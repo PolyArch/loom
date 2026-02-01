@@ -1,7 +1,5 @@
 # Loom Pragma System Specification
 
-> **Last Updated**: 2025-01-26
-
 ## Quick Reference
 
 | Pragma | Category | Type | Description | Jump |
@@ -33,8 +31,6 @@
 3. **Compiler has final authority**: For suggestive pragmas, the compiler may ignore them if it determines a better strategy. For prohibitive pragmas, the compiler must respect them.
 
 4. **Minimal and orthogonal**: Each pragma serves a distinct purpose. No overlapping functionality.
-
-5. **Design space exploration**: Suggestive pragmas define the starting point for the compiler's optimization search, not the final configuration. See [spec-optimization.md](./spec-optimization.md) for details on the optimization flow.
 
 ### Pragma vs Compiler Automation
 
@@ -244,7 +240,7 @@ for (int i = 0; i < n; ++i) { ... }
 **Hardware mapping**:
 - P parallel workers map to P groups of PEs processing different data partitions
 
-**LLVM IR**: Emits `__loom_loop_parallel(degree, schedule)` marker call, or `__loom_loop_parallel_auto()` for auto mode. The `AttachLoomLoopMetadata` pass converts these to `!llvm.loop` metadata.
+**LLVM IR**: Emits `__loom_loop_parallel(degree, schedule)` marker call, or `__loom_loop_parallel_auto()` for auto mode.
 
 ---
 
@@ -265,7 +261,7 @@ for (int i = 0; i < n; ++i) {
 - Useful for loops with complex control flow or dependencies
 - Useful for debugging parallelization-related issues
 
-**LLVM IR**: Emits `__loom_loop_no_parallel()` marker call. The `AttachLoomLoopMetadata` pass converts this to `!llvm.loop` metadata with `!"loom.no_parallel"`.
+**LLVM IR**: Emits `__loom_loop_no_parallel()` marker call.
 
 ---
 
@@ -301,7 +297,7 @@ for (int i = 0; i < n; ++i) {
 - Unrolling increases the size of the dataflow graph within each parallel worker
 - Enables instruction-level parallelism within iterations
 
-**LLVM IR**: Emits `__loom_loop_unroll(factor)` marker call, or `__loom_loop_unroll_auto()` for auto mode. The `AttachLoomLoopMetadata` pass converts these to `!llvm.loop` metadata.
+**LLVM IR**: Emits `__loom_loop_unroll(factor)` marker call, or `__loom_loop_unroll_auto()` for auto mode. 
 
 ---
 
@@ -322,7 +318,7 @@ for (int i = 0; i < n; ++i) {
 - Useful for loops with complex control flow or dependencies
 - Useful for debugging unroll-related issues
 
-**LLVM IR**: Emits `__loom_loop_no_unroll()` marker call. The `AttachLoomLoopMetadata` pass converts this to `!llvm.loop` metadata with `!"loom.no_unroll"`.
+**LLVM IR**: Emits `__loom_loop_no_unroll()` marker call. 
 
 ---
 
@@ -420,7 +416,7 @@ Parameters can be specified in any order. Unspecified parameters default to 0.
 - Providing expected ranges for bounded loops (e.g., `for (int i = 0; i < N; ++i)` where N is known)
 - Tiled/blocked loops with fixed tile sizes
 
-**LLVM IR**: Emits `__loom_loop_tripcount(typical, avg, min, max)` marker call. The `AttachLoomLoopMetadata` pass converts this to `!llvm.loop` metadata with `!"loom.tripcount", i32, i32, i32, i32`.
+**LLVM IR**: Emits `__loom_loop_tripcount(typical, avg, min, max)` marker call. 
 
 ---
 
@@ -599,7 +595,7 @@ Function-level pragmas (LOOM_ACCEL, LOOM_NO_ACCEL, LOOM_TARGET, etc.) generate `
 
 ### Loop-Level Pragmas and !llvm.loop Metadata
 
-Loop pragmas (LOOM_PARALLEL, LOOM_UNROLL, LOOM_TRIPCOUNT, etc.) use the standard LLVM `!llvm.loop` metadata mechanism. The Loom compiler converts pragma marker calls to metadata during linking via the `AttachLoomLoopMetadata` pass.
+Loop pragmas (LOOM_PARALLEL, LOOM_UNROLL, LOOM_TRIPCOUNT, etc.) use the standard LLVM `!llvm.loop` metadata mechanism. The Loom compiler converts pragma marker calls to metadata.
 
 **Metadata format**:
 ```llvm
@@ -709,25 +705,3 @@ llvm.mlir.global appending @llvm.global.annotations() {
 ```
 
 These annotations survive the MLIR import and export path without modification.
-
----
-
-## Interaction with loom-config.yaml
-
-Pragma hints can be overridden or constrained by `loom-config.yaml`:
-
-```yaml
-compiler:
-  auto_accel: true        # Enable auto-detection of acceleratable regions
-  respect_pragmas: true   # Respect user pragmas (default)
-  max_unroll: 16          # Global max unroll factor (pragma cannot exceed)
-  max_parallel: 8         # Global max parallelism (pragma cannot exceed)
-
-dse:
-  enabled: true
-  loop_constraints:
-    - loop: "outer_loop"
-      max_recurrence_length: 4
-```
-
-See [spec-cli.md](./spec-cli.md) for complete configuration options and [spec-optimization.md](./spec-optimization.md) for the optimization flow.
