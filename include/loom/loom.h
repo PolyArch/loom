@@ -82,7 +82,7 @@
 //===========================================================================
 //
 // These marker functions are used to attach loop optimization metadata.
-// They are empty (no-ops) by default. The AttachLoomLoopMetadata pass
+// They are empty (no-ops) by default. The compilation pass
 // converts these calls to !llvm.loop metadata and removes the calls.
 //
 // The functions use noinline+used to prevent inlining/DCE while keeping
@@ -218,7 +218,7 @@ __attribute__((weak, noinline)) void __loom_loop_tripcount(int typical, int avg,
 // LLVM IR: Emits __loom_loop_parallel(degree, schedule) marker call,
 // or __loom_loop_parallel_auto() for auto mode.
 // Schedule: 0=default, 1=contiguous, 2=interleaved
-// The AttachLoomLoopMetadata pass converts these to !llvm.loop metadata.
+// The compilation pass converts these to !llvm.loop metadata.
 #define LOOM_SCHED_DEFAULT 0
 #define LOOM_SCHED_CONTIGUOUS 1
 #define LOOM_SCHED_INTERLEAVED 2
@@ -302,7 +302,7 @@ __attribute__((weak, noinline)) void __loom_loop_tripcount(int typical, int avg,
 //
 // Validation:
 // - All arguments must be compile-time constants
-// - Single-argument form: enforced by backend (AttachLoomLoopMetadata pass)
+// - Single-argument form: enforced by backend (compilation pass)
 // - Multi-argument forms: enforced via constexpr/static_assert
 // - min <= max is validated at compile time
 
@@ -428,7 +428,7 @@ constexpr TripcountBuilder build_tripcount_unified(Args... args) {
 #define LOOM_TC_ARG_COUNT(...) LOOM_TC_ARG_COUNT_IMPL(__VA_ARGS__, M, M, M, 1)
 
 // Single-argument version: preserves backward compatibility with trailing ;
-// Compile-time constant is enforced by the backend (AttachLoomLoopMetadata
+// Compile-time constant is enforced by the backend (compilation
 // pass).
 #define LOOM_TRIPCOUNT_1(n) __loom_loop_tripcount((n), (n), 0, 0);
 
