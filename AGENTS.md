@@ -4,6 +4,7 @@ Loom is a full stack framework for Domain-specific Accelerator, from C++ source 
 # Documentation
 - Check `docs` to understand `loom` design specification.
   - `docs/spec-pragma.md` describes the loom pragma system, used by programmer to provide hint to loom compiler.
+  - `docs/spec-cli.md` describes the `loom` compiler command line interface, anything about the loom cli should be documented here.
 
 # General Rules
 - Avoid terms to describe development progress (`FIXED`, `Step`, `Week`, `Section`, `Phase`, `AC-x`, etc) in code comments or commit message or PR body.
