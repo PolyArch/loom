@@ -102,14 +102,24 @@ __attribute__((weak, noinline)) void __loom_loop_parallel(int degree,
   __asm__ volatile("" : : "r"(degree), "r"(schedule));
 }
 
+// Marker for LOOM_PARALLEL() auto mode
+__attribute__((weak, noinline)) void __loom_loop_parallel_auto(void) {
+  __asm__ volatile("");
+}
+
 // Marker for LOOM_NO_PARALLEL
 __attribute__((weak, noinline)) void __loom_loop_no_parallel(void) {
   __asm__ volatile("");
 }
 
-// Marker for LOOM_UNROLL: factor (254 = auto)
+// Marker for LOOM_UNROLL: factor
 __attribute__((weak, noinline)) void __loom_loop_unroll(int factor) {
   __asm__ volatile("" : : "r"(factor));
+}
+
+// Marker for LOOM_UNROLL() auto mode
+__attribute__((weak, noinline)) void __loom_loop_unroll_auto(void) {
+  __asm__ volatile("");
 }
 
 // Marker for LOOM_NO_UNROLL
@@ -205,8 +215,8 @@ __attribute__((weak, noinline)) void __loom_loop_tripcount(int typical, int avg,
 //   LOOM_PARALLEL()  // Auto: let compiler decide
 //   for (int i = 0; i < n; ++i) { ... }
 //
-// LLVM IR: Emits __loom_loop_parallel(degree, schedule) marker call.
-// Auto mode uses 254 as sentinel value.
+// LLVM IR: Emits __loom_loop_parallel(degree, schedule) marker call,
+// or __loom_loop_parallel_auto() for auto mode.
 // Schedule: 0=default, 1=contiguous, 2=interleaved
 // The AttachLoomLoopMetadata pass converts these to !llvm.loop metadata.
 #define LOOM_SCHED_DEFAULT 0
@@ -215,7 +225,7 @@ __attribute__((weak, noinline)) void __loom_loop_tripcount(int typical, int avg,
 // Lowercase aliases for convenience
 #define LOOM_SCHED_contiguous 1
 #define LOOM_SCHED_interleaved 2
-#define LOOM_PARALLEL_0() __loom_loop_parallel(254, LOOM_SCHED_DEFAULT);
+#define LOOM_PARALLEL_0() __loom_loop_parallel_auto();
 #define LOOM_PARALLEL_1(n)                                                     \
   static_assert((n) > 0, "LOOM_PARALLEL requires positive value; "             \
                          "use LOOM_NO_PARALLEL to forbid parallelization, "    \
@@ -249,9 +259,9 @@ __attribute__((weak, noinline)) void __loom_loop_tripcount(int typical, int avg,
 //   LOOM_UNROLL()  // Auto: let compiler decide
 //   for (int i = 0; i < n; ++i) { ... }
 //
-// LLVM IR: Emits __loom_loop_unroll(factor) marker call.
-// Auto mode uses 254 as sentinel value.
-#define LOOM_UNROLL_0() __loom_loop_unroll(254);
+// LLVM IR: Emits __loom_loop_unroll(factor) marker call,
+// or __loom_loop_unroll_auto() for auto mode.
+#define LOOM_UNROLL_0() __loom_loop_unroll_auto();
 #define LOOM_UNROLL_1(n)                                                       \
   static_assert((n) > 0, "LOOM_UNROLL requires positive value; "               \
                          "use LOOM_NO_UNROLL to forbid unrolling, "            \

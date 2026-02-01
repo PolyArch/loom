@@ -239,12 +239,12 @@ for (int i = 0; i < n; ++i) { ... }
 - Each instance processes a partition of the iteration space
 - Compiler may choose different parallelism if P is infeasible
 - Tail iterations (when n % P != 0) are handled automatically by the compiler
-- Auto mode (254 sentinel) lets the compiler determine optimal parallelism
+- Auto mode lets the compiler determine optimal parallelism
 
 **Hardware mapping**:
 - P parallel workers map to P groups of PEs processing different data partitions
 
-**LLVM IR annotation**: `"loom.parallel=<P>,<schedule>"` (P=254 indicates auto mode)
+**LLVM IR**: Emits `__loom_loop_parallel(degree, schedule)` marker call, or `__loom_loop_parallel_auto()` for auto mode. The `AttachLoomLoopMetadata` pass converts these to `!llvm.loop` metadata.
 
 ---
 
@@ -265,7 +265,7 @@ for (int i = 0; i < n; ++i) {
 - Useful for loops with complex control flow or dependencies
 - Useful for debugging parallelization-related issues
 
-**LLVM IR annotation**: `"loom.no_parallel"`
+**LLVM IR**: Emits `__loom_loop_no_parallel()` marker call. The `AttachLoomLoopMetadata` pass converts this to `!llvm.loop` metadata with `!"loom.no_parallel"`.
 
 ---
 
@@ -293,7 +293,7 @@ for (int i = 0; i < n; ++i) {
 
 **Semantics**:
 - Suggests the compiler should unroll this loop by factor U
-- Auto mode (254 sentinel) lets the compiler determine optimal unrolling
+- Auto mode lets the compiler determine optimal unrolling
 - Compiler may use different factor if U is infeasible
 - Unrolling connects U iterations of the dataflow graph together
 
@@ -301,7 +301,7 @@ for (int i = 0; i < n; ++i) {
 - Unrolling increases the size of the dataflow graph within each parallel worker
 - Enables instruction-level parallelism within iterations
 
-**LLVM IR annotation**: `"loom.unroll=<U>"` (U=254 indicates auto mode)
+**LLVM IR**: Emits `__loom_loop_unroll(factor)` marker call, or `__loom_loop_unroll_auto()` for auto mode. The `AttachLoomLoopMetadata` pass converts these to `!llvm.loop` metadata.
 
 ---
 
@@ -322,7 +322,7 @@ for (int i = 0; i < n; ++i) {
 - Useful for loops with complex control flow or dependencies
 - Useful for debugging unroll-related issues
 
-**LLVM IR annotation**: `"loom.no_unroll"`
+**LLVM IR**: Emits `__loom_loop_no_unroll()` marker call. The `AttachLoomLoopMetadata` pass converts this to `!llvm.loop` metadata with `!"loom.no_unroll"`.
 
 ---
 
@@ -385,7 +385,7 @@ for (int i = 0; i < n; ++i) { ... }
 **Macro Variants**:
 | Macro | Parameters | Description |
 |-------|------------|-------------|
-| `LOOM_TRIPCOUNT(n)` | typical | Sets typical and avg to n |
+| `LOOM_TRIPCOUNT(n)` | typical | Sets typical to n; avg defaults to typical |
 | `LOOM_TRIPCOUNT(min=, max=, ...)` | named params | C++ named-parameter syntax (see below) |
 | `LOOM_TRIPCOUNT_RANGE(min, max)` | min, max | Sets only min/max bounds |
 | `LOOM_TRIPCOUNT_TYPICAL(typ, min, max)` | typical, min, max | Sets typical (avg=typical) with bounds |
@@ -397,7 +397,7 @@ In C++, `LOOM_TRIPCOUNT` supports named parameters using the syntax `name = valu
 | Parameter | Description |
 |-----------|-------------|
 | `typical` | Expected/most common trip count |
-| `avg` | Average trip count (defaults to typical if not specified) |
+| `avg` | Average trip count (defaults to `typical` if not specified) |
 | `min` | Minimum trip count |
 | `max` | Maximum trip count |
 
@@ -420,7 +420,7 @@ Parameters can be specified in any order. Unspecified parameters default to 0.
 - Providing expected ranges for bounded loops (e.g., `for (int i = 0; i < N; ++i)` where N is known)
 - Tiled/blocked loops with fixed tile sizes
 
-**LLVM IR annotation**: `"loom.tripcount=<typical>,<avg>,<min>,<max>"`
+**LLVM IR**: Emits `__loom_loop_tripcount(typical, avg, min, max)` marker call. The `AttachLoomLoopMetadata` pass converts this to `!llvm.loop` metadata with `!"loom.tripcount", i32, i32, i32, i32`.
 
 ---
 
