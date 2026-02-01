@@ -17,7 +17,7 @@ static uint32_t bit_reverse(uint32_t x, uint32_t log2n) {
 int main() {
     const uint32_t N = 16;
     const uint32_t log2n = 4;  // log2(64)
-    
+
     // Input and working arrays
     float input_real[N];
     float input_imag[N];
@@ -25,7 +25,7 @@ int main() {
     float expect_imag[N];
     float calculated_real[N];
     float calculated_imag[N];
-    
+
     // Initialize input data with specific test values
     float input_real_data[16] = {
         -3.981271f,11.75819f,1.067285f,-24.85930f,
@@ -43,11 +43,11 @@ int main() {
         input_real[i] = input_real_data[i];
         input_imag[i] = input_imag_data[i];
     }
-    
+
     // Apply IFFT butterfly operations
     ifft_butterfly_cpu(input_real, input_imag, expect_real, expect_imag, N);
     ifft_butterfly_dsa(input_real, input_imag, calculated_real, calculated_imag, N);
-    
+
     // Compare results with tolerance
     for (uint32_t i = 0; i < N; i++) {
         if (fabsf(expect_real[i] - calculated_real[i]) > 1e-4f ||
@@ -56,7 +56,7 @@ int main() {
             return 1;
         }
     }
-    
+
     printf("ifft_butterfly: PASSED\n");
     return 0;
 }

@@ -4,16 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Tiled matrix multiplication with blocking
 // Tests complete compilation chain with nested loops and tiling optimization
 // Test: A(2x2) * B(2x2 identity) = [1,2,3,4] with tile sizes (1,1,1)
-
-
-
-
-
-
 
 // CPU implementation of tiled matrix multiplication
 // A: M x N matrix
@@ -33,7 +26,7 @@ void mmtile_cpu(const uint32_t* __restrict__ A,
     for (uint32_t i = 0; i < M * K; i++) {
         C[i] = 0;
     }
-    
+
     // Tiled matrix multiplication
     for (uint32_t i0 = 0; i0 < M; i0 += TILE_M) {
         for (uint32_t j0 = 0; j0 < K; j0 += TILE_K) {
@@ -42,7 +35,7 @@ void mmtile_cpu(const uint32_t* __restrict__ A,
                 uint32_t i_end = std::min(i0 + TILE_M, M);
                 uint32_t j_end = std::min(j0 + TILE_K, K);
                 uint32_t k_end = std::min(k0 + TILE_N, N);
-                
+
                 for (uint32_t i = i0; i < i_end; i++) {
                     for (uint32_t j = j0; j < j_end; j++) {
                         uint32_t sum = 0;
@@ -72,7 +65,7 @@ void mmtile_dsa(LOOM_MEMORY_BANK(4, block) LOOM_STREAM const uint32_t* __restric
     for (uint32_t i = 0; i < M * K; i++) {
         C[i] = 0;
     }
-    
+
     // Tiled matrix multiplication
     LOOM_PARALLEL(4, contiguous)
     for (uint32_t i0 = 0; i0 < M; i0 += TILE_M) {
@@ -84,7 +77,7 @@ void mmtile_dsa(LOOM_MEMORY_BANK(4, block) LOOM_STREAM const uint32_t* __restric
                 uint32_t i_end = std::min(i0 + TILE_M, M);
                 uint32_t j_end = std::min(j0 + TILE_K, K);
                 uint32_t k_end = std::min(k0 + TILE_N, N);
-                
+
                 for (uint32_t i = i0; i < i_end; i++) {
                     for (uint32_t j = j0; j < j_end; j++) {
                         uint32_t sum = 0;
@@ -98,5 +91,4 @@ void mmtile_dsa(LOOM_MEMORY_BANK(4, block) LOOM_STREAM const uint32_t* __restric
         }
     }
 }
-
 

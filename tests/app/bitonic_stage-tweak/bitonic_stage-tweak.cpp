@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Bitonic sort stage (in-place)
 // Tests complete compilation chain with conditional swapping logic
 // Test: inplace=[3,1,4,2,8,6,7,5], N=8, stage=1, pass=0
-
-
-
-
-
 
 // CPU implementation of bitonic sort stage (in-place)
 void bitonic_stage_cpu(float* __restrict__ inplace,
@@ -94,6 +88,4 @@ void bitonic_stage_dsa(float* __restrict__ inplace,
         inplace[i]-=1;
     }
 }
-
-
 

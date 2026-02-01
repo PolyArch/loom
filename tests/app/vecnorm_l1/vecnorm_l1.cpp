@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Vector L1 norm
 // Tests complete compilation chain with sum reduction
 // Test: L1 norm of [15, 7, 22, 9, 18, 4, 31, 12, 26, 13] = 157
-
-
-
-
-
 
 // CPU implementation of vector L1 norm
 uint32_t vecnorm_l1_cpu(const uint32_t* __restrict__ A, 
@@ -37,8 +31,4 @@ uint32_t vecnorm_l1_dsa(const uint32_t* __restrict__ A,
     }
     return norm;
 }
-
-
-
-
 

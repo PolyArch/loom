@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Cumulative sum (prefix sum, inclusive scan)
 // Tests complete compilation chain with scan operation
 // Test: input=[1,2,3,4,5], N=5 → output=[1,3,6,10,15]
-
-
-
-
-
 
 // CPU implementation of cumulative sum
 // output[i] = sum of input[0..i]
@@ -41,7 +35,4 @@ void cumsum_dsa(const float* __restrict__ input,
         output[i] = sum;
     }
 }
-
-
-
 

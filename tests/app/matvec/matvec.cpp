@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Matrix-vector multiplication
 // Tests complete compilation chain with nested loops and reduction
 // Test: (2x3)*[1,2,3] = [14,32]
-
-
-
-
-
 
 // CPU implementation of matrix-vector multiplication
 // A: M x N matrix (row-major)
@@ -49,8 +43,4 @@ void matvec_dsa(LOOM_MEMORY_BANK(4, block) LOOM_STREAM const uint32_t* __restric
         y[i] = sum;
     }
 }
-
-
-
-
 

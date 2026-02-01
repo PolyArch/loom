@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Bisection method step
 // Tests complete compilation chain with conditional interval selection
 // Test: a=[0,1,2], b=[4,5,6], fa=[1,2,4], fb=[-2,-3,8], fc=[-0.5,1.5,5], N=3
@@ -13,11 +12,6 @@
 // Element 1: fa*fc = 2*1.5 = 3 > 0, fc*fb = 1.5*(-3) = -4.5 < 0 → [c,b] = [3,5]
 // Element 2: fa*fc = 4*5 = 20 > 0, fc*fb = 5*8 = 40 > 0 → default [c,b] = [4,6]
 // Expected: output_a=[0,3,4], output_b=[2,5,6]
-
-
-
-
-
 
 // CPU implementation of single bisection method step
 // Performs one bisection step for root finding
@@ -88,6 +82,4 @@ void bisection_step_dsa(const float* __restrict__ input_a,
         }
     }
 }
-
-
 

@@ -4,18 +4,11 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Blackman window function
 // Tests complete compilation chain with trigonometric operations (cosine)
 // Test: Apply Blackman window to signal [1.5, 2.3, 1.8, 2.7, 2.1, 1.6, 2.4, 1.9]
 // Window coefficients: [~0, 0.090, 0.459, 0.920, 0.920, 0.459, 0.090, ~0]
 // Expected output (input * window): [~0, 0.208, 0.827, 2.485, 1.933, 0.735, 0.217, ~0]
-
-
-
-
-
-
 
 const float PI_BLACKMAN = 3.14159265358979323846f;
 
@@ -44,6 +37,4 @@ void window_blackman_dsa(const float* __restrict__ input,
         output[n] = input[n] * window;
     }
 }
-
-
 

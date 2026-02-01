@@ -4,14 +4,8 @@
 #include <cmath>
 #include <cstdlib>
 
-
-
 // Full pipeline test from C++ source: Vector scaling (scalar-vector multiplication)
 // Tests complete compilation chain with scalar-vector operation
-
-
-
-
 
 // CPU implementation of vector scaling (scalar × vector)
 void vecscale_cpu(const uint32_t* __restrict__ A, 
@@ -36,8 +30,4 @@ void vecscale_dsa(const uint32_t* __restrict__ A,
         B[i] = alpha * A[i];
     }
 }
-
-
-
-
 

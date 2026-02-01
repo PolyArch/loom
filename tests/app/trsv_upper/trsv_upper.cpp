@@ -4,12 +4,6 @@
 #include <cmath>
 #include <cstdlib>
 
-
-
-
-
-
-
 // CPU implementation of triangular solve (backward substitution)
 // Solves U * x = b, where U is upper triangular
 // U: N x N upper triangular matrix (row-major, diagonal included)
@@ -44,6 +38,4 @@ void trsv_upper_dsa(const uint32_t* __restrict__ U,
         x[i] = sum / U[i * N + i];
     }
 }
-
-
 

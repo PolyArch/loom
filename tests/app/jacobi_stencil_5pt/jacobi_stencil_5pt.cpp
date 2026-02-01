@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: 5-point Jacobi stencil (2D)
 // Tests complete compilation chain with stencil computation
 // Test: 4x4 grid with 5-point stencil averaging → interior updated, boundary unchanged
-
-
-
-
-
 
 // CPU implementation of 5-point Jacobi stencil (2D grid)
 // Updates interior points of a 2D grid using 5-point stencil
@@ -33,7 +27,7 @@ void jacobi_stencil_5pt_cpu(const float* __restrict__ input_grid,
         output_grid[i * N + 0] = input_grid[i * N + 0];  // Left column
         output_grid[i * N + (N - 1)] = input_grid[i * N + (N - 1)];  // Right column
     }
-    
+
     // Update interior points with 5-point stencil
     for (uint32_t i = 1; i < M - 1; i++) {
         for (uint32_t j = 1; j < N - 1; j++) {
@@ -64,7 +58,7 @@ void jacobi_stencil_5pt_dsa(const float* __restrict__ input_grid,
         output_grid[i * N + 0] = input_grid[i * N + 0];
         output_grid[i * N + (N - 1)] = input_grid[i * N + (N - 1)];
     }
-    
+
     // Update interior points with 5-point stencil
     for (uint32_t i = 1; i < M - 1; i++) {
         for (uint32_t j = 1; j < N - 1; j++) {
@@ -77,6 +71,4 @@ void jacobi_stencil_5pt_dsa(const float* __restrict__ input_grid,
         }
     }
 }
-
-
 

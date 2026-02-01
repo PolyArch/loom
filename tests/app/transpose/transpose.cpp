@@ -4,14 +4,8 @@
 #include <cmath>
 #include <cstdlib>
 
-
-
 // Full pipeline test from C++ source: Matrix transpose
 // Tests complete compilation chain with nested loops and non-sequential memory access
-
-
-
-
 
 // CPU implementation of matrix transpose
 // A: M x N matrix (row-major)
@@ -41,9 +35,6 @@ void transpose_dsa(LOOM_MEMORY_BANK(8) LOOM_STREAM const uint32_t* __restrict__ 
     }
 }
 
-
 // For each row i of A, read linearly and write as column i of B (strided)
 // Write to column i of B using 2D strided write (stride = M)
-
-
 

@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Moving average with sliding window
 // Tests complete compilation chain with variable-length inner loop, backward indexing, and per-window reduction
 // Test: 12 random input values, window=4 → moving averages
-
-
-
-
-
 
 // CPU implementation of moving average with window
 // For each position i, output[i] = average of input[i-window_size+1..i]
@@ -25,13 +19,13 @@ void moving_avg_cpu(const float* __restrict__ input,
         // Determine window start and actual window size
         uint32_t start = (i + 1 >= window_size) ? (i + 1 - window_size) : 0;
         uint32_t actual_window = i - start + 1;
-        
+
         // Compute sum over window
         float sum = 0.0f;
         for (uint32_t j = start; j <= i; j++) {
             sum += input[j];
         }
-        
+
         // Compute average
         output[i] = sum / static_cast<float>(actual_window);
     }
@@ -49,18 +43,15 @@ void moving_avg_dsa(const float* __restrict__ input,
         // Determine window start and actual window size
         uint32_t start = (i + 1 >= window_size) ? (i + 1 - window_size) : 0;
         uint32_t actual_window = i - start + 1;
-        
+
         // Compute sum over window
         float sum = 0.0f;
         for (uint32_t j = start; j <= i; j++) {
             sum += input[j];
         }
-        
+
         // Compute average
         output[i] = sum / static_cast<float>(actual_window);
     }
 }
-
-
-
 

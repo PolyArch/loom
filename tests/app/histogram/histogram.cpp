@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Histogram computation
 // Tests complete compilation chain with indirect write pattern (hist[input[i]]++) and initialization loop
 // Test: input=[0,1,2,1,3,2,1,4,2,0], 5 bins → [2,3,3,1,1]
-
-
-
-
-
 
 // CPU implementation of histogram computation
 // Count occurrences of each value in the input array
@@ -25,7 +19,7 @@ void histogram_cpu(const uint32_t* __restrict__ input,
     for (uint32_t i = 0; i < num_bins; i++) {
         hist[i] = 0;
     }
-    
+
     // Count occurrences
     for (uint32_t i = 0; i < N; i++) {
         LOOM_REDUCE(+)
@@ -49,7 +43,7 @@ void histogram_dsa(const uint32_t* __restrict__ input,
     for (uint32_t i = 0; i < num_bins; i++) {
         hist[i] = 0;
     }
-    
+
     // Count occurrences
     for (uint32_t i = 0; i < N; i++) {
         uint32_t value = input[i];
@@ -58,8 +52,6 @@ void histogram_dsa(const uint32_t* __restrict__ input,
         }
     }
 }
-
-
 
 // Step 1: Initialize histogram to zero
 
@@ -75,6 +67,4 @@ void histogram_dsa(const uint32_t* __restrict__ input,
 // Step 6: Generate ones to add at each indexed location
 
 // Step 7: Indirect atomic increment for valid indices only: hist[input[i]]++
-
-
 

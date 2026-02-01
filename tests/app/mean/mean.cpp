@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Mean computation (sum reduction + division)
 // Tests complete compilation chain with reduction operation and post-processing
 // Test: input=[1,2,3,4,5] → mean=3.0
-
-
-
-
-
 
 // CPU implementation of mean computation
 float mean_cpu(const float* __restrict__ input,
@@ -38,7 +32,4 @@ float mean_dsa(const float* __restrict__ input,
     }
     return sum / static_cast<float>(N);
 }
-
-
-
 

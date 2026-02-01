@@ -4,16 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: ReLU activation function
 // Tests complete compilation chain with max operation using float type
 // Test: [-5.5,-3.2,-1,-0.1,0,0.1,1,2.5,4.8,10] → [0,0,0,0,0,0.1,1,2.5,4.8,10] (max(0, x))
-
-
-
-
-
-
 
 // CPU implementation of ReLU activation
 // ReLU(x) = max(0, x)
@@ -37,8 +30,4 @@ void relu_dsa(const float* __restrict__ input,
         output[i] = std::max(0.0f, input[i]);
     }
 }
-
-
-
-
 

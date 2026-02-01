@@ -4,17 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: FFT butterfly stages (Cooley-Tukey)
 // Tests complete compilation chain with trigonometric operations (cos, sin, log2)
 // Test: 16-point FFT with random complex inputs
-
-
-
-
-
-
-
 
 const float PI_BUTTERFLY = 3.14159265358979323846f;
 
@@ -45,13 +37,13 @@ void fft_butterfly_cpu(const float* __restrict__ input_real,
         output_real[i] = input_real[i];
         output_imag[i] = input_imag[i];
     }
-    
+
     // FFT butterfly computation
     for (uint32_t s = 1; s <= static_cast<uint32_t>(log2f(N)); s++) {
         uint32_t m = 1 << s;  // 2^s
         float wm_r = cosf(-2.0f * PI_BUTTERFLY / m);
         float wm_i = sinf(-2.0f * PI_BUTTERFLY / m);
-        
+
         for (uint32_t k = 0; k < N; k += m) {
             float w_r = 1.0f;
             float w_i = 0.0f;
@@ -59,19 +51,19 @@ void fft_butterfly_cpu(const float* __restrict__ input_real,
                 // t = w * output[k + j + m/2]
                 float t_r = w_r * output_real[k + j + m / 2] - w_i * output_imag[k + j + m / 2];
                 float t_i = w_r * output_imag[k + j + m / 2] + w_i * output_real[k + j + m / 2];
-                
+
                 // u = output[k + j]
                 float u_r = output_real[k + j];
                 float u_i = output_imag[k + j];
-                
+
                 // output[k + j] = u + t
                 output_real[k + j] = u_r + t_r;
                 output_imag[k + j] = u_i + t_i;
-                
+
                 // output[k + j + m/2] = u - t
                 output_real[k + j + m / 2] = u_r - t_r;
                 output_imag[k + j + m / 2] = u_i - t_i;
-                
+
                 // w = w * wm
                 float new_w_r = w_r * wm_r - w_i * wm_i;
                 float new_w_i = w_r * wm_i + w_i * wm_r;
@@ -110,13 +102,13 @@ void fft_butterfly_dsa(const float* __restrict__ input_real,
         output_real[i] = input_real[i];
         output_imag[i] = input_imag[i];
     }
-    
+
     // FFT butterfly computation
     for (uint32_t s = 1; s <= static_cast<uint32_t>(log2f(N)); s++) {
         uint32_t m = 1 << s;  // 2^s
         float wm_r = cosf(-2.0f * PI_BUTTERFLY / m);
         float wm_i = sinf(-2.0f * PI_BUTTERFLY / m);
-        
+
         for (uint32_t k = 0; k < N; k += m) {
             float w_r = 1.0f;
             float w_i = 0.0f;
@@ -124,19 +116,19 @@ void fft_butterfly_dsa(const float* __restrict__ input_real,
                 // t = w * output[k + j + m/2]
                 float t_r = w_r * output_real[k + j + m / 2] - w_i * output_imag[k + j + m / 2];
                 float t_i = w_r * output_imag[k + j + m / 2] + w_i * output_real[k + j + m / 2];
-                
+
                 // u = output[k + j]
                 float u_r = output_real[k + j];
                 float u_i = output_imag[k + j];
-                
+
                 // output[k + j] = u + t
                 output_real[k + j] = u_r + t_r;
                 output_imag[k + j] = u_i + t_i;
-                
+
                 // output[k + j + m/2] = u - t
                 output_real[k + j + m / 2] = u_r - t_r;
                 output_imag[k + j + m / 2] = u_i - t_i;
-                
+
                 // w = w * wm
                 float new_w_r = w_r * wm_r - w_i * wm_i;
                 float new_w_i = w_r * wm_i + w_i * wm_r;
@@ -146,6 +138,4 @@ void fft_butterfly_dsa(const float* __restrict__ input_real,
         }
     }
 }
-
-
 

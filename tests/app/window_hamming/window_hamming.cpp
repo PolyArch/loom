@@ -4,13 +4,6 @@
 #include <cmath>
 #include <cstdlib>
 
-
-
-
-
-
-
-
 const float PI_HAMMING = 3.14159265358979323846f;
 
 // CPU implementation of Hamming window
@@ -36,6 +29,4 @@ void window_hamming_dsa(const float* __restrict__ input,
         output[n] = input[n] * window;
     }
 }
-
-
 

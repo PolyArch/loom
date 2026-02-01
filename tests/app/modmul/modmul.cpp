@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Modular multiplication (a*b mod n)
 // Tests complete compilation chain with modular arithmetic
 // Test: 5*3 mod 11 = 4, 7*4 mod 11 = 6, 10*8 mod 11 = 3
-
-
-
-
-
 
 // CPU implementation of modular multiplication (a*b mod n)
 void modmul_cpu(const uint32_t* __restrict__ input_A,
@@ -44,6 +38,4 @@ void modmul_dsa(const uint32_t* __restrict__ input_A,
         output_C[i] = (uint32_t)result;
     }
 }
-
-
 

@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Bit-reversal for complex numbers
 // Tests complete compilation chain with bit reversal permutation on two arrays
 // Test: real=[1..8], imag=[0.1..0.8], N=8 → bit-reversed permutation
-
-
-
-
-
 
 // CPU implementation of bit-reversal for complex numbers (two arrays)
 void bitrev_complex_cpu(const float* __restrict__ input_real,
@@ -24,13 +18,13 @@ void bitrev_complex_cpu(const float* __restrict__ input_real,
         uint32_t j = 0;
         uint32_t k = i;
         uint32_t m = N >> 1;
-        
+
         while (m > 0) {
             j = (j << 1) | (k & 1);
             k >>= 1;
             m >>= 1;
         }
-        
+
         output_real[j] = input_real[i];
         output_imag[j] = input_imag[i];
     }
@@ -49,17 +43,15 @@ void bitrev_complex_dsa(const float* __restrict__ input_real,
         uint32_t j = 0;
         uint32_t k = i;
         uint32_t m = N >> 1;
-        
+
         while (m > 0) {
             j = (j << 1) | (k & 1);
             k >>= 1;
             m >>= 1;
         }
-        
+
         output_real[j] = input_real[i];
         output_imag[j] = input_imag[i];
     }
 }
-
-
 

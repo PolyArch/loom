@@ -4,16 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Sparse matrix-dense matrix multiplication (SpMM)
 // Tests complete compilation chain with CSR format and irregular memory access
 // Test: A(2x3 sparse) * B(3x2 dense) = C(2x2) → [7,10,9,12]
-
-
-
-
-
-
 
 // CPU implementation of Sparse Matrix-Dense Matrix Multiplication (SpMM)
 // Matrix A: M x N sparse matrix in CSR format
@@ -35,16 +28,16 @@ void spmm_cpu(const uint32_t* __restrict__ A_values,
     for (uint32_t i = 0; i < M * K; i++) {
         C[i] = 0;
     }
-    
+
     // Compute C = A * B
     for (uint32_t i = 0; i < M; i++) {
         uint32_t row_start = A_row_ptr[i];
         uint32_t row_end = A_row_ptr[i + 1];
-        
+
         for (uint32_t j = row_start; j < row_end; j++) {
             uint32_t A_val = A_values[j];
             uint32_t A_col = A_col_indices[j];
-            
+
             // Add A[i,A_col] * B[A_col,:] to C[i,:]
             for (uint32_t k = 0; k < K; k++) {
                 C[i * K + k] += A_val * B[A_col * K + k];
@@ -67,16 +60,16 @@ void spmm_dsa(LOOM_MEMORY_BANK(8) LOOM_STREAM const uint32_t* __restrict__ A_val
     for (uint32_t i = 0; i < M * K; i++) {
         C[i] = 0;
     }
-    
+
     // Compute C = A * B
     for (uint32_t i = 0; i < M; i++) {
         uint32_t row_start = A_row_ptr[i];
         uint32_t row_end = A_row_ptr[i + 1];
-        
+
         for (uint32_t j = row_start; j < row_end; j++) {
             uint32_t A_val = A_values[j];
             uint32_t A_col = A_col_indices[j];
-            
+
             // Add A[i,A_col] * B[A_col,:] to C[i,:]
             for (uint32_t k = 0; k < K; k++) {
                 C[i * K + k] += A_val * B[A_col * K + k];
@@ -84,5 +77,4 @@ void spmm_dsa(LOOM_MEMORY_BANK(8) LOOM_STREAM const uint32_t* __restrict__ A_val
         }
     }
 }
-
 

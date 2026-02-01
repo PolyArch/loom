@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Matrix multiplication
 // Tests complete compilation chain with triple-nested loops
 // Test: (2x3)*(3x2) = (2x2) → [22,28,49,64]
-
-
-
-
-
 
 // CPU implementation of matrix multiplication
 // A: M x N matrix
@@ -57,8 +51,4 @@ void matmul_dsa(LOOM_MEMORY_BANK(4, block) LOOM_STREAM const uint32_t* __restric
         }
     }
 }
-
-
-
-
 

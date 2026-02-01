@@ -7,11 +7,11 @@ int main() {
     const uint32_t L = 4;  // Depth
     const uint32_t M = 4;  // Rows
     const uint32_t N = 4;  // Columns
-    
+
     // Input and output grids
     float expect_grid[L * M * N];
     float calculated_grid[L * M * N];
-    
+
     // Initialize input grid
     // for (uint32_t k = 0; k < L; k++) {
     //     for (uint32_t i = 0; i < M; i++) {
@@ -38,13 +38,13 @@ int main() {
         -1.659556f,3.626015f,7.509137f,2.084468e-01,
         3.386276f,1.718731f,2.498070f,3.493781f
     };
-    
+
     // Compute expected result with CPU version
     jacobi_stencil_7pt_cpu(input_grid, expect_grid, L, M, N);
-    
+
     // Compute result with accelerator version
     jacobi_stencil_7pt_dsa(input_grid, calculated_grid, L, M, N);
-    
+
     // Compare results with tolerance
     for (uint32_t i = 0; i < L * M * N; i++) {
         if (fabsf(expect_grid[i] - calculated_grid[i]) > 1e-5f) {
@@ -52,7 +52,7 @@ int main() {
             return 1;
         }
     }
-    
+
     printf("jacobi_stencil_7pt: PASSED\n");
     return 0;
 }

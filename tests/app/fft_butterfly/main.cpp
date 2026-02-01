@@ -41,11 +41,11 @@ int main() {
         input_real[i] = input_real_data[i];
         input_imag[i] = input_imag_data[i];
     }
-    
+
     // Apply butterfly operations
     fft_butterfly_cpu(input_real, input_imag, expect_real, expect_imag, N);
     fft_butterfly_dsa(input_real, input_imag, calculated_real, calculated_imag, N);
-    
+
     // Compare results with tolerance
     for (uint32_t i = 0; i < N; i++) {
         if (fabsf(expect_real[i] - calculated_real[i]) > 1e-4f ||
@@ -54,7 +54,7 @@ int main() {
             return 1;
         }
     }
-    
+
     printf("fft_butterfly: PASSED\n");
     return 0;
 }

@@ -4,12 +4,6 @@
 #include <cmath>
 #include <cstdlib>
 
-
-
-
-
-
-
 // CPU implementation of trapezoidal integration
 // Computes integral using trapezoidal rule: integral = sum((y[i] + y[i+1]) * (x[i+1] - x[i]) / 2)
 // input_x: x coordinates (N elements)
@@ -19,13 +13,13 @@ float integrate_trapz_cpu(const float* __restrict__ input_x,
                           const float* __restrict__ input_y,
                           const uint32_t N) {
     float sum = 0.0f;
-    
+
     for (uint32_t i = 0; i < N - 1; i++) {
         float dx = input_x[i + 1] - input_x[i];
         float avg_y = (input_y[i] + input_y[i + 1]) * 0.5f;
         sum += avg_y * dx;
     }
-    
+
     return sum;
 }
 
@@ -41,8 +35,7 @@ float integrate_trapz_dsa(const float* __restrict__ input_x,
         float avg_y = (input_y[i] + input_y[i + 1]) * 0.5f;
         sum += avg_y * dx;
     }
-    
+
     return sum;
 }
-
 

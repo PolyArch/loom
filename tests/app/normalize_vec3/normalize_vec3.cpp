@@ -4,16 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: 3D vector normalization
 // Tests complete compilation chain with sqrt and floating-point division
 // Test: 6 random 3D vectors → normalized to unit length
-
-
-
-
-
-
 
 // CPU implementation of 3D vector normalization
 // Normalizes N 3D vectors to unit length
@@ -26,9 +19,9 @@ void normalize_vec3_cpu(const float* __restrict__ input_vec,
         float x = input_vec[i * 3 + 0];
         float y = input_vec[i * 3 + 1];
         float z = input_vec[i * 3 + 2];
-        
+
         float length = sqrtf(x * x + y * y + z * z);
-        
+
         if (length > 1e-8f) {
             output_normalized[i * 3 + 0] = x / length;
             output_normalized[i * 3 + 1] = y / length;
@@ -52,9 +45,9 @@ void normalize_vec3_dsa(const float* __restrict__ input_vec,
         float x = input_vec[i * 3 + 0];
         float y = input_vec[i * 3 + 1];
         float z = input_vec[i * 3 + 2];
-        
+
         float length = sqrtf(x * x + y * y + z * z);
-        
+
         if (length > 1e-8f) {
             output_normalized[i * 3 + 0] = x / length;
             output_normalized[i * 3 + 1] = y / length;
@@ -66,6 +59,4 @@ void normalize_vec3_dsa(const float* __restrict__ input_vec,
         }
     }
 }
-
-
 

@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Stream compaction
 // Tests complete compilation chain with conditional filtering and partition operation
 // Test: input=[10,0,20,0,30,40,0,50], N=8 → return value=5
-
-
-
-
-
 
 // CPU implementation of stream compaction
 // Filter and compact non-zero elements from input to output
@@ -45,8 +39,6 @@ uint32_t compact_dsa(LOOM_MEMORY_BANK(8) LOOM_STREAM const uint32_t* __restrict_
     return count;
 }
 
-
-
 // Step 1: Read input array
 
 // Step 2: Check which elements are non-zero: input[i] != 0
@@ -57,7 +49,4 @@ uint32_t compact_dsa(LOOM_MEMORY_BANK(8) LOOM_STREAM const uint32_t* __restrict_
 // Step 4: Write compacted non-zero elements to output
 
 // Step 5: Count the number of non-zero elements using count operation
-
-
-
 

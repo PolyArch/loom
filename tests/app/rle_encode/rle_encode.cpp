@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Run-length encoding
 // Tests complete compilation chain with stateful compression loop
 // Test: [5,5,5,3,3,7] → values=[5,3,7], counts=[3,2,1], length=3
-
-
-
-
-
 
 // CPU implementation of run-length encoding
 void rle_encode_cpu(const uint32_t* __restrict__ input_data,
@@ -24,11 +18,11 @@ void rle_encode_cpu(const uint32_t* __restrict__ input_data,
         *output_length = 0;
         return;
     }
-    
+
     uint32_t write_idx = 0;
     uint32_t current_value = input_data[0];
     uint32_t current_count = 1;
-    
+
     for (uint32_t i = 1; i < N; i++) {
         if (input_data[i] == current_value) {
             current_count++;
@@ -40,12 +34,12 @@ void rle_encode_cpu(const uint32_t* __restrict__ input_data,
             current_count = 1;
         }
     }
-    
+
     // Write the last run
     output_values[write_idx] = current_value;
     output_counts[write_idx] = current_count;
     write_idx++;
-    
+
     *output_length = write_idx;
 }
 
@@ -60,11 +54,11 @@ void rle_encode_dsa(LOOM_MEMORY_BANK(8) LOOM_STREAM const uint32_t* __restrict__
         *output_length = 0;
         return;
     }
-    
+
     uint32_t write_idx = 0;
     uint32_t current_value = input_data[0];
     uint32_t current_count = 1;
-    
+
     for (uint32_t i = 1; i < N; i++) {
         if (input_data[i] == current_value) {
             current_count++;
@@ -76,14 +70,12 @@ void rle_encode_dsa(LOOM_MEMORY_BANK(8) LOOM_STREAM const uint32_t* __restrict__
             current_count = 1;
         }
     }
-    
+
     // Write the last run
     output_values[write_idx] = current_value;
     output_counts[write_idx] = current_count;
     write_idx++;
-    
+
     *output_length = write_idx;
 }
-
-
 

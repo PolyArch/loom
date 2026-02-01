@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Rolling hash (Rabin-Karp)
 // Tests complete compilation chain with modular arithmetic and sliding window
 // Test: string=[1,2,3,4,5], window=3 → hashes=[98, 39, 81]
-
-
-
-
-
 
 // CPU implementation of rolling hash (Rabin-Karp)
 // Computes hash values for all windows of size window_size in the input string
@@ -23,24 +17,24 @@ void string_hash_cpu(const uint32_t* __restrict__ input_str,
                      const uint32_t window_size) {
     const uint32_t base = 256;
     const uint32_t modulus = 101;
-    
+
     if (window_size > N) {
         return;
     }
-    
+
     // Compute base^(window_size-1) % modulus
     uint32_t h = 1;
     for (uint32_t i = 0; i < window_size - 1; i++) {
         h = (h * base) % modulus;
     }
-    
+
     // Compute hash for first window
     uint32_t hash_value = 0;
     for (uint32_t i = 0; i < window_size; i++) {
         hash_value = (hash_value * base + input_str[i]) % modulus;
     }
     output_hashes[0] = hash_value;
-    
+
     // Rolling hash for remaining windows
     for (uint32_t i = 1; i <= N - window_size; i++) {
         // Remove leading character, add trailing character
@@ -58,11 +52,11 @@ void string_hash_dsa(const uint32_t* __restrict__ input_str,
                      const uint32_t window_size) {
     const uint32_t base = 256;
     const uint32_t modulus = 101;
-    
+
     if (window_size > N) {
         return;
     }
-    
+
     // Compute base^(window_size-1) % modulus
     uint32_t h = 1;
     LOOM_NO_PARALLEL
@@ -70,14 +64,14 @@ void string_hash_dsa(const uint32_t* __restrict__ input_str,
     for (uint32_t i = 0; i < window_size - 1; i++) {
         h = (h * base) % modulus;
     }
-    
+
     // Compute hash for first window
     uint32_t hash_value = 0;
     for (uint32_t i = 0; i < window_size; i++) {
         hash_value = (hash_value * base + input_str[i]) % modulus;
     }
     output_hashes[0] = hash_value;
-    
+
     // Rolling hash for remaining windows
     for (uint32_t i = 1; i <= N - window_size; i++) {
         // Remove leading character, add trailing character
@@ -86,6 +80,4 @@ void string_hash_dsa(const uint32_t* __restrict__ input_str,
         output_hashes[i] = hash_value;
     }
 }
-
-
 

@@ -4,16 +4,10 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Vector L2 norm squared
 // Tests complete compilation chain with multiplication and reduction
 // Test: L2 norm squared of [8, 5, 12, 3, 9, 6, 15, 4, 11, 7] = 770
 // (Actual L2 norm = sqrt(770) ≈ 27.75)
-
-
-
-
-
 
 // CPU implementation of vector L2 norm (squared, to avoid floating point)
 uint32_t vecnorm_l2_cpu(const uint32_t* __restrict__ A, 
@@ -39,8 +33,6 @@ uint32_t vecnorm_l2_dsa(const uint32_t* __restrict__ A,
     return norm_sq;
 }
 
-
-
 // Step 1: Read vector A
 
 // Step 2: Duplicate A to get two identical dataflows for A[i] * A[i]
@@ -48,7 +40,4 @@ uint32_t vecnorm_l2_dsa(const uint32_t* __restrict__ A,
 // Step 3: Element-wise multiply A[i] * A[i]
 
 // Step 4: Sum all squared values
-
-
-
 

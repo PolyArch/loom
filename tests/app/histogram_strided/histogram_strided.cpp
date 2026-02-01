@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Strided histogram
 // Tests complete compilation chain with division and indirect writes
 // Test: input=[0,5,10,15,7,12,3,18,22,25], stride=6, 5 bins → [3,2,2,2,1]
-
-
-
-
-
 
 // CPU implementation of histogram with custom bin mapping
 // Maps input values to bins using a stride
@@ -26,7 +20,7 @@ void histogram_strided_cpu(const uint32_t* __restrict__ input,
     for (uint32_t i = 0; i < num_bins; i++) {
         hist[i] = 0;
     }
-    
+
     // Count occurrences with striding
     for (uint32_t i = 0; i < N; i++) {
         LOOM_REDUCE(+)
@@ -50,7 +44,7 @@ void histogram_strided_dsa(const uint32_t* __restrict__ input,
     for (uint32_t i = 0; i < num_bins; i++) {
         hist[i] = 0;
     }
-    
+
     // Count occurrences with striding
     for (uint32_t i = 0; i < N; i++) {
         uint32_t bin = input[i] / stride;
@@ -59,5 +53,4 @@ void histogram_strided_dsa(const uint32_t* __restrict__ input,
         }
     }
 }
-
 

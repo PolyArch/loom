@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Bit rotation (left rotation)
 // Tests complete compilation chain with bitwise shift operations
 // Test: 0xF0F0F0F0<<4, 8<<1, 0xAAAAAAAA<<8
-
-
-
-
-
 
 // CPU implementation of bit rotation (left rotation)
 // Rotates each 32-bit input left by the corresponding rotation amount
@@ -43,6 +37,4 @@ void rotate_bits_dsa(const uint32_t* __restrict__ input_data,
         output_result[i] = (shift == 0) ? value : ((value << shift) | (value >> (32 - shift)));
     }
 }
-
-
 

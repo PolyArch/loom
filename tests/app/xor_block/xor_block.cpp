@@ -4,12 +4,6 @@
 #include <cmath>
 #include <cstdlib>
 
-
-
-
-
-
-
 // CPU implementation of block-wise XOR
 void xor_block_cpu(const uint32_t* __restrict__ input_A,
                    const uint32_t* __restrict__ input_B,
@@ -32,6 +26,4 @@ void xor_block_dsa(const uint32_t* __restrict__ input_A,
         output_C[i] = input_A[i] ^ input_B[i];
     }
 }
-
-
 

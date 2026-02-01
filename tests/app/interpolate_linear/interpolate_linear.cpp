@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Linear interpolation
 // Tests complete compilation chain with search loop and floating-point arithmetic
 // Test: 10 data points, 7 query points → interpolated results
-
-
-
-
-
 
 // CPU implementation of linear interpolation
 // Performs linear interpolation on N_query points
@@ -30,7 +24,7 @@ void interpolate_linear_cpu(const float* __restrict__ input_x,
                              const uint32_t N_query) {
     for (uint32_t q = 0; q < N_query; q++) {
         float xq = input_xq[q];
-        
+
         // Find the interval [x[i], x[i+1]] containing xq
         uint32_t i = 0;
         for (uint32_t k = 0; k < N_data - 1; k++) {
@@ -39,13 +33,13 @@ void interpolate_linear_cpu(const float* __restrict__ input_x,
                 break;
             }
         }
-        
+
         // Linear interpolation
         float x0 = input_x[i];
         float x1 = input_x[i + 1];
         float y0 = input_y[i];
         float y1 = input_y[i + 1];
-        
+
         float t = (xq - x0) / (x1 - x0);
         output_yq[q] = y0 + t * (y1 - y0);
     }
@@ -63,7 +57,7 @@ void interpolate_linear_dsa(const float* __restrict__ input_x,
     LOOM_UNROLL(8)
     for (uint32_t q = 0; q < N_query; q++) {
         float xq = input_xq[q];
-        
+
         // Find the interval [x[i], x[i+1]] containing xq
         uint32_t i = 0;
         for (uint32_t k = 0; k < N_data - 1; k++) {
@@ -72,17 +66,15 @@ void interpolate_linear_dsa(const float* __restrict__ input_x,
                 break;
             }
         }
-        
+
         // Linear interpolation
         float x0 = input_x[i];
         float x1 = input_x[i + 1];
         float y0 = input_y[i];
         float y1 = input_y[i + 1];
-        
+
         float t = (xq - x0) / (x1 - x0);
         output_yq[q] = y0 + t * (y1 - y0);
     }
 }
-
-
 

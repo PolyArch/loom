@@ -4,12 +4,6 @@
 #include <cmath>
 #include <cstdlib>
 
-
-
-
-
-
-
 // CPU implementation of triangular solve (forward substitution)
 // Solves L * x = b, where L is lower triangular
 // L: N x N lower triangular matrix (row-major, diagonal included)
@@ -45,6 +39,4 @@ void trsv_lower_dsa(const uint32_t* __restrict__ L,
         x[i] = sum / L[i * N + i];
     }
 }
-
-
 

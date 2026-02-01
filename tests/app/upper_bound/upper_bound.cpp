@@ -4,12 +4,6 @@
 #include <cmath>
 #include <cstdlib>
 
-
-
-
-
-
-
 // CPU implementation of upper_bound (first element > value)
 void upper_bound_cpu(const float* __restrict__ input_sorted,
                      const float* __restrict__ input_targets,
@@ -21,17 +15,17 @@ void upper_bound_cpu(const float* __restrict__ input_sorted,
         float target = input_targets[t];
         uint32_t left = 0;
         uint32_t right = N;
-        
+
         while (left < right) {
             uint32_t mid = left + (right - left) / 2;
-            
+
             if (input_sorted[mid] <= target) {
                 left = mid + 1;
             } else {
                 right = mid;
             }
         }
-        
+
         output_indices[t] = left;
     }
 }
@@ -50,20 +44,18 @@ void upper_bound_dsa(const float* __restrict__ input_sorted,
         float target = input_targets[t];
         uint32_t left = 0;
         uint32_t right = N;
-        
+
         while (left < right) {
             uint32_t mid = left + (right - left) / 2;
-            
+
             if (input_sorted[mid] <= target) {
                 left = mid + 1;
             } else {
                 right = mid;
             }
         }
-        
+
         output_indices[t] = left;
     }
 }
-
-
 

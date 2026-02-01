@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Quantile/percentile computation on sorted data
 // Tests complete compilation chain with linear interpolation
 // Test: sorted=[1,2,3,4,5], q=0.5 (median) → 3.0
-
-
-
-
-
 
 // CPU implementation of quantile/percentile computation on sorted data
 // Assumes input is already sorted in ascending order
@@ -25,12 +19,12 @@ float quantile_cpu(const float* __restrict__ sorted_input,
     float pos = q * static_cast<float>(N - 1);
     uint32_t lower = static_cast<uint32_t>(pos);
     uint32_t upper = lower + 1;
-    
+
     // Handle boundary cases
     if (upper >= N) {
         return sorted_input[N - 1];
     }
-    
+
     // Linear interpolation
     float frac = pos - static_cast<float>(lower);
     return sorted_input[lower] * (1.0f - frac) + sorted_input[upper] * frac;
@@ -51,15 +45,14 @@ float quantile_dsa(const float* __restrict__ sorted_input,
     float pos = q * static_cast<float>(N - 1);
     uint32_t lower = static_cast<uint32_t>(pos);
     uint32_t upper = lower + 1;
-    
+
     // Handle boundary cases
     if (upper >= N) {
         return sorted_input[N - 1];
     }
-    
+
     // Linear interpolation
     float frac = pos - static_cast<float>(lower);
     return sorted_input[lower] * (1.0f - frac) + sorted_input[upper] * frac;
 }
-
 

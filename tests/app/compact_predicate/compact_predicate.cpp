@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Predicated stream compaction
 // Tests complete compilation chain with predicate-based filtering
 // Test: input=[10,20,30,40,50,60,70,80], predicate=[1,0,1,0,1,1,0,1], N=8 → return value=5
-
-
-
-
-
 
 // CPU implementation of predicated stream compaction
 // Filter elements based on a predicate array (1 = keep, 0 = discard)
@@ -46,6 +40,4 @@ uint32_t compact_predicate_dsa(LOOM_MEMORY_BANK(8) LOOM_STREAM const uint32_t* _
     }
     return count;
 }
-
-
 

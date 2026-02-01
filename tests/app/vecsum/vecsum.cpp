@@ -4,16 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
-
 // Full pipeline test from C++ source: Vector sum (reduction)
 // Tests complete compilation chain with reduction operation
 // Then tests simulation: A=[0..15], init_value=0, N=16 → sum=120
-
-
-
-
-
 
 // CPU implementation of vector sum
 uint32_t vecsum_cpu(const uint32_t* __restrict__ A, 
@@ -41,7 +34,4 @@ uint32_t vecsum_dsa(const uint32_t* __restrict__ A,
     }
     return sum;
 }
-
-
-
 

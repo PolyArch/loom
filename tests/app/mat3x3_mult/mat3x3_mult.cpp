@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: 3x3 matrix multiplication
 // Tests complete compilation chain with fixed-size matrix operations
 // Test: 3 pairs of random 3x3 matrices → C = A * B
-
-
-
-
-
 
 // CPU implementation of 3x3 matrix multiplication
 // Multiplies N pairs of 3x3 matrices: C = A * B
@@ -25,7 +19,7 @@ void mat3x3_mult_cpu(const float* __restrict__ input_mat_a,
         const float* A = &input_mat_a[n * 9];
         const float* B = &input_mat_b[n * 9];
         float* C = &output_mat_c[n * 9];
-        
+
         // Compute C = A * B
         for (uint32_t i = 0; i < 3; i++) {
             for (uint32_t j = 0; j < 3; j++) {
@@ -51,7 +45,7 @@ void mat3x3_mult_dsa(const float* __restrict__ input_mat_a,
         const float* A = &input_mat_a[n * 9];
         const float* B = &input_mat_b[n * 9];
         float* C = &output_mat_c[n * 9];
-        
+
         // Compute C = A * B
         for (uint32_t i = 0; i < 3; i++) {
             for (uint32_t j = 0; j < 3; j++) {
@@ -64,6 +58,4 @@ void mat3x3_mult_dsa(const float* __restrict__ input_mat_a,
         }
     }
 }
-
-
 

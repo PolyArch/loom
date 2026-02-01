@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Outer product
 // Tests complete compilation chain with nested loops
 // Test: a=[1,2], b=[3,4] → C=[3,4,6,8]
-
-
-
-
-
 
 // CPU implementation of outer product
 // a: vector of length M
@@ -47,12 +41,10 @@ void outer_dsa(const uint32_t* __restrict__ a,
     }
 }
 
-
 // Read vector a (M elements)
 // Read vector b (N elements)
 // Repeat each element of a N times: [a0, a0, ..., a0, a1, a1, ..., a1, ...]
 // Repeat entire b vector M times: [b0, b1, ..., bN, b0, b1, ..., bN, ...]
 // Element-wise multiply to get outer product
 // Write result to C (M*N elements)
-
 

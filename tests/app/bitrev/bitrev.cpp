@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Bit-reversal permutation
 // Tests complete compilation chain with bit-reversed index permutation
 // Test: input=[1..8], N=8 → bit-reversed permutation
-
-
-
-
-
 
 // CPU implementation of bit-reversal permutation
 // Reorder array elements according to bit-reversed indices
@@ -23,14 +17,14 @@ void bitrev_cpu(const float* __restrict__ input,
         uint32_t j = 0;
         uint32_t k = i;
         uint32_t m = N >> 1;
-        
+
         // Compute bit-reversed index
         while (m > 0) {
             j = (j << 1) | (k & 1);
             k >>= 1;
             m >>= 1;
         }
-        
+
         output[j] = input[i];
     }
 }
@@ -46,16 +40,14 @@ void bitrev_dsa(const float* __restrict__ input,
         uint32_t j = 0;
         uint32_t k = i;
         uint32_t m = N >> 1;
-        
+
         while (m > 0) {
             j = (j << 1) | (k & 1);
             k >>= 1;
             m >>= 1;
         }
-        
+
         output[j] = input[i];
     }
 }
-
-
 

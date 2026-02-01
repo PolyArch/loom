@@ -4,16 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: 7-point Jacobi stencil (3D)
 // Tests complete compilation chain with 3D stencil computation
 // Test: 4x4x4 grid with 7-point stencil → interior points updated, boundary unchanged
-
-
-
-
-
-
 
 // CPU implementation of 7-point Jacobi stencil (3D grid)
 // Updates interior points of a 3D grid using 7-point stencil
@@ -27,7 +20,7 @@ void jacobi_stencil_7pt_cpu(const float* __restrict__ input_grid,
                              const uint32_t M,
                              const uint32_t N) {
     const uint32_t MN = M * N;
-    
+
     // Copy all boundary points
     for (uint32_t k = 0; k < L; k++) {
         for (uint32_t i = 0; i < M; i++) {
@@ -40,7 +33,7 @@ void jacobi_stencil_7pt_cpu(const float* __restrict__ input_grid,
             }
         }
     }
-    
+
     // Update interior points with 7-point stencil
     for (uint32_t k = 1; k < L - 1; k++) {
         for (uint32_t i = 1; i < M - 1; i++) {
@@ -72,7 +65,7 @@ void jacobi_stencil_7pt_dsa(const float* __restrict__ input_grid,
                              const uint32_t M,
                              const uint32_t N) {
     const uint32_t MN = M * N;
-    
+
     // Copy all boundary points
     LOOM_PARALLEL()
     LOOM_UNROLL(8)
@@ -86,7 +79,7 @@ void jacobi_stencil_7pt_dsa(const float* __restrict__ input_grid,
             }
         }
     }
-    
+
     // Update interior points with 7-point stencil
     for (uint32_t k = 1; k < L - 1; k++) {
         for (uint32_t i = 1; i < M - 1; i++) {
@@ -102,6 +95,4 @@ void jacobi_stencil_7pt_dsa(const float* __restrict__ input_grid,
         }
     }
 }
-
-
 

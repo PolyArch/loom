@@ -4,16 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Batch normalization
 // Tests complete compilation chain with nested loops and transcendental functions (sqrt)
 // Test: input=[1,2,3,4,5,6,7,8], mean=[2.5,6.5], var=[1.25,1.25], C=2, H=2, W=2, eps=0.001
-
-
-
-
-
-
 
 // CPU implementation of batch normalization
 // output[i] = gamma * (input[i] - mean) / sqrt(variance + epsilon) + beta
@@ -33,7 +26,7 @@ void batchnorm_cpu(const float* __restrict__ input,
                    const float epsilon) {
     for (uint32_t c = 0; c < C; c++) {
         float inv_std = 1.0f / sqrtf(variance[c] + epsilon);
-        
+
         for (uint32_t h = 0; h < H; h++) {
             for (uint32_t w = 0; w < W; w++) {
                 uint32_t idx = c * (H * W) + h * W + w;
@@ -60,7 +53,7 @@ void batchnorm_dsa(const float* __restrict__ input,
     LOOM_UNROLL()
     for (uint32_t c = 0; c < C; c++) {
         float inv_std = 1.0f / sqrtf(variance[c] + epsilon);
-        
+
         for (uint32_t h = 0; h < H; h++) {
             for (uint32_t w = 0; w < W; w++) {
                 uint32_t idx = c * (H * W) + h * W + w;
@@ -70,8 +63,6 @@ void batchnorm_dsa(const float* __restrict__ input,
         }
     }
 }
-
-
 
 // Batch Normalization: output = gamma * (input - mean) / sqrt(variance + epsilon) + beta
 // Applied per channel across spatial dimensions (C channels, H×W pixels each)
@@ -117,7 +108,4 @@ void batchnorm_dsa(const float* __restrict__ input,
 // Learnable shift parameter
 
 // Stage 4: Write normalized output (C×H×W elements)
-
-
-
 

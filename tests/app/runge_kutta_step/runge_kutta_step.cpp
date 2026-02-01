@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Runge-Kutta 4th order step
 // Tests complete compilation chain with RK4 formula
 // Test: y=[1,2], h=0.1, k1-k4 → [1.015, 2.025]
-
-
-
-
-
 
 // CPU implementation of single RK4 (Runge-Kutta 4th order) step
 // Computes one RK4 step for ODE: dy/dt = f(t, y)
@@ -51,5 +45,4 @@ void runge_kutta_step_dsa(const float* __restrict__ input_y,
         output_y[i] = input_y[i] + (h / 6.0f) * (input_k1[i] + 2.0f * input_k2[i] + 2.0f * input_k3[i] + input_k4[i]);
     }
 }
-
 

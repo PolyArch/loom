@@ -4,16 +4,10 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Gather operation (indirect read)
 // Tests complete compilation chain with indirect memory access pattern: dst[i] = src[indices[i]]
 // Then tests simulation: src=[10,20,30,40,50,60,70,80,90], indices=[0,2,4,8,1,10,3,5], N=8, src_size=9
 // Expected: dst=[10,30,50,90,20,0,40,60] (index 10 is out of bounds → 0)
-
-
-
-
-
 
 // CPU implementation of gather operation
 // Gather values from src to dst using indices
@@ -51,6 +45,4 @@ void gather_dsa(LOOM_MEMORY_BANK(8) LOOM_STREAM const uint32_t* __restrict__ src
         }
     }
 }
-
-
 

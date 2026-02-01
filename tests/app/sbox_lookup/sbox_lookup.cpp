@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: S-box substitution table lookup
 // Tests complete compilation chain with indirect memory access
 // Test: input=[0,1,2,255], sbox[0]=100, sbox[1]=200, sbox[2]=150, sbox[255]=255
-
-
-
-
-
 
 // CPU implementation of S-box substitution table lookup
 // Takes input values, an S-box table, and performs table lookup
@@ -39,6 +33,4 @@ void sbox_lookup_dsa(const uint32_t* __restrict__ input_data,
         output_result[i] = input_sbox[index];
     }
 }
-
-
 

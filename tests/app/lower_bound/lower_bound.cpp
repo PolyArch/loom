@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Lower bound (binary search)
 // Tests complete compilation chain with while loop and binary search
 // Test: 10 sorted values, 10 target values → lower bound indices
-
-
-
-
-
 
 // CPU implementation of lower_bound (first element >= value)
 void lower_bound_cpu(const float* __restrict__ input_sorted,
@@ -25,17 +19,17 @@ void lower_bound_cpu(const float* __restrict__ input_sorted,
         float target = input_targets[t];
         uint32_t left = 0;
         uint32_t right = N;
-        
+
         while (left < right) {
             uint32_t mid = left + (right - left) / 2;
-            
+
             if (input_sorted[mid] < target) {
                 left = mid + 1;
             } else {
                 right = mid;
             }
         }
-        
+
         output_indices[t] = left;
     }
 }
@@ -54,20 +48,18 @@ void lower_bound_dsa(const float* __restrict__ input_sorted,
         float target = input_targets[t];
         uint32_t left = 0;
         uint32_t right = N;
-        
+
         while (left < right) {
             uint32_t mid = left + (right - left) / 2;
-            
+
             if (input_sorted[mid] < target) {
                 left = mid + 1;
             } else {
                 right = mid;
             }
         }
-        
+
         output_indices[t] = left;
     }
 }
-
-
 

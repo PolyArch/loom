@@ -4,16 +4,10 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: String comparison
 // Tests complete compilation chain with early exit on mismatch
 // Test: "appletea" vs "appleton" → 4294967295 (0xFFFFFFFF = -1, means A < B)
 // Differs at position 6: 'e' (101) < 'o' (111)
-
-
-
-
-
 
 // CPU implementation of string comparison
 // Compares two strings represented as uint32_t arrays (each element is a character)
@@ -51,5 +45,4 @@ void string_compare_dsa(const uint32_t* __restrict__ input_str_a,
     }
     *output_result = 0; // Equal
 }
-
 

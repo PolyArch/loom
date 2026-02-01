@@ -4,16 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Sigmoid activation function
 // Tests complete compilation chain with transcendental operations
 // Test: [0.0, 1.0, -1.0] → [0.5, 0.731, 0.269]
-
-
-
-
-
-
 
 // CPU implementation of Sigmoid activation
 // sigmoid(x) = 1 / (1 + exp(-x))
@@ -38,8 +31,6 @@ void sigmoid_dsa(const float* __restrict__ input,
     }
 }
 
-
-
 // Step 1: Read input
 
 // Step 2: Negate input: -x
@@ -51,7 +42,4 @@ void sigmoid_dsa(const float* __restrict__ input,
 // Step 5: Reciprocal: 1 / (1 + exp(-x))
 
 // Step 6: Write output
-
-
-
 

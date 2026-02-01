@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: Compare and swap operation
 // Tests complete compilation chain with conditional assignment (output min/max of two values)
 // Test: a=[3,1,5,2], b=[2,4,3,6], N=4 → min=[2,1,3,2], max=[3,4,5,6]
-
-
-
-
-
 
 // CPU implementation of compare and swap
 void compare_swap_cpu(const float* __restrict__ input_a,
@@ -51,8 +45,4 @@ void compare_swap_dsa(const float* __restrict__ input_a,
         }
     }
 }
-
-
-
-
 

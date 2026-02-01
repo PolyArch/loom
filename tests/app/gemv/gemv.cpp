@@ -4,15 +4,9 @@
 #include <cmath>
 #include <cstdlib>
 
-
 // Full pipeline test from C++ source: GEMV (General Matrix-Vector multiply)
 // Tests complete compilation chain with nested loops and scalar-vector operations
 // Test: y = 2*[[1,2],[3,4]]*[1,2] + 1*[1,1] → [11,23]
-
-
-
-
-
 
 // CPU implementation of GEMV (General Matrix-Vector multiply)
 // output_y = alpha * A * x + beta * input_y
@@ -58,8 +52,6 @@ void gemv_dsa(const uint32_t alpha,
     }
 }
 
-
-
 // Step 1: Read A matrix using 2D linear read (M rows, each of length N, with stride=N)
 // This produces M logical dataflows (one per row), each of length N
 // Physical dataflow has M LAST markers separating the rows
@@ -85,7 +77,4 @@ void gemv_dsa(const uint32_t alpha,
 // Step 8: Add the two terms: alpha * sum_i + beta * input_y[i]
 
 // Step 9: Write result to output_y linearly
-
-
-
 
