@@ -1,0 +1,15 @@
+# Project Overview
+Loom is a full stack framework for Domain-specific Accelerator, from C++ source code to Hardware Backend
+
+# General Rules
+- Avoid terms to describe development progress (`FIXED`, `Step`, `Week`, `Section`, `Phase`, `AC-x`, etc) in code comments or commit message or PR body.
+- Avoid AI tools name (like Codex, Claude, Grok, Gemini, ...) in code comments or git commit message (including authorship) or PR body.
+- `TODO`, `FIXME` are allowed in code comments.
+- Ideal file size is less than 1300 lines. If a file is more than 1800 lines, please split it into multiple modular and functional-equivalent files.
+- Files in this project should contain English-only char, NO CJK and NO Emoji.
+- Chat response to user should be in the same language as user's
+- Projects under `externals` are external projects that are used in this project via source compilation, avoid modifying them.
+
+# ExecPlans
+When writing complex features or significant refactors, use an ExecPlan (as described in .agent/PLANS.md) from design to implementation.
+The ExecPlan can be stored in `temp` folder as a living execution plan, the filename should be timestamp-ed like `ExecPlan-YYYYMMDD-hhmmss.md`. 
