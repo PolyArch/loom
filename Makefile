@@ -1,0 +1,35 @@
+SHELL := /bin/sh
+
+.PHONY: all init build test clean purge
+
+all: init build test
+
+init:
+	@set -e; \
+	if [ -e externals/llvm-project/.git ]; then \
+	  echo "externals/llvm-project already initialized"; \
+	else \
+	  git -C . submodule update --init --depth 1 --filter=blob:none externals/llvm-project; \
+	fi; \
+	if [ -e externals/circt/.git ]; then \
+	  echo "externals/circt already initialized"; \
+	else \
+	  git -C . submodule update --init --depth 1 --filter=blob:none externals/circt; \
+	fi
+
+build:
+	@set -e; \
+	cmake -S . -B build -G Ninja -DLLVM_ENABLE_PROJECTS="clang;mlir" -DLLVM_TARGETS_TO_BUILD=host; \
+	ninja -C build loom mlir-opt mlir-translate
+
+test:
+	@set -e; \
+	ninja -C build check-loom
+
+clean:
+	@set -e; \
+	rm -rf tests/app/*/Output
+
+purge:
+	@set -e; \
+	rm -rf build

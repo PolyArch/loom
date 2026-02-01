@@ -14,12 +14,22 @@ llvm_map_components_to_libnames(LOOM_LLVM_LIBS
   native
 )
 
+set(LOOM_MLIR_LIBS
+  MLIRTargetLLVMIRImport
+  MLIRLLVMDialect
+  MLIRDLTIDialect
+  MLIRIR
+  MLIRSupport
+)
+
 foreach(target_name IN ITEMS loom)
   target_include_directories(${target_name} PRIVATE
     "${LLVM_SOURCE_DIR}/include"
     "${LLVM_BINARY_DIR}/include"
     "${CLANG_SOURCE_DIR}/include"
     "${CLANG_BINARY_DIR}/include"
+    "${MLIR_SOURCE_DIR}/include"
+    "${MLIR_BINARY_DIR}/include"
   )
 
   target_link_libraries(${target_name} PRIVATE
@@ -33,6 +43,7 @@ foreach(target_name IN ITEMS loom)
     clangAST
     clangLex
     clangBasic
+    ${LOOM_MLIR_LIBS}
     ${LOOM_LLVM_LIBS}
   )
 
@@ -43,7 +54,20 @@ add_dependencies(loom loom_clang_resource)
 add_dependencies(loom clang-headers)
 
 add_custom_target(check-loom-llvm-roundtrip
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_apps.sh" "${LOOM_RUNTIME_DIR}/loom"
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_apps.sh" "${LOOM_RUNTIME_DIR}/loom" --run
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS loom
+)
+
+add_custom_target(check-loom-mlir-roundtrip
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_mlir_apps.sh" "${LOOM_RUNTIME_DIR}/loom" --run
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom mlir-opt mlir-translate
+)
+
+add_custom_target(check-loom
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_apps.sh" "${LOOM_RUNTIME_DIR}/loom" --run
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_mlir_apps.sh" "${LOOM_RUNTIME_DIR}/loom" --run
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom mlir-opt mlir-translate
 )

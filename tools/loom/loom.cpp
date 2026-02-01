@@ -8,9 +8,13 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/InstIterator.h"
@@ -24,14 +28,276 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/VirtualFileSystem.h"
 
+#include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OperationSupport.h"
+#include "mlir/IR/SymbolTable.h"
+#include "mlir/IR/Verifier.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Support/LogicalResult.h"
+#include "mlir/Target/LLVMIR/Import.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace {
+
+using AnnotationMap =
+    llvm::StringMap<llvm::SmallVector<std::string, 4>>;
+
+void AppendAnnotation(AnnotationMap &map, llvm::StringRef symbol,
+                      llvm::StringRef annotation) {
+  if (symbol.empty() || annotation.empty())
+    return;
+  auto &bucket = map[symbol];
+  bucket.push_back(annotation.str());
+}
+
+AnnotationMap CollectGlobalAnnotations(const llvm::Module &module) {
+  AnnotationMap annotations;
+  const auto *global = module.getNamedGlobal("llvm.global.annotations");
+  if (!global || !global->hasInitializer())
+    return annotations;
+
+  const auto *array =
+      llvm::dyn_cast<llvm::ConstantArray>(global->getInitializer());
+  if (!array)
+    return annotations;
+
+  for (const llvm::Value *operand : array->operands()) {
+    const auto *entry = llvm::dyn_cast<llvm::ConstantStruct>(operand);
+    if (!entry || entry->getNumOperands() < 2)
+      continue;
+
+    const llvm::Value *annotated =
+        entry->getOperand(0)->stripPointerCasts();
+    const auto *annotated_gv = llvm::dyn_cast<llvm::GlobalValue>(annotated);
+    if (!annotated_gv)
+      continue;
+
+    llvm::StringRef annotation;
+    if (!llvm::getConstantStringInfo(entry->getOperand(1), annotation))
+      continue;
+
+    AppendAnnotation(annotations, annotated_gv->getName(), annotation);
+  }
+
+  return annotations;
+}
+
+std::string DeriveMlirOutputPath(llvm::StringRef output_path) {
+  if (output_path.ends_with(".llvm.ll")) {
+    llvm::StringRef base = output_path.drop_back(3);
+    return (base + ".mlir").str();
+  }
+  if (output_path.ends_with(".ll")) {
+    llvm::StringRef base = output_path.drop_back(3);
+    return (base + ".mlir").str();
+  }
+  return (output_path + ".mlir").str();
+}
+
+std::optional<std::string> ExtractStringFromGlobal(
+    mlir::LLVM::GlobalOp global) {
+  if (!global)
+    return std::nullopt;
+  auto value_attr = global.getValueAttr();
+  if (!value_attr)
+    return std::nullopt;
+
+  if (auto str_attr = mlir::dyn_cast<mlir::StringAttr>(value_attr)) {
+    std::string value = str_attr.getValue().str();
+    if (!value.empty() && value.back() == '\0')
+      value.pop_back();
+    return value;
+  }
+
+  auto dense_attr = mlir::dyn_cast<mlir::DenseElementsAttr>(value_attr);
+  if (!dense_attr || !dense_attr.getElementType().isInteger(8))
+    return std::nullopt;
+
+  std::string value;
+  value.reserve(dense_attr.getNumElements());
+  for (const llvm::APInt &element : dense_attr.getValues<llvm::APInt>()) {
+    char ch = static_cast<char>(element.getZExtValue());
+    if (ch == '\0')
+      break;
+    value.push_back(ch);
+  }
+  return value;
+}
+
+mlir::Value StripPointerOps(mlir::Value value) {
+  while (true) {
+    if (auto bitcast = value.getDefiningOp<mlir::LLVM::BitcastOp>()) {
+      value = bitcast.getArg();
+      continue;
+    }
+    if (auto gep = value.getDefiningOp<mlir::LLVM::GEPOp>()) {
+      value = gep.getBase();
+      continue;
+    }
+    return value;
+  }
+}
+
+std::optional<std::string> ExtractStringFromOperand(mlir::ModuleOp module,
+                                                    mlir::Value value) {
+  mlir::Value stripped = StripPointerOps(value);
+  if (auto addr = stripped.getDefiningOp<mlir::LLVM::AddressOfOp>()) {
+    auto global =
+        module.lookupSymbol<mlir::LLVM::GlobalOp>(addr.getGlobalName());
+    return ExtractStringFromGlobal(global);
+  }
+  return std::nullopt;
+}
+
+void AppendLoomAnnotation(mlir::Operation *op, llvm::StringRef annotation,
+                          mlir::Builder &builder) {
+  if (!op || annotation.empty())
+    return;
+  auto existing = op->getAttrOfType<mlir::ArrayAttr>("loom.annotations");
+  llvm::SmallVector<mlir::Attribute, 4> values;
+  if (existing)
+    values.append(existing.begin(), existing.end());
+  values.push_back(builder.getStringAttr(annotation));
+  op->setAttr("loom.annotations", builder.getArrayAttr(values));
+}
+
+void ApplySymbolAnnotations(mlir::ModuleOp module,
+                            const AnnotationMap &annotations) {
+  if (annotations.empty())
+    return;
+  mlir::Builder builder(module.getContext());
+
+  module.walk([&](mlir::Operation *op) {
+    auto name_attr = op->getAttrOfType<mlir::StringAttr>(
+        mlir::SymbolTable::getSymbolAttrName());
+    if (!name_attr)
+      return;
+    auto it = annotations.find(name_attr.getValue());
+    if (it == annotations.end())
+      return;
+    for (const std::string &value : it->second)
+      AppendLoomAnnotation(op, value, builder);
+  });
+}
+
+std::optional<int64_t> GetConstantInt(mlir::Value value) {
+  auto const_op = value.getDefiningOp<mlir::LLVM::ConstantOp>();
+  if (!const_op)
+    return std::nullopt;
+  auto int_attr = mlir::dyn_cast<mlir::IntegerAttr>(const_op.getValue());
+  if (!int_attr)
+    return std::nullopt;
+  return int_attr.getInt();
+}
+
+std::string FormatLoopMarkerAnnotation(llvm::StringRef callee,
+                                       mlir::LLVM::CallOp call) {
+  llvm::SmallString<64> storage;
+  llvm::raw_svector_ostream os(storage);
+  auto args = call.getArgOperands();
+
+  auto append_field = [&](llvm::StringRef label,
+                          std::optional<int64_t> value) {
+    os << " " << label << "=";
+    if (value)
+      os << *value;
+    else
+      os << "?";
+  };
+
+  if (callee == "__loom_loop_parallel") {
+    os << "loom.loop.parallel";
+    if (args.size() >= 1)
+      append_field("degree", GetConstantInt(args[0]));
+    if (args.size() >= 2)
+      append_field("schedule", GetConstantInt(args[1]));
+    return os.str().str();
+  }
+  if (callee == "__loom_loop_parallel_auto")
+    return "loom.loop.parallel=auto";
+  if (callee == "__loom_loop_no_parallel")
+    return "loom.loop.no_parallel";
+  if (callee == "__loom_loop_unroll") {
+    os << "loom.loop.unroll";
+    if (args.size() >= 1)
+      append_field("factor", GetConstantInt(args[0]));
+    return os.str().str();
+  }
+  if (callee == "__loom_loop_unroll_auto")
+    return "loom.loop.unroll=auto";
+  if (callee == "__loom_loop_no_unroll")
+    return "loom.loop.no_unroll";
+  if (callee == "__loom_loop_tripcount") {
+    os << "loom.loop.tripcount";
+    if (args.size() >= 1)
+      append_field("typical", GetConstantInt(args[0]));
+    if (args.size() >= 2)
+      append_field("avg", GetConstantInt(args[1]));
+    if (args.size() >= 3)
+      append_field("min", GetConstantInt(args[2]));
+    if (args.size() >= 4)
+      append_field("max", GetConstantInt(args[3]));
+    return os.str().str();
+  }
+
+  return "";
+}
+
+void ApplyLoopMarkerAnnotations(mlir::ModuleOp module) {
+  mlir::Builder builder(module.getContext());
+  module.walk([&](mlir::LLVM::CallOp call) {
+    auto callee = call.getCallee();
+    if (!callee)
+      return;
+    llvm::StringRef callee_name = *callee;
+    if (!callee_name.starts_with("__loom_loop_"))
+      return;
+    std::string annotation = FormatLoopMarkerAnnotation(callee_name, call);
+    if (annotation.empty())
+      return;
+    AppendLoomAnnotation(call.getOperation(), annotation, builder);
+  });
+}
+
+void ApplyIntrinsicAnnotations(mlir::ModuleOp module) {
+  mlir::Builder builder(module.getContext());
+  module.walk([&](mlir::LLVM::CallIntrinsicOp call) {
+    llvm::StringRef intrin_name = call.getIntrin();
+    if (intrin_name.empty())
+      return;
+    if (!intrin_name.starts_with("llvm.var.annotation") &&
+        !intrin_name.starts_with("llvm.ptr.annotation") &&
+        !intrin_name.starts_with("llvm.annotation"))
+      return;
+
+    auto args = call.getArgs();
+    if (args.size() < 2)
+      return;
+
+    std::optional<std::string> annotation =
+        ExtractStringFromOperand(module, args[1]);
+    if (!annotation || annotation->empty())
+      return;
+
+    mlir::Operation *target = args[0].getDefiningOp();
+    if (!target)
+      target = call.getOperation();
+    AppendLoomAnnotation(target, *annotation, builder);
+  });
+}
 
 struct ParsedArgs {
   std::vector<std::string> inputs;
@@ -44,9 +310,12 @@ struct ParsedArgs {
 
 void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "Usage: " << prog
-               << " [options] <sources...> -o <output.ll>\n";
+               << " [options] <sources...> -o <output.llvm.ll>\n";
   llvm::outs() << "\n";
-  llvm::outs() << "Compile and link C++ sources into a single LLVM IR file.\n";
+  llvm::outs() << "Compile and link C++ sources into a single LLVM IR file "
+               << "and emit LLVM dialect MLIR.\n";
+  llvm::outs() << "The MLIR output path is derived from -o by replacing "
+               << ".llvm.ll or .ll with .mlir.\n";
   llvm::outs() << "\n";
   llvm::outs() << "Forwarded compile options include: -I, -D, -U, -std, -O, -g,"
                << " -isystem, -include.\n";
@@ -456,6 +725,8 @@ int main(int argc, char **argv) {
 
   StripUnsupportedAttributes(*linked_module);
 
+  AnnotationMap symbol_annotations = CollectGlobalAnnotations(*linked_module);
+
   std::error_code ec;
   llvm::raw_fd_ostream output(parsed.output_path, ec, llvm::sys::fs::OF_Text);
   if (ec) {
@@ -467,6 +738,53 @@ int main(int argc, char **argv) {
 
   linked_module->print(output, nullptr);
   output.flush();
+
+  std::string mlir_output_path = DeriveMlirOutputPath(parsed.output_path);
+  if (!EnsureOutputDirectory(mlir_output_path))
+    return 1;
+
+  mlir::MLIRContext mlir_context;
+  mlir_context.getDiagEngine().registerHandler(
+      [](mlir::Diagnostic &diag) {
+        diag.print(llvm::errs());
+        llvm::errs() << "\n";
+        return mlir::success();
+      });
+  mlir_context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
+  mlir_context.getOrLoadDialect<mlir::DLTIDialect>();
+
+  auto mlir_module = mlir::translateLLVMIRToModule(
+      std::move(linked_module), &mlir_context,
+      /*emitExpensiveWarnings=*/false,
+      /*dropDICompositeTypeElements=*/false, /*loadAllDialects=*/false);
+  if (!mlir_module) {
+    llvm::errs() << "error: failed to translate LLVM IR to MLIR\n";
+    return 1;
+  }
+
+  ApplySymbolAnnotations(*mlir_module, symbol_annotations);
+  ApplyIntrinsicAnnotations(*mlir_module);
+  ApplyLoopMarkerAnnotations(*mlir_module);
+
+  if (failed(mlir::verify(*mlir_module))) {
+    llvm::errs() << "error: MLIR verification failed\n";
+    return 1;
+  }
+
+  std::error_code mlir_ec;
+  llvm::raw_fd_ostream mlir_output(mlir_output_path, mlir_ec,
+                                   llvm::sys::fs::OF_Text);
+  if (mlir_ec) {
+    llvm::errs() << "error: cannot write MLIR output file: "
+                 << mlir_output_path << "\n";
+    llvm::errs() << mlir_ec.message() << "\n";
+    return 1;
+  }
+
+  mlir::OpPrintingFlags print_flags;
+  print_flags.enableDebugInfo(true, false);
+  mlir_module->print(mlir_output, print_flags);
+  mlir_output.flush();
 
   return 0;
 }

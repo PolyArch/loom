@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(LLVM_ENABLE_PROJECTS "clang" CACHE STRING "")
+set(LLVM_ENABLE_PROJECTS "clang;mlir" CACHE STRING "")
 set(LLVM_TARGETS_TO_BUILD "host" CACHE STRING "")
 
 add_subdirectory(externals/llvm-project/llvm)
@@ -19,6 +19,8 @@ set(LLVM_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/externals/llvm-project/llvm")
 set(LLVM_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/externals/llvm-project/llvm")
 set(CLANG_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/externals/llvm-project/clang")
 set(CLANG_BINARY_DIR "${LLVM_BINARY_DIR}/tools/clang")
+set(MLIR_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/externals/llvm-project/mlir")
+set(MLIR_BINARY_DIR "${LLVM_BINARY_DIR}/tools/mlir")
 
 set(LOOM_RUNTIME_DIR "${CMAKE_BINARY_DIR}/bin")
 
