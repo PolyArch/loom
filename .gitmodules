@@ -1,0 +1,6 @@
+[submodule "externals/llvm-project"]
+	path = externals/llvm-project
+	url = https://github.com/llvm/llvm-project.git
+[submodule "externals/circt"]
+	path = externals/circt
+	url = https://github.com/llvm/circt.git
