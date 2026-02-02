@@ -18,6 +18,28 @@ if [[ ! -x "${LOOM_BIN}" ]]; then
   exit 1
 fi
 
+BIN_DIR=$(cd "$(dirname "${LOOM_BIN}")" && pwd)
+BUILD_DIR=$(cd "${BIN_DIR}/.." && pwd)
+CLANGXX_FALLBACK="${BUILD_DIR}/externals/llvm-project/llvm/bin/clang++"
+if [[ -n "${CLANGXX:-}" ]]; then
+  if [[ ! -x "${CLANGXX}" ]]; then
+    echo "error: clang++ not found: ${CLANGXX}" >&2
+    exit 1
+  fi
+else
+  CLANGXX="${BIN_DIR}/clang++"
+  if [[ ! -x "${CLANGXX}" && -x "${CLANGXX_FALLBACK}" ]]; then
+    CLANGXX="${CLANGXX_FALLBACK}"
+  fi
+  if [[ ! -x "${CLANGXX}" ]]; then
+    CLANGXX="/usr/bin/clang++"
+  fi
+  if [[ ! -x "${CLANGXX}" ]]; then
+    echo "error: clang++ not found: ${CLANGXX}" >&2
+    exit 1
+  fi
+fi
+
 APPS_DIR="${ROOT_DIR}/tests/app"
 INCLUDE_DIR="${ROOT_DIR}/include"
 
@@ -57,7 +79,7 @@ for app_dir in "${APPS_DIR}"/*; do
     clang_target_args=(-target "${target_triple}")
   fi
 
-  /usr/bin/clang++ "${clang_target_args[@]}" "${output_ll}" -o "${output_exe}" -lm
+  "${CLANGXX}" "${clang_target_args[@]}" "${output_ll}" -o "${output_exe}" -lm
 
   if [[ "${RUN_APPS}" == "true" ]]; then
     "${output_exe}"

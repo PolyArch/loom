@@ -89,26 +89,27 @@ for app_dir in "${APPS_DIR}"/*; do
   fi
 
   output_ll="${output_dir}/${app_name}.llvm.ll"
-  output_mlir="${output_dir}/${app_name}.llvm.mlir"
-  output_exe="${output_dir}/${app_name}.mlir.exe"
+  output_scf="${output_dir}/${app_name}.scf.mlir"
+  output_exe="${output_dir}/${app_name}.scf.exe"
 
   "${LOOM_BIN}" "${sources[@]}" \
     -I "${INCLUDE_DIR}" \
     -I "${app_dir}" \
     -o "${output_ll}"
 
-  if [[ ! -f "${output_mlir}" ]]; then
-    echo "error: missing MLIR output: ${output_mlir}" >&2
+  if [[ ! -f "${output_scf}" ]]; then
+    echo "error: missing scf output: ${output_scf}" >&2
     exit 1
   fi
 
-  tmp_ll=$(mktemp "${output_dir}/${app_name}.mlir.XXXXXX.ll")
+  tmp_ll=$(mktemp "${output_dir}/${app_name}.scf.XXXXXX.ll")
   trap 'rm -f "${tmp_ll}"' EXIT
 
-  "${MLIR_OPT}" "${output_mlir}" -o - | \
-    "${MLIR_TRANSLATE}" --mlir-to-llvmir > "${tmp_ll}"
+  "${MLIR_OPT}" "${output_scf}" \
+    --test-lower-to-llvm \
+    -o - | "${MLIR_TRANSLATE}" --mlir-to-llvmir > "${tmp_ll}"
 
-  target_triple=$(awk -F\" '/^target triple =/ {print $2; exit}' "${tmp_ll}")
+  target_triple=$(awk -F'"' '/^target triple =/ {print $2; exit}' "${tmp_ll}")
   clang_target_args=()
   if [[ -n "${target_triple}" ]]; then
     clang_target_args=(-target "${target_triple}")

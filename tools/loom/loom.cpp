@@ -29,7 +29,13 @@
 #include "llvm/Support/VirtualFileSystem.h"
 
 #include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -38,9 +44,15 @@
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Target/LLVMIR/Import.h"
+#include "mlir/Conversion/ControlFlowToSCF/ControlFlowToSCF.h"
+#include "mlir/Transforms/Passes.h"
+
+#include "loom/Conversion/LLVMToSCF.h"
+#include "loom/Conversion/SCFPostProcess.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -105,6 +117,19 @@ std::string DeriveMlirOutputPath(llvm::StringRef output_path) {
     return (base + ".mlir").str();
   }
   return (output_path + ".mlir").str();
+}
+
+std::string DeriveScfOutputPath(llvm::StringRef output_path) {
+  if (output_path.ends_with(".llvm.ll")) {
+    llvm::StringRef base =
+        output_path.drop_back(sizeof(".llvm.ll") - 1);
+    return (base + ".scf.mlir").str();
+  }
+  if (output_path.ends_with(".ll")) {
+    llvm::StringRef base = output_path.drop_back(3);
+    return (base + ".scf.mlir").str();
+  }
+  return (output_path + ".scf.mlir").str();
 }
 
 std::optional<std::string> ExtractStringFromGlobal(
@@ -752,6 +777,12 @@ int main(int argc, char **argv) {
       });
   mlir_context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
   mlir_context.getOrLoadDialect<mlir::DLTIDialect>();
+  mlir_context.getOrLoadDialect<mlir::arith::ArithDialect>();
+  mlir_context.getOrLoadDialect<mlir::cf::ControlFlowDialect>();
+  mlir_context.getOrLoadDialect<mlir::func::FuncDialect>();
+  mlir_context.getOrLoadDialect<mlir::math::MathDialect>();
+  mlir_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
+  mlir_context.getOrLoadDialect<mlir::scf::SCFDialect>();
 
   auto mlir_module = mlir::translateLLVMIRToModule(
       std::move(linked_module), &mlir_context,
@@ -785,6 +816,48 @@ int main(int argc, char **argv) {
   print_flags.enableDebugInfo(true, false);
   mlir_module->print(mlir_output, print_flags);
   mlir_output.flush();
+
+  std::string scf_output_path = DeriveScfOutputPath(parsed.output_path);
+  if (!EnsureOutputDirectory(scf_output_path))
+    return 1;
+
+  mlir::PassManager pass_manager(&mlir_context);
+  pass_manager.addPass(loom::createLowerLLVMToSCFPass());
+  pass_manager.addPass(mlir::createCanonicalizerPass());
+  pass_manager.addPass(mlir::createCSEPass());
+  pass_manager.addPass(mlir::createMem2Reg());
+  pass_manager.addPass(mlir::createCanonicalizerPass());
+  pass_manager.addPass(mlir::createCSEPass());
+  pass_manager.addPass(mlir::createLiftControlFlowToSCFPass());
+  pass_manager.addPass(mlir::createLoopInvariantCodeMotionPass());
+  pass_manager.addPass(mlir::createCanonicalizerPass());
+  pass_manager.addPass(mlir::createCSEPass());
+  pass_manager.addPass(loom::createUpliftWhileToForPass());
+  pass_manager.addPass(mlir::createCanonicalizerPass());
+  pass_manager.addPass(mlir::createCSEPass());
+  pass_manager.addPass(loom::createAttachLoopAnnotationsPass());
+  if (failed(pass_manager.run(*mlir_module))) {
+    llvm::errs() << "error: failed to lower to scf stage\n";
+    return 1;
+  }
+
+  if (failed(mlir::verify(*mlir_module))) {
+    llvm::errs() << "error: scf stage verification failed\n";
+    return 1;
+  }
+
+  std::error_code scf_ec;
+  llvm::raw_fd_ostream scf_output(scf_output_path, scf_ec,
+                                  llvm::sys::fs::OF_Text);
+  if (scf_ec) {
+    llvm::errs() << "error: cannot write scf output file: "
+                 << scf_output_path << "\n";
+    llvm::errs() << scf_ec.message() << "\n";
+    return 1;
+  }
+
+  mlir_module->print(scf_output, print_flags);
+  scf_output.flush();
 
   return 0;
 }
