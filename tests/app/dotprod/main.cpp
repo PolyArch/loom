@@ -19,10 +19,10 @@ int main() {
   float expected = 102.0f;
 
   // Test reference implementation
-  float ref_result = dotprod(a, b, N);
+  float ref_result = dotprod_cpu(a, b, N);
 
-  // Test DSA implementation
-  float dsa_result = dotprod_dsa(a, b, N);
+  // Test accelerated implementation
+  float accel_result = dotprod_dsa(a, b, N);
 
   printf("Dot Product Results:\n");
   printf("a = [");
@@ -37,14 +37,14 @@ int main() {
   }
   printf("]\n");
 
-  printf("a . b = %.1f (expected %.1f)\n", dsa_result, expected);
+  printf("a . b = %.1f (expected %.1f)\n", accel_result, expected);
 
   // Verify results
   constexpr float epsilon = 0.001f;
   bool ref_ok = std::fabs(ref_result - expected) < epsilon;
-  bool dsa_ok = std::fabs(dsa_result - expected) < epsilon;
+  bool accel_ok = std::fabs(accel_result - expected) < epsilon;
 
-  if (ref_ok && dsa_ok) {
+  if (ref_ok && accel_ok) {
     printf("PASSED: All results correct!\n");
     return 0;
   } else {
@@ -52,8 +52,8 @@ int main() {
       printf("FAILED: Reference result %.1f != expected %.1f\n", ref_result,
              expected);
     }
-    if (!dsa_ok) {
-      printf("FAILED: DSA result %.1f != expected %.1f\n", dsa_result,
+    if (!accel_ok) {
+      printf("FAILED: Accel result %.1f != expected %.1f\n", accel_result,
              expected);
     }
     return 1;

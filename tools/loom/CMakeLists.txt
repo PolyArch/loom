@@ -19,6 +19,7 @@ set(LOOM_MLIR_LIBS
   MLIRTargetLLVMIRImport
   MLIRLLVMDialect
   MLIRDLTIDialect
+  MLIRFuncInlinerExtension
   MLIRIR
   MLIRSupport
 )
@@ -32,6 +33,8 @@ foreach(target_name IN ITEMS loom)
     "${CLANG_BINARY_DIR}/include"
     "${MLIR_SOURCE_DIR}/include"
     "${MLIR_BINARY_DIR}/include"
+    "${CIRCT_SOURCE_DIR}/include"
+    "${CIRCT_BINARY_DIR}/include"
   )
 
   target_link_libraries(${target_name} PRIVATE

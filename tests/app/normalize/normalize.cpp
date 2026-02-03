@@ -29,7 +29,7 @@
 // Reference implementation
 //===----------------------------------------------------------------------===//
 
-void normalize(const float *in, float *out, int n) {
+void normalize_cpu(const float *in, float *out, int n) {
   float sum = 0.0f;
   for (int i = 0; i < n; ++i) {
     sum += in[i];
@@ -41,7 +41,7 @@ void normalize(const float *in, float *out, int n) {
 }
 
 //===----------------------------------------------------------------------===//
-// DSA-optimized with fork-join kernel graph
+// Accelerated version with fork-join kernel graph
 //===----------------------------------------------------------------------===//
 
 LOOM_TARGET("temporal")

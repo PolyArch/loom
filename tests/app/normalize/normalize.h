@@ -14,9 +14,9 @@
 #define NORMALIZE_NORMALIZE_H
 
 // Reference implementation
-void normalize(const float *in, float *out, int n);
+void normalize_cpu(const float *in, float *out, int n);
 
-// DSA-optimized with fork-join kernel graph
+// Accelerated version with fork-join kernel graph
 void normalize_dsa(const float *in, float *out, int n);
 
 #endif // NORMALIZE_NORMALIZE_H

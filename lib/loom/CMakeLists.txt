@@ -1,11 +1,23 @@
+add_subdirectory(Dialect)
+
 set(LOOM_CONVERSION_SOURCES
   Conversion/LLVMToSCF.cpp
   Conversion/SCFPostProcess.cpp
+  Conversion/SCFToHandshake.cpp
+  Conversion/SCFToHandshakeLowering.cpp
+  Conversion/SCFToHandshakeMemory.cpp
+  Conversion/SCFToHandshakeSupport.cpp
+  Conversion/HandshakeOptimize.cpp
 )
 
 add_llvm_library(LoomConversion
   ${LOOM_CONVERSION_SOURCES}
   LINK_LIBS PUBLIC
+    LoomDataflow
+    CIRCTHandshake
+    CIRCTESI
+    CIRCTHW
+    CIRCTSeq
     MLIRArithDialect
     MLIRControlFlowDialect
     MLIRFuncDialect
@@ -27,6 +39,8 @@ target_include_directories(LoomConversion
     "${LLVM_BINARY_DIR}/include"
     "${MLIR_SOURCE_DIR}/include"
     "${MLIR_BINARY_DIR}/include"
+    "${CIRCT_SOURCE_DIR}/include"
+    "${CIRCT_BINARY_DIR}/include"
 )
 
 llvm_update_compile_flags(LoomConversion)

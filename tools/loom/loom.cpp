@@ -31,6 +31,7 @@
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -39,6 +40,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OperationSupport.h"
@@ -52,7 +54,14 @@
 #include "mlir/Transforms/Passes.h"
 
 #include "loom/Conversion/LLVMToSCF.h"
+#include "loom/Conversion/SCFToHandshake.h"
 #include "loom/Conversion/SCFPostProcess.h"
+#include "loom/Dialect/Dataflow/IR/DataflowDialect.h"
+
+#include "circt/Dialect/ESI/ESIDialect.h"
+#include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/Handshake/HandshakeDialect.h"
+#include "circt/Dialect/Seq/SeqDialect.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -130,6 +139,19 @@ std::string DeriveScfOutputPath(llvm::StringRef output_path) {
     return (base + ".scf.mlir").str();
   }
   return (output_path + ".scf.mlir").str();
+}
+
+std::string DeriveHandshakeOutputPath(llvm::StringRef output_path) {
+  if (output_path.ends_with(".llvm.ll")) {
+    llvm::StringRef base =
+        output_path.drop_back(sizeof(".llvm.ll") - 1);
+    return (base + ".handshake.mlir").str();
+  }
+  if (output_path.ends_with(".ll")) {
+    llvm::StringRef base = output_path.drop_back(3);
+    return (base + ".handshake.mlir").str();
+  }
+  return (output_path + ".handshake.mlir").str();
 }
 
 std::optional<std::string> ExtractStringFromGlobal(
@@ -769,6 +791,9 @@ int main(int argc, char **argv) {
     return 1;
 
   mlir::MLIRContext mlir_context;
+  mlir::DialectRegistry registry;
+  mlir::func::registerInlinerExtension(registry);
+  mlir_context.appendDialectRegistry(registry);
   mlir_context.getDiagEngine().registerHandler(
       [](mlir::Diagnostic &diag) {
         diag.print(llvm::errs());
@@ -783,6 +808,11 @@ int main(int argc, char **argv) {
   mlir_context.getOrLoadDialect<mlir::math::MathDialect>();
   mlir_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
   mlir_context.getOrLoadDialect<mlir::scf::SCFDialect>();
+  mlir_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
+  mlir_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+  mlir_context.getOrLoadDialect<circt::esi::ESIDialect>();
+  mlir_context.getOrLoadDialect<circt::hw::HWDialect>();
+  mlir_context.getOrLoadDialect<circt::seq::SeqDialect>();
 
   auto mlir_module = mlir::translateLLVMIRToModule(
       std::move(linked_module), &mlir_context,
@@ -858,6 +888,39 @@ int main(int argc, char **argv) {
 
   mlir_module->print(scf_output, print_flags);
   scf_output.flush();
+
+  std::string handshake_output_path =
+      DeriveHandshakeOutputPath(parsed.output_path);
+  if (!EnsureOutputDirectory(handshake_output_path))
+    return 1;
+
+  mlir::PassManager handshake_passes(&mlir_context);
+  handshake_passes.addPass(loom::createSCFToHandshakeDataflowPass());
+  handshake_passes.addPass(mlir::createCanonicalizerPass());
+  handshake_passes.addPass(mlir::createCSEPass());
+
+  if (failed(handshake_passes.run(*mlir_module))) {
+    llvm::errs() << "error: failed to lower to handshake stage\n";
+    return 1;
+  }
+
+  if (failed(mlir::verify(*mlir_module))) {
+    llvm::errs() << "error: handshake stage verification failed\n";
+    return 1;
+  }
+
+  std::error_code handshake_ec;
+  llvm::raw_fd_ostream handshake_output(handshake_output_path, handshake_ec,
+                                        llvm::sys::fs::OF_Text);
+  if (handshake_ec) {
+    llvm::errs() << "error: cannot write handshake output file: "
+                 << handshake_output_path << "\n";
+    llvm::errs() << handshake_ec.message() << "\n";
+    return 1;
+  }
+
+  mlir_module->print(handshake_output, print_flags);
+  handshake_output.flush();
 
   return 0;
 }

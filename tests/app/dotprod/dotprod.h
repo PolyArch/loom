@@ -8,10 +8,10 @@
 #ifndef DOTPROD_DOTPROD_H
 #define DOTPROD_DOTPROD_H
 
-// Reference implementation (no DSA annotations)
-float dotprod(const float *a, const float *b, int n);
+// Reference implementation
+float dotprod_cpu(const float *a, const float *b, int n);
 
-// DSA-optimized composite kernel
+// Accelerated composite kernel
 // Contains a 2-node kernel graph: vecmul -> vecsum
 float dotprod_dsa(const float *a, const float *b, int n);
 

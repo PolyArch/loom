@@ -8,13 +8,13 @@
 #include "vecmul.h"
 #include <loom/loom.h>
 
-void vecmul(const float *a, const float *b, float *c, int n) {
+void vecmul_cpu(const float *a, const float *b, float *c, int n) {
   for (int i = 0; i < n; ++i) {
     c[i] = a[i] * b[i];
   }
 }
 
-// DSA-optimized version using loom pragma
+// Accelerated version using loom pragma
 LOOM_ACCEL()
 void vecmul_dsa(const float *__restrict__ a, const float *__restrict__ b,
                 float *__restrict__ c, int n) {

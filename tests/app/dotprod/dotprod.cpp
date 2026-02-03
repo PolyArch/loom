@@ -14,10 +14,10 @@
 #include <loom/loom.h>
 
 //===----------------------------------------------------------------------===//
-// Reference implementation (no DSA)
+// Reference implementation
 //===----------------------------------------------------------------------===//
 
-float dotprod(const float *a, const float *b, int n) {
+float dotprod_cpu(const float *a, const float *b, int n) {
   float sum = 0.0f;
   for (int i = 0; i < n; ++i) {
     sum += a[i] * b[i];
@@ -26,7 +26,7 @@ float dotprod(const float *a, const float *b, int n) {
 }
 
 //===----------------------------------------------------------------------===//
-// DSA-optimized composite kernel
+// Accelerated composite kernel
 //
 // Kernel Graph:
 //   [vecmul_kernel] --products--> [vecsum_kernel]

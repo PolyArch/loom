@@ -8,9 +8,9 @@
 #define VECMUL_H
 
 // CPU implementation of vector element-wise multiplication
-void vecmul(const float *a, const float *b, float *c, int n);
+void vecmul_cpu(const float *a, const float *b, float *c, int n);
 
-// DSA-optimized version (for future loom target compilation)
+// Accelerated version (for future loom target compilation)
 void vecmul_dsa(const float *__restrict__ a, const float *__restrict__ b,
                 float *__restrict__ c, int n);
 
