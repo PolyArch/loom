@@ -10,7 +10,7 @@ Loom is a full stack framework for Domain-specific Accelerator, from C++ source 
 - Avoid terms to describe development progress (`FIXED`, `Step`, `Week`, `Section`, `Phase`, `AC-x`, etc) in code comments or commit message or PR body.
 - Avoid AI tools name (like Codex, Claude, Grok, Gemini, ...) in code comments or git commit message (including authorship) or PR body.
 - `TODO`, `FIXME` are allowed in code comments.
-- Ideal file size is less than 1300 lines. If a file is more than 1800 lines, please split it into multiple modular and functional-equivalent files.
+- Ideal file size is less than 1300 lines. If a file is more than 1800 lines, please split it into multiple modular and functional-equivalent files. When spliting files, DO NOT use simple spliting as multiple `.inc` files and just including them. Please split them into multiple `.cpp`/`.h` files.
 - Files in this project should contain English-only char, NO CJK and NO Emoji.
 - Chat response to user should be in the same language as user's
 - Projects under `externals` are external projects that are used in this project via source compilation, avoid modifying them.
