@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -15,13 +16,16 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <utility>
@@ -46,6 +50,10 @@ static void CopyLoomAnnotations(Operation *src, Operation *dst) {
 
 static bool IsPointerType(Type type) {
   return llvm::isa<LLVM::LLVMPointerType>(type);
+}
+
+static bool IsRawPointerCallee(StringRef callee) {
+  return callee == "puts";
 }
 
 static Type GetScalarType(Type type, SmallVectorImpl<int64_t> &dims) {
@@ -74,6 +82,69 @@ static int64_t GetByteSize(Type type) {
     return static_cast<int64_t>((width + 7) / 8);
   }
   return 0;
+}
+
+static Value BuildIndexConstant(OpBuilder &builder, Location loc, int64_t value);
+
+static Value ScaleIndexBetweenElementTypes(OpBuilder &builder, Location loc,
+                                           Value index, Type fromType,
+                                           Type toType) {
+  if (!index || fromType == toType)
+    return index;
+  int64_t fromSize = GetByteSize(fromType);
+  int64_t toSize = GetByteSize(toType);
+  if (fromSize == 0 || toSize == 0)
+    return index;
+  Value byteIndex = index;
+  if (fromSize != 1) {
+    Value scale = BuildIndexConstant(builder, loc, fromSize);
+    byteIndex = builder.create<arith::MulIOp>(loc, index, scale);
+  }
+  if (toSize == 1)
+    return byteIndex;
+  Value scale = BuildIndexConstant(builder, loc, toSize);
+  return builder.create<arith::DivSIOp>(loc, byteIndex, scale);
+}
+
+static std::optional<Value> BuildMemsetFillValue(OpBuilder &builder,
+                                                 Location loc, Value fillVal,
+                                                 Type elemType) {
+  if (fillVal.getType() == elemType)
+    return fillVal;
+
+  auto constOp = fillVal.getDefiningOp<arith::ConstantOp>();
+  if (!constOp)
+    return std::nullopt;
+  auto intAttr = llvm::dyn_cast<IntegerAttr>(constOp.getValue());
+  if (!intAttr)
+    return std::nullopt;
+  uint64_t byte = intAttr.getValue().getZExtValue() & 0xFFu;
+
+  auto intTy = llvm::dyn_cast<IntegerType>(elemType);
+  auto floatTy = llvm::dyn_cast<FloatType>(elemType);
+  if (!intTy && !floatTy)
+    return std::nullopt;
+
+  unsigned bitWidth = intTy ? intTy.getWidth() : floatTy.getWidth();
+  if (bitWidth % 8 != 0)
+    return std::nullopt;
+
+  APInt pattern(bitWidth, 0);
+  APInt byteVal(8, byte);
+  for (unsigned shift = 0; shift < bitWidth; shift += 8) {
+    pattern |= byteVal.zext(bitWidth).shl(shift);
+  }
+
+  IntegerType patternType =
+      intTy ? intTy : IntegerType::get(builder.getContext(), bitWidth);
+  auto patternAttr = builder.getIntegerAttr(patternType, pattern);
+  auto patternVal = builder.create<arith::ConstantOp>(loc, patternAttr);
+  if (intTy)
+    return patternVal.getResult();
+
+  auto bitcast =
+      builder.create<arith::BitcastOp>(loc, elemType, patternVal.getResult());
+  return bitcast.getResult();
 }
 
 static Value BuildIndexConstant(OpBuilder &builder, Location loc, int64_t value) {
@@ -108,17 +179,40 @@ LookupPointer(const DenseMap<Value, PointerInfo> &ptrMap, Value key) {
   return it->second;
 }
 
+static std::optional<Type> GuessPointerElementTypeFromValue(Value value);
+
+static bool IsI8Type(Type type) {
+  auto intTy = llvm::dyn_cast<IntegerType>(type);
+  return intTy && intTy.getWidth() == 8;
+}
+
 static std::optional<Type> InferPointerElementType(Value value) {
   SmallVector<int64_t, 4> dims;
   MLIRContext *context = value.getContext();
   SmallVector<Value, 8> worklist;
   llvm::DenseSet<Value> visited;
   worklist.push_back(value);
+  std::optional<Type> fallback;
+
+  auto recordCandidate = [&](Type candidate) -> std::optional<Type> {
+    if (!candidate)
+      return std::nullopt;
+    if (!IsI8Type(candidate))
+      return candidate;
+    if (!fallback)
+      fallback = candidate;
+    return std::nullopt;
+  };
 
   while (!worklist.empty()) {
     Value current = worklist.pop_back_val();
     if (!visited.insert(current).second)
       continue;
+
+    if (auto guessed = GuessPointerElementTypeFromValue(current)) {
+      if (auto strong = recordCandidate(*guessed))
+        return strong;
+    }
 
     for (Operation *user : current.getUsers()) {
       if (auto loadOp = llvm::dyn_cast<LLVM::LoadOp>(user)) {
@@ -129,14 +223,20 @@ static std::optional<Type> InferPointerElementType(Value value) {
           worklist.push_back(loadOp.getResult());
           continue;
         }
-        return NormalizeScalarType(resultTy, context);
+        if (auto strong =
+                recordCandidate(NormalizeScalarType(resultTy, context)))
+          return strong;
+        continue;
       }
 
       if (auto storeOp = llvm::dyn_cast<LLVM::StoreOp>(user)) {
         if (storeOp.getAddr() == current) {
           Type valueTy = storeOp.getValue().getType();
-          if (!IsPointerType(valueTy))
-            return NormalizeScalarType(valueTy, context);
+          if (!IsPointerType(valueTy)) {
+            if (auto strong =
+                    recordCandidate(NormalizeScalarType(valueTy, context)))
+              return strong;
+          }
           continue;
         }
         if (storeOp.getValue() == current) {
@@ -150,7 +250,10 @@ static std::optional<Type> InferPointerElementType(Value value) {
               worklist.push_back(slotLoad.getResult());
               continue;
             }
-            return NormalizeScalarType(resultTy, context);
+            if (auto strong =
+                    recordCandidate(NormalizeScalarType(resultTy, context)))
+              return strong;
+            continue;
           }
         }
       }
@@ -160,7 +263,10 @@ static std::optional<Type> InferPointerElementType(Value value) {
           continue;
         dims.clear();
         Type scalar = GetScalarType(gepOp.getElemType(), dims);
-        return NormalizeScalarType(scalar, context);
+        if (auto strong =
+                recordCandidate(NormalizeScalarType(scalar, context)))
+          return strong;
+        continue;
       }
 
       if (auto bitcastOp = llvm::dyn_cast<LLVM::BitcastOp>(user)) {
@@ -195,6 +301,11 @@ static std::optional<Type> InferPointerElementType(Value value) {
           continue;
         auto calleeFunc =
             module.lookupSymbol<LLVM::LLVMFuncOp>(calleeAttr.getValue());
+        if (!calleeFunc) {
+          llvm::SmallString<64> renamedName(calleeAttr.getValue());
+          renamedName.append(".llvm");
+          calleeFunc = module.lookupSymbol<LLVM::LLVMFuncOp>(renamedName);
+        }
         if (calleeFunc && !calleeFunc.isExternal()) {
           if (operandIndex >= calleeFunc.getNumArguments())
             continue;
@@ -208,14 +319,178 @@ static std::optional<Type> InferPointerElementType(Value value) {
         if (operandIndex >= funcCallee.getNumArguments())
           continue;
         Type argType = funcCallee.getArgument(operandIndex).getType();
-        if (auto memrefType = llvm::dyn_cast<MemRefType>(argType))
-          return memrefType.getElementType();
+        if (auto memrefType = llvm::dyn_cast<MemRefType>(argType)) {
+          if (auto strong = recordCandidate(memrefType.getElementType()))
+            return strong;
+        }
         continue;
       }
 
+      if (auto callIntrinsicOp = llvm::dyn_cast<LLVM::CallIntrinsicOp>(user)) {
+        StringRef callee = callIntrinsicOp.getIntrin();
+        if (callee.starts_with("llvm.memcpy") ||
+            callee.starts_with("llvm.memmove")) {
+          if (callIntrinsicOp.getNumOperands() < 2)
+            continue;
+          Value dst = callIntrinsicOp.getOperand(0);
+          Value src = callIntrinsicOp.getOperand(1);
+          if (current == dst && IsPointerType(src.getType()))
+            worklist.push_back(src);
+          if (current == src && IsPointerType(dst.getType()))
+            worklist.push_back(dst);
+          continue;
+        }
+      }
+
+    }
+
+    if (auto blockArg = llvm::dyn_cast<BlockArgument>(current)) {
+      auto *parent = blockArg.getOwner()->getParentOp();
+      auto func = llvm::dyn_cast_or_null<LLVM::LLVMFuncOp>(parent);
+      if (!func)
+        continue;
+      if (&func.getBody().front() != blockArg.getOwner())
+        continue;
+      unsigned argIndex = blockArg.getArgNumber();
+      auto module = func->getParentOfType<ModuleOp>();
+      if (!module)
+        continue;
+      llvm::StringRef funcName = func.getName();
+      llvm::StringRef baseName = funcName;
+      llvm::StringRef kLlvmSuffix(".llvm");
+      if (funcName.ends_with(kLlvmSuffix))
+        baseName = funcName.drop_back(kLlvmSuffix.size());
+      module.walk([&](LLVM::CallOp call) {
+        auto calleeAttr = call.getCalleeAttr();
+        if (!calleeAttr)
+          return;
+        llvm::StringRef calleeName = calleeAttr.getValue();
+        if (calleeName != funcName && calleeName != baseName)
+          return;
+        if (argIndex >= call.getNumOperands())
+          return;
+        Value operand = call.getOperand(argIndex);
+        worklist.push_back(operand);
+      });
+      std::optional<Type> callArgType;
+      module.walk([&](func::CallOp call) {
+        if (call.getCallee() != baseName)
+          return;
+        if (argIndex >= call.getNumOperands())
+          return;
+        Type argType = call.getOperand(argIndex).getType();
+        if (auto memrefType = llvm::dyn_cast<MemRefType>(argType)) {
+          callArgType = memrefType.getElementType();
+        }
+      });
+      if (callArgType) {
+        if (auto strong = recordCandidate(*callArgType))
+          return strong;
+      }
     }
   }
-  return IntegerType::get(context, 8);
+  return fallback;
+}
+
+static std::optional<Type> GuessPointerElementTypeFromValue(Value value) {
+  SmallVector<int64_t, 4> dims;
+  MLIRContext *context = value.getContext();
+
+  if (auto gepOp = value.getDefiningOp<LLVM::GEPOp>()) {
+    Type scalar = GetScalarType(gepOp.getElemType(), dims);
+    return NormalizeScalarType(scalar, context);
+  }
+  if (auto allocaOp = value.getDefiningOp<LLVM::AllocaOp>()) {
+    Type scalar = GetScalarType(allocaOp.getElemType(), dims);
+    return NormalizeScalarType(scalar, context);
+  }
+  if (auto bitcastOp = value.getDefiningOp<LLVM::BitcastOp>()) {
+    if (IsPointerType(bitcastOp.getArg().getType()))
+      return GuessPointerElementTypeFromValue(bitcastOp.getArg());
+  }
+  if (auto addrSpaceOp = value.getDefiningOp<LLVM::AddrSpaceCastOp>()) {
+    if (IsPointerType(addrSpaceOp.getArg().getType()))
+      return GuessPointerElementTypeFromValue(addrSpaceOp.getArg());
+  }
+  return std::nullopt;
+}
+
+static std::optional<Type>
+InferPointerElementTypeFromCallSites(LLVM::LLVMFuncOp func,
+                                     unsigned argIndex) {
+  auto module = func->getParentOfType<ModuleOp>();
+  if (!module)
+    return std::nullopt;
+  llvm::StringRef funcName = func.getName();
+  llvm::StringRef baseName = funcName;
+  llvm::StringRef kLlvmSuffix(".llvm");
+  if (funcName.ends_with(kLlvmSuffix))
+    baseName = funcName.drop_back(kLlvmSuffix.size());
+  bool debug = baseName.contains("cdma") || baseName.contains("bisection_step");
+  if (debug) {
+    llvm::errs() << "scan callsites for " << baseName << " arg " << argIndex
+                 << "\n";
+  }
+
+  std::optional<Type> inferredType;
+  module.walk([&](LLVM::CallOp call) {
+    if (inferredType)
+      return;
+    auto calleeAttr = call.getCalleeAttr();
+    if (!calleeAttr)
+      return;
+    llvm::StringRef calleeName = calleeAttr.getValue();
+    if (debug) {
+      llvm::errs() << "  llvm.call callee " << calleeName << "\n";
+    }
+    if (calleeName != funcName && calleeName != baseName)
+      return;
+    if (debug) {
+      llvm::errs() << "  llvm.call match " << calleeName << "\n";
+    }
+    if (argIndex >= call.getNumOperands())
+      return;
+    Value operand = call.getOperand(argIndex);
+    if (!IsPointerType(operand.getType()))
+      return;
+    if (debug) {
+      llvm::errs() << "    operand type=";
+      operand.getType().print(llvm::errs());
+      llvm::errs() << "\n";
+    }
+    if (auto guessed = GuessPointerElementTypeFromValue(operand)) {
+      inferredType = guessed;
+      return;
+    }
+    if (auto inferred = InferPointerElementType(operand)) {
+      inferredType = inferred;
+      return;
+    }
+  });
+  if (inferredType)
+    return inferredType;
+
+  module.walk([&](func::CallOp call) {
+    if (inferredType)
+      return;
+    if (debug) {
+      llvm::errs() << "  func.call callee " << call.getCallee() << "\n";
+    }
+    if (call.getCallee() != baseName)
+      return;
+    if (debug) {
+      llvm::errs() << "  func.call match " << call.getCallee() << "\n";
+    }
+    if (argIndex >= call.getNumOperands())
+      return;
+    Type argType = call.getOperand(argIndex).getType();
+    if (auto memrefType = llvm::dyn_cast<MemRefType>(argType))
+      inferredType = memrefType.getElementType();
+  });
+  if (inferredType)
+    return inferredType;
+
+  return std::nullopt;
 }
 
 static MemRefType MakeMemRefType(Type elementType, Attribute memorySpace = {}) {
@@ -600,6 +875,8 @@ public:
     for (LLVM::LLVMFuncOp func : llvmFunctions) {
       if (varargFunctions.contains(func.getName()))
         continue;
+      if (IsRawPointerCallee(func.getName()))
+        continue;
       if (failed(convertFunction(module, func, builder, convertedGlobals,
                                  varargFunctions))) {
         signalPassFailure();
@@ -710,20 +987,30 @@ private:
     func.setSymName(renamedName);
 
     SmallVector<Type, 8> argTypes;
+    SmallVector<std::optional<Type>, 8> argElemTypes;
     auto paramTypes = func.getFunctionType().getParams();
     for (size_t index = 0; index < paramTypes.size(); ++index) {
       Type paramType = paramTypes[index];
       if (IsPointerType(paramType)) {
-        Type elemType = IntegerType::get(module.getContext(), 8);
-        if (!func.isExternal()) {
-          elemType = InferPointerElementType(func.getArgument(index))
-                         .value_or(elemType);
+        std::optional<Type> elemType =
+            func.isExternal()
+                ? std::nullopt
+                : InferPointerElementType(func.getArgument(index));
+        std::optional<Type> callSiteType =
+            InferPointerElementTypeFromCallSites(func, index);
+        if (!elemType || IsI8Type(*elemType)) {
+          if (callSiteType)
+            elemType = callSiteType;
         }
-        argTypes.push_back(MakeStridedMemRefType(elemType));
+        if (!elemType)
+          elemType = IntegerType::get(module.getContext(), 8);
+        argTypes.push_back(MakeStridedMemRefType(*elemType));
+        argElemTypes.push_back(*elemType);
         continue;
       }
       argTypes.push_back(
           NormalizeScalarType(paramType, module.getContext()));
+      argElemTypes.push_back(std::nullopt);
     }
 
     SmallVector<Type, 4> resultTypes;
@@ -763,14 +1050,20 @@ private:
       blockBuilder.setInsertionPointToStart(newBlock);
       Value zeroIndex =
           BuildIndexConstant(blockBuilder, func.getLoc(), 0);
+      bool isEntryBlock = (&oldBlock == &func.getBody().front());
       for (BlockArgument arg : oldBlock.getArguments()) {
         Type oldType = arg.getType();
         if (IsPointerType(oldType)) {
-          auto elemType = InferPointerElementType(arg).value_or(
-              IntegerType::get(module.getContext(), 8));
-          auto memrefType = MakeStridedMemRefType(elemType);
+          std::optional<Type> elemType;
+          if (isEntryBlock && arg.getArgNumber() < argElemTypes.size())
+            elemType = argElemTypes[arg.getArgNumber()];
+          if (!elemType)
+            elemType = InferPointerElementType(arg);
+          if (!elemType)
+            elemType = IntegerType::get(module.getContext(), 8);
+          auto memrefType = MakeStridedMemRefType(*elemType);
           auto newArg = newBlock->addArgument(memrefType, arg.getLoc());
-          PointerInfo info{newArg, zeroIndex, elemType};
+          PointerInfo info{newArg, zeroIndex, *elemType};
           pointerMap[arg] = info;
           continue;
         }
@@ -780,11 +1073,30 @@ private:
       }
     }
 
+    SmallVector<Block *, 16> blockOrder;
+    llvm::DenseSet<Block *> visitedBlocks;
+    auto dfs = [&](auto &&self, Block *block) -> void {
+      if (!block || visitedBlocks.contains(block))
+        return;
+      visitedBlocks.insert(block);
+      if (auto *term = block->getTerminator()) {
+        for (Block *succ : term->getSuccessors())
+          self(self, succ);
+      }
+      blockOrder.push_back(block);
+    };
+    dfs(dfs, &func.getBody().front());
+    std::reverse(blockOrder.begin(), blockOrder.end());
     for (Block &oldBlock : func.getBody()) {
-      Block *newBlock = blockMap[&oldBlock];
+      if (!visitedBlocks.contains(&oldBlock))
+        blockOrder.push_back(&oldBlock);
+    }
+
+    for (Block *oldBlock : blockOrder) {
+      Block *newBlock = blockMap[oldBlock];
       builder.setInsertionPointToStart(newBlock);
 
-      for (Operation &op : oldBlock.getOperations()) {
+      for (Operation &op : oldBlock->getOperations()) {
         builder.setInsertionPointToEnd(newBlock);
         Location loc = op.getLoc();
 
@@ -820,6 +1132,18 @@ private:
             continue;
           }
           return zeroOp.emitError("unsupported zero type"), failure();
+        }
+
+        if (auto poisonOp = llvm::dyn_cast<LLVM::PoisonOp>(op)) {
+          auto poison = builder.create<ub::PoisonOp>(loc, poisonOp.getType());
+          valueMap[poisonOp.getResult()] = poison.getResult();
+          continue;
+        }
+
+        if (auto undefOp = llvm::dyn_cast<LLVM::UndefOp>(op)) {
+          auto poison = builder.create<ub::PoisonOp>(loc, undefOp.getType());
+          valueMap[undefOp.getResult()] = poison.getResult();
+          continue;
         }
 
         if (auto addrOp = llvm::dyn_cast<LLVM::AddressOfOp>(op)) {
@@ -962,7 +1286,9 @@ private:
           if (!offset)
             offset = BuildIndexConstant(builder, loc, 0);
 
-          Value baseIndex = baseInfo->index;
+          Value baseIndex =
+              ScaleIndexBetweenElementTypes(builder, loc, baseInfo->index,
+                                            baseInfo->elementType, scalar);
           Value newIndex = baseIndex;
           if (!IsZeroIndex(offset))
             newIndex = builder.create<arith::AddIOp>(loc, baseIndex, offset);
@@ -977,7 +1303,17 @@ private:
             auto srcInfo = LookupPointer(pointerMap, bitcastOp.getArg());
             if (!srcInfo)
               return bitcastOp.emitError("missing bitcast source"), failure();
-            pointerMap[bitcastOp.getResult()] = *srcInfo;
+            Type targetElem = srcInfo->elementType;
+            if (auto inferred = InferPointerElementType(bitcastOp.getResult()))
+              targetElem = *inferred;
+            PointerInfo info = *srcInfo;
+            if (targetElem != srcInfo->elementType) {
+              info.index = ScaleIndexBetweenElementTypes(
+                  builder, loc, srcInfo->index, srcInfo->elementType,
+                  targetElem);
+              info.elementType = targetElem;
+            }
+            pointerMap[bitcastOp.getResult()] = info;
             continue;
           }
         }
@@ -995,8 +1331,17 @@ private:
             return loadOp.emitError("missing load pointer for address ")
                        << loadOp.getAddr(),
                    failure();
-          Value val = builder.create<memref::LoadOp>(loc, ptrInfo->base,
-                                                     ptrInfo->index);
+          Type accessType =
+              NormalizeScalarType(loadOp.getResult().getType(),
+                                  module.getContext());
+          Value index = ptrInfo->index;
+          if (ptrInfo->elementType != accessType) {
+            index = ScaleIndexBetweenElementTypes(builder, loc, ptrInfo->index,
+                                                  ptrInfo->elementType,
+                                                  accessType);
+          }
+          Value val =
+              builder.create<memref::LoadOp>(loc, ptrInfo->base, index);
           valueMap[loadOp.getResult()] = val;
           continue;
         }
@@ -1015,8 +1360,15 @@ private:
           auto storedVal = LookupValue(valueMap, storeOp.getValue());
           if (!storedVal)
             return storeOp.emitError("missing store value"), failure();
+          Type accessType = storedVal->getType();
+          Value index = ptrInfo->index;
+          if (ptrInfo->elementType != accessType) {
+            index = ScaleIndexBetweenElementTypes(builder, loc, ptrInfo->index,
+                                                  ptrInfo->elementType,
+                                                  accessType);
+          }
           builder.create<memref::StoreOp>(loc, *storedVal, ptrInfo->base,
-                                          ptrInfo->index);
+                                          index);
           continue;
         }
 
@@ -1133,6 +1485,7 @@ private:
           }
 
           bool isVarArg = varargFunctions.contains(callee);
+          bool isRawPtrCall = IsRawPointerCallee(callee);
           if (returnsPointer)
             return callOp.emitError("unsupported pointer return call"),
                    failure();
@@ -1140,7 +1493,7 @@ private:
           operands.reserve(callOp.getNumOperands());
           for (Value operand : callOp.getOperands()) {
             if (auto ptrInfo = LookupPointer(pointerMap, operand)) {
-              if (isVarArg) {
+              if (isVarArg || isRawPtrCall) {
                 operands.push_back(MaterializeLLVMPointer(builder, loc, *ptrInfo));
               } else {
                 operands.push_back(MaterializeMemrefPointer(builder, loc, *ptrInfo));
@@ -1153,7 +1506,7 @@ private:
             operands.push_back(*mapped);
           }
 
-          if (isVarArg) {
+          if (isVarArg || isRawPtrCall) {
             auto newCall = builder.create<LLVM::CallOp>(loc, callOp.getResultTypes(),
                                                         calleeAttr, operands);
             if (auto varType = callOp.getVarCalleeType())
@@ -1195,6 +1548,10 @@ private:
               callee.starts_with("llvm.annotation")) {
             continue;
           }
+          if (callee.starts_with("llvm.lifetime.start") ||
+              callee.starts_with("llvm.lifetime.end")) {
+            continue;
+          }
           if (callee.starts_with("llvm.stacksave")) {
             if (callOp.getNumResults() != 1)
               return callOp.emitError("unexpected stacksave results"), failure();
@@ -1229,13 +1586,98 @@ private:
             Value elemSizeVal = BuildIndexConstant(builder, loc, elemSize);
             Value length = builder.create<arith::DivUIOp>(loc, sizeIndex,
                                                           elemSizeVal);
-            Value srcView =
-                MaterializeSubview(builder, loc, srcInfo->base, srcInfo->index,
-                                   length);
-            Value dstView =
-                MaterializeSubview(builder, loc, dstInfo->base, dstInfo->index,
-                                   length);
-            builder.create<memref::CopyOp>(loc, srcView, dstView);
+            Value zero = BuildIndexConstant(builder, loc, 0);
+            Value one = BuildIndexConstant(builder, loc, 1);
+            auto loop = builder.create<scf::ForOp>(loc, zero, length, one);
+            builder.setInsertionPointToStart(loop.getBody());
+            Value iv = loop.getInductionVar();
+            Value srcIndex = iv;
+            if (!IsZeroIndex(srcInfo->index))
+              srcIndex =
+                  builder.create<arith::AddIOp>(loc, srcInfo->index, iv);
+            Value dstIndex = iv;
+            if (!IsZeroIndex(dstInfo->index))
+              dstIndex =
+                  builder.create<arith::AddIOp>(loc, dstInfo->index, iv);
+            Value val =
+                builder.create<memref::LoadOp>(loc, srcInfo->base, srcIndex);
+            builder.create<memref::StoreOp>(loc, val, dstInfo->base, dstIndex);
+            builder.setInsertionPointAfter(loop);
+            continue;
+          }
+          if (callee.starts_with("llvm.bswap")) {
+            if (callOp.getNumOperands() != 1)
+              return callOp.emitError("invalid bswap operands"), failure();
+            auto operand = LookupValue(valueMap, callOp.getOperand(0));
+            if (!operand)
+              return callOp.emitError("missing bswap operand"), failure();
+            auto intTy = llvm::dyn_cast<IntegerType>(operand->getType());
+            if (!intTy)
+              return callOp.emitError("bswap expects integer operand"),
+                     failure();
+            unsigned bitWidth = intTy.getWidth();
+            if (bitWidth % 8 != 0)
+              return callOp.emitError("bswap expects byte-multiple width"),
+                     failure();
+            unsigned byteCount = bitWidth / 8;
+            Value result;
+            for (unsigned i = 0; i < byteCount; ++i) {
+              unsigned inShift = i * 8;
+              unsigned outShift = (byteCount - 1 - i) * 8;
+              auto inShiftVal = builder.create<arith::ConstantOp>(
+                  loc, builder.getIntegerAttr(intTy, inShift));
+              auto outShiftVal = builder.create<arith::ConstantOp>(
+                  loc, builder.getIntegerAttr(intTy, outShift));
+              auto byteMask = builder.create<arith::ConstantOp>(
+                  loc, builder.getIntegerAttr(intTy, 0xFF));
+              Value shiftedIn = builder.create<arith::ShRUIOp>(
+                  loc, *operand, inShiftVal);
+              Value masked =
+                  builder.create<arith::AndIOp>(loc, shiftedIn, byteMask);
+              Value shiftedOut =
+                  builder.create<arith::ShLIOp>(loc, masked, outShiftVal);
+              if (result)
+                result =
+                    builder.create<arith::OrIOp>(loc, result, shiftedOut);
+              else
+                result = shiftedOut;
+            }
+            valueMap[callOp->getResult(0)] = result;
+            continue;
+          }
+          if (callee.starts_with("llvm.umin")) {
+            if (callOp.getNumOperands() != 2)
+              return callOp.emitError("invalid umin operands"), failure();
+            auto lhs = LookupValue(valueMap, callOp.getOperand(0));
+            auto rhs = LookupValue(valueMap, callOp.getOperand(1));
+            if (!lhs || !rhs)
+              return callOp.emitError("missing umin operand"), failure();
+            auto cmp = builder.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::ult, *lhs, *rhs);
+            auto sel =
+                builder.create<arith::SelectOp>(loc, cmp, *lhs, *rhs);
+            valueMap[callOp->getResult(0)] = sel.getResult();
+            continue;
+          }
+          if (callee.starts_with("llvm.usub.sat")) {
+            if (callOp.getNumOperands() != 2)
+              return callOp.emitError("invalid usub.sat operands"), failure();
+            auto lhs = LookupValue(valueMap, callOp.getOperand(0));
+            auto rhs = LookupValue(valueMap, callOp.getOperand(1));
+            if (!lhs || !rhs)
+              return callOp.emitError("missing usub.sat operand"), failure();
+            auto intTy = llvm::dyn_cast<IntegerType>(lhs->getType());
+            if (!intTy)
+              return callOp.emitError("usub.sat expects integer operands"),
+                     failure();
+            auto zero = builder.create<arith::ConstantOp>(
+                loc, builder.getIntegerAttr(intTy, 0));
+            auto cmp = builder.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::ult, *lhs, *rhs);
+            auto sub = builder.create<arith::SubIOp>(loc, *lhs, *rhs);
+            auto sel =
+                builder.create<arith::SelectOp>(loc, cmp, zero, sub);
+            valueMap[callOp->getResult(0)] = sel.getResult();
             continue;
           }
           if (callee.starts_with("llvm.memset")) {
@@ -1256,35 +1698,22 @@ private:
             Value elemSizeVal = BuildIndexConstant(builder, loc, elemSize);
             Value length = builder.create<arith::DivUIOp>(loc, sizeIndex,
                                                           elemSizeVal);
-            Value fillVal = *val;
             Type elemType = dstInfo->elementType;
-            if (fillVal.getType() != elemType) {
-              auto constOp = fillVal.getDefiningOp<arith::ConstantOp>();
-              if (!constOp)
-                return callOp.emitError("unsupported memset value"), failure();
-              auto intAttr = llvm::dyn_cast<IntegerAttr>(constOp.getValue());
-              if (!intAttr || !intAttr.getValue().isZero())
-                return callOp.emitError("unsupported memset value"), failure();
-              if (auto floatTy = llvm::dyn_cast<FloatType>(elemType)) {
-                fillVal = builder.create<arith::ConstantOp>(
-                    loc, builder.getFloatAttr(floatTy, 0.0));
-              } else if (auto intTy = llvm::dyn_cast<IntegerType>(elemType)) {
-                fillVal = builder.create<arith::ConstantOp>(
-                    loc, builder.getIntegerAttr(intTy, 0));
-              } else {
-                return callOp.emitError("unsupported memset value type"),
-                       failure();
-              }
-            }
-            Value dstView = MaterializeSubview(builder, loc, dstInfo->base,
-                                               dstInfo->index, length);
+            auto fillVal = BuildMemsetFillValue(builder, loc, *val, elemType);
+            if (!fillVal)
+              return callOp.emitError("unsupported memset value"), failure();
             Value zero = BuildIndexConstant(builder, loc, 0);
             Value step = BuildIndexConstant(builder, loc, 1);
             auto loop = builder.create<scf::ForOp>(loc, zero, length, step);
-            OpBuilder::InsertionGuard guard(builder);
             builder.setInsertionPointToStart(loop.getBody());
             Value iv = loop.getInductionVar();
-            builder.create<memref::StoreOp>(loc, fillVal, dstView, iv);
+            Value dstIndex = iv;
+            if (!IsZeroIndex(dstInfo->index))
+              dstIndex =
+                  builder.create<arith::AddIOp>(loc, dstInfo->index, iv);
+            builder.create<memref::StoreOp>(loc, *fillVal, dstInfo->base,
+                                            dstIndex);
+            builder.setInsertionPointAfter(loop);
             continue;
           }
           if (callee.starts_with("llvm.fmuladd")) {
@@ -1300,9 +1729,47 @@ private:
                 !llvm::isa<FloatType>(addend->getType()))
               return callOp.emitError("fmuladd expects float operands"),
                      failure();
-            auto mul = builder.create<arith::MulFOp>(loc, *lhs, *rhs);
-            auto add = builder.create<arith::AddFOp>(loc, mul, *addend);
-            valueMap[callOp->getResult(0)] = add.getResult();
+            auto fma =
+                builder.create<math::FmaOp>(loc, *lhs, *rhs, *addend);
+            valueMap[callOp->getResult(0)] = fma.getResult();
+            continue;
+          }
+          if (callee.starts_with("llvm.fshl")) {
+            if (callOp.getNumOperands() != 3)
+              return callOp.emitError("invalid fshl operands"), failure();
+            auto lhs = LookupValue(valueMap, callOp.getOperand(0));
+            auto rhs = LookupValue(valueMap, callOp.getOperand(1));
+            auto shift = LookupValue(valueMap, callOp.getOperand(2));
+            if (!lhs || !rhs || !shift)
+              return callOp.emitError("missing fshl operand"), failure();
+            auto intTy = llvm::dyn_cast<IntegerType>(lhs->getType());
+            if (!intTy)
+              return callOp.emitError("fshl expects integer operands"),
+                     failure();
+            auto width = builder.create<arith::ConstantOp>(
+                loc, builder.getIntegerAttr(intTy, intTy.getWidth()));
+            auto zero = builder.create<arith::ConstantOp>(
+                loc, builder.getIntegerAttr(intTy, 0));
+            Value shiftMod =
+                builder.create<arith::RemUIOp>(loc, *shift, width);
+            auto isZero = builder.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::eq, shiftMod, zero);
+            OpBuilder::InsertionGuard guard(builder);
+            auto ifOp =
+                builder.create<scf::IfOp>(loc, TypeRange{intTy}, isZero,
+                                          /*withElseRegion=*/true);
+            builder.setInsertionPointToStart(ifOp.thenBlock());
+            builder.create<scf::YieldOp>(loc, *lhs);
+            builder.setInsertionPointToStart(ifOp.elseBlock());
+            Value left = builder.create<arith::ShLIOp>(loc, *lhs, shiftMod);
+            Value rightShift =
+                builder.create<arith::SubIOp>(loc, width, shiftMod);
+            Value right =
+                builder.create<arith::ShRUIOp>(loc, *rhs, rightShift);
+            Value combined =
+                builder.create<arith::OrIOp>(loc, left, right);
+            builder.create<scf::YieldOp>(loc, combined);
+            valueMap[callOp->getResult(0)] = ifOp.getResult(0);
             continue;
           }
           if (callee.starts_with("llvm.fabs")) {
@@ -1663,6 +2130,56 @@ private:
           auto cast = builder.create<arith::FPToUIOp>(loc, dstType, *src);
           valueMap[fptouiOp.getResult()] = cast.getResult();
           continue;
+        }
+
+        if (auto switchOp = llvm::dyn_cast<LLVM::SwitchOp>(op)) {
+          auto flag = LookupValue(valueMap, switchOp.getValue());
+          if (!flag)
+            return switchOp.emitError("missing switch flag"), failure();
+
+          SmallVector<Value, 4> defaultOperands;
+          for (Value operand : switchOp.getDefaultOperands()) {
+            if (auto ptrInfo = LookupPointer(pointerMap, operand)) {
+              defaultOperands.push_back(
+                  MaterializeMemrefPointer(builder, loc, *ptrInfo));
+              continue;
+            }
+            auto mapped = LookupValue(valueMap, operand);
+            if (!mapped)
+              return switchOp.emitError("missing default operand"), failure();
+            defaultOperands.push_back(*mapped);
+          }
+
+          SmallVector<Block *, 4> caseDests;
+          caseDests.reserve(switchOp.getCaseDestinations().size());
+          for (Block *dest : switchOp.getCaseDestinations())
+            caseDests.push_back(blockMap[dest]);
+
+          SmallVector<SmallVector<Value, 4>, 4> caseOperandsStorage;
+          SmallVector<ValueRange, 4> caseOperands;
+          for (auto caseOps : switchOp.getCaseOperands()) {
+            caseOperandsStorage.emplace_back();
+            auto &mappedOps = caseOperandsStorage.back();
+            for (Value operand : caseOps) {
+              if (auto ptrInfo = LookupPointer(pointerMap, operand)) {
+                mappedOps.push_back(
+                    MaterializeMemrefPointer(builder, loc, *ptrInfo));
+                continue;
+              }
+              auto mapped = LookupValue(valueMap, operand);
+              if (!mapped)
+                return switchOp.emitError("missing case operand"), failure();
+              mappedOps.push_back(*mapped);
+            }
+            caseOperands.emplace_back(mappedOps);
+          }
+
+          auto caseValues = switchOp.getCaseValuesAttr();
+          builder.create<cf::SwitchOp>(loc, *flag,
+                                       blockMap[switchOp.getDefaultDestination()],
+                                       defaultOperands, caseValues, caseDests,
+                                       caseOperands);
+          break;
         }
 
         if (auto brOp = llvm::dyn_cast<LLVM::BrOp>(op)) {

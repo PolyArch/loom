@@ -19,6 +19,7 @@ set(LOOM_MLIR_LIBS
   MLIRTargetLLVMIRImport
   MLIRLLVMDialect
   MLIRDLTIDialect
+  MLIRUBDialect
   MLIRFuncInlinerExtension
   MLIRIR
   MLIRSupport

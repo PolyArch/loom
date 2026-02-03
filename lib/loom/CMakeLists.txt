@@ -29,6 +29,7 @@ add_llvm_library(LoomConversion
     MLIRSCFDialect
     MLIRSCFTransforms
     MLIRSupport
+    MLIRUBDialect
 )
 
 target_include_directories(LoomConversion

@@ -37,6 +37,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -499,9 +500,13 @@ std::vector<std::string> BuildDriverArgs(
     const std::vector<std::string> &user_args) {
   std::vector<std::string> args = user_args;
 
+  bool has_opt_level = false;
   bool has_dash_x = false;
   bool has_compile_only = false;
   for (const auto &arg : args) {
+    if (!arg.empty() && arg[0] == '-' && arg.size() >= 2 && arg[1] == 'O') {
+      has_opt_level = true;
+    }
     if (IsDashX(arg)) {
       has_dash_x = true;
     }
@@ -519,6 +524,9 @@ std::vector<std::string> BuildDriverArgs(
     args.emplace_back("-c");
   }
 
+  if (!has_opt_level) {
+    args.emplace_back("-O1");
+  }
   args.emplace_back("-emit-llvm");
   args.emplace_back("-g");
   args.emplace_back("-gno-column-info");
@@ -808,6 +816,7 @@ int main(int argc, char **argv) {
   mlir_context.getOrLoadDialect<mlir::math::MathDialect>();
   mlir_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
   mlir_context.getOrLoadDialect<mlir::scf::SCFDialect>();
+  mlir_context.getOrLoadDialect<mlir::ub::UBDialect>();
   mlir_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
   mlir_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
   mlir_context.getOrLoadDialect<circt::esi::ESIDialect>();
