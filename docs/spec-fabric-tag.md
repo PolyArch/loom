@@ -127,7 +127,9 @@ Lookup rule:
 - The table is searched for entries with `valid = 1` and `src_tag` equal to the
   input tag.
 - Exactly one entry must match.
-- If no entry matches, or multiple entries match, a hardware error is raised.
+- If no entry matches, a runtime error is raised.
+- If multiple entries match, the table contains duplicate valid `src_tag`
+  values and a configuration error is raised.
 - The output tag is the `dst_tag` of the matching entry.
 
 Errors are reported through a hardware-valid error signal and an error code

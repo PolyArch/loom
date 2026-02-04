@@ -8,8 +8,9 @@ values. The tag is used for instruction matching rather than direct indexing.
 
 Each instruction slot stores a tag value and an opcode that selects a FU type.
 When a tagged token arrives, its tag selects the instruction whose tag matches
-that value. If no instruction matches, or if multiple instructions match, the
-hardware signals an error.
+that value. If no instruction matches, the hardware signals a runtime error.
+If multiple instructions could match, the configuration is invalid because it
+contains duplicate tags.
 
 ## Operation: `fabric.temporal_pe`
 
@@ -91,20 +92,48 @@ The number of FU types defined in the body is independent of
 ### Tag Matching Semantics
 
 - Each valid instruction slot has an associated tag value.
-- At runtime, the input tag is matched against instruction tags.
+- At runtime, an input tag is matched against instruction tags.
 - Exactly one instruction must match a given input tag.
-- Duplicate tags or missing tags are configuration errors.
+- Duplicate tags in the instruction memory are configuration errors.
 
-All input operands consumed in a single firing must carry the same tag value
-and that value must match the selected instruction tag. If the input tags
-disagree, the temporal PE raises a hardware error.
+### Operand Buffer Semantics
 
-If a tag does not match any instruction, or matches multiple instructions,
-the temporal PE raises a hardware error. The hardware emits an error-valid
-signal and an error code that is propagated to the top level.
+Each instruction slot contains per-input operand buffers described by
+`op_valid` and `op_value` fields in the machine format. These fields are
+runtime state, not static instruction encoding.
+
+At reset or configuration time, all `op_valid` bits are initialized to `0`
+and `op_value` is initialized to `0`.
+
+When a tagged token arrives on input `i`:
+
+1. The tag selects a unique instruction slot `s`. If no slot matches, a
+   runtime error is raised. If multiple slots match, the configuration is
+   invalid due to duplicate tags.
+2. If `op_valid` for operand `i` in slot `s` is `0`, the token is consumed,
+   its value bits are stored into `op_value`, and `op_valid` is set to `1`.
+3. If `op_valid` for operand `i` in slot `s` is already `1`, the input is
+   backpressured and the token is not consumed.
+
+An instruction in slot `s` may fire when all operands are ready:
+
+- For each input operand `i`, either `op_is_reg = 1` (operand reads from a
+  register) or `op_valid = 1` (operand buffered from an input).
+
+When the instruction fires:
+
+- Input-buffered operands are consumed and their `op_valid` bits are cleared.
+- Register operands dequeue one element from their FIFOs.
+- Result values are produced and routed to outputs or registers.
 
 At most one instruction may fire in a single cycle. The temporal PE does not
 issue multiple instructions in parallel.
+
+### IMPORTANT: Potential Deadlock
+
+Because operand buffers are per-slot, the temporal PE can deadlock if some
+operands for a tag never arrive or if inputs are blocked behind full operand
+buffers. This is a known limitation and requires a system-level solution.
 
 ### Output Tag Semantics
 
@@ -163,6 +192,9 @@ Each destination is one of:
 
 `tag=VALUE` is optional. If omitted, the output tag defaults to the match tag.
 
+If the destination is `reg(idx)`, the tag must be omitted or set to `0`. A
+nonzero tag for a register destination is a configuration error.
+
 The number of destinations must equal the number of outputs of the temporal PE.
 
 #### Sources
@@ -198,6 +230,9 @@ Each entry is a hexadecimal string:
 0x<hex_value>
 ```
 
+In machine format, `op_valid` and `op_value` bits represent runtime operand
+buffers. Configuration should set `op_valid = 0` and `op_value = 0`.
+
 Bit layout is from LSB to MSB:
 
 ```
@@ -216,14 +251,16 @@ Operand field layout:
 | op_valid | op_is_reg | op_reg_idx | op_value |
 ```
 
-- `op_valid`: 1 bit.
+- `op_valid`: 1 bit. Indicates whether the operand buffer holds a valid value.
 - `op_is_reg` and `op_reg_idx` are present only if `num_register > 0`.
 - `op_reg_idx`: `log2(num_register)` bits.
 - `op_value`: `K` bits, where `K` is the value bit width.
 
-`op_value` encodes the input port index for `in(idx)` sources. Only the low
-bits are used if `K` is larger than `log2(num_inputs)`. For `reg(idx)` sources
-and invalid operands, `op_value` is ignored and should be set to 0.
+`op_valid` and `op_value` are runtime operand buffers. When the source is
+`in(idx)` and `op_is_reg = 0`, the input value is stored into `op_value` and
+`op_valid` is set to `1` until the instruction fires. When the source is
+`reg(idx)` and `op_is_reg = 1`, `op_valid` and `op_value` are ignored and
+should be set to `0`.
 
 Result field layout:
 
@@ -237,6 +274,21 @@ Result field layout:
 
 There is no explicit result-valid bit. Every instruction must provide one
 result field per output.
+
+### Operand and Result Ordering
+
+Operands and results are laid out by increasing index from LSB to MSB:
+
+- `operand[0]` is closest to the `opcode` field (lowest bits after `opcode`).
+- `operand[1]` follows `operand[0]`, and so on.
+- `result[0]` follows the operand block.
+- `result[N-1]` is closest to the MSB.
+
+Example layout for `L = 2`, `N = 1`, `R = 0`, `M = 3`, `K = 8`, `O = 2`:
+
+```
+| valid | tag[2:0] | opcode[1:0] | op0[8:0] | op1[8:0] | res0[2:0] |
+```
 
 ### Width Formulas
 
@@ -268,6 +320,9 @@ Then:
 - Reading from a register dequeues one value.
 - A register may have multiple readers.
 - A register must have only one writer.
+- Registers store values only. Tags are not stored.
+- If `res_is_reg = 1`, the corresponding `res_tag` must be `0`.
+  A nonzero `res_tag` when writing a register is a configuration error.
 
 When a register has multiple readers, it behaves like an internal fork. The
 FIFO entry is retained until each dependent instruction has fired once using
@@ -278,8 +333,10 @@ that entry. Only after all readers consume the entry is it dequeued.
 The temporal PE raises a hardware error if any of the following occurs:
 
 - An input tag matches no instruction.
-- An input tag matches multiple instructions.
+- Duplicate instruction tags are configured (configuration error).
 - An instruction specifies illegal register indices.
+- An operand or result selects a register while `num_register = 0`.
+- A result writes to a register with `res_tag != 0`.
 
 Errors are reported through a hardware-valid error signal and an error code
 propagated to the top level.

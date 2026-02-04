@@ -106,6 +106,8 @@ are dropped at the boundary.
 - If the interface is tagged, `output_tag` is required, except inside
   `fabric.temporal_pe` where it is ignored.
 - The body must contain at least one non-terminator operation.
+- If any `dataflow` operation is present, the interface must be native and the
+  body must be dataflow-only as defined below.
 
 ### Allowed Operations Inside `fabric.pe`
 
@@ -114,6 +116,7 @@ are dropped at the boundary.
 - `arith`
 - `math`
 - LLVM arithmetic intrinsics
+- `dataflow` (restricted to the four ops listed below)
 - `fabric.pe` (nested)
 - `fabric.instance` (to instantiate named PEs)
 - Allowed `handshake` operations listed below
@@ -132,6 +135,15 @@ The following `handshake` operations are allowed inside `fabric.pe`:
 - `handshake.join`
 
 All other `handshake` operations are disallowed inside `fabric.pe`.
+
+#### Dataflow Allowlist
+
+The following `dataflow` operations are allowed inside `fabric.pe`:
+
+- `dataflow.carry`
+- `dataflow.invariant`
+- `dataflow.stream`
+- `dataflow.gate`
 
 #### Homogeneous Consumption Rule
 
@@ -155,6 +167,17 @@ Mixing groups in a single `fabric.pe` is not allowed.
 If a `fabric.pe` body contains `handshake.load` or `handshake.store`, then the
 body may contain only `handshake.load`, `handshake.store`, and the terminator
 `fabric.yield`. No other operations are permitted in that case.
+
+#### Dataflow Exclusivity Rule
+
+If a `fabric.pe` body contains any `dataflow` operation, then the body may
+contain only `dataflow` operations and the terminator `fabric.yield`. Mixing
+`dataflow` with `arith`, `math`, LLVM intrinsics, `handshake`, or nested
+`fabric.pe`/`fabric.instance` is not allowed.
+
+Because the `dataflow` dialect does not support tagged types, a dataflow-only
+`fabric.pe` must use the native interface category. Tagged interfaces are
+invalid in this case.
 
 ### Prohibited Operations Inside `fabric.pe`
 
@@ -207,4 +230,3 @@ When a `fabric.pe` is used inside a `fabric.temporal_pe`:
   treat it as an error.
 - Output tags are taken from the `instruction_mem` of the enclosing
   `fabric.temporal_pe`.
-

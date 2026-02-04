@@ -45,10 +45,19 @@ selection and is forwarded unchanged to the output.
 - Length must be less than or equal to `num_route_table`.
 - All entries must use the same format.
 
+### Defaults
+
+If an attribute is omitted, the following defaults apply:
+
+- `connectivity_table`: all `1` (full crossbar connectivity).
+- `route_table`: all `0` entries (all slots invalid, no routes enabled).
+
 ### Constraints
 
 - The number of inputs and outputs must each be less than or equal to 32.
 - `connectivity_table` length must equal `num_outputs * num_inputs`.
+- Each output row of `connectivity_table` must have at least one `1`.
+- Each input column of `connectivity_table` must have at least one `1`.
 - Route entries must only enable positions that are connected in
   `connectivity_table`.
 - Each output may select at most one routed input per slot.
@@ -65,9 +74,10 @@ slot is selected by tag matching:
 - The selected slot determines the routed connections.
 - The tag is forwarded unchanged to the output.
 
-If no slot matches, or multiple slots match, the temporal switch raises a
-hardware error. The hardware emits an error-valid signal and an error code that
-is propagated to the top level.
+If no slot matches, the temporal switch raises a runtime error. If multiple
+slots match, the configuration is invalid due to duplicate tags. The hardware
+emits an error-valid signal and an error code that is propagated to the top
+level.
 
 The temporal switch is input-driven. For a selected route, the output forwards
 the chosen input as soon as it is valid and ready. The switch does not wait for
@@ -129,6 +139,9 @@ Definitions:
 
 `routes` is encoded in row-major order by output then input, considering only
 positions where `connectivity_table` is `1`.
+
+`routes` bits are stored MSB-first: position 0 corresponds to the MSB of the
+`routes` field, and the last position corresponds to the LSB.
 
 ### Example
 

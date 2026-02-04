@@ -40,12 +40,21 @@ output based on a fixed physical connectivity table and a runtime route table.
 
 A `1` in `route_table` enables a connected path. A `0` disables it.
 
+### Defaults
+
+If an attribute is omitted, the following defaults apply:
+
+- `connectivity_table`: all `1` (full crossbar connectivity).
+- `route_table`: all `0` (no routes enabled).
+
 ### Constraints
 
 - The number of inputs and outputs must each be less than or equal to 32.
 - `connectivity_table` length must equal `num_outputs * num_inputs`.
 - `route_table` length must equal the number of `1` entries in
   `connectivity_table`.
+- Each output row of `connectivity_table` must have at least one `1`.
+- Each input column of `connectivity_table` must have at least one `1`.
 - Each output may select at most one routed input.
 - Each input may route to at most one output.
 
@@ -81,4 +90,3 @@ Interpretation:
 - `route_table` enables:
   - Output 0 <- input 1
   - Output 1 <- input 0
-
