@@ -190,12 +190,13 @@ Example:
 
 ## Operation: `dataflow.stream`
 
-An affine index stream generator for canonical `scf.for` loops.
+A configurable index stream generator for loop-like control patterns.
 
 ### Syntax
 
 ```
 %idx, %cont = dataflow.stream %start, %step, %bound
+    {step_op = "+=", stop_cond = "<"}
 ```
 
 ### Operands
@@ -212,22 +213,34 @@ An affine index stream generator for canonical `scf.for` loops.
 ### Constraints
 
 - All operands must be `index`.
+- `step_op` must be one of `+=`, `-=`, `*=`, `/=`, `<<=`, `>>=`.
+- `stop_cond` must be one of `<`, `<=`, `>`, `>=`, `!=`.
+- If `step_op` is omitted, it defaults to `+=`.
+- If `stop_cond` is omitted, it defaults to `<`.
 - `step` must be nonzero. If `step = 0` at runtime, the hardware raises
   `RT_DATAFLOW_STREAM_ZERO_STEP`. See [spec-fabric-error.md](./spec-fabric-error.md).
 
+`step_op` is a hardware parameter that determines the update operator and
+cannot be changed at runtime. `stop_cond` is a runtime configuration parameter
+that selects the comparison used by the loop controller.
+
 ### Semantics
 
-`dataflow.stream` emits two streams for a loop with `N` iterations. The loop
-direction is determined by the sign of `step`:
+`dataflow.stream` emits two streams for a loop with `N` iterations. It can
+represent a canonical `scf.for`, or an analyzed `scf.while` that matches a
+loop pattern but uses a non-`+=` update or a different comparison.
 
-- If `step` is positive, the loop continues while `idx < bound`.
-- If `step` is negative, the loop continues while `idx > bound`.
+The continue condition is:
 
-This supports both increasing and decreasing index streams.
+- `continue = (idx stop_cond bound)`
+
+The next index update is:
+
+- `next = idx (step_op) step`
 
 `dataflow.stream` emits two streams for a loop with `N` iterations:
 
-- `raw_index`: `start, start+step, ..., last, and one extra value`
+- `raw_index`: `start, next, ..., last, and one extra value`
 - `raw_will_continue`: `true` for each body iteration, then `false` once
 
 The streams have length `N + 1`. The extra element aligns with loop-carried
@@ -241,12 +254,10 @@ Initial phase:
 
 - Wait for all three inputs: `%start`, `%step`, `%bound`.
 - Output `idx = start`.
-- Compute `willContinue`:
-  - If `step > 0`, `willContinue = (start < bound)`.
-  - If `step < 0`, `willContinue = (start > bound)`.
+- Compute `willContinue = (start stop_cond bound)`.
 - Consume all three inputs.
 - If `willContinue = true`, transition to block phase and latch:
-  - `nextIdxReg = start + step`
+  - `nextIdxReg = start (step_op) step`
   - `boundReg = bound`
   - `stepReg = step`
 - If `willContinue = false`, remain in initial phase (zero-trip case).
@@ -254,17 +265,16 @@ Initial phase:
 Block phase:
 
 - Output `idx = nextIdxReg`.
-- Compute `willContinue`:
-  - If `stepReg > 0`, `willContinue = (nextIdxReg < boundReg)`.
-  - If `stepReg < 0`, `willContinue = (nextIdxReg > boundReg)`.
-- If `willContinue = true`, update `nextIdxReg = nextIdxReg + stepReg` and stay
-  in block phase.
+- Compute `willContinue = (nextIdxReg stop_cond boundReg)`.
+- If `willContinue = true`, update `nextIdxReg = nextIdxReg (step_op) stepReg`
+  and stay in block phase.
 - If `willContinue = false`, transition back to initial phase.
 
 Example:
 
 ```
 %idx, %cont = dataflow.stream %start, %step, %bound
+    {step_op = "+=", stop_cond = "<"}
 
 // start=0, step=1, bound=5
 // raw_index: [0, 1, 2, 3, 4, 5]
@@ -277,6 +287,28 @@ Zero-trip example:
 // start=3, step=1, bound=3
 // raw_index: [3]
 // raw_will_continue: [F]
+```
+
+Example: right shift with "!="
+
+```
+%idx, %cont = dataflow.stream %start, %step, %bound
+    {step_op = ">>=", stop_cond = "!="}
+
+// start=16, step=1, bound=1
+// raw_index: [16, 8, 4, 2, 1]
+// raw_will_continue: [T, T, T, T, F]
+```
+
+Example: left shift with "<="
+
+```
+%idx, %cont = dataflow.stream %start, %step, %bound
+    {step_op = "<<=", stop_cond = "<="}
+
+// start=1, step=1, bound=8
+// raw_index: [1, 2, 4, 8, 16]
+// raw_will_continue: [T, T, T, T, F]
 ```
 
 ## Operation: `dataflow.gate`

@@ -22,6 +22,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/IRMapping.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -134,6 +135,547 @@ static std::optional<std::string> resolveSourcePath(mlir::Location loc) {
     }
   }
   return std::nullopt;
+}
+
+static mlir::Value stripCasts(mlir::Value value) {
+  while (value) {
+    if (auto cast = value.getDefiningOp<mlir::arith::ExtUIOp>()) {
+      value = cast.getIn();
+      continue;
+    }
+    if (auto cast = value.getDefiningOp<mlir::arith::ExtSIOp>()) {
+      value = cast.getIn();
+      continue;
+    }
+    if (auto cast = value.getDefiningOp<mlir::arith::TruncIOp>()) {
+      value = cast.getIn();
+      continue;
+    }
+    if (auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>()) {
+      value = cast.getIn();
+      continue;
+    }
+    break;
+  }
+  return value;
+}
+
+static bool getConstantInt(mlir::Value value, int64_t &out) {
+  if (!value)
+    return false;
+  if (auto cst = value.getDefiningOp<mlir::arith::ConstantOp>()) {
+    if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(cst.getValue())) {
+      out = intAttr.getInt();
+      return true;
+    }
+  }
+  if (auto cst = value.getDefiningOp<mlir::arith::ConstantIndexOp>()) {
+    out = cst.value();
+    return true;
+  }
+  return false;
+}
+
+static bool isIndexLike(mlir::Type type) {
+  return type && (type.isIndex() || llvm::isa<mlir::IntegerType>(type));
+}
+
+static mlir::Value castToIndex(mlir::OpBuilder &builder, mlir::Location loc,
+                               mlir::Value value) {
+  if (!value)
+    return {};
+  if (value.getType().isIndex())
+    return value;
+  if (llvm::isa<mlir::IntegerType>(value.getType()))
+    return builder.create<mlir::arith::IndexCastOp>(loc,
+                                                    builder.getIndexType(),
+                                                    value);
+  return {};
+}
+
+static mlir::Value castIndexToType(mlir::OpBuilder &builder, mlir::Location loc,
+                                   mlir::Value value,
+                                   mlir::Type targetType) {
+  if (!value)
+    return {};
+  if (value.getType() == targetType)
+    return value;
+  if (value.getType().isIndex() &&
+      llvm::isa<mlir::IntegerType>(targetType))
+    return builder.create<mlir::arith::IndexCastOp>(loc, targetType, value);
+  return {};
+}
+
+struct StreamStepInfo {
+  int64_t constant = 0;
+  mlir::Value value;
+  bool isConst = false;
+  llvm::StringRef stepOp;
+};
+
+static bool sameStepInfo(const StreamStepInfo &lhs,
+                         const StreamStepInfo &rhs) {
+  if (lhs.stepOp != rhs.stepOp)
+    return false;
+  if (lhs.isConst != rhs.isConst)
+    return false;
+  if (lhs.isConst)
+    return lhs.constant == rhs.constant;
+  if (!lhs.value || !rhs.value)
+    return false;
+  return stripCasts(lhs.value) == stripCasts(rhs.value);
+}
+
+static bool matchStreamUpdateValue(mlir::Value value,
+                                   mlir::BlockArgument inductionArg,
+                                   StreamStepInfo &step) {
+  if (!value)
+    return false;
+  value = stripCasts(value);
+  if (auto addi = value.getDefiningOp<mlir::arith::AddIOp>()) {
+    mlir::Value lhs = stripCasts(addi.getLhs());
+    mlir::Value rhs = stripCasts(addi.getRhs());
+    mlir::Value other;
+    if (lhs == inductionArg)
+      other = rhs;
+    else if (rhs == inductionArg)
+      other = lhs;
+    else
+      other = {};
+    if (other) {
+      int64_t constant = 0;
+      if (getConstantInt(other, constant)) {
+        step.isConst = true;
+        if (constant < 0) {
+          step.constant = -constant;
+          step.stepOp = "-=";
+        } else {
+          step.constant = constant;
+          step.stepOp = "+=";
+        }
+      } else {
+        step.isConst = false;
+        step.value = other;
+        step.stepOp = "+=";
+      }
+      return true;
+    }
+  }
+  if (auto subi = value.getDefiningOp<mlir::arith::SubIOp>()) {
+    mlir::Value lhs = stripCasts(subi.getLhs());
+    mlir::Value rhs = stripCasts(subi.getRhs());
+    if (lhs == inductionArg) {
+      int64_t constant = 0;
+      if (getConstantInt(rhs, constant)) {
+        step.isConst = true;
+        if (constant < 0) {
+          step.constant = -constant;
+          step.stepOp = "+=";
+        } else {
+          step.constant = constant;
+          step.stepOp = "-=";
+        }
+      } else {
+        step.isConst = false;
+        step.value = rhs;
+        step.stepOp = "-=";
+      }
+      return true;
+    }
+  }
+  if (auto muli = value.getDefiningOp<mlir::arith::MulIOp>()) {
+    mlir::Value lhs = stripCasts(muli.getLhs());
+    mlir::Value rhs = stripCasts(muli.getRhs());
+    mlir::Value other;
+    if (lhs == inductionArg)
+      other = rhs;
+    else if (rhs == inductionArg)
+      other = lhs;
+    else
+      other = {};
+    if (other) {
+      int64_t constant = 0;
+      if (getConstantInt(other, constant)) {
+        step.isConst = true;
+        step.constant = constant;
+      } else {
+        step.isConst = false;
+        step.value = other;
+      }
+      step.stepOp = "*=";
+      return true;
+    }
+  }
+  if (auto divsi = value.getDefiningOp<mlir::arith::DivSIOp>()) {
+    mlir::Value lhs = stripCasts(divsi.getLhs());
+    mlir::Value rhs = stripCasts(divsi.getRhs());
+    if (lhs == inductionArg) {
+      int64_t constant = 0;
+      if (getConstantInt(rhs, constant)) {
+        step.isConst = true;
+        step.constant = constant;
+      } else {
+        step.isConst = false;
+        step.value = rhs;
+      }
+      step.stepOp = "/=";
+      return true;
+    }
+  }
+  if (auto divui = value.getDefiningOp<mlir::arith::DivUIOp>()) {
+    mlir::Value lhs = stripCasts(divui.getLhs());
+    mlir::Value rhs = stripCasts(divui.getRhs());
+    if (lhs == inductionArg) {
+      int64_t constant = 0;
+      if (getConstantInt(rhs, constant)) {
+        step.isConst = true;
+        step.constant = constant;
+      } else {
+        step.isConst = false;
+        step.value = rhs;
+      }
+      step.stepOp = "/=";
+      return true;
+    }
+  }
+  if (auto shl = value.getDefiningOp<mlir::arith::ShLIOp>()) {
+    mlir::Value lhs = stripCasts(shl.getLhs());
+    mlir::Value rhs = stripCasts(shl.getRhs());
+    if (lhs == inductionArg) {
+      int64_t constant = 0;
+      if (getConstantInt(rhs, constant)) {
+        step.isConst = true;
+        step.constant = constant;
+      } else {
+        step.isConst = false;
+        step.value = rhs;
+      }
+      step.stepOp = "<<=";
+      return true;
+    }
+  }
+  if (auto shrsi = value.getDefiningOp<mlir::arith::ShRSIOp>()) {
+    mlir::Value lhs = stripCasts(shrsi.getLhs());
+    mlir::Value rhs = stripCasts(shrsi.getRhs());
+    if (lhs == inductionArg) {
+      int64_t constant = 0;
+      if (getConstantInt(rhs, constant)) {
+        step.isConst = true;
+        step.constant = constant;
+      } else {
+        step.isConst = false;
+        step.value = rhs;
+      }
+      step.stepOp = ">>=";
+      return true;
+    }
+  }
+  if (auto shrui = value.getDefiningOp<mlir::arith::ShRUIOp>()) {
+    mlir::Value lhs = stripCasts(shrui.getLhs());
+    mlir::Value rhs = stripCasts(shrui.getRhs());
+    if (lhs == inductionArg) {
+      int64_t constant = 0;
+      if (getConstantInt(rhs, constant)) {
+        step.isConst = true;
+        step.constant = constant;
+      } else {
+        step.isConst = false;
+        step.value = rhs;
+      }
+      step.stepOp = ">>=";
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool isValidStepOp(llvm::StringRef op) {
+  return op == "+=" || op == "-=" || op == "*=" || op == "/=" ||
+         op == "<<=" || op == ">>=";
+}
+
+static bool isValidStopCond(llvm::StringRef cond) {
+  return cond == "<" || cond == "<=" || cond == ">" || cond == ">=" ||
+         cond == "!=";
+}
+
+struct StreamWhileAttr {
+  int64_t ivIndex = -1;
+  llvm::StringRef stepOp;
+  llvm::StringRef stopCond;
+  bool cmpOnUpdate = false;
+};
+
+static std::optional<StreamWhileAttr>
+getStreamWhileAttr(mlir::scf::WhileOp op) {
+  auto dict = op->getAttrOfType<mlir::DictionaryAttr>("loom.stream");
+  if (!dict)
+    return std::nullopt;
+  auto ivAttr = dict.getAs<mlir::IntegerAttr>("iv");
+  auto stepAttr = dict.getAs<mlir::StringAttr>("step_op");
+  auto stopAttr = dict.getAs<mlir::StringAttr>("stop_cond");
+  if (!ivAttr || !stepAttr || !stopAttr)
+    return std::nullopt;
+  auto cmpAttr = dict.getAs<mlir::BoolAttr>("cmp_on_update");
+  StreamWhileAttr info;
+  info.ivIndex = ivAttr.getInt();
+  info.stepOp = stepAttr.getValue();
+  info.stopCond = stopAttr.getValue();
+  info.cmpOnUpdate = cmpAttr ? cmpAttr.getValue() : false;
+  return info;
+}
+
+static bool isDefinedIn(mlir::Operation *root, mlir::Value value) {
+  if (!value)
+    return false;
+  if (auto *def = value.getDefiningOp())
+    return root->isAncestor(def);
+  if (auto blockArg = llvm::dyn_cast<mlir::BlockArgument>(value)) {
+    mlir::Operation *owner = blockArg.getOwner()->getParentOp();
+    return owner && root->isAncestor(owner);
+  }
+  return false;
+}
+
+static bool hasStoreToMemref(mlir::Operation *root, mlir::Value memref) {
+  bool found = false;
+  root->walk([&](mlir::memref::StoreOp store) {
+    if (store.getMemref() == memref)
+      found = true;
+  });
+  return found;
+}
+
+static bool isSideEffectFreeOp(mlir::Operation &op) {
+  if (op.getNumRegions() != 0)
+    return false;
+  if (auto memEffect = llvm::dyn_cast<mlir::MemoryEffectOpInterface>(&op))
+    return memEffect.hasNoEffect();
+  return false;
+}
+
+static bool isPassThroughYield(mlir::Block &block) {
+  auto yieldOp = llvm::dyn_cast<mlir::scf::YieldOp>(block.getTerminator());
+  if (!yieldOp)
+    return false;
+  if (yieldOp.getNumOperands() != block.getNumArguments())
+    return false;
+  for (unsigned i = 0; i < yieldOp.getNumOperands(); ++i) {
+    if (stripCasts(yieldOp.getOperand(i)) != block.getArgument(i))
+      return false;
+  }
+  for (mlir::Operation &op : block) {
+    if (llvm::isa<mlir::scf::YieldOp>(op))
+      continue;
+    if (!isSideEffectFreeOp(op))
+      return false;
+    for (mlir::Value result : op.getResults()) {
+      for (mlir::OpOperand &use : result.getUses()) {
+        if (use.getOwner() != yieldOp)
+          return false;
+      }
+    }
+  }
+  return true;
+}
+
+static bool cmpKindFromPredicate(mlir::arith::CmpIPredicate pred,
+                                 llvm::StringRef &cond) {
+  switch (pred) {
+  case mlir::arith::CmpIPredicate::slt:
+  case mlir::arith::CmpIPredicate::ult:
+    cond = "<";
+    return true;
+  case mlir::arith::CmpIPredicate::sle:
+  case mlir::arith::CmpIPredicate::ule:
+    cond = "<=";
+    return true;
+  case mlir::arith::CmpIPredicate::sgt:
+  case mlir::arith::CmpIPredicate::ugt:
+    cond = ">";
+    return true;
+  case mlir::arith::CmpIPredicate::sge:
+  case mlir::arith::CmpIPredicate::uge:
+    cond = ">=";
+    return true;
+  case mlir::arith::CmpIPredicate::ne:
+    cond = "!=";
+    return true;
+  default:
+    return false;
+  }
+}
+
+static mlir::arith::CmpIPredicate
+swapPredicate(mlir::arith::CmpIPredicate pred) {
+  switch (pred) {
+  case mlir::arith::CmpIPredicate::eq:
+  case mlir::arith::CmpIPredicate::ne:
+    return pred;
+  case mlir::arith::CmpIPredicate::slt:
+    return mlir::arith::CmpIPredicate::sgt;
+  case mlir::arith::CmpIPredicate::sle:
+    return mlir::arith::CmpIPredicate::sge;
+  case mlir::arith::CmpIPredicate::sgt:
+    return mlir::arith::CmpIPredicate::slt;
+  case mlir::arith::CmpIPredicate::sge:
+    return mlir::arith::CmpIPredicate::sle;
+  case mlir::arith::CmpIPredicate::ult:
+    return mlir::arith::CmpIPredicate::ugt;
+  case mlir::arith::CmpIPredicate::ule:
+    return mlir::arith::CmpIPredicate::uge;
+  case mlir::arith::CmpIPredicate::ugt:
+    return mlir::arith::CmpIPredicate::ult;
+  case mlir::arith::CmpIPredicate::uge:
+    return mlir::arith::CmpIPredicate::ule;
+  }
+  return pred;
+}
+
+struct StreamWhileOperands {
+  mlir::Value init;
+  mlir::Value step;
+  mlir::Value bound;
+  int64_t stepConst = 0;
+  bool stepIsConst = false;
+  bool bodyInBefore = false;
+};
+
+static mlir::LogicalResult
+analyzeStreamableWhile(mlir::scf::WhileOp op, const StreamWhileAttr &attr,
+                       StreamWhileOperands &operands) {
+  if (attr.ivIndex < 0 ||
+      attr.ivIndex >= static_cast<int64_t>(op.getNumOperands()))
+    return op.emitError("invalid loom.stream iv index");
+  if (!isValidStepOp(attr.stepOp))
+    return op.emitError("invalid loom.stream step_op");
+  if (!isValidStopCond(attr.stopCond))
+    return op.emitError("invalid loom.stream stop_cond");
+
+  if (!op.getBefore().hasOneBlock() || !op.getAfter().hasOneBlock())
+    return op.emitError("expected single-block scf.while regions");
+
+  mlir::Block &before = op.getBefore().front();
+  mlir::Block &after = op.getAfter().front();
+
+  auto conditionOp = llvm::dyn_cast<mlir::scf::ConditionOp>(
+      before.getTerminator());
+  if (!conditionOp)
+    return op.emitError("expected scf.condition terminator");
+  if (conditionOp.getArgs().size() != before.getNumArguments())
+    return op.emitError("expected scf.condition arg count to match loop args");
+
+  bool conditionArgsPassThrough = true;
+  for (unsigned i = 0; i < before.getNumArguments(); ++i) {
+    if (stripCasts(conditionOp.getArgs()[i]) != before.getArgument(i)) {
+      conditionArgsPassThrough = false;
+      break;
+    }
+  }
+
+  bool beforeSideEffectFree = true;
+  for (mlir::Operation &nested : before) {
+    if (llvm::isa<mlir::scf::ConditionOp>(nested))
+      continue;
+    if (auto load = llvm::dyn_cast<mlir::memref::LoadOp>(&nested)) {
+      if (!hasStoreToMemref(op.getOperation(), load.getMemref()))
+        continue;
+    }
+    if (!isSideEffectFreeOp(nested)) {
+      beforeSideEffectFree = false;
+      break;
+    }
+  }
+
+  bool afterPassThrough = isPassThroughYield(after);
+  bool bodyInBefore = false;
+  if (conditionArgsPassThrough && beforeSideEffectFree) {
+    bodyInBefore = false;
+  } else if (afterPassThrough) {
+    bodyInBefore = true;
+  } else {
+    return op.emitError("cannot determine streamable while body location");
+  }
+
+  mlir::Value condValue = stripCasts(conditionOp.getCondition());
+  auto cmpOp = condValue.getDefiningOp<mlir::arith::CmpIOp>();
+  if (!cmpOp)
+    return op.emitError("expected arith.cmpi loop condition");
+
+  mlir::Value lhs = stripCasts(cmpOp.getLhs());
+  mlir::Value rhs = stripCasts(cmpOp.getRhs());
+  int64_t ivIndex = attr.ivIndex;
+  mlir::BlockArgument ivArg = before.getArgument(ivIndex);
+  bool ivOnLhs = false;
+  bool ivOnRhs = false;
+  bool cmpUsesUpdate = false;
+  StreamStepInfo cmpStep;
+
+  if (lhs == ivArg) {
+    ivOnLhs = true;
+  } else if (rhs == ivArg) {
+    ivOnRhs = true;
+  } else {
+    StreamStepInfo candidate;
+    if (matchStreamUpdateValue(lhs, ivArg, candidate)) {
+      ivOnLhs = true;
+      cmpUsesUpdate = true;
+      cmpStep = candidate;
+    } else if (matchStreamUpdateValue(rhs, ivArg, candidate)) {
+      ivOnRhs = true;
+      cmpUsesUpdate = true;
+      cmpStep = candidate;
+    }
+  }
+  if (ivOnLhs == ivOnRhs)
+    return op.emitError("expected loop compare to use induction argument");
+
+  auto pred = cmpOp.getPredicate();
+  if (ivOnRhs) {
+    pred = swapPredicate(pred);
+    std::swap(lhs, rhs);
+  }
+  llvm::StringRef stopCond;
+  if (!cmpKindFromPredicate(pred, stopCond))
+    return op.emitError("unsupported loop comparison predicate");
+  if (stopCond != attr.stopCond)
+    return op.emitError("loom.stream stop_cond mismatch");
+
+  mlir::Value boundValue = rhs;
+  if (isDefinedIn(op, boundValue))
+    return op.emitError("loop bound must be loop-invariant");
+
+  auto yieldOp = llvm::dyn_cast<mlir::scf::YieldOp>(after.getTerminator());
+  if (!yieldOp || yieldOp.getNumOperands() != op.getNumOperands())
+    return op.emitError("expected scf.yield to match loop operands");
+
+  StreamStepInfo stepInfo;
+  mlir::Value updateValue = bodyInBefore
+                                ? stripCasts(conditionOp.getArgs()[ivIndex])
+                                : stripCasts(yieldOp.getOperand(ivIndex));
+  mlir::BlockArgument updateBase = bodyInBefore ? before.getArgument(ivIndex)
+                                                : after.getArgument(ivIndex);
+  if (!matchStreamUpdateValue(updateValue, updateBase, stepInfo))
+    return op.emitError("cannot match induction update");
+  if (cmpUsesUpdate && !sameStepInfo(cmpStep, stepInfo))
+    return op.emitError("mismatched stream step in comparison");
+  if (stepInfo.stepOp != attr.stepOp)
+    return op.emitError("loom.stream step_op mismatch");
+  if (stepInfo.isConst && stepInfo.constant == 0)
+    return op.emitError("stream step must be nonzero");
+  if (!stepInfo.isConst && isDefinedIn(op, stepInfo.value))
+    return op.emitError("loop step must be loop-invariant");
+
+  if (!op.getResult(ivIndex).use_empty())
+    return op.emitError("induction result must be unused for stream lowering");
+
+  operands.init = op.getOperands()[ivIndex];
+  operands.stepIsConst = stepInfo.isConst;
+  operands.stepConst = stepInfo.constant;
+  operands.step = stepInfo.isConst ? nullptr : stepInfo.value;
+  operands.bound = boundValue;
+  operands.bodyInBefore = bodyInBefore;
+  return mlir::success();
 }
 
 static bool readFile(llvm::StringRef path, std::string &out) {
@@ -739,6 +1281,151 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
                                                   RegionState &state) {
   mlir::Location loc = op.getLoc();
 
+  if (auto streamAttr = getStreamWhileAttr(op)) {
+    StreamWhileOperands operands;
+    mlir::ScopedDiagnosticHandler handler(
+        op.getContext(),
+        [&](mlir::Diagnostic &) { return mlir::success(); });
+    if (succeeded(analyzeStreamableWhile(op, *streamAttr, operands))) {
+      mlir::Value startValue = mapValue(operands.init, state, loc);
+      mlir::Value boundValue = mapValue(operands.bound, state, loc);
+      mlir::Value stepValue;
+      if (operands.stepIsConst) {
+        mlir::Value ctrl =
+            state.controlToken ? state.controlToken : getEntryToken(loc);
+        stepValue =
+            makeConstant(loc, builder.getIndexAttr(operands.stepConst),
+                         builder.getIndexType(), ctrl);
+      } else {
+        stepValue = mapValue(operands.step, state, loc);
+      }
+
+      mlir::Value startIndex = castToIndex(builder, loc, startValue);
+      mlir::Value boundIndex = castToIndex(builder, loc, boundValue);
+      mlir::Value stepIndex = castToIndex(builder, loc, stepValue);
+      if (!startIndex || !boundIndex || !stepIndex)
+        return op.emitError("failed to cast stream operands to index");
+
+      auto stream = builder.create<StreamOp>(loc, startIndex, stepIndex,
+                                             boundIndex);
+      stream->setAttr("step_op", builder.getStringAttr(streamAttr->stepOp));
+      stream->setAttr("stop_cond", builder.getStringAttr(streamAttr->stopCond));
+      copyLoomAnnotations(op, stream);
+
+      mlir::Value rawIndex = stream.getIndex();
+      mlir::Value rawCond = stream.getWillContinue();
+      whileConds[op] = rawCond;
+
+      auto gate = builder.create<GateOp>(
+          loc, mlir::TypeRange{rawIndex.getType(), builder.getI1Type()},
+          rawIndex, rawCond);
+      mlir::Value bodyIndex = gate.getIndex();
+      mlir::Value bodyCond = gate.getCond();
+
+      llvm::SmallVector<CarryOp, 4> carries;
+      llvm::SmallVector<mlir::Value, 4> bodyIterValues;
+      llvm::SmallVector<mlir::Value, 4> loopResults;
+
+      auto iterOperands = op.getOperands();
+      for (unsigned i = 0, e = iterOperands.size(); i < e; ++i) {
+        if (static_cast<int64_t>(i) == streamAttr->ivIndex)
+          continue;
+        mlir::Value initValue = mapValue(iterOperands[i], state, loc);
+        auto carry = builder.create<CarryOp>(loc, initValue.getType(), rawCond,
+                                             initValue, initValue);
+        carries.push_back(carry);
+        auto iterGate = builder.create<GateOp>(
+            loc, mlir::TypeRange{carry.getO().getType(), builder.getI1Type()},
+            carry.getO(), rawCond);
+        bodyIterValues.push_back(iterGate.getIndex());
+        auto branch = builder.create<circt::handshake::ConditionalBranchOp>(
+            loc, rawCond, carry.getO());
+        loopResults.push_back(branch.getFalseResult());
+      }
+
+      bool bodyInBefore = operands.bodyInBefore;
+      mlir::Region *bodyRegion =
+          bodyInBefore ? &op.getBefore() : &op.getAfter();
+      if (!bodyRegion || !bodyRegion->hasOneBlock())
+        return op.emitError("expected single-block scf.while body");
+      mlir::Block *bodyBlock = &bodyRegion->front();
+
+      RegionState bodyState;
+      bodyState.region = bodyRegion;
+      bodyState.parent = &state;
+      bodyState.invariantCond = bodyCond;
+      bodyState.pendingCond = false;
+      mlir::Value parentCtrl =
+          state.controlToken ? state.controlToken : getEntryToken(loc);
+      bodyState.controlToken =
+          builder
+              .create<InvariantOp>(loc, parentCtrl.getType(), bodyCond,
+                                   parentCtrl)
+              .getO();
+
+      unsigned iterIndex = 0;
+      for (unsigned i = 0, e = bodyBlock->getNumArguments(); i < e; ++i) {
+        if (static_cast<int64_t>(i) == streamAttr->ivIndex) {
+          mlir::Value casted =
+              castIndexToType(builder, loc, bodyIndex,
+                              bodyBlock->getArgument(i).getType());
+          if (!casted)
+            return op.emitError("failed to cast stream index to iv type");
+          bodyState.valueMap[bodyBlock->getArgument(i)] = casted;
+        } else {
+          if (iterIndex >= bodyIterValues.size())
+            return op.emitError("scf.while iter arg mismatch");
+          bodyState.valueMap[bodyBlock->getArgument(i)] =
+              bodyIterValues[iterIndex++];
+        }
+      }
+
+      llvm::SmallVector<mlir::Value, 4> yieldValues;
+      for (mlir::Operation &nested : *bodyBlock) {
+        if (bodyInBefore) {
+          if (auto condition =
+                  mlir::dyn_cast<mlir::scf::ConditionOp>(nested)) {
+            for (mlir::Value operand : condition.getArgs())
+              yieldValues.push_back(
+                  mapValue(operand, bodyState, condition.getLoc()));
+            break;
+          }
+        } else if (auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(nested)) {
+          for (mlir::Value operand : yield.getOperands())
+            yieldValues.push_back(mapValue(operand, bodyState, yield.getLoc()));
+          break;
+        }
+        if (mlir::failed(lowerOp(&nested, bodyState)))
+          return mlir::failure();
+      }
+
+      if (yieldValues.size() != op.getNumOperands())
+        return op.emitError("scf.while yield arity mismatch");
+
+      unsigned carryIndex = 0;
+      for (unsigned i = 0, e = yieldValues.size(); i < e; ++i) {
+        if (static_cast<int64_t>(i) == streamAttr->ivIndex)
+          continue;
+        if (carryIndex >= carries.size())
+          return op.emitError("scf.while carry mismatch");
+        carries[carryIndex++]->setOperand(2, yieldValues[i]);
+      }
+
+      unsigned resultIndex = 0;
+      for (unsigned i = 0, e = op.getNumResults(); i < e; ++i) {
+        if (static_cast<int64_t>(i) == streamAttr->ivIndex)
+          continue;
+        if (resultIndex >= loopResults.size())
+          return op.emitError("scf.while result mismatch");
+        state.valueMap[op.getResult(i)] = loopResults[resultIndex++];
+      }
+
+      updateInvariantCond(bodyState, bodyCond);
+      return mlir::success();
+    }
+    op->removeAttr("loom.stream");
+  }
+
   llvm::SmallVector<mlir::Value, 4> initValues;
   initValues.reserve(op.getNumOperands());
   for (mlir::Value operand : op.getOperands())
@@ -1042,35 +1729,55 @@ mlir::LogicalResult HandshakeLowering::lowerOp(mlir::Operation *op,
   if (auto store = mlir::dyn_cast<mlir::memref::StoreOp>(op))
     return lowerStore(store, state);
   if (auto castOp = mlir::dyn_cast<mlir::memref::CastOp>(op)) {
-    if (mlir::isa<mlir::BlockArgument>(castOp.getSource())) {
-      mlir::Value mapped = mapValue(castOp.getSource(), state, op->getLoc());
-      state.valueMap[castOp.getResult()] = mapped;
-      return mlir::success();
-    }
+    mlir::Value mapped = mapValue(castOp.getSource(), state, op->getLoc());
+    state.valueMap[castOp.getResult()] = mapped;
+    return mlir::success();
+  }
+  if (auto viewOp = mlir::dyn_cast<mlir::memref::ViewOp>(op)) {
+    mlir::Value mapped = mapValue(viewOp.getSource(), state, op->getLoc());
+    state.valueMap[viewOp.getResult()] = mapped;
+    return mlir::success();
+  }
+  if (auto reinterpretOp =
+          mlir::dyn_cast<mlir::memref::ReinterpretCastOp>(op)) {
+    mlir::Value mapped = mapValue(reinterpretOp.getSource(), state, op->getLoc());
+    state.valueMap[reinterpretOp.getResult()] = mapped;
+    return mlir::success();
+  }
+  if (auto subviewOp = mlir::dyn_cast<mlir::memref::SubViewOp>(op)) {
+    mlir::Value mapped = mapValue(subviewOp.getSource(), state, op->getLoc());
+    state.valueMap[subviewOp.getResult()] = mapped;
+    return mlir::success();
+  }
+  if (auto collapseOp =
+          mlir::dyn_cast<mlir::memref::CollapseShapeOp>(op)) {
+    mlir::Value mapped = mapValue(collapseOp.getSrc(), state, op->getLoc());
+    state.valueMap[collapseOp.getResult()] = mapped;
+    return mlir::success();
+  }
+  if (auto expandOp = mlir::dyn_cast<mlir::memref::ExpandShapeOp>(op)) {
+    mlir::Value mapped = mapValue(expandOp.getSrc(), state, op->getLoc());
+    state.valueMap[expandOp.getResult()] = mapped;
+    return mlir::success();
+  }
+  if (auto getGlobalOp = mlir::dyn_cast<mlir::memref::GetGlobalOp>(op)) {
+    state.valueMap[getGlobalOp.getResult()] = getGlobalOp.getResult();
+    return mlir::success();
   }
   if (auto allocaOp = mlir::dyn_cast<mlir::memref::AllocaOp>(op)) {
-    llvm::SmallVector<mlir::Value, 4> dynSizes;
-    for (mlir::Value size : allocaOp.getDynamicSizes())
-      dynSizes.push_back(mapValue(size, state, op->getLoc()));
-    auto newAlloc = builder.create<mlir::memref::AllocOp>(
-        op->getLoc(), allocaOp.getType(), dynSizes,
-        allocaOp.getAlignmentAttr());
-    state.valueMap[allocaOp.getResult()] = newAlloc.getResult();
+    state.valueMap[allocaOp.getResult()] = allocaOp.getResult();
     return mlir::success();
   }
   if (auto allocOp = mlir::dyn_cast<mlir::memref::AllocOp>(op)) {
-    llvm::SmallVector<mlir::Value, 4> dynSizes;
-    for (mlir::Value size : allocOp.getDynamicSizes())
-      dynSizes.push_back(mapValue(size, state, op->getLoc()));
-    auto newAlloc = builder.create<mlir::memref::AllocOp>(
-        op->getLoc(), allocOp.getType(), dynSizes, allocOp.getAlignmentAttr());
-    state.valueMap[allocOp.getResult()] = newAlloc.getResult();
+    state.valueMap[allocOp.getResult()] = allocOp.getResult();
     return mlir::success();
   }
   if (auto deallocOp = mlir::dyn_cast<mlir::memref::DeallocOp>(op)) {
-    mlir::Value mapped = mapValue(deallocOp.getMemref(), state, op->getLoc());
-    builder.create<mlir::memref::DeallocOp>(op->getLoc(), mapped);
+    (void)deallocOp;
     return mlir::success();
+  }
+  if (auto dimOp = mlir::dyn_cast<mlir::memref::DimOp>(op)) {
+    return dimOp.emitError("memref.dim must be lowered before handshake");
   }
   if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(op)) {
     llvm::SmallVector<mlir::Value, 4> args;
@@ -1106,6 +1813,10 @@ mlir::LogicalResult HandshakeLowering::lowerOp(mlir::Operation *op,
     return mlir::success();
   }
 
+  if (auto *dialect = op->getDialect()) {
+    if (dialect->getNamespace() == "memref")
+      return op->emitError("memref op must be lowered before handshake");
+  }
   op->emitError("unsupported op in SCF to Handshake lowering");
   return mlir::failure();
 }
@@ -1226,6 +1937,20 @@ mlir::LogicalResult HandshakeLowering::run() {
 
   insertForks();
   if (mlir::failed(loom::runHandshakeCleanup(handshakeFunc, builder)))
+    return mlir::failure();
+
+  bool hasMemrefOp = false;
+  handshakeFunc.walk([&](mlir::Operation *op) {
+    if (auto *dialect = op->getDialect()) {
+      if (dialect->getNamespace() == "memref") {
+        op->emitError("memref ops are not allowed in handshake.func");
+        hasMemrefOp = true;
+        return mlir::WalkResult::interrupt();
+      }
+    }
+    return mlir::WalkResult::advance();
+  });
+  if (hasMemrefOp)
     return mlir::failure();
 
   func.erase();

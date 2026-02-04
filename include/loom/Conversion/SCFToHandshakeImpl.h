@@ -27,6 +27,8 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <optional>
+
 namespace loom {
 namespace detail {
 
@@ -106,6 +108,11 @@ mlir::LogicalResult inlineCallsInAccel(mlir::func::FuncOp func,
                                        mlir::SymbolTable &symbols);
 bool isAccelFunc(mlir::func::FuncOp func);
 mlir::Value getMemrefRoot(mlir::Value memref);
+
+enum class MemTargetHint { None, Rom, Extmemory };
+
+MemTargetHint getMemTargetHint(mlir::Operation *op);
+std::optional<int64_t> getStaticMemrefByteSize(mlir::MemRefType type);
 
 } // namespace detail
 } // namespace loom

@@ -43,24 +43,10 @@ if [[ ! -x "${MLIR_TRANSLATE}" ]]; then
   exit 1
 fi
 
-CLANGXX_FALLBACK="${MLIR_BIN_FALLBACK}/clang++"
-if [[ -n "${CLANGXX:-}" ]]; then
-  if [[ ! -x "${CLANGXX}" ]]; then
-    echo "error: clang++ not found: ${CLANGXX}" >&2
-    exit 1
-  fi
-else
-  CLANGXX="${BIN_DIR}/clang++"
-  if [[ ! -x "${CLANGXX}" && -x "${CLANGXX_FALLBACK}" ]]; then
-    CLANGXX="${CLANGXX_FALLBACK}"
-  fi
-  if [[ ! -x "${CLANGXX}" ]]; then
-    CLANGXX="/usr/bin/clang++"
-  fi
-  if [[ ! -x "${CLANGXX}" ]]; then
-    echo "error: clang++ not found: ${CLANGXX}" >&2
-    exit 1
-  fi
+CLANGXX="${MLIR_BIN_FALLBACK}/clang++"
+if [[ ! -x "${CLANGXX}" ]]; then
+  echo "error: clang++ not found: ${CLANGXX}" >&2
+  exit 1
 fi
 
 APPS_DIR="${ROOT_DIR}/tests/app"
@@ -108,9 +94,11 @@ run_one() {
   fi
 
   local output_ll="${output_dir}/${app_name}.llvm.ll"
-  local output_mlir="${output_dir}/${app_name}.llvm.mlir"
-  local output_exe="${output_dir}/${app_name}.mlir.exe"
-  local log_file="${output_dir}/${app_name}.loom.mlir.log"
+  local output_scf="${output_dir}/${app_name}.scf.mlir"
+  local output_exe="${output_dir}/${app_name}.scf.exe"
+  local log_file="${output_dir}/${app_name}.scf.log"
+
+  rm -f "${output_scf}" "${output_exe}" "${log_file}"
 
   timeout --kill-after=1s "${TIMEOUT_SEC}s" bash -c '
     set -euo pipefail
@@ -122,21 +110,21 @@ run_one() {
     MLIR_TRANSLATE="$6"
     RUN_APPS="$7"
     OUTPUT_LL="$8"
-    OUTPUT_MLIR="$9"
+    OUTPUT_SCF="$9"
     OUTPUT_EXE="${10}"
     shift 10
 
     "$LOOM_BIN" "$@" -I "$INCLUDE_DIR" -I "$APP_DIR" -o "$OUTPUT_LL"
 
-    if [[ ! -f "$OUTPUT_MLIR" ]]; then
-      echo "missing MLIR output: $OUTPUT_MLIR" >&2
+    if [[ ! -f "$OUTPUT_SCF" ]]; then
+      echo "missing scf output: $OUTPUT_SCF" >&2
       exit 1
     fi
 
     tmp_ll=$(mktemp "${OUTPUT_EXE}.XXXXXX.ll")
     trap "rm -f \"${tmp_ll}\"" EXIT
 
-    "$MLIR_OPT" "$OUTPUT_MLIR" -o - | \
+    "$MLIR_OPT" "$OUTPUT_SCF" --test-lower-to-llvm -o - | \
       "$MLIR_TRANSLATE" --mlir-to-llvmir > "$tmp_ll"
 
     target_triple=$(awk -F"\"" "/^target triple =/ {print \$2; exit}" "$tmp_ll" || true)
@@ -153,7 +141,7 @@ run_one() {
     if [[ "$RUN_APPS" == "true" ]]; then
       "$OUTPUT_EXE"
     fi
-  ' _ "${LOOM_BIN}" "${app_dir}" "${INCLUDE_DIR}" "${CLANGXX}" "${MLIR_OPT}" "${MLIR_TRANSLATE}" "${RUN_APPS}" "${output_ll}" "${output_mlir}" "${output_exe}" "${sources[@]}" >"${log_file}" 2>&1
+  ' _ "${LOOM_BIN}" "${app_dir}" "${INCLUDE_DIR}" "${CLANGXX}" "${MLIR_OPT}" "${MLIR_TRANSLATE}" "${RUN_APPS}" "${output_ll}" "${output_scf}" "${output_exe}" "${sources[@]}" >"${log_file}" 2>&1
 
   local rc=$?
   if [[ ${rc} -eq 0 ]]; then
@@ -210,7 +198,8 @@ for app_dir in "${app_dirs[@]}"; do
   esac
 done
 
-echo "total: ${total}, pass: ${pass}, fail: ${fail}, timeout: ${timeout}"
+summary_prefix=${LOOM_SUMMARY_PREFIX:-loom_scf_roundtrip}
+echo "${summary_prefix}: total: ${total}, pass: ${pass}, fail: ${fail}, timeout: ${timeout}"
 if (( fail > 0 || timeout > 0 )); then
   echo "failed apps:"
   for app in "${failed_apps[@]}"; do

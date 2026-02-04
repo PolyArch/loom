@@ -16,8 +16,6 @@
 #include "mlir/IR/Block.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -75,8 +73,6 @@ static LogicalResult eliminateHandshakeDeadCode(circt::handshake::FuncOp func,
 
     func.walk([&](Operation *op) {
       if (isa<circt::handshake::FuncOp, circt::handshake::ReturnOp>(op))
-        return;
-      if (isa<memref::GetGlobalOp>(op))
         return;
       if (op->getNumResults() == 0)
         return;

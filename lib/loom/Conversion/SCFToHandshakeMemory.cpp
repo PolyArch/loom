@@ -19,6 +19,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/SymbolTable.h"
 
 #include "circt/Dialect/Handshake/HandshakeOps.h"
 
@@ -36,6 +37,8 @@ namespace detail {
 using loom::dataflow::CarryOp;
 
 namespace {
+
+constexpr int64_t kOnChipMemThresholdBytes = 4096;
 
 static std::optional<int64_t> getConstantIndexValue(mlir::Value value) {
   if (!value)
@@ -260,6 +263,57 @@ static void dumpAccess(const MemAccess &access) {
   llvm::dbgs() << "\n";
 }
 
+static void attachGlobalConstant(mlir::ModuleOp module,
+                                 circt::handshake::MemoryOp memOp,
+                                 mlir::memref::GetGlobalOp getGlobal) {
+  if (!module || !memOp || !getGlobal)
+    return;
+  auto global =
+      module.lookupSymbol<mlir::memref::GlobalOp>(getGlobal.getName());
+  if (!global)
+    return;
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(global.getType());
+  if (!memrefType || !memrefType.hasStaticShape())
+    return;
+  auto sizeBytes = getStaticMemrefByteSize(memrefType);
+  if (!sizeBytes)
+    return;
+
+  MemTargetHint hint = getMemTargetHint(getGlobal);
+  if (hint == MemTargetHint::None)
+    hint = getMemTargetHint(global);
+
+  bool isConst = global.getConstant();
+  bool forceExt = hint == MemTargetHint::Extmemory;
+  bool forceRom = hint == MemTargetHint::Rom;
+  if (!isConst && forceRom)
+    return;
+  if (!isConst && !forceRom)
+    return;
+
+  if (!forceRom && (*sizeBytes > kOnChipMemThresholdBytes))
+    return;
+  if (forceExt)
+    return;
+
+  mlir::Builder builder(module.getContext());
+  std::string name = getGlobal.getName().str();
+  std::string attrName = std::string("loom.global_constant.") + name;
+  if (!module->hasAttr(attrName)) {
+    llvm::SmallVector<mlir::NamedAttribute, 2> fields;
+    fields.push_back(builder.getNamedAttr(
+        "type", mlir::TypeAttr::get(memrefType)));
+    if (auto init = global.getInitialValueAttr())
+      fields.push_back(builder.getNamedAttr("data", init));
+    module->setAttr(attrName, builder.getDictionaryAttr(fields));
+  }
+
+  memOp->setAttr("loom.global_memref",
+                 mlir::FlatSymbolRefAttr::get(builder.getContext(), name));
+  memOp->setAttr("loom.global_constant",
+                 builder.getStringAttr(name));
+}
+
 } // namespace
 
 void HandshakeLowering::finalizeMemory() {
@@ -339,11 +393,16 @@ void HandshakeLowering::finalizeMemory() {
                       loc, memrefValue, operands, ldCount, stCount, memoryId++)
                   .getOperation();
     } else {
-      memOp = builder
+      auto created = builder
                   .create<circt::handshake::MemoryOp>(
                       loc, operands, ldCount, ldCount + stCount, false,
-                      memoryId++, memrefValue)
-                  .getOperation();
+                      memoryId++, memrefValue);
+      memOp = created.getOperation();
+      if (auto getGlobal =
+              memrefValue.getDefiningOp<mlir::memref::GetGlobalOp>()) {
+        auto module = handshakeFunc->getParentOfType<mlir::ModuleOp>();
+        attachGlobalConstant(module, created, getGlobal);
+      }
     }
 
     auto memResults = memOp->getResults();

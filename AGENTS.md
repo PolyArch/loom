@@ -18,3 +18,9 @@ Loom is a full stack framework for Domain-specific Accelerator, from C++ source 
 # ExecPlans
 When writing complex features or significant refactors, use an ExecPlan (as described in .agent/PLANS.md) from design to implementation.
 The ExecPlan can be stored in `temp` folder as a living execution plan, the filename should be timestamp-ed like `ExecPlan-<YYYYMMDD-hhmmss>.md`, timestamp should use `date +"%Y%m%d-%H%M%S"`. 
+
+# End To End Test Pipeline
+Use the following sequence as the end to end test pipeline:
+- `ninja -C build clean-loom`
+- `ninja -C build loom`
+- `ninja -C build check-loom`

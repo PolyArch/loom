@@ -1,0 +1,15 @@
+if(NOT DEFINED LOOM_BINARY)
+  message(FATAL_ERROR "LOOM_BINARY is not set")
+endif()
+if(NOT DEFINED SOURCE_DIR)
+  message(FATAL_ERROR "SOURCE_DIR is not set")
+endif()
+
+file(REMOVE "${LOOM_BINARY}")
+
+file(GLOB APP_OUTPUT_DIRS "${SOURCE_DIR}/tests/app/*/Output")
+foreach(dir IN LISTS APP_OUTPUT_DIRS)
+  if(IS_DIRECTORY "${dir}")
+    file(REMOVE_RECURSE "${dir}")
+  endif()
+endforeach()

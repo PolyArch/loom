@@ -17,6 +17,9 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/IR/BuiltinAttributes.h"
+
+#include <limits>
 
 namespace loom {
 namespace detail {
@@ -42,6 +45,55 @@ static bool hasLoomAnnotation(mlir::Operation *op, llvm::StringRef prefix) {
 
 bool isAccelFunc(mlir::func::FuncOp func) {
   return func && hasLoomAnnotation(func, "loom.accel");
+}
+
+MemTargetHint getMemTargetHint(mlir::Operation *op) {
+  if (!op)
+    return MemTargetHint::None;
+  auto attr = op->getAttrOfType<mlir::ArrayAttr>("loom.annotations");
+  if (!attr)
+    return MemTargetHint::None;
+  for (mlir::Attribute entry : attr) {
+    auto str = mlir::dyn_cast<mlir::StringAttr>(entry);
+    if (!str)
+      continue;
+    llvm::StringRef value = str.getValue();
+    if (!value.starts_with("loom.target="))
+      continue;
+    llvm::StringRef target = value.drop_front(sizeof("loom.target=") - 1);
+    if (target == "rom")
+      return MemTargetHint::Rom;
+    if (target == "extmemory")
+      return MemTargetHint::Extmemory;
+  }
+  return MemTargetHint::None;
+}
+
+std::optional<int64_t> getStaticMemrefByteSize(mlir::MemRefType type) {
+  if (!type || !type.hasStaticShape())
+    return std::nullopt;
+  int64_t elementBytes = 0;
+  mlir::Type elementType = type.getElementType();
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(elementType)) {
+    elementBytes = (intType.getWidth() + 7) / 8;
+  } else if (auto floatType = mlir::dyn_cast<mlir::FloatType>(elementType)) {
+    elementBytes = (floatType.getWidth() + 7) / 8;
+  } else {
+    return std::nullopt;
+  }
+  int64_t count = 1;
+  for (int64_t dim : type.getShape()) {
+    if (dim <= 0)
+      return std::nullopt;
+    if (count > (std::numeric_limits<int64_t>::max() / dim))
+      return std::nullopt;
+    count *= dim;
+  }
+  if (elementBytes <= 0)
+    return std::nullopt;
+  if (count > (std::numeric_limits<int64_t>::max() / elementBytes))
+    return std::nullopt;
+  return count * elementBytes;
 }
 
 mlir::Value getMemrefRoot(mlir::Value memref) {

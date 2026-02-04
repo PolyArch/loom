@@ -2,7 +2,7 @@
 
 ## Overview
 
-## Operation: `fabric.mem`
+## Operation: `fabric.memory` and `fabric.extmemory`
 
 ### Syntax
 

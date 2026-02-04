@@ -121,10 +121,26 @@ void critical_op(...) { ... }
 | `"temporal"` | Map to temporal PEs |
 | `"pe[x,y]"` | Map to specific PE at coordinates (x,y) |
 | `"tile[n]"` | Map to specific tile |
+| `"rom"` | Force a constant memory object to map to ROM |
+| `"extmemory"` | Force a memory object to map to external memory |
 
 **Semantics**:
 - Suggests where the compiler should map the function/operation
 - Compiler may override if the suggestion is infeasible
+
+**Memory object hints**:
+- `LOOM_TARGET("rom")` applies to constant globals or read-only arrays.
+  The compiler treats the object as a ROM-backed memory.
+- `LOOM_TARGET("extmemory")` applies to globals or local arrays.
+  The compiler externalizes the buffer and maps it to an external memory
+  interface.
+- `LOOM_TARGET("rom")` on a non-constant object is a compile-time error.
+
+**Default memory mapping** (when no hint is provided):
+- Constant globals with total size <= 4096 bytes map to ROM.
+- Larger globals or non-constant globals map to external memory.
+- Local allocations with static size <= 4096 bytes map to on-chip memory.
+- Dynamic allocations map to external memory.
 
 **LLVM IR annotation**: `"loom.target=<spec>"`
 

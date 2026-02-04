@@ -5,8 +5,9 @@
 //===----------------------------------------------------------------------===//
 //
 // This header declares passes for post-processing SCF IR, including uplifting
-// scf.while loops to scf.for when possible and attaching loop annotations from
-// Loom pragma markers to their corresponding loop operations.
+// scf.while loops to scf.for when possible, attaching loop annotations from
+// Loom pragma markers to their corresponding loop operations, and annotating
+// streamable scf.while loops for dataflow lowering.
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,6 +24,7 @@ namespace loom {
 
 std::unique_ptr<mlir::Pass> createUpliftWhileToForPass();
 std::unique_ptr<mlir::Pass> createAttachLoopAnnotationsPass();
+std::unique_ptr<mlir::Pass> createMarkWhileStreamablePass();
 
 } // namespace loom
 

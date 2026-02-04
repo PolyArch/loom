@@ -890,6 +890,7 @@ int main(int argc, char **argv) {
   pass_manager.addPass(mlir::createCanonicalizerPass());
   pass_manager.addPass(mlir::createCSEPass());
   pass_manager.addPass(loom::createAttachLoopAnnotationsPass());
+  pass_manager.addPass(loom::createMarkWhileStreamablePass());
   if (failed(pass_manager.run(*mlir_module))) {
     llvm::errs() << "error: failed to lower to scf stage\n";
     return 1;

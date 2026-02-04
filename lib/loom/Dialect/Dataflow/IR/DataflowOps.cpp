@@ -6,8 +6,8 @@
 //
 // This file implements verification logic for Dataflow dialect operations.
 // Each operation verifies type constraints: CarryOp checks matching a/b types,
-// InvariantOp checks result matches input, StreamOp requires index-typed
-// operands, and GateOp validates condition and value types.
+// InvariantOp checks result matches input, StreamOp validates index-typed
+// operands and attributes, and GateOp validates condition and value types.
 //
 //===----------------------------------------------------------------------===//
 
@@ -45,6 +45,23 @@ LogicalResult StreamOp::verify() {
   if (getStart().getType() != indexType || getStep().getType() != indexType ||
       getBound().getType() != indexType)
     return emitOpError("expects index typed operands");
+
+  if (auto stepOpAttr = getStepOpAttr()) {
+    auto stepOp = stepOpAttr.getValue();
+    if (!(stepOp == "+=" || stepOp == "-=" || stepOp == "*=" ||
+          stepOp == "/=" || stepOp == "<<=" || stepOp == ">>="))
+      return emitOpError("expects step_op to be one of "
+                         "\"+=\", \"-=\", \"*=\", \"/=\", \"<<=\", \">>=\"");
+  }
+
+  if (auto stopCondAttr = getStopCondAttr()) {
+    auto stopCond = stopCondAttr.getValue();
+    if (!(stopCond == "<" || stopCond == "<=" || stopCond == ">" ||
+          stopCond == ">=" || stopCond == "!="))
+      return emitOpError(
+          "expects stop_cond to be one of \"<\", \"<=\", \">\", \">=\", "
+          "\"!=\"");
+  }
   return success();
 }
 

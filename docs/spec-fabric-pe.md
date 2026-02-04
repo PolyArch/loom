@@ -145,6 +145,9 @@ The following `dataflow` operations are allowed inside `fabric.pe`:
 - `dataflow.stream`
 - `dataflow.gate`
 
+`dataflow.stream` supports the `step_op` and `stop_cond` attributes to encode
+loop updates and termination conditions. See [spec-dataflow.md](./spec-dataflow.md).
+
 #### Homogeneous Consumption Rule
 
 A `fabric.pe` body must be homogeneous with respect to input consumption and

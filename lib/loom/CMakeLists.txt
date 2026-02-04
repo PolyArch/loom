@@ -1,7 +1,9 @@
 add_subdirectory(Dialect)
 
 set(LOOM_CONVERSION_SOURCES
-  Conversion/LLVMToSCF.cpp
+  Conversion/LLVMToSCFConvert.cpp
+  Conversion/LLVMToSCFPass.cpp
+  Conversion/LLVMToSCFSupport.cpp
   Conversion/SCFPostProcess.cpp
   Conversion/SCFToHandshake.cpp
   Conversion/SCFToHandshakeLowering.cpp
@@ -36,6 +38,7 @@ target_include_directories(LoomConversion
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
   PRIVATE
+    "${CMAKE_SOURCE_DIR}/lib"
     "${LLVM_SOURCE_DIR}/include"
     "${LLVM_BINARY_DIR}/include"
     "${MLIR_SOURCE_DIR}/include"

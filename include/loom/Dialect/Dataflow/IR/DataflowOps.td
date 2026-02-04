@@ -83,26 +83,41 @@ def Dataflow_InvariantOp : Dataflow_Op<"invariant", []> {
 //===----------------------------------------------------------------------===//
 
 def Dataflow_StreamOp : Dataflow_Op<"stream", []> {
-  let summary = "Affine index stream generator";
+  let summary = "Configurable index stream generator";
   let description = [{
     Generates a raw index stream and a raw will_continue stream for a
-    canonical scf.for. The streams are length N+1 for a loop with N body
-    iterations. This supports loop-carried values that produce N+1 outputs.
+    loop-like control pattern. The streams are length N+1 for a loop with
+    N body iterations. This supports loop-carried values that produce N+1
+    outputs.
+
+    Attributes:
+    - step_op: "+=", "-=", "*=", "/=", "<<=", ">>="
+      Defines how to update the index each iteration. This is a hardware
+      parameter and cannot change at runtime.
+    - stop_cond: "<", "<=", ">", ">=", "!="
+      Defines the continue condition for the loop. This is a runtime
+      configuration parameter.
 
     Semantics:
-    - raw_index emits: start, start+step, ..., last, and one extra value.
+    - raw_index emits: start, next, ..., last, and one extra value.
     - raw_will_continue emits: T for each body iteration, then F to mark
       loop exit.
 
-    Example: start=0, step=1, bound=5
+    Where:
+    - continue when (idx stop_cond bound) is true.
+    - next = idx (step_op) step.
+
+    Example: step_op="+=", stop_cond="<", start=0, step=1, bound=5
       raw_index: [0, 1, 2, 3, 4, 5]
       raw_will_continue: [T, T, T, T, T, F]
 
-    Zero-trip example: start=3, step=1, bound=3
+    Zero-trip example: step_op="+=", stop_cond="<", start=3, step=1, bound=3
       raw_index: [3]
       raw_will_continue: [F]
   }];
-  let arguments = (ins Index:$start, Index:$step, Index:$bound);
+  let arguments = (ins Index:$start, Index:$step, Index:$bound,
+                   OptionalAttr<StrAttr>:$step_op,
+                   OptionalAttr<StrAttr>:$stop_cond);
   let results = (outs Index:$index, I1:$willContinue);
 
   let assemblyFormat = "$start `,` $step `,` $bound attr-dict";

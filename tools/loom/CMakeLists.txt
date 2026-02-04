@@ -61,33 +61,46 @@ add_dependencies(loom loom_clang_resource)
 add_dependencies(loom clang-headers)
 
 add_custom_target(check-loom-llvm-roundtrip
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_apps.sh" "${LOOM_RUNTIME_DIR}/loom" --run
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_ll_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS loom
 )
 
 add_custom_target(check-loom-mlir-roundtrip
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_mlir_apps.sh" "${LOOM_RUNTIME_DIR}/loom" --run
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_mlir_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS loom mlir-opt mlir-translate
 )
 
 add_custom_target(check-loom-scf-roundtrip
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_scf_apps.sh" "${LOOM_RUNTIME_DIR}/loom" --run
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_scf_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS loom mlir-opt mlir-translate
 )
 
-add_custom_target(check-loom-exe-roundtrip
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_exe_roundtrip.sh"
+add_custom_target(check-loom-handshake
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_handshake.sh" "${LOOM_RUNTIME_DIR}/loom"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-handshake-ops-stat
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_handshake_ops-stat.sh" "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
 )
 
 add_custom_target(check-loom
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_apps.sh" "${LOOM_RUNTIME_DIR}/loom" --run
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_mlir_apps.sh" "${LOOM_RUNTIME_DIR}/loom" --run
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_scf_apps.sh" "${LOOM_RUNTIME_DIR}/loom" --run
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_exe_roundtrip.sh"
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_ll_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_mlir_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_scf_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_handshake.sh" "${LOOM_RUNTIME_DIR}/loom"
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_handshake_ops-stat.sh" "${LOOM_RUNTIME_DIR}/loom"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS loom mlir-opt mlir-translate
+)
+
+add_custom_target(clean-loom
+  COMMAND "${CMAKE_COMMAND}" -DLOOM_BINARY="$<TARGET_FILE:loom>" -DSOURCE_DIR="${CMAKE_SOURCE_DIR}" -P "${CMAKE_SOURCE_DIR}/tools/loom/clean-loom.cmake"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
