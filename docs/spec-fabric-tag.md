@@ -1,0 +1,134 @@
+# Fabric Tag Operations Specification
+
+## Overview
+
+The fabric dialect defines three tag boundary operations used to move between
+native values and tagged values, or to transform tags across temporal regions:
+
+- `fabric.add_tag`
+- `fabric.map_tag`
+- `fabric.del_tag`
+
+These operations operate on `!dataflow.tagged` values and are commonly used
+at boundaries between dedicated and temporal regions.
+
+## Operation: `fabric.add_tag`
+
+### Syntax
+
+```
+%tagged = fabric.add_tag %value {tag = 5 : i4} : T -> !dataflow.tagged<T, i4>
+```
+
+### Operands
+
+- `%value`: native value of type `T`.
+
+### Results
+
+- `%tagged`: tagged value of type `!dataflow.tagged<T, iN>`.
+
+### Attributes
+
+- `tag` (runtime configuration parameter)
+  - Type: signless integer with the same width as the tag type.
+  - Default value is `0`.
+  - Must fit within the tag width.
+
+### Constraints
+
+- `T` must be a native value type.
+- Tag width must be in the range `i1` to `i16`.
+
+### Semantics
+
+`fabric.add_tag` attaches a constant tag to the input value. In hardware, the
+value and tag are concatenated into a single tagged payload. The tag is placed
+in the high bits.
+
+## Operation: `fabric.del_tag`
+
+### Syntax
+
+```
+%value = fabric.del_tag %tagged : !dataflow.tagged<T, iN> -> T
+```
+
+### Operands
+
+- `%tagged`: tagged value of type `!dataflow.tagged<T, iN>`.
+
+### Results
+
+- `%value`: native value of type `T`.
+
+### Constraints
+
+- Output type must match the value type of the input tagged type.
+
+### Semantics
+
+`fabric.del_tag` removes the tag and forwards the value unchanged. The tag is
+discarded.
+
+## Operation: `fabric.map_tag`
+
+### Syntax
+
+```
+%retagged = fabric.map_tag %tagged
+  {table_size = 10,
+   table = [
+     [1 : i1, 5 : i7, 2 : i3],
+     [0 : i1, 0 : i7, 0 : i3],
+     [1 : i1, 7 : i7, 3 : i3]
+   ]}
+  : !dataflow.tagged<T, i7> -> !dataflow.tagged<T, i3>
+```
+
+### Operands
+
+- `%tagged`: tagged value of type `!dataflow.tagged<T, iM>`.
+
+### Results
+
+- `%retagged`: tagged value of type `!dataflow.tagged<T, iN>`.
+
+### Attributes
+
+- `table_size` (hardware parameter)
+  - Unsigned integer.
+  - Number of entries supported by the hardware table.
+  - Must be at least 1 and at most 256.
+
+- `table` (runtime configuration parameter)
+  - Array of length `table_size`.
+  - Each entry is a triple: `[valid, src_tag, dst_tag]`.
+  - `valid` is `i1`.
+  - `src_tag` uses the input tag type.
+  - `dst_tag` uses the output tag type.
+  - Entries with `valid = 0` are ignored.
+  - For ignored entries, `src_tag` and `dst_tag` default to `0`.
+
+### Constraints
+
+- Input and output value types must match.
+- `table` length must equal `table_size`.
+- Tag width can change between input and output.
+- `valid` must be `i1` and tag types must be signless integers in `i1` to `i16`.
+
+### Semantics
+
+`fabric.map_tag` transforms the tag using the runtime table while forwarding
+its value unchanged.
+
+Lookup rule:
+
+- The table is searched for entries with `valid = 1` and `src_tag` equal to the
+  input tag.
+- Exactly one entry must match.
+- If no entry matches, or multiple entries match, a hardware error is raised.
+- The output tag is the `dst_tag` of the matching entry.
+
+Errors are reported through a hardware-valid error signal and an error code
+propagated to the top level.

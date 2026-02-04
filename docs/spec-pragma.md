@@ -705,3 +705,6 @@ llvm.mlir.global appending @llvm.global.annotations() {
 ```
 
 These annotations survive the MLIR import and export path without modification.
+
+## Change log and Reviews
+- Date: 2026-02-03; Reviewer: [Sihao Liu](mailto:sihao@cs.ucla.edu); Note: initial draft.
