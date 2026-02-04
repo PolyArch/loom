@@ -1,3 +1,18 @@
+//===-- loom.cpp - Loom compiler driver -------------------------*- C++ -*-===//
+//
+// Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements the Loom compiler entry point. The driver integrates
+// clang frontend invocation with the Loom MLIR pipeline. It compiles C/C++
+// sources to LLVM IR, imports to MLIR LLVM dialect, applies annotation
+// extraction (global annotations, loop markers, intrinsic annotations), runs
+// the LLVM-to-SCF lowering, SCF post-processing, and SCF-to-Handshake
+// conversion to produce hardware-focused dataflow IR.
+//
+//===----------------------------------------------------------------------===//
+
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/Version.h"
 #include "clang/CodeGen/CodeGenAction.h"

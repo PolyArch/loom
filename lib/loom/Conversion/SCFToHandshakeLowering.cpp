@@ -1,6 +1,14 @@
-//===- SCFToHandshakeLowering.cpp - SCF->Handshake lowering -----*- C++ -*-===//
+//===-- SCFToHandshakeLowering.cpp - SCF to Handshake lowering --*- C++ -*-===//
 //
 // Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements the core SCF-to-Handshake lowering logic. It converts
+// scf.for, scf.while, scf.if, and scf.index_switch operations to Handshake
+// dataflow operations using dataflow primitives (CarryOp, GateOp, InvariantOp,
+// StreamOp). It also handles memory loads/stores, value mapping across region
+// boundaries, and Handshake function signature construction with named ports.
 //
 //===----------------------------------------------------------------------===//
 

@@ -1,6 +1,13 @@
-//===- SCFToHandshake.cpp - SCF to Handshake pass entry --------*- C++ -*-===//
+//===-- SCFToHandshake.cpp - SCF to Handshake pass entry --------*- C++ -*-===//
 //
 // Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements the SCF-to-Handshake dataflow conversion pass. It
+// identifies accelerator-marked functions, inlines callees, invokes the
+// HandshakeLowering class to convert them to Handshake dialect, and rewrites
+// host-side calls to use ESI channel-based accelerator instances.
 //
 //===----------------------------------------------------------------------===//
 

@@ -1,3 +1,17 @@
+//===-- SCFPostProcess.cpp - SCF post-processing passes ---------*- C++ -*-===//
+//
+// Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements post-processing passes for SCF IR. The UpliftWhileToFor
+// pass converts scf.while loops with induction patterns to scf.for loops,
+// handling both memref-based and iter-arg-based induction variables. The
+// AttachLoopAnnotations pass collects Loom pragma marker calls and attaches
+// their annotations to corresponding loop operations.
+//
+//===----------------------------------------------------------------------===//
+
 #include "loom/Conversion/SCFPostProcess.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"

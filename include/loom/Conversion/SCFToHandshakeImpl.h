@@ -1,6 +1,13 @@
-//===- SCFToHandshakeImpl.h - SCF->Handshake internal API -------*- C++ -*-===//
+//===-- SCFToHandshakeImpl.h - SCF to Handshake internal API ----*- C++ -*-===//
 //
 // Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This header declares internal implementation details for the SCF-to-Handshake
+// lowering, including the HandshakeLowering class that manages value mapping,
+// memory access tracking, and control flow conversion from structured control
+// flow to dataflow operations.
 //
 //===----------------------------------------------------------------------===//
 

@@ -1,6 +1,13 @@
-//===- DataflowOps.cpp - Dataflow operations ------------------*- C++ -*-===//
+//===-- DataflowOps.cpp - Dataflow dialect operation verifiers --*- C++ -*-===//
 //
 // Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements verification logic for Dataflow dialect operations.
+// Each operation verifies type constraints: CarryOp checks matching a/b types,
+// InvariantOp checks result matches input, StreamOp requires index-typed
+// operands, and GateOp validates condition and value types.
 //
 //===----------------------------------------------------------------------===//
 

@@ -1,6 +1,12 @@
-//===- SCFPostProcess.h - Loom SCF post-processing -----------*- C++ -*-===//
+//===-- SCFPostProcess.h - Loom SCF post-processing -------------*- C++ -*-===//
 //
 // Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This header declares passes for post-processing SCF IR, including uplifting
+// scf.while loops to scf.for when possible and attaching loop annotations from
+// Loom pragma markers to their corresponding loop operations.
 //
 //===----------------------------------------------------------------------===//
 

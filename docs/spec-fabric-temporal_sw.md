@@ -50,7 +50,8 @@ selection and is forwarded unchanged to the output.
 If an attribute is omitted, the following defaults apply:
 
 - `connectivity_table`: all `1` (full crossbar connectivity).
-- `route_table`: all `0` entries (all slots invalid, no routes enabled).
+- `route_table`: all slots invalid. This is equivalent to all `invalid`
+  entries in human-readable format or all `0x0` entries in machine format.
 
 ### Constraints
 
@@ -64,6 +65,14 @@ If an attribute is omitted, the following defaults apply:
 - Each input may route to at most one output per slot.
 - Each slot must have a unique tag value.
 
+Hardware-parameter violations are compile-time errors: `COMP_TEMPORAL_SW_PORT_LIMIT`,
+`COMP_TEMPORAL_SW_TABLE_SHAPE`, `COMP_TEMPORAL_SW_ROW_EMPTY`,
+`COMP_TEMPORAL_SW_COL_EMPTY`, `COMP_TEMPORAL_SW_NUM_ROUTE_TABLE`,
+`COMP_TEMPORAL_SW_TOO_MANY_SLOTS`, and `COMP_TEMPORAL_SW_ROUTE_ILLEGAL`.
+Duplicate tags in `route_table` are configuration errors: `CFG_TEMPORAL_SW_DUP_TAG`.
+If no slot matches an input tag at runtime, the temporal switch raises
+`RT_TEMPORAL_SW_NO_MATCH`. See [spec-fabric-error.md](./spec-fabric-error.md).
+
 ### Semantics
 
 `fabric.temporal_sw` contains multiple routing tables (route_table slots). Each
@@ -74,10 +83,11 @@ slot is selected by tag matching:
 - The selected slot determines the routed connections.
 - The tag is forwarded unchanged to the output.
 
-If no slot matches, the temporal switch raises a runtime error. If multiple
-slots match, the configuration is invalid due to duplicate tags. The hardware
-emits an error-valid signal and an error code that is propagated to the top
-level.
+If no slot matches, the temporal switch raises a runtime error
+(`RT_TEMPORAL_SW_NO_MATCH`). If multiple slots match, the configuration is
+invalid due to duplicate tags (`CFG_TEMPORAL_SW_DUP_TAG`). The hardware emits
+an error-valid signal and an error code that is propagated to the top level.
+See [spec-fabric-error.md](./spec-fabric-error.md).
 
 The temporal switch is input-driven. For a selected route, the output forwards
 the chosen input as soon as it is valid and ready. The switch does not wait for
@@ -130,6 +140,16 @@ Bit layout is from LSB to MSB:
 | valid | tag | routes |
 ```
 
+ASCII diagram:
+
+```
++--------------------------------------------------------------+
+|                ROUTE TABLE SLOT (LSB -> MSB)                 |
++--------+---------+-------------------------------+-----------+
+| valid  | tag[M]  | routes[K] (MSB-first)         |    MSB    |
++--------+---------+-------------------------------+-----------+
+```
+
 Definitions:
 
 - `valid`: 1 bit. `0` means invalid slot.
@@ -142,6 +162,45 @@ positions where `connectivity_table` is `1`.
 
 `routes` bits are stored MSB-first: position 0 corresponds to the MSB of the
 `routes` field, and the last position corresponds to the LSB.
+
+Slot width in bits:
+
+```
+slot_width = 1 + M + K
+```
+
+Where:
+
+- `M` = tag bit width
+- `K` = number of connected positions in `connectivity_table`
+
+Complete example bitmap (LSB -> MSB):
+
+Parameters:
+- `M = 4`
+- `K = 3` (three connected positions)
+
+Example slot:
+- `valid = 1`
+- `tag = 5` (`0101`)
+- `routes = 101` (MSB-first)
+
+Bitmap (fields separated by `|`):
+
+```
+1 | 0101 | 101
+```
+
+Hex encoding (8 bits, LSB -> MSB):
+
+```
+0xAB
+```
+
+### Format Selection Guidance
+
+- Use the human-readable format for documentation and inspection.
+- Use the machine (hex) format for hardware configuration files and simulation.
 
 ### Example
 

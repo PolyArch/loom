@@ -212,8 +212,18 @@ An affine index stream generator for canonical `scf.for` loops.
 ### Constraints
 
 - All operands must be `index`.
+- `step` must be nonzero. If `step = 0` at runtime, the hardware raises
+  `RT_DATAFLOW_STREAM_ZERO_STEP`. See [spec-fabric-error.md](./spec-fabric-error.md).
 
 ### Semantics
+
+`dataflow.stream` emits two streams for a loop with `N` iterations. The loop
+direction is determined by the sign of `step`:
+
+- If `step` is positive, the loop continues while `idx < bound`.
+- If `step` is negative, the loop continues while `idx > bound`.
+
+This supports both increasing and decreasing index streams.
 
 `dataflow.stream` emits two streams for a loop with `N` iterations:
 
@@ -222,6 +232,34 @@ An affine index stream generator for canonical `scf.for` loops.
 
 The streams have length `N + 1`. The extra element aligns with loop-carried
 values that produce one more output than the body iteration count.
+
+### State Machine Behavior
+
+`dataflow.stream` is implemented as a two-phase state machine.
+
+Initial phase:
+
+- Wait for all three inputs: `%start`, `%step`, `%bound`.
+- Output `idx = start`.
+- Compute `willContinue`:
+  - If `step > 0`, `willContinue = (start < bound)`.
+  - If `step < 0`, `willContinue = (start > bound)`.
+- Consume all three inputs.
+- If `willContinue = true`, transition to block phase and latch:
+  - `nextIdxReg = start + step`
+  - `boundReg = bound`
+  - `stepReg = step`
+- If `willContinue = false`, remain in initial phase (zero-trip case).
+
+Block phase:
+
+- Output `idx = nextIdxReg`.
+- Compute `willContinue`:
+  - If `stepReg > 0`, `willContinue = (nextIdxReg < boundReg)`.
+  - If `stepReg < 0`, `willContinue = (nextIdxReg > boundReg)`.
+- If `willContinue = true`, update `nextIdxReg = nextIdxReg + stepReg` and stay
+  in block phase.
+- If `willContinue = false`, transition back to initial phase.
 
 Example:
 

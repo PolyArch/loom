@@ -1,6 +1,13 @@
-//===- HandshakeOptimize.cpp - Handshake cleanup helpers -------*- C++ -*-===//
+//===-- HandshakeOptimize.cpp - Handshake cleanup helpers -------*- C++ -*-===//
 //
 // Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements cleanup utilities for Handshake IR. It provides sink
+// insertion for unused values, dead code elimination for side-effect-free
+// operations feeding only sinks, and fork optimization to coalesce or remove
+// redundant fork operations.
 //
 //===----------------------------------------------------------------------===//
 

@@ -1,6 +1,12 @@
-//===- DataflowDialect.h - Dataflow dialect -------------------*- C++ -*-===//
+//===-- DataflowDialect.h - Dataflow dialect definition ---------*- C++ -*-===//
 //
 // Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This header defines the Dataflow dialect, which provides operations for
+// representing dataflow-style computations used as intermediate representations
+// during the SCF-to-Handshake lowering process.
 //
 //===----------------------------------------------------------------------===//
 

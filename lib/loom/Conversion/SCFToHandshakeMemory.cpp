@@ -1,6 +1,13 @@
-//===- SCFToHandshakeMemory.cpp - Memory control builder --------*- C++ -*-===//
+//===-- SCFToHandshakeMemory.cpp - Memory control builder -------*- C++ -*-===//
 //
 // Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements memory control logic for the SCF-to-Handshake lowering.
+// It builds memory interface operations (ExternalMemoryOp, MemoryOp), connects
+// load/store operations to memory ports, and constructs control token chains
+// that enforce memory ordering through alias analysis and SCF path tracking.
 //
 //===----------------------------------------------------------------------===//
 

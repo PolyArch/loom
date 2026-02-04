@@ -58,6 +58,12 @@ If an attribute is omitted, the following defaults apply:
 - Each output may select at most one routed input.
 - Each input may route to at most one output.
 
+Violations of hardware-parameter constraints are compile-time errors:
+`COMP_SWITCH_PORT_LIMIT`, `COMP_SWITCH_TABLE_SHAPE`, `COMP_SWITCH_ROW_EMPTY`,
+`COMP_SWITCH_COL_EMPTY`, and `COMP_SWITCH_ROUTE_LEN_MISMATCH`. Violations of
+runtime routing constraints are configuration errors: `CFG_SWITCH_ROUTE_MULTI_OUT`
+and `CFG_SWITCH_ROUTE_MULTI_IN`. See [spec-fabric-error.md](./spec-fabric-error.md).
+
 ### Semantics
 
 `fabric.switch` models a physical routing resource:

@@ -1,6 +1,12 @@
-//===- DataflowOps.h - Dataflow operations --------------------*- C++ -*-===//
+//===-- DataflowOps.h - Dataflow dialect operations -------------*- C++ -*-===//
 //
 // Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This header declares operations for the Dataflow dialect, including CarryOp
+// for loop-carried values, InvariantOp for loop-invariant gating, StreamOp for
+// index stream generation, and GateOp for conditional value passing.
 //
 //===----------------------------------------------------------------------===//
 

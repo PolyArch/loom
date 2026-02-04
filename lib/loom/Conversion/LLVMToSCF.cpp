@@ -1,3 +1,17 @@
+//===-- LLVMToSCF.cpp - LLVM to SCF conversion pass -------------*- C++ -*-===//
+//
+// Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements lowering from the LLVM dialect to SCF, arith, memref,
+// and func operations. The pass handles pointer arithmetic with PointerInfo
+// tracking, converts LLVM globals to memrefs, infers pointer element types
+// from uses, and lowers common LLVM intrinsics (memcpy, memset, lifetime,
+// annotations) into equivalent MLIR constructs suitable for dataflow lowering.
+//
+//===----------------------------------------------------------------------===//
+
 #include "loom/Conversion/LLVMToSCF.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"

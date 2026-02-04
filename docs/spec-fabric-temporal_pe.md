@@ -8,9 +8,10 @@ values. The tag is used for instruction matching rather than direct indexing.
 
 Each instruction slot stores a tag value and an opcode that selects a FU type.
 When a tagged token arrives, its tag selects the instruction whose tag matches
-that value. If no instruction matches, the hardware signals a runtime error.
-If multiple instructions could match, the configuration is invalid because it
-contains duplicate tags.
+that value. If no instruction matches, the hardware signals a runtime error
+(`RT_TEMPORAL_PE_NO_MATCH`). If multiple instructions could match, the
+configuration is invalid because it contains duplicate tags
+(`CFG_TEMPORAL_PE_DUP_TAG`). See [spec-fabric-error.md](./spec-fabric-error.md).
 
 ## Operation: `fabric.temporal_pe`
 
@@ -32,6 +33,9 @@ fabric.temporal_pe @name(
 - All inputs and outputs must be `!dataflow.tagged` types.
 - All ports must use the same tagged type.
 - Tag width must be in the range `i1` to `i16`.
+
+Violations of tagged interface width requirements are compile-time errors:
+`COMP_TEMPORAL_PE_TAG_WIDTH`. See [spec-fabric-error.md](./spec-fabric-error.md).
 
 ### FU Types and Body Structure
 
@@ -71,6 +75,8 @@ The ordering is:
 - Unsigned integer.
 - Maximum number of instruction slots.
 - Must be greater than 0.
+- Violations are compile-time errors: `COMP_TEMPORAL_PE_NUM_INSTRUCTION`. See
+  [spec-fabric-error.md](./spec-fabric-error.md).
 
 #### `num_instance` (hardware parameter)
 
@@ -78,6 +84,8 @@ The ordering is:
 - FIFO depth for each internal register.
 - Must be 0 if `num_register` is 0.
 - Must be at least 1 if `num_register` is greater than 0.
+- Violations are compile-time errors: `COMP_TEMPORAL_PE_NUM_INSTANCE`. See
+  [spec-fabric-error.md](./spec-fabric-error.md).
 
 #### `instruction_mem` (runtime configuration parameter)
 
@@ -94,7 +102,8 @@ The number of FU types defined in the body is independent of
 - Each valid instruction slot has an associated tag value.
 - At runtime, an input tag is matched against instruction tags.
 - Exactly one instruction must match a given input tag.
-- Duplicate tags in the instruction memory are configuration errors.
+- Duplicate tags in the instruction memory are configuration errors
+  (`CFG_TEMPORAL_PE_DUP_TAG`). See [spec-fabric-error.md](./spec-fabric-error.md).
 
 ### Operand Buffer Semantics
 
@@ -108,8 +117,9 @@ and `op_value` is initialized to `0`.
 When a tagged token arrives on input `i`:
 
 1. The tag selects a unique instruction slot `s`. If no slot matches, a
-   runtime error is raised. If multiple slots match, the configuration is
-   invalid due to duplicate tags.
+   runtime error is raised (`RT_TEMPORAL_PE_NO_MATCH`). If multiple slots
+   match, the configuration is invalid due to duplicate tags
+   (`CFG_TEMPORAL_PE_DUP_TAG`). See [spec-fabric-error.md](./spec-fabric-error.md).
 2. If `op_valid` for operand `i` in slot `s` is `0`, the token is consumed,
    its value bits are stored into `op_value`, and `op_valid` is set to `1`.
 3. If `op_valid` for operand `i` in slot `s` is already `1`, the input is
@@ -193,7 +203,10 @@ Each destination is one of:
 `tag=VALUE` is optional. If omitted, the output tag defaults to the match tag.
 
 If the destination is `reg(idx)`, the tag must be omitted or set to `0`. A
-nonzero tag for a register destination is a configuration error.
+nonzero tag for a register destination is a configuration error. If
+`num_register = 0`, `reg(idx)` destinations are invalid. See
+`CFG_TEMPORAL_PE_REG_TAG_NONZERO` and `COMP_TEMPORAL_PE_REG_DISABLED` in
+[spec-fabric-error.md](./spec-fabric-error.md).
 
 The number of destinations must equal the number of outputs of the temporal PE.
 
@@ -205,6 +218,13 @@ Each source is one of:
 - `reg(idx)`
 
 The number of sources must equal the number of inputs of the temporal PE.
+If `num_register = 0`, `reg(idx)` sources are invalid.
+
+Sources are positional. For operand position `i`, the source must be either
+`in(i)` or `reg(idx)`. Using `in(j)` where `j != i` is invalid.
+
+Violations are compile-time errors: `COMP_TEMPORAL_PE_REG_DISABLED` and
+`COMP_TEMPORAL_PE_SRC_MISMATCH`. See [spec-fabric-error.md](./spec-fabric-error.md).
 
 #### Invalid Slot
 
@@ -239,6 +259,16 @@ Bit layout is from LSB to MSB:
 | valid | tag | opcode | operand fields ... | result fields ... |
 ```
 
+ASCII diagram:
+
+```
++----------------------------------------------------------------------------------+
+|                     INSTRUCTION WORD (LSB -> MSB)                                |
++--------+---------+--------+-------------------------+----------------------------+
+| valid  | tag[M]  | opcode | operands (L blocks)     | results (N blocks)         |
++--------+---------+--------+-------------------------+----------------------------+
+```
+
 Definitions:
 
 - `valid`: 1 bit. `0` means invalid slot.
@@ -249,6 +279,14 @@ Operand field layout:
 
 ```
 | op_valid | op_is_reg | op_reg_idx | op_value |
+```
+
+ASCII diagram:
+
+```
++----------+----------+-----------+------------------+
+| op_valid | op_is_reg| op_reg_idx| op_value (K bits)|
++----------+----------+-----------+------------------+
 ```
 
 - `op_valid`: 1 bit. Indicates whether the operand buffer holds a valid value.
@@ -268,12 +306,25 @@ Result field layout:
 | res_is_reg | res_reg_idx | res_tag |
 ```
 
+ASCII diagram:
+
+```
++-----------+------------+----------------+
+| res_is_reg| res_reg_idx| res_tag (M bits)|
++-----------+------------+----------------+
+```
+
 - `res_is_reg` and `res_reg_idx` are present only if `num_register > 0`.
 - `res_reg_idx`: `log2(num_register)` bits.
 - `res_tag`: `M` bits, the output tag for this result.
 
 There is no explicit result-valid bit. Every instruction must provide one
 result field per output.
+
+### Format Selection Guidance
+
+- Use the human-readable format for documentation and inspection.
+- Use the machine (hex) format for hardware configuration files and simulation.
 
 ### Operand and Result Ordering
 
@@ -288,6 +339,32 @@ Example layout for `L = 2`, `N = 1`, `R = 0`, `M = 3`, `K = 8`, `O = 2`:
 
 ```
 | valid | tag[2:0] | opcode[1:0] | op0[8:0] | op1[8:0] | res0[2:0] |
+```
+
+Complete example bitmap (LSB -> MSB):
+
+Parameters:
+- `L = 2`, `N = 1`, `R = 0`, `T = i8` (`K = 8`), `tag = i4` (`M = 4`)
+- `num_fu_types = 2` (`O = 1`)
+
+Example instruction:
+- `valid = 1`
+- `tag = 3` (`0011`)
+- `opcode = 1`
+- `op0_valid = 0`, `op0_value = 0x00`
+- `op1_valid = 0`, `op1_value = 0x00`
+- `res0_tag = 3` (`0011`)
+
+Bitmap (fields separated by `|`):
+
+```
+1 | 0011 | 1 | 0 00000000 | 0 00000000 | 0011
+```
+
+Hex encoding (28 bits, LSB -> MSB):
+
+```
+0x03000027
 ```
 
 ### Width Formulas
@@ -307,6 +384,15 @@ Then:
 - `result_width = (R > 0 ? 1 + log2(R) : 0) + M`
 - `instruction_width = 1 + M + O + L * operand_width + N * result_width`
 
+For a temporal PE with interface `!dataflow.tagged<T, iN>`, the bit widths are
+defined as:
+
+- `K = num_bits(T)`
+- `M = N`
+
+Any mismatch between the interface type and these widths is a compile-time
+error. See `COMP_TEMPORAL_PE_TAG_WIDTH` in [spec-fabric-error.md](./spec-fabric-error.md).
+
 ### Opcode Assignment
 
 - FU types are indexed in the order they appear in the body.
@@ -322,7 +408,8 @@ Then:
 - A register must have only one writer.
 - Registers store values only. Tags are not stored.
 - If `res_is_reg = 1`, the corresponding `res_tag` must be `0`.
-  A nonzero `res_tag` when writing a register is a configuration error.
+  A nonzero `res_tag` when writing a register is a configuration error
+  (`CFG_TEMPORAL_PE_REG_TAG_NONZERO`). See [spec-fabric-error.md](./spec-fabric-error.md).
 
 When a register has multiple readers, it behaves like an internal fork. The
 FIFO entry is retained until each dependent instruction has fired once using
@@ -332,11 +419,13 @@ that entry. Only after all readers consume the entry is it dequeued.
 
 The temporal PE raises a hardware error if any of the following occurs:
 
-- An input tag matches no instruction.
-- Duplicate instruction tags are configured (configuration error).
-- An instruction specifies illegal register indices.
-- An operand or result selects a register while `num_register = 0`.
-- A result writes to a register with `res_tag != 0`.
+- An input tag matches no instruction (`RT_TEMPORAL_PE_NO_MATCH`).
+- Duplicate instruction tags are configured (`CFG_TEMPORAL_PE_DUP_TAG`).
+- An instruction specifies illegal register indices (`CFG_TEMPORAL_PE_ILLEGAL_REG`).
+- A result writes to a register with `res_tag != 0` (`CFG_TEMPORAL_PE_REG_TAG_NONZERO`).
 
 Errors are reported through a hardware-valid error signal and an error code
-propagated to the top level.
+propagated to the top level. The corresponding symbols are
+`RT_TEMPORAL_PE_NO_MATCH`, `CFG_TEMPORAL_PE_DUP_TAG`,
+`CFG_TEMPORAL_PE_ILLEGAL_REG`, and `CFG_TEMPORAL_PE_REG_TAG_NONZERO`. See
+[spec-fabric-error.md](./spec-fabric-error.md).

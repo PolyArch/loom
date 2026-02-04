@@ -1,6 +1,13 @@
-//===- SCFToHandshakeSupport.cpp - Shared helpers ----------------*- C++ -*-===//
+//===-- SCFToHandshakeSupport.cpp - Shared lowering helpers -----*- C++ -*-===//
 //
 // Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements shared helper functions for the SCF-to-Handshake
+// lowering, including detection of accelerator-marked functions, memref root
+// tracing through casts and views, and call inlining within accelerator
+// functions.
 //
 //===----------------------------------------------------------------------===//
 

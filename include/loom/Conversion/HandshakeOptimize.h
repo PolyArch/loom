@@ -1,6 +1,12 @@
-//===- HandshakeOptimize.h - Handshake cleanup helpers ---------*- C++ -*-===//
+//===-- HandshakeOptimize.h - Handshake cleanup helpers ---------*- C++ -*-===//
 //
 // Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This header declares cleanup utilities for Handshake IR, including sink
+// insertion for unused values, dead code elimination, and fork optimization
+// to remove redundant dataflow control structures.
 //
 //===----------------------------------------------------------------------===//
 

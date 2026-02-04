@@ -1,4 +1,8 @@
-//===- loom.h - Loom DSA Pragma Macros -------------------------*- C++ -*-===//
+//===-- loom.h - Loom DSA Pragma Macros -------------------------*- C++ -*-===//
+//
+// Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
 //
 // This header provides macros for marking DSA-accelerated regions and
 // expressing optimization hints for CGRA compilation.

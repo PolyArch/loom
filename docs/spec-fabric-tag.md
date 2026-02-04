@@ -117,6 +117,9 @@ discarded.
 - Tag width can change between input and output.
 - `valid` must be `i1` and tag types must be signless integers in `i1` to `i16`.
 
+Violations of table shape or size are compile-time errors: `COMP_MAP_TAG_TABLE_SIZE`
+and `COMP_MAP_TAG_TABLE_LENGTH`. See [spec-fabric-error.md](./spec-fabric-error.md).
+
 ### Semantics
 
 `fabric.map_tag` transforms the tag using the runtime table while forwarding
@@ -127,10 +130,12 @@ Lookup rule:
 - The table is searched for entries with `valid = 1` and `src_tag` equal to the
   input tag.
 - Exactly one entry must match.
-- If no entry matches, a runtime error is raised.
+- If no entry matches, a runtime error is raised (`RT_MAP_TAG_NO_MATCH`).
 - If multiple entries match, the table contains duplicate valid `src_tag`
-  values and a configuration error is raised.
+  values and a configuration error is raised (`CFG_MAP_TAG_DUP_TAG`).
 - The output tag is the `dst_tag` of the matching entry.
 
 Errors are reported through a hardware-valid error signal and an error code
-propagated to the top level.
+propagated to the top level. The corresponding symbols are
+`RT_MAP_TAG_NO_MATCH` and `CFG_MAP_TAG_DUP_TAG`. See
+[spec-fabric-error.md](./spec-fabric-error.md).

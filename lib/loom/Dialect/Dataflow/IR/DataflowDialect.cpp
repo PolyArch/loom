@@ -1,6 +1,11 @@
-//===- DataflowDialect.cpp - Dataflow dialect -----------------*- C++ -*-===//
+//===-- DataflowDialect.cpp - Dataflow dialect registration -----*- C++ -*-===//
 //
 // Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements the Dataflow dialect registration and initialization,
+// adding all dataflow operations to the dialect.
 //
 //===----------------------------------------------------------------------===//
 
