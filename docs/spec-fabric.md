@@ -20,7 +20,7 @@ operations are specified in dedicated documents referenced below.
 | Processing | `fabric.pe`, `fabric.temporal_pe` | [spec-fabric-pe.md](./spec-fabric-pe.md), [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) |
 | Routing | `fabric.switch`, `fabric.temporal_sw` | [spec-fabric-switch.md](./spec-fabric-switch.md), [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md) |
 | Tag boundary | `fabric.add_tag`, `fabric.map_tag`, `fabric.del_tag` | [spec-fabric-tag.md](./spec-fabric-tag.md) |
-| Memory | `fabric.mem` | [spec-fabric-mem.md](./spec-fabric-mem.md) |
+| Memory | `fabric.memory`, `fabric.extmemory` | [spec-fabric-mem.md](./spec-fabric-mem.md) |
 
 ## Type Conventions
 
@@ -104,6 +104,14 @@ The argument and result ordering is fixed and must be preserved:
 - `M + N + O + I + J + K` must be greater than 0.
   - An accelerator cannot be a completely empty shell.
 - All `tagged` ports must use valid `!dataflow.tagged` types.
+- Port ordering must follow: memref*, native*, tagged* for both inputs and
+  outputs. Violations raise `COMP_MODULE_PORT_ORDER`.
+- The body must contain at least one non-terminator operation. Violations
+  raise `COMP_MODULE_EMPTY_BODY`.
+- The body must end with `fabric.yield`. Violations raise
+  `COMP_MODULE_MISSING_YIELD`.
+
+See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.
 
 ### Body and Terminator
 
@@ -119,7 +127,8 @@ Allowed operations at module level:
 - `fabric.add_tag`
 - `fabric.map_tag`
 - `fabric.del_tag`
-- `fabric.mem`
+- `fabric.memory`
+- `fabric.extmemory`
 - `fabric.instance`
 - `fabric.yield`
 
@@ -128,6 +137,20 @@ contained inside `fabric.pe` and are not allowed directly at module level.
 
 The body must end with `fabric.yield` and the yielded values must match the
 module result types and ordering.
+Any memref result must originate from a `fabric.memory` with
+`private = false`. See [spec-fabric-mem.md](./spec-fabric-mem.md).
+
+### Explicit Type Matching
+
+All connections inside a `fabric.module` must match exactly in type and bit
+width. There are no implicit width extensions, truncations, or tag
+conversions. Any type mismatch on a connection is a compile-time error.
+(`COMP_FABRIC_TYPE_MISMATCH`; see [spec-fabric-error.md](./spec-fabric-error.md).)
+Explicit conversions must be represented as operations, such as:
+
+- `fabric.add_tag`, `fabric.del_tag`, and `fabric.map_tag` for tag boundaries or
+  tag transforms.
+- `fabric.pe` containing explicit casts (e.g., `arith.index_cast`).
 
 ## Operation: `fabric.instance`
 
@@ -153,7 +176,8 @@ Instantiates a named fabric module or hardware component.
   - `fabric.temporal_pe`
   - `fabric.switch`
   - `fabric.temporal_sw`
-  - `fabric.mem`
+  - `fabric.memory`
+  - `fabric.extmemory`
 - `fabric.add_tag`, `fabric.map_tag`, and `fabric.del_tag` cannot be
   instantiated. They must be used inline.
 - Operand count and types must match the referenced module signature.

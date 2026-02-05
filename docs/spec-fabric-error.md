@@ -19,6 +19,8 @@ CFG_ errors are detected after writing runtime configuration registers or
 tables, before or during execution, and do not require dataflow execution to
 surface.
 
+CFG_ error codes use the range 0-7. Codes 8-255 are reserved for future use.
+
 RT_ error codes start at 256 and increase sequentially.
 
 ## COMP_ (Compile-Time Errors, No Hardware Code)
@@ -42,8 +44,30 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_TEMPORAL_PE_REG_DISABLED | An instruction uses `reg(idx)` when `num_register = 0` |
 | COMP_TEMPORAL_PE_SRC_MISMATCH | A human-readable source uses `in(j)` where `j` is not the operand position |
 | COMP_TEMPORAL_PE_TAG_WIDTH | `K != num_bits(T)` or `M != N` for interface `!dataflow.tagged<T, iN>` |
+| COMP_TEMPORAL_PE_TAGGED_PE | A `fabric.temporal_pe` contains a tagged `fabric.pe` |
+| COMP_TEMPORAL_PE_LOADSTORE | A `fabric.temporal_pe` contains a load/store PE |
 | COMP_MAP_TAG_TABLE_SIZE | `table_size` is out of range [1, 256] |
 | COMP_MAP_TAG_TABLE_LENGTH | `table` length does not equal `table_size` |
+| COMP_ADD_TAG_TYPE_MISMATCH | `fabric.add_tag` result value type does not match input type |
+| COMP_DEL_TAG_TYPE_MISMATCH | `fabric.del_tag` output type does not match input tagged value type |
+| COMP_MEMORY_PORTS_EMPTY | `ldCount == 0` and `stCount == 0` |
+| COMP_MEMORY_LSQ_WITHOUT_STORE | `lsqDepth != 0` when `stCount == 0` |
+| COMP_MEMORY_LSQ_MIN | `lsqDepth < 1` when `stCount > 0` |
+| COMP_MEMORY_ADDR_TYPE | Address port is not `index` or `!dataflow.tagged<index, iK>` |
+| COMP_MEMORY_DATA_TYPE | Data port element type does not match memref element type |
+| COMP_MEMORY_TAG_REQUIRED | `ldCount > 1` or `stCount > 1` but ports are not tagged |
+| COMP_MEMORY_TAG_FOR_SINGLE | Tagged ports used when `ldCount == 1` or `stCount == 1` |
+| COMP_MEMORY_TAG_WIDTH | Tag width is smaller than `log2Ceil(count)` or mismatched across ports |
+| COMP_MEMORY_STATIC_REQUIRED | `fabric.memory` uses a dynamic memref type |
+| COMP_MEMORY_PRIVATE_OUTPUT | `fabric.module` yields a memref not produced by `fabric.memory` with `private = false` |
+| COMP_MEMORY_EXTMEM_BINDING | `fabric.extmemory` memref operand is not a `fabric.module` memref input |
+| COMP_FABRIC_TYPE_MISMATCH | A connection inside `fabric.module` uses mismatched types or bit widths without an explicit conversion |
+| COMP_MODULE_PORT_ORDER | `fabric.module` ports are not in the required order: memref*, native*, tagged* |
+| COMP_MODULE_EMPTY_BODY | `fabric.module` body contains no operations other than the terminator |
+| COMP_MODULE_MISSING_YIELD | `fabric.module` body does not end with `fabric.yield` |
+| COMP_PE_LOADSTORE_BODY | A load/store PE does not contain exactly one `handshake.load` or `handshake.store` |
+| COMP_PE_LOADSTORE_TAG_MODE | Invalid combination of `output_tag`, tagged ctrl, and queue depth attributes |
+| COMP_PE_LOADSTORE_TAG_WIDTH | Tag widths do not match across addr/data/ctrl ports |
 
 ## CFG_ (Runtime Configuration Errors, Hardware Code)
 
@@ -66,3 +90,7 @@ RT_ error codes start at 256 and increase sequentially.
 | 257 | RT_TEMPORAL_SW_NO_MATCH | Input tag matches no route table slot |
 | 258 | RT_MAP_TAG_NO_MATCH | `map_tag` finds no valid entry |
 | 259 | RT_DATAFLOW_STREAM_ZERO_STEP | `dataflow.stream` observes `step = 0` at runtime |
+| 260 | RT_MEMORY_TAG_OOB | A tagged load/store request uses `tag >= count` |
+| 261 | RT_MEMORY_STORE_DEADLOCK | A store request cannot be paired with a matching address or data for the same tag within the default timeout (65535 cycles) |
+| 262 | RT_SWITCH_UNROUTED_INPUT | A `fabric.switch` input with physical connectivity receives a valid token but has no enabled route |
+| 263 | RT_TEMPORAL_SW_UNROUTED_INPUT | A `fabric.temporal_sw` input receives a valid token but the matched route_table slot does not route that input |

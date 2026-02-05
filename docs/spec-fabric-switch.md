@@ -74,6 +74,24 @@ and `CFG_SWITCH_ROUTE_MULTI_IN`. See [spec-fabric-error.md](./spec-fabric-error.
 When an output is connected to exactly one routed input, the output forwards
 that input. If an output has no routed input, the output produces no token.
 
+### Backpressure Behavior
+
+The switch uses standard valid/ready handshaking. Backpressure propagates from
+outputs to inputs:
+
+- An input is blocked (backpressured) when its destination output is not ready.
+- Each input-output pair operates independently; blocking one path does not
+  affect other paths.
+
+### Unrouted Input Error
+
+If an input that has physical connectivity (a `1` in `connectivity_table`) but
+no enabled route (no `1` in the corresponding `route_table` positions) receives
+a valid token, the switch raises a runtime error (`RT_SWITCH_UNROUTED_INPUT`).
+This prevents silent data loss from misconfigured routes.
+
+See [spec-fabric-error.md](./spec-fabric-error.md).
+
 ### Example
 
 A 3-input, 2-output switch with partial connectivity:

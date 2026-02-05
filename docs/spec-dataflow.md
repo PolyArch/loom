@@ -13,6 +13,8 @@ four operations and one type:
 - `!dataflow.tagged<value_type, tag_type>`
 
 This document defines the syntax, constraints, and semantics of these elements.
+Compile-time errors for the software IR pipeline are listed in
+[spec-dataflow-error.md](./spec-dataflow-error.md).
 
 ## Common Type Conventions
 
@@ -24,6 +26,31 @@ This document uses the following terms:
 The dataflow dialect does not define memref, tensor, vector, complex, or
 opaque value types. Those are not valid as dataflow value types or as the value
 component of `!dataflow.tagged`.
+
+## Control-Only Tokens
+
+Loom represents control-only tokens (valid/ready without data payload) using
+the MLIR `none` type. This applies to control tokens in `handshake.func`, as
+well as load/store control and done tokens in the handshake/fabric memory
+interfaces.
+
+When a control-only token must carry a tag (for port multiplexing), it is
+encoded as `!dataflow.tagged<i1, iK>`. The `i1` payload is a dummy value and
+must be treated as constant `0` in hardware. It must not drive logic or carry
+information. The tag is the only meaningful field and the `i1` payload is
+expected to be optimized away in the backend.
+
+For host-side ESI interfaces that cannot transport `none`, a control-only token
+may be represented as an `i1` pulse with value `1`. This value must not drive
+logic; it only indicates that a control token was issued. Hardware should treat
+this as a one-cycle pulse which is consumed by the control path and then
+cleared.
+
+**Note on dataflow `i1` streams:** The `i1` control streams used by
+`dataflow.carry`, `dataflow.invariant`, `dataflow.stream`, and `dataflow.gate`
+are **boolean value streams**, not control-only tokens. Each element carries a
+meaningful true/false value that controls loop behavior. These are distinct
+from `none`-type control tokens which carry no data payload.
 
 ## Type: `!dataflow.tagged<value_type, tag_type>`
 
@@ -99,7 +126,18 @@ control stream.
 ### Constraints
 
 - `%d` must be `i1`.
-- `%a`, `%b`, and `%o` must have the same type.
+- `%a`, `%b`, and `%o` must have the same type. Violations raise
+  `COMP_DATAFLOW_CARRY_TYPE_MISMATCH`.
+
+Example error:
+
+```
+// ERROR: COMP_DATAFLOW_CARRY_TYPE_MISMATCH
+// %a is i32 but %b is f32
+%o = dataflow.carry %d, %a, %b : i1, i32, f32 -> i32
+```
+
+See [spec-dataflow-error.md](./spec-dataflow-error.md).
 
 ### Semantics
 
@@ -156,7 +194,18 @@ A loop-invariant value repeater aligned to a control stream.
 ### Constraints
 
 - `%d` must be `i1`.
-- `%a` and `%o` must have the same type.
+- `%a` and `%o` must have the same type. Violations raise
+  `COMP_DATAFLOW_INVARIANT_TYPE_MISMATCH`.
+
+Example error:
+
+```
+// ERROR: COMP_DATAFLOW_INVARIANT_TYPE_MISMATCH
+// %a is i32 but result %o is f32
+%o = dataflow.invariant %d, %a : i1, i32 -> f32
+```
+
+See [spec-dataflow-error.md](./spec-dataflow-error.md).
 
 ### Semantics
 
@@ -213,12 +262,28 @@ A configurable index stream generator for loop-like control patterns.
 ### Constraints
 
 - All operands must be `index`.
-- `step_op` must be one of `+=`, `-=`, `*=`, `/=`, `<<=`, `>>=`.
-- `stop_cond` must be one of `<`, `<=`, `>`, `>=`, `!=`.
+- `step_op` must be one of `+=`, `-=`, `*=`, `/=`, `<<=`, `>>=`. Invalid values
+  raise `COMP_DATAFLOW_STREAM_INVALID_STEP_OP`.
+- `stop_cond` must be one of `<`, `<=`, `>`, `>=`, `!=`. Invalid values raise
+  `COMP_DATAFLOW_STREAM_INVALID_STOP_COND`.
 - If `step_op` is omitted, it defaults to `+=`.
 - If `stop_cond` is omitted, it defaults to `<`.
 - `step` must be nonzero. If `step = 0` at runtime, the hardware raises
   `RT_DATAFLOW_STREAM_ZERO_STEP`. See [spec-fabric-error.md](./spec-fabric-error.md).
+
+Example errors:
+
+```
+// ERROR: COMP_DATAFLOW_STREAM_INVALID_STEP_OP
+// "%=" is not a valid step_op
+%idx, %cont = dataflow.stream %start, %step, %bound {step_op = "%="}
+
+// ERROR: COMP_DATAFLOW_STREAM_INVALID_STOP_COND
+// "==" is not a valid stop_cond
+%idx, %cont = dataflow.stream %start, %step, %bound {stop_cond = "=="}
+```
+
+See [spec-dataflow-error.md](./spec-dataflow-error.md).
 
 `step_op` is a hardware parameter that determines the update operator and
 cannot be changed at runtime. `stop_cond` is a runtime configuration parameter
@@ -245,6 +310,12 @@ The next index update is:
 
 The streams have length `N + 1`. The extra element aligns with loop-carried
 values that produce one more output than the body iteration count.
+
+**Extra value semantics:** The "extra value" is the index value that causes the
+loop condition to fail. For example, with `start=0, step=1, bound=5, stop_cond="<"`,
+the loop executes for indices 0, 1, 2, 3, 4 (5 iterations). The extra value is
+5, which is the first index that fails the condition `5 < 5`. This extra value
+is emitted alongside `willContinue = false` to signal loop termination.
 
 ### State Machine Behavior
 
@@ -311,6 +382,16 @@ Example: left shift with "<="
 // raw_will_continue: [T, T, T, T, F]
 ```
 
+## Handshake Memory Control Constraints
+
+When lowering to `handshake.func`, the compiler constructs control-token chains
+for each `handshake.load` and `handshake.store`. Each control token must be
+rooted at the `handshake.func` `start_token`, or depend only on done tokens
+produced by the same `handshake.extmemory` or `handshake.memory` associated with
+that access. If a control chain depends on done tokens from other memory
+interfaces, the compiler raises `COMP_HANDSHAKE_CTRL_MULTI_MEM`. See
+[spec-dataflow-error.md](./spec-dataflow-error.md).
+
 ## Operation: `dataflow.gate`
 
 A stream adapter that aligns before-region and after-region loop streams.
@@ -335,8 +416,20 @@ A stream adapter that aligns before-region and after-region loop streams.
 ### Constraints
 
 - `%before_cond` must be `i1`.
-- `%before_value` and `%after_value` must have the same type.
+- `%before_value` and `%after_value` must have the same type. Violations raise
+  `COMP_DATAFLOW_GATE_TYPE_MISMATCH`.
 - `%after_cond` must be `i1`.
+
+Example error:
+
+```
+// ERROR: COMP_DATAFLOW_GATE_TYPE_MISMATCH
+// %before_value is i32 but %after_value is f32
+%after_value, %after_cond = dataflow.gate %before_value, %before_cond
+  : i32, i1 -> f32, i1
+```
+
+See [spec-dataflow-error.md](./spec-dataflow-error.md).
 
 ### Semantics
 

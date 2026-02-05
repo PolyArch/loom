@@ -39,6 +39,16 @@ at boundaries between dedicated and temporal regions.
 
 - `T` must be a native value type.
 - Tag width must be in the range `i1` to `i16`.
+- The result tagged type's value component must match the input type `T`.
+  Violations raise `COMP_ADD_TAG_TYPE_MISMATCH`.
+
+Example error:
+
+```
+// ERROR: COMP_ADD_TAG_TYPE_MISMATCH
+// Input is i32, but result value type is f32
+%bad = fabric.add_tag %i32_val {tag = 0 : i4} : i32 -> !dataflow.tagged<f32, i4>
+```
 
 ### Semantics
 
@@ -65,6 +75,15 @@ in the high bits.
 ### Constraints
 
 - Output type must match the value type of the input tagged type.
+  Violations raise `COMP_DEL_TAG_TYPE_MISMATCH`.
+
+Example error:
+
+```
+// ERROR: COMP_DEL_TAG_TYPE_MISMATCH
+// Input value type is i32, but output type is f32
+%bad = fabric.del_tag %tagged : !dataflow.tagged<i32, i4> -> f32
+```
 
 ### Semantics
 

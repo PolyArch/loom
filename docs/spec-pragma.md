@@ -32,6 +32,18 @@
 
 4. **Minimal and orthogonal**: Each pragma serves a distinct purpose. No overlapping functionality.
 
+### Compiler Support
+
+Loom currently only supports the LLVM/Clang ecosystem. The pragma macros are
+fully functional with Clang.
+
+**GCC fallback behavior**: When compiled with GCC, function-level pragmas
+(`LOOM_ACCEL`, `LOOM_NO_ACCEL`, `LOOM_TARGET`, `LOOM_STREAM`) use GCC's
+`__attribute__((annotate(...)))` syntax. However, loop-level pragmas
+(`LOOM_PARALLEL`, `LOOM_UNROLL`, `LOOM_TRIPCOUNT`, etc.) are defined as no-ops
+because the Loom compilation pipeline has not been tested with GCC. GCC
+support is not guaranteed.
+
 ### Pragma vs Compiler Automation
 
 | Aspect | Without Pragma | With Pragma |
@@ -120,7 +132,6 @@ void critical_op(...) { ... }
 | `"spatial"` | Map to spatial (dedicated) PEs |
 | `"temporal"` | Map to temporal PEs |
 | `"pe[x,y]"` | Map to specific PE at coordinates (x,y) |
-| `"tile[n]"` | Map to specific tile |
 | `"rom"` | Force a constant memory object to map to ROM |
 | `"extmemory"` | Force a memory object to map to external memory |
 
@@ -357,7 +368,7 @@ for (int i = 0; i < 100; ++i) {
 4. Tail handling (1 remaining iteration) is automatic
 
 **Design space**:
-The combination of `parallel(P)`, `unroll(U)`, and `schedule` defines a 3-dimensional design space. The compiler explores this space using performance models before committing to expensive PnR. See [spec-optimization.md](./spec-optimization.md) for details.
+The combination of `parallel(P)`, `unroll(U)`, and `schedule` defines a 3-dimensional design space. The compiler explores this space using performance models before committing to expensive PnR.
 
 ---
 

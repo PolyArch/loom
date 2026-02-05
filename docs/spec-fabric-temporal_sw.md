@@ -97,6 +97,16 @@ If multiple inputs with different tags target the same output (through their
 respective route_table slots), the output uses round-robin arbitration starting
 from lower port index.
 
+### Unrouted Input Error
+
+If an input receives a valid token but the matched route_table slot does not
+enable a route for that input, the temporal switch raises a runtime error
+(`RT_TEMPORAL_SW_UNROUTED_INPUT`). This applies when the tag matches a slot
+but the slot's routes do not include that input. This prevents silent data
+loss from misconfigured route tables.
+
+See [spec-fabric-error.md](./spec-fabric-error.md).
+
 ## Route Table Format
 
 The route table format is identical to the temporal PE instruction sparse
@@ -146,7 +156,7 @@ ASCII diagram:
 +--------------------------------------------------------------+
 |                ROUTE TABLE SLOT (LSB -> MSB)                 |
 +--------+---------+-------------------------------+-----------+
-| valid  | tag[M]  | routes[K] (MSB-first)         |    MSB    |
+| valid  | tag[M]  | routes[K] (LSB-first)         |    MSB    |
 +--------+---------+-------------------------------+-----------+
 ```
 
@@ -160,8 +170,9 @@ Definitions:
 `routes` is encoded in row-major order by output then input, considering only
 positions where `connectivity_table` is `1`.
 
-`routes` bits are stored MSB-first: position 0 corresponds to the MSB of the
-`routes` field, and the last position corresponds to the LSB.
+`routes` bits are stored LSB-first: position 0 corresponds to the LSB of the
+`routes` field, and the last position corresponds to the MSB. This matches the
+LSB-to-MSB convention used elsewhere in the fabric specification.
 
 Slot width in bits:
 
@@ -183,7 +194,7 @@ Parameters:
 Example slot:
 - `valid = 1`
 - `tag = 5` (`0101`)
-- `routes = 101` (MSB-first)
+- `routes = 101` (positions 0 and 2 enabled, position 1 disabled; LSB-first)
 
 Bitmap (fields separated by `|`):
 

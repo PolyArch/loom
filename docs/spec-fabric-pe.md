@@ -54,6 +54,8 @@ All ports must belong to the same category:
 
 Within a category, individual port types may differ. This allows type
 conversion PEs.
+Load/store PEs have additional interface rules described in
+`Load/Store PE Semantics` below.
 
 ### Tag Visibility and Block Arguments
 
@@ -63,7 +65,9 @@ When the interface is tagged:
 - The entry block arguments are the value types only.
 - The body must yield value types only.
 - The operation result types remain tagged; tags are reattached at the
-  boundary using `output_tag`.
+  boundary using `output_tag`, except for load/store PEs in the
+  tag-transparent hardware type where tags are preserved. See
+  `Load/Store PE Semantics`.
 
 This can be viewed as implicit `fabric.del_tag` at inputs and implicit
 `fabric.add_tag` at outputs.
@@ -90,7 +94,7 @@ This can be viewed as implicit `fabric.del_tag` at inputs and implicit
 
 #### `output_tag` (runtime configuration parameter)
 
-- Required only when the interface category is tagged.
+- Allowed only when the interface category is tagged.
 - Type: `ArrayAttr` of integers, one per output port.
 - Each element type must match the tag type of the corresponding output port.
 - Default value for each element is `0`.
@@ -99,12 +103,26 @@ This can be viewed as implicit `fabric.del_tag` at inputs and implicit
 The `output_tag` array provides one tag per output. Input tags are ignored and
 are dropped at the boundary.
 
+Load/store PEs override the default `output_tag` rules. See
+`Load/Store PE Semantics`.
+
+#### `lqDepth` and `sqDepth` (hardware parameters)
+
+These attributes are only valid for load/store PEs:
+
+- `lqDepth` applies to a load PE.
+- `sqDepth` applies to a store PE.
+
+They define the depth of the internal tag-matching queues used by the
+tag-transparent hardware type (no `output_tag`). See `Load/Store PE Semantics`.
+
 ### Constraints
 
-- All ports must be native types, or all ports must be tagged types.
+- All ports must be native types, or all ports must be tagged types, except for
+  the load/store PE special cases described below.
 - If the interface is native, `output_tag` must be absent.
-- If the interface is tagged, `output_tag` is required, except inside
-  `fabric.temporal_pe` where it is ignored.
+- If the interface is tagged, `output_tag` is required for non-load/store PEs.
+  Load/store PEs follow their own rules below.
 - The body must contain at least one non-terminator operation.
 - If any `dataflow` operation is present, the interface must be native and the
   body must be dataflow-only as defined below.
@@ -168,8 +186,14 @@ Mixing groups in a single `fabric.pe` is not allowed.
 #### Load/Store Exclusivity Rule
 
 If a `fabric.pe` body contains `handshake.load` or `handshake.store`, then the
-body may contain only `handshake.load`, `handshake.store`, and the terminator
-`fabric.yield`. No other operations are permitted in that case.
+body must contain exactly one of these operations and no other non-terminator
+operations. The only allowed body shape is:
+
+- A single `handshake.load` or a single `handshake.store`.
+- The `fabric.yield` terminator.
+
+Any other operation in the body, or a mix of load and store, is a compile-time
+error (`COMP_PE_LOADSTORE_BODY`).
 
 #### Dataflow Exclusivity Rule
 
@@ -196,6 +220,82 @@ The following operations are not allowed inside `fabric.pe`:
 
 If a software graph contains unsupported handshake operations, it cannot be
 mapped into a `fabric.pe`.
+
+### Load/Store PE Semantics
+
+Load/store PEs are hardware adapters between the fabric memory system and
+compute graph. They only support a single `handshake.load` or a single
+`handshake.store` in the body. Their behavior is defined here and in
+[spec-fabric-mem.md](./spec-fabric-mem.md).
+
+#### Port Roles
+
+Load PE:
+
+- Inputs: `addr`, `ctrl`, `data_from_mem` (data returned from memory)
+- Outputs: `addr_out`, `data_to_comp` (data forwarded to compute)
+
+Store PE:
+
+- Inputs: `addr`, `data`, `ctrl`
+- Outputs: `addr_to_mem`, `data_to_mem`
+
+The `ctrl` input is a synchronization token. It is consumed and discarded after
+the synchronization condition is met. Load/store PEs do not output a done token.
+The done token is produced by `fabric.memory`/`fabric.extmemory` (`lddone` or
+`stdone`) and must be wired directly into the control chain or sunk.
+
+Synchronization rules:
+
+- Load PE fires when `addr` and `ctrl` are both ready.
+- Store PE fires when `addr`, `data`, and `ctrl` are all ready.
+- For load PEs, `data_from_mem` does not participate in the synchronization;
+  it is forwarded independently.
+- Tag matching applies only to Hardware Type B (tag-transparent mode). In
+  Type B, inputs must have matching tags before the PE fires. Type A does not
+  perform tag matching.
+
+Tagged and native interfaces are not implicitly convertible. If a load/store PE
+is tagged, it cannot connect directly to a single-port memory interface
+(`ldCount == 1` or `stCount == 1`) because those ports are native. Use explicit
+`fabric.del_tag` or `fabric.add_tag` boundaries to convert types.
+
+#### Tag Modes
+
+Load/store PEs are defined as two distinct hardware types. The hardware type is
+fixed at build time and cannot be switched at runtime. Type A may be native or
+tagged; Type B is tagged-only.
+
+Hardware Type A: output-tag overwrite.
+
+- If the interface is native, `output_tag` must be absent.
+- If the interface is tagged, `output_tag` is required.
+- The PE represents a single logical software edge.
+- The `addr` and `data` ports may be tagged or native.
+- The `ctrl` port must be `none`.
+- `lqDepth`/`sqDepth` must be absent.
+- When tagged, output tags are overwritten with `output_tag`.
+- When tagged, the `data_from_mem` tag is ignored; the output tag is always
+  `output_tag`.
+- When native, there is no tag overwrite.
+
+Hardware Type B: tag-transparent.
+
+- `output_tag` is absent.
+- `addr`, `data`, and `ctrl` ports must all be tagged.
+- The `ctrl` value type is `i1` and the tag carries the logical port ID. The
+  `i1` payload is a dummy constant `0` and must not drive logic. See
+  [spec-dataflow.md](./spec-dataflow.md).
+- Tag widths on `addr`, `data`, and `ctrl` must match.
+- `lqDepth` (load) or `sqDepth` (store) is required and must be >= 1.
+- The PE synchronizes inputs only when tags match, then forwards tags
+  unchanged to the outputs.
+- The PE does not enforce tag equality between returned data and the matched
+  request.
+
+Invalid combinations of `output_tag`, tagged `ctrl`, and queue depth attributes
+are compile-time errors (`COMP_PE_LOADSTORE_TAG_MODE`,
+`COMP_PE_LOADSTORE_TAG_WIDTH`).
 
 ### Example: Native PE with Type Conversion
 
@@ -228,8 +328,7 @@ fabric.pe @sitofp(%a: i32) -> (f32)
 When a `fabric.pe` is used inside a `fabric.temporal_pe`:
 
 - The PE still operates on value-only data in its body.
-- Any `output_tag` on the PE is ignored.
-- If `output_tag` is present, the compiler must emit a warning but must not
-  treat it as an error.
-- Output tags are taken from the `instruction_mem` of the enclosing
-  `fabric.temporal_pe`.
+- The PE must use a native (non-tagged) interface. Tagged `fabric.pe` is not
+  allowed inside `fabric.temporal_pe` (`COMP_TEMPORAL_PE_TAGGED_PE`).
+- Load/store PEs are forbidden inside `fabric.temporal_pe`. The compiler must
+  emit `COMP_TEMPORAL_PE_LOADSTORE`.
