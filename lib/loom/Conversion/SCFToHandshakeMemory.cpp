@@ -25,6 +25,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
 
 #include <algorithm>
@@ -39,6 +40,50 @@ using loom::dataflow::CarryOp;
 namespace {
 
 constexpr int64_t kOnChipMemThresholdBytes = 4096;
+
+enum class RootKind { BlockArg, Alloc, Alloca, Global, Other };
+
+static RootKind classifyRoot(mlir::Value root, llvm::StringRef &globalName) {
+  if (!root)
+    return RootKind::Other;
+  if (mlir::isa<mlir::BlockArgument>(root))
+    return RootKind::BlockArg;
+  if (root.getDefiningOp<mlir::memref::AllocOp>())
+    return RootKind::Alloc;
+  if (root.getDefiningOp<mlir::memref::AllocaOp>())
+    return RootKind::Alloca;
+  if (auto global = root.getDefiningOp<mlir::memref::GetGlobalOp>()) {
+    globalName = global.getName();
+    return RootKind::Global;
+  }
+  return RootKind::Other;
+}
+
+static bool areGuaranteedNoAlias(mlir::Value lhs, mlir::Value rhs) {
+  mlir::Value lhsRoot = getMemrefRoot(lhs);
+  mlir::Value rhsRoot = getMemrefRoot(rhs);
+  if (!lhsRoot || !rhsRoot)
+    return false;
+  if (lhsRoot == rhsRoot)
+    return false;
+
+  llvm::StringRef lhsGlobal;
+  llvm::StringRef rhsGlobal;
+  RootKind lhsKind = classifyRoot(lhsRoot, lhsGlobal);
+  RootKind rhsKind = classifyRoot(rhsRoot, rhsGlobal);
+
+  auto isUniqueRoot = [](RootKind kind) {
+    return kind == RootKind::BlockArg || kind == RootKind::Alloc ||
+           kind == RootKind::Alloca || kind == RootKind::Global;
+  };
+
+  if (!isUniqueRoot(lhsKind) || !isUniqueRoot(rhsKind))
+    return false;
+  if (lhsKind == RootKind::Global && rhsKind == RootKind::Global &&
+      lhsGlobal == rhsGlobal)
+    return false;
+  return true;
+}
 
 static std::optional<int64_t> getConstantIndexValue(mlir::Value value) {
   if (!value)
@@ -261,6 +306,29 @@ static void dumpAccess(const MemAccess &access) {
   llvm::dbgs() << " memref=";
   dumpValue(llvm::dbgs(), access.origMemref);
   llvm::dbgs() << "\n";
+}
+
+static void collectMemorySources(
+    mlir::Value value,
+    const llvm::DenseMap<mlir::Value, mlir::Operation *> &memTokens,
+    llvm::SmallPtrSetImpl<mlir::Value> &visited,
+    llvm::SmallPtrSetImpl<mlir::Operation *> &sources) {
+  if (!value)
+    return;
+  if (!mlir::isa<mlir::NoneType>(value.getType()))
+    return;
+  if (!visited.insert(value).second)
+    return;
+  auto it = memTokens.find(value);
+  if (it != memTokens.end())
+    sources.insert(it->second);
+  if (mlir::Operation *def = value.getDefiningOp()) {
+    for (mlir::Value operand : def->getOperands()) {
+      if (!mlir::isa<mlir::NoneType>(operand.getType()))
+        continue;
+      collectMemorySources(operand, memTokens, visited, sources);
+    }
+  }
 }
 
 static void attachGlobalConstant(mlir::ModuleOp module,
@@ -944,6 +1012,8 @@ mlir::LogicalResult HandshakeLowering::buildMemoryControl() {
 
   for (unsigned i = 0; i < memrefs.size(); ++i) {
     for (unsigned j = i + 1; j < memrefs.size(); ++j) {
+      if (areGuaranteedNoAlias(memrefs[i], memrefs[j]))
+        continue;
       if (aliasAnalysis.alias(memrefs[i], memrefs[j]) !=
           mlir::AliasResult::NoAlias)
         unite(i, j);
@@ -985,6 +1055,88 @@ mlir::LogicalResult HandshakeLowering::buildMemoryControl() {
   }
 
   return mlir::success();
+}
+
+mlir::LogicalResult HandshakeLowering::verifyMemoryControl() {
+  llvm::DenseMap<mlir::Value, mlir::Operation *> memTokens;
+  memTokens.reserve(memAccesses.size());
+  for (MemAccess &access : memAccesses) {
+    if (!access.doneToken)
+      continue;
+    mlir::Operation *owner = access.doneToken.getDefiningOp();
+    if (!owner)
+      continue;
+    if (!mlir::isa<circt::handshake::ExternalMemoryOp,
+                   circt::handshake::MemoryOp>(owner))
+      continue;
+    memTokens[access.doneToken] = owner;
+  }
+
+  llvm::DenseMap<mlir::Operation *, mlir::Operation *> allowedMem;
+  allowedMem.reserve(memAccesses.size());
+  for (MemAccess &access : memAccesses) {
+    mlir::Operation *op = nullptr;
+    if (access.loadOp)
+      op = access.loadOp.getOperation();
+    else if (access.storeOp)
+      op = access.storeOp.getOperation();
+    if (!op || !access.doneToken)
+      continue;
+    mlir::Operation *owner = access.doneToken.getDefiningOp();
+    if (!owner)
+      continue;
+    if (!mlir::isa<circt::handshake::ExternalMemoryOp,
+                   circt::handshake::MemoryOp>(owner))
+      continue;
+    allowedMem[op] = owner;
+  }
+
+  bool failed = false;
+  handshakeFunc.walk([&](mlir::Operation *op) {
+    mlir::Value ctrl;
+    mlir::Operation *expectedMem = nullptr;
+    if (auto load = mlir::dyn_cast<circt::handshake::LoadOp>(op)) {
+      unsigned addrCount = load.getAddresses().size();
+      ctrl = load->getOperand(addrCount + 1);
+      expectedMem = allowedMem.lookup(op);
+    } else if (auto store = mlir::dyn_cast<circt::handshake::StoreOp>(op)) {
+      unsigned addrCount = store.getAddresses().size();
+      ctrl = store->getOperand(addrCount + 1);
+      expectedMem = allowedMem.lookup(op);
+    } else {
+      return;
+    }
+
+    llvm::SmallPtrSet<mlir::Value, 32> visited;
+    llvm::SmallPtrSet<mlir::Operation *, 4> sources;
+    collectMemorySources(ctrl, memTokens, visited, sources);
+
+    bool sawEntry = entryToken && visited.contains(entryToken);
+    if (!sources.empty()) {
+      for (mlir::Operation *source : sources) {
+        if (expectedMem && source == expectedMem)
+          continue;
+        op->emitError("COMP_HANDSHAKE_CTRL_MULTI_MEM: control token depends on "
+                      "a memory interface not associated with this access");
+        failed = true;
+        return;
+      }
+    }
+    if (sources.empty() && !sawEntry) {
+      op->emitError("COMP_HANDSHAKE_CTRL_MULTI_MEM: control token is not "
+                    "rooted at start_token");
+      failed = true;
+      return;
+    }
+    if (!expectedMem && !sources.empty()) {
+      op->emitError("COMP_HANDSHAKE_CTRL_MULTI_MEM: missing memory mapping for "
+                    "access control check");
+      failed = true;
+      return;
+    }
+  });
+
+  return failed ? mlir::failure() : mlir::success();
 }
 
 } // namespace detail

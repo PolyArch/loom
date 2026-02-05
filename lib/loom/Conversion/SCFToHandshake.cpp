@@ -190,6 +190,103 @@ static void rewriteHostCalls(ModuleOp module,
   llvm::DenseMap<func::FuncOp, Value> falseCache;
   llvm::DenseMap<func::FuncOp, unsigned> instCount;
 
+  auto getOrCreateEsiWrapper =
+      [&](circt::handshake::FuncOp target) -> circt::handshake::FuncOp {
+    if (!target)
+      return target;
+    auto targetType = target.getFunctionType();
+    if (targetType.getNumInputs() == 0 || targetType.getNumResults() == 0)
+      return target;
+    auto lastInput = targetType.getInput(targetType.getNumInputs() - 1);
+    auto lastResult = targetType.getResult(targetType.getNumResults() - 1);
+    if (!mlir::isa<mlir::NoneType>(lastInput) ||
+        !mlir::isa<mlir::NoneType>(lastResult))
+      return target;
+
+    std::string wrapperName = target.getName().str() + "_esi";
+    if (auto existing =
+            module.lookupSymbol<circt::handshake::FuncOp>(wrapperName))
+      return existing;
+
+    OpBuilder builder(module.getContext());
+    builder.setInsertionPoint(target);
+
+    llvm::SmallVector<Type, 8> inputs(targetType.getInputs().begin(),
+                                      targetType.getInputs().end());
+    llvm::SmallVector<Type, 4> results(targetType.getResults().begin(),
+                                       targetType.getResults().end());
+    inputs.back() = builder.getI1Type();
+    results.back() = builder.getI1Type();
+    auto wrapperType = builder.getFunctionType(inputs, results);
+
+    auto wrapper =
+        builder.create<circt::handshake::FuncOp>(target.getLoc(), wrapperName,
+                                                 wrapperType);
+    wrapper.resolveArgAndResNames();
+    if (auto visibility =
+            target->getAttrOfType<mlir::StringAttr>(
+                mlir::SymbolTable::getVisibilityAttrName()))
+      wrapper->setAttr(mlir::SymbolTable::getVisibilityAttrName(), visibility);
+    if (auto argNames = target->getAttrOfType<ArrayAttr>("argNames"))
+      wrapper->setAttr("argNames", argNames);
+    if (auto resNames = target->getAttrOfType<ArrayAttr>("resNames"))
+      wrapper->setAttr("resNames", resNames);
+    if (auto annotations = target->getAttrOfType<ArrayAttr>("loom.annotations"))
+      wrapper->setAttr("loom.annotations", annotations);
+
+    Block *entry = new Block();
+    wrapper.getBody().push_back(entry);
+    for (Type inputType : wrapperType.getInputs())
+      entry->addArgument(inputType, target.getLoc());
+    builder.setInsertionPointToStart(entry);
+
+    auto args = entry->getArguments();
+    Value startI1 = args.back();
+    auto ctrlNone =
+        builder.create<circt::handshake::JoinOp>(target.getLoc(),
+                                                 mlir::ValueRange{startI1})
+            .getResult();
+
+    mlir::IRMapping mapping;
+    Block &origBlock = target.getBody().front();
+    for (unsigned i = 0, e = origBlock.getNumArguments(); i < e; ++i) {
+      if (i + 1 == e) {
+        mapping.map(origBlock.getArgument(i), ctrlNone);
+      } else {
+        mapping.map(origBlock.getArgument(i), args[i]);
+      }
+    }
+
+    llvm::SmallVector<mlir::Operation *, 64> clonedOps;
+    for (mlir::Operation &op : origBlock) {
+      if (auto ret = mlir::dyn_cast<circt::handshake::ReturnOp>(op)) {
+        llvm::SmallVector<Value, 8> retOperands;
+        for (Value operand : ret.getOperands().drop_back(1))
+          retOperands.push_back(mapping.lookup(operand));
+        Value doneNone = mapping.lookup(ret.getOperands().back());
+        mlir::OperationState doneState(
+            target.getLoc(), circt::handshake::ConstantOp::getOperationName());
+        doneState.addOperands(doneNone);
+        doneState.addTypes(builder.getI1Type());
+        doneState.addAttribute("value", builder.getBoolAttr(true));
+        auto doneOp = builder.create(doneState);
+        retOperands.push_back(doneOp->getResult(0));
+        builder.create<circt::handshake::ReturnOp>(target.getLoc(),
+                                                   retOperands);
+        continue;
+      }
+      clonedOps.push_back(builder.clone(op, mapping));
+    }
+
+    for (mlir::Operation *cloned : clonedOps) {
+      for (mlir::OpOperand &operand : cloned->getOpOperands()) {
+        if (mlir::Value mapped = mapping.lookupOrNull(operand.get()))
+          operand.set(mapped);
+      }
+    }
+    return wrapper;
+  };
+
   auto getBoolConst = [&](func::FuncOp func, bool value) -> Value {
     auto &cache = value ? trueCache : falseCache;
     auto it = cache.find(func);
@@ -242,6 +339,10 @@ static void rewriteHostCalls(ModuleOp module,
       Value valid = getBoolConst(func, true);
       Value ready = getBoolConst(func, true);
 
+      auto target = module.lookupSymbol<circt::handshake::FuncOp>(
+          call.getCallee());
+      auto esiTarget = getOrCreateEsiWrapper(target);
+
       llvm::SmallVector<Value, 8> chanOperands;
       chanOperands.reserve(call.getNumOperands() + 1);
       for (Value operand : call.getOperands()) {
@@ -258,15 +359,16 @@ static void rewriteHostCalls(ModuleOp module,
       for (Type type : call.getResultTypes())
         resultTypes.push_back(
             circt::esi::ChannelType::get(call.getContext(), type));
-      resultTypes.push_back(
-          circt::esi::ChannelType::get(call.getContext(), builder.getI1Type()));
+      resultTypes.push_back(circt::esi::ChannelType::get(
+          call.getContext(), builder.getI1Type()));
 
       unsigned count = instCount[func]++;
       std::string instName = call.getCallee().str() + "_inst" +
                              std::to_string(count);
 
       auto esiInst = builder.create<circt::handshake::ESIInstanceOp>(
-          loc, resultTypes, call.getCallee(), instName, clk, rst,
+          loc, resultTypes,
+          esiTarget ? esiTarget.getName() : call.getCallee(), instName, clk, rst,
           chanOperands);
 
       for (unsigned i = 0, e = call.getNumResults(); i < e; ++i) {

@@ -1867,8 +1867,8 @@ mlir::LogicalResult HandshakeLowering::run() {
     inputTypes.push_back(type);
   for (mlir::Type type : originalType.getResults())
     resultTypes.push_back(type);
-  inputTypes.push_back(builder.getI1Type());
-  resultTypes.push_back(builder.getI1Type());
+  inputTypes.push_back(builder.getNoneType());
+  resultTypes.push_back(builder.getNoneType());
   auto handshakeType =
       builder.getFunctionType(inputTypes, resultTypes);
 
@@ -1917,18 +1917,13 @@ mlir::LogicalResult HandshakeLowering::run() {
   finalizeMemory();
   if (mlir::failed(buildMemoryControl()))
     return mlir::failure();
+  if (mlir::failed(verifyMemoryControl()))
+    return mlir::failure();
 
   mlir::Value doneCtrl = memoryDoneToken ? memoryDoneToken : entryToken;
   if (!doneCtrl)
     doneCtrl = getEntryToken(func.getLoc());
-
-  mlir::OperationState doneState(
-      returnLoc, circt::handshake::ConstantOp::getOperationName());
-  doneState.addOperands(doneCtrl);
-  doneState.addTypes(builder.getI1Type());
-  doneState.addAttribute("value", builder.getBoolAttr(true));
-  mlir::Operation *doneOp = builder.create(doneState);
-  doneSignal = doneOp->getResult(0);
+  doneSignal = doneCtrl;
 
   llvm::SmallVector<mlir::Value, 4> returnOperands(pendingReturnValues.begin(),
                                                    pendingReturnValues.end());

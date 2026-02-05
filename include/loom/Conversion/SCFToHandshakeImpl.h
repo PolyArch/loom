@@ -81,6 +81,7 @@ private:
   void updateInvariantCond(RegionState &state, mlir::Value cond);
   void finalizeMemory();
   mlir::LogicalResult buildMemoryControl();
+  mlir::LogicalResult verifyMemoryControl();
   void insertForks();
   void assignHandshakeNames();
 

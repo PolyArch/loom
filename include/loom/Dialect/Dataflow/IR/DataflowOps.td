@@ -176,9 +176,9 @@ def Dataflow_GateOp : Dataflow_Op<"gate", []> {
       after_cond:   []
   }];
   let arguments = (ins AnyType:$beforeValue, I1:$beforeCond);
-  let results = (outs AnyType:$index, I1:$cond);
+  let results = (outs AnyType:$afterValue, I1:$afterCond);
 
-  let assemblyFormat = "$beforeValue `,` $beforeCond attr-dict `:` type($beforeValue) `,` type($beforeCond) `->` type($index) `,` type($cond)";
+  let assemblyFormat = "$beforeValue `,` $beforeCond attr-dict `:` type($beforeValue) `,` type($beforeCond) `->` type($afterValue) `,` type($afterCond)";
   let hasVerifier = 1;
 }
 
