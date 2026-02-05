@@ -232,13 +232,21 @@ compute graph. They only support a single `handshake.load` or a single
 
 Load PE:
 
-- Inputs: `addr`, `ctrl`, `data_from_mem` (data returned from memory)
-- Outputs: `addr_out`, `data_to_comp` (data forwarded to compute)
+- Inputs: `addr_from_comp`, `ctrl`, `data_from_mem` (data returned from memory)
+- Outputs: `addr_to_mem`, `data_to_comp` (data forwarded to compute)
 
 Store PE:
 
-- Inputs: `addr`, `data`, `ctrl`
+- Inputs: `addr_from_comp`, `data_from_comp`, `ctrl`
 - Outputs: `addr_to_mem`, `data_to_mem`
+
+Tag consistency:
+
+- For a load PE, `addr_from_comp`, `data_from_mem`, `addr_to_mem`, and
+  `data_to_comp` must share the same taggedness and tag width.
+- For a store PE, `addr_from_comp`, `data_from_comp`, `addr_to_mem`, and
+  `data_to_mem` must share the same taggedness and tag width.
+- Violations raise `COMP_PE_LOADSTORE_TAG_WIDTH`.
 
 The `ctrl` input is a synchronization token. It is consumed and discarded after
 the synchronization condition is met. Load/store PEs do not output a done token.
@@ -247,8 +255,8 @@ The done token is produced by `fabric.memory`/`fabric.extmemory` (`lddone` or
 
 Synchronization rules:
 
-- Load PE fires when `addr` and `ctrl` are both ready.
-- Store PE fires when `addr`, `data`, and `ctrl` are all ready.
+- Load PE fires when `addr_from_comp` and `ctrl` are both ready.
+- Store PE fires when `addr_from_comp`, `data_from_comp`, and `ctrl` are all ready.
 - For load PEs, `data_from_mem` does not participate in the synchronization;
   it is forwarded independently.
 - Tag matching applies only to Hardware Type B (tag-transparent mode). In
@@ -271,7 +279,8 @@ Hardware Type A: output-tag overwrite.
 - If the interface is native, `output_tag` must be absent.
 - If the interface is tagged, `output_tag` is required.
 - The PE represents a single logical software edge.
-- The `addr` and `data` ports may be tagged or native.
+- The `addr_from_comp` port and the data port (`data_from_mem` for load,
+  `data_from_comp` for store) may be tagged or native.
 - The `ctrl` port must be `none`.
 - `lqDepth`/`sqDepth` must be absent.
 - When tagged, output tags are overwritten with `output_tag`.
@@ -282,11 +291,12 @@ Hardware Type A: output-tag overwrite.
 Hardware Type B: tag-transparent.
 
 - `output_tag` is absent.
-- `addr`, `data`, and `ctrl` ports must all be tagged.
+- `addr_from_comp`, the data port (`data_from_mem` for load, `data_from_comp`
+  for store), and `ctrl` ports must all be tagged.
 - The `ctrl` value type is `i1` and the tag carries the logical port ID. The
   `i1` payload is a dummy constant `0` and must not drive logic. See
   [spec-dataflow.md](./spec-dataflow.md).
-- Tag widths on `addr`, `data`, and `ctrl` must match.
+- Tag widths on `addr_from_comp`, the data port, and `ctrl` must match.
 - `lqDepth` (load) or `sqDepth` (store) is required and must be >= 1.
 - The PE synchronizes inputs only when tags match, then forwards tags
   unchanged to the outputs.

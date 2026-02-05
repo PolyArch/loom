@@ -125,9 +125,17 @@ control stream.
 
 ### Constraints
 
-- `%d` must be `i1`.
+- `%d` must be `i1`. Violations raise `COMP_DATAFLOW_CARRY_CTRL_TYPE`.
 - `%a`, `%b`, and `%o` must have the same type. Violations raise
   `COMP_DATAFLOW_CARRY_TYPE_MISMATCH`.
+
+Example error:
+
+```
+// ERROR: COMP_DATAFLOW_CARRY_CTRL_TYPE
+// %d is i32 but must be i1
+%o = dataflow.carry %d, %a, %b : i32, i32, i32 -> i32
+```
 
 Example error:
 
@@ -193,9 +201,17 @@ A loop-invariant value repeater aligned to a control stream.
 
 ### Constraints
 
-- `%d` must be `i1`.
+- `%d` must be `i1`. Violations raise `COMP_DATAFLOW_INVARIANT_CTRL_TYPE`.
 - `%a` and `%o` must have the same type. Violations raise
   `COMP_DATAFLOW_INVARIANT_TYPE_MISMATCH`.
+
+Example error:
+
+```
+// ERROR: COMP_DATAFLOW_INVARIANT_CTRL_TYPE
+// %d is i32 but must be i1
+%o = dataflow.invariant %d, %a : i32, i32 -> i32
+```
 
 Example error:
 
@@ -261,7 +277,8 @@ A configurable index stream generator for loop-like control patterns.
 
 ### Constraints
 
-- All operands must be `index`.
+- All operands must be `index`. Violations raise
+  `COMP_DATAFLOW_STREAM_OPERAND_TYPE`.
 - `step_op` must be one of `+=`, `-=`, `*=`, `/=`, `<<=`, `>>=`. Invalid values
   raise `COMP_DATAFLOW_STREAM_INVALID_STEP_OP`.
 - `stop_cond` must be one of `<`, `<=`, `>`, `>=`, `!=`. Invalid values raise
@@ -274,6 +291,10 @@ A configurable index stream generator for loop-like control patterns.
 Example errors:
 
 ```
+// ERROR: COMP_DATAFLOW_STREAM_OPERAND_TYPE
+// %start is i32 but must be index
+%idx, %cont = dataflow.stream %start, %step, %bound : i32, index, index
+
 // ERROR: COMP_DATAFLOW_STREAM_INVALID_STEP_OP
 // "%=" is not a valid step_op
 %idx, %cont = dataflow.stream %start, %step, %bound {step_op = "%="}
@@ -415,14 +436,19 @@ A stream adapter that aligns before-region and after-region loop streams.
 
 ### Constraints
 
-- `%before_cond` must be `i1`.
+- `%before_cond` must be `i1`. Violations raise `COMP_DATAFLOW_GATE_COND_TYPE`.
 - `%before_value` and `%after_value` must have the same type. Violations raise
   `COMP_DATAFLOW_GATE_TYPE_MISMATCH`.
-- `%after_cond` must be `i1`.
+- `%after_cond` must be `i1`. Violations raise `COMP_DATAFLOW_GATE_COND_TYPE`.
 
 Example error:
 
 ```
+// ERROR: COMP_DATAFLOW_GATE_COND_TYPE
+// %before_cond is i32 but must be i1
+%after_value, %after_cond = dataflow.gate %before_value, %before_cond
+  : i32, i32 -> i32, i1
+
 // ERROR: COMP_DATAFLOW_GATE_TYPE_MISMATCH
 // %before_value is i32 but %after_value is f32
 %after_value, %after_cond = dataflow.gate %before_value, %before_cond
