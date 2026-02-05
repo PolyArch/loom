@@ -1,0 +1,524 @@
+# ADG (Architecture Description Graph) Specification
+
+## Overview
+
+The ADG system provides a C++ API for programmatically constructing CGRA
+(Coarse-Grained Reconfigurable Array) hardware descriptions. An ADG represents
+the hardware structure of an accelerator, including processing elements,
+switches, memory units, and their interconnections.
+
+The ADG system produces four output formats:
+
+1. **Fabric MLIR**: Hardware IR compatible with the Loom compiler toolchain
+2. **DOT**: Graphviz visualization for documentation and debugging
+3. **SystemC**: Cycle-accurate simulation model for modeling and verification
+4. **SystemVerilog**: Synthesizable RTL for FPGA or ASIC implementation
+
+This document defines the overall ADG design. Companion documents provide
+detailed specifications:
+
+- [spec-adg-api.md](./spec-adg-api.md): ADGBuilder C++ API reference
+- [spec-adg-sysc.md](./spec-adg-sysc.md): SystemC generation specification
+- [spec-adg-sv.md](./spec-adg-sv.md): SystemVerilog generation specification
+
+## Design Philosophy
+
+### Single-Source Semantics
+
+The ADG API is implemented entirely in C++. This design choice ensures that the
+semantics of the Fabric MLIR dialect are maintained in a single codebase. Using
+Python bindings would require duplicating semantic validation logic, leading to
+potential inconsistencies and increased maintenance burden.
+
+### Builder Pattern
+
+All ADG construction uses the `ADGBuilder` class. This pattern provides:
+
+- Implicit state management (e.g., tracking module definitions)
+- Automatic port ordering to satisfy `fabric.module` constraints
+- Deferred validation until export time
+- Consistent error handling
+
+Users should never directly instantiate fabric operation objects. All
+construction goes through builder methods.
+
+### Hardware vs Runtime Configuration Separation
+
+**The ADG builder exclusively describes physical hardware structure.**
+
+The ADG defines what hardware exists (PEs, switches, memories, connections) but
+has absolutely no influence on config_mem values. Runtime configuration
+(instruction memories, route tables, tag mappings, constant values) is:
+
+- Intentionally left empty at ADG construction time
+- Populated by the place-and-route phase that maps software dataflow graphs
+- Determined by the compiler, not the hardware architect
+
+This strict separation ensures:
+
+- Clean architectural exploration without P&R dependency
+- Reusable ADG definitions across different software workloads
+- Clear distinction between synthesis-time and runtime parameters
+- Hardware description is purely structural, not behavioral
+
+**What ADG builder controls:**
+- Physical module definitions (PEs, switches, memories)
+- Hardware parameters (latency, interval, port counts, connectivity)
+- Topology and interconnect structure
+- Visualization (DOT export)
+
+**What ADG builder does NOT control:**
+- config_mem contents (values are always default/empty in ADG output)
+- Runtime behavior of the accelerator
+- Instruction memory contents
+- Route table configurations
+- Tag mapping tables
+
+### Instance and Template Semantics
+
+The ADG builder uses a **modify-on-clone with deduplication** model:
+
+**Clone creates reference:** When you clone a module template, the instance
+initially references the original definition. Multiple clones share the same
+underlying template.
+
+**Modify forks a new template:** When you modify any hardware attribute on a
+cloned instance, the builder automatically creates a new anonymous template
+with the modified attributes. The instance is decoupled from the original and
+now references this new template. Other instances remain unchanged.
+
+**Deduplication at validation:** During `validateADG()`, the builder identifies
+templates that are **hardware equivalent** and merges them:
+
+- Two templates are equivalent if they produce identical physical hardware
+- Name, instance ID, and port indices do not affect equivalence (unless they
+  influence physical routing)
+- Only attributes that affect synthesis output matter
+
+This design allows flexible template variations while ensuring minimal RTL
+output through automatic deduplication.
+
+See [spec-adg-api.md](./spec-adg-api.md) for detailed clone and validation
+semantics.
+
+## Usage Model
+
+A typical ADG construction workflow:
+
+```cpp
+#include <loom/adg.h>
+
+int main() {
+    // Create builder
+    ADGBuilder builder("my_cgra");
+
+    // Define module templates
+    auto pe = builder.newPE("alu_pe")
+        .setLatency(1, 1, 1)
+        .setInterval(1, 1, 1)
+        .setInputPorts({Type::i32(), Type::i32()})
+        .setOutputPorts({Type::i32()})
+        .setBodyMLIR(R"(
+            ^bb0(%a: i32, %b: i32):
+                %sum = arith.addi %a, %b : i32
+                fabric.yield %sum : i32
+        )");
+
+    auto sw = builder.newSwitch("router")
+        .setPortCount(4, 4);
+
+    // Build topology
+    builder.buildMesh(4, 4, pe, sw, Topology::Mesh);
+
+    // Validate
+    builder.validateADG();
+
+    // Export
+    builder.exportMLIR("output/my_cgra.fabric.mlir");
+    builder.exportDOT("output/my_cgra.dot");
+    builder.exportSysC("output/sysc/");
+    builder.exportSV("output/rtl/");
+
+    return 0;
+}
+```
+
+The program is compiled with `loom --as-clang` (recommended) or standard
+`clang++`. When using `loom --as-clang`, the ADG library is linked automatically.
+When using `clang++` directly, you must manually link against the ADG library:
+
+```bash
+clang++ -I<loom-install>/include my_cgra.cpp -L<loom-install>/lib -lloom-adg -o my_cgra
+```
+
+Execution produces the specified output files.
+
+## Fabric Module Hierarchy
+
+An ADG maps to a single `fabric.module` containing:
+
+- Processing elements (`fabric.pe`, `fabric.temporal_pe`)
+- Routing switches (`fabric.switch`, `fabric.temporal_sw`)
+- Tag operations (`fabric.add_tag`, `fabric.map_tag`, `fabric.del_tag`)
+- Memory interfaces (`fabric.memory`, `fabric.extmemory`)
+- Module instantiations (`fabric.instance`)
+
+The builder automatically ensures correct port ordering (memref*, native*,
+tagged*) as required by [spec-fabric.md](./spec-fabric.md).
+
+## Configurable Modules
+
+Certain fabric operations contain runtime configuration parameters that form
+the CGRA bitstream. The following table lists all configurable operations and
+their configuration requirements:
+
+| Operation | Config Parameter | Description | Reference |
+|-----------|-----------------|-------------|-----------|
+| `fabric.pe` (tagged) | `output_tag` | Output tag values (tagged interface only) | [spec-fabric-pe.md](./spec-fabric-pe.md) |
+| `fabric.pe` (constant, native) | `constant_value` | Constant value for handshake.constant body | [spec-fabric-pe.md](./spec-fabric-pe.md) |
+| `fabric.pe` (constant, tagged) | `constant_value`, `output_tag` | Constant value + output tag | [spec-fabric-pe.md](./spec-fabric-pe.md) |
+| `fabric.add_tag` | `tag` | Constant tag to attach | [spec-fabric-tag.md](./spec-fabric-tag.md) |
+| `fabric.map_tag` | `table` | Tag remapping table | [spec-fabric-tag.md](./spec-fabric-tag.md) |
+| `fabric.switch` | `route_table` | Static routing configuration | [spec-fabric-switch.md](./spec-fabric-switch.md) |
+| `fabric.temporal_pe` | `instruction_mem` | Time-multiplexed instruction slots | [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) |
+| `fabric.temporal_sw` | `route_table` | Tag-indexed routing tables | [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md) |
+
+Operations without runtime configuration:
+
+| Operation | Notes | Reference |
+|-----------|-------|-----------|
+| `fabric.pe` (compute) | PEs with arith/math body have no runtime config | [spec-fabric-pe.md](./spec-fabric-pe.md) |
+| `fabric.memory` | All parameters are hardware (synthesis-time) | [spec-fabric-mem.md](./spec-fabric-mem.md) |
+| `fabric.extmemory` | All parameters are hardware (synthesis-time) | [spec-fabric-mem.md](./spec-fabric-mem.md) |
+| `fabric.del_tag` | No configuration; purely combinational | [spec-fabric-tag.md](./spec-fabric-tag.md) |
+| `fabric.instance` | Instantiates existing definitions; config on referenced module | [spec-fabric.md](./spec-fabric.md) |
+
+**Note:** The individual spec-fabric-*.md documents are authoritative for
+runtime configuration parameter definitions and bit width formulas. If there
+is any discrepancy between this table and the referenced documents, the
+referenced documents take precedence.
+
+A `fabric.pe` containing `handshake.constant` is a special case: the constant
+value is runtime configurable. All other compute PEs (arith, math, dataflow
+bodies) have no runtime configuration beyond output_tag for tagged interfaces.
+
+### Configuration Bit Width Details
+
+For detailed bit width formulas, see the authoritative documents listed in the
+table above. This section provides a brief overview.
+
+#### fabric.pe
+
+- **Tagged interface:** N * M bits (N outputs, M tag width)
+- **Constant body:** constant_value + output_tag bits, packed continuously
+- **Compute body (native):** No runtime configuration
+
+#### fabric.add_tag / fabric.map_tag
+
+See [spec-fabric-tag.md](./spec-fabric-tag.md) for table entry formats.
+
+#### fabric.switch
+
+One bit per connected position. See [spec-fabric-switch.md](./spec-fabric-switch.md).
+
+#### fabric.temporal_pe
+
+The `instruction_mem` contains only instruction configuration. Operand buffering
+is handled by a **separate operand buffer** component that is NOT part of
+config_mem.
+
+See [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) for:
+- Instruction field layout and bit width formulas
+- Operand buffer architecture (Mode A vs Mode B)
+
+#### fabric.temporal_sw
+
+See [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md) for slot width
+formula and route table encoding.
+
+## config_mem Principles
+
+All runtime configuration is consolidated into a single memory-mapped register
+array called `config_mem`. This design provides:
+
+- Unified configuration interface via AXI-Lite
+- Simple software driver model
+- Deterministic configuration sequence
+
+### Access Model
+
+**config_mem is read-write from host, read-only from accelerator.**
+
+- The host CPU has full read-write access to config_mem via AXI-Lite
+- The accelerator (`fabric.module`) can only read config_mem; it cannot modify
+  configuration values during execution
+- There is no write path from accelerator logic to config_mem
+
+This asymmetric access model ensures deterministic behavior: once configured,
+the accelerator's behavior is fixed until the host reconfigures it.
+
+### Address Allocation
+
+Configuration addresses are allocated sequentially based on MLIR operation
+order within `fabric.module`:
+
+1. Traverse operations in definition order
+2. For each configurable operation, allocate space starting at the next 32-bit
+   aligned boundary
+3. The operation's config bits occupy consecutive 32-bit words
+4. Unused bits within a word are tied to zero
+5. Repeat until all configurable operations are processed
+
+Each configurable node's bits are isolated within its allocated words. No two
+nodes share a 32-bit word. This simplifies software driver development and
+debugging by providing clear per-node boundaries.
+
+Note: The base design does not support partial reconfiguration (updating some
+nodes while others execute). Full reconfiguration requires reset.
+
+### Address Map Generation
+
+The `exportSV()` function generates a C header file containing:
+
+- Base address offsets for each configurable node
+- Bit position macros for each field
+- Total config_mem depth
+
+See [spec-adg-sv.md](./spec-adg-sv.md) for header file format.
+
+## Topology Construction
+
+The ADGBuilder provides helper functions for common interconnect topologies:
+
+| Function | Description |
+|----------|-------------|
+| `buildMesh(rows, cols, pe, sw, topology)` | Regular grid with configurable connectivity |
+| `connect(src, dst)` | Direct point-to-point connection |
+| `connectPorts(src, srcPort, dst, dstPort)` | Explicit port-level connection |
+
+Supported topology patterns for `buildMesh`:
+
+| Topology | Description |
+|----------|-------------|
+| `Topology::Mesh` | Nearest-neighbor with boundary (no wrap) |
+| `Topology::Torus` | Nearest-neighbor with wraparound |
+| `Topology::DiagonalMesh` | Mesh plus diagonal connections |
+| `Topology::DiagonalTorus` | Torus plus diagonal connections |
+
+See [spec-adg-api.md](./spec-adg-api.md) for complete method signatures.
+
+## Validation
+
+The `validateADG()` method performs strict validation to minimize errors found
+during RTL simulation:
+
+1. **Connectivity completeness**: All ports must be connected; no dangling wires
+2. **Type matching**: Connected ports must have identical types and bit widths
+3. **Port ordering**: Module interface follows memref*, native*, tagged* order
+4. **Instance validity**: All `fabric.instance` references resolve to valid modules
+5. **Parameter bounds**: Hardware parameters are within valid ranges
+6. **Resource constraints**: Port counts within limits (e.g., switch max 32 ports)
+
+Validation errors are reported with:
+- Error code (from [spec-fabric-error.md](./spec-fabric-error.md))
+- Source location (builder method or line number if available)
+- Detailed message explaining the constraint violation
+
+## Export Formats
+
+### MLIR Export
+
+`exportMLIR(path)` produces a valid Fabric MLIR file containing:
+
+- A single `fabric.module` definition
+- All nested operation definitions
+- Hardware parameters fully specified
+- Runtime configuration parameters empty (default values)
+
+The output is compatible with standard MLIR tools (mlir-opt, mlir-translate)
+and the Loom compiler pipeline.
+
+### DOT Export
+
+`exportDOT(path, mode)` produces Graphviz DOT format with two modes:
+
+| Mode | Description |
+|------|-------------|
+| `DOTMode::Structure` | Hardware modules and connections only |
+| `DOTMode::Detailed` | Includes runtime config visualization |
+
+#### Node Styles
+
+| Operation | Shape | Fill Color | Notes |
+|-----------|-------|------------|-------|
+| `fabric.pe` | Msquare | darkgreen | White text |
+| `fabric.temporal_pe` | Msquare | purple4 | White text, larger size |
+| `fabric.switch` | diamond | lightgray | Black text |
+| `fabric.temporal_sw` | diamond | slategray | White text |
+| `fabric.memory` | cylinder | skyblue | Black text |
+| `fabric.extmemory` | hexagon | gold | Black text |
+| `fabric.add_tag` | trapezium | lightcyan | Black text |
+| `fabric.map_tag` | trapezium | orchid | Black text |
+| `fabric.del_tag` | invtrapezium | lightcyan | Black text |
+| `fabric.instance` | box | wheat | Uses referenced module color with dashed border |
+| Module input ports | invhouse | lightpink | Black text |
+| Module output ports | house | lightcoral | Black text |
+| Unknown/fallback | star | red | White text, indicates error |
+
+#### Edge Styles
+
+| Connection Type | Line Style | Color | Width |
+|-----------------|------------|-------|-------|
+| Native value | solid | black | 2.0 |
+| Tagged value | dashed | purple | 2.0 |
+| Memref | dotted | blue | 2.0 |
+| Control (none type) | dashed | gray | 1.0 |
+
+#### Unmapped Elements
+
+In `DOTMode::Detailed`, elements without runtime configuration are shown with:
+- Fill color: white
+- Border style: dashed
+- Original border color preserved
+
+### SystemC Export
+
+`exportSysC(directory)` produces a self-contained SystemC simulation model:
+
+- Top-level module with TLM 2.0 configuration interface
+- config_mem controller using `simple_target_socket`
+- Example testbench with clock generation and VCD tracing
+- CMake build configuration
+- `lib/` directory with all parameterized library modules (copied)
+
+The output directory is completely self-contained and does not reference any
+files in the Loom installation. It can be moved, archived, or shared
+independently.
+
+The generated model targets SystemC 3.0.2 and supports two abstraction levels:
+
+| Mode | Macro | Description |
+|------|-------|-------------|
+| Cycle-Accurate | `FABRIC_SYSC_CYCLE_ACCURATE` | Exact timing, verification reference |
+| Loosely-Timed | `FABRIC_SYSC_LOOSELY_TIMED` | Fast simulation for software development |
+
+See [spec-adg-sysc.md](./spec-adg-sysc.md) for complete specification.
+
+### SystemVerilog Export
+
+`exportSV(directory)` produces a self-contained hierarchical RTL design:
+
+- Top-level instantiation module
+- config_mem controller with AXI-Lite interface
+- C header file with address definitions
+- `lib/` directory with all parameterized module templates (copied)
+
+The output directory is completely self-contained and does not reference any
+files in the Loom installation. It can be moved, archived, or shared
+independently.
+
+See [spec-adg-sv.md](./spec-adg-sv.md) for complete specification.
+
+### Simulation Tools
+
+Both SystemC and SystemVerilog exports are designed to work with standard
+simulation tools. For detailed information on supported simulators (VCS,
+Verilator), waveform formats (FSDB, FST, VCD), and co-simulation workflows,
+see [spec-adg-tools.md](./spec-adg-tools.md).
+
+## Error Handling
+
+ADGBuilder methods may throw exceptions or return error codes depending on
+configuration. The default mode uses exceptions with descriptive messages.
+
+Error categories:
+
+| Category | When Detected | Example |
+|----------|--------------|---------|
+| Builder errors | During API calls | Invalid parameter values |
+| Validation errors | During validateADG() | Unconnected ports |
+| Export errors | During export | File I/O failures |
+
+All error messages include the Fabric error code symbol (e.g.,
+`COMP_SWITCH_PORT_LIMIT`) for cross-referencing with
+[spec-fabric-error.md](./spec-fabric-error.md).
+
+## File Organization
+
+### Loom Source Tree (Implementation)
+
+The ADG implementation is organized within the Loom source tree as follows.
+**Note:** These files are used by the exporter implementation; they are NOT
+referenced by the generated output. The export functions copy required templates
+into the output directory to ensure self-contained output.
+
+```
+include/loom/
+  adg.h                            # Public API header (to be created)
+
+include/loom/Dialect/Fabric/
+  ADGBuilder.h                     # Builder class declaration (to be created)
+  ADGTypes.h                       # Type definitions (to be created)
+
+include/loom/Hardware/SystemC/
+  fabric_pe.h                      # PE module template (to be created)
+  fabric_temporal_pe.h             # Temporal PE template (to be created)
+  fabric_switch.h                  # Switch template (to be created)
+  fabric_temporal_sw.h             # Temporal switch template (to be created)
+  fabric_memory.h                  # Memory template (to be created)
+  fabric_stream.h                  # Streaming interface (to be created)
+  fabric_common.h                  # Common utilities (to be created)
+
+include/loom/Hardware/SystemVerilog/
+  fabric_pe.sv                     # PE module template (to be created)
+  fabric_temporal_pe.sv            # Temporal PE template (to be created)
+  fabric_switch.sv                 # Switch template (to be created)
+  fabric_temporal_sw.sv            # Temporal switch template (to be created)
+  fabric_memory.sv                 # Memory template (to be created)
+  fabric_common.svh                # Common definitions (to be created)
+
+lib/loom/Dialect/Fabric/
+  ADGBuilder.cpp                   # Builder implementation (to be created)
+  ADGExportMLIR.cpp                # MLIR export (to be created)
+  ADGExportDOT.cpp                 # DOT export (to be created)
+  ADGValidation.cpp                # Validation logic (to be created)
+
+lib/loom/Hardware/SystemC/
+  ADGExportSysC.cpp                # SystemC export logic (to be created)
+
+lib/loom/Hardware/SystemVerilog/
+  ADGExportSV.cpp                  # SystemVerilog export logic (to be created)
+```
+
+## Test Organization
+
+ADG tests should be organized under `tests/adg/`:
+
+```
+tests/adg/
+  cgra-4x4/          # Basic 4x4 CGRA example (to be created)
+  my-first-cgra/     # Tutorial example (to be created)
+  large-cgra-10x10/  # Stress test with larger grid (to be created)
+```
+
+Each test directory should contain:
+- Source C++ file defining the ADG
+- Expected output files for verification
+- CMakeLists.txt for build integration
+
+## Related Documents
+
+- [spec-fabric.md](./spec-fabric.md): Fabric MLIR dialect specification
+- [spec-fabric-pe.md](./spec-fabric-pe.md): Processing element specification
+- [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md): PE allowed operations (single source)
+- [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md): Temporal PE specification
+- [spec-fabric-switch.md](./spec-fabric-switch.md): Switch specification
+- [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md): Temporal switch specification
+- [spec-fabric-tag.md](./spec-fabric-tag.md): Tag operations specification
+- [spec-fabric-mem.md](./spec-fabric-mem.md): Memory operations specification
+- [spec-fabric-error.md](./spec-fabric-error.md): Error code definitions
+- [spec-cli.md](./spec-cli.md): Loom CLI specification (includes --as-clang)
+- [spec-adg-api.md](./spec-adg-api.md): ADGBuilder API reference
+- [spec-adg-tools.md](./spec-adg-tools.md): Simulation tools and waveform formats
+- [spec-adg-sysc.md](./spec-adg-sysc.md): SystemC generation specification
+- [spec-adg-sv.md](./spec-adg-sv.md): SystemVerilog generation specification

@@ -68,6 +68,11 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_PE_LOADSTORE_BODY | A load/store PE does not contain exactly one `handshake.load` or `handshake.store` |
 | COMP_PE_LOADSTORE_TAG_MODE | Invalid combination of `output_tag`, tagged ctrl, and queue depth attributes |
 | COMP_PE_LOADSTORE_TAG_WIDTH | Tag widths do not match across addr/data/ctrl ports |
+| COMP_PE_CONSTANT_BODY | A constant PE contains operations other than a single `handshake.constant` |
+| COMP_PE_INSTANCE_ONLY_BODY | A `fabric.pe` body contains only a single `fabric.instance` with no other operations |
+| COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE | `operand_buffer_size` is set when `enable_share_operand_buffer = false` |
+| COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING | `operand_buffer_size` is missing when `enable_share_operand_buffer = true` |
+| COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE | `operand_buffer_size` is out of range [1, 8192] |
 
 ## CFG_ (Runtime Configuration Errors, Hardware Code)
 

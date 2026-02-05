@@ -58,9 +58,63 @@ The CLI recognizes and handles these options directly:
 - `-h`, `--help`: print usage and exit.
 - `--version`: print the tool version and exit.
 - `-o <path>` or `-o<path>`: select the LLVM IR output path.
+- `--as-clang`: operate as a standard C++ compiler (see below).
 
 `--` terminates option parsing. All subsequent arguments are treated as input
 files, even if they begin with `-`.
+
+## Loom-Specific Options
+
+### `--as-clang`
+
+When `--as-clang` is specified, `loom` operates as a standard C++ compiler
+without performing Loom-specific analysis or MLIR transformations.
+
+**Behavior:**
+
+- The tool behaves like `clang++` with the same defaults
+- No MLIR outputs are generated
+- Linking is enabled (linker flags are processed, not ignored)
+- The Loom ADG library (`libloom-adg`) is automatically linked
+- Include paths for Loom headers (`<loom/adg.h>`) are automatically added
+
+**Use case:**
+
+This mode is intended for compiling ADG construction programs. An ADG program
+is a standard C++ executable that uses the ADGBuilder API to construct hardware
+descriptions and export them to MLIR, DOT, or SystemVerilog.
+
+**Example:**
+
+```bash
+# Compile an ADG construction program
+loom --as-clang my_cgra.cpp -o my_cgra
+
+# Run the program to generate hardware outputs
+./my_cgra
+```
+
+**Output with `--as-clang`:**
+
+When `--as-clang` is specified:
+
+- If `-c` is present: produces object file only
+- If `-S` is present: produces assembly only
+- Otherwise: produces linked executable
+
+**Differences from standard mode:**
+
+| Aspect | Standard mode | `--as-clang` mode |
+|--------|---------------|-------------------|
+| MLIR generation | Yes | No |
+| Linker flags | Ignored | Processed |
+| Default output | `<stem>.llvm.ll` | `<stem>` or `a.out` |
+| ADG library | Not linked | Auto-linked |
+
+**Combining with other options:**
+
+`--as-clang` is incompatible with options that require MLIR processing. If
+both `--as-clang` and MLIR-related options are specified, an error is reported.
 
 ## Forwarded Compile Options
 
@@ -102,7 +156,7 @@ where `<loom-install>` is derived from the directory of the `loom` executable.
 
 ## Compilation and Linking Behavior
 
-- Each input is compiled using clang’s cc1 pipeline (in-process).
+- Each input is compiled using clang's cc1 pipeline (in-process).
 - All compiled inputs are linked into a single LLVM module.
 - If target triples or data layouts do not match across inputs, the compile
   fails.

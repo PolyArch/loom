@@ -17,7 +17,7 @@ operations are specified in dedicated documents referenced below.
 | Top level | `fabric.module` | This document |
 | Instantiation | `fabric.instance` | This document |
 | Terminator | `fabric.yield` | This document |
-| Processing | `fabric.pe`, `fabric.temporal_pe` | [spec-fabric-pe.md](./spec-fabric-pe.md), [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) |
+| Processing | `fabric.pe`, `fabric.temporal_pe` | [spec-fabric-pe.md](./spec-fabric-pe.md), [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md), [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) |
 | Routing | `fabric.switch`, `fabric.temporal_sw` | [spec-fabric-switch.md](./spec-fabric-switch.md), [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md) |
 | Tag boundary | `fabric.add_tag`, `fabric.map_tag`, `fabric.del_tag` | [spec-fabric-tag.md](./spec-fabric-tag.md) |
 | Memory | `fabric.memory`, `fabric.extmemory` | [spec-fabric-mem.md](./spec-fabric-mem.md) |
@@ -207,6 +207,12 @@ explicitly set on the instance.
 `fabric.instance` is a hardware instantiation. Each instance represents a
 separate stateful hardware component. The instance name is used for hardware
 naming and debugging.
+
+**Note on ADG Builder:** When using ADGBuilder to construct Fabric MLIR, all
+runtime configuration attributes are left at default (empty) values. The
+ADGBuilder exclusively describes hardware structure; runtime configuration is
+populated by the compiler's place-and-route phase. See
+[spec-adg.md](./spec-adg.md) for details.
 
 ## Operation: `fabric.yield`
 

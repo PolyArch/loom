@@ -129,42 +129,15 @@ tag-transparent hardware type (no `output_tag`). See `Load/Store PE Semantics`.
 
 ### Allowed Operations Inside `fabric.pe`
 
-`fabric.pe` bodies may include operations from the following dialects:
+See [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md) for the complete list of
+allowed operations. This includes operations from:
 
-- `arith`
-- `math`
-- LLVM arithmetic intrinsics
-- `dataflow` (restricted to the four ops listed below)
+- `arith` (26 operations)
+- `math` (7 operations)
+- `dataflow` (4 operations, with exclusivity constraint)
+- `handshake` (8 operations, with exclusivity constraints)
 - `fabric.pe` (nested)
 - `fabric.instance` (to instantiate named PEs)
-- Allowed `handshake` operations listed below
-
-#### Handshake Allowlist
-
-The following `handshake` operations are allowed inside `fabric.pe`:
-
-- `handshake.cond_br`
-- `handshake.mux`
-- `handshake.load`
-- `handshake.store`
-- `handshake.constant`
-- `handshake.sink`
-- `handshake.fork`
-- `handshake.join`
-
-All other `handshake` operations are disallowed inside `fabric.pe`.
-
-#### Dataflow Allowlist
-
-The following `dataflow` operations are allowed inside `fabric.pe`:
-
-- `dataflow.carry`
-- `dataflow.invariant`
-- `dataflow.stream`
-- `dataflow.gate`
-
-`dataflow.stream` supports the `step_op` and `stop_cond` attributes to encode
-loop updates and termination conditions. See [spec-dataflow.md](./spec-dataflow.md).
 
 #### Homogeneous Consumption Rule
 
@@ -199,12 +172,44 @@ error (`COMP_PE_LOADSTORE_BODY`).
 
 If a `fabric.pe` body contains any `dataflow` operation, then the body may
 contain only `dataflow` operations and the terminator `fabric.yield`. Mixing
-`dataflow` with `arith`, `math`, LLVM intrinsics, `handshake`, or nested
-`fabric.pe`/`fabric.instance` is not allowed.
+`dataflow` with `arith`, `math`, `handshake`, or nested `fabric.pe`/
+`fabric.instance` is not allowed.
 
 Because the `dataflow` dialect does not support tagged types, a dataflow-only
 `fabric.pe` must use the native interface category. Tagged interfaces are
 invalid in this case.
+
+#### Constant Exclusivity Rule
+
+If a `fabric.pe` body contains `handshake.constant`, then the body must contain
+exactly one `handshake.constant` and no other non-terminator operations. The
+only allowed body shape is:
+
+- A single `handshake.constant`.
+- The `fabric.yield` terminator.
+
+This rule exists because `handshake.constant` produces a runtime configurable
+value that must be included in config_mem. Mixing constants with other
+operations would create ambiguous configuration semantics.
+
+Any other operation in the body alongside `handshake.constant` is a compile-time
+error (`COMP_PE_CONSTANT_BODY`).
+
+#### Instance-Only Body Prohibition
+
+A `fabric.pe` body must not consist solely of a single `fabric.instance`
+referencing another `fabric.pe`. The only allowed body shape in this case would
+be:
+
+- A single `fabric.instance` of another `fabric.pe`.
+- The `fabric.yield` terminator.
+
+This pattern is prohibited because it introduces unnecessary hierarchy without
+adding functionality. Users should directly use the referenced PE or
+`fabric.instance` at the call site instead.
+
+A `fabric.pe` with only a single `fabric.instance` is a compile-time error
+(`COMP_PE_INSTANCE_ONLY_BODY`).
 
 ### Prohibited Operations Inside `fabric.pe`
 
@@ -259,8 +264,8 @@ Synchronization rules:
 - Store PE fires when `addr_from_comp`, `data_from_comp`, and `ctrl` are all ready.
 - For load PEs, `data_from_mem` does not participate in the synchronization;
   it is forwarded independently.
-- Tag matching applies only to Hardware Type B (tag-transparent mode). In
-  Type B, inputs must have matching tags before the PE fires. Type A does not
+- Tag matching applies only to TagTransparent hardware type (tag-transparent mode). In
+  TagTransparent, inputs must have matching tags before the PE fires. TagOverwrite does not
   perform tag matching.
 
 Tagged and native interfaces are not implicitly convertible. If a load/store PE
@@ -268,13 +273,12 @@ is tagged, it cannot connect directly to a single-port memory interface
 (`ldCount == 1` or `stCount == 1`) because those ports are native. Use explicit
 `fabric.del_tag` or `fabric.add_tag` boundaries to convert types.
 
-#### Tag Modes
+#### Hardware Types
 
 Load/store PEs are defined as two distinct hardware types. The hardware type is
-fixed at build time and cannot be switched at runtime. Type A may be native or
-tagged; Type B is tagged-only.
+fixed at build time and cannot be switched at runtime.
 
-Hardware Type A: output-tag overwrite.
+**TagOverwrite** (output-tag overwrite):
 
 - If the interface is native, `output_tag` must be absent.
 - If the interface is tagged, `output_tag` is required.
@@ -288,7 +292,7 @@ Hardware Type A: output-tag overwrite.
   `output_tag`.
 - When native, there is no tag overwrite.
 
-Hardware Type B: tag-transparent.
+**TagTransparent** (tag-transparent):
 
 - `output_tag` is absent.
 - `addr_from_comp`, the data port (`data_from_mem` for load, `data_from_comp`

@@ -21,7 +21,8 @@ configuration is invalid because it contains duplicate tags
 fabric.temporal_pe @name(
   %in0: !dataflow.tagged<T, iN>, %in1: !dataflow.tagged<T, iN>, ...
 ) -> (!dataflow.tagged<T, iN>, ...)
-  [num_register = R, num_instruction = I, num_instance = F]
+  [num_register = R, num_instruction = I, num_instance = F,
+   enable_share_operand_buffer = false, operand_buffer_size = S]
   {instruction_mem = [ ... ]} {
   // FU definitions
   fabric.yield %fu0_out0, %fu0_out1, %fu1_out0, %fu1_out1, ...
@@ -97,6 +98,28 @@ The ordering is:
 - Violations are compile-time errors: `COMP_TEMPORAL_PE_NUM_INSTANCE`. See
   [spec-fabric-error.md](./spec-fabric-error.md).
 
+#### `enable_share_operand_buffer` (hardware parameter)
+
+- Boolean (default: `false`).
+- Selects the operand buffer hardware mode:
+  - `false`: Per-instruction operand buffer mode (Mode A)
+  - `true`: Shared operand buffer mode (Mode B)
+- This is a static hardware parameter determined at synthesis time.
+- See [Operand Buffer Architecture](#operand-buffer-architecture) for details.
+
+#### `operand_buffer_size` (hardware parameter)
+
+- Unsigned integer.
+- Only valid when `enable_share_operand_buffer = true`.
+- Specifies the depth of the shared operand buffer.
+- Must be absent or unset when `enable_share_operand_buffer = false`.
+- Must be in range [1, 8192] when `enable_share_operand_buffer = true`.
+- Violations are compile-time errors:
+  - `COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE`: Mode A cannot have size
+  - `COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING`: Mode B requires size
+  - `COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE`: Size out of [1, 8192] range
+- See [spec-fabric-error.md](./spec-fabric-error.md).
+
 #### `instruction_mem` (runtime configuration parameter)
 
 - Array of instruction slot entries.
@@ -115,56 +138,100 @@ The number of FU types defined in the body is independent of
 - Duplicate tags in the instruction memory are configuration errors
   (`CFG_TEMPORAL_PE_DUP_TAG`). See [spec-fabric-error.md](./spec-fabric-error.md).
 
-### Operand Buffer Semantics
+## Operand Buffer Architecture
 
-Each instruction slot contains per-input operand buffers described by
-`op_valid` and `op_value` fields in the machine format. These fields are
-runtime state, not static instruction encoding.
+The operand buffer is a **separate hardware component** from `instruction_mem`.
+It stores incoming operand values until all operands for an instruction are
+ready. The operand buffer is internal runtime state, **not part of config_mem**.
 
-At reset or configuration time, all `op_valid` bits are initialized to `0`
-and `op_value` is initialized to `0`.
+Two hardware modes are available, selected by `enable_share_operand_buffer`:
 
-When a tagged token arrives on input `i`:
+### Mode A: Per-Instruction Operand Buffer (Default)
 
-1. The tag selects a unique instruction slot `s`. If no slot matches, a
-   runtime error is raised (`RT_TEMPORAL_PE_NO_MATCH`). If multiple slots
-   match, the configuration is invalid due to duplicate tags
-   (`CFG_TEMPORAL_PE_DUP_TAG`). See [spec-fabric-error.md](./spec-fabric-error.md).
-2. If `op_valid` for operand `i` in slot `s` is `0`, the token is consumed,
-   its value bits are stored into `op_value`, and `op_valid` is set to `1`.
-3. If `op_valid` for operand `i` in slot `s` is already `1`, the input is
-   backpressured and the token is not consumed.
+When `enable_share_operand_buffer = false` (default):
 
-An instruction in slot `s` may fire when all operands are ready:
+**Structure:**
+- Size: `num_instruction` rows x `num_input` columns x `(1 + K)` bits per entry
+- Each instruction slot has a dedicated operand buffer row
+- Each entry contains: `op_valid` (1 bit) + `op_value` (K bits)
 
-- For each input operand `i`, either `op_is_reg = 1` (operand reads from a
-  register) or `op_valid = 1` (operand buffered from an input).
+**Operand Arrival:**
+1. Incoming operand's tag matches an instruction in `instruction_mem`
+2. If no match: runtime error `RT_TEMPORAL_PE_NO_MATCH`
+3. If match found at slot `s`:
+   - If `op_valid[s][i] = 0`: store value, set `op_valid = 1`
+   - If `op_valid[s][i] = 1`: backpressure (block input)
 
-When the instruction fires:
+**Instruction Firing:**
+- Instruction at slot `s` fires when all operands ready:
+  - For each input `i`: either `op_is_reg = 1` OR `op_valid[s][i] = 1`
+- After firing: all `op_valid` in row `s` become `0`, `op_value` retained
+- At most one instruction fires per cycle
 
-- Input-buffered operands are consumed and their `op_valid` bits are cleared.
-- Register operands dequeue one element from their FIFOs.
-- Result values are produced and routed to outputs or registers.
+**Deadlock Risk:**
+Mode A can deadlock if operands for different tags interleave and block each
+other. Use Mode B or upstream scheduling constraints to mitigate.
 
-At most one instruction may fire in a single cycle. The temporal PE does not
-issue multiple instructions in parallel.
+### Mode B: Shared Operand Buffer
 
-### IMPORTANT: Potential Deadlock
+When `enable_share_operand_buffer = true`:
 
-Because operand buffers are per-slot, the temporal PE can deadlock if some
-operands for a tag never arrive or if inputs are blocked behind full operand
-buffers. This is a known limitation.
+This mode implements per-tag virtual channels using a shared buffer, similar
+to virtual channel techniques in network-on-chip designs.
 
-Possible mitigation strategies (not implemented in the base design):
+**Structure:**
+- Depth: `operand_buffer_size` entries (max 8192)
+- Each entry format:
 
-- **Deeper operand buffers**: Replace single-entry operand buffers with deeper
-  FIFO buffers to tolerate temporary imbalances.
-- **Virtual channels**: Use virtual channel techniques to prevent head-of-line
-  blocking between different tags.
-- **Scheduling constraints**: Ensure the upstream dataflow graph guarantees
-  that all operands for a tag arrive before any operand for a later tag.
+```
+| position | tag | operand[0] | operand[1] | ... | operand[L-1] |
+```
 
-System-level scheduling and buffer sizing must account for these constraints.
+- `position`: `log2Ceil(operand_buffer_size)` bits (max 13 bits)
+- `tag`: M bits (tag width)
+- Each operand: `op_valid` (1 bit) + `op_value` (K bits)
+- Total entry width: `log2Ceil(S) + M + L * (1 + K)` bits
+
+**Entry Validity:**
+- **Valid entry**: at least one `op_valid = 1`
+- **Invalid entry**: all `op_valid = 0` (does not count toward capacity)
+
+**Operand Arrival:**
+1. Find all entries with matching tag
+2. If no matching entries exist:
+   - Create new entry with `position = 0`, store operand
+3. If matching entries exist:
+   - Find entry with largest `position`
+   - If that entry's `op_valid[i] = 0`: store operand in that entry
+   - If that entry's `op_valid[i] = 1`: create new entry with
+     `position = max_position + 1`, store operand
+4. If buffer full (see below): backpressure input
+
+**Buffer Full Condition (per input column `i`):**
+- All entries have `op_valid[i] = 1`, OR
+- Entries with `op_valid[i] = 0` exist, but belong to valid entries (have
+  some `op_valid = 1`) with non-matching tags
+
+**Instruction Firing:**
+1. Match instruction tag against buffer entries
+2. Find entry with matching tag AND `position = 0` AND all `op_valid = 1`
+3. Fire instruction using operand values
+4. After firing:
+   - Fired entry: all `op_valid` become `0` (entry becomes invalid)
+   - Other tag-matched entries: `position -= 1`
+
+**Deadlock Mitigation:**
+Mode B provides per-tag FIFO ordering, preventing head-of-line blocking between
+different tags. However, `operand_buffer_size` must be sufficient for the
+expected operand interleaving depth. Formal analysis of required buffer depth
+is application-dependent.
+
+### Operand Buffer Initialization
+
+At reset, all operand buffer entries are initialized:
+- All `op_valid` bits = 0
+- All `op_value` bits = 0 (don't care, controlled by `op_valid`)
+- Mode B: all `position` and `tag` fields = 0
 
 ### Output Tag Semantics
 
@@ -269,9 +336,6 @@ Each entry is a hexadecimal string:
 0x<hex_value>
 ```
 
-In machine format, `op_valid` and `op_value` bits represent runtime operand
-buffers. Configuration should set `op_valid = 0` and `op_value = 0`.
-
 Bit layout is from LSB to MSB:
 
 ```
@@ -297,27 +361,26 @@ Definitions:
 Operand field layout:
 
 ```
-| op_valid | op_is_reg | op_reg_idx | op_value |
+| op_is_reg | op_reg_idx |
 ```
 
 ASCII diagram:
 
 ```
-+----------+----------+-----------+------------------+
-| op_valid | op_is_reg| op_reg_idx| op_value (K bits)|
-+----------+----------+-----------+------------------+
++-----------+---------------------------+
+| op_is_reg | op_reg_idx (if R > 0)     |
++-----------+---------------------------+
 ```
 
-- `op_valid`: 1 bit. Indicates whether the operand buffer holds a valid value.
-- `op_is_reg` and `op_reg_idx` are present only if `num_register > 0`.
-- `op_reg_idx`: `log2Ceil(num_register)` bits.
-- `op_value`: `K` bits, where `K` is the value bit width.
+- `op_is_reg`: 1 bit. `1` means operand comes from register, `0` means from input.
+- `op_reg_idx`: `log2Ceil(num_register)` bits. Present only if `num_register > 0`.
+- When `op_is_reg = 0`, the operand comes from the corresponding input port
+  and is buffered in the operand buffer (see [Operand Buffer Architecture]).
+- When `op_is_reg = 1`, the operand comes from register `op_reg_idx`.
 
-`op_valid` and `op_value` are runtime operand buffers. When the source is
-`in(idx)` and `op_is_reg = 0`, the input value is stored into `op_value` and
-`op_valid` is set to `1` until the instruction fires. When the source is
-`reg(idx)` and `op_is_reg = 1`, `op_valid` and `op_value` are ignored and
-should be set to `0`.
+**Note:** `op_valid` and `op_value` are NOT part of `instruction_mem`. They
+reside in the separate operand buffer hardware. See
+[Operand Buffer Architecture](#operand-buffer-architecture).
 
 Result field layout:
 
@@ -354,11 +417,13 @@ Operands and results are laid out by increasing index from LSB to MSB:
 - `result[0]` follows the operand block.
 - `result[N-1]` is closest to the MSB.
 
-Example layout for `L = 2`, `N = 1`, `R = 0`, `M = 3`, `K = 8`, `O = 2`:
+Example layout for `L = 2`, `N = 1`, `R = 0`, `M = 3`, `O = 2`:
 
 ```
-| valid | tag[2:0] | opcode[1:0] | op0[8:0] | op1[8:0] | res0[2:0] |
+| valid | tag[2:0] | opcode[1:0] | op0_is_reg | op1_is_reg | res0_tag[2:0] |
 ```
+
+Note: When `R = 0`, operand fields only contain `op_is_reg` (1 bit each).
 
 Complete example bitmap (LSB -> MSB):
 
@@ -370,23 +435,24 @@ Example instruction:
 - `valid = 1`
 - `tag = 3` (`0011`)
 - `opcode = 1`
-- `op0_valid = 0`, `op0_value = 0x00`
-- `op1_valid = 0`, `op1_value = 0x00`
+- `op0_is_reg = 0` (from input)
+- `op1_is_reg = 0` (from input)
 - `res0_tag = 3` (`0011`)
 
 Bitmap (fields separated by `|`):
 
 ```
-1 | 0011 | 1 | 0 00000000 | 0 00000000 | 0011
+1 | 0011 | 1 | 0 | 0 | 0011
 ```
 
-Hex encoding (28 bits, LSB -> MSB):
+Hex encoding (10 bits, LSB -> MSB):
 
 ```
-0x03000027
+0x0C7
 ```
 
-Note: 28 bits requires 7 hex digits; the leading zero is for display alignment.
+Note: Operand values (`op_valid`, `op_value`) are stored in the separate
+operand buffer, not in `instruction_mem`.
 
 ### Width Formulas
 
@@ -398,12 +464,26 @@ Let:
 - `M` = tag bit width
 - `K` = value bit width
 - `O` = `log2Ceil(num_fu_types)`
+- `S` = `operand_buffer_size` (Mode B only)
 
-Then:
+**Instruction Memory Width (config_mem):**
 
-- `operand_width = 1 + (R > 0 ? 1 + log2Ceil(R) : 0) + K`
+- `operand_config_width = (R > 0 ? 1 + log2Ceil(R) : 0)`
+  - Only contains `op_is_reg` and `op_reg_idx`
+  - Does NOT include `op_valid` or `op_value` (those are in operand buffer)
 - `result_width = (R > 0 ? 1 + log2Ceil(R) : 0) + M`
-- `instruction_width = 1 + M + O + L * operand_width + N * result_width`
+- `instruction_width = 1 + M + O + L * operand_config_width + N * result_width`
+
+**Operand Buffer Width (internal, not config_mem):**
+
+Mode A (per-instruction):
+- `operand_buffer_entry_width = 1 + K` (op_valid + op_value)
+- `total_operand_buffer_bits = num_instruction * L * (1 + K)`
+
+Mode B (shared):
+- `position_width = log2Ceil(S)` (max 13 bits when S = 8192)
+- `operand_buffer_entry_width = position_width + M + L * (1 + K)`
+- `total_operand_buffer_bits = S * operand_buffer_entry_width`
 
 For a temporal PE with interface `!dataflow.tagged<T, iN>`, the bit widths are
 defined as:
