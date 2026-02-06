@@ -19,8 +19,8 @@ configuration is invalid because it contains duplicate tags
 
 ```
 fabric.temporal_pe @name(
-  %in0: !dataflow.tagged<T, iN>, %in1: !dataflow.tagged<T, iN>, ...
-) -> (!dataflow.tagged<T, iN>, ...)
+  %in0: !dataflow.tagged<T, iJ>, %in1: !dataflow.tagged<T, iJ>, ...
+) -> (!dataflow.tagged<T, iJ>, ...)
   [num_register = R, num_instruction = I, num_instance = F,
    enable_share_operand_buffer = false, operand_buffer_size = S]
   {instruction_mem = [ ... ]} {
@@ -50,7 +50,7 @@ Constraints:
 - Each FU type operates on value-only data. Tags are stripped at the boundary.
 - Each FU type must use a native (non-tagged) `fabric.pe` interface.
 - Each FU type's value types must match the `fabric.temporal_pe` interface
-  value type `T`. For interface `!dataflow.tagged<T, iN>`, all FU ports must
+  value type `T`. For interface `!dataflow.tagged<T, iJ>`, all FU ports must
   use type `T`.
 - The body may contain only FU definitions (`fabric.pe` or `fabric.instance`)
   and a single `fabric.yield`.
@@ -131,7 +131,7 @@ The number of FU types defined in the body is independent of
 `num_instruction`. Instruction slots select among FU types via the opcode.
 For the formal `config_mem` definition (32-bit word width, depth calculation,
 and per-module packing/alignment), see
-[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
 ### Tag Matching Semantics
 
@@ -191,9 +191,9 @@ to virtual channel techniques in network-on-chip designs.
 ```
 
 - `position`: `log2Ceil(operand_buffer_size)` bits (max 13 bits)
-- `tag`: M bits (tag width)
+- `tag`: J bits (tag width)
 - Each operand: `op_valid` (1 bit) + `op_value` (K bits)
-- Total entry width: `log2Ceil(S) + M + L * (1 + K)` bits
+- Total entry width: `log2Ceil(S) + J + L * (1 + K)` bits
 
 **Entry Validity:**
 - **Valid entry**: at least one `op_valid = 1`
@@ -351,14 +351,14 @@ ASCII diagram:
 +----------------------------------------------------------------------------------+
 |                     INSTRUCTION WORD (LSB -> MSB)                                |
 +--------+---------+--------+-------------------------+----------------------------+
-| valid  | tag[M]  | opcode | operands (L blocks)     | results (N blocks)         |
+| valid  | tag[J]  | opcode | operands (L blocks)     | results (N blocks)         |
 +--------+---------+--------+-------------------------+----------------------------+
 ```
 
 Definitions:
 
 - `valid`: 1 bit. `0` means invalid slot.
-- `tag`: `M` bits, where `M` is the tag width.
+- `tag`: `J` bits, where `J` is the tag width.
 - `opcode`: `O` bits, where `O = log2Ceil(num_fu_types)`.
 
 Operand field layout:
@@ -395,13 +395,13 @@ ASCII diagram:
 
 ```
 +-----------+------------+----------------+
-| res_is_reg| res_reg_idx| res_tag (M bits)|
+| res_is_reg| res_reg_idx| res_tag (J bits)|
 +-----------+------------+----------------+
 ```
 
 - `res_is_reg` and `res_reg_idx` are present only if `num_register > 0`.
 - `res_reg_idx`: `log2Ceil(num_register)` bits.
-- `res_tag`: `M` bits, the output tag for this result.
+- `res_tag`: `J` bits, the output tag for this result.
 
 There is no explicit result-valid bit. Every instruction must provide one
 result field per output.
@@ -420,9 +420,9 @@ Operands and results are laid out by increasing index from LSB to MSB:
 - `result[0]` follows the operand block.
 - `result[N-1]` is closest to the MSB.
 
-#### Base Example: No Registers (`R = 0`)
+#### Base Example 1: Field Layout Illustration (`R = 0`, `O = 2`)
 
-Example layout for `L = 2`, `N = 1`, `R = 0`, `M = 3`, `O = 2`:
+Example layout for `L = 2`, `N = 1`, `R = 0`, `J = 3`, `O = 2`:
 
 ```
 | valid | tag[2:0] | opcode[1:0] | res0_tag[2:0] |
@@ -431,10 +431,12 @@ Example layout for `L = 2`, `N = 1`, `R = 0`, `M = 3`, `O = 2`:
 Note: When `R = 0`, operand fields are omitted entirely (0 bits each).
 The `op_is_reg` bit is not needed because there are no registers to select.
 
+#### Base Example 2: Concrete Encoding (`R = 0`, `num_fu_types = 2`)
+
 Complete example bitmap (LSB -> MSB):
 
 Parameters:
-- `L = 2`, `N = 1`, `R = 0`, `T = i8` (`K = 8`), `tag = i4` (`M = 4`)
+- `L = 2`, `N = 1`, `R = 0`, `T = i8` (`K = 8`), `tag = i4` (`J = 4`)
 - `num_fu_types = 2` (`O = 1`)
 
 Example instruction:
@@ -461,7 +463,7 @@ operand buffer, not in `instruction_mem`.
 #### Complex Example 1: Registers and Multiple Results (`R > 0`, `O > 0`)
 
 Parameters:
-- `L = 2`, `N = 2`, `R = 4`, `M = 3`, `num_fu_types = 4` (`O = 2`)
+- `L = 2`, `N = 2`, `R = 4`, `J = 3`, `num_fu_types = 4` (`O = 2`)
 - `operand_config_width = 1 + log2Ceil(4) = 3`
 - `result_width = (1 + log2Ceil(4)) + 3 = 6`
 - `instruction_width = 1 + 3 + 2 + 2*3 + 2*6 = 24`
@@ -490,7 +492,7 @@ Hex encoding (24-bit slot):
 #### Complex Example 2: Single FU Type with Three Operands (`O = 0`)
 
 Parameters:
-- `L = 3`, `N = 1`, `R = 2`, `M = 4`, `num_fu_types = 1` (`O = 0`, opcode omitted)
+- `L = 3`, `N = 1`, `R = 2`, `J = 4`, `num_fu_types = 1` (`O = 0`, opcode omitted)
 - `operand_config_width = 1 + log2Ceil(2) = 2`
 - `result_width = (1 + log2Ceil(2)) + 4 = 6`
 - `instruction_width = 1 + 4 + 0 + 3*2 + 1*6 = 17`
@@ -522,7 +524,7 @@ Let:
 - `L` = number of inputs
 - `N` = number of outputs
 - `R` = `num_register`
-- `M` = tag bit width
+- `J` = tag bit width
 - `K` = value bit width
 - `O` = `log2Ceil(num_fu_types)`
 - `S` = `operand_buffer_size` (Mode B only)
@@ -532,8 +534,8 @@ Let:
 - `operand_config_width = (R > 0 ? 1 + log2Ceil(R) : 0)`
   - Only contains `op_is_reg` and `op_reg_idx`
   - Does NOT include `op_valid` or `op_value` (those are in operand buffer)
-- `result_width = (R > 0 ? 1 + log2Ceil(R) : 0) + M`
-- `instruction_width = 1 + M + O + L * operand_config_width + N * result_width`
+- `result_width = (R > 0 ? 1 + log2Ceil(R) : 0) + J`
+- `instruction_width = 1 + J + O + L * operand_config_width + N * result_width`
 
 **Operand Buffer Width (internal, not config_mem):**
 
@@ -543,14 +545,14 @@ Mode A (per-instruction):
 
 Mode B (shared):
 - `position_width = log2Ceil(S)` (max 13 bits when S = 8192)
-- `operand_buffer_entry_width = position_width + M + L * (1 + K)`
+- `operand_buffer_entry_width = position_width + J + L * (1 + K)`
 - `total_operand_buffer_bits = S * operand_buffer_entry_width`
 
-For a temporal PE with interface `!dataflow.tagged<T, iN>`, the bit widths are
+For a temporal PE with interface `!dataflow.tagged<T, iJ>`, the bit widths are
 defined as:
 
 - `K = num_bits(T)`
-- `M = N`
+- `J = num_bits(iJ)`
 
 Any mismatch between the interface type and these widths is a compile-time
 error. See `COMP_TEMPORAL_PE_TAG_WIDTH` in [spec-fabric-error.md](./spec-fabric-error.md).

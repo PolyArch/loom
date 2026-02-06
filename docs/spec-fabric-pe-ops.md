@@ -78,6 +78,13 @@ operation and the `fabric.yield` terminator. Multiple `dataflow` operations in
 a single PE, mixing `dataflow` with other dialects, and nesting via
 `fabric.instance` are all not allowed. Each dataflow operation maps to a
 dedicated hardware state machine and cannot share a PE with other operations.
+Violations raise `COMP_PE_DATAFLOW_BODY`.
+
+`dataflow.stream` is a special case for runtime configuration. When a
+`fabric.pe` body contains exactly one `dataflow.stream`, the PE exposes a
+5-bit `stop_cond_sel` configuration field in `config_mem` (one-hot order:
+`<`, `<=`, `>`, `>=`, `!=`). Non-one-hot values (all zero or multiple set bits)
+raise `CFG_PE_STREAM_STOP_COND_ONEHOT`.
 
 ## handshake Dialect (8 operations)
 
@@ -125,6 +132,7 @@ A `fabric.pe` body must use operations from exactly one consumption group:
 - `handshake.mux`
 
 Mixing operations from different groups is not allowed.
+Violations raise `COMP_PE_MIXED_CONSUMPTION`.
 
 ## Prohibited Operations
 

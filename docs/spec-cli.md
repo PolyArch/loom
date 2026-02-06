@@ -230,6 +230,8 @@ sequences complete successfully.
 
 ## Related Documents
 
+- [spec-loom.md](./spec-loom.md): End-to-end Loom compilation and mapping pipeline
 - [spec-pragma.md](./spec-pragma.md): Loom pragma system specification
 - [spec-dataflow.md](./spec-dataflow.md): Dataflow dialect (lowering target)
 - [spec-fabric.md](./spec-fabric.md): Fabric dialect overview
+- [spec-mapper.md](./spec-mapper.md): Mapper place-and-route bridge from Handshake to Fabric

@@ -147,6 +147,14 @@ void critical_op(...) { ... }
   interface.
 - `LOOM_TARGET("rom")` on a non-constant object is a compile-time error.
 
+`LOOM_TARGET("rom")` lowers to Fabric read-only memory forms:
+
+- On-chip ROM: `fabric.memory` with `stCount = 0`
+- External ROM: `fabric.extmemory` with `stCount = 0`
+
+There is no dedicated `fabric.rom` operation; read-only behavior is encoded by
+memory port configuration. See [spec-fabric-mem.md](./spec-fabric-mem.md).
+
 **Default memory mapping** (when no hint is provided):
 - Constant globals with total size <= 4096 bytes map to ROM.
 - Larger globals or non-constant globals map to external memory.

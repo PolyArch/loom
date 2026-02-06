@@ -54,6 +54,8 @@ All ports must belong to the same category:
 
 Within a category, individual port types may differ. This allows type
 conversion PEs.
+In the tagged category, tag width must be uniform across all input and output
+ports; only value types may vary per port.
 Load/store PEs have additional interface rules described in
 `Load/Store PE Semantics` below.
 
@@ -120,7 +122,22 @@ This attribute is a direct consequence of the Constant Exclusivity Rule: if a
 operation. Therefore, each PE can have at most one `constant_value`.
 For the formal `config_mem` definition (32-bit word width, depth calculation,
 and field packing rules), see
-[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
+
+#### `stop_cond_sel` (runtime configuration parameter)
+
+`stop_cond_sel` is a special runtime configuration field for
+`fabric.pe` bodies containing exactly one `dataflow.stream`.
+
+- Width: 5 bits
+- Encoding: one-hot in fixed order [`<`, `<=`, `>`, `>=`, `!=`]
+- Default reset value: `00001` (`<`)
+- Any non-one-hot value (all zero or multiple set bits) is a configuration
+  error: `CFG_PE_STREAM_STOP_COND_ONEHOT`
+
+PEs containing other dataflow operations (`dataflow.carry`,
+`dataflow.invariant`, `dataflow.gate`) have no dataflow-specific runtime
+configuration field.
 
 #### `lqDepth` and `sqDepth` (hardware parameters)
 
@@ -145,7 +162,8 @@ tag-transparent hardware type (no `output_tag`). See `Load/Store PE Semantics`.
 - The body must contain at least one non-terminator operation. Violations raise
   `COMP_PE_EMPTY_BODY`.
 - If any `dataflow` operation is present, the interface must be native and the
-  body must be dataflow-only as defined below. Violations raise
+  body must be dataflow-only as defined in
+  [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md). Violations raise
   `COMP_PE_DATAFLOW_BODY`.
 
 See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.
@@ -175,7 +193,8 @@ for the complete specification.
 Load/store PEs are hardware adapters between the fabric memory system and
 compute graph. They only support a single `handshake.load` or a single
 `handshake.store` in the body. Their behavior is defined here and in
-[spec-fabric-mem.md](./spec-fabric-mem.md).
+[spec-fabric-mem.md](./spec-fabric-mem.md). Violations of this single-op body
+constraint raise `COMP_PE_LOADSTORE_BODY`.
 
 #### Port Roles
 

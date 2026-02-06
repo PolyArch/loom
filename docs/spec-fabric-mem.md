@@ -14,6 +14,18 @@ modules. They are the fabric-level counterparts of `handshake.memory` and
 Compile-time, configuration-time, and runtime error codes are defined in
 [spec-fabric-error.md](./spec-fabric-error.md).
 
+## Read-Only Memory Mapping (ROM)
+
+Loom does not define a separate `fabric.rom` operation. Read-only memory is
+represented using existing memory operations with no store ports:
+
+- On-chip read-only memory: `fabric.memory` with `stCount = 0`
+- External read-only memory: `fabric.extmemory` with `stCount = 0`
+
+The source object's constant initializer is used to initialize memory contents.
+This representation is the lowering target for `LOOM_TARGET("rom")` hints.
+See [spec-pragma.md](./spec-pragma.md).
+
 ## Operation: `fabric.memory` and `fabric.extmemory`
 
 ### Forms

@@ -21,6 +21,7 @@ detailed specifications:
 - [spec-adg-sysc.md](./spec-adg-sysc.md): SystemC generation specification
 - [spec-adg-sv.md](./spec-adg-sv.md): SystemVerilog generation specification
 - [spec-adg-tools.md](./spec-adg-tools.md): Simulation tools and waveform formats
+- [spec-mapper.md](./spec-mapper.md): Place-and-route from software graph to ADG-generated hardware graph
 
 ## Design Philosophy
 
@@ -52,7 +53,8 @@ has absolutely no influence on config_mem values. Runtime configuration
 (instruction memories, route tables, tag mappings, constant values) is:
 
 - Intentionally left empty at ADG construction time
-- Populated by the place-and-route phase that maps software dataflow graphs
+- Populated by the mapper stage that performs place-and-route from software
+  dataflow graphs (see [spec-mapper.md](./spec-mapper.md))
 - Determined by the compiler, not the hardware architect
 
 This strict separation ensures:
@@ -178,6 +180,7 @@ their configuration requirements:
 | `fabric.pe` (tagged) | `output_tag` | Output tag values (tagged interface only) | [spec-fabric-pe.md](./spec-fabric-pe.md) |
 | `fabric.pe` (constant, native) | `constant_value` | Constant value for handshake.constant body | [spec-fabric-pe.md](./spec-fabric-pe.md) |
 | `fabric.pe` (constant, tagged) | `constant_value`, `output_tag` | Constant value + output tag | [spec-fabric-pe.md](./spec-fabric-pe.md) |
+| `fabric.pe` (dataflow.stream, native) | `stop_cond_sel` | Runtime-selectable stop condition (`<`, `<=`, `>`, `>=`, `!=`) as 5-bit one-hot | [spec-fabric-pe.md](./spec-fabric-pe.md) |
 | `fabric.add_tag` | `tag` | Constant tag to attach | [spec-fabric-tag.md](./spec-fabric-tag.md) |
 | `fabric.map_tag` | `table` | Tag remapping table | [spec-fabric-tag.md](./spec-fabric-tag.md) |
 | `fabric.switch` | `route_table` | Static routing configuration | [spec-fabric-switch.md](./spec-fabric-switch.md) |
@@ -188,7 +191,7 @@ Operations without runtime configuration:
 
 | Operation | Notes | Reference |
 |-----------|-------|-----------|
-| `fabric.pe` (compute) | PEs with arith/math body have no runtime config | [spec-fabric-pe.md](./spec-fabric-pe.md) |
+| `fabric.pe` (compute) | PEs with arith/math body and `dataflow.{carry,invariant,gate}` body have no runtime config | [spec-fabric-pe.md](./spec-fabric-pe.md) |
 | `fabric.memory` | All parameters are hardware (synthesis-time) | [spec-fabric-mem.md](./spec-fabric-mem.md) |
 | `fabric.extmemory` | All parameters are hardware (synthesis-time) | [spec-fabric-mem.md](./spec-fabric-mem.md) |
 | `fabric.del_tag` | No configuration; purely combinational | [spec-fabric-tag.md](./spec-fabric-tag.md) |
@@ -200,8 +203,11 @@ is any discrepancy between this table and the referenced documents, the
 referenced documents take precedence.
 
 A `fabric.pe` containing `handshake.constant` is a special case: the constant
-value is runtime configurable. All other compute PEs (arith, math, dataflow
-bodies) have no runtime configuration beyond output_tag for tagged interfaces.
+value is runtime configurable. A `fabric.pe` containing `dataflow.stream` is
+another special case with a 5-bit `stop_cond_sel` runtime field. All other
+compute PEs (arith, math, `dataflow.carry`, `dataflow.invariant`,
+`dataflow.gate`) have no runtime configuration beyond output_tag for tagged
+interfaces.
 
 ### Configuration Bit Width Details
 
@@ -212,7 +218,8 @@ table above. This section provides a brief overview.
 
 - **Tagged interface:** N * M bits (N outputs, M tag width)
 - **Constant body:** constant_value + output_tag bits, packed continuously
-- **Compute body (native):** No runtime configuration
+- **dataflow.stream body (native):** 5 bits (`stop_cond_sel`, one-hot)
+- **Other compute body (native):** No runtime configuration
 
 #### fabric.add_tag / fabric.map_tag
 
@@ -242,7 +249,7 @@ formula and route table encoding.
 All runtime configuration is consolidated into a single memory-mapped register
 array called `config_mem`. For the formal definition of config_mem (word width,
 depth calculation, CONFIG_WIDTH derivation), see
-[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
 This design provides:
 
@@ -432,12 +439,8 @@ handshake protocol:
 - `ready` may depend combinationally on `valid`.
 - Once asserted, `valid` must remain high until the transfer completes.
 
-For tagged interfaces, the data signal contains both value and tag:
-
-```
-data[TAG_WIDTH+DATA_WIDTH-1:DATA_WIDTH] = tag
-data[DATA_WIDTH-1:0] = value
-```
+For tagged interfaces, value/tag packing follows the authoritative convention
+defined in [spec-dataflow.md](./spec-dataflow.md) (`!dataflow.tagged` type).
 
 Both SystemVerilog and SystemC backends implement this protocol.
 See [spec-adg-sv.md](./spec-adg-sv.md) and
@@ -484,6 +487,10 @@ include/loom/Hardware/SystemC/
   fabric_switch.h                  # Switch template (to be created)
   fabric_temporal_sw.h             # Temporal switch template (to be created)
   fabric_memory.h                  # Memory template (to be created)
+  fabric_extmemory.h               # External memory template (to be created)
+  fabric_add_tag.h                 # add_tag template (to be created)
+  fabric_map_tag.h                 # map_tag template (to be created)
+  fabric_del_tag.h                 # del_tag template (to be created)
   fabric_stream.h                  # Streaming interface (to be created)
   fabric_common.h                  # Common utilities (to be created)
 
@@ -493,6 +500,10 @@ include/loom/Hardware/SystemVerilog/
   fabric_switch.sv                 # Switch template (to be created)
   fabric_temporal_sw.sv            # Temporal switch template (to be created)
   fabric_memory.sv                 # Memory template (to be created)
+  fabric_extmemory.sv              # External memory template (to be created)
+  fabric_add_tag.sv                # add_tag template (to be created)
+  fabric_map_tag.sv                # map_tag template (to be created)
+  fabric_del_tag.sv                # del_tag template (to be created)
   fabric_common.svh                # Common definitions (to be created)
 
 lib/loom/Dialect/Fabric/
@@ -535,6 +546,8 @@ Each test directory should contain:
 - [spec-fabric-tag.md](./spec-fabric-tag.md): Tag operations specification
 - [spec-fabric-mem.md](./spec-fabric-mem.md): Memory operations specification
 - [spec-fabric-error.md](./spec-fabric-error.md): Error code definitions
+- [spec-loom.md](./spec-loom.md): Loom full pipeline overview
+- [spec-mapper.md](./spec-mapper.md): Mapper top-level specification
 - [spec-cli.md](./spec-cli.md): Loom CLI specification (includes --as-clang)
 - [spec-adg-api.md](./spec-adg-api.md): ADGBuilder API reference
 - [spec-adg-tools.md](./spec-adg-tools.md): Simulation tools and waveform formats

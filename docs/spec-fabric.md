@@ -5,6 +5,8 @@
 The fabric dialect is the hardware IR for Loom. It models a full accelerator as
 interconnected hardware modules with explicit streaming and memory interfaces.
 The dialect is designed to be a mapping target for software dataflow graphs.
+For mapper semantics (place-and-route from Handshake/Dataflow graphs), see
+[spec-mapper.md](./spec-mapper.md).
 
 This document defines the fabric dialect at a top level and provides full
 specifications for `fabric.module`, `fabric.instance`, and `fabric.yield`. Other
@@ -251,3 +253,13 @@ For `fabric.module`, the yielded values become the module outputs.
 Fabric error classes and the global error code space are defined in
 [spec-fabric-error.md](./spec-fabric-error.md). All references in this
 document use the symbols defined there.
+
+## Related Documents
+
+- [spec-loom.md](./spec-loom.md)
+- [spec-mapper.md](./spec-mapper.md)
+- [spec-fabric-pe.md](./spec-fabric-pe.md)
+- [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md)
+- [spec-fabric-switch.md](./spec-fabric-switch.md)
+- [spec-fabric-mem.md](./spec-fabric-mem.md)
+- [spec-fabric-error.md](./spec-fabric-error.md)

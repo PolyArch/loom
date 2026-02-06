@@ -7,6 +7,8 @@ All ADG construction uses builder methods exclusively. Direct instantiation of
 fabric operation objects is not supported.
 
 For design rationale and usage examples, see [spec-adg.md](./spec-adg.md).
+For software-to-hardware place-and-route semantics, see
+[spec-mapper.md](./spec-mapper.md).
 
 ## Namespace and Headers
 
@@ -93,6 +95,12 @@ See [spec-fabric-pe.md](./spec-fabric-pe.md) for body constraints including:
 - Constant exclusivity (use `newConstantPE()` instead)
 - Dataflow exclusivity (dataflow-only PE must use native interface)
 - Instance-only prohibition
+
+Special case: a PE whose body is exactly one `dataflow.stream` has a runtime
+configuration field `stop_cond_sel` (5-bit one-hot for `<`, `<=`, `>`, `>=`,
+`!=`) in `config_mem`. Other dataflow-only PE bodies (`dataflow.carry`,
+`dataflow.invariant`, `dataflow.gate`) have no dataflow-specific runtime
+configuration.
 
 **Example with inline MLIR body:**
 ```cpp
@@ -445,7 +453,22 @@ Creates a new `fabric.extmemory` definition (external memory interface).
 
 **Returns:** `ExtMemoryHandle` for further configuration
 
-Methods are similar to `MemoryHandle` except `setPrivate` is not available.
+**Chainable methods on ExtMemoryHandle:**
+
+| Method | Description |
+|--------|-------------|
+| `setLoadPorts(count)` | Set number of load ports |
+| `setStorePorts(count)` | Set number of store ports |
+| `setLsqDepth(depth)` | Set store queue depth |
+| `setShape(memrefType)` | Set memory shape and element type |
+
+`setPrivate` is not available for `fabric.extmemory`.
+
+**Interface type rules:**
+
+Port counts affect interface types exactly as in `MemoryHandle`. When
+`ldCount > 1` or `stCount > 1`, the corresponding address and data ports must
+be tagged types. Single-port interfaces (`count == 1`) use native types.
 
 ## Tag Operation Methods
 
@@ -565,7 +588,7 @@ Each instance gets a **separate config_mem address region**. If a PE requires
 order at export time.
 For the formal config memory definition (fixed 32-bit words, depth
 calculation, and alignment rules), see
-[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
 **Example:**
 ```cpp
@@ -1102,3 +1125,10 @@ Returns collected errors when using `ErrorMode::Collect`.
 
 `ADGBuilder` is not thread-safe. Each thread should use its own builder
 instance. Multiple builders can operate concurrently on different ADGs.
+
+## Related Documents
+
+- [spec-loom.md](./spec-loom.md)
+- [spec-adg.md](./spec-adg.md)
+- [spec-fabric.md](./spec-fabric.md)
+- [spec-mapper.md](./spec-mapper.md)

@@ -242,12 +242,8 @@ All streaming connections use the valid/ready handshake protocol defined in
 [spec-adg.md](./spec-adg.md). See the "Streaming Handshake Protocol" section
 in that document for the authoritative protocol rules.
 
-For tagged interfaces, the data signal contains both value and tag:
-
-```
-data[TAG_WIDTH+DATA_WIDTH-1:DATA_WIDTH] = tag
-data[DATA_WIDTH-1:0] = value
-```
+For tagged interfaces, value/tag packing follows the authoritative convention
+defined in [spec-dataflow.md](./spec-dataflow.md) (`!dataflow.tagged` type).
 
 ## Parameterized Fabric Modules
 
@@ -263,6 +259,7 @@ template<
     std::array<int, 2> IN_DATA_WIDTH = {32, 32},   // per-input data width
     std::array<int, 1> OUT_DATA_WIDTH = {32},       // per-output data width
     int TAG_WIDTH = 0,      // 0 means native interface
+    bool HAS_DATAFLOW_STREAM = false,
     int LATENCY_MIN = 1,
     int LATENCY_TYP = 1,
     int LATENCY_MAX = 1,
@@ -272,10 +269,13 @@ template<
 >
 SC_MODULE(fabric_pe) {
     // CONFIG_WIDTH: derived, not a template parameter
-    //   Tagged compute PE:     NUM_OUTPUTS * TAG_WIDTH
-    //   Native compute PE:     0
+    //   Tagged compute PE:        NUM_OUTPUTS * TAG_WIDTH
+    //   dataflow.stream PE:       +5 bits stop_cond_sel (one-hot)
+    //   Other native compute PEs: 0
+    static constexpr int STREAM_STOP_COND_WIDTH =
+        HAS_DATAFLOW_STREAM ? 5 : 0;
     static constexpr int CONFIG_WIDTH =
-        (TAG_WIDTH > 0) ? NUM_OUTPUTS * TAG_WIDTH : 0;
+        ((TAG_WIDTH > 0) ? NUM_OUTPUTS * TAG_WIDTH : 0) + STREAM_STOP_COND_WIDTH;
 
     // Clock and reset
     sc_core::sc_in<bool> clk;
@@ -361,6 +361,7 @@ No input ports: the constant value comes from `cfg_data`. See
 
 ```cpp
 template<
+    int ADDR_WIDTH = 32,
     int DATA_WIDTH = 32,
     int TAG_WIDTH = 0,
     int HARDWARE_TYPE = 0,  // 0 = TagOverwrite, 1 = TagTransparent
@@ -380,7 +381,7 @@ SC_MODULE(fabric_pe_load) {
     // From compute: address
     sc_core::sc_in<bool>                                   addr_valid;
     sc_core::sc_out<bool>                                  addr_ready;
-    sc_core::sc_in<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>>   addr_data;
+    sc_core::sc_in<sc_dt::sc_bv<ADDR_WIDTH + TAG_WIDTH>>   addr_data;
 
     // From memory: returned data
     sc_core::sc_in<bool>                                   mem_data_valid;
@@ -394,7 +395,7 @@ SC_MODULE(fabric_pe_load) {
     // To memory: address
     sc_core::sc_out<bool>                                  mem_addr_valid;
     sc_core::sc_in<bool>                                   mem_addr_ready;
-    sc_core::sc_out<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>>  mem_addr_data;
+    sc_core::sc_out<sc_dt::sc_bv<ADDR_WIDTH + TAG_WIDTH>>  mem_addr_data;
 
     // To compute: data
     sc_core::sc_out<bool>                                  data_valid;
@@ -422,6 +423,7 @@ See [spec-fabric-pe.md](./spec-fabric-pe.md) for hardware type semantics
 
 ```cpp
 template<
+    int ADDR_WIDTH = 32,
     int DATA_WIDTH = 32,
     int TAG_WIDTH = 0,
     int HARDWARE_TYPE = 0,  // 0 = TagOverwrite, 1 = TagTransparent
@@ -437,7 +439,7 @@ SC_MODULE(fabric_pe_store) {
     // From compute: address
     sc_core::sc_in<bool>                                   addr_valid;
     sc_core::sc_out<bool>                                  addr_ready;
-    sc_core::sc_in<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>>   addr_data;
+    sc_core::sc_in<sc_dt::sc_bv<ADDR_WIDTH + TAG_WIDTH>>   addr_data;
 
     // From compute: data
     sc_core::sc_in<bool>                                   data_valid;
@@ -451,7 +453,7 @@ SC_MODULE(fabric_pe_store) {
     // To memory: address
     sc_core::sc_out<bool>                                  mem_addr_valid;
     sc_core::sc_in<bool>                                   mem_addr_ready;
-    sc_core::sc_out<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>>  mem_addr_data;
+    sc_core::sc_out<sc_dt::sc_bv<ADDR_WIDTH + TAG_WIDTH>>  mem_addr_data;
 
     // To memory: data
     sc_core::sc_out<bool>                                  mem_data_valid;
@@ -882,7 +884,7 @@ SC_MODULE(fabric_del_tag) {
 
 For the formal definition of config_mem (word width, depth calculation,
 CONFIG_WIDTH derivation), see
-[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
 ### Purpose
 

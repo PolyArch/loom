@@ -125,6 +125,7 @@ module fabric_pe #(
     parameter int IN_DATA_WIDTH [NUM_INPUTS] = '{default: 32},
     parameter int OUT_DATA_WIDTH [NUM_OUTPUTS] = '{default: 32},
     parameter int TAG_WIDTH = 0,      // 0 means native interface
+    parameter bit HAS_DATAFLOW_STREAM = 0,
     parameter int LATENCY_MIN = 1,
     parameter int LATENCY_TYP = 1,
     parameter int LATENCY_MAX = 1,
@@ -132,7 +133,12 @@ module fabric_pe #(
     parameter int INTERVAL_TYP = 1,
     parameter int INTERVAL_MAX = 1,
     // CONFIG_WIDTH: derived, not overridable
-    localparam int CONFIG_WIDTH = (TAG_WIDTH > 0) ? NUM_OUTPUTS * TAG_WIDTH : 0
+    //   Tagged compute PE:        NUM_OUTPUTS * TAG_WIDTH
+    //   dataflow.stream PE:       +5 bits stop_cond_sel (one-hot)
+    //   Other native compute PEs: 0
+    localparam int STREAM_STOP_COND_WIDTH = HAS_DATAFLOW_STREAM ? 5 : 0,
+    localparam int CONFIG_WIDTH =
+        ((TAG_WIDTH > 0) ? NUM_OUTPUTS * TAG_WIDTH : 0) + STREAM_STOP_COND_WIDTH
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -216,6 +222,7 @@ A load PE contains exactly one `handshake.load` in its body.
 
 ```systemverilog
 module fabric_pe_load #(
+    parameter int ADDR_WIDTH = 32,
     parameter int DATA_WIDTH = 32,
     parameter int TAG_WIDTH = 0,
     parameter int HARDWARE_TYPE = 0,  // 0 = TagOverwrite, 1 = TagTransparent
@@ -233,7 +240,7 @@ module fabric_pe_load #(
     // From compute: address
     input  logic                          addr_valid,
     output logic                          addr_ready,
-    input  logic [DATA_WIDTH+TAG_WIDTH-1:0] addr_data,
+    input  logic [ADDR_WIDTH+TAG_WIDTH-1:0] addr_data,
 
     // From memory: returned data
     input  logic                          mem_data_valid,
@@ -247,7 +254,7 @@ module fabric_pe_load #(
     // To memory: address
     output logic                          mem_addr_valid,
     input  logic                          mem_addr_ready,
-    output logic [DATA_WIDTH+TAG_WIDTH-1:0] mem_addr_data,
+    output logic [ADDR_WIDTH+TAG_WIDTH-1:0] mem_addr_data,
 
     // To compute: data
     output logic                          data_valid,
@@ -270,6 +277,7 @@ A store PE contains exactly one `handshake.store` in its body.
 
 ```systemverilog
 module fabric_pe_store #(
+    parameter int ADDR_WIDTH = 32,
     parameter int DATA_WIDTH = 32,
     parameter int TAG_WIDTH = 0,
     parameter int HARDWARE_TYPE = 0,  // 0 = TagOverwrite, 1 = TagTransparent
@@ -283,7 +291,7 @@ module fabric_pe_store #(
     // From compute: address
     input  logic                          addr_valid,
     output logic                          addr_ready,
-    input  logic [DATA_WIDTH+TAG_WIDTH-1:0] addr_data,
+    input  logic [ADDR_WIDTH+TAG_WIDTH-1:0] addr_data,
 
     // From compute: data
     input  logic                          data_valid,
@@ -297,7 +305,7 @@ module fabric_pe_store #(
     // To memory: address
     output logic                          mem_addr_valid,
     input  logic                          mem_addr_ready,
-    output logic [DATA_WIDTH+TAG_WIDTH-1:0] mem_addr_data,
+    output logic [ADDR_WIDTH+TAG_WIDTH-1:0] mem_addr_data,
 
     // To memory: data
     output logic                          mem_data_valid,
@@ -602,7 +610,7 @@ module fabric_del_tag #(
 
 For the formal definition of config_mem (word width, depth calculation,
 CONFIG_WIDTH derivation), see
-[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
 ### Purpose
 
@@ -630,8 +638,6 @@ Address allocation follows the authoritative rules defined in
 [spec-adg.md](./spec-adg.md). See the "Address Allocation" section in that
 document for the complete specification including allocation steps, alignment
 rules, and isolation guarantees.
-
-Total config_mem depth: 5 words (20 bytes)
 
 ### Bit Layout Within Words
 
@@ -736,6 +742,7 @@ documents:
 | `fabric.pe` (tagged) | N * M | N outputs, M tag bits |
 | `fabric.pe` (constant, native) | bitwidth(value) | Constant value only |
 | `fabric.pe` (constant, tagged) | bitwidth(value) + M | Value + tag, packed continuously |
+| `fabric.pe` (dataflow.stream, native) | 5 | `stop_cond_sel` one-hot (`<`, `<=`, `>`, `>=`, `!=`) |
 | `fabric.add_tag` | M | Tag width |
 | `fabric.map_tag` | table_size * (1 + M_in + M_out) | Per-entry format |
 | `fabric.switch` | K | K = connected positions |

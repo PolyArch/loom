@@ -19,7 +19,8 @@ CFG_ errors are detected after writing runtime configuration registers or
 tables, before or during execution, and do not require dataflow execution to
 surface.
 
-CFG_ error codes use the range 0-7. Codes 8-255 are reserved for future use.
+CFG_ error codes currently use the range 0-8. Codes 9-255 are reserved for
+future use.
 
 RT_ error codes start at 256 and increase sequentially.
 
@@ -43,7 +44,7 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_TEMPORAL_PE_NUM_INSTANCE | `num_instance` is 0 when `num_register > 0`, or nonzero when `num_register = 0` |
 | COMP_TEMPORAL_PE_REG_DISABLED | An instruction uses `reg(idx)` when `num_register = 0` |
 | COMP_TEMPORAL_PE_SRC_MISMATCH | A human-readable source uses `in(j)` where `j` is not the operand position |
-| COMP_TEMPORAL_PE_TAG_WIDTH | `K != num_bits(T)` or `M != N` for interface `!dataflow.tagged<T, iN>` |
+| COMP_TEMPORAL_PE_TAG_WIDTH | `K != num_bits(T)` or tag-width metadata is inconsistent for interface `!dataflow.tagged<T, iJ>` |
 | COMP_TEMPORAL_PE_TAGGED_PE | A `fabric.temporal_pe` contains a tagged `fabric.pe` |
 | COMP_TEMPORAL_PE_LOADSTORE | A `fabric.temporal_pe` contains a load/store PE |
 | COMP_MAP_TAG_TABLE_SIZE | `table_size` is out of range [1, 256] |
@@ -79,7 +80,7 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_INSTANCE_UNRESOLVED | `fabric.instance` references a symbol that does not exist |
 | COMP_PE_EMPTY_BODY | A `fabric.pe` body contains no non-terminator operations |
 | COMP_PE_MIXED_INTERFACE | A `fabric.pe` has mixed native and tagged ports |
-| COMP_PE_DATAFLOW_BODY | A `fabric.pe` body contains `dataflow` operations mixed with non-dataflow operations |
+| COMP_PE_DATAFLOW_BODY | A `fabric.pe` dataflow body violates dataflow exclusivity: mixed dataflow/non-dataflow ops, multiple dataflow ops, or any `fabric.instance` nesting |
 | COMP_PE_MIXED_CONSUMPTION | A `fabric.pe` body mixes full-consume and partial-consume operations |
 | COMP_PE_OUTPUT_TAG_NATIVE | A native `fabric.pe` has `output_tag` attribute (must be absent for native) |
 | COMP_PE_OUTPUT_TAG_MISSING | A tagged non-load/store `fabric.pe` is missing the required `output_tag` attribute |
@@ -152,6 +153,7 @@ fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
 | 5 | CFG_TEMPORAL_PE_ILLEGAL_REG | Register index encodes a value >= `num_register` |
 | 6 | CFG_TEMPORAL_PE_REG_TAG_NONZERO | `res_tag != 0` when writing a register |
 | 7 | CFG_MAP_TAG_DUP_TAG | `map_tag` has multiple valid entries with the same `src_tag` |
+| 8 | CFG_PE_STREAM_STOP_COND_ONEHOT | `dataflow.stream` `stop_cond_sel` register is not one-hot (`<`, `<=`, `>`, `>=`, `!=`) |
 
 ## RT_ (Runtime Execution Errors, Hardware Code)
 

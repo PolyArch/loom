@@ -42,7 +42,7 @@ output based on a fixed physical connectivity table and a runtime route table.
 
 A `1` in `route_table` enables a connected path. A `0` disables it.
 For the formal `config_mem` definition and packing rules, see
-[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
 ### Defaults
 

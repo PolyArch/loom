@@ -310,6 +310,14 @@ See [spec-dataflow-error.md](./spec-dataflow-error.md).
 cannot be changed at runtime. `stop_cond` is a runtime configuration parameter
 that selects the comparison used by the loop controller.
 
+In Fabric lowering, this runtime configuration is exposed only when a
+`fabric.pe` body contains exactly one `dataflow.stream`. The PE contributes a
+5-bit one-hot `stop_cond_sel` field to `config_mem` with fixed bit order:
+`<`, `<=`, `>`, `>=`, `!=`. A non-one-hot value (all zeros or multiple set
+bits) is a configuration error: `CFG_PE_STREAM_STOP_COND_ONEHOT`.
+See [spec-fabric-pe.md](./spec-fabric-pe.md) and
+[spec-fabric-error.md](./spec-fabric-error.md).
+
 ### Semantics
 
 `dataflow.stream` emits two streams for a loop with `N` iterations. It can
