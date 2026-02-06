@@ -240,7 +240,11 @@ formula and route table encoding.
 ## config_mem Principles
 
 All runtime configuration is consolidated into a single memory-mapped register
-array called `config_mem`. This design provides:
+array called `config_mem`. For the formal definition of config_mem (word width,
+depth calculation, CONFIG_WIDTH derivation), see
+[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
+
+This design provides:
 
 - Unified configuration interface via AXI-Lite
 - Simple software driver model

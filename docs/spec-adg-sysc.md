@@ -238,12 +238,9 @@ inline bool handshake(bool valid, bool ready) {
 #endif // FABRIC_STREAM_H
 ```
 
-**Handshake protocol:**
-
-- Transfer occurs when `valid && ready` on rising clock edge
-- `valid` must not depend combinationally on `ready`
-- `ready` may depend combinationally on `valid`
-- Once asserted, `valid` must remain high until transfer completes
+All streaming connections use the valid/ready handshake protocol defined in
+[spec-adg.md](./spec-adg.md). See the "Streaming Handshake Protocol" section
+in that document for the authoritative protocol rules.
 
 For tagged interfaces, the data signal contains both value and tag:
 
@@ -263,8 +260,8 @@ Parameters correspond to hardware attributes from the Fabric MLIR spec.
 template<
     int NUM_INPUTS = 2,
     int NUM_OUTPUTS = 1,
-    int IN_DATA_WIDTH[NUM_INPUTS] = {32},   // per-input data width (default 32)
-    int OUT_DATA_WIDTH[NUM_OUTPUTS] = {32},  // per-output data width (default 32)
+    std::array<int, 2> IN_DATA_WIDTH = {32, 32},   // per-input data width
+    std::array<int, 1> OUT_DATA_WIDTH = {32},       // per-output data width
     int TAG_WIDTH = 0,      // 0 means native interface
     int LATENCY_MIN = 1,
     int LATENCY_TYP = 1,
@@ -272,35 +269,35 @@ template<
     int INTERVAL_MIN = 1,
     int INTERVAL_TYP = 1,
     int INTERVAL_MAX = 1
-    // CONFIG_WIDTH is derived, not a template parameter:
-    //   Tagged PE:          NUM_OUTPUTS * TAG_WIDTH
-    //   Constant PE (native): bitwidth(constant_value)
-    //   Constant PE (tagged): bitwidth(constant_value) + TAG_WIDTH
-    //   Compute PE (native):  0
 >
 SC_MODULE(fabric_pe) {
+    // CONFIG_WIDTH: derived, not a template parameter
+    //   Tagged compute PE:     NUM_OUTPUTS * TAG_WIDTH
+    //   Native compute PE:     0
+    static constexpr int CONFIG_WIDTH =
+        (TAG_WIDTH > 0) ? NUM_OUTPUTS * TAG_WIDTH : 0;
+
     // Clock and reset
     sc_core::sc_in<bool> clk;
     sc_core::sc_in<bool> rst_n;
 
     // Input ports (per-port data width)
+    // Each in_data[i] has width IN_DATA_WIDTH[i] + TAG_WIDTH.
+    // The exporter generates per-port declarations for heterogeneous widths.
     sc_core::sc_in<bool>  in_valid[NUM_INPUTS];
     sc_core::sc_out<bool> in_ready[NUM_INPUTS];
-    sc_core::sc_in<sc_dt::sc_bv<IN_DATA_WIDTH[i] + TAG_WIDTH>> in_data[NUM_INPUTS];
 
     // Output ports (per-port data width)
+    // Each out_data[o] has width OUT_DATA_WIDTH[o] + TAG_WIDTH.
     sc_core::sc_out<bool> out_valid[NUM_OUTPUTS];
     sc_core::sc_in<bool>  out_ready[NUM_OUTPUTS];
-    sc_core::sc_out<sc_dt::sc_bv<OUT_DATA_WIDTH[i] + TAG_WIDTH>> out_data[NUM_OUTPUTS];
 
-    // Configuration (CONFIG_WIDTH is derived; see comment above)
+    // Configuration (CONFIG_WIDTH bits; empty for native compute PEs)
     sc_core::sc_in<sc_dt::sc_bv<CONFIG_WIDTH>> cfg_data;
 
     // Compute function pointer (set during elaboration)
-    std::function<void(
-        const std::array<sc_dt::sc_bv<IN_DATA_WIDTH[0]>, NUM_INPUTS>&,
-        std::array<sc_dt::sc_bv<OUT_DATA_WIDTH[0]>, NUM_OUTPUTS>&
-    )> compute;
+    // Port data types are generated per-port to match IN/OUT_DATA_WIDTH
+    std::function<void()> compute;
 
     // Error reporting
     sc_core::sc_out<bool>     error_valid;
@@ -314,6 +311,169 @@ SC_MODULE(fabric_pe) {
     void main_thread();
 };
 ```
+
+### Constant PE Variant (fabric_pe_constant.h)
+
+```cpp
+template<
+    int NUM_OUTPUTS = 1,
+    std::array<int, 1> OUT_DATA_WIDTH = {32},
+    int TAG_WIDTH = 0,
+    int LATENCY_MIN = 0,
+    int LATENCY_TYP = 0,
+    int LATENCY_MAX = 0,
+    int INTERVAL_MIN = 1,
+    int INTERVAL_TYP = 1,
+    int INTERVAL_MAX = 1
+>
+SC_MODULE(fabric_pe_constant) {
+    // CONFIG_WIDTH: derived
+    //   Native:  bitwidth(constant_value) = OUT_DATA_WIDTH[0]
+    //   Tagged:  bitwidth(constant_value) + TAG_WIDTH
+    static constexpr int CONST_WIDTH = OUT_DATA_WIDTH[0];
+    static constexpr int CONFIG_WIDTH =
+        (TAG_WIDTH > 0) ? CONST_WIDTH + TAG_WIDTH : CONST_WIDTH;
+
+    sc_core::sc_in<bool> clk;
+    sc_core::sc_in<bool> rst_n;
+
+    sc_core::sc_out<bool> out_valid[NUM_OUTPUTS];
+    sc_core::sc_in<bool>  out_ready[NUM_OUTPUTS];
+
+    sc_core::sc_in<sc_dt::sc_bv<CONFIG_WIDTH>> cfg_data;
+
+    sc_core::sc_out<bool>     error_valid;
+    sc_core::sc_out<uint16_t> error_code;
+
+    SC_CTOR(fabric_pe_constant) {
+        SC_THREAD(main_thread);
+        sensitive << clk.pos();
+    }
+
+    void main_thread();
+};
+```
+
+No input ports: the constant value comes from `cfg_data`. See
+[spec-fabric-pe.md](./spec-fabric-pe.md) for constant exclusivity rules.
+
+### Load PE Variant (fabric_pe_load.h)
+
+```cpp
+template<
+    int DATA_WIDTH = 32,
+    int TAG_WIDTH = 0,
+    int HARDWARE_TYPE = 0,  // 0 = TagOverwrite, 1 = TagTransparent
+    int LQ_DEPTH = 0        // Required when HARDWARE_TYPE = 1
+>
+SC_MODULE(fabric_pe_load) {
+    // CONFIG_WIDTH: derived
+    //   TagOverwrite (tagged):  TAG_WIDTH (output_tag)
+    //   TagOverwrite (native):  0
+    //   TagTransparent:         0 (no output_tag)
+    static constexpr int CONFIG_WIDTH =
+        (HARDWARE_TYPE == 0 && TAG_WIDTH > 0) ? TAG_WIDTH : 0;
+
+    sc_core::sc_in<bool> clk;
+    sc_core::sc_in<bool> rst_n;
+
+    // From compute: address
+    sc_core::sc_in<bool>                                   addr_valid;
+    sc_core::sc_out<bool>                                  addr_ready;
+    sc_core::sc_in<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>>   addr_data;
+
+    // From memory: returned data
+    sc_core::sc_in<bool>                                   mem_data_valid;
+    sc_core::sc_out<bool>                                  mem_data_ready;
+    sc_core::sc_in<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>>   mem_data;
+
+    // Control token
+    sc_core::sc_in<bool>  ctrl_valid;
+    sc_core::sc_out<bool> ctrl_ready;
+
+    // To memory: address
+    sc_core::sc_out<bool>                                  mem_addr_valid;
+    sc_core::sc_in<bool>                                   mem_addr_ready;
+    sc_core::sc_out<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>>  mem_addr_data;
+
+    // To compute: data
+    sc_core::sc_out<bool>                                  data_valid;
+    sc_core::sc_in<bool>                                   data_ready;
+    sc_core::sc_out<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>>  data_out;
+
+    sc_core::sc_in<sc_dt::sc_bv<CONFIG_WIDTH>> cfg_data;
+
+    sc_core::sc_out<bool>     error_valid;
+    sc_core::sc_out<uint16_t> error_code;
+
+    SC_CTOR(fabric_pe_load) {
+        SC_THREAD(main_thread);
+        sensitive << clk.pos();
+    }
+
+    void main_thread();
+};
+```
+
+See [spec-fabric-pe.md](./spec-fabric-pe.md) for hardware type semantics
+(TagOverwrite vs TagTransparent) and port role definitions.
+
+### Store PE Variant (fabric_pe_store.h)
+
+```cpp
+template<
+    int DATA_WIDTH = 32,
+    int TAG_WIDTH = 0,
+    int HARDWARE_TYPE = 0,  // 0 = TagOverwrite, 1 = TagTransparent
+    int SQ_DEPTH = 0        // Required when HARDWARE_TYPE = 1
+>
+SC_MODULE(fabric_pe_store) {
+    static constexpr int CONFIG_WIDTH =
+        (HARDWARE_TYPE == 0 && TAG_WIDTH > 0) ? TAG_WIDTH : 0;
+
+    sc_core::sc_in<bool> clk;
+    sc_core::sc_in<bool> rst_n;
+
+    // From compute: address
+    sc_core::sc_in<bool>                                   addr_valid;
+    sc_core::sc_out<bool>                                  addr_ready;
+    sc_core::sc_in<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>>   addr_data;
+
+    // From compute: data
+    sc_core::sc_in<bool>                                   data_valid;
+    sc_core::sc_out<bool>                                  data_ready;
+    sc_core::sc_in<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>>   data_in;
+
+    // Control token
+    sc_core::sc_in<bool>  ctrl_valid;
+    sc_core::sc_out<bool> ctrl_ready;
+
+    // To memory: address
+    sc_core::sc_out<bool>                                  mem_addr_valid;
+    sc_core::sc_in<bool>                                   mem_addr_ready;
+    sc_core::sc_out<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>>  mem_addr_data;
+
+    // To memory: data
+    sc_core::sc_out<bool>                                  mem_data_valid;
+    sc_core::sc_in<bool>                                   mem_data_ready;
+    sc_core::sc_out<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>>  mem_data_out;
+
+    sc_core::sc_in<sc_dt::sc_bv<CONFIG_WIDTH>> cfg_data;
+
+    sc_core::sc_out<bool>     error_valid;
+    sc_core::sc_out<uint16_t> error_code;
+
+    SC_CTOR(fabric_pe_store) {
+        SC_THREAD(main_thread);
+        sensitive << clk.pos();
+    }
+
+    void main_thread();
+};
+```
+
+See [spec-fabric-pe.md](./spec-fabric-pe.md) for hardware type semantics
+and port role definitions.
 
 ### fabric_temporal_pe.h
 
@@ -512,12 +672,6 @@ private:
 ```
 
 ### fabric_memory.h
-
-> **Note:** Load/store PEs that interface with memory modules may include
-> a `HARDWARE_TYPE` parameter variant to distinguish between different
-> memory access patterns (e.g., streaming, indexed, indirect). This
-> parameter affects the internal load/store unit implementation but does
-> not change the port interface.
 
 ```cpp
 template<
@@ -726,6 +880,10 @@ SC_MODULE(fabric_del_tag) {
 
 ## config_mem Design
 
+For the formal definition of config_mem (word width, depth calculation,
+CONFIG_WIDTH derivation), see
+[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
+
 ### Purpose
 
 The `config_mem` controller provides a TLM 2.0 interface for runtime
@@ -834,9 +992,6 @@ sc_core::sc_out<uint16_t> error_code;
 
 Error codes match the values defined in
 [spec-fabric-error.md](./spec-fabric-error.md):
-
-- CFG_ errors (0-7): Configuration errors detected after programming
-- RT_ errors (256+): Runtime execution errors
 
 The top-level module aggregates errors using priority encoding (lower code =
 higher priority). The first error is latched until reset.

@@ -334,8 +334,8 @@ This is output-major ordering, consistent with the Fabric specification
 
 **Constraints:**
 - Maximum 32 inputs and 32 outputs
-- Each connectivity row must have at least one `true` (input must route somewhere)
-- Each connectivity column must have at least one `true` (output must have source)
+- Each row must have at least one `true` (every output must have at least one source)
+- Each column must have at least one `true` (every input must route to at least one output)
 
 **Example (full crossbar):**
 ```cpp
@@ -347,12 +347,12 @@ auto sw = builder.newSwitch("router_4x4")
 
 **Example (ring topology):**
 ```cpp
-// 4-input, 4-output ring: each input routes to same and next output
+// 4-input, 4-output ring: each output receives from same-index and next-index input
 std::vector<std::vector<bool>> ring = {
-    {true, true, false, false},  // in0 -> out0, out1
-    {false, true, true, false},  // in1 -> out1, out2
-    {false, false, true, true},  // in2 -> out2, out3
-    {true, false, false, true}   // in3 -> out3, out0
+    {true, true, false, false},  // out0 <- in0, in1
+    {false, true, true, false},  // out1 <- in1, in2
+    {false, false, true, true},  // out2 <- in2, in3
+    {true, false, false, true}   // out3 <- in3, in0 (wrap)
 };
 auto sw = builder.newSwitch("ring_4x4")
     .setPortCount(4, 4)
@@ -659,15 +659,18 @@ Constructs a regular grid of PEs and switches.
 For a 2x2 mesh with `Topology::Mesh`:
 
 ```
-PE[0,0] -- SW[0,0] -- PE[0,1]
-   |                    |
-SW[0,1]              SW[1,1]
-   |                    |
-PE[1,0] -- SW[1,0] -- PE[1,1]
+[0,0]              [0,1]
+PE -- SW -------- PE -- SW
+      |                 |
+      |                 |
+PE -- SW -------- PE -- SW
+[1,0]              [1,1]
 ```
 
-Each PE and SW uses a unique `[row, col]` coordinate. No two modules share the
-same coordinate.
+Each grid point `[row, col]` contains one PE and one SW. The `peGrid` and
+`swGrid` arrays use independent coordinate spaces: `peGrid[r][c]` and
+`swGrid[r][c]` refer to different modules co-located at grid point `[r, c]`.
+Instance names encode both type and position (e.g., `pe_0_0`, `sw_0_0`).
 
 **Switch port ordering:**
 

@@ -161,25 +161,11 @@ allowed operations. This includes operations from:
 
 #### Body Constraints and Exclusivity Rules
 
-The following body constraints are defined authoritatively in
-[spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md):
-
-- **Homogeneous Consumption Rule**: Operations must belong to the same
-  consumption group (full-consume or partial-consume).
-- **Load/Store Exclusivity**: Body must contain exactly one load or store
-  and no other non-terminator ops (`COMP_PE_LOADSTORE_BODY`).
-- **Dataflow Exclusivity**: If any `dataflow` op is present, only `dataflow`
-  and `fabric.yield` are allowed. Interface must be native.
-- **Constant Exclusivity**: Body must contain exactly one `handshake.constant`
-  and no other non-terminator ops (`COMP_PE_CONSTANT_BODY`).
-- **Instance-Only Prohibition**: Body must not consist solely of a single
-  `fabric.instance` (`COMP_PE_INSTANCE_ONLY_BODY`).
-- **Prohibited Operations**: `fabric.switch`, `fabric.temporal_pe`,
-  `fabric.temporal_sw`, `fabric.add_tag`, `fabric.map_tag`, `fabric.del_tag`,
-  and any unlisted `handshake` operations are not allowed.
-
-See [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md) for the complete and
-authoritative specification of these rules.
+All body constraints (homogeneous consumption rule, load/store exclusivity,
+dataflow exclusivity, constant exclusivity, instance-only prohibition, and
+prohibited operations) are defined authoritatively in
+[spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md). Refer to that document
+for the complete specification.
 
 ### Load/Store PE Semantics
 

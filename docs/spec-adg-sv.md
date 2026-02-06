@@ -130,25 +130,20 @@ module fabric_pe #(
     parameter int LATENCY_MAX = 1,
     parameter int INTERVAL_MIN = 1,
     parameter int INTERVAL_TYP = 1,
-    parameter int INTERVAL_MAX = 1
-    // CONFIG_WIDTH is a derived parameter:
-    // For tagged PE: NUM_OUTPUTS * TAG_WIDTH
-    // For constant PE (native): bitwidth(constant_value)
-    // For constant PE (tagged): bitwidth(constant_value) + TAG_WIDTH
-    // For compute PE (native): 0 (no config)
+    parameter int INTERVAL_MAX = 1,
+    // CONFIG_WIDTH: derived, not overridable
+    localparam int CONFIG_WIDTH = (TAG_WIDTH > 0) ? NUM_OUTPUTS * TAG_WIDTH : 0
 ) (
     input  logic clk,
     input  logic rst_n,
 
-    // Input ports (valid/ready/data)
+    // Input ports (valid/ready per port)
     input  logic [NUM_INPUTS-1:0]  in_valid,
     output logic [NUM_INPUTS-1:0]  in_ready,
-    input  logic [IN_DATA_WIDTH[0]+TAG_WIDTH-1:0] in_data [NUM_INPUTS],
 
-    // Output ports (valid/ready/data)
+    // Output ports (valid/ready per port)
     output logic [NUM_OUTPUTS-1:0] out_valid,
     input  logic [NUM_OUTPUTS-1:0] out_ready,
-    output logic [OUT_DATA_WIDTH[0]+TAG_WIDTH-1:0] out_data [NUM_OUTPUTS],
 
     // Generic configuration data (derived CONFIG_WIDTH)
     input  logic [CONFIG_WIDTH-1:0] cfg_data,
@@ -157,9 +152,167 @@ module fabric_pe #(
     output logic        error_valid,
     output logic [15:0] error_code
 );
+
+// Per-port data wires with individual widths.
+// Accessed as gen_in[i].data and gen_out[o].data.
+generate
+    for (genvar i = 0; i < NUM_INPUTS; i++) begin : gen_in
+        wire [IN_DATA_WIDTH[i]+TAG_WIDTH-1:0] data;
+    end
+    for (genvar o = 0; o < NUM_OUTPUTS; o++) begin : gen_out
+        wire [OUT_DATA_WIDTH[o]+TAG_WIDTH-1:0] data;
+    end
+endgenerate
 ```
 
-**Load/Store PE variant:** Load and store PEs use the same `fabric_pe` module with an additional `HARDWARE_TYPE` parameter (0 = TagOverwrite, 1 = TagTransparent). TagTransparent mode requires `LQ_DEPTH` or `SQ_DEPTH` parameters for queue depth. See [spec-fabric-pe.md](./spec-fabric-pe.md).
+#### Constant PE Variant
+
+A constant PE contains exactly one `handshake.constant` in its body. The
+constant value is runtime configurable via config_mem.
+
+```systemverilog
+module fabric_pe_constant #(
+    parameter int NUM_OUTPUTS = 1,
+    parameter int OUT_DATA_WIDTH [NUM_OUTPUTS] = '{default: 32},
+    parameter int TAG_WIDTH = 0,
+    parameter int LATENCY_MIN = 0,
+    parameter int LATENCY_TYP = 0,
+    parameter int LATENCY_MAX = 0,
+    parameter int INTERVAL_MIN = 1,
+    parameter int INTERVAL_TYP = 1,
+    parameter int INTERVAL_MAX = 1,
+    // CONFIG_WIDTH: derived
+    //   Native:  bitwidth(constant_value)
+    //   Tagged:  bitwidth(constant_value) + TAG_WIDTH
+    localparam int CONST_WIDTH = OUT_DATA_WIDTH[0],
+    localparam int CONFIG_WIDTH = (TAG_WIDTH > 0)
+        ? CONST_WIDTH + TAG_WIDTH : CONST_WIDTH
+) (
+    input  logic clk,
+    input  logic rst_n,
+
+    output logic [NUM_OUTPUTS-1:0] out_valid,
+    input  logic [NUM_OUTPUTS-1:0] out_ready,
+
+    input  logic [CONFIG_WIDTH-1:0] cfg_data,
+
+    output logic        error_valid,
+    output logic [15:0] error_code
+);
+
+generate
+    for (genvar o = 0; o < NUM_OUTPUTS; o++) begin : gen_out
+        wire [OUT_DATA_WIDTH[o]+TAG_WIDTH-1:0] data;
+    end
+endgenerate
+```
+
+No input ports: the constant value comes from `cfg_data`. See
+[spec-fabric-pe.md](./spec-fabric-pe.md) for constant exclusivity rules.
+
+#### Load PE Variant
+
+A load PE contains exactly one `handshake.load` in its body.
+
+```systemverilog
+module fabric_pe_load #(
+    parameter int DATA_WIDTH = 32,
+    parameter int TAG_WIDTH = 0,
+    parameter int HARDWARE_TYPE = 0,  // 0 = TagOverwrite, 1 = TagTransparent
+    parameter int LQ_DEPTH = 0,       // Required when HARDWARE_TYPE = 1
+    // CONFIG_WIDTH: derived
+    //   TagOverwrite (tagged):  TAG_WIDTH (output_tag)
+    //   TagOverwrite (native):  0
+    //   TagTransparent:         0 (no output_tag)
+    localparam int CONFIG_WIDTH = (HARDWARE_TYPE == 0 && TAG_WIDTH > 0)
+        ? TAG_WIDTH : 0
+) (
+    input  logic clk,
+    input  logic rst_n,
+
+    // From compute: address
+    input  logic                          addr_valid,
+    output logic                          addr_ready,
+    input  logic [DATA_WIDTH+TAG_WIDTH-1:0] addr_data,
+
+    // From memory: returned data
+    input  logic                          mem_data_valid,
+    output logic                          mem_data_ready,
+    input  logic [DATA_WIDTH+TAG_WIDTH-1:0] mem_data,
+
+    // Control token
+    input  logic                          ctrl_valid,
+    output logic                          ctrl_ready,
+
+    // To memory: address
+    output logic                          mem_addr_valid,
+    input  logic                          mem_addr_ready,
+    output logic [DATA_WIDTH+TAG_WIDTH-1:0] mem_addr_data,
+
+    // To compute: data
+    output logic                          data_valid,
+    input  logic                          data_ready,
+    output logic [DATA_WIDTH+TAG_WIDTH-1:0] data_out,
+
+    input  logic [CONFIG_WIDTH-1:0] cfg_data,
+
+    output logic        error_valid,
+    output logic [15:0] error_code
+);
+```
+
+See [spec-fabric-pe.md](./spec-fabric-pe.md) for hardware type semantics
+(TagOverwrite vs TagTransparent) and port role definitions.
+
+#### Store PE Variant
+
+A store PE contains exactly one `handshake.store` in its body.
+
+```systemverilog
+module fabric_pe_store #(
+    parameter int DATA_WIDTH = 32,
+    parameter int TAG_WIDTH = 0,
+    parameter int HARDWARE_TYPE = 0,  // 0 = TagOverwrite, 1 = TagTransparent
+    parameter int SQ_DEPTH = 0,       // Required when HARDWARE_TYPE = 1
+    localparam int CONFIG_WIDTH = (HARDWARE_TYPE == 0 && TAG_WIDTH > 0)
+        ? TAG_WIDTH : 0
+) (
+    input  logic clk,
+    input  logic rst_n,
+
+    // From compute: address
+    input  logic                          addr_valid,
+    output logic                          addr_ready,
+    input  logic [DATA_WIDTH+TAG_WIDTH-1:0] addr_data,
+
+    // From compute: data
+    input  logic                          data_valid,
+    output logic                          data_ready,
+    input  logic [DATA_WIDTH+TAG_WIDTH-1:0] data_in,
+
+    // Control token
+    input  logic                          ctrl_valid,
+    output logic                          ctrl_ready,
+
+    // To memory: address
+    output logic                          mem_addr_valid,
+    input  logic                          mem_addr_ready,
+    output logic [DATA_WIDTH+TAG_WIDTH-1:0] mem_addr_data,
+
+    // To memory: data
+    output logic                          mem_data_valid,
+    input  logic                          mem_data_ready,
+    output logic [DATA_WIDTH+TAG_WIDTH-1:0] mem_data_out,
+
+    input  logic [CONFIG_WIDTH-1:0] cfg_data,
+
+    output logic        error_valid,
+    output logic [15:0] error_code
+);
+```
+
+See [spec-fabric-pe.md](./spec-fabric-pe.md) for hardware type semantics
+and port role definitions.
 
 #### fabric_temporal_pe.sv
 
@@ -446,6 +599,10 @@ module fabric_del_tag #(
 ```
 
 ## config_mem Design
+
+For the formal definition of config_mem (word width, depth calculation,
+CONFIG_WIDTH derivation), see
+[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
 
 ### Purpose
 
