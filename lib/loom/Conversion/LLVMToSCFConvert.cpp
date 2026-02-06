@@ -86,7 +86,7 @@ LogicalResult convertGlobals(ModuleOp module, OpBuilder &builder,
     }
 
     builder.setInsertionPoint(global);
-    auto newGlobal = builder.create<memref::GlobalOp>(
+    auto newGlobal = memref::GlobalOp::create(builder,
         global.getLoc(), originalName, StringAttr(), memrefType, initAttr,
         global.getConstant(), global.getAlignmentAttr());
     CopyLoomAnnotations(global.getOperation(), newGlobal.getOperation());
@@ -159,7 +159,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
   auto funcType = builder.getFunctionType(argTypes, resultTypes);
   builder.setInsertionPoint(func);
   func::FuncOp newFunc =
-      builder.create<func::FuncOp>(func.getLoc(), originalName, funcType);
+      func::FuncOp::create(builder, func.getLoc(), originalName, funcType);
   newFunc.setSymVisibilityAttr(func.getSymVisibilityAttr());
   CopyLoomAnnotations(func.getOperation(), newFunc.getOperation());
   for (unsigned i = 0, e = func.getNumArguments(); i < e; ++i) {
@@ -249,23 +249,23 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
       if (auto zeroOp = llvm::dyn_cast<LLVM::ZeroOp>(op)) {
         Type type = zeroOp.getType();
         if (IsPointerType(type)) {
-          auto zeroInt = builder.create<arith::ConstantOp>(
+          auto zeroInt = arith::ConstantOp::create(builder,
               loc, builder.getI64Type(),
               builder.getIntegerAttr(builder.getI64Type(), 0));
-          auto ptr = builder.create<LLVM::IntToPtrOp>(loc, type,
+          auto ptr = LLVM::IntToPtrOp::create(builder, loc, type,
                                                       zeroInt.getResult());
           valueMap[zeroOp.getResult()] = ptr.getResult();
           continue;
         }
         if (auto intTy = llvm::dyn_cast<IntegerType>(type)) {
           auto attr = builder.getIntegerAttr(intTy, 0);
-          auto zero = builder.create<arith::ConstantOp>(loc, attr);
+          auto zero = arith::ConstantOp::create(builder, loc, attr);
           valueMap[zeroOp.getResult()] = zero.getResult();
           continue;
         }
         if (auto floatTy = llvm::dyn_cast<FloatType>(type)) {
           auto attr = builder.getFloatAttr(floatTy, 0.0);
-          auto zero = builder.create<arith::ConstantOp>(loc, attr);
+          auto zero = arith::ConstantOp::create(builder, loc, attr);
           valueMap[zeroOp.getResult()] = zero.getResult();
           continue;
         }
@@ -273,13 +273,13 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
       }
 
       if (auto poisonOp = llvm::dyn_cast<LLVM::PoisonOp>(op)) {
-        auto poison = builder.create<ub::PoisonOp>(loc, poisonOp.getType());
+        auto poison = ub::PoisonOp::create(builder, loc, poisonOp.getType());
         valueMap[poisonOp.getResult()] = poison.getResult();
         continue;
       }
 
       if (auto undefOp = llvm::dyn_cast<LLVM::UndefOp>(op)) {
-        auto poison = builder.create<ub::PoisonOp>(loc, undefOp.getType());
+        auto poison = ub::PoisonOp::create(builder, loc, undefOp.getType());
         valueMap[undefOp.getResult()] = poison.getResult();
         continue;
       }
@@ -289,7 +289,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (it == globals.end())
           return addrOp.emitError("unknown global"), failure();
         auto memrefType = it->second.type;
-        auto getGlobal = builder.create<memref::GetGlobalOp>(
+        auto getGlobal = memref::GetGlobalOp::create(builder,
             loc, memrefType, addrOp.getGlobalName());
         CopyLoomAnnotations(it->second.oldGlobal.getOperation(),
                             getGlobal.getOperation());
@@ -337,7 +337,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           Value sizeIndex = ToIndexValue(builder, loc, *mappedSize);
           if (!sizeIndex)
             return allocaOp.emitError("invalid alloca size"), failure();
-          countValue = builder.create<arith::MulIOp>(loc, sizeIndex, countValue);
+          countValue = arith::MulIOp::create(builder, loc, sizeIndex, countValue);
         }
         MemRefType memrefType;
         memref::AllocaOp alloc;
@@ -345,10 +345,10 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           memrefType =
               MemRefType::get({*staticCount}, scalar,
                               MemRefLayoutAttrInterface(), Attribute());
-          alloc = builder.create<memref::AllocaOp>(loc, memrefType);
+          alloc = memref::AllocaOp::create(builder, loc, memrefType);
         } else {
           memrefType = MakeMemRefType(scalar);
-          alloc = builder.create<memref::AllocaOp>(loc, memrefType,
+          alloc = memref::AllocaOp::create(builder, loc, memrefType,
                                                     ValueRange{countValue});
         }
         PointerInfo info{alloc, BuildIndexConstant(builder, loc, 0), scalar};
@@ -402,14 +402,14 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           if (!offset)
             offset = term;
           else
-            offset = builder.create<arith::AddIOp>(loc, offset, term);
+            offset = arith::AddIOp::create(builder, loc, offset, term);
         };
 
         if (!indices.empty()) {
           Value stride0 = BuildIndexConstant(builder, loc, totalStride);
           Value term = indices[0];
           if (totalStride != 1)
-            term = builder.create<arith::MulIOp>(loc, term, stride0);
+            term = arith::MulIOp::create(builder, loc, term, stride0);
           addTerm(term);
         }
 
@@ -422,7 +422,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           Value term = indices[i];
           if (stride != 1) {
             Value strideVal = BuildIndexConstant(builder, loc, stride);
-            term = builder.create<arith::MulIOp>(loc, term, strideVal);
+            term = arith::MulIOp::create(builder, loc, term, strideVal);
           }
           addTerm(term);
         }
@@ -435,7 +435,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
                                           baseInfo->elementType, scalar);
         Value newIndex = baseIndex;
         if (!IsZeroIndex(offset))
-          newIndex = builder.create<arith::AddIOp>(loc, baseIndex, offset);
+          newIndex = arith::AddIOp::create(builder, loc, baseIndex, offset);
 
         PointerInfo info{baseInfo->base, newIndex, scalar};
         pointerMap[gepOp.getResult()] = info;
@@ -485,7 +485,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
                                                 accessType);
         }
         Value val =
-            builder.create<memref::LoadOp>(loc, ptrInfo->base, index);
+            memref::LoadOp::create(builder, loc, ptrInfo->base, index);
         valueMap[loadOp.getResult()] = val;
         continue;
       }
@@ -520,7 +520,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
                                                 ptrInfo->elementType,
                                                 accessType);
         }
-        builder.create<memref::StoreOp>(loc, *storedVal, ptrInfo->base,
+        memref::StoreOp::create(builder, loc, *storedVal, ptrInfo->base,
                                         index);
         continue;
       }
@@ -545,9 +545,9 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
             if (!lhsPtr || !rhsPtr)
               return callOp.emitError("missing std::min/max pointer operand"),
                      failure();
-            Value lhsVal = builder.create<memref::LoadOp>(
+            Value lhsVal = memref::LoadOp::create(builder,
                 loc, lhsPtr->base, lhsPtr->index);
-            Value rhsVal = builder.create<memref::LoadOp>(
+            Value rhsVal = memref::LoadOp::create(builder,
                 loc, rhsPtr->base, rhsPtr->index);
             if (lhsVal.getType() != rhsVal.getType())
               return callOp.emitError("std::min/max operand type mismatch"),
@@ -564,7 +564,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
                   (minMaxKind == StdMinMaxKind::Minimum) ? rhsVal : lhsVal;
               Value cmpRhs =
                   (minMaxKind == StdMinMaxKind::Minimum) ? lhsVal : rhsVal;
-              cmp = builder.create<arith::CmpFOp>(
+              cmp = arith::CmpFOp::create(builder,
                   loc, arith::CmpFPredicate::OLT, cmpLhs, cmpRhs);
             } else if (llvm::isa<IntegerType>(lhsVal.getType())) {
               bool isUnsigned =
@@ -581,7 +581,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
                   (minMaxKind == StdMinMaxKind::Minimum) ? rhsVal : lhsVal;
               Value cmpRhs =
                   (minMaxKind == StdMinMaxKind::Minimum) ? lhsVal : rhsVal;
-              cmp = builder.create<arith::CmpIOp>(loc, pred, cmpLhs, cmpRhs);
+              cmp = arith::CmpIOp::create(builder, loc, pred, cmpLhs, cmpRhs);
             } else {
               return callOp.emitError(
                          "std::min/max unsupported operand type"),
@@ -660,7 +660,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         }
 
         if (isVarArg || isRawPtrCall) {
-          auto newCall = builder.create<LLVM::CallOp>(loc, callOp.getResultTypes(),
+          auto newCall = LLVM::CallOp::create(builder, loc, callOp.getResultTypes(),
                                                       calleeAttr, operands);
           if (auto varType = callOp.getVarCalleeType())
             newCall.setVarCalleeType(varType);
@@ -674,7 +674,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         SmallVector<Type, 4> resultTypes;
         for (Type type : callOp.getResultTypes())
           resultTypes.push_back(NormalizeScalarType(type, module.getContext()));
-        auto call = builder.create<func::CallOp>(loc, callee,
+        auto call = func::CallOp::create(builder, loc, callee,
                                                  resultTypes, operands);
         CopyLoomAnnotations(&op, call.getOperation());
         for (auto [oldRes, newRes] :
@@ -711,7 +711,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           auto memrefType = MakeMemRefType(builder.getI8Type());
           Value one = BuildIndexConstant(builder, loc, 1);
           auto alloc =
-              builder.create<memref::AllocaOp>(loc, memrefType,
+              memref::AllocaOp::create(builder, loc, memrefType,
                                                ValueRange{one});
           PointerInfo info{alloc, BuildIndexConstant(builder, loc, 0),
                            builder.getI8Type()};
@@ -737,24 +737,24 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           if (!sizeIndex)
             return callOp.emitError("invalid memcpy size"), failure();
           Value elemSizeVal = BuildIndexConstant(builder, loc, elemSize);
-          Value length = builder.create<arith::DivUIOp>(loc, sizeIndex,
+          Value length = arith::DivUIOp::create(builder, loc, sizeIndex,
                                                         elemSizeVal);
           Value zero = BuildIndexConstant(builder, loc, 0);
           Value one = BuildIndexConstant(builder, loc, 1);
-          auto loop = builder.create<scf::ForOp>(loc, zero, length, one);
+          auto loop = scf::ForOp::create(builder, loc, zero, length, one);
           builder.setInsertionPointToStart(loop.getBody());
           Value iv = loop.getInductionVar();
           Value srcIndex = iv;
           if (!IsZeroIndex(srcInfo->index))
             srcIndex =
-                builder.create<arith::AddIOp>(loc, srcInfo->index, iv);
+                arith::AddIOp::create(builder, loc, srcInfo->index, iv);
           Value dstIndex = iv;
           if (!IsZeroIndex(dstInfo->index))
             dstIndex =
-                builder.create<arith::AddIOp>(loc, dstInfo->index, iv);
+                arith::AddIOp::create(builder, loc, dstInfo->index, iv);
           Value val =
-              builder.create<memref::LoadOp>(loc, srcInfo->base, srcIndex);
-          builder.create<memref::StoreOp>(loc, val, dstInfo->base, dstIndex);
+              memref::LoadOp::create(builder, loc, srcInfo->base, srcIndex);
+          memref::StoreOp::create(builder, loc, val, dstInfo->base, dstIndex);
           builder.setInsertionPointAfter(loop);
           continue;
         }
@@ -777,21 +777,21 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           for (unsigned i = 0; i < byteCount; ++i) {
             unsigned inShift = i * 8;
             unsigned outShift = (byteCount - 1 - i) * 8;
-            auto inShiftVal = builder.create<arith::ConstantOp>(
+            auto inShiftVal = arith::ConstantOp::create(builder,
                 loc, builder.getIntegerAttr(intTy, inShift));
-            auto outShiftVal = builder.create<arith::ConstantOp>(
+            auto outShiftVal = arith::ConstantOp::create(builder,
                 loc, builder.getIntegerAttr(intTy, outShift));
-            auto byteMask = builder.create<arith::ConstantOp>(
+            auto byteMask = arith::ConstantOp::create(builder,
                 loc, builder.getIntegerAttr(intTy, 0xFF));
-            Value shiftedIn = builder.create<arith::ShRUIOp>(
+            Value shiftedIn = arith::ShRUIOp::create(builder,
                 loc, *operand, inShiftVal);
             Value masked =
-                builder.create<arith::AndIOp>(loc, shiftedIn, byteMask);
+                arith::AndIOp::create(builder, loc, shiftedIn, byteMask);
             Value shiftedOut =
-                builder.create<arith::ShLIOp>(loc, masked, outShiftVal);
+                arith::ShLIOp::create(builder, loc, masked, outShiftVal);
             if (result)
               result =
-                  builder.create<arith::OrIOp>(loc, result, shiftedOut);
+                  arith::OrIOp::create(builder, loc, result, shiftedOut);
             else
               result = shiftedOut;
           }
@@ -805,10 +805,10 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           auto rhs = LookupValue(valueMap, callOp.getOperand(1));
           if (!lhs || !rhs)
             return callOp.emitError("missing umin operand"), failure();
-          auto cmp = builder.create<arith::CmpIOp>(
+          auto cmp = arith::CmpIOp::create(builder,
               loc, arith::CmpIPredicate::ult, *lhs, *rhs);
           auto sel =
-              builder.create<arith::SelectOp>(loc, cmp, *lhs, *rhs);
+              arith::SelectOp::create(builder, loc, cmp, *lhs, *rhs);
           valueMap[callOp->getResult(0)] = sel.getResult();
           continue;
         }
@@ -823,13 +823,13 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           if (!intTy)
             return callOp.emitError("usub.sat expects integer operands"),
                    failure();
-          auto zero = builder.create<arith::ConstantOp>(
+          auto zero = arith::ConstantOp::create(builder,
               loc, builder.getIntegerAttr(intTy, 0));
-          auto cmp = builder.create<arith::CmpIOp>(
+          auto cmp = arith::CmpIOp::create(builder,
               loc, arith::CmpIPredicate::ult, *lhs, *rhs);
-          auto sub = builder.create<arith::SubIOp>(loc, *lhs, *rhs);
+          auto sub = arith::SubIOp::create(builder, loc, *lhs, *rhs);
           auto sel =
-              builder.create<arith::SelectOp>(loc, cmp, zero, sub);
+              arith::SelectOp::create(builder, loc, cmp, zero, sub);
           valueMap[callOp->getResult(0)] = sel.getResult();
           continue;
         }
@@ -849,7 +849,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           if (!sizeIndex)
             return callOp.emitError("invalid memset size"), failure();
           Value elemSizeVal = BuildIndexConstant(builder, loc, elemSize);
-          Value length = builder.create<arith::DivUIOp>(loc, sizeIndex,
+          Value length = arith::DivUIOp::create(builder, loc, sizeIndex,
                                                         elemSizeVal);
           Type elemType = dstInfo->elementType;
           auto fillVal = BuildMemsetFillValue(builder, loc, *val, elemType);
@@ -857,14 +857,14 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
             return callOp.emitError("unsupported memset value"), failure();
           Value zero = BuildIndexConstant(builder, loc, 0);
           Value step = BuildIndexConstant(builder, loc, 1);
-          auto loop = builder.create<scf::ForOp>(loc, zero, length, step);
+          auto loop = scf::ForOp::create(builder, loc, zero, length, step);
           builder.setInsertionPointToStart(loop.getBody());
           Value iv = loop.getInductionVar();
           Value dstIndex = iv;
           if (!IsZeroIndex(dstInfo->index))
             dstIndex =
-                builder.create<arith::AddIOp>(loc, dstInfo->index, iv);
-          builder.create<memref::StoreOp>(loc, *fillVal, dstInfo->base,
+                arith::AddIOp::create(builder, loc, dstInfo->index, iv);
+          memref::StoreOp::create(builder, loc, *fillVal, dstInfo->base,
                                           dstIndex);
           builder.setInsertionPointAfter(loop);
           continue;
@@ -883,7 +883,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
             return callOp.emitError("fmuladd expects float operands"),
                    failure();
           auto fma =
-              builder.create<math::FmaOp>(loc, *lhs, *rhs, *addend);
+              math::FmaOp::create(builder, loc, *lhs, *rhs, *addend);
           valueMap[callOp->getResult(0)] = fma.getResult();
           continue;
         }
@@ -899,29 +899,29 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           if (!intTy)
             return callOp.emitError("fshl expects integer operands"),
                    failure();
-          auto width = builder.create<arith::ConstantOp>(
+          auto width = arith::ConstantOp::create(builder,
               loc, builder.getIntegerAttr(intTy, intTy.getWidth()));
-          auto zero = builder.create<arith::ConstantOp>(
+          auto zero = arith::ConstantOp::create(builder,
               loc, builder.getIntegerAttr(intTy, 0));
           Value shiftMod =
-              builder.create<arith::RemUIOp>(loc, *shift, width);
-          auto isZero = builder.create<arith::CmpIOp>(
+              arith::RemUIOp::create(builder, loc, *shift, width);
+          auto isZero = arith::CmpIOp::create(builder,
               loc, arith::CmpIPredicate::eq, shiftMod, zero);
           OpBuilder::InsertionGuard guard(builder);
           auto ifOp =
-              builder.create<scf::IfOp>(loc, TypeRange{intTy}, isZero,
+              scf::IfOp::create(builder, loc, TypeRange{intTy}, isZero,
                                         /*withElseRegion=*/true);
           builder.setInsertionPointToStart(ifOp.thenBlock());
-          builder.create<scf::YieldOp>(loc, *lhs);
+          scf::YieldOp::create(builder, loc, *lhs);
           builder.setInsertionPointToStart(ifOp.elseBlock());
-          Value left = builder.create<arith::ShLIOp>(loc, *lhs, shiftMod);
+          Value left = arith::ShLIOp::create(builder, loc, *lhs, shiftMod);
           Value rightShift =
-              builder.create<arith::SubIOp>(loc, width, shiftMod);
+              arith::SubIOp::create(builder, loc, width, shiftMod);
           Value right =
-              builder.create<arith::ShRUIOp>(loc, *rhs, rightShift);
+              arith::ShRUIOp::create(builder, loc, *rhs, rightShift);
           Value combined =
-              builder.create<arith::OrIOp>(loc, left, right);
-          builder.create<scf::YieldOp>(loc, combined);
+              arith::OrIOp::create(builder, loc, left, right);
+          scf::YieldOp::create(builder, loc, combined);
           valueMap[callOp->getResult(0)] = ifOp.getResult(0);
           continue;
         }
@@ -931,7 +931,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           auto operand = LookupValue(valueMap, callOp.getOperand(0));
           if (!operand)
             return callOp.emitError("missing fabs operand"), failure();
-          auto abs = builder.create<math::AbsFOp>(loc, *operand);
+          auto abs = math::AbsFOp::create(builder, loc, *operand);
           valueMap[callOp->getResult(0)] = abs.getResult();
           continue;
         }
@@ -943,7 +943,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, addOp.getRhs());
         if (!lhs || !rhs)
           return addOp.emitError("missing add operand"), failure();
-        auto add = builder.create<arith::AddIOp>(loc, *lhs, *rhs);
+        auto add = arith::AddIOp::create(builder, loc, *lhs, *rhs);
         valueMap[addOp.getResult()] = add.getResult();
         continue;
       }
@@ -953,7 +953,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, subOp.getRhs());
         if (!lhs || !rhs)
           return subOp.emitError("missing sub operand"), failure();
-        auto sub = builder.create<arith::SubIOp>(loc, *lhs, *rhs);
+        auto sub = arith::SubIOp::create(builder, loc, *lhs, *rhs);
         valueMap[subOp.getResult()] = sub.getResult();
         continue;
       }
@@ -963,7 +963,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, mulOp.getRhs());
         if (!lhs || !rhs)
           return mulOp.emitError("missing mul operand"), failure();
-        auto mul = builder.create<arith::MulIOp>(loc, *lhs, *rhs);
+        auto mul = arith::MulIOp::create(builder, loc, *lhs, *rhs);
         valueMap[mulOp.getResult()] = mul.getResult();
         continue;
       }
@@ -973,7 +973,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, shlOp.getRhs());
         if (!lhs || !rhs)
           return shlOp.emitError("missing shl operand"), failure();
-        auto shl = builder.create<arith::ShLIOp>(loc, *lhs, *rhs);
+        auto shl = arith::ShLIOp::create(builder, loc, *lhs, *rhs);
         valueMap[shlOp.getResult()] = shl.getResult();
         continue;
       }
@@ -983,7 +983,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, lshrOp.getRhs());
         if (!lhs || !rhs)
           return lshrOp.emitError("missing lshr operand"), failure();
-        auto shr = builder.create<arith::ShRUIOp>(loc, *lhs, *rhs);
+        auto shr = arith::ShRUIOp::create(builder, loc, *lhs, *rhs);
         valueMap[lshrOp.getResult()] = shr.getResult();
         continue;
       }
@@ -993,7 +993,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, ashrOp.getRhs());
         if (!lhs || !rhs)
           return ashrOp.emitError("missing ashr operand"), failure();
-        auto shr = builder.create<arith::ShRSIOp>(loc, *lhs, *rhs);
+        auto shr = arith::ShRSIOp::create(builder, loc, *lhs, *rhs);
         valueMap[ashrOp.getResult()] = shr.getResult();
         continue;
       }
@@ -1003,7 +1003,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, andOp.getRhs());
         if (!lhs || !rhs)
           return andOp.emitError("missing and operand"), failure();
-        auto andv = builder.create<arith::AndIOp>(loc, *lhs, *rhs);
+        auto andv = arith::AndIOp::create(builder, loc, *lhs, *rhs);
         valueMap[andOp.getResult()] = andv.getResult();
         continue;
       }
@@ -1013,7 +1013,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, orOp.getRhs());
         if (!lhs || !rhs)
           return orOp.emitError("missing or operand"), failure();
-        auto orv = builder.create<arith::OrIOp>(loc, *lhs, *rhs);
+        auto orv = arith::OrIOp::create(builder, loc, *lhs, *rhs);
         valueMap[orOp.getResult()] = orv.getResult();
         continue;
       }
@@ -1023,7 +1023,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, xorOp.getRhs());
         if (!lhs || !rhs)
           return xorOp.emitError("missing xor operand"), failure();
-        auto xorv = builder.create<arith::XOrIOp>(loc, *lhs, *rhs);
+        auto xorv = arith::XOrIOp::create(builder, loc, *lhs, *rhs);
         valueMap[xorOp.getResult()] = xorv.getResult();
         continue;
       }
@@ -1033,7 +1033,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, faddOp.getRhs());
         if (!lhs || !rhs)
           return faddOp.emitError("missing fadd operand"), failure();
-        auto add = builder.create<arith::AddFOp>(loc, *lhs, *rhs);
+        auto add = arith::AddFOp::create(builder, loc, *lhs, *rhs);
         valueMap[faddOp.getResult()] = add.getResult();
         continue;
       }
@@ -1042,7 +1042,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto operand = LookupValue(valueMap, fnegOp.getOperand());
         if (!operand)
           return fnegOp.emitError("missing fneg operand"), failure();
-        auto neg = builder.create<arith::NegFOp>(loc, *operand);
+        auto neg = arith::NegFOp::create(builder, loc, *operand);
         valueMap[fnegOp.getResult()] = neg.getResult();
         continue;
       }
@@ -1052,7 +1052,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, fsubOp.getRhs());
         if (!lhs || !rhs)
           return fsubOp.emitError("missing fsub operand"), failure();
-        auto sub = builder.create<arith::SubFOp>(loc, *lhs, *rhs);
+        auto sub = arith::SubFOp::create(builder, loc, *lhs, *rhs);
         valueMap[fsubOp.getResult()] = sub.getResult();
         continue;
       }
@@ -1065,7 +1065,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (!llvm::isa<FloatType>(lhs->getType()) ||
             !llvm::isa<FloatType>(rhs->getType()))
           return fmulOp.emitError("fmul expects float operands"), failure();
-        auto mul = builder.create<arith::MulFOp>(loc, *lhs, *rhs);
+        auto mul = arith::MulFOp::create(builder, loc, *lhs, *rhs);
         valueMap[fmulOp.getResult()] = mul.getResult();
         continue;
       }
@@ -1075,7 +1075,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, fdivOp.getRhs());
         if (!lhs || !rhs)
           return fdivOp.emitError("missing fdiv operand"), failure();
-        auto div = builder.create<arith::DivFOp>(loc, *lhs, *rhs);
+        auto div = arith::DivFOp::create(builder, loc, *lhs, *rhs);
         valueMap[fdivOp.getResult()] = div.getResult();
         continue;
       }
@@ -1085,7 +1085,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, sdivOp.getRhs());
         if (!lhs || !rhs)
           return sdivOp.emitError("missing sdiv operand"), failure();
-        auto div = builder.create<arith::DivSIOp>(loc, *lhs, *rhs);
+        auto div = arith::DivSIOp::create(builder, loc, *lhs, *rhs);
         valueMap[sdivOp.getResult()] = div.getResult();
         continue;
       }
@@ -1095,7 +1095,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, udivOp.getRhs());
         if (!lhs || !rhs)
           return udivOp.emitError("missing udiv operand"), failure();
-        auto div = builder.create<arith::DivUIOp>(loc, *lhs, *rhs);
+        auto div = arith::DivUIOp::create(builder, loc, *lhs, *rhs);
         valueMap[udivOp.getResult()] = div.getResult();
         continue;
       }
@@ -1105,7 +1105,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, uremOp.getRhs());
         if (!lhs || !rhs)
           return uremOp.emitError("missing urem operand"), failure();
-        auto rem = builder.create<arith::RemUIOp>(loc, *lhs, *rhs);
+        auto rem = arith::RemUIOp::create(builder, loc, *lhs, *rhs);
         valueMap[uremOp.getResult()] = rem.getResult();
         continue;
       }
@@ -1116,7 +1116,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (!lhs || !rhs)
           return icmpOp.emitError("missing icmp operand"), failure();
         auto pred = ConvertICmpPredicate(icmpOp.getPredicate());
-        auto cmp = builder.create<arith::CmpIOp>(loc, pred, *lhs, *rhs);
+        auto cmp = arith::CmpIOp::create(builder, loc, pred, *lhs, *rhs);
         valueMap[icmpOp.getResult()] = cmp.getResult();
         continue;
       }
@@ -1127,7 +1127,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (!lhs || !rhs)
           return fcmpOp.emitError("missing fcmp operand"), failure();
         auto pred = ConvertFCmpPredicate(fcmpOp.getPredicate());
-        auto cmp = builder.create<arith::CmpFOp>(loc, pred, *lhs, *rhs);
+        auto cmp = arith::CmpFOp::create(builder, loc, pred, *lhs, *rhs);
         valueMap[fcmpOp.getResult()] = cmp.getResult();
         continue;
       }
@@ -1164,7 +1164,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
                     lhsBaseType, commonBaseType))
               return selectOp.emitError("select pointer base mismatch"),
                      failure();
-            lhsBase = builder.create<memref::CastOp>(loc, commonBaseType,
+            lhsBase = memref::CastOp::create(builder, loc, commonBaseType,
                                                      lhsBase);
           }
           Value rhsBase = rhsPtr->base;
@@ -1173,13 +1173,13 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
                     rhsBaseType, commonBaseType))
               return selectOp.emitError("select pointer base mismatch"),
                      failure();
-            rhsBase = builder.create<memref::CastOp>(loc, commonBaseType,
+            rhsBase = memref::CastOp::create(builder, loc, commonBaseType,
                                                      rhsBase);
           }
           Value baseSel =
-              builder.create<arith::SelectOp>(loc, *cond, lhsBase, rhsBase);
+              arith::SelectOp::create(builder, loc, *cond, lhsBase, rhsBase);
           Value indexSel =
-              builder.create<arith::SelectOp>(loc, *cond, lhsPtr->index,
+              arith::SelectOp::create(builder, loc, *cond, lhsPtr->index,
                                               rhsPtr->index);
           pointerMap[selectOp.getResult()] =
               PointerInfo{baseSel, indexSel, lhsPtr->elementType};
@@ -1190,7 +1190,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         auto rhs = LookupValue(valueMap, selectOp.getFalseValue());
         if (!lhs || !rhs)
           return selectOp.emitError("missing select operand"), failure();
-        auto sel = builder.create<arith::SelectOp>(loc, *cond, *lhs, *rhs);
+        auto sel = arith::SelectOp::create(builder, loc, *cond, *lhs, *rhs);
         valueMap[selectOp.getResult()] = sel.getResult();
         continue;
       }
@@ -1200,7 +1200,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (!src)
           return zextOp.emitError("missing zext operand"), failure();
         auto dstType = NormalizeScalarType(zextOp.getType(), module.getContext());
-        auto ext = builder.create<arith::ExtUIOp>(loc, dstType, *src);
+        auto ext = arith::ExtUIOp::create(builder, loc, dstType, *src);
         valueMap[zextOp.getResult()] = ext.getResult();
         continue;
       }
@@ -1210,7 +1210,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (!src)
           return sextOp.emitError("missing sext operand"), failure();
         auto dstType = NormalizeScalarType(sextOp.getType(), module.getContext());
-        auto ext = builder.create<arith::ExtSIOp>(loc, dstType, *src);
+        auto ext = arith::ExtSIOp::create(builder, loc, dstType, *src);
         valueMap[sextOp.getResult()] = ext.getResult();
         continue;
       }
@@ -1220,7 +1220,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (!src)
           return truncOp.emitError("missing trunc operand"), failure();
         auto dstType = NormalizeScalarType(truncOp.getType(), module.getContext());
-        auto trunc = builder.create<arith::TruncIOp>(loc, dstType, *src);
+        auto trunc = arith::TruncIOp::create(builder, loc, dstType, *src);
         valueMap[truncOp.getResult()] = trunc.getResult();
         continue;
       }
@@ -1230,7 +1230,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (!src)
           return fpextOp.emitError("missing fpext operand"), failure();
         auto dstType = NormalizeScalarType(fpextOp.getType(), module.getContext());
-        auto ext = builder.create<arith::ExtFOp>(loc, dstType, *src);
+        auto ext = arith::ExtFOp::create(builder, loc, dstType, *src);
         valueMap[fpextOp.getResult()] = ext.getResult();
         continue;
       }
@@ -1240,7 +1240,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (!src)
           return fptruncOp.emitError("missing fptrunc operand"), failure();
         auto dstType = NormalizeScalarType(fptruncOp.getType(), module.getContext());
-        auto trunc = builder.create<arith::TruncFOp>(loc, dstType, *src);
+        auto trunc = arith::TruncFOp::create(builder, loc, dstType, *src);
         valueMap[fptruncOp.getResult()] = trunc.getResult();
         continue;
       }
@@ -1250,7 +1250,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (!src)
           return uitofpOp.emitError("missing uitofp operand"), failure();
         auto dstType = NormalizeScalarType(uitofpOp.getType(), module.getContext());
-        auto cast = builder.create<arith::UIToFPOp>(loc, dstType, *src);
+        auto cast = arith::UIToFPOp::create(builder, loc, dstType, *src);
         valueMap[uitofpOp.getResult()] = cast.getResult();
         continue;
       }
@@ -1260,7 +1260,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (!src)
           return sitofpOp.emitError("missing sitofp operand"), failure();
         auto dstType = NormalizeScalarType(sitofpOp.getType(), module.getContext());
-        auto cast = builder.create<arith::SIToFPOp>(loc, dstType, *src);
+        auto cast = arith::SIToFPOp::create(builder, loc, dstType, *src);
         valueMap[sitofpOp.getResult()] = cast.getResult();
         continue;
       }
@@ -1270,7 +1270,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (!src)
           return fptosiOp.emitError("missing fptosi operand"), failure();
         auto dstType = NormalizeScalarType(fptosiOp.getType(), module.getContext());
-        auto cast = builder.create<arith::FPToSIOp>(loc, dstType, *src);
+        auto cast = arith::FPToSIOp::create(builder, loc, dstType, *src);
         valueMap[fptosiOp.getResult()] = cast.getResult();
         continue;
       }
@@ -1280,7 +1280,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (!src)
           return fptouiOp.emitError("missing fptoui operand"), failure();
         auto dstType = NormalizeScalarType(fptouiOp.getType(), module.getContext());
-        auto cast = builder.create<arith::FPToUIOp>(loc, dstType, *src);
+        auto cast = arith::FPToUIOp::create(builder, loc, dstType, *src);
         valueMap[fptouiOp.getResult()] = cast.getResult();
         continue;
       }
@@ -1328,7 +1328,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         }
 
         auto caseValues = switchOp.getCaseValuesAttr();
-        builder.create<cf::SwitchOp>(loc, *flag,
+        cf::SwitchOp::create(builder, loc, *flag,
                                      blockMap[switchOp.getDefaultDestination()],
                                      defaultOperands, caseValues, caseDests,
                                      caseOperands);
@@ -1348,7 +1348,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
             return brOp.emitError("missing branch operand"), failure();
           operands.push_back(*mapped);
         }
-        builder.create<cf::BranchOp>(loc, dest, operands);
+        cf::BranchOp::create(builder, loc, dest, operands);
         break;
       }
 
@@ -1383,7 +1383,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           falseOperands.push_back(*mapped);
         }
 
-        builder.create<cf::CondBranchOp>(loc, *cond,
+        cf::CondBranchOp::create(builder, loc, *cond,
                                          blockMap[condBrOp.getTrueDest()],
                                          trueOperands,
                                          blockMap[condBrOp.getFalseDest()],
@@ -1399,7 +1399,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
             return retOp.emitError("missing return operand"), failure();
           results.push_back(*mapped);
         }
-        builder.create<func::ReturnOp>(loc, results);
+        func::ReturnOp::create(builder, loc, results);
         break;
       }
 

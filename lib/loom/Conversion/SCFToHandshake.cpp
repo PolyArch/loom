@@ -107,7 +107,7 @@ static int64_t getElementByteSize(mlir::Type type) {
 
 static mlir::Value buildIndexConstant(mlir::OpBuilder &builder,
                                       mlir::Location loc, int64_t value) {
-  return builder.create<mlir::arith::ConstantOp>(
+  return mlir::arith::ConstantOp::create(builder,
       loc, builder.getIndexType(), builder.getIndexAttr(value));
 }
 
@@ -157,7 +157,7 @@ static mlir::Value cloneValueForCall(mlir::Value value, mlir::func::FuncOp func,
     }
   }
   if (auto cst = value.getDefiningOp<mlir::arith::ConstantOp>()) {
-    mlir::Value created = builder.create<mlir::arith::ConstantOp>(
+    mlir::Value created = mlir::arith::ConstantOp::create(builder,
         cst.getLoc(), cst.getValue());
     cloned[value] = created;
     return created;
@@ -220,7 +220,7 @@ static void rewriteHostCalls(ModuleOp module,
     auto wrapperType = builder.getFunctionType(inputs, results);
 
     auto wrapper =
-        builder.create<circt::handshake::FuncOp>(target.getLoc(), wrapperName,
+        circt::handshake::FuncOp::create(builder, target.getLoc(), wrapperName,
                                                  wrapperType);
     wrapper.resolveArgAndResNames();
     if (auto visibility =
@@ -243,7 +243,7 @@ static void rewriteHostCalls(ModuleOp module,
     auto args = entry->getArguments();
     Value startI1 = args.back();
     auto ctrlNone =
-        builder.create<circt::handshake::JoinOp>(target.getLoc(),
+        circt::handshake::JoinOp::create(builder, target.getLoc(),
                                                  mlir::ValueRange{startI1})
             .getResult();
 
@@ -271,7 +271,7 @@ static void rewriteHostCalls(ModuleOp module,
         doneState.addAttribute("value", builder.getBoolAttr(true));
         auto doneOp = builder.create(doneState);
         retOperands.push_back(doneOp->getResult(0));
-        builder.create<circt::handshake::ReturnOp>(target.getLoc(),
+        circt::handshake::ReturnOp::create(builder, target.getLoc(),
                                                    retOperands);
         continue;
       }
@@ -294,7 +294,7 @@ static void rewriteHostCalls(ModuleOp module,
       return it->second;
     OpBuilder builder(func.getContext());
     builder.setInsertionPointToStart(&func.front());
-    Value cst = builder.create<arith::ConstantOp>(
+    Value cst = arith::ConstantOp::create(builder,
         func.getLoc(), builder.getI1Type(), builder.getBoolAttr(value));
     cache[func] = cst;
     return cst;
@@ -308,7 +308,7 @@ static void rewriteHostCalls(ModuleOp module,
     builder.setInsertionPointToStart(&func.front());
     auto attr = circt::seq::ClockConstAttr::get(
         func.getContext(), circt::seq::ClockConst::Low);
-    Value clk = builder.create<circt::seq::ConstClockOp>(func.getLoc(), attr)
+    Value clk = circt::seq::ConstClockOp::create(builder, func.getLoc(), attr)
                     .getResult();
     clkCache[func] = clk;
     return clk;
@@ -346,12 +346,12 @@ static void rewriteHostCalls(ModuleOp module,
       llvm::SmallVector<Value, 8> chanOperands;
       chanOperands.reserve(call.getNumOperands() + 1);
       for (Value operand : call.getOperands()) {
-        auto wrap = builder.create<circt::esi::WrapValidReadyOp>(
+        auto wrap = circt::esi::WrapValidReadyOp::create(builder,
             loc, operand, valid);
         chanOperands.push_back(wrap.getResult(0));
       }
       auto entryWrap =
-          builder.create<circt::esi::WrapValidReadyOp>(loc, valid, valid);
+          circt::esi::WrapValidReadyOp::create(builder, loc, valid, valid);
       chanOperands.push_back(entryWrap.getResult(0));
 
       llvm::SmallVector<Type, 4> resultTypes;
@@ -366,18 +366,18 @@ static void rewriteHostCalls(ModuleOp module,
       std::string instName = call.getCallee().str() + "_inst" +
                              std::to_string(count);
 
-      auto esiInst = builder.create<circt::handshake::ESIInstanceOp>(
+      auto esiInst = circt::handshake::ESIInstanceOp::create(builder,
           loc, resultTypes,
           esiTarget ? esiTarget.getName() : call.getCallee(), instName, clk, rst,
           chanOperands);
 
       for (unsigned i = 0, e = call.getNumResults(); i < e; ++i) {
-        auto unwrap = builder.create<circt::esi::UnwrapValidReadyOp>(
+        auto unwrap = circt::esi::UnwrapValidReadyOp::create(builder,
             loc, esiInst.getResult(i), ready);
         call.getResult(i).replaceAllUsesWith(unwrap.getResult(0));
       }
       if (call.getNumResults() < esiInst.getNumResults()) {
-        auto doneUnwrap = builder.create<circt::esi::UnwrapValidReadyOp>(
+        auto doneUnwrap = circt::esi::UnwrapValidReadyOp::create(builder,
             loc, esiInst.getResult(call.getNumResults()), ready);
         (void)doneUnwrap;
       }
@@ -570,7 +570,7 @@ static mlir::LogicalResult liftExternalMemrefs(
     llvm::SmallVector<mlir::Value, 4> toDealloc;
     for (const LiftedMemref &item : lifted) {
       if (item.kind == LiftedMemref::Kind::Global) {
-        auto getGlobal = callBuilder.create<mlir::memref::GetGlobalOp>(
+        auto getGlobal = mlir::memref::GetGlobalOp::create(callBuilder,
             call.getLoc(), item.type, item.globalName);
         newOperands.push_back(getGlobal.getResult());
         continue;
@@ -586,7 +586,7 @@ static mlir::LogicalResult liftExternalMemrefs(
               "dynamic alloc size must derive from func args");
         dynSizes.push_back(mapped);
       }
-      auto alloc = callBuilder.create<mlir::memref::AllocOp>(
+      auto alloc = mlir::memref::AllocOp::create(callBuilder,
           call.getLoc(), item.type, dynSizes, item.alignment);
       newOperands.push_back(alloc.getResult());
       toDealloc.push_back(alloc.getResult());
@@ -599,7 +599,7 @@ static mlir::LogicalResult liftExternalMemrefs(
       mlir::OpBuilder afterBuilder(call->getBlock(),
                                    std::next(call->getIterator()));
       for (mlir::Value memref : toDealloc)
-        afterBuilder.create<mlir::memref::DeallocOp>(call.getLoc(), memref);
+        mlir::memref::DeallocOp::create(afterBuilder, call.getLoc(), memref);
     }
   }
 
@@ -704,7 +704,7 @@ static mlir::LogicalResult lowerMemrefDims(
         mlir::Value dim =
             buildIndexConstant(callBuilder, call.getLoc(), key.dim);
         auto dimOp =
-            callBuilder.create<mlir::memref::DimOp>(call.getLoc(), mem, dim);
+            mlir::memref::DimOp::create(callBuilder, call.getLoc(), mem, dim);
         newOperands.push_back(dimOp.getResult());
       }
       if (!newOperands.empty())
@@ -756,7 +756,7 @@ static mlir::LogicalResult rewriteLoadsForGroup(
       mlir::Value index = load.getIndices().front();
       mlir::Value offset = it->second.second;
       mlir::Value newIndex =
-          builder.create<mlir::arith::AddIOp>(load.getLoc(), index, offset);
+          mlir::arith::AddIOp::create(builder, load.getLoc(), index, offset);
       load->setOperand(0, it->second.first);
       load->setOperand(1, newIndex);
       continue;
@@ -774,7 +774,7 @@ static mlir::LogicalResult rewriteLoadsForGroup(
       mlir::Value index = store.getIndices().front();
       mlir::Value offset = it->second.second;
       mlir::Value newIndex =
-          builder.create<mlir::arith::AddIOp>(store.getLoc(), index, offset);
+          mlir::arith::AddIOp::create(builder, store.getLoc(), index, offset);
       store->setOperand(1, it->second.first);
       store->setOperand(2, newIndex);
       continue;
@@ -806,52 +806,52 @@ static PackedCallValues buildPackedCallValues(
   for (unsigned index : group.memberIndices) {
     mlir::Value memref = oldOperands[index];
     auto cast =
-        builder.create<mlir::memref::CastOp>(loc, group.commonType, memref);
+        mlir::memref::CastOp::create(builder, loc, group.commonType, memref);
     castedMemrefs.push_back(cast.getResult());
 
     auto basePtr =
-        builder.create<mlir::memref::ExtractAlignedPointerAsIndexOp>(
+        mlir::memref::ExtractAlignedPointerAsIndexOp::create(builder,
             loc, memref);
     mlir::Value baseElem = basePtr.getResult();
     if (elemBytes != 1) {
       baseElem =
-          builder.create<mlir::arith::DivUIOp>(loc, baseElem, elemSize);
+          mlir::arith::DivUIOp::create(builder, loc, baseElem, elemSize);
     }
     addrElems.push_back(baseElem);
 
     mlir::Value dimIndex = buildIndexConstant(builder, loc, 0);
     auto dimOp =
-        builder.create<mlir::memref::DimOp>(loc, memref, dimIndex);
+        mlir::memref::DimOp::create(builder, loc, memref, dimIndex);
     auto end =
-        builder.create<mlir::arith::AddIOp>(loc, baseElem, dimOp.getResult());
+        mlir::arith::AddIOp::create(builder, loc, baseElem, dimOp.getResult());
     endElems.push_back(end);
   }
 
   mlir::Value baseAddr = addrElems.front();
   mlir::Value baseMem = castedMemrefs.front();
   for (size_t i = 1; i < addrElems.size(); ++i) {
-    auto cmp = builder.create<mlir::arith::CmpIOp>(
+    auto cmp = mlir::arith::CmpIOp::create(builder,
         loc, mlir::arith::CmpIPredicate::ult, addrElems[i], baseAddr);
-    baseAddr = builder.create<mlir::arith::SelectOp>(loc, cmp, addrElems[i],
+    baseAddr = mlir::arith::SelectOp::create(builder, loc, cmp, addrElems[i],
                                                      baseAddr);
-    baseMem = builder.create<mlir::arith::SelectOp>(loc, cmp, castedMemrefs[i],
+    baseMem = mlir::arith::SelectOp::create(builder, loc, cmp, castedMemrefs[i],
                                                     baseMem);
   }
 
   mlir::Value maxEnd = endElems.front();
   for (size_t i = 1; i < endElems.size(); ++i) {
-    auto cmp = builder.create<mlir::arith::CmpIOp>(
+    auto cmp = mlir::arith::CmpIOp::create(builder,
         loc, mlir::arith::CmpIPredicate::ugt, endElems[i], maxEnd);
     maxEnd =
-        builder.create<mlir::arith::SelectOp>(loc, cmp, endElems[i], maxEnd);
+        mlir::arith::SelectOp::create(builder, loc, cmp, endElems[i], maxEnd);
   }
 
   mlir::Value span =
-      builder.create<mlir::arith::SubIOp>(loc, maxEnd, baseAddr);
+      mlir::arith::SubIOp::create(builder, loc, maxEnd, baseAddr);
 
   mlir::Value zero = buildIndexConstant(builder, loc, 0);
   mlir::Value one = buildIndexConstant(builder, loc, 1);
-  auto packed = builder.create<mlir::memref::ReinterpretCastOp>(
+  auto packed = mlir::memref::ReinterpretCastOp::create(builder,
       loc, group.commonType, baseMem, zero, mlir::ValueRange{span},
       mlir::ValueRange{one});
 
@@ -860,7 +860,7 @@ static PackedCallValues buildPackedCallValues(
   values.offsets.reserve(addrElems.size());
   for (mlir::Value addr : addrElems) {
     mlir::Value offset =
-        builder.create<mlir::arith::SubIOp>(loc, addr, baseAddr);
+        mlir::arith::SubIOp::create(builder, loc, addr, baseAddr);
     values.offsets.push_back(offset);
   }
   return values;

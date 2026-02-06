@@ -724,8 +724,8 @@ Value CloneLoopInvariantValue(Value value, Operation *loop,
     Value memref = load.getMemref();
     if (HasStoreToMemref(loop, memref))
       return {};
-    Value zeroIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value hoisted = rewriter.create<memref::LoadOp>(loc, memref, zeroIndex);
+    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value hoisted = memref::LoadOp::create(rewriter, loc, memref, zeroIndex);
     cache[value] = hoisted;
     return hoisted;
   }
@@ -760,7 +760,7 @@ Value CastToIndex(OpBuilder &builder, Location loc, Value value) {
   if (value.getType().isIndex())
     return value;
   if (llvm::isa<IntegerType>(value.getType()))
-    return builder.create<arith::IndexCastOp>(loc, builder.getIndexType(),
+    return arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
                                               value);
   return {};
 }
@@ -772,7 +772,7 @@ Value CastIndexToType(OpBuilder &builder, Location loc, Value value,
   if (value.getType() == targetType)
     return value;
   if (value.getType().isIndex() && llvm::isa<IntegerType>(targetType))
-    return builder.create<arith::IndexCastOp>(loc, targetType, value);
+    return arith::IndexCastOp::create(builder, loc, targetType, value);
   return {};
 }
 
@@ -957,24 +957,24 @@ LogicalResult TryUpliftIterArgWhile(scf::WhileOp loop,
     lowerIndex = initIndex;
     upperIndex = boundIndex;
     if (cmpKind == CmpKind::LessEqual) {
-      Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-      upperIndex = rewriter.create<arith::AddIOp>(loc, upperIndex, one);
+      Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      upperIndex = arith::AddIOp::create(rewriter, loc, upperIndex, one);
     }
   } else {
-    Value diff = rewriter.create<arith::SubIOp>(loc, initIndex, boundIndex);
+    Value diff = arith::SubIOp::create(rewriter, loc, initIndex, boundIndex);
     upperIndex = diff;
     if (cmpKind == CmpKind::GreaterEqual) {
-      Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-      upperIndex = rewriter.create<arith::AddIOp>(loc, upperIndex, one);
+      Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      upperIndex = arith::AddIOp::create(rewriter, loc, upperIndex, one);
     }
-    lowerIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    lowerIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
   }
 
   Value stepIndex;
   if (stepInfo.isConst) {
     int64_t stepConst = stepInfo.constant;
     int64_t stepAbs = stepConst > 0 ? stepConst : -stepConst;
-    stepIndex = rewriter.create<arith::ConstantIndexOp>(loc, stepAbs);
+    stepIndex = arith::ConstantIndexOp::create(rewriter, loc, stepAbs);
   } else {
     Value stepValue = stepOutside;
     if (!stepValue)
@@ -1002,7 +1002,7 @@ LogicalResult TryUpliftIterArgWhile(scf::WhileOp loop,
   }
 
   auto forOp =
-      rewriter.create<scf::ForOp>(loc, lowerIndex, upperIndex, stepIndex,
+      scf::ForOp::create(rewriter, loc, lowerIndex, upperIndex, stepIndex,
                                   initArgs);
   scf::ForOp::ensureTerminator(forOp.getRegion(), rewriter, loc);
   if (auto attr = loop->getAttr("loom.annotations"))
@@ -1016,7 +1016,7 @@ LogicalResult TryUpliftIterArgWhile(scf::WhileOp loop,
       return forOp.getInductionVar();
     if (!mappedIvIndex)
       mappedIvIndex =
-          builder.create<arith::SubIOp>(loc, initIndex, forOp.getInductionVar());
+          arith::SubIOp::create(builder, loc, initIndex, forOp.getInductionVar());
     return mappedIvIndex;
   };
 
@@ -1136,7 +1136,7 @@ LogicalResult TryUpliftIterArgWhile(scf::WhileOp loop,
   if (oldYield)
     rewriter.replaceOpWithNewOp<scf::YieldOp>(oldYield, newYieldOperands);
   else
-    rewriter.create<scf::YieldOp>(loc, newYieldOperands);
+    scf::YieldOp::create(rewriter, loc, newYieldOperands);
 
   if (failed(verify(forOp))) {
     rewriter.eraseOp(forOp);
@@ -1388,13 +1388,13 @@ struct WhileMemrefToForPattern : public OpRewritePattern<scf::WhileOp> {
 
     if (pred == arith::CmpIPredicate::sle ||
         pred == arith::CmpIPredicate::ule) {
-      Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-      upperIndex = rewriter.create<arith::AddIOp>(loc, upperIndex, one);
+      Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      upperIndex = arith::AddIOp::create(rewriter, loc, upperIndex, one);
     }
 
-    Value stepIndex = rewriter.create<arith::ConstantIndexOp>(loc, step);
+    Value stepIndex = arith::ConstantIndexOp::create(rewriter, loc, step);
     auto forOp =
-        rewriter.create<scf::ForOp>(loc, lowerIndex, upperIndex, stepIndex);
+        scf::ForOp::create(rewriter, loc, lowerIndex, upperIndex, stepIndex);
     if (auto attr = loop->getAttr("loom.annotations"))
       forOp->setAttr("loom.annotations", attr);
 

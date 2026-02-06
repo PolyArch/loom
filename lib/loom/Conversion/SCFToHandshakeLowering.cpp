@@ -187,7 +187,7 @@ static mlir::Value castToIndex(mlir::OpBuilder &builder, mlir::Location loc,
   if (value.getType().isIndex())
     return value;
   if (llvm::isa<mlir::IntegerType>(value.getType()))
-    return builder.create<mlir::arith::IndexCastOp>(loc,
+    return mlir::arith::IndexCastOp::create(builder, loc,
                                                     builder.getIndexType(),
                                                     value);
   return {};
@@ -202,7 +202,7 @@ static mlir::Value castIndexToType(mlir::OpBuilder &builder, mlir::Location loc,
     return value;
   if (value.getType().isIndex() &&
       llvm::isa<mlir::IntegerType>(targetType))
-    return builder.create<mlir::arith::IndexCastOp>(loc, targetType, value);
+    return mlir::arith::IndexCastOp::create(builder, loc, targetType, value);
   return {};
 }
 
@@ -909,13 +909,13 @@ mlir::Value HandshakeLowering::makeBool(mlir::Location loc, bool value) {
 
 mlir::Value HandshakeLowering::makeDummyData(mlir::Location loc,
                                              mlir::Type type) {
-  return builder.create<circt::handshake::SourceOp>(loc, type).getResult();
+  return circt::handshake::SourceOp::create(builder, loc, type).getResult();
 }
 
 mlir::Value HandshakeLowering::getEntryToken(mlir::Location loc) {
   if (!entryToken)
     entryToken =
-        builder.create<circt::handshake::SourceOp>(loc, builder.getNoneType())
+        circt::handshake::SourceOp::create(builder, loc, builder.getNoneType())
             .getResult();
   return entryToken;
 }
@@ -1009,7 +1009,7 @@ mlir::Value HandshakeLowering::mapValue(mlir::Value value, RegionState &state,
     if (mlir::isa<mlir::BaseMemRefType>(outer.getType()))
       return outer;
 
-    auto inv = builder.create<InvariantOp>(loc, outer.getType(),
+    auto inv = InvariantOp::create(builder, loc, outer.getType(),
                                            state.invariantCond, outer);
     if (state.pendingCond) {
       state.pendingInvariants.push_back(inv);
@@ -1094,7 +1094,7 @@ mlir::LogicalResult HandshakeLowering::lowerLoad(mlir::memref::LoadOp op,
       mlir::Value cond = mapValue(selectOp.getCondition(), state, loc);
       mlir::Value baseCtrl = state.controlToken ? state.controlToken
                                                 : getEntryToken(loc);
-      auto branch = builder.create<circt::handshake::ConditionalBranchOp>(
+      auto branch = circt::handshake::ConditionalBranchOp::create(builder,
           loc, cond, baseCtrl);
       mlir::Value trueData =
           emitLoad(selectOp.getTrueValue(),
@@ -1109,8 +1109,8 @@ mlir::LogicalResult HandshakeLowering::lowerLoad(mlir::memref::LoadOp op,
       mlir::Value one = makeConstant(
           loc, builder.getIndexAttr(1), builder.getIndexType(), baseCtrl);
       mlir::Value select =
-          builder.create<mlir::arith::SelectOp>(loc, cond, one, zero);
-      auto mux = builder.create<circt::handshake::MuxOp>(
+          mlir::arith::SelectOp::create(builder, loc, cond, one, zero);
+      auto mux = circt::handshake::MuxOp::create(builder,
           loc, select, mlir::ValueRange{falseData, trueData});
       state.valueMap[op.getResult()] = mux.getResult();
       return mlir::success();
@@ -1176,7 +1176,7 @@ mlir::LogicalResult HandshakeLowering::lowerStore(mlir::memref::StoreOp op,
       mlir::Value cond = mapValue(selectOp.getCondition(), state, loc);
       mlir::Value baseCtrl = state.controlToken ? state.controlToken
                                                 : getEntryToken(loc);
-      auto branch = builder.create<circt::handshake::ConditionalBranchOp>(
+      auto branch = circt::handshake::ConditionalBranchOp::create(builder,
           loc, cond, baseCtrl);
       emitStore(selectOp.getTrueValue(),
                 mapValue(selectOp.getTrueValue(), state, loc),
@@ -1201,17 +1201,17 @@ mlir::LogicalResult HandshakeLowering::lowerFor(mlir::scf::ForOp op,
   mlir::Value upper = mapValue(op.getUpperBound(), state, loc);
   mlir::Value step = mapValue(op.getStep(), state, loc);
 
-  auto stream = builder.create<StreamOp>(loc, lower, step, upper);
+  auto stream = StreamOp::create(builder, loc, lower, step, upper);
   copyLoomAnnotations(op, stream);
   mlir::Value rawIndex = stream.getIndex();
   mlir::Value rawCond = stream.getWillContinue();
   forConds[op] = rawCond;
 
-  auto gate = builder.create<GateOp>(
+  auto gate = GateOp::create(builder,
       loc, mlir::TypeRange{rawIndex.getType(), builder.getI1Type()}, rawIndex,
       rawCond);
-  mlir::Value bodyIndex = gate.getIndex();
-  mlir::Value bodyCond = gate.getCond();
+  mlir::Value bodyIndex = gate.getAfterValue();
+  mlir::Value bodyCond = gate.getAfterCond();
 
   llvm::SmallVector<CarryOp, 4> carries;
   llvm::SmallVector<mlir::Value, 4> bodyIterValues;
@@ -1220,14 +1220,14 @@ mlir::LogicalResult HandshakeLowering::lowerFor(mlir::scf::ForOp op,
   auto iterOperands = op.getInitArgs();
   for (mlir::Value init : iterOperands) {
     mlir::Value initValue = mapValue(init, state, loc);
-    auto carry = builder.create<CarryOp>(loc, initValue.getType(), rawCond,
+    auto carry = CarryOp::create(builder, loc, initValue.getType(), rawCond,
                                          initValue, initValue);
     carries.push_back(carry);
-    auto iterGate = builder.create<GateOp>(
+    auto iterGate = GateOp::create(builder,
         loc, mlir::TypeRange{carry.getO().getType(), builder.getI1Type()},
         carry.getO(), rawCond);
-    bodyIterValues.push_back(iterGate.getIndex());
-    auto branch = builder.create<circt::handshake::ConditionalBranchOp>(
+    bodyIterValues.push_back(iterGate.getAfterValue());
+    auto branch = circt::handshake::ConditionalBranchOp::create(builder,
         loc, rawCond, carry.getO());
     loopResults.push_back(branch.getFalseResult());
   }
@@ -1245,8 +1245,8 @@ mlir::LogicalResult HandshakeLowering::lowerFor(mlir::scf::ForOp op,
   mlir::Value parentCtrl =
       state.controlToken ? state.controlToken : getEntryToken(loc);
   bodyState.controlToken =
-      builder
-          .create<InvariantOp>(loc, parentCtrl.getType(), bodyCond, parentCtrl)
+      InvariantOp::create(builder, loc, parentCtrl.getType(), bodyCond,
+                          parentCtrl)
           .getO();
 
   bodyState.valueMap[bodyBlock->getArgument(0)] = bodyIndex;
@@ -1306,7 +1306,7 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
       if (!startIndex || !boundIndex || !stepIndex)
         return op.emitError("failed to cast stream operands to index");
 
-      auto stream = builder.create<StreamOp>(loc, startIndex, stepIndex,
+      auto stream = StreamOp::create(builder, loc, startIndex, stepIndex,
                                              boundIndex);
       stream->setAttr("step_op", builder.getStringAttr(streamAttr->stepOp));
       stream->setAttr("stop_cond", builder.getStringAttr(streamAttr->stopCond));
@@ -1316,11 +1316,11 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
       mlir::Value rawCond = stream.getWillContinue();
       whileConds[op] = rawCond;
 
-      auto gate = builder.create<GateOp>(
+      auto gate = GateOp::create(builder,
           loc, mlir::TypeRange{rawIndex.getType(), builder.getI1Type()},
           rawIndex, rawCond);
-      mlir::Value bodyIndex = gate.getIndex();
-      mlir::Value bodyCond = gate.getCond();
+      mlir::Value bodyIndex = gate.getAfterValue();
+      mlir::Value bodyCond = gate.getAfterCond();
 
       llvm::SmallVector<CarryOp, 4> carries;
       llvm::SmallVector<mlir::Value, 4> bodyIterValues;
@@ -1331,14 +1331,14 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
         if (static_cast<int64_t>(i) == streamAttr->ivIndex)
           continue;
         mlir::Value initValue = mapValue(iterOperands[i], state, loc);
-        auto carry = builder.create<CarryOp>(loc, initValue.getType(), rawCond,
+        auto carry = CarryOp::create(builder, loc, initValue.getType(), rawCond,
                                              initValue, initValue);
         carries.push_back(carry);
-        auto iterGate = builder.create<GateOp>(
+        auto iterGate = GateOp::create(builder,
             loc, mlir::TypeRange{carry.getO().getType(), builder.getI1Type()},
             carry.getO(), rawCond);
-        bodyIterValues.push_back(iterGate.getIndex());
-        auto branch = builder.create<circt::handshake::ConditionalBranchOp>(
+        bodyIterValues.push_back(iterGate.getAfterValue());
+        auto branch = circt::handshake::ConditionalBranchOp::create(builder,
             loc, rawCond, carry.getO());
         loopResults.push_back(branch.getFalseResult());
       }
@@ -1358,9 +1358,8 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
       mlir::Value parentCtrl =
           state.controlToken ? state.controlToken : getEntryToken(loc);
       bodyState.controlToken =
-          builder
-              .create<InvariantOp>(loc, parentCtrl.getType(), bodyCond,
-                                   parentCtrl)
+          InvariantOp::create(builder, loc, parentCtrl.getType(), bodyCond,
+                              parentCtrl)
               .getO();
 
       unsigned iterIndex = 0;
@@ -1434,7 +1433,7 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
   llvm::SmallVector<CarryOp, 4> carries;
   for (mlir::Value initValue : initValues) {
     mlir::Value placeholderCond = makeBool(loc, true);
-    auto carry = builder.create<CarryOp>(loc, initValue.getType(),
+    auto carry = CarryOp::create(builder, loc, initValue.getType(),
                                          placeholderCond, initValue, initValue);
     carries.push_back(carry);
   }
@@ -1450,7 +1449,7 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
   mlir::Value parentCtrl =
       state.controlToken ? state.controlToken : getEntryToken(loc);
   mlir::Value placeholderCond = makeBool(loc, true);
-  beforeState.controlInvariant = builder.create<InvariantOp>(
+  beforeState.controlInvariant = InvariantOp::create(builder,
       loc, parentCtrl.getType(), placeholderCond, parentCtrl);
   beforeState.controlToken = beforeState.controlInvariant.getO();
 
@@ -1486,16 +1485,16 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
   afterArgs.reserve(condArgs.size());
   exitValues.reserve(condArgs.size());
   for (mlir::Value value : condArgs) {
-    auto branch = builder.create<circt::handshake::ConditionalBranchOp>(
+    auto branch = circt::handshake::ConditionalBranchOp::create(builder,
         loc, condValue, value);
     afterArgs.push_back(branch.getTrueResult());
     exitValues.push_back(branch.getFalseResult());
   }
 
-  auto gate = builder.create<GateOp>(
+  auto gate = GateOp::create(builder,
       loc, mlir::TypeRange{condValue.getType(), builder.getI1Type()}, condValue,
       condValue);
-  mlir::Value bodyCond = gate.getCond();
+  mlir::Value bodyCond = gate.getAfterCond();
 
   mlir::Block &afterBlock = op.getAfter().front();
   if (afterBlock.getNumArguments() != afterArgs.size())
@@ -1507,9 +1506,8 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
   afterState.invariantCond = bodyCond;
   afterState.pendingCond = false;
   afterState.controlToken =
-      builder
-          .create<InvariantOp>(loc, beforeState.controlToken.getType(), bodyCond,
-                               beforeState.controlToken)
+      InvariantOp::create(builder, loc, beforeState.controlToken.getType(),
+                          bodyCond, beforeState.controlToken)
           .getO();
 
   for (unsigned i = 0, e = afterArgs.size(); i < e; ++i)
@@ -1547,7 +1545,7 @@ mlir::LogicalResult HandshakeLowering::lowerIf(mlir::scf::IfOp op,
   mlir::Value ctrlToken = state.controlToken ? state.controlToken
                                              : getEntryToken(loc);
 
-  auto branch = builder.create<circt::handshake::ConditionalBranchOp>(
+  auto branch = circt::handshake::ConditionalBranchOp::create(builder,
       loc, condValue, ctrlToken);
   mlir::Value thenCtrl = branch.getTrueResult();
   mlir::Value elseCtrl = branch.getFalseResult();
@@ -1603,10 +1601,10 @@ mlir::LogicalResult HandshakeLowering::lowerIf(mlir::scf::IfOp op,
   mlir::Value one = makeConstant(
       loc, builder.getIndexAttr(1), builder.getIndexType(), ctrlToken);
   mlir::Value select =
-      builder.create<mlir::arith::SelectOp>(loc, condValue, one, zero);
+      mlir::arith::SelectOp::create(builder, loc, condValue, one, zero);
 
   for (unsigned i = 0, e = op.getNumResults(); i < e; ++i) {
-    auto mux = builder.create<circt::handshake::MuxOp>(
+    auto mux = circt::handshake::MuxOp::create(builder,
         loc, select, mlir::ValueRange{elseValues[i], thenValues[i]});
     state.valueMap[op.getResult(i)] = mux.getResult();
   }
@@ -1632,11 +1630,11 @@ mlir::LogicalResult HandshakeLowering::lowerIndexSwitch(
   for (auto [caseValue, caseRegion] : llvm::zip(cases, caseRegions)) {
     mlir::Value caseConst = makeConstant(
         loc, builder.getIndexAttr(caseValue), builder.getIndexType(), ctrlToken);
-    mlir::Value caseCond = builder.create<mlir::arith::CmpIOp>(
+    mlir::Value caseCond = mlir::arith::CmpIOp::create(builder,
         loc, mlir::arith::CmpIPredicate::eq, indexValue, caseConst);
     caseConds.push_back(caseCond);
 
-    auto branch = builder.create<circt::handshake::ConditionalBranchOp>(
+    auto branch = circt::handshake::ConditionalBranchOp::create(builder,
         loc, caseCond, chainCtrl);
     mlir::Value caseCtrl = branch.getTrueResult();
     chainCtrl = branch.getFalseResult();
@@ -1693,7 +1691,7 @@ mlir::LogicalResult HandshakeLowering::lowerIndexSwitch(
   for (int64_t i = static_cast<int64_t>(caseConds.size()) - 1; i >= 0; --i) {
     mlir::Value caseIndex = makeConstant(
         loc, builder.getIndexAttr(i), builder.getIndexType(), ctrlToken);
-    select = builder.create<mlir::arith::SelectOp>(
+    select = mlir::arith::SelectOp::create(builder,
         loc, caseConds[static_cast<size_t>(i)], caseIndex, select);
   }
 
@@ -1705,7 +1703,7 @@ mlir::LogicalResult HandshakeLowering::lowerIndexSwitch(
         return op.emitError("scf.index_switch yield arity mismatch");
       values.push_back(caseValues[i]);
     }
-    auto mux = builder.create<circt::handshake::MuxOp>(loc, select, values);
+    auto mux = circt::handshake::MuxOp::create(builder, loc, select, values);
     state.valueMap[op.getResult(i)] = mux.getResult();
   }
 
@@ -1783,7 +1781,7 @@ mlir::LogicalResult HandshakeLowering::lowerOp(mlir::Operation *op,
     llvm::SmallVector<mlir::Value, 4> args;
     for (mlir::Value operand : callOp.getOperands())
       args.push_back(mapValue(operand, state, op->getLoc()));
-    auto newCall = builder.create<mlir::func::CallOp>(
+    auto newCall = mlir::func::CallOp::create(builder,
         op->getLoc(), callOp.getCallee(), callOp.getResultTypes(), args);
     for (unsigned i = 0, e = callOp.getNumResults(); i < e; ++i)
       state.valueMap[callOp.getResult(i)] = newCall.getResult(i);
@@ -1851,7 +1849,7 @@ void HandshakeLowering::insertForks() {
     else
       builder.setInsertionPointAfter(value.getDefiningOp());
 
-    auto fork = builder.create<circt::handshake::ForkOp>(
+    auto fork = circt::handshake::ForkOp::create(builder,
         value.getLoc(), value, static_cast<unsigned>(uses.size()));
     for (size_t i = 0; i < uses.size(); ++i)
       uses[i]->set(fork.getResults()[i]);
@@ -1872,7 +1870,7 @@ mlir::LogicalResult HandshakeLowering::run() {
   auto handshakeType =
       builder.getFunctionType(inputTypes, resultTypes);
 
-  handshakeFunc = builder.create<circt::handshake::FuncOp>(
+  handshakeFunc = circt::handshake::FuncOp::create(builder,
       func.getLoc(), func.getName(), handshakeType);
   handshakeFunc.resolveArgAndResNames();
   if (auto visibility = func.getSymVisibilityAttr())
@@ -1894,10 +1892,10 @@ mlir::LogicalResult HandshakeLowering::run() {
   state.region = &func.getBody();
   state.parent = nullptr;
   entrySignal = handshakeFunc.getArguments().back();
-  entryToken = builder
-                   .create<circt::handshake::JoinOp>(
-                       func.getLoc(), mlir::ValueRange{entrySignal})
-                   .getResult();
+  entryToken =
+      circt::handshake::JoinOp::create(builder, func.getLoc(),
+                                       mlir::ValueRange{entrySignal})
+          .getResult();
   state.controlToken = entryToken;
 
   auto newArgs = handshakeFunc.getArguments().drop_back(1);
@@ -1928,7 +1926,7 @@ mlir::LogicalResult HandshakeLowering::run() {
   llvm::SmallVector<mlir::Value, 4> returnOperands(pendingReturnValues.begin(),
                                                    pendingReturnValues.end());
   returnOperands.push_back(doneSignal);
-  builder.create<circt::handshake::ReturnOp>(returnLoc, returnOperands);
+  circt::handshake::ReturnOp::create(builder, returnLoc, returnOperands);
 
   insertForks();
   if (mlir::failed(loom::runHandshakeCleanup(handshakeFunc, builder)))

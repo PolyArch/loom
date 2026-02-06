@@ -456,15 +456,14 @@ void HandshakeLowering::finalizeMemory() {
 
     mlir::Operation *memOp = nullptr;
     if (useExternal) {
-      memOp = builder
-                  .create<circt::handshake::ExternalMemoryOp>(
-                      loc, memrefValue, operands, ldCount, stCount, memoryId++)
+      memOp = circt::handshake::ExternalMemoryOp::create(
+                  builder, loc, memrefValue, operands, ldCount, stCount,
+                  memoryId++)
                   .getOperation();
     } else {
-      auto created = builder
-                  .create<circt::handshake::MemoryOp>(
-                      loc, operands, ldCount, ldCount + stCount, false,
-                      memoryId++, memrefValue);
+      auto created = circt::handshake::MemoryOp::create(
+          builder, loc, operands, ldCount, ldCount + stCount, false,
+          memoryId++, memrefValue);
       memOp = created.getOperation();
       if (auto getGlobal =
               memrefValue.getDefiningOp<mlir::memref::GetGlobalOp>()) {
@@ -501,7 +500,7 @@ void HandshakeLowering::finalizeMemory() {
       continue;
     mlir::OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(handshakeFunc.getBodyBlock());
-    auto cast = builder.create<mlir::memref::CastOp>(
+    auto cast = mlir::memref::CastOp::create(builder,
         arg.getLoc(), arg.getType(), arg);
     for (mlir::OpOperand *use : uses)
       use->set(cast.getResult());
@@ -561,7 +560,7 @@ private:
   mlir::Value makeEntryToken(mlir::Location loc) {
     if (entryControl)
       return entryControl;
-    return builder.create<circt::handshake::SourceOp>(loc, builder.getNoneType())
+    return circt::handshake::SourceOp::create(builder, loc, builder.getNoneType())
         .getResult();
   }
 
@@ -620,7 +619,7 @@ private:
       return batch.front()->doneToken ? batch.front()->doneToken : entryToken;
     }
 
-    auto fork = builder.create<circt::handshake::ForkOp>(
+    auto fork = circt::handshake::ForkOp::create(builder,
         loc, entryToken, static_cast<unsigned>(batch.size()));
 
     llvm::SmallVector<mlir::Value, 4> doneTokens;
@@ -636,7 +635,7 @@ private:
     if (doneTokens.size() == 1)
       return doneTokens.front();
 
-    auto join = builder.create<circt::handshake::JoinOp>(loc, doneTokens);
+    auto join = circt::handshake::JoinOp::create(builder, loc, doneTokens);
     return join.getResult();
   }
 
@@ -668,7 +667,7 @@ private:
     LLVM_DEBUG(dumpPath(llvm::dbgs(), parentPath));
     LLVM_DEBUG(llvm::dbgs() << "\n");
 
-    auto branch = builder.create<circt::handshake::ConditionalBranchOp>(
+    auto branch = circt::handshake::ConditionalBranchOp::create(builder,
         loc, cond, entryToken);
     mlir::Value thenEntry = branch.getTrueResult();
     mlir::Value elseEntry = branch.getFalseResult();
@@ -687,8 +686,8 @@ private:
     mlir::Value one =
         makeConstant(loc, builder.getIndexAttr(1), builder.getIndexType(),
                      entryToken);
-    mlir::Value sel = builder.create<mlir::arith::SelectOp>(loc, cond, one, zero);
-    auto mux = builder.create<circt::handshake::MuxOp>(
+    mlir::Value sel = mlir::arith::SelectOp::create(builder, loc, cond, one, zero);
+    auto mux = circt::handshake::MuxOp::create(builder,
         loc, sel, mlir::ValueRange{elseDone, thenDone});
     LLVM_DEBUG(llvm::dbgs() << "[loom.memctrl] exit scf.if path=");
     LLVM_DEBUG(dumpPath(llvm::dbgs(), parentPath));
@@ -714,11 +713,11 @@ private:
     LLVM_DEBUG(dumpPath(llvm::dbgs(), parentPath));
     LLVM_DEBUG(llvm::dbgs() << "\n");
 
-    auto carry = builder.create<CarryOp>(loc, entryToken.getType(), cond,
+    auto carry = CarryOp::create(builder, loc, entryToken.getType(), cond,
                                          entryToken, entryToken);
     mlir::Value loopToken = carry.getO();
 
-    auto branch = builder.create<circt::handshake::ConditionalBranchOp>(
+    auto branch = circt::handshake::ConditionalBranchOp::create(builder,
         loc, cond, loopToken);
     mlir::Value bodyEntry = branch.getTrueResult();
     mlir::Value loopExit = branch.getFalseResult();
@@ -752,7 +751,7 @@ private:
     LLVM_DEBUG(dumpPath(llvm::dbgs(), parentPath));
     LLVM_DEBUG(llvm::dbgs() << "\n");
 
-    auto carry = builder.create<CarryOp>(loc, entryToken.getType(), cond,
+    auto carry = CarryOp::create(builder, loc, entryToken.getType(), cond,
                                          entryToken, entryToken);
     mlir::Value beforeEntry = carry.getO();
 
@@ -760,7 +759,7 @@ private:
     beforePath.push_back(PathEntry{op, 0});
     mlir::Value beforeDone = processLevel(beforePath, beforeEntry);
 
-    auto branch = builder.create<circt::handshake::ConditionalBranchOp>(
+    auto branch = circt::handshake::ConditionalBranchOp::create(builder,
         loc, cond, beforeDone);
     mlir::Value afterEntry = branch.getTrueResult();
     mlir::Value loopExit = branch.getFalseResult();
@@ -806,10 +805,10 @@ private:
       mlir::Value caseConst =
           makeConstant(loc, builder.getIndexAttr(cases[i]),
                        builder.getIndexType(), entryToken);
-      mlir::Value caseCond = builder.create<mlir::arith::CmpIOp>(
+      mlir::Value caseCond = mlir::arith::CmpIOp::create(builder,
           loc, mlir::arith::CmpIPredicate::eq, indexValue, caseConst);
       caseConds.push_back(caseCond);
-      auto branch = builder.create<circt::handshake::ConditionalBranchOp>(
+      auto branch = circt::handshake::ConditionalBranchOp::create(builder,
           loc, caseCond, chainToken);
       branchTokens.push_back(branch.getTrueResult());
       chainToken = branch.getFalseResult();
@@ -837,10 +836,10 @@ private:
       mlir::Value caseIndex =
           makeConstant(loc, builder.getIndexAttr(i),
                        builder.getIndexType(), entryToken);
-      select = builder.create<mlir::arith::SelectOp>(
+      select = mlir::arith::SelectOp::create(builder,
           loc, caseConds[static_cast<size_t>(i)], caseIndex, select);
     }
-    auto mux = builder.create<circt::handshake::MuxOp>(loc, select, doneTokens);
+    auto mux = circt::handshake::MuxOp::create(builder, loc, select, doneTokens);
     LLVM_DEBUG(llvm::dbgs() << "[loom.memctrl] exit scf.index_switch path=");
     LLVM_DEBUG(dumpPath(llvm::dbgs(), parentPath));
     LLVM_DEBUG(llvm::dbgs() << " done=");
@@ -1046,7 +1045,7 @@ mlir::LogicalResult HandshakeLowering::buildMemoryControl() {
     if (doneTokens.size() == 1) {
       memoryDoneToken = doneTokens.front();
     } else {
-      auto join = joinBuilder.create<circt::handshake::JoinOp>(
+      auto join = circt::handshake::JoinOp::create(joinBuilder,
           handshakeFunc.getLoc(), doneTokens);
       memoryDoneToken = join.getResult();
     }

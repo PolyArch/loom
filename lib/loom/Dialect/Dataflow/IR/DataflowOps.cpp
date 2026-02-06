@@ -68,9 +68,9 @@ LogicalResult StreamOp::verify() {
 LogicalResult GateOp::verify() {
   if (!getBeforeCond().getType().isInteger(1))
     return emitOpError("expects i1 condition input");
-  if (getIndex().getType() != getBeforeValue().getType())
+  if (getAfterValue().getType() != getBeforeValue().getType())
     return emitOpError("expects result type to match value");
-  if (!getCond().getType().isInteger(1))
+  if (!getAfterCond().getType().isInteger(1))
     return emitOpError("expects i1 condition result");
   return success();
 }

@@ -58,7 +58,7 @@ static LogicalResult insertHandshakeSinks(circt::handshake::FuncOp func,
     if (!def)
       continue;
     builder.setInsertionPointAfter(def);
-    builder.create<circt::handshake::SinkOp>(def->getLoc(), result);
+    circt::handshake::SinkOp::create(builder, def->getLoc(), result);
   }
   return success();
 }
@@ -153,7 +153,7 @@ static LogicalResult optimizeHandshakeForks(circt::handshake::FuncOp func,
           liveOutputs[0].replaceAllUsesWith(input);
         } else {
           builder.setInsertionPoint(forkOp);
-          auto newFork = builder.create<circt::handshake::ForkOp>(
+          auto newFork = circt::handshake::ForkOp::create(builder,
               forkOp.getLoc(), input,
               static_cast<unsigned>(liveOutputs.size()));
           for (unsigned i = 0, e = liveOutputs.size(); i < e; ++i) {

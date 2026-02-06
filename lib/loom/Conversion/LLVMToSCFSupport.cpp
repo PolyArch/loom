@@ -132,12 +132,12 @@ Value ScaleIndexBetweenElementTypes(OpBuilder &builder, Location loc,
   Value byteIndex = index;
   if (fromSize != 1) {
     Value scale = BuildIndexConstant(builder, loc, fromSize);
-    byteIndex = builder.create<arith::MulIOp>(loc, index, scale);
+    byteIndex = arith::MulIOp::create(builder, loc, index, scale);
   }
   if (toSize == 1)
     return byteIndex;
   Value scale = BuildIndexConstant(builder, loc, toSize);
-  return builder.create<arith::DivSIOp>(loc, byteIndex, scale);
+  return arith::DivSIOp::create(builder, loc, byteIndex, scale);
 }
 
 std::optional<Value> BuildMemsetFillValue(OpBuilder &builder,
@@ -172,17 +172,17 @@ std::optional<Value> BuildMemsetFillValue(OpBuilder &builder,
   IntegerType patternType =
       intTy ? intTy : IntegerType::get(builder.getContext(), bitWidth);
   auto patternAttr = builder.getIntegerAttr(patternType, pattern);
-  auto patternVal = builder.create<arith::ConstantOp>(loc, patternAttr);
+  auto patternVal = arith::ConstantOp::create(builder, loc, patternAttr);
   if (intTy)
     return patternVal.getResult();
 
   auto bitcast =
-      builder.create<arith::BitcastOp>(loc, elemType, patternVal.getResult());
+      arith::BitcastOp::create(builder, loc, elemType, patternVal.getResult());
   return bitcast.getResult();
 }
 
 Value BuildIndexConstant(OpBuilder &builder, Location loc, int64_t value) {
-  return builder.create<arith::ConstantOp>(loc, builder.getIndexType(),
+  return arith::ConstantOp::create(builder, loc, builder.getIndexType(),
                                            builder.getIndexAttr(value));
 }
 
@@ -192,7 +192,7 @@ Value ToIndexValue(OpBuilder &builder, Location loc, Value value) {
   if (value.getType().isIndex())
     return value;
   if (llvm::isa<IntegerType>(value.getType()))
-    return builder.create<arith::IndexCastOp>(loc, builder.getIndexType(),
+    return arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
                                               value);
   return nullptr;
 }
@@ -590,7 +590,7 @@ Value MaterializeSubview(OpBuilder &builder, Location loc, Value base,
   SmallVector<OpFoldResult, 1> sizes{length};
   SmallVector<OpFoldResult, 1> strides{builder.getIndexAttr(1)};
   auto subview =
-      builder.create<memref::SubViewOp>(loc, base, offsets, sizes, strides);
+      memref::SubViewOp::create(builder, loc, base, offsets, sizes, strides);
   return subview.getResult();
 }
 
@@ -600,8 +600,8 @@ Value MaterializeMemrefPointer(OpBuilder &builder, Location loc,
   if (IsZeroIndex(info.index)) {
     result = info.base;
   } else {
-    Value dim = builder.create<memref::DimOp>(loc, info.base, 0);
-    Value size = builder.create<arith::SubIOp>(loc, dim, info.index);
+    Value dim = memref::DimOp::create(builder, loc, info.base, 0);
+    Value size = arith::SubIOp::create(builder, loc, dim, info.index);
     result = MaterializeSubview(builder, loc, info.base, info.index, size);
   }
 
@@ -613,29 +613,29 @@ Value MaterializeMemrefPointer(OpBuilder &builder, Location loc,
       MakeStridedMemRefType(info.elementType, memrefType.getMemorySpace());
   if (memrefType == targetType)
     return result;
-  return builder.create<memref::CastOp>(loc, targetType, result);
+  return memref::CastOp::create(builder, loc, targetType, result);
 }
 
 Value MaterializeLLVMPointer(OpBuilder &builder, Location loc,
                                     const PointerInfo &info) {
-  Value baseIndex = builder.create<memref::ExtractAlignedPointerAsIndexOp>(
+  Value baseIndex = memref::ExtractAlignedPointerAsIndexOp::create(builder,
       loc, info.base);
-  Value baseInt = builder.create<arith::IndexCastOp>(
+  Value baseInt = arith::IndexCastOp::create(builder,
       loc, builder.getI64Type(), baseIndex);
   int64_t elemSize = GetByteSize(info.elementType);
   if (elemSize == 0)
-    return builder.create<LLVM::IntToPtrOp>(loc, LLVM::LLVMPointerType::get(
+    return LLVM::IntToPtrOp::create(builder, loc, LLVM::LLVMPointerType::get(
                                                      builder.getContext()),
                                             baseInt);
   Value offsetBytes = info.index;
   if (elemSize != 1) {
     Value scale = BuildIndexConstant(builder, loc, elemSize);
-    offsetBytes = builder.create<arith::MulIOp>(loc, info.index, scale);
+    offsetBytes = arith::MulIOp::create(builder, loc, info.index, scale);
   }
-  Value offsetInt = builder.create<arith::IndexCastOp>(
+  Value offsetInt = arith::IndexCastOp::create(builder,
       loc, builder.getI64Type(), offsetBytes);
-  Value total = builder.create<arith::AddIOp>(loc, baseInt, offsetInt);
-  return builder.create<LLVM::IntToPtrOp>(loc,
+  Value total = arith::AddIOp::create(builder, loc, baseInt, offsetInt);
+  return LLVM::IntToPtrOp::create(builder, loc,
                                           LLVM::LLVMPointerType::get(
                                               builder.getContext()),
                                           total);
@@ -645,9 +645,9 @@ std::optional<Value> ConvertLLVMConstant(OpBuilder &builder,
                                                 LLVM::ConstantOp op) {
   Attribute attr = op.getValue();
   if (auto intAttr = llvm::dyn_cast<IntegerAttr>(attr))
-    return builder.create<arith::ConstantOp>(op.getLoc(), intAttr);
+    return arith::ConstantOp::create(builder, op.getLoc(), intAttr);
   if (auto floatAttr = llvm::dyn_cast<FloatAttr>(attr))
-    return builder.create<arith::ConstantOp>(op.getLoc(), floatAttr);
+    return arith::ConstantOp::create(builder, op.getLoc(), floatAttr);
   return std::nullopt;
 }
 
@@ -656,23 +656,23 @@ ConvertMathCall(OpBuilder &builder, Location loc, StringRef callee,
                 ValueRange operands) {
   if (operands.size() == 1) {
     if (callee == "sinf" || callee == "sin")
-      return builder.create<math::SinOp>(loc, operands[0]);
+      return math::SinOp::create(builder, loc, operands[0]);
     if (callee == "cosf" || callee == "cos")
-      return builder.create<math::CosOp>(loc, operands[0]);
+      return math::CosOp::create(builder, loc, operands[0]);
     if (callee == "expf" || callee == "exp")
-      return builder.create<math::ExpOp>(loc, operands[0]);
+      return math::ExpOp::create(builder, loc, operands[0]);
     if (callee == "logf" || callee == "log")
-      return builder.create<math::LogOp>(loc, operands[0]);
+      return math::LogOp::create(builder, loc, operands[0]);
     if (callee == "log2f" || callee == "log2")
-      return builder.create<math::Log2Op>(loc, operands[0]);
+      return math::Log2Op::create(builder, loc, operands[0]);
     if (callee == "sqrtf" || callee == "sqrt")
-      return builder.create<math::SqrtOp>(loc, operands[0]);
+      return math::SqrtOp::create(builder, loc, operands[0]);
     if (callee == "fabsf" || callee == "fabs")
-      return builder.create<math::AbsFOp>(loc, operands[0]);
+      return math::AbsFOp::create(builder, loc, operands[0]);
   }
   if (operands.size() == 2) {
     if (callee == "powf" || callee == "pow")
-      return builder.create<math::PowFOp>(loc, operands[0], operands[1]);
+      return math::PowFOp::create(builder, loc, operands[0], operands[1]);
   }
   return std::nullopt;
 }
@@ -735,22 +735,22 @@ std::optional<PointerInfo> BuildPointerSelect(OpBuilder &builder,
   if (lhsBaseType != commonBaseType) {
     if (!memref::CastOp::areCastCompatible(lhsBaseType, commonBaseType))
       return std::nullopt;
-    lhsBase = builder.create<memref::CastOp>(loc, commonBaseType, lhsBase);
+    lhsBase = memref::CastOp::create(builder, loc, commonBaseType, lhsBase);
   }
   Value rhsBase = rhs.base;
   if (rhsBaseType != commonBaseType) {
     if (!memref::CastOp::areCastCompatible(rhsBaseType, commonBaseType))
       return std::nullopt;
-    rhsBase = builder.create<memref::CastOp>(loc, commonBaseType, rhsBase);
+    rhsBase = memref::CastOp::create(builder, loc, commonBaseType, rhsBase);
   }
 
   Value trueBase = trueSelectsRhs ? rhsBase : lhsBase;
   Value falseBase = trueSelectsRhs ? lhsBase : rhsBase;
   Value trueIndex = trueSelectsRhs ? rhs.index : lhs.index;
   Value falseIndex = trueSelectsRhs ? lhs.index : rhs.index;
-  Value baseSel = builder.create<arith::SelectOp>(loc, cond, trueBase, falseBase);
+  Value baseSel = arith::SelectOp::create(builder, loc, cond, trueBase, falseBase);
   Value indexSel =
-      builder.create<arith::SelectOp>(loc, cond, trueIndex, falseIndex);
+      arith::SelectOp::create(builder, loc, cond, trueIndex, falseIndex);
   return PointerInfo{baseSel, indexSel, lhs.elementType};
 }
 
@@ -774,8 +774,8 @@ ConvertStdMinMaxScalarCall(OpBuilder &builder, Location loc, StringRef callee,
       return std::nullopt;
     }
     if (kind == StdMinMaxKind::Minimum)
-      return builder.create<arith::MinimumFOp>(loc, operands[0], operands[1]);
-    return builder.create<arith::MaximumFOp>(loc, operands[0], operands[1]);
+      return arith::MinimumFOp::create(builder, loc, operands[0], operands[1]);
+    return arith::MaximumFOp::create(builder, loc, operands[0], operands[1]);
   }
 
   if (llvm::isa<IntegerType>(type)) {
@@ -785,12 +785,12 @@ ConvertStdMinMaxScalarCall(OpBuilder &builder, Location loc, StringRef callee,
       return std::nullopt;
     if (kind == StdMinMaxKind::Minimum) {
       if (isUnsigned)
-        return builder.create<arith::MinUIOp>(loc, operands[0], operands[1]);
-      return builder.create<arith::MinSIOp>(loc, operands[0], operands[1]);
+        return arith::MinUIOp::create(builder, loc, operands[0], operands[1]);
+      return arith::MinSIOp::create(builder, loc, operands[0], operands[1]);
     }
     if (isUnsigned)
-      return builder.create<arith::MaxUIOp>(loc, operands[0], operands[1]);
-    return builder.create<arith::MaxSIOp>(loc, operands[0], operands[1]);
+      return arith::MaxUIOp::create(builder, loc, operands[0], operands[1]);
+    return arith::MaxSIOp::create(builder, loc, operands[0], operands[1]);
   }
 
   return std::nullopt;
