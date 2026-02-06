@@ -1,5 +1,5 @@
 // RUN: not loom --adg %s 2>&1 | FileCheck %s
-// CHECK: tag type width must be 1-16
+// CHECK: COMP_TAG_WIDTH_RANGE
 
 // Tag type i32 has width 32, which exceeds the allowed range [1, 16].
 // The parser rejects the type before the verifier runs.

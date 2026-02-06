@@ -34,6 +34,7 @@ add_mlir_dialect_library(LoomFabric
     MLIRIR
     MLIRSupport
     LoomDataflow
+    CIRCTHandshake
 )
 
 target_include_directories(LoomFabric

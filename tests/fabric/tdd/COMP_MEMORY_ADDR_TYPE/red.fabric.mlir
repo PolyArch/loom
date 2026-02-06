@@ -1,5 +1,4 @@
 // RUN: not loom --adg %s 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK: COMP_MEMORY_ADDR_TYPE
 
 // Load address port uses i32 instead of index.

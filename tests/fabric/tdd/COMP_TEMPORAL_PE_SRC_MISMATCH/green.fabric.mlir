@@ -3,8 +3,8 @@
 // Valid: instruction_mem source positions match operand positions.
 // in(0) at operand position 0, in(1) at operand position 1.
 fabric.temporal_pe @tpe_ok(%in0: !dataflow.tagged<i32, i4>, %in1: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
-  [num_register = 0, num_instruction = 2, reg_fifo_depth = 0]
-  {instruction_mem = ["inst[0]: when(tag=3) out(0, tag=1) = add(0) in(0), in(1)"]} {
+  [num_register = 0, num_instruction = 2, reg_fifo_depth = 0,
+   instruction_mem = ["inst[0]: when(tag=3) out(0, tag=1) = add(0) in(0), in(1)"]] {
   fabric.pe @fu_add(%a: i32, %b: i32) -> (i32) {
     %r = arith.addi %a, %b : i32
     fabric.yield %r : i32

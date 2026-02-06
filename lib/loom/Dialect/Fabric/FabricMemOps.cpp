@@ -392,10 +392,20 @@ LogicalResult MemoryOp::verify() {
     return emitOpError("[COMP_MEMORY_STATIC_REQUIRED] "
                        "on-chip memory requires static memref shape");
 
-  // Validate port types if function_type is present.
+  // Validate port types.
   bool isPriv = getIsPrivate();
+  std::optional<FunctionType> fnType = getFunctionType();
+  if (!fnType) {
+    // Inline form: derive function type from SSA operands/results.
+    SmallVector<Type> inTypes, outTypes;
+    for (auto v : getInputs())
+      inTypes.push_back(v.getType());
+    for (auto v : getOutputs())
+      outTypes.push_back(v.getType());
+    fnType = FunctionType::get(getContext(), inTypes, outTypes);
+  }
   if (failed(verifyMemPortTypes(getOperation(), getLdCount(), getStCount(),
-                                getMemrefType(), isPriv, getFunctionType())))
+                                getMemrefType(), isPriv, fnType)))
     return failure();
 
   return success();
@@ -470,10 +480,19 @@ LogicalResult ExtMemoryOp::verify() {
     }
   }
 
-  // Validate port types if function_type is present.
+  // Validate port types.
+  std::optional<FunctionType> fnType = getFunctionType();
+  if (!fnType) {
+    // Inline form: derive function type from SSA operands/results.
+    SmallVector<Type> inTypes, outTypes;
+    for (auto v : getInputs())
+      inTypes.push_back(v.getType());
+    for (auto v : getOutputs())
+      outTypes.push_back(v.getType());
+    fnType = FunctionType::get(getContext(), inTypes, outTypes);
+  }
   if (failed(verifyMemPortTypes(getOperation(), getLdCount(), getStCount(),
-                                getMemrefType(), /*isPrivate=*/false,
-                                getFunctionType())))
+                                getMemrefType(), /*isPrivate=*/false, fnType)))
     return failure();
 
   return success();

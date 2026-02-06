@@ -426,6 +426,47 @@ LogicalResult PEOp::verify() {
              << " non-terminator ops";
   }
 
+  // COMP_PE_LOADSTORE_TAG_MODE: TagOverwrite vs TagTransparent exclusivity.
+  if (hasLoadStore) {
+    bool hasOutputTag = getOutputTag().has_value();
+    bool hasLqSq = getLqDepth().has_value() || getSqDepth().has_value();
+    if (hasOutputTag && hasLqSq)
+      return emitOpError("[COMP_PE_LOADSTORE_TAG_MODE] "
+          "load/store PE cannot have both output_tag and lqDepth/sqDepth");
+    if (hasLqSq && !hasTagged)
+      return emitOpError("[COMP_PE_LOADSTORE_TAG_MODE] "
+          "TagTransparent load/store PE requires all tagged ports");
+    if (hasTagged && !hasOutputTag && !hasLqSq)
+      return emitOpError("[COMP_PE_LOADSTORE_TAG_MODE] "
+          "tagged load/store PE requires output_tag or lqDepth/sqDepth");
+  }
+
+  // COMP_PE_LOADSTORE_TAG_WIDTH: tag widths must match across all ports.
+  if (hasLoadStore && hasTagged) {
+    unsigned firstTagWidth = 0;
+    bool tagWidthSet = false;
+    auto checkTagWidth = [&](Type t) -> LogicalResult {
+      if (auto tagged = dyn_cast<dataflow_t>(t)) {
+        unsigned tw = tagged.getTagType().getWidth();
+        if (!tagWidthSet) {
+          firstTagWidth = tw;
+          tagWidthSet = true;
+        } else if (tw != firstTagWidth) {
+          return emitOpError("[COMP_PE_LOADSTORE_TAG_WIDTH] "
+              "tag widths must match across all ports; got ")
+                 << firstTagWidth << " and " << tw;
+        }
+      }
+      return success();
+    };
+    for (Type t : inputTypes)
+      if (failed(checkTagWidth(t)))
+        return failure();
+    for (Type t : outputTypes)
+      if (failed(checkTagWidth(t)))
+        return failure();
+  }
+
   // Tagged interface: output_tag should be present.
   // Allow missing output_tag for load/store PEs (detected by body content).
   if (hasTagged && !getOutputTag() && !hasLoadStore)
@@ -469,8 +510,8 @@ LogicalResult PEOp::verify() {
 // Always named:
 //   fabric.temporal_pe @name(%in: T, ...) -> (T, ...)
 //     [num_register = R, num_instruction = I, reg_fifo_depth = F,
-//      enable_share_operand_buffer = B, operand_buffer_size = S]
-//     {instruction_mem = [...]}
+//      enable_share_operand_buffer = B, operand_buffer_size = S,
+//      instruction_mem = [...]]
 //     { body }
 //===----------------------------------------------------------------------===//
 
@@ -522,6 +563,12 @@ static ParseResult parseTemporalPEHwParams(OpAsmParser &parser,
         return failure();
       result.addAttribute(
           TemporalPEOp::getOperandBufferSizeAttrName(result.name), attr);
+    } else if (keyword == "instruction_mem") {
+      ArrayAttr attr;
+      if (parser.parseAttribute(attr))
+        return failure();
+      result.addAttribute(
+          TemporalPEOp::getInstructionMemAttrName(result.name), attr);
     } else {
       return parser.emitError(parser.getCurrentLocation(),
                               "unexpected keyword '")
@@ -568,21 +615,6 @@ ParseResult TemporalPEOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parseTemporalPEHwParams(parser, result))
     return failure();
 
-  // Parse optional {instruction_mem = [...]}.
-  // Use parseOptionalAttrDict to parse the instruction_mem attribute without
-  // consuming the '{' that belongs to the body region.
-  {
-    NamedAttrList attrs;
-    if (parser.parseOptionalAttrDict(attrs))
-      return failure();
-    for (auto &attr : attrs) {
-      if (attr.getName() == "instruction_mem") {
-        result.addAttribute(getInstructionMemAttrName(result.name),
-                            attr.getValue());
-      }
-    }
-  }
-
   // Parse region body. Block args use value types (tags stripped).
   for (auto &arg : entryArgs)
     arg.type = getValueType(arg.type);
@@ -626,14 +658,11 @@ void TemporalPEOp::print(OpAsmPrinter &p) {
   if (auto obs = getOperandBufferSize()) {
     p << ", operand_buffer_size = " << *obs;
   }
-  p << "]";
-
-  // Print optional {instruction_mem = [...]}.
   if (auto im = getInstructionMem()) {
-    p << " {instruction_mem = ";
+    p << ", instruction_mem = ";
     p.printAttribute(*im);
-    p << "}";
   }
+  p << "]";
 
   // Print region body (block args not printed since they differ from interface).
   p << " ";
@@ -767,6 +796,54 @@ LogicalResult TemporalPEOp::verify() {
         return emitOpError("[COMP_TEMPORAL_PE_REG_DISABLED] "
                            "instruction_mem entry ")
                << instIdx << " uses reg() when num_register is 0";
+
+      // COMP_TEMPORAL_PE_SRC_MISMATCH: in(j) at operand position i must have
+      // j == i. Extract operand portion after '= fuName(fuIdx)'.
+      {
+        size_t eqPos = inst.find(" = ");
+        if (eqPos != StringRef::npos) {
+          StringRef rhs = inst.substr(eqPos + 3).ltrim();
+          // Skip FU call 'fuName(fuIdx)' to get operand list.
+          size_t parenClose = rhs.find(')');
+          if (parenClose != StringRef::npos) {
+            StringRef operands = rhs.substr(parenClose + 1).ltrim();
+            // Parse comma-separated operand tokens, track position.
+            unsigned operandPos = 0;
+            while (!operands.empty()) {
+              // Trim leading whitespace and commas.
+              operands = operands.ltrim();
+              if (operands.starts_with(",")) {
+                operands = operands.substr(1).ltrim();
+              }
+              if (operands.empty())
+                break;
+              // Check for in(N) pattern at current position.
+              if (operands.starts_with("in(")) {
+                StringRef rest = operands.substr(3);
+                size_t closeParen = rest.find(')');
+                if (closeParen != StringRef::npos) {
+                  unsigned srcIdx;
+                  if (!rest.substr(0, closeParen).getAsInteger(10, srcIdx)) {
+                    if (srcIdx != operandPos)
+                      return emitOpError(
+                          "[COMP_TEMPORAL_PE_SRC_MISMATCH] "
+                          "instruction_mem entry ")
+                             << instIdx << ": in(" << srcIdx
+                             << ") at operand position " << operandPos
+                             << " (expected in(" << operandPos << "))";
+                  }
+                }
+              }
+              // Advance past current token (up to next ',' or end).
+              size_t nextComma = operands.find(',');
+              if (nextComma == StringRef::npos)
+                break;
+              operands = operands.substr(nextComma + 1);
+              operandPos++;
+            }
+          }
+        }
+      }
     }
   }
 

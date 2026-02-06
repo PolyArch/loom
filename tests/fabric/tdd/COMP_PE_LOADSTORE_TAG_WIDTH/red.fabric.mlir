@@ -1,5 +1,4 @@
 // RUN: not loom --adg %s 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK: COMP_PE_LOADSTORE_TAG_WIDTH
 
 // Valid handshake.load body, but mismatched tag widths: addr has i4

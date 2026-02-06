@@ -1,5 +1,4 @@
 // RUN: not loom --adg %s 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK: COMP_MEMORY_TAG_WIDTH
 
 // ldCount = 4 requires tag width >= 2 (log2Ceil(4) = 2), but i1 is provided.

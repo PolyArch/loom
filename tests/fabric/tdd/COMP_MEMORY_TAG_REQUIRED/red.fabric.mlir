@@ -1,5 +1,4 @@
 // RUN: not loom --adg %s 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK: COMP_MEMORY_TAG_REQUIRED
 
 // ldCount = 2 but load address ports use native index instead of tagged.

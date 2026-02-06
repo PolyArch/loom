@@ -1,5 +1,4 @@
 // RUN: not loom --adg %s 2>&1 | FileCheck %s
-// XFAIL: *
 // CHECK: COMP_MEMORY_DATA_TYPE
 
 // Store data port uses i64 but memref element type is i32.
