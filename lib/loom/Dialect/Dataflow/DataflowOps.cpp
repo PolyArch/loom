@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "loom/Dialect/Dataflow/IR/DataflowOps.h"
+#include "loom/Dialect/Dataflow/DataflowOps.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"

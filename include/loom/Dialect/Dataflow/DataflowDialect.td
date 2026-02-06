@@ -14,7 +14,7 @@ def Dataflow_Dialect : Dialect {
   let name = "dataflow";
   let cppNamespace = "::loom::dataflow";
   let useDefaultAttributePrinterParser = 0;
-  let useDefaultTypePrinterParser = 0;
+  let useDefaultTypePrinterParser = 1;
   let usePropertiesForAttributes = 0;
 }
 

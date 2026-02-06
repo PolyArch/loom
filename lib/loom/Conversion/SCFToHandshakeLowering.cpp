@@ -14,7 +14,7 @@
 
 #include "loom/Conversion/HandshakeOptimize.h"
 #include "loom/Conversion/SCFToHandshakeImpl.h"
-#include "loom/Dialect/Dataflow/IR/DataflowOps.h"
+#include "loom/Dialect/Dataflow/DataflowOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

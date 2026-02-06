@@ -50,6 +50,7 @@ foreach(target_name IN ITEMS loom)
     clangLex
     clangBasic
     LoomConversion
+    LoomFabric
     ${LOOM_MLIR_LIBS}
     ${LOOM_LLVM_LIBS}
   )

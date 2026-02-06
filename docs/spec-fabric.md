@@ -149,7 +149,7 @@ inside `fabric.pe` must follow the authoritative allowlist in
 The body must end with `fabric.yield` and the yielded values must match the
 module result types and ordering.
 Any memref result must originate from a `fabric.memory` with
-`private = false`. See [spec-fabric-mem.md](./spec-fabric-mem.md).
+`is_private = false`. See [spec-fabric-mem.md](./spec-fabric-mem.md).
 
 ### Explicit Type Matching
 

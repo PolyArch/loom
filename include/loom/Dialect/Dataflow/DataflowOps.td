@@ -7,7 +7,7 @@
 #ifndef LOOM_DIALECT_DATAFLOW_DATAFLOWOPS_TD
 #define LOOM_DIALECT_DATAFLOW_DATAFLOWOPS_TD
 
-include "loom/Dialect/Dataflow/IR/DataflowDialect.td"
+include "loom/Dialect/Dataflow/DataflowDialect.td"
 include "mlir/IR/OpBase.td"
 include "mlir/IR/BuiltinTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"

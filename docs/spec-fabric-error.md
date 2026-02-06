@@ -64,9 +64,9 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_MEMORY_TAG_FOR_SINGLE | Tagged ports used when `ldCount == 1` or `stCount == 1` |
 | COMP_MEMORY_TAG_WIDTH | Tag width is smaller than `log2Ceil(count)` or mismatched across ports |
 | COMP_MEMORY_STATIC_REQUIRED | `fabric.memory` uses a dynamic memref type |
-| COMP_MEMORY_PRIVATE_OUTPUT | `fabric.module` yields a memref not produced by `fabric.memory` with `private = false` |
+| COMP_MEMORY_PRIVATE_OUTPUT | `fabric.module` yields a memref not produced by `fabric.memory` with `is_private = false` |
 | COMP_MEMORY_EXTMEM_BINDING | `fabric.extmemory` memref operand is not a `fabric.module` memref input |
-| COMP_MEMORY_EXTMEM_PRIVATE | `private` is supplied on `fabric.extmemory` |
+| COMP_MEMORY_EXTMEM_PRIVATE | `is_private` is supplied on `fabric.extmemory` |
 | COMP_FABRIC_TYPE_MISMATCH | A connection inside `fabric.module` uses mismatched types or bit widths without an explicit conversion |
 | COMP_MODULE_PORT_ORDER | `fabric.module` ports are not in the required order: memref*, native*, tagged* |
 | COMP_MODULE_EMPTY_BODY | `fabric.module` body contains no operations other than the terminator |

@@ -72,7 +72,8 @@
 #include "loom/Conversion/LLVMToSCF.h"
 #include "loom/Conversion/SCFToHandshake.h"
 #include "loom/Conversion/SCFPostProcess.h"
-#include "loom/Dialect/Dataflow/IR/DataflowDialect.h"
+#include "loom/Dialect/Dataflow/DataflowDialect.h"
+#include "loom/Dialect/Fabric/FabricDialect.h"
 
 #include "circt/Dialect/ESI/ESIDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
@@ -833,6 +834,7 @@ int main(int argc, char **argv) {
   mlir_context.getOrLoadDialect<mlir::scf::SCFDialect>();
   mlir_context.getOrLoadDialect<mlir::ub::UBDialect>();
   mlir_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
+  mlir_context.getOrLoadDialect<loom::fabric::FabricDialect>();
   mlir_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
   mlir_context.getOrLoadDialect<circt::esi::ESIDialect>();
   mlir_context.getOrLoadDialect<circt::hw::HWDialect>();

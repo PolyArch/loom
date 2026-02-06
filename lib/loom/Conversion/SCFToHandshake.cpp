@@ -13,7 +13,7 @@
 
 #include "loom/Conversion/SCFToHandshake.h"
 #include "loom/Conversion/SCFToHandshakeImpl.h"
-#include "loom/Dialect/Dataflow/IR/DataflowDialect.h"
+#include "loom/Dialect/Dataflow/DataflowDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

@@ -12,7 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Conversion/SCFToHandshakeImpl.h"
-#include "loom/Dialect/Dataflow/IR/DataflowOps.h"
+#include "loom/Dialect/Dataflow/DataflowOps.h"
 
 #include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"

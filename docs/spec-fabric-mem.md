@@ -43,7 +43,7 @@ be instantiated via `fabric.instance`.
 
 ```mlir
 fabric.memory @scratchpad
-    [ldCount = 2, stCount = 2, lsqDepth = 4, private = true]
+    [ldCount = 2, stCount = 2, lsqDepth = 4, is_private = true]
     : memref<1024xi32>,
       (!dataflow.tagged<index, i2>, !dataflow.tagged<index, i2>,
        !dataflow.tagged<i32, i2>)
@@ -76,7 +76,7 @@ Single-port example:
 
 ```mlir
 %lddata, %lddone, %stdone = fabric.memory
-    [ldCount = 1, stCount = 1, lsqDepth = 4, private = true]
+    [ldCount = 1, stCount = 1, lsqDepth = 4, is_private = true]
     (%ldaddr, %staddr, %stdata)
     : memref<256xi32>, (index, index, i32) -> (i32, none, none)
 ```
@@ -100,7 +100,7 @@ Memory export example:
 
 ```mlir
 %mem, %lddata, %lddone = fabric.memory
-    [ldCount = 1, stCount = 0, private = false]
+    [ldCount = 1, stCount = 0, is_private = false]
     (%ldaddr)
     : memref<1024xi16>, (index) -> (memref<1024xi16>, i16, none)
 
@@ -114,10 +114,10 @@ All attributes in this section are hardware parameters.
 - `ldCount`: number of logical load ports.
 - `stCount`: number of logical store ports.
 - `lsqDepth`: load-store queue (LSQ) depth (only meaningful when `stCount > 0`).
-- `private` (only for `fabric.memory`): if `true`, the memory is private to the
-  module. If `false`, the memory exposes an output memref that must be yielded
-  by `fabric.module`. The default is `true`.
-- `fabric.extmemory` does not support `private`. Supplying `private` on
+- `is_private` (only for `fabric.memory`): if `true`, the memory is private to
+  the module. If `false`, the memory exposes an output memref that must be
+  yielded by `fabric.module`. The default is `true`.
+- `fabric.extmemory` does not support `is_private`. Supplying `is_private` on
   `fabric.extmemory` is invalid (`COMP_MEMORY_EXTMEM_PRIVATE`).
 
 ### Port Groups
@@ -215,7 +215,7 @@ or vice versa). The default timeout is defined in
 
 ### Memory Export (`fabric.memory` only)
 
-`fabric.memory` may expose an output memref when `private = false`. The output
+`fabric.memory` may expose an output memref when `is_private = false`. The output
 memref is the first result of the operation, must be yielded by
 `fabric.module`, and appears in the module result list.
 
@@ -254,7 +254,7 @@ Violations of the following constraints are compile-time errors:
 - Dynamic memref shape on `fabric.memory` (`COMP_MEMORY_STATIC_REQUIRED`).
 - `fabric.extmemory` memref operand is not a module memref input
   (`COMP_MEMORY_EXTMEM_BINDING`).
-- `private` is supplied on `fabric.extmemory`
+- `is_private` is supplied on `fabric.extmemory`
   (`COMP_MEMORY_EXTMEM_PRIVATE`).
 
 ## Interaction with Load/Store PEs
