@@ -339,12 +339,6 @@ LogicalResult PEOp::verify() {
       return emitOpError("interval must be a 3-element array [min, typ, max]");
   }
 
-  // Tagged interface: output_tag should be present.
-  // Allow missing output_tag for load/store PEs (detected by body content).
-  if (hasTagged && !getOutputTag() && !hasLoadStore)
-    return emitOpError("[COMP_PE_OUTPUT_TAG_MISSING] "
-        "tagged PE requires output_tag (unless load/store PE)");
-
   // Native interface: output_tag must be absent.
   if (hasNative && getOutputTag())
     return emitOpError("[COMP_PE_OUTPUT_TAG_NATIVE] "
@@ -431,6 +425,12 @@ LogicalResult PEOp::verify() {
              << lsCount << " load/store ops and " << nonTermCount
              << " non-terminator ops";
   }
+
+  // Tagged interface: output_tag should be present.
+  // Allow missing output_tag for load/store PEs (detected by body content).
+  if (hasTagged && !getOutputTag() && !hasLoadStore)
+    return emitOpError("[COMP_PE_OUTPUT_TAG_MISSING] "
+        "tagged PE requires output_tag (unless load/store PE)");
 
   // COMP_PE_CONSTANT_BODY: constant PE has no other ops.
   if (hasConstant && nonTermCount > 1)

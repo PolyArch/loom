@@ -92,23 +92,29 @@ add_custom_target(check-loom-handshake-ops-stat
   DEPENDS loom
 )
 
-add_custom_target(check-loom-fabric
+add_custom_target(check-loom-app
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_ll_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_mlir_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_scf_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_handshake.sh" "${LOOM_RUNTIME_DIR}/loom"
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_handshake_ops-stat.sh" "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom mlir-opt mlir-translate
+)
+
+add_custom_target(check-loom-fabric-tdd
   COMMAND python3 "${LLVM_SOURCE_DIR}/utils/lit/lit.py" -v
     "${CMAKE_SOURCE_DIR}/tests/fabric/tdd"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS loom FileCheck not
 )
 
+add_custom_target(check-loom-fabric
+  DEPENDS check-loom-fabric-tdd
+)
+
 add_custom_target(check-loom
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_ll_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_mlir_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_scf_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_handshake.sh" "${LOOM_RUNTIME_DIR}/loom"
-  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_handshake_ops-stat.sh" "${LOOM_RUNTIME_DIR}/loom"
-  COMMAND python3 "${LLVM_SOURCE_DIR}/utils/lit/lit.py" -v
-    "${CMAKE_SOURCE_DIR}/tests/fabric/tdd"
-  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-  DEPENDS loom mlir-opt mlir-translate FileCheck not
+  DEPENDS check-loom-app check-loom-fabric
 )
 
 add_custom_target(clean-loom
