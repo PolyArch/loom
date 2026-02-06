@@ -2,7 +2,7 @@ SHELL := /bin/sh
 
 .PHONY: all init build rebuild test clean purge
 
-all: init rebuild test
+all: rebuild test
 
 init:
 	@set -e; \
@@ -17,12 +17,12 @@ init:
 	  git -C . submodule update --init --depth 1 --filter=blob:none externals/circt; \
 	fi
 
-build:
+build: init
 	@set -e; \
 	cmake -S . -B build -G Ninja -DLLVM_ENABLE_PROJECTS="clang;mlir" -DLLVM_TARGETS_TO_BUILD=host; \
 	ninja -C build loom
 
-rebuild:
+rebuild: init
 	@set -e; \
 	cmake -S . -B build -G Ninja -DLLVM_ENABLE_PROJECTS="clang;mlir" -DLLVM_TARGETS_TO_BUILD=host; \
 	ninja -C build clang mlir-opt mlir-translate loom

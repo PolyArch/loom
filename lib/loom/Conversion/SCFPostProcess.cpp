@@ -1519,7 +1519,7 @@ struct UpliftWhileToForPass
     FrozenRewritePatternSet frozen(std::move(patterns));
 
     for (auto func : getOperation().getOps<func::FuncOp>())
-      (void)applyPatternsAndFoldGreedily(func, frozen);
+      (void)applyPatternsGreedily(func, frozen);
   }
 };
 
