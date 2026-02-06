@@ -38,14 +38,16 @@ at boundaries between dedicated and temporal regions.
 ### Constraints
 
 - `T` must be a native value type.
-- Tag width must be in the range `i1` to `i16`.
+- Tag type must satisfy `!dataflow.tagged` constraints from
+  [spec-dataflow.md](./spec-dataflow.md). Tag-width violations raise
+  `COMP_TAG_WIDTH_RANGE`.
 - The result tagged type's value component must match the input type `T`.
-  Violations raise `COMP_ADD_TAG_TYPE_MISMATCH`.
+  Violations raise `COMP_ADD_TAG_VALUE_TYPE_MISMATCH`.
 
 Example error:
 
 ```
-// ERROR: COMP_ADD_TAG_TYPE_MISMATCH
+// ERROR: COMP_ADD_TAG_VALUE_TYPE_MISMATCH
 // Input is i32, but result value type is f32
 %bad = fabric.add_tag %i32_val {tag = 0 : i4} : i32 -> !dataflow.tagged<f32, i4>
 ```
@@ -75,12 +77,12 @@ in the high bits.
 ### Constraints
 
 - Output type must match the value type of the input tagged type.
-  Violations raise `COMP_DEL_TAG_TYPE_MISMATCH`.
+  Violations raise `COMP_DEL_TAG_VALUE_TYPE_MISMATCH`.
 
 Example error:
 
 ```
-// ERROR: COMP_DEL_TAG_TYPE_MISMATCH
+// ERROR: COMP_DEL_TAG_VALUE_TYPE_MISMATCH
 // Input value type is i32, but output type is f32
 %bad = fabric.del_tag %tagged : !dataflow.tagged<i32, i4> -> f32
 ```
@@ -131,10 +133,13 @@ discarded.
 
 ### Constraints
 
-- Input and output value types must match.
+- Input and output value types must match. Violations raise
+  `COMP_MAP_TAG_VALUE_TYPE_MISMATCH`.
 - `table` length must equal `table_size`.
 - Tag width can change between input and output.
-- `valid` must be `i1` and tag types must be signless integers in `i1` to `i16`.
+- `valid` must be `i1`. Input and output tag types must satisfy
+  `!dataflow.tagged` constraints from [spec-dataflow.md](./spec-dataflow.md).
+  Tag-width violations raise `COMP_TAG_WIDTH_RANGE`.
 
 Violations of table shape or size are compile-time errors: `COMP_MAP_TAG_TABLE_SIZE`
 and `COMP_MAP_TAG_TABLE_LENGTH`. See [spec-fabric-error.md](./spec-fabric-error.md).
@@ -158,3 +163,10 @@ Errors are reported through a hardware-valid error signal and an error code
 propagated to the top level. The corresponding symbols are
 `RT_MAP_TAG_NO_MATCH` and `CFG_MAP_TAG_DUP_TAG`. See
 [spec-fabric-error.md](./spec-fabric-error.md).
+
+## Related Documents
+
+- [spec-fabric.md](./spec-fabric.md)
+- [spec-dataflow.md](./spec-dataflow.md)
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
+- [spec-fabric-error.md](./spec-fabric-error.md)

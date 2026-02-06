@@ -82,9 +82,9 @@ Violations raise `COMP_PE_DATAFLOW_BODY`.
 
 `dataflow.stream` is a special case for runtime configuration. When a
 `fabric.pe` body contains exactly one `dataflow.stream`, the PE exposes a
-5-bit `stop_cond_sel` configuration field in `config_mem` (one-hot order:
+5-bit `cont_cond_sel` configuration field in `config_mem` (one-hot order:
 `<`, `<=`, `>`, `>=`, `!=`). Non-one-hot values (all zero or multiple set bits)
-raise `CFG_PE_STREAM_STOP_COND_ONEHOT`.
+raise `CFG_PE_STREAM_CONT_COND_ONEHOT`.
 
 ## handshake Dialect (8 operations)
 

@@ -52,12 +52,15 @@ parameters:
 | `fabric.pe` (tagged, compute) | `NUM_OUTPUTS * TAG_WIDTH` |
 | `fabric.pe` (constant, native) | `bitwidth(constant_value_type)` |
 | `fabric.pe` (constant, tagged) | `bitwidth(constant_value_type) + TAG_WIDTH` |
-| `fabric.pe` (dataflow.stream, native) | `5` (`stop_cond_sel`, one-hot [`<`, `<=`, `>`, `>=`, `!=`]) |
+| `fabric.pe` (dataflow.stream, native) | `5` (`cont_cond_sel`, one-hot [`<`, `<=`, `>`, `>=`, `!=`]) |
+| `fabric.pe` (load/store, TagOverwrite + tagged) | `TAG_WIDTH` (single shared `output_tag` for all outputs) |
+| `fabric.pe` (load/store, TagOverwrite + native) | 0 |
+| `fabric.pe` (load/store, TagTransparent) | 0 |
 | `fabric.pe` (compute, native) | 0 (no config) |
 | `fabric.add_tag` | `TAG_WIDTH` |
 | `fabric.map_tag` | `TABLE_SIZE * (1 + IN_TAG_WIDTH + OUT_TAG_WIDTH)` |
 | `fabric.switch` | `K` (number of connected positions in connectivity_table) |
-| `fabric.temporal_pe` | `NUM_INSTRUCTION * INSTRUCTION_WIDTH` |
+| `fabric.temporal_pe` | `NUM_INSTRUCTIONS * INSTRUCTION_WIDTH` |
 | `fabric.temporal_sw` | `NUM_ROUTE_TABLE * SLOT_WIDTH` |
 | `fabric.memory` | 0 (no runtime config) |
 | `fabric.extmemory` | 0 (no runtime config) |
@@ -98,6 +101,11 @@ then LSB of word 1, and so on.
 Fields within a module's config_mem allocation are packed continuously
 (LSB-first). The 32-bit word alignment applies to the entire module's total
 config bits, not individual fields.
+
+For `fabric.pe` with constant tagged interface, packing order is:
+
+- Lower bits: `constant_value`
+- Upper bits: `output_tag`
 
 ## Access Protocol
 

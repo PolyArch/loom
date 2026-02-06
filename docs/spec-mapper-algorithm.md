@@ -101,7 +101,7 @@ Recommended escalation order:
 
 1. Reroute conflicting edges.
 2. Reassign conflicting node placements.
-3. Reassign temporal slot/tag/register allocations.
+3. Reassign temporal slot/tag/opcode/register allocations.
 4. Restart from checkpoint or fail with minimal conflict report.
 
 ## Algorithm Quality Requirements

@@ -55,7 +55,8 @@ All ports must belong to the same category:
 Within a category, individual port types may differ. This allows type
 conversion PEs.
 In the tagged category, tag width must be uniform across all input and output
-ports; only value types may vary per port.
+ports; only value types may vary per port. The authoritative tagged type set
+and tag-width range are defined in [spec-dataflow.md](./spec-dataflow.md).
 Load/store PEs have additional interface rules described in
 `Load/Store PE Semantics` below.
 
@@ -113,9 +114,6 @@ Load/store PEs override the default `output_tag` rules. See
 - Allowed only when the PE body contains exactly one `handshake.constant`.
 - Type: matches the output value type of the `handshake.constant`.
 - The value is stored in config_mem and may be reprogrammed at runtime.
-- When the interface is tagged, `constant_value` is packed together with
-  `output_tag` in config_mem (constant_value in lower bits, output_tag in
-  upper bits).
 
 This attribute is a direct consequence of the Constant Exclusivity Rule: if a
 `fabric.pe` contains `handshake.constant`, it must be the only non-terminator
@@ -124,16 +122,16 @@ For the formal `config_mem` definition (32-bit word width, depth calculation,
 and field packing rules), see
 [spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
-#### `stop_cond_sel` (runtime configuration parameter)
+#### `cont_cond_sel` (runtime configuration parameter)
 
-`stop_cond_sel` is a special runtime configuration field for
+`cont_cond_sel` is a special runtime configuration field for
 `fabric.pe` bodies containing exactly one `dataflow.stream`.
 
 - Width: 5 bits
 - Encoding: one-hot in fixed order [`<`, `<=`, `>`, `>=`, `!=`]
 - Default reset value: `00001` (`<`)
 - Any non-one-hot value (all zero or multiple set bits) is a configuration
-  error: `CFG_PE_STREAM_STOP_COND_ONEHOT`
+  error: `CFG_PE_STREAM_CONT_COND_ONEHOT`
 
 PEs containing other dataflow operations (`dataflow.carry`,
 `dataflow.invariant`, `dataflow.gate`) have no dataflow-specific runtime
@@ -161,8 +159,7 @@ tag-transparent hardware type (no `output_tag`). See `Load/Store PE Semantics`.
   `COMP_PE_OUTPUT_TAG_MISSING`.
 - The body must contain at least one non-terminator operation. Violations raise
   `COMP_PE_EMPTY_BODY`.
-- If any `dataflow` operation is present, the interface must be native and the
-  body must be dataflow-only as defined in
+- Dataflow body constraints are defined authoritatively in
   [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md). Violations raise
   `COMP_PE_DATAFLOW_BODY`.
 
@@ -191,10 +188,11 @@ for the complete specification.
 ### Load/Store PE Semantics
 
 Load/store PEs are hardware adapters between the fabric memory system and
-compute graph. They only support a single `handshake.load` or a single
-`handshake.store` in the body. Their behavior is defined here and in
-[spec-fabric-mem.md](./spec-fabric-mem.md). Violations of this single-op body
-constraint raise `COMP_PE_LOADSTORE_BODY`.
+compute graph. Body structure constraints for load/store PEs are defined
+authoritatively in [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md), and their
+memory interaction semantics are defined in
+[spec-fabric-mem.md](./spec-fabric-mem.md). Violations of load/store body
+constraints raise `COMP_PE_LOADSTORE_BODY`.
 
 #### Port Roles
 
@@ -245,6 +243,8 @@ fixed at build time and cannot be switched at runtime.
 
 - If the interface is native, `output_tag` must be absent.
 - If the interface is tagged, `output_tag` is required.
+- For load/store PEs, `output_tag` is a single runtime value shared by all
+  outputs (not a per-output array).
 - The PE represents a single logical software edge.
 - The `addr_from_comp` port and the data port (`data_from_mem` for load,
   `data_from_comp` for store) may be tagged or native.
@@ -307,3 +307,13 @@ authoritative constraints on `fabric.pe` usage within `fabric.temporal_pe`.
 Key restrictions: the PE must use a native interface
 (`COMP_TEMPORAL_PE_TAGGED_PE`) and load/store PEs are forbidden
 (`COMP_TEMPORAL_PE_LOADSTORE`).
+
+## Related Documents
+
+- [spec-fabric.md](./spec-fabric.md)
+- [spec-dataflow.md](./spec-dataflow.md)
+- [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md)
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
+- [spec-fabric-mem.md](./spec-fabric-mem.md)
+- [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md)
+- [spec-fabric-error.md](./spec-fabric-error.md)

@@ -81,9 +81,9 @@ lib/loom/Hardware/SystemC/
 
 ### Generated Output (Self-Contained)
 
-**IMPORTANT:** The exported output is completely self-contained. It does not
-reference or depend on any files in the Loom installation. All required files
-are either generated or copied into the output directory.
+Self-contained output is guaranteed by
+[spec-adg.md](./spec-adg.md). This document defines the generated SystemC file
+set and module structure.
 
 Given `exportSysC(directory)` with module name `my_cgra`, the following files
 are generated:
@@ -101,6 +101,9 @@ are generated:
   CMakeLists.txt           # CMake build configuration
   lib/                     # Library modules (copied from Loom templates)
     fabric_pe.h            # Parameterized PE module
+    fabric_pe_constant.h   # Parameterized constant PE module
+    fabric_pe_load.h       # Parameterized load PE module
+    fabric_pe_store.h      # Parameterized store PE module
     fabric_temporal_pe.h   # Parameterized temporal PE module
     fabric_switch.h        # Parameterized switch module
     fabric_temporal_sw.h   # Parameterized temporal switch module
@@ -112,9 +115,6 @@ are generated:
     fabric_stream.h        # Streaming interface definitions
     fabric_common.h        # Common definitions and utilities
 ```
-
-The entire `<directory>/` can be moved, archived, or shared without requiring
-access to the Loom installation.
 
 ## Module Hierarchy
 
@@ -249,6 +249,9 @@ defined in [spec-dataflow.md](./spec-dataflow.md) (`!dataflow.tagged` type).
 
 Each fabric operation type has a corresponding parameterized SystemC module.
 Parameters correspond to hardware attributes from the Fabric MLIR spec.
+`CONFIG_WIDTH` formulas remain authoritative in
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md); derived expressions in
+the snippets below are implementation illustrations.
 
 ### fabric_pe.h
 
@@ -270,12 +273,12 @@ template<
 SC_MODULE(fabric_pe) {
     // CONFIG_WIDTH: derived, not a template parameter
     //   Tagged compute PE:        NUM_OUTPUTS * TAG_WIDTH
-    //   dataflow.stream PE:       +5 bits stop_cond_sel (one-hot)
+    //   dataflow.stream PE:       +5 bits cont_cond_sel (one-hot)
     //   Other native compute PEs: 0
-    static constexpr int STREAM_STOP_COND_WIDTH =
+    static constexpr int STREAM_CONT_COND_WIDTH =
         HAS_DATAFLOW_STREAM ? 5 : 0;
     static constexpr int CONFIG_WIDTH =
-        ((TAG_WIDTH > 0) ? NUM_OUTPUTS * TAG_WIDTH : 0) + STREAM_STOP_COND_WIDTH;
+        ((TAG_WIDTH > 0) ? NUM_OUTPUTS * TAG_WIDTH : 0) + STREAM_CONT_COND_WIDTH;
 
     // Clock and reset
     sc_core::sc_in<bool> clk;
@@ -485,13 +488,13 @@ template<
     int NUM_OUTPUTS = 1,
     int DATA_WIDTH = 32,
     int TAG_WIDTH = 4,
-    int NUM_REGISTER = 4,
-    int NUM_INSTRUCTION = 16,
-    int NUM_INSTANCE = 2,
+    int NUM_REGISTERS = 4,
+    int NUM_INSTRUCTIONS = 16,
+    int REG_FIFO_DEPTH = 2,
     int NUM_FU_TYPES = 2,
     int INSTRUCTION_WIDTH = 64,
     // Operand buffer mode parameters
-    bool ENABLE_SHARED_OPERAND_BUFFER = false,  // false=Mode A, true=Mode B
+    bool ENABLE_SHARE_OPERAND_BUFFER = false,  // false=Mode A, true=Mode B
     int OPERAND_BUFFER_SIZE = 0                  // Mode B only, range [1,8192]
 >
 SC_MODULE(fabric_temporal_pe) {
@@ -509,7 +512,7 @@ SC_MODULE(fabric_temporal_pe) {
     sc_core::sc_out<sc_dt::sc_bv<DATA_WIDTH + TAG_WIDTH>> out_data[NUM_OUTPUTS];
 
     // Configuration memory interface (instruction_mem only, no operand buffers)
-    sc_core::sc_in<sc_dt::sc_bv<NUM_INSTRUCTION * INSTRUCTION_WIDTH>>
+    sc_core::sc_in<sc_dt::sc_bv<NUM_INSTRUCTIONS * INSTRUCTION_WIDTH>>
         cfg_instruction_mem;
 
     // Error reporting
@@ -525,7 +528,7 @@ SC_MODULE(fabric_temporal_pe) {
 
 private:
     // Internal register file
-    std::array<sc_dt::sc_bv<DATA_WIDTH>, NUM_REGISTER> registers;
+    std::array<sc_dt::sc_bv<DATA_WIDTH>, NUM_REGISTERS> registers;
 
     // Operand buffer entry (runtime state, NOT configurable)
     struct operand_slot {
@@ -534,8 +537,8 @@ private:
     };
 
     // Mode A: per-instruction operand buffer
-    // Conditional compilation based on ENABLE_SHARED_OPERAND_BUFFER
-    std::array<std::array<operand_slot, NUM_INPUTS>, NUM_INSTRUCTION>
+    // Conditional compilation based on ENABLE_SHARE_OPERAND_BUFFER
+    std::array<std::array<operand_slot, NUM_INPUTS>, NUM_INSTRUCTIONS>
         operand_buffers_mode_a;
 
     // Mode B: shared operand buffer with per-tag FIFO semantics
@@ -568,7 +571,7 @@ private:
             sc_dt::sc_bv<TAG_WIDTH> tag;
         } results[NUM_OUTPUTS];
     };
-    std::array<instruction, NUM_INSTRUCTION> instruction_mem;
+    std::array<instruction, NUM_INSTRUCTIONS> instruction_mem;
 
     void decode_instructions();
     int match_tag(const sc_dt::sc_bv<TAG_WIDTH>& tag);
@@ -583,10 +586,13 @@ template<
     int NUM_OUTPUTS = 4,
     int DATA_WIDTH = 32,
     int TAG_WIDTH = 0,
-    sc_dt::sc_bv<NUM_OUTPUTS*NUM_INPUTS> CONNECTIVITY,  // bit mask
+    sc_dt::sc_bv<NUM_OUTPUTS*NUM_INPUTS> CONNECTIVITY = sc_dt::sc_bv<NUM_OUTPUTS*NUM_INPUTS>(-1),
     int NUM_CONNECTED = 16  // popcount(CONNECTIVITY)
 >
 SC_MODULE(fabric_switch) {
+    static_assert(NUM_CONNECTED == fabric::const_popcount(CONNECTIVITY),
+                  "NUM_CONNECTED must equal popcount(CONNECTIVITY)");
+
     // Clock and reset
     sc_core::sc_in<bool> clk;
     sc_core::sc_in<bool> rst_n;
@@ -609,7 +615,13 @@ SC_MODULE(fabric_switch) {
 
     SC_CTOR(fabric_switch) {
         SC_METHOD(route_method);
-        sensitive << clk.pos();
+        sensitive << cfg_route_table;
+        for (int i = 0; i < NUM_INPUTS; ++i) {
+            sensitive << in_valid[i] << in_data[i];
+        }
+        for (int o = 0; o < NUM_OUTPUTS; ++o) {
+            sensitive << out_ready[o];
+        }
     }
 
     void route_method();
@@ -620,6 +632,11 @@ private:
 };
 ```
 
+`CONNECTIVITY` defaults to full crossbar (all ones). The exporter must provide
+the correct `NUM_CONNECTED = popcount(CONNECTIVITY)` for each instantiated
+switch. `fabric::const_popcount` is provided by `fabric_common.h`. The
+compile-time assertion above is a defensive consistency check.
+
 ### fabric_temporal_sw.h
 
 ```cpp
@@ -629,10 +646,14 @@ template<
     int DATA_WIDTH = 32,
     int TAG_WIDTH = 4,
     int NUM_ROUTE_TABLE = 8,
-    sc_dt::sc_bv<NUM_OUTPUTS*NUM_INPUTS> CONNECTIVITY,
-    int SLOT_WIDTH = 16
+    sc_dt::sc_bv<NUM_OUTPUTS*NUM_INPUTS> CONNECTIVITY = sc_dt::sc_bv<NUM_OUTPUTS*NUM_INPUTS>(-1),
+    int NUM_CONNECTED = 16
 >
 SC_MODULE(fabric_temporal_sw) {
+    static_assert(NUM_CONNECTED == fabric::const_popcount(CONNECTIVITY),
+                  "NUM_CONNECTED must equal popcount(CONNECTIVITY)");
+    static constexpr int SLOT_WIDTH = 1 + TAG_WIDTH + NUM_CONNECTED;
+
     // Clock and reset
     sc_core::sc_in<bool> clk;
     sc_core::sc_in<bool> rst_n;
@@ -672,6 +693,10 @@ private:
     int match_tag(const sc_dt::sc_bv<TAG_WIDTH>& tag);
 };
 ```
+
+`SLOT_WIDTH` is derived and must not be set independently. The exporter must
+emit `CONNECTIVITY` and `NUM_CONNECTED` consistently; assertions provide
+defensive checks.
 
 ### fabric_memory.h
 
@@ -886,11 +911,6 @@ For the formal definition of config_mem (word width, depth calculation,
 CONFIG_WIDTH derivation), see
 [spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
-### Purpose
-
-The `config_mem` controller provides a TLM 2.0 interface for runtime
-configuration, equivalent to the AXI-Lite interface in RTL.
-
 ### TLM Interface
 
 The config_mem uses `tlm_utils::simple_target_socket` for blocking transport:
@@ -941,9 +961,9 @@ accelerator modules.**
 
 ### Address Allocation
 
-Address allocation follows the rules defined in [spec-adg.md](./spec-adg.md).
-See the Address Allocation section in that document for the authoritative
-specification.
+Address allocation follows the authoritative rules in
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md), including operation
+order traversal, 32-bit word alignment, and per-node isolation.
 
 The `<module>_addr.h` header is shared between SystemC and SystemVerilog
 exports.

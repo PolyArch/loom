@@ -180,7 +180,7 @@ their configuration requirements:
 | `fabric.pe` (tagged) | `output_tag` | Output tag values (tagged interface only) | [spec-fabric-pe.md](./spec-fabric-pe.md) |
 | `fabric.pe` (constant, native) | `constant_value` | Constant value for handshake.constant body | [spec-fabric-pe.md](./spec-fabric-pe.md) |
 | `fabric.pe` (constant, tagged) | `constant_value`, `output_tag` | Constant value + output tag | [spec-fabric-pe.md](./spec-fabric-pe.md) |
-| `fabric.pe` (dataflow.stream, native) | `stop_cond_sel` | Runtime-selectable stop condition (`<`, `<=`, `>`, `>=`, `!=`) as 5-bit one-hot | [spec-fabric-pe.md](./spec-fabric-pe.md) |
+| `fabric.pe` (dataflow.stream, native) | `cont_cond_sel` | Runtime-selectable continue condition (`<`, `<=`, `>`, `>=`, `!=`) as 5-bit one-hot | [spec-fabric-pe.md](./spec-fabric-pe.md) |
 | `fabric.add_tag` | `tag` | Constant tag to attach | [spec-fabric-tag.md](./spec-fabric-tag.md) |
 | `fabric.map_tag` | `table` | Tag remapping table | [spec-fabric-tag.md](./spec-fabric-tag.md) |
 | `fabric.switch` | `route_table` | Static routing configuration | [spec-fabric-switch.md](./spec-fabric-switch.md) |
@@ -204,45 +204,17 @@ referenced documents take precedence.
 
 A `fabric.pe` containing `handshake.constant` is a special case: the constant
 value is runtime configurable. A `fabric.pe` containing `dataflow.stream` is
-another special case with a 5-bit `stop_cond_sel` runtime field. All other
+another special case with a 5-bit `cont_cond_sel` runtime field. All other
 compute PEs (arith, math, `dataflow.carry`, `dataflow.invariant`,
 `dataflow.gate`) have no runtime configuration beyond output_tag for tagged
 interfaces.
 
-### Configuration Bit Width Details
+### Configuration Bit Width Authority
 
-For detailed bit width formulas, see the authoritative documents listed in the
-table above. This section provides a brief overview.
-
-#### fabric.pe
-
-- **Tagged interface:** N * M bits (N outputs, M tag width)
-- **Constant body:** constant_value + output_tag bits, packed continuously
-- **dataflow.stream body (native):** 5 bits (`stop_cond_sel`, one-hot)
-- **Other compute body (native):** No runtime configuration
-
-#### fabric.add_tag / fabric.map_tag
-
-See [spec-fabric-tag.md](./spec-fabric-tag.md) for table entry formats.
-
-#### fabric.switch
-
-One bit per connected position. See [spec-fabric-switch.md](./spec-fabric-switch.md).
-
-#### fabric.temporal_pe
-
-The `instruction_mem` contains only instruction configuration. Operand buffering
-is handled by a **separate operand buffer** component that is NOT part of
-config_mem.
-
-See [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) for:
-- Instruction field layout and bit width formulas
-- Operand buffer architecture (Mode A vs Mode B)
-
-#### fabric.temporal_sw
-
-See [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md) for slot width
-formula and route table encoding.
+`CONFIG_WIDTH` formulas and operation-local field packing are defined
+authoritatively in [spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
+Operation-specific semantics remain authoritative in the corresponding
+`spec-fabric-*.md` documents.
 
 ## config_mem Principles
 
@@ -271,22 +243,10 @@ the accelerator's behavior is fixed until the host reconfigures it.
 
 ### Address Allocation
 
-Configuration addresses are allocated sequentially based on MLIR operation
-order within `fabric.module`:
-
-1. Traverse operations in definition order
-2. For each configurable operation, allocate space starting at the next 32-bit
-   aligned boundary
-3. The operation's config bits occupy consecutive 32-bit words
-4. Unused bits within a word are tied to zero
-5. Repeat until all configurable operations are processed
-
-Each configurable node's bits are isolated within its allocated words. No two
-nodes share a 32-bit word. This simplifies software driver development and
-debugging by providing clear per-node boundaries.
-
-Note: The base design does not support partial reconfiguration (updating some
-nodes while others execute). Full reconfiguration requires reset.
+Address allocation rules are defined authoritatively in
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md). This includes
+operation order traversal, 32-bit word alignment, per-node isolation, and reset
+requirements for full reconfiguration.
 
 ### Address Map Generation
 
@@ -341,22 +301,14 @@ See [spec-adg-api.md](./spec-adg-api.md) for complete method signatures.
 
 ## Validation
 
-The `validateADG()` method performs strict validation to minimize errors found
-during RTL simulation:
-
-1. **Connectivity completeness**: All ports must be connected; no dangling wires
-2. **Type matching**: Connected ports must have identical types and bit widths
-3. **Port ordering**: Module interface follows memref*, native*, tagged* order
-4. **Instance validity**: All `fabric.instance` references resolve to valid modules
-5. **Parameter bounds**: Hardware parameters are within valid ranges
-6. **Resource constraints**: Port counts within limits (e.g., switch max 32 ports)
-
-Validation errors are reported with:
-- Error code (from [spec-fabric-error.md](./spec-fabric-error.md))
-- Source location (builder method or line number if available)
-- Detailed message explaining the constraint violation
+`validateADG()` performs structural, type, resource, and template-dedup checks
+before export. The authoritative validation checklist and error reporting model
+are defined in [spec-adg-api.md](./spec-adg-api.md).
 
 ## Export Formats
+
+`exportSysC()` and `exportSV()` produce self-contained output directories that
+can be moved or archived independently of the Loom installation.
 
 ### MLIR Export
 
@@ -384,7 +336,7 @@ For node styles, edge styles, and unmapped element conventions, see
 
 ### SystemC Export
 
-`exportSysC(directory)` produces a self-contained SystemC simulation model:
+`exportSysC(directory)` produces a SystemC simulation model:
 
 - Top-level module with TLM 2.0 configuration interface
 - config_mem controller using `simple_target_socket`
@@ -393,10 +345,6 @@ For node styles, edge styles, and unmapped element conventions, see
 - `_addr.h` C header with address definitions (shared with SV)
 - CMake build configuration
 - `lib/` directory with all parameterized library modules (copied)
-
-The output directory is completely self-contained and does not reference any
-files in the Loom installation. It can be moved, archived, or shared
-independently.
 
 The generated model targets SystemC 3.0.1 and supports two abstraction levels:
 
@@ -409,16 +357,12 @@ See [spec-adg-sysc.md](./spec-adg-sysc.md) for complete specification.
 
 ### SystemVerilog Export
 
-`exportSV(directory)` produces a self-contained hierarchical RTL design:
+`exportSV(directory)` produces a hierarchical RTL design:
 
 - Top-level instantiation module
 - config_mem controller with AXI-Lite interface
 - C header file with address definitions
 - `lib/` directory with all parameterized module templates (copied)
-
-The output directory is completely self-contained and does not reference any
-files in the Loom installation. It can be moved, archived, or shared
-independently.
 
 See [spec-adg-sv.md](./spec-adg-sv.md) for complete specification.
 
@@ -471,52 +415,52 @@ All error messages include the Fabric error code symbol (e.g.,
 The ADG implementation is organized within the Loom source tree as follows.
 **Note:** These files are used by the exporter implementation; they are NOT
 referenced by the generated output. The export functions copy required templates
-into the output directory to ensure self-contained output.
+into the output directory.
 
 ```
 include/loom/
-  adg.h                            # Public API header (to be created)
+  adg.h                            # Public API header
 
 include/loom/Dialect/Fabric/
-  ADGBuilder.h                     # Builder class declaration (to be created)
-  ADGTypes.h                       # Type definitions (to be created)
+  ADGBuilder.h                     # Builder class declaration
+  ADGTypes.h                       # Type definitions
 
 include/loom/Hardware/SystemC/
-  fabric_pe.h                      # PE module template (to be created)
-  fabric_temporal_pe.h             # Temporal PE template (to be created)
-  fabric_switch.h                  # Switch template (to be created)
-  fabric_temporal_sw.h             # Temporal switch template (to be created)
-  fabric_memory.h                  # Memory template (to be created)
-  fabric_extmemory.h               # External memory template (to be created)
-  fabric_add_tag.h                 # add_tag template (to be created)
-  fabric_map_tag.h                 # map_tag template (to be created)
-  fabric_del_tag.h                 # del_tag template (to be created)
-  fabric_stream.h                  # Streaming interface (to be created)
-  fabric_common.h                  # Common utilities (to be created)
+  fabric_pe.h                      # PE module template
+  fabric_temporal_pe.h             # Temporal PE template
+  fabric_switch.h                  # Switch template
+  fabric_temporal_sw.h             # Temporal switch template
+  fabric_memory.h                  # Memory template
+  fabric_extmemory.h               # External memory template
+  fabric_add_tag.h                 # add_tag template
+  fabric_map_tag.h                 # map_tag template
+  fabric_del_tag.h                 # del_tag template
+  fabric_stream.h                  # Streaming interface
+  fabric_common.h                  # Common utilities
 
 include/loom/Hardware/SystemVerilog/
-  fabric_pe.sv                     # PE module template (to be created)
-  fabric_temporal_pe.sv            # Temporal PE template (to be created)
-  fabric_switch.sv                 # Switch template (to be created)
-  fabric_temporal_sw.sv            # Temporal switch template (to be created)
-  fabric_memory.sv                 # Memory template (to be created)
-  fabric_extmemory.sv              # External memory template (to be created)
-  fabric_add_tag.sv                # add_tag template (to be created)
-  fabric_map_tag.sv                # map_tag template (to be created)
-  fabric_del_tag.sv                # del_tag template (to be created)
-  fabric_common.svh                # Common definitions (to be created)
+  fabric_pe.sv                     # PE module template
+  fabric_temporal_pe.sv            # Temporal PE template
+  fabric_switch.sv                 # Switch template
+  fabric_temporal_sw.sv            # Temporal switch template
+  fabric_memory.sv                 # Memory template
+  fabric_extmemory.sv              # External memory template
+  fabric_add_tag.sv                # add_tag template
+  fabric_map_tag.sv                # map_tag template
+  fabric_del_tag.sv                # del_tag template
+  fabric_common.svh                # Common definitions
 
 lib/loom/Dialect/Fabric/
-  ADGBuilder.cpp                   # Builder implementation (to be created)
-  ADGExportMLIR.cpp                # MLIR export (to be created)
-  ADGExportDOT.cpp                 # DOT export (to be created)
-  ADGValidation.cpp                # Validation logic (to be created)
+  ADGBuilder.cpp                   # Builder implementation
+  ADGExportMLIR.cpp                # MLIR export
+  ADGExportDOT.cpp                 # DOT export
+  ADGValidation.cpp                # Validation logic
 
 lib/loom/Hardware/SystemC/
-  ADGExportSysC.cpp                # SystemC export logic (to be created)
+  ADGExportSysC.cpp                # SystemC export logic
 
 lib/loom/Hardware/SystemVerilog/
-  ADGExportSV.cpp                  # SystemVerilog export logic (to be created)
+  ADGExportSV.cpp                  # SystemVerilog export logic
 ```
 
 ## Test Organization
@@ -525,9 +469,9 @@ ADG tests should be organized under `tests/adg/`:
 
 ```
 tests/adg/
-  cgra-4x4/          # Basic 4x4 CGRA example (to be created)
-  my-first-cgra/     # Tutorial example (to be created)
-  large-cgra-10x10/  # Stress test with larger grid (to be created)
+  cgra-4x4/          # Basic 4x4 CGRA example
+  my-first-cgra/     # Tutorial example
+  large-cgra-10x10/  # Stress test with larger grid
 ```
 
 Each test directory should contain:

@@ -27,9 +27,9 @@ lib/loom/Hardware/SystemVerilog/
 
 ### Generated Output (Self-Contained)
 
-**IMPORTANT:** The exported output is completely self-contained. It does not
-reference or depend on any files in the Loom installation. All required files
-are either generated or copied into the output directory.
+Self-contained output is guaranteed by
+[spec-adg.md](./spec-adg.md). This document defines the generated SystemVerilog
+file set and module structure.
 
 Given `exportSV(directory)` with module name `my_cgra`, the following files are
 generated:
@@ -41,6 +41,9 @@ generated:
   my_cgra_addr.h           # C header with address definitions
   lib/                     # Library modules (copied from Loom templates)
     fabric_pe.sv           # Parameterized PE module
+    fabric_pe_constant.sv  # Parameterized constant PE module
+    fabric_pe_load.sv      # Parameterized load PE module
+    fabric_pe_store.sv     # Parameterized store PE module
     fabric_temporal_pe.sv  # Parameterized temporal PE module
     fabric_switch.sv       # Parameterized switch module
     fabric_temporal_sw.sv  # Parameterized temporal switch module
@@ -51,9 +54,6 @@ generated:
     fabric_del_tag.sv      # Parameterized del_tag module
     fabric_common.svh      # Common definitions and interfaces
 ```
-
-The entire `<directory>/` can be moved, archived, or shared without requiring
-access to the Loom installation.
 
 ## Module Hierarchy
 
@@ -115,6 +115,9 @@ module my_cgra_top #(
 
 Each fabric operation type has a corresponding parameterized SystemVerilog
 module. Parameters correspond to hardware attributes from the Fabric MLIR spec.
+`CONFIG_WIDTH` formulas remain authoritative in
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md); derived expressions in
+the snippets below are implementation illustrations.
 
 #### fabric_pe.sv
 
@@ -134,11 +137,11 @@ module fabric_pe #(
     parameter int INTERVAL_MAX = 1,
     // CONFIG_WIDTH: derived, not overridable
     //   Tagged compute PE:        NUM_OUTPUTS * TAG_WIDTH
-    //   dataflow.stream PE:       +5 bits stop_cond_sel (one-hot)
+    //   dataflow.stream PE:       +5 bits cont_cond_sel (one-hot)
     //   Other native compute PEs: 0
-    localparam int STREAM_STOP_COND_WIDTH = HAS_DATAFLOW_STREAM ? 5 : 0,
+    localparam int STREAM_CONT_COND_WIDTH = HAS_DATAFLOW_STREAM ? 5 : 0,
     localparam int CONFIG_WIDTH =
-        ((TAG_WIDTH > 0) ? NUM_OUTPUTS * TAG_WIDTH : 0) + STREAM_STOP_COND_WIDTH
+        ((TAG_WIDTH > 0) ? NUM_OUTPUTS * TAG_WIDTH : 0) + STREAM_CONT_COND_WIDTH
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -330,13 +333,13 @@ module fabric_temporal_pe #(
     parameter int NUM_OUTPUTS = 1,
     parameter int DATA_WIDTH = 32,
     parameter int TAG_WIDTH = 4,
-    parameter int NUM_REGISTER = 4,
-    parameter int NUM_INSTRUCTION = 16,
-    parameter int NUM_INSTANCE = 2,
+    parameter int NUM_REGISTERS = 4,
+    parameter int NUM_INSTRUCTIONS = 16,
+    parameter int REG_FIFO_DEPTH = 2,
     parameter int NUM_FU_TYPES = 2,
     parameter int INSTRUCTION_WIDTH = 64,
     // Operand buffer mode parameters
-    parameter bit ENABLE_SHARED_OPERAND_BUFFER = 0,  // 0=Mode A, 1=Mode B
+    parameter bit ENABLE_SHARE_OPERAND_BUFFER = 0,  // 0=Mode A, 1=Mode B
     parameter int OPERAND_BUFFER_SIZE = 0            // Mode B only, range [1,8192]
 ) (
     input  logic clk,
@@ -352,7 +355,7 @@ module fabric_temporal_pe #(
     output logic [NUM_OUTPUTS-1:0][DATA_WIDTH+TAG_WIDTH-1:0] out_data,
 
     // Configuration memory interface (instruction_mem only, no operand buffers)
-    input  logic [NUM_INSTRUCTION-1:0][INSTRUCTION_WIDTH-1:0] cfg_instruction_mem,
+    input  logic [NUM_INSTRUCTIONS-1:0][INSTRUCTION_WIDTH-1:0] cfg_instruction_mem,
 
     // Error reporting
     output logic        error_valid,
@@ -361,7 +364,7 @@ module fabric_temporal_pe #(
 ```
 
 **Note:** The operand buffer is internal to the module and not part of
-`cfg_instruction_mem`. Mode A uses `NUM_INSTRUCTION * NUM_INPUTS * (1 + DATA_WIDTH)`
+`cfg_instruction_mem`. Mode A uses `NUM_INSTRUCTIONS * NUM_INPUTS * (1 + DATA_WIDTH)`
 bits internally. Mode B uses `OPERAND_BUFFER_SIZE` entries with per-tag FIFO semantics.
 
 #### fabric_switch.sv
@@ -410,7 +413,8 @@ module fabric_temporal_sw #(
     parameter int TAG_WIDTH = 4,
     parameter int NUM_ROUTE_TABLE = 8,
     parameter bit [NUM_OUTPUTS*NUM_INPUTS-1:0] CONNECTIVITY = '1,
-    parameter int SLOT_WIDTH = 16
+    localparam int NUM_CONNECTED = $countones(CONNECTIVITY),
+    localparam int SLOT_WIDTH = 1 + TAG_WIDTH + NUM_CONNECTED
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -431,7 +435,16 @@ module fabric_temporal_sw #(
     output logic        error_valid,
     output logic [15:0] error_code
 );
+
+initial begin
+    assert (SLOT_WIDTH == (1 + TAG_WIDTH + NUM_CONNECTED))
+        else $fatal(1, "SLOT_WIDTH must equal 1 + TAG_WIDTH + NUM_CONNECTED");
+end
 ```
+
+`SLOT_WIDTH` is a derived quantity and must not be overridden. The exporter
+must emit `CONNECTIVITY` consistently with the config_mem packer; the assertion
+is a defensive check.
 
 #### fabric_memory.sv
 
@@ -537,9 +550,6 @@ module fabric_add_tag #(
     parameter int TAG_WIDTH = 4
     // CONFIG_WIDTH = TAG_WIDTH (the tag value to attach)
 ) (
-    input  logic clk,
-    input  logic rst_n,
-
     // Input: native value
     input  logic                          in_valid,
     output logic                          in_ready,
@@ -565,9 +575,6 @@ module fabric_map_tag #(
     parameter int TABLE_SIZE = 16
     // CONFIG_WIDTH = TABLE_SIZE * (1 + IN_TAG_WIDTH + OUT_TAG_WIDTH)
 ) (
-    input  logic clk,
-    input  logic rst_n,
-
     // Input: tagged value with input tag type
     input  logic                                    in_valid,
     output logic                                    in_ready,
@@ -612,15 +619,6 @@ For the formal definition of config_mem (word width, depth calculation,
 CONFIG_WIDTH derivation), see
 [spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
-### Purpose
-
-The `config_mem` is a register array that holds all runtime configuration for
-the accelerator. It provides:
-
-- Unified memory-mapped access via AXI-Lite
-- Simple software programming model
-- Deterministic configuration sequence
-
 ### Register Array Structure
 
 The config_mem is organized as an array of 32-bit registers:
@@ -634,10 +632,9 @@ Operations are isolated; no two operations share a word.
 
 ### Address Allocation Rules
 
-Address allocation follows the authoritative rules defined in
-[spec-adg.md](./spec-adg.md). See the "Address Allocation" section in that
-document for the complete specification including allocation steps, alignment
-rules, and isolation guarantees.
+Address allocation follows the authoritative rules in
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md), including operation
+order traversal, 32-bit word alignment, and per-node isolation.
 
 ### Bit Layout Within Words
 
@@ -726,32 +723,9 @@ containing address definitions:
 
 ## Configuration Bit Width Formulas
 
-For detailed bit width formulas, see the authoritative Fabric specification
-documents:
-
-- [spec-fabric-pe.md](./spec-fabric-pe.md): PE configuration
-- [spec-fabric-tag.md](./spec-fabric-tag.md): Tag operations
-- [spec-fabric-switch.md](./spec-fabric-switch.md): Switch configuration
-- [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md): Temporal PE instruction memory
-- [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md): Temporal switch route tables
-
-### Quick Reference
-
-| Operation | Formula | Notes |
-|-----------|---------|-------|
-| `fabric.pe` (tagged) | N * M | N outputs, M tag bits |
-| `fabric.pe` (constant, native) | bitwidth(value) | Constant value only |
-| `fabric.pe` (constant, tagged) | bitwidth(value) + M | Value + tag, packed continuously |
-| `fabric.pe` (dataflow.stream, native) | 5 | `stop_cond_sel` one-hot (`<`, `<=`, `>`, `>=`, `!=`) |
-| `fabric.add_tag` | M | Tag width |
-| `fabric.map_tag` | table_size * (1 + M_in + M_out) | Per-entry format |
-| `fabric.switch` | K | K = connected positions |
-| `fabric.temporal_pe` | See [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) | Complex formula |
-| `fabric.temporal_sw` | num_route_table * (1 + M + K) | Per-slot format |
-
-**Note:** Fields within a module's config_mem allocation are packed continuously
-(LSB-first). The 32-bit word alignment applies to the entire module's total
-config bits, not individual fields.
+`CONFIG_WIDTH` formulas and field packing are defined authoritatively in
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md). Operation-specific
+semantics remain in their corresponding `spec-fabric-*.md` documents.
 
 ## Streaming Interface Conventions
 

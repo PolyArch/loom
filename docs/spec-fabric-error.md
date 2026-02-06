@@ -41,7 +41,8 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_TEMPORAL_SW_TOO_MANY_SLOTS | `route_table` entries exceed `num_route_table` |
 | COMP_TEMPORAL_SW_ROUTE_ILLEGAL | A route entry targets a disconnected position |
 | COMP_TEMPORAL_PE_NUM_INSTRUCTION | `num_instruction` is less than 1 |
-| COMP_TEMPORAL_PE_NUM_INSTANCE | `num_instance` is 0 when `num_register > 0`, or nonzero when `num_register = 0` |
+| COMP_TEMPORAL_PE_NUM_INSTANCE | `reg_fifo_depth` is 0 when `num_register > 0`, or nonzero when `num_register = 0` |
+| COMP_TEMPORAL_PE_EMPTY_BODY | A `fabric.temporal_pe` contains no FU definitions in its body |
 | COMP_TEMPORAL_PE_REG_DISABLED | An instruction uses `reg(idx)` when `num_register = 0` |
 | COMP_TEMPORAL_PE_SRC_MISMATCH | A human-readable source uses `in(j)` where `j` is not the operand position |
 | COMP_TEMPORAL_PE_TAG_WIDTH | `K != num_bits(T)` or tag-width metadata is inconsistent for interface `!dataflow.tagged<T, iJ>` |
@@ -49,8 +50,10 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_TEMPORAL_PE_LOADSTORE | A `fabric.temporal_pe` contains a load/store PE |
 | COMP_MAP_TAG_TABLE_SIZE | `table_size` is out of range [1, 256] |
 | COMP_MAP_TAG_TABLE_LENGTH | `table` length does not equal `table_size` |
-| COMP_ADD_TAG_TYPE_MISMATCH | `fabric.add_tag` result value type does not match input type |
-| COMP_DEL_TAG_TYPE_MISMATCH | `fabric.del_tag` output type does not match input tagged value type |
+| COMP_MAP_TAG_VALUE_TYPE_MISMATCH | `fabric.map_tag` output value type does not match input value type |
+| COMP_ADD_TAG_VALUE_TYPE_MISMATCH | `fabric.add_tag` result value type does not match input type |
+| COMP_DEL_TAG_VALUE_TYPE_MISMATCH | `fabric.del_tag` output type does not match input tagged value type |
+| COMP_TAG_WIDTH_RANGE | Tag type width is outside the allowed range defined by `!dataflow.tagged` (`i1` to `i16`) |
 | COMP_MEMORY_PORTS_EMPTY | `ldCount == 0` and `stCount == 0` |
 | COMP_MEMORY_LSQ_WITHOUT_STORE | `lsqDepth != 0` when `stCount == 0` |
 | COMP_MEMORY_LSQ_MIN | `lsqDepth < 1` when `stCount > 0` |
@@ -153,7 +156,7 @@ fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
 | 5 | CFG_TEMPORAL_PE_ILLEGAL_REG | Register index encodes a value >= `num_register` |
 | 6 | CFG_TEMPORAL_PE_REG_TAG_NONZERO | `res_tag != 0` when writing a register |
 | 7 | CFG_MAP_TAG_DUP_TAG | `map_tag` has multiple valid entries with the same `src_tag` |
-| 8 | CFG_PE_STREAM_STOP_COND_ONEHOT | `dataflow.stream` `stop_cond_sel` register is not one-hot (`<`, `<=`, `>`, `>=`, `!=`) |
+| 8 | CFG_PE_STREAM_CONT_COND_ONEHOT | `dataflow.stream` `cont_cond_sel` register is not one-hot (`<`, `<=`, `>`, `>=`, `!=`) |
 
 ## RT_ (Runtime Execution Errors, Hardware Code)
 
@@ -167,3 +170,12 @@ fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
 | 261 | RT_MEMORY_STORE_DEADLOCK | A store request cannot be paired with a matching address or data for the same tag within the default timeout (65535 cycles) |
 | 262 | RT_SWITCH_UNROUTED_INPUT | A `fabric.switch` input with physical connectivity receives a valid token but has no enabled route |
 | 263 | RT_TEMPORAL_SW_UNROUTED_INPUT | A `fabric.temporal_sw` input receives a valid token but the matched route_table slot does not route that input |
+
+## Related Documents
+
+- [spec-fabric.md](./spec-fabric.md)
+- [spec-fabric-tag.md](./spec-fabric-tag.md)
+- [spec-fabric-pe.md](./spec-fabric-pe.md)
+- [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md)
+- [spec-fabric-switch.md](./spec-fabric-switch.md)
+- [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md)

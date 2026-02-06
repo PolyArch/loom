@@ -117,6 +117,8 @@ All attributes in this section are hardware parameters.
 - `private` (only for `fabric.memory`): if `true`, the memory is private to the
   module. If `false`, the memory exposes an output memref that must be yielded
   by `fabric.module`. The default is `true`.
+- `fabric.extmemory` does not support `private`. Supplying `private` on
+  `fabric.extmemory` is invalid.
 
 ### Port Groups
 
@@ -259,3 +261,11 @@ Load/store PEs are adapters between compute and `fabric.memory` /
 `fabric.extmemory`. They perform synchronization and tag handling, while the
 memory operation performs the actual memory access. See
 [spec-fabric-pe.md](./spec-fabric-pe.md) for load/store PE semantics.
+
+## Related Documents
+
+- [spec-fabric.md](./spec-fabric.md)
+- [spec-dataflow.md](./spec-dataflow.md)
+- [spec-fabric-pe.md](./spec-fabric-pe.md)
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
+- [spec-fabric-error.md](./spec-fabric-error.md)

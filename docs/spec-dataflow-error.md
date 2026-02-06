@@ -8,6 +8,11 @@ and do not map to hardware error codes.
 
 All symbols in this document are **COMP_** errors.
 
+Scope note: this document covers the software frontend/lowering path
+(C/C++ -> Handshake/Dataflow MLIR). Runtime (`RT_`) and configuration (`CFG_`)
+errors for dataflow behavior after embedding into Fabric hardware are defined in
+[spec-fabric-error.md](./spec-fabric-error.md).
+
 ## COMP_ (Compile-Time Errors)
 
 | Symbol | Condition |
@@ -19,6 +24,6 @@ All symbols in this document are **COMP_** errors.
 | COMP_DATAFLOW_INVARIANT_TYPE_MISMATCH | `dataflow.invariant` operand `%a` and result `%o` have different types. They must have the same type. |
 | COMP_DATAFLOW_STREAM_OPERAND_TYPE | `dataflow.stream` operands `%start`, `%step`, or `%bound` are not `index`. |
 | COMP_DATAFLOW_STREAM_INVALID_STEP_OP | `dataflow.stream` attribute `step_op` is not one of the allowed values: `+=`, `-=`, `*=`, `/=`, `<<=`, `>>=`. |
-| COMP_DATAFLOW_STREAM_INVALID_STOP_COND | `dataflow.stream` attribute `stop_cond` is not one of the allowed values: `<`, `<=`, `>`, `>=`, `!=`. |
+| COMP_DATAFLOW_STREAM_INVALID_CONT_COND | `dataflow.stream` attribute `cont_cond` is not one of the allowed values: `<`, `<=`, `>`, `>=`, `!=`. |
 | COMP_DATAFLOW_GATE_COND_TYPE | `dataflow.gate` operand `%before_cond` or result `%after_cond` is not `i1`. |
 | COMP_DATAFLOW_GATE_TYPE_MISMATCH | `dataflow.gate` operand `%before_value` and result `%after_value` have different types. They must have the same type. |

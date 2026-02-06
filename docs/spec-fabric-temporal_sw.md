@@ -21,7 +21,9 @@ selection and is forwarded unchanged to the output.
 
 - All inputs and outputs must be `!dataflow.tagged`.
 - All ports must use the same tagged type.
-- Tag width must be in the range `i1` to `i16`.
+- Tag type must satisfy `!dataflow.tagged` constraints from
+  [spec-dataflow.md](./spec-dataflow.md). Tag-width range violations raise
+  `COMP_TAG_WIDTH_RANGE`.
 
 ### Attributes
 
@@ -36,6 +38,7 @@ selection and is forwarded unchanged to the output.
 - Type: `DenseI8ArrayAttr`.
 - Values: `0` or `1`.
 - Shape: `num_outputs * num_inputs` in row-major order.
+- Indexing convention: `connectivity_table[output][input]`.
 - Entry `1` means a physical connection exists from input to output.
 - Entry `0` means no physical connection exists.
 
@@ -44,6 +47,10 @@ selection and is forwarded unchanged to the output.
 - ArrayAttr of strings, either human-readable or hex format.
 - Length must be less than or equal to `num_route_table`.
 - All entries must use the same format.
+
+Note: `fabric.temporal_sw` uses a structured `route_table` format (ArrayAttr of
+strings with `valid/tag/routes` payload). This differs from `fabric.switch`,
+whose `route_table` is a flat `DenseI8ArrayAttr` of enable bits.
 
 ### Defaults
 
@@ -220,3 +227,11 @@ Hex encoding (8 bits, LSB -> MSB):
   %i0, %i1, %i2 : !dataflow.tagged<i32, i4>, !dataflow.tagged<i32, i4>, !dataflow.tagged<i32, i4>
                -> !dataflow.tagged<i32, i4>, !dataflow.tagged<i32, i4>
 ```
+
+## Related Documents
+
+- [spec-fabric.md](./spec-fabric.md)
+- [spec-dataflow.md](./spec-dataflow.md)
+- [spec-fabric-switch.md](./spec-fabric-switch.md)
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
+- [spec-fabric-error.md](./spec-fabric-error.md)

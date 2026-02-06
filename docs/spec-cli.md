@@ -19,8 +19,7 @@ Key differences:
 loom [options] <sources...> -o <output.llvm.ll>
 ```
 
-`-o` is required for explicit output naming, but if omitted a default output
-path is chosen (see below).
+`-o` is required.
 
 ## Outputs
 
@@ -45,11 +44,6 @@ Output path derivation:
   - MLIR output: append `.mlir`
   - SCF output: append `.scf.mlir`
   - Handshake output: append `.handshake.mlir`
-
-Default output path:
-
-- If there is exactly one input, the default is `<stem>.llvm.ll`.
-- Otherwise, the default is `a.llvm.ll`.
 
 ## Supported Options
 
@@ -108,7 +102,7 @@ When `--as-clang` is specified:
 |--------|---------------|-------------------|
 | MLIR generation | Yes | No |
 | Linker flags | Ignored | Processed |
-| Default output | `<stem>.llvm.ll` | `<stem>` or `a.out` |
+| Output naming | `-o` required | `<stem>` or `a.out` when `-o` is omitted |
 | ADG library | Not linked | Auto-linked |
 
 **Combining with other options:**
@@ -227,6 +221,30 @@ sequences complete successfully.
 | `LOOM_TRIPCOUNT` | `createAttachLoopAnnotationsPass()` |
 | `LOOM_REDUCE` | `createAttachLoopAnnotationsPass()` + `createSCFToHandshakeDataflowPass()` |
 | `LOOM_MEMORY_BANK` | `createAttachLoopAnnotationsPass()` + `createSCFToHandshakeDataflowPass()` |
+
+## Stage C Placeholder: Mapper Invocation
+
+Stage C (mapper place-and-route) CLI surface is specified in mapper documents.
+This document currently specifies Stage A frontend behavior and `--as-clang`
+behavior used to compile Stage B ADG programs.
+
+Forward references:
+
+- [spec-mapper.md](./spec-mapper.md)
+- [spec-mapper-model.md](./spec-mapper-model.md)
+- [spec-mapper-algorithm.md](./spec-mapper-algorithm.md)
+
+## Stage D Placeholder: Backend Invocation
+
+Stage D backend realization (SystemC/SystemVerilog generation and config_mem
+artifact flow) is specified in ADG/backend documents.
+
+Forward references:
+
+- [spec-adg.md](./spec-adg.md)
+- [spec-adg-sysc.md](./spec-adg-sysc.md)
+- [spec-adg-sv.md](./spec-adg-sv.md)
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
 
 ## Related Documents
 

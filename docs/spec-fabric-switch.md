@@ -118,3 +118,10 @@ Interpretation:
 - `route_table` enables:
   - Output 0 <- input 1
   - Output 1 <- input 0
+
+## Related Documents
+
+- [spec-fabric.md](./spec-fabric.md)
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
+- [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md)
+- [spec-fabric-error.md](./spec-fabric-error.md)

@@ -52,8 +52,8 @@ Input:
 Output:
 - Fabric MLIR hardware graph
 - DOT visualization
-- SystemC template output
-- SystemVerilog template output
+- SystemC backend artifacts
+- SystemVerilog backend artifacts
 
 ADG describes hardware structure only. Runtime configuration is left empty by
 design. See [spec-adg.md](./spec-adg.md).
@@ -117,7 +117,8 @@ config memory specification:
 
 ## Error Responsibility by Stage
 
-- Frontend/lowering errors: diagnosed in Stage A.
+- Frontend/lowering errors: diagnosed in Stage A
+  ([spec-dataflow-error.md](./spec-dataflow-error.md)).
 - ADG structural errors: diagnosed in Stage B.
 - Mapping feasibility and assignment errors: diagnosed in Stage C.
 - Runtime configuration and execution errors: reported by Fabric hardware using
@@ -131,6 +132,11 @@ compatible with these symbols.
 - [spec-cli.md](./spec-cli.md)
 - [spec-pragma.md](./spec-pragma.md)
 - [spec-dataflow.md](./spec-dataflow.md)
+- [spec-dataflow-error.md](./spec-dataflow-error.md)
 - [spec-fabric.md](./spec-fabric.md)
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
 - [spec-adg.md](./spec-adg.md)
+- [spec-adg-sysc.md](./spec-adg-sysc.md)
+- [spec-adg-sv.md](./spec-adg-sv.md)
+- [spec-viz-hw.md](./spec-viz-hw.md)
 - [spec-mapper.md](./spec-mapper.md)

@@ -72,6 +72,16 @@ When an internal temporal register is used for routing:
 These assignments must satisfy all temporal constraints in
 [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md).
 
+When a software edge is realized through `fabric.temporal_sw`, mapper metadata
+must also capture:
+
+- `temporal_sw_slot`: selected route-table slot index
+- `temporal_sw_tag`: slot match tag value
+- `temporal_sw_route`: enabled route mask for that slot
+
+Encoding details for these fields are part of C6 and must follow
+[spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md).
+
 ## Constraint Classes
 
 A valid mapping must satisfy all classes below.
@@ -80,7 +90,8 @@ A valid mapping must satisfy all classes below.
 
 A software node can map to a hardware node only if operation semantics are
 compatible (including body-op restrictions for `fabric.pe` and load/store
-specialization rules).
+specialization rules). The authoritative `fabric.pe` body-op restrictions are
+defined in [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md).
 
 ### C2: Port and Type Compatibility
 
@@ -128,6 +139,9 @@ bit width, and error semantics:
 - [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md)
 - [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md)
 - [spec-fabric-tag.md](./spec-fabric-tag.md)
+
+This includes temporal-switch metadata (`temporal_sw_slot`,
+`temporal_sw_tag`, `temporal_sw_route`) in addition to temporal-PE metadata.
 
 ## Resource Sharing Policy
 

@@ -261,7 +261,7 @@ A configurable index stream generator for loop-like control patterns.
 
 ```
 %idx, %cont = dataflow.stream %start, %step, %bound
-    {step_op = "+=", stop_cond = "<"}
+    {step_op = "+=", cont_cond = "<"}
 ```
 
 ### Operands
@@ -281,10 +281,10 @@ A configurable index stream generator for loop-like control patterns.
   `COMP_DATAFLOW_STREAM_OPERAND_TYPE`.
 - `step_op` must be one of `+=`, `-=`, `*=`, `/=`, `<<=`, `>>=`. Invalid values
   raise `COMP_DATAFLOW_STREAM_INVALID_STEP_OP`.
-- `stop_cond` must be one of `<`, `<=`, `>`, `>=`, `!=`. Invalid values raise
-  `COMP_DATAFLOW_STREAM_INVALID_STOP_COND`.
+- `cont_cond` must be one of `<`, `<=`, `>`, `>=`, `!=`. Invalid values raise
+  `COMP_DATAFLOW_STREAM_INVALID_CONT_COND`.
 - If `step_op` is omitted, it defaults to `+=`.
-- If `stop_cond` is omitted, it defaults to `<`.
+- If `cont_cond` is omitted, it defaults to `<`.
 - `step` must be nonzero. If `step = 0` at runtime, the hardware raises
   `RT_DATAFLOW_STREAM_ZERO_STEP`. See [spec-fabric-error.md](./spec-fabric-error.md).
 
@@ -299,24 +299,24 @@ Example errors:
 // "%=" is not a valid step_op
 %idx, %cont = dataflow.stream %start, %step, %bound {step_op = "%="}
 
-// ERROR: COMP_DATAFLOW_STREAM_INVALID_STOP_COND
-// "==" is not a valid stop_cond
-%idx, %cont = dataflow.stream %start, %step, %bound {stop_cond = "=="}
+// ERROR: COMP_DATAFLOW_STREAM_INVALID_CONT_COND
+// "==" is not a valid cont_cond
+%idx, %cont = dataflow.stream %start, %step, %bound {cont_cond = "=="}
 ```
 
 See [spec-dataflow-error.md](./spec-dataflow-error.md).
 
 `step_op` is a hardware parameter that determines the update operator and
-cannot be changed at runtime. `stop_cond` is a runtime configuration parameter
+cannot be changed at runtime. `cont_cond` is a runtime configuration parameter
 that selects the comparison used by the loop controller.
 
 In Fabric lowering, this runtime configuration is exposed only when a
 `fabric.pe` body contains exactly one `dataflow.stream`. The PE contributes a
-5-bit one-hot `stop_cond_sel` field to `config_mem` with fixed bit order:
-`<`, `<=`, `>`, `>=`, `!=`. A non-one-hot value (all zeros or multiple set
-bits) is a configuration error: `CFG_PE_STREAM_STOP_COND_ONEHOT`.
-See [spec-fabric-pe.md](./spec-fabric-pe.md) and
-[spec-fabric-error.md](./spec-fabric-error.md).
+runtime `cont_cond_sel` field to `config_mem`. The authoritative encoding and
+one-hot requirements are defined in
+[spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md) and
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md). Configuration
+violations use symbols from [spec-fabric-error.md](./spec-fabric-error.md).
 
 ### Semantics
 
@@ -326,7 +326,7 @@ loop pattern but uses a non-`+=` update or a different comparison.
 
 The continue condition is:
 
-- `continue = (idx stop_cond bound)`
+- `continue = (idx cont_cond bound)`
 
 The next index update is:
 
@@ -341,7 +341,7 @@ The streams have length `N + 1`. The extra element aligns with loop-carried
 values that produce one more output than the body iteration count.
 
 **Extra value semantics:** The "extra value" is the index value that causes the
-loop condition to fail. For example, with `start=0, step=1, bound=5, stop_cond="<"`,
+loop condition to fail. For example, with `start=0, step=1, bound=5, cont_cond="<"`,
 the loop executes for indices 0, 1, 2, 3, 4 (5 iterations). The extra value is
 5, which is the first index that fails the condition `5 < 5`. This extra value
 is emitted alongside `willContinue = false` to signal loop termination.
@@ -354,7 +354,7 @@ Initial phase:
 
 - Wait for all three inputs: `%start`, `%step`, `%bound`.
 - Output `idx = start`.
-- Compute `willContinue = (start stop_cond bound)`.
+- Compute `willContinue = (start cont_cond bound)`.
 - Consume all three inputs.
 - If `willContinue = true`, transition to block phase and latch:
   - `nextIdxReg = start (step_op) step`
@@ -365,7 +365,7 @@ Initial phase:
 Block phase:
 
 - Output `idx = nextIdxReg`.
-- Compute `willContinue = (nextIdxReg stop_cond boundReg)`.
+- Compute `willContinue = (nextIdxReg cont_cond boundReg)`.
 - If `willContinue = true`, update `nextIdxReg = nextIdxReg (step_op) stepReg`
   and stay in block phase.
 - If `willContinue = false`, transition back to initial phase.
@@ -374,7 +374,7 @@ Example:
 
 ```
 %idx, %cont = dataflow.stream %start, %step, %bound
-    {step_op = "+=", stop_cond = "<"}
+    {step_op = "+=", cont_cond = "<"}
 
 // start=0, step=1, bound=5
 // raw_index: [0, 1, 2, 3, 4, 5]
@@ -393,7 +393,7 @@ Example: right shift with "!="
 
 ```
 %idx, %cont = dataflow.stream %start, %step, %bound
-    {step_op = ">>=", stop_cond = "!="}
+    {step_op = ">>=", cont_cond = "!="}
 
 // start=16, step=1, bound=1
 // raw_index: [16, 8, 4, 2, 1]
@@ -404,7 +404,7 @@ Example: left shift with "<="
 
 ```
 %idx, %cont = dataflow.stream %start, %step, %bound
-    {step_op = "<<=", stop_cond = "<="}
+    {step_op = "<<=", cont_cond = "<="}
 
 // start=1, step=1, bound=8
 // raw_index: [1, 2, 4, 8, 16]

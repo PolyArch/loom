@@ -21,7 +21,7 @@ configuration is invalid because it contains duplicate tags
 fabric.temporal_pe @name(
   %in0: !dataflow.tagged<T, iJ>, %in1: !dataflow.tagged<T, iJ>, ...
 ) -> (!dataflow.tagged<T, iJ>, ...)
-  [num_register = R, num_instruction = I, num_instance = F,
+  [num_register = R, num_instruction = I, reg_fifo_depth = F,
    enable_share_operand_buffer = false, operand_buffer_size = S]
   {instruction_mem = [ ... ]} {
   // FU definitions
@@ -33,7 +33,9 @@ fabric.temporal_pe @name(
 
 - All inputs and outputs must be `!dataflow.tagged` types.
 - All ports must use the same tagged type.
-- Tag width must be in the range `i1` to `i16`.
+- Tag type must satisfy `!dataflow.tagged` constraints from
+  [spec-dataflow.md](./spec-dataflow.md). Tag-width range violations raise
+  `COMP_TAG_WIDTH_RANGE`.
 
 Violations of tagged interface width requirements are compile-time errors:
 `COMP_TEMPORAL_PE_TAG_WIDTH`. See [spec-fabric-error.md](./spec-fabric-error.md).
@@ -45,6 +47,9 @@ by a `fabric.pe` or by a `fabric.instance` of a named `fabric.pe`.
 
 Constraints:
 
+- The body must contain at least one FU definition (`fabric.pe` or
+  `fabric.instance` targeting a `fabric.pe`). Violations raise
+  `COMP_TEMPORAL_PE_EMPTY_BODY`.
 - Each FU type must have the same number of inputs and outputs as the
   `fabric.temporal_pe` itself.
 - Each FU type operates on value-only data. Tags are stripped at the boundary.
@@ -89,7 +94,7 @@ The ordering is:
 - Violations are compile-time errors: `COMP_TEMPORAL_PE_NUM_INSTRUCTION`. See
   [spec-fabric-error.md](./spec-fabric-error.md).
 
-#### `num_instance` (hardware parameter)
+#### `reg_fifo_depth` (hardware parameter)
 
 - Unsigned integer.
 - FIFO depth for each internal register.
@@ -565,7 +570,7 @@ error. See `COMP_TEMPORAL_PE_TAG_WIDTH` in [spec-fabric-error.md](./spec-fabric-
 
 ## Register Semantics
 
-- Each register is a FIFO with depth `num_instance`.
+- Each register is a FIFO with depth `reg_fifo_depth`.
 - Writing to a register enqueues one value.
 - Reading from a register dequeues one value.
 - A register may have multiple readers.
@@ -593,3 +598,12 @@ propagated to the top level. The corresponding symbols are
 `RT_TEMPORAL_PE_NO_MATCH`, `CFG_TEMPORAL_PE_DUP_TAG`,
 `CFG_TEMPORAL_PE_ILLEGAL_REG`, and `CFG_TEMPORAL_PE_REG_TAG_NONZERO`. See
 [spec-fabric-error.md](./spec-fabric-error.md).
+
+## Related Documents
+
+- [spec-fabric.md](./spec-fabric.md)
+- [spec-dataflow.md](./spec-dataflow.md)
+- [spec-fabric-pe.md](./spec-fabric-pe.md)
+- [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md)
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
+- [spec-fabric-error.md](./spec-fabric-error.md)

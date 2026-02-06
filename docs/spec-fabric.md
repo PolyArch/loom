@@ -33,14 +33,17 @@ streaming:
 
 See [spec-dataflow.md](./spec-dataflow.md) for the tagged type definition.
 
-Within fabric operations, the term **native value type** refers to scalar
-integer, scalar floating-point, or `index` types. Vector, tensor, memref,
-complex, and opaque types are not considered native value types.
+Within fabric operations, the term **native value type** follows the exact value
+type set defined in [spec-dataflow.md](./spec-dataflow.md). Vector, tensor,
+memref, complex, and opaque types are not considered native value types.
 
 The **none type** represents a control-only token with valid/ready signals but
 no data payload. It is used for synchronization tokens such as `ctrl` ports on
-load/store PEs and `lddone`/`stdone` ports on memory operations. See
-[spec-dataflow.md](./spec-dataflow.md) for details on control-only tokens.
+load/store PEs and single-port `lddone`/`stdone` ports on memory operations.
+For multi-port tagged memories, done tokens use `!dataflow.tagged<i1, iK>`.
+This uses an `i1` dummy payload because MLIR cannot express
+`!dataflow.tagged<none, iK>`. See [spec-dataflow.md](./spec-dataflow.md) and
+[spec-fabric-mem.md](./spec-fabric-mem.md) for the authoritative rule.
 
 ## Hardware Parameters vs Runtime Configuration
 
@@ -261,5 +264,8 @@ document use the symbols defined there.
 - [spec-fabric-pe.md](./spec-fabric-pe.md)
 - [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md)
 - [spec-fabric-switch.md](./spec-fabric-switch.md)
+- [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md)
 - [spec-fabric-mem.md](./spec-fabric-mem.md)
+- [spec-fabric-tag.md](./spec-fabric-tag.md)
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
 - [spec-fabric-error.md](./spec-fabric-error.md)

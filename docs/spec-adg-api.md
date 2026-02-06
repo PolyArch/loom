@@ -97,7 +97,7 @@ See [spec-fabric-pe.md](./spec-fabric-pe.md) for body constraints including:
 - Instance-only prohibition
 
 Special case: a PE whose body is exactly one `dataflow.stream` has a runtime
-configuration field `stop_cond_sel` (5-bit one-hot for `<`, `<=`, `>`, `>=`,
+configuration field `cont_cond_sel` (5-bit one-hot for `<`, `<=`, `>`, `>=`,
 `!=`) in `config_mem`. Other dataflow-only PE bodies (`dataflow.carry`,
 `dataflow.invariant`, `dataflow.gate`) have no dataflow-specific runtime
 configuration.
@@ -168,16 +168,8 @@ For tagged constant PEs, use `Type::tagged(valueType, tagType)` as the output ty
 
 **Config bits:**
 
-For **native** interface:
-- constant_value: `bitwidth(output_type)` bits
-
-For **tagged** interface:
-- constant_value: `bitwidth(output_type)` bits
-- output_tag: `tag_width` bits
-
-Fields are packed continuously (LSB-first) within the module's config_mem
-allocation. For example, an i16 constant with 7-bit tag uses 23 bits total,
-fitting in one 32-bit word with 9 bits unused (tied to zero).
+Constant PE config width and field packing are defined authoritatively in
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
 **Example (native):**
 ```cpp
@@ -212,8 +204,8 @@ Creates load/store PEs with strict body constraints (exactly one
 | `setDataType(type)` | Set the data element type |
 | `setInterfaceCategory(category)` | Set Native or Tagged category |
 | `setTagWidth(width)` | Set tag width (required if Tagged) |
-| `setQueueDepth(depth)` | Set load queue depth (lq_depth, TagTransparent only) |
-| `setHardwareType(type)` | Set hardware type: Overwrite or Transparent |
+| `setQueueDepth(depth)` | Set load queue depth (lqDepth, TagTransparent only) |
+| `setHardwareType(type)` | Set hardware type: TagOverwrite or TagTransparent |
 
 **Chainable methods on StorePEHandle:**
 
@@ -222,15 +214,15 @@ Creates load/store PEs with strict body constraints (exactly one
 | `setDataType(type)` | Set the data element type |
 | `setInterfaceCategory(category)` | Set Native or Tagged category |
 | `setTagWidth(width)` | Set tag width (required if Tagged) |
-| `setQueueDepth(depth)` | Set store queue depth (sq_depth, TagTransparent only) |
-| `setHardwareType(type)` | Set hardware type: Overwrite or Transparent |
+| `setQueueDepth(depth)` | Set store queue depth (sqDepth, TagTransparent only) |
+| `setHardwareType(type)` | Set hardware type: TagOverwrite or TagTransparent |
 
 **HardwareType enum:**
 
 | Value | Description |
 |-------|-------------|
-| `HardwareType::Overwrite` | Output tags are overwritten with configured values (TagOverwrite) |
-| `HardwareType::Transparent` | Tags are preserved and forwarded unchanged (TagTransparent) |
+| `HardwareType::TagOverwrite` | Output tags are overwritten with configured values (TagOverwrite) |
+| `HardwareType::TagTransparent` | Tags are preserved and forwarded unchanged (TagTransparent) |
 
 See [spec-fabric-pe.md](./spec-fabric-pe.md) for detailed hardware type semantics.
 
@@ -241,7 +233,7 @@ auto load_pe = builder.newLoadPE("mem_load")
     .setInterfaceCategory(InterfaceCategory::Tagged)
     .setTagWidth(4)
     .setQueueDepth(8)
-    .setHardwareType(HardwareType::Transparent);
+    .setHardwareType(HardwareType::TagTransparent);
 ```
 
 See [spec-fabric-pe.md](./spec-fabric-pe.md) for detailed load/store PE
@@ -264,17 +256,17 @@ Creates a new `fabric.temporal_pe` definition.
 
 | Method | Description |
 |--------|-------------|
-| `setNumRegister(n)` | Set number of internal registers |
-| `setNumInstruction(n)` | Set maximum instruction slots |
-| `setNumInstance(n)` | Set FIFO depth for registers |
+| `setNumRegisters(n)` | Set number of internal registers |
+| `setNumInstructions(n)` | Set maximum instruction slots |
+| `setRegFifoDepth(n)` | Set FIFO depth for registers |
 | `setInterface(taggedType)` | Set interface type (must be tagged) |
 | `addFU(peHandle)` | Add a functional unit type |
-| `enableSharedOperandBuffer(size)` | Enable Mode B with specified buffer size |
+| `enableShareOperandBuffer(size)` | Enable Mode B with specified buffer size |
 
 **Operand Buffer Modes:**
 
 By default, temporal PE uses Mode A (per-instruction operand buffer). Call
-`enableSharedOperandBuffer(size)` to switch to Mode B (shared buffer with
+`enableShareOperandBuffer(size)` to switch to Mode B (shared buffer with
 per-tag FIFO semantics).
 
 - Mode A: Each instruction has dedicated operand buffer slots
@@ -293,9 +285,9 @@ operand buffer architecture.
 **Example (Mode A, default):**
 ```cpp
 auto temporal_pe = builder.newTemporalPE("mux_pe")
-    .setNumRegister(4)
-    .setNumInstruction(16)
-    .setNumInstance(2)
+    .setNumRegisters(4)
+    .setNumInstructions(16)
+    .setRegFifoDepth(2)
     .setInterface(Type::tagged(Type::i32(), Type::iN(4)))
     .addFU(alu_pe)
     .addFU(mul_pe);
@@ -304,11 +296,11 @@ auto temporal_pe = builder.newTemporalPE("mux_pe")
 **Example (Mode B, shared operand buffer):**
 ```cpp
 auto temporal_pe = builder.newTemporalPE("mux_pe_shared")
-    .setNumRegister(4)
-    .setNumInstruction(16)
-    .setNumInstance(2)
+    .setNumRegisters(4)
+    .setNumInstructions(16)
+    .setRegFifoDepth(2)
     .setInterface(Type::tagged(Type::i32(), Type::iN(4)))
-    .enableSharedOperandBuffer(64)  // 64-entry shared buffer
+    .enableShareOperandBuffer(64)  // 64-entry shared buffer
     .addFU(alu_pe)
     .addFU(mul_pe);
 ```
@@ -417,7 +409,7 @@ Creates a new `fabric.memory` definition (on-chip scratchpad).
 |--------|-------------|
 | `setLoadPorts(count)` | Set number of load ports |
 | `setStorePorts(count)` | Set number of store ports |
-| `setLsqDepth(depth)` | Set store queue depth |
+| `setQueueDepth(depth)` | Set store queue depth |
 | `setPrivate(isPrivate)` | Set whether memory is private (default: true) |
 | `setShape(memrefType)` | Set memory shape and element type |
 
@@ -436,7 +428,7 @@ type constraints.
 auto mem = builder.newMemory("scratchpad")
     .setLoadPorts(2)
     .setStorePorts(2)
-    .setLsqDepth(4)
+    .setQueueDepth(4)
     .setShape(MemrefType::static1D(1024, Type::i32()));
 ```
 
@@ -459,7 +451,7 @@ Creates a new `fabric.extmemory` definition (external memory interface).
 |--------|-------------|
 | `setLoadPorts(count)` | Set number of load ports |
 | `setStorePorts(count)` | Set number of store ports |
-| `setLsqDepth(depth)` | Set store queue depth |
+| `setQueueDepth(depth)` | Set store queue depth |
 | `setShape(memrefType)` | Set memory shape and element type |
 
 `setPrivate` is not available for `fabric.extmemory`.
@@ -945,8 +937,7 @@ Exports the ADG as synthesizable SystemVerilog.
 - `lib/`: Parameterized library modules (copied, no external dependencies)
   - `fabric_pe.sv`, `fabric_temporal_pe.sv`, `fabric_switch.sv`, etc.
 
-The output directory is completely self-contained and does not reference any
-files in the Loom installation.
+Self-contained output is guaranteed by [spec-adg.md](./spec-adg.md).
 
 See [spec-adg-sv.md](./spec-adg-sv.md) for complete specification.
 
@@ -971,8 +962,7 @@ Exports the ADG as a SystemC simulation model.
 - `lib/`: Parameterized library modules (copied, no external dependencies)
   - `fabric_pe.h`, `fabric_temporal_pe.h`, `fabric_switch.h`, etc.
 
-The output directory is completely self-contained and does not reference any
-files in the Loom installation.
+Self-contained output is guaranteed by [spec-adg.md](./spec-adg.md).
 
 **Abstraction levels:**
 
@@ -1071,6 +1061,30 @@ auto custom_fma = builder.getPEByName("custom_fma");
 auto fma_inst = builder.clone(custom_fma, "fma_0");
 ```
 
+#### Named Lookup Methods
+
+```cpp
+PEHandle getPEByName(const std::string& name);
+SwitchHandle getSwitchByName(const std::string& name);
+TemporalPEHandle getTemporalPEByName(const std::string& name);
+TemporalSwitchHandle getTemporalSwitchByName(const std::string& name);
+MemoryHandle getMemoryByName(const std::string& name);
+ExtMemoryHandle getExtMemoryByName(const std::string& name);
+```
+
+Returns a typed handle to an existing named module definition.
+
+**Parameters:**
+- `name`: Symbol name of the definition (without `@`).
+
+**Behavior:**
+- On success, returns the corresponding handle type.
+- If `name` does not resolve to that module category, error handling follows
+  the current builder error mode (`ErrorMode::Throw` or `ErrorMode::Collect`).
+
+These lookups are typically used after `injectMLIR()` or when definitions are
+created in helper code and retrieved later by symbol name.
+
 #### getMLIRContext
 
 ```cpp
@@ -1130,5 +1144,11 @@ instance. Multiple builders can operate concurrently on different ADGs.
 
 - [spec-loom.md](./spec-loom.md)
 - [spec-adg.md](./spec-adg.md)
+- [spec-adg-sv.md](./spec-adg-sv.md)
+- [spec-adg-sysc.md](./spec-adg-sysc.md)
+- [spec-adg-tools.md](./spec-adg-tools.md)
 - [spec-fabric.md](./spec-fabric.md)
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
+- [spec-fabric-pe.md](./spec-fabric-pe.md)
+- [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md)
 - [spec-mapper.md](./spec-mapper.md)
