@@ -101,6 +101,10 @@ add_custom_target(check-loom
 )
 
 add_custom_target(clean-loom
-  COMMAND "${CMAKE_COMMAND}" -DLOOM_BINARY="$<TARGET_FILE:loom>" -DSOURCE_DIR="${CMAKE_SOURCE_DIR}" -P "${CMAKE_SOURCE_DIR}/tools/loom/clean-loom.cmake"
+  COMMAND "${CMAKE_COMMAND}"
+    -DLOOM_BINARY="${LOOM_RUNTIME_DIR}/loom"
+    -DSOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    -DBUILD_DIR="${CMAKE_BINARY_DIR}"
+    -P "${CMAKE_SOURCE_DIR}/tools/loom/clean-loom.cmake"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )

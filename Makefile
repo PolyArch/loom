@@ -1,8 +1,8 @@
 SHELL := /bin/sh
 
-.PHONY: all init build test clean purge
+.PHONY: all init build rebuild test clean purge
 
-all: init build test
+all: init rebuild test
 
 init:
 	@set -e; \
@@ -18,6 +18,11 @@ init:
 	fi
 
 build:
+	@set -e; \
+	cmake -S . -B build -G Ninja -DLLVM_ENABLE_PROJECTS="clang;mlir" -DLLVM_TARGETS_TO_BUILD=host; \
+	ninja -C build loom
+
+rebuild:
 	@set -e; \
 	cmake -S . -B build -G Ninja -DLLVM_ENABLE_PROJECTS="clang;mlir" -DLLVM_TARGETS_TO_BUILD=host; \
 	ninja -C build clang mlir-opt mlir-translate loom
