@@ -70,7 +70,8 @@ without performing Loom-specific analysis or MLIR transformations.
 - No MLIR outputs are generated
 - Linking is enabled (linker flags are processed, not ignored)
 - The Loom ADG library (`libloom-adg`) is automatically linked
-- Include paths for Loom headers (`<loom/adg.h>`) are automatically added
+- Include paths for Loom headers (`<loom/adg.h>` and `<loom/loom.h>`) are
+  automatically added
 
 **Use case:**
 
@@ -105,6 +106,13 @@ When `--as-clang` is specified:
 | Linker flags | Ignored | Processed |
 | Output naming | `-o` required | `-o` required |
 | ADG library | Not linked | Auto-linked |
+
+### Header Include Path Behavior
+
+- Standard mode: no mode-specific guarantee is made for implicit Loom include
+  paths; users should pass explicit include flags (`-I`, `-isystem`) when needed.
+- `--as-clang` mode: Loom include paths are added automatically for both
+  `<loom/adg.h>` and `<loom/loom.h>`.
 
 **Combining with other options:**
 
@@ -246,6 +254,12 @@ Forward references:
 - [spec-adg-sysc.md](./spec-adg-sysc.md)
 - [spec-adg-sv.md](./spec-adg-sv.md)
 - [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
+
+## Exit Codes
+
+- `0`: Success.
+- `1`: Usage error, compilation failure, MLIR lowering failure, verification
+  failure, or output/write failure.
 
 ## Related Documents
 

@@ -30,7 +30,8 @@ A directed graph where:
 
 A directed graph derived from `fabric.module` where:
 
-- Each node represents one hardware operation instance or module boundary port.
+- Each node represents one hardware operation node (including
+  `fabric.instance` nodes) or one module boundary port.
 - Each edge represents one legal physical data path segment.
 - Node and edge attributes carry capacities and type constraints from Fabric.
 - `fabric.memory` and `fabric.extmemory` are explicit hardware-graph nodes.
@@ -39,6 +40,21 @@ A directed graph derived from `fabric.module` where:
   validity checks.
 
 Fabric semantics remain authoritative in [spec-fabric.md](./spec-fabric.md).
+
+### Formal Mapper Entities
+
+To avoid ambiguity, the mapper model uses the following formal entities:
+
+- `CandidateSet(swNode) = { hwNode | compatible(swNode, hwNode) }`
+- `Port = (node_id, direction, index, type, taggedness, tag_width?)`
+- `HwEdge = (src_node, src_port, dst_node, dst_port)`
+
+Where:
+
+- `direction in {input, output}`
+- `tag_width` is present only for tagged ports
+- `src_port` and `dst_port` are port identifiers on the corresponding endpoint
+  nodes
 
 ## Canonical Mapping State
 
@@ -97,6 +113,22 @@ compatible (including body-op restrictions for `fabric.pe` and load/store
 specialization rules). The authoritative `fabric.pe` body-op restrictions are
 defined in [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md).
 
+`CandidateSet(swNode)` is the formal compatibility result and must be
+deterministically derivable from software node semantics plus hardware node
+attributes.
+
+### Load/Store PE Mapping Implications
+
+Mapper decisions for load/store PEs must distinguish the two hardware types in
+[spec-fabric-pe.md](./spec-fabric-pe.md):
+
+- **TagOverwrite**: mapper must emit `output_tag` configuration for the mapped
+  load/store PE instance.
+- **TagTransparent**: mapper must not emit `output_tag`; it must satisfy tagged
+  interface matching and queue-depth legality (`lqDepth`/`sqDepth`).
+- Port-role legality (`addr_*`, `data_*`, `ctrl`) and done-token wiring
+  constraints remain mandatory for route validity.
+
 ### C2: Port and Type Compatibility
 
 Mapped ports must satisfy:
@@ -107,6 +139,7 @@ Mapped ports must satisfy:
 
 No implicit conversion is allowed unless represented by explicit hardware
 operations (`fabric.add_tag`, `fabric.del_tag`, `fabric.map_tag`, or cast PEs).
+Port compatibility checks are defined over the formal `Port` entity above.
 
 ### C3: Route Legality
 
@@ -119,11 +152,26 @@ Each mapped software edge path must:
 - Preserve required memory control relationships, including legal wiring of
   memory done tokens (`lddone`, `stdone`) to their consuming control paths
 
+Route legality is defined over ordered sequences of `HwEdge` identifiers.
+
 ### C4: Capacity Constraints
 
 Resources with bounded capacity (ports, buffers, route choices, temporal slots,
 registers, memory ports, and memory queue resources) must not exceed legal
 usage.
+
+Capacity authority by resource class:
+
+- Switch route choices and per-port fan-in/fan-out:
+  [spec-fabric-switch.md](./spec-fabric-switch.md)
+- Temporal-switch slot and route-table capacities:
+  [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md)
+- Temporal-PE slot/register limits:
+  [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md)
+- Memory port and queue resources (`ldCount`, `stCount`, `lsqDepth`):
+  [spec-fabric-mem.md](./spec-fabric-mem.md)
+- PE-local configuration-derived capacity behaviors:
+  [spec-fabric-pe.md](./spec-fabric-pe.md)
 
 ### C5: Temporal Constraints
 
@@ -150,6 +198,18 @@ bit width, and error semantics:
 
 This includes temporal-switch metadata (`temporal_sw_slot`,
 `temporal_sw_tag`, `temporal_sw_route`) in addition to temporal-PE metadata.
+
+Derivation notes from mapping state:
+
+- `constant_value` is derived from the mapped software constant payload for the
+  corresponding constant PE instance.
+- `cont_cond_sel` is derived from the mapped software stream-continue predicate
+  (`<`, `<=`, `>`, `>=`, `!=`) for `dataflow.stream` PEs.
+- `output_tag` is derived from mapper tag-assignment policy on mapped software
+  edges for TagOverwrite PEs.
+
+These derived values must still satisfy the authoritative config-format and
+error-symbol constraints in the referenced Fabric specs.
 
 ## Resource Sharing Policy
 

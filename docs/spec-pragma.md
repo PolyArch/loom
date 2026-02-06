@@ -214,7 +214,22 @@ void pipeline(...) {
 
 ## Category 3: Loop Optimization Pragmas
 
-Loop pragmas control the parallelization and optimization of for-loops. These pragmas work together to define the **design space** that the compiler explores.
+Loop pragmas control loop parallelization and optimization. They were
+introduced for canonical `for` loops, but they may also attach to loop-like
+forms that lower to `scf.while` in MLIR.
+
+Applicability rules:
+
+- Loop-marker annotations can attach to loop-like operations (including
+  `scf.for` and `scf.while`).
+- Whether a specific pragma changes lowering behavior depends on downstream
+  passes (for example, while-uplift and streamable-while analysis).
+- If a pragma is accepted syntactically but not consumed by later lowering for
+  that loop form, the compiler should emit an explicit diagnostic (at minimum, a
+  warning) instead of silently ignoring it.
+
+These pragmas work together to define the **design space** that the compiler
+explores.
 
 ### Loop Labeling
 

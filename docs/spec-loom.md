@@ -41,6 +41,9 @@ Output:
 - SCF MLIR (`*.scf.mlir`)
 - Handshake MLIR (`*.handshake.mlir`)
 
+This output list is summary-only. [spec-cli.md](./spec-cli.md) is the
+authoritative source for Stage A output naming and derivation rules.
+
 This stage is specified in [spec-cli.md](./spec-cli.md). Pragma semantics that
 influence lowering are specified in [spec-pragma.md](./spec-pragma.md).
 

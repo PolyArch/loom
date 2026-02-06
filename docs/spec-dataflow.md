@@ -332,8 +332,6 @@ The next index update is:
 
 - `next = idx (step_op) step`
 
-`dataflow.stream` emits two streams for a loop with `N` iterations:
-
 - `raw_index`: `start, next, ..., last, and one extra value`
 - `raw_will_continue`: `true` for each body iteration, then `false` once
 
@@ -413,6 +411,12 @@ Example: left shift with "<="
 
 ## Handshake Memory Control Constraints
 
+Scope note: this section describes a lowering-boundary constraint between
+Dataflow usage and CIRCT Handshake operations. It remains in this document
+because it directly constrains legal Dataflow-to-Handshake lowering behavior.
+`handshake.func`, `handshake.load`, `handshake.store`, `handshake.memory`, and
+`handshake.extmemory` are operations from the CIRCT Handshake dialect.
+
 When lowering to `handshake.func`, the compiler constructs control-token chains
 for each `handshake.load` and `handshake.store`. Each control token must be
 rooted at the `handshake.func` `start_token`, or depend only on done tokens
@@ -477,9 +481,10 @@ If `before_cond` has length 1, the outputs are empty.
 
 Important timing detail:
 
-- `after_cond[0]` corresponds to `after_value[1]`, not `after_value[0]`.
-- This reflects that the last-iteration condition is only known after the
-  next before-region condition is computed.
+- `after_cond[0]` gates whether `after_value[1]` will be produced, not
+  `after_value[0]`.
+- This reflects that the continue condition for iteration `i` is known only
+  after the before-region of iteration `i+1` is evaluated.
 
 Example:
 

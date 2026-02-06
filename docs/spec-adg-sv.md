@@ -35,7 +35,7 @@ Given `exportSV(directory)` with module name `my_cgra`, the following files are
 generated:
 
 ```
-<directory>/
+  <directory>/
   my_cgra_top.sv           # Top-level module with all instantiations
   my_cgra_config.sv        # config_mem controller with AXI-Lite interface
   my_cgra_addr.h           # C header with address definitions
@@ -52,7 +52,7 @@ generated:
     fabric_add_tag.sv      # Parameterized add_tag module
     fabric_map_tag.sv      # Parameterized map_tag module
     fabric_del_tag.sv      # Parameterized del_tag module
-    fabric_common.svh      # Common definitions and interfaces
+    fabric_common.svh      # Common definitions and interfaces (includes fabric_stream)
 ```
 
 ## Module Hierarchy
@@ -83,6 +83,7 @@ module my_cgra_top #(
     input  logic                  cfg_awvalid,
     output logic                  cfg_awready,
     input  logic [31:0]           cfg_wdata,
+    input  logic [3:0]            cfg_wstrb,
     input  logic                  cfg_wvalid,
     output logic                  cfg_wready,
     output logic [1:0]            cfg_bresp,
@@ -128,6 +129,7 @@ module fabric_pe #(
     parameter int IN_DATA_WIDTH [NUM_INPUTS] = '{default: 32},
     parameter int OUT_DATA_WIDTH [NUM_OUTPUTS] = '{default: 32},
     parameter int TAG_WIDTH = 0,      // 0 means native interface
+    // Derived by exporter from PE-body analysis; not user-authored.
     parameter bit HAS_DATAFLOW_STREAM = 0,
     parameter int LATENCY_MIN = 1,
     parameter int LATENCY_TYP = 1,
@@ -369,6 +371,12 @@ module fabric_temporal_pe #(
 bits internally. Mode B uses `OPERAND_BUFFER_SIZE` entries with per-tag FIFO semantics.
 `INSTRUCTION_WIDTH = 64` is only a placeholder default in the template
 signature.
+
+Representation note: this SystemVerilog view uses a 2D packed array for
+`cfg_instruction_mem`, while the SystemC view uses a flat bitvector. They are
+bit-equivalent representations of the same packed instruction memory, with
+packing/bit-order authority defined by
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
 Recommended defensive check (compile-time/elaboration-time):
 
@@ -723,6 +731,9 @@ interface fabric_stream #(parameter WIDTH = 32);
     modport sink   (input valid, data, output ready);
 endinterface
 ```
+
+This interface is defined in `fabric_common.svh` in the generated library set;
+it is not emitted as a standalone `fabric_stream.sv` file.
 
 ## Error Reporting
 

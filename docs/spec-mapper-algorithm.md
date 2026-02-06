@@ -81,6 +81,9 @@ The following workflow is recommended as the default deterministic algorithm:
      region before global restart, using bounded retry limits.
 6. Final validation and config emission:
    - Run full-state validation and emit configuration fragments.
+   - During emission, populate tag-operation runtime configuration
+     (`fabric.map_tag` table entries and related add/del-tag config fields)
+     from the resolved mapping and tag-assignment state.
 
 Alternative strategies (simulated annealing, beam search, RL-guided search) are
 allowed if they preserve this contract.
@@ -94,6 +97,8 @@ To keep runs reproducible, tie breaks should be deterministic by default:
 - Seeded randomness only when explicitly enabled
 
 If randomness is enabled, the seed must be part of mapper input parameters.
+This mechanism is the algorithm-level realization of the reproducibility
+requirement in [spec-mapper.md](./spec-mapper.md).
 
 ## Conflict Resolution Policy
 
@@ -125,6 +130,9 @@ At minimum, a production mapper should provide:
 - Deterministic failure diagnostics
 
 Performance optimizations must not violate hard constraints.
+This quality bar depends on deterministic tie-breaking and seed handling defined
+above, and on the top-level reproducibility contract in
+[spec-mapper.md](./spec-mapper.md).
 
 ## Diagnostics Requirements
 

@@ -84,6 +84,9 @@ Given identical inputs and deterministic policy settings, mapper output must be
 reproducible. Sources of non-determinism (randomized search, tie breaks) must
 be controlled by explicit seed/configuration parameters.
 
+Algorithm-level deterministic tie-breaking and seed rules are defined in
+[spec-mapper-algorithm.md](./spec-mapper-algorithm.md).
+
 ## Failure Modes
 
 Mapper failure is expected when no feasible mapping exists under hard

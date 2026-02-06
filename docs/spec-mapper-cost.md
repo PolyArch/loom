@@ -21,12 +21,23 @@ Lower cost is better.
 Implementations may add target-specific metrics, but the core metric families
 below should be supported.
 
+The formulas in this document are reference formulas for comparability. Exact
+implementations may refine coefficients and normalization details if they
+preserve metric intent and deterministic behavior.
+
 ## Core Metric Families
 
 ### Placement Pressure
 
 Measures concentration of mapped software nodes onto limited hardware
 resources.
+
+Reference formula:
+
+`placement_pressure = sum_tile (occ(tile) / cap(tile))^2`
+
+where `occ(tile)` is mapped-node occupancy and `cap(tile)` is legal capacity for
+that tile class.
 
 Examples:
 
@@ -36,6 +47,13 @@ Examples:
 ### Routing Cost
 
 Measures path expense of mapped software edges.
+
+Reference formula:
+
+`routing_cost = sum_hwedge (hop_weight(hwedge) * usage(hwedge))`
+
+where `hop_weight` can encode topology preference (for example, direct < switch
+hop) and `usage` is routed software-edge multiplicity on that hardware edge.
 
 Examples:
 
@@ -47,6 +65,12 @@ Examples:
 
 Measures quality of temporal assignments.
 
+Reference formula:
+
+`temporal_cost = alpha * slot_util + beta * reg_pressure + gamma * tag_pressure`
+
+with implementation-defined coefficients `alpha`, `beta`, and `gamma`.
+
 Examples:
 
 - Slot utilization efficiency
@@ -57,6 +81,12 @@ Examples:
 
 Predicts performance impact before backend timing is available.
 
+Reference formula:
+
+`perf_proxy_cost = critical_path_est + ii_pressure + queue_pressure`
+
+where each term is a normalized proxy (not a signoff timing number).
+
 Examples:
 
 - Critical mapped path estimate
@@ -66,6 +96,12 @@ Examples:
 ### Configuration Footprint
 
 Measures runtime configuration size and programming overhead.
+
+Reference formula:
+
+`config_footprint = non_default_words / total_config_words`
+
+optionally extended with weighted terms for sparse updates or table occupancy.
 
 Examples:
 

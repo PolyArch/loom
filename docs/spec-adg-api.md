@@ -102,6 +102,11 @@ configuration field `cont_cond_sel` (5-bit one-hot for `<`, `<=`, `>`, `>=`,
 `dataflow.invariant`, `dataflow.gate`) have no dataflow-specific runtime
 configuration.
 
+Exporter note: backend templates expose this via a derived flag
+(`HAS_DATAFLOW_STREAM` in SystemVerilog/SystemC views). The exporter infers this
+flag from PE body analysis (exactly one `dataflow.stream`), not from a
+user-specified API parameter.
+
 **Example with inline MLIR body:**
 ```cpp
 auto pe = builder.newPE("adder_pe")
@@ -506,7 +511,8 @@ Creates a new `fabric.add_tag` operation.
 
 **Constraints:**
 - Input must be native type (not tagged)
-- Tag width must be in range [1, 16] bits
+- Tag width must be in range [1, 16] bits (authoritative tag-width definition:
+  [spec-dataflow.md](./spec-dataflow.md))
 
 Note: The `tag` value itself is a runtime configuration parameter and is not
 set at ADG construction time.
@@ -563,6 +569,9 @@ Creates a `fabric.instance` referencing an existing module definition.
 **Parameters:**
 - `source`: Handle to PE, Switch, TemporalPE, TemporalSwitch, Memory, or ExtMemory
 - `instanceName`: Unique instance name within the module
+
+Tag-operation handles (`AddTagHandle`, `MapTagHandle`, `DelTagHandle`) are not
+valid clone sources.
 
 **Returns:** `InstanceHandle` for connection and further modification
 
@@ -887,6 +896,16 @@ struct ValidationError {
 };
 ```
 
+Code-space mapping note:
+
+- `COMP_*` symbols are compile-time diagnostics and have no hardware integer
+  error code.
+- `CFG_*` and `RT_*` symbols are string identifiers in API diagnostics that
+  correspond to hardware integer code definitions in
+  [spec-fabric-error.md](./spec-fabric-error.md).
+- Integer code assignments are authoritative only in
+  [spec-fabric-error.md](./spec-fabric-error.md).
+
 **Example:**
 ```cpp
 auto result = builder.validateADG();
@@ -955,6 +974,13 @@ Exports the ADG as synthesizable SystemVerilog.
 **Parameters:**
 - `directory`: Output directory path
 
+**Behavior:**
+- Calls `validateADG()` internally; throws on validation failure
+- Creates parent directories if needed
+- Overwrites existing files in the output directory
+- For complete validation diagnostics, callers may run `validateADG()`
+  explicitly before export and inspect the full error list
+
 **Output files (self-contained):**
 - `<moduleName>_top.sv`: Top-level module with instantiations
 - `<moduleName>_config.sv`: config_mem controller
@@ -976,6 +1002,13 @@ Exports the ADG as a SystemC simulation model.
 
 **Parameters:**
 - `directory`: Output directory path
+
+**Behavior:**
+- Calls `validateADG()` internally; throws on validation failure
+- Creates parent directories if needed
+- Overwrites existing files in the output directory
+- For complete validation diagnostics, callers may run `validateADG()`
+  explicitly before export and inspect the full error list
 
 **Output files (self-contained):**
 - `<moduleName>_top.h/cpp`: Top-level module

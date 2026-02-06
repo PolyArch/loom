@@ -262,6 +262,7 @@ template<
     std::array<int, 2> IN_DATA_WIDTH = {32, 32},   // per-input data width
     std::array<int, 1> OUT_DATA_WIDTH = {32},       // per-output data width
     int TAG_WIDTH = 0,      // 0 means native interface
+    // Derived by exporter from PE-body analysis; not user-authored.
     bool HAS_DATAFLOW_STREAM = false,
     int LATENCY_MIN = 1,
     int LATENCY_TYP = 1,
@@ -585,6 +586,11 @@ private:
     int match_tag(const sc_dt::sc_bv<TAG_WIDTH>& tag);
 };
 ```
+
+Representation note: SystemC models `cfg_instruction_mem` as one flat packed
+bitvector. The SystemVerilog template uses a 2D packed array with equivalent
+bit content. Both follow the same packing and bit-order rules from
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
 `INSTRUCTION_WIDTH = 64` is only a placeholder default in the template
 signature.
