@@ -255,6 +255,18 @@ Forward references:
 - [spec-adg-sv.md](./spec-adg-sv.md)
 - [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
 
+## Stage E Placeholder: Co-Simulation Invocation
+
+Co-simulation orchestration (host runtime, ESI transport, backend session
+lifecycle, trace/perf collection, and end-to-end compare flow) is specified in
+the `spec-cosim` document family.
+
+Forward references:
+
+- [spec-cosim.md](./spec-cosim.md)
+- [spec-cosim-runtime.md](./spec-cosim-runtime.md)
+- [spec-cosim-validation.md](./spec-cosim-validation.md)
+
 ## Exit Codes
 
 - `0`: Success.
@@ -274,3 +286,6 @@ Forward references:
 - [spec-adg-sysc.md](./spec-adg-sysc.md): SystemC backend artifacts
 - [spec-adg-sv.md](./spec-adg-sv.md): SystemVerilog backend artifacts
 - [spec-fabric-config_mem.md](./spec-fabric-config_mem.md): Runtime configuration memory definition
+- [spec-cosim.md](./spec-cosim.md): Co-simulation stage overview and authority map
+- [spec-cosim-runtime.md](./spec-cosim-runtime.md): Host runtime and threading contract
+- [spec-cosim-validation.md](./spec-cosim-validation.md): End-to-end validation requirements

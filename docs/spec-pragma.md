@@ -233,7 +233,7 @@ explores.
 
 ### Loop Labeling
 
-C++ supports labeled statements, which can be used to identify loops for pragma application and DSE constraints:
+C++ supports labeled statements, which can be used to identify loops for pragma application:
 
 ```cpp
 outer_loop: LOOM_PARALLEL(4)
@@ -246,12 +246,8 @@ for (int i = 0; i < n; ++i) {
 ```
 
 Labels enable:
-- Referencing specific loops in `loom-config.yaml` for DSE constraints
 - Clear identification in optimization reports
 - MLIR location tracking for performance analysis
-
-Forward-reference note: `loom-config.yaml` schema and DSE semantics are not yet
-fully standardized in a dedicated spec document.
 
 **Requirement**: Compile with `-g` flag to enable label capture. Without debug info, labels are not preserved in the IR and cannot be captured as `loom.label` metadata.
 
@@ -694,11 +690,7 @@ br i1 %cmp, label %for.body, label %for.end, !llvm.loop !10
 
 When compiling with `-g` (debug info enabled), C++ statement labels preceding loops are captured as `loom.label` metadata. This enables:
 - Clear loop identification in optimization reports
-- DSE constraints via `loom-config.yaml` loop references
 - MLIR location tracking for debugging
-
-Forward-reference note: `loom-config.yaml` schema and DSE semantics are not yet
-fully standardized in a dedicated spec document.
 
 **Requirements**:
 - Compile with `-g` flag (debug info must be enabled)

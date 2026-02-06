@@ -17,6 +17,9 @@ The complete flow is:
 4. Run mapper place-and-route from software graph to hardware graph.
 5. Emit runtime configuration (`config_mem`) and backend artifacts
    (SystemC/SystemVerilog).
+6. Run co-simulation between host software and backend model through ESI,
+   verify accelerator outputs against CPU reference outputs, and collect
+   optional trace/performance data.
 
 This document is the top-level picture. Detailed definitions are delegated to
 specialized specs:
@@ -92,6 +95,23 @@ Backend structure and generated artifacts are specified in:
 - [spec-adg-sv.md](./spec-adg-sv.md)
 - [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
 
+### Stage E: Co-Simulation and End-to-End Verification
+
+Input:
+- Backend executable model from Stage D (SystemC or RTL simulation target)
+- Mapper-produced runtime configuration (`config_mem` image)
+- Host test vectors and CPU reference implementation
+
+Output:
+- End-to-end pass/fail verdict
+- Accelerator outputs captured through ESI channels
+- Optional trace and performance artifacts
+
+This stage defines runtime integration only. It does not redefine mapper or
+Fabric semantics. Authoritative stage definition:
+
+- [spec-cosim.md](./spec-cosim.md)
+
 ## Graph Boundary Definitions
 
 To avoid ambiguity, Loom uses these terms consistently:
@@ -145,3 +165,11 @@ compatible with these symbols.
 - [spec-viz-hw.md](./spec-viz-hw.md)
 - [spec-mapper.md](./spec-mapper.md)
 - [spec-mapper-model.md](./spec-mapper-model.md)
+- [spec-cosim.md](./spec-cosim.md)
+- [spec-cosim-architecture.md](./spec-cosim-architecture.md)
+- [spec-cosim-protocol.md](./spec-cosim-protocol.md)
+- [spec-cosim-runtime.md](./spec-cosim-runtime.md)
+- [spec-cosim-backend-systemc.md](./spec-cosim-backend-systemc.md)
+- [spec-cosim-backend-rtl.md](./spec-cosim-backend-rtl.md)
+- [spec-cosim-trace.md](./spec-cosim-trace.md)
+- [spec-cosim-validation.md](./spec-cosim-validation.md)
