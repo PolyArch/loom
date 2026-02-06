@@ -323,7 +323,8 @@ LogicalResult PEOp::verify() {
       hasNative = true;
   }
   if (hasTagged && hasNative)
-    return emitOpError("all ports must be either native or tagged; "
+    return emitOpError("[COMP_PE_MIXED_INTERFACE] "
+                       "all ports must be either native or tagged; "
                        "mixed interface not allowed");
 
   // Validate latency array if present.
@@ -339,15 +340,15 @@ LogicalResult PEOp::verify() {
   }
 
   // Tagged interface: output_tag should be present.
-  if (hasTagged && !getOutputTag())
-    // Allow missing output_tag for load/store PEs (detected by lqDepth/sqDepth).
-    if (!getLqDepth() && !getSqDepth())
-      return emitOpError(
-          "tagged PE requires output_tag (unless load/store PE)");
+  // Allow missing output_tag for load/store PEs (detected by body content).
+  if (hasTagged && !getOutputTag() && !hasLoadStore)
+    return emitOpError("[COMP_PE_OUTPUT_TAG_MISSING] "
+        "tagged PE requires output_tag (unless load/store PE)");
 
   // Native interface: output_tag must be absent.
   if (hasNative && getOutputTag())
-    return emitOpError("native PE must not have output_tag");
+    return emitOpError("[COMP_PE_OUTPUT_TAG_NATIVE] "
+                       "native PE must not have output_tag");
 
   // Body must have at least one non-terminator.
   Block &body = getBody().front();
@@ -359,8 +360,105 @@ LogicalResult PEOp::verify() {
     }
   }
   if (!hasOp)
-    return emitOpError(
+    return emitOpError("[COMP_PE_EMPTY_BODY] "
         "PE body must contain at least one non-terminator operation");
+
+  // Classify body operations for PE body constraints.
+  bool hasLoadStore = false;
+  bool hasConstant = false;
+  bool hasDataflow = false;
+  bool hasInstance = false;
+  bool hasArithMath = false;
+  bool hasMux = false;      // partial-consume: handshake.mux, handshake.cmerge
+  bool hasFullConsume = false; // full-consume: arith.*, math.*, arith.cmpi etc
+  unsigned nonTermCount = 0;
+  unsigned instanceCount = 0;
+  unsigned dataflowCount = 0;
+
+  for (auto &op : body) {
+    if (op.hasTrait<OpTrait::IsTerminator>())
+      continue;
+    nonTermCount++;
+
+    StringRef dialectName = op.getDialect()
+        ? op.getDialect()->getNamespace() : "";
+    StringRef opName = op.getName().getStringRef();
+
+    if (opName == "handshake.load" || opName == "handshake.store") {
+      hasLoadStore = true;
+    } else if (opName == "handshake.constant") {
+      hasConstant = true;
+    } else if (opName == "handshake.mux" || opName == "handshake.cmerge") {
+      hasMux = true;
+    } else if (dialectName == "arith" || dialectName == "math") {
+      hasArithMath = true;
+      hasFullConsume = true;
+    }
+
+    if (dialectName == "dataflow") {
+      hasDataflow = true;
+      dataflowCount++;
+    }
+
+    if (isa<InstanceOp>(&op))
+      instanceCount++;
+
+    if (isa<InstanceOp>(&op))
+      hasInstance = true;
+  }
+
+  // COMP_PE_INSTANCE_ONLY_BODY: exactly one non-terminator and it's instance.
+  if (nonTermCount == 1 && instanceCount == 1)
+    return emitOpError("[COMP_PE_INSTANCE_ONLY_BODY] "
+                       "PE body must not contain only a single "
+                       "fabric.instance with no other operations");
+
+  // COMP_PE_LOADSTORE_BODY: load/store PE body must contain exactly one
+  // handshake.load or handshake.store and no other non-terminator ops.
+  if (hasLoadStore) {
+    unsigned lsCount = 0;
+    for (auto &op : body) {
+      if (op.hasTrait<OpTrait::IsTerminator>())
+        continue;
+      StringRef opName = op.getName().getStringRef();
+      if (opName == "handshake.load" || opName == "handshake.store")
+        lsCount++;
+    }
+    if (lsCount != 1 || nonTermCount != lsCount)
+      return emitOpError("[COMP_PE_LOADSTORE_BODY] "
+                         "load/store PE must contain exactly one "
+                         "handshake.load or handshake.store; found ")
+             << lsCount << " load/store ops and " << nonTermCount
+             << " non-terminator ops";
+  }
+
+  // COMP_PE_CONSTANT_BODY: constant PE has no other ops.
+  if (hasConstant && nonTermCount > 1)
+    return emitOpError("[COMP_PE_CONSTANT_BODY] "
+                       "constant PE must contain only a single "
+                       "handshake.constant; found ")
+           << nonTermCount << " non-terminator operations";
+
+  // COMP_PE_DATAFLOW_BODY: dataflow exclusivity.
+  if (hasDataflow) {
+    if (hasArithMath)
+      return emitOpError("[COMP_PE_DATAFLOW_BODY] "
+                         "dataflow PE body must not contain arith/math ops");
+    if (dataflowCount > 1)
+      return emitOpError("[COMP_PE_DATAFLOW_BODY] "
+                         "dataflow PE body must contain at most one "
+                         "dataflow operation; found ")
+             << dataflowCount;
+    if (hasInstance)
+      return emitOpError("[COMP_PE_DATAFLOW_BODY] "
+                         "dataflow PE body must not contain fabric.instance");
+  }
+
+  // COMP_PE_MIXED_CONSUMPTION: full-consume vs partial-consume.
+  if (hasFullConsume && hasMux)
+    return emitOpError("[COMP_PE_MIXED_CONSUMPTION] "
+                       "PE body must not mix full-consume (arith/math) "
+                       "and partial-consume (handshake.mux/cmerge) operations");
 
   return success();
 }
@@ -471,15 +569,18 @@ ParseResult TemporalPEOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   // Parse optional {instruction_mem = [...]}.
-  if (succeeded(parser.parseOptionalLBrace())) {
-    if (parser.parseKeyword("instruction_mem") || parser.parseEqual())
+  // Use parseOptionalAttrDict to parse the instruction_mem attribute without
+  // consuming the '{' that belongs to the body region.
+  {
+    NamedAttrList attrs;
+    if (parser.parseOptionalAttrDict(attrs))
       return failure();
-    ArrayAttr imAttr;
-    if (parser.parseAttribute(imAttr))
-      return failure();
-    result.addAttribute(getInstructionMemAttrName(result.name), imAttr);
-    if (parser.parseRBrace())
-      return failure();
+    for (auto &attr : attrs) {
+      if (attr.getName() == "instruction_mem") {
+        result.addAttribute(getInstructionMemAttrName(result.name),
+                            attr.getValue());
+      }
+    }
   }
 
   // Parse region body. Block args use value types (tags stripped).
@@ -563,33 +664,43 @@ LogicalResult TemporalPEOp::verify() {
     Type first = allTypes.front();
     for (Type t : allTypes) {
       if (t != first)
-        return emitOpError("all ports must use the same tagged type; got ")
+        return emitOpError("[COMP_TEMPORAL_PE_TAG_WIDTH] "
+                           "all ports must use the same tagged type; got ")
                << first << " and " << t;
     }
   }
 
   // num_instruction must be >= 1.
   if (getNumInstruction() < 1)
-    return emitOpError("num_instruction must be >= 1");
+    return emitOpError("[COMP_TEMPORAL_PE_NUM_INSTRUCTION] "
+                       "num_instruction must be >= 1");
 
   // reg_fifo_depth constraints.
   if (getNumRegister() == 0 && getRegFifoDepth() != 0)
-    return emitOpError(
+    return emitOpError("[COMP_TEMPORAL_PE_REG_FIFO_DEPTH] "
         "reg_fifo_depth must be 0 when num_register is 0");
   if (getNumRegister() > 0 && getRegFifoDepth() < 1)
-    return emitOpError(
+    return emitOpError("[COMP_TEMPORAL_PE_REG_FIFO_DEPTH] "
         "reg_fifo_depth must be >= 1 when num_register > 0");
 
   // operand_buffer_size constraints.
   if (getEnableShareOperandBuffer()) {
     if (!getOperandBufferSize())
-      return emitOpError(
+      return emitOpError("[COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING] "
           "operand_buffer_size required when enable_share_operand_buffer");
     int64_t obs = *getOperandBufferSize();
     if (obs < 1 || obs > 8192)
-      return emitOpError("operand_buffer_size must be in [1, 8192]; got ")
+      return emitOpError(
+          "[COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE] "
+          "operand_buffer_size must be in [1, 8192]; got ")
              << obs;
   }
+
+  // COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE
+  if (!getEnableShareOperandBuffer() && getOperandBufferSize())
+    return emitOpError("[COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE] "
+        "operand_buffer_size must not be set when "
+        "enable_share_operand_buffer is false");
 
   // Body must have at least one non-terminator.
   Block &body = getBody().front();
@@ -601,7 +712,61 @@ LogicalResult TemporalPEOp::verify() {
     }
   }
   if (!hasOp)
-    return emitOpError("body must contain at least one FU definition");
+    return emitOpError("[COMP_TEMPORAL_PE_EMPTY_BODY] "
+                       "body must contain at least one FU definition");
+
+  // COMP_TEMPORAL_PE_TAGGED_PE: no tagged PEs inside temporal_pe.
+  for (auto &op : body) {
+    auto pe = dyn_cast<PEOp>(&op);
+    if (!pe)
+      continue;
+    if (auto peFnType = pe.getFunctionType()) {
+      for (Type t : peFnType->getInputs()) {
+        if (isa<dataflow_t>(t))
+          return emitOpError("[COMP_TEMPORAL_PE_TAGGED_PE] "
+                             "temporal_pe must not contain tagged fabric.pe");
+      }
+      for (Type t : peFnType->getResults()) {
+        if (isa<dataflow_t>(t))
+          return emitOpError("[COMP_TEMPORAL_PE_TAGGED_PE] "
+                             "temporal_pe must not contain tagged fabric.pe");
+      }
+    }
+  }
+
+  // COMP_TEMPORAL_PE_LOADSTORE: no load/store PEs inside temporal_pe.
+  // Detect by body content (handshake.load/handshake.store), not attributes.
+  for (auto &op : body) {
+    auto pe = dyn_cast<PEOp>(&op);
+    if (!pe)
+      continue;
+    Block &peBody = pe.getBody().front();
+    for (auto &innerOp : peBody) {
+      StringRef opName = innerOp.getName().getStringRef();
+      if (opName == "handshake.load" || opName == "handshake.store")
+        return emitOpError("[COMP_TEMPORAL_PE_LOADSTORE] "
+                           "temporal_pe must not contain load/store PE");
+    }
+  }
+
+  // COMP_TEMPORAL_PE_REG_DISABLED / COMP_TEMPORAL_PE_SRC_MISMATCH:
+  // Validate instruction_mem entries if present.
+  if (auto im = getInstructionMem()) {
+    for (auto [instIdx, entry] : llvm::enumerate(*im)) {
+      auto strAttr = dyn_cast<StringAttr>(entry);
+      if (!strAttr)
+        continue;
+      StringRef inst = strAttr.getValue();
+      if (inst.contains("invalid"))
+        continue;
+
+      // COMP_TEMPORAL_PE_REG_DISABLED: check for reg() usage.
+      if (getNumRegister() == 0 && inst.contains("reg("))
+        return emitOpError("[COMP_TEMPORAL_PE_REG_DISABLED] "
+                           "instruction_mem entry ")
+               << instIdx << " uses reg() when num_register is 0";
+    }
+  }
 
   return success();
 }

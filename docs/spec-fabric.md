@@ -40,9 +40,8 @@ memref, complex, and opaque types are not considered native value types.
 The **none type** represents a control-only token with valid/ready signals but
 no data payload. It is used for synchronization tokens such as `ctrl` ports on
 load/store PEs and single-port `lddone`/`stdone` ports on memory operations.
-For multi-port tagged memories, done tokens use `!dataflow.tagged<i1, iK>`.
-This uses an `i1` dummy payload because MLIR cannot express
-`!dataflow.tagged<none, iK>`. See [spec-dataflow.md](./spec-dataflow.md) and
+For multi-port tagged memories, done tokens use `!dataflow.tagged<none, iK>`.
+See [spec-dataflow.md](./spec-dataflow.md) and
 [spec-fabric-mem.md](./spec-fabric-mem.md) for the authoritative rule.
 
 ## Hardware Parameters vs Runtime Configuration

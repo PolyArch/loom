@@ -48,8 +48,8 @@ fabric.memory @scratchpad
       (!dataflow.tagged<index, i2>, !dataflow.tagged<index, i2>,
        !dataflow.tagged<i32, i2>)
       -> (!dataflow.tagged<i32, i2>,
-          !dataflow.tagged<i1, i2>,
-          !dataflow.tagged<i1, i2>)
+          !dataflow.tagged<none, i2>,
+          !dataflow.tagged<none, i2>)
 
 fabric.extmemory @dram_if
     [ldCount = 1, stCount = 1, lsqDepth = 4]
@@ -63,8 +63,8 @@ Named memory modules can be instantiated with `fabric.instance`:
     : (!dataflow.tagged<index, i2>, !dataflow.tagged<index, i2>,
        !dataflow.tagged<i32, i2>)
       -> (!dataflow.tagged<i32, i2>,
-          !dataflow.tagged<i1, i2>,
-          !dataflow.tagged<i1, i2>)
+          !dataflow.tagged<none, i2>,
+          !dataflow.tagged<none, i2>)
 ```
 
 ### Inline Form Syntax
@@ -92,8 +92,8 @@ Multi-port example with tags:
        !dataflow.tagged<index, i3>,
        !dataflow.tagged<f32, i3>)
       -> (!dataflow.tagged<f32, i3>,
-          !dataflow.tagged<i1, i3>,
-          !dataflow.tagged<i1, i3>)
+          !dataflow.tagged<none, i3>,
+          !dataflow.tagged<none, i3>)
 ```
 
 Memory export example:
@@ -151,17 +151,15 @@ Address and data types:
 Done tokens:
 
 - If `ldCount == 1`, `lddone` is `none`.
-- If `ldCount > 1`, `lddone` is `!dataflow.tagged<i1, iK>` and carries the same
-  tag as the corresponding `ldaddr`. The `i1` payload is a dummy constant `0`.
-  See [spec-dataflow.md](./spec-dataflow.md).
+- If `ldCount > 1`, `lddone` is `!dataflow.tagged<none, iK>` and carries the
+  same tag as the corresponding `ldaddr`.
 - If `stCount == 1`, `stdone` is `none`.
-- If `stCount > 1`, `stdone` is `!dataflow.tagged<i1, iK>` and carries the same
-  tag as the corresponding store request. The `i1` payload is a dummy constant
-  `0`. See [spec-dataflow.md](./spec-dataflow.md).
+- If `stCount > 1`, `stdone` is `!dataflow.tagged<none, iK>` and carries the
+  same tag as the corresponding store request.
 
 **IMPORTANT: Breaking change when modifying port counts.** Changing `ldCount`
 from 1 to 2 (or vice versa) changes the `lddone` type from `none` to
-`!dataflow.tagged<i1, iK>`. Similarly, changing `stCount` from 1 to 2 changes
+`!dataflow.tagged<none, iK>`. Similarly, changing `stCount` from 1 to 2 changes
 `stdone` type. This is a breaking interface change that requires updating all
 consumers of the done token.
 

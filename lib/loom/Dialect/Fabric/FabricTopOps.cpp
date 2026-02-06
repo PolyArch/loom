@@ -9,6 +9,9 @@
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/SymbolTable.h"
+
+#include "llvm/ADT/SmallPtrSet.h"
 
 using namespace mlir;
 using namespace loom::fabric;
@@ -100,7 +103,8 @@ LogicalResult ModuleOp::verify() {
       else
         cat = 1;
       if (cat < lastCat)
-        return emitOpError(label)
+        return emitOpError("[COMP_MODULE_PORT_ORDER] ")
+               << label
                << " must follow port ordering: memref*, native*, tagged*";
       lastCat = cat;
     }
@@ -122,25 +126,110 @@ LogicalResult ModuleOp::verify() {
     }
   }
   if (!hasOp)
-    return emitOpError(
+    return emitOpError("[COMP_MODULE_EMPTY_BODY] "
         "body must contain at least one non-terminator operation");
 
   // Yield operand types must match result types.
+  // COMP_MODULE_MISSING_YIELD: the SingleBlockImplicitTerminator trait
+  // guarantees a YieldOp exists; this check catches operand count mismatch.
   auto yield = cast<YieldOp>(body.getTerminator());
   if (yield.getOperands().size() != fnType.getNumResults())
-    return emitOpError("yield operand count (")
+    return emitOpError("[COMP_MODULE_MISSING_YIELD] yield operand count (")
            << yield.getOperands().size() << ") must match result count ("
            << fnType.getNumResults() << ")";
 
   for (auto [idx, pair] : llvm::enumerate(
            llvm::zip(yield.getOperandTypes(), fnType.getResults()))) {
     if (std::get<0>(pair) != std::get<1>(pair))
-      return emitOpError("yield operand #")
+      return emitOpError("[COMP_FABRIC_TYPE_MISMATCH] yield operand #")
              << idx << " type " << std::get<0>(pair)
              << " must match result type " << std::get<1>(pair);
   }
 
+  // COMP_MEMORY_PRIVATE_OUTPUT: each memref yield operand must trace back
+  // to a MemoryOp with is_private = false.
+  for (auto [idx, operand] : llvm::enumerate(yield.getOperands())) {
+    if (!isa<MemRefType>(operand.getType()))
+      continue;
+    auto *defOp = operand.getDefiningOp();
+    if (!defOp) {
+      // Block argument: not produced by a memory op.
+      return emitOpError("[COMP_MEMORY_PRIVATE_OUTPUT] yield memref operand #")
+             << idx << " is not produced by a fabric.memory with "
+             << "is_private = false";
+    }
+    auto memOp = dyn_cast<MemoryOp>(defOp);
+    if (!memOp) {
+      return emitOpError("[COMP_MEMORY_PRIVATE_OUTPUT] yield memref operand #")
+             << idx << " is not produced by a fabric.memory";
+    }
+    if (memOp.getIsPrivate()) {
+      return emitOpError("[COMP_MEMORY_PRIVATE_OUTPUT] yield memref operand #")
+             << idx << " is produced by a fabric.memory with is_private = true";
+    }
+  }
+
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// Instance helpers
+//===----------------------------------------------------------------------===//
+
+/// Get the function_type from a target operation that may be a ModuleOp, PEOp,
+/// TemporalPEOp, SwitchOp, TemporalSwOp, MemoryOp, or ExtMemoryOp.
+static std::optional<FunctionType> getTargetFunctionType(Operation *target) {
+  if (auto mod = dyn_cast<ModuleOp>(target))
+    return mod.getFunctionType();
+  if (auto pe = dyn_cast<PEOp>(target)) {
+    if (auto ft = pe.getFunctionType())
+      return *ft;
+    return std::nullopt;
+  }
+  if (auto tpe = dyn_cast<TemporalPEOp>(target))
+    return tpe.getFunctionType();
+  if (auto sw = dyn_cast<SwitchOp>(target)) {
+    if (auto ft = sw.getFunctionType())
+      return *ft;
+    return std::nullopt;
+  }
+  if (auto tsw = dyn_cast<TemporalSwOp>(target)) {
+    if (auto ft = tsw.getFunctionType())
+      return *ft;
+    return std::nullopt;
+  }
+  if (auto mem = dyn_cast<MemoryOp>(target)) {
+    if (auto ft = mem.getFunctionType())
+      return *ft;
+    return std::nullopt;
+  }
+  if (auto ext = dyn_cast<ExtMemoryOp>(target)) {
+    if (auto ft = ext.getFunctionType())
+      return *ft;
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+/// Check for cyclic instance references starting from an operation.
+static bool hasCyclicReference(Operation *start, SymbolTableCollection &tables) {
+  llvm::SmallPtrSet<Operation *, 8> visited;
+  SmallVector<Operation *> worklist;
+  worklist.push_back(start);
+
+  while (!worklist.empty()) {
+    Operation *current = worklist.pop_back_val();
+    if (!visited.insert(current).second)
+      return true;
+
+    current->walk([&](InstanceOp inst) {
+      auto *resolved = tables.lookupNearestSymbolFrom(
+          inst.getOperation(), inst.getModuleAttr());
+      if (resolved)
+        worklist.push_back(resolved);
+    });
+  }
+  return false;
 }
 
 //===----------------------------------------------------------------------===//
@@ -148,6 +237,54 @@ LogicalResult ModuleOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult InstanceOp::verify() {
-  // Full symbol resolution is deferred to a separate validation pass.
+  // COMP_INSTANCE_UNRESOLVED: symbol must exist.
+  SymbolTableCollection tables;
+  auto *target = tables.lookupNearestSymbolFrom(
+      getOperation(), getModuleAttr());
+  if (!target)
+    return emitOpError("[COMP_INSTANCE_UNRESOLVED] referenced symbol '")
+           << getModule() << "' does not exist";
+
+  // COMP_INSTANCE_ILLEGAL_TARGET: cannot instantiate tag ops.
+  if (isa<AddTagOp>(target) || isa<MapTagOp>(target) || isa<DelTagOp>(target))
+    return emitOpError("[COMP_INSTANCE_ILLEGAL_TARGET] cannot instantiate "
+                       "tag operation '")
+           << getModule() << "'";
+
+  // COMP_INSTANCE_OPERAND_MISMATCH / COMP_INSTANCE_RESULT_MISMATCH:
+  // Compare types against target's function_type.
+  auto targetFnType = getTargetFunctionType(target);
+  if (targetFnType) {
+    auto fnType = *targetFnType;
+    if (getOperands().size() != fnType.getNumInputs())
+      return emitOpError("[COMP_INSTANCE_OPERAND_MISMATCH] operand count (")
+             << getOperands().size() << ") does not match target input count ("
+             << fnType.getNumInputs() << ")";
+    for (auto [idx, pair] : llvm::enumerate(
+             llvm::zip(getOperandTypes(), fnType.getInputs()))) {
+      if (std::get<0>(pair) != std::get<1>(pair))
+        return emitOpError("[COMP_INSTANCE_OPERAND_MISMATCH] operand #")
+               << idx << " type " << std::get<0>(pair)
+               << " does not match target input type " << std::get<1>(pair);
+    }
+
+    if (getResults().size() != fnType.getNumResults())
+      return emitOpError("[COMP_INSTANCE_RESULT_MISMATCH] result count (")
+             << getResults().size() << ") does not match target result count ("
+             << fnType.getNumResults() << ")";
+    for (auto [idx, pair] : llvm::enumerate(
+             llvm::zip(getResultTypes(), fnType.getResults()))) {
+      if (std::get<0>(pair) != std::get<1>(pair))
+        return emitOpError("[COMP_INSTANCE_RESULT_MISMATCH] result #")
+               << idx << " type " << std::get<0>(pair)
+               << " does not match target result type " << std::get<1>(pair);
+    }
+  }
+
+  // COMP_INSTANCE_CYCLIC_REFERENCE: check for cycles.
+  if (hasCyclicReference(target, tables))
+    return emitOpError("[COMP_INSTANCE_CYCLIC_REFERENCE] instance of '")
+           << getModule() << "' forms a cyclic reference";
+
   return success();
 }

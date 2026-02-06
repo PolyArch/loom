@@ -26,7 +26,8 @@ endif()
 
 # Remove test output directories
 file(GLOB APP_OUTPUT_DIRS "${SOURCE_DIR}/tests/app/*/Output")
-foreach(dir IN LISTS APP_OUTPUT_DIRS)
+file(GLOB TDD_OUTPUT_DIRS "${SOURCE_DIR}/tests/fabric/tdd/*/Output")
+foreach(dir IN LISTS APP_OUTPUT_DIRS TDD_OUTPUT_DIRS)
   if(IS_DIRECTORY "${dir}")
     file(REMOVE_RECURSE "${dir}")
     message(STATUS "Removed ${dir}")

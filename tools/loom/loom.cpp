@@ -69,6 +69,8 @@
 #include "mlir/Conversion/ControlFlowToSCF/ControlFlowToSCF.h"
 #include "mlir/Transforms/Passes.h"
 
+#include "mlir/Parser/Parser.h"
+
 #include "loom/Conversion/LLVMToSCF.h"
 #include "loom/Conversion/SCFToHandshake.h"
 #include "loom/Conversion/SCFPostProcess.h"
@@ -367,6 +369,7 @@ struct ParsedArgs {
   std::vector<std::string> inputs;
   std::vector<std::string> driver_args;
   std::string output_path;
+  std::string adg_path;
   bool show_help = false;
   bool show_version = false;
   bool had_error = false;
@@ -375,11 +378,17 @@ struct ParsedArgs {
 void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "Usage: " << prog
                << " [options] <sources...> -o <output.llvm.ll>\n";
+  llvm::outs() << "       " << prog
+               << " --adg <file.fabric.mlir>\n";
   llvm::outs() << "\n";
   llvm::outs() << "Compile and link C++ sources into a single LLVM IR file "
                << "and emit LLVM dialect MLIR.\n";
   llvm::outs() << "The MLIR output path is derived from -o by replacing "
                << ".llvm.ll or .ll with .mlir.\n";
+  llvm::outs() << "\n";
+  llvm::outs() << "ADG validation mode (--adg):\n";
+  llvm::outs() << "  Parse a fabric MLIR file, run semantic verification, "
+               << "and exit 0 (valid) or 1 (errors).\n";
   llvm::outs() << "\n";
   llvm::outs() << "Forwarded compile options include: -I, -D, -U, -std, -O, -g,"
                << " -isystem, -include.\n";
@@ -452,6 +461,15 @@ ParsedArgs ParseArgs(int argc, char **argv) {
       }
       if (arg == "--version") {
         parsed.show_version = true;
+        continue;
+      }
+      if (arg == "--adg") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --adg requires a path\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.adg_path = argv[++i];
         continue;
       }
       if (arg == "-o") {
@@ -660,6 +678,35 @@ int main(int argc, char **argv) {
   }
   if (parsed.had_error)
     return 1;
+
+  // ADG validation mode: parse fabric MLIR and run verification.
+  if (!parsed.adg_path.empty()) {
+    mlir::MLIRContext adg_context;
+    mlir::DialectRegistry adg_registry;
+    adg_context.appendDialectRegistry(adg_registry);
+    adg_context.getDiagEngine().registerHandler(
+        [](mlir::Diagnostic &diag) {
+          diag.print(llvm::errs());
+          llvm::errs() << "\n";
+          return mlir::success();
+        });
+    adg_context.getOrLoadDialect<mlir::arith::ArithDialect>();
+    adg_context.getOrLoadDialect<mlir::math::MathDialect>();
+    adg_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
+    adg_context.getOrLoadDialect<mlir::func::FuncDialect>();
+    adg_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
+    adg_context.getOrLoadDialect<loom::fabric::FabricDialect>();
+    adg_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+
+    mlir::ParserConfig adg_parser_config(&adg_context);
+    auto adg_module = mlir::parseSourceFile<mlir::ModuleOp>(
+        parsed.adg_path, adg_parser_config);
+    if (!adg_module)
+      return 1;
+    if (failed(mlir::verify(*adg_module)))
+      return 1;
+    return 0;
+  }
 
   if (parsed.inputs.empty()) {
     llvm::errs() << "error: no input files\n";

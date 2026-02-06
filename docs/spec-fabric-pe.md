@@ -265,9 +265,10 @@ fixed at build time and cannot be switched at runtime.
 - `output_tag` is absent.
 - `addr_from_comp`, the data port (`data_from_mem` for load, `data_from_comp`
   for store), and `ctrl` ports must all be tagged.
-- The `ctrl` value type is `i1` and the tag carries the logical port ID. The
-  `i1` payload is a dummy constant `0` and must not drive logic. See
-  [spec-dataflow.md](./spec-dataflow.md).
+- The `ctrl` port type is `!dataflow.tagged<none, iK>`. The tagged `none`
+  carries only the tag (logical port ID) with no data payload. Inside the PE
+  body, after implicit tag stripping, `ctrl` becomes `none`, matching
+  `handshake.load`/`handshake.store`'s `NoneType` ctrl requirement.
 - Tag widths on `addr_from_comp`, the data port, and `ctrl` must match.
 - `lqDepth` (load) or `sqDepth` (store) is required and must be >= 1.
 - The PE synchronizes inputs only when tags match, then forwards tags

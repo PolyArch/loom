@@ -37,9 +37,13 @@ static LogicalResult verifyUniformType(Operation *op,
 
 static LogicalResult
 verifyConnectivityTable(Operation *op, ArrayRef<int8_t> table,
-                        unsigned numOutputs, unsigned numInputs) {
+                        unsigned numOutputs, unsigned numInputs,
+                        StringRef tableShapeCode,
+                        StringRef rowEmptyCode,
+                        StringRef colEmptyCode) {
   if (table.size() != numOutputs * numInputs)
-    return op->emitOpError("connectivity_table length must be ")
+    return op->emitOpError(tableShapeCode)
+           << " connectivity_table length must be "
            << numOutputs * numInputs << "; got " << table.size();
 
   for (unsigned o = 0; o < numOutputs; ++o) {
@@ -52,7 +56,8 @@ verifyConnectivityTable(Operation *op, ArrayRef<int8_t> table,
         hasConn = true;
     }
     if (!hasConn)
-      return op->emitOpError("output row ") << o << " has no connections";
+      return op->emitOpError(rowEmptyCode)
+             << " output row " << o << " has no connections";
   }
 
   for (unsigned i = 0; i < numInputs; ++i) {
@@ -62,7 +67,8 @@ verifyConnectivityTable(Operation *op, ArrayRef<int8_t> table,
         hasConn = true;
     }
     if (!hasConn)
-      return op->emitOpError("input column ") << i << " has no connections";
+      return op->emitOpError(colEmptyCode)
+             << " input column " << i << " has no connections";
   }
 
   return success();
@@ -242,13 +248,20 @@ LogicalResult SwitchOp::verify() {
   }
 
   if (numInputs > 32)
-    return emitOpError("number of inputs must be <= 32; got ") << numInputs;
+    return emitOpError("[COMP_SWITCH_PORT_LIMIT] "
+                       "number of inputs must be <= 32; got ")
+           << numInputs;
   if (numOutputs > 32)
-    return emitOpError("number of outputs must be <= 32; got ") << numOutputs;
+    return emitOpError("[COMP_SWITCH_PORT_LIMIT] "
+                       "number of outputs must be <= 32; got ")
+           << numOutputs;
 
   if (auto ct = getConnectivityTable()) {
-    if (failed(verifyConnectivityTable(getOperation(), *ct, numOutputs,
-                                       numInputs)))
+    if (failed(verifyConnectivityTable(
+            getOperation(), *ct, numOutputs, numInputs,
+            "[COMP_SWITCH_TABLE_SHAPE]",
+            "[COMP_SWITCH_ROW_EMPTY]",
+            "[COMP_SWITCH_COL_EMPTY]")))
       return failure();
 
     if (auto rt = getRouteTable()) {
@@ -257,7 +270,8 @@ LogicalResult SwitchOp::verify() {
         if (v == 1)
           ++popcount;
       if (rt->size() != popcount)
-        return emitOpError("route_table length must equal popcount of "
+        return emitOpError("[COMP_SWITCH_ROUTE_LEN_MISMATCH] "
+                           "route_table length must equal popcount of "
                            "connectivity_table (")
                << popcount << "); got " << rt->size();
     }
@@ -452,22 +466,68 @@ LogicalResult TemporalSwOp::verify() {
   }
 
   if (numInputs > 32)
-    return emitOpError("number of inputs must be <= 32; got ") << numInputs;
+    return emitOpError("[COMP_TEMPORAL_SW_PORT_LIMIT] "
+                       "number of inputs must be <= 32; got ")
+           << numInputs;
   if (numOutputs > 32)
-    return emitOpError("number of outputs must be <= 32; got ") << numOutputs;
+    return emitOpError("[COMP_TEMPORAL_SW_PORT_LIMIT] "
+                       "number of outputs must be <= 32; got ")
+           << numOutputs;
 
   if (getNumRouteTable() < 1)
-    return emitOpError("num_route_table must be >= 1");
+    return emitOpError("[COMP_TEMPORAL_SW_NUM_ROUTE_TABLE] "
+                       "num_route_table must be >= 1");
 
   if (auto ct = getConnectivityTable()) {
-    if (failed(verifyConnectivityTable(getOperation(), *ct, numOutputs,
-                                       numInputs)))
+    if (failed(verifyConnectivityTable(
+            getOperation(), *ct, numOutputs, numInputs,
+            "[COMP_TEMPORAL_SW_TABLE_SHAPE]",
+            "[COMP_TEMPORAL_SW_ROW_EMPTY]",
+            "[COMP_TEMPORAL_SW_COL_EMPTY]")))
       return failure();
+
+    // COMP_TEMPORAL_SW_ROUTE_ILLEGAL: validate route_table entries against
+    // connectivity_table.
+    if (auto rt = getRouteTable()) {
+      // Build a set of connected (output, input) positions from ct.
+      llvm::DenseSet<std::pair<unsigned, unsigned>> connected;
+      for (unsigned o = 0; o < numOutputs; ++o)
+        for (unsigned i = 0; i < numInputs; ++i)
+          if ((*ct)[o * numInputs + i] == 1)
+            connected.insert({o, i});
+
+      for (auto [slotIdx, slotAttr] : llvm::enumerate(*rt)) {
+        auto slotArray = dyn_cast<ArrayAttr>(slotAttr);
+        if (!slotArray)
+          continue;
+        // Each slot is an array of route entries. A route entry is an array
+        // [output_idx, input_idx, ...] or a DenseI8ArrayAttr.
+        for (auto routeAttr : slotArray) {
+          if (auto routeArray = dyn_cast<ArrayAttr>(routeAttr)) {
+            if (routeArray.size() >= 2) {
+              auto outAttr = dyn_cast<IntegerAttr>(routeArray[0]);
+              auto inAttr = dyn_cast<IntegerAttr>(routeArray[1]);
+              if (outAttr && inAttr) {
+                unsigned outIdx = outAttr.getInt();
+                unsigned inIdx = inAttr.getInt();
+                if (!connected.contains({outIdx, inIdx}))
+                  return emitOpError("[COMP_TEMPORAL_SW_ROUTE_ILLEGAL] "
+                                     "route_table slot ")
+                         << slotIdx << " routes output " << outIdx
+                         << " from input " << inIdx
+                         << " which is not connected";
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   if (auto rt = getRouteTable()) {
     if (static_cast<int64_t>(rt->size()) > getNumRouteTable())
-      return emitOpError("route_table slot count must be <= num_route_table (")
+      return emitOpError("[COMP_TEMPORAL_SW_TOO_MANY_SLOTS] "
+                         "route_table slot count must be <= num_route_table (")
              << getNumRouteTable() << "); got " << rt->size();
   }
 

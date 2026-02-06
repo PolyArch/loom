@@ -52,12 +52,43 @@ The CLI recognizes and handles these options directly:
 - `-h`, `--help`: print usage and exit.
 - `--version`: print the tool version and exit.
 - `-o <path>` or `-o<path>`: select the LLVM IR output path.
+- `--adg <file.fabric.mlir>`: validate a fabric MLIR file (see below).
 - `--as-clang`: operate as a standard C++ compiler (see below).
 
 `--` terminates option parsing. All subsequent arguments are treated as input
 files, even if they begin with `-`.
 
 ## Loom-Specific Options
+
+### `--adg`
+
+When `--adg <path>` is specified, `loom` operates in ADG validation mode.
+
+**Behavior:**
+
+- Parses the given fabric MLIR file
+- Registers Fabric, Dataflow, Handshake, Arith, Math, MemRef, and Func dialects
+- Runs MLIR parse and semantic verification
+- Exits 0 if the file is valid, 1 if any errors are detected
+- Error codes are emitted to stderr with `[COMP_XXX]` prefix
+  (see [spec-fabric-error.md](./spec-fabric-error.md))
+- No MLIR/SCF/Handshake outputs are generated
+- Source files and `-o` are ignored when `--adg` is set
+
+**Incompatibilities:**
+
+`--adg` is incompatible with `--as-clang`. If both are specified, behavior is
+undefined.
+
+**Example:**
+
+```bash
+# Validate an ADG fabric MLIR file
+loom --adg my_cgra.fabric.mlir
+
+# Check exit code
+echo $?  # 0 = valid, 1 = errors
+```
 
 ### `--as-clang`
 

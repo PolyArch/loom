@@ -1,0 +1,16 @@
+// RUN: not loom --adg %s 2>&1 | FileCheck %s
+// CHECK: COMP_MEMORY_EXTMEM_BINDING
+
+// A fabric.module with inline fabric.extmemory where the memref operand
+// comes from a fabric.memory result, not from a module block argument.
+fabric.module @bad_extmem_binding(%addr: index) -> (i32, none) {
+  %mem, %ld1, %done1 = fabric.memory
+      [ldCount = 1, stCount = 0, is_private = false]
+      (%addr)
+      : memref<64xi32>, (index) -> (memref<64xi32>, i32, none)
+  %lddata, %lddone = fabric.extmemory
+      [ldCount = 1, stCount = 0]
+      (%mem, %addr)
+      : memref<64xi32>, (memref<64xi32>, index) -> (i32, none)
+  fabric.yield %lddata, %lddone : i32, none
+}

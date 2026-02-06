@@ -20,11 +20,12 @@ TaggedType::verify(function_ref<InFlightDiagnostic()> emitError,
                     valueType.isInteger(16) || valueType.isInteger(32) ||
                     valueType.isInteger(64) || valueType.isBF16() ||
                     valueType.isF16() || valueType.isF32() ||
-                    valueType.isF64() || valueType.isIndex();
+                    valueType.isF64() || valueType.isIndex() ||
+                    isa<NoneType>(valueType);
   if (!validValue)
     return emitError()
            << "tagged value type must be one of i1, i8, i16, i32, i64, "
-              "bf16, f16, f32, f64, index; got "
+              "bf16, f16, f32, f64, index, none; got "
            << valueType;
 
   // tagType must be signless integer with width 1-16.

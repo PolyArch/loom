@@ -25,7 +25,7 @@ build: init
 rebuild: init
 	@set -e; \
 	cmake -S . -B build -G Ninja -DLLVM_ENABLE_PROJECTS="clang;mlir" -DLLVM_TARGETS_TO_BUILD=host; \
-	ninja -C build clang mlir-opt mlir-translate loom
+	ninja -C build clang mlir-opt mlir-translate loom FileCheck not
 
 test:
 	@set -e; \

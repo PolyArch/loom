@@ -35,16 +35,9 @@ well as load/store control and done tokens in the handshake/fabric memory
 interfaces.
 
 When a control-only token must carry a tag (for port multiplexing), it is
-encoded as `!dataflow.tagged<i1, iK>`. The `i1` payload is a dummy value and
-must be treated as constant `0` in hardware. It must not drive logic or carry
-information. The tag is the only meaningful field and the `i1` payload is
-expected to be optimized away in the backend.
-
-For host-side ESI interfaces that cannot transport `none`, a control-only token
-may be represented as an `i1` pulse with value `1`. This value must not drive
-logic; it only indicates that a control token was issued. Hardware should treat
-this as a one-cycle pulse which is consumed by the control path and then
-cleared.
+encoded as `!dataflow.tagged<none, iK>`. The tagged `none` carries only
+valid/ready signals and a tag; there is no data payload. The tag is the only
+meaningful field.
 
 **Note on dataflow `i1` streams:** The `i1` control streams used by
 `dataflow.carry`, `dataflow.invariant`, `dataflow.stream`, and `dataflow.gate`
@@ -70,6 +63,7 @@ Examples:
 !dataflow.tagged<i32, i4>
 !dataflow.tagged<f32, i5>
 !dataflow.tagged<index, i1>
+!dataflow.tagged<none, i4>
 ```
 
 ### Constraints
@@ -81,6 +75,7 @@ Allowed value types are listed below.
 | Integer | `i1`, `i8`, `i16`, `i32`, `i64` |
 | Float | `bf16`, `f16`, `f32`, `f64` |
 | Index | `index` |
+| None | `none` |
 
 - `tag_type` must be a signless integer type in the range `i1` to `i16`.
 - `value_type` must be scalar. Vector, tensor, memref, complex, and opaque
