@@ -184,7 +184,7 @@ auto const_pe = builder.newConstantPE("const_42")
 auto const_pe = builder.newConstantPE("tagged_const")
     .setLatency(0, 0, 0)
     .setInterval(1, 1, 1)
-    .setOutputType(Type::tagged(Type::f32(), Type::i4()));  // f32 value with 4-bit tag
+    .setOutputType(Type::tagged(Type::f32(), Type::iN(4)));  // f32 value with 4-bit tag
 ```
 
 ### newLoadPE / newStorePE
@@ -288,7 +288,7 @@ auto temporal_pe = builder.newTemporalPE("mux_pe")
     .setNumRegister(4)
     .setNumInstruction(16)
     .setNumInstance(2)
-    .setInterface(Type::tagged(Type::i32(), Type::i4()))
+    .setInterface(Type::tagged(Type::i32(), Type::iN(4)))
     .addFU(alu_pe)
     .addFU(mul_pe);
 ```
@@ -299,7 +299,7 @@ auto temporal_pe = builder.newTemporalPE("mux_pe_shared")
     .setNumRegister(4)
     .setNumInstruction(16)
     .setNumInstance(2)
-    .setInterface(Type::tagged(Type::i32(), Type::i4()))
+    .setInterface(Type::tagged(Type::i32(), Type::iN(4)))
     .enableSharedOperandBuffer(64)  // 64-entry shared buffer
     .addFU(alu_pe)
     .addFU(mul_pe);
@@ -327,8 +327,10 @@ Creates a new `fabric.switch` definition.
 | `setType(type)` | Set port type (native or tagged) |
 
 **Connectivity table format:**
-`std::vector<std::vector<bool>>` with dimensions `[num_inputs][num_outputs]`.
-`table[i][o] = true` means input `i` can route to output `o`.
+`std::vector<std::vector<bool>>` with dimensions `[num_outputs][num_inputs]`.
+`table[o][i] = true` means input `i` can physically route to output `o`.
+This is output-major ordering, consistent with the Fabric specification
+(see [spec-fabric-switch.md](./spec-fabric-switch.md)).
 
 **Constraints:**
 - Maximum 32 inputs and 32 outputs
@@ -385,7 +387,7 @@ Creates a new `fabric.temporal_sw` definition.
 auto tsw = builder.newTemporalSwitch("temporal_router")
     .setNumRouteTable(8)
     .setPortCount(4, 4)
-    .setInterface(Type::tagged(Type::i32(), Type::i4()));
+    .setInterface(Type::tagged(Type::i32(), Type::iN(4)));
 ```
 
 ### newMemory
@@ -659,10 +661,13 @@ For a 2x2 mesh with `Topology::Mesh`:
 ```
 PE[0,0] -- SW[0,0] -- PE[0,1]
    |                    |
-SW[1,0]              SW[1,1]
+SW[0,1]              SW[1,1]
    |                    |
 PE[1,0] -- SW[1,0] -- PE[1,1]
 ```
+
+Each PE and SW uses a unique `[row, col]` coordinate. No two modules share the
+same coordinate.
 
 **Switch port ordering:**
 
@@ -714,7 +719,7 @@ auto stream_in = builder.addModuleInput("data_in", Type::i32());
 
 // Tagged streaming input (AXI-Stream)
 auto tagged_in = builder.addModuleInput("tagged_in",
-    Type::tagged(Type::i32(), Type::i4()));
+    Type::tagged(Type::i32(), Type::iN(4)));
 
 // Memory input (AXI-MM)
 auto mem_in = builder.addModuleInput("mem",
@@ -886,18 +891,8 @@ Exports the ADG as Graphviz DOT format.
 | `DOTMode::Structure` | Hardware modules and connections only |
 | `DOTMode::Detailed` | Includes internal structure and config info |
 
-**Visual conventions:**
-
-| Element | Shape | Color |
-|---------|-------|-------|
-| `fabric.pe` | Rectangle | Light blue |
-| `fabric.temporal_pe` | Rectangle | Dark blue |
-| `fabric.switch` | Diamond | Light gray |
-| `fabric.temporal_sw` | Diamond | Dark gray |
-| `fabric.memory` | Cylinder | Green |
-| `fabric.extmemory` | Cylinder | Orange |
-| Native connection | Solid line | Black |
-| Tagged connection | Dashed line | Purple |
+For visual conventions (node styles, edge styles, unmapped elements), see
+[spec-viz-hw.md](./spec-viz-hw.md).
 
 ### exportSV
 
@@ -954,7 +949,7 @@ files in the Loom installation.
 | Loosely-Timed | `FABRIC_SYSC_LOOSELY_TIMED` | Fast simulation |
 
 **Requirements:**
-- SystemC 3.0.1 or later (3.0.2 recommended)
+- SystemC 3.0.1
 - C++17 compiler
 
 See [spec-adg-sysc.md](./spec-adg-sysc.md) for complete specification.
@@ -974,7 +969,7 @@ The `Type` class represents MLIR types in the ADG API.
 | `Type::i16()` | 16-bit integer |
 | `Type::i32()` | 32-bit integer |
 | `Type::i64()` | 64-bit integer |
-| `Type::iN(n)` | N-bit integer |
+| `Type::iN(n)` | N-bit integer (primarily for tag types; see note below) |
 | `Type::bf16()` | Brain floating-point (16-bit) |
 | `Type::f16()` | IEEE 16-bit float |
 | `Type::f32()` | 32-bit float |
@@ -983,10 +978,18 @@ The `Type` class represents MLIR types in the ADG API.
 | `Type::none()` | None type (for control tokens) |
 | `Type::tagged(value, tag)` | Tagged type |
 
+**Validation note:** `Type::iN(n)` creates an arbitrary-width integer type,
+but its primary use is for **tag types** (range `i1` to `i16`). For value
+types (data payload), only the fixed set of widths is allowed: `i1`, `i8`,
+`i16`, `i32`, `i64`. Using `Type::iN(n)` with an unsupported value width
+(e.g., `Type::iN(3)` as a data type) will be rejected during validation.
+See [spec-dataflow.md](./spec-dataflow.md) for the complete list of allowed
+value types.
+
 **Example:**
 ```cpp
 auto i32 = Type::i32();
-auto tagged_i32 = Type::tagged(Type::i32(), Type::i4());
+auto tagged_i32 = Type::tagged(Type::i32(), Type::iN(4));
 ```
 
 ### MemrefType Class
@@ -1051,7 +1054,7 @@ authoritative list of allowed operations, see
 [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md).
 
 **Summary:**
-- `arith` dialect: 26 operations
+- `arith` dialect: 30 operations
 - `math` dialect: 7 operations
 - `dataflow` dialect: 4 operations (exclusive group)
 - `handshake` dialect: 8 operations (with exclusivity constraints)

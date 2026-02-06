@@ -200,9 +200,36 @@ sequences complete successfully.
 - `loom::createUpliftWhileToForPass()`: Converts `scf.while` loops that match
   canonical for-loop patterns into `scf.for` operations.
 - `loom::createAttachLoopAnnotationsPass()`: Extracts loop pragma metadata from
-  marker calls and attaches them as MLIR attributes on loop operations.
+  marker calls and attaches them as MLIR attributes on loop operations. This
+  pass handles annotations from all loop-level pragmas including
+  `LOOM_PARALLEL`, `LOOM_UNROLL`, `LOOM_TRIPCOUNT`, `LOOM_REDUCE`, and
+  `LOOM_MEMORY_BANK`. See [spec-pragma.md](./spec-pragma.md).
 - `loom::createMarkWhileStreamablePass()`: Analyzes `scf.while` loops to
   determine if they can be lowered to streaming dataflow and marks them
   accordingly.
 - `loom::createSCFToHandshakeDataflowPass()`: Converts SCF operations to
-  Handshake dialect for dataflow execution on hardware.
+  Handshake dialect for dataflow execution on hardware. This pass consumes
+  the `LOOM_REDUCE` annotation to generate reduction trees and the
+  `LOOM_MEMORY_BANK` annotation to generate banked memory interfaces.
+
+### Pragma Handling Summary
+
+| Pragma | Handling Pass |
+|--------|--------------|
+| `LOOM_ACCEL` | Processed during function selection (pre-pipeline) |
+| `LOOM_NO_ACCEL` | Processed during function selection (pre-pipeline) |
+| `LOOM_TARGET` | Processed during function selection (pre-pipeline) |
+| `LOOM_STREAM` | Processed during function selection (pre-pipeline) |
+| `LOOM_PARALLEL` | `createAttachLoopAnnotationsPass()` + `createSCFToHandshakeDataflowPass()` |
+| `LOOM_NO_PARALLEL` | `createAttachLoopAnnotationsPass()` |
+| `LOOM_UNROLL` | `createAttachLoopAnnotationsPass()` + SCF canonicalization |
+| `LOOM_NO_UNROLL` | `createAttachLoopAnnotationsPass()` |
+| `LOOM_TRIPCOUNT` | `createAttachLoopAnnotationsPass()` |
+| `LOOM_REDUCE` | `createAttachLoopAnnotationsPass()` + `createSCFToHandshakeDataflowPass()` |
+| `LOOM_MEMORY_BANK` | `createAttachLoopAnnotationsPass()` + `createSCFToHandshakeDataflowPass()` |
+
+## Related Documents
+
+- [spec-pragma.md](./spec-pragma.md): Loom pragma system specification
+- [spec-dataflow.md](./spec-dataflow.md): Dataflow dialect (lowering target)
+- [spec-fabric.md](./spec-fabric.md): Fabric dialect overview

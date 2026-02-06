@@ -106,6 +106,19 @@ are dropped at the boundary.
 Load/store PEs override the default `output_tag` rules. See
 `Load/Store PE Semantics`.
 
+#### `constant_value` (runtime configuration parameter)
+
+- Allowed only when the PE body contains exactly one `handshake.constant`.
+- Type: matches the output value type of the `handshake.constant`.
+- The value is stored in config_mem and may be reprogrammed at runtime.
+- When the interface is tagged, `constant_value` is packed together with
+  `output_tag` in config_mem (constant_value in lower bits, output_tag in
+  upper bits).
+
+This attribute is a direct consequence of the Constant Exclusivity Rule: if a
+`fabric.pe` contains `handshake.constant`, it must be the only non-terminator
+operation. Therefore, each PE can have at most one `constant_value`.
+
 #### `lqDepth` and `sqDepth` (hardware parameters)
 
 These attributes are only valid for load/store PEs:
@@ -119,112 +132,54 @@ tag-transparent hardware type (no `output_tag`). See `Load/Store PE Semantics`.
 ### Constraints
 
 - All ports must be native types, or all ports must be tagged types, except for
-  the load/store PE special cases described below.
-- If the interface is native, `output_tag` must be absent.
+  the load/store PE special cases described below. Violations raise
+  `COMP_PE_MIXED_INTERFACE`.
+- If the interface is native, `output_tag` must be absent. Violations raise
+  `COMP_PE_OUTPUT_TAG_NATIVE`.
 - If the interface is tagged, `output_tag` is required for non-load/store PEs.
-  Load/store PEs follow their own rules below.
-- The body must contain at least one non-terminator operation.
+  Load/store PEs follow their own rules below. Violations raise
+  `COMP_PE_OUTPUT_TAG_MISSING`.
+- The body must contain at least one non-terminator operation. Violations raise
+  `COMP_PE_EMPTY_BODY`.
 - If any `dataflow` operation is present, the interface must be native and the
-  body must be dataflow-only as defined below.
+  body must be dataflow-only as defined below. Violations raise
+  `COMP_PE_DATAFLOW_BODY`.
+
+See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.
 
 ### Allowed Operations Inside `fabric.pe`
 
 See [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md) for the complete list of
 allowed operations. This includes operations from:
 
-- `arith` (26 operations)
+- `arith` (30 operations)
 - `math` (7 operations)
 - `dataflow` (4 operations, with exclusivity constraint)
 - `handshake` (8 operations, with exclusivity constraints)
 - `fabric.pe` (nested)
 - `fabric.instance` (to instantiate named PEs)
 
-#### Homogeneous Consumption Rule
+#### Body Constraints and Exclusivity Rules
 
-A `fabric.pe` body must be homogeneous with respect to input consumption and
-output production behavior. There are two groups.
+The following body constraints are defined authoritatively in
+[spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md):
 
-Full-consume/full-produce group: operations that consume all their inputs and
-produce all outputs each firing. This group includes arithmetic operations and
-`handshake.load`, `handshake.store`, `handshake.constant`, `handshake.sink`,
-`handshake.fork`, and `handshake.join`.
+- **Homogeneous Consumption Rule**: Operations must belong to the same
+  consumption group (full-consume or partial-consume).
+- **Load/Store Exclusivity**: Body must contain exactly one load or store
+  and no other non-terminator ops (`COMP_PE_LOADSTORE_BODY`).
+- **Dataflow Exclusivity**: If any `dataflow` op is present, only `dataflow`
+  and `fabric.yield` are allowed. Interface must be native.
+- **Constant Exclusivity**: Body must contain exactly one `handshake.constant`
+  and no other non-terminator ops (`COMP_PE_CONSTANT_BODY`).
+- **Instance-Only Prohibition**: Body must not consist solely of a single
+  `fabric.instance` (`COMP_PE_INSTANCE_ONLY_BODY`).
+- **Prohibited Operations**: `fabric.switch`, `fabric.temporal_pe`,
+  `fabric.temporal_sw`, `fabric.add_tag`, `fabric.map_tag`, `fabric.del_tag`,
+  and any unlisted `handshake` operations are not allowed.
 
-Partial-consume/partial-produce group: operations that may consume only a
-subset of inputs or produce only a subset of outputs per firing. This group
-includes `handshake.cond_br` and `handshake.mux`.
-
-A `fabric.pe` body must use operations from exactly one of these groups.
-Mixing groups in a single `fabric.pe` is not allowed.
-
-#### Load/Store Exclusivity Rule
-
-If a `fabric.pe` body contains `handshake.load` or `handshake.store`, then the
-body must contain exactly one of these operations and no other non-terminator
-operations. The only allowed body shape is:
-
-- A single `handshake.load` or a single `handshake.store`.
-- The `fabric.yield` terminator.
-
-Any other operation in the body, or a mix of load and store, is a compile-time
-error (`COMP_PE_LOADSTORE_BODY`).
-
-#### Dataflow Exclusivity Rule
-
-If a `fabric.pe` body contains any `dataflow` operation, then the body may
-contain only `dataflow` operations and the terminator `fabric.yield`. Mixing
-`dataflow` with `arith`, `math`, `handshake`, or nested `fabric.pe`/
-`fabric.instance` is not allowed.
-
-Because the `dataflow` dialect does not support tagged types, a dataflow-only
-`fabric.pe` must use the native interface category. Tagged interfaces are
-invalid in this case.
-
-#### Constant Exclusivity Rule
-
-If a `fabric.pe` body contains `handshake.constant`, then the body must contain
-exactly one `handshake.constant` and no other non-terminator operations. The
-only allowed body shape is:
-
-- A single `handshake.constant`.
-- The `fabric.yield` terminator.
-
-This rule exists because `handshake.constant` produces a runtime configurable
-value that must be included in config_mem. Mixing constants with other
-operations would create ambiguous configuration semantics.
-
-Any other operation in the body alongside `handshake.constant` is a compile-time
-error (`COMP_PE_CONSTANT_BODY`).
-
-#### Instance-Only Body Prohibition
-
-A `fabric.pe` body must not consist solely of a single `fabric.instance`
-referencing another `fabric.pe`. The only allowed body shape in this case would
-be:
-
-- A single `fabric.instance` of another `fabric.pe`.
-- The `fabric.yield` terminator.
-
-This pattern is prohibited because it introduces unnecessary hierarchy without
-adding functionality. Users should directly use the referenced PE or
-`fabric.instance` at the call site instead.
-
-A `fabric.pe` with only a single `fabric.instance` is a compile-time error
-(`COMP_PE_INSTANCE_ONLY_BODY`).
-
-### Prohibited Operations Inside `fabric.pe`
-
-The following operations are not allowed inside `fabric.pe`:
-
-- `fabric.switch`
-- `fabric.temporal_pe`
-- `fabric.temporal_sw`
-- `fabric.add_tag`
-- `fabric.map_tag`
-- `fabric.del_tag`
-- Any `handshake` operation not listed in the allowlist
-
-If a software graph contains unsupported handshake operations, it cannot be
-mapped into a `fabric.pe`.
+See [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md) for the complete and
+authoritative specification of these rules.
 
 ### Load/Store PE Semantics
 
@@ -339,10 +294,8 @@ fabric.pe @sitofp(%a: i32) -> (f32)
 
 ## Interaction with `fabric.temporal_pe`
 
-When a `fabric.pe` is used inside a `fabric.temporal_pe`:
-
-- The PE still operates on value-only data in its body.
-- The PE must use a native (non-tagged) interface. Tagged `fabric.pe` is not
-  allowed inside `fabric.temporal_pe` (`COMP_TEMPORAL_PE_TAGGED_PE`).
-- Load/store PEs are forbidden inside `fabric.temporal_pe`. The compiler must
-  emit `COMP_TEMPORAL_PE_LOADSTORE`.
+See [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) for the
+authoritative constraints on `fabric.pe` usage within `fabric.temporal_pe`.
+Key restrictions: the PE must use a native interface
+(`COMP_TEMPORAL_PE_TAGGED_PE`) and load/store PEs are forbidden
+(`COMP_TEMPORAL_PE_LOADSTORE`).

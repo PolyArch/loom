@@ -114,17 +114,10 @@ format rules and supports human-readable and hex formats.
 
 ### Sparse Format Rules
 
-For human-readable entries:
-
-- Slot indices must be strictly ascending.
-- Implicit holes are allowed only when there are no explicit `invalid` entries.
-- If any explicit `invalid` entry is present, all holes must be explicit.
-- Trailing invalid entries may be omitted.
-
-For machine format entries:
-
-- The array is dense by index.
-- Only trailing `0x0` entries may be omitted.
+The sparse format rules are identical to those for `fabric.temporal_pe`
+instruction memory. See
+[spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) for the
+authoritative specification of sparse format rules.
 
 ### Human-Readable Format
 

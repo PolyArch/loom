@@ -733,5 +733,12 @@ llvm.mlir.global appending @llvm.global.annotations() {
 
 These annotations survive the MLIR import and export path without modification.
 
+## Related Documents
+
+- [spec-cli.md](./spec-cli.md): Loom CLI specification (pragma handling passes)
+- [spec-dataflow.md](./spec-dataflow.md): Dataflow dialect (loop-carried semantics)
+- [spec-fabric.md](./spec-fabric.md): Fabric dialect overview
+- [spec-fabric-pe.md](./spec-fabric-pe.md): PE specification (PE body operations)
+
 ## Change log and Reviews
 - Date: 2026-02-03; Reviewer: [Sihao Liu](mailto:sihao@cs.ucla.edu); Note: initial draft.

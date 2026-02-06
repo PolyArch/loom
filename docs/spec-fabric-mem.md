@@ -16,7 +16,46 @@ Compile-time, configuration-time, and runtime error codes are defined in
 
 ## Operation: `fabric.memory` and `fabric.extmemory`
 
-### Syntax
+### Forms
+
+`fabric.memory` and `fabric.extmemory` support two forms:
+
+- **Named form**: defines a reusable memory module with a symbol name.
+- **Inline form**: defines a local memory used directly in the surrounding
+  region.
+
+Both forms share the same semantics and constraints. Named memory modules can
+be instantiated via `fabric.instance`.
+
+### Named Form Syntax
+
+```mlir
+fabric.memory @scratchpad
+    [ldCount = 2, stCount = 2, lsqDepth = 4, private = true]
+    : memref<1024xi32>,
+      (!dataflow.tagged<index, i2>, !dataflow.tagged<index, i2>,
+       !dataflow.tagged<i32, i2>)
+      -> (!dataflow.tagged<i32, i2>,
+          !dataflow.tagged<i1, i2>,
+          !dataflow.tagged<i1, i2>)
+
+fabric.extmemory @dram_if
+    [ldCount = 1, stCount = 1, lsqDepth = 4]
+    : memref<?xf32>, (index, index, f32) -> (f32, none, none)
+```
+
+Named memory modules can be instantiated with `fabric.instance`:
+
+```mlir
+%lddata, %lddone, %stdone = fabric.instance @scratchpad(%ldaddr, %staddr, %stdata)
+    : (!dataflow.tagged<index, i2>, !dataflow.tagged<index, i2>,
+       !dataflow.tagged<i32, i2>)
+      -> (!dataflow.tagged<i32, i2>,
+          !dataflow.tagged<i1, i2>,
+          !dataflow.tagged<i1, i2>)
+```
+
+### Inline Form Syntax
 
 The following syntax sketches the required structure. The operation may omit
 the load or store group when `ldCount == 0` or `stCount == 0`.
@@ -134,16 +173,31 @@ For both load and store:
 
 ### Store Queue Semantics
 
-`lsqDepth` defines the capacity of the internal store queue used to match
-`staddr` and `stdata` by tag when tagged ports are enabled.
+`lsqDepth` defines the capacity of the internal store queue used to pair
+`staddr` and `stdata`.
 
 - If `stCount == 0`, `lsqDepth` must be `0`.
 - If `stCount > 0`, `lsqDepth` must be >= 1.
 
-Stores are paired per tag in FIFO order. If a store request cannot be matched
-because one side (address or data) is missing for a tag and no progress is
-possible, hardware reports `RT_MEMORY_STORE_DEADLOCK`. The default timeout is
-defined in [spec-fabric-error.md](./spec-fabric-error.md).
+**Multi-port (tagged, `stCount > 1`):**
+
+Stores are paired per tag in FIFO order. For each tag, the queue matches
+`staddr` and `stdata` arrivals in the order they are received.
+
+**Single-port (native, `stCount == 1`):**
+
+Since there is only one logical store port (native, no tags), the queue pairs
+`staddr` and `stdata` in strict FIFO order. The first `staddr` matches with
+the first `stdata`, the second with the second, and so on.
+
+**Deadlock detection:**
+
+For both tagged and native modes, if a store request cannot be matched because
+one side (address or data) is missing and no progress is possible, hardware
+reports `RT_MEMORY_STORE_DEADLOCK` after a configurable timeout. This applies
+equally to the native single-port case (e.g., `staddr` waiting for `stdata`
+or vice versa). The default timeout is defined in
+[spec-fabric-error.md](./spec-fabric-error.md).
 
 ### Memory Export (`fabric.memory` only)
 

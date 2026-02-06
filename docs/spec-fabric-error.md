@@ -73,6 +73,72 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE | `operand_buffer_size` is set when `enable_share_operand_buffer = false` |
 | COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING | `operand_buffer_size` is missing when `enable_share_operand_buffer = true` |
 | COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE | `operand_buffer_size` is out of range [1, 8192] |
+| COMP_INSTANCE_ILLEGAL_TARGET | `fabric.instance` references an invalid or unsupported target type (e.g., `fabric.add_tag`, `fabric.map_tag`, `fabric.del_tag`) |
+| COMP_INSTANCE_OPERAND_MISMATCH | `fabric.instance` operand count or types do not match the referenced module signature |
+| COMP_INSTANCE_RESULT_MISMATCH | `fabric.instance` result count or types do not match the referenced module signature |
+| COMP_INSTANCE_UNRESOLVED | `fabric.instance` references a symbol that does not exist |
+| COMP_PE_EMPTY_BODY | A `fabric.pe` body contains no non-terminator operations |
+| COMP_PE_MIXED_INTERFACE | A `fabric.pe` has mixed native and tagged ports |
+| COMP_PE_DATAFLOW_BODY | A `fabric.pe` body contains `dataflow` operations mixed with non-dataflow operations |
+| COMP_PE_MIXED_CONSUMPTION | A `fabric.pe` body mixes full-consume and partial-consume operations |
+| COMP_PE_OUTPUT_TAG_NATIVE | A native `fabric.pe` has `output_tag` attribute (must be absent for native) |
+| COMP_PE_OUTPUT_TAG_MISSING | A tagged non-load/store `fabric.pe` is missing the required `output_tag` attribute |
+
+### Instance Error Examples
+
+```mlir
+// ERROR: COMP_INSTANCE_ILLEGAL_TARGET
+// fabric.add_tag cannot be instantiated; must be used inline
+%t = fabric.instance @my_add_tag(%v) : (i32) -> (!dataflow.tagged<i32, i4>)
+
+// ERROR: COMP_INSTANCE_OPERAND_MISMATCH
+// @alu expects (i32, i32) but only one operand provided
+fabric.pe @alu(%a: i32, %b: i32) -> (i32) { ... }
+%r = fabric.instance @alu(%x) : (i32) -> (i32)
+
+// ERROR: COMP_INSTANCE_UNRESOLVED
+// @nonexistent is not defined
+%r = fabric.instance @nonexistent(%x) : (i32) -> (i32)
+```
+
+### PE Body Error Examples
+
+```mlir
+// ERROR: COMP_PE_EMPTY_BODY
+fabric.pe @empty(%a: i32) -> (i32) {
+  fabric.yield %a : i32  // no non-terminator operations
+}
+
+// ERROR: COMP_PE_MIXED_INTERFACE
+// Mixing native (i32) and tagged ports
+fabric.pe @mixed(%a: i32, %b: !dataflow.tagged<i32, i4>) -> (i32) { ... }
+
+// ERROR: COMP_PE_DATAFLOW_BODY
+// Mixing dataflow with arith
+fabric.pe @bad_mix(%a: i32, %b: i32) -> (i32) {
+  %c = dataflow.invariant %d, %a : i1, i32 -> i32
+  %s = arith.addi %c, %b : i32
+  fabric.yield %s : i32
+}
+
+// ERROR: COMP_PE_MIXED_CONSUMPTION
+// Mixing full-consume (arith.addi) with partial-consume (handshake.mux)
+fabric.pe @bad_consume(%sel: i1, %a: i32, %b: i32) -> (i32) {
+  %sum = arith.addi %a, %b : i32
+  %r = handshake.mux %sel [%sum, %b] : i1, i32, i32 -> i32
+  fabric.yield %r : i32
+}
+
+// ERROR: COMP_PE_OUTPUT_TAG_NATIVE
+// Native PE must not have output_tag
+fabric.pe @bad_tag(%a: i32) -> (i32)
+    [output_tag = [0 : i4]] { ... }
+
+// ERROR: COMP_PE_OUTPUT_TAG_MISSING
+// Tagged non-load/store PE must have output_tag
+fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
+    [latency = [1 : i16, 1 : i16, 1 : i16]] { ... }
+```
 
 ## CFG_ (Runtime Configuration Errors, Hardware Code)
 

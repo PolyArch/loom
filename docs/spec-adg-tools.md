@@ -277,10 +277,11 @@ endif()
 | `VCS_HOME` | Synopsys VCS installation | `/path/to/tools/synopsys/vcs/X-2025.06-SP1` |
 | `VERDI_HOME` | Synopsys Verdi installation | `/path/to/tools/synopsys/verdi/X-2025.06-SP1` |
 | `VERILATOR_ROOT` | Verilator installation | `/path/to/tools/verilator/5.044` |
-| `SYSTEMC_HOME` | SystemC installation | `/path/to/tools/systemc/3.0.2` |
+| `SYSTEMC_HOME` | SystemC installation | `/path/to/tools/systemc/3.0.1` |
 
 ## Related Documents
 
 - [spec-adg.md](./spec-adg.md): ADG overall design
+- [spec-adg-api.md](./spec-adg-api.md): ADGBuilder API reference
 - [spec-adg-sysc.md](./spec-adg-sysc.md): SystemC generation specification
 - [spec-adg-sv.md](./spec-adg-sv.md): SystemVerilog generation specification

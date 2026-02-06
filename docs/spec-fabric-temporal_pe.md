@@ -423,7 +423,8 @@ Example layout for `L = 2`, `N = 1`, `R = 0`, `M = 3`, `O = 2`:
 | valid | tag[2:0] | opcode[1:0] | op0_is_reg | op1_is_reg | res0_tag[2:0] |
 ```
 
-Note: When `R = 0`, operand fields only contain `op_is_reg` (1 bit each).
+Note: When `R = 0`, operand fields are omitted entirely (0 bits each).
+The `op_is_reg` bit is not needed because there are no registers to select.
 
 Complete example bitmap (LSB -> MSB):
 

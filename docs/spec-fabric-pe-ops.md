@@ -17,7 +17,7 @@ This document is the **single source of truth** for operations allowed inside
 - `fabric.pe` (nested)
 - `fabric.instance` (to instantiate named PEs)
 
-## arith Dialect (26 operations)
+## arith Dialect (30 operations)
 
 | Operation | Description |
 |-----------|-------------|
@@ -29,7 +29,9 @@ This document is the **single source of truth** for operations allowed inside
 | `arith.divf` | Floating-point division |
 | `arith.divsi` | Signed integer division |
 | `arith.divui` | Unsigned integer division |
+| `arith.extsi` | Signed integer extension |
 | `arith.extui` | Unsigned integer extension |
+| `arith.fptosi` | Floating-point to signed integer |
 | `arith.fptoui` | Floating-point to unsigned integer |
 | `arith.index_cast` | Index to integer cast |
 | `arith.index_castui` | Index to unsigned integer cast |
@@ -37,6 +39,7 @@ This document is the **single source of truth** for operations allowed inside
 | `arith.muli` | Integer multiplication |
 | `arith.negf` | Floating-point negation |
 | `arith.ori` | Bitwise OR |
+| `arith.remsi` | Signed integer remainder |
 | `arith.remui` | Unsigned integer remainder |
 | `arith.select` | Conditional select |
 | `arith.shli` | Shift left |
@@ -45,6 +48,7 @@ This document is the **single source of truth** for operations allowed inside
 | `arith.subf` | Floating-point subtraction |
 | `arith.subi` | Integer subtraction |
 | `arith.trunci` | Integer truncation |
+| `arith.sitofp` | Signed integer to floating-point |
 | `arith.uitofp` | Unsigned integer to floating-point |
 | `arith.xori` | Bitwise XOR |
 
@@ -69,10 +73,11 @@ This document is the **single source of truth** for operations allowed inside
 | `dataflow.stream` | Index stream generator |
 | `dataflow.gate` | Stream alignment adapter |
 
-**Constraint:** If any `dataflow` operation is present, the PE body must contain
-ONLY `dataflow` operations and `fabric.yield`. Mixing `dataflow` with other
-dialects is not allowed. See [spec-fabric-pe.md](./spec-fabric-pe.md) for the
-Dataflow Exclusivity Rule.
+**Constraint:** A `fabric.pe` body must contain exactly **one** `dataflow`
+operation and the `fabric.yield` terminator. Multiple `dataflow` operations in
+a single PE, mixing `dataflow` with other dialects, and nesting via
+`fabric.instance` are all not allowed. Each dataflow operation maps to a
+dedicated hardware state machine and cannot share a PE with other operations.
 
 ## handshake Dialect (8 operations)
 
@@ -89,6 +94,10 @@ Dataflow Exclusivity Rule.
 
 All other `handshake` operations are **not allowed** inside `fabric.pe`.
 
+The `handshake` dialect is defined by CIRCT, not by Loom. For detailed
+semantics of these operations, see
+[externals/circt/docs/Dialects/Handshake/RationaleHandshake.md](../externals/circt/docs/Dialects/Handshake/RationaleHandshake.md).
+
 ## Exclusivity Rules
 
 Certain operations have exclusivity constraints that restrict what else can
@@ -98,7 +107,7 @@ appear in the same PE body:
 |------|------------|
 | **Load/Store Exclusivity** | If `handshake.load` or `handshake.store` is present, the body must contain exactly one of these and no other non-terminator operations. |
 | **Constant Exclusivity** | If `handshake.constant` is present, the body must contain exactly one `handshake.constant` and no other non-terminator operations. |
-| **Dataflow Exclusivity** | If any `dataflow` operation is present, only `dataflow` operations and `fabric.yield` are allowed. |
+| **Dataflow Exclusivity** | The body must contain exactly one `dataflow` operation and `fabric.yield`. No other operations, no multiple dataflow ops, no `fabric.instance`. |
 | **Instance-Only Prohibition** | A PE body must not consist solely of a single `fabric.instance`. |
 
 ## Homogeneous Consumption Rule

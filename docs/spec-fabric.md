@@ -35,6 +35,11 @@ Within fabric operations, the term **native value type** refers to scalar
 integer, scalar floating-point, or `index` types. Vector, tensor, memref,
 complex, and opaque types are not considered native value types.
 
+The **none type** represents a control-only token with valid/ready signals but
+no data payload. It is used for synchronization tokens such as `ctrl` ports on
+load/store PEs and `lddone`/`stdone` ports on memory operations. See
+[spec-dataflow.md](./spec-dataflow.md) for details on control-only tokens.
+
 ## Hardware Parameters vs Runtime Configuration
 
 Many fabric operations split parameters into two categories:
@@ -179,9 +184,16 @@ Instantiates a named fabric module or hardware component.
   - `fabric.memory`
   - `fabric.extmemory`
 - `fabric.add_tag`, `fabric.map_tag`, and `fabric.del_tag` cannot be
-  instantiated. They must be used inline.
+  instantiated. They must be used inline. Violations raise
+  `COMP_INSTANCE_ILLEGAL_TARGET`.
+- The referenced symbol must exist. Violations raise
+  `COMP_INSTANCE_UNRESOLVED`.
 - Operand count and types must match the referenced module signature.
+  Violations raise `COMP_INSTANCE_OPERAND_MISMATCH`.
 - Result count and types must match the referenced module signature.
+  Violations raise `COMP_INSTANCE_RESULT_MISMATCH`.
+
+See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.
 
 ### Runtime Configuration Overrides
 

@@ -122,7 +122,8 @@ module. Parameters correspond to hardware attributes from the Fabric MLIR spec.
 module fabric_pe #(
     parameter int NUM_INPUTS = 2,
     parameter int NUM_OUTPUTS = 1,
-    parameter int DATA_WIDTH = 32,
+    parameter int IN_DATA_WIDTH [NUM_INPUTS] = '{default: 32},
+    parameter int OUT_DATA_WIDTH [NUM_OUTPUTS] = '{default: 32},
     parameter int TAG_WIDTH = 0,      // 0 means native interface
     parameter int LATENCY_MIN = 1,
     parameter int LATENCY_TYP = 1,
@@ -130,6 +131,11 @@ module fabric_pe #(
     parameter int INTERVAL_MIN = 1,
     parameter int INTERVAL_TYP = 1,
     parameter int INTERVAL_MAX = 1
+    // CONFIG_WIDTH is a derived parameter:
+    // For tagged PE: NUM_OUTPUTS * TAG_WIDTH
+    // For constant PE (native): bitwidth(constant_value)
+    // For constant PE (tagged): bitwidth(constant_value) + TAG_WIDTH
+    // For compute PE (native): 0 (no config)
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -137,17 +143,23 @@ module fabric_pe #(
     // Input ports (valid/ready/data)
     input  logic [NUM_INPUTS-1:0]  in_valid,
     output logic [NUM_INPUTS-1:0]  in_ready,
-    input  logic [NUM_INPUTS-1:0][DATA_WIDTH+TAG_WIDTH-1:0] in_data,
+    input  logic [IN_DATA_WIDTH[0]+TAG_WIDTH-1:0] in_data [NUM_INPUTS],
 
     // Output ports (valid/ready/data)
     output logic [NUM_OUTPUTS-1:0] out_valid,
     input  logic [NUM_OUTPUTS-1:0] out_ready,
-    output logic [NUM_OUTPUTS-1:0][DATA_WIDTH+TAG_WIDTH-1:0] out_data,
+    output logic [OUT_DATA_WIDTH[0]+TAG_WIDTH-1:0] out_data [NUM_OUTPUTS],
 
-    // Configuration (for output_tag when tagged)
-    input  logic [NUM_OUTPUTS-1:0][TAG_WIDTH-1:0] cfg_output_tag
+    // Generic configuration data (derived CONFIG_WIDTH)
+    input  logic [CONFIG_WIDTH-1:0] cfg_data,
+
+    // Error reporting
+    output logic        error_valid,
+    output logic [15:0] error_code
 );
 ```
+
+**Load/Store PE variant:** Load and store PEs use the same `fabric_pe` module with an additional `HARDWARE_TYPE` parameter (0 = TagOverwrite, 1 = TagTransparent). TagTransparent mode requires `LQ_DEPTH` or `SQ_DEPTH` parameters for queue depth. See [spec-fabric-pe.md](./spec-fabric-pe.md).
 
 #### fabric_temporal_pe.sv
 
@@ -225,6 +237,8 @@ module fabric_switch #(
 );
 ```
 
+**Config bit width:** `K` bits, where `K = $countones(CONNECTIVITY)` (number of connected positions). See [spec-fabric-switch.md](./spec-fabric-switch.md).
+
 #### fabric_temporal_sw.sv
 
 ```systemverilog
@@ -258,6 +272,179 @@ module fabric_temporal_sw #(
 );
 ```
 
+#### fabric_memory.sv
+
+```systemverilog
+module fabric_memory #(
+    parameter int LD_COUNT = 1,
+    parameter int ST_COUNT = 1,
+    parameter int DATA_WIDTH = 32,
+    parameter int ADDR_WIDTH = 32,
+    parameter int TAG_WIDTH = 0,       // 0 for single-port (native)
+    parameter int LSQ_DEPTH = 4,
+    parameter bit PRIVATE = 1,
+    parameter int MEM_DEPTH = 256      // Number of elements
+) (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Load ports
+    input  logic [LD_COUNT-1:0] ld_addr_valid,
+    output logic [LD_COUNT-1:0] ld_addr_ready,
+    input  logic [LD_COUNT-1:0][ADDR_WIDTH+TAG_WIDTH-1:0] ld_addr_data,
+
+    output logic [LD_COUNT-1:0] ld_data_valid,
+    input  logic [LD_COUNT-1:0] ld_data_ready,
+    output logic [LD_COUNT-1:0][DATA_WIDTH+TAG_WIDTH-1:0] ld_data_data,
+
+    output logic [LD_COUNT-1:0] ld_done_valid,
+    input  logic [LD_COUNT-1:0] ld_done_ready,
+
+    // Store ports
+    input  logic [ST_COUNT-1:0] st_addr_valid,
+    output logic [ST_COUNT-1:0] st_addr_ready,
+    input  logic [ST_COUNT-1:0][ADDR_WIDTH+TAG_WIDTH-1:0] st_addr_data,
+
+    input  logic [ST_COUNT-1:0] st_data_valid,
+    output logic [ST_COUNT-1:0] st_data_ready,
+    input  logic [ST_COUNT-1:0][DATA_WIDTH+TAG_WIDTH-1:0] st_data_data,
+
+    output logic [ST_COUNT-1:0] st_done_valid,
+    input  logic [ST_COUNT-1:0] st_done_ready,
+
+    // Memory export (when PRIVATE = 0)
+    // Directly connected to module output memref port
+
+    // Error reporting
+    output logic        error_valid,
+    output logic [15:0] error_code
+);
+```
+
+#### fabric_extmemory.sv
+
+```systemverilog
+module fabric_extmemory #(
+    parameter int LD_COUNT = 1,
+    parameter int ST_COUNT = 1,
+    parameter int DATA_WIDTH = 32,
+    parameter int ADDR_WIDTH = 32,
+    parameter int TAG_WIDTH = 0,
+    parameter int LSQ_DEPTH = 4
+) (
+    input  logic clk,
+    input  logic rst_n,
+
+    // External memory interface (AXI Master)
+    // ... AXI master signals for external memory access
+
+    // Load ports (same as fabric_memory)
+    input  logic [LD_COUNT-1:0] ld_addr_valid,
+    output logic [LD_COUNT-1:0] ld_addr_ready,
+    input  logic [LD_COUNT-1:0][ADDR_WIDTH+TAG_WIDTH-1:0] ld_addr_data,
+
+    output logic [LD_COUNT-1:0] ld_data_valid,
+    input  logic [LD_COUNT-1:0] ld_data_ready,
+    output logic [LD_COUNT-1:0][DATA_WIDTH+TAG_WIDTH-1:0] ld_data_data,
+
+    output logic [LD_COUNT-1:0] ld_done_valid,
+    input  logic [LD_COUNT-1:0] ld_done_ready,
+
+    // Store ports (same as fabric_memory)
+    input  logic [ST_COUNT-1:0] st_addr_valid,
+    output logic [ST_COUNT-1:0] st_addr_ready,
+    input  logic [ST_COUNT-1:0][ADDR_WIDTH+TAG_WIDTH-1:0] st_addr_data,
+
+    input  logic [ST_COUNT-1:0] st_data_valid,
+    output logic [ST_COUNT-1:0] st_data_ready,
+    input  logic [ST_COUNT-1:0][DATA_WIDTH+TAG_WIDTH-1:0] st_data_data,
+
+    output logic [ST_COUNT-1:0] st_done_valid,
+    input  logic [ST_COUNT-1:0] st_done_ready,
+
+    // Error reporting
+    output logic        error_valid,
+    output logic [15:0] error_code
+);
+```
+
+#### fabric_add_tag.sv
+
+```systemverilog
+module fabric_add_tag #(
+    parameter int DATA_WIDTH = 32,
+    parameter int TAG_WIDTH = 4
+    // CONFIG_WIDTH = TAG_WIDTH (the tag value to attach)
+) (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Input: native value
+    input  logic                          in_valid,
+    output logic                          in_ready,
+    input  logic [DATA_WIDTH-1:0]         in_data,
+
+    // Output: tagged value
+    output logic                          out_valid,
+    input  logic                          out_ready,
+    output logic [DATA_WIDTH+TAG_WIDTH-1:0] out_data,
+
+    // Configuration: tag value
+    input  logic [TAG_WIDTH-1:0]          cfg_tag
+);
+```
+
+#### fabric_map_tag.sv
+
+```systemverilog
+module fabric_map_tag #(
+    parameter int DATA_WIDTH = 32,
+    parameter int IN_TAG_WIDTH = 4,
+    parameter int OUT_TAG_WIDTH = 4,
+    parameter int TABLE_SIZE = 16
+    // CONFIG_WIDTH = TABLE_SIZE * (1 + IN_TAG_WIDTH + OUT_TAG_WIDTH)
+) (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Input: tagged value with input tag type
+    input  logic                                    in_valid,
+    output logic                                    in_ready,
+    input  logic [DATA_WIDTH+IN_TAG_WIDTH-1:0]      in_data,
+
+    // Output: tagged value with output tag type
+    output logic                                    out_valid,
+    input  logic                                    out_ready,
+    output logic [DATA_WIDTH+OUT_TAG_WIDTH-1:0]     out_data,
+
+    // Configuration: mapping table
+    input  logic [TABLE_SIZE*(1+IN_TAG_WIDTH+OUT_TAG_WIDTH)-1:0] cfg_table,
+
+    // Error reporting
+    output logic        error_valid,
+    output logic [15:0] error_code
+);
+```
+
+#### fabric_del_tag.sv
+
+```systemverilog
+module fabric_del_tag #(
+    parameter int DATA_WIDTH = 32,
+    parameter int TAG_WIDTH = 4
+) (
+    // Input: tagged value
+    input  logic                          in_valid,
+    output logic                          in_ready,
+    input  logic [DATA_WIDTH+TAG_WIDTH-1:0] in_data,
+
+    // Output: native value (tag stripped)
+    output logic                          out_valid,
+    input  logic                          out_ready,
+    output logic [DATA_WIDTH-1:0]         out_data
+);
+```
+
 ## config_mem Design
 
 ### Purpose
@@ -282,23 +469,10 @@ Operations are isolated; no two operations share a word.
 
 ### Address Allocation Rules
 
-Addresses are allocated sequentially based on MLIR operation order:
-
-1. Traverse operations in `fabric.module` in definition order
-2. For each configurable operation:
-   a. Calculate required bits (see formulas below)
-   b. Align to next 32-bit word boundary
-   c. Allocate ceiling(bits/32) words
-   d. Record base address and bit layout
-3. Total depth = last address + 1
-
-**Example allocation:**
-
-| Node | Type | Config Bits | Start Word | Words | End Word |
-|------|------|-------------|------------|-------|----------|
-| node_0 | temporal_pe | 42 | 0 | 2 | 1 |
-| node_3 | switch | 17 | 2 | 1 | 2 |
-| node_7 | temporal_sw | 33 | 3 | 2 | 4 |
+Address allocation follows the authoritative rules defined in
+[spec-adg.md](./spec-adg.md). See the "Address Allocation" section in that
+document for the complete specification including allocation steps, alignment
+rules, and isolation guarantees.
 
 Total config_mem depth: 5 words (20 bytes)
 
@@ -417,7 +591,11 @@ config bits, not individual fields.
 
 ## Streaming Interface Conventions
 
-All streaming connections use a valid/ready handshake protocol:
+All streaming connections use the valid/ready handshake protocol defined in
+[spec-adg.md](./spec-adg.md). See the "Streaming Handshake Protocol" section
+in that document for the authoritative protocol rules.
+
+The SystemVerilog interface definition:
 
 ```systemverilog
 interface fabric_stream #(parameter WIDTH = 32);
@@ -430,36 +608,13 @@ interface fabric_stream #(parameter WIDTH = 32);
 endinterface
 ```
 
-**Handshake rules:**
-- Transfer occurs when `valid && ready` on rising clock edge
-- `valid` must not depend on `ready`
-- `ready` may depend on `valid`
-- Once asserted, `valid` must remain high until transfer
-
-For tagged interfaces, the data signal contains both value and tag:
-
-```
-data[TAG_WIDTH+DATA_WIDTH-1:DATA_WIDTH] = tag
-data[DATA_WIDTH-1:0] = value
-```
-
 ## Error Reporting
 
-Each module propagates errors upward through error signals:
-
-```systemverilog
-output logic        error_valid;
-output logic [15:0] error_code;
-```
-
-Error codes use the values defined in
-[spec-fabric-error.md](./spec-fabric-error.md):
-
-- CFG_ errors (0-7): Configuration errors detected after programming
-- RT_ errors (256+): Runtime execution errors
-
-The top-level module aggregates errors using priority encoding (lower code =
-higher priority). The first error is latched until reset.
+Each module propagates errors upward through `error_valid` and `error_code`
+signals. Error codes and their semantics are defined in
+[spec-fabric-error.md](./spec-fabric-error.md). The top-level module
+aggregates errors using priority encoding (lower code = higher priority).
+The first error is latched until reset.
 
 ## Synthesis Considerations
 

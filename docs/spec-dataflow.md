@@ -482,5 +482,13 @@ Example:
 // after_cond:   [T, T, T, F]
 ```
 
+## Related Documents
+
+- [spec-fabric-pe.md](./spec-fabric-pe.md): Fabric PE specification (dataflow ops inside PEs)
+- [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md): Allowed operations in fabric.pe (includes dataflow ops)
+- [spec-fabric-mem.md](./spec-fabric-mem.md): Memory operations using tagged/native types
+- [spec-fabric.md](./spec-fabric.md): Fabric dialect overview and type conventions
+- [spec-dataflow-error.md](./spec-dataflow-error.md): Dataflow error code definitions
+
 ## Change log and Reviews
 - Date: 2026-02-03; Reviewer: [Sihao Liu](mailto:sihao@cs.ucla.edu); Note: initial draft.

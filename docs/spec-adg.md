@@ -20,6 +20,7 @@ detailed specifications:
 - [spec-adg-api.md](./spec-adg-api.md): ADGBuilder C++ API reference
 - [spec-adg-sysc.md](./spec-adg-sysc.md): SystemC generation specification
 - [spec-adg-sv.md](./spec-adg-sv.md): SystemVerilog generation specification
+- [spec-adg-tools.md](./spec-adg-tools.md): Simulation tools and waveform formats
 
 ## Design Philosophy
 
@@ -307,6 +308,26 @@ Supported topology patterns for `buildMesh`:
 
 See [spec-adg-api.md](./spec-adg-api.md) for complete method signatures.
 
+### Builder Methods Overview
+
+| Method | Creates | Reference |
+|--------|---------|-----------|
+| `newPE(name)` | `fabric.pe` | [spec-adg-api.md](./spec-adg-api.md) |
+| `newConstantPE(name)` | Constant `fabric.pe` | [spec-adg-api.md](./spec-adg-api.md) |
+| `newLoadPE(name)` | Load `fabric.pe` | [spec-adg-api.md](./spec-adg-api.md) |
+| `newStorePE(name)` | Store `fabric.pe` | [spec-adg-api.md](./spec-adg-api.md) |
+| `newTemporalPE(name)` | `fabric.temporal_pe` | [spec-adg-api.md](./spec-adg-api.md) |
+| `newSwitch(name)` | `fabric.switch` | [spec-adg-api.md](./spec-adg-api.md) |
+| `newTemporalSwitch(name)` | `fabric.temporal_sw` | [spec-adg-api.md](./spec-adg-api.md) |
+| `newMemory(name)` | `fabric.memory` | [spec-adg-api.md](./spec-adg-api.md) |
+| `newExtMemory(name)` | `fabric.extmemory` | [spec-adg-api.md](./spec-adg-api.md) |
+| `newAddTag(name)` | `fabric.add_tag` | [spec-adg-api.md](./spec-adg-api.md) |
+| `newMapTag(name)` | `fabric.map_tag` | [spec-adg-api.md](./spec-adg-api.md) |
+| `newDelTag(name)` | `fabric.del_tag` | [spec-adg-api.md](./spec-adg-api.md) |
+| `addModuleInput(name, type)` | Module input port | [spec-adg-api.md](./spec-adg-api.md) |
+| `addModuleOutput(name, type)` | Module output port | [spec-adg-api.md](./spec-adg-api.md) |
+| `injectMLIR(mlir)` | Raw MLIR injection | [spec-adg-api.md](./spec-adg-api.md) |
+
 ## Validation
 
 The `validateADG()` method performs strict validation to minimize errors found
@@ -347,39 +368,8 @@ and the Loom compiler pipeline.
 | `DOTMode::Structure` | Hardware modules and connections only |
 | `DOTMode::Detailed` | Includes runtime config visualization |
 
-#### Node Styles
-
-| Operation | Shape | Fill Color | Notes |
-|-----------|-------|------------|-------|
-| `fabric.pe` | Msquare | darkgreen | White text |
-| `fabric.temporal_pe` | Msquare | purple4 | White text, larger size |
-| `fabric.switch` | diamond | lightgray | Black text |
-| `fabric.temporal_sw` | diamond | slategray | White text |
-| `fabric.memory` | cylinder | skyblue | Black text |
-| `fabric.extmemory` | hexagon | gold | Black text |
-| `fabric.add_tag` | trapezium | lightcyan | Black text |
-| `fabric.map_tag` | trapezium | orchid | Black text |
-| `fabric.del_tag` | invtrapezium | lightcyan | Black text |
-| `fabric.instance` | box | wheat | Uses referenced module color with dashed border |
-| Module input ports | invhouse | lightpink | Black text |
-| Module output ports | house | lightcoral | Black text |
-| Unknown/fallback | star | red | White text, indicates error |
-
-#### Edge Styles
-
-| Connection Type | Line Style | Color | Width |
-|-----------------|------------|-------|-------|
-| Native value | solid | black | 2.0 |
-| Tagged value | dashed | purple | 2.0 |
-| Memref | dotted | blue | 2.0 |
-| Control (none type) | dashed | gray | 1.0 |
-
-#### Unmapped Elements
-
-In `DOTMode::Detailed`, elements without runtime configuration are shown with:
-- Fill color: white
-- Border style: dashed
-- Original border color preserved
+For node styles, edge styles, and unmapped element conventions, see
+[spec-viz-hw.md](./spec-viz-hw.md).
 
 ### SystemC Export
 
@@ -388,6 +378,8 @@ In `DOTMode::Detailed`, elements without runtime configuration are shown with:
 - Top-level module with TLM 2.0 configuration interface
 - config_mem controller using `simple_target_socket`
 - Example testbench with clock generation and VCD tracing
+- Example `_main.cpp` for standalone simulation
+- `_addr.h` C header with address definitions (shared with SV)
 - CMake build configuration
 - `lib/` directory with all parameterized library modules (copied)
 
@@ -395,7 +387,7 @@ The output directory is completely self-contained and does not reference any
 files in the Loom installation. It can be moved, archived, or shared
 independently.
 
-The generated model targets SystemC 3.0.2 and supports two abstraction levels:
+The generated model targets SystemC 3.0.1 and supports two abstraction levels:
 
 | Mode | Macro | Description |
 |------|-------|-------------|
@@ -425,6 +417,28 @@ Both SystemC and SystemVerilog exports are designed to work with standard
 simulation tools. For detailed information on supported simulators (VCS,
 Verilator), waveform formats (FSDB, FST, VCD), and co-simulation workflows,
 see [spec-adg-tools.md](./spec-adg-tools.md).
+
+## Streaming Handshake Protocol
+
+All streaming connections in the generated hardware use a valid/ready
+handshake protocol:
+
+- Transfer occurs when `valid && ready` on the rising clock edge.
+- `valid` must not depend combinationally on `ready`.
+- `ready` may depend combinationally on `valid`.
+- Once asserted, `valid` must remain high until the transfer completes.
+
+For tagged interfaces, the data signal contains both value and tag:
+
+```
+data[TAG_WIDTH+DATA_WIDTH-1:DATA_WIDTH] = tag
+data[DATA_WIDTH-1:0] = value
+```
+
+Both SystemVerilog and SystemC backends implement this protocol.
+See [spec-adg-sv.md](./spec-adg-sv.md) and
+[spec-adg-sysc.md](./spec-adg-sysc.md) for backend-specific interface
+definitions.
 
 ## Error Handling
 
