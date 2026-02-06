@@ -9,7 +9,6 @@
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpImplementation.h"
-#include "mlir/IR/SymbolTable.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 
@@ -211,8 +210,29 @@ static std::optional<FunctionType> getTargetFunctionType(Operation *target) {
   return std::nullopt;
 }
 
+/// Look up an operation by its sym_name attribute, searching from the
+/// outermost parent. Unlike SymbolTable::lookupNearestSymbolFrom, this finds
+/// any op with a sym_name attribute, not just ops with the Symbol trait.
+static Operation *lookupBySymName(Operation *from, StringRef name) {
+  Operation *scope = from;
+  while (scope->getParentOp())
+    scope = scope->getParentOp();
+
+  Operation *result = nullptr;
+  scope->walk([&](Operation *op) -> WalkResult {
+    if (auto attr = op->getAttrOfType<StringAttr>("sym_name")) {
+      if (attr.getValue() == name) {
+        result = op;
+        return WalkResult::interrupt();
+      }
+    }
+    return WalkResult::advance();
+  });
+  return result;
+}
+
 /// Check for cyclic instance references starting from an operation.
-static bool hasCyclicReference(Operation *start, SymbolTableCollection &tables) {
+static bool hasCyclicReference(Operation *start) {
   llvm::SmallPtrSet<Operation *, 8> visited;
   SmallVector<Operation *> worklist;
   worklist.push_back(start);
@@ -223,8 +243,7 @@ static bool hasCyclicReference(Operation *start, SymbolTableCollection &tables) 
       return true;
 
     current->walk([&](InstanceOp inst) {
-      auto *resolved = tables.lookupNearestSymbolFrom(
-          inst.getOperation(), inst.getModuleAttr());
+      auto *resolved = lookupBySymName(inst.getOperation(), inst.getModule());
       if (resolved)
         worklist.push_back(resolved);
     });
@@ -238,18 +257,17 @@ static bool hasCyclicReference(Operation *start, SymbolTableCollection &tables) 
 
 LogicalResult InstanceOp::verify() {
   // COMP_INSTANCE_UNRESOLVED: symbol must exist.
-  SymbolTableCollection tables;
-  auto *target = tables.lookupNearestSymbolFrom(
-      getOperation(), getModuleAttr());
+  auto *target = lookupBySymName(getOperation(), getModule());
   if (!target)
     return emitOpError("[COMP_INSTANCE_UNRESOLVED] referenced symbol '")
            << getModule() << "' does not exist";
 
-  // COMP_INSTANCE_ILLEGAL_TARGET: cannot instantiate tag ops.
-  if (isa<AddTagOp>(target) || isa<MapTagOp>(target) || isa<DelTagOp>(target))
-    return emitOpError("[COMP_INSTANCE_ILLEGAL_TARGET] cannot instantiate "
-                       "tag operation '")
-           << getModule() << "'";
+  // COMP_PE_INSTANCE_ILLEGAL_TARGET: inside fabric.pe, only named fabric.pe
+  // targets are legal.
+  if (getOperation()->getParentOfType<PEOp>() && !isa<PEOp>(target))
+    return emitOpError("[COMP_PE_INSTANCE_ILLEGAL_TARGET] inside fabric.pe, "
+                       "fabric.instance may only target a named fabric.pe; '")
+           << getModule() << "' is not a fabric.pe";
 
   // COMP_INSTANCE_OPERAND_MISMATCH / COMP_INSTANCE_RESULT_MISMATCH:
   // Compare types against target's function_type.
@@ -282,7 +300,7 @@ LogicalResult InstanceOp::verify() {
   }
 
   // COMP_INSTANCE_CYCLIC_REFERENCE: check for cycles.
-  if (hasCyclicReference(target, tables))
+  if (hasCyclicReference(target))
     return emitOpError("[COMP_INSTANCE_CYCLIC_REFERENCE] instance of '")
            << getModule() << "' forms a cyclic reference";
 

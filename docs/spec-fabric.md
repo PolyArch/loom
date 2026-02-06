@@ -188,9 +188,6 @@ Instantiates a named fabric module or hardware component.
   - `fabric.temporal_sw`
   - `fabric.memory`
   - `fabric.extmemory`
-- `fabric.add_tag`, `fabric.map_tag`, and `fabric.del_tag` cannot be
-  instantiated. They must be used inline. Violations raise
-  `COMP_INSTANCE_ILLEGAL_TARGET`.
 - The referenced symbol must exist. Violations raise
   `COMP_INSTANCE_UNRESOLVED`.
 - Operand count and types must match the referenced module signature.
@@ -199,7 +196,8 @@ Instantiates a named fabric module or hardware component.
   Violations raise `COMP_INSTANCE_RESULT_MISMATCH`.
 - Scope-specific restrictions still apply:
   - Inside `fabric.pe`, `fabric.instance` may target only named `fabric.pe`
-    definitions, and cyclic instance graphs are not allowed.
+    definitions. Other target kinds raise `COMP_PE_INSTANCE_ILLEGAL_TARGET`.
+    Cyclic instance graphs are not allowed.
   - See [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md).
 
 See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.

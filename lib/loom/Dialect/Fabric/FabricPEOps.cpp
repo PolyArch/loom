@@ -535,11 +535,11 @@ static ParseResult parseTemporalPEHwParams(OpAsmParser &parser,
 }
 
 ParseResult TemporalPEOp::parse(OpAsmParser &parser, OperationState &result) {
-  // Parse @sym_name (required).
+  // Parse @sym_name (optional).
   StringAttr symName;
-  if (parser.parseSymbolName(symName))
-    return failure();
-  result.addAttribute(getSymNameAttrName(result.name), symName);
+  bool isNamed = succeeded(parser.parseOptionalSymbolName(symName));
+  if (isNamed)
+    result.addAttribute(getSymNameAttrName(result.name), symName);
 
   // Parse argument list: (%arg0: T0, ...).
   SmallVector<OpAsmParser::Argument> entryArgs;
@@ -599,7 +599,9 @@ ParseResult TemporalPEOp::parse(OpAsmParser &parser, OperationState &result) {
 void TemporalPEOp::print(OpAsmPrinter &p) {
   auto fnType = getFunctionType();
 
-  p << " @" << getSymName() << "(";
+  if (getSymName())
+    p << " @" << *getSymName();
+  p << "(";
   Block &entryBlock = getBody().front();
   auto inputTypes = fnType.getInputs();
   for (unsigned i = 0; i < entryBlock.getNumArguments(); ++i) {

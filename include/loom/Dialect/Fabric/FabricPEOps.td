@@ -74,8 +74,7 @@ def Fabric_PEOp : Fabric_Op<"pe", [
 
 def Fabric_TemporalPEOp : Fabric_Op<"temporal_pe", [
     SingleBlock,
-    SingleBlockImplicitTerminator<"YieldOp">,
-    Symbol
+    SingleBlockImplicitTerminator<"YieldOp">
 ]> {
   let summary = "Time-multiplexed processing element";
   let description = [{
@@ -85,7 +84,7 @@ def Fabric_TemporalPEOp : Fabric_Op<"temporal_pe", [
   }];
 
   let arguments = (ins
-    SymbolNameAttr:$sym_name,
+    OptionalAttr<SymbolNameAttr>:$sym_name,
     TypeAttrOf<FunctionType>:$function_type,
     I64Attr:$num_register,
     I64Attr:$num_instruction,

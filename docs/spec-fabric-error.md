@@ -79,7 +79,7 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE | `operand_buffer_size` is set when `enable_share_operand_buffer = false` |
 | COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING | `operand_buffer_size` is missing when `enable_share_operand_buffer = true` |
 | COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE | `operand_buffer_size` is out of range [1, 8192] |
-| COMP_INSTANCE_ILLEGAL_TARGET | `fabric.instance` references an invalid or unsupported target type (e.g., `fabric.add_tag`, `fabric.map_tag`, `fabric.del_tag`) |
+| COMP_PE_INSTANCE_ILLEGAL_TARGET | Inside `fabric.pe`, `fabric.instance` targets a non-PE operation (only named `fabric.pe` targets are legal) |
 | COMP_INSTANCE_OPERAND_MISMATCH | `fabric.instance` operand count or types do not match the referenced module signature |
 | COMP_INSTANCE_RESULT_MISMATCH | `fabric.instance` result count or types do not match the referenced module signature |
 | COMP_INSTANCE_UNRESOLVED | `fabric.instance` references a symbol that does not exist |
@@ -94,9 +94,18 @@ RT_ error codes start at 256 and increase sequentially.
 ### Instance Error Examples
 
 ```mlir
-// ERROR: COMP_INSTANCE_ILLEGAL_TARGET
-// fabric.add_tag cannot be instantiated; must be used inline
-%t = fabric.instance @my_add_tag(%v) : (i32) -> (!dataflow.tagged<i32, i4>)
+// ERROR: COMP_PE_INSTANCE_ILLEGAL_TARGET
+// Inside fabric.pe, only named fabric.pe targets are legal.
+fabric.module @inner(%a: i32, %b: i32) -> (i32) { ... }
+fabric.module @top(%a: i32, %b: i32, %c: i32) -> (i32) {
+  %r = fabric.pe %a, %b, %c : (i32, i32, i32) -> (i32) {
+  ^bb0(%x: i32, %y: i32, %z: i32):
+    %out = fabric.instance @inner(%x, %y) : (i32, i32) -> (i32)  // illegal
+    %s = arith.addi %out, %z : i32
+    fabric.yield %s : i32
+  }
+  fabric.yield %r : i32
+}
 
 // ERROR: COMP_INSTANCE_OPERAND_MISMATCH
 // @alu expects (i32, i32) but only one operand provided

@@ -124,7 +124,7 @@ appear in the same PE body:
 Additional `fabric.instance` constraints inside `fabric.pe` bodies:
 
 - Target must be a named `fabric.pe`. Other target kinds are illegal in this
-  scope and raise `COMP_INSTANCE_ILLEGAL_TARGET`.
+  scope and raise `COMP_PE_INSTANCE_ILLEGAL_TARGET`.
 - The PE-local instance graph must be acyclic. Direct self-reference and
   indirect cycles (for example, `A -> B -> A`) raise
   `COMP_INSTANCE_CYCLIC_REFERENCE`.
