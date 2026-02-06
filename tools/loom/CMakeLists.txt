@@ -103,6 +103,9 @@ add_custom_target(check-loom-app
 )
 
 add_custom_target(check-loom-fabric-tdd
+  COMMAND "${CMAKE_COMMAND}"
+    -DSOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    -P "${CMAKE_SOURCE_DIR}/tools/loom/clean-tdd-output.cmake"
   COMMAND python3 "${LLVM_SOURCE_DIR}/utils/lit/lit.py" -v
     "${CMAKE_SOURCE_DIR}/tests/fabric/tdd"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
