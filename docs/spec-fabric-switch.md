@@ -27,6 +27,7 @@ output based on a fixed physical connectivity table and a runtime route table.
 - Type: `DenseI8ArrayAttr`.
 - Values: `0` or `1`.
 - Shape: `num_outputs * num_inputs` in row-major order.
+- Indexing convention: `connectivity_table[output][input]`.
 - Entry `1` means a physical connection exists from input to output.
 - Entry `0` means no physical connection exists.
 
@@ -37,8 +38,11 @@ output based on a fixed physical connectivity table and a runtime route table.
 - Length: equal to the number of `1` entries in `connectivity_table`.
 - Ordering: entries correspond to `1` positions in `connectivity_table`,
   scanned in row-major order by output then input.
+- Config bit width: `K` bits, where `K = popcount(connectivity_table)`.
 
 A `1` in `route_table` enables a connected path. A `0` disables it.
+For the formal `config_mem` definition and packing rules, see
+[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
 
 ### Defaults
 

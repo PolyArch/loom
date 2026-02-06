@@ -129,6 +129,9 @@ The ordering is:
 
 The number of FU types defined in the body is independent of
 `num_instruction`. Instruction slots select among FU types via the opcode.
+For the formal `config_mem` definition (32-bit word width, depth calculation,
+and per-module packing/alignment), see
+[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
 
 ### Tag Matching Semantics
 
@@ -417,10 +420,12 @@ Operands and results are laid out by increasing index from LSB to MSB:
 - `result[0]` follows the operand block.
 - `result[N-1]` is closest to the MSB.
 
+#### Base Example: No Registers (`R = 0`)
+
 Example layout for `L = 2`, `N = 1`, `R = 0`, `M = 3`, `O = 2`:
 
 ```
-| valid | tag[2:0] | opcode[1:0] | op0_is_reg | op1_is_reg | res0_tag[2:0] |
+| valid | tag[2:0] | opcode[1:0] | res0_tag[2:0] |
 ```
 
 Note: When `R = 0`, operand fields are omitted entirely (0 bits each).
@@ -436,24 +441,79 @@ Example instruction:
 - `valid = 1`
 - `tag = 3` (`0011`)
 - `opcode = 1`
-- `op0_is_reg = 0` (from input)
-- `op1_is_reg = 0` (from input)
 - `res0_tag = 3` (`0011`)
 
 Bitmap (fields separated by `|`):
 
 ```
-1 | 0011 | 1 | 0 | 0 | 0011
+1 | 0011 | 1 | 0011
 ```
 
 Hex encoding (10 bits, LSB -> MSB):
 
 ```
-0x0C7
+0x0E7
 ```
 
 Note: Operand values (`op_valid`, `op_value`) are stored in the separate
 operand buffer, not in `instruction_mem`.
+
+#### Complex Example 1: Registers and Multiple Results (`R > 0`, `O > 0`)
+
+Parameters:
+- `L = 2`, `N = 2`, `R = 4`, `M = 3`, `num_fu_types = 4` (`O = 2`)
+- `operand_config_width = 1 + log2Ceil(4) = 3`
+- `result_width = (1 + log2Ceil(4)) + 3 = 6`
+- `instruction_width = 1 + 3 + 2 + 2*3 + 2*6 = 24`
+
+Example instruction:
+- `valid = 1`
+- `tag = 5` (`101`)
+- `opcode = 2` (`10`)
+- `operand[0] = reg(2)` -> `op0_is_reg = 1`, `op0_reg_idx = 10`
+- `operand[1] = in(1)` -> `op1_is_reg = 0`, `op1_reg_idx = 00` (ignored)
+- `result[0] = out(0, tag=6)` -> `res0_is_reg = 0`, `res0_reg_idx = 00`, `res0_tag = 110`
+- `result[1] = reg(3)` -> `res1_is_reg = 1`, `res1_reg_idx = 11`, `res1_tag = 000`
+
+Bitmap (LSB -> MSB):
+
+```
+1 | 101 | 10 | 1 10 | 0 00 | 0 00 110 | 1 11 000
+```
+
+Hex encoding (24-bit slot):
+
+```
+0x1F016B
+```
+
+#### Complex Example 2: Single FU Type with Three Operands (`O = 0`)
+
+Parameters:
+- `L = 3`, `N = 1`, `R = 2`, `M = 4`, `num_fu_types = 1` (`O = 0`, opcode omitted)
+- `operand_config_width = 1 + log2Ceil(2) = 2`
+- `result_width = (1 + log2Ceil(2)) + 4 = 6`
+- `instruction_width = 1 + 4 + 0 + 3*2 + 1*6 = 17`
+
+Example instruction:
+- `valid = 1`
+- `tag = 9` (`1001`)
+- `operand[0] = in(0)` -> `op0_is_reg = 0`, `op0_reg_idx = 0` (ignored)
+- `operand[1] = reg(1)` -> `op1_is_reg = 1`, `op1_reg_idx = 1`
+- `operand[2] = reg(0)` -> `op2_is_reg = 1`, `op2_reg_idx = 0`
+- `result[0] = out(0, tag=12)` -> `res0_is_reg = 0`, `res0_reg_idx = 0`, `res0_tag = 1100`
+
+Bitmap (LSB -> MSB):
+
+```
+1 | 1001 | 0 0 | 1 1 | 1 0 | 0 0 1100
+```
+
+Hex encoding (17-bit slot):
+
+```
+0x18393
+```
 
 ### Width Formulas
 

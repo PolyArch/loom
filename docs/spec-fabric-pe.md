@@ -118,6 +118,9 @@ Load/store PEs override the default `output_tag` rules. See
 This attribute is a direct consequence of the Constant Exclusivity Rule: if a
 `fabric.pe` contains `handshake.constant`, it must be the only non-terminator
 operation. Therefore, each PE can have at most one `constant_value`.
+For the formal `config_mem` definition (32-bit word width, depth calculation,
+and field packing rules), see
+[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
 
 #### `lqDepth` and `sqDepth` (hardware parameters)
 

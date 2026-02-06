@@ -563,6 +563,9 @@ Each instance gets a **separate config_mem address region**. If a PE requires
 32 config bits and you create 4 instances, the total config_mem usage is
 4 x 32 = 128 bits. Addresses are allocated sequentially in MLIR operation
 order at export time.
+For the formal config memory definition (fixed 32-bit words, depth
+calculation, and alignment rules), see
+[spec-fabric-config_mem.md](../temp/spec-fabric-config_mem.md).
 
 **Example:**
 ```cpp
@@ -659,18 +662,22 @@ Constructs a regular grid of PEs and switches.
 For a 2x2 mesh with `Topology::Mesh`:
 
 ```
-[0,0]              [0,1]
-PE -- SW -------- PE -- SW
-      |                 |
-      |                 |
-PE -- SW -------- PE -- SW
-[1,0]              [1,1]
+[0,0] PE[0,0]                [0,2] PE[0,1]
+
+        [1,1] SW[0,0]                [1,3] SW[0,1]
+
+[2,0] PE[1,0]                [2,2] PE[1,1]
+
+        [3,1] SW[1,0]                [3,3] SW[1,1]
 ```
 
-Each grid point `[row, col]` contains one PE and one SW. The `peGrid` and
-`swGrid` arrays use independent coordinate spaces: `peGrid[r][c]` and
-`swGrid[r][c]` refer to different modules co-located at grid point `[r, c]`.
-Instance names encode both type and position (e.g., `pe_0_0`, `sw_0_0`).
+`buildMesh` uses a single coordinate system with no overlapping modules:
+
+- `peGrid[r][c]` maps to coordinate `(2*r, 2*c)`
+- `swGrid[r][c]` maps to coordinate `(2*r + 1, 2*c + 1)`
+
+Instance names encode module type and logical grid index
+(e.g., `pe_0_0`, `sw_0_0`).
 
 **Switch port ordering:**
 
