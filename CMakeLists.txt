@@ -1,5 +1,21 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Prefer clang/clang++ if available and no compiler was explicitly specified.
+if(NOT DEFINED CMAKE_C_COMPILER AND NOT DEFINED ENV{CC})
+  find_program(_LOOM_CLANG clang)
+  if(_LOOM_CLANG)
+    set(CMAKE_C_COMPILER "${_LOOM_CLANG}")
+  endif()
+  unset(_LOOM_CLANG CACHE)
+endif()
+if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
+  find_program(_LOOM_CLANGXX clang++)
+  if(_LOOM_CLANGXX)
+    set(CMAKE_CXX_COMPILER "${_LOOM_CLANGXX}")
+  endif()
+  unset(_LOOM_CLANGXX CACHE)
+endif()
+
 project(loom LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
