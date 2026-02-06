@@ -19,7 +19,7 @@ CFG_ errors are detected after writing runtime configuration registers or
 tables, before or during execution, and do not require dataflow execution to
 surface.
 
-CFG_ error codes currently use the range 0-8. Codes 9-255 are reserved for
+CFG_ error codes currently use the range 0-10. Codes 11-255 are reserved for
 future use.
 
 RT_ error codes start at 256 and increase sequentially.
@@ -41,7 +41,7 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_TEMPORAL_SW_TOO_MANY_SLOTS | `route_table` entries exceed `num_route_table` |
 | COMP_TEMPORAL_SW_ROUTE_ILLEGAL | A route entry targets a disconnected position |
 | COMP_TEMPORAL_PE_NUM_INSTRUCTION | `num_instruction` is less than 1 |
-| COMP_TEMPORAL_PE_NUM_INSTANCE | `reg_fifo_depth` is 0 when `num_register > 0`, or nonzero when `num_register = 0` |
+| COMP_TEMPORAL_PE_REG_FIFO_DEPTH | `reg_fifo_depth` is 0 when `num_register > 0`, or nonzero when `num_register = 0` |
 | COMP_TEMPORAL_PE_EMPTY_BODY | A `fabric.temporal_pe` contains no FU definitions in its body |
 | COMP_TEMPORAL_PE_REG_DISABLED | An instruction uses `reg(idx)` when `num_register = 0` |
 | COMP_TEMPORAL_PE_SRC_MISMATCH | A human-readable source uses `in(j)` where `j` is not the operand position |
@@ -52,6 +52,7 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_MAP_TAG_TABLE_LENGTH | `table` length does not equal `table_size` |
 | COMP_MAP_TAG_VALUE_TYPE_MISMATCH | `fabric.map_tag` output value type does not match input value type |
 | COMP_ADD_TAG_VALUE_TYPE_MISMATCH | `fabric.add_tag` result value type does not match input type |
+| COMP_ADD_TAG_VALUE_OVERFLOW | `fabric.add_tag` configured `tag` value exceeds the representable range of the output tag type |
 | COMP_DEL_TAG_VALUE_TYPE_MISMATCH | `fabric.del_tag` output type does not match input tagged value type |
 | COMP_TAG_WIDTH_RANGE | Tag type width is outside the allowed range defined by `!dataflow.tagged` (`i1` to `i16`) |
 | COMP_MEMORY_PORTS_EMPTY | `ldCount == 0` and `stCount == 0` |
@@ -65,6 +66,7 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_MEMORY_STATIC_REQUIRED | `fabric.memory` uses a dynamic memref type |
 | COMP_MEMORY_PRIVATE_OUTPUT | `fabric.module` yields a memref not produced by `fabric.memory` with `private = false` |
 | COMP_MEMORY_EXTMEM_BINDING | `fabric.extmemory` memref operand is not a `fabric.module` memref input |
+| COMP_MEMORY_EXTMEM_PRIVATE | `private` is supplied on `fabric.extmemory` |
 | COMP_FABRIC_TYPE_MISMATCH | A connection inside `fabric.module` uses mismatched types or bit widths without an explicit conversion |
 | COMP_MODULE_PORT_ORDER | `fabric.module` ports are not in the required order: memref*, native*, tagged* |
 | COMP_MODULE_EMPTY_BODY | `fabric.module` body contains no operations other than the terminator |
@@ -81,6 +83,7 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_INSTANCE_OPERAND_MISMATCH | `fabric.instance` operand count or types do not match the referenced module signature |
 | COMP_INSTANCE_RESULT_MISMATCH | `fabric.instance` result count or types do not match the referenced module signature |
 | COMP_INSTANCE_UNRESOLVED | `fabric.instance` references a symbol that does not exist |
+| COMP_INSTANCE_CYCLIC_REFERENCE | `fabric.instance` forms a cyclic reference in a scope that requires acyclic instantiation (for example, inside `fabric.pe`) |
 | COMP_PE_EMPTY_BODY | A `fabric.pe` body contains no non-terminator operations |
 | COMP_PE_MIXED_INTERFACE | A `fabric.pe` has mixed native and tagged ports |
 | COMP_PE_DATAFLOW_BODY | A `fabric.pe` dataflow body violates dataflow exclusivity: mixed dataflow/non-dataflow ops, multiple dataflow ops, or any `fabric.instance` nesting |
@@ -151,12 +154,14 @@ fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
 | 0 | OK | No error |
 | 1 | CFG_SWITCH_ROUTE_MULTI_OUT | A single output routes multiple inputs |
 | 2 | CFG_SWITCH_ROUTE_MULTI_IN | A single input routes multiple outputs |
-| 3 | CFG_TEMPORAL_SW_DUP_TAG | Duplicate tags in `route_table` slots |
-| 4 | CFG_TEMPORAL_PE_DUP_TAG | Duplicate tags in `instruction_mem` |
-| 5 | CFG_TEMPORAL_PE_ILLEGAL_REG | Register index encodes a value >= `num_register` |
-| 6 | CFG_TEMPORAL_PE_REG_TAG_NONZERO | `res_tag != 0` when writing a register |
-| 7 | CFG_MAP_TAG_DUP_TAG | `map_tag` has multiple valid entries with the same `src_tag` |
-| 8 | CFG_PE_STREAM_CONT_COND_ONEHOT | `dataflow.stream` `cont_cond_sel` register is not one-hot (`<`, `<=`, `>`, `>=`, `!=`) |
+| 3 | CFG_TEMPORAL_SW_ROUTE_MULTI_OUT | In one temporal-sw slot, a single output routes multiple inputs |
+| 4 | CFG_TEMPORAL_SW_ROUTE_MULTI_IN | In one temporal-sw slot, a single input routes multiple outputs |
+| 5 | CFG_TEMPORAL_SW_DUP_TAG | Duplicate tags in `route_table` slots |
+| 6 | CFG_TEMPORAL_PE_DUP_TAG | Duplicate tags in `instruction_mem` |
+| 7 | CFG_TEMPORAL_PE_ILLEGAL_REG | Register index encodes a value >= `num_register` |
+| 8 | CFG_TEMPORAL_PE_REG_TAG_NONZERO | `res_tag != 0` when writing a register |
+| 9 | CFG_MAP_TAG_DUP_TAG | `map_tag` has multiple valid entries with the same `src_tag` |
+| 10 | CFG_PE_STREAM_CONT_COND_ONEHOT | `dataflow.stream` `cont_cond_sel` register is not one-hot (`<`, `<=`, `>`, `>=`, `!=`) |
 
 ## RT_ (Runtime Execution Errors, Hardware Code)
 

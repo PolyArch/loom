@@ -33,6 +33,10 @@ A directed graph derived from `fabric.module` where:
 - Each node represents one hardware operation instance or module boundary port.
 - Each edge represents one legal physical data path segment.
 - Node and edge attributes carry capacities and type constraints from Fabric.
+- `fabric.memory` and `fabric.extmemory` are explicit hardware-graph nodes.
+  They are fixed resources (their physical positions are not moved by
+  placement), but they participate in routing, capacity, and configuration
+  validity checks.
 
 Fabric semantics remain authoritative in [spec-fabric.md](./spec-fabric.md).
 
@@ -112,11 +116,14 @@ Each mapped software edge path must:
 - Respect directionality
 - Respect per-edge sharing or exclusivity constraints
 - Connect the mapped source and destination ports
+- Preserve required memory control relationships, including legal wiring of
+  memory done tokens (`lddone`, `stdone`) to their consuming control paths
 
 ### C4: Capacity Constraints
 
 Resources with bounded capacity (ports, buffers, route choices, temporal slots,
-registers) must not exceed legal usage.
+registers, memory ports, and memory queue resources) must not exceed legal
+usage.
 
 ### C5: Temporal Constraints
 
@@ -135,6 +142,7 @@ bit width, and error semantics:
 
 - [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
 - [spec-fabric-pe.md](./spec-fabric-pe.md)
+- [spec-fabric-mem.md](./spec-fabric-mem.md)
 - [spec-fabric-switch.md](./spec-fabric-switch.md)
 - [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md)
 - [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md)
@@ -183,3 +191,10 @@ This two-level model avoids coupling mapping logic to physical address offsets.
 - [spec-mapper-cost.md](./spec-mapper-cost.md)
 - [spec-fabric.md](./spec-fabric.md)
 - [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
+- [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md)
+- [spec-fabric-pe.md](./spec-fabric-pe.md)
+- [spec-fabric-mem.md](./spec-fabric-mem.md)
+- [spec-fabric-switch.md](./spec-fabric-switch.md)
+- [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md)
+- [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md)
+- [spec-fabric-tag.md](./spec-fabric-tag.md)

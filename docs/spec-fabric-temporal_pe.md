@@ -100,7 +100,7 @@ The ordering is:
 - FIFO depth for each internal register.
 - Must be 0 if `num_register` is 0.
 - Must be at least 1 if `num_register` is greater than 0.
-- Violations are compile-time errors: `COMP_TEMPORAL_PE_NUM_INSTANCE`. See
+- Violations are compile-time errors: `COMP_TEMPORAL_PE_REG_FIFO_DEPTH`. See
   [spec-fabric-error.md](./spec-fabric-error.md).
 
 #### `enable_share_operand_buffer` (hardware parameter)

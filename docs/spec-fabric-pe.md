@@ -86,6 +86,9 @@ This can be viewed as implicit `fabric.del_tag` at inputs and implicit
 
 `latency = [0, 0, 0]` denotes a combinational PE.
 
+For load/store PEs, latency is fixed by hardware implementation and is not a
+user-settable attribute.
+
 #### `interval` (hardware parameter)
 
 - Type: `ArrayAttr` of three `i16` values `[min, typical, max]`.
@@ -94,6 +97,9 @@ This can be viewed as implicit `fabric.del_tag` at inputs and implicit
 - Semantics: cycles between consecutive input consumptions.
 
 `interval = [1, 1, 1]` denotes a fully pipelined PE.
+
+For load/store PEs, interval is fixed by hardware implementation and is not a
+user-settable attribute.
 
 #### `output_tag` (runtime configuration parameter)
 
@@ -118,6 +124,9 @@ Load/store PEs override the default `output_tag` rules. See
 This attribute is a direct consequence of the Constant Exclusivity Rule: if a
 `fabric.pe` contains `handshake.constant`, it must be the only non-terminator
 operation. Therefore, each PE can have at most one `constant_value`.
+Constant PEs must declare exactly one output port. Multi-consumer fanout must
+be expressed with external `handshake.fork` or `fabric.switch`, not by adding
+multiple constant outputs.
 For the formal `config_mem` definition (32-bit word width, depth calculation,
 and field packing rules), see
 [spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
@@ -167,15 +176,8 @@ See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.
 
 ### Allowed Operations Inside `fabric.pe`
 
-See [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md) for the complete list of
-allowed operations. This includes operations from:
-
-- `arith` (30 operations)
-- `math` (7 operations)
-- `dataflow` (4 operations, with exclusivity constraint)
-- `handshake` (8 operations, with exclusivity constraints)
-- `fabric.pe` (nested)
-- `fabric.instance` (to instantiate named PEs)
+See [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md) for the authoritative
+allowlist and exclusivity rules. This document does not duplicate that list.
 
 #### Body Constraints and Exclusivity Rules
 
@@ -193,6 +195,9 @@ authoritatively in [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md), and their
 memory interaction semantics are defined in
 [spec-fabric-mem.md](./spec-fabric-mem.md). Violations of load/store body
 constraints raise `COMP_PE_LOADSTORE_BODY`.
+
+Load/store PEs use fixed hardware timing. Their latency and interval are not
+user-configurable attributes.
 
 #### Port Roles
 

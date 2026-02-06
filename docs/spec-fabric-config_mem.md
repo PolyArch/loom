@@ -49,10 +49,11 @@ parameters:
 
 | Module Type | CONFIG_WIDTH Formula |
 |-------------|---------------------|
-| `fabric.pe` (tagged, compute) | `NUM_OUTPUTS * TAG_WIDTH` |
+| `fabric.pe` (tagged, non-constant non-load/store) | `NUM_OUTPUTS * TAG_WIDTH` |
 | `fabric.pe` (constant, native) | `bitwidth(constant_value_type)` |
-| `fabric.pe` (constant, tagged) | `bitwidth(constant_value_type) + TAG_WIDTH` |
+| `fabric.pe` (constant, tagged, `NUM_OUTPUTS = 1`) | `bitwidth(constant_value_type) + TAG_WIDTH` |
 | `fabric.pe` (dataflow.stream, native) | `5` (`cont_cond_sel`, one-hot [`<`, `<=`, `>`, `>=`, `!=`]) |
+| `fabric.pe` (dataflow.stream, tagged) | `NUM_OUTPUTS * TAG_WIDTH + 5` |
 | `fabric.pe` (load/store, TagOverwrite + tagged) | `TAG_WIDTH` (single shared `output_tag` for all outputs) |
 | `fabric.pe` (load/store, TagOverwrite + native) | 0 |
 | `fabric.pe` (load/store, TagTransparent) | 0 |
@@ -102,10 +103,22 @@ Fields within a module's config_mem allocation are packed continuously
 (LSB-first). The 32-bit word alignment applies to the entire module's total
 config bits, not individual fields.
 
-For `fabric.pe` with constant tagged interface, packing order is:
+General field packing rule:
 
-- Lower bits: `constant_value`
-- Upper bits: `output_tag`
+- Fields are packed in spec-defined field order, LSB-first.
+- Array fields are packed by ascending index (index 0 in lower bits).
+- Later fields occupy higher bit positions than earlier fields.
+
+Examples:
+
+- `fabric.pe` constant tagged (`NUM_OUTPUTS = 1`):
+  - Lower bits: `constant_value`
+  - Upper bits: `output_tag`
+- `fabric.pe` tagged non-constant non-load/store:
+  - `output_tag[0]` is lowest, then `output_tag[1]`, ..., `output_tag[N-1]`
+- `fabric.pe` dataflow.stream tagged:
+  - Lower bits: `output_tag` array (ascending output index)
+  - Upper bits: 5-bit `cont_cond_sel`
 
 ## Access Protocol
 

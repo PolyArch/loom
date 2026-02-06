@@ -95,6 +95,7 @@ When `--as-clang` is specified:
 - If `-c` is present: produces object file only
 - If `-S` is present: produces assembly only
 - Otherwise: produces linked executable
+- `-o` is still required.
 
 **Differences from standard mode:**
 
@@ -102,7 +103,7 @@ When `--as-clang` is specified:
 |--------|---------------|-------------------|
 | MLIR generation | Yes | No |
 | Linker flags | Ignored | Processed |
-| Output naming | `-o` required | `<stem>` or `a.out` when `-o` is omitted |
+| Output naming | `-o` required | `-o` required |
 | ADG library | Not linked | Auto-linked |
 
 **Combining with other options:**
@@ -253,3 +254,9 @@ Forward references:
 - [spec-dataflow.md](./spec-dataflow.md): Dataflow dialect (lowering target)
 - [spec-fabric.md](./spec-fabric.md): Fabric dialect overview
 - [spec-mapper.md](./spec-mapper.md): Mapper place-and-route bridge from Handshake to Fabric
+- [spec-mapper-model.md](./spec-mapper-model.md): Mapper data model and hard constraints
+- [spec-mapper-algorithm.md](./spec-mapper-algorithm.md): Mapper algorithm contract
+- [spec-adg.md](./spec-adg.md): ADG stage definition and outputs
+- [spec-adg-sysc.md](./spec-adg-sysc.md): SystemC backend artifacts
+- [spec-adg-sv.md](./spec-adg-sv.md): SystemVerilog backend artifacts
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md): Runtime configuration memory definition

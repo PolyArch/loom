@@ -15,7 +15,7 @@ This document is the **single source of truth** for operations allowed inside
 - `dataflow` (restricted subset)
 - `handshake` (restricted subset)
 - `fabric.pe` (nested)
-- `fabric.instance` (to instantiate named PEs)
+- `fabric.instance` (to instantiate named `fabric.pe` only)
 
 ## arith Dialect (30 operations)
 
@@ -86,6 +86,10 @@ Violations raise `COMP_PE_DATAFLOW_BODY`.
 `<`, `<=`, `>`, `>=`, `!=`). Non-one-hot values (all zero or multiple set bits)
 raise `CFG_PE_STREAM_CONT_COND_ONEHOT`.
 
+All four dataflow operations (`carry`, `invariant`, `stream`, `gate`) may use
+either native or tagged PE interfaces. Only `dataflow.stream` adds extra
+runtime configuration bits (`cont_cond_sel`).
+
 ## handshake Dialect (8 operations)
 
 | Operation | Description |
@@ -112,10 +116,18 @@ appear in the same PE body:
 
 | Rule | Constraint |
 |------|------------|
-| **Load/Store Exclusivity** | If `handshake.load` or `handshake.store` is present, the body must contain exactly one of these and no other non-terminator operations. |
-| **Constant Exclusivity** | If `handshake.constant` is present, the body must contain exactly one `handshake.constant` and no other non-terminator operations. |
+| **Load/Store Exclusivity** | If `handshake.load` or `handshake.store` is present, the body must contain exactly one of these and no other non-terminator operations. Violations raise `COMP_PE_LOADSTORE_BODY`. |
+| **Constant Exclusivity** | If `handshake.constant` is present, the body must contain exactly one `handshake.constant` and no other non-terminator operations. Violations raise `COMP_PE_CONSTANT_BODY`. |
 | **Dataflow Exclusivity** | The body must contain exactly one `dataflow` operation and `fabric.yield`. No other operations, no multiple dataflow ops, no `fabric.instance`. |
-| **Instance-Only Prohibition** | A PE body must not consist solely of a single `fabric.instance`. |
+| **Instance-Only Prohibition** | A PE body must not consist solely of a single `fabric.instance`. Violations raise `COMP_PE_INSTANCE_ONLY_BODY`. |
+
+Additional `fabric.instance` constraints inside `fabric.pe` bodies:
+
+- Target must be a named `fabric.pe`. Other target kinds are illegal in this
+  scope and raise `COMP_INSTANCE_ILLEGAL_TARGET`.
+- The PE-local instance graph must be acyclic. Direct self-reference and
+  indirect cycles (for example, `A -> B -> A`) raise
+  `COMP_INSTANCE_CYCLIC_REFERENCE`.
 
 ## Homogeneous Consumption Rule
 
@@ -134,6 +146,10 @@ A `fabric.pe` body must use operations from exactly one consumption group:
 Mixing operations from different groups is not allowed.
 Violations raise `COMP_PE_MIXED_CONSUMPTION`.
 
+`dataflow.{carry,invariant,stream,gate}` are exempt from this grouping rule.
+They are handled by Dataflow Exclusivity and therefore never participate in
+cross-group mixing checks.
+
 ## Prohibited Operations
 
 The following operations are **never** allowed inside `fabric.pe`:
@@ -151,3 +167,4 @@ The following operations are **never** allowed inside `fabric.pe`:
 - [spec-fabric-pe.md](./spec-fabric-pe.md): PE body constraints and semantics
 - [spec-fabric.md](./spec-fabric.md): Fabric dialect overview
 - [spec-adg-api.md](./spec-adg-api.md): ADGBuilder API reference
+- [spec-fabric-error.md](./spec-fabric-error.md): Error code definitions

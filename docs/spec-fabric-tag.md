@@ -43,6 +43,8 @@ at boundaries between dedicated and temporal regions.
   `COMP_TAG_WIDTH_RANGE`.
 - The result tagged type's value component must match the input type `T`.
   Violations raise `COMP_ADD_TAG_VALUE_TYPE_MISMATCH`.
+- The configured `tag` value must fit in the result tag type width.
+  Violations raise `COMP_ADD_TAG_VALUE_OVERFLOW`.
 
 Example error:
 
@@ -57,6 +59,8 @@ Example error:
 `fabric.add_tag` attaches a constant tag to the input value. In hardware, the
 value and tag are concatenated into a single tagged payload. The tag is placed
 in the high bits.
+
+Timing model: combinational, zero-cycle data transformation.
 
 ## Operation: `fabric.del_tag`
 
@@ -91,6 +95,8 @@ Example error:
 
 `fabric.del_tag` removes the tag and forwards the value unchanged. The tag is
 discarded.
+
+Timing model: combinational, zero-cycle data transformation.
 
 ## Operation: `fabric.map_tag`
 
@@ -163,6 +169,9 @@ Errors are reported through a hardware-valid error signal and an error code
 propagated to the top level. The corresponding symbols are
 `RT_MAP_TAG_NO_MATCH` and `CFG_MAP_TAG_DUP_TAG`. See
 [spec-fabric-error.md](./spec-fabric-error.md).
+
+Timing model: combinational datapath with combinational table lookup and error
+condition detection.
 
 ## Related Documents
 

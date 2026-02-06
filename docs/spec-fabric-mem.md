@@ -113,12 +113,12 @@ All attributes in this section are hardware parameters.
 
 - `ldCount`: number of logical load ports.
 - `stCount`: number of logical store ports.
-- `lsqDepth`: store queue depth (only meaningful when `stCount > 0`).
+- `lsqDepth`: load-store queue (LSQ) depth (only meaningful when `stCount > 0`).
 - `private` (only for `fabric.memory`): if `true`, the memory is private to the
   module. If `false`, the memory exposes an output memref that must be yielded
   by `fabric.module`. The default is `true`.
 - `fabric.extmemory` does not support `private`. Supplying `private` on
-  `fabric.extmemory` is invalid.
+  `fabric.extmemory` is invalid (`COMP_MEMORY_EXTMEM_PRIVATE`).
 
 ### Port Groups
 
@@ -254,6 +254,8 @@ Violations of the following constraints are compile-time errors:
 - Dynamic memref shape on `fabric.memory` (`COMP_MEMORY_STATIC_REQUIRED`).
 - `fabric.extmemory` memref operand is not a module memref input
   (`COMP_MEMORY_EXTMEM_BINDING`).
+- `private` is supplied on `fabric.extmemory`
+  (`COMP_MEMORY_EXTMEM_PRIVATE`).
 
 ## Interaction with Load/Store PEs
 

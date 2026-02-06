@@ -427,6 +427,9 @@ include/loom/Dialect/Fabric/
 
 include/loom/Hardware/SystemC/
   fabric_pe.h                      # PE module template
+  fabric_pe_constant.h             # Constant PE template
+  fabric_pe_load.h                 # Load PE template
+  fabric_pe_store.h                # Store PE template
   fabric_temporal_pe.h             # Temporal PE template
   fabric_switch.h                  # Switch template
   fabric_temporal_sw.h             # Temporal switch template
@@ -440,6 +443,9 @@ include/loom/Hardware/SystemC/
 
 include/loom/Hardware/SystemVerilog/
   fabric_pe.sv                     # PE module template
+  fabric_pe_constant.sv            # Constant PE template
+  fabric_pe_load.sv                # Load PE template
+  fabric_pe_store.sv               # Store PE template
   fabric_temporal_pe.sv            # Temporal PE template
   fabric_switch.sv                 # Switch template
   fabric_temporal_sw.sv            # Temporal switch template

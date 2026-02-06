@@ -71,11 +71,14 @@ The following workflow is recommended as the default deterministic algorithm:
 3. Routing pass:
    - Route software edges between placed endpoints using shortest legal paths.
    - Reserve resources as required by sharing policy.
+   - Emit per-switch routing selections (`fabric.switch` `route_table`) that
+     realize the selected paths.
 4. Temporal assignment pass:
-   - Assign slot/tag/opcode/register metadata for temporal targets.
+   - Assign slot/tag/opcode/register metadata for `fabric.temporal_pe`.
+   - Assign slot/tag/route metadata for `fabric.temporal_sw`.
 5. Repair loop:
    - If a conflict appears, locally unmap and remap the minimal conflicting
-     region before global restart.
+     region before global restart, using bounded retry limits.
 6. Final validation and config emission:
    - Run full-state validation and emit configuration fragments.
 
@@ -101,8 +104,17 @@ Recommended escalation order:
 
 1. Reroute conflicting edges.
 2. Reassign conflicting node placements.
-3. Reassign temporal slot/tag/opcode/register allocations.
+3. Reassign temporal metadata (`temporal_pe` and `temporal_sw`).
 4. Restart from checkpoint or fail with minimal conflict report.
+
+Repair loops must be bounded. Implementations must support configurable limits:
+
+- `max_local_repairs`
+- `max_rollback_depth`
+- `max_global_restarts`
+
+If any limit is exceeded, the mapper must stop retrying, emit a minimal
+conflict diagnostic, and return failure.
 
 ## Algorithm Quality Requirements
 

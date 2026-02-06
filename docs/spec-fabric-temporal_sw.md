@@ -8,9 +8,37 @@ selection and is forwarded unchanged to the output.
 
 ## Operation: `fabric.temporal_sw`
 
-### Syntax
+### Forms
 
+`fabric.temporal_sw` supports two forms:
+
+- **Named form**: defines a reusable temporal switch with a symbol name.
+- **Inline form**: defines a local temporal switch used directly in the
+  surrounding region.
+
+Both forms share the same semantics and constraints.
+
+### Named Form Syntax
+
+```mlir
+fabric.temporal_sw @tsw
+  [num_route_table = 4, connectivity_table = [...]]
+  {route_table = [ ... ]}
+  : (!dataflow.tagged<T, iN>, !dataflow.tagged<T, iN>, !dataflow.tagged<T, iN>)
+    -> (!dataflow.tagged<T, iN>, !dataflow.tagged<T, iN>)
 ```
+
+Named temporal switches can be instantiated via `fabric.instance`:
+
+```mlir
+%o0, %o1 = fabric.instance @tsw(%i0, %i1, %i2)
+  : (!dataflow.tagged<T, iN>, !dataflow.tagged<T, iN>, !dataflow.tagged<T, iN>)
+    -> (!dataflow.tagged<T, iN>, !dataflow.tagged<T, iN>)
+```
+
+### Inline Form Syntax
+
+```mlir
 %out0, %out1 = fabric.temporal_sw
   [num_route_table = 4, connectivity_table = [...]]
   {route_table = [ ... ]}
@@ -76,7 +104,14 @@ Hardware-parameter violations are compile-time errors: `COMP_TEMPORAL_SW_PORT_LI
 `COMP_TEMPORAL_SW_TABLE_SHAPE`, `COMP_TEMPORAL_SW_ROW_EMPTY`,
 `COMP_TEMPORAL_SW_COL_EMPTY`, `COMP_TEMPORAL_SW_NUM_ROUTE_TABLE`,
 `COMP_TEMPORAL_SW_TOO_MANY_SLOTS`, and `COMP_TEMPORAL_SW_ROUTE_ILLEGAL`.
-Duplicate tags in `route_table` are configuration errors: `CFG_TEMPORAL_SW_DUP_TAG`.
+Configuration-time violations include:
+
+- `CFG_TEMPORAL_SW_DUP_TAG` for duplicate slot tags.
+- `CFG_TEMPORAL_SW_ROUTE_MULTI_OUT` when one output selects multiple inputs in
+  a slot.
+- `CFG_TEMPORAL_SW_ROUTE_MULTI_IN` when one input routes to multiple outputs in
+  a slot.
+
 If no slot matches an input tag at runtime, the temporal switch raises
 `RT_TEMPORAL_SW_NO_MATCH`. See [spec-fabric-error.md](./spec-fabric-error.md).
 
@@ -103,6 +138,25 @@ unrelated inputs.
 If multiple inputs with different tags target the same output (through their
 respective route_table slots), the output uses round-robin arbitration starting
 from lower port index.
+
+### Timing Model
+
+`fabric.temporal_sw` is a clocked temporal routing primitive:
+
+- Slot/tag selection and arbitration are stateful and evaluated with sequential
+  timing semantics.
+- Routing outcomes are governed by the selected slot and the runtime ready/valid
+  state for that cycle.
+
+### Backpressure Behavior
+
+`fabric.temporal_sw` uses standard valid/ready handshaking.
+
+- Backpressure propagates from each output to the selected input for that
+  output in the active slot.
+- If multiple candidate inputs contend for one output in a slot, round-robin
+  arbitration chooses one; non-selected contenders observe backpressure.
+- Backpressure is isolated per routed path and does not block unrelated paths.
 
 ### Unrouted Input Error
 

@@ -142,8 +142,9 @@ Allowed operations at module level:
 - `fabric.instance`
 - `fabric.yield`
 
-Operations from `arith`, `math`, `handshake`, `dataflow`, and LLVM must be
-contained inside `fabric.pe` and are not allowed directly at module level.
+Non-fabric operations are not allowed directly at module level. Operations
+inside `fabric.pe` must follow the authoritative allowlist in
+[spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md).
 
 The body must end with `fabric.yield` and the yielded values must match the
 module result types and ordering.
@@ -197,6 +198,10 @@ Instantiates a named fabric module or hardware component.
   Violations raise `COMP_INSTANCE_OPERAND_MISMATCH`.
 - Result count and types must match the referenced module signature.
   Violations raise `COMP_INSTANCE_RESULT_MISMATCH`.
+- Scope-specific restrictions still apply:
+  - Inside `fabric.pe`, `fabric.instance` may target only named `fabric.pe`
+    definitions, and cyclic instance graphs are not allowed.
+  - See [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md).
 
 See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.
 

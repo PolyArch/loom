@@ -272,7 +272,7 @@ template<
 >
 SC_MODULE(fabric_pe) {
     // CONFIG_WIDTH: derived, not a template parameter
-    //   Tagged compute PE:        NUM_OUTPUTS * TAG_WIDTH
+    //   Tagged non-constant non-load/store PE: NUM_OUTPUTS * TAG_WIDTH
     //   dataflow.stream PE:       +5 bits cont_cond_sel (one-hot)
     //   Other native compute PEs: 0
     static constexpr int STREAM_CONT_COND_WIDTH =
@@ -317,10 +317,11 @@ SC_MODULE(fabric_pe) {
 
 ### Constant PE Variant (fabric_pe_constant.h)
 
+Constant PEs have exactly one output.
+
 ```cpp
 template<
-    int NUM_OUTPUTS = 1,
-    std::array<int, 1> OUT_DATA_WIDTH = {32},
+    int OUT_DATA_WIDTH = 32,
     int TAG_WIDTH = 0,
     int LATENCY_MIN = 0,
     int LATENCY_TYP = 0,
@@ -331,17 +332,18 @@ template<
 >
 SC_MODULE(fabric_pe_constant) {
     // CONFIG_WIDTH: derived
-    //   Native:  bitwidth(constant_value) = OUT_DATA_WIDTH[0]
+    //   Native:  bitwidth(constant_value) = OUT_DATA_WIDTH
     //   Tagged:  bitwidth(constant_value) + TAG_WIDTH
-    static constexpr int CONST_WIDTH = OUT_DATA_WIDTH[0];
+    static constexpr int CONST_WIDTH = OUT_DATA_WIDTH;
     static constexpr int CONFIG_WIDTH =
         (TAG_WIDTH > 0) ? CONST_WIDTH + TAG_WIDTH : CONST_WIDTH;
 
     sc_core::sc_in<bool> clk;
     sc_core::sc_in<bool> rst_n;
 
-    sc_core::sc_out<bool> out_valid[NUM_OUTPUTS];
-    sc_core::sc_in<bool>  out_ready[NUM_OUTPUTS];
+    sc_core::sc_out<bool> out_valid;
+    sc_core::sc_in<bool>  out_ready;
+    sc_core::sc_out<sc_dt::sc_bv<OUT_DATA_WIDTH + TAG_WIDTH>> out_data;
 
     sc_core::sc_in<sc_dt::sc_bv<CONFIG_WIDTH>> cfg_data;
 
@@ -421,6 +423,8 @@ SC_MODULE(fabric_pe_load) {
 
 See [spec-fabric-pe.md](./spec-fabric-pe.md) for hardware type semantics
 (TagOverwrite vs TagTransparent) and port role definitions.
+Load/store PE latency and interval are fixed hardware behavior and are not
+template parameters.
 
 ### Store PE Variant (fabric_pe_store.h)
 
@@ -479,6 +483,8 @@ SC_MODULE(fabric_pe_store) {
 
 See [spec-fabric-pe.md](./spec-fabric-pe.md) for hardware type semantics
 and port role definitions.
+Load/store PE latency and interval are fixed hardware behavior and are not
+template parameters.
 
 ### fabric_temporal_pe.h
 
@@ -492,6 +498,8 @@ template<
     int NUM_INSTRUCTIONS = 16,
     int REG_FIFO_DEPTH = 2,
     int NUM_FU_TYPES = 2,
+    // Placeholder default only. Exporter must emit the derived per-instance
+    // width from spec-fabric-temporal_pe.md.
     int INSTRUCTION_WIDTH = 64,
     // Operand buffer mode parameters
     bool ENABLE_SHARE_OPERAND_BUFFER = false,  // false=Mode A, true=Mode B
@@ -578,6 +586,29 @@ private:
 };
 ```
 
+`INSTRUCTION_WIDTH = 64` is only a placeholder default in the template
+signature.
+
+Recommended defensive check (compile-time/elaboration-time):
+
+```cpp
+static constexpr int log2_ceil_constexpr(int v) {
+    return (v <= 1) ? 0 : 1 + log2_ceil_constexpr((v + 1) >> 1);
+}
+
+static constexpr int OPERAND_CONFIG_WIDTH =
+    (NUM_REGISTERS > 0) ? (1 + log2_ceil_constexpr(NUM_REGISTERS)) : 0;
+static constexpr int RESULT_WIDTH = OPERAND_CONFIG_WIDTH + TAG_WIDTH;
+static constexpr int DERIVED_INSTRUCTION_WIDTH =
+    1 + TAG_WIDTH
+    + ((NUM_FU_TYPES > 1) ? log2_ceil_constexpr(NUM_FU_TYPES) : 0)
+    + NUM_INPUTS * OPERAND_CONFIG_WIDTH
+    + NUM_OUTPUTS * RESULT_WIDTH;
+
+static_assert(INSTRUCTION_WIDTH == DERIVED_INSTRUCTION_WIDTH,
+              "INSTRUCTION_WIDTH must match derived temporal_pe formula");
+```
+
 ### fabric_switch.h
 
 ```cpp
@@ -586,16 +617,17 @@ template<
     int NUM_OUTPUTS = 4,
     int DATA_WIDTH = 32,
     int TAG_WIDTH = 0,
-    sc_dt::sc_bv<NUM_OUTPUTS*NUM_INPUTS> CONNECTIVITY = sc_dt::sc_bv<NUM_OUTPUTS*NUM_INPUTS>(-1),
-    int NUM_CONNECTED = 16  // popcount(CONNECTIVITY)
+    int NUM_CONNECTED = 16
 >
 SC_MODULE(fabric_switch) {
-    static_assert(NUM_CONNECTED == fabric::const_popcount(CONNECTIVITY),
-                  "NUM_CONNECTED must equal popcount(CONNECTIVITY)");
-
-    // Clock and reset
-    sc_core::sc_in<bool> clk;
-    sc_core::sc_in<bool> rst_n;
+    static constexpr int CONNECTIVITY_BITS = NUM_OUTPUTS * NUM_INPUTS;
+    sc_dt::sc_bv<CONNECTIVITY_BITS> connectivity;
+    static int popcount_bv(const sc_dt::sc_bv<CONNECTIVITY_BITS>& bits) {
+        int count = 0;
+        for (int i = 0; i < CONNECTIVITY_BITS; ++i)
+            if (bits[i] == sc_dt::SC_LOGIC_1) ++count;
+        return count;
+    }
 
     // Streaming ports
     sc_core::sc_in<bool>  in_valid[NUM_INPUTS];
@@ -613,7 +645,16 @@ SC_MODULE(fabric_switch) {
     sc_core::sc_out<bool>     error_valid;
     sc_core::sc_out<uint16_t> error_code;
 
-    SC_CTOR(fabric_switch) {
+    SC_HAS_PROCESS(fabric_switch);
+    explicit fabric_switch(
+        sc_core::sc_module_name name,
+        const sc_dt::sc_bv<CONNECTIVITY_BITS>& connectivity_mask =
+            sc_dt::sc_bv<CONNECTIVITY_BITS>(-1))
+        : sc_core::sc_module(name), connectivity(connectivity_mask) {
+        if (NUM_CONNECTED != popcount_bv(connectivity)) {
+            SC_REPORT_ERROR("fabric_switch",
+                            "NUM_CONNECTED must equal popcount(connectivity)");
+        }
         SC_METHOD(route_method);
         sensitive << cfg_route_table;
         for (int i = 0; i < NUM_INPUTS; ++i) {
@@ -632,10 +673,11 @@ private:
 };
 ```
 
-`CONNECTIVITY` defaults to full crossbar (all ones). The exporter must provide
-the correct `NUM_CONNECTED = popcount(CONNECTIVITY)` for each instantiated
-switch. `fabric::const_popcount` is provided by `fabric_common.h`. The
-compile-time assertion above is a defensive consistency check.
+`fabric_switch` is combinational (no `clk`/`rst_n` ports). In C++17,
+`sc_dt::sc_bv` cannot be used as a non-type template parameter, so
+`connectivity` is provided as a constructor argument (or equivalent constant
+object bound at instantiation). The exporter must emit `connectivity` and
+`NUM_CONNECTED` consistently; the constructor check is a defensive guard.
 
 ### fabric_temporal_sw.h
 
@@ -646,13 +688,18 @@ template<
     int DATA_WIDTH = 32,
     int TAG_WIDTH = 4,
     int NUM_ROUTE_TABLE = 8,
-    sc_dt::sc_bv<NUM_OUTPUTS*NUM_INPUTS> CONNECTIVITY = sc_dt::sc_bv<NUM_OUTPUTS*NUM_INPUTS>(-1),
     int NUM_CONNECTED = 16
 >
 SC_MODULE(fabric_temporal_sw) {
-    static_assert(NUM_CONNECTED == fabric::const_popcount(CONNECTIVITY),
-                  "NUM_CONNECTED must equal popcount(CONNECTIVITY)");
+    static constexpr int CONNECTIVITY_BITS = NUM_OUTPUTS * NUM_INPUTS;
     static constexpr int SLOT_WIDTH = 1 + TAG_WIDTH + NUM_CONNECTED;
+    sc_dt::sc_bv<CONNECTIVITY_BITS> connectivity;
+    static int popcount_bv(const sc_dt::sc_bv<CONNECTIVITY_BITS>& bits) {
+        int count = 0;
+        for (int i = 0; i < CONNECTIVITY_BITS; ++i)
+            if (bits[i] == sc_dt::SC_LOGIC_1) ++count;
+        return count;
+    }
 
     // Clock and reset
     sc_core::sc_in<bool> clk;
@@ -674,7 +721,16 @@ SC_MODULE(fabric_temporal_sw) {
     sc_core::sc_out<bool>     error_valid;
     sc_core::sc_out<uint16_t> error_code;
 
-    SC_CTOR(fabric_temporal_sw) {
+    SC_HAS_PROCESS(fabric_temporal_sw);
+    explicit fabric_temporal_sw(
+        sc_core::sc_module_name name,
+        const sc_dt::sc_bv<CONNECTIVITY_BITS>& connectivity_mask =
+            sc_dt::sc_bv<CONNECTIVITY_BITS>(-1))
+        : sc_core::sc_module(name), connectivity(connectivity_mask) {
+        if (NUM_CONNECTED != popcount_bv(connectivity)) {
+            SC_REPORT_ERROR("fabric_temporal_sw",
+                            "NUM_CONNECTED must equal popcount(connectivity)");
+        }
         SC_THREAD(main_thread);
         sensitive << clk.pos();
     }
@@ -695,8 +751,8 @@ private:
 ```
 
 `SLOT_WIDTH` is derived and must not be set independently. The exporter must
-emit `CONNECTIVITY` and `NUM_CONNECTED` consistently; assertions provide
-defensive checks.
+emit `connectivity` and `NUM_CONNECTED` consistently; constructor checks provide
+defensive guards.
 
 ### fabric_memory.h
 
@@ -905,11 +961,23 @@ SC_MODULE(fabric_del_tag) {
 };
 ```
 
+`fabric_add_tag` and `fabric_del_tag` intentionally do not expose
+`error_valid/error_code` ports. They are unconditional combinational data
+transformations with no runtime failure mode. `fabric_map_tag` keeps error
+ports because table matching can fail at runtime/configuration time.
+
 ## config_mem Design
 
-For the formal definition of config_mem (word width, depth calculation,
-CONFIG_WIDTH derivation), see
+Shared config_mem semantics (address allocation, `CONFIG_WIDTH` derivation,
+bit packing, and alignment) are defined authoritatively in
 [spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
+
+This document only specifies the SystemC backend surface:
+
+- Transport: TLM 2.0 `simple_target_socket` (`b_transport`)
+- Storage: host-visible `std::vector<uint32_t> config_mem`
+- Propagation: backend-specific `propagate_config()` fanout
+- Software-visible constants: shared `<module>_addr.h` header
 
 ### TLM Interface
 
@@ -948,64 +1016,10 @@ void my_cgra_top::b_transport(
 }
 ```
 
-### Access Model
-
-**config_mem is read-write from host (TLM initiator), read-only from
-accelerator modules.**
-
-- The host (testbench or software model) has full read-write access via TLM
-- Fabric modules receive configuration through `sc_in` ports
-- Fabric modules cannot modify config_mem during execution
-- Configuration changes require the `propagate_config()` call to update module
-  ports
-
-### Address Allocation
-
-Address allocation follows the authoritative rules in
-[spec-fabric-config_mem.md](./spec-fabric-config_mem.md), including operation
-order traversal, 32-bit word alignment, and per-node isolation.
-
-The `<module>_addr.h` header is shared between SystemC and SystemVerilog
-exports.
-
-### Configuration Sequence
-
-Software configures the accelerator by:
-
-1. Assert reset (`rst_n = false`)
-2. Write all config_mem words via TLM transactions
-3. De-assert reset (`rst_n = true`)
-4. Begin dataflow simulation
-
-```cpp
-// Example configuration sequence
-void testbench::configure() {
-    // Assert reset
-    rst_n.write(false);
-    wait(clk.posedge_event());
-
-    // Write configuration via TLM
-    tlm::tlm_generic_payload trans;
-    sc_core::sc_time delay = sc_core::SC_ZERO_TIME;
-
-    uint32_t config_data[] = { /* ... */ };
-    for (size_t i = 0; i < config_size; i++) {
-        trans.set_command(tlm::TLM_WRITE_COMMAND);
-        trans.set_address(i * 4);
-        trans.set_data_ptr(reinterpret_cast<uint8_t*>(&config_data[i]));
-        trans.set_data_length(4);
-        cfg_socket->b_transport(trans, delay);
-    }
-
-    // De-assert reset
-    wait(clk.posedge_event());
-    rst_n.write(true);
-}
-```
-
 ## Error Reporting
 
-Each module reports errors through error signals:
+Modules with runtime/configuration failure modes report errors through error
+signals:
 
 ```cpp
 sc_core::sc_out<bool>     error_valid;
@@ -1014,6 +1028,9 @@ sc_core::sc_out<uint16_t> error_code;
 
 Error codes match the values defined in
 [spec-fabric-error.md](./spec-fabric-error.md):
+
+`fabric_add_tag` and `fabric_del_tag` are exception paths: they do not expose
+error ports because they have no runtime failure mode.
 
 The top-level module aggregates errors using priority encoding (lower code =
 higher priority). The first error is latched until reset.

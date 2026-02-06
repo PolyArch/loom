@@ -135,6 +135,15 @@ void critical_op(...) { ... }
 | `"rom"` | Force a constant memory object to map to ROM |
 | `"extmemory"` | Force a memory object to map to external memory |
 
+`"pe[x,y]"` coordinate convention:
+
+- `x` and `y` are 0-based indices.
+- `x` is the column index; `y` is the row index.
+- If target dimensions are known at compile time and `(x, y)` is out of range,
+  compilation fails.
+- If target dimensions are not fixed yet, out-of-range placement is reported
+  during mapping.
+
 **Semantics**:
 - Suggests where the compiler should map the function/operation
 - Compiler may override if the suggestion is infeasible
@@ -225,6 +234,9 @@ Labels enable:
 - Referencing specific loops in `loom-config.yaml` for DSE constraints
 - Clear identification in optimization reports
 - MLIR location tracking for performance analysis
+
+Forward-reference note: `loom-config.yaml` schema and DSE semantics are not yet
+fully standardized in a dedicated spec document.
 
 **Requirement**: Compile with `-g` flag to enable label capture. Without debug info, labels are not preserved in the IR and cannot be captured as `loom.label` metadata.
 
@@ -475,6 +487,9 @@ for (int i = 0; i < n; ++i) {
 - Enables parallel reduction tree implementation
 - Compiler can auto-detect common patterns; pragma helps with complex cases
 
+Forward-reference note: the exact lowered Handshake/Dataflow IR form of
+reduction trees is not yet standardized in a dedicated section.
+
 **Why needed**:
 - Loop `sum += x` looks like a dependency (each iteration needs previous sum)
 - With LOOM_REDUCE, compiler knows `+` is associative and can parallelize
@@ -510,6 +525,9 @@ float b[1024];  // Block: a[0..255] in bank 0, a[256..511] in bank 1, etc.
 - Enables parallel memory access (up to n simultaneous accesses)
 - Compiler can auto-detect based on access patterns and unroll factors
 - Maps to `handshake.memory` with bank configuration in hardware IR
+
+Forward-reference note: the exact lowered Handshake/Dataflow IR form of banked
+memory interfaces is not yet standardized in a dedicated section.
 
 **Bank conflicts**:
 - If access pattern doesn't match banking, parallel accesses serialize
@@ -664,6 +682,9 @@ When compiling with `-g` (debug info enabled), C++ statement labels preceding lo
 - DSE constraints via `loom-config.yaml` loop references
 - MLIR location tracking for debugging
 
+Forward-reference note: `loom-config.yaml` schema and DSE semantics are not yet
+fully standardized in a dedicated spec document.
+
 **Requirements**:
 - Compile with `-g` flag (debug info must be enabled)
 - Label must immediately precede the loop pragma(s)
@@ -724,8 +745,8 @@ llvm.cond_br %cmp, ^bb1, ^bb2 {
 ### Preservation Across Import and Export
 
 The `loom.loop` attribute survives the MLIR import and export path:
-1. **LLVM IR → MLIR**: `!llvm.loop` metadata is parsed and converted to `loom.loop` DictionaryAttr
-2. **MLIR → LLVM IR**: `loom.loop` attribute is serialized back to `!llvm.loop` metadata
+1. **LLVM IR -> MLIR**: `!llvm.loop` metadata is parsed and converted to `loom.loop` DictionaryAttr
+2. **MLIR -> LLVM IR**: `loom.loop` attribute is serialized back to `!llvm.loop` metadata
 
 This enables pragma information to pass through MLIR transformations without loss.
 
@@ -747,6 +768,7 @@ These annotations survive the MLIR import and export path without modification.
 - [spec-dataflow.md](./spec-dataflow.md): Dataflow dialect (loop-carried semantics)
 - [spec-fabric.md](./spec-fabric.md): Fabric dialect overview
 - [spec-fabric-pe.md](./spec-fabric-pe.md): PE specification (PE body operations)
+- [spec-fabric-mem.md](./spec-fabric-mem.md): Memory operation semantics used by target hints
 
 ## Change log and Reviews
 - Date: 2026-02-03; Reviewer: [Sihao Liu](mailto:sihao@cs.ucla.edu); Note: initial draft.

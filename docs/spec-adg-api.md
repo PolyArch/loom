@@ -86,14 +86,14 @@ provides full control over the PE's internal structure.
 **Allowed operations and body constraints:**
 
 See [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md) for the complete list of
-allowed operations (arith, math, dataflow, handshake, fabric dialects).
+allowed operations.
 
 See [spec-fabric-pe.md](./spec-fabric-pe.md) for body constraints including:
 
 - Homogeneous consumption rule (full-consume vs partial-consume groups)
 - Load/store exclusivity (use `newLoadPE()`/`newStorePE()` instead)
 - Constant exclusivity (use `newConstantPE()` instead)
-- Dataflow exclusivity (dataflow-only PE must use native interface)
+- Dataflow exclusivity
 - Instance-only prohibition
 
 Special case: a PE whose body is exactly one `dataflow.stream` has a runtime
@@ -164,6 +164,8 @@ and must be included in config_mem.
 | `setInterval(min, typical, max)` | Set initiation interval |
 | `setOutputType(type)` | Set the constant output type (native or tagged) |
 
+ConstantPEHandle always defines exactly one output port.
+
 For tagged constant PEs, use `Type::tagged(valueType, tagType)` as the output type.
 
 **Config bits:**
@@ -225,6 +227,8 @@ Creates load/store PEs with strict body constraints (exactly one
 | `HardwareType::TagTransparent` | Tags are preserved and forwarded unchanged (TagTransparent) |
 
 See [spec-fabric-pe.md](./spec-fabric-pe.md) for detailed hardware type semantics.
+Load/store PE latency and interval are fixed hardware behavior and are not
+configurable through `LoadPEHandle` or `StorePEHandle`.
 
 **Example (TagTransparent load PE):**
 ```cpp
@@ -409,7 +413,7 @@ Creates a new `fabric.memory` definition (on-chip scratchpad).
 |--------|-------------|
 | `setLoadPorts(count)` | Set number of load ports |
 | `setStorePorts(count)` | Set number of store ports |
-| `setQueueDepth(depth)` | Set store queue depth |
+| `setQueueDepth(depth)` | Set LSQ depth (`lsqDepth`) |
 | `setPrivate(isPrivate)` | Set whether memory is private (default: true) |
 | `setShape(memrefType)` | Set memory shape and element type |
 
@@ -451,10 +455,31 @@ Creates a new `fabric.extmemory` definition (external memory interface).
 |--------|-------------|
 | `setLoadPorts(count)` | Set number of load ports |
 | `setStorePorts(count)` | Set number of store ports |
-| `setQueueDepth(depth)` | Set store queue depth |
+| `setQueueDepth(depth)` | Set LSQ depth (`lsqDepth`) |
 | `setShape(memrefType)` | Set memory shape and element type |
 
 `setPrivate` is not available for `fabric.extmemory`.
+
+### API-to-MLIR Attribute Mapping
+
+The builder API uses method names for ergonomics. Fabric MLIR attribute names
+remain authoritative in Fabric specs.
+
+| API Method | Handle Type | Fabric MLIR Attribute |
+|-----------|-------------|------------------------|
+| `setQueueDepth(depth)` | `LoadPEHandle` | `lqDepth` |
+| `setQueueDepth(depth)` | `StorePEHandle` | `sqDepth` |
+| `setQueueDepth(depth)` | `MemoryHandle` | `lsqDepth` |
+| `setQueueDepth(depth)` | `ExtMemoryHandle` | `lsqDepth` |
+| `setNumRegisters(n)` | `TemporalPEHandle` | `num_register` |
+| `setNumInstructions(n)` | `TemporalPEHandle` | `num_instruction` |
+
+Naming convention note:
+
+- Fabric MLIR attributes use singular count names (for example,
+  `num_register`, `num_instruction`).
+- API and backend templates use plural count names where appropriate (for
+  example, `setNumRegisters`, `NUM_REGISTERS`).
 
 **Interface type rules:**
 
@@ -1096,15 +1121,8 @@ caution; direct context manipulation bypasses builder validation.
 
 ### Supported Operations Reference
 
-PE bodies can contain operations from multiple dialects. For the complete and
-authoritative list of allowed operations, see
+For the complete and authoritative `fabric.pe` operation allowlist, see
 [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md).
-
-**Summary:**
-- `arith` dialect: 30 operations
-- `math` dialect: 7 operations
-- `dataflow` dialect: 4 operations (exclusive group)
-- `handshake` dialect: 8 operations (with exclusivity constraints)
 
 For body constraints (exclusivity rules, homogeneous consumption rule), see
 [spec-fabric-pe.md](./spec-fabric-pe.md).

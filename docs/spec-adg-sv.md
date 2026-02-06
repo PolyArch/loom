@@ -136,7 +136,7 @@ module fabric_pe #(
     parameter int INTERVAL_TYP = 1,
     parameter int INTERVAL_MAX = 1,
     // CONFIG_WIDTH: derived, not overridable
-    //   Tagged compute PE:        NUM_OUTPUTS * TAG_WIDTH
+    //   Tagged non-constant non-load/store PE: NUM_OUTPUTS * TAG_WIDTH
     //   dataflow.stream PE:       +5 bits cont_cond_sel (one-hot)
     //   Other native compute PEs: 0
     localparam int STREAM_CONT_COND_WIDTH = HAS_DATAFLOW_STREAM ? 5 : 0,
@@ -178,11 +178,11 @@ endgenerate
 
 A constant PE contains exactly one `handshake.constant` in its body. The
 constant value is runtime configurable via config_mem.
+Constant PEs have exactly one output.
 
 ```systemverilog
 module fabric_pe_constant #(
-    parameter int NUM_OUTPUTS = 1,
-    parameter int OUT_DATA_WIDTH [NUM_OUTPUTS] = '{default: 32},
+    parameter int OUT_DATA_WIDTH = 32,
     parameter int TAG_WIDTH = 0,
     parameter int LATENCY_MIN = 0,
     parameter int LATENCY_TYP = 0,
@@ -193,27 +193,22 @@ module fabric_pe_constant #(
     // CONFIG_WIDTH: derived
     //   Native:  bitwidth(constant_value)
     //   Tagged:  bitwidth(constant_value) + TAG_WIDTH
-    localparam int CONST_WIDTH = OUT_DATA_WIDTH[0],
+    localparam int CONST_WIDTH = OUT_DATA_WIDTH,
     localparam int CONFIG_WIDTH = (TAG_WIDTH > 0)
         ? CONST_WIDTH + TAG_WIDTH : CONST_WIDTH
 ) (
     input  logic clk,
     input  logic rst_n,
 
-    output logic [NUM_OUTPUTS-1:0] out_valid,
-    input  logic [NUM_OUTPUTS-1:0] out_ready,
+    output logic                          out_valid,
+    input  logic                          out_ready,
+    output logic [OUT_DATA_WIDTH+TAG_WIDTH-1:0] out_data,
 
     input  logic [CONFIG_WIDTH-1:0] cfg_data,
 
     output logic        error_valid,
     output logic [15:0] error_code
 );
-
-generate
-    for (genvar o = 0; o < NUM_OUTPUTS; o++) begin : gen_out
-        wire [OUT_DATA_WIDTH[o]+TAG_WIDTH-1:0] data;
-    end
-endgenerate
 ```
 
 No input ports: the constant value comes from `cfg_data`. See
@@ -273,6 +268,8 @@ module fabric_pe_load #(
 
 See [spec-fabric-pe.md](./spec-fabric-pe.md) for hardware type semantics
 (TagOverwrite vs TagTransparent) and port role definitions.
+Load/store PE latency and interval are fixed hardware behavior and are not
+module parameters.
 
 #### Store PE Variant
 
@@ -324,6 +321,8 @@ module fabric_pe_store #(
 
 See [spec-fabric-pe.md](./spec-fabric-pe.md) for hardware type semantics
 and port role definitions.
+Load/store PE latency and interval are fixed hardware behavior and are not
+module parameters.
 
 #### fabric_temporal_pe.sv
 
@@ -337,6 +336,8 @@ module fabric_temporal_pe #(
     parameter int NUM_INSTRUCTIONS = 16,
     parameter int REG_FIFO_DEPTH = 2,
     parameter int NUM_FU_TYPES = 2,
+    // Placeholder default only. Exporter must emit the derived per-instance
+    // width from spec-fabric-temporal_pe.md.
     parameter int INSTRUCTION_WIDTH = 64,
     // Operand buffer mode parameters
     parameter bit ENABLE_SHARE_OPERAND_BUFFER = 0,  // 0=Mode A, 1=Mode B
@@ -366,6 +367,26 @@ module fabric_temporal_pe #(
 **Note:** The operand buffer is internal to the module and not part of
 `cfg_instruction_mem`. Mode A uses `NUM_INSTRUCTIONS * NUM_INPUTS * (1 + DATA_WIDTH)`
 bits internally. Mode B uses `OPERAND_BUFFER_SIZE` entries with per-tag FIFO semantics.
+`INSTRUCTION_WIDTH = 64` is only a placeholder default in the template
+signature.
+
+Recommended defensive check (compile-time/elaboration-time):
+
+```systemverilog
+localparam int OPERAND_CONFIG_WIDTH =
+    (NUM_REGISTERS > 0) ? (1 + $clog2(NUM_REGISTERS)) : 0;
+localparam int RESULT_WIDTH = OPERAND_CONFIG_WIDTH + TAG_WIDTH;
+localparam int DERIVED_INSTRUCTION_WIDTH =
+    1 + TAG_WIDTH
+    + ((NUM_FU_TYPES > 1) ? $clog2(NUM_FU_TYPES) : 0)
+    + NUM_INPUTS * OPERAND_CONFIG_WIDTH
+    + NUM_OUTPUTS * RESULT_WIDTH;
+
+initial begin
+    assert (INSTRUCTION_WIDTH == DERIVED_INSTRUCTION_WIDTH)
+      else $fatal(1, "INSTRUCTION_WIDTH must match derived temporal_pe formula");
+end
+```
 
 #### fabric_switch.sv
 
@@ -376,11 +397,8 @@ module fabric_switch #(
     parameter int DATA_WIDTH = 32,
     parameter int TAG_WIDTH = 0,
     parameter bit [NUM_OUTPUTS*NUM_INPUTS-1:0] CONNECTIVITY = '1,
-    parameter int NUM_CONNECTED = $countones(CONNECTIVITY)  // K in spec
+    localparam int NUM_CONNECTED = $countones(CONNECTIVITY)  // Derived K in spec
 ) (
-    input  logic clk,
-    input  logic rst_n,
-
     // Streaming ports
     input  logic [NUM_INPUTS-1:0]  in_valid,
     output logic [NUM_INPUTS-1:0]  in_ready,
@@ -402,6 +420,7 @@ module fabric_switch #(
 ```
 
 **Config bit width:** `K` bits, where `K = $countones(CONNECTIVITY)` (number of connected positions). See [spec-fabric-switch.md](./spec-fabric-switch.md).
+`fabric_switch` is combinational; it does not depend on `clk`/`rst_n`.
 
 #### fabric_temporal_sw.sv
 
@@ -613,51 +632,22 @@ module fabric_del_tag #(
 );
 ```
 
+`fabric_add_tag` and `fabric_del_tag` intentionally do not expose
+`error_valid/error_code` ports. They are unconditional combinational data
+transformations with no runtime failure mode. `fabric_map_tag` keeps error
+ports because table matching can fail at runtime/configuration time.
+
 ## config_mem Design
 
-For the formal definition of config_mem (word width, depth calculation,
-CONFIG_WIDTH derivation), see
+Shared config_mem semantics (address allocation, `CONFIG_WIDTH` derivation,
+bit packing, and alignment) are defined authoritatively in
 [spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
 
-### Register Array Structure
+This document only specifies the SystemVerilog backend surface:
 
-The config_mem is organized as an array of 32-bit registers:
-
-```systemverilog
-logic [31:0] config_mem [0:CONFIG_MEM_DEPTH-1];
-```
-
-Each configurable operation occupies a contiguous range of 32-bit words.
-Operations are isolated; no two operations share a word.
-
-### Address Allocation Rules
-
-Address allocation follows the authoritative rules in
-[spec-fabric-config_mem.md](./spec-fabric-config_mem.md), including operation
-order traversal, 32-bit word alignment, and per-node isolation.
-
-### Bit Layout Within Words
-
-Configuration bits are packed starting from the LSB of each word:
-
-```
-Word N:   [31:bits_used] = 0 (tied low)
-          [bits_used-1:0] = config data
-
-Word N+1: [31:remaining] = 0 (tied low)
-          [remaining-1:0] = overflow config data
-```
-
-For multi-word configurations, bits flow from LSB of word 0 to MSB of word 0,
-then LSB of word 1, and so on.
-
-### Unused Bits
-
-Unused bits within each word are tied to constant zero. These bits:
-
-- Are readable (always return 0)
-- Are writable (writes are ignored)
-- Will be optimized away by synthesis tools
+- Storage form: 32-bit register array (`logic [31:0] config_mem[...]`)
+- Transport: AXI4-Lite slave interface
+- Software-visible constants: generated `<module>_addr.h`
 
 ### AXI-Lite Interface
 
@@ -675,18 +665,6 @@ The config_mem controller implements a standard AXI4-Lite slave interface:
 **Error responses:**
 - OKAY (2'b00): Valid access within config_mem range
 - SLVERR (2'b10): Address out of range
-
-### Configuration Sequence
-
-Software configures the accelerator by:
-
-1. Assert reset
-2. Write all config_mem words via AXI-Lite
-3. De-assert reset
-4. Begin dataflow execution
-
-Partial reconfiguration (updating some nodes while others execute) is not
-supported in the base design.
 
 ## C Header Generation
 
@@ -748,11 +726,14 @@ endinterface
 
 ## Error Reporting
 
-Each module propagates errors upward through `error_valid` and `error_code`
-signals. Error codes and their semantics are defined in
-[spec-fabric-error.md](./spec-fabric-error.md). The top-level module
-aggregates errors using priority encoding (lower code = higher priority).
-The first error is latched until reset.
+Modules with runtime/configuration failure modes propagate errors upward
+through `error_valid` and `error_code` signals. Error codes and their semantics
+are defined in [spec-fabric-error.md](./spec-fabric-error.md). The top-level
+module aggregates errors using priority encoding (lower code = higher
+priority). The first error is latched until reset.
+
+`fabric_add_tag` and `fabric_del_tag` are exception paths: they do not expose
+error ports because they have no runtime failure mode.
 
 ## Synthesis Considerations
 
@@ -804,3 +785,13 @@ The generated RTL includes:
 - Error injection hooks for fault simulation
 
 Assertions are gated by `FABRIC_ASSERTIONS_ON` define.
+
+## Related Documents
+
+- [spec-adg.md](./spec-adg.md): ADG overall design
+- [spec-adg-api.md](./spec-adg-api.md): ADGBuilder API reference
+- [spec-adg-tools.md](./spec-adg-tools.md): Simulation tools and waveform formats
+- [spec-adg-sysc.md](./spec-adg-sysc.md): SystemC generation specification
+- [spec-fabric.md](./spec-fabric.md): Fabric MLIR dialect specification
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md): Authoritative config_mem rules
+- [spec-fabric-error.md](./spec-fabric-error.md): Error code definitions

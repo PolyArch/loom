@@ -27,3 +27,9 @@ errors for dataflow behavior after embedding into Fabric hardware are defined in
 | COMP_DATAFLOW_STREAM_INVALID_CONT_COND | `dataflow.stream` attribute `cont_cond` is not one of the allowed values: `<`, `<=`, `>`, `>=`, `!=`. |
 | COMP_DATAFLOW_GATE_COND_TYPE | `dataflow.gate` operand `%before_cond` or result `%after_cond` is not `i1`. |
 | COMP_DATAFLOW_GATE_TYPE_MISMATCH | `dataflow.gate` operand `%before_value` and result `%after_value` have different types. They must have the same type. |
+
+## Related Documents
+
+- [spec-dataflow.md](./spec-dataflow.md): Dataflow dialect operation semantics
+- [spec-fabric-error.md](./spec-fabric-error.md): Fabric CFG_/RT_ errors referenced by embedded dataflow behavior
+- [spec-fabric.md](./spec-fabric.md): Fabric dialect context for lowered dataflow operations

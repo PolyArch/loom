@@ -7,11 +7,37 @@ output based on a fixed physical connectivity table and a runtime route table.
 
 ## Operation: `fabric.switch`
 
-### Syntax
+### Forms
 
+`fabric.switch` supports two forms:
+
+- **Named form**: defines a reusable switch module with a symbol name.
+- **Inline form**: defines a local switch used directly in the surrounding
+  region.
+
+Both forms share the same semantics and constraints.
+
+### Named Form Syntax
+
+```mlir
+fabric.switch @sw4x4
+  [connectivity_table = [ ... ], route_table = [ ... ]]
+  : (T, T, T, T) -> (T, T, T, T)
 ```
-%out0, %out1 = fabric.switch [connectivity_table = [...], route_table = [...]]
-    %in0, %in1, %in2 : T -> T, T
+
+Named switches can be instantiated via `fabric.instance`:
+
+```mlir
+%o0, %o1, %o2, %o3 = fabric.instance @sw4x4(%i0, %i1, %i2, %i3)
+  : (T, T, T, T) -> (T, T, T, T)
+```
+
+### Inline Form Syntax
+
+```mlir
+%out0, %out1 = fabric.switch
+  [connectivity_table = [...], route_table = [...]]
+  %in0, %in1, %in2 : T -> T, T
 ```
 
 ### Interface Types
@@ -77,6 +103,15 @@ and `CFG_SWITCH_ROUTE_MULTI_IN`. See [spec-fabric-error.md](./spec-fabric-error.
 
 When an output is connected to exactly one routed input, the output forwards
 that input. If an output has no routed input, the output produces no token.
+
+### Timing Model
+
+`fabric.switch` is a purely combinational routing primitive:
+
+- Data-path routing is combinational (zero-cycle forwarding once
+  valid/ready allows transfer).
+- Runtime routing-constraint checks are combinational and report
+  configuration errors without sequential latching in the switch itself.
 
 ### Backpressure Behavior
 

@@ -495,6 +495,8 @@ Example:
 - [spec-fabric-pe.md](./spec-fabric-pe.md): Fabric PE specification (dataflow ops inside PEs)
 - [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md): Allowed operations in fabric.pe (includes dataflow ops)
 - [spec-fabric-mem.md](./spec-fabric-mem.md): Memory operations using tagged/native types
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md): Runtime configuration layout used by dataflow.stream lowering
+- [spec-fabric-error.md](./spec-fabric-error.md): Fabric CFG_/RT_ symbols referenced by embedded dataflow behavior
 - [spec-fabric.md](./spec-fabric.md): Fabric dialect overview and type conventions
 - [spec-dataflow-error.md](./spec-dataflow-error.md): Dataflow error code definitions
 
