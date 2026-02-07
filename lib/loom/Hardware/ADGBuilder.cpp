@@ -270,6 +270,10 @@ InstanceHandle ADGBuilder::clone(ModuleHandle source,
       (unsigned)impl_->storePEDefs.size(),
   };
   unsigned kindIdx = (unsigned)source.kind;
+  constexpr unsigned numKinds = sizeof(defSizes) / sizeof(defSizes[0]);
+  if (kindIdx >= numKinds)
+    builderError("clone(ModuleHandle)",
+                 "invalid module kind " + std::to_string(kindIdx));
   if (source.id >= defSizes[kindIdx])
     builderError("clone(ModuleHandle)",
                  std::string("invalid ") + kindMap[kindIdx].label +
