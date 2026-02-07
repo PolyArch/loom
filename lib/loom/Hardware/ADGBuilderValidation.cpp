@@ -176,11 +176,22 @@ ValidationResult ADGBuilder::validateADG() {
   }
 
   // Validate tag types for tag operations.
+  // Accept both Type::iN(w) and canonical aliases (i1, i8, i16) with valid widths.
+  auto getIntWidth = [](Type t) -> int {
+    switch (t.getKind()) {
+    case Type::I1:  return 1;
+    case Type::I8:  return 8;
+    case Type::I16: return 16;
+    case Type::IN:  return (int)t.getWidth();
+    default:        return -1; // not an integer type
+    }
+  };
   auto validateTagType = [&](Type tagType, const std::string &loc) {
-    if (tagType.getKind() != Type::IN)
+    int w = getIntWidth(tagType);
+    if (w < 0)
       addError("COMP_TAG_WIDTH_RANGE",
-               "tag type must be iN (arbitrary-width integer)", loc);
-    else if (tagType.getWidth() < 1 || tagType.getWidth() > 16)
+               "tag type must be an integer type", loc);
+    else if (w < 1 || w > 16)
       addError("COMP_TAG_WIDTH_RANGE",
                "tag width outside [1, 16]", loc);
   };

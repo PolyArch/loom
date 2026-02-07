@@ -7,6 +7,7 @@
 #include "loom/Hardware/adg.h"
 
 #include <cassert>
+#include <utility>
 
 namespace loom {
 namespace adg {
@@ -53,12 +54,28 @@ std::string Type::toMLIR() const {
   return "i32"; // fallback
 }
 
+/// Return a canonical (kind, width) pair for integer types so that e.g.
+/// Type::i32() (kind=I32) and Type::iN(32) (kind=IN, width=32) compare equal.
+static std::pair<Type::Kind, unsigned> canonicalizeInt(Type::Kind k,
+                                                       unsigned w) {
+  switch (k) {
+  case Type::I1:  return {Type::IN, 1};
+  case Type::I8:  return {Type::IN, 8};
+  case Type::I16: return {Type::IN, 16};
+  case Type::I32: return {Type::IN, 32};
+  case Type::I64: return {Type::IN, 64};
+  default:        return {k, w};
+  }
+}
+
 bool Type::operator==(const Type &other) const {
-  if (kind_ != other.kind_)
+  auto [lk, lw] = canonicalizeInt(kind_, width_);
+  auto [rk, rw] = canonicalizeInt(other.kind_, other.width_);
+  if (lk != rk)
     return false;
-  if (kind_ == IN)
-    return width_ == other.width_;
-  if (kind_ == Tagged) {
+  if (lk == IN)
+    return lw == rw;
+  if (lk == Tagged) {
     if (!taggedData_ || !other.taggedData_)
       return taggedData_ == other.taggedData_;
     return taggedData_->valueType == other.taggedData_->valueType &&
