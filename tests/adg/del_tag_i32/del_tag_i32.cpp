@@ -11,10 +11,8 @@ using namespace loom::adg;
 int main() {
   ADGBuilder builder("del_tag_i32");
 
-  auto dt = builder.newDelTag("del_tag_0")
+  InstanceHandle inst = builder.newDelTag("dt0")
       .setInputType(Type::tagged(Type::i32(), Type::iN(4)));
-
-  auto inst = builder.clone(dt, "dt0");
 
   auto in0 = builder.addModuleInput("tagged",
       Type::tagged(Type::i32(), Type::iN(4)));

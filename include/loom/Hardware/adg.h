@@ -146,20 +146,14 @@ struct LoadPEHandle { unsigned id; };
 /// Opaque handle to a store PE definition.
 struct StorePEHandle { unsigned id; };
 
-/// Opaque handle to an add_tag definition.
-struct AddTagHandle { unsigned id; };
-
-/// Opaque handle to a map_tag definition.
-struct MapTagHandle { unsigned id; };
-
-/// Opaque handle to a del_tag definition.
-struct DelTagHandle { unsigned id; };
+// Tag-operation handles are internal only (auto-instantiated by builders).
+// Users work with InstanceHandle directly for tag ops.
 
 /// Generic handle to any module definition. Can be implicitly constructed
 /// from any typed handle.
 struct ModuleHandle {
   enum Kind { PE, Switch, TemporalPE, TemporalSwitch, Memory, ExtMemory,
-              ConstantPE, LoadPE, StorePE, AddTag, MapTag, DelTag };
+              ConstantPE, LoadPE, StorePE };
   Kind kind;
   unsigned id;
 
@@ -172,9 +166,6 @@ struct ModuleHandle {
   ModuleHandle(ConstantPEHandle h) : kind(ConstantPE), id(h.id) {}
   ModuleHandle(LoadPEHandle h) : kind(LoadPE), id(h.id) {}
   ModuleHandle(StorePEHandle h) : kind(StorePE), id(h.id) {}
-  ModuleHandle(AddTagHandle h) : kind(AddTag), id(h.id) {}
-  ModuleHandle(MapTagHandle h) : kind(MapTag), id(h.id) {}
-  ModuleHandle(DelTagHandle h) : kind(DelTag), id(h.id) {}
 };
 
 //===----------------------------------------------------------------------===//
@@ -364,13 +355,14 @@ private:
   unsigned defId_;
 };
 
-/// Builder for configuring an add_tag operation.
+/// Builder for configuring an add_tag operation (auto-instantiated).
 class AddTagBuilder {
 public:
   AddTagBuilder &setValueType(Type type);
   AddTagBuilder &setTagType(Type type);
 
-  operator AddTagHandle() const;
+  /// Implicitly converts to InstanceHandle (auto-instantiation).
+  operator InstanceHandle() const;
 
 private:
   friend class ADGBuilder;
@@ -379,7 +371,7 @@ private:
   unsigned defId_;
 };
 
-/// Builder for configuring a map_tag operation.
+/// Builder for configuring a map_tag operation (auto-instantiated).
 class MapTagBuilder {
 public:
   MapTagBuilder &setValueType(Type type);
@@ -387,7 +379,8 @@ public:
   MapTagBuilder &setOutputTagType(Type type);
   MapTagBuilder &setTableSize(unsigned size);
 
-  operator MapTagHandle() const;
+  /// Implicitly converts to InstanceHandle (auto-instantiation).
+  operator InstanceHandle() const;
 
 private:
   friend class ADGBuilder;
@@ -396,12 +389,13 @@ private:
   unsigned defId_;
 };
 
-/// Builder for configuring a del_tag operation.
+/// Builder for configuring a del_tag operation (auto-instantiated).
 class DelTagBuilder {
 public:
   DelTagBuilder &setInputType(Type type);
 
-  operator DelTagHandle() const;
+  /// Implicitly converts to InstanceHandle (auto-instantiation).
+  operator InstanceHandle() const;
 
 private:
   friend class ADGBuilder;
@@ -493,16 +487,8 @@ public:
   /// Create an instance of a store PE definition.
   InstanceHandle clone(StorePEHandle source, const std::string &instanceName);
 
-  /// Create an instance of an add_tag definition.
-  InstanceHandle clone(AddTagHandle source, const std::string &instanceName);
-
-  /// Create an instance of a map_tag definition.
-  InstanceHandle clone(MapTagHandle source, const std::string &instanceName);
-
-  /// Create an instance of a del_tag definition.
-  InstanceHandle clone(DelTagHandle source, const std::string &instanceName);
-
   /// Create an instance of any module definition using a generic handle.
+  /// Tag-operation handles are not valid clone sources (they auto-instantiate).
   InstanceHandle clone(ModuleHandle source, const std::string &instanceName);
 
   // --- Internal connections ---

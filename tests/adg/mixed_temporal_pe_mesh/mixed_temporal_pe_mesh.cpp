@@ -39,18 +39,14 @@ int main() {
       .setInterface(taggedType)
       .addFU(fu);
 
-  auto at = builder.newAddTag("tagger")
-      .setValueType(Type::i32())
-      .setTagType(tagType);
-
-  auto dt = builder.newDelTag("untagger")
-      .setInputType(taggedType);
-
   auto mesh = builder.buildMesh(2, 2, pe, sw, Topology::Mesh);
   auto tpe0 = builder.clone(tpe, "tpe0");
-  auto at0 = builder.clone(at, "tag0");
-  auto at1 = builder.clone(at, "tag1");
-  auto dt0 = builder.clone(dt, "untag0");
+  InstanceHandle at0 = builder.newAddTag("tag0")
+      .setValueType(Type::i32()).setTagType(tagType);
+  InstanceHandle at1 = builder.newAddTag("tag1")
+      .setValueType(Type::i32()).setTagType(tagType);
+  InstanceHandle dt0 = builder.newDelTag("untag0")
+      .setInputType(taggedType);
 
   // Module I/O
   auto a = builder.addModuleInput("a", Type::i32());

@@ -11,13 +11,11 @@ using namespace loom::adg;
 int main() {
   ADGBuilder builder("map_tag_remap");
 
-  auto mt = builder.newMapTag("map_tag_0")
+  InstanceHandle inst = builder.newMapTag("mt0")
       .setValueType(Type::i32())
       .setInputTagType(Type::iN(4))
       .setOutputTagType(Type::iN(2))
       .setTableSize(4);
-
-  auto inst = builder.clone(mt, "mt0");
 
   auto in0 = builder.addModuleInput("in",
       Type::tagged(Type::i32(), Type::iN(4)));

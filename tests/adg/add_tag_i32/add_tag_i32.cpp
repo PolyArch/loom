@@ -11,11 +11,9 @@ using namespace loom::adg;
 int main() {
   ADGBuilder builder("add_tag_i32");
 
-  auto at = builder.newAddTag("add_tag_0")
+  InstanceHandle inst = builder.newAddTag("at0")
       .setValueType(Type::i32())
       .setTagType(Type::iN(4));
-
-  auto inst = builder.clone(at, "at0");
 
   auto in0 = builder.addModuleInput("val", Type::i32());
   auto out0 = builder.addModuleOutput("tagged",

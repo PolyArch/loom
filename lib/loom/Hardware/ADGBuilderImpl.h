@@ -164,6 +164,28 @@ struct ModulePort {
   bool isInput;
 };
 
+/// Internal port type representation that can encode either a scalar Type
+/// or a MemrefType. Used for type checking in validation and generation.
+struct PortType {
+  Type scalarType = Type::i32();
+  bool isMemref = false;
+  MemrefType memrefType = MemrefType::dynamic1D(Type::i32());
+
+  static PortType scalar(Type t) { return {t, false, MemrefType::dynamic1D(Type::i32())}; }
+  static PortType memref(MemrefType m) { return {Type::index(), true, m}; }
+
+  std::string toMLIR() const {
+    return isMemref ? memrefType.toMLIR() : scalarType.toMLIR();
+  }
+
+  bool matches(const PortType &other) const {
+    if (isMemref != other.isMemref) return false;
+    if (isMemref)
+      return memrefType.toMLIR() == other.memrefType.toMLIR();
+    return scalarType == other.scalarType;
+  }
+};
+
 struct InputConn {
   unsigned portIdx;
   unsigned instIdx;
@@ -223,6 +245,10 @@ struct ADGBuilder::Impl {
   Type getInstanceInputType(unsigned instIdx, int port) const;
   /// Get the output port type for an instance.
   Type getInstanceOutputType(unsigned instIdx, int port) const;
+  /// Get the output port type including memref distinction.
+  PortType getInstanceOutputPortType(unsigned instIdx, int port) const;
+  /// Get the input port type including memref distinction.
+  PortType getInstanceInputPortType(unsigned instIdx, int port) const;
 
   /// Generate the PE body MLIR text for a PEDef.
   std::string generatePEBody(const PEDef &pe) const;

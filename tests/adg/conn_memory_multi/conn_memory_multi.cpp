@@ -11,7 +11,8 @@ using namespace loom::adg;
 int main() {
   ADGBuilder builder("conn_memory_multi");
 
-  auto tagType = Type::iN(4);
+  // 2 load + 2 store -> maxCount=2, tag width = ceil(log2(2)) = 1 bit
+  auto tagType = Type::iN(1);
   auto taggedIndex = Type::tagged(Type::index(), tagType);
   auto taggedData = Type::tagged(Type::i32(), tagType);
   auto taggedNone = Type::tagged(Type::none(), tagType);

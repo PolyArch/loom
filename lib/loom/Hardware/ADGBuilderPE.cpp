@@ -357,8 +357,13 @@ AddTagBuilder &AddTagBuilder::setTagType(Type type) {
   return *this;
 }
 
-AddTagBuilder::operator AddTagHandle() const {
-  return AddTagHandle{defId_};
+AddTagBuilder::operator InstanceHandle() const {
+  // Auto-instantiate: create both definition and instance.
+  unsigned id = builder_->impl_->instances.size();
+  builder_->impl_->instances.push_back(
+      {ModuleKind::AddTag, defId_,
+       builder_->impl_->addTagDefs[defId_].name});
+  return InstanceHandle{id};
 }
 
 //===----------------------------------------------------------------------===//
@@ -388,8 +393,12 @@ MapTagBuilder &MapTagBuilder::setTableSize(unsigned size) {
   return *this;
 }
 
-MapTagBuilder::operator MapTagHandle() const {
-  return MapTagHandle{defId_};
+MapTagBuilder::operator InstanceHandle() const {
+  unsigned id = builder_->impl_->instances.size();
+  builder_->impl_->instances.push_back(
+      {ModuleKind::MapTag, defId_,
+       builder_->impl_->mapTagDefs[defId_].name});
+  return InstanceHandle{id};
 }
 
 //===----------------------------------------------------------------------===//
@@ -404,8 +413,12 @@ DelTagBuilder &DelTagBuilder::setInputType(Type type) {
   return *this;
 }
 
-DelTagBuilder::operator DelTagHandle() const {
-  return DelTagHandle{defId_};
+DelTagBuilder::operator InstanceHandle() const {
+  unsigned id = builder_->impl_->instances.size();
+  builder_->impl_->instances.push_back(
+      {ModuleKind::DelTag, defId_,
+       builder_->impl_->delTagDefs[defId_].name});
+  return InstanceHandle{id};
 }
 
 } // namespace adg

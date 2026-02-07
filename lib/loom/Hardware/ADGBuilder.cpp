@@ -195,27 +195,6 @@ InstanceHandle ADGBuilder::clone(StorePEHandle source,
   return InstanceHandle{id};
 }
 
-InstanceHandle ADGBuilder::clone(AddTagHandle source,
-                                 const std::string &instanceName) {
-  unsigned id = impl_->instances.size();
-  impl_->instances.push_back({ModuleKind::AddTag, source.id, instanceName});
-  return InstanceHandle{id};
-}
-
-InstanceHandle ADGBuilder::clone(MapTagHandle source,
-                                 const std::string &instanceName) {
-  unsigned id = impl_->instances.size();
-  impl_->instances.push_back({ModuleKind::MapTag, source.id, instanceName});
-  return InstanceHandle{id};
-}
-
-InstanceHandle ADGBuilder::clone(DelTagHandle source,
-                                 const std::string &instanceName) {
-  unsigned id = impl_->instances.size();
-  impl_->instances.push_back({ModuleKind::DelTag, source.id, instanceName});
-  return InstanceHandle{id};
-}
-
 InstanceHandle ADGBuilder::clone(ModuleHandle source,
                                  const std::string &instanceName) {
   static const ModuleKind kindMap[] = {
@@ -223,8 +202,7 @@ InstanceHandle ADGBuilder::clone(ModuleHandle source,
       ModuleKind::TemporalPE,    ModuleKind::TemporalSwitch,
       ModuleKind::Memory,        ModuleKind::ExtMemory,
       ModuleKind::ConstantPE,    ModuleKind::LoadPE,
-      ModuleKind::StorePE,       ModuleKind::AddTag,
-      ModuleKind::MapTag,        ModuleKind::DelTag,
+      ModuleKind::StorePE,
   };
   unsigned id = impl_->instances.size();
   impl_->instances.push_back({kindMap[source.kind], source.id, instanceName});
@@ -293,6 +271,9 @@ void ADGBuilder::connectToModuleInput(PortHandle port, InstanceHandle dst,
                                       int dstPort) {
   assert(port.id < impl_->ports.size() && "invalid port handle");
   assert(dst.id < impl_->instances.size() && "invalid instance handle");
+  assert(dstPort >= 0 &&
+         (unsigned)dstPort < impl_->getInstanceInputCount(dst.id) &&
+         "destination port out of range");
   impl_->inputConns.push_back({port.id, dst.id, dstPort});
 }
 
@@ -300,6 +281,9 @@ void ADGBuilder::connectToModuleOutput(InstanceHandle src, int srcPort,
                                        PortHandle port) {
   assert(src.id < impl_->instances.size() && "invalid instance handle");
   assert(port.id < impl_->ports.size() && "invalid port handle");
+  assert(srcPort >= 0 &&
+         (unsigned)srcPort < impl_->getInstanceOutputCount(src.id) &&
+         "source port out of range");
   impl_->outputConns.push_back({src.id, srcPort, port.id});
 }
 
@@ -312,9 +296,17 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
   assert(rows > 0 && "rows must be positive");
   assert(cols > 0 && "cols must be positive");
 
+  // Validate switch port count. Need at least 5 ports for N/E/S/W + PE-local.
+  auto &swDef = impl_->switchDefs[swTemplate.id];
+  assert(swDef.numIn >= 5 && "switch needs >= 5 input ports for mesh topology");
+  assert(swDef.numOut >= 5 &&
+         "switch needs >= 5 output ports for mesh topology");
+
   MeshResult result;
   result.peGrid.resize(rows, std::vector<InstanceHandle>(cols));
+  result.swGrid.resize(rows, std::vector<InstanceHandle>(cols));
 
+  // Create PE instances first (they appear first in topological order).
   for (int r = 0; r < rows; ++r) {
     for (int c = 0; c < cols; ++c) {
       std::string peName =
@@ -323,10 +315,98 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
     }
   }
 
-  // Note: switches are not instantiated as part of the mesh grid. In MLIR SSA
-  // form, all connections must form a DAG. The user creates unidirectional PE
-  // connections using the returned peGrid handles. The topology parameter and
-  // swTemplate record the intended topology for documentation/metadata.
+  // Create switch instances (they follow PEs in topological order).
+  for (int r = 0; r < rows; ++r) {
+    for (int c = 0; c < cols; ++c) {
+      std::string swName =
+          "sw_" + std::to_string(r) + "_" + std::to_string(c);
+      result.swGrid[r][c] = clone(swTemplate, swName);
+    }
+  }
+
+  // Wire PE output 0 -> local switch port 4 (PE-local input).
+  // Data flows from PEs into the switch network.
+  for (int r = 0; r < rows; ++r) {
+    for (int c = 0; c < cols; ++c) {
+      connectPorts(result.peGrid[r][c], 0, result.swGrid[r][c], 4);
+    }
+  }
+
+  // Switch-to-switch connections.
+  // Switch port ordering: N=0, E=1, S=2, W=3, PE-local=4+
+  // Only forward connections (row-major scan order) are created as internal
+  // connections. Wraparound edges (torus/diagonal-torus) are NOT created
+  // as internal connections because they create cycles that MLIR SSA cannot
+  // represent. Instead, they become module-level I/O via the auto-fill below.
+  bool diagonal = (topology == Topology::DiagonalMesh ||
+                   topology == Topology::DiagonalTorus);
+
+  for (int r = 0; r < rows; ++r) {
+    for (int c = 0; c < cols; ++c) {
+      // East: SW[r][c] out 1 -> SW[r][c+1] in 3
+      if (c + 1 < cols) {
+        connectPorts(result.swGrid[r][c], 1, result.swGrid[r][c + 1], 3);
+      }
+
+      // South: SW[r][c] out 2 -> SW[r+1][c] in 0
+      if (r + 1 < rows) {
+        connectPorts(result.swGrid[r][c], 2, result.swGrid[r + 1][c], 0);
+      }
+
+      if (diagonal) {
+        // SE diagonal: SW[r][c] out 5 -> SW[r+1][c+1] in 5
+        if (swDef.numOut > 5 && swDef.numIn > 5) {
+          if (r + 1 < rows && c + 1 < cols) {
+            connectPorts(result.swGrid[r][c], 5,
+                         result.swGrid[r + 1][c + 1], 5);
+          }
+        }
+
+        // SW diagonal: SW[r][c] out 6 -> SW[r+1][c-1] in 6
+        if (swDef.numOut > 6 && swDef.numIn > 6) {
+          if (r + 1 < rows && c - 1 >= 0) {
+            connectPorts(result.swGrid[r][c], 6,
+                         result.swGrid[r + 1][c - 1], 6);
+          }
+        }
+      }
+    }
+  }
+
+  // Connect unconnected switch input ports to auto-generated module inputs.
+  // This ensures the MLIR generator has valid operands for all switch ports.
+  // Use a unique mesh ID to avoid name collisions when multiple buildMesh
+  // calls are made.
+  static unsigned meshCounter = 0;
+  unsigned meshId = meshCounter++;
+  Type swPortType = swDef.portType;
+  for (int r = 0; r < rows; ++r) {
+    for (int c = 0; c < cols; ++c) {
+      unsigned swInst = result.swGrid[r][c].id;
+      unsigned numIn = impl_->getInstanceInputCount(swInst);
+      // Check which input ports are already connected.
+      std::vector<bool> connected(numIn, false);
+      for (const auto &conn : impl_->internalConns) {
+        if (conn.dstInst == swInst)
+          connected[conn.dstPort] = true;
+      }
+      for (const auto &conn : impl_->inputConns) {
+        if (conn.instIdx == swInst)
+          connected[conn.dstPort] = true;
+      }
+      // Create module inputs for unconnected ports.
+      for (unsigned p = 0; p < numIn; ++p) {
+        if (!connected[p]) {
+          std::string portName =
+              "m" + std::to_string(meshId) + "_sw_" +
+              std::to_string(r) + "_" + std::to_string(c) +
+              "_in" + std::to_string(p);
+          auto mPort = addModuleInput(portName, swPortType);
+          connectToModuleInput(mPort, result.swGrid[r][c], p);
+        }
+      }
+    }
+  }
 
   return result;
 }
@@ -520,9 +600,76 @@ ValidationResult ADGBuilder::validateADG() {
     addError("COMP_MODULE_EMPTY_BODY",
              "module has no instances", "module @" + impl_->moduleName);
 
-  // Note: cycle detection is intentionally omitted. ADG architectures use
-  // bidirectional switch connections (PE<->SW, SW<->SW) which form valid
-  // routing cycles. The MLIR verifier handles structural correctness.
+  // Graph-level validation: check type compatibility of all connections.
+  for (const auto &conn : impl_->internalConns) {
+    if (conn.srcInst >= impl_->instances.size() ||
+        conn.dstInst >= impl_->instances.size())
+      continue;
+    auto srcType = impl_->getInstanceOutputPortType(conn.srcInst, conn.srcPort);
+    auto dstType = impl_->getInstanceInputPortType(conn.dstInst, conn.dstPort);
+    if (!srcType.matches(dstType)) {
+      std::string loc =
+          impl_->instances[conn.srcInst].name + ":" +
+          std::to_string(conn.srcPort) + " -> " +
+          impl_->instances[conn.dstInst].name + ":" +
+          std::to_string(conn.dstPort);
+      addError("COMP_TYPE_MISMATCH",
+               "type mismatch: " + srcType.toMLIR() + " vs " + dstType.toMLIR(),
+               loc);
+    }
+  }
+
+  // Check module-input-to-instance type compatibility.
+  for (const auto &conn : impl_->inputConns) {
+    if (conn.portIdx >= impl_->ports.size() ||
+        conn.instIdx >= impl_->instances.size())
+      continue;
+    const auto &port = impl_->ports[conn.portIdx];
+    PortType srcType = port.isMemref ? PortType::memref(port.memrefType)
+                                     : PortType::scalar(port.type);
+    auto dstType = impl_->getInstanceInputPortType(conn.instIdx, conn.dstPort);
+    if (!srcType.matches(dstType)) {
+      std::string loc =
+          "%" + port.name + " -> " +
+          impl_->instances[conn.instIdx].name + ":" +
+          std::to_string(conn.dstPort);
+      addError("COMP_TYPE_MISMATCH",
+               "type mismatch: " + srcType.toMLIR() + " vs " + dstType.toMLIR(),
+               loc);
+    }
+  }
+
+  // Check instance-to-module-output type compatibility.
+  for (const auto &conn : impl_->outputConns) {
+    if (conn.instIdx >= impl_->instances.size() ||
+        conn.portIdx >= impl_->ports.size())
+      continue;
+    auto srcType = impl_->getInstanceOutputPortType(conn.instIdx, conn.srcPort);
+    const auto &port = impl_->ports[conn.portIdx];
+    PortType dstType = port.isMemref ? PortType::memref(port.memrefType)
+                                     : PortType::scalar(port.type);
+    if (!srcType.matches(dstType)) {
+      std::string loc =
+          impl_->instances[conn.instIdx].name + ":" +
+          std::to_string(conn.srcPort) + " -> %" + port.name;
+      addError("COMP_TYPE_MISMATCH",
+               "type mismatch: " + srcType.toMLIR() + " vs " + dstType.toMLIR(),
+               loc);
+    }
+  }
+
+  // Check that every module output port has a source connection.
+  for (unsigned i = 0; i < impl_->ports.size(); ++i) {
+    if (impl_->ports[i].isInput) continue;
+    bool found = false;
+    for (const auto &conn : impl_->outputConns) {
+      if (conn.portIdx == i) { found = true; break; }
+    }
+    if (!found)
+      addError("COMP_OUTPUT_UNCONNECTED",
+               "module output %" + impl_->ports[i].name + " has no source",
+               "module @" + impl_->moduleName);
+  }
 
   return result;
 }
@@ -844,22 +991,70 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
   case ModuleKind::Memory: {
     auto &def = memoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
+    bool isTaggedMem = def.ldCount > 1 || def.stCount > 1;
+    unsigned tagWidth = 4;
+    if (isTaggedMem) {
+      unsigned maxCount = std::max(def.ldCount, def.stCount);
+      tagWidth = 1;
+      while ((1u << tagWidth) < maxCount) tagWidth++;
+      if (tagWidth < 1) tagWidth = 1;
+    }
+    Type tagType = Type::iN(tagWidth);
+
     unsigned idx = 0;
-    if (!def.isPrivate) { if (port == 0) return elemType; idx++; }
+    // Non-private memory port 0 is memref -- return index as placeholder for
+    // scalar type query (the PortType variant returns the actual memref).
+    if (!def.isPrivate) { if (port == 0) return Type::index(); idx++; }
+    // Output layout: [memref?] [lddata * ldCount] [lddone] [stdone?]
     if ((unsigned)port < idx + def.ldCount)
-      return elemType;
-    return Type::none();
+      return isTaggedMem ? Type::tagged(elemType, tagType) : elemType;
+    // Remaining are done tokens.
+    return isTaggedMem ? Type::tagged(Type::none(), tagType) : Type::none();
   }
   case ModuleKind::ExtMemory: {
     auto &def = extMemoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
+    bool isTaggedMem = def.ldCount > 1 || def.stCount > 1;
+    unsigned tagWidth = 4;
+    if (isTaggedMem) {
+      unsigned maxCount = std::max(def.ldCount, def.stCount);
+      tagWidth = 1;
+      while ((1u << tagWidth) < maxCount) tagWidth++;
+      if (tagWidth < 1) tagWidth = 1;
+    }
+    Type tagType = Type::iN(tagWidth);
+
+    // Output layout: [lddata * ldCount] [lddone] [stdone?]
     if ((unsigned)port < def.ldCount)
-      return elemType;
-    return Type::none();
+      return isTaggedMem ? Type::tagged(elemType, tagType) : elemType;
+    return isTaggedMem ? Type::tagged(Type::none(), tagType) : Type::none();
   }
   default:
     return Type::i32();
   }
+}
+
+PortType ADGBuilder::Impl::getInstanceOutputPortType(unsigned instIdx,
+                                                     int port) const {
+  const auto &inst = instances[instIdx];
+  // Memory non-private port 0 is memref.
+  if (inst.kind == ModuleKind::Memory) {
+    auto &def = memoryDefs[inst.defIdx];
+    if (!def.isPrivate && port == 0)
+      return PortType::memref(def.shape);
+  }
+  return PortType::scalar(getInstanceOutputType(instIdx, port));
+}
+
+PortType ADGBuilder::Impl::getInstanceInputPortType(unsigned instIdx,
+                                                    int port) const {
+  const auto &inst = instances[instIdx];
+  // ExtMemory port 0 is memref.
+  if (inst.kind == ModuleKind::ExtMemory && port == 0) {
+    auto &def = extMemoryDefs[inst.defIdx];
+    return PortType::memref(def.shape);
+  }
+  return PortType::scalar(getInstanceInputType(instIdx, port));
 }
 
 } // namespace adg

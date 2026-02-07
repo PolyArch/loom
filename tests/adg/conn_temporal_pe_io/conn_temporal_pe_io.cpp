@@ -27,17 +27,13 @@ int main() {
       .setInterface(taggedType)
       .addFU(fu);
 
-  auto at = builder.newAddTag("tagger")
-      .setValueType(Type::i32())
-      .setTagType(tagType);
-
-  auto dt = builder.newDelTag("untagger")
-      .setInputType(taggedType);
-
-  auto at0 = builder.clone(at, "tag0");
-  auto at1 = builder.clone(at, "tag1");
+  InstanceHandle at0 = builder.newAddTag("tag0")
+      .setValueType(Type::i32()).setTagType(tagType);
+  InstanceHandle at1 = builder.newAddTag("tag1")
+      .setValueType(Type::i32()).setTagType(tagType);
   auto tpe0 = builder.clone(tpe, "tpe0");
-  auto dt0 = builder.clone(dt, "untag0");
+  InstanceHandle dt0 = builder.newDelTag("untag0")
+      .setInputType(taggedType);
 
   auto a = builder.addModuleInput("a", Type::i32());
   auto b = builder.addModuleInput("b", Type::i32());

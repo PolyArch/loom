@@ -26,20 +26,19 @@ int main() {
       .setPortCount(5, 5)
       .setType(taggedType);
 
-  auto at = builder.newAddTag("tagger")
-      .setValueType(Type::i32())
-      .setTagType(tagType);
-
-  auto dt = builder.newDelTag("untagger")
-      .setInputType(taggedType);
-
   auto mesh = builder.buildMesh(2, 2, pe, sw, Topology::Mesh);
-  auto at0 = builder.clone(at, "tag0");
-  auto at1 = builder.clone(at, "tag1");
-  auto at2 = builder.clone(at, "tag2");
-  auto at3 = builder.clone(at, "tag3");
-  auto at4 = builder.clone(at, "tag4");
-  auto dt0 = builder.clone(dt, "untag0");
+  InstanceHandle at0 = builder.newAddTag("tag0")
+      .setValueType(Type::i32()).setTagType(tagType);
+  InstanceHandle at1 = builder.newAddTag("tag1")
+      .setValueType(Type::i32()).setTagType(tagType);
+  InstanceHandle at2 = builder.newAddTag("tag2")
+      .setValueType(Type::i32()).setTagType(tagType);
+  InstanceHandle at3 = builder.newAddTag("tag3")
+      .setValueType(Type::i32()).setTagType(tagType);
+  InstanceHandle at4 = builder.newAddTag("tag4")
+      .setValueType(Type::i32()).setTagType(tagType);
+  InstanceHandle dt0 = builder.newDelTag("untag0")
+      .setInputType(taggedType);
 
   // Module I/O: native inputs, native output
   auto a = builder.addModuleInput("a", Type::i32());

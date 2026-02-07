@@ -11,16 +11,6 @@ using namespace loom::adg;
 int main() {
   ADGBuilder builder("conn_tag_map_chain");
 
-  auto at = builder.newAddTag("tagger")
-      .setValueType(Type::i32())
-      .setTagType(Type::iN(4));
-
-  auto mt = builder.newMapTag("remapper")
-      .setValueType(Type::i32())
-      .setInputTagType(Type::iN(4))
-      .setOutputTagType(Type::iN(2))
-      .setTableSize(16);
-
   auto taggedI2 = Type::tagged(Type::i32(), Type::iN(2));
 
   auto adder = builder.newPE("adder")
@@ -31,15 +21,19 @@ int main() {
       .setOutputPorts({taggedI2})
       .addOp("arith.addi");
 
-  auto dt = builder.newDelTag("untagger")
-      .setInputType(taggedI2);
-
-  auto at0 = builder.clone(at, "tag0");
-  auto at1 = builder.clone(at, "tag1");
-  auto mt0 = builder.clone(mt, "map0");
-  auto mt1 = builder.clone(mt, "map1");
+  InstanceHandle at0 = builder.newAddTag("tag0")
+      .setValueType(Type::i32()).setTagType(Type::iN(4));
+  InstanceHandle at1 = builder.newAddTag("tag1")
+      .setValueType(Type::i32()).setTagType(Type::iN(4));
+  InstanceHandle mt0 = builder.newMapTag("map0")
+      .setValueType(Type::i32()).setInputTagType(Type::iN(4))
+      .setOutputTagType(Type::iN(2)).setTableSize(16);
+  InstanceHandle mt1 = builder.newMapTag("map1")
+      .setValueType(Type::i32()).setInputTagType(Type::iN(4))
+      .setOutputTagType(Type::iN(2)).setTableSize(16);
   auto add0 = builder.clone(adder, "add0");
-  auto dt0 = builder.clone(dt, "untag0");
+  InstanceHandle dt0 = builder.newDelTag("untag0")
+      .setInputType(taggedI2);
 
   auto a = builder.addModuleInput("a", Type::i32());
   auto b = builder.addModuleInput("b", Type::i32());

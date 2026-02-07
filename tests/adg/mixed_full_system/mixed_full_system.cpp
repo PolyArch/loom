@@ -35,20 +35,16 @@ int main() {
   auto cpe = builder.newConstantPE("const_gen")
       .setOutputType(Type::i32());
 
-  auto at = builder.newAddTag("tagger")
-      .setValueType(Type::i32())
-      .setTagType(tagType);
-
-  auto dt = builder.newDelTag("untagger")
-      .setInputType(taggedType);
-
   // Build 2x2 mesh (tagged)
   auto mesh = builder.buildMesh(2, 2, pe, sw, Topology::Mesh);
   auto mem0 = builder.clone(mem, "mem0");
   auto c0 = builder.clone(cpe, "c0");
-  auto at0 = builder.clone(at, "tag0");
-  auto at1 = builder.clone(at, "tag1");
-  auto dt0 = builder.clone(dt, "untag0");
+  InstanceHandle at0 = builder.newAddTag("tag0")
+      .setValueType(Type::i32()).setTagType(tagType);
+  InstanceHandle at1 = builder.newAddTag("tag1")
+      .setValueType(Type::i32()).setTagType(tagType);
+  InstanceHandle dt0 = builder.newDelTag("untag0")
+      .setInputType(taggedType);
 
   // Module I/O
   auto ctrl = builder.addModuleInput("ctrl", Type::none());
@@ -61,9 +57,12 @@ int main() {
   auto lddone = builder.addModuleOutput("lddone", Type::none());
 
   // Additional add_tag instances for chaining
-  auto at2 = builder.clone(at, "tag2");
-  auto at3 = builder.clone(at, "tag3");
-  auto at4 = builder.clone(at, "tag4");
+  InstanceHandle at2 = builder.newAddTag("tag2")
+      .setValueType(Type::i32()).setTagType(tagType);
+  InstanceHandle at3 = builder.newAddTag("tag3")
+      .setValueType(Type::i32()).setTagType(tagType);
+  InstanceHandle at4 = builder.newAddTag("tag4")
+      .setValueType(Type::i32()).setTagType(tagType);
 
   // Constant PE: ctrl -> const value
   builder.connectToModuleInput(ctrl, c0, 0);

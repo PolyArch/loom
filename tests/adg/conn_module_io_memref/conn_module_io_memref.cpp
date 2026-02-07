@@ -26,8 +26,8 @@ int main() {
   auto em0 = builder.clone(emem, "em0");
   auto add0 = builder.clone(adder, "add0");
 
-  // Static memref module input passed to extmemory
-  auto mref = builder.addModuleInput("mem", MemrefType::static1D(256, Type::i32()));
+  // Dynamic memref module input passed to extmemory
+  auto mref = builder.addModuleInput("mem", MemrefType::dynamic1D(Type::i32()));
   auto addr = builder.addModuleInput("addr", Type::index());
   auto b = builder.addModuleInput("b", Type::i32());
   auto result = builder.addModuleOutput("result", Type::i32());
