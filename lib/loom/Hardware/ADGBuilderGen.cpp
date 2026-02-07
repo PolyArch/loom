@@ -263,7 +263,7 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
        << ", %ctrl: " << tnStr << ")\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
-    if (def.queueDepth > 0 && def.hwType == HardwareType::TagTransparent)
+    if (def.hwType == HardwareType::TagTransparent)
       os << ", lqDepth = " << def.queueDepth;
     os << "]\n";
     os << "    {output_tag = [0 : " << tagType.toMLIR()
@@ -310,7 +310,7 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
        << ", %ctrl: " << tnStr << ")\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
-    if (def.queueDepth > 0 && def.hwType == HardwareType::TagTransparent)
+    if (def.hwType == HardwareType::TagTransparent)
       os << ", sqDepth = " << def.queueDepth;
     os << "]\n";
     os << "    {output_tag = [0 : " << tagType.toMLIR()
@@ -721,13 +721,11 @@ std::string ADGBuilder::Impl::generateMLIR() const {
              << intMax << " : i16]";
           if (inst.kind == ModuleKind::LoadPE) {
             auto &lpDef = loadPEDefs[inst.defIdx];
-            if (lpDef.queueDepth > 0 &&
-                lpDef.hwType == HardwareType::TagTransparent)
+            if (lpDef.hwType == HardwareType::TagTransparent)
               os << ", lqDepth = " << lpDef.queueDepth;
           } else if (inst.kind == ModuleKind::StorePE) {
             auto &spDef = storePEDefs[inst.defIdx];
-            if (spDef.queueDepth > 0 &&
-                spDef.hwType == HardwareType::TagTransparent)
+            if (spDef.hwType == HardwareType::TagTransparent)
               os << ", sqDepth = " << spDef.queueDepth;
           }
           os << "]\n";
@@ -784,6 +782,15 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         case ModuleKind::PE: {
           auto &pd = peDefs[inst.defIdx];
           if (!pd.bodyMLIR.empty()) {
+            // Inline PE regions need an explicit ^bb0 header with value types.
+            // Emit a fresh header, then append the transformed body statements
+            // (which renames user args to %argN).
+            os << "  ^bb0(";
+            for (size_t i = 0; i < bodyInTypes.size(); ++i) {
+              if (i > 0) os << ", ";
+              os << "%arg" << i << ": " << bodyInTypes[i].toMLIR();
+            }
+            os << "):\n";
             os << transformBodyMLIR(pd.bodyMLIR, bodyInTypes);
           } else {
             os << "  ^bb0(";
