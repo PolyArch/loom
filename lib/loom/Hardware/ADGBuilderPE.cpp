@@ -362,12 +362,13 @@ AddTagBuilder &AddTagBuilder::setTagType(Type type) {
 }
 
 AddTagBuilder::operator InstanceHandle() const {
-  // Auto-instantiate: create both definition and instance.
-  unsigned id = builder_->impl_->instances.size();
-  builder_->impl_->instances.push_back(
-      {ModuleKind::AddTag, defId_,
-       builder_->impl_->addTagDefs[defId_].name});
-  return InstanceHandle{id};
+  if (instanceId_ < 0) {
+    instanceId_ = (int)builder_->impl_->instances.size();
+    builder_->impl_->instances.push_back(
+        {ModuleKind::AddTag, defId_,
+         builder_->impl_->addTagDefs[defId_].name});
+  }
+  return InstanceHandle{(unsigned)instanceId_};
 }
 
 //===----------------------------------------------------------------------===//
@@ -398,11 +399,13 @@ MapTagBuilder &MapTagBuilder::setTableSize(unsigned size) {
 }
 
 MapTagBuilder::operator InstanceHandle() const {
-  unsigned id = builder_->impl_->instances.size();
-  builder_->impl_->instances.push_back(
-      {ModuleKind::MapTag, defId_,
-       builder_->impl_->mapTagDefs[defId_].name});
-  return InstanceHandle{id};
+  if (instanceId_ < 0) {
+    instanceId_ = (int)builder_->impl_->instances.size();
+    builder_->impl_->instances.push_back(
+        {ModuleKind::MapTag, defId_,
+         builder_->impl_->mapTagDefs[defId_].name});
+  }
+  return InstanceHandle{(unsigned)instanceId_};
 }
 
 //===----------------------------------------------------------------------===//
@@ -422,11 +425,13 @@ DelTagBuilder &DelTagBuilder::setInputType(Type type) {
 }
 
 DelTagBuilder::operator InstanceHandle() const {
-  unsigned id = builder_->impl_->instances.size();
-  builder_->impl_->instances.push_back(
-      {ModuleKind::DelTag, defId_,
-       builder_->impl_->delTagDefs[defId_].name});
-  return InstanceHandle{id};
+  if (instanceId_ < 0) {
+    instanceId_ = (int)builder_->impl_->instances.size();
+    builder_->impl_->instances.push_back(
+        {ModuleKind::DelTag, defId_,
+         builder_->impl_->delTagDefs[defId_].name});
+  }
+  return InstanceHandle{(unsigned)instanceId_};
 }
 
 } // namespace adg

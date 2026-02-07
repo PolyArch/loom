@@ -784,7 +784,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         case ModuleKind::PE: {
           auto &pd = peDefs[inst.defIdx];
           if (!pd.bodyMLIR.empty()) {
-            os << pd.bodyMLIR;
+            os << transformBodyMLIR(pd.bodyMLIR, bodyInTypes);
           } else {
             os << "  ^bb0(";
             for (size_t i = 0; i < bodyInTypes.size(); ++i) {

@@ -371,6 +371,8 @@ public:
   AddTagBuilder &setTagType(Type type);
 
   /// Implicitly converts to InstanceHandle (auto-instantiation).
+  /// Creates the instance on first conversion; subsequent conversions return
+  /// the same handle.
   operator InstanceHandle() const;
 
 private:
@@ -378,6 +380,7 @@ private:
   AddTagBuilder(ADGBuilder *builder, unsigned defId);
   ADGBuilder *builder_;
   unsigned defId_;
+  mutable int instanceId_ = -1;
 };
 
 /// Builder for configuring a map_tag operation (auto-instantiated).
@@ -389,6 +392,8 @@ public:
   MapTagBuilder &setTableSize(unsigned size);
 
   /// Implicitly converts to InstanceHandle (auto-instantiation).
+  /// Creates the instance on first conversion; subsequent conversions return
+  /// the same handle.
   operator InstanceHandle() const;
 
 private:
@@ -396,6 +401,7 @@ private:
   MapTagBuilder(ADGBuilder *builder, unsigned defId);
   ADGBuilder *builder_;
   unsigned defId_;
+  mutable int instanceId_ = -1;
 };
 
 /// Builder for configuring a del_tag operation (auto-instantiated).
@@ -404,6 +410,8 @@ public:
   DelTagBuilder &setInputType(Type type);
 
   /// Implicitly converts to InstanceHandle (auto-instantiation).
+  /// Creates the instance on first conversion; subsequent conversions return
+  /// the same handle.
   operator InstanceHandle() const;
 
 private:
@@ -411,6 +419,7 @@ private:
   DelTagBuilder(ADGBuilder *builder, unsigned defId);
   ADGBuilder *builder_;
   unsigned defId_;
+  mutable int instanceId_ = -1;
 };
 
 //===----------------------------------------------------------------------===//
