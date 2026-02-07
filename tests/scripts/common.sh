@@ -98,6 +98,51 @@ loom_find_sources() {
   find "$1" -maxdepth 1 -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) | sort
 }
 
+# Discover app/test directories, exit with error if none found.
+# Sets the caller's array variable (name passed as $2) to the list of directories.
+loom_discover_dirs() {
+  local base_dir="$1"
+  local -n _out_dirs="$2"
+
+  if [[ ! -d "${base_dir}" ]]; then
+    echo "error: directory not found: ${base_dir}" >&2
+    exit 1
+  fi
+
+  mapfile -t _out_dirs < <(loom_find_test_dirs "${base_dir}")
+  if [[ ${#_out_dirs[@]} -eq 0 ]]; then
+    echo "error: no subdirectories found under ${base_dir}" >&2
+    exit 1
+  fi
+}
+
+# Build a space-separated string of relative source paths for a given directory.
+# Returns empty string (and returns 1) if no sources found.
+loom_rel_sources() {
+  local dir="$1"
+  local result=""
+
+  mapfile -t _sources < <(loom_find_sources "${dir}")
+  if [[ ${#_sources[@]} -eq 0 ]]; then
+    return 1
+  fi
+
+  for src in "${_sources[@]}"; do
+    result+=" $(loom_relpath "${src}")"
+  done
+  echo "${result}"
+}
+
+# Parse an optional --run flag. Prints "true" or "false".
+# Caller is responsible for shifting if the flag was present.
+loom_parse_run_flag() {
+  if [[ "${1:-}" == "--run" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
 # --- Parallel File Generation ---
 
 loom_write_parallel_header() {
@@ -123,10 +168,30 @@ EOF
 
 # --- Execution ---
 
+# High-level wrapper: run parallel file, print summary, write result, exit on failure.
+# Usage: loom_run_suite <parallel_file> <suite_name> <log_tag> [timeout_sec]
+loom_run_suite() {
+  local parallel_file="$1"
+  local suite_name="$2"
+  local log_tag="$3"
+  local timeout_sec="${4:-${LOOM_TIMEOUT:-10}}"
+  local max_jobs
+  max_jobs=$(loom_resolve_jobs)
+
+  loom_run_parallel "${parallel_file}" "${timeout_sec}" "${max_jobs}" "${log_tag}"
+  loom_print_summary "${suite_name}"
+  loom_write_result "${suite_name}"
+
+  if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
+    exit 1
+  fi
+}
+
 loom_run_parallel() {
   local parallel_file="$1"
   local timeout_sec="${2:-10}"
   local max_jobs="${3:-$(loom_resolve_jobs)}"
+  local log_tag="${4:-test}"
   local joblog
   joblog=$(mktemp)
 
@@ -136,8 +201,27 @@ loom_run_parallel() {
   LOOM_TOTAL=0
   LOOM_FAILED_NAMES=()
 
+  # Create wrapped parallel file: redirect per-job stdout/stderr to Output files
+  local wrapped_file
+  wrapped_file=$(mktemp)
+
+  while IFS= read -r line; do
+    if [[ "${line}" =~ ^[[:space:]]*(#|$) ]]; then
+      continue
+    fi
+    if [[ "${line}" =~ ^mkdir\ -p\ ([^[:space:]]+)\ \&\&\ (.*) ]]; then
+      local out_dir="${BASH_REMATCH[1]}"
+      local rest="${BASH_REMATCH[2]}"
+      local tname="${out_dir%/Output}"
+      tname=$(basename "${tname}")
+      echo "mkdir -p ${out_dir} && ( ${rest} ) >${out_dir}/${tname}.${log_tag}.out 2>${out_dir}/${tname}.${log_tag}.log" >> "${wrapped_file}"
+    else
+      echo "${line}" >> "${wrapped_file}"
+    fi
+  done < "${parallel_file}"
+
   parallel --joblog "${joblog}" --timeout "${timeout_sec}" \
-    -j "${max_jobs}" --halt never --group < "${parallel_file}" || true
+    -j "${max_jobs}" --halt never < "${wrapped_file}" || true
 
   # Parse joblog: columns are Seq Host Starttime JobRuntime Send Receive Exitval Signal Command
   local first=true
@@ -167,7 +251,7 @@ loom_run_parallel() {
     fi
   done < "${joblog}"
 
-  rm -f "${joblog}"
+  rm -f "${joblog}" "${wrapped_file}"
   export LOOM_PASS LOOM_FAIL LOOM_TIMEOUT LOOM_TOTAL LOOM_FAILED_NAMES
 }
 
@@ -175,9 +259,9 @@ loom_run_parallel() {
 
 loom_print_summary() {
   local suite_name="$1"
-  echo "${suite_name}: total: ${LOOM_TOTAL}, pass: ${LOOM_PASS}, fail: ${LOOM_FAIL}, timeout: ${LOOM_TIMEOUT}"
   if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
-    echo "failed:"
+    local fail_total=$((LOOM_FAIL + LOOM_TIMEOUT))
+    echo "${suite_name}: ${fail_total} failed"
     for name in "${LOOM_FAILED_NAMES[@]}"; do
       echo "  ${name}"
     done

@@ -19,7 +19,7 @@ if [[ "${1:-}" == "--single" ]]; then
   output_dir="${TEST_DIR}/Output"
   mkdir -p "${output_dir}"
 
-  mapfile -t sources < <(find "${TEST_DIR}" -maxdepth 1 -type f -name "*.cpp" | sort)
+  mapfile -t sources < <(loom_find_sources "${TEST_DIR}")
   if [[ ${#sources[@]} -eq 0 ]]; then
     exit 0
   fi
@@ -53,16 +53,8 @@ LOOM_BIN=$(loom_resolve_bin "${1:-${ROOT_DIR}/build/bin/loom}"); shift || true
 
 loom_require_parallel
 
-if [[ ! -d "${TESTS_DIR}" ]]; then
-  echo "error: tests directory not found: ${TESTS_DIR}" >&2
-  exit 1
-fi
-
-mapfile -t test_dirs < <(loom_find_test_dirs "${TESTS_DIR}")
-if [[ ${#test_dirs[@]} -eq 0 ]]; then
-  echo "error: no test directories found under ${TESTS_DIR}" >&2
-  exit 1
-fi
+test_dirs=()
+loom_discover_dirs "${TESTS_DIR}" test_dirs
 
 PARALLEL_FILE="${TESTS_DIR}/adg_test.parallel.sh"
 
@@ -73,19 +65,11 @@ loom_write_parallel_header "${PARALLEL_FILE}" \
   "Compiles and runs ADG test binaries, validates generated fabric MLIR files."
 
 for test_dir in "${test_dirs[@]}"; do
-  mapfile -t sources < <(find "${test_dir}" -maxdepth 1 -type f -name "*.cpp" | sort)
-  if [[ ${#sources[@]} -eq 0 ]]; then
-    continue
-  fi
+  rel_sources=$(loom_rel_sources "${test_dir}") || continue
 
   test_name=$(basename "${test_dir}")
   rel_test=$(loom_relpath "${test_dir}")
   rel_out="${rel_test}/Output"
-
-  rel_sources=""
-  for src in "${sources[@]}"; do
-    rel_sources+=" $(loom_relpath "${src}")"
-  done
 
   line="mkdir -p ${rel_out}"
   line+=" && ${rel_loom} --as-clang${rel_sources} -o ${rel_out}/${test_name}"
@@ -95,13 +79,4 @@ for test_dir in "${test_dirs[@]}"; do
   echo "${line}" >> "${PARALLEL_FILE}"
 done
 
-TIMEOUT_SEC=${LOOM_TIMEOUT:-30}
-MAX_JOBS=$(loom_resolve_jobs)
-
-loom_run_parallel "${PARALLEL_FILE}" "${TIMEOUT_SEC}" "${MAX_JOBS}"
-loom_print_summary "ADG"
-loom_write_result "ADG"
-
-if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
-  exit 1
-fi
+loom_run_suite "${PARALLEL_FILE}" "ADG" "adg" "30"

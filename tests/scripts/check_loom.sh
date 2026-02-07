@@ -16,28 +16,11 @@ loom_clean_results_dir
 
 any_failure=false
 
-echo ""
-echo "=== Fabric TDD ==="
 "${SCRIPT_DIR}/fabric_tdd.sh" "${LOOM_BIN}" "${LIT_PY}" || any_failure=true
-
-echo ""
-echo "=== ADG ==="
 "${SCRIPT_DIR}/adg_test.sh" "${LOOM_BIN}" || any_failure=true
-
-echo ""
-echo "=== LLVM Roundtrip ==="
 "${SCRIPT_DIR}/ll_roundtrip.sh" "${LOOM_BIN}" --run || any_failure=true
-
-echo ""
-echo "=== MLIR Roundtrip ==="
 "${SCRIPT_DIR}/mlir_roundtrip.sh" "${LOOM_BIN}" --run || any_failure=true
-
-echo ""
-echo "=== SCF Roundtrip ==="
 "${SCRIPT_DIR}/scf_roundtrip.sh" "${LOOM_BIN}" --run || any_failure=true
-
-echo ""
-echo "=== Handshake Ops Stat ==="
 "${SCRIPT_DIR}/handshake_ops_stat.sh" "${LOOM_BIN}" || any_failure=true
 
 echo ""

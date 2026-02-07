@@ -18,30 +18,22 @@ if [[ ! -d "${APPS_DIR}" ]]; then
   exit 1
 fi
 
-levels=(0 1 2 3)
 any_failure=false
 
-for level in "${levels[@]}"; do
+for level in 0 1 2 3; do
   tag="O${level}"
   output_ops="${APPS_DIR}/full-ops-${tag}.stat"
 
   rm -f "${output_ops}"
 
   # Clean previous tagged output
-  mapfile -t handshake_outputs < <(
-    find "${APPS_DIR}" -mindepth 2 -maxdepth 2 -type f \
-      \( -name "*.${tag}.handshake.mlir" -o -name "*.${tag}.handshake.log" \) \
-      | sort
-  )
-  if [[ ${#handshake_outputs[@]} -gt 0 ]]; then
-    rm -f "${handshake_outputs[@]}"
-  fi
+  find "${APPS_DIR}" -mindepth 2 -maxdepth 2 -type f \
+    \( -name "*.${tag}.handshake.mlir" -o -name "*.${tag}.handshake.log" \) \
+    -delete 2>/dev/null || true
 
-  # Run handshake at this O level
   LOOM_SUMMARY_PREFIX="Handshake ${tag}" LOOM_HANDSHAKE_TAG="${tag}" \
     "${SCRIPT_DIR}/handshake.sh" "${LOOM_BIN}" "-O${level}" "$@" || any_failure=true
 
-  # Generate ops stat file
   python3 - "${APPS_DIR}" "${tag}" "${output_ops}" <<'PY'
 import re
 import sys
@@ -121,12 +113,8 @@ out_path.write_text("\n".join(lines) + "\n")
 PY
 
   # Clean intermediate .llvm.ll files
-  mapfile -t llvm_outputs < <(
-    find "${APPS_DIR}" -mindepth 2 -maxdepth 2 -type f -name "*.${tag}.llvm.ll" | sort
-  )
-  if [[ ${#llvm_outputs[@]} -gt 0 ]]; then
-    rm -f "${llvm_outputs[@]}"
-  fi
+  find "${APPS_DIR}" -mindepth 2 -maxdepth 2 -type f \
+    -name "*.${tag}.llvm.ll" -delete 2>/dev/null || true
 done
 
 if [[ "${any_failure}" == "true" ]]; then

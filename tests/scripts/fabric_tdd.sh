@@ -25,12 +25,13 @@ fi
 # Clean TDD output directories
 find "${TDD_DIR}" -mindepth 2 -maxdepth 2 -type d -name "Output" -exec rm -rf {} + 2>/dev/null || true
 
-# Run lit
-lit_output=$(python3 "${LIT_PY}" -v "${TDD_DIR}" 2>&1) || true
-lit_rc=${PIPESTATUS[0]:-$?}
+# Run lit and save full output to results dir
+results_dir="${ROOT_DIR}/tests/.results"
+mkdir -p "${results_dir}"
+lit_log="${results_dir}/fabric_tdd.log"
 
-# Print lit output (preserve original style for standalone use)
-echo "${lit_output}"
+lit_output=$(python3 "${LIT_PY}" -v "${TDD_DIR}" 2>&1) || true
+echo "${lit_output}" > "${lit_log}"
 
 # Parse lit summary
 pass_count=0
@@ -52,6 +53,12 @@ LOOM_PASS=${pass_count}
 LOOM_FAIL=${fail_count}
 LOOM_TIMEOUT=0
 LOOM_FAILED_NAMES=()
+
+# Print failures only
+if (( fail_count > 0 )); then
+  echo "Fabric TDD: ${fail_count} failed"
+  echo "${lit_output}" | grep "^FAIL:" | sed 's/^FAIL: [^:]*:: /  /; s/ (.*//'
+fi
 
 loom_write_result "Fabric TDD"
 

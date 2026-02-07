@@ -17,11 +17,8 @@ if [[ "${1:-}" == "--single" ]]; then
   LOOM_BIN=$(loom_resolve_bin "$1"); shift
   APP_DIR="$1"; shift
 
-  RUN_APPS=false
-  if [[ "${1:-}" == "--run" ]]; then
-    RUN_APPS=true
-    shift
-  fi
+  RUN_APPS=$(loom_parse_run_flag "${1:-}")
+  [[ "${RUN_APPS}" == "true" ]] && shift
 
   loom_resolve_mlir_tools "${LOOM_BIN}"
 
@@ -75,25 +72,14 @@ fi
 # --- Batch mode ---
 LOOM_BIN=$(loom_resolve_bin "${1:-${ROOT_DIR}/build/bin/loom}"); shift || true
 
-RUN_APPS=false
-if [[ "${1:-}" == "--run" ]]; then
-  RUN_APPS=true
-  shift
-fi
+RUN_APPS=$(loom_parse_run_flag "${1:-}")
+[[ "${RUN_APPS}" == "true" ]] && shift
 
 loom_require_parallel
 loom_resolve_mlir_tools "${LOOM_BIN}"
 
-if [[ ! -d "${APPS_DIR}" ]]; then
-  echo "error: apps directory not found: ${APPS_DIR}" >&2
-  exit 1
-fi
-
-mapfile -t app_dirs < <(loom_find_test_dirs "${APPS_DIR}")
-if [[ ${#app_dirs[@]} -eq 0 ]]; then
-  echo "error: no apps found under ${APPS_DIR}" >&2
-  exit 1
-fi
+app_dirs=()
+loom_discover_dirs "${APPS_DIR}" app_dirs
 
 PARALLEL_FILE="${APPS_DIR}/scf_roundtrip.parallel.sh"
 
@@ -108,19 +94,11 @@ loom_write_parallel_header "${PARALLEL_FILE}" \
   "Lowers SCF MLIR through mlir-opt/mlir-translate, links with clang++, runs the executable."
 
 for app_dir in "${app_dirs[@]}"; do
-  mapfile -t sources < <(loom_find_sources "${app_dir}")
-  if [[ ${#sources[@]} -eq 0 ]]; then
-    continue
-  fi
+  rel_sources=$(loom_rel_sources "${app_dir}") || continue
 
   app_name=$(basename "${app_dir}")
   rel_app=$(loom_relpath "${app_dir}")
   rel_out="${rel_app}/Output"
-
-  rel_sources=""
-  for src in "${sources[@]}"; do
-    rel_sources+=" $(loom_relpath "${src}")"
-  done
 
   line="mkdir -p ${rel_out}"
   line+=" && ${rel_loom}${rel_sources} -I ${rel_include} -I ${rel_app} -o ${rel_out}/${app_name}.llvm.ll"
@@ -133,13 +111,4 @@ for app_dir in "${app_dirs[@]}"; do
   echo "${line}" >> "${PARALLEL_FILE}"
 done
 
-TIMEOUT_SEC=${LOOM_TIMEOUT:-10}
-MAX_JOBS=$(loom_resolve_jobs)
-
-loom_run_parallel "${PARALLEL_FILE}" "${TIMEOUT_SEC}" "${MAX_JOBS}"
-loom_print_summary "SCF Roundtrip"
-loom_write_result "SCF Roundtrip"
-
-if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
-  exit 1
-fi
+loom_run_suite "${PARALLEL_FILE}" "SCF Roundtrip" "scf"
