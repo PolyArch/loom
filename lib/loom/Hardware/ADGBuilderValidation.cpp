@@ -15,6 +15,40 @@ namespace adg {
 // Validation Helpers
 //===----------------------------------------------------------------------===//
 
+/// Check whether a Type::Kind corresponds to a native scalar type (i.e. one of
+/// the fixed-width integers, floats, Index, or None -- but not Tagged or IN).
+static bool isNativeTypeKind(Type::Kind k) {
+  switch (k) {
+  case Type::I1:
+  case Type::I8:
+  case Type::I16:
+  case Type::I32:
+  case Type::I64:
+  case Type::BF16:
+  case Type::F16:
+  case Type::F32:
+  case Type::F64:
+  case Type::Index:
+  case Type::None:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// Check whether a type is a native scalar type, treating Type::IN with a
+/// native integer width (1, 8, 16, 32, 64) as equivalent to the canonical
+/// fixed-width alias.
+static bool isNativeOrEquivalent(Type t) {
+  if (isNativeTypeKind(t.getKind()))
+    return true;
+  if (t.getKind() == Type::IN) {
+    unsigned w = t.getWidth();
+    return w == 1 || w == 8 || w == 16 || w == 32 || w == 64;
+  }
+  return false;
+}
+
 /// Validate connectivity table shape and completeness for a switch-like
 /// component (used by both switch and temporal_switch validation).
 static void validateConnectivityTable(
@@ -33,16 +67,21 @@ static void validateConnectivityTable(
       addError(codePrefix + "_TABLE_SHAPE",
                "connectivity_table column count != num_inputs", loc);
     bool hasOne = false;
-    for (bool v : connectivity[r])
-      if (v) hasOne = true;
+    for (bool v : connectivity[r]) {
+      if (v) { hasOne = true; break; }
+    }
     if (!hasOne)
       addError(codePrefix + "_ROW_EMPTY",
                "connectivity row " + std::to_string(r) + " has no 1", loc);
   }
   for (unsigned c = 0; c < numIn; ++c) {
     bool hasOne = false;
-    for (unsigned r = 0; r < connectivity.size(); ++r)
-      if (c < connectivity[r].size() && connectivity[r][c]) hasOne = true;
+    for (unsigned r = 0; r < connectivity.size(); ++r) {
+      if (c < connectivity[r].size() && connectivity[r][c]) {
+        hasOne = true;
+        break;
+      }
+    }
     if (!hasOne)
       addError(codePrefix + "_COL_EMPTY",
                "connectivity column " + std::to_string(c) + " has no 1", loc);
@@ -148,10 +187,14 @@ ValidationResult ADGBuilder::validateADG() {
         addError("COMP_TEMPORAL_PE_TAGGED_FU",
                  "temporal PE FU must use native interface", fuLoc);
       bool fuHasTagged = false;
-      for (const auto &t : fu.inputPorts)
-        if (t.isTagged()) fuHasTagged = true;
-      for (const auto &t : fu.outputPorts)
-        if (t.isTagged()) fuHasTagged = true;
+      for (const auto &t : fu.inputPorts) {
+        if (t.isTagged()) { fuHasTagged = true; break; }
+      }
+      if (!fuHasTagged) {
+        for (const auto &t : fu.outputPorts) {
+          if (t.isTagged()) { fuHasTagged = true; break; }
+        }
+      }
       if (fuHasTagged)
         addError("COMP_TEMPORAL_PE_TAGGED_FU",
                  "temporal PE FU must not have tagged ports", fuLoc);
@@ -235,41 +278,19 @@ ValidationResult ADGBuilder::validateADG() {
     std::string loc = "fifo @" + fifo.name;
     if (fifo.depth < 1)
       addError("COMP_FIFO_DEPTH_ZERO", "depth must be >= 1", loc);
-    // Type must be native or tagged. Accept Type::IN when width matches
-    // a native integer width (1, 8, 16, 32, 64) since Type::iN(32) and
-    // Type::i32() are semantically equivalent.
-    auto kind = fifo.elementType.getKind();
-    bool validType = kind == Type::I1 || kind == Type::I8 ||
-                     kind == Type::I16 || kind == Type::I32 ||
-                     kind == Type::I64 || kind == Type::BF16 ||
-                     kind == Type::F16 || kind == Type::F32 ||
-                     kind == Type::F64 || kind == Type::Index ||
-                     kind == Type::None || kind == Type::Tagged;
-    if (!validType && kind == Type::IN) {
-      unsigned w = fifo.elementType.getWidth();
-      validType = (w == 1 || w == 8 || w == 16 || w == 32 || w == 64);
-    }
+    // Type must be native or tagged. Type::IN with a native integer width
+    // (1, 8, 16, 32, 64) is treated as equivalent to the canonical alias.
+    bool validType = isNativeOrEquivalent(fifo.elementType) ||
+                     fifo.elementType.isTagged();
     if (!validType)
       addError("COMP_FIFO_INVALID_TYPE",
                "type must be a native type or tagged; got " +
                    fifo.elementType.toMLIR(),
                loc);
     // Validate tagged element: both payload and tag must be valid.
-    if (kind == Type::Tagged) {
+    if (fifo.elementType.isTagged()) {
       validateTagType(fifo.elementType.getTagType(), loc);
-      // Payload (value) type must be a native type.
-      auto vk = fifo.elementType.getValueType().getKind();
-      bool validPayload = vk == Type::I1 || vk == Type::I8 ||
-                          vk == Type::I16 || vk == Type::I32 ||
-                          vk == Type::I64 || vk == Type::BF16 ||
-                          vk == Type::F16 || vk == Type::F32 ||
-                          vk == Type::F64 || vk == Type::Index ||
-                          vk == Type::None;
-      if (!validPayload && vk == Type::IN) {
-        unsigned w = fifo.elementType.getValueType().getWidth();
-        validPayload = (w == 1 || w == 8 || w == 16 || w == 32 || w == 64);
-      }
-      if (!validPayload)
+      if (!isNativeOrEquivalent(fifo.elementType.getValueType()))
         addError("COMP_FIFO_INVALID_TYPE",
                  "tagged payload type must be a native type; got " +
                      fifo.elementType.toMLIR(),
@@ -568,27 +589,20 @@ ValidationResult ADGBuilder::validateADG() {
     auto canInputDriveOutput =
         [&](unsigned idx, int inPort, unsigned outPort) -> bool {
       const auto &inst = impl_->instances[idx];
-      if (inst.kind == ModuleKind::Switch) {
-        const auto &def = impl_->switchDefs[inst.defIdx];
-        if (def.connectivity.empty())
+      // Retrieve the connectivity table for switch-like instances.
+      const std::vector<std::vector<bool>> *ct = nullptr;
+      if (inst.kind == ModuleKind::Switch)
+        ct = &impl_->switchDefs[inst.defIdx].connectivity;
+      else if (inst.kind == ModuleKind::TemporalSwitch)
+        ct = &impl_->temporalSwitchDefs[inst.defIdx].connectivity;
+      if (ct) {
+        if (ct->empty())
           return true; // full connectivity
-        if (outPort >= def.connectivity.size())
+        if (outPort >= ct->size())
           return false;
-        if (inPort < 0 ||
-            (unsigned)inPort >= def.connectivity[outPort].size())
+        if (inPort < 0 || (unsigned)inPort >= (*ct)[outPort].size())
           return false;
-        return def.connectivity[outPort][inPort];
-      }
-      if (inst.kind == ModuleKind::TemporalSwitch) {
-        const auto &def = impl_->temporalSwitchDefs[inst.defIdx];
-        if (def.connectivity.empty())
-          return true;
-        if (outPort >= def.connectivity.size())
-          return false;
-        if (inPort < 0 ||
-            (unsigned)inPort >= def.connectivity[outPort].size())
-          return false;
-        return def.connectivity[outPort][inPort];
+        return (*ct)[outPort][inPort];
       }
       // AddTag, MapTag, DelTag: single input/output, always connected.
       return true;

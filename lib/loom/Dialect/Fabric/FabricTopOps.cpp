@@ -92,6 +92,23 @@ struct CombInfo {
   // operandDeps[i] = bitmask of which operands can influence result i
   // through combinational paths. Size equals resultMask size.
   SmallVector<llvm::SmallBitVector> operandDeps;
+
+  /// Construct an empty (non-combinational) CombInfo for the given result count.
+  static CombInfo empty(unsigned numResults) {
+    CombInfo info;
+    info.resultMask.resize(numResults);
+    return info;
+  }
+
+  /// Construct a fully-connected CombInfo where every output depends on every
+  /// input through a combinational path.
+  static CombInfo fullConnectivity(unsigned numResults, unsigned numOperands) {
+    CombInfo info;
+    info.resultMask = llvm::SmallBitVector(numResults, true);
+    for (unsigned o = 0; o < numResults; ++o)
+      info.operandDeps.push_back(llvm::SmallBitVector(numOperands, true));
+    return info;
+  }
 };
 
 /// Helper: extract connectivity-based operandDeps from a switch-like op.
@@ -117,8 +134,7 @@ getSwitchCombInfo(Operation *op, unsigned numResults, unsigned numOperands) {
     }
   } else {
     // No connectivity table: full crossbar -- all outputs depend on all inputs.
-    for (unsigned o = 0; o < numResults; ++o)
-      info.operandDeps.push_back(llvm::SmallBitVector(numOperands, true));
+    return CombInfo::fullConnectivity(numResults, numOperands);
   }
   return info;
 }
@@ -137,12 +153,12 @@ static CombInfo getCombInfo(Operation *op,
   if (auto mod = dyn_cast<ModuleOp>(op)) {
     unsigned numOutputs = mod.getFunctionType().getNumResults();
     unsigned numInputs = mod.getFunctionType().getNumInputs();
+    if (numOutputs == 0)
+      return CombInfo::empty(0);
+    if (!visited.insert(op).second)
+      return CombInfo::empty(numOutputs); // cycle guard
     CombInfo info;
     info.resultMask.resize(numOutputs);
-    if (numOutputs == 0)
-      return info;
-    if (!visited.insert(op).second)
-      return info; // cycle guard
     Block &body = mod.getBody().front();
     auto yield = cast<YieldOp>(body.getTerminator());
     info.operandDeps.resize(numOutputs, llvm::SmallBitVector(numInputs));
@@ -200,46 +216,30 @@ static CombInfo getCombInfo(Operation *op,
       }
     }
   }
-  if (numResults == 0) {
-    CombInfo info;
-    info.resultMask.resize(0);
-    return info;
-  }
+  if (numResults == 0)
+    return CombInfo::empty(0);
 
   // SwitchOp/TemporalSwOp: use connectivity_table for per-output deps.
   if (isa<SwitchOp, TemporalSwOp>(op))
     return getSwitchCombInfo(op, numResults, numOperands);
 
   // AddTagOp, MapTagOp, DelTagOp: all outputs depend on all inputs.
-  if (isa<AddTagOp, MapTagOp, DelTagOp>(op)) {
-    CombInfo info;
-    info.resultMask = llvm::SmallBitVector(numResults, true);
-    for (unsigned o = 0; o < numResults; ++o)
-      info.operandDeps.push_back(llvm::SmallBitVector(numOperands, true));
-    return info;
-  }
+  if (isa<AddTagOp, MapTagOp, DelTagOp>(op))
+    return CombInfo::fullConnectivity(numResults, numOperands);
 
   // InstanceOp: delegate to resolved target.
   if (auto inst = dyn_cast<InstanceOp>(op)) {
     auto *target = lookupBySymName(inst.getOperation(), inst.getModule());
-    if (!target) {
-      CombInfo info;
-      info.resultMask.resize(numResults);
-      return info;
+    if (target) {
+      auto targetInfo = getCombInfo(target, visited);
+      if (targetInfo.resultMask.size() == numResults)
+        return targetInfo;
     }
-    auto targetInfo = getCombInfo(target, visited);
-    if (targetInfo.resultMask.size() != numResults) {
-      CombInfo info;
-      info.resultMask.resize(numResults);
-      return info;
-    }
-    return targetInfo;
+    return CombInfo::empty(numResults);
   }
 
   // Non-combinational ops.
-  CombInfo info;
-  info.resultMask.resize(numResults);
-  return info;
+  return CombInfo::empty(numResults);
 }
 
 //===----------------------------------------------------------------------===//
