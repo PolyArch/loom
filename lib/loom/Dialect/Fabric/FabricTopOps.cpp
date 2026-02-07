@@ -86,19 +86,50 @@ void ModuleOp::print(OpAsmPrinter &p) {
 // Forward declaration (defined in Instance helpers section below).
 static Operation *lookupBySymName(Operation *from, StringRef name);
 
-/// Per-operation combinational path info: which results and which operands
-/// are on zero-delay through-paths.
+/// Per-operation combinational path info.
 struct CombInfo {
-  llvm::SmallBitVector resultMask;  // which results are combinational
-  llvm::SmallBitVector operandMask; // which operands feed combinational paths
+  llvm::SmallBitVector resultMask; // which results are combinational
+  // operandDeps[i] = bitmask of which operands can influence result i
+  // through combinational paths. Size equals resultMask size.
+  SmallVector<llvm::SmallBitVector> operandDeps;
 };
 
-/// Compute combinational path info for `op`. For primitive combinational ops,
-/// all results and operands are combinational. For InstanceOp, delegates to
-/// the resolved target. For ModuleOp, performs per-yield-operand backward
-/// reachability analysis and tracks which block arguments (inputs) are
-/// reachable from combinational outputs. Uses a path-based visited set
-/// to avoid infinite recursion.
+/// Helper: extract connectivity-based operandDeps from a switch-like op.
+/// The connectivity_table is a flat DenseI8ArrayAttr of size numOut*numIn,
+/// stored output-major: table[o * numIn + i] = 1 means output o receives
+/// from input i. Returns per-output operandDeps using the table, or
+/// full-connectivity deps if no table is present.
+static CombInfo
+getSwitchCombInfo(Operation *op, unsigned numResults, unsigned numOperands) {
+  CombInfo info;
+  info.resultMask = llvm::SmallBitVector(numResults, true);
+  auto ctAttr = op->getAttrOfType<DenseI8ArrayAttr>("connectivity_table");
+  if (ctAttr) {
+    auto ct = ctAttr.asArrayRef();
+    for (unsigned o = 0; o < numResults; ++o) {
+      llvm::SmallBitVector deps(numOperands);
+      for (unsigned i = 0; i < numOperands; ++i) {
+        unsigned flatIdx = o * numOperands + i;
+        if (flatIdx < ct.size() && ct[flatIdx])
+          deps.set(i);
+      }
+      info.operandDeps.push_back(deps);
+    }
+  } else {
+    // No connectivity table: full crossbar -- all outputs depend on all inputs.
+    for (unsigned o = 0; o < numResults; ++o)
+      info.operandDeps.push_back(llvm::SmallBitVector(numOperands, true));
+  }
+  return info;
+}
+
+/// Compute combinational path info for `op`. For SwitchOp/TemporalSwOp,
+/// uses the connectivity_table to determine per-output input dependencies.
+/// For AddTagOp/MapTagOp/DelTagOp, all inputs feed all outputs. For
+/// InstanceOp, delegates to the resolved target. For ModuleOp, performs
+/// per-yield-operand backward reachability analysis tracking which block
+/// arguments (inputs) are reachable from each output independently.
+/// Uses a path-based visited set to avoid infinite recursion.
 static CombInfo getCombInfo(Operation *op,
                             llvm::SmallPtrSetImpl<Operation *> &visited) {
   // ModuleOp: per-yield-operand backward reachability. Handled first because
@@ -106,14 +137,15 @@ static CombInfo getCombInfo(Operation *op,
   if (auto mod = dyn_cast<ModuleOp>(op)) {
     unsigned numOutputs = mod.getFunctionType().getNumResults();
     unsigned numInputs = mod.getFunctionType().getNumInputs();
-    CombInfo info{llvm::SmallBitVector(numOutputs),
-                  llvm::SmallBitVector(numInputs)};
+    CombInfo info;
+    info.resultMask.resize(numOutputs);
     if (numOutputs == 0)
       return info;
     if (!visited.insert(op).second)
       return info; // cycle guard
     Block &body = mod.getBody().front();
     auto yield = cast<YieldOp>(body.getTerminator());
+    info.operandDeps.resize(numOutputs, llvm::SmallBitVector(numInputs));
     for (unsigned i = 0; i < yield.getNumOperands(); ++i) {
       SmallVector<Value> worklist;
       llvm::SmallPtrSet<Value, 16> seen;
@@ -134,13 +166,22 @@ static CombInfo getCombInfo(Operation *op,
         unsigned resultIdx = cast<OpResult>(v).getResultNumber();
         if (resultIdx < defInfo.resultMask.size() &&
             defInfo.resultMask.test(resultIdx)) {
-          for (Value operand : defOp->getOperands())
-            worklist.push_back(operand);
+          // Only walk through operands that can influence this result.
+          if (resultIdx < defInfo.operandDeps.size()) {
+            const auto &deps = defInfo.operandDeps[resultIdx];
+            for (unsigned k = 0; k < defOp->getNumOperands(); ++k) {
+              if (k < deps.size() && deps.test(k))
+                worklist.push_back(defOp->getOperand(k));
+            }
+          } else {
+            for (Value operand : defOp->getOperands())
+              worklist.push_back(operand);
+          }
         }
       }
       if (reachedArgs.any()) {
         info.resultMask.set(i);
-        info.operandMask |= reachedArgs;
+        info.operandDeps[i] = reachedArgs;
       }
     }
     visited.erase(op); // allow re-evaluation from other call paths
@@ -159,30 +200,46 @@ static CombInfo getCombInfo(Operation *op,
       }
     }
   }
-  if (numResults == 0)
-    return {llvm::SmallBitVector(0), llvm::SmallBitVector(numOperands)};
+  if (numResults == 0) {
+    CombInfo info;
+    info.resultMask.resize(0);
+    return info;
+  }
 
-  // Primitive combinational ops: all results and operands are combinational.
-  if (isa<SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp>(op))
-    return {llvm::SmallBitVector(numResults, true),
-            llvm::SmallBitVector(numOperands, true)};
+  // SwitchOp/TemporalSwOp: use connectivity_table for per-output deps.
+  if (isa<SwitchOp, TemporalSwOp>(op))
+    return getSwitchCombInfo(op, numResults, numOperands);
+
+  // AddTagOp, MapTagOp, DelTagOp: all outputs depend on all inputs.
+  if (isa<AddTagOp, MapTagOp, DelTagOp>(op)) {
+    CombInfo info;
+    info.resultMask = llvm::SmallBitVector(numResults, true);
+    for (unsigned o = 0; o < numResults; ++o)
+      info.operandDeps.push_back(llvm::SmallBitVector(numOperands, true));
+    return info;
+  }
 
   // InstanceOp: delegate to resolved target.
   if (auto inst = dyn_cast<InstanceOp>(op)) {
     auto *target = lookupBySymName(inst.getOperation(), inst.getModule());
-    if (!target)
-      return {llvm::SmallBitVector(numResults),
-              llvm::SmallBitVector(numOperands)};
+    if (!target) {
+      CombInfo info;
+      info.resultMask.resize(numResults);
+      return info;
+    }
     auto targetInfo = getCombInfo(target, visited);
-    if (targetInfo.resultMask.size() != numResults)
-      return {llvm::SmallBitVector(numResults),
-              llvm::SmallBitVector(numOperands)};
+    if (targetInfo.resultMask.size() != numResults) {
+      CombInfo info;
+      info.resultMask.resize(numResults);
+      return info;
+    }
     return targetInfo;
   }
 
   // Non-combinational ops.
-  return {llvm::SmallBitVector(numResults),
-          llvm::SmallBitVector(numOperands)};
+  CombInfo info;
+  info.resultMask.resize(numResults);
+  return info;
 }
 
 //===----------------------------------------------------------------------===//
@@ -250,16 +307,13 @@ LogicalResult ModuleOp::verify() {
   }
 
   // COMP_ADG_COMBINATIONAL_LOOP: detect cycles among purely combinational ops.
-  // Uses per-result and per-operand combinational masks so that only edges
-  // through combinational paths contribute to cycle detection.
+  // Uses a per-result graph: each node is (op, result_index). An edge from
+  // (A, r) to (B, s) exists when result r of A is used at operand k of B,
+  // and operandDeps[s][k] of B is true (operand k can influence result s).
+  // This respects switch connectivity tables and per-output module deps.
   {
     llvm::SmallPtrSet<Operation *, 8> visited;
 
-    // Build adjacency list. An op is included if any result is combinational.
-    // An edge from A to B exists only when:
-    //   1. The specific result of A is combinational, AND
-    //   2. The specific operand of B where that result is consumed is on a
-    //      combinational input path.
     SmallVector<Operation *> combOps;
     SmallVector<CombInfo> combInfos;
     llvm::DenseMap<Operation *, unsigned> opIndex;
@@ -270,34 +324,50 @@ LogicalResult ModuleOp::verify() {
       if (info.resultMask.any()) {
         opIndex[&op] = combOps.size();
         combOps.push_back(&op);
-        combInfos.push_back(info);
+        combInfos.push_back(std::move(info));
       }
     }
 
     if (!combOps.empty()) {
       unsigned n = combOps.size();
-      SmallVector<SmallVector<unsigned>> adj(n);
+
+      // Assign per-result node IDs.
+      SmallVector<unsigned> nodeBase(n);
+      unsigned totalNodes = 0;
+      for (unsigned i = 0; i < n; ++i) {
+        nodeBase[i] = totalNodes;
+        totalNodes += combOps[i]->getNumResults();
+      }
+
+      SmallVector<SmallVector<unsigned>> adj(totalNodes);
 
       for (unsigned i = 0; i < n; ++i) {
         for (unsigned r = 0; r < combOps[i]->getNumResults(); ++r) {
           if (!combInfos[i].resultMask.test(r))
-            continue; // skip sequential results
+            continue;
           Value result = combOps[i]->getResult(r);
           for (OpOperand &use : result.getUses()) {
             Operation *user = use.getOwner();
             auto it = opIndex.find(user);
             if (it == opIndex.end())
               continue;
+            unsigned userIdx = it->second;
             unsigned opIdx = use.getOperandNumber();
-            if (opIdx < combInfos[it->second].operandMask.size() &&
-                combInfos[it->second].operandMask.test(opIdx))
-              adj[i].push_back(it->second);
+            // Add edge to each result of user that this operand influences.
+            for (unsigned s = 0; s < combInfos[userIdx].operandDeps.size();
+                 ++s) {
+              if (!combInfos[userIdx].resultMask.test(s))
+                continue;
+              if (opIdx < combInfos[userIdx].operandDeps[s].size() &&
+                  combInfos[userIdx].operandDeps[s].test(opIdx))
+                adj[nodeBase[i] + r].push_back(nodeBase[userIdx] + s);
+            }
           }
         }
       }
 
       // DFS cycle detection: 0=white, 1=gray, 2=black.
-      SmallVector<int> color(n, 0);
+      SmallVector<int> color(totalNodes, 0);
       bool hasCombLoop = false;
       std::function<void(unsigned)> dfs = [&](unsigned u) {
         if (hasCombLoop)
@@ -316,7 +386,7 @@ LogicalResult ModuleOp::verify() {
         color[u] = 2;
       };
 
-      for (unsigned i = 0; i < n && !hasCombLoop; ++i) {
+      for (unsigned i = 0; i < totalNodes && !hasCombLoop; ++i) {
         if (color[i] == 0)
           dfs(i);
       }
