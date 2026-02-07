@@ -214,7 +214,9 @@ ValidationResult ADGBuilder::validateADG() {
     std::string loc = "fifo @" + fifo.name;
     if (fifo.depth < 1)
       addError("COMP_FIFO_DEPTH_ZERO", "depth must be >= 1", loc);
-    // Type must be native or tagged (not arbitrary-width iN).
+    // Type must be native or tagged. Accept Type::IN when width matches
+    // a native integer width (1, 8, 16, 32, 64) since Type::iN(32) and
+    // Type::i32() are semantically equivalent.
     auto kind = fifo.elementType.getKind();
     bool validType = kind == Type::I1 || kind == Type::I8 ||
                      kind == Type::I16 || kind == Type::I32 ||
@@ -222,6 +224,10 @@ ValidationResult ADGBuilder::validateADG() {
                      kind == Type::F16 || kind == Type::F32 ||
                      kind == Type::F64 || kind == Type::Index ||
                      kind == Type::None || kind == Type::Tagged;
+    if (!validType && kind == Type::IN) {
+      unsigned w = fifo.elementType.getWidth();
+      validType = (w == 1 || w == 8 || w == 16 || w == 32 || w == 64);
+    }
     if (!validType)
       addError("COMP_FIFO_INVALID_TYPE",
                "type must be a native type or tagged; got " +
