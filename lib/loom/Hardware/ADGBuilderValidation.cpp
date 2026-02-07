@@ -66,6 +66,9 @@ ValidationResult ADGBuilder::validateADG() {
     if (ts.numIn > 32 || ts.numOut > 32)
       addError("COMP_TEMPORAL_SW_PORT_LIMIT",
                "temporal switch has more than 32 inputs or outputs", loc);
+    if (!ts.interfaceType.isTagged())
+      addError("COMP_TEMPORAL_SW_INTERFACE_NOT_TAGGED",
+               "temporal switch interface type must be tagged", loc);
     if (ts.numRouteTable < 1)
       addError("COMP_TEMPORAL_SW_NUM_ROUTE_TABLE",
                "num_route_table must be >= 1", loc);
@@ -103,6 +106,9 @@ ValidationResult ADGBuilder::validateADG() {
   for (size_t i = 0; i < impl_->temporalPEDefs.size(); ++i) {
     const auto &tp = impl_->temporalPEDefs[i];
     std::string loc = "temporal_pe @" + tp.name;
+    if (!tp.interfaceType.isTagged())
+      addError("COMP_TEMPORAL_PE_INTERFACE_NOT_TAGGED",
+               "temporal PE interface type must be tagged", loc);
     if (tp.numInstructions < 1)
       addError("COMP_TEMPORAL_PE_NUM_INSTRUCTION",
                "num_instruction must be >= 1", loc);
@@ -169,14 +175,31 @@ ValidationResult ADGBuilder::validateADG() {
                "table_size out of range [1, 256]", loc);
   }
 
-  // Validate tag width range for add_tag and del_tag.
+  // Validate tag types for tag operations.
+  auto validateTagType = [&](Type tagType, const std::string &loc) {
+    if (tagType.getKind() != Type::IN)
+      addError("COMP_TAG_WIDTH_RANGE",
+               "tag type must be iN (arbitrary-width integer)", loc);
+    else if (tagType.getWidth() < 1 || tagType.getWidth() > 16)
+      addError("COMP_TAG_WIDTH_RANGE",
+               "tag width outside [1, 16]", loc);
+  };
   for (size_t i = 0; i < impl_->addTagDefs.size(); ++i) {
     const auto &at = impl_->addTagDefs[i];
     std::string loc = "add_tag @" + at.name;
-    if (at.tagType.getKind() == Type::IN &&
-        (at.tagType.getWidth() < 1 || at.tagType.getWidth() > 16))
-      addError("COMP_TAG_WIDTH_RANGE",
-               "tag width outside [1, 16]", loc);
+    validateTagType(at.tagType, loc);
+  }
+  for (size_t i = 0; i < impl_->mapTagDefs.size(); ++i) {
+    const auto &mt = impl_->mapTagDefs[i];
+    std::string loc = "map_tag @" + mt.name;
+    validateTagType(mt.inputTagType, loc + " (inputTagType)");
+    validateTagType(mt.outputTagType, loc + " (outputTagType)");
+  }
+  for (size_t i = 0; i < impl_->delTagDefs.size(); ++i) {
+    const auto &dt = impl_->delTagDefs[i];
+    std::string loc = "del_tag @" + dt.name;
+    if (dt.inputType.isTagged())
+      validateTagType(dt.inputType.getTagType(), loc);
   }
 
   // Validate PE definitions.
@@ -201,6 +224,9 @@ ValidationResult ADGBuilder::validateADG() {
     if (pe.interface == InterfaceCategory::Tagged && !hasTagged)
       addError("COMP_PE_TAGGED_INTERFACE_NATIVE_PORTS",
                "PE has Tagged interface but all ports are native", loc);
+    if (pe.interface == InterfaceCategory::Native && hasTagged)
+      addError("COMP_PE_NATIVE_INTERFACE_TAGGED_PORTS",
+               "PE has Native interface but has tagged ports", loc);
   }
 
   // Check for empty module body.
