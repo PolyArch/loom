@@ -49,3 +49,7 @@ target_include_directories(LoomFabric
 )
 
 llvm_update_compile_flags(LoomFabric)
+set_target_properties(LoomFabric PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(TARGET obj.LoomFabric)
+  set_target_properties(obj.LoomFabric PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()

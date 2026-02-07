@@ -12,6 +12,10 @@ llvm_map_components_to_libnames(LOOM_LLVM_LIBS
   linker
   analysis
   native
+  nativecodegen
+  x86info
+  x86codegen
+  x86asmparser
 )
 
 set(LOOM_MLIR_LIBS
@@ -41,6 +45,7 @@ foreach(target_name IN ITEMS loom)
 
   target_link_libraries(${target_name} PRIVATE
     clangFrontend
+    clangFrontendTool
     clangCodeGen
     clangTooling
     clangDriver
@@ -52,8 +57,14 @@ foreach(target_name IN ITEMS loom)
     clangBasic
     LoomConversion
     LoomFabric
+    LoomADG
     ${LOOM_MLIR_LIBS}
     ${LOOM_LLVM_LIBS}
+  )
+
+  target_compile_definitions(${target_name} PRIVATE
+    LOOM_ADG_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/include"
+    LOOM_ADG_LIB_DIR="${CMAKE_BINARY_DIR}/lib"
   )
 
   llvm_update_compile_flags(${target_name})
@@ -61,6 +72,13 @@ endforeach()
 
 add_dependencies(loom loom_clang_resource)
 add_dependencies(loom clang-headers)
+
+add_custom_target(check-loom-adg
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_adg_test.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom loom-sdk
+)
 
 add_custom_target(check-loom-llvm-roundtrip
   COMMAND "${CMAKE_SOURCE_DIR}/tools/loom/loom_ll_roundtrip.sh" "${LOOM_RUNTIME_DIR}/loom" --run
@@ -117,7 +135,7 @@ add_custom_target(check-loom-fabric
 )
 
 add_custom_target(check-loom
-  DEPENDS check-loom-app check-loom-fabric
+  DEPENDS check-loom-app check-loom-fabric check-loom-adg
 )
 
 add_custom_target(clean-loom

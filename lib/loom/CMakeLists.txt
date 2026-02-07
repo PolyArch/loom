@@ -1,4 +1,5 @@
 add_subdirectory(Dialect)
+add_subdirectory(Hardware)
 
 set(LOOM_CONVERSION_SOURCES
   Conversion/LLVMToSCFConvert.cpp
@@ -48,3 +49,18 @@ target_include_directories(LoomConversion
 )
 
 llvm_update_compile_flags(LoomConversion)
+
+# Shared library that bundles LoomADG for use by loom --as-clang.
+# Avoids the need to manually enumerate all transitive static deps.
+file(WRITE "${CMAKE_BINARY_DIR}/loom-sdk-stub.cpp" "")
+add_library(loom-sdk SHARED "${CMAKE_BINARY_DIR}/loom-sdk-stub.cpp")
+target_link_libraries(loom-sdk PRIVATE
+  -Wl,--whole-archive
+  $<TARGET_FILE:LoomADG>
+  -Wl,--no-whole-archive
+  LoomADG
+)
+set_target_properties(loom-sdk PROPERTIES
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+  OUTPUT_NAME "loom-sdk"
+)

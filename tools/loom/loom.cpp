@@ -23,6 +23,7 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
+#include "clang/FrontendTool/Utils.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
@@ -36,6 +37,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/TargetSelect.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/Path.h"
@@ -370,6 +372,7 @@ struct ParsedArgs {
   std::vector<std::string> driver_args;
   std::string output_path;
   std::string adg_path;
+  bool as_clang = false;
   bool show_help = false;
   bool show_version = false;
   bool had_error = false;
@@ -380,6 +383,8 @@ void PrintUsage(llvm::StringRef prog) {
                << " [options] <sources...> -o <output.llvm.ll>\n";
   llvm::outs() << "       " << prog
                << " --adg <file.fabric.mlir>\n";
+  llvm::outs() << "       " << prog
+               << " --as-clang [clang-options...]\n";
   llvm::outs() << "\n";
   llvm::outs() << "Compile and link C++ sources into a single LLVM IR file "
                << "and emit LLVM dialect MLIR.\n";
@@ -471,6 +476,13 @@ ParsedArgs ParseArgs(int argc, char **argv) {
         }
         parsed.adg_path = argv[++i];
         continue;
+      }
+      if (arg == "--as-clang") {
+        parsed.as_clang = true;
+        // Collect all remaining arguments as passthrough to clang.
+        for (++i; i < argc; ++i)
+          parsed.driver_args.emplace_back(argv[i]);
+        break;
       }
       if (arg == "-o") {
         if (i + 1 >= argc) {
@@ -667,6 +679,28 @@ int main(int argc, char **argv) {
   llvm::InitLLVM init_llvm(argc, argv);
   llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
 
+  // Handle -cc1 re-invocation from --as-clang mode. The clang driver
+  // spawns the same executable with -cc1 args for the compile step.
+  if (argc > 1 && llvm::StringRef(argv[1]) == "-cc1") {
+    llvm::InitializeNativeTarget();
+    llvm::InitializeNativeTargetAsmPrinter();
+    llvm::InitializeNativeTargetAsmParser();
+
+    clang::DiagnosticOptions cc1_diag_opts;
+    auto cc1_diags = clang::CompilerInstance::createDiagnostics(
+        *llvm::vfs::getRealFileSystem(), cc1_diag_opts);
+    auto cc1_invocation = std::make_shared<clang::CompilerInvocation>();
+    bool ok = clang::CompilerInvocation::CreateFromArgs(
+        *cc1_invocation,
+        llvm::ArrayRef(argv + 2, argv + argc),
+        *cc1_diags);
+    if (!ok)
+      return 1;
+    clang::CompilerInstance cc1_compiler(std::move(cc1_invocation));
+    cc1_compiler.createDiagnostics();
+    return clang::ExecuteCompilerInvocation(&cc1_compiler) ? 0 : 1;
+  }
+
   ParsedArgs parsed = ParseArgs(argc, argv);
   if (parsed.show_help) {
     PrintUsage(argv[0]);
@@ -678,6 +712,76 @@ int main(int argc, char **argv) {
   }
   if (parsed.had_error)
     return 1;
+
+  // --as-clang mode: invoke clang driver with ADG include/link flags.
+  if (parsed.as_clang) {
+    std::string exe_path_clang =
+        llvm::sys::fs::getMainExecutable(argv[0],
+                                         reinterpret_cast<void *>(&main));
+
+    clang::DiagnosticOptions as_clang_diag_opts;
+    auto as_clang_diag_client =
+        std::make_unique<clang::TextDiagnosticPrinter>(
+            llvm::errs(), as_clang_diag_opts);
+    auto as_clang_diags = clang::CompilerInstance::createDiagnostics(
+        *llvm::vfs::getRealFileSystem(), as_clang_diag_opts,
+        as_clang_diag_client.get(), /*ShouldOwnClient=*/false);
+
+    clang::driver::Driver as_clang_driver(
+        exe_path_clang, llvm::sys::getDefaultTargetTriple(),
+        *as_clang_diags);
+    as_clang_driver.setTitle("loom --as-clang");
+    as_clang_driver.setCheckInputsExist(true);
+
+    // Point to the loom resource directory (build/lib/clang) so the
+    // driver emits the correct -resource-dir for -cc1 re-invocations.
+    llvm::SmallString<256> resource_dir(
+        llvm::sys::path::parent_path(   // bin/
+            llvm::sys::path::parent_path(exe_path_clang)));  // build/
+    llvm::sys::path::append(resource_dir, "lib", "clang");
+    as_clang_driver.ResourceDir = std::string(resource_dir);
+
+    std::vector<const char *> as_clang_args;
+    as_clang_args.push_back(exe_path_clang.c_str());
+
+    // Inject ADG include path.
+    std::string include_flag =
+        std::string("-I") + LOOM_ADG_INCLUDE_DIR;
+    as_clang_args.push_back(include_flag.c_str());
+
+    // Inject library search path and RPATH for libloom-sdk.so.
+    std::string lib_path_flag =
+        std::string("-L") + LOOM_ADG_LIB_DIR;
+    std::string rpath_flag =
+        std::string("-Wl,-rpath,") + LOOM_ADG_LIB_DIR;
+    as_clang_args.push_back(lib_path_flag.c_str());
+    as_clang_args.push_back(rpath_flag.c_str());
+
+    // Link against loom-sdk shared library (bundles LoomADG + deps).
+    std::vector<std::string> link_libs = {
+        "-lloom-sdk",
+        "-lstdc++", "-lm"
+    };
+
+    // Forward user arguments.
+    for (const auto &arg : parsed.driver_args)
+      as_clang_args.push_back(arg.c_str());
+
+    // Append link libraries after user args.
+    for (const auto &lib : link_libs)
+      as_clang_args.push_back(lib.c_str());
+
+    std::unique_ptr<clang::driver::Compilation> as_clang_compilation(
+        as_clang_driver.BuildCompilation(as_clang_args));
+    if (!as_clang_compilation)
+      return 1;
+
+    llvm::SmallVector<std::pair<int, const clang::driver::Command *>, 4>
+        failing_commands;
+    int as_clang_result = as_clang_driver.ExecuteCompilation(
+        *as_clang_compilation, failing_commands);
+    return as_clang_result;
+  }
 
   // ADG validation mode: parse fabric MLIR and run verification.
   if (!parsed.adg_path.empty()) {

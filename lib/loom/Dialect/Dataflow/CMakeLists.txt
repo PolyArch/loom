@@ -50,3 +50,7 @@ target_include_directories(LoomDataflow
 )
 
 llvm_update_compile_flags(LoomDataflow)
+set_target_properties(LoomDataflow PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(TARGET obj.LoomDataflow)
+  set_target_properties(obj.LoomDataflow PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
