@@ -146,14 +146,20 @@ struct LoadPEHandle { unsigned id; };
 /// Opaque handle to a store PE definition.
 struct StorePEHandle { unsigned id; };
 
-// Tag-operation handles are internal only (auto-instantiated by builders).
-// Users work with InstanceHandle directly for tag ops.
+/// Opaque handle to an add_tag definition.
+struct AddTagHandle { unsigned id; };
+
+/// Opaque handle to a map_tag definition.
+struct MapTagHandle { unsigned id; };
+
+/// Opaque handle to a del_tag definition.
+struct DelTagHandle { unsigned id; };
 
 /// Generic handle to any module definition. Can be implicitly constructed
 /// from any typed handle.
 struct ModuleHandle {
   enum Kind { PE, Switch, TemporalPE, TemporalSwitch, Memory, ExtMemory,
-              ConstantPE, LoadPE, StorePE };
+              ConstantPE, LoadPE, StorePE, AddTag, MapTag, DelTag };
   Kind kind;
   unsigned id;
 
@@ -166,6 +172,9 @@ struct ModuleHandle {
   ModuleHandle(ConstantPEHandle h) : kind(ConstantPE), id(h.id) {}
   ModuleHandle(LoadPEHandle h) : kind(LoadPE), id(h.id) {}
   ModuleHandle(StorePEHandle h) : kind(StorePE), id(h.id) {}
+  ModuleHandle(AddTagHandle h) : kind(AddTag), id(h.id) {}
+  ModuleHandle(MapTagHandle h) : kind(MapTag), id(h.id) {}
+  ModuleHandle(DelTagHandle h) : kind(DelTag), id(h.id) {}
 };
 
 //===----------------------------------------------------------------------===//

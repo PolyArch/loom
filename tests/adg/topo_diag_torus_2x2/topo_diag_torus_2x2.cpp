@@ -3,8 +3,19 @@
 // Part of the Loom project.
 //
 //===----------------------------------------------------------------------===//
+//
+// Verifies that buildMesh with Topology::DiagonalTorus creates:
+//   - 2x2 PE grid and 2x2 switch grid
+//   - East-West wraparound module I/O (2 pairs: one per row)
+//   - North-South wraparound module I/O (2 pairs: one per column)
+//   - SE/SW diagonal wraparound module I/O
+//   - All PEs and switches connected
+//
+//===----------------------------------------------------------------------===//
 
 #include <loom/Hardware/adg.h>
+
+#include <cassert>
 
 using namespace loom::adg;
 
@@ -24,6 +35,12 @@ int main() {
 
   auto mesh = builder.buildMesh(2, 2, pe, sw, Topology::DiagonalTorus);
 
+  // Verify grid dimensions.
+  assert(mesh.peGrid.size() == 2 && "expected 2 PE rows");
+  assert(mesh.peGrid[0].size() == 2 && "expected 2 PE cols");
+  assert(mesh.swGrid.size() == 2 && "expected 2 switch rows");
+  assert(mesh.swGrid[0].size() == 2 && "expected 2 switch cols");
+
   // Chain PEs in row-major order: [0][0] -> [0][1] -> [1][0] -> [1][1]
   auto a = builder.addModuleInput("a", Type::i32());
   auto b = builder.addModuleInput("b", Type::i32());
@@ -41,6 +58,10 @@ int main() {
   builder.connectPorts(mesh.peGrid[1][0], 0, mesh.peGrid[1][1], 0);
   builder.connectToModuleInput(e, mesh.peGrid[1][1], 1);
   builder.connectToModuleOutput(mesh.peGrid[1][1], 0, out);
+
+  // Validate ADG before export.
+  auto validation = builder.validateADG();
+  assert(validation.success && "validation failed");
 
   builder.exportMLIR("Output/topo_diag_torus_2x2.fabric.mlir");
   return 0;

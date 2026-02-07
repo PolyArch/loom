@@ -3,8 +3,17 @@
 // Part of the Loom project.
 //
 //===----------------------------------------------------------------------===//
+//
+// Verifies that buildMesh with Topology::DiagonalMesh creates:
+//   - 3x3 PE grid and 3x3 switch grid
+//   - SE/SW diagonal internal connections (no wraparound)
+//   - All PEs and switches connected
+//
+//===----------------------------------------------------------------------===//
 
 #include <loom/Hardware/adg.h>
+
+#include <cassert>
 
 using namespace loom::adg;
 
@@ -23,6 +32,12 @@ int main() {
       .setType(Type::i32());
 
   auto mesh = builder.buildMesh(3, 3, pe, sw, Topology::DiagonalMesh);
+
+  // Verify grid dimensions.
+  assert(mesh.peGrid.size() == 3 && "expected 3 PE rows");
+  assert(mesh.peGrid[0].size() == 3 && "expected 3 PE cols");
+  assert(mesh.swGrid.size() == 3 && "expected 3 switch rows");
+  assert(mesh.swGrid[0].size() == 3 && "expected 3 switch cols");
 
   // Chain PEs in row-major order:
   // [0][0] -> [0][1] -> [0][2] -> [1][0] -> [1][1] -> [1][2] ->
@@ -58,6 +73,10 @@ int main() {
   builder.connectPorts(mesh.peGrid[2][1], 0, mesh.peGrid[2][2], 0);
   builder.connectToModuleInput(j, mesh.peGrid[2][2], 1);
   builder.connectToModuleOutput(mesh.peGrid[2][2], 0, out);
+
+  // Validate ADG before export.
+  auto validation = builder.validateADG();
+  assert(validation.success && "validation failed");
 
   builder.exportMLIR("Output/topo_diag_mesh_3x3.fabric.mlir");
   return 0;

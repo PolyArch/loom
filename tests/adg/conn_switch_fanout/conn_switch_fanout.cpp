@@ -35,8 +35,7 @@ int main() {
   builder.connectPorts(sw0, 0, a0, 0);
   builder.connectPorts(sw0, 1, a0, 1);
   builder.connectPorts(sw0, 2, a1, 0);
-  builder.connectPorts(sw0, 3, a1, 1);
-  builder.connectToModuleInput(y, a1, 1); // override sw0 port 3
+  builder.connectToModuleInput(y, a1, 1);
   builder.connectToModuleOutput(a0, 0, out0);
   builder.connectToModuleOutput(a1, 0, out1);
 

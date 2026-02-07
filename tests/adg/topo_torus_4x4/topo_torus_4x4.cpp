@@ -3,8 +3,18 @@
 // Part of the Loom project.
 //
 //===----------------------------------------------------------------------===//
+//
+// Verifies that buildMesh with Topology::Torus creates:
+//   - 4x4 PE grid and 4x4 switch grid
+//   - East-West wraparound module I/O (4 pairs: one per row)
+//   - North-South wraparound module I/O (4 pairs: one per column)
+//   - All PEs and switches connected
+//
+//===----------------------------------------------------------------------===//
 
 #include <loom/Hardware/adg.h>
+
+#include <cassert>
 
 using namespace loom::adg;
 
@@ -23,6 +33,12 @@ int main() {
       .setType(Type::i32());
 
   auto mesh = builder.buildMesh(4, 4, pe, sw, Topology::Torus);
+
+  // Verify grid dimensions.
+  assert(mesh.peGrid.size() == 4 && "expected 4 PE rows");
+  assert(mesh.peGrid[0].size() == 4 && "expected 4 PE cols");
+  assert(mesh.swGrid.size() == 4 && "expected 4 switch rows");
+  assert(mesh.swGrid[0].size() == 4 && "expected 4 switch cols");
 
   // Chain 16 PEs in row-major order:
   // [0][0] -> [0][1] -> [0][2] -> [0][3] -> [1][0] -> ... -> [3][3]
@@ -96,6 +112,10 @@ int main() {
   builder.connectToModuleInput(in16, mesh.peGrid[3][3], 1);
 
   builder.connectToModuleOutput(mesh.peGrid[3][3], 0, out);
+
+  // Validate ADG before export.
+  auto validation = builder.validateADG();
+  assert(validation.success && "validation failed");
 
   builder.exportMLIR("Output/topo_torus_4x4.fabric.mlir");
   return 0;

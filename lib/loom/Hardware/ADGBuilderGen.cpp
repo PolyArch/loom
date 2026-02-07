@@ -550,7 +550,9 @@ std::string ADGBuilder::Impl::generateMLIR() const {
     for (unsigned r = 0; r < numOutputs; ++r) {
       std::string name = "%" + std::to_string(ssaCounter + r);
       instResultSSA[{ii, (int)r}] = name;
-      instResultType[{ii, (int)r}] = getInstanceOutputType(ii, r).toMLIR();
+      // Use PortType to correctly handle memref outputs (e.g. memory port 0).
+      instResultType[{ii, (int)r}] =
+          getInstanceOutputPortType(ii, r).toMLIR();
     }
     ssaCounter += numOutputs;
   }

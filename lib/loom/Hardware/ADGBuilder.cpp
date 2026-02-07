@@ -202,7 +202,8 @@ InstanceHandle ADGBuilder::clone(ModuleHandle source,
       ModuleKind::TemporalPE,    ModuleKind::TemporalSwitch,
       ModuleKind::Memory,        ModuleKind::ExtMemory,
       ModuleKind::ConstantPE,    ModuleKind::LoadPE,
-      ModuleKind::StorePE,
+      ModuleKind::StorePE,       ModuleKind::AddTag,
+      ModuleKind::MapTag,        ModuleKind::DelTag,
   };
   unsigned id = impl_->instances.size();
   impl_->instances.push_back({kindMap[source.kind], source.id, instanceName});
@@ -213,22 +214,40 @@ InstanceHandle ADGBuilder::clone(ModuleHandle source,
 // Internal connections
 //===----------------------------------------------------------------------===//
 
+/// Report a builder API misuse error and exit.
+static void builderError(const char *api, const std::string &msg) {
+  llvm::errs() << "error: " << api << ": " << msg << "\n";
+  std::exit(1);
+}
+
 void ADGBuilder::connect(InstanceHandle src, InstanceHandle dst) {
-  assert(src.id < impl_->instances.size() && "invalid source instance");
-  assert(dst.id < impl_->instances.size() && "invalid destination instance");
+  if (src.id >= impl_->instances.size())
+    builderError("connect", "invalid source instance id " +
+                 std::to_string(src.id));
+  if (dst.id >= impl_->instances.size())
+    builderError("connect", "invalid destination instance id " +
+                 std::to_string(dst.id));
   impl_->internalConns.push_back({src.id, 0, dst.id, 0});
 }
 
 void ADGBuilder::connectPorts(InstanceHandle src, int srcPort,
                               InstanceHandle dst, int dstPort) {
-  assert(src.id < impl_->instances.size() && "invalid source instance");
-  assert(dst.id < impl_->instances.size() && "invalid destination instance");
-  assert(srcPort >= 0 &&
-         (unsigned)srcPort < impl_->getInstanceOutputCount(src.id) &&
-         "source port out of range");
-  assert(dstPort >= 0 &&
-         (unsigned)dstPort < impl_->getInstanceInputCount(dst.id) &&
-         "destination port out of range");
+  if (src.id >= impl_->instances.size())
+    builderError("connectPorts", "invalid source instance id " +
+                 std::to_string(src.id));
+  if (dst.id >= impl_->instances.size())
+    builderError("connectPorts", "invalid destination instance id " +
+                 std::to_string(dst.id));
+  if (srcPort < 0 || (unsigned)srcPort >= impl_->getInstanceOutputCount(src.id))
+    builderError("connectPorts", "source port " + std::to_string(srcPort) +
+                 " out of range [0, " +
+                 std::to_string(impl_->getInstanceOutputCount(src.id)) +
+                 ") for instance '" + impl_->instances[src.id].name + "'");
+  if (dstPort < 0 || (unsigned)dstPort >= impl_->getInstanceInputCount(dst.id))
+    builderError("connectPorts", "destination port " + std::to_string(dstPort) +
+                 " out of range [0, " +
+                 std::to_string(impl_->getInstanceInputCount(dst.id)) +
+                 ") for instance '" + impl_->instances[dst.id].name + "'");
   impl_->internalConns.push_back(
       {src.id, srcPort, dst.id, dstPort});
 }
@@ -269,21 +288,41 @@ PortHandle ADGBuilder::addModuleOutput(const std::string &name,
 
 void ADGBuilder::connectToModuleInput(PortHandle port, InstanceHandle dst,
                                       int dstPort) {
-  assert(port.id < impl_->ports.size() && "invalid port handle");
-  assert(dst.id < impl_->instances.size() && "invalid instance handle");
-  assert(dstPort >= 0 &&
-         (unsigned)dstPort < impl_->getInstanceInputCount(dst.id) &&
-         "destination port out of range");
+  if (port.id >= impl_->ports.size())
+    builderError("connectToModuleInput", "invalid port handle id " +
+                 std::to_string(port.id));
+  if (!impl_->ports[port.id].isInput)
+    builderError("connectToModuleInput", "port '" +
+                 impl_->ports[port.id].name + "' is an output port, not input");
+  if (dst.id >= impl_->instances.size())
+    builderError("connectToModuleInput", "invalid instance handle id " +
+                 std::to_string(dst.id));
+  if (dstPort < 0 ||
+      (unsigned)dstPort >= impl_->getInstanceInputCount(dst.id))
+    builderError("connectToModuleInput", "destination port " +
+                 std::to_string(dstPort) + " out of range [0, " +
+                 std::to_string(impl_->getInstanceInputCount(dst.id)) +
+                 ") for instance '" + impl_->instances[dst.id].name + "'");
   impl_->inputConns.push_back({port.id, dst.id, dstPort});
 }
 
 void ADGBuilder::connectToModuleOutput(InstanceHandle src, int srcPort,
                                        PortHandle port) {
-  assert(src.id < impl_->instances.size() && "invalid instance handle");
-  assert(port.id < impl_->ports.size() && "invalid port handle");
-  assert(srcPort >= 0 &&
-         (unsigned)srcPort < impl_->getInstanceOutputCount(src.id) &&
-         "source port out of range");
+  if (src.id >= impl_->instances.size())
+    builderError("connectToModuleOutput", "invalid instance handle id " +
+                 std::to_string(src.id));
+  if (port.id >= impl_->ports.size())
+    builderError("connectToModuleOutput", "invalid port handle id " +
+                 std::to_string(port.id));
+  if (impl_->ports[port.id].isInput)
+    builderError("connectToModuleOutput", "port '" +
+                 impl_->ports[port.id].name + "' is an input port, not output");
+  if (srcPort < 0 ||
+      (unsigned)srcPort >= impl_->getInstanceOutputCount(src.id))
+    builderError("connectToModuleOutput", "source port " +
+                 std::to_string(srcPort) + " out of range [0, " +
+                 std::to_string(impl_->getInstanceOutputCount(src.id)) +
+                 ") for instance '" + impl_->instances[src.id].name + "'");
   impl_->outputConns.push_back({src.id, srcPort, port.id});
 }
 
@@ -293,14 +332,19 @@ void ADGBuilder::connectToModuleOutput(InstanceHandle src, int srcPort,
 
 MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
                                  SwitchHandle swTemplate, Topology topology) {
-  assert(rows > 0 && "rows must be positive");
-  assert(cols > 0 && "cols must be positive");
+  if (rows <= 0)
+    builderError("buildMesh", "rows must be positive");
+  if (cols <= 0)
+    builderError("buildMesh", "cols must be positive");
 
   // Validate switch port count. Need at least 5 ports for N/E/S/W + PE-local.
   auto &swDef = impl_->switchDefs[swTemplate.id];
-  assert(swDef.numIn >= 5 && "switch needs >= 5 input ports for mesh topology");
-  assert(swDef.numOut >= 5 &&
-         "switch needs >= 5 output ports for mesh topology");
+  if (swDef.numIn < 5)
+    builderError("buildMesh",
+                 "switch needs >= 5 input ports for mesh topology");
+  if (swDef.numOut < 5)
+    builderError("buildMesh",
+                 "switch needs >= 5 output ports for mesh topology");
 
   MeshResult result;
   result.peGrid.resize(rows, std::vector<InstanceHandle>(cols));
@@ -334,12 +378,17 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
 
   // Switch-to-switch connections.
   // Switch port ordering: N=0, E=1, S=2, W=3, PE-local=4+
-  // Only forward connections (row-major scan order) are created as internal
-  // connections. Wraparound edges (torus/diagonal-torus) are NOT created
-  // as internal connections because they create cycles that MLIR SSA cannot
-  // represent. Instead, they become module-level I/O via the auto-fill below.
   bool diagonal = (topology == Topology::DiagonalMesh ||
                    topology == Topology::DiagonalTorus);
+  bool torus = (topology == Topology::Torus ||
+                topology == Topology::DiagonalTorus);
+
+  // Use a unique mesh ID to avoid name collisions when multiple buildMesh
+  // calls are made.
+  static unsigned meshCounter = 0;
+  unsigned meshId = meshCounter++;
+  Type swPortType = swDef.portType;
+  std::string mPrefix = "m" + std::to_string(meshId) + "_";
 
   for (int r = 0; r < rows; ++r) {
     for (int c = 0; c < cols; ++c) {
@@ -373,13 +422,90 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
     }
   }
 
+  // Torus/DiagonalTorus wraparound: create module I/O pairs for wrap edges.
+  // These cannot be internal connections due to MLIR SSA DAG constraint.
+  // Each wraparound creates an output port (from the source switch) and a
+  // corresponding input port (to the destination switch) with clear naming.
+  if (torus) {
+    // East-West wraparound: SW[r][cols-1] out 1 -> SW[r][0] in 3
+    for (int r = 0; r < rows; ++r) {
+      std::string wrapName = mPrefix + "wrap_ew_r" + std::to_string(r);
+      auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
+      connectToModuleOutput(result.swGrid[r][cols - 1], 1, wrapOut);
+      auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
+      connectToModuleInput(wrapIn, result.swGrid[r][0], 3);
+    }
+
+    // North-South wraparound: SW[rows-1][c] out 2 -> SW[0][c] in 0
+    for (int c = 0; c < cols; ++c) {
+      std::string wrapName = mPrefix + "wrap_ns_c" + std::to_string(c);
+      auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
+      connectToModuleOutput(result.swGrid[rows - 1][c], 2, wrapOut);
+      auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
+      connectToModuleInput(wrapIn, result.swGrid[0][c], 0);
+    }
+
+    if (diagonal && swDef.numOut > 5 && swDef.numIn > 5) {
+      // SE diagonal wraparound (rows): SW[rows-1][c] out 5 -> SW[0][c+1] in 5
+      for (int c = 0; c + 1 < cols; ++c) {
+        std::string wrapName = mPrefix + "wrap_se_r_c" + std::to_string(c);
+        auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
+        connectToModuleOutput(result.swGrid[rows - 1][c], 5, wrapOut);
+        auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
+        connectToModuleInput(wrapIn, result.swGrid[0][c + 1], 5);
+      }
+
+      // SE diagonal wraparound (cols): SW[r][cols-1] out 5 -> SW[r+1][0] in 5
+      for (int r = 0; r + 1 < rows; ++r) {
+        std::string wrapName = mPrefix + "wrap_se_c_r" + std::to_string(r);
+        auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
+        connectToModuleOutput(result.swGrid[r][cols - 1], 5, wrapOut);
+        auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
+        connectToModuleInput(wrapIn, result.swGrid[r + 1][0], 5);
+      }
+
+      // SE diagonal wraparound (corner): SW[rows-1][cols-1] out 5 -> SW[0][0] in 5
+      {
+        std::string wrapName = mPrefix + "wrap_se_corner";
+        auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
+        connectToModuleOutput(result.swGrid[rows - 1][cols - 1], 5, wrapOut);
+        auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
+        connectToModuleInput(wrapIn, result.swGrid[0][0], 5);
+      }
+    }
+
+    if (diagonal && swDef.numOut > 6 && swDef.numIn > 6) {
+      // SW diagonal wraparound (rows): SW[rows-1][c] out 6 -> SW[0][c-1] in 6
+      for (int c = 1; c < cols; ++c) {
+        std::string wrapName = mPrefix + "wrap_sw_r_c" + std::to_string(c);
+        auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
+        connectToModuleOutput(result.swGrid[rows - 1][c], 6, wrapOut);
+        auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
+        connectToModuleInput(wrapIn, result.swGrid[0][c - 1], 6);
+      }
+
+      // SW diagonal wraparound (cols): SW[r][0] out 6 -> SW[r+1][cols-1] in 6
+      for (int r = 0; r + 1 < rows; ++r) {
+        std::string wrapName = mPrefix + "wrap_sw_c_r" + std::to_string(r);
+        auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
+        connectToModuleOutput(result.swGrid[r][0], 6, wrapOut);
+        auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
+        connectToModuleInput(wrapIn, result.swGrid[r + 1][cols - 1], 6);
+      }
+
+      // SW diagonal wraparound (corner): SW[rows-1][0] out 6 -> SW[0][cols-1] in 6
+      {
+        std::string wrapName = mPrefix + "wrap_sw_corner";
+        auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
+        connectToModuleOutput(result.swGrid[rows - 1][0], 6, wrapOut);
+        auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
+        connectToModuleInput(wrapIn, result.swGrid[0][cols - 1], 6);
+      }
+    }
+  }
+
   // Connect unconnected switch input ports to auto-generated module inputs.
   // This ensures the MLIR generator has valid operands for all switch ports.
-  // Use a unique mesh ID to avoid name collisions when multiple buildMesh
-  // calls are made.
-  static unsigned meshCounter = 0;
-  unsigned meshId = meshCounter++;
-  Type swPortType = swDef.portType;
   for (int r = 0; r < rows; ++r) {
     for (int c = 0; c < cols; ++c) {
       unsigned swInst = result.swGrid[r][c].id;
@@ -398,7 +524,7 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
       for (unsigned p = 0; p < numIn; ++p) {
         if (!connected[p]) {
           std::string portName =
-              "m" + std::to_string(meshId) + "_sw_" +
+              mPrefix + "sw_" +
               std::to_string(r) + "_" + std::to_string(c) +
               "_in" + std::to_string(p);
           auto mPort = addModuleInput(portName, swPortType);
@@ -668,6 +794,101 @@ ValidationResult ADGBuilder::validateADG() {
     if (!found)
       addError("COMP_OUTPUT_UNCONNECTED",
                "module output %" + impl_->ports[i].name + " has no source",
+               "module @" + impl_->moduleName);
+  }
+
+  // One-driver-per-input-port check: each instance input port must have at
+  // most one source (either from a module input or from another instance).
+  for (unsigned instIdx = 0; instIdx < impl_->instances.size(); ++instIdx) {
+    unsigned numIn = impl_->getInstanceInputCount(instIdx);
+    std::vector<unsigned> driverCount(numIn, 0);
+
+    for (const auto &conn : impl_->inputConns) {
+      if (conn.instIdx == instIdx && conn.dstPort >= 0 &&
+          (unsigned)conn.dstPort < numIn)
+        driverCount[conn.dstPort]++;
+    }
+    for (const auto &conn : impl_->internalConns) {
+      if (conn.dstInst == instIdx && conn.dstPort >= 0 &&
+          (unsigned)conn.dstPort < numIn)
+        driverCount[conn.dstPort]++;
+    }
+
+    for (unsigned p = 0; p < numIn; ++p) {
+      if (driverCount[p] > 1) {
+        std::string loc = impl_->instances[instIdx].name + ":" +
+                          std::to_string(p);
+        addError("COMP_MULTI_DRIVER",
+                 "input port has " + std::to_string(driverCount[p]) +
+                 " drivers (expected at most 1)", loc);
+      }
+    }
+  }
+
+  // Unconnected instance input port detection.
+  for (unsigned instIdx = 0; instIdx < impl_->instances.size(); ++instIdx) {
+    unsigned numIn = impl_->getInstanceInputCount(instIdx);
+    std::vector<bool> connected(numIn, false);
+
+    for (const auto &conn : impl_->inputConns) {
+      if (conn.instIdx == instIdx && conn.dstPort >= 0 &&
+          (unsigned)conn.dstPort < numIn)
+        connected[conn.dstPort] = true;
+    }
+    for (const auto &conn : impl_->internalConns) {
+      if (conn.dstInst == instIdx && conn.dstPort >= 0 &&
+          (unsigned)conn.dstPort < numIn)
+        connected[conn.dstPort] = true;
+    }
+
+    for (unsigned p = 0; p < numIn; ++p) {
+      if (!connected[p]) {
+        std::string loc = impl_->instances[instIdx].name + ":" +
+                          std::to_string(p);
+        addError("COMP_INPUT_UNCONNECTED",
+                 "instance input port is not connected", loc);
+      }
+    }
+  }
+
+  // Cycle detection using DFS on the internal connection graph.
+  // Note: bidirectional edges (A->B and B->A) are treated as two edges.
+  // True cycles (length > 2 or self-loops) are flagged.
+  {
+    unsigned numInst = impl_->instances.size();
+    std::vector<std::vector<unsigned>> adj(numInst);
+    for (const auto &conn : impl_->internalConns) {
+      if (conn.srcInst < numInst && conn.dstInst < numInst)
+        adj[conn.srcInst].push_back(conn.dstInst);
+    }
+
+    // 0 = unvisited, 1 = in-stack, 2 = done
+    std::vector<int> color(numInst, 0);
+    bool hasCycle = false;
+
+    std::function<void(unsigned)> dfs = [&](unsigned u) {
+      color[u] = 1;
+      for (unsigned v : adj[u]) {
+        if (color[v] == 1) {
+          hasCycle = true;
+          return;
+        }
+        if (color[v] == 0) {
+          dfs(v);
+          if (hasCycle) return;
+        }
+      }
+      color[u] = 2;
+    };
+
+    for (unsigned i = 0; i < numInst && !hasCycle; ++i) {
+      if (color[i] == 0)
+        dfs(i);
+    }
+
+    if (hasCycle)
+      addError("COMP_CYCLE_DETECTED",
+               "internal connection graph contains a cycle",
                "module @" + impl_->moduleName);
   }
 

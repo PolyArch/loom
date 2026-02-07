@@ -8,7 +8,16 @@
 // Uses seeded mt19937 for reproducibility. Each generated ADG is acyclic
 // with all ports connected.
 //
+// Two-pass architecture:
+//   Pass 1 (--gen-cpp): Generate standalone C++ source files in Output/
+//   Pass 2 (default): Build and validate ADGs directly via ADGBuilder API
+//
+// The test harness compiles this file, runs it (pass 2 by default), and
+// validates generated MLIR. Pass 1 is available for manual inspection.
+//
 //===----------------------------------------------------------------------===//
+
+#include "fuzzer_config.h"
 
 #include <loom/Hardware/adg.h>
 
@@ -22,9 +31,6 @@
 
 using namespace loom::adg;
 
-static constexpr unsigned FUZZER_SEED = 42;
-static constexpr unsigned FUZZER_COUNT = 200;
-
 // Allowed single-op names for random PE bodies.
 static const char *const kOps[] = {
     "arith.addi", "arith.subi", "arith.muli", "arith.andi",
@@ -35,22 +41,191 @@ static constexpr unsigned kNumOps = sizeof(kOps) / sizeof(kOps[0]);
 
 // Value types available for random selection.
 struct TypeInfo {
-  const char *name;
+  const char *mlirName;  // e.g. "i32"
+  const char *apiCall;   // e.g. "Type::i32()"
   std::function<Type()> make;
   bool isFloat;
 };
 
 static const TypeInfo kTypes[] = {
-    {"i8", []() { return Type::i8(); }, false},
-    {"i16", []() { return Type::i16(); }, false},
-    {"i32", []() { return Type::i32(); }, false},
-    {"i64", []() { return Type::i64(); }, false},
-    {"f32", []() { return Type::f32(); }, true},
-    {"f64", []() { return Type::f64(); }, true},
+    {"i8", "Type::i8()", []() { return Type::i8(); }, false},
+    {"i16", "Type::i16()", []() { return Type::i16(); }, false},
+    {"i32", "Type::i32()", []() { return Type::i32(); }, false},
+    {"i64", "Type::i64()", []() { return Type::i64(); }, false},
+    {"f32", "Type::f32()", []() { return Type::f32(); }, true},
+    {"f64", "Type::f64()", []() { return Type::f64(); }, true},
 };
 static constexpr unsigned kNumTypes = sizeof(kTypes) / sizeof(kTypes[0]);
 
-int main() {
+/// Parameters for a single generated ADG.
+struct FuzzParams {
+  std::string name;
+  unsigned typeIdx;
+  unsigned opIdx;
+  unsigned numPEDefs;
+  unsigned numInstances;
+  std::vector<unsigned> instPEDef;   // which PE def each instance uses
+  std::vector<unsigned> latMax;      // per PE def
+  // Connections: (src, dstPort) pairs indexed by dst instance.
+  // -1 means unconnected (use module input).
+  std::vector<std::vector<int>> inputSrc; // [inst][port] = src inst or -1
+  unsigned numOutputs;
+  std::vector<unsigned> outputSrcInst;
+};
+
+/// Derive random parameters for a single ADG.
+static FuzzParams generateParams(unsigned seed, unsigned idx) {
+  std::mt19937 rng(seed + idx);
+  FuzzParams p;
+  p.name = "fuzz_" + std::to_string(seed) + "_" + std::to_string(idx);
+
+  p.typeIdx = rng() % kNumTypes;
+  if (kTypes[p.typeIdx].isFloat) {
+    p.opIdx = 6 + rng() % 3;
+  } else {
+    p.opIdx = rng() % 6;
+  }
+
+  p.numPEDefs = 1 + rng() % 3;
+  p.numInstances = 2 + rng() % 8;
+
+  p.latMax.resize(p.numPEDefs);
+  for (unsigned i = 0; i < p.numPEDefs; ++i)
+    p.latMax[i] = 1 + rng() % 3;
+
+  p.instPEDef.resize(p.numInstances);
+  for (unsigned i = 0; i < p.numInstances; ++i)
+    p.instPEDef[i] = rng() % p.numPEDefs;
+
+  // Random acyclic connections.
+  p.inputSrc.resize(p.numInstances, std::vector<int>(2, -1));
+  unsigned numConns = rng() % (p.numInstances - 1);
+  for (unsigned c = 0; c < numConns; ++c) {
+    if (p.numInstances < 2) break;
+    unsigned src = rng() % (p.numInstances - 1);
+    unsigned dst = src + 1 + rng() % (p.numInstances - src - 1);
+    unsigned dstPort = rng() % 2;
+    if (p.inputSrc[dst][dstPort] == -1)
+      p.inputSrc[dst][dstPort] = (int)src;
+  }
+
+  p.numOutputs = 1 + rng() % 3;
+  p.outputSrcInst.resize(p.numOutputs);
+  for (unsigned o = 0; o < p.numOutputs; ++o)
+    p.outputSrcInst[o] = rng() % p.numInstances;
+
+  return p;
+}
+
+/// Build an ADG directly from parameters and export MLIR.
+static void buildAndExport(const FuzzParams &p) {
+  ADGBuilder builder(p.name);
+  Type valType = kTypes[p.typeIdx].make();
+
+  struct PEDefInfo { PEHandle handle; };
+  std::vector<PEDefInfo> peDefs;
+  for (unsigned i = 0; i < p.numPEDefs; ++i) {
+    auto pe = builder.newPE("pe_def_" + std::to_string(i))
+        .setLatency(1, 1, p.latMax[i])
+        .setInterval(1, 1, 1)
+        .setInputPorts({valType, valType})
+        .setOutputPorts({valType})
+        .addOp(kOps[p.opIdx]);
+    peDefs.push_back({pe});
+  }
+
+  std::vector<InstanceHandle> insts;
+  for (unsigned i = 0; i < p.numInstances; ++i) {
+    auto h = builder.clone(peDefs[p.instPEDef[i]].handle,
+                           "inst_" + std::to_string(i));
+    insts.push_back(h);
+  }
+
+  unsigned moduleInputIdx = 0;
+  for (unsigned i = 0; i < p.numInstances; ++i) {
+    for (unsigned port = 0; port < 2; ++port) {
+      if (p.inputSrc[i][port] >= 0) {
+        builder.connectPorts(insts[p.inputSrc[i][port]], 0,
+                             insts[i], port);
+      } else {
+        auto mPort = builder.addModuleInput(
+            "in_" + std::to_string(moduleInputIdx++), valType);
+        builder.connectToModuleInput(mPort, insts[i], port);
+      }
+    }
+  }
+
+  for (unsigned o = 0; o < p.numOutputs; ++o) {
+    auto port = builder.addModuleOutput(
+        "out_" + std::to_string(o), valType);
+    builder.connectToModuleOutput(insts[p.outputSrcInst[o]], 0, port);
+  }
+
+  builder.exportMLIR("Output/" + p.name + ".fabric.mlir");
+}
+
+/// Generate a standalone C++ source file for an ADG.
+static void writeCppSource(const FuzzParams &p, const std::string &outDir) {
+  std::string path = outDir + "/" + p.name + ".cpp";
+  std::ofstream os(path);
+
+  os << "#include <loom/Hardware/adg.h>\n";
+  os << "using namespace loom::adg;\n\n";
+  os << "int main() {\n";
+  os << "  ADGBuilder builder(\"" << p.name << "\");\n";
+  os << "  Type valType = " << kTypes[p.typeIdx].apiCall << ";\n\n";
+
+  // PE definitions.
+  for (unsigned i = 0; i < p.numPEDefs; ++i) {
+    os << "  auto pe_def_" << i << " = builder.newPE(\"pe_def_"
+       << i << "\")\n";
+    os << "      .setLatency(1, 1, " << p.latMax[i] << ")\n";
+    os << "      .setInterval(1, 1, 1)\n";
+    os << "      .setInputPorts({valType, valType})\n";
+    os << "      .setOutputPorts({valType})\n";
+    os << "      .addOp(\"" << kOps[p.opIdx] << "\");\n\n";
+  }
+
+  // Instances.
+  for (unsigned i = 0; i < p.numInstances; ++i) {
+    os << "  auto inst_" << i << " = builder.clone(pe_def_"
+       << p.instPEDef[i] << ", \"inst_" << i << "\");\n";
+  }
+  os << "\n";
+
+  // Connections.
+  unsigned moduleInputIdx = 0;
+  for (unsigned i = 0; i < p.numInstances; ++i) {
+    for (unsigned port = 0; port < 2; ++port) {
+      if (p.inputSrc[i][port] >= 0) {
+        os << "  builder.connectPorts(inst_" << p.inputSrc[i][port]
+           << ", 0, inst_" << i << ", " << port << ");\n";
+      } else {
+        os << "  auto in_" << moduleInputIdx
+           << " = builder.addModuleInput(\"in_" << moduleInputIdx
+           << "\", valType);\n";
+        os << "  builder.connectToModuleInput(in_" << moduleInputIdx
+           << ", inst_" << i << ", " << port << ");\n";
+        moduleInputIdx++;
+      }
+    }
+  }
+  os << "\n";
+
+  for (unsigned o = 0; o < p.numOutputs; ++o) {
+    os << "  auto out_" << o << " = builder.addModuleOutput(\"out_" << o
+       << "\", valType);\n";
+    os << "  builder.connectToModuleOutput(inst_" << p.outputSrcInst[o]
+       << ", 0, out_" << o << ");\n";
+  }
+  os << "\n";
+
+  os << "  builder.exportMLIR(\"Output/" << p.name << ".fabric.mlir\");\n";
+  os << "  return 0;\n";
+  os << "}\n";
+}
+
+int main(int argc, char **argv) {
   unsigned seed = FUZZER_SEED;
   unsigned count = FUZZER_COUNT;
 
@@ -60,111 +235,22 @@ int main() {
   if (const char *c = std::getenv("LOOM_FUZZER_COUNT"))
     count = std::atoi(c);
 
-  unsigned passed = 0, failed = 0;
-
-  for (unsigned idx = 0; idx < count; ++idx) {
-    std::mt19937 rng(seed + idx);
-
-    std::string name = "fuzz_" + std::to_string(seed) + "_" + std::to_string(idx);
-    ADGBuilder builder(name);
-
-    // Pick a random value type.
-    unsigned typeIdx = rng() % kNumTypes;
-    const auto &ti = kTypes[typeIdx];
-    Type valType = ti.make();
-
-    // Pick a compatible op.
-    unsigned opIdx;
-    if (ti.isFloat) {
-      // Only float ops (indices 6, 7, 8).
-      opIdx = 6 + rng() % 3;
-    } else {
-      // Only int ops (indices 0-5).
-      opIdx = rng() % 6;
-    }
-
-    // All PEs use 2 inputs for simplicity (all arith ops are binary).
-    unsigned numPEDefs = 1 + rng() % 3;     // 1-3 PE definitions
-    unsigned numInstances = 2 + rng() % 8;   // 2-9 instances
-
-    // Create PE definitions (all with exactly 2 inputs).
-    struct PEDefInfo {
-      PEHandle handle;
-      unsigned numIn;
-    };
-    std::vector<PEDefInfo> peDefs;
-    for (unsigned p = 0; p < numPEDefs; ++p) {
-      unsigned nIn = 2; // Binary ops need exactly 2 inputs.
-      std::vector<Type> inPorts(nIn, valType);
-      auto pe = builder.newPE("pe_def_" + std::to_string(p))
-          .setLatency(1, 1, 1 + rng() % 3)
-          .setInterval(1, 1, 1)
-          .setInputPorts(inPorts)
-          .setOutputPorts({valType})
-          .addOp(kOps[opIdx]);
-      peDefs.push_back({pe, nIn});
-    }
-
-    // Create instances tracking actual port counts.
-    struct InstInfo {
-      InstanceHandle handle;
-      unsigned numIn;
-      unsigned numOut;
-    };
-    std::vector<InstInfo> insts;
-
-    for (unsigned i = 0; i < numInstances; ++i) {
-      unsigned pi = rng() % peDefs.size();
-      auto h = builder.clone(peDefs[pi].handle, "inst_" + std::to_string(i));
-      insts.push_back({h, peDefs[pi].numIn, 1});
-    }
-
-    // Create random acyclic connections.
-    // Only connect from lower-index to higher-index instances (guarantees acyclic).
-    std::vector<std::vector<bool>> inputConnected(numInstances);
-    for (auto &ic : inputConnected)
-      ic.resize(2, false); // max 2 inputs tracked
-
-    unsigned numConns = rng() % (numInstances - 1);
-    for (unsigned c = 0; c < numConns; ++c) {
-      if (numInstances < 2) break;
-      unsigned src = rng() % (numInstances - 1);
-      unsigned dst = src + 1 + rng() % (numInstances - src - 1);
-      unsigned dstPort = rng() % std::min(insts[dst].numIn, 2u);
-      if (!inputConnected[dst][dstPort]) {
-        builder.connectPorts(insts[src].handle, 0, insts[dst].handle, dstPort);
-        inputConnected[dst][dstPort] = true;
-      }
-    }
-
-    // Connect unconnected input ports to module inputs.
-    unsigned moduleInputIdx = 0;
-    for (unsigned i = 0; i < numInstances; ++i) {
-      for (unsigned p = 0; p < insts[i].numIn; ++p) {
-        if (!inputConnected[i][p]) {
-          auto port = builder.addModuleInput(
-              "in_" + std::to_string(moduleInputIdx++), valType);
-          builder.connectToModuleInput(port, insts[i].handle, p);
-        }
-      }
-    }
-
-    // Connect at least one instance output to a module output.
-    unsigned numOutputs = 1 + rng() % 3;
-    for (unsigned o = 0; o < numOutputs; ++o) {
-      unsigned srcInst = rng() % numInstances;
-      auto port = builder.addModuleOutput(
-          "out_" + std::to_string(o), valType);
-      builder.connectToModuleOutput(insts[srcInst].handle, 0, port);
-    }
-
-    // Export all MLIR files flat in Output/ so the test harness glob finds them.
-    std::string outPath = "Output/" + name + ".fabric.mlir";
-    builder.exportMLIR(outPath);
-    passed++;
+  // Check for --gen-cpp mode.
+  bool genCpp = false;
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--gen-cpp")
+      genCpp = true;
   }
 
-  // The test harness expects exit code 0 if things ran.
-  // The exportMLIR calls exit(1) on failure, so if we get here, all passed.
+  for (unsigned idx = 0; idx < count; ++idx) {
+    FuzzParams p = generateParams(seed, idx);
+
+    if (genCpp) {
+      writeCppSource(p, "Output");
+    } else {
+      buildAndExport(p);
+    }
+  }
+
   return 0;
 }
