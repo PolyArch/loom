@@ -257,28 +257,44 @@ ValidationResult ADGBuilder::validateADG() {
       validateTaggedType(t, loc + " (output port)");
   }
 
-  // Validate tag widths on load PE tagged interfaces.
+  // Validate load PE definitions.
   for (size_t i = 0; i < impl_->loadPEDefs.size(); ++i) {
     const auto &lp = impl_->loadPEDefs[i];
+    std::string loc = "load_pe @" + lp.name;
     if (lp.interface == InterfaceCategory::Tagged) {
-      std::string loc = "load_pe @" + lp.name;
       int w = getIntWidth(Type::iN(lp.tagWidth));
       if (w < 1 || w > 16)
         addError("COMP_TAG_WIDTH_RANGE",
                  "tag width outside [1, 16]", loc);
     }
+    if (lp.hwType == HardwareType::TagTransparent &&
+        lp.interface != InterfaceCategory::Tagged)
+      addError("COMP_LOADPE_TRANSPARENT_NATIVE",
+               "TagTransparent hardware type requires Tagged interface", loc);
+    if (lp.hwType == HardwareType::TagTransparent &&
+        lp.interface == InterfaceCategory::Tagged && lp.queueDepth < 1)
+      addError("COMP_LOADPE_TRANSPARENT_QUEUE_DEPTH",
+               "TagTransparent load PE requires queueDepth >= 1", loc);
   }
 
-  // Validate tag widths on store PE tagged interfaces.
+  // Validate store PE definitions.
   for (size_t i = 0; i < impl_->storePEDefs.size(); ++i) {
     const auto &sp = impl_->storePEDefs[i];
+    std::string loc = "store_pe @" + sp.name;
     if (sp.interface == InterfaceCategory::Tagged) {
-      std::string loc = "store_pe @" + sp.name;
       int w = getIntWidth(Type::iN(sp.tagWidth));
       if (w < 1 || w > 16)
         addError("COMP_TAG_WIDTH_RANGE",
                  "tag width outside [1, 16]", loc);
     }
+    if (sp.hwType == HardwareType::TagTransparent &&
+        sp.interface != InterfaceCategory::Tagged)
+      addError("COMP_STOREPE_TRANSPARENT_NATIVE",
+               "TagTransparent hardware type requires Tagged interface", loc);
+    if (sp.hwType == HardwareType::TagTransparent &&
+        sp.interface == InterfaceCategory::Tagged && sp.queueDepth < 1)
+      addError("COMP_STOREPE_TRANSPARENT_QUEUE_DEPTH",
+               "TagTransparent store PE requires queueDepth >= 1", loc);
   }
 
   // Validate tag widths on temporal PE/SW interface types.
