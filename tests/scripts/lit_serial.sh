@@ -42,7 +42,7 @@ for test_file in "${test_files[@]}"; do
     cmd="${run_cmd//%s/${test_file}}"
 
     # Execute the command via bash.
-    if ! bash -c "${cmd}" >/dev/null 2>&1; then
+    if ! bash -c "set -o pipefail; ${cmd}" >/dev/null 2>&1; then
       test_passed=false
       break
     fi
