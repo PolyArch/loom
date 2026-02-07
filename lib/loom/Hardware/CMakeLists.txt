@@ -3,6 +3,7 @@ add_llvm_library(LoomADG
   ADGBuilderGen.cpp
   ADGBuilderPE.cpp
   ADGBuilderTypes.cpp
+  ADGBuilderValidation.cpp
 
   LINK_LIBS PUBLIC
     LoomFabric

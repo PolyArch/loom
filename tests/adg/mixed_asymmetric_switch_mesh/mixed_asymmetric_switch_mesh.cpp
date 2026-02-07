@@ -60,6 +60,8 @@ int main() {
   builder.connectPorts(mesh.peGrid[1][1], 0, asw0, 3);
   builder.connectToModuleOutput(asw0, 0, asw_out0);
   builder.connectToModuleOutput(asw0, 1, asw_out1);
+  auto asw_out2 = builder.addModuleOutput("asw_out2", Type::i32());
+  builder.connectToModuleOutput(asw0, 2, asw_out2);
 
   builder.exportMLIR("Output/mixed_asymmetric_switch_mesh.fabric.mlir");
   return 0;

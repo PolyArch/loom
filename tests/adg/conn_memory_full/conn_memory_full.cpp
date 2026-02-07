@@ -45,7 +45,9 @@ int main() {
   builder.connectPorts(add0, 0, mem0, 2); // adder -> st_data
   // Memory outputs: [lddata, lddone, stdone]
   builder.connectToModuleOutput(mem0, 0, lddata);
-  builder.connectToModuleOutput(mem0, 2, done); // stdone
+  auto lddone = builder.addModuleOutput("lddone", Type::none());
+  builder.connectToModuleOutput(mem0, 1, lddone); // lddone
+  builder.connectToModuleOutput(mem0, 2, done);    // stdone
 
   builder.exportMLIR("Output/conn_memory_full.fabric.mlir");
   return 0;

@@ -69,6 +69,12 @@ int main() {
   builder.connectPorts(meshB.peGrid[1][0], 0, meshB.peGrid[1][1], 0);
   builder.connectToModuleInput(f, meshB.peGrid[1][1], 1);
 
+  // Bridge remaining outputs -> module outputs
+  auto br_out1 = builder.addModuleOutput("br_out1", Type::i32());
+  auto br_out2 = builder.addModuleOutput("br_out2", Type::i32());
+  builder.connectToModuleOutput(br0, 1, br_out1);
+  builder.connectToModuleOutput(br0, 2, br_out2);
+
   // mesh B output -> result
   builder.connectToModuleOutput(meshB.peGrid[1][1], 0, result);
 

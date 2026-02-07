@@ -79,6 +79,9 @@ if [[ -d "${FUZZER_DIR}" ]]; then
     "${LOOM_BIN}" --as-clang "${fuzzer_sources[@]}" -o "${fuzzer_out}/fuzzer" \
       >"${fuzzer_out}/fuzzer.compile.log" 2>&1
 
+    # Remove stale generated case subdirs so only current run's cases are discovered.
+    find "${fuzzer_out}" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+
     # Run fuzzer in --gen-cpp mode to generate per-case subdirs.
     (cd "${FUZZER_DIR}" && "${fuzzer_out}/fuzzer" --gen-cpp) \
       >"${fuzzer_out}/fuzzer.gen.log" 2>&1

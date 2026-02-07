@@ -16,6 +16,8 @@
 
 #include <cassert>
 #include <fstream>
+#include <regex>
+#include <set>
 #include <string>
 
 static unsigned mlirCount(const std::string &path, const std::string &substr) {
@@ -29,6 +31,29 @@ static unsigned mlirCount(const std::string &path, const std::string &substr) {
     pos += substr.size();
   }
   return count;
+}
+
+// Count direct inter-switch edges: switch result used as operand to another switch.
+static unsigned countInterSwitchEdges(const std::string &path) {
+  std::ifstream f(path);
+  std::string content((std::istreambuf_iterator<char>(f)),
+                       std::istreambuf_iterator<char>());
+  // Collect SSA names defined by fabric.switch lines (%N:K = fabric.switch).
+  std::regex swDef(R"((%\d+):\d+\s*=\s*fabric\.switch)");
+  std::set<std::string> swNames;
+  for (std::sregex_iterator it(content.begin(), content.end(), swDef), end; it != end; ++it)
+    swNames.insert((*it)[1].str());
+  // Count operands to fabric.switch that reference a switch result (%N#M).
+  unsigned edges = 0;
+  std::regex swLine(R"(fabric\.switch\s*\[.*?\]\s*(.*?)\s*:)");
+  std::regex operand(R"((%\d+)#\d+)");
+  for (std::sregex_iterator it(content.begin(), content.end(), swLine), end; it != end; ++it) {
+    std::string ops = (*it)[1].str();
+    for (std::sregex_iterator oit(ops.begin(), ops.end(), operand), oend; oit != oend; ++oit)
+      if (swNames.count((*oit)[1].str()))
+        ++edges;
+  }
+  return edges;
 }
 
 using namespace loom::adg;
@@ -101,6 +126,7 @@ int main() {
   assert(mlirCount(mlir, "fabric.instance") == 9 && "expected 9 PE instances");
   assert(mlirCount(mlir, "fabric.switch") == 9 && "expected 9 switch instances");
   assert(mlirCount(mlir, "sym_name = \"pe_") == 9 && "expected pe_ sym_names");
+  assert(countInterSwitchEdges(mlir) == 12 && "expected 12 inter-switch edges");
 
   return 0;
 }

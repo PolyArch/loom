@@ -48,6 +48,8 @@ int main() {
   builder.connectToModuleInput(nc, nsw0, 2);
   builder.connectToModuleOutput(nsw0, 0, nr0);
   builder.connectToModuleOutput(nsw0, 1, nr1);
+  auto nr2 = builder.addModuleOutput("nr2", Type::i32());
+  builder.connectToModuleOutput(nsw0, 2, nr2);
 
   // Temporal switch connections (all 3 inputs must be connected)
   builder.connectToModuleInput(ta, tsw0, 0);
@@ -55,6 +57,8 @@ int main() {
   builder.connectToModuleInput(tc, tsw0, 2);
   builder.connectToModuleOutput(tsw0, 0, tr0);
   builder.connectToModuleOutput(tsw0, 1, tr1);
+  auto tr2 = builder.addModuleOutput("tr2", taggedType);
+  builder.connectToModuleOutput(tsw0, 2, tr2);
 
   builder.exportMLIR("Output/mixed_all_switch_types.fabric.mlir");
   return 0;

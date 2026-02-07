@@ -37,8 +37,10 @@ int main() {
   // Memory inputs: [st_addr, st_data]
   builder.connectToModuleInput(addr, mem0, 0);
   builder.connectPorts(add0, 0, mem0, 1);
-  // Memory outputs: [lddone, stdone]
-  builder.connectToModuleOutput(mem0, 1, done);
+  // Memory outputs (private, 0 ld, 1 st): [lddone(0), stdone(1)]
+  builder.connectToModuleOutput(mem0, 0, done);    // lddone
+  auto stdone = builder.addModuleOutput("stdone", Type::none());
+  builder.connectToModuleOutput(mem0, 1, stdone);  // stdone
 
   builder.exportMLIR("Output/conn_memory_store.fabric.mlir");
   return 0;

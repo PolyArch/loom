@@ -43,6 +43,9 @@ int main() {
   builder.connectPorts(sw0, 0, a2, 0);
   builder.connectPorts(sw0, 1, a2, 1);
   builder.connectToModuleOutput(a2, 0, out);
+  // Connect remaining switch output port to avoid dangling.
+  auto sink = builder.addModuleOutput("sw0_out2", Type::i32());
+  builder.connectToModuleOutput(sw0, 2, sink);
 
   builder.exportMLIR("Output/conn_switch_crossbar.fabric.mlir");
   return 0;

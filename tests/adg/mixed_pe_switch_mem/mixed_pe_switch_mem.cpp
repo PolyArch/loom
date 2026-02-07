@@ -50,8 +50,12 @@ int main() {
   builder.connectToModuleInput(sw_in1, sw0, 1);
   builder.connectToModuleInput(sw_in2, sw0, 2);
 
-  // Switch output 0 -> module output
+  // Switch outputs -> module outputs
   builder.connectToModuleOutput(sw0, 0, result);
+  auto sw_out1 = builder.addModuleOutput("sw_out1", Type::i32());
+  auto sw_out2 = builder.addModuleOutput("sw_out2", Type::i32());
+  builder.connectToModuleOutput(sw0, 1, sw_out1);
+  builder.connectToModuleOutput(sw0, 2, sw_out2);
 
   // Memory: separate load path
   builder.connectToModuleInput(ld_addr, mem0, 0);

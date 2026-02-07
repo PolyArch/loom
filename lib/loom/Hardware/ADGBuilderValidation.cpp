@@ -1,0 +1,400 @@
+//===-- ADGBuilderValidation.cpp - ADG Builder validation ---------*- C++ -*-===//
+//
+// Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+
+#include "ADGBuilderImpl.h"
+
+#include <functional>
+
+namespace loom {
+namespace adg {
+
+//===----------------------------------------------------------------------===//
+// Validation
+//===----------------------------------------------------------------------===//
+
+ValidationResult ADGBuilder::validateADG() {
+  ValidationResult result;
+
+  auto addError = [&](const std::string &code, const std::string &msg,
+                      const std::string &loc = "") {
+    result.errors.push_back({code, msg, loc});
+    result.success = false;
+  };
+
+  // Validate switch definitions.
+  for (size_t i = 0; i < impl_->switchDefs.size(); ++i) {
+    const auto &sw = impl_->switchDefs[i];
+    std::string loc = "switch @" + sw.name;
+    if (sw.numIn > 32 || sw.numOut > 32)
+      addError("COMP_SWITCH_PORT_LIMIT",
+               "switch has more than 32 inputs or outputs", loc);
+    if (!sw.connectivity.empty()) {
+      if (sw.connectivity.size() != sw.numOut)
+        addError("COMP_SWITCH_TABLE_SHAPE",
+                 "connectivity_table row count != num_outputs", loc);
+      for (size_t r = 0; r < sw.connectivity.size(); ++r) {
+        if (sw.connectivity[r].size() != sw.numIn)
+          addError("COMP_SWITCH_TABLE_SHAPE",
+                   "connectivity_table column count != num_inputs", loc);
+        bool hasOne = false;
+        for (bool v : sw.connectivity[r]) if (v) hasOne = true;
+        if (!hasOne)
+          addError("COMP_SWITCH_ROW_EMPTY",
+                   "connectivity row " + std::to_string(r) + " has no 1",
+                   loc);
+      }
+      for (unsigned c = 0; c < sw.numIn; ++c) {
+        bool hasOne = false;
+        for (unsigned r = 0; r < sw.connectivity.size(); ++r)
+          if (c < sw.connectivity[r].size() && sw.connectivity[r][c])
+            hasOne = true;
+        if (!hasOne)
+          addError("COMP_SWITCH_COL_EMPTY",
+                   "connectivity column " + std::to_string(c) + " has no 1",
+                   loc);
+      }
+    }
+  }
+
+  // Validate temporal switch definitions.
+  for (size_t i = 0; i < impl_->temporalSwitchDefs.size(); ++i) {
+    const auto &ts = impl_->temporalSwitchDefs[i];
+    std::string loc = "temporal_sw @" + ts.name;
+    if (ts.numIn > 32 || ts.numOut > 32)
+      addError("COMP_TEMPORAL_SW_PORT_LIMIT",
+               "temporal switch has more than 32 inputs or outputs", loc);
+    if (ts.numRouteTable < 1)
+      addError("COMP_TEMPORAL_SW_NUM_ROUTE_TABLE",
+               "num_route_table must be >= 1", loc);
+    if (!ts.connectivity.empty()) {
+      if (ts.connectivity.size() != ts.numOut)
+        addError("COMP_TEMPORAL_SW_TABLE_SHAPE",
+                 "connectivity_table row count != num_outputs", loc);
+      for (size_t r = 0; r < ts.connectivity.size(); ++r) {
+        bool hasOne = false;
+        for (bool v : ts.connectivity[r]) if (v) hasOne = true;
+        if (!hasOne)
+          addError("COMP_TEMPORAL_SW_ROW_EMPTY",
+                   "connectivity row " + std::to_string(r) + " has no 1",
+                   loc);
+      }
+      for (unsigned c = 0; c < ts.numIn; ++c) {
+        bool hasOne = false;
+        for (unsigned r = 0; r < ts.connectivity.size(); ++r)
+          if (c < ts.connectivity[r].size() && ts.connectivity[r][c])
+            hasOne = true;
+        if (!hasOne)
+          addError("COMP_TEMPORAL_SW_COL_EMPTY",
+                   "connectivity column " + std::to_string(c) + " has no 1",
+                   loc);
+      }
+    }
+  }
+
+  // Validate temporal PE definitions.
+  for (size_t i = 0; i < impl_->temporalPEDefs.size(); ++i) {
+    const auto &tp = impl_->temporalPEDefs[i];
+    std::string loc = "temporal_pe @" + tp.name;
+    if (tp.numInstructions < 1)
+      addError("COMP_TEMPORAL_PE_NUM_INSTRUCTION",
+               "num_instruction must be >= 1", loc);
+    if (tp.numRegisters > 0 && tp.regFifoDepth == 0)
+      addError("COMP_TEMPORAL_PE_REG_FIFO_DEPTH",
+               "reg_fifo_depth must be > 0 when num_register > 0", loc);
+    if (tp.numRegisters == 0 && tp.regFifoDepth > 0)
+      addError("COMP_TEMPORAL_PE_REG_FIFO_DEPTH",
+               "reg_fifo_depth must be 0 when num_register == 0", loc);
+    if (tp.fuPEDefIndices.empty())
+      addError("COMP_TEMPORAL_PE_EMPTY_BODY",
+               "temporal PE has no FU definitions", loc);
+    if (!tp.shareModeB && tp.shareBufferSize > 0)
+      addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE",
+               "operand_buffer_size set without enable_share_operand_buffer",
+               loc);
+    if (tp.shareModeB && tp.shareBufferSize == 0)
+      addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING",
+               "operand_buffer_size missing with share_operand_buffer", loc);
+    if (tp.shareModeB && tp.shareBufferSize > 8192)
+      addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE",
+               "operand_buffer_size out of range [1, 8192]", loc);
+  }
+
+  // Validate memory definitions.
+  for (size_t i = 0; i < impl_->memoryDefs.size(); ++i) {
+    const auto &mem = impl_->memoryDefs[i];
+    std::string loc = "memory @" + mem.name;
+    if (mem.ldCount == 0 && mem.stCount == 0)
+      addError("COMP_MEMORY_PORTS_EMPTY",
+               "ldCount and stCount are both 0", loc);
+    if (mem.stCount > 0 && mem.lsqDepth < 1)
+      addError("COMP_MEMORY_LSQ_MIN",
+               "lsqDepth must be >= 1 when stCount > 0", loc);
+    if (mem.stCount == 0 && mem.lsqDepth > 0)
+      addError("COMP_MEMORY_LSQ_WITHOUT_STORE",
+               "lsqDepth must be 0 when stCount == 0", loc);
+    if (mem.shape.isDynamic())
+      addError("COMP_MEMORY_STATIC_REQUIRED",
+               "fabric.memory requires static memref shape", loc);
+  }
+
+  // Validate external memory definitions.
+  for (size_t i = 0; i < impl_->extMemoryDefs.size(); ++i) {
+    const auto &em = impl_->extMemoryDefs[i];
+    std::string loc = "extmemory @" + em.name;
+    if (em.ldCount == 0 && em.stCount == 0)
+      addError("COMP_MEMORY_PORTS_EMPTY",
+               "ldCount and stCount are both 0", loc);
+    if (em.stCount > 0 && em.lsqDepth < 1)
+      addError("COMP_MEMORY_LSQ_MIN",
+               "lsqDepth must be >= 1 when stCount > 0", loc);
+    if (em.stCount == 0 && em.lsqDepth > 0)
+      addError("COMP_MEMORY_LSQ_WITHOUT_STORE",
+               "lsqDepth must be 0 when stCount == 0", loc);
+  }
+
+  // Validate map_tag definitions.
+  for (size_t i = 0; i < impl_->mapTagDefs.size(); ++i) {
+    const auto &mt = impl_->mapTagDefs[i];
+    std::string loc = "map_tag @" + mt.name;
+    if (mt.tableSize < 1 || mt.tableSize > 256)
+      addError("COMP_MAP_TAG_TABLE_SIZE",
+               "table_size out of range [1, 256]", loc);
+  }
+
+  // Validate tag width range for add_tag and del_tag.
+  for (size_t i = 0; i < impl_->addTagDefs.size(); ++i) {
+    const auto &at = impl_->addTagDefs[i];
+    std::string loc = "add_tag @" + at.name;
+    if (at.tagType.getKind() == Type::IN &&
+        (at.tagType.getWidth() < 1 || at.tagType.getWidth() > 16))
+      addError("COMP_TAG_WIDTH_RANGE",
+               "tag width outside [1, 16]", loc);
+  }
+
+  // Validate PE definitions.
+  for (size_t i = 0; i < impl_->peDefs.size(); ++i) {
+    const auto &pe = impl_->peDefs[i];
+    std::string loc = "pe @" + pe.name;
+    if (pe.inputPorts.empty())
+      addError("COMP_PE_EMPTY_BODY", "PE has no input ports", loc);
+    if (pe.outputPorts.empty())
+      addError("COMP_PE_EMPTY_BODY", "PE has no output ports", loc);
+    if (pe.bodyMLIR.empty() && pe.singleOp.empty())
+      addError("COMP_PE_EMPTY_BODY", "PE has no body or operation", loc);
+    // Check for mixed interface (some tagged, some not).
+    bool hasTagged = false, hasNative = false;
+    for (const auto &t : pe.inputPorts)
+      (t.isTagged() ? hasTagged : hasNative) = true;
+    for (const auto &t : pe.outputPorts)
+      (t.isTagged() ? hasTagged : hasNative) = true;
+    if (hasTagged && hasNative)
+      addError("COMP_PE_MIXED_INTERFACE",
+               "PE has mixed native and tagged ports", loc);
+  }
+
+  // Check for empty module body.
+  if (impl_->instances.empty())
+    addError("COMP_MODULE_EMPTY_BODY",
+             "module has no instances", "module @" + impl_->moduleName);
+
+  // Graph-level validation: check type compatibility of all connections.
+  for (const auto &conn : impl_->internalConns) {
+    if (conn.srcInst >= impl_->instances.size() ||
+        conn.dstInst >= impl_->instances.size())
+      continue;
+    auto srcType = impl_->getInstanceOutputPortType(conn.srcInst, conn.srcPort);
+    auto dstType = impl_->getInstanceInputPortType(conn.dstInst, conn.dstPort);
+    if (!srcType.matches(dstType)) {
+      std::string loc =
+          impl_->instances[conn.srcInst].name + ":" +
+          std::to_string(conn.srcPort) + " -> " +
+          impl_->instances[conn.dstInst].name + ":" +
+          std::to_string(conn.dstPort);
+      addError("COMP_TYPE_MISMATCH",
+               "type mismatch: " + srcType.toMLIR() + " vs " + dstType.toMLIR(),
+               loc);
+    }
+  }
+
+  // Check module-input-to-instance type compatibility.
+  for (const auto &conn : impl_->inputConns) {
+    if (conn.portIdx >= impl_->ports.size() ||
+        conn.instIdx >= impl_->instances.size())
+      continue;
+    const auto &port = impl_->ports[conn.portIdx];
+    PortType srcType = port.isMemref ? PortType::memref(port.memrefType)
+                                     : PortType::scalar(port.type);
+    auto dstType = impl_->getInstanceInputPortType(conn.instIdx, conn.dstPort);
+    if (!srcType.matches(dstType)) {
+      std::string loc =
+          "%" + port.name + " -> " +
+          impl_->instances[conn.instIdx].name + ":" +
+          std::to_string(conn.dstPort);
+      addError("COMP_TYPE_MISMATCH",
+               "type mismatch: " + srcType.toMLIR() + " vs " + dstType.toMLIR(),
+               loc);
+    }
+  }
+
+  // Check instance-to-module-output type compatibility.
+  for (const auto &conn : impl_->outputConns) {
+    if (conn.instIdx >= impl_->instances.size() ||
+        conn.portIdx >= impl_->ports.size())
+      continue;
+    auto srcType = impl_->getInstanceOutputPortType(conn.instIdx, conn.srcPort);
+    const auto &port = impl_->ports[conn.portIdx];
+    PortType dstType = port.isMemref ? PortType::memref(port.memrefType)
+                                     : PortType::scalar(port.type);
+    if (!srcType.matches(dstType)) {
+      std::string loc =
+          impl_->instances[conn.instIdx].name + ":" +
+          std::to_string(conn.srcPort) + " -> %" + port.name;
+      addError("COMP_TYPE_MISMATCH",
+               "type mismatch: " + srcType.toMLIR() + " vs " + dstType.toMLIR(),
+               loc);
+    }
+  }
+
+  // Check that every module output port has a source connection.
+  for (unsigned i = 0; i < impl_->ports.size(); ++i) {
+    if (impl_->ports[i].isInput) continue;
+    bool found = false;
+    for (const auto &conn : impl_->outputConns) {
+      if (conn.portIdx == i) { found = true; break; }
+    }
+    if (!found)
+      addError("COMP_OUTPUT_UNCONNECTED",
+               "module output %" + impl_->ports[i].name + " has no source",
+               "module @" + impl_->moduleName);
+  }
+
+  // One-driver-per-input-port check: each instance input port must have at
+  // most one source (either from a module input or from another instance).
+  for (unsigned instIdx = 0; instIdx < impl_->instances.size(); ++instIdx) {
+    unsigned numIn = impl_->getInstanceInputCount(instIdx);
+    std::vector<unsigned> driverCount(numIn, 0);
+
+    for (const auto &conn : impl_->inputConns) {
+      if (conn.instIdx == instIdx && conn.dstPort >= 0 &&
+          (unsigned)conn.dstPort < numIn)
+        driverCount[conn.dstPort]++;
+    }
+    for (const auto &conn : impl_->internalConns) {
+      if (conn.dstInst == instIdx && conn.dstPort >= 0 &&
+          (unsigned)conn.dstPort < numIn)
+        driverCount[conn.dstPort]++;
+    }
+
+    for (unsigned p = 0; p < numIn; ++p) {
+      if (driverCount[p] > 1) {
+        std::string loc = impl_->instances[instIdx].name + ":" +
+                          std::to_string(p);
+        addError("COMP_MULTI_DRIVER",
+                 "input port has " + std::to_string(driverCount[p]) +
+                 " drivers (expected at most 1)", loc);
+      }
+    }
+  }
+
+  // Unconnected instance input port detection.
+  for (unsigned instIdx = 0; instIdx < impl_->instances.size(); ++instIdx) {
+    unsigned numIn = impl_->getInstanceInputCount(instIdx);
+    std::vector<bool> connected(numIn, false);
+
+    for (const auto &conn : impl_->inputConns) {
+      if (conn.instIdx == instIdx && conn.dstPort >= 0 &&
+          (unsigned)conn.dstPort < numIn)
+        connected[conn.dstPort] = true;
+    }
+    for (const auto &conn : impl_->internalConns) {
+      if (conn.dstInst == instIdx && conn.dstPort >= 0 &&
+          (unsigned)conn.dstPort < numIn)
+        connected[conn.dstPort] = true;
+    }
+
+    for (unsigned p = 0; p < numIn; ++p) {
+      if (!connected[p]) {
+        std::string loc = impl_->instances[instIdx].name + ":" +
+                          std::to_string(p);
+        addError("COMP_INPUT_UNCONNECTED",
+                 "instance input port is not connected", loc);
+      }
+    }
+  }
+
+  // Dangling instance output port detection: all output ports must be connected
+  // to at least one destination (spec: connectivity completeness).
+  for (unsigned instIdx = 0; instIdx < impl_->instances.size(); ++instIdx) {
+    unsigned numOut = impl_->getInstanceOutputCount(instIdx);
+    std::vector<bool> used(numOut, false);
+
+    for (const auto &conn : impl_->internalConns) {
+      if (conn.srcInst == instIdx && conn.srcPort >= 0 &&
+          (unsigned)conn.srcPort < numOut)
+        used[conn.srcPort] = true;
+    }
+    for (const auto &conn : impl_->outputConns) {
+      if (conn.instIdx == instIdx && conn.srcPort >= 0 &&
+          (unsigned)conn.srcPort < numOut)
+        used[conn.srcPort] = true;
+    }
+
+    for (unsigned p = 0; p < numOut; ++p) {
+      if (!used[p]) {
+        std::string loc = impl_->instances[instIdx].name + ":" +
+                          std::to_string(p) + " (output)";
+        addError("COMP_OUTPUT_DANGLING",
+                 "instance output port is not connected to any consumer", loc);
+      }
+    }
+  }
+
+  // Cycle detection using DFS on the internal connection graph.
+  // Note: bidirectional edges (A->B and B->A) are treated as two edges.
+  // True cycles (length > 2 or self-loops) are flagged.
+  {
+    unsigned numInst = impl_->instances.size();
+    std::vector<std::vector<unsigned>> adj(numInst);
+    for (const auto &conn : impl_->internalConns) {
+      if (conn.srcInst < numInst && conn.dstInst < numInst)
+        adj[conn.srcInst].push_back(conn.dstInst);
+    }
+
+    // 0 = unvisited, 1 = in-stack, 2 = done
+    std::vector<int> color(numInst, 0);
+    bool hasCycle = false;
+
+    std::function<void(unsigned)> dfs = [&](unsigned u) {
+      color[u] = 1;
+      for (unsigned v : adj[u]) {
+        if (color[v] == 1) {
+          hasCycle = true;
+          return;
+        }
+        if (color[v] == 0) {
+          dfs(v);
+          if (hasCycle) return;
+        }
+      }
+      color[u] = 2;
+    };
+
+    for (unsigned i = 0; i < numInst && !hasCycle; ++i) {
+      if (color[i] == 0)
+        dfs(i);
+    }
+
+    if (hasCycle)
+      addError("COMP_CYCLE_DETECTED",
+               "internal connection graph contains a cycle",
+               "module @" + impl_->moduleName);
+  }
+
+  return result;
+}
+
+} // namespace adg
+} // namespace loom

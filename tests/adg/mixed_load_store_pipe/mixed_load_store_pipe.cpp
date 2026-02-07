@@ -53,8 +53,10 @@ int main() {
   // Store memory inputs (store-only): [st_addr, st_data]
   builder.connectToModuleInput(st_addr, mem_st0, 0);
   builder.connectPorts(add0, 0, mem_st0, 1); // adder result -> st_data
-  // Store memory outputs (store-only, ldCount=0): [stdone]
-  builder.connectToModuleOutput(mem_st0, 0, stdone);
+  // Store memory outputs (store-only, private, ldCount=0): [lddone(0), stdone(1)]
+  auto st_lddone = builder.addModuleOutput("st_lddone", Type::none());
+  builder.connectToModuleOutput(mem_st0, 0, st_lddone);
+  builder.connectToModuleOutput(mem_st0, 1, stdone);
 
   builder.exportMLIR("Output/mixed_load_store_pipe.fabric.mlir");
   return 0;

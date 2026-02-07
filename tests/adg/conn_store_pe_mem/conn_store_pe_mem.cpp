@@ -33,16 +33,17 @@ int main() {
   builder.connectToModuleInput(addr, st0, 0);
   builder.connectToModuleInput(data, st0, 1);
   builder.connectToModuleInput(ctrl, st0, 2);
-  // StorePE outputs: [addr_out, done]
+  // StorePE outputs: [addr_out(0), done(1)]
   // Connect StorePE addr_out -> memory st_addr (port 0)
   builder.connectPorts(st0, 0, mem0, 0);
-  // Connect StorePE done as store data -> memory st_data (port 1)
-  // Actually, memory store-only inputs: [st_addr, st_data]
-  // We need separate data for memory. Use module input for st_data.
-  // StorePE addr_out goes to memory st_addr, module provides st_data separately.
+  auto st_done = builder.addModuleOutput("st_pe_done", Type::none());
+  builder.connectToModuleOutput(st0, 1, st_done); // StorePE done
+  // Memory store-only inputs: [st_addr, st_data]
   builder.connectToModuleInput(data, mem0, 1);
-  // Memory outputs (store-only): [lddone, stdone] -- lddone still present
-  builder.connectToModuleOutput(mem0, 1, done); // stdone
+  // Memory outputs (store-only, private, ldCount=0): [lddone(0), stdone(1)]
+  auto lddone = builder.addModuleOutput("lddone", Type::none());
+  builder.connectToModuleOutput(mem0, 0, lddone); // lddone
+  builder.connectToModuleOutput(mem0, 1, done);    // stdone
 
   builder.exportMLIR("Output/conn_store_pe_mem.fabric.mlir");
   return 0;

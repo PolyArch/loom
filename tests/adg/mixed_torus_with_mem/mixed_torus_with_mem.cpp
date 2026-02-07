@@ -58,8 +58,10 @@ int main() {
   builder.connectToModuleInput(ld_addr, mem0, 0);
   builder.connectToModuleInput(st_addr, mem0, 1);
   builder.connectPorts(mesh.peGrid[0][0], 0, mem0, 2); // mesh PE output -> st_data
-  // Memory outputs: [lddata, lddone, stdone]
+  // Memory outputs (private, 1ld+1st): [lddata(0), lddone(1), stdone(2)]
   builder.connectToModuleOutput(mem0, 0, lddata);
+  auto lddone = builder.addModuleOutput("lddone", Type::none());
+  builder.connectToModuleOutput(mem0, 1, lddone);
   builder.connectToModuleOutput(mem0, 2, stdone);
 
   builder.exportMLIR("Output/mixed_torus_with_mem.fabric.mlir");

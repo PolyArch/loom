@@ -70,7 +70,9 @@ int main() {
   // Memory outputs: [lddata0, lddata1, lddone, stdone]
   builder.connectToModuleOutput(mem0, 0, lddata0);
   builder.connectToModuleOutput(mem0, 1, lddata1);
-  builder.connectToModuleOutput(mem0, 2, done);
+  builder.connectToModuleOutput(mem0, 2, done);    // lddone
+  auto stdone = builder.addModuleOutput("stdone", taggedNone);
+  builder.connectToModuleOutput(mem0, 3, stdone);  // stdone
 
   builder.exportMLIR("Output/conn_memory_multi.fabric.mlir");
   return 0;

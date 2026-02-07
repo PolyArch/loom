@@ -30,7 +30,8 @@ results_dir="${ROOT_DIR}/tests/.results"
 mkdir -p "${results_dir}"
 lit_log="${results_dir}/fabric_tdd.log"
 
-lit_output=$(python3 "${LIT_PY}" -v "${TDD_DIR}" 2>&1) || true
+lit_exit=0
+lit_output=$(python3 "${LIT_PY}" -v "${TDD_DIR}" 2>&1) || lit_exit=$?
 echo "${lit_output}" > "${lit_log}"
 
 # Parse lit summary
@@ -46,6 +47,20 @@ fi
 # Also check for unexpected failures / errors
 if [[ "${lit_output}" =~ Unexpected\ Failures:[[:space:]]*([0-9]+) ]]; then
   fail_count="${BASH_REMATCH[1]}"
+fi
+
+# If lit exited non-zero but we parsed zero results, lit itself crashed.
+if (( lit_exit != 0 && pass_count == 0 && fail_count == 0 )); then
+  echo "error: lit crashed (exit ${lit_exit}) with no test results" >&2
+  echo "  see ${lit_log} for details" >&2
+  # Write a failed result so the harness reports the failure.
+  LOOM_TOTAL=1
+  LOOM_PASS=0
+  LOOM_FAIL=1
+  LOOM_TIMEOUT=0
+  LOOM_FAILED_NAMES=("lit-crash")
+  loom_write_result "Fabric TDD"
+  exit 1
 fi
 
 LOOM_TOTAL=$((pass_count + fail_count))

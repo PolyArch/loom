@@ -38,6 +38,9 @@ int main() {
   builder.connectToModuleInput(y, a1, 1);
   builder.connectToModuleOutput(a0, 0, out0);
   builder.connectToModuleOutput(a1, 0, out1);
+  // Connect remaining switch output port to avoid dangling.
+  auto sink = builder.addModuleOutput("sw0_out3", Type::i32());
+  builder.connectToModuleOutput(sw0, 3, sink);
 
   builder.exportMLIR("Output/conn_switch_fanout.fabric.mlir");
   return 0;
