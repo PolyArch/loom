@@ -82,6 +82,9 @@ void ModuleOp::print(OpAsmPrinter &p) {
                 /*printBlockTerminators=*/true);
 }
 
+// Forward declaration (defined in Instance helpers section below).
+static Operation *lookupBySymName(Operation *from, StringRef name);
+
 //===----------------------------------------------------------------------===//
 // ModuleOp verify
 //===----------------------------------------------------------------------===//
@@ -149,8 +152,18 @@ LogicalResult ModuleOp::verify() {
   // COMP_ADG_COMBINATIONAL_LOOP: detect cycles among purely combinational ops.
   {
     // Classify ops as combinational (zero-delay).
+    // For InstanceOp, resolve the target symbol to determine if the
+    // instantiated module is combinational.
     auto isCombinational = [](Operation *op) -> bool {
-      return isa<SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp>(op);
+      if (isa<SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp>(op))
+        return true;
+      if (auto inst = dyn_cast<InstanceOp>(op)) {
+        auto *target = lookupBySymName(inst.getOperation(), inst.getModule());
+        if (target)
+          return isa<SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp>(
+              target);
+      }
+      return false;
     };
 
     // Build adjacency list for combinational ops only.
@@ -243,7 +256,7 @@ LogicalResult ModuleOp::verify() {
 //===----------------------------------------------------------------------===//
 
 /// Get the function_type from a target operation that may be a ModuleOp, PEOp,
-/// TemporalPEOp, SwitchOp, TemporalSwOp, MemoryOp, or ExtMemoryOp.
+/// TemporalPEOp, SwitchOp, TemporalSwOp, MemoryOp, ExtMemoryOp, or FifoOp.
 static std::optional<FunctionType> getTargetFunctionType(Operation *target) {
   if (auto mod = dyn_cast<ModuleOp>(target))
     return mod.getFunctionType();
@@ -271,6 +284,11 @@ static std::optional<FunctionType> getTargetFunctionType(Operation *target) {
   }
   if (auto ext = dyn_cast<ExtMemoryOp>(target)) {
     if (auto ft = ext.getFunctionType())
+      return *ft;
+    return std::nullopt;
+  }
+  if (auto fifo = dyn_cast<FifoOp>(target)) {
+    if (auto ft = fifo.getFunctionType())
       return *ft;
     return std::nullopt;
   }

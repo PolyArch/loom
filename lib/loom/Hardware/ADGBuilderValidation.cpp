@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ADGBuilderImpl.h"
+#include "loom/Hardware/ADGBuilderImpl.h"
 
 #include <functional>
 
@@ -206,6 +206,27 @@ ValidationResult ADGBuilder::validateADG() {
     if (mt.tableSize < 1 || mt.tableSize > 256)
       addError("COMP_MAP_TAG_TABLE_SIZE",
                "table_size out of range [1, 256]", loc);
+  }
+
+  // Validate FIFO definitions.
+  for (size_t i = 0; i < impl_->fifoDefs.size(); ++i) {
+    const auto &fifo = impl_->fifoDefs[i];
+    std::string loc = "fifo @" + fifo.name;
+    if (fifo.depth < 1)
+      addError("COMP_FIFO_DEPTH_ZERO", "depth must be >= 1", loc);
+    // Type must be native or tagged (not arbitrary-width iN).
+    auto kind = fifo.elementType.getKind();
+    bool validType = kind == Type::I1 || kind == Type::I8 ||
+                     kind == Type::I16 || kind == Type::I32 ||
+                     kind == Type::I64 || kind == Type::BF16 ||
+                     kind == Type::F16 || kind == Type::F32 ||
+                     kind == Type::F64 || kind == Type::Index ||
+                     kind == Type::None || kind == Type::Tagged;
+    if (!validType)
+      addError("COMP_FIFO_INVALID_TYPE",
+               "type must be a native type or tagged; got " +
+                   fifo.elementType.toMLIR(),
+               loc);
   }
 
   // Validate tag types for tag operations.

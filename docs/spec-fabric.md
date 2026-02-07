@@ -218,6 +218,7 @@ Instantiates a named fabric module or hardware component.
   - `fabric.temporal_sw`
   - `fabric.memory`
   - `fabric.extmemory`
+  - `fabric.fifo`
 - The referenced symbol must exist. Violations raise
   `COMP_INSTANCE_UNRESOLVED`.
 - Operand count and types must match the referenced module signature.

@@ -8,7 +8,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ADGBuilderImpl.h"
+#include "loom/Hardware/ADGBuilderImpl.h"
 
 #include <algorithm>
 #include <queue>

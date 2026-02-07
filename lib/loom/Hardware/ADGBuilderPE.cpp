@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ADGBuilderImpl.h"
+#include "loom/Hardware/ADGBuilderImpl.h"
 
 namespace loom {
 namespace adg {
