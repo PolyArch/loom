@@ -6,9 +6,7 @@
 //
 // Verifies that buildMesh with Topology::DiagonalTorus creates:
 //   - 2x2 PE grid and 2x2 switch grid
-//   - East-West wraparound module I/O (2 pairs: one per row)
-//   - North-South wraparound module I/O (2 pairs: one per column)
-//   - SE/SW diagonal wraparound module I/O
+//   - Internal fifo instances for wraparound (2 EW + 2 NS + 3 SE + 3 SW = 10 fifos)
 //   - All PEs and switches connected
 //
 //===----------------------------------------------------------------------===//
@@ -113,7 +111,8 @@ int main() {
   assert(mlirCount(mlir, "sym_name = \"pe_") == 4 && "expected pe_ sym_names");
   assert(countInterSwitchEdges(mlir) == 6 && "expected 6 inter-switch edges");
 
-  // Verify wraparound ports via builder query API.
+  // Verify wraparound uses internal fifo instances (no wrap module I/O).
+  assert(mlirCount(mlir, "fabric.fifo") == 10 && "expected 10 fifo instances (2 EW + 2 NS + 3 SE + 3 SW)");
   auto outNames = builder.getModuleOutputNames();
   auto inNames = builder.getModuleInputNames();
   auto countMatching = [](const std::vector<std::string> &names,
@@ -121,20 +120,9 @@ int main() {
     return std::count_if(names.begin(), names.end(),
         [&](const std::string &n) { return n.find(substr) != std::string::npos; });
   };
-  // DiagonalTorus 2x2: 2 EW wraps, 2 NS wraps (same as torus).
-  assert(countMatching(outNames, "wrap_ew") == 2 && "expected 2 EW wrap outputs");
-  assert(countMatching(inNames, "wrap_ew") == 2 && "expected 2 EW wrap inputs");
-  assert(countMatching(outNames, "wrap_ns") == 2 && "expected 2 NS wrap outputs");
-  assert(countMatching(inNames, "wrap_ns") == 2 && "expected 2 NS wrap inputs");
-  // SE diagonal wraps: (C-1) + (R-1) + 1 = 1 + 1 + 1 = 3 pairs.
-  assert(countMatching(outNames, "wrap_se") == 3 && "expected 3 SE wrap outputs");
-  assert(countMatching(inNames, "wrap_se") == 3 && "expected 3 SE wrap inputs");
-  // SW diagonal wraps: (C-1) + (R-1) + 1 = 1 + 1 + 1 = 3 pairs.
-  assert(countMatching(outNames, "wrap_sw") == 3 && "expected 3 SW wrap outputs");
-  assert(countMatching(inNames, "wrap_sw") == 3 && "expected 3 SW wrap inputs");
-  // Verify corner wraps exist.
-  assert(countMatching(outNames, "wrap_se_corner") == 1 && "expected SE corner wrap");
-  assert(countMatching(outNames, "wrap_sw_corner") == 1 && "expected SW corner wrap");
+  // No wrap module I/O -- wraparound is handled by internal fifos.
+  assert(countMatching(outNames, "wrap_") == 0 && "no wrap module outputs");
+  assert(countMatching(inNames, "wrap_") == 0 && "no wrap module inputs");
 
   return 0;
 }

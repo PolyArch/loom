@@ -10,6 +10,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpImplementation.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
 using namespace mlir;
@@ -143,6 +144,72 @@ LogicalResult ModuleOp::verify() {
       return emitOpError("[COMP_FABRIC_TYPE_MISMATCH] yield operand #")
              << idx << " type " << std::get<0>(pair)
              << " must match result type " << std::get<1>(pair);
+  }
+
+  // COMP_ADG_COMBINATIONAL_LOOP: detect cycles among purely combinational ops.
+  {
+    // Classify ops as combinational (zero-delay).
+    auto isCombinational = [](Operation *op) -> bool {
+      return isa<SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp>(op);
+    };
+
+    // Build adjacency list for combinational ops only.
+    // Map from op to index, then build directed edges.
+    SmallVector<Operation *> combOps;
+    llvm::DenseMap<Operation *, unsigned> opIndex;
+    for (auto &op : body) {
+      if (op.hasTrait<OpTrait::IsTerminator>())
+        continue;
+      if (isCombinational(&op)) {
+        opIndex[&op] = combOps.size();
+        combOps.push_back(&op);
+      }
+    }
+
+    if (!combOps.empty()) {
+      unsigned n = combOps.size();
+      SmallVector<SmallVector<unsigned>> adj(n);
+
+      for (unsigned i = 0; i < n; ++i) {
+        for (Value result : combOps[i]->getResults()) {
+          for (Operation *user : result.getUsers()) {
+            auto it = opIndex.find(user);
+            if (it != opIndex.end())
+              adj[i].push_back(it->second);
+          }
+        }
+      }
+
+      // DFS cycle detection: 0=white, 1=gray, 2=black.
+      SmallVector<int> color(n, 0);
+      bool hasCombLoop = false;
+      std::function<void(unsigned)> dfs = [&](unsigned u) {
+        if (hasCombLoop)
+          return;
+        color[u] = 1;
+        for (unsigned v : adj[u]) {
+          if (color[v] == 1) {
+            hasCombLoop = true;
+            return;
+          }
+          if (color[v] == 0)
+            dfs(v);
+          if (hasCombLoop)
+            return;
+        }
+        color[u] = 2;
+      };
+
+      for (unsigned i = 0; i < n && !hasCombLoop; ++i) {
+        if (color[i] == 0)
+          dfs(i);
+      }
+
+      if (hasCombLoop)
+        return emitOpError("[COMP_ADG_COMBINATIONAL_LOOP] "
+            "a cycle of purely combinational operations exists; "
+            "insert a fabric.fifo or sequential element to break it");
+    }
   }
 
   // COMP_MEMORY_PRIVATE_OUTPUT: each memref yield operand must trace back

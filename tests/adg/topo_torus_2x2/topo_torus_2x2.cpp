@@ -6,8 +6,7 @@
 //
 // Verifies that buildMesh with Topology::Torus creates:
 //   - 2x2 PE grid and 2x2 switch grid
-//   - East-West wraparound module I/O (2 pairs: one per row)
-//   - North-South wraparound module I/O (2 pairs: one per column)
+//   - Internal fifo instances for wraparound (2 EW + 2 NS = 4 fifos)
 //   - All PEs and switches connected
 //
 //===----------------------------------------------------------------------===//
@@ -109,14 +108,11 @@ int main() {
   const char *mlir = "Output/topo_torus_2x2.fabric.mlir";
   assert(mlirCount(mlir, "fabric.instance") == 4 && "expected 4 PE instances");
   assert(mlirCount(mlir, "fabric.switch") == 4 && "expected 4 switch instances");
-  // Torus has more module I/O than mesh due to wraparound connections.
-  // A 2x2 torus with 5-port switches has wrap ports that become module I/O.
   assert(mlirCount(mlir, "sym_name = \"pe_") == 4 && "expected pe_ sym_names");
-  assert(mlirCount(mlir, "sym_name = \"sw_") == 0 ||
-         mlirCount(mlir, "fabric.switch") == 4);
   assert(countInterSwitchEdges(mlir) == 4 && "expected 4 inter-switch edges");
 
-  // Verify wraparound ports via builder query API.
+  // Verify wraparound uses internal fifo instances (no wrap module I/O).
+  assert(mlirCount(mlir, "fabric.fifo") == 4 && "expected 4 fifo instances (2 EW + 2 NS)");
   auto outNames = builder.getModuleOutputNames();
   auto inNames = builder.getModuleInputNames();
   auto countMatching = [](const std::vector<std::string> &names,
@@ -124,14 +120,9 @@ int main() {
     return std::count_if(names.begin(), names.end(),
         [&](const std::string &n) { return n.find(substr) != std::string::npos; });
   };
-  // Torus 2x2: 2 EW wraps (one per row), 2 NS wraps (one per column).
-  assert(countMatching(outNames, "wrap_ew") == 2 && "expected 2 EW wrap outputs");
-  assert(countMatching(inNames, "wrap_ew") == 2 && "expected 2 EW wrap inputs");
-  assert(countMatching(outNames, "wrap_ns") == 2 && "expected 2 NS wrap outputs");
-  assert(countMatching(inNames, "wrap_ns") == 2 && "expected 2 NS wrap inputs");
-  // No diagonal wraps for standard torus.
-  assert(countMatching(outNames, "wrap_se") == 0 && "no SE wraps in torus");
-  assert(countMatching(outNames, "wrap_sw") == 0 && "no SW wraps in torus");
+  // No wrap module I/O -- wraparound is handled by internal fifos.
+  assert(countMatching(outNames, "wrap_") == 0 && "no wrap module outputs");
+  assert(countMatching(inNames, "wrap_") == 0 && "no wrap module inputs");
 
   return 0;
 }

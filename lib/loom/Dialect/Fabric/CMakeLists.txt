@@ -22,6 +22,7 @@ add_mlir_dialect_library(LoomFabric
   FabricDialect.cpp
   FabricTagOps.cpp
   FabricSwitchOps.cpp
+  FabricFifoOps.cpp
   FabricTopOps.cpp
   FabricPEOps.cpp
   FabricMemOps.cpp

@@ -42,6 +42,7 @@ enum class ModuleKind {
   ConstantPE,
   LoadPE,
   StorePE,
+  Fifo,
 };
 
 //===----------------------------------------------------------------------===//
@@ -148,6 +149,12 @@ struct DelTagDef {
   Type inputType = Type::tagged(Type::i32(), Type::iN(4));
 };
 
+struct FifoDef {
+  std::string name;
+  unsigned depth = 2;
+  Type elementType = Type::i32();
+};
+
 //===----------------------------------------------------------------------===//
 // Instance and Connection Tracking
 //===----------------------------------------------------------------------===//
@@ -227,6 +234,7 @@ struct ADGBuilder::Impl {
   std::vector<AddTagDef> addTagDefs;
   std::vector<MapTagDef> mapTagDefs;
   std::vector<DelTagDef> delTagDefs;
+  std::vector<FifoDef> fifoDefs;
 
   // Instances (uniform tracking).
   std::vector<InstanceDef> instances;

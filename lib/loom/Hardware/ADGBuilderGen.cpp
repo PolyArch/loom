@@ -519,8 +519,9 @@ std::string ADGBuilder::Impl::generateMLIR() const {
   os << ") {\n";
 
   // Topological sort of instances.
-  // Reciprocal edges (A->B and B->A) are rejected by validateADG(), so the
-  // connection graph is a DAG (modulo true cycles, which are also rejected).
+  // The connection graph may contain cycles (e.g. torus wraparound with fifos).
+  // Any remaining instances not reachable via Kahn's algorithm are appended
+  // in original order (the Graph region semantics allow forward references).
   unsigned numInst = instances.size();
   std::vector<std::vector<unsigned>> adjList(numInst);
   std::vector<unsigned> inDeg(numInst, 0);
@@ -1092,6 +1093,13 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       os << "fabric.del_tag " << operands[0]
          << " : " << dtDef.inputType.toMLIR() << " -> "
          << outType.toMLIR() << "\n";
+      break;
+    }
+
+    case ModuleKind::Fifo: {
+      auto &fifoDef = fifoDefs[inst.defIdx];
+      os << "fabric.fifo [depth = " << fifoDef.depth << "] "
+         << operands[0] << " : " << fifoDef.elementType.toMLIR() << "\n";
       break;
     }
 

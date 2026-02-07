@@ -21,6 +21,7 @@ operations are specified in dedicated documents referenced below.
 | Terminator | `fabric.yield` | This document |
 | Processing | `fabric.pe`, `fabric.temporal_pe` | [spec-fabric-pe.md](./spec-fabric-pe.md), [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md), [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) |
 | Routing | `fabric.switch`, `fabric.temporal_sw` | [spec-fabric-switch.md](./spec-fabric-switch.md), [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md) |
+| Buffering | `fabric.fifo` | [spec-fabric-fifo.md](./spec-fabric-fifo.md) |
 | Tag boundary | `fabric.add_tag`, `fabric.map_tag`, `fabric.del_tag` | [spec-fabric-tag.md](./spec-fabric-tag.md) |
 | Memory | `fabric.memory`, `fabric.extmemory` | [spec-fabric-mem.md](./spec-fabric-mem.md) |
 
@@ -145,8 +146,15 @@ See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.
 
 ### Body and Terminator
 
-The body of `fabric.module` contains a hardware graph built from fabric
-operations. Only fabric operations are allowed at the module level.
+The body of `fabric.module` uses **Graph region** semantics (MLIR
+`RegionKind::Graph`), which allows forward references between operations.
+This is necessary because hardware interconnect graphs naturally contain
+cycles (e.g., torus wraparound, feedback loops). Physical cycles are allowed
+as long as they are not **combinational loops** (cycles where every element
+has zero delay). See `COMP_ADG_COMBINATIONAL_LOOP` in
+[spec-fabric-error.md](./spec-fabric-error.md).
+
+Only fabric operations are allowed at the module level.
 
 Allowed operations at module level:
 
@@ -154,6 +162,7 @@ Allowed operations at module level:
 - `fabric.temporal_pe`
 - `fabric.switch`
 - `fabric.temporal_sw`
+- `fabric.fifo`
 - `fabric.add_tag`
 - `fabric.map_tag`
 - `fabric.del_tag`
@@ -288,6 +297,7 @@ document use the symbols defined there.
 - [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md)
 - [spec-fabric-switch.md](./spec-fabric-switch.md)
 - [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md)
+- [spec-fabric-fifo.md](./spec-fabric-fifo.md)
 - [spec-fabric-mem.md](./spec-fabric-mem.md)
 - [spec-fabric-tag.md](./spec-fabric-tag.md)
 - [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)

@@ -477,33 +477,35 @@ ValidationResult ADGBuilder::validateADG() {
     }
   }
 
-  // Reject reciprocal internal edges (A->B and B->A both present).
-  // SSA-based MLIR generation cannot represent bidirectional data dependencies
-  // without violating dominance, so these must be caught at validation time.
-  {
-    std::set<std::pair<unsigned, unsigned>> edgeSet;
-    for (const auto &conn : impl_->internalConns)
-      edgeSet.insert({conn.srcInst, conn.dstInst});
-    for (const auto &e : edgeSet) {
-      if (e.first < e.second && edgeSet.count({e.second, e.first})) {
-        std::string loc = impl_->instances[e.first].name + " <-> " +
-                          impl_->instances[e.second].name;
-        addError("COMP_RECIPROCAL_EDGE",
-                 "bidirectional internal connection is not supported", loc);
-      }
-    }
-  }
-
-  // Cycle detection using DFS on the internal connection graph.
+  // Combinational loop detection: a cycle where every element is a
+  // zero-delay (combinational) operation causes signal instability.
+  // Sequential elements (PE, TemporalPE, Memory, ExtMemory, Fifo) break loops.
   {
     unsigned numInst = impl_->instances.size();
+
+    // Identify combinational instances.
+    auto isCombinational = [&](unsigned idx) -> bool {
+      switch (impl_->instances[idx].kind) {
+      case ModuleKind::Switch:
+      case ModuleKind::TemporalSwitch:
+      case ModuleKind::AddTag:
+      case ModuleKind::MapTag:
+      case ModuleKind::DelTag:
+        return true;
+      default:
+        return false;
+      }
+    };
+
+    // Build adjacency list restricted to combinational instances.
     std::vector<std::vector<unsigned>> adj(numInst);
     for (const auto &conn : impl_->internalConns) {
-      if (conn.srcInst < numInst && conn.dstInst < numInst)
+      if (conn.srcInst < numInst && conn.dstInst < numInst &&
+          isCombinational(conn.srcInst) && isCombinational(conn.dstInst))
         adj[conn.srcInst].push_back(conn.dstInst);
     }
 
-    // 0 = unvisited, 1 = in-stack, 2 = done
+    // DFS cycle detection (0 = unvisited, 1 = in-stack, 2 = done).
     std::vector<int> color(numInst, 0);
     bool hasCycle = false;
 
@@ -523,13 +525,14 @@ ValidationResult ADGBuilder::validateADG() {
     };
 
     for (unsigned i = 0; i < numInst && !hasCycle; ++i) {
-      if (color[i] == 0)
+      if (isCombinational(i) && color[i] == 0)
         dfs(i);
     }
 
     if (hasCycle)
-      addError("COMP_CYCLE_DETECTED",
-               "internal connection graph contains a cycle",
+      addError("COMP_ADG_COMBINATIONAL_LOOP",
+               "connection graph contains a combinational loop (all elements "
+               "are zero-delay)",
                "module @" + impl_->moduleName);
   }
 

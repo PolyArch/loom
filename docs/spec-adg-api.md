@@ -369,6 +369,44 @@ auto sw = builder.newSwitch("ring_4x4")
     .setType(Type::i32());
 ```
 
+### newFifo
+
+```cpp
+FifoBuilder newFifo(const std::string& name);
+```
+
+Creates a new `fabric.fifo` definition.
+
+**Parameters:**
+- `name`: Symbol name for the FIFO
+
+**Returns:** `FifoBuilder` for further configuration
+
+**Chainable methods on FifoBuilder:**
+
+| Method | Description |
+|--------|-------------|
+| `setDepth(depth)` | Set buffer depth (must be >= 1) |
+| `setType(type)` | Set element type (native or tagged) |
+
+**Constraints:**
+- Depth must be >= 1 (`COMP_FIFO_DEPTH_ZERO`)
+- Type must be a native value type or `!dataflow.tagged`
+
+**Example (pipeline buffer):**
+```cpp
+auto fifo = builder.newFifo("pipeline_buf")
+    .setDepth(4)
+    .setType(Type::i32());
+```
+
+**Example (tagged FIFO):**
+```cpp
+auto fifo = builder.newFifo("tagged_buf")
+    .setDepth(2)
+    .setType(Type::tagged(Type::i32(), Type::iN(4)));
+```
+
 ### newTemporalSwitch
 
 ```cpp
@@ -567,7 +605,7 @@ InstanceHandle clone(ModuleHandle source, const std::string& instanceName);
 Creates a `fabric.instance` referencing an existing module definition.
 
 **Parameters:**
-- `source`: Handle to PE, Switch, TemporalPE, TemporalSwitch, Memory, or ExtMemory
+- `source`: Handle to PE, Switch, TemporalPE, TemporalSwitch, Memory, ExtMemory, or Fifo
 - `instanceName`: Unique instance name within the module
 
 Tag-operation handles (`AddTagHandle`, `MapTagHandle`, `DelTagHandle`) are not
@@ -702,9 +740,17 @@ Constructs a regular grid of PEs and switches.
 | Value | Description |
 |-------|-------------|
 | `Topology::Mesh` | Nearest-neighbor, no wraparound |
-| `Topology::Torus` | Nearest-neighbor with wraparound |
+| `Topology::Torus` | Nearest-neighbor with wraparound (internal FIFOs) |
 | `Topology::DiagonalMesh` | Mesh plus diagonal neighbors |
-| `Topology::DiagonalTorus` | Torus plus diagonal neighbors |
+| `Topology::DiagonalTorus` | Torus plus diagonal neighbors (internal FIFOs) |
+
+**Torus wraparound implementation:**
+
+For `Torus` and `DiagonalTorus` topologies, wraparound edges use internal
+`fabric.fifo` instances (depth=2) to break combinational loops. Each
+wraparound connection goes through: `switch_src -> fifo -> switch_dst`.
+These FIFOs are automatically created by `buildMesh` and do not appear as
+module-level I/O ports.
 
 **Grid layout:**
 
@@ -854,6 +900,12 @@ Performs comprehensive validation of the constructed ADG.
 6. **Resource constraints**
    - Memory port counts valid (ldCount + stCount > 0)
    - LSQ depth requirements met
+
+7. **Combinational loop detection**
+   - A cycle where every element is combinational (zero-delay) is forbidden
+   - Combinational ops: Switch, TemporalSwitch, AddTag, MapTag, DelTag
+   - Sequential ops break loops: PE, TemporalPE, Memory, ExtMemory, Fifo
+   - Violations raise `COMP_ADG_COMBINATIONAL_LOOP`
 
 7. **Template deduplication**
    - Multiple module definitions with identical hardware structure are merged

@@ -434,5 +434,26 @@ DelTagBuilder::operator InstanceHandle() const {
   return InstanceHandle{(unsigned)*instanceId_};
 }
 
+//===----------------------------------------------------------------------===//
+// FifoBuilder
+//===----------------------------------------------------------------------===//
+
+FifoBuilder::FifoBuilder(ADGBuilder *builder, unsigned defId)
+    : builder_(builder), defId_(defId) {}
+
+FifoBuilder &FifoBuilder::setDepth(unsigned depth) {
+  builder_->impl_->fifoDefs[defId_].depth = depth;
+  return *this;
+}
+
+FifoBuilder &FifoBuilder::setType(Type type) {
+  builder_->impl_->fifoDefs[defId_].elementType = type;
+  return *this;
+}
+
+FifoBuilder::operator FifoHandle() const {
+  return FifoHandle{defId_};
+}
+
 } // namespace adg
 } // namespace loom

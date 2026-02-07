@@ -155,11 +155,14 @@ struct MapTagHandle { unsigned id; };
 /// Opaque handle to a del_tag definition.
 struct DelTagHandle { unsigned id; };
 
+/// Opaque handle to a FIFO definition.
+struct FifoHandle { unsigned id; };
+
 /// Generic handle to any module definition. Can be implicitly constructed
 /// from any typed handle.
 struct ModuleHandle {
   enum Kind { PE, Switch, TemporalPE, TemporalSwitch, Memory, ExtMemory,
-              ConstantPE, LoadPE, StorePE, AddTag, MapTag, DelTag };
+              ConstantPE, LoadPE, StorePE, AddTag, MapTag, DelTag, Fifo };
   Kind kind;
   unsigned id;
 
@@ -175,6 +178,7 @@ struct ModuleHandle {
   ModuleHandle(AddTagHandle h) : kind(AddTag), id(h.id) {}
   ModuleHandle(MapTagHandle h) : kind(MapTag), id(h.id) {}
   ModuleHandle(DelTagHandle h) : kind(DelTag), id(h.id) {}
+  ModuleHandle(FifoHandle h) : kind(Fifo), id(h.id) {}
 };
 
 //===----------------------------------------------------------------------===//
@@ -404,6 +408,21 @@ private:
   std::shared_ptr<int> instanceId_;
 };
 
+/// Builder for configuring a FIFO definition.
+class FifoBuilder {
+public:
+  FifoBuilder &setDepth(unsigned depth);
+  FifoBuilder &setType(Type type);
+
+  operator FifoHandle() const;
+
+private:
+  friend class ADGBuilder;
+  FifoBuilder(ADGBuilder *builder, unsigned defId);
+  ADGBuilder *builder_;
+  unsigned defId_;
+};
+
 /// Builder for configuring a del_tag operation (auto-instantiated).
 class DelTagBuilder {
 public:
@@ -473,6 +492,9 @@ public:
   /// Create a new del_tag operation.
   DelTagBuilder newDelTag(const std::string &name);
 
+  /// Create a new FIFO definition.
+  FifoBuilder newFifo(const std::string &name);
+
   // --- Instantiation ---
 
   /// Create an instance of an existing PE definition.
@@ -504,6 +526,9 @@ public:
 
   /// Create an instance of a store PE definition.
   InstanceHandle clone(StorePEHandle source, const std::string &instanceName);
+
+  /// Create an instance of a FIFO definition.
+  InstanceHandle clone(FifoHandle source, const std::string &instanceName);
 
   /// Create an instance of any module definition using a generic handle.
   /// Tag-operation handles are not valid clone sources (they auto-instantiate).
@@ -573,6 +598,7 @@ private:
   friend class AddTagBuilder;
   friend class MapTagBuilder;
   friend class DelTagBuilder;
+  friend class FifoBuilder;
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

@@ -6,8 +6,7 @@
 //
 // Verifies that buildMesh with Topology::Torus creates:
 //   - 4x4 PE grid and 4x4 switch grid
-//   - East-West wraparound module I/O (4 pairs: one per row)
-//   - North-South wraparound module I/O (4 pairs: one per column)
+//   - Internal fifo instances for wraparound (4 EW + 4 NS = 8 fifos)
 //   - All PEs and switches connected
 //
 //===----------------------------------------------------------------------===//
@@ -167,7 +166,8 @@ int main() {
   assert(mlirCount(mlir, "sym_name = \"pe_") == 16 && "expected pe_ sym_names");
   assert(countInterSwitchEdges(mlir) == 24 && "expected 24 inter-switch edges");
 
-  // Verify wraparound ports via builder query API.
+  // Verify wraparound uses internal fifo instances (no wrap module I/O).
+  assert(mlirCount(mlir, "fabric.fifo") == 8 && "expected 8 fifo instances (4 EW + 4 NS)");
   auto outNames = builder.getModuleOutputNames();
   auto inNames = builder.getModuleInputNames();
   auto countMatching = [](const std::vector<std::string> &names,
@@ -175,14 +175,9 @@ int main() {
     return std::count_if(names.begin(), names.end(),
         [&](const std::string &n) { return n.find(substr) != std::string::npos; });
   };
-  // Torus 4x4: 4 EW wraps (one per row), 4 NS wraps (one per column).
-  assert(countMatching(outNames, "wrap_ew") == 4 && "expected 4 EW wrap outputs");
-  assert(countMatching(inNames, "wrap_ew") == 4 && "expected 4 EW wrap inputs");
-  assert(countMatching(outNames, "wrap_ns") == 4 && "expected 4 NS wrap outputs");
-  assert(countMatching(inNames, "wrap_ns") == 4 && "expected 4 NS wrap inputs");
-  // No diagonal wraps for standard torus.
-  assert(countMatching(outNames, "wrap_se") == 0 && "no SE wraps in torus");
-  assert(countMatching(outNames, "wrap_sw") == 0 && "no SW wraps in torus");
+  // No wrap module I/O -- wraparound is handled by internal fifos.
+  assert(countMatching(outNames, "wrap_") == 0 && "no wrap module outputs");
+  assert(countMatching(inNames, "wrap_") == 0 && "no wrap module inputs");
 
   return 0;
 }

@@ -99,6 +99,10 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_PE_MIXED_CONSUMPTION | A `fabric.pe` body mixes full-consume and partial-consume operations |
 | COMP_PE_OUTPUT_TAG_NATIVE | A native `fabric.pe` has `output_tag` attribute (must be absent for native) |
 | COMP_PE_OUTPUT_TAG_MISSING | A tagged non-load/store `fabric.pe` is missing the required `output_tag` attribute |
+| COMP_ADG_COMBINATIONAL_LOOP | A cycle exists in the connection graph where every element is combinational (zero-delay), causing signal instability |
+| COMP_FIFO_DEPTH_ZERO | `fabric.fifo` depth must be >= 1 |
+| COMP_FIFO_TYPE_MISMATCH | `fabric.fifo` input and output types do not match |
+| COMP_FIFO_INVALID_TYPE | `fabric.fifo` type must be a native value type or `!dataflow.tagged` |
 
 ### Instance Error Examples
 

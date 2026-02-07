@@ -126,6 +126,13 @@ DelTagBuilder ADGBuilder::newDelTag(const std::string &name) {
   return DelTagBuilder(this, id);
 }
 
+FifoBuilder ADGBuilder::newFifo(const std::string &name) {
+  unsigned id = impl_->fifoDefs.size();
+  impl_->fifoDefs.push_back({});
+  impl_->fifoDefs.back().name = name;
+  return FifoBuilder(this, id);
+}
+
 //===----------------------------------------------------------------------===//
 // Error reporting
 //===----------------------------------------------------------------------===//
@@ -244,6 +251,16 @@ InstanceHandle ADGBuilder::clone(StorePEHandle source,
   return InstanceHandle{id};
 }
 
+InstanceHandle ADGBuilder::clone(FifoHandle source,
+                                 const std::string &instanceName) {
+  if (source.id >= impl_->fifoDefs.size())
+    builderError("clone(FifoHandle)", "invalid FIFO definition id " +
+                 std::to_string(source.id));
+  unsigned id = impl_->instances.size();
+  impl_->instances.push_back({ModuleKind::Fifo, source.id, instanceName});
+  return InstanceHandle{id};
+}
+
 InstanceHandle ADGBuilder::clone(ModuleHandle source,
                                  const std::string &instanceName) {
   // Tag-operation handles are not valid clone sources (they auto-instantiate).
@@ -254,41 +271,33 @@ InstanceHandle ADGBuilder::clone(ModuleHandle source,
                  "tag-operation handles cannot be cloned; they auto-instantiate "
                  "via their builder's implicit conversion to InstanceHandle");
 
-  // Validate definition ID bounds.
-  static const struct { ModuleKind kind; const char *label; } kindMap[] = {
-      {ModuleKind::PE, "PE"},
-      {ModuleKind::Switch, "switch"},
-      {ModuleKind::TemporalPE, "temporal PE"},
-      {ModuleKind::TemporalSwitch, "temporal switch"},
-      {ModuleKind::Memory, "memory"},
-      {ModuleKind::ExtMemory, "external memory"},
-      {ModuleKind::ConstantPE, "constant PE"},
-      {ModuleKind::LoadPE, "load PE"},
-      {ModuleKind::StorePE, "store PE"},
-  };
-  const unsigned defSizes[] = {
-      (unsigned)impl_->peDefs.size(),
-      (unsigned)impl_->switchDefs.size(),
-      (unsigned)impl_->temporalPEDefs.size(),
-      (unsigned)impl_->temporalSwitchDefs.size(),
-      (unsigned)impl_->memoryDefs.size(),
-      (unsigned)impl_->extMemoryDefs.size(),
-      (unsigned)impl_->constantPEDefs.size(),
-      (unsigned)impl_->loadPEDefs.size(),
-      (unsigned)impl_->storePEDefs.size(),
-  };
-  unsigned kindIdx = (unsigned)source.kind;
-  constexpr unsigned numKinds = sizeof(defSizes) / sizeof(defSizes[0]);
-  if (kindIdx >= numKinds)
+  // Dispatch to typed clone for known kinds.
+  switch (source.kind) {
+  case ModuleHandle::PE:
+    return clone(PEHandle{source.id}, instanceName);
+  case ModuleHandle::Switch:
+    return clone(SwitchHandle{source.id}, instanceName);
+  case ModuleHandle::TemporalPE:
+    return clone(TemporalPEHandle{source.id}, instanceName);
+  case ModuleHandle::TemporalSwitch:
+    return clone(TemporalSwitchHandle{source.id}, instanceName);
+  case ModuleHandle::Memory:
+    return clone(MemoryHandle{source.id}, instanceName);
+  case ModuleHandle::ExtMemory:
+    return clone(ExtMemoryHandle{source.id}, instanceName);
+  case ModuleHandle::ConstantPE:
+    return clone(ConstantPEHandle{source.id}, instanceName);
+  case ModuleHandle::LoadPE:
+    return clone(LoadPEHandle{source.id}, instanceName);
+  case ModuleHandle::StorePE:
+    return clone(StorePEHandle{source.id}, instanceName);
+  case ModuleHandle::Fifo:
+    return clone(FifoHandle{source.id}, instanceName);
+  default:
     builderError("clone(ModuleHandle)",
-                 "invalid module kind " + std::to_string(kindIdx));
-  if (source.id >= defSizes[kindIdx])
-    builderError("clone(ModuleHandle)",
-                 std::string("invalid ") + kindMap[kindIdx].label +
-                 " definition id " + std::to_string(source.id));
-  unsigned id = impl_->instances.size();
-  impl_->instances.push_back({kindMap[kindIdx].kind, source.id, instanceName});
-  return InstanceHandle{id};
+                 "invalid module kind " + std::to_string((unsigned)source.kind));
+    return InstanceHandle{0}; // unreachable
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -508,82 +517,74 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
     }
   }
 
-  // Torus/DiagonalTorus wraparound: create module I/O pairs for wrap edges.
-  // These cannot be internal connections due to MLIR SSA DAG constraint.
-  // Each wraparound creates an output port (from the source switch) and a
-  // corresponding input port (to the destination switch) with clear naming.
+  // Torus/DiagonalTorus wraparound: insert fifo instances to break
+  // combinational loops on wraparound edges.
   if (torus) {
-    // East-West wraparound: SW[r][cols-1] out 1 -> SW[r][0] in 3
+    auto wrapFifo = newFifo(mPrefix + "wrap_fifo");
+    wrapFifo.setDepth(2).setType(swPortType);
+    FifoHandle wrapFifoH = wrapFifo;
+
+    // East-West wraparound: SW[r][cols-1] out 1 -> fifo -> SW[r][0] in 3
     for (int r = 0; r < rows; ++r) {
-      std::string wrapName = mPrefix + "wrap_ew_r" + std::to_string(r);
-      auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
-      connectToModuleOutput(result.swGrid[r][cols - 1], 1, wrapOut);
-      auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
-      connectToModuleInput(wrapIn, result.swGrid[r][0], 3);
+      auto f = clone(wrapFifoH,
+                     mPrefix + "fifo_ew_r" + std::to_string(r));
+      connectPorts(result.swGrid[r][cols - 1], 1, f, 0);
+      connectPorts(f, 0, result.swGrid[r][0], 3);
     }
 
-    // North-South wraparound: SW[rows-1][c] out 2 -> SW[0][c] in 0
+    // North-South wraparound: SW[rows-1][c] out 2 -> fifo -> SW[0][c] in 0
     for (int c = 0; c < cols; ++c) {
-      std::string wrapName = mPrefix + "wrap_ns_c" + std::to_string(c);
-      auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
-      connectToModuleOutput(result.swGrid[rows - 1][c], 2, wrapOut);
-      auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
-      connectToModuleInput(wrapIn, result.swGrid[0][c], 0);
+      auto f = clone(wrapFifoH,
+                     mPrefix + "fifo_ns_c" + std::to_string(c));
+      connectPorts(result.swGrid[rows - 1][c], 2, f, 0);
+      connectPorts(f, 0, result.swGrid[0][c], 0);
     }
 
     if (diagonal) {
-      // SE diagonal wraparound (rows): SW[rows-1][c] out 5 -> SW[0][c+1] in 5
+      // SE diagonal wraparound (rows): SW[rows-1][c] out 5 -> fifo -> SW[0][c+1] in 5
       for (int c = 0; c + 1 < cols; ++c) {
-        std::string wrapName = mPrefix + "wrap_se_r_c" + std::to_string(c);
-        auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
-        connectToModuleOutput(result.swGrid[rows - 1][c], 5, wrapOut);
-        auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
-        connectToModuleInput(wrapIn, result.swGrid[0][c + 1], 5);
+        auto f = clone(wrapFifoH,
+                       mPrefix + "fifo_se_r_c" + std::to_string(c));
+        connectPorts(result.swGrid[rows - 1][c], 5, f, 0);
+        connectPorts(f, 0, result.swGrid[0][c + 1], 5);
       }
 
-      // SE diagonal wraparound (cols): SW[r][cols-1] out 5 -> SW[r+1][0] in 5
+      // SE diagonal wraparound (cols): SW[r][cols-1] out 5 -> fifo -> SW[r+1][0] in 5
       for (int r = 0; r + 1 < rows; ++r) {
-        std::string wrapName = mPrefix + "wrap_se_c_r" + std::to_string(r);
-        auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
-        connectToModuleOutput(result.swGrid[r][cols - 1], 5, wrapOut);
-        auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
-        connectToModuleInput(wrapIn, result.swGrid[r + 1][0], 5);
+        auto f = clone(wrapFifoH,
+                       mPrefix + "fifo_se_c_r" + std::to_string(r));
+        connectPorts(result.swGrid[r][cols - 1], 5, f, 0);
+        connectPorts(f, 0, result.swGrid[r + 1][0], 5);
       }
 
-      // SE diagonal wraparound (corner): SW[rows-1][cols-1] out 5 -> SW[0][0] in 5
+      // SE diagonal wraparound (corner): SW[rows-1][cols-1] out 5 -> fifo -> SW[0][0] in 5
       {
-        std::string wrapName = mPrefix + "wrap_se_corner";
-        auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
-        connectToModuleOutput(result.swGrid[rows - 1][cols - 1], 5, wrapOut);
-        auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
-        connectToModuleInput(wrapIn, result.swGrid[0][0], 5);
+        auto f = clone(wrapFifoH, mPrefix + "fifo_se_corner");
+        connectPorts(result.swGrid[rows - 1][cols - 1], 5, f, 0);
+        connectPorts(f, 0, result.swGrid[0][0], 5);
       }
 
-      // SW diagonal wraparound (rows): SW[rows-1][c] out 6 -> SW[0][c-1] in 6
+      // SW diagonal wraparound (rows): SW[rows-1][c] out 6 -> fifo -> SW[0][c-1] in 6
       for (int c = 1; c < cols; ++c) {
-        std::string wrapName = mPrefix + "wrap_sw_r_c" + std::to_string(c);
-        auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
-        connectToModuleOutput(result.swGrid[rows - 1][c], 6, wrapOut);
-        auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
-        connectToModuleInput(wrapIn, result.swGrid[0][c - 1], 6);
+        auto f = clone(wrapFifoH,
+                       mPrefix + "fifo_sw_r_c" + std::to_string(c));
+        connectPorts(result.swGrid[rows - 1][c], 6, f, 0);
+        connectPorts(f, 0, result.swGrid[0][c - 1], 6);
       }
 
-      // SW diagonal wraparound (cols): SW[r][0] out 6 -> SW[r+1][cols-1] in 6
+      // SW diagonal wraparound (cols): SW[r][0] out 6 -> fifo -> SW[r+1][cols-1] in 6
       for (int r = 0; r + 1 < rows; ++r) {
-        std::string wrapName = mPrefix + "wrap_sw_c_r" + std::to_string(r);
-        auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
-        connectToModuleOutput(result.swGrid[r][0], 6, wrapOut);
-        auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
-        connectToModuleInput(wrapIn, result.swGrid[r + 1][cols - 1], 6);
+        auto f = clone(wrapFifoH,
+                       mPrefix + "fifo_sw_c_r" + std::to_string(r));
+        connectPorts(result.swGrid[r][0], 6, f, 0);
+        connectPorts(f, 0, result.swGrid[r + 1][cols - 1], 6);
       }
 
-      // SW diagonal wraparound (corner): SW[rows-1][0] out 6 -> SW[0][cols-1] in 6
+      // SW diagonal wraparound (corner): SW[rows-1][0] out 6 -> fifo -> SW[0][cols-1] in 6
       {
-        std::string wrapName = mPrefix + "wrap_sw_corner";
-        auto wrapOut = addModuleOutput(wrapName + "_out", swPortType);
-        connectToModuleOutput(result.swGrid[rows - 1][0], 6, wrapOut);
-        auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
-        connectToModuleInput(wrapIn, result.swGrid[0][cols - 1], 6);
+        auto f = clone(wrapFifoH, mPrefix + "fifo_sw_corner");
+        connectPorts(result.swGrid[rows - 1][0], 6, f, 0);
+        connectPorts(f, 0, result.swGrid[0][cols - 1], 6);
       }
     }
   }
@@ -772,6 +773,8 @@ unsigned ADGBuilder::Impl::getInstanceInputCount(unsigned instIdx) const {
     return 1; // tagged in
   case ModuleKind::DelTag:
     return 1; // tagged in
+  case ModuleKind::Fifo:
+    return 1; // single input
   }
   return 0;
 }
@@ -823,6 +826,8 @@ unsigned ADGBuilder::Impl::getInstanceOutputCount(unsigned instIdx) const {
     return 1; // tagged out (remapped)
   case ModuleKind::DelTag:
     return 1; // native value out
+  case ModuleKind::Fifo:
+    return 1; // single output
   }
   return 0;
 }
@@ -846,6 +851,8 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
   }
   case ModuleKind::DelTag:
     return delTagDefs[inst.defIdx].inputType;
+  case ModuleKind::Fifo:
+    return fifoDefs[inst.defIdx].elementType;
   case ModuleKind::ConstantPE: {
     auto &def = constantPEDefs[inst.defIdx];
     if (def.outputType.isTagged()) {
@@ -949,6 +956,8 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
     auto &def = delTagDefs[inst.defIdx];
     return def.inputType.getValueType();
   }
+  case ModuleKind::Fifo:
+    return fifoDefs[inst.defIdx].elementType;
   case ModuleKind::ConstantPE:
     return constantPEDefs[inst.defIdx].outputType;
   case ModuleKind::LoadPE: {

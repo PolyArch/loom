@@ -44,6 +44,8 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
     IsolatedFromAbove,
     SingleBlock,
     SingleBlockImplicitTerminator<"YieldOp">,
+    RegionKindInterface,
+    HasOnlyGraphRegion,
     Symbol
 ]> {
   let summary = "Top-level accelerator module";
