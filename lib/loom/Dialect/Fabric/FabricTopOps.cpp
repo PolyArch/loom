@@ -11,6 +11,7 @@
 #include "mlir/IR/OpImplementation.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
 using namespace mlir;
@@ -85,56 +86,89 @@ void ModuleOp::print(OpAsmPrinter &p) {
 // Forward declaration (defined in Instance helpers section below).
 static Operation *lookupBySymName(Operation *from, StringRef name);
 
-/// Classify an operation as combinational (zero-delay). Combinational ops are
-/// SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp. For InstanceOp,
-/// resolves the target: if it is one of those ops, the instance is
-/// combinational; if it is a ModuleOp that has a combinational through-path
-/// (any input reachable from any output through only combinational ops), the
-/// module is also considered combinational. Uses a path-based visited set to
-/// avoid infinite recursion on cyclic instance graphs.
-static bool isCombinational(Operation *op,
-                            llvm::SmallPtrSetImpl<Operation *> &visited) {
+/// Return a bitmask indicating which results of `op` are on combinational
+/// (zero-delay) through-paths. For primitive combinational ops (SwitchOp,
+/// TemporalSwOp, AddTagOp, MapTagOp, DelTagOp), all results are combinational.
+/// For InstanceOp, delegates to the resolved target. For ModuleOp, performs
+/// per-yield-operand backward reachability analysis: bit i is set when yield
+/// operand i can reach a block argument through only combinational ops.
+/// Uses a path-based visited set to avoid infinite recursion.
+static llvm::SmallBitVector
+getCombResultMask(Operation *op,
+                  llvm::SmallPtrSetImpl<Operation *> &visited) {
+  // ModuleOp: per-yield-operand backward reachability through combinational
+  // ops to block arguments. Handled first because ModuleOp has 0 SSA results
+  // (it is a symbol definition); its logical output count comes from the
+  // function type.
+  if (auto mod = dyn_cast<ModuleOp>(op)) {
+    unsigned numOutputs = mod.getFunctionType().getNumResults();
+    if (numOutputs == 0)
+      return llvm::SmallBitVector(0);
+    if (!visited.insert(op).second)
+      return llvm::SmallBitVector(numOutputs); // cycle guard
+    Block &body = mod.getBody().front();
+    auto yield = cast<YieldOp>(body.getTerminator());
+    llvm::SmallBitVector mask(numOutputs);
+    for (unsigned i = 0; i < yield.getNumOperands(); ++i) {
+      SmallVector<Value> worklist;
+      llvm::SmallPtrSet<Value, 16> seen;
+      worklist.push_back(yield.getOperand(i));
+      bool reachesInput = false;
+      while (!worklist.empty() && !reachesInput) {
+        Value v = worklist.pop_back_val();
+        if (!seen.insert(v).second)
+          continue;
+        if (isa<BlockArgument>(v)) {
+          reachesInput = true;
+          break;
+        }
+        Operation *defOp = v.getDefiningOp();
+        if (!defOp)
+          continue;
+        // Only walk through this op's operands if the specific result we
+        // arrived through is on a combinational path.
+        auto defMask = getCombResultMask(defOp, visited);
+        unsigned resultIdx = cast<OpResult>(v).getResultNumber();
+        if (resultIdx < defMask.size() && defMask.test(resultIdx)) {
+          for (Value operand : defOp->getOperands())
+            worklist.push_back(operand);
+        }
+      }
+      if (reachesInput)
+        mask.set(i);
+    }
+    visited.erase(op); // allow re-evaluation from other call paths
+    return mask;
+  }
+
+  // Determine logical result count. For named definitions (SwitchOp, etc.),
+  // op->getNumResults() is 0; use the function_type attribute instead.
+  unsigned numResults = op->getNumResults();
+  if (numResults == 0) {
+    if (auto ftAttr = op->getAttrOfType<TypeAttr>("function_type"))
+      if (auto ft = dyn_cast<FunctionType>(ftAttr.getValue()))
+        numResults = ft.getNumResults();
+  }
+  if (numResults == 0)
+    return llvm::SmallBitVector(0);
+
+  // Primitive combinational ops: all results are combinational.
   if (isa<SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp>(op))
-    return true;
+    return llvm::SmallBitVector(numResults, true);
+
+  // InstanceOp: delegate to resolved target.
   if (auto inst = dyn_cast<InstanceOp>(op)) {
     auto *target = lookupBySymName(inst.getOperation(), inst.getModule());
     if (!target)
-      return false;
-    return isCombinational(target, visited);
+      return llvm::SmallBitVector(numResults);
+    auto targetMask = getCombResultMask(target, visited);
+    if (targetMask.size() != numResults)
+      return llvm::SmallBitVector(numResults); // mismatch caught elsewhere
+    return targetMask;
   }
-  if (auto mod = dyn_cast<ModuleOp>(op)) {
-    if (!visited.insert(op).second)
-      return false; // cycle guard: currently being evaluated
-    // Check if any combinational through-path exists from a module input
-    // (block argument) to a module output (yield operand). Walk backward
-    // from yield operands through combinational ops only.
-    Block &body = mod.getBody().front();
-    auto yield = cast<YieldOp>(body.getTerminator());
-    SmallVector<Value> worklist;
-    llvm::SmallPtrSet<Value, 16> seen;
-    for (Value v : yield.getOperands())
-      worklist.push_back(v);
-    bool hasThroughPath = false;
-    while (!worklist.empty()) {
-      Value v = worklist.pop_back_val();
-      if (!seen.insert(v).second)
-        continue;
-      if (isa<BlockArgument>(v)) {
-        hasThroughPath = true;
-        break;
-      }
-      Operation *defOp = v.getDefiningOp();
-      if (!defOp)
-        continue;
-      if (isCombinational(defOp, visited)) {
-        for (Value operand : defOp->getOperands())
-          worklist.push_back(operand);
-      }
-    }
-    visited.erase(op); // allow re-evaluation from other call paths
-    return hasThroughPath;
-  }
-  return false;
+
+  // Non-combinational ops: no results are combinational.
+  return llvm::SmallBitVector(numResults);
 }
 
 //===----------------------------------------------------------------------===//
@@ -202,22 +236,25 @@ LogicalResult ModuleOp::verify() {
   }
 
   // COMP_ADG_COMBINATIONAL_LOOP: detect cycles among purely combinational ops.
+  // Uses per-result combinational masks so that mixed modules (some outputs
+  // combinational, some sequential) only contribute edges for their
+  // combinational results.
   {
     llvm::SmallPtrSet<Operation *, 8> visited;
-    auto isComb = [&](Operation *op) -> bool {
-      return isCombinational(op, visited);
-    };
 
-    // Build adjacency list for combinational ops only.
-    // Map from op to index, then build directed edges.
+    // Build adjacency list. An op is included if any result is combinational.
+    // Only combinational results contribute edges.
     SmallVector<Operation *> combOps;
+    SmallVector<llvm::SmallBitVector> combMasks;
     llvm::DenseMap<Operation *, unsigned> opIndex;
     for (auto &op : body) {
       if (op.hasTrait<OpTrait::IsTerminator>())
         continue;
-      if (isComb(&op)) {
+      auto mask = getCombResultMask(&op, visited);
+      if (mask.any()) {
         opIndex[&op] = combOps.size();
         combOps.push_back(&op);
+        combMasks.push_back(mask);
       }
     }
 
@@ -226,7 +263,10 @@ LogicalResult ModuleOp::verify() {
       SmallVector<SmallVector<unsigned>> adj(n);
 
       for (unsigned i = 0; i < n; ++i) {
-        for (Value result : combOps[i]->getResults()) {
+        for (unsigned r = 0; r < combOps[i]->getNumResults(); ++r) {
+          if (!combMasks[i].test(r))
+            continue; // skip sequential results
+          Value result = combOps[i]->getResult(r);
           for (Operation *user : result.getUsers()) {
             auto it = opIndex.find(user);
             if (it != opIndex.end())

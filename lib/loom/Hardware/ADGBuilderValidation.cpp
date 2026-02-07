@@ -208,6 +208,27 @@ ValidationResult ADGBuilder::validateADG() {
                "table_size out of range [1, 256]", loc);
   }
 
+  // Validate tag types for tag operations.
+  // Accept both Type::iN(w) and canonical aliases (i1, i8, i16) with valid widths.
+  auto getIntWidth = [](Type t) -> int {
+    switch (t.getKind()) {
+    case Type::I1:  return 1;
+    case Type::I8:  return 8;
+    case Type::I16: return 16;
+    case Type::IN:  return (int)t.getWidth();
+    default:        return -1; // not an integer type
+    }
+  };
+  auto validateTagType = [&](Type tagType, const std::string &loc) {
+    int w = getIntWidth(tagType);
+    if (w < 0)
+      addError("COMP_TAG_WIDTH_RANGE",
+               "tag type must be an integer type", loc);
+    else if (w < 1 || w > 16)
+      addError("COMP_TAG_WIDTH_RANGE",
+               "tag width outside [1, 16]", loc);
+  };
+
   // Validate FIFO definitions.
   for (size_t i = 0; i < impl_->fifoDefs.size(); ++i) {
     const auto &fifo = impl_->fifoDefs[i];
@@ -233,28 +254,11 @@ ValidationResult ADGBuilder::validateADG() {
                "type must be a native type or tagged; got " +
                    fifo.elementType.toMLIR(),
                loc);
+    // Validate tag width when element type is tagged.
+    if (kind == Type::Tagged)
+      validateTagType(fifo.elementType.getTagType(), loc);
   }
 
-  // Validate tag types for tag operations.
-  // Accept both Type::iN(w) and canonical aliases (i1, i8, i16) with valid widths.
-  auto getIntWidth = [](Type t) -> int {
-    switch (t.getKind()) {
-    case Type::I1:  return 1;
-    case Type::I8:  return 8;
-    case Type::I16: return 16;
-    case Type::IN:  return (int)t.getWidth();
-    default:        return -1; // not an integer type
-    }
-  };
-  auto validateTagType = [&](Type tagType, const std::string &loc) {
-    int w = getIntWidth(tagType);
-    if (w < 0)
-      addError("COMP_TAG_WIDTH_RANGE",
-               "tag type must be an integer type", loc);
-    else if (w < 1 || w > 16)
-      addError("COMP_TAG_WIDTH_RANGE",
-               "tag width outside [1, 16]", loc);
-  };
   for (size_t i = 0; i < impl_->addTagDefs.size(); ++i) {
     const auto &at = impl_->addTagDefs[i];
     std::string loc = "add_tag @" + at.name;
