@@ -85,6 +85,42 @@ void ModuleOp::print(OpAsmPrinter &p) {
 // Forward declaration (defined in Instance helpers section below).
 static Operation *lookupBySymName(Operation *from, StringRef name);
 
+/// Classify an operation as combinational (zero-delay). Combinational ops are
+/// SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp. For InstanceOp,
+/// resolves the target: if it is one of those ops, the instance is
+/// combinational; if it is a ModuleOp whose body contains only combinational
+/// non-terminator ops, the module (and thus the instance) is also
+/// combinational. Uses a visited set to avoid infinite recursion on cyclic
+/// instance graphs.
+static bool isCombinational(Operation *op,
+                            llvm::SmallPtrSetImpl<Operation *> &visited) {
+  if (isa<SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp>(op))
+    return true;
+  if (auto inst = dyn_cast<InstanceOp>(op)) {
+    auto *target = lookupBySymName(inst.getOperation(), inst.getModule());
+    if (!target)
+      return false;
+    return isCombinational(target, visited);
+  }
+  if (auto mod = dyn_cast<ModuleOp>(op)) {
+    if (!visited.insert(op).second)
+      return false; // cycle guard: currently being evaluated
+    Block &body = mod.getBody().front();
+    bool allComb = true;
+    for (auto &inner : body) {
+      if (inner.hasTrait<OpTrait::IsTerminator>())
+        continue;
+      if (!isCombinational(&inner, visited)) {
+        allComb = false;
+        break;
+      }
+    }
+    visited.erase(op); // allow re-evaluation from other call paths
+    return allComb;
+  }
+  return false;
+}
+
 //===----------------------------------------------------------------------===//
 // ModuleOp verify
 //===----------------------------------------------------------------------===//
@@ -151,19 +187,9 @@ LogicalResult ModuleOp::verify() {
 
   // COMP_ADG_COMBINATIONAL_LOOP: detect cycles among purely combinational ops.
   {
-    // Classify ops as combinational (zero-delay).
-    // For InstanceOp, resolve the target symbol to determine if the
-    // instantiated module is combinational.
-    auto isCombinational = [](Operation *op) -> bool {
-      if (isa<SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp>(op))
-        return true;
-      if (auto inst = dyn_cast<InstanceOp>(op)) {
-        auto *target = lookupBySymName(inst.getOperation(), inst.getModule());
-        if (target)
-          return isa<SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp>(
-              target);
-      }
-      return false;
+    llvm::SmallPtrSet<Operation *, 8> visited;
+    auto isComb = [&](Operation *op) -> bool {
+      return isCombinational(op, visited);
     };
 
     // Build adjacency list for combinational ops only.
@@ -173,7 +199,7 @@ LogicalResult ModuleOp::verify() {
     for (auto &op : body) {
       if (op.hasTrait<OpTrait::IsTerminator>())
         continue;
-      if (isCombinational(&op)) {
+      if (isComb(&op)) {
         opIndex[&op] = combOps.size();
         combOps.push_back(&op);
       }
