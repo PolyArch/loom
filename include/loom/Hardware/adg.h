@@ -155,6 +155,28 @@ struct MapTagHandle { unsigned id; };
 /// Opaque handle to a del_tag definition.
 struct DelTagHandle { unsigned id; };
 
+/// Generic handle to any module definition. Can be implicitly constructed
+/// from any typed handle.
+struct ModuleHandle {
+  enum Kind { PE, Switch, TemporalPE, TemporalSwitch, Memory, ExtMemory,
+              ConstantPE, LoadPE, StorePE, AddTag, MapTag, DelTag };
+  Kind kind;
+  unsigned id;
+
+  ModuleHandle(PEHandle h) : kind(PE), id(h.id) {}
+  ModuleHandle(SwitchHandle h) : kind(Switch), id(h.id) {}
+  ModuleHandle(TemporalPEHandle h) : kind(TemporalPE), id(h.id) {}
+  ModuleHandle(TemporalSwitchHandle h) : kind(TemporalSwitch), id(h.id) {}
+  ModuleHandle(MemoryHandle h) : kind(Memory), id(h.id) {}
+  ModuleHandle(ExtMemoryHandle h) : kind(ExtMemory), id(h.id) {}
+  ModuleHandle(ConstantPEHandle h) : kind(ConstantPE), id(h.id) {}
+  ModuleHandle(LoadPEHandle h) : kind(LoadPE), id(h.id) {}
+  ModuleHandle(StorePEHandle h) : kind(StorePE), id(h.id) {}
+  ModuleHandle(AddTagHandle h) : kind(AddTag), id(h.id) {}
+  ModuleHandle(MapTagHandle h) : kind(MapTag), id(h.id) {}
+  ModuleHandle(DelTagHandle h) : kind(DelTag), id(h.id) {}
+};
+
 //===----------------------------------------------------------------------===//
 // Validation
 //===----------------------------------------------------------------------===//
@@ -479,6 +501,9 @@ public:
 
   /// Create an instance of a del_tag definition.
   InstanceHandle clone(DelTagHandle source, const std::string &instanceName);
+
+  /// Create an instance of any module definition using a generic handle.
+  InstanceHandle clone(ModuleHandle source, const std::string &instanceName);
 
   // --- Internal connections ---
 

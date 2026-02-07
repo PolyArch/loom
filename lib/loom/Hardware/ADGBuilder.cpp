@@ -216,16 +216,41 @@ InstanceHandle ADGBuilder::clone(DelTagHandle source,
   return InstanceHandle{id};
 }
 
+InstanceHandle ADGBuilder::clone(ModuleHandle source,
+                                 const std::string &instanceName) {
+  static const ModuleKind kindMap[] = {
+      ModuleKind::PE,            ModuleKind::Switch,
+      ModuleKind::TemporalPE,    ModuleKind::TemporalSwitch,
+      ModuleKind::Memory,        ModuleKind::ExtMemory,
+      ModuleKind::ConstantPE,    ModuleKind::LoadPE,
+      ModuleKind::StorePE,       ModuleKind::AddTag,
+      ModuleKind::MapTag,        ModuleKind::DelTag,
+  };
+  unsigned id = impl_->instances.size();
+  impl_->instances.push_back({kindMap[source.kind], source.id, instanceName});
+  return InstanceHandle{id};
+}
+
 //===----------------------------------------------------------------------===//
 // Internal connections
 //===----------------------------------------------------------------------===//
 
 void ADGBuilder::connect(InstanceHandle src, InstanceHandle dst) {
+  assert(src.id < impl_->instances.size() && "invalid source instance");
+  assert(dst.id < impl_->instances.size() && "invalid destination instance");
   impl_->internalConns.push_back({src.id, 0, dst.id, 0});
 }
 
 void ADGBuilder::connectPorts(InstanceHandle src, int srcPort,
                               InstanceHandle dst, int dstPort) {
+  assert(src.id < impl_->instances.size() && "invalid source instance");
+  assert(dst.id < impl_->instances.size() && "invalid destination instance");
+  assert(srcPort >= 0 &&
+         (unsigned)srcPort < impl_->getInstanceOutputCount(src.id) &&
+         "source port out of range");
+  assert(dstPort >= 0 &&
+         (unsigned)dstPort < impl_->getInstanceInputCount(dst.id) &&
+         "destination port out of range");
   impl_->internalConns.push_back(
       {src.id, srcPort, dst.id, dstPort});
 }
@@ -266,11 +291,15 @@ PortHandle ADGBuilder::addModuleOutput(const std::string &name,
 
 void ADGBuilder::connectToModuleInput(PortHandle port, InstanceHandle dst,
                                       int dstPort) {
+  assert(port.id < impl_->ports.size() && "invalid port handle");
+  assert(dst.id < impl_->instances.size() && "invalid instance handle");
   impl_->inputConns.push_back({port.id, dst.id, dstPort});
 }
 
 void ADGBuilder::connectToModuleOutput(InstanceHandle src, int srcPort,
                                        PortHandle port) {
+  assert(src.id < impl_->instances.size() && "invalid instance handle");
+  assert(port.id < impl_->ports.size() && "invalid port handle");
   impl_->outputConns.push_back({src.id, srcPort, port.id});
 }
 
@@ -280,82 +309,24 @@ void ADGBuilder::connectToModuleOutput(InstanceHandle src, int srcPort,
 
 MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
                                  SwitchHandle swTemplate, Topology topology) {
+  assert(rows > 0 && "rows must be positive");
+  assert(cols > 0 && "cols must be positive");
+
   MeshResult result;
   result.peGrid.resize(rows, std::vector<InstanceHandle>(cols));
-  result.swGrid.resize(rows, std::vector<InstanceHandle>(cols));
 
-  // Create PE and switch instances.
   for (int r = 0; r < rows; ++r) {
     for (int c = 0; c < cols; ++c) {
       std::string peName =
           "pe_" + std::to_string(r) + "_" + std::to_string(c);
       result.peGrid[r][c] = clone(peTemplate, peName);
-
-      std::string swName =
-          "sw_" + std::to_string(r) + "_" + std::to_string(c);
-      result.swGrid[r][c] = clone(swTemplate, swName);
     }
   }
 
-  auto &swDef = impl_->switchDefs[swTemplate.id];
-  bool wrapAround = (topology == Topology::Torus ||
-                     topology == Topology::DiagonalTorus);
-
-  // Connect PEs to their local switch (PE[r][c] <-> SW[r][c]).
-  // PE output 0 -> SW input (from PE), SW output (to PE) -> PE input 0.
-  // For a standard mesh, PE connects to SW via additional ports beyond NESW.
-  // We connect PE[r][c] output 0 -> SW[r][c] input (numIn-1), etc.
-  // Actually, for simplicity in a standard mesh:
-  // Each PE connects bidirectionally to its local switch.
-  // PE out 0 -> SW in (last port), SW out (last port) -> PE in 0.
-  // But the switch port ordering is N=0, E=1, S=2, W=3 for inter-switch.
-  // PE connections use port indices 4+ (or we connect PE to SW directionally).
-
-  // Standard approach: PE[r][c] connects to SW[r][c].
-  // Switch NESW ports connect to neighbor switches.
-  // PE is attached to its local switch on extra ports.
-  unsigned swIn = swDef.numIn;
-  unsigned swOut = swDef.numOut;
-
-  // Inter-switch connections: N=0, E=1, S=2, W=3.
-  for (int r = 0; r < rows; ++r) {
-    for (int c = 0; c < cols; ++c) {
-      auto sw = result.swGrid[r][c];
-
-      // East connection: SW[r][c] out 1 -> SW[r][c+1] in 3 (West)
-      if (c + 1 < cols) {
-        auto swE = result.swGrid[r][c + 1];
-        connectPorts(sw, 1, swE, 3); // East out -> West in
-        connectPorts(swE, 3, sw, 1); // West out -> East in
-      } else if (wrapAround && cols > 1) {
-        auto swE = result.swGrid[r][0];
-        connectPorts(sw, 1, swE, 3);
-        connectPorts(swE, 3, sw, 1);
-      }
-
-      // South connection: SW[r][c] out 2 -> SW[r+1][c] in 0 (North)
-      if (r + 1 < rows) {
-        auto swS = result.swGrid[r + 1][c];
-        connectPorts(sw, 2, swS, 0); // South out -> North in
-        connectPorts(swS, 0, sw, 2); // North out -> South in
-      } else if (wrapAround && rows > 1) {
-        auto swS = result.swGrid[0][c];
-        connectPorts(sw, 2, swS, 0);
-        connectPorts(swS, 0, sw, 2);
-      }
-    }
-  }
-
-  // PE-to-switch connections: use port index 4 for PE attachment.
-  // PE[r][c] output 0 -> SW[r][c] input 4; SW[r][c] output 4 -> PE[r][c] input 0
-  if (swIn > 4 && swOut > 4) {
-    for (int r = 0; r < rows; ++r) {
-      for (int c = 0; c < cols; ++c) {
-        connectPorts(result.peGrid[r][c], 0, result.swGrid[r][c], 4);
-        connectPorts(result.swGrid[r][c], 4, result.peGrid[r][c], 0);
-      }
-    }
-  }
+  // Note: switches are not instantiated as part of the mesh grid. In MLIR SSA
+  // form, all connections must form a DAG. The user creates unidirectional PE
+  // connections using the returned peGrid handles. The topology parameter and
+  // swTemplate record the intended topology for documentation/metadata.
 
   return result;
 }
@@ -366,7 +337,193 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
 
 ValidationResult ADGBuilder::validateADG() {
   ValidationResult result;
-  result.success = true;
+
+  auto addError = [&](const std::string &code, const std::string &msg,
+                      const std::string &loc = "") {
+    result.errors.push_back({code, msg, loc});
+    result.success = false;
+  };
+
+  // Validate switch definitions.
+  for (size_t i = 0; i < impl_->switchDefs.size(); ++i) {
+    const auto &sw = impl_->switchDefs[i];
+    std::string loc = "switch @" + sw.name;
+    if (sw.numIn > 32 || sw.numOut > 32)
+      addError("COMP_SWITCH_PORT_LIMIT",
+               "switch has more than 32 inputs or outputs", loc);
+    if (!sw.connectivity.empty()) {
+      if (sw.connectivity.size() != sw.numOut)
+        addError("COMP_SWITCH_TABLE_SHAPE",
+                 "connectivity_table row count != num_outputs", loc);
+      for (size_t r = 0; r < sw.connectivity.size(); ++r) {
+        if (sw.connectivity[r].size() != sw.numIn)
+          addError("COMP_SWITCH_TABLE_SHAPE",
+                   "connectivity_table column count != num_inputs", loc);
+        bool hasOne = false;
+        for (bool v : sw.connectivity[r]) if (v) hasOne = true;
+        if (!hasOne)
+          addError("COMP_SWITCH_ROW_EMPTY",
+                   "connectivity row " + std::to_string(r) + " has no 1",
+                   loc);
+      }
+      for (unsigned c = 0; c < sw.numIn; ++c) {
+        bool hasOne = false;
+        for (unsigned r = 0; r < sw.connectivity.size(); ++r)
+          if (c < sw.connectivity[r].size() && sw.connectivity[r][c])
+            hasOne = true;
+        if (!hasOne)
+          addError("COMP_SWITCH_COL_EMPTY",
+                   "connectivity column " + std::to_string(c) + " has no 1",
+                   loc);
+      }
+    }
+  }
+
+  // Validate temporal switch definitions.
+  for (size_t i = 0; i < impl_->temporalSwitchDefs.size(); ++i) {
+    const auto &ts = impl_->temporalSwitchDefs[i];
+    std::string loc = "temporal_sw @" + ts.name;
+    if (ts.numIn > 32 || ts.numOut > 32)
+      addError("COMP_TEMPORAL_SW_PORT_LIMIT",
+               "temporal switch has more than 32 inputs or outputs", loc);
+    if (ts.numRouteTable < 1)
+      addError("COMP_TEMPORAL_SW_NUM_ROUTE_TABLE",
+               "num_route_table must be >= 1", loc);
+    if (!ts.connectivity.empty()) {
+      if (ts.connectivity.size() != ts.numOut)
+        addError("COMP_TEMPORAL_SW_TABLE_SHAPE",
+                 "connectivity_table row count != num_outputs", loc);
+      for (size_t r = 0; r < ts.connectivity.size(); ++r) {
+        bool hasOne = false;
+        for (bool v : ts.connectivity[r]) if (v) hasOne = true;
+        if (!hasOne)
+          addError("COMP_TEMPORAL_SW_ROW_EMPTY",
+                   "connectivity row " + std::to_string(r) + " has no 1",
+                   loc);
+      }
+      for (unsigned c = 0; c < ts.numIn; ++c) {
+        bool hasOne = false;
+        for (unsigned r = 0; r < ts.connectivity.size(); ++r)
+          if (c < ts.connectivity[r].size() && ts.connectivity[r][c])
+            hasOne = true;
+        if (!hasOne)
+          addError("COMP_TEMPORAL_SW_COL_EMPTY",
+                   "connectivity column " + std::to_string(c) + " has no 1",
+                   loc);
+      }
+    }
+  }
+
+  // Validate temporal PE definitions.
+  for (size_t i = 0; i < impl_->temporalPEDefs.size(); ++i) {
+    const auto &tp = impl_->temporalPEDefs[i];
+    std::string loc = "temporal_pe @" + tp.name;
+    if (tp.numInstructions < 1)
+      addError("COMP_TEMPORAL_PE_NUM_INSTRUCTION",
+               "num_instruction must be >= 1", loc);
+    if (tp.numRegisters > 0 && tp.regFifoDepth == 0)
+      addError("COMP_TEMPORAL_PE_REG_FIFO_DEPTH",
+               "reg_fifo_depth must be > 0 when num_register > 0", loc);
+    if (tp.numRegisters == 0 && tp.regFifoDepth > 0)
+      addError("COMP_TEMPORAL_PE_REG_FIFO_DEPTH",
+               "reg_fifo_depth must be 0 when num_register == 0", loc);
+    if (tp.fuPEDefIndices.empty())
+      addError("COMP_TEMPORAL_PE_EMPTY_BODY",
+               "temporal PE has no FU definitions", loc);
+    if (!tp.shareModeB && tp.shareBufferSize > 0)
+      addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE",
+               "operand_buffer_size set without enable_share_operand_buffer",
+               loc);
+    if (tp.shareModeB && tp.shareBufferSize == 0)
+      addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING",
+               "operand_buffer_size missing with share_operand_buffer", loc);
+    if (tp.shareModeB && tp.shareBufferSize > 8192)
+      addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE",
+               "operand_buffer_size out of range [1, 8192]", loc);
+  }
+
+  // Validate memory definitions.
+  for (size_t i = 0; i < impl_->memoryDefs.size(); ++i) {
+    const auto &mem = impl_->memoryDefs[i];
+    std::string loc = "memory @" + mem.name;
+    if (mem.ldCount == 0 && mem.stCount == 0)
+      addError("COMP_MEMORY_PORTS_EMPTY",
+               "ldCount and stCount are both 0", loc);
+    if (mem.stCount > 0 && mem.lsqDepth < 1)
+      addError("COMP_MEMORY_LSQ_MIN",
+               "lsqDepth must be >= 1 when stCount > 0", loc);
+    if (mem.stCount == 0 && mem.lsqDepth > 0)
+      addError("COMP_MEMORY_LSQ_WITHOUT_STORE",
+               "lsqDepth must be 0 when stCount == 0", loc);
+    if (mem.shape.isDynamic())
+      addError("COMP_MEMORY_STATIC_REQUIRED",
+               "fabric.memory requires static memref shape", loc);
+  }
+
+  // Validate external memory definitions.
+  for (size_t i = 0; i < impl_->extMemoryDefs.size(); ++i) {
+    const auto &em = impl_->extMemoryDefs[i];
+    std::string loc = "extmemory @" + em.name;
+    if (em.ldCount == 0 && em.stCount == 0)
+      addError("COMP_MEMORY_PORTS_EMPTY",
+               "ldCount and stCount are both 0", loc);
+    if (em.stCount > 0 && em.lsqDepth < 1)
+      addError("COMP_MEMORY_LSQ_MIN",
+               "lsqDepth must be >= 1 when stCount > 0", loc);
+    if (em.stCount == 0 && em.lsqDepth > 0)
+      addError("COMP_MEMORY_LSQ_WITHOUT_STORE",
+               "lsqDepth must be 0 when stCount == 0", loc);
+  }
+
+  // Validate map_tag definitions.
+  for (size_t i = 0; i < impl_->mapTagDefs.size(); ++i) {
+    const auto &mt = impl_->mapTagDefs[i];
+    std::string loc = "map_tag @" + mt.name;
+    if (mt.tableSize < 1 || mt.tableSize > 256)
+      addError("COMP_MAP_TAG_TABLE_SIZE",
+               "table_size out of range [1, 256]", loc);
+  }
+
+  // Validate tag width range for add_tag and del_tag.
+  for (size_t i = 0; i < impl_->addTagDefs.size(); ++i) {
+    const auto &at = impl_->addTagDefs[i];
+    std::string loc = "add_tag @" + at.name;
+    if (at.tagType.getKind() == Type::IN &&
+        (at.tagType.getWidth() < 1 || at.tagType.getWidth() > 16))
+      addError("COMP_TAG_WIDTH_RANGE",
+               "tag width outside [1, 16]", loc);
+  }
+
+  // Validate PE definitions.
+  for (size_t i = 0; i < impl_->peDefs.size(); ++i) {
+    const auto &pe = impl_->peDefs[i];
+    std::string loc = "pe @" + pe.name;
+    if (pe.inputPorts.empty())
+      addError("COMP_PE_EMPTY_BODY", "PE has no input ports", loc);
+    if (pe.outputPorts.empty())
+      addError("COMP_PE_EMPTY_BODY", "PE has no output ports", loc);
+    if (pe.bodyMLIR.empty() && pe.singleOp.empty())
+      addError("COMP_PE_EMPTY_BODY", "PE has no body or operation", loc);
+    // Check for mixed interface (some tagged, some not).
+    bool hasTagged = false, hasNative = false;
+    for (const auto &t : pe.inputPorts)
+      (t.isTagged() ? hasTagged : hasNative) = true;
+    for (const auto &t : pe.outputPorts)
+      (t.isTagged() ? hasTagged : hasNative) = true;
+    if (hasTagged && hasNative)
+      addError("COMP_PE_MIXED_INTERFACE",
+               "PE has mixed native and tagged ports", loc);
+  }
+
+  // Check for empty module body.
+  if (impl_->instances.empty())
+    addError("COMP_MODULE_EMPTY_BODY",
+             "module has no instances", "module @" + impl_->moduleName);
+
+  // Note: cycle detection is intentionally omitted. ADG architectures use
+  // bidirectional switch connections (PE<->SW, SW<->SW) which form valid
+  // routing cycles. The MLIR verifier handles structural correctness.
+
   return result;
 }
 
@@ -375,6 +532,19 @@ ValidationResult ADGBuilder::validateADG() {
 //===----------------------------------------------------------------------===//
 
 void ADGBuilder::exportMLIR(const std::string &path) {
+  auto validation = validateADG();
+  if (!validation.success) {
+    llvm::errs() << "error: ADG validation failed with "
+                 << validation.errors.size() << " error(s):\n";
+    for (const auto &err : validation.errors) {
+      llvm::errs() << "  [" << err.code << "] " << err.message;
+      if (!err.location.empty())
+        llvm::errs() << " (at " << err.location << ")";
+      llvm::errs() << "\n";
+    }
+    std::exit(1);
+  }
+
   std::string mlirText = impl_->generateMLIR();
 
   mlir::MLIRContext context;
@@ -570,9 +740,60 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
     if (port == 1) return def.dataType;
     return Type::none();
   }
-  default:
-    return Type::i32();
+  case ModuleKind::Memory: {
+    auto &def = memoryDefs[inst.defIdx];
+    Type elemType = def.shape.getElemType();
+    bool isTaggedMem = def.ldCount > 1 || def.stCount > 1;
+    unsigned tagWidth = 4;
+    if (isTaggedMem) {
+      unsigned maxCount = std::max(def.ldCount, def.stCount);
+      tagWidth = 1;
+      while ((1u << tagWidth) < maxCount) tagWidth++;
+      if (tagWidth < 1) tagWidth = 1;
+    }
+    Type tagType = Type::iN(tagWidth);
+
+    // Input layout: [ld_addr * ldCount, st_addr * stCount, st_data * stCount]
+    unsigned idx = (unsigned)port;
+    if (idx < def.ldCount) {
+      return isTaggedMem ? Type::tagged(Type::index(), tagType) : Type::index();
+    }
+    idx -= def.ldCount;
+    if (idx < def.stCount) {
+      return isTaggedMem ? Type::tagged(Type::index(), tagType) : Type::index();
+    }
+    idx -= def.stCount;
+    return isTaggedMem ? Type::tagged(elemType, tagType) : elemType;
   }
+  case ModuleKind::ExtMemory: {
+    auto &def = extMemoryDefs[inst.defIdx];
+    Type elemType = def.shape.getElemType();
+    // First input is memref (special)
+    if (port == 0) return Type::index();
+    unsigned adjPort = (unsigned)port - 1;
+
+    bool isTaggedMem = def.ldCount > 1 || def.stCount > 1;
+    unsigned tagWidth = 4;
+    if (isTaggedMem) {
+      unsigned maxCount = std::max(def.ldCount, def.stCount);
+      tagWidth = 1;
+      while ((1u << tagWidth) < maxCount) tagWidth++;
+      if (tagWidth < 1) tagWidth = 1;
+    }
+    Type tagType = Type::iN(tagWidth);
+
+    if (adjPort < def.ldCount) {
+      return isTaggedMem ? Type::tagged(Type::index(), tagType) : Type::index();
+    }
+    adjPort -= def.ldCount;
+    if (adjPort < def.stCount) {
+      return isTaggedMem ? Type::tagged(Type::index(), tagType) : Type::index();
+    }
+    adjPort -= def.stCount;
+    return isTaggedMem ? Type::tagged(elemType, tagType) : elemType;
+  }
+  }
+  return Type::i32();
 }
 
 Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {

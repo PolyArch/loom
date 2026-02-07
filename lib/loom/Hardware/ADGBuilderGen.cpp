@@ -496,11 +496,20 @@ std::string ADGBuilder::Impl::generateMLIR() const {
   os << ") {\n";
 
   // Topological sort of instances.
+  // Skip bidirectional edges (A->B and B->A both exist) to handle mesh
+  // topologies where switches have bidirectional connections.
   unsigned numInst = instances.size();
+  std::set<std::pair<unsigned, unsigned>> edgeSet;
+  for (const auto &conn : internalConns)
+    edgeSet.insert({conn.srcInst, conn.dstInst});
+
   std::vector<std::vector<unsigned>> adjList(numInst);
   std::vector<unsigned> inDeg(numInst, 0);
 
   for (const auto &conn : internalConns) {
+    // Skip bidirectional edges (both A->B and B->A exist).
+    if (edgeSet.count({conn.dstInst, conn.srcInst}))
+      continue;
     adjList[conn.srcInst].push_back(conn.dstInst);
     inDeg[conn.dstInst]++;
   }
@@ -530,14 +539,24 @@ std::string ADGBuilder::Impl::generateMLIR() const {
     }
   }
 
-  // SSA name allocation.
+  // Pre-allocate SSA names for all instances (enables forward references in
+  // bidirectional connections like mesh switch-to-switch).
   unsigned ssaCounter = 0;
-  // Map: (instIdx, port) -> SSA name
   std::map<std::pair<unsigned, int>, std::string> instResultSSA;
-  // Map: (instIdx, port) -> type string (for tracking SSA result types)
   std::map<std::pair<unsigned, int>, std::string> instResultType;
 
+  for (unsigned ii : topoOrder) {
+    unsigned numOutputs = getInstanceOutputCount(ii);
+    for (unsigned r = 0; r < numOutputs; ++r) {
+      std::string name = "%" + std::to_string(ssaCounter + r);
+      instResultSSA[{ii, (int)r}] = name;
+      instResultType[{ii, (int)r}] = getInstanceOutputType(ii, r).toMLIR();
+    }
+    ssaCounter += numOutputs;
+  }
+
   // Emit instances in topological order.
+  ssaCounter = 0;
   for (unsigned ii : topoOrder) {
     const auto &inst = instances[ii];
 
@@ -559,7 +578,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       }
     }
 
-    // From internal connections.
+    // From internal connections (SSA names pre-allocated, so forward refs work).
     for (const auto &conn : internalConns) {
       if (conn.dstInst == ii) {
         auto it = instResultSSA.find({conn.srcInst, conn.srcPort});
@@ -571,17 +590,11 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       }
     }
 
-    // Allocate result SSA names and store result types.
+    // Collect pre-allocated result SSA names.
     unsigned numOutputs = getInstanceOutputCount(ii);
     std::vector<std::string> resultNames;
-    for (unsigned r = 0; r < numOutputs; ++r) {
-      std::string name = "%" + std::to_string(ssaCounter + r);
-      resultNames.push_back(name);
-      instResultSSA[{ii, (int)r}] = name;
-      instResultType[{ii, (int)r}] =
-          getInstanceOutputType(ii, r).toMLIR();
-    }
-    ssaCounter += numOutputs;
+    for (unsigned r = 0; r < numOutputs; ++r)
+      resultNames.push_back(instResultSSA[{ii, (int)r}]);
 
     // Emit the instance/operation.
     os << "  ";
