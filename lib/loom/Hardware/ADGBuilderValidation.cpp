@@ -254,9 +254,27 @@ ValidationResult ADGBuilder::validateADG() {
                "type must be a native type or tagged; got " +
                    fifo.elementType.toMLIR(),
                loc);
-    // Validate tag width when element type is tagged.
-    if (kind == Type::Tagged)
+    // Validate tagged element: both payload and tag must be valid.
+    if (kind == Type::Tagged) {
       validateTagType(fifo.elementType.getTagType(), loc);
+      // Payload (value) type must be a native type.
+      auto vk = fifo.elementType.getValueType().getKind();
+      bool validPayload = vk == Type::I1 || vk == Type::I8 ||
+                          vk == Type::I16 || vk == Type::I32 ||
+                          vk == Type::I64 || vk == Type::BF16 ||
+                          vk == Type::F16 || vk == Type::F32 ||
+                          vk == Type::F64 || vk == Type::Index ||
+                          vk == Type::None;
+      if (!validPayload && vk == Type::IN) {
+        unsigned w = fifo.elementType.getValueType().getWidth();
+        validPayload = (w == 1 || w == 8 || w == 16 || w == 32 || w == 64);
+      }
+      if (!validPayload)
+        addError("COMP_FIFO_INVALID_TYPE",
+                 "tagged payload type must be a native type; got " +
+                     fifo.elementType.toMLIR(),
+                 loc);
+    }
   }
 
   for (size_t i = 0; i < impl_->addTagDefs.size(); ++i) {
