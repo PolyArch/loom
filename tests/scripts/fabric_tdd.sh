@@ -30,50 +30,72 @@ results_dir="${ROOT_DIR}/tests/.results"
 mkdir -p "${results_dir}"
 lit_log="${results_dir}/fabric_tdd.log"
 
+BUILD_BIN="${ROOT_DIR}/build/bin"
+LLVM_BIN="${ROOT_DIR}/build/externals/llvm-project/llvm/bin"
+
 lit_exit=0
 lit_output=$(python3 "${LIT_PY}" -v "${TDD_DIR}" 2>&1) || lit_exit=$?
 echo "${lit_output}" > "${lit_log}"
 
-# Detect multiprocessing permission failure (SemLock/PermissionError) and retry
-# with serial mode (-j 1) as fallback for constrained environments.
+# Detect multiprocessing permission failure (SemLock/PermissionError) and fall
+# back to a shell-based serial runner that avoids Python multiprocessing entirely.
+# The -j 1 flag is insufficient because lit still initializes multiprocessing
+# infrastructure (BoundedSemaphore, Pool) even with one worker.
 if (( lit_exit != 0 )); then
   if echo "${lit_output}" | grep -qE "SemLock|PermissionError"; then
-    echo "warning: lit multiprocessing failed, retrying with -j 1" >&2
+    echo "warning: lit multiprocessing unavailable, using serial runner" >&2
     lit_exit=0
-    lit_output=$(python3 "${LIT_PY}" -v -j 1 "${TDD_DIR}" 2>&1) || lit_exit=$?
+    lit_output=$("${SCRIPT_DIR}/lit_serial.sh" "${TDD_DIR}" "${BUILD_BIN}" "${LLVM_BIN}" 2>&1) || lit_exit=$?
     echo "${lit_output}" > "${lit_log}"
-    echo "(fallback: serial lit execution used)" >> "${lit_log}"
+    echo "(fallback: shell-based serial execution used)" >> "${lit_log}"
   fi
 fi
 
-# Parse lit summary: accumulate all failure categories.
+# Parse lit summary into disjoint failure categories.
+# Lit prints either "Failed: N" (simple mode) or "Unexpected Failures: N"
+# (detailed mode) for the same set of failures -- they are mutually exclusive
+# aggregate fields. We use whichever is present, preferring Unexpected Failures
+# as the more specific category.
+# Unresolved Tests, Unexpectedly Passed (XPASS), and Timed Out are always
+# disjoint from the above and from each other.
 pass_count=0
 fail_count=0
 timeout_count=0
 
-if [[ "${lit_output}" =~ Passed:[[:space:]]*([0-9]+) ]]; then
+if [[ "${lit_output}" =~ Passed[[:space:]]*:[[:space:]]*([0-9]+) ]]; then
   pass_count="${BASH_REMATCH[1]}"
 fi
-# Standard Failed count.
-if [[ "${lit_output}" =~ Failed:[[:space:]]*([0-9]+) ]]; then
-  (( fail_count += BASH_REMATCH[1] ))
-fi
-# Unexpected Failures (overrides Failed when present).
+
+# Failed and Unexpected Failures are mutually exclusive (same failures).
+unexpected_failures=0
+simple_failed=0
 if [[ "${lit_output}" =~ Unexpected\ Failures:[[:space:]]*([0-9]+) ]]; then
-  (( fail_count += BASH_REMATCH[1] ))
+  unexpected_failures="${BASH_REMATCH[1]}"
 fi
+if [[ "${lit_output}" =~ Failed:[[:space:]]*([0-9]+) ]]; then
+  simple_failed="${BASH_REMATCH[1]}"
+fi
+# Use the larger of the two (they should not both be non-zero, but be safe).
+# Note: (( expr )) returns exit code 1 when the result is 0, so we use || true
+# to avoid triggering set -e on zero-valued arithmetic.
+if (( unexpected_failures > simple_failed )); then
+  (( fail_count += unexpected_failures )) || true
+else
+  (( fail_count += simple_failed )) || true
+fi
+
 # Unresolved tests count as failures.
 if [[ "${lit_output}" =~ Unresolved\ Tests:[[:space:]]*([0-9]+) ]]; then
-  (( fail_count += BASH_REMATCH[1] ))
+  (( fail_count += BASH_REMATCH[1] )) || true
 fi
 # Unexpectedly Passed (XPASS) count as failures.
 if [[ "${lit_output}" =~ Unexpectedly\ Passed:[[:space:]]*([0-9]+) ]]; then
-  (( fail_count += BASH_REMATCH[1] ))
+  (( fail_count += BASH_REMATCH[1] )) || true
 fi
 # Timed Out tests.
 if [[ "${lit_output}" =~ Timed\ Out:[[:space:]]*([0-9]+) ]]; then
   timeout_count="${BASH_REMATCH[1]}"
-  (( fail_count += timeout_count ))
+  (( fail_count += timeout_count )) || true
 fi
 
 # Any non-zero lit exit is an unconditional failure.
