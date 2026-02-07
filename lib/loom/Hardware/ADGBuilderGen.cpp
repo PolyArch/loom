@@ -263,7 +263,7 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
        << ", %ctrl: " << tnStr << ")\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
-    if (def.queueDepth > 0)
+    if (def.queueDepth > 0 && def.hwType == HardwareType::TagTransparent)
       os << ", lqDepth = " << def.queueDepth;
     os << "]\n";
     os << "    {output_tag = [0 : " << tagType.toMLIR()
@@ -279,8 +279,6 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
        << "(%addr: index, %data_in: " << dTypeStr << ", %ctrl: none)\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
-    if (def.queueDepth > 0)
-      os << ", lqDepth = " << def.queueDepth;
     os << "]\n";
     os << "    -> (" << dTypeStr << ", index) {\n";
     os << "  %ld_d, %ld_a = handshake.load [%addr] %data_in, %ctrl : index, "
@@ -312,7 +310,7 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
        << ", %ctrl: " << tnStr << ")\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
-    if (def.queueDepth > 0)
+    if (def.queueDepth > 0 && def.hwType == HardwareType::TagTransparent)
       os << ", sqDepth = " << def.queueDepth;
     os << "]\n";
     os << "    {output_tag = [0 : " << tagType.toMLIR()
@@ -327,8 +325,6 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
        << "(%addr: index, %data: " << dTypeStr << ", %ctrl: none)\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
-    if (def.queueDepth > 0)
-      os << ", sqDepth = " << def.queueDepth;
     os << "]\n";
     os << "    -> (index, none) {\n";
     os << "  handshake.store [%addr] %data, %ctrl : index, " << dTypeStr
