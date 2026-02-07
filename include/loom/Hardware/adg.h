@@ -372,20 +372,15 @@ public:
 
   /// Implicitly converts to InstanceHandle (auto-instantiation).
   /// Creates the instance on first conversion; subsequent conversions return
-  /// the same handle.
+  /// the same handle. Copies share the same cached instance ID.
   operator InstanceHandle() const;
-
-  AddTagBuilder(const AddTagBuilder &) = delete;
-  AddTagBuilder &operator=(const AddTagBuilder &) = delete;
-  AddTagBuilder(AddTagBuilder &&) = default;
-  AddTagBuilder &operator=(AddTagBuilder &&) = default;
 
 private:
   friend class ADGBuilder;
   AddTagBuilder(ADGBuilder *builder, unsigned defId);
   ADGBuilder *builder_;
   unsigned defId_;
-  mutable int instanceId_ = -1;
+  std::shared_ptr<int> instanceId_;
 };
 
 /// Builder for configuring a map_tag operation (auto-instantiated).
@@ -398,20 +393,15 @@ public:
 
   /// Implicitly converts to InstanceHandle (auto-instantiation).
   /// Creates the instance on first conversion; subsequent conversions return
-  /// the same handle.
+  /// the same handle. Copies share the same cached instance ID.
   operator InstanceHandle() const;
-
-  MapTagBuilder(const MapTagBuilder &) = delete;
-  MapTagBuilder &operator=(const MapTagBuilder &) = delete;
-  MapTagBuilder(MapTagBuilder &&) = default;
-  MapTagBuilder &operator=(MapTagBuilder &&) = default;
 
 private:
   friend class ADGBuilder;
   MapTagBuilder(ADGBuilder *builder, unsigned defId);
   ADGBuilder *builder_;
   unsigned defId_;
-  mutable int instanceId_ = -1;
+  std::shared_ptr<int> instanceId_;
 };
 
 /// Builder for configuring a del_tag operation (auto-instantiated).
@@ -421,20 +411,15 @@ public:
 
   /// Implicitly converts to InstanceHandle (auto-instantiation).
   /// Creates the instance on first conversion; subsequent conversions return
-  /// the same handle.
+  /// the same handle. Copies share the same cached instance ID.
   operator InstanceHandle() const;
-
-  DelTagBuilder(const DelTagBuilder &) = delete;
-  DelTagBuilder &operator=(const DelTagBuilder &) = delete;
-  DelTagBuilder(DelTagBuilder &&) = default;
-  DelTagBuilder &operator=(DelTagBuilder &&) = default;
 
 private:
   friend class ADGBuilder;
   DelTagBuilder(ADGBuilder *builder, unsigned defId);
   ADGBuilder *builder_;
   unsigned defId_;
-  mutable int instanceId_ = -1;
+  std::shared_ptr<int> instanceId_;
 };
 
 //===----------------------------------------------------------------------===//

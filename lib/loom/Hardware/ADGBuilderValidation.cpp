@@ -6,6 +6,7 @@
 
 #include "ADGBuilderImpl.h"
 
+#include <climits>
 #include <functional>
 
 namespace loom {
@@ -398,28 +399,49 @@ ValidationResult ADGBuilder::validateADG() {
   }
 
   // Cycle detection using DFS on the internal connection graph.
-  // Note: bidirectional edges (A->B and B->A) are treated as two edges.
-  // True cycles (length > 2 or self-loops) are flagged.
+  // Reciprocal edges (A->B and B->A) are excluded from cycle detection since
+  // bidirectional inter-switch links are valid. Self-loops and cycles of
+  // length > 2 are flagged.
   {
     unsigned numInst = impl_->instances.size();
     std::vector<std::vector<unsigned>> adj(numInst);
+    std::set<std::pair<unsigned, unsigned>> edgeSet;
     for (const auto &conn : impl_->internalConns) {
-      if (conn.srcInst < numInst && conn.dstInst < numInst)
+      if (conn.srcInst < numInst && conn.dstInst < numInst) {
         adj[conn.srcInst].push_back(conn.dstInst);
+        edgeSet.insert({conn.srcInst, conn.dstInst});
+      }
+    }
+    // Build reciprocal pair set for quick lookup.
+    std::set<std::pair<unsigned, unsigned>> reciprocal;
+    for (const auto &e : edgeSet) {
+      if (e.first != e.second &&
+          edgeSet.count({e.second, e.first}))
+        reciprocal.insert(e);
     }
 
     // 0 = unvisited, 1 = in-stack, 2 = done
     std::vector<int> color(numInst, 0);
+    std::vector<unsigned> parent(numInst, UINT_MAX);
     bool hasCycle = false;
 
     std::function<void(unsigned)> dfs = [&](unsigned u) {
       color[u] = 1;
       for (unsigned v : adj[u]) {
+        if (v == u) {
+          // Self-loop is always a cycle.
+          hasCycle = true;
+          return;
+        }
         if (color[v] == 1) {
+          // Back-edge to in-stack node. Skip if it's just a reciprocal edge
+          // to the direct DFS parent.
+          if (v == parent[u] && reciprocal.count({u, v})) continue;
           hasCycle = true;
           return;
         }
         if (color[v] == 0) {
+          parent[v] = u;
           dfs(v);
           if (hasCycle) return;
         }

@@ -349,7 +349,7 @@ ExtMemoryBuilder::operator ExtMemoryHandle() const {
 //===----------------------------------------------------------------------===//
 
 AddTagBuilder::AddTagBuilder(ADGBuilder *builder, unsigned defId)
-    : builder_(builder), defId_(defId) {}
+    : builder_(builder), defId_(defId), instanceId_(std::make_shared<int>(-1)) {}
 
 AddTagBuilder &AddTagBuilder::setValueType(Type type) {
   builder_->impl_->addTagDefs[defId_].valueType = type;
@@ -362,13 +362,13 @@ AddTagBuilder &AddTagBuilder::setTagType(Type type) {
 }
 
 AddTagBuilder::operator InstanceHandle() const {
-  if (instanceId_ < 0) {
-    instanceId_ = (int)builder_->impl_->instances.size();
+  if (*instanceId_ < 0) {
+    *instanceId_ = (int)builder_->impl_->instances.size();
     builder_->impl_->instances.push_back(
         {ModuleKind::AddTag, defId_,
          builder_->impl_->addTagDefs[defId_].name});
   }
-  return InstanceHandle{(unsigned)instanceId_};
+  return InstanceHandle{(unsigned)*instanceId_};
 }
 
 //===----------------------------------------------------------------------===//
@@ -376,7 +376,7 @@ AddTagBuilder::operator InstanceHandle() const {
 //===----------------------------------------------------------------------===//
 
 MapTagBuilder::MapTagBuilder(ADGBuilder *builder, unsigned defId)
-    : builder_(builder), defId_(defId) {}
+    : builder_(builder), defId_(defId), instanceId_(std::make_shared<int>(-1)) {}
 
 MapTagBuilder &MapTagBuilder::setValueType(Type type) {
   builder_->impl_->mapTagDefs[defId_].valueType = type;
@@ -399,13 +399,13 @@ MapTagBuilder &MapTagBuilder::setTableSize(unsigned size) {
 }
 
 MapTagBuilder::operator InstanceHandle() const {
-  if (instanceId_ < 0) {
-    instanceId_ = (int)builder_->impl_->instances.size();
+  if (*instanceId_ < 0) {
+    *instanceId_ = (int)builder_->impl_->instances.size();
     builder_->impl_->instances.push_back(
         {ModuleKind::MapTag, defId_,
          builder_->impl_->mapTagDefs[defId_].name});
   }
-  return InstanceHandle{(unsigned)instanceId_};
+  return InstanceHandle{(unsigned)*instanceId_};
 }
 
 //===----------------------------------------------------------------------===//
@@ -413,7 +413,7 @@ MapTagBuilder::operator InstanceHandle() const {
 //===----------------------------------------------------------------------===//
 
 DelTagBuilder::DelTagBuilder(ADGBuilder *builder, unsigned defId)
-    : builder_(builder), defId_(defId) {}
+    : builder_(builder), defId_(defId), instanceId_(std::make_shared<int>(-1)) {}
 
 DelTagBuilder &DelTagBuilder::setInputType(Type type) {
   if (!type.isTagged()) {
@@ -425,13 +425,13 @@ DelTagBuilder &DelTagBuilder::setInputType(Type type) {
 }
 
 DelTagBuilder::operator InstanceHandle() const {
-  if (instanceId_ < 0) {
-    instanceId_ = (int)builder_->impl_->instances.size();
+  if (*instanceId_ < 0) {
+    *instanceId_ = (int)builder_->impl_->instances.size();
     builder_->impl_->instances.push_back(
         {ModuleKind::DelTag, defId_,
          builder_->impl_->delTagDefs[defId_].name});
   }
-  return InstanceHandle{(unsigned)instanceId_};
+  return InstanceHandle{(unsigned)*instanceId_};
 }
 
 } // namespace adg
