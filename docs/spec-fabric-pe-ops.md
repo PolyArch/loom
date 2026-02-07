@@ -12,6 +12,7 @@ This document is the **single source of truth** for operations allowed inside
 
 - `arith`
 - `math`
+- `llvm` (restricted subset)
 - `dataflow` (restricted subset)
 - `handshake` (restricted subset)
 - `fabric.pe` (nested)
@@ -63,6 +64,12 @@ This document is the **single source of truth** for operations allowed inside
 | `math.log2` | Logarithm base 2 |
 | `math.sin` | Sine |
 | `math.sqrt` | Square root |
+
+## llvm Dialect (1 operation)
+
+| Operation | Description |
+|-----------|-------------|
+| `llvm.intr.bitreverse` | Bit reversal (zero-cost in hardware: wire re-routing) |
 
 ## dataflow Dialect (4 operations)
 
@@ -136,6 +143,7 @@ A `fabric.pe` body must use operations from exactly one consumption group:
 **Full-consume/full-produce group:**
 - All `arith` operations
 - All `math` operations
+- `llvm.intr.bitreverse`
 - `handshake.load`, `handshake.store`, `handshake.constant`
 - `handshake.fork`, `handshake.join`, `handshake.sink`
 

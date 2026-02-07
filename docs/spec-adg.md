@@ -109,7 +109,7 @@ semantics.
 A typical ADG construction workflow:
 
 ```cpp
-#include <loom/adg.h>
+#include <loom/Hardware/adg.h>
 
 int main() {
     // Create builder
@@ -418,7 +418,7 @@ referenced by the generated output. The export functions copy required templates
 into the output directory.
 
 ```
-include/loom/
+include/loom/Hardware/
   adg.h                            # Public API header
 
 include/loom/Dialect/Fabric/

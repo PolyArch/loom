@@ -1,11 +1,11 @@
-//===-- LLVMToSCFConvert.cpp - LLVM to SCF conversion -------*- C++ -*-===//
+//===-- LLVMToSCFFunction.cpp - LLVM function conversion ------*- C++ -*-===//
 //
 // Part of the Loom project.
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements conversion of LLVM globals and functions into SCF,
-// memref, arith, and func dialects, using shared helper utilities.
+// This file implements conversion of LLVM functions into SCF, memref, arith,
+// and func dialects, using shared helper utilities.
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,79 +22,6 @@
 using namespace mlir;
 
 namespace loom::llvm_to_scf {
-
-LogicalResult convertGlobals(ModuleOp module, OpBuilder &builder,
-                             llvm::StringMap<ConvertedGlobal> &out) {
-  llvm::SmallVector<LLVM::GlobalOp, 8> globals;
-  for (auto global : module.getOps<LLVM::GlobalOp>())
-    globals.push_back(global);
-
-  for (LLVM::GlobalOp global : globals) {
-    if (global.getName() == "llvm.global.annotations") {
-      global.erase();
-      continue;
-    }
-    Attribute valueAttr = global.getValueAttr();
-    if (!valueAttr)
-      continue;
-
-    std::string originalName = global.getName().str();
-    std::string renamedName = originalName + ".llvm";
-    global.setSymName(renamedName);
-
-    SmallVector<int64_t, 4> dims;
-    Type scalar = GetScalarType(global.getType(), dims);
-    scalar = NormalizeScalarType(scalar, module.getContext());
-    if (!llvm::isa<IntegerType>(scalar) &&
-        !llvm::isa<FloatType>(scalar)) {
-      global.emitError("unsupported global element type");
-      return failure();
-    }
-
-    int64_t totalCount = 1;
-    for (int64_t dim : dims)
-      totalCount *= dim;
-
-    MemRefType memrefType =
-        MemRefType::get({totalCount}, scalar, MemRefLayoutAttrInterface(),
-                        global.getAddrSpaceAttr());
-
-    Attribute initAttr;
-    if (auto strAttr = llvm::dyn_cast<StringAttr>(valueAttr)) {
-      std::string data = strAttr.getValue().str();
-      SmallVector<int8_t, 16> bytes;
-      bytes.reserve(data.size());
-      for (char ch : data)
-        bytes.push_back(static_cast<int8_t>(ch));
-      auto tensorType =
-          RankedTensorType::get({static_cast<int64_t>(bytes.size())},
-                                IntegerType::get(module.getContext(), 8));
-      llvm::ArrayRef<int8_t> byteRef(bytes.data(), bytes.size());
-      initAttr = DenseElementsAttr::get(tensorType, byteRef);
-    } else if (auto denseAttr =
-                   llvm::dyn_cast<DenseElementsAttr>(valueAttr)) {
-      initAttr = denseAttr;
-    } else if (auto intAttr = llvm::dyn_cast<IntegerAttr>(valueAttr)) {
-      auto tensorType = RankedTensorType::get({1}, scalar);
-      initAttr = DenseElementsAttr::get(tensorType, {intAttr.getValue()});
-    } else if (auto floatAttr = llvm::dyn_cast<FloatAttr>(valueAttr)) {
-      auto tensorType = RankedTensorType::get({1}, scalar);
-      initAttr = DenseElementsAttr::get(tensorType, {floatAttr.getValue()});
-    } else {
-      global.emitError("unsupported global initializer");
-      return failure();
-    }
-
-    builder.setInsertionPoint(global);
-    auto newGlobal = memref::GlobalOp::create(builder,
-        global.getLoc(), originalName, StringAttr(), memrefType, initAttr,
-        global.getConstant(), global.getAlignmentAttr());
-    CopyLoomAnnotations(global.getOperation(), newGlobal.getOperation());
-    out[originalName] = {memrefType, global};
-    (void)newGlobal;
-  }
-  return success();
-}
 
 LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
                               OpBuilder &builder,
@@ -173,6 +100,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
   }
 
   DenseMap<Value, Value> valueMap;
+  VectorMapT vectorMap;
   DenseMap<Value, PointerInfo> pointerMap;
   DenseMap<Value, PointerInfo> pointerSlotValues;
   llvm::DenseSet<Value> pointerSlots;
@@ -239,6 +167,14 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
       Location loc = op.getLoc();
 
       if (auto constOp = llvm::dyn_cast<LLVM::ConstantOp>(op)) {
+        if (auto denseAttr =
+                llvm::dyn_cast<DenseElementsAttr>(constOp.getValue())) {
+          auto lanes = ScalarizeDenseConstant(builder, loc, denseAttr);
+          if (lanes.empty())
+            return constOp.emitError("unsupported vector constant"), failure();
+          vectorMap[constOp.getResult()] = std::move(lanes);
+          continue;
+        }
         auto value = ConvertLLVMConstant(builder, constOp);
         if (!value)
           return constOp.emitError("unsupported constant"), failure();
@@ -273,14 +209,90 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
       }
 
       if (auto poisonOp = llvm::dyn_cast<LLVM::PoisonOp>(op)) {
+        if (auto vecTy =
+                llvm::dyn_cast<VectorType>(poisonOp.getType())) {
+          Type elemTy = vecTy.getElementType();
+          int64_t n = vecTy.getNumElements();
+          SmallVector<Value, 8> lanes;
+          for (int64_t i = 0; i < n; ++i)
+            lanes.push_back(ub::PoisonOp::create(builder, loc, elemTy));
+          vectorMap[poisonOp.getResult()] = std::move(lanes);
+          continue;
+        }
         auto poison = ub::PoisonOp::create(builder, loc, poisonOp.getType());
         valueMap[poisonOp.getResult()] = poison.getResult();
         continue;
       }
 
       if (auto undefOp = llvm::dyn_cast<LLVM::UndefOp>(op)) {
+        if (auto vecTy =
+                llvm::dyn_cast<VectorType>(undefOp.getType())) {
+          Type elemTy = vecTy.getElementType();
+          int64_t n = vecTy.getNumElements();
+          SmallVector<Value, 8> lanes;
+          for (int64_t i = 0; i < n; ++i)
+            lanes.push_back(ub::PoisonOp::create(builder, loc, elemTy));
+          vectorMap[undefOp.getResult()] = std::move(lanes);
+          continue;
+        }
         auto poison = ub::PoisonOp::create(builder, loc, undefOp.getType());
         valueMap[undefOp.getResult()] = poison.getResult();
+        continue;
+      }
+
+      if (auto insertOp = llvm::dyn_cast<LLVM::InsertElementOp>(op)) {
+        auto *srcLanes = LookupVector(vectorMap, insertOp.getVector());
+        if (!srcLanes)
+          return insertOp.emitError("missing insertelement vector"), failure();
+        auto scalarVal = LookupValue(valueMap, insertOp.getValue());
+        if (!scalarVal)
+          return insertOp.emitError("missing insertelement value"), failure();
+        auto posVal = LookupValue(valueMap, insertOp.getPosition());
+        if (!posVal)
+          return insertOp.emitError("missing insertelement index"), failure();
+        auto idx = GetConstantIntValue(*posVal);
+        if (!idx)
+          return insertOp.emitError("non-constant insertelement index"),
+                 failure();
+        SmallVector<Value, 8> lanes(*srcLanes);
+        lanes[*idx] = *scalarVal;
+        vectorMap[insertOp.getResult()] = std::move(lanes);
+        continue;
+      }
+
+      if (auto extractOp = llvm::dyn_cast<LLVM::ExtractElementOp>(op)) {
+        auto *srcLanes = LookupVector(vectorMap, extractOp.getVector());
+        if (!srcLanes)
+          return extractOp.emitError("missing extractelement vector"),
+                 failure();
+        auto posVal = LookupValue(valueMap, extractOp.getPosition());
+        if (!posVal)
+          return extractOp.emitError("missing extractelement index"), failure();
+        auto idx = GetConstantIntValue(*posVal);
+        if (!idx)
+          return extractOp.emitError("non-constant extractelement index"),
+                 failure();
+        valueMap[extractOp.getResult()] = (*srcLanes)[*idx];
+        continue;
+      }
+
+      if (auto shuffleOp = llvm::dyn_cast<LLVM::ShuffleVectorOp>(op)) {
+        auto *v1Lanes = LookupVector(vectorMap, shuffleOp.getV1());
+        auto *v2Lanes = LookupVector(vectorMap, shuffleOp.getV2());
+        if (!v1Lanes || !v2Lanes)
+          return shuffleOp.emitError("missing shufflevector operand"),
+                 failure();
+        SmallVector<Value, 16> pool;
+        pool.append(v1Lanes->begin(), v1Lanes->end());
+        pool.append(v2Lanes->begin(), v2Lanes->end());
+        SmallVector<Value, 8> outLanes;
+        for (int32_t maskIdx : shuffleOp.getMask()) {
+          if (maskIdx < 0 || static_cast<size_t>(maskIdx) >= pool.size())
+            return shuffleOp.emitError("shufflevector mask out of range"),
+                   failure();
+          outLanes.push_back(pool[maskIdx]);
+        }
+        vectorMap[shuffleOp.getResult()] = std::move(outLanes);
         continue;
       }
 
@@ -460,6 +472,43 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           pointerMap[bitcastOp.getResult()] = info;
           continue;
         }
+        // vector<NxiK> -> iM bitcast: pack N i-K lanes into one iM integer
+        auto srcVecTy =
+            llvm::dyn_cast<VectorType>(bitcastOp.getArg().getType());
+        auto dstIntTy =
+            llvm::dyn_cast<IntegerType>(bitcastOp.getType());
+        if (srcVecTy && dstIntTy) {
+          auto *lanes = LookupVector(vectorMap, bitcastOp.getArg());
+          if (!lanes)
+            return bitcastOp.emitError("missing vector bitcast source"),
+                   failure();
+          unsigned laneWidth =
+              srcVecTy.getElementType().getIntOrFloatBitWidth();
+          Value result = arith::ConstantOp::create(builder, loc,
+              builder.getIntegerAttr(dstIntTy, 0));
+          for (size_t i = 0, e = lanes->size(); i < e; ++i) {
+            Value lane = (*lanes)[i];
+            if (lane.getType() != dstIntTy)
+              lane = arith::ExtUIOp::create(builder, loc, dstIntTy, lane);
+            if (i > 0) {
+              Value shift = arith::ConstantOp::create(builder, loc,
+                  builder.getIntegerAttr(dstIntTy, i * laneWidth));
+              lane = arith::ShLIOp::create(builder, loc, lane, shift);
+            }
+            result = arith::OrIOp::create(builder, loc, result, lane);
+          }
+          valueMap[bitcastOp.getResult()] = result;
+          continue;
+        }
+      }
+
+      if (auto freezeOp = llvm::dyn_cast<LLVM::FreezeOp>(op)) {
+        // freeze is a no-op for hardware: pass through the value
+        auto src = LookupValue(valueMap, freezeOp.getVal());
+        if (!src)
+          return freezeOp.emitError("missing freeze operand"), failure();
+        valueMap[freezeOp.getResult()] = *src;
+        continue;
       }
 
       if (auto loadOp = llvm::dyn_cast<LLVM::LoadOp>(op)) {
@@ -872,6 +921,21 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (callee.starts_with("llvm.fmuladd")) {
           if (callOp.getNumOperands() != 3)
             return callOp.emitError("invalid fmuladd operands"), failure();
+          // Vector fmuladd: per-lane math.fma
+          auto *lhsL = LookupVector(vectorMap, callOp.getOperand(0));
+          if (lhsL) {
+            auto *rhsL = LookupVector(vectorMap, callOp.getOperand(1));
+            auto *addL = LookupVector(vectorMap, callOp.getOperand(2));
+            if (!rhsL || !addL)
+              return callOp.emitError("missing vector fmuladd operand"),
+                     failure();
+            SmallVector<Value, 8> out;
+            for (size_t i = 0, e = lhsL->size(); i < e; ++i)
+              out.push_back(math::FmaOp::create(
+                  builder, loc, (*lhsL)[i], (*rhsL)[i], (*addL)[i]));
+            vectorMap[callOp->getResult(0)] = std::move(out);
+            continue;
+          }
           auto lhs = LookupValue(valueMap, callOp.getOperand(0));
           auto rhs = LookupValue(valueMap, callOp.getOperand(1));
           auto addend = LookupValue(valueMap, callOp.getOperand(2));
@@ -928,6 +992,15 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
         if (callee.starts_with("llvm.fabs")) {
           if (callOp.getNumOperands() != 1)
             return callOp.emitError("invalid fabs operands"), failure();
+          // Vector fabs: per-lane math.absf
+          auto *srcL = LookupVector(vectorMap, callOp.getOperand(0));
+          if (srcL) {
+            SmallVector<Value, 8> out;
+            for (Value v : *srcL)
+              out.push_back(math::AbsFOp::create(builder, loc, v));
+            vectorMap[callOp->getResult(0)] = std::move(out);
+            continue;
+          }
           auto operand = LookupValue(valueMap, callOp.getOperand(0));
           if (!operand)
             return callOp.emitError("missing fabs operand"), failure();
@@ -935,204 +1008,293 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
           valueMap[callOp->getResult(0)] = abs.getResult();
           continue;
         }
+        if (callee.starts_with("llvm.vector.reduce.xor")) {
+          if (callOp.getNumOperands() != 1)
+            return callOp.emitError("invalid reduce.xor operands"), failure();
+          auto *srcL = LookupVector(vectorMap, callOp.getOperand(0));
+          if (!srcL || srcL->empty())
+            return callOp.emitError("missing reduce.xor operand"), failure();
+          Value result = (*srcL)[0];
+          for (size_t i = 1, e = srcL->size(); i < e; ++i)
+            result = arith::XOrIOp::create(builder, loc, result, (*srcL)[i]);
+          valueMap[callOp->getResult(0)] = result;
+          continue;
+        }
+        if (callee.starts_with("llvm.vector.reduce.add")) {
+          if (callOp.getNumOperands() != 1)
+            return callOp.emitError("invalid reduce.add operands"), failure();
+          auto *srcL = LookupVector(vectorMap, callOp.getOperand(0));
+          if (!srcL || srcL->empty())
+            return callOp.emitError("missing reduce.add operand"), failure();
+          Value result = (*srcL)[0];
+          for (size_t i = 1, e = srcL->size(); i < e; ++i)
+            result = arith::AddIOp::create(builder, loc, result, (*srcL)[i]);
+          valueMap[callOp->getResult(0)] = result;
+          continue;
+        }
+        if (callee.starts_with("llvm.bitreverse")) {
+          if (callOp.getNumOperands() != 1)
+            return callOp.emitError("invalid bitreverse operands"), failure();
+          auto operand = LookupValue(valueMap, callOp.getOperand(0));
+          if (!operand)
+            return callOp.emitError("missing bitreverse operand"), failure();
+          auto bitrev = LLVM::BitReverseOp::create(builder, loc,
+                                                    operand->getType(),
+                                                    *operand);
+          valueMap[callOp->getResult(0)] = bitrev.getResult();
+          continue;
+        }
         return callOp.emitError("unsupported intrinsic"), failure();
       }
 
+      // --- Binary ops with vector scalarization support ---
+      // Handles both vector (per-lane) and scalar paths for binary ops.
+      auto convertBinaryOp = [&](Value llvmLhs, Value llvmRhs, Value llvmRes,
+                                 StringRef name,
+                                 function_ref<Value(Value, Value)> mkScalar)
+          -> LogicalResult {
+        if (llvm::isa<VectorType>(llvmRes.getType())) {
+          auto *lhsL = LookupVector(vectorMap, llvmLhs);
+          auto *rhsL = LookupVector(vectorMap, llvmRhs);
+          if (!lhsL || !rhsL) {
+            op.emitError("missing vector ") << name << " operand";
+            return failure();
+          }
+          SmallVector<Value, 8> out;
+          for (size_t i = 0, e = lhsL->size(); i < e; ++i)
+            out.push_back(mkScalar((*lhsL)[i], (*rhsL)[i]));
+          vectorMap[llvmRes] = std::move(out);
+          return success();
+        }
+        auto lhs = LookupValue(valueMap, llvmLhs);
+        auto rhs = LookupValue(valueMap, llvmRhs);
+        if (!lhs || !rhs) {
+          op.emitError("missing ") << name << " operand";
+          return failure();
+        }
+        valueMap[llvmRes] = mkScalar(*lhs, *rhs);
+        return success();
+      };
+
       if (auto addOp = llvm::dyn_cast<LLVM::AddOp>(op)) {
-        auto lhs = LookupValue(valueMap, addOp.getLhs());
-        auto rhs = LookupValue(valueMap, addOp.getRhs());
-        if (!lhs || !rhs)
-          return addOp.emitError("missing add operand"), failure();
-        auto add = arith::AddIOp::create(builder, loc, *lhs, *rhs);
-        valueMap[addOp.getResult()] = add.getResult();
+        if (failed(convertBinaryOp(addOp.getLhs(), addOp.getRhs(),
+                addOp.getResult(), "add",
+                [&](Value a, Value b) -> Value {
+                  return arith::AddIOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto subOp = llvm::dyn_cast<LLVM::SubOp>(op)) {
-        auto lhs = LookupValue(valueMap, subOp.getLhs());
-        auto rhs = LookupValue(valueMap, subOp.getRhs());
-        if (!lhs || !rhs)
-          return subOp.emitError("missing sub operand"), failure();
-        auto sub = arith::SubIOp::create(builder, loc, *lhs, *rhs);
-        valueMap[subOp.getResult()] = sub.getResult();
+        if (failed(convertBinaryOp(subOp.getLhs(), subOp.getRhs(),
+                subOp.getResult(), "sub",
+                [&](Value a, Value b) -> Value {
+                  return arith::SubIOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto mulOp = llvm::dyn_cast<LLVM::MulOp>(op)) {
-        auto lhs = LookupValue(valueMap, mulOp.getLhs());
-        auto rhs = LookupValue(valueMap, mulOp.getRhs());
-        if (!lhs || !rhs)
-          return mulOp.emitError("missing mul operand"), failure();
-        auto mul = arith::MulIOp::create(builder, loc, *lhs, *rhs);
-        valueMap[mulOp.getResult()] = mul.getResult();
+        if (failed(convertBinaryOp(mulOp.getLhs(), mulOp.getRhs(),
+                mulOp.getResult(), "mul",
+                [&](Value a, Value b) -> Value {
+                  return arith::MulIOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto shlOp = llvm::dyn_cast<LLVM::ShlOp>(op)) {
-        auto lhs = LookupValue(valueMap, shlOp.getLhs());
-        auto rhs = LookupValue(valueMap, shlOp.getRhs());
-        if (!lhs || !rhs)
-          return shlOp.emitError("missing shl operand"), failure();
-        auto shl = arith::ShLIOp::create(builder, loc, *lhs, *rhs);
-        valueMap[shlOp.getResult()] = shl.getResult();
+        if (failed(convertBinaryOp(shlOp.getLhs(), shlOp.getRhs(),
+                shlOp.getResult(), "shl",
+                [&](Value a, Value b) -> Value {
+                  return arith::ShLIOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto lshrOp = llvm::dyn_cast<LLVM::LShrOp>(op)) {
-        auto lhs = LookupValue(valueMap, lshrOp.getLhs());
-        auto rhs = LookupValue(valueMap, lshrOp.getRhs());
-        if (!lhs || !rhs)
-          return lshrOp.emitError("missing lshr operand"), failure();
-        auto shr = arith::ShRUIOp::create(builder, loc, *lhs, *rhs);
-        valueMap[lshrOp.getResult()] = shr.getResult();
+        if (failed(convertBinaryOp(lshrOp.getLhs(), lshrOp.getRhs(),
+                lshrOp.getResult(), "lshr",
+                [&](Value a, Value b) -> Value {
+                  return arith::ShRUIOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto ashrOp = llvm::dyn_cast<LLVM::AShrOp>(op)) {
-        auto lhs = LookupValue(valueMap, ashrOp.getLhs());
-        auto rhs = LookupValue(valueMap, ashrOp.getRhs());
-        if (!lhs || !rhs)
-          return ashrOp.emitError("missing ashr operand"), failure();
-        auto shr = arith::ShRSIOp::create(builder, loc, *lhs, *rhs);
-        valueMap[ashrOp.getResult()] = shr.getResult();
+        if (failed(convertBinaryOp(ashrOp.getLhs(), ashrOp.getRhs(),
+                ashrOp.getResult(), "ashr",
+                [&](Value a, Value b) -> Value {
+                  return arith::ShRSIOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto andOp = llvm::dyn_cast<LLVM::AndOp>(op)) {
-        auto lhs = LookupValue(valueMap, andOp.getLhs());
-        auto rhs = LookupValue(valueMap, andOp.getRhs());
-        if (!lhs || !rhs)
-          return andOp.emitError("missing and operand"), failure();
-        auto andv = arith::AndIOp::create(builder, loc, *lhs, *rhs);
-        valueMap[andOp.getResult()] = andv.getResult();
+        if (failed(convertBinaryOp(andOp.getLhs(), andOp.getRhs(),
+                andOp.getResult(), "and",
+                [&](Value a, Value b) -> Value {
+                  return arith::AndIOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto orOp = llvm::dyn_cast<LLVM::OrOp>(op)) {
-        auto lhs = LookupValue(valueMap, orOp.getLhs());
-        auto rhs = LookupValue(valueMap, orOp.getRhs());
-        if (!lhs || !rhs)
-          return orOp.emitError("missing or operand"), failure();
-        auto orv = arith::OrIOp::create(builder, loc, *lhs, *rhs);
-        valueMap[orOp.getResult()] = orv.getResult();
+        if (failed(convertBinaryOp(orOp.getLhs(), orOp.getRhs(),
+                orOp.getResult(), "or",
+                [&](Value a, Value b) -> Value {
+                  return arith::OrIOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto xorOp = llvm::dyn_cast<LLVM::XOrOp>(op)) {
-        auto lhs = LookupValue(valueMap, xorOp.getLhs());
-        auto rhs = LookupValue(valueMap, xorOp.getRhs());
-        if (!lhs || !rhs)
-          return xorOp.emitError("missing xor operand"), failure();
-        auto xorv = arith::XOrIOp::create(builder, loc, *lhs, *rhs);
-        valueMap[xorOp.getResult()] = xorv.getResult();
+        if (failed(convertBinaryOp(xorOp.getLhs(), xorOp.getRhs(),
+                xorOp.getResult(), "xor",
+                [&](Value a, Value b) -> Value {
+                  return arith::XOrIOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto faddOp = llvm::dyn_cast<LLVM::FAddOp>(op)) {
-        auto lhs = LookupValue(valueMap, faddOp.getLhs());
-        auto rhs = LookupValue(valueMap, faddOp.getRhs());
-        if (!lhs || !rhs)
-          return faddOp.emitError("missing fadd operand"), failure();
-        auto add = arith::AddFOp::create(builder, loc, *lhs, *rhs);
-        valueMap[faddOp.getResult()] = add.getResult();
+        if (failed(convertBinaryOp(faddOp.getLhs(), faddOp.getRhs(),
+                faddOp.getResult(), "fadd",
+                [&](Value a, Value b) -> Value {
+                  return arith::AddFOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto fnegOp = llvm::dyn_cast<LLVM::FNegOp>(op)) {
+        if (llvm::isa<VectorType>(fnegOp.getResult().getType())) {
+          auto *srcL = LookupVector(vectorMap, fnegOp.getOperand());
+          if (!srcL)
+            return fnegOp.emitError("missing vector fneg operand"), failure();
+          SmallVector<Value, 8> out;
+          for (Value v : *srcL)
+            out.push_back(arith::NegFOp::create(builder, loc, v));
+          vectorMap[fnegOp.getResult()] = std::move(out);
+          continue;
+        }
         auto operand = LookupValue(valueMap, fnegOp.getOperand());
         if (!operand)
           return fnegOp.emitError("missing fneg operand"), failure();
-        auto neg = arith::NegFOp::create(builder, loc, *operand);
-        valueMap[fnegOp.getResult()] = neg.getResult();
+        valueMap[fnegOp.getResult()] = arith::NegFOp::create(builder, loc,
+                                                              *operand);
         continue;
       }
 
       if (auto fsubOp = llvm::dyn_cast<LLVM::FSubOp>(op)) {
-        auto lhs = LookupValue(valueMap, fsubOp.getLhs());
-        auto rhs = LookupValue(valueMap, fsubOp.getRhs());
-        if (!lhs || !rhs)
-          return fsubOp.emitError("missing fsub operand"), failure();
-        auto sub = arith::SubFOp::create(builder, loc, *lhs, *rhs);
-        valueMap[fsubOp.getResult()] = sub.getResult();
+        if (failed(convertBinaryOp(fsubOp.getLhs(), fsubOp.getRhs(),
+                fsubOp.getResult(), "fsub",
+                [&](Value a, Value b) -> Value {
+                  return arith::SubFOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto fmulOp = llvm::dyn_cast<LLVM::FMulOp>(op)) {
-        auto lhs = LookupValue(valueMap, fmulOp.getLhs());
-        auto rhs = LookupValue(valueMap, fmulOp.getRhs());
-        if (!lhs || !rhs)
-          return fmulOp.emitError("missing fmul operand"), failure();
-        if (!llvm::isa<FloatType>(lhs->getType()) ||
-            !llvm::isa<FloatType>(rhs->getType()))
-          return fmulOp.emitError("fmul expects float operands"), failure();
-        auto mul = arith::MulFOp::create(builder, loc, *lhs, *rhs);
-        valueMap[fmulOp.getResult()] = mul.getResult();
+        if (failed(convertBinaryOp(fmulOp.getLhs(), fmulOp.getRhs(),
+                fmulOp.getResult(), "fmul",
+                [&](Value a, Value b) -> Value {
+                  return arith::MulFOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto fdivOp = llvm::dyn_cast<LLVM::FDivOp>(op)) {
-        auto lhs = LookupValue(valueMap, fdivOp.getLhs());
-        auto rhs = LookupValue(valueMap, fdivOp.getRhs());
-        if (!lhs || !rhs)
-          return fdivOp.emitError("missing fdiv operand"), failure();
-        auto div = arith::DivFOp::create(builder, loc, *lhs, *rhs);
-        valueMap[fdivOp.getResult()] = div.getResult();
+        if (failed(convertBinaryOp(fdivOp.getLhs(), fdivOp.getRhs(),
+                fdivOp.getResult(), "fdiv",
+                [&](Value a, Value b) -> Value {
+                  return arith::DivFOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto sdivOp = llvm::dyn_cast<LLVM::SDivOp>(op)) {
-        auto lhs = LookupValue(valueMap, sdivOp.getLhs());
-        auto rhs = LookupValue(valueMap, sdivOp.getRhs());
-        if (!lhs || !rhs)
-          return sdivOp.emitError("missing sdiv operand"), failure();
-        auto div = arith::DivSIOp::create(builder, loc, *lhs, *rhs);
-        valueMap[sdivOp.getResult()] = div.getResult();
+        if (failed(convertBinaryOp(sdivOp.getLhs(), sdivOp.getRhs(),
+                sdivOp.getResult(), "sdiv",
+                [&](Value a, Value b) -> Value {
+                  return arith::DivSIOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto udivOp = llvm::dyn_cast<LLVM::UDivOp>(op)) {
-        auto lhs = LookupValue(valueMap, udivOp.getLhs());
-        auto rhs = LookupValue(valueMap, udivOp.getRhs());
-        if (!lhs || !rhs)
-          return udivOp.emitError("missing udiv operand"), failure();
-        auto div = arith::DivUIOp::create(builder, loc, *lhs, *rhs);
-        valueMap[udivOp.getResult()] = div.getResult();
+        if (failed(convertBinaryOp(udivOp.getLhs(), udivOp.getRhs(),
+                udivOp.getResult(), "udiv",
+                [&](Value a, Value b) -> Value {
+                  return arith::DivUIOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto uremOp = llvm::dyn_cast<LLVM::URemOp>(op)) {
-        auto lhs = LookupValue(valueMap, uremOp.getLhs());
-        auto rhs = LookupValue(valueMap, uremOp.getRhs());
-        if (!lhs || !rhs)
-          return uremOp.emitError("missing urem operand"), failure();
-        auto rem = arith::RemUIOp::create(builder, loc, *lhs, *rhs);
-        valueMap[uremOp.getResult()] = rem.getResult();
+        if (failed(convertBinaryOp(uremOp.getLhs(), uremOp.getRhs(),
+                uremOp.getResult(), "urem",
+                [&](Value a, Value b) -> Value {
+                  return arith::RemUIOp::create(builder, loc, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto icmpOp = llvm::dyn_cast<LLVM::ICmpOp>(op)) {
-        auto lhs = LookupValue(valueMap, icmpOp.getLhs());
-        auto rhs = LookupValue(valueMap, icmpOp.getRhs());
-        if (!lhs || !rhs)
-          return icmpOp.emitError("missing icmp operand"), failure();
         auto pred = ConvertICmpPredicate(icmpOp.getPredicate());
-        auto cmp = arith::CmpIOp::create(builder, loc, pred, *lhs, *rhs);
-        valueMap[icmpOp.getResult()] = cmp.getResult();
+        if (failed(convertBinaryOp(icmpOp.getLhs(), icmpOp.getRhs(),
+                icmpOp.getResult(), "icmp",
+                [&](Value a, Value b) -> Value {
+                  return arith::CmpIOp::create(builder, loc, pred, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto fcmpOp = llvm::dyn_cast<LLVM::FCmpOp>(op)) {
-        auto lhs = LookupValue(valueMap, fcmpOp.getLhs());
-        auto rhs = LookupValue(valueMap, fcmpOp.getRhs());
-        if (!lhs || !rhs)
-          return fcmpOp.emitError("missing fcmp operand"), failure();
         auto pred = ConvertFCmpPredicate(fcmpOp.getPredicate());
-        auto cmp = arith::CmpFOp::create(builder, loc, pred, *lhs, *rhs);
-        valueMap[fcmpOp.getResult()] = cmp.getResult();
+        if (failed(convertBinaryOp(fcmpOp.getLhs(), fcmpOp.getRhs(),
+                fcmpOp.getResult(), "fcmp",
+                [&](Value a, Value b) -> Value {
+                  return arith::CmpFOp::create(builder, loc, pred, a, b);
+                })))
+          return failure();
         continue;
       }
 
       if (auto selectOp = llvm::dyn_cast<LLVM::SelectOp>(op)) {
+        // Vector select: per-lane arith.select
+        if (auto vecTy = llvm::dyn_cast<VectorType>(
+                selectOp.getResult().getType())) {
+          auto *condL = LookupVector(vectorMap, selectOp.getCondition());
+          auto *trueL = LookupVector(vectorMap, selectOp.getTrueValue());
+          auto *falseL = LookupVector(vectorMap, selectOp.getFalseValue());
+          if (!condL || !trueL || !falseL)
+            return selectOp.emitError("missing vector select operand"),
+                   failure();
+          SmallVector<Value, 8> out;
+          for (size_t i = 0, e = condL->size(); i < e; ++i)
+            out.push_back(arith::SelectOp::create(
+                builder, loc, (*condL)[i], (*trueL)[i], (*falseL)[i]));
+          vectorMap[selectOp.getResult()] = std::move(out);
+          continue;
+        }
+
         auto cond = LookupValue(valueMap, selectOp.getCondition());
         if (!cond)
           return selectOp.emitError("missing select condition"), failure();

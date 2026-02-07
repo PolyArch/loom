@@ -89,12 +89,19 @@ BuildMemsetFillValue(mlir::OpBuilder &builder, mlir::Location loc,
 mlir::Value ToIndexValue(mlir::OpBuilder &builder, mlir::Location loc,
                          mlir::Value value);
 
+using VectorMapT = llvm::DenseMap<mlir::Value, llvm::SmallVector<mlir::Value, 8>>;
+
 std::optional<mlir::Value>
 LookupValue(const llvm::DenseMap<mlir::Value, mlir::Value> &valueMap,
             mlir::Value key);
 std::optional<PointerInfo>
 LookupPointer(const llvm::DenseMap<mlir::Value, PointerInfo> &ptrMap,
               mlir::Value key);
+llvm::SmallVector<mlir::Value, 8> *LookupVector(VectorMapT &vectorMap,
+                                                 mlir::Value key);
+llvm::SmallVector<mlir::Value, 8>
+ScalarizeDenseConstant(mlir::OpBuilder &builder, mlir::Location loc,
+                       mlir::DenseElementsAttr attr);
 
 std::optional<mlir::Type> GuessPointerElementTypeFromValue(mlir::Value value);
 bool IsI8Type(mlir::Type type);

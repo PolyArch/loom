@@ -2,12 +2,14 @@ add_subdirectory(Dialect)
 add_subdirectory(Hardware)
 
 set(LOOM_CONVERSION_SOURCES
-  Conversion/LLVMToSCFConvert.cpp
+  Conversion/LLVMToSCFFunction.cpp
+  Conversion/LLVMToSCFGlobals.cpp
   Conversion/LLVMToSCFPass.cpp
   Conversion/LLVMToSCFSupport.cpp
   Conversion/SCFPostProcess.cpp
   Conversion/SCFToHandshake.cpp
-  Conversion/SCFToHandshakeConversion.cpp
+  Conversion/SCFToHandshakeAnalysis.cpp
+  Conversion/SCFToHandshakeConvert.cpp
   Conversion/SCFToHandshakeMemory.cpp
   Conversion/SCFToHandshakeSupport.cpp
   Conversion/HandshakeOptimize.cpp

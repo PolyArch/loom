@@ -13,12 +13,12 @@ For software-to-hardware place-and-route semantics, see
 ## Namespace and Headers
 
 ```cpp
-#include <loom/adg.h>
+#include <loom/Hardware/adg.h>
 
 using namespace loom::adg;
 ```
 
-The public API is contained in `<loom/adg.h>`. Implementation details are in
+The public API is contained in `<loom/Hardware/adg.h>`. Implementation details are in
 internal headers under `include/loom/Dialect/Fabric/`.
 
 ## Class: ADGBuilder

@@ -105,6 +105,53 @@ private:
   llvm::DenseMap<mlir::Operation *, mlir::Value> switchConds;
 };
 
+// --- Analysis helpers (used by both Analysis and Convert files) ---
+
+void copyLoomAnnotations(mlir::Operation *src, mlir::Operation *dst);
+std::optional<std::string> resolveSourcePath(mlir::Location loc);
+std::string demangleBaseName(llvm::StringRef name);
+bool readFile(llvm::StringRef path, std::string &out);
+bool extractFunctionSource(llvm::StringRef content, llvm::StringRef funcName,
+                           std::string &params, std::string &body);
+llvm::SmallVector<std::string, 8> extractParamNames(llvm::StringRef params);
+std::optional<std::string> extractReturnName(llvm::StringRef body);
+mlir::Value castToIndex(mlir::OpBuilder &builder, mlir::Location loc,
+                        mlir::Value value);
+mlir::Value castIndexToType(mlir::OpBuilder &builder, mlir::Location loc,
+                            mlir::Value value, mlir::Type targetType);
+
+struct StreamStepInfo {
+  int64_t constant = 0;
+  mlir::Value value;
+  bool isConst = false;
+  llvm::StringRef stepOp;
+};
+
+struct StreamWhileAttr {
+  int64_t ivIndex = -1;
+  llvm::StringRef stepOp;
+  llvm::StringRef stopCond;
+  bool cmpOnUpdate = false;
+};
+
+struct StreamWhileOperands {
+  mlir::Value init;
+  mlir::Value step;
+  mlir::Value bound;
+  int64_t stepConst = 0;
+  bool stepIsConst = false;
+  bool bodyInBefore = false;
+};
+
+std::optional<StreamWhileAttr> getStreamWhileAttr(mlir::scf::WhileOp op);
+mlir::LogicalResult analyzeStreamableWhile(mlir::scf::WhileOp op,
+                                           const StreamWhileAttr &attr,
+                                           StreamWhileOperands &result);
+bool isLocalToRegion(mlir::Value value, mlir::Region *region);
+ScfPath computeScfPath(mlir::Operation *op);
+
+// --- Other utilities ---
+
 mlir::LogicalResult inlineCallsInAccel(mlir::func::FuncOp func,
                                        mlir::SymbolTable &symbols);
 bool isAccelFunc(mlir::func::FuncOp func);

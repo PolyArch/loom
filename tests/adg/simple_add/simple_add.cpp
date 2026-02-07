@@ -9,7 +9,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <loom/adg.h>
+#include <loom/Hardware/adg.h>
 
 using namespace loom::adg;
 

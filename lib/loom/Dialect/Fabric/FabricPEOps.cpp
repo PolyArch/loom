@@ -496,7 +496,8 @@ LogicalResult PEOp::verify() {
       hasConstant = true;
     } else if (opName == "handshake.mux" || opName == "handshake.cmerge") {
       hasMux = true;
-    } else if (dialectName == "arith" || dialectName == "math") {
+    } else if (dialectName == "arith" || dialectName == "math" ||
+               opName == "llvm.intr.bitreverse") {
       hasArithMath = true;
       hasFullConsume = true;
     }
@@ -506,11 +507,10 @@ LogicalResult PEOp::verify() {
       dataflowCount++;
     }
 
-    if (isa<InstanceOp>(&op))
-      instanceCount++;
-
-    if (isa<InstanceOp>(&op))
+    if (isa<InstanceOp>(&op)) {
       hasInstance = true;
+      instanceCount++;
+    }
   }
 
   // COMP_PE_INSTANCE_ONLY_BODY: exactly one non-terminator and it's instance.

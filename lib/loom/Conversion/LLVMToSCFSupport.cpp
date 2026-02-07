@@ -33,13 +33,8 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
-#include "llvm/ADT/TypeSwitch.h"
-#include "llvm/Support/raw_ostream.h"
 
-#include <algorithm>
 #include <optional>
-#include <string>
-#include <utility>
 
 using namespace mlir;
 
@@ -211,6 +206,55 @@ LookupPointer(const DenseMap<Value, PointerInfo> &ptrMap, Value key) {
   if (it == ptrMap.end())
     return std::nullopt;
   return it->second;
+}
+
+SmallVector<Value, 8> *LookupVector(VectorMapT &vectorMap, Value key) {
+  auto it = vectorMap.find(key);
+  if (it == vectorMap.end())
+    return nullptr;
+  return &it->second;
+}
+
+SmallVector<Value, 8> ScalarizeDenseConstant(OpBuilder &builder, Location loc,
+                                             DenseElementsAttr attr) {
+  SmallVector<Value, 8> lanes;
+  auto vecTy = llvm::dyn_cast<VectorType>(attr.getType());
+  if (!vecTy)
+    return lanes;
+  Type elemTy = vecTy.getElementType();
+  if (attr.isSplat()) {
+    Value scalar;
+    if (auto intTy = llvm::dyn_cast<IntegerType>(elemTy)) {
+      auto val = attr.getSplatValue<APInt>();
+      scalar = arith::ConstantOp::create(
+          builder, loc, builder.getIntegerAttr(intTy, val));
+    } else if (auto floatTy = llvm::dyn_cast<FloatType>(elemTy)) {
+      auto val = attr.getSplatValue<APFloat>();
+      scalar = arith::ConstantOp::create(
+          builder, loc, builder.getFloatAttr(floatTy, val));
+    }
+    if (scalar) {
+      int64_t n = vecTy.getNumElements();
+      lanes.resize(n, scalar);
+    }
+    return lanes;
+  }
+  if (llvm::isa<IntegerType>(elemTy)) {
+    for (APInt val : attr.getValues<APInt>()) {
+      auto c = arith::ConstantOp::create(
+          builder, loc,
+          builder.getIntegerAttr(elemTy, val));
+      lanes.push_back(c);
+    }
+  } else if (llvm::isa<FloatType>(elemTy)) {
+    for (APFloat val : attr.getValues<APFloat>()) {
+      auto c = arith::ConstantOp::create(
+          builder, loc,
+          builder.getFloatAttr(elemTy, val));
+      lanes.push_back(c);
+    }
+  }
+  return lanes;
 }
 
 std::optional<Type> GuessPointerElementTypeFromValue(Value value);
@@ -460,12 +504,6 @@ InferPointerElementTypeFromCallSites(LLVM::LLVMFuncOp func,
   llvm::StringRef kLlvmSuffix(".llvm");
   if (funcName.ends_with(kLlvmSuffix))
     baseName = funcName.drop_back(kLlvmSuffix.size());
-  bool debug = baseName.contains("cdma") || baseName.contains("bisection_step");
-  if (debug) {
-    llvm::errs() << "scan callsites for " << baseName << " arg " << argIndex
-                 << "\n";
-  }
-
   std::optional<Type> inferredType;
   module.walk([&](LLVM::CallOp call) {
     if (inferredType)
@@ -474,24 +512,13 @@ InferPointerElementTypeFromCallSites(LLVM::LLVMFuncOp func,
     if (!calleeAttr)
       return;
     llvm::StringRef calleeName = calleeAttr.getValue();
-    if (debug) {
-      llvm::errs() << "  llvm.call callee " << calleeName << "\n";
-    }
     if (calleeName != funcName && calleeName != baseName)
       return;
-    if (debug) {
-      llvm::errs() << "  llvm.call match " << calleeName << "\n";
-    }
     if (argIndex >= call.getNumOperands())
       return;
     Value operand = call.getOperand(argIndex);
     if (!IsPointerType(operand.getType()))
       return;
-    if (debug) {
-      llvm::errs() << "    operand type=";
-      operand.getType().print(llvm::errs());
-      llvm::errs() << "\n";
-    }
     if (auto guessed = GuessPointerElementTypeFromValue(operand)) {
       inferredType = guessed;
       return;
@@ -507,24 +534,15 @@ InferPointerElementTypeFromCallSites(LLVM::LLVMFuncOp func,
   module.walk([&](func::CallOp call) {
     if (inferredType)
       return;
-    if (debug) {
-      llvm::errs() << "  func.call callee " << call.getCallee() << "\n";
-    }
     if (call.getCallee() != baseName)
       return;
-    if (debug) {
-      llvm::errs() << "  func.call match " << call.getCallee() << "\n";
-    }
     if (argIndex >= call.getNumOperands())
       return;
     Type argType = call.getOperand(argIndex).getType();
     if (auto memrefType = llvm::dyn_cast<MemRefType>(argType))
       inferredType = memrefType.getElementType();
   });
-  if (inferredType)
-    return inferredType;
-
-  return std::nullopt;
+  return inferredType;
 }
 
 MemRefType MakeMemRefType(Type elementType, Attribute memorySpace) {
