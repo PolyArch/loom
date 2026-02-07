@@ -6,3 +6,7 @@ temp
 .humanize*
 .vscode
 .cache
+
+# Test runtime artifacts
+tests/.results/
+tests/**/*.parallel.sh

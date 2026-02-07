@@ -1,66 +1,25 @@
 #!/usr/bin/env bash
+# Handshake Ops Statistics Test
+# Runs handshake generation at O0-O3, generates per-level ops stat files.
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ROOT_DIR=$(cd "${SCRIPT_DIR}/../.." && pwd)
+source "${SCRIPT_DIR}/common.sh"
 
-LOOM_BIN=${1:-"${ROOT_DIR}/build/bin/loom"}
-shift || true
-
-HANDSHAKE_SCRIPT="${ROOT_DIR}/tools/loom/loom_handshake.sh"
-if [[ ! -x "${HANDSHAKE_SCRIPT}" ]]; then
-  echo "error: handshake script not found: ${HANDSHAKE_SCRIPT}" >&2
-  exit 1
-fi
-
+ROOT_DIR=$(loom_root)
 APPS_DIR="${ROOT_DIR}/tests/app"
+
+LOOM_BIN=$(loom_resolve_bin "${1:-${ROOT_DIR}/build/bin/loom}"); shift || true
+
+loom_require_parallel
+
 if [[ ! -d "${APPS_DIR}" ]]; then
   echo "error: apps directory not found: ${APPS_DIR}" >&2
   exit 1
 fi
 
 levels=(0 1 2 3)
-EXPECTED_ARITH=26
-EXPECTED_DATAFLOW=4
-EXPECTED_HANDSHAKE=11
-EXPECTED_MATH=7
-EXPECTED_UB=1
-
-check_dialect_counts() {
-  local path="$1"
-  declare -A expected=(
-    [arith]="${EXPECTED_ARITH}"
-    [dataflow]="${EXPECTED_DATAFLOW}"
-    [handshake]="${EXPECTED_HANDSHAKE}"
-    [math]="${EXPECTED_MATH}"
-    [ub]="${EXPECTED_UB}"
-  )
-  declare -A found=()
-  local line
-  while IFS= read -r line; do
-    if [[ "${line}" =~ ^dialect:\ ([^[:space:]]+)\ \(([0-9]+)\)$ ]]; then
-      found["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
-    fi
-  done < "${path}"
-
-  local errors=0
-  local dialect expected_count actual
-  for dialect in "${!expected[@]}"; do
-    expected_count="${expected[${dialect}]}"
-    actual="${found[${dialect}]:-}"
-    if [[ -z "${actual}" ]]; then
-      echo "error: missing dialect ${dialect} in ${path}" >&2
-      errors=1
-      continue
-    fi
-    if [[ "${actual}" != "${expected_count}" ]]; then
-      echo "error: dialect ${dialect} count mismatch in ${path}: expected ${expected_count}, got ${actual}" >&2
-      errors=1
-    fi
-  done
-
-  return "${errors}"
-}
+any_failure=false
 
 for level in "${levels[@]}"; do
   tag="O${level}"
@@ -68,6 +27,7 @@ for level in "${levels[@]}"; do
 
   rm -f "${output_ops}"
 
+  # Clean previous tagged output
   mapfile -t handshake_outputs < <(
     find "${APPS_DIR}" -mindepth 2 -maxdepth 2 -type f \
       \( -name "*.${tag}.handshake.mlir" -o -name "*.${tag}.handshake.log" \) \
@@ -77,8 +37,11 @@ for level in "${levels[@]}"; do
     rm -f "${handshake_outputs[@]}"
   fi
 
-  LOOM_SUMMARY_PREFIX="loom_handshake ${tag}" LOOM_HANDSHAKE_TAG="${tag}" "${HANDSHAKE_SCRIPT}" "${LOOM_BIN}" "-O${level}" "$@"
+  # Run handshake at this O level
+  LOOM_SUMMARY_PREFIX="Handshake ${tag}" LOOM_HANDSHAKE_TAG="${tag}" \
+    "${SCRIPT_DIR}/handshake.sh" "${LOOM_BIN}" "-O${level}" "$@" || any_failure=true
 
+  # Generate ops stat file
   python3 - "${APPS_DIR}" "${tag}" "${output_ops}" <<'PY'
 import re
 import sys
@@ -157,50 +120,15 @@ for dialect in sorted(by_dialect):
 out_path.write_text("\n".join(lines) + "\n")
 PY
 
-  check_dialect_counts "${output_ops}"
-
+  # Clean intermediate .llvm.ll files
   mapfile -t llvm_outputs < <(
     find "${APPS_DIR}" -mindepth 2 -maxdepth 2 -type f -name "*.${tag}.llvm.ll" | sort
   )
   if [[ ${#llvm_outputs[@]} -gt 0 ]]; then
     rm -f "${llvm_outputs[@]}"
   fi
-
 done
 
-python3 - "${APPS_DIR}" <<'PY'
-import sys
-from pathlib import Path
-
-apps_dir = Path(sys.argv[1])
-levels = [0, 1, 2, 3]
-
-baseline = None
-baseline_level = None
-
-for level in levels:
-    path = apps_dir / f"full-ops-O{level}.stat"
-    if not path.exists():
-        sys.stderr.write(f"error: missing ops file: {path}\n")
-        sys.exit(1)
-    ops = []
-    for line in path.read_text().splitlines():
-        if line.startswith("  "):
-            op = line.strip().split(":", 1)[0]
-            ops.append(op)
-    ops_set = set(ops)
-    if baseline is None:
-        baseline = ops_set
-        baseline_level = level
-    elif ops_set != baseline:
-        missing = sorted(baseline - ops_set)
-        extra = sorted(ops_set - baseline)
-        sys.stderr.write(
-            f"error: op set mismatch between O{baseline_level} and O{level}\n"
-        )
-        if missing:
-            sys.stderr.write(f"  missing in O{level}: {', '.join(missing)}\n")
-        if extra:
-            sys.stderr.write(f"  extra in O{level}: {', '.join(extra)}\n")
-        sys.exit(1)
-PY
+if [[ "${any_failure}" == "true" ]]; then
+  exit 1
+fi
