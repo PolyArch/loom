@@ -5,7 +5,7 @@
 //===----------------------------------------------------------------------===//
 //
 // This header declares internal implementation details for the SCF-to-Handshake
-// lowering, including the HandshakeLowering class that manages value mapping,
+// conversion, including the HandshakeConversion class that manages value mapping,
 // memory access tracking, and control flow conversion from structured control
 // flow to dataflow operations.
 //
@@ -54,23 +54,23 @@ struct MemAccess {
   mlir::Value controlToken;
 };
 
-class HandshakeLowering {
+class HandshakeConversion {
 public:
-  HandshakeLowering(mlir::func::FuncOp func, mlir::AliasAnalysis &aa);
+  HandshakeConversion(mlir::func::FuncOp func, mlir::AliasAnalysis &aa);
   mlir::LogicalResult run();
 
 private:
   struct RegionState;
 
-  mlir::LogicalResult lowerOp(mlir::Operation *op, RegionState &state);
-  mlir::LogicalResult lowerFor(mlir::scf::ForOp op, RegionState &state);
-  mlir::LogicalResult lowerWhile(mlir::scf::WhileOp op, RegionState &state);
-  mlir::LogicalResult lowerIf(mlir::scf::IfOp op, RegionState &state);
-  mlir::LogicalResult lowerIndexSwitch(mlir::scf::IndexSwitchOp op,
-                                       RegionState &state);
-  mlir::LogicalResult lowerReturn(mlir::func::ReturnOp op, RegionState &state);
-  mlir::LogicalResult lowerLoad(mlir::memref::LoadOp op, RegionState &state);
-  mlir::LogicalResult lowerStore(mlir::memref::StoreOp op, RegionState &state);
+  mlir::LogicalResult convertOp(mlir::Operation *op, RegionState &state);
+  mlir::LogicalResult convertFor(mlir::scf::ForOp op, RegionState &state);
+  mlir::LogicalResult convertWhile(mlir::scf::WhileOp op, RegionState &state);
+  mlir::LogicalResult convertIf(mlir::scf::IfOp op, RegionState &state);
+  mlir::LogicalResult convertIndexSwitch(mlir::scf::IndexSwitchOp op,
+                                         RegionState &state);
+  mlir::LogicalResult convertReturn(mlir::func::ReturnOp op, RegionState &state);
+  mlir::LogicalResult convertLoad(mlir::memref::LoadOp op, RegionState &state);
+  mlir::LogicalResult convertStore(mlir::memref::StoreOp op, RegionState &state);
   mlir::Value mapValue(mlir::Value value, RegionState &state,
                        mlir::Location loc);
   mlir::Value getEntryToken(mlir::Location loc);

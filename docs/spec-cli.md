@@ -200,9 +200,9 @@ where `<loom-install>` is derived from the directory of the `loom` executable.
 
 After generating LLVM dialect MLIR, the tool runs two pass sequences:
 
-SCF lowering sequence:
+SCF conversion sequence:
 
-- `loom::createLowerLLVMToSCFPass()`
+- `loom::createConvertLLVMToSCFPass()`
 - `canonicalize`
 - `cse`
 - `mem2reg`
@@ -218,7 +218,7 @@ SCF lowering sequence:
 - `loom::createAttachLoopAnnotationsPass()`
 - `loom::createMarkWhileStreamablePass()`
 
-Handshake lowering sequence:
+Handshake conversion sequence:
 
 - `loom::createSCFToHandshakeDataflowPass()`
 - `canonicalize`
@@ -229,7 +229,7 @@ sequences complete successfully.
 
 ### Loom-Specific Passes
 
-- `loom::createLowerLLVMToSCFPass()`: Converts LLVM dialect to structured
+- `loom::createConvertLLVMToSCFPass()`: Converts LLVM dialect to structured
   control flow (SCF) using pattern-based rewriting.
 - `loom::createUpliftWhileToForPass()`: Converts `scf.while` loops that match
   canonical for-loop patterns into `scf.for` operations.
@@ -239,7 +239,7 @@ sequences complete successfully.
   `LOOM_PARALLEL`, `LOOM_UNROLL`, `LOOM_TRIPCOUNT`, `LOOM_REDUCE`, and
   `LOOM_MEMORY_BANK`. See [spec-pragma.md](./spec-pragma.md).
 - `loom::createMarkWhileStreamablePass()`: Analyzes `scf.while` loops to
-  determine if they can be lowered to streaming dataflow and marks them
+  determine if they can be converted to streaming dataflow and marks them
   accordingly.
 - `loom::createSCFToHandshakeDataflowPass()`: Converts SCF operations to
   Handshake dialect for dataflow execution on hardware. This pass consumes
@@ -301,14 +301,14 @@ Forward references:
 ## Exit Codes
 
 - `0`: Success.
-- `1`: Usage error, compilation failure, MLIR lowering failure, verification
+- `1`: Usage error, compilation failure, MLIR conversion failure, verification
   failure, or output/write failure.
 
 ## Related Documents
 
 - [spec-loom.md](./spec-loom.md): End-to-end Loom compilation and mapping pipeline
 - [spec-pragma.md](./spec-pragma.md): Loom pragma system specification
-- [spec-dataflow.md](./spec-dataflow.md): Dataflow dialect (lowering target)
+- [spec-dataflow.md](./spec-dataflow.md): Dataflow dialect (conversion target)
 - [spec-fabric.md](./spec-fabric.md): Fabric dialect overview
 - [spec-mapper.md](./spec-mapper.md): Mapper place-and-route bridge from Handshake to Fabric
 - [spec-mapper-model.md](./spec-mapper-model.md): Mapper data model and hard constraints

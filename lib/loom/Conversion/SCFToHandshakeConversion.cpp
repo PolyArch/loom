@@ -1,10 +1,10 @@
-//===-- SCFToHandshakeLowering.cpp - SCF to Handshake lowering --*- C++ -*-===//
+//===-- SCFToHandshakeConversion.cpp - SCF to Handshake conversion -*- C++ -*-//
 //
 // Part of the Loom project.
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements the core SCF-to-Handshake lowering logic. It converts
+// This file implements the core SCF-to-Handshake conversion logic. It converts
 // scf.for, scf.while, scf.if, and scf.index_switch operations to Handshake
 // dataflow operations using dataflow primitives (CarryOp, GateOp, InvariantOp,
 // StreamOp). It also handles memory loads/stores, value mapping across region
@@ -45,7 +45,7 @@ using loom::dataflow::GateOp;
 using loom::dataflow::InvariantOp;
 using loom::dataflow::StreamOp;
 
-struct HandshakeLowering::RegionState {
+struct HandshakeConversion::RegionState {
   mlir::Region *region = nullptr;
   RegionState *parent = nullptr;
   llvm::DenseMap<mlir::Value, mlir::Value> valueMap;
@@ -667,7 +667,7 @@ analyzeStreamableWhile(mlir::scf::WhileOp op, const StreamWhileAttr &attr,
     return op.emitError("loop step must be loop-invariant");
 
   if (!op.getResult(ivIndex).use_empty())
-    return op.emitError("induction result must be unused for stream lowering");
+    return op.emitError("induction result must be unused for stream conversion");
 
   operands.init = op.getOperands()[ivIndex];
   operands.stepIsConst = stepInfo.isConst;
@@ -883,12 +883,12 @@ static ScfPath computeScfPath(mlir::Operation *op) {
   return path;
 }
 
-HandshakeLowering::HandshakeLowering(mlir::func::FuncOp func,
+HandshakeConversion::HandshakeConversion(mlir::func::FuncOp func,
                                      mlir::AliasAnalysis &aa)
     : func(func), aliasAnalysis(aa), builder(func.getContext()),
       returnLoc(func.getLoc()) {}
 
-mlir::Value HandshakeLowering::makeConstant(mlir::Location loc,
+mlir::Value HandshakeConversion::makeConstant(mlir::Location loc,
                                             mlir::Attribute value,
                                             mlir::Type type,
                                             mlir::Value ctrlToken) {
@@ -902,17 +902,17 @@ mlir::Value HandshakeLowering::makeConstant(mlir::Location loc,
   return created->getResult(0);
 }
 
-mlir::Value HandshakeLowering::makeBool(mlir::Location loc, bool value) {
+mlir::Value HandshakeConversion::makeBool(mlir::Location loc, bool value) {
   return makeConstant(loc, builder.getBoolAttr(value), builder.getI1Type(),
                       getEntryToken(loc));
 }
 
-mlir::Value HandshakeLowering::makeDummyData(mlir::Location loc,
+mlir::Value HandshakeConversion::makeDummyData(mlir::Location loc,
                                              mlir::Type type) {
   return circt::handshake::SourceOp::create(builder, loc, type).getResult();
 }
 
-mlir::Value HandshakeLowering::getEntryToken(mlir::Location loc) {
+mlir::Value HandshakeConversion::getEntryToken(mlir::Location loc) {
   if (!entryToken)
     entryToken =
         circt::handshake::SourceOp::create(builder, loc, builder.getNoneType())
@@ -920,7 +920,7 @@ mlir::Value HandshakeLowering::getEntryToken(mlir::Location loc) {
   return entryToken;
 }
 
-void HandshakeLowering::assignHandshakeNames() {
+void HandshakeConversion::assignHandshakeNames() {
   unsigned argCount = func.getFunctionType().getNumInputs();
   unsigned resCount = func.getFunctionType().getNumResults();
 
@@ -994,7 +994,7 @@ void HandshakeLowering::assignHandshakeNames() {
   handshakeFunc->setAttr("resNames", builder.getArrayAttr(resAttrs));
 }
 
-mlir::Value HandshakeLowering::mapValue(mlir::Value value, RegionState &state,
+mlir::Value HandshakeConversion::mapValue(mlir::Value value, RegionState &state,
                                         mlir::Location loc) {
   if (!value)
     return value;
@@ -1023,7 +1023,7 @@ mlir::Value HandshakeLowering::mapValue(mlir::Value value, RegionState &state,
   return value;
 }
 
-void HandshakeLowering::updateInvariantCond(RegionState &state,
+void HandshakeConversion::updateInvariantCond(RegionState &state,
                                             mlir::Value cond) {
   if (!state.pendingCond)
     return;
@@ -1033,7 +1033,7 @@ void HandshakeLowering::updateInvariantCond(RegionState &state,
   state.pendingCond = false;
 }
 
-mlir::LogicalResult HandshakeLowering::lowerReturn(mlir::func::ReturnOp op,
+mlir::LogicalResult HandshakeConversion::convertReturn(mlir::func::ReturnOp op,
                                                    RegionState &state) {
   if (sawReturn)
     return op.emitError("multiple func.return in accel function");
@@ -1044,7 +1044,7 @@ mlir::LogicalResult HandshakeLowering::lowerReturn(mlir::func::ReturnOp op,
   return mlir::success();
 }
 
-mlir::LogicalResult HandshakeLowering::lowerLoad(mlir::memref::LoadOp op,
+mlir::LogicalResult HandshakeConversion::convertLoad(mlir::memref::LoadOp op,
                                                  RegionState &state) {
   mlir::Location loc = op.getLoc();
   llvm::SmallVector<mlir::Value, 4> addrOperands;
@@ -1125,7 +1125,7 @@ mlir::LogicalResult HandshakeLowering::lowerLoad(mlir::memref::LoadOp op,
   return mlir::success();
 }
 
-mlir::LogicalResult HandshakeLowering::lowerStore(mlir::memref::StoreOp op,
+mlir::LogicalResult HandshakeConversion::convertStore(mlir::memref::StoreOp op,
                                                   RegionState &state) {
   mlir::Location loc = op.getLoc();
   llvm::SmallVector<mlir::Value, 4> addrOperands;
@@ -1194,7 +1194,7 @@ mlir::LogicalResult HandshakeLowering::lowerStore(mlir::memref::StoreOp op,
   return mlir::success();
 }
 
-mlir::LogicalResult HandshakeLowering::lowerFor(mlir::scf::ForOp op,
+mlir::LogicalResult HandshakeConversion::convertFor(mlir::scf::ForOp op,
                                                 RegionState &state) {
   mlir::Location loc = op.getLoc();
   mlir::Value lower = mapValue(op.getLowerBound(), state, loc);
@@ -1260,7 +1260,7 @@ mlir::LogicalResult HandshakeLowering::lowerFor(mlir::scf::ForOp op,
         yieldValues.push_back(mapValue(operand, bodyState, yield.getLoc()));
       break;
     }
-    if (mlir::failed(lowerOp(&nested, bodyState)))
+    if (mlir::failed(convertOp(&nested, bodyState)))
       return mlir::failure();
   }
 
@@ -1277,7 +1277,7 @@ mlir::LogicalResult HandshakeLowering::lowerFor(mlir::scf::ForOp op,
   return mlir::success();
 }
 
-mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
+mlir::LogicalResult HandshakeConversion::convertWhile(mlir::scf::WhileOp op,
                                                   RegionState &state) {
   mlir::Location loc = op.getLoc();
 
@@ -1394,7 +1394,7 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
             yieldValues.push_back(mapValue(operand, bodyState, yield.getLoc()));
           break;
         }
-        if (mlir::failed(lowerOp(&nested, bodyState)))
+        if (mlir::failed(convertOp(&nested, bodyState)))
           return mlir::failure();
       }
 
@@ -1466,7 +1466,7 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
         condArgs.push_back(mapValue(operand, beforeState, condition.getLoc()));
       break;
     }
-    if (mlir::failed(lowerOp(&nested, beforeState)))
+    if (mlir::failed(convertOp(&nested, beforeState)))
       return mlir::failure();
   }
 
@@ -1520,7 +1520,7 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
         yieldValues.push_back(mapValue(operand, afterState, yield.getLoc()));
       break;
     }
-    if (mlir::failed(lowerOp(&nested, afterState)))
+    if (mlir::failed(convertOp(&nested, afterState)))
       return mlir::failure();
   }
 
@@ -1537,7 +1537,7 @@ mlir::LogicalResult HandshakeLowering::lowerWhile(mlir::scf::WhileOp op,
   return mlir::success();
 }
 
-mlir::LogicalResult HandshakeLowering::lowerIf(mlir::scf::IfOp op,
+mlir::LogicalResult HandshakeConversion::convertIf(mlir::scf::IfOp op,
                                                RegionState &state) {
   mlir::Location loc = op.getLoc();
   mlir::Value condValue = mapValue(op.getCondition(), state, loc);
@@ -1565,7 +1565,7 @@ mlir::LogicalResult HandshakeLowering::lowerIf(mlir::scf::IfOp op,
         thenValues.push_back(mapValue(operand, thenState, yield.getLoc()));
       break;
     }
-    if (mlir::failed(lowerOp(&nested, thenState)))
+    if (mlir::failed(convertOp(&nested, thenState)))
       return mlir::failure();
   }
 
@@ -1585,7 +1585,7 @@ mlir::LogicalResult HandshakeLowering::lowerIf(mlir::scf::IfOp op,
           elseValues.push_back(mapValue(operand, elseState, yield.getLoc()));
         break;
       }
-      if (mlir::failed(lowerOp(&nested, elseState)))
+      if (mlir::failed(convertOp(&nested, elseState)))
         return mlir::failure();
     }
   }
@@ -1612,7 +1612,7 @@ mlir::LogicalResult HandshakeLowering::lowerIf(mlir::scf::IfOp op,
   return mlir::success();
 }
 
-mlir::LogicalResult HandshakeLowering::lowerIndexSwitch(
+mlir::LogicalResult HandshakeConversion::convertIndexSwitch(
     mlir::scf::IndexSwitchOp op, RegionState &state) {
   mlir::Location loc = op.getLoc();
   mlir::Value indexValue = mapValue(op.getArg(), state, loc);
@@ -1654,7 +1654,7 @@ mlir::LogicalResult HandshakeLowering::lowerIndexSwitch(
           caseValues.push_back(mapValue(operand, caseState, yield.getLoc()));
         break;
       }
-      if (mlir::failed(lowerOp(&nested, caseState)))
+      if (mlir::failed(convertOp(&nested, caseState)))
         return mlir::failure();
     }
 
@@ -1677,7 +1677,7 @@ mlir::LogicalResult HandshakeLowering::lowerIndexSwitch(
         defaultValues.push_back(mapValue(operand, defaultState, yield.getLoc()));
       break;
     }
-    if (mlir::failed(lowerOp(&nested, defaultState)))
+    if (mlir::failed(convertOp(&nested, defaultState)))
       return mlir::failure();
   }
 
@@ -1710,22 +1710,22 @@ mlir::LogicalResult HandshakeLowering::lowerIndexSwitch(
   return mlir::success();
 }
 
-mlir::LogicalResult HandshakeLowering::lowerOp(mlir::Operation *op,
+mlir::LogicalResult HandshakeConversion::convertOp(mlir::Operation *op,
                                                RegionState &state) {
   if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op))
-    return lowerFor(forOp, state);
+    return convertFor(forOp, state);
   if (auto whileOp = mlir::dyn_cast<mlir::scf::WhileOp>(op))
-    return lowerWhile(whileOp, state);
+    return convertWhile(whileOp, state);
   if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(op))
-    return lowerIf(ifOp, state);
+    return convertIf(ifOp, state);
   if (auto switchOp = mlir::dyn_cast<mlir::scf::IndexSwitchOp>(op))
-    return lowerIndexSwitch(switchOp, state);
+    return convertIndexSwitch(switchOp, state);
   if (auto ret = mlir::dyn_cast<mlir::func::ReturnOp>(op))
-    return lowerReturn(ret, state);
+    return convertReturn(ret, state);
   if (auto load = mlir::dyn_cast<mlir::memref::LoadOp>(op))
-    return lowerLoad(load, state);
+    return convertLoad(load, state);
   if (auto store = mlir::dyn_cast<mlir::memref::StoreOp>(op))
-    return lowerStore(store, state);
+    return convertStore(store, state);
   if (auto castOp = mlir::dyn_cast<mlir::memref::CastOp>(op)) {
     mlir::Value mapped = mapValue(castOp.getSource(), state, op->getLoc());
     state.valueMap[castOp.getResult()] = mapped;
@@ -1775,7 +1775,7 @@ mlir::LogicalResult HandshakeLowering::lowerOp(mlir::Operation *op,
     return mlir::success();
   }
   if (auto dimOp = mlir::dyn_cast<mlir::memref::DimOp>(op)) {
-    return dimOp.emitError("memref.dim must be lowered before handshake");
+    return dimOp.emitError("memref.dim must be converted before handshake");
   }
   if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(op)) {
     llvm::SmallVector<mlir::Value, 4> args;
@@ -1813,13 +1813,13 @@ mlir::LogicalResult HandshakeLowering::lowerOp(mlir::Operation *op,
 
   if (auto *dialect = op->getDialect()) {
     if (dialect->getNamespace() == "memref")
-      return op->emitError("memref op must be lowered before handshake");
+      return op->emitError("memref op must be converted before handshake");
   }
-  op->emitError("unsupported op in SCF to Handshake lowering");
+  op->emitError("unsupported op in SCF to Handshake conversion");
   return mlir::failure();
 }
 
-void HandshakeLowering::insertForks() {
+void HandshakeConversion::insertForks() {
   mlir::Block *block = handshakeFunc.getBodyBlock();
   llvm::SmallVector<mlir::Value, 16> values;
   for (mlir::BlockArgument arg : block->getArguments())
@@ -1856,7 +1856,7 @@ void HandshakeLowering::insertForks() {
   }
 }
 
-mlir::LogicalResult HandshakeLowering::run() {
+mlir::LogicalResult HandshakeConversion::run() {
   builder.setInsertionPointAfter(func);
   auto originalType = func.getFunctionType();
   llvm::SmallVector<mlir::Type, 8> inputTypes;
@@ -1905,7 +1905,7 @@ mlir::LogicalResult HandshakeLowering::run() {
 
   mlir::Block &bodyBlock = func.getBody().front();
   for (mlir::Operation &op : bodyBlock) {
-    if (mlir::failed(lowerOp(&op, state)))
+    if (mlir::failed(convertOp(&op, state)))
       return mlir::failure();
   }
 

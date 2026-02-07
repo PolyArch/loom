@@ -8,7 +8,7 @@
 // clang frontend invocation with the Loom MLIR pipeline. It compiles C/C++
 // sources to LLVM IR, imports to MLIR LLVM dialect, applies annotation
 // extraction (global annotations, loop markers, intrinsic annotations), runs
-// the LLVM-to-SCF lowering, SCF post-processing, and SCF-to-Handshake
+// the LLVM-to-SCF conversion, SCF post-processing, and SCF-to-Handshake
 // conversion to produce hardware-focused dataflow IR.
 //
 //===----------------------------------------------------------------------===//
@@ -1029,7 +1029,7 @@ int main(int argc, char **argv) {
     return 1;
 
   mlir::PassManager pass_manager(&mlir_context);
-  pass_manager.addPass(loom::createLowerLLVMToSCFPass());
+  pass_manager.addPass(loom::createConvertLLVMToSCFPass());
   pass_manager.addPass(mlir::createCanonicalizerPass());
   pass_manager.addPass(mlir::createCSEPass());
   pass_manager.addPass(mlir::createMem2Reg());
@@ -1045,7 +1045,7 @@ int main(int argc, char **argv) {
   pass_manager.addPass(loom::createAttachLoopAnnotationsPass());
   pass_manager.addPass(loom::createMarkWhileStreamablePass());
   if (failed(pass_manager.run(*mlir_module))) {
-    llvm::errs() << "error: failed to lower to scf stage\n";
+    llvm::errs() << "error: failed to convert to scf stage\n";
     return 1;
   }
 
@@ -1078,7 +1078,7 @@ int main(int argc, char **argv) {
   handshake_passes.addPass(mlir::createCSEPass());
 
   if (failed(handshake_passes.run(*mlir_module))) {
-    llvm::errs() << "error: failed to lower to handshake stage\n";
+    llvm::errs() << "error: failed to convert to handshake stage\n";
     return 1;
   }
 

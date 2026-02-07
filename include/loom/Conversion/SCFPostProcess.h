@@ -7,7 +7,7 @@
 // This header declares passes for post-processing SCF IR, including uplifting
 // scf.while loops to scf.for when possible, attaching loop annotations from
 // Loom pragma markers to their corresponding loop operations, and annotating
-// streamable scf.while loops for dataflow lowering.
+// streamable scf.while loops for dataflow conversion.
 //
 //===----------------------------------------------------------------------===//
 

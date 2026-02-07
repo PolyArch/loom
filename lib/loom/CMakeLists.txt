@@ -7,7 +7,7 @@ set(LOOM_CONVERSION_SOURCES
   Conversion/LLVMToSCFSupport.cpp
   Conversion/SCFPostProcess.cpp
   Conversion/SCFToHandshake.cpp
-  Conversion/SCFToHandshakeLowering.cpp
+  Conversion/SCFToHandshakeConversion.cpp
   Conversion/SCFToHandshakeMemory.cpp
   Conversion/SCFToHandshakeSupport.cpp
   Conversion/HandshakeOptimize.cpp

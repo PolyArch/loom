@@ -5,13 +5,11 @@
 //===----------------------------------------------------------------------===//
 //
 // This file wires the LLVM-to-SCF conversion helpers into an MLIR pass and
-// drives the lowering for all eligible LLVM functions and globals.
+// drives the conversion for all eligible LLVM functions and globals.
 //
 //===----------------------------------------------------------------------===//
 
 #include "loom/Conversion/LLVMToSCF.h"
-#include "loom/Conversion/LLVMToSCFConvert.h"
-#include "loom/Conversion/LLVMToSCFSupport.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -23,12 +21,12 @@ using namespace mlir;
 
 namespace loom::llvm_to_scf {
 
-class LowerLLVMToSCFPass
-    : public PassWrapper<LowerLLVMToSCFPass, OperationPass<ModuleOp>> {
+class ConvertLLVMToSCFPass
+    : public PassWrapper<ConvertLLVMToSCFPass, OperationPass<ModuleOp>> {
 public:
-  StringRef getArgument() const final { return "loom-lower-llvm-to-scf"; }
+  StringRef getArgument() const final { return "loom-convert-llvm-to-scf"; }
   StringRef getDescription() const final {
-    return "Lower LLVM dialect to scf-stage dialects";
+    return "Convert LLVM dialect to scf-stage dialects";
   }
 
   void runOnOperation() override {
@@ -76,8 +74,8 @@ public:
 
 namespace loom {
 
-std::unique_ptr<mlir::Pass> createLowerLLVMToSCFPass() {
-  return std::make_unique<llvm_to_scf::LowerLLVMToSCFPass>();
+std::unique_ptr<mlir::Pass> createConvertLLVMToSCFPass() {
+  return std::make_unique<llvm_to_scf::ConvertLLVMToSCFPass>();
 }
 
 } // namespace loom

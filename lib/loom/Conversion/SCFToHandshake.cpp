@@ -6,7 +6,7 @@
 //
 // This file implements the SCF-to-Handshake dataflow conversion pass. It
 // identifies accelerator-marked functions, inlines callees, invokes the
-// HandshakeLowering class to convert them to Handshake dialect, and rewrites
+// HandshakeConversion class to convert them to Handshake dialect, and rewrites
 // host-side calls to use ESI channel-based accelerator instances.
 //
 //===----------------------------------------------------------------------===//
@@ -37,7 +37,7 @@ namespace {
 
 using namespace mlir;
 
-using loom::detail::HandshakeLowering;
+using loom::detail::HandshakeConversion;
 using loom::detail::inlineCallsInAccel;
 using loom::detail::isAccelFunc;
 using loom::detail::getMemTargetHint;
@@ -613,7 +613,7 @@ struct DimReplacement {
   DimKey key;
 };
 
-static mlir::LogicalResult lowerMemrefDims(
+static mlir::LogicalResult convertMemrefDims(
     func::FuncOp func, llvm::SmallVector<func::CallOp, 8> &calls) {
   llvm::SmallVector<mlir::memref::DimOp, 8> dimOps;
   llvm::DenseMap<mlir::Operation *, DimReplacement> replacements;
@@ -1078,7 +1078,7 @@ static mlir::LogicalResult prepareAccelMemrefs(ModuleOp module,
 
   if (mlir::failed(liftExternalMemrefs(module, func, calls)))
     return mlir::failure();
-  if (mlir::failed(lowerMemrefDims(func, calls)))
+  if (mlir::failed(convertMemrefDims(func, calls)))
     return mlir::failure();
   if (mlir::failed(mergeAliasGroups(func, calls)))
     return mlir::failure();
@@ -1124,8 +1124,8 @@ struct SCFToHandshakeDataflowPass
 
     for (func::FuncOp func : accelFuncs) {
       AliasAnalysis aliasAnalysis(func);
-      HandshakeLowering lowering(func, aliasAnalysis);
-      if (failed(lowering.run())) {
+      HandshakeConversion converter(func, aliasAnalysis);
+      if (failed(converter.run())) {
         signalPassFailure();
         return;
       }

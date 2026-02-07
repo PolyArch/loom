@@ -9,7 +9,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "loom/Conversion/LLVMToSCFConvert.h"
+#include "loom/Conversion/LLVMToSCF.h"
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -1409,7 +1409,7 @@ LogicalResult convertFunction(ModuleOp module, LLVM::LLVMFuncOp func,
                     LLVM::DbgLabelOp>(op))
         continue;
 
-      op.emitError("unsupported LLVM operation in scf lowering: ")
+      op.emitError("unsupported LLVM operation in scf conversion: ")
           << op.getName();
       return failure();
     }

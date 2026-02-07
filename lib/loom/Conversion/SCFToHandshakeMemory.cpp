@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements memory control logic for the SCF-to-Handshake lowering.
+// This file implements memory control logic for the SCF-to-Handshake conversion.
 // It builds memory interface operations (ExternalMemoryOp, MemoryOp), connects
 // load/store operations to memory ports, and constructs control token chains
 // that enforce memory ordering through alias analysis and SCF path tracking.
@@ -384,7 +384,7 @@ static void attachGlobalConstant(mlir::ModuleOp module,
 
 } // namespace
 
-void HandshakeLowering::finalizeMemory() {
+void HandshakeConversion::finalizeMemory() {
   mlir::OpBuilder::InsertionGuard guard(builder);
   mlir::Operation *returnOp = nullptr;
   handshakeFunc.walk([&](circt::handshake::ReturnOp ret) {
@@ -930,7 +930,7 @@ private:
 
 } // namespace
 
-mlir::LogicalResult HandshakeLowering::buildMemoryControl() {
+mlir::LogicalResult HandshakeConversion::buildMemoryControl() {
   memoryDoneToken = entryToken;
   if (memAccesses.empty())
     return mlir::success();
@@ -1056,7 +1056,7 @@ mlir::LogicalResult HandshakeLowering::buildMemoryControl() {
   return mlir::success();
 }
 
-mlir::LogicalResult HandshakeLowering::verifyMemoryControl() {
+mlir::LogicalResult HandshakeConversion::verifyMemoryControl() {
   llvm::DenseMap<mlir::Value, mlir::Operation *> memTokens;
   memTokens.reserve(memAccesses.size());
   for (MemAccess &access : memAccesses) {

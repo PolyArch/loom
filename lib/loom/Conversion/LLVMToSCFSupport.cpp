@@ -4,13 +4,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file provides shared helper routines for the LLVM-to-SCF lowering,
+// This file provides shared helper routines for the LLVM-to-SCF conversion,
 // including pointer tracking, type normalization, annotation handling, and
-// intrinsic lowering helpers used by the conversion implementation.
+// intrinsic conversion helpers used by the conversion implementation.
 //
 //===----------------------------------------------------------------------===//
 
-#include "loom/Conversion/LLVMToSCFSupport.h"
+#include "loom/Conversion/LLVMToSCF.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"

@@ -1473,7 +1473,7 @@ struct MarkWhileStreamablePass
     : public PassWrapper<MarkWhileStreamablePass, OperationPass<ModuleOp>> {
   StringRef getArgument() const final { return "loom-mark-while-streamable"; }
   StringRef getDescription() const final {
-    return "Annotate streamable scf.while loops for dataflow lowering";
+    return "Annotate streamable scf.while loops for dataflow conversion";
   }
 
   void runOnOperation() override {
