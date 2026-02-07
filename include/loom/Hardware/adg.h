@@ -535,6 +535,14 @@ public:
   MeshResult buildMesh(int rows, int cols, PEHandle peTemplate,
                        SwitchHandle swTemplate, Topology topology);
 
+  // --- Query ---
+
+  /// Return all module-level input port names (in creation order).
+  std::vector<std::string> getModuleInputNames() const;
+
+  /// Return all module-level output port names (in creation order).
+  std::vector<std::string> getModuleOutputNames() const;
+
   // --- Validation and export ---
 
   /// Validate the constructed ADG.

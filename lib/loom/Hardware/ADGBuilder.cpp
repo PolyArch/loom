@@ -640,6 +640,26 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
 // Validation is in ADGBuilderValidation.cpp.
 
 //===----------------------------------------------------------------------===//
+// Query
+//===----------------------------------------------------------------------===//
+
+std::vector<std::string> ADGBuilder::getModuleInputNames() const {
+  std::vector<std::string> names;
+  for (const auto &p : impl_->ports)
+    if (p.isInput)
+      names.push_back(p.name);
+  return names;
+}
+
+std::vector<std::string> ADGBuilder::getModuleOutputNames() const {
+  std::vector<std::string> names;
+  for (const auto &p : impl_->ports)
+    if (!p.isInput)
+      names.push_back(p.name);
+  return names;
+}
+
+//===----------------------------------------------------------------------===//
 // Export
 //===----------------------------------------------------------------------===//
 

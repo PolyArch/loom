@@ -14,6 +14,7 @@
 
 #include <loom/Hardware/adg.h>
 
+#include <algorithm>
 #include <cassert>
 #include <fstream>
 #include <regex>
@@ -165,6 +166,23 @@ int main() {
   assert(mlirCount(mlir, "fabric.switch") == 16 && "expected 16 switch instances");
   assert(mlirCount(mlir, "sym_name = \"pe_") == 16 && "expected pe_ sym_names");
   assert(countInterSwitchEdges(mlir) == 24 && "expected 24 inter-switch edges");
+
+  // Verify wraparound ports via builder query API.
+  auto outNames = builder.getModuleOutputNames();
+  auto inNames = builder.getModuleInputNames();
+  auto countMatching = [](const std::vector<std::string> &names,
+                          const std::string &substr) -> unsigned {
+    return std::count_if(names.begin(), names.end(),
+        [&](const std::string &n) { return n.find(substr) != std::string::npos; });
+  };
+  // Torus 4x4: 4 EW wraps (one per row), 4 NS wraps (one per column).
+  assert(countMatching(outNames, "wrap_ew") == 4 && "expected 4 EW wrap outputs");
+  assert(countMatching(inNames, "wrap_ew") == 4 && "expected 4 EW wrap inputs");
+  assert(countMatching(outNames, "wrap_ns") == 4 && "expected 4 NS wrap outputs");
+  assert(countMatching(inNames, "wrap_ns") == 4 && "expected 4 NS wrap inputs");
+  // No diagonal wraps for standard torus.
+  assert(countMatching(outNames, "wrap_se") == 0 && "no SE wraps in torus");
+  assert(countMatching(outNames, "wrap_sw") == 0 && "no SW wraps in torus");
 
   return 0;
 }

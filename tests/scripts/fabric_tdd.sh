@@ -34,45 +34,69 @@ lit_exit=0
 lit_output=$(python3 "${LIT_PY}" -v "${TDD_DIR}" 2>&1) || lit_exit=$?
 echo "${lit_output}" > "${lit_log}"
 
-# Parse lit summary
+# Detect multiprocessing permission failure (SemLock/PermissionError) and retry
+# with serial mode (-j 1) as fallback for constrained environments.
+if (( lit_exit != 0 )); then
+  if echo "${lit_output}" | grep -qE "SemLock|PermissionError"; then
+    echo "warning: lit multiprocessing failed, retrying with -j 1" >&2
+    lit_exit=0
+    lit_output=$(python3 "${LIT_PY}" -v -j 1 "${TDD_DIR}" 2>&1) || lit_exit=$?
+    echo "${lit_output}" > "${lit_log}"
+    echo "(fallback: serial lit execution used)" >> "${lit_log}"
+  fi
+fi
+
+# Parse lit summary: accumulate all failure categories.
 pass_count=0
 fail_count=0
+timeout_count=0
 
 if [[ "${lit_output}" =~ Passed:[[:space:]]*([0-9]+) ]]; then
   pass_count="${BASH_REMATCH[1]}"
 fi
+# Standard Failed count.
 if [[ "${lit_output}" =~ Failed:[[:space:]]*([0-9]+) ]]; then
-  fail_count="${BASH_REMATCH[1]}"
+  (( fail_count += BASH_REMATCH[1] ))
 fi
-# Also check for unexpected failures / errors
+# Unexpected Failures (overrides Failed when present).
 if [[ "${lit_output}" =~ Unexpected\ Failures:[[:space:]]*([0-9]+) ]]; then
-  fail_count="${BASH_REMATCH[1]}"
+  (( fail_count += BASH_REMATCH[1] ))
+fi
+# Unresolved tests count as failures.
+if [[ "${lit_output}" =~ Unresolved\ Tests:[[:space:]]*([0-9]+) ]]; then
+  (( fail_count += BASH_REMATCH[1] ))
+fi
+# Unexpectedly Passed (XPASS) count as failures.
+if [[ "${lit_output}" =~ Unexpectedly\ Passed:[[:space:]]*([0-9]+) ]]; then
+  (( fail_count += BASH_REMATCH[1] ))
+fi
+# Timed Out tests.
+if [[ "${lit_output}" =~ Timed\ Out:[[:space:]]*([0-9]+) ]]; then
+  timeout_count="${BASH_REMATCH[1]}"
+  (( fail_count += timeout_count ))
 fi
 
-# If lit exited non-zero but we parsed zero results, lit itself crashed.
-if (( lit_exit != 0 && pass_count == 0 && fail_count == 0 )); then
-  echo "error: lit crashed (exit ${lit_exit}) with no test results" >&2
+# Any non-zero lit exit is an unconditional failure.
+if (( lit_exit != 0 )); then
+  # If we didn't parse any failure categories, report as lit-crash.
+  if (( fail_count == 0 )); then
+    fail_count=1
+    pass_count=0
+  fi
+  echo "error: lit exited with code ${lit_exit}" >&2
   echo "  see ${lit_log} for details" >&2
-  # Write a failed result so the harness reports the failure.
-  LOOM_TOTAL=1
-  LOOM_PASS=0
-  LOOM_FAIL=1
-  LOOM_TIMEOUT=0
-  LOOM_FAILED_NAMES=("lit-crash")
-  loom_write_result "Fabric TDD"
-  exit 1
 fi
 
 LOOM_TOTAL=$((pass_count + fail_count))
 LOOM_PASS=${pass_count}
 LOOM_FAIL=${fail_count}
-LOOM_TIMEOUT=0
+LOOM_TIMEOUT=${timeout_count}
 LOOM_FAILED_NAMES=()
 
 # Print failures only
 if (( fail_count > 0 )); then
   echo "Fabric TDD: ${fail_count} failed"
-  echo "${lit_output}" | grep "^FAIL:" | sed 's/^FAIL: [^:]*:: /  /; s/ (.*//'
+  echo "${lit_output}" | grep -E "^(FAIL|UNRESOLVED|TIMEOUT|XPASS):" | sed 's/^[A-Z]*: [^:]*:: /  /; s/ (.*//' || true
 fi
 
 loom_write_result "Fabric TDD"
