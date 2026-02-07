@@ -198,6 +198,9 @@ ValidationResult ADGBuilder::validateADG() {
     if (hasTagged && hasNative)
       addError("COMP_PE_MIXED_INTERFACE",
                "PE has mixed native and tagged ports", loc);
+    if (pe.interface == InterfaceCategory::Tagged && !hasTagged)
+      addError("COMP_PE_TAGGED_INTERFACE_NATIVE_PORTS",
+               "PE has Tagged interface but all ports are native", loc);
   }
 
   // Check for empty module body.

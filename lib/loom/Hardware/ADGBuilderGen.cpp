@@ -704,26 +704,38 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         }
         os << "\n";
 
-        // Emit hw_params [latency, interval, lqDepth, sqDepth] if applicable.
-        bool hasHwParams = false;
-        std::ostringstream hwParams;
-        if (inst.kind == ModuleKind::LoadPE) {
-          auto &lpDef = loadPEDefs[inst.defIdx];
-          if (lpDef.queueDepth > 0 &&
-              lpDef.hwType == HardwareType::TagTransparent) {
-            hwParams << "lqDepth = " << lpDef.queueDepth;
-            hasHwParams = true;
+        // Emit hw_params [latency, interval, lqDepth, sqDepth].
+        {
+          int16_t latMin = 1, latTyp = 1, latMax = 1;
+          int16_t intMin = 1, intTyp = 1, intMax = 1;
+          if (inst.kind == ModuleKind::PE) {
+            auto &pd = peDefs[inst.defIdx];
+            latMin = pd.latMin; latTyp = pd.latTyp; latMax = pd.latMax;
+            intMin = pd.intMin; intTyp = pd.intTyp; intMax = pd.intMax;
+          } else if (inst.kind == ModuleKind::ConstantPE) {
+            auto &cd = constantPEDefs[inst.defIdx];
+            latMin = cd.latMin; latTyp = cd.latTyp; latMax = cd.latMax;
+            intMin = cd.intMin; intTyp = cd.intTyp; intMax = cd.intMax;
           }
-        } else if (inst.kind == ModuleKind::StorePE) {
-          auto &spDef = storePEDefs[inst.defIdx];
-          if (spDef.queueDepth > 0 &&
-              spDef.hwType == HardwareType::TagTransparent) {
-            hwParams << "sqDepth = " << spDef.queueDepth;
-            hasHwParams = true;
+          os << "      [latency = ["
+             << latMin << " : i16, " << latTyp << " : i16, "
+             << latMax << " : i16]"
+             << ", interval = ["
+             << intMin << " : i16, " << intTyp << " : i16, "
+             << intMax << " : i16]";
+          if (inst.kind == ModuleKind::LoadPE) {
+            auto &lpDef = loadPEDefs[inst.defIdx];
+            if (lpDef.queueDepth > 0 &&
+                lpDef.hwType == HardwareType::TagTransparent)
+              os << ", lqDepth = " << lpDef.queueDepth;
+          } else if (inst.kind == ModuleKind::StorePE) {
+            auto &spDef = storePEDefs[inst.defIdx];
+            if (spDef.queueDepth > 0 &&
+                spDef.hwType == HardwareType::TagTransparent)
+              os << ", sqDepth = " << spDef.queueDepth;
           }
+          os << "]\n";
         }
-        if (hasHwParams)
-          os << "      [" << hwParams.str() << "]\n";
 
         // Emit runtime_config {output_tag} if applicable (TagOverwrite mode).
         bool hasOutputTag = false;
