@@ -92,16 +92,15 @@ fi
 if [[ "${lit_output}" =~ Unexpectedly\ Passed:[[:space:]]*([0-9]+) ]]; then
   (( fail_count += BASH_REMATCH[1] )) || true
 fi
-# Timed Out tests.
+# Timed Out tests (tracked separately, not added to fail_count).
 if [[ "${lit_output}" =~ Timed\ Out:[[:space:]]*([0-9]+) ]]; then
   timeout_count="${BASH_REMATCH[1]}"
-  (( fail_count += timeout_count )) || true
 fi
 
 # Any non-zero lit exit is an unconditional failure.
 if (( lit_exit != 0 )); then
   # If we didn't parse any failure categories, report as lit-crash.
-  if (( fail_count == 0 )); then
+  if (( fail_count == 0 && timeout_count == 0 )); then
     fail_count=1
     pass_count=0
   fi
@@ -109,20 +108,20 @@ if (( lit_exit != 0 )); then
   echo "  see ${lit_log} for details" >&2
 fi
 
-LOOM_TOTAL=$((pass_count + fail_count))
+LOOM_TOTAL=$((pass_count + fail_count + timeout_count))
 LOOM_PASS=${pass_count}
 LOOM_FAIL=${fail_count}
 LOOM_TIMEOUT=${timeout_count}
 LOOM_FAILED_NAMES=()
 
 # Print failures only
-if (( fail_count > 0 )); then
-  echo "Fabric TDD: ${fail_count} failed"
+if (( fail_count > 0 || timeout_count > 0 )); then
+  echo "Fabric TDD: ${fail_count} failed, ${timeout_count} timed out"
   echo "${lit_output}" | grep -E "^(FAIL|UNRESOLVED|TIMEOUT|XPASS):" | sed 's/^[A-Z]*: [^:]*:: /  /; s/ (.*//' || true
 fi
 
 loom_write_result "Fabric TDD"
 
-if (( LOOM_FAIL > 0 )); then
+if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
   exit 1
 fi

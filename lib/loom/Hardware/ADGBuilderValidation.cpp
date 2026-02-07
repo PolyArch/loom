@@ -74,6 +74,11 @@ ValidationResult ADGBuilder::validateADG() {
         addError("COMP_TEMPORAL_SW_TABLE_SHAPE",
                  "connectivity_table row count != num_outputs", loc);
       for (size_t r = 0; r < ts.connectivity.size(); ++r) {
+        if (ts.connectivity[r].size() != ts.numIn)
+          addError("COMP_TEMPORAL_SW_TABLE_SHAPE",
+                   "connectivity_table column count != num_inputs in row " +
+                       std::to_string(r),
+                   loc);
         bool hasOne = false;
         for (bool v : ts.connectivity[r]) if (v) hasOne = true;
         if (!hasOne)
