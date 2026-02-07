@@ -2,9 +2,10 @@
 // CHECK: COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING
 
 // Mode B (enable_share_operand_buffer = true) requires operand_buffer_size.
-fabric.temporal_pe @tpe_bad(%in: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
+fabric.temporal_pe @tpe_bad(%in: !dataflow.tagged<i32, i4>)
   [num_register = 0, num_instruction = 2, reg_fifo_depth = 0,
-   enable_share_operand_buffer = true] {
+   enable_share_operand_buffer = true]
+  -> (!dataflow.tagged<i32, i4>) {
   fabric.pe @fu0(%a: i32) -> (i32) {
     %r = arith.addi %a, %a : i32
     fabric.yield %r : i32

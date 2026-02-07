@@ -9,7 +9,8 @@ fabric.module @test(
     %ctrl: !dataflow.tagged<none, i4>
 ) -> (!dataflow.tagged<i32, i4>, !dataflow.tagged<index, i4>) {
   %d, %a = fabric.pe %addr, %data, %ctrl
-      [lqDepth = 4, output_tag = [0 : i4, 0 : i4]]
+      [lqDepth = 4]
+      {output_tag = [0 : i4, 0 : i4]}
       : (!dataflow.tagged<index, i4>, !dataflow.tagged<i32, i4>,
          !dataflow.tagged<none, i4>)
       -> (!dataflow.tagged<i32, i4>, !dataflow.tagged<index, i4>) {

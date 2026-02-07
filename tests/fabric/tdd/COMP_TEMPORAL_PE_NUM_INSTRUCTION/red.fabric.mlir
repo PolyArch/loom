@@ -2,8 +2,9 @@
 // CHECK: COMP_TEMPORAL_PE_NUM_INSTRUCTION
 
 // num_instruction = 0 violates the >= 1 requirement.
-fabric.temporal_pe @tpe_bad(%in: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
-  [num_register = 0, num_instruction = 0, reg_fifo_depth = 0] {
+fabric.temporal_pe @tpe_bad(%in: !dataflow.tagged<i32, i4>)
+  [num_register = 0, num_instruction = 0, reg_fifo_depth = 0]
+  -> (!dataflow.tagged<i32, i4>) {
   fabric.pe @fu0(%a: i32) -> (i32) {
     %r = arith.addi %a, %a : i32
     fabric.yield %r : i32

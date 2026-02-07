@@ -101,11 +101,6 @@ static ParseResult parseSwitchHwParams(OpAsmParser &parser,
         return failure();
       result.addAttribute(
           SwitchOp::getConnectivityTableAttrName(result.name), attr);
-    } else if (keyword == "route_table") {
-      DenseI8ArrayAttr attr;
-      if (parser.parseCustomAttributeWithFallback(attr))
-        return failure();
-      result.addAttribute(SwitchOp::getRouteTableAttrName(result.name), attr);
     } else {
       return parser.emitError(parser.getCurrentLocation(),
                               "unexpected keyword '")
@@ -135,6 +130,18 @@ ParseResult SwitchOp::parse(OpAsmParser &parser, OperationState &result) {
   // Parse optional [hw_params].
   if (parseSwitchHwParams(parser, result))
     return failure();
+
+  // Parse optional {route_table = [...]}.
+  if (succeeded(parser.parseOptionalLBrace())) {
+    if (parser.parseKeyword("route_table") || parser.parseEqual())
+      return failure();
+    DenseI8ArrayAttr attr;
+    if (parser.parseCustomAttributeWithFallback(attr))
+      return failure();
+    result.addAttribute(SwitchOp::getRouteTableAttrName(result.name), attr);
+    if (parser.parseRBrace())
+      return failure();
+  }
 
   if (isNamed) {
     // Named form: parse `: (types) -> (types)` and store as function_type.
@@ -184,23 +191,17 @@ void SwitchOp::print(OpAsmPrinter &p) {
     p << " @" << *getSymName();
 
   // Print [hw_params] if any are present.
-  bool hasCt = getConnectivityTable().has_value();
-  bool hasRt = getRouteTable().has_value();
-  if (hasCt || hasRt) {
-    p << " [";
-    bool needComma = false;
-    if (hasCt) {
-      p << "connectivity_table = ";
-      p.printAttribute(getConnectivityTableAttr());
-      needComma = true;
-    }
-    if (hasRt) {
-      if (needComma)
-        p << ", ";
-      p << "route_table = ";
-      p.printAttribute(getRouteTableAttr());
-    }
+  if (getConnectivityTable().has_value()) {
+    p << " [connectivity_table = ";
+    p.printAttribute(getConnectivityTableAttr());
     p << "]";
+  }
+
+  // Print optional {route_table = [...]}.
+  if (getRouteTable().has_value()) {
+    p << " {route_table = ";
+    p.printAttribute(getRouteTableAttr());
+    p << "}";
   }
 
   if (isNamed) {
@@ -497,28 +498,67 @@ LogicalResult TemporalSwOp::verify() {
             connected.insert({o, i});
 
       for (auto [slotIdx, slotAttr] : llvm::enumerate(*rt)) {
-        auto slotArray = dyn_cast<ArrayAttr>(slotAttr);
-        if (!slotArray)
+        auto strAttr = dyn_cast<StringAttr>(slotAttr);
+        if (!strAttr)
           continue;
-        // Each slot is an array of route entries. A route entry is an array
-        // [output_idx, input_idx, ...] or a DenseI8ArrayAttr.
-        for (auto routeAttr : slotArray) {
-          if (auto routeArray = dyn_cast<ArrayAttr>(routeAttr)) {
-            if (routeArray.size() >= 2) {
-              auto outAttr = dyn_cast<IntegerAttr>(routeArray[0]);
-              auto inAttr = dyn_cast<IntegerAttr>(routeArray[1]);
-              if (outAttr && inAttr) {
-                unsigned outIdx = outAttr.getInt();
-                unsigned inIdx = inAttr.getInt();
-                if (!connected.contains({outIdx, inIdx}))
-                  return emitOpError("[COMP_TEMPORAL_SW_ROUTE_ILLEGAL] "
-                                     "route_table slot ")
-                         << slotIdx << " routes output " << outIdx
-                         << " from input " << inIdx
-                         << " which is not connected";
-              }
-            }
-          }
+        StringRef slot = strAttr.getValue();
+
+        // Skip invalid slots.
+        if (slot.contains("invalid"))
+          continue;
+
+        // Skip hex format (cannot validate without decoding).
+        if (slot.starts_with("0x"))
+          continue;
+
+        // Parse human-readable format: "route_table[N]: when(tag=T) O[out]<-I[in], ..."
+        // Extract route pairs "O[out]<-I[in]".
+        size_t routeStart = slot.find(')');
+        if (routeStart == StringRef::npos)
+          continue;
+        StringRef routes = slot.substr(routeStart + 1).ltrim();
+
+        // Parse each "O[out]<-I[in]" pair.
+        while (!routes.empty()) {
+          // Find "O[" pattern.
+          size_t oPos = routes.find("O[");
+          if (oPos == StringRef::npos)
+            break;
+          routes = routes.substr(oPos + 2);
+
+          // Parse output index.
+          size_t oBracket = routes.find(']');
+          if (oBracket == StringRef::npos)
+            break;
+          unsigned outIdx;
+          if (routes.substr(0, oBracket).getAsInteger(10, outIdx))
+            break;
+
+          // Find "I[" pattern.
+          routes = routes.substr(oBracket + 1);
+          size_t iPos = routes.find("I[");
+          if (iPos == StringRef::npos)
+            break;
+          routes = routes.substr(iPos + 2);
+
+          // Parse input index.
+          size_t iBracket = routes.find(']');
+          if (iBracket == StringRef::npos)
+            break;
+          unsigned inIdx;
+          if (routes.substr(0, iBracket).getAsInteger(10, inIdx))
+            break;
+
+          // Validate connection.
+          if (!connected.contains({outIdx, inIdx}))
+            return emitOpError("[COMP_TEMPORAL_SW_ROUTE_ILLEGAL] "
+                               "route_table slot ")
+                   << slotIdx << " routes output " << outIdx
+                   << " from input " << inIdx
+                   << " which is not connected";
+
+          // Advance past this route.
+          routes = routes.substr(iBracket + 1);
         }
       }
     }

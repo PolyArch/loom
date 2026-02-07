@@ -4,7 +4,7 @@
 // A native fabric.pe that incorrectly has an output_tag attribute.
 fabric.module @test(%a: i32, %b: i32) -> (i32) {
   %r = fabric.pe %a, %b
-      [output_tag = [0 : i4]]
+      {output_tag = [0 : i4]}
       : (i32, i32) -> (i32) {
   ^bb0(%x: i32, %y: i32):
     %s = arith.addi %x, %y : i32

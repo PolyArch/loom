@@ -26,8 +26,7 @@ static Type getValueType(Type t) {
 }
 
 /// Parse [key = value, ...] hw params block for PE operations.
-/// Populates latency, interval, output_tag, constant_value, cont_cond_sel,
-/// lqDepth, sqDepth.
+/// Populates latency, interval, lqDepth, sqDepth.
 static ParseResult parsePEHwParams(OpAsmParser &parser,
                                    OperationState &result) {
   if (failed(parser.parseOptionalLSquare()))
@@ -55,21 +54,6 @@ static ParseResult parsePEHwParams(OpAsmParser &parser,
       if (parser.parseAttribute(attr))
         return failure();
       result.addAttribute(PEOp::getIntervalAttrName(result.name), attr);
-    } else if (keyword == "output_tag") {
-      ArrayAttr attr;
-      if (parser.parseAttribute(attr))
-        return failure();
-      result.addAttribute(PEOp::getOutputTagAttrName(result.name), attr);
-    } else if (keyword == "constant_value") {
-      Attribute attr;
-      if (parser.parseAttribute(attr))
-        return failure();
-      result.addAttribute(PEOp::getConstantValueAttrName(result.name), attr);
-    } else if (keyword == "cont_cond_sel") {
-      IntegerAttr attr;
-      if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
-        return failure();
-      result.addAttribute(PEOp::getContCondSelAttrName(result.name), attr);
     } else if (keyword == "lqDepth") {
       IntegerAttr attr;
       if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
@@ -92,12 +76,58 @@ static ParseResult parsePEHwParams(OpAsmParser &parser,
   return success();
 }
 
+/// Parse {key = value, ...} runtime config block for PE operations.
+/// Populates output_tag, constant_value, cont_cond_sel.
+static ParseResult parsePERuntimeConfig(OpAsmParser &parser,
+                                        OperationState &result) {
+  if (failed(parser.parseOptionalLBrace()))
+    return success(); // No braces.
+
+  bool first = true;
+  while (true) {
+    if (!first && failed(parser.parseOptionalComma()))
+      break;
+    first = false;
+
+    StringRef keyword;
+    if (parser.parseKeyword(&keyword))
+      return failure();
+    if (parser.parseEqual())
+      return failure();
+
+    if (keyword == "output_tag") {
+      ArrayAttr attr;
+      if (parser.parseAttribute(attr))
+        return failure();
+      result.addAttribute(PEOp::getOutputTagAttrName(result.name), attr);
+    } else if (keyword == "constant_value") {
+      Attribute attr;
+      if (parser.parseAttribute(attr))
+        return failure();
+      result.addAttribute(PEOp::getConstantValueAttrName(result.name), attr);
+    } else if (keyword == "cont_cond_sel") {
+      IntegerAttr attr;
+      if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
+        return failure();
+      result.addAttribute(PEOp::getContCondSelAttrName(result.name), attr);
+    } else {
+      return parser.emitError(parser.getCurrentLocation(),
+                              "unexpected keyword '")
+             << keyword << "' in PE runtime configuration";
+    }
+  }
+
+  if (parser.parseRBrace())
+    return failure();
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // PEOp parse/print
 //
-// Named:  fabric.pe @name(%a: T0, %b: T1) -> (R0)
-//           [latency = [...], interval = [...]] { body }
-// Inline: %o = fabric.pe %i0, %i1 [hw_params]
+// Named:  fabric.pe @name(%a: T0, %b: T1)
+//           [hw_params] {runtime_config} -> (R0) { body }
+// Inline: %o = fabric.pe %i0, %i1 [hw_params] {runtime_config}
 //           : (T0, T1) -> (R0) { ^bb0(%a: VT0, %b: VT1): body }
 //===----------------------------------------------------------------------===//
 
@@ -112,7 +142,7 @@ ParseResult PEOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument> bodyArgs;
 
   if (isNamed) {
-    // Named form: parse (%arg0: T0, ...) -> (R0, ...) [hw_params] { body }.
+    // Named form: (%arg0: T0, ...) [hw_params] {config} -> (R0, ...) { body }.
     SmallVector<OpAsmParser::Argument> entryArgs;
     if (parser.parseArgumentList(entryArgs, OpAsmParser::Delimiter::Paren,
                                  /*allowType=*/true))
@@ -120,6 +150,12 @@ ParseResult PEOp::parse(OpAsmParser &parser, OperationState &result) {
 
     for (auto &arg : entryArgs)
       inputTypes.push_back(arg.type);
+
+    // Parse [hw_params] {runtime_config} before -> (results).
+    if (parsePEHwParams(parser, result))
+      return failure();
+    if (parsePERuntimeConfig(parser, result))
+      return failure();
 
     if (parser.parseArrow() || parser.parseLParen())
       return failure();
@@ -133,22 +169,20 @@ ParseResult PEOp::parse(OpAsmParser &parser, OperationState &result) {
     result.addAttribute(getFunctionTypeAttrName(result.name),
                         TypeAttr::get(fnType));
 
-    // Parse [hw_params].
-    if (parsePEHwParams(parser, result))
-      return failure();
-
     // Derive body block argument types (strip tags).
     for (auto &arg : entryArgs)
       arg.type = getValueType(arg.type);
     bodyArgs.append(entryArgs.begin(), entryArgs.end());
   } else {
-    // Inline form: parse operands, [hw_params], then : (types) -> (types).
+    // Inline form: operands [hw_params] {config} : (types) -> (types) { body }.
     SmallVector<OpAsmParser::UnresolvedOperand> operands;
     if (parser.parseOperandList(operands))
       return failure();
 
-    // Parse [hw_params].
+    // Parse [hw_params] {runtime_config}.
     if (parsePEHwParams(parser, result))
+      return failure();
+    if (parsePERuntimeConfig(parser, result))
       return failure();
 
     if (parser.parseColon())
@@ -206,38 +240,12 @@ void PEOp::print(OpAsmPrinter &p) {
       outputTypes.push_back(v.getType());
   }
 
-  if (isNamed) {
-    // Named form: print (%arg: T, ...) -> (R, ...).
-    Block &entryBlock = getBody().front();
-    p << "(";
-    for (unsigned i = 0; i < entryBlock.getNumArguments(); ++i) {
-      if (i > 0)
-        p << ", ";
-      p.printOperand(entryBlock.getArgument(i));
-      p << ": ";
-      p.printType(inputTypes[i]);
-    }
-    p << ") -> (";
-    llvm::interleaveComma(outputTypes, p,
-                          [&](Type t) { p.printType(t); });
-    p << ")";
-  }
-
-  // Print [hw_params].
+  // Collect [hw_params].
   SmallVector<std::pair<StringRef, Attribute>> hwParams;
   if (auto a = getLatencyAttr())
     hwParams.push_back({"latency", a});
   if (auto a = getIntervalAttr())
     hwParams.push_back({"interval", a});
-  if (auto a = getOutputTagAttr())
-    hwParams.push_back({"output_tag", a});
-  if (auto a = getConstantValueAttr())
-    hwParams.push_back({"constant_value", a});
-  if (getContCondSel())
-    hwParams.push_back({"cont_cond_sel",
-                         IntegerAttr::get(
-                             IntegerType::get(getContext(), 64),
-                             *getContCondSel())});
   if (getLqDepth())
     hwParams.push_back({"lqDepth",
                          IntegerAttr::get(
@@ -249,6 +257,33 @@ void PEOp::print(OpAsmPrinter &p) {
                              IntegerType::get(getContext(), 64),
                              *getSqDepth())});
 
+  // Collect {runtime_config}.
+  SmallVector<std::pair<StringRef, Attribute>> runtimeParams;
+  if (auto a = getOutputTagAttr())
+    runtimeParams.push_back({"output_tag", a});
+  if (auto a = getConstantValueAttr())
+    runtimeParams.push_back({"constant_value", a});
+  if (getContCondSel())
+    runtimeParams.push_back({"cont_cond_sel",
+                         IntegerAttr::get(
+                             IntegerType::get(getContext(), 64),
+                             *getContCondSel())});
+
+  if (isNamed) {
+    // Named form: (%arg: T, ...) [hw] {config} -> (R, ...).
+    Block &entryBlock = getBody().front();
+    p << "(";
+    for (unsigned i = 0; i < entryBlock.getNumArguments(); ++i) {
+      if (i > 0)
+        p << ", ";
+      p.printOperand(entryBlock.getArgument(i));
+      p << ": ";
+      p.printType(inputTypes[i]);
+    }
+    p << ")";
+  }
+
+  // Print [hw_params].
   if (!hwParams.empty()) {
     p << " [";
     for (unsigned i = 0; i < hwParams.size(); ++i) {
@@ -258,6 +293,26 @@ void PEOp::print(OpAsmPrinter &p) {
       p.printAttribute(hwParams[i].second);
     }
     p << "]";
+  }
+
+  // Print {runtime_config}.
+  if (!runtimeParams.empty()) {
+    p << " {";
+    for (unsigned i = 0; i < runtimeParams.size(); ++i) {
+      if (i > 0)
+        p << ", ";
+      p << runtimeParams[i].first << " = ";
+      p.printAttribute(runtimeParams[i].second);
+    }
+    p << "}";
+  }
+
+  if (isNamed) {
+    // Named form: print -> (R, ...) after [hw] {config}.
+    p << " -> (";
+    llvm::interleaveComma(outputTypes, p,
+                          [&](Type t) { p.printType(t); });
+    p << ")";
   }
 
   if (!isNamed) {
@@ -508,11 +563,11 @@ LogicalResult PEOp::verify() {
 // TemporalPEOp parse/print
 //
 // Always named:
-//   fabric.temporal_pe @name(%in: T, ...) -> (T, ...)
+//   fabric.temporal_pe @name(%in: T, ...)
 //     [num_register = R, num_instruction = I, reg_fifo_depth = F,
-//      enable_share_operand_buffer = B, operand_buffer_size = S,
-//      instruction_mem = [...]]
-//     { body }
+//      enable_share_operand_buffer = B, operand_buffer_size = S]
+//     {instruction_mem = [...]}
+//     -> (T, ...) { body }
 //===----------------------------------------------------------------------===//
 
 /// Parse [hw_params] for temporal_pe.
@@ -563,12 +618,6 @@ static ParseResult parseTemporalPEHwParams(OpAsmParser &parser,
         return failure();
       result.addAttribute(
           TemporalPEOp::getOperandBufferSizeAttrName(result.name), attr);
-    } else if (keyword == "instruction_mem") {
-      ArrayAttr attr;
-      if (parser.parseAttribute(attr))
-        return failure();
-      result.addAttribute(
-          TemporalPEOp::getInstructionMemAttrName(result.name), attr);
     } else {
       return parser.emitError(parser.getCurrentLocation(),
                               "unexpected keyword '")
@@ -577,6 +626,24 @@ static ParseResult parseTemporalPEHwParams(OpAsmParser &parser,
   }
 
   if (parser.parseRSquare())
+    return failure();
+  return success();
+}
+
+/// Parse optional {instruction_mem = [...]} runtime config for temporal_pe.
+static ParseResult parseTemporalPERuntimeConfig(OpAsmParser &parser,
+                                                OperationState &result) {
+  if (failed(parser.parseOptionalLBrace()))
+    return success(); // No braces.
+
+  if (parser.parseKeyword("instruction_mem") || parser.parseEqual())
+    return failure();
+  ArrayAttr attr;
+  if (parser.parseAttribute(attr))
+    return failure();
+  result.addAttribute(TemporalPEOp::getInstructionMemAttrName(result.name),
+                      attr);
+  if (parser.parseRBrace())
     return failure();
   return success();
 }
@@ -598,6 +665,12 @@ ParseResult TemporalPEOp::parse(OpAsmParser &parser, OperationState &result) {
   for (auto &arg : entryArgs)
     argTypes.push_back(arg.type);
 
+  // Parse [hw_params] {runtime_config} before -> (results).
+  if (parseTemporalPEHwParams(parser, result))
+    return failure();
+  if (parseTemporalPERuntimeConfig(parser, result))
+    return failure();
+
   // Parse -> (result_types).
   SmallVector<Type> resultTypes;
   if (parser.parseArrow() || parser.parseLParen())
@@ -610,10 +683,6 @@ ParseResult TemporalPEOp::parse(OpAsmParser &parser, OperationState &result) {
   auto fnType = FunctionType::get(parser.getContext(), argTypes, resultTypes);
   result.addAttribute(getFunctionTypeAttrName(result.name),
                       TypeAttr::get(fnType));
-
-  // Parse [hw_params] (required).
-  if (parseTemporalPEHwParams(parser, result))
-    return failure();
 
   // Parse region body. Block args use value types (tags stripped).
   for (auto &arg : entryArgs)
@@ -643,9 +712,6 @@ void TemporalPEOp::print(OpAsmPrinter &p) {
     p << ": ";
     p.printType(inputTypes[i]);
   }
-  p << ") -> (";
-  llvm::interleaveComma(fnType.getResults(), p,
-                        [&](Type t) { p.printType(t); });
   p << ")";
 
   // Print [hw_params].
@@ -658,11 +724,20 @@ void TemporalPEOp::print(OpAsmPrinter &p) {
   if (auto obs = getOperandBufferSize()) {
     p << ", operand_buffer_size = " << *obs;
   }
-  if (auto im = getInstructionMem()) {
-    p << ", instruction_mem = ";
-    p.printAttribute(*im);
-  }
   p << "]";
+
+  // Print optional {instruction_mem = [...]}.
+  if (auto im = getInstructionMem()) {
+    p << " {instruction_mem = ";
+    p.printAttribute(*im);
+    p << "}";
+  }
+
+  // Print -> (results).
+  p << " -> (";
+  llvm::interleaveComma(fnType.getResults(), p,
+                        [&](Type t) { p.printType(t); });
+  p << ")";
 
   // Print region body (block args not printed since they differ from interface).
   p << " ";

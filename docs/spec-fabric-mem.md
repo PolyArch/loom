@@ -262,6 +262,9 @@ Load/store PEs are adapters between compute and `fabric.memory` /
 memory operation performs the actual memory access. See
 [spec-fabric-pe.md](./spec-fabric-pe.md) for load/store PE semantics.
 
+See [spec-fabric.md](./spec-fabric.md) Operation Syntax Conventions for the
+canonical `[hw_params] {runtime_config}` bracket convention.
+
 ## Related Documents
 
 - [spec-fabric.md](./spec-fabric.md)

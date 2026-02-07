@@ -2,8 +2,9 @@
 // CHECK: COMP_TEMPORAL_PE_EMPTY_BODY
 
 // Body contains only the terminator (fabric.yield), no FU definitions.
-fabric.temporal_pe @tpe_empty(%in: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
-  [num_register = 0, num_instruction = 2, reg_fifo_depth = 0] {
+fabric.temporal_pe @tpe_empty(%in: !dataflow.tagged<i32, i4>)
+  [num_register = 0, num_instruction = 2, reg_fifo_depth = 0]
+  -> (!dataflow.tagged<i32, i4>) {
   fabric.yield
 }
 

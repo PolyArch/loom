@@ -23,10 +23,11 @@ Both forms share the same semantics and constraints.
 ### Named Form Syntax
 
 ```
-fabric.pe @name(%arg0: T0, %arg1: T1) -> (R0)
+fabric.pe @name(%arg0: T0, %arg1: T1)
     [latency = [0 : i16, 1 : i16, 2 : i16],
-     interval = [1 : i16, 1 : i16, 1 : i16],
-     output_tag = [0 : i4]] {
+     interval = [1 : i16, 1 : i16, 1 : i16]]
+    {output_tag = [0 : i4]}
+    -> (R0) {
   // body
   fabric.yield %result : R0
 }
@@ -283,9 +284,10 @@ are compile-time errors (`COMP_PE_LOADSTORE_TAG_MODE`,
 ### Example: Native PE with Type Conversion
 
 ```
-fabric.pe @sitofp(%a: i32) -> (f32)
+fabric.pe @sitofp(%a: i32)
     [latency = [1 : i16, 1 : i16, 1 : i16],
-     interval = [1 : i16, 1 : i16, 1 : i16]] {
+     interval = [1 : i16, 1 : i16, 1 : i16]]
+    -> (f32) {
   %v = arith.sitofp %a : i32 to f32
   fabric.yield %v : f32
 }
@@ -296,8 +298,8 @@ fabric.pe @sitofp(%a: i32) -> (f32)
 ```
 %out = fabric.pe %in0, %in1
     [latency = [0 : i16, 0 : i16, 0 : i16],
-     interval = [1 : i16, 1 : i16, 1 : i16],
-     output_tag = [3 : i4]]
+     interval = [1 : i16, 1 : i16, 1 : i16]]
+    {output_tag = [3 : i4]}
     : (!dataflow.tagged<i32, i4>, !dataflow.tagged<i32, i4>)
       -> (!dataflow.tagged<i32, i4>) {
   ^bb0(%a: i32, %b: i32):

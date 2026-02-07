@@ -56,6 +56,27 @@ Many fabric operations split parameters into two categories:
 Each operation document explicitly identifies which attributes are hardware
 parameters and which are runtime configuration parameters.
 
+## Operation Syntax Conventions
+
+Fabric operations use a uniform bracket convention for parameters:
+
+- **`[...]`** -- Hardware parameters: physical structure, fixed for a given instance.
+- **`{...}`** -- Runtime configuration: stored in registers/tables, reprogrammable.
+
+General format for operations with both parameter categories:
+
+    fabric.<op> @name(<ports>) [hw_param = val, ...] {config_param = val, ...} -> (<results>) { body }
+
+For operations without a region body (switches, memory):
+
+    %out = fabric.<op> [hw_params] {runtime_config} %in : type -> types
+
+When an operation has no runtime configuration parameters, the `{...}` block is omitted.
+When an operation has no hardware parameters, the `[...]` block is omitted (or empty).
+
+Each operation's spec document identifies which attributes are hardware parameters and
+which are runtime configuration. See individual operation specs for details.
+
 ## Operation: `fabric.module`
 
 A `fabric.module` represents an accelerator as a hardware module with explicit

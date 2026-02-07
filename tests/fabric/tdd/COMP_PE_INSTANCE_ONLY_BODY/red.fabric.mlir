@@ -2,8 +2,9 @@
 // CHECK: COMP_PE_INSTANCE_ONLY_BODY
 
 // A fabric.pe whose body is solely a single fabric.instance with no other ops.
-fabric.pe @target(%a: i32, %b: i32) -> (i32)
-    [latency = [1 : i16, 1 : i16, 1 : i16]] {
+fabric.pe @target(%a: i32, %b: i32)
+    [latency = [1 : i16, 1 : i16, 1 : i16]]
+    -> (i32) {
   %r = arith.addi %a, %b : i32
   fabric.yield %r : i32
 }

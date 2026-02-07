@@ -2,8 +2,9 @@
 
 // A valid fabric.pe (inline) with a fabric.instance plus another operation.
 // The body has more than just a single fabric.instance, so this is allowed.
-fabric.pe @inner_add(%a: i32, %b: i32) -> (i32)
-    [latency = [1 : i16, 1 : i16, 1 : i16]] {
+fabric.pe @inner_add(%a: i32, %b: i32)
+    [latency = [1 : i16, 1 : i16, 1 : i16]]
+    -> (i32) {
   %r = arith.addi %a, %b : i32
   fabric.yield %r : i32
 }

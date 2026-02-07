@@ -1,8 +1,9 @@
 // RUN: loom --adg %s
 
 // A valid fabric.pe body that instances a named fabric.pe (legal target).
-fabric.pe @adder(%a: i32, %b: i32) -> (i32)
-    [latency = [1 : i16, 1 : i16, 1 : i16]] {
+fabric.pe @adder(%a: i32, %b: i32)
+    [latency = [1 : i16, 1 : i16, 1 : i16]]
+    -> (i32) {
   %s = arith.addi %a, %b : i32
   fabric.yield %s : i32
 }

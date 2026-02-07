@@ -20,10 +20,11 @@ configuration is invalid because it contains duplicate tags
 ```
 fabric.temporal_pe @name(
   %in0: !dataflow.tagged<T, iJ>, %in1: !dataflow.tagged<T, iJ>, ...
-) -> (!dataflow.tagged<T, iJ>, ...)
+)
   [num_register = R, num_instruction = I, reg_fifo_depth = F,
    enable_share_operand_buffer = false, operand_buffer_size = S]
-  {instruction_mem = [ ... ]} {
+  {instruction_mem = [ ... ]}
+  -> (!dataflow.tagged<T, iJ>, ...) {
   // FU definitions
   fabric.yield %fu0_out0, %fu0_out1, %fu1_out0, %fu1_out1, ...
 }

@@ -6,7 +6,7 @@ fabric.module @test(
     %b: !dataflow.tagged<i32, i4>
 ) -> (!dataflow.tagged<i32, i4>) {
   %sum = fabric.pe %a, %b
-      [output_tag = [0 : i4]]
+      {output_tag = [0 : i4]}
       : (!dataflow.tagged<i32, i4>, !dataflow.tagged<i32, i4>)
       -> (!dataflow.tagged<i32, i4>) {
   ^bb0(%x: i32, %y: i32):

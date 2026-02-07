@@ -21,7 +21,8 @@ Both forms share the same semantics and constraints.
 
 ```mlir
 fabric.switch @sw4x4
-  [connectivity_table = [ ... ], route_table = [ ... ]]
+  [connectivity_table = [ ... ]]
+  {route_table = [ ... ]}
   : (T, T, T, T) -> (T, T, T, T)
 ```
 
@@ -36,7 +37,8 @@ Named switches can be instantiated via `fabric.instance`:
 
 ```mlir
 %out0, %out1 = fabric.switch
-  [connectivity_table = [...], route_table = [...]]
+  [connectivity_table = [...]]
+  {route_table = [...]}
   %in0, %in1, %in2 : T -> T, T
 ```
 
@@ -137,8 +139,8 @@ A 3-input, 2-output switch with partial connectivity:
 
 ```
 %o0, %o1 = fabric.switch
-  [connectivity_table = [0, 1, 1, 1, 1, 0],
-   route_table = [1, 0, 1, 0]]
+  [connectivity_table = [0, 1, 1, 1, 1, 0]]
+  {route_table = [1, 0, 1, 0]}
   %i0, %i1, %i2 : i32 -> i32, i32
 ```
 
@@ -153,6 +155,9 @@ Interpretation:
 - `route_table` enables:
   - Output 0 <- input 1
   - Output 1 <- input 0
+
+See [spec-fabric.md](./spec-fabric.md) Operation Syntax Conventions for the
+canonical `[hw_params] {runtime_config}` bracket convention.
 
 ## Related Documents
 

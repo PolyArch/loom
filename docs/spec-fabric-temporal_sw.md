@@ -282,6 +282,9 @@ Hex encoding (8 bits, LSB -> MSB):
                -> !dataflow.tagged<i32, i4>, !dataflow.tagged<i32, i4>
 ```
 
+See [spec-fabric.md](./spec-fabric.md) Operation Syntax Conventions for the
+canonical `[hw_params] {runtime_config}` bracket convention.
+
 ## Related Documents
 
 - [spec-fabric.md](./spec-fabric.md)
