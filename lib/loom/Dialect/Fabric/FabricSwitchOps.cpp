@@ -74,6 +74,63 @@ verifyConnectivityTable(Operation *op, ArrayRef<int8_t> table,
   return success();
 }
 
+/// Verify sparse format rules for human-readable config entries.
+/// Checks: mixed format, ascending slot order, implicit hole consistency.
+static LogicalResult verifySparseFormat(Operation *op, ArrayAttr entries,
+                                        StringRef prefix,
+                                        StringRef mixedCode,
+                                        StringRef orderCode,
+                                        StringRef holeCode) {
+  bool hasHex = false, hasHuman = false, hasExplicitInvalid = false;
+  SmallVector<int64_t> slotIndices;
+
+  for (auto entry : entries) {
+    auto str = dyn_cast<StringAttr>(entry);
+    if (!str)
+      continue;
+    StringRef s = str.getValue();
+    if (s.starts_with("0x") || s.starts_with("0X")) {
+      hasHex = true;
+    } else {
+      hasHuman = true;
+      if (s.contains("invalid"))
+        hasExplicitInvalid = true;
+      // Parse slot index from "prefix[N]: ..."
+      size_t lb = s.find('['), rb = s.find(']');
+      if (lb != StringRef::npos && rb != StringRef::npos && rb > lb) {
+        unsigned idx;
+        if (!s.substr(lb + 1, rb - lb - 1).getAsInteger(10, idx))
+          slotIndices.push_back(idx);
+      }
+    }
+  }
+
+  if (hasHex && hasHuman)
+    return op->emitOpError(mixedCode)
+           << " " << prefix
+           << " entries mix human-readable and hex formats";
+
+  for (unsigned i = 1; i < slotIndices.size(); ++i) {
+    if (slotIndices[i] <= slotIndices[i - 1])
+      return op->emitOpError(orderCode)
+             << " " << prefix
+             << " slot indices must be strictly ascending; got "
+             << slotIndices[i - 1] << " followed by " << slotIndices[i];
+  }
+
+  if (hasExplicitInvalid) {
+    for (unsigned i = 1; i < slotIndices.size(); ++i) {
+      if (slotIndices[i] != slotIndices[i - 1] + 1)
+        return op->emitOpError(holeCode)
+               << " " << prefix << " has implicit hole between slot "
+               << slotIndices[i - 1] << " and " << slotIndices[i]
+               << "; all holes must be explicit when explicit invalid"
+                  " entries exist";
+    }
+  }
+  return success();
+}
+
 /// Parse the [hw_param = val, ...] bracket section for fabric.switch.
 /// Returns true if brackets were parsed. Populates connectivity_table
 /// and route_table attributes.
@@ -569,6 +626,14 @@ LogicalResult TemporalSwOp::verify() {
       return emitOpError("[COMP_TEMPORAL_SW_TOO_MANY_SLOTS] "
                          "route_table slot count must be <= num_route_table (")
              << getNumRouteTable() << "); got " << rt->size();
+
+    // Sparse format checks: mixed format, slot order, implicit hole.
+    if (failed(verifySparseFormat(
+            getOperation(), *rt, "route_table",
+            "[COMP_TEMPORAL_SW_MIXED_FORMAT]",
+            "[COMP_TEMPORAL_SW_SLOT_ORDER]",
+            "[COMP_TEMPORAL_SW_IMPLICIT_HOLE]")))
+      return failure();
   }
 
   return success();

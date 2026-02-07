@@ -40,11 +40,20 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_TEMPORAL_SW_NUM_ROUTE_TABLE | `num_route_table` is less than 1 |
 | COMP_TEMPORAL_SW_TOO_MANY_SLOTS | `route_table` entries exceed `num_route_table` |
 | COMP_TEMPORAL_SW_ROUTE_ILLEGAL | A route entry targets a disconnected position |
+| COMP_TEMPORAL_SW_MIXED_FORMAT | `route_table` mixes human-readable and hex entries |
+| COMP_TEMPORAL_SW_SLOT_ORDER | Human-readable `route_table` slot indices are not strictly ascending |
+| COMP_TEMPORAL_SW_IMPLICIT_HOLE | `route_table` has implicit holes when explicit `invalid` entries exist |
 | COMP_TEMPORAL_PE_NUM_INSTRUCTION | `num_instruction` is less than 1 |
 | COMP_TEMPORAL_PE_REG_FIFO_DEPTH | `reg_fifo_depth` is 0 when `num_register > 0`, or nonzero when `num_register = 0` |
 | COMP_TEMPORAL_PE_EMPTY_BODY | A `fabric.temporal_pe` contains no FU definitions in its body |
 | COMP_TEMPORAL_PE_REG_DISABLED | An instruction uses `reg(idx)` when `num_register = 0` |
 | COMP_TEMPORAL_PE_SRC_MISMATCH | A human-readable source uses `in(j)` where `j` is not the operand position |
+| COMP_TEMPORAL_PE_TOO_MANY_SLOTS | `instruction_mem` entries exceed `num_instruction` |
+| COMP_TEMPORAL_PE_MIXED_FORMAT | `instruction_mem` mixes human-readable and hex entries |
+| COMP_TEMPORAL_PE_SLOT_ORDER | Human-readable `instruction_mem` slot indices are not strictly ascending |
+| COMP_TEMPORAL_PE_IMPLICIT_HOLE | `instruction_mem` has implicit holes when explicit `invalid` entries exist |
+| COMP_TEMPORAL_PE_DEST_COUNT | Destination count in a human-readable instruction does not equal `num_outputs` |
+| COMP_TEMPORAL_PE_SRC_COUNT | Source count in a human-readable instruction does not equal `num_inputs` |
 | COMP_TEMPORAL_PE_TAG_WIDTH | `K != num_bits(T)` or tag-width metadata is inconsistent for interface `!dataflow.tagged<T, iJ>` |
 | COMP_TEMPORAL_PE_TAGGED_PE | A `fabric.temporal_pe` contains a tagged `fabric.pe` |
 | COMP_TEMPORAL_PE_LOADSTORE | A `fabric.temporal_pe` contains a load/store PE |

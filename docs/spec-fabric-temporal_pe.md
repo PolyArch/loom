@@ -129,9 +129,11 @@ The ordering is:
 #### `instruction_mem` (runtime configuration parameter)
 
 - Array of instruction slot entries.
-- Length must be less than or equal to `num_instruction`.
+- Length must be less than or equal to `num_instruction`
+  (`COMP_TEMPORAL_PE_TOO_MANY_SLOTS`).
 - Supports human-readable and machine (hex) formats.
-- All entries in the array must use the same format.
+- All entries in the array must use the same format
+  (`COMP_TEMPORAL_PE_MIXED_FORMAT`).
 
 The number of FU types defined in the body is independent of
 `num_instruction`. Instruction slots select among FU types via the opcode.
@@ -263,10 +265,13 @@ active instruction at runtime.
 
 The following rules apply to human-readable entries:
 
-- Slot indices must be strictly ascending.
+- Slot indices must be strictly ascending (`COMP_TEMPORAL_PE_SLOT_ORDER`).
 - Implicit holes are allowed only when there are no explicit `invalid` entries.
-- If any explicit `invalid` entry is present, all holes must be explicit.
+- If any explicit `invalid` entry is present, all holes must be explicit
+  (`COMP_TEMPORAL_PE_IMPLICIT_HOLE`).
 - Trailing invalid entries may be omitted.
+
+See [spec-fabric-error.md](./spec-fabric-error.md).
 
 For machine format entries:
 
@@ -303,7 +308,8 @@ nonzero tag for a register destination is a configuration error. If
 `CFG_TEMPORAL_PE_REG_TAG_NONZERO` and `COMP_TEMPORAL_PE_REG_DISABLED` in
 [spec-fabric-error.md](./spec-fabric-error.md).
 
-The number of destinations must equal the number of outputs of the temporal PE.
+The number of destinations must equal the number of outputs of the temporal PE
+(`COMP_TEMPORAL_PE_DEST_COUNT`). See [spec-fabric-error.md](./spec-fabric-error.md).
 
 #### Sources
 
@@ -312,7 +318,8 @@ Each source is one of:
 - `in(idx)`
 - `reg(idx)`
 
-The number of sources must equal the number of inputs of the temporal PE.
+The number of sources must equal the number of inputs of the temporal PE
+(`COMP_TEMPORAL_PE_SRC_COUNT`). See [spec-fabric-error.md](./spec-fabric-error.md).
 If `num_register = 0`, `reg(idx)` sources are invalid.
 
 Sources are positional. For operand position `i`, the source must be either

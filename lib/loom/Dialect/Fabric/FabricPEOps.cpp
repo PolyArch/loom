@@ -25,6 +25,63 @@ static Type getValueType(Type t) {
   return t;
 }
 
+/// Verify sparse format rules for human-readable config entries.
+/// Checks: mixed format, ascending slot order, implicit hole consistency.
+static LogicalResult verifySparseFormat(Operation *op, ArrayAttr entries,
+                                        StringRef prefix,
+                                        StringRef mixedCode,
+                                        StringRef orderCode,
+                                        StringRef holeCode) {
+  bool hasHex = false, hasHuman = false, hasExplicitInvalid = false;
+  SmallVector<int64_t> slotIndices;
+
+  for (auto entry : entries) {
+    auto str = dyn_cast<StringAttr>(entry);
+    if (!str)
+      continue;
+    StringRef s = str.getValue();
+    if (s.starts_with("0x") || s.starts_with("0X")) {
+      hasHex = true;
+    } else {
+      hasHuman = true;
+      if (s.contains("invalid"))
+        hasExplicitInvalid = true;
+      // Parse slot index from "prefix[N]: ..."
+      size_t lb = s.find('['), rb = s.find(']');
+      if (lb != StringRef::npos && rb != StringRef::npos && rb > lb) {
+        unsigned idx;
+        if (!s.substr(lb + 1, rb - lb - 1).getAsInteger(10, idx))
+          slotIndices.push_back(idx);
+      }
+    }
+  }
+
+  if (hasHex && hasHuman)
+    return op->emitOpError(mixedCode)
+           << " " << prefix
+           << " entries mix human-readable and hex formats";
+
+  for (unsigned i = 1; i < slotIndices.size(); ++i) {
+    if (slotIndices[i] <= slotIndices[i - 1])
+      return op->emitOpError(orderCode)
+             << " " << prefix
+             << " slot indices must be strictly ascending; got "
+             << slotIndices[i - 1] << " followed by " << slotIndices[i];
+  }
+
+  if (hasExplicitInvalid) {
+    for (unsigned i = 1; i < slotIndices.size(); ++i) {
+      if (slotIndices[i] != slotIndices[i - 1] + 1)
+        return op->emitOpError(holeCode)
+               << " " << prefix << " has implicit hole between slot "
+               << slotIndices[i - 1] << " and " << slotIndices[i]
+               << "; all holes must be explicit when explicit invalid"
+                  " entries exist";
+    }
+  }
+  return success();
+}
+
 /// Parse [key = value, ...] hw params block for PE operations.
 /// Populates latency, interval, lqDepth, sqDepth.
 static ParseResult parsePEHwParams(OpAsmParser &parser,
@@ -855,14 +912,34 @@ LogicalResult TemporalPEOp::verify() {
     }
   }
 
-  // COMP_TEMPORAL_PE_REG_DISABLED / COMP_TEMPORAL_PE_SRC_MISMATCH:
   // Validate instruction_mem entries if present.
   if (auto im = getInstructionMem()) {
+    unsigned numInputs = fnType.getNumInputs();
+    unsigned numOutputs = fnType.getNumResults();
+
+    // COMP_TEMPORAL_PE_TOO_MANY_SLOTS
+    if (static_cast<int64_t>(im->size()) > getNumInstruction())
+      return emitOpError("[COMP_TEMPORAL_PE_TOO_MANY_SLOTS] "
+                         "instruction_mem slot count must be <= "
+                         "num_instruction (")
+             << getNumInstruction() << "); got " << im->size();
+
+    // Sparse format checks: mixed format, slot order, implicit hole.
+    if (failed(verifySparseFormat(
+            getOperation(), *im, "instruction_mem",
+            "[COMP_TEMPORAL_PE_MIXED_FORMAT]",
+            "[COMP_TEMPORAL_PE_SLOT_ORDER]",
+            "[COMP_TEMPORAL_PE_IMPLICIT_HOLE]")))
+      return failure();
+
     for (auto [instIdx, entry] : llvm::enumerate(*im)) {
       auto strAttr = dyn_cast<StringAttr>(entry);
       if (!strAttr)
         continue;
       StringRef inst = strAttr.getValue();
+      // Skip hex entries.
+      if (inst.starts_with("0x") || inst.starts_with("0X"))
+        continue;
       if (inst.contains("invalid"))
         continue;
 
@@ -872,51 +949,93 @@ LogicalResult TemporalPEOp::verify() {
                            "instruction_mem entry ")
                << instIdx << " uses reg() when num_register is 0";
 
+      // Parse dest and src regions from human-readable format:
+      //   inst[N]: when(tag=T) DESTS = fuName(opcode) SRCS
+      size_t eqPos = inst.find(" = ");
+      if (eqPos == StringRef::npos)
+        continue;
+
+      // Extract DESTS: text between ') ' (after when(...)) and ' = '
+      StringRef beforeEq = inst.substr(0, eqPos);
+      size_t whenClose = beforeEq.find(") ");
+      StringRef destsStr;
+      if (whenClose != StringRef::npos)
+        destsStr = beforeEq.substr(whenClose + 2).trim();
+
+      // Extract SRCS: text after the FU call 'fuName(opcode) '
+      StringRef rhs = inst.substr(eqPos + 3).ltrim();
+      size_t parenClose = rhs.find(')');
+      StringRef srcsStr;
+      if (parenClose != StringRef::npos)
+        srcsStr = rhs.substr(parenClose + 1).ltrim();
+
+      // Count destinations (paren-aware comma splitting).
+      if (!destsStr.empty()) {
+        unsigned destCount = 1;
+        int depth = 0;
+        for (char c : destsStr) {
+          if (c == '(') ++depth;
+          else if (c == ')') --depth;
+          else if (c == ',' && depth == 0) ++destCount;
+        }
+        // COMP_TEMPORAL_PE_DEST_COUNT
+        if (destCount != numOutputs)
+          return emitOpError("[COMP_TEMPORAL_PE_DEST_COUNT] "
+                             "instruction_mem entry ")
+                 << instIdx << " has " << destCount
+                 << " destination(s) but num_outputs is " << numOutputs;
+      }
+
+      // Count sources (paren-aware comma splitting).
+      if (parenClose != StringRef::npos && !srcsStr.empty()) {
+        unsigned srcCount = 1;
+        int depth = 0;
+        for (char c : srcsStr) {
+          if (c == '(') ++depth;
+          else if (c == ')') --depth;
+          else if (c == ',' && depth == 0) ++srcCount;
+        }
+        // COMP_TEMPORAL_PE_SRC_COUNT
+        if (srcCount != numInputs)
+          return emitOpError("[COMP_TEMPORAL_PE_SRC_COUNT] "
+                             "instruction_mem entry ")
+                 << instIdx << " has " << srcCount
+                 << " source(s) but num_inputs is " << numInputs;
+      }
+
       // COMP_TEMPORAL_PE_SRC_MISMATCH: in(j) at operand position i must have
       // j == i. Extract operand portion after '= fuName(fuIdx)'.
-      {
-        size_t eqPos = inst.find(" = ");
-        if (eqPos != StringRef::npos) {
-          StringRef rhs = inst.substr(eqPos + 3).ltrim();
-          // Skip FU call 'fuName(fuIdx)' to get operand list.
-          size_t parenClose = rhs.find(')');
-          if (parenClose != StringRef::npos) {
-            StringRef operands = rhs.substr(parenClose + 1).ltrim();
-            // Parse comma-separated operand tokens, track position.
-            unsigned operandPos = 0;
-            while (!operands.empty()) {
-              // Trim leading whitespace and commas.
-              operands = operands.ltrim();
-              if (operands.starts_with(",")) {
-                operands = operands.substr(1).ltrim();
+      if (parenClose != StringRef::npos) {
+        StringRef operands = srcsStr;
+        unsigned operandPos = 0;
+        while (!operands.empty()) {
+          operands = operands.ltrim();
+          if (operands.starts_with(",")) {
+            operands = operands.substr(1).ltrim();
+          }
+          if (operands.empty())
+            break;
+          if (operands.starts_with("in(")) {
+            StringRef rest = operands.substr(3);
+            size_t cp = rest.find(')');
+            if (cp != StringRef::npos) {
+              unsigned srcIdx;
+              if (!rest.substr(0, cp).getAsInteger(10, srcIdx)) {
+                if (srcIdx != operandPos)
+                  return emitOpError(
+                      "[COMP_TEMPORAL_PE_SRC_MISMATCH] "
+                      "instruction_mem entry ")
+                         << instIdx << ": in(" << srcIdx
+                         << ") at operand position " << operandPos
+                         << " (expected in(" << operandPos << "))";
               }
-              if (operands.empty())
-                break;
-              // Check for in(N) pattern at current position.
-              if (operands.starts_with("in(")) {
-                StringRef rest = operands.substr(3);
-                size_t closeParen = rest.find(')');
-                if (closeParen != StringRef::npos) {
-                  unsigned srcIdx;
-                  if (!rest.substr(0, closeParen).getAsInteger(10, srcIdx)) {
-                    if (srcIdx != operandPos)
-                      return emitOpError(
-                          "[COMP_TEMPORAL_PE_SRC_MISMATCH] "
-                          "instruction_mem entry ")
-                             << instIdx << ": in(" << srcIdx
-                             << ") at operand position " << operandPos
-                             << " (expected in(" << operandPos << "))";
-                  }
-                }
-              }
-              // Advance past current token (up to next ',' or end).
-              size_t nextComma = operands.find(',');
-              if (nextComma == StringRef::npos)
-                break;
-              operands = operands.substr(nextComma + 1);
-              operandPos++;
             }
           }
+          size_t nextComma = operands.find(',');
+          if (nextComma == StringRef::npos)
+            break;
+          operands = operands.substr(nextComma + 1);
+          operandPos++;
         }
       }
     }

@@ -103,7 +103,9 @@ If an attribute is omitted, the following defaults apply:
 Hardware-parameter violations are compile-time errors: `COMP_TEMPORAL_SW_PORT_LIMIT`,
 `COMP_TEMPORAL_SW_TABLE_SHAPE`, `COMP_TEMPORAL_SW_ROW_EMPTY`,
 `COMP_TEMPORAL_SW_COL_EMPTY`, `COMP_TEMPORAL_SW_NUM_ROUTE_TABLE`,
-`COMP_TEMPORAL_SW_TOO_MANY_SLOTS`, and `COMP_TEMPORAL_SW_ROUTE_ILLEGAL`.
+`COMP_TEMPORAL_SW_TOO_MANY_SLOTS`, `COMP_TEMPORAL_SW_ROUTE_ILLEGAL`,
+`COMP_TEMPORAL_SW_MIXED_FORMAT`, `COMP_TEMPORAL_SW_SLOT_ORDER`, and
+`COMP_TEMPORAL_SW_IMPLICIT_HOLE`.
 Configuration-time violations include:
 
 - `CFG_TEMPORAL_SW_DUP_TAG` for duplicate slot tags.
@@ -178,7 +180,9 @@ format rules and supports human-readable and hex formats.
 The sparse format rules are identical to those for `fabric.temporal_pe`
 instruction memory. See
 [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) for the
-authoritative specification of sparse format rules.
+authoritative specification of sparse format rules. Violations raise
+`COMP_TEMPORAL_SW_MIXED_FORMAT`, `COMP_TEMPORAL_SW_SLOT_ORDER`, and
+`COMP_TEMPORAL_SW_IMPLICIT_HOLE`. See [spec-fabric-error.md](./spec-fabric-error.md).
 
 ### Human-Readable Format
 
