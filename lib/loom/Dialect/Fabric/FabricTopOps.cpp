@@ -86,89 +86,103 @@ void ModuleOp::print(OpAsmPrinter &p) {
 // Forward declaration (defined in Instance helpers section below).
 static Operation *lookupBySymName(Operation *from, StringRef name);
 
-/// Return a bitmask indicating which results of `op` are on combinational
-/// (zero-delay) through-paths. For primitive combinational ops (SwitchOp,
-/// TemporalSwOp, AddTagOp, MapTagOp, DelTagOp), all results are combinational.
-/// For InstanceOp, delegates to the resolved target. For ModuleOp, performs
-/// per-yield-operand backward reachability analysis: bit i is set when yield
-/// operand i can reach a block argument through only combinational ops.
-/// Uses a path-based visited set to avoid infinite recursion.
-static llvm::SmallBitVector
-getCombResultMask(Operation *op,
-                  llvm::SmallPtrSetImpl<Operation *> &visited) {
-  // ModuleOp: per-yield-operand backward reachability through combinational
-  // ops to block arguments. Handled first because ModuleOp has 0 SSA results
-  // (it is a symbol definition); its logical output count comes from the
-  // function type.
+/// Per-operation combinational path info: which results and which operands
+/// are on zero-delay through-paths.
+struct CombInfo {
+  llvm::SmallBitVector resultMask;  // which results are combinational
+  llvm::SmallBitVector operandMask; // which operands feed combinational paths
+};
+
+/// Compute combinational path info for `op`. For primitive combinational ops,
+/// all results and operands are combinational. For InstanceOp, delegates to
+/// the resolved target. For ModuleOp, performs per-yield-operand backward
+/// reachability analysis and tracks which block arguments (inputs) are
+/// reachable from combinational outputs. Uses a path-based visited set
+/// to avoid infinite recursion.
+static CombInfo getCombInfo(Operation *op,
+                            llvm::SmallPtrSetImpl<Operation *> &visited) {
+  // ModuleOp: per-yield-operand backward reachability. Handled first because
+  // ModuleOp has 0 SSA results; logical counts come from the function type.
   if (auto mod = dyn_cast<ModuleOp>(op)) {
     unsigned numOutputs = mod.getFunctionType().getNumResults();
+    unsigned numInputs = mod.getFunctionType().getNumInputs();
+    CombInfo info{llvm::SmallBitVector(numOutputs),
+                  llvm::SmallBitVector(numInputs)};
     if (numOutputs == 0)
-      return llvm::SmallBitVector(0);
+      return info;
     if (!visited.insert(op).second)
-      return llvm::SmallBitVector(numOutputs); // cycle guard
+      return info; // cycle guard
     Block &body = mod.getBody().front();
     auto yield = cast<YieldOp>(body.getTerminator());
-    llvm::SmallBitVector mask(numOutputs);
     for (unsigned i = 0; i < yield.getNumOperands(); ++i) {
       SmallVector<Value> worklist;
       llvm::SmallPtrSet<Value, 16> seen;
       worklist.push_back(yield.getOperand(i));
-      bool reachesInput = false;
-      while (!worklist.empty() && !reachesInput) {
+      llvm::SmallBitVector reachedArgs(numInputs);
+      while (!worklist.empty()) {
         Value v = worklist.pop_back_val();
         if (!seen.insert(v).second)
           continue;
-        if (isa<BlockArgument>(v)) {
-          reachesInput = true;
-          break;
+        if (auto ba = dyn_cast<BlockArgument>(v)) {
+          reachedArgs.set(ba.getArgNumber());
+          continue; // keep walking to find all reachable inputs
         }
         Operation *defOp = v.getDefiningOp();
         if (!defOp)
           continue;
-        // Only walk through this op's operands if the specific result we
-        // arrived through is on a combinational path.
-        auto defMask = getCombResultMask(defOp, visited);
+        auto defInfo = getCombInfo(defOp, visited);
         unsigned resultIdx = cast<OpResult>(v).getResultNumber();
-        if (resultIdx < defMask.size() && defMask.test(resultIdx)) {
+        if (resultIdx < defInfo.resultMask.size() &&
+            defInfo.resultMask.test(resultIdx)) {
           for (Value operand : defOp->getOperands())
             worklist.push_back(operand);
         }
       }
-      if (reachesInput)
-        mask.set(i);
+      if (reachedArgs.any()) {
+        info.resultMask.set(i);
+        info.operandMask |= reachedArgs;
+      }
     }
     visited.erase(op); // allow re-evaluation from other call paths
-    return mask;
+    return info;
   }
 
-  // Determine logical result count. For named definitions (SwitchOp, etc.),
-  // op->getNumResults() is 0; use the function_type attribute instead.
+  // Determine logical result/operand counts. Named definitions (SwitchOp, etc.)
+  // have 0 SSA results; use the function_type attribute instead.
   unsigned numResults = op->getNumResults();
+  unsigned numOperands = op->getNumOperands();
   if (numResults == 0) {
-    if (auto ftAttr = op->getAttrOfType<TypeAttr>("function_type"))
-      if (auto ft = dyn_cast<FunctionType>(ftAttr.getValue()))
+    if (auto ftAttr = op->getAttrOfType<TypeAttr>("function_type")) {
+      if (auto ft = dyn_cast<FunctionType>(ftAttr.getValue())) {
         numResults = ft.getNumResults();
+        numOperands = ft.getNumInputs();
+      }
+    }
   }
   if (numResults == 0)
-    return llvm::SmallBitVector(0);
+    return {llvm::SmallBitVector(0), llvm::SmallBitVector(numOperands)};
 
-  // Primitive combinational ops: all results are combinational.
+  // Primitive combinational ops: all results and operands are combinational.
   if (isa<SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp>(op))
-    return llvm::SmallBitVector(numResults, true);
+    return {llvm::SmallBitVector(numResults, true),
+            llvm::SmallBitVector(numOperands, true)};
 
   // InstanceOp: delegate to resolved target.
   if (auto inst = dyn_cast<InstanceOp>(op)) {
     auto *target = lookupBySymName(inst.getOperation(), inst.getModule());
     if (!target)
-      return llvm::SmallBitVector(numResults);
-    auto targetMask = getCombResultMask(target, visited);
-    if (targetMask.size() != numResults)
-      return llvm::SmallBitVector(numResults); // mismatch caught elsewhere
-    return targetMask;
+      return {llvm::SmallBitVector(numResults),
+              llvm::SmallBitVector(numOperands)};
+    auto targetInfo = getCombInfo(target, visited);
+    if (targetInfo.resultMask.size() != numResults)
+      return {llvm::SmallBitVector(numResults),
+              llvm::SmallBitVector(numOperands)};
+    return targetInfo;
   }
 
-  // Non-combinational ops: no results are combinational.
-  return llvm::SmallBitVector(numResults);
+  // Non-combinational ops.
+  return {llvm::SmallBitVector(numResults),
+          llvm::SmallBitVector(numOperands)};
 }
 
 //===----------------------------------------------------------------------===//
@@ -236,25 +250,27 @@ LogicalResult ModuleOp::verify() {
   }
 
   // COMP_ADG_COMBINATIONAL_LOOP: detect cycles among purely combinational ops.
-  // Uses per-result combinational masks so that mixed modules (some outputs
-  // combinational, some sequential) only contribute edges for their
-  // combinational results.
+  // Uses per-result and per-operand combinational masks so that only edges
+  // through combinational paths contribute to cycle detection.
   {
     llvm::SmallPtrSet<Operation *, 8> visited;
 
     // Build adjacency list. An op is included if any result is combinational.
-    // Only combinational results contribute edges.
+    // An edge from A to B exists only when:
+    //   1. The specific result of A is combinational, AND
+    //   2. The specific operand of B where that result is consumed is on a
+    //      combinational input path.
     SmallVector<Operation *> combOps;
-    SmallVector<llvm::SmallBitVector> combMasks;
+    SmallVector<CombInfo> combInfos;
     llvm::DenseMap<Operation *, unsigned> opIndex;
     for (auto &op : body) {
       if (op.hasTrait<OpTrait::IsTerminator>())
         continue;
-      auto mask = getCombResultMask(&op, visited);
-      if (mask.any()) {
+      auto info = getCombInfo(&op, visited);
+      if (info.resultMask.any()) {
         opIndex[&op] = combOps.size();
         combOps.push_back(&op);
-        combMasks.push_back(mask);
+        combInfos.push_back(info);
       }
     }
 
@@ -264,12 +280,17 @@ LogicalResult ModuleOp::verify() {
 
       for (unsigned i = 0; i < n; ++i) {
         for (unsigned r = 0; r < combOps[i]->getNumResults(); ++r) {
-          if (!combMasks[i].test(r))
+          if (!combInfos[i].resultMask.test(r))
             continue; // skip sequential results
           Value result = combOps[i]->getResult(r);
-          for (Operation *user : result.getUsers()) {
+          for (OpOperand &use : result.getUses()) {
+            Operation *user = use.getOwner();
             auto it = opIndex.find(user);
-            if (it != opIndex.end())
+            if (it == opIndex.end())
+              continue;
+            unsigned opIdx = use.getOperandNumber();
+            if (opIdx < combInfos[it->second].operandMask.size() &&
+                combInfos[it->second].operandMask.test(opIdx))
               adj[i].push_back(it->second);
           }
         }

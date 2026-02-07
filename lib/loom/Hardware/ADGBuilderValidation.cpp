@@ -508,13 +508,14 @@ ValidationResult ADGBuilder::validateADG() {
     }
   }
 
-  // Combinational loop detection: a cycle where every element is a
-  // zero-delay (combinational) operation causes signal instability.
-  // Sequential elements (PE, TemporalPE, Memory, ExtMemory, Fifo) break loops.
+  // Combinational loop detection using a port-level graph. Each node is
+  // (combinational_instance, output_port). Edges respect switch connectivity
+  // tables: an internal connection srcInst.srcPort -> dstInst.dstPort creates
+  // edges from (srcInst, srcPort) to (dstInst, j) for each output j that
+  // dstPort can drive per the connectivity table.
   {
     unsigned numInst = impl_->instances.size();
 
-    // Identify combinational instances.
     auto isCombinational = [&](unsigned idx) -> bool {
       switch (impl_->instances[idx].kind) {
       case ModuleKind::Switch:
@@ -528,43 +529,113 @@ ValidationResult ADGBuilder::validateADG() {
       }
     };
 
-    // Build adjacency list restricted to combinational instances.
-    std::vector<std::vector<unsigned>> adj(numInst);
-    for (const auto &conn : impl_->internalConns) {
-      if (conn.srcInst < numInst && conn.dstInst < numInst &&
-          isCombinational(conn.srcInst) && isCombinational(conn.dstInst))
-        adj[conn.srcInst].push_back(conn.dstInst);
-    }
-
-    // DFS cycle detection (0 = unvisited, 1 = in-stack, 2 = done).
-    std::vector<int> color(numInst, 0);
-    bool hasCycle = false;
-
-    std::function<void(unsigned)> dfs = [&](unsigned u) {
-      color[u] = 1;
-      for (unsigned v : adj[u]) {
-        if (color[v] == 1) {
-          hasCycle = true;
-          return;
-        }
-        if (color[v] == 0) {
-          dfs(v);
-          if (hasCycle) return;
-        }
+    auto getOutputCount = [&](unsigned idx) -> unsigned {
+      const auto &inst = impl_->instances[idx];
+      switch (inst.kind) {
+      case ModuleKind::Switch:
+        return impl_->switchDefs[inst.defIdx].numOut;
+      case ModuleKind::TemporalSwitch:
+        return impl_->temporalSwitchDefs[inst.defIdx].numOut;
+      case ModuleKind::AddTag:
+      case ModuleKind::MapTag:
+      case ModuleKind::DelTag:
+        return 1;
+      default:
+        return 0;
       }
-      color[u] = 2;
     };
 
-    for (unsigned i = 0; i < numInst && !hasCycle; ++i) {
-      if (isCombinational(i) && color[i] == 0)
-        dfs(i);
+    // Check if input port inPort of instance idx can drive output port outPort
+    // according to the connectivity table.
+    auto canInputDriveOutput =
+        [&](unsigned idx, int inPort, unsigned outPort) -> bool {
+      const auto &inst = impl_->instances[idx];
+      if (inst.kind == ModuleKind::Switch) {
+        const auto &def = impl_->switchDefs[inst.defIdx];
+        if (def.connectivity.empty())
+          return true; // full connectivity
+        if (outPort >= def.connectivity.size())
+          return false;
+        if (inPort < 0 ||
+            (unsigned)inPort >= def.connectivity[outPort].size())
+          return false;
+        return def.connectivity[outPort][inPort];
+      }
+      if (inst.kind == ModuleKind::TemporalSwitch) {
+        const auto &def = impl_->temporalSwitchDefs[inst.defIdx];
+        if (def.connectivity.empty())
+          return true;
+        if (outPort >= def.connectivity.size())
+          return false;
+        if (inPort < 0 ||
+            (unsigned)inPort >= def.connectivity[outPort].size())
+          return false;
+        return def.connectivity[outPort][inPort];
+      }
+      // AddTag, MapTag, DelTag: single input/output, always connected.
+      return true;
+    };
+
+    // Build port-level graph: assign a node to each output port of
+    // combinational instances.
+    std::vector<unsigned> portBase(numInst, 0);
+    std::vector<unsigned> portCount(numInst, 0);
+    unsigned totalPorts = 0;
+    for (unsigned i = 0; i < numInst; ++i) {
+      if (isCombinational(i)) {
+        portBase[i] = totalPorts;
+        portCount[i] = getOutputCount(i);
+        totalPorts += portCount[i];
+      }
     }
 
-    if (hasCycle)
-      addError("COMP_ADG_COMBINATIONAL_LOOP",
-               "connection graph contains a combinational loop (all elements "
-               "are zero-delay)",
-               "module @" + impl_->moduleName);
+    if (totalPorts > 0) {
+      std::vector<std::vector<unsigned>> adj(totalPorts);
+      for (const auto &conn : impl_->internalConns) {
+        if (conn.srcInst >= numInst || conn.dstInst >= numInst)
+          continue;
+        if (!isCombinational(conn.srcInst) || !isCombinational(conn.dstInst))
+          continue;
+        if (conn.srcPort < 0 ||
+            (unsigned)conn.srcPort >= portCount[conn.srcInst])
+          continue;
+        unsigned srcNode = portBase[conn.srcInst] + (unsigned)conn.srcPort;
+        for (unsigned j = 0; j < portCount[conn.dstInst]; ++j) {
+          if (canInputDriveOutput(conn.dstInst, conn.dstPort, j))
+            adj[srcNode].push_back(portBase[conn.dstInst] + j);
+        }
+      }
+
+      // DFS cycle detection (0 = unvisited, 1 = in-stack, 2 = done).
+      std::vector<int> color(totalPorts, 0);
+      bool hasCycle = false;
+      std::function<void(unsigned)> dfs = [&](unsigned u) {
+        color[u] = 1;
+        for (unsigned v : adj[u]) {
+          if (color[v] == 1) {
+            hasCycle = true;
+            return;
+          }
+          if (color[v] == 0) {
+            dfs(v);
+            if (hasCycle)
+              return;
+          }
+        }
+        color[u] = 2;
+      };
+
+      for (unsigned i = 0; i < totalPorts && !hasCycle; ++i) {
+        if (color[i] == 0)
+          dfs(i);
+      }
+
+      if (hasCycle)
+        addError("COMP_ADG_COMBINATIONAL_LOOP",
+                 "connection graph contains a combinational loop (all elements "
+                 "are zero-delay)",
+                 "module @" + impl_->moduleName);
+    }
   }
 
   return result;
