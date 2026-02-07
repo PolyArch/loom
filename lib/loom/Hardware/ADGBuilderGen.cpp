@@ -58,27 +58,37 @@ transformBodyMLIR(const std::string &body,
   if (!remainder.empty() && remainder[0] == '\n')
     remainder = remainder.substr(1);
 
-  // Replace each user arg name with %argN.
-  for (size_t i = 0; i < argNames.size() && i < inputPorts.size(); ++i) {
-    std::string from = argNames[i];
-    std::string to = "%arg" + std::to_string(i);
-    if (from == to) continue;
-
-    // Replace all occurrences of the arg name (word-boundary aware).
+  // Word-boundary-aware replacement helper.
+  auto replaceAllIdent = [](std::string &text, const std::string &from,
+                            const std::string &to) {
     size_t pos = 0;
-    while ((pos = remainder.find(from, pos)) != std::string::npos) {
-      // Check that next char is not alphanumeric/underscore (word boundary).
+    while ((pos = text.find(from, pos)) != std::string::npos) {
       size_t afterEnd = pos + from.size();
-      if (afterEnd < remainder.size()) {
-        char next = remainder[afterEnd];
+      if (afterEnd < text.size()) {
+        char next = text[afterEnd];
         if (std::isalnum(next) || next == '_') {
           pos = afterEnd;
           continue;
         }
       }
-      remainder.replace(pos, from.size(), to);
+      text.replace(pos, from.size(), to);
       pos += to.size();
     }
+  };
+
+  // Two-pass rename to avoid collisions (e.g. user body contains %arg0).
+  // Pass 1: rename user args to unique temporaries.
+  for (size_t i = 0; i < argNames.size() && i < inputPorts.size(); ++i) {
+    std::string tmp = "%__loom_rename_" + std::to_string(i);
+    if (argNames[i] == tmp) continue;
+    replaceAllIdent(remainder, argNames[i], tmp);
+  }
+  // Pass 2: rename temporaries to final %argN names.
+  for (size_t i = 0; i < argNames.size() && i < inputPorts.size(); ++i) {
+    std::string tmp = "%__loom_rename_" + std::to_string(i);
+    std::string target = "%arg" + std::to_string(i);
+    if (tmp == target) continue;
+    replaceAllIdent(remainder, tmp, target);
   }
 
   return remainder;
@@ -492,31 +502,15 @@ std::string ADGBuilder::Impl::generateMLIR() const {
   os << ") {\n";
 
   // Topological sort of instances.
-  // Skip bidirectional edges (A->B and B->A both exist) to handle mesh
-  // topologies where switches have bidirectional connections.
+  // Reciprocal edges (A->B and B->A) are rejected by validateADG(), so the
+  // connection graph is a DAG (modulo true cycles, which are also rejected).
   unsigned numInst = instances.size();
-  std::set<std::pair<unsigned, unsigned>> edgeSet;
-  for (const auto &conn : internalConns)
-    edgeSet.insert({conn.srcInst, conn.dstInst});
-
   std::vector<std::vector<unsigned>> adjList(numInst);
   std::vector<unsigned> inDeg(numInst, 0);
 
-  // For reciprocal pairs (A->B and B->A both exist), keep only one direction
-  // (lower id -> higher id) so that a valid topo order exists and SSA
-  // dominance is maintained.
-  std::set<std::pair<unsigned, unsigned>> reciprocal;
-  for (const auto &e : edgeSet) {
-    if (e.first != e.second && edgeSet.count({e.second, e.first}))
-      reciprocal.insert(e);
-  }
-
   for (const auto &conn : internalConns) {
-    unsigned s = conn.srcInst, d = conn.dstInst;
-    if (reciprocal.count({s, d}) && s > d)
-      continue; // drop the higher->lower direction of a reciprocal pair
-    adjList[s].push_back(d);
-    inDeg[d]++;
+    adjList[conn.srcInst].push_back(conn.dstInst);
+    inDeg[conn.dstInst]++;
   }
 
   std::queue<unsigned> readyQueue;
