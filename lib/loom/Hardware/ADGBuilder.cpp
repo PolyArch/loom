@@ -130,6 +130,14 @@ DelTagBuilder ADGBuilder::newDelTag(const std::string &name) {
 // Error reporting
 //===----------------------------------------------------------------------===//
 
+/// Compute the minimum tag type width needed to distinguish `count` items.
+static Type computeTagType(unsigned count) {
+  unsigned tw = 1;
+  while ((1u << tw) < count)
+    tw++;
+  return Type::iN(tw);
+}
+
 /// Report a builder API misuse error and exit.
 static void builderError(const char *api, const std::string &msg) {
   llvm::errs() << "error: " << api << ": " << msg << "\n";
@@ -876,12 +884,6 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
     bool isTaggedLd = def.ldCount > 1;
     bool isTaggedSt = def.stCount > 1;
 
-    auto computeTagType = [](unsigned count) {
-      unsigned tw = 1;
-      while ((1u << tw) < count) tw++;
-      return Type::iN(tw);
-    };
-
     // Input layout: [ld_addr * ldCount, st_addr * stCount, st_data * stCount]
     unsigned idx = (unsigned)port;
     if (idx < def.ldCount) {
@@ -906,12 +908,6 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
 
     bool isTaggedLd = def.ldCount > 1;
     bool isTaggedSt = def.stCount > 1;
-
-    auto computeTagType = [](unsigned count) {
-      unsigned tw = 1;
-      while ((1u << tw) < count) tw++;
-      return Type::iN(tw);
-    };
 
     if (adjPort < def.ldCount) {
       return isTaggedLd ? Type::tagged(Type::index(), computeTagType(def.ldCount))
@@ -981,12 +977,6 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
     bool isTaggedLd = def.ldCount > 1;
     bool isTaggedSt = def.stCount > 1;
 
-    auto computeTagType = [](unsigned count) {
-      unsigned tw = 1;
-      while ((1u << tw) < count) tw++;
-      return Type::iN(tw);
-    };
-
     unsigned idx = 0;
     // Non-private memory port 0 is memref -- return index as placeholder for
     // scalar type query (the PortType variant returns the actual memref).
@@ -1008,12 +998,6 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
     Type elemType = def.shape.getElemType();
     bool isTaggedLd = def.ldCount > 1;
     bool isTaggedSt = def.stCount > 1;
-
-    auto computeTagType = [](unsigned count) {
-      unsigned tw = 1;
-      while ((1u << tw) < count) tw++;
-      return Type::iN(tw);
-    };
 
     // Output layout: [lddata * ldCount] [lddone] [stdone?]
     if ((unsigned)port < def.ldCount)

@@ -17,6 +17,62 @@ namespace loom {
 namespace adg {
 
 //===----------------------------------------------------------------------===//
+// Generation Helpers
+//===----------------------------------------------------------------------===//
+
+/// Emit latency and interval attributes to the output stream.
+static void emitLatencyInterval(std::ostringstream &os, int16_t latMin,
+                                int16_t latTyp, int16_t latMax, int16_t intMin,
+                                int16_t intTyp, int16_t intMax) {
+  os << "    [latency = [" << latMin << " : i16, " << latTyp << " : i16, "
+     << latMax << " : i16]";
+  os << ", interval = [" << intMin << " : i16, " << intTyp << " : i16, "
+     << intMax << " : i16]";
+}
+
+/// Emit a comma-separated list of Type values as MLIR strings.
+static void emitTypeList(std::ostringstream &os,
+                         const std::vector<Type> &types) {
+  for (size_t i = 0; i < types.size(); ++i) {
+    if (i > 0) os << ", ";
+    os << types[i].toMLIR();
+  }
+}
+
+/// Flatten a 2D connectivity table into a 1D vector of 0/1 ints.
+/// If the table is empty, returns a full-crossbar (all 1s) of size numOut*numIn.
+static std::vector<int>
+flattenConnectivity(const std::vector<std::vector<bool>> &table,
+                    unsigned numOut, unsigned numIn) {
+  if (table.empty())
+    return std::vector<int>(numOut * numIn, 1);
+  std::vector<int> flat;
+  for (const auto &row : table)
+    for (bool v : row)
+      flat.push_back(v ? 1 : 0);
+  return flat;
+}
+
+/// Extract the tag type string from a tagged MLIR type string.
+/// For "!dataflow.tagged<i32, i4>", returns "i4".
+static std::string extractTagType(const std::string &typeStr) {
+  auto pos = typeStr.find(", ");
+  if (pos != std::string::npos)
+    return typeStr.substr(pos + 2, typeStr.size() - pos - 3);
+  return "";
+}
+
+/// Determine the constant literal for a given value type.
+/// Floating point types use "0.0", integers use "0".
+static std::string getConstLiteral(Type valueType) {
+  auto vk = valueType.getKind();
+  if (vk == Type::F16 || vk == Type::BF16 || vk == Type::F32 ||
+      vk == Type::F64)
+    return "0.0";
+  return "0";
+}
+
+//===----------------------------------------------------------------------===//
 // PE definition MLIR generation
 //===----------------------------------------------------------------------===//
 
@@ -115,34 +171,20 @@ std::string ADGBuilder::Impl::generatePEBody(const PEDef &pe) const {
 
 std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
   std::ostringstream os;
-
-  // Determine if this PE uses tagged interface.
   bool isTagged = pe.interface == InterfaceCategory::Tagged;
 
+  // Emit signature (shared between tagged and native).
+  os << "fabric.pe @" << pe.name << "(";
+  for (size_t i = 0; i < pe.inputPorts.size(); ++i) {
+    if (i > 0) os << ", ";
+    os << "%arg" << i << ": " << pe.inputPorts[i].toMLIR();
+  }
+  os << ")\n";
+  emitLatencyInterval(os, pe.latMin, pe.latTyp, pe.latMax, pe.intMin,
+                      pe.intTyp, pe.intMax);
+  os << "]\n";
+
   if (isTagged) {
-    // Tagged PE: body operates on value types, outer interface is tagged.
-    // Need to compute value types for body args.
-    std::vector<Type> bodyInputTypes, bodyOutputTypes;
-    for (const auto &t : pe.inputPorts)
-      bodyInputTypes.push_back(t.isTagged() ? t.getValueType() : t);
-    for (const auto &t : pe.outputPorts)
-      bodyOutputTypes.push_back(t.isTagged() ? t.getValueType() : t);
-
-    // Emit named PE definition.
-    os << "fabric.pe @" << pe.name << "(";
-    for (size_t i = 0; i < pe.inputPorts.size(); ++i) {
-      if (i > 0) os << ", ";
-      os << "%arg" << i << ": " << pe.inputPorts[i].toMLIR();
-    }
-    os << ")\n";
-    os << "    [latency = ["
-       << pe.latMin << " : i16, " << pe.latTyp << " : i16, "
-       << pe.latMax << " : i16]";
-    os << ", interval = ["
-       << pe.intMin << " : i16, " << pe.intTyp << " : i16, "
-       << pe.intMax << " : i16]";
-    os << "]\n";
-
     // Emit output_tag in {runtime_config} section.
     os << "    {output_tag = [";
     for (size_t i = 0; i < pe.outputPorts.size(); ++i) {
@@ -153,15 +195,20 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
         os << "0 : i4"; // fallback
     }
     os << "]}\n";
+  }
 
-    os << "    -> (";
-    for (size_t i = 0; i < pe.outputPorts.size(); ++i) {
-      if (i > 0) os << ", ";
-      os << pe.outputPorts[i].toMLIR();
-    }
-    os << ") {\n";
+  os << "    -> (";
+  emitTypeList(os, pe.outputPorts);
+  os << ") {\n";
 
-    // Body with value types.
+  if (isTagged) {
+    // Tagged PE: body operates on value types.
+    std::vector<Type> bodyInputTypes, bodyOutputTypes;
+    for (const auto &t : pe.inputPorts)
+      bodyInputTypes.push_back(t.isTagged() ? t.getValueType() : t);
+    for (const auto &t : pe.outputPorts)
+      bodyOutputTypes.push_back(t.isTagged() ? t.getValueType() : t);
+
     if (!pe.bodyMLIR.empty()) {
       os << pe.bodyMLIR;
     } else {
@@ -179,31 +226,10 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
       os << " : " << bodyOutputTypes[0].toMLIR() << "\n";
       os << "  fabric.yield %0 : " << bodyOutputTypes[0].toMLIR() << "\n";
     }
-    os << "}\n\n";
   } else {
-    // Native PE: standard definition.
-    os << "fabric.pe @" << pe.name << "(";
-    for (size_t i = 0; i < pe.inputPorts.size(); ++i) {
-      if (i > 0) os << ", ";
-      os << "%arg" << i << ": " << pe.inputPorts[i].toMLIR();
-    }
-    os << ")\n";
-    os << "    [latency = ["
-       << pe.latMin << " : i16, " << pe.latTyp << " : i16, "
-       << pe.latMax << " : i16]";
-    os << ", interval = ["
-       << pe.intMin << " : i16, " << pe.intTyp << " : i16, "
-       << pe.intMax << " : i16]";
-    os << "]\n";
-    os << "    -> (";
-    for (size_t i = 0; i < pe.outputPorts.size(); ++i) {
-      if (i > 0) os << ", ";
-      os << pe.outputPorts[i].toMLIR();
-    }
-    os << ") {\n";
     os << generatePEBody(pe);
-    os << "}\n\n";
   }
+  os << "}\n\n";
 
   return os.str();
 }
@@ -215,39 +241,30 @@ ADGBuilder::Impl::generateConstantPEDef(const ConstantPEDef &def) const {
   bool isTagged = outType.isTagged();
   Type valueType = isTagged ? outType.getValueType() : outType;
 
-  std::string ctrlTypeStr = isTagged ?
-      Type::tagged(Type::none(), outType.getTagType()).toMLIR() : "none";
+  std::string ctrlTypeStr =
+      isTagged ? Type::tagged(Type::none(), outType.getTagType()).toMLIR()
+               : "none";
 
   os << "fabric.pe @" << def.name << "(%ctrl: " << ctrlTypeStr << ")\n";
-  os << "    [latency = ["
-     << def.latMin << " : i16, " << def.latTyp << " : i16, "
-     << def.latMax << " : i16]";
-  os << ", interval = ["
-     << def.intMin << " : i16, " << def.intTyp << " : i16, "
-     << def.intMax << " : i16]";
+  emitLatencyInterval(os, def.latMin, def.latTyp, def.latMax, def.intMin,
+                      def.intTyp, def.intMax);
   os << "]\n";
-  if (isTagged) {
+  if (isTagged)
     os << "    {output_tag = [0 : " << outType.getTagType().toMLIR() << "]}\n";
-  }
   os << "    -> (" << outType.toMLIR() << ") {\n";
 
-  // Determine the constant literal: floating point types need "0.0", integers need "0".
-  std::string constLiteral = "0";
-  auto vk = valueType.getKind();
-  if (vk == Type::F16 || vk == Type::BF16 || vk == Type::F32 || vk == Type::F64)
-    constLiteral = "0.0";
+  std::string constLiteral = getConstLiteral(valueType);
+  std::string vStr = valueType.toMLIR();
 
   if (isTagged) {
-    // Tagged constant PE: body operates on native types.
     os << "^bb0(%c_native: none):\n";
-    os << "  %c = handshake.constant %c_native {value = " << constLiteral << " : "
-       << valueType.toMLIR() << "} : " << valueType.toMLIR() << "\n";
-    os << "  fabric.yield %c : " << valueType.toMLIR() << "\n";
+    os << "  %c = handshake.constant %c_native {value = " << constLiteral
+       << " : " << vStr << "} : " << vStr << "\n";
   } else {
     os << "  %c = handshake.constant %ctrl {value = " << constLiteral << " : "
-       << valueType.toMLIR() << "} : " << valueType.toMLIR() << "\n";
-    os << "  fabric.yield %c : " << valueType.toMLIR() << "\n";
+       << vStr << "} : " << vStr << "\n";
   }
+  os << "  fabric.yield %c : " << vStr << "\n";
   os << "}\n\n";
   return os.str();
 }
@@ -814,20 +831,15 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         }
         case ModuleKind::ConstantPE: {
           auto &cpDef = constantPEDefs[inst.defIdx];
-          Type valueType =
-              cpDef.outputType.isTagged()
-                  ? cpDef.outputType.getValueType()
-                  : cpDef.outputType;
-          std::string constLiteral = "0";
-          auto vk = valueType.getKind();
-          if (vk == Type::F16 || vk == Type::BF16 || vk == Type::F32 ||
-              vk == Type::F64)
-            constLiteral = "0.0";
+          Type valueType = cpDef.outputType.isTagged()
+                               ? cpDef.outputType.getValueType()
+                               : cpDef.outputType;
+          std::string constLiteral = getConstLiteral(valueType);
+          std::string vStr = valueType.toMLIR();
           os << "  ^bb0(%c_native: none):\n";
           os << "    %c = handshake.constant %c_native {value = "
-             << constLiteral << " : " << valueType.toMLIR() << "} : "
-             << valueType.toMLIR() << "\n";
-          os << "    fabric.yield %c : " << valueType.toMLIR() << "\n";
+             << constLiteral << " : " << vStr << "} : " << vStr << "\n";
+          os << "    fabric.yield %c : " << vStr << "\n";
           break;
         }
         case ModuleKind::LoadPE: {
@@ -879,20 +891,10 @@ std::string ADGBuilder::Impl::generateMLIR() const {
     }
 
     case ModuleKind::Switch: {
-      // Pattern B: fabric.switch [connectivity_table = [...]] %a, %b : type -> type, type
       auto &swDef = switchDefs[inst.defIdx];
       std::string typeStr = swDef.portType.toMLIR();
-
-      // Build connectivity table as flat array.
-      std::vector<int> flatConn;
-      if (!swDef.connectivity.empty()) {
-        for (const auto &row : swDef.connectivity)
-          for (bool v : row)
-            flatConn.push_back(v ? 1 : 0);
-      } else {
-        // Full crossbar.
-        flatConn.resize(swDef.numOut * swDef.numIn, 1);
-      }
+      auto flatConn = flattenConnectivity(swDef.connectivity, swDef.numOut,
+                                          swDef.numIn);
 
       os << "fabric.switch [connectivity_table = [";
       for (size_t i = 0; i < flatConn.size(); ++i) {
@@ -916,15 +918,8 @@ std::string ADGBuilder::Impl::generateMLIR() const {
     case ModuleKind::TemporalSwitch: {
       auto &tsDef = temporalSwitchDefs[inst.defIdx];
       std::string typeStr = tsDef.interfaceType.toMLIR();
-
-      std::vector<int> flatConn;
-      if (!tsDef.connectivity.empty()) {
-        for (const auto &row : tsDef.connectivity)
-          for (bool v : row)
-            flatConn.push_back(v ? 1 : 0);
-      } else {
-        flatConn.resize(tsDef.numOut * tsDef.numIn, 1);
-      }
+      auto flatConn = flattenConnectivity(tsDef.connectivity, tsDef.numOut,
+                                          tsDef.numIn);
 
       os << "fabric.temporal_sw [num_route_table = " << tsDef.numRouteTable
          << ", connectivity_table = [";
@@ -955,13 +950,6 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       // Determine per-side tagging from operand types.
       bool isTaggedLd = memDef.ldCount > 1;
       bool isTaggedSt = memDef.stCount > 1;
-
-      auto extractTagType = [](const std::string &typeStr) -> std::string {
-        auto pos = typeStr.find(", ");
-        if (pos != std::string::npos)
-          return typeStr.substr(pos + 2, typeStr.size() - pos - 3);
-        return "";
-      };
 
       // Derive tag type strings from operand types at the boundary of each group.
       // Input layout: [ld_addr * ldCount, st_addr * stCount, st_data * stCount]
@@ -1028,13 +1016,6 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       // Determine per-side tagging from operand types after memref.
       bool isTaggedLd = emDef.ldCount > 1;
       bool isTaggedSt = emDef.stCount > 1;
-
-      auto extractTagType = [](const std::string &typeStr) -> std::string {
-        auto pos = typeStr.find(", ");
-        if (pos != std::string::npos)
-          return typeStr.substr(pos + 2, typeStr.size() - pos - 3);
-        return "";
-      };
 
       // ExtMemory input layout: [memref, ld_addr * ldCount, st_addr * stCount, st_data * stCount]
       // operandTypes[0] is memref, operandTypes[1] is first ld_addr.

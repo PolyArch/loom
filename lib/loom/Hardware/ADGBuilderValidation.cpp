@@ -12,6 +12,61 @@ namespace loom {
 namespace adg {
 
 //===----------------------------------------------------------------------===//
+// Validation Helpers
+//===----------------------------------------------------------------------===//
+
+/// Validate connectivity table shape and completeness for a switch-like
+/// component (used by both switch and temporal_switch validation).
+static void validateConnectivityTable(
+    const std::vector<std::vector<bool>> &connectivity, unsigned numIn,
+    unsigned numOut, const std::string &codePrefix, const std::string &loc,
+    std::function<void(const std::string &, const std::string &,
+                       const std::string &)>
+        addError) {
+  if (connectivity.empty())
+    return;
+  if (connectivity.size() != numOut)
+    addError(codePrefix + "_TABLE_SHAPE",
+             "connectivity_table row count != num_outputs", loc);
+  for (size_t r = 0; r < connectivity.size(); ++r) {
+    if (connectivity[r].size() != numIn)
+      addError(codePrefix + "_TABLE_SHAPE",
+               "connectivity_table column count != num_inputs", loc);
+    bool hasOne = false;
+    for (bool v : connectivity[r])
+      if (v) hasOne = true;
+    if (!hasOne)
+      addError(codePrefix + "_ROW_EMPTY",
+               "connectivity row " + std::to_string(r) + " has no 1", loc);
+  }
+  for (unsigned c = 0; c < numIn; ++c) {
+    bool hasOne = false;
+    for (unsigned r = 0; r < connectivity.size(); ++r)
+      if (c < connectivity[r].size() && connectivity[r][c]) hasOne = true;
+    if (!hasOne)
+      addError(codePrefix + "_COL_EMPTY",
+               "connectivity column " + std::to_string(c) + " has no 1", loc);
+  }
+}
+
+/// Validate memory port rules shared by both memory and external memory.
+static void validateMemoryPorts(
+    unsigned ldCount, unsigned stCount, unsigned lsqDepth,
+    const std::string &loc,
+    std::function<void(const std::string &, const std::string &,
+                       const std::string &)>
+        addError) {
+  if (ldCount == 0 && stCount == 0)
+    addError("COMP_MEMORY_PORTS_EMPTY", "ldCount and stCount are both 0", loc);
+  if (stCount > 0 && lsqDepth < 1)
+    addError("COMP_MEMORY_LSQ_MIN", "lsqDepth must be >= 1 when stCount > 0",
+             loc);
+  if (stCount == 0 && lsqDepth > 0)
+    addError("COMP_MEMORY_LSQ_WITHOUT_STORE",
+             "lsqDepth must be 0 when stCount == 0", loc);
+}
+
+//===----------------------------------------------------------------------===//
 // Validation
 //===----------------------------------------------------------------------===//
 
@@ -34,32 +89,8 @@ ValidationResult ADGBuilder::validateADG() {
     if (sw.numIn > 32 || sw.numOut > 32)
       addError("COMP_SWITCH_PORT_LIMIT",
                "switch has more than 32 inputs or outputs", loc);
-    if (!sw.connectivity.empty()) {
-      if (sw.connectivity.size() != sw.numOut)
-        addError("COMP_SWITCH_TABLE_SHAPE",
-                 "connectivity_table row count != num_outputs", loc);
-      for (size_t r = 0; r < sw.connectivity.size(); ++r) {
-        if (sw.connectivity[r].size() != sw.numIn)
-          addError("COMP_SWITCH_TABLE_SHAPE",
-                   "connectivity_table column count != num_inputs", loc);
-        bool hasOne = false;
-        for (bool v : sw.connectivity[r]) if (v) hasOne = true;
-        if (!hasOne)
-          addError("COMP_SWITCH_ROW_EMPTY",
-                   "connectivity row " + std::to_string(r) + " has no 1",
-                   loc);
-      }
-      for (unsigned c = 0; c < sw.numIn; ++c) {
-        bool hasOne = false;
-        for (unsigned r = 0; r < sw.connectivity.size(); ++r)
-          if (c < sw.connectivity[r].size() && sw.connectivity[r][c])
-            hasOne = true;
-        if (!hasOne)
-          addError("COMP_SWITCH_COL_EMPTY",
-                   "connectivity column " + std::to_string(c) + " has no 1",
-                   loc);
-      }
-    }
+    validateConnectivityTable(sw.connectivity, sw.numIn, sw.numOut,
+                              "COMP_SWITCH", loc, addError);
   }
 
   // Validate temporal switch definitions.
@@ -78,34 +109,8 @@ ValidationResult ADGBuilder::validateADG() {
     if (ts.numRouteTable < 1)
       addError("COMP_TEMPORAL_SW_NUM_ROUTE_TABLE",
                "num_route_table must be >= 1", loc);
-    if (!ts.connectivity.empty()) {
-      if (ts.connectivity.size() != ts.numOut)
-        addError("COMP_TEMPORAL_SW_TABLE_SHAPE",
-                 "connectivity_table row count != num_outputs", loc);
-      for (size_t r = 0; r < ts.connectivity.size(); ++r) {
-        if (ts.connectivity[r].size() != ts.numIn)
-          addError("COMP_TEMPORAL_SW_TABLE_SHAPE",
-                   "connectivity_table column count != num_inputs in row " +
-                       std::to_string(r),
-                   loc);
-        bool hasOne = false;
-        for (bool v : ts.connectivity[r]) if (v) hasOne = true;
-        if (!hasOne)
-          addError("COMP_TEMPORAL_SW_ROW_EMPTY",
-                   "connectivity row " + std::to_string(r) + " has no 1",
-                   loc);
-      }
-      for (unsigned c = 0; c < ts.numIn; ++c) {
-        bool hasOne = false;
-        for (unsigned r = 0; r < ts.connectivity.size(); ++r)
-          if (c < ts.connectivity[r].size() && ts.connectivity[r][c])
-            hasOne = true;
-        if (!hasOne)
-          addError("COMP_TEMPORAL_SW_COL_EMPTY",
-                   "connectivity column " + std::to_string(c) + " has no 1",
-                   loc);
-      }
-    }
+    validateConnectivityTable(ts.connectivity, ts.numIn, ts.numOut,
+                              "COMP_TEMPORAL_SW", loc, addError);
   }
 
   // Validate temporal PE definitions.
@@ -181,15 +186,7 @@ ValidationResult ADGBuilder::validateADG() {
   for (size_t i = 0; i < impl_->memoryDefs.size(); ++i) {
     const auto &mem = impl_->memoryDefs[i];
     std::string loc = "memory @" + mem.name;
-    if (mem.ldCount == 0 && mem.stCount == 0)
-      addError("COMP_MEMORY_PORTS_EMPTY",
-               "ldCount and stCount are both 0", loc);
-    if (mem.stCount > 0 && mem.lsqDepth < 1)
-      addError("COMP_MEMORY_LSQ_MIN",
-               "lsqDepth must be >= 1 when stCount > 0", loc);
-    if (mem.stCount == 0 && mem.lsqDepth > 0)
-      addError("COMP_MEMORY_LSQ_WITHOUT_STORE",
-               "lsqDepth must be 0 when stCount == 0", loc);
+    validateMemoryPorts(mem.ldCount, mem.stCount, mem.lsqDepth, loc, addError);
     if (mem.shape.isDynamic())
       addError("COMP_MEMORY_STATIC_REQUIRED",
                "fabric.memory requires static memref shape", loc);
@@ -199,15 +196,7 @@ ValidationResult ADGBuilder::validateADG() {
   for (size_t i = 0; i < impl_->extMemoryDefs.size(); ++i) {
     const auto &em = impl_->extMemoryDefs[i];
     std::string loc = "extmemory @" + em.name;
-    if (em.ldCount == 0 && em.stCount == 0)
-      addError("COMP_MEMORY_PORTS_EMPTY",
-               "ldCount and stCount are both 0", loc);
-    if (em.stCount > 0 && em.lsqDepth < 1)
-      addError("COMP_MEMORY_LSQ_MIN",
-               "lsqDepth must be >= 1 when stCount > 0", loc);
-    if (em.stCount == 0 && em.lsqDepth > 0)
-      addError("COMP_MEMORY_LSQ_WITHOUT_STORE",
-               "lsqDepth must be 0 when stCount == 0", loc);
+    validateMemoryPorts(em.ldCount, em.stCount, em.lsqDepth, loc, addError);
   }
 
   // Validate map_tag definitions.
@@ -430,8 +419,8 @@ ValidationResult ADGBuilder::validateADG() {
                "module @" + impl_->moduleName);
   }
 
-  // One-driver-per-input-port check: each instance input port must have at
-  // most one source (either from a module input or from another instance).
+  // One-driver-per-input-port check and unconnected input port detection.
+  // Both checks share the same iteration over input connections.
   for (unsigned instIdx = 0; instIdx < impl_->instances.size(); ++instIdx) {
     unsigned numIn = impl_->getInstanceInputCount(instIdx);
     std::vector<unsigned> driverCount(numIn, 0);
@@ -448,39 +437,16 @@ ValidationResult ADGBuilder::validateADG() {
     }
 
     for (unsigned p = 0; p < numIn; ++p) {
-      if (driverCount[p] > 1) {
-        std::string loc = impl_->instances[instIdx].name + ":" +
-                          std::to_string(p);
+      std::string loc =
+          impl_->instances[instIdx].name + ":" + std::to_string(p);
+      if (driverCount[p] > 1)
         addError("COMP_MULTI_DRIVER",
                  "input port has " + std::to_string(driverCount[p]) +
-                 " drivers (expected at most 1)", loc);
-      }
-    }
-  }
-
-  // Unconnected instance input port detection.
-  for (unsigned instIdx = 0; instIdx < impl_->instances.size(); ++instIdx) {
-    unsigned numIn = impl_->getInstanceInputCount(instIdx);
-    std::vector<bool> connected(numIn, false);
-
-    for (const auto &conn : impl_->inputConns) {
-      if (conn.instIdx == instIdx && conn.dstPort >= 0 &&
-          (unsigned)conn.dstPort < numIn)
-        connected[conn.dstPort] = true;
-    }
-    for (const auto &conn : impl_->internalConns) {
-      if (conn.dstInst == instIdx && conn.dstPort >= 0 &&
-          (unsigned)conn.dstPort < numIn)
-        connected[conn.dstPort] = true;
-    }
-
-    for (unsigned p = 0; p < numIn; ++p) {
-      if (!connected[p]) {
-        std::string loc = impl_->instances[instIdx].name + ":" +
-                          std::to_string(p);
+                     " drivers (expected at most 1)",
+                 loc);
+      if (driverCount[p] == 0)
         addError("COMP_INPUT_UNCONNECTED",
                  "instance input port is not connected", loc);
-      }
     }
   }
 
