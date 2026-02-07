@@ -297,34 +297,45 @@ void PEOp::print(OpAsmPrinter &p) {
       outputTypes.push_back(v.getType());
   }
 
-  // Collect [hw_params].
-  SmallVector<std::pair<StringRef, Attribute>> hwParams;
-  if (auto a = getLatencyAttr())
-    hwParams.push_back({"latency", a});
-  if (auto a = getIntervalAttr())
-    hwParams.push_back({"interval", a});
-  if (getLqDepth())
-    hwParams.push_back({"lqDepth",
-                         IntegerAttr::get(
-                             IntegerType::get(getContext(), 64),
-                             *getLqDepth())});
-  if (getSqDepth())
-    hwParams.push_back({"sqDepth",
-                         IntegerAttr::get(
-                             IntegerType::get(getContext(), 64),
-                             *getSqDepth())});
+  // Helper to print [hw_params] section.
+  auto printHwParams = [&](OpAsmPrinter &p) {
+    SmallVector<std::function<void()>> entries;
+    if (auto a = getLatencyAttr())
+      entries.push_back([&, a]() { p << "latency = "; p.printAttribute(a); });
+    if (auto a = getIntervalAttr())
+      entries.push_back([&, a]() { p << "interval = "; p.printAttribute(a); });
+    if (getLqDepth())
+      entries.push_back([&]() { p << "lqDepth = " << *getLqDepth(); });
+    if (getSqDepth())
+      entries.push_back([&]() { p << "sqDepth = " << *getSqDepth(); });
+    if (entries.empty())
+      return;
+    p << " [";
+    for (unsigned i = 0; i < entries.size(); ++i) {
+      if (i > 0) p << ", ";
+      entries[i]();
+    }
+    p << "]";
+  };
 
-  // Collect {runtime_config}.
-  SmallVector<std::pair<StringRef, Attribute>> runtimeParams;
-  if (auto a = getOutputTagAttr())
-    runtimeParams.push_back({"output_tag", a});
-  if (auto a = getConstantValueAttr())
-    runtimeParams.push_back({"constant_value", a});
-  if (getContCondSel())
-    runtimeParams.push_back({"cont_cond_sel",
-                         IntegerAttr::get(
-                             IntegerType::get(getContext(), 64),
-                             *getContCondSel())});
+  // Helper to print {runtime_config} section.
+  auto printRuntimeConfig = [&](OpAsmPrinter &p) {
+    SmallVector<std::function<void()>> entries;
+    if (auto a = getOutputTagAttr())
+      entries.push_back([&, a]() { p << "output_tag = "; p.printAttribute(a); });
+    if (auto a = getConstantValueAttr())
+      entries.push_back([&, a]() { p << "constant_value = "; p.printAttribute(a); });
+    if (getContCondSel())
+      entries.push_back([&]() { p << "cont_cond_sel = " << *getContCondSel(); });
+    if (entries.empty())
+      return;
+    p << " {";
+    for (unsigned i = 0; i < entries.size(); ++i) {
+      if (i > 0) p << ", ";
+      entries[i]();
+    }
+    p << "}";
+  };
 
   if (isNamed) {
     // Named form: (%arg: T, ...) [hw] {config} -> (R, ...).
@@ -340,44 +351,22 @@ void PEOp::print(OpAsmPrinter &p) {
     p << ")";
   }
 
-  // Print [hw_params].
-  if (!hwParams.empty()) {
-    p << " [";
-    for (unsigned i = 0; i < hwParams.size(); ++i) {
-      if (i > 0)
-        p << ", ";
-      p << hwParams[i].first << " = ";
-      p.printAttribute(hwParams[i].second);
-    }
-    p << "]";
-  }
-
-  // Print {runtime_config}.
-  if (!runtimeParams.empty()) {
-    p << " {";
-    for (unsigned i = 0; i < runtimeParams.size(); ++i) {
-      if (i > 0)
-        p << ", ";
-      p << runtimeParams[i].first << " = ";
-      p.printAttribute(runtimeParams[i].second);
-    }
-    p << "}";
-  }
-
   if (isNamed) {
-    // Named form: print -> (R, ...) after [hw] {config}.
+    // Named form: (%args) [hw_params] {config} -> (results).
+    printHwParams(p);
+    printRuntimeConfig(p);
     p << " -> (";
     llvm::interleaveComma(outputTypes, p,
                           [&](Type t) { p.printType(t); });
     p << ")";
-  }
-
-  if (!isNamed) {
-    // Inline form: print operands and type signature.
+  } else {
+    // Inline form: operands [hw_params] {config} : (types) -> (types).
     if (!getInputs().empty()) {
       p << " ";
       p.printOperands(getInputs());
     }
+    printHwParams(p);
+    printRuntimeConfig(p);
     p << " : (";
     llvm::interleaveComma(inputTypes, p, [&](Type t) { p.printType(t); });
     p << ") -> (";

@@ -249,9 +249,14 @@ void SwitchOp::print(OpAsmPrinter &p) {
 
   // Print [hw_params] if any are present.
   if (getConnectivityTable().has_value()) {
-    p << " [connectivity_table = ";
-    p.printAttribute(getConnectivityTableAttr());
-    p << "]";
+    p << " [connectivity_table = [";
+    auto ct = *getConnectivityTable();
+    for (size_t i = 0; i < ct.size(); ++i) {
+      if (i > 0)
+        p << ", ";
+      p << static_cast<int>(ct[i]);
+    }
+    p << "]]";
   }
 
   // Print optional {route_table = [...]}.
@@ -453,8 +458,13 @@ void TemporalSwOp::print(OpAsmPrinter &p) {
   // Print [hw_params] (always present: num_route_table is required).
   p << " [num_route_table = " << getNumRouteTable();
   if (auto ct = getConnectivityTable()) {
-    p << ", connectivity_table = ";
-    p.printAttribute(getConnectivityTableAttr());
+    p << ", connectivity_table = [";
+    for (size_t i = 0; i < ct->size(); ++i) {
+      if (i > 0)
+        p << ", ";
+      p << static_cast<int>((*ct)[i]);
+    }
+    p << "]";
   }
   p << "]";
 
