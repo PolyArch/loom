@@ -14,6 +14,8 @@
 #include "loom/Hardware/adg.h"
 
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <set>
 #include <sstream>

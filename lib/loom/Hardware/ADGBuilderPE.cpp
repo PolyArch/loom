@@ -222,6 +222,10 @@ TemporalPEBuilder &TemporalPEBuilder::setInterface(Type taggedType) {
 }
 
 TemporalPEBuilder &TemporalPEBuilder::addFU(PEHandle pe) {
+  if (pe.id >= builder_->impl_->peDefs.size()) {
+    fprintf(stderr, "error: addFU: invalid PE definition id %u\n", pe.id);
+    std::exit(1);
+  }
   builder_->impl_->temporalPEDefs[defId_].fuPEDefIndices.push_back(pe.id);
   return *this;
 }
@@ -409,6 +413,10 @@ DelTagBuilder::DelTagBuilder(ADGBuilder *builder, unsigned defId)
     : builder_(builder), defId_(defId) {}
 
 DelTagBuilder &DelTagBuilder::setInputType(Type type) {
+  if (!type.isTagged()) {
+    fprintf(stderr, "error: setInputType: del_tag requires a tagged type\n");
+    std::exit(1);
+  }
   builder_->impl_->delTagDefs[defId_].inputType = type;
   return *this;
 }

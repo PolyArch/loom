@@ -284,13 +284,7 @@ InstanceHandle ADGBuilder::clone(ModuleHandle source,
 //===----------------------------------------------------------------------===//
 
 void ADGBuilder::connect(InstanceHandle src, InstanceHandle dst) {
-  if (src.id >= impl_->instances.size())
-    builderError("connect", "invalid source instance id " +
-                 std::to_string(src.id));
-  if (dst.id >= impl_->instances.size())
-    builderError("connect", "invalid destination instance id " +
-                 std::to_string(dst.id));
-  impl_->internalConns.push_back({src.id, 0, dst.id, 0});
+  connectPorts(src, 0, dst, 0);
 }
 
 void ADGBuilder::connectPorts(InstanceHandle src, int srcPort,
