@@ -502,12 +502,21 @@ std::string ADGBuilder::Impl::generateMLIR() const {
   std::vector<std::vector<unsigned>> adjList(numInst);
   std::vector<unsigned> inDeg(numInst, 0);
 
+  // For reciprocal pairs (A->B and B->A both exist), keep only one direction
+  // (lower id -> higher id) so that a valid topo order exists and SSA
+  // dominance is maintained.
+  std::set<std::pair<unsigned, unsigned>> reciprocal;
+  for (const auto &e : edgeSet) {
+    if (e.first != e.second && edgeSet.count({e.second, e.first}))
+      reciprocal.insert(e);
+  }
+
   for (const auto &conn : internalConns) {
-    // Skip bidirectional edges (both A->B and B->A exist).
-    if (edgeSet.count({conn.dstInst, conn.srcInst}))
-      continue;
-    adjList[conn.srcInst].push_back(conn.dstInst);
-    inDeg[conn.dstInst]++;
+    unsigned s = conn.srcInst, d = conn.dstInst;
+    if (reciprocal.count({s, d}) && s > d)
+      continue; // drop the higher->lower direction of a reciprocal pair
+    adjList[s].push_back(d);
+    inDeg[d]++;
   }
 
   std::queue<unsigned> readyQueue;

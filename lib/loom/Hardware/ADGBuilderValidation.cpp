@@ -214,6 +214,12 @@ ValidationResult ADGBuilder::validateADG() {
       validateTagType(dt.inputType.getTagType(), loc);
   }
 
+  // Helper: validate tag width on any tagged type encountered in definitions.
+  auto validateTaggedType = [&](Type t, const std::string &loc) {
+    if (t.isTagged())
+      validateTagType(t.getTagType(), loc);
+  };
+
   // Validate PE definitions.
   for (size_t i = 0; i < impl_->peDefs.size(); ++i) {
     const auto &pe = impl_->peDefs[i];
@@ -239,6 +245,54 @@ ValidationResult ADGBuilder::validateADG() {
     if (pe.interface == InterfaceCategory::Native && hasTagged)
       addError("COMP_PE_NATIVE_INTERFACE_TAGGED_PORTS",
                "PE has Native interface but has tagged ports", loc);
+    // Validate tag widths on all tagged port types.
+    for (const auto &t : pe.inputPorts)
+      validateTaggedType(t, loc + " (input port)");
+    for (const auto &t : pe.outputPorts)
+      validateTaggedType(t, loc + " (output port)");
+  }
+
+  // Validate tag widths on load PE tagged interfaces.
+  for (size_t i = 0; i < impl_->loadPEDefs.size(); ++i) {
+    const auto &lp = impl_->loadPEDefs[i];
+    if (lp.interface == InterfaceCategory::Tagged) {
+      std::string loc = "load_pe @" + lp.name;
+      int w = getIntWidth(Type::iN(lp.tagWidth));
+      if (w < 1 || w > 16)
+        addError("COMP_TAG_WIDTH_RANGE",
+                 "tag width outside [1, 16]", loc);
+    }
+  }
+
+  // Validate tag widths on store PE tagged interfaces.
+  for (size_t i = 0; i < impl_->storePEDefs.size(); ++i) {
+    const auto &sp = impl_->storePEDefs[i];
+    if (sp.interface == InterfaceCategory::Tagged) {
+      std::string loc = "store_pe @" + sp.name;
+      int w = getIntWidth(Type::iN(sp.tagWidth));
+      if (w < 1 || w > 16)
+        addError("COMP_TAG_WIDTH_RANGE",
+                 "tag width outside [1, 16]", loc);
+    }
+  }
+
+  // Validate tag widths on temporal PE/SW interface types.
+  for (size_t i = 0; i < impl_->temporalPEDefs.size(); ++i) {
+    const auto &tp = impl_->temporalPEDefs[i];
+    validateTaggedType(tp.interfaceType,
+                       "temporal_pe @" + tp.name + " (interface)");
+  }
+  for (size_t i = 0; i < impl_->temporalSwitchDefs.size(); ++i) {
+    const auto &ts = impl_->temporalSwitchDefs[i];
+    validateTaggedType(ts.interfaceType,
+                       "temporal_sw @" + ts.name + " (interface)");
+  }
+
+  // Validate tag widths on module port types.
+  for (size_t i = 0; i < impl_->ports.size(); ++i) {
+    const auto &p = impl_->ports[i];
+    if (!p.isMemref)
+      validateTaggedType(p.type, "module port %" + p.name);
   }
 
   // Check for empty module body.
