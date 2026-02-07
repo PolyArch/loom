@@ -127,6 +127,44 @@ ValidationResult ADGBuilder::validateADG() {
     if (tp.fuPEDefIndices.empty())
       addError("COMP_TEMPORAL_PE_EMPTY_BODY",
                "temporal PE has no FU definitions", loc);
+    // Validate each FU definition referenced by this temporal PE.
+    unsigned expectedIn = 0, expectedOut = 0;
+    for (size_t fi = 0; fi < tp.fuPEDefIndices.size(); ++fi) {
+      unsigned fuIdx = tp.fuPEDefIndices[fi];
+      std::string fuLoc = loc + " FU[" + std::to_string(fi) + "]";
+      if (fuIdx >= impl_->peDefs.size()) {
+        addError("COMP_TEMPORAL_PE_FU_INVALID",
+                 "FU index out of range", fuLoc);
+        continue;
+      }
+      const auto &fu = impl_->peDefs[fuIdx];
+      // FUs must use native interface (not tagged).
+      if (fu.interface == InterfaceCategory::Tagged)
+        addError("COMP_TEMPORAL_PE_TAGGED_FU",
+                 "temporal PE FU must use native interface", fuLoc);
+      bool fuHasTagged = false;
+      for (const auto &t : fu.inputPorts)
+        if (t.isTagged()) fuHasTagged = true;
+      for (const auto &t : fu.outputPorts)
+        if (t.isTagged()) fuHasTagged = true;
+      if (fuHasTagged)
+        addError("COMP_TEMPORAL_PE_TAGGED_FU",
+                 "temporal PE FU must not have tagged ports", fuLoc);
+      // All FUs must have the same port arity.
+      unsigned nIn = fu.inputPorts.size();
+      unsigned nOut = fu.outputPorts.size();
+      if (fi == 0) {
+        expectedIn = nIn;
+        expectedOut = nOut;
+      } else {
+        if (nIn != expectedIn || nOut != expectedOut)
+          addError("COMP_TEMPORAL_PE_FU_ARITY",
+                   "FU port count mismatch with first FU ("
+                   + std::to_string(nIn) + " in, " + std::to_string(nOut)
+                   + " out vs " + std::to_string(expectedIn) + " in, "
+                   + std::to_string(expectedOut) + " out)", fuLoc);
+      }
+    }
     if (!tp.shareModeB && tp.shareBufferSize > 0)
       addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE",
                "operand_buffer_size set without enable_share_operand_buffer",
