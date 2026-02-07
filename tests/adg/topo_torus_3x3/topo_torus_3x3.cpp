@@ -15,6 +15,21 @@
 #include <loom/Hardware/adg.h>
 
 #include <cassert>
+#include <fstream>
+#include <string>
+
+static unsigned mlirCount(const std::string &path, const std::string &substr) {
+  std::ifstream f(path);
+  std::string content((std::istreambuf_iterator<char>(f)),
+                       std::istreambuf_iterator<char>());
+  unsigned count = 0;
+  size_t pos = 0;
+  while ((pos = content.find(substr, pos)) != std::string::npos) {
+    ++count;
+    pos += substr.size();
+  }
+  return count;
+}
 
 using namespace loom::adg;
 
@@ -80,5 +95,12 @@ int main() {
   assert(validation.success && "validation failed");
 
   builder.exportMLIR("Output/topo_torus_3x3.fabric.mlir");
+
+  // Verify MLIR contains expected instances: 9 PEs and 9 switches.
+  const char *mlir = "Output/topo_torus_3x3.fabric.mlir";
+  assert(mlirCount(mlir, "fabric.instance") == 9 && "expected 9 PE instances");
+  assert(mlirCount(mlir, "fabric.switch") == 9 && "expected 9 switch instances");
+  assert(mlirCount(mlir, "sym_name = \"pe_") == 9 && "expected pe_ sym_names");
+
   return 0;
 }

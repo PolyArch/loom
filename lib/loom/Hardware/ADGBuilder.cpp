@@ -127,11 +127,24 @@ DelTagBuilder ADGBuilder::newDelTag(const std::string &name) {
 }
 
 //===----------------------------------------------------------------------===//
+// Error reporting
+//===----------------------------------------------------------------------===//
+
+/// Report a builder API misuse error and exit.
+static void builderError(const char *api, const std::string &msg) {
+  llvm::errs() << "error: " << api << ": " << msg << "\n";
+  std::exit(1);
+}
+
+//===----------------------------------------------------------------------===//
 // Clone (instantiation)
 //===----------------------------------------------------------------------===//
 
 InstanceHandle ADGBuilder::clone(PEHandle source,
                                  const std::string &instanceName) {
+  if (source.id >= impl_->peDefs.size())
+    builderError("clone(PEHandle)", "invalid PE definition id " +
+                 std::to_string(source.id));
   unsigned id = impl_->instances.size();
   impl_->instances.push_back({ModuleKind::PE, source.id, instanceName});
   return InstanceHandle{id};
@@ -139,6 +152,9 @@ InstanceHandle ADGBuilder::clone(PEHandle source,
 
 InstanceHandle ADGBuilder::clone(SwitchHandle source,
                                  const std::string &instanceName) {
+  if (source.id >= impl_->switchDefs.size())
+    builderError("clone(SwitchHandle)", "invalid switch definition id " +
+                 std::to_string(source.id));
   unsigned id = impl_->instances.size();
   impl_->instances.push_back({ModuleKind::Switch, source.id, instanceName});
   return InstanceHandle{id};
@@ -146,6 +162,10 @@ InstanceHandle ADGBuilder::clone(SwitchHandle source,
 
 InstanceHandle ADGBuilder::clone(TemporalPEHandle source,
                                  const std::string &instanceName) {
+  if (source.id >= impl_->temporalPEDefs.size())
+    builderError("clone(TemporalPEHandle)",
+                 "invalid temporal PE definition id " +
+                 std::to_string(source.id));
   unsigned id = impl_->instances.size();
   impl_->instances.push_back({ModuleKind::TemporalPE, source.id, instanceName});
   return InstanceHandle{id};
@@ -153,6 +173,10 @@ InstanceHandle ADGBuilder::clone(TemporalPEHandle source,
 
 InstanceHandle ADGBuilder::clone(TemporalSwitchHandle source,
                                  const std::string &instanceName) {
+  if (source.id >= impl_->temporalSwitchDefs.size())
+    builderError("clone(TemporalSwitchHandle)",
+                 "invalid temporal switch definition id " +
+                 std::to_string(source.id));
   unsigned id = impl_->instances.size();
   impl_->instances.push_back(
       {ModuleKind::TemporalSwitch, source.id, instanceName});
@@ -161,6 +185,9 @@ InstanceHandle ADGBuilder::clone(TemporalSwitchHandle source,
 
 InstanceHandle ADGBuilder::clone(MemoryHandle source,
                                  const std::string &instanceName) {
+  if (source.id >= impl_->memoryDefs.size())
+    builderError("clone(MemoryHandle)", "invalid memory definition id " +
+                 std::to_string(source.id));
   unsigned id = impl_->instances.size();
   impl_->instances.push_back({ModuleKind::Memory, source.id, instanceName});
   return InstanceHandle{id};
@@ -168,6 +195,10 @@ InstanceHandle ADGBuilder::clone(MemoryHandle source,
 
 InstanceHandle ADGBuilder::clone(ExtMemoryHandle source,
                                  const std::string &instanceName) {
+  if (source.id >= impl_->extMemoryDefs.size())
+    builderError("clone(ExtMemoryHandle)",
+                 "invalid external memory definition id " +
+                 std::to_string(source.id));
   unsigned id = impl_->instances.size();
   impl_->instances.push_back({ModuleKind::ExtMemory, source.id, instanceName});
   return InstanceHandle{id};
@@ -175,6 +206,10 @@ InstanceHandle ADGBuilder::clone(ExtMemoryHandle source,
 
 InstanceHandle ADGBuilder::clone(ConstantPEHandle source,
                                  const std::string &instanceName) {
+  if (source.id >= impl_->constantPEDefs.size())
+    builderError("clone(ConstantPEHandle)",
+                 "invalid constant PE definition id " +
+                 std::to_string(source.id));
   unsigned id = impl_->instances.size();
   impl_->instances.push_back(
       {ModuleKind::ConstantPE, source.id, instanceName});
@@ -183,6 +218,9 @@ InstanceHandle ADGBuilder::clone(ConstantPEHandle source,
 
 InstanceHandle ADGBuilder::clone(LoadPEHandle source,
                                  const std::string &instanceName) {
+  if (source.id >= impl_->loadPEDefs.size())
+    builderError("clone(LoadPEHandle)", "invalid load PE definition id " +
+                 std::to_string(source.id));
   unsigned id = impl_->instances.size();
   impl_->instances.push_back({ModuleKind::LoadPE, source.id, instanceName});
   return InstanceHandle{id};
@@ -190,6 +228,9 @@ InstanceHandle ADGBuilder::clone(LoadPEHandle source,
 
 InstanceHandle ADGBuilder::clone(StorePEHandle source,
                                  const std::string &instanceName) {
+  if (source.id >= impl_->storePEDefs.size())
+    builderError("clone(StorePEHandle)", "invalid store PE definition id " +
+                 std::to_string(source.id));
   unsigned id = impl_->instances.size();
   impl_->instances.push_back({ModuleKind::StorePE, source.id, instanceName});
   return InstanceHandle{id};
@@ -197,28 +238,50 @@ InstanceHandle ADGBuilder::clone(StorePEHandle source,
 
 InstanceHandle ADGBuilder::clone(ModuleHandle source,
                                  const std::string &instanceName) {
-  static const ModuleKind kindMap[] = {
-      ModuleKind::PE,            ModuleKind::Switch,
-      ModuleKind::TemporalPE,    ModuleKind::TemporalSwitch,
-      ModuleKind::Memory,        ModuleKind::ExtMemory,
-      ModuleKind::ConstantPE,    ModuleKind::LoadPE,
-      ModuleKind::StorePE,       ModuleKind::AddTag,
-      ModuleKind::MapTag,        ModuleKind::DelTag,
+  // Tag-operation handles are not valid clone sources (they auto-instantiate).
+  if (source.kind == ModuleHandle::AddTag ||
+      source.kind == ModuleHandle::MapTag ||
+      source.kind == ModuleHandle::DelTag)
+    builderError("clone",
+                 "tag-operation handles cannot be cloned; they auto-instantiate "
+                 "via their builder's implicit conversion to InstanceHandle");
+
+  // Validate definition ID bounds.
+  static const struct { ModuleKind kind; const char *label; } kindMap[] = {
+      {ModuleKind::PE, "PE"},
+      {ModuleKind::Switch, "switch"},
+      {ModuleKind::TemporalPE, "temporal PE"},
+      {ModuleKind::TemporalSwitch, "temporal switch"},
+      {ModuleKind::Memory, "memory"},
+      {ModuleKind::ExtMemory, "external memory"},
+      {ModuleKind::ConstantPE, "constant PE"},
+      {ModuleKind::LoadPE, "load PE"},
+      {ModuleKind::StorePE, "store PE"},
   };
+  const unsigned defSizes[] = {
+      (unsigned)impl_->peDefs.size(),
+      (unsigned)impl_->switchDefs.size(),
+      (unsigned)impl_->temporalPEDefs.size(),
+      (unsigned)impl_->temporalSwitchDefs.size(),
+      (unsigned)impl_->memoryDefs.size(),
+      (unsigned)impl_->extMemoryDefs.size(),
+      (unsigned)impl_->constantPEDefs.size(),
+      (unsigned)impl_->loadPEDefs.size(),
+      (unsigned)impl_->storePEDefs.size(),
+  };
+  unsigned kindIdx = (unsigned)source.kind;
+  if (source.id >= defSizes[kindIdx])
+    builderError("clone(ModuleHandle)",
+                 std::string("invalid ") + kindMap[kindIdx].label +
+                 " definition id " + std::to_string(source.id));
   unsigned id = impl_->instances.size();
-  impl_->instances.push_back({kindMap[source.kind], source.id, instanceName});
+  impl_->instances.push_back({kindMap[kindIdx].kind, source.id, instanceName});
   return InstanceHandle{id};
 }
 
 //===----------------------------------------------------------------------===//
 // Internal connections
 //===----------------------------------------------------------------------===//
-
-/// Report a builder API misuse error and exit.
-static void builderError(const char *api, const std::string &msg) {
-  llvm::errs() << "error: " << api << ": " << msg << "\n";
-  std::exit(1);
-}
 
 void ADGBuilder::connect(InstanceHandle src, InstanceHandle dst) {
   if (src.id >= impl_->instances.size())
@@ -336,6 +399,12 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
     builderError("buildMesh", "rows must be positive");
   if (cols <= 0)
     builderError("buildMesh", "cols must be positive");
+  if (peTemplate.id >= impl_->peDefs.size())
+    builderError("buildMesh", "invalid PE template handle id " +
+                 std::to_string(peTemplate.id));
+  if (swTemplate.id >= impl_->switchDefs.size())
+    builderError("buildMesh", "invalid switch template handle id " +
+                 std::to_string(swTemplate.id));
 
   // Validate switch port count. Need at least 5 ports for N/E/S/W + PE-local.
   auto &swDef = impl_->switchDefs[swTemplate.id];
@@ -345,6 +414,22 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
   if (swDef.numOut < 5)
     builderError("buildMesh",
                  "switch needs >= 5 output ports for mesh topology");
+
+  bool diagonal = (topology == Topology::DiagonalMesh ||
+                   topology == Topology::DiagonalTorus);
+  if (diagonal) {
+    // Diagonal topologies require ports 5 (SE) and 6 (SW) on switches.
+    if (swDef.numIn < 7)
+      builderError("buildMesh",
+                   "diagonal topology requires >= 7 input ports on switch "
+                   "(N=0,E=1,S=2,W=3,PE=4,SE=5,SW=6); have " +
+                   std::to_string(swDef.numIn));
+    if (swDef.numOut < 7)
+      builderError("buildMesh",
+                   "diagonal topology requires >= 7 output ports on switch "
+                   "(N=0,E=1,S=2,W=3,PE=4,SE=5,SW=6); have " +
+                   std::to_string(swDef.numOut));
+  }
 
   MeshResult result;
   result.peGrid.resize(rows, std::vector<InstanceHandle>(cols));
@@ -378,8 +463,7 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
 
   // Switch-to-switch connections.
   // Switch port ordering: N=0, E=1, S=2, W=3, PE-local=4+
-  bool diagonal = (topology == Topology::DiagonalMesh ||
-                   topology == Topology::DiagonalTorus);
+  // Note: `diagonal` was already computed above for port validation.
   bool torus = (topology == Topology::Torus ||
                 topology == Topology::DiagonalTorus);
 
@@ -404,19 +488,15 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
 
       if (diagonal) {
         // SE diagonal: SW[r][c] out 5 -> SW[r+1][c+1] in 5
-        if (swDef.numOut > 5 && swDef.numIn > 5) {
-          if (r + 1 < rows && c + 1 < cols) {
-            connectPorts(result.swGrid[r][c], 5,
-                         result.swGrid[r + 1][c + 1], 5);
-          }
+        if (r + 1 < rows && c + 1 < cols) {
+          connectPorts(result.swGrid[r][c], 5,
+                       result.swGrid[r + 1][c + 1], 5);
         }
 
         // SW diagonal: SW[r][c] out 6 -> SW[r+1][c-1] in 6
-        if (swDef.numOut > 6 && swDef.numIn > 6) {
-          if (r + 1 < rows && c - 1 >= 0) {
-            connectPorts(result.swGrid[r][c], 6,
-                         result.swGrid[r + 1][c - 1], 6);
-          }
+        if (r + 1 < rows && c - 1 >= 0) {
+          connectPorts(result.swGrid[r][c], 6,
+                       result.swGrid[r + 1][c - 1], 6);
         }
       }
     }
@@ -445,7 +525,7 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
       connectToModuleInput(wrapIn, result.swGrid[0][c], 0);
     }
 
-    if (diagonal && swDef.numOut > 5 && swDef.numIn > 5) {
+    if (diagonal) {
       // SE diagonal wraparound (rows): SW[rows-1][c] out 5 -> SW[0][c+1] in 5
       for (int c = 0; c + 1 < cols; ++c) {
         std::string wrapName = mPrefix + "wrap_se_r_c" + std::to_string(c);
@@ -472,9 +552,7 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
         auto wrapIn = addModuleInput(wrapName + "_in", swPortType);
         connectToModuleInput(wrapIn, result.swGrid[0][0], 5);
       }
-    }
 
-    if (diagonal && swDef.numOut > 6 && swDef.numIn > 6) {
       // SW diagonal wraparound (rows): SW[rows-1][c] out 6 -> SW[0][c-1] in 6
       for (int c = 1; c < cols; ++c) {
         std::string wrapName = mPrefix + "wrap_sw_r_c" + std::to_string(c);
@@ -520,7 +598,7 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
         if (conn.instIdx == swInst)
           connected[conn.dstPort] = true;
       }
-      // Create module inputs for unconnected ports.
+      // Create module inputs for unconnected input ports.
       for (unsigned p = 0; p < numIn; ++p) {
         if (!connected[p]) {
           std::string portName =
@@ -529,6 +607,28 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
               "_in" + std::to_string(p);
           auto mPort = addModuleInput(portName, swPortType);
           connectToModuleInput(mPort, result.swGrid[r][c], p);
+        }
+      }
+
+      // Auto-fill unconnected switch output ports with module outputs.
+      unsigned numOut = impl_->getInstanceOutputCount(swInst);
+      std::vector<bool> outUsed(numOut, false);
+      for (const auto &conn : impl_->internalConns) {
+        if (conn.srcInst == swInst)
+          outUsed[conn.srcPort] = true;
+      }
+      for (const auto &conn : impl_->outputConns) {
+        if (conn.instIdx == swInst)
+          outUsed[conn.srcPort] = true;
+      }
+      for (unsigned p = 0; p < numOut; ++p) {
+        if (!outUsed[p]) {
+          std::string portName =
+              mPrefix + "sw_" +
+              std::to_string(r) + "_" + std::to_string(c) +
+              "_out" + std::to_string(p);
+          auto mPort = addModuleOutput(portName, swPortType);
+          connectToModuleOutput(result.swGrid[r][c], p, mPort);
         }
       }
     }
@@ -847,6 +947,44 @@ ValidationResult ADGBuilder::validateADG() {
                           std::to_string(p);
         addError("COMP_INPUT_UNCONNECTED",
                  "instance input port is not connected", loc);
+      }
+    }
+  }
+
+  // Dangling instance output port detection: PE-type instances must have all
+  // output ports connected. Switch/Memory instances may have unused outputs
+  // (boundary switches in meshes, unused memory done signals).
+  for (unsigned instIdx = 0; instIdx < impl_->instances.size(); ++instIdx) {
+    auto kind = impl_->instances[instIdx].kind;
+    // Only check PE and tag-op instances for dangling outputs.
+    // Switches and memory instances may have unused ports by design.
+    // Specialized PEs (ConstantPE, LoadPE, StorePE) have secondary outputs
+    // (done signals) that may legitimately be unused.
+    if (kind != ModuleKind::PE && kind != ModuleKind::TemporalPE &&
+        kind != ModuleKind::AddTag && kind != ModuleKind::MapTag &&
+        kind != ModuleKind::DelTag)
+      continue;
+
+    unsigned numOut = impl_->getInstanceOutputCount(instIdx);
+    std::vector<bool> used(numOut, false);
+
+    for (const auto &conn : impl_->internalConns) {
+      if (conn.srcInst == instIdx && conn.srcPort >= 0 &&
+          (unsigned)conn.srcPort < numOut)
+        used[conn.srcPort] = true;
+    }
+    for (const auto &conn : impl_->outputConns) {
+      if (conn.instIdx == instIdx && conn.srcPort >= 0 &&
+          (unsigned)conn.srcPort < numOut)
+        used[conn.srcPort] = true;
+    }
+
+    for (unsigned p = 0; p < numOut; ++p) {
+      if (!used[p]) {
+        std::string loc = impl_->instances[instIdx].name + ":" +
+                          std::to_string(p) + " (output)";
+        addError("COMP_OUTPUT_DANGLING",
+                 "instance output port is not connected to any consumer", loc);
       }
     }
   }

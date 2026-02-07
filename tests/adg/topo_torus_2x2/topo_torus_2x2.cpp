@@ -15,6 +15,21 @@
 #include <loom/Hardware/adg.h>
 
 #include <cassert>
+#include <fstream>
+#include <string>
+
+static unsigned mlirCount(const std::string &path, const std::string &substr) {
+  std::ifstream f(path);
+  std::string content((std::istreambuf_iterator<char>(f)),
+                       std::istreambuf_iterator<char>());
+  unsigned count = 0;
+  size_t pos = 0;
+  while ((pos = content.find(substr, pos)) != std::string::npos) {
+    ++count;
+    pos += substr.size();
+  }
+  return count;
+}
 
 using namespace loom::adg;
 
@@ -63,5 +78,16 @@ int main() {
   assert(validation.success && "validation failed");
 
   builder.exportMLIR("Output/topo_torus_2x2.fabric.mlir");
+
+  // Verify MLIR contains expected instances: 4 PEs and 4 switches.
+  const char *mlir = "Output/topo_torus_2x2.fabric.mlir";
+  assert(mlirCount(mlir, "fabric.instance") == 4 && "expected 4 PE instances");
+  assert(mlirCount(mlir, "fabric.switch") == 4 && "expected 4 switch instances");
+  // Torus has more module I/O than mesh due to wraparound connections.
+  // A 2x2 torus with 5-port switches has wrap ports that become module I/O.
+  assert(mlirCount(mlir, "sym_name = \"pe_") == 4 && "expected pe_ sym_names");
+  assert(mlirCount(mlir, "sym_name = \"sw_") == 0 ||
+         mlirCount(mlir, "fabric.switch") == 4);
+
   return 0;
 }

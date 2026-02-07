@@ -155,18 +155,43 @@ static void buildAndExport(const FuzzParams &p) {
     }
   }
 
+  // Ensure all PE output ports are consumed. Track which instances have their
+  // output connected as a source in internal connections or module outputs.
+  std::vector<bool> outputUsed(p.numInstances, false);
+  for (unsigned i = 0; i < p.numInstances; ++i) {
+    for (unsigned port = 0; port < 2; ++port) {
+      if (p.inputSrc[i][port] >= 0)
+        outputUsed[p.inputSrc[i][port]] = true;
+    }
+  }
+
   for (unsigned o = 0; o < p.numOutputs; ++o) {
     auto port = builder.addModuleOutput(
         "out_" + std::to_string(o), valType);
     builder.connectToModuleOutput(insts[p.outputSrcInst[o]], 0, port);
+    outputUsed[p.outputSrcInst[o]] = true;
+  }
+
+  // Create module outputs for any instance whose output is still dangling.
+  for (unsigned i = 0; i < p.numInstances; ++i) {
+    if (!outputUsed[i]) {
+      auto port = builder.addModuleOutput(
+          "sink_" + std::to_string(i), valType);
+      builder.connectToModuleOutput(insts[i], 0, port);
+    }
   }
 
   builder.exportMLIR("Output/" + p.name + ".fabric.mlir");
 }
 
-/// Generate a standalone C++ source file for an ADG.
+/// Generate a standalone C++ source file for an ADG in its own subdirectory.
 static void writeCppSource(const FuzzParams &p, const std::string &outDir) {
-  std::string path = outDir + "/" + p.name + ".cpp";
+  // Create per-case subdirectory: Output/<name>/<name>.cpp
+  std::string caseDir = outDir + "/" + p.name;
+  // Use system() for mkdir since we're just in a test tool.
+  std::string mkdirCmd = "mkdir -p " + caseDir;
+  (void)std::system(mkdirCmd.c_str());
+  std::string path = caseDir + "/" + p.name + ".cpp";
   std::ofstream os(path);
 
   os << "#include <loom/Hardware/adg.h>\n";
@@ -220,7 +245,33 @@ static void writeCppSource(const FuzzParams &p, const std::string &outDir) {
   }
   os << "\n";
 
+  // Compute which outputs are used and emit sinks for dangling ones.
+  std::vector<bool> genOutputUsed(p.numInstances, false);
+  for (unsigned i = 0; i < p.numInstances; ++i) {
+    for (unsigned port = 0; port < 2; ++port) {
+      if (p.inputSrc[i][port] >= 0)
+        genOutputUsed[p.inputSrc[i][port]] = true;
+    }
+  }
+  for (unsigned o = 0; o < p.numOutputs; ++o)
+    genOutputUsed[p.outputSrcInst[o]] = true;
+
+  unsigned sinkIdx = 0;
+  for (unsigned i = 0; i < p.numInstances; ++i) {
+    if (!genOutputUsed[i]) {
+      os << "  auto sink_" << sinkIdx
+         << " = builder.addModuleOutput(\"sink_" << sinkIdx
+         << "\", valType);\n";
+      os << "  builder.connectToModuleOutput(inst_" << i
+         << ", 0, sink_" << sinkIdx << ");\n";
+      sinkIdx++;
+    }
+  }
+  os << "\n";
+
   os << "  builder.exportMLIR(\"Output/" << p.name << ".fabric.mlir\");\n";
+  // Note: the generated binary runs from within Output/<name>/, so its
+  // Output/ subdirectory is at Output/<name>/Output/.
   os << "  return 0;\n";
   os << "}\n";
 }
