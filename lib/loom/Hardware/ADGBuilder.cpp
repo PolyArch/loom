@@ -869,27 +869,29 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
   case ModuleKind::Memory: {
     auto &def = memoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
-    bool isTaggedMem = def.ldCount > 1 || def.stCount > 1;
-    unsigned tagWidth = 4;
-    if (isTaggedMem) {
-      unsigned maxCount = std::max(def.ldCount, def.stCount);
-      tagWidth = 1;
-      while ((1u << tagWidth) < maxCount) tagWidth++;
-      if (tagWidth < 1) tagWidth = 1;
-    }
-    Type tagType = Type::iN(tagWidth);
+    bool isTaggedLd = def.ldCount > 1;
+    bool isTaggedSt = def.stCount > 1;
+
+    auto computeTagType = [](unsigned count) {
+      unsigned tw = 1;
+      while ((1u << tw) < count) tw++;
+      return Type::iN(tw);
+    };
 
     // Input layout: [ld_addr * ldCount, st_addr * stCount, st_data * stCount]
     unsigned idx = (unsigned)port;
     if (idx < def.ldCount) {
-      return isTaggedMem ? Type::tagged(Type::index(), tagType) : Type::index();
+      return isTaggedLd ? Type::tagged(Type::index(), computeTagType(def.ldCount))
+                        : Type::index();
     }
     idx -= def.ldCount;
     if (idx < def.stCount) {
-      return isTaggedMem ? Type::tagged(Type::index(), tagType) : Type::index();
+      return isTaggedSt ? Type::tagged(Type::index(), computeTagType(def.stCount))
+                        : Type::index();
     }
     idx -= def.stCount;
-    return isTaggedMem ? Type::tagged(elemType, tagType) : elemType;
+    return isTaggedSt ? Type::tagged(elemType, computeTagType(def.stCount))
+                      : elemType;
   }
   case ModuleKind::ExtMemory: {
     auto &def = extMemoryDefs[inst.defIdx];
@@ -898,25 +900,27 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
     if (port == 0) return Type::index();
     unsigned adjPort = (unsigned)port - 1;
 
-    bool isTaggedMem = def.ldCount > 1 || def.stCount > 1;
-    unsigned tagWidth = 4;
-    if (isTaggedMem) {
-      unsigned maxCount = std::max(def.ldCount, def.stCount);
-      tagWidth = 1;
-      while ((1u << tagWidth) < maxCount) tagWidth++;
-      if (tagWidth < 1) tagWidth = 1;
-    }
-    Type tagType = Type::iN(tagWidth);
+    bool isTaggedLd = def.ldCount > 1;
+    bool isTaggedSt = def.stCount > 1;
+
+    auto computeTagType = [](unsigned count) {
+      unsigned tw = 1;
+      while ((1u << tw) < count) tw++;
+      return Type::iN(tw);
+    };
 
     if (adjPort < def.ldCount) {
-      return isTaggedMem ? Type::tagged(Type::index(), tagType) : Type::index();
+      return isTaggedLd ? Type::tagged(Type::index(), computeTagType(def.ldCount))
+                        : Type::index();
     }
     adjPort -= def.ldCount;
     if (adjPort < def.stCount) {
-      return isTaggedMem ? Type::tagged(Type::index(), tagType) : Type::index();
+      return isTaggedSt ? Type::tagged(Type::index(), computeTagType(def.stCount))
+                        : Type::index();
     }
     adjPort -= def.stCount;
-    return isTaggedMem ? Type::tagged(elemType, tagType) : elemType;
+    return isTaggedSt ? Type::tagged(elemType, computeTagType(def.stCount))
+                      : elemType;
   }
   }
   return Type::i32();
@@ -970,15 +974,14 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
   case ModuleKind::Memory: {
     auto &def = memoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
-    bool isTaggedMem = def.ldCount > 1 || def.stCount > 1;
-    unsigned tagWidth = 4;
-    if (isTaggedMem) {
-      unsigned maxCount = std::max(def.ldCount, def.stCount);
-      tagWidth = 1;
-      while ((1u << tagWidth) < maxCount) tagWidth++;
-      if (tagWidth < 1) tagWidth = 1;
-    }
-    Type tagType = Type::iN(tagWidth);
+    bool isTaggedLd = def.ldCount > 1;
+    bool isTaggedSt = def.stCount > 1;
+
+    auto computeTagType = [](unsigned count) {
+      unsigned tw = 1;
+      while ((1u << tw) < count) tw++;
+      return Type::iN(tw);
+    };
 
     unsigned idx = 0;
     // Non-private memory port 0 is memref -- return index as placeholder for
@@ -986,27 +989,39 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
     if (!def.isPrivate) { if (port == 0) return Type::index(); idx++; }
     // Output layout: [memref?] [lddata * ldCount] [lddone] [stdone?]
     if ((unsigned)port < idx + def.ldCount)
-      return isTaggedMem ? Type::tagged(elemType, tagType) : elemType;
-    // Remaining are done tokens.
-    return isTaggedMem ? Type::tagged(Type::none(), tagType) : Type::none();
+      return isTaggedLd ? Type::tagged(elemType, computeTagType(def.ldCount))
+                        : elemType;
+    // lddone
+    if ((unsigned)port < idx + def.ldCount + 1)
+      return isTaggedLd ? Type::tagged(Type::none(), computeTagType(def.ldCount))
+                        : Type::none();
+    // stdone
+    return isTaggedSt ? Type::tagged(Type::none(), computeTagType(def.stCount))
+                      : Type::none();
   }
   case ModuleKind::ExtMemory: {
     auto &def = extMemoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
-    bool isTaggedMem = def.ldCount > 1 || def.stCount > 1;
-    unsigned tagWidth = 4;
-    if (isTaggedMem) {
-      unsigned maxCount = std::max(def.ldCount, def.stCount);
-      tagWidth = 1;
-      while ((1u << tagWidth) < maxCount) tagWidth++;
-      if (tagWidth < 1) tagWidth = 1;
-    }
-    Type tagType = Type::iN(tagWidth);
+    bool isTaggedLd = def.ldCount > 1;
+    bool isTaggedSt = def.stCount > 1;
+
+    auto computeTagType = [](unsigned count) {
+      unsigned tw = 1;
+      while ((1u << tw) < count) tw++;
+      return Type::iN(tw);
+    };
 
     // Output layout: [lddata * ldCount] [lddone] [stdone?]
     if ((unsigned)port < def.ldCount)
-      return isTaggedMem ? Type::tagged(elemType, tagType) : elemType;
-    return isTaggedMem ? Type::tagged(Type::none(), tagType) : Type::none();
+      return isTaggedLd ? Type::tagged(elemType, computeTagType(def.ldCount))
+                        : elemType;
+    // lddone
+    if ((unsigned)port < def.ldCount + 1)
+      return isTaggedLd ? Type::tagged(Type::none(), computeTagType(def.ldCount))
+                        : Type::none();
+    // stdone
+    return isTaggedSt ? Type::tagged(Type::none(), computeTagType(def.stCount))
+                      : Type::none();
   }
   default:
     return Type::i32();

@@ -934,22 +934,24 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       Type elemType = memDef.shape.getElemType();
       std::string elemStr = elemType.toMLIR();
 
-      // Determine if this is a tagged memory by checking operand types.
-      bool isTaggedMem = false;
-      std::string tagTypeStr;
-      if (memDef.ldCount > 1 || memDef.stCount > 1) {
-        // Must be tagged. Derive tag type from first operand.
-        if (!operandTypes.empty() && !operandTypes[0].empty()) {
-          // The first operand should be tagged<index, iN>.
-          isTaggedMem = true;
-          // Extract tag type: find second comma-separated type in tagged<..., ...>
-          auto pos = operandTypes[0].find(", ");
-          if (pos != std::string::npos) {
-            tagTypeStr = operandTypes[0].substr(pos + 2,
-                operandTypes[0].size() - pos - 3); // strip trailing >
-          }
-        }
-      }
+      // Determine per-side tagging from operand types.
+      bool isTaggedLd = memDef.ldCount > 1;
+      bool isTaggedSt = memDef.stCount > 1;
+
+      auto extractTagType = [](const std::string &typeStr) -> std::string {
+        auto pos = typeStr.find(", ");
+        if (pos != std::string::npos)
+          return typeStr.substr(pos + 2, typeStr.size() - pos - 3);
+        return "";
+      };
+
+      // Derive tag type strings from operand types at the boundary of each group.
+      // Input layout: [ld_addr * ldCount, st_addr * stCount, st_data * stCount]
+      std::string ldTagTypeStr, stTagTypeStr;
+      if (isTaggedLd && !operandTypes.empty())
+        ldTagTypeStr = extractTagType(operandTypes[0]);
+      if (isTaggedSt && memDef.ldCount < operandTypes.size())
+        stTagTypeStr = extractTagType(operandTypes[memDef.ldCount]);
 
       os << "fabric.memory\n      [ldCount = " << memDef.ldCount
          << ", stCount = " << memDef.stCount;
@@ -977,21 +979,21 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       for (unsigned i = 0; i < memDef.ldCount; ++i) {
         if (!first) os << ", ";
         first = false;
-        if (isTaggedMem)
-          os << "!dataflow.tagged<" << elemStr << ", " << tagTypeStr << ">";
+        if (isTaggedLd)
+          os << "!dataflow.tagged<" << elemStr << ", " << ldTagTypeStr << ">";
         else
           os << elemStr;
       }
       // lddone (always present)
       if (!first) os << ", ";
-      if (isTaggedMem)
-        os << "!dataflow.tagged<none, " << tagTypeStr << ">";
+      if (isTaggedLd)
+        os << "!dataflow.tagged<none, " << ldTagTypeStr << ">";
       else
         os << "none";
       if (memDef.stCount > 0) {
         os << ", ";
-        if (isTaggedMem)
-          os << "!dataflow.tagged<none, " << tagTypeStr << ">";
+        if (isTaggedSt)
+          os << "!dataflow.tagged<none, " << stTagTypeStr << ">";
         else
           os << "none";
       }
@@ -1005,20 +1007,24 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       Type elemType = emDef.shape.getElemType();
       std::string elemStr = elemType.toMLIR();
 
-      // Check if multi-port tagged (detect from operand types after memref).
-      bool isTaggedMem = false;
-      std::string tagTypeStr;
-      if (emDef.ldCount > 1 || emDef.stCount > 1) {
-        // First operand is memref, second is first ld addr.
-        if (operandTypes.size() > 1 && !operandTypes[1].empty() &&
-            operandTypes[1].find("tagged") != std::string::npos) {
-          isTaggedMem = true;
-          auto pos = operandTypes[1].find(", ");
-          if (pos != std::string::npos)
-            tagTypeStr = operandTypes[1].substr(pos + 2,
-                operandTypes[1].size() - pos - 3);
-        }
-      }
+      // Determine per-side tagging from operand types after memref.
+      bool isTaggedLd = emDef.ldCount > 1;
+      bool isTaggedSt = emDef.stCount > 1;
+
+      auto extractTagType = [](const std::string &typeStr) -> std::string {
+        auto pos = typeStr.find(", ");
+        if (pos != std::string::npos)
+          return typeStr.substr(pos + 2, typeStr.size() - pos - 3);
+        return "";
+      };
+
+      // ExtMemory input layout: [memref, ld_addr * ldCount, st_addr * stCount, st_data * stCount]
+      // operandTypes[0] is memref, operandTypes[1] is first ld_addr.
+      std::string ldTagTypeStr, stTagTypeStr;
+      if (isTaggedLd && operandTypes.size() > 1)
+        ldTagTypeStr = extractTagType(operandTypes[1]);
+      if (isTaggedSt && (1 + emDef.ldCount) < operandTypes.size())
+        stTagTypeStr = extractTagType(operandTypes[1 + emDef.ldCount]);
 
       os << "fabric.extmemory\n      [ldCount = " << emDef.ldCount
          << ", stCount = " << emDef.stCount;
@@ -1041,20 +1047,20 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       for (unsigned i = 0; i < emDef.ldCount; ++i) {
         if (!first) os << ", ";
         first = false;
-        if (isTaggedMem)
-          os << "!dataflow.tagged<" << elemStr << ", " << tagTypeStr << ">";
+        if (isTaggedLd)
+          os << "!dataflow.tagged<" << elemStr << ", " << ldTagTypeStr << ">";
         else
           os << elemStr;
       }
       if (!first) os << ", ";
-      if (isTaggedMem)
-        os << "!dataflow.tagged<none, " << tagTypeStr << ">";
+      if (isTaggedLd)
+        os << "!dataflow.tagged<none, " << ldTagTypeStr << ">";
       else
         os << "none";
       if (emDef.stCount > 0) {
         os << ", ";
-        if (isTaggedMem)
-          os << "!dataflow.tagged<none, " << tagTypeStr << ">";
+        if (isTaggedSt)
+          os << "!dataflow.tagged<none, " << stTagTypeStr << ">";
         else
           os << "none";
       }
