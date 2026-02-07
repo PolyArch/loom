@@ -88,10 +88,10 @@ static Operation *lookupBySymName(Operation *from, StringRef name);
 /// Classify an operation as combinational (zero-delay). Combinational ops are
 /// SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp. For InstanceOp,
 /// resolves the target: if it is one of those ops, the instance is
-/// combinational; if it is a ModuleOp whose body contains only combinational
-/// non-terminator ops, the module (and thus the instance) is also
-/// combinational. Uses a visited set to avoid infinite recursion on cyclic
-/// instance graphs.
+/// combinational; if it is a ModuleOp that has a combinational through-path
+/// (any input reachable from any output through only combinational ops), the
+/// module is also considered combinational. Uses a path-based visited set to
+/// avoid infinite recursion on cyclic instance graphs.
 static bool isCombinational(Operation *op,
                             llvm::SmallPtrSetImpl<Operation *> &visited) {
   if (isa<SwitchOp, TemporalSwOp, AddTagOp, MapTagOp, DelTagOp>(op))
@@ -105,18 +105,34 @@ static bool isCombinational(Operation *op,
   if (auto mod = dyn_cast<ModuleOp>(op)) {
     if (!visited.insert(op).second)
       return false; // cycle guard: currently being evaluated
+    // Check if any combinational through-path exists from a module input
+    // (block argument) to a module output (yield operand). Walk backward
+    // from yield operands through combinational ops only.
     Block &body = mod.getBody().front();
-    bool allComb = true;
-    for (auto &inner : body) {
-      if (inner.hasTrait<OpTrait::IsTerminator>())
+    auto yield = cast<YieldOp>(body.getTerminator());
+    SmallVector<Value> worklist;
+    llvm::SmallPtrSet<Value, 16> seen;
+    for (Value v : yield.getOperands())
+      worklist.push_back(v);
+    bool hasThroughPath = false;
+    while (!worklist.empty()) {
+      Value v = worklist.pop_back_val();
+      if (!seen.insert(v).second)
         continue;
-      if (!isCombinational(&inner, visited)) {
-        allComb = false;
+      if (isa<BlockArgument>(v)) {
+        hasThroughPath = true;
         break;
+      }
+      Operation *defOp = v.getDefiningOp();
+      if (!defOp)
+        continue;
+      if (isCombinational(defOp, visited)) {
+        for (Value operand : defOp->getOperands())
+          worklist.push_back(operand);
       }
     }
     visited.erase(op); // allow re-evaluation from other call paths
-    return allComb;
+    return hasThroughPath;
   }
   return false;
 }
