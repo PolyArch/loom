@@ -412,6 +412,7 @@ private:
 class FifoBuilder {
 public:
   FifoBuilder &setDepth(unsigned depth);
+  FifoBuilder &setBypassable(bool bypassable);
   FifoBuilder &setType(Type type);
 
   operator FifoHandle() const;

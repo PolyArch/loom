@@ -446,6 +446,11 @@ FifoBuilder &FifoBuilder::setDepth(unsigned depth) {
   return *this;
 }
 
+FifoBuilder &FifoBuilder::setBypassable(bool bypassable) {
+  builder_->impl_->fifoDefs[defId_].bypassable = bypassable;
+  return *this;
+}
+
 FifoBuilder &FifoBuilder::setType(Type type) {
   builder_->impl_->fifoDefs[defId_].elementType = type;
   return *this;

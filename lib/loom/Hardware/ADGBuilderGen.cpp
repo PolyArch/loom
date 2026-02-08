@@ -1098,8 +1098,13 @@ std::string ADGBuilder::Impl::generateMLIR() const {
 
     case ModuleKind::Fifo: {
       auto &fifoDef = fifoDefs[inst.defIdx];
-      os << "fabric.fifo [depth = " << fifoDef.depth << "] "
-         << operands[0] << " : " << fifoDef.elementType.toMLIR() << "\n";
+      os << "fabric.fifo [depth = " << fifoDef.depth;
+      if (fifoDef.bypassable)
+        os << ", bypassable";
+      os << "] ";
+      if (fifoDef.bypassable)
+        os << "{bypassed = false} ";
+      os << operands[0] << " : " << fifoDef.elementType.toMLIR() << "\n";
       break;
     }
 

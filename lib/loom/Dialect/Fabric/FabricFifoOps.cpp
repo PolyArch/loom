@@ -17,7 +17,9 @@ using namespace loom::fabric;
 // FifoOp parse/print
 //
 // Named:  fabric.fifo @name [depth = N] : (T) -> (T)
+//         fabric.fifo @name [depth = N, bypassable] {bypassed = false} : (T) -> (T)
 // Inline: %out = fabric.fifo [depth = N] %in : T
+//         %out = fabric.fifo [depth = N, bypassable] {bypassed = false} %in : T
 //===----------------------------------------------------------------------===//
 
 ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -45,8 +47,40 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
   result.addAttribute(getDepthAttrName(result.name), depthAttr);
 
+  // Parse optional `, bypassable`.
+  if (succeeded(parser.parseOptionalComma())) {
+    StringRef bypassKw;
+    if (parser.parseKeyword(&bypassKw))
+      return failure();
+    if (bypassKw != "bypassable")
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected 'bypassable' keyword");
+    result.addAttribute(getBypassableAttrName(result.name),
+                        parser.getBuilder().getUnitAttr());
+  }
+
   if (parser.parseRSquare())
     return failure();
+
+  // Parse optional {bypassed = true/false}.
+  if (succeeded(parser.parseOptionalLBrace())) {
+    StringRef bypassedKw;
+    if (parser.parseKeyword(&bypassedKw))
+      return failure();
+    if (bypassedKw != "bypassed")
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected 'bypassed' keyword");
+    if (parser.parseEqual())
+      return failure();
+
+    BoolAttr bypassedAttr;
+    if (parser.parseAttribute(bypassedAttr))
+      return failure();
+    result.addAttribute(getBypassedAttrName(result.name), bypassedAttr);
+
+    if (parser.parseRBrace())
+      return failure();
+  }
 
   if (isNamed) {
     // Named form: parse `: (T) -> (T)` and store as function_type.
@@ -82,7 +116,16 @@ void FifoOp::print(OpAsmPrinter &p) {
   if (isNamed)
     p << " @" << *getSymName();
 
-  p << " [depth = " << getDepth() << "]";
+  p << " [depth = " << getDepth();
+  if (getBypassable())
+    p << ", bypassable";
+  p << "]";
+
+  if (getBypassed().has_value()) {
+    p << " {bypassed = ";
+    p << (*getBypassed() ? "true" : "false");
+    p << "}";
+  }
 
   if (isNamed) {
     p << " : ";
@@ -163,6 +206,14 @@ LogicalResult FifoOp::verify() {
   if (getDepth() < 1)
     return emitOpError("[COMP_FIFO_DEPTH_ZERO] depth must be >= 1; got ")
            << getDepth();
+
+  // Bypassable/bypassed consistency.
+  if (!getBypassable() && getBypassed().has_value())
+    return emitOpError("[COMP_FIFO_BYPASSED_NOT_BYPASSABLE] "
+                       "'bypassed' attribute present without 'bypassable'");
+  if (getBypassable() && !getBypassed().has_value())
+    return emitOpError("[COMP_FIFO_BYPASSED_MISSING] "
+                       "'bypassable' is set but 'bypassed' attribute is missing");
 
   return success();
 }

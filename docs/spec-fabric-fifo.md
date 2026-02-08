@@ -21,6 +21,7 @@ Both forms share the same semantics and constraints.
 
 ```mlir
 fabric.fifo @buf [depth = 4] : (i32) -> (i32)
+fabric.fifo @buf [depth = 4, bypassable] {bypassed = false} : (i32) -> (i32)
 ```
 
 Named FIFOs can be instantiated via `fabric.instance`:
@@ -33,6 +34,7 @@ Named FIFOs can be instantiated via `fabric.instance`:
 
 ```mlir
 %out = fabric.fifo [depth = 4] %in : i32
+%out = fabric.fifo [depth = 4, bypassable] {bypassed = false} %in : i32
 %tagged_out = fabric.fifo [depth = 2] %tagged_in : !dataflow.tagged<i32, i4>
 ```
 
@@ -56,13 +58,38 @@ produce identical hardware).
 | Attribute | Type | Range | Description |
 |-----------|------|-------|-------------|
 | `depth` | integer | >= 1 | Number of buffer slots |
+| `bypassable` | flag (UnitAttr) | present/absent | Enables runtime bypass capability |
 
 `depth` is a hardware parameter that determines the physical buffer size. It is
 fixed for a given hardware instance and cannot be reconfigured at runtime.
+`depth >= 1` is always required regardless of `bypassable`.
+
+`bypassable` is a hardware parameter that, when present, adds bypass circuitry
+to the FIFO. When bypassed at runtime, the input is directly connected to the
+output, skipping the buffer. When `bypassable` is absent (the default), the
+FIFO has no bypass capability.
 
 ## Runtime Configuration
 
-`fabric.fifo` has no runtime configuration parameters.
+| Attribute | Type | Condition | Default | Description |
+|-----------|------|-----------|---------|-------------|
+| `bypassed` | bool | only when `bypassable` is set | `false` | Bypass the FIFO buffer |
+
+When `bypassable` is not set, `fabric.fifo` has no runtime configuration
+parameters (`CONFIG_WIDTH = 0`).
+
+When `bypassable` is set, `fabric.fifo` has a 1-bit runtime configuration
+parameter `bypassed` (`CONFIG_WIDTH = 1`):
+
+- `bypassed = false` (default): normal FIFO operation with buffering.
+- `bypassed = true`: input directly connected to output, buffer skipped.
+
+**Warning:** When `bypassed = true`, the FIFO becomes combinational (zero delay).
+If the FIFO was the only sequential element breaking a combinational loop, bypassing
+it creates a combinational loop at runtime. Avoiding this is the mapper's
+responsibility, not a compile-time constraint. The FIFO is still classified as
+**sequential** for compile-time combinational loop detection regardless of the
+`bypassed` value.
 
 ## Depth Semantics
 
@@ -97,6 +124,8 @@ clock boundary.
 | `COMP_FIFO_DEPTH_ZERO` | `depth` is 0 |
 | `COMP_FIFO_TYPE_MISMATCH` | Input and output types do not match |
 | `COMP_FIFO_INVALID_TYPE` | Type is not a native value type or `!dataflow.tagged` |
+| `COMP_FIFO_BYPASSED_NOT_BYPASSABLE` | `bypassed` attribute present without `bypassable` |
+| `COMP_FIFO_BYPASSED_MISSING` | `bypassable` is set but `bypassed` attribute is missing |
 
 See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.
 

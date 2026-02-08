@@ -12,9 +12,11 @@
 //
 // Named form:
 //   fabric.fifo @name [depth = N] : (T) -> (T)
+//   fabric.fifo @name [depth = N, bypassable] {bypassed = false} : (T) -> (T)
 //
 // Inline form:
 //   %out = fabric.fifo [depth = N] %in : T
+//   %out = fabric.fifo [depth = N, bypassable] {bypassed = false} %in : T
 //===----------------------------------------------------------------------===//
 
 def Fabric_FifoOp : Fabric_Op<"fifo", []> {
@@ -28,6 +30,8 @@ def Fabric_FifoOp : Fabric_Op<"fifo", []> {
     Variadic<AnyType>:$inputs,
     OptionalAttr<SymbolNameAttr>:$sym_name,
     I64Attr:$depth,
+    OptionalAttr<UnitAttr>:$bypassable,
+    OptionalAttr<BoolAttr>:$bypassed,
     OptionalAttr<TypeAttrOf<FunctionType>>:$function_type
   );
   let results = (outs Variadic<AnyType>:$outputs);

@@ -387,6 +387,7 @@ Creates a new `fabric.fifo` definition.
 | Method | Description |
 |--------|-------------|
 | `setDepth(depth)` | Set buffer depth (must be >= 1) |
+| `setBypassable(bypassable)` | Enable/disable runtime bypass capability |
 | `setType(type)` | Set element type (native or tagged) |
 
 **Constraints:**
@@ -397,6 +398,14 @@ Creates a new `fabric.fifo` definition.
 ```cpp
 auto fifo = builder.newFifo("pipeline_buf")
     .setDepth(4)
+    .setType(Type::i32());
+```
+
+**Example (bypassable FIFO):**
+```cpp
+auto fifo = builder.newFifo("bypass_buf")
+    .setDepth(4)
+    .setBypassable(true)
     .setType(Type::i32());
 ```
 

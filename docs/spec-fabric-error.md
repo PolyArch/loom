@@ -103,6 +103,8 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_FIFO_DEPTH_ZERO | `fabric.fifo` depth must be >= 1 |
 | COMP_FIFO_TYPE_MISMATCH | `fabric.fifo` input and output types do not match |
 | COMP_FIFO_INVALID_TYPE | `fabric.fifo` type must be a native value type or `!dataflow.tagged` |
+| COMP_FIFO_BYPASSED_NOT_BYPASSABLE | `fabric.fifo` has `bypassed` attribute present without `bypassable` |
+| COMP_FIFO_BYPASSED_MISSING | `fabric.fifo` has `bypassable` set but `bypassed` attribute is missing |
 
 ### Instance Error Examples
 

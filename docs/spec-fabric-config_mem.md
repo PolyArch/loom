@@ -65,6 +65,8 @@ parameters:
 | `fabric.temporal_sw` | `NUM_ROUTE_TABLE * SLOT_WIDTH` |
 | `fabric.memory` | 0 (no runtime config) |
 | `fabric.extmemory` | 0 (no runtime config) |
+| `fabric.fifo` (not bypassable) | 0 (no config) |
+| `fabric.fifo` (bypassable) | 1 (`bypassed` flag) |
 | `fabric.del_tag` | 0 (no config) |
 
 See the individual spec-fabric-*.md documents for detailed bit width formulas.

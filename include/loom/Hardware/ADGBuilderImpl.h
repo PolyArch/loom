@@ -152,6 +152,7 @@ struct DelTagDef {
 struct FifoDef {
   std::string name;
   unsigned depth = 2;
+  bool bypassable = false;
   Type elementType = Type::i32();
 };
 
