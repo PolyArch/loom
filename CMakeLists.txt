@@ -64,5 +64,14 @@ add_custom_target(loom_clang_resource ALL
   BYPRODUCTS "${LOOM_RESOURCE_DIR}/include/stdarg.h"
 )
 
+set(LOOM_SV_TEMPLATE_DIR "${CMAKE_BINARY_DIR}/lib/sv")
+
+add_custom_target(loom_sv_templates ALL
+  COMMAND "${CMAKE_COMMAND}" -E make_directory "${LOOM_SV_TEMPLATE_DIR}"
+  COMMAND "${CMAKE_COMMAND}" -E copy_directory
+          "${CMAKE_SOURCE_DIR}/lib/loom/Hardware/SystemVerilog"
+          "${LOOM_SV_TEMPLATE_DIR}"
+)
+
 add_subdirectory(lib)
 add_subdirectory(tools)

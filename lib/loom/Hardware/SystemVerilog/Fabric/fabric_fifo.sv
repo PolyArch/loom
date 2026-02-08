@@ -155,7 +155,8 @@ module fabric_fifo_core #(
 
   // Full throughput for depth>=2: accept a new write even when full
   // if a pop is happening on the same cycle (write-through).
-  assign in_ready  = !full || pop_pending;
+  // Depth-1 uses strict single-slot semantics (no write-through).
+  assign in_ready  = (SAFE_DEPTH > 1) ? (!full || pop_pending) : !full;
   assign out_valid = !empty;
   assign out_data  = buffer[tail];
 

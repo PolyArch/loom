@@ -32,8 +32,10 @@ target_include_directories(LoomADG
 )
 
 target_compile_definitions(LoomADG PRIVATE
-  LOOM_SV_TEMPLATE_DIR="${CMAKE_SOURCE_DIR}/lib/loom/Hardware/SystemVerilog"
+  LOOM_SV_TEMPLATE_DIR="${LOOM_SV_TEMPLATE_DIR}"
 )
+
+add_dependencies(LoomADG loom_sv_templates)
 
 llvm_update_compile_flags(LoomADG)
 set_target_properties(LoomADG PROPERTIES POSITION_INDEPENDENT_CODE ON)
