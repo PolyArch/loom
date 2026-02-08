@@ -15,6 +15,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <map>
 #include <sstream>
 
 namespace loom {
@@ -161,9 +162,15 @@ static std::string genSwitchParams(const SwitchDef &def) {
 //===----------------------------------------------------------------------===//
 
 static std::string genFifoParams(const FifoDef &def) {
+  unsigned dw = getDataWidthBits(def.elementType);
+  if (dw == 0) {
+    llvm::errs() << "error: exportSV: FIFO has zero-width payload type "
+                    "(Type::None is not valid for SV stream ports)\n";
+    std::exit(1);
+  }
   std::ostringstream os;
   os << "    .DEPTH(" << def.depth << "),\n";
-  os << "    .DATA_WIDTH(" << getDataWidthBits(def.elementType) << "),\n";
+  os << "    .DATA_WIDTH(" << dw << "),\n";
   os << "    .TAG_WIDTH(" << getTagWidthBits(def.elementType) << "),\n";
   os << "    .BYPASSABLE(" << (def.bypassable ? 1 : 0) << ")";
   return os.str();
@@ -399,19 +406,36 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
   }
 
+  // Collect ready sources per output port for fanout aggregation.
+  // Key: "<inst_name>_out<port>" or "%<module_port_name>" -> list of ready signals.
+  std::map<std::string, std::vector<std::string>> readySources;
+
   // Wire connections: module inputs to instances (skip memref ports)
   for (const auto &conn : inputConns) {
     const auto &port = ports[conn.portIdx];
     if (port.isMemref)
       continue;
     const auto &inst = instances[conn.instIdx];
+    std::string sinkReady = inst.name + "_in" + std::to_string(conn.dstPort) + "_ready";
     top << "  assign " << inst.name << "_in" << conn.dstPort
         << "_valid = " << port.name << "_valid;\n";
-    top << "  assign " << port.name << "_ready = "
-        << inst.name << "_in" << conn.dstPort << "_ready;\n";
     top << "  assign " << inst.name << "_in" << conn.dstPort
         << "_data = " << port.name << "_data;\n";
+    readySources["%" + port.name].push_back(sinkReady);
   }
+  // Emit aggregated ready for module input ports
+  for (const auto &[key, sources] : readySources) {
+    std::string portName = key.substr(1); // strip leading '%'
+    if (sources.size() == 1) {
+      top << "  assign " << portName << "_ready = " << sources[0] << ";\n";
+    } else {
+      top << "  assign " << portName << "_ready = " << sources[0];
+      for (size_t s = 1; s < sources.size(); ++s)
+        top << " & " << sources[s];
+      top << ";\n";
+    }
+  }
+  readySources.clear();
 
   // Wire connections: instances to module outputs (skip memref ports)
   for (const auto &conn : outputConns) {
@@ -419,24 +443,35 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     const auto &port = ports[conn.portIdx];
     if (port.isMemref)
       continue;
-    top << "  assign " << port.name << "_valid = "
-        << inst.name << "_out" << conn.srcPort << "_valid;\n";
-    top << "  assign " << inst.name << "_out" << conn.srcPort
-        << "_ready = " << port.name << "_ready;\n";
-    top << "  assign " << port.name << "_data = "
-        << inst.name << "_out" << conn.srcPort << "_data;\n";
+    std::string srcKey = inst.name + "_out" + std::to_string(conn.srcPort);
+    top << "  assign " << port.name << "_valid = " << srcKey << "_valid;\n";
+    top << "  assign " << port.name << "_data = " << srcKey << "_data;\n";
+    readySources[srcKey].push_back(port.name + "_ready");
   }
 
   // Wire connections: internal (instance to instance)
   for (const auto &conn : internalConns) {
     const auto &srcInst = instances[conn.srcInst];
     const auto &dstInst = instances[conn.dstInst];
+    std::string srcKey = srcInst.name + "_out" + std::to_string(conn.srcPort);
     top << "  assign " << dstInst.name << "_in" << conn.dstPort
-        << "_valid = " << srcInst.name << "_out" << conn.srcPort << "_valid;\n";
-    top << "  assign " << srcInst.name << "_out" << conn.srcPort
-        << "_ready = " << dstInst.name << "_in" << conn.dstPort << "_ready;\n";
+        << "_valid = " << srcKey << "_valid;\n";
     top << "  assign " << dstInst.name << "_in" << conn.dstPort
-        << "_data = " << srcInst.name << "_out" << conn.srcPort << "_data;\n";
+        << "_data = " << srcKey << "_data;\n";
+    readySources[srcKey].push_back(
+        dstInst.name + "_in" + std::to_string(conn.dstPort) + "_ready");
+  }
+
+  // Emit aggregated ready for instance output ports
+  for (const auto &[srcKey, sources] : readySources) {
+    if (sources.size() == 1) {
+      top << "  assign " << srcKey << "_ready = " << sources[0] << ";\n";
+    } else {
+      top << "  assign " << srcKey << "_ready = " << sources[0];
+      for (size_t s = 1; s < sources.size(); ++s)
+        top << " & " << sources[s];
+      top << ";\n";
+    }
   }
 
   // Error aggregation
