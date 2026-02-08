@@ -44,8 +44,8 @@ module fabric_fifo #(
   initial begin
     if (DEPTH == 0)
       $fatal(1, "COMP_FIFO_DEPTH_ZERO: depth must be >= 1");
-    if (DATA_WIDTH <= 0)
-      $fatal(1, "COMP_FIFO_INVALID_TYPE: DATA_WIDTH must be > 0");
+    if (PAYLOAD_WIDTH <= 0)
+      $fatal(1, "COMP_FIFO_INVALID_TYPE: PAYLOAD_WIDTH (DATA_WIDTH + TAG_WIDTH) must be > 0");
   end
 
   // -----------------------------------------------------------------------

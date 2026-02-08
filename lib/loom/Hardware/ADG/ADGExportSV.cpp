@@ -503,24 +503,29 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
   }
 
-  // Error aggregation
+  // Error aggregation: latch first error until reset
   if (hasErrorPorts) {
-    top << "\n  // Error aggregation (OR of all error_valid, priority-encode error_code)\n";
-    top << "  always_comb begin\n";
-    top << "    error_valid = 1'b0;\n";
-    top << "    error_code  = 16'd0;\n";
+    top << "\n  // Error latch: captures first error, held until reset\n";
+    top << "  always_ff @(posedge clk or negedge rst_n) begin\n";
+    top << "    if (!rst_n) begin\n";
+    top << "      error_valid <= 1'b0;\n";
+    top << "      error_code  <= 16'd0;\n";
+    top << "    end else if (!error_valid) begin\n";
+    // Only capture when no error latched yet
+    bool first = true;
     for (const auto &inst : instances) {
       if (inst.kind == ModuleKind::Switch ||
           inst.kind == ModuleKind::TemporalSwitch ||
           inst.kind == ModuleKind::TemporalPE) {
-        top << "    if (" << inst.name << "_error_valid) begin\n";
-        top << "      error_valid = 1'b1;\n";
-        top << "      if (error_code == 16'd0 || " << inst.name
-            << "_error_code < error_code)\n";
-        top << "        error_code = " << inst.name << "_error_code;\n";
-        top << "    end\n";
+        top << "      " << (first ? "if" : "else if") << " ("
+            << inst.name << "_error_valid) begin\n";
+        top << "        error_valid <= 1'b1;\n";
+        top << "        error_code  <= " << inst.name << "_error_code;\n";
+        top << "      end\n";
+        first = false;
       }
     }
+    top << "    end\n";
     top << "  end\n";
   }
 
