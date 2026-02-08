@@ -112,6 +112,9 @@ if [[ "${MODE}" == "run" ]]; then
 
 elif [[ "${MODE}" == "expect-fail" ]]; then
   # Expect compilation or simulation to fail with error_pattern in logs
+  # Clear logs to prevent stale content from producing false matches
+  : > "${OUTDIR}/compile.log"
+  : > "${OUTDIR}/sim.log"
   local_rc=0
   "${compile_and_run}" "${TOP}" "${OUTDIR}" "${SV_FILES[@]}" "${SIM_PARAMS[@]+"${SIM_PARAMS[@]}"}" || local_rc=$?
 

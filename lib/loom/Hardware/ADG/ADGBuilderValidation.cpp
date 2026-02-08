@@ -128,9 +128,10 @@ ValidationResult ADGBuilder::validateADG() {
     if (sw.numIn > 32 || sw.numOut > 32)
       addError("COMP_SWITCH_PORT_LIMIT",
                "switch has more than 32 inputs or outputs", loc);
-    if (sw.portType.getKind() == Type::None)
+    if (sw.portType.getKind() == Type::None ||
+        (sw.portType.getKind() == Type::IN && sw.portType.getWidth() == 0))
       addError("COMP_SWITCH_INVALID_TYPE",
-               "switch port type must not be none (zero-width payload)", loc);
+               "switch port type must not be zero-width", loc);
     validateConnectivityTable(sw.connectivity, sw.numIn, sw.numOut,
                               "COMP_SWITCH", loc, addError);
   }

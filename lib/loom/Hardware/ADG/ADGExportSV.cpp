@@ -245,19 +245,24 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
   }
 
-  // Collect switch instances that need config route table ports
-  struct SwitchCfgPort {
-    std::string name;
+  // Collect instance config ports (switch route tables, bypassable FIFO cfg)
+  struct InstCfgPort {
+    std::string portName; // top-level port name
     unsigned width;
   };
-  std::vector<SwitchCfgPort> switchCfgPorts;
+  std::vector<InstCfgPort> instCfgPorts;
   for (const auto &inst : instances) {
     if (inst.kind == ModuleKind::Switch) {
       const auto &def = switchDefs[inst.defIdx];
-      switchCfgPorts.push_back({inst.name, getNumConnected(def)});
+      instCfgPorts.push_back({inst.name + "_cfg_route_table",
+                              getNumConnected(def)});
+    } else if (inst.kind == ModuleKind::Fifo) {
+      const auto &def = fifoDefs[inst.defIdx];
+      if (def.bypassable)
+        instCfgPorts.push_back({inst.name + "_cfg_data", 1});
     }
   }
-  bool hasCfgPorts = !switchCfgPorts.empty();
+  bool hasCfgPorts = !instCfgPorts.empty();
 
   bool hasMorePorts = !streamInputs.empty() || !streamOutputs.empty() ||
                       hasCfgPorts || hasErrorPorts;
@@ -285,13 +290,13 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         << p->name << "_data" << (last ? "" : ",") << "\n";
   }
 
-  // Per-switch config route table inputs
-  for (size_t i = 0; i < switchCfgPorts.size(); ++i) {
-    const auto &cp = switchCfgPorts[i];
-    bool last = (i + 1 == switchCfgPorts.size()) && !hasErrorPorts;
+  // Per-instance config input ports
+  for (size_t i = 0; i < instCfgPorts.size(); ++i) {
+    const auto &cp = instCfgPorts[i];
+    bool last = (i + 1 == instCfgPorts.size()) && !hasErrorPorts;
     top << "    input  logic "
         << (cp.width > 1 ? "[" + std::to_string(cp.width - 1) + ":0] " : "")
-        << cp.name << "_cfg_route_table" << (last ? "" : ",") << "\n";
+        << cp.portName << (last ? "" : ",") << "\n";
   }
 
   if (hasErrorPorts) {
@@ -402,7 +407,10 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       top << "    .out_valid(" << inst.name << "_out0_valid),\n";
       top << "    .out_ready(" << inst.name << "_out0_ready),\n";
       top << "    .out_data(" << inst.name << "_out0_data),\n";
-      top << "    .cfg_data('0)  // TODO: connect to config_mem\n";
+      if (def.bypassable)
+        top << "    .cfg_data(" << inst.name << "_cfg_data)\n";
+      else
+        top << "    .cfg_data('0)\n";
       top << "  );\n\n";
       break;
     }
