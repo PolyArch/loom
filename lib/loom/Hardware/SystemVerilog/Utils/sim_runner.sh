@@ -106,6 +106,9 @@ esac
 
 if [[ "${MODE}" == "run" ]]; then
   # Normal run: compile + simulate, expect pass
+  # Clear logs to prevent stale content from misleading debugging
+  : > "${OUTDIR}/compile.log"
+  : > "${OUTDIR}/sim.log"
   if ! "${compile_and_run}" "${TOP}" "${OUTDIR}" "${SV_FILES[@]}" "${SIM_PARAMS[@]+"${SIM_PARAMS[@]}"}"; then
     exit 1
   fi

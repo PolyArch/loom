@@ -134,11 +134,11 @@ static unsigned getNumConnected(const SwitchDef &def) {
 static std::string genSwitchParams(const SwitchDef &def) {
   unsigned dw = getDataWidthBits(def.portType);
   unsigned tw = getTagWidthBits(def.portType);
-  if (dw + tw == 0) {
-    llvm::errs() << "error: exportSV: switch has zero-width payload type "
-                    "(total DATA_WIDTH + TAG_WIDTH must be > 0)\n";
-    std::exit(1);
-  }
+  // Control-token types (Type::none) have zero data+tag width.
+  // Use DATA_WIDTH=1 as the minimum SV representation so the
+  // hardware compiles; the data bits are unused for control tokens.
+  if (dw + tw == 0)
+    dw = 1;
   std::ostringstream os;
   os << "    .NUM_INPUTS(" << def.numIn << "),\n";
   os << "    .NUM_OUTPUTS(" << def.numOut << "),\n";
@@ -172,11 +172,11 @@ static std::string genSwitchParams(const SwitchDef &def) {
 static std::string genFifoParams(const FifoDef &def) {
   unsigned dw = getDataWidthBits(def.elementType);
   unsigned tw = getTagWidthBits(def.elementType);
-  if (dw + tw == 0) {
-    llvm::errs() << "error: exportSV: FIFO has zero-width payload type "
-                    "(total DATA_WIDTH + TAG_WIDTH must be > 0)\n";
-    std::exit(1);
-  }
+  // Control-token types (Type::none) have zero data+tag width.
+  // Use DATA_WIDTH=1 as the minimum SV representation so the
+  // hardware compiles; the data bits are unused for control tokens.
+  if (dw + tw == 0)
+    dw = 1;
   std::ostringstream os;
   os << "    .DEPTH(" << def.depth << "),\n";
   os << "    .DATA_WIDTH(" << dw << "),\n";
