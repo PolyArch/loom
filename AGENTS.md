@@ -2,9 +2,7 @@
 Loom is a full stack framework for Domain-specific Accelerator, from C++ source code to Hardware Backend
 
 # Documentation
-- Check `docs` to understand `loom` design specification.
-  - `docs/spec-pragma.md` describes the loom pragma system, used by programmer to provide hint to loom compiler.
-  - `docs/spec-cli.md` describes the `loom` compiler command line interface, anything about the loom cli should be documented here.
+- Check `docs` to understand `loom` design specification, there are important concepts like: `dataflow`, `fabric`, `adg`, `cosim`, each one of them has its own specification documents.
 
 # General Rules
 - Avoid terms to describe development progress (`FIXED`, `Step`, `Week`, `Section`, `Phase`, `AC-x`, etc) in code comments or commit message or PR body.
@@ -16,7 +14,10 @@ Loom is a full stack framework for Domain-specific Accelerator, from C++ source 
 - Chat response to user should be in the same language as user's
 - Projects under `externals` are external projects that are used in this project via source compilation, avoid modifying them.
 
-# ExecPlans
+# Useful Hints
+- If EDA related tools (like `vcs`, `verilator`, `verdi`, `dc_shell`, `fc_shell`, etc.) cannot be found, please try `module avail` and use `module load ...` to load environments. 
+
+# ExecPlans (for Codex only)
 When writing complex features or significant refactors, use an ExecPlan (as described in .agent/PLANS.md) from design to implementation.
 The ExecPlan can be stored in `temp` folder as a living execution plan, the filename should be timestamp-ed like `ExecPlan-<YYYYMMDD-hhmmss>.md`, timestamp should use `date +"%Y%m%d-%H%M%S"`. 
 
