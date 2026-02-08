@@ -193,46 +193,19 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   // Module port declarations
   top << "module " << moduleName << "_top (\n";
   top << "    input  logic clk,\n";
-  top << "    input  logic rst_n,\n";
 
-  // Module I/O ports
-  std::vector<const ModulePort *> inputPorts, outputPorts;
+  // Collect non-memref stream ports
+  std::vector<const ModulePort *> streamInputs, streamOutputs;
   for (const auto &p : ports) {
+    if (p.isMemref)
+      continue;
     if (p.isInput)
-      inputPorts.push_back(&p);
+      streamInputs.push_back(&p);
     else
-      outputPorts.push_back(&p);
+      streamOutputs.push_back(&p);
   }
 
-  for (size_t i = 0; i < inputPorts.size(); ++i) {
-    const auto *p = inputPorts[i];
-    if (!p->isMemref) {
-      unsigned w = getDataWidthBits(p->type) + getTagWidthBits(p->type);
-      top << "    input  logic " << p->name << "_valid,\n";
-      top << "    output logic " << p->name << "_ready,\n";
-      top << "    input  logic " << (w > 1 ? "[" + std::to_string(w-1) + ":0] " : "")
-          << p->name << "_data";
-    }
-    if (i + 1 < inputPorts.size() || !outputPorts.empty())
-      top << ",";
-    top << "\n";
-  }
-
-  for (size_t i = 0; i < outputPorts.size(); ++i) {
-    const auto *p = outputPorts[i];
-    if (!p->isMemref) {
-      unsigned w = getDataWidthBits(p->type) + getTagWidthBits(p->type);
-      top << "    output logic " << p->name << "_valid,\n";
-      top << "    input  logic " << p->name << "_ready,\n";
-      top << "    output logic " << (w > 1 ? "[" + std::to_string(w-1) + ":0] " : "")
-          << p->name << "_data";
-    }
-    if (i + 1 < outputPorts.size())
-      top << ",";
-    top << "\n";
-  }
-
-  // Error aggregation ports
+  // Check if error aggregation ports are needed
   bool hasErrorPorts = false;
   for (const auto &inst : instances) {
     if (inst.kind == ModuleKind::Switch ||
@@ -243,8 +216,32 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
   }
 
+  bool hasMorePorts = !streamInputs.empty() || !streamOutputs.empty() ||
+                      hasErrorPorts;
+  top << "    input  logic rst_n" << (hasMorePorts ? "," : "") << "\n";
+
+  for (size_t i = 0; i < streamInputs.size(); ++i) {
+    const auto *p = streamInputs[i];
+    unsigned w = getDataWidthBits(p->type) + getTagWidthBits(p->type);
+    bool last = (i + 1 == streamInputs.size()) && streamOutputs.empty() &&
+                !hasErrorPorts;
+    top << "    input  logic " << p->name << "_valid,\n";
+    top << "    output logic " << p->name << "_ready,\n";
+    top << "    input  logic " << (w > 1 ? "[" + std::to_string(w-1) + ":0] " : "")
+        << p->name << "_data" << (last ? "" : ",") << "\n";
+  }
+
+  for (size_t i = 0; i < streamOutputs.size(); ++i) {
+    const auto *p = streamOutputs[i];
+    unsigned w = getDataWidthBits(p->type) + getTagWidthBits(p->type);
+    bool last = (i + 1 == streamOutputs.size()) && !hasErrorPorts;
+    top << "    output logic " << p->name << "_valid,\n";
+    top << "    input  logic " << p->name << "_ready,\n";
+    top << "    output logic " << (w > 1 ? "[" + std::to_string(w-1) + ":0] " : "")
+        << p->name << "_data" << (last ? "" : ",") << "\n";
+  }
+
   if (hasErrorPorts) {
-    top << ",\n";
     top << "    output logic        error_valid,\n";
     top << "    output logic [15:0] error_code\n";
   }
@@ -357,15 +354,18 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       break;
     }
     default:
-      top << "  // TODO: " << svModuleName(inst.kind) << " " << inst.name
-          << " (not yet implemented)\n\n";
-      break;
+      llvm::errs() << "error: exportSV does not support module kind '"
+                   << svModuleName(inst.kind) << "' (instance '" << inst.name
+                   << "')\n";
+      std::exit(1);
     }
   }
 
-  // Wire connections: module inputs to instances
+  // Wire connections: module inputs to instances (skip memref ports)
   for (const auto &conn : inputConns) {
     const auto &port = ports[conn.portIdx];
+    if (port.isMemref)
+      continue;
     const auto &inst = instances[conn.instIdx];
     top << "  assign " << inst.name << "_in" << conn.dstPort
         << "_valid = " << port.name << "_valid;\n";
@@ -375,10 +375,12 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         << "_data = " << port.name << "_data;\n";
   }
 
-  // Wire connections: instances to module outputs
+  // Wire connections: instances to module outputs (skip memref ports)
   for (const auto &conn : outputConns) {
     const auto &inst = instances[conn.instIdx];
     const auto &port = ports[conn.portIdx];
+    if (port.isMemref)
+      continue;
     top << "  assign " << port.name << "_valid = "
         << inst.name << "_out" << conn.srcPort << "_valid;\n";
     top << "  assign " << inst.name << "_out" << conn.srcPort
