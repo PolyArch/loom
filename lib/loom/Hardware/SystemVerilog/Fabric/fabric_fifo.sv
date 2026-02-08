@@ -17,6 +17,8 @@ module fabric_fifo #(
     parameter int TAG_WIDTH  = 0,
     parameter bit BYPASSABLE = 0,
     localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH,
+    // Guard against zero-width ports so DATA_WIDTH=0 compiles but $fatal fires
+    localparam int SAFE_PW       = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1,
     localparam int CONFIG_WIDTH  = BYPASSABLE ? 1 : 0
 ) (
     input  logic                      clk,
@@ -25,12 +27,12 @@ module fabric_fifo #(
     // Streaming input
     input  logic                      in_valid,
     output logic                      in_ready,
-    input  logic [PAYLOAD_WIDTH-1:0]  in_data,
+    input  logic [SAFE_PW-1:0]        in_data,
 
     // Streaming output
     output logic                      out_valid,
     input  logic                      out_ready,
-    output logic [PAYLOAD_WIDTH-1:0]  out_data,
+    output logic [SAFE_PW-1:0]        out_data,
 
     // Configuration (only meaningful when BYPASSABLE=1)
     input  logic [CONFIG_WIDTH > 0 ? CONFIG_WIDTH-1 : 0 : 0] cfg_data
@@ -56,10 +58,10 @@ module fabric_fifo #(
       // When bypass is active, wire input directly to output
       logic                      fifo_in_valid;
       logic                      fifo_in_ready;
-      logic [PAYLOAD_WIDTH-1:0]  fifo_in_data;
+      logic [SAFE_PW-1:0]        fifo_in_data;
       logic                      fifo_out_valid;
       logic                      fifo_out_ready;
-      logic [PAYLOAD_WIDTH-1:0]  fifo_out_data;
+      logic [SAFE_PW-1:0]        fifo_out_data;
 
       always_comb begin
         if (bypass_en) begin
@@ -85,7 +87,7 @@ module fabric_fifo #(
       // Internal FIFO buffer
       fabric_fifo_core #(
         .DEPTH         (DEPTH),
-        .PAYLOAD_WIDTH (PAYLOAD_WIDTH)
+        .PAYLOAD_WIDTH (SAFE_PW)
       ) u_core (
         .clk       (clk),
         .rst_n     (rst_n),
@@ -100,7 +102,7 @@ module fabric_fifo #(
       // Non-bypassable: wire directly to core
       fabric_fifo_core #(
         .DEPTH         (DEPTH),
-        .PAYLOAD_WIDTH (PAYLOAD_WIDTH)
+        .PAYLOAD_WIDTH (SAFE_PW)
       ) u_core (
         .clk       (clk),
         .rst_n     (rst_n),
@@ -149,12 +151,16 @@ module fabric_fifo_core #(
   wire full  = (count == CNT_WIDTH'(SAFE_DEPTH));
   wire empty = (count == '0);
 
-  assign in_ready  = !full;
+  wire pop_pending = out_valid && out_ready;
+
+  // Full throughput for depth>=2: accept a new write even when full
+  // if a pop is happening on the same cycle (write-through).
+  assign in_ready  = !full || pop_pending;
   assign out_valid = !empty;
   assign out_data  = buffer[tail];
 
   wire do_write = in_valid  && in_ready;
-  wire do_read  = out_valid && out_ready;
+  wire do_read  = pop_pending;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin

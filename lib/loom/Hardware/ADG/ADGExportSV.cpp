@@ -208,8 +208,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     const auto *p = inputPorts[i];
     if (!p->isMemref) {
       unsigned w = getDataWidthBits(p->type) + getTagWidthBits(p->type);
-      top << "    input  logic " << (w > 1 ? "[" + std::to_string(w-1) + ":0] " : "")
-          << p->name << "_valid,\n";
+      top << "    input  logic " << p->name << "_valid,\n";
       top << "    output logic " << p->name << "_ready,\n";
       top << "    input  logic " << (w > 1 ? "[" + std::to_string(w-1) + ":0] " : "")
           << p->name << "_data";
@@ -223,8 +222,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     const auto *p = outputPorts[i];
     if (!p->isMemref) {
       unsigned w = getDataWidthBits(p->type) + getTagWidthBits(p->type);
-      top << "    output logic " << (w > 1 ? "[" + std::to_string(w-1) + ":0] " : "")
-          << p->name << "_valid,\n";
+      top << "    output logic " << p->name << "_valid,\n";
       top << "    input  logic " << p->name << "_ready,\n";
       top << "    output logic " << (w > 1 ? "[" + std::to_string(w-1) + ":0] " : "")
           << p->name << "_data";
