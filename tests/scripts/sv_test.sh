@@ -22,7 +22,7 @@ SV_TB="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Testbench"
 if [[ "${1:-}" == "--single" ]]; then
   shift
   LOOM_BIN=$(loom_resolve_bin "$1"); shift
-  TEST_DIR="$1"; shift
+  TEST_DIR=$(cd "$1" && pwd); shift
 
   test_name=$(basename "${TEST_DIR}")
   output_dir="${TEST_DIR}/Output"
