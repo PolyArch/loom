@@ -128,6 +128,9 @@ ValidationResult ADGBuilder::validateADG() {
     if (sw.numIn > 32 || sw.numOut > 32)
       addError("COMP_SWITCH_PORT_LIMIT",
                "switch has more than 32 inputs or outputs", loc);
+    if (sw.portType.getKind() == Type::None)
+      addError("COMP_SWITCH_INVALID_TYPE",
+               "switch port type must not be none (zero-width payload)", loc);
     validateConnectivityTable(sw.connectivity, sw.numIn, sw.numOut,
                               "COMP_SWITCH", loc, addError);
   }
@@ -278,6 +281,9 @@ ValidationResult ADGBuilder::validateADG() {
     std::string loc = "fifo @" + fifo.name;
     if (fifo.depth < 1)
       addError("COMP_FIFO_DEPTH_ZERO", "depth must be >= 1", loc);
+    if (fifo.elementType.getKind() == Type::None)
+      addError("COMP_FIFO_INVALID_TYPE",
+               "FIFO element type must not be none (zero-width payload)", loc);
     // Type must be native or tagged. Type::IN with a native integer width
     // (1, 8, 16, 32, 64) is treated as equivalent to the canonical alias.
     bool validType = isNativeOrEquivalent(fifo.elementType) ||
@@ -290,10 +296,16 @@ ValidationResult ADGBuilder::validateADG() {
     // Validate tagged element: both payload and tag must be valid.
     if (fifo.elementType.isTagged()) {
       validateTagType(fifo.elementType.getTagType(), loc);
-      if (!isNativeOrEquivalent(fifo.elementType.getValueType()))
+      Type valType = fifo.elementType.getValueType();
+      if (!isNativeOrEquivalent(valType))
         addError("COMP_FIFO_INVALID_TYPE",
                  "tagged payload type must be a native type; got " +
                      fifo.elementType.toMLIR(),
+                 loc);
+      else if (valType.getKind() == Type::None)
+        addError("COMP_FIFO_INVALID_TYPE",
+                 "tagged payload value type must not be none "
+                 "(zero-width payload)",
                  loc);
     }
   }

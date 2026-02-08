@@ -112,20 +112,28 @@ static const char *svModuleName(ModuleKind kind) {
 }
 
 //===----------------------------------------------------------------------===//
+// Helper: compute NUM_CONNECTED for a switch definition
+//===----------------------------------------------------------------------===//
+
+static unsigned getNumConnected(const SwitchDef &def) {
+  if (def.connectivity.empty())
+    return def.numIn * def.numOut;
+  unsigned count = 0;
+  for (const auto &row : def.connectivity)
+    for (bool v : row)
+      if (v) ++count;
+  return count;
+}
+
+//===----------------------------------------------------------------------===//
 // Generate switch instance parameters
 //===----------------------------------------------------------------------===//
 
 static std::string genSwitchParams(const SwitchDef &def) {
-  unsigned dw = getDataWidthBits(def.portType);
-  if (dw == 0) {
-    llvm::errs() << "error: exportSV: switch has zero-width payload type "
-                    "(Type::None is not valid for SV stream ports)\n";
-    std::exit(1);
-  }
   std::ostringstream os;
   os << "    .NUM_INPUTS(" << def.numIn << "),\n";
   os << "    .NUM_OUTPUTS(" << def.numOut << "),\n";
-  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .DATA_WIDTH(" << getDataWidthBits(def.portType) << "),\n";
   os << "    .TAG_WIDTH(" << getTagWidthBits(def.portType) << ")";
 
   // Connectivity matrix
@@ -153,15 +161,9 @@ static std::string genSwitchParams(const SwitchDef &def) {
 //===----------------------------------------------------------------------===//
 
 static std::string genFifoParams(const FifoDef &def) {
-  unsigned dw = getDataWidthBits(def.elementType);
-  if (dw == 0) {
-    llvm::errs() << "error: exportSV: FIFO has zero-width payload type "
-                    "(Type::None is not valid for SV stream ports)\n";
-    std::exit(1);
-  }
   std::ostringstream os;
   os << "    .DEPTH(" << def.depth << "),\n";
-  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .DATA_WIDTH(" << getDataWidthBits(def.elementType) << "),\n";
   os << "    .TAG_WIDTH(" << getTagWidthBits(def.elementType) << "),\n";
   os << "    .BYPASSABLE(" << (def.bypassable ? 1 : 0) << ")";
   return os.str();
@@ -228,15 +230,29 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
   }
 
+  // Collect switch instances that need config route table ports
+  struct SwitchCfgPort {
+    std::string name;
+    unsigned width;
+  };
+  std::vector<SwitchCfgPort> switchCfgPorts;
+  for (const auto &inst : instances) {
+    if (inst.kind == ModuleKind::Switch) {
+      const auto &def = switchDefs[inst.defIdx];
+      switchCfgPorts.push_back({inst.name, getNumConnected(def)});
+    }
+  }
+  bool hasCfgPorts = !switchCfgPorts.empty();
+
   bool hasMorePorts = !streamInputs.empty() || !streamOutputs.empty() ||
-                      hasErrorPorts;
+                      hasCfgPorts || hasErrorPorts;
   top << "    input  logic rst_n" << (hasMorePorts ? "," : "") << "\n";
 
   for (size_t i = 0; i < streamInputs.size(); ++i) {
     const auto *p = streamInputs[i];
     unsigned w = getDataWidthBits(p->type) + getTagWidthBits(p->type);
     bool last = (i + 1 == streamInputs.size()) && streamOutputs.empty() &&
-                !hasErrorPorts;
+                !hasCfgPorts && !hasErrorPorts;
     top << "    input  logic " << p->name << "_valid,\n";
     top << "    output logic " << p->name << "_ready,\n";
     top << "    input  logic " << (w > 1 ? "[" + std::to_string(w-1) + ":0] " : "")
@@ -246,11 +262,21 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   for (size_t i = 0; i < streamOutputs.size(); ++i) {
     const auto *p = streamOutputs[i];
     unsigned w = getDataWidthBits(p->type) + getTagWidthBits(p->type);
-    bool last = (i + 1 == streamOutputs.size()) && !hasErrorPorts;
+    bool last = (i + 1 == streamOutputs.size()) && !hasCfgPorts &&
+                !hasErrorPorts;
     top << "    output logic " << p->name << "_valid,\n";
     top << "    input  logic " << p->name << "_ready,\n";
     top << "    output logic " << (w > 1 ? "[" + std::to_string(w-1) + ":0] " : "")
         << p->name << "_data" << (last ? "" : ",") << "\n";
+  }
+
+  // Per-switch config route table inputs
+  for (size_t i = 0; i < switchCfgPorts.size(); ++i) {
+    const auto &cp = switchCfgPorts[i];
+    bool last = (i + 1 == switchCfgPorts.size()) && !hasErrorPorts;
+    top << "    input  logic "
+        << (cp.width > 1 ? "[" + std::to_string(cp.width - 1) + ":0] " : "")
+        << cp.name << "_cfg_route_table" << (last ? "" : ",") << "\n";
   }
 
   if (hasErrorPorts) {
@@ -344,7 +370,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         if (p > 0) top << ", ";
       }
       top << "}),\n";
-      top << "    .cfg_route_table('0),  // TODO: connect to config_mem\n";
+      top << "    .cfg_route_table(" << inst.name << "_cfg_route_table),\n";
       top << "    .error_valid(" << inst.name << "_error_valid),\n";
       top << "    .error_code(" << inst.name << "_error_code)\n";
       top << "  );\n\n";
