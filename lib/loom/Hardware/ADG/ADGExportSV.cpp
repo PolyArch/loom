@@ -189,7 +189,21 @@ static std::string genFifoParams(const FifoDef &def) {
 // ADGBuilder::Impl::generateSV
 //===----------------------------------------------------------------------===//
 
+static bool hasSVTemplate(ModuleKind kind) {
+  return kind == ModuleKind::Switch || kind == ModuleKind::Fifo;
+}
+
 void ADGBuilder::Impl::generateSV(const std::string &directory) const {
+  // Reject unsupported module kinds before producing any output
+  for (const auto &inst : instances) {
+    if (!hasSVTemplate(inst.kind)) {
+      llvm::errs() << "error: exportSV does not support module kind '"
+                   << svModuleName(inst.kind) << "' (instance '" << inst.name
+                   << "')\n";
+      std::exit(1);
+    }
+  }
+
   // Create output directories
   llvm::SmallString<256> libDir(directory);
   llvm::sys::path::append(libDir, "lib");
@@ -422,32 +436,8 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       top << "  );\n\n";
       break;
     }
-    default: {
-      // Black-box instantiation for module kinds without a dedicated SV
-      // template (PE, Memory, etc.).  Wire standard ports so the top-level
-      // compiles and can be used for integration testing with stubs.
-      unsigned numIn = getInstanceInputCount(i);
-      unsigned numOut = getInstanceOutputCount(i);
-      top << "  " << svModuleName(inst.kind) << " " << inst.name << " (\n";
-      top << "    .clk(clk), .rst_n(rst_n)";
-      for (unsigned p = 0; p < numIn; ++p) {
-        top << ",\n    .in" << p << "_valid(" << inst.name << "_in" << p << "_valid)";
-        top << ",\n    .in" << p << "_ready(" << inst.name << "_in" << p << "_ready)";
-        top << ",\n    .in" << p << "_data(" << inst.name << "_in" << p << "_data)";
-      }
-      for (unsigned p = 0; p < numOut; ++p) {
-        top << ",\n    .out" << p << "_valid(" << inst.name << "_out" << p << "_valid)";
-        top << ",\n    .out" << p << "_ready(" << inst.name << "_out" << p << "_ready)";
-        top << ",\n    .out" << p << "_data(" << inst.name << "_out" << p << "_data)";
-      }
-      if (inst.kind == ModuleKind::TemporalSwitch ||
-          inst.kind == ModuleKind::TemporalPE) {
-        top << ",\n    .error_valid(" << inst.name << "_error_valid)";
-        top << ",\n    .error_code(" << inst.name << "_error_code)";
-      }
-      top << "\n  );\n\n";
-      break;
-    }
+    default:
+      llvm_unreachable("unsupported module kind (should be caught earlier)");
     }
   }
 
