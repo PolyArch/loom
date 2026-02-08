@@ -16,6 +16,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <map>
+#include <set>
 #include <sstream>
 
 namespace loom {
@@ -215,11 +216,18 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   top << "module " << moduleName << "_top (\n";
   top << "    input  logic clk,\n";
 
-  // Collect non-memref stream ports
+  // Reject memref ports (not supported in SV export)
+  for (const auto &p : ports) {
+    if (p.isMemref) {
+      llvm::errs() << "error: exportSV does not support memref port '"
+                   << p.name << "'\n";
+      std::exit(1);
+    }
+  }
+
+  // Collect stream ports
   std::vector<const ModulePort *> streamInputs, streamOutputs;
   for (const auto &p : ports) {
-    if (p.isMemref)
-      continue;
     if (p.isInput)
       streamInputs.push_back(&p);
     else
@@ -410,11 +418,9 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   // Key: "<inst_name>_out<port>" or "%<module_port_name>" -> list of ready signals.
   std::map<std::string, std::vector<std::string>> readySources;
 
-  // Wire connections: module inputs to instances (skip memref ports)
+  // Wire connections: module inputs to instances
   for (const auto &conn : inputConns) {
     const auto &port = ports[conn.portIdx];
-    if (port.isMemref)
-      continue;
     const auto &inst = instances[conn.instIdx];
     std::string sinkReady = inst.name + "_in" + std::to_string(conn.dstPort) + "_ready";
     top << "  assign " << inst.name << "_in" << conn.dstPort
@@ -423,26 +429,33 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         << "_data = " << port.name << "_data;\n";
     readySources["%" + port.name].push_back(sinkReady);
   }
-  // Emit aggregated ready for module input ports
-  for (const auto &[key, sources] : readySources) {
-    std::string portName = key.substr(1); // strip leading '%'
-    if (sources.size() == 1) {
-      top << "  assign " << portName << "_ready = " << sources[0] << ";\n";
+  // Emit aggregated ready for module input ports; drive unconnected to 0
+  for (const auto *p : streamInputs) {
+    std::string key = "%" + p->name;
+    auto it = readySources.find(key);
+    if (it == readySources.end()) {
+      top << "  assign " << p->name << "_ready = 1'b0;\n";
+    } else if (it->second.size() == 1) {
+      top << "  assign " << p->name << "_ready = " << it->second[0] << ";\n";
     } else {
-      top << "  assign " << portName << "_ready = " << sources[0];
-      for (size_t s = 1; s < sources.size(); ++s)
-        top << " & " << sources[s];
+      top << "  assign " << p->name << "_ready = " << it->second[0];
+      for (size_t s = 1; s < it->second.size(); ++s)
+        top << " & " << it->second[s];
       top << ";\n";
     }
   }
   readySources.clear();
 
-  // Wire connections: instances to module outputs (skip memref ports)
+  // Wire connections: instances to module outputs
+  std::set<unsigned> assignedOutputPorts;
   for (const auto &conn : outputConns) {
     const auto &inst = instances[conn.instIdx];
     const auto &port = ports[conn.portIdx];
-    if (port.isMemref)
-      continue;
+    if (!assignedOutputPorts.insert(conn.portIdx).second) {
+      llvm::errs() << "error: exportSV: module output '" << port.name
+                   << "' has multiple source connections\n";
+      std::exit(1);
+    }
     std::string srcKey = inst.name + "_out" + std::to_string(conn.srcPort);
     top << "  assign " << port.name << "_valid = " << srcKey << "_valid;\n";
     top << "  assign " << port.name << "_data = " << srcKey << "_data;\n";
