@@ -6,8 +6,9 @@
 //
 // Parameterized testbench for fabric_switch. Covers:
 //   - Straight routing (diagonal)
+//   - Permutation routing (non-diagonal swap)
 //   - Valid/ready handshake with backpressure
-//   - Randomized valid routing
+//   - Randomized route-table with data verification
 //   - CFG_ error injection (ROUTE_MULTI_OUT, ROUTE_MULTI_IN)
 //   - RT_ error injection (UNROUTED_INPUT)
 //
@@ -85,6 +86,11 @@ module tb_fabric_switch #(
           bit_idx++;
         end
     return result;
+  endfunction
+
+  // LCG step: returns next rng state
+  function automatic int lcg_next(input int state);
+    return state * 1103515245 + 12345;
   endfunction
 
   task automatic do_reset();
@@ -166,29 +172,97 @@ module tb_fabric_switch #(
 
     do_reset();
 
-    // ---- Test 4: Randomized valid routing ----
-    begin
+    // ---- Test 4: Permutation routing (non-diagonal swap) ----
+    // Route input 0 -> output (DIM-1), input 1 -> output (DIM-2), ...
+    // This is a reversed mapping that verifies non-diagonal route correctness.
+    if (DIM >= 2) begin
       logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_route;
       flat_route = '0;
       for (int k = 0; k < DIM; k++)
-        flat_route[k*NUM_INPUTS + k] = 1'b1;
+        flat_route[(DIM-1-k)*NUM_INPUTS + k] = 1'b1;  // out[DIM-1-k] <- in[k]
 
       cfg_route_table = compress_route(flat_route);
       out_ready = '1;
 
+      // Drive all DIM inputs simultaneously with unique data
+      in_valid = '0;
+      for (int k = 0; k < DIM; k++) begin
+        in_valid[k] = 1'b1;
+        in_data[k] = PAYLOAD_WIDTH'(16'hC000 + k);
+      end
+      #1;
+
+      // Verify: output[DIM-1-k] should have data from input[k]
+      for (int k = 0; k < DIM; k++) begin
+        if (out_valid[DIM-1-k] !== 1'b1)
+          $fatal(1, "FAIL: permutation: out_valid[%0d] should be 1", DIM-1-k);
+        if (out_data[DIM-1-k] !== PAYLOAD_WIDTH'(16'hC000 + k))
+          $fatal(1, "FAIL: permutation: out_data[%0d] expected 0x%04x, got 0x%04x",
+                 DIM-1-k, 16'hC000 + k, out_data[DIM-1-k]);
+      end
+      in_valid = '0;
+    end
+
+    do_reset();
+
+    // ---- Test 5: Randomized route-table with data verification ----
+    // Each transaction: generate a random valid one-to-one mapping under
+    // connectivity constraints, drive random data, verify output correctness.
+    begin
+      logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_route;
+      logic [NUM_INPUTS-1:0] input_used;
+      int mapping [NUM_OUTPUTS];
+      int candidates [32];
+      int n_cand, pick, chosen;
+
       for (int t = 0; t < NUM_TRANSACTIONS; t++) begin
+        // Build a random valid one-to-one route mapping
+        flat_route = '0;
+        input_used = '0;
+
+        for (int o = 0; o < NUM_OUTPUTS; o++) begin
+          mapping[o] = -1;
+          n_cand = 0;
+          for (int i = 0; i < NUM_INPUTS; i++) begin
+            if (CONNECTIVITY[o*NUM_INPUTS + i] && !input_used[i]) begin
+              candidates[n_cand] = i;
+              n_cand++;
+            end
+          end
+          if (n_cand > 0) begin
+            rng = lcg_next(rng);
+            pick = ((rng >> 16) & 32'h7FFF) % n_cand;
+            chosen = candidates[pick];
+            flat_route[o*NUM_INPUTS + chosen] = 1'b1;
+            input_used[chosen] = 1'b1;
+            mapping[o] = chosen;
+          end
+        end
+
+        cfg_route_table = compress_route(flat_route);
+        out_ready = '1;
+
+        // Drive random data on routed inputs
+        in_valid = '0;
         for (int i = 0; i < NUM_INPUTS; i++) begin
-          in_valid[i] = (i < DIM) ? 1'b1 : 1'b0;
-          rng = rng * 1103515245 + 12345;
+          in_valid[i] = input_used[i];
+          rng = lcg_next(rng);
           in_data[i] = PAYLOAD_WIDTH'(rng);
         end
         #1;
 
-        for (int k = 0; k < DIM; k++) begin
-          if (out_valid[k] !== 1'b1)
-            $fatal(1, "FAIL: random route t=%0d: out_valid[%0d] not 1", t, k);
-          if (out_data[k] !== in_data[k])
-            $fatal(1, "FAIL: random route t=%0d: data mismatch at output %0d", t, k);
+        // Verify each routed output
+        for (int o = 0; o < NUM_OUTPUTS; o++) begin
+          if (mapping[o] >= 0) begin
+            if (out_valid[o] !== 1'b1)
+              $fatal(1, "FAIL: random route t=%0d: out_valid[%0d] not 1", t, o);
+            if (out_data[o] !== in_data[mapping[o]])
+              $fatal(1, "FAIL: random route t=%0d: data mismatch out[%0d], expected from in[%0d]",
+                     t, o, mapping[o]);
+          end else begin
+            if (out_valid[o] !== 1'b0)
+              $fatal(1, "FAIL: random route t=%0d: out_valid[%0d] should be 0 (unrouted)", t, o);
+          end
         end
 
         @(posedge clk);
@@ -199,7 +273,7 @@ module tb_fabric_switch #(
 
     do_reset();
 
-    // ---- Test 5: CFG_SWITCH_ROUTE_MULTI_OUT (code 1) ----
+    // ---- Test 6: CFG_SWITCH_ROUTE_MULTI_OUT (code 1) ----
     if (NUM_INPUTS >= 2) begin
       logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_route;
       flat_route = '0;
@@ -220,7 +294,7 @@ module tb_fabric_switch #(
 
     do_reset();
 
-    // ---- Test 6: CFG_SWITCH_ROUTE_MULTI_IN (code 2) ----
+    // ---- Test 7: CFG_SWITCH_ROUTE_MULTI_IN (code 2) ----
     if (NUM_OUTPUTS >= 2) begin
       logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_route;
       flat_route = '0;
@@ -241,7 +315,7 @@ module tb_fabric_switch #(
 
     do_reset();
 
-    // ---- Test 7: RT_SWITCH_UNROUTED_INPUT (code 262) ----
+    // ---- Test 8: RT_SWITCH_UNROUTED_INPUT (code 262) ----
     begin
       cfg_route_table = '0;
       in_valid = '0;

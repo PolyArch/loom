@@ -2,6 +2,11 @@
 # Fabric SystemVerilog Test
 # Compiles ADG test binaries, generates SV output, validates MLIR, and runs
 # SV simulation tests with parameter sweeps and negative (COMP_) tests.
+#
+# Two-stage architecture:
+#   Stage A (ADG prerequisite): compile C++ -> run binary -> validate MLIR
+#   Stage B (SV simulation):    param sweeps, negative tests, e2e smoke tests
+# Stage A must complete fully before Stage B begins (no shared-output races).
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -59,16 +64,76 @@ loom_require_parallel
 test_dirs=()
 loom_discover_dirs "${TESTS_DIR}" test_dirs
 
-PARALLEL_FILE="${TESTS_DIR}/sv_test.parallel.sh"
+# Cap parallelism at 50 jobs per plan requirement
+SV_MAX_JOBS=50
+if [[ -n "${LOOM_JOBS:-}" ]] && (( LOOM_JOBS > SV_MAX_JOBS )); then
+  LOOM_JOBS=${SV_MAX_JOBS}
+fi
+LOOM_JOBS=${LOOM_JOBS:-${SV_MAX_JOBS}}
+export LOOM_JOBS
 
 rel_loom=$(loom_relpath "${LOOM_BIN}")
 rel_sim_runner=$(loom_relpath "${SIM_RUNNER}")
 rel_sv_fabric=$(loom_relpath "${SV_FABRIC}")
 rel_sv_tb=$(loom_relpath "${SV_TB}")
 
+# =========================================================================
+# Stage A: ADG prerequisite (compile C++ -> run binary -> validate MLIR)
+# Must complete fully before Stage B begins.
+# =========================================================================
+ADG_PARALLEL_FILE="${TESTS_DIR}/sv_test_adg.parallel.sh"
+
+loom_write_parallel_header "${ADG_PARALLEL_FILE}" \
+  "Loom SV Tests - ADG prerequisite" \
+  "Compiles ADG test binaries, runs them, and validates generated MLIR."
+
+for test_dir in "${test_dirs[@]}"; do
+  test_name=$(basename "${test_dir}")
+  rel_sources=$(loom_rel_sources "${test_dir}") || continue
+  rel_test=$(loom_relpath "${test_dir}")
+  rel_out="${rel_test}/Output"
+
+  line="mkdir -p ${rel_out}"
+  line+=" && ${rel_loom} --as-clang${rel_sources} -o ${rel_out}/${test_name}"
+  line+=" && (cd ${rel_test} && Output/${test_name})"
+  line+=" && for f in ${rel_out}/*.fabric.mlir; do ${rel_loom} --adg \"\$f\" || exit 1; done"
+
+  echo "${line}" >> "${ADG_PARALLEL_FILE}"
+done
+
+loom_run_parallel "${ADG_PARALLEL_FILE}" "60" "${LOOM_JOBS}" "sv"
+
+# Save Stage A counts
+ADG_PASS=${LOOM_PASS}
+ADG_FAIL=${LOOM_FAIL}
+ADG_TIMEOUT=${LOOM_TIMEOUT}
+ADG_SKIPPED=${LOOM_SKIPPED}
+ADG_TOTAL=${LOOM_TOTAL}
+ADG_FAILED_NAMES=("${LOOM_FAILED_NAMES[@]+"${LOOM_FAILED_NAMES[@]}"}")
+
+# Fail fast if any ADG jobs failed
+if (( ADG_FAIL > 0 || ADG_TIMEOUT > 0 )); then
+  echo "Stage A (ADG prerequisite) failed: ${ADG_FAIL} failures, ${ADG_TIMEOUT} timeouts"
+  for name in "${ADG_FAILED_NAMES[@]}"; do
+    echo "  ${name}"
+  done
+  # Write partial result so the summary table still shows this suite
+  LOOM_PASS=${ADG_PASS}; LOOM_FAIL=${ADG_FAIL}; LOOM_TIMEOUT=${ADG_TIMEOUT}
+  LOOM_SKIPPED=${ADG_SKIPPED}; LOOM_TOTAL=${ADG_TOTAL}
+  export LOOM_PASS LOOM_FAIL LOOM_TIMEOUT LOOM_SKIPPED LOOM_TOTAL
+  loom_write_result "Fabric SystemVerilog"
+  exit 1
+fi
+
+# =========================================================================
+# Stage B: SV simulation (param sweeps, negative tests, e2e smoke tests)
+# Reuses Stage A outputs; no re-compilation of C++ binaries.
+# =========================================================================
+PARALLEL_FILE="${TESTS_DIR}/sv_test.parallel.sh"
+
 loom_write_parallel_header "${PARALLEL_FILE}" \
   "Loom Fabric SystemVerilog Tests" \
-  "Compiles ADG test binaries, generates SV, and runs simulation tests."
+  "SV simulation tests with parameter sweeps and negative (COMP_) tests."
 
 # --- Detect available simulators ---
 SIMS=()
@@ -86,21 +151,6 @@ if [[ ${#SIMS[@]} -eq 0 ]]; then
 else
   NO_SIM=false
 fi
-
-# --- ADG phase: compile + run + validate MLIR for each test dir ---
-for test_dir in "${test_dirs[@]}"; do
-  test_name=$(basename "${test_dir}")
-  rel_sources=$(loom_rel_sources "${test_dir}") || continue
-  rel_test=$(loom_relpath "${test_dir}")
-  rel_out="${rel_test}/Output"
-
-  line="mkdir -p ${rel_out}"
-  line+=" && ${rel_loom} --as-clang${rel_sources} -o ${rel_out}/${test_name}"
-  line+=" && (cd ${rel_test} && Output/${test_name})"
-  line+=" && for f in ${rel_out}/*.fabric.mlir; do ${rel_loom} --adg \"\$f\" || exit 1; done"
-
-  echo "${line}" >> "${PARALLEL_FILE}"
-done
 
 # --- SV simulation phase ---
 
@@ -223,24 +273,18 @@ if [[ ${#SIMS[@]} -gt 0 ]]; then
     emit_sim_jobs "${sim}"
   done
 
-  # --- End-to-end tests: ADG export -> compile generated top -> simulate ---
-  # These verify the full pipeline: C++ ADG builder -> exportSV -> SV compilation
-  rel_sv_tb_top=$(loom_relpath "${SV_TB}")
+  # --- End-to-end tests: simulate generated top (SV only, no C++ re-compile) ---
+  # Stage A already produced Output/sv/ artifacts; e2e just compiles+simulates SV.
   for test_dir in "${test_dirs[@]}"; do
     test_name=$(basename "${test_dir}")
-    rel_sources=$(loom_rel_sources "${test_dir}") || continue
     rel_test=$(loom_relpath "${test_dir}")
     rel_out="${rel_test}/Output"
 
     for sim in "${SIMS[@]}"; do
       outdir="${rel_out}/${sim}_e2e_${test_name}"
-      # Chain: compile C++ -> run binary -> simulate generated top
       line="mkdir -p ${outdir}"
-      line+=" && ${rel_loom} --as-clang${rel_sources} -o ${rel_out}/${test_name}"
-      line+=" && (cd ${rel_test} && Output/${test_name})"
-      # Compile generated top + copied lib files + smoke TB
       line+=" && ${rel_sim_runner} run ${sim} tb_${test_name}_top ${outdir}"
-      line+=" ${rel_out}/sv/${test_name}_top.sv ${rel_out}/sv/lib/fabric_fifo.sv ${rel_out}/sv/lib/fabric_switch.sv ${rel_sv_tb_top}/tb_${test_name}_top.sv"
+      line+=" ${rel_out}/sv/${test_name}_top.sv ${rel_out}/sv/lib/fabric_fifo.sv ${rel_out}/sv/lib/fabric_switch.sv ${rel_sv_tb}/tb_${test_name}_top.sv"
       echo "${line}" >> "${PARALLEL_FILE}"
     done
   done
@@ -269,12 +313,18 @@ else
   done
 fi
 
-# Cap parallelism at 50 jobs per plan requirement
-SV_MAX_JOBS=50
-if [[ -n "${LOOM_JOBS:-}" ]] && (( LOOM_JOBS > SV_MAX_JOBS )); then
-  LOOM_JOBS=${SV_MAX_JOBS}
-fi
-LOOM_JOBS=${LOOM_JOBS:-${SV_MAX_JOBS}}
-export LOOM_JOBS
+# Run Stage B and accumulate Stage A counts into the final result
+loom_run_parallel "${PARALLEL_FILE}" "60" "${LOOM_JOBS}" "sv"
 
-loom_run_suite "${PARALLEL_FILE}" "Fabric SystemVerilog" "sv" "60"
+# Merge Stage A + Stage B counts
+LOOM_PASS=$((LOOM_PASS + ADG_PASS))
+LOOM_TOTAL=$((LOOM_TOTAL + ADG_TOTAL))
+LOOM_SKIPPED=$((LOOM_SKIPPED + ADG_SKIPPED))
+export LOOM_PASS LOOM_FAIL LOOM_TIMEOUT LOOM_SKIPPED LOOM_TOTAL
+
+loom_print_summary "Fabric SystemVerilog"
+loom_write_result "Fabric SystemVerilog"
+
+if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
+  exit 1
+fi
