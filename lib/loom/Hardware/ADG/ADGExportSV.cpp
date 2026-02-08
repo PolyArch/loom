@@ -193,6 +193,23 @@ static bool hasSVTemplate(ModuleKind kind) {
   return kind == ModuleKind::Switch || kind == ModuleKind::Fifo;
 }
 
+//===----------------------------------------------------------------------===//
+// Helper: validate a name as a legal SystemVerilog identifier
+//===----------------------------------------------------------------------===//
+
+static bool isValidSVIdentifier(const std::string &name) {
+  if (name.empty())
+    return false;
+  // Must start with letter or underscore
+  if (!std::isalpha(static_cast<unsigned char>(name[0])) && name[0] != '_')
+    return false;
+  for (char c : name) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_')
+      return false;
+  }
+  return true;
+}
+
 void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   // Reject unsupported module kinds before producing any output
   for (const auto &inst : instances) {
@@ -201,6 +218,40 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
                    << svModuleName(inst.kind) << "' (instance '" << inst.name
                    << "')\n";
       std::exit(1);
+    }
+  }
+
+  // Validate instance names: must be valid SV identifiers and unique
+  {
+    std::set<std::string> seenNames;
+    for (const auto &inst : instances) {
+      if (!isValidSVIdentifier(inst.name)) {
+        llvm::errs() << "error: exportSV: instance name '" << inst.name
+                     << "' is not a valid SystemVerilog identifier\n";
+        std::exit(1);
+      }
+      if (!seenNames.insert(inst.name).second) {
+        llvm::errs() << "error: exportSV: duplicate instance name '"
+                     << inst.name << "'\n";
+        std::exit(1);
+      }
+    }
+  }
+
+  // Validate port names: must be valid SV identifiers and unique
+  {
+    std::set<std::string> seenPorts;
+    for (const auto &p : ports) {
+      if (!isValidSVIdentifier(p.name)) {
+        llvm::errs() << "error: exportSV: port name '" << p.name
+                     << "' is not a valid SystemVerilog identifier\n";
+        std::exit(1);
+      }
+      if (!seenPorts.insert(p.name).second) {
+        llvm::errs() << "error: exportSV: duplicate port name '" << p.name
+                     << "'\n";
+        std::exit(1);
+      }
     }
   }
 
