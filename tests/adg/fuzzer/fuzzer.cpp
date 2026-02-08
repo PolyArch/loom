@@ -19,7 +19,7 @@
 
 #include "fuzzer_config.h"
 
-#include <loom/Hardware/adg.h>
+#include <loom/adg.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -194,7 +194,7 @@ static void writeCppSource(const FuzzParams &p, const std::string &outDir) {
   std::string path = caseDir + "/" + p.name + ".cpp";
   std::ofstream os(path);
 
-  os << "#include <loom/Hardware/adg.h>\n";
+  os << "#include <loom/adg.h>\n";
   os << "using namespace loom::adg;\n\n";
   os << "int main() {\n";
   os << "  ADGBuilder builder(\"" << p.name << "\");\n";

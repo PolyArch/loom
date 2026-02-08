@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "loom/Hardware/ADGBuilderImpl.h"
+#include "loom/Hardware/ADG/ADGBuilderImpl.h"
 
 #include "loom/Dialect/Dataflow/DataflowDialect.h"
 #include "loom/Dialect/Fabric/FabricDialect.h"

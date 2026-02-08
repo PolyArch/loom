@@ -136,6 +136,13 @@ add_custom_target(check-loom-fabric
   DEPENDS check-loom-fabric-tdd
 )
 
+add_custom_target(check-loom-sv
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/sv_test.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom loom-sdk
+)
+
 add_custom_target(check-loom
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/check_loom.sh"
     "${LOOM_RUNTIME_DIR}/loom"

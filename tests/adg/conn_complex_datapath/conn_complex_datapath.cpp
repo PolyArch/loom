@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <loom/Hardware/adg.h>
+#include <loom/adg.h>
 
 using namespace loom::adg;
 

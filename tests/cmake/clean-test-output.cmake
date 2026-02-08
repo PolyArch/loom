@@ -41,6 +41,22 @@ foreach(f IN LISTS ADG_PARALLEL_FILES)
   message(STATUS "Removed ${f}")
 endforeach()
 
+# Remove SV test output directories
+file(GLOB SV_OUTPUT_DIRS "${SOURCE_DIR}/tests/sv/*/Output")
+foreach(dir IN LISTS SV_OUTPUT_DIRS)
+  if(IS_DIRECTORY "${dir}")
+    file(REMOVE_RECURSE "${dir}")
+    message(STATUS "Removed ${dir}")
+  endif()
+endforeach()
+
+# Remove SV parallel files
+file(GLOB SV_PARALLEL_FILES "${SOURCE_DIR}/tests/sv/*.parallel.sh")
+foreach(f IN LISTS SV_PARALLEL_FILES)
+  file(REMOVE "${f}")
+  message(STATUS "Removed ${f}")
+endforeach()
+
 # Remove fabric TDD output directories
 file(GLOB TDD_OUTPUT_DIRS "${SOURCE_DIR}/tests/fabric/tdd/*/Output")
 foreach(dir IN LISTS TDD_OUTPUT_DIRS)

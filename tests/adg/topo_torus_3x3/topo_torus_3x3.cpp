@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <loom/Hardware/adg.h>
+#include <loom/adg.h>
 
 #include <algorithm>
 #include <cassert>

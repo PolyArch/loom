@@ -18,11 +18,20 @@ The export implementation and parameterized templates are part of the Loom
 source tree:
 
 ```
-include/loom/Hardware/SystemVerilog/
-  # Parameterized module templates (used by exporter, NOT referenced by output)
-
-lib/loom/Hardware/SystemVerilog/
-  ADGExportSV.cpp        # Export implementation
+lib/loom/Hardware/
+  ADG/
+    ADGExportSV.cpp          # Export implementation
+  SystemVerilog/
+    Common/
+      fabric_common.svh      # Stream interface, error codes, common macros
+    Fabric/
+      fabric_fifo.sv         # Parameterized FIFO module
+      fabric_switch.sv       # Parameterized switch module
+    Testbench/
+      tb_fabric_fifo.sv      # FIFO testbench
+      tb_fabric_switch.sv    # Switch testbench
+    Utils/
+      sim_runner.sh          # Verilator/VCS compile+run helper
 ```
 
 ### Generated Output (Self-Contained)
@@ -52,6 +61,7 @@ generated:
     fabric_add_tag.sv      # Parameterized add_tag module
     fabric_map_tag.sv      # Parameterized map_tag module
     fabric_del_tag.sv      # Parameterized del_tag module
+    fabric_fifo.sv         # Parameterized FIFO module
     fabric_common.svh      # Common definitions and interfaces (includes fabric_stream)
 ```
 
@@ -429,6 +439,39 @@ module fabric_switch #(
 
 **Config bit width:** `K` bits, where `K = $countones(CONNECTIVITY)` (number of connected positions). See [spec-fabric-switch.md](./spec-fabric-switch.md).
 `fabric_switch` is combinational; it does not depend on `clk`/`rst_n`.
+
+#### fabric_fifo.sv
+
+```systemverilog
+module fabric_fifo #(
+    parameter int DEPTH      = 2,
+    parameter int DATA_WIDTH = 32,
+    parameter int TAG_WIDTH  = 0,
+    parameter bit BYPASSABLE = 0,
+    localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH,
+    localparam int CONFIG_WIDTH  = BYPASSABLE ? 1 : 0
+) (
+    input  logic clk,
+    input  logic rst_n,
+
+    // Streaming input
+    input  logic                    in_valid,
+    output logic                    in_ready,
+    input  logic [PAYLOAD_WIDTH-1:0] in_data,
+
+    // Streaming output
+    output logic                    out_valid,
+    input  logic                    out_ready,
+    output logic [PAYLOAD_WIDTH-1:0] out_data,
+
+    // Configuration (only present when BYPASSABLE=1)
+    input  logic [CONFIG_WIDTH-1:0] cfg_data
+);
+```
+
+`fabric_fifo` is a sequential module with valid/ready handshake. For semantics, see
+[spec-fabric-fifo.md](./spec-fabric-fifo.md). Unlike `fabric_switch`, it has no
+`error_valid`/`error_code` ports (FIFO has no runtime or configuration errors).
 
 #### fabric_temporal_sw.sv
 

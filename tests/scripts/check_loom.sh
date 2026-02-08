@@ -18,6 +18,7 @@ any_failure=false
 
 "${SCRIPT_DIR}/fabric_tdd.sh" "${LOOM_BIN}" "${LIT_PY}" || any_failure=true
 "${SCRIPT_DIR}/adg_test.sh" "${LOOM_BIN}" || any_failure=true
+"${SCRIPT_DIR}/sv_test.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/ll_roundtrip.sh" "${LOOM_BIN}" --run || any_failure=true
 "${SCRIPT_DIR}/mlir_roundtrip.sh" "${LOOM_BIN}" --run || any_failure=true
 "${SCRIPT_DIR}/scf_roundtrip.sh" "${LOOM_BIN}" --run || any_failure=true

@@ -198,6 +198,7 @@ loom_run_parallel() {
   LOOM_PASS=0
   LOOM_FAIL=0
   LOOM_TIMEOUT=0
+  LOOM_SKIPPED=0
   LOOM_TOTAL=0
   LOOM_FAILED_NAMES=()
 
@@ -243,6 +244,8 @@ loom_run_parallel() {
     if [[ "${signal}" -ne 0 || "${exitval}" -eq 137 || "${exitval}" -eq 143 ]]; then
       LOOM_TIMEOUT=$((LOOM_TIMEOUT + 1))
       LOOM_FAILED_NAMES+=("${name} (timeout)")
+    elif [[ "${exitval}" -eq 77 ]]; then
+      LOOM_SKIPPED=$((LOOM_SKIPPED + 1))
     elif [[ "${exitval}" -ne 0 ]]; then
       LOOM_FAIL=$((LOOM_FAIL + 1))
       LOOM_FAILED_NAMES+=("${name}")
@@ -252,13 +255,16 @@ loom_run_parallel() {
   done < "${joblog}"
 
   rm -f "${joblog}" "${wrapped_file}"
-  export LOOM_PASS LOOM_FAIL LOOM_TIMEOUT LOOM_TOTAL LOOM_FAILED_NAMES
+  export LOOM_PASS LOOM_FAIL LOOM_TIMEOUT LOOM_SKIPPED LOOM_TOTAL LOOM_FAILED_NAMES
 }
 
 # --- Result Reporting ---
 
 loom_print_summary() {
   local suite_name="$1"
+  if (( LOOM_SKIPPED > 0 )); then
+    echo "${suite_name}: ${LOOM_SKIPPED} skipped"
+  fi
   if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
     local fail_total=$((LOOM_FAIL + LOOM_TIMEOUT))
     echo "${suite_name}: ${fail_total} failed"
@@ -276,8 +282,8 @@ loom_write_result() {
   mkdir -p "${results_dir}"
   local fname
   fname=$(echo "${suite_name}" | tr ' ' '_' | tr '[:upper:]' '[:lower:]')
-  printf '%s\t%s\t%s\t%s\t%s\n' \
-    "${suite_name}" "${LOOM_TOTAL}" "${LOOM_PASS}" "${LOOM_FAIL}" "${LOOM_TIMEOUT}" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${suite_name}" "${LOOM_TOTAL}" "${LOOM_PASS}" "${LOOM_FAIL}" "${LOOM_TIMEOUT}" "${LOOM_SKIPPED:-0}" \
     > "${results_dir}/${fname}.tsv"
 }
 
@@ -298,28 +304,30 @@ loom_print_table() {
     return 1
   fi
 
-  local grand_total=0 grand_pass=0 grand_fail=0 grand_timeout=0
+  local grand_total=0 grand_pass=0 grand_fail=0 grand_timeout=0 grand_skipped=0
   local rows=()
 
   for f in "${files[@]}"; do
-    while IFS=$'\t' read -r name total pass fail timeout; do
-      rows+=("$(printf '%-28s %5s %7s %7s %10s' "${name}" "${total}" "${pass}" "${fail}" "${timeout}")")
+    while IFS=$'\t' read -r name total pass fail timeout skipped; do
+      skipped=${skipped:-0}
+      rows+=("$(printf '%-28s %5s %7s %7s %10s %9s' "${name}" "${total}" "${pass}" "${fail}" "${timeout}" "${skipped}")")
       grand_total=$((grand_total + total))
       grand_pass=$((grand_pass + pass))
       grand_fail=$((grand_fail + fail))
       grand_timeout=$((grand_timeout + timeout))
+      grand_skipped=$((grand_skipped + skipped))
     done < "${f}"
   done
 
-  echo "============================== Test Summary ==============================="
-  printf '%-28s %5s %7s %7s %10s\n' "Test Suite" "Total" "Pass" "Fail" "Timeout"
-  echo "--------------------------------------------------------------------------"
+  echo "============================== Test Summary ======================================="
+  printf '%-28s %5s %7s %7s %10s %9s\n' "Test Suite" "Total" "Pass" "Fail" "Timeout" "Skipped"
+  echo "------------------------------------------------------------------------------------"
   for row in "${rows[@]}"; do
     echo "${row}"
   done
-  echo "--------------------------------------------------------------------------"
-  printf '%-28s %5s %7s %7s %10s\n' "TOTAL" "${grand_total}" "${grand_pass}" "${grand_fail}" "${grand_timeout}"
-  echo "=========================================================================="
+  echo "------------------------------------------------------------------------------------"
+  printf '%-28s %5s %7s %7s %10s %9s\n' "TOTAL" "${grand_total}" "${grand_pass}" "${grand_fail}" "${grand_timeout}" "${grand_skipped}"
+  echo "===================================================================================="
 
   if (( grand_fail > 0 || grand_timeout > 0 )); then
     return 1

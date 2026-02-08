@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <loom/Hardware/adg.h>
+#include <loom/adg.h>
 
 #include <cassert>
 #include <cstdlib>

@@ -109,7 +109,7 @@ semantics.
 A typical ADG construction workflow:
 
 ```cpp
-#include <loom/Hardware/adg.h>
+#include <loom/adg.h>
 
 int main() {
     // Create builder
@@ -418,55 +418,37 @@ referenced by the generated output. The export functions copy required templates
 into the output directory.
 
 ```
+include/loom/
+  adg.h                              # Public API header (hardware)
+  loom.h                             # Public API header (software)
+
 include/loom/Hardware/
-  adg.h                            # Public API header
+  ADG/
+    ADGBuilderImpl.h                 # Internal builder implementation
+  SystemVerilog/                     # (placeholder for future SV-related headers)
+  SystemC/                           # (placeholder for future SystemC-related headers)
 
-include/loom/Dialect/Fabric/
-  ADGBuilder.h                     # Builder class declaration
-  ADGTypes.h                       # Type definitions
-
-include/loom/Hardware/SystemC/
-  fabric_pe.h                      # PE module template
-  fabric_pe_constant.h             # Constant PE template
-  fabric_pe_load.h                 # Load PE template
-  fabric_pe_store.h                # Store PE template
-  fabric_temporal_pe.h             # Temporal PE template
-  fabric_switch.h                  # Switch template
-  fabric_temporal_sw.h             # Temporal switch template
-  fabric_memory.h                  # Memory template
-  fabric_extmemory.h               # External memory template
-  fabric_add_tag.h                 # add_tag template
-  fabric_map_tag.h                 # map_tag template
-  fabric_del_tag.h                 # del_tag template
-  fabric_stream.h                  # Streaming interface
-  fabric_common.h                  # Common utilities
-
-include/loom/Hardware/SystemVerilog/
-  fabric_pe.sv                     # PE module template
-  fabric_pe_constant.sv            # Constant PE template
-  fabric_pe_load.sv                # Load PE template
-  fabric_pe_store.sv               # Store PE template
-  fabric_temporal_pe.sv            # Temporal PE template
-  fabric_switch.sv                 # Switch template
-  fabric_temporal_sw.sv            # Temporal switch template
-  fabric_memory.sv                 # Memory template
-  fabric_extmemory.sv              # External memory template
-  fabric_add_tag.sv                # add_tag template
-  fabric_map_tag.sv                # map_tag template
-  fabric_del_tag.sv                # del_tag template
-  fabric_common.svh                # Common definitions
-
-lib/loom/Dialect/Fabric/
-  ADGBuilder.cpp                   # Builder implementation
-  ADGExportMLIR.cpp                # MLIR export
-  ADGExportDOT.cpp                 # DOT export
-  ADGValidation.cpp                # Validation logic
-
-lib/loom/Hardware/SystemC/
-  ADGExportSysC.cpp                # SystemC export logic
-
-lib/loom/Hardware/SystemVerilog/
-  ADGExportSV.cpp                  # SystemVerilog export logic
+lib/loom/Hardware/
+  ADG/
+    ADGBuilder.cpp                   # Builder implementation
+    ADGBuilderGen.cpp                # MLIR generation
+    ADGBuilderPE.cpp                 # PE builder methods
+    ADGBuilderTypes.cpp              # Type system implementation
+    ADGBuilderValidation.cpp         # Validation logic
+    ADGExportSV.cpp                  # SystemVerilog export logic
+    CMakeLists.txt                   # Build rules for LoomADG library
+  SystemVerilog/
+    Common/
+      fabric_common.svh              # Stream interface, error code defines
+    Fabric/
+      fabric_fifo.sv                 # Parameterized FIFO module
+      fabric_switch.sv               # Parameterized switch module
+    Testbench/
+      tb_fabric_fifo.sv              # FIFO testbench
+      tb_fabric_switch.sv            # Switch testbench
+    Utils/
+      sim_runner.sh                  # Verilator/VCS compile+run helper
+  SystemC/                           # (placeholder, no files yet)
 ```
 
 ## Test Organization

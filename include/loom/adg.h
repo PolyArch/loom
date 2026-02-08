@@ -10,8 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LOOM_HARDWARE_ADG_H
-#define LOOM_HARDWARE_ADG_H
+#ifndef LOOM_ADG_H
+#define LOOM_ADG_H
 
 #include <cstdint>
 #include <memory>
@@ -586,6 +586,9 @@ public:
   /// Export the ADG as Fabric MLIR to the given file path.
   void exportMLIR(const std::string &path);
 
+  /// Export the ADG as synthesizable SystemVerilog to the given directory.
+  void exportSV(const std::string &directory);
+
 private:
   friend class PEBuilder;
   friend class ConstantPEBuilder;
@@ -607,4 +610,4 @@ private:
 } // namespace adg
 } // namespace loom
 
-#endif // LOOM_HARDWARE_ADG_H
+#endif // LOOM_ADG_H

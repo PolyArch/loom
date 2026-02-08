@@ -11,7 +11,7 @@
 #ifndef LOOM_HARDWARE_ADGBUILDERIMPL_H
 #define LOOM_HARDWARE_ADGBUILDERIMPL_H
 
-#include "loom/Hardware/adg.h"
+#include "loom/adg.h"
 
 #include <cassert>
 #include <cstdio>
@@ -276,6 +276,9 @@ struct ADGBuilder::Impl {
 
   /// Generate full MLIR text from the internal state.
   std::string generateMLIR() const;
+
+  /// Generate SystemVerilog output into the given directory.
+  void generateSV(const std::string &directory) const;
 };
 
 } // namespace adg
