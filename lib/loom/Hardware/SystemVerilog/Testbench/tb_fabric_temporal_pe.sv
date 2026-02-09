@@ -99,11 +99,12 @@ module tb_fabric_temporal_pe;
 
     // Check 3: RT_TEMPORAL_PE_NO_MATCH - send tag not in instruction table
     rst_n = 0;
+    in_valid = '0;
+    cfg_data = '0;
     repeat (2) @(posedge clk);
     rst_n = 1;
     @(posedge clk);
     // Configure one valid instruction with tag=1
-    cfg_data = '0;
     cfg_data[dut.INSN_WIDTH - 1] = 1'b1;
     cfg_data[dut.INSN_WIDTH - 2 -: TAG_WIDTH] = TAG_WIDTH'(1);
     // Send inputs with tag=7 (no match)

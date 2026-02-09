@@ -882,7 +882,9 @@ static std::string genTemporalPEParams(const TemporalPEDef &def,
   os << "    .NUM_FU_TYPES(" << def.fuPEDefIndices.size() << "),\n";
   os << "    .NUM_REGISTERS(" << def.numRegisters << "),\n";
   os << "    .NUM_INSTRUCTIONS(" << def.numInstructions << "),\n";
-  os << "    .REG_FIFO_DEPTH(" << def.regFifoDepth << ")";
+  os << "    .REG_FIFO_DEPTH(" << def.regFifoDepth << "),\n";
+  os << "    .SHARE_MODE_B(" << (def.shareModeB ? 1 : 0) << "),\n";
+  os << "    .OPERAND_BUFFER_SIZE(" << def.shareBufferSize << ")";
   return os.str();
 }
 
@@ -1423,13 +1425,20 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         llvm::sys::path::append(tpePath, inst.name + "_temporal_pe.sv");
         writeFile(tpePath.str().str(), customized);
 
-        // Track dialects used by FU types
+        // Track dialects used by FU types (singleOp and bodyMLIR)
         for (unsigned idx : def.fuPEDefIndices) {
           const auto &fuDef = peDefs[idx];
           if (!fuDef.singleOp.empty()) {
             auto dotPos = fuDef.singleOp.find('.');
             if (dotPos != std::string::npos)
               usedDialects.insert(fuDef.singleOp.substr(0, dotPos));
+          }
+          if (!fuDef.bodyMLIR.empty()) {
+            for (const auto &op : extractBodyMLIROps(fuDef.bodyMLIR)) {
+              auto dotPos = op.find('.');
+              if (dotPos != std::string::npos)
+                usedDialects.insert(op.substr(0, dotPos));
+            }
           }
         }
       }

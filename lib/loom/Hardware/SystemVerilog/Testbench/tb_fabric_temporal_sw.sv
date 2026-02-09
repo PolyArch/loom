@@ -91,11 +91,12 @@ module tb_fabric_temporal_sw;
 
     // Check 3: RT_TEMPORAL_SW_NO_MATCH - send input with unmatched tag
     rst_n = 0;
+    in_valid = '0;
+    cfg_data = '0;
     repeat (2) @(posedge clk);
     rst_n = 1;
     @(posedge clk);
     // Configure one valid entry with tag=2, route in0->out0
-    cfg_data = '0;
     cfg_data[ENTRY_WIDTH - 1] = 1'b1;
     cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(2);
     cfg_data[0] = 1'b1;
@@ -117,12 +118,13 @@ module tb_fabric_temporal_sw;
 
     // Check 4: CFG_TEMPORAL_SW_ROUTE_MULTI_OUT - input routes to >1 output
     rst_n = 0;
+    in_valid = '0;
+    cfg_data = '0;
     repeat (2) @(posedge clk);
     rst_n = 1;
     @(posedge clk);
     // Entry 0: valid=1, tag=1, routes: in0->out0 AND in0->out1 (multi-out for in0)
     // Route bits: [out0_in0, out0_in1, out1_in0, out1_in1]
-    cfg_data = '0;
     cfg_data[ENTRY_WIDTH - 1] = 1'b1;
     cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(1);
     cfg_data[0] = 1'b1; // out0->in0
@@ -139,11 +141,12 @@ module tb_fabric_temporal_sw;
 
     // Check 5: CFG_TEMPORAL_SW_ROUTE_MULTI_IN - output selects >1 input
     rst_n = 0;
+    in_valid = '0;
+    cfg_data = '0;
     repeat (2) @(posedge clk);
     rst_n = 1;
     @(posedge clk);
     // Entry 0: valid=1, tag=1, routes: in0->out0 AND in1->out0 (multi-in for out0)
-    cfg_data = '0;
     cfg_data[ENTRY_WIDTH - 1] = 1'b1;
     cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(1);
     cfg_data[0] = 1'b1; // out0->in0
@@ -160,11 +163,12 @@ module tb_fabric_temporal_sw;
 
     // Check 6: RT_TEMPORAL_SW_UNROUTED_INPUT - valid input, tag matches but no route
     rst_n = 0;
+    in_valid = '0;
+    cfg_data = '0;
     repeat (2) @(posedge clk);
     rst_n = 1;
     @(posedge clk);
     // Entry 0: valid=1, tag=3, routes: only in1->out0 (no route for in0)
-    cfg_data = '0;
     cfg_data[ENTRY_WIDTH - 1] = 1'b1;
     cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(3);
     cfg_data[1] = 1'b1; // out0->in1 only

@@ -19,6 +19,11 @@ set -uo pipefail
 export CCACHE_DISABLE=1
 export CCACHE_TEMPDIR=/tmp
 
+# Unset VERILATOR_ROOT if it causes inconsistency (Verilator 5.x self-resolves)
+if [[ -n "${VERILATOR_ROOT:-}" ]]; then
+  unset VERILATOR_ROOT
+fi
+
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
@@ -77,10 +82,33 @@ compile_and_run_verilator() {
   local outdir="$2"
   shift 2
 
+  # Auto-derive include search paths from source file directories
+  local inc_dirs=()
+  for a in "$@"; do
+    if [[ "${a}" != -* && -f "${a}" ]]; then
+      local d
+      d="$(dirname "${a}")"
+      local dup=0
+      for existing in "${inc_dirs[@]+"${inc_dirs[@]}"}"; do
+        if [[ "${existing}" == "${d}" ]]; then
+          dup=1; break
+        fi
+      done
+      if [[ "${dup}" -eq 0 ]]; then
+        inc_dirs+=("${d}")
+      fi
+    fi
+  done
+  local inc_flags=()
+  for d in "${inc_dirs[@]+"${inc_dirs[@]}"}"; do
+    inc_flags+=("-I${d}")
+  done
+
   if ! verilator --binary --timing \
     --top-module "${top}" \
     -Mdir "${outdir}/obj_dir" \
     -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
+    "${inc_flags[@]+"${inc_flags[@]}"}" \
     "$@" \
     >"${outdir}/compile.log" 2>&1; then
     return 1
@@ -159,6 +187,14 @@ elif [[ "${MODE}" == "expect-fail" ]]; then
 
   # Check logs for expected pattern first (VCS $fatal may exit 0)
   if grep -q "${ERR_PATTERN}" "${OUTDIR}/compile.log" "${OUTDIR}/sim.log" 2>/dev/null; then
+    exit 0
+  fi
+
+  # COMP_ patterns are compile-time parameter validation.  When invalid
+  # parameters cause the elaborator itself to reject the design (e.g.
+  # Verilator ASCRANGE/SELRANGE errors from zero-width signals), the $fatal
+  # message never appears, but the compile failure IS the correct outcome.
+  if [[ "${local_rc}" -ne 0 && "${ERR_PATTERN}" == COMP_* ]]; then
     exit 0
   fi
 

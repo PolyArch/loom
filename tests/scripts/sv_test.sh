@@ -17,6 +17,7 @@ TESTS_DIR="${ROOT_DIR}/tests/sv"
 SIM_RUNNER="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Utils/sim_runner.sh"
 SV_FABRIC="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Fabric"
 SV_TB="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Testbench"
+SV_COMMON="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Common"
 
 # Detect preferred simulator (VCS > Verilator per spec-adg-tools.md)
 SIM=""
@@ -90,6 +91,7 @@ rel_loom=$(loom_relpath "${LOOM_BIN}")
 rel_sim_runner=$(loom_relpath "${SIM_RUNNER}")
 rel_sv_fabric=$(loom_relpath "${SV_FABRIC}")
 rel_sv_tb=$(loom_relpath "${SV_TB}")
+rel_sv_common=$(loom_relpath "${SV_COMMON}")
 
 # =========================================================================
 # Stage A: ADG prerequisite (compile C++ -> run binary -> validate MLIR)
@@ -263,7 +265,8 @@ temporal_pe_reg_configs=(
 
 # Memory positive parameter sweeps
 memory_configs=(
-  "DATA_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,IS_PRIVATE=1,MEM_DEPTH=64"
+  "DATA_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,IS_PRIVATE=1,MEM_DEPTH=64,DEADLOCK_TIMEOUT=65535"
+  "DATA_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,IS_PRIVATE=1,MEM_DEPTH=64,DEADLOCK_TIMEOUT=16"
 )
 
 # Memory negative tests
@@ -364,7 +367,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${cfg}")
     outdir="tests/sv/add_tag/Output/${sim}_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_add_tag.sv ${rel_sv_tb}/tb_fabric_add_tag.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_add_tag.sv ${rel_sv_tb}/tb_fabric_add_tag.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_add_tag ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -378,7 +381,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${params}")
     outdir="tests/sv/add_tag/Output/${sim}_neg_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_add_tag.sv ${rel_sv_tb}/tb_fabric_add_tag.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_add_tag.sv ${rel_sv_tb}/tb_fabric_add_tag.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} expect-fail ${sim} tb_fabric_add_tag ${outdir} ${pattern} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -391,7 +394,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${cfg}")
     outdir="tests/sv/del_tag/Output/${sim}_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_del_tag.sv ${rel_sv_tb}/tb_fabric_del_tag.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_del_tag.sv ${rel_sv_tb}/tb_fabric_del_tag.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_del_tag ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -405,7 +408,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${params}")
     outdir="tests/sv/del_tag/Output/${sim}_neg_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_del_tag.sv ${rel_sv_tb}/tb_fabric_del_tag.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_del_tag.sv ${rel_sv_tb}/tb_fabric_del_tag.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} expect-fail ${sim} tb_fabric_del_tag ${outdir} ${pattern} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -418,7 +421,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${cfg}")
     outdir="tests/sv/map_tag/Output/${sim}_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_map_tag.sv ${rel_sv_tb}/tb_fabric_map_tag.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_map_tag.sv ${rel_sv_tb}/tb_fabric_map_tag.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_map_tag ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -432,7 +435,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${params}")
     outdir="tests/sv/map_tag/Output/${sim}_neg_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_map_tag.sv ${rel_sv_tb}/tb_fabric_map_tag.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_map_tag.sv ${rel_sv_tb}/tb_fabric_map_tag.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} expect-fail ${sim} tb_fabric_map_tag ${outdir} ${pattern} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -445,7 +448,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${cfg}")
     outdir="tests/sv/pe_constant/Output/${sim}_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_pe_constant.sv ${rel_sv_tb}/tb_fabric_pe_constant.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_pe_constant.sv ${rel_sv_tb}/tb_fabric_pe_constant.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_pe_constant ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -458,7 +461,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${cfg}")
     outdir="tests/sv/temporal_sw/Output/${sim}_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_temporal_sw.sv ${rel_sv_tb}/tb_fabric_temporal_sw.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_temporal_sw.sv ${rel_sv_tb}/tb_fabric_temporal_sw.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_temporal_sw ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -472,7 +475,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${params}")
     outdir="tests/sv/temporal_sw/Output/${sim}_neg_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_temporal_sw.sv ${rel_sv_tb}/tb_fabric_temporal_sw.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_temporal_sw.sv ${rel_sv_tb}/tb_fabric_temporal_sw.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} expect-fail ${sim} tb_fabric_temporal_sw ${outdir} ${pattern} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -485,7 +488,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${cfg}")
     outdir="tests/sv/pe/Output/${sim}_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_pe.sv ${rel_sv_tb}/tb_fabric_pe.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_pe.sv ${rel_sv_tb}/tb_fabric_pe.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_pe ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -498,7 +501,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${cfg}")
     outdir="tests/sv/temporal_pe/Output/${sim}_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_temporal_pe.sv ${rel_sv_tb}/tb_fabric_temporal_pe.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_temporal_pe.sv ${rel_sv_tb}/tb_fabric_temporal_pe.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_temporal_pe ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -512,7 +515,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${params}")
     outdir="tests/sv/temporal_pe/Output/${sim}_neg_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_temporal_pe.sv ${rel_sv_tb}/tb_fabric_temporal_pe.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_temporal_pe.sv ${rel_sv_tb}/tb_fabric_temporal_pe.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} expect-fail ${sim} tb_fabric_temporal_pe ${outdir} ${pattern} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -525,7 +528,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${cfg}")
     outdir="tests/sv/temporal_pe_reg/Output/${sim}_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_temporal_pe.sv ${rel_sv_tb}/tb_fabric_temporal_pe_reg.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_temporal_pe.sv ${rel_sv_tb}/tb_fabric_temporal_pe_reg.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_temporal_pe_reg ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -539,7 +542,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${params}")
     outdir="tests/sv/memory/Output/${sim}_neg_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_memory.sv ${rel_sv_tb}/tb_fabric_memory.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_memory.sv ${rel_sv_tb}/tb_fabric_memory.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} expect-fail ${sim} tb_fabric_memory ${outdir} ${pattern} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -552,7 +555,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${cfg}")
     outdir="tests/sv/memory/Output/${sim}_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_memory.sv ${rel_sv_tb}/tb_fabric_memory.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_memory.sv ${rel_sv_tb}/tb_fabric_memory.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_memory ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -577,7 +580,7 @@ if [[ -n "${SIM}" ]]; then
     # Collect all generated lib .sv files dynamically
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${SIM} tb_${test_name}_top ${outdir}"
-    line+=" ${rel_out}/sv/${test_name}_top.sv \$(find ${rel_out}/sv/lib -name '*.sv' -type f) ${tb_file}"
+    line+=" ${rel_sv_common}/fabric_common.svh ${rel_out}/sv/${test_name}_top.sv \$(find ${rel_out}/sv/lib -name '*.sv' -type f) ${tb_file}"
     echo "${line}" >> "${PARALLEL_FILE}"
   done
 else

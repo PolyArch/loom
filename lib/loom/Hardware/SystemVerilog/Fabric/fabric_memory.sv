@@ -22,13 +22,14 @@
 `include "fabric_common.svh"
 
 module fabric_memory #(
-    parameter int DATA_WIDTH    = 32,
-    parameter int TAG_WIDTH     = 0,
-    parameter int LD_COUNT      = 1,
-    parameter int ST_COUNT      = 0,
-    parameter int LSQ_DEPTH     = 0,
-    parameter int IS_PRIVATE    = 1,
-    parameter int MEM_DEPTH     = 64,
+    parameter int DATA_WIDTH       = 32,
+    parameter int TAG_WIDTH        = 0,
+    parameter int LD_COUNT         = 1,
+    parameter int ST_COUNT         = 0,
+    parameter int LSQ_DEPTH        = 0,
+    parameter int IS_PRIVATE       = 1,
+    parameter int MEM_DEPTH        = 64,
+    parameter int DEADLOCK_TIMEOUT = 65535,
     localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH,
     localparam int SAFE_PW       = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1,
     localparam int SAFE_DW       = (DATA_WIDTH > 0) ? DATA_WIDTH : 1,
@@ -144,12 +145,15 @@ module fabric_memory #(
   endgenerate
 
   // -----------------------------------------------------------------------
-  // Store path: FIFO-based address/data pairing per store port
+  // Store path: per-tag FIFO-based address/data pairing
   // -----------------------------------------------------------------------
   // Each store port has an independent address FIFO and data FIFO (depth =
-  // LSQ_DEPTH). Address and data can arrive at different times. When both
-  // FIFOs are non-empty, the head entries pair and the store fires.
+  // LSQ_DEPTH). The addr FIFO also stores the request tag (when TAG_WIDTH > 0
+  // and ST_COUNT > 1) so stdone can propagate the actual request tag.
+  localparam int SAFE_TW = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
   logic [ST_COUNT > 0 ? ST_COUNT-1 : 0 : 0] st_paired;
+  // Flat array for stdone tag lookup (populated inside generate loop)
+  logic [ST_COUNT > 0 ? ST_COUNT-1 : 0 : 0][SAFE_TW-1:0] st_head_tag;
 
   generate
     if (ST_COUNT > 0) begin : g_store
@@ -162,8 +166,9 @@ module fabric_memory #(
         localparam int DATA_IN = LD_COUNT + ST_COUNT + gsi;
         localparam int DONE_IDX = (IS_PRIVATE ? 0 : 1) + LD_COUNT + 1;
 
-        // Address FIFO
+        // Address FIFO (also stores request tag for tagged stdone)
         logic [ADDR_WIDTH-1:0] addr_q [0:SAFE_LSQ-1];
+        logic [SAFE_TW-1:0]   addr_tag_q [0:SAFE_LSQ-1];
         logic [Q_IDX_W:0] addr_cnt;
         logic [Q_IDX_W-1:0] addr_wr_ptr, addr_rd_ptr;
         logic addr_full, addr_empty;
@@ -191,6 +196,10 @@ module fabric_memory #(
         assign pair_fire = !addr_empty && !data_empty && out_ready[DONE_IDX];
         assign st_paired[gsi] = pair_fire;
 
+        // Extract tag from addr input (safe for TAG_WIDTH=0: uses top bits of SAFE_PW)
+        logic [SAFE_TW-1:0] addr_in_tag;
+        assign addr_in_tag = in_data[ADDR_IN][SAFE_PW-1 -: SAFE_TW];
+
         always_ff @(posedge clk or negedge rst_n) begin : addr_fifo
           if (!rst_n) begin : reset
             addr_cnt    <= '0;
@@ -199,6 +208,7 @@ module fabric_memory #(
           end else begin : tick
             if (addr_enq && !pair_fire) begin : enq_only
               addr_q[addr_wr_ptr] <= in_data[ADDR_IN][ADDR_WIDTH-1:0];
+              addr_tag_q[addr_wr_ptr] <= addr_in_tag;
               addr_wr_ptr <= (addr_wr_ptr == Q_IDX_W'(SAFE_LSQ - 1)) ? '0 : (addr_wr_ptr + Q_IDX_W'(1));
               addr_cnt    <= addr_cnt + (Q_IDX_W+1)'(1);
             end else if (!addr_enq && pair_fire) begin : deq_only
@@ -206,6 +216,7 @@ module fabric_memory #(
               addr_cnt    <= addr_cnt - (Q_IDX_W+1)'(1);
             end else if (addr_enq && pair_fire) begin : enq_deq
               addr_q[addr_wr_ptr] <= in_data[ADDR_IN][ADDR_WIDTH-1:0];
+              addr_tag_q[addr_wr_ptr] <= addr_in_tag;
               addr_wr_ptr <= (addr_wr_ptr == Q_IDX_W'(SAFE_LSQ - 1)) ? '0 : (addr_wr_ptr + Q_IDX_W'(1));
               addr_rd_ptr <= (addr_rd_ptr == Q_IDX_W'(SAFE_LSQ - 1)) ? '0 : (addr_rd_ptr + Q_IDX_W'(1));
             end
@@ -239,10 +250,14 @@ module fabric_memory #(
             mem[addr_q[addr_rd_ptr]] <= data_q[data_rd_ptr];
           end
         end
+
+        // Export FIFO head tag to flat array for stdone lookup
+        assign st_head_tag[gsi] = addr_tag_q[addr_rd_ptr];
       end
 
       // Store done signal: fires when any store port has a paired completion.
-      // When ST_COUNT > 1 && TAG_WIDTH > 0, stdone carries the port tag.
+      // When ST_COUNT > 1 && TAG_WIDTH > 0, stdone carries the request tag
+      // from the addr FIFO (not the physical port index).
       begin : g_stdone
         localparam int DONE_IDX = (IS_PRIVATE ? 0 : 1) + LD_COUNT + 1;
         logic any_st_fire;
@@ -255,7 +270,7 @@ module fabric_memory #(
             for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : chk
               if (st_paired[iter_var0]) begin : fire
                 any_st_fire = 1'b1;
-                stdone_data[DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(iter_var0);
+                stdone_data[DATA_WIDTH +: TAG_WIDTH] = st_head_tag[iter_var0][TAG_WIDTH-1:0];
               end
             end
           end
@@ -293,7 +308,6 @@ module fabric_memory #(
   // Store deadlock timeout counter (per store port)
   // Deadlock: one FIFO has entries but the other is empty with no progress.
   // -----------------------------------------------------------------------
-  localparam int DEADLOCK_TIMEOUT = 65535;
   logic [ST_COUNT > 0 ? ST_COUNT-1 : 0 : 0] st_deadlock_hit;
 
   generate

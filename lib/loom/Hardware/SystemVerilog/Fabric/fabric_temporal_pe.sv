@@ -19,14 +19,16 @@
 `include "fabric_common.svh"
 
 module fabric_temporal_pe #(
-    parameter int NUM_INPUTS        = 2,
-    parameter int NUM_OUTPUTS       = 1,
-    parameter int DATA_WIDTH        = 32,
-    parameter int TAG_WIDTH         = 4,
-    parameter int NUM_FU_TYPES      = 1,
-    parameter int NUM_REGISTERS     = 0,
-    parameter int NUM_INSTRUCTIONS  = 2,
-    parameter int REG_FIFO_DEPTH    = 0,
+    parameter int NUM_INPUTS             = 2,
+    parameter int NUM_OUTPUTS            = 1,
+    parameter int DATA_WIDTH             = 32,
+    parameter int TAG_WIDTH              = 4,
+    parameter int NUM_FU_TYPES           = 1,
+    parameter int NUM_REGISTERS          = 0,
+    parameter int NUM_INSTRUCTIONS       = 2,
+    parameter int REG_FIFO_DEPTH         = 0,
+    parameter int SHARE_MODE_B           = 0,
+    parameter int OPERAND_BUFFER_SIZE    = 0,
     localparam int PAYLOAD_WIDTH    = DATA_WIDTH + TAG_WIDTH,
     localparam int SAFE_PW          = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1,
     localparam int SAFE_DW          = (DATA_WIDTH > 0) ? DATA_WIDTH : 1,
@@ -73,6 +75,12 @@ module fabric_temporal_pe #(
       $fatal(1, "COMP_TEMPORAL_PE_NUM_INSTRUCTION: must be >= 1");
     if (NUM_REGISTERS > 0 && REG_FIFO_DEPTH < 1)
       $fatal(1, "COMP_TEMPORAL_PE_REG_FIFO_DEPTH: must be >= 1 when registers enabled");
+    if (SHARE_MODE_B == 0 && OPERAND_BUFFER_SIZE != 0)
+      $fatal(1, "COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE: Mode A cannot have size");
+    if (SHARE_MODE_B != 0 && OPERAND_BUFFER_SIZE < 1)
+      $fatal(1, "COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING: Mode B requires size >= 1");
+    if (SHARE_MODE_B != 0 && OPERAND_BUFFER_SIZE > 8192)
+      $fatal(1, "COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE: Size out of [1, 8192] range");
   end
 
   // -----------------------------------------------------------------------
@@ -106,15 +114,14 @@ module fabric_temporal_pe #(
   end
 
   // -----------------------------------------------------------------------
-  // Operand buffer (Mode A: per-instruction buffer)
-  // Each instruction slot has NUM_INPUTS entries: {op_valid, op_value}
-  // For register-sourced operands, the buffer is pre-filled from register FIFOs.
+  // Operand buffer declarations
+  // Mode A: per-instruction buffer; Mode B: shared tag-position buffer
   // -----------------------------------------------------------------------
   localparam int INSN_IDX_W = $clog2(NUM_INSTRUCTIONS > 1 ? NUM_INSTRUCTIONS : 2);
-  // Sequential operand buffer (input-sourced operands)
+  // Sequential operand buffer (input-sourced operands) - used by Mode A
   logic [NUM_INSTRUCTIONS-1:0][NUM_INPUTS-1:0] op_buf_valid;
   logic [NUM_INSTRUCTIONS-1:0][NUM_INPUTS-1:0][SAFE_DW-1:0] op_buf_value;
-  // Effective operand state: sequential buffer overridden by register FIFO
+  // Effective operand state: instruction-indexed view for fire logic
   logic [NUM_INSTRUCTIONS-1:0][NUM_INPUTS-1:0] op_valid;
   logic [NUM_INSTRUCTIONS-1:0][NUM_INPUTS-1:0][SAFE_DW-1:0] op_value;
 
@@ -168,9 +175,10 @@ module fabric_temporal_pe #(
   end
 
   // -----------------------------------------------------------------------
-  // FU launch one-shot: prevent FU replay during multi-cycle latency
+  // FU launch one-shot: prevent FU replay during multi-cycle latency.
   // fu_launch pulses high for exactly one cycle when an instruction fires.
-  // fu_busy stays high until body_valid indicates completion.
+  // fu_busy stays high until fire (commit), NOT just body_valid, to prevent
+  // replay under output backpressure (all_out_ready=0).
   // -----------------------------------------------------------------------
   logic fu_busy;
   logic fu_launch;
@@ -182,7 +190,7 @@ module fabric_temporal_pe #(
     end else begin : tick
       if (fu_launch) begin : launch
         fu_busy <= 1'b1;
-      end else if (fu_busy && body_valid) begin : complete
+      end else if (fire) begin : commit
         fu_busy <= 1'b0;
       end
     end
@@ -243,14 +251,32 @@ module fabric_temporal_pe #(
   endgenerate
 
   // Input ready: accept when tag matches and buffer slot is available
-  always_comb begin : gen_in_ready
-    integer iter_var0;
-    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
-      in_accept[iter_var0] = in_valid[iter_var0] && in_match[iter_var0] &&
-                             !op_buf_valid[in_matched_slot[iter_var0]][iter_var0];
-      in_ready[iter_var0] = in_accept[iter_var0];
+  generate
+    if (SHARE_MODE_B == 0) begin : g_mode_a_ready
+      always_comb begin : gen_in_ready
+        integer iter_var0;
+        for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
+          in_accept[iter_var0] = in_valid[iter_var0] && in_match[iter_var0] &&
+                                 !op_buf_valid[in_matched_slot[iter_var0]][iter_var0];
+          in_ready[iter_var0] = in_accept[iter_var0];
+        end
+      end
+    end else begin : g_mode_b_ready
+      // Mode B: accept when tag matches and buffer has capacity for this operand.
+      // Capacity exists if: existing tag-match entry has free column, or free entry exists.
+      always_comb begin : gen_in_ready
+        integer iter_var0;
+        for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
+          in_accept[iter_var0] = in_valid[iter_var0] && in_match[iter_var0] &&
+                                 (g_mode_b_buf.sb_in_has_match[iter_var0]
+                                  ? (!g_mode_b_buf.sb_in_create_new[iter_var0] ||
+                                     g_mode_b_buf.sb_in_has_free[iter_var0])
+                                  : g_mode_b_buf.sb_in_has_free[iter_var0]);
+          in_ready[iter_var0] = in_accept[iter_var0];
+        end
+      end
     end
-  end
+  endgenerate
 
   // -----------------------------------------------------------------------
   // Register file FIFOs (generate-time guard for NUM_REGISTERS > 0)
@@ -308,14 +334,61 @@ module fabric_temporal_pe #(
         end
       end
 
-      // Register FIFO update
+      // Per-register reader count: how many distinct instructions read each
+      // register. A FIFO entry is retained until all readers have consumed it.
+      localparam int INSN_CNT_W = $clog2(NUM_INSTRUCTIONS > 1 ? NUM_INSTRUCTIONS : 2) + 1;
+      logic [NUM_REGISTERS-1:0][INSN_CNT_W-1:0] reg_reader_count;
+
+      always_comb begin : count_readers
+        integer iter_var0, iter_var1, iter_var2;
+        for (iter_var0 = 0; iter_var0 < NUM_REGISTERS; iter_var0 = iter_var0 + 1) begin : per_reg
+          reg_reader_count[iter_var0] = '0;
+          for (iter_var1 = 0; iter_var1 < NUM_INSTRUCTIONS; iter_var1 = iter_var1 + 1) begin : per_insn
+            if (insn_valid[iter_var1]) begin : valid_insn
+              automatic logic reads_reg = 1'b0;
+              for (iter_var2 = 0; iter_var2 < NUM_INPUTS; iter_var2 = iter_var2 + 1) begin : per_op
+                automatic int ob = iter_var1 * INSN_WIDTH + NUM_OUTPUTS * RESULT_WIDTH + iter_var2 * REG_BITS;
+                if (cfg_data[ob + REG_BITS - 1] &&
+                    (cfg_data[ob +: (REG_BITS - 1)] == (REG_BITS-1)'(iter_var0))) begin : match
+                  reads_reg = 1'b1;
+                end
+              end
+              if (reads_reg) begin : inc
+                reg_reader_count[iter_var0] = reg_reader_count[iter_var0] + INSN_CNT_W'(1);
+              end
+            end
+          end
+        end
+      end
+
+      // Per-register consumed counter: tracks how many readers have fired
+      // for the current FIFO head entry.
+      logic [NUM_REGISTERS-1:0][INSN_CNT_W-1:0] reg_rd_consumed;
+
+      // Determine if the firing instruction reads each register
+      logic [NUM_REGISTERS-1:0] fire_reads_reg;
+      always_comb begin : fire_reads
+        integer iter_var0, iter_var1;
+        for (iter_var0 = 0; iter_var0 < NUM_REGISTERS; iter_var0 = iter_var0 + 1) begin : per_reg
+          fire_reads_reg[iter_var0] = 1'b0;
+          for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : per_op
+            if (op_is_reg[iter_var1] &&
+                (op_reg_idx[iter_var1] == (REG_BITS-1)'(iter_var0))) begin : match
+              fire_reads_reg[iter_var0] = 1'b1;
+            end
+          end
+        end
+      end
+
+      // Register FIFO update with multi-reader tracking
       always_ff @(posedge clk or negedge rst_n) begin : reg_fifo_update
         integer iter_var0, iter_var1;
         if (!rst_n) begin : reset
           for (iter_var0 = 0; iter_var0 < NUM_REGISTERS; iter_var0 = iter_var0 + 1) begin : clr_reg
-            reg_fifo_cnt[iter_var0]    <= '0;
-            reg_fifo_wr_ptr[iter_var0] <= '0;
-            reg_fifo_rd_ptr[iter_var0] <= '0;
+            reg_fifo_cnt[iter_var0]     <= '0;
+            reg_fifo_wr_ptr[iter_var0]  <= '0;
+            reg_fifo_rd_ptr[iter_var0]  <= '0;
+            reg_rd_consumed[iter_var0]  <= '0;
           end
         end else begin : tick
           if (fire) begin : commit
@@ -330,14 +403,21 @@ module fabric_temporal_pe #(
                   reg_fifo_cnt[res_reg_idx[iter_var0]] + (RFIFO_IDX_W+1)'(1);
               end
             end
-            // Dequeue: consume register operands
-            for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : rd_reg
-              if (op_is_reg[iter_var0] && !reg_fifo_empty[op_reg_idx[iter_var0]]) begin : deq
-                reg_fifo_rd_ptr[op_reg_idx[iter_var0]] <=
-                  (reg_fifo_rd_ptr[op_reg_idx[iter_var0]] == RFIFO_IDX_W'(SAFE_RFIFO - 1))
-                    ? '0 : (reg_fifo_rd_ptr[op_reg_idx[iter_var0]] + RFIFO_IDX_W'(1));
-                reg_fifo_cnt[op_reg_idx[iter_var0]] <=
-                  reg_fifo_cnt[op_reg_idx[iter_var0]] - (RFIFO_IDX_W+1)'(1);
+            // Multi-reader dequeue: track consumption per register
+            for (iter_var0 = 0; iter_var0 < NUM_REGISTERS; iter_var0 = iter_var0 + 1) begin : rd_reg
+              if (fire_reads_reg[iter_var0] && !reg_fifo_empty[iter_var0]) begin : consume
+                if ((reg_rd_consumed[iter_var0] + INSN_CNT_W'(1)) >= reg_reader_count[iter_var0]) begin : all_consumed
+                  // All readers done: dequeue and reset counter
+                  reg_fifo_rd_ptr[iter_var0] <=
+                    (reg_fifo_rd_ptr[iter_var0] == RFIFO_IDX_W'(SAFE_RFIFO - 1))
+                      ? '0 : (reg_fifo_rd_ptr[iter_var0] + RFIFO_IDX_W'(1));
+                  reg_fifo_cnt[iter_var0] <=
+                    reg_fifo_cnt[iter_var0] - (RFIFO_IDX_W+1)'(1);
+                  reg_rd_consumed[iter_var0] <= '0;
+                end else begin : partial
+                  reg_rd_consumed[iter_var0] <=
+                    reg_rd_consumed[iter_var0] + INSN_CNT_W'(1);
+                end
               end
             end
           end
@@ -358,37 +438,187 @@ module fabric_temporal_pe #(
   endgenerate
 
   // -----------------------------------------------------------------------
-  // Operand buffer update
-  // For input-sourced operands (op_is_reg=0 or NUM_REGISTERS=0):
-  //   Buffers arriving input values; cleared on fire.
-  // For register-sourced operands (op_is_reg=1, NUM_REGISTERS>0):
-  //   op_valid reflects register FIFO non-empty (combinational, not buffered).
+  // Operand buffer update (Mode A / Mode B)
   // -----------------------------------------------------------------------
-  always_ff @(posedge clk or negedge rst_n) begin : op_buf_update
-    integer iter_var0, iter_var1;
-    if (!rst_n) begin : reset
-      for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : clr_insn
-        for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : clr_op
-          op_buf_valid[iter_var0][iter_var1] <= 1'b0;
-          op_buf_value[iter_var0][iter_var1] <= '0;
+  generate
+    if (SHARE_MODE_B == 0) begin : g_mode_a_buf
+      // Mode A: per-instruction buffer
+      // For input-sourced operands: buffers arriving values; cleared on fire.
+      // For register-sourced operands: op_valid reflects register FIFO state.
+      always_ff @(posedge clk or negedge rst_n) begin : op_buf_update
+        integer iter_var0, iter_var1;
+        if (!rst_n) begin : reset
+          for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : clr_insn
+            for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : clr_op
+              op_buf_valid[iter_var0][iter_var1] <= 1'b0;
+              op_buf_value[iter_var0][iter_var1] <= '0;
+            end
+          end
+        end else begin : update
+          // Clear fired instruction's buffer (input-sourced operands)
+          if (fire) begin : clear_fired
+            for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : clr_op
+              op_buf_valid[matched_insn][iter_var1] <= 1'b0;
+            end
+          end
+          // Buffer arriving operands (input-sourced)
+          for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : buf_in
+            if (in_accept[iter_var0]) begin : accept
+              op_buf_valid[in_matched_slot[iter_var0]][iter_var0] <= 1'b1;
+              op_buf_value[in_matched_slot[iter_var0]][iter_var0] <= in_value[iter_var0];
+            end
+          end
         end
       end
-    end else begin : update
-      // Clear fired instruction's buffer (input-sourced operands)
-      if (fire) begin : clear_fired
-        for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : clr_op
-          op_buf_valid[matched_insn][iter_var1] <= 1'b0;
+    end else begin : g_mode_b_buf
+      // Mode B: shared operand buffer with tag-position matching.
+      // Each entry: {tag, position, op_valid[L-1:0], op_value[L-1:0]}
+      // Entry valid when any op_valid=1; invalid when all op_valid=0.
+      localparam int BUF_DEPTH = OPERAND_BUFFER_SIZE;
+      localparam int POS_W = $clog2(BUF_DEPTH > 1 ? BUF_DEPTH : 2);
+      localparam int BUF_IDX_W = $clog2(BUF_DEPTH > 1 ? BUF_DEPTH : 2);
+
+      logic [BUF_DEPTH-1:0][TAG_WIDTH-1:0]                 sb_tag;
+      logic [BUF_DEPTH-1:0][POS_W-1:0]                     sb_pos;
+      logic [BUF_DEPTH-1:0][NUM_INPUTS-1:0]                sb_op_valid;
+      logic [BUF_DEPTH-1:0][NUM_INPUTS-1:0][SAFE_DW-1:0]  sb_op_value;
+
+      // Entry validity: any op_valid bit set
+      logic [BUF_DEPTH-1:0] sb_entry_valid;
+      always_comb begin : entry_valid_calc
+        integer iter_var0;
+        for (iter_var0 = 0; iter_var0 < BUF_DEPTH; iter_var0 = iter_var0 + 1) begin : per_entry
+          sb_entry_valid[iter_var0] = |sb_op_valid[iter_var0];
         end
       end
-      // Buffer arriving operands (input-sourced)
-      for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : buf_in
-        if (in_accept[iter_var0]) begin : accept
-          op_buf_valid[in_matched_slot[iter_var0]][iter_var0] <= 1'b1;
-          op_buf_value[in_matched_slot[iter_var0]][iter_var0] <= in_value[iter_var0];
+
+      // Find head entry per instruction: tag match AND position=0 AND all ops valid
+      // This provides the instruction-indexed op_valid/op_value interface.
+      always_comb begin : mode_b_to_insn
+        integer iter_var0, iter_var1, iter_var2;
+        for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : per_insn
+          for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : per_op
+            op_buf_valid[iter_var0][iter_var1] = 1'b0;
+            op_buf_value[iter_var0][iter_var1] = '0;
+          end
+          for (iter_var2 = 0; iter_var2 < BUF_DEPTH; iter_var2 = iter_var2 + 1) begin : scan_buf
+            if (sb_entry_valid[iter_var2] &&
+                (sb_tag[iter_var2] == insn_tag[iter_var0]) &&
+                (sb_pos[iter_var2] == '0)) begin : head_match
+              for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : copy_ops
+                op_buf_valid[iter_var0][iter_var1] = sb_op_valid[iter_var2][iter_var1];
+                op_buf_value[iter_var0][iter_var1] = sb_op_value[iter_var2][iter_var1];
+              end
+            end
+          end
+        end
+      end
+
+      // Per-input: find target buffer entry for arriving operand
+      // 1. Find entries with matching tag, select largest position
+      // 2. If max-position entry has op_valid[i]=0: store there
+      // 3. If op_valid[i]=1: create new entry at max_position+1
+      // 4. If no matching entry: create new entry at position=0
+      logic [NUM_INPUTS-1:0]              sb_in_has_match;
+      logic [NUM_INPUTS-1:0][BUF_IDX_W-1:0] sb_in_target;
+      logic [NUM_INPUTS-1:0]              sb_in_create_new;
+      logic [NUM_INPUTS-1:0][POS_W-1:0]  sb_in_new_pos;
+      logic [NUM_INPUTS-1:0][BUF_IDX_W-1:0] sb_in_free_slot;
+      logic [NUM_INPUTS-1:0]              sb_in_has_free;
+
+      always_comb begin : find_targets
+        integer iter_var0, iter_var1;
+        for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
+          automatic logic found_tag = 1'b0;
+          automatic logic [BUF_IDX_W-1:0] best_idx = '0;
+          automatic logic [POS_W-1:0] best_pos = '0;
+          automatic logic found_free = 1'b0;
+          automatic logic [BUF_IDX_W-1:0] free_idx = '0;
+          sb_in_has_match[iter_var0] = 1'b0;
+          sb_in_target[iter_var0] = '0;
+          sb_in_create_new[iter_var0] = 1'b0;
+          sb_in_new_pos[iter_var0] = '0;
+          sb_in_has_free[iter_var0] = 1'b0;
+          sb_in_free_slot[iter_var0] = '0;
+          // Scan for tag matches and free slots
+          for (iter_var1 = 0; iter_var1 < BUF_DEPTH; iter_var1 = iter_var1 + 1) begin : scan
+            if (sb_entry_valid[iter_var1] &&
+                (sb_tag[iter_var1] == in_tag[iter_var0])) begin : tag_match
+              if (!found_tag || (sb_pos[iter_var1] >= best_pos)) begin : update_max
+                found_tag = 1'b1;
+                best_idx = iter_var1[BUF_IDX_W-1:0];
+                best_pos = sb_pos[iter_var1];
+              end
+            end
+            if (!sb_entry_valid[iter_var1] && !found_free) begin : free_found
+              found_free = 1'b1;
+              free_idx = iter_var1[BUF_IDX_W-1:0];
+            end
+          end
+          sb_in_has_match[iter_var0] = found_tag;
+          sb_in_has_free[iter_var0] = found_free;
+          sb_in_free_slot[iter_var0] = free_idx;
+          if (found_tag) begin : decide
+            if (!sb_op_valid[best_idx][iter_var0]) begin : store_existing
+              sb_in_target[iter_var0] = best_idx;
+              sb_in_create_new[iter_var0] = 1'b0;
+            end else begin : need_new
+              sb_in_target[iter_var0] = free_idx;
+              sb_in_create_new[iter_var0] = 1'b1;
+              sb_in_new_pos[iter_var0] = best_pos + POS_W'(1);
+            end
+          end else begin : no_match
+            sb_in_target[iter_var0] = free_idx;
+            sb_in_create_new[iter_var0] = 1'b1;
+            sb_in_new_pos[iter_var0] = '0;
+          end
+        end
+      end
+
+      // Shared buffer update: operand arrival + fire invalidation + position dec
+      always_ff @(posedge clk or negedge rst_n) begin : sb_update
+        integer iter_var0, iter_var1;
+        if (!rst_n) begin : reset
+          for (iter_var0 = 0; iter_var0 < BUF_DEPTH; iter_var0 = iter_var0 + 1) begin : clr_entry
+            sb_tag[iter_var0] <= '0;
+            sb_pos[iter_var0] <= '0;
+            sb_op_valid[iter_var0] <= '0;
+            for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : clr_op
+              sb_op_value[iter_var0][iter_var1] <= '0;
+            end
+          end
+        end else begin : tick
+          // On fire: invalidate head entry and decrement positions for same tag
+          if (fire) begin : commit
+            for (iter_var0 = 0; iter_var0 < BUF_DEPTH; iter_var0 = iter_var0 + 1) begin : per_entry
+              if (sb_entry_valid[iter_var0] &&
+                  (sb_tag[iter_var0] == insn_tag[matched_insn])) begin : tag_match
+                if (sb_pos[iter_var0] == '0) begin : invalidate
+                  sb_op_valid[iter_var0] <= '0;
+                end else begin : decrement
+                  sb_pos[iter_var0] <= sb_pos[iter_var0] - POS_W'(1);
+                end
+              end
+            end
+          end
+          // On operand arrival: store into target entry
+          for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : buf_in
+            if (in_accept[iter_var1]) begin : accept
+              if (sb_in_create_new[iter_var1]) begin : create
+                sb_tag[sb_in_target[iter_var1]] <= in_tag[iter_var1];
+                sb_pos[sb_in_target[iter_var1]] <= sb_in_new_pos[iter_var1];
+                sb_op_valid[sb_in_target[iter_var1]][iter_var1] <= 1'b1;
+                sb_op_value[sb_in_target[iter_var1]][iter_var1] <= in_value[iter_var1];
+              end else begin : existing
+                sb_op_valid[sb_in_target[iter_var1]][iter_var1] <= 1'b1;
+                sb_op_value[sb_in_target[iter_var1]][iter_var1] <= in_value[iter_var1];
+              end
+            end
+          end
         end
       end
     end
-  end
+  endgenerate
 
   // Effective operand merge: combine sequential buffer with register FIFO state.
   // For register-sourced operands (op_is_reg=1), override with FIFO non-empty/data.

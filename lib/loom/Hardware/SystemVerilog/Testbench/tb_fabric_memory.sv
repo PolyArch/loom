@@ -7,13 +7,14 @@
 `include "fabric_common.svh"
 
 module tb_fabric_memory;
-  parameter int DATA_WIDTH  = 32;
-  parameter int TAG_WIDTH   = 0;
-  parameter int LD_COUNT    = 1;
-  parameter int ST_COUNT    = 1;
-  parameter int LSQ_DEPTH   = 4;
-  parameter int IS_PRIVATE  = 1;
-  parameter int MEM_DEPTH   = 64;
+  parameter int DATA_WIDTH       = 32;
+  parameter int TAG_WIDTH        = 0;
+  parameter int LD_COUNT         = 1;
+  parameter int ST_COUNT         = 1;
+  parameter int LSQ_DEPTH        = 4;
+  parameter int IS_PRIVATE       = 1;
+  parameter int MEM_DEPTH        = 64;
+  parameter int DEADLOCK_TIMEOUT = 65535;
 
   localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH;
   localparam int SAFE_PW = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1;
@@ -37,7 +38,8 @@ module tb_fabric_memory;
     .ST_COUNT(ST_COUNT),
     .LSQ_DEPTH(LSQ_DEPTH),
     .IS_PRIVATE(IS_PRIVATE),
-    .MEM_DEPTH(MEM_DEPTH)
+    .MEM_DEPTH(MEM_DEPTH),
+    .DEADLOCK_TIMEOUT(DEADLOCK_TIMEOUT)
   ) dut (
     .clk(clk), .rst_n(rst_n),
     .in_valid(in_valid), .in_ready(in_ready), .in_data(in_data),
@@ -144,13 +146,41 @@ module tb_fabric_memory;
       in_valid = '0;
     end
 
+    // Check 5: RT_MEMORY_STORE_DEADLOCK (only when ST_COUNT > 0)
+    // Send only a store address (no data) and wait for deadlock timeout.
+    if (ST_COUNT > 0) begin : deadlock_test
+      rst_n = 0;
+      in_valid = '0;
+      repeat (2) @(posedge clk);
+      rst_n = 1;
+      @(posedge clk);
+      // Enqueue only addr, leave data FIFO empty -> triggers deadlock
+      in_data = '0;
+      in_data[LD_COUNT][SAFE_PW-1:0] = SAFE_PW'(1);
+      in_valid = '0;
+      in_valid[LD_COUNT] = 1'b1;
+      @(posedge clk);
+      in_valid = '0;
+      // Wait for deadlock timeout + margin
+      repeat (DEADLOCK_TIMEOUT + 4) @(posedge clk);
+      if (error_valid !== 1'b1) begin : check_deadlock_valid
+        $fatal(1, "expected RT_MEMORY_STORE_DEADLOCK error");
+      end
+      if (error_code !== RT_MEMORY_STORE_DEADLOCK) begin : check_deadlock_code
+        $fatal(1, "wrong error code for deadlock: got %0d, expected %0d",
+               error_code, RT_MEMORY_STORE_DEADLOCK);
+      end
+      pass_count = pass_count + 1;
+    end
+
     $display("PASS: tb_fabric_memory DW=%0d TW=%0d LD=%0d ST=%0d (%0d checks)",
              DATA_WIDTH, TAG_WIDTH, LD_COUNT, ST_COUNT, pass_count);
     $finish;
   end
 
   initial begin : timeout
-    #10000;
+    // Allow enough time for deadlock test (DEADLOCK_TIMEOUT + margin cycles)
+    #((DEADLOCK_TIMEOUT + 200) * 10);
     $fatal(1, "TIMEOUT");
   end
 endmodule

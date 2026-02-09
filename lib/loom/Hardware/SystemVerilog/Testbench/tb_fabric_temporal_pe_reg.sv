@@ -121,10 +121,11 @@ module tb_fabric_temporal_pe_reg;
 
     // Check 3: CFG_TEMPORAL_PE_REG_TAG_NONZERO - result writes register with nonzero tag
     rst_n = 0;
+    in_valid = '0;
+    cfg_data = '0;
     repeat (2) @(posedge clk);
     rst_n = 1;
     @(posedge clk);
-    cfg_data = '0;
     // Insn 0: valid=1, tag=2
     cfg_data[17] = 1'b1;
     cfg_data[16:13] = TAG_WIDTH'(2);

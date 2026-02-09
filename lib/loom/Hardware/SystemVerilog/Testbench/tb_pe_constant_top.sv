@@ -35,18 +35,20 @@ module tb_pe_constant_top;
     @(posedge clk);
 
     // Send control token to trigger constant output
+    // pe_constant is combinational, so output appears in the same cycle as input.
     ctrl_valid = 1;
     ctrl_data = 1'b1;
     @(posedge clk);
     while (!ctrl_ready) @(posedge clk);
-    ctrl_valid = 0;
-
-    // Wait for output
-    while (!out_valid) @(posedge clk);
+    // Capture output while handshake is active (combinational path)
+    if (!out_valid) begin : check_valid
+      $fatal(1, "out_valid should be high during handshake");
+    end
     if (out_data !== 32'h0000_002A) begin : check_data
       $display("FAIL: expected 0000002A, got %h", out_data);
       $fatal(1, "pe_constant data mismatch");
     end
+    ctrl_valid = 0;
     pass_count = pass_count + 1;
 
     $display("PASS: pe_constant_top (%0d checks)", pass_count);
