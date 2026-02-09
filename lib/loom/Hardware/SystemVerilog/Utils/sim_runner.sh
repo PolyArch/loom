@@ -125,6 +125,28 @@ compile_and_run_vcs() {
   local outdir="$2"
   shift 2
 
+  # Auto-derive include search paths from source file directories
+  local inc_dirs=()
+  for a in "$@"; do
+    if [[ "${a}" != -* && -f "${a}" ]]; then
+      local d
+      d="$(dirname "${a}")"
+      local dup=0
+      for existing in "${inc_dirs[@]+"${inc_dirs[@]}"}"; do
+        if [[ "${existing}" == "${d}" ]]; then
+          dup=1; break
+        fi
+      done
+      if [[ "${dup}" -eq 0 ]]; then
+        inc_dirs+=("${d}")
+      fi
+    fi
+  done
+  local inc_flags=()
+  for d in "${inc_dirs[@]+"${inc_dirs[@]}"}"; do
+    inc_flags+=("+incdir+${d}")
+  done
+
   # VCS uses -pvalue+ instead of -G for parameter overrides
   local args=()
   for a in "$@"; do
@@ -143,6 +165,7 @@ compile_and_run_vcs() {
   if ! (cd "${outdir}" && vcs -sverilog -full64 \
     -top "${top}" \
     -o ./simv \
+    "${inc_flags[@]+"${inc_flags[@]}"}" \
     "${args[@]}" \
     >compile.log 2>&1); then
     strip_vcs_noise "${outdir}/compile.log"
