@@ -120,14 +120,16 @@ module tb_fabric_memory;
     pass_count = pass_count + 1;
 
     // Check 4: RT_MEMORY_TAG_OOB (only testable when TAG_WIDTH > 0 and LD_COUNT > 1)
+    // Uses SAFE_TW to avoid zero-width part-select when TAG_WIDTH=0.
     if (TAG_WIDTH > 0 && LD_COUNT > 1) begin : tag_oob_test
       rst_n = 0;
       repeat (2) @(posedge clk);
       rst_n = 1;
       @(posedge clk);
       // Send load with tag = LD_COUNT (out of bounds)
+      // Use SAFE_PW-wide assignment to avoid zero-width TAG_WIDTH part-select
       in_data = '0;
-      in_data[0][DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(LD_COUNT);
+      in_data[0] = SAFE_PW'(LD_COUNT) << DATA_WIDTH;
       in_valid = '0;
       in_valid[0] = 1'b1;
       @(posedge clk);

@@ -607,7 +607,9 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     std::string fuModName = instName + "_fu" + std::to_string(f) + "_pe";
     unsigned fuNumIn = fuDef.inputPorts.size();
     unsigned fuNumOut = fuDef.outputPorts.size();
-    unsigned fuLatency = getOpLatency(fuDef.singleOp);
+    unsigned fuLatency = fuDef.singleOp.empty()
+                             ? computeBodyMLIRLatency(fuDef.bodyMLIR)
+                             : getOpLatency(fuDef.singleOp);
 
     os << "  // FU " << f << ": " << (fuDef.singleOp.empty() ? "passthrough" : fuDef.singleOp)
        << " (latency=" << fuLatency << ")\n";
@@ -620,7 +622,7 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     os << "  ) u_fu" << f << " (\n";
     os << "    .clk(clk),\n";
     os << "    .rst_n(rst_n),\n";
-    os << "    .in_valid({" << fuNumIn << "{insn_fire_ready}}),\n";
+    os << "    .in_valid({" << fuNumIn << "{fu_launch}}),\n";
     os << "    .in_ready(),\n";
     os << "    .in_data({";
     // Map input ports from fu_operands (reverse order for packed array)
@@ -630,7 +632,7 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     }
     os << "}),\n";
     os << "    .out_valid(fu" << f << "_out_valid),\n";
-    os << "    .out_ready({" << fuNumOut << "{1'b1}}),\n";
+    os << "    .out_ready({" << fuNumOut << "{fire}}),\n";
     os << "    .out_data(fu" << f << "_out_data),\n";
     os << "    .cfg_data('0)\n";
     os << "  );\n";
