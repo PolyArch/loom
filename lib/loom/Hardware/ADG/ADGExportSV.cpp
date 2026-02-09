@@ -299,15 +299,197 @@ static std::string genPEBodySV(const PEDef &def) {
   return os.str();
 }
 
+/// Generate the temporal PE body SV text for a TemporalPEDef.
+/// Instantiates each FU type's operation module and muxes results by fu_sel.
+static std::string genTemporalPEBodySV(const TemporalPEDef &def,
+                                        const std::vector<PEDef> &peDefs) {
+  unsigned numFU = def.fuPEDefIndices.size();
+  if (numFU == 0)
+    return "  // no FU types defined\n";
+
+  unsigned numOut = peDefs[def.fuPEDefIndices[0]].outputPorts.size();
+  unsigned numIn = peDefs[def.fuPEDefIndices[0]].inputPorts.size();
+
+  // FU_SEL_BITS mirrors the localparam in fabric_temporal_pe.sv
+  unsigned fuSelBits = 0;
+  if (numFU > 1) {
+    unsigned v = numFU - 1;
+    while (v > 0) { fuSelBits++; v >>= 1; }
+  }
+
+  std::ostringstream os;
+
+  // Extract fu_sel from the matched instruction
+  if (fuSelBits > 0) {
+    // fu_sel sits at bit offset: NUM_INPUTS * REG_BITS + NUM_OUTPUTS * RESULT_WIDTH
+    // We use the localparam values already defined in the module
+    os << "  logic [FU_SEL_BITS-1:0] fu_sel;\n";
+    os << "  assign fu_sel = cfg_data[matched_insn * INSN_WIDTH + "
+       << "NUM_INPUTS * REG_BITS + NUM_OUTPUTS * RESULT_WIDTH +: FU_SEL_BITS];\n";
+    os << "\n";
+  }
+
+  // Per-FU result wires
+  for (unsigned f = 0; f < numFU; ++f) {
+    os << "  logic [NUM_OUTPUTS-1:0][SAFE_DW-1:0] fu" << f << "_result;\n";
+  }
+  os << "\n";
+
+  // Instantiate each FU's operation module
+  for (unsigned f = 0; f < numFU; ++f) {
+    const auto &fuDef = peDefs[def.fuPEDefIndices[f]];
+    if (fuDef.singleOp.empty()) {
+      // Passthrough FU
+      os << "  // FU " << f << ": passthrough\n";
+      for (unsigned o = 0; o < numOut; ++o)
+        os << "  assign fu" << f << "_result[" << o
+           << "] = (NUM_INPUTS > " << o << ") ? in_value[" << o << "] : '0;\n";
+      os << "\n";
+      continue;
+    }
+
+    std::string svModule = opToSVModule(fuDef.singleOp);
+    unsigned fuNumIn = fuDef.inputPorts.size();
+
+    if (isConversionOp(fuDef.singleOp)) {
+      unsigned inW = fuNumIn > 0 ? getDataWidthBits(fuDef.inputPorts[0]) : 32;
+      unsigned outW = fuDef.outputPorts.size() > 0
+                          ? getDataWidthBits(fuDef.outputPorts[0])
+                          : 32;
+      if (inW == 0) inW = 1;
+      if (outW == 0) outW = 1;
+      os << "  // FU " << f << ": " << fuDef.singleOp << "\n";
+      os << "  logic [" << (outW - 1) << ":0] fu" << f << "_conv_out;\n";
+      os << "  " << svModule << " #(.IN_WIDTH(" << inW << "), .OUT_WIDTH("
+         << outW << ")) u_fu" << f << " (\n";
+      os << "    .a(in_value[0][" << (inW - 1) << ":0]),\n";
+      os << "    .result(fu" << f << "_conv_out)\n";
+      os << "  );\n";
+      os << "  assign fu" << f << "_result[0] = {{(SAFE_DW - " << outW
+         << "){1'b0}}, fu" << f << "_conv_out};\n";
+      for (unsigned o = 1; o < numOut; ++o)
+        os << "  assign fu" << f << "_result[" << o << "] = '0;\n";
+    } else if (isCompareOp(fuDef.singleOp)) {
+      os << "  // FU " << f << ": " << fuDef.singleOp << "\n";
+      os << "  logic fu" << f << "_cmp_out;\n";
+      os << "  " << svModule
+         << " #(.WIDTH(DATA_WIDTH), .PREDICATE(0)) u_fu" << f << " (\n";
+      os << "    .a(in_value[0]),\n";
+      os << "    .b(in_value[1]),\n";
+      os << "    .result(fu" << f << "_cmp_out)\n";
+      os << "  );\n";
+      os << "  assign fu" << f << "_result[0] = {{(SAFE_DW-1){1'b0}}, fu"
+         << f << "_cmp_out};\n";
+      for (unsigned o = 1; o < numOut; ++o)
+        os << "  assign fu" << f << "_result[" << o << "] = '0;\n";
+    } else {
+      os << "  // FU " << f << ": " << fuDef.singleOp << "\n";
+      os << "  " << svModule << " #(.WIDTH(DATA_WIDTH)) u_fu" << f << " (\n";
+
+      if (fuDef.singleOp == "arith.select") {
+        os << "    .condition(in_value[0][0]),\n";
+        os << "    .a(in_value[1]),\n";
+        os << "    .b(in_value[2]),\n";
+      } else if (fuDef.singleOp == "math.fma") {
+        os << "    .a(in_value[0]),\n";
+        os << "    .b(in_value[1]),\n";
+        os << "    .c(in_value[2]),\n";
+      } else if (fuNumIn >= 2) {
+        os << "    .a(in_value[0]),\n";
+        os << "    .b(in_value[1]),\n";
+      } else {
+        os << "    .a(in_value[0]),\n";
+      }
+
+      os << "    .result(fu" << f << "_result[0])\n";
+      os << "  );\n";
+      for (unsigned o = 1; o < numOut; ++o)
+        os << "  assign fu" << f << "_result[" << o << "] = '0;\n";
+    }
+    os << "\n";
+  }
+
+  // Mux body_result based on fu_sel
+  if (numFU == 1) {
+    // Single FU: direct connection
+    for (unsigned o = 0; o < numOut; ++o)
+      os << "  assign body_result[" << o << "] = fu0_result[" << o << "];\n";
+  } else {
+    // Multi-FU: mux by fu_sel
+    os << "  always_comb begin : fu_mux\n";
+    os << "    integer iter_var0;\n";
+    os << "    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; "
+       << "iter_var0 = iter_var0 + 1) begin : per_out\n";
+    os << "      body_result[iter_var0] = '0;\n";
+    os << "    end\n";
+    os << "    case (fu_sel)\n";
+    for (unsigned f = 0; f < numFU; ++f) {
+      os << "      " << fuSelBits << "'d" << f << ": begin : fu" << f << "\n";
+      os << "        for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; "
+         << "iter_var0 = iter_var0 + 1) begin : assign_out\n";
+      os << "          body_result[iter_var0] = fu" << f
+         << "_result[iter_var0];\n";
+      os << "        end\n";
+      os << "      end\n";
+    }
+    os << "      default: begin : fu_default\n";
+    os << "        for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; "
+       << "iter_var0 = iter_var0 + 1) begin : zero_out\n";
+    os << "          body_result[iter_var0] = '0;\n";
+    os << "        end\n";
+    os << "      end\n";
+    os << "    endcase\n";
+    os << "  end\n";
+  }
+
+  return os.str();
+}
+
+/// Fill the temporal PE template with the generated FU body.
+static std::string fillTemporalPETemplate(const std::string &templateDir,
+                                           const TemporalPEDef &def,
+                                           const std::vector<PEDef> &peDefs) {
+  llvm::SmallString<256> tmplPath(templateDir);
+  llvm::sys::path::append(tmplPath, "Fabric", "fabric_temporal_pe.sv");
+  std::string tmpl = readFile(tmplPath.str().str());
+
+  std::string body = genTemporalPEBodySV(def, peDefs);
+
+  const std::string beginMarker = "  // ===== BEGIN PE BODY =====";
+  const std::string endMarker = "  // ===== END PE BODY =====";
+
+  auto beginPos = tmpl.find(beginMarker);
+  auto endPos = tmpl.find(endMarker);
+
+  if (beginPos == std::string::npos || endPos == std::string::npos) {
+    llvm::errs() << "error: temporal PE template missing body markers\n";
+    std::exit(1);
+  }
+
+  auto afterBegin = tmpl.find('\n', beginPos);
+  std::string result;
+  result += tmpl.substr(0, afterBegin + 1);
+  result += body;
+  result += tmpl.substr(endPos);
+
+  return result;
+}
+
 /// Generate PE instance parameters.
 static std::string genPEParams(const PEDef &def) {
   unsigned numIn = def.inputPorts.size();
   unsigned numOut = def.outputPorts.size();
-  // Use the first input port to determine data/tag widths
-  unsigned dw = numIn > 0 ? getDataWidthBits(def.inputPorts[0]) : 32;
-  unsigned tw = numIn > 0 ? getTagWidthBits(def.inputPorts[0]) : 0;
+  // DATA_WIDTH = max across all input and output port data widths.
+  // This is essential for conversion ops (e.g., extsi i16->i32) where
+  // input and output widths differ; body_result must be wide enough.
+  unsigned dw = 0;
+  for (unsigned i = 0; i < numIn; ++i)
+    dw = std::max(dw, getDataWidthBits(def.inputPorts[i]));
+  for (unsigned i = 0; i < numOut; ++i)
+    dw = std::max(dw, getDataWidthBits(def.outputPorts[i]));
   if (dw == 0)
-    dw = 1;
+    dw = 32;
+  unsigned tw = numIn > 0 ? getTagWidthBits(def.inputPorts[0]) : 0;
   unsigned latency = getOpLatency(def.singleOp);
 
   std::ostringstream os;
@@ -953,6 +1135,35 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       }
     }
 
+    // For TemporalPE instances: generate body-filled customized modules
+    for (const auto &inst : instances) {
+      if (inst.kind == ModuleKind::TemporalPE) {
+        const auto &def = temporalPEDefs[inst.defIdx];
+        std::string customized = fillTemporalPETemplate(templateDir, def, peDefs);
+
+        // Replace module name to make it unique per instance
+        std::string origName = "module fabric_temporal_pe";
+        std::string newName = "module " + inst.name + "_temporal_pe";
+        auto pos = customized.find(origName);
+        if (pos != std::string::npos)
+          customized.replace(pos, origName.size(), newName);
+
+        llvm::SmallString<256> tpePath(libDir);
+        llvm::sys::path::append(tpePath, inst.name + "_temporal_pe.sv");
+        writeFile(tpePath.str().str(), customized);
+
+        // Track dialects used by FU types
+        for (unsigned idx : def.fuPEDefIndices) {
+          const auto &fuDef = peDefs[idx];
+          if (!fuDef.singleOp.empty()) {
+            auto dotPos = fuDef.singleOp.find('.');
+            if (dotPos != std::string::npos)
+              usedDialects.insert(fuDef.singleOp.substr(0, dotPos));
+          }
+        }
+      }
+    }
+
     // Copy operation module SV files for used dialects
     // Map dialect names to directory names
     static const std::map<std::string, std::string> dialectDirs = {
@@ -963,20 +1174,30 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       if (it == dialectDirs.end())
         continue;
 
-      // Copy the specific operation file used by PEs
+      // Collect all operation names used by PEs and TemporalPE FU types
+      std::set<std::string> opsForDialect;
       for (const auto &inst : instances) {
-        if (inst.kind != ModuleKind::PE)
-          continue;
-        const auto &def = peDefs[inst.defIdx];
-        if (def.singleOp.empty())
-          continue;
-        auto dotPos = def.singleOp.find('.');
-        if (dotPos == std::string::npos)
-          continue;
-        std::string d = def.singleOp.substr(0, dotPos);
-        if (d != dialect)
-          continue;
-        std::string svFile = opToSVModule(def.singleOp) + ".sv";
+        if (inst.kind == ModuleKind::PE) {
+          const auto &def = peDefs[inst.defIdx];
+          if (!def.singleOp.empty()) {
+            auto dotPos = def.singleOp.find('.');
+            if (dotPos != std::string::npos && def.singleOp.substr(0, dotPos) == dialect)
+              opsForDialect.insert(def.singleOp);
+          }
+        } else if (inst.kind == ModuleKind::TemporalPE) {
+          const auto &tpeDef = temporalPEDefs[inst.defIdx];
+          for (unsigned idx : tpeDef.fuPEDefIndices) {
+            const auto &fuDef = peDefs[idx];
+            if (!fuDef.singleOp.empty()) {
+              auto dotPos = fuDef.singleOp.find('.');
+              if (dotPos != std::string::npos && fuDef.singleOp.substr(0, dotPos) == dialect)
+                opsForDialect.insert(fuDef.singleOp);
+            }
+          }
+        }
+      }
+      for (const auto &op : opsForDialect) {
+        std::string svFile = opToSVModule(op) + ".sv";
         copyTemplateFile(templateDir, it->second + "/" + svFile,
                          libDir.str().str());
       }
@@ -1138,9 +1359,34 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     unsigned numIn = getInstanceInputCount(i);
     unsigned numOut = getInstanceOutputCount(i);
 
+    // For PE instances, all data wires use the PE's PAYLOAD_WIDTH (= max
+    // data width across all ports + tag width) so that the packed-array port
+    // connection has uniform element width.  This matters for conversion ops
+    // (e.g. arith.extsi i16->i32) where individual port types differ.
+    unsigned pePayloadWidth = 0;
+    if (inst.kind == ModuleKind::PE) {
+      const auto &def = peDefs[inst.defIdx];
+      unsigned dw = 0;
+      for (const auto &pt : def.inputPorts)
+        dw = std::max(dw, getDataWidthBits(pt));
+      for (const auto &pt : def.outputPorts)
+        dw = std::max(dw, getDataWidthBits(pt));
+      if (dw == 0)
+        dw = 32;
+      unsigned tw = !def.inputPorts.empty()
+                        ? getTagWidthBits(def.inputPorts[0])
+                        : 0;
+      pePayloadWidth = dw + tw;
+    }
+
     for (unsigned p = 0; p < numIn; ++p) {
-      Type pt = getInstanceInputType(i, p);
-      unsigned w = getDataWidthBits(pt) + getTagWidthBits(pt);
+      unsigned w;
+      if (pePayloadWidth > 0)
+        w = pePayloadWidth;
+      else {
+        Type pt = getInstanceInputType(i, p);
+        w = getDataWidthBits(pt) + getTagWidthBits(pt);
+      }
       top << "  logic " << inst.name << "_in" << p << "_valid;\n";
       top << "  logic " << inst.name << "_in" << p << "_ready;\n";
       if (w > 1)
@@ -1149,8 +1395,13 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         top << "  logic " << inst.name << "_in" << p << "_data;\n";
     }
     for (unsigned p = 0; p < numOut; ++p) {
-      Type pt = getInstanceOutputType(i, p);
-      unsigned w = getDataWidthBits(pt) + getTagWidthBits(pt);
+      unsigned w;
+      if (pePayloadWidth > 0)
+        w = pePayloadWidth;
+      else {
+        Type pt = getInstanceOutputType(i, p);
+        w = getDataWidthBits(pt) + getTagWidthBits(pt);
+      }
       top << "  logic " << inst.name << "_out" << p << "_valid;\n";
       top << "  logic " << inst.name << "_out" << p << "_ready;\n";
       if (w > 1)
@@ -1463,7 +1714,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         numIn = peDefs[def.fuPEDefIndices[0]].inputPorts.size();
         numOut = peDefs[def.fuPEDefIndices[0]].outputPorts.size();
       }
-      top << "  fabric_temporal_pe #(\n" << genTemporalPEParams(def, peDefs)
+      top << "  " << inst.name << "_temporal_pe #(\n" << genTemporalPEParams(def, peDefs)
           << "\n  ) " << inst.name << " (\n";
       top << "    .clk(clk), .rst_n(rst_n),\n";
       top << "    .in_valid({";

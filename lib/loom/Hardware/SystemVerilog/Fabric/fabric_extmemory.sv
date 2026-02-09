@@ -148,14 +148,93 @@ module fabric_extmemory #(
   endgenerate
 
   // -----------------------------------------------------------------------
+  // Store deadlock timeout counter (per store port)
+  // -----------------------------------------------------------------------
+  localparam int DEADLOCK_TIMEOUT = 65535;
+  logic [ST_COUNT > 0 ? ST_COUNT-1 : 0 : 0] st_deadlock_hit;
+
+  generate
+    if (ST_COUNT > 0) begin : g_deadlock
+      genvar gdi;
+      for (gdi = 0; gdi < ST_COUNT; gdi++) begin : g_dl_cnt
+        localparam int ADDR_IN = 1 + LD_COUNT + gdi;
+        localparam int DATA_IN = 1 + LD_COUNT + ST_COUNT + gdi;
+
+        logic [15:0] dl_counter;
+        logic        addr_only, data_only;
+        assign addr_only = in_valid[ADDR_IN] && !in_valid[DATA_IN];
+        assign data_only = !in_valid[ADDR_IN] && in_valid[DATA_IN];
+
+        always_ff @(posedge clk or negedge rst_n) begin : dl_cnt
+          if (!rst_n) begin : reset
+            dl_counter <= 16'd0;
+          end else begin : tick
+            if (addr_only || data_only) begin : waiting
+              if (dl_counter < DEADLOCK_TIMEOUT[15:0]) begin : inc
+                dl_counter <= dl_counter + 16'd1;
+              end
+            end else begin : clear
+              dl_counter <= 16'd0;
+            end
+          end
+        end
+
+        assign st_deadlock_hit[gdi] = (dl_counter == DEADLOCK_TIMEOUT[15:0]);
+      end
+    end else begin : g_no_deadlock
+      assign st_deadlock_hit = 1'b0;
+    end
+  endgenerate
+
+  // -----------------------------------------------------------------------
   // Error detection
   // -----------------------------------------------------------------------
   logic        err_detect;
   logic [15:0] err_code_comb;
 
   always_comb begin : err_check
+    integer iter_var0;
     err_detect    = 1'b0;
     err_code_comb = 16'd0;
+
+    // RT_MEMORY_TAG_OOB: tag >= count (only when TAG_WIDTH > 0 and multi-port)
+    if (TAG_WIDTH > 0) begin : tag_oob_chk
+      // Check load ports: tag must be < LD_COUNT (only if LD_COUNT > 1)
+      if (LD_COUNT > 1) begin : ld_tag_chk
+        for (iter_var0 = 0; iter_var0 < LD_COUNT; iter_var0 = iter_var0 + 1) begin : per_ld
+          if (in_valid[1 + iter_var0] &&
+              (in_data[1 + iter_var0][DATA_WIDTH +: TAG_WIDTH] >= TAG_WIDTH'(LD_COUNT))) begin : oob
+            err_detect    = 1'b1;
+            err_code_comb = RT_MEMORY_TAG_OOB;
+          end
+        end
+      end
+      // Check store ports: tag must be < ST_COUNT (only if ST_COUNT > 1)
+      if (ST_COUNT > 1) begin : st_tag_chk
+        for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : per_st_addr
+          if (in_valid[1 + LD_COUNT + iter_var0] &&
+              (in_data[1 + LD_COUNT + iter_var0][DATA_WIDTH +: TAG_WIDTH] >= TAG_WIDTH'(ST_COUNT))) begin : oob
+            err_detect    = 1'b1;
+            err_code_comb = RT_MEMORY_TAG_OOB;
+          end
+        end
+        for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : per_st_data
+          if (in_valid[1 + LD_COUNT + ST_COUNT + iter_var0] &&
+              (in_data[1 + LD_COUNT + ST_COUNT + iter_var0][DATA_WIDTH +: TAG_WIDTH] >= TAG_WIDTH'(ST_COUNT))) begin : oob
+            err_detect    = 1'b1;
+            err_code_comb = RT_MEMORY_TAG_OOB;
+          end
+        end
+      end
+    end
+
+    // RT_MEMORY_STORE_DEADLOCK: store pairing timeout
+    for (iter_var0 = 0; iter_var0 < (ST_COUNT > 0 ? ST_COUNT : 1); iter_var0 = iter_var0 + 1) begin : dl_chk
+      if (st_deadlock_hit[iter_var0]) begin : deadlock
+        err_detect    = 1'b1;
+        err_code_comb = RT_MEMORY_STORE_DEADLOCK;
+      end
+    end
   end
 
   always_ff @(posedge clk or negedge rst_n) begin : error_latch

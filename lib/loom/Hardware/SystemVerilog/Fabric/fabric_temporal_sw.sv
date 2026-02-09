@@ -9,6 +9,9 @@
 //   {valid(1), tag(TAG_WIDTH), routes(NUM_CONNECTED)}
 // where NUM_CONNECTED = $countones(CONNECTIVITY).
 //
+// When multiple inputs contend for the same output, round-robin arbitration
+// selects the winner (per-output priority pointer, starting from port 0).
+//
 // Errors:
 //   CFG_TEMPORAL_SW_ROUTE_MULTI_OUT - Route entry drives same output >1 times
 //   CFG_TEMPORAL_SW_ROUTE_MULTI_IN  - Multiple inputs routed to same output
@@ -136,37 +139,54 @@ module fabric_temporal_sw #(
   end
 
   // -----------------------------------------------------------------------
-  // Output muxing: for each output, find which input is routed to it
-  // Priority: lower-numbered input wins on contention
+  // Round-robin arbitration state: one priority pointer per output
   // -----------------------------------------------------------------------
-  logic [NUM_INPUTS-1:0] input_routed;
-  logic [NUM_INPUTS-1:0] input_dst_ready;
+  localparam int RR_PTR_W = (NUM_INPUTS > 1) ? $clog2(NUM_INPUTS) : 1;
+  logic [NUM_OUTPUTS-1:0][RR_PTR_W-1:0] rr_ptr;
+
+  // -----------------------------------------------------------------------
+  // Output muxing: for each output, round-robin among contending inputs
+  // -----------------------------------------------------------------------
+  logic [NUM_INPUTS-1:0]  input_routed;
+  logic [NUM_INPUTS-1:0]  input_dst_ready;
+  // Per-output: which input won arbitration (combinational)
+  logic [NUM_OUTPUTS-1:0][RR_PTR_W-1:0] arb_winner;
+  logic [NUM_OUTPUTS-1:0]               arb_valid;
 
   always_comb begin : output_mux
-    integer iter_var0, iter_var1;
+    integer iter_var0, iter_var1, iter_var2;
     for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : per_output
       out_valid[iter_var0] = 1'b0;
       out_data[iter_var0 * SAFE_PW +: SAFE_PW] = '0;
-      for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : find_src
-        if (in_valid[iter_var1] && in_match_found[iter_var1] &&
-            in_routes[iter_var1][iter_var0] &&
-            CONNECTIVITY[iter_var0 * NUM_INPUTS + iter_var1]) begin : route
-          if (!out_valid[iter_var0]) begin : first_src
-            out_valid[iter_var0] = 1'b1;
-            out_data[iter_var0 * SAFE_PW +: SAFE_PW] = in_port_data[iter_var1];
-          end
+      arb_winner[iter_var0] = '0;
+      arb_valid[iter_var0]  = 1'b0;
+      // Round-robin scan: start from rr_ptr[output], wrap around
+      for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : rr_scan
+        iter_var2 = (int'(rr_ptr[iter_var0]) + iter_var1) % NUM_INPUTS;
+        if (!arb_valid[iter_var0] &&
+            in_valid[iter_var2] && in_match_found[iter_var2] &&
+            in_routes[iter_var2][iter_var0] &&
+            CONNECTIVITY[iter_var0 * NUM_INPUTS + iter_var2]) begin : winner
+          arb_valid[iter_var0]  = 1'b1;
+          arb_winner[iter_var0] = iter_var2[RR_PTR_W-1:0];
+          out_valid[iter_var0]  = 1'b1;
+          out_data[iter_var0 * SAFE_PW +: SAFE_PW] = in_port_data[iter_var2];
         end
       end
     end
 
-    // Ready logic: input is ready when its routed output is ready
+    // Ready logic: input is ready only when it is the arbitration winner
+    // for its routed output and that output is ready
     for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : gen_ready
       input_routed[iter_var0]    = 1'b0;
       input_dst_ready[iter_var0] = 1'b0;
       for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : find_dst
         if (in_routes[iter_var0][iter_var1]) begin : has_route
-          input_routed[iter_var0]    = 1'b1;
-          input_dst_ready[iter_var0] = out_ready[iter_var1];
+          input_routed[iter_var0] = 1'b1;
+          if (arb_valid[iter_var1] &&
+              (int'(arb_winner[iter_var1]) == iter_var0)) begin : is_winner
+            input_dst_ready[iter_var0] = out_ready[iter_var1];
+          end
         end
       end
     end
@@ -176,6 +196,22 @@ module fabric_temporal_sw #(
         in_ready[iter_var0] = input_dst_ready[iter_var0];
       else
         in_ready[iter_var0] = 1'b0;
+    end
+  end
+
+  // Round-robin pointer update: advance past winner on successful handshake
+  always_ff @(posedge clk or negedge rst_n) begin : rr_update
+    integer iter_var0;
+    if (!rst_n) begin : reset
+      for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : init_ptr
+        rr_ptr[iter_var0] <= '0;
+      end
+    end else begin : advance
+      for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : per_output
+        if (arb_valid[iter_var0] && out_valid[iter_var0] && out_ready[iter_var0]) begin : handshake
+          rr_ptr[iter_var0] <= (arb_winner[iter_var0] + 1) % NUM_INPUTS;
+        end
+      end
     end
   end
 

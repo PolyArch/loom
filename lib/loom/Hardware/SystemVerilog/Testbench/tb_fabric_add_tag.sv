@@ -82,18 +82,18 @@ module tb_fabric_add_tag #(
     rst_n = 1;
     @(posedge clk);
 
-    // Test 1: simple tag attachment
-    cfg_data = 4'hA;
-    in_data = 32'hDEAD_BEEF;
+    // Test 1: simple tag attachment (width-parameterized values)
+    cfg_data = {TAG_WIDTH{1'b1}};
+    in_data = {IN_WIDTH{1'b1}};
     in_valid = 1;
     out_ready = 1;
     @(posedge clk);
     while (!in_ready) @(posedge clk);
-    if (out_valid && out_data == {4'hA, 32'hDEAD_BEEF}) begin : t1_pass
+    if (out_valid && out_data == {{TAG_WIDTH{1'b1}}, {IN_WIDTH{1'b1}}}) begin : t1_pass
       $display("PASS: tag attachment correct");
       num_pass = num_pass + 1;
     end else begin : t1_fail
-      $display("FAIL: expected {A, DEAD_BEEF}, got %h", out_data);
+      $display("FAIL: expected all-ones tag+data, got %h", out_data);
     end
 
     // Test 2: backpressure
