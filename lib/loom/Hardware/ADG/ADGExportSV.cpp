@@ -368,7 +368,7 @@ static unsigned parseMLIRTypeWidth(const std::string &typeStr) {
   std::string t = typeStr.substr(s);
   auto e = t.find_first_of(" \t,)");
   if (e != std::string::npos) t = t.substr(0, e);
-  if (t == "index") return 32;
+  if (t == "index") return 64;
   if (t.size() > 1 && (t[0] == 'i' || t[0] == 'f')) {
     unsigned w = 0;
     for (size_t i = 1; i < t.size(); ++i) {
@@ -806,7 +806,7 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     }
     os << "}),\n";
     os << "    .out_valid(fu" << f << "_out_valid),\n";
-    os << "    .out_ready({" << fuNumOut << "{fire}}),\n";
+    os << "    .out_ready({" << fuNumOut << "{all_out_ready}}),\n";
     os << "    .out_data(fu" << f << "_out_data),\n";
     os << "    .cfg_data('0)\n";
     os << "  );\n";
