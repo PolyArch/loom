@@ -29,7 +29,7 @@ module tb_temporal_pe_multireader;
   localparam int NUM_REGISTERS        = 2;
   localparam int NUM_INSTRUCTIONS     = 3;
   localparam int REG_FIFO_DEPTH       = 4;
-  localparam int SHARE_MODE_B         = 0;
+  localparam int SHARED_OPERAND_BUFFER         = 0;
   localparam int OPERAND_BUFFER_SIZE  = 0;
 
   localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH;
@@ -62,7 +62,7 @@ module tb_temporal_pe_multireader;
     .NUM_REGISTERS(NUM_REGISTERS),
     .NUM_INSTRUCTIONS(NUM_INSTRUCTIONS),
     .REG_FIFO_DEPTH(REG_FIFO_DEPTH),
-    .SHARE_MODE_B(SHARE_MODE_B),
+    .SHARED_OPERAND_BUFFER(SHARED_OPERAND_BUFFER),
     .OPERAND_BUFFER_SIZE(OPERAND_BUFFER_SIZE)
   ) dut (
     .clk(clk), .rst_n(rst_n),

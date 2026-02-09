@@ -27,7 +27,7 @@ module fabric_temporal_pe #(
     parameter int NUM_REGISTERS          = 0,
     parameter int NUM_INSTRUCTIONS       = 2,
     parameter int REG_FIFO_DEPTH         = 0,
-    parameter int SHARE_MODE_B           = 0,
+    parameter int SHARED_OPERAND_BUFFER  = 0,
     parameter int OPERAND_BUFFER_SIZE    = 0,
     localparam int PAYLOAD_WIDTH    = DATA_WIDTH + TAG_WIDTH,
     localparam int SAFE_PW          = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1,
@@ -75,11 +75,11 @@ module fabric_temporal_pe #(
       $fatal(1, "COMP_TEMPORAL_PE_NUM_INSTRUCTION: must be >= 1");
     if (NUM_REGISTERS > 0 && REG_FIFO_DEPTH < 1)
       $fatal(1, "COMP_TEMPORAL_PE_REG_FIFO_DEPTH: must be >= 1 when registers enabled");
-    if (SHARE_MODE_B == 0 && OPERAND_BUFFER_SIZE != 0)
-      $fatal(1, "COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE: Mode A cannot have size");
-    if (SHARE_MODE_B != 0 && OPERAND_BUFFER_SIZE < 1)
-      $fatal(1, "COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING: Mode B requires size >= 1");
-    if (SHARE_MODE_B != 0 && OPERAND_BUFFER_SIZE > 8192)
+    if (SHARED_OPERAND_BUFFER == 0 && OPERAND_BUFFER_SIZE != 0)
+      $fatal(1, "COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE: per-instruction mode cannot have size");
+    if (SHARED_OPERAND_BUFFER != 0 && OPERAND_BUFFER_SIZE < 1)
+      $fatal(1, "COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING: shared mode requires size >= 1");
+    if (SHARED_OPERAND_BUFFER != 0 && OPERAND_BUFFER_SIZE > 8192)
       $fatal(1, "COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE: Size out of [1, 8192] range");
   end
 
@@ -115,10 +115,10 @@ module fabric_temporal_pe #(
 
   // -----------------------------------------------------------------------
   // Operand buffer declarations
-  // Mode A: per-instruction buffer; Mode B: shared tag-position buffer
+  // Per-instruction buffer or shared tag-position buffer
   // -----------------------------------------------------------------------
   localparam int INSN_IDX_W = $clog2(NUM_INSTRUCTIONS > 1 ? NUM_INSTRUCTIONS : 2);
-  // Sequential operand buffer (input-sourced operands) - used by Mode A
+  // Sequential operand buffer (input-sourced operands) - used by per-instruction mode
   logic [NUM_INSTRUCTIONS-1:0][NUM_INPUTS-1:0] op_buf_valid;
   logic [NUM_INSTRUCTIONS-1:0][NUM_INPUTS-1:0][SAFE_DW-1:0] op_buf_value;
   // Effective operand state: instruction-indexed view for fire logic
@@ -290,7 +290,7 @@ module fabric_temporal_pe #(
 
   // Input ready: accept when tag matches and buffer slot is available
   generate
-    if (SHARE_MODE_B == 0) begin : g_mode_a_ready
+    if (SHARED_OPERAND_BUFFER == 0) begin : g_per_inst_ready
       always_comb begin : gen_in_ready
         integer iter_var0;
         for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
@@ -299,17 +299,17 @@ module fabric_temporal_pe #(
           in_ready[iter_var0] = in_accept[iter_var0];
         end
       end
-    end else begin : g_mode_b_ready
-      // Mode B: accept when tag matches and buffer has capacity for this operand.
+    end else begin : g_shared_ready
+      // Shared operand buffer: accept when tag matches and buffer has capacity.
       // Capacity exists if: existing tag-match entry has free column, or free entry exists.
       always_comb begin : gen_in_ready
         integer iter_var0;
         for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
           in_accept[iter_var0] = in_valid[iter_var0] && in_match[iter_var0] &&
-                                 (g_mode_b_buf.sb_in_has_match[iter_var0]
-                                  ? (!g_mode_b_buf.sb_in_create_new[iter_var0] ||
-                                     g_mode_b_buf.sb_in_has_free[iter_var0])
-                                  : g_mode_b_buf.sb_in_has_free[iter_var0]);
+                                 (g_shared_buf.sb_in_has_match[iter_var0]
+                                  ? (!g_shared_buf.sb_in_create_new[iter_var0] ||
+                                     g_shared_buf.sb_in_has_free[iter_var0])
+                                  : g_shared_buf.sb_in_has_free[iter_var0]);
           in_ready[iter_var0] = in_accept[iter_var0];
         end
       end
@@ -492,11 +492,11 @@ module fabric_temporal_pe #(
   endgenerate
 
   // -----------------------------------------------------------------------
-  // Operand buffer update (Mode A / Mode B)
+  // Operand buffer update (per-instruction / shared)
   // -----------------------------------------------------------------------
   generate
-    if (SHARE_MODE_B == 0) begin : g_mode_a_buf
-      // Mode A: per-instruction buffer
+    if (SHARED_OPERAND_BUFFER == 0) begin : g_per_inst_buf
+      // Per-instruction operand buffer
       // For input-sourced operands: buffers arriving values; cleared on fire.
       // For register-sourced operands: op_valid reflects register FIFO state.
       always_ff @(posedge clk or negedge rst_n) begin : op_buf_update
@@ -524,8 +524,8 @@ module fabric_temporal_pe #(
           end
         end
       end
-    end else begin : g_mode_b_buf
-      // Mode B: shared operand buffer with tag-position matching.
+    end else begin : g_shared_buf
+      // Shared operand buffer with tag-position matching.
       // Each entry: {tag, position, op_valid[L-1:0], op_value[L-1:0]}
       // Entry valid when any op_valid=1; invalid when all op_valid=0.
       localparam int BUF_DEPTH = OPERAND_BUFFER_SIZE;
@@ -548,7 +548,7 @@ module fabric_temporal_pe #(
 
       // Find head entry per instruction: tag match AND position=0 AND all ops valid
       // This provides the instruction-indexed op_valid/op_value interface.
-      always_comb begin : mode_b_to_insn
+      always_comb begin : shared_to_insn
         integer iter_var0, iter_var1, iter_var2;
         for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : per_insn
           for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : per_op

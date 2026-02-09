@@ -417,7 +417,7 @@ ADGBuilder::Impl::generateTemporalPEDef(const TemporalPEDef &def) const {
   os << "    [num_register = " << def.numRegisters
      << ", num_instruction = " << def.numInstructions
      << ", reg_fifo_depth = " << def.regFifoDepth;
-  if (def.shareModeB)
+  if (def.sharedOperandBuffer)
     os << ", enable_share_operand_buffer = true"
        << ", operand_buffer_size = " << def.shareBufferSize;
   os << "]\n";

@@ -192,6 +192,38 @@ Explicit conversions must be represented as operations, such as:
   tag transforms.
 - `fabric.pe` containing explicit casts (e.g., `arith.index_cast`).
 
+### Port Connection Invariants
+
+The following invariants apply to all connections inside a `fabric.module`:
+
+1. **Strict 1-to-1 connections**: Every port connection inside a `fabric.module`
+   must be exactly one-to-one. A single output port can connect to exactly one
+   input port, and vice versa. There are no implicit fan-out or fan-in
+   connections. Data duplication requires explicit `handshake.fork`; data merging
+   requires explicit `handshake.join` or switch arbitration.
+
+2. **No implicit width adaptation**: All connections must match exactly in data
+   width. No zero-extension, truncation, or sign-extension is performed
+   implicitly at connection boundaries. Width conversions require explicit
+   conversion operations (`arith.extsi`, `arith.trunci`, etc.) inside PE bodies.
+
+3. **Uniform tag width per module**: All ports of a given module instance share
+   the same `TAG_WIDTH`. Only three primitives change tag width across their port
+   boundaries: `add_tag` (none -> tagged), `del_tag` (tagged -> none), `map_tag`
+   (tag_in -> tag_out, widths may differ).
+
+4. **Per-port data width**: Each port of a module has its own data width
+   determined by its semantic type. There is no requirement for uniform data
+   width across ports. Tag width is uniform; data width is per-port.
+
+**Error codes** (see [spec-fabric-error.md](./spec-fabric-error.md)):
+
+- `COMP_IMPLICIT_FANOUT_WITHOUT_FORK`: An SSA value or port output is consumed
+  by more than one destination without explicit `handshake.fork`.
+- `COMP_FANOUT_OUTPUT`: An instance output port has multiple consumers.
+- `COMP_FANOUT_INPUT`: A module input feeds multiple instance input ports
+  without explicit fork.
+
 ## Operation: `fabric.instance`
 
 Instantiates a named fabric module or hardware component.

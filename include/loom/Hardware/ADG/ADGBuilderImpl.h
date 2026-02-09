@@ -101,7 +101,7 @@ struct TemporalPEDef {
   unsigned regFifoDepth = 0;
   Type interfaceType = Type::tagged(Type::i32(), Type::iN(4));
   std::vector<unsigned> fuPEDefIndices; // indices into peDefs
-  bool shareModeB = false;
+  bool sharedOperandBuffer = false;
   unsigned shareBufferSize = 0;
 };
 

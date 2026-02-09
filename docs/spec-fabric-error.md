@@ -105,6 +105,9 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_FIFO_INVALID_TYPE | `fabric.fifo` type must be a native value type or `!dataflow.tagged` |
 | COMP_FIFO_BYPASSED_NOT_BYPASSABLE | `fabric.fifo` has `bypassed` attribute present without `bypassable` |
 | COMP_FIFO_BYPASSED_MISSING | `fabric.fifo` has `bypassable` set but `bypassed` attribute is missing |
+| COMP_FANOUT_OUTPUT | Instance output port has multiple consumers; use explicit `handshake.fork` PE for data duplication |
+| COMP_FANOUT_INPUT | Module input feeds multiple instance input ports; use explicit `handshake.fork` PE |
+| COMP_IMPLICIT_FANOUT_WITHOUT_FORK | SSA value consumed multiple times without explicit `handshake.fork` |
 
 ### Instance Error Examples
 

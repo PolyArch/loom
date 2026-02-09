@@ -237,7 +237,7 @@ TemporalPEBuilder &TemporalPEBuilder::addFU(PEHandle pe) {
 
 TemporalPEBuilder &TemporalPEBuilder::enableShareOperandBuffer(unsigned size) {
   auto &def = builder_->impl_->temporalPEDefs[defId_];
-  def.shareModeB = true;
+  def.sharedOperandBuffer = true;
   def.shareBufferSize = size;
   return *this;
 }

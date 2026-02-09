@@ -352,8 +352,8 @@ module fabric_temporal_pe #(
     // width from spec-fabric-temporal_pe.md.
     parameter int INSTRUCTION_WIDTH = 64,
     // Operand buffer mode parameters
-    parameter bit ENABLE_SHARE_OPERAND_BUFFER = 0,  // 0=Mode A, 1=Mode B
-    parameter int OPERAND_BUFFER_SIZE = 0            // Mode B only, range [1,8192]
+    parameter bit SHARED_OPERAND_BUFFER = 0,  // 0=per-instruction, 1=shared
+    parameter int OPERAND_BUFFER_SIZE = 0    // shared mode only, range [1,8192]
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -377,8 +377,9 @@ module fabric_temporal_pe #(
 ```
 
 **Note:** The operand buffer is internal to the module and not part of
-`cfg_instruction_mem`. Mode A uses `NUM_INSTRUCTIONS * NUM_INPUTS * (1 + DATA_WIDTH)`
-bits internally. Mode B uses `OPERAND_BUFFER_SIZE` entries with per-tag FIFO semantics.
+`cfg_instruction_mem`. The per-instruction operand buffer uses
+`NUM_INSTRUCTIONS * NUM_INPUTS * (1 + DATA_WIDTH)` bits internally. The shared
+operand buffer uses `OPERAND_BUFFER_SIZE` entries with per-tag FIFO semantics.
 `INSTRUCTION_WIDTH = 64` is only a placeholder default in the template
 signature.
 

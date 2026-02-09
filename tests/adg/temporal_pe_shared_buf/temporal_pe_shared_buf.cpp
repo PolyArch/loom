@@ -1,4 +1,4 @@
-//===-- temporal_pe_mode_b.cpp - ADG test: temporal PE mode B ---*- C++ -*-===//
+//===-- temporal_pe_shared_buf.cpp - ADG test: shared operand buf -*- C++ -*-===//
 //
 // Part of the Loom project.
 //
@@ -9,7 +9,7 @@
 using namespace loom::adg;
 
 int main() {
-  ADGBuilder builder("temporal_pe_mode_b");
+  ADGBuilder builder("temporal_pe_shared_buf");
 
   auto taggedType = Type::tagged(Type::i32(), Type::iN(4));
 
@@ -18,7 +18,7 @@ int main() {
       .setOutputPorts({Type::i32()})
       .addOp("arith.addi");
 
-  auto tpe = builder.newTemporalPE("tpe_mode_b")
+  auto tpe = builder.newTemporalPE("tpe_shared_buf")
       .setNumRegisters(2)
       .setNumInstructions(4)
       .setRegFifoDepth(2)
@@ -36,6 +36,6 @@ int main() {
   builder.connectToModuleInput(in1, inst, 1);
   builder.connectToModuleOutput(inst, 0, out0);
 
-  builder.exportMLIR("Output/temporal_pe_mode_b.fabric.mlir");
+  builder.exportMLIR("Output/temporal_pe_shared_buf.fabric.mlir");
   return 0;
 }

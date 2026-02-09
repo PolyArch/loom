@@ -265,6 +265,35 @@ memory operation performs the actual memory access. See
 See [spec-fabric.md](./spec-fabric.md) Operation Syntax Conventions for the
 canonical `[hw_params] {runtime_config}` bracket convention.
 
+## Port Width by Category
+
+Memory module ports have category-specific widths:
+
+| Port Category | Data Width | Notes |
+|---------------|-----------|-------|
+| `ld_addr[i]` | 64 bits (index type) | Fixed address width |
+| `st_addr[i]` | 64 bits (index type) | Fixed address width |
+| `st_data[i]` | `elemType` width | Element data width |
+| `ld_data[i]` | `elemType` width | Element data width |
+| `ld_done[i]` | 1 bit (none type) | Completion signal only |
+| `st_done[i]` | 1 bit (none type) | Completion signal only |
+
+`TAG_WIDTH` is uniform across all ports of a memory instance:
+`TAG_WIDTH = clog2(max(LD_COUNT, ST_COUNT))` when either count > 1, else 0.
+(`clog2` = ceiling of log base 2.)
+
+**Example**: Memory with `elemType=i32`, `LD_COUNT=2`, `ST_COUNT=1`:
+
+```
+TAG_WIDTH = clog2(max(2,1)) = 1
+ld_addr0: 64 + 1 = 65 bits payload
+st_addr0: 64 + 1 = 65 bits payload
+st_data0: 32 + 1 = 33 bits payload
+ld_data0: 32 + 1 = 33 bits payload
+ld_done0: 1 + 1  = 2  bits payload
+st_done0: 1 + 1  = 2  bits payload
+```
+
 ## Related Documents
 
 - [spec-fabric.md](./spec-fabric.md)

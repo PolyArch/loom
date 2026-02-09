@@ -270,16 +270,16 @@ Creates a new `fabric.temporal_pe` definition.
 | `setRegFifoDepth(n)` | Set FIFO depth for registers |
 | `setInterface(taggedType)` | Set interface type (must be tagged) |
 | `addFU(peHandle)` | Add a functional unit type |
-| `enableShareOperandBuffer(size)` | Enable Mode B with specified buffer size |
+| `enableShareOperandBuffer(size)` | Enable shared operand buffer with specified buffer size |
 
 **Operand Buffer Modes:**
 
-By default, temporal PE uses Mode A (per-instruction operand buffer). Call
-`enableShareOperandBuffer(size)` to switch to Mode B (shared buffer with
+By default, temporal PE uses the per-instruction operand buffer. Call
+`enableShareOperandBuffer(size)` to switch to the shared operand buffer (with
 per-tag FIFO semantics).
 
-- Mode A: Each instruction has dedicated operand buffer slots
-- Mode B: Shared buffer prevents head-of-line blocking between tags
+- Per-instruction operand buffer (default): Each instruction has dedicated operand buffer slots
+- Shared operand buffer: Shared buffer prevents head-of-line blocking between tags
 
 See [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) for detailed
 operand buffer architecture.
@@ -289,9 +289,9 @@ operand buffer architecture.
 - FU interfaces must be native (not tagged)
 - FU value types must match the temporal PE interface value type
 - At least one FU must be added
-- Mode B `size` must be in range [1, 8192]
+- Shared operand buffer `size` must be in range [1, 8192]
 
-**Example (Mode A, default):**
+**Example (per-instruction operand buffer, default):**
 ```cpp
 auto temporal_pe = builder.newTemporalPE("mux_pe")
     .setNumRegisters(4)
@@ -302,7 +302,7 @@ auto temporal_pe = builder.newTemporalPE("mux_pe")
     .addFU(mul_pe);
 ```
 
-**Example (Mode B, shared operand buffer):**
+**Example (shared operand buffer):**
 ```cpp
 auto temporal_pe = builder.newTemporalPE("mux_pe_shared")
     .setNumRegisters(4)

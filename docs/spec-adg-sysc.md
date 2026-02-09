@@ -503,8 +503,8 @@ template<
     // width from spec-fabric-temporal_pe.md.
     int INSTRUCTION_WIDTH = 64,
     // Operand buffer mode parameters
-    bool ENABLE_SHARE_OPERAND_BUFFER = false,  // false=Mode A, true=Mode B
-    int OPERAND_BUFFER_SIZE = 0                  // Mode B only, range [1,8192]
+    bool SHARED_OPERAND_BUFFER = false,  // false=per-instruction, true=shared
+    int OPERAND_BUFFER_SIZE = 0          // shared mode only, range [1,8192]
 >
 SC_MODULE(fabric_temporal_pe) {
     // Clock and reset
@@ -545,12 +545,12 @@ private:
         sc_dt::sc_bv<DATA_WIDTH> value;
     };
 
-    // Mode A: per-instruction operand buffer
-    // Conditional compilation based on ENABLE_SHARE_OPERAND_BUFFER
+    // Per-instruction operand buffer
+    // Conditional compilation based on SHARED_OPERAND_BUFFER
     std::array<std::array<operand_slot, NUM_INPUTS>, NUM_INSTRUCTIONS>
-        operand_buffers_mode_a;
+        per_inst_operand_buffer;
 
-    // Mode B: shared operand buffer with per-tag FIFO semantics
+    // Shared operand buffer with per-tag FIFO semantics
     struct shared_buffer_entry {
         int position;
         sc_dt::sc_bv<TAG_WIDTH> tag;
@@ -561,7 +561,7 @@ private:
             return false;
         }
     };
-    std::array<shared_buffer_entry, OPERAND_BUFFER_SIZE> operand_buffers_mode_b;
+    std::array<shared_buffer_entry, OPERAND_BUFFER_SIZE> shared_operand_buffers;
 
     // Instruction decode
     struct instruction {

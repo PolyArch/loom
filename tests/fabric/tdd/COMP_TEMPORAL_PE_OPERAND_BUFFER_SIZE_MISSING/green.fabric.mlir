@@ -1,6 +1,6 @@
 // RUN: loom --adg %s
 
-// Valid: Mode B with operand_buffer_size provided.
+// Valid: shared operand buffer mode with operand_buffer_size provided.
 fabric.temporal_pe @tpe_mode_b(%in: !dataflow.tagged<i32, i4>)
   [num_register = 0, num_instruction = 2, reg_fifo_depth = 0,
    enable_share_operand_buffer = true, operand_buffer_size = 128]

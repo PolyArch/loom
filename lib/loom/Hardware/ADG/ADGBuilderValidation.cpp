@@ -213,14 +213,14 @@ ValidationResult ADGBuilder::validateADG() {
                    + std::to_string(expectedOut) + " out)", fuLoc);
       }
     }
-    if (!tp.shareModeB && tp.shareBufferSize > 0)
+    if (!tp.sharedOperandBuffer && tp.shareBufferSize > 0)
       addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE",
                "operand_buffer_size set without enable_share_operand_buffer",
                loc);
-    if (tp.shareModeB && tp.shareBufferSize == 0)
+    if (tp.sharedOperandBuffer && tp.shareBufferSize == 0)
       addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING",
                "operand_buffer_size missing with share_operand_buffer", loc);
-    if (tp.shareModeB && tp.shareBufferSize > 8192)
+    if (tp.sharedOperandBuffer && tp.shareBufferSize > 8192)
       addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE",
                "operand_buffer_size out of range [1, 8192]", loc);
   }

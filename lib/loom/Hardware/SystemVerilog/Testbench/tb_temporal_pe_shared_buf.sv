@@ -1,10 +1,10 @@
-//===-- tb_temporal_pe_mode_b.sv - Mode-B collision regression --*- SV -*-===//
+//===-- tb_temporal_pe_shared_buf.sv - Shared-buf collision regr -*- SV -*-===//
 //
 // Part of the Loom project.
 //
 //===----------------------------------------------------------------------===//
 //
-// Tests Mode-B shared operand buffer collision prevention: concurrent
+// Tests shared operand buffer collision prevention: concurrent
 // different-tag arrivals must not merge into the same buffer entry.
 // With OPERAND_BUFFER_SIZE=2, two instructions (tag=1, tag=2) receive
 // interleaved operands. Both must fire independently without error.
@@ -20,7 +20,7 @@
 
 `include "fabric_common.svh"
 
-module tb_temporal_pe_mode_b;
+module tb_temporal_pe_shared_buf;
   localparam int NUM_INPUTS           = 2;
   localparam int NUM_OUTPUTS          = 1;
   localparam int DATA_WIDTH           = 32;
@@ -29,7 +29,7 @@ module tb_temporal_pe_mode_b;
   localparam int NUM_REGISTERS        = 0;
   localparam int NUM_INSTRUCTIONS     = 2;
   localparam int REG_FIFO_DEPTH       = 0;
-  localparam int SHARE_MODE_B         = 1;
+  localparam int SHARED_OPERAND_BUFFER         = 1;
   localparam int OPERAND_BUFFER_SIZE  = 2;
 
   localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH;
@@ -55,7 +55,7 @@ module tb_temporal_pe_mode_b;
     .NUM_REGISTERS(NUM_REGISTERS),
     .NUM_INSTRUCTIONS(NUM_INSTRUCTIONS),
     .REG_FIFO_DEPTH(REG_FIFO_DEPTH),
-    .SHARE_MODE_B(SHARE_MODE_B),
+    .SHARED_OPERAND_BUFFER(SHARED_OPERAND_BUFFER),
     .OPERAND_BUFFER_SIZE(OPERAND_BUFFER_SIZE)
   ) dut (
     .clk(clk), .rst_n(rst_n),
@@ -106,8 +106,8 @@ module tb_temporal_pe_mode_b;
     pass_count = pass_count + 1;
 
     // Check 2: Concurrent different-tag inputs are properly buffered.
-    // Send tag=1 on port 0 and tag=2 on port 1 simultaneously. Mode-B must
-    // allocate separate buffer entries without collision.
+    // Send tag=1 on port 0 and tag=2 on port 1 simultaneously. Shared buffer
+    // must allocate separate entries without collision.
     in_data[0] = {TAG_WIDTH'(1), 32'h0000_000A};
     in_data[1] = {TAG_WIDTH'(2), 32'h0000_000B};
     in_valid = 2'b11;
@@ -117,20 +117,20 @@ module tb_temporal_pe_mode_b;
     // After buffering: entry for tag=1 should have op[0] valid,
     // entry for tag=2 should have op[1] valid. No collision = no error.
     if (error_valid !== 1'b0) begin : check_no_err
-      $fatal(1, "unexpected error during Mode-B concurrent input: code=%0d", error_code);
+      $fatal(1, "unexpected error during shared-buf concurrent input: code=%0d", error_code);
     end
     // Verify buffer entries via hierarchical access
     // Entry 0 should have tag=1 with op[0]=1,op[1]=0
     // Entry 1 should have tag=2 with op[0]=0,op[1]=1
-    if (dut.g_mode_b_buf.sb_tag[0] != TAG_WIDTH'(1) ||
-        dut.g_mode_b_buf.sb_op_valid[0] != 2'b01) begin : check_buf0
-      $fatal(1, "Mode-B buffer entry 0: expected tag=1 op_valid=01, got tag=%0d op_valid=%b",
-             dut.g_mode_b_buf.sb_tag[0], dut.g_mode_b_buf.sb_op_valid[0]);
+    if (dut.g_shared_buf.sb_tag[0] != TAG_WIDTH'(1) ||
+        dut.g_shared_buf.sb_op_valid[0] != 2'b01) begin : check_buf0
+      $fatal(1, "shared buffer entry 0: expected tag=1 op_valid=01, got tag=%0d op_valid=%b",
+             dut.g_shared_buf.sb_tag[0], dut.g_shared_buf.sb_op_valid[0]);
     end
-    if (dut.g_mode_b_buf.sb_tag[1] != TAG_WIDTH'(2) ||
-        dut.g_mode_b_buf.sb_op_valid[1] != 2'b10) begin : check_buf1
-      $fatal(1, "Mode-B buffer entry 1: expected tag=2 op_valid=10, got tag=%0d op_valid=%b",
-             dut.g_mode_b_buf.sb_tag[1], dut.g_mode_b_buf.sb_op_valid[1]);
+    if (dut.g_shared_buf.sb_tag[1] != TAG_WIDTH'(2) ||
+        dut.g_shared_buf.sb_op_valid[1] != 2'b10) begin : check_buf1
+      $fatal(1, "shared buffer entry 1: expected tag=2 op_valid=10, got tag=%0d op_valid=%b",
+             dut.g_shared_buf.sb_tag[1], dut.g_shared_buf.sb_op_valid[1]);
     end
     pass_count = pass_count + 1;
 
@@ -148,19 +148,19 @@ module tb_temporal_pe_mode_b;
     repeat (5) @(posedge clk);
 
     // Both entries should be invalidated (both instructions fired)
-    if (|dut.g_mode_b_buf.sb_op_valid[0] || |dut.g_mode_b_buf.sb_op_valid[1]) begin : check_fired
-      $fatal(1, "Mode-B: buffer not cleared after both fires: entry0=%b entry1=%b",
-             dut.g_mode_b_buf.sb_op_valid[0], dut.g_mode_b_buf.sb_op_valid[1]);
+    if (|dut.g_shared_buf.sb_op_valid[0] || |dut.g_shared_buf.sb_op_valid[1]) begin : check_fired
+      $fatal(1, "shared buffer not cleared after both fires: entry0=%b entry1=%b",
+             dut.g_shared_buf.sb_op_valid[0], dut.g_shared_buf.sb_op_valid[1]);
     end
     pass_count = pass_count + 1;
 
     // Check 4: still no error
     if (error_valid !== 1'b0) begin : check_final
-      $fatal(1, "unexpected error after Mode-B test: code=%0d", error_code);
+      $fatal(1, "unexpected error after shared-buf test: code=%0d", error_code);
     end
     pass_count = pass_count + 1;
 
-    $display("PASS: tb_temporal_pe_mode_b (%0d checks)", pass_count);
+    $display("PASS: tb_temporal_pe_shared_buf (%0d checks)", pass_count);
     $finish;
   end
 

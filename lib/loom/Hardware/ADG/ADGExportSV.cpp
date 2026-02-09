@@ -1245,7 +1245,7 @@ static std::string genTemporalPEParams(const TemporalPEDef &def,
   os << "    .NUM_REGISTERS(" << def.numRegisters << "),\n";
   os << "    .NUM_INSTRUCTIONS(" << def.numInstructions << "),\n";
   os << "    .REG_FIFO_DEPTH(" << def.regFifoDepth << "),\n";
-  os << "    .SHARE_MODE_B(" << (def.shareModeB ? 1 : 0) << "),\n";
+  os << "    .SHARED_OPERAND_BUFFER(" << (def.sharedOperandBuffer ? 1 : 0) << "),\n";
   os << "    .OPERAND_BUFFER_SIZE(" << def.shareBufferSize << ")";
   return os.str();
 }

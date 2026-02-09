@@ -108,8 +108,8 @@ The ordering is:
 
 - Boolean (default: `false`).
 - Selects the operand buffer hardware mode:
-  - `false`: Per-instruction operand buffer mode (Mode A)
-  - `true`: Shared operand buffer mode (Mode B)
+  - `false`: Per-instruction operand buffer mode
+  - `true`: Shared operand buffer mode
 - This is a static hardware parameter determined at synthesis time.
 - See [Operand Buffer Architecture](#operand-buffer-architecture) for details.
 
@@ -121,9 +121,9 @@ The ordering is:
 - Must be absent or unset when `enable_share_operand_buffer = false`.
 - Must be in range [1, 8192] when `enable_share_operand_buffer = true`.
 - Violations are compile-time errors:
-  - `COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE`: Mode A cannot have size
-  - `COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING`: Mode B requires size
-  - `COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE`: Size out of [1, 8192] range
+  - `COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE`: per-instruction mode cannot have size
+  - `COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING`: shared mode requires size
+  - `COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE`: size out of [1, 8192] range
 - See [spec-fabric-error.md](./spec-fabric-error.md).
 
 #### `instruction_mem` (runtime configuration parameter)
@@ -157,7 +157,7 @@ ready. The operand buffer is internal runtime state, **not part of config_mem**.
 
 Two hardware modes are available, selected by `enable_share_operand_buffer`:
 
-### Mode A: Per-Instruction Operand Buffer (Default)
+### Per-Instruction Operand Buffer (Default)
 
 When `enable_share_operand_buffer = false` (default):
 
@@ -180,10 +180,11 @@ When `enable_share_operand_buffer = false` (default):
 - At most one instruction fires per cycle
 
 **Deadlock Risk:**
-Mode A can deadlock if operands for different tags interleave and block each
-other. Use Mode B or upstream scheduling constraints to mitigate.
+The per-instruction operand buffer can deadlock if operands for different tags
+interleave and block each other. Use the shared operand buffer or upstream
+scheduling constraints to mitigate.
 
-### Mode B: Shared Operand Buffer
+### Shared Operand Buffer
 
 When `enable_share_operand_buffer = true`:
 
@@ -232,17 +233,17 @@ to virtual channel techniques in network-on-chip designs.
    - Other tag-matched entries: `position -= 1`
 
 **Deadlock Mitigation:**
-Mode B provides per-tag FIFO ordering, preventing head-of-line blocking between
-different tags. However, `operand_buffer_size` must be sufficient for the
-expected operand interleaving depth. Formal analysis of required buffer depth
-is application-dependent.
+The shared operand buffer provides per-tag FIFO ordering, preventing
+head-of-line blocking between different tags. However, `operand_buffer_size`
+must be sufficient for the expected operand interleaving depth. Formal analysis
+of required buffer depth is application-dependent.
 
 ### Operand Buffer Initialization
 
 At reset, all operand buffer entries are initialized:
 - All `op_valid` bits = 0
 - All `op_value` bits = 0 (don't care, controlled by `op_valid`)
-- Mode B: all `position` and `tag` fields = 0
+- Shared operand buffer: all `position` and `tag` fields = 0
 
 ### Output Tag Semantics
 
@@ -540,7 +541,7 @@ Let:
 - `J` = tag bit width
 - `K` = value bit width
 - `O` = `log2Ceil(num_fu_types)`
-- `S` = `operand_buffer_size` (Mode B only)
+- `S` = `operand_buffer_size` (shared operand buffer only)
 
 **Instruction Memory Width (config_mem):**
 
@@ -552,11 +553,11 @@ Let:
 
 **Operand Buffer Width (internal, not config_mem):**
 
-Mode A (per-instruction):
+Per-instruction operand buffer:
 - `operand_buffer_entry_width = 1 + K` (op_valid + op_value)
 - `total_operand_buffer_bits = num_instruction * L * (1 + K)`
 
-Mode B (shared):
+Shared operand buffer:
 - `position_width = log2Ceil(S)` (max 13 bits when S = 8192)
 - `operand_buffer_entry_width = position_width + J + L * (1 + K)`
 - `total_operand_buffer_bits = S * operand_buffer_entry_width`
@@ -606,6 +607,39 @@ propagated to the top level. The corresponding symbols are
 `RT_TEMPORAL_PE_NO_MATCH`, `CFG_TEMPORAL_PE_DUP_TAG`,
 `CFG_TEMPORAL_PE_ILLEGAL_REG`, and `CFG_TEMPORAL_PE_REG_TAG_NONZERO`. See
 [spec-fabric-error.md](./spec-fabric-error.md).
+
+## Per-Port Width Derivation from FU Definitions
+
+A Temporal PE's external port widths are derived as the per-position maximum
+across all FU definitions:
+
+- `IN_i_DW = max across all FUs of (FU.inputPorts[i].dataWidth)`
+- `OUT_j_DW = max across all FUs of (FU.outputPorts[j].dataWidth)`
+- `TAG_WIDTH` = uniform from `interfaceType`
+
+**Example**: Two FUs with signatures `(i8, i16) -> (i64)` and
+`(i32, i16) -> (i32)`:
+
+```
+External input 0 width:  max(8, 32)  = 32 bits
+External input 1 width:  max(16, 16) = 16 bits
+External output 0 width: max(64, 32) = 64 bits
+```
+
+**Internal width strategy** ("design for worst case"):
+
+| Signal | Width | Rationale |
+|--------|-------|-----------|
+| External `in_i` | `IN_i_DW` | Per-port, exact semantic width |
+| Operand buffer slot [i] | `max(IN_i_DW)` for that position | Must hold widest value any FU can receive at position i |
+| FU operand extraction | FU-specific width | Extract from operand buffer at FU boundary |
+| `body_result[j]` | `OUT_j_DW` | Per-output, matches external port |
+| Register FIFO | `max(OUT_j_DW)` across all j | Must hold widest result any FU can produce |
+| Register-to-operand override | Truncate `REG_FIFO_DW` to operand width | Explicit width adaptation at known boundary |
+
+These internal width adaptations are **not** implicit -- they occur at
+documented, spec-mandated boundaries within the Temporal PE microarchitecture.
+External ports always carry exact semantic widths.
 
 ## Related Documents
 

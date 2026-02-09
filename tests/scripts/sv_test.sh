@@ -251,7 +251,7 @@ pe_configs=(
 # Temporal PE positive parameter sweeps
 temporal_pe_configs=(
   "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=1,NUM_REGISTERS=0,NUM_INSTRUCTIONS=2,REG_FIFO_DEPTH=0"
-  "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=1,NUM_REGISTERS=0,NUM_INSTRUCTIONS=2,REG_FIFO_DEPTH=0,SHARE_MODE_B=1,OPERAND_BUFFER_SIZE=4"
+  "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=1,NUM_REGISTERS=0,NUM_INSTRUCTIONS=2,REG_FIFO_DEPTH=0,SHARED_OPERAND_BUFFER=1,OPERAND_BUFFER_SIZE=4"
 )
 
 # Temporal PE negative tests
@@ -571,11 +571,11 @@ emit_sim_jobs() {
     echo "${line}" >> "${PARALLEL_FILE}"
   done
 
-  # Temporal PE Mode-B collision regression (dedicated bench)
-  outdir="tests/sv/temporal_pe/Output/${sim}_mode_b_collision"
-  sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_temporal_pe.sv ${rel_sv_tb}/tb_temporal_pe_mode_b.sv"
+  # Temporal PE shared-buffer collision regression (dedicated bench)
+  outdir="tests/sv/temporal_pe/Output/${sim}_shared_buf_collision"
+  sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_temporal_pe.sv ${rel_sv_tb}/tb_temporal_pe_shared_buf.sv"
   line="rm -rf ${outdir} && mkdir -p ${outdir}"
-  line+=" && ${rel_sim_runner} run ${sim} tb_temporal_pe_mode_b ${outdir} ${sv_files}"
+  line+=" && ${rel_sim_runner} run ${sim} tb_temporal_pe_shared_buf ${outdir} ${sv_files}"
   echo "${line}" >> "${PARALLEL_FILE}"
 
   # Temporal PE multi-reader register regression (dedicated bench)
@@ -689,7 +689,7 @@ else
     emit_skip_job "tests/sv/memory/Output/skip_neg_$(cfg_to_suffix "${params}")"
   done
   # Dedicated temporal PE benches
-  emit_skip_job "tests/sv/temporal_pe/Output/skip_mode_b_collision"
+  emit_skip_job "tests/sv/temporal_pe/Output/skip_shared_buf_collision"
   emit_skip_job "tests/sv/temporal_pe/Output/skip_multireader_reg"
   # Extmemory positive tests
   for cfg in "${extmemory_configs[@]}"; do

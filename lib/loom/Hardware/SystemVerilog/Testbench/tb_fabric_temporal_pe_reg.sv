@@ -21,7 +21,7 @@ module tb_fabric_temporal_pe_reg;
   parameter int NUM_REGISTERS        = 3;
   parameter int NUM_INSTRUCTIONS     = 2;
   parameter int REG_FIFO_DEPTH       = 2;
-  parameter int SHARE_MODE_B         = 0;
+  parameter int SHARED_OPERAND_BUFFER         = 0;
   parameter int OPERAND_BUFFER_SIZE  = 0;
 
   localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH;
@@ -48,7 +48,7 @@ module tb_fabric_temporal_pe_reg;
     .NUM_REGISTERS(NUM_REGISTERS),
     .NUM_INSTRUCTIONS(NUM_INSTRUCTIONS),
     .REG_FIFO_DEPTH(REG_FIFO_DEPTH),
-    .SHARE_MODE_B(SHARE_MODE_B),
+    .SHARED_OPERAND_BUFFER(SHARED_OPERAND_BUFFER),
     .OPERAND_BUFFER_SIZE(OPERAND_BUFFER_SIZE)
   ) dut (
     .clk(clk), .rst_n(rst_n),

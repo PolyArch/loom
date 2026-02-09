@@ -7,6 +7,8 @@
 #include "loom/Hardware/ADG/ADGBuilderImpl.h"
 
 #include "loom/Dialect/Dataflow/DataflowDialect.h"
+
+#include <algorithm>
 #include "loom/Dialect/Fabric/FabricDialect.h"
 
 #include "circt/Dialect/Handshake/HandshakeDialect.h"
@@ -890,20 +892,22 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
     Type elemType = def.shape.getElemType();
     bool isTaggedLd = def.ldCount > 1;
     bool isTaggedSt = def.stCount > 1;
+    // Uniform tag type: clog2(max(ldCount, stCount)), matching SV generation
+    Type uniformTag = computeTagType(std::max(def.ldCount, def.stCount));
 
     // Input layout: [ld_addr * ldCount, st_addr * stCount, st_data * stCount]
     unsigned idx = (unsigned)port;
     if (idx < def.ldCount) {
-      return isTaggedLd ? Type::tagged(Type::index(), computeTagType(def.ldCount))
+      return isTaggedLd ? Type::tagged(Type::index(), uniformTag)
                         : Type::index();
     }
     idx -= def.ldCount;
     if (idx < def.stCount) {
-      return isTaggedSt ? Type::tagged(Type::index(), computeTagType(def.stCount))
+      return isTaggedSt ? Type::tagged(Type::index(), uniformTag)
                         : Type::index();
     }
     idx -= def.stCount;
-    return isTaggedSt ? Type::tagged(elemType, computeTagType(def.stCount))
+    return isTaggedSt ? Type::tagged(elemType, uniformTag)
                       : elemType;
   }
   case ModuleKind::ExtMemory: {
@@ -915,18 +919,20 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
 
     bool isTaggedLd = def.ldCount > 1;
     bool isTaggedSt = def.stCount > 1;
+    // Uniform tag type: clog2(max(ldCount, stCount)), matching SV generation
+    Type uniformTag = computeTagType(std::max(def.ldCount, def.stCount));
 
     if (adjPort < def.ldCount) {
-      return isTaggedLd ? Type::tagged(Type::index(), computeTagType(def.ldCount))
+      return isTaggedLd ? Type::tagged(Type::index(), uniformTag)
                         : Type::index();
     }
     adjPort -= def.ldCount;
     if (adjPort < def.stCount) {
-      return isTaggedSt ? Type::tagged(Type::index(), computeTagType(def.stCount))
+      return isTaggedSt ? Type::tagged(Type::index(), uniformTag)
                         : Type::index();
     }
     adjPort -= def.stCount;
-    return isTaggedSt ? Type::tagged(elemType, computeTagType(def.stCount))
+    return isTaggedSt ? Type::tagged(elemType, uniformTag)
                       : elemType;
   }
   }
@@ -985,6 +991,8 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
     Type elemType = def.shape.getElemType();
     bool isTaggedLd = def.ldCount > 1;
     bool isTaggedSt = def.stCount > 1;
+    // Uniform tag type: clog2(max(ldCount, stCount)), matching SV generation
+    Type uniformTag = computeTagType(std::max(def.ldCount, def.stCount));
 
     unsigned idx = 0;
     // Non-private memory port 0 is memref -- return index as placeholder for
@@ -992,14 +1000,14 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
     if (!def.isPrivate) { if (port == 0) return Type::index(); idx++; }
     // Output layout: [memref?] [lddata * ldCount] [lddone] [stdone?]
     if ((unsigned)port < idx + def.ldCount)
-      return isTaggedLd ? Type::tagged(elemType, computeTagType(def.ldCount))
+      return isTaggedLd ? Type::tagged(elemType, uniformTag)
                         : elemType;
     // lddone
     if ((unsigned)port < idx + def.ldCount + 1)
-      return isTaggedLd ? Type::tagged(Type::none(), computeTagType(def.ldCount))
+      return isTaggedLd ? Type::tagged(Type::none(), uniformTag)
                         : Type::none();
     // stdone
-    return isTaggedSt ? Type::tagged(Type::none(), computeTagType(def.stCount))
+    return isTaggedSt ? Type::tagged(Type::none(), uniformTag)
                       : Type::none();
   }
   case ModuleKind::ExtMemory: {
@@ -1007,17 +1015,19 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
     Type elemType = def.shape.getElemType();
     bool isTaggedLd = def.ldCount > 1;
     bool isTaggedSt = def.stCount > 1;
+    // Uniform tag type: clog2(max(ldCount, stCount)), matching SV generation
+    Type uniformTag = computeTagType(std::max(def.ldCount, def.stCount));
 
     // Output layout: [lddata * ldCount] [lddone] [stdone?]
     if ((unsigned)port < def.ldCount)
-      return isTaggedLd ? Type::tagged(elemType, computeTagType(def.ldCount))
+      return isTaggedLd ? Type::tagged(elemType, uniformTag)
                         : elemType;
     // lddone
     if ((unsigned)port < def.ldCount + 1)
-      return isTaggedLd ? Type::tagged(Type::none(), computeTagType(def.ldCount))
+      return isTaggedLd ? Type::tagged(Type::none(), uniformTag)
                         : Type::none();
     // stdone
-    return isTaggedSt ? Type::tagged(Type::none(), computeTagType(def.stCount))
+    return isTaggedSt ? Type::tagged(Type::none(), uniformTag)
                       : Type::none();
   }
   default:

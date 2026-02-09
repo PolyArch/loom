@@ -308,6 +308,48 @@ fabric.pe @sitofp(%a: i32)
 }
 ```
 
+## Per-Port Data Width
+
+Each input and output port of a `fabric.pe` carries its own data width, derived
+from the port's declared type. The PE module does not have a single
+`DATA_WIDTH` parameter; instead, each port has its own width.
+
+**Example**: A PE performing `extsi(i16) + i32 -> trunci(i16)`:
+
+```
+Inputs:  in0: i16 (16 bits),  in1: i32 (32 bits)
+Outputs: out0: i16 (16 bits)
+```
+
+Generated SV module has individual port declarations:
+
+```systemverilog
+input  logic in0_valid, output logic in0_ready, input  logic [15:0] in0_data,
+input  logic in1_valid, output logic in1_ready, input  logic [31:0] in1_data,
+output logic out0_valid, input logic out0_ready, output logic [15:0] out0_data
+```
+
+Internal body wires carry their operation-specific widths. The shift-register
+pipeline (if `LATENCY > 0`) stores per-output at that output's width.
+
+## Body SSA Single-Use Rule
+
+Inside a PE body, every SSA value (including block arguments) may be consumed
+exactly once. Using a value as an operand in two different operations requires
+explicit `handshake.fork`:
+
+```mlir
+// ILLEGAL: %x consumed twice
+%r = arith.addi %x, %x : i32
+
+// LEGAL: explicit fork before double use
+%f:2 = handshake.fork %x : i32
+%r = arith.addi %f#0, %f#1 : i32
+```
+
+Violations raise `COMP_IMPLICIT_FANOUT_WITHOUT_FORK`. See
+[spec-fabric-error.md](./spec-fabric-error.md).
+
 ## Interaction with `fabric.temporal_pe`
 
 See [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) for the
