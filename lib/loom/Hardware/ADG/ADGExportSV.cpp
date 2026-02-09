@@ -343,17 +343,32 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
                      << "' collides with another port or reserved name\n";
         std::exit(1);
       }
-      // Check that port-derived signals (<port>_valid, etc.) do not collide
-      // with instance-derived internal nets (<inst>_in0_valid, etc.).
-      for (const auto &inst : instances) {
-        std::string prefix = inst.name + "_";
-        if (p.name.size() >= prefix.size() &&
-            p.name.compare(0, prefix.size(), prefix) == 0) {
-          llvm::errs() << "error: exportSV: port name '" << p.name
-                       << "' collides with internal signals for instance '"
-                       << inst.name << "'\n";
-          std::exit(1);
-        }
+    }
+  }
+
+  // Check that port-derived signals (<port>_valid, etc.) do not collide
+  // with instance-derived internal nets.  Build exact set of internal
+  // signal base names, then reject any port whose base matches.
+  {
+    std::set<std::string> internalBases;
+    for (size_t i = 0; i < instances.size(); ++i) {
+      const auto &inst = instances[i];
+      unsigned numIn = getInstanceInputCount(i);
+      unsigned numOut = getInstanceOutputCount(i);
+      for (unsigned p = 0; p < numIn; ++p)
+        internalBases.insert(inst.name + "_in" + std::to_string(p));
+      for (unsigned p = 0; p < numOut; ++p)
+        internalBases.insert(inst.name + "_out" + std::to_string(p));
+      if (inst.kind == ModuleKind::Switch ||
+          inst.kind == ModuleKind::TemporalSwitch ||
+          inst.kind == ModuleKind::TemporalPE)
+        internalBases.insert(inst.name + "_error");
+    }
+    for (const auto &p : ports) {
+      if (internalBases.count(p.name)) {
+        llvm::errs() << "error: exportSV: port name '" << p.name
+                     << "' collides with a generated internal signal\n";
+        std::exit(1);
       }
     }
   }
