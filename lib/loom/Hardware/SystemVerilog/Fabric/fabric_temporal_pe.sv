@@ -238,13 +238,34 @@ module fabric_temporal_pe #(
   // -----------------------------------------------------------------------
   // Output assembly with tag from instruction result fields
   // -----------------------------------------------------------------------
+
+  // Per-output register-destination flag: set when the current commit
+  // instruction writes this output to a register FIFO instead of externally.
+  // Declared at module level so g_out and all_out_ready can see them.
+  logic [NUM_OUTPUTS-1:0] out_is_reg;
+
+  // Register-destination stall: asserted when any output targets a full
+  // register FIFO. Prevents fire so register writes are never dropped.
+  logic reg_dest_stall;
+
   logic all_out_ready;
-  assign all_out_ready = &out_ready;
+
+  // all_out_ready: require external readiness only for non-register outputs.
+  always_comb begin : calc_all_out_ready
+    integer iter_var0;
+    all_out_ready = 1'b1;
+    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : per_out
+      if (!out_is_reg[iter_var0] && !out_ready[iter_var0]) begin : not_ready
+        all_out_ready = 1'b0;
+      end
+    end
+  end
 
   // fire: instruction commits - operand buffer cleared, outputs driven,
-  // register writes occur. Requires FU completion and output readiness.
+  // register writes occur. Requires FU completion, output readiness,
+  // and register FIFO availability for register-destination outputs.
   logic fire;
-  assign fire = insn_fire_ready && body_valid && all_out_ready && (fu_busy || fu_launch);
+  assign fire = insn_fire_ready && body_valid && all_out_ready && !reg_dest_stall && (fu_busy || fu_launch);
 
   // Extract per-output result tag from the matched instruction.
   logic [NUM_OUTPUTS-1:0][TAG_WIDTH-1:0] out_res_tag;
@@ -257,11 +278,12 @@ module fabric_temporal_pe #(
   end
 
   // Output valid/data: only for results that are NOT register-writes.
-  // When NUM_REGISTERS=0, all results go to outputs.
+  // When NUM_REGISTERS=0, all results go to outputs; register-destination
+  // outputs suppress out_valid so they do not drive external handshakes.
   generate
     genvar go;
     for (go = 0; go < NUM_OUTPUTS; go++) begin : g_out
-      assign out_valid[go] = fire;
+      assign out_valid[go] = fire && !out_is_reg[go];
       assign out_data[go]  = {out_res_tag[go], body_result[go]};
     end
   endgenerate
@@ -337,6 +359,18 @@ module fabric_temporal_pe #(
         end
       end
 
+      // Drive module-level out_is_reg and reg_dest_stall from decoded fields.
+      always_comb begin : drive_reg_dest
+        integer iter_var0;
+        reg_dest_stall = 1'b0;
+        for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : per_out
+          out_is_reg[iter_var0] = res_is_reg[iter_var0];
+          if (res_is_reg[iter_var0] && reg_fifo_full[res_reg_idx[iter_var0]]) begin : stall
+            reg_dest_stall = 1'b1;
+          end
+        end
+      end
+
       // Decode op_is_reg and op_reg_idx for the matched instruction
       logic [NUM_INPUTS-1:0] op_is_reg;
       logic [NUM_INPUTS-1:0][SAFE_REG_IDX_W-1:0] op_reg_idx;
@@ -404,9 +438,10 @@ module fabric_temporal_pe #(
           end
         end else begin : tick
           if (fire) begin : commit
-            // Enqueue: write results to register FIFOs
+            // Enqueue: write results to register FIFOs.
+            // fire guarantees !reg_dest_stall, so target FIFOs have space.
             for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : wr_reg
-              if (res_is_reg[iter_var0] && !reg_fifo_full[res_reg_idx[iter_var0]]) begin : enq
+              if (res_is_reg[iter_var0]) begin : enq
                 reg_fifo_data[res_reg_idx[iter_var0]][reg_fifo_wr_ptr[res_reg_idx[iter_var0]]] <= body_result[iter_var0];
                 reg_fifo_wr_ptr[res_reg_idx[iter_var0]] <=
                   (reg_fifo_wr_ptr[res_reg_idx[iter_var0]] == RFIFO_IDX_W'(SAFE_RFIFO - 1))
@@ -450,6 +485,9 @@ module fabric_temporal_pe #(
         assign reg_fifo_empty[gri_no] = 1'b1;
         assign reg_fifo_full[gri_no]  = 1'b0;
       end
+      // No registers: all outputs are external, no stall
+      assign out_is_reg = '0;
+      assign reg_dest_stall = 1'b0;
     end
   endgenerate
 
