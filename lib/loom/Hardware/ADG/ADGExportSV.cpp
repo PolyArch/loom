@@ -197,6 +197,35 @@ static bool hasSVTemplate(ModuleKind kind) {
 // Helper: validate a name as a legal SystemVerilog identifier
 //===----------------------------------------------------------------------===//
 
+static bool isSVKeyword(const std::string &name) {
+  // IEEE 1800-2017 reserved keywords that could appear as user-chosen names.
+  // Not exhaustive but covers the most likely collisions.
+  static const std::set<std::string> keywords = {
+      "always",    "and",        "assign",    "automatic", "begin",
+      "bit",       "break",      "buf",       "case",      "class",
+      "clocking",  "config",     "const",     "continue",  "default",
+      "disable",   "do",         "edge",      "else",      "end",
+      "endcase",   "endclass",   "endconfig", "endfunction","endgenerate",
+      "endinterface","endmodule","endpackage","endprogram","endproperty",
+      "endtask",   "enum",       "event",     "export",    "extends",
+      "extern",    "final",      "for",       "force",     "foreach",
+      "forever",   "fork",       "function",  "generate",  "genvar",
+      "if",        "import",     "initial",   "inout",     "input",
+      "int",       "integer",    "interface",  "join",     "local",
+      "logic",     "longint",    "module",    "nand",      "new",
+      "nor",       "not",        "null",      "or",        "output",
+      "package",   "parameter",  "program",   "property",  "protected",
+      "pull0",     "pull1",      "pure",      "rand",      "randc",
+      "real",      "reg",        "release",   "repeat",    "return",
+      "shortint",  "shortreal",  "signed",    "static",    "string",
+      "struct",    "super",      "supply0",   "supply1",   "task",
+      "this",      "time",       "tri",       "type",      "typedef",
+      "union",     "unsigned",   "var",       "virtual",   "void",
+      "wait",      "while",      "wire",      "xnor",      "xor",
+  };
+  return keywords.count(name) != 0;
+}
+
 static bool isValidSVIdentifier(const std::string &name) {
   if (name.empty())
     return false;
@@ -207,6 +236,8 @@ static bool isValidSVIdentifier(const std::string &name) {
     if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_')
       return false;
   }
+  if (isSVKeyword(name))
+    return false;
   return true;
 }
 
@@ -219,6 +250,13 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
                    << "')\n";
       std::exit(1);
     }
+  }
+
+  // Validate module name (emitted as <moduleName>_top)
+  if (!isValidSVIdentifier(moduleName)) {
+    llvm::errs() << "error: exportSV: module name '" << moduleName
+                 << "' is not a valid SystemVerilog identifier\n";
+    std::exit(1);
   }
 
   // Validate instance names: must be valid SV identifiers and unique
@@ -238,9 +276,22 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
   }
 
-  // Validate port names: must be valid SV identifiers and unique
+  // Validate port names: must be valid SV identifiers, unique, and not
+  // collide with generated aggregated port names (error_valid/error_code).
   {
     std::set<std::string> seenPorts;
+    // Reserve "error" if error aggregation ports will be emitted
+    bool willEmitErrorPorts = false;
+    for (const auto &inst : instances) {
+      if (inst.kind == ModuleKind::Switch ||
+          inst.kind == ModuleKind::TemporalSwitch ||
+          inst.kind == ModuleKind::TemporalPE) {
+        willEmitErrorPorts = true;
+        break;
+      }
+    }
+    if (willEmitErrorPorts)
+      seenPorts.insert("error");
     for (const auto &p : ports) {
       if (!isValidSVIdentifier(p.name)) {
         llvm::errs() << "error: exportSV: port name '" << p.name
@@ -248,8 +299,8 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         std::exit(1);
       }
       if (!seenPorts.insert(p.name).second) {
-        llvm::errs() << "error: exportSV: duplicate port name '" << p.name
-                     << "'\n";
+        llvm::errs() << "error: exportSV: port name '" << p.name
+                     << "' collides with another port or reserved name\n";
         std::exit(1);
       }
     }
