@@ -4,6 +4,11 @@ Loom is a full stack framework for Domain-specific Accelerator, from C++ source 
 # Documentation
 - Check `docs` to understand `loom` design specification, there are important concepts like: `dataflow`, `fabric`, `adg`, `cosim`, each one of them has its own specification documents.
 
+# Referencing Code Locations
+- **NEVER** use exact line-number ranges (e.g. `path/to/file:123-456`) to reference or quote code locations in plans, documentation, comments, or code. Line numbers shift as development proceeds, making such references fragile and misleading.
+- **Always** identify locations by semantic anchors: function/class/method names, section/chapter headings, or other stable identifiers.
+- If a line-number range is absolutely unavoidable, use a deliberately broad/approximate range and clearly mark it as approximate. Even so, this practice **should be minimized**.
+
 # General Rules
 - Avoid terms to describe development progress (`FIXED`, `Step`, `Week`, `Section`, `Phase`, `AC-x`, `round-i`, `step-i` etc) in code comments or commit message or PR body.
 - Avoid AI tools name (like Codex, Claude, Grok, Gemini, ...) in code comments or git commit message (including authorship) or PR body.
