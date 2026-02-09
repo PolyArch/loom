@@ -21,6 +21,10 @@ Loom is a full stack framework for Domain-specific Accelerator, from C++ source 
 When writing complex features or significant refactors, use an ExecPlan (as described in .agent/PLANS.md) from design to implementation.
 The ExecPlan can be stored in `temp` folder as a living execution plan, the filename should be timestamp-ed like `ExecPlan-<YYYYMMDD-hhmmss>.md`, timestamp should use `date +"%Y%m%d-%H%M%S"`. 
 
+# SystemVerilog Style Rules
+- Every `begin`-`end` block must have a named label (`: label_name`).
+- Loop variables must be declared at the top of the enclosing procedural block (`always`, `initial`, `function`), not inline in `for`. Use `iter_var0`, `iter_var1`, ... as loop variable names (numbered by nesting depth).
+
 # End To End Test Pipeline
 Use the following sequence as the end to end test pipeline:
 - `ninja -C build clean-loom`

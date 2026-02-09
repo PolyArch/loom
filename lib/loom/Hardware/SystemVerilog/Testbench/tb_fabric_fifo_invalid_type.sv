@@ -46,7 +46,7 @@ module tb_fabric_fifo_invalid_type #(
   initial clk = 0;
   always #5 clk = ~clk;
 
-  initial begin
+  initial begin : main
     rst_n = 0;
     in_valid = 0;
     out_ready = 0;

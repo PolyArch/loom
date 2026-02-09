@@ -10,3 +10,12 @@ temp
 # Test runtime artifacts
 tests/.results/
 tests/**/*.parallel.sh
+
+# Waveform Debug related
+novas*
+verdi*
+*.fsdb
+*.fst
+sysProgress*/*
+sysProgress*
+ucli.key

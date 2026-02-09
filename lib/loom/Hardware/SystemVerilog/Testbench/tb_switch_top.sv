@@ -48,7 +48,20 @@ module tb_switch_top;
   initial clk = 0;
   always #5 clk = ~clk;
 
-  initial begin
+`ifdef DUMP_FST
+  initial begin : dump_fst
+    $dumpfile("waves.fst");
+    $dumpvars(0, tb_switch_top);
+  end
+`endif
+`ifdef DUMP_FSDB
+  initial begin : dump_fsdb
+    $fsdbDumpfile("waves.fsdb");
+    $fsdbDumpvars(0, tb_switch_top, "+mda");
+  end
+`endif
+
+  initial begin : main
     in0_valid  = 0;
     in1_valid  = 0;
     out0_ready = 0;
@@ -103,7 +116,7 @@ module tb_switch_top;
     $finish;
   end
 
-  initial begin
+  initial begin : watchdog
     #100000;
     $fatal(1, "FAIL: watchdog timeout");
   end

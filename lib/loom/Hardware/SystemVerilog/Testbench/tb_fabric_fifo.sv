@@ -56,6 +56,19 @@ module tb_fabric_fifo #(
   initial clk = 0;
   always #5 clk = ~clk;
 
+`ifdef DUMP_FST
+  initial begin : dump_fst
+    $dumpfile("waves.fst");
+    $dumpvars(0, tb_fabric_fifo);
+  end
+`endif
+`ifdef DUMP_FSDB
+  initial begin : dump_fsdb
+    $fsdbDumpfile("waves.fsdb");
+    $fsdbDumpvars(0, tb_fabric_fifo, "+mda");
+  end
+`endif
+
   // Storage for randomized test
   int rand_val;
   logic [PAYLOAD_WIDTH-1:0] sent_data [NUM_TRANSACTIONS];
@@ -63,7 +76,8 @@ module tb_fabric_fifo #(
   int sent_count;
   int recv_count;
 
-  initial begin
+  initial begin : main
+    int iter_var0;
     rand_val  = SEED + 1;
     in_valid  = 0;
     out_ready = 0;
@@ -102,9 +116,9 @@ module tb_fabric_fifo #(
       $fatal(1, "FAIL: after pop: out_valid should be 0");
 
     // ---- Test 3: Fill to capacity ----
-    for (int i = 0; i < DEPTH; i++) begin
+    for (iter_var0 = 0; iter_var0 < DEPTH; iter_var0++) begin : fill
       in_valid = 1;
-      in_data  = PAYLOAD_WIDTH'(i + 100);
+      in_data  = PAYLOAD_WIDTH'(iter_var0 + 100);
       @(posedge clk);
       #1;
     end
@@ -113,12 +127,12 @@ module tb_fabric_fifo #(
       $fatal(1, "FAIL: in_ready should be 0 when FIFO is full");
 
     // ---- Test 4: Drain and verify order ----
-    for (int i = 0; i < DEPTH; i++) begin
+    for (iter_var0 = 0; iter_var0 < DEPTH; iter_var0++) begin : drain
       if (out_valid !== 1)
-        $fatal(1, "FAIL: drain: out_valid should be 1 at %0d", i);
-      if (out_data !== PAYLOAD_WIDTH'(i + 100))
+        $fatal(1, "FAIL: drain: out_valid should be 1 at %0d", iter_var0);
+      if (out_data !== PAYLOAD_WIDTH'(iter_var0 + 100))
         $fatal(1, "FAIL: drain mismatch at %0d: expected=%0h got=%0h",
-               i, PAYLOAD_WIDTH'(i + 100), out_data);
+               iter_var0, PAYLOAD_WIDTH'(iter_var0 + 100), out_data);
       out_ready = 1;
       @(posedge clk);
       #1;
@@ -140,9 +154,9 @@ module tb_fabric_fifo #(
     sent_count = 0;
     recv_count = 0;
 
-    for (int i = 0; i < NUM_TRANSACTIONS; i++) begin
+    for (iter_var0 = 0; iter_var0 < NUM_TRANSACTIONS; iter_var0++) begin : gen_data
       rand_val = rand_val * 1103515245 + 12345;
-      sent_data[i] = PAYLOAD_WIDTH'(rand_val);
+      sent_data[iter_var0] = PAYLOAD_WIDTH'(rand_val);
     end
 
     // Protocol:
@@ -152,7 +166,7 @@ module tb_fabric_fifo #(
     //   4. #1 -> combinational outputs settle with new FF state + new inputs
     //   5. Sample handshake (in_valid && in_ready, out_valid && out_ready)
     //   6. Go to step 1: @(posedge clk) latches the handshake
-    for (int cycle = 0; cycle < NUM_TRANSACTIONS * 20 + 200; cycle++) begin
+    for (iter_var0 = 0; iter_var0 < NUM_TRANSACTIONS * 20 + 200; iter_var0++) begin : rand_traffic
       if (recv_count >= NUM_TRANSACTIONS)
         break;
 
@@ -162,11 +176,11 @@ module tb_fabric_fifo #(
       #1;
 
       // Drive new stimulus
-      if (sent_count < NUM_TRANSACTIONS) begin
+      if (sent_count < NUM_TRANSACTIONS) begin : drive_in
         rand_val = rand_val * 1103515245 + 12345;
         in_valid = ((rand_val >> 16) & 3) != 0;
         in_data  = sent_data[sent_count];
-      end else begin
+      end else begin : drive_idle
         in_valid = 0;
       end
       rand_val = rand_val * 1103515245 + 12345;
@@ -179,7 +193,7 @@ module tb_fabric_fifo #(
       // next posedge, so this is the correct time to observe them.
       if (in_valid && in_ready && sent_count < NUM_TRANSACTIONS)
         sent_count = sent_count + 1;
-      if (out_valid && out_ready && recv_count < NUM_TRANSACTIONS) begin
+      if (out_valid && out_ready && recv_count < NUM_TRANSACTIONS) begin : recv
         recv_data[recv_count] = out_data;
         recv_count = recv_count + 1;
       end
@@ -191,14 +205,14 @@ module tb_fabric_fifo #(
     if (recv_count < NUM_TRANSACTIONS)
       $fatal(1, "FAIL: random traffic: only received %0d/%0d", recv_count, NUM_TRANSACTIONS);
 
-    for (int i = 0; i < NUM_TRANSACTIONS; i++) begin
-      if (recv_data[i] !== sent_data[i])
+    for (iter_var0 = 0; iter_var0 < NUM_TRANSACTIONS; iter_var0++) begin : verify
+      if (recv_data[iter_var0] !== sent_data[iter_var0])
         $fatal(1, "FAIL: random traffic mismatch at %0d: expected=%0h got=%0h",
-               i, sent_data[i], recv_data[i]);
+               iter_var0, sent_data[iter_var0], recv_data[iter_var0]);
     end
 
     // ---- Test 6: Bypass mode (if BYPASSABLE) ----
-    if (BYPASSABLE) begin
+    if (BYPASSABLE) begin : bypass_test
       rst_n = 0;
       in_valid = 0;
       out_ready = 0;
@@ -238,7 +252,7 @@ module tb_fabric_fifo #(
   end
 
   // Watchdog timer
-  initial begin
+  initial begin : watchdog
     #(NUM_TRANSACTIONS * 500 * 10 + 200000);
     $fatal(1, "FAIL: testbench watchdog timeout");
   end

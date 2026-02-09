@@ -18,6 +18,20 @@ SIM_RUNNER="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Utils/sim_runner.sh"
 SV_FABRIC="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Fabric"
 SV_TB="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Testbench"
 
+# Detect preferred simulator (VCS > Verilator per spec-adg-tools.md)
+SIM=""
+if command -v vcs >/dev/null 2>&1; then
+  SIM="vcs"
+elif command -v verilator >/dev/null 2>&1; then
+  SIM="verilator"
+fi
+
+if [[ -n "${SIM}" ]]; then
+  SUITE_NAME="Fabric SV (${SIM})"
+else
+  SUITE_NAME="Fabric SV"
+fi
+
 # --- Single mode ---
 if [[ "${1:-}" == "--single" ]]; then
   shift
@@ -121,7 +135,7 @@ if (( ADG_FAIL > 0 || ADG_TIMEOUT > 0 )); then
   LOOM_PASS=${ADG_PASS}; LOOM_FAIL=${ADG_FAIL}; LOOM_TIMEOUT=${ADG_TIMEOUT}
   LOOM_SKIPPED=${ADG_SKIPPED}; LOOM_TOTAL=${ADG_TOTAL}
   export LOOM_PASS LOOM_FAIL LOOM_TIMEOUT LOOM_SKIPPED LOOM_TOTAL
-  loom_write_result "Fabric SystemVerilog"
+  loom_write_result "${SUITE_NAME}"
   exit 1
 fi
 
@@ -132,24 +146,22 @@ fi
 PARALLEL_FILE="${TESTS_DIR}/sv_test.parallel.sh"
 
 loom_write_parallel_header "${PARALLEL_FILE}" \
-  "Loom Fabric SystemVerilog Tests" \
+  "Loom Fabric SV Tests (${SIM:-none})" \
   "SV simulation tests with parameter sweeps and negative (COMP_) tests."
 
-# --- Detect available simulators ---
-SIMS=()
-if command -v verilator >/dev/null 2>&1; then
-  SIMS+=("verilator")
-fi
-if command -v vcs >/dev/null 2>&1; then
-  SIMS+=("vcs")
-fi
+cat >> "${PARALLEL_FILE}" <<'WAVE_EOF'
+#
+# To dump waveforms, copy a test line below and append a -D flag at the end:
+#   -DDUMP_FST   (Verilator) -> <outdir>/waves.fst   | gtkwave <outdir>/waves.fst
+#   -DDUMP_FSDB  (VCS)       -> <outdir>/waves.fsdb  | verdi -ssf <outdir>/waves.fsdb
+#
+# Example (VCS FSDB):
+#   mkdir -p <outdir> && sim_runner.sh run vcs <top> <outdir> <files...> -GDEPTH=4 -DDUMP_FSDB
+WAVE_EOF
 
-if [[ ${#SIMS[@]} -eq 0 ]]; then
-  echo "Neither verilator nor vcs found. Try 'module avail' to check available EDA tools, then 'module load <tool>'."
+if [[ -z "${SIM}" ]]; then
+  echo "Neither vcs nor verilator found. Try 'module avail' to check available EDA tools, then 'module load <tool>'."
   echo "All SV simulation tests will be skipped."
-  NO_SIM=true
-else
-  NO_SIM=false
 fi
 
 # --- SV simulation phase ---
@@ -184,7 +196,7 @@ switch_neg=(
 # Helper: emit a skip job (exit 77) for a given output directory
 emit_skip_job() {
   local outdir="$1"
-  echo "mkdir -p ${outdir} && exit 77" >> "${PARALLEL_FILE}"
+  echo "rm -rf ${outdir} && mkdir -p ${outdir} && exit 77" >> "${PARALLEL_FILE}"
 }
 
 # Helper: convert "KEY=VAL,KEY=VAL" to " -GKEY=VAL -GKEY=VAL"
@@ -214,7 +226,7 @@ emit_sim_jobs() {
     outdir="tests/sv/fifo/Output/${sim}_${cfg_suffix}"
 
     sv_files="${rel_sv_fabric}/fabric_fifo.sv ${rel_sv_tb}/tb_fabric_fifo.sv"
-    line="mkdir -p ${outdir}"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_fifo ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
   done
@@ -235,7 +247,7 @@ emit_sim_jobs() {
     else
       neg_sv_files+=" ${rel_sv_tb}/tb_fabric_fifo.sv"
     fi
-    line="mkdir -p ${outdir}"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} expect-fail ${sim} ${neg_top} ${outdir} ${pattern} ${neg_sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
   done
@@ -248,7 +260,7 @@ emit_sim_jobs() {
     outdir="tests/sv/switch/Output/${sim}_${cfg_suffix}"
 
     sv_files="${rel_sv_fabric}/fabric_switch.sv ${rel_sv_tb}/tb_fabric_switch.sv"
-    line="mkdir -p ${outdir}"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_switch ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
   done
@@ -262,16 +274,14 @@ emit_sim_jobs() {
     outdir="tests/sv/switch/Output/${sim}_neg_${cfg_suffix}"
 
     sv_files="${rel_sv_fabric}/fabric_switch.sv ${rel_sv_tb}/tb_fabric_switch.sv"
-    line="mkdir -p ${outdir}"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} expect-fail ${sim} tb_fabric_switch ${outdir} ${pattern} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
   done
 }
 
-if [[ ${#SIMS[@]} -gt 0 ]]; then
-  for sim in "${SIMS[@]}"; do
-    emit_sim_jobs "${sim}"
-  done
+if [[ -n "${SIM}" ]]; then
+  emit_sim_jobs "${SIM}"
 
   # --- End-to-end tests: simulate generated top (SV only, no C++ re-compile) ---
   # Stage A already produced Output/sv/ artifacts; e2e just compiles+simulates SV.
@@ -280,13 +290,11 @@ if [[ ${#SIMS[@]} -gt 0 ]]; then
     rel_test=$(loom_relpath "${test_dir}")
     rel_out="${rel_test}/Output"
 
-    for sim in "${SIMS[@]}"; do
-      outdir="${rel_out}/${sim}_e2e_${test_name}"
-      line="mkdir -p ${outdir}"
-      line+=" && ${rel_sim_runner} run ${sim} tb_${test_name}_top ${outdir}"
-      line+=" ${rel_out}/sv/${test_name}_top.sv ${rel_out}/sv/lib/fabric_fifo.sv ${rel_out}/sv/lib/fabric_switch.sv ${rel_sv_tb}/tb_${test_name}_top.sv"
-      echo "${line}" >> "${PARALLEL_FILE}"
-    done
+    outdir="${rel_out}/${SIM}_e2e_${test_name}"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
+    line+=" && ${rel_sim_runner} run ${SIM} tb_${test_name}_top ${outdir}"
+    line+=" ${rel_out}/sv/${test_name}_top.sv ${rel_out}/sv/lib/fabric_fifo.sv ${rel_out}/sv/lib/fabric_switch.sv ${rel_sv_tb}/tb_${test_name}_top.sv"
+    echo "${line}" >> "${PARALLEL_FILE}"
   done
 else
   # No simulator available: emit skip (exit 77) jobs for each planned test
@@ -322,8 +330,8 @@ LOOM_TOTAL=$((LOOM_TOTAL + ADG_TOTAL))
 LOOM_SKIPPED=$((LOOM_SKIPPED + ADG_SKIPPED))
 export LOOM_PASS LOOM_FAIL LOOM_TIMEOUT LOOM_SKIPPED LOOM_TOTAL
 
-loom_print_summary "Fabric SystemVerilog"
-loom_write_result "Fabric SystemVerilog"
+loom_print_summary "${SUITE_NAME}"
+loom_write_result "${SUITE_NAME}"
 
 if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
   exit 1

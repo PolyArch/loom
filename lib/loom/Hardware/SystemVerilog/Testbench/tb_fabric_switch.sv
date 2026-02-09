@@ -68,6 +68,19 @@ module tb_fabric_switch #(
   initial clk = 0;
   always #5 clk = ~clk;
 
+`ifdef DUMP_FST
+  initial begin : dump_fst
+    $dumpfile("waves.fst");
+    $dumpvars(0, tb_fabric_switch);
+  end
+`endif
+`ifdef DUMP_FSDB
+  initial begin : dump_fsdb
+    $fsdbDumpfile("waves.fsdb");
+    $fsdbDumpvars(0, tb_fabric_switch, "+mda");
+  end
+`endif
+
   // -----------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------
@@ -77,14 +90,17 @@ module tb_fabric_switch #(
   function automatic logic [NUM_CONNECTED-1:0] compress_route(
       input logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_matrix
   );
+    int iter_var0, iter_var1;
     automatic int bit_idx = 0;
     automatic logic [NUM_CONNECTED-1:0] result = '0;
-    for (int o = 0; o < NUM_OUTPUTS; o++)
-      for (int i = 0; i < NUM_INPUTS; i++)
-        if (CONNECTIVITY[o*NUM_INPUTS + i]) begin
-          result[bit_idx] = flat_matrix[o*NUM_INPUTS + i];
+    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0++) begin : per_out
+      for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1++) begin : per_in
+        if (CONNECTIVITY[iter_var0*NUM_INPUTS + iter_var1]) begin : connected
+          result[bit_idx] = flat_matrix[iter_var0*NUM_INPUTS + iter_var1];
           bit_idx++;
         end
+      end
+    end
     return result;
   endfunction
 
@@ -108,7 +124,8 @@ module tb_fabric_switch #(
   // -----------------------------------------------------------------------
   // Main test sequence
   // -----------------------------------------------------------------------
-  initial begin
+  initial begin : main
+    int iter_var0, iter_var1, iter_var2;
     rng = SEED + 1;
 
     do_reset();
@@ -118,25 +135,26 @@ module tb_fabric_switch #(
       $fatal(1, "FAIL: error_valid should be 0 after reset");
 
     // ---- Test 2: Straight routing (input k -> output k for k < DIM) ----
-    begin
+    begin : straight_route
       logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_route;
       flat_route = '0;
-      for (int k = 0; k < DIM; k++)
-        flat_route[k*NUM_INPUTS + k] = 1'b1;
+      for (iter_var0 = 0; iter_var0 < DIM; iter_var0++) begin : set_diag
+        flat_route[iter_var0*NUM_INPUTS + iter_var0] = 1'b1;
+      end
 
       cfg_route_table = compress_route(flat_route);
       out_ready = '1;
       #1;
 
-      for (int k = 0; k < DIM; k++) begin
+      for (iter_var0 = 0; iter_var0 < DIM; iter_var0++) begin : check_out
         in_valid = '0;
-        in_valid[k] = 1'b1;
-        in_data[k] = PAYLOAD_WIDTH'(k + 1);
+        in_valid[iter_var0] = 1'b1;
+        in_data[iter_var0] = PAYLOAD_WIDTH'(iter_var0 + 1);
         #1;
-        if (out_valid[k] !== 1'b1)
-          $fatal(1, "FAIL: straight routing: out_valid[%0d] should be 1", k);
-        if (out_data[k] !== PAYLOAD_WIDTH'(k + 1))
-          $fatal(1, "FAIL: straight routing: data mismatch at output %0d", k);
+        if (out_valid[iter_var0] !== 1'b1)
+          $fatal(1, "FAIL: straight routing: out_valid[%0d] should be 1", iter_var0);
+        if (out_data[iter_var0] !== PAYLOAD_WIDTH'(iter_var0 + 1))
+          $fatal(1, "FAIL: straight routing: data mismatch at output %0d", iter_var0);
       end
       in_valid = '0;
     end
@@ -144,7 +162,7 @@ module tb_fabric_switch #(
     do_reset();
 
     // ---- Test 3: Valid/ready handshake with backpressure ----
-    if (NUM_INPUTS >= 2 && NUM_OUTPUTS >= 2) begin
+    if (NUM_INPUTS >= 2 && NUM_OUTPUTS >= 2) begin : backpressure
       logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_route;
       flat_route = '0;
       flat_route[0*NUM_INPUTS + 0] = 1'b1;  // out0 <- in0
@@ -175,30 +193,31 @@ module tb_fabric_switch #(
     // ---- Test 4: Permutation routing (non-diagonal swap) ----
     // Route input 0 -> output (DIM-1), input 1 -> output (DIM-2), ...
     // This is a reversed mapping that verifies non-diagonal route correctness.
-    if (DIM >= 2) begin
+    if (DIM >= 2) begin : permutation
       logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_route;
       flat_route = '0;
-      for (int k = 0; k < DIM; k++)
-        flat_route[(DIM-1-k)*NUM_INPUTS + k] = 1'b1;  // out[DIM-1-k] <- in[k]
+      for (iter_var0 = 0; iter_var0 < DIM; iter_var0++) begin : set_perm
+        flat_route[(DIM-1-iter_var0)*NUM_INPUTS + iter_var0] = 1'b1;
+      end
 
       cfg_route_table = compress_route(flat_route);
       out_ready = '1;
 
       // Drive all DIM inputs simultaneously with unique data
       in_valid = '0;
-      for (int k = 0; k < DIM; k++) begin
-        in_valid[k] = 1'b1;
-        in_data[k] = PAYLOAD_WIDTH'(16'hC000 + k);
+      for (iter_var0 = 0; iter_var0 < DIM; iter_var0++) begin : drive_perm
+        in_valid[iter_var0] = 1'b1;
+        in_data[iter_var0] = PAYLOAD_WIDTH'(16'hC000 + iter_var0);
       end
       #1;
 
       // Verify: output[DIM-1-k] should have data from input[k]
-      for (int k = 0; k < DIM; k++) begin
-        if (out_valid[DIM-1-k] !== 1'b1)
-          $fatal(1, "FAIL: permutation: out_valid[%0d] should be 1", DIM-1-k);
-        if (out_data[DIM-1-k] !== PAYLOAD_WIDTH'(16'hC000 + k))
+      for (iter_var0 = 0; iter_var0 < DIM; iter_var0++) begin : check_perm
+        if (out_valid[DIM-1-iter_var0] !== 1'b1)
+          $fatal(1, "FAIL: permutation: out_valid[%0d] should be 1", DIM-1-iter_var0);
+        if (out_data[DIM-1-iter_var0] !== PAYLOAD_WIDTH'(16'hC000 + iter_var0))
           $fatal(1, "FAIL: permutation: out_data[%0d] expected 0x%04x, got 0x%04x",
-                 DIM-1-k, 16'hC000 + k, out_data[DIM-1-k]);
+                 DIM-1-iter_var0, 16'hC000 + iter_var0, out_data[DIM-1-iter_var0]);
       end
       in_valid = '0;
     end
@@ -208,34 +227,34 @@ module tb_fabric_switch #(
     // ---- Test 5: Randomized route-table with data verification ----
     // Each transaction: generate a random valid one-to-one mapping under
     // connectivity constraints, drive random data, verify output correctness.
-    begin
+    begin : rand_route
       logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_route;
       logic [NUM_INPUTS-1:0] input_used;
       int mapping [NUM_OUTPUTS];
       int candidates [32];
       int n_cand, pick, chosen;
 
-      for (int t = 0; t < NUM_TRANSACTIONS; t++) begin
+      for (iter_var0 = 0; iter_var0 < NUM_TRANSACTIONS; iter_var0++) begin : txn
         // Build a random valid one-to-one route mapping
         flat_route = '0;
         input_used = '0;
 
-        for (int o = 0; o < NUM_OUTPUTS; o++) begin
-          mapping[o] = -1;
+        for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1++) begin : build_map
+          mapping[iter_var1] = -1;
           n_cand = 0;
-          for (int i = 0; i < NUM_INPUTS; i++) begin
-            if (CONNECTIVITY[o*NUM_INPUTS + i] && !input_used[i]) begin
-              candidates[n_cand] = i;
+          for (iter_var2 = 0; iter_var2 < NUM_INPUTS; iter_var2++) begin : find_cand
+            if (CONNECTIVITY[iter_var1*NUM_INPUTS + iter_var2] && !input_used[iter_var2]) begin : add_cand
+              candidates[n_cand] = iter_var2;
               n_cand++;
             end
           end
-          if (n_cand > 0) begin
+          if (n_cand > 0) begin : pick_route
             rng = lcg_next(rng);
             pick = ((rng >> 16) & 32'h7FFF) % n_cand;
             chosen = candidates[pick];
-            flat_route[o*NUM_INPUTS + chosen] = 1'b1;
+            flat_route[iter_var1*NUM_INPUTS + chosen] = 1'b1;
             input_used[chosen] = 1'b1;
-            mapping[o] = chosen;
+            mapping[iter_var1] = chosen;
           end
         end
 
@@ -244,24 +263,24 @@ module tb_fabric_switch #(
 
         // Drive random data on routed inputs
         in_valid = '0;
-        for (int i = 0; i < NUM_INPUTS; i++) begin
-          in_valid[i] = input_used[i];
+        for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1++) begin : drive_in
+          in_valid[iter_var1] = input_used[iter_var1];
           rng = lcg_next(rng);
-          in_data[i] = PAYLOAD_WIDTH'(rng);
+          in_data[iter_var1] = PAYLOAD_WIDTH'(rng);
         end
         #1;
 
         // Verify each routed output
-        for (int o = 0; o < NUM_OUTPUTS; o++) begin
-          if (mapping[o] >= 0) begin
-            if (out_valid[o] !== 1'b1)
-              $fatal(1, "FAIL: random route t=%0d: out_valid[%0d] not 1", t, o);
-            if (out_data[o] !== in_data[mapping[o]])
+        for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1++) begin : check_out
+          if (mapping[iter_var1] >= 0) begin : routed
+            if (out_valid[iter_var1] !== 1'b1)
+              $fatal(1, "FAIL: random route t=%0d: out_valid[%0d] not 1", iter_var0, iter_var1);
+            if (out_data[iter_var1] !== in_data[mapping[iter_var1]])
               $fatal(1, "FAIL: random route t=%0d: data mismatch out[%0d], expected from in[%0d]",
-                     t, o, mapping[o]);
-          end else begin
-            if (out_valid[o] !== 1'b0)
-              $fatal(1, "FAIL: random route t=%0d: out_valid[%0d] should be 0 (unrouted)", t, o);
+                     iter_var0, iter_var1, mapping[iter_var1]);
+          end else begin : unrouted
+            if (out_valid[iter_var1] !== 1'b0)
+              $fatal(1, "FAIL: random route t=%0d: out_valid[%0d] should be 0 (unrouted)", iter_var0, iter_var1);
           end
         end
 
@@ -274,7 +293,7 @@ module tb_fabric_switch #(
     do_reset();
 
     // ---- Test 6: CFG_SWITCH_ROUTE_MULTI_OUT (code 1) ----
-    if (NUM_INPUTS >= 2) begin
+    if (NUM_INPUTS >= 2) begin : multi_out
       logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_route;
       flat_route = '0;
       flat_route[0*NUM_INPUTS + 0] = 1'b1;
@@ -295,7 +314,7 @@ module tb_fabric_switch #(
     do_reset();
 
     // ---- Test 7: CFG_SWITCH_ROUTE_MULTI_IN (code 2) ----
-    if (NUM_OUTPUTS >= 2) begin
+    if (NUM_OUTPUTS >= 2) begin : multi_in
       logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_route;
       flat_route = '0;
       flat_route[0*NUM_INPUTS + 0] = 1'b1;
@@ -316,7 +335,7 @@ module tb_fabric_switch #(
     do_reset();
 
     // ---- Test 8: RT_SWITCH_UNROUTED_INPUT (code 262) ----
-    begin
+    begin : unrouted_input
       cfg_route_table = '0;
       in_valid = '0;
       in_valid[0] = 1'b1;
@@ -338,7 +357,7 @@ module tb_fabric_switch #(
   end
 
   // Watchdog timer
-  initial begin
+  initial begin : watchdog
     #(NUM_TRANSACTIONS * 100 * 10 + 100000);
     $fatal(1, "FAIL: testbench watchdog timeout");
   end

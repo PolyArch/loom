@@ -34,7 +34,20 @@ module tb_fifo_top;
   initial clk = 0;
   always #5 clk = ~clk;
 
-  initial begin
+`ifdef DUMP_FST
+  initial begin : dump_fst
+    $dumpfile("waves.fst");
+    $dumpvars(0, tb_fifo_top);
+  end
+`endif
+`ifdef DUMP_FSDB
+  initial begin : dump_fsdb
+    $fsdbDumpfile("waves.fsdb");
+    $fsdbDumpvars(0, tb_fifo_top, "+mda");
+  end
+`endif
+
+  initial begin : main
     in_valid  = 0;
     out_ready = 0;
     in_data   = '0;
@@ -78,7 +91,7 @@ module tb_fifo_top;
     $finish;
   end
 
-  initial begin
+  initial begin : watchdog
     #100000;
     $fatal(1, "FAIL: watchdog timeout");
   end

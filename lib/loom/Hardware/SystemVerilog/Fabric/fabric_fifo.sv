@@ -41,7 +41,7 @@ module fabric_fifo #(
   // -----------------------------------------------------------------------
   // Elaboration-time parameter validation (COMP_ errors)
   // -----------------------------------------------------------------------
-  initial begin
+  initial begin : param_check
     if (DEPTH == 0)
       $fatal(1, "COMP_FIFO_DEPTH_ZERO: depth must be >= 1");
     if (PAYLOAD_WIDTH <= 0)
@@ -63,8 +63,8 @@ module fabric_fifo #(
       logic                      fifo_out_ready;
       logic [SAFE_PW-1:0]        fifo_out_data;
 
-      always_comb begin
-        if (bypass_en) begin
+      always_comb begin : bypass_mux
+        if (bypass_en) begin : active
           // Combinational pass-through
           out_valid     = in_valid;
           in_ready      = out_ready;
@@ -73,7 +73,7 @@ module fabric_fifo #(
           fifo_in_valid = 1'b0;
           fifo_in_data  = '0;
           fifo_out_ready = 1'b0;
-        end else begin
+        end else begin : normal
           // Normal FIFO path
           fifo_in_valid  = in_valid;
           in_ready       = fifo_in_ready;
@@ -163,19 +163,19 @@ module fabric_fifo_core #(
   wire do_write = in_valid  && in_ready;
   wire do_read  = pop_pending;
 
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
+  always_ff @(posedge clk or negedge rst_n) begin : seq
+    if (!rst_n) begin : reset
       head  <= '0;
       tail  <= '0;
       count <= '0;
-    end else begin
-      if (do_write) begin
+    end else begin : operate
+      if (do_write) begin : write
         buffer[head] <= in_data;
         head <= (SAFE_DEPTH == 1) ? '0 :
                 (head == PTR_WIDTH'(SAFE_DEPTH - 1)) ? '0 : head + 1'b1;
       end
 
-      if (do_read) begin
+      if (do_read) begin : read
         tail <= (SAFE_DEPTH == 1) ? '0 :
                 (tail == PTR_WIDTH'(SAFE_DEPTH - 1)) ? '0 : tail + 1'b1;
       end
