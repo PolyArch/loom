@@ -194,7 +194,10 @@ std::string ADGBuilder::Impl::generatePEBody(const PEDef &pe) const {
     os << (i == 0 ? " " : ", ");
     os << "%arg" << i;
   }
-  os << " : " << pe.outputPorts[0].toMLIR() << "\n";
+  // Compare ops require the operand type, not the result type (i1).
+  bool isCmp = (pe.singleOp == "arith.cmpi" || pe.singleOp == "arith.cmpf");
+  const auto &trailingType = isCmp ? pe.inputPorts[0] : pe.outputPorts[0];
+  os << " : " << trailingType.toMLIR() << "\n";
   os << "  fabric.yield %0 : " << pe.outputPorts[0].toMLIR() << "\n";
   return os.str();
 }
@@ -856,7 +859,11 @@ std::string ADGBuilder::Impl::generateMLIR() const {
               os << (i == 0 ? " " : ", ");
               os << "%x" << i;
             }
-            os << " : " << bodyOutTypes[0].toMLIR() << "\n";
+            bool isFuCmp = (pd.singleOp == "arith.cmpi" ||
+                            pd.singleOp == "arith.cmpf");
+            const auto &fuTrailingType =
+                isFuCmp ? bodyInTypes[0] : bodyOutTypes[0];
+            os << " : " << fuTrailingType.toMLIR() << "\n";
             os << "    fabric.yield %r : " << bodyOutTypes[0].toMLIR() << "\n";
           }
           break;

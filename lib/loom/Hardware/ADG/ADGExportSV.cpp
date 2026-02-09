@@ -1469,11 +1469,15 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     std::exit(1);
   }
 
-  // Reject memref ports (not supported in SV export)
+  // Reject memref ports (not supported in SV export).
+  // This catches non-private Memory and ExtMemory modules that expose memref
+  // at the module boundary.  Private memories are fine (no memref ports).
   for (const auto &p : ports) {
     if (p.isMemref) {
       llvm::errs() << "error: exportSV does not support memref port '"
-                   << p.name << "'\n";
+                   << p.name
+                   << "'; Memory/ExtMemory with external memref cannot be "
+                      "exported to SystemVerilog\n";
       std::exit(1);
     }
   }
