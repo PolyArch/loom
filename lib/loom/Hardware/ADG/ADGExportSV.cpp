@@ -193,6 +193,12 @@ static bool hasSVTemplate(ModuleKind kind) {
   return kind == ModuleKind::Switch || kind == ModuleKind::Fifo;
 }
 
+/// Returns true for module kinds that expose error_valid/error_code ports.
+static bool hasErrorOutput(ModuleKind kind) {
+  return kind == ModuleKind::Switch || kind == ModuleKind::TemporalSwitch ||
+         kind == ModuleKind::TemporalPE;
+}
+
 //===----------------------------------------------------------------------===//
 // Helper: validate a name as a legal SystemVerilog identifier
 //===----------------------------------------------------------------------===//
@@ -276,9 +282,7 @@ static bool isValidSVIdentifier(const std::string &name) {
     if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_')
       return false;
   }
-  if (isSVKeyword(name))
-    return false;
-  return true;
+  return !isSVKeyword(name);
 }
 
 void ADGBuilder::Impl::generateSV(const std::string &directory) const {
@@ -297,6 +301,24 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     llvm::errs() << "error: exportSV: module name '" << moduleName
                  << "' is not a valid SystemVerilog identifier\n";
     std::exit(1);
+  }
+
+  // Reject memref ports (not supported in SV export)
+  for (const auto &p : ports) {
+    if (p.isMemref) {
+      llvm::errs() << "error: exportSV does not support memref port '"
+                   << p.name << "'\n";
+      std::exit(1);
+    }
+  }
+
+  // Determine once whether any instance produces error signals
+  bool hasErrorPorts = false;
+  for (const auto &inst : instances) {
+    if (hasErrorOutput(inst.kind)) {
+      hasErrorPorts = true;
+      break;
+    }
   }
 
   // Validate instance names: must be valid SV identifiers and unique
@@ -320,17 +342,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   // collide with generated aggregated port names (error_valid/error_code).
   {
     std::set<std::string> seenPorts;
-    // Reserve "error" if error aggregation ports will be emitted
-    bool willEmitErrorPorts = false;
-    for (const auto &inst : instances) {
-      if (inst.kind == ModuleKind::Switch ||
-          inst.kind == ModuleKind::TemporalSwitch ||
-          inst.kind == ModuleKind::TemporalPE) {
-        willEmitErrorPorts = true;
-        break;
-      }
-    }
-    if (willEmitErrorPorts)
+    if (hasErrorPorts)
       seenPorts.insert("error");
     for (const auto &p : ports) {
       if (!isValidSVIdentifier(p.name)) {
@@ -347,6 +359,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   }
 
   // Collect instance-derived internal signal names (wires + config ports).
+  static const char *streamSuffixes[] = {"_valid", "_ready", "_data"};
   std::set<std::string> instanceDerived;
   for (size_t i = 0; i < instances.size(); ++i) {
     const auto &inst = instances[i];
@@ -354,19 +367,15 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     unsigned numOut = getInstanceOutputCount(i);
     for (unsigned p = 0; p < numIn; ++p) {
       std::string base = inst.name + "_in" + std::to_string(p);
-      instanceDerived.insert(base + "_valid");
-      instanceDerived.insert(base + "_ready");
-      instanceDerived.insert(base + "_data");
+      for (const char *sfx : streamSuffixes)
+        instanceDerived.insert(base + sfx);
     }
     for (unsigned p = 0; p < numOut; ++p) {
       std::string base = inst.name + "_out" + std::to_string(p);
-      instanceDerived.insert(base + "_valid");
-      instanceDerived.insert(base + "_ready");
-      instanceDerived.insert(base + "_data");
+      for (const char *sfx : streamSuffixes)
+        instanceDerived.insert(base + sfx);
     }
-    if (inst.kind == ModuleKind::Switch ||
-        inst.kind == ModuleKind::TemporalSwitch ||
-        inst.kind == ModuleKind::TemporalPE) {
+    if (hasErrorOutput(inst.kind)) {
       instanceDerived.insert(inst.name + "_error_valid");
       instanceDerived.insert(inst.name + "_error_code");
     }
@@ -381,8 +390,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
 
   // Check port suffixed names against instance-derived signals
   for (const auto &p : ports) {
-    std::string suffixes[] = {"_valid", "_ready", "_data"};
-    for (const auto &sfx : suffixes) {
+    for (const char *sfx : streamSuffixes) {
       if (instanceDerived.count(p.name + sfx)) {
         llvm::errs() << "error: exportSV: port '" << p.name
                      << "' generates signal '" << p.name << sfx
@@ -393,30 +401,17 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   }
 
   // Check instance names against top-level identifiers (fixed ports,
-  // port-derived signals, error aggregation ports).
+  // port-derived signals, error aggregation ports, and instance-derived names).
   {
-    std::set<std::string> topLevel;
-    topLevel.insert("clk");
-    topLevel.insert("rst_n");
-    bool willEmitError = false;
-    for (const auto &inst : instances) {
-      if (inst.kind == ModuleKind::Switch ||
-          inst.kind == ModuleKind::TemporalSwitch ||
-          inst.kind == ModuleKind::TemporalPE) {
-        willEmitError = true;
-        break;
-      }
-    }
-    if (willEmitError) {
+    std::set<std::string> topLevel({"clk", "rst_n"});
+    if (hasErrorPorts) {
       topLevel.insert("error_valid");
       topLevel.insert("error_code");
     }
     for (const auto &p : ports) {
-      topLevel.insert(p.name + "_valid");
-      topLevel.insert(p.name + "_ready");
-      topLevel.insert(p.name + "_data");
+      for (const char *sfx : streamSuffixes)
+        topLevel.insert(p.name + sfx);
     }
-    // Also include instance-derived names to catch cross-instance collisions
     topLevel.insert(instanceDerived.begin(), instanceDerived.end());
     for (const auto &inst : instances) {
       if (topLevel.count(inst.name)) {
@@ -461,15 +456,6 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   top << "module " << moduleName << "_top (\n";
   top << "    input  logic clk,\n";
 
-  // Reject memref ports (not supported in SV export)
-  for (const auto &p : ports) {
-    if (p.isMemref) {
-      llvm::errs() << "error: exportSV does not support memref port '"
-                   << p.name << "'\n";
-      std::exit(1);
-    }
-  }
-
   // Collect stream ports
   std::vector<const ModulePort *> streamInputs, streamOutputs;
   for (const auto &p : ports) {
@@ -477,17 +463,6 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       streamInputs.push_back(&p);
     else
       streamOutputs.push_back(&p);
-  }
-
-  // Check if error aggregation ports are needed
-  bool hasErrorPorts = false;
-  for (const auto &inst : instances) {
-    if (inst.kind == ModuleKind::Switch ||
-        inst.kind == ModuleKind::TemporalSwitch ||
-        inst.kind == ModuleKind::TemporalPE) {
-      hasErrorPorts = true;
-      break;
-    }
   }
 
   // Collect instance config ports (switch route tables, bypassable FIFO cfg)
@@ -578,9 +553,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
 
     // Per-instance error signals for modules that support them
-    if (inst.kind == ModuleKind::Switch ||
-        inst.kind == ModuleKind::TemporalSwitch ||
-        inst.kind == ModuleKind::TemporalPE) {
+    if (hasErrorOutput(inst.kind)) {
       top << "  logic " << inst.name << "_error_valid;\n";
       top << "  logic [15:0] " << inst.name << "_error_code;\n";
     }
@@ -748,9 +721,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     // Only capture when no error latched yet
     bool first = true;
     for (const auto &inst : instances) {
-      if (inst.kind == ModuleKind::Switch ||
-          inst.kind == ModuleKind::TemporalSwitch ||
-          inst.kind == ModuleKind::TemporalPE) {
+      if (hasErrorOutput(inst.kind)) {
         top << "      " << (first ? "if" : "else if") << " ("
             << inst.name << "_error_valid) begin\n";
         top << "        error_valid <= 1'b1;\n";
