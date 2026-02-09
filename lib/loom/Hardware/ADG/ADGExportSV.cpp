@@ -283,6 +283,79 @@ static MLIRStmt parseMLIRLine(const std::string &line) {
   return stmt;
 }
 
+/// Extract all operation names from a bodyMLIR string.
+static std::vector<std::string> extractBodyMLIROps(const std::string &bodyMLIR) {
+  std::vector<std::string> ops;
+  std::string body = bodyMLIR;
+  auto bbPos = body.find("^bb0(");
+  if (bbPos != std::string::npos) {
+    auto closePos = body.find("):", bbPos);
+    if (closePos != std::string::npos)
+      body = body.substr(closePos + 2);
+  }
+  std::istringstream stream(body);
+  std::string line;
+  while (std::getline(stream, line)) {
+    auto s = line.find_first_not_of(" \t");
+    if (s == std::string::npos) continue;
+    line = line.substr(s);
+    if (line.find("fabric.yield") == 0) continue;
+    MLIRStmt stmt = parseMLIRLine(line);
+    if (!stmt.opName.empty())
+      ops.push_back(stmt.opName);
+  }
+  return ops;
+}
+
+/// Compute the critical-path latency through a bodyMLIR DAG.
+/// Uses a simple approach: sum of all operation latencies along the
+/// longest dependency chain.
+static unsigned computeBodyMLIRLatency(const std::string &bodyMLIR) {
+  std::string body = bodyMLIR;
+  auto bbPos = body.find("^bb0(");
+  if (bbPos != std::string::npos) {
+    auto closePos = body.find("):", bbPos);
+    if (closePos != std::string::npos)
+      body = body.substr(closePos + 2);
+  }
+
+  // Parse all stmts and build a dependency graph
+  std::vector<MLIRStmt> stmts;
+  std::istringstream stream(body);
+  std::string line;
+  while (std::getline(stream, line)) {
+    auto s = line.find_first_not_of(" \t");
+    if (s == std::string::npos) continue;
+    line = line.substr(s);
+    if (line.find("fabric.yield") == 0) continue;
+    MLIRStmt stmt = parseMLIRLine(line);
+    if (!stmt.opName.empty())
+      stmts.push_back(stmt);
+  }
+
+  // Map SSA result -> index in stmts
+  std::map<std::string, unsigned> resultToIdx;
+  for (unsigned i = 0; i < stmts.size(); ++i)
+    resultToIdx[stmts[i].result] = i;
+
+  // Compute longest path to each node
+  std::vector<unsigned> longest(stmts.size(), 0);
+  for (unsigned i = 0; i < stmts.size(); ++i) {
+    unsigned maxPred = 0;
+    for (const auto &op : stmts[i].operands) {
+      auto it = resultToIdx.find(op);
+      if (it != resultToIdx.end())
+        maxPred = std::max(maxPred, longest[it->second]);
+    }
+    longest[i] = maxPred + getOpLatency(stmts[i].opName);
+  }
+
+  unsigned maxLatency = 0;
+  for (unsigned v : longest)
+    maxLatency = std::max(maxLatency, v);
+  return maxLatency;
+}
+
 /// Generate SV body from bodyMLIR containing multiple operations.
 static std::string genMultiOpBodySV(const PEDef &def) {
   std::string body = def.bodyMLIR;
@@ -356,16 +429,13 @@ static std::string genMultiOpBodySV(const PEDef &def) {
     ssaToSV[stmt.result] = wireName;
 
     if (isConversionOp(stmt.opName)) {
-      unsigned inW = def.inputPorts.size() > 0
-                         ? getDataWidthBits(def.inputPorts[0]) : 32;
-      unsigned outW = def.outputPorts.size() > 0
-                          ? getDataWidthBits(def.outputPorts[0]) : 32;
-      if (inW == 0) inW = 1;
-      if (outW == 0) outW = 1;
-      os << "  logic [" << (outW - 1) << ":0] " << wireName << ";\n";
-      os << "  " << svModule << " #(.IN_WIDTH(" << inW << "), .OUT_WIDTH("
-         << outW << ")) u_op" << wireIdx << " (\n";
-      os << "    .a(" << ssaToSV[stmt.operands[0]] << "[" << (inW-1) << ":0]),\n";
+      // In a multi-op body, use DATA_WIDTH for both in/out since all
+      // intermediate wires are DATA_WIDTH-wide. The conversion module
+      // handles the actual narrowing/extension semantics.
+      os << "  logic [SAFE_DW-1:0] " << wireName << ";\n";
+      os << "  " << svModule << " #(.IN_WIDTH(DATA_WIDTH), .OUT_WIDTH("
+         << "DATA_WIDTH)) u_op" << wireIdx << " (\n";
+      os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
       os << "    .result(" << wireName << ")\n";
       os << "  );\n";
     } else if (isCompareOp(stmt.opName)) {
@@ -522,42 +592,44 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     os << "\n";
   }
 
-  // Per-FU result wires and output data wires
+  // Per-FU result wires, output data wires, and valid signals
   for (unsigned f = 0; f < numFU; ++f) {
     os << "  logic [NUM_OUTPUTS-1:0][SAFE_DW-1:0] fu" << f << "_result;\n";
     os << "  logic [NUM_OUTPUTS-1:0][SAFE_PW-1:0] fu" << f << "_out_data;\n";
+    os << "  logic [NUM_OUTPUTS-1:0] fu" << f << "_out_valid;\n";
   }
   os << "\n";
 
-  // Instantiate each FU as a customized fabric_pe module (TAG_WIDTH=0,
-  // combinational body: LATENCY_TYP=0 since the temporal PE template
-  // manages its own output handshake).
+  // Instantiate each FU as a customized fabric_pe module (TAG_WIDTH=0).
+  // Each FU uses its own latency from getOpLatency().
   for (unsigned f = 0; f < numFU; ++f) {
     const auto &fuDef = peDefs[def.fuPEDefIndices[f]];
     std::string fuModName = instName + "_fu" + std::to_string(f) + "_pe";
     unsigned fuNumIn = fuDef.inputPorts.size();
     unsigned fuNumOut = fuDef.outputPorts.size();
+    unsigned fuLatency = getOpLatency(fuDef.singleOp);
 
-    os << "  // FU " << f << ": " << (fuDef.singleOp.empty() ? "passthrough" : fuDef.singleOp) << "\n";
+    os << "  // FU " << f << ": " << (fuDef.singleOp.empty() ? "passthrough" : fuDef.singleOp)
+       << " (latency=" << fuLatency << ")\n";
     os << "  " << fuModName << " #(\n";
     os << "    .NUM_INPUTS(" << fuNumIn << "),\n";
     os << "    .NUM_OUTPUTS(" << fuNumOut << "),\n";
     os << "    .DATA_WIDTH(DATA_WIDTH),\n";
     os << "    .TAG_WIDTH(0),\n";
-    os << "    .LATENCY_TYP(0)\n";
+    os << "    .LATENCY_TYP(" << fuLatency << ")\n";
     os << "  ) u_fu" << f << " (\n";
     os << "    .clk(clk),\n";
     os << "    .rst_n(rst_n),\n";
-    os << "    .in_valid({" << fuNumIn << "{all_in_valid}}),\n";
+    os << "    .in_valid({" << fuNumIn << "{insn_fire_ready}}),\n";
     os << "    .in_ready(),\n";
     os << "    .in_data({";
-    // Map input ports from in_value (reverse order for packed array)
+    // Map input ports from fu_operands (reverse order for packed array)
     for (unsigned i = fuNumIn; i > 0; --i) {
       if (i < fuNumIn) os << ", ";
-      os << "in_value[" << (i - 1) << "]";
+      os << "fu_operands[" << (i - 1) << "]";
     }
     os << "}),\n";
-    os << "    .out_valid(),\n";
+    os << "    .out_valid(fu" << f << "_out_valid),\n";
     os << "    .out_ready({" << fuNumOut << "{1'b1}}),\n";
     os << "    .out_data(fu" << f << "_out_data),\n";
     os << "    .cfg_data('0)\n";
@@ -573,13 +645,15 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     os << "\n";
   }
 
-  // Mux body_result based on fu_sel
+  // Mux body_result and body_valid based on fu_sel
   if (numFU == 1) {
     for (unsigned o = 0; o < numOut; ++o)
       os << "  assign body_result[" << o << "] = fu0_result[" << o << "];\n";
+    os << "  assign body_valid = fu0_out_valid[0];\n";
   } else {
     os << "  always_comb begin : fu_mux\n";
     os << "    integer iter_var0;\n";
+    os << "    body_valid = 1'b0;\n";
     os << "    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; "
        << "iter_var0 = iter_var0 + 1) begin : per_out\n";
     os << "      body_result[iter_var0] = '0;\n";
@@ -587,6 +661,7 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     os << "    case (fu_sel)\n";
     for (unsigned f = 0; f < numFU; ++f) {
       os << "      " << fuSelBits << "'d" << f << ": begin : fu" << f << "\n";
+      os << "        body_valid = fu" << f << "_out_valid[0];\n";
       os << "        for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; "
          << "iter_var0 = iter_var0 + 1) begin : assign_out\n";
       os << "          body_result[iter_var0] = fu" << f
@@ -653,7 +728,9 @@ static std::string genPEParams(const PEDef &def) {
   if (dw == 0)
     dw = 32;
   unsigned tw = numIn > 0 ? getTagWidthBits(def.inputPorts[0]) : 0;
-  unsigned latency = getOpLatency(def.singleOp);
+  unsigned latency = def.singleOp.empty() && !def.bodyMLIR.empty()
+                         ? computeBodyMLIRLatency(def.bodyMLIR)
+                         : getOpLatency(def.singleOp);
 
   std::ostringstream os;
   os << "    .NUM_INPUTS(" << numIn << "),\n";
@@ -1295,6 +1372,13 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
           if (dotPos != std::string::npos)
             usedDialects.insert(def.singleOp.substr(0, dotPos));
         }
+        if (!def.bodyMLIR.empty()) {
+          for (const auto &op : extractBodyMLIROps(def.bodyMLIR)) {
+            auto dotPos = op.find('.');
+            if (dotPos != std::string::npos)
+              usedDialects.insert(op.substr(0, dotPos));
+          }
+        }
       }
     }
 
@@ -1361,24 +1445,27 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
 
       // Collect all operation names used by PEs and TemporalPE FU types
       std::set<std::string> opsForDialect;
+      auto addOpsFromDef = [&](const PEDef &def) {
+        if (!def.singleOp.empty()) {
+          auto dotPos = def.singleOp.find('.');
+          if (dotPos != std::string::npos && def.singleOp.substr(0, dotPos) == dialect)
+            opsForDialect.insert(def.singleOp);
+        }
+        if (!def.bodyMLIR.empty()) {
+          for (const auto &op : extractBodyMLIROps(def.bodyMLIR)) {
+            auto dotPos = op.find('.');
+            if (dotPos != std::string::npos && op.substr(0, dotPos) == dialect)
+              opsForDialect.insert(op);
+          }
+        }
+      };
       for (const auto &inst : instances) {
         if (inst.kind == ModuleKind::PE) {
-          const auto &def = peDefs[inst.defIdx];
-          if (!def.singleOp.empty()) {
-            auto dotPos = def.singleOp.find('.');
-            if (dotPos != std::string::npos && def.singleOp.substr(0, dotPos) == dialect)
-              opsForDialect.insert(def.singleOp);
-          }
+          addOpsFromDef(peDefs[inst.defIdx]);
         } else if (inst.kind == ModuleKind::TemporalPE) {
           const auto &tpeDef = temporalPEDefs[inst.defIdx];
-          for (unsigned idx : tpeDef.fuPEDefIndices) {
-            const auto &fuDef = peDefs[idx];
-            if (!fuDef.singleOp.empty()) {
-              auto dotPos = fuDef.singleOp.find('.');
-              if (dotPos != std::string::npos && fuDef.singleOp.substr(0, dotPos) == dialect)
-                opsForDialect.insert(fuDef.singleOp);
-            }
-          }
+          for (unsigned idx : tpeDef.fuPEDefIndices)
+            addOpsFromDef(peDefs[idx]);
         }
       }
       for (const auto &op : opsForDialect) {

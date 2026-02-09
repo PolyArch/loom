@@ -115,6 +115,75 @@ module tb_fabric_temporal_sw;
     pass_count = pass_count + 1;
     in_valid = '0;
 
+    // Check 4: CFG_TEMPORAL_SW_ROUTE_MULTI_OUT - input routes to >1 output
+    rst_n = 0;
+    repeat (2) @(posedge clk);
+    rst_n = 1;
+    @(posedge clk);
+    // Entry 0: valid=1, tag=1, routes: in0->out0 AND in0->out1 (multi-out for in0)
+    // Route bits: [out0_in0, out0_in1, out1_in0, out1_in1]
+    cfg_data = '0;
+    cfg_data[ENTRY_WIDTH - 1] = 1'b1;
+    cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(1);
+    cfg_data[0] = 1'b1; // out0->in0
+    cfg_data[2] = 1'b1; // out1->in0 (in0 routes to both outputs)
+    @(posedge clk);
+    @(posedge clk);
+    if (error_valid !== 1'b1) begin : check_multi_out
+      $fatal(1, "expected CFG_TEMPORAL_SW_ROUTE_MULTI_OUT error");
+    end
+    if (error_code !== CFG_TEMPORAL_SW_ROUTE_MULTI_OUT) begin : check_multi_out_code
+      $fatal(1, "wrong error code for multi_out: got %0d", error_code);
+    end
+    pass_count = pass_count + 1;
+
+    // Check 5: CFG_TEMPORAL_SW_ROUTE_MULTI_IN - output selects >1 input
+    rst_n = 0;
+    repeat (2) @(posedge clk);
+    rst_n = 1;
+    @(posedge clk);
+    // Entry 0: valid=1, tag=1, routes: in0->out0 AND in1->out0 (multi-in for out0)
+    cfg_data = '0;
+    cfg_data[ENTRY_WIDTH - 1] = 1'b1;
+    cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(1);
+    cfg_data[0] = 1'b1; // out0->in0
+    cfg_data[1] = 1'b1; // out0->in1 (out0 selects both inputs)
+    @(posedge clk);
+    @(posedge clk);
+    if (error_valid !== 1'b1) begin : check_multi_in
+      $fatal(1, "expected CFG_TEMPORAL_SW_ROUTE_MULTI_IN error");
+    end
+    if (error_code !== CFG_TEMPORAL_SW_ROUTE_MULTI_IN) begin : check_multi_in_code
+      $fatal(1, "wrong error code for multi_in: got %0d", error_code);
+    end
+    pass_count = pass_count + 1;
+
+    // Check 6: RT_TEMPORAL_SW_UNROUTED_INPUT - valid input, tag matches but no route
+    rst_n = 0;
+    repeat (2) @(posedge clk);
+    rst_n = 1;
+    @(posedge clk);
+    // Entry 0: valid=1, tag=3, routes: only in1->out0 (no route for in0)
+    cfg_data = '0;
+    cfg_data[ENTRY_WIDTH - 1] = 1'b1;
+    cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(3);
+    cfg_data[1] = 1'b1; // out0->in1 only
+    // Send input 0 with tag=3 (matches but no route for in0)
+    in_data = '0;
+    in_data[DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(3);
+    in_valid = '0;
+    in_valid[0] = 1'b1;
+    @(posedge clk);
+    @(posedge clk);
+    if (error_valid !== 1'b1) begin : check_unrouted
+      $fatal(1, "expected RT_TEMPORAL_SW_UNROUTED_INPUT error");
+    end
+    if (error_code !== RT_TEMPORAL_SW_UNROUTED_INPUT) begin : check_unrouted_code
+      $fatal(1, "wrong error code for unrouted: got %0d", error_code);
+    end
+    pass_count = pass_count + 1;
+    in_valid = '0;
+
     $display("PASS: tb_fabric_temporal_sw NI=%0d NO=%0d DW=%0d TW=%0d (%0d checks)",
              NUM_INPUTS, NUM_OUTPUTS, DATA_WIDTH, TAG_WIDTH, pass_count);
     $finish;

@@ -241,6 +241,11 @@ temporal_pe_configs=(
   "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=1,NUM_REGISTERS=0,NUM_INSTRUCTIONS=2,REG_FIFO_DEPTH=0"
 )
 
+# Temporal PE register tests (NUM_REGISTERS > 0)
+temporal_pe_reg_configs=(
+  "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=1,NUM_REGISTERS=3,NUM_INSTRUCTIONS=2,REG_FIFO_DEPTH=2"
+)
+
 # Memory positive parameter sweeps
 memory_configs=(
   "DATA_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,IS_PRIVATE=1,MEM_DEPTH=64"
@@ -451,6 +456,19 @@ emit_sim_jobs() {
     echo "${line}" >> "${PARALLEL_FILE}"
   done
 
+  # Temporal PE register tests (NUM_REGISTERS > 0)
+  for cfg in "${temporal_pe_reg_configs[@]}"; do
+    local cfg_suffix gparams
+    cfg_suffix=$(cfg_to_suffix "${cfg}")
+    gparams=$(cfg_to_gparams "${cfg}")
+    outdir="tests/sv/temporal_pe_reg/Output/${sim}_${cfg_suffix}"
+
+    sv_files="${rel_sv_fabric}/fabric_temporal_pe.sv ${rel_sv_tb}/tb_fabric_temporal_pe_reg.sv"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
+    line+=" && ${rel_sim_runner} run ${sim} tb_fabric_temporal_pe_reg ${outdir} ${sv_files}${gparams}"
+    echo "${line}" >> "${PARALLEL_FILE}"
+  done
+
   # Memory positive tests
   for cfg in "${memory_configs[@]}"; do
     local cfg_suffix gparams
@@ -531,6 +549,9 @@ else
   done
   for cfg in "${temporal_pe_configs[@]}"; do
     emit_skip_job "tests/sv/temporal_pe/Output/skip_$(cfg_to_suffix "${cfg}")"
+  done
+  for cfg in "${temporal_pe_reg_configs[@]}"; do
+    emit_skip_job "tests/sv/temporal_pe_reg/Output/skip_$(cfg_to_suffix "${cfg}")"
   done
   for cfg in "${memory_configs[@]}"; do
     emit_skip_job "tests/sv/memory/Output/skip_$(cfg_to_suffix "${cfg}")"

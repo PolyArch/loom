@@ -69,10 +69,12 @@ module tb_fabric_memory;
     end
     pass_count = pass_count + 1;
 
-    // Check 2: store then load - verify round-trip through memory
+    // Check 2: store then load - verify round-trip through FIFO-based store queue
     if (ST_COUNT > 0 && LD_COUNT > 0) begin : store_load
       // Store: addr=5, data=0xABCD
       // Input layout: [ld_addr * LD_COUNT, st_addr * ST_COUNT, st_data * ST_COUNT]
+      // With FIFO-based pairing: addr and data are enqueued independently,
+      // then paired internally and written to memory.
       in_data = '0;
       in_data[LD_COUNT][SAFE_PW-1:0] = SAFE_PW'(5);
       in_data[LD_COUNT + ST_COUNT][SAFE_PW-1:0] = SAFE_PW'(32'hABCD);
@@ -80,9 +82,17 @@ module tb_fabric_memory;
       in_valid[LD_COUNT] = 1'b1;
       in_valid[LD_COUNT + ST_COUNT] = 1'b1;
       @(posedge clk);
-      // Wait for store to complete
-      while (!in_ready[LD_COUNT]) @(posedge clk);
+      // Addr and data are accepted into FIFOs immediately
       in_valid = '0;
+      // Wait for store done (pair_fire -> write_mem -> stdone)
+      iter_var0 = 0;
+      while (iter_var0 < 10) begin : wait_stdone
+        @(posedge clk);
+        iter_var0 = iter_var0 + 1;
+        if (out_valid[(IS_PRIVATE ? 0 : 1) + LD_COUNT + 1]) begin : done
+          iter_var0 = 10;
+        end
+      end
       @(posedge clk);
 
       // Load: addr=5
@@ -108,6 +118,29 @@ module tb_fabric_memory;
       $fatal(1, "unexpected error after store/load: code=%0d", error_code);
     end
     pass_count = pass_count + 1;
+
+    // Check 4: RT_MEMORY_TAG_OOB (only testable when TAG_WIDTH > 0 and LD_COUNT > 1)
+    if (TAG_WIDTH > 0 && LD_COUNT > 1) begin : tag_oob_test
+      rst_n = 0;
+      repeat (2) @(posedge clk);
+      rst_n = 1;
+      @(posedge clk);
+      // Send load with tag = LD_COUNT (out of bounds)
+      in_data = '0;
+      in_data[0][DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(LD_COUNT);
+      in_valid = '0;
+      in_valid[0] = 1'b1;
+      @(posedge clk);
+      @(posedge clk);
+      if (error_valid !== 1'b1) begin : check_tag_oob
+        $fatal(1, "expected RT_MEMORY_TAG_OOB error");
+      end
+      if (error_code !== RT_MEMORY_TAG_OOB) begin : check_tag_oob_code
+        $fatal(1, "wrong error code for tag OOB: got %0d", error_code);
+      end
+      pass_count = pass_count + 1;
+      in_valid = '0;
+    end
 
     $display("PASS: tb_fabric_memory DW=%0d TW=%0d LD=%0d ST=%0d (%0d checks)",
              DATA_WIDTH, TAG_WIDTH, LD_COUNT, ST_COUNT, pass_count);

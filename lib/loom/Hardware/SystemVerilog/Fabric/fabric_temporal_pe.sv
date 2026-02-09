@@ -92,13 +92,11 @@ module fabric_temporal_pe #(
   end
 
   // -----------------------------------------------------------------------
-  // Tag matching: find instruction for current input tag
+  // Input tag/value extraction
   // -----------------------------------------------------------------------
   logic [NUM_INPUTS-1:0][TAG_WIDTH-1:0] in_tag;
   logic [NUM_INPUTS-1:0][SAFE_DW-1:0]  in_value;
   logic                                  all_in_valid;
-  logic                                  match_found;
-  logic [$clog2(NUM_INSTRUCTIONS > 1 ? NUM_INSTRUCTIONS : 2)-1:0] matched_insn;
 
   assign all_in_valid = &in_valid;
 
@@ -110,25 +108,83 @@ module fabric_temporal_pe #(
     end
   end
 
-  always_comb begin : find_insn
-    integer iter_var0;
+  // -----------------------------------------------------------------------
+  // Operand buffer (Mode A: per-instruction buffer)
+  // Each instruction slot has NUM_INPUTS entries: {op_valid, op_value}
+  // -----------------------------------------------------------------------
+  localparam int INSN_IDX_W = $clog2(NUM_INSTRUCTIONS > 1 ? NUM_INSTRUCTIONS : 2);
+  logic [NUM_INSTRUCTIONS-1:0][NUM_INPUTS-1:0] op_valid;
+  logic [NUM_INSTRUCTIONS-1:0][NUM_INPUTS-1:0][SAFE_DW-1:0] op_value;
+
+  // Per-input tag match: find instruction slot for each input's tag
+  logic [NUM_INPUTS-1:0]                       in_match;
+  logic [NUM_INPUTS-1:0][INSN_IDX_W-1:0]      in_matched_slot;
+
+  always_comb begin : per_input_match
+    integer iter_var0, iter_var1;
+    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
+      in_match[iter_var0] = 1'b0;
+      in_matched_slot[iter_var0] = '0;
+      for (iter_var1 = 0; iter_var1 < NUM_INSTRUCTIONS; iter_var1 = iter_var1 + 1) begin : search
+        if (insn_valid[iter_var1] && (insn_tag[iter_var1] == in_tag[iter_var0])) begin : found
+          in_match[iter_var0] = 1'b1;
+          in_matched_slot[iter_var0] = iter_var1[INSN_IDX_W-1:0];
+        end
+      end
+    end
+  end
+
+  // Accept input when: valid, tag matches an instruction, and buffer slot
+  // for that instruction/input is empty (or instruction fires this cycle).
+  logic [NUM_INPUTS-1:0] in_accept;
+  // Instruction ready to fire: all operands buffered (or from register)
+  logic                  match_found;
+  logic [INSN_IDX_W-1:0] matched_insn;
+  logic                  insn_fire_ready;
+
+  // Find the first instruction slot where all operands are ready
+  always_comb begin : find_ready_insn
+    integer iter_var0, iter_var1;
     match_found = 1'b0;
     matched_insn = '0;
-    for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : search
-      if (insn_valid[iter_var0] && (insn_tag[iter_var0] == in_tag[0])) begin : found
-        match_found  = 1'b1;
-        matched_insn = iter_var0[$clog2(NUM_INSTRUCTIONS > 1 ? NUM_INSTRUCTIONS : 2)-1:0];
+    insn_fire_ready = 1'b0;
+    for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : per_slot
+      if (insn_valid[iter_var0] && !match_found) begin : check_ready
+        automatic logic all_ready = 1'b1;
+        for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : per_op
+          if (!op_valid[iter_var0][iter_var1]) begin : not_ready
+            all_ready = 1'b0;
+          end
+        end
+        if (all_ready) begin : ready
+          match_found = 1'b1;
+          matched_insn = iter_var0[INSN_IDX_W-1:0];
+          insn_fire_ready = 1'b1;
+        end
       end
     end
   end
 
   // -----------------------------------------------------------------------
   // Compute: pass-through body (filled per-instance by exportSV)
+  // body_valid: driven by generated body; 1 when FU result is ready.
+  // in_value feeds from operand buffer for the firing instruction.
   // -----------------------------------------------------------------------
   logic [NUM_OUTPUTS-1:0][SAFE_DW-1:0] body_result;
+  logic body_valid;
+
+  // Override in_value with operand buffer values for the firing instruction
+  logic [NUM_INPUTS-1:0][SAFE_DW-1:0] fu_operands;
+  always_comb begin : select_operands
+    integer iter_var0;
+    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
+      fu_operands[iter_var0] = op_value[matched_insn][iter_var0];
+    end
+  end
 
   // ===== BEGIN PE BODY =====
   // (replaced by exportSV based on instruction FU selection)
+  assign body_valid = 1'b1;
   // ===== END PE BODY =====
 
   // -----------------------------------------------------------------------
@@ -138,12 +194,9 @@ module fabric_temporal_pe #(
   assign all_out_ready = &out_ready;
 
   logic fire;
-  assign fire = all_in_valid && match_found && all_out_ready;
+  assign fire = insn_fire_ready && body_valid && all_out_ready;
 
   // Extract per-output result tag from the matched instruction.
-  // Instruction layout from LSB: [results | operands | opcode | tag | valid(MSB)]
-  // Each result field: [res_tag(TAG_WIDTH) | res_reg_idx | res_is_reg(MSB)]
-  // res_tag for output go is at: base + go * RESULT_WIDTH, TAG_WIDTH bits wide.
   logic [NUM_OUTPUTS-1:0][TAG_WIDTH-1:0] out_res_tag;
 
   always_comb begin : extract_res_tag
@@ -156,101 +209,158 @@ module fabric_temporal_pe #(
   generate
     genvar go;
     for (go = 0; go < NUM_OUTPUTS; go++) begin : g_out
-      assign out_valid[go] = all_in_valid && match_found;
+      assign out_valid[go] = insn_fire_ready && body_valid;
       assign out_data[go]  = {out_res_tag[go], body_result[go]};
     end
-    genvar gi;
-    for (gi = 0; gi < NUM_INPUTS; gi++) begin : g_in_ready
-      assign in_ready[gi] = fire;
-    end
   endgenerate
+
+  // Input ready: accept when tag matches and buffer slot is available
+  always_comb begin : gen_in_ready
+    integer iter_var0;
+    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
+      in_accept[iter_var0] = in_valid[iter_var0] && in_match[iter_var0] &&
+                             !op_valid[in_matched_slot[iter_var0]][iter_var0];
+      in_ready[iter_var0] = in_accept[iter_var0];
+    end
+  end
+
+  // -----------------------------------------------------------------------
+  // Operand buffer update
+  // -----------------------------------------------------------------------
+  always_ff @(posedge clk or negedge rst_n) begin : op_buf_update
+    integer iter_var0, iter_var1;
+    if (!rst_n) begin : reset
+      for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : clr_insn
+        for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : clr_op
+          op_valid[iter_var0][iter_var1] <= 1'b0;
+          op_value[iter_var0][iter_var1] <= '0;
+        end
+      end
+    end else begin : update
+      // Clear fired instruction's buffer
+      if (fire) begin : clear_fired
+        for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : clr_op
+          op_valid[matched_insn][iter_var1] <= 1'b0;
+        end
+      end
+      // Buffer arriving operands
+      for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : buf_in
+        if (in_accept[iter_var0]) begin : accept
+          op_valid[in_matched_slot[iter_var0]][iter_var0] <= 1'b1;
+          op_value[in_matched_slot[iter_var0]][iter_var0] <= in_value[iter_var0];
+        end
+      end
+    end
+  end
 
   // -----------------------------------------------------------------------
   // Error detection
   // -----------------------------------------------------------------------
+  logic        err_dup_tag;
+  logic        err_no_match;
+  logic        err_illegal_reg;
+  logic        err_reg_tag_nz;
+
+  // CFG_TEMPORAL_PE_DUP_TAG: duplicate valid tags
+  always_comb begin : chk_dup_tag
+    integer iter_var0, iter_var1;
+    err_dup_tag = 1'b0;
+    for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : outer
+      for (iter_var1 = iter_var0 + 1; iter_var1 < NUM_INSTRUCTIONS; iter_var1 = iter_var1 + 1) begin : inner
+        if (insn_valid[iter_var0] && insn_valid[iter_var1] &&
+            (insn_tag[iter_var0] == insn_tag[iter_var1])) begin : dup
+          err_dup_tag = 1'b1;
+        end
+      end
+    end
+  end
+
+  // RT_TEMPORAL_PE_NO_MATCH: any input valid with tag matching no instruction
+  always_comb begin : chk_no_match
+    integer iter_var0;
+    err_no_match = 1'b0;
+    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
+      if (in_valid[iter_var0] && !in_match[iter_var0]) begin : no_match
+        err_no_match = 1'b1;
+      end
+    end
+  end
+
+  // CFG_TEMPORAL_PE_ILLEGAL_REG and CFG_TEMPORAL_PE_REG_TAG_NONZERO:
+  // Only elaborated when NUM_REGISTERS > 0 (generate-time guard) to avoid
+  // negative-width part-selects from REG_BITS-1 when NUM_REGISTERS=0.
+  generate
+    if (NUM_REGISTERS > 0) begin : g_reg_checks
+      always_comb begin : chk_illegal_reg
+        integer iter_var0, iter_var1;
+        err_illegal_reg = 1'b0;
+        for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : per_insn
+          if (insn_valid[iter_var0]) begin : valid_insn
+            automatic int insn_base = iter_var0 * INSN_WIDTH;
+            for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : per_op
+              automatic int op_base = insn_base + NUM_OUTPUTS * RESULT_WIDTH + iter_var1 * REG_BITS;
+              if (cfg_data[op_base + REG_BITS - 1]) begin : is_reg
+                if ({{(32 - (REG_BITS - 1)){1'b0}}, cfg_data[op_base +: (REG_BITS - 1)]} >= 32'(NUM_REGISTERS)) begin : oob
+                  err_illegal_reg = 1'b1;
+                end
+              end
+            end
+            for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_res
+              automatic int res_base = insn_base + iter_var1 * RESULT_WIDTH;
+              if (cfg_data[res_base + RESULT_WIDTH - 1]) begin : is_reg
+                if ({{(32 - (RES_BITS - 1)){1'b0}}, cfg_data[res_base + TAG_WIDTH +: (RES_BITS - 1)]} >= 32'(NUM_REGISTERS)) begin : oob
+                  err_illegal_reg = 1'b1;
+                end
+              end
+            end
+          end
+        end
+      end
+
+      always_comb begin : chk_reg_tag_nz
+        integer iter_var0, iter_var1;
+        err_reg_tag_nz = 1'b0;
+        for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : per_insn
+          if (insn_valid[iter_var0]) begin : valid_insn
+            automatic int insn_base = iter_var0 * INSN_WIDTH;
+            for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_res
+              automatic int res_base = insn_base + iter_var1 * RESULT_WIDTH;
+              if (cfg_data[res_base + RESULT_WIDTH - 1]) begin : is_reg
+                if (cfg_data[res_base +: TAG_WIDTH] != '0) begin : nonzero_tag
+                  err_reg_tag_nz = 1'b1;
+                end
+              end
+            end
+          end
+        end
+      end
+    end else begin : g_no_reg_checks
+      assign err_illegal_reg = 1'b0;
+      assign err_reg_tag_nz  = 1'b0;
+    end
+  endgenerate
+
+  // Priority-encode error code from individual flags
   logic        err_detect;
   logic [15:0] err_code_comb;
 
-  always_comb begin : err_check
-    integer iter_var0, iter_var1;
+  always_comb begin : err_encode
     err_detect    = 1'b0;
-    err_code_comb = 16'hFFFF;
+    err_code_comb = 16'd0;
 
-    // CFG_TEMPORAL_PE_DUP_TAG: duplicate valid tags
-    for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : chk_dup_outer
-      for (iter_var1 = iter_var0 + 1; iter_var1 < NUM_INSTRUCTIONS; iter_var1 = iter_var1 + 1) begin : chk_dup_inner
-        if (insn_valid[iter_var0] && insn_valid[iter_var1] &&
-            (insn_tag[iter_var0] == insn_tag[iter_var1])) begin : dup
-          err_detect = 1'b1;
-          if (CFG_TEMPORAL_PE_DUP_TAG < err_code_comb)
-            err_code_comb = CFG_TEMPORAL_PE_DUP_TAG;
-        end
-      end
+    if (err_dup_tag) begin : e_dup
+      err_detect    = 1'b1;
+      err_code_comb = CFG_TEMPORAL_PE_DUP_TAG;
+    end else if (err_illegal_reg) begin : e_reg
+      err_detect    = 1'b1;
+      err_code_comb = CFG_TEMPORAL_PE_ILLEGAL_REG;
+    end else if (err_reg_tag_nz) begin : e_rtag
+      err_detect    = 1'b1;
+      err_code_comb = CFG_TEMPORAL_PE_REG_TAG_NONZERO;
+    end else if (err_no_match) begin : e_nomatch
+      err_detect    = 1'b1;
+      err_code_comb = RT_TEMPORAL_PE_NO_MATCH;
     end
-
-    // CFG_TEMPORAL_PE_ILLEGAL_REG: register index >= NUM_REGISTERS
-    if (NUM_REGISTERS > 0) begin : chk_illegal_reg
-      for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : per_insn_reg
-        if (insn_valid[iter_var0]) begin : valid_insn
-          automatic int insn_base = iter_var0 * INSN_WIDTH;
-          // Check operand register indices
-          for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : per_op
-            automatic int op_base = insn_base + NUM_OUTPUTS * RESULT_WIDTH + iter_var1 * REG_BITS;
-            // op_is_reg is at MSB of operand field
-            if (cfg_data[op_base + REG_BITS - 1]) begin : is_reg
-              // reg_idx is REG_BITS-1 bits wide at op_base
-              if ({{(32 - (REG_BITS - 1)){1'b0}}, cfg_data[op_base +: (REG_BITS - 1)]} >= 32'(NUM_REGISTERS)) begin : oob
-                err_detect = 1'b1;
-                if (CFG_TEMPORAL_PE_ILLEGAL_REG < err_code_comb)
-                  err_code_comb = CFG_TEMPORAL_PE_ILLEGAL_REG;
-              end
-            end
-          end
-          // Check result register indices
-          for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_res
-            automatic int res_base = insn_base + iter_var1 * RESULT_WIDTH;
-            // res_is_reg is at MSB of result field
-            if (cfg_data[res_base + RESULT_WIDTH - 1]) begin : is_reg
-              // reg_idx is RES_BITS-1 bits wide at res_base + TAG_WIDTH
-              if ({{(32 - (RES_BITS - 1)){1'b0}}, cfg_data[res_base + TAG_WIDTH +: (RES_BITS - 1)]} >= 32'(NUM_REGISTERS)) begin : oob
-                err_detect = 1'b1;
-                if (CFG_TEMPORAL_PE_ILLEGAL_REG < err_code_comb)
-                  err_code_comb = CFG_TEMPORAL_PE_ILLEGAL_REG;
-              end
-            end
-          end
-        end
-      end
-    end
-
-    // CFG_TEMPORAL_PE_REG_TAG_NONZERO: res_tag != 0 when writing register
-    if (NUM_REGISTERS > 0) begin : chk_reg_tag
-      for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : per_insn_rtag
-        if (insn_valid[iter_var0]) begin : valid_insn
-          automatic int insn_base = iter_var0 * INSN_WIDTH;
-          for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_res
-            automatic int res_base = insn_base + iter_var1 * RESULT_WIDTH;
-            if (cfg_data[res_base + RESULT_WIDTH - 1]) begin : is_reg
-              if (cfg_data[res_base +: TAG_WIDTH] != '0) begin : nonzero_tag
-                err_detect = 1'b1;
-                if (CFG_TEMPORAL_PE_REG_TAG_NONZERO < err_code_comb)
-                  err_code_comb = CFG_TEMPORAL_PE_REG_TAG_NONZERO;
-              end
-            end
-          end
-        end
-      end
-    end
-
-    // RT_TEMPORAL_PE_NO_MATCH: all inputs valid but no instruction matches
-    if (all_in_valid && !match_found) begin : rt_no_match
-      err_detect = 1'b1;
-      if (RT_TEMPORAL_PE_NO_MATCH < err_code_comb)
-        err_code_comb = RT_TEMPORAL_PE_NO_MATCH;
-    end
-
-    if (!err_detect)
-      err_code_comb = 16'd0;
   end
 
   // Error latch
