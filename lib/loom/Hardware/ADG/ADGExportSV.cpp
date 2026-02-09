@@ -474,6 +474,56 @@ static unsigned computeBodyMLIRLatency(const std::string &bodyMLIR) {
   return maxLatency;
 }
 
+/// Compute the maximum intermediate type width in a bodyMLIR.
+/// Scans block arg types, conversion source/destination widths, and
+/// operation type annotations to find the widest type used internally.
+static unsigned computeBodyMLIRMaxWidth(const std::string &bodyMLIR) {
+  unsigned maxW = 0;
+  std::string body = bodyMLIR;
+
+  // Parse block arg types from "^bb0(%a: i16, %b: i32):"
+  auto bbPos = body.find("^bb0(");
+  if (bbPos != std::string::npos) {
+    auto closePos = body.find("):", bbPos);
+    if (closePos != std::string::npos) {
+      std::string argList = body.substr(bbPos + 5, closePos - (bbPos + 5));
+      std::istringstream argStream(argList);
+      std::string token;
+      while (std::getline(argStream, token, ',')) {
+        auto colon = token.find(':');
+        if (colon != std::string::npos) {
+          unsigned w = parseMLIRTypeWidth(token.substr(colon + 1));
+          maxW = std::max(maxW, w);
+        }
+      }
+      body = body.substr(closePos + 2);
+    }
+  }
+
+  // Scan each statement's type annotation for widths
+  std::istringstream stream(body);
+  std::string line;
+  while (std::getline(stream, line)) {
+    auto s = line.find_first_not_of(" \t");
+    if (s == std::string::npos) continue;
+    line = line.substr(s);
+    if (line.find("fabric.yield") == 0) continue;
+    MLIRStmt stmt = parseMLIRLine(line);
+    if (stmt.opName.empty() || stmt.typeAnnotation.empty()) continue;
+
+    if (isConversionOp(stmt.opName)) {
+      auto [inW, outW] = parseConversionWidths(stmt.typeAnnotation);
+      maxW = std::max(maxW, inW);
+      maxW = std::max(maxW, outW);
+    } else {
+      // Non-conversion ops: type annotation is the result type (e.g., "i32")
+      unsigned w = parseMLIRTypeWidth(stmt.typeAnnotation);
+      maxW = std::max(maxW, w);
+    }
+  }
+  return maxW;
+}
+
 /// Generate SV body from bodyMLIR containing multiple operations.
 static std::string genMultiOpBodySV(const PEDef &def) {
   std::string body = def.bodyMLIR;
@@ -612,12 +662,23 @@ static std::string genMultiOpBodySV(const PEDef &def) {
       }
     } else if (isCompareOp(stmt.opName)) {
       int predVal = resolveComparePredicate(stmt.opName, stmt.predicate);
+      unsigned cmpW = parseMLIRTypeWidth(stmt.typeAnnotation);
       os << "  logic " << wireName << ";\n";
-      os << "  " << svModule << " #(.WIDTH(DATA_WIDTH), .PREDICATE("
-         << predVal << ")) u_op" << wireIdx << " (\n";
-      os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
-      if (stmt.operands.size() > 1)
-        os << "    .b(" << ssaToSV[stmt.operands[1]] << "),\n";
+      if (cmpW > 0) {
+        os << "  " << svModule << " #(.WIDTH(" << cmpW << "), .PREDICATE("
+           << predVal << ")) u_op" << wireIdx << " (\n";
+        os << "    .a(" << ssaToSV[stmt.operands[0]] << "[" << (cmpW - 1)
+           << ":0]),\n";
+        if (stmt.operands.size() > 1)
+          os << "    .b(" << ssaToSV[stmt.operands[1]] << "[" << (cmpW - 1)
+             << ":0]),\n";
+      } else {
+        os << "  " << svModule << " #(.WIDTH(DATA_WIDTH), .PREDICATE("
+           << predVal << ")) u_op" << wireIdx << " (\n";
+        os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
+        if (stmt.operands.size() > 1)
+          os << "    .b(" << ssaToSV[stmt.operands[1]] << "),\n";
+      }
       os << "    .result(" << wireName << ")\n";
       os << "  );\n";
     } else {
@@ -893,14 +954,17 @@ static std::string fillTemporalPETemplate(const std::string &templateDir,
 static std::string genPEParams(const PEDef &def) {
   unsigned numIn = def.inputPorts.size();
   unsigned numOut = def.outputPorts.size();
-  // DATA_WIDTH = max across all input and output port data widths.
-  // This is essential for conversion ops (e.g., extsi i16->i32) where
-  // input and output widths differ; body_result must be wide enough.
+  // DATA_WIDTH = max across all input/output port data widths AND internal
+  // body intermediate widths. Without the body scan, a PE with narrow ports
+  // but wider internal conversions (e.g., i16 -> i32 -> i16) would get a
+  // DATA_WIDTH too small for the generated body wires.
   unsigned dw = 0;
   for (unsigned i = 0; i < numIn; ++i)
     dw = std::max(dw, getDataWidthBits(def.inputPorts[i]));
   for (unsigned i = 0; i < numOut; ++i)
     dw = std::max(dw, getDataWidthBits(def.outputPorts[i]));
+  if (!def.bodyMLIR.empty())
+    dw = std::max(dw, computeBodyMLIRMaxWidth(def.bodyMLIR));
   if (dw == 0)
     dw = 32;
   unsigned tw = numIn > 0 ? getTagWidthBits(def.inputPorts[0]) : 0;
