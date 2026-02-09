@@ -11,13 +11,15 @@ module arith_fptosi #(
       shortreal sa;
       always_comb begin : conv
         sa = $bitstoshortreal(a);
-        result = OUT_WIDTH'($rtoi(sa));
+        result = OUT_WIDTH'(longint'($rtoi(sa)));
       end
     end else if (IN_WIDTH == 64) begin : g_f64
       real ra;
+      longint li;
       always_comb begin : conv
         ra = $bitstoreal(a);
-        result = OUT_WIDTH'($rtoi(ra));
+        li = longint'(ra);
+        result = OUT_WIDTH'(li);
       end
     end else begin : g_unsupported
       initial $fatal(1, "arith_fptosi: unsupported IN_WIDTH=%0d", IN_WIDTH);

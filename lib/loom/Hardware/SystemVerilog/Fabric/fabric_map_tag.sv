@@ -57,8 +57,8 @@ module fabric_map_tag #(
       $fatal(1, "COMP_MAP_TAG_OUT_TAG_WIDTH: OUT_TAG_WIDTH must be >= 1");
     if (TABLE_SIZE < 1)
       $fatal(1, "COMP_MAP_TAG_TABLE_SIZE: TABLE_SIZE must be >= 1");
-    if (DATA_WIDTH < 0)
-      $fatal(1, "COMP_MAP_TAG_DATA_WIDTH: DATA_WIDTH must be >= 0");
+    if (DATA_WIDTH < 1)
+      $fatal(1, "COMP_MAP_TAG_DATA_WIDTH: DATA_WIDTH must be >= 1");
   end
 
   // -----------------------------------------------------------------------

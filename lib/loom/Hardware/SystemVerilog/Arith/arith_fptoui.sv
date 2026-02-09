@@ -9,19 +9,19 @@ module arith_fptoui #(
   generate
     if (IN_WIDTH == 32) begin : g_f32
       shortreal sa;
-      int signed ival;
+      longint li;
       always_comb begin : conv
         sa = $bitstoshortreal(a);
-        ival = $rtoi(sa);
-        result = (ival < 0) ? '0 : OUT_WIDTH'(unsigned'(ival));
+        li = longint'(sa);
+        result = (li < 0) ? '0 : OUT_WIDTH'(li);
       end
     end else if (IN_WIDTH == 64) begin : g_f64
       real ra;
-      int signed ival;
+      longint li;
       always_comb begin : conv
         ra = $bitstoreal(a);
-        ival = $rtoi(ra);
-        result = (ival < 0) ? '0 : OUT_WIDTH'(unsigned'(ival));
+        li = longint'(ra);
+        result = (li < 0) ? '0 : OUT_WIDTH'(li);
       end
     end else begin : g_unsupported
       initial $fatal(1, "arith_fptoui: unsupported IN_WIDTH=%0d", IN_WIDTH);

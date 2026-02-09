@@ -41,8 +41,8 @@ module fabric_add_tag #(
   initial begin : param_check
     if (TAG_WIDTH < 1)
       $fatal(1, "COMP_ADD_TAG_TAG_WIDTH: TAG_WIDTH must be >= 1");
-    if (DATA_WIDTH < 0)
-      $fatal(1, "COMP_ADD_TAG_DATA_WIDTH: DATA_WIDTH must be >= 0");
+    if (DATA_WIDTH < 1)
+      $fatal(1, "COMP_ADD_TAG_DATA_WIDTH: DATA_WIDTH must be >= 1");
   end
 
   // -----------------------------------------------------------------------
