@@ -1152,10 +1152,11 @@ static unsigned ceilLog2(unsigned v) {
 }
 
 static std::string genLoadPEParams(const LoadPEDef &def) {
-  // DATA_WIDTH must cover both the data type and address lanes (index type),
-  // since fabric_pe_load uses DATA_WIDTH to slice addresses from in0_data.
-  unsigned dw = std::max(getDataWidthBits(def.dataType),
-                         getDataWidthBits(Type::index()));
+  // DATA_WIDTH matches the value payload (dataType), not the address type.
+  // The SV template handles address forwarding within SAFE_DW (= DATA_WIDTH)
+  // lanes; the connected memory's ADDR_WIDTH = $clog2(MEM_DEPTH) must fit
+  // within DATA_WIDTH, which is a fabric design constraint.
+  unsigned dw = getDataWidthBits(def.dataType);
   if (dw == 0)
     dw = 1;
   std::ostringstream os;
@@ -1172,10 +1173,8 @@ static std::string genLoadPEParams(const LoadPEDef &def) {
 //===----------------------------------------------------------------------===//
 
 static std::string genStorePEParams(const StorePEDef &def) {
-  // DATA_WIDTH must cover both the data type and address lanes (index type),
-  // since fabric_pe_store uses DATA_WIDTH to slice addresses from in0_data.
-  unsigned dw = std::max(getDataWidthBits(def.dataType),
-                         getDataWidthBits(Type::index()));
+  // DATA_WIDTH matches the value payload (dataType), not the address type.
+  unsigned dw = getDataWidthBits(def.dataType);
   if (dw == 0)
     dw = 1;
   std::ostringstream os;

@@ -22,6 +22,8 @@ module fabric_pe_store #(
     localparam int ADDR_PW    = (DATA_WIDTH + TAG_WIDTH > 0) ? DATA_WIDTH + TAG_WIDTH : 1,
     localparam int DATA_PW    = (DATA_WIDTH + TAG_WIDTH > 0) ? DATA_WIDTH + TAG_WIDTH : 1,
     localparam int SAFE_DW    = (DATA_WIDTH > 0) ? DATA_WIDTH : 1,
+    // Done signal width: tagged<none, iK> = TAG_WIDTH bits, else 1 bit
+    localparam int DONE_PW    = (TAG_WIDTH > 0) ? TAG_WIDTH : 1,
     // Config: output_tag for TagOverwrite+tagged, else 0
     localparam int CONFIG_WIDTH = (HW_TYPE == 0 && TAG_WIDTH > 0) ? TAG_WIDTH : 0
 ) (
@@ -43,15 +45,15 @@ module fabric_pe_store #(
     output logic               in2_ready,
     input  logic [ADDR_PW-1:0] in2_data,
 
-    // Output 0: address to memory (index type)
+    // Output 0: address to memory (index type, tagged when TAG_WIDTH > 0)
     output logic               out0_valid,
     input  logic               out0_ready,
-    output logic [SAFE_DW-1:0] out0_data,
+    output logic [ADDR_PW-1:0] out0_data,
 
-    // Output 1: done signal (none type, control token)
+    // Output 1: done signal (tagged<none, iK> when tagged, else 1-bit)
     output logic               out1_valid,
     input  logic               out1_ready,
-    output logic               out1_data,
+    output logic [DONE_PW-1:0] out1_data,
 
     // Configuration
     input  logic [CONFIG_WIDTH > 0 ? CONFIG_WIDTH-1 : 0 : 0] cfg_data
@@ -87,12 +89,20 @@ module fabric_pe_store #(
       logic fire;
       assign fire = all_valid && both_out_ready;
 
-      // out0: address to memory
+      // out0: address to memory (with tag if tagged)
       assign out0_valid = all_valid && out1_ready;
-      assign out0_data  = addr_value;
-      // out1: done signal (control token)
+      // out1: done signal (with tag if tagged)
       assign out1_valid = all_valid && out0_ready;
-      assign out1_data  = 1'b0;
+
+      if (TAG_WIDTH > 0) begin : g_tag_out
+        logic [TAG_WIDTH-1:0] output_tag;
+        assign output_tag = cfg_data[TAG_WIDTH-1:0];
+        assign out0_data  = {output_tag, addr_value};
+        assign out1_data  = output_tag;
+      end else begin : g_no_tag_out
+        assign out0_data  = addr_value;
+        assign out1_data  = 1'b0;
+      end
 
       assign in0_ready = fire;
       assign in1_ready = fire;
@@ -119,12 +129,12 @@ module fabric_pe_store #(
       logic fire;
       assign fire = all_valid && both_out_ready;
 
-      // out0: address to memory
+      // out0: address to memory (with tag)
       assign out0_valid = all_valid && out1_ready;
-      assign out0_data  = addr_value;
-      // out1: done signal (control token)
+      assign out0_data  = {addr_tag, addr_value};
+      // out1: done signal (with tag)
       assign out1_valid = all_valid && out0_ready;
-      assign out1_data  = 1'b0;
+      assign out1_data  = addr_tag;
 
       assign in0_ready = fire;
       assign in1_ready = fire;

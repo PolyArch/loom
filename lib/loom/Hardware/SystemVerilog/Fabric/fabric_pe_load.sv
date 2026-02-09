@@ -48,10 +48,10 @@ module fabric_pe_load #(
     input  logic               out0_ready,
     output logic [DATA_PW-1:0] out0_data,
 
-    // Output 1: address to memory (index type, untagged)
+    // Output 1: address to memory (index type, tagged when TAG_WIDTH > 0)
     output logic               out1_valid,
     input  logic               out1_ready,
-    output logic [SAFE_DW-1:0] out1_data,
+    output logic [ADDR_PW-1:0] out1_data,
 
     // Configuration
     input  logic [CONFIG_WIDTH > 0 ? CONFIG_WIDTH-1 : 0 : 0] cfg_data
@@ -82,9 +82,15 @@ module fabric_pe_load #(
       logic [SAFE_DW-1:0] addr_value;
       assign addr_value = in0_data[DATA_WIDTH-1:0];
 
-      // Forward address to memory (out1)
+      // Forward address to memory (out1), with tag if tagged
       assign out1_valid = sync_valid;
-      assign out1_data  = addr_value;
+      if (TAG_WIDTH > 0) begin : g_addr_tag
+        logic [TAG_WIDTH-1:0] output_tag;
+        assign output_tag = cfg_data[TAG_WIDTH-1:0];
+        assign out1_data  = {output_tag, addr_value};
+      end else begin : g_addr_no_tag
+        assign out1_data  = addr_value;
+      end
 
       logic fire;
       assign fire = sync_valid && out1_ready;
@@ -93,9 +99,7 @@ module fabric_pe_load #(
 
       // Forward memory data (in1) to compute (out0), attaching output_tag
       if (TAG_WIDTH > 0) begin : g_tag_attach
-        logic [TAG_WIDTH-1:0] output_tag;
-        assign output_tag = cfg_data[TAG_WIDTH-1:0];
-        assign out0_data  = {output_tag, in1_data};
+        assign out0_data = {g_addr_tag.output_tag, in1_data};
       end else begin : g_no_tag
         assign out0_data = in1_data;
       end
@@ -116,9 +120,9 @@ module fabric_pe_load #(
       logic [SAFE_DW-1:0] addr_value;
       assign addr_value = in0_data[DATA_WIDTH-1:0];
 
-      // Forward address to memory (out1)
+      // Forward address to memory (out1), with tag in tagged mode
       assign out1_valid = sync_valid;
-      assign out1_data  = addr_value;
+      assign out1_data  = {addr_tag, addr_value};
 
       logic fire;
       assign fire = sync_valid && out1_ready;
