@@ -10,6 +10,7 @@ temp
 # Test runtime artifacts
 tests/.results/
 tests/**/*.parallel.sh
+Output/
 
 # Waveform Debug related
 novas*
