@@ -1558,6 +1558,51 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
   }
 
+  // Validate that LoadPE/StorePE DATA_WIDTH can carry the connected memory's
+  // address range.  The SV templates encode addresses in DATA_WIDTH-sized lanes,
+  // so narrow element types (e.g. i8 with memDepth > 256) would silently
+  // truncate upper address bits.
+  for (const auto &conn : internalConns) {
+    const auto &srcInst = instances[conn.srcInst];
+    const auto &dstInst = instances[conn.dstInst];
+    unsigned addrWidth = 0;
+    unsigned dataWidth = 0;
+    std::string peName;
+    if ((srcInst.kind == ModuleKind::LoadPE && conn.srcPort == 1) ||
+        (srcInst.kind == ModuleKind::StorePE && conn.srcPort == 0)) {
+      // LoadPE out1 or StorePE out0 connects to a memory address port
+      if (dstInst.kind == ModuleKind::Memory) {
+        const auto &mdef = memoryDefs[dstInst.defIdx];
+        unsigned md = mdef.shape.isDynamic() ? 64 : mdef.shape.getSize();
+        if (md == 0) md = 64;
+        addrWidth = ceilLog2(md);
+      } else if (dstInst.kind == ModuleKind::ExtMemory) {
+        const auto &mdef = extMemoryDefs[dstInst.defIdx];
+        unsigned md = mdef.shape.isDynamic() ? 64 : mdef.shape.getSize();
+        if (md == 0) md = 64;
+        addrWidth = ceilLog2(md);
+      }
+      if (addrWidth > 0) {
+        if (srcInst.kind == ModuleKind::LoadPE) {
+          dataWidth = getDataWidthBits(loadPEDefs[srcInst.defIdx].dataType);
+          peName = srcInst.name;
+        } else {
+          dataWidth = getDataWidthBits(storePEDefs[srcInst.defIdx].dataType);
+          peName = srcInst.name;
+        }
+        if (dataWidth == 0) dataWidth = 1;
+        if (dataWidth < addrWidth) {
+          llvm::errs() << "error: exportSV: " << peName
+                       << " DATA_WIDTH (" << dataWidth
+                       << ") is too narrow to address " << dstInst.name
+                       << " (needs " << addrWidth
+                       << " bits); use a wider dataType\n";
+          std::exit(1);
+        }
+      }
+    }
+  }
+
   // Determine once whether any instance produces error signals
   bool hasErrorPorts = false;
   for (const auto &inst : instances) {
