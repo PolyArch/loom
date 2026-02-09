@@ -184,12 +184,28 @@ module fabric_temporal_pe #(
   logic fu_launch;
   assign fu_launch = insn_fire_ready && !fu_busy;
 
-  always_ff @(posedge clk or negedge rst_n) begin : fu_busy_reg
+  // Latch the instruction index that was issued to the FU so that commit-
+  // time decode (output tag, buffer clear, register tracking) references the
+  // correct instruction even when matched_insn changes during multi-cycle
+  // FU execution.
+  logic [INSN_IDX_W-1:0] issued_insn;
+  // commit_insn: on the launch cycle use matched_insn directly (the
+  // registered value is not yet available); otherwise use the latched value.
+  logic [INSN_IDX_W-1:0] commit_insn;
+  assign commit_insn = fu_launch ? matched_insn : issued_insn;
+
+  always_ff @(posedge clk or negedge rst_n) begin : fu_ctrl_reg
     if (!rst_n) begin : reset
-      fu_busy <= 1'b0;
+      fu_busy    <= 1'b0;
+      issued_insn <= '0;
     end else begin : tick
-      if (fu_launch) begin : launch
-        fu_busy <= 1'b1;
+      if (fu_launch && fire) begin : launch_and_commit
+        // Zero-latency: launched and completed in the same cycle; stay idle
+        fu_busy    <= 1'b0;
+        issued_insn <= matched_insn;
+      end else if (fu_launch) begin : launch
+        fu_busy    <= 1'b1;
+        issued_insn <= matched_insn;
       end else if (fire) begin : commit
         fu_busy <= 1'b0;
       end
@@ -236,7 +252,7 @@ module fabric_temporal_pe #(
   always_comb begin : extract_res_tag
     integer iter_var0;
     for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : per_out
-      out_res_tag[iter_var0] = cfg_data[matched_insn * INSN_WIDTH + iter_var0 * RESULT_WIDTH +: TAG_WIDTH];
+      out_res_tag[iter_var0] = cfg_data[commit_insn * INSN_WIDTH + iter_var0 * RESULT_WIDTH +: TAG_WIDTH];
     end
   end
 
@@ -315,7 +331,7 @@ module fabric_temporal_pe #(
       always_comb begin : decode_res
         integer iter_var0;
         for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : per_out
-          automatic int res_base = matched_insn * INSN_WIDTH + iter_var0 * RESULT_WIDTH;
+          automatic int res_base = commit_insn * INSN_WIDTH + iter_var0 * RESULT_WIDTH;
           res_is_reg[iter_var0] = cfg_data[res_base + RESULT_WIDTH - 1];
           res_reg_idx[iter_var0] = cfg_data[res_base + TAG_WIDTH +: (RES_BITS - 1)];
         end
@@ -328,7 +344,7 @@ module fabric_temporal_pe #(
       always_comb begin : decode_op
         integer iter_var0;
         for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
-          automatic int op_base = matched_insn * INSN_WIDTH + NUM_OUTPUTS * RESULT_WIDTH + iter_var0 * REG_BITS;
+          automatic int op_base = commit_insn * INSN_WIDTH + NUM_OUTPUTS * RESULT_WIDTH + iter_var0 * REG_BITS;
           op_is_reg[iter_var0] = cfg_data[op_base + REG_BITS - 1];
           op_reg_idx[iter_var0] = cfg_data[op_base +: (REG_BITS - 1)];
         end
@@ -399,14 +415,14 @@ module fabric_temporal_pe #(
                   reg_fifo_cnt[res_reg_idx[iter_var0]] + (RFIFO_IDX_W+1)'(1);
               end
             end
-            // Identity-tracked multi-reader dequeue: mark matched_insn as
+            // Identity-tracked multi-reader dequeue: mark commit_insn as
             // having consumed each register it reads. Dequeue only when
             // every distinct reader instruction has consumed.
             for (iter_var0 = 0; iter_var0 < NUM_REGISTERS; iter_var0 = iter_var0 + 1) begin : rd_reg
               if (fire_reads_reg[iter_var0] && !reg_fifo_empty[iter_var0]) begin : consume
                 automatic logic [NUM_INSTRUCTIONS-1:0] next_consumed;
                 next_consumed = reg_rd_consumed[iter_var0];
-                next_consumed[matched_insn] = 1'b1;
+                next_consumed[commit_insn] = 1'b1;
                 if (next_consumed == reg_reader_mask[iter_var0]) begin : all_consumed
                   // All distinct readers done: dequeue and clear mask
                   reg_fifo_rd_ptr[iter_var0] <=
@@ -458,7 +474,7 @@ module fabric_temporal_pe #(
           // Clear fired instruction's buffer (input-sourced operands)
           if (fire) begin : clear_fired
             for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : clr_op
-              op_buf_valid[matched_insn][iter_var1] <= 1'b0;
+              op_buf_valid[commit_insn][iter_var1] <= 1'b0;
             end
           end
           // Buffer arriving operands (input-sourced)
@@ -607,7 +623,7 @@ module fabric_temporal_pe #(
           if (fire) begin : commit
             for (iter_var0 = 0; iter_var0 < BUF_DEPTH; iter_var0 = iter_var0 + 1) begin : per_entry
               if (sb_entry_valid[iter_var0] &&
-                  (sb_tag[iter_var0] == insn_tag[matched_insn])) begin : tag_match
+                  (sb_tag[iter_var0] == insn_tag[commit_insn])) begin : tag_match
                 if (sb_pos[iter_var0] == '0) begin : invalidate
                   sb_op_valid[iter_var0] <= '0;
                 end else begin : decrement

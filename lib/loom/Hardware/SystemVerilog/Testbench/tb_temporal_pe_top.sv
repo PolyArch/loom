@@ -14,7 +14,7 @@ module tb_temporal_pe_top;
   logic [35:0] in1_data;
   logic out_valid, out_ready;
   logic [35:0] out_data;
-  logic [17:0] t0_cfg_data;
+  logic [19:0] t0_cfg_data;
   logic        error_valid;
   logic [15:0] error_code;
 

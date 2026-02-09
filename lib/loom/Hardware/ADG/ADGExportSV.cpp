@@ -848,10 +848,10 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
 
   std::ostringstream os;
 
-  // Extract fu_sel from the matched instruction
+  // Extract fu_sel from the committed instruction (latched for multi-cycle FU)
   if (fuSelBits > 0) {
     os << "  logic [FU_SEL_BITS-1:0] fu_sel;\n";
-    os << "  assign fu_sel = cfg_data[matched_insn * INSN_WIDTH + "
+    os << "  assign fu_sel = cfg_data[commit_insn * INSN_WIDTH + "
        << "NUM_INPUTS * REG_BITS + NUM_OUTPUTS * RESULT_WIDTH +: FU_SEL_BITS];\n";
     os << "\n";
   }
