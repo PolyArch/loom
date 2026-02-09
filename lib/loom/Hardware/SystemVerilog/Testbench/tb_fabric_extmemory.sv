@@ -210,7 +210,65 @@ module tb_fabric_extmemory;
       pass_count = pass_count + 1;
     end
 
-    // Check 6: deadlock detection (when ST_COUNT > 0)
+    // Check 6: cross-port same-tag contention (when ST_COUNT >= 2 && TAG_WIDTH > 0)
+    // Both port 0 and port 1 simultaneously target tag=0. Per-tag grant allows
+    // only one per cycle; the denied port retries and succeeds next cycle.
+    if (ST_COUNT >= 2 && TAG_WIDTH > 0) begin : same_tag_test
+      rst_n = 0;
+      in_valid = '0;
+      repeat (2) @(posedge clk);
+      rst_n = 1;
+      @(posedge clk);
+
+      // Simultaneously present tag=0 addr+data on port 0 and port 1.
+      // Port 0: addr=30, data=0xAAAA (tag=0)
+      // Port 1: addr=31, data=0xBBBB (tag=0)
+      in_data = '0;
+      in_data[1 + LD_COUNT]              = SAFE_PW'(30);       // port 0 addr, tag=0
+      in_data[1 + LD_COUNT + ST_COUNT]   = SAFE_PW'(32'hAAAA); // port 0 data, tag=0
+      in_data[1 + LD_COUNT + 1]          = SAFE_PW'(31);       // port 1 addr, tag=0
+      in_data[1 + LD_COUNT + ST_COUNT+1] = SAFE_PW'(32'hBBBB); // port 1 data, tag=0
+      in_valid = '0;
+      in_valid[1 + LD_COUNT]            = 1'b1;
+      in_valid[1 + LD_COUNT + ST_COUNT] = 1'b1;
+      in_valid[1 + LD_COUNT + 1]        = 1'b1;
+      in_valid[1 + LD_COUNT + ST_COUNT+1] = 1'b1;
+      @(posedge clk);
+      // Port 0 granted, port 1 denied. Deassert port 0, keep port 1 for retry.
+      in_data[1 + LD_COUNT]            = '0;
+      in_data[1 + LD_COUNT + ST_COUNT] = '0;
+      in_valid[1 + LD_COUNT]           = 1'b0;
+      in_valid[1 + LD_COUNT + ST_COUNT] = 1'b0;
+      @(posedge clk);
+      in_valid = '0;
+      repeat (10) @(posedge clk);
+
+      // Load addr=30 -> expect 0xAAAA
+      in_data = '0;
+      in_data[1][SAFE_PW-1:0] = SAFE_PW'(30);
+      in_valid = '0;
+      in_valid[1] = 1'b1;
+      @(posedge clk);
+      in_valid = '0;
+      if (out_data[0][DATA_WIDTH-1:0] !== DATA_WIDTH'(32'hAAAA)) begin : check_st0_same
+        $fatal(1, "same-tag store 0: expected 0xAAAA, got 0x%0h",
+               out_data[0][DATA_WIDTH-1:0]);
+      end
+      @(posedge clk);
+
+      // Load addr=31 -> expect 0xBBBB
+      in_data[1][SAFE_PW-1:0] = SAFE_PW'(31);
+      in_valid[1] = 1'b1;
+      @(posedge clk);
+      in_valid = '0;
+      if (out_data[0][DATA_WIDTH-1:0] !== DATA_WIDTH'(32'hBBBB)) begin : check_st1_same
+        $fatal(1, "same-tag store 1: expected 0xBBBB, got 0x%0h",
+               out_data[0][DATA_WIDTH-1:0]);
+      end
+      pass_count = pass_count + 1;
+    end
+
+    // Check 7: deadlock detection (when ST_COUNT > 0)
     if (ST_COUNT > 0) begin : deadlock_test
       rst_n = 0;
       in_valid = '0;
@@ -241,7 +299,7 @@ module tb_fabric_extmemory;
   end
 
   initial begin : timeout
-    #((DEADLOCK_TIMEOUT + 200) * 10);
+    #((DEADLOCK_TIMEOUT + 250) * 10);
     $fatal(1, "TIMEOUT");
   end
 endmodule

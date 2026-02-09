@@ -36,13 +36,32 @@ int main() {
 
   auto inst = builder.clone(pe, "conv0");
 
+  // Second PE using arith.extui (zero-extension) instead of arith.extsi
+  auto pe_u = builder.newPE("conv_pe_u")
+      .setLatency(1, 1, 1)
+      .setInterval(1, 1, 1)
+      .setInputPorts({Type::i16(), Type::i32()})
+      .setOutputPorts({Type::i16()})
+      .setBodyMLIR(
+          "^bb0(%a: i16, %b: i32):\n"
+          "  %ext = arith.extui %a : i16 to i32\n"
+          "  %sum = arith.addi %ext, %b : i32\n"
+          "  %out = arith.trunci %sum : i32 to i16\n"
+          "  fabric.yield %out : i16\n");
+  auto inst_u = builder.clone(pe_u, "conv_u0");
+
   auto in0 = builder.addModuleInput("in0", Type::i16());
   auto in1 = builder.addModuleInput("in1", Type::i32());
   auto out = builder.addModuleOutput("out", Type::i16());
+  auto out_u = builder.addModuleOutput("out_u", Type::i16());
 
   builder.connectToModuleInput(in0, inst, 0);
   builder.connectToModuleInput(in1, inst, 1);
   builder.connectToModuleOutput(inst, 0, out);
+
+  builder.connectToModuleInput(in0, inst_u, 0);
+  builder.connectToModuleInput(in1, inst_u, 1);
+  builder.connectToModuleOutput(inst_u, 0, out_u);
 
   builder.exportMLIR("Output/pe_conv.fabric.mlir");
   builder.exportSV("Output/sv");

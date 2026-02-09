@@ -236,9 +236,84 @@ module tb_temporal_pe_multireader;
     end
     pass_count = pass_count + 1;
 
-    // Check 5: no errors throughout
+    // Check 5: no errors throughout first sequence
     if (error_valid !== 1'b0) begin : check_final
       $fatal(1, "unexpected error at end: code=%0d", error_code);
+    end
+    pass_count = pass_count + 1;
+
+    // ---------------------------------------------------------------
+    // Repeated-same-reader stress: write reg 0 twice, then fire
+    // insn 1 twice (both values) WITHOUT insn 2 firing. After insn 1
+    // consumes both entries, neither entry should be dequeued because
+    // insn 2 (the other reader) hasn't consumed either. This
+    // distinguishes identity-tracked dequeue from a simple scalar
+    // counter.
+    // ---------------------------------------------------------------
+
+    // Reset to clear all state from the first sequence.
+    rst_n = 0;
+    in_valid = '0;
+    repeat (3) @(posedge clk);
+    rst_n = 1;
+    @(posedge clk);
+    // Re-apply config (cfg_data is still driven).
+    @(posedge clk);
+
+    // Write reg 0 twice via insn 0 (tag=1).
+    // First write: op[0]=0xA, op[1]=0x1
+    in_data[0] = {TAG_WIDTH'(1), 32'h0000_000A};
+    in_data[1] = {TAG_WIDTH'(1), 32'h0000_0001};
+    in_valid = 2'b11;
+    @(posedge clk);
+    in_valid = '0;
+    repeat (4) @(posedge clk);
+
+    // Second write: op[0]=0xB, op[1]=0x2
+    in_data[0] = {TAG_WIDTH'(1), 32'h0000_000B};
+    in_data[1] = {TAG_WIDTH'(1), 32'h0000_0002};
+    in_valid = 2'b11;
+    @(posedge clk);
+    in_valid = '0;
+    repeat (4) @(posedge clk);
+
+    // Check 6: reg 0 FIFO should have 2 entries after two writes.
+    if (dut.reg_fifo_cnt[0] !== (dut.RFIFO_IDX_W+1)'(2)) begin : check_reg0_two
+      $fatal(1, "reg 0 FIFO should have 2 entries after two writes, got %0d",
+             dut.reg_fifo_cnt[0]);
+    end
+    pass_count = pass_count + 1;
+
+    // Fire insn 1 (tag=2) to consume first reg 0 entry.
+    in_data[0] = {TAG_WIDTH'(2), 32'h0000_0010};
+    in_data[1] = {TAG_WIDTH'(2), 32'h0000_0020};
+    in_valid = 2'b11;
+    @(posedge clk);
+    in_valid = '0;
+    repeat (4) @(posedge clk);
+
+    // Check 7: after insn 1 fires once, reg 0 should still have 2 entries.
+    // Identity tracking: insn 2 hasn't consumed, so no dequeue allowed.
+    if (dut.reg_fifo_cnt[0] !== (dut.RFIFO_IDX_W+1)'(2)) begin : check_reg0_retain2
+      $fatal(1, "reg 0 FIFO should still have 2 entries (insn 2 not consumed), got %0d",
+             dut.reg_fifo_cnt[0]);
+    end
+    pass_count = pass_count + 1;
+
+    // Fire insn 1 (tag=2) again to consume second reg 0 entry.
+    in_data[0] = {TAG_WIDTH'(2), 32'h0000_0030};
+    in_data[1] = {TAG_WIDTH'(2), 32'h0000_0040};
+    in_valid = 2'b11;
+    @(posedge clk);
+    in_valid = '0;
+    repeat (4) @(posedge clk);
+
+    // Check 8: after insn 1 fires twice (consuming both values), reg 0
+    // should still have 2 entries. Neither can be dequeued because insn 2
+    // hasn't consumed either entry yet.
+    if (dut.reg_fifo_cnt[0] !== (dut.RFIFO_IDX_W+1)'(2)) begin : check_reg0_no_deq
+      $fatal(1, "reg 0 FIFO should still have 2 entries (insn 2 never fired), got %0d",
+             dut.reg_fifo_cnt[0]);
     end
     pass_count = pass_count + 1;
 
@@ -247,7 +322,7 @@ module tb_temporal_pe_multireader;
   end
 
   initial begin : timeout
-    #20000;
+    #40000;
     $fatal(1, "TIMEOUT");
   end
 endmodule
