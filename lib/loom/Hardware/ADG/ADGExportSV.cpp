@@ -12,6 +12,7 @@
 #include "loom/Hardware/ADG/ADGBuilderImpl.h"
 
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -128,6 +129,249 @@ static unsigned getNumConnected(const SwitchDef &def) {
 }
 
 //===----------------------------------------------------------------------===//
+// Helper: read a file into a string
+//===----------------------------------------------------------------------===//
+
+static std::string readFile(const std::string &path) {
+  auto bufOrErr = llvm::MemoryBuffer::getFile(path);
+  if (!bufOrErr) {
+    llvm::errs() << "error: cannot read file: " << path << "\n";
+    std::exit(1);
+  }
+  return (*bufOrErr)->getBuffer().str();
+}
+
+//===----------------------------------------------------------------------===//
+// PE helpers: operation latency and body generation
+//===----------------------------------------------------------------------===//
+
+/// Return the typical latency (in cycles) for a single operation name.
+static unsigned getOpLatency(const std::string &opName) {
+  // Bitwise / extension / truncation: 0 cycles
+  if (opName == "arith.andi" || opName == "arith.ori" ||
+      opName == "arith.xori" || opName == "arith.shli" ||
+      opName == "arith.shrsi" || opName == "arith.shrui" ||
+      opName == "arith.trunci" || opName == "arith.extsi" ||
+      opName == "arith.extui" || opName == "arith.index_cast" ||
+      opName == "arith.index_castui" || opName == "llvm.bitreverse")
+    return 0;
+  // Integer add/sub/cmp/select: 1 cycle
+  if (opName == "arith.addi" || opName == "arith.subi" ||
+      opName == "arith.cmpi" || opName == "arith.select")
+    return 1;
+  // Integer mul: 3 cycles
+  if (opName == "arith.muli")
+    return 3;
+  // Integer div/rem: 6 cycles
+  if (opName == "arith.divsi" || opName == "arith.divui" ||
+      opName == "arith.remsi" || opName == "arith.remui")
+    return 6;
+  // FP add/sub/cmp/neg: 4 cycles
+  if (opName == "arith.addf" || opName == "arith.subf" ||
+      opName == "arith.cmpf" || opName == "arith.negf" ||
+      opName == "math.absf")
+    return 4;
+  // FP mul/fma: 5 cycles
+  if (opName == "arith.mulf" || opName == "math.fma")
+    return 5;
+  // FP conversion: 4 cycles
+  if (opName == "arith.sitofp" || opName == "arith.uitofp" ||
+      opName == "arith.fptosi" || opName == "arith.fptoui")
+    return 4;
+  // FP div/sqrt: 10 cycles
+  if (opName == "arith.divf" || opName == "math.sqrt")
+    return 10;
+  // FP transcendental: 12 cycles
+  if (opName == "math.sin" || opName == "math.cos" ||
+      opName == "math.exp" || opName == "math.log2")
+    return 12;
+  // Default: 1 cycle
+  return 1;
+}
+
+/// Convert a dialect.op name to the SV module name (e.g., "arith.addi" -> "arith_addi").
+static std::string opToSVModule(const std::string &opName) {
+  std::string result = opName;
+  for (char &c : result)
+    if (c == '.')
+      c = '_';
+  return result;
+}
+
+/// Generate the PE body SV text for a singleOp PEDef.
+/// Returns the text to insert between BEGIN/END PE BODY markers.
+static std::string genPEBodySV(const PEDef &def) {
+  if (def.singleOp.empty())
+    return "  // TODO: multi-op body not yet supported\n";
+
+  std::string svModule = opToSVModule(def.singleOp);
+  unsigned numIn = def.inputPorts.size();
+  unsigned numOut = def.outputPorts.size();
+
+  std::ostringstream os;
+  os << "  " << svModule << " #(.WIDTH(DATA_WIDTH)) u_body (\n";
+
+  // Map input ports: a, b, c, or special names for specific ops
+  if (def.singleOp == "arith.select") {
+    // select: condition (i1), a, b
+    os << "    .condition(in_value[0][0]),\n";
+    os << "    .a(in_value[1]),\n";
+    os << "    .b(in_value[2]),\n";
+  } else if (def.singleOp == "math.fma") {
+    os << "    .a(in_value[0]),\n";
+    os << "    .b(in_value[1]),\n";
+    os << "    .c(in_value[2]),\n";
+  } else if (numIn >= 2) {
+    os << "    .a(in_value[0]),\n";
+    os << "    .b(in_value[1]),\n";
+  } else {
+    os << "    .a(in_value[0]),\n";
+  }
+
+  // Output
+  os << "    .result(body_result[0])\n";
+  os << "  );\n";
+
+  return os.str();
+}
+
+/// Generate PE instance parameters.
+static std::string genPEParams(const PEDef &def) {
+  unsigned numIn = def.inputPorts.size();
+  unsigned numOut = def.outputPorts.size();
+  // Use the first input port to determine data/tag widths
+  unsigned dw = numIn > 0 ? getDataWidthBits(def.inputPorts[0]) : 32;
+  unsigned tw = numIn > 0 ? getTagWidthBits(def.inputPorts[0]) : 0;
+  if (dw == 0)
+    dw = 1;
+  unsigned latency = getOpLatency(def.singleOp);
+
+  std::ostringstream os;
+  os << "    .NUM_INPUTS(" << numIn << "),\n";
+  os << "    .NUM_OUTPUTS(" << numOut << "),\n";
+  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .TAG_WIDTH(" << tw << "),\n";
+  os << "    .LATENCY_TYP(" << latency << ")";
+  return os.str();
+}
+
+/// Read the fabric_pe.sv template and replace the body markers with generated body.
+/// Returns the complete customized module text.
+static std::string fillPETemplate(const std::string &templateDir,
+                                  const PEDef &def) {
+  llvm::SmallString<256> tmplPath(templateDir);
+  llvm::sys::path::append(tmplPath, "Fabric", "fabric_pe.sv");
+  std::string tmpl = readFile(tmplPath.str().str());
+
+  std::string body = genPEBodySV(def);
+
+  // Find and replace the body region
+  const std::string beginMarker = "  // ===== BEGIN PE BODY =====";
+  const std::string endMarker = "  // ===== END PE BODY =====";
+
+  auto beginPos = tmpl.find(beginMarker);
+  auto endPos = tmpl.find(endMarker);
+
+  if (beginPos == std::string::npos || endPos == std::string::npos) {
+    llvm::errs() << "error: PE template missing body markers\n";
+    std::exit(1);
+  }
+
+  // Replace from after beginMarker line to before endMarker line
+  auto afterBegin = tmpl.find('\n', beginPos);
+  std::string result;
+  result += tmpl.substr(0, afterBegin + 1);
+  result += body;
+  result += tmpl.substr(endPos);
+
+  return result;
+}
+
+//===----------------------------------------------------------------------===//
+// Generate constant PE instance parameters
+//===----------------------------------------------------------------------===//
+
+static std::string genConstantPEParams(const ConstantPEDef &def) {
+  unsigned dw = getDataWidthBits(def.outputType);
+  unsigned tw = getTagWidthBits(def.outputType);
+  if (dw == 0)
+    dw = 1;
+  std::ostringstream os;
+  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .TAG_WIDTH(" << tw << ")";
+  return os.str();
+}
+
+//===----------------------------------------------------------------------===//
+// Generate load PE instance parameters
+//===----------------------------------------------------------------------===//
+
+static std::string genLoadPEParams(const LoadPEDef &def) {
+  unsigned dw = getDataWidthBits(def.dataType);
+  if (dw == 0)
+    dw = 1;
+  std::ostringstream os;
+  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .TAG_WIDTH(" << def.tagWidth << "),\n";
+  os << "    .HW_TYPE(" << (def.hwType == HardwareType::TagTransparent ? 1 : 0)
+     << "),\n";
+  os << "    .QUEUE_DEPTH(" << def.queueDepth << ")";
+  return os.str();
+}
+
+//===----------------------------------------------------------------------===//
+// Generate store PE instance parameters
+//===----------------------------------------------------------------------===//
+
+static std::string genStorePEParams(const StorePEDef &def) {
+  unsigned dw = getDataWidthBits(def.dataType);
+  if (dw == 0)
+    dw = 1;
+  std::ostringstream os;
+  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .TAG_WIDTH(" << def.tagWidth << "),\n";
+  os << "    .HW_TYPE(" << (def.hwType == HardwareType::TagTransparent ? 1 : 0)
+     << "),\n";
+  os << "    .QUEUE_DEPTH(" << def.queueDepth << ")";
+  return os.str();
+}
+
+//===----------------------------------------------------------------------===//
+// Generate temporal switch instance parameters
+//===----------------------------------------------------------------------===//
+
+static std::string genTemporalSwitchParams(const TemporalSwitchDef &def) {
+  unsigned dw = getDataWidthBits(def.interfaceType);
+  unsigned tw = getTagWidthBits(def.interfaceType);
+  if (dw + tw == 0)
+    dw = 1;
+  std::ostringstream os;
+  os << "    .NUM_INPUTS(" << def.numIn << "),\n";
+  os << "    .NUM_OUTPUTS(" << def.numOut << "),\n";
+  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .TAG_WIDTH(" << tw << "),\n";
+  os << "    .NUM_ROUTE_TABLE(" << def.numRouteTable << ")";
+
+  // Connectivity matrix
+  if (!def.connectivity.empty()) {
+    unsigned total = def.numOut * def.numIn;
+    os << ",\n    .CONNECTIVITY(" << total << "'b";
+    for (int o = static_cast<int>(def.numOut) - 1; o >= 0; --o) {
+      for (int i = static_cast<int>(def.numIn) - 1; i >= 0; --i) {
+        if (static_cast<unsigned>(o) < def.connectivity.size() &&
+            static_cast<unsigned>(i) < def.connectivity[o].size())
+          os << (def.connectivity[o][i] ? "1" : "0");
+        else
+          os << "1";
+      }
+    }
+    os << ")";
+  }
+
+  return os.str();
+}
+
+//===----------------------------------------------------------------------===//
 // Generate switch instance parameters
 //===----------------------------------------------------------------------===//
 
@@ -169,6 +413,52 @@ static std::string genSwitchParams(const SwitchDef &def) {
 // Generate FIFO instance parameters
 //===----------------------------------------------------------------------===//
 
+//===----------------------------------------------------------------------===//
+// Generate add_tag instance parameters
+//===----------------------------------------------------------------------===//
+
+static std::string genAddTagParams(const AddTagDef &def) {
+  unsigned dw = getDataWidthBits(def.valueType);
+  unsigned tw = getDataWidthBits(def.tagType);
+  std::ostringstream os;
+  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .TAG_WIDTH(" << tw << ")";
+  return os.str();
+}
+
+//===----------------------------------------------------------------------===//
+// Generate del_tag instance parameters
+//===----------------------------------------------------------------------===//
+
+static std::string genDelTagParams(const DelTagDef &def) {
+  unsigned dw = getDataWidthBits(def.inputType.getValueType());
+  unsigned tw = getDataWidthBits(def.inputType.getTagType());
+  std::ostringstream os;
+  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .TAG_WIDTH(" << tw << ")";
+  return os.str();
+}
+
+//===----------------------------------------------------------------------===//
+// Generate map_tag instance parameters
+//===----------------------------------------------------------------------===//
+
+static std::string genMapTagParams(const MapTagDef &def) {
+  unsigned dw = getDataWidthBits(def.valueType);
+  unsigned itw = getDataWidthBits(def.inputTagType);
+  unsigned otw = getDataWidthBits(def.outputTagType);
+  std::ostringstream os;
+  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .IN_TAG_WIDTH(" << itw << "),\n";
+  os << "    .OUT_TAG_WIDTH(" << otw << "),\n";
+  os << "    .TABLE_SIZE(" << def.tableSize << ")";
+  return os.str();
+}
+
+//===----------------------------------------------------------------------===//
+// Generate FIFO instance parameters
+//===----------------------------------------------------------------------===//
+
 static std::string genFifoParams(const FifoDef &def) {
   unsigned dw = getDataWidthBits(def.elementType);
   unsigned tw = getTagWidthBits(def.elementType);
@@ -190,13 +480,17 @@ static std::string genFifoParams(const FifoDef &def) {
 //===----------------------------------------------------------------------===//
 
 static bool hasSVTemplate(ModuleKind kind) {
-  return kind == ModuleKind::Switch || kind == ModuleKind::Fifo;
+  return kind == ModuleKind::Switch || kind == ModuleKind::Fifo ||
+         kind == ModuleKind::AddTag || kind == ModuleKind::DelTag ||
+         kind == ModuleKind::MapTag || kind == ModuleKind::PE ||
+         kind == ModuleKind::ConstantPE || kind == ModuleKind::LoadPE ||
+         kind == ModuleKind::StorePE || kind == ModuleKind::TemporalSwitch;
 }
 
 /// Returns true for module kinds that expose error_valid/error_code ports.
 static bool hasErrorOutput(ModuleKind kind) {
   return kind == ModuleKind::Switch || kind == ModuleKind::TemporalSwitch ||
-         kind == ModuleKind::TemporalPE;
+         kind == ModuleKind::TemporalPE || kind == ModuleKind::MapTag;
 }
 
 //===----------------------------------------------------------------------===//
@@ -385,6 +679,29 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       const auto &def = fifoDefs[inst.defIdx];
       if (def.bypassable)
         instanceDerived.insert(inst.name + "_cfg_data");
+    } else if (inst.kind == ModuleKind::AddTag) {
+      instanceDerived.insert(inst.name + "_cfg_data");
+    } else if (inst.kind == ModuleKind::MapTag) {
+      instanceDerived.insert(inst.name + "_cfg_data");
+    } else if (inst.kind == ModuleKind::PE) {
+      const auto &def = peDefs[inst.defIdx];
+      unsigned tw = def.inputPorts.size() > 0
+                        ? getTagWidthBits(def.inputPorts[0])
+                        : 0;
+      if (tw > 0)
+        instanceDerived.insert(inst.name + "_cfg_data");
+    } else if (inst.kind == ModuleKind::ConstantPE) {
+      instanceDerived.insert(inst.name + "_cfg_data");
+    } else if (inst.kind == ModuleKind::LoadPE) {
+      const auto &def = loadPEDefs[inst.defIdx];
+      if (def.hwType == HardwareType::TagOverwrite && def.tagWidth > 0)
+        instanceDerived.insert(inst.name + "_cfg_data");
+    } else if (inst.kind == ModuleKind::StorePE) {
+      const auto &def = storePEDefs[inst.defIdx];
+      if (def.hwType == HardwareType::TagOverwrite && def.tagWidth > 0)
+        instanceDerived.insert(inst.name + "_cfg_data");
+    } else if (inst.kind == ModuleKind::TemporalSwitch) {
+      instanceDerived.insert(inst.name + "_cfg_data");
     }
   }
 
@@ -436,12 +753,77 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   const std::string templateDir = "";
 #endif
 
+  // Track which operation dialects are used (for copying operation SV files)
+  std::set<std::string> usedDialects;
+
   if (!templateDir.empty()) {
     // Copy Common/ files
     copyTemplateFile(templateDir, "Common/fabric_common.svh", libDir.str().str());
     // Copy Fabric/ files
     copyTemplateFile(templateDir, "Fabric/fabric_fifo.sv", libDir.str().str());
     copyTemplateFile(templateDir, "Fabric/fabric_switch.sv", libDir.str().str());
+    copyTemplateFile(templateDir, "Fabric/fabric_add_tag.sv", libDir.str().str());
+    copyTemplateFile(templateDir, "Fabric/fabric_del_tag.sv", libDir.str().str());
+    copyTemplateFile(templateDir, "Fabric/fabric_map_tag.sv", libDir.str().str());
+    copyTemplateFile(templateDir, "Fabric/fabric_pe_constant.sv", libDir.str().str());
+    copyTemplateFile(templateDir, "Fabric/fabric_pe_load.sv", libDir.str().str());
+    copyTemplateFile(templateDir, "Fabric/fabric_pe_store.sv", libDir.str().str());
+    copyTemplateFile(templateDir, "Fabric/fabric_temporal_sw.sv", libDir.str().str());
+
+    // For PE instances: generate body-filled customized modules
+    for (const auto &inst : instances) {
+      if (inst.kind == ModuleKind::PE) {
+        const auto &def = peDefs[inst.defIdx];
+        std::string customized = fillPETemplate(templateDir, def);
+
+        // Replace module name to make it unique per instance
+        std::string origName = "module fabric_pe";
+        std::string newName = "module " + inst.name + "_pe";
+        auto pos = customized.find(origName);
+        if (pos != std::string::npos)
+          customized.replace(pos, origName.size(), newName);
+
+        llvm::SmallString<256> pePath(libDir);
+        llvm::sys::path::append(pePath, inst.name + "_pe.sv");
+        writeFile(pePath.str().str(), customized);
+
+        // Track the dialect for operation module copying
+        if (!def.singleOp.empty()) {
+          auto dotPos = def.singleOp.find('.');
+          if (dotPos != std::string::npos)
+            usedDialects.insert(def.singleOp.substr(0, dotPos));
+        }
+      }
+    }
+
+    // Copy operation module SV files for used dialects
+    // Map dialect names to directory names
+    static const std::map<std::string, std::string> dialectDirs = {
+        {"arith", "Arith"}, {"math", "Math"}, {"llvm", "LLVM"}};
+
+    for (const auto &dialect : usedDialects) {
+      auto it = dialectDirs.find(dialect);
+      if (it == dialectDirs.end())
+        continue;
+
+      // Copy the specific operation file used by PEs
+      for (const auto &inst : instances) {
+        if (inst.kind != ModuleKind::PE)
+          continue;
+        const auto &def = peDefs[inst.defIdx];
+        if (def.singleOp.empty())
+          continue;
+        auto dotPos = def.singleOp.find('.');
+        if (dotPos == std::string::npos)
+          continue;
+        std::string d = def.singleOp.substr(0, dotPos);
+        if (d != dialect)
+          continue;
+        std::string svFile = opToSVModule(def.singleOp) + ".sv";
+        copyTemplateFile(templateDir, it->second + "/" + svFile,
+                         libDir.str().str());
+      }
+    }
   }
 
   // ---- Generate top-level module ----
@@ -480,6 +862,46 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       const auto &def = fifoDefs[inst.defIdx];
       if (def.bypassable)
         instCfgPorts.push_back({inst.name + "_cfg_data", 1});
+    } else if (inst.kind == ModuleKind::AddTag) {
+      const auto &def = addTagDefs[inst.defIdx];
+      unsigned tw = getDataWidthBits(def.tagType);
+      instCfgPorts.push_back({inst.name + "_cfg_data", tw});
+    } else if (inst.kind == ModuleKind::MapTag) {
+      const auto &def = mapTagDefs[inst.defIdx];
+      unsigned itw = getDataWidthBits(def.inputTagType);
+      unsigned otw = getDataWidthBits(def.outputTagType);
+      unsigned entryWidth = 1 + itw + otw;
+      instCfgPorts.push_back(
+          {inst.name + "_cfg_data", def.tableSize * entryWidth});
+    } else if (inst.kind == ModuleKind::PE) {
+      const auto &def = peDefs[inst.defIdx];
+      unsigned tw = def.inputPorts.size() > 0
+                        ? getTagWidthBits(def.inputPorts[0])
+                        : 0;
+      if (tw > 0) {
+        unsigned cfgBits = def.outputPorts.size() * tw;
+        instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
+      }
+    } else if (inst.kind == ModuleKind::ConstantPE) {
+      const auto &def = constantPEDefs[inst.defIdx];
+      unsigned dw = getDataWidthBits(def.outputType);
+      unsigned tw = getTagWidthBits(def.outputType);
+      unsigned cfgBits = (tw > 0) ? dw + tw : dw;
+      instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
+    } else if (inst.kind == ModuleKind::LoadPE) {
+      const auto &def = loadPEDefs[inst.defIdx];
+      if (def.hwType == HardwareType::TagOverwrite && def.tagWidth > 0)
+        instCfgPorts.push_back({inst.name + "_cfg_data", def.tagWidth});
+    } else if (inst.kind == ModuleKind::StorePE) {
+      const auto &def = storePEDefs[inst.defIdx];
+      if (def.hwType == HardwareType::TagOverwrite && def.tagWidth > 0)
+        instCfgPorts.push_back({inst.name + "_cfg_data", def.tagWidth});
+    } else if (inst.kind == ModuleKind::TemporalSwitch) {
+      const auto &def = temporalSwitchDefs[inst.defIdx];
+      unsigned tw = getTagWidthBits(def.interfaceType);
+      unsigned entryWidth = 1 + tw + def.numOut;
+      instCfgPorts.push_back(
+          {inst.name + "_cfg_data", def.numRouteTable * entryWidth});
     }
   }
   bool hasCfgPorts = !instCfgPorts.empty();
@@ -629,6 +1051,223 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         top << "    .cfg_data(" << inst.name << "_cfg_data)\n";
       else
         top << "    .cfg_data('0)\n";
+      top << "  );\n\n";
+      break;
+    }
+    case ModuleKind::AddTag: {
+      const auto &def = addTagDefs[inst.defIdx];
+      top << "  fabric_add_tag #(\n" << genAddTagParams(def) << "\n  ) "
+          << inst.name << " (\n";
+      top << "    .clk(clk), .rst_n(rst_n),\n";
+      top << "    .in_valid(" << inst.name << "_in0_valid),\n";
+      top << "    .in_ready(" << inst.name << "_in0_ready),\n";
+      top << "    .in_data(" << inst.name << "_in0_data),\n";
+      top << "    .out_valid(" << inst.name << "_out0_valid),\n";
+      top << "    .out_ready(" << inst.name << "_out0_ready),\n";
+      top << "    .out_data(" << inst.name << "_out0_data),\n";
+      top << "    .cfg_data(" << inst.name << "_cfg_data)\n";
+      top << "  );\n\n";
+      break;
+    }
+    case ModuleKind::DelTag: {
+      const auto &def = delTagDefs[inst.defIdx];
+      top << "  fabric_del_tag #(\n" << genDelTagParams(def) << "\n  ) "
+          << inst.name << " (\n";
+      top << "    .clk(clk), .rst_n(rst_n),\n";
+      top << "    .in_valid(" << inst.name << "_in0_valid),\n";
+      top << "    .in_ready(" << inst.name << "_in0_ready),\n";
+      top << "    .in_data(" << inst.name << "_in0_data),\n";
+      top << "    .out_valid(" << inst.name << "_out0_valid),\n";
+      top << "    .out_ready(" << inst.name << "_out0_ready),\n";
+      top << "    .out_data(" << inst.name << "_out0_data)\n";
+      top << "  );\n\n";
+      break;
+    }
+    case ModuleKind::MapTag: {
+      const auto &def = mapTagDefs[inst.defIdx];
+      top << "  fabric_map_tag #(\n" << genMapTagParams(def) << "\n  ) "
+          << inst.name << " (\n";
+      top << "    .clk(clk), .rst_n(rst_n),\n";
+      top << "    .in_valid(" << inst.name << "_in0_valid),\n";
+      top << "    .in_ready(" << inst.name << "_in0_ready),\n";
+      top << "    .in_data(" << inst.name << "_in0_data),\n";
+      top << "    .out_valid(" << inst.name << "_out0_valid),\n";
+      top << "    .out_ready(" << inst.name << "_out0_ready),\n";
+      top << "    .out_data(" << inst.name << "_out0_data),\n";
+      top << "    .cfg_data(" << inst.name << "_cfg_data),\n";
+      top << "    .error_valid(" << inst.name << "_error_valid),\n";
+      top << "    .error_code(" << inst.name << "_error_code)\n";
+      top << "  );\n\n";
+      break;
+    }
+    case ModuleKind::PE: {
+      const auto &def = peDefs[inst.defIdx];
+      unsigned numIn = def.inputPorts.size();
+      unsigned numOut = def.outputPorts.size();
+      top << "  " << inst.name << "_pe #(\n" << genPEParams(def) << "\n  ) "
+          << inst.name << " (\n";
+      top << "    .clk(clk), .rst_n(rst_n),\n";
+      // Input port connections (packed array)
+      top << "    .in_valid({";
+      for (int p = numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_valid";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .in_ready({";
+      for (int p = numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_ready";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .in_data({";
+      for (int p = numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_data";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_valid({";
+      for (int p = numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_valid";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_ready({";
+      for (int p = numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_ready";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_data({";
+      for (int p = numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_data";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      // Config: output tags for tagged PE, '0 for native
+      unsigned tw = numIn > 0 ? getTagWidthBits(def.inputPorts[0]) : 0;
+      if (tw > 0 && instCfgPorts.size() > 0)
+        top << "    .cfg_data(" << inst.name << "_cfg_data)\n";
+      else
+        top << "    .cfg_data('0)\n";
+      top << "  );\n\n";
+      break;
+    }
+    case ModuleKind::ConstantPE: {
+      const auto &def = constantPEDefs[inst.defIdx];
+      top << "  fabric_pe_constant #(\n" << genConstantPEParams(def)
+          << "\n  ) " << inst.name << " (\n";
+      top << "    .clk(clk), .rst_n(rst_n),\n";
+      top << "    .in_valid(" << inst.name << "_in0_valid),\n";
+      top << "    .in_ready(" << inst.name << "_in0_ready),\n";
+      top << "    .in_data(" << inst.name << "_in0_data),\n";
+      top << "    .out_valid(" << inst.name << "_out0_valid),\n";
+      top << "    .out_ready(" << inst.name << "_out0_ready),\n";
+      top << "    .out_data(" << inst.name << "_out0_data),\n";
+      top << "    .cfg_data(" << inst.name << "_cfg_data)\n";
+      top << "  );\n\n";
+      break;
+    }
+    case ModuleKind::LoadPE: {
+      const auto &def = loadPEDefs[inst.defIdx];
+      top << "  fabric_pe_load #(\n" << genLoadPEParams(def) << "\n  ) "
+          << inst.name << " (\n";
+      top << "    .clk(clk), .rst_n(rst_n),\n";
+      top << "    .in0_valid(" << inst.name << "_in0_valid),\n";
+      top << "    .in0_ready(" << inst.name << "_in0_ready),\n";
+      top << "    .in0_data(" << inst.name << "_in0_data),\n";
+      top << "    .in1_valid(" << inst.name << "_in1_valid),\n";
+      top << "    .in1_ready(" << inst.name << "_in1_ready),\n";
+      top << "    .in1_data(" << inst.name << "_in1_data),\n";
+      top << "    .in2_valid(" << inst.name << "_in2_valid),\n";
+      top << "    .in2_ready(" << inst.name << "_in2_ready),\n";
+      top << "    .in2_data(" << inst.name << "_in2_data),\n";
+      top << "    .out0_valid(" << inst.name << "_out0_valid),\n";
+      top << "    .out0_ready(" << inst.name << "_out0_ready),\n";
+      top << "    .out0_data(" << inst.name << "_out0_data),\n";
+      top << "    .out1_valid(" << inst.name << "_out1_valid),\n";
+      top << "    .out1_ready(" << inst.name << "_out1_ready),\n";
+      top << "    .out1_data(" << inst.name << "_out1_data),\n";
+      unsigned tw = def.tagWidth;
+      if (def.hwType == HardwareType::TagOverwrite && tw > 0)
+        top << "    .cfg_data(" << inst.name << "_cfg_data)\n";
+      else
+        top << "    .cfg_data('0)\n";
+      top << "  );\n\n";
+      break;
+    }
+    case ModuleKind::StorePE: {
+      const auto &def = storePEDefs[inst.defIdx];
+      top << "  fabric_pe_store #(\n" << genStorePEParams(def) << "\n  ) "
+          << inst.name << " (\n";
+      top << "    .clk(clk), .rst_n(rst_n),\n";
+      top << "    .in0_valid(" << inst.name << "_in0_valid),\n";
+      top << "    .in0_ready(" << inst.name << "_in0_ready),\n";
+      top << "    .in0_data(" << inst.name << "_in0_data),\n";
+      top << "    .in1_valid(" << inst.name << "_in1_valid),\n";
+      top << "    .in1_ready(" << inst.name << "_in1_ready),\n";
+      top << "    .in1_data(" << inst.name << "_in1_data),\n";
+      top << "    .in2_valid(" << inst.name << "_in2_valid),\n";
+      top << "    .in2_ready(" << inst.name << "_in2_ready),\n";
+      top << "    .in2_data(" << inst.name << "_in2_data),\n";
+      top << "    .out0_valid(" << inst.name << "_out0_valid),\n";
+      top << "    .out0_ready(" << inst.name << "_out0_ready),\n";
+      top << "    .out0_data(" << inst.name << "_out0_data),\n";
+      top << "    .out1_valid(" << inst.name << "_out1_valid),\n";
+      top << "    .out1_ready(" << inst.name << "_out1_ready),\n";
+      top << "    .out1_data(" << inst.name << "_out1_data),\n";
+      unsigned tw = def.tagWidth;
+      if (def.hwType == HardwareType::TagOverwrite && tw > 0)
+        top << "    .cfg_data(" << inst.name << "_cfg_data)\n";
+      else
+        top << "    .cfg_data('0)\n";
+      top << "  );\n\n";
+      break;
+    }
+    case ModuleKind::TemporalSwitch: {
+      const auto &def = temporalSwitchDefs[inst.defIdx];
+      top << "  fabric_temporal_sw #(\n" << genTemporalSwitchParams(def)
+          << "\n  ) " << inst.name << " (\n";
+      top << "    .clk(clk), .rst_n(rst_n),\n";
+      top << "    .in_valid({";
+      for (int p = def.numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_valid";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .in_ready({";
+      for (int p = def.numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_ready";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .in_data({";
+      for (int p = def.numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_data";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_valid({";
+      for (int p = def.numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_valid";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_ready({";
+      for (int p = def.numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_ready";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_data({";
+      for (int p = def.numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_data";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .cfg_data(" << inst.name << "_cfg_data),\n";
+      top << "    .error_valid(" << inst.name << "_error_valid),\n";
+      top << "    .error_code(" << inst.name << "_error_code)\n";
       top << "  );\n\n";
       break;
     }
