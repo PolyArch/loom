@@ -556,31 +556,49 @@ static std::string genMultiOpBodySV(const PEDef &def) {
     }
   }
 
-  // Rename user block args to %argN in the body text.
-  // Must process longest names first to avoid partial replacement.
-  std::vector<std::pair<std::string, std::string>> renames;
-  for (size_t i = 0; i < blockArgNames.size(); ++i)
-    renames.push_back({blockArgNames[i], "%arg" + std::to_string(i)});
-  // Sort by name length descending to avoid partial replacement
-  std::sort(renames.begin(), renames.end(),
-            [](const auto &a, const auto &b) {
-              return a.first.size() > b.first.size();
-            });
-  for (const auto &[from, to] : renames) {
-    if (from == to)
-      continue;
+  // Rename user block args to %argN in the body text via a two-phase
+  // approach to avoid SSA collisions (e.g. body already contains %arg0).
+  // Phase 1: rename original names to unique temporaries.
+  // Phase 2: rename temporaries to final %argN names.
+  //
+  // Helper: whole-token replacement (next char must not be alnum/_).
+  auto replaceWholeToken = [](std::string &s, const std::string &from,
+                              const std::string &to) {
     size_t pos = 0;
-    while ((pos = body.find(from, pos)) != std::string::npos) {
-      // Ensure we match a complete token (next char is not alphanumeric/underscore)
+    while ((pos = s.find(from, pos)) != std::string::npos) {
       size_t endPos = pos + from.size();
-      if (endPos < body.size() &&
-          (std::isalnum(body[endPos]) || body[endPos] == '_')) {
+      if (endPos < s.size() &&
+          (std::isalnum(s[endPos]) || s[endPos] == '_')) {
         pos = endPos;
         continue;
       }
-      body.replace(pos, from.size(), to);
+      s.replace(pos, from.size(), to);
       pos += to.size();
     }
+  };
+
+  // Phase 1: original names -> unique temporaries (%__loom_tmp_N)
+  std::vector<std::pair<std::string, std::string>> phase1;
+  for (size_t i = 0; i < blockArgNames.size(); ++i)
+    phase1.push_back({blockArgNames[i],
+                      "%__loom_tmp_" + std::to_string(i)});
+  // Sort by name length descending to avoid partial replacement
+  std::sort(phase1.begin(), phase1.end(),
+            [](const auto &a, const auto &b) {
+              return a.first.size() > b.first.size();
+            });
+  for (const auto &[from, to] : phase1) {
+    if (from == to)
+      continue;
+    replaceWholeToken(body, from, to);
+  }
+
+  // Phase 2: temporaries -> final %argN names
+  for (size_t i = 0; i < blockArgNames.size(); ++i) {
+    std::string tmp = "%__loom_tmp_" + std::to_string(i);
+    std::string final_ = "%arg" + std::to_string(i);
+    if (tmp != final_)
+      replaceWholeToken(body, tmp, final_);
   }
 
   // Parse lines into statements
@@ -1125,8 +1143,19 @@ static std::string genConstantPEParams(const ConstantPEDef &def) {
 // Generate load PE instance parameters
 //===----------------------------------------------------------------------===//
 
+static unsigned ceilLog2(unsigned v) {
+  if (v <= 1) return 1;
+  unsigned r = 0;
+  unsigned vv = v - 1;
+  while (vv > 0) { ++r; vv >>= 1; }
+  return r;
+}
+
 static std::string genLoadPEParams(const LoadPEDef &def) {
-  unsigned dw = getDataWidthBits(def.dataType);
+  // DATA_WIDTH must cover both the data type and address lanes (index type),
+  // since fabric_pe_load uses DATA_WIDTH to slice addresses from in0_data.
+  unsigned dw = std::max(getDataWidthBits(def.dataType),
+                         getDataWidthBits(Type::index()));
   if (dw == 0)
     dw = 1;
   std::ostringstream os;
@@ -1143,7 +1172,10 @@ static std::string genLoadPEParams(const LoadPEDef &def) {
 //===----------------------------------------------------------------------===//
 
 static std::string genStorePEParams(const StorePEDef &def) {
-  unsigned dw = getDataWidthBits(def.dataType);
+  // DATA_WIDTH must cover both the data type and address lanes (index type),
+  // since fabric_pe_store uses DATA_WIDTH to slice addresses from in0_data.
+  unsigned dw = std::max(getDataWidthBits(def.dataType),
+                         getDataWidthBits(Type::index()));
   if (dw == 0)
     dw = 1;
   std::ostringstream os;
@@ -1224,7 +1256,14 @@ static std::string genTemporalPEParams(const TemporalPEDef &def,
 //===----------------------------------------------------------------------===//
 
 static std::string genMemoryParams(const MemoryDef &def) {
-  unsigned dw = getDataWidthBits(def.shape.getElemType());
+  // Use shape size as MEM_DEPTH (needed early to derive address width)
+  unsigned memDepth = def.shape.isDynamic() ? 64 : def.shape.getSize();
+  if (memDepth == 0)
+    memDepth = 64;
+  // DATA_WIDTH must cover both element type and address width, since
+  // fabric_memory packs addresses into DATA_WIDTH-sized lanes.
+  unsigned dw = std::max(getDataWidthBits(def.shape.getElemType()),
+                         ceilLog2(memDepth));
   if (dw == 0)
     dw = 1;
   // Determine tag width from tagging rules
@@ -1243,10 +1282,6 @@ static std::string genMemoryParams(const MemoryDef &def) {
   os << "    .ST_COUNT(" << def.stCount << "),\n";
   os << "    .LSQ_DEPTH(" << def.lsqDepth << "),\n";
   os << "    .IS_PRIVATE(" << (def.isPrivate ? 1 : 0) << "),\n";
-  // Use shape size as MEM_DEPTH
-  unsigned memDepth = def.shape.isDynamic() ? 64 : def.shape.getSize();
-  if (memDepth == 0)
-    memDepth = 64;
   os << "    .MEM_DEPTH(" << memDepth << ")";
   return os.str();
 }
@@ -1256,7 +1291,13 @@ static std::string genMemoryParams(const MemoryDef &def) {
 //===----------------------------------------------------------------------===//
 
 static std::string genExtMemoryParams(const ExtMemoryDef &def) {
-  unsigned dw = getDataWidthBits(def.shape.getElemType());
+  // External memory: use dynamic default depth for address width estimation
+  unsigned extMemDepth = def.shape.isDynamic() ? 64 : def.shape.getSize();
+  if (extMemDepth == 0)
+    extMemDepth = 64;
+  // DATA_WIDTH must cover both element type and address width
+  unsigned dw = std::max(getDataWidthBits(def.shape.getElemType()),
+                         ceilLog2(extMemDepth));
   if (dw == 0)
     dw = 1;
   unsigned tw = 0;
@@ -1998,7 +2039,10 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       instPeTagW[i] = tw;
     } else if (instances[i].kind == ModuleKind::Memory) {
       const auto &def = memoryDefs[instances[i].defIdx];
-      unsigned dw = getDataWidthBits(def.shape.getElemType());
+      unsigned memDepth = def.shape.isDynamic() ? 64 : def.shape.getSize();
+      if (memDepth == 0) memDepth = 64;
+      unsigned dw = std::max(getDataWidthBits(def.shape.getElemType()),
+                             ceilLog2(memDepth));
       if (dw == 0) dw = 1;
       unsigned tw = 0;
       if (def.ldCount > 1 || def.stCount > 1) {
@@ -2013,7 +2057,10 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       instPeTagW[i] = tw;
     } else if (instances[i].kind == ModuleKind::ExtMemory) {
       const auto &def = extMemoryDefs[instances[i].defIdx];
-      unsigned dw = getDataWidthBits(def.shape.getElemType());
+      unsigned extMemDepth = def.shape.isDynamic() ? 64 : def.shape.getSize();
+      if (extMemDepth == 0) extMemDepth = 64;
+      unsigned dw = std::max(getDataWidthBits(def.shape.getElemType()),
+                             ceilLog2(extMemDepth));
       if (dw == 0) dw = 1;
       unsigned tw = 0;
       if (def.ldCount > 1 || def.stCount > 1) {
@@ -2535,8 +2582,20 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   auto emitDataAssign = [&](const std::string &dst, unsigned dstDW,
                             unsigned dstTW, const std::string &src,
                             unsigned srcDW, unsigned srcTW) {
-    if (srcTW == 0 || dstTW == 0 || srcDW == dstDW) {
+    unsigned srcTotal = srcDW + srcTW;
+    unsigned dstTotal = dstDW + dstTW;
+    if (srcTotal == dstTotal || dstTotal == 0 || srcTotal == 0) {
+      // Same width, or one side is zero-width (none type): plain assign
       top << "  assign " << dst << " = " << src << ";\n";
+    } else if (srcTW == 0 || dstTW == 0) {
+      // No tag repack needed; just truncate or zero-extend data
+      if (srcTotal > dstTotal) {
+        top << "  assign " << dst << " = " << src << "["
+            << (dstTotal - 1) << ":0];\n";
+      } else {
+        top << "  assign " << dst << " = {"
+            << (dstTotal - srcTotal) << "'b0, " << src << "};\n";
+      }
     } else if (srcDW > dstDW) {
       // Wide -> narrow: extract tag from wide position, truncate data
       top << "  assign " << dst << " = {" << src << "["
