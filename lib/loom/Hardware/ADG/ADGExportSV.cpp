@@ -1903,6 +1903,34 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   }
   top << ");\n\n";
 
+  // Pre-compute per-instance PE payload dimensions.
+  // For PE instances with mixed or body-widened DATA_WIDTH, the packed-array
+  // port requires uniform element width = DATA_WIDTH + TAG_WIDTH.  Store
+  // the widened DATA_WIDTH and TAG_WIDTH so connection code can repack tags
+  // when the PE payload is wider than the connected port's native width.
+  std::vector<unsigned> instPePayload(instances.size(), 0);
+  std::vector<unsigned> instPeDataW(instances.size(), 0);
+  std::vector<unsigned> instPeTagW(instances.size(), 0);
+  for (size_t i = 0; i < instances.size(); ++i) {
+    if (instances[i].kind == ModuleKind::PE) {
+      const auto &def = peDefs[instances[i].defIdx];
+      unsigned dw = 0;
+      for (const auto &pt : def.inputPorts)
+        dw = std::max(dw, getDataWidthBits(pt));
+      for (const auto &pt : def.outputPorts)
+        dw = std::max(dw, getDataWidthBits(pt));
+      if (!def.bodyMLIR.empty())
+        dw = std::max(dw, computeBodyMLIRMaxWidth(def.bodyMLIR));
+      if (dw == 0) dw = 32;
+      unsigned tw = !def.inputPorts.empty()
+                        ? getTagWidthBits(def.inputPorts[0])
+                        : 0;
+      instPePayload[i] = dw + tw;
+      instPeDataW[i] = dw;
+      instPeTagW[i] = tw;
+    }
+  }
+
   // Wire declarations for internal connections
   for (size_t i = 0; i < instances.size(); ++i) {
     const auto &inst = instances[i];
@@ -1913,23 +1941,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     // data width across all ports + tag width) so that the packed-array port
     // connection has uniform element width.  This matters for conversion ops
     // (e.g. arith.extsi i16->i32) where individual port types differ.
-    unsigned pePayloadWidth = 0;
-    if (inst.kind == ModuleKind::PE) {
-      const auto &def = peDefs[inst.defIdx];
-      unsigned dw = 0;
-      for (const auto &pt : def.inputPorts)
-        dw = std::max(dw, getDataWidthBits(pt));
-      for (const auto &pt : def.outputPorts)
-        dw = std::max(dw, getDataWidthBits(pt));
-      if (!def.bodyMLIR.empty())
-        dw = std::max(dw, computeBodyMLIRMaxWidth(def.bodyMLIR));
-      if (dw == 0)
-        dw = 32;
-      unsigned tw = !def.inputPorts.empty()
-                        ? getTagWidthBits(def.inputPorts[0])
-                        : 0;
-      pePayloadWidth = dw + tw;
-    }
+    unsigned pePayloadWidth = instPePayload[i];
 
     for (unsigned p = 0; p < numIn; ++p) {
       unsigned w;
@@ -2416,6 +2428,31 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   // Key: "<inst_name>_out<port>" or "%<module_port_name>" -> list of ready signals.
   std::map<std::string, std::vector<std::string>> readySources;
 
+  // Helper: emit a data assignment with tag repacking when the source and
+  // destination use different data widths in a tagged payload.
+  // srcDW/srcTW: source data/tag widths.  dstDW/dstTW: destination data/tag
+  // widths.  When tag width is 0 or data widths match, a plain assign is
+  // emitted.  Otherwise the tag is extracted from the source position and
+  // placed at the destination position, with data zero-filled or truncated.
+  auto emitDataAssign = [&](const std::string &dst, unsigned dstDW,
+                            unsigned dstTW, const std::string &src,
+                            unsigned srcDW, unsigned srcTW) {
+    if (srcTW == 0 || dstTW == 0 || srcDW == dstDW) {
+      top << "  assign " << dst << " = " << src << ";\n";
+    } else if (srcDW > dstDW) {
+      // Wide -> narrow: extract tag from wide position, truncate data
+      top << "  assign " << dst << " = {" << src << "["
+          << (srcDW + srcTW - 1) << ":" << srcDW << "], " << src << "["
+          << (dstDW - 1) << ":0]};\n";
+    } else {
+      // Narrow -> wide: extract tag from narrow position, zero-pad data
+      top << "  assign " << dst << " = {" << src << "["
+          << (srcDW + srcTW - 1) << ":" << srcDW << "], "
+          << (dstDW - srcDW) << "'b0, " << src << "["
+          << (srcDW - 1) << ":0]};\n";
+    }
+  };
+
   // Wire connections: module inputs to instances
   for (const auto &conn : inputConns) {
     const auto &port = ports[conn.portIdx];
@@ -2423,8 +2460,17 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     std::string sinkReady = inst.name + "_in" + std::to_string(conn.dstPort) + "_ready";
     top << "  assign " << inst.name << "_in" << conn.dstPort
         << "_valid = " << port.name << "_valid;\n";
-    top << "  assign " << inst.name << "_in" << conn.dstPort
-        << "_data = " << port.name << "_data;\n";
+    unsigned srcDW = getDataWidthBits(port.type);
+    unsigned srcTW = getTagWidthBits(port.type);
+    unsigned dstDW = instPeDataW[conn.instIdx];
+    unsigned dstTW = instPeTagW[conn.instIdx];
+    if (instPePayload[conn.instIdx] > 0 && (srcDW + srcTW) != instPePayload[conn.instIdx]) {
+      emitDataAssign(inst.name + "_in" + std::to_string(conn.dstPort) + "_data",
+                     dstDW, dstTW, port.name + "_data", srcDW, srcTW);
+    } else {
+      top << "  assign " << inst.name << "_in" << conn.dstPort
+          << "_data = " << port.name << "_data;\n";
+    }
     readySources["%" + port.name].push_back(sinkReady);
   }
   // Emit aggregated ready for module input ports; drive unconnected to 0
@@ -2456,7 +2502,16 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
     std::string srcKey = inst.name + "_out" + std::to_string(conn.srcPort);
     top << "  assign " << port.name << "_valid = " << srcKey << "_valid;\n";
-    top << "  assign " << port.name << "_data = " << srcKey << "_data;\n";
+    unsigned srcDW = instPeDataW[conn.instIdx];
+    unsigned srcTW = instPeTagW[conn.instIdx];
+    unsigned dstDW = getDataWidthBits(port.type);
+    unsigned dstTW = getTagWidthBits(port.type);
+    if (instPePayload[conn.instIdx] > 0 && (dstDW + dstTW) != instPePayload[conn.instIdx]) {
+      emitDataAssign(port.name + "_data", dstDW, dstTW,
+                     srcKey + "_data", srcDW, srcTW);
+    } else {
+      top << "  assign " << port.name << "_data = " << srcKey << "_data;\n";
+    }
     readySources[srcKey].push_back(port.name + "_ready");
   }
 
@@ -2467,8 +2522,37 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     std::string srcKey = srcInst.name + "_out" + std::to_string(conn.srcPort);
     top << "  assign " << dstInst.name << "_in" << conn.dstPort
         << "_valid = " << srcKey << "_valid;\n";
-    top << "  assign " << dstInst.name << "_in" << conn.dstPort
-        << "_data = " << srcKey << "_data;\n";
+    // Check if source or destination is a PE with widened payload
+    unsigned srcPL = instPePayload[conn.srcInst];
+    unsigned dstPL = instPePayload[conn.dstInst];
+    if (srcPL > 0 && dstPL > 0 && srcPL == dstPL) {
+      // Both PEs with same payload width: plain assign
+      top << "  assign " << dstInst.name << "_in" << conn.dstPort
+          << "_data = " << srcKey << "_data;\n";
+    } else if (srcPL > 0 && srcPL != dstPL) {
+      // Source is wider PE, destination is narrower (non-PE or different PE)
+      unsigned sDW = instPeDataW[conn.srcInst];
+      unsigned sTW = instPeTagW[conn.srcInst];
+      unsigned dDW = dstPL > 0 ? instPeDataW[conn.dstInst]
+                                : getDataWidthBits(getInstanceInputType(conn.dstInst, conn.dstPort));
+      unsigned dTW = dstPL > 0 ? instPeTagW[conn.dstInst]
+                                : getTagWidthBits(getInstanceInputType(conn.dstInst, conn.dstPort));
+      emitDataAssign(dstInst.name + "_in" + std::to_string(conn.dstPort) + "_data",
+                     dDW, dTW, srcKey + "_data", sDW, sTW);
+    } else if (dstPL > 0 && dstPL != srcPL) {
+      // Destination is wider PE, source is narrower (non-PE or different PE)
+      unsigned dDW = instPeDataW[conn.dstInst];
+      unsigned dTW = instPeTagW[conn.dstInst];
+      unsigned sDW = srcPL > 0 ? instPeDataW[conn.srcInst]
+                                : getDataWidthBits(getInstanceOutputType(conn.srcInst, conn.srcPort));
+      unsigned sTW = srcPL > 0 ? instPeTagW[conn.srcInst]
+                                : getTagWidthBits(getInstanceOutputType(conn.srcInst, conn.srcPort));
+      emitDataAssign(dstInst.name + "_in" + std::to_string(conn.dstPort) + "_data",
+                     dDW, dTW, srcKey + "_data", sDW, sTW);
+    } else {
+      top << "  assign " << dstInst.name << "_in" << conn.dstPort
+          << "_data = " << srcKey << "_data;\n";
+    }
     readySources[srcKey].push_back(
         dstInst.name + "_in" + std::to_string(conn.dstPort) + "_ready");
   }

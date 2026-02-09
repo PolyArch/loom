@@ -194,8 +194,14 @@ elif [[ "${MODE}" == "expect-fail" ]]; then
   # parameters cause the elaborator itself to reject the design (e.g.
   # Verilator ASCRANGE/SELRANGE errors from zero-width signals), the $fatal
   # message never appears, but the compile failure IS the correct outcome.
+  # Require that the compile log contains at least one error-class indicator
+  # to rule out unrelated failures (e.g., missing files, syntax errors in
+  # unrelated modules).
   if [[ "${local_rc}" -ne 0 && "${ERR_PATTERN}" == COMP_* ]]; then
-    exit 0
+    if grep -qiE '(\$fatal|%Fatal|%Error|ASCRANGE|SELRANGE|Width of range)' \
+         "${OUTDIR}/compile.log" 2>/dev/null; then
+      exit 0
+    fi
   fi
 
   if [[ "${local_rc}" -eq 0 ]]; then
