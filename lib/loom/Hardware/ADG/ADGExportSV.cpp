@@ -346,51 +346,83 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
   }
 
-  // Check that port-derived signals (<port>_valid/ready/data) do not collide
-  // with any generated internal or top-level signal name.
+  // Collect instance-derived internal signal names (wires + config ports).
+  std::set<std::string> instanceDerived;
+  for (size_t i = 0; i < instances.size(); ++i) {
+    const auto &inst = instances[i];
+    unsigned numIn = getInstanceInputCount(i);
+    unsigned numOut = getInstanceOutputCount(i);
+    for (unsigned p = 0; p < numIn; ++p) {
+      std::string base = inst.name + "_in" + std::to_string(p);
+      instanceDerived.insert(base + "_valid");
+      instanceDerived.insert(base + "_ready");
+      instanceDerived.insert(base + "_data");
+    }
+    for (unsigned p = 0; p < numOut; ++p) {
+      std::string base = inst.name + "_out" + std::to_string(p);
+      instanceDerived.insert(base + "_valid");
+      instanceDerived.insert(base + "_ready");
+      instanceDerived.insert(base + "_data");
+    }
+    if (inst.kind == ModuleKind::Switch ||
+        inst.kind == ModuleKind::TemporalSwitch ||
+        inst.kind == ModuleKind::TemporalPE) {
+      instanceDerived.insert(inst.name + "_error_valid");
+      instanceDerived.insert(inst.name + "_error_code");
+    }
+    if (inst.kind == ModuleKind::Switch) {
+      instanceDerived.insert(inst.name + "_cfg_route_table");
+    } else if (inst.kind == ModuleKind::Fifo) {
+      const auto &def = fifoDefs[inst.defIdx];
+      if (def.bypassable)
+        instanceDerived.insert(inst.name + "_cfg_data");
+    }
+  }
+
+  // Check port suffixed names against instance-derived signals
+  for (const auto &p : ports) {
+    std::string suffixes[] = {"_valid", "_ready", "_data"};
+    for (const auto &sfx : suffixes) {
+      if (instanceDerived.count(p.name + sfx)) {
+        llvm::errs() << "error: exportSV: port '" << p.name
+                     << "' generates signal '" << p.name << sfx
+                     << "' that collides with an internal/config signal\n";
+        std::exit(1);
+      }
+    }
+  }
+
+  // Check instance names against top-level identifiers (fixed ports,
+  // port-derived signals, error aggregation ports).
   {
-    // Collect all generated signal names (internal wires, config ports, error)
-    std::set<std::string> generatedNames;
-    for (size_t i = 0; i < instances.size(); ++i) {
-      const auto &inst = instances[i];
-      unsigned numIn = getInstanceInputCount(i);
-      unsigned numOut = getInstanceOutputCount(i);
-      for (unsigned p = 0; p < numIn; ++p) {
-        std::string base = inst.name + "_in" + std::to_string(p);
-        generatedNames.insert(base + "_valid");
-        generatedNames.insert(base + "_ready");
-        generatedNames.insert(base + "_data");
-      }
-      for (unsigned p = 0; p < numOut; ++p) {
-        std::string base = inst.name + "_out" + std::to_string(p);
-        generatedNames.insert(base + "_valid");
-        generatedNames.insert(base + "_ready");
-        generatedNames.insert(base + "_data");
-      }
+    std::set<std::string> topLevel;
+    topLevel.insert("clk");
+    topLevel.insert("rst_n");
+    bool willEmitError = false;
+    for (const auto &inst : instances) {
       if (inst.kind == ModuleKind::Switch ||
           inst.kind == ModuleKind::TemporalSwitch ||
           inst.kind == ModuleKind::TemporalPE) {
-        generatedNames.insert(inst.name + "_error_valid");
-        generatedNames.insert(inst.name + "_error_code");
-      }
-      // Config port names
-      if (inst.kind == ModuleKind::Switch) {
-        generatedNames.insert(inst.name + "_cfg_route_table");
-      } else if (inst.kind == ModuleKind::Fifo) {
-        const auto &def = fifoDefs[inst.defIdx];
-        if (def.bypassable)
-          generatedNames.insert(inst.name + "_cfg_data");
+        willEmitError = true;
+        break;
       }
     }
+    if (willEmitError) {
+      topLevel.insert("error_valid");
+      topLevel.insert("error_code");
+    }
     for (const auto &p : ports) {
-      std::string suffixes[] = {"_valid", "_ready", "_data"};
-      for (const auto &sfx : suffixes) {
-        if (generatedNames.count(p.name + sfx)) {
-          llvm::errs() << "error: exportSV: port '" << p.name
-                       << "' generates signal '" << p.name << sfx
-                       << "' that collides with an internal/config signal\n";
-          std::exit(1);
-        }
+      topLevel.insert(p.name + "_valid");
+      topLevel.insert(p.name + "_ready");
+      topLevel.insert(p.name + "_data");
+    }
+    // Also include instance-derived names to catch cross-instance collisions
+    topLevel.insert(instanceDerived.begin(), instanceDerived.end());
+    for (const auto &inst : instances) {
+      if (topLevel.count(inst.name)) {
+        llvm::errs() << "error: exportSV: instance name '" << inst.name
+                     << "' collides with a generated top-level identifier\n";
+        std::exit(1);
       }
     }
   }
