@@ -683,6 +683,14 @@ static std::string genMultiOpBodySV(const PEDef &def) {
       os << "  );\n";
     } else {
       unsigned opW = parseMLIRTypeWidth(stmt.typeAnnotation);
+      // arith.select has type annotation "i1, i32" — the value type is after
+      // the comma; parseMLIRTypeWidth stops at ',' and returns the condition
+      // width (1), so extract the value type instead.
+      if (stmt.opName == "arith.select") {
+        auto commaPos = stmt.typeAnnotation.find(',');
+        if (commaPos != std::string::npos)
+          opW = parseMLIRTypeWidth(stmt.typeAnnotation.substr(commaPos + 1));
+      }
       bool useNarrow = opW > 0;
       os << "  logic [SAFE_DW-1:0] " << wireName << ";\n";
       if (useNarrow) {
@@ -788,10 +796,14 @@ static std::string genPEBodySV(const PEDef &def) {
     os << "    end\n";
     os << "  endgenerate\n";
   } else if (isCompareOp(def.singleOp)) {
-    // Compare ops have a PREDICATE parameter and 1-bit output
+    // Compare ops have a PREDICATE parameter and 1-bit output.
+    // Clamp to valid range: cmpi 0-9, cmpf 0-15.
+    int maxPred = (def.singleOp == "arith.cmpf") ? 15 : 9;
+    int pred = def.comparePredicate;
+    if (pred < 0 || pred > maxPred) pred = 0;
     os << "  logic cmp_result;\n";
     os << "  " << svModule
-       << " #(.WIDTH(DATA_WIDTH), .PREDICATE(" << def.comparePredicate
+       << " #(.WIDTH(DATA_WIDTH), .PREDICATE(" << pred
        << ")) u_body (\n";
     // Map input ports
     os << "    .a(in_value[0]),\n";
