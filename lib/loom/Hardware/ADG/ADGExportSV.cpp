@@ -413,22 +413,59 @@ static unsigned computeBodyMLIRLatency(const std::string &bodyMLIR) {
 static std::string genMultiOpBodySV(const PEDef &def) {
   std::string body = def.bodyMLIR;
 
-  // Strip ^bb0(...): header if present
+  // Strip ^bb0(...): header if present, extracting named block args
+  // so they can be renamed to %argN in the body text.
+  std::vector<std::string> blockArgNames;
   auto bbPos = body.find("^bb0(");
   if (bbPos != std::string::npos) {
     auto closePos = body.find("):", bbPos);
     if (closePos != std::string::npos) {
+      std::string argList = body.substr(bbPos + 5, closePos - (bbPos + 5));
+      // Parse "%name: type, %name2: type2, ..."
+      std::istringstream argStream(argList);
+      std::string token;
+      while (std::getline(argStream, token, ',')) {
+        auto pct = token.find('%');
+        if (pct != std::string::npos) {
+          auto colon = token.find(':', pct);
+          if (colon != std::string::npos)
+            blockArgNames.push_back(token.substr(pct, colon - pct));
+          else
+            blockArgNames.push_back(
+                token.substr(pct, token.find_first_of(" \t\n", pct) - pct));
+        }
+      }
       body = body.substr(closePos + 2);
       if (!body.empty() && body[0] == '\n')
         body = body.substr(1);
     }
   }
 
-  // Rename user args to %argN (same as transformBodyMLIR)
-  for (size_t i = 0; i < def.inputPorts.size(); ++i) {
-    std::string argName = "%arg" + std::to_string(i);
-    // Already in %argN form after transformBodyMLIR
-    (void)argName;
+  // Rename user block args to %argN in the body text.
+  // Must process longest names first to avoid partial replacement.
+  std::vector<std::pair<std::string, std::string>> renames;
+  for (size_t i = 0; i < blockArgNames.size(); ++i)
+    renames.push_back({blockArgNames[i], "%arg" + std::to_string(i)});
+  // Sort by name length descending to avoid partial replacement
+  std::sort(renames.begin(), renames.end(),
+            [](const auto &a, const auto &b) {
+              return a.first.size() > b.first.size();
+            });
+  for (const auto &[from, to] : renames) {
+    if (from == to)
+      continue;
+    size_t pos = 0;
+    while ((pos = body.find(from, pos)) != std::string::npos) {
+      // Ensure we match a complete token (next char is not alphanumeric/underscore)
+      size_t endPos = pos + from.size();
+      if (endPos < body.size() &&
+          (std::isalnum(body[endPos]) || body[endPos] == '_')) {
+        pos = endPos;
+        continue;
+      }
+      body.replace(pos, from.size(), to);
+      pos += to.size();
+    }
   }
 
   // Parse lines into statements

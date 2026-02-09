@@ -126,12 +126,15 @@ module tb_memory_top;
     ld_data_in_valid = 0;
     ld_ctrl_valid = 0;
 
-    // Wait for lddata
+    // Wait for lddata and verify round-trip data integrity
     iter_var0 = 0;
     while (iter_var0 < 20) begin : wait_lddata
       @(posedge clk);
       iter_var0 = iter_var0 + 1;
       if (lddata_valid) begin : got_data
+        if (lddata_data !== 32'hBEEF) begin : check_ld_data
+          $fatal(1, "load data mismatch: expected 0xBEEF, got 0x%0h", lddata_data);
+        end
         iter_var0 = 20;
       end
     end

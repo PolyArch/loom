@@ -272,6 +272,13 @@ memory_configs=(
   "DATA_WIDTH=32,TAG_WIDTH=4,LD_COUNT=2,ST_COUNT=2,LSQ_DEPTH=4,IS_PRIVATE=1,MEM_DEPTH=64,DEADLOCK_TIMEOUT=65535"
 )
 
+# Extmemory positive parameter sweeps (subset of memory params; no IS_PRIVATE, MEM_DEPTH)
+extmemory_configs=(
+  "DATA_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,DEADLOCK_TIMEOUT=65535"
+  "DATA_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,DEADLOCK_TIMEOUT=16"
+  "DATA_WIDTH=32,TAG_WIDTH=4,LD_COUNT=2,ST_COUNT=2,LSQ_DEPTH=4,DEADLOCK_TIMEOUT=65535"
+)
+
 # Memory negative tests
 memory_neg=(
   "DATA_WIDTH=32,TAG_WIDTH=0,LD_COUNT=0,ST_COUNT=0,LSQ_DEPTH=0,IS_PRIVATE=1,MEM_DEPTH=64|COMP_MEMORY_PORTS_EMPTY"
@@ -563,6 +570,33 @@ emit_sim_jobs() {
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_memory ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
   done
+
+  # Temporal PE Mode-B collision regression (dedicated bench)
+  outdir="tests/sv/temporal_pe/Output/${sim}_mode_b_collision"
+  sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_temporal_pe.sv ${rel_sv_tb}/tb_temporal_pe_mode_b.sv"
+  line="rm -rf ${outdir} && mkdir -p ${outdir}"
+  line+=" && ${rel_sim_runner} run ${sim} tb_temporal_pe_mode_b ${outdir} ${sv_files}"
+  echo "${line}" >> "${PARALLEL_FILE}"
+
+  # Temporal PE multi-reader register regression (dedicated bench)
+  outdir="tests/sv/temporal_pe/Output/${sim}_multireader_reg"
+  sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_temporal_pe.sv ${rel_sv_tb}/tb_temporal_pe_multireader.sv"
+  line="rm -rf ${outdir} && mkdir -p ${outdir}"
+  line+=" && ${rel_sim_runner} run ${sim} tb_temporal_pe_multireader ${outdir} ${sv_files}"
+  echo "${line}" >> "${PARALLEL_FILE}"
+
+  # Extmemory positive tests
+  for cfg in "${extmemory_configs[@]}"; do
+    local cfg_suffix gparams
+    cfg_suffix=$(cfg_to_suffix "${cfg}")
+    gparams=$(cfg_to_gparams "${cfg}")
+    outdir="tests/sv/memory/Output/${sim}_extmem_${cfg_suffix}"
+
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_extmemory.sv ${rel_sv_tb}/tb_fabric_extmemory.sv"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
+    line+=" && ${rel_sim_runner} run ${sim} tb_fabric_extmemory ${outdir} ${sv_files}${gparams}"
+    echo "${line}" >> "${PARALLEL_FILE}"
+  done
 }
 
 if [[ -n "${SIM}" ]]; then
@@ -653,6 +687,13 @@ else
   for neg in "${memory_neg[@]}"; do
     IFS='|' read -r params _ <<< "${neg}"
     emit_skip_job "tests/sv/memory/Output/skip_neg_$(cfg_to_suffix "${params}")"
+  done
+  # Dedicated temporal PE benches
+  emit_skip_job "tests/sv/temporal_pe/Output/skip_mode_b_collision"
+  emit_skip_job "tests/sv/temporal_pe/Output/skip_multireader_reg"
+  # Extmemory positive tests
+  for cfg in "${extmemory_configs[@]}"; do
+    emit_skip_job "tests/sv/memory/Output/skip_extmem_$(cfg_to_suffix "${cfg}")"
   done
   # Also emit skip for e2e tests (only where testbench exists)
   for test_dir in "${test_dirs[@]}"; do

@@ -1,4 +1,4 @@
-//===-- tb_fabric_memory.sv - Parameterized memory test --------*- SV -*-===//
+//===-- tb_fabric_extmemory.sv - Parameterized extmemory test ---*- SV -*-===//
 //
 // Part of the Loom project.
 //
@@ -6,25 +6,20 @@
 
 `include "fabric_common.svh"
 
-module tb_fabric_memory;
+module tb_fabric_extmemory;
   parameter int DATA_WIDTH       = 32;
   parameter int TAG_WIDTH        = 0;
   parameter int LD_COUNT         = 1;
   parameter int ST_COUNT         = 1;
   parameter int LSQ_DEPTH        = 4;
-  parameter int IS_PRIVATE       = 1;
-  parameter int MEM_DEPTH        = 64;
   parameter int DEADLOCK_TIMEOUT = 65535;
 
   localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH;
   localparam int SAFE_PW = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1;
   localparam int SAFE_TW = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
-  localparam int NUM_INPUTS  = LD_COUNT + 2 * ST_COUNT;
-  localparam int NUM_OUTPUTS = (IS_PRIVATE ? 0 : 1) + LD_COUNT + 1 + (ST_COUNT > 0 ? 1 : 0);
-
-  // Safe port indices for multi-port tests (clamped to valid range for elaboration)
-  localparam int SAFE_ST_ADDR1 = (ST_COUNT >= 2) ? (LD_COUNT + 1) : 0;
-  localparam int SAFE_ST_DATA1 = (ST_COUNT >= 2) ? (LD_COUNT + ST_COUNT + 1) : 0;
+  // Extmemory: first input is memref binding
+  localparam int NUM_INPUTS  = 1 + LD_COUNT + 2 * ST_COUNT;
+  localparam int NUM_OUTPUTS = LD_COUNT + 1 + (ST_COUNT > 0 ? 1 : 0);
 
   logic clk, rst_n;
   logic [NUM_INPUTS-1:0]                in_valid;
@@ -36,14 +31,12 @@ module tb_fabric_memory;
   logic        error_valid;
   logic [15:0] error_code;
 
-  fabric_memory #(
+  fabric_extmemory #(
     .DATA_WIDTH(DATA_WIDTH),
     .TAG_WIDTH(TAG_WIDTH),
     .LD_COUNT(LD_COUNT),
     .ST_COUNT(ST_COUNT),
     .LSQ_DEPTH(LSQ_DEPTH),
-    .IS_PRIVATE(IS_PRIVATE),
-    .MEM_DEPTH(MEM_DEPTH),
     .DEADLOCK_TIMEOUT(DEADLOCK_TIMEOUT)
   ) dut (
     .clk(clk), .rst_n(rst_n),
@@ -77,43 +70,41 @@ module tb_fabric_memory;
     pass_count = pass_count + 1;
 
     // Check 2: store then load - verify round-trip through FIFO-based store queue
+    // Port layout (inputs): [memref(0)] [ld_addr(1..LD)] [st_addr] [st_data]
     if (ST_COUNT > 0 && LD_COUNT > 0) begin : store_load
-      // Store: addr=5, data=0xABCD
-      // Input layout: [ld_addr * LD_COUNT, st_addr * ST_COUNT, st_data * ST_COUNT]
-      // With FIFO-based pairing: addr and data are enqueued independently,
-      // then paired internally and written to memory.
       in_data = '0;
-      in_data[LD_COUNT][SAFE_PW-1:0] = SAFE_PW'(5);
-      in_data[LD_COUNT + ST_COUNT][SAFE_PW-1:0] = SAFE_PW'(32'hABCD);
+      // st_addr port index = 1 + LD_COUNT + 0
+      in_data[1 + LD_COUNT][SAFE_PW-1:0] = SAFE_PW'(5);
+      // st_data port index = 1 + LD_COUNT + ST_COUNT + 0
+      in_data[1 + LD_COUNT + ST_COUNT][SAFE_PW-1:0] = SAFE_PW'(32'hABCD);
       in_valid = '0;
-      in_valid[LD_COUNT] = 1'b1;
-      in_valid[LD_COUNT + ST_COUNT] = 1'b1;
+      in_valid[1 + LD_COUNT] = 1'b1;
+      in_valid[1 + LD_COUNT + ST_COUNT] = 1'b1;
       @(posedge clk);
-      // Addr and data are accepted into FIFOs immediately
       in_valid = '0;
-      // Wait for store done (pair_fire -> write_mem -> stdone)
+      // Wait for store done (stdone at output index LD_COUNT + 1)
       iter_var0 = 0;
       while (iter_var0 < 10) begin : wait_stdone
         @(posedge clk);
         iter_var0 = iter_var0 + 1;
-        if (out_valid[(IS_PRIVATE ? 0 : 1) + LD_COUNT + 1]) begin : done
+        if (out_valid[LD_COUNT + 1]) begin : done
           iter_var0 = 10;
         end
       end
       @(posedge clk);
 
-      // Load: addr=5
+      // Load: ld_addr port index = 1 (skip memref)
       in_data = '0;
-      in_data[0][SAFE_PW-1:0] = SAFE_PW'(5);
+      in_data[1][SAFE_PW-1:0] = SAFE_PW'(5);
       in_valid = '0;
-      in_valid[0] = 1'b1;
+      in_valid[1] = 1'b1;
       @(posedge clk);
-      if (out_valid[IS_PRIVATE ? 0 : 1] !== 1'b1) begin : check_ld_valid
+      if (out_valid[0] !== 1'b1) begin : check_ld_valid
         $fatal(1, "load data output should be valid");
       end
-      if (out_data[IS_PRIVATE ? 0 : 1][DATA_WIDTH-1:0] !== DATA_WIDTH'(32'hABCD)) begin : check_ld_data
+      if (out_data[0][DATA_WIDTH-1:0] !== DATA_WIDTH'(32'hABCD)) begin : check_ld_data
         $fatal(1, "load data mismatch: expected 0xABCD, got 0x%0h",
-               out_data[IS_PRIVATE ? 0 : 1][DATA_WIDTH-1:0]);
+               out_data[0][DATA_WIDTH-1:0]);
       end
       pass_count = pass_count + 1;
       in_valid = '0;
@@ -126,32 +117,7 @@ module tb_fabric_memory;
     end
     pass_count = pass_count + 1;
 
-    // Check 4: RT_MEMORY_TAG_OOB (only testable when TAG_WIDTH > 0 and LD_COUNT > 1)
-    // Uses SAFE_TW to avoid zero-width part-select when TAG_WIDTH=0.
-    if (TAG_WIDTH > 0 && LD_COUNT > 1) begin : tag_oob_test
-      rst_n = 0;
-      repeat (2) @(posedge clk);
-      rst_n = 1;
-      @(posedge clk);
-      // Send load with tag = LD_COUNT (out of bounds)
-      // Use SAFE_PW-wide assignment to avoid zero-width TAG_WIDTH part-select
-      in_data = '0;
-      in_data[0] = SAFE_PW'(LD_COUNT) << DATA_WIDTH;
-      in_valid = '0;
-      in_valid[0] = 1'b1;
-      @(posedge clk);
-      @(posedge clk);
-      if (error_valid !== 1'b1) begin : check_tag_oob
-        $fatal(1, "expected RT_MEMORY_TAG_OOB error");
-      end
-      if (error_code !== RT_MEMORY_TAG_OOB) begin : check_tag_oob_code
-        $fatal(1, "wrong error code for tag OOB: got %0d", error_code);
-      end
-      pass_count = pass_count + 1;
-      in_valid = '0;
-    end
-
-    // Check 5: multi-port store via different tags (when ST_COUNT >= 2 && TAG_WIDTH > 0)
+    // Check 4: multi-port store via different tags (when ST_COUNT >= 2 && TAG_WIDTH > 0)
     // Store on port 0 (tag=0) and port 1 (tag=1) sequentially, then verify.
     if (ST_COUNT >= 2 && TAG_WIDTH > 0) begin : cross_port_test
       rst_n = 0;
@@ -162,52 +128,53 @@ module tb_fabric_memory;
 
       // Store via port 0 (tag=0): addr=10, data=0xDEAD
       in_data = '0;
-      in_data[LD_COUNT] = SAFE_PW'(10);
-      in_data[LD_COUNT + ST_COUNT] = SAFE_PW'(32'hDEAD);
+      in_data[1 + LD_COUNT] = SAFE_PW'(10);
+      in_data[1 + LD_COUNT + ST_COUNT] = SAFE_PW'(32'hDEAD);
       in_valid = '0;
-      in_valid[LD_COUNT] = 1'b1;
-      in_valid[LD_COUNT + ST_COUNT] = 1'b1;
+      in_valid[1 + LD_COUNT] = 1'b1;
+      in_valid[1 + LD_COUNT + ST_COUNT] = 1'b1;
       @(posedge clk);
       in_valid = '0;
       repeat (10) @(posedge clk);
 
       // Store via port 1 (tag=1): addr=11, data=0xBEEF
       in_data = '0;
-      in_data[SAFE_ST_ADDR1] = (SAFE_PW'(1) << DATA_WIDTH) | SAFE_PW'(11);
-      in_data[SAFE_ST_DATA1] = (SAFE_PW'(1) << DATA_WIDTH) | SAFE_PW'(32'hBEEF);
+      in_data[1 + LD_COUNT + 1] = (SAFE_PW'(1) << DATA_WIDTH) | SAFE_PW'(11);
+      in_data[1 + LD_COUNT + ST_COUNT + 1] = (SAFE_PW'(1) << DATA_WIDTH) | SAFE_PW'(32'hBEEF);
       in_valid = '0;
-      in_valid[SAFE_ST_ADDR1] = 1'b1;
-      in_valid[SAFE_ST_DATA1] = 1'b1;
+      in_valid[1 + LD_COUNT + 1] = 1'b1;
+      in_valid[1 + LD_COUNT + ST_COUNT + 1] = 1'b1;
       @(posedge clk);
       in_valid = '0;
       repeat (10) @(posedge clk);
 
       // Load addr=10 -> expect 0xDEAD
       in_data = '0;
-      in_data[0][SAFE_PW-1:0] = SAFE_PW'(10);
+      in_data[1][SAFE_PW-1:0] = SAFE_PW'(10);
       in_valid = '0;
-      in_valid[0] = 1'b1;
+      in_valid[1] = 1'b1;
       @(posedge clk);
       in_valid = '0;
-      if (out_data[IS_PRIVATE ? 0 : 1][DATA_WIDTH-1:0] !== DATA_WIDTH'(32'hDEAD)) begin : check_st0
+      if (out_data[0][DATA_WIDTH-1:0] !== DATA_WIDTH'(32'hDEAD)) begin : check_st0
         $fatal(1, "cross-port store 0: expected 0xDEAD, got 0x%0h",
-               out_data[IS_PRIVATE ? 0 : 1][DATA_WIDTH-1:0]);
+               out_data[0][DATA_WIDTH-1:0]);
       end
       @(posedge clk);
 
       // Load addr=11 -> expect 0xBEEF
-      in_data[0][SAFE_PW-1:0] = SAFE_PW'(11);
-      in_valid[0] = 1'b1;
+      in_data[1][SAFE_PW-1:0] = SAFE_PW'(11);
+      in_valid[1] = 1'b1;
       @(posedge clk);
       in_valid = '0;
-      if (out_data[IS_PRIVATE ? 0 : 1][DATA_WIDTH-1:0] !== DATA_WIDTH'(32'hBEEF)) begin : check_st1
+      if (out_data[0][DATA_WIDTH-1:0] !== DATA_WIDTH'(32'hBEEF)) begin : check_st1
         $fatal(1, "cross-port store 1: expected 0xBEEF, got 0x%0h",
-               out_data[IS_PRIVATE ? 0 : 1][DATA_WIDTH-1:0]);
+               out_data[0][DATA_WIDTH-1:0]);
       end
       pass_count = pass_count + 1;
     end
 
-    // Check 6: stdone tag correctness (when ST_COUNT >= 2 && TAG_WIDTH > 0)
+    // Check 5: stdone tag correctness (when ST_COUNT >= 2 && TAG_WIDTH > 0)
+    // Verify stdone output carries the correct tag index.
     if (ST_COUNT >= 2 && TAG_WIDTH > 0) begin : stdone_tag_test
       rst_n = 0;
       in_valid = '0;
@@ -215,25 +182,27 @@ module tb_fabric_memory;
       rst_n = 1;
       @(posedge clk);
 
-      // Store targeting tag 1 via port 1: addr=20, data=0x1234
+      // Store on port 1 targeting tag 1: addr=20, data=0x1234
       in_data = '0;
-      in_data[SAFE_ST_ADDR1] = (SAFE_PW'(1) << DATA_WIDTH) | SAFE_PW'(20);
-      in_data[SAFE_ST_DATA1] = (SAFE_PW'(1) << DATA_WIDTH) | SAFE_PW'(32'h1234);
+      // Tag goes in the upper TAG_WIDTH bits of the payload
+      in_data[1 + LD_COUNT + 1] = (SAFE_PW'(1) << DATA_WIDTH) | SAFE_PW'(20);
+      in_data[1 + LD_COUNT + ST_COUNT + 1] = (SAFE_PW'(1) << DATA_WIDTH) | SAFE_PW'(32'h1234);
       in_valid = '0;
-      in_valid[SAFE_ST_ADDR1] = 1'b1;
-      in_valid[SAFE_ST_DATA1] = 1'b1;
+      in_valid[1 + LD_COUNT + 1] = 1'b1;
+      in_valid[1 + LD_COUNT + ST_COUNT + 1] = 1'b1;
       @(posedge clk);
       in_valid = '0;
 
-      // Wait for stdone and verify tag
+      // Wait for stdone and check tag
       iter_var0 = 0;
       while (iter_var0 < 10) begin : wait_stdone_tag
         @(posedge clk);
         iter_var0 = iter_var0 + 1;
-        if (out_valid[(IS_PRIVATE ? 0 : 1) + LD_COUNT + 1]) begin : got_stdone
-          if (out_data[(IS_PRIVATE ? 0 : 1) + LD_COUNT + 1][SAFE_PW-1 -: SAFE_TW] !== SAFE_TW'(1)) begin : bad_tag
+        if (out_valid[LD_COUNT + 1]) begin : got_stdone
+          // stdone tag should be 1 (the tag index of the paired store)
+          if (out_data[LD_COUNT + 1][SAFE_PW-1 -: SAFE_TW] !== SAFE_TW'(1)) begin : bad_tag
             $fatal(1, "stdone tag: expected 1, got %0d",
-                   out_data[(IS_PRIVATE ? 0 : 1) + LD_COUNT + 1][SAFE_PW-1 -: SAFE_TW]);
+                   out_data[LD_COUNT + 1][SAFE_PW-1 -: SAFE_TW]);
           end
           iter_var0 = 10;
         end
@@ -241,8 +210,7 @@ module tb_fabric_memory;
       pass_count = pass_count + 1;
     end
 
-    // Check 7: RT_MEMORY_STORE_DEADLOCK (only when ST_COUNT > 0)
-    // Send only a store address (no data) and wait for deadlock timeout.
+    // Check 6: deadlock detection (when ST_COUNT > 0)
     if (ST_COUNT > 0) begin : deadlock_test
       rst_n = 0;
       in_valid = '0;
@@ -251,12 +219,11 @@ module tb_fabric_memory;
       @(posedge clk);
       // Enqueue only addr, leave data FIFO empty -> triggers deadlock
       in_data = '0;
-      in_data[LD_COUNT][SAFE_PW-1:0] = SAFE_PW'(1);
+      in_data[1 + LD_COUNT][SAFE_PW-1:0] = SAFE_PW'(1);
       in_valid = '0;
-      in_valid[LD_COUNT] = 1'b1;
+      in_valid[1 + LD_COUNT] = 1'b1;
       @(posedge clk);
       in_valid = '0;
-      // Wait for deadlock timeout + margin
       repeat (DEADLOCK_TIMEOUT + 4) @(posedge clk);
       if (error_valid !== 1'b1) begin : check_deadlock_valid
         $fatal(1, "expected RT_MEMORY_STORE_DEADLOCK error");
@@ -268,13 +235,12 @@ module tb_fabric_memory;
       pass_count = pass_count + 1;
     end
 
-    $display("PASS: tb_fabric_memory DW=%0d TW=%0d LD=%0d ST=%0d (%0d checks)",
+    $display("PASS: tb_fabric_extmemory DW=%0d TW=%0d LD=%0d ST=%0d (%0d checks)",
              DATA_WIDTH, TAG_WIDTH, LD_COUNT, ST_COUNT, pass_count);
     $finish;
   end
 
   initial begin : timeout
-    // Allow enough time for deadlock test (DEADLOCK_TIMEOUT + margin cycles)
     #((DEADLOCK_TIMEOUT + 200) * 10);
     $fatal(1, "TIMEOUT");
   end
