@@ -346,29 +346,51 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
   }
 
-  // Check that port-derived signals (<port>_valid, etc.) do not collide
-  // with instance-derived internal nets.  Build exact set of internal
-  // signal base names, then reject any port whose base matches.
+  // Check that port-derived signals (<port>_valid/ready/data) do not collide
+  // with any generated internal or top-level signal name.
   {
-    std::set<std::string> internalBases;
+    // Collect all generated signal names (internal wires, config ports, error)
+    std::set<std::string> generatedNames;
     for (size_t i = 0; i < instances.size(); ++i) {
       const auto &inst = instances[i];
       unsigned numIn = getInstanceInputCount(i);
       unsigned numOut = getInstanceOutputCount(i);
-      for (unsigned p = 0; p < numIn; ++p)
-        internalBases.insert(inst.name + "_in" + std::to_string(p));
-      for (unsigned p = 0; p < numOut; ++p)
-        internalBases.insert(inst.name + "_out" + std::to_string(p));
+      for (unsigned p = 0; p < numIn; ++p) {
+        std::string base = inst.name + "_in" + std::to_string(p);
+        generatedNames.insert(base + "_valid");
+        generatedNames.insert(base + "_ready");
+        generatedNames.insert(base + "_data");
+      }
+      for (unsigned p = 0; p < numOut; ++p) {
+        std::string base = inst.name + "_out" + std::to_string(p);
+        generatedNames.insert(base + "_valid");
+        generatedNames.insert(base + "_ready");
+        generatedNames.insert(base + "_data");
+      }
       if (inst.kind == ModuleKind::Switch ||
           inst.kind == ModuleKind::TemporalSwitch ||
-          inst.kind == ModuleKind::TemporalPE)
-        internalBases.insert(inst.name + "_error");
+          inst.kind == ModuleKind::TemporalPE) {
+        generatedNames.insert(inst.name + "_error_valid");
+        generatedNames.insert(inst.name + "_error_code");
+      }
+      // Config port names
+      if (inst.kind == ModuleKind::Switch) {
+        generatedNames.insert(inst.name + "_cfg_route_table");
+      } else if (inst.kind == ModuleKind::Fifo) {
+        const auto &def = fifoDefs[inst.defIdx];
+        if (def.bypassable)
+          generatedNames.insert(inst.name + "_cfg_data");
+      }
     }
     for (const auto &p : ports) {
-      if (internalBases.count(p.name)) {
-        llvm::errs() << "error: exportSV: port name '" << p.name
-                     << "' collides with a generated internal signal\n";
-        std::exit(1);
+      std::string suffixes[] = {"_valid", "_ready", "_data"};
+      for (const auto &sfx : suffixes) {
+        if (generatedNames.count(p.name + sfx)) {
+          llvm::errs() << "error: exportSV: port '" << p.name
+                       << "' generates signal '" << p.name << sfx
+                       << "' that collides with an internal/config signal\n";
+          std::exit(1);
+        }
       }
     }
   }
