@@ -105,12 +105,12 @@ module tb_memory_top;
 
     // Wait for stdone
     iter_var0 = 0;
-    while (iter_var0 < 20) begin : wait_stdone
+    while (iter_var0 < 20 && !stdone_valid) begin : wait_stdone
       @(posedge clk);
       iter_var0 = iter_var0 + 1;
-      if (stdone_valid) begin : done
-        iter_var0 = 20;
-      end
+    end
+    if (!stdone_valid) begin : check_stdone
+      $fatal(1, "stdone_valid not asserted within 20 cycles");
     end
     @(posedge clk);
 
@@ -128,15 +128,15 @@ module tb_memory_top;
 
     // Wait for lddata and verify round-trip data integrity
     iter_var0 = 0;
-    while (iter_var0 < 20) begin : wait_lddata
+    while (iter_var0 < 20 && !lddata_valid) begin : wait_lddata
       @(posedge clk);
       iter_var0 = iter_var0 + 1;
-      if (lddata_valid) begin : got_data
-        if (lddata_data !== 32'hBEEF) begin : check_ld_data
-          $fatal(1, "load data mismatch: expected 0xBEEF, got 0x%0h", lddata_data);
-        end
-        iter_var0 = 20;
-      end
+    end
+    if (!lddata_valid) begin : check_lddata_seen
+      $fatal(1, "lddata_valid not asserted within 20 cycles");
+    end
+    if (lddata_data !== 32'hBEEF) begin : check_ld_data
+      $fatal(1, "load data mismatch: expected 0xBEEF, got 0x%0h", lddata_data);
     end
     pass_count = pass_count + 1;
 

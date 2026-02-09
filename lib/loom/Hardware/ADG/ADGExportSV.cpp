@@ -1959,11 +1959,11 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   }
   top << ");\n\n";
 
-  // Pre-compute per-instance PE payload dimensions.
-  // For PE instances with mixed or body-widened DATA_WIDTH, the packed-array
-  // port requires uniform element width = DATA_WIDTH + TAG_WIDTH.  Store
-  // the widened DATA_WIDTH and TAG_WIDTH so connection code can repack tags
-  // when the PE payload is wider than the connected port's native width.
+  // Pre-compute per-instance payload dimensions for modules with packed-array
+  // ports (PE, Memory, ExtMemory).  All lanes of in_data/out_data must have
+  // uniform width = DATA_WIDTH + TAG_WIDTH (SAFE_PW).  Without this, semantic
+  // port types of different widths (e.g. index=64 vs i32=32 for Memory) would
+  // produce mismatched wire widths that corrupt packed-array lane boundaries.
   std::vector<unsigned> instPePayload(instances.size(), 0);
   std::vector<unsigned> instPeDataW(instances.size(), 0);
   std::vector<unsigned> instPeTagW(instances.size(), 0);
@@ -1981,6 +1981,36 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       unsigned tw = !def.inputPorts.empty()
                         ? getTagWidthBits(def.inputPorts[0])
                         : 0;
+      instPePayload[i] = dw + tw;
+      instPeDataW[i] = dw;
+      instPeTagW[i] = tw;
+    } else if (instances[i].kind == ModuleKind::Memory) {
+      const auto &def = memoryDefs[instances[i].defIdx];
+      unsigned dw = getDataWidthBits(def.shape.getElemType());
+      if (dw == 0) dw = 1;
+      unsigned tw = 0;
+      if (def.ldCount > 1 || def.stCount > 1) {
+        unsigned maxCount = std::max(def.ldCount, def.stCount);
+        unsigned tagBits = 1;
+        while ((1u << tagBits) < maxCount)
+          ++tagBits;
+        tw = tagBits;
+      }
+      instPePayload[i] = dw + tw;
+      instPeDataW[i] = dw;
+      instPeTagW[i] = tw;
+    } else if (instances[i].kind == ModuleKind::ExtMemory) {
+      const auto &def = extMemoryDefs[instances[i].defIdx];
+      unsigned dw = getDataWidthBits(def.shape.getElemType());
+      if (dw == 0) dw = 1;
+      unsigned tw = 0;
+      if (def.ldCount > 1 || def.stCount > 1) {
+        unsigned maxCount = std::max(def.ldCount, def.stCount);
+        unsigned tagBits = 1;
+        while ((1u << tagBits) < maxCount)
+          ++tagBits;
+        tw = tagBits;
+      }
       instPePayload[i] = dw + tw;
       instPeDataW[i] = dw;
       instPeTagW[i] = tw;
