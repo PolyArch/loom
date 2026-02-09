@@ -682,26 +682,55 @@ static std::string genMultiOpBodySV(const PEDef &def) {
       os << "    .result(" << wireName << ")\n";
       os << "  );\n";
     } else {
+      unsigned opW = parseMLIRTypeWidth(stmt.typeAnnotation);
+      bool useNarrow = opW > 0;
       os << "  logic [SAFE_DW-1:0] " << wireName << ";\n";
-      os << "  " << svModule << " #(.WIDTH(DATA_WIDTH)) u_op" << wireIdx << " (\n";
+      if (useNarrow) {
+        os << "  " << svModule << " #(.WIDTH(" << opW << ")) u_op" << wireIdx
+           << " (\n";
+      } else {
+        os << "  " << svModule << " #(.WIDTH(DATA_WIDTH)) u_op" << wireIdx
+           << " (\n";
+      }
+
+      // Helper lambda: emit an operand reference, sliced when narrower.
+      auto emitOp = [&](const std::string &port, const std::string &svRef) {
+        if (useNarrow)
+          os << "    ." << port << "(" << svRef << "[" << (opW - 1) << ":0]),\n";
+        else
+          os << "    ." << port << "(" << svRef << "),\n";
+      };
 
       if (stmt.opName == "arith.select" && stmt.operands.size() >= 3) {
         os << "    .condition(" << ssaToSV[stmt.operands[0]] << "[0]),\n";
-        os << "    .a(" << ssaToSV[stmt.operands[1]] << "),\n";
-        os << "    .b(" << ssaToSV[stmt.operands[2]] << "),\n";
+        emitOp("a", ssaToSV[stmt.operands[1]]);
+        emitOp("b", ssaToSV[stmt.operands[2]]);
       } else if (stmt.opName == "math.fma" && stmt.operands.size() >= 3) {
-        os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
-        os << "    .b(" << ssaToSV[stmt.operands[1]] << "),\n";
-        os << "    .c(" << ssaToSV[stmt.operands[2]] << "),\n";
+        emitOp("a", ssaToSV[stmt.operands[0]]);
+        emitOp("b", ssaToSV[stmt.operands[1]]);
+        emitOp("c", ssaToSV[stmt.operands[2]]);
       } else if (stmt.operands.size() >= 2) {
-        os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
-        os << "    .b(" << ssaToSV[stmt.operands[1]] << "),\n";
+        emitOp("a", ssaToSV[stmt.operands[0]]);
+        emitOp("b", ssaToSV[stmt.operands[1]]);
       } else if (stmt.operands.size() >= 1) {
-        os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
+        emitOp("a", ssaToSV[stmt.operands[0]]);
       }
 
-      os << "    .result(" << wireName << ")\n";
-      os << "  );\n";
+      if (useNarrow) {
+        os << "    .result(" << wireName << "[" << (opW - 1) << ":0])\n";
+        os << "  );\n";
+        // Zero-fill upper bits when op width < DATA_WIDTH
+        os << "  generate\n";
+        os << "    if (DATA_WIDTH > " << opW << ") begin : g_op_pad_"
+           << wireIdx << "\n";
+        os << "      assign " << wireName << "[DATA_WIDTH-1:" << opW
+           << "] = '0;\n";
+        os << "    end\n";
+        os << "  endgenerate\n";
+      } else {
+        os << "    .result(" << wireName << ")\n";
+        os << "  );\n";
+      }
     }
     os << "\n";
     ++wireIdx;
@@ -1892,6 +1921,8 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         dw = std::max(dw, getDataWidthBits(pt));
       for (const auto &pt : def.outputPorts)
         dw = std::max(dw, getDataWidthBits(pt));
+      if (!def.bodyMLIR.empty())
+        dw = std::max(dw, computeBodyMLIRMaxWidth(def.bodyMLIR));
       if (dw == 0)
         dw = 32;
       unsigned tw = !def.inputPorts.empty()
