@@ -145,37 +145,45 @@ module fabric_memory #(
   endgenerate
 
   // -----------------------------------------------------------------------
-  // Store path: per-tag FIFO-based address/data pairing
+  // Store path: true per-tag FIFO-based address/data pairing
   // -----------------------------------------------------------------------
-  // Each store port has an independent address FIFO and data FIFO (depth =
-  // LSQ_DEPTH). The addr FIFO also stores the request tag (when TAG_WIDTH > 0
-  // and ST_COUNT > 1) so stdone can propagate the actual request tag.
+  // Store FIFOs are organized by TAG (not by physical port). With TAG_WIDTH > 0
+  // and ST_COUNT > 1, addr/data arriving on ANY physical port are routed to the
+  // per-tag FIFO matching their request tag. This enables cross-port same-tag
+  // pairing. With single store port or untagged mode, this degenerates to the
+  // per-port model (tag 0 on port 0).
   localparam int SAFE_TW = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
-  logic [ST_COUNT > 0 ? ST_COUNT-1 : 0 : 0] st_paired;
-  // Flat array for stdone tag lookup (populated inside generate loop)
-  logic [ST_COUNT > 0 ? ST_COUNT-1 : 0 : 0][SAFE_TW-1:0] st_head_tag;
+  localparam int SAFE_STC = (ST_COUNT > 0) ? ST_COUNT : 1;
+  logic [SAFE_STC-1:0] st_paired;
 
   generate
     if (ST_COUNT > 0) begin : g_store
       localparam int SAFE_LSQ = (LSQ_DEPTH > 0) ? LSQ_DEPTH : 1;
       localparam int Q_IDX_W  = $clog2(SAFE_LSQ > 1 ? SAFE_LSQ : 2);
+      localparam int DONE_IDX = (IS_PRIVATE ? 0 : 1) + LD_COUNT + 1;
 
-      genvar gsi;
-      for (gsi = 0; gsi < ST_COUNT; gsi++) begin : g_st_port
-        localparam int ADDR_IN = LD_COUNT + gsi;
-        localparam int DATA_IN = LD_COUNT + ST_COUNT + gsi;
-        localparam int DONE_IDX = (IS_PRIVATE ? 0 : 1) + LD_COUNT + 1;
+      // Flat arrays for Verilator compatibility: generate-internal signals
+      // exported via continuous assign so the route_to_tags always_comb
+      // block can index them with runtime variables.
+      logic [ST_COUNT-1:0]                    tag_addr_full;
+      logic [ST_COUNT-1:0]                    tag_data_full;
+      logic [ST_COUNT-1:0]                    tag_addr_enq;
+      logic [ST_COUNT-1:0][ADDR_WIDTH-1:0]   tag_addr_enq_val;
+      logic [ST_COUNT-1:0]                    tag_data_enq;
+      logic [ST_COUNT-1:0][SAFE_DW-1:0]      tag_data_enq_val;
 
-        // Address FIFO (also stores request tag for tagged stdone)
+      // Per-tag FIFOs: ST_COUNT tags (tag range [0, ST_COUNT-1])
+      genvar gti;
+      for (gti = 0; gti < ST_COUNT; gti++) begin : g_tag_fifo
+        // Address FIFO for this tag
         logic [ADDR_WIDTH-1:0] addr_q [0:SAFE_LSQ-1];
-        logic [SAFE_TW-1:0]   addr_tag_q [0:SAFE_LSQ-1];
         logic [Q_IDX_W:0] addr_cnt;
         logic [Q_IDX_W-1:0] addr_wr_ptr, addr_rd_ptr;
         logic addr_full, addr_empty;
         assign addr_full  = (addr_cnt == SAFE_LSQ[Q_IDX_W:0]);
         assign addr_empty = (addr_cnt == '0);
 
-        // Data FIFO
+        // Data FIFO for this tag
         logic [SAFE_DW-1:0] data_q [0:SAFE_LSQ-1];
         logic [Q_IDX_W:0] data_cnt;
         logic [Q_IDX_W-1:0] data_wr_ptr, data_rd_ptr;
@@ -183,22 +191,24 @@ module fabric_memory #(
         assign data_full  = (data_cnt == SAFE_LSQ[Q_IDX_W:0]);
         assign data_empty = (data_cnt == '0);
 
-        // Enqueue: accept address/data independently when FIFO not full
-        assign in_ready[ADDR_IN] = !addr_full;
-        assign in_ready[DATA_IN] = !data_full;
-
-        logic addr_enq, data_enq;
-        assign addr_enq = in_valid[ADDR_IN] && !addr_full;
-        assign data_enq = in_valid[DATA_IN] && !data_full;
-
-        // Dequeue: paired store fires when both FIFOs non-empty and done ready
+        // Paired store fires when both FIFOs non-empty and done-port ready
         logic pair_fire;
         assign pair_fire = !addr_empty && !data_empty && out_ready[DONE_IDX];
-        assign st_paired[gsi] = pair_fire;
+        assign st_paired[gti] = pair_fire;
 
-        // Extract tag from addr input (safe for TAG_WIDTH=0: uses top bits of SAFE_PW)
-        logic [SAFE_TW-1:0] addr_in_tag;
-        assign addr_in_tag = in_data[ADDR_IN][SAFE_PW-1 -: SAFE_TW];
+        // Export to flat arrays for runtime-indexed access
+        assign tag_addr_full[gti] = addr_full;
+        assign tag_data_full[gti] = data_full;
+
+        // Per-tag enqueue signals driven from flat arrays
+        logic addr_enq;
+        logic [ADDR_WIDTH-1:0] addr_enq_val;
+        logic data_enq;
+        logic [SAFE_DW-1:0] data_enq_val;
+        assign addr_enq     = tag_addr_enq[gti];
+        assign addr_enq_val = tag_addr_enq_val[gti];
+        assign data_enq     = tag_data_enq[gti];
+        assign data_enq_val = tag_data_enq_val[gti];
 
         always_ff @(posedge clk or negedge rst_n) begin : addr_fifo
           if (!rst_n) begin : reset
@@ -207,16 +217,14 @@ module fabric_memory #(
             addr_rd_ptr <= '0;
           end else begin : tick
             if (addr_enq && !pair_fire) begin : enq_only
-              addr_q[addr_wr_ptr] <= in_data[ADDR_IN][ADDR_WIDTH-1:0];
-              addr_tag_q[addr_wr_ptr] <= addr_in_tag;
+              addr_q[addr_wr_ptr] <= addr_enq_val;
               addr_wr_ptr <= (addr_wr_ptr == Q_IDX_W'(SAFE_LSQ - 1)) ? '0 : (addr_wr_ptr + Q_IDX_W'(1));
               addr_cnt    <= addr_cnt + (Q_IDX_W+1)'(1);
             end else if (!addr_enq && pair_fire) begin : deq_only
               addr_rd_ptr <= (addr_rd_ptr == Q_IDX_W'(SAFE_LSQ - 1)) ? '0 : (addr_rd_ptr + Q_IDX_W'(1));
               addr_cnt    <= addr_cnt - (Q_IDX_W+1)'(1);
             end else if (addr_enq && pair_fire) begin : enq_deq
-              addr_q[addr_wr_ptr] <= in_data[ADDR_IN][ADDR_WIDTH-1:0];
-              addr_tag_q[addr_wr_ptr] <= addr_in_tag;
+              addr_q[addr_wr_ptr] <= addr_enq_val;
               addr_wr_ptr <= (addr_wr_ptr == Q_IDX_W'(SAFE_LSQ - 1)) ? '0 : (addr_wr_ptr + Q_IDX_W'(1));
               addr_rd_ptr <= (addr_rd_ptr == Q_IDX_W'(SAFE_LSQ - 1)) ? '0 : (addr_rd_ptr + Q_IDX_W'(1));
             end
@@ -230,14 +238,14 @@ module fabric_memory #(
             data_rd_ptr <= '0;
           end else begin : tick
             if (data_enq && !pair_fire) begin : enq_only
-              data_q[data_wr_ptr] <= in_data[DATA_IN][DATA_WIDTH-1:0];
+              data_q[data_wr_ptr] <= data_enq_val;
               data_wr_ptr <= (data_wr_ptr == Q_IDX_W'(SAFE_LSQ - 1)) ? '0 : (data_wr_ptr + Q_IDX_W'(1));
               data_cnt    <= data_cnt + (Q_IDX_W+1)'(1);
             end else if (!data_enq && pair_fire) begin : deq_only
               data_rd_ptr <= (data_rd_ptr == Q_IDX_W'(SAFE_LSQ - 1)) ? '0 : (data_rd_ptr + Q_IDX_W'(1));
               data_cnt    <= data_cnt - (Q_IDX_W+1)'(1);
             end else if (data_enq && pair_fire) begin : enq_deq
-              data_q[data_wr_ptr] <= in_data[DATA_IN][DATA_WIDTH-1:0];
+              data_q[data_wr_ptr] <= data_enq_val;
               data_wr_ptr <= (data_wr_ptr == Q_IDX_W'(SAFE_LSQ - 1)) ? '0 : (data_wr_ptr + Q_IDX_W'(1));
               data_rd_ptr <= (data_rd_ptr == Q_IDX_W'(SAFE_LSQ - 1)) ? '0 : (data_rd_ptr + Q_IDX_W'(1));
             end
@@ -250,16 +258,62 @@ module fabric_memory #(
             mem[addr_q[addr_rd_ptr]] <= data_q[data_rd_ptr];
           end
         end
-
-        // Export FIFO head tag to flat array for stdone lookup
-        assign st_head_tag[gsi] = addr_tag_q[addr_rd_ptr];
       end
 
-      // Store done signal: fires when any store port has a paired completion.
-      // When ST_COUNT > 1 && TAG_WIDTH > 0, stdone carries the request tag
-      // from the addr FIFO (not the physical port index).
+      // Route physical port inputs to per-tag FIFOs based on request tag.
+      // For TAG_WIDTH > 0 and ST_COUNT > 1: tag extracted from input selects
+      // the target FIFO. For single-port or untagged: everything goes to tag 0.
+      //
+      // Uses flat arrays (tag_addr_full, tag_addr_enq, etc.) instead of
+      // generate-array hierarchical refs for Verilator compatibility.
+      logic [ST_COUNT-1:0] addr_port_fire;
+      logic [ST_COUNT-1:0] data_port_fire;
+
+      always_comb begin : route_to_tags
+        integer iter_var0;
+        // Default: no enqueues
+        for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : clr_enq
+          tag_addr_enq[iter_var0] = 1'b0;
+          tag_addr_enq_val[iter_var0] = '0;
+          tag_data_enq[iter_var0] = 1'b0;
+          tag_data_enq_val[iter_var0] = '0;
+        end
+        // Route addr ports
+        for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : per_addr_port
+          automatic int port_idx = LD_COUNT + iter_var0;
+          // Extract tag using safe part-select (SAFE_TW >= 1 avoids zero-width)
+          automatic int target_tag = (TAG_WIDTH > 0 && ST_COUNT > 1)
+            ? int'(in_data[port_idx][SAFE_PW-1 -: SAFE_TW]) : iter_var0;
+          if (target_tag >= ST_COUNT) begin : clamp_addr
+            target_tag = 0;
+          end
+          addr_port_fire[iter_var0] = in_valid[port_idx] && !tag_addr_full[target_tag];
+          in_ready[port_idx] = !tag_addr_full[target_tag];
+          if (addr_port_fire[iter_var0]) begin : enq
+            tag_addr_enq[target_tag] = 1'b1;
+            tag_addr_enq_val[target_tag] = in_data[port_idx][ADDR_WIDTH-1:0];
+          end
+        end
+        // Route data ports
+        for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : per_data_port
+          automatic int port_idx = LD_COUNT + ST_COUNT + iter_var0;
+          automatic int target_tag = (TAG_WIDTH > 0 && ST_COUNT > 1)
+            ? int'(in_data[port_idx][SAFE_PW-1 -: SAFE_TW]) : iter_var0;
+          if (target_tag >= ST_COUNT) begin : clamp_data
+            target_tag = 0;
+          end
+          data_port_fire[iter_var0] = in_valid[port_idx] && !tag_data_full[target_tag];
+          in_ready[port_idx] = !tag_data_full[target_tag];
+          if (data_port_fire[iter_var0]) begin : enq
+            tag_data_enq[target_tag] = 1'b1;
+            tag_data_enq_val[target_tag] = in_data[port_idx][DATA_WIDTH-1:0];
+          end
+        end
+      end
+
+      // Store done signal: fires when any tag FIFO has a paired completion.
+      // When ST_COUNT > 1 && TAG_WIDTH > 0, stdone carries the tag index.
       begin : g_stdone
-        localparam int DONE_IDX = (IS_PRIVATE ? 0 : 1) + LD_COUNT + 1;
         logic any_st_fire;
         logic [SAFE_PW-1:0] stdone_data;
         if (TAG_WIDTH > 0 && ST_COUNT > 1) begin : g_tagged_stdone
@@ -270,7 +324,7 @@ module fabric_memory #(
             for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : chk
               if (st_paired[iter_var0]) begin : fire
                 any_st_fire = 1'b1;
-                stdone_data[DATA_WIDTH +: TAG_WIDTH] = st_head_tag[iter_var0][TAG_WIDTH-1:0];
+                stdone_data[DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(iter_var0);
               end
             end
           end
@@ -317,8 +371,8 @@ module fabric_memory #(
         logic [15:0] dl_counter;
         logic        addr_waiting, data_waiting;
         // Deadlock condition: one FIFO has data but the other is empty
-        assign addr_waiting = !g_store.g_st_port[gdi].addr_empty && g_store.g_st_port[gdi].data_empty;
-        assign data_waiting = g_store.g_st_port[gdi].addr_empty && !g_store.g_st_port[gdi].data_empty;
+        assign addr_waiting = !g_store.g_tag_fifo[gdi].addr_empty && g_store.g_tag_fifo[gdi].data_empty;
+        assign data_waiting = g_store.g_tag_fifo[gdi].addr_empty && !g_store.g_tag_fifo[gdi].data_empty;
 
         always_ff @(posedge clk or negedge rst_n) begin : dl_cnt
           if (!rst_n) begin : reset

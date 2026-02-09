@@ -334,36 +334,32 @@ module fabric_temporal_pe #(
         end
       end
 
-      // Per-register reader count: how many distinct instructions read each
-      // register. A FIFO entry is retained until all readers have consumed it.
-      localparam int INSN_CNT_W = $clog2(NUM_INSTRUCTIONS > 1 ? NUM_INSTRUCTIONS : 2) + 1;
-      logic [NUM_REGISTERS-1:0][INSN_CNT_W-1:0] reg_reader_count;
+      // Per-register reader bitmask: which instruction indices read each
+      // register. A FIFO entry is retained until all reader instructions
+      // have consumed it (identity-tracked, not just counted).
+      logic [NUM_REGISTERS-1:0][NUM_INSTRUCTIONS-1:0] reg_reader_mask;
 
-      always_comb begin : count_readers
+      always_comb begin : build_reader_masks
         integer iter_var0, iter_var1, iter_var2;
         for (iter_var0 = 0; iter_var0 < NUM_REGISTERS; iter_var0 = iter_var0 + 1) begin : per_reg
-          reg_reader_count[iter_var0] = '0;
+          reg_reader_mask[iter_var0] = '0;
           for (iter_var1 = 0; iter_var1 < NUM_INSTRUCTIONS; iter_var1 = iter_var1 + 1) begin : per_insn
             if (insn_valid[iter_var1]) begin : valid_insn
-              automatic logic reads_reg = 1'b0;
               for (iter_var2 = 0; iter_var2 < NUM_INPUTS; iter_var2 = iter_var2 + 1) begin : per_op
                 automatic int ob = iter_var1 * INSN_WIDTH + NUM_OUTPUTS * RESULT_WIDTH + iter_var2 * REG_BITS;
                 if (cfg_data[ob + REG_BITS - 1] &&
                     (cfg_data[ob +: (REG_BITS - 1)] == (REG_BITS-1)'(iter_var0))) begin : match
-                  reads_reg = 1'b1;
+                  reg_reader_mask[iter_var0][iter_var1] = 1'b1;
                 end
-              end
-              if (reads_reg) begin : inc
-                reg_reader_count[iter_var0] = reg_reader_count[iter_var0] + INSN_CNT_W'(1);
               end
             end
           end
         end
       end
 
-      // Per-register consumed counter: tracks how many readers have fired
-      // for the current FIFO head entry.
-      logic [NUM_REGISTERS-1:0][INSN_CNT_W-1:0] reg_rd_consumed;
+      // Per-register consumed bitmask: tracks which reader instructions have
+      // fired for the current FIFO head entry (one bit per instruction index).
+      logic [NUM_REGISTERS-1:0][NUM_INSTRUCTIONS-1:0] reg_rd_consumed;
 
       // Determine if the firing instruction reads each register
       logic [NUM_REGISTERS-1:0] fire_reads_reg;
@@ -380,7 +376,7 @@ module fabric_temporal_pe #(
         end
       end
 
-      // Register FIFO update with multi-reader tracking
+      // Register FIFO update with identity-tracked multi-reader dequeue
       always_ff @(posedge clk or negedge rst_n) begin : reg_fifo_update
         integer iter_var0, iter_var1;
         if (!rst_n) begin : reset
@@ -403,11 +399,16 @@ module fabric_temporal_pe #(
                   reg_fifo_cnt[res_reg_idx[iter_var0]] + (RFIFO_IDX_W+1)'(1);
               end
             end
-            // Multi-reader dequeue: track consumption per register
+            // Identity-tracked multi-reader dequeue: mark matched_insn as
+            // having consumed each register it reads. Dequeue only when
+            // every distinct reader instruction has consumed.
             for (iter_var0 = 0; iter_var0 < NUM_REGISTERS; iter_var0 = iter_var0 + 1) begin : rd_reg
               if (fire_reads_reg[iter_var0] && !reg_fifo_empty[iter_var0]) begin : consume
-                if ((reg_rd_consumed[iter_var0] + INSN_CNT_W'(1)) >= reg_reader_count[iter_var0]) begin : all_consumed
-                  // All readers done: dequeue and reset counter
+                automatic logic [NUM_INSTRUCTIONS-1:0] next_consumed;
+                next_consumed = reg_rd_consumed[iter_var0];
+                next_consumed[matched_insn] = 1'b1;
+                if (next_consumed == reg_reader_mask[iter_var0]) begin : all_consumed
+                  // All distinct readers done: dequeue and clear mask
                   reg_fifo_rd_ptr[iter_var0] <=
                     (reg_fifo_rd_ptr[iter_var0] == RFIFO_IDX_W'(SAFE_RFIFO - 1))
                       ? '0 : (reg_fifo_rd_ptr[iter_var0] + RFIFO_IDX_W'(1));
@@ -415,8 +416,7 @@ module fabric_temporal_pe #(
                     reg_fifo_cnt[iter_var0] - (RFIFO_IDX_W+1)'(1);
                   reg_rd_consumed[iter_var0] <= '0;
                 end else begin : partial
-                  reg_rd_consumed[iter_var0] <=
-                    reg_rd_consumed[iter_var0] + INSN_CNT_W'(1);
+                  reg_rd_consumed[iter_var0] <= next_consumed;
                 end
               end
             end
@@ -514,7 +514,10 @@ module fabric_temporal_pe #(
         end
       end
 
-      // Per-input: find target buffer entry for arriving operand
+      // Per-input: find target buffer entry for arriving operand.
+      // Uses cascaded free-slot reservation across inputs to prevent two
+      // different-tag inputs from allocating the same slot in one cycle.
+      //
       // 1. Find entries with matching tag, select largest position
       // 2. If max-position entry has op_valid[i]=0: store there
       // 3. If op_valid[i]=1: create new entry at max_position+1
@@ -527,7 +530,10 @@ module fabric_temporal_pe #(
       logic [NUM_INPUTS-1:0]              sb_in_has_free;
 
       always_comb begin : find_targets
-        integer iter_var0, iter_var1;
+        integer iter_var0, iter_var1, iter_var2;
+        // Cascaded reservation mask: tracks which slots are claimed by
+        // prior inputs in this cycle, preventing double-allocation.
+        automatic logic [BUF_DEPTH-1:0] reserved = '0;
         for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
           automatic logic found_tag = 1'b0;
           automatic logic [BUF_IDX_W-1:0] best_idx = '0;
@@ -540,7 +546,7 @@ module fabric_temporal_pe #(
           sb_in_new_pos[iter_var0] = '0;
           sb_in_has_free[iter_var0] = 1'b0;
           sb_in_free_slot[iter_var0] = '0;
-          // Scan for tag matches and free slots
+          // Scan for tag matches and free slots (respecting reservations)
           for (iter_var1 = 0; iter_var1 < BUF_DEPTH; iter_var1 = iter_var1 + 1) begin : scan
             if (sb_entry_valid[iter_var1] &&
                 (sb_tag[iter_var1] == in_tag[iter_var0])) begin : tag_match
@@ -550,7 +556,8 @@ module fabric_temporal_pe #(
                 best_pos = sb_pos[iter_var1];
               end
             end
-            if (!sb_entry_valid[iter_var1] && !found_free) begin : free_found
+            if (!sb_entry_valid[iter_var1] && !reserved[iter_var1] &&
+                !found_free) begin : free_found
               found_free = 1'b1;
               free_idx = iter_var1[BUF_IDX_W-1:0];
             end
@@ -566,11 +573,19 @@ module fabric_temporal_pe #(
               sb_in_target[iter_var0] = free_idx;
               sb_in_create_new[iter_var0] = 1'b1;
               sb_in_new_pos[iter_var0] = best_pos + POS_W'(1);
+              // Reserve the free slot so subsequent inputs skip it
+              if (found_free && in_valid[iter_var0] && in_match[iter_var0]) begin : rsv_new
+                reserved[free_idx] = 1'b1;
+              end
             end
           end else begin : no_match
             sb_in_target[iter_var0] = free_idx;
             sb_in_create_new[iter_var0] = 1'b1;
             sb_in_new_pos[iter_var0] = '0;
+            // Reserve the free slot so subsequent inputs skip it
+            if (found_free && in_valid[iter_var0] && in_match[iter_var0]) begin : rsv_no_match
+              reserved[free_idx] = 1'b1;
+            end
           end
         end
       end

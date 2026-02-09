@@ -107,7 +107,7 @@ compile_and_run_verilator() {
   if ! verilator --binary --timing \
     --top-module "${top}" \
     -Mdir "${outdir}/obj_dir" \
-    -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
+    -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-MULTIDRIVEN \
     "${inc_flags[@]+"${inc_flags[@]}"}" \
     "$@" \
     >"${outdir}/compile.log" 2>&1; then

@@ -230,11 +230,13 @@ static bool isCompareOp(const std::string &opName) {
 }
 
 /// Parse a simple MLIR SSA line: "%res = dialect.op %a, %b : type"
-/// Returns {result, opName, {operands}} or empty result on failure.
+/// Returns {result, opName, {operands}, typeAnnotation} or empty result on
+/// failure.
 struct MLIRStmt {
   std::string result; // e.g., "%t0"
   std::string opName; // e.g., "arith.muli"
   std::vector<std::string> operands; // e.g., {"%arg0", "%arg1"}
+  std::string typeAnnotation; // e.g., "i16 to i32" (text after ':')
 };
 
 static MLIRStmt parseMLIRLine(const std::string &line) {
@@ -280,7 +282,58 @@ static MLIRStmt parseMLIRLine(const std::string &line) {
     pos = (end != std::string::npos) ? end + 1 : opSection.size();
   }
 
+  // Capture type annotation (text after ':')
+  if (colonPos != std::string::npos) {
+    std::string ta = rhs.substr(colonPos + 1);
+    auto taStart = ta.find_first_not_of(" \t");
+    if (taStart != std::string::npos) {
+      auto taEnd = ta.find_last_not_of(" \t\n\r");
+      stmt.typeAnnotation = ta.substr(taStart, taEnd - taStart + 1);
+    }
+  }
+
   return stmt;
+}
+
+/// Parse width from an MLIR integer type string like "i32", "i16", "index".
+/// Returns 0 if not a recognized integer type.
+static unsigned parseMLIRTypeWidth(const std::string &typeStr) {
+  auto s = typeStr.find_first_not_of(" \t");
+  if (s == std::string::npos) return 0;
+  std::string t = typeStr.substr(s);
+  auto e = t.find_first_of(" \t,)");
+  if (e != std::string::npos) t = t.substr(0, e);
+  if (t == "index") return 32;
+  if (t.size() > 1 && (t[0] == 'i' || t[0] == 'f')) {
+    unsigned w = 0;
+    for (size_t i = 1; i < t.size(); ++i) {
+      if (!std::isdigit(t[i])) return 0;
+      w = w * 10 + (t[i] - '0');
+    }
+    return w;
+  }
+  return 0;
+}
+
+/// Parse conversion op type annotation: "i16 to i32" -> {16, 32}.
+/// Returns {0, 0} if parsing fails.
+static std::pair<unsigned, unsigned>
+parseConversionWidths(const std::string &typeAnnotation) {
+  // Format: "i16 to i32" or "i32 to i16"
+  auto toPos = typeAnnotation.find(" to ");
+  if (toPos == std::string::npos) {
+    // Try without spaces: "i16to i32" is unlikely but handle "i16 -> i32"
+    toPos = typeAnnotation.find("->");
+    if (toPos != std::string::npos) {
+      unsigned inW = parseMLIRTypeWidth(typeAnnotation.substr(0, toPos));
+      unsigned outW = parseMLIRTypeWidth(typeAnnotation.substr(toPos + 2));
+      return {inW, outW};
+    }
+    return {0, 0};
+  }
+  unsigned inW = parseMLIRTypeWidth(typeAnnotation.substr(0, toPos));
+  unsigned outW = parseMLIRTypeWidth(typeAnnotation.substr(toPos + 4));
+  return {inW, outW};
 }
 
 /// Extract all operation names from a bodyMLIR string.
@@ -429,14 +482,22 @@ static std::string genMultiOpBodySV(const PEDef &def) {
     ssaToSV[stmt.result] = wireName;
 
     if (isConversionOp(stmt.opName)) {
-      // In a multi-op body, use DATA_WIDTH for both in/out since all
-      // intermediate wires are DATA_WIDTH-wide. The conversion module
-      // handles the actual narrowing/extension semantics.
+      // Parse IN_WIDTH and OUT_WIDTH from the type annotation.
+      // Falls back to DATA_WIDTH if type parsing fails.
+      auto [inW, outW] = parseConversionWidths(stmt.typeAnnotation);
       os << "  logic [SAFE_DW-1:0] " << wireName << ";\n";
-      os << "  " << svModule << " #(.IN_WIDTH(DATA_WIDTH), .OUT_WIDTH("
-         << "DATA_WIDTH)) u_op" << wireIdx << " (\n";
-      os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
-      os << "    .result(" << wireName << ")\n";
+      if (inW > 0 && outW > 0) {
+        os << "  " << svModule << " #(.IN_WIDTH(" << inW << "), .OUT_WIDTH("
+           << outW << ")) u_op" << wireIdx << " (\n";
+        os << "    .a(" << ssaToSV[stmt.operands[0]] << "[" << (inW - 1)
+           << ":0]),\n";
+        os << "    .result(" << wireName << "[" << (outW - 1) << ":0])\n";
+      } else {
+        os << "  " << svModule << " #(.IN_WIDTH(DATA_WIDTH), .OUT_WIDTH("
+           << "DATA_WIDTH)) u_op" << wireIdx << " (\n";
+        os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
+        os << "    .result(" << wireName << ")\n";
+      }
       os << "  );\n";
     } else if (isCompareOp(stmt.opName)) {
       os << "  logic " << wireName << ";\n";
