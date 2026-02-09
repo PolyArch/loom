@@ -57,6 +57,7 @@ struct PEDef {
   std::vector<Type> outputPorts;
   std::string bodyMLIR;
   std::string singleOp;
+  int comparePredicate = 0; // MLIR predicate encoding for cmpi/cmpf
   InterfaceCategory interface = InterfaceCategory::Native;
 };
 

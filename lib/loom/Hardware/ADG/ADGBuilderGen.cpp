@@ -62,6 +62,35 @@ static std::string extractTagType(const std::string &typeStr) {
   return "";
 }
 
+/// Map arith.cmpi predicate integer to MLIR keyword.
+static const char *cmpiPredicateToStr(int pred) {
+  static const char *names[] = {"eq",  "ne",  "slt", "sle", "sgt",
+                                "sge", "ult", "ule", "ugt", "uge"};
+  if (pred >= 0 && pred < 10)
+    return names[pred];
+  return "eq";
+}
+
+/// Map arith.cmpf predicate integer to MLIR keyword.
+static const char *cmpfPredicateToStr(int pred) {
+  static const char *names[] = {"false", "oeq", "ogt", "oge", "olt", "ole",
+                                "one",   "ord", "ueq", "ugt", "uge", "ult",
+                                "ule",   "une", "uno", "true"};
+  if (pred >= 0 && pred < 16)
+    return names[pred];
+  return "false";
+}
+
+/// Emit the MLIR compare predicate keyword for a single-op compare PE.
+/// Returns "" if the op is not a compare.
+static std::string getComparePredicateStr(const PEDef &pe) {
+  if (pe.singleOp == "arith.cmpi")
+    return std::string(" ") + cmpiPredicateToStr(pe.comparePredicate) + ",";
+  if (pe.singleOp == "arith.cmpf")
+    return std::string(" ") + cmpfPredicateToStr(pe.comparePredicate) + ",";
+  return "";
+}
+
 /// Determine the constant literal for a given value type.
 /// Floating point types use "0.0", integers use "0".
 static std::string getConstLiteral(Type valueType) {
@@ -160,6 +189,7 @@ std::string ADGBuilder::Impl::generatePEBody(const PEDef &pe) const {
 
   std::ostringstream os;
   os << "  %0 = " << pe.singleOp;
+  os << getComparePredicateStr(pe);
   for (size_t i = 0; i < pe.inputPorts.size(); ++i) {
     os << (i == 0 ? " " : ", ");
     os << "%arg" << i;
@@ -821,6 +851,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
             }
             os << "):\n";
             os << "    %r = " << pd.singleOp;
+            os << getComparePredicateStr(pd);
             for (size_t i = 0; i < bodyInTypes.size(); ++i) {
               os << (i == 0 ? " " : ", ");
               os << "%x" << i;

@@ -218,10 +218,13 @@ static std::string opToSVModule(const std::string &opName) {
   return result;
 }
 
-/// Return true if the op is a width-conversion operation.
+/// Return true if the op is a width-conversion operation (uses IN_WIDTH/OUT_WIDTH).
 static bool isConversionOp(const std::string &opName) {
   return opName == "arith.extsi" || opName == "arith.extui" ||
-         opName == "arith.trunci";
+         opName == "arith.trunci" || opName == "arith.sitofp" ||
+         opName == "arith.uitofp" || opName == "arith.fptosi" ||
+         opName == "arith.fptoui" || opName == "arith.index_cast" ||
+         opName == "arith.index_castui";
 }
 
 /// Return true if the op is a compare operation (1-bit result).
@@ -237,7 +240,57 @@ struct MLIRStmt {
   std::string opName; // e.g., "arith.muli"
   std::vector<std::string> operands; // e.g., {"%arg0", "%arg1"}
   std::string typeAnnotation; // e.g., "i16 to i32" (text after ':')
+  std::string predicate; // e.g., "sgt" for compare ops
 };
+
+/// Map an MLIR arith.cmpi predicate name to its integer encoding.
+/// PREDICATE encoding: 0=eq,1=ne,2=slt,3=sle,4=sgt,5=sge,6=ult,7=ule,8=ugt,9=uge
+static int cmpiPredicateToInt(const std::string &pred) {
+  if (pred == "eq") return 0;
+  if (pred == "ne") return 1;
+  if (pred == "slt") return 2;
+  if (pred == "sle") return 3;
+  if (pred == "sgt") return 4;
+  if (pred == "sge") return 5;
+  if (pred == "ult") return 6;
+  if (pred == "ule") return 7;
+  if (pred == "ugt") return 8;
+  if (pred == "uge") return 9;
+  return 0; // default: eq
+}
+
+/// Map an MLIR arith.cmpf predicate name to its integer encoding.
+/// PREDICATE encoding: 0=false,1=oeq,2=ogt,3=oge,4=olt,5=ole,6=one,7=ord,
+///   8=ueq,9=ugt,10=uge,11=ult,12=ule,13=une,14=uno,15=true
+static int cmpfPredicateToInt(const std::string &pred) {
+  if (pred == "false") return 0;
+  if (pred == "oeq") return 1;
+  if (pred == "ogt") return 2;
+  if (pred == "oge") return 3;
+  if (pred == "olt") return 4;
+  if (pred == "ole") return 5;
+  if (pred == "one") return 6;
+  if (pred == "ord") return 7;
+  if (pred == "ueq") return 8;
+  if (pred == "ugt") return 9;
+  if (pred == "uge") return 10;
+  if (pred == "ult") return 11;
+  if (pred == "ule") return 12;
+  if (pred == "une") return 13;
+  if (pred == "uno") return 14;
+  if (pred == "true") return 15;
+  return 0; // default: false
+}
+
+/// Resolve a compare predicate integer from the operation name and predicate
+/// string. Returns 0 if the op is not a compare or predicate is empty.
+static int resolveComparePredicate(const std::string &opName,
+                                   const std::string &pred) {
+  if (pred.empty()) return 0;
+  if (opName == "arith.cmpi") return cmpiPredicateToInt(pred);
+  if (opName == "arith.cmpf") return cmpfPredicateToInt(pred);
+  return 0;
+}
 
 static MLIRStmt parseMLIRLine(const std::string &line) {
   MLIRStmt stmt;
@@ -274,6 +327,18 @@ static MLIRStmt parseMLIRLine(const std::string &line) {
   std::string opSection = rhs.substr(opEnd, colonPos != std::string::npos
                                                  ? colonPos - opEnd
                                                  : std::string::npos);
+  // Extract predicate keyword for compare ops (text before first '%').
+  // e.g., in " sgt, %a, %b" the predicate is "sgt".
+  auto firstPct = opSection.find('%');
+  if (firstPct != std::string::npos && firstPct > 0) {
+    std::string predSection = opSection.substr(0, firstPct);
+    auto ps = predSection.find_first_not_of(" \t,");
+    if (ps != std::string::npos) {
+      auto pe = predSection.find_last_not_of(" \t,");
+      stmt.predicate = predSection.substr(ps, pe - ps + 1);
+    }
+  }
+
   // Find all %name tokens
   size_t pos = 0;
   while ((pos = opSection.find('%', pos)) != std::string::npos) {
@@ -546,9 +611,10 @@ static std::string genMultiOpBodySV(const PEDef &def) {
         os << "  );\n";
       }
     } else if (isCompareOp(stmt.opName)) {
+      int predVal = resolveComparePredicate(stmt.opName, stmt.predicate);
       os << "  logic " << wireName << ";\n";
-      os << "  " << svModule << " #(.WIDTH(DATA_WIDTH), .PREDICATE(0)) u_op"
-         << wireIdx << " (\n";
+      os << "  " << svModule << " #(.WIDTH(DATA_WIDTH), .PREDICATE("
+         << predVal << ")) u_op" << wireIdx << " (\n";
       os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
       if (stmt.operands.size() > 1)
         os << "    .b(" << ssaToSV[stmt.operands[1]] << "),\n";
@@ -635,7 +701,8 @@ static std::string genPEBodySV(const PEDef &def) {
     // Compare ops have a PREDICATE parameter and 1-bit output
     os << "  logic cmp_result;\n";
     os << "  " << svModule
-       << " #(.WIDTH(DATA_WIDTH), .PREDICATE(0)) u_body (\n";
+       << " #(.WIDTH(DATA_WIDTH), .PREDICATE(" << def.comparePredicate
+       << ")) u_body (\n";
     // Map input ports
     os << "    .a(in_value[0]),\n";
     os << "    .b(in_value[1]),\n";

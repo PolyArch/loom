@@ -47,6 +47,11 @@ PEBuilder &PEBuilder::addOp(const std::string &opName) {
   return *this;
 }
 
+PEBuilder &PEBuilder::setComparePredicate(int predicate) {
+  builder_->impl_->peDefs[peId_].comparePredicate = predicate;
+  return *this;
+}
+
 PEBuilder &PEBuilder::setBodyMLIR(const std::string &mlirString) {
   builder_->impl_->peDefs[peId_].bodyMLIR = mlirString;
   return *this;
