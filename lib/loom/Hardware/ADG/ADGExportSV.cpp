@@ -838,12 +838,29 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     return "  // no FU types defined\n";
 
   unsigned numOut = peDefs[def.fuPEDefIndices[0]].outputPorts.size();
+  unsigned tpeDW = getDataWidthBits(def.interfaceType);
+  if (tpeDW == 0) tpeDW = 1;
 
   // FU_SEL_BITS mirrors the localparam in fabric_temporal_pe.sv
   unsigned fuSelBits = 0;
   if (numFU > 1) {
     unsigned v = numFU - 1;
     while (v > 0) { fuSelBits++; v >>= 1; }
+  }
+
+  // Compute per-FU effective DATA_WIDTH: max of temporal PE interface width
+  // and the FU's own required width (port widths + internal body widths).
+  std::vector<unsigned> fuEffDW(numFU);
+  for (unsigned f = 0; f < numFU; ++f) {
+    const auto &fuDef = peDefs[def.fuPEDefIndices[f]];
+    unsigned dw = tpeDW;
+    for (const auto &pt : fuDef.inputPorts)
+      dw = std::max(dw, getDataWidthBits(pt));
+    for (const auto &pt : fuDef.outputPorts)
+      dw = std::max(dw, getDataWidthBits(pt));
+    if (!fuDef.bodyMLIR.empty())
+      dw = std::max(dw, computeBodyMLIRMaxWidth(fuDef.bodyMLIR));
+    fuEffDW[f] = dw;
   }
 
   std::ostringstream os;
@@ -856,10 +873,13 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     os << "\n";
   }
 
-  // Per-FU result wires, output data wires, and valid signals
+  // Per-FU result wires, output data wires, and valid signals.
+  // fu_result is temporal-PE-width (SAFE_DW) for the mux output.
+  // fu_out_data is FU-width (fuEffDW, TAG_WIDTH=0 so PW = DW).
   for (unsigned f = 0; f < numFU; ++f) {
     os << "  logic [NUM_OUTPUTS-1:0][SAFE_DW-1:0] fu" << f << "_result;\n";
-    os << "  logic [NUM_OUTPUTS-1:0][SAFE_PW-1:0] fu" << f << "_out_data;\n";
+    unsigned fw = fuEffDW[f];
+    os << "  logic [NUM_OUTPUTS-1:0][" << (fw > 0 ? fw - 1 : 0) << ":0] fu" << f << "_out_data;\n";
     os << "  logic [NUM_OUTPUTS-1:0] fu" << f << "_out_valid;\n";
   }
   os << "\n";
@@ -875,12 +895,14 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
                              ? computeBodyMLIRLatency(fuDef.bodyMLIR)
                              : getOpLatency(fuDef.singleOp);
 
+    unsigned fw = fuEffDW[f];
+
     os << "  // FU " << f << ": " << (fuDef.singleOp.empty() ? "passthrough" : fuDef.singleOp)
-       << " (latency=" << fuLatency << ")\n";
+       << " (latency=" << fuLatency << ", DATA_WIDTH=" << fw << ")\n";
     os << "  " << fuModName << " #(\n";
     os << "    .NUM_INPUTS(" << fuNumIn << "),\n";
     os << "    .NUM_OUTPUTS(" << fuNumOut << "),\n";
-    os << "    .DATA_WIDTH(DATA_WIDTH),\n";
+    os << "    .DATA_WIDTH(" << fw << "),\n";
     os << "    .TAG_WIDTH(0),\n";
     os << "    .LATENCY_TYP(" << fuLatency << ")\n";
     os << "  ) u_fu" << f << " (\n";
@@ -889,10 +911,15 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     os << "    .in_valid({" << fuNumIn << "{fu_launch}}),\n";
     os << "    .in_ready(),\n";
     os << "    .in_data({";
-    // Map input ports from fu_operands (reverse order for packed array)
+    // Map input ports from fu_operands (reverse order for packed array).
+    // When FU is wider than temporal PE, zero-extend each operand.
     for (unsigned i = fuNumIn; i > 0; --i) {
       if (i < fuNumIn) os << ", ";
-      os << "fu_operands[" << (i - 1) << "]";
+      if (fw > tpeDW) {
+        os << "{" << (fw - tpeDW) << "'b0, fu_operands[" << (i - 1) << "]}";
+      } else {
+        os << "fu_operands[" << (i - 1) << "]";
+      }
     }
     os << "}),\n";
     os << "    .out_valid(fu" << f << "_out_valid),\n";
@@ -900,7 +927,8 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     os << "    .out_data(fu" << f << "_out_data),\n";
     os << "    .cfg_data('0)\n";
     os << "  );\n";
-    // Extract data portion from FU output (TAG_WIDTH=0 so out_data is just data)
+    // Extract data portion from FU output (TAG_WIDTH=0 so out_data is just data).
+    // Truncate to temporal PE's SAFE_DW when FU is wider.
     for (unsigned o = 0; o < fuNumOut; ++o) {
       os << "  assign fu" << f << "_result[" << o << "] = fu" << f
          << "_out_data[" << o << "][SAFE_DW-1:0];\n";
