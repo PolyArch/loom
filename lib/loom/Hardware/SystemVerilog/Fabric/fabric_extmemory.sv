@@ -264,14 +264,26 @@ module fabric_extmemory #(
 
       always_comb begin : route_to_tags
         integer iter_var0;
-        // Default: no enqueues
+        // Per-tag grant tracking: at most one addr and one data producer per
+        // tag per cycle. Prevents acknowledged-but-dropped requests when
+        // multiple physical ports target the same tag simultaneously.
+        logic [ST_COUNT-1:0] addr_tag_granted;
+        logic [ST_COUNT-1:0] data_tag_granted;
+        // Default: no enqueues, no grants
         for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : clr_enq
           tag_addr_enq[iter_var0] = 1'b0;
           tag_addr_enq_val[iter_var0] = '0;
           tag_data_enq[iter_var0] = 1'b0;
           tag_data_enq_val[iter_var0] = '0;
+          addr_tag_granted[iter_var0] = 1'b0;
+          data_tag_granted[iter_var0] = 1'b0;
         end
-        // Route addr ports (offset by 1 for memref binding)
+        // Default ready for all store ports (overwritten below)
+        for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : clr_ready
+          in_ready[1 + LD_COUNT + iter_var0] = 1'b0;
+          in_ready[1 + LD_COUNT + ST_COUNT + iter_var0] = 1'b0;
+        end
+        // Route addr ports with per-tag arbitration (offset by 1 for memref)
         for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : per_addr_port
           automatic int port_idx = 1 + LD_COUNT + iter_var0;
           automatic int target_tag = (TAG_WIDTH > 0 && ST_COUNT > 1)
@@ -279,14 +291,21 @@ module fabric_extmemory #(
           if (target_tag >= ST_COUNT) begin : clamp_addr
             target_tag = 0;
           end
-          addr_port_fire[iter_var0] = in_valid[port_idx] && !tag_addr_full[target_tag];
-          in_ready[port_idx] = !tag_addr_full[target_tag];
-          if (addr_port_fire[iter_var0]) begin : enq
-            tag_addr_enq[target_tag] = 1'b1;
-            tag_addr_enq_val[target_tag] = in_data[port_idx][EXT_ADDR_WIDTH-1:0];
+          // Grant only if tag FIFO not full AND no prior port already granted
+          if (!tag_addr_full[target_tag] && !addr_tag_granted[target_tag]) begin : grant
+            in_ready[port_idx] = 1'b1;
+            addr_port_fire[iter_var0] = in_valid[port_idx];
+            if (in_valid[port_idx]) begin : enq
+              tag_addr_enq[target_tag] = 1'b1;
+              tag_addr_enq_val[target_tag] = in_data[port_idx][EXT_ADDR_WIDTH-1:0];
+              addr_tag_granted[target_tag] = 1'b1;
+            end
+          end else begin : deny
+            in_ready[port_idx] = 1'b0;
+            addr_port_fire[iter_var0] = 1'b0;
           end
         end
-        // Route data ports (offset by 1 for memref binding)
+        // Route data ports with per-tag arbitration (offset by 1 for memref)
         for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : per_data_port
           automatic int port_idx = 1 + LD_COUNT + ST_COUNT + iter_var0;
           automatic int target_tag = (TAG_WIDTH > 0 && ST_COUNT > 1)
@@ -294,11 +313,17 @@ module fabric_extmemory #(
           if (target_tag >= ST_COUNT) begin : clamp_data
             target_tag = 0;
           end
-          data_port_fire[iter_var0] = in_valid[port_idx] && !tag_data_full[target_tag];
-          in_ready[port_idx] = !tag_data_full[target_tag];
-          if (data_port_fire[iter_var0]) begin : enq
-            tag_data_enq[target_tag] = 1'b1;
-            tag_data_enq_val[target_tag] = in_data[port_idx][DATA_WIDTH-1:0];
+          if (!tag_data_full[target_tag] && !data_tag_granted[target_tag]) begin : grant
+            in_ready[port_idx] = 1'b1;
+            data_port_fire[iter_var0] = in_valid[port_idx];
+            if (in_valid[port_idx]) begin : enq
+              tag_data_enq[target_tag] = 1'b1;
+              tag_data_enq_val[target_tag] = in_data[port_idx][DATA_WIDTH-1:0];
+              data_tag_granted[target_tag] = 1'b1;
+            end
+          end else begin : deny
+            in_ready[port_idx] = 1'b0;
+            data_port_fire[iter_var0] = 1'b0;
           end
         end
       end

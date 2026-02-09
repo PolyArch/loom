@@ -492,13 +492,22 @@ static std::string genMultiOpBodySV(const PEDef &def) {
         os << "    .a(" << ssaToSV[stmt.operands[0]] << "[" << (inW - 1)
            << ":0]),\n";
         os << "    .result(" << wireName << "[" << (outW - 1) << ":0])\n";
+        os << "  );\n";
+        // Zero-fill upper bits when OUT_WIDTH < DATA_WIDTH
+        os << "  generate\n";
+        os << "    if (DATA_WIDTH > " << outW << ") begin : g_conv_pad_"
+           << wireIdx << "\n";
+        os << "      assign " << wireName << "[DATA_WIDTH-1:" << outW
+           << "] = '0;\n";
+        os << "    end\n";
+        os << "  endgenerate\n";
       } else {
         os << "  " << svModule << " #(.IN_WIDTH(DATA_WIDTH), .OUT_WIDTH("
            << "DATA_WIDTH)) u_op" << wireIdx << " (\n";
         os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
         os << "    .result(" << wireName << ")\n";
+        os << "  );\n";
       }
-      os << "  );\n";
     } else if (isCompareOp(stmt.opName)) {
       os << "  logic " << wireName << ";\n";
       os << "  " << svModule << " #(.WIDTH(DATA_WIDTH), .PREDICATE(0)) u_op"

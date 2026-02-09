@@ -7,14 +7,16 @@
 `include "fabric_common.svh"
 
 module tb_fabric_temporal_pe;
-  parameter int NUM_INPUTS       = 2;
-  parameter int NUM_OUTPUTS      = 1;
-  parameter int DATA_WIDTH       = 32;
-  parameter int TAG_WIDTH        = 4;
-  parameter int NUM_FU_TYPES     = 1;
-  parameter int NUM_REGISTERS    = 0;
-  parameter int NUM_INSTRUCTIONS = 2;
-  parameter int REG_FIFO_DEPTH   = 0;
+  parameter int NUM_INPUTS           = 2;
+  parameter int NUM_OUTPUTS          = 1;
+  parameter int DATA_WIDTH           = 32;
+  parameter int TAG_WIDTH            = 4;
+  parameter int NUM_FU_TYPES         = 1;
+  parameter int NUM_REGISTERS        = 0;
+  parameter int NUM_INSTRUCTIONS     = 2;
+  parameter int REG_FIFO_DEPTH       = 0;
+  parameter int SHARE_MODE_B         = 0;
+  parameter int OPERAND_BUFFER_SIZE  = 0;
 
   localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH;
   localparam int SAFE_PW = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1;
@@ -39,7 +41,9 @@ module tb_fabric_temporal_pe;
     .NUM_FU_TYPES(NUM_FU_TYPES),
     .NUM_REGISTERS(NUM_REGISTERS),
     .NUM_INSTRUCTIONS(NUM_INSTRUCTIONS),
-    .REG_FIFO_DEPTH(REG_FIFO_DEPTH)
+    .REG_FIFO_DEPTH(REG_FIFO_DEPTH),
+    .SHARE_MODE_B(SHARE_MODE_B),
+    .OPERAND_BUFFER_SIZE(OPERAND_BUFFER_SIZE)
   ) dut (
     .clk(clk), .rst_n(rst_n),
     .in_valid(in_valid), .in_ready(in_ready), .in_data(in_data),
