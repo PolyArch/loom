@@ -43,15 +43,15 @@ module fabric_pe_store #(
     output logic               in2_ready,
     input  logic [ADDR_PW-1:0] in2_data,
 
-    // Output 0: address to memory
+    // Output 0: address to memory (index type)
     output logic               out0_valid,
     input  logic               out0_ready,
     output logic [SAFE_DW-1:0] out0_data,
 
-    // Output 1: data to memory
+    // Output 1: done signal (none type, control token)
     output logic               out1_valid,
     input  logic               out1_ready,
-    output logic [SAFE_DW-1:0] out1_data,
+    output logic               out1_data,
 
     // Configuration
     input  logic [CONFIG_WIDTH > 0 ? CONFIG_WIDTH-1 : 0 : 0] cfg_data
@@ -79,20 +79,20 @@ module fabric_pe_store #(
       assign all_valid = in0_valid && in1_valid && in2_valid;
 
       logic [SAFE_DW-1:0] addr_value;
-      logic [SAFE_DW-1:0] data_value;
       assign addr_value = in0_data[DATA_WIDTH-1:0];
-      assign data_value = in1_data[DATA_WIDTH-1:0];
 
-      logic mem_both_ready;
-      assign mem_both_ready = out0_ready && out1_ready;
+      logic both_out_ready;
+      assign both_out_ready = out0_ready && out1_ready;
 
       logic fire;
-      assign fire = all_valid && mem_both_ready;
+      assign fire = all_valid && both_out_ready;
 
+      // out0: address to memory
       assign out0_valid = all_valid && out1_ready;
       assign out0_data  = addr_value;
+      // out1: done signal (control token)
       assign out1_valid = all_valid && out0_ready;
-      assign out1_data  = data_value;
+      assign out1_data  = 1'b0;
 
       assign in0_ready = fire;
       assign in1_ready = fire;
@@ -111,20 +111,20 @@ module fabric_pe_store #(
       assign all_valid = in0_valid && in1_valid && in2_valid && tags_match;
 
       logic [SAFE_DW-1:0] addr_value;
-      logic [SAFE_DW-1:0] data_value;
       assign addr_value = in0_data[DATA_WIDTH-1:0];
-      assign data_value = in1_data[DATA_WIDTH-1:0];
 
-      logic mem_both_ready;
-      assign mem_both_ready = out0_ready && out1_ready;
+      logic both_out_ready;
+      assign both_out_ready = out0_ready && out1_ready;
 
       logic fire;
-      assign fire = all_valid && mem_both_ready;
+      assign fire = all_valid && both_out_ready;
 
+      // out0: address to memory
       assign out0_valid = all_valid && out1_ready;
       assign out0_data  = addr_value;
+      // out1: done signal (control token)
       assign out1_valid = all_valid && out0_ready;
-      assign out1_data  = data_value;
+      assign out1_data  = 1'b0;
 
       assign in0_ready = fire;
       assign in1_ready = fire;

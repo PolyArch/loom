@@ -28,30 +28,30 @@ module fabric_pe_load #(
     input  logic               clk,
     input  logic               rst_n,
 
-    // Input 0: address from compute
+    // Input 0: address from compute (index type, possibly tagged)
     input  logic               in0_valid,
     output logic               in0_ready,
     input  logic [ADDR_PW-1:0] in0_data,
 
-    // Input 1: control token
+    // Input 1: data from memory (does NOT participate in synchronization)
     input  logic               in1_valid,
     output logic               in1_ready,
-    input  logic [ADDR_PW-1:0] in1_data,
+    input  logic [SAFE_DW-1:0] in1_data,
 
-    // Input 2: data from memory (does NOT participate in synchronization)
+    // Input 2: control token (none type, possibly tagged)
     input  logic               in2_valid,
     output logic               in2_ready,
-    input  logic [SAFE_DW-1:0] in2_data,
+    input  logic [ADDR_PW-1:0] in2_data,
 
-    // Output 0: address to memory
+    // Output 0: data to compute (dataType, possibly tagged)
     output logic               out0_valid,
     input  logic               out0_ready,
-    output logic [SAFE_DW-1:0] out0_data,
+    output logic [DATA_PW-1:0] out0_data,
 
-    // Output 1: data to compute
+    // Output 1: address to memory (index type, untagged)
     output logic               out1_valid,
     input  logic               out1_ready,
-    output logic [DATA_PW-1:0] out1_data,
+    output logic [SAFE_DW-1:0] out1_data,
 
     // Configuration
     input  logic [CONFIG_WIDTH > 0 ? CONFIG_WIDTH-1 : 0 : 0] cfg_data
@@ -74,61 +74,61 @@ module fabric_pe_load #(
   // -----------------------------------------------------------------------
   generate
     if (HW_TYPE == 0) begin : g_overwrite
-      // Synchronize addr (in0) + ctrl (in1)
+      // Synchronize addr (in0) + ctrl (in2); in1 = data from memory
       logic sync_valid;
-      assign sync_valid = in0_valid && in1_valid;
+      assign sync_valid = in0_valid && in2_valid;
 
       // Extract address value (strip tag if present)
       logic [SAFE_DW-1:0] addr_value;
       assign addr_value = in0_data[DATA_WIDTH-1:0];
 
-      // Forward address to memory
-      assign out0_valid = sync_valid && out0_ready ? sync_valid : sync_valid;
-      assign out0_data  = addr_value;
+      // Forward address to memory (out1)
+      assign out1_valid = sync_valid;
+      assign out1_data  = addr_value;
 
       logic fire;
-      assign fire = sync_valid && out0_ready;
+      assign fire = sync_valid && out1_ready;
       assign in0_ready = fire;
-      assign in1_ready = fire;
+      assign in2_ready = fire;
 
-      // Forward memory data to compute, attaching output_tag if tagged
+      // Forward memory data (in1) to compute (out0), attaching output_tag
       if (TAG_WIDTH > 0) begin : g_tag_attach
         logic [TAG_WIDTH-1:0] output_tag;
         assign output_tag = cfg_data[TAG_WIDTH-1:0];
-        assign out1_data  = {output_tag, in2_data};
+        assign out0_data  = {output_tag, in1_data};
       end else begin : g_no_tag
-        assign out1_data = in2_data;
+        assign out0_data = in1_data;
       end
-      assign out1_valid = in2_valid;
-      assign in2_ready  = out1_ready;
+      assign out0_valid = in1_valid;
+      assign in1_ready  = out0_ready;
     end else begin : g_transparent
-      // TagTransparent: tag-match addr+ctrl, forward unchanged
-      // Simplified: synchronize addr+ctrl when tags match
+      // TagTransparent: tag-match addr (in0) + ctrl (in2), forward unchanged
       logic [TAG_WIDTH-1:0] addr_tag, ctrl_tag;
       assign addr_tag = in0_data[DATA_WIDTH +: TAG_WIDTH];
-      assign ctrl_tag = in1_data[TAG_WIDTH-1:0]; // ctrl is tagged<none, iK>
+      assign ctrl_tag = in2_data[TAG_WIDTH-1:0]; // ctrl is tagged<none, iK>
 
       logic tags_match;
       assign tags_match = (addr_tag == ctrl_tag);
 
       logic sync_valid;
-      assign sync_valid = in0_valid && in1_valid && tags_match;
+      assign sync_valid = in0_valid && in2_valid && tags_match;
 
       logic [SAFE_DW-1:0] addr_value;
       assign addr_value = in0_data[DATA_WIDTH-1:0];
 
-      assign out0_valid = sync_valid;
-      assign out0_data  = addr_value;
+      // Forward address to memory (out1)
+      assign out1_valid = sync_valid;
+      assign out1_data  = addr_value;
 
       logic fire;
-      assign fire = sync_valid && out0_ready;
+      assign fire = sync_valid && out1_ready;
       assign in0_ready = fire;
-      assign in1_ready = fire;
+      assign in2_ready = fire;
 
-      // Forward memory data with original tag
-      assign out1_data  = {addr_tag, in2_data};
-      assign out1_valid = in2_valid;
-      assign in2_ready  = out1_ready;
+      // Forward memory data (in1) with original tag to compute (out0)
+      assign out0_data  = {addr_tag, in1_data};
+      assign out0_valid = in1_valid;
+      assign in1_ready  = out0_ready;
     end
   endgenerate
 

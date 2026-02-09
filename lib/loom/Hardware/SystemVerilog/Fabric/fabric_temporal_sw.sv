@@ -6,12 +6,13 @@
 //
 // Tag-matching crossbar switch. Routes tagged inputs to outputs based on
 // tag-to-route table entries. Each table entry specifies:
-//   {valid(1), tag(TAG_WIDTH), routes(K)} where K = popcount(CONNECTIVITY).
+//   {valid(1), tag(TAG_WIDTH), routes(NUM_CONNECTED)}
+// where NUM_CONNECTED = $countones(CONNECTIVITY).
 //
 // Errors:
-//   CFG_TEMPORAL_SW_DUP_TAG         - Duplicate valid tags in route table
-//   CFG_TEMPORAL_SW_ROUTE_MULTI_OUT - Route entry drives same output multiple times
+//   CFG_TEMPORAL_SW_ROUTE_MULTI_OUT - Route entry drives same output >1 times
 //   CFG_TEMPORAL_SW_ROUTE_MULTI_IN  - Multiple inputs routed to same output
+//   CFG_TEMPORAL_SW_DUP_TAG         - Duplicate valid tags in route table
 //   RT_TEMPORAL_SW_NO_MATCH         - No table entry matches input tag
 //   RT_TEMPORAL_SW_UNROUTED_INPUT   - Valid input has no route
 //
@@ -25,9 +26,10 @@ module fabric_temporal_sw #(
     parameter int DATA_WIDTH       = 32,
     parameter int TAG_WIDTH        = 4,
     parameter int NUM_ROUTE_TABLE  = 4,
-    parameter logic [NUM_OUTPUTS*NUM_INPUTS-1:0] CONNECTIVITY = '1,
+    parameter bit [NUM_OUTPUTS*NUM_INPUTS-1:0] CONNECTIVITY = '1,
     localparam int PAYLOAD_WIDTH   = DATA_WIDTH + TAG_WIDTH,
-    localparam int SAFE_PW         = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1
+    localparam int SAFE_PW         = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1,
+    localparam int NUM_CONNECTED   = $countones(CONNECTIVITY)
 ) (
     input  logic                                      clk,
     input  logic                                      rst_n,
@@ -42,8 +44,8 @@ module fabric_temporal_sw #(
     input  logic [NUM_OUTPUTS-1:0]                    out_ready,
     output logic [NUM_OUTPUTS*SAFE_PW-1:0]            out_data,
 
-    // Configuration: route table entries
-    input  logic [NUM_ROUTE_TABLE*(1+TAG_WIDTH+NUM_OUTPUTS)-1:0] cfg_data,
+    // Configuration: route table entries (compressed)
+    input  logic [NUM_ROUTE_TABLE*(1+TAG_WIDTH+NUM_CONNECTED)-1:0] cfg_data,
 
     // Error output
     output logic                                      error_valid,
@@ -65,21 +67,47 @@ module fabric_temporal_sw #(
   end
 
   // -----------------------------------------------------------------------
-  // Unpack route table entries
-  // Each entry: {valid(1), tag(TAG_WIDTH), routes(NUM_OUTPUTS)}
+  // Unpack route table entries (compressed)
+  // Each entry: {valid(1), tag(TAG_WIDTH), routes(NUM_CONNECTED)}
   // -----------------------------------------------------------------------
-  localparam int ENTRY_WIDTH = 1 + TAG_WIDTH + NUM_OUTPUTS;
+  localparam int ENTRY_WIDTH = 1 + TAG_WIDTH + NUM_CONNECTED;
 
   logic [NUM_ROUTE_TABLE-1:0]                       rt_valid;
   logic [NUM_ROUTE_TABLE-1:0][TAG_WIDTH-1:0]        rt_tag;
-  logic [NUM_ROUTE_TABLE-1:0][NUM_OUTPUTS-1:0]      rt_routes;
+  logic [NUM_ROUTE_TABLE-1:0][NUM_CONNECTED-1:0]    rt_routes_compressed;
 
   always_comb begin : unpack_rt
     integer iter_var0;
     for (iter_var0 = 0; iter_var0 < NUM_ROUTE_TABLE; iter_var0 = iter_var0 + 1) begin : unpack
-      rt_routes[iter_var0] = cfg_data[iter_var0 * ENTRY_WIDTH +: NUM_OUTPUTS];
-      rt_tag[iter_var0]    = cfg_data[iter_var0 * ENTRY_WIDTH + NUM_OUTPUTS +: TAG_WIDTH];
-      rt_valid[iter_var0]  = cfg_data[iter_var0 * ENTRY_WIDTH + NUM_OUTPUTS + TAG_WIDTH];
+      rt_routes_compressed[iter_var0] = cfg_data[iter_var0 * ENTRY_WIDTH +: NUM_CONNECTED];
+      rt_tag[iter_var0]    = cfg_data[iter_var0 * ENTRY_WIDTH + NUM_CONNECTED +: TAG_WIDTH];
+      rt_valid[iter_var0]  = cfg_data[iter_var0 * ENTRY_WIDTH + NUM_CONNECTED + TAG_WIDTH];
+    end
+  end
+
+  // -----------------------------------------------------------------------
+  // Expand compressed route table to full [NUM_ROUTE_TABLE][NUM_OUTPUTS]
+  // Follows the same pattern as fabric_switch.sv expand_route
+  // -----------------------------------------------------------------------
+  logic [NUM_ROUTE_TABLE-1:0][NUM_OUTPUTS-1:0] rt_routes;
+
+  always_comb begin : expand_routes
+    integer iter_var0, iter_var1, iter_var2;
+    for (iter_var0 = 0; iter_var0 < NUM_ROUTE_TABLE; iter_var0 = iter_var0 + 1) begin : per_entry
+      automatic int bit_idx = 0;
+      for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_out
+        // Check if any input is connected to this output
+        automatic bit has_conn = 1'b0;
+        for (iter_var2 = 0; iter_var2 < NUM_INPUTS; iter_var2 = iter_var2 + 1) begin : scan_in
+          has_conn |= CONNECTIVITY[iter_var1 * NUM_INPUTS + iter_var2];
+        end
+        if (has_conn) begin : connected
+          rt_routes[iter_var0][iter_var1] = rt_routes_compressed[iter_var0][bit_idx];
+          bit_idx++;
+        end else begin : unconnected
+          rt_routes[iter_var0][iter_var1] = 1'b0;
+        end
+      end
     end
   end
 
@@ -109,8 +137,11 @@ module fabric_temporal_sw #(
 
   // -----------------------------------------------------------------------
   // Output muxing: for each output, find which input is routed to it
-  // Simple priority: lower-numbered input wins on contention
+  // Priority: lower-numbered input wins on contention
   // -----------------------------------------------------------------------
+  logic [NUM_INPUTS-1:0] input_routed;
+  logic [NUM_INPUTS-1:0] input_dst_ready;
+
   always_comb begin : output_mux
     integer iter_var0, iter_var1;
     for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : per_output
@@ -118,79 +149,112 @@ module fabric_temporal_sw #(
       out_data[iter_var0 * SAFE_PW +: SAFE_PW] = '0;
       for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : find_src
         if (in_valid[iter_var1] && in_match_found[iter_var1] &&
-            in_routes[iter_var1][iter_var0] && !out_valid[iter_var0]) begin : route
-          out_valid[iter_var0] = 1'b1;
-          out_data[iter_var0 * SAFE_PW +: SAFE_PW] = in_port_data[iter_var1];
+            in_routes[iter_var1][iter_var0] &&
+            CONNECTIVITY[iter_var0 * NUM_INPUTS + iter_var1]) begin : route
+          if (!out_valid[iter_var0]) begin : first_src
+            out_valid[iter_var0] = 1'b1;
+            out_data[iter_var0 * SAFE_PW +: SAFE_PW] = in_port_data[iter_var1];
+          end
         end
       end
     end
-  end
 
-  // -----------------------------------------------------------------------
-  // Ready logic: input is ready when all its target outputs are ready
-  // -----------------------------------------------------------------------
-  always_comb begin : ready_logic
-    integer iter_var0, iter_var1;
-    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_input
-      in_ready[iter_var0] = 1'b1;
-      if (in_valid[iter_var0] && in_match_found[iter_var0]) begin : check_outputs
-        for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_out
-          if (in_routes[iter_var0][iter_var1]) begin : routed
-            if (!out_ready[iter_var1]) begin : not_ready
-              in_ready[iter_var0] = 1'b0;
-            end
-          end
+    // Ready logic: input is ready when its routed output is ready
+    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : gen_ready
+      input_routed[iter_var0]    = 1'b0;
+      input_dst_ready[iter_var0] = 1'b0;
+      for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : find_dst
+        if (in_routes[iter_var0][iter_var1]) begin : has_route
+          input_routed[iter_var0]    = 1'b1;
+          input_dst_ready[iter_var0] = out_ready[iter_var1];
         end
-      end else begin : no_route
-        in_ready[iter_var0] = 1'b0;
       end
+    end
+
+    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : drive_rdy
+      if (in_valid[iter_var0] && in_match_found[iter_var0] && input_routed[iter_var0])
+        in_ready[iter_var0] = input_dst_ready[iter_var0];
+      else
+        in_ready[iter_var0] = 1'b0;
     end
   end
 
   // -----------------------------------------------------------------------
   // Error detection
   // -----------------------------------------------------------------------
+  logic        err_detect;
+  logic [15:0] err_code_comb;
 
-  // CFG: duplicate valid tags
-  logic cfg_dup_tag;
-  always_comb begin : dup_tag_check
+  always_comb begin : err_check
     integer iter_var0, iter_var1;
-    cfg_dup_tag = 1'b0;
-    for (iter_var0 = 0; iter_var0 < NUM_ROUTE_TABLE; iter_var0 = iter_var0 + 1) begin : outer
-      for (iter_var1 = iter_var0 + 1; iter_var1 < NUM_ROUTE_TABLE; iter_var1 = iter_var1 + 1) begin : inner
+    err_detect    = 1'b0;
+    err_code_comb = 16'hFFFF;
+
+    // CFG_TEMPORAL_SW_ROUTE_MULTI_OUT: per route entry, check >1 output bit set
+    for (iter_var0 = 0; iter_var0 < NUM_ROUTE_TABLE; iter_var0 = iter_var0 + 1) begin : chk_multi_out
+      if (rt_valid[iter_var0] && ($countones(rt_routes[iter_var0]) > 1)) begin : err_multi_out
+        err_detect = 1'b1;
+        if (CFG_TEMPORAL_SW_ROUTE_MULTI_OUT < err_code_comb)
+          err_code_comb = CFG_TEMPORAL_SW_ROUTE_MULTI_OUT;
+      end
+    end
+
+    // CFG_TEMPORAL_SW_ROUTE_MULTI_IN: per output, check if >1 input routes to it
+    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : chk_multi_in
+      automatic int route_count = 0;
+      for (iter_var1 = 0; iter_var1 < NUM_ROUTE_TABLE; iter_var1 = iter_var1 + 1) begin : count
+        route_count += int'(rt_valid[iter_var1] && rt_routes[iter_var1][iter_var0]);
+      end
+      if (route_count > 1) begin : err_multi_in
+        err_detect = 1'b1;
+        if (CFG_TEMPORAL_SW_ROUTE_MULTI_IN < err_code_comb)
+          err_code_comb = CFG_TEMPORAL_SW_ROUTE_MULTI_IN;
+      end
+    end
+
+    // CFG_TEMPORAL_SW_DUP_TAG: duplicate valid tags
+    for (iter_var0 = 0; iter_var0 < NUM_ROUTE_TABLE; iter_var0 = iter_var0 + 1) begin : chk_dup_outer
+      for (iter_var1 = iter_var0 + 1; iter_var1 < NUM_ROUTE_TABLE; iter_var1 = iter_var1 + 1) begin : chk_dup_inner
         if (rt_valid[iter_var0] && rt_valid[iter_var1] &&
             (rt_tag[iter_var0] == rt_tag[iter_var1])) begin : dup
-          cfg_dup_tag = 1'b1;
+          err_detect = 1'b1;
+          if (CFG_TEMPORAL_SW_DUP_TAG < err_code_comb)
+            err_code_comb = CFG_TEMPORAL_SW_DUP_TAG;
         end
       end
     end
-  end
 
-  // RT: no match for valid input
-  logic rt_no_match;
-  always_comb begin : no_match_check
-    integer iter_var0;
-    rt_no_match = 1'b0;
-    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : check
+    // RT_TEMPORAL_SW_NO_MATCH: valid input with no matching tag
+    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : chk_no_match
       if (in_valid[iter_var0] && !in_match_found[iter_var0]) begin : miss
-        rt_no_match = 1'b1;
+        err_detect = 1'b1;
+        if (RT_TEMPORAL_SW_NO_MATCH < err_code_comb)
+          err_code_comb = RT_TEMPORAL_SW_NO_MATCH;
       end
     end
+
+    // RT_TEMPORAL_SW_UNROUTED_INPUT: valid input has match but no enabled route
+    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : chk_unrouted
+      if (in_valid[iter_var0] && in_match_found[iter_var0] &&
+          !input_routed[iter_var0]) begin : unrouted
+        err_detect = 1'b1;
+        if (RT_TEMPORAL_SW_UNROUTED_INPUT < err_code_comb)
+          err_code_comb = RT_TEMPORAL_SW_UNROUTED_INPUT;
+      end
+    end
+
+    if (!err_detect)
+      err_code_comb = 16'd0;
   end
 
-  // Error latch
+  // Error latch: once set, stays set
   always_ff @(posedge clk or negedge rst_n) begin : error_latch
     if (!rst_n) begin : reset
       error_valid <= 1'b0;
       error_code  <= 16'd0;
-    end else if (!error_valid) begin : capture
-      if (cfg_dup_tag) begin : dup_err
-        error_valid <= 1'b1;
-        error_code  <= CFG_TEMPORAL_SW_DUP_TAG;
-      end else if (rt_no_match) begin : match_err
-        error_valid <= 1'b1;
-        error_code  <= RT_TEMPORAL_SW_NO_MATCH;
-      end
+    end else if (!error_valid && err_detect) begin : capture
+      error_valid <= 1'b1;
+      error_code  <= err_code_comb;
     end
   end
 

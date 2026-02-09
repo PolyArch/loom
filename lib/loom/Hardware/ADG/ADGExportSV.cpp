@@ -16,6 +16,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <sstream>
@@ -128,6 +129,16 @@ static unsigned getNumConnected(const SwitchDef &def) {
   return count;
 }
 
+static unsigned getNumConnected(const TemporalSwitchDef &def) {
+  if (def.connectivity.empty())
+    return def.numIn * def.numOut;
+  unsigned count = 0;
+  for (const auto &row : def.connectivity)
+    for (bool v : row)
+      if (v) ++count;
+  return count;
+}
+
 //===----------------------------------------------------------------------===//
 // Helper: read a file into a string
 //===----------------------------------------------------------------------===//
@@ -153,7 +164,7 @@ static unsigned getOpLatency(const std::string &opName) {
       opName == "arith.shrsi" || opName == "arith.shrui" ||
       opName == "arith.trunci" || opName == "arith.extsi" ||
       opName == "arith.extui" || opName == "arith.index_cast" ||
-      opName == "arith.index_castui" || opName == "llvm.bitreverse")
+      opName == "arith.index_castui" || opName == "llvm.intr.bitreverse")
     return 0;
   // Integer add/sub/cmp/select: 1 cycle
   if (opName == "arith.addi" || opName == "arith.subi" ||
@@ -191,11 +202,31 @@ static unsigned getOpLatency(const std::string &opName) {
 
 /// Convert a dialect.op name to the SV module name (e.g., "arith.addi" -> "arith_addi").
 static std::string opToSVModule(const std::string &opName) {
+  // Normalize LLVM intrinsic names: strip the ".intr" segment
+  // e.g., "llvm.intr.bitreverse" -> "llvm_bitreverse"
+  if (opName.find("llvm.intr.") == 0) {
+    std::string result = "llvm_" + opName.substr(10);
+    for (char &c : result)
+      if (c == '.')
+        c = '_';
+    return result;
+  }
   std::string result = opName;
   for (char &c : result)
     if (c == '.')
       c = '_';
   return result;
+}
+
+/// Return true if the op is a width-conversion operation.
+static bool isConversionOp(const std::string &opName) {
+  return opName == "arith.extsi" || opName == "arith.extui" ||
+         opName == "arith.trunci";
+}
+
+/// Return true if the op is a compare operation (1-bit result).
+static bool isCompareOp(const std::string &opName) {
+  return opName == "arith.cmpi" || opName == "arith.cmpf";
 }
 
 /// Generate the PE body SV text for a singleOp PEDef.
@@ -206,31 +237,64 @@ static std::string genPEBodySV(const PEDef &def) {
 
   std::string svModule = opToSVModule(def.singleOp);
   unsigned numIn = def.inputPorts.size();
-  unsigned numOut = def.outputPorts.size();
 
   std::ostringstream os;
-  os << "  " << svModule << " #(.WIDTH(DATA_WIDTH)) u_body (\n";
 
-  // Map input ports: a, b, c, or special names for specific ops
-  if (def.singleOp == "arith.select") {
-    // select: condition (i1), a, b
-    os << "    .condition(in_value[0][0]),\n";
-    os << "    .a(in_value[1]),\n";
-    os << "    .b(in_value[2]),\n";
-  } else if (def.singleOp == "math.fma") {
+  if (isConversionOp(def.singleOp)) {
+    // Conversion ops use IN_WIDTH and OUT_WIDTH parameters
+    unsigned inW = numIn > 0 ? getDataWidthBits(def.inputPorts[0]) : 32;
+    unsigned outW = def.outputPorts.size() > 0
+                        ? getDataWidthBits(def.outputPorts[0])
+                        : 32;
+    if (inW == 0) inW = 1;
+    if (outW == 0) outW = 1;
+    os << "  " << svModule << " #(.IN_WIDTH(" << inW << "), .OUT_WIDTH("
+       << outW << ")) u_body (\n";
+    os << "    .a(in_value[0][" << (inW - 1) << ":0]),\n";
+    os << "    .result(body_result[0][" << (outW - 1) << ":0])\n";
+    os << "  );\n";
+    // Zero-fill upper bits if OUT_WIDTH < DATA_WIDTH
+    os << "  generate\n";
+    os << "    if (DATA_WIDTH > " << outW << ") begin : g_conv_pad\n";
+    os << "      assign body_result[0][DATA_WIDTH-1:" << outW << "] = '0;\n";
+    os << "    end\n";
+    os << "  endgenerate\n";
+  } else if (isCompareOp(def.singleOp)) {
+    // Compare ops have a PREDICATE parameter and 1-bit output
+    os << "  logic cmp_result;\n";
+    os << "  " << svModule
+       << " #(.WIDTH(DATA_WIDTH), .PREDICATE(0)) u_body (\n";
+    // Map input ports
     os << "    .a(in_value[0]),\n";
     os << "    .b(in_value[1]),\n";
-    os << "    .c(in_value[2]),\n";
-  } else if (numIn >= 2) {
-    os << "    .a(in_value[0]),\n";
-    os << "    .b(in_value[1]),\n";
+    os << "    .result(cmp_result)\n";
+    os << "  );\n";
+    // Zero-extend 1-bit result to DATA_WIDTH
+    os << "  assign body_result[0] = {{(DATA_WIDTH-1){1'b0}}, cmp_result};\n";
   } else {
-    os << "    .a(in_value[0]),\n";
-  }
+    // Standard ops: use WIDTH parameter
+    os << "  " << svModule << " #(.WIDTH(DATA_WIDTH)) u_body (\n";
 
-  // Output
-  os << "    .result(body_result[0])\n";
-  os << "  );\n";
+    // Map input ports: a, b, c, or special names for specific ops
+    if (def.singleOp == "arith.select") {
+      // select: condition (i1), a, b
+      os << "    .condition(in_value[0][0]),\n";
+      os << "    .a(in_value[1]),\n";
+      os << "    .b(in_value[2]),\n";
+    } else if (def.singleOp == "math.fma") {
+      os << "    .a(in_value[0]),\n";
+      os << "    .b(in_value[1]),\n";
+      os << "    .c(in_value[2]),\n";
+    } else if (numIn >= 2) {
+      os << "    .a(in_value[0]),\n";
+      os << "    .b(in_value[1]),\n";
+    } else {
+      os << "    .a(in_value[0]),\n";
+    }
+
+    os << "    .result(body_result[0])\n";
+    os << "  );\n";
+  }
 
   return os.str();
 }
@@ -372,6 +436,90 @@ static std::string genTemporalSwitchParams(const TemporalSwitchDef &def) {
 }
 
 //===----------------------------------------------------------------------===//
+// Generate temporal PE instance parameters
+//===----------------------------------------------------------------------===//
+
+static std::string genTemporalPEParams(const TemporalPEDef &def,
+                                       const std::vector<PEDef> &peDefs) {
+  unsigned dw = getDataWidthBits(def.interfaceType);
+  unsigned tw = getTagWidthBits(def.interfaceType);
+  if (dw == 0)
+    dw = 1;
+  unsigned numIn = 1, numOut = 1;
+  if (!def.fuPEDefIndices.empty()) {
+    numIn = peDefs[def.fuPEDefIndices[0]].inputPorts.size();
+    numOut = peDefs[def.fuPEDefIndices[0]].outputPorts.size();
+  }
+  std::ostringstream os;
+  os << "    .NUM_INPUTS(" << numIn << "),\n";
+  os << "    .NUM_OUTPUTS(" << numOut << "),\n";
+  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .TAG_WIDTH(" << tw << "),\n";
+  os << "    .NUM_FU_TYPES(" << def.fuPEDefIndices.size() << "),\n";
+  os << "    .NUM_REGISTERS(" << def.numRegisters << "),\n";
+  os << "    .NUM_INSTRUCTIONS(" << def.numInstructions << "),\n";
+  os << "    .REG_FIFO_DEPTH(" << def.regFifoDepth << ")";
+  return os.str();
+}
+
+//===----------------------------------------------------------------------===//
+// Generate memory instance parameters
+//===----------------------------------------------------------------------===//
+
+static std::string genMemoryParams(const MemoryDef &def) {
+  unsigned dw = getDataWidthBits(def.shape.getElemType());
+  if (dw == 0)
+    dw = 1;
+  // Determine tag width from tagging rules
+  unsigned tw = 0;
+  if (def.ldCount > 1 || def.stCount > 1) {
+    unsigned maxCount = std::max(def.ldCount, def.stCount);
+    unsigned tagBits = 1;
+    while ((1u << tagBits) < maxCount)
+      ++tagBits;
+    tw = tagBits;
+  }
+  std::ostringstream os;
+  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .TAG_WIDTH(" << tw << "),\n";
+  os << "    .LD_COUNT(" << def.ldCount << "),\n";
+  os << "    .ST_COUNT(" << def.stCount << "),\n";
+  os << "    .LSQ_DEPTH(" << def.lsqDepth << "),\n";
+  os << "    .IS_PRIVATE(" << (def.isPrivate ? 1 : 0) << "),\n";
+  // Use shape size as MEM_DEPTH
+  unsigned memDepth = def.shape.isDynamic() ? 64 : def.shape.getSize();
+  if (memDepth == 0)
+    memDepth = 64;
+  os << "    .MEM_DEPTH(" << memDepth << ")";
+  return os.str();
+}
+
+//===----------------------------------------------------------------------===//
+// Generate external memory instance parameters
+//===----------------------------------------------------------------------===//
+
+static std::string genExtMemoryParams(const ExtMemoryDef &def) {
+  unsigned dw = getDataWidthBits(def.shape.getElemType());
+  if (dw == 0)
+    dw = 1;
+  unsigned tw = 0;
+  if (def.ldCount > 1 || def.stCount > 1) {
+    unsigned maxCount = std::max(def.ldCount, def.stCount);
+    unsigned tagBits = 1;
+    while ((1u << tagBits) < maxCount)
+      ++tagBits;
+    tw = tagBits;
+  }
+  std::ostringstream os;
+  os << "    .DATA_WIDTH(" << dw << "),\n";
+  os << "    .TAG_WIDTH(" << tw << "),\n";
+  os << "    .LD_COUNT(" << def.ldCount << "),\n";
+  os << "    .ST_COUNT(" << def.stCount << "),\n";
+  os << "    .LSQ_DEPTH(" << def.lsqDepth << ")";
+  return os.str();
+}
+
+//===----------------------------------------------------------------------===//
 // Generate switch instance parameters
 //===----------------------------------------------------------------------===//
 
@@ -484,13 +632,16 @@ static bool hasSVTemplate(ModuleKind kind) {
          kind == ModuleKind::AddTag || kind == ModuleKind::DelTag ||
          kind == ModuleKind::MapTag || kind == ModuleKind::PE ||
          kind == ModuleKind::ConstantPE || kind == ModuleKind::LoadPE ||
-         kind == ModuleKind::StorePE || kind == ModuleKind::TemporalSwitch;
+         kind == ModuleKind::StorePE || kind == ModuleKind::TemporalSwitch ||
+         kind == ModuleKind::TemporalPE || kind == ModuleKind::Memory ||
+         kind == ModuleKind::ExtMemory;
 }
 
 /// Returns true for module kinds that expose error_valid/error_code ports.
 static bool hasErrorOutput(ModuleKind kind) {
   return kind == ModuleKind::Switch || kind == ModuleKind::TemporalSwitch ||
-         kind == ModuleKind::TemporalPE || kind == ModuleKind::MapTag;
+         kind == ModuleKind::TemporalPE || kind == ModuleKind::MapTag ||
+         kind == ModuleKind::Memory || kind == ModuleKind::ExtMemory;
 }
 
 //===----------------------------------------------------------------------===//
@@ -702,7 +853,10 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         instanceDerived.insert(inst.name + "_cfg_data");
     } else if (inst.kind == ModuleKind::TemporalSwitch) {
       instanceDerived.insert(inst.name + "_cfg_data");
+    } else if (inst.kind == ModuleKind::TemporalPE) {
+      instanceDerived.insert(inst.name + "_cfg_data");
     }
+    // Memory and ExtMemory have no config ports (CONFIG_WIDTH = 0)
   }
 
   // Check port suffixed names against instance-derived signals
@@ -769,6 +923,9 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     copyTemplateFile(templateDir, "Fabric/fabric_pe_load.sv", libDir.str().str());
     copyTemplateFile(templateDir, "Fabric/fabric_pe_store.sv", libDir.str().str());
     copyTemplateFile(templateDir, "Fabric/fabric_temporal_sw.sv", libDir.str().str());
+    copyTemplateFile(templateDir, "Fabric/fabric_temporal_pe.sv", libDir.str().str());
+    copyTemplateFile(templateDir, "Fabric/fabric_memory.sv", libDir.str().str());
+    copyTemplateFile(templateDir, "Fabric/fabric_extmemory.sv", libDir.str().str());
 
     // For PE instances: generate body-filled customized modules
     for (const auto &inst : instances) {
@@ -899,10 +1056,38 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     } else if (inst.kind == ModuleKind::TemporalSwitch) {
       const auto &def = temporalSwitchDefs[inst.defIdx];
       unsigned tw = getTagWidthBits(def.interfaceType);
-      unsigned entryWidth = 1 + tw + def.numOut;
+      unsigned numConn = getNumConnected(def);
+      unsigned entryWidth = 1 + tw + numConn;
       instCfgPorts.push_back(
           {inst.name + "_cfg_data", def.numRouteTable * entryWidth});
+    } else if (inst.kind == ModuleKind::TemporalPE) {
+      const auto &def = temporalPEDefs[inst.defIdx];
+      unsigned tw = getTagWidthBits(def.interfaceType);
+      unsigned numIn = 1, numOut = 1;
+      if (!def.fuPEDefIndices.empty()) {
+        numIn = peDefs[def.fuPEDefIndices[0]].inputPorts.size();
+        numOut = peDefs[def.fuPEDefIndices[0]].outputPorts.size();
+      }
+      unsigned fuTypes = def.fuPEDefIndices.size();
+      // log2Ceil helper
+      auto log2Ceil = [](unsigned v) -> unsigned {
+        if (v <= 1) return 0;
+        unsigned bits = 0;
+        v--;
+        while (v > 0) { bits++; v >>= 1; }
+        return bits;
+      };
+      unsigned regBits = (def.numRegisters > 0) ?
+          (1 + log2Ceil(std::max(def.numRegisters, 2u))) : 0;
+      unsigned fuSelBits = (fuTypes > 1) ? log2Ceil(fuTypes) : 0;
+      unsigned resBits = regBits;
+      unsigned resultWidth = resBits + tw;
+      unsigned insnWidth = 1 + tw + fuSelBits + numIn * regBits + numOut * resultWidth;
+      unsigned cfgBits = def.numInstructions * insnWidth;
+      if (cfgBits > 0)
+        instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
     }
+    // Memory and ExtMemory have CONFIG_WIDTH = 0, no config ports
   }
   bool hasCfgPorts = !instCfgPorts.empty();
 
@@ -1266,6 +1451,154 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       }
       top << "}),\n";
       top << "    .cfg_data(" << inst.name << "_cfg_data),\n";
+      top << "    .error_valid(" << inst.name << "_error_valid),\n";
+      top << "    .error_code(" << inst.name << "_error_code)\n";
+      top << "  );\n\n";
+      break;
+    }
+    case ModuleKind::TemporalPE: {
+      const auto &def = temporalPEDefs[inst.defIdx];
+      unsigned numIn = 1, numOut = 1;
+      if (!def.fuPEDefIndices.empty()) {
+        numIn = peDefs[def.fuPEDefIndices[0]].inputPorts.size();
+        numOut = peDefs[def.fuPEDefIndices[0]].outputPorts.size();
+      }
+      top << "  fabric_temporal_pe #(\n" << genTemporalPEParams(def, peDefs)
+          << "\n  ) " << inst.name << " (\n";
+      top << "    .clk(clk), .rst_n(rst_n),\n";
+      top << "    .in_valid({";
+      for (int p = numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_valid";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .in_ready({";
+      for (int p = numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_ready";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .in_data({";
+      for (int p = numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_data";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_valid({";
+      for (int p = numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_valid";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_ready({";
+      for (int p = numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_ready";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_data({";
+      for (int p = numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_data";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .cfg_data(" << inst.name << "_cfg_data),\n";
+      top << "    .error_valid(" << inst.name << "_error_valid),\n";
+      top << "    .error_code(" << inst.name << "_error_code)\n";
+      top << "  );\n\n";
+      break;
+    }
+    case ModuleKind::Memory: {
+      const auto &def = memoryDefs[inst.defIdx];
+      unsigned numIn = getInstanceInputCount(i);
+      unsigned numOut = getInstanceOutputCount(i);
+      top << "  fabric_memory #(\n" << genMemoryParams(def) << "\n  ) "
+          << inst.name << " (\n";
+      top << "    .clk(clk), .rst_n(rst_n),\n";
+      top << "    .in_valid({";
+      for (int p = numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_valid";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .in_ready({";
+      for (int p = numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_ready";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .in_data({";
+      for (int p = numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_data";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_valid({";
+      for (int p = numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_valid";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_ready({";
+      for (int p = numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_ready";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_data({";
+      for (int p = numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_data";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .error_valid(" << inst.name << "_error_valid),\n";
+      top << "    .error_code(" << inst.name << "_error_code)\n";
+      top << "  );\n\n";
+      break;
+    }
+    case ModuleKind::ExtMemory: {
+      const auto &def = extMemoryDefs[inst.defIdx];
+      unsigned numIn = getInstanceInputCount(i);
+      unsigned numOut = getInstanceOutputCount(i);
+      top << "  fabric_extmemory #(\n" << genExtMemoryParams(def) << "\n  ) "
+          << inst.name << " (\n";
+      top << "    .clk(clk), .rst_n(rst_n),\n";
+      top << "    .in_valid({";
+      for (int p = numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_valid";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .in_ready({";
+      for (int p = numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_ready";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .in_data({";
+      for (int p = numIn - 1; p >= 0; --p) {
+        top << inst.name << "_in" << p << "_data";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_valid({";
+      for (int p = numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_valid";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_ready({";
+      for (int p = numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_ready";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
+      top << "    .out_data({";
+      for (int p = numOut - 1; p >= 0; --p) {
+        top << inst.name << "_out" << p << "_data";
+        if (p > 0) top << ", ";
+      }
+      top << "}),\n";
       top << "    .error_valid(" << inst.name << "_error_valid),\n";
       top << "    .error_code(" << inst.name << "_error_code)\n";
       top << "  );\n\n";

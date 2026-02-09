@@ -6,6 +6,9 @@
 // Errors:
 //   CFG_PE_STREAM_CONT_COND_ONEHOT - cont_cond_sel is not one-hot
 //   RT_DATAFLOW_STREAM_ZERO_STEP   - step == 0 at runtime
+
+`include "fabric_common.svh"
+
 module dataflow_stream #(
     parameter int WIDTH = 32
 ) (
@@ -44,8 +47,6 @@ module dataflow_stream #(
     output logic             error_valid,
     output logic [15:0]      error_code
 );
-
-  `include "fabric_common.svh"
 
   typedef enum logic [1:0] {
     S_IDLE    = 2'b00,

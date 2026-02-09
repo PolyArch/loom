@@ -193,6 +193,18 @@ switch_neg=(
   "NUM_INPUTS=2,NUM_OUTPUTS=2,CONNECTIVITY=5|COMP_SWITCH_COL_EMPTY"
 )
 
+# AddTag positive parameter sweeps
+add_tag_configs=(
+  "DATA_WIDTH=32,TAG_WIDTH=4"
+  "DATA_WIDTH=16,TAG_WIDTH=8"
+  "DATA_WIDTH=8,TAG_WIDTH=1"
+)
+
+# AddTag negative tests
+add_tag_neg=(
+  "DATA_WIDTH=32,TAG_WIDTH=0|COMP_ADD_TAG_TAG_WIDTH"
+)
+
 # Helper: emit a skip job (exit 77) for a given output directory
 emit_skip_job() {
   local outdir="$1"
@@ -278,6 +290,33 @@ emit_sim_jobs() {
     line+=" && ${rel_sim_runner} expect-fail ${sim} tb_fabric_switch ${outdir} ${pattern} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
   done
+
+  # AddTag positive tests
+  for cfg in "${add_tag_configs[@]}"; do
+    local cfg_suffix gparams
+    cfg_suffix=$(cfg_to_suffix "${cfg}")
+    gparams=$(cfg_to_gparams "${cfg}")
+    outdir="tests/sv/add_tag/Output/${sim}_${cfg_suffix}"
+
+    sv_files="${rel_sv_fabric}/fabric_add_tag.sv ${rel_sv_tb}/tb_fabric_add_tag.sv"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
+    line+=" && ${rel_sim_runner} run ${sim} tb_fabric_add_tag ${outdir} ${sv_files}${gparams}"
+    echo "${line}" >> "${PARALLEL_FILE}"
+  done
+
+  # AddTag negative tests
+  for neg in "${add_tag_neg[@]}"; do
+    IFS='|' read -r params pattern <<< "${neg}"
+    local cfg_suffix gparams
+    cfg_suffix=$(cfg_to_suffix "${params}")
+    gparams=$(cfg_to_gparams "${params}")
+    outdir="tests/sv/add_tag/Output/${sim}_neg_${cfg_suffix}"
+
+    sv_files="${rel_sv_fabric}/fabric_add_tag.sv ${rel_sv_tb}/tb_fabric_add_tag.sv"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
+    line+=" && ${rel_sim_runner} expect-fail ${sim} tb_fabric_add_tag ${outdir} ${pattern} ${sv_files}${gparams}"
+    echo "${line}" >> "${PARALLEL_FILE}"
+  done
 }
 
 if [[ -n "${SIM}" ]]; then
@@ -289,11 +328,16 @@ if [[ -n "${SIM}" ]]; then
     test_name=$(basename "${test_dir}")
     rel_test=$(loom_relpath "${test_dir}")
     rel_out="${rel_test}/Output"
+    tb_file="${rel_sv_tb}/tb_${test_name}_top.sv"
+
+    # Skip e2e if the testbench file does not exist
+    [[ -f "${tb_file}" ]] || continue
 
     outdir="${rel_out}/${SIM}_e2e_${test_name}"
+    # Collect all generated lib .sv files dynamically
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${SIM} tb_${test_name}_top ${outdir}"
-    line+=" ${rel_out}/sv/${test_name}_top.sv ${rel_out}/sv/lib/fabric_fifo.sv ${rel_out}/sv/lib/fabric_switch.sv ${rel_sv_tb}/tb_${test_name}_top.sv"
+    line+=" ${rel_out}/sv/${test_name}_top.sv \$(find ${rel_out}/sv/lib -name '*.sv' -type f) ${tb_file}"
     echo "${line}" >> "${PARALLEL_FILE}"
   done
 else
@@ -313,10 +357,18 @@ else
     IFS='|' read -r params _ <<< "${neg}"
     emit_skip_job "tests/sv/switch/Output/skip_neg_$(cfg_to_suffix "${params}")"
   done
-  # Also emit skip for e2e tests
+  for cfg in "${add_tag_configs[@]}"; do
+    emit_skip_job "tests/sv/add_tag/Output/skip_$(cfg_to_suffix "${cfg}")"
+  done
+  for neg in "${add_tag_neg[@]}"; do
+    IFS='|' read -r params _ <<< "${neg}"
+    emit_skip_job "tests/sv/add_tag/Output/skip_neg_$(cfg_to_suffix "${params}")"
+  done
+  # Also emit skip for e2e tests (only where testbench exists)
   for test_dir in "${test_dirs[@]}"; do
     test_name=$(basename "${test_dir}")
     rel_test=$(loom_relpath "${test_dir}")
+    [[ -f "${SV_TB}/tb_${test_name}_top.sv" ]] || continue
     emit_skip_job "${rel_test}/Output/skip_e2e_${test_name}"
   done
 fi
