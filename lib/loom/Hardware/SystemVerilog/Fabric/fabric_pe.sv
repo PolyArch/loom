@@ -24,6 +24,7 @@ module fabric_pe #(
     parameter int DATA_WIDTH   = 32,
     parameter int TAG_WIDTH    = 0,
     parameter int LATENCY_TYP  = 1,
+    parameter int INTERVAL     = 1,
     localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH,
     localparam int SAFE_PW       = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1,
     localparam int SAFE_DW       = (DATA_WIDTH > 0) ? DATA_WIDTH : 1,
@@ -60,6 +61,8 @@ module fabric_pe #(
       $fatal(1, "COMP_PE_DATA_WIDTH: DATA_WIDTH must be >= 1");
     if (LATENCY_TYP < 0)
       $fatal(1, "COMP_PE_LATENCY: LATENCY_TYP must be >= 0");
+    if (INTERVAL < 1)
+      $fatal(1, "COMP_PE_INTERVAL: INTERVAL must be >= 1");
   end
 
   // -----------------------------------------------------------------------
@@ -90,10 +93,40 @@ module fabric_pe #(
   // Ready gated by downstream ready (combinational, no buffering)
   logic pipeline_ready;
 
+  // -----------------------------------------------------------------------
+  // Initiation interval gating
+  // -----------------------------------------------------------------------
+  logic ii_allow;
+  logic fire;
+
+  generate
+    if (INTERVAL > 1) begin : g_ii
+      localparam int II_CTR_W = $clog2(INTERVAL);
+      logic [II_CTR_W-1:0] ii_ctr;
+
+      assign fire = pipeline_ready && all_in_valid && ii_allow;
+
+      always_ff @(posedge clk or negedge rst_n) begin : ii_counter
+        if (!rst_n) begin : reset
+          ii_ctr <= '0;
+        end else if (fire) begin : reload
+          ii_ctr <= II_CTR_W'(INTERVAL - 1);
+        end else if (ii_ctr != '0 && pipeline_ready) begin : tick
+          ii_ctr <= ii_ctr - II_CTR_W'(1);
+        end
+      end
+
+      assign ii_allow = (ii_ctr == '0);
+    end else begin : g_ii_bypass
+      assign ii_allow = 1'b1;
+      assign fire = pipeline_ready && all_in_valid;
+    end
+  endgenerate
+
   generate
     genvar gi_rdy;
     for (gi_rdy = 0; gi_rdy < NUM_INPUTS; gi_rdy++) begin : g_in_ready
-      assign in_ready[gi_rdy] = pipeline_ready && all_in_valid;
+      assign in_ready[gi_rdy] = pipeline_ready && all_in_valid && ii_allow;
     end
   endgenerate
 
@@ -128,8 +161,8 @@ module fabric_pe #(
           end
         end else if (all_out_ready) begin : advance
           integer iter_var0;
-          // Stage 0 gets body output
-          sr_valid[0] <= all_in_valid;
+          // Stage 0 gets body output (gated by interval)
+          sr_valid[0] <= fire;
           sr_data[0]  <= body_result;
           // Subsequent stages shift
           for (iter_var0 = 1; iter_var0 < LATENCY_TYP; iter_var0 = iter_var0 + 1) begin : shift
@@ -173,7 +206,7 @@ module fabric_pe #(
         end else begin : g_native
           assign out_data[go]  = body_result[go];
         end
-        assign out_valid[go] = all_in_valid;
+        assign out_valid[go] = fire;
       end
     end
   endgenerate

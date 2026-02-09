@@ -885,15 +885,14 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
   os << "\n";
 
   // Instantiate each FU as a customized fabric_pe module (TAG_WIDTH=0).
-  // Each FU uses its own latency from getOpLatency().
+  // Each FU uses its configured latency from the PEDef.
   for (unsigned f = 0; f < numFU; ++f) {
     const auto &fuDef = peDefs[def.fuPEDefIndices[f]];
     std::string fuModName = instName + "_fu" + std::to_string(f) + "_pe";
     unsigned fuNumIn = fuDef.inputPorts.size();
     unsigned fuNumOut = fuDef.outputPorts.size();
-    unsigned fuLatency = fuDef.singleOp.empty()
-                             ? computeBodyMLIRLatency(fuDef.bodyMLIR)
-                             : getOpLatency(fuDef.singleOp);
+    unsigned fuLatency =
+        static_cast<unsigned>(std::max<int16_t>(fuDef.latTyp, 0));
 
     unsigned fw = fuEffDW[f];
 
@@ -903,8 +902,11 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     os << "    .NUM_INPUTS(" << fuNumIn << "),\n";
     os << "    .NUM_OUTPUTS(" << fuNumOut << "),\n";
     os << "    .DATA_WIDTH(" << fw << "),\n";
+    unsigned fuInterval =
+        static_cast<unsigned>(std::max<int16_t>(fuDef.intTyp, 1));
     os << "    .TAG_WIDTH(0),\n";
-    os << "    .LATENCY_TYP(" << fuLatency << ")\n";
+    os << "    .LATENCY_TYP(" << fuLatency << "),\n";
+    os << "    .INTERVAL(" << fuInterval << ")\n";
     os << "  ) u_fu" << f << " (\n";
     os << "    .clk(clk),\n";
     os << "    .rst_n(rst_n),\n";
@@ -1025,16 +1027,17 @@ static std::string genPEParams(const PEDef &def) {
   if (dw == 0)
     dw = 32;
   unsigned tw = numIn > 0 ? getTagWidthBits(def.inputPorts[0]) : 0;
-  unsigned latency = def.singleOp.empty() && !def.bodyMLIR.empty()
-                         ? computeBodyMLIRLatency(def.bodyMLIR)
-                         : getOpLatency(def.singleOp);
+  // Use the PEDef's configured latency/interval (set via setLatency()/setInterval()).
+  unsigned latency = static_cast<unsigned>(std::max<int16_t>(def.latTyp, 0));
+  unsigned interval = static_cast<unsigned>(std::max<int16_t>(def.intTyp, 1));
 
   std::ostringstream os;
   os << "    .NUM_INPUTS(" << numIn << "),\n";
   os << "    .NUM_OUTPUTS(" << numOut << "),\n";
   os << "    .DATA_WIDTH(" << dw << "),\n";
   os << "    .TAG_WIDTH(" << tw << "),\n";
-  os << "    .LATENCY_TYP(" << latency << ")";
+  os << "    .LATENCY_TYP(" << latency << "),\n";
+  os << "    .INTERVAL(" << interval << ")";
   return os.str();
 }
 
