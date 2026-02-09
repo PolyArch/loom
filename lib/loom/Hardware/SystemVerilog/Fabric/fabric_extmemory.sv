@@ -72,9 +72,14 @@ module fabric_extmemory #(
   assign in_ready[0] = 1'b1;
 
   // -----------------------------------------------------------------------
-  // Load path: forward address request, wait for external data return
-  // In simulation, external memory is modeled as a simple passthrough.
-  // The actual memory binding is handled by the testbench or co-simulation.
+  // Behavioral memory for simulation (external memory modeled internally)
+  // -----------------------------------------------------------------------
+  localparam int EXT_MEM_DEPTH = 256;
+  localparam int EXT_ADDR_WIDTH = $clog2(EXT_MEM_DEPTH > 1 ? EXT_MEM_DEPTH : 2);
+  logic [SAFE_DW-1:0] ext_mem [0:EXT_MEM_DEPTH-1];
+
+  // -----------------------------------------------------------------------
+  // Load path: read from behavioral memory
   // -----------------------------------------------------------------------
   generate
     genvar gli;
@@ -83,29 +88,44 @@ module fabric_extmemory #(
       localparam int DATA_OUT = gli;
       localparam int DONE_OUT = LD_COUNT;
 
-      // Pass-through: load address in -> load data out (simulation stub)
+      logic [EXT_ADDR_WIDTH-1:0] ld_addr;
+      assign ld_addr = in_data[IN_IDX][EXT_ADDR_WIDTH-1:0];
+
       assign out_valid[DATA_OUT] = in_valid[IN_IDX];
-      assign out_data[DATA_OUT]  = '0; // data from external memory (stub)
-      assign in_ready[IN_IDX]    = out_ready[DATA_OUT] && out_ready[DONE_OUT];
+      if (TAG_WIDTH > 0) begin : g_tagged_ld
+        logic [TAG_WIDTH-1:0] ld_tag;
+        assign ld_tag = in_data[IN_IDX][DATA_WIDTH +: TAG_WIDTH];
+        assign out_data[DATA_OUT] = {ld_tag, ext_mem[ld_addr]};
+      end else begin : g_untagged_ld
+        assign out_data[DATA_OUT] = ext_mem[ld_addr];
+      end
+      assign in_ready[IN_IDX] = out_ready[DATA_OUT] && out_ready[DONE_OUT];
     end
   endgenerate
 
   // -----------------------------------------------------------------------
-  // Load done signal
+  // Load done signal (carries tag when LD_COUNT > 1)
   // -----------------------------------------------------------------------
   generate
     if (LD_COUNT > 0) begin : g_lddone
       localparam int DONE_IDX = LD_COUNT;
       logic any_ld_valid;
+      logic [SAFE_PW-1:0] lddone_data;
       always_comb begin : lddone_logic
         integer iter_var0;
         any_ld_valid = 1'b0;
+        lddone_data  = '0;
         for (iter_var0 = 0; iter_var0 < LD_COUNT; iter_var0 = iter_var0 + 1) begin : chk
-          any_ld_valid |= in_valid[1 + iter_var0];
+          if (in_valid[1 + iter_var0]) begin : fire
+            any_ld_valid = 1'b1;
+            if (TAG_WIDTH > 0 && LD_COUNT > 1) begin : tag_fwd
+              lddone_data[DATA_WIDTH +: TAG_WIDTH] = in_data[1 + iter_var0][DATA_WIDTH +: TAG_WIDTH];
+            end
+          end
         end
       end
       assign out_valid[DONE_IDX] = any_ld_valid;
-      assign out_data[DONE_IDX]  = '0;
+      assign out_data[DONE_IDX]  = lddone_data;
     end
   endgenerate
 
@@ -128,21 +148,39 @@ module fabric_extmemory #(
 
         assign in_ready[ADDR_IN] = st_fire;
         assign in_ready[DATA_IN] = st_fire;
+
+        logic [EXT_ADDR_WIDTH-1:0] st_addr;
+        logic [SAFE_DW-1:0]        st_data_val;
+        assign st_addr     = in_data[ADDR_IN][EXT_ADDR_WIDTH-1:0];
+        assign st_data_val = in_data[DATA_IN][DATA_WIDTH-1:0];
+
+        always_ff @(posedge clk) begin : write_mem
+          if (st_fire) begin : do_write
+            ext_mem[st_addr] <= st_data_val;
+          end
+        end
       end
 
-      // Store done signal
+      // Store done signal (carries tag when ST_COUNT > 1)
       begin : g_stdone
         localparam int DONE_IDX = LD_COUNT + 1;
         logic any_st_sync;
+        logic [SAFE_PW-1:0] stdone_data;
         always_comb begin : stdone_logic
           integer iter_var0;
           any_st_sync = 1'b0;
+          stdone_data = '0;
           for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : chk
-            any_st_sync |= (in_valid[1 + LD_COUNT + iter_var0] && in_valid[1 + LD_COUNT + ST_COUNT + iter_var0]);
+            if (in_valid[1 + LD_COUNT + iter_var0] && in_valid[1 + LD_COUNT + ST_COUNT + iter_var0]) begin : fire
+              any_st_sync = 1'b1;
+              if (TAG_WIDTH > 0 && ST_COUNT > 1) begin : tag_fwd
+                stdone_data[DATA_WIDTH +: TAG_WIDTH] = in_data[1 + LD_COUNT + iter_var0][DATA_WIDTH +: TAG_WIDTH];
+              end
+            end
           end
         end
         assign out_valid[DONE_IDX] = any_st_sync;
-        assign out_data[DONE_IDX]  = '0;
+        assign out_data[DONE_IDX]  = stdone_data;
       end
     end
   endgenerate
@@ -203,7 +241,7 @@ module fabric_extmemory #(
       if (LD_COUNT > 1) begin : ld_tag_chk
         for (iter_var0 = 0; iter_var0 < LD_COUNT; iter_var0 = iter_var0 + 1) begin : per_ld
           if (in_valid[1 + iter_var0] &&
-              (in_data[1 + iter_var0][DATA_WIDTH +: TAG_WIDTH] >= TAG_WIDTH'(LD_COUNT))) begin : oob
+              ({{(32-TAG_WIDTH){1'b0}}, in_data[1 + iter_var0][DATA_WIDTH +: TAG_WIDTH]} >= 32'(LD_COUNT))) begin : oob
             err_detect    = 1'b1;
             err_code_comb = RT_MEMORY_TAG_OOB;
           end
@@ -213,14 +251,14 @@ module fabric_extmemory #(
       if (ST_COUNT > 1) begin : st_tag_chk
         for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : per_st_addr
           if (in_valid[1 + LD_COUNT + iter_var0] &&
-              (in_data[1 + LD_COUNT + iter_var0][DATA_WIDTH +: TAG_WIDTH] >= TAG_WIDTH'(ST_COUNT))) begin : oob
+              ({{(32-TAG_WIDTH){1'b0}}, in_data[1 + LD_COUNT + iter_var0][DATA_WIDTH +: TAG_WIDTH]} >= 32'(ST_COUNT))) begin : oob
             err_detect    = 1'b1;
             err_code_comb = RT_MEMORY_TAG_OOB;
           end
         end
         for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : per_st_data
           if (in_valid[1 + LD_COUNT + ST_COUNT + iter_var0] &&
-              (in_data[1 + LD_COUNT + ST_COUNT + iter_var0][DATA_WIDTH +: TAG_WIDTH] >= TAG_WIDTH'(ST_COUNT))) begin : oob
+              ({{(32-TAG_WIDTH){1'b0}}, in_data[1 + LD_COUNT + ST_COUNT + iter_var0][DATA_WIDTH +: TAG_WIDTH]} >= 32'(ST_COUNT))) begin : oob
             err_detect    = 1'b1;
             err_code_comb = RT_MEMORY_TAG_OOB;
           end

@@ -13,8 +13,8 @@
 // selects the winner (per-output priority pointer, starting from port 0).
 //
 // Errors:
-//   CFG_TEMPORAL_SW_ROUTE_MULTI_OUT - Route entry drives same output >1 times
-//   CFG_TEMPORAL_SW_ROUTE_MULTI_IN  - Multiple inputs routed to same output
+//   CFG_TEMPORAL_SW_ROUTE_MULTI_OUT - Input routes to >1 output in a slot
+//   CFG_TEMPORAL_SW_ROUTE_MULTI_IN  - Output selects >1 input in a slot
 //   CFG_TEMPORAL_SW_DUP_TAG         - Duplicate valid tags in route table
 //   RT_TEMPORAL_SW_NO_MATCH         - No table entry matches input tag
 //   RT_TEMPORAL_SW_UNROUTED_INPUT   - Valid input has no route
@@ -89,26 +89,23 @@ module fabric_temporal_sw #(
   end
 
   // -----------------------------------------------------------------------
-  // Expand compressed route table to full [NUM_ROUTE_TABLE][NUM_OUTPUTS]
-  // Follows the same pattern as fabric_switch.sv expand_route
+  // Expand compressed route table to full [NUM_ROUTE_TABLE][NUM_OUTPUTS][NUM_INPUTS]
+  // Each compressed bit maps to one connected (output,input) edge in row-major order.
   // -----------------------------------------------------------------------
-  logic [NUM_ROUTE_TABLE-1:0][NUM_OUTPUTS-1:0] rt_routes;
+  logic [NUM_ROUTE_TABLE-1:0][NUM_OUTPUTS-1:0][NUM_INPUTS-1:0] rt_routes;
 
   always_comb begin : expand_routes
     integer iter_var0, iter_var1, iter_var2;
     for (iter_var0 = 0; iter_var0 < NUM_ROUTE_TABLE; iter_var0 = iter_var0 + 1) begin : per_entry
       automatic int bit_idx = 0;
       for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_out
-        // Check if any input is connected to this output
-        automatic bit has_conn = 1'b0;
-        for (iter_var2 = 0; iter_var2 < NUM_INPUTS; iter_var2 = iter_var2 + 1) begin : scan_in
-          has_conn |= CONNECTIVITY[iter_var1 * NUM_INPUTS + iter_var2];
-        end
-        if (has_conn) begin : connected
-          rt_routes[iter_var0][iter_var1] = rt_routes_compressed[iter_var0][bit_idx];
-          bit_idx++;
-        end else begin : unconnected
-          rt_routes[iter_var0][iter_var1] = 1'b0;
+        for (iter_var2 = 0; iter_var2 < NUM_INPUTS; iter_var2 = iter_var2 + 1) begin : per_in
+          if (CONNECTIVITY[iter_var1 * NUM_INPUTS + iter_var2]) begin : connected
+            rt_routes[iter_var0][iter_var1][iter_var2] = rt_routes_compressed[iter_var0][bit_idx];
+            bit_idx++;
+          end else begin : unconnected
+            rt_routes[iter_var0][iter_var1][iter_var2] = 1'b0;
+          end
         end
       end
     end
@@ -123,7 +120,7 @@ module fabric_temporal_sw #(
   logic [NUM_INPUTS-1:0][NUM_OUTPUTS-1:0]      in_routes;
 
   always_comb begin : tag_match
-    integer iter_var0, iter_var1;
+    integer iter_var0, iter_var1, iter_var2;
     for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_input
       in_port_data[iter_var0] = in_data[iter_var0 * SAFE_PW +: SAFE_PW];
       in_tag[iter_var0]       = in_port_data[iter_var0][DATA_WIDTH +: TAG_WIDTH];
@@ -132,7 +129,10 @@ module fabric_temporal_sw #(
       for (iter_var1 = 0; iter_var1 < NUM_ROUTE_TABLE; iter_var1 = iter_var1 + 1) begin : search
         if (rt_valid[iter_var1] && (rt_tag[iter_var1] == in_tag[iter_var0])) begin : found
           in_match_found[iter_var0] = 1'b1;
-          in_routes[iter_var0]      = rt_routes[iter_var1];
+          // Extract this input's routes from the full route matrix
+          for (iter_var2 = 0; iter_var2 < NUM_OUTPUTS; iter_var2 = iter_var2 + 1) begin : extract
+            in_routes[iter_var0][iter_var2] = rt_routes[iter_var1][iter_var2][iter_var0];
+          end
         end
       end
     end
@@ -226,25 +226,37 @@ module fabric_temporal_sw #(
     err_detect    = 1'b0;
     err_code_comb = 16'hFFFF;
 
-    // CFG_TEMPORAL_SW_ROUTE_MULTI_OUT: per route entry, check >1 output bit set
+    // CFG_TEMPORAL_SW_ROUTE_MULTI_OUT: per slot, each input routes to at most 1 output
     for (iter_var0 = 0; iter_var0 < NUM_ROUTE_TABLE; iter_var0 = iter_var0 + 1) begin : chk_multi_out
-      if (rt_valid[iter_var0] && ($countones(rt_routes[iter_var0]) > 1)) begin : err_multi_out
-        err_detect = 1'b1;
-        if (CFG_TEMPORAL_SW_ROUTE_MULTI_OUT < err_code_comb)
-          err_code_comb = CFG_TEMPORAL_SW_ROUTE_MULTI_OUT;
+      if (rt_valid[iter_var0]) begin : valid_slot
+        for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : per_in
+          automatic int out_count = 0;
+          for (integer iter_var2 = 0; iter_var2 < NUM_OUTPUTS; iter_var2 = iter_var2 + 1) begin : cnt_out
+            out_count += int'(rt_routes[iter_var0][iter_var2][iter_var1]);
+          end
+          if (out_count > 1) begin : err_multi_out
+            err_detect = 1'b1;
+            if (CFG_TEMPORAL_SW_ROUTE_MULTI_OUT < err_code_comb)
+              err_code_comb = CFG_TEMPORAL_SW_ROUTE_MULTI_OUT;
+          end
+        end
       end
     end
 
-    // CFG_TEMPORAL_SW_ROUTE_MULTI_IN: per output, check if >1 input routes to it
-    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : chk_multi_in
-      automatic int route_count = 0;
-      for (iter_var1 = 0; iter_var1 < NUM_ROUTE_TABLE; iter_var1 = iter_var1 + 1) begin : count
-        route_count += int'(rt_valid[iter_var1] && rt_routes[iter_var1][iter_var0]);
-      end
-      if (route_count > 1) begin : err_multi_in
-        err_detect = 1'b1;
-        if (CFG_TEMPORAL_SW_ROUTE_MULTI_IN < err_code_comb)
-          err_code_comb = CFG_TEMPORAL_SW_ROUTE_MULTI_IN;
+    // CFG_TEMPORAL_SW_ROUTE_MULTI_IN: per slot, each output selects at most 1 input
+    for (iter_var0 = 0; iter_var0 < NUM_ROUTE_TABLE; iter_var0 = iter_var0 + 1) begin : chk_multi_in
+      if (rt_valid[iter_var0]) begin : valid_slot
+        for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_out
+          automatic int in_count = 0;
+          for (integer iter_var2 = 0; iter_var2 < NUM_INPUTS; iter_var2 = iter_var2 + 1) begin : cnt_in
+            in_count += int'(rt_routes[iter_var0][iter_var1][iter_var2]);
+          end
+          if (in_count > 1) begin : err_multi_in
+            err_detect = 1'b1;
+            if (CFG_TEMPORAL_SW_ROUTE_MULTI_IN < err_code_comb)
+              err_code_comb = CFG_TEMPORAL_SW_ROUTE_MULTI_IN;
+          end
+        end
       end
     end
 

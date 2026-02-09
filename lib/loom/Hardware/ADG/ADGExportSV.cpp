@@ -229,11 +229,206 @@ static bool isCompareOp(const std::string &opName) {
   return opName == "arith.cmpi" || opName == "arith.cmpf";
 }
 
-/// Generate the PE body SV text for a singleOp PEDef.
+/// Parse a simple MLIR SSA line: "%res = dialect.op %a, %b : type"
+/// Returns {result, opName, {operands}} or empty result on failure.
+struct MLIRStmt {
+  std::string result; // e.g., "%t0"
+  std::string opName; // e.g., "arith.muli"
+  std::vector<std::string> operands; // e.g., {"%arg0", "%arg1"}
+};
+
+static MLIRStmt parseMLIRLine(const std::string &line) {
+  MLIRStmt stmt;
+  auto eqPos = line.find('=');
+  if (eqPos == std::string::npos)
+    return stmt;
+
+  // Extract result name (trim whitespace)
+  std::string lhs = line.substr(0, eqPos);
+  auto pctPos = lhs.find('%');
+  if (pctPos == std::string::npos)
+    return stmt;
+  auto endRes = lhs.find_first_of(" \t", pctPos);
+  stmt.result = lhs.substr(pctPos, endRes - pctPos);
+
+  // Extract RHS: "dialect.op %a, %b : type"
+  std::string rhs = line.substr(eqPos + 1);
+  // Trim leading whitespace
+  auto rhsStart = rhs.find_first_not_of(" \t");
+  if (rhsStart == std::string::npos)
+    return stmt;
+  rhs = rhs.substr(rhsStart);
+
+  // Extract op name (first token)
+  auto opEnd = rhs.find_first_of(" \t");
+  if (opEnd == std::string::npos) {
+    stmt.opName = rhs;
+    return stmt;
+  }
+  stmt.opName = rhs.substr(0, opEnd);
+
+  // Extract operands between op name and ':'
+  auto colonPos = rhs.find(':');
+  std::string opSection = rhs.substr(opEnd, colonPos != std::string::npos
+                                                 ? colonPos - opEnd
+                                                 : std::string::npos);
+  // Find all %name tokens
+  size_t pos = 0;
+  while ((pos = opSection.find('%', pos)) != std::string::npos) {
+    auto end = opSection.find_first_of(" ,:\t\n)", pos);
+    stmt.operands.push_back(opSection.substr(pos, end - pos));
+    pos = (end != std::string::npos) ? end + 1 : opSection.size();
+  }
+
+  return stmt;
+}
+
+/// Generate SV body from bodyMLIR containing multiple operations.
+static std::string genMultiOpBodySV(const PEDef &def) {
+  std::string body = def.bodyMLIR;
+
+  // Strip ^bb0(...): header if present
+  auto bbPos = body.find("^bb0(");
+  if (bbPos != std::string::npos) {
+    auto closePos = body.find("):", bbPos);
+    if (closePos != std::string::npos) {
+      body = body.substr(closePos + 2);
+      if (!body.empty() && body[0] == '\n')
+        body = body.substr(1);
+    }
+  }
+
+  // Rename user args to %argN (same as transformBodyMLIR)
+  for (size_t i = 0; i < def.inputPorts.size(); ++i) {
+    std::string argName = "%arg" + std::to_string(i);
+    // Already in %argN form after transformBodyMLIR
+    (void)argName;
+  }
+
+  // Parse lines into statements
+  std::vector<MLIRStmt> stmts;
+  std::vector<std::string> yieldOperands;
+  std::istringstream stream(body);
+  std::string line;
+  while (std::getline(stream, line)) {
+    // Trim whitespace
+    auto s = line.find_first_not_of(" \t");
+    if (s == std::string::npos) continue;
+    line = line.substr(s);
+
+    // Handle fabric.yield
+    if (line.find("fabric.yield") == 0) {
+      // Extract yield operands
+      auto colonPos = line.find(':');
+      std::string opSection = line.substr(12,
+          colonPos != std::string::npos ? colonPos - 12 : std::string::npos);
+      size_t pos = 0;
+      while ((pos = opSection.find('%', pos)) != std::string::npos) {
+        auto end = opSection.find_first_of(" ,:\t\n", pos);
+        yieldOperands.push_back(opSection.substr(pos, end - pos));
+        pos = (end != std::string::npos) ? end + 1 : opSection.size();
+      }
+      continue;
+    }
+
+    MLIRStmt stmt = parseMLIRLine(line);
+    if (!stmt.opName.empty())
+      stmts.push_back(stmt);
+  }
+
+  if (stmts.empty())
+    return "  // empty multi-op body\n";
+
+  // Map SSA names to SV wire names
+  // %argN -> in_value[N]
+  // %result -> body_tN (intermediate wire)
+  std::map<std::string, std::string> ssaToSV;
+  for (size_t i = 0; i < def.inputPorts.size(); ++i) {
+    ssaToSV["%arg" + std::to_string(i)] = "in_value[" + std::to_string(i) + "]";
+  }
+
+  std::ostringstream os;
+  unsigned wireIdx = 0;
+
+  for (const auto &stmt : stmts) {
+    std::string svModule = opToSVModule(stmt.opName);
+    std::string wireName = "body_t" + std::to_string(wireIdx);
+    ssaToSV[stmt.result] = wireName;
+
+    if (isConversionOp(stmt.opName)) {
+      unsigned inW = def.inputPorts.size() > 0
+                         ? getDataWidthBits(def.inputPorts[0]) : 32;
+      unsigned outW = def.outputPorts.size() > 0
+                          ? getDataWidthBits(def.outputPorts[0]) : 32;
+      if (inW == 0) inW = 1;
+      if (outW == 0) outW = 1;
+      os << "  logic [" << (outW - 1) << ":0] " << wireName << ";\n";
+      os << "  " << svModule << " #(.IN_WIDTH(" << inW << "), .OUT_WIDTH("
+         << outW << ")) u_op" << wireIdx << " (\n";
+      os << "    .a(" << ssaToSV[stmt.operands[0]] << "[" << (inW-1) << ":0]),\n";
+      os << "    .result(" << wireName << ")\n";
+      os << "  );\n";
+    } else if (isCompareOp(stmt.opName)) {
+      os << "  logic " << wireName << ";\n";
+      os << "  " << svModule << " #(.WIDTH(DATA_WIDTH), .PREDICATE(0)) u_op"
+         << wireIdx << " (\n";
+      os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
+      if (stmt.operands.size() > 1)
+        os << "    .b(" << ssaToSV[stmt.operands[1]] << "),\n";
+      os << "    .result(" << wireName << ")\n";
+      os << "  );\n";
+    } else {
+      os << "  logic [SAFE_DW-1:0] " << wireName << ";\n";
+      os << "  " << svModule << " #(.WIDTH(DATA_WIDTH)) u_op" << wireIdx << " (\n";
+
+      if (stmt.opName == "arith.select" && stmt.operands.size() >= 3) {
+        os << "    .condition(" << ssaToSV[stmt.operands[0]] << "[0]),\n";
+        os << "    .a(" << ssaToSV[stmt.operands[1]] << "),\n";
+        os << "    .b(" << ssaToSV[stmt.operands[2]] << "),\n";
+      } else if (stmt.opName == "math.fma" && stmt.operands.size() >= 3) {
+        os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
+        os << "    .b(" << ssaToSV[stmt.operands[1]] << "),\n";
+        os << "    .c(" << ssaToSV[stmt.operands[2]] << "),\n";
+      } else if (stmt.operands.size() >= 2) {
+        os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
+        os << "    .b(" << ssaToSV[stmt.operands[1]] << "),\n";
+      } else if (stmt.operands.size() >= 1) {
+        os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
+      }
+
+      os << "    .result(" << wireName << ")\n";
+      os << "  );\n";
+    }
+    os << "\n";
+    ++wireIdx;
+  }
+
+  // Assign body_result from yield operands or last wire
+  if (!yieldOperands.empty()) {
+    for (size_t i = 0; i < yieldOperands.size(); ++i) {
+      auto it = ssaToSV.find(yieldOperands[i]);
+      std::string src = (it != ssaToSV.end()) ? it->second : "'0";
+      if (isCompareOp(stmts.back().opName) && i == 0) {
+        os << "  assign body_result[" << i << "] = {{(SAFE_DW-1){1'b0}}, " << src << "};\n";
+      } else {
+        os << "  assign body_result[" << i << "] = " << src << ";\n";
+      }
+    }
+  } else if (!stmts.empty()) {
+    os << "  assign body_result[0] = " << ssaToSV[stmts.back().result] << ";\n";
+  }
+
+  return os.str();
+}
+
+/// Generate the PE body SV text for a PEDef.
 /// Returns the text to insert between BEGIN/END PE BODY markers.
 static std::string genPEBodySV(const PEDef &def) {
-  if (def.singleOp.empty())
-    return "  // TODO: multi-op body not yet supported\n";
+  if (def.singleOp.empty()) {
+    if (!def.bodyMLIR.empty())
+      return genMultiOpBodySV(def);
+    return "  // empty PE body\n";
+  }
 
   std::string svModule = opToSVModule(def.singleOp);
   unsigned numIn = def.inputPorts.size();
@@ -300,15 +495,15 @@ static std::string genPEBodySV(const PEDef &def) {
 }
 
 /// Generate the temporal PE body SV text for a TemporalPEDef.
-/// Instantiates each FU type's operation module and muxes results by fu_sel.
+/// Instantiates per-FU customized fabric_pe modules and muxes results by fu_sel.
 static std::string genTemporalPEBodySV(const TemporalPEDef &def,
-                                        const std::vector<PEDef> &peDefs) {
+                                        const std::vector<PEDef> &peDefs,
+                                        const std::string &instName) {
   unsigned numFU = def.fuPEDefIndices.size();
   if (numFU == 0)
     return "  // no FU types defined\n";
 
   unsigned numOut = peDefs[def.fuPEDefIndices[0]].outputPorts.size();
-  unsigned numIn = peDefs[def.fuPEDefIndices[0]].inputPorts.size();
 
   // FU_SEL_BITS mirrors the localparam in fabric_temporal_pe.sv
   unsigned fuSelBits = 0;
@@ -321,101 +516,68 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
 
   // Extract fu_sel from the matched instruction
   if (fuSelBits > 0) {
-    // fu_sel sits at bit offset: NUM_INPUTS * REG_BITS + NUM_OUTPUTS * RESULT_WIDTH
-    // We use the localparam values already defined in the module
     os << "  logic [FU_SEL_BITS-1:0] fu_sel;\n";
     os << "  assign fu_sel = cfg_data[matched_insn * INSN_WIDTH + "
        << "NUM_INPUTS * REG_BITS + NUM_OUTPUTS * RESULT_WIDTH +: FU_SEL_BITS];\n";
     os << "\n";
   }
 
-  // Per-FU result wires
+  // Per-FU result wires and output data wires
   for (unsigned f = 0; f < numFU; ++f) {
     os << "  logic [NUM_OUTPUTS-1:0][SAFE_DW-1:0] fu" << f << "_result;\n";
+    os << "  logic [NUM_OUTPUTS-1:0][SAFE_PW-1:0] fu" << f << "_out_data;\n";
   }
   os << "\n";
 
-  // Instantiate each FU's operation module
+  // Instantiate each FU as a customized fabric_pe module (TAG_WIDTH=0,
+  // combinational body: LATENCY_TYP=0 since the temporal PE template
+  // manages its own output handshake).
   for (unsigned f = 0; f < numFU; ++f) {
     const auto &fuDef = peDefs[def.fuPEDefIndices[f]];
-    if (fuDef.singleOp.empty()) {
-      // Passthrough FU
-      os << "  // FU " << f << ": passthrough\n";
-      for (unsigned o = 0; o < numOut; ++o)
-        os << "  assign fu" << f << "_result[" << o
-           << "] = (NUM_INPUTS > " << o << ") ? in_value[" << o << "] : '0;\n";
-      os << "\n";
-      continue;
-    }
-
-    std::string svModule = opToSVModule(fuDef.singleOp);
+    std::string fuModName = instName + "_fu" + std::to_string(f) + "_pe";
     unsigned fuNumIn = fuDef.inputPorts.size();
+    unsigned fuNumOut = fuDef.outputPorts.size();
 
-    if (isConversionOp(fuDef.singleOp)) {
-      unsigned inW = fuNumIn > 0 ? getDataWidthBits(fuDef.inputPorts[0]) : 32;
-      unsigned outW = fuDef.outputPorts.size() > 0
-                          ? getDataWidthBits(fuDef.outputPorts[0])
-                          : 32;
-      if (inW == 0) inW = 1;
-      if (outW == 0) outW = 1;
-      os << "  // FU " << f << ": " << fuDef.singleOp << "\n";
-      os << "  logic [" << (outW - 1) << ":0] fu" << f << "_conv_out;\n";
-      os << "  " << svModule << " #(.IN_WIDTH(" << inW << "), .OUT_WIDTH("
-         << outW << ")) u_fu" << f << " (\n";
-      os << "    .a(in_value[0][" << (inW - 1) << ":0]),\n";
-      os << "    .result(fu" << f << "_conv_out)\n";
-      os << "  );\n";
-      os << "  assign fu" << f << "_result[0] = {{(SAFE_DW - " << outW
-         << "){1'b0}}, fu" << f << "_conv_out};\n";
-      for (unsigned o = 1; o < numOut; ++o)
-        os << "  assign fu" << f << "_result[" << o << "] = '0;\n";
-    } else if (isCompareOp(fuDef.singleOp)) {
-      os << "  // FU " << f << ": " << fuDef.singleOp << "\n";
-      os << "  logic fu" << f << "_cmp_out;\n";
-      os << "  " << svModule
-         << " #(.WIDTH(DATA_WIDTH), .PREDICATE(0)) u_fu" << f << " (\n";
-      os << "    .a(in_value[0]),\n";
-      os << "    .b(in_value[1]),\n";
-      os << "    .result(fu" << f << "_cmp_out)\n";
-      os << "  );\n";
-      os << "  assign fu" << f << "_result[0] = {{(SAFE_DW-1){1'b0}}, fu"
-         << f << "_cmp_out};\n";
-      for (unsigned o = 1; o < numOut; ++o)
-        os << "  assign fu" << f << "_result[" << o << "] = '0;\n";
-    } else {
-      os << "  // FU " << f << ": " << fuDef.singleOp << "\n";
-      os << "  " << svModule << " #(.WIDTH(DATA_WIDTH)) u_fu" << f << " (\n";
-
-      if (fuDef.singleOp == "arith.select") {
-        os << "    .condition(in_value[0][0]),\n";
-        os << "    .a(in_value[1]),\n";
-        os << "    .b(in_value[2]),\n";
-      } else if (fuDef.singleOp == "math.fma") {
-        os << "    .a(in_value[0]),\n";
-        os << "    .b(in_value[1]),\n";
-        os << "    .c(in_value[2]),\n";
-      } else if (fuNumIn >= 2) {
-        os << "    .a(in_value[0]),\n";
-        os << "    .b(in_value[1]),\n";
-      } else {
-        os << "    .a(in_value[0]),\n";
-      }
-
-      os << "    .result(fu" << f << "_result[0])\n";
-      os << "  );\n";
-      for (unsigned o = 1; o < numOut; ++o)
-        os << "  assign fu" << f << "_result[" << o << "] = '0;\n";
+    os << "  // FU " << f << ": " << (fuDef.singleOp.empty() ? "passthrough" : fuDef.singleOp) << "\n";
+    os << "  " << fuModName << " #(\n";
+    os << "    .NUM_INPUTS(" << fuNumIn << "),\n";
+    os << "    .NUM_OUTPUTS(" << fuNumOut << "),\n";
+    os << "    .DATA_WIDTH(DATA_WIDTH),\n";
+    os << "    .TAG_WIDTH(0),\n";
+    os << "    .LATENCY_TYP(0)\n";
+    os << "  ) u_fu" << f << " (\n";
+    os << "    .clk(clk),\n";
+    os << "    .rst_n(rst_n),\n";
+    os << "    .in_valid({" << fuNumIn << "{all_in_valid}}),\n";
+    os << "    .in_ready(),\n";
+    os << "    .in_data({";
+    // Map input ports from in_value (reverse order for packed array)
+    for (unsigned i = fuNumIn; i > 0; --i) {
+      if (i < fuNumIn) os << ", ";
+      os << "in_value[" << (i - 1) << "]";
+    }
+    os << "}),\n";
+    os << "    .out_valid(),\n";
+    os << "    .out_ready({" << fuNumOut << "{1'b1}}),\n";
+    os << "    .out_data(fu" << f << "_out_data),\n";
+    os << "    .cfg_data('0)\n";
+    os << "  );\n";
+    // Extract data portion from FU output (TAG_WIDTH=0 so out_data is just data)
+    for (unsigned o = 0; o < fuNumOut; ++o) {
+      os << "  assign fu" << f << "_result[" << o << "] = fu" << f
+         << "_out_data[" << o << "][SAFE_DW-1:0];\n";
+    }
+    for (unsigned o = fuNumOut; o < numOut; ++o) {
+      os << "  assign fu" << f << "_result[" << o << "] = '0;\n";
     }
     os << "\n";
   }
 
   // Mux body_result based on fu_sel
   if (numFU == 1) {
-    // Single FU: direct connection
     for (unsigned o = 0; o < numOut; ++o)
       os << "  assign body_result[" << o << "] = fu0_result[" << o << "];\n";
   } else {
-    // Multi-FU: mux by fu_sel
     os << "  always_comb begin : fu_mux\n";
     os << "    integer iter_var0;\n";
     os << "    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; "
@@ -448,12 +610,13 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
 /// Fill the temporal PE template with the generated FU body.
 static std::string fillTemporalPETemplate(const std::string &templateDir,
                                            const TemporalPEDef &def,
-                                           const std::vector<PEDef> &peDefs) {
+                                           const std::vector<PEDef> &peDefs,
+                                           const std::string &instName) {
   llvm::SmallString<256> tmplPath(templateDir);
   llvm::sys::path::append(tmplPath, "Fabric", "fabric_temporal_pe.sv");
   std::string tmpl = readFile(tmplPath.str().str());
 
-  std::string body = genTemporalPEBodySV(def, peDefs);
+  std::string body = genTemporalPEBodySV(def, peDefs, instName);
 
   const std::string beginMarker = "  // ===== BEGIN PE BODY =====";
   const std::string endMarker = "  // ===== END PE BODY =====";
@@ -1135,11 +1298,33 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       }
     }
 
-    // For TemporalPE instances: generate body-filled customized modules
+    // For TemporalPE instances: generate per-FU fabric_pe modules and
+    // body-filled customized temporal_pe modules
     for (const auto &inst : instances) {
       if (inst.kind == ModuleKind::TemporalPE) {
         const auto &def = temporalPEDefs[inst.defIdx];
-        std::string customized = fillTemporalPETemplate(templateDir, def, peDefs);
+
+        // Generate customized fabric_pe modules for each FU type
+        for (unsigned f = 0; f < def.fuPEDefIndices.size(); ++f) {
+          const auto &fuDef = peDefs[def.fuPEDefIndices[f]];
+          std::string fuModName = inst.name + "_fu" + std::to_string(f) + "_pe";
+          std::string fuCustomized = fillPETemplate(templateDir, fuDef);
+
+          // Replace module name to match FU module name
+          std::string origPeName = "module fabric_pe";
+          std::string newPeName = "module " + fuModName;
+          auto pePos = fuCustomized.find(origPeName);
+          if (pePos != std::string::npos)
+            fuCustomized.replace(pePos, origPeName.size(), newPeName);
+
+          llvm::SmallString<256> fuPath(libDir);
+          llvm::sys::path::append(fuPath, fuModName + ".sv");
+          writeFile(fuPath.str().str(), fuCustomized);
+        }
+
+        // Generate the temporal PE module with FU instantiations
+        std::string customized =
+            fillTemporalPETemplate(templateDir, def, peDefs, inst.name);
 
         // Replace module name to make it unique per instance
         std::string origName = "module fabric_temporal_pe";

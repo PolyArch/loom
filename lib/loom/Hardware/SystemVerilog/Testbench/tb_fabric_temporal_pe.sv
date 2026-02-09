@@ -66,11 +66,63 @@ module tb_fabric_temporal_pe;
     rst_n = 1;
     @(posedge clk);
 
-    // Verify reset state: no error
+    // Check 1: no error after reset
     if (error_valid !== 1'b0) begin : check_reset
       $fatal(1, "error_valid should be 0 after reset");
     end
     pass_count = pass_count + 1;
+
+    // Check 2: CFG_TEMPORAL_PE_DUP_TAG - configure two instructions with same tag
+    // Instruction layout from LSB: [results | operands | opcode | tag | valid(MSB)]
+    // INSN_WIDTH = 1 + TAG_WIDTH + FU_SEL_BITS + NUM_INPUTS*REG_BITS + NUM_OUTPUTS*RESULT_WIDTH
+    // For default params (NR=0): REG_BITS=0, RES_BITS=0, RESULT_WIDTH=TAG_WIDTH
+    // INSN_WIDTH = 1 + TAG_WIDTH + FU_SEL_BITS + TAG_WIDTH
+    // Insn 0: valid=1, tag=3; Insn 1: valid=1, tag=3 (duplicate)
+    cfg_data = '0;
+    // Insn 0: valid at MSB
+    cfg_data[dut.INSN_WIDTH - 1] = 1'b1;
+    // Insn 0: tag just below valid
+    cfg_data[dut.INSN_WIDTH - 2 -: TAG_WIDTH] = TAG_WIDTH'(3);
+    // Insn 1: valid at MSB of second slot
+    cfg_data[dut.INSN_WIDTH + dut.INSN_WIDTH - 1] = 1'b1;
+    // Insn 1: tag = 3 (duplicate)
+    cfg_data[dut.INSN_WIDTH + dut.INSN_WIDTH - 2 -: TAG_WIDTH] = TAG_WIDTH'(3);
+    @(posedge clk);
+    @(posedge clk);
+    if (error_valid !== 1'b1) begin : check_dup_tag
+      $fatal(1, "expected CFG_TEMPORAL_PE_DUP_TAG error");
+    end
+    if (error_code !== CFG_TEMPORAL_PE_DUP_TAG) begin : check_dup_code
+      $fatal(1, "wrong error code for dup tag: got %0d", error_code);
+    end
+    pass_count = pass_count + 1;
+
+    // Check 3: RT_TEMPORAL_PE_NO_MATCH - send tag not in instruction table
+    rst_n = 0;
+    repeat (2) @(posedge clk);
+    rst_n = 1;
+    @(posedge clk);
+    // Configure one valid instruction with tag=1
+    cfg_data = '0;
+    cfg_data[dut.INSN_WIDTH - 1] = 1'b1;
+    cfg_data[dut.INSN_WIDTH - 2 -: TAG_WIDTH] = TAG_WIDTH'(1);
+    // Send inputs with tag=7 (no match)
+    in_data = '0;
+    in_data[0][DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(7);
+    if (NUM_INPUTS > 1) begin : set_in1
+      in_data[1][DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(7);
+    end
+    in_valid = {NUM_INPUTS{1'b1}};
+    @(posedge clk);
+    @(posedge clk);
+    if (error_valid !== 1'b1) begin : check_no_match
+      $fatal(1, "expected RT_TEMPORAL_PE_NO_MATCH error");
+    end
+    if (error_code !== RT_TEMPORAL_PE_NO_MATCH) begin : check_no_match_code
+      $fatal(1, "wrong error code for no match: got %0d", error_code);
+    end
+    pass_count = pass_count + 1;
+    in_valid = '0;
 
     $display("PASS: tb_fabric_temporal_pe NI=%0d NO=%0d DW=%0d TW=%0d (%0d checks)",
              NUM_INPUTS, NUM_OUTPUTS, DATA_WIDTH, TAG_WIDTH, pass_count);

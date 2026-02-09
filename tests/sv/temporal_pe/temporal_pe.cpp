@@ -11,19 +11,26 @@ using namespace loom::adg;
 int main() {
   ADGBuilder builder("temporal_pe");
 
-  // Create an FU (a plain PE) for the temporal PE body
+  // Create two FU types for the temporal PE body
   auto adder = builder.newPE("fu_add")
       .addOp("arith.addi")
       .setInputPorts({Type::i32(), Type::i32()})
       .setOutputPorts({Type::i32()})
       .setLatency(1, 1, 1);
 
+  auto multiplier = builder.newPE("fu_mul")
+      .addOp("arith.muli")
+      .setInputPorts({Type::i32(), Type::i32()})
+      .setOutputPorts({Type::i32()})
+      .setLatency(3, 3, 3);
+
   auto tpe = builder.newTemporalPE("tpe0")
       .setInterface(Type::tagged(Type::i32(), Type::iN(4)))
       .setNumRegisters(0)
       .setNumInstructions(2)
       .setRegFifoDepth(0)
-      .addFU(adder);
+      .addFU(adder)
+      .addFU(multiplier);
 
   auto t0 = builder.clone(tpe, "t0");
 

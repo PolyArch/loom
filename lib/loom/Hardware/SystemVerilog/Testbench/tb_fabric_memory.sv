@@ -52,6 +52,7 @@ module tb_fabric_memory;
 
   initial begin : test
     integer pass_count;
+    integer iter_var0;
     pass_count = 0;
     rst_n = 0;
     in_valid = '0;
@@ -62,9 +63,49 @@ module tb_fabric_memory;
     rst_n = 1;
     @(posedge clk);
 
-    // Verify reset state: no error
+    // Check 1: no error after reset
     if (error_valid !== 1'b0) begin : check_reset
       $fatal(1, "error_valid should be 0 after reset");
+    end
+    pass_count = pass_count + 1;
+
+    // Check 2: store then load - verify round-trip through memory
+    if (ST_COUNT > 0 && LD_COUNT > 0) begin : store_load
+      // Store: addr=5, data=0xABCD
+      // Input layout: [ld_addr * LD_COUNT, st_addr * ST_COUNT, st_data * ST_COUNT]
+      in_data = '0;
+      in_data[LD_COUNT][SAFE_PW-1:0] = SAFE_PW'(5);
+      in_data[LD_COUNT + ST_COUNT][SAFE_PW-1:0] = SAFE_PW'(32'hABCD);
+      in_valid = '0;
+      in_valid[LD_COUNT] = 1'b1;
+      in_valid[LD_COUNT + ST_COUNT] = 1'b1;
+      @(posedge clk);
+      // Wait for store to complete
+      while (!in_ready[LD_COUNT]) @(posedge clk);
+      in_valid = '0;
+      @(posedge clk);
+
+      // Load: addr=5
+      in_data = '0;
+      in_data[0][SAFE_PW-1:0] = SAFE_PW'(5);
+      in_valid = '0;
+      in_valid[0] = 1'b1;
+      @(posedge clk);
+      if (out_valid[IS_PRIVATE ? 0 : 1] !== 1'b1) begin : check_ld_valid
+        $fatal(1, "load data output should be valid");
+      end
+      if (out_data[IS_PRIVATE ? 0 : 1][DATA_WIDTH-1:0] !== DATA_WIDTH'(32'hABCD)) begin : check_ld_data
+        $fatal(1, "load data mismatch: expected 0xABCD, got 0x%0h",
+               out_data[IS_PRIVATE ? 0 : 1][DATA_WIDTH-1:0]);
+      end
+      pass_count = pass_count + 1;
+      in_valid = '0;
+      @(posedge clk);
+    end
+
+    // Check 3: no error after normal operation
+    if (error_valid !== 1'b0) begin : check_no_err
+      $fatal(1, "unexpected error after store/load: code=%0d", error_code);
     end
     pass_count = pass_count + 1;
 

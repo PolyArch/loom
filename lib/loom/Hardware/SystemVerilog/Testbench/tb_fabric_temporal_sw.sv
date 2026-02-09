@@ -62,11 +62,58 @@ module tb_fabric_temporal_sw;
     rst_n = 1;
     @(posedge clk);
 
-    // Verify reset state: no error
+    // Check 1: no error after reset
     if (error_valid !== 1'b0) begin : check_reset
       $fatal(1, "error_valid should be 0 after reset");
     end
     pass_count = pass_count + 1;
+
+    // Check 2: CFG_TEMPORAL_SW_DUP_TAG - duplicate tags
+    // Entry format per slot: [routes(NUM_CONNECTED)] [tag(TAG_WIDTH)] [valid(1)]
+    cfg_data = '0;
+    // Entry 0: valid=1, tag=5, routes: in0->out0
+    cfg_data[ENTRY_WIDTH - 1] = 1'b1;
+    cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(5);
+    cfg_data[0] = 1'b1;
+    // Entry 1: valid=1, tag=5 (duplicate), routes: in1->out1
+    cfg_data[ENTRY_WIDTH + ENTRY_WIDTH - 1] = 1'b1;
+    cfg_data[ENTRY_WIDTH + NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(5);
+    cfg_data[ENTRY_WIDTH + 3] = 1'b1;
+    @(posedge clk);
+    @(posedge clk);
+    if (error_valid !== 1'b1) begin : check_dup_tag
+      $fatal(1, "expected CFG_TEMPORAL_SW_DUP_TAG error");
+    end
+    if (error_code !== CFG_TEMPORAL_SW_DUP_TAG) begin : check_dup_code
+      $fatal(1, "wrong error code for dup tag: got %0d", error_code);
+    end
+    pass_count = pass_count + 1;
+
+    // Check 3: RT_TEMPORAL_SW_NO_MATCH - send input with unmatched tag
+    rst_n = 0;
+    repeat (2) @(posedge clk);
+    rst_n = 1;
+    @(posedge clk);
+    // Configure one valid entry with tag=2, route in0->out0
+    cfg_data = '0;
+    cfg_data[ENTRY_WIDTH - 1] = 1'b1;
+    cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(2);
+    cfg_data[0] = 1'b1;
+    // Send input 0 with tag=9 (no match)
+    in_data = '0;
+    in_data[DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(9);
+    in_valid = '0;
+    in_valid[0] = 1'b1;
+    @(posedge clk);
+    @(posedge clk);
+    if (error_valid !== 1'b1) begin : check_no_match
+      $fatal(1, "expected RT_TEMPORAL_SW_NO_MATCH error");
+    end
+    if (error_code !== RT_TEMPORAL_SW_NO_MATCH) begin : check_no_match_code
+      $fatal(1, "wrong error code for no match: got %0d", error_code);
+    end
+    pass_count = pass_count + 1;
+    in_valid = '0;
 
     $display("PASS: tb_fabric_temporal_sw NI=%0d NO=%0d DW=%0d TW=%0d (%0d checks)",
              NUM_INPUTS, NUM_OUTPUTS, DATA_WIDTH, TAG_WIDTH, pass_count);

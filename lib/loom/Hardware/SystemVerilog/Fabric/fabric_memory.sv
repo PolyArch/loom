@@ -107,21 +107,29 @@ module fabric_memory #(
   endgenerate
 
   // -----------------------------------------------------------------------
-  // Load done signal
+  // Load done signal (carries tag when LD_COUNT > 1)
   // -----------------------------------------------------------------------
   generate
     if (LD_COUNT > 0) begin : g_lddone
       localparam int DONE_IDX = (IS_PRIVATE ? 0 : 1) + LD_COUNT;
       logic any_ld_valid;
+      logic [SAFE_PW-1:0] lddone_data;
       always_comb begin : lddone_logic
         integer iter_var0;
         any_ld_valid = 1'b0;
+        lddone_data  = '0;
         for (iter_var0 = 0; iter_var0 < LD_COUNT; iter_var0 = iter_var0 + 1) begin : chk
-          any_ld_valid |= in_valid[iter_var0];
+          if (in_valid[iter_var0]) begin : fire
+            any_ld_valid = 1'b1;
+            // Forward tag from the firing load's address input
+            if (TAG_WIDTH > 0 && LD_COUNT > 1) begin : tag_fwd
+              lddone_data[DATA_WIDTH +: TAG_WIDTH] = in_data[iter_var0][DATA_WIDTH +: TAG_WIDTH];
+            end
+          end
         end
       end
       assign out_valid[DONE_IDX] = any_ld_valid;
-      assign out_data[DONE_IDX]  = '0;
+      assign out_data[DONE_IDX]  = lddone_data;
     end
   endgenerate
 
@@ -157,19 +165,27 @@ module fabric_memory #(
         end
       end
 
-      // Store done signal
+      // Store done signal (carries tag when ST_COUNT > 1)
       begin : g_stdone
         localparam int DONE_IDX = (IS_PRIVATE ? 0 : 1) + LD_COUNT + 1;
         logic any_st_sync;
+        logic [SAFE_PW-1:0] stdone_data;
         always_comb begin : stdone_logic
           integer iter_var0;
           any_st_sync = 1'b0;
+          stdone_data = '0;
           for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : chk
-            any_st_sync |= (in_valid[LD_COUNT + iter_var0] && in_valid[LD_COUNT + ST_COUNT + iter_var0]);
+            if (in_valid[LD_COUNT + iter_var0] && in_valid[LD_COUNT + ST_COUNT + iter_var0]) begin : fire
+              any_st_sync = 1'b1;
+              // Forward tag from the firing store's address input
+              if (TAG_WIDTH > 0 && ST_COUNT > 1) begin : tag_fwd
+                stdone_data[DATA_WIDTH +: TAG_WIDTH] = in_data[LD_COUNT + iter_var0][DATA_WIDTH +: TAG_WIDTH];
+              end
+            end
           end
         end
         assign out_valid[DONE_IDX] = any_st_sync;
-        assign out_data[DONE_IDX]  = '0;
+        assign out_data[DONE_IDX]  = stdone_data;
       end
     end
   endgenerate
@@ -240,7 +256,7 @@ module fabric_memory #(
       if (LD_COUNT > 1) begin : ld_tag_chk
         for (iter_var0 = 0; iter_var0 < LD_COUNT; iter_var0 = iter_var0 + 1) begin : per_ld
           if (in_valid[iter_var0] &&
-              (in_data[iter_var0][DATA_WIDTH +: TAG_WIDTH] >= TAG_WIDTH'(LD_COUNT))) begin : oob
+              ({{(32-TAG_WIDTH){1'b0}}, in_data[iter_var0][DATA_WIDTH +: TAG_WIDTH]} >= 32'(LD_COUNT))) begin : oob
             err_detect    = 1'b1;
             err_code_comb = RT_MEMORY_TAG_OOB;
           end
@@ -250,14 +266,14 @@ module fabric_memory #(
       if (ST_COUNT > 1) begin : st_tag_chk
         for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : per_st_addr
           if (in_valid[LD_COUNT + iter_var0] &&
-              (in_data[LD_COUNT + iter_var0][DATA_WIDTH +: TAG_WIDTH] >= TAG_WIDTH'(ST_COUNT))) begin : oob
+              ({{(32-TAG_WIDTH){1'b0}}, in_data[LD_COUNT + iter_var0][DATA_WIDTH +: TAG_WIDTH]} >= 32'(ST_COUNT))) begin : oob
             err_detect    = 1'b1;
             err_code_comb = RT_MEMORY_TAG_OOB;
           end
         end
         for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : per_st_data
           if (in_valid[LD_COUNT + ST_COUNT + iter_var0] &&
-              (in_data[LD_COUNT + ST_COUNT + iter_var0][DATA_WIDTH +: TAG_WIDTH] >= TAG_WIDTH'(ST_COUNT))) begin : oob
+              ({{(32-TAG_WIDTH){1'b0}}, in_data[LD_COUNT + ST_COUNT + iter_var0][DATA_WIDTH +: TAG_WIDTH]} >= 32'(ST_COUNT))) begin : oob
             err_detect    = 1'b1;
             err_code_comb = RT_MEMORY_TAG_OOB;
           end

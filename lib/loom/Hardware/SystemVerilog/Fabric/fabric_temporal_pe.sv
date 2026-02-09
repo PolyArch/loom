@@ -132,7 +132,7 @@ module fabric_temporal_pe #(
   // ===== END PE BODY =====
 
   // -----------------------------------------------------------------------
-  // Output assembly with tag from instruction
+  // Output assembly with tag from instruction result fields
   // -----------------------------------------------------------------------
   logic all_out_ready;
   assign all_out_ready = &out_ready;
@@ -140,11 +140,24 @@ module fabric_temporal_pe #(
   logic fire;
   assign fire = all_in_valid && match_found && all_out_ready;
 
+  // Extract per-output result tag from the matched instruction.
+  // Instruction layout from LSB: [results | operands | opcode | tag | valid(MSB)]
+  // Each result field: [res_tag(TAG_WIDTH) | res_reg_idx | res_is_reg(MSB)]
+  // res_tag for output go is at: base + go * RESULT_WIDTH, TAG_WIDTH bits wide.
+  logic [NUM_OUTPUTS-1:0][TAG_WIDTH-1:0] out_res_tag;
+
+  always_comb begin : extract_res_tag
+    integer iter_var0;
+    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : per_out
+      out_res_tag[iter_var0] = cfg_data[matched_insn * INSN_WIDTH + iter_var0 * RESULT_WIDTH +: TAG_WIDTH];
+    end
+  end
+
   generate
     genvar go;
     for (go = 0; go < NUM_OUTPUTS; go++) begin : g_out
       assign out_valid[go] = all_in_valid && match_found;
-      assign out_data[go]  = {in_tag[0], body_result[go]};
+      assign out_data[go]  = {out_res_tag[go], body_result[go]};
     end
     genvar gi;
     for (gi = 0; gi < NUM_INPUTS; gi++) begin : g_in_ready
@@ -171,6 +184,60 @@ module fabric_temporal_pe #(
           err_detect = 1'b1;
           if (CFG_TEMPORAL_PE_DUP_TAG < err_code_comb)
             err_code_comb = CFG_TEMPORAL_PE_DUP_TAG;
+        end
+      end
+    end
+
+    // CFG_TEMPORAL_PE_ILLEGAL_REG: register index >= NUM_REGISTERS
+    if (NUM_REGISTERS > 0) begin : chk_illegal_reg
+      for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : per_insn_reg
+        if (insn_valid[iter_var0]) begin : valid_insn
+          automatic int insn_base = iter_var0 * INSN_WIDTH;
+          // Check operand register indices
+          for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : per_op
+            automatic int op_base = insn_base + NUM_OUTPUTS * RESULT_WIDTH + iter_var1 * REG_BITS;
+            // op_is_reg is at MSB of operand field
+            if (cfg_data[op_base + REG_BITS - 1]) begin : is_reg
+              // reg_idx is REG_BITS-1 bits wide at op_base
+              if ({{(32 - (REG_BITS - 1)){1'b0}}, cfg_data[op_base +: (REG_BITS - 1)]} >= 32'(NUM_REGISTERS)) begin : oob
+                err_detect = 1'b1;
+                if (CFG_TEMPORAL_PE_ILLEGAL_REG < err_code_comb)
+                  err_code_comb = CFG_TEMPORAL_PE_ILLEGAL_REG;
+              end
+            end
+          end
+          // Check result register indices
+          for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_res
+            automatic int res_base = insn_base + iter_var1 * RESULT_WIDTH;
+            // res_is_reg is at MSB of result field
+            if (cfg_data[res_base + RESULT_WIDTH - 1]) begin : is_reg
+              // reg_idx is RES_BITS-1 bits wide at res_base + TAG_WIDTH
+              if ({{(32 - (RES_BITS - 1)){1'b0}}, cfg_data[res_base + TAG_WIDTH +: (RES_BITS - 1)]} >= 32'(NUM_REGISTERS)) begin : oob
+                err_detect = 1'b1;
+                if (CFG_TEMPORAL_PE_ILLEGAL_REG < err_code_comb)
+                  err_code_comb = CFG_TEMPORAL_PE_ILLEGAL_REG;
+              end
+            end
+          end
+        end
+      end
+    end
+
+    // CFG_TEMPORAL_PE_REG_TAG_NONZERO: res_tag != 0 when writing register
+    if (NUM_REGISTERS > 0) begin : chk_reg_tag
+      for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : per_insn_rtag
+        if (insn_valid[iter_var0]) begin : valid_insn
+          automatic int insn_base = iter_var0 * INSN_WIDTH;
+          for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_res
+            automatic int res_base = insn_base + iter_var1 * RESULT_WIDTH;
+            if (cfg_data[res_base + RESULT_WIDTH - 1]) begin : is_reg
+              if (cfg_data[res_base +: TAG_WIDTH] != '0) begin : nonzero_tag
+                err_detect = 1'b1;
+                if (CFG_TEMPORAL_PE_REG_TAG_NONZERO < err_code_comb)
+                  err_code_comb = CFG_TEMPORAL_PE_REG_TAG_NONZERO;
+              end
+            end
+          end
         end
       end
     end
