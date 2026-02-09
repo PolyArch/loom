@@ -11,6 +11,10 @@
 #   77 - skip (no simulator available)
 set -uo pipefail
 
+# Disable ccache to avoid permission errors on shared/restricted temp dirs
+export CCACHE_DISABLE=1
+export CCACHE_TEMPDIR=/tmp
+
 MODE="$1"; shift
 SIM="$1"; shift
 TOP="$1"; shift
