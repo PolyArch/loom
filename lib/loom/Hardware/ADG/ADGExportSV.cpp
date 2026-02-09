@@ -1027,6 +1027,27 @@ static std::string genPEParams(const PEDef &def) {
   if (dw == 0)
     dw = 32;
   unsigned tw = numIn > 0 ? getTagWidthBits(def.inputPorts[0]) : 0;
+  // Validate uniform tag width across all ports.
+  for (unsigned i = 1; i < numIn; ++i) {
+    if (getTagWidthBits(def.inputPorts[i]) != tw) {
+      llvm::errs() << "error: exportSV: PE '" << def.name
+                   << "' has mismatched tag widths across ports (input port "
+                   << i << " has tag width "
+                   << getTagWidthBits(def.inputPorts[i])
+                   << ", expected " << tw << ")\n";
+      std::exit(1);
+    }
+  }
+  for (unsigned i = 0; i < numOut; ++i) {
+    if (getTagWidthBits(def.outputPorts[i]) != tw) {
+      llvm::errs() << "error: exportSV: PE '" << def.name
+                   << "' has mismatched tag widths across ports (output port "
+                   << i << " has tag width "
+                   << getTagWidthBits(def.outputPorts[i])
+                   << ", expected " << tw << ")\n";
+      std::exit(1);
+    }
+  }
   // Use the PEDef's configured latency/interval (set via setLatency()/setInterval()).
   unsigned latency = static_cast<unsigned>(std::max<int16_t>(def.latTyp, 0));
   unsigned interval = static_cast<unsigned>(std::max<int16_t>(def.intTyp, 1));
