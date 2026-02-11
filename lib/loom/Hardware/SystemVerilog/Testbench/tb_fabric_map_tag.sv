@@ -16,6 +16,9 @@ module tb_fabric_map_tag;
   localparam int IN_PW        = DATA_WIDTH + IN_TAG_WIDTH;
   localparam int OUT_PW       = DATA_WIDTH + OUT_TAG_WIDTH;
   localparam int CONFIG_WIDTH = TABLE_SIZE * ENTRY_WIDTH;
+  localparam int ENTRY_VALID_LSB = 0;
+  localparam int ENTRY_SRC_TAG_LSB = ENTRY_VALID_LSB + 1;
+  localparam int ENTRY_DST_TAG_LSB = ENTRY_SRC_TAG_LSB + IN_TAG_WIDTH;
 
   logic clk, rst_n;
   logic in_valid, in_ready;
@@ -58,19 +61,28 @@ module tb_fabric_map_tag;
     pass_count = pass_count + 1;
 
     // Check 2: valid mapping - no error
+    @(negedge clk);
     // Entry 0: valid=1, src_tag=1, dst_tag=2
     cfg_data = '0;
-    cfg_data[ENTRY_WIDTH-1] = 1'b1;
-    cfg_data[OUT_TAG_WIDTH +: IN_TAG_WIDTH] = IN_TAG_WIDTH'(1);
-    cfg_data[0 +: OUT_TAG_WIDTH] = OUT_TAG_WIDTH'(2);
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_VALID_LSB] = 1'b1;
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_SRC_TAG_LSB +: IN_TAG_WIDTH] = IN_TAG_WIDTH'(1);
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_DST_TAG_LSB +: OUT_TAG_WIDTH] = OUT_TAG_WIDTH'(2);
     // Send data with tag=1
     in_data = '0;
     in_data[DATA_WIDTH +: IN_TAG_WIDTH] = IN_TAG_WIDTH'(1);
     in_data[DATA_WIDTH-1:0] = DATA_WIDTH'(42);
     in_valid = 1;
     @(posedge clk);
+    #1;
     if (error_valid !== 1'b0) begin : check_valid_map
       $fatal(1, "error after valid mapping");
+    end
+    if (out_valid !== 1'b1) begin : check_valid_map_out_valid
+      $fatal(1, "out_valid should assert for valid mapping");
+    end
+    if (out_data[DATA_WIDTH +: OUT_TAG_WIDTH] !== OUT_TAG_WIDTH'(2)) begin : check_valid_map_out_tag
+      $fatal(1, "mapped out tag mismatch: got %0d expected %0d",
+             out_data[DATA_WIDTH +: OUT_TAG_WIDTH], OUT_TAG_WIDTH'(2));
     end
     pass_count = pass_count + 1;
     in_valid = 0;
@@ -83,11 +95,13 @@ module tb_fabric_map_tag;
     rst_n = 1;
     @(posedge clk);
     // cfg_data still has entry 0 with src_tag=1; send tag=5 (no match)
+    @(negedge clk);
     in_data = '0;
     in_data[DATA_WIDTH +: IN_TAG_WIDTH] = IN_TAG_WIDTH'(5);
     in_valid = 1;
     @(posedge clk);
     @(posedge clk);
+    #1;
     if (error_valid !== 1'b1) begin : check_no_match
       $fatal(1, "expected RT_MAP_TAG_NO_MATCH error");
     end
@@ -103,16 +117,18 @@ module tb_fabric_map_tag;
     rst_n = 1;
     @(posedge clk);
     // Set entry 0 and entry 1 both valid with same src_tag=3
+    @(negedge clk);
     cfg_data = '0;
     // Entry 0: valid=1, src_tag=3, dst_tag=0
-    cfg_data[ENTRY_WIDTH-1] = 1'b1;
-    cfg_data[OUT_TAG_WIDTH +: IN_TAG_WIDTH] = IN_TAG_WIDTH'(3);
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_VALID_LSB] = 1'b1;
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_SRC_TAG_LSB +: IN_TAG_WIDTH] = IN_TAG_WIDTH'(3);
     // Entry 1: valid=1, src_tag=3, dst_tag=1
-    cfg_data[ENTRY_WIDTH + ENTRY_WIDTH-1] = 1'b1;
-    cfg_data[ENTRY_WIDTH + OUT_TAG_WIDTH +: IN_TAG_WIDTH] = IN_TAG_WIDTH'(3);
-    cfg_data[ENTRY_WIDTH +: OUT_TAG_WIDTH] = OUT_TAG_WIDTH'(1);
+    cfg_data[1 * ENTRY_WIDTH + ENTRY_VALID_LSB] = 1'b1;
+    cfg_data[1 * ENTRY_WIDTH + ENTRY_SRC_TAG_LSB +: IN_TAG_WIDTH] = IN_TAG_WIDTH'(3);
+    cfg_data[1 * ENTRY_WIDTH + ENTRY_DST_TAG_LSB +: OUT_TAG_WIDTH] = OUT_TAG_WIDTH'(1);
     @(posedge clk);
     @(posedge clk);
+    #1;
     if (error_valid !== 1'b1) begin : check_dup_tag
       $fatal(1, "expected CFG_MAP_TAG_DUP_TAG error");
     end

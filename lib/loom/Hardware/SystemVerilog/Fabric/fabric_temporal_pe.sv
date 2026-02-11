@@ -89,8 +89,15 @@ module fabric_temporal_pe #(
 
   // -----------------------------------------------------------------------
   // Instruction memory unpacking
-  // Each instruction: {valid(1), tag(TAG_WIDTH), fu_sel, operand_src[], result_dst[]}
+  // Each instruction (MSB -> LSB):
+  //   {result_dst[], operand_src[], fu_sel, tag(TAG_WIDTH), valid(1)}
   // -----------------------------------------------------------------------
+  localparam int INSN_VALID_LSB      = 0;
+  localparam int INSN_TAG_LSB        = INSN_VALID_LSB + 1;
+  localparam int INSN_FU_SEL_LSB     = INSN_TAG_LSB + TAG_WIDTH;
+  localparam int INSN_OPERANDS_LSB   = INSN_FU_SEL_LSB + FU_SEL_BITS;
+  localparam int INSN_RESULTS_LSB    = INSN_OPERANDS_LSB + NUM_INPUTS * REG_BITS;
+
   logic [NUM_INSTRUCTIONS-1:0]                     insn_valid;
   logic [NUM_INSTRUCTIONS-1:0][TAG_WIDTH-1:0]      insn_tag;
 
@@ -98,8 +105,8 @@ module fabric_temporal_pe #(
     integer iter_var0;
     for (iter_var0 = 0; iter_var0 < NUM_INSTRUCTIONS; iter_var0 = iter_var0 + 1) begin : per_insn
       automatic int base = iter_var0 * INSN_WIDTH;
-      insn_valid[iter_var0] = cfg_data[base + INSN_WIDTH - 1];
-      insn_tag[iter_var0]   = cfg_data[base + INSN_WIDTH - 2 -: TAG_WIDTH];
+      insn_valid[iter_var0] = cfg_data[base + INSN_VALID_LSB];
+      insn_tag[iter_var0]   = cfg_data[base + INSN_TAG_LSB +: TAG_WIDTH];
     end
   end
 
@@ -282,7 +289,8 @@ module fabric_temporal_pe #(
   always_comb begin : extract_res_tag
     integer iter_var0;
     for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : per_out
-      out_res_tag[iter_var0] = cfg_data[commit_insn * INSN_WIDTH + iter_var0 * RESULT_WIDTH +: TAG_WIDTH];
+      automatic int res_base = commit_insn * INSN_WIDTH + INSN_RESULTS_LSB + iter_var0 * RESULT_WIDTH;
+      out_res_tag[iter_var0] = cfg_data[res_base +: TAG_WIDTH];
     end
   end
 
@@ -362,7 +370,7 @@ module fabric_temporal_pe #(
       always_comb begin : decode_res
         integer iter_var0;
         for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : per_out
-          automatic int res_base = commit_insn * INSN_WIDTH + iter_var0 * RESULT_WIDTH;
+          automatic int res_base = commit_insn * INSN_WIDTH + INSN_RESULTS_LSB + iter_var0 * RESULT_WIDTH;
           res_is_reg[iter_var0] = cfg_data[res_base + RESULT_WIDTH - 1];
           res_reg_idx[iter_var0] = cfg_data[res_base + TAG_WIDTH +: (RES_BITS - 1)];
         end
@@ -387,7 +395,7 @@ module fabric_temporal_pe #(
       always_comb begin : decode_op
         integer iter_var0;
         for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : per_in
-          automatic int op_base = commit_insn * INSN_WIDTH + NUM_OUTPUTS * RESULT_WIDTH + iter_var0 * REG_BITS;
+          automatic int op_base = commit_insn * INSN_WIDTH + INSN_OPERANDS_LSB + iter_var0 * REG_BITS;
           op_is_reg[iter_var0] = cfg_data[op_base + REG_BITS - 1];
           op_reg_idx[iter_var0] = cfg_data[op_base +: (REG_BITS - 1)];
         end
@@ -405,7 +413,7 @@ module fabric_temporal_pe #(
           for (iter_var1 = 0; iter_var1 < NUM_INSTRUCTIONS; iter_var1 = iter_var1 + 1) begin : per_insn
             if (insn_valid[iter_var1]) begin : valid_insn
               for (iter_var2 = 0; iter_var2 < NUM_INPUTS; iter_var2 = iter_var2 + 1) begin : per_op
-                automatic int ob = iter_var1 * INSN_WIDTH + NUM_OUTPUTS * RESULT_WIDTH + iter_var2 * REG_BITS;
+                automatic int ob = iter_var1 * INSN_WIDTH + INSN_OPERANDS_LSB + iter_var2 * REG_BITS;
                 if (cfg_data[ob + REG_BITS - 1] &&
                     (cfg_data[ob +: (REG_BITS - 1)] == (REG_BITS-1)'(iter_var0))) begin : match
                   reg_reader_mask[iter_var0][iter_var1] = 1'b1;
@@ -711,7 +719,7 @@ module fabric_temporal_pe #(
             op_valid[iter_var0][iter_var1] = op_buf_valid[iter_var0][iter_var1];
             op_value[iter_var0][iter_var1] = op_buf_value[iter_var0][iter_var1];
             if (insn_valid[iter_var0]) begin : valid_insn
-              automatic int op_base = iter_var0 * INSN_WIDTH + NUM_OUTPUTS * RESULT_WIDTH + iter_var1 * REG_BITS;
+              automatic int op_base = iter_var0 * INSN_WIDTH + INSN_OPERANDS_LSB + iter_var1 * REG_BITS;
               if (cfg_data[op_base + REG_BITS - 1]) begin : is_reg_op
                 // Register-sourced: op_valid = FIFO non-empty
                 automatic int ridx = cfg_data[op_base +: (REG_BITS - 1)];
@@ -780,7 +788,7 @@ module fabric_temporal_pe #(
           if (insn_valid[iter_var0]) begin : valid_insn
             automatic int insn_base = iter_var0 * INSN_WIDTH;
             for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : per_op
-              automatic int op_base = insn_base + NUM_OUTPUTS * RESULT_WIDTH + iter_var1 * REG_BITS;
+              automatic int op_base = insn_base + INSN_OPERANDS_LSB + iter_var1 * REG_BITS;
               if (cfg_data[op_base + REG_BITS - 1]) begin : is_reg
                 if ({{(32 - (REG_BITS - 1)){1'b0}}, cfg_data[op_base +: (REG_BITS - 1)]} >= 32'(NUM_REGISTERS)) begin : oob
                   err_illegal_reg = 1'b1;
@@ -788,7 +796,7 @@ module fabric_temporal_pe #(
               end
             end
             for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_res
-              automatic int res_base = insn_base + iter_var1 * RESULT_WIDTH;
+              automatic int res_base = insn_base + INSN_RESULTS_LSB + iter_var1 * RESULT_WIDTH;
               if (cfg_data[res_base + RESULT_WIDTH - 1]) begin : is_reg
                 if ({{(32 - (RES_BITS - 1)){1'b0}}, cfg_data[res_base + TAG_WIDTH +: (RES_BITS - 1)]} >= 32'(NUM_REGISTERS)) begin : oob
                   err_illegal_reg = 1'b1;
@@ -806,7 +814,7 @@ module fabric_temporal_pe #(
           if (insn_valid[iter_var0]) begin : valid_insn
             automatic int insn_base = iter_var0 * INSN_WIDTH;
             for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_res
-              automatic int res_base = insn_base + iter_var1 * RESULT_WIDTH;
+              automatic int res_base = insn_base + INSN_RESULTS_LSB + iter_var1 * RESULT_WIDTH;
               if (cfg_data[res_base + RESULT_WIDTH - 1]) begin : is_reg
                 if (cfg_data[res_base +: TAG_WIDTH] != '0) begin : nonzero_tag
                   err_reg_tag_nz = 1'b1;

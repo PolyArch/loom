@@ -5,7 +5,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Translates the tag on a tagged stream via a CAM-style lookup table.
-// Each table entry: {valid(1), src_tag(IN_TAG_WIDTH), dst_tag(OUT_TAG_WIDTH)}.
+// Each table entry: {dst_tag(OUT_TAG_WIDTH), src_tag(IN_TAG_WIDTH), valid(1)}.
 // On match, replaces the input tag with the destination tag.
 //
 // Errors:
@@ -71,9 +71,11 @@ module fabric_map_tag #(
   always_comb begin : unpack_table
     integer iter_var0;
     for (iter_var0 = 0; iter_var0 < TABLE_SIZE; iter_var0 = iter_var0 + 1) begin : unpack_entry
-      entry_valid[iter_var0]   = cfg_data[iter_var0 * ENTRY_WIDTH + OUT_TAG_WIDTH + IN_TAG_WIDTH];
-      entry_src_tag[iter_var0] = cfg_data[iter_var0 * ENTRY_WIDTH + OUT_TAG_WIDTH +: IN_TAG_WIDTH];
-      entry_dst_tag[iter_var0] = cfg_data[iter_var0 * ENTRY_WIDTH +: OUT_TAG_WIDTH];
+      entry_valid[iter_var0]   = cfg_data[iter_var0 * ENTRY_WIDTH];
+      entry_src_tag[iter_var0] =
+          cfg_data[iter_var0 * ENTRY_WIDTH + 1 +: IN_TAG_WIDTH];
+      entry_dst_tag[iter_var0] =
+          cfg_data[iter_var0 * ENTRY_WIDTH + 1 + IN_TAG_WIDTH +: OUT_TAG_WIDTH];
     end
   end
 
@@ -107,7 +109,8 @@ module fabric_map_tag #(
   always_comb begin : priority_select
     integer iter_var0;
     matched_dst_tag = '0;
-    for (iter_var0 = 0; iter_var0 < TABLE_SIZE; iter_var0 = iter_var0 + 1) begin : select_entry
+    // Reverse scan so the lowest matching index wins (first table entry).
+    for (iter_var0 = TABLE_SIZE - 1; iter_var0 >= 0; iter_var0 = iter_var0 - 1) begin : select_entry
       if (match_vec[iter_var0]) begin : found
         matched_dst_tag = entry_dst_tag[iter_var0];
       end

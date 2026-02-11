@@ -72,6 +72,7 @@ endforeach()
 
 add_dependencies(loom loom_clang_resource)
 add_dependencies(loom clang-headers)
+add_dependencies(loom loom-sdk)
 
 add_custom_target(check-loom-adg
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/adg_test.sh"

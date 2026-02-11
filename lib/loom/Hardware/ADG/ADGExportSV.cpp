@@ -375,7 +375,10 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     // Copy operation module SV files for used dialects
     // Map dialect names to directory names
     static const std::map<std::string, std::string> dialectDirs = {
-        {"arith", "Arith"}, {"math", "Math"}, {"llvm", "LLVM"}};
+        {"arith", "Arith"},
+        {"math", "Math"},
+        {"llvm", "LLVM"},
+        {"dataflow", "Dataflow"}};
 
     for (const auto &dialect : usedDialects) {
       auto it = dialectDirs.find(dialect);
@@ -467,10 +470,17 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       unsigned tw = def.inputPorts.size() > 0
                         ? getTagWidthBits(def.inputPorts[0])
                         : 0;
-      if (tw > 0) {
-        unsigned cfgBits = def.outputPorts.size() * tw;
-        instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
+      unsigned cfgBits = (tw > 0) ? def.outputPorts.size() * tw : 0;
+      bool hasStreamCfg = (def.singleOp == "dataflow.stream");
+      if (!hasStreamCfg && !def.bodyMLIR.empty()) {
+        auto bodyOps = extractBodyMLIROps(def.bodyMLIR);
+        hasStreamCfg =
+            (bodyOps.size() == 1 && bodyOps[0] == "dataflow.stream");
       }
+      if (hasStreamCfg)
+        cfgBits += 5;
+      if (cfgBits > 0)
+        instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
     } else if (inst.kind == ModuleKind::ConstantPE) {
       const auto &def = constantPEDefs[inst.defIdx];
       unsigned dw = getDataWidthBits(def.outputType);
@@ -740,7 +750,16 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         top << "    .out" << p << "_data(" << inst.name << "_out" << p << "_data),\n";
       }
       unsigned tw = numIn > 0 ? getTagWidthBits(def.inputPorts[0]) : 0;
-      if (tw > 0 && instCfgPorts.size() > 0)
+      unsigned cfgBits = (tw > 0) ? numOut * tw : 0;
+      bool hasStreamCfg = (def.singleOp == "dataflow.stream");
+      if (!hasStreamCfg && !def.bodyMLIR.empty()) {
+        auto bodyOps = extractBodyMLIROps(def.bodyMLIR);
+        hasStreamCfg =
+            (bodyOps.size() == 1 && bodyOps[0] == "dataflow.stream");
+      }
+      if (hasStreamCfg)
+        cfgBits += 5;
+      if (cfgBits > 0)
         top << "    .cfg_data(" << inst.name << "_cfg_data)\n";
       else
         top << "    .cfg_data('0)\n";

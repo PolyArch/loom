@@ -126,12 +126,14 @@ ALL broadcast targets have consumed the data (AND of all targeted readys).
 
 ### Timing Model
 
-`fabric.switch` is a purely combinational routing primitive:
+`fabric.switch` uses a combinational datapath with latched error reporting:
 
 - Data-path routing is combinational (zero-cycle forwarding once
   valid/ready allows transfer).
-- Runtime routing-constraint checks are combinational and report
-  configuration errors without sequential latching in the switch itself.
+- Runtime routing-constraint checks are combinational, but the first detected
+  error is captured into `error_valid`/`error_code` and held until reset.
+- `error_valid` is sticky (once set, it remains asserted until reset), and
+  later errors do not overwrite the first captured error code.
 
 ### Backpressure Behavior
 

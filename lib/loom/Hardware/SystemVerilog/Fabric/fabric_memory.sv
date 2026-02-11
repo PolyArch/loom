@@ -105,6 +105,37 @@ module fabric_memory #(
   logic [SAFE_EW-1:0] mem [0:MEM_DEPTH-1];
 
   // -----------------------------------------------------------------------
+  // Tag range checks used by ready/enqueue and error reporting
+  // -----------------------------------------------------------------------
+  logic ld_tag_oob_req;
+  logic st_addr_tag_oob_req;
+  logic st_data_tag_oob_req;
+
+  generate
+    if (TAG_WIDTH > 0) begin : g_req_tag_chk
+      if (LD_COUNT > 1) begin : g_ld_req_tag_chk
+        assign ld_tag_oob_req =
+            ({{(32-TAG_WIDTH){1'b0}}, ld_addr_data[ADDR_WIDTH +: TAG_WIDTH]} >= 32'(LD_COUNT));
+      end else begin : g_ld_req_tag_ok
+        assign ld_tag_oob_req = 1'b0;
+      end
+      if (ST_COUNT > 1) begin : g_st_req_tag_chk
+        assign st_addr_tag_oob_req =
+            ({{(32-TAG_WIDTH){1'b0}}, st_addr_data[ADDR_WIDTH +: TAG_WIDTH]} >= 32'(ST_COUNT));
+        assign st_data_tag_oob_req =
+            ({{(32-TAG_WIDTH){1'b0}}, st_data_data[ELEM_WIDTH +: TAG_WIDTH]} >= 32'(ST_COUNT));
+      end else begin : g_st_req_tag_ok
+        assign st_addr_tag_oob_req = 1'b0;
+        assign st_data_tag_oob_req = 1'b0;
+      end
+    end else begin : g_no_req_tag_chk
+      assign ld_tag_oob_req = 1'b0;
+      assign st_addr_tag_oob_req = 1'b0;
+      assign st_data_tag_oob_req = 1'b0;
+    end
+  endgenerate
+
+  // -----------------------------------------------------------------------
   // Load path: read from memory (only active when LD_COUNT > 0)
   // -----------------------------------------------------------------------
   generate
@@ -112,12 +143,13 @@ module fabric_memory #(
       logic [MEM_AW-1:0] ld_addr_val;
       assign ld_addr_val = ld_addr_data[MEM_AW-1:0];
 
-      logic ld_fire;
-      assign ld_fire = ld_addr_valid && ld_data_ready && ld_done_ready;
+      // lddata/lddone must represent one aligned completion event.
+      logic ld_req_ok;
+      assign ld_req_ok = !ld_tag_oob_req;
 
-      assign ld_addr_ready = ld_fire;
-      assign ld_data_valid = ld_addr_valid;
-      assign ld_done_valid = ld_addr_valid;
+      assign ld_addr_ready = ld_req_ok && ld_data_ready && ld_done_ready;
+      assign ld_data_valid = ld_addr_valid && ld_req_ok && ld_done_ready;
+      assign ld_done_valid = ld_addr_valid && ld_req_ok && ld_data_ready;
 
       if (TAG_WIDTH > 0) begin : g_tagged_ld
         logic [TAG_WIDTH-1:0] ld_tag;
@@ -161,6 +193,10 @@ module fabric_memory #(
       logic [ST_COUNT-1:0]                    tag_write_en;
       logic [ST_COUNT-1:0][MEM_AW-1:0]       tag_write_addr;
       logic [ST_COUNT-1:0][SAFE_EW-1:0]      tag_write_data;
+      logic [ST_COUNT-1:0]                    pair_req;
+      logic [ST_COUNT-1:0]                    pair_grant;
+      logic                                   pair_sel_valid;
+      logic [SAFE_TW-1:0]                     pair_sel_tag;
 
       genvar gti;
       for (gti = 0; gti < ST_COUNT; gti++) begin : g_tag_fifo
@@ -180,9 +216,10 @@ module fabric_memory #(
         assign data_full  = (data_cnt == SAFE_LSQ[Q_IDX_W:0]);
         assign data_empty = (data_cnt == '0);
 
-        // Paired store fires when both FIFOs non-empty and done-port ready
+        // One paired store is selected globally each cycle.
         logic pair_fire;
-        assign pair_fire = !addr_empty && !data_empty && st_done_ready;
+        assign pair_req[gti] = !addr_empty && !data_empty;
+        assign pair_fire = pair_grant[gti] && st_done_ready;
         assign st_paired[gti] = pair_fire;
 
         // Export to flat arrays
@@ -247,6 +284,34 @@ module fabric_memory #(
         assign tag_write_data[gti] = data_q[data_rd_ptr];
       end
 
+      always_comb begin : pair_select
+        integer iter_var0;
+        logic grant_taken;
+        pair_grant = '0;
+        grant_taken = 1'b0;
+        for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : pick
+          if (!grant_taken && pair_req[iter_var0]) begin : grant
+            pair_grant[iter_var0] = 1'b1;
+            grant_taken = 1'b1;
+          end
+        end
+      end
+
+      assign pair_sel_valid = |pair_grant;
+      if (TAG_WIDTH > 0 && ST_COUNT > 1) begin : g_pair_tag
+        always_comb begin : pair_tag_encode
+          integer iter_var0;
+          pair_sel_tag = '0;
+          for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : encode
+            if (pair_grant[iter_var0]) begin : hit
+              pair_sel_tag = SAFE_TW'(iter_var0);
+            end
+          end
+        end
+      end else begin : g_pair_tag_zero
+        assign pair_sel_tag = '0;
+      end
+
       // Single always_ff to write memory
       always_ff @(posedge clk) begin : write_mem
         integer iter_var0;
@@ -269,7 +334,7 @@ module fabric_memory #(
           if (target_tag >= ST_COUNT) begin : clamp
             target_tag = 0;
           end
-          if (!tag_addr_full[target_tag]) begin : grant
+          if (!st_addr_tag_oob_req && !tag_addr_full[target_tag]) begin : grant
             st_addr_ready = 1'b1;
           end
         end
@@ -288,7 +353,7 @@ module fabric_memory #(
           if (target_tag >= ST_COUNT) begin : clamp
             target_tag = 0;
           end
-          if (!tag_addr_full[target_tag] && st_addr_valid) begin : enq
+          if (!st_addr_tag_oob_req && !tag_addr_full[target_tag] && st_addr_valid) begin : enq
             tag_addr_enq[target_tag] = 1'b1;
             tag_addr_enq_val[target_tag] = st_addr_data[MEM_AW-1:0];
           end
@@ -305,7 +370,7 @@ module fabric_memory #(
           if (target_tag >= ST_COUNT) begin : clamp
             target_tag = 0;
           end
-          if (!tag_data_full[target_tag]) begin : grant
+          if (!st_data_tag_oob_req && !tag_data_full[target_tag]) begin : grant
             st_data_ready = 1'b1;
           end
         end
@@ -324,7 +389,7 @@ module fabric_memory #(
           if (target_tag >= ST_COUNT) begin : clamp
             target_tag = 0;
           end
-          if (!tag_data_full[target_tag] && st_data_valid) begin : enq
+          if (!st_data_tag_oob_req && !tag_data_full[target_tag] && st_data_valid) begin : enq
             tag_data_enq[target_tag] = 1'b1;
             tag_data_enq_val[target_tag] = st_data_data[ELEM_WIDTH-1:0];
           end
@@ -332,36 +397,8 @@ module fabric_memory #(
       end
 
       // Store done signal
-      begin : g_stdone
-        logic any_st_fire;
-        logic [DONE_PW-1:0] stdone_val;
-        if (TAG_WIDTH > 0 && ST_COUNT > 1) begin : g_tagged_stdone
-          always_comb begin : stdone_logic
-            integer iter_var0;
-            any_st_fire = 1'b0;
-            stdone_val = '0;
-            for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : chk
-              if (st_paired[iter_var0]) begin : fire
-                any_st_fire = 1'b1;
-                stdone_val = DONE_PW'(iter_var0);
-              end
-            end
-          end
-        end else begin : g_untagged_stdone
-          always_comb begin : stdone_logic
-            integer iter_var0;
-            any_st_fire = 1'b0;
-            stdone_val = '0;
-            for (iter_var0 = 0; iter_var0 < ST_COUNT; iter_var0 = iter_var0 + 1) begin : chk
-              if (st_paired[iter_var0]) begin : fire
-                any_st_fire = 1'b1;
-              end
-            end
-          end
-        end
-        assign st_done_valid = any_st_fire;
-        assign st_done_data  = stdone_val;
-      end
+      assign st_done_valid = pair_sel_valid;
+      assign st_done_data  = DONE_PW'(pair_sel_tag);
     end else begin : g_no_store
       assign st_paired    = 1'b0;
       assign st_addr_ready = 1'b0;
@@ -428,21 +465,14 @@ module fabric_memory #(
     if (TAG_WIDTH > 0) begin : g_tag_oob_chk
       always_comb begin : tag_oob_logic
         err_tag_oob = 1'b0;
-        if (LD_COUNT > 1) begin : ld_tag_chk
-          if (ld_addr_valid &&
-              ({{(32-TAG_WIDTH){1'b0}}, ld_addr_data[ADDR_WIDTH +: TAG_WIDTH]} >= 32'(LD_COUNT))) begin : oob
-            err_tag_oob = 1'b1;
-          end
+        if (ld_addr_valid && ld_tag_oob_req) begin : ld_tag_chk
+          err_tag_oob = 1'b1;
         end
-        if (ST_COUNT > 1) begin : st_tag_chk
-          if (st_addr_valid &&
-              ({{(32-TAG_WIDTH){1'b0}}, st_addr_data[ADDR_WIDTH +: TAG_WIDTH]} >= 32'(ST_COUNT))) begin : oob_addr
-            err_tag_oob = 1'b1;
-          end
-          if (st_data_valid &&
-              ({{(32-TAG_WIDTH){1'b0}}, st_data_data[ELEM_WIDTH +: TAG_WIDTH]} >= 32'(ST_COUNT))) begin : oob_data
-            err_tag_oob = 1'b1;
-          end
+        if (st_addr_valid && st_addr_tag_oob_req) begin : st_addr_tag_chk
+          err_tag_oob = 1'b1;
+        end
+        if (st_data_valid && st_data_tag_oob_req) begin : st_data_tag_chk
+          err_tag_oob = 1'b1;
         end
       end
     end else begin : g_no_tag_oob

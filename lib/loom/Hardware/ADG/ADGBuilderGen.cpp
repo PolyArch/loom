@@ -101,6 +101,52 @@ static std::string getConstLiteral(Type valueType) {
   return "0";
 }
 
+/// Emit the trailing type signature for a single-op PE body.
+/// Most ops use a single trailing type; dataflow ops use explicit
+/// "(input types) -> (result types)" formatting.
+static void emitSingleOpTypeSignature(std::ostringstream &os,
+                                      const std::string &singleOp,
+                                      const std::vector<Type> &inputTypes,
+                                      const std::vector<Type> &outputTypes) {
+  assert(!inputTypes.empty() && "single-op PE requires at least one input");
+  assert(!outputTypes.empty() && "single-op PE requires at least one output");
+
+  if (singleOp == "dataflow.stream") {
+    // stream op assembly format does not use trailing type annotation.
+    return;
+  }
+
+  if (singleOp == "dataflow.invariant") {
+    assert(inputTypes.size() == 2 &&
+           "dataflow.invariant expects control and value inputs");
+    os << " : " << inputTypes[0].toMLIR() << ", " << inputTypes[1].toMLIR()
+       << " -> " << outputTypes[0].toMLIR();
+    return;
+  }
+
+  if (singleOp == "dataflow.carry") {
+    assert(inputTypes.size() == 3 &&
+           "dataflow.carry expects control, init and carry inputs");
+    os << " : " << inputTypes[0].toMLIR() << ", " << inputTypes[1].toMLIR()
+       << ", " << inputTypes[2].toMLIR() << " -> " << outputTypes[0].toMLIR();
+    return;
+  }
+
+  if (singleOp == "dataflow.gate") {
+    assert(inputTypes.size() == 2 && outputTypes.size() == 2 &&
+           "dataflow.gate expects two inputs and two outputs");
+    os << " : " << inputTypes[0].toMLIR() << ", " << inputTypes[1].toMLIR()
+       << " -> " << outputTypes[0].toMLIR() << ", "
+       << outputTypes[1].toMLIR();
+    return;
+  }
+
+  // Compare ops require the operand type, not the result type (i1).
+  bool isCmp = (singleOp == "arith.cmpi" || singleOp == "arith.cmpf");
+  const auto &trailingType = isCmp ? inputTypes[0] : outputTypes[0];
+  os << " : " << trailingType.toMLIR();
+}
+
 //===----------------------------------------------------------------------===//
 // PE definition MLIR generation
 //===----------------------------------------------------------------------===//
@@ -188,17 +234,31 @@ std::string ADGBuilder::Impl::generatePEBody(const PEDef &pe) const {
   assert(!pe.outputPorts.empty() && "PE must have output ports");
 
   std::ostringstream os;
-  os << "  %0 = " << pe.singleOp;
+  const bool isGate = (pe.singleOp == "dataflow.gate");
+  const bool isStream = (pe.singleOp == "dataflow.stream");
+  const bool hasTwoResults = isGate || isStream;
+
+  os << "  ";
+  if (hasTwoResults)
+    os << "%0, %1 = ";
+  else
+    os << "%0 = ";
+  os << pe.singleOp;
   os << getComparePredicateStr(pe);
   for (size_t i = 0; i < pe.inputPorts.size(); ++i) {
     os << (i == 0 ? " " : ", ");
     os << "%arg" << i;
   }
-  // Compare ops require the operand type, not the result type (i1).
-  bool isCmp = (pe.singleOp == "arith.cmpi" || pe.singleOp == "arith.cmpf");
-  const auto &trailingType = isCmp ? pe.inputPorts[0] : pe.outputPorts[0];
-  os << " : " << trailingType.toMLIR() << "\n";
-  os << "  fabric.yield %0 : " << pe.outputPorts[0].toMLIR() << "\n";
+  emitSingleOpTypeSignature(os, pe.singleOp, pe.inputPorts, pe.outputPorts);
+  os << "\n";
+  if (hasTwoResults) {
+    assert(pe.outputPorts.size() == 2 &&
+           "dataflow.gate/stream single-op PE expects two outputs");
+    os << "  fabric.yield %0, %1 : " << pe.outputPorts[0].toMLIR() << ", "
+       << pe.outputPorts[1].toMLIR() << "\n";
+  } else {
+    os << "  fabric.yield %0 : " << pe.outputPorts[0].toMLIR() << "\n";
+  }
   return os.str();
 }
 
@@ -245,19 +305,37 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
     if (!pe.bodyMLIR.empty()) {
       os << pe.bodyMLIR;
     } else {
+      const bool isGate = (pe.singleOp == "dataflow.gate");
+      const bool isStream = (pe.singleOp == "dataflow.stream");
+      const bool hasTwoResults = isGate || isStream;
+
       os << "^bb0(";
       for (size_t i = 0; i < bodyInputTypes.size(); ++i) {
         if (i > 0) os << ", ";
         os << "%x" << i << ": " << bodyInputTypes[i].toMLIR();
       }
       os << "):\n";
-      os << "  %0 = " << pe.singleOp;
+      os << "  ";
+      if (hasTwoResults)
+        os << "%0, %1 = ";
+      else
+        os << "%0 = ";
+      os << pe.singleOp;
       for (size_t i = 0; i < bodyInputTypes.size(); ++i) {
         os << (i == 0 ? " " : ", ");
         os << "%x" << i;
       }
-      os << " : " << bodyOutputTypes[0].toMLIR() << "\n";
-      os << "  fabric.yield %0 : " << bodyOutputTypes[0].toMLIR() << "\n";
+      emitSingleOpTypeSignature(os, pe.singleOp, bodyInputTypes,
+                                bodyOutputTypes);
+      os << "\n";
+      if (hasTwoResults) {
+        assert(bodyOutputTypes.size() == 2 &&
+               "dataflow.gate/stream tagged single-op PE expects two outputs");
+        os << "  fabric.yield %0, %1 : " << bodyOutputTypes[0].toMLIR()
+           << ", " << bodyOutputTypes[1].toMLIR() << "\n";
+      } else {
+        os << "  fabric.yield %0 : " << bodyOutputTypes[0].toMLIR() << "\n";
+      }
     }
   } else {
     os << generatePEBody(pe);
@@ -867,11 +945,9 @@ std::string ADGBuilder::Impl::generateMLIR() const {
               os << (i == 0 ? " " : ", ");
               os << "%x" << i;
             }
-            bool isFuCmp = (pd.singleOp == "arith.cmpi" ||
-                            pd.singleOp == "arith.cmpf");
-            const auto &fuTrailingType =
-                isFuCmp ? bodyInTypes[0] : bodyOutTypes[0];
-            os << " : " << fuTrailingType.toMLIR() << "\n";
+            emitSingleOpTypeSignature(os, pd.singleOp, bodyInTypes,
+                                      bodyOutTypes);
+            os << "\n";
             os << "    fabric.yield %r : " << bodyOutTypes[0].toMLIR() << "\n";
           }
           break;

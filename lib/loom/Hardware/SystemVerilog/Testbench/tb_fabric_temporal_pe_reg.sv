@@ -26,6 +26,16 @@ module tb_fabric_temporal_pe_reg;
 
   localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH;
   localparam int SAFE_PW = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1;
+  localparam int REG_BITS = 1 + $clog2(NUM_REGISTERS > 1 ? NUM_REGISTERS : 2);
+  localparam int FU_SEL_BITS = (NUM_FU_TYPES > 1) ? $clog2(NUM_FU_TYPES) : 0;
+  localparam int RES_BITS = REG_BITS;
+  localparam int RESULT_WIDTH = RES_BITS + TAG_WIDTH;
+  localparam int INSN_WIDTH =
+      1 + TAG_WIDTH + FU_SEL_BITS + NUM_INPUTS * REG_BITS + NUM_OUTPUTS * RESULT_WIDTH;
+  localparam int INSN_VALID_LSB = 0;
+  localparam int INSN_TAG_LSB = INSN_VALID_LSB + 1;
+  localparam int INSN_OPERANDS_LSB = INSN_TAG_LSB + TAG_WIDTH + FU_SEL_BITS;
+  localparam int INSN_RESULTS_LSB = INSN_OPERANDS_LSB + NUM_INPUTS * REG_BITS;
 
   logic clk, rst_n;
   logic [NUM_INPUTS-1:0]                 in_valid;
@@ -58,25 +68,11 @@ module tb_fabric_temporal_pe_reg;
     .error_valid(error_valid), .error_code(error_code)
   );
 
-  // For NUM_REGISTERS=3: REG_BITS = 1 + clog2(3) = 3, RES_BITS = 3
-  // RESULT_WIDTH = RES_BITS + TAG_WIDTH = 3 + 4 = 7
-  // INSN_WIDTH = 1 + TAG_WIDTH + FU_SEL_BITS + NUM_INPUTS*REG_BITS + NUM_OUTPUTS*RESULT_WIDTH
-  //            = 1 + 4 + 0 + 2*3 + 1*7 = 18
-  //
-  // Instruction bit layout from res_base (per result):
-  //   [res_tag(TAG_WIDTH=4)] [reg_idx(RES_BITS-1=2)] [is_reg(1)]  -- but check:
-  //   Actually from code: is_reg = cfg_data[res_base + RESULT_WIDTH - 1]
-  //   reg_idx = cfg_data[res_base + TAG_WIDTH +: (RES_BITS - 1)]
-  //   res_tag = cfg_data[res_base +: TAG_WIDTH]
-  //   So from LSB: res_tag(4), reg_idx(2), is_reg(1)  = 7 bits = RESULT_WIDTH
-  //
-  // Operand bit layout from op_base (per operand):
-  //   is_reg = cfg_data[op_base + REG_BITS - 1]
-  //   reg_idx = cfg_data[op_base +: (REG_BITS - 1)]
-  //   From LSB: reg_idx(2), is_reg(1)  = 3 bits = REG_BITS
-  //
-  // Full instruction from LSB:
-  //   result0(7) | op0(3) | op1(3) | fu_sel(0) | tag(4) | valid(1) = 18 bits
+  // For NUM_REGISTERS=3: REG_BITS = 3, RES_BITS = 3, RESULT_WIDTH = 7, INSN_WIDTH = 18.
+  // Full instruction layout from LSB:
+  //   valid(1) | tag(4) | fu_sel(0) | op0(3) | op1(3) | result0(7)
+  // Operand field (3 bits): reg_idx[1:0] (LSB), is_reg (MSB)
+  // Result field (7 bits):  res_tag[3:0] (LSB), reg_idx[1:0], is_reg (MSB)
 
   initial begin : clk_gen
     clk = 0;
@@ -105,14 +101,11 @@ module tb_fabric_temporal_pe_reg;
     // Check 2: CFG_TEMPORAL_PE_ILLEGAL_REG - operand register index OOB
     // Insn 0: valid=1, tag=1, operand 0 = {is_reg=1, reg_idx=3} (3 >= NUM_REGISTERS=3)
     cfg_data = '0;
-    // valid bit at INSN_WIDTH-1 = 17
-    cfg_data[17] = 1'b1;
-    // tag at bits [16:13] (INSN_WIDTH-2 downto INSN_WIDTH-1-TAG_WIDTH)
-    cfg_data[16:13] = TAG_WIDTH'(1);
-    // operand 0 at base: result0(7 bits) = bits [6:0], then op0 starts at bit 7
-    // op0: bits [9:7], where bit 9 = is_reg, bits [8:7] = reg_idx
-    cfg_data[9] = 1'b1;      // is_reg = 1
-    cfg_data[8:7] = 2'd3;    // reg_idx = 3 (OOB: >= NUM_REGISTERS=3)
+    cfg_data[0 * INSN_WIDTH + INSN_VALID_LSB] = 1'b1;
+    cfg_data[0 * INSN_WIDTH + INSN_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(1);
+    // operand0 = reg(3): is_reg=1, reg_idx=3
+    cfg_data[0 * INSN_WIDTH + INSN_OPERANDS_LSB + REG_BITS - 1] = 1'b1;
+    cfg_data[0 * INSN_WIDTH + INSN_OPERANDS_LSB +: (REG_BITS - 1)] = (REG_BITS-1)'(3);
     @(posedge clk);
     @(posedge clk);
     if (error_valid !== 1'b1) begin : check_illegal_reg
@@ -131,15 +124,12 @@ module tb_fabric_temporal_pe_reg;
     rst_n = 1;
     @(posedge clk);
     // Insn 0: valid=1, tag=2
-    cfg_data[17] = 1'b1;
-    cfg_data[16:13] = TAG_WIDTH'(2);
-    // result 0 at bits [6:0]: res_tag(4), reg_idx(2), is_reg(1)
-    // Set is_reg=1 at bit 6
-    cfg_data[6] = 1'b1;
-    // reg_idx=0 at bits [5:4]
-    cfg_data[5:4] = 2'd0;
-    // res_tag=5 at bits [3:0] (nonzero -> error)
-    cfg_data[3:0] = 4'd5;
+    cfg_data[0 * INSN_WIDTH + INSN_VALID_LSB] = 1'b1;
+    cfg_data[0 * INSN_WIDTH + INSN_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(2);
+    // result0: is_reg=1, reg_idx=0, res_tag=5 (nonzero -> error)
+    cfg_data[0 * INSN_WIDTH + INSN_RESULTS_LSB + RESULT_WIDTH - 1] = 1'b1;
+    cfg_data[0 * INSN_WIDTH + INSN_RESULTS_LSB + TAG_WIDTH +: (RES_BITS - 1)] = (RES_BITS-1)'(0);
+    cfg_data[0 * INSN_WIDTH + INSN_RESULTS_LSB +: TAG_WIDTH] = TAG_WIDTH'(5);
     @(posedge clk);
     @(posedge clk);
     if (error_valid !== 1'b1) begin : check_reg_tag_nz

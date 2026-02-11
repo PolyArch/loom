@@ -18,6 +18,7 @@ SIM_RUNNER="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Utils/sim_runner.sh"
 SV_FABRIC="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Fabric"
 SV_TB="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Testbench"
 SV_COMMON="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Common"
+SV_DATAFLOW="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Dataflow"
 
 # Both simulators run as equals; sim_runner.sh exits 77 if a tool is missing.
 SIMS=("vcs" "verilator")
@@ -89,6 +90,7 @@ rel_sim_runner=$(loom_relpath "${SIM_RUNNER}")
 rel_sv_fabric=$(loom_relpath "${SV_FABRIC}")
 rel_sv_tb=$(loom_relpath "${SV_TB}")
 rel_sv_common=$(loom_relpath "${SV_COMMON}")
+rel_sv_dataflow=$(loom_relpath "${SV_DATAFLOW}")
 
 # =========================================================================
 # Stage A: ADG prerequisite (compile C++ -> run binary -> validate MLIR)
@@ -213,6 +215,32 @@ pe_constant_configs=(
   "DATA_WIDTH=32,TAG_WIDTH=0"
 )
 
+# Load PE positive parameter sweeps
+pe_load_configs=(
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=0,QUEUE_DEPTH=2"
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=1,QUEUE_DEPTH=2"
+)
+
+# Load PE negative tests
+pe_load_neg=(
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=0,HW_TYPE=1,QUEUE_DEPTH=2|COMP_PE_LOADSTORE_TAG_WIDTH"
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=2,QUEUE_DEPTH=2|COMP_PE_LOADSTORE_TAG_MODE"
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=1,QUEUE_DEPTH=0|COMP_PE_LOADSTORE_TAG_MODE"
+)
+
+# Store PE positive parameter sweeps
+pe_store_configs=(
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=0,QUEUE_DEPTH=2"
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=1,QUEUE_DEPTH=2"
+)
+
+# Store PE negative tests
+pe_store_neg=(
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=0,HW_TYPE=1,QUEUE_DEPTH=2|COMP_PE_LOADSTORE_TAG_WIDTH"
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=2,QUEUE_DEPTH=2|COMP_PE_LOADSTORE_TAG_MODE"
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=1,QUEUE_DEPTH=0|COMP_PE_LOADSTORE_TAG_MODE"
+)
+
 # Temporal SW positive parameter sweeps
 temporal_sw_configs=(
   "NUM_INPUTS=2,NUM_OUTPUTS=2,DATA_WIDTH=32,TAG_WIDTH=4,NUM_ROUTE_TABLE=4"
@@ -226,6 +254,7 @@ temporal_sw_neg=(
 # Temporal PE positive parameter sweeps
 temporal_pe_configs=(
   "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=1,NUM_REGISTERS=0,NUM_INSTRUCTIONS=2,REG_FIFO_DEPTH=0"
+  "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=2,NUM_REGISTERS=0,NUM_INSTRUCTIONS=2,REG_FIFO_DEPTH=0"
   "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=1,NUM_REGISTERS=0,NUM_INSTRUCTIONS=2,REG_FIFO_DEPTH=0,SHARED_OPERAND_BUFFER=1,OPERAND_BUFFER_SIZE=4"
 )
 
@@ -237,6 +266,7 @@ temporal_pe_neg=(
 # Temporal PE register tests (NUM_REGISTERS > 0)
 temporal_pe_reg_configs=(
   "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=1,NUM_REGISTERS=3,NUM_INSTRUCTIONS=2,REG_FIFO_DEPTH=2"
+  "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=2,NUM_REGISTERS=3,NUM_INSTRUCTIONS=2,REG_FIFO_DEPTH=2"
   "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=1,NUM_REGISTERS=3,NUM_INSTRUCTIONS=4,REG_FIFO_DEPTH=4"
 )
 
@@ -324,6 +354,13 @@ emit_sim_jobs() {
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_switch ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
   done
+
+  # Switch randomized stress regression (dedicated bench)
+  outdir="tests/sv/switch/Output/${sim}_stress"
+  sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_switch.sv ${rel_sv_tb}/tb_fabric_switch_stress.sv"
+  line="rm -rf ${outdir} && mkdir -p ${outdir}"
+  line+=" && ${rel_sim_runner} run ${sim} tb_fabric_switch_stress ${outdir} ${sv_files}"
+  echo "${line}" >> "${PARALLEL_FILE}"
 
   # Switch negative tests
   for neg in "${switch_neg[@]}"; do
@@ -433,6 +470,74 @@ emit_sim_jobs() {
     echo "${line}" >> "${PARALLEL_FILE}"
   done
 
+  # Load PE positive tests
+  for cfg in "${pe_load_configs[@]}"; do
+    local cfg_suffix gparams
+    cfg_suffix=$(cfg_to_suffix "${cfg}")
+    gparams=$(cfg_to_gparams "${cfg}")
+    outdir="tests/sv/pe/Output/${sim}_load_${cfg_suffix}"
+
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_pe_load.sv ${rel_sv_tb}/tb_fabric_pe_load.sv"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
+    line+=" && ${rel_sim_runner} run ${sim} tb_fabric_pe_load ${outdir} ${sv_files}${gparams}"
+    echo "${line}" >> "${PARALLEL_FILE}"
+  done
+
+  # Load PE randomized stress regression (TagTransparent focused)
+  outdir="tests/sv/pe/Output/${sim}_load_stress"
+  sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_pe_load.sv ${rel_sv_tb}/tb_fabric_pe_load_stress.sv"
+  line="rm -rf ${outdir} && mkdir -p ${outdir}"
+  line+=" && ${rel_sim_runner} run ${sim} tb_fabric_pe_load_stress ${outdir} ${sv_files}"
+  echo "${line}" >> "${PARALLEL_FILE}"
+
+  # Load PE negative tests
+  for neg in "${pe_load_neg[@]}"; do
+    IFS='|' read -r params pattern <<< "${neg}"
+    local cfg_suffix gparams
+    cfg_suffix=$(cfg_to_suffix "${params}")
+    gparams=$(cfg_to_gparams "${params}")
+    outdir="tests/sv/pe/Output/${sim}_load_neg_${cfg_suffix}"
+
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_pe_load.sv ${rel_sv_tb}/tb_fabric_pe_load.sv"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
+    line+=" && ${rel_sim_runner} expect-fail ${sim} tb_fabric_pe_load ${outdir} ${pattern} ${sv_files}${gparams}"
+    echo "${line}" >> "${PARALLEL_FILE}"
+  done
+
+  # Store PE positive tests
+  for cfg in "${pe_store_configs[@]}"; do
+    local cfg_suffix gparams
+    cfg_suffix=$(cfg_to_suffix "${cfg}")
+    gparams=$(cfg_to_gparams "${cfg}")
+    outdir="tests/sv/pe/Output/${sim}_store_${cfg_suffix}"
+
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_pe_store.sv ${rel_sv_tb}/tb_fabric_pe_store.sv"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
+    line+=" && ${rel_sim_runner} run ${sim} tb_fabric_pe_store ${outdir} ${sv_files}${gparams}"
+    echo "${line}" >> "${PARALLEL_FILE}"
+  done
+
+  # Store PE randomized stress regression (TagTransparent focused)
+  outdir="tests/sv/pe/Output/${sim}_store_stress"
+  sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_pe_store.sv ${rel_sv_tb}/tb_fabric_pe_store_stress.sv"
+  line="rm -rf ${outdir} && mkdir -p ${outdir}"
+  line+=" && ${rel_sim_runner} run ${sim} tb_fabric_pe_store_stress ${outdir} ${sv_files}"
+  echo "${line}" >> "${PARALLEL_FILE}"
+
+  # Store PE negative tests
+  for neg in "${pe_store_neg[@]}"; do
+    IFS='|' read -r params pattern <<< "${neg}"
+    local cfg_suffix gparams
+    cfg_suffix=$(cfg_to_suffix "${params}")
+    gparams=$(cfg_to_gparams "${params}")
+    outdir="tests/sv/pe/Output/${sim}_store_neg_${cfg_suffix}"
+
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_pe_store.sv ${rel_sv_tb}/tb_fabric_pe_store.sv"
+    line="rm -rf ${outdir} && mkdir -p ${outdir}"
+    line+=" && ${rel_sim_runner} expect-fail ${sim} tb_fabric_pe_store ${outdir} ${pattern} ${sv_files}${gparams}"
+    echo "${line}" >> "${PARALLEL_FILE}"
+  done
+
   # Temporal switch positive tests
   for cfg in "${temporal_sw_configs[@]}"; do
     local cfg_suffix gparams
@@ -445,6 +550,13 @@ emit_sim_jobs() {
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_temporal_sw ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
   done
+
+  # Temporal switch randomized stress regression (dedicated bench)
+  outdir="tests/sv/temporal_sw/Output/${sim}_stress"
+  sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_temporal_sw.sv ${rel_sv_tb}/tb_fabric_temporal_sw_stress.sv"
+  line="rm -rf ${outdir} && mkdir -p ${outdir}"
+  line+=" && ${rel_sim_runner} run ${sim} tb_fabric_temporal_sw_stress ${outdir} ${sv_files}"
+  echo "${line}" >> "${PARALLEL_FILE}"
 
   # Temporal SW negative tests
   for neg in "${temporal_sw_neg[@]}"; do
@@ -541,6 +653,13 @@ emit_sim_jobs() {
   line+=" && ${rel_sim_runner} run ${sim} tb_temporal_pe_multireader ${outdir} ${sv_files}"
   echo "${line}" >> "${PARALLEL_FILE}"
 
+  # Temporal PE long-run mixed-tag stress regression (dedicated bench)
+  outdir="tests/sv/temporal_pe/Output/${sim}_stress_mix"
+  sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_temporal_pe.sv ${rel_sv_tb}/tb_temporal_pe_stress.sv"
+  line="rm -rf ${outdir} && mkdir -p ${outdir}"
+  line+=" && ${rel_sim_runner} run ${sim} tb_temporal_pe_stress ${outdir} ${sv_files}"
+  echo "${line}" >> "${PARALLEL_FILE}"
+
   # Extmemory positive tests
   for cfg in "${extmemory_configs[@]}"; do
     local cfg_suffix gparams
@@ -553,6 +672,13 @@ emit_sim_jobs() {
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_extmemory ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
   done
+
+  # Direct dataflow.stream validation (functional + error paths)
+  outdir="tests/sv/pe_dataflow/Output/${sim}_direct_stream"
+  sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_dataflow}/dataflow_stream.sv ${rel_sv_tb}/tb_dataflow_stream.sv"
+  line="rm -rf ${outdir} && mkdir -p ${outdir}"
+  line+=" && ${rel_sim_runner} run ${sim} tb_dataflow_stream ${outdir} ${sv_files}"
+  echo "${line}" >> "${PARALLEL_FILE}"
 }
 
 OVERALL_RC=0

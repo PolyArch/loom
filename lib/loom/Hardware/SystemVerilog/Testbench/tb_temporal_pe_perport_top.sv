@@ -14,14 +14,14 @@
 // Per-port (internal): {tag[3:0], data[15:0]} = 20 bits
 //
 // Instruction encoding (INSN_WIDTH=10, NUM_REGISTERS=0):
-//   [9]   valid
-//   [8:5] tag (match)
-//   [4]   fu_sel (0=adder, 1=multiplier)
-//   [3:0] output_tag
+//   [0]   valid
+//   [4:1] tag (match)
+//   [5]   fu_sel (0=adder, 1=multiplier)
+//   [9:6] output_tag
 //
-// Insn 0: tag=0, fu_sel=0 (adder),      output_tag=0  -> 10'h200
-// Insn 1: tag=1, fu_sel=1 (multiplier), output_tag=1  -> 10'h231
-// cfg_data = {insn1, insn0} = 20'h8C600
+// Insn 0: tag=0, fu_sel=0 (adder),      output_tag=0  -> 10'h001
+// Insn 1: tag=1, fu_sel=1 (multiplier), output_tag=1  -> 10'h063
+// cfg_data = {insn1, insn0} = 20'h18C01
 //
 //===----------------------------------------------------------------------===//
 
@@ -99,11 +99,11 @@ module tb_temporal_pe_perport_top;
 
     // ---- Configure instruction memory ----
     // Insn 0: valid=1, tag=0, fu_sel=0 (adder), output_tag=0
-    //   = 10'b1_0000_0_0000 = 10'h200
+    //   = 10'b0000_0_0000_1 = 10'h001
     // Insn 1: valid=1, tag=1, fu_sel=1 (multiplier), output_tag=1
-    //   = 10'b1_0001_1_0001 = 10'h231
+    //   = 10'b0001_1_0001_1 = 10'h063
     // cfg_data[9:0] = insn0, cfg_data[19:10] = insn1
-    t0_cfg_data = 20'h8C600;
+    t0_cfg_data = 20'h18C01;
 
     // ---- Test 1: adder (tag=0) ----
     // Module port: {tag=0, data=0x00001234} = 36'h0_00001234

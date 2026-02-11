@@ -545,6 +545,98 @@ static std::string genPEBodySV(const PEDef &def) {
     os << "  );\n";
     // Zero-extend 1-bit result to DATA_WIDTH
     os << "  assign body_result[0] = {{(DATA_WIDTH-1){1'b0}}, cmp_result};\n";
+  } else if (def.singleOp == "dataflow.invariant") {
+    os << "  dataflow_invariant #(.WIDTH(DATA_WIDTH)) u_body (\n";
+    os << "    .clk(clk),\n";
+    os << "    .rst_n(rst_n),\n";
+    os << "    .d_valid(in_value_0_valid),\n";
+    os << "    .d_ready(in_value_0_ready),\n";
+    os << "    .a_valid(in_value_1_valid),\n";
+    os << "    .a_ready(in_value_1_ready),\n";
+    os << "    .a_data(in_value[1]),\n";
+    os << "    .o_valid(u_body_result_valid),\n";
+    os << "    .o_ready(body_ready),\n";
+    os << "    .o_data(body_result[0])\n";
+    os << "  );\n";
+  } else if (def.singleOp == "dataflow.carry") {
+    os << "  dataflow_carry #(.WIDTH(DATA_WIDTH)) u_body (\n";
+    os << "    .clk(clk),\n";
+    os << "    .rst_n(rst_n),\n";
+    os << "    .d_valid(in_value_0_valid),\n";
+    os << "    .d_ready(in_value_0_ready),\n";
+    os << "    .a_valid(in_value_1_valid),\n";
+    os << "    .a_ready(in_value_1_ready),\n";
+    os << "    .a_data(in_value[1]),\n";
+    os << "    .b_valid(in_value_2_valid),\n";
+    os << "    .b_ready(in_value_2_ready),\n";
+    os << "    .b_data(in_value[2]),\n";
+    os << "    .o_valid(u_body_result_valid),\n";
+    os << "    .o_ready(body_ready),\n";
+    os << "    .o_data(body_result[0])\n";
+    os << "  );\n";
+  } else if (def.singleOp == "dataflow.gate") {
+    os << "  logic gate_av_valid;\n";
+    os << "  logic gate_ac_valid;\n";
+    os << "  dataflow_gate #(.WIDTH(DATA_WIDTH)) u_body (\n";
+    os << "    .clk(clk),\n";
+    os << "    .rst_n(rst_n),\n";
+    os << "    .bv_valid(in_value_0_valid),\n";
+    os << "    .bv_ready(in_value_0_ready),\n";
+    os << "    .bv_data(in_value[0]),\n";
+    os << "    .bc_valid(in_value_1_valid),\n";
+    os << "    .bc_ready(in_value_1_ready),\n";
+    os << "    .bc_data(in_value[1][0]),\n";
+    os << "    .av_valid(gate_av_valid),\n";
+    os << "    .av_ready(body_ready),\n";
+    os << "    .av_data(body_result[0]),\n";
+    os << "    .ac_valid(gate_ac_valid),\n";
+    os << "    .ac_ready(body_ready),\n";
+    os << "    .ac_data(body_result[1][0])\n";
+    os << "  );\n";
+    os << "  generate\n";
+    os << "    if (DATA_WIDTH > 1) begin : g_gate_cond_pad\n";
+    os << "      assign body_result[1][DATA_WIDTH-1:1] = '0;\n";
+    os << "    end\n";
+    os << "  endgenerate\n";
+    os << "  assign body_valid = gate_av_valid & gate_ac_valid;\n";
+    return os.str();
+  } else if (def.singleOp == "dataflow.stream") {
+    unsigned tw = def.inputPorts.empty() ? 0 : getTagWidthBits(def.inputPorts[0]);
+    unsigned tagCfgBits = (tw > 0) ? def.outputPorts.size() * tw : 0;
+    os << "  localparam int STREAM_CFG_LSB = " << tagCfgBits << ";\n";
+    os << "  logic stream_index_valid;\n";
+    os << "  logic stream_cont_valid;\n";
+    os << "  logic stream_error_valid;\n";
+    os << "  logic [15:0] stream_error_code;\n";
+    os << "  dataflow_stream #(.WIDTH(DATA_WIDTH)) u_body (\n";
+    os << "    .clk(clk),\n";
+    os << "    .rst_n(rst_n),\n";
+    os << "    .start_valid(in_value_0_valid),\n";
+    os << "    .start_ready(in_value_0_ready),\n";
+    os << "    .start_data(in_value[0]),\n";
+    os << "    .step_valid(in_value_1_valid),\n";
+    os << "    .step_ready(in_value_1_ready),\n";
+    os << "    .step_data(in_value[1]),\n";
+    os << "    .bound_valid(in_value_2_valid),\n";
+    os << "    .bound_ready(in_value_2_ready),\n";
+    os << "    .bound_data(in_value[2]),\n";
+    os << "    .index_valid(stream_index_valid),\n";
+    os << "    .index_ready(body_ready),\n";
+    os << "    .index_data(body_result[0]),\n";
+    os << "    .cont_valid(stream_cont_valid),\n";
+    os << "    .cont_ready(body_ready),\n";
+    os << "    .cont_data(body_result[1][0]),\n";
+    os << "    .cfg_cont_cond_sel(cfg_data[STREAM_CFG_LSB +: 5]),\n";
+    os << "    .error_valid(stream_error_valid),\n";
+    os << "    .error_code(stream_error_code)\n";
+    os << "  );\n";
+    os << "  generate\n";
+    os << "    if (DATA_WIDTH > 1) begin : g_stream_cond_pad\n";
+    os << "      assign body_result[1][DATA_WIDTH-1:1] = '0;\n";
+    os << "    end\n";
+    os << "  endgenerate\n";
+    os << "  assign body_valid = stream_index_valid & stream_cont_valid;\n";
+    return os.str();
   } else {
     // Standard ops: use WIDTH parameter
     os << "  " << svModule << " #(.WIDTH(DATA_WIDTH)) u_body (\n";
@@ -634,7 +726,7 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
   if (fuSelBits > 0) {
     os << "  logic [FU_SEL_BITS-1:0] fu_sel;\n";
     os << "  assign fu_sel = cfg_data[commit_insn * INSN_WIDTH + "
-       << "NUM_INPUTS * REG_BITS + NUM_OUTPUTS * RESULT_WIDTH +: FU_SEL_BITS];\n";
+       << "INSN_FU_SEL_LSB +: FU_SEL_BITS];\n";
     os << "\n";
   }
 
@@ -1026,10 +1118,12 @@ std::string genFullPESV(const PEDef &def) {
     os << "    input  logic out" << i << "_ready,\n";
     os << "    output logic [" << (pw - 1) << ":0] out" << i << "_data,\n";
   }
-  // Config port for output tags
+  // Config port for output tags and optional dataflow.stream condition selector.
   unsigned tagCfgBits = (tw > 0) ? numOut * tw : 0;
-  if (tagCfgBits > 0) {
-    os << "    input  logic [" << (tagCfgBits - 1) << ":0] cfg_data\n";
+  unsigned streamCfgBits = (def.singleOp == "dataflow.stream") ? 5 : 0;
+  unsigned totalCfgBits = tagCfgBits + streamCfgBits;
+  if (totalCfgBits > 0) {
+    os << "    input  logic [" << (totalCfgBits - 1) << ":0] cfg_data\n";
   } else {
     os << "    input  logic [0:0] cfg_data\n";
   }

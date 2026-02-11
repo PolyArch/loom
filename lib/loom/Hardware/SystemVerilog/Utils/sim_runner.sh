@@ -176,6 +176,11 @@ compile_and_run_vcs() {
   if ! (cd "${outdir}" && ./simv >sim.log 2>&1); then
     return 1
   fi
+  # VCS may exit 0 even when $fatal is hit. Treat runtime Fatal lines as
+  # simulation failure in normal run mode so regressions are not masked.
+  if grep -q '^Fatal:' "${outdir}/sim.log"; then
+    return 1
+  fi
   return 0
 }
 

@@ -18,6 +18,9 @@ module tb_fabric_temporal_sw;
   localparam int NUM_CONNECTED = NUM_OUTPUTS * NUM_INPUTS; // full crossbar
   localparam int ENTRY_WIDTH = 1 + TAG_WIDTH + NUM_CONNECTED;
   localparam int CONFIG_WIDTH = NUM_ROUTE_TABLE * ENTRY_WIDTH;
+  localparam int ENTRY_VALID_LSB = 0;
+  localparam int ENTRY_TAG_LSB = ENTRY_VALID_LSB + 1;
+  localparam int ENTRY_ROUTES_LSB = ENTRY_TAG_LSB + TAG_WIDTH;
 
   logic clk, rst_n;
   logic [NUM_INPUTS-1:0]              in_valid;
@@ -69,16 +72,16 @@ module tb_fabric_temporal_sw;
     pass_count = pass_count + 1;
 
     // Check 2: CFG_TEMPORAL_SW_DUP_TAG - duplicate tags
-    // Entry format per slot: [routes(NUM_CONNECTED)] [tag(TAG_WIDTH)] [valid(1)]
+    // Entry format per slot from LSB: [valid(1)] [tag(TAG_WIDTH)] [routes(NUM_CONNECTED)]
     cfg_data = '0;
     // Entry 0: valid=1, tag=5, routes: in0->out0
-    cfg_data[ENTRY_WIDTH - 1] = 1'b1;
-    cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(5);
-    cfg_data[0] = 1'b1;
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_VALID_LSB] = 1'b1;
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(5);
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_ROUTES_LSB + 0] = 1'b1;
     // Entry 1: valid=1, tag=5 (duplicate), routes: in1->out1
-    cfg_data[ENTRY_WIDTH + ENTRY_WIDTH - 1] = 1'b1;
-    cfg_data[ENTRY_WIDTH + NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(5);
-    cfg_data[ENTRY_WIDTH + 3] = 1'b1;
+    cfg_data[1 * ENTRY_WIDTH + ENTRY_VALID_LSB] = 1'b1;
+    cfg_data[1 * ENTRY_WIDTH + ENTRY_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(5);
+    cfg_data[1 * ENTRY_WIDTH + ENTRY_ROUTES_LSB + 3] = 1'b1;
     @(posedge clk);
     @(posedge clk);
     if (error_valid !== 1'b1) begin : check_dup_tag
@@ -97,9 +100,9 @@ module tb_fabric_temporal_sw;
     rst_n = 1;
     @(posedge clk);
     // Configure one valid entry with tag=2, route in0->out0
-    cfg_data[ENTRY_WIDTH - 1] = 1'b1;
-    cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(2);
-    cfg_data[0] = 1'b1;
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_VALID_LSB] = 1'b1;
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(2);
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_ROUTES_LSB + 0] = 1'b1;
     // Send input 0 with tag=9 (no match)
     in_data = '0;
     in_data[DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(9);
@@ -125,10 +128,10 @@ module tb_fabric_temporal_sw;
     @(posedge clk);
     // Entry 0: valid=1, tag=1, routes: in0->out0 AND in0->out1 (broadcast)
     // Route bits: [out0_in0, out0_in1, out1_in0, out1_in1]
-    cfg_data[ENTRY_WIDTH - 1] = 1'b1;
-    cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(1);
-    cfg_data[0] = 1'b1; // out0->in0
-    cfg_data[2] = 1'b1; // out1->in0 (in0 routes to both outputs)
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_VALID_LSB] = 1'b1;
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(1);
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_ROUTES_LSB + 0] = 1'b1; // out0->in0
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_ROUTES_LSB + 2] = 1'b1; // out1->in0 (in0 routes to both outputs)
     // Send input 0 with tag=1
     in_data = '0;
     in_data[DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(1);
@@ -184,10 +187,10 @@ module tb_fabric_temporal_sw;
     rst_n = 1;
     @(posedge clk);
     // Entry 0: valid=1, tag=1, routes: in0->out0 AND in1->out0 (same-tag inputs to same output)
-    cfg_data[ENTRY_WIDTH - 1] = 1'b1;
-    cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(1);
-    cfg_data[0] = 1'b1; // out0->in0
-    cfg_data[1] = 1'b1; // out0->in1 (out0 selects both inputs in same slot)
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_VALID_LSB] = 1'b1;
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(1);
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_ROUTES_LSB + 0] = 1'b1; // out0->in0
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_ROUTES_LSB + 1] = 1'b1; // out0->in1 (out0 selects both inputs in same slot)
     @(posedge clk);
     @(posedge clk);
     if (error_valid !== 1'b1) begin : check_same_tag
@@ -206,9 +209,9 @@ module tb_fabric_temporal_sw;
     rst_n = 1;
     @(posedge clk);
     // Entry 0: valid=1, tag=3, routes: only in1->out0 (no route for in0)
-    cfg_data[ENTRY_WIDTH - 1] = 1'b1;
-    cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(3);
-    cfg_data[1] = 1'b1; // out0->in1 only
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_VALID_LSB] = 1'b1;
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(3);
+    cfg_data[0 * ENTRY_WIDTH + ENTRY_ROUTES_LSB + 1] = 1'b1; // out0->in1 only
     // Send input 0 with tag=3 (matches but no route for in0)
     in_data = '0;
     in_data[DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(3);

@@ -354,20 +354,20 @@ Each entry is a hexadecimal string:
 0x<hex_value>
 ```
 
-Bit layout is from LSB to MSB:
+Bit layout is shown in **MSB -> LSB** order:
 
 ```
-| valid | tag | opcode | operand fields ... | result fields ... |
+| result fields ... | operand fields ... | opcode | tag | valid |
 ```
 
 ASCII diagram:
 
 ```
 +----------------------------------------------------------------------------------+
-|                     INSTRUCTION WORD (LSB -> MSB)                                |
-+--------+---------+--------+-------------------------+----------------------------+
-| valid  | tag[J]  | opcode | operands (L blocks)     | results (N blocks)         |
-+--------+---------+--------+-------------------------+----------------------------+
+|                     INSTRUCTION WORD (MSB -> LSB)                                |
++----------------------------+-------------------------+--------+---------+--------+
+| results (N blocks)         | operands (L blocks)     | opcode | tag[J]  | valid  |
++----------------------------+-------------------------+--------+---------+--------+
 ```
 
 Definitions:
@@ -376,7 +376,15 @@ Definitions:
 - `tag`: `J` bits, where `J` is the tag width.
 - `opcode`: `O` bits, where `O = log2Ceil(num_fu_types)`.
 
-Operand field layout:
+Field bit-index rules (within one instruction slot):
+
+- `valid` is always bit `[0]`.
+- `tag` occupies bits `[J:1]`.
+- `opcode` (when present) occupies bits `[J+O : J+1]`.
+- Operand block starts at bit `1 + J + O`.
+- Result block starts at bit `1 + J + O + L * operand_config_width`.
+
+Operand field layout (one operand block):
 
 ```
 | op_is_reg | op_reg_idx |
@@ -390,8 +398,9 @@ ASCII diagram:
 +-----------+---------------------------+
 ```
 
-- `op_is_reg`: 1 bit. `1` means operand comes from register, `0` means from input.
-- `op_reg_idx`: `log2Ceil(num_register)` bits. Present only if `num_register > 0`.
+- `op_is_reg`: 1 bit at the operand field MSB.
+- `op_reg_idx`: `log2Ceil(num_register)` bits at the operand field LSBs.
+  Present only if `num_register > 0`.
 - When `op_is_reg = 0`, the operand comes from the corresponding input port
   and is buffered in the operand buffer (see [Operand Buffer Architecture]).
 - When `op_is_reg = 1`, the operand comes from register `op_reg_idx`.
@@ -400,7 +409,7 @@ ASCII diagram:
 reside in the separate operand buffer hardware. See
 [Operand Buffer Architecture](#operand-buffer-architecture).
 
-Result field layout:
+Result field layout (one result block):
 
 ```
 | res_is_reg | res_reg_idx | res_tag |
@@ -415,8 +424,9 @@ ASCII diagram:
 ```
 
 - `res_is_reg` and `res_reg_idx` are present only if `num_register > 0`.
-- `res_reg_idx`: `log2Ceil(num_register)` bits.
-- `res_tag`: `J` bits, the output tag for this result.
+- `res_is_reg` is the result field MSB.
+- `res_reg_idx`: `log2Ceil(num_register)` bits immediately below `res_is_reg`.
+- `res_tag`: `J` bits at the result field LSBs (output tag).
 
 There is no explicit result-valid bit. Every instruction must provide one
 result field per output.
@@ -428,19 +438,19 @@ result field per output.
 
 ### Operand and Result Ordering
 
-Operands and results are laid out by increasing index from LSB to MSB:
+Operands and results are packed by increasing index from lower bits to higher bits:
 
-- `operand[0]` is closest to the `opcode` field (lowest bits after `opcode`).
+- `operand[0]` is closest to the `opcode` field.
 - `operand[1]` follows `operand[0]`, and so on.
 - `result[0]` follows the operand block.
-- `result[N-1]` is closest to the MSB.
+- `result[N-1]` is closest to the instruction MSB.
 
 #### Base Example 1: Field Layout Illustration (`R = 0`, `O = 2`)
 
 Example layout for `L = 2`, `N = 1`, `R = 0`, `J = 3`, `O = 2`:
 
 ```
-| valid | tag[2:0] | opcode[1:0] | res0_tag[2:0] |
+| res0_tag[2:0] | opcode[1:0] | tag[2:0] | valid |
 ```
 
 Note: When `R = 0`, operand fields are omitted entirely (0 bits each).
@@ -448,7 +458,7 @@ The `op_is_reg` bit is not needed because there are no registers to select.
 
 #### Base Example 2: Concrete Encoding (`R = 0`, `num_fu_types = 2`)
 
-Complete example bitmap (LSB -> MSB):
+Complete example bitmap (MSB -> LSB):
 
 Parameters:
 - `L = 2`, `N = 1`, `R = 0`, `T = i8` (`K = 8`), `tag = i4` (`J = 4`)
@@ -460,13 +470,13 @@ Example instruction:
 - `opcode = 1`
 - `res0_tag = 3` (`0011`)
 
-Bitmap (fields separated by `|`):
+Bitmap (fields separated by `|`, MSB -> LSB):
 
 ```
-1 | 0011 | 1 | 0011
+0011 | 1 | 0011 | 1
 ```
 
-Hex encoding (10 bits, LSB -> MSB):
+Hex encoding (10-bit slot):
 
 ```
 0x0E7
@@ -492,10 +502,10 @@ Example instruction:
 - `result[0] = out(0, tag=6)` -> `res0_is_reg = 0`, `res0_reg_idx = 00`, `res0_tag = 110`
 - `result[1] = reg(3)` -> `res1_is_reg = 1`, `res1_reg_idx = 11`, `res1_tag = 000`
 
-Bitmap (LSB -> MSB):
+Bitmap (MSB -> LSB):
 
 ```
-1 | 101 | 10 | 1 10 | 0 00 | 0 00 110 | 1 11 000
+1 11 000 | 0 00 110 | 0 00 | 1 10 | 10 | 101 | 1
 ```
 
 Hex encoding (24-bit slot):
@@ -520,10 +530,10 @@ Example instruction:
 - `operand[2] = reg(0)` -> `op2_is_reg = 1`, `op2_reg_idx = 0`
 - `result[0] = out(0, tag=12)` -> `res0_is_reg = 0`, `res0_reg_idx = 0`, `res0_tag = 1100`
 
-Bitmap (LSB -> MSB):
+Bitmap (MSB -> LSB):
 
 ```
-1 | 1001 | 0 0 | 1 1 | 1 0 | 0 0 1100
+0 0 1100 | 1 0 | 1 1 | 0 0 | 1001 | 1
 ```
 
 Hex encoding (17-bit slot):
@@ -608,6 +618,10 @@ propagated to the top level. The corresponding symbols are
 `RT_TEMPORAL_PE_NO_MATCH`, `CFG_TEMPORAL_PE_DUP_TAG`,
 `CFG_TEMPORAL_PE_ILLEGAL_REG`, and `CFG_TEMPORAL_PE_REG_TAG_NONZERO`. See
 [spec-fabric-error.md](./spec-fabric-error.md).
+
+The first detected error is captured into `error_valid`/`error_code` and held
+until reset. `error_valid` is sticky after first assertion, and later errors do
+not overwrite the captured error code.
 
 ## Per-Port Width Derivation from FU Definitions
 

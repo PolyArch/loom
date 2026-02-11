@@ -137,6 +137,10 @@ This design is motivated by two considerations:
 
 ## Bit Layout
 
+Configuration diagrams in this document are shown in **MSB -> LSB** reading
+order (left to right). This is a display convention only; packing semantics are
+unchanged.
+
 Configuration bits are packed starting from the LSB of each word:
 
 ```
@@ -173,15 +177,15 @@ Module B has `CONFIG_WIDTH = 40` with fields `c` (12 bits) and `d` (28 bits).
 
 ```
           31                                      0
-          ┌──────────────┬────────────────────────┐
-Word 0    │   b[11:0]    │         a[19:0]        │  Module A
-          ├──────────────┴─────┬──────────────────┤
-Word 1    │  (0)               │   b[17:12]       │  Module A
-          ╞════════════════════╧══════════════════╡
-Word 2    │    d[19:0]     │       c[11:0]        │  Module B
-          ├────────────────┴─┬────────────────────┤
-Word 3    │  (0)             │     d[27:20]       │  Module B
-          └──────────────────┴────────────────────┘
+          +--------------+------------------------+
+Word 0    |   b[11:0]    |         a[19:0] 20-bit |  Module A
+          +--------------+-----+------------------+
+Word 1    |  (0)               |   b[17:12] 6-bit |  Module A
+          +================+===+==================+
+Word 2    |    d[19:0]     |       c[11:0] 12-bit |  Module B
+          +----------------+-+--------------------+
+Word 3    |  (0)             |     d[27:20] 8-bit |  Module B
+          +------------------+--------------------+
 ```
 
 Key observations:
@@ -193,7 +197,7 @@ Key observations:
 - Field `d` (28 bits) similarly straddles Word 2 / Word 3 within Module B.
 - `(0)` denotes unused bits tied low. These bits are not backed by flip-flops
   after synthesis optimization.
-- The `╞══╡` line marks a word-aligned module boundary. Module B starts at
+- The `+===+` separator line marks a word-aligned module boundary. Module B starts at
   Word 2 regardless of how many bits Module A leaves unused in Word 1.
 
 ### Field Packing Examples

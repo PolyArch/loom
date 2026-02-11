@@ -73,6 +73,8 @@ module fabric_pe_load #(
       $fatal(1, "COMP_PE_LOADSTORE_TAG_MODE: HW_TYPE must be 0 or 1");
     if (HW_TYPE == 1 && TAG_WIDTH == 0)
       $fatal(1, "COMP_PE_LOADSTORE_TAG_WIDTH: TagTransparent requires TAG_WIDTH > 0");
+    if (HW_TYPE == 1 && QUEUE_DEPTH < 1)
+      $fatal(1, "COMP_PE_LOADSTORE_TAG_MODE: TagTransparent requires QUEUE_DEPTH >= 1");
   end
 
   // -----------------------------------------------------------------------
@@ -112,33 +114,127 @@ module fabric_pe_load #(
       assign out1_valid = in1_valid;
       assign in1_ready  = out1_ready;
     end else begin : g_transparent
-      // TagTransparent: tag-match addr (in0) + ctrl (in2), forward unchanged
-      logic [TAG_WIDTH-1:0] addr_tag, ctrl_tag;
-      assign addr_tag = in0_data[ADDR_WIDTH +: TAG_WIDTH];
-      assign ctrl_tag = in2_data[TAG_WIDTH-1:0]; // ctrl is tagged<none, iK>
+      // TagTransparent: queue addr and ctrl arrivals, then match by tag.
+      localparam int SAFE_QD = (QUEUE_DEPTH > 0) ? QUEUE_DEPTH : 1;
+      localparam int Q_IDX_W = $clog2(SAFE_QD > 1 ? SAFE_QD : 2);
 
-      logic tags_match;
-      assign tags_match = (addr_tag == ctrl_tag);
+      logic [SAFE_QD-1:0]                   addr_q_valid;
+      logic [SAFE_QD-1:0][TAG_WIDTH-1:0]   addr_q_tag;
+      logic [SAFE_QD-1:0][SAFE_AW-1:0]     addr_q_value;
 
-      logic sync_valid;
-      assign sync_valid = in0_valid && in2_valid && tags_match;
+      logic [SAFE_QD-1:0]                   ctrl_q_valid;
+      logic [SAFE_QD-1:0][TAG_WIDTH-1:0]   ctrl_q_tag;
 
-      logic [SAFE_AW-1:0] addr_value;
-      assign addr_value = in0_data[ADDR_WIDTH-1:0];
+      logic addr_free_found;
+      logic [Q_IDX_W-1:0] addr_free_idx;
+      logic ctrl_free_found;
+      logic [Q_IDX_W-1:0] ctrl_free_idx;
 
-      // Forward address to memory (out0), with tag
-      assign out0_valid = sync_valid;
-      assign out0_data  = {addr_tag, addr_value};
+      logic match_found;
+      logic [Q_IDX_W-1:0] match_addr_idx;
+      logic [Q_IDX_W-1:0] match_ctrl_idx;
+      logic [TAG_WIDTH-1:0] match_tag;
 
-      logic fire;
-      assign fire = sync_valid && out0_ready;
-      assign in0_ready = fire;
-      assign in2_ready = fire;
+      logic [TAG_WIDTH-1:0] in0_addr_tag;
+      logic [SAFE_AW-1:0]   in0_addr_value;
+      logic [TAG_WIDTH-1:0] in2_ctrl_tag;
+      assign in0_addr_tag   = in0_data[ADDR_WIDTH +: TAG_WIDTH];
+      assign in0_addr_value = in0_data[ADDR_WIDTH-1:0];
+      assign in2_ctrl_tag   = in2_data[TAG_WIDTH-1:0];
 
-      // Forward memory data (in1) with original tag to compute (out1)
-      assign out1_data  = {addr_tag, in1_data[ELEM_WIDTH-1:0]};
+      always_comb begin : addr_free_find
+        integer iter_var0;
+        addr_free_found = 1'b0;
+        addr_free_idx = '0;
+        for (iter_var0 = 0; iter_var0 < SAFE_QD; iter_var0 = iter_var0 + 1) begin : scan
+          if (!addr_free_found && !addr_q_valid[iter_var0]) begin : hit
+            addr_free_found = 1'b1;
+            addr_free_idx = Q_IDX_W'(iter_var0);
+          end
+        end
+      end
+
+      always_comb begin : ctrl_free_find
+        integer iter_var0;
+        ctrl_free_found = 1'b0;
+        ctrl_free_idx = '0;
+        for (iter_var0 = 0; iter_var0 < SAFE_QD; iter_var0 = iter_var0 + 1) begin : scan
+          if (!ctrl_free_found && !ctrl_q_valid[iter_var0]) begin : hit
+            ctrl_free_found = 1'b1;
+            ctrl_free_idx = Q_IDX_W'(iter_var0);
+          end
+        end
+      end
+
+      always_comb begin : match_find
+        integer iter_var0;
+        integer iter_var1;
+        match_found = 1'b0;
+        match_addr_idx = '0;
+        match_ctrl_idx = '0;
+        match_tag = '0;
+        for (iter_var0 = 0; iter_var0 < SAFE_QD; iter_var0 = iter_var0 + 1) begin : scan_addr
+          if (addr_q_valid[iter_var0] && !match_found) begin : scan_ctrl_block
+            for (iter_var1 = 0; iter_var1 < SAFE_QD; iter_var1 = iter_var1 + 1) begin : scan_ctrl
+              if (ctrl_q_valid[iter_var1] && !match_found &&
+                  addr_q_tag[iter_var0] == ctrl_q_tag[iter_var1]) begin : hit
+                match_found = 1'b1;
+                match_addr_idx = Q_IDX_W'(iter_var0);
+                match_ctrl_idx = Q_IDX_W'(iter_var1);
+                match_tag = addr_q_tag[iter_var0];
+              end
+            end
+          end
+        end
+      end
+
+      logic addr_push;
+      logic ctrl_push;
+      logic match_fire;
+      assign addr_push = in0_valid && in0_ready;
+      assign ctrl_push = in2_valid && in2_ready;
+      assign match_fire = match_found && out0_ready;
+
+      assign in0_ready = addr_free_found;
+      assign in2_ready = ctrl_free_found;
+
+      // out0 emits the matched request tag+address.
+      assign out0_valid = match_found;
+      assign out0_data  = {match_tag, addr_q_value[match_addr_idx]};
+
+      // out1 forwards memory response token unchanged in transparent mode.
       assign out1_valid = in1_valid;
       assign in1_ready  = out1_ready;
+      assign out1_data  = in1_data;
+
+      always_ff @(posedge clk or negedge rst_n) begin : queue_state
+        integer iter_var0;
+        if (!rst_n) begin : reset
+          for (iter_var0 = 0; iter_var0 < SAFE_QD; iter_var0 = iter_var0 + 1) begin : clr
+            addr_q_valid[iter_var0] <= 1'b0;
+            addr_q_tag[iter_var0] <= '0;
+            addr_q_value[iter_var0] <= '0;
+            ctrl_q_valid[iter_var0] <= 1'b0;
+            ctrl_q_tag[iter_var0] <= '0;
+          end
+        end else begin : tick
+          if (match_fire) begin : pop_match
+            addr_q_valid[match_addr_idx] <= 1'b0;
+            ctrl_q_valid[match_ctrl_idx] <= 1'b0;
+          end
+
+          if (addr_push) begin : push_addr
+            addr_q_valid[addr_free_idx] <= 1'b1;
+            addr_q_tag[addr_free_idx] <= in0_addr_tag;
+            addr_q_value[addr_free_idx] <= in0_addr_value;
+          end
+
+          if (ctrl_push) begin : push_ctrl
+            ctrl_q_valid[ctrl_free_idx] <= 1'b1;
+            ctrl_q_tag[ctrl_free_idx] <= in2_ctrl_tag;
+          end
+        end
+      end
     end
   endgenerate
 

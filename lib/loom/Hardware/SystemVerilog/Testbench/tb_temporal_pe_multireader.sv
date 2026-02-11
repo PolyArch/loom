@@ -41,6 +41,10 @@ module tb_temporal_pe_multireader;
   localparam int RES_BITS     = 1 + $clog2(NUM_REGISTERS > 1 ? NUM_REGISTERS : 2);
   localparam int RESULT_WIDTH = RES_BITS + TAG_WIDTH;
   localparam int INSN_WIDTH   = 1 + TAG_WIDTH + FU_SEL_BITS + NUM_INPUTS * REG_BITS + NUM_OUTPUTS * RESULT_WIDTH;
+  localparam int INSN_VALID_LSB = 0;
+  localparam int INSN_TAG_LSB = INSN_VALID_LSB + 1;
+  localparam int INSN_OPERANDS_LSB = INSN_TAG_LSB + TAG_WIDTH + FU_SEL_BITS;
+  localparam int INSN_RESULTS_LSB = INSN_OPERANDS_LSB + NUM_INPUTS * REG_BITS;
 
   logic clk, rst_n;
   logic [NUM_INPUTS-1:0]                 in_valid;
@@ -94,64 +98,71 @@ module tb_temporal_pe_multireader;
 
     // ---------------------------------------------------------------
     // Build instruction config
-    // Per-insn layout (LSB to MSB):
-    //   [RESULT_WIDTH-1:0] = result: {res_is_reg(1), res_reg_idx(1), res_tag(4)}
-    //   [RESULT_WIDTH + REG_BITS*0 +: REG_BITS] = op[0]: {is_reg(1), reg_idx(1)}
-    //   [RESULT_WIDTH + REG_BITS*1 +: REG_BITS] = op[1]: {is_reg(1), reg_idx(1)}
-    //   [RESULT_WIDTH + REG_BITS*2 +: TAG_WIDTH] = insn_tag
-    //   [INSN_WIDTH - 1] = valid
+    // Per-insn layout (LSB -> MSB):
+    //   valid | tag | fu_sel | operand fields | result fields
+    // Operand field format: reg_idx (LSB) + is_reg (MSB)
+    // Result field format:  res_tag (LSB) + reg_idx + is_reg (MSB)
     // ---------------------------------------------------------------
     cfg_data = '0;
 
     // Insn 0 (tag=1): op[0]=input, op[1]=input, result -> reg 0 (write)
     begin : cfg_insn0
       automatic int base = 0 * INSN_WIDTH;
+      automatic int op0_base = base + INSN_OPERANDS_LSB + 0 * REG_BITS;
+      automatic int op1_base = base + INSN_OPERANDS_LSB + 1 * REG_BITS;
+      automatic int res0_base = base + INSN_RESULTS_LSB + 0 * RESULT_WIDTH;
       // Result: res_tag=0 (must be 0 for register writes), res_reg_idx=0, res_is_reg=1
-      cfg_data[base +: TAG_WIDTH] = TAG_WIDTH'(0); // res_tag (must be 0 for reg write)
-      cfg_data[base + TAG_WIDTH] = 1'b0;           // res_reg_idx = 0
-      cfg_data[base + TAG_WIDTH + 1] = 1'b1;       // res_is_reg = 1
+      cfg_data[res0_base +: TAG_WIDTH] = TAG_WIDTH'(0); // res_tag (must be 0 for reg write)
+      cfg_data[res0_base + TAG_WIDTH] = 1'b0;           // res_reg_idx = 0
+      cfg_data[res0_base + RESULT_WIDTH - 1] = 1'b1;    // res_is_reg = 1
       // Op[0]: input (is_reg=0)
-      cfg_data[base + RESULT_WIDTH + REG_BITS - 1] = 1'b0;
+      cfg_data[op0_base + REG_BITS - 1] = 1'b0;
       // Op[1]: input (is_reg=0)
-      cfg_data[base + RESULT_WIDTH + REG_BITS + REG_BITS - 1] = 1'b0;
+      cfg_data[op1_base + REG_BITS - 1] = 1'b0;
       // Tag = 1
-      cfg_data[base + INSN_WIDTH - 2 -: TAG_WIDTH] = TAG_WIDTH'(1);
+      cfg_data[base + INSN_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(1);
       // Valid
-      cfg_data[base + INSN_WIDTH - 1] = 1'b1;
+      cfg_data[base + INSN_VALID_LSB] = 1'b1;
     end
 
     // Insn 1 (tag=2): op[0]=reg 0 (read), op[1]=input, result -> output
     begin : cfg_insn1
       automatic int base = 1 * INSN_WIDTH;
+      automatic int op0_base = base + INSN_OPERANDS_LSB + 0 * REG_BITS;
+      automatic int op1_base = base + INSN_OPERANDS_LSB + 1 * REG_BITS;
+      automatic int res0_base = base + INSN_RESULTS_LSB + 0 * RESULT_WIDTH;
       // Result: res_tag=2, res_is_reg=0
-      cfg_data[base +: TAG_WIDTH] = TAG_WIDTH'(2);
-      cfg_data[base + TAG_WIDTH + 1] = 1'b0;       // res_is_reg = 0
+      cfg_data[res0_base +: TAG_WIDTH] = TAG_WIDTH'(2);
+      cfg_data[res0_base + RESULT_WIDTH - 1] = 1'b0;    // res_is_reg = 0
       // Op[0]: reg 0 (is_reg=1, reg_idx=0)
-      cfg_data[base + RESULT_WIDTH] = 1'b0;         // reg_idx = 0
-      cfg_data[base + RESULT_WIDTH + 1] = 1'b1;     // is_reg = 1
+      cfg_data[op0_base +: (REG_BITS - 1)] = '0;         // reg_idx = 0
+      cfg_data[op0_base + REG_BITS - 1] = 1'b1;          // is_reg = 1
       // Op[1]: input (is_reg=0)
-      cfg_data[base + RESULT_WIDTH + REG_BITS + REG_BITS - 1] = 1'b0;
+      cfg_data[op1_base + REG_BITS - 1] = 1'b0;
       // Tag = 2
-      cfg_data[base + INSN_WIDTH - 2 -: TAG_WIDTH] = TAG_WIDTH'(2);
+      cfg_data[base + INSN_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(2);
       // Valid
-      cfg_data[base + INSN_WIDTH - 1] = 1'b1;
+      cfg_data[base + INSN_VALID_LSB] = 1'b1;
     end
 
     // Insn 2 (tag=3): op[0]=reg 0 (read), op[1]=input, result -> output
     begin : cfg_insn2
       automatic int base = 2 * INSN_WIDTH;
+      automatic int op0_base = base + INSN_OPERANDS_LSB + 0 * REG_BITS;
+      automatic int op1_base = base + INSN_OPERANDS_LSB + 1 * REG_BITS;
+      automatic int res0_base = base + INSN_RESULTS_LSB + 0 * RESULT_WIDTH;
       // Result: res_tag=3, res_is_reg=0
-      cfg_data[base +: TAG_WIDTH] = TAG_WIDTH'(3);
-      cfg_data[base + TAG_WIDTH + 1] = 1'b0;       // res_is_reg = 0
+      cfg_data[res0_base +: TAG_WIDTH] = TAG_WIDTH'(3);
+      cfg_data[res0_base + RESULT_WIDTH - 1] = 1'b0;    // res_is_reg = 0
       // Op[0]: reg 0 (is_reg=1, reg_idx=0)
-      cfg_data[base + RESULT_WIDTH] = 1'b0;         // reg_idx = 0
-      cfg_data[base + RESULT_WIDTH + 1] = 1'b1;     // is_reg = 1
+      cfg_data[op0_base +: (REG_BITS - 1)] = '0;         // reg_idx = 0
+      cfg_data[op0_base + REG_BITS - 1] = 1'b1;          // is_reg = 1
       // Op[1]: input (is_reg=0)
-      cfg_data[base + RESULT_WIDTH + REG_BITS + REG_BITS - 1] = 1'b0;
+      cfg_data[op1_base + REG_BITS - 1] = 1'b0;
       // Tag = 3
-      cfg_data[base + INSN_WIDTH - 2 -: TAG_WIDTH] = TAG_WIDTH'(3);
+      cfg_data[base + INSN_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(3);
       // Valid
-      cfg_data[base + INSN_WIDTH - 1] = 1'b1;
+      cfg_data[base + INSN_VALID_LSB] = 1'b1;
     end
     @(posedge clk);
 

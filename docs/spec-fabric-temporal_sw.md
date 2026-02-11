@@ -165,6 +165,10 @@ from lower port index.
   timing semantics.
 - Routing outcomes are governed by the selected slot and the runtime ready/valid
   state for that cycle.
+- Error checks are evaluated per cycle, and the first detected error is captured
+  into `error_valid`/`error_code` and held until reset.
+- `error_valid` is sticky after first assertion, and later errors do not
+  overwrite the captured error code.
 
 ### Backpressure Behavior
 
@@ -218,20 +222,20 @@ Each entry is a hexadecimal string:
 0x<hex_value>
 ```
 
-Bit layout is from LSB to MSB:
+Bit layout is shown in **MSB -> LSB** order:
 
 ```
-| valid | tag | routes |
+| routes | tag | valid |
 ```
 
 ASCII diagram:
 
 ```
 +--------------------------------------------------------------+
-|                ROUTE TABLE SLOT (LSB -> MSB)                 |
-+--------+---------+-------------------------------+-----------+
-| valid  | tag[M]  | routes[K] (LSB-first)         |    MSB    |
-+--------+---------+-------------------------------+-----------+
+|                ROUTE TABLE SLOT (MSB -> LSB)                 |
++-------------------------------+---------+--------+-----------+
+| routes[K] (LSB-first)         | tag[M]  | valid  |    LSB    |
++-------------------------------+---------+--------+-----------+
 ```
 
 Definitions:
@@ -240,6 +244,9 @@ Definitions:
 - `tag`: `M` bits, where `M` is the tag width.
 - `routes`: `K` bits, where `K` is the number of connected positions in
   `connectivity_table`.
+- `valid` is always `slot[0]`.
+- `tag` occupies `slot[M:1]`.
+- `routes` occupies `slot[M+K : M+1]`.
 
 `routes` is encoded in row-major order by output then input, considering only
 positions where `connectivity_table` is `1`.
@@ -259,7 +266,7 @@ Where:
 - `M` = tag bit width
 - `K` = number of connected positions in `connectivity_table`
 
-Complete example bitmap (LSB -> MSB):
+Complete example bitmap (MSB -> LSB):
 
 Parameters:
 - `M = 4`
@@ -270,13 +277,13 @@ Example slot:
 - `tag = 5` (`0101`)
 - `routes = 101` (positions 0 and 2 enabled, position 1 disabled; LSB-first)
 
-Bitmap (fields separated by `|`):
+Bitmap (fields separated by `|`, MSB -> LSB):
 
 ```
-1 | 0101 | 101
+101 | 0101 | 1
 ```
 
-Hex encoding (8 bits, LSB -> MSB):
+Hex encoding (8-bit slot):
 
 ```
 0xAB

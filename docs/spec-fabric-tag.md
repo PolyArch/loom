@@ -137,6 +137,21 @@ Timing model: combinational, zero-cycle data transformation.
   - Entries with `valid = 0` are ignored.
   - For ignored entries, `src_tag` and `dst_tag` default to `0`.
 
+### Machine Format (map_tag table entry)
+
+For one `fabric.map_tag` table entry with input tag width `M` and output tag
+width `N`, the packed bit layout is shown in **MSB -> LSB** order:
+
+```
+| dst_tag[N-1:0] | src_tag[M-1:0] | valid |
+```
+
+Bit-index rules:
+
+- `valid` is always `entry[0]`.
+- `src_tag` occupies `entry[M:1]`.
+- `dst_tag` occupies `entry[M+N : M+1]`.
+
 ### Constraints
 
 - Input and output value types must match. Violations raise
@@ -170,8 +185,9 @@ propagated to the top level. The corresponding symbols are
 `RT_MAP_TAG_NO_MATCH` and `CFG_MAP_TAG_DUP_TAG`. See
 [spec-fabric-error.md](./spec-fabric-error.md).
 
-Timing model: combinational datapath with combinational table lookup and error
-condition detection.
+Timing model: combinational datapath with combinational table lookup.
+When an error condition is detected, `error_valid`/`error_code` are captured
+and held until reset.
 
 ## Related Documents
 

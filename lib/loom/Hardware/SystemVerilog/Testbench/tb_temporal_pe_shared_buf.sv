@@ -34,6 +34,14 @@ module tb_temporal_pe_shared_buf;
 
   localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH;
   localparam int SAFE_PW = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1;
+  localparam int REG_BITS = 0;
+  localparam int FU_SEL_BITS = 0;
+  localparam int RESULT_WIDTH = TAG_WIDTH;
+  localparam int INSN_WIDTH =
+      1 + TAG_WIDTH + FU_SEL_BITS + NUM_INPUTS * REG_BITS + NUM_OUTPUTS * RESULT_WIDTH;
+  localparam int INSN_VALID_LSB = 0;
+  localparam int INSN_TAG_LSB = INSN_VALID_LSB + 1;
+  localparam int INSN_RESULTS_LSB = INSN_TAG_LSB + TAG_WIDTH + FU_SEL_BITS + NUM_INPUTS * REG_BITS;
 
   logic clk, rst_n;
   logic [NUM_INPUTS-1:0]                 in_valid;
@@ -90,13 +98,13 @@ module tb_temporal_pe_shared_buf;
     //   = 1 + 4 + 0 + 0 + 1*4 = 9
     cfg_data = '0;
     // Insn 0: valid=1, tag=1, res_tag=1
-    cfg_data[dut.INSN_WIDTH - 1] = 1'b1;
-    cfg_data[dut.INSN_WIDTH - 2 -: TAG_WIDTH] = TAG_WIDTH'(1);
-    cfg_data[TAG_WIDTH - 1 : 0] = TAG_WIDTH'(1);
+    cfg_data[0 * INSN_WIDTH + INSN_VALID_LSB] = 1'b1;
+    cfg_data[0 * INSN_WIDTH + INSN_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(1);
+    cfg_data[0 * INSN_WIDTH + INSN_RESULTS_LSB +: TAG_WIDTH] = TAG_WIDTH'(1);
     // Insn 1: valid=1, tag=2, res_tag=2
-    cfg_data[dut.INSN_WIDTH + dut.INSN_WIDTH - 1] = 1'b1;
-    cfg_data[dut.INSN_WIDTH + dut.INSN_WIDTH - 2 -: TAG_WIDTH] = TAG_WIDTH'(2);
-    cfg_data[dut.INSN_WIDTH + TAG_WIDTH - 1 : dut.INSN_WIDTH] = TAG_WIDTH'(2);
+    cfg_data[1 * INSN_WIDTH + INSN_VALID_LSB] = 1'b1;
+    cfg_data[1 * INSN_WIDTH + INSN_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(2);
+    cfg_data[1 * INSN_WIDTH + INSN_RESULTS_LSB +: TAG_WIDTH] = TAG_WIDTH'(2);
     @(posedge clk);
 
     // Check 1: no error after config

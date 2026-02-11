@@ -20,6 +20,8 @@ module tb_fabric_temporal_pe;
 
   localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH;
   localparam int SAFE_PW = (PAYLOAD_WIDTH > 0) ? PAYLOAD_WIDTH : 1;
+  localparam int INSN_VALID_LSB = 0;
+  localparam int INSN_TAG_LSB = 1;
 
   logic clk, rst_n;
   logic [NUM_INPUTS-1:0]                 in_valid;
@@ -77,20 +79,18 @@ module tb_fabric_temporal_pe;
     pass_count = pass_count + 1;
 
     // Check 2: CFG_TEMPORAL_PE_DUP_TAG - configure two instructions with same tag
-    // Instruction layout from LSB: [results | operands | opcode | tag | valid(MSB)]
+    // Instruction layout from LSB: [valid | tag | opcode | operands | results]
     // INSN_WIDTH = 1 + TAG_WIDTH + FU_SEL_BITS + NUM_INPUTS*REG_BITS + NUM_OUTPUTS*RESULT_WIDTH
     // For default params (NR=0): REG_BITS=0, RES_BITS=0, RESULT_WIDTH=TAG_WIDTH
     // INSN_WIDTH = 1 + TAG_WIDTH + FU_SEL_BITS + TAG_WIDTH
     // Insn 0: valid=1, tag=3; Insn 1: valid=1, tag=3 (duplicate)
     cfg_data = '0;
-    // Insn 0: valid at MSB
-    cfg_data[dut.INSN_WIDTH - 1] = 1'b1;
-    // Insn 0: tag just below valid
-    cfg_data[dut.INSN_WIDTH - 2 -: TAG_WIDTH] = TAG_WIDTH'(3);
-    // Insn 1: valid at MSB of second slot
-    cfg_data[dut.INSN_WIDTH + dut.INSN_WIDTH - 1] = 1'b1;
-    // Insn 1: tag = 3 (duplicate)
-    cfg_data[dut.INSN_WIDTH + dut.INSN_WIDTH - 2 -: TAG_WIDTH] = TAG_WIDTH'(3);
+    // Insn 0
+    cfg_data[0 * dut.INSN_WIDTH + INSN_VALID_LSB] = 1'b1;
+    cfg_data[0 * dut.INSN_WIDTH + INSN_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(3);
+    // Insn 1
+    cfg_data[1 * dut.INSN_WIDTH + INSN_VALID_LSB] = 1'b1;
+    cfg_data[1 * dut.INSN_WIDTH + INSN_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(3);
     @(posedge clk);
     @(posedge clk);
     if (error_valid !== 1'b1) begin : check_dup_tag
@@ -109,8 +109,8 @@ module tb_fabric_temporal_pe;
     rst_n = 1;
     @(posedge clk);
     // Configure one valid instruction with tag=1
-    cfg_data[dut.INSN_WIDTH - 1] = 1'b1;
-    cfg_data[dut.INSN_WIDTH - 2 -: TAG_WIDTH] = TAG_WIDTH'(1);
+    cfg_data[0 * dut.INSN_WIDTH + INSN_VALID_LSB] = 1'b1;
+    cfg_data[0 * dut.INSN_WIDTH + INSN_TAG_LSB +: TAG_WIDTH] = TAG_WIDTH'(1);
     // Send inputs with tag=7 (no match)
     in_data = '0;
     in_data[0][DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(7);

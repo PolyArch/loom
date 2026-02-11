@@ -84,6 +84,18 @@ module tb_fabric_extmemory;
   initial begin : test
     integer pass_count;
     integer iter_var0;
+    integer iter_var1;
+    integer rand_state;
+    integer tag_limit;
+    integer done_count;
+    logic seen_tag0;
+    logic seen_tag1;
+    logic [ADDR_WIDTH-1:0] stress_addr_raw;
+    logic [ELEM_WIDTH-1:0] stress_data_raw;
+    logic [SAFE_ADDR_PW-1:0] stress_addr_payload;
+    logic [SAFE_ELEM_PW-1:0] stress_data_payload;
+    logic [SAFE_ADDR_PW-1:0] stress_ld_addr_payload;
+    logic [DONE_PW-1:0] expected_tag;
     pass_count = 0;
     rst_n = 0;
     memref_bind_valid = 0;
@@ -292,7 +304,400 @@ module tb_fabric_extmemory;
       pass_count = pass_count + 1;
     end
 
-    // Check 7: deadlock detection (when ST_COUNT > 0)
+    // Check 7: load completion alignment under independent ready toggling
+    if (ST_COUNT > 0 && LD_COUNT > 0) begin : ld_align_test
+      rst_n = 0;
+      ld_addr_valid = 1'b0;
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+      ld_data_ready = 1'b1;
+      ld_done_ready = 1'b1;
+      st_done_ready = 1'b1;
+      repeat (2) @(posedge clk);
+      rst_n = 1;
+      @(posedge clk);
+
+      // Seed addr=6 with known data.
+      st_addr_data = SAFE_ADDR_PW'(6);
+      st_data_data = SAFE_ELEM_PW'(32'hCAFE);
+      st_addr_valid = 1'b1;
+      st_data_valid = 1'b1;
+      iter_var0 = 0;
+      while (iter_var0 < 10 && !(st_addr_ready && st_data_ready)) begin : wait_seed_ready_align
+        @(posedge clk);
+        iter_var0 = iter_var0 + 1;
+      end
+      if (!(st_addr_ready && st_data_ready)) begin : check_seed_ready_align
+        $fatal(1, "seed store was not accepted in ld_align_test");
+      end
+      @(posedge clk);
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+      iter_var0 = 0;
+      while (iter_var0 < 10) begin : wait_seed_done_align
+        @(posedge clk);
+        iter_var0 = iter_var0 + 1;
+        if (st_done_valid) begin : seed_done
+          iter_var0 = 10;
+        end
+      end
+
+      ld_addr_data = SAFE_ADDR_PW'(6);
+      ld_addr_valid = 1'b1;
+      ld_data_ready = 1'b1;
+      ld_done_ready = 1'b0;
+      @(posedge clk);
+      if (ld_addr_ready !== 1'b0) begin : check_no_addr_fire_a
+        $fatal(1, "load accepted while ld_done was not ready");
+      end
+
+      ld_data_ready = 1'b0;
+      ld_done_ready = 1'b1;
+      @(posedge clk);
+      if (ld_addr_ready !== 1'b0) begin : check_no_addr_fire_b
+        $fatal(1, "load accepted while ld_data was not ready");
+      end
+
+      ld_data_ready = 1'b1;
+      ld_done_ready = 1'b1;
+      @(posedge clk);
+      if (ld_addr_ready !== 1'b1) begin : check_addr_fire
+        $fatal(1, "load should be accepted when both completion channels are ready");
+      end
+      if (ld_data_valid !== 1'b1 || ld_done_valid !== 1'b1) begin : check_aligned_valid
+        $fatal(1, "ld_data_valid and ld_done_valid must assert together");
+      end
+      if (ld_data_data[ELEM_WIDTH-1:0] !== ELEM_WIDTH'(32'hCAFE)) begin : check_aligned_data
+        $fatal(1, "aligned load returned wrong data: 0x%0h", ld_data_data[ELEM_WIDTH-1:0]);
+      end
+      ld_addr_valid = 1'b0;
+      pass_count = pass_count + 1;
+    end
+
+    // Check 8: multi-tag stdone events are not dropped
+    if (ST_COUNT >= 2 && TAG_WIDTH > 0) begin : stdone_nonloss_test
+      rst_n = 0;
+      ld_addr_valid = 1'b0;
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+      st_done_ready = 1'b0;
+      repeat (2) @(posedge clk);
+      rst_n = 1;
+      @(posedge clk);
+
+      // Queue one complete store for tag 0.
+      st_addr_data = SAFE_ADDR_PW'(40);
+      st_data_data = SAFE_ELEM_PW'(32'h1111);
+      st_addr_valid = 1'b1;
+      st_data_valid = 1'b1;
+      iter_var0 = 0;
+      while (iter_var0 < 10 && !(st_addr_ready && st_data_ready)) begin : wait_nonloss_ready0
+        @(posedge clk);
+        iter_var0 = iter_var0 + 1;
+      end
+      if (!(st_addr_ready && st_data_ready)) begin : check_nonloss_ready0
+        $fatal(1, "non-loss test tag0 store was not accepted");
+      end
+      @(posedge clk);
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+
+      // Queue one complete store for tag 1.
+      st_addr_data = (SAFE_ADDR_PW'(1) << ADDR_WIDTH) | SAFE_ADDR_PW'(41);
+      st_data_data = (SAFE_ELEM_PW'(1) << ELEM_WIDTH) | SAFE_ELEM_PW'(32'h2222);
+      st_addr_valid = 1'b1;
+      st_data_valid = 1'b1;
+      iter_var0 = 0;
+      while (iter_var0 < 10 && !(st_addr_ready && st_data_ready)) begin : wait_nonloss_ready1
+        @(posedge clk);
+        iter_var0 = iter_var0 + 1;
+      end
+      if (!(st_addr_ready && st_data_ready)) begin : check_nonloss_ready1
+        $fatal(1, "non-loss test tag1 store was not accepted");
+      end
+      @(posedge clk);
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+
+      done_count = 0;
+      seen_tag0 = 1'b0;
+      seen_tag1 = 1'b0;
+      st_done_ready = 1'b0;
+      while (done_count < 2) begin : collect_two_done
+        iter_var0 = 0;
+        while (iter_var0 < 20 && !st_done_valid) begin : wait_done_token
+          @(posedge clk);
+          iter_var0 = iter_var0 + 1;
+        end
+        if (!st_done_valid) begin : missing_done
+          $fatal(1, "expected two stdone tokens, saw only %0d", done_count);
+        end
+
+        if (st_done_data === DONE_PW'(0)) begin : mark0
+          seen_tag0 = 1'b1;
+        end else if (st_done_data === DONE_PW'(1)) begin : mark1
+          seen_tag1 = 1'b1;
+        end else begin : bad_tag
+          $fatal(1, "unexpected stdone tag %0d in non-loss test", st_done_data);
+        end
+        done_count = done_count + 1;
+
+        st_done_ready = 1'b1;
+        @(posedge clk);
+        st_done_ready = 1'b0;
+        @(posedge clk);
+      end
+      if (done_count != 2 || !seen_tag0 || !seen_tag1) begin : check_nonloss
+        $fatal(1, "expected two stdone events (tags 0 and 1), got count=%0d t0=%0b t1=%0b",
+               done_count, seen_tag0, seen_tag1);
+      end
+      pass_count = pass_count + 1;
+    end
+
+    // Check 9: randomized store/load round-trip stress
+    if (ST_COUNT > 0 && LD_COUNT > 0) begin : random_roundtrip_stress
+      rst_n = 0;
+      ld_addr_valid = 1'b0;
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+      ld_data_ready = 1'b1;
+      ld_done_ready = 1'b1;
+      st_done_ready = 1'b1;
+      repeat (2) @(posedge clk);
+      rst_n = 1;
+      @(posedge clk);
+
+      rand_state = 32'h27182818;
+      if (TAG_WIDTH > 0)
+        tag_limit = (LD_COUNT < ST_COUNT) ? LD_COUNT : ST_COUNT;
+      else
+        tag_limit = 1;
+      if (tag_limit < 1)
+        tag_limit = 1;
+
+      for (iter_var1 = 0; iter_var1 < 24; iter_var1 = iter_var1 + 1) begin : per_txn
+        rand_state = rand_state * 1664525 + 1013904223;
+        stress_addr_raw = ADDR_WIDTH'((rand_state & 32'h7FFF_FFFF) % 64);
+        rand_state = rand_state * 1664525 + 1013904223;
+        stress_data_raw = ELEM_WIDTH'(rand_state);
+
+        if (TAG_WIDTH > 0) begin : tagged_payload
+          rand_state = rand_state * 1664525 + 1013904223;
+          expected_tag = DONE_PW'((rand_state & 32'h7FFF_FFFF) % tag_limit);
+          stress_addr_payload =
+              (SAFE_ADDR_PW'(expected_tag) << ADDR_WIDTH) | SAFE_ADDR_PW'(stress_addr_raw);
+          stress_data_payload =
+              (SAFE_ELEM_PW'(expected_tag) << ELEM_WIDTH) | SAFE_ELEM_PW'(stress_data_raw);
+          stress_ld_addr_payload =
+              (SAFE_ADDR_PW'(expected_tag) << ADDR_WIDTH) | SAFE_ADDR_PW'(stress_addr_raw);
+        end else begin : native_payload
+          expected_tag = DONE_PW'(0);
+          stress_addr_payload = SAFE_ADDR_PW'(stress_addr_raw);
+          stress_data_payload = SAFE_ELEM_PW'(stress_data_raw);
+          stress_ld_addr_payload = SAFE_ADDR_PW'(stress_addr_raw);
+        end
+
+        // Store request (addr+data pair)
+        st_addr_data = stress_addr_payload;
+        st_data_data = stress_data_payload;
+        st_addr_valid = 1'b1;
+        st_data_valid = 1'b1;
+        iter_var0 = 0;
+        while (iter_var0 < 20 && !(st_addr_ready && st_data_ready)) begin : wait_store_accept
+          @(posedge clk);
+          iter_var0 = iter_var0 + 1;
+        end
+        if (!(st_addr_ready && st_data_ready)) begin : check_store_accept
+          $fatal(1, "random stress store not accepted (txn %0d)", iter_var1);
+        end
+        @(posedge clk);
+        st_addr_valid = 1'b0;
+        st_data_valid = 1'b0;
+
+        // Wait for matching stdone tag.
+        seen_tag0 = 1'b0;
+        iter_var0 = 0;
+        if (TAG_WIDTH > 0) begin : precheck_stdone_tagged
+          if (st_done_valid && (st_done_data === expected_tag))
+            seen_tag0 = 1'b1;
+        end else begin : precheck_stdone_native
+          if (st_done_valid)
+            seen_tag0 = 1'b1;
+        end
+        while (iter_var0 < 40 && !seen_tag0) begin : wait_stdone_match
+          @(posedge clk);
+          if (TAG_WIDTH > 0) begin : chk_stdone_tagged
+            if (st_done_valid && (st_done_data === expected_tag))
+              seen_tag0 = 1'b1;
+          end else begin : chk_stdone_native
+            if (st_done_valid)
+              seen_tag0 = 1'b1;
+          end
+          iter_var0 = iter_var0 + 1;
+        end
+        if (!seen_tag0) begin : check_stdone_match
+          $fatal(1, "random stress missing matching stdone (txn %0d, tag %0d)",
+                 iter_var1, expected_tag);
+        end
+
+        // Load same address/tag and verify aligned completion data.
+        ld_addr_data = stress_ld_addr_payload;
+        ld_addr_valid = 1'b1;
+        seen_tag1 = 1'b0;
+        if (TAG_WIDTH > 0) begin : tagged_load_roundtrip
+          iter_var0 = 0;
+          while (iter_var0 < 20 && !ld_addr_ready) begin : wait_load_accept
+            @(posedge clk);
+            iter_var0 = iter_var0 + 1;
+          end
+          if (!ld_addr_ready) begin : check_load_accept
+            $fatal(1, "random stress load not accepted (txn %0d)", iter_var1);
+          end
+
+          if (ld_data_valid && ld_done_valid) begin : precheck_accept_edge
+            if (ld_data_data[ELEM_WIDTH-1:0] !== stress_data_raw) begin : bad_data_accept_edge
+              $fatal(1, "random stress load data mismatch txn %0d: exp=0x%0h got=0x%0h",
+                     iter_var1, stress_data_raw, ld_data_data[ELEM_WIDTH-1:0]);
+            end
+            if (ld_done_data !== expected_tag) begin : bad_tag_accept_edge
+              $fatal(1, "random stress lddone tag mismatch txn %0d: exp=%0d got=%0d",
+                     iter_var1, expected_tag, ld_done_data);
+            end
+            seen_tag1 = 1'b1;
+          end
+
+          @(posedge clk);
+          ld_addr_valid = 1'b0;
+
+          if (ld_data_valid && ld_done_valid) begin : precheck_deassert_edge
+            if (ld_data_data[ELEM_WIDTH-1:0] !== stress_data_raw) begin : bad_data_deassert_edge
+              $fatal(1, "random stress load data mismatch txn %0d: exp=0x%0h got=0x%0h",
+                     iter_var1, stress_data_raw, ld_data_data[ELEM_WIDTH-1:0]);
+            end
+            if (ld_done_data !== expected_tag) begin : bad_tag_deassert_edge
+              $fatal(1, "random stress lddone tag mismatch txn %0d: exp=%0d got=%0d",
+                     iter_var1, expected_tag, ld_done_data);
+            end
+            seen_tag1 = 1'b1;
+          end
+
+          iter_var0 = 0;
+          while (iter_var0 < 40 && !seen_tag1) begin : wait_load_data
+            @(posedge clk);
+            if (ld_data_valid && ld_done_valid) begin : got_aligned
+              if (ld_data_data[ELEM_WIDTH-1:0] !== stress_data_raw) begin : bad_data
+                $fatal(1, "random stress load data mismatch txn %0d: exp=0x%0h got=0x%0h",
+                       iter_var1, stress_data_raw, ld_data_data[ELEM_WIDTH-1:0]);
+              end
+              if (ld_done_data !== expected_tag) begin : bad_tag
+                $fatal(1, "random stress lddone tag mismatch txn %0d: exp=%0d got=%0d",
+                       iter_var1, expected_tag, ld_done_data);
+              end
+              seen_tag1 = 1'b1;
+            end
+            iter_var0 = iter_var0 + 1;
+          end
+          if (!seen_tag1) begin : check_load_data
+            $fatal(1, "random stress load completion timeout (txn %0d)", iter_var1);
+          end
+        end else begin : native_load_roundtrip
+          logic seen_ready;
+          seen_ready = 1'b0;
+          iter_var0 = 0;
+          while (iter_var0 < 60 && !seen_tag1) begin : wait_load_data
+            @(posedge clk);
+            if (ld_addr_ready)
+              seen_ready = 1'b1;
+            if (ld_data_valid) begin : got_data
+              if (^ld_data_data[ELEM_WIDTH-1:0] === 1'bx) begin : unknown_data
+                // Ignore unknown transients and keep waiting for concrete data.
+              end else if (ld_data_data[ELEM_WIDTH-1:0] !== stress_data_raw) begin : bad_data
+                $fatal(1, "random stress load data mismatch txn %0d: exp=0x%0h got=0x%0h",
+                       iter_var1, stress_data_raw, ld_data_data[ELEM_WIDTH-1:0]);
+              end else begin : match_data
+                seen_tag1 = 1'b1;
+              end
+            end
+            iter_var0 = iter_var0 + 1;
+          end
+          ld_addr_valid = 1'b0;
+          if (!seen_ready) begin : check_load_accept
+            $fatal(1, "random stress load not accepted (txn %0d)", iter_var1);
+          end
+          if (!seen_tag1) begin : check_load_data
+            $fatal(1, "random stress load completion timeout (txn %0d)", iter_var1);
+          end
+        end
+      end
+
+      pass_count = pass_count + 1;
+    end
+
+    // Check 10: OOB store raises error and does not modify memory state
+    if (ST_COUNT >= 2 && TAG_WIDTH > 0 && LD_COUNT > 0) begin : oob_store_no_write_test
+      rst_n = 0;
+      ld_addr_valid = 1'b0;
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+      ld_data_ready = 1'b1;
+      ld_done_ready = 1'b1;
+      st_done_ready = 1'b1;
+      repeat (2) @(posedge clk);
+      rst_n = 1;
+      @(posedge clk);
+
+      // Seed addr=50 with tag 0 store.
+      st_addr_data = SAFE_ADDR_PW'(50);
+      st_data_data = SAFE_ELEM_PW'(32'h5A5A);
+      st_addr_valid = 1'b1;
+      st_data_valid = 1'b1;
+      iter_var0 = 0;
+      while (iter_var0 < 10 && !(st_addr_ready && st_data_ready)) begin : wait_seed_ready_oob
+        @(posedge clk);
+        iter_var0 = iter_var0 + 1;
+      end
+      if (!(st_addr_ready && st_data_ready)) begin : check_seed_ready_oob
+        $fatal(1, "seed store was not accepted in OOB store test");
+      end
+      @(posedge clk);
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+      iter_var0 = 0;
+      while (iter_var0 < 10) begin : wait_seed_done_oob
+        @(posedge clk);
+        iter_var0 = iter_var0 + 1;
+        if (st_done_valid) begin : seed_done
+          iter_var0 = 10;
+        end
+      end
+
+      // Invalid tag = ST_COUNT: must report OOB and must not update state.
+      st_addr_data = (SAFE_ADDR_PW'(ST_COUNT) << ADDR_WIDTH) | SAFE_ADDR_PW'(50);
+      st_data_data = (SAFE_ELEM_PW'(ST_COUNT) << ELEM_WIDTH) | SAFE_ELEM_PW'(32'hDEAD);
+      st_addr_valid = 1'b1;
+      st_data_valid = 1'b1;
+      @(posedge clk);
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+      @(posedge clk);
+
+      if (error_valid !== 1'b1 || error_code !== RT_MEMORY_TAG_OOB) begin : check_oob_store_error
+        $fatal(1, "expected RT_MEMORY_TAG_OOB after OOB store, got valid=%0b code=%0d",
+               error_valid, error_code);
+      end
+
+      ld_addr_data = SAFE_ADDR_PW'(50);
+      ld_addr_valid = 1'b1;
+      @(posedge clk);
+      ld_addr_valid = 1'b0;
+      if (ld_data_data[ELEM_WIDTH-1:0] !== ELEM_WIDTH'(32'h5A5A)) begin : check_preserved_data
+        $fatal(1, "OOB store modified state: expected 0x5A5A, got 0x%0h",
+               ld_data_data[ELEM_WIDTH-1:0]);
+      end
+      pass_count = pass_count + 1;
+    end
+
+    // Check 11: deadlock detection (when ST_COUNT > 0)
     if (ST_COUNT > 0) begin : deadlock_test
       rst_n = 0;
       st_addr_valid = 1'b0;

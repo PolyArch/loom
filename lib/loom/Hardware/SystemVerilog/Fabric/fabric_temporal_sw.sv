@@ -6,7 +6,7 @@
 //
 // Tag-matching crossbar switch. Routes tagged inputs to outputs based on
 // tag-to-route table entries. Each table entry specifies:
-//   {valid(1), tag(TAG_WIDTH), routes(NUM_CONNECTED)}
+//   {routes(NUM_CONNECTED), tag(TAG_WIDTH), valid(1)}
 // where NUM_CONNECTED = $countones(CONNECTIVITY).
 //
 // When multiple inputs contend for the same output, round-robin arbitration
@@ -70,7 +70,7 @@ module fabric_temporal_sw #(
 
   // -----------------------------------------------------------------------
   // Unpack route table entries (compressed)
-  // Each entry: {valid(1), tag(TAG_WIDTH), routes(NUM_CONNECTED)}
+  // Each entry (MSB -> LSB): {routes(NUM_CONNECTED), tag(TAG_WIDTH), valid(1)}
   // -----------------------------------------------------------------------
   localparam int ENTRY_WIDTH = 1 + TAG_WIDTH + NUM_CONNECTED;
 
@@ -81,9 +81,10 @@ module fabric_temporal_sw #(
   always_comb begin : unpack_rt
     integer iter_var0;
     for (iter_var0 = 0; iter_var0 < NUM_ROUTE_TABLE; iter_var0 = iter_var0 + 1) begin : unpack
-      rt_routes_compressed[iter_var0] = cfg_data[iter_var0 * ENTRY_WIDTH +: NUM_CONNECTED];
-      rt_tag[iter_var0]    = cfg_data[iter_var0 * ENTRY_WIDTH + NUM_CONNECTED +: TAG_WIDTH];
-      rt_valid[iter_var0]  = cfg_data[iter_var0 * ENTRY_WIDTH + NUM_CONNECTED + TAG_WIDTH];
+      rt_valid[iter_var0]  = cfg_data[iter_var0 * ENTRY_WIDTH];
+      rt_tag[iter_var0]    = cfg_data[iter_var0 * ENTRY_WIDTH + 1 +: TAG_WIDTH];
+      rt_routes_compressed[iter_var0] =
+          cfg_data[iter_var0 * ENTRY_WIDTH + 1 + TAG_WIDTH +: NUM_CONNECTED];
     end
   end
 
