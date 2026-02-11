@@ -3,4 +3,4 @@
 	url = https://github.com/llvm/llvm-project.git
 [submodule "externals/circt"]
 	path = externals/circt
-	url = https://github.com/llvm/circt.git
+	url = https://github.com/PolyArch/circt.git
