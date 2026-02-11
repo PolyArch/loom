@@ -75,3 +75,4 @@ add_custom_target(loom_sv_templates ALL
 
 add_subdirectory(lib)
 add_subdirectory(tools)
+add_subdirectory(tests)

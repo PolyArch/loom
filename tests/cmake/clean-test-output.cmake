@@ -72,6 +72,12 @@ foreach(dir IN LISTS TDD_OUTPUT_DIRS)
   endif()
 endforeach()
 
+# Remove spec test output directory
+if(IS_DIRECTORY "${SOURCE_DIR}/tests/spec/Output")
+  file(REMOVE_RECURSE "${SOURCE_DIR}/tests/spec/Output")
+  message(STATUS "Removed ${SOURCE_DIR}/tests/spec/Output")
+endif()
+
 # Remove results directory
 if(IS_DIRECTORY "${SOURCE_DIR}/tests/.results")
   file(REMOVE_RECURSE "${SOURCE_DIR}/tests/.results")
