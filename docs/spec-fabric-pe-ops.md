@@ -99,15 +99,15 @@ runtime configuration bits (`cont_cond_sel`).
 
 ## handshake Dialect (7 operations)
 
-| Operation | Description |
-|-----------|-------------|
-| `handshake.cond_br` | Conditional branch |
-| `handshake.constant` | Constant value (runtime configurable) |
-| `handshake.join` | Data join (multiple inputs to one output) |
-| `handshake.load` | Memory load |
-| `handshake.mux` | Multiplexer |
-| `handshake.sink` | Data sink (consumes and discards) |
-| `handshake.store` | Memory store |
+| Operation | Description | Group |
+|-----------|-------------|-------|
+| `handshake.cond_br` | Conditional branch | Partial consume/produce |
+| `handshake.mux` | Multiplexer | Partial consume/produce |
+| `handshake.join` | Data join (multiple inputs to one output) | Full consume/produce |
+| `handshake.constant` | Constant value (runtime configurable) | Full consume/produce |
+| `handshake.sink` | Data sink (consumes and discards) | Full consume/produce |
+| `handshake.load` | Memory load | Load/Store Exclusivity |
+| `handshake.store` | Memory store | Load/Store Exclusivity |
 
 All other `handshake` operations are **not allowed** inside `fabric.pe`.
 
@@ -143,8 +143,8 @@ A `fabric.pe` body must use operations from exactly one consumption group:
 - All `arith` operations
 - All `math` operations
 - `llvm.intr.bitreverse`
-- `handshake.load`, `handshake.store`, `handshake.constant`
-- `handshake.join`, `handshake.sink`
+- `handshake.load`, `handshake.store`
+- `handshake.join`, `handshake.sink`, `handshake.constant`
 
 **Partial-consume/partial-produce group:**
 - `handshake.cond_br`
