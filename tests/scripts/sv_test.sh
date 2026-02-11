@@ -722,6 +722,18 @@ WAVE_EOF
     echo "${line}" >> "${PARALLEL_FILE}"
   done
 
+  # If simulator is not available, count jobs as skipped without running
+  if ! command -v "${sim}" >/dev/null 2>&1; then
+    job_count=$(grep -cvE '^\s*(#|$)' "${PARALLEL_FILE}" || true)
+    LOOM_PASS=0; LOOM_FAIL=0; LOOM_TIMEOUT=0
+    LOOM_SKIPPED=${job_count}; LOOM_TOTAL=${job_count}
+    LOOM_FAILED_NAMES=()
+    export LOOM_PASS LOOM_FAIL LOOM_TIMEOUT LOOM_SKIPPED LOOM_TOTAL LOOM_FAILED_NAMES
+    loom_print_summary "${SUITE_NAME}"
+    loom_write_result "${SUITE_NAME}"
+    continue
+  fi
+
   loom_run_parallel "${PARALLEL_FILE}" "60" "${LOOM_JOBS}" "sv"
   loom_print_summary "${SUITE_NAME}"
   loom_write_result "${SUITE_NAME}"
