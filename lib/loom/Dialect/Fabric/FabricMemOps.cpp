@@ -6,6 +6,7 @@
 
 #include "loom/Dialect/Fabric/FabricOps.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
+#include "loom/Hardware/Common/FabricError.h"
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpImplementation.h"
@@ -13,6 +14,7 @@
 #include <cmath>
 
 using namespace mlir;
+using namespace loom;
 using namespace loom::fabric;
 using namespace loom::dataflow;
 
@@ -153,16 +155,16 @@ static LogicalResult verifyMemCommon(Operation *op, int64_t ldCount,
                                      int64_t stCount, int64_t lsqDepth,
                                      Type memrefType) {
   if (ldCount == 0 && stCount == 0)
-    return op->emitOpError("[COMP_MEMORY_PORTS_EMPTY] "
-                           "ldCount and stCount cannot both be 0");
+    return op->emitOpError(compErrMsg(CompError::MEMORY_PORTS_EMPTY,
+                           "ldCount and stCount cannot both be 0"));
 
   if (stCount == 0 && lsqDepth != 0)
-    return op->emitOpError("[COMP_MEMORY_LSQ_WITHOUT_STORE] "
-                           "lsqDepth must be 0 when stCount is 0");
+    return op->emitOpError(compErrMsg(CompError::MEMORY_LSQ_WITHOUT_STORE,
+                           "lsqDepth must be 0 when stCount is 0"));
 
   if (stCount > 0 && lsqDepth < 1)
-    return op->emitOpError("[COMP_MEMORY_LSQ_MIN] "
-                           "lsqDepth must be >= 1 when stCount > 0");
+    return op->emitOpError(compErrMsg(CompError::MEMORY_LSQ_MIN,
+                           "lsqDepth must be >= 1 when stCount > 0"));
 
   if (!isa<MemRefType>(memrefType))
     return op->emitOpError("memref_type must be a memref type");
@@ -218,119 +220,117 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
     return static_cast<unsigned>(std::ceil(std::log2(count)));
   };
 
-  // Validate input port types:
-  // Layout: [ldaddr * ldCount] [staddr * stCount] [stdata * stCount]
-  unsigned expectedInputs = ldCount + 2 * stCount;
+  // Presence-based input layout: [ld_addr?] [st_addr? st_data?]
+  unsigned expectedInputs = 0;
+  if (ldCount > 0) expectedInputs++;       // ld_addr
+  if (stCount > 0) expectedInputs += 2;    // st_addr + st_data
   if (inputs.size() != expectedInputs)
     return success(); // Port count mismatch handled elsewhere.
 
-  // Validate load address ports.
-  for (int64_t i = 0; i < ldCount; ++i) {
-    Type t = inputs[i];
-    if (!isAddrType(t))
-      return op->emitOpError("[COMP_MEMORY_ADDR_TYPE] "
-                             "load address port ")
-             << i << " must be index or !dataflow.tagged<index, iK>; got "
-             << t;
+  // Uniform tagging rule: if ldCount > 1 OR stCount > 1, all ports tagged.
+  bool needTag = (ldCount > 1 || stCount > 1);
+  unsigned maxCount = std::max(ldCount, stCount);
 
-    // COMP_MEMORY_TAG_REQUIRED / COMP_MEMORY_TAG_FOR_SINGLE
-    if (ldCount > 1 && !isTagged(t))
-      return op->emitOpError("[COMP_MEMORY_TAG_REQUIRED] "
-                             "load address port ")
-             << i << " must be tagged when ldCount > 1";
-    if (ldCount == 1 && isTagged(t))
-      return op->emitOpError("[COMP_MEMORY_TAG_FOR_SINGLE] "
+  // Track current input port index.
+  unsigned inIdx = 0;
+
+  // Validate ld_addr (singular) if ldCount > 0.
+  if (ldCount > 0 && inIdx < inputs.size()) {
+    Type t = inputs[inIdx++];
+    if (!isAddrType(t))
+      return op->emitOpError(compErrMsg(CompError::MEMORY_ADDR_TYPE,
+                             "load address port must be index or "
+                             "!dataflow.tagged<index, iK>; got "))
+             << t;
+    if (needTag && !isTagged(t))
+      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_REQUIRED,
+                             "load address port must be tagged when "
+                             "ldCount > 1 or stCount > 1"));
+    if (!needTag && isTagged(t))
+      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_FOR_SINGLE,
                              "load address port must not be tagged "
-                             "when ldCount == 1");
-
-    // COMP_MEMORY_TAG_WIDTH
-    if (ldCount > 1 && isTagged(t)) {
+                             "when both ldCount <= 1 and stCount <= 1"));
+    if (needTag && isTagged(t)) {
       unsigned tw = getTagWidth(t);
-      unsigned minW = minTagWidth(ldCount);
+      unsigned minW = minTagWidth(maxCount);
       if (tw < minW)
-        return op->emitOpError("[COMP_MEMORY_TAG_WIDTH] "
-                               "load address port ")
-               << i << " tag width " << tw
-               << " is smaller than log2Ceil(ldCount) = " << minW;
+        return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_WIDTH,
+                               "load address port tag width "))
+               << tw << " is smaller than log2Ceil(max(ldCount,stCount)) = "
+               << minW;
     }
   }
 
-  // Validate store address ports.
-  for (int64_t i = 0; i < stCount; ++i) {
-    unsigned idx = ldCount + i;
-    Type t = inputs[idx];
+  // Validate st_addr (singular) if stCount > 0.
+  if (stCount > 0 && inIdx < inputs.size()) {
+    Type t = inputs[inIdx++];
     if (!isAddrType(t))
-      return op->emitOpError("[COMP_MEMORY_ADDR_TYPE] "
-                             "store address port ")
-             << i << " must be index or !dataflow.tagged<index, iK>; got "
+      return op->emitOpError(compErrMsg(CompError::MEMORY_ADDR_TYPE,
+                             "store address port must be index or "
+                             "!dataflow.tagged<index, iK>; got "))
              << t;
-
-    if (stCount > 1 && !isTagged(t))
-      return op->emitOpError("[COMP_MEMORY_TAG_REQUIRED] "
-                             "store address port ")
-             << i << " must be tagged when stCount > 1";
-    if (stCount == 1 && isTagged(t))
-      return op->emitOpError("[COMP_MEMORY_TAG_FOR_SINGLE] "
+    if (needTag && !isTagged(t))
+      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_REQUIRED,
+                             "store address port must be tagged when "
+                             "ldCount > 1 or stCount > 1"));
+    if (!needTag && isTagged(t))
+      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_FOR_SINGLE,
                              "store address port must not be tagged "
-                             "when stCount == 1");
-
-    if (stCount > 1 && isTagged(t)) {
+                             "when both ldCount <= 1 and stCount <= 1"));
+    if (needTag && isTagged(t)) {
       unsigned tw = getTagWidth(t);
-      unsigned minW = minTagWidth(stCount);
+      unsigned minW = minTagWidth(maxCount);
       if (tw < minW)
-        return op->emitOpError("[COMP_MEMORY_TAG_WIDTH] "
-                               "store address port ")
-               << i << " tag width " << tw
-               << " is smaller than log2Ceil(stCount) = " << minW;
+        return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_WIDTH,
+                               "store address port tag width "))
+               << tw << " is smaller than log2Ceil(max(ldCount,stCount)) = "
+               << minW;
     }
   }
 
-  // Validate store data ports.
-  for (int64_t i = 0; i < stCount; ++i) {
-    unsigned idx = ldCount + stCount + i;
-    Type t = inputs[idx];
+  // Validate st_data (singular) if stCount > 0.
+  if (stCount > 0 && inIdx < inputs.size()) {
+    Type t = inputs[inIdx++];
     Type valT = getValType(t);
     if (valT != elemType)
-      return op->emitOpError("[COMP_MEMORY_DATA_TYPE] "
-                             "store data port ")
-             << i << " value type " << valT
-             << " does not match memref element type " << elemType;
-
-    if (stCount > 1 && !isTagged(t))
-      return op->emitOpError("[COMP_MEMORY_TAG_REQUIRED] "
-                             "store data port ")
-             << i << " must be tagged when stCount > 1";
-    if (stCount == 1 && isTagged(t))
-      return op->emitOpError("[COMP_MEMORY_TAG_FOR_SINGLE] "
+      return op->emitOpError(compErrMsg(CompError::MEMORY_DATA_TYPE,
+                             "store data port value type "))
+             << valT << " does not match memref element type " << elemType;
+    if (needTag && !isTagged(t))
+      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_REQUIRED,
+                             "store data port must be tagged when "
+                             "ldCount > 1 or stCount > 1"));
+    if (!needTag && isTagged(t))
+      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_FOR_SINGLE,
                              "store data port must not be tagged "
-                             "when stCount == 1");
+                             "when both ldCount <= 1 and stCount <= 1"));
   }
 
-  // Validate output port types:
-  // Layout: [memref?] [lddata * ldCount] [lddone] [stdone]
+  // Presence-based output layout: [memref?] [ld_data? ld_done?] [st_done?]
   unsigned outIdx = 0;
   if (!isPrivate && outputs.size() > 0 && isa<MemRefType>(outputs[0]))
     outIdx++; // Skip memref output.
 
-  // Validate load data ports.
-  for (int64_t i = 0; i < ldCount && outIdx < outputs.size(); ++i, ++outIdx) {
-    Type t = outputs[outIdx];
+  // Validate ld_data (singular) if ldCount > 0.
+  if (ldCount > 0 && outIdx < outputs.size()) {
+    Type t = outputs[outIdx++];
     Type valT = getValType(t);
     if (valT != elemType)
-      return op->emitOpError("[COMP_MEMORY_DATA_TYPE] "
-                             "load data port ")
-             << i << " value type " << valT
-             << " does not match memref element type " << elemType;
-
-    if (ldCount > 1 && !isTagged(t))
-      return op->emitOpError("[COMP_MEMORY_TAG_REQUIRED] "
-                             "load data port ")
-             << i << " must be tagged when ldCount > 1";
-    if (ldCount == 1 && isTagged(t))
-      return op->emitOpError("[COMP_MEMORY_TAG_FOR_SINGLE] "
+      return op->emitOpError(compErrMsg(CompError::MEMORY_DATA_TYPE,
+                             "load data port value type "))
+             << valT << " does not match memref element type " << elemType;
+    if (needTag && !isTagged(t))
+      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_REQUIRED,
+                             "load data port must be tagged when "
+                             "ldCount > 1 or stCount > 1"));
+    if (!needTag && isTagged(t))
+      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_FOR_SINGLE,
                              "load data port must not be tagged "
-                             "when ldCount == 1");
+                             "when both ldCount <= 1 and stCount <= 1"));
   }
+
+  // ld_done and st_done: skip detailed type checking for now
+  // (they carry tag or none, validated structurally by port count)
 
   return success();
 }
@@ -389,8 +389,8 @@ LogicalResult MemoryOp::verify() {
   // Static shape required for on-chip memory.
   auto memref = cast<MemRefType>(getMemrefType());
   if (!memref.hasStaticShape())
-    return emitOpError("[COMP_MEMORY_STATIC_REQUIRED] "
-                       "on-chip memory requires static memref shape");
+    return emitOpError(compErrMsg(CompError::MEMORY_STATIC_REQUIRED,
+                       "on-chip memory requires static memref shape"));
 
   // Validate port types.
   bool isPriv = getIsPrivate();
@@ -465,8 +465,8 @@ LogicalResult ExtMemoryOp::verify() {
 
   // COMP_MEMORY_EXTMEM_PRIVATE: is_private must not be present.
   if (getOperation()->getAttr("is_private"))
-    return emitOpError("[COMP_MEMORY_EXTMEM_PRIVATE] "
-                       "is_private must not be set on fabric.extmemory");
+    return emitOpError(compErrMsg(CompError::MEMORY_EXTMEM_PRIVATE,
+                       "is_private must not be set on fabric.extmemory"));
 
   // COMP_MEMORY_EXTMEM_BINDING: validate memref operand is a block argument
   // of the parent module (checked for inline form only).
@@ -474,9 +474,9 @@ LogicalResult ExtMemoryOp::verify() {
     Value firstInput = getInputs().front();
     if (isa<MemRefType>(firstInput.getType())) {
       if (!isa<BlockArgument>(firstInput))
-        return emitOpError("[COMP_MEMORY_EXTMEM_BINDING] "
+        return emitOpError(compErrMsg(CompError::MEMORY_EXTMEM_BINDING,
                            "first memref operand must be a block argument "
-                           "of the parent fabric.module");
+                           "of the parent fabric.module"));
     }
   }
 

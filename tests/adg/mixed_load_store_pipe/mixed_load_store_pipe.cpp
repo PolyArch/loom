@@ -43,20 +43,23 @@ int main() {
 
   // Load memory: ld_addr -> lddata
   builder.connectToModuleInput(ld_addr, mem_ld0, 0);
-  builder.connectToModuleOutput(mem_ld0, 0, lddata);
+  auto bcast_0_sw_def = builder.newSwitch("bcast_0_sw")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast_0 = builder.clone(bcast_0_sw_def, "bcast_0");
+  builder.connectPorts(mem_ld0, 0, bcast_0, 0);
+  builder.connectToModuleOutput(bcast_0, 0, lddata);
+  builder.connectPorts(bcast_0, 1, add0, 0);
   builder.connectToModuleOutput(mem_ld0, 1, lddone);
 
   // Compute: lddata + operand -> result
-  builder.connectPorts(mem_ld0, 0, add0, 0);
   builder.connectToModuleInput(operand, add0, 1);
 
-  // Store memory inputs (store-only): [st_addr, st_data]
+  // Store memory inputs (ldCount=0, stCount=1): [st_addr(0), st_data(1)]
   builder.connectToModuleInput(st_addr, mem_st0, 0);
   builder.connectPorts(add0, 0, mem_st0, 1); // adder result -> st_data
-  // Store memory outputs (store-only, private, ldCount=0): [lddone(0), stdone(1)]
-  auto st_lddone = builder.addModuleOutput("st_lddone", Type::none());
-  builder.connectToModuleOutput(mem_st0, 0, st_lddone);
-  builder.connectToModuleOutput(mem_st0, 1, stdone);
+  // Store memory outputs (ldCount=0, stCount=1): [st_done(0)]
+  builder.connectToModuleOutput(mem_st0, 0, stdone);
 
   builder.exportMLIR("Output/mixed_load_store_pipe.fabric.mlir");
   return 0;

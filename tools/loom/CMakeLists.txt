@@ -143,6 +143,15 @@ add_custom_target(check-loom-sv
   DEPENDS loom loom-sdk
 )
 
+add_custom_target(check-loom-docs-errcode
+  COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/docs/error-alignment.py"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+add_custom_target(check-loom-docs
+  DEPENDS check-loom-docs-errcode
+)
+
 add_custom_target(check-loom
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/check_loom.sh"
     "${LOOM_RUNTIME_DIR}/loom"

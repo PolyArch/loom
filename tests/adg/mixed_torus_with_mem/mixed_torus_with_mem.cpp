@@ -44,20 +44,35 @@ int main() {
 
   // Chain PEs in row-major order: [0][0] -> [0][1] -> [1][0] -> [1][1]
   builder.connectToModuleInput(a, mesh.peGrid[0][0], 0);
-  builder.connectToModuleInput(b, mesh.peGrid[0][0], 1);
-  builder.connectPorts(mesh.peGrid[0][0], 0, mesh.peGrid[0][1], 0);
+  auto bcast_0_sw_def = builder.newSwitch("bcast_0_sw")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast_0 = builder.clone(bcast_0_sw_def, "bcast_0");
+  builder.connectToModuleInput(b, bcast_0, 0);
+  builder.connectPorts(bcast_0, 0, mesh.peGrid[0][0], 1);
+  builder.connectPorts(bcast_0, 1, mesh.peGrid[1][1], 1);
+  auto chain_in_0 = builder.addModuleInput("chain_in_0", Type::i32());
+  builder.connectToModuleInput(chain_in_0, mesh.peGrid[0][1], 0);
   builder.connectToModuleInput(c, mesh.peGrid[0][1], 1);
-  builder.connectPorts(mesh.peGrid[0][1], 0, mesh.peGrid[1][0], 0);
+  auto chain_in_2 = builder.addModuleInput("chain_in_2", Type::i32());
+  builder.connectToModuleInput(chain_in_2, mesh.peGrid[1][0], 0);
   builder.connectToModuleInput(d, mesh.peGrid[1][0], 1);
-  builder.connectPorts(mesh.peGrid[1][0], 0, mesh.peGrid[1][1], 0);
-  builder.connectToModuleInput(b, mesh.peGrid[1][1], 1);
-  builder.connectToModuleOutput(mesh.peGrid[1][1], 0, mesh_out);
+  auto chain_in_3 = builder.addModuleInput("chain_in_3", Type::i32());
+  builder.connectToModuleInput(chain_in_3, mesh.peGrid[1][1], 0);
+  auto chain_in_4 = builder.addModuleInput("chain_in_4", Type::i32());
+  auto chain_in_4_pass_sw = builder.newSwitch("chain_in_4_pass_sw")
+      .setPortCount(1, 1)
+      .setType(Type::i32());
+  auto chain_in_4_pass = builder.clone(chain_in_4_pass_sw, "chain_in_4_pass");
+  builder.connectToModuleInput(chain_in_4, chain_in_4_pass, 0);
+  builder.connectToModuleOutput(chain_in_4_pass, 0, mesh_out);
 
   // Memory connected to corner PE[0][0] output as store data
   // Memory inputs: [ld_addr, st_addr, st_data]
   builder.connectToModuleInput(ld_addr, mem0, 0);
   builder.connectToModuleInput(st_addr, mem0, 1);
-  builder.connectPorts(mesh.peGrid[0][0], 0, mem0, 2); // mesh PE output -> st_data
+  auto chain_in_1 = builder.addModuleInput("chain_in_1", Type::i32());
+  builder.connectToModuleInput(chain_in_1, mem0, 2);
   // Memory outputs (private, 1ld+1st): [lddata(0), lddone(1), stdone(2)]
   builder.connectToModuleOutput(mem0, 0, lddata);
   auto lddone = builder.addModuleOutput("lddone", Type::none());

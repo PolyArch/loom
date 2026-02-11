@@ -138,4 +138,4 @@ if [[ -d "${FUZZER_DIR}/Output" ]]; then
   done
 fi
 
-loom_run_suite "${PARALLEL_FILE}" "ADG" "adg" "30"
+loom_run_suite "${PARALLEL_FILE}" "Fabric ADG" "adg" "30"

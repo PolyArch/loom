@@ -5,8 +5,7 @@
 //===----------------------------------------------------------------------===//
 //
 // This header declares cleanup utilities for Handshake IR, including sink
-// insertion for unused values, dead code elimination, and fork optimization
-// to remove redundant dataflow control structures.
+// insertion for unused values and dead code elimination.
 //
 //===----------------------------------------------------------------------===//
 

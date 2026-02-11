@@ -44,17 +44,19 @@ int main() {
   auto e = builder.addModuleInput("e", Type::i32());
   auto f = builder.addModuleInput("f", Type::i32());
   auto g = builder.addModuleInput("g", Type::i32());
-  auto outAdd = builder.addModuleOutput("result_add", Type::i32());
   auto outMul = builder.addModuleOutput("result_mul", Type::i32());
 
   // Chain mesh PEs: [0][0] -> [0][1] -> [1][0] -> [1][1]
   builder.connectToModuleInput(a, mesh.peGrid[0][0], 0);
   builder.connectToModuleInput(b, mesh.peGrid[0][0], 1);
-  builder.connectPorts(mesh.peGrid[0][0], 0, mesh.peGrid[0][1], 0);
+  auto bcast_0 = builder.addModuleInput("bcast_0", Type::i32());
+  builder.connectToModuleInput(bcast_0, mesh.peGrid[0][1], 0);
   builder.connectToModuleInput(c, mesh.peGrid[0][1], 1);
-  builder.connectPorts(mesh.peGrid[0][1], 0, mesh.peGrid[1][0], 0);
+  auto bcast_1 = builder.addModuleInput("bcast_1", Type::i32());
+  builder.connectToModuleInput(bcast_1, mesh.peGrid[1][0], 0);
   builder.connectToModuleInput(d, mesh.peGrid[1][0], 1);
-  builder.connectPorts(mesh.peGrid[1][0], 0, mesh.peGrid[1][1], 0);
+  auto bcast_2 = builder.addModuleInput("bcast_2", Type::i32());
+  builder.connectToModuleInput(bcast_2, mesh.peGrid[1][1], 0);
   builder.connectToModuleInput(e, mesh.peGrid[1][1], 1);
 
   // Feed extra multiplier PEs
@@ -63,10 +65,10 @@ int main() {
 
   // Chain: mul0 -> mul1 input 0, mesh[1][1] output -> mul1 input 1
   builder.connectPorts(mul0, 0, mul1, 0);
-  builder.connectPorts(mesh.peGrid[1][1], 0, mul1, 1);
+  auto bcast_3 = builder.addModuleInput("bcast_3", Type::i32());
+  builder.connectToModuleInput(bcast_3, mul1, 1);
 
   // Outputs
-  builder.connectToModuleOutput(mesh.peGrid[1][1], 0, outAdd);
   builder.connectToModuleOutput(mul1, 0, outMul);
 
   builder.exportMLIR("Output/topo_mesh_multi_pe.fabric.mlir");

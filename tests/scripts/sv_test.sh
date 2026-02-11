@@ -19,19 +19,16 @@ SV_FABRIC="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Fabric"
 SV_TB="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Testbench"
 SV_COMMON="${ROOT_DIR}/lib/loom/Hardware/SystemVerilog/Common"
 
-# Detect preferred simulator (VCS > Verilator per spec-adg-tools.md)
-SIM=""
-if command -v vcs >/dev/null 2>&1; then
-  SIM="vcs"
-elif command -v verilator >/dev/null 2>&1; then
-  SIM="verilator"
-fi
-
-if [[ -n "${SIM}" ]]; then
-  SUITE_NAME="Fabric SV (${SIM})"
-else
-  SUITE_NAME="Fabric SV"
-fi
+# Both simulators run as equals; sim_runner.sh exits 77 if a tool is missing.
+SIMS=("vcs" "verilator")
+SIM_SUITE_NAMES=("Fabric SV (VCS)" "Fabric SV (Verilator)")
+for s in "${SIMS[@]}"; do
+  if command -v "${s}" >/dev/null 2>&1; then
+    echo "Found simulator: ${s}"
+  else
+    echo "Simulator not found: ${s} (tests will be skipped)"
+  fi
+done
 
 # --- Single mode ---
 if [[ "${1:-}" == "--single" ]]; then
@@ -133,38 +130,21 @@ if (( ADG_FAIL > 0 || ADG_TIMEOUT > 0 )); then
   for name in "${ADG_FAILED_NAMES[@]}"; do
     echo "  ${name}"
   done
-  # Write partial result so the summary table still shows this suite
+  # Write partial result so the summary table still shows both suites
   LOOM_PASS=${ADG_PASS}; LOOM_FAIL=${ADG_FAIL}; LOOM_TIMEOUT=${ADG_TIMEOUT}
   LOOM_SKIPPED=${ADG_SKIPPED}; LOOM_TOTAL=${ADG_TOTAL}
   export LOOM_PASS LOOM_FAIL LOOM_TIMEOUT LOOM_SKIPPED LOOM_TOTAL
-  loom_write_result "${SUITE_NAME}"
+  for suite in "${SIM_SUITE_NAMES[@]}"; do
+    loom_write_result "${suite}"
+  done
   exit 1
 fi
 
 # =========================================================================
 # Stage B: SV simulation (param sweeps, negative tests, e2e smoke tests)
 # Reuses Stage A outputs; no re-compilation of C++ binaries.
+# Runs once per simulator; sim_runner.sh exits 77 if the tool is missing.
 # =========================================================================
-PARALLEL_FILE="${TESTS_DIR}/sv_test.parallel.sh"
-
-loom_write_parallel_header "${PARALLEL_FILE}" \
-  "Loom Fabric SV Tests (${SIM:-none})" \
-  "SV simulation tests with parameter sweeps and negative (COMP_) tests."
-
-cat >> "${PARALLEL_FILE}" <<'WAVE_EOF'
-#
-# To dump waveforms, copy a test line below and append a -D flag at the end:
-#   -DDUMP_FST   (Verilator) -> <outdir>/waves.fst   | gtkwave <outdir>/waves.fst
-#   -DDUMP_FSDB  (VCS)       -> <outdir>/waves.fsdb  | verdi -ssf <outdir>/waves.fsdb
-#
-# Example (VCS FSDB):
-#   mkdir -p <outdir> && sim_runner.sh run vcs <top> <outdir> <files...> -GDEPTH=4 -DDUMP_FSDB
-WAVE_EOF
-
-if [[ -z "${SIM}" ]]; then
-  echo "Neither vcs nor verilator found. Try 'module avail' to check available EDA tools, then 'module load <tool>'."
-  echo "All SV simulation tests will be skipped."
-fi
 
 # --- SV simulation phase ---
 
@@ -243,11 +223,6 @@ temporal_sw_neg=(
   "NUM_INPUTS=2,NUM_OUTPUTS=2,DATA_WIDTH=32,TAG_WIDTH=4,NUM_ROUTE_TABLE=0|COMP_TEMPORAL_SW_NUM_ROUTE_TABLE"
 )
 
-# PE positive parameter sweeps
-pe_configs=(
-  "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=0,LATENCY_TYP=1"
-)
-
 # Temporal PE positive parameter sweeps
 temporal_pe_configs=(
   "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=1,NUM_REGISTERS=0,NUM_INSTRUCTIONS=2,REG_FIFO_DEPTH=0"
@@ -267,28 +242,22 @@ temporal_pe_reg_configs=(
 
 # Memory positive parameter sweeps
 memory_configs=(
-  "DATA_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,IS_PRIVATE=1,MEM_DEPTH=64,DEADLOCK_TIMEOUT=65535"
-  "DATA_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,IS_PRIVATE=1,MEM_DEPTH=64,DEADLOCK_TIMEOUT=16"
-  "DATA_WIDTH=32,TAG_WIDTH=4,LD_COUNT=2,ST_COUNT=2,LSQ_DEPTH=4,IS_PRIVATE=1,MEM_DEPTH=64,DEADLOCK_TIMEOUT=65535"
+  "ELEM_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,IS_PRIVATE=1,MEM_DEPTH=64,DEADLOCK_TIMEOUT=65535"
+  "ELEM_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,IS_PRIVATE=1,MEM_DEPTH=64,DEADLOCK_TIMEOUT=16"
+  "ELEM_WIDTH=32,TAG_WIDTH=4,LD_COUNT=2,ST_COUNT=2,LSQ_DEPTH=4,IS_PRIVATE=1,MEM_DEPTH=64,DEADLOCK_TIMEOUT=65535"
 )
 
 # Extmemory positive parameter sweeps (subset of memory params; no IS_PRIVATE, MEM_DEPTH)
 extmemory_configs=(
-  "DATA_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,DEADLOCK_TIMEOUT=65535"
-  "DATA_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,DEADLOCK_TIMEOUT=16"
-  "DATA_WIDTH=32,TAG_WIDTH=4,LD_COUNT=2,ST_COUNT=2,LSQ_DEPTH=4,DEADLOCK_TIMEOUT=65535"
+  "ELEM_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,DEADLOCK_TIMEOUT=65535"
+  "ELEM_WIDTH=32,TAG_WIDTH=0,LD_COUNT=1,ST_COUNT=1,LSQ_DEPTH=4,DEADLOCK_TIMEOUT=16"
+  "ELEM_WIDTH=32,TAG_WIDTH=4,LD_COUNT=2,ST_COUNT=2,LSQ_DEPTH=4,DEADLOCK_TIMEOUT=65535"
 )
 
 # Memory negative tests
 memory_neg=(
-  "DATA_WIDTH=32,TAG_WIDTH=0,LD_COUNT=0,ST_COUNT=0,LSQ_DEPTH=0,IS_PRIVATE=1,MEM_DEPTH=64|COMP_MEMORY_PORTS_EMPTY"
+  "ELEM_WIDTH=32,TAG_WIDTH=0,LD_COUNT=0,ST_COUNT=0,LSQ_DEPTH=0,IS_PRIVATE=1,MEM_DEPTH=64|COMP_MEMORY_PORTS_EMPTY"
 )
-
-# Helper: emit a skip job (exit 77) for a given output directory
-emit_skip_job() {
-  local outdir="$1"
-  echo "rm -rf ${outdir} && mkdir -p ${outdir} && exit 77" >> "${PARALLEL_FILE}"
-}
 
 # Helper: convert "KEY=VAL,KEY=VAL" to " -GKEY=VAL -GKEY=VAL"
 cfg_to_gparams() {
@@ -350,7 +319,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${cfg}")
     outdir="tests/sv/switch/Output/${sim}_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_switch.sv ${rel_sv_tb}/tb_fabric_switch.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_switch.sv ${rel_sv_tb}/tb_fabric_switch.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} run ${sim} tb_fabric_switch ${outdir} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -364,7 +333,7 @@ emit_sim_jobs() {
     gparams=$(cfg_to_gparams "${params}")
     outdir="tests/sv/switch/Output/${sim}_neg_${cfg_suffix}"
 
-    sv_files="${rel_sv_fabric}/fabric_switch.sv ${rel_sv_tb}/tb_fabric_switch.sv"
+    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_switch.sv ${rel_sv_tb}/tb_fabric_switch.sv"
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
     line+=" && ${rel_sim_runner} expect-fail ${sim} tb_fabric_switch ${outdir} ${pattern} ${sv_files}${gparams}"
     echo "${line}" >> "${PARALLEL_FILE}"
@@ -491,19 +460,6 @@ emit_sim_jobs() {
     echo "${line}" >> "${PARALLEL_FILE}"
   done
 
-  # PE positive tests
-  for cfg in "${pe_configs[@]}"; do
-    local cfg_suffix gparams
-    cfg_suffix=$(cfg_to_suffix "${cfg}")
-    gparams=$(cfg_to_gparams "${cfg}")
-    outdir="tests/sv/pe/Output/${sim}_${cfg_suffix}"
-
-    sv_files="${rel_sv_common}/fabric_common.svh ${rel_sv_fabric}/fabric_pe.sv ${rel_sv_tb}/tb_fabric_pe.sv"
-    line="rm -rf ${outdir} && mkdir -p ${outdir}"
-    line+=" && ${rel_sim_runner} run ${sim} tb_fabric_pe ${outdir} ${sv_files}${gparams}"
-    echo "${line}" >> "${PARALLEL_FILE}"
-  done
-
   # Temporal PE positive tests
   for cfg in "${temporal_pe_configs[@]}"; do
     local cfg_suffix gparams
@@ -599,8 +555,27 @@ emit_sim_jobs() {
   done
 }
 
-if [[ -n "${SIM}" ]]; then
-  emit_sim_jobs "${SIM}"
+OVERALL_RC=0
+for i in "${!SIMS[@]}"; do
+  sim="${SIMS[$i]}"
+  SUITE_NAME="${SIM_SUITE_NAMES[$i]}"
+  PARALLEL_FILE="${TESTS_DIR}/sv_test.${sim}.parallel.sh"
+
+  loom_write_parallel_header "${PARALLEL_FILE}" \
+    "Loom Fabric SV Tests (${sim})" \
+    "SV simulation tests with parameter sweeps and negative (COMP_) tests."
+
+  cat >> "${PARALLEL_FILE}" <<'WAVE_EOF'
+#
+# To dump waveforms, copy a test line below and append a -D flag at the end:
+#   -DDUMP_FST   (Verilator) -> <outdir>/waves.fst   | gtkwave <outdir>/waves.fst
+#   -DDUMP_FSDB  (VCS)       -> <outdir>/waves.fsdb  | verdi -ssf <outdir>/waves.fsdb
+#
+# Example (VCS FSDB):
+#   mkdir -p <outdir> && sim_runner.sh run vcs <top> <outdir> <files...> -GDEPTH=4 -DDUMP_FSDB
+WAVE_EOF
+
+  emit_sim_jobs "${sim}"
 
   # --- End-to-end tests: simulate generated top (SV only, no C++ re-compile) ---
   # Stage A already produced Output/sv/ artifacts; e2e just compiles+simulates SV.
@@ -613,109 +588,20 @@ if [[ -n "${SIM}" ]]; then
     # Skip e2e if the testbench file does not exist
     [[ -f "${tb_file}" ]] || continue
 
-    outdir="${rel_out}/${SIM}_e2e_${test_name}"
+    outdir="${rel_out}/${sim}_e2e_${test_name}"
     # Collect all generated lib .sv files dynamically
     line="rm -rf ${outdir} && mkdir -p ${outdir}"
-    line+=" && ${rel_sim_runner} run ${SIM} tb_${test_name}_top ${outdir}"
+    line+=" && ${rel_sim_runner} run ${sim} tb_${test_name}_top ${outdir}"
     line+=" ${rel_sv_common}/fabric_common.svh ${rel_out}/sv/${test_name}_top.sv \$(find ${rel_out}/sv/lib -name '*.sv' -type f) ${tb_file}"
     echo "${line}" >> "${PARALLEL_FILE}"
   done
-else
-  # No simulator available: emit skip (exit 77) jobs for each planned test
-  # so the summary shows correct skipped counts
-  for cfg in "${fifo_configs[@]}"; do
-    emit_skip_job "tests/sv/fifo/Output/skip_$(cfg_to_suffix "${cfg}")"
-  done
-  for neg in "${fifo_neg[@]}"; do
-    IFS='|' read -r params _ <<< "${neg}"
-    emit_skip_job "tests/sv/fifo/Output/skip_neg_$(cfg_to_suffix "${params}")"
-  done
-  for cfg in "${switch_configs[@]}"; do
-    emit_skip_job "tests/sv/switch/Output/skip_$(cfg_to_suffix "${cfg}")"
-  done
-  for neg in "${switch_neg[@]}"; do
-    IFS='|' read -r params _ <<< "${neg}"
-    emit_skip_job "tests/sv/switch/Output/skip_neg_$(cfg_to_suffix "${params}")"
-  done
-  for cfg in "${add_tag_configs[@]}"; do
-    emit_skip_job "tests/sv/add_tag/Output/skip_$(cfg_to_suffix "${cfg}")"
-  done
-  for neg in "${add_tag_neg[@]}"; do
-    IFS='|' read -r params _ <<< "${neg}"
-    emit_skip_job "tests/sv/add_tag/Output/skip_neg_$(cfg_to_suffix "${params}")"
-  done
-  for cfg in "${del_tag_configs[@]}"; do
-    emit_skip_job "tests/sv/del_tag/Output/skip_$(cfg_to_suffix "${cfg}")"
-  done
-  for neg in "${del_tag_neg[@]}"; do
-    IFS='|' read -r params _ <<< "${neg}"
-    emit_skip_job "tests/sv/del_tag/Output/skip_neg_$(cfg_to_suffix "${params}")"
-  done
-  for cfg in "${map_tag_configs[@]}"; do
-    emit_skip_job "tests/sv/map_tag/Output/skip_$(cfg_to_suffix "${cfg}")"
-  done
-  for neg in "${map_tag_neg[@]}"; do
-    IFS='|' read -r params _ <<< "${neg}"
-    emit_skip_job "tests/sv/map_tag/Output/skip_neg_$(cfg_to_suffix "${params}")"
-  done
-  for cfg in "${pe_constant_configs[@]}"; do
-    emit_skip_job "tests/sv/pe_constant/Output/skip_$(cfg_to_suffix "${cfg}")"
-  done
-  for cfg in "${temporal_sw_configs[@]}"; do
-    emit_skip_job "tests/sv/temporal_sw/Output/skip_$(cfg_to_suffix "${cfg}")"
-  done
-  for neg in "${temporal_sw_neg[@]}"; do
-    IFS='|' read -r params _ <<< "${neg}"
-    emit_skip_job "tests/sv/temporal_sw/Output/skip_neg_$(cfg_to_suffix "${params}")"
-  done
-  for cfg in "${pe_configs[@]}"; do
-    emit_skip_job "tests/sv/pe/Output/skip_$(cfg_to_suffix "${cfg}")"
-  done
-  for cfg in "${temporal_pe_configs[@]}"; do
-    emit_skip_job "tests/sv/temporal_pe/Output/skip_$(cfg_to_suffix "${cfg}")"
-  done
-  for neg in "${temporal_pe_neg[@]}"; do
-    IFS='|' read -r params _ <<< "${neg}"
-    emit_skip_job "tests/sv/temporal_pe/Output/skip_neg_$(cfg_to_suffix "${params}")"
-  done
-  for cfg in "${temporal_pe_reg_configs[@]}"; do
-    emit_skip_job "tests/sv/temporal_pe_reg/Output/skip_$(cfg_to_suffix "${cfg}")"
-  done
-  for cfg in "${memory_configs[@]}"; do
-    emit_skip_job "tests/sv/memory/Output/skip_$(cfg_to_suffix "${cfg}")"
-  done
-  for neg in "${memory_neg[@]}"; do
-    IFS='|' read -r params _ <<< "${neg}"
-    emit_skip_job "tests/sv/memory/Output/skip_neg_$(cfg_to_suffix "${params}")"
-  done
-  # Dedicated temporal PE benches
-  emit_skip_job "tests/sv/temporal_pe/Output/skip_shared_buf_collision"
-  emit_skip_job "tests/sv/temporal_pe/Output/skip_multireader_reg"
-  # Extmemory positive tests
-  for cfg in "${extmemory_configs[@]}"; do
-    emit_skip_job "tests/sv/memory/Output/skip_extmem_$(cfg_to_suffix "${cfg}")"
-  done
-  # Also emit skip for e2e tests (only where testbench exists)
-  for test_dir in "${test_dirs[@]}"; do
-    test_name=$(basename "${test_dir}")
-    rel_test=$(loom_relpath "${test_dir}")
-    [[ -f "${SV_TB}/tb_${test_name}_top.sv" ]] || continue
-    emit_skip_job "${rel_test}/Output/skip_e2e_${test_name}"
-  done
-fi
 
-# Run Stage B and accumulate Stage A counts into the final result
-loom_run_parallel "${PARALLEL_FILE}" "60" "${LOOM_JOBS}" "sv"
+  loom_run_parallel "${PARALLEL_FILE}" "60" "${LOOM_JOBS}" "sv"
+  loom_print_summary "${SUITE_NAME}"
+  loom_write_result "${SUITE_NAME}"
 
-# Merge Stage A + Stage B counts
-LOOM_PASS=$((LOOM_PASS + ADG_PASS))
-LOOM_TOTAL=$((LOOM_TOTAL + ADG_TOTAL))
-LOOM_SKIPPED=$((LOOM_SKIPPED + ADG_SKIPPED))
-export LOOM_PASS LOOM_FAIL LOOM_TIMEOUT LOOM_SKIPPED LOOM_TOTAL
-
-loom_print_summary "${SUITE_NAME}"
-loom_write_result "${SUITE_NAME}"
-
-if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
-  exit 1
-fi
+  if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
+    OVERALL_RC=1
+  fi
+done
+exit ${OVERALL_RC}

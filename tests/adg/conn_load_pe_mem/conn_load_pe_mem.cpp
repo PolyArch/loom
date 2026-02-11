@@ -34,10 +34,10 @@ int main() {
   builder.connectToModuleInput(addr, ld0, 0);
   builder.connectToModuleInput(data_in, ld0, 1);
   builder.connectToModuleInput(ctrl, ld0, 2);
-  // LoadPE outputs: [data_out, addr_out]
-  builder.connectToModuleOutput(ld0, 0, data_out);
-  // LoadPE addr_out -> memory ld_addr
-  builder.connectPorts(ld0, 1, mem0, 0);
+  // LoadPE outputs: [addr_to_mem, data_to_comp]
+  builder.connectToModuleOutput(ld0, 1, data_out);
+  // LoadPE addr_to_mem -> memory ld_addr
+  builder.connectPorts(ld0, 0, mem0, 0);
   // Memory outputs: [lddata, lddone]
   builder.connectToModuleOutput(mem0, 0, lddata);
   builder.connectToModuleOutput(mem0, 1, done);

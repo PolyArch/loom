@@ -5,9 +5,8 @@
 //===----------------------------------------------------------------------===//
 //
 // This file implements cleanup utilities for Handshake IR. It provides sink
-// insertion for unused values, dead code elimination for side-effect-free
-// operations feeding only sinks, and fork optimization to coalesce or remove
-// redundant fork operations.
+// insertion for unused values and dead code elimination for side-effect-free
+// operations feeding only sinks.
 //
 //===----------------------------------------------------------------------===//
 
@@ -106,84 +105,11 @@ static LogicalResult eliminateHandshakeDeadCode(circt::handshake::FuncOp func,
   return success();
 }
 
-static LogicalResult optimizeHandshakeForks(circt::handshake::FuncOp func,
-                                            OpBuilder &builder) {
-  bool madeProgress = true;
-  while (madeProgress) {
-    madeProgress = false;
-    llvm::SmallVector<circt::handshake::ForkOp, 16> forks;
-    func.walk([&](circt::handshake::ForkOp forkOp) { forks.push_back(forkOp); });
-
-    for (circt::handshake::ForkOp forkOp : forks) {
-      llvm::SmallVector<Value, 8> liveOutputs;
-      llvm::SmallVector<unsigned, 8> sinkOnlyOutputs;
-
-      for (unsigned i = 0, e = forkOp.getNumResults(); i < e; ++i) {
-        Value result = forkOp.getResults()[i];
-        bool hasUses = !result.use_empty();
-        bool onlySinks = hasUses;
-        for (Operation *user : result.getUsers()) {
-          if (!isa<circt::handshake::SinkOp>(user)) {
-            onlySinks = false;
-            break;
-          }
-        }
-        if (hasUses && onlySinks)
-          sinkOnlyOutputs.push_back(i);
-        else if (hasUses)
-          liveOutputs.push_back(result);
-      }
-
-      if (liveOutputs.empty())
-        continue;
-
-      if (!sinkOnlyOutputs.empty() ||
-          liveOutputs.size() < forkOp.getNumResults()) {
-        for (unsigned idx : sinkOnlyOutputs) {
-          Value result = forkOp.getResults()[idx];
-          for (auto user :
-               llvm::make_early_inc_range(result.getUsers())) {
-            if (isa<circt::handshake::SinkOp>(user))
-              user->erase();
-          }
-        }
-
-        Value input = forkOp.getOperand();
-        if (liveOutputs.size() == 1) {
-          liveOutputs[0].replaceAllUsesWith(input);
-        } else {
-          builder.setInsertionPoint(forkOp);
-          auto newFork = circt::handshake::ForkOp::create(builder,
-              forkOp.getLoc(), input,
-              static_cast<unsigned>(liveOutputs.size()));
-          for (unsigned i = 0, e = liveOutputs.size(); i < e; ++i) {
-            liveOutputs[i].replaceAllUsesWith(newFork.getResults()[i]);
-          }
-        }
-
-        forkOp->erase();
-        madeProgress = true;
-        continue;
-      }
-
-      if (forkOp.getNumResults() == 1) {
-        Value input = forkOp.getOperand();
-        forkOp.getResults()[0].replaceAllUsesWith(input);
-        forkOp->erase();
-        madeProgress = true;
-      }
-    }
-  }
-  return success();
-}
-
 } // namespace
 
 LogicalResult runHandshakeCleanup(circt::handshake::FuncOp func,
                                   OpBuilder &builder) {
   if (failed(insertHandshakeSinks(func, builder)))
-    return failure();
-  if (failed(optimizeHandshakeForks(func, builder)))
     return failure();
   if (failed(eliminateHandshakeDeadCode(func, builder)))
     return failure();

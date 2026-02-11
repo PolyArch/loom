@@ -471,10 +471,14 @@ Creates a new `fabric.memory` definition (on-chip scratchpad).
 
 **Interface type rules:**
 
-Port counts affect interface types. When `ldCount > 1` or `stCount > 1`, the
-corresponding address and data ports must be tagged types. Single-port
-interfaces (`count == 1`) use native types. Changing from single to multi-port
-is a breaking interface change.
+Port tagging is uniform across the entire memory instance: when
+`ldCount > 1` or `stCount > 1`, **all** address, data, and done ports
+(both load-side and store-side) use the same tag type
+`iN(clog2(max(ldCount, stCount)))`. When both counts are <= 1, all ports
+are native (untagged). This uniform-tag rule ensures that all ports of a
+memory instance share the same `TAG_WIDTH`, consistent with the fabric-wide
+invariant (see [spec-fabric.md](./spec-fabric.md) "Port Connection
+Invariants").
 
 See [spec-fabric-mem.md](./spec-fabric-mem.md) for complete tagging rules and
 type constraints.
@@ -535,9 +539,10 @@ Naming convention note:
 
 **Interface type rules:**
 
-Port counts affect interface types exactly as in `MemoryHandle`. When
-`ldCount > 1` or `stCount > 1`, the corresponding address and data ports must
-be tagged types. Single-port interfaces (`count == 1`) use native types.
+Port tagging is uniform across the entire extmemory instance, exactly as in
+`MemoryHandle`. When `ldCount > 1` or `stCount > 1`, **all** ports use the
+same tag type `iN(clog2(max(ldCount, stCount)))`. When both counts are <= 1,
+all ports are native (untagged).
 
 ## Tag Operation Methods
 
@@ -710,6 +715,10 @@ Creates a connection between specific ports.
 **Constraints:**
 - Port indices must be valid for the respective modules
 - Port types must match exactly (enforced at validation)
+- **Strict 1-to-1**: Each source output port may be connected to exactly one
+  destination input port. Attempting to connect a source port that already has
+  a consumer raises `COMP_FANOUT_MODULE_INNER`. To duplicate data, use a
+  switch configured for broadcast between the source and multiple destinations.
 
 **Example:**
 ```cpp
@@ -858,6 +867,11 @@ void connectToModuleInput(PortHandle port, Handle dst, int dstPort);
 
 Connects a module input port to an internal component.
 
+**Strict 1-to-1**: Each module input port may feed exactly one instance input
+port. Attempting to connect the same module input to a second destination
+raises `COMP_FANOUT_MODULE_BOUNDARY`. To distribute a module input to
+multiple instances, route it through a switch configured for broadcast.
+
 ### connectToModuleOutput
 
 ```cpp
@@ -865,6 +879,9 @@ void connectToModuleOutput(Handle src, int srcPort, PortHandle port);
 ```
 
 Connects an internal component to a module output port.
+
+**Strict 1-to-1**: The source output port must not already have a consumer.
+If it does, this raises `COMP_FANOUT_MODULE_INNER`.
 
 ## Validation
 
@@ -882,10 +899,14 @@ Performs comprehensive validation of the constructed ADG.
 
 **Validation checks:**
 
-1. **Connectivity completeness**
+1. **Connectivity completeness (strict 1-to-1)**
    - All input ports have exactly one driver
-   - All output ports are connected to at least one destination
+   - All output ports are connected to exactly one destination
    - No dangling wires
+   - No implicit fanout: `COMP_FANOUT_MODULE_INNER` if an instance output
+     port has multiple consumers; `COMP_FANOUT_MODULE_BOUNDARY` if a module
+     input feeds multiple instance ports. Use switch broadcast for data
+     duplication.
 
 2. **Type matching**
    - Connected ports have identical types
@@ -1050,6 +1071,14 @@ Exports the ADG as synthesizable SystemVerilog.
   - `fabric_pe.sv`, `fabric_temporal_pe.sv`, `fabric_switch.sv`, etc.
 
 Self-contained output is guaranteed by [spec-adg.md](./spec-adg.md).
+
+**Per-port width derivation:**
+Each port's data width in the generated SV is derived from its declared type at
+export time. There is no uniform `DATA_WIDTH` for ports with different semantic
+widths. Connections between ports must match exactly in width; no implicit
+zero-extension or truncation is performed. See
+[spec-fabric.md](./spec-fabric.md) "Port Connection Invariants" for the
+normative rules.
 
 See [spec-adg-sv.md](./spec-adg-sv.md) for complete specification.
 

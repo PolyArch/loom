@@ -23,19 +23,16 @@ int main() {
 
   auto inst = builder.clone(mem, "mem0");
 
-  // 2 load address inputs (tagged)
-  auto ld0 = builder.addModuleInput("ld0", taggedIndex);
-  auto ld1 = builder.addModuleInput("ld1", taggedIndex);
-  // 2 load data outputs (tagged) + 1 done (tagged)
-  auto d0 = builder.addModuleOutput("d0", taggedData);
-  auto d1 = builder.addModuleOutput("d1", taggedData);
-  auto done = builder.addModuleOutput("done", taggedNone);
+  // Singular tagged load address input (TAG_WIDTH=1 for ldCount=2)
+  auto ld_addr = builder.addModuleInput("ld_addr", taggedIndex);
+  // Singular tagged outputs: ld_data + ld_done
+  auto ld_data = builder.addModuleOutput("ld_data", taggedData);
+  auto ld_done = builder.addModuleOutput("ld_done", taggedNone);
 
-  builder.connectToModuleInput(ld0, inst, 0);
-  builder.connectToModuleInput(ld1, inst, 1);
-  builder.connectToModuleOutput(inst, 0, d0);
-  builder.connectToModuleOutput(inst, 1, d1);
-  builder.connectToModuleOutput(inst, 2, done);
+  // Memory (ldCount=2, stCount=0): inputs=[ld_addr(0)], outputs=[ld_data(0), ld_done(1)]
+  builder.connectToModuleInput(ld_addr, inst, 0);
+  builder.connectToModuleOutput(inst, 0, ld_data);
+  builder.connectToModuleOutput(inst, 1, ld_done);
 
   builder.exportMLIR("Output/memory_multi_port.fabric.mlir");
   return 0;

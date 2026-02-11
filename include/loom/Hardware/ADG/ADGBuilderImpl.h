@@ -25,6 +25,34 @@
 namespace loom {
 namespace adg {
 
+/// Default address width in bits for index type ports (load/store addresses).
+/// Centralized here so that all code-gen paths share the same value.
+static constexpr unsigned DEFAULT_ADDR_WIDTH = 64;
+
+//===----------------------------------------------------------------------===//
+// Helper: get data width in bits for a Type (accessible from multiple TUs)
+//===----------------------------------------------------------------------===//
+
+inline unsigned getTypeDataWidth(const Type &t) {
+  switch (t.getKind()) {
+  case Type::I1:    return 1;
+  case Type::I8:    return 8;
+  case Type::I16:   return 16;
+  case Type::I32:   return 32;
+  case Type::I64:   return 64;
+  case Type::IN:    return t.getWidth();
+  case Type::BF16:  return 16;
+  case Type::F16:   return 16;
+  case Type::F32:   return 32;
+  case Type::F64:   return 64;
+  case Type::Index: return 64;
+  case Type::None:  return 0;
+  case Type::Tagged:
+    return getTypeDataWidth(t.getValueType());
+  }
+  return 32;
+}
+
 //===----------------------------------------------------------------------===//
 // Module Definition Kinds
 //===----------------------------------------------------------------------===//
@@ -194,6 +222,19 @@ struct PortType {
     if (isMemref)
       return memrefType.toMLIR() == other.memrefType.toMLIR();
     return scalarType == other.scalarType;
+  }
+
+  /// Width-compatible check: allows tagged types with the same tag type but
+  /// different value widths. Used for module-port-to-instance connections
+  /// where the SV generator handles width adaptation via emitDataAssign.
+  bool widthCompatible(const PortType &other) const {
+    if (matches(other)) return true;
+    if (isMemref || other.isMemref) return false;
+    if (scalarType.getKind() == Type::Tagged &&
+        other.scalarType.getKind() == Type::Tagged) {
+      return scalarType.getTagType() == other.scalarType.getTagType();
+    }
+    return false;
   }
 };
 

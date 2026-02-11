@@ -43,21 +43,46 @@ int main() {
   auto asw_out1 = builder.addModuleOutput("asw_out1", Type::i32());
 
   // Chain mesh PEs: [0][0] -> [0][1] -> [1][0] -> [1][1]
-  builder.connectToModuleInput(a, mesh.peGrid[0][0], 0);
-  builder.connectToModuleInput(b, mesh.peGrid[0][0], 1);
-  builder.connectPorts(mesh.peGrid[0][0], 0, mesh.peGrid[0][1], 0);
-  builder.connectToModuleInput(c, mesh.peGrid[0][1], 1);
-  builder.connectPorts(mesh.peGrid[0][1], 0, mesh.peGrid[1][0], 0);
+  auto bcast_0_sw_def = builder.newSwitch("bcast_0_sw")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast_0 = builder.clone(bcast_0_sw_def, "bcast_0");
+  builder.connectToModuleInput(a, bcast_0, 0);
+  builder.connectPorts(bcast_0, 0, mesh.peGrid[0][0], 0);
+  builder.connectPorts(bcast_0, 1, asw0, 0);
+  auto bcast_1_sw_def = builder.newSwitch("bcast_1_sw")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast_1 = builder.clone(bcast_1_sw_def, "bcast_1");
+  builder.connectToModuleInput(b, bcast_1, 0);
+  builder.connectPorts(bcast_1, 0, mesh.peGrid[0][0], 1);
+  builder.connectPorts(bcast_1, 1, asw0, 1);
+  auto chain_in_0 = builder.addModuleInput("chain_in_0", Type::i32());
+  builder.connectToModuleInput(chain_in_0, mesh.peGrid[0][1], 0);
+  auto bcast_2_sw_def = builder.newSwitch("bcast_2_sw")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast_2 = builder.clone(bcast_2_sw_def, "bcast_2");
+  builder.connectToModuleInput(c, bcast_2, 0);
+  builder.connectPorts(bcast_2, 0, mesh.peGrid[0][1], 1);
+  builder.connectPorts(bcast_2, 1, asw0, 2);
+  auto chain_in_1 = builder.addModuleInput("chain_in_1", Type::i32());
+  builder.connectToModuleInput(chain_in_1, mesh.peGrid[1][0], 0);
   builder.connectToModuleInput(d, mesh.peGrid[1][0], 1);
-  builder.connectPorts(mesh.peGrid[1][0], 0, mesh.peGrid[1][1], 0);
+  auto chain_in_2 = builder.addModuleInput("chain_in_2", Type::i32());
+  builder.connectToModuleInput(chain_in_2, mesh.peGrid[1][1], 0);
   builder.connectToModuleInput(e, mesh.peGrid[1][1], 1);
-  builder.connectToModuleOutput(mesh.peGrid[1][1], 0, mesh_out);
+  auto chain_in_3 = builder.addModuleInput("chain_in_3", Type::i32());
+  auto chain_in_3_pass_sw = builder.newSwitch("chain_in_3_pass_sw")
+      .setPortCount(1, 1)
+      .setType(Type::i32());
+  auto chain_in_3_pass = builder.clone(chain_in_3_pass_sw, "chain_in_3_pass");
+  builder.connectToModuleInput(chain_in_3, chain_in_3_pass, 0);
+  builder.connectToModuleOutput(chain_in_3_pass, 0, mesh_out);
 
   // Asymmetric switch: 4 inputs (a, b, c, mesh output), 3 outputs
-  builder.connectToModuleInput(a, asw0, 0);
-  builder.connectToModuleInput(b, asw0, 1);
-  builder.connectToModuleInput(c, asw0, 2);
-  builder.connectPorts(mesh.peGrid[1][1], 0, asw0, 3);
+  auto chain_in_4 = builder.addModuleInput("chain_in_4", Type::i32());
+  builder.connectToModuleInput(chain_in_4, asw0, 3);
   builder.connectToModuleOutput(asw0, 0, asw_out0);
   builder.connectToModuleOutput(asw0, 1, asw_out1);
   auto asw_out2 = builder.addModuleOutput("asw_out2", Type::i32());

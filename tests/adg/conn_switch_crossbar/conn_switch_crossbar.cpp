@@ -33,13 +33,18 @@ int main() {
   auto x3 = builder.addModuleInput("x3", Type::i32());
   auto out = builder.addModuleOutput("result", Type::i32());
 
-  builder.connectToModuleInput(x0, a0, 0);
+  auto bcast_0_sw_def = builder.newSwitch("bcast_0_sw")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast_0 = builder.clone(bcast_0_sw_def, "bcast_0");
+  builder.connectToModuleInput(x0, bcast_0, 0);
+  builder.connectPorts(bcast_0, 0, a0, 0);
+  builder.connectPorts(bcast_0, 1, sw0, 2);
   builder.connectToModuleInput(x1, a0, 1);
   builder.connectToModuleInput(x2, a1, 0);
   builder.connectToModuleInput(x3, a1, 1);
   builder.connectPorts(a0, 0, sw0, 0);
   builder.connectPorts(a1, 0, sw0, 1);
-  builder.connectToModuleInput(x0, sw0, 2);
   builder.connectPorts(sw0, 0, a2, 0);
   builder.connectPorts(sw0, 1, a2, 1);
   builder.connectToModuleOutput(a2, 0, out);

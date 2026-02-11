@@ -82,7 +82,6 @@ private:
   void finalizeMemory();
   mlir::LogicalResult buildMemoryControl();
   mlir::LogicalResult verifyMemoryControl();
-  void insertForks();
   void assignHandshakeNames();
 
   mlir::func::FuncOp func;

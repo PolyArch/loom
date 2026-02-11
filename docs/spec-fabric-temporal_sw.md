@@ -97,7 +97,6 @@ If an attribute is omitted, the following defaults apply:
 - Route entries must only enable positions that are connected in
   `connectivity_table`.
 - Each output may select at most one routed input per slot.
-- Each input may route to at most one output per slot.
 - Each slot must have a unique tag value.
 
 Hardware-parameter violations are compile-time errors: `COMP_TEMPORAL_SW_PORT_LIMIT`,
@@ -109,10 +108,27 @@ Hardware-parameter violations are compile-time errors: `COMP_TEMPORAL_SW_PORT_LI
 Configuration-time violations include:
 
 - `CFG_TEMPORAL_SW_DUP_TAG` for duplicate slot tags.
-- `CFG_TEMPORAL_SW_ROUTE_MULTI_OUT` when one output selects multiple inputs in
-  a slot.
-- `CFG_TEMPORAL_SW_ROUTE_MULTI_IN` when one input routes to multiple outputs in
-  a slot.
+- `CFG_TEMPORAL_SW_ROUTE_SAME_TAG_INPUTS_TO_SAME_OUTPUT` when one output
+  selects multiple inputs within the same tag slot (per-slot fan-in).
+
+**Per-slot broadcast**: One input can route to multiple outputs within a tag
+slot. Handshake: atomic broadcast (all targets must be ready AND input must win
+arbitration for all targets). Cross-slot fan-in (different tags routing
+different inputs to same output) is still allowed via existing round-robin
+arbitration.
+
+**Broadcast valid/ready**: `out_valid[j]` depends on `broadcast_won` (the
+winner of output `j` won arbitration for ALL its broadcast targets), with no
+dependency on any `out_ready` signal. This avoids combinational loops through
+downstream consumers' ready paths.
+
+- `out_valid[j] = broadcast_won[arb_winner[j]]`.
+- `in_ready[i] = broadcast_ok[i]`, where `broadcast_ok[i]` requires that
+  input `i` won arbitration for ALL its broadcast targets AND all those
+  targets' `out_ready` are asserted.
+
+Atomic broadcast is guaranteed by `in_ready`: the source only advances when
+ALL broadcast targets have consumed the data.
 
 If no slot matches an input tag at runtime, the temporal switch raises
 `RT_TEMPORAL_SW_NO_MATCH`. See [spec-fabric-error.md](./spec-fabric-error.md).

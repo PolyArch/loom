@@ -55,9 +55,10 @@ Constraints:
   `fabric.temporal_pe` itself.
 - Each FU type operates on value-only data. Tags are stripped at the boundary.
 - Each FU type must use a native (non-tagged) `fabric.pe` interface.
-- Each FU type's value types must match the `fabric.temporal_pe` interface
-  value type `T`. For interface `!dataflow.tagged<T, iJ>`, all FU ports must
-  use type `T`.
+- Each FU type's value types must have data width `<= width(T)` where `T` is
+  the `fabric.temporal_pe` interface value type. For interface
+  `!dataflow.tagged<T, iJ>`, all FU port widths must not exceed `width(T)`.
+  Violations raise `COMP_TEMPORAL_PE_FU_WIDTH`.
 - The body may contain only FU definitions (`fabric.pe` or `fabric.instance`)
   and a single `fabric.yield`.
 - Any `fabric.instance` inside `fabric.temporal_pe` must reference a

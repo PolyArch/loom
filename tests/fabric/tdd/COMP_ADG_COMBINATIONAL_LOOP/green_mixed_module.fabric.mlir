@@ -10,7 +10,9 @@ fabric.module @mixed(%a: i32, %b: i32) -> (i32, i32) {
 }
 
 fabric.module @top(%x: i32) -> (i32) {
-  %u:2 = fabric.instance @mixed(%x, %v#1) : (i32, i32) -> (i32, i32)
-  %v:2 = fabric.instance @mixed(%x, %u#1) : (i32, i32) -> (i32, i32)
+  // Use switch broadcast to duplicate %x for two consumers
+  %bcast:2 = fabric.switch [connectivity_table = [1, 1]] %x : i32 -> i32, i32
+  %u:2 = fabric.instance @mixed(%bcast#0, %v#1) : (i32, i32) -> (i32, i32)
+  %v:2 = fabric.instance @mixed(%bcast#1, %u#1) : (i32, i32) -> (i32, i32)
   fabric.yield %u#0 : i32
 }

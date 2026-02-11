@@ -53,7 +53,13 @@ int main() {
   auto mul_out = builder.addModuleOutput("mul_result", Type::i32());
 
   // Temporal PE path: a,b -> add_tag -> temporal PE -> del_tag -> output
-  builder.connectToModuleInput(a, at0, 0);
+  auto bcast_0_sw_def = builder.newSwitch("bcast_0_sw")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast_0 = builder.clone(bcast_0_sw_def, "bcast_0");
+  builder.connectToModuleInput(a, bcast_0, 0);
+  builder.connectPorts(bcast_0, 0, at0, 0);
+  builder.connectPorts(bcast_0, 1, mul0, 0);
   builder.connectToModuleInput(b, at1, 0);
   builder.connectPorts(at0, 0, tpe0, 0);
   builder.connectPorts(at1, 0, tpe0, 1);
@@ -61,7 +67,6 @@ int main() {
   builder.connectToModuleOutput(dt0, 0, tpe_out);
 
   // Native PE path: a,c -> mul -> output
-  builder.connectToModuleInput(a, mul0, 0);
   builder.connectToModuleInput(c, mul0, 1);
   builder.connectToModuleOutput(mul0, 0, mul_out);
 

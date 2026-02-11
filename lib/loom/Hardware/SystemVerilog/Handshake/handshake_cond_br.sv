@@ -39,7 +39,7 @@ module handshake_cond_br #(
   logic selected_ready;
   assign selected_ready = cond_data ? true_ready : false_ready;
 
-  assign cond_ready = both_valid && selected_ready;
-  assign in_ready   = both_valid && selected_ready;
+  assign cond_ready = in_valid && selected_ready;
+  assign in_ready   = cond_valid && selected_ready;
 
 endmodule

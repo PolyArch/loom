@@ -37,25 +37,30 @@ int main() {
 
   // Chain: pe0 -> pe1 -> pe2 -> ... -> pe9
   builder.connectToModuleInput(init, pe0, 0);
-  builder.connectToModuleInput(step, pe0, 1);
+  auto bcast_0_sw_def = builder.newSwitch("bcast_0_sw")
+      .setPortCount(1, 10)
+      .setType(Type::i32());
+  auto bcast_0 = builder.clone(bcast_0_sw_def, "bcast_0");
+  builder.connectToModuleInput(step, bcast_0, 0);
+  builder.connectPorts(bcast_0, 0, pe0, 1);
+  builder.connectPorts(bcast_0, 1, pe1, 1);
+  builder.connectPorts(bcast_0, 2, pe2, 1);
+  builder.connectPorts(bcast_0, 3, pe3, 1);
+  builder.connectPorts(bcast_0, 4, pe4, 1);
+  builder.connectPorts(bcast_0, 5, pe5, 1);
+  builder.connectPorts(bcast_0, 6, pe6, 1);
+  builder.connectPorts(bcast_0, 7, pe7, 1);
+  builder.connectPorts(bcast_0, 8, pe8, 1);
+  builder.connectPorts(bcast_0, 9, pe9, 1);
   builder.connectPorts(pe0, 0, pe1, 0);
-  builder.connectToModuleInput(step, pe1, 1);
   builder.connectPorts(pe1, 0, pe2, 0);
-  builder.connectToModuleInput(step, pe2, 1);
   builder.connectPorts(pe2, 0, pe3, 0);
-  builder.connectToModuleInput(step, pe3, 1);
   builder.connectPorts(pe3, 0, pe4, 0);
-  builder.connectToModuleInput(step, pe4, 1);
   builder.connectPorts(pe4, 0, pe5, 0);
-  builder.connectToModuleInput(step, pe5, 1);
   builder.connectPorts(pe5, 0, pe6, 0);
-  builder.connectToModuleInput(step, pe6, 1);
   builder.connectPorts(pe6, 0, pe7, 0);
-  builder.connectToModuleInput(step, pe7, 1);
   builder.connectPorts(pe7, 0, pe8, 0);
-  builder.connectToModuleInput(step, pe8, 1);
   builder.connectPorts(pe8, 0, pe9, 0);
-  builder.connectToModuleInput(step, pe9, 1);
 
   builder.connectToModuleOutput(pe9, 0, result);
 

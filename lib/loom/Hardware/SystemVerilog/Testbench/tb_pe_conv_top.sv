@@ -21,6 +21,8 @@ module tb_pe_conv_top;
   logic [15:0] out_data;
   logic        out_u_valid, out_u_ready;
   logic [15:0] out_u_data;
+  logic        error_valid;
+  logic [15:0] error_code;
 
   pe_conv_top dut (
     .clk       (clk),
@@ -36,11 +38,28 @@ module tb_pe_conv_top;
     .out_data  (out_data),
     .out_u_valid (out_u_valid),
     .out_u_ready (out_u_ready),
-    .out_u_data  (out_u_data)
+    .out_u_data  (out_u_data),
+    .bcast_in0_cfg_route_table(2'b11),
+    .bcast_in1_cfg_route_table(2'b11),
+    .error_valid (error_valid),
+    .error_code  (error_code)
   );
 
   initial clk = 0;
   always #5 clk = ~clk;
+
+`ifdef DUMP_FST
+  initial begin : dump_fst
+    $dumpfile("waves.fst");
+    $dumpvars(0, tb_pe_conv_top);
+  end
+`endif
+`ifdef DUMP_FSDB
+  initial begin : dump_fsdb
+    $fsdbDumpfile("waves.fsdb");
+    $fsdbDumpvars(0, tb_pe_conv_top, "+mda");
+  end
+`endif
 
   initial begin : main
     integer pass_count;
@@ -73,6 +92,15 @@ module tb_pe_conv_top;
 
     @(posedge clk);
     #1;
+
+    $display("[%0t] DEBUG pe_conv after posedge:", $time);
+    $display("  in0_valid=%0b in0_ready=%0b in1_valid=%0b in1_ready=%0b",
+             in0_valid, in0_ready, in1_valid, in1_ready);
+    $display("  out_valid=%0b out_ready=%0b out_data=0x%04h",
+             out_valid, out_ready, out_data);
+    $display("  out_u_valid=%0b out_u_ready=%0b out_u_data=0x%04h",
+             out_u_valid, out_u_ready, out_u_data);
+    $display("  error_valid=%0b error_code=0x%04h", error_valid, error_code);
 
     if (out_valid !== 1) begin : check_valid1
       $fatal(1, "out_valid should be 1 after pipeline delay");

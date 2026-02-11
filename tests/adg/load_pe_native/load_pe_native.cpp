@@ -26,8 +26,8 @@ int main() {
   builder.connectToModuleInput(addr, inst, 0);
   builder.connectToModuleInput(data_in, inst, 1);
   builder.connectToModuleInput(ctrl, inst, 2);
-  builder.connectToModuleOutput(inst, 0, data_out);
-  builder.connectToModuleOutput(inst, 1, addr_out);
+  builder.connectToModuleOutput(inst, 0, addr_out);
+  builder.connectToModuleOutput(inst, 1, data_out);
 
   builder.exportMLIR("Output/load_pe_native.fabric.mlir");
   return 0;

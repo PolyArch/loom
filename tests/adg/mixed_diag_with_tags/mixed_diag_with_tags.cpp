@@ -54,17 +54,26 @@ int main() {
   builder.connectPorts(at1, 0, mesh.peGrid[0][0], 1);
 
   // Chain PEs in row-major order: [0][0] -> [0][1] -> [1][0] -> [1][1]
-  builder.connectPorts(mesh.peGrid[0][0], 0, mesh.peGrid[0][1], 0);
-  builder.connectToModuleInput(c, at2, 0);
+  auto chain_in_0 = builder.addModuleInput("chain_in_0", taggedType);
+  builder.connectToModuleInput(chain_in_0, mesh.peGrid[0][1], 0);
+  auto bcast_0_sw_def = builder.newSwitch("bcast_0_sw")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast_0 = builder.clone(bcast_0_sw_def, "bcast_0");
+  builder.connectToModuleInput(c, bcast_0, 0);
+  builder.connectPorts(bcast_0, 0, at2, 0);
+  builder.connectPorts(bcast_0, 1, at3, 0);
   builder.connectPorts(at2, 0, mesh.peGrid[0][1], 1);
-  builder.connectPorts(mesh.peGrid[0][1], 0, mesh.peGrid[1][0], 0);
-  builder.connectToModuleInput(c, at3, 0);
+  auto chain_in_1 = builder.addModuleInput("chain_in_1", taggedType);
+  builder.connectToModuleInput(chain_in_1, mesh.peGrid[1][0], 0);
   builder.connectPorts(at3, 0, mesh.peGrid[1][0], 1);
-  builder.connectPorts(mesh.peGrid[1][0], 0, mesh.peGrid[1][1], 0);
+  auto chain_in_2 = builder.addModuleInput("chain_in_2", taggedType);
+  builder.connectToModuleInput(chain_in_2, mesh.peGrid[1][1], 0);
   builder.connectToModuleInput(d, at4, 0);
   builder.connectPorts(at4, 0, mesh.peGrid[1][1], 1);
 
-  builder.connectPorts(mesh.peGrid[1][1], 0, dt0, 0);
+  auto chain_in_3 = builder.addModuleInput("chain_in_3", taggedType);
+  builder.connectToModuleInput(chain_in_3, dt0, 0);
   builder.connectToModuleOutput(dt0, 0, result);
 
   builder.exportMLIR("Output/mixed_diag_with_tags.fabric.mlir");

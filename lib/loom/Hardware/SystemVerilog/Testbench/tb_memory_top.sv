@@ -37,10 +37,6 @@ module tb_memory_top;
   logic stdone_valid, stdone_ready;
   logic stdone_data;
 
-  // StorePE done output
-  logic st_pe_done_valid, st_pe_done_ready;
-  logic st_pe_done_data;
-
   // Config ports
   logic [3:0] ld0_cfg_data;
   logic [3:0] st0_cfg_data;
@@ -54,6 +50,19 @@ module tb_memory_top;
     clk = 0;
     forever #5 clk = ~clk;
   end
+
+`ifdef DUMP_FST
+  initial begin : dump_fst
+    $dumpfile("waves.fst");
+    $dumpvars(0, tb_memory_top);
+  end
+`endif
+`ifdef DUMP_FSDB
+  initial begin : dump_fsdb
+    $fsdbDumpfile("waves.fsdb");
+    $fsdbDumpvars(0, tb_memory_top, "+mda");
+  end
+`endif
 
   initial begin : test
     integer pass_count;
@@ -70,7 +79,6 @@ module tb_memory_top;
     lddata_ready = 1;
     lddone_ready = 1;
     stdone_ready = 1;
-    st_pe_done_ready = 1;
     ld_addr_data = '0;
     ld_data_in_data = '0;
     ld_ctrl_data = '0;
@@ -106,10 +114,17 @@ module tb_memory_top;
     // Wait for stdone
     iter_var0 = 0;
     while (iter_var0 < 20 && !stdone_valid) begin : wait_stdone
+      $display("[%0t] wait_stdone cycle %0d: stdone_valid=%0b", $time, iter_var0, stdone_valid);
+      $display("  st_addr_ready=%0b st_data_ready=%0b st_ctrl_ready=%0b",
+               st_addr_ready, st_data_ready, st_ctrl_ready);
+      $display("  error_valid=%0b error_code=0x%04h", error_valid, error_code);
       @(posedge clk);
       iter_var0 = iter_var0 + 1;
     end
     if (!stdone_valid) begin : check_stdone
+      $display("[%0t] FINAL: stdone_valid=%0b after %0d cycles", $time, stdone_valid, iter_var0);
+      $display("  st_addr_ready=%0b st_data_ready=%0b st_ctrl_ready=%0b",
+               st_addr_ready, st_data_ready, st_ctrl_ready);
       $fatal(1, "stdone_valid not asserted within 20 cycles");
     end
     @(posedge clk);

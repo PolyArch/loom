@@ -88,13 +88,13 @@ If an attribute is omitted, the following defaults apply:
 - Each output row of `connectivity_table` must have at least one `1`.
 - Each input column of `connectivity_table` must have at least one `1`.
 - Each output may select at most one routed input.
-- Each input may route to at most one output.
 
 Violations of hardware-parameter constraints are compile-time errors:
 `COMP_SWITCH_PORT_LIMIT`, `COMP_SWITCH_TABLE_SHAPE`, `COMP_SWITCH_ROW_EMPTY`,
 `COMP_SWITCH_COL_EMPTY`, and `COMP_SWITCH_ROUTE_LEN_MISMATCH`. Violations of
-runtime routing constraints are configuration errors: `CFG_SWITCH_ROUTE_MULTI_OUT`
-and `CFG_SWITCH_ROUTE_MULTI_IN`. See [spec-fabric-error.md](./spec-fabric-error.md).
+runtime routing constraints are configuration errors:
+`CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT` (multiple inputs route to the same
+output). See [spec-fabric-error.md](./spec-fabric-error.md).
 
 ### Semantics
 
@@ -105,6 +105,24 @@ and `CFG_SWITCH_ROUTE_MULTI_IN`. See [spec-fabric-error.md](./spec-fabric-error.
 
 When an output is connected to exactly one routed input, the output forwards
 that input. If an output has no routed input, the output produces no token.
+
+**Broadcast**: One input can route to multiple outputs (the route_table column
+for that input may have multiple 1s across different output rows). When
+broadcasting, the input's ready signal is the AND of all targeted outputs'
+ready signals (atomic delivery).
+
+One output still receives from at most one input
+(`CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT` enforced).
+
+**Broadcast valid/ready**: `out_valid[j]` depends only on `in_valid[source]`,
+with no dependency on any `out_ready` signal. This avoids combinational loops
+through downstream consumers' ready paths.
+
+- `out_valid[j] = in_valid[source]`.
+- `in_ready[i] = AND(out_ready[k])` for all outputs `k` targeted by input `i`.
+
+Atomic broadcast is guaranteed by `in_ready`: the source only advances when
+ALL broadcast targets have consumed the data (AND of all targeted readys).
 
 ### Timing Model
 
@@ -120,8 +138,9 @@ that input. If an output has no routed input, the output produces no token.
 The switch uses standard valid/ready handshaking. Backpressure propagates from
 outputs to inputs:
 
-- An input is blocked (backpressured) when its destination output is not ready.
-- Each input-output pair operates independently; blocking one path does not
+- An input is blocked (backpressured) when any of its targeted outputs is not
+  ready (broadcast: AND of all targeted output readys).
+- Non-broadcasting paths operate independently; blocking one path does not
   affect other paths.
 
 ### Unrouted Input Error

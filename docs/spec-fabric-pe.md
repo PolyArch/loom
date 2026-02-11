@@ -126,8 +126,8 @@ This attribute is a direct consequence of the Constant Exclusivity Rule: if a
 `fabric.pe` contains `handshake.constant`, it must be the only non-terminator
 operation. Therefore, each PE can have at most one `constant_value`.
 Constant PEs must declare exactly one output port. Multi-consumer fanout must
-be expressed with external `handshake.fork` or `fabric.switch`, not by adding
-multiple constant outputs.
+be expressed with external `fabric.switch` broadcast, not by adding multiple
+constant outputs.
 For the formal `config_mem` definition (32-bit word width, depth calculation,
 and field packing rules), see
 [spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
@@ -204,8 +204,8 @@ user-configurable attributes.
 
 Load PE:
 
-- Inputs: `addr_from_comp`, `ctrl`, `data_from_mem` (data returned from memory)
-- Outputs: `addr_to_mem`, `data_to_comp` (data forwarded to compute)
+- Inputs: `in0=addr_from_comp`, `in1=data_from_mem`, `in2=ctrl`
+- Outputs: `out0=addr_to_mem`, `out1=data_to_comp`
 
 Store PE:
 
@@ -332,23 +332,28 @@ output logic out0_valid, input logic out0_ready, output logic [15:0] out0_data
 Internal body wires carry their operation-specific widths. The shift-register
 pipeline (if `LATENCY > 0`) stores per-output at that output's width.
 
-## Body SSA Single-Use Rule
+## PE Body Wire Fanout
 
-Inside a PE body, every SSA value (including block arguments) may be consumed
-exactly once. Using a value as an operand in two different operations requires
-explicit `handshake.fork`:
+Inside a PE body, SSA value reuse (e.g. `%b = arith.addi %a, %a`) is valid
+and generates wire fanout in the generated SystemVerilog. Body operations are
+connected with proper valid/ready handshake signals. Multi-use SSA values use
+the eager fork pattern (broadcast semantics):
+
+- `srcReady = AND(all dstReady)` -- source advances when all consumers are ready
+- `dstValid[i] = srcValid AND AND(dstReady[j] for all j != i)` -- each consumer
+  sees valid only when all sibling consumers are ready
+
+This enables future replacement of combinational ops with pipelined IP blocks
+without changing the PE skeleton.
 
 ```mlir
-// ILLEGAL: %x consumed twice
-%r = arith.addi %x, %x : i32
-
-// LEGAL: explicit fork before double use
-%f:2 = handshake.fork %x : i32
-%r = arith.addi %f#0, %f#1 : i32
+// VALID: %a reused as both operands (eager fork in SV)
+%r = arith.addi %a, %a : i32
 ```
 
-Violations raise `COMP_IMPLICIT_FANOUT_WITHOUT_FORK`. See
-[spec-fabric-error.md](./spec-fabric-error.md).
+Note: module-level fanout (one `fabric.pe` result consumed by multiple
+instance inputs in a `fabric.module` body) is still prohibited. Use switch
+broadcast for data duplication between modules.
 
 ## Interaction with `fabric.temporal_pe`
 

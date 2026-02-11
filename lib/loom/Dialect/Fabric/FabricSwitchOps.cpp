@@ -6,10 +6,12 @@
 
 #include "loom/Dialect/Fabric/FabricOps.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
+#include "loom/Hardware/Common/FabricError.h"
 
 #include "mlir/IR/OpImplementation.h"
 
 using namespace mlir;
+using namespace loom;
 using namespace loom::fabric;
 
 //===----------------------------------------------------------------------===//
@@ -311,20 +313,20 @@ LogicalResult SwitchOp::verify() {
   }
 
   if (numInputs > 32)
-    return emitOpError("[COMP_SWITCH_PORT_LIMIT] "
-                       "number of inputs must be <= 32; got ")
+    return emitOpError(compErrMsg(CompError::SWITCH_PORT_LIMIT,
+                       "number of inputs must be <= 32; got "))
            << numInputs;
   if (numOutputs > 32)
-    return emitOpError("[COMP_SWITCH_PORT_LIMIT] "
-                       "number of outputs must be <= 32; got ")
+    return emitOpError(compErrMsg(CompError::SWITCH_PORT_LIMIT,
+                       "number of outputs must be <= 32; got "))
            << numOutputs;
 
   if (auto ct = getConnectivityTable()) {
     if (failed(verifyConnectivityTable(
             getOperation(), *ct, numOutputs, numInputs,
-            "[COMP_SWITCH_TABLE_SHAPE]",
-            "[COMP_SWITCH_ROW_EMPTY]",
-            "[COMP_SWITCH_COL_EMPTY]")))
+            compErrCode(CompError::SWITCH_TABLE_SHAPE),
+            compErrCode(CompError::SWITCH_ROW_EMPTY),
+            compErrCode(CompError::SWITCH_COL_EMPTY))))
       return failure();
 
     if (auto rt = getRouteTable()) {
@@ -333,9 +335,9 @@ LogicalResult SwitchOp::verify() {
         if (v == 1)
           ++popcount;
       if (rt->size() != popcount)
-        return emitOpError("[COMP_SWITCH_ROUTE_LEN_MISMATCH] "
+        return emitOpError(compErrMsg(CompError::SWITCH_ROUTE_LEN_MISMATCH,
                            "route_table length must equal popcount of "
-                           "connectivity_table (")
+                           "connectivity_table ("))
                << popcount << "); got " << rt->size();
     }
   }
@@ -534,24 +536,24 @@ LogicalResult TemporalSwOp::verify() {
   }
 
   if (numInputs > 32)
-    return emitOpError("[COMP_TEMPORAL_SW_PORT_LIMIT] "
-                       "number of inputs must be <= 32; got ")
+    return emitOpError(compErrMsg(CompError::TEMPORAL_SW_PORT_LIMIT,
+                       "number of inputs must be <= 32; got "))
            << numInputs;
   if (numOutputs > 32)
-    return emitOpError("[COMP_TEMPORAL_SW_PORT_LIMIT] "
-                       "number of outputs must be <= 32; got ")
+    return emitOpError(compErrMsg(CompError::TEMPORAL_SW_PORT_LIMIT,
+                       "number of outputs must be <= 32; got "))
            << numOutputs;
 
   if (getNumRouteTable() < 1)
-    return emitOpError("[COMP_TEMPORAL_SW_NUM_ROUTE_TABLE] "
-                       "num_route_table must be >= 1");
+    return emitOpError(compErrMsg(CompError::TEMPORAL_SW_NUM_ROUTE_TABLE,
+                       "num_route_table must be >= 1"));
 
   if (auto ct = getConnectivityTable()) {
     if (failed(verifyConnectivityTable(
             getOperation(), *ct, numOutputs, numInputs,
-            "[COMP_TEMPORAL_SW_TABLE_SHAPE]",
-            "[COMP_TEMPORAL_SW_ROW_EMPTY]",
-            "[COMP_TEMPORAL_SW_COL_EMPTY]")))
+            compErrCode(CompError::TEMPORAL_SW_TABLE_SHAPE),
+            compErrCode(CompError::TEMPORAL_SW_ROW_EMPTY),
+            compErrCode(CompError::TEMPORAL_SW_COL_EMPTY))))
       return failure();
 
     // COMP_TEMPORAL_SW_ROUTE_ILLEGAL: validate route_table entries against
@@ -618,8 +620,8 @@ LogicalResult TemporalSwOp::verify() {
 
           // Validate connection.
           if (!connected.contains({outIdx, inIdx}))
-            return emitOpError("[COMP_TEMPORAL_SW_ROUTE_ILLEGAL] "
-                               "route_table slot ")
+            return emitOpError(compErrMsg(CompError::TEMPORAL_SW_ROUTE_ILLEGAL,
+                               "route_table slot "))
                    << slotIdx << " routes output " << outIdx
                    << " from input " << inIdx
                    << " which is not connected";
@@ -633,16 +635,16 @@ LogicalResult TemporalSwOp::verify() {
 
   if (auto rt = getRouteTable()) {
     if (static_cast<int64_t>(rt->size()) > getNumRouteTable())
-      return emitOpError("[COMP_TEMPORAL_SW_TOO_MANY_SLOTS] "
-                         "route_table slot count must be <= num_route_table (")
+      return emitOpError(compErrMsg(CompError::TEMPORAL_SW_TOO_MANY_SLOTS,
+                         "route_table slot count must be <= num_route_table ("))
              << getNumRouteTable() << "); got " << rt->size();
 
     // Sparse format checks: mixed format, slot order, implicit hole.
     if (failed(verifySparseFormat(
             getOperation(), *rt, "route_table",
-            "[COMP_TEMPORAL_SW_MIXED_FORMAT]",
-            "[COMP_TEMPORAL_SW_SLOT_ORDER]",
-            "[COMP_TEMPORAL_SW_IMPLICIT_HOLE]")))
+            compErrCode(CompError::TEMPORAL_SW_MIXED_FORMAT),
+            compErrCode(CompError::TEMPORAL_SW_SLOT_ORDER),
+            compErrCode(CompError::TEMPORAL_SW_IMPLICIT_HOLE))))
       return failure();
   }
 

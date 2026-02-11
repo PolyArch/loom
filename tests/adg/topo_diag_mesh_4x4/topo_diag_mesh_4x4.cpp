@@ -98,59 +98,72 @@ int main() {
   auto in14 = builder.addModuleInput("in14", Type::i32());
   auto in15 = builder.addModuleInput("in15", Type::i32());
   auto in16 = builder.addModuleInput("in16", Type::i32());
-  auto out = builder.addModuleOutput("result", Type::i32());
 
   // PE[0][0]: first PE gets both inputs from module inputs
   builder.connectToModuleInput(in0, mesh.peGrid[0][0], 0);
   builder.connectToModuleInput(in1, mesh.peGrid[0][0], 1);
 
   // PE[0][1]
-  builder.connectPorts(mesh.peGrid[0][0], 0, mesh.peGrid[0][1], 0);
+  auto bcast_0 = builder.addModuleInput("bcast_0", Type::i32());
+  builder.connectToModuleInput(bcast_0, mesh.peGrid[0][1], 0);
   builder.connectToModuleInput(in2, mesh.peGrid[0][1], 1);
   // PE[0][2]
-  builder.connectPorts(mesh.peGrid[0][1], 0, mesh.peGrid[0][2], 0);
+  auto bcast_1 = builder.addModuleInput("bcast_1", Type::i32());
+  builder.connectToModuleInput(bcast_1, mesh.peGrid[0][2], 0);
   builder.connectToModuleInput(in3, mesh.peGrid[0][2], 1);
   // PE[0][3]
-  builder.connectPorts(mesh.peGrid[0][2], 0, mesh.peGrid[0][3], 0);
+  auto bcast_2 = builder.addModuleInput("bcast_2", Type::i32());
+  builder.connectToModuleInput(bcast_2, mesh.peGrid[0][3], 0);
   builder.connectToModuleInput(in4, mesh.peGrid[0][3], 1);
   // PE[1][0]
-  builder.connectPorts(mesh.peGrid[0][3], 0, mesh.peGrid[1][0], 0);
+  auto bcast_3 = builder.addModuleInput("bcast_3", Type::i32());
+  builder.connectToModuleInput(bcast_3, mesh.peGrid[1][0], 0);
   builder.connectToModuleInput(in5, mesh.peGrid[1][0], 1);
   // PE[1][1]
-  builder.connectPorts(mesh.peGrid[1][0], 0, mesh.peGrid[1][1], 0);
+  auto bcast_4 = builder.addModuleInput("bcast_4", Type::i32());
+  builder.connectToModuleInput(bcast_4, mesh.peGrid[1][1], 0);
   builder.connectToModuleInput(in6, mesh.peGrid[1][1], 1);
   // PE[1][2]
-  builder.connectPorts(mesh.peGrid[1][1], 0, mesh.peGrid[1][2], 0);
+  auto bcast_5 = builder.addModuleInput("bcast_5", Type::i32());
+  builder.connectToModuleInput(bcast_5, mesh.peGrid[1][2], 0);
   builder.connectToModuleInput(in7, mesh.peGrid[1][2], 1);
   // PE[1][3]
-  builder.connectPorts(mesh.peGrid[1][2], 0, mesh.peGrid[1][3], 0);
+  auto bcast_6 = builder.addModuleInput("bcast_6", Type::i32());
+  builder.connectToModuleInput(bcast_6, mesh.peGrid[1][3], 0);
   builder.connectToModuleInput(in8, mesh.peGrid[1][3], 1);
   // PE[2][0]
-  builder.connectPorts(mesh.peGrid[1][3], 0, mesh.peGrid[2][0], 0);
+  auto bcast_7 = builder.addModuleInput("bcast_7", Type::i32());
+  builder.connectToModuleInput(bcast_7, mesh.peGrid[2][0], 0);
   builder.connectToModuleInput(in9, mesh.peGrid[2][0], 1);
   // PE[2][1]
-  builder.connectPorts(mesh.peGrid[2][0], 0, mesh.peGrid[2][1], 0);
+  auto bcast_8 = builder.addModuleInput("bcast_8", Type::i32());
+  builder.connectToModuleInput(bcast_8, mesh.peGrid[2][1], 0);
   builder.connectToModuleInput(in10, mesh.peGrid[2][1], 1);
   // PE[2][2]
-  builder.connectPorts(mesh.peGrid[2][1], 0, mesh.peGrid[2][2], 0);
+  auto bcast_9 = builder.addModuleInput("bcast_9", Type::i32());
+  builder.connectToModuleInput(bcast_9, mesh.peGrid[2][2], 0);
   builder.connectToModuleInput(in11, mesh.peGrid[2][2], 1);
   // PE[2][3]
-  builder.connectPorts(mesh.peGrid[2][2], 0, mesh.peGrid[2][3], 0);
+  auto bcast_10 = builder.addModuleInput("bcast_10", Type::i32());
+  builder.connectToModuleInput(bcast_10, mesh.peGrid[2][3], 0);
   builder.connectToModuleInput(in12, mesh.peGrid[2][3], 1);
   // PE[3][0]
-  builder.connectPorts(mesh.peGrid[2][3], 0, mesh.peGrid[3][0], 0);
+  auto bcast_11 = builder.addModuleInput("bcast_11", Type::i32());
+  builder.connectToModuleInput(bcast_11, mesh.peGrid[3][0], 0);
   builder.connectToModuleInput(in13, mesh.peGrid[3][0], 1);
   // PE[3][1]
-  builder.connectPorts(mesh.peGrid[3][0], 0, mesh.peGrid[3][1], 0);
+  auto bcast_12 = builder.addModuleInput("bcast_12", Type::i32());
+  builder.connectToModuleInput(bcast_12, mesh.peGrid[3][1], 0);
   builder.connectToModuleInput(in14, mesh.peGrid[3][1], 1);
   // PE[3][2]
-  builder.connectPorts(mesh.peGrid[3][1], 0, mesh.peGrid[3][2], 0);
+  auto bcast_13 = builder.addModuleInput("bcast_13", Type::i32());
+  builder.connectToModuleInput(bcast_13, mesh.peGrid[3][2], 0);
   builder.connectToModuleInput(in15, mesh.peGrid[3][2], 1);
   // PE[3][3]
-  builder.connectPorts(mesh.peGrid[3][2], 0, mesh.peGrid[3][3], 0);
+  auto bcast_14 = builder.addModuleInput("bcast_14", Type::i32());
+  builder.connectToModuleInput(bcast_14, mesh.peGrid[3][3], 0);
   builder.connectToModuleInput(in16, mesh.peGrid[3][3], 1);
 
-  builder.connectToModuleOutput(mesh.peGrid[3][3], 0, out);
 
   // Validate ADG before export.
   auto validation = builder.validateADG();

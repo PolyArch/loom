@@ -69,11 +69,9 @@ int main() {
   // Single PE: module inputs -> PE[0][0] -> module output
   auto a = builder.addModuleInput("a", Type::i32());
   auto b = builder.addModuleInput("b", Type::i32());
-  auto out = builder.addModuleOutput("result", Type::i32());
 
   builder.connectToModuleInput(a, mesh.peGrid[0][0], 0);
   builder.connectToModuleInput(b, mesh.peGrid[0][0], 1);
-  builder.connectToModuleOutput(mesh.peGrid[0][0], 0, out);
 
   builder.exportMLIR("Output/topo_mesh_1x1.fabric.mlir");
 

@@ -46,27 +46,32 @@ int main() {
   auto ld_out = builder.addModuleOutput("ld_out", Type::i32());
   auto ld_addr_out = builder.addModuleOutput("ld_addr_out", Type::index());
   auto st_addr_out = builder.addModuleOutput("st_addr_out", Type::index());
-  auto st_done = builder.addModuleOutput("st_done", Type::none());
+  auto st_data_out = builder.addModuleOutput("st_data_out", Type::i32());
 
   // Constant PE: ctrl -> const -> compute input 0
   builder.connectToModuleInput(ctrl, c0, 0);
   builder.connectPorts(c0, 0, comp0, 0);
-  builder.connectToModuleInput(x, comp0, 1);
+  auto bcast_0_sw_def = builder.newSwitch("bcast_0_sw")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast_0 = builder.clone(bcast_0_sw_def, "bcast_0");
+  builder.connectToModuleInput(x, bcast_0, 0);
+  builder.connectPorts(bcast_0, 0, comp0, 1);
+  builder.connectPorts(bcast_0, 1, st0, 1);
   builder.connectToModuleOutput(comp0, 0, comp_result);
 
   // Load PE: addr, data_in, ctrl -> data_out, addr_out
   builder.connectToModuleInput(ld_addr, ld0, 0);
   builder.connectToModuleInput(ld_data, ld0, 1);
   builder.connectToModuleInput(ld_ctrl, ld0, 2);
-  builder.connectToModuleOutput(ld0, 0, ld_out);
-  builder.connectToModuleOutput(ld0, 1, ld_addr_out);
+  builder.connectToModuleOutput(ld0, 0, ld_addr_out);
+  builder.connectToModuleOutput(ld0, 1, ld_out);
 
   // Store PE: addr, data, ctrl -> addr_out, done
   builder.connectToModuleInput(st_addr, st0, 0);
-  builder.connectToModuleInput(x, st0, 1);
   builder.connectToModuleInput(st_ctrl, st0, 2);
   builder.connectToModuleOutput(st0, 0, st_addr_out);
-  builder.connectToModuleOutput(st0, 1, st_done);
+  builder.connectToModuleOutput(st0, 1, st_data_out);
 
   builder.exportMLIR("Output/mixed_all_pe_types.fabric.mlir");
   return 0;

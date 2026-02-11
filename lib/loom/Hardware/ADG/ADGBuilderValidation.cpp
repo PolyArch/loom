@@ -5,8 +5,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Hardware/ADG/ADGBuilderImpl.h"
+#include "loom/Hardware/Common/FabricError.h"
 
 #include <functional>
+#include <map>
 
 namespace loom {
 namespace adg {
@@ -96,12 +98,12 @@ static void validateMemoryPorts(
                        const std::string &)>
         addError) {
   if (ldCount == 0 && stCount == 0)
-    addError("COMP_MEMORY_PORTS_EMPTY", "ldCount and stCount are both 0", loc);
+    addError(CompError::MEMORY_PORTS_EMPTY, "ldCount and stCount are both 0", loc);
   if (stCount > 0 && lsqDepth < 1)
-    addError("COMP_MEMORY_LSQ_MIN", "lsqDepth must be >= 1 when stCount > 0",
+    addError(CompError::MEMORY_LSQ_MIN, "lsqDepth must be >= 1 when stCount > 0",
              loc);
   if (stCount == 0 && lsqDepth > 0)
-    addError("COMP_MEMORY_LSQ_WITHOUT_STORE",
+    addError(CompError::MEMORY_LSQ_WITHOUT_STORE,
              "lsqDepth must be 0 when stCount == 0", loc);
 }
 
@@ -123,10 +125,10 @@ ValidationResult ADGBuilder::validateADG() {
     const auto &sw = impl_->switchDefs[i];
     std::string loc = "switch @" + sw.name;
     if (sw.numIn < 1 || sw.numOut < 1)
-      addError("COMP_SWITCH_PORT_ZERO",
+      addError(CompError::SWITCH_PORT_ZERO,
                "switch must have at least 1 input and 1 output", loc);
     if (sw.numIn > 32 || sw.numOut > 32)
-      addError("COMP_SWITCH_PORT_LIMIT",
+      addError(CompError::SWITCH_PORT_LIMIT,
                "switch has more than 32 inputs or outputs", loc);
     validateConnectivityTable(sw.connectivity, sw.numIn, sw.numOut,
                               "COMP_SWITCH", loc, addError);
@@ -137,16 +139,16 @@ ValidationResult ADGBuilder::validateADG() {
     const auto &ts = impl_->temporalSwitchDefs[i];
     std::string loc = "temporal_sw @" + ts.name;
     if (ts.numIn < 1 || ts.numOut < 1)
-      addError("COMP_TEMPORAL_SW_PORT_ZERO",
+      addError(CompError::TEMPORAL_SW_PORT_ZERO,
                "temporal switch must have at least 1 input and 1 output", loc);
     if (ts.numIn > 32 || ts.numOut > 32)
-      addError("COMP_TEMPORAL_SW_PORT_LIMIT",
+      addError(CompError::TEMPORAL_SW_PORT_LIMIT,
                "temporal switch has more than 32 inputs or outputs", loc);
     if (!ts.interfaceType.isTagged())
-      addError("COMP_TEMPORAL_SW_INTERFACE_NOT_TAGGED",
+      addError(CompError::TEMPORAL_SW_INTERFACE_NOT_TAGGED,
                "temporal switch interface type must be tagged", loc);
     if (ts.numRouteTable < 1)
-      addError("COMP_TEMPORAL_SW_NUM_ROUTE_TABLE",
+      addError(CompError::TEMPORAL_SW_NUM_ROUTE_TABLE,
                "num_route_table must be >= 1", loc);
     validateConnectivityTable(ts.connectivity, ts.numIn, ts.numOut,
                               "COMP_TEMPORAL_SW", loc, addError);
@@ -157,19 +159,19 @@ ValidationResult ADGBuilder::validateADG() {
     const auto &tp = impl_->temporalPEDefs[i];
     std::string loc = "temporal_pe @" + tp.name;
     if (!tp.interfaceType.isTagged())
-      addError("COMP_TEMPORAL_PE_INTERFACE_NOT_TAGGED",
+      addError(CompError::TEMPORAL_PE_INTERFACE_NOT_TAGGED,
                "temporal PE interface type must be tagged", loc);
     if (tp.numInstructions < 1)
-      addError("COMP_TEMPORAL_PE_NUM_INSTRUCTION",
+      addError(CompError::TEMPORAL_PE_NUM_INSTRUCTION,
                "num_instruction must be >= 1", loc);
     if (tp.numRegisters > 0 && tp.regFifoDepth == 0)
-      addError("COMP_TEMPORAL_PE_REG_FIFO_DEPTH",
+      addError(CompError::TEMPORAL_PE_REG_FIFO_DEPTH,
                "reg_fifo_depth must be > 0 when num_register > 0", loc);
     if (tp.numRegisters == 0 && tp.regFifoDepth > 0)
-      addError("COMP_TEMPORAL_PE_REG_FIFO_DEPTH",
+      addError(CompError::TEMPORAL_PE_REG_FIFO_DEPTH,
                "reg_fifo_depth must be 0 when num_register == 0", loc);
     if (tp.fuPEDefIndices.empty())
-      addError("COMP_TEMPORAL_PE_EMPTY_BODY",
+      addError(CompError::TEMPORAL_PE_EMPTY_BODY,
                "temporal PE has no FU definitions", loc);
     // Validate each FU definition referenced by this temporal PE.
     unsigned expectedIn = 0, expectedOut = 0;
@@ -177,14 +179,14 @@ ValidationResult ADGBuilder::validateADG() {
       unsigned fuIdx = tp.fuPEDefIndices[fi];
       std::string fuLoc = loc + " FU[" + std::to_string(fi) + "]";
       if (fuIdx >= impl_->peDefs.size()) {
-        addError("COMP_TEMPORAL_PE_FU_INVALID",
+        addError(CompError::TEMPORAL_PE_FU_INVALID,
                  "FU index out of range", fuLoc);
         continue;
       }
       const auto &fu = impl_->peDefs[fuIdx];
       // FUs must use native interface (not tagged).
       if (fu.interface == InterfaceCategory::Tagged)
-        addError("COMP_TEMPORAL_PE_TAGGED_FU",
+        addError(CompError::TEMPORAL_PE_TAGGED_FU,
                  "temporal PE FU must use native interface", fuLoc);
       bool fuHasTagged = false;
       for (const auto &t : fu.inputPorts) {
@@ -196,7 +198,7 @@ ValidationResult ADGBuilder::validateADG() {
         }
       }
       if (fuHasTagged)
-        addError("COMP_TEMPORAL_PE_TAGGED_FU",
+        addError(CompError::TEMPORAL_PE_TAGGED_FU,
                  "temporal PE FU must not have tagged ports", fuLoc);
       // All FUs must have the same port arity.
       unsigned nIn = fu.inputPorts.size();
@@ -206,22 +208,37 @@ ValidationResult ADGBuilder::validateADG() {
         expectedOut = nOut;
       } else {
         if (nIn != expectedIn || nOut != expectedOut)
-          addError("COMP_TEMPORAL_PE_FU_ARITY",
+          addError(CompError::TEMPORAL_PE_FU_ARITY,
                    "FU port count mismatch with first FU ("
                    + std::to_string(nIn) + " in, " + std::to_string(nOut)
                    + " out vs " + std::to_string(expectedIn) + " in, "
                    + std::to_string(expectedOut) + " out)", fuLoc);
       }
+      // FU port data widths must not exceed interface value type width.
+      unsigned interfaceDW = getTypeDataWidth(
+          tp.interfaceType.getValueType());
+      for (size_t pi = 0; pi < fu.inputPorts.size(); ++pi) {
+        if (getTypeDataWidth(fu.inputPorts[pi]) > interfaceDW)
+          addError(CompError::TEMPORAL_PE_FU_WIDTH,
+                   "FU input port " + std::to_string(pi)
+                   + " width exceeds interface type width", fuLoc);
+      }
+      for (size_t po = 0; po < fu.outputPorts.size(); ++po) {
+        if (getTypeDataWidth(fu.outputPorts[po]) > interfaceDW)
+          addError(CompError::TEMPORAL_PE_FU_WIDTH,
+                   "FU output port " + std::to_string(po)
+                   + " width exceeds interface type width", fuLoc);
+      }
     }
     if (!tp.sharedOperandBuffer && tp.shareBufferSize > 0)
-      addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE",
+      addError(CompError::TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE,
                "operand_buffer_size set without enable_share_operand_buffer",
                loc);
     if (tp.sharedOperandBuffer && tp.shareBufferSize == 0)
-      addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING",
+      addError(CompError::TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING,
                "operand_buffer_size missing with share_operand_buffer", loc);
     if (tp.sharedOperandBuffer && tp.shareBufferSize > 8192)
-      addError("COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE",
+      addError(CompError::TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE,
                "operand_buffer_size out of range [1, 8192]", loc);
   }
 
@@ -231,7 +248,7 @@ ValidationResult ADGBuilder::validateADG() {
     std::string loc = "memory @" + mem.name;
     validateMemoryPorts(mem.ldCount, mem.stCount, mem.lsqDepth, loc, addError);
     if (mem.shape.isDynamic())
-      addError("COMP_MEMORY_STATIC_REQUIRED",
+      addError(CompError::MEMORY_STATIC_REQUIRED,
                "fabric.memory requires static memref shape", loc);
   }
 
@@ -247,7 +264,7 @@ ValidationResult ADGBuilder::validateADG() {
     const auto &mt = impl_->mapTagDefs[i];
     std::string loc = "map_tag @" + mt.name;
     if (mt.tableSize < 1 || mt.tableSize > 256)
-      addError("COMP_MAP_TAG_TABLE_SIZE",
+      addError(CompError::MAP_TAG_TABLE_SIZE,
                "table_size out of range [1, 256]", loc);
   }
 
@@ -265,10 +282,10 @@ ValidationResult ADGBuilder::validateADG() {
   auto validateTagType = [&](Type tagType, const std::string &loc) {
     int w = getIntWidth(tagType);
     if (w < 0)
-      addError("COMP_TAG_WIDTH_RANGE",
+      addError(CompError::TAG_WIDTH_RANGE,
                "tag type must be an integer type", loc);
     else if (w < 1 || w > 16)
-      addError("COMP_TAG_WIDTH_RANGE",
+      addError(CompError::TAG_WIDTH_RANGE,
                "tag width outside [1, 16]", loc);
   };
 
@@ -277,13 +294,13 @@ ValidationResult ADGBuilder::validateADG() {
     const auto &fifo = impl_->fifoDefs[i];
     std::string loc = "fifo @" + fifo.name;
     if (fifo.depth < 1)
-      addError("COMP_FIFO_DEPTH_ZERO", "depth must be >= 1", loc);
+      addError(CompError::FIFO_DEPTH_ZERO, "depth must be >= 1", loc);
     // Type must be native or tagged. Type::IN with a native integer width
     // (1, 8, 16, 32, 64) is treated as equivalent to the canonical alias.
     bool validType = isNativeOrEquivalent(fifo.elementType) ||
                      fifo.elementType.isTagged();
     if (!validType)
-      addError("COMP_FIFO_INVALID_TYPE",
+      addError(CompError::FIFO_INVALID_TYPE,
                "type must be a native type or tagged; got " +
                    fifo.elementType.toMLIR(),
                loc);
@@ -291,7 +308,7 @@ ValidationResult ADGBuilder::validateADG() {
     if (fifo.elementType.isTagged()) {
       validateTagType(fifo.elementType.getTagType(), loc);
       if (!isNativeOrEquivalent(fifo.elementType.getValueType()))
-        addError("COMP_FIFO_INVALID_TYPE",
+        addError(CompError::FIFO_INVALID_TYPE,
                  "tagged payload type must be a native type; got " +
                      fifo.elementType.toMLIR(),
                  loc);
@@ -327,11 +344,11 @@ ValidationResult ADGBuilder::validateADG() {
     const auto &pe = impl_->peDefs[i];
     std::string loc = "pe @" + pe.name;
     if (pe.inputPorts.empty())
-      addError("COMP_PE_EMPTY_BODY", "PE has no input ports", loc);
+      addError(CompError::PE_EMPTY_BODY, "PE has no input ports", loc);
     if (pe.outputPorts.empty())
-      addError("COMP_PE_EMPTY_BODY", "PE has no output ports", loc);
+      addError(CompError::PE_EMPTY_BODY, "PE has no output ports", loc);
     if (pe.bodyMLIR.empty() && pe.singleOp.empty())
-      addError("COMP_PE_EMPTY_BODY", "PE has no body or operation", loc);
+      addError(CompError::PE_EMPTY_BODY, "PE has no body or operation", loc);
     // Check for mixed interface (some tagged, some not).
     bool hasTagged = false, hasNative = false;
     for (const auto &t : pe.inputPorts)
@@ -339,19 +356,20 @@ ValidationResult ADGBuilder::validateADG() {
     for (const auto &t : pe.outputPorts)
       (t.isTagged() ? hasTagged : hasNative) = true;
     if (hasTagged && hasNative)
-      addError("COMP_PE_MIXED_INTERFACE",
+      addError(CompError::PE_MIXED_INTERFACE,
                "PE has mixed native and tagged ports", loc);
     if (pe.interface == InterfaceCategory::Tagged && !hasTagged)
-      addError("COMP_PE_TAGGED_INTERFACE_NATIVE_PORTS",
+      addError(CompError::PE_TAGGED_INTERFACE_NATIVE_PORTS,
                "PE has Tagged interface but all ports are native", loc);
     if (pe.interface == InterfaceCategory::Native && hasTagged)
-      addError("COMP_PE_NATIVE_INTERFACE_TAGGED_PORTS",
+      addError(CompError::PE_NATIVE_INTERFACE_TAGGED_PORTS,
                "PE has Native interface but has tagged ports", loc);
     // Validate tag widths on all tagged port types.
     for (const auto &t : pe.inputPorts)
       validateTaggedType(t, loc + " (input port)");
     for (const auto &t : pe.outputPorts)
       validateTaggedType(t, loc + " (output port)");
+
   }
 
   // Validate load PE definitions.
@@ -361,16 +379,16 @@ ValidationResult ADGBuilder::validateADG() {
     if (lp.interface == InterfaceCategory::Tagged) {
       int w = getIntWidth(Type::iN(lp.tagWidth));
       if (w < 1 || w > 16)
-        addError("COMP_TAG_WIDTH_RANGE",
+        addError(CompError::TAG_WIDTH_RANGE,
                  "tag width outside [1, 16]", loc);
     }
     if (lp.hwType == HardwareType::TagTransparent &&
         lp.interface != InterfaceCategory::Tagged)
-      addError("COMP_LOADPE_TRANSPARENT_NATIVE",
+      addError(CompError::LOADPE_TRANSPARENT_NATIVE,
                "TagTransparent hardware type requires Tagged interface", loc);
     if (lp.hwType == HardwareType::TagTransparent &&
         lp.interface == InterfaceCategory::Tagged && lp.queueDepth < 1)
-      addError("COMP_LOADPE_TRANSPARENT_QUEUE_DEPTH",
+      addError(CompError::LOADPE_TRANSPARENT_QUEUE_DEPTH,
                "TagTransparent load PE requires queueDepth >= 1", loc);
   }
 
@@ -381,16 +399,16 @@ ValidationResult ADGBuilder::validateADG() {
     if (sp.interface == InterfaceCategory::Tagged) {
       int w = getIntWidth(Type::iN(sp.tagWidth));
       if (w < 1 || w > 16)
-        addError("COMP_TAG_WIDTH_RANGE",
+        addError(CompError::TAG_WIDTH_RANGE,
                  "tag width outside [1, 16]", loc);
     }
     if (sp.hwType == HardwareType::TagTransparent &&
         sp.interface != InterfaceCategory::Tagged)
-      addError("COMP_STOREPE_TRANSPARENT_NATIVE",
+      addError(CompError::STOREPE_TRANSPARENT_NATIVE,
                "TagTransparent hardware type requires Tagged interface", loc);
     if (sp.hwType == HardwareType::TagTransparent &&
         sp.interface == InterfaceCategory::Tagged && sp.queueDepth < 1)
-      addError("COMP_STOREPE_TRANSPARENT_QUEUE_DEPTH",
+      addError(CompError::STOREPE_TRANSPARENT_QUEUE_DEPTH,
                "TagTransparent store PE requires queueDepth >= 1", loc);
   }
 
@@ -415,7 +433,7 @@ ValidationResult ADGBuilder::validateADG() {
 
   // Check for empty module body.
   if (impl_->instances.empty())
-    addError("COMP_MODULE_EMPTY_BODY",
+    addError(CompError::MODULE_EMPTY_BODY,
              "module has no instances", "module @" + impl_->moduleName);
 
   // Graph-level validation: check type compatibility of all connections.
@@ -431,7 +449,7 @@ ValidationResult ADGBuilder::validateADG() {
           std::to_string(conn.srcPort) + " -> " +
           impl_->instances[conn.dstInst].name + ":" +
           std::to_string(conn.dstPort);
-      addError("COMP_TYPE_MISMATCH",
+      addError(CompError::FABRIC_TYPE_MISMATCH,
                "type mismatch: " + srcType.toMLIR() + " vs " + dstType.toMLIR(),
                loc);
     }
@@ -446,12 +464,12 @@ ValidationResult ADGBuilder::validateADG() {
     PortType srcType = port.isMemref ? PortType::memref(port.memrefType)
                                      : PortType::scalar(port.type);
     auto dstType = impl_->getInstanceInputPortType(conn.instIdx, conn.dstPort);
-    if (!srcType.matches(dstType)) {
+    if (!srcType.widthCompatible(dstType)) {
       std::string loc =
           "%" + port.name + " -> " +
           impl_->instances[conn.instIdx].name + ":" +
           std::to_string(conn.dstPort);
-      addError("COMP_TYPE_MISMATCH",
+      addError(CompError::FABRIC_TYPE_MISMATCH,
                "type mismatch: " + srcType.toMLIR() + " vs " + dstType.toMLIR(),
                loc);
     }
@@ -466,11 +484,11 @@ ValidationResult ADGBuilder::validateADG() {
     const auto &port = impl_->ports[conn.portIdx];
     PortType dstType = port.isMemref ? PortType::memref(port.memrefType)
                                      : PortType::scalar(port.type);
-    if (!srcType.matches(dstType)) {
+    if (!srcType.widthCompatible(dstType)) {
       std::string loc =
           impl_->instances[conn.instIdx].name + ":" +
           std::to_string(conn.srcPort) + " -> %" + port.name;
-      addError("COMP_TYPE_MISMATCH",
+      addError(CompError::FABRIC_TYPE_MISMATCH,
                "type mismatch: " + srcType.toMLIR() + " vs " + dstType.toMLIR(),
                loc);
     }
@@ -484,7 +502,7 @@ ValidationResult ADGBuilder::validateADG() {
       if (conn.portIdx == i) { found = true; break; }
     }
     if (!found)
-      addError("COMP_OUTPUT_UNCONNECTED",
+      addError(CompError::OUTPUT_UNCONNECTED,
                "module output %" + impl_->ports[i].name + " has no source",
                "module @" + impl_->moduleName);
   }
@@ -510,12 +528,12 @@ ValidationResult ADGBuilder::validateADG() {
       std::string loc =
           impl_->instances[instIdx].name + ":" + std::to_string(p);
       if (driverCount[p] > 1)
-        addError("COMP_MULTI_DRIVER",
+        addError(CompError::MULTI_DRIVER,
                  "input port has " + std::to_string(driverCount[p]) +
                      " drivers (expected at most 1)",
                  loc);
       if (driverCount[p] == 0)
-        addError("COMP_INPUT_UNCONNECTED",
+        addError(CompError::INPUT_UNCONNECTED,
                  "instance input port is not connected", loc);
     }
   }
@@ -541,7 +559,7 @@ ValidationResult ADGBuilder::validateADG() {
       if (!used[p]) {
         std::string loc = impl_->instances[instIdx].name + ":" +
                           std::to_string(p) + " (output)";
-        addError("COMP_OUTPUT_DANGLING",
+        addError(CompError::OUTPUT_DANGLING,
                  "instance output port is not connected to any consumer", loc);
       }
     }
@@ -663,9 +681,48 @@ ValidationResult ADGBuilder::validateADG() {
       }
 
       if (hasCycle)
-        addError("COMP_ADG_COMBINATIONAL_LOOP",
+        addError(CompError::ADG_COMBINATIONAL_LOOP,
                  "connection graph contains a combinational loop (all elements "
                  "are zero-delay)",
+                 "module @" + impl_->moduleName);
+    }
+  }
+
+  // Strict 1-to-1 connection validation: detect fanout and multi-source
+  {
+    // Build output fanout counts: (instIdx, srcPort) -> count
+    std::map<std::pair<unsigned, int>, unsigned> outFanout;
+    for (const auto &c : impl_->internalConns)
+      ++outFanout[{c.srcInst, c.srcPort}];
+    for (const auto &c : impl_->outputConns)
+      ++outFanout[{c.instIdx, c.srcPort}];
+    for (const auto &[key, count] : outFanout) {
+      if (count > 1)
+        addError(CompError::FANOUT_MODULE_INNER,
+                 "output port " + std::to_string(key.second) +
+                     " of instance '" +
+                     impl_->instances[key.first].name +
+                     "' has " + std::to_string(count) +
+                     " destinations (strict 1-to-1 requires exactly 1)"
+                     " (use switch broadcast for data duplication)",
+                 "module @" + impl_->moduleName);
+    }
+
+    // Build input fanout counts: (instIdx, dstPort) -> count
+    std::map<std::pair<unsigned, int>, unsigned> inFanout;
+    for (const auto &c : impl_->internalConns)
+      ++inFanout[{c.dstInst, c.dstPort}];
+    for (const auto &c : impl_->inputConns)
+      ++inFanout[{c.instIdx, c.dstPort}];
+    for (const auto &[key, count] : inFanout) {
+      if (count > 1)
+        addError(CompError::FANOUT_MODULE_BOUNDARY,
+                 "input port " + std::to_string(key.second) +
+                     " of instance '" +
+                     impl_->instances[key.first].name +
+                     "' has " + std::to_string(count) +
+                     " sources (strict 1-to-1 requires exactly 1)"
+                     " (use switch broadcast for data duplication)",
                  "module @" + impl_->moduleName);
     }
   }

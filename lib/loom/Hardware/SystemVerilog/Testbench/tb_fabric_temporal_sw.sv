@@ -116,48 +116,85 @@ module tb_fabric_temporal_sw;
     pass_count = pass_count + 1;
     in_valid = '0;
 
-    // Check 4: CFG_TEMPORAL_SW_ROUTE_MULTI_OUT - input routes to >1 output
+    // Check 4: Broadcast - input routes to >1 output (now valid)
     rst_n = 0;
     in_valid = '0;
     cfg_data = '0;
     repeat (2) @(posedge clk);
     rst_n = 1;
     @(posedge clk);
-    // Entry 0: valid=1, tag=1, routes: in0->out0 AND in0->out1 (multi-out for in0)
+    // Entry 0: valid=1, tag=1, routes: in0->out0 AND in0->out1 (broadcast)
     // Route bits: [out0_in0, out0_in1, out1_in0, out1_in1]
     cfg_data[ENTRY_WIDTH - 1] = 1'b1;
     cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(1);
     cfg_data[0] = 1'b1; // out0->in0
     cfg_data[2] = 1'b1; // out1->in0 (in0 routes to both outputs)
+    // Send input 0 with tag=1
+    in_data = '0;
+    in_data[DATA_WIDTH +: TAG_WIDTH] = TAG_WIDTH'(1);
+    in_data[DATA_WIDTH-1:0] = 32'hCAFE;
+    in_valid = '0;
+    in_valid[0] = 1'b1;
+    out_ready = '1;
     @(posedge clk);
-    @(posedge clk);
-    if (error_valid !== 1'b1) begin : check_multi_out
-      $fatal(1, "expected CFG_TEMPORAL_SW_ROUTE_MULTI_OUT error");
+    #1;
+    // No error expected (broadcast is valid)
+    if (error_valid !== 1'b0) begin : check_broadcast_no_err
+      $fatal(1, "broadcast should not trigger error, got code %0d", error_code);
     end
-    if (error_code !== CFG_TEMPORAL_SW_ROUTE_MULTI_OUT) begin : check_multi_out_code
-      $fatal(1, "wrong error code for multi_out: got %0d", error_code);
+    // Both outputs should receive the data with correct values
+    if (out_valid[0] !== 1'b1) begin : check_broadcast_out0
+      $fatal(1, "broadcast: out_valid[0] should be 1");
+    end
+    if (out_valid[1] !== 1'b1) begin : check_broadcast_out1
+      $fatal(1, "broadcast: out_valid[1] should be 1");
+    end
+    // Verify output data: both ports carry {tag=1, data=0xCAFE}
+    if (out_data[SAFE_PW-1:0] !== {TAG_WIDTH'(1), DATA_WIDTH'(32'hCAFE)}) begin : check_broadcast_data0
+      $fatal(1, "broadcast: out0 data mismatch, got 0x%h", out_data[SAFE_PW-1:0]);
+    end
+    if (out_data[2*SAFE_PW-1:SAFE_PW] !== {TAG_WIDTH'(1), DATA_WIDTH'(32'hCAFE)}) begin : check_broadcast_data1
+      $fatal(1, "broadcast: out1 data mismatch, got 0x%h", out_data[2*SAFE_PW-1:SAFE_PW]);
     end
     pass_count = pass_count + 1;
 
-    // Check 5: CFG_TEMPORAL_SW_ROUTE_MULTI_IN - output selects >1 input
+    // Check 4b: Broadcast backpressure - deassert one output ready
+    // When one output is not ready, in_ready should go low
+    out_ready[1] = 1'b0;
+    @(posedge clk);
+    #1;
+    if (in_ready[0] !== 1'b0) begin : check_broadcast_bp
+      $fatal(1, "broadcast backpressure: in_ready[0] should be 0 when out_ready[1]=0");
+    end
+    // Reassert and verify data still correct
+    out_ready[1] = 1'b1;
+    @(posedge clk);
+    #1;
+    if (in_ready[0] !== 1'b1) begin : check_broadcast_bp_release
+      $fatal(1, "broadcast backpressure release: in_ready[0] should be 1");
+    end
+    pass_count = pass_count + 1;
+    in_valid = '0;
+
+    // Check 5: CFG_TEMPORAL_SW_ROUTE_SAME_TAG_INPUTS_TO_SAME_OUTPUT - output selects >1 input
     rst_n = 0;
     in_valid = '0;
     cfg_data = '0;
     repeat (2) @(posedge clk);
     rst_n = 1;
     @(posedge clk);
-    // Entry 0: valid=1, tag=1, routes: in0->out0 AND in1->out0 (multi-in for out0)
+    // Entry 0: valid=1, tag=1, routes: in0->out0 AND in1->out0 (same-tag inputs to same output)
     cfg_data[ENTRY_WIDTH - 1] = 1'b1;
     cfg_data[NUM_CONNECTED +: TAG_WIDTH] = TAG_WIDTH'(1);
     cfg_data[0] = 1'b1; // out0->in0
-    cfg_data[1] = 1'b1; // out0->in1 (out0 selects both inputs)
+    cfg_data[1] = 1'b1; // out0->in1 (out0 selects both inputs in same slot)
     @(posedge clk);
     @(posedge clk);
-    if (error_valid !== 1'b1) begin : check_multi_in
-      $fatal(1, "expected CFG_TEMPORAL_SW_ROUTE_MULTI_IN error");
+    if (error_valid !== 1'b1) begin : check_same_tag
+      $fatal(1, "expected CFG_TEMPORAL_SW_ROUTE_SAME_TAG_INPUTS_TO_SAME_OUTPUT error");
     end
-    if (error_code !== CFG_TEMPORAL_SW_ROUTE_MULTI_IN) begin : check_multi_in_code
-      $fatal(1, "wrong error code for multi_in: got %0d", error_code);
+    if (error_code !== CFG_TEMPORAL_SW_ROUTE_SAME_TAG_INPUTS_TO_SAME_OUTPUT) begin : check_same_tag_code
+      $fatal(1, "wrong error code for same_tag_inputs: got %0d", error_code);
     end
     pass_count = pass_count + 1;
 

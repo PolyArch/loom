@@ -97,7 +97,8 @@ static FuzzParams generateParams(unsigned seed, unsigned idx) {
   for (unsigned i = 0; i < p.numInstances; ++i)
     p.instPEDef[i] = rng() % p.numPEDefs;
 
-  // Random acyclic connections.
+  // Random acyclic connections (single-fanout: each output port used once).
+  std::vector<bool> srcUsed(p.numInstances, false);
   p.inputSrc.resize(p.numInstances, std::vector<int>(2, -1));
   unsigned numConns = rng() % (p.numInstances - 1);
   for (unsigned c = 0; c < numConns; ++c) {
@@ -105,14 +106,45 @@ static FuzzParams generateParams(unsigned seed, unsigned idx) {
     unsigned src = rng() % (p.numInstances - 1);
     unsigned dst = src + 1 + rng() % (p.numInstances - src - 1);
     unsigned dstPort = rng() % 2;
-    if (p.inputSrc[dst][dstPort] == -1)
+    if (p.inputSrc[dst][dstPort] == -1 && !srcUsed[src]) {
       p.inputSrc[dst][dstPort] = (int)src;
+      srcUsed[src] = true;
+    }
   }
 
   p.numOutputs = 1 + rng() % 3;
   p.outputSrcInst.resize(p.numOutputs);
-  for (unsigned o = 0; o < p.numOutputs; ++o)
-    p.outputSrcInst[o] = rng() % p.numInstances;
+  for (unsigned o = 0; o < p.numOutputs; ++o) {
+    unsigned base = rng() % p.numInstances;
+    bool found = false;
+    for (unsigned tries = 0; tries < p.numInstances; ++tries) {
+      unsigned candidate = (base + tries) % p.numInstances;
+      if (!srcUsed[candidate]) {
+        p.outputSrcInst[o] = candidate;
+        srcUsed[candidate] = true;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      p.numOutputs = o;
+      p.outputSrcInst.resize(o);
+      break;
+    }
+  }
+
+  // Ensure at least one module output exists.
+  if (p.numOutputs == 0) {
+    p.numOutputs = 1;
+    // Reclaim instance 0 from any internal connection to use as output.
+    for (unsigned i = 0; i < p.numInstances; ++i) {
+      for (unsigned port = 0; port < 2; ++port) {
+        if (p.inputSrc[i][port] == 0)
+          p.inputSrc[i][port] = -1;
+      }
+    }
+    p.outputSrcInst = {0};
+  }
 
   return p;
 }

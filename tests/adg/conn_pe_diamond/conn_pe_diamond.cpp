@@ -39,9 +39,14 @@ int main() {
 
   builder.connectToModuleInput(a, add0, 0);
   builder.connectToModuleInput(b, add0, 1);
-  builder.connectPorts(add0, 0, mul0, 0);
+  auto bcast_0_sw_def = builder.newSwitch("bcast_0_sw")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast_0 = builder.clone(bcast_0_sw_def, "bcast_0");
+  builder.connectPorts(add0, 0, bcast_0, 0);
+  builder.connectPorts(bcast_0, 0, mul0, 0);
+  builder.connectPorts(bcast_0, 1, mul1, 0);
   builder.connectToModuleInput(c, mul0, 1);
-  builder.connectPorts(add0, 0, mul1, 0);
   builder.connectToModuleInput(d, mul1, 1);
   builder.connectPorts(mul0, 0, add1, 0);
   builder.connectPorts(mul1, 0, add1, 1);

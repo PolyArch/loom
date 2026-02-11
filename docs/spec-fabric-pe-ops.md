@@ -97,13 +97,12 @@ All four dataflow operations (`carry`, `invariant`, `stream`, `gate`) may use
 either native or tagged PE interfaces. Only `dataflow.stream` adds extra
 runtime configuration bits (`cont_cond_sel`).
 
-## handshake Dialect (8 operations)
+## handshake Dialect (7 operations)
 
 | Operation | Description |
 |-----------|-------------|
 | `handshake.cond_br` | Conditional branch |
 | `handshake.constant` | Constant value (runtime configurable) |
-| `handshake.fork` | Data fork (one input to multiple outputs) |
 | `handshake.join` | Data join (multiple inputs to one output) |
 | `handshake.load` | Memory load |
 | `handshake.mux` | Multiplexer |
@@ -145,7 +144,7 @@ A `fabric.pe` body must use operations from exactly one consumption group:
 - All `math` operations
 - `llvm.intr.bitreverse`
 - `handshake.load`, `handshake.store`, `handshake.constant`
-- `handshake.fork`, `handshake.join`, `handshake.sink`
+- `handshake.join`, `handshake.sink`
 
 **Partial-consume/partial-produce group:**
 - `handshake.cond_br`

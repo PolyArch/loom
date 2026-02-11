@@ -21,13 +21,13 @@ int main() {
   auto data = builder.addModuleInput("data", Type::i32());
   auto ctrl = builder.addModuleInput("ctrl", Type::none());
   auto addr_out = builder.addModuleOutput("addr_out", Type::index());
-  auto done = builder.addModuleOutput("done", Type::none());
+  auto data_out = builder.addModuleOutput("data_out", Type::i32());
 
   builder.connectToModuleInput(addr, inst, 0);
   builder.connectToModuleInput(data, inst, 1);
   builder.connectToModuleInput(ctrl, inst, 2);
   builder.connectToModuleOutput(inst, 0, addr_out);
-  builder.connectToModuleOutput(inst, 1, done);
+  builder.connectToModuleOutput(inst, 1, data_out);
 
   builder.exportMLIR("Output/store_pe_native.fabric.mlir");
   return 0;

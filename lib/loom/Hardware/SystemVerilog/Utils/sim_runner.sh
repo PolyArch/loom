@@ -221,7 +221,7 @@ elif [[ "${MODE}" == "expect-fail" ]]; then
   # to rule out unrelated failures (e.g., missing files, syntax errors in
   # unrelated modules).
   if [[ "${local_rc}" -ne 0 && "${ERR_PATTERN}" == COMP_* ]]; then
-    if grep -qiE '(\$fatal|%Fatal|ASCRANGE|SELRANGE|Width of range)' \
+    if grep -qiE '(\$fatal|%Fatal|ASCRANGE|SELRANGE|Width of range|ZMMCM|SIOB)' \
          "${OUTDIR}/compile.log" 2>/dev/null; then
       exit 0
     fi

@@ -199,8 +199,9 @@ The following invariants apply to all connections inside a `fabric.module`:
 1. **Strict 1-to-1 connections**: Every port connection inside a `fabric.module`
    must be exactly one-to-one. A single output port can connect to exactly one
    input port, and vice versa. There are no implicit fan-out or fan-in
-   connections. Data duplication requires explicit `handshake.fork`; data merging
-   requires explicit `handshake.join` or switch arbitration.
+   connections. Data duplication at module level uses switch broadcast (one input
+   routed to multiple outputs via `fabric.switch` or `fabric.temporal_sw`); data
+   merging (fan-in) uses `fabric.temporal_sw` arbitration.
 
 2. **No implicit width adaptation**: All connections must match exactly in data
    width. No zero-extension, truncation, or sign-extension is performed
@@ -216,13 +217,21 @@ The following invariants apply to all connections inside a `fabric.module`:
    determined by its semantic type. There is no requirement for uniform data
    width across ports. Tag width is uniform; data width is per-port.
 
+**Module-level SSA single-use**: Inside a `fabric.module` body, every SSA value
+(operation result or block argument) must be consumed at most once. Data
+duplication between modules uses switch broadcast (`fabric.switch` or
+`fabric.temporal_sw` configured with a route table where one input routes to
+multiple outputs). Inside a `fabric.pe` body, SSA value reuse is valid and
+generates simple wire fanout in the generated SystemVerilog.
+
 **Error codes** (see [spec-fabric-error.md](./spec-fabric-error.md)):
 
-- `COMP_IMPLICIT_FANOUT_WITHOUT_FORK`: An SSA value or port output is consumed
-  by more than one destination without explicit `handshake.fork`.
-- `COMP_FANOUT_OUTPUT`: An instance output port has multiple consumers.
-- `COMP_FANOUT_INPUT`: A module input feeds multiple instance input ports
-  without explicit fork.
+- `COMP_FANOUT_MODULE_INNER`: An SSA result of an operation inside the
+  `fabric.module` body has multiple consumers. Use switch broadcast for
+  data duplication.
+- `COMP_FANOUT_MODULE_BOUNDARY`: A `fabric.module` input argument feeds
+  multiple instance/operation input ports. Use switch broadcast for data
+  duplication.
 
 ## Operation: `fabric.instance`
 

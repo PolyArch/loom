@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Hardware/ADG/ADGBuilderImpl.h"
+#include "loom/Hardware/Common/FabricError.h"
 
 #include "loom/Dialect/Dataflow/DataflowDialect.h"
 
@@ -328,6 +329,40 @@ void ADGBuilder::connectPorts(InstanceHandle src, int srcPort,
                  " out of range [0, " +
                  std::to_string(impl_->getInstanceInputCount(dst.id)) +
                  ") for instance '" + impl_->instances[dst.id].name + "'");
+  // Strict 1-to-1: check output port not already connected (no fanout)
+  for (const auto &c : impl_->internalConns) {
+    if (c.srcInst == src.id && c.srcPort == srcPort)
+      builderError("connectPorts",
+                   std::string(CompError::FANOUT_MODULE_INNER) + ": output port " +
+                       std::to_string(srcPort) + " of instance '" +
+                       impl_->instances[src.id].name +
+                       "' is already connected; use switch broadcast for data duplication");
+  }
+  for (const auto &c : impl_->outputConns) {
+    if (c.instIdx == src.id && c.srcPort == srcPort)
+      builderError("connectPorts",
+                   std::string(CompError::FANOUT_MODULE_INNER) + ": output port " +
+                       std::to_string(srcPort) + " of instance '" +
+                       impl_->instances[src.id].name +
+                       "' is already connected to a module output");
+  }
+  // Strict 1-to-1: check input port not already connected
+  for (const auto &c : impl_->internalConns) {
+    if (c.dstInst == dst.id && c.dstPort == dstPort)
+      builderError("connectPorts",
+                   std::string(CompError::FANOUT_MODULE_BOUNDARY) + ": input port " +
+                       std::to_string(dstPort) + " of instance '" +
+                       impl_->instances[dst.id].name +
+                       "' already has a source connection");
+  }
+  for (const auto &c : impl_->inputConns) {
+    if (c.instIdx == dst.id && c.dstPort == dstPort)
+      builderError("connectPorts",
+                   std::string(CompError::FANOUT_MODULE_BOUNDARY) + ": input port " +
+                       std::to_string(dstPort) + " of instance '" +
+                       impl_->instances[dst.id].name +
+                       "' already connected from a module input");
+  }
   impl_->internalConns.push_back(
       {src.id, srcPort, dst.id, dstPort});
 }
@@ -383,6 +418,23 @@ void ADGBuilder::connectToModuleInput(PortHandle port, InstanceHandle dst,
                  std::to_string(dstPort) + " out of range [0, " +
                  std::to_string(impl_->getInstanceInputCount(dst.id)) +
                  ") for instance '" + impl_->instances[dst.id].name + "'");
+  // Strict 1-to-1: check destination input not already connected
+  for (const auto &c : impl_->inputConns) {
+    if (c.instIdx == dst.id && c.dstPort == dstPort)
+      builderError("connectToModuleInput",
+                   std::string(CompError::FANOUT_MODULE_BOUNDARY) + ": input port " +
+                       std::to_string(dstPort) + " of instance '" +
+                       impl_->instances[dst.id].name +
+                       "' already has a source connection");
+  }
+  for (const auto &c : impl_->internalConns) {
+    if (c.dstInst == dst.id && c.dstPort == dstPort)
+      builderError("connectToModuleInput",
+                   std::string(CompError::FANOUT_MODULE_BOUNDARY) + ": input port " +
+                       std::to_string(dstPort) + " of instance '" +
+                       impl_->instances[dst.id].name +
+                       "' already connected from another source");
+  }
   impl_->inputConns.push_back({port.id, dst.id, dstPort});
 }
 
@@ -403,6 +455,23 @@ void ADGBuilder::connectToModuleOutput(InstanceHandle src, int srcPort,
                  std::to_string(srcPort) + " out of range [0, " +
                  std::to_string(impl_->getInstanceOutputCount(src.id)) +
                  ") for instance '" + impl_->instances[src.id].name + "'");
+  // Strict 1-to-1: check source output not already connected
+  for (const auto &c : impl_->outputConns) {
+    if (c.instIdx == src.id && c.srcPort == srcPort)
+      builderError("connectToModuleOutput",
+                   std::string(CompError::FANOUT_MODULE_INNER) + ": output port " +
+                       std::to_string(srcPort) + " of instance '" +
+                       impl_->instances[src.id].name +
+                       "' is already connected to a module output");
+  }
+  for (const auto &c : impl_->internalConns) {
+    if (c.srcInst == src.id && c.srcPort == srcPort)
+      builderError("connectToModuleOutput",
+                   std::string(CompError::FANOUT_MODULE_INNER) + ": output port " +
+                       std::to_string(srcPort) + " of instance '" +
+                       impl_->instances[src.id].name +
+                       "' is already connected to another destination");
+  }
   impl_->outputConns.push_back({src.id, srcPort, port.id});
 }
 
@@ -761,13 +830,19 @@ unsigned ADGBuilder::Impl::getInstanceInputCount(unsigned instIdx) const {
     return temporalSwitchDefs[inst.defIdx].numIn;
   case ModuleKind::Memory: {
     auto &mem = memoryDefs[inst.defIdx];
-    // load addrs + store addrs + store data = ldCount + 2*stCount
-    return mem.ldCount + 2 * mem.stCount;
+    // Presence-based: at most ld_addr + st_addr + st_data
+    unsigned count = 0;
+    if (mem.ldCount > 0) count++;      // ld_addr
+    if (mem.stCount > 0) count += 2;   // st_addr + st_data
+    return count;
   }
   case ModuleKind::ExtMemory: {
     auto &mem = extMemoryDefs[inst.defIdx];
-    // memref + load addrs + store addrs + store data = 1 + ldCount + 2*stCount
-    return 1 + mem.ldCount + 2 * mem.stCount;
+    // Presence-based: memref_bind + ld_addr? + st_addr? + st_data?
+    unsigned count = 1;                // memref binding (always present)
+    if (mem.ldCount > 0) count++;      // ld_addr
+    if (mem.stCount > 0) count += 2;   // st_addr + st_data
+    return count;
   }
   case ModuleKind::AddTag:
     return 1; // value in
@@ -789,9 +864,9 @@ unsigned ADGBuilder::Impl::getInstanceOutputCount(unsigned instIdx) const {
   case ModuleKind::ConstantPE:
     return 1; // constant value
   case ModuleKind::LoadPE:
-    return 2; // data_out, addr_out
+    return 2; // addr_to_mem, data_to_comp
   case ModuleKind::StorePE:
-    return 2; // addr_out, done
+    return 2; // addr_to_mem, data_to_mem
   case ModuleKind::Switch:
     return switchDefs[inst.defIdx].numOut;
   case ModuleKind::TemporalPE: {
@@ -804,22 +879,19 @@ unsigned ADGBuilder::Impl::getInstanceOutputCount(unsigned instIdx) const {
     return temporalSwitchDefs[inst.defIdx].numOut;
   case ModuleKind::Memory: {
     auto &mem = memoryDefs[inst.defIdx];
-    // Output: [memref?] [lddata * ldCount] [lddone] [stdone?]
+    // Presence-based: memref? + ld_data? + ld_done? + st_done?
     unsigned count = 0;
-    if (!mem.isPrivate)
-      count++; // memref output
-    count += mem.ldCount; // load data outputs
-    count++; // lddone (always present)
-    if (mem.stCount > 0)
-      count++; // stdone
+    if (!mem.isPrivate) count++;       // memref output
+    if (mem.ldCount > 0) count += 2;   // ld_data + ld_done
+    if (mem.stCount > 0) count++;       // st_done
     return count;
   }
   case ModuleKind::ExtMemory: {
     auto &mem = extMemoryDefs[inst.defIdx];
-    // Output: [lddata * ldCount] [lddone] [stdone?]
-    unsigned count = mem.ldCount + 1; // data + lddone
-    if (mem.stCount > 0)
-      count++; // stdone
+    // Presence-based: ld_data? + ld_done? + st_done?
+    unsigned count = 0;
+    if (mem.ldCount > 0) count += 2;   // ld_data + ld_done
+    if (mem.stCount > 0) count++;       // st_done
     return count;
   }
   case ModuleKind::AddTag:
@@ -841,8 +913,20 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
     return peDefs[inst.defIdx].inputPorts[port];
   case ModuleKind::Switch:
     return switchDefs[inst.defIdx].portType;
-  case ModuleKind::TemporalPE:
-    return temporalPEDefs[inst.defIdx].interfaceType;
+  case ModuleKind::TemporalPE: {
+    const auto &tpeDef = temporalPEDefs[inst.defIdx];
+    if (tpeDef.fuPEDefIndices.empty())
+      return tpeDef.interfaceType;
+    unsigned maxDW = 0;
+    for (unsigned fuIdx : tpeDef.fuPEDefIndices) {
+      const auto &fu = peDefs[fuIdx];
+      if ((unsigned)port < fu.inputPorts.size())
+        maxDW = std::max(maxDW, getTypeDataWidth(fu.inputPorts[port]));
+    }
+    if (maxDW == 0) maxDW = 1;
+    Type tagType = tpeDef.interfaceType.getTagType();
+    return Type::tagged(Type::iN(maxDW), tagType);
+  }
   case ModuleKind::TemporalSwitch:
     return temporalSwitchDefs[inst.defIdx].interfaceType;
   case ModuleKind::AddTag:
@@ -865,50 +949,66 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
   }
   case ModuleKind::LoadPE: {
     auto &def = loadPEDefs[inst.defIdx];
-    if (def.interface == InterfaceCategory::Tagged) {
-      Type tagType = Type::iN(def.tagWidth);
-      if (port == 0) return Type::tagged(Type::index(), tagType);
-      if (port == 1) return Type::tagged(def.dataType, tagType);
-      return Type::tagged(Type::none(), tagType);
+    if (port == 0) {
+      // addr input
+      return (def.interface == InterfaceCategory::Tagged)
+                 ? Type::tagged(Type::index(), Type::iN(def.tagWidth))
+                 : Type::index();
     }
-    if (port == 0) return Type::index();
-    if (port == 1) return def.dataType;
+    if (port == 1) {
+      // data_from_mem input
+      return (def.interface == InterfaceCategory::Tagged)
+                 ? Type::tagged(def.dataType, Type::iN(def.tagWidth))
+                 : def.dataType;
+    }
+    // port 2: ctrl input
+    // TagOverwrite: ctrl is none (1-bit token)
+    // TagTransparent: ctrl is tagged<none, iK>
+    if (def.hwType == HardwareType::TagTransparent)
+      return Type::tagged(Type::none(), Type::iN(def.tagWidth));
     return Type::none();
   }
   case ModuleKind::StorePE: {
     auto &def = storePEDefs[inst.defIdx];
-    if (def.interface == InterfaceCategory::Tagged) {
-      Type tagType = Type::iN(def.tagWidth);
-      if (port == 0) return Type::tagged(Type::index(), tagType);
-      if (port == 1) return Type::tagged(def.dataType, tagType);
-      return Type::tagged(Type::none(), tagType);
+    if (port == 0) {
+      // addr input
+      return (def.interface == InterfaceCategory::Tagged)
+                 ? Type::tagged(Type::index(), Type::iN(def.tagWidth))
+                 : Type::index();
     }
-    if (port == 0) return Type::index();
-    if (port == 1) return def.dataType;
+    if (port == 1) {
+      // data input
+      return (def.interface == InterfaceCategory::Tagged)
+                 ? Type::tagged(def.dataType, Type::iN(def.tagWidth))
+                 : def.dataType;
+    }
+    // port 2: ctrl input
+    // TagOverwrite: ctrl is none (1-bit token)
+    // TagTransparent: ctrl is tagged<none, iK>
+    if (def.hwType == HardwareType::TagTransparent)
+      return Type::tagged(Type::none(), Type::iN(def.tagWidth));
     return Type::none();
   }
   case ModuleKind::Memory: {
     auto &def = memoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
-    bool isTaggedLd = def.ldCount > 1;
-    bool isTaggedSt = def.stCount > 1;
-    // Uniform tag type: clog2(max(ldCount, stCount)), matching SV generation
+    bool isTagged = def.ldCount > 1 || def.stCount > 1;
     Type uniformTag = computeTagType(std::max(def.ldCount, def.stCount));
 
-    // Input layout: [ld_addr * ldCount, st_addr * stCount, st_data * stCount]
+    // Presence-based input layout: [ld_addr?] [st_addr? st_data?]
     unsigned idx = (unsigned)port;
-    if (idx < def.ldCount) {
-      return isTaggedLd ? Type::tagged(Type::index(), uniformTag)
+    if (def.ldCount > 0) {
+      if (idx == 0)
+        return isTagged ? Type::tagged(Type::index(), uniformTag)
                         : Type::index();
+      idx--;
     }
-    idx -= def.ldCount;
-    if (idx < def.stCount) {
-      return isTaggedSt ? Type::tagged(Type::index(), uniformTag)
-                        : Type::index();
-    }
-    idx -= def.stCount;
-    return isTaggedSt ? Type::tagged(elemType, uniformTag)
-                      : elemType;
+    // idx 0 = st_addr, idx 1 = st_data
+    if (idx == 0)
+      return isTagged ? Type::tagged(Type::index(), uniformTag)
+                      : Type::index();
+    return isTagged ? Type::tagged(elemType, uniformTag)
+                    : elemType;
   }
   case ModuleKind::ExtMemory: {
     auto &def = extMemoryDefs[inst.defIdx];
@@ -917,23 +1017,22 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
     if (port == 0) return Type::index();
     unsigned adjPort = (unsigned)port - 1;
 
-    bool isTaggedLd = def.ldCount > 1;
-    bool isTaggedSt = def.stCount > 1;
-    // Uniform tag type: clog2(max(ldCount, stCount)), matching SV generation
+    bool isTagged = def.ldCount > 1 || def.stCount > 1;
     Type uniformTag = computeTagType(std::max(def.ldCount, def.stCount));
 
-    if (adjPort < def.ldCount) {
-      return isTaggedLd ? Type::tagged(Type::index(), uniformTag)
+    // Presence-based: [ld_addr?] [st_addr? st_data?]
+    if (def.ldCount > 0) {
+      if (adjPort == 0)
+        return isTagged ? Type::tagged(Type::index(), uniformTag)
                         : Type::index();
+      adjPort--;
     }
-    adjPort -= def.ldCount;
-    if (adjPort < def.stCount) {
-      return isTaggedSt ? Type::tagged(Type::index(), uniformTag)
-                        : Type::index();
-    }
-    adjPort -= def.stCount;
-    return isTaggedSt ? Type::tagged(elemType, uniformTag)
-                      : elemType;
+    // adjPort 0 = st_addr, adjPort 1 = st_data
+    if (adjPort == 0)
+      return isTagged ? Type::tagged(Type::index(), uniformTag)
+                      : Type::index();
+    return isTagged ? Type::tagged(elemType, uniformTag)
+                    : elemType;
   }
   }
   return Type::i32();
@@ -946,8 +1045,20 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
     return peDefs[inst.defIdx].outputPorts[port];
   case ModuleKind::Switch:
     return switchDefs[inst.defIdx].portType;
-  case ModuleKind::TemporalPE:
-    return temporalPEDefs[inst.defIdx].interfaceType;
+  case ModuleKind::TemporalPE: {
+    const auto &tpeDef = temporalPEDefs[inst.defIdx];
+    if (tpeDef.fuPEDefIndices.empty())
+      return tpeDef.interfaceType;
+    unsigned maxDW = 0;
+    for (unsigned fuIdx : tpeDef.fuPEDefIndices) {
+      const auto &fu = peDefs[fuIdx];
+      if ((unsigned)port < fu.outputPorts.size())
+        maxDW = std::max(maxDW, getTypeDataWidth(fu.outputPorts[port]));
+    }
+    if (maxDW == 0) maxDW = 1;
+    Type tagType = tpeDef.interfaceType.getTagType();
+    return Type::tagged(Type::iN(maxDW), tagType);
+  }
   case ModuleKind::TemporalSwitch:
     return temporalSwitchDefs[inst.defIdx].interfaceType;
   case ModuleKind::AddTag: {
@@ -970,65 +1081,61 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
     auto &def = loadPEDefs[inst.defIdx];
     if (def.interface == InterfaceCategory::Tagged) {
       Type tagType = Type::iN(def.tagWidth);
-      if (port == 0) return Type::tagged(def.dataType, tagType);
-      return Type::tagged(Type::index(), tagType);
+      if (port == 0) return Type::tagged(Type::index(), tagType);   // addr_to_mem
+      return Type::tagged(def.dataType, tagType);                    // data_to_comp
     }
-    if (port == 0) return def.dataType;
-    return Type::index();
+    if (port == 0) return Type::index();   // addr_to_mem
+    return def.dataType;                    // data_to_comp
   }
   case ModuleKind::StorePE: {
     auto &def = storePEDefs[inst.defIdx];
     if (def.interface == InterfaceCategory::Tagged) {
       Type tagType = Type::iN(def.tagWidth);
-      if (port == 0) return Type::tagged(Type::index(), tagType);
-      return Type::tagged(Type::none(), tagType);
+      if (port == 0) return Type::tagged(Type::index(), tagType);   // addr_to_mem
+      return Type::tagged(def.dataType, tagType);                    // data_to_mem
     }
-    if (port == 0) return Type::index();
-    return Type::none();
+    if (port == 0) return Type::index();   // addr_to_mem
+    return def.dataType;                    // data_to_mem
   }
   case ModuleKind::Memory: {
     auto &def = memoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
-    bool isTaggedLd = def.ldCount > 1;
-    bool isTaggedSt = def.stCount > 1;
-    // Uniform tag type: clog2(max(ldCount, stCount)), matching SV generation
+    bool isTagged = def.ldCount > 1 || def.stCount > 1;
     Type uniformTag = computeTagType(std::max(def.ldCount, def.stCount));
 
-    unsigned idx = 0;
-    // Non-private memory port 0 is memref -- return index as placeholder for
-    // scalar type query (the PortType variant returns the actual memref).
-    if (!def.isPrivate) { if (port == 0) return Type::index(); idx++; }
-    // Output layout: [memref?] [lddata * ldCount] [lddone] [stdone?]
-    if ((unsigned)port < idx + def.ldCount)
-      return isTaggedLd ? Type::tagged(elemType, uniformTag)
-                        : elemType;
-    // lddone
-    if ((unsigned)port < idx + def.ldCount + 1)
-      return isTaggedLd ? Type::tagged(Type::none(), uniformTag)
-                        : Type::none();
-    // stdone
-    return isTaggedSt ? Type::tagged(Type::none(), uniformTag)
-                      : Type::none();
+    // Presence-based output layout: [memref?] [ld_data? ld_done?] [st_done?]
+    unsigned idx = (unsigned)port;
+    if (!def.isPrivate) {
+      if (idx == 0) return Type::index(); // memref placeholder
+      idx--;
+    }
+    if (def.ldCount > 0) {
+      if (idx == 0)
+        return isTagged ? Type::tagged(elemType, uniformTag) : elemType; // ld_data
+      if (idx == 1)
+        return isTagged ? Type::tagged(Type::none(), uniformTag) : Type::none(); // ld_done
+      idx -= 2;
+    }
+    // st_done
+    return isTagged ? Type::tagged(Type::none(), uniformTag) : Type::none();
   }
   case ModuleKind::ExtMemory: {
     auto &def = extMemoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
-    bool isTaggedLd = def.ldCount > 1;
-    bool isTaggedSt = def.stCount > 1;
-    // Uniform tag type: clog2(max(ldCount, stCount)), matching SV generation
+    bool isTagged = def.ldCount > 1 || def.stCount > 1;
     Type uniformTag = computeTagType(std::max(def.ldCount, def.stCount));
 
-    // Output layout: [lddata * ldCount] [lddone] [stdone?]
-    if ((unsigned)port < def.ldCount)
-      return isTaggedLd ? Type::tagged(elemType, uniformTag)
-                        : elemType;
-    // lddone
-    if ((unsigned)port < def.ldCount + 1)
-      return isTaggedLd ? Type::tagged(Type::none(), uniformTag)
-                        : Type::none();
-    // stdone
-    return isTaggedSt ? Type::tagged(Type::none(), uniformTag)
-                      : Type::none();
+    // Presence-based output layout: [ld_data? ld_done?] [st_done?]
+    unsigned idx = (unsigned)port;
+    if (def.ldCount > 0) {
+      if (idx == 0)
+        return isTagged ? Type::tagged(elemType, uniformTag) : elemType; // ld_data
+      if (idx == 1)
+        return isTagged ? Type::tagged(Type::none(), uniformTag) : Type::none(); // ld_done
+      idx -= 2;
+    }
+    // st_done
+    return isTagged ? Type::tagged(Type::none(), uniformTag) : Type::none();
   }
   default:
     return Type::i32();

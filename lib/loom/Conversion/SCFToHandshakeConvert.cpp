@@ -984,43 +984,6 @@ mlir::LogicalResult HandshakeConversion::convertOp(mlir::Operation *op,
   return mlir::failure();
 }
 
-void HandshakeConversion::insertForks() {
-  mlir::Block *block = handshakeFunc.getBodyBlock();
-  llvm::SmallVector<mlir::Value, 16> values;
-  for (mlir::BlockArgument arg : block->getArguments())
-    values.push_back(arg);
-  for (mlir::Operation &op : *block) {
-    for (mlir::Value res : op.getResults())
-      values.push_back(res);
-  }
-
-  for (mlir::Value value : values) {
-    if (!value)
-      continue;
-    if (auto arg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-      if (mlir::isa<mlir::BaseMemRefType>(arg.getType()))
-        continue;
-    }
-    if (value.use_empty() || value.hasOneUse())
-      continue;
-
-    llvm::SmallVector<mlir::OpOperand *, 4> uses;
-    for (mlir::OpOperand &use : value.getUses())
-      uses.push_back(&use);
-
-    mlir::OpBuilder::InsertionGuard guard(builder);
-    if (auto arg = mlir::dyn_cast<mlir::BlockArgument>(value))
-      builder.setInsertionPointToStart(block);
-    else
-      builder.setInsertionPointAfter(value.getDefiningOp());
-
-    auto fork = circt::handshake::ForkOp::create(builder,
-        value.getLoc(), value, static_cast<unsigned>(uses.size()));
-    for (size_t i = 0; i < uses.size(); ++i)
-      uses[i]->set(fork.getResults()[i]);
-  }
-}
-
 mlir::LogicalResult HandshakeConversion::run() {
   builder.setInsertionPointAfter(func);
   auto originalType = func.getFunctionType();
@@ -1093,7 +1056,8 @@ mlir::LogicalResult HandshakeConversion::run() {
   returnOperands.push_back(doneSignal);
   circt::handshake::ReturnOp::create(builder, returnLoc, returnOperands);
 
-  insertForks();
+  // insertForks() removed: data duplication at module level uses switch
+  // broadcast; PE body wire fanout is valid.
   if (mlir::failed(loom::runHandshakeCleanup(handshakeFunc, builder)))
     return mlir::failure();
 

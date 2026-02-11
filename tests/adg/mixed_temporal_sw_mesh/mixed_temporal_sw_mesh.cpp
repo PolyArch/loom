@@ -44,7 +44,13 @@ int main() {
 
   // tsw0: 2 inputs from module
   builder.connectToModuleInput(in0, tsw0, 0);
-  builder.connectToModuleInput(in1, tsw0, 1);
+  auto bcast_1_sw_def = builder.newSwitch("bcast_1_sw")
+      .setPortCount(1, 2)
+      .setType(taggedType);
+  auto bcast_1 = builder.clone(bcast_1_sw_def, "bcast_1");
+  builder.connectToModuleInput(in1, bcast_1, 0);
+  builder.connectPorts(bcast_1, 0, tsw0, 1);
+  builder.connectPorts(bcast_1, 1, tsw1, 1);
 
   // tsw0 outputs -> tpe0 inputs
   builder.connectPorts(tsw0, 0, tpe0, 0);
@@ -52,15 +58,19 @@ int main() {
 
   // tpe0 output -> tsw1 input 0, module in1 -> tsw1 input 1
   builder.connectPorts(tpe0, 0, tsw1, 0);
-  builder.connectToModuleInput(in1, tsw1, 1);
 
   // tsw1 outputs -> tpe1 inputs
-  builder.connectPorts(tsw1, 0, tpe1, 0);
+  auto bcast_0_sw_def = builder.newSwitch("bcast_0_sw")
+      .setPortCount(1, 2)
+      .setType(taggedType);
+  auto bcast_0 = builder.clone(bcast_0_sw_def, "bcast_0");
+  builder.connectPorts(tsw1, 0, bcast_0, 0);
+  builder.connectPorts(bcast_0, 0, tpe1, 0);
+  builder.connectToModuleOutput(bcast_0, 1, out1);
   builder.connectPorts(tsw1, 1, tpe1, 1);
 
   // tpe1 output -> module outputs
   builder.connectToModuleOutput(tpe1, 0, out0);
-  builder.connectToModuleOutput(tsw1, 0, out1);
 
   builder.exportMLIR("Output/mixed_temporal_sw_mesh.fabric.mlir");
   return 0;

@@ -18,6 +18,7 @@
 
 `include "fabric_common.svh"
 
+// ===== BEGIN MODULE DECLARATION =====
 module fabric_temporal_pe #(
     parameter int NUM_INPUTS             = 2,
     parameter int NUM_OUTPUTS            = 1,
@@ -60,7 +61,9 @@ module fabric_temporal_pe #(
     output logic                       error_valid,
     output logic [15:0]                error_code
 );
+// ===== END MODULE DECLARATION =====
 
+  // ===== BEGIN PARAM CHECK =====
   // -----------------------------------------------------------------------
   // Elaboration-time parameter validation
   // -----------------------------------------------------------------------
@@ -82,6 +85,7 @@ module fabric_temporal_pe #(
     if (SHARED_OPERAND_BUFFER != 0 && OPERAND_BUFFER_SIZE > 8192)
       $fatal(1, "COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE: Size out of [1, 8192] range");
   end
+  // ===== END PARAM CHECK =====
 
   // -----------------------------------------------------------------------
   // Instruction memory unpacking
@@ -99,6 +103,7 @@ module fabric_temporal_pe #(
     end
   end
 
+  // ===== BEGIN INPUT EXTRACT =====
   // -----------------------------------------------------------------------
   // Input tag/value extraction
   // -----------------------------------------------------------------------
@@ -112,6 +117,7 @@ module fabric_temporal_pe #(
       in_tag[iter_var0]   = in_data[iter_var0][DATA_WIDTH +: TAG_WIDTH];
     end
   end
+  // ===== END INPUT EXTRACT =====
 
   // -----------------------------------------------------------------------
   // Operand buffer declarations
@@ -194,6 +200,9 @@ module fabric_temporal_pe #(
   logic [INSN_IDX_W-1:0] commit_insn;
   assign commit_insn = fu_launch ? matched_insn : issued_insn;
 
+  // Forward declaration: fire is assigned after body_valid/all_out_ready
+  logic fire;
+
   always_ff @(posedge clk or negedge rst_n) begin : fu_ctrl_reg
     if (!rst_n) begin : reset
       fu_busy    <= 1'b0;
@@ -230,15 +239,6 @@ module fabric_temporal_pe #(
     end
   end
 
-  // ===== BEGIN PE BODY =====
-  // (replaced by exportSV based on instruction FU selection)
-  assign body_valid = 1'b1;
-  // ===== END PE BODY =====
-
-  // -----------------------------------------------------------------------
-  // Output assembly with tag from instruction result fields
-  // -----------------------------------------------------------------------
-
   // Per-output register-destination flag: set when the current commit
   // instruction writes this output to a register FIFO instead of externally.
   // Declared at module level so g_out and all_out_ready can see them.
@@ -248,7 +248,17 @@ module fabric_temporal_pe #(
   // register FIFO. Prevents fire so register writes are never dropped.
   logic reg_dest_stall;
 
+  // Forward-declared before body section so FU instantiations can reference it.
   logic all_out_ready;
+
+  // ===== BEGIN PE BODY =====
+  // (replaced by exportSV based on instruction FU selection)
+  assign body_valid = 1'b1;
+  // ===== END PE BODY =====
+
+  // -----------------------------------------------------------------------
+  // Output assembly with tag from instruction result fields
+  // -----------------------------------------------------------------------
 
   // all_out_ready: require external readiness only for non-register outputs.
   always_comb begin : calc_all_out_ready
@@ -264,7 +274,6 @@ module fabric_temporal_pe #(
   // fire: instruction commits - operand buffer cleared, outputs driven,
   // register writes occur. Requires FU completion, output readiness,
   // and register FIFO availability for register-destination outputs.
-  logic fire;
   assign fire = insn_fire_ready && body_valid && all_out_ready && !reg_dest_stall && (fu_busy || fu_launch);
 
   // Extract per-output result tag from the matched instruction.

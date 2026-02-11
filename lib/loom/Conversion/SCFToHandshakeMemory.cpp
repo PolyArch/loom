@@ -13,6 +13,7 @@
 
 #include "loom/Conversion/SCFToHandshakeImpl.h"
 #include "loom/Dialect/Dataflow/DataflowOps.h"
+#include "loom/Hardware/Common/FabricError.h"
 
 #include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -619,13 +620,11 @@ private:
       return batch.front()->doneToken ? batch.front()->doneToken : entryToken;
     }
 
-    auto fork = circt::handshake::ForkOp::create(builder,
-        loc, entryToken, static_cast<unsigned>(batch.size()));
-
+    // Distribute the control token to all parallel accesses via wire fanout.
     llvm::SmallVector<mlir::Value, 4> doneTokens;
     doneTokens.reserve(batch.size());
     for (unsigned i = 0; i < batch.size(); ++i) {
-      setAccessCtrl(*batch[i], fork.getResults()[i]);
+      setAccessCtrl(*batch[i], entryToken);
       if (batch[i]->doneToken)
         doneTokens.push_back(batch[i]->doneToken);
     }
@@ -1115,20 +1114,23 @@ mlir::LogicalResult HandshakeConversion::verifyMemoryControl() {
       for (mlir::Operation *source : sources) {
         if (expectedMem && source == expectedMem)
           continue;
-        op->emitError("COMP_HANDSHAKE_CTRL_MULTI_MEM: control token depends on "
+        op->emitError(std::string(CompError::HANDSHAKE_CTRL_MULTI_MEM) +
+                      ": control token depends on "
                       "a memory interface not associated with this access");
         failed = true;
         return;
       }
     }
     if (sources.empty() && !sawEntry) {
-      op->emitError("COMP_HANDSHAKE_CTRL_MULTI_MEM: control token is not "
+      op->emitError(std::string(CompError::HANDSHAKE_CTRL_MULTI_MEM) +
+                    ": control token is not "
                     "rooted at start_token");
       failed = true;
       return;
     }
     if (!expectedMem && !sources.empty()) {
-      op->emitError("COMP_HANDSHAKE_CTRL_MULTI_MEM: missing memory mapping for "
+      op->emitError(std::string(CompError::HANDSHAKE_CTRL_MULTI_MEM) +
+                    ": missing memory mapping for "
                     "access control check");
       failed = true;
       return;

@@ -60,8 +60,20 @@ int main() {
   builder.connectPorts(sw1_0, 3, pe1, 1);
 
   // Second switch: first-stage PE outputs + additional module inputs
-  builder.connectPorts(pe0, 0, sw2_0, 0);
-  builder.connectPorts(pe1, 0, sw2_0, 1);
+  auto bcast_0_sw_def = builder.newSwitch("bcast_0_sw")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast_0 = builder.clone(bcast_0_sw_def, "bcast_0");
+  builder.connectPorts(pe0, 0, bcast_0, 0);
+  builder.connectPorts(bcast_0, 0, sw2_0, 0);
+  builder.connectToModuleOutput(bcast_0, 1, out0);
+  auto bcast_1_sw_def = builder.newSwitch("bcast_1_sw")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast_1 = builder.clone(bcast_1_sw_def, "bcast_1");
+  builder.connectPorts(pe1, 0, bcast_1, 0);
+  builder.connectPorts(bcast_1, 0, sw2_0, 1);
+  builder.connectToModuleOutput(bcast_1, 1, out1);
   builder.connectToModuleInput(in4, sw2_0, 2);
   builder.connectToModuleInput(in5, sw2_0, 3);
 
@@ -73,8 +85,6 @@ int main() {
 
   // PE outputs -> module outputs
   // Also need module inputs for unused switch outputs or direct PE connections
-  builder.connectToModuleOutput(pe0, 0, out0);
-  builder.connectToModuleOutput(pe1, 0, out1);
   builder.connectToModuleOutput(pe2, 0, out2);
   builder.connectToModuleOutput(pe3, 0, out3);
 

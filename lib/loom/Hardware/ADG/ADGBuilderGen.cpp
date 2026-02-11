@@ -313,14 +313,15 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
     Type tagType = Type::iN(def.tagWidth);
     Type taggedData = Type::tagged(dataType, tagType);
     Type taggedIndex = Type::tagged(Type::index(), tagType);
-    Type taggedNone = Type::tagged(Type::none(), tagType);
     std::string tdStr = taggedData.toMLIR();
     std::string tiStr = taggedIndex.toMLIR();
-    std::string tnStr = taggedNone.toMLIR();
+    // Ctrl: none for TagOverwrite, tagged<none> for TagTransparent
+    std::string ctrlStr = (def.hwType == HardwareType::TagTransparent)
+        ? Type::tagged(Type::none(), tagType).toMLIR() : "none";
 
     os << "fabric.pe @" << def.name
        << "(%addr: " << tiStr << ", %data_in: " << tdStr
-       << ", %ctrl: " << tnStr << ")\n";
+       << ", %ctrl: " << ctrlStr << ")\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
     if (def.hwType == HardwareType::TagTransparent)
@@ -328,11 +329,11 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
     os << "]\n";
     os << "    {output_tag = [0 : " << tagType.toMLIR()
        << ", 0 : " << tagType.toMLIR() << "]}\n";
-    os << "    -> (" << tdStr << ", " << tiStr << ") {\n";
+    os << "    -> (" << tiStr << ", " << tdStr << ") {\n";
     os << "^bb0(%x: index, %y: " << dTypeStr << ", %c: none):\n";
     os << "  %ld_d, %ld_a = handshake.load [%x] %y, %c : index, "
        << dTypeStr << "\n";
-    os << "  fabric.yield %ld_d, %ld_a : " << dTypeStr << ", index\n";
+    os << "  fabric.yield %ld_a, %ld_d : index, " << dTypeStr << "\n";
     os << "}\n\n";
   } else {
     os << "fabric.pe @" << def.name
@@ -340,10 +341,10 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
     os << "]\n";
-    os << "    -> (" << dTypeStr << ", index) {\n";
+    os << "    -> (index, " << dTypeStr << ") {\n";
     os << "  %ld_d, %ld_a = handshake.load [%addr] %data_in, %ctrl : index, "
        << dTypeStr << "\n";
-    os << "  fabric.yield %ld_d, %ld_a : " << dTypeStr << ", index\n";
+    os << "  fabric.yield %ld_a, %ld_d : index, " << dTypeStr << "\n";
     os << "}\n\n";
   }
   return os.str();
@@ -360,14 +361,15 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
     Type tagType = Type::iN(def.tagWidth);
     Type taggedData = Type::tagged(dataType, tagType);
     Type taggedIndex = Type::tagged(Type::index(), tagType);
-    Type taggedNone = Type::tagged(Type::none(), tagType);
     std::string tdStr = taggedData.toMLIR();
     std::string tiStr = taggedIndex.toMLIR();
-    std::string tnStr = taggedNone.toMLIR();
+    // Ctrl: none for TagOverwrite, tagged<none> for TagTransparent
+    std::string ctrlStr = (def.hwType == HardwareType::TagTransparent)
+        ? Type::tagged(Type::none(), tagType).toMLIR() : "none";
 
     os << "fabric.pe @" << def.name
        << "(%addr: " << tiStr << ", %data: " << tdStr
-       << ", %ctrl: " << tnStr << ")\n";
+       << ", %ctrl: " << ctrlStr << ")\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
     if (def.hwType == HardwareType::TagTransparent)
@@ -375,10 +377,10 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
     os << "]\n";
     os << "    {output_tag = [0 : " << tagType.toMLIR()
        << ", 0 : " << tagType.toMLIR() << "]}\n";
-    os << "    -> (" << tiStr << ", " << tnStr << ") {\n";
+    os << "    -> (" << tiStr << ", " << tdStr << ") {\n";
     os << "^bb0(%x: index, %y: " << dTypeStr << ", %c: none):\n";
     os << "  handshake.store [%x] %y, %c : index, " << dTypeStr << "\n";
-    os << "  fabric.yield %x, %c : index, none\n";
+    os << "  fabric.yield %x, %y : index, " << dTypeStr << "\n";
     os << "}\n\n";
   } else {
     os << "fabric.pe @" << def.name
@@ -386,10 +388,10 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
     os << "]\n";
-    os << "    -> (index, none) {\n";
+    os << "    -> (index, " << dTypeStr << ") {\n";
     os << "  handshake.store [%addr] %data, %ctrl : index, " << dTypeStr
        << "\n";
-    os << "  fabric.yield %addr, %ctrl : index, none\n";
+    os << "  fabric.yield %addr, %data : index, " << dTypeStr << "\n";
     os << "}\n\n";
   }
   return os.str();
@@ -702,14 +704,17 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         defName = lpDef.name;
         if (lpDef.interface == InterfaceCategory::Tagged) {
           Type tagType = Type::iN(lpDef.tagWidth);
+          // Ctrl: none for TagOverwrite, tagged<none> for TagTransparent
+          Type ctrlType = (lpDef.hwType == HardwareType::TagTransparent)
+              ? Type::tagged(Type::none(), tagType) : Type::none();
           inTypes = {Type::tagged(Type::index(), tagType),
                      Type::tagged(lpDef.dataType, tagType),
-                     Type::tagged(Type::none(), tagType)};
-          outTypes = {Type::tagged(lpDef.dataType, tagType),
-                      Type::tagged(Type::index(), tagType)};
+                     ctrlType};
+          outTypes = {Type::tagged(Type::index(), tagType),
+                      Type::tagged(lpDef.dataType, tagType)};
         } else {
           inTypes = {Type::index(), lpDef.dataType, Type::none()};
-          outTypes = {lpDef.dataType, Type::index()};
+          outTypes = {Type::index(), lpDef.dataType};
         }
         break;
       }
@@ -718,14 +723,17 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         defName = spDef.name;
         if (spDef.interface == InterfaceCategory::Tagged) {
           Type tagType = Type::iN(spDef.tagWidth);
+          // Ctrl: none for TagOverwrite, tagged<none> for TagTransparent
+          Type ctrlType = (spDef.hwType == HardwareType::TagTransparent)
+              ? Type::tagged(Type::none(), tagType) : Type::none();
           inTypes = {Type::tagged(Type::index(), tagType),
                      Type::tagged(spDef.dataType, tagType),
-                     Type::tagged(Type::none(), tagType)};
+                     ctrlType};
           outTypes = {Type::tagged(Type::index(), tagType),
-                      Type::tagged(Type::none(), tagType)};
+                      Type::tagged(spDef.dataType, tagType)};
         } else {
           inTypes = {Type::index(), spDef.dataType, Type::none()};
-          outTypes = {Type::index(), Type::none()};
+          outTypes = {Type::index(), spDef.dataType};
         }
         break;
       }
@@ -887,8 +895,8 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           os << "  ^bb0(%x: index, %y: " << dTypeStr << ", %c: none):\n";
           os << "    %ld_d, %ld_a = handshake.load [%x] %y, %c : index, "
              << dTypeStr << "\n";
-          os << "    fabric.yield %ld_d, %ld_a : " << dTypeStr
-             << ", index\n";
+          os << "    fabric.yield %ld_a, %ld_d : index, "
+             << dTypeStr << "\n";
           break;
         }
         case ModuleKind::StorePE: {
@@ -897,7 +905,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           os << "  ^bb0(%x: index, %y: " << dTypeStr << ", %c: none):\n";
           os << "    handshake.store [%x] %y, %c : index, " << dTypeStr
              << "\n";
-          os << "    fabric.yield %x, %c : index, none\n";
+          os << "    fabric.yield %x, %y : index, " << dTypeStr << "\n";
           break;
         }
         default:
@@ -986,17 +994,14 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       Type elemType = memDef.shape.getElemType();
       std::string elemStr = elemType.toMLIR();
 
-      // Determine per-side tagging from operand types.
-      bool isTaggedLd = memDef.ldCount > 1;
-      bool isTaggedSt = memDef.stCount > 1;
+      // Unified tagging: tagged when max(ldCount, stCount) > 1
+      bool isTagged = (memDef.ldCount > 1 || memDef.stCount > 1);
 
-      // Derive tag type strings from operand types at the boundary of each group.
-      // Input layout: [ld_addr * ldCount, st_addr * stCount, st_data * stCount]
-      std::string ldTagTypeStr, stTagTypeStr;
-      if (isTaggedLd && !operandTypes.empty())
-        ldTagTypeStr = extractTagType(operandTypes[0]);
-      if (isTaggedSt && memDef.ldCount < operandTypes.size())
-        stTagTypeStr = extractTagType(operandTypes[memDef.ldCount]);
+      // Derive tag type string from first data port operand type.
+      // Input layout (presence-based): [ld_addr?] [st_addr? st_data?]
+      std::string tagTypeStr;
+      if (isTagged && !operandTypes.empty())
+        tagTypeStr = extractTagType(operandTypes[0]);
 
       os << "fabric.memory\n      [ldCount = " << memDef.ldCount
          << ", stCount = " << memDef.stCount;
@@ -1015,30 +1020,30 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         os << operandTypes[o];
       }
       os << ") -> (";
-      // Output types: [memref?] [lddata * ldCount] [lddone] [stdone?]
+      // Output types (presence-based): [memref?] [ld_data? ld_done?] [st_done?]
       bool first = true;
       if (!memDef.isPrivate) {
         os << memrefStr;
         first = false;
       }
-      for (unsigned i = 0; i < memDef.ldCount; ++i) {
+      if (memDef.ldCount > 0) {
         if (!first) os << ", ";
         first = false;
-        if (isTaggedLd)
-          os << "!dataflow.tagged<" << elemStr << ", " << ldTagTypeStr << ">";
+        if (isTagged)
+          os << "!dataflow.tagged<" << elemStr << ", " << tagTypeStr << ">";
         else
           os << elemStr;
-      }
-      // lddone (always present)
-      if (!first) os << ", ";
-      if (isTaggedLd)
-        os << "!dataflow.tagged<none, " << ldTagTypeStr << ">";
-      else
-        os << "none";
-      if (memDef.stCount > 0) {
         os << ", ";
-        if (isTaggedSt)
-          os << "!dataflow.tagged<none, " << stTagTypeStr << ">";
+        if (isTagged)
+          os << "!dataflow.tagged<none, " << tagTypeStr << ">";
+        else
+          os << "none";
+      }
+      if (memDef.stCount > 0) {
+        if (!first) os << ", ";
+        first = false;
+        if (isTagged)
+          os << "!dataflow.tagged<none, " << tagTypeStr << ">";
         else
           os << "none";
       }
@@ -1052,17 +1057,14 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       Type elemType = emDef.shape.getElemType();
       std::string elemStr = elemType.toMLIR();
 
-      // Determine per-side tagging from operand types after memref.
-      bool isTaggedLd = emDef.ldCount > 1;
-      bool isTaggedSt = emDef.stCount > 1;
+      // Unified tagging: tagged when max(ldCount, stCount) > 1
+      bool isTagged = (emDef.ldCount > 1 || emDef.stCount > 1);
 
-      // ExtMemory input layout: [memref, ld_addr * ldCount, st_addr * stCount, st_data * stCount]
-      // operandTypes[0] is memref, operandTypes[1] is first ld_addr.
-      std::string ldTagTypeStr, stTagTypeStr;
-      if (isTaggedLd && operandTypes.size() > 1)
-        ldTagTypeStr = extractTagType(operandTypes[1]);
-      if (isTaggedSt && (1 + emDef.ldCount) < operandTypes.size())
-        stTagTypeStr = extractTagType(operandTypes[1 + emDef.ldCount]);
+      // Input layout (presence-based): [memref(0)] [ld_addr?] [st_addr? st_data?]
+      // Derive tag type string from first data port after memref.
+      std::string tagTypeStr;
+      if (isTagged && operandTypes.size() > 1)
+        tagTypeStr = extractTagType(operandTypes[1]);
 
       os << "fabric.extmemory\n      [ldCount = " << emDef.ldCount
          << ", stCount = " << emDef.stCount;
@@ -1080,25 +1082,25 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         os << operandTypes[o];
       }
       os << ") -> (";
-      // Output types: [lddata * ldCount] [lddone] [stdone?]
+      // Output types (presence-based): [ld_data? ld_done?] [st_done?]
       bool first = true;
-      for (unsigned i = 0; i < emDef.ldCount; ++i) {
-        if (!first) os << ", ";
-        first = false;
-        if (isTaggedLd)
-          os << "!dataflow.tagged<" << elemStr << ", " << ldTagTypeStr << ">";
+      if (emDef.ldCount > 0) {
+        if (isTagged)
+          os << "!dataflow.tagged<" << elemStr << ", " << tagTypeStr << ">";
         else
           os << elemStr;
-      }
-      if (!first) os << ", ";
-      if (isTaggedLd)
-        os << "!dataflow.tagged<none, " << ldTagTypeStr << ">";
-      else
-        os << "none";
-      if (emDef.stCount > 0) {
         os << ", ";
-        if (isTaggedSt)
-          os << "!dataflow.tagged<none, " << stTagTypeStr << ">";
+        if (isTagged)
+          os << "!dataflow.tagged<none, " << tagTypeStr << ">";
+        else
+          os << "none";
+        first = false;
+      }
+      if (emDef.stCount > 0) {
+        if (!first) os << ", ";
+        first = false;
+        if (isTagged)
+          os << "!dataflow.tagged<none, " << tagTypeStr << ">";
         else
           os << "none";
       }

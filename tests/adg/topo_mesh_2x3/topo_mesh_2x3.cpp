@@ -74,21 +74,24 @@ int main() {
   auto e = builder.addModuleInput("e", Type::i32());
   auto f = builder.addModuleInput("f", Type::i32());
   auto g = builder.addModuleInput("g", Type::i32());
-  auto out = builder.addModuleOutput("result", Type::i32());
 
   builder.connectToModuleInput(a, mesh.peGrid[0][0], 0);
   builder.connectToModuleInput(b, mesh.peGrid[0][0], 1);
-  builder.connectPorts(mesh.peGrid[0][0], 0, mesh.peGrid[0][1], 0);
+  auto bcast_0 = builder.addModuleInput("bcast_0", Type::i32());
+  builder.connectToModuleInput(bcast_0, mesh.peGrid[0][1], 0);
   builder.connectToModuleInput(c, mesh.peGrid[0][1], 1);
-  builder.connectPorts(mesh.peGrid[0][1], 0, mesh.peGrid[0][2], 0);
+  auto bcast_1 = builder.addModuleInput("bcast_1", Type::i32());
+  builder.connectToModuleInput(bcast_1, mesh.peGrid[0][2], 0);
   builder.connectToModuleInput(d, mesh.peGrid[0][2], 1);
-  builder.connectPorts(mesh.peGrid[0][2], 0, mesh.peGrid[1][0], 0);
+  auto bcast_2 = builder.addModuleInput("bcast_2", Type::i32());
+  builder.connectToModuleInput(bcast_2, mesh.peGrid[1][0], 0);
   builder.connectToModuleInput(e, mesh.peGrid[1][0], 1);
-  builder.connectPorts(mesh.peGrid[1][0], 0, mesh.peGrid[1][1], 0);
+  auto bcast_3 = builder.addModuleInput("bcast_3", Type::i32());
+  builder.connectToModuleInput(bcast_3, mesh.peGrid[1][1], 0);
   builder.connectToModuleInput(f, mesh.peGrid[1][1], 1);
-  builder.connectPorts(mesh.peGrid[1][1], 0, mesh.peGrid[1][2], 0);
+  auto bcast_4 = builder.addModuleInput("bcast_4", Type::i32());
+  builder.connectToModuleInput(bcast_4, mesh.peGrid[1][2], 0);
   builder.connectToModuleInput(g, mesh.peGrid[1][2], 1);
-  builder.connectToModuleOutput(mesh.peGrid[1][2], 0, out);
 
   builder.exportMLIR("Output/topo_mesh_2x3.fabric.mlir");
 

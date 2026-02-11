@@ -34,7 +34,6 @@ int main() {
   auto b = builder.addModuleInput("b", Type::i32());
   auto c = builder.addModuleInput("c", Type::i32());
   auto d = builder.addModuleInput("d", Type::i32());
-  auto result = builder.addModuleOutput("result", Type::i32());
 
   // Constant PE feeds PE[0][0] input 0
   builder.connectToModuleInput(ctrl, c0, 0);
@@ -42,15 +41,17 @@ int main() {
   builder.connectToModuleInput(a, mesh.peGrid[0][0], 1);
 
   // Chain PEs in row-major order: [0][0] -> [0][1] -> [1][0] -> [1][1]
-  builder.connectPorts(mesh.peGrid[0][0], 0, mesh.peGrid[0][1], 0);
+  auto bcast_0 = builder.addModuleInput("bcast_0", Type::i32());
+  builder.connectToModuleInput(bcast_0, mesh.peGrid[0][1], 0);
   builder.connectToModuleInput(b, mesh.peGrid[0][1], 1);
-  builder.connectPorts(mesh.peGrid[0][1], 0, mesh.peGrid[1][0], 0);
+  auto bcast_1 = builder.addModuleInput("bcast_1", Type::i32());
+  builder.connectToModuleInput(bcast_1, mesh.peGrid[1][0], 0);
   builder.connectToModuleInput(c, mesh.peGrid[1][0], 1);
-  builder.connectPorts(mesh.peGrid[1][0], 0, mesh.peGrid[1][1], 0);
+  auto bcast_2 = builder.addModuleInput("bcast_2", Type::i32());
+  builder.connectToModuleInput(bcast_2, mesh.peGrid[1][1], 0);
   builder.connectToModuleInput(d, mesh.peGrid[1][1], 1);
 
   // Output from PE[1][1]
-  builder.connectToModuleOutput(mesh.peGrid[1][1], 0, result);
 
   builder.exportMLIR("Output/mixed_const_in_mesh.fabric.mlir");
   return 0;

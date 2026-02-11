@@ -50,17 +50,32 @@ int main() {
           "  fabric.yield %out : i16\n");
   auto inst_u = builder.clone(pe_u, "conv_u0");
 
+  // Broadcast switches to duplicate module inputs for two PE instances
+  auto bcast_i16 = builder.newSwitch("bcast_i16")
+      .setPortCount(1, 2)
+      .setType(Type::i16());
+  auto bcast_i32 = builder.newSwitch("bcast_i32")
+      .setPortCount(1, 2)
+      .setType(Type::i32());
+  auto bcast0 = builder.clone(bcast_i16, "bcast_in0");
+  auto bcast1 = builder.clone(bcast_i32, "bcast_in1");
+
   auto in0 = builder.addModuleInput("in0", Type::i16());
   auto in1 = builder.addModuleInput("in1", Type::i32());
   auto out = builder.addModuleOutput("out", Type::i16());
   auto out_u = builder.addModuleOutput("out_u", Type::i16());
 
-  builder.connectToModuleInput(in0, inst, 0);
-  builder.connectToModuleInput(in1, inst, 1);
-  builder.connectToModuleOutput(inst, 0, out);
+  // in0 -> bcast_in0 -> inst, inst_u
+  builder.connectToModuleInput(in0, bcast0, 0);
+  builder.connectPorts(bcast0, 0, inst, 0);
+  builder.connectPorts(bcast0, 1, inst_u, 0);
 
-  builder.connectToModuleInput(in0, inst_u, 0);
-  builder.connectToModuleInput(in1, inst_u, 1);
+  // in1 -> bcast_in1 -> inst, inst_u
+  builder.connectToModuleInput(in1, bcast1, 0);
+  builder.connectPorts(bcast1, 0, inst, 1);
+  builder.connectPorts(bcast1, 1, inst_u, 1);
+
+  builder.connectToModuleOutput(inst, 0, out);
   builder.connectToModuleOutput(inst_u, 0, out_u);
 
   builder.exportMLIR("Output/pe_conv.fabric.mlir");

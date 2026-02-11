@@ -34,6 +34,12 @@ foreach(dir IN LISTS ADG_OUTPUT_DIRS)
   endif()
 endforeach()
 
+# Remove fuzzer-generated test directories (nested under tests/adg/fuzzer/tests/)
+if(IS_DIRECTORY "${SOURCE_DIR}/tests/adg/fuzzer/tests")
+  file(REMOVE_RECURSE "${SOURCE_DIR}/tests/adg/fuzzer/tests")
+  message(STATUS "Removed ${SOURCE_DIR}/tests/adg/fuzzer/tests")
+endif()
+
 # Remove ADG parallel files
 file(GLOB ADG_PARALLEL_FILES "${SOURCE_DIR}/tests/adg/*.parallel.sh")
 foreach(f IN LISTS ADG_PARALLEL_FILES)

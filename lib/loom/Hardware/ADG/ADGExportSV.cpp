@@ -9,10 +9,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ADGExportSVInternal.h"
+
 #include "loom/Hardware/ADG/ADGBuilderImpl.h"
 
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -25,1507 +26,8 @@ namespace loom {
 namespace adg {
 
 //===----------------------------------------------------------------------===//
-// Helper: get data width in bits for a Type
-//===----------------------------------------------------------------------===//
-
-static unsigned getDataWidthBits(const Type &t) {
-  switch (t.getKind()) {
-  case Type::I1:    return 1;
-  case Type::I8:    return 8;
-  case Type::I16:   return 16;
-  case Type::I32:   return 32;
-  case Type::I64:   return 64;
-  case Type::IN:    return t.getWidth();
-  case Type::BF16:  return 16;
-  case Type::F16:   return 16;
-  case Type::F32:   return 32;
-  case Type::F64:   return 64;
-  case Type::Index: return 64;
-  case Type::None:  return 0;
-  case Type::Tagged:
-    return getDataWidthBits(t.getValueType());
-  }
-  return 32;
-}
-
-static unsigned getTagWidthBits(const Type &t) {
-  if (!t.isTagged())
-    return 0;
-  return getDataWidthBits(t.getTagType());
-}
-
-//===----------------------------------------------------------------------===//
-// Helper: write string to file
-//===----------------------------------------------------------------------===//
-
-static void writeFile(const std::string &path, const std::string &content) {
-  std::error_code ec;
-  llvm::raw_fd_ostream out(path, ec, llvm::sys::fs::OF_Text);
-  if (ec) {
-    llvm::errs() << "error: cannot write output file: " << path << "\n"
-                 << ec.message() << "\n";
-    std::exit(1);
-  }
-  out << content;
-  out.flush();
-}
-
-//===----------------------------------------------------------------------===//
-// Helper: copy a template file from LOOM_SV_TEMPLATE_DIR
-//===----------------------------------------------------------------------===//
-
-static void copyTemplateFile(const std::string &srcDir,
-                             const std::string &relPath,
-                             const std::string &dstDir) {
-  llvm::SmallString<256> srcPath(srcDir);
-  llvm::sys::path::append(srcPath, relPath);
-
-  llvm::SmallString<256> dstPath(dstDir);
-  llvm::sys::path::append(dstPath, llvm::sys::path::filename(relPath));
-
-  std::error_code ec = llvm::sys::fs::copy_file(srcPath, dstPath);
-  if (ec) {
-    llvm::errs() << "error: cannot copy template file: " << srcPath << " -> "
-                 << dstPath << "\n"
-                 << ec.message() << "\n";
-    std::exit(1);
-  }
-}
-
-//===----------------------------------------------------------------------===//
-// SV module kind name
-//===----------------------------------------------------------------------===//
-
-static const char *svModuleName(ModuleKind kind) {
-  switch (kind) {
-  case ModuleKind::PE:            return "fabric_pe";
-  case ModuleKind::ConstantPE:    return "fabric_pe_constant";
-  case ModuleKind::LoadPE:        return "fabric_pe_load";
-  case ModuleKind::StorePE:       return "fabric_pe_store";
-  case ModuleKind::Switch:        return "fabric_switch";
-  case ModuleKind::TemporalPE:    return "fabric_temporal_pe";
-  case ModuleKind::TemporalSwitch:return "fabric_temporal_sw";
-  case ModuleKind::Memory:        return "fabric_memory";
-  case ModuleKind::ExtMemory:     return "fabric_extmemory";
-  case ModuleKind::AddTag:        return "fabric_add_tag";
-  case ModuleKind::MapTag:        return "fabric_map_tag";
-  case ModuleKind::DelTag:        return "fabric_del_tag";
-  case ModuleKind::Fifo:          return "fabric_fifo";
-  }
-  return "fabric_unknown";
-}
-
-//===----------------------------------------------------------------------===//
-// Helper: compute NUM_CONNECTED for a switch definition
-//===----------------------------------------------------------------------===//
-
-static unsigned getNumConnected(const SwitchDef &def) {
-  if (def.connectivity.empty())
-    return def.numIn * def.numOut;
-  unsigned count = 0;
-  for (const auto &row : def.connectivity)
-    for (bool v : row)
-      if (v) ++count;
-  return count;
-}
-
-static unsigned getNumConnected(const TemporalSwitchDef &def) {
-  if (def.connectivity.empty())
-    return def.numIn * def.numOut;
-  unsigned count = 0;
-  for (const auto &row : def.connectivity)
-    for (bool v : row)
-      if (v) ++count;
-  return count;
-}
-
-//===----------------------------------------------------------------------===//
-// Helper: read a file into a string
-//===----------------------------------------------------------------------===//
-
-static std::string readFile(const std::string &path) {
-  auto bufOrErr = llvm::MemoryBuffer::getFile(path);
-  if (!bufOrErr) {
-    llvm::errs() << "error: cannot read file: " << path << "\n";
-    std::exit(1);
-  }
-  return (*bufOrErr)->getBuffer().str();
-}
-
-//===----------------------------------------------------------------------===//
-// PE helpers: operation latency and body generation
-//===----------------------------------------------------------------------===//
-
-/// Return the typical latency (in cycles) for a single operation name.
-static unsigned getOpLatency(const std::string &opName) {
-  // Bitwise / extension / truncation: 0 cycles
-  if (opName == "arith.andi" || opName == "arith.ori" ||
-      opName == "arith.xori" || opName == "arith.shli" ||
-      opName == "arith.shrsi" || opName == "arith.shrui" ||
-      opName == "arith.trunci" || opName == "arith.extsi" ||
-      opName == "arith.extui" || opName == "arith.index_cast" ||
-      opName == "arith.index_castui" || opName == "llvm.intr.bitreverse")
-    return 0;
-  // Integer add/sub/cmp/select: 1 cycle
-  if (opName == "arith.addi" || opName == "arith.subi" ||
-      opName == "arith.cmpi" || opName == "arith.select")
-    return 1;
-  // Integer mul: 3 cycles
-  if (opName == "arith.muli")
-    return 3;
-  // Integer div/rem: 6 cycles
-  if (opName == "arith.divsi" || opName == "arith.divui" ||
-      opName == "arith.remsi" || opName == "arith.remui")
-    return 6;
-  // FP add/sub/cmp/neg: 4 cycles
-  if (opName == "arith.addf" || opName == "arith.subf" ||
-      opName == "arith.cmpf" || opName == "arith.negf" ||
-      opName == "math.absf")
-    return 4;
-  // FP mul/fma: 5 cycles
-  if (opName == "arith.mulf" || opName == "math.fma")
-    return 5;
-  // FP conversion: 4 cycles
-  if (opName == "arith.sitofp" || opName == "arith.uitofp" ||
-      opName == "arith.fptosi" || opName == "arith.fptoui")
-    return 4;
-  // FP div/sqrt: 10 cycles
-  if (opName == "arith.divf" || opName == "math.sqrt")
-    return 10;
-  // FP transcendental: 12 cycles
-  if (opName == "math.sin" || opName == "math.cos" ||
-      opName == "math.exp" || opName == "math.log2")
-    return 12;
-  // Default: 1 cycle
-  return 1;
-}
-
-/// Convert a dialect.op name to the SV module name (e.g., "arith.addi" -> "arith_addi").
-static std::string opToSVModule(const std::string &opName) {
-  // Normalize LLVM intrinsic names: strip the ".intr" segment
-  // e.g., "llvm.intr.bitreverse" -> "llvm_bitreverse"
-  if (opName.find("llvm.intr.") == 0) {
-    std::string result = "llvm_" + opName.substr(10);
-    for (char &c : result)
-      if (c == '.')
-        c = '_';
-    return result;
-  }
-  std::string result = opName;
-  for (char &c : result)
-    if (c == '.')
-      c = '_';
-  return result;
-}
-
-/// Return true if the op is a width-conversion operation (uses IN_WIDTH/OUT_WIDTH).
-static bool isConversionOp(const std::string &opName) {
-  return opName == "arith.extsi" || opName == "arith.extui" ||
-         opName == "arith.trunci" || opName == "arith.sitofp" ||
-         opName == "arith.uitofp" || opName == "arith.fptosi" ||
-         opName == "arith.fptoui" || opName == "arith.index_cast" ||
-         opName == "arith.index_castui";
-}
-
-/// Return true if the op is a compare operation (1-bit result).
-static bool isCompareOp(const std::string &opName) {
-  return opName == "arith.cmpi" || opName == "arith.cmpf";
-}
-
-/// Parse a simple MLIR SSA line: "%res = dialect.op %a, %b : type"
-/// Returns {result, opName, {operands}, typeAnnotation} or empty result on
-/// failure.
-struct MLIRStmt {
-  std::string result; // e.g., "%t0"
-  std::string opName; // e.g., "arith.muli"
-  std::vector<std::string> operands; // e.g., {"%arg0", "%arg1"}
-  std::string typeAnnotation; // e.g., "i16 to i32" (text after ':')
-  std::string predicate; // e.g., "sgt" for compare ops
-};
-
-/// Map an MLIR arith.cmpi predicate name to its integer encoding.
-/// PREDICATE encoding: 0=eq,1=ne,2=slt,3=sle,4=sgt,5=sge,6=ult,7=ule,8=ugt,9=uge
-static int cmpiPredicateToInt(const std::string &pred) {
-  if (pred == "eq") return 0;
-  if (pred == "ne") return 1;
-  if (pred == "slt") return 2;
-  if (pred == "sle") return 3;
-  if (pred == "sgt") return 4;
-  if (pred == "sge") return 5;
-  if (pred == "ult") return 6;
-  if (pred == "ule") return 7;
-  if (pred == "ugt") return 8;
-  if (pred == "uge") return 9;
-  return 0; // default: eq
-}
-
-/// Map an MLIR arith.cmpf predicate name to its integer encoding.
-/// PREDICATE encoding: 0=false,1=oeq,2=ogt,3=oge,4=olt,5=ole,6=one,7=ord,
-///   8=ueq,9=ugt,10=uge,11=ult,12=ule,13=une,14=uno,15=true
-static int cmpfPredicateToInt(const std::string &pred) {
-  if (pred == "false") return 0;
-  if (pred == "oeq") return 1;
-  if (pred == "ogt") return 2;
-  if (pred == "oge") return 3;
-  if (pred == "olt") return 4;
-  if (pred == "ole") return 5;
-  if (pred == "one") return 6;
-  if (pred == "ord") return 7;
-  if (pred == "ueq") return 8;
-  if (pred == "ugt") return 9;
-  if (pred == "uge") return 10;
-  if (pred == "ult") return 11;
-  if (pred == "ule") return 12;
-  if (pred == "une") return 13;
-  if (pred == "uno") return 14;
-  if (pred == "true") return 15;
-  return 0; // default: false
-}
-
-/// Resolve a compare predicate integer from the operation name and predicate
-/// string. Returns 0 if the op is not a compare or predicate is empty.
-static int resolveComparePredicate(const std::string &opName,
-                                   const std::string &pred) {
-  if (pred.empty()) return 0;
-  if (opName == "arith.cmpi") return cmpiPredicateToInt(pred);
-  if (opName == "arith.cmpf") return cmpfPredicateToInt(pred);
-  return 0;
-}
-
-static MLIRStmt parseMLIRLine(const std::string &line) {
-  MLIRStmt stmt;
-  auto eqPos = line.find('=');
-  if (eqPos == std::string::npos)
-    return stmt;
-
-  // Extract result name (trim whitespace)
-  std::string lhs = line.substr(0, eqPos);
-  auto pctPos = lhs.find('%');
-  if (pctPos == std::string::npos)
-    return stmt;
-  auto endRes = lhs.find_first_of(" \t", pctPos);
-  stmt.result = lhs.substr(pctPos, endRes - pctPos);
-
-  // Extract RHS: "dialect.op %a, %b : type"
-  std::string rhs = line.substr(eqPos + 1);
-  // Trim leading whitespace
-  auto rhsStart = rhs.find_first_not_of(" \t");
-  if (rhsStart == std::string::npos)
-    return stmt;
-  rhs = rhs.substr(rhsStart);
-
-  // Extract op name (first token)
-  auto opEnd = rhs.find_first_of(" \t");
-  if (opEnd == std::string::npos) {
-    stmt.opName = rhs;
-    return stmt;
-  }
-  stmt.opName = rhs.substr(0, opEnd);
-
-  // Extract operands between op name and ':'
-  auto colonPos = rhs.find(':');
-  std::string opSection = rhs.substr(opEnd, colonPos != std::string::npos
-                                                 ? colonPos - opEnd
-                                                 : std::string::npos);
-  // Extract predicate keyword for compare ops (text before first '%').
-  // e.g., in " sgt, %a, %b" the predicate is "sgt".
-  auto firstPct = opSection.find('%');
-  if (firstPct != std::string::npos && firstPct > 0) {
-    std::string predSection = opSection.substr(0, firstPct);
-    auto ps = predSection.find_first_not_of(" \t,");
-    if (ps != std::string::npos) {
-      auto pe = predSection.find_last_not_of(" \t,");
-      stmt.predicate = predSection.substr(ps, pe - ps + 1);
-    }
-  }
-
-  // Find all %name tokens
-  size_t pos = 0;
-  while ((pos = opSection.find('%', pos)) != std::string::npos) {
-    auto end = opSection.find_first_of(" ,:\t\n)", pos);
-    stmt.operands.push_back(opSection.substr(pos, end - pos));
-    pos = (end != std::string::npos) ? end + 1 : opSection.size();
-  }
-
-  // Capture type annotation (text after ':')
-  if (colonPos != std::string::npos) {
-    std::string ta = rhs.substr(colonPos + 1);
-    auto taStart = ta.find_first_not_of(" \t");
-    if (taStart != std::string::npos) {
-      auto taEnd = ta.find_last_not_of(" \t\n\r");
-      stmt.typeAnnotation = ta.substr(taStart, taEnd - taStart + 1);
-    }
-  }
-
-  return stmt;
-}
-
-/// Parse width from an MLIR integer type string like "i32", "i16", "index".
-/// Returns 0 if not a recognized integer type.
-static unsigned parseMLIRTypeWidth(const std::string &typeStr) {
-  auto s = typeStr.find_first_not_of(" \t");
-  if (s == std::string::npos) return 0;
-  std::string t = typeStr.substr(s);
-  auto e = t.find_first_of(" \t,)");
-  if (e != std::string::npos) t = t.substr(0, e);
-  if (t == "index") return 64;
-  if (t.size() > 1 && (t[0] == 'i' || t[0] == 'f')) {
-    unsigned w = 0;
-    for (size_t i = 1; i < t.size(); ++i) {
-      if (!std::isdigit(t[i])) return 0;
-      w = w * 10 + (t[i] - '0');
-    }
-    return w;
-  }
-  return 0;
-}
-
-/// Parse conversion op type annotation: "i16 to i32" -> {16, 32}.
-/// Returns {0, 0} if parsing fails.
-static std::pair<unsigned, unsigned>
-parseConversionWidths(const std::string &typeAnnotation) {
-  // Format: "i16 to i32" or "i32 to i16"
-  auto toPos = typeAnnotation.find(" to ");
-  if (toPos == std::string::npos) {
-    // Try without spaces: "i16to i32" is unlikely but handle "i16 -> i32"
-    toPos = typeAnnotation.find("->");
-    if (toPos != std::string::npos) {
-      unsigned inW = parseMLIRTypeWidth(typeAnnotation.substr(0, toPos));
-      unsigned outW = parseMLIRTypeWidth(typeAnnotation.substr(toPos + 2));
-      return {inW, outW};
-    }
-    return {0, 0};
-  }
-  unsigned inW = parseMLIRTypeWidth(typeAnnotation.substr(0, toPos));
-  unsigned outW = parseMLIRTypeWidth(typeAnnotation.substr(toPos + 4));
-  return {inW, outW};
-}
-
-/// Extract all operation names from a bodyMLIR string.
-static std::vector<std::string> extractBodyMLIROps(const std::string &bodyMLIR) {
-  std::vector<std::string> ops;
-  std::string body = bodyMLIR;
-  auto bbPos = body.find("^bb0(");
-  if (bbPos != std::string::npos) {
-    auto closePos = body.find("):", bbPos);
-    if (closePos != std::string::npos)
-      body = body.substr(closePos + 2);
-  }
-  std::istringstream stream(body);
-  std::string line;
-  while (std::getline(stream, line)) {
-    auto s = line.find_first_not_of(" \t");
-    if (s == std::string::npos) continue;
-    line = line.substr(s);
-    if (line.find("fabric.yield") == 0) continue;
-    MLIRStmt stmt = parseMLIRLine(line);
-    if (!stmt.opName.empty())
-      ops.push_back(stmt.opName);
-  }
-  return ops;
-}
-
-/// Compute the critical-path latency through a bodyMLIR DAG.
-/// Uses a simple approach: sum of all operation latencies along the
-/// longest dependency chain.
-static unsigned computeBodyMLIRLatency(const std::string &bodyMLIR) {
-  std::string body = bodyMLIR;
-  auto bbPos = body.find("^bb0(");
-  if (bbPos != std::string::npos) {
-    auto closePos = body.find("):", bbPos);
-    if (closePos != std::string::npos)
-      body = body.substr(closePos + 2);
-  }
-
-  // Parse all stmts and build a dependency graph
-  std::vector<MLIRStmt> stmts;
-  std::istringstream stream(body);
-  std::string line;
-  while (std::getline(stream, line)) {
-    auto s = line.find_first_not_of(" \t");
-    if (s == std::string::npos) continue;
-    line = line.substr(s);
-    if (line.find("fabric.yield") == 0) continue;
-    MLIRStmt stmt = parseMLIRLine(line);
-    if (!stmt.opName.empty())
-      stmts.push_back(stmt);
-  }
-
-  // Map SSA result -> index in stmts
-  std::map<std::string, unsigned> resultToIdx;
-  for (unsigned i = 0; i < stmts.size(); ++i)
-    resultToIdx[stmts[i].result] = i;
-
-  // Compute longest path to each node
-  std::vector<unsigned> longest(stmts.size(), 0);
-  for (unsigned i = 0; i < stmts.size(); ++i) {
-    unsigned maxPred = 0;
-    for (const auto &op : stmts[i].operands) {
-      auto it = resultToIdx.find(op);
-      if (it != resultToIdx.end())
-        maxPred = std::max(maxPred, longest[it->second]);
-    }
-    longest[i] = maxPred + getOpLatency(stmts[i].opName);
-  }
-
-  unsigned maxLatency = 0;
-  for (unsigned v : longest)
-    maxLatency = std::max(maxLatency, v);
-  return maxLatency;
-}
-
-/// Compute the maximum intermediate type width in a bodyMLIR.
-/// Scans block arg types, conversion source/destination widths, and
-/// operation type annotations to find the widest type used internally.
-static unsigned computeBodyMLIRMaxWidth(const std::string &bodyMLIR) {
-  unsigned maxW = 0;
-  std::string body = bodyMLIR;
-
-  // Parse block arg types from "^bb0(%a: i16, %b: i32):"
-  auto bbPos = body.find("^bb0(");
-  if (bbPos != std::string::npos) {
-    auto closePos = body.find("):", bbPos);
-    if (closePos != std::string::npos) {
-      std::string argList = body.substr(bbPos + 5, closePos - (bbPos + 5));
-      std::istringstream argStream(argList);
-      std::string token;
-      while (std::getline(argStream, token, ',')) {
-        auto colon = token.find(':');
-        if (colon != std::string::npos) {
-          unsigned w = parseMLIRTypeWidth(token.substr(colon + 1));
-          maxW = std::max(maxW, w);
-        }
-      }
-      body = body.substr(closePos + 2);
-    }
-  }
-
-  // Scan each statement's type annotation for widths
-  std::istringstream stream(body);
-  std::string line;
-  while (std::getline(stream, line)) {
-    auto s = line.find_first_not_of(" \t");
-    if (s == std::string::npos) continue;
-    line = line.substr(s);
-    if (line.find("fabric.yield") == 0) continue;
-    MLIRStmt stmt = parseMLIRLine(line);
-    if (stmt.opName.empty() || stmt.typeAnnotation.empty()) continue;
-
-    if (isConversionOp(stmt.opName)) {
-      auto [inW, outW] = parseConversionWidths(stmt.typeAnnotation);
-      maxW = std::max(maxW, inW);
-      maxW = std::max(maxW, outW);
-    } else {
-      // Non-conversion ops: type annotation is the result type (e.g., "i32")
-      unsigned w = parseMLIRTypeWidth(stmt.typeAnnotation);
-      maxW = std::max(maxW, w);
-    }
-  }
-  return maxW;
-}
-
-/// Generate SV body from bodyMLIR containing multiple operations.
-static std::string genMultiOpBodySV(const PEDef &def) {
-  std::string body = def.bodyMLIR;
-
-  // Strip ^bb0(...): header if present, extracting named block args
-  // so they can be renamed to %argN in the body text.
-  std::vector<std::string> blockArgNames;
-  auto bbPos = body.find("^bb0(");
-  if (bbPos != std::string::npos) {
-    auto closePos = body.find("):", bbPos);
-    if (closePos != std::string::npos) {
-      std::string argList = body.substr(bbPos + 5, closePos - (bbPos + 5));
-      // Parse "%name: type, %name2: type2, ..."
-      std::istringstream argStream(argList);
-      std::string token;
-      while (std::getline(argStream, token, ',')) {
-        auto pct = token.find('%');
-        if (pct != std::string::npos) {
-          auto colon = token.find(':', pct);
-          if (colon != std::string::npos)
-            blockArgNames.push_back(token.substr(pct, colon - pct));
-          else
-            blockArgNames.push_back(
-                token.substr(pct, token.find_first_of(" \t\n", pct) - pct));
-        }
-      }
-      body = body.substr(closePos + 2);
-      if (!body.empty() && body[0] == '\n')
-        body = body.substr(1);
-    }
-  }
-
-  // Rename user block args to %argN in the body text via a two-phase
-  // approach to avoid SSA collisions (e.g. body already contains %arg0).
-  // Phase 1: rename original names to unique temporaries.
-  // Phase 2: rename temporaries to final %argN names.
-  //
-  // Helper: whole-token replacement (next char must not be alnum/_).
-  auto replaceWholeToken = [](std::string &s, const std::string &from,
-                              const std::string &to) {
-    size_t pos = 0;
-    while ((pos = s.find(from, pos)) != std::string::npos) {
-      size_t endPos = pos + from.size();
-      if (endPos < s.size() &&
-          (std::isalnum(s[endPos]) || s[endPos] == '_')) {
-        pos = endPos;
-        continue;
-      }
-      s.replace(pos, from.size(), to);
-      pos += to.size();
-    }
-  };
-
-  // Phase 1: original names -> unique temporaries (%__loom_tmp_N)
-  std::vector<std::pair<std::string, std::string>> phase1;
-  for (size_t i = 0; i < blockArgNames.size(); ++i)
-    phase1.push_back({blockArgNames[i],
-                      "%__loom_tmp_" + std::to_string(i)});
-  // Sort by name length descending to avoid partial replacement
-  std::sort(phase1.begin(), phase1.end(),
-            [](const auto &a, const auto &b) {
-              return a.first.size() > b.first.size();
-            });
-  for (const auto &[from, to] : phase1) {
-    if (from == to)
-      continue;
-    replaceWholeToken(body, from, to);
-  }
-
-  // Phase 2: temporaries -> final %argN names
-  for (size_t i = 0; i < blockArgNames.size(); ++i) {
-    std::string tmp = "%__loom_tmp_" + std::to_string(i);
-    std::string final_ = "%arg" + std::to_string(i);
-    if (tmp != final_)
-      replaceWholeToken(body, tmp, final_);
-  }
-
-  // Parse lines into statements
-  std::vector<MLIRStmt> stmts;
-  std::vector<std::string> yieldOperands;
-  std::istringstream stream(body);
-  std::string line;
-  while (std::getline(stream, line)) {
-    // Trim whitespace
-    auto s = line.find_first_not_of(" \t");
-    if (s == std::string::npos) continue;
-    line = line.substr(s);
-
-    // Handle fabric.yield
-    if (line.find("fabric.yield") == 0) {
-      // Extract yield operands
-      auto colonPos = line.find(':');
-      std::string opSection = line.substr(12,
-          colonPos != std::string::npos ? colonPos - 12 : std::string::npos);
-      size_t pos = 0;
-      while ((pos = opSection.find('%', pos)) != std::string::npos) {
-        auto end = opSection.find_first_of(" ,:\t\n", pos);
-        yieldOperands.push_back(opSection.substr(pos, end - pos));
-        pos = (end != std::string::npos) ? end + 1 : opSection.size();
-      }
-      continue;
-    }
-
-    MLIRStmt stmt = parseMLIRLine(line);
-    if (!stmt.opName.empty())
-      stmts.push_back(stmt);
-  }
-
-  if (stmts.empty())
-    return "  // empty multi-op body\n";
-
-  // Map SSA names to SV wire names
-  // %argN -> in_value[N]
-  // %result -> body_tN (intermediate wire)
-  std::map<std::string, std::string> ssaToSV;
-  for (size_t i = 0; i < def.inputPorts.size(); ++i) {
-    ssaToSV["%arg" + std::to_string(i)] = "in_value[" + std::to_string(i) + "]";
-  }
-
-  std::ostringstream os;
-  unsigned wireIdx = 0;
-
-  for (const auto &stmt : stmts) {
-    std::string svModule = opToSVModule(stmt.opName);
-    std::string wireName = "body_t" + std::to_string(wireIdx);
-    ssaToSV[stmt.result] = wireName;
-
-    if (isConversionOp(stmt.opName)) {
-      // Parse IN_WIDTH and OUT_WIDTH from the type annotation.
-      // Falls back to DATA_WIDTH if type parsing fails.
-      auto [inW, outW] = parseConversionWidths(stmt.typeAnnotation);
-      os << "  logic [SAFE_DW-1:0] " << wireName << ";\n";
-      if (inW > 0 && outW > 0) {
-        os << "  " << svModule << " #(.IN_WIDTH(" << inW << "), .OUT_WIDTH("
-           << outW << ")) u_op" << wireIdx << " (\n";
-        os << "    .a(" << ssaToSV[stmt.operands[0]] << "[" << (inW - 1)
-           << ":0]),\n";
-        os << "    .result(" << wireName << "[" << (outW - 1) << ":0])\n";
-        os << "  );\n";
-        // Zero-fill upper bits when OUT_WIDTH < DATA_WIDTH
-        os << "  generate\n";
-        os << "    if (DATA_WIDTH > " << outW << ") begin : g_conv_pad_"
-           << wireIdx << "\n";
-        os << "      assign " << wireName << "[DATA_WIDTH-1:" << outW
-           << "] = '0;\n";
-        os << "    end\n";
-        os << "  endgenerate\n";
-      } else {
-        os << "  " << svModule << " #(.IN_WIDTH(DATA_WIDTH), .OUT_WIDTH("
-           << "DATA_WIDTH)) u_op" << wireIdx << " (\n";
-        os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
-        os << "    .result(" << wireName << ")\n";
-        os << "  );\n";
-      }
-    } else if (isCompareOp(stmt.opName)) {
-      int predVal = resolveComparePredicate(stmt.opName, stmt.predicate);
-      unsigned cmpW = parseMLIRTypeWidth(stmt.typeAnnotation);
-      os << "  logic " << wireName << ";\n";
-      if (cmpW > 0) {
-        os << "  " << svModule << " #(.WIDTH(" << cmpW << "), .PREDICATE("
-           << predVal << ")) u_op" << wireIdx << " (\n";
-        os << "    .a(" << ssaToSV[stmt.operands[0]] << "[" << (cmpW - 1)
-           << ":0]),\n";
-        if (stmt.operands.size() > 1)
-          os << "    .b(" << ssaToSV[stmt.operands[1]] << "[" << (cmpW - 1)
-             << ":0]),\n";
-      } else {
-        os << "  " << svModule << " #(.WIDTH(DATA_WIDTH), .PREDICATE("
-           << predVal << ")) u_op" << wireIdx << " (\n";
-        os << "    .a(" << ssaToSV[stmt.operands[0]] << "),\n";
-        if (stmt.operands.size() > 1)
-          os << "    .b(" << ssaToSV[stmt.operands[1]] << "),\n";
-      }
-      os << "    .result(" << wireName << ")\n";
-      os << "  );\n";
-    } else {
-      unsigned opW = parseMLIRTypeWidth(stmt.typeAnnotation);
-      // arith.select has type annotation "i1, i32" — the value type is after
-      // the comma; parseMLIRTypeWidth stops at ',' and returns the condition
-      // width (1), so extract the value type instead.
-      if (stmt.opName == "arith.select") {
-        auto commaPos = stmt.typeAnnotation.find(',');
-        if (commaPos != std::string::npos)
-          opW = parseMLIRTypeWidth(stmt.typeAnnotation.substr(commaPos + 1));
-      }
-      bool useNarrow = opW > 0;
-      os << "  logic [SAFE_DW-1:0] " << wireName << ";\n";
-      if (useNarrow) {
-        os << "  " << svModule << " #(.WIDTH(" << opW << ")) u_op" << wireIdx
-           << " (\n";
-      } else {
-        os << "  " << svModule << " #(.WIDTH(DATA_WIDTH)) u_op" << wireIdx
-           << " (\n";
-      }
-
-      // Helper lambda: emit an operand reference, sliced when narrower.
-      auto emitOp = [&](const std::string &port, const std::string &svRef) {
-        if (useNarrow)
-          os << "    ." << port << "(" << svRef << "[" << (opW - 1) << ":0]),\n";
-        else
-          os << "    ." << port << "(" << svRef << "),\n";
-      };
-
-      if (stmt.opName == "arith.select" && stmt.operands.size() >= 3) {
-        os << "    .condition(" << ssaToSV[stmt.operands[0]] << "[0]),\n";
-        emitOp("a", ssaToSV[stmt.operands[1]]);
-        emitOp("b", ssaToSV[stmt.operands[2]]);
-      } else if (stmt.opName == "math.fma" && stmt.operands.size() >= 3) {
-        emitOp("a", ssaToSV[stmt.operands[0]]);
-        emitOp("b", ssaToSV[stmt.operands[1]]);
-        emitOp("c", ssaToSV[stmt.operands[2]]);
-      } else if (stmt.operands.size() >= 2) {
-        emitOp("a", ssaToSV[stmt.operands[0]]);
-        emitOp("b", ssaToSV[stmt.operands[1]]);
-      } else if (stmt.operands.size() >= 1) {
-        emitOp("a", ssaToSV[stmt.operands[0]]);
-      }
-
-      if (useNarrow) {
-        os << "    .result(" << wireName << "[" << (opW - 1) << ":0])\n";
-        os << "  );\n";
-        // Zero-fill upper bits when op width < DATA_WIDTH
-        os << "  generate\n";
-        os << "    if (DATA_WIDTH > " << opW << ") begin : g_op_pad_"
-           << wireIdx << "\n";
-        os << "      assign " << wireName << "[DATA_WIDTH-1:" << opW
-           << "] = '0;\n";
-        os << "    end\n";
-        os << "  endgenerate\n";
-      } else {
-        os << "    .result(" << wireName << ")\n";
-        os << "  );\n";
-      }
-    }
-    os << "\n";
-    ++wireIdx;
-  }
-
-  // Assign body_result from yield operands or last wire
-  if (!yieldOperands.empty()) {
-    for (size_t i = 0; i < yieldOperands.size(); ++i) {
-      auto it = ssaToSV.find(yieldOperands[i]);
-      std::string src = (it != ssaToSV.end()) ? it->second : "'0";
-      if (isCompareOp(stmts.back().opName) && i == 0) {
-        os << "  assign body_result[" << i << "] = {{(SAFE_DW-1){1'b0}}, " << src << "};\n";
-      } else {
-        os << "  assign body_result[" << i << "] = " << src << ";\n";
-      }
-    }
-  } else if (!stmts.empty()) {
-    os << "  assign body_result[0] = " << ssaToSV[stmts.back().result] << ";\n";
-  }
-
-  return os.str();
-}
-
-/// Generate the PE body SV text for a PEDef.
-/// Returns the text to insert between BEGIN/END PE BODY markers.
-static std::string genPEBodySV(const PEDef &def) {
-  if (def.singleOp.empty()) {
-    if (!def.bodyMLIR.empty())
-      return genMultiOpBodySV(def);
-    return "  // empty PE body\n";
-  }
-
-  std::string svModule = opToSVModule(def.singleOp);
-  unsigned numIn = def.inputPorts.size();
-
-  std::ostringstream os;
-
-  if (isConversionOp(def.singleOp)) {
-    // Conversion ops use IN_WIDTH and OUT_WIDTH parameters
-    unsigned inW = numIn > 0 ? getDataWidthBits(def.inputPorts[0]) : 32;
-    unsigned outW = def.outputPorts.size() > 0
-                        ? getDataWidthBits(def.outputPorts[0])
-                        : 32;
-    if (inW == 0) inW = 1;
-    if (outW == 0) outW = 1;
-    os << "  " << svModule << " #(.IN_WIDTH(" << inW << "), .OUT_WIDTH("
-       << outW << ")) u_body (\n";
-    os << "    .a(in_value[0][" << (inW - 1) << ":0]),\n";
-    os << "    .result(body_result[0][" << (outW - 1) << ":0])\n";
-    os << "  );\n";
-    // Zero-fill upper bits if OUT_WIDTH < DATA_WIDTH
-    os << "  generate\n";
-    os << "    if (DATA_WIDTH > " << outW << ") begin : g_conv_pad\n";
-    os << "      assign body_result[0][DATA_WIDTH-1:" << outW << "] = '0;\n";
-    os << "    end\n";
-    os << "  endgenerate\n";
-  } else if (isCompareOp(def.singleOp)) {
-    // Compare ops have a PREDICATE parameter and 1-bit output.
-    // Clamp to valid range: cmpi 0-9, cmpf 0-15.
-    int maxPred = (def.singleOp == "arith.cmpf") ? 15 : 9;
-    int pred = def.comparePredicate;
-    if (pred < 0 || pred > maxPred) pred = 0;
-    os << "  logic cmp_result;\n";
-    os << "  " << svModule
-       << " #(.WIDTH(DATA_WIDTH), .PREDICATE(" << pred
-       << ")) u_body (\n";
-    // Map input ports
-    os << "    .a(in_value[0]),\n";
-    os << "    .b(in_value[1]),\n";
-    os << "    .result(cmp_result)\n";
-    os << "  );\n";
-    // Zero-extend 1-bit result to DATA_WIDTH
-    os << "  assign body_result[0] = {{(DATA_WIDTH-1){1'b0}}, cmp_result};\n";
-  } else {
-    // Standard ops: use WIDTH parameter
-    os << "  " << svModule << " #(.WIDTH(DATA_WIDTH)) u_body (\n";
-
-    // Map input ports: a, b, c, or special names for specific ops
-    if (def.singleOp == "arith.select") {
-      // select: condition (i1), a, b
-      os << "    .condition(in_value[0][0]),\n";
-      os << "    .a(in_value[1]),\n";
-      os << "    .b(in_value[2]),\n";
-    } else if (def.singleOp == "math.fma") {
-      os << "    .a(in_value[0]),\n";
-      os << "    .b(in_value[1]),\n";
-      os << "    .c(in_value[2]),\n";
-    } else if (numIn >= 2) {
-      os << "    .a(in_value[0]),\n";
-      os << "    .b(in_value[1]),\n";
-    } else {
-      os << "    .a(in_value[0]),\n";
-    }
-
-    os << "    .result(body_result[0])\n";
-    os << "  );\n";
-  }
-
-  return os.str();
-}
-
-/// Generate the temporal PE body SV text for a TemporalPEDef.
-/// Instantiates per-FU customized fabric_pe modules and muxes results by fu_sel.
-static std::string genTemporalPEBodySV(const TemporalPEDef &def,
-                                        const std::vector<PEDef> &peDefs,
-                                        const std::string &instName) {
-  unsigned numFU = def.fuPEDefIndices.size();
-  if (numFU == 0)
-    return "  // no FU types defined\n";
-
-  unsigned numOut = peDefs[def.fuPEDefIndices[0]].outputPorts.size();
-  unsigned tpeDW = getDataWidthBits(def.interfaceType);
-  if (tpeDW == 0) tpeDW = 1;
-
-  // FU_SEL_BITS mirrors the localparam in fabric_temporal_pe.sv
-  unsigned fuSelBits = 0;
-  if (numFU > 1) {
-    unsigned v = numFU - 1;
-    while (v > 0) { fuSelBits++; v >>= 1; }
-  }
-
-  // Compute per-FU effective DATA_WIDTH: max of temporal PE interface width
-  // and the FU's own required width (port widths + internal body widths).
-  std::vector<unsigned> fuEffDW(numFU);
-  for (unsigned f = 0; f < numFU; ++f) {
-    const auto &fuDef = peDefs[def.fuPEDefIndices[f]];
-    unsigned dw = tpeDW;
-    for (const auto &pt : fuDef.inputPorts)
-      dw = std::max(dw, getDataWidthBits(pt));
-    for (const auto &pt : fuDef.outputPorts)
-      dw = std::max(dw, getDataWidthBits(pt));
-    if (!fuDef.bodyMLIR.empty())
-      dw = std::max(dw, computeBodyMLIRMaxWidth(fuDef.bodyMLIR));
-    fuEffDW[f] = dw;
-  }
-
-  std::ostringstream os;
-
-  // Extract fu_sel from the committed instruction (latched for multi-cycle FU)
-  if (fuSelBits > 0) {
-    os << "  logic [FU_SEL_BITS-1:0] fu_sel;\n";
-    os << "  assign fu_sel = cfg_data[commit_insn * INSN_WIDTH + "
-       << "NUM_INPUTS * REG_BITS + NUM_OUTPUTS * RESULT_WIDTH +: FU_SEL_BITS];\n";
-    os << "\n";
-  }
-
-  // Per-FU result wires, output data wires, and valid signals.
-  // fu_result is temporal-PE-width (SAFE_DW) for the mux output.
-  // fu_out_data is FU-width (fuEffDW, TAG_WIDTH=0 so PW = DW).
-  for (unsigned f = 0; f < numFU; ++f) {
-    os << "  logic [NUM_OUTPUTS-1:0][SAFE_DW-1:0] fu" << f << "_result;\n";
-    unsigned fw = fuEffDW[f];
-    os << "  logic [NUM_OUTPUTS-1:0][" << (fw > 0 ? fw - 1 : 0) << ":0] fu" << f << "_out_data;\n";
-    os << "  logic [NUM_OUTPUTS-1:0] fu" << f << "_out_valid;\n";
-  }
-  os << "\n";
-
-  // Instantiate each FU as a customized fabric_pe module (TAG_WIDTH=0).
-  // Each FU uses its configured latency from the PEDef.
-  for (unsigned f = 0; f < numFU; ++f) {
-    const auto &fuDef = peDefs[def.fuPEDefIndices[f]];
-    std::string fuModName = instName + "_fu" + std::to_string(f) + "_pe";
-    unsigned fuNumIn = fuDef.inputPorts.size();
-    unsigned fuNumOut = fuDef.outputPorts.size();
-    unsigned fuLatency =
-        static_cast<unsigned>(std::max<int16_t>(fuDef.latTyp, 0));
-
-    unsigned fw = fuEffDW[f];
-
-    os << "  // FU " << f << ": " << (fuDef.singleOp.empty() ? "passthrough" : fuDef.singleOp)
-       << " (latency=" << fuLatency << ", DATA_WIDTH=" << fw << ")\n";
-    os << "  " << fuModName << " #(\n";
-    os << "    .NUM_INPUTS(" << fuNumIn << "),\n";
-    os << "    .NUM_OUTPUTS(" << fuNumOut << "),\n";
-    os << "    .DATA_WIDTH(" << fw << "),\n";
-    unsigned fuInterval =
-        static_cast<unsigned>(std::max<int16_t>(fuDef.intTyp, 1));
-    os << "    .TAG_WIDTH(0),\n";
-    os << "    .LATENCY_TYP(" << fuLatency << "),\n";
-    os << "    .INTERVAL(" << fuInterval << ")\n";
-    os << "  ) u_fu" << f << " (\n";
-    os << "    .clk(clk),\n";
-    os << "    .rst_n(rst_n),\n";
-    os << "    .in_valid({" << fuNumIn << "{fu_launch}}),\n";
-    os << "    .in_ready(),\n";
-    os << "    .in_data({";
-    // Map input ports from fu_operands (reverse order for packed array).
-    // When FU is wider than temporal PE, zero-extend each operand.
-    for (unsigned i = fuNumIn; i > 0; --i) {
-      if (i < fuNumIn) os << ", ";
-      if (fw > tpeDW) {
-        os << "{" << (fw - tpeDW) << "'b0, fu_operands[" << (i - 1) << "]}";
-      } else {
-        os << "fu_operands[" << (i - 1) << "]";
-      }
-    }
-    os << "}),\n";
-    os << "    .out_valid(fu" << f << "_out_valid),\n";
-    os << "    .out_ready({" << fuNumOut << "{all_out_ready}}),\n";
-    os << "    .out_data(fu" << f << "_out_data),\n";
-    os << "    .cfg_data('0)\n";
-    os << "  );\n";
-    // Extract data portion from FU output (TAG_WIDTH=0 so out_data is just data).
-    // Truncate to temporal PE's SAFE_DW when FU is wider.
-    for (unsigned o = 0; o < fuNumOut; ++o) {
-      os << "  assign fu" << f << "_result[" << o << "] = fu" << f
-         << "_out_data[" << o << "][SAFE_DW-1:0];\n";
-    }
-    for (unsigned o = fuNumOut; o < numOut; ++o) {
-      os << "  assign fu" << f << "_result[" << o << "] = '0;\n";
-    }
-    os << "\n";
-  }
-
-  // Mux body_result and body_valid based on fu_sel
-  if (numFU == 1) {
-    for (unsigned o = 0; o < numOut; ++o)
-      os << "  assign body_result[" << o << "] = fu0_result[" << o << "];\n";
-    os << "  assign body_valid = fu0_out_valid[0];\n";
-  } else {
-    os << "  always_comb begin : fu_mux\n";
-    os << "    integer iter_var0;\n";
-    os << "    body_valid = 1'b0;\n";
-    os << "    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; "
-       << "iter_var0 = iter_var0 + 1) begin : per_out\n";
-    os << "      body_result[iter_var0] = '0;\n";
-    os << "    end\n";
-    os << "    case (fu_sel)\n";
-    for (unsigned f = 0; f < numFU; ++f) {
-      os << "      " << fuSelBits << "'d" << f << ": begin : fu" << f << "\n";
-      os << "        body_valid = fu" << f << "_out_valid[0];\n";
-      os << "        for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; "
-         << "iter_var0 = iter_var0 + 1) begin : assign_out\n";
-      os << "          body_result[iter_var0] = fu" << f
-         << "_result[iter_var0];\n";
-      os << "        end\n";
-      os << "      end\n";
-    }
-    os << "      default: begin : fu_default\n";
-    os << "        for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; "
-       << "iter_var0 = iter_var0 + 1) begin : zero_out\n";
-    os << "          body_result[iter_var0] = '0;\n";
-    os << "        end\n";
-    os << "      end\n";
-    os << "    endcase\n";
-    os << "  end\n";
-  }
-
-  return os.str();
-}
-
-/// Fill the temporal PE template with the generated FU body.
-static std::string fillTemporalPETemplate(const std::string &templateDir,
-                                           const TemporalPEDef &def,
-                                           const std::vector<PEDef> &peDefs,
-                                           const std::string &instName) {
-  llvm::SmallString<256> tmplPath(templateDir);
-  llvm::sys::path::append(tmplPath, "Fabric", "fabric_temporal_pe.sv");
-  std::string tmpl = readFile(tmplPath.str().str());
-
-  std::string body = genTemporalPEBodySV(def, peDefs, instName);
-
-  const std::string beginMarker = "  // ===== BEGIN PE BODY =====";
-  const std::string endMarker = "  // ===== END PE BODY =====";
-
-  auto beginPos = tmpl.find(beginMarker);
-  auto endPos = tmpl.find(endMarker);
-
-  if (beginPos == std::string::npos || endPos == std::string::npos) {
-    llvm::errs() << "error: temporal PE template missing body markers\n";
-    std::exit(1);
-  }
-
-  auto afterBegin = tmpl.find('\n', beginPos);
-  std::string result;
-  result += tmpl.substr(0, afterBegin + 1);
-  result += body;
-  result += tmpl.substr(endPos);
-
-  return result;
-}
-
-/// Generate PE instance parameters.
-static std::string genPEParams(const PEDef &def) {
-  unsigned numIn = def.inputPorts.size();
-  unsigned numOut = def.outputPorts.size();
-  // DATA_WIDTH = max across all input/output port data widths AND internal
-  // body intermediate widths. Without the body scan, a PE with narrow ports
-  // but wider internal conversions (e.g., i16 -> i32 -> i16) would get a
-  // DATA_WIDTH too small for the generated body wires.
-  unsigned dw = 0;
-  for (unsigned i = 0; i < numIn; ++i)
-    dw = std::max(dw, getDataWidthBits(def.inputPorts[i]));
-  for (unsigned i = 0; i < numOut; ++i)
-    dw = std::max(dw, getDataWidthBits(def.outputPorts[i]));
-  if (!def.bodyMLIR.empty())
-    dw = std::max(dw, computeBodyMLIRMaxWidth(def.bodyMLIR));
-  if (dw == 0)
-    dw = 32;
-  unsigned tw = numIn > 0 ? getTagWidthBits(def.inputPorts[0]) : 0;
-  // Validate uniform tag width across all ports.
-  for (unsigned i = 1; i < numIn; ++i) {
-    if (getTagWidthBits(def.inputPorts[i]) != tw) {
-      llvm::errs() << "error: exportSV: PE '" << def.name
-                   << "' has mismatched tag widths across ports (input port "
-                   << i << " has tag width "
-                   << getTagWidthBits(def.inputPorts[i])
-                   << ", expected " << tw << ")\n";
-      std::exit(1);
-    }
-  }
-  for (unsigned i = 0; i < numOut; ++i) {
-    if (getTagWidthBits(def.outputPorts[i]) != tw) {
-      llvm::errs() << "error: exportSV: PE '" << def.name
-                   << "' has mismatched tag widths across ports (output port "
-                   << i << " has tag width "
-                   << getTagWidthBits(def.outputPorts[i])
-                   << ", expected " << tw << ")\n";
-      std::exit(1);
-    }
-  }
-  // Use the PEDef's configured latency/interval (set via setLatency()/setInterval()).
-  unsigned latency = static_cast<unsigned>(std::max<int16_t>(def.latTyp, 0));
-  unsigned interval = static_cast<unsigned>(std::max<int16_t>(def.intTyp, 1));
-
-  std::ostringstream os;
-  os << "    .NUM_INPUTS(" << numIn << "),\n";
-  os << "    .NUM_OUTPUTS(" << numOut << "),\n";
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .TAG_WIDTH(" << tw << "),\n";
-  os << "    .LATENCY_TYP(" << latency << "),\n";
-  os << "    .INTERVAL(" << interval << ")";
-  return os.str();
-}
-
-/// Read the fabric_pe.sv template and replace the body markers with generated body.
-/// Returns the complete customized module text.
-static std::string fillPETemplate(const std::string &templateDir,
-                                  const PEDef &def) {
-  llvm::SmallString<256> tmplPath(templateDir);
-  llvm::sys::path::append(tmplPath, "Fabric", "fabric_pe.sv");
-  std::string tmpl = readFile(tmplPath.str().str());
-
-  std::string body = genPEBodySV(def);
-
-  // Find and replace the body region
-  const std::string beginMarker = "  // ===== BEGIN PE BODY =====";
-  const std::string endMarker = "  // ===== END PE BODY =====";
-
-  auto beginPos = tmpl.find(beginMarker);
-  auto endPos = tmpl.find(endMarker);
-
-  if (beginPos == std::string::npos || endPos == std::string::npos) {
-    llvm::errs() << "error: PE template missing body markers\n";
-    std::exit(1);
-  }
-
-  // Replace from after beginMarker line to before endMarker line
-  auto afterBegin = tmpl.find('\n', beginPos);
-  std::string result;
-  result += tmpl.substr(0, afterBegin + 1);
-  result += body;
-  result += tmpl.substr(endPos);
-
-  return result;
-}
-
-//===----------------------------------------------------------------------===//
-// Generate constant PE instance parameters
-//===----------------------------------------------------------------------===//
-
-static std::string genConstantPEParams(const ConstantPEDef &def) {
-  unsigned dw = getDataWidthBits(def.outputType);
-  unsigned tw = getTagWidthBits(def.outputType);
-  if (dw == 0)
-    dw = 1;
-  std::ostringstream os;
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .TAG_WIDTH(" << tw << ")";
-  return os.str();
-}
-
-//===----------------------------------------------------------------------===//
-// Generate load PE instance parameters
-//===----------------------------------------------------------------------===//
-
-static unsigned ceilLog2(unsigned v) {
-  if (v <= 1) return 1;
-  unsigned r = 0;
-  unsigned vv = v - 1;
-  while (vv > 0) { ++r; vv >>= 1; }
-  return r;
-}
-
-static std::string genLoadPEParams(const LoadPEDef &def) {
-  // DATA_WIDTH matches the value payload (dataType), not the address type.
-  // The SV template handles address forwarding within SAFE_DW (= DATA_WIDTH)
-  // lanes; the connected memory's ADDR_WIDTH = $clog2(MEM_DEPTH) must fit
-  // within DATA_WIDTH, which is a fabric design constraint.
-  unsigned dw = getDataWidthBits(def.dataType);
-  if (dw == 0)
-    dw = 1;
-  std::ostringstream os;
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .TAG_WIDTH(" << def.tagWidth << "),\n";
-  os << "    .HW_TYPE(" << (def.hwType == HardwareType::TagTransparent ? 1 : 0)
-     << "),\n";
-  os << "    .QUEUE_DEPTH(" << def.queueDepth << ")";
-  return os.str();
-}
-
-//===----------------------------------------------------------------------===//
-// Generate store PE instance parameters
-//===----------------------------------------------------------------------===//
-
-static std::string genStorePEParams(const StorePEDef &def) {
-  // DATA_WIDTH matches the value payload (dataType), not the address type.
-  unsigned dw = getDataWidthBits(def.dataType);
-  if (dw == 0)
-    dw = 1;
-  std::ostringstream os;
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .TAG_WIDTH(" << def.tagWidth << "),\n";
-  os << "    .HW_TYPE(" << (def.hwType == HardwareType::TagTransparent ? 1 : 0)
-     << "),\n";
-  os << "    .QUEUE_DEPTH(" << def.queueDepth << ")";
-  return os.str();
-}
-
-//===----------------------------------------------------------------------===//
-// Generate temporal switch instance parameters
-//===----------------------------------------------------------------------===//
-
-static std::string genTemporalSwitchParams(const TemporalSwitchDef &def) {
-  unsigned dw = getDataWidthBits(def.interfaceType);
-  unsigned tw = getTagWidthBits(def.interfaceType);
-  if (dw + tw == 0)
-    dw = 1;
-  std::ostringstream os;
-  os << "    .NUM_INPUTS(" << def.numIn << "),\n";
-  os << "    .NUM_OUTPUTS(" << def.numOut << "),\n";
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .TAG_WIDTH(" << tw << "),\n";
-  os << "    .NUM_ROUTE_TABLE(" << def.numRouteTable << ")";
-
-  // Connectivity matrix
-  if (!def.connectivity.empty()) {
-    unsigned total = def.numOut * def.numIn;
-    os << ",\n    .CONNECTIVITY(" << total << "'b";
-    for (int o = static_cast<int>(def.numOut) - 1; o >= 0; --o) {
-      for (int i = static_cast<int>(def.numIn) - 1; i >= 0; --i) {
-        if (static_cast<unsigned>(o) < def.connectivity.size() &&
-            static_cast<unsigned>(i) < def.connectivity[o].size())
-          os << (def.connectivity[o][i] ? "1" : "0");
-        else
-          os << "1";
-      }
-    }
-    os << ")";
-  }
-
-  return os.str();
-}
-
-//===----------------------------------------------------------------------===//
-// Generate temporal PE instance parameters
-//===----------------------------------------------------------------------===//
-
-static std::string genTemporalPEParams(const TemporalPEDef &def,
-                                       const std::vector<PEDef> &peDefs) {
-  unsigned dw = getDataWidthBits(def.interfaceType);
-  unsigned tw = getTagWidthBits(def.interfaceType);
-  if (dw == 0)
-    dw = 1;
-  unsigned numIn = 1, numOut = 1;
-  if (!def.fuPEDefIndices.empty()) {
-    numIn = peDefs[def.fuPEDefIndices[0]].inputPorts.size();
-    numOut = peDefs[def.fuPEDefIndices[0]].outputPorts.size();
-  }
-  std::ostringstream os;
-  os << "    .NUM_INPUTS(" << numIn << "),\n";
-  os << "    .NUM_OUTPUTS(" << numOut << "),\n";
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .TAG_WIDTH(" << tw << "),\n";
-  os << "    .NUM_FU_TYPES(" << def.fuPEDefIndices.size() << "),\n";
-  os << "    .NUM_REGISTERS(" << def.numRegisters << "),\n";
-  os << "    .NUM_INSTRUCTIONS(" << def.numInstructions << "),\n";
-  os << "    .REG_FIFO_DEPTH(" << def.regFifoDepth << "),\n";
-  os << "    .SHARED_OPERAND_BUFFER(" << (def.sharedOperandBuffer ? 1 : 0) << "),\n";
-  os << "    .OPERAND_BUFFER_SIZE(" << def.shareBufferSize << ")";
-  return os.str();
-}
-
-//===----------------------------------------------------------------------===//
-// Generate memory instance parameters
-//===----------------------------------------------------------------------===//
-
-static std::string genMemoryParams(const MemoryDef &def) {
-  // Use shape size as MEM_DEPTH (needed early to derive address width)
-  unsigned memDepth = def.shape.isDynamic() ? 64 : def.shape.getSize();
-  if (memDepth == 0)
-    memDepth = 64;
-  // DATA_WIDTH must cover both element type and address width, since
-  // fabric_memory packs addresses into DATA_WIDTH-sized lanes.
-  unsigned dw = std::max(getDataWidthBits(def.shape.getElemType()),
-                         ceilLog2(memDepth));
-  if (dw == 0)
-    dw = 1;
-  // Determine tag width from tagging rules
-  unsigned tw = 0;
-  if (def.ldCount > 1 || def.stCount > 1) {
-    unsigned maxCount = std::max(def.ldCount, def.stCount);
-    unsigned tagBits = 1;
-    while ((1u << tagBits) < maxCount)
-      ++tagBits;
-    tw = tagBits;
-  }
-  std::ostringstream os;
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .TAG_WIDTH(" << tw << "),\n";
-  os << "    .LD_COUNT(" << def.ldCount << "),\n";
-  os << "    .ST_COUNT(" << def.stCount << "),\n";
-  os << "    .LSQ_DEPTH(" << def.lsqDepth << "),\n";
-  os << "    .IS_PRIVATE(" << (def.isPrivate ? 1 : 0) << "),\n";
-  os << "    .MEM_DEPTH(" << memDepth << ")";
-  return os.str();
-}
-
-//===----------------------------------------------------------------------===//
-// Generate external memory instance parameters
-//===----------------------------------------------------------------------===//
-
-static std::string genExtMemoryParams(const ExtMemoryDef &def) {
-  // External memory: use dynamic default depth for address width estimation
-  unsigned extMemDepth = def.shape.isDynamic() ? 64 : def.shape.getSize();
-  if (extMemDepth == 0)
-    extMemDepth = 64;
-  // DATA_WIDTH must cover both element type and address width
-  unsigned dw = std::max(getDataWidthBits(def.shape.getElemType()),
-                         ceilLog2(extMemDepth));
-  if (dw == 0)
-    dw = 1;
-  unsigned tw = 0;
-  if (def.ldCount > 1 || def.stCount > 1) {
-    unsigned maxCount = std::max(def.ldCount, def.stCount);
-    unsigned tagBits = 1;
-    while ((1u << tagBits) < maxCount)
-      ++tagBits;
-    tw = tagBits;
-  }
-  std::ostringstream os;
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .TAG_WIDTH(" << tw << "),\n";
-  os << "    .LD_COUNT(" << def.ldCount << "),\n";
-  os << "    .ST_COUNT(" << def.stCount << "),\n";
-  os << "    .LSQ_DEPTH(" << def.lsqDepth << ")";
-  return os.str();
-}
-
-//===----------------------------------------------------------------------===//
-// Generate switch instance parameters
-//===----------------------------------------------------------------------===//
-
-static std::string genSwitchParams(const SwitchDef &def) {
-  unsigned dw = getDataWidthBits(def.portType);
-  unsigned tw = getTagWidthBits(def.portType);
-  // Control-token types (Type::none) have zero data+tag width.
-  // Use DATA_WIDTH=1 as the minimum SV representation so the
-  // hardware compiles; the data bits are unused for control tokens.
-  if (dw + tw == 0)
-    dw = 1;
-  std::ostringstream os;
-  os << "    .NUM_INPUTS(" << def.numIn << "),\n";
-  os << "    .NUM_OUTPUTS(" << def.numOut << "),\n";
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .TAG_WIDTH(" << tw << ")";
-
-  // Connectivity matrix
-  if (!def.connectivity.empty()) {
-    unsigned total = def.numOut * def.numIn;
-    os << ",\n    .CONNECTIVITY(" << total << "'b";
-    // Emit MSB first (highest output, highest input)
-    for (int o = static_cast<int>(def.numOut) - 1; o >= 0; --o) {
-      for (int i = static_cast<int>(def.numIn) - 1; i >= 0; --i) {
-        if (static_cast<unsigned>(o) < def.connectivity.size() &&
-            static_cast<unsigned>(i) < def.connectivity[o].size())
-          os << (def.connectivity[o][i] ? "1" : "0");
-        else
-          os << "1";
-      }
-    }
-    os << ")";
-  }
-
-  return os.str();
-}
-
-//===----------------------------------------------------------------------===//
-// Generate FIFO instance parameters
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// Generate add_tag instance parameters
-//===----------------------------------------------------------------------===//
-
-static std::string genAddTagParams(const AddTagDef &def) {
-  unsigned dw = getDataWidthBits(def.valueType);
-  unsigned tw = getDataWidthBits(def.tagType);
-  std::ostringstream os;
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .TAG_WIDTH(" << tw << ")";
-  return os.str();
-}
-
-//===----------------------------------------------------------------------===//
-// Generate del_tag instance parameters
-//===----------------------------------------------------------------------===//
-
-static std::string genDelTagParams(const DelTagDef &def) {
-  unsigned dw = getDataWidthBits(def.inputType.getValueType());
-  unsigned tw = getDataWidthBits(def.inputType.getTagType());
-  std::ostringstream os;
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .TAG_WIDTH(" << tw << ")";
-  return os.str();
-}
-
-//===----------------------------------------------------------------------===//
-// Generate map_tag instance parameters
-//===----------------------------------------------------------------------===//
-
-static std::string genMapTagParams(const MapTagDef &def) {
-  unsigned dw = getDataWidthBits(def.valueType);
-  unsigned itw = getDataWidthBits(def.inputTagType);
-  unsigned otw = getDataWidthBits(def.outputTagType);
-  std::ostringstream os;
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .IN_TAG_WIDTH(" << itw << "),\n";
-  os << "    .OUT_TAG_WIDTH(" << otw << "),\n";
-  os << "    .TABLE_SIZE(" << def.tableSize << ")";
-  return os.str();
-}
-
-//===----------------------------------------------------------------------===//
-// Generate FIFO instance parameters
-//===----------------------------------------------------------------------===//
-
-static std::string genFifoParams(const FifoDef &def) {
-  unsigned dw = getDataWidthBits(def.elementType);
-  unsigned tw = getTagWidthBits(def.elementType);
-  // Control-token types (Type::none) have zero data+tag width.
-  // Use DATA_WIDTH=1 as the minimum SV representation so the
-  // hardware compiles; the data bits are unused for control tokens.
-  if (dw + tw == 0)
-    dw = 1;
-  std::ostringstream os;
-  os << "    .DEPTH(" << def.depth << "),\n";
-  os << "    .DATA_WIDTH(" << dw << "),\n";
-  os << "    .TAG_WIDTH(" << tw << "),\n";
-  os << "    .BYPASSABLE(" << (def.bypassable ? 1 : 0) << ")";
-  return os.str();
-}
-
-//===----------------------------------------------------------------------===//
 // ADGBuilder::Impl::generateSV
 //===----------------------------------------------------------------------===//
-
-static bool hasSVTemplate(ModuleKind kind) {
-  return kind == ModuleKind::Switch || kind == ModuleKind::Fifo ||
-         kind == ModuleKind::AddTag || kind == ModuleKind::DelTag ||
-         kind == ModuleKind::MapTag || kind == ModuleKind::PE ||
-         kind == ModuleKind::ConstantPE || kind == ModuleKind::LoadPE ||
-         kind == ModuleKind::StorePE || kind == ModuleKind::TemporalSwitch ||
-         kind == ModuleKind::TemporalPE || kind == ModuleKind::Memory ||
-         kind == ModuleKind::ExtMemory;
-}
-
-/// Returns true for module kinds that expose error_valid/error_code ports.
-static bool hasErrorOutput(ModuleKind kind) {
-  return kind == ModuleKind::Switch || kind == ModuleKind::TemporalSwitch ||
-         kind == ModuleKind::TemporalPE || kind == ModuleKind::MapTag ||
-         kind == ModuleKind::Memory || kind == ModuleKind::ExtMemory;
-}
-
-//===----------------------------------------------------------------------===//
-// Helper: validate a name as a legal SystemVerilog identifier
-//===----------------------------------------------------------------------===//
-
-static bool isSVKeyword(const std::string &name) {
-  // IEEE 1800-2017 Table B.1 - all reserved keywords.
-  static const std::set<std::string> keywords = {
-      "accept_on",    "alias",         "always",        "always_comb",
-      "always_ff",    "always_latch",  "and",           "assert",
-      "assign",       "assume",        "automatic",     "before",
-      "begin",        "bind",          "bins",          "binsof",
-      "bit",          "break",         "buf",           "bufif0",
-      "bufif1",       "byte",          "case",          "casex",
-      "casez",        "cell",          "chandle",       "checker",
-      "class",        "clocking",      "cmos",          "config",
-      "const",        "constraint",    "context",       "continue",
-      "cover",        "covergroup",    "coverpoint",    "cross",
-      "deassign",     "default",       "defparam",      "design",
-      "disable",      "dist",          "do",            "edge",
-      "else",         "end",           "endcase",       "endchecker",
-      "endclass",     "endclocking",   "endconfig",     "endfunction",
-      "endgenerate",  "endgroup",      "endinterface",  "endmodule",
-      "endpackage",   "endprimitive",  "endprogram",    "endproperty",
-      "endsequence",  "endspecify",    "endtable",      "endtask",
-      "enum",         "event",         "eventually",    "expect",
-      "export",       "extends",       "extern",        "final",
-      "first_match",  "for",           "force",         "foreach",
-      "forever",      "fork",          "forkjoin",      "function",
-      "generate",     "genvar",        "global",        "highz0",
-      "highz1",       "if",            "iff",           "ifnone",
-      "ignore_bins",  "illegal_bins",  "implements",    "implies",
-      "import",       "incdir",        "include",       "initial",
-      "inout",        "input",         "inside",        "instance",
-      "int",          "integer",       "interconnect",  "interface",
-      "intersect",    "join",          "join_any",      "join_none",
-      "large",        "let",           "liblist",       "library",
-      "local",        "localparam",    "logic",         "longint",
-      "macromodule",  "matches",       "medium",        "modport",
-      "module",       "nand",          "negedge",       "nettype",
-      "new",          "nexttime",      "nmos",          "nor",
-      "noshowcancelled","not",         "notif0",        "notif1",
-      "null",         "or",            "output",        "package",
-      "packed",       "parameter",     "pmos",          "posedge",
-      "primitive",    "priority",      "program",       "property",
-      "protected",    "pull0",         "pull1",         "pulldown",
-      "pullup",       "pulsestyle_ondetect","pulsestyle_onevent","pure",
-      "rand",         "randc",         "randcase",      "randsequence",
-      "rcmos",        "real",          "realtime",      "ref",
-      "reg",          "reject_on",     "release",       "repeat",
-      "restrict",     "return",        "rnmos",         "rpmos",
-      "rtran",        "rtranif0",      "rtranif1",      "s_always",
-      "s_eventually", "s_nexttime",    "s_until",       "s_until_with",
-      "scalared",     "sequence",      "shortint",      "shortreal",
-      "showcancelled","signed",        "small",         "soft",
-      "solve",        "specify",       "specparam",     "static",
-      "string",       "strong",        "strong0",       "strong1",
-      "struct",       "super",         "supply0",       "supply1",
-      "sync_accept_on","sync_reject_on","table",        "tagged",
-      "task",         "this",          "throughout",    "time",
-      "timeprecision","timeunit",      "tran",          "tranif0",
-      "tranif1",      "tri",           "tri0",          "tri1",
-      "triand",       "trior",         "trireg",        "type",
-      "typedef",      "union",         "unique",        "unique0",
-      "unsigned",     "until",         "until_with",    "untyped",
-      "use",          "uwire",         "var",           "vectored",
-      "virtual",      "void",          "wait",          "wait_order",
-      "wand",         "weak",          "weak0",         "weak1",
-      "while",        "wildcard",      "wire",          "with",
-      "within",       "wor",           "xnor",          "xor",
-  };
-  return keywords.count(name) != 0;
-}
-
-static bool isValidSVIdentifier(const std::string &name) {
-  if (name.empty())
-    return false;
-  // Must start with letter or underscore
-  if (!std::isalpha(static_cast<unsigned char>(name[0])) && name[0] != '_')
-    return false;
-  for (char c : name) {
-    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_')
-      return false;
-  }
-  return !isSVKeyword(name);
-}
 
 void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   // Reject unsupported module kinds before producing any output
@@ -1568,9 +70,9 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     unsigned addrWidth = 0;
     unsigned dataWidth = 0;
     std::string peName;
-    if ((srcInst.kind == ModuleKind::LoadPE && conn.srcPort == 1) ||
+    if ((srcInst.kind == ModuleKind::LoadPE && conn.srcPort == 0) ||
         (srcInst.kind == ModuleKind::StorePE && conn.srcPort == 0)) {
-      // LoadPE out1 or StorePE out0 connects to a memory address port
+      // LoadPE out0 or StorePE out0 connects to a memory address port
       if (dstInst.kind == ModuleKind::Memory) {
         const auto &mdef = memoryDefs[dstInst.defIdx];
         unsigned md = mdef.shape.isDynamic() ? 64 : mdef.shape.getSize();
@@ -1757,21 +259,34 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   std::set<std::string> usedDialects;
 
   if (!templateDir.empty()) {
-    // Copy Common/ files
+    // Copy Common/ header (always needed)
     copyTemplateFile(templateDir, "Common/fabric_common.svh", libDir.str().str());
-    // Copy Fabric/ files
-    copyTemplateFile(templateDir, "Fabric/fabric_fifo.sv", libDir.str().str());
-    copyTemplateFile(templateDir, "Fabric/fabric_switch.sv", libDir.str().str());
-    copyTemplateFile(templateDir, "Fabric/fabric_add_tag.sv", libDir.str().str());
-    copyTemplateFile(templateDir, "Fabric/fabric_del_tag.sv", libDir.str().str());
-    copyTemplateFile(templateDir, "Fabric/fabric_map_tag.sv", libDir.str().str());
-    copyTemplateFile(templateDir, "Fabric/fabric_pe_constant.sv", libDir.str().str());
-    copyTemplateFile(templateDir, "Fabric/fabric_pe_load.sv", libDir.str().str());
-    copyTemplateFile(templateDir, "Fabric/fabric_pe_store.sv", libDir.str().str());
-    copyTemplateFile(templateDir, "Fabric/fabric_temporal_sw.sv", libDir.str().str());
-    copyTemplateFile(templateDir, "Fabric/fabric_temporal_pe.sv", libDir.str().str());
-    copyTemplateFile(templateDir, "Fabric/fabric_memory.sv", libDir.str().str());
-    copyTemplateFile(templateDir, "Fabric/fabric_extmemory.sv", libDir.str().str());
+
+    // Collect which module kinds are present in instances
+    std::set<ModuleKind> usedKinds;
+    for (const auto &inst : instances)
+      usedKinds.insert(inst.kind);
+
+    // Copy only the Fabric/ template files actually needed by the design.
+    // PE and TemporalPE are generated per-instance (not directly instantiated
+    // from the template), so they do not need a template copy in the output.
+    static const std::pair<ModuleKind, const char *> kindToTemplate[] = {
+        {ModuleKind::Fifo, "Fabric/fabric_fifo.sv"},
+        {ModuleKind::Switch, "Fabric/fabric_switch.sv"},
+        {ModuleKind::AddTag, "Fabric/fabric_add_tag.sv"},
+        {ModuleKind::DelTag, "Fabric/fabric_del_tag.sv"},
+        {ModuleKind::MapTag, "Fabric/fabric_map_tag.sv"},
+        {ModuleKind::ConstantPE, "Fabric/fabric_pe_constant.sv"},
+        {ModuleKind::LoadPE, "Fabric/fabric_pe_load.sv"},
+        {ModuleKind::StorePE, "Fabric/fabric_pe_store.sv"},
+        {ModuleKind::TemporalSwitch, "Fabric/fabric_temporal_sw.sv"},
+        {ModuleKind::Memory, "Fabric/fabric_memory.sv"},
+        {ModuleKind::ExtMemory, "Fabric/fabric_extmemory.sv"},
+    };
+    for (const auto &[kind, tmpl] : kindToTemplate) {
+      if (usedKinds.count(kind))
+        copyTemplateFile(templateDir, tmpl, libDir.str().str());
+    }
 
     // For PE instances: generate body-filled customized modules
     for (const auto &inst : instances) {
@@ -1780,7 +295,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         std::string customized = fillPETemplate(templateDir, def);
 
         // Replace module name to make it unique per instance
-        std::string origName = "module fabric_pe";
+        std::string origName = "module " + def.name + "_pe";
         std::string newName = "module " + inst.name + "_pe";
         auto pos = customized.find(origName);
         if (pos != std::string::npos)
@@ -1819,7 +334,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
           std::string fuCustomized = fillPETemplate(templateDir, fuDef);
 
           // Replace module name to match FU module name
-          std::string origPeName = "module fabric_pe";
+          std::string origPeName = "module " + fuDef.name + "_pe";
           std::string newPeName = "module " + fuModName;
           auto pePos = fuCustomized.find(origPeName);
           if (pePos != std::string::npos)
@@ -1830,16 +345,9 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
           writeFile(fuPath.str().str(), fuCustomized);
         }
 
-        // Generate the temporal PE module with FU instantiations
+        // Generate the temporal PE module with per-port widths
         std::string customized =
-            fillTemporalPETemplate(templateDir, def, peDefs, inst.name);
-
-        // Replace module name to make it unique per instance
-        std::string origName = "module fabric_temporal_pe";
-        std::string newName = "module " + inst.name + "_temporal_pe";
-        auto pos = customized.find(origName);
-        if (pos != std::string::npos)
-          customized.replace(pos, origName.size(), newName);
+            genFullTemporalPESV(templateDir, def, peDefs, inst.name);
 
         llvm::SmallString<256> tpePath(libDir);
         llvm::sys::path::append(tpePath, inst.name + "_temporal_pe.sv");
@@ -2057,89 +565,17 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   top << ");\n\n";
 
   // Pre-compute per-instance payload dimensions for modules with packed-array
-  // ports (PE, Memory, ExtMemory).  All lanes of in_data/out_data must have
-  // uniform width = DATA_WIDTH + TAG_WIDTH (SAFE_PW).  Without this, semantic
-  // port types of different widths (e.g. index=64 vs i32=32 for Memory) would
-  // produce mismatched wire widths that corrupt packed-array lane boundaries.
-  std::vector<unsigned> instPePayload(instances.size(), 0);
-  std::vector<unsigned> instPeDataW(instances.size(), 0);
-  std::vector<unsigned> instPeTagW(instances.size(), 0);
-  for (size_t i = 0; i < instances.size(); ++i) {
-    if (instances[i].kind == ModuleKind::PE) {
-      const auto &def = peDefs[instances[i].defIdx];
-      unsigned dw = 0;
-      for (const auto &pt : def.inputPorts)
-        dw = std::max(dw, getDataWidthBits(pt));
-      for (const auto &pt : def.outputPorts)
-        dw = std::max(dw, getDataWidthBits(pt));
-      if (!def.bodyMLIR.empty())
-        dw = std::max(dw, computeBodyMLIRMaxWidth(def.bodyMLIR));
-      if (dw == 0) dw = 32;
-      unsigned tw = !def.inputPorts.empty()
-                        ? getTagWidthBits(def.inputPorts[0])
-                        : 0;
-      instPePayload[i] = dw + tw;
-      instPeDataW[i] = dw;
-      instPeTagW[i] = tw;
-    } else if (instances[i].kind == ModuleKind::Memory) {
-      const auto &def = memoryDefs[instances[i].defIdx];
-      unsigned memDepth = def.shape.isDynamic() ? 64 : def.shape.getSize();
-      if (memDepth == 0) memDepth = 64;
-      unsigned dw = std::max(getDataWidthBits(def.shape.getElemType()),
-                             ceilLog2(memDepth));
-      if (dw == 0) dw = 1;
-      unsigned tw = 0;
-      if (def.ldCount > 1 || def.stCount > 1) {
-        unsigned maxCount = std::max(def.ldCount, def.stCount);
-        unsigned tagBits = 1;
-        while ((1u << tagBits) < maxCount)
-          ++tagBits;
-        tw = tagBits;
-      }
-      instPePayload[i] = dw + tw;
-      instPeDataW[i] = dw;
-      instPeTagW[i] = tw;
-    } else if (instances[i].kind == ModuleKind::ExtMemory) {
-      const auto &def = extMemoryDefs[instances[i].defIdx];
-      unsigned extMemDepth = def.shape.isDynamic() ? 64 : def.shape.getSize();
-      if (extMemDepth == 0) extMemDepth = 64;
-      unsigned dw = std::max(getDataWidthBits(def.shape.getElemType()),
-                             ceilLog2(extMemDepth));
-      if (dw == 0) dw = 1;
-      unsigned tw = 0;
-      if (def.ldCount > 1 || def.stCount > 1) {
-        unsigned maxCount = std::max(def.ldCount, def.stCount);
-        unsigned tagBits = 1;
-        while ((1u << tagBits) < maxCount)
-          ++tagBits;
-        tw = tagBits;
-      }
-      instPePayload[i] = dw + tw;
-      instPeDataW[i] = dw;
-      instPeTagW[i] = tw;
-    }
-  }
-
   // Wire declarations for internal connections
   for (size_t i = 0; i < instances.size(); ++i) {
     const auto &inst = instances[i];
     unsigned numIn = getInstanceInputCount(i);
     unsigned numOut = getInstanceOutputCount(i);
 
-    // For PE instances, all data wires use the PE's PAYLOAD_WIDTH (= max
-    // data width across all ports + tag width) so that the packed-array port
-    // connection has uniform element width.  This matters for conversion ops
-    // (e.g. arith.extsi i16->i32) where individual port types differ.
-    unsigned pePayloadWidth = instPePayload[i];
-
+    // Per-port semantic widths for all instances.
     for (unsigned p = 0; p < numIn; ++p) {
-      unsigned w;
-      if (pePayloadWidth > 0)
-        w = pePayloadWidth;
-      else {
-        Type pt = getInstanceInputType(i, p);
-        w = getDataWidthBits(pt) + getTagWidthBits(pt);
-      }
+      Type pt = getInstanceInputType(i, p);
+      unsigned w = getDataWidthBits(pt) + getTagWidthBits(pt);
+      if (w == 0) w = 1;
       top << "  logic " << inst.name << "_in" << p << "_valid;\n";
       top << "  logic " << inst.name << "_in" << p << "_ready;\n";
       if (w > 1)
@@ -2148,13 +584,9 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         top << "  logic " << inst.name << "_in" << p << "_data;\n";
     }
     for (unsigned p = 0; p < numOut; ++p) {
-      unsigned w;
-      if (pePayloadWidth > 0)
-        w = pePayloadWidth;
-      else {
-        Type pt = getInstanceOutputType(i, p);
-        w = getDataWidthBits(pt) + getTagWidthBits(pt);
-      }
+      Type pt = getInstanceOutputType(i, p);
+      unsigned w = getDataWidthBits(pt) + getTagWidthBits(pt);
+      if (w == 0) w = 1;
       top << "  logic " << inst.name << "_out" << p << "_valid;\n";
       top << "  logic " << inst.name << "_out" << p << "_ready;\n";
       if (w > 1)
@@ -2293,47 +725,20 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       const auto &def = peDefs[inst.defIdx];
       unsigned numIn = def.inputPorts.size();
       unsigned numOut = def.outputPorts.size();
-      top << "  " << inst.name << "_pe #(\n" << genPEParams(def) << "\n  ) "
+      // Per-port instantiation (matches genFullPESV per-port interface)
+      top << "  " << inst.name << "_pe "
           << inst.name << " (\n";
       top << "    .clk(clk), .rst_n(rst_n),\n";
-      // Input port connections (packed array)
-      top << "    .in_valid({";
-      for (int p = numIn - 1; p >= 0; --p) {
-        top << inst.name << "_in" << p << "_valid";
-        if (p > 0) top << ", ";
+      for (unsigned p = 0; p < numIn; ++p) {
+        top << "    .in" << p << "_valid(" << inst.name << "_in" << p << "_valid),\n";
+        top << "    .in" << p << "_ready(" << inst.name << "_in" << p << "_ready),\n";
+        top << "    .in" << p << "_data(" << inst.name << "_in" << p << "_data),\n";
       }
-      top << "}),\n";
-      top << "    .in_ready({";
-      for (int p = numIn - 1; p >= 0; --p) {
-        top << inst.name << "_in" << p << "_ready";
-        if (p > 0) top << ", ";
+      for (unsigned p = 0; p < numOut; ++p) {
+        top << "    .out" << p << "_valid(" << inst.name << "_out" << p << "_valid),\n";
+        top << "    .out" << p << "_ready(" << inst.name << "_out" << p << "_ready),\n";
+        top << "    .out" << p << "_data(" << inst.name << "_out" << p << "_data),\n";
       }
-      top << "}),\n";
-      top << "    .in_data({";
-      for (int p = numIn - 1; p >= 0; --p) {
-        top << inst.name << "_in" << p << "_data";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .out_valid({";
-      for (int p = numOut - 1; p >= 0; --p) {
-        top << inst.name << "_out" << p << "_valid";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .out_ready({";
-      for (int p = numOut - 1; p >= 0; --p) {
-        top << inst.name << "_out" << p << "_ready";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .out_data({";
-      for (int p = numOut - 1; p >= 0; --p) {
-        top << inst.name << "_out" << p << "_data";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      // Config: output tags for tagged PE, '0 for native
       unsigned tw = numIn > 0 ? getTagWidthBits(def.inputPorts[0]) : 0;
       if (tw > 0 && instCfgPorts.size() > 0)
         top << "    .cfg_data(" << inst.name << "_cfg_data)\n";
@@ -2467,45 +872,20 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         numIn = peDefs[def.fuPEDefIndices[0]].inputPorts.size();
         numOut = peDefs[def.fuPEDefIndices[0]].outputPorts.size();
       }
-      top << "  " << inst.name << "_temporal_pe #(\n" << genTemporalPEParams(def, peDefs)
-          << "\n  ) " << inst.name << " (\n";
+      // Per-port instantiation (no parameter block; localparams baked in)
+      top << "  " << inst.name << "_temporal_pe "
+          << inst.name << " (\n";
       top << "    .clk(clk), .rst_n(rst_n),\n";
-      top << "    .in_valid({";
-      for (int p = numIn - 1; p >= 0; --p) {
-        top << inst.name << "_in" << p << "_valid";
-        if (p > 0) top << ", ";
+      for (unsigned p = 0; p < numIn; ++p) {
+        top << "    .in" << p << "_valid(" << inst.name << "_in" << p << "_valid),\n";
+        top << "    .in" << p << "_ready(" << inst.name << "_in" << p << "_ready),\n";
+        top << "    .in" << p << "_data(" << inst.name << "_in" << p << "_data),\n";
       }
-      top << "}),\n";
-      top << "    .in_ready({";
-      for (int p = numIn - 1; p >= 0; --p) {
-        top << inst.name << "_in" << p << "_ready";
-        if (p > 0) top << ", ";
+      for (unsigned p = 0; p < numOut; ++p) {
+        top << "    .out" << p << "_valid(" << inst.name << "_out" << p << "_valid),\n";
+        top << "    .out" << p << "_ready(" << inst.name << "_out" << p << "_ready),\n";
+        top << "    .out" << p << "_data(" << inst.name << "_out" << p << "_data),\n";
       }
-      top << "}),\n";
-      top << "    .in_data({";
-      for (int p = numIn - 1; p >= 0; --p) {
-        top << inst.name << "_in" << p << "_data";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .out_valid({";
-      for (int p = numOut - 1; p >= 0; --p) {
-        top << inst.name << "_out" << p << "_valid";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .out_ready({";
-      for (int p = numOut - 1; p >= 0; --p) {
-        top << inst.name << "_out" << p << "_ready";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .out_data({";
-      for (int p = numOut - 1; p >= 0; --p) {
-        top << inst.name << "_out" << p << "_data";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
       top << "    .cfg_data(" << inst.name << "_cfg_data),\n";
       top << "    .error_valid(" << inst.name << "_error_valid),\n";
       top << "    .error_code(" << inst.name << "_error_code)\n";
@@ -2514,47 +894,68 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
     case ModuleKind::Memory: {
       const auto &def = memoryDefs[inst.defIdx];
-      unsigned numIn = getInstanceInputCount(i);
-      unsigned numOut = getInstanceOutputCount(i);
       top << "  fabric_memory #(\n" << genMemoryParams(def) << "\n  ) "
           << inst.name << " (\n";
       top << "    .clk(clk), .rst_n(rst_n),\n";
-      top << "    .in_valid({";
-      for (int p = numIn - 1; p >= 0; --p) {
-        top << inst.name << "_in" << p << "_valid";
-        if (p > 0) top << ", ";
+      // Named port connections mapped from indexed wires
+      {
+        unsigned inPort = 0;
+        unsigned outPort = 0;
+        // ld_addr input
+        if (def.ldCount > 0) {
+          top << "    .ld_addr_valid(" << inst.name << "_in" << inPort << "_valid),\n";
+          top << "    .ld_addr_ready(" << inst.name << "_in" << inPort << "_ready),\n";
+          top << "    .ld_addr_data(" << inst.name << "_in" << inPort << "_data),\n";
+          inPort++;
+        } else {
+          top << "    .ld_addr_valid(1'b0), .ld_addr_ready(), .ld_addr_data('0),\n";
+        }
+        // st_addr + st_data inputs
+        if (def.stCount > 0) {
+          top << "    .st_addr_valid(" << inst.name << "_in" << inPort << "_valid),\n";
+          top << "    .st_addr_ready(" << inst.name << "_in" << inPort << "_ready),\n";
+          top << "    .st_addr_data(" << inst.name << "_in" << inPort << "_data),\n";
+          inPort++;
+          top << "    .st_data_valid(" << inst.name << "_in" << inPort << "_valid),\n";
+          top << "    .st_data_ready(" << inst.name << "_in" << inPort << "_ready),\n";
+          top << "    .st_data_data(" << inst.name << "_in" << inPort << "_data),\n";
+          inPort++;
+        } else {
+          top << "    .st_addr_valid(1'b0), .st_addr_ready(), .st_addr_data('0),\n";
+          top << "    .st_data_valid(1'b0), .st_data_ready(), .st_data_data('0),\n";
+        }
+        // memref output (non-private)
+        if (!def.isPrivate) {
+          top << "    .memref_valid(" << inst.name << "_out" << outPort << "_valid),\n";
+          top << "    .memref_ready(" << inst.name << "_out" << outPort << "_ready),\n";
+          outPort++;
+        } else {
+          top << "    .memref_valid(), .memref_ready(1'b1),\n";
+        }
+        // ld_data + ld_done outputs
+        if (def.ldCount > 0) {
+          top << "    .ld_data_valid(" << inst.name << "_out" << outPort << "_valid),\n";
+          top << "    .ld_data_ready(" << inst.name << "_out" << outPort << "_ready),\n";
+          top << "    .ld_data_data(" << inst.name << "_out" << outPort << "_data),\n";
+          outPort++;
+          top << "    .ld_done_valid(" << inst.name << "_out" << outPort << "_valid),\n";
+          top << "    .ld_done_ready(" << inst.name << "_out" << outPort << "_ready),\n";
+          top << "    .ld_done_data(" << inst.name << "_out" << outPort << "_data),\n";
+          outPort++;
+        } else {
+          top << "    .ld_data_valid(), .ld_data_ready(1'b1), .ld_data_data(),\n";
+          top << "    .ld_done_valid(), .ld_done_ready(1'b1), .ld_done_data(),\n";
+        }
+        // st_done output
+        if (def.stCount > 0) {
+          top << "    .st_done_valid(" << inst.name << "_out" << outPort << "_valid),\n";
+          top << "    .st_done_ready(" << inst.name << "_out" << outPort << "_ready),\n";
+          top << "    .st_done_data(" << inst.name << "_out" << outPort << "_data),\n";
+          outPort++;
+        } else {
+          top << "    .st_done_valid(), .st_done_ready(1'b1), .st_done_data(),\n";
+        }
       }
-      top << "}),\n";
-      top << "    .in_ready({";
-      for (int p = numIn - 1; p >= 0; --p) {
-        top << inst.name << "_in" << p << "_ready";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .in_data({";
-      for (int p = numIn - 1; p >= 0; --p) {
-        top << inst.name << "_in" << p << "_data";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .out_valid({";
-      for (int p = numOut - 1; p >= 0; --p) {
-        top << inst.name << "_out" << p << "_valid";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .out_ready({";
-      for (int p = numOut - 1; p >= 0; --p) {
-        top << inst.name << "_out" << p << "_ready";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .out_data({";
-      for (int p = numOut - 1; p >= 0; --p) {
-        top << inst.name << "_out" << p << "_data";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
       top << "    .error_valid(" << inst.name << "_error_valid),\n";
       top << "    .error_code(" << inst.name << "_error_code)\n";
       top << "  );\n\n";
@@ -2562,47 +963,65 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
     case ModuleKind::ExtMemory: {
       const auto &def = extMemoryDefs[inst.defIdx];
-      unsigned numIn = getInstanceInputCount(i);
-      unsigned numOut = getInstanceOutputCount(i);
       top << "  fabric_extmemory #(\n" << genExtMemoryParams(def) << "\n  ) "
           << inst.name << " (\n";
       top << "    .clk(clk), .rst_n(rst_n),\n";
-      top << "    .in_valid({";
-      for (int p = numIn - 1; p >= 0; --p) {
-        top << inst.name << "_in" << p << "_valid";
-        if (p > 0) top << ", ";
+      // Named port connections mapped from indexed wires
+      {
+        unsigned inPort = 0;
+        unsigned outPort = 0;
+        // memref_bind input (always port 0)
+        top << "    .memref_bind_valid(" << inst.name << "_in" << inPort << "_valid),\n";
+        top << "    .memref_bind_ready(" << inst.name << "_in" << inPort << "_ready),\n";
+        top << "    .memref_bind_data(" << inst.name << "_in" << inPort << "_data),\n";
+        inPort++;
+        // ld_addr input
+        if (def.ldCount > 0) {
+          top << "    .ld_addr_valid(" << inst.name << "_in" << inPort << "_valid),\n";
+          top << "    .ld_addr_ready(" << inst.name << "_in" << inPort << "_ready),\n";
+          top << "    .ld_addr_data(" << inst.name << "_in" << inPort << "_data),\n";
+          inPort++;
+        } else {
+          top << "    .ld_addr_valid(1'b0), .ld_addr_ready(), .ld_addr_data('0),\n";
+        }
+        // st_addr + st_data inputs
+        if (def.stCount > 0) {
+          top << "    .st_addr_valid(" << inst.name << "_in" << inPort << "_valid),\n";
+          top << "    .st_addr_ready(" << inst.name << "_in" << inPort << "_ready),\n";
+          top << "    .st_addr_data(" << inst.name << "_in" << inPort << "_data),\n";
+          inPort++;
+          top << "    .st_data_valid(" << inst.name << "_in" << inPort << "_valid),\n";
+          top << "    .st_data_ready(" << inst.name << "_in" << inPort << "_ready),\n";
+          top << "    .st_data_data(" << inst.name << "_in" << inPort << "_data),\n";
+          inPort++;
+        } else {
+          top << "    .st_addr_valid(1'b0), .st_addr_ready(), .st_addr_data('0),\n";
+          top << "    .st_data_valid(1'b0), .st_data_ready(), .st_data_data('0),\n";
+        }
+        // ld_data + ld_done outputs
+        if (def.ldCount > 0) {
+          top << "    .ld_data_valid(" << inst.name << "_out" << outPort << "_valid),\n";
+          top << "    .ld_data_ready(" << inst.name << "_out" << outPort << "_ready),\n";
+          top << "    .ld_data_data(" << inst.name << "_out" << outPort << "_data),\n";
+          outPort++;
+          top << "    .ld_done_valid(" << inst.name << "_out" << outPort << "_valid),\n";
+          top << "    .ld_done_ready(" << inst.name << "_out" << outPort << "_ready),\n";
+          top << "    .ld_done_data(" << inst.name << "_out" << outPort << "_data),\n";
+          outPort++;
+        } else {
+          top << "    .ld_data_valid(), .ld_data_ready(1'b1), .ld_data_data(),\n";
+          top << "    .ld_done_valid(), .ld_done_ready(1'b1), .ld_done_data(),\n";
+        }
+        // st_done output
+        if (def.stCount > 0) {
+          top << "    .st_done_valid(" << inst.name << "_out" << outPort << "_valid),\n";
+          top << "    .st_done_ready(" << inst.name << "_out" << outPort << "_ready),\n";
+          top << "    .st_done_data(" << inst.name << "_out" << outPort << "_data),\n";
+          outPort++;
+        } else {
+          top << "    .st_done_valid(), .st_done_ready(1'b1), .st_done_data(),\n";
+        }
       }
-      top << "}),\n";
-      top << "    .in_ready({";
-      for (int p = numIn - 1; p >= 0; --p) {
-        top << inst.name << "_in" << p << "_ready";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .in_data({";
-      for (int p = numIn - 1; p >= 0; --p) {
-        top << inst.name << "_in" << p << "_data";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .out_valid({";
-      for (int p = numOut - 1; p >= 0; --p) {
-        top << inst.name << "_out" << p << "_valid";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .out_ready({";
-      for (int p = numOut - 1; p >= 0; --p) {
-        top << inst.name << "_out" << p << "_ready";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
-      top << "    .out_data({";
-      for (int p = numOut - 1; p >= 0; --p) {
-        top << inst.name << "_out" << p << "_data";
-        if (p > 0) top << ", ";
-      }
-      top << "}),\n";
       top << "    .error_valid(" << inst.name << "_error_valid),\n";
       top << "    .error_code(" << inst.name << "_error_code)\n";
       top << "  );\n\n";
@@ -2617,36 +1036,28 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   // Key: "<inst_name>_out<port>" or "%<module_port_name>" -> list of ready signals.
   std::map<std::string, std::vector<std::string>> readySources;
 
-  // Helper: emit a data assignment with tag repacking when the source and
-  // destination use different data widths in a tagged payload.
-  // srcDW/srcTW: source data/tag widths.  dstDW/dstTW: destination data/tag
-  // widths.  When tag width is 0 or data widths match, a plain assign is
-  // emitted.  Otherwise the tag is extracted from the source position and
-  // placed at the destination position, with data zero-filled or truncated.
+  // Width-adapting data assignment: repack tag+data when src and dst use
+  // different data widths within the same tag structure. Needed when per-port
+  // temporal PE widths differ from module-level interface widths.
   auto emitDataAssign = [&](const std::string &dst, unsigned dstDW,
                             unsigned dstTW, const std::string &src,
                             unsigned srcDW, unsigned srcTW) {
     unsigned srcTotal = srcDW + srcTW;
     unsigned dstTotal = dstDW + dstTW;
     if (srcTotal == dstTotal || dstTotal == 0 || srcTotal == 0) {
-      // Same width, or one side is zero-width (none type): plain assign
       top << "  assign " << dst << " = " << src << ";\n";
     } else if (srcTW == 0 || dstTW == 0) {
-      // No tag repack needed; just truncate or zero-extend data
-      if (srcTotal > dstTotal) {
+      if (srcTotal > dstTotal)
         top << "  assign " << dst << " = " << src << "["
             << (dstTotal - 1) << ":0];\n";
-      } else {
+      else
         top << "  assign " << dst << " = {"
             << (dstTotal - srcTotal) << "'b0, " << src << "};\n";
-      }
     } else if (srcDW > dstDW) {
-      // Wide -> narrow: extract tag from wide position, truncate data
       top << "  assign " << dst << " = {" << src << "["
           << (srcDW + srcTW - 1) << ":" << srcDW << "], " << src << "["
           << (dstDW - 1) << ":0]};\n";
     } else {
-      // Narrow -> wide: extract tag from narrow position, zero-pad data
       top << "  assign " << dst << " = {" << src << "["
           << (srcDW + srcTW - 1) << ":" << srcDW << "], "
           << (dstDW - srcDW) << "'b0, " << src << "["
@@ -2663,9 +1074,10 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         << "_valid = " << port.name << "_valid;\n";
     unsigned srcDW = getDataWidthBits(port.type);
     unsigned srcTW = getTagWidthBits(port.type);
-    unsigned dstDW = instPeDataW[conn.instIdx];
-    unsigned dstTW = instPeTagW[conn.instIdx];
-    if (instPePayload[conn.instIdx] > 0 && (srcDW + srcTW) != instPePayload[conn.instIdx]) {
+    Type dstType = getInstanceInputType(conn.instIdx, conn.dstPort);
+    unsigned dstDW = getDataWidthBits(dstType);
+    unsigned dstTW = getTagWidthBits(dstType);
+    if ((srcDW + srcTW) != (dstDW + dstTW)) {
       emitDataAssign(inst.name + "_in" + std::to_string(conn.dstPort) + "_data",
                      dstDW, dstTW, port.name + "_data", srcDW, srcTW);
     } else {
@@ -2674,19 +1086,15 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
     readySources["%" + port.name].push_back(sinkReady);
   }
-  // Emit aggregated ready for module input ports; drive unconnected to 0
+  // Emit ready for module input ports; drive unconnected to 0.
+  // Validation (COMP_FANOUT_MODULE_BOUNDARY) guarantees at most one sink.
   for (const auto *p : streamInputs) {
     std::string key = "%" + p->name;
     auto it = readySources.find(key);
     if (it == readySources.end()) {
       top << "  assign " << p->name << "_ready = 1'b0;\n";
-    } else if (it->second.size() == 1) {
-      top << "  assign " << p->name << "_ready = " << it->second[0] << ";\n";
     } else {
-      top << "  assign " << p->name << "_ready = " << it->second[0];
-      for (size_t s = 1; s < it->second.size(); ++s)
-        top << " & " << it->second[s];
-      top << ";\n";
+      top << "  assign " << p->name << "_ready = " << it->second[0] << ";\n";
     }
   }
   readySources.clear();
@@ -2703,11 +1111,12 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
     std::string srcKey = inst.name + "_out" + std::to_string(conn.srcPort);
     top << "  assign " << port.name << "_valid = " << srcKey << "_valid;\n";
-    unsigned srcDW = instPeDataW[conn.instIdx];
-    unsigned srcTW = instPeTagW[conn.instIdx];
+    Type srcType = getInstanceOutputType(conn.instIdx, conn.srcPort);
+    unsigned srcDW = getDataWidthBits(srcType);
+    unsigned srcTW = getTagWidthBits(srcType);
     unsigned dstDW = getDataWidthBits(port.type);
     unsigned dstTW = getTagWidthBits(port.type);
-    if (instPePayload[conn.instIdx] > 0 && (dstDW + dstTW) != instPePayload[conn.instIdx]) {
+    if ((srcDW + srcTW) != (dstDW + dstTW)) {
       emitDataAssign(port.name + "_data", dstDW, dstTW,
                      srcKey + "_data", srcDW, srcTW);
     } else {
@@ -2723,31 +1132,13 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     std::string srcKey = srcInst.name + "_out" + std::to_string(conn.srcPort);
     top << "  assign " << dstInst.name << "_in" << conn.dstPort
         << "_valid = " << srcKey << "_valid;\n";
-    // Check if source or destination is a PE with widened payload
-    unsigned srcPL = instPePayload[conn.srcInst];
-    unsigned dstPL = instPePayload[conn.dstInst];
-    if (srcPL > 0 && dstPL > 0 && srcPL == dstPL) {
-      // Both PEs with same payload width: plain assign
-      top << "  assign " << dstInst.name << "_in" << conn.dstPort
-          << "_data = " << srcKey << "_data;\n";
-    } else if (srcPL > 0 && srcPL != dstPL) {
-      // Source is wider PE, destination is narrower (non-PE or different PE)
-      unsigned sDW = instPeDataW[conn.srcInst];
-      unsigned sTW = instPeTagW[conn.srcInst];
-      unsigned dDW = dstPL > 0 ? instPeDataW[conn.dstInst]
-                                : getDataWidthBits(getInstanceInputType(conn.dstInst, conn.dstPort));
-      unsigned dTW = dstPL > 0 ? instPeTagW[conn.dstInst]
-                                : getTagWidthBits(getInstanceInputType(conn.dstInst, conn.dstPort));
-      emitDataAssign(dstInst.name + "_in" + std::to_string(conn.dstPort) + "_data",
-                     dDW, dTW, srcKey + "_data", sDW, sTW);
-    } else if (dstPL > 0 && dstPL != srcPL) {
-      // Destination is wider PE, source is narrower (non-PE or different PE)
-      unsigned dDW = instPeDataW[conn.dstInst];
-      unsigned dTW = instPeTagW[conn.dstInst];
-      unsigned sDW = srcPL > 0 ? instPeDataW[conn.srcInst]
-                                : getDataWidthBits(getInstanceOutputType(conn.srcInst, conn.srcPort));
-      unsigned sTW = srcPL > 0 ? instPeTagW[conn.srcInst]
-                                : getTagWidthBits(getInstanceOutputType(conn.srcInst, conn.srcPort));
+    Type srcType2 = getInstanceOutputType(conn.srcInst, conn.srcPort);
+    Type dstType2 = getInstanceInputType(conn.dstInst, conn.dstPort);
+    unsigned sDW = getDataWidthBits(srcType2);
+    unsigned sTW = getTagWidthBits(srcType2);
+    unsigned dDW = getDataWidthBits(dstType2);
+    unsigned dTW = getTagWidthBits(dstType2);
+    if ((sDW + sTW) != (dDW + dTW)) {
       emitDataAssign(dstInst.name + "_in" + std::to_string(conn.dstPort) + "_data",
                      dDW, dTW, srcKey + "_data", sDW, sTW);
     } else {
@@ -2758,15 +1149,13 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         dstInst.name + "_in" + std::to_string(conn.dstPort) + "_ready");
   }
 
-  // Emit aggregated ready for instance output ports
+  // Emit ready for instance output ports.
+  // Validation (COMP_FANOUT_MODULE_INNER) guarantees at most one sink.
   for (const auto &[srcKey, sources] : readySources) {
     if (sources.size() == 1) {
       top << "  assign " << srcKey << "_ready = " << sources[0] << ";\n";
     } else {
-      top << "  assign " << srcKey << "_ready = " << sources[0];
-      for (size_t s = 1; s < sources.size(); ++s)
-        top << " & " << sources[s];
-      top << ";\n";
+      top << "  assign " << srcKey << "_ready = " << sources[0] << ";\n";
     }
   }
 

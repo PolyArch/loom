@@ -9,8 +9,9 @@
 //   - Permutation routing (non-diagonal swap)
 //   - Valid/ready handshake with backpressure
 //   - Randomized route-table with data verification
-//   - CFG_ error injection (ROUTE_MULTI_OUT, ROUTE_MULTI_IN)
+//   - CFG_ error injection (ROUTE_MIX_INPUTS_TO_SAME_OUTPUT)
 //   - RT_ error injection (UNROUTED_INPUT)
+//   - Broadcast: one input to two outputs
 //
 //===----------------------------------------------------------------------===//
 
@@ -292,8 +293,8 @@ module tb_fabric_switch #(
 
     do_reset();
 
-    // ---- Test 6: CFG_SWITCH_ROUTE_MULTI_OUT (code 1) ----
-    if (NUM_INPUTS >= 2) begin : multi_out
+    // ---- Test 6: CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT (code 1) ----
+    if (NUM_INPUTS >= 2) begin : mix_inputs
       logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_route;
       flat_route = '0;
       flat_route[0*NUM_INPUTS + 0] = 1'b1;
@@ -305,31 +306,56 @@ module tb_fabric_switch #(
       #1;
 
       if (error_valid !== 1'b1)
-        $fatal(1, "FAIL: CFG_SWITCH_ROUTE_MULTI_OUT: error_valid should be 1");
+        $fatal(1, "FAIL: CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT: error_valid should be 1");
       if (error_code !== 16'd1)
-        $fatal(1, "FAIL: CFG_SWITCH_ROUTE_MULTI_OUT: error_code should be 1, got %0d",
+        $fatal(1, "FAIL: CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT: error_code should be 1, got %0d",
                error_code);
     end
 
     do_reset();
 
-    // ---- Test 7: CFG_SWITCH_ROUTE_MULTI_IN (code 2) ----
-    if (NUM_OUTPUTS >= 2) begin : multi_in
+    // ---- Test 7: Broadcast (one input to two outputs) ----
+    if (NUM_OUTPUTS >= 2) begin : broadcast
       logic [NUM_OUTPUTS*NUM_INPUTS-1:0] flat_route;
       flat_route = '0;
-      flat_route[0*NUM_INPUTS + 0] = 1'b1;
-      flat_route[1*NUM_INPUTS + 0] = 1'b1;
+      flat_route[0*NUM_INPUTS + 0] = 1'b1;  // out0 <- in0
+      flat_route[1*NUM_INPUTS + 0] = 1'b1;  // out1 <- in0 (broadcast)
 
       cfg_route_table = compress_route(flat_route);
-      @(posedge clk);
-      @(posedge clk);
+      out_ready = '1;
+      in_valid = '0;
+      in_valid[0] = 1'b1;
+      in_data[0] = PAYLOAD_WIDTH'(16'hBEEF);
       #1;
 
-      if (error_valid !== 1'b1)
-        $fatal(1, "FAIL: CFG_SWITCH_ROUTE_MULTI_IN: error_valid should be 1");
-      if (error_code !== 16'd2)
-        $fatal(1, "FAIL: CFG_SWITCH_ROUTE_MULTI_IN: error_code should be 2, got %0d",
-               error_code);
+      // No error expected (broadcast is valid)
+      if (error_valid !== 1'b0)
+        $fatal(1, "FAIL: broadcast: unexpected error code %0d", error_code);
+      // Both outputs should receive the data
+      if (out_valid[0] !== 1'b1)
+        $fatal(1, "FAIL: broadcast: out_valid[0] should be 1");
+      if (out_valid[1] !== 1'b1)
+        $fatal(1, "FAIL: broadcast: out_valid[1] should be 1");
+      if (out_data[0] !== PAYLOAD_WIDTH'(16'hBEEF))
+        $fatal(1, "FAIL: broadcast: out_data[0] mismatch");
+      if (out_data[1] !== PAYLOAD_WIDTH'(16'hBEEF))
+        $fatal(1, "FAIL: broadcast: out_data[1] mismatch");
+      // in_ready should be 1 (both out_ready are 1)
+      if (in_ready[0] !== 1'b1)
+        $fatal(1, "FAIL: broadcast: in_ready[0] should be 1 when all targets ready");
+
+      // Now test backpressure: deassert out_ready[1]
+      out_ready[1] = 1'b0;
+      #1;
+      // in_ready should be 0 (not all broadcast targets ready)
+      if (in_ready[0] !== 1'b0)
+        $fatal(1, "FAIL: broadcast backpressure: in_ready[0] should be 0 when out_ready[1]=0");
+      // out_valid[0] should still be 1 (valid does not depend on ready)
+      if (out_valid[0] !== 1'b1)
+        $fatal(1, "FAIL: broadcast backpressure: out_valid[0] should be 1 (valid independent of ready)");
+
+      in_valid = '0;
+      out_ready = '0;
     end
 
     do_reset();

@@ -6,23 +6,32 @@ module arith_cmpi #(
     parameter int WIDTH     = 32,
     parameter int PREDICATE = 0
 ) (
-    input  logic [WIDTH-1:0] a,
-    input  logic [WIDTH-1:0] b,
-    output logic             result
+    input  logic             a_valid,
+    output logic             a_ready,
+    input  logic [WIDTH-1:0] a_data,
+    input  logic             b_valid,
+    output logic             b_ready,
+    input  logic [WIDTH-1:0] b_data,
+    output logic             result_valid,
+    input  logic             result_ready,
+    output logic             result_data
 );
   always_comb begin : cmp
     case (PREDICATE)
-      0:  result = (a == b);
-      1:  result = (a != b);
-      2:  result = ($signed(a) < $signed(b));
-      3:  result = ($signed(a) <= $signed(b));
-      4:  result = ($signed(a) > $signed(b));
-      5:  result = ($signed(a) >= $signed(b));
-      6:  result = (a < b);
-      7:  result = (a <= b);
-      8:  result = (a > b);
-      9:  result = (a >= b);
-      default: result = 1'b0;
+      0:  result_data = (a_data == b_data);
+      1:  result_data = (a_data != b_data);
+      2:  result_data = ($signed(a_data) < $signed(b_data));
+      3:  result_data = ($signed(a_data) <= $signed(b_data));
+      4:  result_data = ($signed(a_data) > $signed(b_data));
+      5:  result_data = ($signed(a_data) >= $signed(b_data));
+      6:  result_data = (a_data < b_data);
+      7:  result_data = (a_data <= b_data);
+      8:  result_data = (a_data > b_data);
+      9:  result_data = (a_data >= b_data);
+      default: result_data = 1'b0;
     endcase
   end
+  assign result_valid = a_valid & b_valid;
+  assign a_ready      = result_ready & b_valid;
+  assign b_ready      = result_ready & a_valid;
 endmodule

@@ -13,8 +13,7 @@
 // selects the winner (per-output priority pointer, starting from port 0).
 //
 // Errors:
-//   CFG_TEMPORAL_SW_ROUTE_MULTI_OUT - Input routes to >1 output in a slot
-//   CFG_TEMPORAL_SW_ROUTE_MULTI_IN  - Output selects >1 input in a slot
+//   CFG_TEMPORAL_SW_ROUTE_SAME_TAG_INPUTS_TO_SAME_OUTPUT - Output selects >1 input in a slot
 //   CFG_TEMPORAL_SW_DUP_TAG         - Duplicate valid tags in route table
 //   RT_TEMPORAL_SW_NO_MATCH         - No table entry matches input tag
 //   RT_TEMPORAL_SW_UNROUTED_INPUT   - Valid input has no route
@@ -145,18 +144,24 @@ module fabric_temporal_sw #(
   logic [NUM_OUTPUTS-1:0][RR_PTR_W-1:0] rr_ptr;
 
   // -----------------------------------------------------------------------
-  // Output muxing: for each output, round-robin among contending inputs
+  // Output muxing: for each output, round-robin among contending inputs.
+  // Supports broadcast: one input can route to multiple outputs per slot.
   // -----------------------------------------------------------------------
   logic [NUM_INPUTS-1:0]  input_routed;
   logic [NUM_INPUTS-1:0]  input_dst_ready;
   // Per-output: which input won arbitration (combinational)
   logic [NUM_OUTPUTS-1:0][RR_PTR_W-1:0] arb_winner;
   logic [NUM_OUTPUTS-1:0]               arb_valid;
+  // Per-input: broadcast won (won arb for ALL broadcast targets, no ready check)
+  logic [NUM_INPUTS-1:0]                broadcast_won;
+  // Per-input: broadcast OK (won arb + all targets ready, for in_ready gating)
+  logic [NUM_INPUTS-1:0]                broadcast_ok;
 
   always_comb begin : output_mux
     integer iter_var0, iter_var1, iter_var2;
+
+    // Arbitration: per-output, determine winner among contending inputs
     for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : per_output
-      out_valid[iter_var0] = 1'b0;
       out_data[iter_var0 * SAFE_PW +: SAFE_PW] = '0;
       arb_winner[iter_var0] = '0;
       arb_valid[iter_var0]  = 1'b0;
@@ -169,31 +174,51 @@ module fabric_temporal_sw #(
             CONNECTIVITY[iter_var0 * NUM_INPUTS + iter_var2]) begin : winner
           arb_valid[iter_var0]  = 1'b1;
           arb_winner[iter_var0] = iter_var2[RR_PTR_W-1:0];
-          out_valid[iter_var0]  = 1'b1;
           out_data[iter_var0 * SAFE_PW +: SAFE_PW] = in_port_data[iter_var2];
         end
       end
     end
 
-    // Ready logic: input is ready only when it is the arbitration winner
-    // for its routed output and that output is ready
-    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : gen_ready
-      input_routed[iter_var0]    = 1'b0;
-      input_dst_ready[iter_var0] = 1'b0;
-      for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : find_dst
+    // Broadcast-won: for each input, verify it won arbitration for ALL its
+    // broadcast targets (no ready check -- avoids combinational loop through
+    // downstream consumers' ready paths).
+    // Broadcast-ok: same but also requires all targets' out_ready (for in_ready).
+    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : bcast_chk
+      input_routed[iter_var0] = 1'b0;
+      broadcast_won[iter_var0] = 1'b1; // AND identity
+      broadcast_ok[iter_var0]  = 1'b1; // AND identity
+      for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_tgt
         if (in_routes[iter_var0][iter_var1]) begin : has_route
           input_routed[iter_var0] = 1'b1;
-          if (arb_valid[iter_var1] &&
-              (int'(arb_winner[iter_var1]) == iter_var0)) begin : is_winner
-            input_dst_ready[iter_var0] = out_ready[iter_var1];
+          if (!(arb_valid[iter_var1] &&
+                (int'(arb_winner[iter_var1]) == iter_var0))) begin : arb_fail
+            broadcast_won[iter_var0] = 1'b0;
+            broadcast_ok[iter_var0]  = 1'b0;
+          end else if (!out_ready[iter_var1]) begin : not_ready
+            broadcast_ok[iter_var0] = 1'b0;
           end
         end
       end
     end
 
+    // Gate out_valid: winner won arbitration for ALL its broadcast targets.
+    // No out_ready dependency in out_valid avoids combinational loops.
+    // Atomic broadcast is still guaranteed because in_ready = broadcast_ok
+    // (includes ready check), so the source only advances when ALL targets
+    // have consumed.
+    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : gate_valid
+      if (arb_valid[iter_var0])
+        out_valid[iter_var0] = broadcast_won[arb_winner[iter_var0]];
+      else
+        out_valid[iter_var0] = 1'b0;
+    end
+
+    // Ready logic: input is ready when it has a match, is routed, and
+    // broadcast is OK (won arb for all targets and all are ready).
     for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0 = iter_var0 + 1) begin : drive_rdy
-      if (in_valid[iter_var0] && in_match_found[iter_var0] && input_routed[iter_var0])
-        in_ready[iter_var0] = input_dst_ready[iter_var0];
+      if (in_valid[iter_var0] && in_match_found[iter_var0] &&
+          input_routed[iter_var0])
+        in_ready[iter_var0] = broadcast_ok[iter_var0];
       else
         in_ready[iter_var0] = 1'b0;
     end
@@ -226,35 +251,20 @@ module fabric_temporal_sw #(
     err_detect    = 1'b0;
     err_code_comb = 16'hFFFF;
 
-    // CFG_TEMPORAL_SW_ROUTE_MULTI_OUT: per slot, each input routes to at most 1 output
-    for (iter_var0 = 0; iter_var0 < NUM_ROUTE_TABLE; iter_var0 = iter_var0 + 1) begin : chk_multi_out
-      if (rt_valid[iter_var0]) begin : valid_slot
-        for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1 = iter_var1 + 1) begin : per_in
-          automatic int out_count = 0;
-          for (integer iter_var2 = 0; iter_var2 < NUM_OUTPUTS; iter_var2 = iter_var2 + 1) begin : cnt_out
-            out_count += int'(rt_routes[iter_var0][iter_var2][iter_var1]);
-          end
-          if (out_count > 1) begin : err_multi_out
-            err_detect = 1'b1;
-            if (CFG_TEMPORAL_SW_ROUTE_MULTI_OUT < err_code_comb)
-              err_code_comb = CFG_TEMPORAL_SW_ROUTE_MULTI_OUT;
-          end
-        end
-      end
-    end
-
-    // CFG_TEMPORAL_SW_ROUTE_MULTI_IN: per slot, each output selects at most 1 input
-    for (iter_var0 = 0; iter_var0 < NUM_ROUTE_TABLE; iter_var0 = iter_var0 + 1) begin : chk_multi_in
+    // CFG_TEMPORAL_SW_ROUTE_SAME_TAG_INPUTS_TO_SAME_OUTPUT (code 4):
+    // Per slot, each output selects at most 1 input.
+    // (Broadcast is allowed: one input may route to multiple outputs per slot.)
+    for (iter_var0 = 0; iter_var0 < NUM_ROUTE_TABLE; iter_var0 = iter_var0 + 1) begin : chk_same_tag_inputs
       if (rt_valid[iter_var0]) begin : valid_slot
         for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : per_out
           automatic int in_count = 0;
           for (integer iter_var2 = 0; iter_var2 < NUM_INPUTS; iter_var2 = iter_var2 + 1) begin : cnt_in
             in_count += int'(rt_routes[iter_var0][iter_var1][iter_var2]);
           end
-          if (in_count > 1) begin : err_multi_in
+          if (in_count > 1) begin : err_same_tag_inputs
             err_detect = 1'b1;
-            if (CFG_TEMPORAL_SW_ROUTE_MULTI_IN < err_code_comb)
-              err_code_comb = CFG_TEMPORAL_SW_ROUTE_MULTI_IN;
+            if (CFG_TEMPORAL_SW_ROUTE_SAME_TAG_INPUTS_TO_SAME_OUTPUT < err_code_comb)
+              err_code_comb = CFG_TEMPORAL_SW_ROUTE_SAME_TAG_INPUTS_TO_SAME_OUTPUT;
           end
         end
       end

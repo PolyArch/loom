@@ -165,11 +165,10 @@ consumers of the done token.
 
 ### Tagging Rules
 
-- If `ldCount > 1`, `ldaddr` and `lddata` must be tagged.
-- If `stCount > 1`, `staddr` and `stdata` must be tagged.
-- If `ldCount == 1`, tagged load ports are not allowed.
-- If `stCount == 1`, tagged store ports are not allowed.
-- Tag width `K` must satisfy `K >= log2Ceil(count)` for each group.
+- If either `ldCount > 1` or `stCount > 1`, ALL ports of the memory instance
+  must be tagged with `TAG_WIDTH = clog2(max(ldCount, stCount))`.
+- If both `ldCount <= 1` and `stCount <= 1`, no ports may be tagged
+  (`TAG_WIDTH = 0`).
 
 Tags identify the logical port. The valid tag range is `[0, count - 1]`. A tag
 value outside this range is a runtime error (`RT_MEMORY_TAG_OOB`).
@@ -275,12 +274,16 @@ Memory module ports have category-specific widths:
 | `st_addr[i]` | 64 bits (index type) | Fixed address width |
 | `st_data[i]` | `elemType` width | Element data width |
 | `ld_data[i]` | `elemType` width | Element data width |
-| `ld_done[i]` | 1 bit (none type) | Completion signal only |
-| `st_done[i]` | 1 bit (none type) | Completion signal only |
+| `ld_done[i]` | 0 bits (none type) | Completion signal only |
+| `st_done[i]` | 0 bits (none type) | Completion signal only |
 
 `TAG_WIDTH` is uniform across all ports of a memory instance:
 `TAG_WIDTH = clog2(max(LD_COUNT, ST_COUNT))` when either count > 1, else 0.
 (`clog2` = ceiling of log base 2.)
+
+When untagged (`TAG_WIDTH = 0`), done ports use a 1-bit minimum for hardware
+positive width. When tagged, done port width = `TAG_WIDTH` bits (none carries
+0 data bits).
 
 **Example**: Memory with `elemType=i32`, `LD_COUNT=2`, `ST_COUNT=1`:
 
@@ -290,8 +293,8 @@ ld_addr0: 64 + 1 = 65 bits payload
 st_addr0: 64 + 1 = 65 bits payload
 st_data0: 32 + 1 = 33 bits payload
 ld_data0: 32 + 1 = 33 bits payload
-ld_done0: 1 + 1  = 2  bits payload
-st_done0: 1 + 1  = 2  bits payload
+ld_done0: 0 + 1  = 1  bit payload (none=0 data bits + TAG_WIDTH)
+st_done0: 0 + 1  = 1  bit payload (none=0 data bits + TAG_WIDTH)
 ```
 
 ## Related Documents

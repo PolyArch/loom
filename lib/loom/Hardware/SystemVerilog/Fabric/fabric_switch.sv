@@ -12,6 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+`include "fabric_common.svh"
+
 module fabric_switch #(
     parameter int NUM_INPUTS  = 4,
     parameter int NUM_OUTPUTS = 4,
@@ -88,35 +90,25 @@ module fabric_switch #(
   end
 
   // -----------------------------------------------------------------------
-  // Combinational data path: per-output mux + valid/ready forwarding
+  // Combinational data path: broadcast-aware ready + per-output mux
   // -----------------------------------------------------------------------
 
   // Per-input: which output is routing from this input (for ready generation)
   logic [NUM_INPUTS-1:0] input_routed;    // at least one output routes this input
-  logic [NUM_INPUTS-1:0] input_dst_ready; // ready from the destination output
+  logic [NUM_INPUTS-1:0] input_dst_ready; // AND of all targeted output readys
 
   always_comb begin : datapath
     int iter_var0, iter_var1;
 
-    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0++) begin : out_mux
-      out_valid[iter_var0] = 1'b0;
-      out_data[iter_var0]  = '0;
-      for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1++) begin : sel_in
-        if (route_matrix[iter_var0][iter_var1]) begin : routed
-          out_valid[iter_var0] = in_valid[iter_var1];
-          out_data[iter_var0]  = in_data[iter_var1];
-        end
-      end
-    end
-
-    // Generate in_ready: input is ready when its routed output is ready
+    // Ready logic: for each input, AND-reduce all targeted output ready
+    // signals.  This supports broadcast: one input to N outputs.
     for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0++) begin : in_rdy
       input_routed[iter_var0]    = 1'b0;
-      input_dst_ready[iter_var0] = 1'b0;
+      input_dst_ready[iter_var0] = 1'b1; // AND identity
       for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1++) begin : find_dst
         if (route_matrix[iter_var1][iter_var0]) begin : has_route
           input_routed[iter_var0]    = 1'b1;
-          input_dst_ready[iter_var0] = out_ready[iter_var1];
+          input_dst_ready[iter_var0] = input_dst_ready[iter_var0] & out_ready[iter_var1];
         end
       end
     end
@@ -126,6 +118,22 @@ module fabric_switch #(
         in_ready[iter_var0] = input_dst_ready[iter_var0];
       else
         in_ready[iter_var0] = 1'b0;
+    end
+
+    // Output mux: out_valid follows source in_valid directly, with no
+    // dependency on any out_ready signal.  This avoids combinational loops
+    // through downstream consumers.  Atomic broadcast is still guaranteed
+    // because in_ready = AND(all targeted out_ready), so the source only
+    // advances when ALL broadcast targets have consumed the data.
+    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0++) begin : out_mux
+      out_valid[iter_var0] = 1'b0;
+      out_data[iter_var0]  = '0;
+      for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1++) begin : sel_in
+        if (route_matrix[iter_var0][iter_var1]) begin : routed
+          out_valid[iter_var0] = in_valid[iter_var1];
+          out_data[iter_var0]  = in_data[iter_var1];
+        end
+      end
     end
   end
 
@@ -140,27 +148,13 @@ module fabric_switch #(
     err_detect    = 1'b0;
     err_code_comb = 16'hFFFF; // sentinel: no error detected yet
 
-    // CFG_SWITCH_ROUTE_MULTI_OUT (code 1):
-    // Per-output: check if more than one route bit is set
-    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0++) begin : chk_multi_out
-      if ($countones(route_matrix[iter_var0]) > 1) begin : err_multi_out
+    // CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT (code 1):
+    // Per-output: check if more than one input routes to this output
+    for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0++) begin : chk_mix_inputs
+      if ($countones(route_matrix[iter_var0]) > 1) begin : err_mix_inputs
         err_detect = 1'b1;
-        if (16'd1 < err_code_comb)
-          err_code_comb = 16'd1;
-      end
-    end
-
-    // CFG_SWITCH_ROUTE_MULTI_IN (code 2):
-    // Per-input: check if routed to more than one output
-    for (iter_var0 = 0; iter_var0 < NUM_INPUTS; iter_var0++) begin : chk_multi_in
-      automatic int route_count = 0;
-      for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1++) begin : count_routes
-        route_count += int'(route_matrix[iter_var1][iter_var0]);
-      end
-      if (route_count > 1) begin : err_multi_in
-        err_detect = 1'b1;
-        if (16'd2 < err_code_comb)
-          err_code_comb = 16'd2;
+        if (CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT < err_code_comb)
+          err_code_comb = CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT;
       end
     end
 
@@ -173,21 +167,21 @@ module fabric_switch #(
       end
       if (has_phys && in_valid[iter_var0] && !input_routed[iter_var0]) begin : err_unrouted
         err_detect = 1'b1;
-        if (16'd262 < err_code_comb)
-          err_code_comb = 16'd262;
+        if (RT_SWITCH_UNROUTED_INPUT < err_code_comb)
+          err_code_comb = RT_SWITCH_UNROUTED_INPUT;
       end
     end
 
     // Replace sentinel with 0 when no error was detected
     if (!err_detect)
-      err_code_comb = 16'd0;
+      err_code_comb = FABRIC_OK;
   end
 
   // Error latch: once set, stays set (fatal, no recovery)
   always_ff @(posedge clk or negedge rst_n) begin : error_latch
     if (!rst_n) begin : reset
       error_valid <= 1'b0;
-      error_code  <= 16'd0;
+      error_code  <= FABRIC_OK;
     end else if (!error_valid && err_detect) begin : capture
       error_valid <= 1'b1;
       error_code  <= err_code_comb;
