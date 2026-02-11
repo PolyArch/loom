@@ -34,7 +34,8 @@ test:
 clean:
 	@set -e; \
 	ninja -C build clean-loom
+	rm -rf ucli.key *.fsdb novas* verdi* sysProgressP*
 
-purge:
+purge: clean
 	@set -e; \
 	rm -rf build
