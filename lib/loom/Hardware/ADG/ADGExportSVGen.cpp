@@ -551,6 +551,7 @@ static std::string genPEBodySV(const PEDef &def) {
     os << "    .rst_n(rst_n),\n";
     os << "    .d_valid(in_value_0_valid),\n";
     os << "    .d_ready(in_value_0_ready),\n";
+    os << "    .d_data(in_value[0][0]),\n";
     os << "    .a_valid(in_value_1_valid),\n";
     os << "    .a_ready(in_value_1_ready),\n";
     os << "    .a_data(in_value[1]),\n";
@@ -564,6 +565,7 @@ static std::string genPEBodySV(const PEDef &def) {
     os << "    .rst_n(rst_n),\n";
     os << "    .d_valid(in_value_0_valid),\n";
     os << "    .d_ready(in_value_0_ready),\n";
+    os << "    .d_data(in_value[0][0]),\n";
     os << "    .a_valid(in_value_1_valid),\n";
     os << "    .a_ready(in_value_1_ready),\n";
     os << "    .a_data(in_value[1]),\n";
@@ -608,7 +610,8 @@ static std::string genPEBodySV(const PEDef &def) {
     os << "  logic stream_cont_valid;\n";
     os << "  logic stream_error_valid;\n";
     os << "  logic [15:0] stream_error_code;\n";
-    os << "  dataflow_stream #(.WIDTH(DATA_WIDTH)) u_body (\n";
+    os << "  dataflow_stream #(.WIDTH(DATA_WIDTH), .STEP_OP("
+       << def.streamStepOp << ")) u_body (\n";
     os << "    .clk(clk),\n";
     os << "    .rst_n(rst_n),\n";
     os << "    .start_valid(in_value_0_valid),\n";

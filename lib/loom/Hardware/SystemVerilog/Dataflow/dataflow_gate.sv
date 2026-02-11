@@ -47,7 +47,10 @@ module dataflow_gate #(
           end
         end
         S_FORWARD: begin : forward_state
-          // Stay in forward mode
+          // When a pair with bc_data=0 fires, return to S_SKIP_HEAD
+          if (bv_valid && bc_valid && av_ready && ac_ready && !bc_data) begin : forward_done
+            state <= S_SKIP_HEAD;
+          end
         end
         default: begin : default_state
           state <= S_SKIP_HEAD;

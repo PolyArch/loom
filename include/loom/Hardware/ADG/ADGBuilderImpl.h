@@ -86,6 +86,7 @@ struct PEDef {
   std::string bodyMLIR;
   std::string singleOp;
   int comparePredicate = 0; // MLIR predicate encoding for cmpi/cmpf
+  int streamStepOp = 0;    // step operation for dataflow.stream (0=+=, 1=-=, ...)
   InterfaceCategory interface = InterfaceCategory::Native;
 };
 

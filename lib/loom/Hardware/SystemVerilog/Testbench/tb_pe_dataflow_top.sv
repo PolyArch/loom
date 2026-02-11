@@ -52,41 +52,30 @@ module tb_pe_dataflow_top;
 
   task automatic load_invariant(input logic [31:0] value);
     integer iter_var0;
-    logic ready_seen;
-    begin : drive
-      ready_seen = 1'b0;
-      iter_var0 = 0;
-      while (iter_var0 < 40 && !ready_seen) begin : wait_ready
-        @(posedge clk);
-        if (a_ready)
-          ready_seen = 1'b1;
-        iter_var0 = iter_var0 + 1;
-      end
-      if (!ready_seen) begin : timeout_ready
-        $fatal(1, "a_ready did not assert before loading invariant value 0x%08h", value);
-      end
-
-      // dataflow.invariant consumes `a` when `a_valid` is sampled in S_LOAD.
-      // Drive a one-cycle pulse so both simulators observe the same transition.
+    logic accepted;
+    begin : load_task
       @(negedge clk);
       a_data = value;
       a_valid = 1'b1;
-      @(posedge clk);
-      @(negedge clk);
-      a_valid = 1'b0;
 
-      // After loading, the PE should be in repeat mode where `d` drives output.
-      ready_seen = 1'b0;
+      accepted = 1'b0;
       iter_var0 = 0;
-      while (iter_var0 < 20 && !ready_seen) begin : wait_repeat_mode
+      while (iter_var0 < 60 && !accepted) begin : wait_hs
         @(posedge clk);
-        if (d_ready)
-          ready_seen = 1'b1;
+        if (o_valid && a_ready) begin : got_hs
+          if (o_data !== value) begin : bad_data
+            $fatal(1, "invariant init mismatch: expected 0x%08h got 0x%08h", value, o_data);
+          end
+          accepted = 1'b1;
+        end
         iter_var0 = iter_var0 + 1;
       end
-      if (!ready_seen) begin : timeout_repeat_mode
-        $fatal(1, "dataflow.invariant did not enter repeat mode after loading 0x%08h", value);
+      if (!accepted) begin : timeout_hs
+        $fatal(1, "timeout in invariant init phase value=0x%08h", value);
       end
+
+      @(negedge clk);
+      a_valid = 1'b0;
     end
   endtask
 
@@ -109,6 +98,33 @@ module tb_pe_dataflow_top;
       if (!seen) begin : timeout_out
         $fatal(1, "timeout waiting repeated value 0x%08h", expected);
       end
+    end
+  endtask
+
+  task automatic drive_done;
+    begin : done_task
+      // Drive d_data=0, d_valid=1 for one cycle.
+      // In S_BLOCK with d_data=0, d_ready is combinationally 1 and the
+      // handshake fires at the next posedge. The NBA then transitions the
+      // FSM to S_INIT, making d_ready go to 0 after the NBA update.
+      // Therefore we verify the transition succeeded by checking a_ready
+      // (which is unconditionally 1 in S_INIT) instead of d_ready.
+      @(negedge clk);
+      d_data = 1'b0;
+      d_valid = 1'b1;
+
+      @(posedge clk);
+      #1;
+      // After NBA, state = S_INIT: a_ready = o_ready = 1, o_valid = a_valid = 0
+      if (!a_ready) begin : verify_load
+        $fatal(1, "invariant done: FSM did not return to S_INIT (a_ready not asserted)");
+      end
+      if (o_valid) begin : verify_no_output
+        $fatal(1, "invariant done: unexpected o_valid after done transition");
+      end
+
+      @(negedge clk);
+      d_valid = 1'b0;
     end
   endtask
 
@@ -154,6 +170,22 @@ module tb_pe_dataflow_top;
 
     o_ready = 1'b1;
     expect_repeat(32'h0000_002A);
+    pass_count = pass_count + 1;
+
+    d_valid = 1'b0;
+    @(posedge clk);
+
+    // d_data=0 should consume only d, return to S_INIT
+    drive_done();
+    pass_count = pass_count + 1;
+
+    // After done, should be back in S_INIT - load new value
+    load_invariant(32'h0000_00FF);
+    pass_count = pass_count + 1;
+
+    d_data = 1'b1;
+    d_valid = 1'b1;
+    expect_repeat(32'h0000_00FF);
     pass_count = pass_count + 1;
 
     d_valid = 1'b0;

@@ -52,6 +52,11 @@ PEBuilder &PEBuilder::setComparePredicate(int predicate) {
   return *this;
 }
 
+PEBuilder &PEBuilder::setStreamStepOp(int stepOp) {
+  builder_->impl_->peDefs[peId_].streamStepOp = stepOp;
+  return *this;
+}
+
 PEBuilder &PEBuilder::setBodyMLIR(const std::string &mlirString) {
   builder_->impl_->peDefs[peId_].bodyMLIR = mlirString;
   return *this;

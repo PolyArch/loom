@@ -156,11 +156,12 @@ module tb_pe_dataflow_stream_top;
     end
     pass_count = pass_count + 1;
 
-    // start=0, step=2, bound=5 with '<' => (idx,cont): (0,1), (2,1), (4,0)
+    // start=0, step=2, bound=5 with '<' => (0,T), (2,T), (4,T), (6,F)
     drive_triplet(64'd0, 64'd2, 64'd5);
     expect_pair(64'd0, 1'b1);
     expect_pair(64'd2, 1'b1);
-    expect_pair(64'd4, 1'b0);
+    expect_pair(64'd4, 1'b1);
+    expect_pair(64'd6, 1'b0);
     pass_count = pass_count + 1;
 
     // Backpressure holds current pair stable until both outputs ready.
@@ -190,10 +191,29 @@ module tb_pe_dataflow_stream_top;
 
     idx_ready = 1'b1;
     cont_ready = 1'b1;
+    // start=10, step=3, bound=20, '<' => (10,T), (13,T), (16,T), (19,T), (22,F)
     expect_pair(64'd10, 1'b1);
     expect_pair(64'd13, 1'b1);
     expect_pair(64'd16, 1'b1);
-    expect_pair(64'd19, 1'b0);
+    expect_pair(64'd19, 1'b1);
+    expect_pair(64'd22, 1'b0);
+    pass_count = pass_count + 1;
+
+    // Zero-trip test: start=5, step=1, bound=3, '<' => (5,F)
+    drive_triplet(64'd5, 64'd1, 64'd3);
+    expect_pair(64'd5, 1'b0);
+    pass_count = pass_count + 1;
+
+    // != test: cfg=5'b10000, start=0, step=2, bound=6 => (0,T), (2,T), (4,T), (6,F)
+    // Change cfg at negedge to avoid a race with the FSM evaluating
+    // will_continue at the same posedge where the zero-trip test completes.
+    @(negedge clk);
+    p0_cfg_data = 5'b10000;
+    drive_triplet(64'd0, 64'd2, 64'd6);
+    expect_pair(64'd0, 1'b1);
+    expect_pair(64'd2, 1'b1);
+    expect_pair(64'd4, 1'b1);
+    expect_pair(64'd6, 1'b0);
     pass_count = pass_count + 1;
 
     $display("PASS: tb_pe_dataflow_stream_top (%0d checks)", pass_count);

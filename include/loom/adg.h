@@ -218,6 +218,7 @@ public:
   PEBuilder &setOutputPorts(std::vector<Type> types);
   PEBuilder &addOp(const std::string &opName);
   PEBuilder &setComparePredicate(int predicate);
+  PEBuilder &setStreamStepOp(int stepOp);
   PEBuilder &setBodyMLIR(const std::string &mlirString);
   PEBuilder &setInterfaceCategory(InterfaceCategory category);
 

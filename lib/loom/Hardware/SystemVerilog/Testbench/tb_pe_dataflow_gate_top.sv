@@ -60,6 +60,28 @@ module tb_pe_dataflow_gate_top;
   end
 `endif
 
+  task automatic consume_head(input logic head_val);
+    integer iter_var0;
+    logic consumed_head;
+    begin : head_task
+      bc_data = head_val;
+      bc_valid = 1'b1;
+      consumed_head = 1'b0;
+      iter_var0 = 0;
+      while (iter_var0 < 20 && !consumed_head) begin : wait_head
+        @(posedge clk);
+        if (bc_ready)
+          consumed_head = 1'b1;
+        iter_var0 = iter_var0 + 1;
+      end
+      if (!consumed_head) begin : timeout_head
+        $fatal(1, "gate skip-head token was not consumed");
+      end
+      @(negedge clk);
+      bc_valid = 1'b0;
+    end
+  endtask
+
   task automatic drive_pair_expect(input logic [31:0] v, input logic c);
     integer iter_var0;
     logic seen;
@@ -96,10 +118,18 @@ module tb_pe_dataflow_gate_top;
     end
   endtask
 
+  task automatic verify_skip_head_state;
+    begin : verify_task
+      @(posedge clk);
+      #1;
+      if (bc_ready !== 1'b1 || bv_ready !== 1'b0) begin : bad_state
+        $fatal(1, "not in skip-head state: bc_ready=%0b bv_ready=%0b", bc_ready, bv_ready);
+      end
+    end
+  endtask
+
   initial begin : main
     integer pass_count;
-    integer iter_var0;
-    logic consumed_head;
     pass_count = 0;
 
     rst_n = 1'b0;
@@ -124,21 +154,8 @@ module tb_pe_dataflow_gate_top;
     pass_count = pass_count + 1;
 
     // First condition token is consumed and dropped in skip-head state.
-    bc_data = 1'b1;
-    bc_valid = 1'b1;
-    consumed_head = 1'b0;
-    iter_var0 = 0;
-    while (iter_var0 < 20 && !consumed_head) begin : wait_head
-      @(posedge clk);
-      if (bc_ready)
-        consumed_head = 1'b1;
-      iter_var0 = iter_var0 + 1;
-    end
-    if (!consumed_head) begin : timeout_head
-      $fatal(1, "gate skip-head token was not consumed");
-    end
-    @(negedge clk);
-    bc_valid = 1'b0;
+    consume_head(1'b1);
+    pass_count = pass_count + 1;
 
     drive_pair_expect(32'h0000_00AA, 1'b1);
     pass_count = pass_count + 1;
@@ -164,6 +181,25 @@ module tb_pe_dataflow_gate_top;
     @(negedge clk);
     bv_valid = 1'b0;
     bc_valid = 1'b0;
+    pass_count = pass_count + 1;
+
+    // After forwarding a pair with bc_data=0, gate should return to S_SKIP_HEAD
+    verify_skip_head_state();
+    pass_count = pass_count + 1;
+
+    // Second invocation: consume new head token
+    consume_head(1'b0);
+    pass_count = pass_count + 1;
+
+    // Forward new pairs in second invocation
+    drive_pair_expect(32'h0000_00CC, 1'b1);
+    pass_count = pass_count + 1;
+
+    drive_pair_expect(32'h0000_00DD, 1'b0);
+    pass_count = pass_count + 1;
+
+    // Should be back in S_SKIP_HEAD again
+    verify_skip_head_state();
     pass_count = pass_count + 1;
 
     $display("PASS: tb_pe_dataflow_gate_top (%0d checks)", pass_count);

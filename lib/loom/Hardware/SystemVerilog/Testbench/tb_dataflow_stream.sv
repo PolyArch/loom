@@ -197,10 +197,12 @@ module tb_dataflow_stream;
     pass_count = pass_count + 1;
 
     // Functional sequence: start=0 step=2 bound=5 with '<'
+    // => (0,T), (2,T), (4,T), (6,F)
     drive_triplet(64'd0, 64'd2, 64'd5);
     expect_pair(64'd0, 1'b1);
     expect_pair(64'd2, 1'b1);
-    expect_pair(64'd4, 1'b0);
+    expect_pair(64'd4, 1'b1);
+    expect_pair(64'd6, 1'b0);
     pass_count = pass_count + 1;
 
     // Runtime error: zero step during running state.

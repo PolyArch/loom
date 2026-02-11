@@ -121,6 +121,34 @@ module tb_pe_dataflow_carry_top;
     end
   endtask
 
+  task automatic drive_carry_done;
+    begin : done_task
+      // Drive d_data=0, d_valid=1 for one cycle.
+      // In S_BLOCK with d_data=0, d_ready is combinationally 1 and the
+      // handshake fires at the next posedge. The NBA then transitions the
+      // FSM to S_INIT, making d_ready go to 0 after the NBA update.
+      // Therefore we verify the transition succeeded by checking a_ready
+      // (which equals o_ready=1 in S_INIT) instead of d_ready.
+      @(negedge clk);
+      d_data = 1'b0;
+      d_valid = 1'b1;
+      b_valid = 1'b0;
+
+      @(posedge clk);
+      #1;
+      // After NBA, state = S_INIT: a_ready = o_ready = 1, o_valid = 0
+      if (!a_ready) begin : verify_init
+        $fatal(1, "carry done: FSM did not return to S_INIT (a_ready not asserted)");
+      end
+      if (o_valid) begin : verify_no_output
+        $fatal(1, "carry done: unexpected o_valid after done transition");
+      end
+
+      @(negedge clk);
+      d_valid = 1'b0;
+    end
+  endtask
+
   initial begin : main
     integer pass_count;
     pass_count = 0;
@@ -166,6 +194,30 @@ module tb_pe_dataflow_carry_top;
 
     o_ready = 1'b1;
     drive_carry_once(32'h0000_0044);
+    pass_count = pass_count + 1;
+
+    // d_data=0 should consume only d, return to S_INIT
+    drive_carry_done();
+    pass_count = pass_count + 1;
+
+    // After done, should be back in S_INIT - load new init value
+    load_init(32'h0000_00AA);
+    pass_count = pass_count + 1;
+
+    drive_carry_once(32'h0000_00BB);
+    pass_count = pass_count + 1;
+
+    // Multi-burst: init -> carry(T) -> carry(T) -> done(F) -> init -> carry(T) -> done(F)
+    drive_carry_done();
+    pass_count = pass_count + 1;
+
+    load_init(32'h0000_00CC);
+    pass_count = pass_count + 1;
+
+    drive_carry_once(32'h0000_00DD);
+    pass_count = pass_count + 1;
+
+    drive_carry_done();
     pass_count = pass_count + 1;
 
     $display("PASS: tb_pe_dataflow_carry_top (%0d checks)", pass_count);

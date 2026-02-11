@@ -1,7 +1,9 @@
 // Dataflow stream: loop counter with configurable continuation condition.
 // Generates index values from start with step, bounded by bound.
 // cfg_cont_cond_sel selects the comparison: one-hot encoding of
-// {slt, sle, sgt, sge, ult, ule, ugt, uge, eq, ne} (bits 0-9).
+// {slt, sle, sgt, sge, ne} (bits 0-4).
+//
+// STEP_OP selects the step operation: 0=+=, 1=-=, 2=*=, 3=/=, 4=<<=, 5=>>=.
 //
 // Errors:
 //   CFG_PE_STREAM_CONT_COND_ONEHOT - cont_cond_sel is not one-hot
@@ -10,7 +12,8 @@
 `include "fabric_common.svh"
 
 module dataflow_stream #(
-    parameter int WIDTH = 32
+    parameter int WIDTH = 32,
+    parameter int STEP_OP = 0
 ) (
     input  logic             clk,
     input  logic             rst_n,
@@ -58,19 +61,31 @@ module dataflow_stream #(
   logic [WIDTH-1:0] saved_step;
   logic [WIDTH-1:0] saved_bound;
 
-  // Continuation condition evaluation
+  // Continuation condition evaluation (uses current_index, not next_index)
   logic will_continue;
   logic [WIDTH-1:0] next_index;
-  assign next_index = current_index + saved_step;
+
+  // Step operation mux
+  always_comb begin : step_op_mux
+    case (STEP_OP)
+      0: next_index = current_index + saved_step;
+      1: next_index = current_index - saved_step;
+      2: next_index = current_index * saved_step;
+      3: next_index = current_index / saved_step;
+      4: next_index = current_index << saved_step;
+      5: next_index = current_index >> saved_step;
+      default: next_index = current_index + saved_step;
+    endcase
+  end
 
   always_comb begin : eval_cont
     will_continue = 1'b0;
     case (1'b1)
-      cfg_cont_cond_sel[0]: will_continue = $signed(next_index) <  $signed(saved_bound); // slt
-      cfg_cont_cond_sel[1]: will_continue = $signed(next_index) <= $signed(saved_bound); // sle
-      cfg_cont_cond_sel[2]: will_continue = $signed(next_index) >  $signed(saved_bound); // sgt
-      cfg_cont_cond_sel[3]: will_continue = $signed(next_index) >= $signed(saved_bound); // sge
-      cfg_cont_cond_sel[4]: will_continue = next_index          <  saved_bound;           // ult
+      cfg_cont_cond_sel[0]: will_continue = $signed(current_index) <  $signed(saved_bound); // slt
+      cfg_cont_cond_sel[1]: will_continue = $signed(current_index) <= $signed(saved_bound); // sle
+      cfg_cont_cond_sel[2]: will_continue = $signed(current_index) >  $signed(saved_bound); // sgt
+      cfg_cont_cond_sel[3]: will_continue = $signed(current_index) >= $signed(saved_bound); // sge
+      cfg_cont_cond_sel[4]: will_continue = (current_index != saved_bound);                  // ne
       default: will_continue = 1'b0;
     endcase
   end
