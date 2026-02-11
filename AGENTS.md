@@ -20,7 +20,9 @@ Loom is a full stack framework for Domain-specific Accelerator, from C++ source 
 - Projects under `externals` are external projects that are used in this project via source compilation, avoid modifying them.
 
 # Useful Hints
-- If EDA related tools (like `vcs`, `verilator`, `verdi`, `dc_shell`, `fc_shell`, etc.) cannot be found, please try `module avail` and use `module load ...` to load environments. 
+- If EDA related tools (like `vcs`, `verilator`, `verdi`, `dc_shell`, `fc_shell`, etc.) cannot be found, please try `module avail` and use `module load ...` to load environments.
+- For example, if you want to run verilator, prepend `module load verilator && ...`; for vcs/verdi, prepend `module load synopsys/vcs synopsys/verdi && ...` to command you want to run. Prepend with `module purge && ...` can clean the loaded tools.
+- For tests that need verilator and vcs/verdi, you can do `module purge && module load synopsys/vcs synopsys/verdi verilator && ...` to load all of them.
 
 # ExecPlans (for Codex only)
 When writing complex features or significant refactors, use an ExecPlan (as described in .agent/PLANS.md) from design to implementation.
