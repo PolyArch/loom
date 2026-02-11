@@ -44,13 +44,16 @@ Violations of tagged interface width requirements are compile-time errors:
 ### FU Types and Body Structure
 
 The body of `fabric.temporal_pe` defines FU types. Each FU type is represented
-by a `fabric.pe` or by a `fabric.instance` of a named `fabric.pe`.
+by a `fabric.pe` definition. The `temporal_pe` body has no block arguments, so
+`fabric.instance` cannot appear directly in the body (there are no SSA operands
+to pass). To reference an external `fabric.pe`, wrap it in an inline `fabric.pe`
+using `fabric.instance` inside that PE's body. The `COMP_PE_INSTANCE_ONLY_BODY`
+check is exempted for PEs inside `temporal_pe` to enable this wrapping pattern.
 
 Constraints:
 
-- The body must contain at least one FU definition (`fabric.pe` or
-  `fabric.instance` targeting a `fabric.pe`). Violations raise
-  `COMP_TEMPORAL_PE_EMPTY_BODY`.
+- The body must contain at least one FU definition (`fabric.pe`). Violations
+  raise `COMP_TEMPORAL_PE_EMPTY_BODY`.
 - Each FU type must have the same number of inputs and outputs as the
   `fabric.temporal_pe` itself.
 - Each FU type operates on value-only data. Tags are stripped at the boundary.
@@ -59,15 +62,17 @@ Constraints:
   the `fabric.temporal_pe` interface value type. For interface
   `!dataflow.tagged<T, iJ>`, all FU port widths must not exceed `width(T)`.
   Violations raise `COMP_TEMPORAL_PE_FU_WIDTH`.
-- The body may contain only FU definitions (`fabric.pe` or `fabric.instance`)
-  and a single `fabric.yield`.
-- Any `fabric.instance` inside `fabric.temporal_pe` must reference a
-  `fabric.pe`.
+- The body may contain only `fabric.pe` definitions and a single
+  `fabric.yield`.
 - `fabric.switch` is not allowed inside `fabric.temporal_pe`.
 - `fabric.temporal_sw` is not allowed inside `fabric.temporal_pe`.
 - Load/store PEs (a `fabric.pe` containing `handshake.load` or `handshake.store`)
   are not allowed inside `fabric.temporal_pe`
   (`COMP_TEMPORAL_PE_LOADSTORE`).
+- Dataflow PEs (a `fabric.pe` that directly contains `dataflow.carry`,
+  `dataflow.invariant`, `dataflow.gate`, or `dataflow.stream`, or indirectly
+  contains them via `fabric.instance`) are not allowed inside
+  `fabric.temporal_pe` (`COMP_TEMPORAL_PE_DATAFLOW_INVALID`).
 
 Using a tagged `fabric.pe` inside `fabric.temporal_pe` is a compile-time error
 (`COMP_TEMPORAL_PE_TAGGED_PE`). See [spec-fabric-error.md](./spec-fabric-error.md).

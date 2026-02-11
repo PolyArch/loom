@@ -132,6 +132,8 @@ inline constexpr const char *TEMPORAL_PE_TAGGED_PE =
     "COMP_TEMPORAL_PE_TAGGED_PE";
 inline constexpr const char *TEMPORAL_PE_LOADSTORE =
     "COMP_TEMPORAL_PE_LOADSTORE";
+inline constexpr const char *TEMPORAL_PE_DATAFLOW_INVALID =
+    "COMP_TEMPORAL_PE_DATAFLOW_INVALID";
 inline constexpr const char *TEMPORAL_PE_TOO_MANY_SLOTS =
     "COMP_TEMPORAL_PE_TOO_MANY_SLOTS";
 inline constexpr const char *TEMPORAL_PE_MIXED_FORMAT =

@@ -200,6 +200,11 @@ ValidationResult ADGBuilder::validateADG() {
       if (fuHasTagged)
         addError(CompError::TEMPORAL_PE_TAGGED_FU,
                  "temporal PE FU must not have tagged ports", fuLoc);
+      // COMP_TEMPORAL_PE_DATAFLOW_INVALID: FU must not be a dataflow operation.
+      if (fu.singleOp.rfind("dataflow.", 0) == 0)
+        addError(CompError::TEMPORAL_PE_DATAFLOW_INVALID,
+                 "temporal PE FU must not use a dataflow operation ("
+                 + fu.singleOp + ")", fuLoc);
       // All FUs must have the same port arity.
       unsigned nIn = fu.inputPorts.size();
       unsigned nOut = fu.outputPorts.size();

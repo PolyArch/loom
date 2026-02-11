@@ -68,6 +68,7 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_TEMPORAL_PE_TAG_WIDTH | `K != num_bits(T)` or tag-width metadata is inconsistent for interface `!dataflow.tagged<T, iJ>` |
 | COMP_TEMPORAL_PE_TAGGED_PE | A `fabric.temporal_pe` contains a tagged `fabric.pe` |
 | COMP_TEMPORAL_PE_LOADSTORE | A `fabric.temporal_pe` contains a load/store PE |
+| COMP_TEMPORAL_PE_DATAFLOW_INVALID | A `fabric.temporal_pe` contains a dataflow PE (carry/invariant/gate/stream) |
 | COMP_TEMPORAL_PE_FU_WIDTH | An FU port data width exceeds the `fabric.temporal_pe` interface value type width |
 | COMP_MAP_TAG_TABLE_SIZE | `table_size` is out of range [1, 256] |
 | COMP_MAP_TAG_TABLE_LENGTH | `table` length does not equal `table_size` |
@@ -96,7 +97,7 @@ RT_ error codes start at 256 and increase sequentially.
 | COMP_PE_LOADSTORE_TAG_MODE | Invalid combination of `output_tag`, tagged ctrl, and queue depth attributes |
 | COMP_PE_LOADSTORE_TAG_WIDTH | Tag widths do not match across addr/data/ctrl ports |
 | COMP_PE_CONSTANT_BODY | A constant PE contains operations other than a single `handshake.constant` |
-| COMP_PE_INSTANCE_ONLY_BODY | A `fabric.pe` body contains only a single `fabric.instance` with no other operations |
+| COMP_PE_INSTANCE_ONLY_BODY | A `fabric.pe` body contains only a single `fabric.instance` with no other operations (exempt inside `fabric.temporal_pe`) |
 | COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE | `operand_buffer_size` is set when `enable_share_operand_buffer = false` |
 | COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING | `operand_buffer_size` is missing when `enable_share_operand_buffer = true` |
 | COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE | `operand_buffer_size` is out of range [1, 8192] |

@@ -506,7 +506,10 @@ LogicalResult PEOp::verify() {
   }
 
   // COMP_PE_INSTANCE_ONLY_BODY: exactly one non-terminator and it's instance.
-  if (nonTermCount == 1 && instanceCount == 1)
+  // Exception: inside temporal_pe, a PE wrapping a single fabric.instance is
+  // the canonical way to reference an external PE as a FU type.
+  if (nonTermCount == 1 && instanceCount == 1 &&
+      !getOperation()->getParentOfType<TemporalPEOp>())
     return emitOpError(compErrMsg(CompError::PE_INSTANCE_ONLY_BODY,
                        "PE body must not contain only a single "
                        "fabric.instance with no other operations"));
@@ -901,6 +904,40 @@ LogicalResult TemporalPEOp::verify() {
       if (opName == "handshake.load" || opName == "handshake.store")
         return emitOpError(compErrMsg(CompError::TEMPORAL_PE_LOADSTORE,
                            "temporal_pe must not contain load/store PE"));
+    }
+  }
+
+  // COMP_TEMPORAL_PE_DATAFLOW_INVALID: no dataflow PEs inside temporal_pe.
+  // Also follows fabric.instance references to check the target PE body.
+  for (auto &op : body) {
+    auto pe = dyn_cast<PEOp>(&op);
+    if (!pe)
+      continue;
+    // Collect the PE bodies to check: the inline body, plus any instance
+    // targets referenced from it.
+    SmallVector<Block *, 2> bodiesToCheck;
+    bodiesToCheck.push_back(&pe.getBody().front());
+    for (auto &innerOp : pe.getBody().front()) {
+      auto inst = dyn_cast<InstanceOp>(&innerOp);
+      if (!inst)
+        continue;
+      auto *target = SymbolTable::lookupNearestSymbolFrom(
+          getOperation(), inst.getModuleAttr());
+      if (auto targetPE = dyn_cast_or_null<PEOp>(target))
+        bodiesToCheck.push_back(&targetPE.getBody().front());
+    }
+    for (Block *checkBody : bodiesToCheck) {
+      for (auto &innerOp : *checkBody) {
+        if (innerOp.hasTrait<OpTrait::IsTerminator>())
+          continue;
+        StringRef dialectName = innerOp.getDialect()
+            ? innerOp.getDialect()->getNamespace() : "";
+        if (dialectName == "dataflow")
+          return emitOpError(compErrMsg(
+              CompError::TEMPORAL_PE_DATAFLOW_INVALID,
+              "temporal_pe must not contain dataflow PE "
+              "(carry/invariant/gate/stream)"));
+      }
     }
   }
 
