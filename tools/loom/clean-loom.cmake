@@ -10,6 +10,10 @@ endif()
 
 # Remove loom library and tool build artifacts
 if(DEFINED BUILD_DIR)
+  if(EXISTS "${BUILD_DIR}/lib/libloom-sdk.so")
+    file(REMOVE "${BUILD_DIR}/lib/libloom-sdk.so")
+    message(STATUS "Removed ${BUILD_DIR}/lib/libloom-sdk.so")
+  endif()
   if(IS_DIRECTORY "${BUILD_DIR}/lib/loom")
     file(REMOVE_RECURSE "${BUILD_DIR}/lib/loom")
     message(STATUS "Removed ${BUILD_DIR}/lib/loom")
