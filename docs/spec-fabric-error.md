@@ -223,6 +223,18 @@ fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
 | 262 | RT_SWITCH_UNROUTED_INPUT | A `fabric.switch` input with physical connectivity receives a valid token but has no enabled route |
 | 263 | RT_TEMPORAL_SW_UNROUTED_INPUT | A `fabric.temporal_sw` input receives a valid token but the matched route_table slot does not route that input |
 
+## Same-Cycle Error Precedence
+
+For any module that can detect multiple error conditions simultaneously
+(`fabric.switch`, `fabric.temporal_sw`, `fabric.memory`, `fabric.extmemory`),
+the error with the **numerically smallest error code** is captured first. This
+establishes a fixed priority: configuration errors (CFG\_, codes 1-255) always
+take precedence over runtime execution errors (RT\_, codes 256+). Within the
+same error class, the lower code number wins.
+
+Once `error_valid` is asserted, it is sticky (remains asserted until reset).
+Later errors do not overwrite the first captured error code.
+
 ## Related Documents
 
 - [spec-fabric.md](./spec-fabric.md)

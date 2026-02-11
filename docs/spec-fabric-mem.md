@@ -182,6 +182,13 @@ For both load and store:
 - `lddone` aligns with `lddata`.
 - `stdone` aligns with the completion of the corresponding store request.
 
+**Same-cycle load/store collision.** When a load and a store target the same
+element address in the same cycle, the load returns the value that existed at
+the beginning of the cycle (read-before-write semantics). This applies to both
+`fabric.memory` and `fabric.extmemory`. The dataflow compiler is responsible
+for inserting proper control tokens to enforce any required read-after-write
+ordering across cycles.
+
 ### Store Queue Semantics
 
 `lsqDepth` defines the capacity of the internal store queue used to pair
@@ -203,12 +210,25 @@ the first `stdata`, the second with the second, and so on.
 
 **Deadlock detection:**
 
-For both tagged and native modes, if a store request cannot be matched because
-one side (address or data) is missing and no progress is possible, hardware
-reports `RT_MEMORY_STORE_DEADLOCK` after a configurable timeout. This applies
-equally to the native single-port case (e.g., `staddr` waiting for `stdata`
-or vice versa). The default timeout is defined in
-[spec-fabric-error.md](./spec-fabric-error.md).
+For each store tag (or the single global store queue in native mode), the
+hardware maintains a deadlock counter. The counter behavior is:
+
+- **Imbalance condition**: exactly one of `staddr` or `stdata` has a queued
+  entry while the other side is empty for that tag.
+- **Counting**: the counter increments by 1 each cycle while the imbalance
+  condition holds continuously. If the imbalance condition ceases (both sides
+  have data, or both sides are empty), the counter resets to 0 immediately.
+- **Trigger**: `RT_MEMORY_STORE_DEADLOCK` is raised after the counter has
+  incremented for exactly `DEADLOCK_TIMEOUT` consecutive cycles under the
+  imbalance condition.
+- **Default timeout**: 65535 cycles (see
+  [spec-fabric-error.md](./spec-fabric-error.md)).
+
+This rule applies identically to `fabric.memory` and `fabric.extmemory`.
+When multiple error conditions are true in the same cycle, the error with the
+numerically smallest code is captured. See
+[spec-fabric-error.md](./spec-fabric-error.md) for the cross-module
+precedence rule.
 
 ### Memory Export (`fabric.memory` only)
 

@@ -271,6 +271,133 @@ module tb_fabric_temporal_sw_stress;
     end
     pass_count = pass_count + 1;
 
+    // ---- Test 2a: deterministic RR pointer sequence ----
+    // Two slots: tag=1 routes in0->out0, tag=2 routes in1->out0.
+    // Both in0 and in1 contend for out0. RR starts at 0 after reset.
+    rst_n = 1'b0;
+    in_valid = '0;
+    in_data = '0;
+    out_ready = '0;
+    cfg_data = '0;
+    // tag=1: in0->out0 -> routes = 6'b00_0001
+    cfg_data[0 * ENTRY_WIDTH +: ENTRY_WIDTH] = pack_entry(1'b1, 3'd1, 6'b00_0001);
+    // tag=2: in1->out0 -> routes = 6'b00_0010
+    cfg_data[1 * ENTRY_WIDTH +: ENTRY_WIDTH] = pack_entry(1'b1, 3'd2, 6'b00_0010);
+    cfg_data[2 * ENTRY_WIDTH +: ENTRY_WIDTH] = pack_entry(1'b0, 3'd0, '0);
+    cfg_data[3 * ENTRY_WIDTH +: ENTRY_WIDTH] = pack_entry(1'b0, 3'd0, '0);
+    repeat (3) @(posedge clk);
+    rst_n = 1'b1;
+    @(posedge clk);
+
+    // Drive both in0 (tag=1) and in1 (tag=2) valid simultaneously, out_ready=1.
+    // RR starts at 0: in0 wins first, pointer advances to 1, then in1 wins, etc.
+    for (iter_var0 = 0; iter_var0 < 8; iter_var0 = iter_var0 + 1) begin : rr_check
+      @(negedge clk);
+      in_valid[0] = 1'b1;
+      in_data[0 * SAFE_PW +: SAFE_PW] = {3'd1, DATA_WIDTH'(iter_var0 * 2 + 100)};
+      in_valid[1] = 1'b1;
+      in_data[1 * SAFE_PW +: SAFE_PW] = {3'd2, DATA_WIDTH'(iter_var0 * 2 + 200)};
+      in_valid[2] = 1'b0;
+      out_ready = '1;
+      #1;
+
+      if (!out_valid[0]) begin : rr_no_valid
+        $fatal(1, "RR test: out0 should be valid at cycle %0d", iter_var0);
+      end
+      // Even cycles: in0 wins (RR ptr starts at 0). Odd cycles: in1 wins.
+      if ((iter_var0 % 2) == 0) begin : expect_in0
+        if (out_data[0 * SAFE_PW +: SAFE_PW] !== {3'd1, DATA_WIDTH'(iter_var0 * 2 + 100)}) begin : bad_rr_data
+          $fatal(1, "RR test: expected in0 data at cycle %0d", iter_var0);
+        end
+      end else begin : expect_in1
+        if (out_data[0 * SAFE_PW +: SAFE_PW] !== {3'd2, DATA_WIDTH'(iter_var0 * 2 + 200)}) begin : bad_rr_data
+          $fatal(1, "RR test: expected in1 data at cycle %0d", iter_var0);
+        end
+      end
+      @(posedge clk);
+    end
+    pass_count = pass_count + 1;
+
+    // ---- Test 2b: RR pointer idle hold ----
+    // After 8 cycles above, pointer should be at 0 (8 handshakes: 0->1->0->...->0).
+    // Insert an idle cycle then verify in0 wins (pointer did not advance).
+    @(negedge clk);
+    in_valid = '0;
+    out_ready = '1;
+    @(posedge clk);
+    // Now drive both again.
+    @(negedge clk);
+    in_valid[0] = 1'b1;
+    in_data[0 * SAFE_PW +: SAFE_PW] = {3'd1, DATA_WIDTH'(16'hBB00)};
+    in_valid[1] = 1'b1;
+    in_data[1 * SAFE_PW +: SAFE_PW] = {3'd2, DATA_WIDTH'(16'hCC00)};
+    in_valid[2] = 1'b0;
+    out_ready = '1;
+    #1;
+    if (out_data[0 * SAFE_PW +: SAFE_PW] !== {3'd1, DATA_WIDTH'(16'hBB00)}) begin : idle_hold_check
+      $fatal(1, "RR idle hold: expected in0 to win after idle (pointer did not advance)");
+    end
+    @(posedge clk);
+    in_valid = '0;
+    pass_count = pass_count + 1;
+
+    // ---- Test 2c: multi-error precedence (dup_tag + per-slot fan-in) ----
+    // Per-slot fan-in (code 4) must win over dup_tag (code 5).
+    rst_n = 1'b0;
+    in_valid = '0;
+    out_ready = '0;
+    cfg_data = '0;
+    repeat (2) @(posedge clk);
+    rst_n = 1'b1;
+    @(posedge clk);
+
+    // Slot 0: tag=5, in0 AND in1 both route to out0 -> per-slot fan-in (code 4).
+    // routes = 6'b00_0011 (out0<-in0 + out0<-in1)
+    cfg_data[0 * ENTRY_WIDTH +: ENTRY_WIDTH] = pack_entry(1'b1, 3'd5, 6'b00_0011);
+    // Slot 1: tag=5 (duplicate) -> dup_tag (code 5).
+    cfg_data[1 * ENTRY_WIDTH +: ENTRY_WIDTH] = pack_entry(1'b1, 3'd5, 6'b00_0100);
+    cfg_data[2 * ENTRY_WIDTH +: ENTRY_WIDTH] = pack_entry(1'b0, 3'd0, '0);
+    cfg_data[3 * ENTRY_WIDTH +: ENTRY_WIDTH] = pack_entry(1'b0, 3'd0, '0);
+    @(posedge clk);
+    @(posedge clk);
+
+    if (error_valid !== 1'b1 || error_code !== CFG_TEMPORAL_SW_ROUTE_SAME_TAG_INPUTS_TO_SAME_OUTPUT) begin : multi_err_tsw_check
+      $fatal(1, "multi-error TSW: expected code %0d, got valid=%0b code=%0d",
+             CFG_TEMPORAL_SW_ROUTE_SAME_TAG_INPUTS_TO_SAME_OUTPUT, error_valid, error_code);
+    end
+    pass_count = pass_count + 1;
+
+    // ---- Test 2d: RT_TEMPORAL_SW_UNROUTED_INPUT ----
+    // One valid slot: tag=1 routes in0->out0 only.
+    // Drive in1 valid with tag=1 -> in1 matches but has no route -> code 263.
+    rst_n = 1'b0;
+    in_valid = '0;
+    out_ready = '0;
+    cfg_data = '0;
+    repeat (2) @(posedge clk);
+    rst_n = 1'b1;
+    @(posedge clk);
+
+    // tag=1: in0->out0 only, routes = 6'b00_0001
+    cfg_data[0 * ENTRY_WIDTH +: ENTRY_WIDTH] = pack_entry(1'b1, 3'd1, 6'b00_0001);
+    cfg_data[1 * ENTRY_WIDTH +: ENTRY_WIDTH] = pack_entry(1'b0, 3'd0, '0);
+    cfg_data[2 * ENTRY_WIDTH +: ENTRY_WIDTH] = pack_entry(1'b0, 3'd0, '0);
+    cfg_data[3 * ENTRY_WIDTH +: ENTRY_WIDTH] = pack_entry(1'b0, 3'd0, '0);
+
+    @(negedge clk);
+    // in1 sends tag=1 but slot for tag=1 does not route in1 -> unrouted input.
+    in_valid[1] = 1'b1;
+    in_data[1 * SAFE_PW +: SAFE_PW] = {3'd1, DATA_WIDTH'(16'hFFFF)};
+    out_ready = '1;
+    @(posedge clk);
+    @(posedge clk);
+
+    if (error_valid !== 1'b1 || error_code !== RT_TEMPORAL_SW_UNROUTED_INPUT) begin : unrouted_check
+      $fatal(1, "unrouted input: expected code %0d, got valid=%0b code=%0d",
+             RT_TEMPORAL_SW_UNROUTED_INPUT, error_valid, error_code);
+    end
+    pass_count = pass_count + 1;
+
     $display("PASS: tb_fabric_temporal_sw_stress (%0d checks, %0d handshakes)",
              pass_count, handshake_count);
     $finish;

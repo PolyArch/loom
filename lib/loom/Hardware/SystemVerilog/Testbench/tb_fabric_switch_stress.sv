@@ -228,6 +228,36 @@ module tb_fabric_switch_stress;
     end
     pass_count = pass_count + 1;
 
+    // Multi-error precedence: CFG (code 1) + RT (code 262) same cycle.
+    // CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT must win (smallest code).
+    rst_n = 1'b0;
+    in_valid = '0;
+    out_ready = '0;
+    cfg_route_table = '0;
+    repeat (2) @(posedge clk);
+    rst_n = 1'b1;
+    @(posedge clk);
+
+    // Output 0 selects both input 0 and input 1 -> CFG error code 1.
+    bad_route = '0;
+    bad_route[0 * NUM_INPUTS + 0] = 1'b1;
+    bad_route[0 * NUM_INPUTS + 1] = 1'b1;
+    cfg_route_table = bad_route;
+    // Input 2 is valid but has no route -> RT error code 262.
+    in_valid[2] = 1'b1;
+    in_data[2] = PAYLOAD_WIDTH'(32'hDEAD);
+    @(posedge clk);
+    @(posedge clk);
+
+    if (error_valid !== 1'b1) begin : multi_err_valid_check
+      $fatal(1, "multi-error: expected error_valid=1");
+    end
+    if (error_code !== CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT) begin : multi_err_code_check
+      $fatal(1, "multi-error: expected code %0d (CFG), got %0d",
+             CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT, error_code);
+    end
+    pass_count = pass_count + 1;
+
     $display("PASS: tb_fabric_switch_stress (%0d checks, %0d handshakes)",
              pass_count, handshake_count);
     $finish;

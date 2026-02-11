@@ -134,6 +134,10 @@ ALL broadcast targets have consumed the data (AND of all targeted readys).
   error is captured into `error_valid`/`error_code` and held until reset.
 - `error_valid` is sticky (once set, it remains asserted until reset), and
   later errors do not overwrite the first captured error code.
+- When multiple error conditions are true in the same cycle, the error with the
+  numerically smallest error code is captured. See
+  [spec-fabric-error.md](./spec-fabric-error.md) for the cross-module
+  precedence rule.
 
 ### Backpressure Behavior
 

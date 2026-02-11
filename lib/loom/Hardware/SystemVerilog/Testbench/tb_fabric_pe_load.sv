@@ -188,6 +188,127 @@ module tb_fabric_pe_load;
       @(posedge clk);
       in1_valid = 1'b0;
 
+      // ---- Test 4a: independent queue backpressure ----
+      // Reset to clear queues.
+      rst_n = 1'b0;
+      in0_valid = 1'b0;
+      in1_valid = 1'b0;
+      in2_valid = 1'b0;
+      out0_ready = 1'b0;
+      out1_ready = 1'b1;
+      repeat (3) @(posedge clk);
+      rst_n = 1'b1;
+      @(posedge clk);
+
+      // Fill addr queue with QUEUE_DEPTH entries (tags 0 and 1).
+      // Block out0_ready so matches cannot drain the queue.
+      out0_ready = 1'b0;
+      for (iter_var0 = 0; iter_var0 < QUEUE_DEPTH; iter_var0 = iter_var0 + 1) begin : fill_addr_q
+        @(negedge clk);
+        in0_data = (ADDR_PW'(iter_var0) << ADDR_WIDTH) | ADDR_PW'(50 + iter_var0);
+        in0_valid = 1'b1;
+        @(posedge clk);
+      end
+      @(negedge clk);
+      in0_valid = 1'b0;
+      #1;
+
+      // Addr queue full: in0_ready must be 0.
+      if (in0_ready !== 1'b0) begin : check_addr_full_bp
+        $fatal(1, "backpressure: in0_ready should be 0 when addr queue is full");
+      end
+      // Ctrl queue still has space: in2_ready must be 1.
+      if (in2_ready !== 1'b1) begin : check_ctrl_space
+        $fatal(1, "backpressure: in2_ready should be 1 when ctrl queue has space");
+      end
+
+      // Drain by enabling out0_ready and sending matching ctrl token.
+      // Set stimulus at negedge to avoid races with always_ff.
+      @(negedge clk);
+      out0_ready = 1'b1;
+      in2_data = CTRL_PW'(0);
+      in2_valid = 1'b1;
+      @(posedge clk);
+      // Match fires on this posedge; NB assignments update queues.
+      @(negedge clk);
+      in2_valid = 1'b0;
+      // Wait one more posedge for NB queue updates to settle.
+      @(posedge clk);
+
+      // After draining one entry, addr queue should accept again.
+      @(negedge clk);
+      in0_data = (ADDR_PW'(3) << ADDR_WIDTH) | ADDR_PW'(60);
+      in0_valid = 1'b1;
+      #1;
+      if (in0_ready !== 1'b1) begin : check_addr_drain_accept
+        $fatal(1, "backpressure: in0_ready should be 1 after draining addr queue");
+      end
+      @(posedge clk);
+      in0_valid = 1'b0;
+      pass_count = pass_count + 1;
+
+      // ---- Test 4b: lowest-index-first match selection ----
+      // Reset to clear queues.
+      rst_n = 1'b0;
+      in0_valid = 1'b0;
+      in1_valid = 1'b0;
+      in2_valid = 1'b0;
+      out0_ready = 1'b1;
+      out1_ready = 1'b1;
+      repeat (3) @(posedge clk);
+      rst_n = 1'b1;
+      @(posedge clk);
+
+      // Block out0 so matches queue up but don't fire.
+      out0_ready = 1'b0;
+
+      // Enqueue addr tag=1 at slot 0 (first free slot).
+      @(negedge clk);
+      in0_data = (ADDR_PW'(1) << ADDR_WIDTH) | ADDR_PW'(70);
+      in0_valid = 1'b1;
+      @(posedge clk);
+      @(negedge clk);
+      in0_valid = 1'b0;
+
+      // Enqueue addr tag=0 at slot 1 (next free slot).
+      @(negedge clk);
+      in0_data = (ADDR_PW'(0) << ADDR_WIDTH) | ADDR_PW'(71);
+      in0_valid = 1'b1;
+      @(posedge clk);
+      @(negedge clk);
+      in0_valid = 1'b0;
+
+      // Enqueue ctrl tag=0 and ctrl tag=1 (both present).
+      @(negedge clk);
+      in2_data = CTRL_PW'(0);
+      in2_valid = 1'b1;
+      @(posedge clk);
+      @(negedge clk);
+      in2_valid = 1'b0;
+
+      @(negedge clk);
+      in2_data = CTRL_PW'(1);
+      in2_valid = 1'b1;
+      @(posedge clk);
+      @(negedge clk);
+      in2_valid = 1'b0;
+
+      // All four entries now in queues. Release out0_ready at negedge.
+      // Match_find scans addr slots from index 0:
+      // slot 0 has tag=1, ctrl has tag=1 -> match. Fires tag=1 first.
+      @(negedge clk);
+      out0_ready = 1'b1;
+      #1;
+      if (out0_valid !== 1'b1) begin : check_lif_valid
+        $fatal(1, "lowest-index-first: expected output to fire");
+      end
+      // out0_data should have tag=1, addr=70.
+      if (out0_data !== ((ADDR_PW'(1) << ADDR_WIDTH) | ADDR_PW'(70))) begin : check_lif_data
+        $fatal(1, "lowest-index-first: expected tag=1 addr=70 first, got 0x%0h", out0_data);
+      end
+      @(posedge clk);
+      pass_count = pass_count + 1;
+
       pass_count = pass_count + 1;
     end
 
@@ -197,7 +318,7 @@ module tb_fabric_pe_load;
   end
 
   initial begin : timeout
-    #5000;
+    #20000;
     $fatal(1, "TIMEOUT");
   end
 

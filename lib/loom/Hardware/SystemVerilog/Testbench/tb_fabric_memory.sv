@@ -749,14 +749,156 @@ module tb_fabric_memory;
       pass_count = pass_count + 1;
     end
 
+    // Check 13: exact deadlock boundary - error asserts exactly at TIMEOUT
+    // Timeline: posedge N: addr enqueued. posedge N+1: counter starts (0->1).
+    // posedge N+DT: counter reaches DT. posedge N+DT+1: error_latch captures.
+    if (ST_COUNT > 0) begin : deadlock_exact_test
+      rst_n = 0;
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+      ld_addr_valid = 1'b0;
+      st_done_ready = 1'b1;
+      repeat (2) @(posedge clk);
+      rst_n = 1;
+      @(posedge clk);
+
+      // Send only store address (no data) to create imbalance.
+      st_addr_data = SAFE_ADDR_PW'(2);
+      st_addr_valid = 1'b1;
+      @(posedge clk);                        // posedge N: addr enqueued
+      st_addr_valid = 1'b0;
+
+      // Wait DT+1 posedges: DT for counter to reach threshold,
+      // +1 for error_latch to capture on the next posedge.
+      repeat (DEADLOCK_TIMEOUT + 1) @(posedge clk);
+      @(negedge clk);
+      #1;
+      if (error_valid !== 1'b1) begin : exact_dl_valid
+        $fatal(1, "exact deadlock: error_valid not set at expected time");
+      end
+      if (error_code !== RT_MEMORY_STORE_DEADLOCK) begin : exact_dl_code
+        $fatal(1, "exact deadlock: wrong code %0d", error_code);
+      end
+      pass_count = pass_count + 1;
+    end
+
+    // Check 14: just below deadlock timeout - resolve before trigger
+    if (ST_COUNT > 0) begin : deadlock_below_test
+      rst_n = 0;
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+      ld_addr_valid = 1'b0;
+      st_done_ready = 1'b1;
+      repeat (2) @(posedge clk);
+      rst_n = 1;
+      @(posedge clk);
+
+      // Send only store address to create imbalance.
+      st_addr_data = SAFE_ADDR_PW'(3);
+      st_addr_valid = 1'b1;
+      @(posedge clk);
+      st_addr_valid = 1'b0;
+
+      // Wait DEADLOCK_TIMEOUT - 2 cycles, then resolve by sending data.
+      repeat (DEADLOCK_TIMEOUT - 2) @(posedge clk);
+
+      st_data_data = SAFE_ELEM_PW'(32'h9999);
+      st_data_valid = 1'b1;
+      @(posedge clk);
+      st_data_valid = 1'b0;
+
+      // Wait a few more cycles and verify no error was raised.
+      repeat (4) @(posedge clk);
+      @(negedge clk);
+      #1;
+      if (error_valid !== 1'b0) begin : below_dl_check
+        $fatal(1, "below timeout: error_valid should be 0 after resolving imbalance");
+      end
+      pass_count = pass_count + 1;
+    end
+
+    // Check 15: read-before-write same-cycle collision
+    if (LD_COUNT > 0 && ST_COUNT > 0) begin : read_before_write_test
+      rst_n = 0;
+      ld_addr_valid = 1'b0;
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+      ld_data_ready = 1'b1;
+      ld_done_ready = 1'b1;
+      st_done_ready = 1'b1;
+      repeat (2) @(posedge clk);
+      rst_n = 1;
+      @(posedge clk);
+
+      // Store value 0xAAAA to address 7.
+      st_addr_data = SAFE_ADDR_PW'(7);
+      st_data_data = SAFE_ELEM_PW'(32'hAAAA);
+      st_addr_valid = 1'b1;
+      st_data_valid = 1'b1;
+      iter_var0 = 0;
+      while (iter_var0 < 20) begin : wait_rbw_stdone
+        @(posedge clk);
+        iter_var0 = iter_var0 + 1;
+        if (st_done_valid) begin : done
+          iter_var0 = 20;
+        end
+      end
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+      @(posedge clk);
+
+      // Now in the same cycle: issue load to addr 7 AND start a store of 0xBBBB to addr 7.
+      // Load path is combinational (reads old mem value), store writes on posedge.
+      ld_addr_data = SAFE_ADDR_PW'(7);
+      ld_addr_valid = 1'b1;
+      st_addr_data = SAFE_ADDR_PW'(7);
+      st_data_data = SAFE_ELEM_PW'(32'hBBBB);
+      st_addr_valid = 1'b1;
+      st_data_valid = 1'b1;
+
+      // Check load returns old value (read-before-write).
+      #1;
+      if (ld_data_valid) begin : check_rbw_old
+        if (ld_data_data[ELEM_WIDTH-1:0] !== ELEM_WIDTH'(32'hAAAA)) begin : bad_rbw
+          $fatal(1, "read-before-write: load should return old value 0xAAAA, got 0x%0h",
+                 ld_data_data[ELEM_WIDTH-1:0]);
+        end
+      end
+      @(posedge clk);
+      ld_addr_valid = 1'b0;
+      st_addr_valid = 1'b0;
+      st_data_valid = 1'b0;
+
+      // Wait for store to complete.
+      iter_var0 = 0;
+      while (iter_var0 < 20) begin : wait_rbw_stdone2
+        @(posedge clk);
+        iter_var0 = iter_var0 + 1;
+        if (st_done_valid) begin : done
+          iter_var0 = 20;
+        end
+      end
+
+      // Read addr 7 again: should be new value 0xBBBB.
+      ld_addr_data = SAFE_ADDR_PW'(7);
+      ld_addr_valid = 1'b1;
+      @(posedge clk);
+      ld_addr_valid = 1'b0;
+      if (ld_data_data[ELEM_WIDTH-1:0] !== ELEM_WIDTH'(32'hBBBB)) begin : check_rbw_new
+        $fatal(1, "read-before-write: second load should return 0xBBBB, got 0x%0h",
+               ld_data_data[ELEM_WIDTH-1:0]);
+      end
+      pass_count = pass_count + 1;
+    end
+
     $display("PASS: tb_fabric_memory AW=%0d EW=%0d TW=%0d LD=%0d ST=%0d (%0d checks)",
              ADDR_WIDTH, ELEM_WIDTH, TAG_WIDTH, LD_COUNT, ST_COUNT, pass_count);
     $finish;
   end
 
   initial begin : timeout
-    // Allow enough time for deadlock test (DEADLOCK_TIMEOUT + margin cycles)
-    #((DEADLOCK_TIMEOUT + 200) * 10);
+    // Allow enough time for 3 deadlock-related tests + other checks
+    #((4 * DEADLOCK_TIMEOUT + 2000) * 10);
     $fatal(1, "TIMEOUT");
   end
 endmodule

@@ -277,6 +277,21 @@ fixed at build time and cannot be switched at runtime.
 - The PE does not enforce tag equality between returned data and the matched
   request.
 
+**Backpressure model.** In TagTransparent mode, each input port has an
+independent internal queue of depth `lqDepth` (load) or `sqDepth` (store). The
+`ready` signal on each input port depends solely on whether that port's queue
+has a free slot. Queue fullness on one port does not affect `ready` on other
+ports. Tag matching is performed only at the output stage: when a complete set
+of matching-tag entries exists across all queues, the matched set is dequeued
+atomically and forwarded to the outputs.
+
+**Match selection policy.** When multiple tag values have complete matching sets
+in the queues simultaneously, the hardware selects the match whose
+address-queue entry has the lowest slot index. Ties in the address queue are
+broken by the lowest slot index in the data queue (store PE only), then by the
+lowest slot index in the control queue. This is a deterministic
+lowest-index-first policy. Only one match fires per cycle.
+
 Invalid combinations of `output_tag`, tagged `ctrl`, and queue depth attributes
 are compile-time errors (`COMP_PE_LOADSTORE_TAG_MODE`,
 `COMP_PE_LOADSTORE_TAG_WIDTH`).

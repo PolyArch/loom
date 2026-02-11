@@ -157,6 +157,19 @@ If multiple inputs with different tags target the same output (through their
 respective route_table slots), the output uses round-robin arbitration starting
 from lower port index.
 
+**Round-robin arbitration details:**
+
+- Each output maintains an independent round-robin pointer, initialized to
+  input index 0 on reset.
+- The pointer is shared across all tag slots for that output (i.e., it is
+  per-output, not per-output-per-tag).
+- After a successful handshake (both `out_valid` and `out_ready` asserted),
+  the pointer advances to `(winner_input_index + 1) mod NUM_INPUTS`.
+- When no handshake occurs (idle cycle, backpressure, or no contending
+  inputs), the pointer holds its current value.
+- Arbitration scans inputs starting from the current pointer value, wrapping
+  around, and selects the first valid contender.
+
 ### Timing Model
 
 `fabric.temporal_sw` is a clocked temporal routing primitive:
@@ -169,6 +182,10 @@ from lower port index.
   into `error_valid`/`error_code` and held until reset.
 - `error_valid` is sticky after first assertion, and later errors do not
   overwrite the captured error code.
+- When multiple error conditions are true in the same cycle, the error with the
+  numerically smallest error code is captured. See
+  [spec-fabric-error.md](./spec-fabric-error.md) for the cross-module
+  precedence rule.
 
 ### Backpressure Behavior
 
