@@ -76,7 +76,8 @@ unsigned getNumConnected(const TemporalSwitchDef &def) {
 //===----------------------------------------------------------------------===//
 
 /// Generate SV body from bodyMLIR containing multiple operations.
-static std::string genMultiOpBodySV(const PEDef &def) {
+/// tagCfgBits: number of tag config bits at LSB of cfg_data.
+static std::string genMultiOpBodySV(const PEDef &def, unsigned tagCfgBits) {
   std::string body = def.bodyMLIR;
 
   // Strip ^bb0(...): header if present, extracting named block args
@@ -278,6 +279,8 @@ static std::string genMultiOpBodySV(const PEDef &def) {
   os << "\n";
 
   unsigned wireIdx = 0;
+  unsigned cmpIdx = 0;
+  std::vector<unsigned> cmpiOffsets;
 
   for (const auto &stmt : stmts) {
     std::string svModule = opToSVModule(stmt.opName);
@@ -329,13 +332,13 @@ static std::string genMultiOpBodySV(const PEDef &def) {
         os << "  );\n";
       }
     } else if (isCompareOp(stmt.opName)) {
-      int predVal = resolveComparePredicate(stmt.opName, stmt.predicate);
       unsigned cmpW = parseMLIRTypeWidth(stmt.typeAnnotation);
+      unsigned cmpBitOff = tagCfgBits + cmpIdx * 4;
       std::string aV = getUseValid(stmt.operands[0]);
       std::string aR = getUseReady(stmt.operands[0]);
       if (cmpW > 0) {
-        os << "  " << svModule << " #(.WIDTH(" << cmpW << "), .PREDICATE("
-           << predVal << ")) u_op" << wireIdx << " (\n";
+        os << "  " << svModule << " #(.WIDTH(" << cmpW
+           << ")) u_op" << wireIdx << " (\n";
         os << "    .a_valid(" << aV << "),\n";
         os << "    .a_ready(" << aR << "),\n";
         os << "    .a_data(" << ssaToSV[stmt.operands[0]] << "[" << (cmpW - 1)
@@ -349,8 +352,8 @@ static std::string genMultiOpBodySV(const PEDef &def) {
              << ":0]),\n";
         }
       } else {
-        os << "  " << svModule << " #(.WIDTH(DATA_WIDTH), .PREDICATE("
-           << predVal << ")) u_op" << wireIdx << " (\n";
+        os << "  " << svModule << " #(.WIDTH(DATA_WIDTH)) u_op"
+           << wireIdx << " (\n";
         os << "    .a_valid(" << aV << "),\n";
         os << "    .a_ready(" << aR << "),\n";
         os << "    .a_data(" << ssaToSV[stmt.operands[0]] << "),\n";
@@ -364,8 +367,12 @@ static std::string genMultiOpBodySV(const PEDef &def) {
       }
       os << "    .result_valid(" << wireName << "_valid),\n";
       os << "    .result_ready(" << wireName << "_ready),\n";
-      os << "    .result_data(" << wireName << ")\n";
+      os << "    .result_data(" << wireName << "),\n";
+      os << "    .predicate(cfg_data[" << cmpBitOff << " +: 4])\n";
       os << "  );\n";
+      if (stmt.opName == "arith.cmpi")
+        cmpiOffsets.push_back(cmpBitOff);
+      ++cmpIdx;
     } else {
       unsigned opW = parseMLIRTypeWidth(stmt.typeAnnotation);
       if (stmt.opName == "arith.select") {
@@ -482,15 +489,27 @@ static std::string genMultiOpBodySV(const PEDef &def) {
   }
   os << ";\n";
 
+  // Error detection for cmpi predicate values >= 10
+  if (!cmpiOffsets.empty()) {
+    os << "  assign error_valid = ";
+    for (size_t i = 0; i < cmpiOffsets.size(); ++i) {
+      if (i > 0) os << " | ";
+      os << "(cfg_data[" << cmpiOffsets[i] << " +: 4] >= 4'd10)";
+    }
+    os << ";\n";
+    os << "  assign error_code  = CFG_PE_CMPI_PREDICATE_INVALID;\n";
+  }
+
   return os.str();
 }
 
 /// Generate the PE body SV text for a PEDef.
 /// Returns the text to insert between BEGIN/END PE BODY markers.
-static std::string genPEBodySV(const PEDef &def) {
+/// tagCfgBits: number of tag config bits at LSB of cfg_data.
+static std::string genPEBodySV(const PEDef &def, unsigned tagCfgBits) {
   if (def.singleOp.empty()) {
     if (!def.bodyMLIR.empty())
-      return genMultiOpBodySV(def);
+      return genMultiOpBodySV(def, tagCfgBits);
     return "  // empty PE body\n";
   }
 
@@ -524,15 +543,11 @@ static std::string genPEBodySV(const PEDef &def) {
     os << "    end\n";
     os << "  endgenerate\n";
   } else if (isCompareOp(def.singleOp)) {
-    // Compare ops have a PREDICATE parameter and 1-bit output.
-    // Clamp to valid range: cmpi 0-9, cmpf 0-15.
-    int maxPred = (def.singleOp == "arith.cmpf") ? 15 : 9;
-    int pred = def.comparePredicate;
-    if (pred < 0 || pred > maxPred) pred = 0;
+    // Compare ops: predicate from cfg_data (runtime configurable).
+    unsigned cmpLSB = tagCfgBits;
     os << "  logic cmp_result;\n";
     os << "  " << svModule
-       << " #(.WIDTH(DATA_WIDTH), .PREDICATE(" << pred
-       << ")) u_body (\n";
+       << " #(.WIDTH(DATA_WIDTH)) u_body (\n";
     os << "    .a_valid(in_value_0_valid),\n";
     os << "    .a_ready(in_value_0_ready),\n";
     os << "    .a_data(in_value[0]),\n";
@@ -541,10 +556,16 @@ static std::string genPEBodySV(const PEDef &def) {
     os << "    .b_data(in_value[1]),\n";
     os << "    .result_valid(u_body_result_valid),\n";
     os << "    .result_ready(body_ready),\n";
-    os << "    .result_data(cmp_result)\n";
+    os << "    .result_data(cmp_result),\n";
+    os << "    .predicate(cfg_data[" << cmpLSB << " +: 4])\n";
     os << "  );\n";
     // Zero-extend 1-bit result to DATA_WIDTH
     os << "  assign body_result[0] = {{(DATA_WIDTH-1){1'b0}}, cmp_result};\n";
+    // Error detection for cmpi: predicate >= 10 is invalid
+    if (def.singleOp == "arith.cmpi") {
+      os << "  assign error_valid = (cfg_data[" << cmpLSB << " +: 4] >= 4'd10);\n";
+      os << "  assign error_code  = CFG_PE_CMPI_PREDICATE_INVALID;\n";
+    }
   } else if (def.singleOp == "dataflow.invariant") {
     os << "  dataflow_invariant #(.WIDTH(DATA_WIDTH)) u_body (\n";
     os << "    .clk(clk),\n";
@@ -694,7 +715,8 @@ static std::string genPEBodySV(const PEDef &def) {
 static std::string genTemporalPEBodySV(const TemporalPEDef &def,
                                         const std::vector<PEDef> &peDefs,
                                         const std::string &instName,
-                                        unsigned tpeDW) {
+                                        unsigned tpeDW,
+                                        const std::vector<unsigned> &fuCmpBits) {
   unsigned numFU = def.fuPEDefIndices.size();
   if (numFU == 0)
     return "  // no FU types defined\n";
@@ -728,7 +750,7 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
   // Extract fu_sel from the committed instruction (latched for multi-cycle FU)
   if (fuSelBits > 0) {
     os << "  logic [FU_SEL_BITS-1:0] fu_sel;\n";
-    os << "  assign fu_sel = cfg_data[commit_insn * INSN_WIDTH + "
+    os << "  assign fu_sel = cfg_data[INSN_MEM_BASE + commit_insn * INSN_WIDTH + "
        << "INSN_FU_SEL_LSB +: FU_SEL_BITS];\n";
     os << "\n";
   }
@@ -750,9 +772,19 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
   }
   os << "\n";
 
+  // Declare per-FU error wires for FUs that have cmpi ops
+  for (unsigned f = 0; f < numFU; ++f) {
+    const auto &fuDef = peDefs[def.fuPEDefIndices[f]];
+    if (peHasErrorOutput(fuDef)) {
+      os << "  logic fu" << f << "_error_valid;\n";
+      os << "  logic [15:0] fu" << f << "_error_code;\n";
+    }
+  }
+
   // Instantiate each FU as a customized fabric_pe module (TAG_WIDTH=0).
   // Each FU uses its configured latency from the PEDef.
   // Connections use per-port interface matching genFullPESV output.
+  unsigned fuCfgOffset = 0;
   for (unsigned f = 0; f < numFU; ++f) {
     const auto &fuDef = peDefs[def.fuPEDefIndices[f]];
     std::string fuModName = instName + "_fu" + std::to_string(f) + "_pe";
@@ -760,6 +792,7 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
     unsigned fuNumOut = fuDef.outputPorts.size();
     unsigned fuLatency =
         static_cast<unsigned>(std::max<int16_t>(fuDef.latTyp, 0));
+    bool fuHasErr = peHasErrorOutput(fuDef);
 
     unsigned fw = fuEffDW[f];
 
@@ -791,8 +824,20 @@ static std::string genTemporalPEBodySV(const TemporalPEDef &def,
       os << "    .out" << o << "_ready(all_out_ready),\n";
       os << "    .out" << o << "_data(fu" << f << "_out" << o << "_data),\n";
     }
-    os << "    .cfg_data('0)\n";
+    if (fuCmpBits[f] > 0)
+      os << "    .cfg_data(cfg_data[" << fuCfgOffset << " +: " << fuCmpBits[f]
+         << "])";
+    else
+      os << "    .cfg_data('0)";
+    if (fuHasErr) {
+      os << ",\n";
+      os << "    .error_valid(fu" << f << "_error_valid),\n";
+      os << "    .error_code(fu" << f << "_error_code)\n";
+    } else {
+      os << "\n";
+    }
     os << "  );\n";
+    fuCfgOffset += fuCmpBits[f];
     // Extract data portion from FU output (TAG_WIDTH=0 so out_data is just data).
     for (unsigned o = 0; o < fuNumOut; ++o) {
       unsigned ow = getDataWidthBits(fuDef.outputPorts[o]);
@@ -920,7 +965,16 @@ std::string genFullTemporalPESV(const std::string &templateDir,
   unsigned resultWidth = resBits + tagWidth;
   unsigned insnWidth = 1 + tagWidth + fuSelBits
       + numIn * regBits + numOut * resultWidth;
-  unsigned configWidth = numInstructions * insnWidth;
+
+  // Per-FU compare config bits
+  std::vector<unsigned> fuCmpBits(numFU);
+  unsigned totalFuCmpBits = 0;
+  for (unsigned f = 0; f < numFU; ++f) {
+    fuCmpBits[f] = countCmpOps(peDefs[def.fuPEDefIndices[f]]) * 4;
+    totalFuCmpBits += fuCmpBits[f];
+  }
+
+  unsigned configWidth = totalFuCmpBits + numInstructions * insnWidth;
   unsigned cfgPortWidth = configWidth > 0 ? configWidth : 1;
 
   std::ostringstream os;
@@ -985,7 +1039,9 @@ std::string genFullTemporalPESV(const std::string &templateDir,
   os << "  localparam int RESULT_WIDTH     = RES_BITS + TAG_WIDTH;\n";
   os << "  localparam int INSN_WIDTH       = 1 + TAG_WIDTH + FU_SEL_BITS "
      << "+ NUM_INPUTS * REG_BITS + NUM_OUTPUTS * RESULT_WIDTH;\n";
-  os << "  localparam int CONFIG_WIDTH     = NUM_INSTRUCTIONS * INSN_WIDTH;\n";
+  os << "  localparam int FU_CMP_CFG_BITS = " << totalFuCmpBits << ";\n";
+  os << "  localparam int INSN_MEM_BASE   = FU_CMP_CFG_BITS;\n";
+  os << "  localparam int CONFIG_WIDTH     = FU_CMP_CFG_BITS + NUM_INSTRUCTIONS * INSN_WIDTH;\n";
   os << "\n";
 
   // ---- Internal packed-array signals ----
@@ -1036,20 +1092,90 @@ std::string genFullTemporalPESV(const std::string &templateDir,
     std::exit(1);
   }
 
+  // Helper: apply INSN_MEM_BASE offset to cfg_data indexing in template text.
+  // Replaces patterns like "X * INSN_WIDTH" with "(INSN_MEM_BASE + X * INSN_WIDTH)"
+  // when totalFuCmpBits > 0.
+  auto applyInsnOffset = [&](std::string section) -> std::string {
+    if (totalFuCmpBits == 0)
+      return section;
+    // Pattern: "<var> * INSN_WIDTH" in automatic int base assignments.
+    // Replace all occurrences of " = <token> * INSN_WIDTH" with
+    // " = INSN_MEM_BASE + <token> * INSN_WIDTH"
+    // This covers: iter_var0, commit_insn, iter_var1, iter_var2
+    static const char *tokens[] = {
+      "iter_var0 * INSN_WIDTH", "commit_insn * INSN_WIDTH",
+      "iter_var1 * INSN_WIDTH", "iter_var2 * INSN_WIDTH"
+    };
+    for (const char *tok : tokens) {
+      std::string from = tok;
+      std::string to = "INSN_MEM_BASE + " + from;
+      size_t pos = 0;
+      while ((pos = section.find(from, pos)) != std::string::npos) {
+        // Avoid double-replacement (check if already prefixed)
+        if (pos >= 16 && section.substr(pos - 16, 16) == "INSN_MEM_BASE + ") {
+          pos += from.size();
+          continue;
+        }
+        section.replace(pos, from.size(), to);
+        pos += to.size();
+      }
+    }
+    return section;
+  };
+
   // Core logic section 1: instruction unpacking, input extraction,
   // operand buffer, matching, fire logic, FU launch, fu_operands
   auto afterEndPC = tmpl.find('\n', posEndPC);
-  os << tmpl.substr(afterEndPC + 1, posBeginPB - afterEndPC - 1);
+  std::string section1 = tmpl.substr(afterEndPC + 1, posBeginPB - afterEndPC - 1);
+  os << applyInsnOffset(section1);
 
   // PE body (generated FU instantiations)
   os << "  // ===== BEGIN PE BODY =====\n";
-  os << genTemporalPEBodySV(def, peDefs, instName, dataWidth);
+  os << genTemporalPEBodySV(def, peDefs, instName, dataWidth, fuCmpBits);
   os << "  // ===== END PE BODY =====\n";
 
   // Core logic section 2: output assembly, in_ready, register FIFOs,
   // operand buffer update, operand merge, error detection
   auto afterEndPB = tmpl.find('\n', posEndPB);
-  os << tmpl.substr(afterEndPB + 1, posEndModule - afterEndPB - 1);
+  std::string section2 = tmpl.substr(afterEndPB + 1, posEndModule - afterEndPB - 1);
+
+  // Inject FU error aggregation into the error encode block.
+  // Find the "end else if (err_no_match)" line and append FU error checks.
+  bool anyFuHasErr = false;
+  for (unsigned f = 0; f < numFU; ++f) {
+    if (peHasErrorOutput(peDefs[def.fuPEDefIndices[f]])) {
+      anyFuHasErr = true;
+      break;
+    }
+  }
+  if (anyFuHasErr) {
+    // Build FU error else-if chain text
+    std::ostringstream fuErrText;
+    for (unsigned f = 0; f < numFU; ++f) {
+      if (peHasErrorOutput(peDefs[def.fuPEDefIndices[f]])) {
+        fuErrText << "    end else if (fu" << f << "_error_valid) begin : e_fu"
+                  << f << "\n";
+        fuErrText << "      err_detect    = 1'b1;\n";
+        fuErrText << "      err_code_comb = fu" << f << "_error_code;\n";
+      }
+    }
+    // Insert before the closing "end" of the err_encode always_comb block.
+    // The pattern to find: "end else if (err_no_match) begin : e_nomatch\n"
+    // followed by "      err_detect    = 1'b1;\n"
+    //              "      err_code_comb = RT_TEMPORAL_PE_NO_MATCH;\n"
+    //              "    end\n"
+    //              "  end\n"
+    const std::string nomatchEnd = "err_code_comb = RT_TEMPORAL_PE_NO_MATCH;\n    end\n  end";
+    auto nmPos = section2.find(nomatchEnd);
+    if (nmPos != std::string::npos) {
+      // Insert FU error checks before the final "end" of the always_comb block
+      std::string replacement = "err_code_comb = RT_TEMPORAL_PE_NO_MATCH;\n"
+          + fuErrText.str() + "    end\n  end";
+      section2.replace(nmPos, nomatchEnd.size(), replacement);
+    }
+  }
+
+  os << applyInsnOffset(section2);
 
   // ---- Output boundary adaptation: internal packed -> per-port ----
   for (unsigned o = 0; o < numOut; ++o) {
@@ -1121,14 +1247,23 @@ std::string genFullPESV(const PEDef &def) {
     os << "    input  logic out" << i << "_ready,\n";
     os << "    output logic [" << (pw - 1) << ":0] out" << i << "_data,\n";
   }
-  // Config port for output tags and optional dataflow.stream condition selector.
+  // Config port for output tags, optional dataflow.stream condition selector,
+  // and compare predicate fields.
   unsigned tagCfgBits = (tw > 0) ? numOut * tw : 0;
   unsigned streamCfgBits = (def.singleOp == "dataflow.stream") ? 5 : 0;
-  unsigned totalCfgBits = tagCfgBits + streamCfgBits;
+  unsigned cmpCfgBits = countCmpOps(def) * 4;
+  unsigned totalCfgBits = tagCfgBits + streamCfgBits + cmpCfgBits;
+  bool hasErrPorts = hasCmpiOp(def);
   if (totalCfgBits > 0) {
-    os << "    input  logic [" << (totalCfgBits - 1) << ":0] cfg_data\n";
+    os << "    input  logic [" << (totalCfgBits - 1) << ":0] cfg_data"
+       << (hasErrPorts ? "," : "") << "\n";
   } else {
-    os << "    input  logic [0:0] cfg_data\n";
+    os << "    input  logic [0:0] cfg_data"
+       << (hasErrPorts ? "," : "") << "\n";
+  }
+  if (hasErrPorts) {
+    os << "    output logic        error_valid,\n";
+    os << "    output logic [15:0] error_code\n";
   }
   os << ");\n\n";
 
@@ -1220,7 +1355,7 @@ std::string genFullPESV(const PEDef &def) {
      << ":0] body_result;\n\n";
 
   // Body generation
-  os << genPEBodySV(def);
+  os << genPEBodySV(def, tagCfgBits);
   os << "\n";
 
   // Latency pipeline
@@ -1332,10 +1467,11 @@ std::string genLoadPEParams(const LoadPEDef &def) {
   unsigned ew = getDataWidthBits(def.dataType);
   if (ew == 0)
     ew = 1;
+  unsigned tw = (def.interface == InterfaceCategory::Tagged) ? def.tagWidth : 0;
   std::ostringstream os;
   os << "    .ELEM_WIDTH(" << ew << "),\n";
   os << "    .ADDR_WIDTH(" << DEFAULT_ADDR_WIDTH << "),\n";
-  os << "    .TAG_WIDTH(" << def.tagWidth << "),\n";
+  os << "    .TAG_WIDTH(" << tw << "),\n";
   os << "    .HW_TYPE(" << (def.hwType == HardwareType::TagTransparent ? 1 : 0)
      << "),\n";
   os << "    .QUEUE_DEPTH(" << def.queueDepth << ")";
@@ -1350,10 +1486,11 @@ std::string genStorePEParams(const StorePEDef &def) {
   unsigned ew = getDataWidthBits(def.dataType);
   if (ew == 0)
     ew = 1;
+  unsigned tw = (def.interface == InterfaceCategory::Tagged) ? def.tagWidth : 0;
   std::ostringstream os;
   os << "    .ELEM_WIDTH(" << ew << "),\n";
   os << "    .ADDR_WIDTH(" << DEFAULT_ADDR_WIDTH << "),\n";
-  os << "    .TAG_WIDTH(" << def.tagWidth << "),\n";
+  os << "    .TAG_WIDTH(" << tw << "),\n";
   os << "    .HW_TYPE(" << (def.hwType == HardwareType::TagTransparent ? 1 : 0)
      << "),\n";
   os << "    .QUEUE_DEPTH(" << def.queueDepth << ")";
@@ -1589,6 +1726,11 @@ bool hasErrorOutput(ModuleKind kind) {
   return kind == ModuleKind::Switch || kind == ModuleKind::TemporalSwitch ||
          kind == ModuleKind::TemporalPE || kind == ModuleKind::MapTag ||
          kind == ModuleKind::Memory || kind == ModuleKind::ExtMemory;
+}
+
+/// Returns true if a PE definition needs error_valid/error_code ports.
+bool peHasErrorOutput(const PEDef &def) {
+  return hasCmpiOp(def);
 }
 
 } // namespace adg

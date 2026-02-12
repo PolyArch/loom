@@ -116,15 +116,15 @@ module tb_fabric_pe_store_stress;
     int addr_push_count;
     int data_push_count;
     int ctrl_push_count;
-    int addr_expect_full;
-    int data_expect_full;
-    int ctrl_expect_full;
-    int addr_push;
-    int data_push;
-    int ctrl_push;
-    int out0_fire;
-    int out1_fire;
-    int atomic_fire;
+    logic addr_expect_full;
+    logic data_expect_full;
+    logic ctrl_expect_full;
+    logic addr_push;
+    logic data_push;
+    logic ctrl_push;
+    logic out0_fire;
+    logic out1_fire;
+    logic atomic_fire;
     logic [ADDR_WIDTH-1:0] pending_addr_value [TAG_COUNT];
     logic [ELEM_WIDTH-1:0] pending_data_value [TAG_COUNT];
     logic [TAG_COUNT-1:0] pending_addr_valid;
@@ -167,7 +167,7 @@ module tb_fabric_pe_store_stress;
     for (iter_var0 = 0; iter_var0 < QUEUE_DEPTH; iter_var0 = iter_var0 + 1) begin : fill_addr_q
       @(negedge clk);
       in0_valid = 1'b1;
-      in0_data = pack_addr(iter_var0 % TAG_COUNT, 16'h0200 + iter_var0);
+      in0_data = pack_addr(iter_var0 % TAG_COUNT, 32'h0200 + iter_var0);
       in1_valid = 1'b0;
       in2_valid = 1'b0;
       out0_ready = 1'b0;
@@ -180,7 +180,7 @@ module tb_fabric_pe_store_stress;
     end
     @(negedge clk);
     in0_valid = 1'b1;
-    in0_data = pack_addr(0, 16'h0ABC);
+    in0_data = pack_addr(0, 32'h0ABC);
     #1;
     if (in0_ready !== 1'b0) begin : addr_full_backpressure
       $fatal(1, "address queue backpressure missing at full depth");
@@ -298,7 +298,7 @@ module tb_fabric_pe_store_stress;
 
         if (addr_occ < QUEUE_DEPTH && !pending_addr_valid[tag_sel]) begin : drive_addr_first
           in0_valid = 1'b1;
-          in0_data = pack_addr(tag_sel, (16'h5000 + iter_var0) ^ (tag_sel << 2));
+          in0_data = pack_addr(tag_sel, (32'h5000 + iter_var0) ^ (tag_sel << 2));
         end else if (data_occ < QUEUE_DEPTH && !pending_data_valid[tag_sel]) begin : drive_data_second
           in1_valid = 1'b1;
           in1_data = pack_data(tag_sel, (32'h7000_0000 + iter_var0) ^ (tag_sel << 8));
@@ -313,13 +313,13 @@ module tb_fabric_pe_store_stress;
       addr_expect_full = (addr_occ >= QUEUE_DEPTH);
       data_expect_full = (data_occ >= QUEUE_DEPTH);
       ctrl_expect_full = (ctrl_occ >= QUEUE_DEPTH);
-      if (in0_ready !== !addr_expect_full[0]) begin : check_addr_ready
+      if (in0_ready !== !addr_expect_full) begin : check_addr_ready
         $fatal(1, "in0_ready mismatch at cycle=%0d occ=%0d", iter_var0, addr_occ);
       end
-      if (in1_ready !== !data_expect_full[0]) begin : check_data_ready
+      if (in1_ready !== !data_expect_full) begin : check_data_ready
         $fatal(1, "in1_ready mismatch at cycle=%0d occ=%0d", iter_var0, data_occ);
       end
-      if (in2_ready !== !ctrl_expect_full[0]) begin : check_ctrl_ready
+      if (in2_ready !== !ctrl_expect_full) begin : check_ctrl_ready
         $fatal(1, "in2_ready mismatch at cycle=%0d occ=%0d", iter_var0, ctrl_occ);
       end
 

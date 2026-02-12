@@ -1,10 +1,9 @@
-// Integer comparison with PREDICATE parameter.
-// PREDICATE encoding (MLIR arith.cmpi):
+// Integer comparison with runtime-configurable predicate.
+// predicate encoding (MLIR arith.cmpi):
 //   0=eq, 1=ne, 2=slt, 3=sle, 4=sgt, 5=sge, 6=ult, 7=ule, 8=ugt, 9=uge
 // Output is always 1 bit.
 module arith_cmpi #(
-    parameter int WIDTH     = 32,
-    parameter int PREDICATE = 0
+    parameter int WIDTH     = 32
 ) (
     input  logic             a_valid,
     output logic             a_ready,
@@ -14,10 +13,11 @@ module arith_cmpi #(
     input  logic [WIDTH-1:0] b_data,
     output logic             result_valid,
     input  logic             result_ready,
-    output logic             result_data
+    output logic             result_data,
+    input  logic [3:0]       predicate
 );
   always_comb begin : cmp
-    case (PREDICATE)
+    case (predicate)
       0:  result_data = (a_data == b_data);
       1:  result_data = (a_data != b_data);
       2:  result_data = ($signed(a_data) < $signed(b_data));

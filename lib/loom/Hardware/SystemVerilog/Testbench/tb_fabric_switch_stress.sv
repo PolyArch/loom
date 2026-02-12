@@ -113,17 +113,17 @@ module tb_fabric_switch_stress;
       cfg_route_table = '0;
       for (iter_var1 = 0; iter_var1 < NUM_OUTPUTS; iter_var1 = iter_var1 + 1) begin : build_route
         rng = lcg_next(rng);
-        if (((rng >> 16) & 16'h7) == 0) begin : disable_out
+        if (((rng >> 16) & 32'h7) == 0) begin : disable_out
           route_src[iter_var1] = -1;
         end else begin : assign_out
-          route_src[iter_var1] = ((rng >> 20) & 16'h7FFF) % NUM_INPUTS;
+          route_src[iter_var1] = ((rng >> 20) & 32'h7FFF) % NUM_INPUTS;
           cfg_route_table[iter_var1 * NUM_INPUTS + route_src[iter_var1]] = 1'b1;
         end
       end
 
       // Force occasional broadcast by duplicating one source across two outputs.
       rng = lcg_next(rng);
-      if (NUM_OUTPUTS >= 2 && (((rng >> 19) & 16'h3) == 0) && route_src[0] >= 0) begin : make_bcast
+      if (NUM_OUTPUTS >= 2 && (((rng >> 19) & 32'h3) == 0) && route_src[0] >= 0) begin : make_bcast
         cfg_route_table[1 * NUM_INPUTS +: NUM_INPUTS] = '0;
         route_src[1] = route_src[0];
         cfg_route_table[1 * NUM_INPUTS + route_src[1]] = 1'b1;

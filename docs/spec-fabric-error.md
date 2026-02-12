@@ -23,7 +23,7 @@ CFG_ errors are detected after writing runtime configuration registers or
 tables, before or during execution, and do not require dataflow execution to
 surface.
 
-CFG_ error codes currently use the range 0-10. Codes 11-255 are reserved for
+CFG_ error codes currently use the range 0-11. Codes 12-255 are reserved for
 future use.
 
 RT_ error codes start at 256 and increase sequentially.
@@ -210,6 +210,7 @@ fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
 | 8 | CFG_TEMPORAL_PE_REG_TAG_NONZERO | `res_tag != 0` when writing a register |
 | 9 | CFG_MAP_TAG_DUP_TAG | `map_tag` has multiple valid entries with the same `src_tag` |
 | 10 | CFG_PE_STREAM_CONT_COND_ONEHOT | `dataflow.stream` `cont_cond_sel` register is not one-hot (`<`, `<=`, `>`, `>=`, `!=`) |
+| 11 | CFG_PE_CMPI_PREDICATE_INVALID | PE cmpi predicate field value >= 10 (only 0-9 are valid for integer comparison) |
 
 ## RT_ (Runtime Execution Errors, Hardware Code)
 

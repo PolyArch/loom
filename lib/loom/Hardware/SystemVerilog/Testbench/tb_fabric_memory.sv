@@ -502,7 +502,7 @@ module tb_fabric_memory;
 
       for (iter_var1 = 0; iter_var1 < 24; iter_var1 = iter_var1 + 1) begin : per_txn
         rand_state = rand_state * 1664525 + 1013904223;
-        stress_addr_raw = ADDR_WIDTH'((rand_state & 32'h7FFF_FFFF) % MEM_DEPTH);
+        stress_addr_raw = ADDR_WIDTH'((ADDR_WIDTH'(rand_state) & ADDR_WIDTH'(32'h7FFF_FFFF)) % MEM_DEPTH);
         rand_state = rand_state * 1664525 + 1013904223;
         stress_data_raw = ELEM_WIDTH'(rand_state);
 

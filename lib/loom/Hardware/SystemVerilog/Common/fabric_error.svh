@@ -53,6 +53,9 @@ localparam logic [15:0] CFG_MAP_TAG_DUP_TAG = 16'd9;
 // PE stream: cont_cond_sel is not one-hot
 localparam logic [15:0] CFG_PE_STREAM_CONT_COND_ONEHOT = 16'd10;
 
+// PE cmpi: predicate value >= 10 (only 0-9 valid for integer compare)
+localparam logic [15:0] CFG_PE_CMPI_PREDICATE_INVALID = 16'd11;
+
 //===----------------------------------------------------------------------===//
 // RT_ Errors: Runtime Execution Errors (Codes 256+)
 //===----------------------------------------------------------------------===//

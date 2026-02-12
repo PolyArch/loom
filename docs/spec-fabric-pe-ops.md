@@ -25,8 +25,8 @@ This document is the **single source of truth** for operations allowed inside
 | `arith.addf` | Floating-point addition |
 | `arith.addi` | Integer addition |
 | `arith.andi` | Bitwise AND |
-| `arith.cmpf` | Floating-point comparison |
-| `arith.cmpi` | Integer comparison |
+| `arith.cmpf` | Floating-point comparison (predicate is runtime-configurable) |
+| `arith.cmpi` | Integer comparison (predicate is runtime-configurable) |
 | `arith.divf` | Floating-point division |
 | `arith.divsi` | Signed integer division |
 | `arith.divui` | Unsigned integer division |
@@ -52,6 +52,11 @@ This document is the **single source of truth** for operations allowed inside
 | `arith.sitofp` | Signed integer to floating-point |
 | `arith.uitofp` | Unsigned integer to floating-point |
 | `arith.xori` | Bitwise XOR |
+
+The PREDICATE for `arith.cmpi` and `arith.cmpf` is a runtime configuration
+parameter stored in `config_mem`. Changing the predicate in the PE body
+definition changes the initial runtime configuration value, not the hardware.
+See [spec-fabric-pe.md](./spec-fabric-pe.md) for details.
 
 ## math Dialect (7 operations)
 

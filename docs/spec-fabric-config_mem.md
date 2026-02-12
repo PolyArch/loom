@@ -71,7 +71,8 @@ parameters:
 
 | Module Type | CONFIG_WIDTH Formula |
 |-------------|---------------------|
-| `fabric.pe` (tagged, non-constant non-load/store) | `NUM_OUTPUTS * TAG_WIDTH` |
+| `fabric.pe` (tagged, non-constant non-load/store, no cmp ops) | `NUM_OUTPUTS * TAG_WIDTH` |
+| `fabric.pe` (tagged, non-constant non-load/store, with cmp ops) | `NUM_OUTPUTS * TAG_WIDTH + 4 * NUM_CMP_OPS` |
 | `fabric.pe` (constant, native) | `bitwidth(constant_value_type)` |
 | `fabric.pe` (constant, tagged, `NUM_OUTPUTS = 1`) | `bitwidth(constant_value_type) + TAG_WIDTH` |
 | `fabric.pe` (dataflow.stream, native) | `5` (`cont_cond_sel`, one-hot [`<`, `<=`, `>`, `>=`, `!=`]) |
@@ -79,11 +80,12 @@ parameters:
 | `fabric.pe` (load/store, TagOverwrite + tagged) | `TAG_WIDTH` (single shared `output_tag` for all outputs) |
 | `fabric.pe` (load/store, TagOverwrite + native) | 0 |
 | `fabric.pe` (load/store, TagTransparent) | 0 |
-| `fabric.pe` (compute, native) | 0 (no config) |
+| `fabric.pe` (compute, native, no cmp ops) | 0 (no config) |
+| `fabric.pe` (compute, native, with cmp ops) | `4 * NUM_CMP_OPS` |
 | `fabric.add_tag` | `TAG_WIDTH` |
 | `fabric.map_tag` | `TABLE_SIZE * (1 + IN_TAG_WIDTH + OUT_TAG_WIDTH)` |
 | `fabric.switch` | `K` (number of connected positions in connectivity_table) |
-| `fabric.temporal_pe` | `NUM_INSTRUCTIONS * INSTRUCTION_WIDTH` |
+| `fabric.temporal_pe` | `SUM(4 * cmp_ops_in_FU_k) + NUM_INSTRUCTIONS * INSTRUCTION_WIDTH` |
 | `fabric.temporal_sw` | `NUM_ROUTE_TABLE * SLOT_WIDTH` |
 | `fabric.memory` | 0 (no runtime config) |
 | `fabric.extmemory` | 0 (no runtime config) |
@@ -210,6 +212,15 @@ Key observations:
 - `fabric.pe` dataflow.stream tagged:
   - Lower bits: `output_tag` array (ascending output index)
   - Upper bits: 5-bit `cont_cond_sel`
+- `fabric.pe` with cmp ops (native, no tag):
+  - Lower bits: `compare_predicate[0]` (4 bits), first cmp op in body order
+  - Upper bits: `compare_predicate[1]` (4 bits), etc.
+- `fabric.pe` with cmp ops (tagged):
+  - Lower bits: `output_tag` array (ascending output index)
+  - Upper bits: `compare_predicate` fields (ascending body order)
+- `fabric.temporal_pe` with FU cmp ops:
+  - Lower bits: FU 0 cmp config, FU 1 cmp config, ..., FU K cmp config
+  - Upper bits: instruction memory (`NUM_INSTRUCTIONS * INSN_WIDTH`)
 
 ## Access Protocol
 

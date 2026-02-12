@@ -412,7 +412,7 @@ module fabric_memory #(
   // Non-private memref output (placeholder, always valid)
   // -----------------------------------------------------------------------
   generate
-    if (!IS_PRIVATE) begin : g_memref
+    if (IS_PRIVATE == 0) begin : g_memref
       assign memref_valid = 1'b1;
     end else begin : g_no_memref
       assign memref_valid = 1'b0;

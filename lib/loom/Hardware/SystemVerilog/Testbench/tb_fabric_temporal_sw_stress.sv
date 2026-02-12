@@ -134,8 +134,8 @@ module tb_fabric_temporal_sw_stress;
     int iter_var1;
     int iter_var2;
     int cand_count;
-    int contender_out0;
-    int contender_out1;
+    logic contender_out0;
+    logic contender_out1;
     logic [TAG_WIDTH-1:0] in_tag [NUM_INPUTS];
     logic data_match;
 
@@ -226,11 +226,11 @@ module tb_fabric_temporal_sw_stress;
       end
 
       // If no contention and both targets ready, broadcast should advance.
-      contender_out0 = (in_valid[1] && in_tag[1] == 3'd2) ? 1 : 0;
-      contender_out1 = (in_valid[1] && in_tag[1] == 3'd1) ||
-                       (in_valid[2] && in_tag[2] == 3'd2);
+      contender_out0 = in_valid[1] && (in_tag[1] == 3'd2);
+      contender_out1 = (in_valid[1] && (in_tag[1] == 3'd1)) ||
+                       (in_valid[2] && (in_tag[2] == 3'd2));
       if (in_valid[0] && in_tag[0] == 3'd3 && out_ready[0] && out_ready[1] &&
-          contender_out0 == 0 && contender_out1 == 0) begin : bcast_progress
+          !contender_out0 && !contender_out1) begin : bcast_progress
         if (in_ready[0] !== 1'b1)
           $fatal(1, "broadcast input should be ready without contention");
       end

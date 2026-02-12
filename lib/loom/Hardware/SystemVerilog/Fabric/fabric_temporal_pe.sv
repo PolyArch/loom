@@ -722,7 +722,7 @@ module fabric_temporal_pe #(
               automatic int op_base = iter_var0 * INSN_WIDTH + INSN_OPERANDS_LSB + iter_var1 * REG_BITS;
               if (cfg_data[op_base + REG_BITS - 1]) begin : is_reg_op
                 // Register-sourced: op_valid = FIFO non-empty
-                automatic int ridx = cfg_data[op_base +: (REG_BITS - 1)];
+                automatic int ridx = int'(cfg_data[op_base +: (REG_BITS - 1)]);
                 op_valid[iter_var0][iter_var1] = !reg_fifo_empty[ridx];
                 op_value[iter_var0][iter_var1] = reg_fifo_data[ridx][reg_fifo_rd_ptr[ridx]];
               end

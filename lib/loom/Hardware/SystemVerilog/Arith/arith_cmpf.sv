@@ -1,11 +1,10 @@
-// Floating-point comparison with PREDICATE parameter.
-// PREDICATE encoding (MLIR arith.cmpf):
+// Floating-point comparison with runtime-configurable predicate.
+// predicate encoding (MLIR arith.cmpf):
 //   0=false, 1=oeq, 2=ogt, 3=oge, 4=olt, 5=ole, 6=one, 7=ord,
 //   8=ueq, 9=ugt, 10=uge, 11=ult, 12=ule, 13=une, 14=uno, 15=true
 // Output is always 1 bit.
 module arith_cmpf #(
-    parameter int WIDTH     = 32,
-    parameter int PREDICATE = 0
+    parameter int WIDTH     = 32
 ) (
     input  logic             a_valid,
     output logic             a_ready,
@@ -15,18 +14,23 @@ module arith_cmpf #(
     input  logic [WIDTH-1:0] b_data,
     output logic             result_valid,
     input  logic             result_ready,
-    output logic             result_data
+    output logic             result_data,
+    input  logic [3:0]       predicate
 );
   generate
     if (WIDTH == 32) begin : g_f32
       shortreal sa, sb;
       logic is_nan;
       always_comb begin : cmp
+        /* verilator lint_off WIDTHEXPAND */
         sa = $bitstoshortreal(a_data);
         sb = $bitstoshortreal(b_data);
-        // NaN detection: shortreal comparison with NaN returns false
-        is_nan = (sa != sa) || (sb != sb);
-        case (PREDICATE)
+        /* verilator lint_on WIDTHEXPAND */
+        // Bit-level NaN detection (IEEE 754 single: exp=0xFF, mantissa!=0).
+        // shortreal self-comparison (sa != sa) is unreliable across simulators.
+        is_nan = ((&a_data[30:23]) && (|a_data[22:0]))
+              || ((&b_data[30:23]) && (|b_data[22:0]));
+        case (predicate)
           0:  result_data = 1'b0;           // false
           1:  result_data = !is_nan && (sa == sb); // oeq
           2:  result_data = !is_nan && (sa > sb);  // ogt
@@ -52,8 +56,10 @@ module arith_cmpf #(
       always_comb begin : cmp
         ra = $bitstoreal(a_data);
         rb = $bitstoreal(b_data);
-        is_nan = (ra != ra) || (rb != rb);
-        case (PREDICATE)
+        // Bit-level NaN detection (IEEE 754 double: exp=0x7FF, mantissa!=0)
+        is_nan = ((&a_data[62:52]) && (|a_data[51:0]))
+              || ((&b_data[62:52]) && (|b_data[51:0]));
+        case (predicate)
           0:  result_data = 1'b0;
           1:  result_data = !is_nan && (ra == rb);
           2:  result_data = !is_nan && (ra > rb);

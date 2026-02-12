@@ -235,7 +235,7 @@ module fabric_temporal_sw #(
     end else begin : advance
       for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0 = iter_var0 + 1) begin : per_output
         if (arb_valid[iter_var0] && out_valid[iter_var0] && out_ready[iter_var0]) begin : handshake
-          rr_ptr[iter_var0] <= (arb_winner[iter_var0] + 1) % NUM_INPUTS;
+          rr_ptr[iter_var0] <= RR_PTR_W'((32'(arb_winner[iter_var0]) + 32'd1) % NUM_INPUTS);
         end
       end
     end

@@ -102,6 +102,22 @@ user-settable attribute.
 For load/store PEs, interval is fixed by hardware implementation and is not a
 user-settable attribute.
 
+#### Runtime Configuration Parameters from PE Body
+
+Certain attributes of operations inside `fabric.pe` body are **runtime
+configuration parameters**, not hardware parameters. Changing these attributes
+modifies the runtime configuration stored in `config_mem`, not the hardware
+structure itself. These include:
+
+| Body attribute | Operation | Config field | Bits |
+|----------------|-----------|-------------|------|
+| predicate (`eq`, `slt`, ...) | `arith.cmpi`, `arith.cmpf` | `compare_predicate` | 4 per cmp op |
+| `cont_cond` / `step_op` | `dataflow.stream` | `cont_cond_sel` | 5 |
+| `value` | `handshake.constant` | `constant_value` | bitwidth(value_type) |
+
+`output_tag` (in the `{}` block) is also a runtime configuration parameter,
+but it is exclusive to tagged PEs and has no body-level representation.
+
 #### `output_tag` (runtime configuration parameter)
 
 - Allowed only when the interface category is tagged.
@@ -131,6 +147,19 @@ constant outputs.
 For the formal `config_mem` definition (32-bit word width, depth calculation,
 and field packing rules), see
 [spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
+
+#### `compare_predicate` (runtime configuration parameter)
+
+- Allowed when the PE body contains one or more `arith.cmpi` or `arith.cmpf`
+  operations.
+- Each compare operation contributes a 4-bit runtime configuration field.
+- Fields are allocated in body definition order, first operation at lowest bit
+  position (above tag config).
+- For `arith.cmpi`: valid values 0-9; values 10-15 trigger
+  `CFG_PE_CMPI_PREDICATE_INVALID`.
+- For `arith.cmpf`: all 16 values (0-15) are valid.
+- Changing the predicate in the PE body definition changes the initial runtime
+  configuration value, not the hardware.
 
 #### `cont_cond_sel` (runtime configuration parameter)
 

@@ -20,13 +20,14 @@ module tb_fabric_switch #(
     parameter int NUM_OUTPUTS      = 2,
     parameter int DATA_WIDTH       = 32,
     parameter int TAG_WIDTH        = 0,
-    parameter bit [NUM_OUTPUTS*NUM_INPUTS-1:0] CONNECTIVITY = '1,
+    parameter bit [31:0] CONNECTIVITY = '1,
     parameter int NUM_TRANSACTIONS = 100,
     parameter int SEED             = 0
 );
 
+  localparam bit [NUM_OUTPUTS*NUM_INPUTS-1:0] CONN = CONNECTIVITY[NUM_OUTPUTS*NUM_INPUTS-1:0];
   localparam int PAYLOAD_WIDTH = DATA_WIDTH + TAG_WIDTH;
-  localparam int NUM_CONNECTED = $countones(CONNECTIVITY);
+  localparam int NUM_CONNECTED = $countones(CONN);
   localparam int DIM = (NUM_INPUTS < NUM_OUTPUTS) ? NUM_INPUTS : NUM_OUTPUTS;
 
   logic clk;
@@ -50,7 +51,7 @@ module tb_fabric_switch #(
     .NUM_OUTPUTS  (NUM_OUTPUTS),
     .DATA_WIDTH   (DATA_WIDTH),
     .TAG_WIDTH    (TAG_WIDTH),
-    .CONNECTIVITY (CONNECTIVITY)
+    .CONNECTIVITY (CONN)
   ) dut (
     .clk             (clk),
     .rst_n           (rst_n),
@@ -96,7 +97,7 @@ module tb_fabric_switch #(
     automatic logic [NUM_CONNECTED-1:0] result = '0;
     for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0++) begin : per_out
       for (iter_var1 = 0; iter_var1 < NUM_INPUTS; iter_var1++) begin : per_in
-        if (CONNECTIVITY[iter_var0*NUM_INPUTS + iter_var1]) begin : connected
+        if (CONN[iter_var0*NUM_INPUTS + iter_var1]) begin : connected
           result[bit_idx] = flat_matrix[iter_var0*NUM_INPUTS + iter_var1];
           bit_idx++;
         end
@@ -208,7 +209,7 @@ module tb_fabric_switch #(
       in_valid = '0;
       for (iter_var0 = 0; iter_var0 < DIM; iter_var0++) begin : drive_perm
         in_valid[iter_var0] = 1'b1;
-        in_data[iter_var0] = PAYLOAD_WIDTH'(16'hC000 + iter_var0);
+        in_data[iter_var0] = PAYLOAD_WIDTH'(32'hC000 + iter_var0);
       end
       #1;
 
@@ -216,9 +217,9 @@ module tb_fabric_switch #(
       for (iter_var0 = 0; iter_var0 < DIM; iter_var0++) begin : check_perm
         if (out_valid[DIM-1-iter_var0] !== 1'b1)
           $fatal(1, "FAIL: permutation: out_valid[%0d] should be 1", DIM-1-iter_var0);
-        if (out_data[DIM-1-iter_var0] !== PAYLOAD_WIDTH'(16'hC000 + iter_var0))
+        if (out_data[DIM-1-iter_var0] !== PAYLOAD_WIDTH'(32'hC000 + iter_var0))
           $fatal(1, "FAIL: permutation: out_data[%0d] expected 0x%04x, got 0x%04x",
-                 DIM-1-iter_var0, 16'hC000 + iter_var0, out_data[DIM-1-iter_var0]);
+                 DIM-1-iter_var0, 32'hC000 + iter_var0, out_data[DIM-1-iter_var0]);
       end
       in_valid = '0;
     end
@@ -244,7 +245,7 @@ module tb_fabric_switch #(
           mapping[iter_var1] = -1;
           n_cand = 0;
           for (iter_var2 = 0; iter_var2 < NUM_INPUTS; iter_var2++) begin : find_cand
-            if (CONNECTIVITY[iter_var1*NUM_INPUTS + iter_var2] && !input_used[iter_var2]) begin : add_cand
+            if (CONN[iter_var1*NUM_INPUTS + iter_var2] && !input_used[iter_var2]) begin : add_cand
               candidates[n_cand] = iter_var2;
               n_cand++;
             end

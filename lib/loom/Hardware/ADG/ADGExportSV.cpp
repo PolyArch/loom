@@ -112,6 +112,10 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       hasErrorPorts = true;
       break;
     }
+    if (inst.kind == ModuleKind::PE && peHasErrorOutput(peDefs[inst.defIdx])) {
+      hasErrorPorts = true;
+      break;
+    }
   }
 
   // Validate instance names: must be valid SV identifiers and unique
@@ -187,8 +191,21 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       unsigned tw = def.inputPorts.size() > 0
                         ? getTagWidthBits(def.inputPorts[0])
                         : 0;
-      if (tw > 0)
+      unsigned peCfgBits = (tw > 0) ? def.outputPorts.size() * tw : 0;
+      bool peHasStream = (def.singleOp == "dataflow.stream");
+      if (!peHasStream && !def.bodyMLIR.empty()) {
+        auto bodyOps = extractBodyMLIROps(def.bodyMLIR);
+        peHasStream = (bodyOps.size() == 1 && bodyOps[0] == "dataflow.stream");
+      }
+      if (peHasStream)
+        peCfgBits += 5;
+      peCfgBits += countCmpOps(def) * 4;
+      if (peCfgBits > 0)
         instanceDerived.insert(inst.name + "_cfg_data");
+      if (peHasErrorOutput(def)) {
+        instanceDerived.insert(inst.name + "_error_valid");
+        instanceDerived.insert(inst.name + "_error_code");
+      }
     } else if (inst.kind == ModuleKind::ConstantPE) {
       instanceDerived.insert(inst.name + "_cfg_data");
     } else if (inst.kind == ModuleKind::LoadPE) {
@@ -479,6 +496,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       }
       if (hasStreamCfg)
         cfgBits += 5;
+      cfgBits += countCmpOps(def) * 4;
       if (cfgBits > 0)
         instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
     } else if (inst.kind == ModuleKind::ConstantPE) {
@@ -489,11 +507,13 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
     } else if (inst.kind == ModuleKind::LoadPE) {
       const auto &def = loadPEDefs[inst.defIdx];
-      if (def.hwType == HardwareType::TagOverwrite && def.tagWidth > 0)
+      if (def.interface == InterfaceCategory::Tagged &&
+          def.hwType == HardwareType::TagOverwrite && def.tagWidth > 0)
         instCfgPorts.push_back({inst.name + "_cfg_data", def.tagWidth});
     } else if (inst.kind == ModuleKind::StorePE) {
       const auto &def = storePEDefs[inst.defIdx];
-      if (def.hwType == HardwareType::TagOverwrite && def.tagWidth > 0)
+      if (def.interface == InterfaceCategory::Tagged &&
+          def.hwType == HardwareType::TagOverwrite && def.tagWidth > 0)
         instCfgPorts.push_back({inst.name + "_cfg_data", def.tagWidth});
     } else if (inst.kind == ModuleKind::TemporalSwitch) {
       const auto &def = temporalSwitchDefs[inst.defIdx];
@@ -525,7 +545,10 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       unsigned resBits = regBits;
       unsigned resultWidth = resBits + tw;
       unsigned insnWidth = 1 + tw + fuSelBits + numIn * regBits + numOut * resultWidth;
-      unsigned cfgBits = def.numInstructions * insnWidth;
+      unsigned totalFuCmpBits = 0;
+      for (unsigned idx : def.fuPEDefIndices)
+        totalFuCmpBits += countCmpOps(peDefs[idx]) * 4;
+      unsigned cfgBits = totalFuCmpBits + def.numInstructions * insnWidth;
       if (cfgBits > 0)
         instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
     }
@@ -574,6 +597,21 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   }
   top << ");\n\n";
 
+  // Helper: compute the actual SV port data width for an instance input port.
+  // For most modules this equals getDataWidthBits(type) + getTagWidthBits(type).
+  // ConstantPE is special: its SV in_data port is SAFE_PW = DATA_WIDTH + TAG_WIDTH
+  // (matching the output payload width), not the semantic control-token width.
+  auto getInputSVWidth = [&](unsigned instIdx, unsigned port) -> unsigned {
+    const auto &inst = instances[instIdx];
+    if (inst.kind == ModuleKind::ConstantPE && port == 0) {
+      const auto &cdef = constantPEDefs[inst.defIdx];
+      unsigned w = getDataWidthBits(cdef.outputType) + getTagWidthBits(cdef.outputType);
+      return w > 0 ? w : 1;
+    }
+    Type pt = getInstanceInputType(instIdx, port);
+    return getDataWidthBits(pt) + getTagWidthBits(pt);
+  };
+
   // Pre-compute per-instance payload dimensions for modules with packed-array
   // Wire declarations for internal connections
   for (size_t i = 0; i < instances.size(); ++i) {
@@ -583,8 +621,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
 
     // Per-port semantic widths for all instances.
     for (unsigned p = 0; p < numIn; ++p) {
-      Type pt = getInstanceInputType(i, p);
-      unsigned w = getDataWidthBits(pt) + getTagWidthBits(pt);
+      unsigned w = getInputSVWidth(i, p);
       if (w == 0) w = 1;
       top << "  logic " << inst.name << "_in" << p << "_valid;\n";
       top << "  logic " << inst.name << "_in" << p << "_ready;\n";
@@ -606,7 +643,8 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     }
 
     // Per-instance error signals for modules that support them
-    if (hasErrorOutput(inst.kind)) {
+    if (hasErrorOutput(inst.kind) ||
+        (inst.kind == ModuleKind::PE && peHasErrorOutput(peDefs[inst.defIdx]))) {
       top << "  logic " << inst.name << "_error_valid;\n";
       top << "  logic [15:0] " << inst.name << "_error_code;\n";
     }
@@ -735,6 +773,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       const auto &def = peDefs[inst.defIdx];
       unsigned numIn = def.inputPorts.size();
       unsigned numOut = def.outputPorts.size();
+      bool peHasErr = peHasErrorOutput(def);
       // Per-port instantiation (matches genFullPESV per-port interface)
       top << "  " << inst.name << "_pe "
           << inst.name << " (\n";
@@ -759,10 +798,17 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       }
       if (hasStreamCfg)
         cfgBits += 5;
+      cfgBits += countCmpOps(def) * 4;
       if (cfgBits > 0)
-        top << "    .cfg_data(" << inst.name << "_cfg_data)\n";
+        top << "    .cfg_data(" << inst.name << "_cfg_data)"
+            << (peHasErr ? "," : "") << "\n";
       else
-        top << "    .cfg_data('0)\n";
+        top << "    .cfg_data('0)"
+            << (peHasErr ? "," : "") << "\n";
+      if (peHasErr) {
+        top << "    .error_valid(" << inst.name << "_error_valid),\n";
+        top << "    .error_code(" << inst.name << "_error_code)\n";
+      }
       top << "  );\n\n";
       break;
     }
@@ -801,8 +847,8 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       top << "    .out1_valid(" << inst.name << "_out1_valid),\n";
       top << "    .out1_ready(" << inst.name << "_out1_ready),\n";
       top << "    .out1_data(" << inst.name << "_out1_data),\n";
-      unsigned tw = def.tagWidth;
-      if (def.hwType == HardwareType::TagOverwrite && tw > 0)
+      if (def.interface == InterfaceCategory::Tagged &&
+          def.hwType == HardwareType::TagOverwrite && def.tagWidth > 0)
         top << "    .cfg_data(" << inst.name << "_cfg_data)\n";
       else
         top << "    .cfg_data('0)\n";
@@ -829,8 +875,8 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       top << "    .out1_valid(" << inst.name << "_out1_valid),\n";
       top << "    .out1_ready(" << inst.name << "_out1_ready),\n";
       top << "    .out1_data(" << inst.name << "_out1_data),\n";
-      unsigned tw = def.tagWidth;
-      if (def.hwType == HardwareType::TagOverwrite && tw > 0)
+      if (def.interface == InterfaceCategory::Tagged &&
+          def.hwType == HardwareType::TagOverwrite && def.tagWidth > 0)
         top << "    .cfg_data(" << inst.name << "_cfg_data)\n";
       else
         top << "    .cfg_data('0)\n";
@@ -1093,12 +1139,30 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         << "_valid = " << port.name << "_valid;\n";
     unsigned srcDW = getDataWidthBits(port.type);
     unsigned srcTW = getTagWidthBits(port.type);
+    unsigned srcTotal = srcDW + srcTW;
+    if (srcTotal == 0) srcTotal = 1;
+    // Compute the actual SV port width for the destination instance input.
+    // For most modules this equals the semantic type width (data + tag bits).
+    // ConstantPE is special: its input port 0 has a narrow semantic type
+    // (e.g. i1 control token = 1 bit), but the SV module's in_data port
+    // uses SAFE_PW = DATA_WIDTH + TAG_WIDTH (matching output payload width,
+    // e.g. 36 bits for tagged f32 with 4-bit tag).  Without getInputSVWidth,
+    // dstSVWidth would be computed from the semantic type (1 bit), causing a
+    // width mismatch when connecting a wide module port to a narrow wire.
+    unsigned dstSVWidth = getInputSVWidth(conn.instIdx, conn.dstPort);
+    if (dstSVWidth == 0) dstSVWidth = 1;
     Type dstType = getInstanceInputType(conn.instIdx, conn.dstPort);
     unsigned dstDW = getDataWidthBits(dstType);
     unsigned dstTW = getTagWidthBits(dstType);
-    if ((srcDW + srcTW) != (dstDW + dstTW)) {
-      emitDataAssign(inst.name + "_in" + std::to_string(conn.dstPort) + "_data",
-                     dstDW, dstTW, port.name + "_data", srcDW, srcTW);
+    if (srcTotal != dstSVWidth) {
+      // Use tag-aware slicing when both sides carry tags
+      if (srcTW > 0 && dstTW > 0) {
+        emitDataAssign(inst.name + "_in" + std::to_string(conn.dstPort) + "_data",
+                       dstDW, dstTW, port.name + "_data", srcDW, srcTW);
+      } else {
+        emitDataAssign(inst.name + "_in" + std::to_string(conn.dstPort) + "_data",
+                       dstSVWidth, 0, port.name + "_data", srcTotal, 0);
+      }
     } else {
       top << "  assign " << inst.name << "_in" << conn.dstPort
           << "_data = " << port.name << "_data;\n";
@@ -1152,14 +1216,24 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     top << "  assign " << dstInst.name << "_in" << conn.dstPort
         << "_valid = " << srcKey << "_valid;\n";
     Type srcType2 = getInstanceOutputType(conn.srcInst, conn.srcPort);
-    Type dstType2 = getInstanceInputType(conn.dstInst, conn.dstPort);
     unsigned sDW = getDataWidthBits(srcType2);
     unsigned sTW = getTagWidthBits(srcType2);
-    unsigned dDW = getDataWidthBits(dstType2);
-    unsigned dTW = getTagWidthBits(dstType2);
-    if ((sDW + sTW) != (dDW + dTW)) {
-      emitDataAssign(dstInst.name + "_in" + std::to_string(conn.dstPort) + "_data",
-                     dDW, dTW, srcKey + "_data", sDW, sTW);
+    unsigned sTotal = sDW + sTW;
+    if (sTotal == 0) sTotal = 1;
+    unsigned dTotal = getInputSVWidth(conn.dstInst, conn.dstPort);
+    if (dTotal == 0) dTotal = 1;
+    if (sTotal != dTotal) {
+      Type dstType2 = getInstanceInputType(conn.dstInst, conn.dstPort);
+      unsigned dDW = getDataWidthBits(dstType2);
+      unsigned dTW = getTagWidthBits(dstType2);
+      // Use semantic tag-aware widths when both sides have tag info
+      if (sTW > 0 && dTW > 0) {
+        emitDataAssign(dstInst.name + "_in" + std::to_string(conn.dstPort) + "_data",
+                       dDW, dTW, srcKey + "_data", sDW, sTW);
+      } else {
+        emitDataAssign(dstInst.name + "_in" + std::to_string(conn.dstPort) + "_data",
+                       dTotal, 0, srcKey + "_data", sTotal, 0);
+      }
     } else {
       top << "  assign " << dstInst.name << "_in" << conn.dstPort
           << "_data = " << srcKey << "_data;\n";
@@ -1189,7 +1263,9 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     // Only capture when no error latched yet
     bool first = true;
     for (const auto &inst : instances) {
-      if (hasErrorOutput(inst.kind)) {
+      bool instHasErr = hasErrorOutput(inst.kind) ||
+          (inst.kind == ModuleKind::PE && peHasErrorOutput(peDefs[inst.defIdx]));
+      if (instHasErr) {
         top << "      " << (first ? "if" : "else if") << " ("
             << inst.name << "_error_valid) begin\n";
         top << "        error_valid <= 1'b1;\n";

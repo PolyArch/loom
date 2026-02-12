@@ -551,5 +551,48 @@ bool isValidSVIdentifier(const std::string &name) {
   return !isSVKeyword(name);
 }
 
+//===----------------------------------------------------------------------===//
+// Helper: count compare ops in a PEDef
+//===----------------------------------------------------------------------===//
+
+unsigned countCmpOps(const PEDef &def) {
+  if (!def.singleOp.empty())
+    return isCompareOp(def.singleOp) ? 1 : 0;
+  if (!def.bodyMLIR.empty()) {
+    unsigned count = 0;
+    for (const auto &op : extractBodyMLIROps(def.bodyMLIR))
+      if (isCompareOp(op))
+        ++count;
+    return count;
+  }
+  return 0;
+}
+
+bool hasCmpiOp(const PEDef &def) {
+  if (def.singleOp == "arith.cmpi")
+    return true;
+  if (!def.bodyMLIR.empty()) {
+    for (const auto &op : extractBodyMLIROps(def.bodyMLIR))
+      if (op == "arith.cmpi")
+        return true;
+  }
+  return false;
+}
+
+std::vector<std::string> getCmpOps(const PEDef &def) {
+  std::vector<std::string> result;
+  if (!def.singleOp.empty()) {
+    if (isCompareOp(def.singleOp))
+      result.push_back(def.singleOp);
+    return result;
+  }
+  if (!def.bodyMLIR.empty()) {
+    for (const auto &op : extractBodyMLIROps(def.bodyMLIR))
+      if (isCompareOp(op))
+        result.push_back(op);
+  }
+  return result;
+}
+
 } // namespace adg
 } // namespace loom

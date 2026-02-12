@@ -15,10 +15,6 @@
 #   77 - skip (no simulator available)
 set -uo pipefail
 
-# Disable ccache to avoid permission errors on shared/restricted temp dirs
-export CCACHE_DISABLE=1
-export CCACHE_TEMPDIR=/tmp
-
 # Unset VERILATOR_ROOT if it causes inconsistency (Verilator 5.x self-resolves)
 if [[ -n "${VERILATOR_ROOT:-}" ]]; then
   unset VERILATOR_ROOT
@@ -107,7 +103,7 @@ compile_and_run_verilator() {
   if ! verilator --binary --timing \
     --top-module "${top}" \
     -Mdir "${outdir}/obj_dir" \
-    -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-MULTIDRIVEN \
+    -Wno-SHORTREAL \
     "${inc_flags[@]+"${inc_flags[@]}"}" \
     "$@" \
     >"${outdir}/compile.log" 2>&1; then
@@ -163,6 +159,7 @@ compile_and_run_vcs() {
   # Compile from outdir so each test gets its own csrc/ directory
   # (parallel VCS runs from the same CWD would collide on csrc/)
   if ! (cd "${outdir}" && vcs -sverilog -full64 \
+    +lint=all \
     -top "${top}" \
     -o ./simv \
     "${inc_flags[@]+"${inc_flags[@]}"}" \

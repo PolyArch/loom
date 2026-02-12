@@ -115,11 +115,11 @@ module tb_fabric_pe_load_stress;
     int out1_hs_count;
     int addr_push_count;
     int ctrl_push_count;
-    int addr_expect_full;
-    int ctrl_expect_full;
-    int addr_push;
-    int ctrl_push;
-    int out0_fire;
+    logic addr_expect_full;
+    logic ctrl_expect_full;
+    logic addr_push;
+    logic ctrl_push;
+    logic out0_fire;
     logic [ADDR_WIDTH-1:0] pending_addr_value [TAG_COUNT];
     logic [TAG_COUNT-1:0] pending_addr_valid;
     logic [TAG_COUNT-1:0] pending_ctrl_valid;
@@ -157,7 +157,7 @@ module tb_fabric_pe_load_stress;
     for (iter_var0 = 0; iter_var0 < QUEUE_DEPTH; iter_var0 = iter_var0 + 1) begin : fill_addr_q
       @(negedge clk);
       in0_valid = 1'b1;
-      in0_data = pack_addr(iter_var0 % TAG_COUNT, 16'h0100 + iter_var0);
+      in0_data = pack_addr(iter_var0 % TAG_COUNT, 32'h0100 + iter_var0);
       in2_valid = 1'b0;
       out0_ready = 1'b0;
       #1;
@@ -169,7 +169,7 @@ module tb_fabric_pe_load_stress;
 
     @(negedge clk);
     in0_valid = 1'b1;
-    in0_data = pack_addr(0, 16'h0F0F);
+    in0_data = pack_addr(0, 32'h0F0F);
     #1;
     if (in0_ready !== 1'b0) begin : addr_full_backpressure
       $fatal(1, "address queue backpressure missing at full depth");
@@ -252,7 +252,7 @@ module tb_fabric_pe_load_stress;
 
         if (addr_occ < QUEUE_DEPTH && !pending_addr_valid[tag_sel]) begin : drive_addr_first
           in0_valid = 1'b1;
-          in0_data = pack_addr(tag_sel, (16'h2000 + iter_var0) ^ (tag_sel << 3));
+          in0_data = pack_addr(tag_sel, (32'h2000 + iter_var0) ^ (tag_sel << 3));
         end else if (ctrl_occ < QUEUE_DEPTH && !pending_ctrl_valid[tag_sel]) begin : drive_ctrl_second
           in2_valid = 1'b1;
           in2_data = TAG_WIDTH'(tag_sel);
@@ -263,10 +263,10 @@ module tb_fabric_pe_load_stress;
 
       addr_expect_full = (addr_occ >= QUEUE_DEPTH);
       ctrl_expect_full = (ctrl_occ >= QUEUE_DEPTH);
-      if (in0_ready !== !addr_expect_full[0]) begin : check_addr_ready
+      if (in0_ready !== !addr_expect_full) begin : check_addr_ready
         $fatal(1, "in0_ready mismatch at cycle=%0d occ=%0d", iter_var0, addr_occ);
       end
-      if (in2_ready !== !ctrl_expect_full[0]) begin : check_ctrl_ready
+      if (in2_ready !== !ctrl_expect_full) begin : check_ctrl_ready
         $fatal(1, "in2_ready mismatch at cycle=%0d occ=%0d", iter_var0, ctrl_occ);
       end
 

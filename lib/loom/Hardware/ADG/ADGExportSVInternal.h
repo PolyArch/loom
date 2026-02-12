@@ -59,6 +59,10 @@ int cmpfPredicateToInt(const std::string &pred);
 int resolveComparePredicate(const std::string &opName,
                             const std::string &pred);
 
+unsigned countCmpOps(const PEDef &def);
+bool hasCmpiOp(const PEDef &def);
+std::vector<std::string> getCmpOps(const PEDef &def);
+
 MLIRStmt parseMLIRLine(const std::string &line);
 unsigned parseMLIRTypeWidth(const std::string &typeStr);
 std::pair<unsigned, unsigned>
@@ -102,6 +106,7 @@ std::string genFifoParams(const FifoDef &def);
 
 bool hasSVTemplate(ModuleKind kind);
 bool hasErrorOutput(ModuleKind kind);
+bool peHasErrorOutput(const PEDef &def);
 
 } // namespace adg
 } // namespace loom
