@@ -37,4 +37,3 @@ Use the following sequence as the end to end test pipeline:
 - `ninja -C build clean-loom`
 - `ninja -C build loom`
 - `ninja -C build check-loom`
-- Note: prefix command with `CCACHE_DISABLE=1 CCACHE_TEMPDIR=/tmp` if there is ccache-related permission issue.
