@@ -59,13 +59,13 @@ module fabric_temporal_sw #(
   // -----------------------------------------------------------------------
   initial begin : param_check
     if (NUM_INPUTS < 1)
-      $fatal(1, "COMP_TEMPORAL_SW_NUM_INPUTS: must be >= 1");
+      $fatal(1, "CPL_TEMPORAL_SW_NUM_INPUTS: must be >= 1");
     if (NUM_OUTPUTS < 1)
-      $fatal(1, "COMP_TEMPORAL_SW_NUM_OUTPUTS: must be >= 1");
+      $fatal(1, "CPL_TEMPORAL_SW_NUM_OUTPUTS: must be >= 1");
     if (TAG_WIDTH < 1)
-      $fatal(1, "COMP_TEMPORAL_SW_TAG_WIDTH: must be >= 1");
+      $fatal(1, "CPL_TEMPORAL_SW_TAG_WIDTH: must be >= 1");
     if (NUM_ROUTE_TABLE < 1)
-      $fatal(1, "COMP_TEMPORAL_SW_NUM_ROUTE_TABLE: must be >= 1");
+      $fatal(1, "CPL_TEMPORAL_SW_NUM_ROUTE_TABLE: must be >= 1");
   end
 
   // -----------------------------------------------------------------------

@@ -5,7 +5,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Verifies that validateADG detects PE instances with unused output ports
-// (COMP_OUTPUT_DANGLING).
+// (CPL_OUTPUT_DANGLING).
 //
 //===----------------------------------------------------------------------===//
 
@@ -76,10 +76,10 @@ int main() {
 
   bool foundDangling = false;
   for (const auto &e : v2.errors) {
-    if (e.code == "COMP_OUTPUT_DANGLING")
+    if (e.code == "CPL_OUTPUT_DANGLING")
       foundDangling = true;
   }
-  assert(foundDangling && "should report COMP_OUTPUT_DANGLING error");
+  assert(foundDangling && "should report CPL_OUTPUT_DANGLING error");
 
   // Export the valid ADG so the test harness MLIR check passes.
   builder.exportMLIR("Output/error_dangling_output.fabric.mlir");

@@ -70,15 +70,15 @@ module fabric_pe_store #(
   // -----------------------------------------------------------------------
   initial begin : param_check
     if (ELEM_WIDTH < 1)
-      $fatal(1, "COMP_PE_STORE_ELEM_WIDTH: ELEM_WIDTH must be >= 1");
+      $fatal(1, "CPL_PE_STORE_ELEM_WIDTH: ELEM_WIDTH must be >= 1");
     if (ADDR_WIDTH < 1)
-      $fatal(1, "COMP_PE_STORE_ADDR_WIDTH: ADDR_WIDTH must be >= 1");
+      $fatal(1, "CPL_PE_STORE_ADDR_WIDTH: ADDR_WIDTH must be >= 1");
     if (HW_TYPE != 0 && HW_TYPE != 1)
-      $fatal(1, "COMP_PE_LOADSTORE_TAG_MODE: HW_TYPE must be 0 or 1");
+      $fatal(1, "CPL_PE_LOADSTORE_TAG_MODE: HW_TYPE must be 0 or 1");
     if (HW_TYPE == 1 && TAG_WIDTH == 0)
-      $fatal(1, "COMP_PE_LOADSTORE_TAG_WIDTH: TagTransparent requires TAG_WIDTH > 0");
+      $fatal(1, "CPL_PE_LOADSTORE_TAG_WIDTH: TagTransparent requires TAG_WIDTH > 0");
     if (HW_TYPE == 1 && QUEUE_DEPTH < 1)
-      $fatal(1, "COMP_PE_LOADSTORE_TAG_MODE: TagTransparent requires QUEUE_DEPTH >= 1");
+      $fatal(1, "CPL_PE_LOADSTORE_TAG_MODE: TagTransparent requires QUEUE_DEPTH >= 1");
   end
 
   // -----------------------------------------------------------------------

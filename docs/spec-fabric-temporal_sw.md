@@ -51,7 +51,7 @@ Named temporal switches can be instantiated via `fabric.instance`:
 - All ports must use the same tagged type.
 - Tag type must satisfy `!dataflow.tagged` constraints from
   [spec-dataflow.md](./spec-dataflow.md). Tag-width range violations raise
-  `COMP_TAG_WIDTH_RANGE`.
+  `CPL_TAG_WIDTH_RANGE`.
 
 ### Attributes
 
@@ -99,12 +99,12 @@ If an attribute is omitted, the following defaults apply:
 - Each output may select at most one routed input per slot.
 - Each slot must have a unique tag value.
 
-Hardware-parameter violations are compile-time errors: `COMP_TEMPORAL_SW_PORT_LIMIT`,
-`COMP_TEMPORAL_SW_TABLE_SHAPE`, `COMP_TEMPORAL_SW_ROW_EMPTY`,
-`COMP_TEMPORAL_SW_COL_EMPTY`, `COMP_TEMPORAL_SW_NUM_ROUTE_TABLE`,
-`COMP_TEMPORAL_SW_TOO_MANY_SLOTS`, `COMP_TEMPORAL_SW_ROUTE_ILLEGAL`,
-`COMP_TEMPORAL_SW_MIXED_FORMAT`, `COMP_TEMPORAL_SW_SLOT_ORDER`, and
-`COMP_TEMPORAL_SW_IMPLICIT_HOLE`.
+Hardware-parameter violations are compile-time errors: `CPL_TEMPORAL_SW_PORT_LIMIT`,
+`CPL_TEMPORAL_SW_TABLE_SHAPE`, `CPL_TEMPORAL_SW_ROW_EMPTY`,
+`CPL_TEMPORAL_SW_COL_EMPTY`, `CPL_TEMPORAL_SW_NUM_ROUTE_TABLE`,
+`CPL_TEMPORAL_SW_TOO_MANY_SLOTS`, `CPL_TEMPORAL_SW_ROUTE_ILLEGAL`,
+`CPL_TEMPORAL_SW_MIXED_FORMAT`, `CPL_TEMPORAL_SW_SLOT_ORDER`, and
+`CPL_TEMPORAL_SW_IMPLICIT_HOLE`.
 Configuration-time violations include:
 
 - `CFG_TEMPORAL_SW_DUP_TAG` for duplicate slot tags.
@@ -218,8 +218,8 @@ The sparse format rules are identical to those for `fabric.temporal_pe`
 instruction memory. See
 [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) for the
 authoritative specification of sparse format rules. Violations raise
-`COMP_TEMPORAL_SW_MIXED_FORMAT`, `COMP_TEMPORAL_SW_SLOT_ORDER`, and
-`COMP_TEMPORAL_SW_IMPLICIT_HOLE`. See [spec-fabric-error.md](./spec-fabric-error.md).
+`CPL_TEMPORAL_SW_MIXED_FORMAT`, `CPL_TEMPORAL_SW_SLOT_ORDER`, and
+`CPL_TEMPORAL_SW_IMPLICIT_HOLE`. See [spec-fabric-error.md](./spec-fabric-error.md).
 
 ### Human-Readable Format
 

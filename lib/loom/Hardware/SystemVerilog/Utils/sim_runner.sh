@@ -218,14 +218,14 @@ elif [[ "${MODE}" == "expect-fail" ]]; then
     exit 0
   fi
 
-  # COMP_ patterns are compile-time parameter validation.  When invalid
+  # CPL_ patterns are compile-time parameter validation.  When invalid
   # parameters cause the elaborator itself to reject the design (e.g.
   # Verilator ASCRANGE/SELRANGE errors from zero-width signals), the $fatal
   # message never appears, but the compile failure IS the correct outcome.
   # Require that the compile log contains at least one error-class indicator
   # to rule out unrelated failures (e.g., missing files, syntax errors in
   # unrelated modules).
-  if [[ "${local_rc}" -ne 0 && "${ERR_PATTERN}" == COMP_* ]]; then
+  if [[ "${local_rc}" -ne 0 && "${ERR_PATTERN}" == CPL_* ]]; then
     if grep -qiE '(\$fatal|%Fatal|ASCRANGE|SELRANGE|Width of range|ZMMCM|SIOB)' \
          "${OUTDIR}/compile.log" 2>/dev/null; then
       exit 0

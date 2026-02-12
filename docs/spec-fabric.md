@@ -136,11 +136,11 @@ The argument and result ordering is fixed and must be preserved:
   - An accelerator cannot be a completely empty shell.
 - All `tagged` ports must use valid `!dataflow.tagged` types.
 - Port ordering must follow: memref*, native*, tagged* for both inputs and
-  outputs. Violations raise `COMP_MODULE_PORT_ORDER`.
+  outputs. Violations raise `CPL_MODULE_PORT_ORDER`.
 - The body must contain at least one non-terminator operation. Violations
-  raise `COMP_MODULE_EMPTY_BODY`.
+  raise `CPL_MODULE_EMPTY_BODY`.
 - The body must end with `fabric.yield`. Violations raise
-  `COMP_MODULE_MISSING_YIELD`.
+  `CPL_MODULE_MISSING_YIELD`.
 
 See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.
 
@@ -151,7 +151,7 @@ The body of `fabric.module` uses **Graph region** semantics (MLIR
 This is necessary because hardware interconnect graphs naturally contain
 cycles (e.g., torus wraparound, feedback loops). Physical cycles are allowed
 as long as they are not **combinational loops** (cycles where every element
-has zero delay). See `COMP_ADG_COMBINATIONAL_LOOP` in
+has zero delay). See `CPL_ADG_COMBINATIONAL_LOOP` in
 [spec-fabric-error.md](./spec-fabric-error.md).
 
 Only fabric operations are allowed at the module level.
@@ -185,7 +185,7 @@ Any memref result must originate from a `fabric.memory` with
 All connections inside a `fabric.module` must match exactly in type and bit
 width. There are no implicit width extensions, truncations, or tag
 conversions. Any type mismatch on a connection is a compile-time error.
-(`COMP_FABRIC_TYPE_MISMATCH`; see [spec-fabric-error.md](./spec-fabric-error.md).)
+(`CPL_FABRIC_TYPE_MISMATCH`; see [spec-fabric-error.md](./spec-fabric-error.md).)
 Explicit conversions must be represented as operations, such as:
 
 - `fabric.add_tag`, `fabric.del_tag`, and `fabric.map_tag` for tag boundaries or
@@ -226,10 +226,10 @@ generates simple wire fanout in the generated SystemVerilog.
 
 **Error codes** (see [spec-fabric-error.md](./spec-fabric-error.md)):
 
-- `COMP_FANOUT_MODULE_INNER`: An SSA result of an operation inside the
+- `CPL_FANOUT_MODULE_INNER`: An SSA result of an operation inside the
   `fabric.module` body has multiple consumers. Use switch broadcast for
   data duplication.
-- `COMP_FANOUT_MODULE_BOUNDARY`: A `fabric.module` input argument feeds
+- `CPL_FANOUT_MODULE_BOUNDARY`: A `fabric.module` input argument feeds
   multiple instance/operation input ports. Use switch broadcast for data
   duplication.
 
@@ -261,14 +261,14 @@ Instantiates a named fabric module or hardware component.
   - `fabric.extmemory`
   - `fabric.fifo`
 - The referenced symbol must exist. Violations raise
-  `COMP_INSTANCE_UNRESOLVED`.
+  `CPL_INSTANCE_UNRESOLVED`.
 - Operand count and types must match the referenced module signature.
-  Violations raise `COMP_INSTANCE_OPERAND_MISMATCH`.
+  Violations raise `CPL_INSTANCE_OPERAND_MISMATCH`.
 - Result count and types must match the referenced module signature.
-  Violations raise `COMP_INSTANCE_RESULT_MISMATCH`.
+  Violations raise `CPL_INSTANCE_RESULT_MISMATCH`.
 - Scope-specific restrictions still apply:
   - Inside `fabric.pe`, `fabric.instance` may target only named `fabric.pe`
-    definitions. Other target kinds raise `COMP_PE_INSTANCE_ILLEGAL_TARGET`.
+    definitions. Other target kinds raise `CPL_PE_INSTANCE_ILLEGAL_TARGET`.
     Cyclic instance graphs are not allowed.
   - See [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md).
 

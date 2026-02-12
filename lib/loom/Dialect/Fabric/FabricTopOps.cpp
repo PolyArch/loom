@@ -265,7 +265,7 @@ LogicalResult ModuleOp::verify() {
       else
         cat = 1;
       if (cat < lastCat)
-        return emitOpError(compErrCode(CompError::MODULE_PORT_ORDER) + " ")
+        return emitOpError(cplErrCode(CplError::MODULE_PORT_ORDER) + " ")
                << label
                << " must follow port ordering: memref*, native*, tagged*";
       lastCat = cat;
@@ -288,15 +288,15 @@ LogicalResult ModuleOp::verify() {
     }
   }
   if (!hasOp)
-    return emitOpError(compErrMsg(CompError::MODULE_EMPTY_BODY,
+    return emitOpError(cplErrMsg(CplError::MODULE_EMPTY_BODY,
         "body must contain at least one non-terminator operation"));
 
   // Yield operand types must match result types.
-  // COMP_MODULE_MISSING_YIELD: the SingleBlockImplicitTerminator trait
+  // CPL_MODULE_MISSING_YIELD: the SingleBlockImplicitTerminator trait
   // guarantees a YieldOp exists; this check catches operand count mismatch.
   auto yield = cast<YieldOp>(body.getTerminator());
   if (yield.getOperands().size() != fnType.getNumResults())
-    return emitOpError(compErrMsg(CompError::MODULE_MISSING_YIELD,
+    return emitOpError(cplErrMsg(CplError::MODULE_MISSING_YIELD,
                        "yield operand count ("))
            << yield.getOperands().size() << ") must match result count ("
            << fnType.getNumResults() << ")";
@@ -304,13 +304,13 @@ LogicalResult ModuleOp::verify() {
   for (auto [idx, pair] : llvm::enumerate(
            llvm::zip(yield.getOperandTypes(), fnType.getResults()))) {
     if (std::get<0>(pair) != std::get<1>(pair))
-      return emitOpError(compErrMsg(CompError::FABRIC_TYPE_MISMATCH,
+      return emitOpError(cplErrMsg(CplError::FABRIC_TYPE_MISMATCH,
                          "yield operand #"))
              << idx << " type " << std::get<0>(pair)
              << " must match result type " << std::get<1>(pair);
   }
 
-  // COMP_FANOUT_MODULE_INNER: each SSA result of a non-terminator operation
+  // CPL_FANOUT_MODULE_INNER: each SSA result of a non-terminator operation
   // in the module body must have at most one use (including yield/terminator).
   for (auto &op : body) {
     if (op.hasTrait<OpTrait::IsTerminator>())
@@ -320,7 +320,7 @@ LogicalResult ModuleOp::verify() {
       for (auto &use : result.getUses())
         ++useCount;
       if (useCount > 1)
-        return emitOpError(compErrMsg(CompError::FANOUT_MODULE_INNER,
+        return emitOpError(cplErrMsg(CplError::FANOUT_MODULE_INNER,
                            "SSA result of '"))
                << op.getName() << "' has " << useCount
                << " consumers; strict 1-to-1 requires at most 1"
@@ -328,21 +328,21 @@ LogicalResult ModuleOp::verify() {
     }
   }
 
-  // COMP_FANOUT_MODULE_BOUNDARY: each module input (block argument) must have
+  // CPL_FANOUT_MODULE_BOUNDARY: each module input (block argument) must have
   // at most one use (including yield/terminator).
   for (auto arg : body.getArguments()) {
     unsigned useCount = 0;
     for (auto &use : arg.getUses())
       ++useCount;
     if (useCount > 1)
-      return emitOpError(compErrMsg(CompError::FANOUT_MODULE_BOUNDARY,
+      return emitOpError(cplErrMsg(CplError::FANOUT_MODULE_BOUNDARY,
                          "module input argument #"))
              << arg.getArgNumber() << " has " << useCount
              << " consumers; strict 1-to-1 requires at most 1"
                 " (use switch broadcast for data duplication)";
   }
 
-  // COMP_ADG_COMBINATIONAL_LOOP: detect cycles among purely combinational ops.
+  // CPL_ADG_COMBINATIONAL_LOOP: detect cycles among purely combinational ops.
   // Uses a per-result graph: each node is (op, result_index). An edge from
   // (A, r) to (B, s) exists when result r of A is used at operand k of B,
   // and operandDeps[s][k] of B is true (operand k can influence result s).
@@ -428,13 +428,13 @@ LogicalResult ModuleOp::verify() {
       }
 
       if (hasCombLoop)
-        return emitOpError(compErrMsg(CompError::ADG_COMBINATIONAL_LOOP,
+        return emitOpError(cplErrMsg(CplError::ADG_COMBINATIONAL_LOOP,
             "a cycle of purely combinational operations exists; "
             "insert a fabric.fifo or sequential element to break it"));
     }
   }
 
-  // COMP_MEMORY_PRIVATE_OUTPUT: each memref yield operand must trace back
+  // CPL_MEMORY_PRIVATE_OUTPUT: each memref yield operand must trace back
   // to a MemoryOp with is_private = false.
   for (auto [idx, operand] : llvm::enumerate(yield.getOperands())) {
     if (!isa<MemRefType>(operand.getType()))
@@ -442,19 +442,19 @@ LogicalResult ModuleOp::verify() {
     auto *defOp = operand.getDefiningOp();
     if (!defOp) {
       // Block argument: not produced by a memory op.
-      return emitOpError(compErrMsg(CompError::MEMORY_PRIVATE_OUTPUT,
+      return emitOpError(cplErrMsg(CplError::MEMORY_PRIVATE_OUTPUT,
                          "yield memref operand #"))
              << idx << " is not produced by a fabric.memory with "
              << "is_private = false";
     }
     auto memOp = dyn_cast<MemoryOp>(defOp);
     if (!memOp) {
-      return emitOpError(compErrMsg(CompError::MEMORY_PRIVATE_OUTPUT,
+      return emitOpError(cplErrMsg(CplError::MEMORY_PRIVATE_OUTPUT,
                          "yield memref operand #"))
              << idx << " is not produced by a fabric.memory";
     }
     if (memOp.getIsPrivate()) {
-      return emitOpError(compErrMsg(CompError::MEMORY_PRIVATE_OUTPUT,
+      return emitOpError(cplErrMsg(CplError::MEMORY_PRIVATE_OUTPUT,
                          "yield memref operand #"))
              << idx << " is produced by a fabric.memory with is_private = true";
     }
@@ -553,58 +553,58 @@ static bool hasCyclicReference(Operation *start) {
 //===----------------------------------------------------------------------===//
 
 LogicalResult InstanceOp::verify() {
-  // COMP_INSTANCE_UNRESOLVED: symbol must exist.
+  // CPL_INSTANCE_UNRESOLVED: symbol must exist.
   auto *target = lookupBySymName(getOperation(), getModule());
   if (!target)
-    return emitOpError(compErrMsg(CompError::INSTANCE_UNRESOLVED,
+    return emitOpError(cplErrMsg(CplError::INSTANCE_UNRESOLVED,
                        "referenced symbol '"))
            << getModule() << "' does not exist";
 
-  // COMP_PE_INSTANCE_ILLEGAL_TARGET: inside fabric.pe, only named fabric.pe
+  // CPL_PE_INSTANCE_ILLEGAL_TARGET: inside fabric.pe, only named fabric.pe
   // targets are legal.
   if (getOperation()->getParentOfType<PEOp>() && !isa<PEOp>(target))
-    return emitOpError(compErrMsg(CompError::PE_INSTANCE_ILLEGAL_TARGET,
+    return emitOpError(cplErrMsg(CplError::PE_INSTANCE_ILLEGAL_TARGET,
                        "inside fabric.pe, "
                        "fabric.instance may only target a named fabric.pe; '"))
            << getModule() << "' is not a fabric.pe";
 
-  // COMP_INSTANCE_OPERAND_MISMATCH / COMP_INSTANCE_RESULT_MISMATCH:
+  // CPL_INSTANCE_OPERAND_MISMATCH / CPL_INSTANCE_RESULT_MISMATCH:
   // Compare types against target's function_type.
   auto targetFnType = getTargetFunctionType(target);
   if (targetFnType) {
     auto fnType = *targetFnType;
     if (getOperands().size() != fnType.getNumInputs())
-      return emitOpError(compErrMsg(CompError::INSTANCE_OPERAND_MISMATCH,
+      return emitOpError(cplErrMsg(CplError::INSTANCE_OPERAND_MISMATCH,
                          "operand count ("))
              << getOperands().size() << ") does not match target input count ("
              << fnType.getNumInputs() << ")";
     for (auto [idx, pair] : llvm::enumerate(
              llvm::zip(getOperandTypes(), fnType.getInputs()))) {
       if (std::get<0>(pair) != std::get<1>(pair))
-        return emitOpError(compErrMsg(CompError::INSTANCE_OPERAND_MISMATCH,
+        return emitOpError(cplErrMsg(CplError::INSTANCE_OPERAND_MISMATCH,
                            "operand #"))
                << idx << " type " << std::get<0>(pair)
                << " does not match target input type " << std::get<1>(pair);
     }
 
     if (getResults().size() != fnType.getNumResults())
-      return emitOpError(compErrMsg(CompError::INSTANCE_RESULT_MISMATCH,
+      return emitOpError(cplErrMsg(CplError::INSTANCE_RESULT_MISMATCH,
                          "result count ("))
              << getResults().size() << ") does not match target result count ("
              << fnType.getNumResults() << ")";
     for (auto [idx, pair] : llvm::enumerate(
              llvm::zip(getResultTypes(), fnType.getResults()))) {
       if (std::get<0>(pair) != std::get<1>(pair))
-        return emitOpError(compErrMsg(CompError::INSTANCE_RESULT_MISMATCH,
+        return emitOpError(cplErrMsg(CplError::INSTANCE_RESULT_MISMATCH,
                            "result #"))
                << idx << " type " << std::get<0>(pair)
                << " does not match target result type " << std::get<1>(pair);
     }
   }
 
-  // COMP_INSTANCE_CYCLIC_REFERENCE: check for cycles.
+  // CPL_INSTANCE_CYCLIC_REFERENCE: check for cycles.
   if (hasCyclicReference(target))
-    return emitOpError(compErrMsg(CompError::INSTANCE_CYCLIC_REFERENCE,
+    return emitOpError(cplErrMsg(CplError::INSTANCE_CYCLIC_REFERENCE,
                        "instance of '"))
            << getModule() << "' forms a cyclic reference";
 

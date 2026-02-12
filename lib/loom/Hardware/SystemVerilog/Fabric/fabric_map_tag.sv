@@ -48,17 +48,17 @@ module fabric_map_tag #(
 );
 
   // -----------------------------------------------------------------------
-  // Elaboration-time parameter validation (COMP_ errors)
+  // Elaboration-time parameter validation (CPL_ errors)
   // -----------------------------------------------------------------------
   initial begin : param_check
     if (IN_TAG_WIDTH < 1)
-      $fatal(1, "COMP_MAP_TAG_IN_TAG_WIDTH: IN_TAG_WIDTH must be >= 1");
+      $fatal(1, "CPL_MAP_TAG_IN_TAG_WIDTH: IN_TAG_WIDTH must be >= 1");
     if (OUT_TAG_WIDTH < 1)
-      $fatal(1, "COMP_MAP_TAG_OUT_TAG_WIDTH: OUT_TAG_WIDTH must be >= 1");
+      $fatal(1, "CPL_MAP_TAG_OUT_TAG_WIDTH: OUT_TAG_WIDTH must be >= 1");
     if (TABLE_SIZE < 1)
-      $fatal(1, "COMP_MAP_TAG_TABLE_SIZE: TABLE_SIZE must be >= 1");
+      $fatal(1, "CPL_MAP_TAG_TABLE_SIZE: TABLE_SIZE must be >= 1");
     if (DATA_WIDTH < 1)
-      $fatal(1, "COMP_MAP_TAG_DATA_WIDTH: DATA_WIDTH must be >= 1");
+      $fatal(1, "CPL_MAP_TAG_DATA_WIDTH: DATA_WIDTH must be >= 1");
   end
 
   // -----------------------------------------------------------------------

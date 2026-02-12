@@ -48,12 +48,12 @@ int main() {
 
     bool foundDepthZero = false;
     for (const auto &err : validation.errors) {
-      if (err.code == "COMP_FIFO_DEPTH_ZERO") {
+      if (err.code == "CPL_FIFO_DEPTH_ZERO") {
         foundDepthZero = true;
         break;
       }
     }
-    assert(foundDepthZero && "expected COMP_FIFO_DEPTH_ZERO error");
+    assert(foundDepthZero && "expected CPL_FIFO_DEPTH_ZERO error");
   }
 
   // Part 2: Build a valid ADG with depth=1 and export MLIR.

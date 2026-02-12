@@ -34,7 +34,7 @@ TaggedType::verify(function_ref<InFlightDiagnostic()> emitError,
 
   unsigned width = tagType.getWidth();
   if (width < 1 || width > 16)
-    return emitError() << "[COMP_TAG_WIDTH_RANGE] "
+    return emitError() << "[CPL_TAG_WIDTH_RANGE] "
                           "tag type width must be 1-16; got " << width;
 
   return success();

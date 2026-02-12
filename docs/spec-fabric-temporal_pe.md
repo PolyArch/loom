@@ -36,10 +36,10 @@ fabric.temporal_pe @name(
 - All ports must use the same tagged type.
 - Tag type must satisfy `!dataflow.tagged` constraints from
   [spec-dataflow.md](./spec-dataflow.md). Tag-width range violations raise
-  `COMP_TAG_WIDTH_RANGE`.
+  `CPL_TAG_WIDTH_RANGE`.
 
 Violations of tagged interface width requirements are compile-time errors:
-`COMP_TEMPORAL_PE_TAG_WIDTH`. See [spec-fabric-error.md](./spec-fabric-error.md).
+`CPL_TEMPORAL_PE_TAG_WIDTH`. See [spec-fabric-error.md](./spec-fabric-error.md).
 
 ### FU Types and Body Structure
 
@@ -47,13 +47,13 @@ The body of `fabric.temporal_pe` defines FU types. Each FU type is represented
 by a `fabric.pe` definition. The `temporal_pe` body has no block arguments, so
 `fabric.instance` cannot appear directly in the body (there are no SSA operands
 to pass). To reference an external `fabric.pe`, wrap it in an inline `fabric.pe`
-using `fabric.instance` inside that PE's body. The `COMP_PE_INSTANCE_ONLY_BODY`
+using `fabric.instance` inside that PE's body. The `CPL_PE_INSTANCE_ONLY_BODY`
 check is exempted for PEs inside `temporal_pe` to enable this wrapping pattern.
 
 Constraints:
 
 - The body must contain at least one FU definition (`fabric.pe`). Violations
-  raise `COMP_TEMPORAL_PE_EMPTY_BODY`.
+  raise `CPL_TEMPORAL_PE_EMPTY_BODY`.
 - Each FU type must have the same number of inputs and outputs as the
   `fabric.temporal_pe` itself.
 - Each FU type operates on value-only data. Tags are stripped at the boundary.
@@ -61,21 +61,21 @@ Constraints:
 - Each FU type's value types must have data width `<= width(T)` where `T` is
   the `fabric.temporal_pe` interface value type. For interface
   `!dataflow.tagged<T, iJ>`, all FU port widths must not exceed `width(T)`.
-  Violations raise `COMP_TEMPORAL_PE_FU_WIDTH`.
+  Violations raise `CPL_TEMPORAL_PE_FU_WIDTH`.
 - The body may contain only `fabric.pe` definitions and a single
   `fabric.yield`.
 - `fabric.switch` is not allowed inside `fabric.temporal_pe`.
 - `fabric.temporal_sw` is not allowed inside `fabric.temporal_pe`.
 - Load/store PEs (a `fabric.pe` containing `handshake.load` or `handshake.store`)
   are not allowed inside `fabric.temporal_pe`
-  (`COMP_TEMPORAL_PE_LOADSTORE`).
+  (`CPL_TEMPORAL_PE_LOADSTORE`).
 - Dataflow PEs (a `fabric.pe` that directly contains `dataflow.carry`,
   `dataflow.invariant`, `dataflow.gate`, or `dataflow.stream`, or indirectly
   contains them via `fabric.instance`) are not allowed inside
-  `fabric.temporal_pe` (`COMP_TEMPORAL_PE_DATAFLOW_INVALID`).
+  `fabric.temporal_pe` (`CPL_TEMPORAL_PE_DATAFLOW_INVALID`).
 
 Using a tagged `fabric.pe` inside `fabric.temporal_pe` is a compile-time error
-(`COMP_TEMPORAL_PE_TAGGED_PE`). See [spec-fabric-error.md](./spec-fabric-error.md).
+(`CPL_TEMPORAL_PE_TAGGED_PE`). See [spec-fabric-error.md](./spec-fabric-error.md).
 
 ### Yield Ordering
 
@@ -98,7 +98,7 @@ The ordering is:
 - Unsigned integer.
 - Maximum number of instruction slots.
 - Must be greater than 0.
-- Violations are compile-time errors: `COMP_TEMPORAL_PE_NUM_INSTRUCTION`. See
+- Violations are compile-time errors: `CPL_TEMPORAL_PE_NUM_INSTRUCTION`. See
   [spec-fabric-error.md](./spec-fabric-error.md).
 
 #### `reg_fifo_depth` (hardware parameter)
@@ -107,7 +107,7 @@ The ordering is:
 - FIFO depth for each internal register.
 - Must be 0 if `num_register` is 0.
 - Must be at least 1 if `num_register` is greater than 0.
-- Violations are compile-time errors: `COMP_TEMPORAL_PE_REG_FIFO_DEPTH`. See
+- Violations are compile-time errors: `CPL_TEMPORAL_PE_REG_FIFO_DEPTH`. See
   [spec-fabric-error.md](./spec-fabric-error.md).
 
 #### `enable_share_operand_buffer` (hardware parameter)
@@ -127,19 +127,19 @@ The ordering is:
 - Must be absent or unset when `enable_share_operand_buffer = false`.
 - Must be in range [1, 8192] when `enable_share_operand_buffer = true`.
 - Violations are compile-time errors:
-  - `COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE`: per-instruction mode cannot have size
-  - `COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING`: shared mode requires size
-  - `COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE`: size out of [1, 8192] range
+  - `CPL_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE`: per-instruction mode cannot have size
+  - `CPL_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING`: shared mode requires size
+  - `CPL_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE`: size out of [1, 8192] range
 - See [spec-fabric-error.md](./spec-fabric-error.md).
 
 #### `instruction_mem` (runtime configuration parameter)
 
 - Array of instruction slot entries.
 - Length must be less than or equal to `num_instruction`
-  (`COMP_TEMPORAL_PE_TOO_MANY_SLOTS`).
+  (`CPL_TEMPORAL_PE_TOO_MANY_SLOTS`).
 - Supports human-readable and machine (hex) formats.
 - All entries in the array must use the same format
-  (`COMP_TEMPORAL_PE_MIXED_FORMAT`).
+  (`CPL_TEMPORAL_PE_MIXED_FORMAT`).
 
 The number of FU types defined in the body is independent of
 `num_instruction`. Instruction slots select among FU types via the opcode.
@@ -272,10 +272,10 @@ active instruction at runtime.
 
 The following rules apply to human-readable entries:
 
-- Slot indices must be strictly ascending (`COMP_TEMPORAL_PE_SLOT_ORDER`).
+- Slot indices must be strictly ascending (`CPL_TEMPORAL_PE_SLOT_ORDER`).
 - Implicit holes are allowed only when there are no explicit `invalid` entries.
 - If any explicit `invalid` entry is present, all holes must be explicit
-  (`COMP_TEMPORAL_PE_IMPLICIT_HOLE`).
+  (`CPL_TEMPORAL_PE_IMPLICIT_HOLE`).
 - Trailing invalid entries may be omitted.
 
 See [spec-fabric-error.md](./spec-fabric-error.md).
@@ -312,11 +312,11 @@ Each destination is one of:
 If the destination is `reg(idx)`, the tag must be omitted or set to `0`. A
 nonzero tag for a register destination is a configuration error. If
 `num_register = 0`, `reg(idx)` destinations are invalid. See
-`CFG_TEMPORAL_PE_REG_TAG_NONZERO` and `COMP_TEMPORAL_PE_REG_DISABLED` in
+`CFG_TEMPORAL_PE_REG_TAG_NONZERO` and `CPL_TEMPORAL_PE_REG_DISABLED` in
 [spec-fabric-error.md](./spec-fabric-error.md).
 
 The number of destinations must equal the number of outputs of the temporal PE
-(`COMP_TEMPORAL_PE_DEST_COUNT`). See [spec-fabric-error.md](./spec-fabric-error.md).
+(`CPL_TEMPORAL_PE_DEST_COUNT`). See [spec-fabric-error.md](./spec-fabric-error.md).
 
 #### Sources
 
@@ -326,14 +326,14 @@ Each source is one of:
 - `reg(idx)`
 
 The number of sources must equal the number of inputs of the temporal PE
-(`COMP_TEMPORAL_PE_SRC_COUNT`). See [spec-fabric-error.md](./spec-fabric-error.md).
+(`CPL_TEMPORAL_PE_SRC_COUNT`). See [spec-fabric-error.md](./spec-fabric-error.md).
 If `num_register = 0`, `reg(idx)` sources are invalid.
 
 Sources are positional. For operand position `i`, the source must be either
 `in(i)` or `reg(idx)`. Using `in(j)` where `j != i` is invalid.
 
-Violations are compile-time errors: `COMP_TEMPORAL_PE_REG_DISABLED` and
-`COMP_TEMPORAL_PE_SRC_MISMATCH`. See [spec-fabric-error.md](./spec-fabric-error.md).
+Violations are compile-time errors: `CPL_TEMPORAL_PE_REG_DISABLED` and
+`CPL_TEMPORAL_PE_SRC_MISMATCH`. See [spec-fabric-error.md](./spec-fabric-error.md).
 
 #### Invalid Slot
 
@@ -585,7 +585,7 @@ defined as:
 - `J = num_bits(iJ)`
 
 Any mismatch between the interface type and these widths is a compile-time
-error. See `COMP_TEMPORAL_PE_TAG_WIDTH` in [spec-fabric-error.md](./spec-fabric-error.md).
+error. See `CPL_TEMPORAL_PE_TAG_WIDTH` in [spec-fabric-error.md](./spec-fabric-error.md).
 
 ### Opcode Assignment
 

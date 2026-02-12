@@ -391,7 +391,7 @@ Creates a new `fabric.fifo` definition.
 | `setType(type)` | Set element type (native or tagged) |
 
 **Constraints:**
-- Depth must be >= 1 (`COMP_FIFO_DEPTH_ZERO`)
+- Depth must be >= 1 (`CPL_FIFO_DEPTH_ZERO`)
 - Type must be a native value type or `!dataflow.tagged`
 
 **Example (pipeline buffer):**
@@ -589,7 +589,7 @@ Creates a new `fabric.map_tag` operation.
 **Constraints:**
 - Input must be tagged type
 - `table_size` must be in range [1, 256]
-- Violations: `COMP_MAP_TAG_TABLE_SIZE`
+- Violations: `CPL_MAP_TAG_TABLE_SIZE`
 
 ### newDelTag
 
@@ -717,7 +717,7 @@ Creates a connection between specific ports.
 - Port types must match exactly (enforced at validation)
 - **Strict 1-to-1**: Each source output port may be connected to exactly one
   destination input port. Attempting to connect a source port that already has
-  a consumer raises `COMP_FANOUT_MODULE_INNER`. To duplicate data, use a
+  a consumer raises `CPL_FANOUT_MODULE_INNER`. To duplicate data, use a
   switch configured for broadcast between the source and multiple destinations.
 
 **Example:**
@@ -869,7 +869,7 @@ Connects a module input port to an internal component.
 
 **Strict 1-to-1**: Each module input port may feed exactly one instance input
 port. Attempting to connect the same module input to a second destination
-raises `COMP_FANOUT_MODULE_BOUNDARY`. To distribute a module input to
+raises `CPL_FANOUT_MODULE_BOUNDARY`. To distribute a module input to
 multiple instances, route it through a switch configured for broadcast.
 
 ### connectToModuleOutput
@@ -881,7 +881,7 @@ void connectToModuleOutput(Handle src, int srcPort, PortHandle port);
 Connects an internal component to a module output port.
 
 **Strict 1-to-1**: The source output port must not already have a consumer.
-If it does, this raises `COMP_FANOUT_MODULE_INNER`.
+If it does, this raises `CPL_FANOUT_MODULE_INNER`.
 
 ## Validation
 
@@ -903,8 +903,8 @@ Performs comprehensive validation of the constructed ADG.
    - All input ports have exactly one driver
    - All output ports are connected to exactly one destination
    - No dangling wires
-   - No implicit fanout: `COMP_FANOUT_MODULE_INNER` if an instance output
-     port has multiple consumers; `COMP_FANOUT_MODULE_BOUNDARY` if a module
+   - No implicit fanout: `CPL_FANOUT_MODULE_INNER` if an instance output
+     port has multiple consumers; `CPL_FANOUT_MODULE_BOUNDARY` if a module
      input feeds multiple instance ports. Use switch broadcast for data
      duplication.
 
@@ -935,7 +935,7 @@ Performs comprehensive validation of the constructed ADG.
    - A cycle where every element is combinational (zero-delay) is forbidden
    - Combinational ops: Switch, TemporalSwitch, AddTag, MapTag, DelTag
    - Sequential ops break loops: PE, TemporalPE, Memory, ExtMemory, Fifo
-   - Violations raise `COMP_ADG_COMBINATIONAL_LOOP`
+   - Violations raise `CPL_ADG_COMBINATIONAL_LOOP`
 
 7. **Template deduplication**
    - Multiple module definitions with identical hardware structure are merged
@@ -972,7 +972,7 @@ This ensures minimal RTL output even when many forked templates exist.
 
 ```cpp
 struct ValidationError {
-    std::string code;      // e.g., "COMP_SWITCH_PORT_LIMIT"
+    std::string code;      // e.g., "CPL_SWITCH_PORT_LIMIT"
     std::string message;   // Human-readable description
     std::string location;  // Format: "module_name::operation_name"
 };
@@ -980,7 +980,7 @@ struct ValidationError {
 
 Code-space mapping note:
 
-- `COMP_*` symbols are compile-time diagnostics and have no hardware integer
+- `CPL_*` symbols are compile-time diagnostics and have no hardware integer
   error code.
 - `CFG_*` and `RT_*` symbols are string identifiers in API diagnostics that
   correspond to hardware integer code definitions in

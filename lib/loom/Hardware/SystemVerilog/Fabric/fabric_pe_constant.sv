@@ -41,7 +41,7 @@ module fabric_pe_constant #(
   // -----------------------------------------------------------------------
   initial begin : param_check
     if (DATA_WIDTH < 1)
-      $fatal(1, "COMP_PE_CONSTANT_DATA_WIDTH: DATA_WIDTH must be >= 1");
+      $fatal(1, "CPL_PE_CONSTANT_DATA_WIDTH: DATA_WIDTH must be >= 1");
   end
 
   // -----------------------------------------------------------------------

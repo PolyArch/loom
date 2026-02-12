@@ -405,7 +405,7 @@ Error categories:
 | Export errors | During export | File I/O failures |
 
 All error messages include the Fabric error code symbol (e.g.,
-`COMP_SWITCH_PORT_LIMIT`) for cross-referencing with
+`CPL_SWITCH_PORT_LIMIT`) for cross-referencing with
 [spec-fabric-error.md](./spec-fabric-error.md).
 
 ## File Organization

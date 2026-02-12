@@ -39,7 +39,7 @@ endinterface
 // Hardware Error Codes
 //===----------------------------------------------------------------------===//
 // CFG_ and RT_ error codes are defined in fabric_error.svh (single source of
-// truth for hardware error codes). COMP_ codes are in FabricError.h (C++).
+// truth for hardware error codes). CPL_ codes are in FabricError.h (C++).
 // The normative specification is docs/spec-fabric-error.md.
 
 `include "fabric_error.svh"

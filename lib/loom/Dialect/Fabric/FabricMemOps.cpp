@@ -155,15 +155,15 @@ static LogicalResult verifyMemCommon(Operation *op, int64_t ldCount,
                                      int64_t stCount, int64_t lsqDepth,
                                      Type memrefType) {
   if (ldCount == 0 && stCount == 0)
-    return op->emitOpError(compErrMsg(CompError::MEMORY_PORTS_EMPTY,
+    return op->emitOpError(cplErrMsg(CplError::MEMORY_PORTS_EMPTY,
                            "ldCount and stCount cannot both be 0"));
 
   if (stCount == 0 && lsqDepth != 0)
-    return op->emitOpError(compErrMsg(CompError::MEMORY_LSQ_WITHOUT_STORE,
+    return op->emitOpError(cplErrMsg(CplError::MEMORY_LSQ_WITHOUT_STORE,
                            "lsqDepth must be 0 when stCount is 0"));
 
   if (stCount > 0 && lsqDepth < 1)
-    return op->emitOpError(compErrMsg(CompError::MEMORY_LSQ_MIN,
+    return op->emitOpError(cplErrMsg(CplError::MEMORY_LSQ_MIN,
                            "lsqDepth must be >= 1 when stCount > 0"));
 
   if (!isa<MemRefType>(memrefType))
@@ -238,23 +238,23 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
   if (ldCount > 0 && inIdx < inputs.size()) {
     Type t = inputs[inIdx++];
     if (!isAddrType(t))
-      return op->emitOpError(compErrMsg(CompError::MEMORY_ADDR_TYPE,
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_ADDR_TYPE,
                              "load address port must be index or "
                              "!dataflow.tagged<index, iK>; got "))
              << t;
     if (needTag && !isTagged(t))
-      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_REQUIRED,
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_REQUIRED,
                              "load address port must be tagged when "
                              "ldCount > 1 or stCount > 1"));
     if (!needTag && isTagged(t))
-      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_FOR_SINGLE,
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_FOR_SINGLE,
                              "load address port must not be tagged "
                              "when both ldCount <= 1 and stCount <= 1"));
     if (needTag && isTagged(t)) {
       unsigned tw = getTagWidth(t);
       unsigned minW = minTagWidth(maxCount);
       if (tw < minW)
-        return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_WIDTH,
+        return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_WIDTH,
                                "load address port tag width "))
                << tw << " is smaller than log2Ceil(max(ldCount,stCount)) = "
                << minW;
@@ -265,23 +265,23 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
   if (stCount > 0 && inIdx < inputs.size()) {
     Type t = inputs[inIdx++];
     if (!isAddrType(t))
-      return op->emitOpError(compErrMsg(CompError::MEMORY_ADDR_TYPE,
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_ADDR_TYPE,
                              "store address port must be index or "
                              "!dataflow.tagged<index, iK>; got "))
              << t;
     if (needTag && !isTagged(t))
-      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_REQUIRED,
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_REQUIRED,
                              "store address port must be tagged when "
                              "ldCount > 1 or stCount > 1"));
     if (!needTag && isTagged(t))
-      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_FOR_SINGLE,
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_FOR_SINGLE,
                              "store address port must not be tagged "
                              "when both ldCount <= 1 and stCount <= 1"));
     if (needTag && isTagged(t)) {
       unsigned tw = getTagWidth(t);
       unsigned minW = minTagWidth(maxCount);
       if (tw < minW)
-        return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_WIDTH,
+        return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_WIDTH,
                                "store address port tag width "))
                << tw << " is smaller than log2Ceil(max(ldCount,stCount)) = "
                << minW;
@@ -293,15 +293,15 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
     Type t = inputs[inIdx++];
     Type valT = getValType(t);
     if (valT != elemType)
-      return op->emitOpError(compErrMsg(CompError::MEMORY_DATA_TYPE,
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_TYPE,
                              "store data port value type "))
              << valT << " does not match memref element type " << elemType;
     if (needTag && !isTagged(t))
-      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_REQUIRED,
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_REQUIRED,
                              "store data port must be tagged when "
                              "ldCount > 1 or stCount > 1"));
     if (!needTag && isTagged(t))
-      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_FOR_SINGLE,
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_FOR_SINGLE,
                              "store data port must not be tagged "
                              "when both ldCount <= 1 and stCount <= 1"));
   }
@@ -316,15 +316,15 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
     Type t = outputs[outIdx++];
     Type valT = getValType(t);
     if (valT != elemType)
-      return op->emitOpError(compErrMsg(CompError::MEMORY_DATA_TYPE,
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_TYPE,
                              "load data port value type "))
              << valT << " does not match memref element type " << elemType;
     if (needTag && !isTagged(t))
-      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_REQUIRED,
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_REQUIRED,
                              "load data port must be tagged when "
                              "ldCount > 1 or stCount > 1"));
     if (!needTag && isTagged(t))
-      return op->emitOpError(compErrMsg(CompError::MEMORY_TAG_FOR_SINGLE,
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_FOR_SINGLE,
                              "load data port must not be tagged "
                              "when both ldCount <= 1 and stCount <= 1"));
   }
@@ -389,7 +389,7 @@ LogicalResult MemoryOp::verify() {
   // Static shape required for on-chip memory.
   auto memref = cast<MemRefType>(getMemrefType());
   if (!memref.hasStaticShape())
-    return emitOpError(compErrMsg(CompError::MEMORY_STATIC_REQUIRED,
+    return emitOpError(cplErrMsg(CplError::MEMORY_STATIC_REQUIRED,
                        "on-chip memory requires static memref shape"));
 
   // Validate port types.
@@ -463,18 +463,18 @@ LogicalResult ExtMemoryOp::verify() {
                              getLsqDepth(), getMemrefType())))
     return failure();
 
-  // COMP_MEMORY_EXTMEM_PRIVATE: is_private must not be present.
+  // CPL_MEMORY_EXTMEM_PRIVATE: is_private must not be present.
   if (getOperation()->getAttr("is_private"))
-    return emitOpError(compErrMsg(CompError::MEMORY_EXTMEM_PRIVATE,
+    return emitOpError(cplErrMsg(CplError::MEMORY_EXTMEM_PRIVATE,
                        "is_private must not be set on fabric.extmemory"));
 
-  // COMP_MEMORY_EXTMEM_BINDING: validate memref operand is a block argument
+  // CPL_MEMORY_EXTMEM_BINDING: validate memref operand is a block argument
   // of the parent module (checked for inline form only).
   if (!getInputs().empty()) {
     Value firstInput = getInputs().front();
     if (isa<MemRefType>(firstInput.getType())) {
       if (!isa<BlockArgument>(firstInput))
-        return emitOpError(compErrMsg(CompError::MEMORY_EXTMEM_BINDING,
+        return emitOpError(cplErrMsg(CplError::MEMORY_EXTMEM_BINDING,
                            "first memref operand must be a block argument "
                            "of the parent fabric.module"));
     }

@@ -85,13 +85,13 @@ module fabric_extmemory #(
   // -----------------------------------------------------------------------
   initial begin : param_check
     if (LD_COUNT == 0 && ST_COUNT == 0)
-      $fatal(1, "COMP_MEMORY_PORTS_EMPTY: must have at least 1 load or store port");
+      $fatal(1, "CPL_MEMORY_PORTS_EMPTY: must have at least 1 load or store port");
     if (LSQ_DEPTH > 0 && ST_COUNT == 0)
-      $fatal(1, "COMP_MEMORY_LSQ_WITHOUT_STORE: lsqDepth requires stCount > 0");
+      $fatal(1, "CPL_MEMORY_LSQ_WITHOUT_STORE: lsqDepth requires stCount > 0");
     if (ST_COUNT > 0 && LSQ_DEPTH < 1)
-      $fatal(1, "COMP_MEMORY_LSQ_MIN: lsqDepth must be >= 1 when stCount > 0");
+      $fatal(1, "CPL_MEMORY_LSQ_MIN: lsqDepth must be >= 1 when stCount > 0");
     if (ELEM_WIDTH < 1)
-      $fatal(1, "COMP_MEMORY_ELEM_WIDTH: must be >= 1");
+      $fatal(1, "CPL_MEMORY_ELEM_WIDTH: must be >= 1");
   end
 
   // -----------------------------------------------------------------------

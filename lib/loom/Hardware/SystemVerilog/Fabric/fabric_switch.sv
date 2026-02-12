@@ -45,17 +45,17 @@ module fabric_switch #(
 );
 
   // -----------------------------------------------------------------------
-  // Elaboration-time parameter validation (COMP_ errors)
+  // Elaboration-time parameter validation (CPL_ errors)
   // -----------------------------------------------------------------------
   initial begin : param_check
     int iter_var0, iter_var1;
     if (NUM_INPUTS > 32 || NUM_OUTPUTS > 32)
-      $fatal(1, "COMP_SWITCH_PORT_LIMIT: max 32 inputs/outputs");
+      $fatal(1, "CPL_SWITCH_PORT_LIMIT: max 32 inputs/outputs");
 
     // Check each output row has at least one connection
     for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0++) begin : check_row
       if (CONNECTIVITY[iter_var0*NUM_INPUTS +: NUM_INPUTS] == '0)
-        $fatal(1, "COMP_SWITCH_ROW_EMPTY: output %0d has no connections", iter_var0);
+        $fatal(1, "CPL_SWITCH_ROW_EMPTY: output %0d has no connections", iter_var0);
     end
 
     // Check each input column has at least one connection
@@ -65,7 +65,7 @@ module fabric_switch #(
         has_conn |= CONNECTIVITY[iter_var1*NUM_INPUTS + iter_var0];
       end
       if (!has_conn)
-        $fatal(1, "COMP_SWITCH_COL_EMPTY: input %0d has no connections", iter_var0);
+        $fatal(1, "CPL_SWITCH_COL_EMPTY: input %0d has no connections", iter_var0);
     end
   end
 

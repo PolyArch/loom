@@ -161,17 +161,17 @@ tag-transparent hardware type (no `output_tag`). See `Load/Store PE Semantics`.
 
 - All ports must be native types, or all ports must be tagged types, except for
   the load/store PE special cases described below. Violations raise
-  `COMP_PE_MIXED_INTERFACE`.
+  `CPL_PE_MIXED_INTERFACE`.
 - If the interface is native, `output_tag` must be absent. Violations raise
-  `COMP_PE_OUTPUT_TAG_NATIVE`.
+  `CPL_PE_OUTPUT_TAG_NATIVE`.
 - If the interface is tagged, `output_tag` is required for non-load/store PEs.
   Load/store PEs follow their own rules below. Violations raise
-  `COMP_PE_OUTPUT_TAG_MISSING`.
+  `CPL_PE_OUTPUT_TAG_MISSING`.
 - The body must contain at least one non-terminator operation. Violations raise
-  `COMP_PE_EMPTY_BODY`.
+  `CPL_PE_EMPTY_BODY`.
 - Dataflow body constraints are defined authoritatively in
   [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md). Violations raise
-  `COMP_PE_DATAFLOW_BODY`.
+  `CPL_PE_DATAFLOW_BODY`.
 
 See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.
 
@@ -195,7 +195,7 @@ compute graph. Body structure constraints for load/store PEs are defined
 authoritatively in [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md), and their
 memory interaction semantics are defined in
 [spec-fabric-mem.md](./spec-fabric-mem.md). Violations of load/store body
-constraints raise `COMP_PE_LOADSTORE_BODY`.
+constraints raise `CPL_PE_LOADSTORE_BODY`.
 
 Load/store PEs use fixed hardware timing. Their latency and interval are not
 user-configurable attributes.
@@ -218,7 +218,7 @@ Tag consistency:
   `data_to_comp` must share the same taggedness and tag width.
 - For a store PE, `addr_from_comp`, `data_from_comp`, `addr_to_mem`, and
   `data_to_mem` must share the same taggedness and tag width.
-- Violations raise `COMP_PE_LOADSTORE_TAG_WIDTH`.
+- Violations raise `CPL_PE_LOADSTORE_TAG_WIDTH`.
 
 The `ctrl` input is a synchronization token. It is consumed and discarded after
 the synchronization condition is met. Load/store PEs do not output a done token.
@@ -293,8 +293,8 @@ lowest slot index in the control queue. This is a deterministic
 lowest-index-first policy. Only one match fires per cycle.
 
 Invalid combinations of `output_tag`, tagged `ctrl`, and queue depth attributes
-are compile-time errors (`COMP_PE_LOADSTORE_TAG_MODE`,
-`COMP_PE_LOADSTORE_TAG_WIDTH`).
+are compile-time errors (`CPL_PE_LOADSTORE_TAG_MODE`,
+`CPL_PE_LOADSTORE_TAG_WIDTH`).
 
 ### Example: Native PE with Type Conversion
 
@@ -375,8 +375,8 @@ broadcast for data duplication between modules.
 See [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) for the
 authoritative constraints on `fabric.pe` usage within `fabric.temporal_pe`.
 Key restrictions: the PE must use a native interface
-(`COMP_TEMPORAL_PE_TAGGED_PE`) and load/store PEs are forbidden
-(`COMP_TEMPORAL_PE_LOADSTORE`).
+(`CPL_TEMPORAL_PE_TAGGED_PE`) and load/store PEs are forbidden
+(`CPL_TEMPORAL_PE_LOADSTORE`).
 
 ## Related Documents
 

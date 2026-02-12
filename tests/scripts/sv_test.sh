@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fabric SystemVerilog Test
 # Compiles ADG test binaries, generates SV output, validates MLIR, and runs
-# SV simulation tests with parameter sweeps and negative (COMP_) tests.
+# SV simulation tests with parameter sweeps and negative (CPL_) tests.
 #
 # Two-stage architecture:
 #   Stage A (ADG prerequisite): compile C++ -> run binary -> validate MLIR
@@ -160,8 +160,8 @@ fifo_configs=(
 
 # FIFO negative tests (param|expected_error_pattern)
 fifo_neg=(
-  "DEPTH=0|COMP_FIFO_DEPTH_ZERO"
-  "DATA_WIDTH=0|COMP_FIFO_INVALID_TYPE"
+  "DEPTH=0|CPL_FIFO_DEPTH_ZERO"
+  "DATA_WIDTH=0|CPL_FIFO_INVALID_TYPE"
 )
 
 # Switch positive parameter sweeps
@@ -172,9 +172,9 @@ switch_configs=(
 
 # Switch negative tests
 switch_neg=(
-  "NUM_INPUTS=33,NUM_OUTPUTS=2|COMP_SWITCH_PORT_LIMIT"
-  "NUM_INPUTS=2,NUM_OUTPUTS=2,CONNECTIVITY=3|COMP_SWITCH_ROW_EMPTY"
-  "NUM_INPUTS=2,NUM_OUTPUTS=2,CONNECTIVITY=5|COMP_SWITCH_COL_EMPTY"
+  "NUM_INPUTS=33,NUM_OUTPUTS=2|CPL_SWITCH_PORT_LIMIT"
+  "NUM_INPUTS=2,NUM_OUTPUTS=2,CONNECTIVITY=3|CPL_SWITCH_ROW_EMPTY"
+  "NUM_INPUTS=2,NUM_OUTPUTS=2,CONNECTIVITY=5|CPL_SWITCH_COL_EMPTY"
 )
 
 # AddTag positive parameter sweeps
@@ -186,7 +186,7 @@ add_tag_configs=(
 
 # AddTag negative tests
 add_tag_neg=(
-  "DATA_WIDTH=32,TAG_WIDTH=0|COMP_ADD_TAG_TAG_WIDTH"
+  "DATA_WIDTH=32,TAG_WIDTH=0|CPL_ADD_TAG_TAG_WIDTH"
 )
 
 # DelTag positive parameter sweeps
@@ -197,7 +197,7 @@ del_tag_configs=(
 
 # DelTag negative tests
 del_tag_neg=(
-  "DATA_WIDTH=32,TAG_WIDTH=0|COMP_DEL_TAG_TAG_WIDTH"
+  "DATA_WIDTH=32,TAG_WIDTH=0|CPL_DEL_TAG_TAG_WIDTH"
 )
 
 # MapTag positive parameter sweeps
@@ -207,7 +207,7 @@ map_tag_configs=(
 
 # MapTag negative tests
 map_tag_neg=(
-  "DATA_WIDTH=32,IN_TAG_WIDTH=4,OUT_TAG_WIDTH=4,TABLE_SIZE=0|COMP_MAP_TAG_TABLE_SIZE"
+  "DATA_WIDTH=32,IN_TAG_WIDTH=4,OUT_TAG_WIDTH=4,TABLE_SIZE=0|CPL_MAP_TAG_TABLE_SIZE"
 )
 
 # PE constant positive parameter sweeps
@@ -223,9 +223,9 @@ pe_load_configs=(
 
 # Load PE negative tests
 pe_load_neg=(
-  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=0,HW_TYPE=1,QUEUE_DEPTH=2|COMP_PE_LOADSTORE_TAG_WIDTH"
-  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=2,QUEUE_DEPTH=2|COMP_PE_LOADSTORE_TAG_MODE"
-  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=1,QUEUE_DEPTH=0|COMP_PE_LOADSTORE_TAG_MODE"
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=0,HW_TYPE=1,QUEUE_DEPTH=2|CPL_PE_LOADSTORE_TAG_WIDTH"
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=2,QUEUE_DEPTH=2|CPL_PE_LOADSTORE_TAG_MODE"
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=1,QUEUE_DEPTH=0|CPL_PE_LOADSTORE_TAG_MODE"
 )
 
 # Store PE positive parameter sweeps
@@ -236,9 +236,9 @@ pe_store_configs=(
 
 # Store PE negative tests
 pe_store_neg=(
-  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=0,HW_TYPE=1,QUEUE_DEPTH=2|COMP_PE_LOADSTORE_TAG_WIDTH"
-  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=2,QUEUE_DEPTH=2|COMP_PE_LOADSTORE_TAG_MODE"
-  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=1,QUEUE_DEPTH=0|COMP_PE_LOADSTORE_TAG_MODE"
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=0,HW_TYPE=1,QUEUE_DEPTH=2|CPL_PE_LOADSTORE_TAG_WIDTH"
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=2,QUEUE_DEPTH=2|CPL_PE_LOADSTORE_TAG_MODE"
+  "ELEM_WIDTH=32,ADDR_WIDTH=16,TAG_WIDTH=2,HW_TYPE=1,QUEUE_DEPTH=0|CPL_PE_LOADSTORE_TAG_MODE"
 )
 
 # Temporal SW positive parameter sweeps
@@ -248,7 +248,7 @@ temporal_sw_configs=(
 
 # Temporal SW negative tests
 temporal_sw_neg=(
-  "NUM_INPUTS=2,NUM_OUTPUTS=2,DATA_WIDTH=32,TAG_WIDTH=4,NUM_ROUTE_TABLE=0|COMP_TEMPORAL_SW_NUM_ROUTE_TABLE"
+  "NUM_INPUTS=2,NUM_OUTPUTS=2,DATA_WIDTH=32,TAG_WIDTH=4,NUM_ROUTE_TABLE=0|CPL_TEMPORAL_SW_NUM_ROUTE_TABLE"
 )
 
 # Temporal PE positive parameter sweeps
@@ -260,7 +260,7 @@ temporal_pe_configs=(
 
 # Temporal PE negative tests
 temporal_pe_neg=(
-  "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=1,NUM_REGISTERS=0,NUM_INSTRUCTIONS=0,REG_FIFO_DEPTH=0|COMP_TEMPORAL_PE_NUM_INSTRUCTION"
+  "NUM_INPUTS=2,NUM_OUTPUTS=1,DATA_WIDTH=32,TAG_WIDTH=4,NUM_FU_TYPES=1,NUM_REGISTERS=0,NUM_INSTRUCTIONS=0,REG_FIFO_DEPTH=0|CPL_TEMPORAL_PE_NUM_INSTRUCTION"
 )
 
 # Temporal PE register tests (NUM_REGISTERS > 0)
@@ -286,7 +286,7 @@ extmemory_configs=(
 
 # Memory negative tests
 memory_neg=(
-  "ELEM_WIDTH=32,TAG_WIDTH=0,LD_COUNT=0,ST_COUNT=0,LSQ_DEPTH=0,IS_PRIVATE=1,MEM_DEPTH=64|COMP_MEMORY_PORTS_EMPTY"
+  "ELEM_WIDTH=32,TAG_WIDTH=0,LD_COUNT=0,ST_COUNT=0,LSQ_DEPTH=0,IS_PRIVATE=1,MEM_DEPTH=64|CPL_MEMORY_PORTS_EMPTY"
 )
 
 # Helper: convert "KEY=VAL,KEY=VAL" to " -GKEY=VAL -GKEY=VAL"
@@ -689,7 +689,7 @@ for i in "${!SIMS[@]}"; do
 
   loom_write_parallel_header "${PARALLEL_FILE}" \
     "Loom Fabric SV Tests (${sim})" \
-    "SV simulation tests with parameter sweeps and negative (COMP_) tests."
+    "SV simulation tests with parameter sweeps and negative (CPL_) tests."
 
   cat >> "${PARALLEL_FILE}" <<'WAVE_EOF'
 #

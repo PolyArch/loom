@@ -1114,7 +1114,7 @@ mlir::LogicalResult HandshakeConversion::verifyMemoryControl() {
       for (mlir::Operation *source : sources) {
         if (expectedMem && source == expectedMem)
           continue;
-        op->emitError(std::string(CompError::HANDSHAKE_CTRL_MULTI_MEM) +
+        op->emitError(std::string(CplError::HANDSHAKE_CTRL_MULTI_MEM) +
                       ": control token depends on "
                       "a memory interface not associated with this access");
         failed = true;
@@ -1122,14 +1122,14 @@ mlir::LogicalResult HandshakeConversion::verifyMemoryControl() {
       }
     }
     if (sources.empty() && !sawEntry) {
-      op->emitError(std::string(CompError::HANDSHAKE_CTRL_MULTI_MEM) +
+      op->emitError(std::string(CplError::HANDSHAKE_CTRL_MULTI_MEM) +
                     ": control token is not "
                     "rooted at start_token");
       failed = true;
       return;
     }
     if (!expectedMem && !sources.empty()) {
-      op->emitError(std::string(CompError::HANDSHAKE_CTRL_MULTI_MEM) +
+      op->emitError(std::string(CplError::HANDSHAKE_CTRL_MULTI_MEM) +
                     ": missing memory mapping for "
                     "access control check");
       failed = true;

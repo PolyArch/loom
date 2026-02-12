@@ -18,7 +18,7 @@ SVH_FILE = "lib/loom/Hardware/SystemVerilog/Common/fabric_error.svh"
 
 SEARCH_DIRS = ["lib/", "include/"]
 
-ERROR_CODE_RE = re.compile(r"\b(COMP|CFG|RT)_[A-Z][A-Z_]*[A-Z]\b")
+ERROR_CODE_RE = re.compile(r"\b(CPL|CFG|RT)_[A-Z][A-Z_]*[A-Z]\b")
 
 
 def extract_spec_codes(root: Path) -> set[str]:
@@ -57,15 +57,15 @@ def extract_svh_codes(root: Path) -> set[str]:
     return codes
 
 
-COMP_ERROR_NS_RE = re.compile(r"CompError::([A-Z][A-Z_]*[A-Z])\b")
+CPL_ERROR_NS_RE = re.compile(r"CplError::([A-Z][A-Z_]*[A-Z])\b")
 
 
 def build_usage_map(root: Path) -> dict[str, set[str]]:
     """Run ripgrep over lib/ and include/ to find all error code usages.
 
     Searches for:
-    - Full error code strings (CFG_XXX, RT_XXX, COMP_XXX)
-    - CompError::XXX namespace references (mapped back to COMP_XXX)
+    - Full error code strings (CFG_XXX, RT_XXX, CPL_XXX)
+    - CplError::XXX namespace references (mapped back to CPL_XXX)
     """
     usage: dict[str, set[str]] = {}
     search_paths = [str(root / d) for d in SEARCH_DIRS]
@@ -73,7 +73,7 @@ def build_usage_map(root: Path) -> dict[str, set[str]]:
     # Search for full error code strings
     cmd = [
         "rg", "-o", "--no-line-number", "--no-heading",
-        r"\b(COMP|CFG|RT)_[A-Z][A-Z_]*[A-Z]\b",
+        r"\b(CPL|CFG|RT)_[A-Z][A-Z_]*[A-Z]\b",
     ] + search_paths
     result = subprocess.run(cmd, capture_output=True, text=True)
     for line in result.stdout.splitlines():
@@ -84,10 +84,10 @@ def build_usage_map(root: Path) -> dict[str, set[str]]:
         if ERROR_CODE_RE.fullmatch(code):
             usage.setdefault(code, set()).add(filepath)
 
-    # Search for CompError::XXX namespace references (C++ usage pattern)
+    # Search for CplError::XXX namespace references (C++ usage pattern)
     cmd = [
         "rg", "-o", "--no-line-number", "--no-heading",
-        r"CompError::[A-Z][A-Z_]*[A-Z]\b",
+        r"CplError::[A-Z][A-Z_]*[A-Z]\b",
     ] + search_paths
     result = subprocess.run(cmd, capture_output=True, text=True)
     for line in result.stdout.splitlines():
@@ -95,9 +95,9 @@ def build_usage_map(root: Path) -> dict[str, set[str]]:
             continue
         filepath, ref = line.split(":", 1)
         ref = ref.strip()
-        m = COMP_ERROR_NS_RE.fullmatch(ref)
+        m = CPL_ERROR_NS_RE.fullmatch(ref)
         if m:
-            code = "COMP_" + m.group(1)
+            code = "CPL_" + m.group(1)
             usage.setdefault(code, set()).add(filepath)
 
     return usage

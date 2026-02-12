@@ -333,7 +333,7 @@ void ADGBuilder::connectPorts(InstanceHandle src, int srcPort,
   for (const auto &c : impl_->internalConns) {
     if (c.srcInst == src.id && c.srcPort == srcPort)
       builderError("connectPorts",
-                   std::string(CompError::FANOUT_MODULE_INNER) + ": output port " +
+                   std::string(CplError::FANOUT_MODULE_INNER) + ": output port " +
                        std::to_string(srcPort) + " of instance '" +
                        impl_->instances[src.id].name +
                        "' is already connected; use switch broadcast for data duplication");
@@ -341,7 +341,7 @@ void ADGBuilder::connectPorts(InstanceHandle src, int srcPort,
   for (const auto &c : impl_->outputConns) {
     if (c.instIdx == src.id && c.srcPort == srcPort)
       builderError("connectPorts",
-                   std::string(CompError::FANOUT_MODULE_INNER) + ": output port " +
+                   std::string(CplError::FANOUT_MODULE_INNER) + ": output port " +
                        std::to_string(srcPort) + " of instance '" +
                        impl_->instances[src.id].name +
                        "' is already connected to a module output");
@@ -350,7 +350,7 @@ void ADGBuilder::connectPorts(InstanceHandle src, int srcPort,
   for (const auto &c : impl_->internalConns) {
     if (c.dstInst == dst.id && c.dstPort == dstPort)
       builderError("connectPorts",
-                   std::string(CompError::FANOUT_MODULE_BOUNDARY) + ": input port " +
+                   std::string(CplError::FANOUT_MODULE_BOUNDARY) + ": input port " +
                        std::to_string(dstPort) + " of instance '" +
                        impl_->instances[dst.id].name +
                        "' already has a source connection");
@@ -358,7 +358,7 @@ void ADGBuilder::connectPorts(InstanceHandle src, int srcPort,
   for (const auto &c : impl_->inputConns) {
     if (c.instIdx == dst.id && c.dstPort == dstPort)
       builderError("connectPorts",
-                   std::string(CompError::FANOUT_MODULE_BOUNDARY) + ": input port " +
+                   std::string(CplError::FANOUT_MODULE_BOUNDARY) + ": input port " +
                        std::to_string(dstPort) + " of instance '" +
                        impl_->instances[dst.id].name +
                        "' already connected from a module input");
@@ -422,7 +422,7 @@ void ADGBuilder::connectToModuleInput(PortHandle port, InstanceHandle dst,
   for (const auto &c : impl_->inputConns) {
     if (c.instIdx == dst.id && c.dstPort == dstPort)
       builderError("connectToModuleInput",
-                   std::string(CompError::FANOUT_MODULE_BOUNDARY) + ": input port " +
+                   std::string(CplError::FANOUT_MODULE_BOUNDARY) + ": input port " +
                        std::to_string(dstPort) + " of instance '" +
                        impl_->instances[dst.id].name +
                        "' already has a source connection");
@@ -430,7 +430,7 @@ void ADGBuilder::connectToModuleInput(PortHandle port, InstanceHandle dst,
   for (const auto &c : impl_->internalConns) {
     if (c.dstInst == dst.id && c.dstPort == dstPort)
       builderError("connectToModuleInput",
-                   std::string(CompError::FANOUT_MODULE_BOUNDARY) + ": input port " +
+                   std::string(CplError::FANOUT_MODULE_BOUNDARY) + ": input port " +
                        std::to_string(dstPort) + " of instance '" +
                        impl_->instances[dst.id].name +
                        "' already connected from another source");
@@ -459,7 +459,7 @@ void ADGBuilder::connectToModuleOutput(InstanceHandle src, int srcPort,
   for (const auto &c : impl_->outputConns) {
     if (c.instIdx == src.id && c.srcPort == srcPort)
       builderError("connectToModuleOutput",
-                   std::string(CompError::FANOUT_MODULE_INNER) + ": output port " +
+                   std::string(CplError::FANOUT_MODULE_INNER) + ": output port " +
                        std::to_string(srcPort) + " of instance '" +
                        impl_->instances[src.id].name +
                        "' is already connected to a module output");
@@ -467,7 +467,7 @@ void ADGBuilder::connectToModuleOutput(InstanceHandle src, int srcPort,
   for (const auto &c : impl_->internalConns) {
     if (c.srcInst == src.id && c.srcPort == srcPort)
       builderError("connectToModuleOutput",
-                   std::string(CompError::FANOUT_MODULE_INNER) + ": output port " +
+                   std::string(CplError::FANOUT_MODULE_INNER) + ": output port " +
                        std::to_string(srcPort) + " of instance '" +
                        impl_->instances[src.id].name +
                        "' is already connected to another destination");

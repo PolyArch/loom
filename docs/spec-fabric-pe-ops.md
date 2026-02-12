@@ -85,7 +85,7 @@ operation and the `fabric.yield` terminator. Multiple `dataflow` operations in
 a single PE, mixing `dataflow` with other dialects, and nesting via
 `fabric.instance` are all not allowed. Each dataflow operation maps to a
 dedicated hardware state machine and cannot share a PE with other operations.
-Violations raise `COMP_PE_DATAFLOW_BODY`.
+Violations raise `CPL_PE_DATAFLOW_BODY`.
 
 `dataflow.stream` is a special case for runtime configuration. When a
 `fabric.pe` body contains exactly one `dataflow.stream`, the PE exposes a
@@ -122,18 +122,18 @@ appear in the same PE body:
 
 | Rule | Constraint |
 |------|------------|
-| **Load/Store Exclusivity** | If `handshake.load` or `handshake.store` is present, the body must contain exactly one of these and no other non-terminator operations. Violations raise `COMP_PE_LOADSTORE_BODY`. |
-| **Constant Exclusivity** | If `handshake.constant` is present, the body must contain exactly one `handshake.constant` and no other non-terminator operations. Violations raise `COMP_PE_CONSTANT_BODY`. |
+| **Load/Store Exclusivity** | If `handshake.load` or `handshake.store` is present, the body must contain exactly one of these and no other non-terminator operations. Violations raise `CPL_PE_LOADSTORE_BODY`. |
+| **Constant Exclusivity** | If `handshake.constant` is present, the body must contain exactly one `handshake.constant` and no other non-terminator operations. Violations raise `CPL_PE_CONSTANT_BODY`. |
 | **Dataflow Exclusivity** | The body must contain exactly one `dataflow` operation and `fabric.yield`. No other operations, no multiple dataflow ops, no `fabric.instance`. |
-| **Instance-Only Prohibition** | A PE body must not consist solely of a single `fabric.instance`. Violations raise `COMP_PE_INSTANCE_ONLY_BODY`. |
+| **Instance-Only Prohibition** | A PE body must not consist solely of a single `fabric.instance`. Violations raise `CPL_PE_INSTANCE_ONLY_BODY`. |
 
 Additional `fabric.instance` constraints inside `fabric.pe` bodies:
 
 - Target must be a named `fabric.pe`. Other target kinds are illegal in this
-  scope and raise `COMP_PE_INSTANCE_ILLEGAL_TARGET`.
+  scope and raise `CPL_PE_INSTANCE_ILLEGAL_TARGET`.
 - The PE-local instance graph must be acyclic. Direct self-reference and
   indirect cycles (for example, `A -> B -> A`) raise
-  `COMP_INSTANCE_CYCLIC_REFERENCE`.
+  `CPL_INSTANCE_CYCLIC_REFERENCE`.
 
 ## Homogeneous Consumption Rule
 
@@ -151,7 +151,7 @@ A `fabric.pe` body must use operations from exactly one consumption group:
 - `handshake.mux`
 
 Mixing operations from different groups is not allowed.
-Violations raise `COMP_PE_MIXED_CONSUMPTION`.
+Violations raise `CPL_PE_MIXED_CONSUMPTION`.
 
 `dataflow.{carry,invariant,stream,gate}` are exempt from this grouping rule.
 They are handled by Dataflow Exclusivity and therefore never participate in

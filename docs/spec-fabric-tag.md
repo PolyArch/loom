@@ -40,16 +40,16 @@ at boundaries between dedicated and temporal regions.
 - `T` must be a native value type.
 - Tag type must satisfy `!dataflow.tagged` constraints from
   [spec-dataflow.md](./spec-dataflow.md). Tag-width violations raise
-  `COMP_TAG_WIDTH_RANGE`.
+  `CPL_TAG_WIDTH_RANGE`.
 - The result tagged type's value component must match the input type `T`.
-  Violations raise `COMP_ADD_TAG_VALUE_TYPE_MISMATCH`.
+  Violations raise `CPL_ADD_TAG_VALUE_TYPE_MISMATCH`.
 - The configured `tag` value must fit in the result tag type width.
-  Violations raise `COMP_ADD_TAG_VALUE_OVERFLOW`.
+  Violations raise `CPL_ADD_TAG_VALUE_OVERFLOW`.
 
 Example error:
 
 ```
-// ERROR: COMP_ADD_TAG_VALUE_TYPE_MISMATCH
+// ERROR: CPL_ADD_TAG_VALUE_TYPE_MISMATCH
 // Input is i32, but result value type is f32
 %bad = fabric.add_tag %i32_val {tag = 0 : i4} : i32 -> !dataflow.tagged<f32, i4>
 ```
@@ -81,12 +81,12 @@ Timing model: combinational, zero-cycle data transformation.
 ### Constraints
 
 - Output type must match the value type of the input tagged type.
-  Violations raise `COMP_DEL_TAG_VALUE_TYPE_MISMATCH`.
+  Violations raise `CPL_DEL_TAG_VALUE_TYPE_MISMATCH`.
 
 Example error:
 
 ```
-// ERROR: COMP_DEL_TAG_VALUE_TYPE_MISMATCH
+// ERROR: CPL_DEL_TAG_VALUE_TYPE_MISMATCH
 // Input value type is i32, but output type is f32
 %bad = fabric.del_tag %tagged : !dataflow.tagged<i32, i4> -> f32
 ```
@@ -155,15 +155,15 @@ Bit-index rules:
 ### Constraints
 
 - Input and output value types must match. Violations raise
-  `COMP_MAP_TAG_VALUE_TYPE_MISMATCH`.
+  `CPL_MAP_TAG_VALUE_TYPE_MISMATCH`.
 - `table` length must equal `table_size`.
 - Tag width can change between input and output.
 - `valid` must be `i1`. Input and output tag types must satisfy
   `!dataflow.tagged` constraints from [spec-dataflow.md](./spec-dataflow.md).
-  Tag-width violations raise `COMP_TAG_WIDTH_RANGE`.
+  Tag-width violations raise `CPL_TAG_WIDTH_RANGE`.
 
-Violations of table shape or size are compile-time errors: `COMP_MAP_TAG_TABLE_SIZE`
-and `COMP_MAP_TAG_TABLE_LENGTH`. See [spec-fabric-error.md](./spec-fabric-error.md).
+Violations of table shape or size are compile-time errors: `CPL_MAP_TAG_TABLE_SIZE`
+and `CPL_MAP_TAG_TABLE_LENGTH`. See [spec-fabric-error.md](./spec-fabric-error.md).
 
 ### Semantics
 

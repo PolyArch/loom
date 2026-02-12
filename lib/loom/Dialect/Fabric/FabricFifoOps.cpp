@@ -174,11 +174,11 @@ LogicalResult FifoOp::verify() {
     if (fnType.getNumInputs() != 1 || fnType.getNumResults() != 1)
       return emitOpError("named fifo must have exactly 1 input and 1 output");
     if (fnType.getInput(0) != fnType.getResult(0))
-      return emitOpError(compErrMsg(CompError::FIFO_TYPE_MISMATCH,
+      return emitOpError(cplErrMsg(CplError::FIFO_TYPE_MISMATCH,
                          "input type must match output type; got "))
              << fnType.getInput(0) << " vs " << fnType.getResult(0);
     if (!isValidFifoType(fnType.getInput(0)))
-      return emitOpError(compErrMsg(CompError::FIFO_INVALID_TYPE,
+      return emitOpError(cplErrMsg(CplError::FIFO_INVALID_TYPE,
                          "type must be a native type or !dataflow.tagged; got "))
              << fnType.getInput(0);
     // Named form should have no SSA operands/results.
@@ -194,28 +194,28 @@ LogicalResult FifoOp::verify() {
       return emitOpError("inline fifo must have exactly 1 output; got ")
              << getOutputs().size();
     if (getInputs().front().getType() != getOutputs().front().getType())
-      return emitOpError(compErrMsg(CompError::FIFO_TYPE_MISMATCH,
+      return emitOpError(cplErrMsg(CplError::FIFO_TYPE_MISMATCH,
                          "input type must match output type; got "))
              << getInputs().front().getType() << " vs "
              << getOutputs().front().getType();
     if (!isValidFifoType(getInputs().front().getType()))
-      return emitOpError(compErrMsg(CompError::FIFO_INVALID_TYPE,
+      return emitOpError(cplErrMsg(CplError::FIFO_INVALID_TYPE,
                          "type must be a native type or !dataflow.tagged; got "))
              << getInputs().front().getType();
   }
 
   // Depth must be >= 1.
   if (getDepth() < 1)
-    return emitOpError(compErrMsg(CompError::FIFO_DEPTH_ZERO,
+    return emitOpError(cplErrMsg(CplError::FIFO_DEPTH_ZERO,
                        "depth must be >= 1; got "))
            << getDepth();
 
   // Bypassable/bypassed consistency.
   if (!getBypassable() && getBypassed().has_value())
-    return emitOpError(compErrMsg(CompError::FIFO_BYPASSED_NOT_BYPASSABLE,
+    return emitOpError(cplErrMsg(CplError::FIFO_BYPASSED_NOT_BYPASSABLE,
                        "'bypassed' attribute present without 'bypassable'"));
   if (getBypassable() && !getBypassed().has_value())
-    return emitOpError(compErrMsg(CompError::FIFO_BYPASSED_MISSING,
+    return emitOpError(cplErrMsg(CplError::FIFO_BYPASSED_MISSING,
                        "'bypassable' is set but 'bypassed' attribute is missing"));
 
   return success();

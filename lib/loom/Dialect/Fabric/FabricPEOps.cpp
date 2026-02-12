@@ -427,7 +427,7 @@ LogicalResult PEOp::verify() {
       hasNative = true;
   }
   if (hasTagged && hasNative)
-    return emitOpError(compErrMsg(CompError::PE_MIXED_INTERFACE,
+    return emitOpError(cplErrMsg(CplError::PE_MIXED_INTERFACE,
                        "all ports must be either native or tagged; "
                        "mixed interface not allowed"));
 
@@ -445,7 +445,7 @@ LogicalResult PEOp::verify() {
 
   // Native interface: output_tag must be absent.
   if (hasNative && getOutputTag())
-    return emitOpError(compErrMsg(CompError::PE_OUTPUT_TAG_NATIVE,
+    return emitOpError(cplErrMsg(CplError::PE_OUTPUT_TAG_NATIVE,
                        "native PE must not have output_tag"));
 
   // Body must have at least one non-terminator.
@@ -458,7 +458,7 @@ LogicalResult PEOp::verify() {
     }
   }
   if (!hasOp)
-    return emitOpError(compErrMsg(CompError::PE_EMPTY_BODY,
+    return emitOpError(cplErrMsg(CplError::PE_EMPTY_BODY,
         "PE body must contain at least one non-terminator operation"));
 
   // Classify body operations for PE body constraints.
@@ -505,16 +505,16 @@ LogicalResult PEOp::verify() {
     }
   }
 
-  // COMP_PE_INSTANCE_ONLY_BODY: exactly one non-terminator and it's instance.
+  // CPL_PE_INSTANCE_ONLY_BODY: exactly one non-terminator and it's instance.
   // Exception: inside temporal_pe, a PE wrapping a single fabric.instance is
   // the canonical way to reference an external PE as a FU type.
   if (nonTermCount == 1 && instanceCount == 1 &&
       !getOperation()->getParentOfType<TemporalPEOp>())
-    return emitOpError(compErrMsg(CompError::PE_INSTANCE_ONLY_BODY,
+    return emitOpError(cplErrMsg(CplError::PE_INSTANCE_ONLY_BODY,
                        "PE body must not contain only a single "
                        "fabric.instance with no other operations"));
 
-  // COMP_PE_LOADSTORE_BODY: load/store PE body must contain exactly one
+  // CPL_PE_LOADSTORE_BODY: load/store PE body must contain exactly one
   // handshake.load or handshake.store and no other non-terminator ops.
   if (hasLoadStore) {
     unsigned lsCount = 0;
@@ -526,29 +526,29 @@ LogicalResult PEOp::verify() {
         lsCount++;
     }
     if (lsCount != 1 || nonTermCount != lsCount)
-      return emitOpError(compErrMsg(CompError::PE_LOADSTORE_BODY,
+      return emitOpError(cplErrMsg(CplError::PE_LOADSTORE_BODY,
                          "load/store PE must contain exactly one "
                          "handshake.load or handshake.store; found "))
              << lsCount << " load/store ops and " << nonTermCount
              << " non-terminator ops";
   }
 
-  // COMP_PE_LOADSTORE_TAG_MODE: TagOverwrite vs TagTransparent exclusivity.
+  // CPL_PE_LOADSTORE_TAG_MODE: TagOverwrite vs TagTransparent exclusivity.
   if (hasLoadStore) {
     bool hasOutputTag = getOutputTag().has_value();
     bool hasLqSq = getLqDepth().has_value() || getSqDepth().has_value();
     if (hasOutputTag && hasLqSq)
-      return emitOpError(compErrMsg(CompError::PE_LOADSTORE_TAG_MODE,
+      return emitOpError(cplErrMsg(CplError::PE_LOADSTORE_TAG_MODE,
           "load/store PE cannot have both output_tag and lqDepth/sqDepth"));
     if (hasLqSq && !hasTagged)
-      return emitOpError(compErrMsg(CompError::PE_LOADSTORE_TAG_MODE,
+      return emitOpError(cplErrMsg(CplError::PE_LOADSTORE_TAG_MODE,
           "TagTransparent load/store PE requires all tagged ports"));
     if (hasTagged && !hasOutputTag && !hasLqSq)
-      return emitOpError(compErrMsg(CompError::PE_LOADSTORE_TAG_MODE,
+      return emitOpError(cplErrMsg(CplError::PE_LOADSTORE_TAG_MODE,
           "tagged load/store PE requires output_tag or lqDepth/sqDepth"));
   }
 
-  // COMP_PE_LOADSTORE_TAG_WIDTH: tag widths must match across all ports.
+  // CPL_PE_LOADSTORE_TAG_WIDTH: tag widths must match across all ports.
   if (hasLoadStore && hasTagged) {
     unsigned firstTagWidth = 0;
     bool tagWidthSet = false;
@@ -559,7 +559,7 @@ LogicalResult PEOp::verify() {
           firstTagWidth = tw;
           tagWidthSet = true;
         } else if (tw != firstTagWidth) {
-          return emitOpError(compErrMsg(CompError::PE_LOADSTORE_TAG_WIDTH,
+          return emitOpError(cplErrMsg(CplError::PE_LOADSTORE_TAG_WIDTH,
               "tag widths must match across all ports; got "))
                  << firstTagWidth << " and " << tw;
         }
@@ -577,34 +577,34 @@ LogicalResult PEOp::verify() {
   // Tagged interface: output_tag should be present.
   // Allow missing output_tag for load/store PEs (detected by body content).
   if (hasTagged && !getOutputTag() && !hasLoadStore)
-    return emitOpError(compErrMsg(CompError::PE_OUTPUT_TAG_MISSING,
+    return emitOpError(cplErrMsg(CplError::PE_OUTPUT_TAG_MISSING,
         "tagged PE requires output_tag (unless load/store PE)"));
 
-  // COMP_PE_CONSTANT_BODY: constant PE has no other ops.
+  // CPL_PE_CONSTANT_BODY: constant PE has no other ops.
   if (hasConstant && nonTermCount > 1)
-    return emitOpError(compErrMsg(CompError::PE_CONSTANT_BODY,
+    return emitOpError(cplErrMsg(CplError::PE_CONSTANT_BODY,
                        "constant PE must contain only a single "
                        "handshake.constant; found "))
            << nonTermCount << " non-terminator operations";
 
-  // COMP_PE_DATAFLOW_BODY: dataflow exclusivity.
+  // CPL_PE_DATAFLOW_BODY: dataflow exclusivity.
   if (hasDataflow) {
     if (hasArithMath)
-      return emitOpError(compErrMsg(CompError::PE_DATAFLOW_BODY,
+      return emitOpError(cplErrMsg(CplError::PE_DATAFLOW_BODY,
                          "dataflow PE body must not contain arith/math ops"));
     if (dataflowCount > 1)
-      return emitOpError(compErrMsg(CompError::PE_DATAFLOW_BODY,
+      return emitOpError(cplErrMsg(CplError::PE_DATAFLOW_BODY,
                          "dataflow PE body must contain at most one "
                          "dataflow operation; found "))
              << dataflowCount;
     if (hasInstance)
-      return emitOpError(compErrMsg(CompError::PE_DATAFLOW_BODY,
+      return emitOpError(cplErrMsg(CplError::PE_DATAFLOW_BODY,
                          "dataflow PE body must not contain fabric.instance"));
   }
 
-  // COMP_PE_MIXED_CONSUMPTION: full-consume vs partial-consume.
+  // CPL_PE_MIXED_CONSUMPTION: full-consume vs partial-consume.
   if (hasFullConsume && hasMux)
-    return emitOpError(compErrMsg(CompError::PE_MIXED_CONSUMPTION,
+    return emitOpError(cplErrMsg(CplError::PE_MIXED_CONSUMPTION,
                        "PE body must not mix full-consume (arith/math) "
                        "and partial-consume (handshake.mux/cmerge) operations"));
 
@@ -822,7 +822,7 @@ LogicalResult TemporalPEOp::verify() {
     Type first = allTypes.front();
     for (Type t : allTypes) {
       if (t != first)
-        return emitOpError(compErrMsg(CompError::TEMPORAL_PE_TAG_WIDTH,
+        return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_TAG_WIDTH,
                            "all ports must use the same tagged type; got "))
                << first << " and " << t;
     }
@@ -830,33 +830,33 @@ LogicalResult TemporalPEOp::verify() {
 
   // num_instruction must be >= 1.
   if (getNumInstruction() < 1)
-    return emitOpError(compErrMsg(CompError::TEMPORAL_PE_NUM_INSTRUCTION,
+    return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_NUM_INSTRUCTION,
                        "num_instruction must be >= 1"));
 
   // reg_fifo_depth constraints.
   if (getNumRegister() == 0 && getRegFifoDepth() != 0)
-    return emitOpError(compErrMsg(CompError::TEMPORAL_PE_REG_FIFO_DEPTH,
+    return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_REG_FIFO_DEPTH,
         "reg_fifo_depth must be 0 when num_register is 0"));
   if (getNumRegister() > 0 && getRegFifoDepth() < 1)
-    return emitOpError(compErrMsg(CompError::TEMPORAL_PE_REG_FIFO_DEPTH,
+    return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_REG_FIFO_DEPTH,
         "reg_fifo_depth must be >= 1 when num_register > 0"));
 
   // operand_buffer_size constraints.
   if (getEnableShareOperandBuffer()) {
     if (!getOperandBufferSize())
-      return emitOpError(compErrMsg(CompError::TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING,
+      return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING,
           "operand_buffer_size required when enable_share_operand_buffer"));
     int64_t obs = *getOperandBufferSize();
     if (obs < 1 || obs > 8192)
-      return emitOpError(compErrMsg(
-          CompError::TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE,
+      return emitOpError(cplErrMsg(
+          CplError::TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE,
           "operand_buffer_size must be in [1, 8192]; got "))
              << obs;
   }
 
-  // COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE
+  // CPL_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE
   if (!getEnableShareOperandBuffer() && getOperandBufferSize())
-    return emitOpError(compErrMsg(CompError::TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE,
+    return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE,
         "operand_buffer_size must not be set when "
         "enable_share_operand_buffer is false"));
 
@@ -870,10 +870,10 @@ LogicalResult TemporalPEOp::verify() {
     }
   }
   if (!hasOp)
-    return emitOpError(compErrMsg(CompError::TEMPORAL_PE_EMPTY_BODY,
+    return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_EMPTY_BODY,
                        "body must contain at least one FU definition"));
 
-  // COMP_TEMPORAL_PE_TAGGED_PE: no tagged PEs inside temporal_pe.
+  // CPL_TEMPORAL_PE_TAGGED_PE: no tagged PEs inside temporal_pe.
   for (auto &op : body) {
     auto pe = dyn_cast<PEOp>(&op);
     if (!pe)
@@ -881,18 +881,18 @@ LogicalResult TemporalPEOp::verify() {
     if (auto peFnType = pe.getFunctionType()) {
       for (Type t : peFnType->getInputs()) {
         if (isa<dataflow_t>(t))
-          return emitOpError(compErrMsg(CompError::TEMPORAL_PE_TAGGED_PE,
+          return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_TAGGED_PE,
                              "temporal_pe must not contain tagged fabric.pe"));
       }
       for (Type t : peFnType->getResults()) {
         if (isa<dataflow_t>(t))
-          return emitOpError(compErrMsg(CompError::TEMPORAL_PE_TAGGED_PE,
+          return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_TAGGED_PE,
                              "temporal_pe must not contain tagged fabric.pe"));
       }
     }
   }
 
-  // COMP_TEMPORAL_PE_LOADSTORE: no load/store PEs inside temporal_pe.
+  // CPL_TEMPORAL_PE_LOADSTORE: no load/store PEs inside temporal_pe.
   // Detect by body content (handshake.load/handshake.store), not attributes.
   for (auto &op : body) {
     auto pe = dyn_cast<PEOp>(&op);
@@ -902,12 +902,12 @@ LogicalResult TemporalPEOp::verify() {
     for (auto &innerOp : peBody) {
       StringRef opName = innerOp.getName().getStringRef();
       if (opName == "handshake.load" || opName == "handshake.store")
-        return emitOpError(compErrMsg(CompError::TEMPORAL_PE_LOADSTORE,
+        return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_LOADSTORE,
                            "temporal_pe must not contain load/store PE"));
     }
   }
 
-  // COMP_TEMPORAL_PE_DATAFLOW_INVALID: no dataflow PEs inside temporal_pe.
+  // CPL_TEMPORAL_PE_DATAFLOW_INVALID: no dataflow PEs inside temporal_pe.
   // Also follows fabric.instance references to check the target PE body.
   for (auto &op : body) {
     auto pe = dyn_cast<PEOp>(&op);
@@ -933,8 +933,8 @@ LogicalResult TemporalPEOp::verify() {
         StringRef dialectName = innerOp.getDialect()
             ? innerOp.getDialect()->getNamespace() : "";
         if (dialectName == "dataflow")
-          return emitOpError(compErrMsg(
-              CompError::TEMPORAL_PE_DATAFLOW_INVALID,
+          return emitOpError(cplErrMsg(
+              CplError::TEMPORAL_PE_DATAFLOW_INVALID,
               "temporal_pe must not contain dataflow PE "
               "(carry/invariant/gate/stream)"));
       }
@@ -946,9 +946,9 @@ LogicalResult TemporalPEOp::verify() {
     unsigned numInputs = fnType.getNumInputs();
     unsigned numOutputs = fnType.getNumResults();
 
-    // COMP_TEMPORAL_PE_TOO_MANY_SLOTS
+    // CPL_TEMPORAL_PE_TOO_MANY_SLOTS
     if (static_cast<int64_t>(im->size()) > getNumInstruction())
-      return emitOpError(compErrMsg(CompError::TEMPORAL_PE_TOO_MANY_SLOTS,
+      return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_TOO_MANY_SLOTS,
                          "instruction_mem slot count must be <= "
                          "num_instruction ("))
              << getNumInstruction() << "); got " << im->size();
@@ -956,9 +956,9 @@ LogicalResult TemporalPEOp::verify() {
     // Sparse format checks: mixed format, slot order, implicit hole.
     if (failed(verifySparseFormat(
             getOperation(), *im, "instruction_mem",
-            compErrCode(CompError::TEMPORAL_PE_MIXED_FORMAT),
-            compErrCode(CompError::TEMPORAL_PE_SLOT_ORDER),
-            compErrCode(CompError::TEMPORAL_PE_IMPLICIT_HOLE))))
+            cplErrCode(CplError::TEMPORAL_PE_MIXED_FORMAT),
+            cplErrCode(CplError::TEMPORAL_PE_SLOT_ORDER),
+            cplErrCode(CplError::TEMPORAL_PE_IMPLICIT_HOLE))))
       return failure();
 
     for (auto [instIdx, entry] : llvm::enumerate(*im)) {
@@ -972,9 +972,9 @@ LogicalResult TemporalPEOp::verify() {
       if (inst.contains("invalid"))
         continue;
 
-      // COMP_TEMPORAL_PE_REG_DISABLED: check for reg() usage.
+      // CPL_TEMPORAL_PE_REG_DISABLED: check for reg() usage.
       if (getNumRegister() == 0 && inst.contains("reg("))
-        return emitOpError(compErrMsg(CompError::TEMPORAL_PE_REG_DISABLED,
+        return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_REG_DISABLED,
                            "instruction_mem entry "))
                << instIdx << " uses reg() when num_register is 0";
 
@@ -1007,9 +1007,9 @@ LogicalResult TemporalPEOp::verify() {
           else if (c == ')') --depth;
           else if (c == ',' && depth == 0) ++destCount;
         }
-        // COMP_TEMPORAL_PE_DEST_COUNT
+        // CPL_TEMPORAL_PE_DEST_COUNT
         if (destCount != numOutputs)
-          return emitOpError(compErrMsg(CompError::TEMPORAL_PE_DEST_COUNT,
+          return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_DEST_COUNT,
                              "instruction_mem entry "))
                  << instIdx << " has " << destCount
                  << " destination(s) but num_outputs is " << numOutputs;
@@ -1024,15 +1024,15 @@ LogicalResult TemporalPEOp::verify() {
           else if (c == ')') --depth;
           else if (c == ',' && depth == 0) ++srcCount;
         }
-        // COMP_TEMPORAL_PE_SRC_COUNT
+        // CPL_TEMPORAL_PE_SRC_COUNT
         if (srcCount != numInputs)
-          return emitOpError(compErrMsg(CompError::TEMPORAL_PE_SRC_COUNT,
+          return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_SRC_COUNT,
                              "instruction_mem entry "))
                  << instIdx << " has " << srcCount
                  << " source(s) but num_inputs is " << numInputs;
       }
 
-      // COMP_TEMPORAL_PE_SRC_MISMATCH: in(j) at operand position i must have
+      // CPL_TEMPORAL_PE_SRC_MISMATCH: in(j) at operand position i must have
       // j == i. Extract operand portion after '= fuName(fuIdx)'.
       if (parenClose != StringRef::npos) {
         StringRef operands = srcsStr;
@@ -1051,8 +1051,8 @@ LogicalResult TemporalPEOp::verify() {
               unsigned srcIdx;
               if (!rest.substr(0, cp).getAsInteger(10, srcIdx)) {
                 if (srcIdx != operandPos)
-                  return emitOpError(compErrMsg(
-                      CompError::TEMPORAL_PE_SRC_MISMATCH,
+                  return emitOpError(cplErrMsg(
+                      CplError::TEMPORAL_PE_SRC_MISMATCH,
                       "instruction_mem entry "))
                          << instIdx << ": in(" << srcIdx
                          << ") at operand position " << operandPos

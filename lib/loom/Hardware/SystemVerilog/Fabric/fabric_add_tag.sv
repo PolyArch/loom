@@ -36,13 +36,13 @@ module fabric_add_tag #(
 );
 
   // -----------------------------------------------------------------------
-  // Elaboration-time parameter validation (COMP_ errors)
+  // Elaboration-time parameter validation (CPL_ errors)
   // -----------------------------------------------------------------------
   initial begin : param_check
     if (TAG_WIDTH < 1)
-      $fatal(1, "COMP_ADD_TAG_TAG_WIDTH: TAG_WIDTH must be >= 1");
+      $fatal(1, "CPL_ADD_TAG_TAG_WIDTH: TAG_WIDTH must be >= 1");
     if (DATA_WIDTH < 1)
-      $fatal(1, "COMP_ADD_TAG_DATA_WIDTH: DATA_WIDTH must be >= 1");
+      $fatal(1, "CPL_ADD_TAG_DATA_WIDTH: DATA_WIDTH must be >= 1");
   end
 
   // -----------------------------------------------------------------------

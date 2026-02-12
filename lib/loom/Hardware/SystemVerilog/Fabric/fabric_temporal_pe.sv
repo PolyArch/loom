@@ -69,21 +69,21 @@ module fabric_temporal_pe #(
   // -----------------------------------------------------------------------
   initial begin : param_check
     if (NUM_INPUTS < 1)
-      $fatal(1, "COMP_TEMPORAL_PE_NUM_INPUTS: must be >= 1");
+      $fatal(1, "CPL_TEMPORAL_PE_NUM_INPUTS: must be >= 1");
     if (NUM_OUTPUTS < 1)
-      $fatal(1, "COMP_TEMPORAL_PE_NUM_OUTPUTS: must be >= 1");
+      $fatal(1, "CPL_TEMPORAL_PE_NUM_OUTPUTS: must be >= 1");
     if (TAG_WIDTH < 1)
-      $fatal(1, "COMP_TEMPORAL_PE_TAG_WIDTH: must be >= 1");
+      $fatal(1, "CPL_TEMPORAL_PE_TAG_WIDTH: must be >= 1");
     if (NUM_INSTRUCTIONS < 1)
-      $fatal(1, "COMP_TEMPORAL_PE_NUM_INSTRUCTION: must be >= 1");
+      $fatal(1, "CPL_TEMPORAL_PE_NUM_INSTRUCTION: must be >= 1");
     if (NUM_REGISTERS > 0 && REG_FIFO_DEPTH < 1)
-      $fatal(1, "COMP_TEMPORAL_PE_REG_FIFO_DEPTH: must be >= 1 when registers enabled");
+      $fatal(1, "CPL_TEMPORAL_PE_REG_FIFO_DEPTH: must be >= 1 when registers enabled");
     if (SHARED_OPERAND_BUFFER == 0 && OPERAND_BUFFER_SIZE != 0)
-      $fatal(1, "COMP_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE: per-instruction mode cannot have size");
+      $fatal(1, "CPL_TEMPORAL_PE_OPERAND_BUFFER_MODE_A_HAS_SIZE: per-instruction mode cannot have size");
     if (SHARED_OPERAND_BUFFER != 0 && OPERAND_BUFFER_SIZE < 1)
-      $fatal(1, "COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING: shared mode requires size >= 1");
+      $fatal(1, "CPL_TEMPORAL_PE_OPERAND_BUFFER_SIZE_MISSING: shared mode requires size >= 1");
     if (SHARED_OPERAND_BUFFER != 0 && OPERAND_BUFFER_SIZE > 8192)
-      $fatal(1, "COMP_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE: Size out of [1, 8192] range");
+      $fatal(1, "CPL_TEMPORAL_PE_OPERAND_BUFFER_SIZE_RANGE: Size out of [1, 8192] range");
   end
   // ===== END PARAM CHECK =====
 

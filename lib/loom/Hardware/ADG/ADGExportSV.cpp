@@ -1106,7 +1106,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     readySources["%" + port.name].push_back(sinkReady);
   }
   // Emit ready for module input ports; drive unconnected to 0.
-  // Validation (COMP_FANOUT_MODULE_BOUNDARY) guarantees at most one sink.
+  // Validation (CPL_FANOUT_MODULE_BOUNDARY) guarantees at most one sink.
   for (const auto *p : streamInputs) {
     std::string key = "%" + p->name;
     auto it = readySources.find(key);
@@ -1169,7 +1169,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
   }
 
   // Emit ready for instance output ports.
-  // Validation (COMP_FANOUT_MODULE_INNER) guarantees at most one sink.
+  // Validation (CPL_FANOUT_MODULE_INNER) guarantees at most one sink.
   for (const auto &[srcKey, sources] : readySources) {
     if (sources.size() == 1) {
       top << "  assign " << srcKey << "_ready = " << sources[0] << ";\n";

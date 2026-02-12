@@ -93,7 +93,7 @@ responsibility, not a compile-time constraint. The FIFO is still classified as
 
 ## Depth Semantics
 
-- **`depth = 0`**: NOT allowed. Raises `COMP_FIFO_DEPTH_ZERO`.
+- **`depth = 0`**: NOT allowed. Raises `CPL_FIFO_DEPTH_ZERO`.
 - **`depth = 1`**: Single-buffer. Upstream writes in cycle N, downstream reads
   in cycle N+1. Backpressure has 1-cycle latency. 50% throughput. Sufficient
   to break combinational loops.
@@ -121,11 +121,11 @@ clock boundary.
 
 | Error Code | Condition |
 |------------|-----------|
-| `COMP_FIFO_DEPTH_ZERO` | `depth` is 0 |
-| `COMP_FIFO_TYPE_MISMATCH` | Input and output types do not match |
-| `COMP_FIFO_INVALID_TYPE` | Type is not a native value type or `!dataflow.tagged` |
-| `COMP_FIFO_BYPASSED_NOT_BYPASSABLE` | `bypassed` attribute present without `bypassable` |
-| `COMP_FIFO_BYPASSED_MISSING` | `bypassable` is set but `bypassed` attribute is missing |
+| `CPL_FIFO_DEPTH_ZERO` | `depth` is 0 |
+| `CPL_FIFO_TYPE_MISMATCH` | Input and output types do not match |
+| `CPL_FIFO_INVALID_TYPE` | Type is not a native value type or `!dataflow.tagged` |
+| `CPL_FIFO_BYPASSED_NOT_BYPASSABLE` | `bypassed` attribute present without `bypassable` |
+| `CPL_FIFO_BYPASSED_MISSING` | `bypassable` is set but `bypassed` attribute is missing |
 
 See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.
 

@@ -8,7 +8,7 @@
 // Included by fabric_common.svh. Other SV modules should not include this
 // file directly -- include fabric_common.svh instead.
 //
-// COMP_ (compile-time) error codes are defined in:
+// CPL_ (compile-time) error codes are defined in:
 //   include/loom/Hardware/Common/FabricError.h
 //
 // The normative specification for all error codes is:

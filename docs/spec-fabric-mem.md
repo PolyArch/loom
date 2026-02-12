@@ -118,7 +118,7 @@ All attributes in this section are hardware parameters.
   the module. If `false`, the memory exposes an output memref that must be
   yielded by `fabric.module`. The default is `true`.
 - `fabric.extmemory` does not support `is_private`. Supplying `is_private` on
-  `fabric.extmemory` is invalid (`COMP_MEMORY_EXTMEM_PRIVATE`).
+  `fabric.extmemory` is invalid (`CPL_MEMORY_EXTMEM_PRIVATE`).
 
 ### Port Groups
 
@@ -237,7 +237,7 @@ memref is the first result of the operation, must be yielded by
 `fabric.module`, and appears in the module result list.
 
 If a `fabric.module` yields a memref that is not produced by a non-private
-`fabric.memory`, the compiler must raise `COMP_MEMORY_PRIVATE_OUTPUT`.
+`fabric.memory`, the compiler must raise `CPL_MEMORY_PRIVATE_OUTPUT`.
 
 `fabric.extmemory` never produces a memref output.
 
@@ -261,18 +261,18 @@ store. A memory interface cannot be used to access a different element width.
 
 Violations of the following constraints are compile-time errors:
 
-- `ldCount == 0` and `stCount == 0` (`COMP_MEMORY_PORTS_EMPTY`).
-- `lsqDepth != 0` when `stCount == 0` (`COMP_MEMORY_LSQ_WITHOUT_STORE`).
-- `lsqDepth < 1` when `stCount > 0` (`COMP_MEMORY_LSQ_MIN`).
-- Address ports are not `index` or tagged `index` (`COMP_MEMORY_ADDR_TYPE`).
-- Data value type does not match memref element type (`COMP_MEMORY_DATA_TYPE`).
-- Tagging requirements are not met (`COMP_MEMORY_TAG_REQUIRED`,
-  `COMP_MEMORY_TAG_FOR_SINGLE`, `COMP_MEMORY_TAG_WIDTH`).
-- Dynamic memref shape on `fabric.memory` (`COMP_MEMORY_STATIC_REQUIRED`).
+- `ldCount == 0` and `stCount == 0` (`CPL_MEMORY_PORTS_EMPTY`).
+- `lsqDepth != 0` when `stCount == 0` (`CPL_MEMORY_LSQ_WITHOUT_STORE`).
+- `lsqDepth < 1` when `stCount > 0` (`CPL_MEMORY_LSQ_MIN`).
+- Address ports are not `index` or tagged `index` (`CPL_MEMORY_ADDR_TYPE`).
+- Data value type does not match memref element type (`CPL_MEMORY_DATA_TYPE`).
+- Tagging requirements are not met (`CPL_MEMORY_TAG_REQUIRED`,
+  `CPL_MEMORY_TAG_FOR_SINGLE`, `CPL_MEMORY_TAG_WIDTH`).
+- Dynamic memref shape on `fabric.memory` (`CPL_MEMORY_STATIC_REQUIRED`).
 - `fabric.extmemory` memref operand is not a module memref input
-  (`COMP_MEMORY_EXTMEM_BINDING`).
+  (`CPL_MEMORY_EXTMEM_BINDING`).
 - `is_private` is supplied on `fabric.extmemory`
-  (`COMP_MEMORY_EXTMEM_PRIVATE`).
+  (`CPL_MEMORY_EXTMEM_PRIVATE`).
 
 ## Interaction with Load/Store PEs
 

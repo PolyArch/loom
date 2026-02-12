@@ -39,13 +39,13 @@ module fabric_fifo #(
 );
 
   // -----------------------------------------------------------------------
-  // Elaboration-time parameter validation (COMP_ errors)
+  // Elaboration-time parameter validation (CPL_ errors)
   // -----------------------------------------------------------------------
   initial begin : param_check
     if (DEPTH == 0)
-      $fatal(1, "COMP_FIFO_DEPTH_ZERO: depth must be >= 1");
+      $fatal(1, "CPL_FIFO_DEPTH_ZERO: depth must be >= 1");
     if (PAYLOAD_WIDTH <= 0)
-      $fatal(1, "COMP_FIFO_INVALID_TYPE: PAYLOAD_WIDTH (DATA_WIDTH + TAG_WIDTH) must be > 0");
+      $fatal(1, "CPL_FIFO_INVALID_TYPE: PAYLOAD_WIDTH (DATA_WIDTH + TAG_WIDTH) must be > 0");
   end
 
   // -----------------------------------------------------------------------

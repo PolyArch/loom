@@ -1,11 +1,11 @@
-//===-- tb_fabric_fifo_invalid_type.sv - Minimal COMP_ test ----*- SV -*-===//
+//===-- tb_fabric_fifo_invalid_type.sv - Minimal CPL_ test ----*- SV -*-===//
 //
 // Part of the Loom project.
 //
 //===----------------------------------------------------------------------===//
 //
 // Minimal testbench that instantiates fabric_fifo with DATA_WIDTH=0 to
-// trigger COMP_FIFO_INVALID_TYPE. Uses a fixed DEPTH=1 to avoid structural
+// trigger CPL_FIFO_INVALID_TYPE. Uses a fixed DEPTH=1 to avoid structural
 // issues from zero-width payload in the circular buffer.
 //
 //===----------------------------------------------------------------------===//
@@ -55,8 +55,8 @@ module tb_fabric_fifo_invalid_type #(
     repeat (3) @(posedge clk);
     rst_n = 1;
     repeat (5) @(posedge clk);
-    // If we reach here, COMP_FIFO_INVALID_TYPE did not fire
-    $fatal(1, "FAIL: expected COMP_FIFO_INVALID_TYPE but did not get it");
+    // If we reach here, CPL_FIFO_INVALID_TYPE did not fire
+    $fatal(1, "FAIL: expected CPL_FIFO_INVALID_TYPE but did not get it");
   end
 
 endmodule

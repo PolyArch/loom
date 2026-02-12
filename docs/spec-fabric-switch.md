@@ -90,8 +90,8 @@ If an attribute is omitted, the following defaults apply:
 - Each output may select at most one routed input.
 
 Violations of hardware-parameter constraints are compile-time errors:
-`COMP_SWITCH_PORT_LIMIT`, `COMP_SWITCH_TABLE_SHAPE`, `COMP_SWITCH_ROW_EMPTY`,
-`COMP_SWITCH_COL_EMPTY`, and `COMP_SWITCH_ROUTE_LEN_MISMATCH`. Violations of
+`CPL_SWITCH_PORT_LIMIT`, `CPL_SWITCH_TABLE_SHAPE`, `CPL_SWITCH_ROW_EMPTY`,
+`CPL_SWITCH_COL_EMPTY`, and `CPL_SWITCH_ROUTE_LEN_MISMATCH`. Violations of
 runtime routing constraints are configuration errors:
 `CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT` (multiple inputs route to the same
 output). See [spec-fabric-error.md](./spec-fabric-error.md).

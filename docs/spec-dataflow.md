@@ -120,14 +120,14 @@ control stream.
 
 ### Constraints
 
-- `%d` must be `i1`. Violations raise `COMP_DATAFLOW_CARRY_CTRL_TYPE`.
+- `%d` must be `i1`. Violations raise `CPL_DATAFLOW_CARRY_CTRL_TYPE`.
 - `%a`, `%b`, and `%o` must have the same type. Violations raise
-  `COMP_DATAFLOW_CARRY_TYPE_MISMATCH`.
+  `CPL_DATAFLOW_CARRY_TYPE_MISMATCH`.
 
 Example error:
 
 ```
-// ERROR: COMP_DATAFLOW_CARRY_CTRL_TYPE
+// ERROR: CPL_DATAFLOW_CARRY_CTRL_TYPE
 // %d is i32 but must be i1
 %o = dataflow.carry %d, %a, %b : i32, i32, i32 -> i32
 ```
@@ -135,7 +135,7 @@ Example error:
 Example error:
 
 ```
-// ERROR: COMP_DATAFLOW_CARRY_TYPE_MISMATCH
+// ERROR: CPL_DATAFLOW_CARRY_TYPE_MISMATCH
 // %a is i32 but %b is f32
 %o = dataflow.carry %d, %a, %b : i1, i32, f32 -> i32
 ```
@@ -196,14 +196,14 @@ A loop-invariant value repeater aligned to a control stream.
 
 ### Constraints
 
-- `%d` must be `i1`. Violations raise `COMP_DATAFLOW_INVARIANT_CTRL_TYPE`.
+- `%d` must be `i1`. Violations raise `CPL_DATAFLOW_INVARIANT_CTRL_TYPE`.
 - `%a` and `%o` must have the same type. Violations raise
-  `COMP_DATAFLOW_INVARIANT_TYPE_MISMATCH`.
+  `CPL_DATAFLOW_INVARIANT_TYPE_MISMATCH`.
 
 Example error:
 
 ```
-// ERROR: COMP_DATAFLOW_INVARIANT_CTRL_TYPE
+// ERROR: CPL_DATAFLOW_INVARIANT_CTRL_TYPE
 // %d is i32 but must be i1
 %o = dataflow.invariant %d, %a : i32, i32 -> i32
 ```
@@ -211,7 +211,7 @@ Example error:
 Example error:
 
 ```
-// ERROR: COMP_DATAFLOW_INVARIANT_TYPE_MISMATCH
+// ERROR: CPL_DATAFLOW_INVARIANT_TYPE_MISMATCH
 // %a is i32 but result %o is f32
 %o = dataflow.invariant %d, %a : i1, i32 -> f32
 ```
@@ -273,11 +273,11 @@ A configurable index stream generator for loop-like control patterns.
 ### Constraints
 
 - All operands must be `index`. Violations raise
-  `COMP_DATAFLOW_STREAM_OPERAND_TYPE`.
+  `CPL_DATAFLOW_STREAM_OPERAND_TYPE`.
 - `step_op` must be one of `+=`, `-=`, `*=`, `/=`, `<<=`, `>>=`. Invalid values
-  raise `COMP_DATAFLOW_STREAM_INVALID_STEP_OP`.
+  raise `CPL_DATAFLOW_STREAM_INVALID_STEP_OP`.
 - `cont_cond` must be one of `<`, `<=`, `>`, `>=`, `!=`. Invalid values raise
-  `COMP_DATAFLOW_STREAM_INVALID_CONT_COND`.
+  `CPL_DATAFLOW_STREAM_INVALID_CONT_COND`.
 - If `step_op` is omitted, it defaults to `+=`.
 - If `cont_cond` is omitted, it defaults to `<`.
 - `step` must be nonzero. If `step = 0` at runtime, the hardware raises
@@ -286,15 +286,15 @@ A configurable index stream generator for loop-like control patterns.
 Example errors:
 
 ```
-// ERROR: COMP_DATAFLOW_STREAM_OPERAND_TYPE
+// ERROR: CPL_DATAFLOW_STREAM_OPERAND_TYPE
 // %start is i32 but must be index
 %idx, %cont = dataflow.stream %start, %step, %bound : i32, index, index
 
-// ERROR: COMP_DATAFLOW_STREAM_INVALID_STEP_OP
+// ERROR: CPL_DATAFLOW_STREAM_INVALID_STEP_OP
 // "%=" is not a valid step_op
 %idx, %cont = dataflow.stream %start, %step, %bound {step_op = "%="}
 
-// ERROR: COMP_DATAFLOW_STREAM_INVALID_CONT_COND
+// ERROR: CPL_DATAFLOW_STREAM_INVALID_CONT_COND
 // "==" is not a valid cont_cond
 %idx, %cont = dataflow.stream %start, %step, %bound {cont_cond = "=="}
 ```
@@ -417,7 +417,7 @@ for each `handshake.load` and `handshake.store`. Each control token must be
 rooted at the `handshake.func` `start_token`, or depend only on done tokens
 produced by the same `handshake.extmemory` or `handshake.memory` associated with
 that access. If a control chain depends on done tokens from other memory
-interfaces, the compiler raises `COMP_HANDSHAKE_CTRL_MULTI_MEM`. See
+interfaces, the compiler raises `CPL_HANDSHAKE_CTRL_MULTI_MEM`. See
 [spec-dataflow-error.md](./spec-dataflow-error.md).
 
 ## Operation: `dataflow.gate`
@@ -443,20 +443,20 @@ A stream adapter that aligns before-region and after-region loop streams.
 
 ### Constraints
 
-- `%before_cond` must be `i1`. Violations raise `COMP_DATAFLOW_GATE_COND_TYPE`.
+- `%before_cond` must be `i1`. Violations raise `CPL_DATAFLOW_GATE_COND_TYPE`.
 - `%before_value` and `%after_value` must have the same type. Violations raise
-  `COMP_DATAFLOW_GATE_TYPE_MISMATCH`.
-- `%after_cond` must be `i1`. Violations raise `COMP_DATAFLOW_GATE_COND_TYPE`.
+  `CPL_DATAFLOW_GATE_TYPE_MISMATCH`.
+- `%after_cond` must be `i1`. Violations raise `CPL_DATAFLOW_GATE_COND_TYPE`.
 
 Example error:
 
 ```
-// ERROR: COMP_DATAFLOW_GATE_COND_TYPE
+// ERROR: CPL_DATAFLOW_GATE_COND_TYPE
 // %before_cond is i32 but must be i1
 %after_value, %after_cond = dataflow.gate %before_value, %before_cond
   : i32, i32 -> i32, i1
 
-// ERROR: COMP_DATAFLOW_GATE_TYPE_MISMATCH
+// ERROR: CPL_DATAFLOW_GATE_TYPE_MISMATCH
 // %before_value is i32 but %after_value is f32
 %after_value, %after_cond = dataflow.gate %before_value, %before_cond
   : i32, i1 -> f32, i1

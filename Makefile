@@ -1,8 +1,8 @@
 SHELL := /bin/sh
 
-.PHONY: all init build rebuild test clean purge
+.PHONY: all init build rebuild check clean purge
 
-all: rebuild test
+all: rebuild check
 
 init:
 	@set -e; \
@@ -27,7 +27,7 @@ rebuild: init
 	cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DLLVM_ENABLE_PROJECTS="clang;mlir" -DLLVM_TARGETS_TO_BUILD=host; \
 	ninja -C build clang mlir-opt mlir-translate loom FileCheck not
 
-test:
+check:
 	@set -e; \
 	ninja -C build check-loom
 
