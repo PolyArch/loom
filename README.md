@@ -21,7 +21,7 @@ make init
 make rebuild
 
 # Run tests
-make test
+make check
 ```
 
 ### Compile a Kernel
