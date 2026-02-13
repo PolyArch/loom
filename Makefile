@@ -19,12 +19,12 @@ init:
 
 build: init
 	@set -e; \
-	cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DLLVM_ENABLE_PROJECTS="clang;mlir" -DLLVM_TARGETS_TO_BUILD=host; \
+	cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;mlir" -DLLVM_TARGETS_TO_BUILD=host; \
 	ninja -C build loom
 
 rebuild: init
 	@set -e; \
-	cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DLLVM_ENABLE_PROJECTS="clang;mlir" -DLLVM_TARGETS_TO_BUILD=host; \
+	cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;mlir" -DLLVM_TARGETS_TO_BUILD=host; \
 	ninja -C build clang mlir-opt mlir-translate loom FileCheck not
 
 check:
@@ -33,9 +33,9 @@ check:
 
 clean:
 	@set -e; \
-	ninja -C build clean-loom
+	if [ -d build ]; then ninja -C build clean-loom; fi
 	rm -rf ucli.key *.fsdb novas* verdi* sysProgressP*
 
 purge: clean
 	@set -e; \
-	rm -rf build
+	rm -rf build .cache
