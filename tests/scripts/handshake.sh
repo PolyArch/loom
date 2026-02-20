@@ -19,7 +19,11 @@ if [[ "${1:-}" == "--single" ]]; then
 
   CHECK_HANDSHAKE_MEMREF=${LOOM_CHECK_HANDSHAKE_MEMREF:-false}
   HANDSHAKE_TAG=${LOOM_HANDSHAKE_TAG:-}
+  NO_VISUALIZATION=${LOOM_NO_VISUALIZATION:-false}
   tag_suffix="${HANDSHAKE_TAG:+.${HANDSHAKE_TAG}}"
+  if [[ "${NO_VISUALIZATION}" == "true" ]]; then
+    EXTRA_ARGS+=("--no-visualization")
+  fi
 
   app_name=$(basename "${APP_DIR}")
   output_dir="${APP_DIR}/Output"
@@ -72,7 +76,13 @@ for line in lines:
 PY
     fi
   } >"${log_file}" 2>&1
-  exit $?
+  status=$?
+  output_dot="${output_dir}/${app_name}${tag_suffix}.handshake.dot"
+  output_svg="${output_dir}/${app_name}${tag_suffix}.handshake.svg"
+  if [[ "${NO_VISUALIZATION}" != "true" ]] && [[ ${status} -eq 0 ]] && command -v dot >/dev/null 2>&1 && [[ -f "${output_dot}" ]]; then
+    dot -Tsvg "${output_dot}" -o "${output_svg}" 2>/dev/null || true
+  fi
+  exit ${status}
 fi
 
 # --- Batch mode ---
@@ -81,6 +91,10 @@ LOOM_BIN=$(loom_resolve_bin "${1:-${ROOT_DIR}/build/bin/loom}"); shift || true
 EXTRA_ARGS=("$@")
 
 HANDSHAKE_TAG=${LOOM_HANDSHAKE_TAG:-}
+NO_VISUALIZATION=${LOOM_NO_VISUALIZATION:-false}
+if [[ "${NO_VISUALIZATION}" == "true" ]]; then
+  EXTRA_ARGS+=("--no-visualization")
+fi
 
 loom_require_parallel
 
@@ -108,10 +122,15 @@ for app_dir in "${app_dirs[@]}"; do
 
   ll_name="${app_name}${tag_suffix}.llvm.ll"
   hs_name="${app_name}${tag_suffix}.handshake.mlir"
+  dot_name="${app_name}${tag_suffix}.handshake.dot"
+  svg_name="${app_name}${tag_suffix}.handshake.svg"
 
   line="mkdir -p ${rel_out}"
   line+=" && ${rel_loom}${extra_str}${rel_sources} -I ${rel_include} -I ${rel_app} -o ${rel_out}/${ll_name}"
   line+=" && test -f ${rel_out}/${hs_name}"
+  if [[ "${NO_VISUALIZATION}" != "true" ]]; then
+    line+=" && (command -v dot >/dev/null 2>&1 && [[ -f ${rel_out}/${dot_name} ]] && dot -Tsvg ${rel_out}/${dot_name} -o ${rel_out}/${svg_name} 2>/dev/null || true)"
+  fi
 
   echo "${line}" >> "${PARALLEL_FILE}"
 done

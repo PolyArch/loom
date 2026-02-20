@@ -76,6 +76,7 @@
 #include "loom/Conversion/LLVMToSCF.h"
 #include "loom/Conversion/SCFToHandshake.h"
 #include "loom/Conversion/SCFPostProcess.h"
+#include "loom/Visualization/HandshakeToDot.h"
 #include "loom/Dialect/Dataflow/DataflowDialect.h"
 #include "loom/Dialect/Fabric/FabricDialect.h"
 
@@ -173,6 +174,19 @@ std::string DeriveHandshakeOutputPath(llvm::StringRef output_path) {
     return (base + ".handshake.mlir").str();
   }
   return (output_path + ".handshake.mlir").str();
+}
+
+std::string DeriveHandshakeDotPath(llvm::StringRef output_path) {
+  if (output_path.ends_with(".llvm.ll")) {
+    llvm::StringRef base =
+        output_path.drop_back(sizeof(".llvm.ll") - 1);
+    return (base + ".handshake.dot").str();
+  }
+  if (output_path.ends_with(".ll")) {
+    llvm::StringRef base = output_path.drop_back(3);
+    return (base + ".handshake.dot").str();
+  }
+  return (output_path + ".handshake.dot").str();
 }
 
 std::optional<std::string> ExtractStringFromGlobal(
@@ -375,6 +389,7 @@ struct ParsedArgs {
   bool as_clang = false;
   bool show_help = false;
   bool show_version = false;
+  bool no_visualization = false;
   bool had_error = false;
 };
 
@@ -398,6 +413,9 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "Forwarded compile options include: -I, -D, -U, -std, -O, -g,"
                << " -isystem, -include.\n";
   llvm::outs() << "Linker options (-l, -L, -Wl, -shared, -static) are ignored.\n";
+  llvm::outs() << "\n";
+  llvm::outs() << "Visualization options:\n";
+  llvm::outs() << "  --no-visualization  Skip .handshake.dot generation.\n";
 }
 
 void PrintVersion() {
@@ -466,6 +484,10 @@ ParsedArgs ParseArgs(int argc, char **argv) {
       }
       if (arg == "--version") {
         parsed.show_version = true;
+        continue;
+      }
+      if (arg == "--no-visualization") {
+        parsed.no_visualization = true;
         continue;
       }
       if (arg == "--adg") {
@@ -1099,6 +1121,18 @@ int main(int argc, char **argv) {
 
   mlir_module->print(handshake_output, print_flags);
   handshake_output.flush();
+
+  if (!parsed.no_visualization) {
+    std::string dot_output_path = DeriveHandshakeDotPath(parsed.output_path);
+    std::error_code dot_ec;
+    llvm::raw_fd_ostream dot_output(dot_output_path, dot_ec,
+                                    llvm::sys::fs::OF_Text);
+    if (!dot_ec) {
+      loom::visualization::exportModuleToDot(*mlir_module, dot_output);
+      dot_output.flush();
+    }
+    // Non-fatal: silently skip dot export if file cannot be opened
+  }
 
   return 0;
 }

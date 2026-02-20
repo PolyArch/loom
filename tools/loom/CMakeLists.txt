@@ -56,6 +56,7 @@ foreach(target_name IN ITEMS loom)
     clangLex
     clangBasic
     LoomConversion
+    LoomVisualization
     LoomFabric
     LoomADG
     ${LOOM_MLIR_LIBS}
