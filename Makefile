@@ -31,6 +31,12 @@ check:
 	@set -e; \
 	ninja -C build check-loom
 
+check-one:
+	@rc=0; \
+	$(CURDIR)/tests/scripts/$(SUITE).sh --single $(CURDIR)/build/bin/loom $(CURDIR)/tests/app/$(TEST) --run || rc=$$?; \
+	cat $(CURDIR)/tests/app/$(TEST)/Output/$(TEST).scf.log; \
+	exit $$rc
+
 clean:
 	@set -e; \
 	if [ -d build ]; then ninja -C build clean-loom; fi
