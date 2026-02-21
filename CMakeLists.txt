@@ -43,7 +43,7 @@ set(CIRCT_INCLUDE_TOOLS OFF CACHE BOOL "")
 set(CIRCT_BUILD_TOOLS OFF CACHE BOOL "")
 set(ESI_RUNTIME OFF CACHE BOOL "")
 
-add_subdirectory(externals/llvm-project/llvm)
+add_subdirectory(externals)
 
 list(APPEND CMAKE_MODULE_PATH
   "${CMAKE_CURRENT_SOURCE_DIR}/externals/llvm-project/llvm/cmake/modules"
