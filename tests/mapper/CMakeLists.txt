@@ -30,6 +30,7 @@ set(MAPPER_UNIT_TESTS
   group_placement
   config_region_pack
   cpsat_subproblem_trigger
+  cpsat_group_constraint
 )
 
 set(MAPPER_TEST_TARGETS)

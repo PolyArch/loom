@@ -190,6 +190,48 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
     model.AddExactlyOne(allVars);
   }
 
+  // C_group: Group atomicity - all members of a multi-op group must be
+  // placed together on the group's target HW node, or none of them.
+  {
+    llvm::DenseSet<uint64_t> processedGroups;
+    for (const auto &[sw, candList] : candidates) {
+      for (const Candidate &cand : candList) {
+        if (!cand.isGroup || cand.swNodeIds.size() <= 1)
+          continue;
+
+        // Deduplicate groups by (hwNodeId, smallest swNodeId).
+        IdIndex minSw = cand.swNodeIds[0];
+        for (IdIndex s : cand.swNodeIds)
+          minSw = std::min(minSw, s);
+        uint64_t groupKey =
+            (static_cast<uint64_t>(cand.hwNodeId) << 32) | minSw;
+        if (!processedGroups.insert(groupKey).second)
+          continue;
+
+        // Enforce equality: x[sw0][hw] == x[sw1][hw] == ... for all members.
+        IdIndex refSw = cand.swNodeIds[0];
+        auto refIt = placementVars.find(refSw);
+        if (refIt == placementVars.end())
+          continue;
+        auto refHwIt = refIt->second.find(cand.hwNodeId);
+        if (refHwIt == refIt->second.end())
+          continue;
+
+        for (size_t k = 1; k < cand.swNodeIds.size(); ++k) {
+          IdIndex otherSw = cand.swNodeIds[k];
+          auto otherIt = placementVars.find(otherSw);
+          if (otherIt == placementVars.end())
+            continue;
+          auto otherHwIt = otherIt->second.find(cand.hwNodeId);
+          if (otherHwIt == otherIt->second.end())
+            continue;
+
+          model.AddEquality(refHwIt->second, otherHwIt->second);
+        }
+      }
+    }
+  }
+
   // C4: Capacity constraints - at most one sw node per exclusive hw node.
   llvm::DenseMap<IdIndex, std::vector<BoolVar>> hwNodeVars;
   for (auto &[sw, swVars] : placementVars) {
@@ -355,6 +397,50 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
     for (auto &[hw, var] : swVars)
       allVars.push_back(var);
     model.AddExactlyOne(allVars);
+  }
+
+  // C_group: Group atomicity for sub-problem members.
+  {
+    llvm::DenseSet<uint64_t> processedGroups;
+    for (IdIndex sw : subgraphSwNodes) {
+      auto candIt = candidates.find(sw);
+      if (candIt == candidates.end())
+        continue;
+      for (const Candidate &cand : candIt->second) {
+        if (!cand.isGroup || cand.swNodeIds.size() <= 1)
+          continue;
+
+        IdIndex minSw = cand.swNodeIds[0];
+        for (IdIndex s : cand.swNodeIds)
+          minSw = std::min(minSw, s);
+        uint64_t groupKey =
+            (static_cast<uint64_t>(cand.hwNodeId) << 32) | minSw;
+        if (!processedGroups.insert(groupKey).second)
+          continue;
+
+        // Only enforce equality for members that are in the sub-problem.
+        llvm::SmallVector<IdIndex, 4> activeMembers;
+        for (IdIndex s : cand.swNodeIds) {
+          if (subNodes.count(s) && placementVars.count(s))
+            activeMembers.push_back(s);
+        }
+        if (activeMembers.size() <= 1)
+          continue;
+
+        IdIndex refSw = activeMembers[0];
+        auto refHwIt = placementVars[refSw].find(cand.hwNodeId);
+        if (refHwIt == placementVars[refSw].end())
+          continue;
+
+        for (size_t k = 1; k < activeMembers.size(); ++k) {
+          IdIndex otherSw = activeMembers[k];
+          auto otherHwIt = placementVars[otherSw].find(cand.hwNodeId);
+          if (otherHwIt == placementVars[otherSw].end())
+            continue;
+          model.AddEquality(refHwIt->second, otherHwIt->second);
+        }
+      }
+    }
   }
 
   // Capacity constraints including fixed nodes.

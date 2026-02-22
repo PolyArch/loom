@@ -206,8 +206,25 @@ int main() {
     // sw1 (addi) could start a group if it finds a muli neighbor.
     // The edge goes muli->addi, so sw1's input neighbor is sw0 (muli).
     // That should match body_ops[1] = arith.muli.
-    (void)sw1;
-    (void)foundGroupForSw0;
+
+    // Verify: sw0 (muli) should NOT have a group candidate rooted on it,
+    // since the PE body starts with addi. Group candidates are anchored
+    // to the first body op.
+    TEST_ASSERT(!foundGroupForSw0);
+
+    // With reversed connectivity (muli->addi vs PE body addi->muli),
+    // the group match also fails for sw1 as root because the required
+    // DFG edge direction doesn't match the PE body edge direction.
+    // Multi-op PEs return false for isSingleOpCompatible, so neither
+    // node gets any candidates from this PE.
+    bool foundGroupForSw1 = false;
+    if (candidates.count(sw1)) {
+      for (const auto &c : candidates[sw1]) {
+        if (c.isGroup && c.swNodeIds.size() == 2)
+          foundGroupForSw1 = true;
+      }
+    }
+    TEST_ASSERT(!foundGroupForSw1);
   }
 
   // Test 3: Single-op PE body should not produce group candidates.
