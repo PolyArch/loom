@@ -58,6 +58,7 @@ foreach(target_name IN ITEMS loom)
     LoomConversion
     LoomFabric
     LoomADG
+    LoomMapperCore
     ${LOOM_MLIR_LIBS}
     ${LOOM_LLVM_LIBS}
   )

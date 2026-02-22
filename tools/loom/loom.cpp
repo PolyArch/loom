@@ -78,6 +78,11 @@
 #include "loom/Conversion/SCFPostProcess.h"
 #include "loom/Dialect/Dataflow/DataflowDialect.h"
 #include "loom/Dialect/Fabric/FabricDialect.h"
+#include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Mapper/ADGFlattener.h"
+#include "loom/Mapper/ConfigGen.h"
+#include "loom/Mapper/DFGBuilder.h"
+#include "loom/Mapper/Mapper.h"
 
 #include "circt/Dialect/ESI/ESIDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
@@ -372,6 +377,10 @@ struct ParsedArgs {
   std::vector<std::string> driver_args;
   std::string output_path;
   std::string adg_path;
+  double mapper_budget = 60.0;
+  int mapper_seed = 0;
+  std::string mapper_profile = "balanced";
+  bool dump_mapping = false;
   bool as_clang = false;
   bool show_help = false;
   bool show_version = false;

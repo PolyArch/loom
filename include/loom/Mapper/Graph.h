@@ -59,6 +59,9 @@ public:
 // Node
 //===----------------------------------------------------------------------===//
 
+/// Portless nodes are allowed. Sentinel nodes are created before their ports
+/// are attached, and some ADG nodes may legitimately have no ports. Callers
+/// should add ports via addPort() after node creation.
 class Node {
 public:
   enum Kind {
@@ -146,6 +149,14 @@ public:
   std::vector<std::unique_ptr<Edge>> edges;
 
   mlir::MLIRContext *context = nullptr;
+
+  /// Pre-allocate storage for expected graph size. Call before bulk insertion
+  /// to avoid repeated reallocations.
+  void reserve(size_t nodeHint, size_t portHint, size_t edgeHint) {
+    nodes.reserve(nodeHint);
+    ports.reserve(portHint);
+    edges.reserve(edgeHint);
+  }
 
   /// Append a node, returning its ID (== index in nodes vector).
   IdIndex addNode(std::unique_ptr<Node> node);
