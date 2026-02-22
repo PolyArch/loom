@@ -48,7 +48,10 @@ Named temporal switches can be instantiated via `fabric.instance`:
 ### Interface Types
 
 - All inputs and outputs must be `!dataflow.tagged`.
-- All ports must use the same tagged type.
+- All ports must have bit-width-compatible tagged types: value bit width AND
+  tag bit width must each match. Value semantic types may differ. For example,
+  `!dataflow.tagged<i32, i4>` and `!dataflow.tagged<f32, i4>` are compatible
+  because both have 32-bit values and 4-bit tags.
 - Tag type must satisfy `!dataflow.tagged` constraints from
   [spec-dataflow.md](./spec-dataflow.md). Tag-width range violations raise
   `CPL_TAG_WIDTH_RANGE`.

@@ -41,7 +41,10 @@ Named FIFOs can be instantiated via `fabric.instance`:
 ### Interface Types
 
 - Single input, single output.
-- Output type must be identical to input type.
+- Output type must be bit-width compatible with input type. For native types,
+  only bit width must match (e.g., `i32` and `f32` are compatible). For
+  `!dataflow.tagged` types, value bit width AND tag bit width must each match.
+  Native-to-tagged mixing is never allowed.
 - The type may be any native value type or `!dataflow.tagged`.
 
 **Supported types:**
@@ -122,7 +125,7 @@ clock boundary.
 | Error Code | Condition |
 |------------|-----------|
 | `CPL_FIFO_DEPTH_ZERO` | `depth` is 0 |
-| `CPL_FIFO_TYPE_MISMATCH` | Input and output types do not match |
+| `CPL_FIFO_TYPE_MISMATCH` | Input and output types are not bit-width compatible |
 | `CPL_FIFO_INVALID_TYPE` | Type is not a native value type or `!dataflow.tagged` |
 | `CPL_FIFO_BYPASSED_NOT_BYPASSABLE` | `bypassed` attribute present without `bypassable` |
 | `CPL_FIFO_BYPASSED_MISSING` | `bypassable` is set but `bypassed` attribute is missing |

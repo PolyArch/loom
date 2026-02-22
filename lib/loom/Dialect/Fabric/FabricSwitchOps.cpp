@@ -18,9 +18,62 @@ using namespace loom::fabric;
 // Shared verification helpers
 //===----------------------------------------------------------------------===//
 
-static LogicalResult verifyUniformType(Operation *op,
-                                       OperandRange inputs,
-                                       ResultRange outputs) {
+/// Get the bit width of a native type for routing compatibility checks.
+/// Returns std::nullopt for types without a well-defined bit width (index,
+/// none), which must match exactly.
+static std::optional<unsigned> getNativeBitWidth(Type t) {
+  if (auto intTy = dyn_cast<IntegerType>(t))
+    return intTy.getWidth();
+  if (isa<Float16Type, BFloat16Type>(t))
+    return 16u;
+  if (isa<Float32Type>(t))
+    return 32u;
+  if (isa<Float64Type>(t))
+    return 64u;
+  return std::nullopt;
+}
+
+/// Check whether two types are compatible for routing through pass-through
+/// nodes (switch, temporal_sw, fifo). Rules:
+///   - Exact match: always compatible.
+///   - Both native with known bit width: compatible if widths match.
+///   - Both tagged: compatible if value bit widths AND tag bit widths match.
+///   - One native, one tagged (category mismatch): never compatible.
+static bool isRoutingTypeCompatible(Type a, Type b) {
+  if (a == b)
+    return true;
+
+  bool isTaggedA = isa<dataflow::TaggedType>(a);
+  bool isTaggedB = isa<dataflow::TaggedType>(b);
+
+  // Category mismatch: native-to-tagged is never allowed.
+  if (isTaggedA != isTaggedB)
+    return false;
+
+  if (isTaggedA) {
+    // Both tagged: value bit widths and tag bit widths must each match.
+    auto tagA = cast<dataflow::TaggedType>(a);
+    auto tagB = cast<dataflow::TaggedType>(b);
+    auto valWidthA = getNativeBitWidth(tagA.getValueType());
+    auto valWidthB = getNativeBitWidth(tagB.getValueType());
+    if (!valWidthA || !valWidthB)
+      return false;
+    return *valWidthA == *valWidthB &&
+           tagA.getTagType().getWidth() == tagB.getTagType().getWidth();
+  }
+
+  // Both native: check bit width equality.
+  auto widthA = getNativeBitWidth(a);
+  auto widthB = getNativeBitWidth(b);
+  if (!widthA || !widthB)
+    return false;
+  return *widthA == *widthB;
+}
+
+/// Verify that all port types on a routing node are bit-width compatible.
+static LogicalResult verifyRoutingCompatibleTypes(Operation *op,
+                                                  OperandRange inputs,
+                                                  ResultRange outputs) {
   SmallVector<Type> allTypes;
   for (auto v : inputs)
     allTypes.push_back(v.getType());
@@ -30,8 +83,9 @@ static LogicalResult verifyUniformType(Operation *op,
     return success();
   Type first = allTypes.front();
   for (Type t : allTypes) {
-    if (t != first)
-      return op->emitOpError("all ports must have the same type; got ")
+    if (!isRoutingTypeCompatible(first, t))
+      return op->emitOpError(
+                 "all ports must have bit-width-compatible types; got ")
              << first << " and " << t;
   }
   return success();
@@ -308,7 +362,8 @@ LogicalResult SwitchOp::verify() {
   } else {
     numInputs = getInputs().size();
     numOutputs = getOutputs().size();
-    if (failed(verifyUniformType(getOperation(), getInputs(), getOutputs())))
+    if (failed(verifyRoutingCompatibleTypes(getOperation(), getInputs(),
+                                            getOutputs())))
       return failure();
   }
 
@@ -531,7 +586,8 @@ LogicalResult TemporalSwOp::verify() {
         return emitOpError("all ports must be !dataflow.tagged; got ")
                << v.getType();
     }
-    if (failed(verifyUniformType(getOperation(), getInputs(), getOutputs())))
+    if (failed(verifyRoutingCompatibleTypes(getOperation(), getInputs(),
+                                            getOutputs())))
       return failure();
   }
 

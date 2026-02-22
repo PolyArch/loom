@@ -144,6 +144,58 @@ void FifoOp::print(OpAsmPrinter &p) {
 // FifoOp verify
 //===----------------------------------------------------------------------===//
 
+/// Get the bit width of a native type for routing compatibility checks.
+/// Returns std::nullopt for types without a well-defined bit width (index,
+/// none), which must match exactly.
+static std::optional<unsigned> getNativeBitWidth(Type t) {
+  if (auto intTy = dyn_cast<IntegerType>(t))
+    return intTy.getWidth();
+  if (isa<Float16Type, BFloat16Type>(t))
+    return 16u;
+  if (isa<Float32Type>(t))
+    return 32u;
+  if (isa<Float64Type>(t))
+    return 64u;
+  return std::nullopt;
+}
+
+/// Check whether two types are compatible for routing through pass-through
+/// nodes (switch, temporal_sw, fifo). Rules:
+///   - Exact match: always compatible.
+///   - Both native with known bit width: compatible if widths match.
+///   - Both tagged: compatible if value bit widths AND tag bit widths match.
+///   - One native, one tagged (category mismatch): never compatible.
+static bool isRoutingTypeCompatible(Type a, Type b) {
+  if (a == b)
+    return true;
+
+  bool isTaggedA = isa<dataflow::TaggedType>(a);
+  bool isTaggedB = isa<dataflow::TaggedType>(b);
+
+  // Category mismatch: native-to-tagged is never allowed.
+  if (isTaggedA != isTaggedB)
+    return false;
+
+  if (isTaggedA) {
+    // Both tagged: value bit widths and tag bit widths must each match.
+    auto tagA = cast<dataflow::TaggedType>(a);
+    auto tagB = cast<dataflow::TaggedType>(b);
+    auto valWidthA = getNativeBitWidth(tagA.getValueType());
+    auto valWidthB = getNativeBitWidth(tagB.getValueType());
+    if (!valWidthA || !valWidthB)
+      return false;
+    return *valWidthA == *valWidthB &&
+           tagA.getTagType().getWidth() == tagB.getTagType().getWidth();
+  }
+
+  // Both native: check bit width equality.
+  auto widthA = getNativeBitWidth(a);
+  auto widthB = getNativeBitWidth(b);
+  if (!widthA || !widthB)
+    return false;
+  return *widthA == *widthB;
+}
+
 /// Check if a type is a valid native type for fabric.fifo.
 static bool isValidFifoType(Type type) {
   // Native types: i1, i8, i16, i32, i64, f16, bf16, f32, f64, index, none.
@@ -173,14 +225,18 @@ LogicalResult FifoOp::verify() {
     auto fnType = *getFunctionType();
     if (fnType.getNumInputs() != 1 || fnType.getNumResults() != 1)
       return emitOpError("named fifo must have exactly 1 input and 1 output");
-    if (fnType.getInput(0) != fnType.getResult(0))
+    if (!isRoutingTypeCompatible(fnType.getInput(0), fnType.getResult(0)))
       return emitOpError(cplErrMsg(CplError::FIFO_TYPE_MISMATCH,
-                         "input type must match output type; got "))
+                         "input and output types must be bit-width compatible; got "))
              << fnType.getInput(0) << " vs " << fnType.getResult(0);
     if (!isValidFifoType(fnType.getInput(0)))
       return emitOpError(cplErrMsg(CplError::FIFO_INVALID_TYPE,
                          "type must be a native type or !dataflow.tagged; got "))
              << fnType.getInput(0);
+    if (!isValidFifoType(fnType.getResult(0)))
+      return emitOpError(cplErrMsg(CplError::FIFO_INVALID_TYPE,
+                         "type must be a native type or !dataflow.tagged; got "))
+             << fnType.getResult(0);
     // Named form should have no SSA operands/results.
     if (!getInputs().empty() || !getOutputs().empty())
       return emitOpError(
@@ -193,9 +249,10 @@ LogicalResult FifoOp::verify() {
     if (getOutputs().size() != 1)
       return emitOpError("inline fifo must have exactly 1 output; got ")
              << getOutputs().size();
-    if (getInputs().front().getType() != getOutputs().front().getType())
+    if (!isRoutingTypeCompatible(getInputs().front().getType(),
+                                getOutputs().front().getType()))
       return emitOpError(cplErrMsg(CplError::FIFO_TYPE_MISMATCH,
-                         "input type must match output type; got "))
+                         "input and output types must be bit-width compatible; got "))
              << getInputs().front().getType() << " vs "
              << getOutputs().front().getType();
     if (!isValidFifoType(getInputs().front().getType()))

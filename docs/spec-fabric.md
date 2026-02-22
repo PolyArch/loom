@@ -192,6 +192,20 @@ Explicit conversions must be represented as operations, such as:
   tag transforms.
 - `fabric.pe` containing explicit casts (e.g., `arith.index_cast`).
 
+**Routing node exception:** The pass-through routing primitives
+`fabric.switch`, `fabric.temporal_sw`, and `fabric.fifo` relax strict type
+matching to bit-width compatibility. These nodes forward raw bits without
+interpreting data semantics, so types with equal bit widths are
+interchangeable across their ports. Specifically:
+
+- Native types: only bit width must match (`i32` and `f32` are compatible).
+- Tagged types: value bit width AND tag bit width must each match; value
+  semantic types may differ.
+- Native-to-tagged mixing is never allowed, even through routing nodes.
+
+Tag boundary operations (`fabric.add_tag`, `fabric.del_tag`, `fabric.map_tag`)
+retain strict semantic type matching because they perform type transformations.
+
 ### Port Connection Invariants
 
 The following invariants apply to all connections inside a `fabric.module`:

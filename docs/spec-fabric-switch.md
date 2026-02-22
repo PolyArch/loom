@@ -44,8 +44,14 @@ Named switches can be instantiated via `fabric.instance`:
 
 ### Interface Types
 
-- All inputs and outputs must share the same type.
-- The type may be a native value type or `!dataflow.tagged`.
+- All inputs and outputs must have bit-width-compatible types.
+- For native types (integer, float): only bit width must match. For example,
+  `i32` and `f32` are compatible because both are 32 bits. `i32` and `i16`
+  are not compatible because their widths differ.
+- For `!dataflow.tagged` types: value bit width AND tag bit width must each
+  match. Value semantic types may differ. For example,
+  `!dataflow.tagged<i32, i4>` and `!dataflow.tagged<f32, i4>` are compatible.
+- Native-to-tagged mixing is never allowed, even when bit widths would match.
 - If the type is tagged, the tag is forwarded unchanged.
 
 ### Attributes
