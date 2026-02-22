@@ -15,6 +15,7 @@
 
 #include "loom/Mapper/Types.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <string>
@@ -86,6 +87,12 @@ public:
   std::vector<llvm::SmallVector<TemporalSWAssignment, 4>> temporalSWAssignments;
   std::vector<IdIndex> registerAssignments;
 
+  // --- Group placement bindings ---
+  // Maps HW node ID to the set of SW nodes that form a valid multi-op group.
+  // Populated during group placement; used by C4 validation to allow
+  // multiple SW nodes on the same non-temporal PE when they form a group.
+  llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> groupBindings;
+
   // --- Cost metrics ---
   double totalCost = 0.0;
   double placementPressure = 0.0;
@@ -130,6 +137,7 @@ public:
     std::vector<TemporalPEAssignment> temporalPEAssignments;
     std::vector<llvm::SmallVector<TemporalSWAssignment, 4>> temporalSWAssignments;
     std::vector<IdIndex> registerAssignments;
+    llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> groupBindings;
     double totalCost;
     size_t actionLogSize;
   };

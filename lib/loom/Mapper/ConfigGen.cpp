@@ -320,29 +320,28 @@ void genMemoryConfig(const Node *hwNode, const MappingState &state,
   // Determine tag width from attributes (default 4 bits).
   int64_t tagWidth = getNodeIntAttr(hwNode, "tag_width", 4);
 
+  // Accumulate bit position across all regions. Each region entry is
+  // packed contiguously: {valid(1), start_tag, end_tag, addr_offset}.
+  unsigned addrWidth = 16;
+  (void)addrWidth; // Width documented for reference.
+  uint32_t bitPos = 0;
+
   for (size_t r = 0; r < state.hwNodeToSwNodes[hwId].size() &&
                       static_cast<int64_t>(r) < numRegion;
        ++r) {
-    // REGION_ENTRY format: {valid(1), start_tag, end_tag, addr_offset}
-    uint32_t entryWord = 0;
-    uint32_t entryBitPos = 0;
-
     // valid bit: 1 (this region is active).
-    packBits(words, entryBitPos, 1, 1);
+    packBits(words, bitPos, 1, 1);
 
     // start_tag: region index used as tag range start.
     uint64_t startTag = r;
-    packBits(words, entryBitPos, startTag, static_cast<unsigned>(tagWidth));
+    packBits(words, bitPos, startTag, static_cast<unsigned>(tagWidth));
 
     // end_tag: start_tag + 1 (half-open interval).
     uint64_t endTag = r + 1;
-    packBits(words, entryBitPos, endTag, static_cast<unsigned>(tagWidth + 1));
+    packBits(words, bitPos, endTag, static_cast<unsigned>(tagWidth + 1));
 
     // addr_offset: 0 for now (base address offset for this region).
-    packBits(words, entryBitPos, 0, 16);
-
-    // Pack the entry into the output words.
-    (void)entryWord;
+    packBits(words, bitPos, 0, 16);
   }
 }
 
@@ -613,8 +612,25 @@ bool ConfigGen::writeMappingJson(const MappingState &state, const Graph &dfg,
     }
 
     if (hasTag) {
-      // Determine tag index from the position in the shared edge list.
-      json.attribute("tag", static_cast<int64_t>(i % 256));
+      // Use actual assigned per-edge tag from MappingState temporal
+      // routing state. Fall back to source node's temporal PE tag.
+      int64_t tagVal = 0;
+      if (i < state.temporalSWAssignments.size() &&
+          !state.temporalSWAssignments[i].empty()) {
+        const auto &tswa = state.temporalSWAssignments[i];
+        if (tswa[0].tag != INVALID_ID)
+          tagVal = static_cast<int64_t>(tswa[0].tag);
+      } else if (edge) {
+        const Port *srcPort = dfg.getPort(edge->srcPort);
+        if (srcPort && srcPort->parentNode != INVALID_ID &&
+            srcPort->parentNode < state.temporalPEAssignments.size()) {
+          const auto &tpa =
+              state.temporalPEAssignments[srcPort->parentNode];
+          if (tpa.tag != INVALID_ID)
+            tagVal = static_cast<int64_t>(tpa.tag);
+        }
+      }
+      json.attribute("tag", tagVal);
     } else {
       json.attributeBegin("tag");
       json.rawValue("null");
@@ -669,6 +685,25 @@ bool ConfigGen::writeMappingJson(const MappingState &state, const Graph &dfg,
 
     json.attributeBegin(std::to_string(i));
     json.objectBegin();
+
+    // temporalPE: the HW virtual node ID of the temporal PE where the
+    // register is located (per spec-mapper-output.md).
+    const Edge *regEdge = dfg.getEdge(i);
+    if (regEdge) {
+      const Port *srcPort = dfg.getPort(regEdge->srcPort);
+      if (srcPort && srcPort->parentNode != INVALID_ID &&
+          srcPort->parentNode < state.swNodeToHwNode.size()) {
+        IdIndex hwId = state.swNodeToHwNode[srcPort->parentNode];
+        const Node *hwNode = adg.getNode(hwId);
+        if (hwNode) {
+          int64_t parentTPE =
+              getNodeIntAttr(hwNode, "parent_temporal_pe", -1);
+          if (parentTPE >= 0)
+            json.attribute("temporalPE", parentTPE);
+        }
+      }
+    }
+
     json.attribute("registerIndex",
                    static_cast<int64_t>(state.registerAssignments[i]));
     json.objectEnd();

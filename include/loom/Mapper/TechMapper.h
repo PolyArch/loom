@@ -57,6 +57,10 @@ public:
   /// Returns empty candidate set for a node if no compatible hardware exists.
   CandidateSet map(const Graph &dfg, const Graph &adg);
 
+  /// Check if a single DFG operation name is compatible with a PE body op.
+  /// Public so that the recursive group matcher helper can call it.
+  bool isOpNameCompatible(llvm::StringRef swOp, llvm::StringRef hwOp);
+
 private:
   /// Extract the operation body pattern from an ADG PE node.
   /// Returns the list of ops in the PE body (from body_ops attribute).
@@ -65,9 +69,6 @@ private:
   /// Check single-operation compatibility between a DFG op and an ADG node.
   bool isSingleOpCompatible(const Graph &dfg, IdIndex swNode,
                             const Graph &adg, IdIndex hwNode);
-
-  /// Check if a single DFG operation name is compatible with a PE body op.
-  bool isOpNameCompatible(llvm::StringRef swOp, llvm::StringRef hwOp);
 
   /// Find multi-op group candidates: DFG subgraphs matching multi-op PE bodies.
   void findGroupCandidates(const Graph &dfg, const Graph &adg,

@@ -256,6 +256,142 @@ check_ports:
   return true;
 }
 
+/// Collect DFG neighbor node IDs reachable from a set of matched nodes
+/// (both downstream via output edges and upstream via input edges).
+static void collectNeighbors(const Graph &dfg,
+                             llvm::ArrayRef<IdIndex> matched,
+                             const llvm::DenseSet<IdIndex> &usedNodes,
+                             llvm::SmallVectorImpl<IdIndex> &neighbors) {
+  llvm::DenseSet<IdIndex> seen;
+  for (IdIndex prevSwId : matched) {
+    const Node *prevSw = dfg.getNode(prevSwId);
+    if (!prevSw)
+      continue;
+
+    // Downstream neighbors (output edges).
+    for (IdIndex outPortId : prevSw->outputPorts) {
+      const Port *outPort = dfg.getPort(outPortId);
+      if (!outPort)
+        continue;
+      for (IdIndex edgeId : outPort->connectedEdges) {
+        const Edge *edge = dfg.getEdge(edgeId);
+        if (!edge)
+          continue;
+        const Port *dstPort = dfg.getPort(edge->dstPort);
+        if (!dstPort)
+          continue;
+        IdIndex candId = dstPort->parentNode;
+        if (candId != INVALID_ID && !usedNodes.count(candId) &&
+            seen.insert(candId).second) {
+          const Node *candNode = dfg.getNode(candId);
+          if (candNode && candNode->kind == Node::OperationNode)
+            neighbors.push_back(candId);
+        }
+      }
+    }
+
+    // Upstream neighbors (input edges).
+    for (IdIndex inPortId : prevSw->inputPorts) {
+      const Port *inPort = dfg.getPort(inPortId);
+      if (!inPort)
+        continue;
+      for (IdIndex edgeId : inPort->connectedEdges) {
+        const Edge *edge = dfg.getEdge(edgeId);
+        if (!edge)
+          continue;
+        const Port *srcPort = dfg.getPort(edge->srcPort);
+        if (!srcPort)
+          continue;
+        IdIndex candId = srcPort->parentNode;
+        if (candId != INVALID_ID && !usedNodes.count(candId) &&
+            seen.insert(candId).second) {
+          const Node *candNode = dfg.getNode(candId);
+          if (candNode && candNode->kind == Node::OperationNode)
+            neighbors.push_back(candId);
+        }
+      }
+    }
+  }
+}
+
+/// Check if there is a DFG edge from srcSwId to dstSwId.
+static bool hasDFGEdge(const Graph &dfg, IdIndex srcSwId, IdIndex dstSwId) {
+  const Node *srcSw = dfg.getNode(srcSwId);
+  if (!srcSw)
+    return false;
+
+  for (IdIndex outPortId : srcSw->outputPorts) {
+    const Port *outPort = dfg.getPort(outPortId);
+    if (!outPort)
+      continue;
+    for (IdIndex edgeId : outPort->connectedEdges) {
+      const Edge *edge = dfg.getEdge(edgeId);
+      if (!edge)
+        continue;
+      const Port *dp = dfg.getPort(edge->dstPort);
+      if (dp && dp->parentNode == dstSwId)
+        return true;
+    }
+  }
+  return false;
+}
+
+/// Recursive backtracking matcher for multi-op PE body patterns.
+/// Tries to assign each pattern op to a DFG node with correct op-name
+/// compatibility and internal edge correspondence.
+static bool matchPatternRecursive(
+    const Graph &dfg, const PEBodyPattern &pattern, size_t patIdx,
+    llvm::SmallVectorImpl<IdIndex> &matched,
+    llvm::DenseSet<IdIndex> &usedNodes, TechMapper &mapper) {
+
+  if (patIdx >= pattern.opNames.size())
+    return true; // All ops matched.
+
+  // Collect candidate DFG neighbors from already-matched nodes.
+  llvm::SmallVector<IdIndex, 8> neighbors;
+  collectNeighbors(dfg, matched, usedNodes, neighbors);
+
+  for (IdIndex candId : neighbors) {
+    llvm::StringRef candOp = getOpName(dfg.getNode(candId));
+    if (!mapper.isOpNameCompatible(candOp, pattern.opNames[patIdx]))
+      continue;
+
+    // Check operand/result correspondence: verify that required internal
+    // edges to/from already-matched nodes exist.
+    bool edgesOk = true;
+    for (const auto &[srcIdx, dstIdx] : pattern.internalEdges) {
+      if (srcIdx == patIdx && dstIdx < matched.size()) {
+        if (!hasDFGEdge(dfg, candId, matched[dstIdx])) {
+          edgesOk = false;
+          break;
+        }
+      }
+      if (dstIdx == patIdx && srcIdx < matched.size()) {
+        if (!hasDFGEdge(dfg, matched[srcIdx], candId)) {
+          edgesOk = false;
+          break;
+        }
+      }
+    }
+    if (!edgesOk)
+      continue;
+
+    // Try this assignment.
+    matched.push_back(candId);
+    usedNodes.insert(candId);
+
+    if (matchPatternRecursive(dfg, pattern, patIdx + 1, matched,
+                              usedNodes, mapper))
+      return true;
+
+    // Backtrack.
+    matched.pop_back();
+    usedNodes.erase(candId);
+  }
+
+  return false;
+}
+
 void TechMapper::findGroupCandidates(
     const Graph &dfg, const Graph &adg,
     const std::vector<PEBodyPattern> &patterns, CandidateSet &candidates) {
@@ -280,151 +416,33 @@ void TechMapper::findGroupCandidates(
       if (!isOpNameCompatible(startOp, pattern.opNames[0]))
         continue;
 
-      // Try to match remaining ops by following DFG edges.
-      // Build a mapping from pattern op index to DFG node ID.
+      // Use recursive backtracking to match remaining ops.
       llvm::SmallVector<IdIndex, 4> matched;
       matched.push_back(startSwId);
 
       llvm::DenseSet<IdIndex> usedNodes;
       usedNodes.insert(startSwId);
 
-      bool matchFailed = false;
-      for (size_t patIdx = 1; patIdx < pattern.opNames.size(); ++patIdx) {
-        bool foundMatch = false;
-
-        // Look for DFG nodes connected to already-matched nodes that
-        // match the next pattern op.
-        for (IdIndex prevSwId : matched) {
-          const Node *prevSw = dfg.getNode(prevSwId);
-          if (!prevSw)
-            continue;
-
-          // Follow output edges from previous matched nodes.
-          for (IdIndex outPortId : prevSw->outputPorts) {
-            const Port *outPort = dfg.getPort(outPortId);
-            if (!outPort)
-              continue;
-
-            for (IdIndex edgeId : outPort->connectedEdges) {
-              const Edge *edge = dfg.getEdge(edgeId);
-              if (!edge)
-                continue;
-
-              const Port *dstPort = dfg.getPort(edge->dstPort);
-              if (!dstPort)
-                continue;
-
-              IdIndex candidateSwId = dstPort->parentNode;
-              if (candidateSwId == INVALID_ID || usedNodes.count(candidateSwId))
-                continue;
-
-              const Node *candidateSw = dfg.getNode(candidateSwId);
-              if (!candidateSw ||
-                  candidateSw->kind != Node::OperationNode)
-                continue;
-
-              llvm::StringRef candOp = getOpName(candidateSw);
-              if (isOpNameCompatible(candOp, pattern.opNames[patIdx])) {
-                matched.push_back(candidateSwId);
-                usedNodes.insert(candidateSwId);
-                foundMatch = true;
-                goto nextPatOp;
-              }
-            }
-          }
-
-          // Also follow input edges (upstream matches).
-          for (IdIndex inPortId : prevSw->inputPorts) {
-            const Port *inPort = dfg.getPort(inPortId);
-            if (!inPort)
-              continue;
-
-            for (IdIndex edgeId : inPort->connectedEdges) {
-              const Edge *edge = dfg.getEdge(edgeId);
-              if (!edge)
-                continue;
-
-              const Port *srcPort = dfg.getPort(edge->srcPort);
-              if (!srcPort)
-                continue;
-
-              IdIndex candidateSwId = srcPort->parentNode;
-              if (candidateSwId == INVALID_ID || usedNodes.count(candidateSwId))
-                continue;
-
-              const Node *candidateSw = dfg.getNode(candidateSwId);
-              if (!candidateSw ||
-                  candidateSw->kind != Node::OperationNode)
-                continue;
-
-              llvm::StringRef candOp = getOpName(candidateSw);
-              if (isOpNameCompatible(candOp, pattern.opNames[patIdx])) {
-                matched.push_back(candidateSwId);
-                usedNodes.insert(candidateSwId);
-                foundMatch = true;
-                goto nextPatOp;
-              }
-            }
-          }
-        }
-
-      nextPatOp:
-        if (!foundMatch) {
-          matchFailed = true;
-          break;
-        }
-      }
-
-      if (matchFailed)
+      if (!matchPatternRecursive(dfg, pattern, 1, matched, usedNodes,
+                                 *this))
         continue;
 
-      // Verify internal edge connectivity matches the pattern.
+      // Verify ALL internal edge connectivity matches the pattern.
       bool edgesOk = true;
       for (const auto &[srcIdx, dstIdx] : pattern.internalEdges) {
         if (srcIdx >= matched.size() || dstIdx >= matched.size()) {
           edgesOk = false;
           break;
         }
-
-        // Check that there's a DFG edge from matched[srcIdx] to
-        // matched[dstIdx].
-        IdIndex srcSwId = matched[srcIdx];
-        IdIndex dstSwId = matched[dstIdx];
-        bool edgeFound = false;
-
-        const Node *srcSw = dfg.getNode(srcSwId);
-        if (srcSw) {
-          for (IdIndex outPortId : srcSw->outputPorts) {
-            const Port *outPort = dfg.getPort(outPortId);
-            if (!outPort)
-              continue;
-            for (IdIndex edgeId : outPort->connectedEdges) {
-              const Edge *edge = dfg.getEdge(edgeId);
-              if (!edge)
-                continue;
-              const Port *dp = dfg.getPort(edge->dstPort);
-              if (dp && dp->parentNode == dstSwId) {
-                edgeFound = true;
-                break;
-              }
-            }
-            if (edgeFound)
-              break;
-          }
-        }
-
-        if (!edgeFound) {
+        if (!hasDFGEdge(dfg, matched[srcIdx], matched[dstIdx])) {
           edgesOk = false;
           break;
         }
       }
-
       if (!edgesOk)
         continue;
 
-      // Check port compatibility: total inputs/outputs of the group
-      // must fit the HW PE ports.
-      // (Simplified: just check the HW node has enough ports.)
+      // Check port compatibility: HW PE must have enough ports.
       if (hwNode->inputPorts.size() == 0 && hwNode->outputPorts.size() == 0)
         continue;
 

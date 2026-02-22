@@ -10,6 +10,8 @@
 
 #include "mlir/IR/BuiltinAttributes.h"
 
+#include "llvm/ADT/DenseSet.h"
+
 #include <algorithm>
 #include <queue>
 #include <random>
@@ -123,8 +125,10 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
             &result.state, cpsatOpts);
       } else {
         // Sub-problem mode: extract conflicting region.
-        // Find failed edges or high-cost nodes for sub-problem extraction.
+        // Seed from unrouted edges AND congestion/cost hotspots.
         llvm::SmallVector<IdIndex, 8> conflictNodes;
+
+        // Collect nodes from unrouted edges.
         for (IdIndex edgeId = 0;
              edgeId < static_cast<IdIndex>(dfg.edges.size()); ++edgeId) {
           if (edgeId >= result.state.swEdgeToHwPaths.size() ||
@@ -137,6 +141,55 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
                 conflictNodes.push_back(sp->parentNode);
               if (dp && dp->parentNode != INVALID_ID)
                 conflictNodes.push_back(dp->parentNode);
+            }
+          }
+        }
+
+        // Also trigger on congestion: if routing cost or placement
+        // pressure is high, select highest-utilization HW nodes and
+        // include their mapped SW nodes as conflict seeds.
+        if (conflictNodes.empty() &&
+            (result.state.routingCost > 0.5 ||
+             result.state.placementPressure > 0.5)) {
+          // Find the most congested HW nodes (those with the most
+          // mapped SW nodes) as refinement targets.
+          IdIndex bestHwNode = INVALID_ID;
+          size_t maxLoad = 1;
+          for (IdIndex hwId = 0;
+               hwId < static_cast<IdIndex>(
+                          result.state.hwNodeToSwNodes.size());
+               ++hwId) {
+            size_t load = result.state.hwNodeToSwNodes[hwId].size();
+            if (load > maxLoad) {
+              maxLoad = load;
+              bestHwNode = hwId;
+            }
+          }
+          if (bestHwNode != INVALID_ID) {
+            for (IdIndex swId :
+                 result.state.hwNodeToSwNodes[bestHwNode]) {
+              conflictNodes.push_back(swId);
+            }
+          }
+        }
+
+        // Enforce group atomicity: if any conflict node is part of a
+        // group, include all group members in the sub-problem.
+        llvm::DenseSet<IdIndex> conflictSet(conflictNodes.begin(),
+                                            conflictNodes.end());
+        for (auto &[hwId, groupMembers] :
+             result.state.groupBindings) {
+          bool anyInConflict = false;
+          for (IdIndex swId : groupMembers) {
+            if (conflictSet.count(swId)) {
+              anyInConflict = true;
+              break;
+            }
+          }
+          if (anyInConflict) {
+            for (IdIndex swId : groupMembers) {
+              if (conflictSet.insert(swId).second)
+                conflictNodes.push_back(swId);
             }
           }
         }
@@ -446,20 +499,40 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
 
   std::mt19937 rng(opts.seed);
 
+  // Track SW nodes already placed as part of a group.
+  llvm::DenseSet<IdIndex> placedInGroup;
+
   for (IdIndex swNode : order) {
+    // Skip nodes already placed atomically as part of a group.
+    if (placedInGroup.count(swNode))
+      continue;
+
     auto it = candidates.find(swNode);
     if (it == candidates.end() || it->second.empty())
       return false;
 
-    // Score each candidate.
+    // Score each candidate, including group candidates.
     double bestScore = -1e18;
-    IdIndex bestHw = INVALID_ID;
+    const Candidate *bestCand = nullptr;
 
     for (const auto &candidate : it->second) {
-      // Check if hardware node is available (not exclusively occupied for
-      // non-temporal nodes).
       if (candidate.hwNodeId >= state.hwNodeToSwNodes.size())
         continue;
+
+      // For group candidates, verify all members are still unplaced.
+      if (candidate.isGroup) {
+        bool allAvailable = true;
+        for (IdIndex memberId : candidate.swNodeIds) {
+          if (placedInGroup.count(memberId) ||
+              (memberId < state.swNodeToHwNode.size() &&
+               state.swNodeToHwNode[memberId] != INVALID_ID)) {
+            allAvailable = false;
+            break;
+          }
+        }
+        if (!allAvailable)
+          continue;
+      }
 
       double score = scorePlacement(swNode, candidate.hwNodeId, state,
                                     dfg, adg);
@@ -470,28 +543,71 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
 
       if (score > bestScore) {
         bestScore = score;
-        bestHw = candidate.hwNodeId;
+        bestCand = &candidate;
       }
     }
 
-    if (bestHw == INVALID_ID)
+    if (!bestCand || bestCand->hwNodeId == INVALID_ID)
       return false;
 
-    auto result = state.mapNode(swNode, bestHw, dfg, adg);
-    if (result != ActionResult::Success)
-      return false;
+    IdIndex bestHw = bestCand->hwNodeId;
 
-    // Map ports positionally.
-    const Node *sw = dfg.getNode(swNode);
-    const Node *hw = adg.getNode(bestHw);
-    if (sw && hw) {
-      for (size_t i = 0;
-           i < sw->inputPorts.size() && i < hw->inputPorts.size(); ++i) {
-        state.mapPort(sw->inputPorts[i], hw->inputPorts[i], dfg, adg);
+    if (bestCand->isGroup && bestCand->swNodeIds.size() > 1) {
+      // Group placement: bind ALL SW nodes in the group to the same
+      // HW PE atomically.
+      unsigned inPortOffset = 0;
+      unsigned outPortOffset = 0;
+
+      for (IdIndex groupSwNode : bestCand->swNodeIds) {
+        auto mapResult = state.mapNode(groupSwNode, bestHw, dfg, adg);
+        if (mapResult != ActionResult::Success)
+          return false;
+
+        // Map ports with offsets so group members share the PE ports.
+        const Node *sw = dfg.getNode(groupSwNode);
+        const Node *hw = adg.getNode(bestHw);
+        if (sw && hw) {
+          for (size_t i = 0; i < sw->inputPorts.size() &&
+                             (inPortOffset + i) < hw->inputPorts.size();
+               ++i) {
+            state.mapPort(sw->inputPorts[i],
+                          hw->inputPorts[inPortOffset + i], dfg, adg);
+          }
+          inPortOffset += sw->inputPorts.size();
+
+          for (size_t i = 0; i < sw->outputPorts.size() &&
+                             (outPortOffset + i) < hw->outputPorts.size();
+               ++i) {
+            state.mapPort(sw->outputPorts[i],
+                          hw->outputPorts[outPortOffset + i], dfg, adg);
+          }
+          outPortOffset += sw->outputPorts.size();
+        }
+
+        placedInGroup.insert(groupSwNode);
       }
-      for (size_t i = 0;
-           i < sw->outputPorts.size() && i < hw->outputPorts.size(); ++i) {
-        state.mapPort(sw->outputPorts[i], hw->outputPorts[i], dfg, adg);
+
+      // Record group binding for C4 validation.
+      state.groupBindings[bestHw] = llvm::SmallVector<IdIndex, 4>(
+          bestCand->swNodeIds.begin(), bestCand->swNodeIds.end());
+    } else {
+      // Single-op placement.
+      auto mapResult = state.mapNode(swNode, bestHw, dfg, adg);
+      if (mapResult != ActionResult::Success)
+        return false;
+
+      // Map ports positionally.
+      const Node *sw = dfg.getNode(swNode);
+      const Node *hw = adg.getNode(bestHw);
+      if (sw && hw) {
+        for (size_t i = 0;
+             i < sw->inputPorts.size() && i < hw->inputPorts.size(); ++i) {
+          state.mapPort(sw->inputPorts[i], hw->inputPorts[i], dfg, adg);
+        }
+        for (size_t i = 0;
+             i < sw->outputPorts.size() && i < hw->outputPorts.size(); ++i) {
+          state.mapPort(sw->outputPorts[i], hw->outputPorts[i], dfg, adg);
+        }
       }
     }
   }

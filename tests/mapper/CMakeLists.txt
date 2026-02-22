@@ -27,6 +27,9 @@ set(MAPPER_UNIT_TESTS
   config_memory
   config_pe
   cpsat_integration
+  group_placement
+  config_region_pack
+  cpsat_subproblem_trigger
 )
 
 set(MAPPER_TEST_TARGETS)

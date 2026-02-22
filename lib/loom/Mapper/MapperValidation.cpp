@@ -9,6 +9,8 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 
+#include "llvm/ADT/DenseSet.h"
+
 namespace loom {
 
 namespace {
@@ -354,15 +356,39 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
 
     llvm::StringRef resClass = getNodeResClass(hwNode);
 
-    // Non-temporal functional nodes: exclusive (at most 1 mapping).
+    // Non-temporal functional nodes: exclusive (at most 1 mapping),
+    // unless the nodes form a valid multi-op PE group.
     if (resClass == "functional") {
       bool isTemporal = nodeHasAttr(hwNode, "parent_temporal_pe") ||
                         nodeHasAttr(hwNode, "is_virtual");
 
       if (!isTemporal && swNodes.size() > 1) {
-        diag = "C4: capacity exceeded on hw_node=" + std::to_string(i) +
-               " (" + std::to_string(swNodes.size()) + " mappings)";
-        return false;
+        // Check if these SW nodes form a valid group binding.
+        auto groupIt = state.groupBindings.find(i);
+        if (groupIt != state.groupBindings.end()) {
+          // Verify ALL mapped SW nodes are members of the group.
+          llvm::DenseSet<IdIndex> groupSet;
+          for (IdIndex gid : groupIt->second)
+            groupSet.insert(gid);
+
+          bool allInGroup = true;
+          for (IdIndex swId : swNodes) {
+            if (!groupSet.count(swId)) {
+              allInGroup = false;
+              break;
+            }
+          }
+          if (!allInGroup) {
+            diag = "C4: capacity exceeded on hw_node=" + std::to_string(i) +
+                   " (non-group nodes sharing PE)";
+            return false;
+          }
+          // Valid group; allow multiple mappings.
+        } else {
+          diag = "C4: capacity exceeded on hw_node=" + std::to_string(i) +
+                 " (" + std::to_string(swNodes.size()) + " mappings)";
+          return false;
+        }
       }
     }
 
