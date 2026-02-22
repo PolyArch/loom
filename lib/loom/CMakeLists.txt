@@ -1,6 +1,7 @@
 add_subdirectory(Dialect)
 add_subdirectory(Hardware)
 add_subdirectory(Mapper)
+add_subdirectory(Viz)
 
 set(LOOM_CONVERSION_SOURCES
   Conversion/LLVMToSCFFunction.cpp
