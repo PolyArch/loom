@@ -91,6 +91,27 @@ static LogicalResult verifyRoutingCompatibleTypes(Operation *op,
   return success();
 }
 
+/// Overload for TypeRange (used by named forms with function_type attribute).
+static LogicalResult verifyRoutingCompatibleTypes(Operation *op,
+                                                  TypeRange inputTypes,
+                                                  TypeRange outputTypes) {
+  SmallVector<Type> allTypes;
+  for (Type t : inputTypes)
+    allTypes.push_back(t);
+  for (Type t : outputTypes)
+    allTypes.push_back(t);
+  if (allTypes.empty())
+    return success();
+  Type first = allTypes.front();
+  for (Type t : allTypes) {
+    if (!isRoutingTypeCompatible(first, t))
+      return op->emitOpError(
+                 "all ports must have bit-width-compatible types; got ")
+             << first << " and " << t;
+  }
+  return success();
+}
+
 static LogicalResult
 verifyConnectivityTable(Operation *op, ArrayRef<int8_t> table,
                         unsigned numOutputs, unsigned numInputs,
@@ -359,6 +380,10 @@ LogicalResult SwitchOp::verify() {
     if (!getInputs().empty() || !getOutputs().empty())
       return emitOpError(
           "named switch must not have SSA operands or results");
+    if (failed(verifyRoutingCompatibleTypes(getOperation(),
+                                            fnType.getInputs(),
+                                            fnType.getResults())))
+      return failure();
   } else {
     numInputs = getInputs().size();
     numOutputs = getOutputs().size();
@@ -573,6 +598,10 @@ LogicalResult TemporalSwOp::verify() {
       if (!isa<dataflow::TaggedType>(t))
         return emitOpError("all ports must be !dataflow.tagged; got ") << t;
     }
+    if (failed(verifyRoutingCompatibleTypes(getOperation(),
+                                            fnType.getInputs(),
+                                            fnType.getResults())))
+      return failure();
   } else {
     numInputs = getInputs().size();
     numOutputs = getOutputs().size();
