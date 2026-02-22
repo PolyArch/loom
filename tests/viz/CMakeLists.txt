@@ -5,6 +5,7 @@ set(VIZ_UNIT_TESTS
   dot_dfg_node_styles
   dot_dfg_edge_types
   html_basic
+  html_mapped_self_contained
 )
 
 set(VIZ_TEST_TARGETS)
