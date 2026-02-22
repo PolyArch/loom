@@ -9,7 +9,9 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 
+#include <algorithm>
 #include <queue>
+#include <random>
 
 namespace loom {
 
@@ -231,12 +233,22 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort,
 }
 
 bool Mapper::runRouting(MappingState &state, const Graph &dfg,
-                        const Graph &adg) {
+                        const Graph &adg, int seed) {
   bool allRouted = true;
 
+  // Build edge order (optionally shuffled for deadlock avoidance).
+  std::vector<IdIndex> edgeOrder;
+  for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
+    if (dfg.getEdge(i))
+      edgeOrder.push_back(i);
+  }
+  if (seed >= 0) {
+    std::mt19937 rng(static_cast<unsigned>(seed));
+    std::shuffle(edgeOrder.begin(), edgeOrder.end(), rng);
+  }
+
   // Route each DFG edge.
-  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
-       ++edgeId) {
+  for (IdIndex edgeId : edgeOrder) {
     const Edge *edge = dfg.getEdge(edgeId);
     if (!edge)
       continue;

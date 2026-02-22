@@ -536,12 +536,25 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
           }
         }
       }
-      for (size_t i = 0;
-           i < dfgExtmem->outputPorts.size() &&
-           i < adgExtmem->outputPorts.size();
-           ++i) {
-        state.mapPort(dfgExtmem->outputPorts[i], adgExtmem->outputPorts[i],
-                      dfg, adg);
+      {
+        llvm::SmallVector<bool> hwOutUsed(adgExtmem->outputPorts.size(),
+                                          false);
+        for (size_t si = 0; si < dfgExtmem->outputPorts.size(); ++si) {
+          const Port *sp = dfg.getPort(dfgExtmem->outputPorts[si]);
+          if (!sp)
+            continue;
+          for (size_t hi = 0; hi < adgExtmem->outputPorts.size(); ++hi) {
+            if (hwOutUsed[hi])
+              continue;
+            const Port *hp = adg.getPort(adgExtmem->outputPorts[hi]);
+            if (hp && sp->type == hp->type) {
+              state.mapPort(dfgExtmem->outputPorts[si],
+                            adgExtmem->outputPorts[hi], dfg, adg);
+              hwOutUsed[hi] = true;
+              break;
+            }
+          }
+        }
       }
       preBoundExtmem.insert(dfgExtIt->second);
       break;
@@ -703,6 +716,12 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
       if (candidate.hwNodeId >= state.hwNodeToSwNodes.size())
         continue;
 
+      // Skip PEs already occupied by another non-group node to prevent
+      // port collisions (exclusive PE ports can only serve one operation).
+      if (!candidate.isGroup &&
+          !state.hwNodeToSwNodes[candidate.hwNodeId].empty())
+        continue;
+
       // For group candidates, verify all members are still unplaced.
       if (candidate.isGroup) {
         bool allAvailable = true;
@@ -731,8 +750,9 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
       }
     }
 
-    if (!bestCand || bestCand->hwNodeId == INVALID_ID)
+    if (!bestCand || bestCand->hwNodeId == INVALID_ID) {
       return false;
+    }
 
     IdIndex bestHw = bestCand->hwNodeId;
 
@@ -783,38 +803,44 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
       const Node *sw = dfg.getNode(swNode);
       const Node *hw = adg.getNode(bestHw);
       if (sw && hw) {
-        // For memory operations, use type-aware port mapping since
-        // handshake.memory and fabric.memory have different operand orderings.
-        bool isMem = isMemoryOp(hw);
-        if (isMem && sw->inputPorts.size() <= hw->inputPorts.size()) {
-          // Build type-matched mapping: for each SW input, find an unused
-          // HW input with matching type.
-          llvm::SmallVector<bool> hwUsed(hw->inputPorts.size(), false);
+        // Type-aware port mapping: match SW ports to HW ports by type
+        // to ensure edges stay within their type plane for routing.
+        // Also skip HW ports already used by other SW nodes on the same PE.
+        if (sw->inputPorts.size() <= hw->inputPorts.size()) {
           for (size_t si = 0; si < sw->inputPorts.size(); ++si) {
             const Port *sp = dfg.getPort(sw->inputPorts[si]);
             if (!sp) continue;
             for (size_t hi = 0; hi < hw->inputPorts.size(); ++hi) {
-              if (hwUsed[hi]) continue;
-              const Port *hp = adg.getPort(hw->inputPorts[hi]);
+              IdIndex hwPid = hw->inputPorts[hi];
+              if (!state.hwPortToSwPorts[hwPid].empty()) continue;
+              const Port *hp = adg.getPort(hwPid);
               if (hp && sp->type == hp->type) {
-                state.mapPort(sw->inputPorts[si], hw->inputPorts[hi],
-                              dfg, adg);
-                hwUsed[hi] = true;
+                state.mapPort(sw->inputPorts[si], hwPid, dfg, adg);
                 break;
               }
             }
           }
-          // Outputs: use positional mapping (output ordering is compatible).
-          for (size_t i = 0;
-               i < sw->outputPorts.size() && i < hw->outputPorts.size(); ++i) {
-            state.mapPort(sw->outputPorts[i], hw->outputPorts[i], dfg, adg);
-          }
         } else {
-          // Default: map ports positionally.
           for (size_t i = 0;
                i < sw->inputPorts.size() && i < hw->inputPorts.size(); ++i) {
             state.mapPort(sw->inputPorts[i], hw->inputPorts[i], dfg, adg);
           }
+        }
+        if (sw->outputPorts.size() <= hw->outputPorts.size()) {
+          for (size_t si = 0; si < sw->outputPorts.size(); ++si) {
+            const Port *sp = dfg.getPort(sw->outputPorts[si]);
+            if (!sp) continue;
+            for (size_t hi = 0; hi < hw->outputPorts.size(); ++hi) {
+              IdIndex hwPid = hw->outputPorts[hi];
+              if (!state.hwPortToSwPorts[hwPid].empty()) continue;
+              const Port *hp = adg.getPort(hwPid);
+              if (hp && sp->type == hp->type) {
+                state.mapPort(sw->outputPorts[si], hwPid, dfg, adg);
+                break;
+              }
+            }
+          }
+        } else {
           for (size_t i = 0;
                i < sw->outputPorts.size() && i < hw->outputPorts.size(); ++i) {
             state.mapPort(sw->outputPorts[i], hw->outputPorts[i], dfg, adg);

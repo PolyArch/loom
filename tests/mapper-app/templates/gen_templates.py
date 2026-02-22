@@ -330,91 +330,91 @@ SMALL_INSTANCES = {
 }
 
 MEDIUM_INSTANCES = {
-    "pe_const_i32": 8, "pe_const_f32": 4, "pe_const_i64": 4,
-    "pe_const_index": 16, "pe_const_i1": 4, "pe_const_i16": 1,
-    "pe_join1": 8, "pe_join2": 3, "pe_join3": 2, "pe_join4": 1,
+    "pe_const_i32": 7, "pe_const_f32": 6, "pe_const_i64": 2,
+    "pe_const_index": 18, "pe_const_i1": 2, "pe_const_i16": 1,
+    "pe_join1": 5, "pe_join2": 3, "pe_join3": 2, "pe_join4": 1,
     "pe_join5": 1, "pe_join6": 1,
-    "pe_join_i1": 2,
-    "pe_cond_br_none": 19, "pe_cond_br_i32": 4, "pe_cond_br_f32": 3,
-    "pe_cond_br_index": 2,
-    "pe_mux_i32": 6, "pe_mux_f32": 3, "pe_mux_none": 11,
-    "pe_mux_index": 3, "pe_mux_i64": 1,
-    "pe_addi": 10, "pe_subi": 4, "pe_muli": 5, "pe_divui": 2,
+    "pe_join_i1": 1,
+    "pe_cond_br_none": 17, "pe_cond_br_i32": 3, "pe_cond_br_f32": 4,
+    "pe_cond_br_index": 1,
+    "pe_mux_i32": 4, "pe_mux_f32": 3, "pe_mux_none": 9,
+    "pe_mux_index": 5, "pe_mux_i64": 1,
+    "pe_addi": 12, "pe_subi": 2, "pe_muli": 9, "pe_divui": 2,
     "pe_divsi": 1, "pe_remui": 2, "pe_remsi": 1,
-    "pe_addi_i64": 3, "pe_subi_i64": 1, "pe_muli_i64": 1,
-    "pe_cmpi_i64": 3, "pe_shli_i64": 1, "pe_remui_i64": 1,
+    "pe_addi_i64": 2, "pe_subi_i64": 1, "pe_muli_i64": 1,
+    "pe_cmpi_i64": 2, "pe_shli_i64": 1, "pe_remui_i64": 1,
     "pe_addi_index": 2, "pe_subi_index": 1,
     "pe_divui_index": 1, "pe_divsi_index": 1,
     "pe_remui_index": 1, "pe_muli_index": 1,
-    "pe_andi": 3, "pe_ori": 2, "pe_xori": 2,
-    "pe_shli": 2, "pe_shrui": 2, "pe_shrsi": 1,
+    "pe_andi": 5, "pe_ori": 4, "pe_xori": 4,
+    "pe_shli": 4, "pe_shrui": 4, "pe_shrsi": 1,
     "pe_xori_i1": 1,
-    "pe_addf": 4, "pe_subf": 3, "pe_mulf": 4, "pe_divf": 2,
-    "pe_fma": 3,
-    "pe_negf": 2, "pe_absf": 1, "pe_sin": 1, "pe_cos": 1,
+    "pe_addf": 4, "pe_subf": 3, "pe_mulf": 4, "pe_divf": 3,
+    "pe_fma": 7,
+    "pe_negf": 1, "pe_absf": 1, "pe_sin": 1, "pe_cos": 5,
     "pe_exp": 1, "pe_sqrt": 1, "pe_log2": 1,
     "pe_cmpi": 10, "pe_cmpf": 2,
-    "pe_select": 6, "pe_select_index": 6, "pe_select_f32": 2,
-    "pe_index_cast_i32": 16, "pe_index_cast_i64": 6,
-    "pe_index_cast_to_i32": 3, "pe_index_cast_to_i64": 3,
+    "pe_select": 3, "pe_select_index": 8, "pe_select_f32": 2,
+    "pe_index_cast_i32": 15, "pe_index_cast_i64": 8,
+    "pe_index_cast_to_i32": 2, "pe_index_cast_to_i64": 3,
     "pe_index_castui": 2,
-    "pe_extui": 8, "pe_trunci": 6,
-    "pe_extui_i1": 5, "pe_trunci_to_i1": 3,
+    "pe_extui": 9, "pe_trunci": 6,
+    "pe_extui_i1": 4, "pe_trunci_to_i1": 2,
     "pe_extui_i16": 1, "pe_trunci_to_i16": 1, "pe_remui_i16": 1,
-    "pe_uitofp": 2, "pe_uitofp_i16": 1, "pe_sitofp": 1, "pe_fptoui": 1,
-    "pe_stream": 5, "pe_gate": 8, "pe_gate_f32": 3,
-    "pe_gate_index": 6,
-    "pe_carry": 10, "pe_carry_f32": 3, "pe_carry_none": 13,
+    "pe_uitofp": 4, "pe_uitofp_i16": 1, "pe_sitofp": 1, "pe_fptoui": 1,
+    "pe_stream": 4, "pe_gate": 5, "pe_gate_f32": 4,
+    "pe_gate_index": 4,
+    "pe_carry": 3, "pe_carry_f32": 4, "pe_carry_none": 8,
     "pe_carry_index": 2,
-    "pe_invariant": 10, "pe_invariant_i1": 4, "pe_invariant_none": 4,
-    "pe_invariant_f32": 3, "pe_invariant_index": 2, "pe_invariant_i64": 1,
-    "pe_load": 8, "pe_load_f32": 5, "pe_store": 5, "pe_store_f32": 3,
-    "pe_sink_i1": 5, "pe_sink_none": 4, "pe_sink_i32": 2,
+    "pe_invariant": 4, "pe_invariant_i1": 3, "pe_invariant_none": 3,
+    "pe_invariant_f32": 2, "pe_invariant_index": 2, "pe_invariant_i64": 1,
+    "pe_load": 5, "pe_load_f32": 6, "pe_store": 3, "pe_store_f32": 2,
+    "pe_sink_i1": 4, "pe_sink_none": 4, "pe_sink_i32": 2,
     "pe_sink_index": 2, "pe_sink_f32": 2,
 }
 
 LARGE_INSTANCES = {
-    "pe_const_i32": 8, "pe_const_f32": 4, "pe_const_i64": 5,
-    "pe_const_index": 16, "pe_const_i1": 4, "pe_const_i16": 1,
-    "pe_join1": 6, "pe_join2": 2, "pe_join3": 2, "pe_join4": 2,
+    "pe_const_i32": 2, "pe_const_f32": 2, "pe_const_i64": 2,
+    "pe_const_index": 41, "pe_const_i1": 1, "pe_const_i16": 1,
+    "pe_join1": 2, "pe_join2": 2, "pe_join3": 1, "pe_join4": 1,
     "pe_join5": 1, "pe_join6": 1,
-    "pe_join_i1": 2,
-    "pe_cond_br_none": 18, "pe_cond_br_i32": 5, "pe_cond_br_f32": 3,
-    "pe_cond_br_index": 2,
-    "pe_mux_i32": 8, "pe_mux_f32": 3, "pe_mux_none": 10,
-    "pe_mux_index": 3, "pe_mux_i64": 1,
-    "pe_addi": 12, "pe_subi": 3, "pe_muli": 8, "pe_divui": 3,
-    "pe_divsi": 2, "pe_remui": 2, "pe_remsi": 1,
-    "pe_addi_i64": 3, "pe_subi_i64": 1, "pe_muli_i64": 2,
-    "pe_cmpi_i64": 4, "pe_shli_i64": 2, "pe_remui_i64": 1,
-    "pe_addi_index": 2, "pe_subi_index": 1,
+    "pe_join_i1": 1,
+    "pe_cond_br_none": 37, "pe_cond_br_i32": 1, "pe_cond_br_f32": 3,
+    "pe_cond_br_index": 1,
+    "pe_mux_i32": 1, "pe_mux_f32": 4, "pe_mux_none": 17,
+    "pe_mux_index": 1, "pe_mux_i64": 1,
+    "pe_addi": 16, "pe_subi": 2, "pe_muli": 12, "pe_divui": 2,
+    "pe_divsi": 1, "pe_remui": 2, "pe_remsi": 1,
+    "pe_addi_i64": 1, "pe_subi_i64": 1, "pe_muli_i64": 1,
+    "pe_cmpi_i64": 1, "pe_shli_i64": 1, "pe_remui_i64": 1,
+    "pe_addi_index": 1, "pe_subi_index": 1,
     "pe_divui_index": 2, "pe_divsi_index": 1,
     "pe_remui_index": 1, "pe_muli_index": 1,
-    "pe_andi": 3, "pe_ori": 2, "pe_xori": 2,
-    "pe_shli": 2, "pe_shrui": 2, "pe_shrsi": 1,
+    "pe_andi": 1, "pe_ori": 1, "pe_xori": 1,
+    "pe_shli": 1, "pe_shrui": 1, "pe_shrsi": 1,
     "pe_xori_i1": 1,
-    "pe_addf": 4, "pe_subf": 3, "pe_mulf": 4, "pe_divf": 2,
-    "pe_fma": 3,
-    "pe_negf": 2, "pe_absf": 2, "pe_sin": 1, "pe_cos": 1,
+    "pe_addf": 1, "pe_subf": 1, "pe_mulf": 1, "pe_divf": 1,
+    "pe_fma": 1,
+    "pe_negf": 1, "pe_absf": 1, "pe_sin": 1, "pe_cos": 1,
     "pe_exp": 1, "pe_sqrt": 1, "pe_log2": 1,
-    "pe_cmpi": 8, "pe_cmpf": 2,
-    "pe_select": 8, "pe_select_index": 8, "pe_select_f32": 2,
-    "pe_index_cast_i32": 12, "pe_index_cast_i64": 5,
-    "pe_index_cast_to_i32": 3, "pe_index_cast_to_i64": 3,
+    "pe_cmpi": 12, "pe_cmpf": 1,
+    "pe_select": 2, "pe_select_index": 20, "pe_select_f32": 1,
+    "pe_index_cast_i32": 21, "pe_index_cast_i64": 8,
+    "pe_index_cast_to_i32": 5, "pe_index_cast_to_i64": 5,
     "pe_index_castui": 2,
-    "pe_extui": 8, "pe_trunci": 5,
-    "pe_extui_i1": 5, "pe_trunci_to_i1": 3,
+    "pe_extui": 6, "pe_trunci": 6,
+    "pe_extui_i1": 2, "pe_trunci_to_i1": 1,
     "pe_extui_i16": 1, "pe_trunci_to_i16": 1, "pe_remui_i16": 1,
-    "pe_uitofp": 2, "pe_uitofp_i16": 1, "pe_sitofp": 1, "pe_fptoui": 1,
-    "pe_stream": 5, "pe_gate": 8, "pe_gate_f32": 3,
-    "pe_gate_index": 6,
-    "pe_carry": 10, "pe_carry_f32": 3, "pe_carry_none": 10,
-    "pe_carry_index": 2,
-    "pe_invariant": 10, "pe_invariant_i1": 3, "pe_invariant_none": 3,
-    "pe_invariant_f32": 2, "pe_invariant_index": 2, "pe_invariant_i64": 1,
-    "pe_load": 5, "pe_load_f32": 3, "pe_store": 3, "pe_store_f32": 2,
-    "pe_sink_i1": 5, "pe_sink_none": 3, "pe_sink_i32": 2,
-    "pe_sink_index": 2, "pe_sink_f32": 2,
+    "pe_uitofp": 1, "pe_uitofp_i16": 1, "pe_sitofp": 1, "pe_fptoui": 1,
+    "pe_stream": 8, "pe_gate": 1, "pe_gate_f32": 4,
+    "pe_gate_index": 8,
+    "pe_carry": 1, "pe_carry_f32": 4, "pe_carry_none": 16,
+    "pe_carry_index": 1,
+    "pe_invariant": 10, "pe_invariant_i1": 6, "pe_invariant_none": 6,
+    "pe_invariant_f32": 1, "pe_invariant_index": 1, "pe_invariant_i64": 1,
+    "pe_load": 1, "pe_load_f32": 3, "pe_store": 1, "pe_store_f32": 3,
+    "pe_sink_i1": 4, "pe_sink_none": 4, "pe_sink_i32": 1,
+    "pe_sink_index": 1, "pe_sink_f32": 1,
 }
 
 # Extmemory config: (elem_type, ld_count, st_count)
@@ -424,6 +424,7 @@ EXTMEM_MEDIUM = [
     ("i32", 1, 0),  # load-only
     ("i32", 1, 0),  # load-only
     ("i32", 0, 1),  # store-only
+    ("i32", 0, 1),  # store-only
     ("i32", 1, 1),  # read-write
     ("i32", 2, 0),  # dual-load
     ("i32", 1, 2),  # 1-load 2-store
@@ -431,16 +432,23 @@ EXTMEM_MEDIUM = [
     ("i32", 3, 0),  # triple-load
     ("f32", 1, 0),  # load-only
     ("f32", 1, 0),  # load-only
+    ("f32", 1, 0),  # load-only
+    ("f32", 1, 0),  # load-only
+    ("f32", 1, 0),  # load-only
+    ("f32", 0, 1),  # store-only
     ("f32", 0, 1),  # store-only
     ("f32", 1, 1),  # read-write
     ("f32", 2, 0),  # dual-load
+    ("f32", 2, 0),  # dual-load
     ("f32", 0, 2),  # dual-store
+    ("f32", 3, 0),  # triple-load (for quantile-like apps)
 ]
 
 EXTMEM_LARGE = [
     ("i32", 1, 0),  # load-only
     ("i32", 1, 0),  # load-only
     ("i32", 1, 0),  # load-only
+    ("i32", 0, 1),  # store-only
     ("i32", 0, 1),  # store-only
     ("i32", 1, 1),  # read-write
     ("i32", 2, 0),  # dual-load
@@ -473,6 +481,7 @@ MODULE_CONFIGS = {
         "n_in_i32": 4,
         "n_in_i64": 1,
         "n_in_index": 1,
+        "n_in_f32": 1,
         "n_out_i32": 1,
         "n_out_f32": 1,
         "n_out_none": 1,
@@ -487,7 +496,7 @@ MODULE_CONFIGS = {
         "instances": LARGE_INSTANCES,
         "module_name": "loom_cgra_large",
         "extmem": EXTMEM_LARGE,
-        "n_in_i32": 4,
+        "n_in_i32": 8,
         "n_in_i64": 1,
         "n_in_index": 1,
         "n_out_i32": 1,
@@ -642,12 +651,15 @@ def generate_template(tier, out):
     n_in_i32 = cfg["n_in_i32"]
     n_in_i64 = cfg.get("n_in_i64", 0)
     n_in_index = cfg.get("n_in_index", 0)
+    n_in_f32 = cfg.get("n_in_f32", 0)
     for i in range(n_in_i32):
         switches["i32"].add_input(f"%in{i}")
     for i in range(n_in_i64):
         switches["i64"].add_input(f"%in_i64_{i}")
     for i in range(n_in_index):
         switches["index"].add_input(f"%addr{i}")
+    for i in range(n_in_f32):
+        switches["f32"].add_input(f"%in_f32_{i}")
     switches["none"].add_input("%ctrl_in")
 
     # Extmemory outputs -> switch inputs
@@ -772,6 +784,8 @@ def generate_template(tier, out):
         mod_args.append(f"%in_i64_{i}: i64")
     for i in range(n_in_index):
         mod_args.append(f"%addr{i}: index")
+    for i in range(n_in_f32):
+        mod_args.append(f"%in_f32_{i}: f32")
 
     mod_out_types = [t for t, _ in mod_out_slots]
     out.write(f"fabric.module @{cfg['module_name']}(\n")

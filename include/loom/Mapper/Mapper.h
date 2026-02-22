@@ -47,7 +47,8 @@ private:
   void preprocess(const Graph &adg);
   bool runPlacement(MappingState &state, const Graph &dfg, const Graph &adg,
                     const CandidateSet &candidates, const Options &opts);
-  bool runRouting(MappingState &state, const Graph &dfg, const Graph &adg);
+  bool runRouting(MappingState &state, const Graph &dfg, const Graph &adg,
+                  int seed = -1);
   bool runRefinement(MappingState &state, const Graph &dfg, const Graph &adg,
                      const CandidateSet &candidates, const Options &opts);
   bool runTemporalAssignment(MappingState &state, const Graph &dfg,
