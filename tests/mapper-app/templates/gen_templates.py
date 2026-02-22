@@ -40,6 +40,14 @@ PE_DEFS = [
      "%r = handshake.join %a0, %a1, %a2 : none, none, none", 1),
     ("pe_join4", ["none", "none", "none", "none"], ["none"],
      "%r = handshake.join %a0, %a1, %a2, %a3 : none, none, none, none", 1),
+    ("pe_join5",
+     ["none", "none", "none", "none", "none"], ["none"],
+     "%r = handshake.join %a0, %a1, %a2, %a3, %a4 "
+     ": none, none, none, none, none", 1),
+    ("pe_join6",
+     ["none", "none", "none", "none", "none", "none"], ["none"],
+     "%r = handshake.join %a0, %a1, %a2, %a3, %a4, %a5 "
+     ": none, none, none, none, none, none", 1),
     ("pe_join_i1", ["i1"], ["none"],
      "%r = handshake.join %a0 : i1", 1),
 
@@ -62,6 +70,8 @@ PE_DEFS = [
      "%r = handshake.mux %a0 [%a1, %a2] : index, none", 1),
     ("pe_mux_index", ["index", "index", "index"], ["index"],
      "%r = handshake.mux %a0 [%a1, %a2] : index, index", 1),
+    ("pe_mux_i64", ["index", "i64", "i64"], ["i64"],
+     "%r = handshake.mux %a0 [%a1, %a2] : index, i64", 1),
 
     # --- Integer arithmetic (i32) ---
     ("pe_addi", ["i32", "i32"], ["i32"],
@@ -96,8 +106,12 @@ PE_DEFS = [
     # --- Integer arithmetic (index) ---
     ("pe_addi_index", ["index", "index"], ["index"],
      "%r = arith.addi %a0, %a1 : index", 1),
+    ("pe_subi_index", ["index", "index"], ["index"],
+     "%r = arith.subi %a0, %a1 : index", 1),
     ("pe_divui_index", ["index", "index"], ["index"],
      "%r = arith.divui %a0, %a1 : index", 10),
+    ("pe_divsi_index", ["index", "index"], ["index"],
+     "%r = arith.divsi %a0, %a1 : index", 10),
     ("pe_remui_index", ["index", "index"], ["index"],
      "%r = arith.remui %a0, %a1 : index", 10),
     ("pe_muli_index", ["index", "index"], ["index"],
@@ -230,6 +244,8 @@ PE_DEFS = [
      "%o = dataflow.invariant %a0, %a1 : i1, f32 -> f32", 1),
     ("pe_invariant_index", ["i1", "index"], ["index"],
      "%o = dataflow.invariant %a0, %a1 : i1, index -> index", 1),
+    ("pe_invariant_i64", ["i1", "i64"], ["i64"],
+     "%o = dataflow.invariant %a0, %a1 : i1, i64 -> i64", 1),
 
     # --- Memory ---
     ("pe_load", ["index", "i32", "none"], ["i32", "index"],
@@ -314,61 +330,65 @@ SMALL_INSTANCES = {
 }
 
 MEDIUM_INSTANCES = {
-    "pe_const_i32": 6, "pe_const_f32": 3, "pe_const_i64": 4,
-    "pe_const_index": 12, "pe_const_i1": 3, "pe_const_i16": 1,
-    "pe_join1": 6, "pe_join2": 2, "pe_join3": 2, "pe_join4": 1,
+    "pe_const_i32": 8, "pe_const_f32": 4, "pe_const_i64": 4,
+    "pe_const_index": 16, "pe_const_i1": 4, "pe_const_i16": 1,
+    "pe_join1": 8, "pe_join2": 3, "pe_join3": 2, "pe_join4": 1,
+    "pe_join5": 1, "pe_join6": 1,
     "pe_join_i1": 2,
-    "pe_cond_br_none": 14, "pe_cond_br_i32": 3, "pe_cond_br_f32": 2,
-    "pe_cond_br_index": 1,
-    "pe_mux_i32": 4, "pe_mux_f32": 2, "pe_mux_none": 8,
-    "pe_mux_index": 2,
-    "pe_addi": 8, "pe_subi": 3, "pe_muli": 5, "pe_divui": 2,
+    "pe_cond_br_none": 19, "pe_cond_br_i32": 4, "pe_cond_br_f32": 3,
+    "pe_cond_br_index": 2,
+    "pe_mux_i32": 6, "pe_mux_f32": 3, "pe_mux_none": 11,
+    "pe_mux_index": 3, "pe_mux_i64": 1,
+    "pe_addi": 10, "pe_subi": 4, "pe_muli": 5, "pe_divui": 2,
     "pe_divsi": 1, "pe_remui": 2, "pe_remsi": 1,
     "pe_addi_i64": 3, "pe_subi_i64": 1, "pe_muli_i64": 1,
     "pe_cmpi_i64": 3, "pe_shli_i64": 1, "pe_remui_i64": 1,
-    "pe_addi_index": 1, "pe_divui_index": 1,
+    "pe_addi_index": 2, "pe_subi_index": 1,
+    "pe_divui_index": 1, "pe_divsi_index": 1,
     "pe_remui_index": 1, "pe_muli_index": 1,
     "pe_andi": 3, "pe_ori": 2, "pe_xori": 2,
     "pe_shli": 2, "pe_shrui": 2, "pe_shrsi": 1,
     "pe_xori_i1": 1,
-    "pe_addf": 3, "pe_subf": 3, "pe_mulf": 3, "pe_divf": 2,
+    "pe_addf": 4, "pe_subf": 3, "pe_mulf": 4, "pe_divf": 2,
     "pe_fma": 3,
     "pe_negf": 2, "pe_absf": 1, "pe_sin": 1, "pe_cos": 1,
     "pe_exp": 1, "pe_sqrt": 1, "pe_log2": 1,
-    "pe_cmpi": 6, "pe_cmpf": 2,
-    "pe_select": 4, "pe_select_index": 6, "pe_select_f32": 1,
-    "pe_index_cast_i32": 12, "pe_index_cast_i64": 5,
-    "pe_index_cast_to_i32": 2, "pe_index_cast_to_i64": 3,
+    "pe_cmpi": 10, "pe_cmpf": 2,
+    "pe_select": 6, "pe_select_index": 6, "pe_select_f32": 2,
+    "pe_index_cast_i32": 16, "pe_index_cast_i64": 6,
+    "pe_index_cast_to_i32": 3, "pe_index_cast_to_i64": 3,
     "pe_index_castui": 2,
-    "pe_extui": 8, "pe_trunci": 4,
-    "pe_extui_i1": 4, "pe_trunci_to_i1": 3,
+    "pe_extui": 8, "pe_trunci": 6,
+    "pe_extui_i1": 5, "pe_trunci_to_i1": 3,
     "pe_extui_i16": 1, "pe_trunci_to_i16": 1, "pe_remui_i16": 1,
     "pe_uitofp": 2, "pe_uitofp_i16": 1, "pe_sitofp": 1, "pe_fptoui": 1,
-    "pe_stream": 4, "pe_gate": 6, "pe_gate_f32": 2,
-    "pe_gate_index": 5,
-    "pe_carry": 8, "pe_carry_f32": 2, "pe_carry_none": 10,
-    "pe_carry_index": 1,
-    "pe_invariant": 10, "pe_invariant_i1": 3, "pe_invariant_none": 3,
-    "pe_invariant_f32": 2, "pe_invariant_index": 1,
-    "pe_load": 5, "pe_load_f32": 3, "pe_store": 3, "pe_store_f32": 2,
-    "pe_sink_i1": 4, "pe_sink_none": 3, "pe_sink_i32": 2,
-    "pe_sink_index": 1, "pe_sink_f32": 1,
+    "pe_stream": 5, "pe_gate": 8, "pe_gate_f32": 3,
+    "pe_gate_index": 6,
+    "pe_carry": 10, "pe_carry_f32": 3, "pe_carry_none": 13,
+    "pe_carry_index": 2,
+    "pe_invariant": 10, "pe_invariant_i1": 4, "pe_invariant_none": 4,
+    "pe_invariant_f32": 3, "pe_invariant_index": 2, "pe_invariant_i64": 1,
+    "pe_load": 8, "pe_load_f32": 5, "pe_store": 5, "pe_store_f32": 3,
+    "pe_sink_i1": 5, "pe_sink_none": 4, "pe_sink_i32": 2,
+    "pe_sink_index": 2, "pe_sink_f32": 2,
 }
 
 LARGE_INSTANCES = {
     "pe_const_i32": 8, "pe_const_f32": 4, "pe_const_i64": 5,
     "pe_const_index": 16, "pe_const_i1": 4, "pe_const_i16": 1,
     "pe_join1": 6, "pe_join2": 2, "pe_join3": 2, "pe_join4": 2,
+    "pe_join5": 1, "pe_join6": 1,
     "pe_join_i1": 2,
     "pe_cond_br_none": 18, "pe_cond_br_i32": 5, "pe_cond_br_f32": 3,
     "pe_cond_br_index": 2,
     "pe_mux_i32": 8, "pe_mux_f32": 3, "pe_mux_none": 10,
-    "pe_mux_index": 3,
+    "pe_mux_index": 3, "pe_mux_i64": 1,
     "pe_addi": 12, "pe_subi": 3, "pe_muli": 8, "pe_divui": 3,
     "pe_divsi": 2, "pe_remui": 2, "pe_remsi": 1,
     "pe_addi_i64": 3, "pe_subi_i64": 1, "pe_muli_i64": 2,
     "pe_cmpi_i64": 4, "pe_shli_i64": 2, "pe_remui_i64": 1,
-    "pe_addi_index": 2, "pe_divui_index": 2,
+    "pe_addi_index": 2, "pe_subi_index": 1,
+    "pe_divui_index": 2, "pe_divsi_index": 1,
     "pe_remui_index": 1, "pe_muli_index": 1,
     "pe_andi": 3, "pe_ori": 2, "pe_xori": 2,
     "pe_shli": 2, "pe_shrui": 2, "pe_shrsi": 1,
@@ -391,18 +411,54 @@ LARGE_INSTANCES = {
     "pe_carry": 10, "pe_carry_f32": 3, "pe_carry_none": 10,
     "pe_carry_index": 2,
     "pe_invariant": 10, "pe_invariant_i1": 3, "pe_invariant_none": 3,
-    "pe_invariant_f32": 2, "pe_invariant_index": 2,
+    "pe_invariant_f32": 2, "pe_invariant_index": 2, "pe_invariant_i64": 1,
     "pe_load": 5, "pe_load_f32": 3, "pe_store": 3, "pe_store_f32": 2,
     "pe_sink_i1": 5, "pe_sink_none": 3, "pe_sink_i32": 2,
     "pe_sink_index": 2, "pe_sink_f32": 2,
 }
 
+# Extmemory config: (elem_type, ld_count, st_count)
+# Different configs provide the port-signature diversity that the mapper
+# needs when matching DFG extmemory nodes to ADG extmemory nodes.
+EXTMEM_MEDIUM = [
+    ("i32", 1, 0),  # load-only
+    ("i32", 1, 0),  # load-only
+    ("i32", 0, 1),  # store-only
+    ("i32", 1, 1),  # read-write
+    ("i32", 2, 0),  # dual-load
+    ("i32", 1, 2),  # 1-load 2-store
+    ("i32", 0, 2),  # dual-store
+    ("i32", 3, 0),  # triple-load
+    ("f32", 1, 0),  # load-only
+    ("f32", 1, 0),  # load-only
+    ("f32", 0, 1),  # store-only
+    ("f32", 1, 1),  # read-write
+    ("f32", 2, 0),  # dual-load
+    ("f32", 0, 2),  # dual-store
+]
+
+EXTMEM_LARGE = [
+    ("i32", 1, 0),  # load-only
+    ("i32", 1, 0),  # load-only
+    ("i32", 1, 0),  # load-only
+    ("i32", 0, 1),  # store-only
+    ("i32", 1, 1),  # read-write
+    ("i32", 2, 0),  # dual-load
+    ("i32", 1, 2),  # 1-load 2-store
+    ("f32", 1, 0),  # load-only
+    ("f32", 1, 0),  # load-only
+    ("f32", 0, 1),  # store-only
+    ("f32", 0, 1),  # store-only
+    ("f32", 1, 1),  # read-write
+    ("f32", 2, 0),  # dual-load
+    ("f32", 0, 2),  # dual-store
+]
+
 MODULE_CONFIGS = {
     "small": {
         "instances": SMALL_INSTANCES,
         "module_name": "loom_cgra_small",
-        "n_mem_i32": 1,
-        "n_mem_f32": 0,
+        "extmem": [],
         "n_in_i32": 4,
         "n_in_index": 1,
         "n_out_i32": 1,
@@ -413,28 +469,37 @@ MODULE_CONFIGS = {
     "medium": {
         "instances": MEDIUM_INSTANCES,
         "module_name": "loom_cgra_medium",
-        "n_mem_i32": 2,
-        "n_mem_f32": 2,
+        "extmem": EXTMEM_MEDIUM,
         "n_in_i32": 4,
+        "n_in_i64": 1,
         "n_in_index": 1,
         "n_out_i32": 1,
         "n_out_f32": 1,
         "n_out_none": 1,
-        "n_privmem_i32": 1,
-        "n_privmem_f32": 2,
+        "privmem": [
+            ("i32", 1, 1),
+            ("i32", 1, 0),
+            ("f32", 1, 1),
+            ("f32", 1, 1),
+        ],
     },
     "large": {
         "instances": LARGE_INSTANCES,
         "module_name": "loom_cgra_large",
-        "n_mem_i32": 3,
-        "n_mem_f32": 2,
+        "extmem": EXTMEM_LARGE,
         "n_in_i32": 4,
+        "n_in_i64": 1,
         "n_in_index": 1,
         "n_out_i32": 1,
         "n_out_f32": 1,
         "n_out_none": 1,
-        "n_privmem_i32": 2,
-        "n_privmem_f32": 2,
+        "privmem": [
+            ("i32", 1, 1),
+            ("i32", 1, 1),
+            ("i32", 1, 0),
+            ("f32", 1, 1),
+            ("f32", 1, 1),
+        ],
     },
 }
 
@@ -499,6 +564,60 @@ class SwitchBuilder:
         return self.out_idx
 
 
+def _emit_memory_node(out, name, mem_arg, elem_type, ld, st, slots,
+                      memref_t, is_private):
+    """Emit a fabric.extmemory or fabric.memory node with arbitrary ld/st."""
+    n_out = 2 * ld + st
+    out_names = [f"%{name}_o{i}" for i in range(n_out)]
+    out_names_str = ", ".join(out_names)
+
+    # Attributes
+    attrs = f"[ldCount = {ld}, stCount = {st}"
+    if st > 0:
+        attrs += ", lsqDepth = 4"
+    if is_private:
+        attrs += ", is_private = true"
+    attrs += "]"
+
+    # Input operands
+    input_refs = []
+    if mem_arg:
+        input_refs.append(f"%{mem_arg}")
+    for slot in slots["ld_addrs"]:
+        input_refs.append(f"%csw_index#{slot}")
+    for slot in slots["st_addrs"]:
+        input_refs.append(f"%csw_index#{slot}")
+    for slot in slots["st_datas"]:
+        input_refs.append(f"%csw_{elem_type}#{slot}")
+    input_refs_str = ", ".join(input_refs)
+
+    # Input type signature
+    input_types = []
+    if not is_private:
+        input_types.append(memref_t)
+    input_types += ["index"] * (ld + st) + [elem_type] * st
+    input_types_str = ", ".join(input_types)
+
+    # Output type signature
+    output_types = [elem_type] * ld + ["none"] * (ld + st)
+    output_types_str = ", ".join(output_types)
+
+    op = "fabric.memory" if is_private else "fabric.extmemory"
+
+    if n_out == 1:
+        out.write(f"  {out_names[0]} = {op}\n")
+    else:
+        out.write(f"  {out_names_str} = {op}\n")
+    out.write(f"    {attrs}\n")
+    out.write(f"    ({input_refs_str})\n")
+    if is_private:
+        out.write(f"    : {memref_t}, ({input_types_str}) "
+                  f"-> ({output_types_str})\n")
+    else:
+        out.write(f"    : {memref_t}, ({input_types_str}) "
+                  f"-> ({output_types_str})\n")
+
+
 def generate_template(tier, out):
     """Generate a complete CGRA template for the given tier."""
     cfg = MODULE_CONFIGS[tier]
@@ -521,34 +640,56 @@ def generate_template(tier, out):
 
     # Module inputs
     n_in_i32 = cfg["n_in_i32"]
+    n_in_i64 = cfg.get("n_in_i64", 0)
     n_in_index = cfg.get("n_in_index", 0)
     for i in range(n_in_i32):
         switches["i32"].add_input(f"%in{i}")
+    for i in range(n_in_i64):
+        switches["i64"].add_input(f"%in_i64_{i}")
     for i in range(n_in_index):
         switches["index"].add_input(f"%addr{i}")
     switches["none"].add_input("%ctrl_in")
 
     # Extmemory outputs -> switch inputs
-    n_mem_i32 = cfg["n_mem_i32"]
-    n_mem_f32 = cfg.get("n_mem_f32", 0)
-    for i in range(n_mem_i32):
-        switches["i32"].add_input(f"%extmem_i32_{i}_ld")
-        switches["none"].add_input(f"%extmem_i32_{i}_done")
-    for i in range(n_mem_f32):
-        switches["f32"].add_input(f"%extmem_f32_{i}_ld")
-        switches["none"].add_input(f"%extmem_f32_{i}_done")
+    extmem_cfgs = cfg.get("extmem", [])
+    extmem_type_idx = {}
+    extmem_infos = []  # (name, elem_type, ld, st)
+    for elem_type, ld, st in extmem_cfgs:
+        idx = extmem_type_idx.get(elem_type, 0)
+        extmem_type_idx[elem_type] = idx + 1
+        name = f"extmem_{elem_type}_{idx}"
+        extmem_infos.append((name, elem_type, ld, st))
+        # Output order: ld_data*ld, ld_done*ld, st_done*st
+        oi = 0
+        for _ in range(ld):
+            switches[elem_type].add_input(f"%{name}_o{oi}")
+            oi += 1
+        for _ in range(ld):
+            switches["none"].add_input(f"%{name}_o{oi}")
+            oi += 1
+        for _ in range(st):
+            switches["none"].add_input(f"%{name}_o{oi}")
+            oi += 1
 
     # Private memory outputs -> switch inputs
-    n_priv_i32 = cfg.get("n_privmem_i32", 0)
-    n_priv_f32 = cfg.get("n_privmem_f32", 0)
-    for i in range(n_priv_i32):
-        switches["i32"].add_input(f"%privmem_i32_{i}_ld")
-        switches["none"].add_input(f"%privmem_i32_{i}_ld_done")
-        switches["none"].add_input(f"%privmem_i32_{i}_st_done")
-    for i in range(n_priv_f32):
-        switches["f32"].add_input(f"%privmem_f32_{i}_ld")
-        switches["none"].add_input(f"%privmem_f32_{i}_ld_done")
-        switches["none"].add_input(f"%privmem_f32_{i}_st_done")
+    privmem_cfgs = cfg.get("privmem", [])
+    privmem_type_idx = {}
+    privmem_infos = []  # (name, elem_type, ld, st)
+    for elem_type, ld, st in privmem_cfgs:
+        idx = privmem_type_idx.get(elem_type, 0)
+        privmem_type_idx[elem_type] = idx + 1
+        name = f"privmem_{elem_type}_{idx}"
+        privmem_infos.append((name, elem_type, ld, st))
+        oi = 0
+        for _ in range(ld):
+            switches[elem_type].add_input(f"%{name}_o{oi}")
+            oi += 1
+        for _ in range(ld):
+            switches["none"].add_input(f"%{name}_o{oi}")
+            oi += 1
+        for _ in range(st):
+            switches["none"].add_input(f"%{name}_o{oi}")
+            oi += 1
 
     # PE instances
     for pe_name in pe_types_used:
@@ -592,41 +733,43 @@ def generate_template(tier, out):
     for _ in range(n_out_none):
         mod_out_slots.append(("none", switches["none"].alloc_output()))
 
-    # Extmemory input slots
-    extmem_i32_slots = []
-    for i in range(n_mem_i32):
-        extmem_i32_slots.append({"addr": switches["index"].alloc_output()})
-    extmem_f32_slots = []
-    for i in range(n_mem_f32):
-        extmem_f32_slots.append({"addr": switches["index"].alloc_output()})
+    # Extmemory input slots (allocate switch outputs for addresses/data)
+    extmem_slots = []
+    for name, elem_type, ld, st in extmem_infos:
+        slots = {
+            "ld_addrs": [switches["index"].alloc_output()
+                         for _ in range(ld)],
+            "st_addrs": [switches["index"].alloc_output()
+                         for _ in range(st)],
+            "st_datas": [switches[elem_type].alloc_output()
+                         for _ in range(st)],
+        }
+        extmem_slots.append(slots)
 
     # Private memory input slots
-    privmem_i32_slots = []
-    for i in range(n_priv_i32):
-        privmem_i32_slots.append({
-            "ld_addr": switches["index"].alloc_output(),
-            "st_addr": switches["index"].alloc_output(),
-            "st_data": switches["i32"].alloc_output(),
-        })
-    privmem_f32_slots = []
-    for i in range(n_priv_f32):
-        privmem_f32_slots.append({
-            "ld_addr": switches["index"].alloc_output(),
-            "st_addr": switches["index"].alloc_output(),
-            "st_data": switches["f32"].alloc_output(),
-        })
+    privmem_slots = []
+    for name, elem_type, ld, st in privmem_infos:
+        slots = {
+            "ld_addrs": [switches["index"].alloc_output()
+                         for _ in range(ld)],
+            "st_addrs": [switches["index"].alloc_output()
+                         for _ in range(st)],
+            "st_datas": [switches[elem_type].alloc_output()
+                         for _ in range(st)],
+        }
+        privmem_slots.append(slots)
 
     # --- Emit module ---
     mod_args = []
-    for i in range(n_mem_i32):
+    for name, elem_type, ld, st in extmem_infos:
+        mem_arg = name.replace("extmem_", "mem_")
         mod_args.append(
-            f"%mem_i32_{i}: memref<?xi32, strided<[1], offset: ?>>")
-    for i in range(n_mem_f32):
-        mod_args.append(
-            f"%mem_f32_{i}: memref<?xf32, strided<[1], offset: ?>>")
+            f"%{mem_arg}: memref<?x{elem_type}, strided<[1], offset: ?>>")
     mod_args.append("%ctrl_in: none")
     for i in range(n_in_i32):
         mod_args.append(f"%in{i}: i32")
+    for i in range(n_in_i64):
+        mod_args.append(f"%in_i64_{i}: i64")
     for i in range(n_in_index):
         mod_args.append(f"%addr{i}: index")
 
@@ -677,50 +820,21 @@ def generate_template(tier, out):
 
     # Emit extmemory
     out.write("\n  // External memory\n")
-    for i in range(n_mem_i32):
-        addr_ref = f"%csw_index#{extmem_i32_slots[i]['addr']}"
-        out.write(f"  %extmem_i32_{i}_ld, %extmem_i32_{i}_done = "
-                  f"fabric.extmemory\n")
-        out.write(f"    [ldCount = 1, stCount = 1, lsqDepth = 4]\n")
-        out.write(f"    (%mem_i32_{i}, {addr_ref})\n")
-        out.write(f"    : memref<?xi32, strided<[1], offset: ?>>, "
-                  f"(memref<?xi32, strided<[1], offset: ?>>, index) "
-                  f"-> (i32, none)\n")
-    for i in range(n_mem_f32):
-        addr_ref = f"%csw_index#{extmem_f32_slots[i]['addr']}"
-        out.write(f"  %extmem_f32_{i}_ld, %extmem_f32_{i}_done = "
-                  f"fabric.extmemory\n")
-        out.write(f"    [ldCount = 1, stCount = 1, lsqDepth = 4]\n")
-        out.write(f"    (%mem_f32_{i}, {addr_ref})\n")
-        out.write(f"    : memref<?xf32, strided<[1], offset: ?>>, "
-                  f"(memref<?xf32, strided<[1], offset: ?>>, index) "
-                  f"-> (f32, none)\n")
+    for ei, (name, elem_type, ld, st) in enumerate(extmem_infos):
+        memref_t = f"memref<?x{elem_type}, strided<[1], offset: ?>>"
+        mem_arg = name.replace("extmem_", "mem_")
+        s = extmem_slots[ei]
+        _emit_memory_node(out, name, mem_arg, elem_type, ld, st, s,
+                          memref_t, is_private=False)
 
     # Emit private memory
-    if n_priv_i32 > 0 or n_priv_f32 > 0:
+    if privmem_infos:
         out.write("\n  // Private memory (handshake.memory)\n")
-    for i in range(n_priv_i32):
-        s = privmem_i32_slots[i]
-        out.write(f"  %privmem_i32_{i}_ld, %privmem_i32_{i}_ld_done, "
-                  f"%privmem_i32_{i}_st_done = fabric.memory\n")
-        out.write(f"    [ldCount = 1, stCount = 1, lsqDepth = 4, "
-                  f"is_private = true]\n")
-        out.write(f"    (%csw_index#{s['ld_addr']}, "
-                  f"%csw_index#{s['st_addr']}, "
-                  f"%csw_i32#{s['st_data']})\n")
-        out.write(f"    : memref<1024xi32>, (index, index, i32) "
-                  f"-> (i32, none, none)\n")
-    for i in range(n_priv_f32):
-        s = privmem_f32_slots[i]
-        out.write(f"  %privmem_f32_{i}_ld, %privmem_f32_{i}_ld_done, "
-                  f"%privmem_f32_{i}_st_done = fabric.memory\n")
-        out.write(f"    [ldCount = 1, stCount = 1, lsqDepth = 4, "
-                  f"is_private = true]\n")
-        out.write(f"    (%csw_index#{s['ld_addr']}, "
-                  f"%csw_index#{s['st_addr']}, "
-                  f"%csw_f32#{s['st_data']})\n")
-        out.write(f"    : memref<1024xf32>, (index, index, f32) "
-                  f"-> (f32, none, none)\n")
+    for pi, (name, elem_type, ld, st) in enumerate(privmem_infos):
+        memref_t = f"memref<1024x{elem_type}>"
+        s = privmem_slots[pi]
+        _emit_memory_node(out, name, None, elem_type, ld, st, s,
+                          memref_t, is_private=True)
 
     # Module yield
     yield_refs = [f"%csw_{t}#{s}" for t, s in mod_out_slots]
