@@ -389,7 +389,7 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
 
   for (auto &[sw, swVars] : placementVars) {
     for (auto &[hw, var] : swVars) {
-      if (SolutionBoolValue(response, var)) {
+      if (SolutionBooleanValue(response, var)) {
         result.state.mapNode(sw, hw, dfg, adg);
 
         // Map ports: type-aware for memory ops, positional otherwise.
@@ -725,7 +725,7 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
   // Apply new placements.
   for (auto &[sw, swVars] : placementVars) {
     for (auto &[hw, var] : swVars) {
-      if (SolutionBoolValue(response, var)) {
+      if (SolutionBooleanValue(response, var)) {
         result.state.mapNode(sw, hw, dfg, adg);
 
         const Node *swNode = dfg.getNode(sw);

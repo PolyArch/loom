@@ -64,6 +64,7 @@ add_custom_target(check-loom-mapper
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_test.sh"
     "${CMAKE_BINARY_DIR}/tests/mapper"
   COMMAND bash "${CMAKE_SOURCE_DIR}/tests/mapper/unit/template_coverage_real.sh"
+  COMMAND bash "${CMAKE_SOURCE_DIR}/tests/mapper/unit/template_selection_regression.sh"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS ${MAPPER_TEST_TARGETS}
 )
