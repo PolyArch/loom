@@ -52,6 +52,17 @@ bool nodeHasAttr(const Node *node, llvm::StringRef name) {
   return false;
 }
 
+/// Get bit width from an MLIR type.
+unsigned getTypeWidth(mlir::Type type) {
+  if (!type)
+    return 0;
+  if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(type))
+    return intTy.getWidth();
+  if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(type))
+    return floatTy.getWidth();
+  return 0;
+}
+
 } // namespace
 
 bool Mapper::validateC1(const MappingState &state, const Graph &dfg,
@@ -103,17 +114,58 @@ bool Mapper::validateC2(const MappingState &state, const Graph &dfg,
       return false;
     }
 
-    // Type compatibility (relaxed for routing nodes).
+    // Type compatibility check.
     if (sw->type && hw->type) {
       const Node *hwNode = adg.getNode(hw->parentNode);
       bool isRouting = hwNode && getNodeResClass(hwNode) == "routing";
 
-      if (!isRouting && sw->type != hw->type) {
-        diag = "C2: type mismatch sw_port=" + std::to_string(i);
-        return false;
+      if (isRouting) {
+        // Routing nodes: bit-width must match (relaxed type semantics).
+        unsigned swWidth = getTypeWidth(sw->type);
+        unsigned hwWidth = getTypeWidth(hw->type);
+        if (swWidth > 0 && hwWidth > 0 && swWidth != hwWidth) {
+          diag = "C2: routing bit-width mismatch sw_port=" +
+                 std::to_string(i) + " (sw=" + std::to_string(swWidth) +
+                 " hw=" + std::to_string(hwWidth) + ")";
+          return false;
+        }
+      } else {
+        // Functional/memory nodes: strict type compatibility.
+        if (sw->type != hw->type) {
+          diag = "C2: type mismatch sw_port=" + std::to_string(i);
+          return false;
+        }
       }
     }
   }
+
+  // C2 for routing hops: check bit-width consistency along each route path.
+  for (IdIndex i = 0; i < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
+       ++i) {
+    const auto &path = state.swEdgeToHwPaths[i];
+    if (path.empty())
+      continue;
+
+    // Check each physical hop pair in the path.
+    for (size_t j = 0; j + 1 < path.size(); j += 2) {
+      const Port *fromPort = adg.getPort(path[j]);
+      const Port *toPort = adg.getPort(path[j + 1]);
+      if (!fromPort || !toPort)
+        continue;
+
+      // Check bit-width compatibility along routing hops.
+      if (fromPort->type && toPort->type) {
+        unsigned fromWidth = getTypeWidth(fromPort->type);
+        unsigned toWidth = getTypeWidth(toPort->type);
+        if (fromWidth > 0 && toWidth > 0 && fromWidth != toWidth) {
+          diag = "C2: routing hop bit-width mismatch in edge " +
+                 std::to_string(i) + " at hop " + std::to_string(j / 2);
+          return false;
+        }
+      }
+    }
+  }
+
   return true;
 }
 
@@ -150,6 +202,39 @@ bool Mapper::validateC3(const MappingState &state, const Graph &dfg,
         return false;
       }
     }
+
+    // C3 internal routing validation: for multi-hop paths, verify that
+    // intermediate routing hops use legal internal transitions.
+    // Path pairs: (out0, in0), (out1, in1), ...
+    // Between pairs: in0's routing node must connect to out1 internally.
+    for (size_t j = 1; j + 2 < path.size(); j += 2) {
+      IdIndex inPort = path[j];
+      IdIndex nextOutPort = path[j + 1];
+
+      // Check that the routing node containing inPort has an internal
+      // connection to nextOutPort.
+      auto internalIt = connectivity.inToOut.find(inPort);
+      if (internalIt == connectivity.inToOut.end()) {
+        diag = "C3: no internal routing from port " +
+               std::to_string(inPort) + " in edge " + std::to_string(i);
+        return false;
+      }
+
+      bool found = false;
+      for (IdIndex outId : internalIt->second) {
+        if (outId == nextOutPort) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        diag = "C3: illegal internal routing transition from port " +
+               std::to_string(inPort) + " to port " +
+               std::to_string(nextOutPort) + " in edge " +
+               std::to_string(i);
+        return false;
+      }
+    }
   }
 
   // Check C3 exclusivity: no exclusive HW edge used by more than one SW edge.
@@ -174,6 +259,80 @@ bool Mapper::validateC3(const MappingState &state, const Graph &dfg,
       diag = "C3: exclusive hw_edge=" + std::to_string(e) +
              " used by " + std::to_string(swEdges.size()) + " sw edges";
       return false;
+    }
+  }
+
+  // C3.5: Memory done-token wiring legality.
+  // For memory operations, verify that done-token ports are connected.
+  for (IdIndex swId = 0;
+       swId < static_cast<IdIndex>(state.swNodeToHwNode.size()); ++swId) {
+    IdIndex hwId = state.swNodeToHwNode[swId];
+    if (hwId == INVALID_ID)
+      continue;
+
+    const Node *hwNode = adg.getNode(hwId);
+    if (!hwNode)
+      continue;
+
+    llvm::StringRef resClass = getNodeResClass(hwNode);
+    if (resClass != "memory")
+      continue;
+
+    // Memory nodes: verify that the "done" output port (if present)
+    // has a routed edge. Check if the DFG node's output ports are routed.
+    const Node *swNode = dfg.getNode(swId);
+    if (!swNode)
+      continue;
+
+    for (IdIndex outPortId : swNode->outputPorts) {
+      const Port *outPort = dfg.getPort(outPortId);
+      if (!outPort)
+        continue;
+      // Check that all connected edges from this port are routed.
+      for (IdIndex edgeId : outPort->connectedEdges) {
+        if (edgeId >= state.swEdgeToHwPaths.size() ||
+            state.swEdgeToHwPaths[edgeId].empty()) {
+          diag = "C3.5: memory done-token edge " + std::to_string(edgeId) +
+                 " from node " + std::to_string(swId) + " unrouted";
+          return false;
+        }
+      }
+    }
+  }
+
+  // C3.6: Fan-out legality.
+  // DFG output ports with multiple consumer edges must have all edges routed
+  // and they must share the source hardware port.
+  for (IdIndex swId = 0;
+       swId < static_cast<IdIndex>(state.swNodeToHwNode.size()); ++swId) {
+    if (state.swNodeToHwNode[swId] == INVALID_ID)
+      continue;
+
+    const Node *swNode = dfg.getNode(swId);
+    if (!swNode)
+      continue;
+
+    for (IdIndex outPortId : swNode->outputPorts) {
+      const Port *outPort = dfg.getPort(outPortId);
+      if (!outPort || outPort->connectedEdges.size() <= 1)
+        continue;
+
+      // Multiple consumer edges: all must start from the same HW source port.
+      IdIndex expectedSrcHwPort = INVALID_ID;
+      for (IdIndex edgeId : outPort->connectedEdges) {
+        if (edgeId >= state.swEdgeToHwPaths.size() ||
+            state.swEdgeToHwPaths[edgeId].empty())
+          continue;
+
+        IdIndex pathSrcPort = state.swEdgeToHwPaths[edgeId][0];
+        if (expectedSrcHwPort == INVALID_ID) {
+          expectedSrcHwPort = pathSrcPort;
+        } else if (pathSrcPort != expectedSrcHwPort) {
+          diag = "C3.6: fan-out from sw_port " + std::to_string(outPortId) +
+                 " uses inconsistent hw source ports";
+          return false;
+        }
+      }
     }
   }
 
@@ -258,7 +417,7 @@ bool Mapper::validateC5(const MappingState &state, const Graph &dfg,
     }
 
     // Check slot assignments are valid.
-    llvm::DenseSet<IdIndex> usedSlots;
+    llvm::DenseSet<IdIndex> usedTags;
     for (IdIndex swId : swOps) {
       if (swId >= state.temporalPEAssignments.size())
         continue;
@@ -273,8 +432,8 @@ bool Mapper::validateC5(const MappingState &state, const Graph &dfg,
         return false;
       }
 
-      // Check tag uniqueness.
-      if (tpa.tag != INVALID_ID && !usedSlots.insert(tpa.tag).second) {
+      // C5.4: Check tag uniqueness within temporal PE.
+      if (tpa.tag != INVALID_ID && !usedTags.insert(tpa.tag).second) {
         diag = "C5: duplicate tag " + std::to_string(tpa.tag) +
                " in temporal PE " + std::to_string(tpeId);
         return false;

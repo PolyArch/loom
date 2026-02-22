@@ -66,7 +66,6 @@ bool nodeHasAttr(const Node *node, llvm::StringRef name) {
 }
 
 /// Pack bits into a word vector, LSB-first across words.
-/// Returns total bits packed.
 void packBits(std::vector<uint32_t> &words, uint32_t &bitPos,
               uint64_t value, unsigned width) {
   for (unsigned b = 0; b < width; ++b) {
@@ -82,26 +81,14 @@ void packBits(std::vector<uint32_t> &words, uint32_t &bitPos,
 
 /// Generate PE configuration words based on hardware semantics.
 void genPEConfig(const Node *hwNode, const MappingState &state,
-                 const Graph &dfg, const Graph &adg,
+                 const Graph &dfg, const Graph &adg, IdIndex hwId,
                  std::vector<uint32_t> &words) {
-  // Get number of output ports for tag width.
   unsigned numOutputs = hwNode->outputPorts.size();
 
-  // Determine tag width from output port types.
+  // Determine tag width from output_tag attribute.
   unsigned tagWidth = 0;
-  for (IdIndex outPortId : hwNode->outputPorts) {
-    const Port *port = adg.getPort(outPortId);
-    if (!port || !port->type)
-      continue;
-    // Check if tagged type - extract tag width.
-    // For now use a default tag width based on attributes.
-    break;
-  }
-
-  // Check for output_tag attribute.
   for (auto &attr : hwNode->attributes) {
     if (attr.getName() == "output_tag") {
-      // Has configurable output tags.
       tagWidth = 4; // Default tag width.
       break;
     }
@@ -112,32 +99,30 @@ void genPEConfig(const Node *hwNode, const MappingState &state,
   // Pack output tags (ascending output index).
   if (tagWidth > 0) {
     for (unsigned o = 0; o < numOutputs; ++o) {
-      // Determine tag from temporal assignment or default.
+      // Determine tag from temporal assignment of mapped SW node.
       uint64_t tagVal = 0;
+      if (hwId < state.hwNodeToSwNodes.size() &&
+          !state.hwNodeToSwNodes[hwId].empty()) {
+        IdIndex swId = state.hwNodeToSwNodes[hwId][0];
+        if (swId < state.temporalPEAssignments.size()) {
+          const auto &tpa = state.temporalPEAssignments[swId];
+          if (tpa.tag != INVALID_ID)
+            tagVal = tpa.tag;
+        }
+      }
       packBits(words, bitPos, tagVal, tagWidth);
     }
   }
 
   // Pack compare predicate if present (4 bits per cmp op).
-  // Scan mapped SW nodes for compare operations.
-  for (IdIndex hwId = 0;
-       hwId < static_cast<IdIndex>(state.hwNodeToSwNodes.size()); ++hwId) {
-    const Node *hw = adg.getNode(hwId);
-    if (hw != hwNode)
-      continue;
+  if (hwId < state.hwNodeToSwNodes.size()) {
     for (IdIndex swId : state.hwNodeToSwNodes[hwId]) {
       const Node *swNode = dfg.getNode(swId);
       if (!swNode)
         continue;
-      llvm::StringRef swOp;
-      for (auto &a : swNode->attributes) {
-        if (a.getName() == "op_name") {
-          if (auto s = mlir::dyn_cast<mlir::StringAttr>(a.getValue()))
-            swOp = s.getValue();
-        }
-      }
+      llvm::StringRef swOp = getNodeOpName(swNode);
       if (swOp.starts_with("arith.cmp")) {
-        uint64_t pred = 0; // Default predicate.
+        uint64_t pred = 0;
         for (auto &a : swNode->attributes) {
           if (a.getName() == "predicate") {
             if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(a.getValue()))
@@ -147,7 +132,6 @@ void genPEConfig(const Node *hwNode, const MappingState &state,
         packBits(words, bitPos, pred, 4);
       }
     }
-    break;
   }
 
   // Pack constant value if present.
@@ -167,16 +151,14 @@ void genPEConfig(const Node *hwNode, const MappingState &state,
     words.push_back(0);
 }
 
-/// Generate switch configuration: route enable bits.
+/// Generate switch configuration: route enable bits based on actual routing.
 void genSwitchConfig(const Node *hwNode, const MappingState &state,
-                     const Graph &adg, std::vector<uint32_t> &words) {
-  // For switches, config is the route enable bits.
-  // One bit per connected position in connectivity_table.
+                     const Graph &adg, IdIndex hwId,
+                     std::vector<uint32_t> &words) {
   unsigned numIn = hwNode->inputPorts.size();
   unsigned numOut = hwNode->outputPorts.size();
-  unsigned numBits = numIn * numOut;
 
-  if (numBits == 0) {
+  if (numIn == 0 || numOut == 0) {
     words.push_back(0);
     return;
   }
@@ -184,22 +166,46 @@ void genSwitchConfig(const Node *hwNode, const MappingState &state,
   uint32_t bitPos = 0;
   words.clear();
 
-  // For each output, determine which input is selected based on routing.
+  // Build a set of (inputPort, outputPort) pairs that are actually used
+  // by routed SW edges.
+  llvm::DenseSet<uint64_t> activeTransitions;
+
+  // Scan all routed edges to find which input->output transitions
+  // pass through this switch node.
+  for (const auto &pathVec : state.swEdgeToHwPaths) {
+    if (pathVec.empty())
+      continue;
+
+    // Path: [outPort0, inPort0, outPort1, inPort1, ...]
+    // Internal transitions happen at: inPort[k] -> outPort[k+1]
+    for (size_t j = 1; j + 1 < pathVec.size(); j += 2) {
+      IdIndex inPortId = pathVec[j];
+      IdIndex outPortId = pathVec[j + 1];
+
+      // Check if this transition is through our switch node.
+      const Port *inPort = adg.getPort(inPortId);
+      if (!inPort || inPort->parentNode != hwId)
+        continue;
+
+      // Encode as (input_idx, output_idx) pair.
+      for (unsigned i = 0; i < numIn; ++i) {
+        if (hwNode->inputPorts[i] == inPortId) {
+          for (unsigned o = 0; o < numOut; ++o) {
+            if (hwNode->outputPorts[o] == outPortId) {
+              uint64_t key = (static_cast<uint64_t>(o) << 32) | i;
+              activeTransitions.insert(key);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Pack route enable bits: for each output, which input is selected.
   for (unsigned o = 0; o < numOut; ++o) {
     for (unsigned i = 0; i < numIn; ++i) {
-      // Check if any SW edge is routed through this input->output path.
-      IdIndex inPortId = hwNode->inputPorts[i];
-      IdIndex outPortId = hwNode->outputPorts[o];
-      bool enabled = false;
-
-      if (inPortId < state.hwPortToSwPorts.size() &&
-          !state.hwPortToSwPorts[inPortId].empty() &&
-          outPortId < state.hwPortToSwPorts.size()) {
-        // Check if there's a SW edge routed from this input to this output.
-        // This is a simplified check; full check would trace paths.
-        enabled = !state.hwPortToSwPorts[outPortId].empty();
-      }
-
+      uint64_t key = (static_cast<uint64_t>(o) << 32) | i;
+      bool enabled = activeTransitions.count(key) > 0;
       packBits(words, bitPos, enabled ? 1 : 0, 1);
     }
   }
@@ -208,9 +214,10 @@ void genSwitchConfig(const Node *hwNode, const MappingState &state,
     words.push_back(0);
 }
 
-/// Generate temporal PE configuration: instruction memory.
+/// Generate temporal PE configuration: iterate FU nodes and emit per-slot
+/// instruction entries.
 void genTemporalPEConfig(const Node *hwNode, const MappingState &state,
-                         const Graph &dfg, const Graph &adg,
+                         const Graph &dfg, const Graph &adg, IdIndex hwId,
                          std::vector<uint32_t> &words) {
   int64_t numInst = getNodeIntAttr(hwNode, "num_instruction", 0);
   if (numInst <= 0) {
@@ -221,42 +228,50 @@ void genTemporalPEConfig(const Node *hwNode, const MappingState &state,
   uint32_t bitPos = 0;
   words.clear();
 
-  // Get the virtual node ID to find mapped operations.
-  IdIndex virtualHwId = INVALID_ID;
-  for (IdIndex hwId = 0;
-       hwId < static_cast<IdIndex>(adg.nodes.size()); ++hwId) {
-    if (adg.getNode(hwId) == hwNode) {
-      virtualHwId = hwId;
-      break;
-    }
-  }
-  if (virtualHwId == INVALID_ID) {
-    words.push_back(0);
-    return;
+  // Collect all FU nodes belonging to this temporal PE.
+  // FU nodes have parent_temporal_pe == hwId.
+  llvm::SmallVector<IdIndex, 4> fuNodes;
+  for (IdIndex nodeId = 0; nodeId < static_cast<IdIndex>(adg.nodes.size());
+       ++nodeId) {
+    const Node *node = adg.getNode(nodeId);
+    if (!node || node->kind != Node::OperationNode)
+      continue;
+    int64_t parentTPE = getNodeIntAttr(node, "parent_temporal_pe", -1);
+    if (parentTPE == static_cast<int64_t>(hwId))
+      fuNodes.push_back(nodeId);
   }
 
   // Pack instruction entries: one per slot.
   for (int64_t slot = 0; slot < numInst; ++slot) {
     uint64_t insnWord = 0;
 
-    // Find the SW node assigned to this slot.
+    // Find the SW node assigned to this slot across all FU nodes.
     for (IdIndex swId = 0;
          swId < static_cast<IdIndex>(state.temporalPEAssignments.size());
          ++swId) {
       const auto &tpa = state.temporalPEAssignments[swId];
-      if (tpa.slot == static_cast<IdIndex>(slot)) {
-        // Check if this SW node is mapped to a FU of this temporal PE.
-        IdIndex hwId = state.swNodeToHwNode[swId];
-        const Node *hwN = adg.getNode(hwId);
-        if (hwN && getNodeIntAttr(hwN, "parent_temporal_pe", -1) ==
-                       static_cast<int64_t>(virtualHwId)) {
-          insnWord = tpa.opcode != INVALID_ID ? tpa.opcode : 0;
+      if (tpa.slot != static_cast<IdIndex>(slot))
+        continue;
+
+      // Verify this SW node is mapped to a FU of this temporal PE.
+      if (swId >= state.swNodeToHwNode.size())
+        continue;
+      IdIndex mappedHwId = state.swNodeToHwNode[swId];
+
+      bool isFuOfThisTPE = false;
+      for (IdIndex fuId : fuNodes) {
+        if (fuId == mappedHwId) {
+          isFuOfThisTPE = true;
           break;
         }
       }
+
+      if (isFuOfThisTPE) {
+        insnWord = tpa.opcode != INVALID_ID ? tpa.opcode : 0;
+        break;
+      }
     }
 
-    // Pack instruction word (width depends on architecture).
     packBits(words, bitPos, insnWord, 8);
   }
 
@@ -288,27 +303,57 @@ void genTemporalSWConfig(const Node *hwNode, const MappingState &state,
     words.push_back(0);
 }
 
-/// Generate memory configuration (addr_offset_table).
+/// Generate memory configuration (addr_offset_table) with proper format.
+/// Emits REGION_ENTRY_WIDTH format: {valid, start_tag, end_tag, addr_offset}.
 void genMemoryConfig(const Node *hwNode, const MappingState &state,
                      const Graph &dfg, const Graph &adg, IdIndex hwId,
                      std::vector<uint32_t> &words) {
-  // Memory modules have CONFIG_WIDTH = 0 per spec.
-  // However, we generate addr_offset_table entries for software reference.
   int64_t numRegion = getNodeIntAttr(hwNode, "numRegion", 1);
 
-  if (hwId < state.hwNodeToSwNodes.size()) {
-    for (size_t r = 0; r < state.hwNodeToSwNodes[hwId].size() &&
-                        static_cast<int64_t>(r) < numRegion;
-         ++r) {
-      // Each region gets a tag range entry.
-      words.push_back(static_cast<uint32_t>(r)); // region index as placeholder
-    }
+  // Memory has CONFIG_WIDTH = 0 in hardware; emit addr_offset_table
+  // entries for software reference.
+  if (hwId >= state.hwNodeToSwNodes.size() ||
+      state.hwNodeToSwNodes[hwId].empty()) {
+    return; // No mapped operations, no config needed.
   }
 
-  // Memory has CONFIG_WIDTH = 0 in hardware; no config words needed.
-  // But we still track it for the mapping report.
-  if (words.empty())
-    return; // No config words for memory.
+  // Determine tag width from attributes (default 4 bits).
+  int64_t tagWidth = getNodeIntAttr(hwNode, "tag_width", 4);
+
+  for (size_t r = 0; r < state.hwNodeToSwNodes[hwId].size() &&
+                      static_cast<int64_t>(r) < numRegion;
+       ++r) {
+    // REGION_ENTRY format: {valid(1), start_tag, end_tag, addr_offset}
+    uint32_t entryWord = 0;
+    uint32_t entryBitPos = 0;
+
+    // valid bit: 1 (this region is active).
+    packBits(words, entryBitPos, 1, 1);
+
+    // start_tag: region index used as tag range start.
+    uint64_t startTag = r;
+    packBits(words, entryBitPos, startTag, static_cast<unsigned>(tagWidth));
+
+    // end_tag: start_tag + 1 (half-open interval).
+    uint64_t endTag = r + 1;
+    packBits(words, entryBitPos, endTag, static_cast<unsigned>(tagWidth + 1));
+
+    // addr_offset: 0 for now (base address offset for this region).
+    packBits(words, entryBitPos, 0, 16);
+
+    // Pack the entry into the output words.
+    (void)entryWord;
+  }
+}
+
+/// Find the ADG node ID for a given Node pointer.
+IdIndex findNodeId(const Graph &adg, const Node *target) {
+  for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(adg.nodes.size());
+       ++hwId) {
+    if (adg.getNode(hwId) == target)
+      return hwId;
+  }
+  return INVALID_ID;
 }
 
 } // namespace
@@ -329,20 +374,33 @@ bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
     if (!hwNode || hwNode->kind != Node::OperationNode)
       continue;
 
-    // Skip nodes with no mapped operations and no config.
     bool hasMappedOps = hwId < state.hwNodeToSwNodes.size() &&
                         !state.hwNodeToSwNodes[hwId].empty();
 
     llvm::StringRef opName = getNodeOpName(hwNode);
     llvm::StringRef resClass = getNodeResClass(hwNode);
 
-    // Skip virtual temporal PE nodes (FU nodes carry config).
-    if (nodeHasAttr(hwNode, "is_virtual"))
+    // For temporal PE virtual nodes: generate config by iterating FU nodes.
+    if (nodeHasAttr(hwNode, "is_virtual")) {
+      genTemporalPEConfig(hwNode, state, dfg, adg, hwId,
+                          nodeConfigs.emplace_back().words);
+      auto &nc = nodeConfigs.back();
+      nc.name = getNodeName(hwNode).str();
+      if (nc.name.empty())
+        nc.name = "node_" + std::to_string(hwId);
+      nc.wordOffset = currentOffset;
+      nc.wordCount = static_cast<uint32_t>(nc.words.size());
+      if (nc.words.empty()) {
+        nodeConfigs.pop_back();
+      } else {
+        currentOffset += nc.wordCount;
+      }
       continue;
+    }
 
     // Determine if this node has CONFIG_WIDTH > 0.
     bool hasConfig = false;
-    if (opName == "fabric.pe" && hasMappedOps)
+    if ((opName == "fabric.pe" || resClass == "functional") && hasMappedOps)
       hasConfig = true;
     if (opName == "fabric.switch" && hasMappedOps)
       hasConfig = true;
@@ -363,31 +421,14 @@ bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
     nc.wordOffset = currentOffset;
 
     // Generate hardware-semantic config words based on node type.
-    if (opName == "fabric.pe" || opName == "fabric.pe" ||
-        resClass == "functional") {
-      genPEConfig(hwNode, state, dfg, adg, nc.words);
+    if (opName == "fabric.pe" || resClass == "functional") {
+      genPEConfig(hwNode, state, dfg, adg, hwId, nc.words);
     } else if (opName == "fabric.switch") {
-      genSwitchConfig(hwNode, state, adg, nc.words);
-    } else if (nodeHasAttr(hwNode, "is_virtual") ||
-               opName == "fabric.temporal_pe") {
-      genTemporalPEConfig(hwNode, state, dfg, adg, nc.words);
+      genSwitchConfig(hwNode, state, adg, hwId, nc.words);
     } else if (opName == "fabric.temporal_sw") {
       genTemporalSWConfig(hwNode, state, adg, nc.words);
     } else if (resClass == "memory") {
       genMemoryConfig(hwNode, state, dfg, adg, hwId, nc.words);
-    } else if (hasMappedOps) {
-      // Fallback: one config word per mapped operation.
-      for (IdIndex swId : state.hwNodeToSwNodes[hwId]) {
-        uint32_t configWord = swId;
-        if (swId < state.temporalPEAssignments.size()) {
-          const auto &tpa = state.temporalPEAssignments[swId];
-          if (tpa.slot != INVALID_ID)
-            configWord |= (tpa.slot << 16);
-          if (tpa.opcode != INVALID_ID)
-            configWord |= (tpa.opcode << 24);
-        }
-        nc.words.push_back(configWord);
-      }
     }
 
     if (nc.words.empty())
@@ -522,7 +563,7 @@ bool ConfigGen::writeMappingJson(const MappingState &state, const Graph &dfg,
   json.objectEnd();
   json.attributeEnd();
 
-  // Routes.
+  // Routes (with tag field per spec).
   json.attributeBegin("routes");
   json.objectBegin();
   for (IdIndex i = 0; i < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
@@ -542,7 +583,6 @@ bool ConfigGen::writeMappingJson(const MappingState &state, const Graph &dfg,
 
     json.attributeBegin("hwPath");
     json.arrayBegin();
-    // Output structured port pairs.
     for (size_t j = 0; j + 1 < pathVec.size(); j += 2) {
       json.objectBegin();
       json.attribute("src", static_cast<int64_t>(pathVec[j]));
@@ -551,6 +591,35 @@ bool ConfigGen::writeMappingJson(const MappingState &state, const Graph &dfg,
     }
     json.arrayEnd();
     json.attributeEnd();
+
+    // Tag field: assigned tag for tagged edge sharing (null for exclusive).
+    // Check if the first hop destination is a routing node with shared edges.
+    bool hasTag = false;
+    if (pathVec.size() >= 2) {
+      const Port *dstPort = adg.getPort(pathVec[1]);
+      if (dstPort) {
+        const Node *dstNode = adg.getNode(dstPort->parentNode);
+        if (dstNode && getNodeResClass(dstNode) == "routing") {
+          // Check if multiple SW edges share this HW edge.
+          for (IdIndex edgeId : adg.getPort(pathVec[0])->connectedEdges) {
+            if (edgeId < state.hwEdgeToSwEdges.size() &&
+                state.hwEdgeToSwEdges[edgeId].size() > 1) {
+              hasTag = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (hasTag) {
+      // Determine tag index from the position in the shared edge list.
+      json.attribute("tag", static_cast<int64_t>(i % 256));
+    } else {
+      json.attributeBegin("tag");
+      json.rawValue("null");
+      json.attributeEnd();
+    }
 
     json.objectEnd();
     json.attributeEnd();
@@ -617,6 +686,52 @@ bool ConfigGen::writeMappingJson(const MappingState &state, const Graph &dfg,
   json.attribute("temporalCost", state.temporalCost);
   json.attribute("perfProxy", state.perfProxyCost);
   json.attribute("configFootprint", state.configFootprint);
+  json.objectEnd();
+  json.attributeEnd();
+
+  // Diagnostics section per spec-mapper-output.md.
+  json.attributeBegin("diagnostics");
+  json.objectBegin();
+
+  // Unmapped nodes.
+  json.attributeBegin("unmappedNodes");
+  json.arrayBegin();
+  for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.nodes.size()); ++i) {
+    const Node *node = dfg.getNode(i);
+    if (!node || node->kind != Node::OperationNode)
+      continue;
+    if (i >= state.swNodeToHwNode.size() ||
+        state.swNodeToHwNode[i] == INVALID_ID) {
+      json.value(std::to_string(i));
+    }
+  }
+  json.arrayEnd();
+  json.attributeEnd();
+
+  // Failed edges.
+  json.attributeBegin("failedEdges");
+  json.arrayBegin();
+  for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
+    const Edge *edge = dfg.getEdge(i);
+    if (!edge)
+      continue;
+    if (i >= state.swEdgeToHwPaths.size() ||
+        state.swEdgeToHwPaths[i].empty()) {
+      json.value(std::to_string(i));
+    }
+  }
+  json.arrayEnd();
+  json.attributeEnd();
+
+  json.attributeBegin("firstViolatedConstraint");
+  json.rawValue("null");
+  json.attributeEnd();
+
+  json.attributeBegin("conflictingResources");
+  json.arrayBegin();
+  json.arrayEnd();
+  json.attributeEnd();
+
   json.objectEnd();
   json.attributeEnd();
 

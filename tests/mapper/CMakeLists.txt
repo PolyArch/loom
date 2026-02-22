@@ -21,6 +21,12 @@ set(MAPPER_UNIT_TESTS
   cpsat_mode_select
   cpsat_subproblem_extract
   cpsat_available
+  techmapping_single
+  techmapping_group
+  routing_legality
+  config_memory
+  config_pe
+  cpsat_integration
 )
 
 set(MAPPER_TEST_TARGETS)

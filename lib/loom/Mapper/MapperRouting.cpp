@@ -7,6 +7,7 @@
 #include "loom/Mapper/Mapper.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 
 #include <queue>
 
@@ -25,11 +26,41 @@ llvm::StringRef getResClass(const Node *node) {
   return "";
 }
 
+/// Get bit width from an MLIR type (handles integer, float, and index types).
+unsigned getTypeBitWidth(mlir::Type type) {
+  if (!type)
+    return 0;
+  if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(type))
+    return intTy.getWidth();
+  if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(type))
+    return floatTy.getWidth();
+  return 0;
+}
+
+/// Check C2 bit-width compatibility for routing node edges.
+/// Native types: only bit width must match (i32 ~ f32 both 32-bit OK).
+/// Tagged-to-native mixing is never allowed.
+bool isRoutingTypeCompatible(mlir::Type srcType, mlir::Type dstType) {
+  if (!srcType || !dstType)
+    return true; // Untyped ports are compatible.
+  if (srcType == dstType)
+    return true;
+
+  unsigned srcWidth = getTypeBitWidth(srcType);
+  unsigned dstWidth = getTypeBitWidth(dstType);
+
+  // Both must have valid widths for routing compatibility.
+  if (srcWidth == 0 || dstWidth == 0)
+    return false;
+
+  // Width must match for routing (not just <=, exact match for routing).
+  return srcWidth == dstWidth;
+}
+
 } // namespace
 
 bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
                          const MappingState &state, const Graph &adg) {
-  // Check C2: type compatibility (relaxed for routing nodes).
   const Port *sp = adg.getPort(srcPort);
   const Port *dp = adg.getPort(dstPort);
   if (!sp || !dp)
@@ -44,6 +75,24 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
   if (it == connectivity.outToIn.end() || it->second != dstPort)
     return false;
 
+  // C2: Bit-width compatibility for routing hops.
+  // For routing nodes, enforce that bit widths match along the path.
+  const Node *srcNode = adg.getNode(sp->parentNode);
+  const Node *dstNode = adg.getNode(dp->parentNode);
+
+  if (srcNode && dstNode) {
+    bool srcIsRouting = getResClass(srcNode) == "routing";
+    bool dstIsRouting = getResClass(dstNode) == "routing";
+
+    // If either endpoint is a routing node, enforce bit-width compatibility.
+    if (srcIsRouting || dstIsRouting) {
+      if (sp->type && dp->type) {
+        if (!isRoutingTypeCompatible(sp->type, dp->type))
+          return false;
+      }
+    }
+  }
+
   // C3: Check exclusivity - find the ADG edge and verify it's not
   // already exclusively used by another SW edge.
   for (IdIndex edgeId : sp->connectedEdges) {
@@ -55,7 +104,6 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
         !state.hwEdgeToSwEdges[edgeId].empty()) {
       // The edge is already used. Check if the destination node is a
       // routing node (tagged sharing allowed) or exclusive.
-      const Node *dstNode = adg.getNode(dp->parentNode);
       if (!dstNode)
         return false;
       llvm::StringRef resClass = getResClass(dstNode);
@@ -75,8 +123,8 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
 
 IdIndex Mapper::allocateTag(IdIndex hwPort, const MappingState &state,
                             const Graph &adg) {
-  // Smallest-available-tag strategy.
-  // Scan existing tag allocations on this port's connected edges.
+  // Deterministic smallest-available-tag strategy.
+  // Scan all edges connected to this port to find tags already in use.
   llvm::DenseSet<IdIndex> usedTags;
 
   const Port *port = adg.getPort(hwPort);
@@ -84,12 +132,13 @@ IdIndex Mapper::allocateTag(IdIndex hwPort, const MappingState &state,
     return 0;
 
   for (IdIndex edgeId : port->connectedEdges) {
-    // Check if this edge is already used by any mapped SW edge.
-    if (edgeId < state.hwEdgeToSwEdges.size()) {
-      for (IdIndex swEdge : state.hwEdgeToSwEdges[edgeId]) {
-        // The tag is implicitly the SW edge index for now.
-        usedTags.insert(swEdge);
-      }
+    if (edgeId >= state.hwEdgeToSwEdges.size())
+      continue;
+    // Count the number of SW edges already sharing this HW edge.
+    // Each gets a unique tag value.
+    size_t usageCount = state.hwEdgeToSwEdges[edgeId].size();
+    for (size_t t = 0; t < usageCount; ++t) {
+      usedTags.insert(static_cast<IdIndex>(t));
     }
   }
 

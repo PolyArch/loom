@@ -6,6 +6,7 @@
 
 #include "loom/Mapper/Mapper.h"
 #include "loom/Mapper/CandidateBuilder.h"
+#include "loom/Mapper/CPSATSolver.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 
@@ -94,16 +95,88 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     return result;
   }
 
-  // Validation.
+  // Validation of heuristic result.
   std::string validationDiag;
-  if (!runValidation(result.state, dfg, adg, validationDiag)) {
+  bool heuristicValid =
+      runValidation(result.state, dfg, adg, validationDiag);
+
+  // Compute cost for heuristic result.
+  computeCost(result.state, dfg, adg, opts);
+
+  // CP-SAT solver integration: run if available and profile requests it.
+  if (CPSATSolver::isAvailable()) {
+    auto cpsatMode = CPSATSolver::selectMode(dfg, opts.profile);
+
+    if (cpsatMode != CPSATSolver::Mode::DISABLED) {
+      CPSATSolver solver;
+      CPSATSolver::Options cpsatOpts;
+      cpsatOpts.timeLimitSeconds = opts.budgetSeconds * 0.5;
+      cpsatOpts.mode = cpsatMode;
+      cpsatOpts.subProblemMaxNodes = 50;
+
+      CPSATSolver::Result cpsatResult;
+
+      if (cpsatMode == CPSATSolver::Mode::FULL_PROBLEM) {
+        // Warm-start from heuristic solution.
+        cpsatResult = solver.solveFullProblem(
+            dfg, adg, candidateResult.candidates, connectivity,
+            &result.state, cpsatOpts);
+      } else {
+        // Sub-problem mode: extract conflicting region.
+        // Find failed edges or high-cost nodes for sub-problem extraction.
+        llvm::SmallVector<IdIndex, 8> conflictNodes;
+        for (IdIndex edgeId = 0;
+             edgeId < static_cast<IdIndex>(dfg.edges.size()); ++edgeId) {
+          if (edgeId >= result.state.swEdgeToHwPaths.size() ||
+              result.state.swEdgeToHwPaths[edgeId].empty()) {
+            const Edge *edge = dfg.getEdge(edgeId);
+            if (edge) {
+              const Port *sp = dfg.getPort(edge->srcPort);
+              const Port *dp = dfg.getPort(edge->dstPort);
+              if (sp && sp->parentNode != INVALID_ID)
+                conflictNodes.push_back(sp->parentNode);
+              if (dp && dp->parentNode != INVALID_ID)
+                conflictNodes.push_back(dp->parentNode);
+            }
+          }
+        }
+
+        if (!conflictNodes.empty()) {
+          auto subProblem = CPSATSolver::extractSubProblem(
+              dfg, conflictNodes, cpsatOpts.subProblemMaxNodes);
+          cpsatResult = solver.solveSubProblem(
+              dfg, adg, subProblem, result.state,
+              candidateResult.candidates, connectivity, cpsatOpts);
+        }
+      }
+
+      // If CP-SAT found a valid solution, compare costs.
+      if (cpsatResult.success) {
+        // Post-validate deferred constraints on CP-SAT result.
+        std::string cpsatValidDiag;
+        bool cpsatValid =
+            runValidation(cpsatResult.state, dfg, adg, cpsatValidDiag);
+
+        if (cpsatValid) {
+          computeCost(cpsatResult.state, dfg, adg, opts);
+
+          // Accept CP-SAT result if it has lower total cost.
+          if (!heuristicValid ||
+              cpsatResult.state.totalCost < result.state.totalCost) {
+            result.state = std::move(cpsatResult.state);
+            heuristicValid = true;
+            validationDiag.clear();
+          }
+        }
+      }
+    }
+  }
+
+  if (!heuristicValid) {
     result.success = false;
     result.diagnostics = "Validation failed: " + validationDiag;
     return result;
   }
-
-  // Compute cost.
-  computeCost(result.state, dfg, adg, opts);
 
   result.success = true;
   return result;
@@ -122,6 +195,7 @@ void Mapper::preprocess(const Graph &adg) {
   }
 
   // Build internal routing (input port -> output ports) for routing nodes.
+  // Use connectivity_table when available; otherwise fall back to full crossbar.
   for (auto *node : adg.nodeRange()) {
     if (!node || node->kind != Node::OperationNode)
       continue;
@@ -130,9 +204,36 @@ void Mapper::preprocess(const Graph &adg) {
     if (resourceClass != "routing")
       continue;
 
-    for (IdIndex inPortId : node->inputPorts) {
-      for (IdIndex outPortId : node->outputPorts) {
-        connectivity.inToOut[inPortId].push_back(outPortId);
+    unsigned numIn = node->inputPorts.size();
+    unsigned numOut = node->outputPorts.size();
+
+    // Check for connectivity_table attribute (DenseI8ArrayAttr).
+    mlir::DenseI8ArrayAttr connTable;
+    for (auto &attr : node->attributes) {
+      if (attr.getName() == "connectivity_table") {
+        connTable = mlir::dyn_cast<mlir::DenseI8ArrayAttr>(attr.getValue());
+        break;
+      }
+    }
+
+    if (connTable && static_cast<unsigned>(connTable.size()) == numOut * numIn) {
+      // Use connectivity_table: row-major [output_idx][input_idx].
+      // connectivity_table[o * numIn + i] == 1 means output o can receive
+      // from input i.
+      for (unsigned o = 0; o < numOut; ++o) {
+        for (unsigned i = 0; i < numIn; ++i) {
+          if (connTable[o * numIn + i] != 0) {
+            connectivity.inToOut[node->inputPorts[i]].push_back(
+                node->outputPorts[o]);
+          }
+        }
+      }
+    } else {
+      // No connectivity_table or size mismatch: full crossbar fallback.
+      for (IdIndex inPortId : node->inputPorts) {
+        for (IdIndex outPortId : node->outputPorts) {
+          connectivity.inToOut[inPortId].push_back(outPortId);
+        }
       }
     }
   }
