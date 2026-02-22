@@ -12,6 +12,7 @@
 #include "mlir/IR/Value.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace loom {
 
@@ -19,12 +20,23 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
   Graph graph(funcOp.getContext());
 
   // Map from MLIR Value -> output port ID that produces it.
+  // Populated completely in Pass 1 before any edges are created in Pass 2.
   llvm::DenseMap<mlir::Value, IdIndex> valueToPort;
 
-  mlir::Builder builder(funcOp.getContext());
+  // Map from Operation* -> graph node ID, for robust lookup in Pass 2.
+  llvm::DenseMap<mlir::Operation *, IdIndex> opToNode;
 
-  // --- Phase 1: Create OperationNode for each non-terminator operation ---
+  mlir::Builder builder(funcOp.getContext());
   auto &block = funcOp.getBody().front();
+
+  //===--------------------------------------------------------------------===//
+  // PASS 1: Create ALL nodes, ALL ports, and populate the complete valueToPort
+  // map. No edges are created in this pass. This ensures that forward
+  // references in graph regions (e.g., dataflow.carry using a value defined
+  // later) are fully resolved before edge creation.
+  //===--------------------------------------------------------------------===//
+
+  // 1a. Create OperationNode for each non-terminator operation.
   for (auto &op : block) {
     if (op.hasTrait<mlir::OpTrait::IsTerminator>())
       continue;
@@ -36,6 +48,7 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
                              builder.getStringAttr(op.getName().getStringRef())));
 
     IdIndex nodeId = graph.addNode(std::move(node));
+    opToNode[&op] = nodeId;
 
     // Create input ports for each operand.
     for (unsigned i = 0; i < op.getNumOperands(); ++i) {
@@ -47,7 +60,7 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
       graph.getNode(nodeId)->inputPorts.push_back(portId);
     }
 
-    // Create output ports for each result.
+    // Create output ports for each result and register in valueToPort.
     for (unsigned i = 0; i < op.getNumResults(); ++i) {
       auto port = std::make_unique<Port>();
       port->parentNode = nodeId;
@@ -56,12 +69,11 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
       IdIndex portId = graph.addPort(std::move(port));
       graph.getNode(nodeId)->outputPorts.push_back(portId);
 
-      // Register this result value -> output port mapping.
       valueToPort[op.getResult(i)] = portId;
     }
   }
 
-  // --- Phase 2: Create ModuleInputNode sentinels for block arguments ---
+  // 1b. Create ModuleInputNode sentinels for block arguments.
   for (auto arg : block.getArguments()) {
     auto node = std::make_unique<Node>();
     node->kind = Node::ModuleInputNode;
@@ -71,7 +83,6 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
 
     IdIndex nodeId = graph.addNode(std::move(node));
 
-    // Sentinel input nodes have output ports (they produce values).
     auto port = std::make_unique<Port>();
     port->parentNode = nodeId;
     port->direction = Port::Output;
@@ -82,9 +93,9 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
     valueToPort[arg] = portId;
   }
 
-  // --- Phase 3: Create ModuleOutputNode sentinels for return operands ---
-  // Find the return operation.
+  // 1c. Create ModuleOutputNode sentinels for return operands.
   mlir::Operation *returnOp = block.getTerminator();
+  llvm::SmallVector<IdIndex> outputSentinelNodes;
   if (returnOp) {
     for (unsigned i = 0; i < returnOp->getNumOperands(); ++i) {
       auto node = std::make_unique<Node>();
@@ -94,8 +105,8 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
                                builder.getI32IntegerAttr(i)));
 
       IdIndex nodeId = graph.addNode(std::move(node));
+      outputSentinelNodes.push_back(nodeId);
 
-      // Sentinel output nodes have input ports (they consume values).
       auto port = std::make_unique<Port>();
       port->parentNode = nodeId;
       port->direction = Port::Input;
@@ -105,20 +116,30 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
     }
   }
 
-  // --- Phase 4: Create edges for SSA value uses ---
-  // For each non-terminator operation's operands, create edge from
-  // producing port to consuming port.
-  IdIndex nodeIdx = 0;
+  //===--------------------------------------------------------------------===//
+  // PASS 2: Create ALL edges using the now-complete valueToPort map.
+  // Forward references are resolved because every Value (including those
+  // defined later in textual order) was registered in Pass 1.
+  //===--------------------------------------------------------------------===//
+
+  // 2a. Create edges for each non-terminator operation's operands.
   for (auto &op : block) {
     if (op.hasTrait<mlir::OpTrait::IsTerminator>())
       continue;
 
-    Node *node = graph.getNode(nodeIdx);
+    auto nodeIt = opToNode.find(&op);
+    if (nodeIt == opToNode.end())
+      continue;
+    Node *node = graph.getNode(nodeIt->second);
+
     for (unsigned i = 0; i < op.getNumOperands(); ++i) {
       mlir::Value operand = op.getOperand(i);
       auto srcIt = valueToPort.find(operand);
-      if (srcIt == valueToPort.end())
+      if (srcIt == valueToPort.end()) {
+        llvm::errs() << "warning: DFGBuilder: unresolved operand " << i
+                     << " of " << op.getName() << "\n";
         continue;
+      }
 
       IdIndex srcPortId = srcIt->second;
       IdIndex dstPortId = node->inputPorts[i];
@@ -131,21 +152,20 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
       graph.getPort(srcPortId)->connectedEdges.push_back(edgeId);
       graph.getPort(dstPortId)->connectedEdges.push_back(edgeId);
     }
-    ++nodeIdx;
   }
 
-  // Also create edges for return operands -> sentinel output nodes.
+  // 2b. Create edges for return operands -> sentinel output nodes.
   if (returnOp) {
-    // Sentinel output nodes start after all operation nodes and input sentinels.
-    IdIndex outputSentinelStart =
-        nodeIdx + static_cast<IdIndex>(block.getNumArguments());
     for (unsigned i = 0; i < returnOp->getNumOperands(); ++i) {
       mlir::Value operand = returnOp->getOperand(i);
       auto srcIt = valueToPort.find(operand);
-      if (srcIt == valueToPort.end())
+      if (srcIt == valueToPort.end()) {
+        llvm::errs() << "warning: DFGBuilder: unresolved return operand "
+                     << i << "\n";
         continue;
+      }
 
-      Node *outputNode = graph.getNode(outputSentinelStart + i);
+      Node *outputNode = graph.getNode(outputSentinelNodes[i]);
       if (!outputNode || outputNode->inputPorts.empty())
         continue;
 
