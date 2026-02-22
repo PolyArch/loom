@@ -38,6 +38,7 @@ def Fabric_MemoryOp : Fabric_Op<"memory", []> {
     DefaultValuedAttr<I64Attr, "0">:$lsqDepth,
     DefaultValuedAttr<BoolAttr, "true">:$is_private,
     DefaultValuedAttr<I64Attr, "1">:$numRegion,
+    OptionalAttr<DenseI64ArrayAttr>:$addrOffsetTable,
     OptionalAttr<TypeAttrOf<FunctionType>>:$function_type
   );
   let results = (outs Variadic<AnyType>:$outputs);
@@ -76,6 +77,7 @@ def Fabric_ExtMemoryOp : Fabric_Op<"extmemory", []> {
     I64Attr:$stCount,
     DefaultValuedAttr<I64Attr, "0">:$lsqDepth,
     DefaultValuedAttr<I64Attr, "1">:$numRegion,
+    OptionalAttr<DenseI64ArrayAttr>:$addrOffsetTable,
     OptionalAttr<TypeAttrOf<FunctionType>>:$function_type
   );
   let results = (outs Variadic<AnyType>:$outputs);

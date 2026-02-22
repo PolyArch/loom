@@ -15,7 +15,7 @@
 //
 // Errors:
 //   CFG_EXTMEMORY_OVERLAP_TAG_REGION - Overlapping tag ranges in addr_offset_table
-//   CFG_EXTMEMORY_EMPTY_TAG_RANGE   - Region has start_tag > end_tag
+//   CFG_EXTMEMORY_EMPTY_TAG_RANGE   - Region has end_tag <= start_tag
 //   RT_MEMORY_TAG_OOB               - Tagged request uses tag >= port count
 //   RT_MEMORY_STORE_DEADLOCK        - Store pairing timeout
 //   RT_EXTMEMORY_NO_MATCH           - Load/store tag matches no region
@@ -150,13 +150,13 @@ module fabric_extmemory #(
     err_empty_range = 1'b0;
     for (iter_var0 = 0; iter_var0 < NUM_REGION; iter_var0 = iter_var0 + 1) begin : chk_region
       if (region_valid[iter_var0]) begin : valid_region
-        if (region_start_tag[iter_var0] > region_end_tag[iter_var0]) begin : empty_range
+        if (region_end_tag[iter_var0] <= region_start_tag[iter_var0]) begin : empty_range
           err_empty_range = 1'b1;
         end
         for (iter_var1 = iter_var0 + 1; iter_var1 < NUM_REGION; iter_var1 = iter_var1 + 1) begin : chk_overlap
           if (region_valid[iter_var1]) begin : both_valid
-            if (region_start_tag[iter_var0] <= region_end_tag[iter_var1] &&
-                region_start_tag[iter_var1] <= region_end_tag[iter_var0]) begin : overlap
+            if (region_start_tag[iter_var0] < region_end_tag[iter_var1] &&
+                region_start_tag[iter_var1] < region_end_tag[iter_var0]) begin : overlap
               err_overlap_tag = 1'b1;
             end
           end
@@ -181,7 +181,7 @@ module fabric_extmemory #(
       if (region_valid[iter_var0]) begin : valid_ld
         if (TAG_WIDTH > 0) begin : tagged_ld
           if (ld_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] >= region_start_tag[iter_var0] &&
-              ld_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] <= region_end_tag[iter_var0]) begin : match_ld
+              ld_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] < region_end_tag[iter_var0]) begin : match_ld
             ld_region_match = 1'b1;
             ld_addr_offset  = region_addr_offset[iter_var0];
           end
@@ -201,7 +201,7 @@ module fabric_extmemory #(
       if (region_valid[iter_var0]) begin : valid_st
         if (TAG_WIDTH > 0) begin : tagged_st
           if (st_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] >= region_start_tag[iter_var0] &&
-              st_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] <= region_end_tag[iter_var0]) begin : match_st
+              st_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] < region_end_tag[iter_var0]) begin : match_st
             st_region_match = 1'b1;
             st_addr_offset  = region_addr_offset[iter_var0];
           end

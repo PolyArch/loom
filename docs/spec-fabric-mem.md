@@ -120,7 +120,7 @@ All attributes in this section are hardware parameters.
 - `numRegion`: number of entries in the addr_offset_table. Must be >= 1.
   The default is `1`. Each region entry contains a valid bit, start_tag,
   end_tag, and addr_offset. At runtime, a load/store tag is matched against
-  the [start_tag, end_tag] range of each valid region, and the corresponding
+  the [start_tag, end_tag) half-open range of each valid region, and the corresponding
   addr_offset is added to the memory address. CONFIG_WIDTH for a memory is
   `numRegion * (1 + 2 * TAG_WIDTH + ADDR_WIDTH)`.
 - `fabric.extmemory` does not support `is_private`. Supplying `is_private` on
@@ -285,7 +285,7 @@ Runtime configuration errors (detected in hardware):
 
 - Overlapping tag ranges between valid regions in addr_offset_table
   (`CFG_MEMORY_OVERLAP_TAG_REGION`, `CFG_EXTMEMORY_OVERLAP_TAG_REGION`).
-- A region has `start_tag > end_tag` (empty range)
+- A region has `end_tag <= start_tag` (empty half-open range)
   (`CFG_MEMORY_EMPTY_TAG_RANGE`, `CFG_EXTMEMORY_EMPTY_TAG_RANGE`).
 
 Runtime execution errors (detected in hardware):

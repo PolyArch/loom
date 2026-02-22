@@ -67,6 +67,15 @@ static ParseResult parseMemHwParams(OpAsmParser &parser,
       if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
         return failure();
       result.addAttribute("numRegion", attr);
+    } else if (keyword == "addr_offset_table") {
+      Attribute attr;
+      if (parser.parseAttribute(attr))
+        return failure();
+      if (!isa<DenseI64ArrayAttr>(attr))
+        return parser.emitError(parser.getCurrentLocation(),
+                                "expected array<i64: ...> for "
+                                "addr_offset_table");
+      result.addAttribute("addrOffsetTable", attr);
     } else {
       return parser.emitError(parser.getCurrentLocation(),
                               "unexpected keyword '")
@@ -125,7 +134,8 @@ static ParseResult parseMemTypeSignature(OpAsmParser &parser,
 }
 
 /// Print [hw_params] for memory ops.
-static void printMemHwParams(OpAsmPrinter &p, int64_t ldCount, int64_t stCount,
+static void printMemHwParams(OpAsmPrinter &p, Operation *op,
+                             int64_t ldCount, int64_t stCount,
                              int64_t lsqDepth,
                              std::optional<bool> isPrivate,
                              int64_t numRegion = 1) {
@@ -136,6 +146,10 @@ static void printMemHwParams(OpAsmPrinter &p, int64_t ldCount, int64_t stCount,
     p << ", is_private = " << (*isPrivate ? "true" : "false");
   if (numRegion != 1)
     p << ", numRegion = " << numRegion;
+  if (auto aot = op->getAttr("addrOffsetTable")) {
+    p << ", addr_offset_table = ";
+    p.printAttribute(aot);
+  }
   p << "]";
 }
 
@@ -180,6 +194,68 @@ static LogicalResult verifyMemCommon(Operation *op, int64_t ldCount,
 
   if (!isa<MemRefType>(memrefType))
     return op->emitOpError("memref_type must be a memref type");
+
+  return success();
+}
+
+/// Verify addr_offset_table entries against numRegion, tag ranges, and overlap.
+static LogicalResult
+verifyAddrOffsetTable(Operation *op, int64_t numRegion,
+                      std::optional<ArrayRef<int64_t>> aotOpt,
+                      const char *emptyRangeCode, const char *overlapCode) {
+  if (!aotOpt)
+    return success();
+
+  ArrayRef<int64_t> table = *aotOpt;
+
+  // Each entry has 4 fields: [valid, start_tag, end_tag, base_addr].
+  // The flat array must have exactly numRegion * 4 values.
+  if (table.size() % 4 != 0)
+    return op->emitOpError(
+        "addr_offset_table must have 4 fields per entry "
+        "(valid, start_tag, end_tag, base_addr); got ")
+           << table.size() << " values";
+
+  int64_t actualEntries = static_cast<int64_t>(table.size()) / 4;
+  if (actualEntries != numRegion)
+    return op->emitOpError("addr_offset_table has ")
+           << actualEntries << " entries but numRegion is " << numRegion;
+
+  // Per-entry validation.
+  for (int64_t i = 0; i < numRegion; ++i) {
+    int64_t valid = table[i * 4];
+    int64_t startTag = table[i * 4 + 1];
+    int64_t endTag = table[i * 4 + 2];
+
+    if (valid != 0 && valid != 1)
+      return op->emitOpError("addr_offset_table entry ")
+             << i << " has invalid valid field " << valid;
+
+    if (valid) {
+      // Half-open interval: start_tag < end_tag required.
+      if (endTag <= startTag)
+        return op->emitOpError(cplErrMsg(emptyRangeCode,
+                               "addr_offset_table entry "))
+               << i << " has end_tag " << endTag
+               << " <= start_tag " << startTag;
+    }
+  }
+
+  // Check pairwise overlap among valid entries using half-open interval test.
+  for (int64_t i = 0; i < numRegion; ++i) {
+    if (table[i * 4] == 0) continue;
+    int64_t aStart = table[i * 4 + 1];
+    int64_t aEnd = table[i * 4 + 2];
+    for (int64_t j = i + 1; j < numRegion; ++j) {
+      if (table[j * 4] == 0) continue;
+      int64_t bStart = table[j * 4 + 1];
+      int64_t bEnd = table[j * 4 + 2];
+      if (aStart < bEnd && bStart < aEnd)
+        return op->emitOpError(cplErrMsg(overlapCode,
+                               "addr_offset_table entries "))
+               << i << " and " << j << " have overlapping tag ranges";
+    }
+  }
 
   return success();
 }
@@ -375,8 +451,8 @@ void MemoryOp::print(OpAsmPrinter &p) {
   if (isNamed)
     p << " @" << *getSymName();
 
-  printMemHwParams(p, getLdCount(), getStCount(), getLsqDepth(), getIsPrivate(),
-                   getNumRegion());
+  printMemHwParams(p, getOperation(), getLdCount(), getStCount(), getLsqDepth(),
+                   getIsPrivate(), getNumRegion());
 
   SmallVector<Type> inputTypes, outputTypes;
   if (isNamed) {
@@ -397,6 +473,11 @@ void MemoryOp::print(OpAsmPrinter &p) {
 LogicalResult MemoryOp::verify() {
   if (failed(verifyMemCommon(getOperation(), getLdCount(), getStCount(),
                              getLsqDepth(), getNumRegion(), getMemrefType())))
+    return failure();
+
+  if (failed(verifyAddrOffsetTable(
+          getOperation(), getNumRegion(), getAddrOffsetTable(),
+          "CFG_MEMORY_EMPTY_TAG_RANGE", "CFG_MEMORY_OVERLAP_TAG_REGION")))
     return failure();
 
   // Static shape required for on-chip memory.
@@ -452,7 +533,7 @@ void ExtMemoryOp::print(OpAsmPrinter &p) {
   if (isNamed)
     p << " @" << *getSymName();
 
-  printMemHwParams(p, getLdCount(), getStCount(), getLsqDepth(),
+  printMemHwParams(p, getOperation(), getLdCount(), getStCount(), getLsqDepth(),
                    /*isPrivate=*/std::nullopt, getNumRegion());
 
   SmallVector<Type> inputTypes, outputTypes;
@@ -474,6 +555,12 @@ void ExtMemoryOp::print(OpAsmPrinter &p) {
 LogicalResult ExtMemoryOp::verify() {
   if (failed(verifyMemCommon(getOperation(), getLdCount(), getStCount(),
                              getLsqDepth(), getNumRegion(), getMemrefType())))
+    return failure();
+
+  if (failed(verifyAddrOffsetTable(
+          getOperation(), getNumRegion(), getAddrOffsetTable(),
+          "CFG_EXTMEMORY_EMPTY_TAG_RANGE",
+          "CFG_EXTMEMORY_OVERLAP_TAG_REGION")))
     return failure();
 
   // CPL_MEMORY_EXTMEM_PRIVATE: is_private must not be present.

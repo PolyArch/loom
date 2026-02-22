@@ -213,9 +213,9 @@ fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
 | 10 | CFG_PE_STREAM_CONT_COND_ONEHOT | `dataflow.stream` `cont_cond_sel` register is not one-hot (`<`, `<=`, `>`, `>=`, `!=`) |
 | 11 | CFG_PE_CMPI_PREDICATE_INVALID | PE cmpi predicate field value >= 10 (only 0-9 are valid for integer comparison) |
 | 12 | CFG_MEMORY_OVERLAP_TAG_REGION | `fabric.memory` addr_offset_table has overlapping tag ranges between valid regions |
-| 13 | CFG_MEMORY_EMPTY_TAG_RANGE | `fabric.memory` addr_offset_table has a region with `start_tag > end_tag` |
-| 14 | CFG_EXTMEMORY_OVERLAP_TAG_REGION | `fabric.extmemory` addr_offset_table has overlapping tag ranges between valid regions |
-| 15 | CFG_EXTMEMORY_EMPTY_TAG_RANGE | `fabric.extmemory` addr_offset_table has a region with `start_tag > end_tag` |
+| 13 | CFG_MEMORY_EMPTY_TAG_RANGE | `fabric.memory` addr_offset_table has a region with `end_tag <= start_tag` (empty half-open range) |
+| 14 | CFG_EXTMEMORY_OVERLAP_TAG_REGION | `fabric.extmemory` addr_offset_table has overlapping tag ranges between valid regions (half-open interval overlap) |
+| 15 | CFG_EXTMEMORY_EMPTY_TAG_RANGE | `fabric.extmemory` addr_offset_table has a region with `end_tag <= start_tag` (empty half-open range) |
 
 ## RT_ (Runtime Execution Errors, Hardware Code)
 

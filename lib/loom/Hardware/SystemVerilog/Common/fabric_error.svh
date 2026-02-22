@@ -59,13 +59,13 @@ localparam logic [15:0] CFG_PE_CMPI_PREDICATE_INVALID = 16'd11;
 // Memory: overlapping tag ranges in addr_offset_table
 localparam logic [15:0] CFG_MEMORY_OVERLAP_TAG_REGION = 16'd12;
 
-// Memory: a region has start_tag > end_tag (empty range)
+// Memory: a region has end_tag <= start_tag (empty half-open range)
 localparam logic [15:0] CFG_MEMORY_EMPTY_TAG_RANGE = 16'd13;
 
 // ExtMemory: overlapping tag ranges in addr_offset_table
 localparam logic [15:0] CFG_EXTMEMORY_OVERLAP_TAG_REGION = 16'd14;
 
-// ExtMemory: a region has start_tag > end_tag (empty range)
+// ExtMemory: a region has end_tag <= start_tag (empty half-open range)
 localparam logic [15:0] CFG_EXTMEMORY_EMPTY_TAG_RANGE = 16'd15;
 
 //===----------------------------------------------------------------------===//
