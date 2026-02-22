@@ -561,7 +561,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
           ++tagBits;
         tw = tagBits;
       }
-      unsigned cfgBits = def.numRegion * (1 + 2 * tw + DEFAULT_ADDR_WIDTH);
+      unsigned cfgBits = def.numRegion * (1 + tw + ((tw > 0) ? tw + 1 : 0) + DEFAULT_ADDR_WIDTH);
       if (cfgBits > 0)
         instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
     } else if (inst.kind == ModuleKind::ExtMemory) {
@@ -574,7 +574,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
           ++tagBits;
         tw = tagBits;
       }
-      unsigned cfgBits = def.numRegion * (1 + 2 * tw + DEFAULT_ADDR_WIDTH);
+      unsigned cfgBits = def.numRegion * (1 + tw + ((tw > 0) ? tw + 1 : 0) + DEFAULT_ADDR_WIDTH);
       if (cfgBits > 0)
         instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
     }
@@ -1055,7 +1055,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
             ++tagBits;
           tw = tagBits;
         }
-        unsigned cfgBits = def.numRegion * (1 + 2 * tw + DEFAULT_ADDR_WIDTH);
+        unsigned cfgBits = def.numRegion * (1 + tw + ((tw > 0) ? tw + 1 : 0) + DEFAULT_ADDR_WIDTH);
         if (cfgBits > 0)
           top << "    .cfg_data(" << inst.name << "_cfg_data),\n";
         else
@@ -1136,7 +1136,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
             ++tagBits;
           tw = tagBits;
         }
-        unsigned cfgBits = def.numRegion * (1 + 2 * tw + DEFAULT_ADDR_WIDTH);
+        unsigned cfgBits = def.numRegion * (1 + tw + ((tw > 0) ? tw + 1 : 0) + DEFAULT_ADDR_WIDTH);
         if (cfgBits > 0)
           top << "    .cfg_data(" << inst.name << "_cfg_data),\n";
         else

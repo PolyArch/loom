@@ -38,9 +38,9 @@ module tb_memory_tagged_top;
   logic        stdone_data;
 
   // Config port: TAG_WIDTH=1, ADDR_WIDTH=64, NUM_REGION=1
-  // REGION_ENTRY_WIDTH = 1 + 2*1 + 64 = 67
-  // Layout: [addr_offset(64)] [end_tag(1)] [start_tag(1)] [valid(1)]
-  logic [66:0] m0_cfg_data;
+  // REGION_ENTRY_WIDTH = 1 + 1 + (1+1) + 64 = 68
+  // Layout: [valid(1)] [start_tag(1)] [end_tag(2)] [addr_offset(64)]
+  logic [67:0] m0_cfg_data;
 
   logic        error_valid;
   logic [15:0] error_code;
@@ -310,11 +310,11 @@ module tb_memory_tagged_top;
     lddone_ready  = 1'b1;
     stdone_ready  = 1'b1;
 
-    // Region 0: valid=1, start_tag=0, end_tag=1, addr_offset=0
-    // Layout: bit[66]=valid, bit[65]=start_tag, bit[64]=end_tag, bits[63:0]=offset
+    // Region 0: valid=1, start_tag=0, end_tag=2 (half-open [0,2)), addr_offset=0
+    // New layout: bits[63:0]=offset, bits[65:64]=end_tag(2b), bit[66]=start_tag(1b), bit[67]=valid
     m0_cfg_data = '0;
-    m0_cfg_data[66] = 1'b1;  // valid
-    m0_cfg_data[64] = 1'b1;  // end_tag = 1 (covers tags 0-1)
+    m0_cfg_data[67]    = 1'b1;  // valid
+    m0_cfg_data[65:64] = 2'd2;  // end_tag = 2 (half-open [0,2) covers tags 0 and 1)
 
     repeat (3) @(posedge clk);
     rst_n = 1'b1;

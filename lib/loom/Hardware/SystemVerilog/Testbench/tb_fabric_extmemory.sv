@@ -22,7 +22,7 @@ module tb_fabric_extmemory;
   localparam int SAFE_ADDR_PW = (ADDR_PW > 0) ? ADDR_PW : 1;
   localparam int SAFE_ELEM_PW = (ELEM_PW > 0) ? ELEM_PW : 1;
   localparam int SAFE_TW      = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
-  localparam int REGION_ENTRY_WIDTH = 1 + 2 * TAG_WIDTH + ADDR_WIDTH;
+  localparam int REGION_ENTRY_WIDTH = 1 + TAG_WIDTH + ((TAG_WIDTH > 0) ? TAG_WIDTH + 1 : 0) + ADDR_WIDTH;
   localparam int CFG_WIDTH    = NUM_REGION * REGION_ENTRY_WIDTH;
   localparam int SAFE_CFG_W   = (CFG_WIDTH > 0) ? CFG_WIDTH : 1;
 
@@ -118,11 +118,14 @@ module tb_fabric_extmemory;
     ld_done_ready = 1;
     st_done_ready = 1;
 
-    // Initialize cfg_data: region 0 valid, full tag range, zero offset
+    // Initialize cfg_data: region 0 valid, full tag range [0, 2^TW), zero offset
     cfg_data = '0;
-    cfg_data[ADDR_WIDTH + 2 * TAG_WIDTH] = 1'b1;
-    for (iter_var0 = 0; iter_var0 < TAG_WIDTH; iter_var0 = iter_var0 + 1) begin : cfg_end_tag
-      cfg_data[ADDR_WIDTH + iter_var0] = 1'b1;
+    // Valid bit is always at REGION_ENTRY_WIDTH - 1
+    cfg_data[REGION_ENTRY_WIDTH - 1] = 1'b1;
+    // Set end_tag = 2^TAG_WIDTH by setting bit at ADDR_WIDTH + TAG_WIDTH
+    // Loop runs 0 times when TAG_WIDTH=0, avoiding Verilator out-of-range warnings.
+    for (iter_var0 = 0; iter_var0 < 1 && TAG_WIDTH > 0; iter_var0 = iter_var0 + 1) begin : cfg_end_tag
+      cfg_data[ADDR_WIDTH + TAG_WIDTH] = 1'b1;
     end
 
     repeat (3) @(posedge clk);

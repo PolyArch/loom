@@ -43,7 +43,9 @@ module fabric_memory #(
     localparam int SAFE_EW   = (ELEM_WIDTH > 0) ? ELEM_WIDTH : 1,
     localparam int SAFE_AW   = (ADDR_WIDTH > 0) ? ADDR_WIDTH : 1,
     localparam int SAFE_TW   = (TAG_WIDTH > 0) ? TAG_WIDTH : 1,
-    localparam int REGION_ENTRY_WIDTH = 1 + 2 * TAG_WIDTH + ADDR_WIDTH,
+    // end_tag is 1 bit wider than start_tag for half-open interval [start, end)
+    localparam int SAFE_ETW  = (TAG_WIDTH > 0) ? TAG_WIDTH + 1 : 1,
+    localparam int REGION_ENTRY_WIDTH = 1 + TAG_WIDTH + ((TAG_WIDTH > 0) ? TAG_WIDTH + 1 : 0) + ADDR_WIDTH,
     localparam int CONFIG_WIDTH = NUM_REGION * REGION_ENTRY_WIDTH
 ) (
     input  logic               clk,
@@ -110,10 +112,11 @@ module fabric_memory #(
   // -----------------------------------------------------------------------
   // addr_offset_table decode from cfg_data
   // -----------------------------------------------------------------------
-  // Each region entry: { valid[1], start_tag[TAG_WIDTH], end_tag[TAG_WIDTH], addr_offset[ADDR_WIDTH] }
+  // Each region entry: { valid[1], start_tag[TAG_WIDTH], end_tag[TAG_WIDTH+1], addr_offset[ADDR_WIDTH] }
+  // end_tag is 1 bit wider for half-open interval representation [start_tag, end_tag)
   logic [NUM_REGION-1:0]                    region_valid;
   logic [NUM_REGION-1:0][SAFE_TW-1:0]      region_start_tag;
-  logic [NUM_REGION-1:0][SAFE_TW-1:0]      region_end_tag;
+  logic [NUM_REGION-1:0][SAFE_ETW-1:0]     region_end_tag;
   logic [NUM_REGION-1:0][SAFE_AW-1:0]      region_addr_offset;
 
   generate
@@ -123,13 +126,13 @@ module fabric_memory #(
       if (REGION_ENTRY_WIDTH > 0 && CONFIG_WIDTH > 0) begin : g_has_cfg
         assign region_addr_offset[gri] = cfg_data[BASE +: ADDR_WIDTH];
         if (TAG_WIDTH > 0) begin : g_has_tag
-          assign region_end_tag[gri]   = cfg_data[BASE + ADDR_WIDTH +: TAG_WIDTH];
-          assign region_start_tag[gri] = cfg_data[BASE + ADDR_WIDTH + TAG_WIDTH +: TAG_WIDTH];
+          assign region_end_tag[gri]   = cfg_data[BASE + ADDR_WIDTH +: (TAG_WIDTH + 1)];
+          assign region_start_tag[gri] = cfg_data[BASE + ADDR_WIDTH + (TAG_WIDTH + 1) +: TAG_WIDTH];
         end else begin : g_no_tag
           assign region_end_tag[gri]   = '0;
           assign region_start_tag[gri] = '0;
         end
-        assign region_valid[gri]       = cfg_data[BASE + ADDR_WIDTH + 2 * TAG_WIDTH];
+        assign region_valid[gri]       = cfg_data[BASE + ADDR_WIDTH + TAG_WIDTH + ((TAG_WIDTH > 0) ? TAG_WIDTH + 1 : 0)];
       end else begin : g_no_cfg
         assign region_valid[gri]       = 1'b1;
         assign region_start_tag[gri]   = '0;
@@ -151,14 +154,18 @@ module fabric_memory #(
     err_empty_range = 1'b0;
     for (iter_var0 = 0; iter_var0 < NUM_REGION; iter_var0 = iter_var0 + 1) begin : chk_region
       if (region_valid[iter_var0]) begin : valid_region
-        if (region_end_tag[iter_var0] <= region_start_tag[iter_var0]) begin : empty_range
-          err_empty_range = 1'b1;
-        end
-        for (iter_var1 = iter_var0 + 1; iter_var1 < NUM_REGION; iter_var1 = iter_var1 + 1) begin : chk_overlap
-          if (region_valid[iter_var1]) begin : both_valid
-            if (region_start_tag[iter_var0] < region_end_tag[iter_var1] &&
-                region_start_tag[iter_var1] < region_end_tag[iter_var0]) begin : overlap
-              err_overlap_tag = 1'b1;
+        // Tag-range checks only apply when TAG_WIDTH > 0; when TAG_WIDTH=0
+        // the default start_tag=0, end_tag=0 are placeholder values.
+        if (TAG_WIDTH > 0) begin : has_tags
+          if (region_end_tag[iter_var0] <= SAFE_ETW'(region_start_tag[iter_var0])) begin : empty_range
+            err_empty_range = 1'b1;
+          end
+          for (iter_var1 = iter_var0 + 1; iter_var1 < NUM_REGION; iter_var1 = iter_var1 + 1) begin : chk_overlap
+            if (region_valid[iter_var1]) begin : both_valid
+              if (SAFE_ETW'(region_start_tag[iter_var0]) < region_end_tag[iter_var1] &&
+                  SAFE_ETW'(region_start_tag[iter_var1]) < region_end_tag[iter_var0]) begin : overlap
+                err_overlap_tag = 1'b1;
+              end
             end
           end
         end
@@ -182,7 +189,7 @@ module fabric_memory #(
       if (region_valid[iter_var0]) begin : valid_ld
         if (TAG_WIDTH > 0) begin : tagged_ld
           if (ld_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] >= region_start_tag[iter_var0] &&
-              ld_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] < region_end_tag[iter_var0]) begin : match_ld
+              SAFE_ETW'(ld_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW]) < region_end_tag[iter_var0]) begin : match_ld
             ld_region_match = 1'b1;
             ld_addr_offset  = region_addr_offset[iter_var0];
           end
@@ -202,7 +209,7 @@ module fabric_memory #(
       if (region_valid[iter_var0]) begin : valid_st
         if (TAG_WIDTH > 0) begin : tagged_st
           if (st_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] >= region_start_tag[iter_var0] &&
-              st_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] < region_end_tag[iter_var0]) begin : match_st
+              SAFE_ETW'(st_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW]) < region_end_tag[iter_var0]) begin : match_st
             st_region_match = 1'b1;
             st_addr_offset  = region_addr_offset[iter_var0];
           end
