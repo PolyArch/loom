@@ -187,6 +187,23 @@ loom_run_suite() {
   fi
 }
 
+# Like loom_run_suite but returns failure status instead of exiting.
+# Callers can inspect LOOM_PASS/LOOM_FAIL/LOOM_TIMEOUT/LOOM_SKIPPED and
+# implement their own gate logic.
+# Usage: loom_run_suite_no_exit <parallel_file> <suite_name> <log_tag> [timeout_sec]
+loom_run_suite_no_exit() {
+  local parallel_file="$1"
+  local suite_name="$2"
+  local log_tag="$3"
+  local timeout_sec="${4:-${LOOM_TIMEOUT:-10}}"
+  local max_jobs
+  max_jobs=$(loom_resolve_jobs)
+
+  loom_run_parallel "${parallel_file}" "${timeout_sec}" "${max_jobs}" "${log_tag}"
+  loom_print_summary "${suite_name}"
+  loom_write_result "${suite_name}"
+}
+
 loom_run_parallel() {
   local parallel_file="$1"
   local timeout_sec="${2:-10}"

@@ -49,7 +49,7 @@ SMOKE_APPS=(vecsum dotprod matmul conv2d)
 # Selects the smallest adequate template for an app based on line count.
 select_template() {
   local line_count="$1"
-  if (( line_count <= 300 )); then
+  if (( line_count <= 280 )); then
     echo "loom_cgra_small"
   elif (( line_count <= 800 )); then
     echo "loom_cgra_medium"
@@ -172,7 +172,7 @@ else
 fi
 
 SUITE_NAME="Mapper App (${TIER})"
-loom_run_suite "${PARALLEL_FILE}" "${SUITE_NAME}" "mapper_app" "${timeout}"
+loom_run_suite_no_exit "${PARALLEL_FILE}" "${SUITE_NAME}" "mapper_app" "${timeout}"
 
 # --- Post-suite gates ---
 exit_code=0

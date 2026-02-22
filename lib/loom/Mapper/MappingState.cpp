@@ -87,6 +87,28 @@ ActionResult MappingState::unmapNode(IdIndex swNode,
   swNodes.erase(std::remove(swNodes.begin(), swNodes.end(), swNode),
                 swNodes.end());
 
+  // Clear port bindings for all ports of this SW node.
+  const Node *swNodeObj = dfg.getNode(swNode);
+  if (swNodeObj) {
+    auto clearPorts = [&](const llvm::SmallVector<IdIndex, 4> &portIds) {
+      for (IdIndex swPort : portIds) {
+        if (swPort >= swPortToHwPort.size())
+          continue;
+        IdIndex hwPort = swPortToHwPort[swPort];
+        if (hwPort == INVALID_ID)
+          continue;
+        swPortToHwPort[swPort] = INVALID_ID;
+        if (hwPort < hwPortToSwPorts.size()) {
+          auto &swPorts = hwPortToSwPorts[hwPort];
+          swPorts.erase(std::remove(swPorts.begin(), swPorts.end(), swPort),
+                        swPorts.end());
+        }
+      }
+    };
+    clearPorts(swNodeObj->inputPorts);
+    clearPorts(swNodeObj->outputPorts);
+  }
+
   // Log action.
   ActionRecord record;
   record.type = ActionRecord::UNMAP_NODE;

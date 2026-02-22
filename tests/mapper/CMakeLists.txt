@@ -33,6 +33,8 @@ set(MAPPER_UNIT_TESTS
   cpsat_group_constraint
   mapper_run_congestion
   template_resource_coverage
+  placement_exclusivity
+  unmap_node_ports
 )
 
 set(MAPPER_TEST_TARGETS)

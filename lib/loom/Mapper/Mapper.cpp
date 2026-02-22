@@ -718,9 +718,14 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
 
       // Skip PEs already occupied by another non-group node to prevent
       // port collisions (exclusive PE ports can only serve one operation).
+      // Temporal PEs can host multiple SW nodes in different time slots.
       if (!candidate.isGroup &&
-          !state.hwNodeToSwNodes[candidate.hwNodeId].empty())
-        continue;
+          !state.hwNodeToSwNodes[candidate.hwNodeId].empty()) {
+        const Node *hwNode = adg.getNode(candidate.hwNodeId);
+        if (!hwNode ||
+            getNodeResourceClass(hwNode) != "temporal")
+          continue;
+      }
 
       // For group candidates, verify all members are still unplaced.
       if (candidate.isGroup) {

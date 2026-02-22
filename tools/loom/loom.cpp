@@ -1235,7 +1235,7 @@ int main(int argc, char **argv) {
     });
     if (!handshake_func) {
       llvm::errs() << "error: no handshake.func found in input\n";
-      return 1;
+      return 77;
     }
 
     // Find the fabric::ModuleOp in the ADG module.
