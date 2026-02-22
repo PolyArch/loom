@@ -31,6 +31,8 @@ set(MAPPER_UNIT_TESTS
   config_region_pack
   cpsat_subproblem_trigger
   cpsat_group_constraint
+  mapper_run_congestion
+  template_resource_coverage
 )
 
 set(MAPPER_TEST_TARGETS)

@@ -416,5 +416,193 @@ int main() {
     TEST_ASSERT(result.state.swNodeToHwNode[sw2] == hwAdd);
   }
 
+  // Test 4: Group co-placement on non-temporal functional PE.
+  // Verify the solver allows a 2-node group on a single non-temporal PE
+  // (the old AddAtMostOne would reject this; group-aware capacity allows it).
+  if (CPSATSolver::isAvailable()) {
+    Graph dfg(&ctx);
+    Graph adg(&ctx);
+
+    IdIndex sw0 = addOpNode(dfg, ctx, "arith.addi", "functional", 2, 1);
+    IdIndex sw1 = addOpNode(dfg, ctx, "arith.muli", "functional", 2, 1);
+    addEdgeBetween(dfg, sw0, 0, sw1, 0);
+
+    // Single non-temporal functional PE (the only option).
+    auto multiPE = std::make_unique<Node>();
+    multiPE->kind = Node::OperationNode;
+    setStringAttr(multiPE.get(), ctx, "op_name", "fabric.pe");
+    setStringAttr(multiPE.get(), ctx, "resource_class", "functional");
+    setArrayStrAttr(multiPE.get(), ctx, "body_ops",
+                    {"arith.addi", "arith.muli"});
+    setArrayIntAttr(multiPE.get(), ctx, "body_edges", {0, 1});
+    IdIndex hwMulti = adg.addNode(std::move(multiPE));
+    for (int i = 0; i < 3; ++i) {
+      auto port = std::make_unique<Port>();
+      port->parentNode = hwMulti;
+      port->direction = Port::Input;
+      IdIndex pid = adg.addPort(std::move(port));
+      adg.getNode(hwMulti)->inputPorts.push_back(pid);
+    }
+    for (int i = 0; i < 2; ++i) {
+      auto port = std::make_unique<Port>();
+      port->parentNode = hwMulti;
+      port->direction = Port::Output;
+      IdIndex pid = adg.addPort(std::move(port));
+      adg.getNode(hwMulti)->outputPorts.push_back(pid);
+    }
+
+    // Only group candidates: both SW nodes must go to hwMulti.
+    CandidateSet cands;
+    Candidate gc0;
+    gc0.hwNodeId = hwMulti;
+    gc0.swNodeIds = {sw0, sw1};
+    gc0.isGroup = true;
+    cands[sw0].push_back(gc0);
+
+    Candidate gc1;
+    gc1.hwNodeId = hwMulti;
+    gc1.swNodeIds = {sw0, sw1};
+    gc1.isGroup = true;
+    cands[sw1].push_back(gc1);
+
+    ConnectivityMatrix cm;
+    CPSATSolver solver;
+    CPSATSolver::Options opts;
+    opts.timeLimitSeconds = 10.0;
+
+    auto result = solver.solveFullProblem(dfg, adg, cands, cm, nullptr, opts);
+
+    // Must succeed: group-aware capacity treats the pair as 1 slot.
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.state.swNodeToHwNode[sw0] == hwMulti);
+    TEST_ASSERT(result.state.swNodeToHwNode[sw1] == hwMulti);
+  }
+
+  // Test 5: Ungrouped nodes still respect capacity limits.
+  // Two ungrouped SW nodes competing for 1 non-temporal PE should fail
+  // if no alternative placement exists.
+  if (CPSATSolver::isAvailable()) {
+    Graph dfg(&ctx);
+    Graph adg(&ctx);
+
+    IdIndex sw0 = addOpNode(dfg, ctx, "arith.addi", "functional", 2, 1);
+    IdIndex sw1 = addOpNode(dfg, ctx, "arith.addi", "functional", 2, 1);
+
+    IdIndex hw0 = addPENode(adg, ctx, "fabric.pe", "functional", 2, 1);
+
+    // Both nodes can only go to hw0 (non-grouped, non-temporal).
+    CandidateSet cands;
+    Candidate c0;
+    c0.hwNodeId = hw0;
+    c0.swNodeIds = {sw0};
+    c0.isGroup = false;
+    cands[sw0].push_back(c0);
+
+    Candidate c1;
+    c1.hwNodeId = hw0;
+    c1.swNodeIds = {sw1};
+    c1.isGroup = false;
+    cands[sw1].push_back(c1);
+
+    ConnectivityMatrix cm;
+    CPSATSolver solver;
+    CPSATSolver::Options opts;
+    opts.timeLimitSeconds = 10.0;
+
+    auto result = solver.solveFullProblem(dfg, adg, cands, cm, nullptr, opts);
+
+    // Must fail: 2 ungrouped nodes cannot share 1 non-temporal PE.
+    TEST_ASSERT(!result.success);
+  }
+
+  // Test 6: Mixed group + ungrouped on same PE.
+  // 1 group (2 SW nodes) + 1 ungrouped SW node on a non-temporal PE.
+  // Only 1 capacity slot available, so the solver must choose one or the other.
+  if (CPSATSolver::isAvailable()) {
+    Graph dfg(&ctx);
+    Graph adg(&ctx);
+
+    IdIndex sw0 = addOpNode(dfg, ctx, "arith.addi", "functional", 2, 1);
+    IdIndex sw1 = addOpNode(dfg, ctx, "arith.muli", "functional", 2, 1);
+    IdIndex sw2 = addOpNode(dfg, ctx, "arith.addi", "functional", 2, 1);
+    addEdgeBetween(dfg, sw0, 0, sw1, 0);
+
+    // Multi-op PE for group.
+    auto multiPE = std::make_unique<Node>();
+    multiPE->kind = Node::OperationNode;
+    setStringAttr(multiPE.get(), ctx, "op_name", "fabric.pe");
+    setStringAttr(multiPE.get(), ctx, "resource_class", "functional");
+    setArrayStrAttr(multiPE.get(), ctx, "body_ops",
+                    {"arith.addi", "arith.muli"});
+    setArrayIntAttr(multiPE.get(), ctx, "body_edges", {0, 1});
+    IdIndex hwMulti = adg.addNode(std::move(multiPE));
+    for (int i = 0; i < 3; ++i) {
+      auto port = std::make_unique<Port>();
+      port->parentNode = hwMulti;
+      port->direction = Port::Input;
+      IdIndex pid = adg.addPort(std::move(port));
+      adg.getNode(hwMulti)->inputPorts.push_back(pid);
+    }
+    for (int i = 0; i < 2; ++i) {
+      auto port = std::make_unique<Port>();
+      port->parentNode = hwMulti;
+      port->direction = Port::Output;
+      IdIndex pid = adg.addPort(std::move(port));
+      adg.getNode(hwMulti)->outputPorts.push_back(pid);
+    }
+
+    // Separate PE for sw2.
+    IdIndex hwSingle = addPENode(adg, ctx, "fabric.pe", "functional", 2, 1);
+
+    CandidateSet cands;
+
+    // Group candidates for sw0, sw1 -> hwMulti.
+    Candidate gc0;
+    gc0.hwNodeId = hwMulti;
+    gc0.swNodeIds = {sw0, sw1};
+    gc0.isGroup = true;
+    cands[sw0].push_back(gc0);
+
+    Candidate gc1;
+    gc1.hwNodeId = hwMulti;
+    gc1.swNodeIds = {sw0, sw1};
+    gc1.isGroup = true;
+    cands[sw1].push_back(gc1);
+
+    // sw2 can go to hwMulti (ungrouped) or hwSingle.
+    Candidate uc0;
+    uc0.hwNodeId = hwMulti;
+    uc0.swNodeIds = {sw2};
+    uc0.isGroup = false;
+    cands[sw2].push_back(uc0);
+
+    Candidate uc1;
+    uc1.hwNodeId = hwSingle;
+    uc1.swNodeIds = {sw2};
+    uc1.isGroup = false;
+    cands[sw2].push_back(uc1);
+
+    ConnectivityMatrix cm;
+    CPSATSolver solver;
+    CPSATSolver::Options opts;
+    opts.timeLimitSeconds = 10.0;
+
+    auto result = solver.solveFullProblem(dfg, adg, cands, cm, nullptr, opts);
+
+    TEST_ASSERT(result.success);
+
+    // Capacity is 1 on hwMulti: either group OR sw2, not both.
+    IdIndex hw0 = result.state.swNodeToHwNode[sw0];
+    IdIndex hw2 = result.state.swNodeToHwNode[sw2];
+    if (hw0 == hwMulti) {
+      // Group is on hwMulti, so sw2 must be on hwSingle.
+      TEST_ASSERT(hw2 == hwSingle);
+    }
+    if (hw2 == hwMulti) {
+      // sw2 is on hwMulti, so group must not be there.
+      TEST_ASSERT(hw0 != hwMulti);
+    }
+  }
+
   return 0;
 }

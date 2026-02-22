@@ -232,14 +232,16 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
     }
   }
 
-  // C4: Capacity constraints - at most one sw node per exclusive hw node.
-  llvm::DenseMap<IdIndex, std::vector<BoolVar>> hwNodeVars;
+  // C4: Group-aware capacity constraints.
+  // Each group occupies 1 capacity slot; ungrouped nodes each occupy 1 slot.
+  // A group-activation variable tracks whether the group is placed here.
+  llvm::DenseMap<IdIndex, std::vector<std::pair<IdIndex, BoolVar>>> hwNodeSwVars;
   for (auto &[sw, swVars] : placementVars) {
     for (auto &[hw, var] : swVars)
-      hwNodeVars[hw].push_back(var);
+      hwNodeSwVars[hw].push_back({sw, var});
   }
 
-  for (auto &[hwId, vars] : hwNodeVars) {
+  for (auto &[hwId, swVarPairs] : hwNodeSwVars) {
     const Node *hwNode = adg.getNode(hwId);
     if (!hwNode)
       continue;
@@ -248,32 +250,103 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
     if (resClass == "functional") {
       bool isTemporal =
           hasAttr(hwNode, "parent_temporal_pe") || hasAttr(hwNode, "is_virtual");
-      if (!isTemporal) {
-        // Exclusive: at most 1.
-        model.AddAtMostOne(vars);
+      int64_t capacity =
+          isTemporal ? getIntAttr(hwNode, "num_instruction", 1) : 1;
+
+      // Detect groups targeting this HW node.
+      llvm::DenseMap<uint64_t, llvm::SmallVector<IdIndex, 4>> groupsAtHw;
+      llvm::DenseSet<IdIndex> groupedSw;
+      for (const auto &[candSw, candList] : candidates) {
+        for (const Candidate &cand : candList) {
+          if (!cand.isGroup || cand.swNodeIds.size() <= 1 ||
+              cand.hwNodeId != hwId)
+            continue;
+          IdIndex minSw = *std::min_element(cand.swNodeIds.begin(),
+                                            cand.swNodeIds.end());
+          uint64_t gk = (static_cast<uint64_t>(hwId) << 32) | minSw;
+          if (!groupsAtHw.count(gk)) {
+            groupsAtHw[gk] = llvm::SmallVector<IdIndex, 4>(
+                cand.swNodeIds.begin(), cand.swNodeIds.end());
+          }
+          for (IdIndex s : cand.swNodeIds)
+            groupedSw.insert(s);
+        }
+      }
+
+      if (groupsAtHw.empty()) {
+        // No groups: original capacity logic.
+        std::vector<BoolVar> vars;
+        for (auto &[sw, var] : swVarPairs)
+          vars.push_back(var);
+        if (!isTemporal) {
+          model.AddAtMostOne(vars);
+        } else {
+          LinearExpr sum;
+          for (auto &v : vars)
+            sum += v;
+          model.AddLessOrEqual(sum, capacity);
+        }
       } else {
-        // Temporal: capacity = num_instruction.
-        int64_t numInst = getIntAttr(hwNode, "num_instruction", 1);
-        LinearExpr sum;
-        for (auto &v : vars)
-          sum += v;
-        model.AddLessOrEqual(sum, numInst);
+        // Group-aware capacity using activation variables.
+        llvm::DenseMap<IdIndex, BoolVar> swToVar;
+        for (auto &[sw, var] : swVarPairs)
+          swToVar[sw] = var;
+
+        std::vector<BoolVar> capacityVars;
+
+        for (auto &[gk, members] : groupsAtHw) {
+          llvm::SmallVector<IdIndex, 4> active;
+          for (IdIndex s : members) {
+            if (swToVar.count(s))
+              active.push_back(s);
+          }
+          if (active.empty())
+            continue;
+
+          BoolVar groupActive = model.NewBoolVar();
+          // x_group >= x[sw_i][hw] for each member.
+          for (IdIndex s : active)
+            model.AddGreaterOrEqual(groupActive, swToVar[s]);
+          // sum(x[sw_i][hw]) >= group_size * x_group.
+          LinearExpr memberSum;
+          for (IdIndex s : active)
+            memberSum += swToVar[s];
+          model.AddGreaterOrEqual(
+              memberSum,
+              LinearExpr::Term(groupActive,
+                               static_cast<int64_t>(active.size())));
+          capacityVars.push_back(groupActive);
+        }
+
+        // Ungrouped nodes contribute directly.
+        for (auto &[sw, var] : swVarPairs) {
+          if (!groupedSw.count(sw))
+            capacityVars.push_back(var);
+        }
+
+        if (!isTemporal) {
+          model.AddAtMostOne(capacityVars);
+        } else {
+          LinearExpr sum;
+          for (auto &v : capacityVars)
+            sum += v;
+          model.AddLessOrEqual(sum, capacity);
+        }
       }
     } else if (resClass == "memory") {
       int64_t numRegion = getIntAttr(hwNode, "numRegion", 1);
       LinearExpr sum;
-      for (auto &v : vars)
-        sum += v;
+      for (auto &[sw, var] : swVarPairs)
+        sum += var;
       model.AddLessOrEqual(sum, numRegion);
     }
   }
 
-  // Objective: minimize placement pressure (sum of squared occupancies
-  // approximated as sum of occupancies for linearity).
+  // Objective: minimize placement pressure.
   LinearExpr objective;
-  for (auto &[hwId, vars] : hwNodeVars) {
-    for (auto &v : vars)
-      objective += v;
+  for (auto &[hwId, swVarPairs] : hwNodeSwVars) {
+    for (auto &[sw, var] : swVarPairs)
+      objective += var;
   }
   model.Minimize(objective);
 
@@ -454,13 +527,13 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
       fixedOccupancy[hw]++;
   }
 
-  llvm::DenseMap<IdIndex, std::vector<BoolVar>> hwNodeVars;
+  llvm::DenseMap<IdIndex, std::vector<std::pair<IdIndex, BoolVar>>> hwNodeSwVars;
   for (auto &[sw, swVars] : placementVars) {
     for (auto &[hw, var] : swVars)
-      hwNodeVars[hw].push_back(var);
+      hwNodeSwVars[hw].push_back({sw, var});
   }
 
-  for (auto &[hwId, vars] : hwNodeVars) {
+  for (auto &[hwId, swVarPairs] : hwNodeSwVars) {
     const Node *hwNode = adg.getNode(hwId);
     if (!hwNode)
       continue;
@@ -474,38 +547,113 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
     if (resClass == "functional") {
       bool isTemporal =
           hasAttr(hwNode, "parent_temporal_pe") || hasAttr(hwNode, "is_virtual");
-      if (!isTemporal) {
-        int remaining = 1 - fixedCount;
+      int64_t rawCapacity =
+          isTemporal ? getIntAttr(hwNode, "num_instruction", 1) : 1;
+      int remaining = static_cast<int>(rawCapacity) - fixedCount;
+
+      // Detect groups targeting this HW node among sub-problem nodes.
+      llvm::DenseMap<uint64_t, llvm::SmallVector<IdIndex, 4>> groupsAtHw;
+      llvm::DenseSet<IdIndex> groupedSw;
+      for (IdIndex sw : subgraphSwNodes) {
+        auto candIt = candidates.find(sw);
+        if (candIt == candidates.end())
+          continue;
+        for (const Candidate &cand : candIt->second) {
+          if (!cand.isGroup || cand.swNodeIds.size() <= 1 ||
+              cand.hwNodeId != hwId)
+            continue;
+          IdIndex minSw = *std::min_element(cand.swNodeIds.begin(),
+                                            cand.swNodeIds.end());
+          uint64_t gk = (static_cast<uint64_t>(hwId) << 32) | minSw;
+          if (!groupsAtHw.count(gk)) {
+            groupsAtHw[gk] = llvm::SmallVector<IdIndex, 4>(
+                cand.swNodeIds.begin(), cand.swNodeIds.end());
+          }
+          for (IdIndex s : cand.swNodeIds) {
+            if (subNodes.count(s))
+              groupedSw.insert(s);
+          }
+        }
+      }
+
+      if (groupsAtHw.empty()) {
+        // No groups: original capacity logic with fixed occupancy.
         if (remaining <= 0) {
-          // Already full: no sub-problem node can go here.
-          for (auto &v : vars)
-            model.AddEquality(v, 0);
-        } else {
+          for (auto &[sw, var] : swVarPairs)
+            model.AddEquality(var, 0);
+        } else if (!isTemporal) {
+          std::vector<BoolVar> vars;
+          for (auto &[sw, var] : swVarPairs)
+            vars.push_back(var);
           model.AddAtMostOne(vars);
+        } else {
+          LinearExpr sum;
+          for (auto &[sw, var] : swVarPairs)
+            sum += var;
+          model.AddLessOrEqual(sum, std::max(0, remaining));
         }
       } else {
-        int64_t numInst = getIntAttr(hwNode, "num_instruction", 1);
-        int remaining = static_cast<int>(numInst) - fixedCount;
-        LinearExpr sum;
-        for (auto &v : vars)
-          sum += v;
-        model.AddLessOrEqual(sum, std::max(0, remaining));
+        // Group-aware capacity using activation variables.
+        llvm::DenseMap<IdIndex, BoolVar> swToVar;
+        for (auto &[sw, var] : swVarPairs)
+          swToVar[sw] = var;
+
+        std::vector<BoolVar> capacityVars;
+
+        for (auto &[gk, members] : groupsAtHw) {
+          llvm::SmallVector<IdIndex, 4> active;
+          for (IdIndex s : members) {
+            if (swToVar.count(s))
+              active.push_back(s);
+          }
+          if (active.empty())
+            continue;
+
+          BoolVar groupActive = model.NewBoolVar();
+          for (IdIndex s : active)
+            model.AddGreaterOrEqual(groupActive, swToVar[s]);
+          LinearExpr memberSum;
+          for (IdIndex s : active)
+            memberSum += swToVar[s];
+          model.AddGreaterOrEqual(
+              memberSum,
+              LinearExpr::Term(groupActive,
+                               static_cast<int64_t>(active.size())));
+          capacityVars.push_back(groupActive);
+        }
+
+        for (auto &[sw, var] : swVarPairs) {
+          if (!groupedSw.count(sw))
+            capacityVars.push_back(var);
+        }
+
+        if (remaining <= 0) {
+          for (auto &v : capacityVars)
+            model.AddEquality(v, 0);
+        } else if (!isTemporal) {
+          model.AddAtMostOne(capacityVars);
+        } else {
+          LinearExpr sum;
+          for (auto &v : capacityVars)
+            sum += v;
+          model.AddLessOrEqual(sum, std::max(0, remaining));
+        }
       }
     } else if (resClass == "memory") {
       int64_t numRegion = getIntAttr(hwNode, "numRegion", 1);
       int remaining = static_cast<int>(numRegion) - fixedCount;
       LinearExpr sum;
-      for (auto &v : vars)
-        sum += v;
+      for (auto &[sw, var] : swVarPairs)
+        sum += var;
       model.AddLessOrEqual(sum, std::max(0, remaining));
     }
   }
 
   // Objective: minimize number of occupied HW nodes (proxy).
   LinearExpr objective;
-  for (auto &[hwId, vars] : hwNodeVars) {
-    for (auto &v : vars)
-      objective += v;
+  for (auto &[hwId, swVarPairs] : hwNodeSwVars) {
+    for (auto &[sw, var] : swVarPairs)
+      objective += var;
   }
   model.Minimize(objective);
 
