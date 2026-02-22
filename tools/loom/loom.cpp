@@ -977,6 +977,7 @@ int main(int argc, char **argv) {
     viz_ctx.getOrLoadDialect<circt::esi::ESIDialect>();
     viz_ctx.getOrLoadDialect<circt::hw::HWDialect>();
     viz_ctx.getOrLoadDialect<circt::seq::SeqDialect>();
+    viz_ctx.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
     viz_ctx.allowUnregisteredDialects();
 
     mlir::ParserConfig viz_parser_cfg(&viz_ctx);
