@@ -460,6 +460,7 @@ Forward references:
 - [spec-mapper.md](./spec-mapper.md): Mapper place-and-route bridge from Handshake to Fabric
 - [spec-mapper-model.md](./spec-mapper-model.md): Mapper data model and hard constraints
 - [spec-mapper-algorithm.md](./spec-mapper-algorithm.md): Mapper algorithm contract
+- [spec-mapper-output.md](./spec-mapper-output.md): Mapper output formats (mapping.json, config.bin, addr.h)
 - [spec-adg.md](./spec-adg.md): ADG stage definition and outputs
 - [spec-adg-sysc.md](./spec-adg-sysc.md): SystemC backend artifacts
 - [spec-adg-sv.md](./spec-adg-sv.md): SystemVerilog backend artifacts

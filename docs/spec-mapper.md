@@ -122,5 +122,6 @@ from [spec-mapper-model.md](./spec-mapper-model.md).
 - [spec-mapper-model.md](./spec-mapper-model.md)
 - [spec-mapper-algorithm.md](./spec-mapper-algorithm.md)
 - [spec-mapper-cost.md](./spec-mapper-cost.md)
+- [spec-mapper-output.md](./spec-mapper-output.md)
 - [spec-adg.md](./spec-adg.md)
 - [spec-fabric.md](./spec-fabric.md)

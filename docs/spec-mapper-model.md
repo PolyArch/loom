@@ -179,6 +179,15 @@ Design properties:
 
 The DFG is extracted from `handshake.func` within Handshake+Dataflow MLIR.
 
+### Single-Block Guarantee
+
+`handshake.func` is guaranteed to contain exactly one basic block after
+SCF-to-Handshake conversion. The frontend eliminates all multi-block
+control flow during lowering (branches become `handshake.cond_br` and
+`handshake.mux`; loops become `dataflow.stream`). The mapper may assert
+that `handshake.func` has exactly one block and abort with
+`CPL_MAPPER_MULTI_BLOCK` if this invariant is violated.
+
 ### Extraction Rules
 
 1. Each MLIR operation inside `handshake.func` becomes a Node.
@@ -627,15 +636,23 @@ Mapped ports must satisfy:
 - Native/tagged category compatibility (native cannot connect to tagged
   without explicit `fabric.add_tag`, `fabric.del_tag`, or `fabric.map_tag`).
 - Tag-width compatibility where tagged interfaces are used.
-- **Routing node type relaxation**: for the six routing node types
-  (`fabric.switch`, `fabric.temporal_sw`, `fabric.add_tag`,
-  `fabric.map_tag`, `fabric.del_tag`, `fabric.fifo`), type compatibility
-  checks only bit width, not semantic type. Specifically:
+- **Pass-through routing node type relaxation**: for the three pass-through
+  routing node types (`fabric.switch`, `fabric.temporal_sw`, `fabric.fifo`),
+  type compatibility checks only bit width, not semantic type. These nodes
+  forward data unchanged without interpreting semantics. Specifically:
   - Native-to-native: total bit width must match (e.g., `i32` and `f32`
     are compatible through a switch because both are 32 bits).
   - Tagged-to-tagged: value bit width and tag bit width must each match
     (value semantic types may differ).
-  - Native-to-tagged: never allowed, even through routing nodes.
+  - Native-to-tagged: never allowed, even through pass-through routing nodes.
+- **Tag boundary operations** (`fabric.add_tag`, `fabric.del_tag`,
+  `fabric.map_tag`): these operations transform types at domain boundaries
+  (native to tagged, tagged to native, or tag-width change). They enforce
+  **strict** semantic type checking per
+  [spec-fabric-tag.md](./spec-fabric-tag.md). Value type `T` must match
+  exactly across the operation (not just bit width). This is required
+  because these operations define the type contract between native and
+  tagged domains.
 
 ### C3: Route Legality
 
@@ -684,12 +701,21 @@ Resources with bounded capacity must not exceed legal usage.
 - **(C4.5)** Number of distinct mapped software memory operations must not exceed
   `num_region` (the `addr_offset_table` size).
 - **(C4.6)** `addr_offset_table` entries assign base addresses and tag
-  ranges for each mapped software memory region. Assignment uses
-  sequential packing: region_i.base = sum(region_0..i-1.size), and
-  sequential tags: region_i.tag = i. No alignment or fragmentation
-  analysis is required. The number of entries must not exceed
-  `num_region` (C4.5). Format details:
-  [spec-fabric-mem.md](./spec-fabric-mem.md).
+  ranges for each mapped software memory region. The number of entries
+  must not exceed `num_region` (C4.5). Tag assignment uses sequential
+  tags: region_i.tag = i. Base address assignment depends on memory type:
+  - **`fabric.memory`** (on-chip): sequential packing.
+    `region_i.base = sum(region_0..i-1.size)` where `region_j.size` is
+    the mapped software memory's `memref` byte size
+    (`num_elements * element_byte_width`). No alignment or fragmentation
+    analysis is required.
+  - **`fabric.extmemory`** (off-chip): base addresses are host-provided
+    at runtime via the configuration interface. The mapper emits
+    placeholder entries with `base_addr = 0`; the host runtime fills in
+    actual physical addresses before accelerator launch. The mapper only
+    validates that the number of mapped regions does not exceed
+    `num_region`.
+  - Format details: [spec-fabric-mem.md](./spec-fabric-mem.md).
 
 **Other capacity authorities** (unchanged):
 
@@ -765,6 +791,7 @@ using allocation rules from
 - [spec-mapper.md](./spec-mapper.md)
 - [spec-mapper-algorithm.md](./spec-mapper-algorithm.md)
 - [spec-mapper-cost.md](./spec-mapper-cost.md)
+- [spec-mapper-output.md](./spec-mapper-output.md)
 - [spec-fabric.md](./spec-fabric.md)
 - [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
 - [spec-fabric-pe-ops.md](./spec-fabric-pe-ops.md)

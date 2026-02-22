@@ -223,12 +223,24 @@ Iteratively improve placement and routing together.
 3. Re-place with alternative candidates, considering routing feasibility.
 4. Re-route affected edges.
 
-**Refinement strategies**:
+**Refinement strategies** (in priority order):
 
-- Local swap: exchange placements of two DFG nodes if it reduces cost.
-- Rip-up and re-route: remove routes for congested edges and find
-  alternative paths.
-- Node migration: move a placed DFG node to a less congested candidate.
+1. **Rip-up and re-route** (attempts 0-4): Remove routes for conflicting
+   edges. Re-route with A* using increased congestion penalty. Cheapest
+   strategy; resolves most routing conflicts.
+2. **Node migration** (attempts 5-7): Unmap a placed DFG node and re-place
+   to a less congested candidate. Re-route all its edges. Used when
+   rip-up alone cannot resolve congestion.
+3. **Local swap** (attempt 8): Exchange placements of two DFG nodes if
+   their neighbors suggest a swap would reduce routing cost. Used when
+   migration fails because both candidates are equally congested.
+4. **Partial restart** (attempt 9): Unmap a cluster of DFG nodes (the
+   conflicting region + immediate neighbors) and re-place/re-route them.
+   Last resort before global restart.
+
+The attempt ranges above are defaults. Strategy selection must be
+deterministic: given the same attempt number, the same strategy is
+always chosen.
 
 **Bounded iteration**: Repair loops are bounded by configurable limits:
 
