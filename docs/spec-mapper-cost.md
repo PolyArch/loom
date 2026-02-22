@@ -139,14 +139,32 @@ Recommended normalization:
 
 ## Weight Profiles
 
-Implementations should expose named weight profiles for common goals:
+Named weight profiles define weight vectors for the core metric
+families. The vector format is:
 
-- `balanced`: mixed tradeoff
-- `throughput_first`: prioritize throughput proxies
-- `area_power_first`: prioritize compact/resource-light mapping
-- `deterministic_debug`: prioritize stable deterministic tie-break behavior
+`[placement_pressure, routing_cost, temporal_cost, perf_proxy, config_footprint]`
 
-Profile contents are implementation-defined but should be inspectable.
+| Profile | Weights | Goal |
+|---------|---------|------|
+| `balanced` | [1.0, 1.0, 0.5, 0.5, 0.1] | Even tradeoff across all metrics |
+| `cpsat_full` | [1.0, 1.0, 0.5, 0.5, 0.1] | Same as balanced (CP-SAT mode selection, not weight change) |
+| `heuristic_only` | [1.0, 1.0, 0.5, 0.5, 0.1] | Same as balanced (heuristic mode selection, not weight change) |
+| `throughput_first` | [0.3, 0.5, 0.3, 2.0, 0.1] | Prioritize performance proxies (critical path, II) |
+| `area_power_first` | [2.0, 0.5, 0.5, 0.2, 1.0] | Prioritize compact placement and minimal config |
+| `deterministic_debug` | [1.0, 1.0, 0.5, 0.0, 0.0] | Disable noisy proxies; maximize reproducibility |
+
+Notes:
+
+- `cpsat_full` and `heuristic_only` select the solver mode (see
+  [spec-mapper-algorithm.md](./spec-mapper-algorithm.md)) but use
+  the same cost weights as `balanced`. They affect search strategy,
+  not objective function.
+- `deterministic_debug` zeroes performance and config metrics to
+  eliminate sources of non-determinism in cost comparison.
+- Weight values are tunable parameters. The values above are initial
+  defaults; implementations should expose these as inspectable and
+  overridable configuration.
+- All weights are non-negative. A weight of 0.0 disables that metric.
 
 ## Invalid Mapping Penalty
 

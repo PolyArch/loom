@@ -234,12 +234,24 @@ the flattened ADG:
 Port types on ADG sentinel nodes follow `fabric.module` port ordering:
 `memref*`, `native*`, `tagged*`.
 
+### Sentinel Port Binding Convention
+
+Sentinel port binding is positional: DFG block argument i maps to ADG
+module input port i. Both DFG and ADG follow the same port ordering
+convention (`memref*`, `native*`, `tagged*`). This convention is
+enforced by the frontend compiler (Stage A) and the fabric spec.
+
+If the DFG has N input sentinel ports and the ADG has M input sentinel
+ports, the mapper binds ports 0..min(N,M)-1 positionally. If N > M,
+the extra DFG sentinels have no hardware binding and the mapper reports
+`CPL_MAPPER_SENTINEL_MISMATCH`. Similarly for output sentinels.
+
 ### Sentinel Mapping Semantics
 
 Sentinel nodes:
 - Are not placement targets (never appear in `swNodeToHwNode`).
 - Have ports that are bound between DFG and ADG via `MapPort`, subject
-  to type and bit-width compatibility (C2).
+  to type and bit-width compatibility (C2) and positional ordering.
 - Edges incident to sentinel nodes are routed through the ADG connectivity
   network, just like edges between operation nodes. Routing paths start
   at the bound hardware sentinel port and end at the placed operation's
@@ -337,6 +349,49 @@ Virtual node attributes record:
 The mapping target for `swNodeToHwNode` is always an FU node ID, never
 the virtual node ID. The virtual node exists to enforce coupled constraints
 across FUs (instruction count, register count).
+
+**Worked example**: A `fabric.temporal_pe` with 3 FUs (int_arith,
+float_arith, compare) and 4 input ports / 4 output ports:
+
+```
+Graph nodes created:
+  Node 10: virtual temporal PE (not a placement target)
+    attributes: {fuNodes=[11,12,13], num_instruction=8, num_register=4}
+    inputPorts = [P20, P21, P22, P23]   (port IDs in Graph::ports)
+    outputPorts = [P24, P25, P26, P27]
+
+  Node 11: FU int_arith (placement target)
+    attributes: {parentTemporalPE=10, body=["arith.addi","arith.muli",...]}
+    inputPorts = [P20, P21, P22, P23]   (same port IDs as Node 10)
+    outputPorts = [P24, P25, P26, P27]
+
+  Node 12: FU float_arith (placement target)
+    attributes: {parentTemporalPE=10, body=["arith.addf","arith.mulf",...]}
+    inputPorts = [P20, P21, P22, P23]   (same port IDs)
+    outputPorts = [P24, P25, P26, P27]
+
+  Node 13: FU compare (placement target)
+    attributes: {parentTemporalPE=10, body=["arith.cmpi"]}
+    inputPorts = [P20, P21, P22, P23]   (same port IDs)
+    outputPorts = [P24, P25, P26, P27]
+
+Ports:
+  P20: parentNode = 10 (virtual node OWNS the ports)
+  P21: parentNode = 10
+  ...
+```
+
+When mapping `arith.addi` (SW node 5) to FU int_arith:
+- `swNodeToHwNode[5] = 11` (FU node, not virtual node)
+- Port binding uses the shared ports P20-P27
+- Capacity check: look up virtual node 10, check `num_instruction`
+- Slot assignment: tag=0, slot=0 in virtual node 10's instruction table
+
+When mapping `arith.cmpi` (SW node 8) to FU compare:
+- `swNodeToHwNode[8] = 13` (different FU node, same temporal PE)
+- Uses same shared ports P20-P27 (time-multiplexed via tags)
+- Tag must differ from tag=0 already used by SW node 5 (C5.4)
+- Slot assignment: tag=1, slot=1 in virtual node 10's instruction table
 
 ### Connectivity Matrix
 
@@ -541,7 +596,12 @@ When a software edge passes through `fabric.temporal_sw`:
 
 - `temporal_sw_slot`: selected route-table slot index.
 - `temporal_sw_tag`: slot match tag value.
-- `temporal_sw_route`: enabled route mask for that slot.
+- `temporal_sw_route`: enabled route mask for that slot. The route mask
+  is a bitmask of enabled output ports for this slot. Its format and
+  semantics are defined in
+  [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md). The mapper
+  computes the mask by identifying which output port(s) the routing path
+  exits through and setting the corresponding bit(s).
 
 ## Constraint Classes
 
@@ -588,7 +648,14 @@ Each mapped software edge path must:
   incident to sentinel nodes, the sentinel endpoint is the bound hardware
   sentinel port (via `MapPort`); for edges between operation nodes, both
   endpoints are placed operation ports.
-- **(C3.5)** Preserve memory done-token wiring legality.
+- **(C3.5)** Preserve memory done-token wiring legality. Done tokens
+  carry `none` type (valid/ready handshake only, no data payload). They
+  are routed through the same routing network as data signals (switches,
+  temporal switches, FIFOs, tag operations). The `none` type is treated
+  as a 0-bit data width for type compatibility (C2); if hardware
+  implementation requires a minimum width, a 1-bit tied-to-zero signal
+  is used. Routing legality rules for done tokens are identical to data
+  tokens except for the zero-width (or 1-bit) type constraint.
 - **(C3.6)** For fan-out edges: routing through `fabric.switch` broadcast or
   `fabric.temporal_sw` is mandatory; implicit hardware fan-out is illegal.
   This applies equally to fan-out from sentinel input nodes and from
@@ -616,8 +683,12 @@ Resources with bounded capacity must not exceed legal usage.
   Sum of mapped `stCount` values must not exceed hardware `stCount`.
 - **(C4.5)** Number of distinct mapped software memory operations must not exceed
   `num_region` (the `addr_offset_table` size).
-- **(C4.6)** `addr_offset_table` entries assign base addresses and tag ranges for
-  each mapped software memory region. See
+- **(C4.6)** `addr_offset_table` entries assign base addresses and tag
+  ranges for each mapped software memory region. Assignment uses
+  sequential packing: region_i.base = sum(region_0..i-1.size), and
+  sequential tags: region_i.tag = i. No alignment or fragmentation
+  analysis is required. The number of entries must not exceed
+  `num_region` (C4.5). Format details:
   [spec-fabric-mem.md](./spec-fabric-mem.md).
 
 **Other capacity authorities** (unchanged):
@@ -634,7 +705,11 @@ For each temporal PE:
 - **(C5.1)** Total mapped operations across all FUs must not exceed `num_instruction`.
 - **(C5.2)** Total register-routed edges must not exceed `num_register`.
 - **(C5.3)** `tag` values fit interface tag bit width.
-- **(C5.4)** No duplicate tags within configured instruction slots.
+- **(C5.4)** No duplicate tags within a temporal PE (global uniqueness).
+  All instruction entries across all FU slots in one temporal PE must
+  have distinct tag values. Different FU slots cannot reuse the same
+  tag value. This ensures unambiguous instruction selection by the
+  temporal PE's tag-matching hardware.
 
 ### C6: Configuration Encoding Constraints
 

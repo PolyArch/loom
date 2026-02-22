@@ -120,10 +120,22 @@ without actually routing.
 
 **Overlapping operation group handling**: When multiple multi-operation PE
 body patterns share a DFG node, all valid matches are retained as
-candidates. Overlap resolution is deferred to the placement/solver stage:
-- Heuristic placement uses greedy filtering (prefer longer groups).
-- CP-SAT mode uses mutual exclusivity constraints to select the globally
+candidates. Both resolution strategies are supported; heuristic is the
+default:
+
+- **Heuristic (default)**: Greedy filtering during placement. When
+  placing a DFG node, prefer the longest matching operation group
+  (covers the most DFG nodes per PE). On tie, prefer the group with
+  fewer candidates (more constrained). Once a group is selected, all
+  overlapping groups sharing any DFG node with the selected group are
+  invalidated.
+- **CP-SAT**: Mutual exclusivity constraints ensure at most one group
+  covering each DFG node is selected. The solver finds the globally
   optimal combination.
+
+The heuristic strategy is used by all profiles except `cpsat_full`.
+The CP-SAT strategy is used when `cpsat_full` is selected or when
+sub-problem refinement targets an overlapping region.
 
 **Candidate set construction**: For each DFG node (or operation group),
 build `CandidateSet(swNode)` containing all compatible hardware nodes.

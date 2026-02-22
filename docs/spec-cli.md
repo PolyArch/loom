@@ -65,32 +65,50 @@ files, even if they begin with `-`.
 
 ### `--adg`
 
-When `--adg <path>` is specified, `loom` operates in ADG validation mode.
+`--adg <path>` has two modes depending on whether sources or
+`--handshake-input` are provided:
 
-**Behavior:**
+**Mode 1: Validation only** (`--adg` without sources and without
+`--handshake-input`):
 
-- Parses the given fabric MLIR file
-- Registers Fabric, Dataflow, Handshake, Arith, Math, MemRef, and Func dialects
-- Runs MLIR parse and semantic verification
-- Exits 0 if the file is valid, 1 if any errors are detected
+- Parses the given fabric MLIR file.
+- Registers Fabric, Dataflow, Handshake, Arith, Math, MemRef, and Func
+  dialects.
+- Runs MLIR parse and semantic verification.
+- Exits 0 if the file is valid, 1 if any errors are detected.
 - Error codes are emitted to stderr with `[CPL_XXX]` prefix
-  (see [spec-fabric-error.md](./spec-fabric-error.md))
-- No MLIR/SCF/Handshake outputs are generated
-- Source files and `-o` are ignored when `--adg` is set
+  (see [spec-fabric-error.md](./spec-fabric-error.md)).
+- No MLIR/SCF/Handshake outputs are generated.
+- Source files and `-o` are ignored in this mode.
+
+**Mode 2: Mapper invocation** (`--adg` with sources + `-o`, or
+`--adg` with `--handshake-input` + `-o`):
+
+- The fabric MLIR is loaded as the ADG (hardware graph).
+- The DFG is extracted from the Handshake MLIR (compiled from sources
+  via Stage A, or directly from `--handshake-input`).
+- The mapper pipeline runs (place, route, temporal, validate).
+- Configuration and mapping artifacts are emitted.
+- See **Stage C: Mapper Invocation** below for full details.
 
 **Incompatibilities:**
 
-`--adg` is incompatible with `--as-clang`. If both are specified, behavior is
-undefined.
+`--adg` is incompatible with `--as-clang`. If both are specified, a
+usage error is reported.
 
-**Example:**
+**Examples:**
 
 ```bash
-# Validate an ADG fabric MLIR file
+# Mode 1: Validate an ADG fabric MLIR file
 loom --adg my_cgra.fabric.mlir
-
-# Check exit code
 echo $?  # 0 = valid, 1 = errors
+
+# Mode 2: Compile + map
+loom --adg my_cgra.fabric.mlir app.cpp -o app.config.bin
+
+# Mode 2: Map from pre-compiled handshake
+loom --adg my_cgra.fabric.mlir \
+     --handshake-input app.handshake.mlir -o app.config.bin
 ```
 
 ### `--as-clang`
@@ -362,7 +380,7 @@ combined with the mapper pipeline.
 loom --viz-dfg <handshake.mlir> -o <output.html>
 loom --viz-adg <fabric.mlir> -o <output.html> [--viz-mode structure|detailed]
 loom --viz-mapped <mapping.json> \
-     --adg <fabric.mlir> --dfg <handshake.mlir> -o <output.html>
+     --adg <fabric.mlir> --handshake-input <handshake.mlir> -o <output.html>
 ```
 
 | Option | Description | Default |
