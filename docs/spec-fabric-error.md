@@ -23,7 +23,7 @@ CFG_ errors are detected after writing runtime configuration registers or
 tables, before or during execution, and do not require dataflow execution to
 surface.
 
-CFG_ error codes currently use the range 0-11. Codes 12-255 are reserved for
+CFG_ error codes currently use the range 0-15. Codes 16-255 are reserved for
 future use.
 
 RT_ error codes start at 256 and increase sequentially.
@@ -89,6 +89,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_MEMORY_PRIVATE_OUTPUT | `fabric.module` yields a memref not produced by `fabric.memory` with `is_private = false` |
 | CPL_MEMORY_EXTMEM_BINDING | `fabric.extmemory` memref operand is not a `fabric.module` memref input |
 | CPL_MEMORY_EXTMEM_PRIVATE | `is_private` is supplied on `fabric.extmemory` |
+| CPL_MEMORY_INVALID_REGION | `numRegion < 1` on `fabric.memory` or `fabric.extmemory` |
 | CPL_FABRIC_TYPE_MISMATCH | A connection inside `fabric.module` uses mismatched types or bit widths without an explicit conversion |
 | CPL_MODULE_PORT_ORDER | `fabric.module` ports are not in the required order: memref*, native*, tagged* |
 | CPL_MODULE_EMPTY_BODY | `fabric.module` body contains no operations other than the terminator |
@@ -211,6 +212,10 @@ fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
 | 9 | CFG_MAP_TAG_DUP_TAG | `map_tag` has multiple valid entries with the same `src_tag` |
 | 10 | CFG_PE_STREAM_CONT_COND_ONEHOT | `dataflow.stream` `cont_cond_sel` register is not one-hot (`<`, `<=`, `>`, `>=`, `!=`) |
 | 11 | CFG_PE_CMPI_PREDICATE_INVALID | PE cmpi predicate field value >= 10 (only 0-9 are valid for integer comparison) |
+| 12 | CFG_MEMORY_OVERLAP_TAG_REGION | `fabric.memory` addr_offset_table has overlapping tag ranges between valid regions |
+| 13 | CFG_MEMORY_EMPTY_TAG_RANGE | `fabric.memory` addr_offset_table has a region with `start_tag > end_tag` |
+| 14 | CFG_EXTMEMORY_OVERLAP_TAG_REGION | `fabric.extmemory` addr_offset_table has overlapping tag ranges between valid regions |
+| 15 | CFG_EXTMEMORY_EMPTY_TAG_RANGE | `fabric.extmemory` addr_offset_table has a region with `start_tag > end_tag` |
 
 ## RT_ (Runtime Execution Errors, Hardware Code)
 
@@ -224,6 +229,8 @@ fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
 | 261 | RT_MEMORY_STORE_DEADLOCK | A store request cannot be paired with a matching address or data for the same tag within the default timeout (65535 cycles) |
 | 262 | RT_SWITCH_UNROUTED_INPUT | A `fabric.switch` input with physical connectivity receives a valid token but has no enabled route |
 | 263 | RT_TEMPORAL_SW_UNROUTED_INPUT | A `fabric.temporal_sw` input receives a valid token but the matched route_table slot does not route that input |
+| 264 | RT_MEMORY_NO_MATCH | A `fabric.memory` load/store tag matches no valid region in the addr_offset_table |
+| 265 | RT_EXTMEMORY_NO_MATCH | A `fabric.extmemory` load/store tag matches no valid region in the addr_offset_table |
 
 ## Same-Cycle Error Precedence
 

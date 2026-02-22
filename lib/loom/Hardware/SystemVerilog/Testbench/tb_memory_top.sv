@@ -38,8 +38,7 @@ module tb_memory_top;
   logic stdone_data;
 
   // Config ports
-  logic [3:0] ld0_cfg_data;
-  logic [3:0] st0_cfg_data;
+  logic [64:0] m0_cfg_data;
 
   logic        error_valid;
   logic [15:0] error_code;
@@ -85,8 +84,10 @@ module tb_memory_top;
     st_addr_data = '0;
     st_data_data = '0;
     st_ctrl_data = '0;
-    ld0_cfg_data = '0;
-    st0_cfg_data = '0;
+    // Region 0: valid=1, start_tag=0, end_tag=0, addr_offset=0
+    // For untagged memory (TAG_WIDTH=0): bit[64]=valid, bits[63:0]=addr_offset
+    m0_cfg_data = '0;
+    m0_cfg_data[64] = 1'b1;
 
     repeat (3) @(posedge clk);
     rst_n = 1;

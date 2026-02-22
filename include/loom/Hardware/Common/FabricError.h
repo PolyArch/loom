@@ -186,6 +186,8 @@ inline constexpr const char *MEMORY_EXTMEM_BINDING =
     "CPL_MEMORY_EXTMEM_BINDING";
 inline constexpr const char *MEMORY_EXTMEM_PRIVATE =
     "CPL_MEMORY_EXTMEM_PRIVATE";
+inline constexpr const char *MEMORY_INVALID_REGION =
+    "CPL_MEMORY_INVALID_REGION";
 
 // --- Tag Errors ---
 inline constexpr const char *TAG_WIDTH_RANGE =

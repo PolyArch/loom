@@ -342,6 +342,7 @@ public:
   MemoryBuilder &setStorePorts(unsigned count);
   MemoryBuilder &setQueueDepth(unsigned depth);
   MemoryBuilder &setPrivate(bool isPrivate);
+  MemoryBuilder &setNumRegion(unsigned n);
   MemoryBuilder &setShape(MemrefType shape);
 
   operator MemoryHandle() const;
@@ -359,6 +360,7 @@ public:
   ExtMemoryBuilder &setLoadPorts(unsigned count);
   ExtMemoryBuilder &setStorePorts(unsigned count);
   ExtMemoryBuilder &setQueueDepth(unsigned depth);
+  ExtMemoryBuilder &setNumRegion(unsigned n);
   ExtMemoryBuilder &setShape(MemrefType shape);
 
   operator ExtMemoryHandle() const;

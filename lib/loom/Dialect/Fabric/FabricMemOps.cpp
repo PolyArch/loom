@@ -62,6 +62,11 @@ static ParseResult parseMemHwParams(OpAsmParser &parser,
       if (parser.parseAttribute(attr))
         return failure();
       result.addAttribute("is_private", attr);
+    } else if (keyword == "numRegion") {
+      IntegerAttr attr;
+      if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
+        return failure();
+      result.addAttribute("numRegion", attr);
     } else {
       return parser.emitError(parser.getCurrentLocation(),
                               "unexpected keyword '")
@@ -122,12 +127,15 @@ static ParseResult parseMemTypeSignature(OpAsmParser &parser,
 /// Print [hw_params] for memory ops.
 static void printMemHwParams(OpAsmPrinter &p, int64_t ldCount, int64_t stCount,
                              int64_t lsqDepth,
-                             std::optional<bool> isPrivate) {
+                             std::optional<bool> isPrivate,
+                             int64_t numRegion = 1) {
   p << " [ldCount = " << ldCount << ", stCount = " << stCount;
   if (lsqDepth != 0)
     p << ", lsqDepth = " << lsqDepth;
   if (isPrivate)
     p << ", is_private = " << (*isPrivate ? "true" : "false");
+  if (numRegion != 1)
+    p << ", numRegion = " << numRegion;
   p << "]";
 }
 
@@ -153,7 +161,7 @@ static void printMemTypeSignature(OpAsmPrinter &p, Type memrefType,
 /// Shared memory verification logic.
 static LogicalResult verifyMemCommon(Operation *op, int64_t ldCount,
                                      int64_t stCount, int64_t lsqDepth,
-                                     Type memrefType) {
+                                     int64_t numRegion, Type memrefType) {
   if (ldCount == 0 && stCount == 0)
     return op->emitOpError(cplErrMsg(CplError::MEMORY_PORTS_EMPTY,
                            "ldCount and stCount cannot both be 0"));
@@ -165,6 +173,10 @@ static LogicalResult verifyMemCommon(Operation *op, int64_t ldCount,
   if (stCount > 0 && lsqDepth < 1)
     return op->emitOpError(cplErrMsg(CplError::MEMORY_LSQ_MIN,
                            "lsqDepth must be >= 1 when stCount > 0"));
+
+  if (numRegion < 1)
+    return op->emitOpError(cplErrMsg(CplError::MEMORY_INVALID_REGION,
+                           "numRegion must be >= 1"));
 
   if (!isa<MemRefType>(memrefType))
     return op->emitOpError("memref_type must be a memref type");
@@ -363,7 +375,8 @@ void MemoryOp::print(OpAsmPrinter &p) {
   if (isNamed)
     p << " @" << *getSymName();
 
-  printMemHwParams(p, getLdCount(), getStCount(), getLsqDepth(), getIsPrivate());
+  printMemHwParams(p, getLdCount(), getStCount(), getLsqDepth(), getIsPrivate(),
+                   getNumRegion());
 
   SmallVector<Type> inputTypes, outputTypes;
   if (isNamed) {
@@ -383,7 +396,7 @@ void MemoryOp::print(OpAsmPrinter &p) {
 
 LogicalResult MemoryOp::verify() {
   if (failed(verifyMemCommon(getOperation(), getLdCount(), getStCount(),
-                             getLsqDepth(), getMemrefType())))
+                             getLsqDepth(), getNumRegion(), getMemrefType())))
     return failure();
 
   // Static shape required for on-chip memory.
@@ -440,7 +453,7 @@ void ExtMemoryOp::print(OpAsmPrinter &p) {
     p << " @" << *getSymName();
 
   printMemHwParams(p, getLdCount(), getStCount(), getLsqDepth(),
-                   /*isPrivate=*/std::nullopt);
+                   /*isPrivate=*/std::nullopt, getNumRegion());
 
   SmallVector<Type> inputTypes, outputTypes;
   if (isNamed) {
@@ -460,7 +473,7 @@ void ExtMemoryOp::print(OpAsmPrinter &p) {
 
 LogicalResult ExtMemoryOp::verify() {
   if (failed(verifyMemCommon(getOperation(), getLdCount(), getStCount(),
-                             getLsqDepth(), getMemrefType())))
+                             getLsqDepth(), getNumRegion(), getMemrefType())))
     return failure();
 
   // CPL_MEMORY_EXTMEM_PRIVATE: is_private must not be present.

@@ -1563,7 +1563,8 @@ std::string genMemoryParams(const MemoryDef &def) {
   os << "    .ST_COUNT(" << def.stCount << "),\n";
   os << "    .LSQ_DEPTH(" << def.lsqDepth << "),\n";
   os << "    .IS_PRIVATE(" << (def.isPrivate ? 1 : 0) << "),\n";
-  os << "    .MEM_DEPTH(" << memDepth << ")";
+  os << "    .MEM_DEPTH(" << memDepth << "),\n";
+  os << "    .NUM_REGION(" << def.numRegion << ")";
   return os.str();
 }
 
@@ -1589,7 +1590,8 @@ std::string genExtMemoryParams(const ExtMemoryDef &def) {
   os << "    .TAG_WIDTH(" << tw << "),\n";
   os << "    .LD_COUNT(" << def.ldCount << "),\n";
   os << "    .ST_COUNT(" << def.stCount << "),\n";
-  os << "    .LSQ_DEPTH(" << def.lsqDepth << ")";
+  os << "    .LSQ_DEPTH(" << def.lsqDepth << "),\n";
+  os << "    .NUM_REGION(" << def.numRegion << ")";
   return os.str();
 }
 

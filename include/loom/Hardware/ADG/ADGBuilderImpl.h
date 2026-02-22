@@ -149,6 +149,7 @@ struct MemoryDef {
   unsigned stCount = 0;
   unsigned lsqDepth = 0;
   bool isPrivate = true;
+  unsigned numRegion = 1;
   MemrefType shape = MemrefType::static1D(64, Type::i32());
 };
 
@@ -157,6 +158,7 @@ struct ExtMemoryDef {
   unsigned ldCount = 1;
   unsigned stCount = 0;
   unsigned lsqDepth = 0;
+  unsigned numRegion = 1;
   MemrefType shape = MemrefType::dynamic1D(Type::i32());
 };
 

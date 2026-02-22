@@ -551,8 +551,33 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       unsigned cfgBits = totalFuCmpBits + def.numInstructions * insnWidth;
       if (cfgBits > 0)
         instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
+    } else if (inst.kind == ModuleKind::Memory) {
+      const auto &def = memoryDefs[inst.defIdx];
+      unsigned tw = 0;
+      if (def.ldCount > 1 || def.stCount > 1) {
+        unsigned maxCount = std::max(def.ldCount, def.stCount);
+        unsigned tagBits = 1;
+        while ((1u << tagBits) < maxCount)
+          ++tagBits;
+        tw = tagBits;
+      }
+      unsigned cfgBits = def.numRegion * (1 + 2 * tw + DEFAULT_ADDR_WIDTH);
+      if (cfgBits > 0)
+        instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
+    } else if (inst.kind == ModuleKind::ExtMemory) {
+      const auto &def = extMemoryDefs[inst.defIdx];
+      unsigned tw = 0;
+      if (def.ldCount > 1 || def.stCount > 1) {
+        unsigned maxCount = std::max(def.ldCount, def.stCount);
+        unsigned tagBits = 1;
+        while ((1u << tagBits) < maxCount)
+          ++tagBits;
+        tw = tagBits;
+      }
+      unsigned cfgBits = def.numRegion * (1 + 2 * tw + DEFAULT_ADDR_WIDTH);
+      if (cfgBits > 0)
+        instCfgPorts.push_back({inst.name + "_cfg_data", cfgBits});
     }
-    // Memory and ExtMemory have CONFIG_WIDTH = 0, no config ports
   }
   bool hasCfgPorts = !instCfgPorts.empty();
 
@@ -1021,6 +1046,21 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
           top << "    .st_done_valid(), .st_done_ready(1'b1), .st_done_data(),\n";
         }
       }
+      {
+        unsigned tw = 0;
+        if (def.ldCount > 1 || def.stCount > 1) {
+          unsigned maxCount = std::max(def.ldCount, def.stCount);
+          unsigned tagBits = 1;
+          while ((1u << tagBits) < maxCount)
+            ++tagBits;
+          tw = tagBits;
+        }
+        unsigned cfgBits = def.numRegion * (1 + 2 * tw + DEFAULT_ADDR_WIDTH);
+        if (cfgBits > 0)
+          top << "    .cfg_data(" << inst.name << "_cfg_data),\n";
+        else
+          top << "    .cfg_data('0),\n";
+      }
       top << "    .error_valid(" << inst.name << "_error_valid),\n";
       top << "    .error_code(" << inst.name << "_error_code)\n";
       top << "  );\n\n";
@@ -1086,6 +1126,21 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         } else {
           top << "    .st_done_valid(), .st_done_ready(1'b1), .st_done_data(),\n";
         }
+      }
+      {
+        unsigned tw = 0;
+        if (def.ldCount > 1 || def.stCount > 1) {
+          unsigned maxCount = std::max(def.ldCount, def.stCount);
+          unsigned tagBits = 1;
+          while ((1u << tagBits) < maxCount)
+            ++tagBits;
+          tw = tagBits;
+        }
+        unsigned cfgBits = def.numRegion * (1 + 2 * tw + DEFAULT_ADDR_WIDTH);
+        if (cfgBits > 0)
+          top << "    .cfg_data(" << inst.name << "_cfg_data),\n";
+        else
+          top << "    .cfg_data('0),\n";
       }
       top << "    .error_valid(" << inst.name << "_error_valid),\n";
       top << "    .error_code(" << inst.name << "_error_code)\n";

@@ -12,7 +12,7 @@
 //
 // Named form:
 //   fabric.memory @name
-//     [ldCount = N, stCount = N, lsqDepth = N, private = true]
+//     [ldCount = N, stCount = N, lsqDepth = N, private = true, numRegion = N]
 //     : memref<shape>,
 //       (input_types) -> (output_types)
 //
@@ -37,6 +37,7 @@ def Fabric_MemoryOp : Fabric_Op<"memory", []> {
     I64Attr:$stCount,
     DefaultValuedAttr<I64Attr, "0">:$lsqDepth,
     DefaultValuedAttr<BoolAttr, "true">:$is_private,
+    DefaultValuedAttr<I64Attr, "1">:$numRegion,
     OptionalAttr<TypeAttrOf<FunctionType>>:$function_type
   );
   let results = (outs Variadic<AnyType>:$outputs);
@@ -50,7 +51,7 @@ def Fabric_MemoryOp : Fabric_Op<"memory", []> {
 //
 // Named form:
 //   fabric.extmemory @name
-//     [ldCount = N, stCount = N, lsqDepth = N]
+//     [ldCount = N, stCount = N, lsqDepth = N, numRegion = N]
 //     : memref<?xT>,
 //       (input_types) -> (output_types)
 //
@@ -74,6 +75,7 @@ def Fabric_ExtMemoryOp : Fabric_Op<"extmemory", []> {
     I64Attr:$ldCount,
     I64Attr:$stCount,
     DefaultValuedAttr<I64Attr, "0">:$lsqDepth,
+    DefaultValuedAttr<I64Attr, "1">:$numRegion,
     OptionalAttr<TypeAttrOf<FunctionType>>:$function_type
   );
   let results = (outs Variadic<AnyType>:$outputs);

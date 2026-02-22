@@ -255,6 +255,9 @@ ValidationResult ADGBuilder::validateADG() {
     if (mem.shape.isDynamic())
       addError(CplError::MEMORY_STATIC_REQUIRED,
                "fabric.memory requires static memref shape", loc);
+    if (mem.numRegion < 1)
+      addError(CplError::MEMORY_INVALID_REGION,
+               "numRegion must be >= 1", loc);
   }
 
   // Validate external memory definitions.
@@ -262,6 +265,9 @@ ValidationResult ADGBuilder::validateADG() {
     const auto &em = impl_->extMemoryDefs[i];
     std::string loc = "extmemory @" + em.name;
     validateMemoryPorts(em.ldCount, em.stCount, em.lsqDepth, loc, addError);
+    if (em.numRegion < 1)
+      addError(CplError::MEMORY_INVALID_REGION,
+               "numRegion must be >= 1", loc);
   }
 
   // Validate map_tag definitions.

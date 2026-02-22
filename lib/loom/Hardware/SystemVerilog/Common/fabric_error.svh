@@ -56,6 +56,18 @@ localparam logic [15:0] CFG_PE_STREAM_CONT_COND_ONEHOT = 16'd10;
 // PE cmpi: predicate value >= 10 (only 0-9 valid for integer compare)
 localparam logic [15:0] CFG_PE_CMPI_PREDICATE_INVALID = 16'd11;
 
+// Memory: overlapping tag ranges in addr_offset_table
+localparam logic [15:0] CFG_MEMORY_OVERLAP_TAG_REGION = 16'd12;
+
+// Memory: a region has start_tag > end_tag (empty range)
+localparam logic [15:0] CFG_MEMORY_EMPTY_TAG_RANGE = 16'd13;
+
+// ExtMemory: overlapping tag ranges in addr_offset_table
+localparam logic [15:0] CFG_EXTMEMORY_OVERLAP_TAG_REGION = 16'd14;
+
+// ExtMemory: a region has start_tag > end_tag (empty range)
+localparam logic [15:0] CFG_EXTMEMORY_EMPTY_TAG_RANGE = 16'd15;
+
 //===----------------------------------------------------------------------===//
 // RT_ Errors: Runtime Execution Errors (Codes 256+)
 //===----------------------------------------------------------------------===//
@@ -83,5 +95,11 @@ localparam logic [15:0] RT_SWITCH_UNROUTED_INPUT = 16'd262;
 
 // Temporal switch: matched slot does not route the input
 localparam logic [15:0] RT_TEMPORAL_SW_UNROUTED_INPUT = 16'd263;
+
+// Memory: load/store tag matches no region in addr_offset_table
+localparam logic [15:0] RT_MEMORY_NO_MATCH = 16'd264;
+
+// ExtMemory: load/store tag matches no region in addr_offset_table
+localparam logic [15:0] RT_EXTMEMORY_NO_MATCH = 16'd265;
 
 `endif // FABRIC_ERROR_SVH

@@ -117,6 +117,12 @@ All attributes in this section are hardware parameters.
 - `is_private` (only for `fabric.memory`): if `true`, the memory is private to
   the module. If `false`, the memory exposes an output memref that must be
   yielded by `fabric.module`. The default is `true`.
+- `numRegion`: number of entries in the addr_offset_table. Must be >= 1.
+  The default is `1`. Each region entry contains a valid bit, start_tag,
+  end_tag, and addr_offset. At runtime, a load/store tag is matched against
+  the [start_tag, end_tag] range of each valid region, and the corresponding
+  addr_offset is added to the memory address. CONFIG_WIDTH for a memory is
+  `numRegion * (1 + 2 * TAG_WIDTH + ADDR_WIDTH)`.
 - `fabric.extmemory` does not support `is_private`. Supplying `is_private` on
   `fabric.extmemory` is invalid (`CPL_MEMORY_EXTMEM_PRIVATE`).
 
@@ -273,6 +279,19 @@ Violations of the following constraints are compile-time errors:
   (`CPL_MEMORY_EXTMEM_BINDING`).
 - `is_private` is supplied on `fabric.extmemory`
   (`CPL_MEMORY_EXTMEM_PRIVATE`).
+- `numRegion < 1` (`CPL_MEMORY_INVALID_REGION`).
+
+Runtime configuration errors (detected in hardware):
+
+- Overlapping tag ranges between valid regions in addr_offset_table
+  (`CFG_MEMORY_OVERLAP_TAG_REGION`, `CFG_EXTMEMORY_OVERLAP_TAG_REGION`).
+- A region has `start_tag > end_tag` (empty range)
+  (`CFG_MEMORY_EMPTY_TAG_RANGE`, `CFG_EXTMEMORY_EMPTY_TAG_RANGE`).
+
+Runtime execution errors (detected in hardware):
+
+- A load/store tag matches no valid region in the addr_offset_table
+  (`RT_MEMORY_NO_MATCH`, `RT_EXTMEMORY_NO_MATCH`).
 
 ## Interaction with Load/Store PEs
 

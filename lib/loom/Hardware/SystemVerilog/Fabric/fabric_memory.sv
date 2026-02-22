@@ -15,8 +15,11 @@
 //            st_done (if ST_COUNT>0)
 //
 // Errors:
-//   RT_MEMORY_TAG_OOB         - Tagged request uses tag >= port count
-//   RT_MEMORY_STORE_DEADLOCK  - Store pairing timeout
+//   CFG_MEMORY_OVERLAP_TAG_REGION - Overlapping tag ranges in addr_offset_table
+//   CFG_MEMORY_EMPTY_TAG_RANGE   - Region has start_tag > end_tag
+//   RT_MEMORY_TAG_OOB            - Tagged request uses tag >= port count
+//   RT_MEMORY_STORE_DEADLOCK     - Store pairing timeout
+//   RT_MEMORY_NO_MATCH           - Load/store tag matches no region
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,6 +35,7 @@ module fabric_memory #(
     parameter int IS_PRIVATE       = 1,
     parameter int MEM_DEPTH        = 64,
     parameter int DEADLOCK_TIMEOUT = 65535,
+    parameter int NUM_REGION       = 1,
     localparam int ADDR_PW   = (ADDR_WIDTH + TAG_WIDTH > 0) ? ADDR_WIDTH + TAG_WIDTH : 1,
     localparam int ELEM_PW   = (ELEM_WIDTH + TAG_WIDTH > 0) ? ELEM_WIDTH + TAG_WIDTH : 1,
     localparam int DONE_PW   = (TAG_WIDTH > 0) ? TAG_WIDTH : 1,
@@ -39,7 +43,8 @@ module fabric_memory #(
     localparam int SAFE_EW   = (ELEM_WIDTH > 0) ? ELEM_WIDTH : 1,
     localparam int SAFE_AW   = (ADDR_WIDTH > 0) ? ADDR_WIDTH : 1,
     localparam int SAFE_TW   = (TAG_WIDTH > 0) ? TAG_WIDTH : 1,
-    localparam int CONFIG_WIDTH = 0
+    localparam int REGION_ENTRY_WIDTH = 1 + 2 * TAG_WIDTH + ADDR_WIDTH,
+    localparam int CONFIG_WIDTH = NUM_REGION * REGION_ENTRY_WIDTH
 ) (
     input  logic               clk,
     input  logic               rst_n,
@@ -78,6 +83,9 @@ module fabric_memory #(
     output logic               memref_valid,
     input  logic               memref_ready,
 
+    // Configuration data for addr_offset_table
+    input  logic [CONFIG_WIDTH > 0 ? CONFIG_WIDTH-1 : 0 : 0] cfg_data,
+
     // Error output
     output logic               error_valid,
     output logic [15:0]        error_code
@@ -97,6 +105,113 @@ module fabric_memory #(
       $fatal(1, "CPL_MEMORY_ELEM_WIDTH: must be >= 1");
     if (MEM_DEPTH < 1)
       $fatal(1, "CPL_MEMORY_MEM_DEPTH: must be >= 1");
+  end
+
+  // -----------------------------------------------------------------------
+  // addr_offset_table decode from cfg_data
+  // -----------------------------------------------------------------------
+  // Each region entry: { valid[1], start_tag[TAG_WIDTH], end_tag[TAG_WIDTH], addr_offset[ADDR_WIDTH] }
+  logic [NUM_REGION-1:0]                    region_valid;
+  logic [NUM_REGION-1:0][SAFE_TW-1:0]      region_start_tag;
+  logic [NUM_REGION-1:0][SAFE_TW-1:0]      region_end_tag;
+  logic [NUM_REGION-1:0][SAFE_AW-1:0]      region_addr_offset;
+
+  generate
+    genvar gri;
+    for (gri = 0; gri < NUM_REGION; gri++) begin : g_region_decode
+      localparam int BASE = gri * REGION_ENTRY_WIDTH;
+      if (REGION_ENTRY_WIDTH > 0 && CONFIG_WIDTH > 0) begin : g_has_cfg
+        assign region_addr_offset[gri] = cfg_data[BASE +: ADDR_WIDTH];
+        if (TAG_WIDTH > 0) begin : g_has_tag
+          assign region_end_tag[gri]   = cfg_data[BASE + ADDR_WIDTH +: TAG_WIDTH];
+          assign region_start_tag[gri] = cfg_data[BASE + ADDR_WIDTH + TAG_WIDTH +: TAG_WIDTH];
+        end else begin : g_no_tag
+          assign region_end_tag[gri]   = '0;
+          assign region_start_tag[gri] = '0;
+        end
+        assign region_valid[gri]       = cfg_data[BASE + ADDR_WIDTH + 2 * TAG_WIDTH];
+      end else begin : g_no_cfg
+        assign region_valid[gri]       = 1'b1;
+        assign region_start_tag[gri]   = '0;
+        assign region_end_tag[gri]     = '0;
+        assign region_addr_offset[gri] = '0;
+      end
+    end
+  endgenerate
+
+  // -----------------------------------------------------------------------
+  // CFG_ error checks on addr_offset_table
+  // -----------------------------------------------------------------------
+  logic err_overlap_tag;
+  logic err_empty_range;
+
+  always_comb begin : cfg_check
+    integer iter_var0, iter_var1;
+    err_overlap_tag = 1'b0;
+    err_empty_range = 1'b0;
+    for (iter_var0 = 0; iter_var0 < NUM_REGION; iter_var0 = iter_var0 + 1) begin : chk_region
+      if (region_valid[iter_var0]) begin : valid_region
+        if (region_start_tag[iter_var0] > region_end_tag[iter_var0]) begin : empty_range
+          err_empty_range = 1'b1;
+        end
+        for (iter_var1 = iter_var0 + 1; iter_var1 < NUM_REGION; iter_var1 = iter_var1 + 1) begin : chk_overlap
+          if (region_valid[iter_var1]) begin : both_valid
+            if (region_start_tag[iter_var0] <= region_end_tag[iter_var1] &&
+                region_start_tag[iter_var1] <= region_end_tag[iter_var0]) begin : overlap
+              err_overlap_tag = 1'b1;
+            end
+          end
+        end
+      end
+    end
+  end
+
+  // -----------------------------------------------------------------------
+  // RT_ region match logic: find addr_offset for a given tag
+  // -----------------------------------------------------------------------
+  logic        ld_region_match;
+  logic [SAFE_AW-1:0] ld_addr_offset;
+  logic        st_region_match;
+  logic [SAFE_AW-1:0] st_addr_offset;
+
+  always_comb begin : region_match_ld
+    integer iter_var0;
+    ld_region_match = 1'b0;
+    ld_addr_offset  = '0;
+    for (iter_var0 = 0; iter_var0 < NUM_REGION; iter_var0 = iter_var0 + 1) begin : scan_ld
+      if (region_valid[iter_var0]) begin : valid_ld
+        if (TAG_WIDTH > 0) begin : tagged_ld
+          if (ld_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] >= region_start_tag[iter_var0] &&
+              ld_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] <= region_end_tag[iter_var0]) begin : match_ld
+            ld_region_match = 1'b1;
+            ld_addr_offset  = region_addr_offset[iter_var0];
+          end
+        end else begin : untagged_ld
+          ld_region_match = 1'b1;
+          ld_addr_offset  = region_addr_offset[iter_var0];
+        end
+      end
+    end
+  end
+
+  always_comb begin : region_match_st
+    integer iter_var0;
+    st_region_match = 1'b0;
+    st_addr_offset  = '0;
+    for (iter_var0 = 0; iter_var0 < NUM_REGION; iter_var0 = iter_var0 + 1) begin : scan_st
+      if (region_valid[iter_var0]) begin : valid_st
+        if (TAG_WIDTH > 0) begin : tagged_st
+          if (st_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] >= region_start_tag[iter_var0] &&
+              st_addr_data[(ADDR_PW - SAFE_TW) +: SAFE_TW] <= region_end_tag[iter_var0]) begin : match_st
+            st_region_match = 1'b1;
+            st_addr_offset  = region_addr_offset[iter_var0];
+          end
+        end else begin : untagged_st
+          st_region_match = 1'b1;
+          st_addr_offset  = region_addr_offset[iter_var0];
+        end
+      end
+    end
   end
 
   // -----------------------------------------------------------------------
@@ -141,7 +256,7 @@ module fabric_memory #(
   generate
     if (LD_COUNT > 0) begin : g_load
       logic [MEM_AW-1:0] ld_addr_val;
-      assign ld_addr_val = ld_addr_data[MEM_AW-1:0];
+      assign ld_addr_val = ld_addr_data[MEM_AW-1:0] + ld_addr_offset[MEM_AW-1:0];
 
       // lddata/lddone must represent one aligned completion event.
       logic ld_req_ok;
@@ -355,7 +470,7 @@ module fabric_memory #(
           end
           if (!st_addr_tag_oob_req && !tag_addr_full[target_tag] && st_addr_valid) begin : enq
             tag_addr_enq[target_tag] = 1'b1;
-            tag_addr_enq_val[target_tag] = st_addr_data[MEM_AW-1:0];
+            tag_addr_enq_val[target_tag] = st_addr_data[MEM_AW-1:0] + st_addr_offset[MEM_AW-1:0];
           end
         end
       end
@@ -459,6 +574,18 @@ module fabric_memory #(
   // -----------------------------------------------------------------------
   logic        err_tag_oob;
   logic        err_deadlock;
+  logic        err_no_match;
+
+  // RT_MEMORY_NO_MATCH
+  always_comb begin : no_match_check
+    err_no_match = 1'b0;
+    if (ld_addr_valid && !ld_tag_oob_req && !ld_region_match) begin : ld_no_match
+      err_no_match = 1'b1;
+    end
+    if (st_addr_valid && !st_addr_tag_oob_req && !st_region_match) begin : st_no_match
+      err_no_match = 1'b1;
+    end
+  end
 
   // RT_MEMORY_TAG_OOB
   generate
@@ -497,9 +624,18 @@ module fabric_memory #(
   always_comb begin : err_encode
     err_detect    = 1'b0;
     err_code_comb = 16'd0;
-    if (err_tag_oob) begin : e_oob
+    if (err_overlap_tag) begin : e_overlap
+      err_detect    = 1'b1;
+      err_code_comb = CFG_MEMORY_OVERLAP_TAG_REGION;
+    end else if (err_empty_range) begin : e_empty
+      err_detect    = 1'b1;
+      err_code_comb = CFG_MEMORY_EMPTY_TAG_RANGE;
+    end else if (err_tag_oob) begin : e_oob
       err_detect    = 1'b1;
       err_code_comb = RT_MEMORY_TAG_OOB;
+    end else if (err_no_match) begin : e_no_match
+      err_detect    = 1'b1;
+      err_code_comb = RT_MEMORY_NO_MATCH;
     end else if (err_deadlock) begin : e_dl
       err_detect    = 1'b1;
       err_code_comb = RT_MEMORY_STORE_DEADLOCK;

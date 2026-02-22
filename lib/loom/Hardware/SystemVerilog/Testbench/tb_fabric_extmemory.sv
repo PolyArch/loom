@@ -14,6 +14,7 @@ module tb_fabric_extmemory;
   parameter int ST_COUNT         = 1;
   parameter int LSQ_DEPTH        = 4;
   parameter int DEADLOCK_TIMEOUT = 65535;
+  parameter int NUM_REGION       = 1;
 
   localparam int ADDR_PW      = ADDR_WIDTH + TAG_WIDTH;
   localparam int ELEM_PW      = ELEM_WIDTH + TAG_WIDTH;
@@ -21,6 +22,9 @@ module tb_fabric_extmemory;
   localparam int SAFE_ADDR_PW = (ADDR_PW > 0) ? ADDR_PW : 1;
   localparam int SAFE_ELEM_PW = (ELEM_PW > 0) ? ELEM_PW : 1;
   localparam int SAFE_TW      = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
+  localparam int REGION_ENTRY_WIDTH = 1 + 2 * TAG_WIDTH + ADDR_WIDTH;
+  localparam int CFG_WIDTH    = NUM_REGION * REGION_ENTRY_WIDTH;
+  localparam int SAFE_CFG_W   = (CFG_WIDTH > 0) ? CFG_WIDTH : 1;
 
   logic clk, rst_n;
 
@@ -49,6 +53,8 @@ module tb_fabric_extmemory;
   logic        error_valid;
   logic [15:0] error_code;
 
+  logic [SAFE_CFG_W-1:0] cfg_data;
+
   fabric_extmemory #(
     .ADDR_WIDTH(ADDR_WIDTH),
     .ELEM_WIDTH(ELEM_WIDTH),
@@ -56,7 +62,8 @@ module tb_fabric_extmemory;
     .LD_COUNT(LD_COUNT),
     .ST_COUNT(ST_COUNT),
     .LSQ_DEPTH(LSQ_DEPTH),
-    .DEADLOCK_TIMEOUT(DEADLOCK_TIMEOUT)
+    .DEADLOCK_TIMEOUT(DEADLOCK_TIMEOUT),
+    .NUM_REGION(NUM_REGION)
   ) dut (
     .clk(clk), .rst_n(rst_n),
     .memref_bind_valid(memref_bind_valid), .memref_bind_ready(memref_bind_ready),
@@ -73,6 +80,7 @@ module tb_fabric_extmemory;
     .ld_done_data(ld_done_data),
     .st_done_valid(st_done_valid), .st_done_ready(st_done_ready),
     .st_done_data(st_done_data),
+    .cfg_data(cfg_data),
     .error_valid(error_valid), .error_code(error_code)
   );
 
@@ -109,6 +117,13 @@ module tb_fabric_extmemory;
     ld_data_ready = 1;
     ld_done_ready = 1;
     st_done_ready = 1;
+
+    // Initialize cfg_data: region 0 valid, full tag range, zero offset
+    cfg_data = '0;
+    cfg_data[ADDR_WIDTH + 2 * TAG_WIDTH] = 1'b1;
+    for (iter_var0 = 0; iter_var0 < TAG_WIDTH; iter_var0 = iter_var0 + 1) begin : cfg_end_tag
+      cfg_data[ADDR_WIDTH + iter_var0] = 1'b1;
+    end
 
     repeat (3) @(posedge clk);
     rst_n = 1;

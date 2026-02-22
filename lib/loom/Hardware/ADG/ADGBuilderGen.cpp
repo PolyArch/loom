@@ -1084,6 +1084,8 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       if (memDef.lsqDepth > 0)
         os << ", lsqDepth = " << memDef.lsqDepth;
       os << ", is_private = " << (memDef.isPrivate ? "true" : "false");
+      if (memDef.numRegion != 1)
+        os << ", numRegion = " << memDef.numRegion;
       os << "]\n      (";
       for (size_t o = 0; o < operands.size(); ++o) {
         if (o > 0) os << ", ";
@@ -1146,6 +1148,8 @@ std::string ADGBuilder::Impl::generateMLIR() const {
          << ", stCount = " << emDef.stCount;
       if (emDef.lsqDepth > 0)
         os << ", lsqDepth = " << emDef.lsqDepth;
+      if (emDef.numRegion != 1)
+        os << ", numRegion = " << emDef.numRegion;
       os << "]\n      (";
       for (size_t o = 0; o < operands.size(); ++o) {
         if (o > 0) os << ", ";
