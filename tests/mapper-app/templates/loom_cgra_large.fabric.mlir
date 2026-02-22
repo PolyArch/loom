@@ -7,6 +7,62 @@
 module {
 
 // ---------------------------------------------------------------------------
+// Constant PEs (handshake.constant for various types)
+// ---------------------------------------------------------------------------
+fabric.pe @pe_const_i32(%ctrl: none) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (i32) {
+  %r = handshake.constant %ctrl {value = 0 : i32} : i32
+  fabric.yield %r : i32
+}
+fabric.pe @pe_const_i64(%ctrl: none) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (i64) {
+  %r = handshake.constant %ctrl {value = 0 : i64} : i64
+  fabric.yield %r : i64
+}
+fabric.pe @pe_const_index(%ctrl: none) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (index) {
+  %r = handshake.constant %ctrl {value = 0 : index} : index
+  fabric.yield %r : index
+}
+fabric.pe @pe_const_i1(%ctrl: none) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (i1) {
+  %r = handshake.constant %ctrl {value = true} : i1
+  fabric.yield %r : i1
+}
+
+// ---------------------------------------------------------------------------
+// Control flow PEs (join, cond_br, mux)
+// ---------------------------------------------------------------------------
+fabric.pe @pe_join1(%a: none) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (none) {
+  %r = handshake.join %a : none
+  fabric.yield %r : none
+}
+fabric.pe @pe_join2(%a: none, %b: none) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (none) {
+  %r = handshake.join %a, %b : none, none
+  fabric.yield %r : none
+}
+fabric.pe @pe_join3(%a: none, %b: none, %c: none) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (none) {
+  %r = handshake.join %a, %b, %c : none, none, none
+  fabric.yield %r : none
+}
+fabric.pe @pe_join4(%a: none, %b: none, %c: none, %d: none) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (none) {
+  %r = handshake.join %a, %b, %c, %d : none, none, none, none
+  fabric.yield %r : none
+}
+fabric.pe @pe_cond_br_none(%cond: i1, %data: none) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (none, none) {
+  %t, %f = handshake.cond_br %cond, %data : none
+  fabric.yield %t, %f : none, none
+}
+fabric.pe @pe_cond_br_i32(%cond: i1, %data: i32) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (i32, i32) {
+  %t, %f = handshake.cond_br %cond, %data : i32
+  fabric.yield %t, %f : i32, i32
+}
+fabric.pe @pe_mux_i32(%sel: index, %a: i32, %b: i32) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (i32) {
+  %r = handshake.mux %sel [%a, %b] : index, i32
+  fabric.yield %r : i32
+}
+fabric.pe @pe_mux_none(%sel: index, %a: none, %b: none) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (none) {
+  %r = handshake.mux %sel [%a, %b] : index, none
+  fabric.yield %r : none
+}
+
+// ---------------------------------------------------------------------------
 // Integer arithmetic PE definitions
 // ---------------------------------------------------------------------------
 fabric.pe @pe_addi(%a: i32, %b: i32) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (i32) {
@@ -101,6 +157,10 @@ fabric.pe @pe_select(%c: i1, %a: i32, %b: i32) [latency = [1 : i16, 1 : i16, 1 :
   %r = arith.select %c, %a, %b : i32
   fabric.yield %r : i32
 }
+fabric.pe @pe_select_index(%c: i1, %a: index, %b: index) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (index) {
+  %r = arith.select %c, %a, %b : index
+  fabric.yield %r : index
+}
 
 // ---------------------------------------------------------------------------
 // Type cast PEs
@@ -124,6 +184,14 @@ fabric.pe @pe_uitofp(%a: i32) [latency = [1 : i16, 1 : i16, 3 : i16], interval =
 fabric.pe @pe_fptoui(%a: f32) [latency = [1 : i16, 1 : i16, 3 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (i32) {
   %r = arith.fptoui %a : f32 to i32
   fabric.yield %r : i32
+}
+fabric.pe @pe_index_cast_i64(%v: i64) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (index) {
+  %r = arith.index_cast %v : i64 to index
+  fabric.yield %r : index
+}
+fabric.pe @pe_index_cast_i32(%v: i32) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (index) {
+  %r = arith.index_cast %v : i32 to index
+  fabric.yield %r : index
 }
 
 // ---------------------------------------------------------------------------
@@ -149,9 +217,17 @@ fabric.pe @pe_carry(%d: i1, %a: i32, %b: i32) [latency = [1 : i16, 1 : i16, 1 : 
   %o = dataflow.carry %d, %a, %b : i1, i32, i32 -> i32
   fabric.yield %o : i32
 }
+fabric.pe @pe_carry_none(%d: i1, %a: none, %b: none) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (none) {
+  %o = dataflow.carry %d, %a, %b : i1, none, none -> none
+  fabric.yield %o : none
+}
 fabric.pe @pe_gate(%val: i32, %cond: i1) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (i32, i1) {
   %av, %ac = dataflow.gate %val, %cond : i32, i1 -> i32, i1
   fabric.yield %av, %ac : i32, i1
+}
+fabric.pe @pe_gate_index(%val: index, %cond: i1) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (index, i1) {
+  %av, %ac = dataflow.gate %val, %cond : index, i1 -> index, i1
+  fabric.yield %av, %ac : index, i1
 }
 fabric.pe @pe_stream(%start: index, %step: index, %bound: index) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (index, i1) {
   %idx, %wc = dataflow.stream %start, %step, %bound
@@ -162,6 +238,9 @@ fabric.pe @pe_stream(%start: index, %step: index, %bound: index) [latency = [1 :
 // Switches and FIFOs
 // ---------------------------------------------------------------------------
 fabric.switch @sw4x4 [connectivity_table = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]] : (i32, i32, i32, i32) -> (i32, i32, i32, i32)
+fabric.switch @sw_none4x4 [connectivity_table = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]] : (none, none, none, none) -> (none, none, none, none)
+fabric.switch @sw_index4x4 [connectivity_table = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]] : (index, index, index, index) -> (index, index, index, index)
+fabric.switch @sw_i1_4x4 [connectivity_table = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]] : (i1, i1, i1, i1) -> (i1, i1, i1, i1)
 fabric.fifo @fifo_buf [depth = 2] : (i32) -> (i32)
 
 // ---------------------------------------------------------------------------
