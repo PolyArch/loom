@@ -581,15 +581,15 @@ Mapped ports must satisfy:
 
 Each mapped software edge path must:
 
-- Follow physically connected hardware edges.
-- Respect directionality.
-- Respect per-edge sharing or exclusivity constraints.
-- Connect the mapped source and destination hardware ports. For edges
+- **(C3.1)** Follow physically connected hardware edges.
+- **(C3.2)** Respect directionality.
+- **(C3.3)** Respect per-edge sharing or exclusivity constraints.
+- **(C3.4)** Connect the mapped source and destination hardware ports. For edges
   incident to sentinel nodes, the sentinel endpoint is the bound hardware
   sentinel port (via `MapPort`); for edges between operation nodes, both
   endpoints are placed operation ports.
-- Preserve memory done-token wiring legality.
-- For fan-out edges: routing through `fabric.switch` broadcast or
+- **(C3.5)** Preserve memory done-token wiring legality.
+- **(C3.6)** For fan-out edges: routing through `fabric.switch` broadcast or
   `fabric.temporal_sw` is mandatory; implicit hardware fan-out is illegal.
   This applies equally to fan-out from sentinel input nodes and from
   operation output ports.
@@ -598,18 +598,25 @@ Each mapped software edge path must:
 
 Resources with bounded capacity must not exceed legal usage.
 
+**Edge capacity**:
+
+- **(C4.1)** A native (untagged) hardware edge may carry at most one
+  software edge (exclusive use).
+- **(C4.2)** A tagged hardware edge may carry at most `2^TAG_WIDTH`
+  software edges, each with a distinct tag value.
+
 **Memory capacity** (extended with `addr_offset_table`):
 
-- `handshake.memory` maps to `fabric.memory`;
+- **(C4.3)** `handshake.memory` maps to `fabric.memory`;
   `handshake.extmemory` maps to `fabric.extmemory`.
-- `memref` element type must match.
-- For `fabric.memory`: total capacity of mapped software memories must not
+  `memref` element type must match.
+  For `fabric.memory`: total capacity of mapped software memories must not
   exceed hardware memory capacity.
-- Sum of mapped `ldCount` values must not exceed hardware `ldCount`.
-- Sum of mapped `stCount` values must not exceed hardware `stCount`.
-- Number of distinct mapped software memory operations must not exceed
+- **(C4.4)** Sum of mapped `ldCount` values must not exceed hardware `ldCount`.
+  Sum of mapped `stCount` values must not exceed hardware `stCount`.
+- **(C4.5)** Number of distinct mapped software memory operations must not exceed
   `num_region` (the `addr_offset_table` size).
-- `addr_offset_table` entries assign base addresses and tag ranges for
+- **(C4.6)** `addr_offset_table` entries assign base addresses and tag ranges for
   each mapped software memory region. See
   [spec-fabric-mem.md](./spec-fabric-mem.md).
 
@@ -624,10 +631,10 @@ Resources with bounded capacity must not exceed legal usage.
 
 For each temporal PE:
 
-- Total mapped operations across all FUs must not exceed `num_instruction`.
-- Total register-routed edges must not exceed `num_register`.
-- `tag` values fit interface tag bit width.
-- No duplicate tags within configured instruction slots.
+- **(C5.1)** Total mapped operations across all FUs must not exceed `num_instruction`.
+- **(C5.2)** Total register-routed edges must not exceed `num_register`.
+- **(C5.3)** `tag` values fit interface tag bit width.
+- **(C5.4)** No duplicate tags within configured instruction slots.
 
 ### C6: Configuration Encoding Constraints
 

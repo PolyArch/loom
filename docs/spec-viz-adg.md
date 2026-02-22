@@ -1,4 +1,4 @@
-# Hardware Visualization Conventions
+# ADG Visualization Conventions
 
 ## Overview
 
@@ -6,6 +6,9 @@ This document is the **single source of truth** for DOT/Graphviz visual
 conventions used in ADG-exported hardware diagrams. Both
 [spec-adg.md](./spec-adg.md) and [spec-adg-api.md](./spec-adg-api.md)
 reference this document.
+
+This is the ADG counterpart to
+[spec-viz-dfg.md](./spec-viz-dfg.md) (software visualization).
 
 ## Global Graph Conventions
 
@@ -126,5 +129,8 @@ In `DOTMode::Detailed`, elements without runtime configuration are shown with:
 
 ## Related Documents
 
+- [spec-viz.md](./spec-viz.md)
+- [spec-viz-dfg.md](./spec-viz-dfg.md)
+- [spec-viz-gui.md](./spec-viz-gui.md)
 - [spec-adg.md](./spec-adg.md): ADG overall design
 - [spec-adg-api.md](./spec-adg-api.md): ADGBuilder API reference

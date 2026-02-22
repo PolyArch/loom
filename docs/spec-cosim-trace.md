@@ -170,4 +170,4 @@ End-to-end checks are defined in [spec-cosim-validation.md](./spec-cosim-validat
 - [spec-cosim-protocol.md](./spec-cosim-protocol.md)
 - [spec-cosim-runtime.md](./spec-cosim-runtime.md)
 - [spec-cosim-validation.md](./spec-cosim-validation.md)
-- [spec-viz-hw.md](./spec-viz-hw.md)
+- [spec-viz-adg.md](./spec-viz-adg.md)

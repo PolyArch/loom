@@ -54,6 +54,9 @@ The CLI recognizes and handles these options directly:
 - `-o <path>` or `-o<path>`: select the LLVM IR output path.
 - `--adg <file.fabric.mlir>`: validate a fabric MLIR file (see below).
 - `--as-clang`: operate as a standard C++ compiler (see below).
+- `--handshake-input <file.handshake.mlir>`: use pre-compiled Handshake MLIR (see below).
+- `--viz-dfg`, `--viz-adg`, `--viz-mapped`: standalone visualization (see below).
+- `--dump-viz`: emit visualization HTML files alongside mapper outputs.
 
 `--` terminates option parsing. All subsequent arguments are treated as input
 files, even if they begin with `-`.
@@ -262,17 +265,143 @@ sequences complete successfully.
 | `LOOM_REDUCE` | `createAttachLoopAnnotationsPass()` + `createSCFToHandshakeDataflowPass()` |
 | `LOOM_MEMORY_BANK` | `createAttachLoopAnnotationsPass()` + `createSCFToHandshakeDataflowPass()` |
 
-## Stage C Placeholder: Mapper Invocation
+### `--handshake-input`
 
-Stage C (mapper place-and-route) CLI surface is specified in mapper documents.
-This document currently specifies Stage A frontend behavior and `--as-clang`
-behavior used to compile Stage B ADG programs.
+When `--handshake-input <path>` is specified alongside `--adg` and `-o`,
+`loom` skips compilation (Stages A-B) and feeds the given Handshake MLIR
+file directly to the mapper.
+
+**Behavior:**
+
+- Parses the given `.handshake.mlir` file and registers all required
+  dialects (Handshake, Dataflow, Arith, Math, MemRef, Func).
+- Runs MLIR parse and semantic verification on the Handshake input.
+- Proceeds directly to the mapper pipeline (Stage C).
+- No LLVM IR, LLVM MLIR, SCF MLIR, or Handshake MLIR outputs are
+  generated (the input already is the Handshake MLIR).
+- Source files are ignored when `--handshake-input` is set.
+
+**Use case:**
+
+This mode enables decoupled compilation and mapping workflows, and is
+the primary invocation mode for mapper integration tests (plan-mapper-5).
+
+**Example:**
+
+```bash
+loom --adg my_cgra.fabric.mlir \
+     --handshake-input app.handshake.mlir \
+     -o app.config.bin --mapper-budget 30
+```
+
+**Incompatibilities:**
+
+`--handshake-input` requires `--adg` and `-o`. It is incompatible with
+`--as-clang` and source file arguments. If source files are provided
+alongside `--handshake-input`, a usage error is reported.
+
+## Stage C: Mapper Invocation
+
+When `--adg` is specified alongside source files (or `--handshake-input`)
+and `-o`, the mapper place-and-route pipeline runs after Handshake
+conversion (or directly from the provided Handshake input).
+
+**Behavior:**
+
+- Parses `<fabric.mlir>` into the ADG (hardware graph).
+- Extracts the DFG from the Handshake MLIR produced by Stage A.
+- Runs the mapper pipeline (place, route, temporal assign, validate).
+- Emits configuration and mapping artifacts.
+
+**Mapper-specific options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--mapper-budget <seconds>` | Search time limit for CP-SAT solver | 60 |
+| `--mapper-seed <int>` | Deterministic seed for tie-breaking | 0 (deterministic) |
+| `--mapper-profile <name>` | Weight profile: `balanced`, `cpsat_full`, `heuristic_only`, `throughput_first`, `area_power_first`, `deterministic_debug` | `balanced` |
+| `--dump-mapping` | Emit human-readable mapping report | off |
+
+**Mapper outputs** (in addition to Stage A outputs):
+
+| File | Description |
+|------|-------------|
+| `<name>.config.bin` | Binary config_mem image |
+| `<name>_addr.h` | C header with per-node addresses and masks |
+| `<name>.mapping.json` | Mapping report (only with `--dump-mapping`) |
+
+Output path derivation follows the same `-o` base name convention as
+Stage A.
+
+**Exit codes:**
+
+- `0`: Mapping succeeded.
+- `1`: Mapping failed (no valid mapping under constraints). Diagnostics
+  are emitted to stderr per
+  [spec-mapper-algorithm.md](./spec-mapper-algorithm.md).
+
+**Incompatibilities:**
+
+`--adg` with source files requires `-o`. `--adg` without source files
+operates in validation-only mode (existing behavior).
 
 Forward references:
 
 - [spec-mapper.md](./spec-mapper.md)
 - [spec-mapper-model.md](./spec-mapper-model.md)
 - [spec-mapper-algorithm.md](./spec-mapper-algorithm.md)
+
+## Stage C-Viz: Visualization
+
+Visualization outputs can be generated in two modes: standalone or
+combined with the mapper pipeline.
+
+### Standalone Visualization
+
+```bash
+loom --viz-dfg <handshake.mlir> -o <output.html>
+loom --viz-adg <fabric.mlir> -o <output.html> [--viz-mode structure|detailed]
+loom --viz-mapped <mapping.json> \
+     --adg <fabric.mlir> --dfg <handshake.mlir> -o <output.html>
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--viz-dfg <file>` | Generate DFG visualization from Handshake MLIR | - |
+| `--viz-adg <file>` | Generate ADG visualization from Fabric MLIR | - |
+| `--viz-mapped <file>` | Generate mapped visualization from mapping JSON | - |
+| `--viz-mode <mode>` | ADG visualization mode: `structure` or `detailed` | `structure` |
+
+Each standalone command produces a single self-contained HTML file at
+the `-o` path. See [spec-viz.md](./spec-viz.md) for output format.
+
+### Combined with Mapper (`--dump-viz`)
+
+When `--dump-viz` is specified alongside `--adg` and sources (or
+`--handshake-input`), visualization HTML files are generated alongside
+mapper outputs:
+
+```bash
+loom <sources> -o <output> --adg <fabric.mlir> --dump-viz
+# Produces alongside mapper outputs:
+#   <output>.dfg.html
+#   <output>.adg.html
+#   <output>.mapped.html
+```
+
+`--dump-viz` has no effect without `--adg` (no mapper = no mapped viz).
+
+**Incompatibilities:**
+
+Standalone `--viz-*` commands are incompatible with `--as-clang` and
+with each other (only one `--viz-*` per invocation). `--dump-viz` is
+compatible with all mapper options.
+
+Forward references:
+
+- [spec-viz.md](./spec-viz.md)
+- [spec-viz-mapped.md](./spec-viz-mapped.md)
+- [spec-viz-gui.md](./spec-viz-gui.md)
 
 ## Stage D Placeholder: Backend Invocation
 
@@ -320,3 +449,6 @@ Forward references:
 - [spec-cosim.md](./spec-cosim.md): Co-simulation stage overview and authority map
 - [spec-cosim-runtime.md](./spec-cosim-runtime.md): Host runtime and threading contract
 - [spec-cosim-validation.md](./spec-cosim-validation.md): End-to-end validation requirements
+- [spec-viz.md](./spec-viz.md): Visualization specification
+- [spec-viz-mapped.md](./spec-viz-mapped.md): Mapped visualization conventions
+- [spec-viz-gui.md](./spec-viz-gui.md): Browser viewer specification

@@ -1043,7 +1043,7 @@ Exports the ADG as Graphviz DOT format.
 | `DOTMode::Detailed` | Includes internal structure and config info |
 
 For visual conventions (node styles, edge styles, unmapped elements), see
-[spec-viz-hw.md](./spec-viz-hw.md).
+[spec-viz-adg.md](./spec-viz-adg.md).
 
 ### exportSV
 
