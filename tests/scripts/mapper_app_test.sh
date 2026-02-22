@@ -38,6 +38,10 @@ FULL_BUDGET=115
 QUICK_TIMEOUT=30
 FULL_TIMEOUT=120
 
+# Pass-rate gates (percentage of non-skipped apps that must pass).
+QUICK_PASS_RATE=90
+FULL_PASS_RATE=80
+
 # Smoke test apps (must all pass for quick-tier acceptance).
 SMOKE_APPS=(vecsum dotprod matmul conv2d)
 
@@ -63,11 +67,22 @@ if [[ ! -d "${APPS_DIR}" ]]; then
   exit 1
 fi
 
+# Templates directory MUST exist and contain at least one .fabric.mlir file.
 if [[ ! -d "${TEMPLATES_DIR}" ]]; then
-  echo "warning: templates directory not found: ${TEMPLATES_DIR}" >&2
-  echo "ADG CGRA templates are not yet generated. Skipping mapper-app tests." >&2
-  echo "Create template fabric.mlir files under ${TEMPLATES_DIR}/ to enable." >&2
-  exit 0
+  echo "error: templates directory not found: ${TEMPLATES_DIR}" >&2
+  echo "ADG CGRA template files are required for mapper-app tests." >&2
+  exit 1
+fi
+
+template_count=0
+for f in "${TEMPLATES_DIR}"/*.fabric.mlir; do
+  if [[ -f "$f" ]]; then
+    template_count=$((template_count + 1))
+  fi
+done
+if (( template_count == 0 )); then
+  echo "error: no .fabric.mlir template files found in ${TEMPLATES_DIR}" >&2
+  exit 1
 fi
 
 mkdir -p "${OUTPUT_DIR}"
@@ -140,10 +155,11 @@ for app_dir in "${app_dirs[@]}"; do
   job_count=$((job_count + 1))
 done
 
+# Zero jobs is a hard failure (non-vacuous gate).
 if (( job_count == 0 )); then
-  echo "warning: no mapper-app test jobs generated (${skipped_count} skipped)" >&2
+  echo "error: no mapper-app test jobs generated (${skipped_count} skipped)" >&2
   echo "Ensure ADG templates exist and handshake.mlir files are generated." >&2
-  exit 0
+  exit 1
 fi
 
 echo "[mapper-app] Running ${job_count} tests (${skipped_count} skipped, tier=${TIER})"
@@ -158,7 +174,31 @@ fi
 SUITE_NAME="Mapper App (${TIER})"
 loom_run_suite "${PARALLEL_FILE}" "${SUITE_NAME}" "mapper_app" "${timeout}"
 
-# --- Verify smoke tests passed ---
+# --- Post-suite gates ---
+exit_code=0
+
+# Gate 1: Zero timeouts in quick tier.
+if [[ "${TIER}" == "quick" ]] && (( LOOM_TIMEOUT > 0 )); then
+  echo "error: ${LOOM_TIMEOUT} timeout(s) in quick tier (zero allowed)" >&2
+  exit_code=1
+fi
+
+# Gate 2: Pass-rate gate.
+non_skipped=$((LOOM_TOTAL - LOOM_SKIPPED))
+if (( non_skipped > 0 )); then
+  pass_pct=$((LOOM_PASS * 100 / non_skipped))
+  if [[ "${TIER}" == "quick" ]]; then
+    required_pct="${QUICK_PASS_RATE}"
+  else
+    required_pct="${FULL_PASS_RATE}"
+  fi
+  if (( pass_pct < required_pct )); then
+    echo "error: pass rate ${pass_pct}% below required ${required_pct}% (${LOOM_PASS}/${non_skipped})" >&2
+    exit_code=1
+  fi
+fi
+
+# Gate 3: Smoke tests must pass (quick tier).
 if [[ "${TIER}" == "quick" ]]; then
   smoke_fail=0
   for smoke in "${SMOKE_APPS[@]}"; do
@@ -170,6 +210,8 @@ if [[ "${TIER}" == "quick" ]]; then
   done
   if (( smoke_fail > 0 )); then
     echo "error: smoke test failures detected" >&2
-    exit 1
+    exit_code=1
   fi
 fi
+
+exit "${exit_code}"
