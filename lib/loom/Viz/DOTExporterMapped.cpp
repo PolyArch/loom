@@ -166,13 +166,13 @@ collectRouteSegments(const Graph &dfg, const Graph &adg,
     if (hwPath.empty())
       continue;
 
-    // hwPath is a sequence of HW edge IDs forming the route.
-    for (IdIndex hwEdgeId : hwPath) {
-      const Edge *hwEdge = adg.getEdge(hwEdgeId);
-      if (!hwEdge)
-        continue;
-      const Port *sp = adg.getPort(hwEdge->srcPort);
-      const Port *dp = adg.getPort(hwEdge->dstPort);
+    // hwPath is a port-sequence: [outPort0, inPort0, outPort1, inPort1, ...]
+    // Each pair (outPort, inPort) represents a physical link hop.
+    for (size_t pi = 0; pi + 1 < hwPath.size(); pi += 2) {
+      IdIndex outPortId = hwPath[pi];
+      IdIndex inPortId = hwPath[pi + 1];
+      const Port *sp = adg.getPort(outPortId);
+      const Port *dp = adg.getPort(inPortId);
       if (!sp || !dp)
         continue;
       segments.push_back({sp->parentNode, dp->parentNode, colorIdx});

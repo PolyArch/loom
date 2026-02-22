@@ -49,8 +49,14 @@ int main() {
   TEST_CONTAINS(html, "dotSources");
   TEST_CONTAINS(html, "digraph G");
 
-  // viz.js reference (CDN or inlined).
-  TEST_CONTAINS(html, "viz");
+  // Inline renderer present (self-contained).
+  TEST_CONTAINS(html, "renderDot");
+  TEST_CONTAINS(html, "DotRenderer");
+
+  // Self-containment: no external CDN references.
+  TEST_NOT_CONTAINS(html, "unpkg.com");
+  TEST_NOT_CONTAINS(html, "jsdelivr.net");
+  TEST_NOT_CONTAINS(html, "cdn.");
 
   // CSS styles.
   TEST_CONTAINS(html, "<style>");

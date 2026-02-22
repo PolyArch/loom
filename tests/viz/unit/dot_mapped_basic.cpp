@@ -158,10 +158,10 @@ int main() {
   state.swNodeToHwNode[2] = 4;
   state.hwNodeToSwNodes[4].push_back(2);
 
-  // Map SW edge 0 through HW edges [0] (in -> pe0).
-  state.swEdgeToHwPaths[0] = {0};
-  // Map SW edge 1 through HW edges [1, 2, 3] (pe0 -> sw -> pe1 -> out).
-  state.swEdgeToHwPaths[1] = {1, 2, 3};
+  // Map SW edge 0: port-sequence [outPort, inPort] for in -> pe0.
+  state.swEdgeToHwPaths[0] = {0, 1};
+  // Map SW edge 1: port-sequence pairs for pe0 -> sw -> pe1 -> out.
+  state.swEdgeToHwPaths[1] = {2, 3, 4, 5, 6, 7};
 
   // Test overlay DOT.
   {

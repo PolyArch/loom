@@ -84,6 +84,7 @@
 #include "loom/Mapper/DFGBuilder.h"
 #include "loom/Mapper/Mapper.h"
 #include "loom/Mapper/TechMapper.h"
+#include "loom/Viz/DOTExporter.h"
 
 #include "circt/Dialect/ESI/ESIDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
@@ -95,6 +96,7 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -388,6 +390,7 @@ struct ParsedArgs {
   std::string viz_dfg;
   std::string viz_adg;
   std::string viz_mapped;
+  std::string mapping_path;
   std::string viz_mode = "structure";
   bool as_clang = false;
   bool show_help = false;
@@ -444,6 +447,7 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "  --mapper-profile <name>    Weight profile (default: balanced)\n";
   llvm::outs() << "  --dump-mapping             Emit .mapping.json report\n";
   llvm::outs() << "  --handshake-input <file>   Use pre-compiled Handshake MLIR\n";
+  llvm::outs() << "  --mapping <file>           Load mapping JSON (for --viz-mapped)\n";
   llvm::outs() << "\n";
   llvm::outs() << "Visualization options:\n";
   llvm::outs() << "  --dump-viz                 Emit visualization HTML with mapper\n";
@@ -603,6 +607,15 @@ ParsedArgs ParseArgs(int argc, char **argv) {
           break;
         }
         parsed.viz_mapped = argv[++i];
+        continue;
+      }
+      if (arg == "--mapping") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --mapping requires a path\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.mapping_path = argv[++i];
         continue;
       }
       if (arg == "--viz-mode") {
@@ -930,6 +943,140 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // Standalone visualization modes.
+  if (!parsed.viz_dfg.empty() || !parsed.viz_adg.empty() ||
+      !parsed.viz_mapped.empty()) {
+    if (parsed.output_path.empty()) {
+      llvm::errs() << "error: -o is required for visualization\n";
+      return 1;
+    }
+    if (!EnsureOutputDirectory(parsed.output_path))
+      return 1;
+
+    // Set up shared MLIR context with all required dialects.
+    mlir::MLIRContext viz_ctx;
+    mlir::DialectRegistry viz_reg;
+    mlir::func::registerInlinerExtension(viz_reg);
+    viz_ctx.appendDialectRegistry(viz_reg);
+    viz_ctx.getDiagEngine().registerHandler(
+        [](mlir::Diagnostic &diag) {
+          diag.print(llvm::errs());
+          llvm::errs() << "\n";
+          return mlir::success();
+        });
+    viz_ctx.getOrLoadDialect<mlir::arith::ArithDialect>();
+    viz_ctx.getOrLoadDialect<mlir::math::MathDialect>();
+    viz_ctx.getOrLoadDialect<mlir::memref::MemRefDialect>();
+    viz_ctx.getOrLoadDialect<mlir::func::FuncDialect>();
+    viz_ctx.getOrLoadDialect<mlir::scf::SCFDialect>();
+    viz_ctx.getOrLoadDialect<loom::dataflow::DataflowDialect>();
+    viz_ctx.getOrLoadDialect<loom::fabric::FabricDialect>();
+    viz_ctx.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+    viz_ctx.getOrLoadDialect<circt::esi::ESIDialect>();
+    viz_ctx.getOrLoadDialect<circt::hw::HWDialect>();
+    viz_ctx.getOrLoadDialect<circt::seq::SeqDialect>();
+
+    mlir::ParserConfig viz_parser_cfg(&viz_ctx);
+    loom::viz::DOTOptions viz_opts;
+    if (parsed.viz_mode == "detailed")
+      viz_opts.mode = loom::viz::DOTMode::Detailed;
+
+    if (!parsed.viz_dfg.empty()) {
+      auto viz_mod = mlir::parseSourceFile<mlir::ModuleOp>(
+          parsed.viz_dfg, viz_parser_cfg);
+      if (!viz_mod) {
+        llvm::errs() << "error: failed to parse: " << parsed.viz_dfg << "\n";
+        return 1;
+      }
+      circt::handshake::FuncOp hs_func;
+      viz_mod->walk([&](circt::handshake::FuncOp f) {
+        if (!hs_func) hs_func = f;
+      });
+      if (!hs_func) {
+        llvm::errs() << "error: no handshake.func in: " << parsed.viz_dfg << "\n";
+        return 1;
+      }
+      loom::DFGBuilder dfg_builder;
+      loom::Graph dfg = dfg_builder.build(hs_func);
+      std::string dot = loom::viz::exportDFGDot(dfg, viz_opts);
+      std::string html = loom::viz::generateHTML(dot, "DFG Visualization");
+
+      std::error_code ec;
+      llvm::raw_fd_ostream out(parsed.output_path, ec, llvm::sys::fs::OF_Text);
+      if (ec) {
+        llvm::errs() << "error: cannot write: " << parsed.output_path << "\n";
+        return 1;
+      }
+      out << html;
+      out.flush();
+      return 0;
+    }
+
+    if (!parsed.viz_adg.empty()) {
+      auto viz_mod = mlir::parseSourceFile<mlir::ModuleOp>(
+          parsed.viz_adg, viz_parser_cfg);
+      if (!viz_mod) {
+        llvm::errs() << "error: failed to parse: " << parsed.viz_adg << "\n";
+        return 1;
+      }
+      loom::fabric::ModuleOp fab_mod;
+      viz_mod->walk([&](loom::fabric::ModuleOp m) {
+        if (!fab_mod) fab_mod = m;
+      });
+      if (!fab_mod) {
+        llvm::errs() << "error: no fabric.module in: " << parsed.viz_adg << "\n";
+        return 1;
+      }
+      loom::ADGFlattener flattener;
+      loom::Graph adg = flattener.flatten(fab_mod);
+      std::string dot = loom::viz::exportADGDot(adg, viz_opts);
+      std::string html = loom::viz::generateHTML(dot, "ADG Visualization");
+
+      std::error_code ec;
+      llvm::raw_fd_ostream out(parsed.output_path, ec, llvm::sys::fs::OF_Text);
+      if (ec) {
+        llvm::errs() << "error: cannot write: " << parsed.output_path << "\n";
+        return 1;
+      }
+      out << html;
+      out.flush();
+      return 0;
+    }
+
+    if (!parsed.viz_mapped.empty()) {
+      // Standalone mapped visualization: render ADG view from fabric MLIR.
+      // Full mapped overlay requires the mapper pipeline (use --dump-viz).
+      auto viz_mod = mlir::parseSourceFile<mlir::ModuleOp>(
+          parsed.viz_mapped, viz_parser_cfg);
+      if (!viz_mod) {
+        llvm::errs() << "error: failed to parse: " << parsed.viz_mapped << "\n";
+        return 1;
+      }
+      loom::fabric::ModuleOp fab_mod;
+      viz_mod->walk([&](loom::fabric::ModuleOp m) {
+        if (!fab_mod) fab_mod = m;
+      });
+      if (!fab_mod) {
+        llvm::errs() << "error: no fabric.module in: " << parsed.viz_mapped << "\n";
+        return 1;
+      }
+      loom::ADGFlattener flattener;
+      loom::Graph adg = flattener.flatten(fab_mod);
+      std::string dot = loom::viz::exportADGDot(adg, viz_opts);
+      std::string html = loom::viz::generateHTML(dot, "ADG Architecture View");
+
+      std::error_code ec;
+      llvm::raw_fd_ostream out(parsed.output_path, ec, llvm::sys::fs::OF_Text);
+      if (ec) {
+        llvm::errs() << "error: cannot write: " << parsed.output_path << "\n";
+        return 1;
+      }
+      out << html;
+      out.flush();
+      return 0;
+    }
+  }
+
   // ADG mode: validation-only or mapper invocation.
   if (!parsed.adg_path.empty()) {
     bool has_sources = !parsed.inputs.empty();
@@ -1037,14 +1184,164 @@ int main(int argc, char **argv) {
 
     if (has_sources) {
       // Compile sources through the standard frontend pipeline to produce
-      // Handshake MLIR, then run the mapper. We reuse the standard compilation
-      // code path but with the mapper context, and skip writing intermediate
-      // MLIR files when the mapper is the goal.
-      // For now, sources + --adg is not yet supported in this path.
-      // Use --handshake-input for pre-compiled Handshake MLIR.
-      llvm::errs() << "error: source compilation with --adg not yet supported; "
-                   << "use --handshake-input with pre-compiled .handshake.mlir\n";
-      return 1;
+      // Handshake MLIR, then continue with the mapper below.
+      llvm::InitializeNativeTarget();
+      llvm::InitializeNativeTargetAsmPrinter();
+      llvm::InitializeNativeTargetAsmParser();
+
+      std::string src_exe =
+          llvm::sys::fs::getMainExecutable(argv[0],
+                                           reinterpret_cast<void *>(&main));
+      std::vector<std::string> src_drv_args =
+          BuildDriverArgs(parsed.driver_args);
+      if (!HasResourceDirArg(src_drv_args)) {
+        llvm::SmallString<256> rdir =
+            llvm::sys::path::parent_path(src_exe);
+        rdir = llvm::sys::path::parent_path(rdir);
+        llvm::sys::path::append(rdir, "lib", "clang");
+        src_drv_args.push_back("-resource-dir=" + rdir.str().str());
+      }
+
+      clang::DiagnosticOptions src_diag_opts;
+      auto src_diag_client =
+          std::make_unique<clang::TextDiagnosticPrinter>(
+              llvm::errs(), src_diag_opts);
+      auto src_diags = clang::CompilerInstance::createDiagnostics(
+          *llvm::vfs::getRealFileSystem(), src_diag_opts,
+          src_diag_client.get(), /*ShouldOwnClient=*/false);
+
+      clang::driver::Driver src_driver(
+          src_exe, llvm::sys::getDefaultTargetTriple(), *src_diags);
+      src_driver.setTitle("loom");
+      src_driver.setCheckInputsExist(true);
+
+      std::vector<const char *> src_cmdline;
+      src_cmdline.reserve(1 + src_drv_args.size() + parsed.inputs.size());
+      src_cmdline.push_back(src_exe.c_str());
+      for (const auto &a : src_drv_args)
+        src_cmdline.push_back(a.c_str());
+      for (const auto &inp : parsed.inputs)
+        src_cmdline.push_back(inp.c_str());
+
+      std::unique_ptr<clang::driver::Compilation> src_comp(
+          src_driver.BuildCompilation(src_cmdline));
+      if (!src_comp) {
+        llvm::errs() << "error: failed to build compilation\n";
+        return 1;
+      }
+
+      llvm::LLVMContext src_llvm_ctx;
+      std::unique_ptr<llvm::Module> src_linked;
+      unsigned src_count = 0;
+
+      for (const auto &job : src_comp->getJobs()) {
+        if (!IsCC1Command(job))
+          continue;
+        auto inv = std::make_shared<clang::CompilerInvocation>();
+        if (!clang::CompilerInvocation::CreateFromArgs(
+                *inv, job.getArguments(), *src_diags, argv[0])) {
+          llvm::errs() << "error: failed to build compiler invocation\n";
+          return 1;
+        }
+        if (inv->getFrontendOpts().Inputs.empty()) {
+          llvm::errs() << "error: missing input in compiler invocation\n";
+          return 1;
+        }
+        inv->getCodeGenOpts().setDebugInfo(
+            llvm::codegenoptions::FullDebugInfo);
+
+        auto src_mod = CompileInvocation(inv, src_llvm_ctx);
+        if (!src_mod) {
+          llvm::errs() << "error: failed to compile source\n";
+          return 1;
+        }
+        if (!src_linked) {
+          src_linked = std::move(src_mod);
+          src_count++;
+          continue;
+        }
+        llvm::Linker linker(*src_linked);
+        if (linker.linkInModule(std::move(src_mod))) {
+          llvm::errs() << "error: failed to link source module\n";
+          return 1;
+        }
+        src_count++;
+      }
+
+      if (src_count == 0) {
+        llvm::errs() << "error: no compilation jobs generated\n";
+        return 1;
+      }
+
+      std::string src_vfy_err;
+      llvm::raw_string_ostream src_vfy_os(src_vfy_err);
+      if (llvm::verifyModule(*src_linked, &src_vfy_os)) {
+        llvm::errs() << "error: linked module verification failed\n"
+                     << src_vfy_os.str() << "\n";
+        return 1;
+      }
+
+      StripUnsupportedAttributes(*src_linked);
+      AnnotationMap src_annot = CollectGlobalAnnotations(*src_linked);
+
+      // Translate LLVM IR to MLIR using the mapper context.
+      auto src_mlir = mlir::translateLLVMIRToModule(
+          std::move(src_linked), &mapper_context,
+          /*emitExpensiveWarnings=*/false,
+          /*dropDICompositeTypeElements=*/false,
+          /*loadAllDialects=*/false);
+      if (!src_mlir) {
+        llvm::errs() << "error: LLVM IR to MLIR translation failed\n";
+        return 1;
+      }
+
+      ApplySymbolAnnotations(*src_mlir, src_annot);
+      ApplyIntrinsicAnnotations(*src_mlir);
+      ApplyLoopMarkerAnnotations(*src_mlir);
+
+      if (failed(mlir::verify(*src_mlir))) {
+        llvm::errs() << "error: MLIR verification failed\n";
+        return 1;
+      }
+
+      // Run LLVMToSCF pipeline.
+      mlir::PassManager scf_pm(&mapper_context);
+      scf_pm.addPass(loom::createConvertLLVMToSCFPass());
+      scf_pm.addPass(mlir::createCanonicalizerPass());
+      scf_pm.addPass(mlir::createCSEPass());
+      scf_pm.addPass(mlir::createMem2Reg());
+      scf_pm.addPass(mlir::createCanonicalizerPass());
+      scf_pm.addPass(mlir::createCSEPass());
+      scf_pm.addPass(mlir::createLiftControlFlowToSCFPass());
+      scf_pm.addPass(mlir::createLoopInvariantCodeMotionPass());
+      scf_pm.addPass(mlir::createCanonicalizerPass());
+      scf_pm.addPass(mlir::createCSEPass());
+      scf_pm.addPass(loom::createUpliftWhileToForPass());
+      scf_pm.addPass(mlir::createCanonicalizerPass());
+      scf_pm.addPass(mlir::createCSEPass());
+      scf_pm.addPass(loom::createAttachLoopAnnotationsPass());
+      scf_pm.addPass(loom::createMarkWhileStreamablePass());
+      if (failed(scf_pm.run(*src_mlir))) {
+        llvm::errs() << "error: LLVMToSCF conversion failed\n";
+        return 1;
+      }
+
+      // Run SCFToHandshake pipeline.
+      mlir::PassManager hs_pm(&mapper_context);
+      hs_pm.addPass(loom::createSCFToHandshakeDataflowPass());
+      hs_pm.addPass(mlir::createCanonicalizerPass());
+      hs_pm.addPass(mlir::createCSEPass());
+      if (failed(hs_pm.run(*src_mlir))) {
+        llvm::errs() << "error: SCFToHandshake conversion failed\n";
+        return 1;
+      }
+
+      if (failed(mlir::verify(*src_mlir))) {
+        llvm::errs() << "error: Handshake verification failed\n";
+        return 1;
+      }
+
+      handshake_module = std::move(src_mlir);
     }
 
     // Find the handshake::FuncOp in the handshake module for DFG extraction.
@@ -1118,6 +1415,70 @@ int main(int argc, char **argv) {
     }
 
     llvm::outs() << "mapping succeeded: " << base_path << ".config.bin\n";
+
+    // Generate visualization HTML if --dump-viz is set.
+    if (parsed.dump_viz) {
+      loom::viz::DOTOptions viz_opts;
+      if (parsed.viz_mode == "detailed")
+        viz_opts.mode = loom::viz::DOTMode::Detailed;
+
+      std::string overlay_dot =
+          loom::viz::exportMappedOverlayDot(dfg, adg, mapper_result.state,
+                                            viz_opts);
+      std::string dfg_dot =
+          loom::viz::exportMappedDFGDot(dfg, mapper_result.state, viz_opts);
+      std::string adg_dot =
+          loom::viz::exportMappedADGDot(dfg, adg, mapper_result.state,
+                                        viz_opts);
+
+      // Build mapping JSON for the HTML viewer.
+      std::ostringstream mj;
+      mj << "{ \"swToHw\": {";
+      bool mj_first = true;
+      for (size_t i = 0; i < mapper_result.state.swNodeToHwNode.size(); ++i) {
+        if (mapper_result.state.swNodeToHwNode[i] == loom::INVALID_ID)
+          continue;
+        if (!mj_first) mj << ",";
+        mj << "\"sw_" << i << "\":\"hw_"
+           << mapper_result.state.swNodeToHwNode[i] << "\"";
+        mj_first = false;
+      }
+      mj << "}, \"hwToSw\": {";
+      mj_first = true;
+      for (size_t i = 0; i < mapper_result.state.hwNodeToSwNodes.size(); ++i) {
+        bool has_valid = false;
+        for (auto sid : mapper_result.state.hwNodeToSwNodes[i])
+          if (sid != loom::INVALID_ID) has_valid = true;
+        if (!has_valid) continue;
+        if (!mj_first) mj << ",";
+        mj << "\"hw_" << i << "\":[";
+        bool inner_first = true;
+        for (auto sid : mapper_result.state.hwNodeToSwNodes[i]) {
+          if (sid == loom::INVALID_ID) continue;
+          if (!inner_first) mj << ",";
+          mj << "\"sw_" << sid << "\"";
+          inner_first = false;
+        }
+        mj << "]";
+        mj_first = false;
+      }
+      mj << "}, \"routes\": {} }";
+
+      std::string mapped_html = loom::viz::generateMappedHTML(
+          overlay_dot, dfg_dot, adg_dot, mj.str(), "{}", "Mapped View");
+
+      std::string viz_path = base_path + ".mapped.html";
+      std::error_code viz_ec;
+      llvm::raw_fd_ostream viz_out(viz_path, viz_ec, llvm::sys::fs::OF_Text);
+      if (viz_ec) {
+        llvm::errs() << "warning: cannot write viz: " << viz_path << "\n";
+      } else {
+        viz_out << mapped_html;
+        viz_out.flush();
+        llvm::outs() << "visualization: " << viz_path << "\n";
+      }
+    }
+
     return 0;
   }
 

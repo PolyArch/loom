@@ -4,14 +4,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Generates self-contained HTML files that embed DOT sources and viz.js WASM
-// for client-side Graphviz rendering with interactive features (zoom, pan,
-// hover, click detail panel), per docs/spec-viz-gui.md.
+// Generates self-contained HTML files that embed DOT sources and an inline
+// DOT-to-SVG renderer for client-side Graphviz rendering with interactive
+// features (zoom, pan, hover, click detail panel), per docs/spec-viz-gui.md.
 //
-// The HTML file loads viz.js from a CDN for rendering. For truly self-contained
-// output (no network required), the build system can vendor viz-standalone.js
-// into lib/loom/Viz/assets/ and HTMLViewer will inline it as base64. When the
-// vendored file is not available, a CDN fallback is used.
+// The HTML file is fully self-contained with no external dependencies,
+// allowing offline viewing without network access.
 //
 //===----------------------------------------------------------------------===//
 
@@ -111,7 +109,202 @@ std::string generateCSS() {
     .side-by-side #graph-right { display: block; }
     .side-by-side #graph-area #graph-left,
     .side-by-side #graph-area #graph-right { flex: 1; }
+    .node { cursor: pointer; }
+    .node:hover rect, .node:hover ellipse, .node:hover polygon {
+      stroke: #ff6600; stroke-width: 2.5px;
+    }
   )CSS";
+}
+
+// Generate the self-contained inline DOT-to-SVG renderer JavaScript.
+// This replaces the viz.js CDN dependency with a minimal built-in renderer.
+std::string inlineRendererJS() {
+  return R"JS(
+    var DotRenderer = (function() {
+      function escXml(s) {
+        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      }
+
+      function parseDOT(dot) {
+        var nodes = {}, edges = [], rankdir = 'TB', order = [];
+        var lines = dot.split('\n');
+        for (var i = 0; i < lines.length; i++) {
+          var L = lines[i].trim();
+          if (!L || L.match(/^\s*\}/) || L.match(/^digraph\b/) ||
+              L.match(/^\s*\{/) || L.match(/^\s*node\s*\[/) ||
+              L.match(/^\s*edge\s*\[/)) {
+            var rm = L.match(/rankdir\s*=\s*(\w+)/);
+            if (rm) rankdir = rm[1];
+            continue;
+          }
+          var rm2 = L.match(/rankdir\s*=\s*(\w+)/);
+          if (rm2) { rankdir = rm2[1]; continue; }
+          var em = L.match(/^\s*(\S+)\s+->\s+(\S+)/);
+          if (em) {
+            var eattr = {};
+            var eam = L.match(/\[([^\]]*)\]/);
+            if (eam) {
+              var cm = eam[1].match(/color="([^"]*)"/);
+              if (cm) eattr.color = cm[1];
+              var pm = eam[1].match(/penwidth=([\d.]+)/);
+              if (pm) eattr.pw = parseFloat(pm[1]);
+            }
+            edges.push({s: em[1], d: em[2], attr: eattr});
+            continue;
+          }
+          var nm = L.match(/^\s*(\S+)\s+\[(.+)\]/);
+          if (nm) {
+            var id = nm[1], a = nm[2];
+            var lb = id, fc = '#ddd', sh = 'box', ni = '';
+            var m;
+            if (m = a.match(/label="([^"]*)"/)) lb = m[1];
+            if (m = a.match(/fillcolor="([^"]*)"/)) fc = m[1];
+            if (m = a.match(/shape=(\w+)/)) sh = m[1];
+            if (m = a.match(/id="([^"]*)"/)) ni = m[1];
+            nodes[id] = {lb: lb.replace(/\\n/g,'\n'), fc: fc,
+                         sh: sh, ni: ni || id};
+            order.push(id);
+          }
+        }
+        return {nodes: nodes, edges: edges, rankdir: rankdir, order: order};
+      }
+
+      function layout(g) {
+        var ids = g.order.length > 0 ? g.order : Object.keys(g.nodes);
+        var indeg = {}, adj = {};
+        ids.forEach(function(i) { indeg[i] = 0; adj[i] = []; });
+        g.edges.forEach(function(e) {
+          if (g.nodes[e.s] && g.nodes[e.d]) {
+            indeg[e.d]++;
+            adj[e.s].push(e.d);
+          }
+        });
+        var layers = [], done = {}, q = [];
+        ids.forEach(function(i) { if (indeg[i] === 0) q.push(i); });
+        while (q.length) {
+          layers.push(q.slice());
+          var nq = [];
+          q.forEach(function(i) {
+            done[i] = true;
+            adj[i].forEach(function(d) {
+              indeg[d]--;
+              if (indeg[d] === 0 && !done[d]) nq.push(d);
+            });
+          });
+          q = nq;
+        }
+        ids.forEach(function(i) {
+          if (!done[i]) {
+            if (!layers.length) layers.push([]);
+            layers[layers.length - 1].push(i);
+          }
+        });
+        var isLR = (g.rankdir === 'LR');
+        var nW = 140, nH = 52, gMaj = 170, gMin = 68;
+        var pos = {};
+        layers.forEach(function(layer, li) {
+          var total = layer.length * (isLR ? nH : nW) +
+                      (layer.length - 1) * gMin;
+          var offset = -total / 2;
+          layer.forEach(function(id, ni) {
+            var maj = li * gMaj + 80;
+            var mn = offset + ni * ((isLR ? nH : nW) + gMin) +
+                     (isLR ? nH : nW) / 2 + 400;
+            pos[id] = isLR ? {x: maj, y: mn} : {x: mn, y: maj};
+          });
+        });
+        return pos;
+      }
+
+      function toSVG(g, pos) {
+        var nW = 140, nH = 52;
+        var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+        Object.keys(pos).forEach(function(id) {
+          var p = pos[id];
+          minX = Math.min(minX, p.x - nW / 2);
+          minY = Math.min(minY, p.y - nH / 2);
+          maxX = Math.max(maxX, p.x + nW / 2);
+          maxY = Math.max(maxY, p.y + nH / 2);
+        });
+        if (minX > maxX) { minX = 0; minY = 0; maxX = 200; maxY = 100; }
+        var pad = 50;
+        var vw = maxX - minX + pad * 2;
+        var vh = maxY - minY + pad * 2;
+        var ox = minX - pad, oy = minY - pad;
+        var s = '<svg xmlns="http://www.w3.org/2000/svg" '
+              + 'width="' + vw + '" height="' + vh + '" '
+              + 'viewBox="' + ox + ' ' + oy + ' ' + vw + ' ' + vh + '">\n';
+        s += '<defs><marker id="ah" markerWidth="10" markerHeight="7" '
+           + 'refX="10" refY="3.5" orient="auto">'
+           + '<polygon points="0 0,10 3.5,0 7" fill="#555"/>'
+           + '</marker></defs>\n';
+
+        g.edges.forEach(function(e) {
+          if (!pos[e.s] || !pos[e.d]) return;
+          var a = pos[e.s], b = pos[e.d];
+          var ec = (e.attr && e.attr.color) ? e.attr.color : '#888';
+          var pw = (e.attr && e.attr.pw) ? e.attr.pw : 1.5;
+          s += '<line x1="' + a.x + '" y1="' + a.y
+             + '" x2="' + b.x + '" y2="' + b.y
+             + '" stroke="' + ec + '" stroke-width="' + pw
+             + '" marker-end="url(#ah)"/>\n';
+        });
+
+        var nodeIds = g.order.length > 0 ? g.order : Object.keys(g.nodes);
+        nodeIds.forEach(function(id) {
+          if (!pos[id] || !g.nodes[id]) return;
+          var n = g.nodes[id], p = pos[id];
+          s += '<g class="node" id="' + escXml(n.ni) + '">\n';
+          if (n.sh === 'diamond') {
+            var pts = p.x + ',' + (p.y - nH/2) + ' '
+                    + (p.x + nW/2) + ',' + p.y + ' '
+                    + p.x + ',' + (p.y + nH/2) + ' '
+                    + (p.x - nW/2) + ',' + p.y;
+            s += '<polygon points="' + pts + '" fill="' + n.fc
+               + '" stroke="#333" stroke-width="1.5"/>\n';
+          } else if (n.sh === 'ellipse' || n.sh === 'point') {
+            s += '<ellipse cx="' + p.x + '" cy="' + p.y
+               + '" rx="' + (nW/2) + '" ry="' + (nH/2)
+               + '" fill="' + n.fc
+               + '" stroke="#333" stroke-width="1.5"/>\n';
+          } else if (n.sh === 'cylinder') {
+            s += '<rect x="' + (p.x - nW/2) + '" y="' + (p.y - nH/2)
+               + '" width="' + nW + '" height="' + nH
+               + '" rx="' + (nW/4) + '" fill="' + n.fc
+               + '" stroke="#333" stroke-width="1.5"/>\n';
+          } else {
+            s += '<rect x="' + (p.x - nW/2) + '" y="' + (p.y - nH/2)
+               + '" width="' + nW + '" height="' + nH
+               + '" rx="4" fill="' + n.fc
+               + '" stroke="#333" stroke-width="1.5"/>\n';
+          }
+          var lns = n.lb.split('\n'), fs = 11;
+          lns.forEach(function(ln, li) {
+            var ty = p.y + (li - (lns.length - 1) / 2) * (fs + 1) + 4;
+            s += '<text x="' + p.x + '" y="' + ty
+               + '" text-anchor="middle" font-size="' + fs
+               + '" font-family="Helvetica,Arial,sans-serif">'
+               + escXml(ln) + '</text>\n';
+          });
+          s += '</g>\n';
+        });
+
+        s += '</svg>';
+        return s;
+      }
+
+      return {
+        render: function(dot) {
+          var g = parseDOT(dot);
+          var p = layout(g);
+          return toSVG(g, p);
+        }
+      };
+    })();
+
+    window.renderDot = function(d) { return DotRenderer.render(d); };
+  )JS";
 }
 
 // Generate inline JavaScript for rendering and interaction.
@@ -119,43 +312,29 @@ std::string generateJS(const std::string &vizLevel) {
   std::ostringstream js;
 
   js << R"JS(
-    let currentMode = 'primary';
-    let viz = null;
-
-    async function initViz() {
-      if (typeof Viz !== 'undefined') {
-        viz = await Viz.instance();
-      } else {
-        document.getElementById('graph-left').innerHTML =
-          '<p style="padding:20px;color:red;">viz.js not loaded. '
-          + 'Ensure network access for CDN or vendor viz-standalone.js.</p>';
-        return;
-      }
-      renderGraph();
-    }
+    var currentMode = 'primary';
 
     function renderGraph() {
-      if (!viz) return;
-      const leftEl = document.getElementById('graph-left');
-      const rightEl = document.getElementById('graph-right');
+      var leftEl = document.getElementById('graph-left');
+      var rightEl = document.getElementById('graph-right');
 
       try {
         if (vizLevel === 'mapped' && currentMode === 'sidebyside') {
-          leftEl.innerHTML = viz.renderSVGElement(dotSources.dfg).outerHTML;
-          rightEl.innerHTML = viz.renderSVGElement(dotSources.adg).outerHTML;
+          leftEl.innerHTML = window.renderDot(dotSources.dfg);
+          rightEl.innerHTML = window.renderDot(dotSources.adg);
           document.body.classList.add('side-by-side');
         } else if (vizLevel === 'mapped' && currentMode === 'overlay') {
-          leftEl.innerHTML = viz.renderSVGElement(dotSources.overlay).outerHTML;
+          leftEl.innerHTML = window.renderDot(dotSources.overlay);
           document.body.classList.remove('side-by-side');
           rightEl.innerHTML = '';
         } else {
-          leftEl.innerHTML = viz.renderSVGElement(dotSources.primary).outerHTML;
+          leftEl.innerHTML = window.renderDot(dotSources.primary);
           document.body.classList.remove('side-by-side');
           rightEl.innerHTML = '';
         }
       } catch (e) {
-        leftEl.innerHTML = '<p style="padding:20px;color:red;">Render error: '
-          + e.message + '</p>';
+        leftEl.innerHTML = '<pre style="padding:20px;color:red;">Render error: '
+          + e.message + '</pre>';
       }
 
       attachInteraction();
@@ -181,7 +360,7 @@ std::string generateJS(const std::string &vizLevel) {
     function crossHighlight(node, active) {
       if (vizLevel !== 'mapped' || currentMode !== 'sidebyside') return;
 
-      const nodeId = node.id;
+      var nodeId = node.id;
       if (!nodeId) return;
 
       document.querySelectorAll('.cross-highlight')
@@ -189,41 +368,41 @@ std::string generateJS(const std::string &vizLevel) {
 
       if (!active) return;
 
-      if (nodeId.startsWith('sw_')) {
-        const swId = nodeId;
-        const hwId = mappingData.swToHw[swId];
+      if (nodeId.indexOf('sw_') === 0) {
+        var hwId = mappingData.swToHw[nodeId];
         if (hwId) {
-          const target = document.getElementById(hwId);
+          var target = document.getElementById(hwId);
           if (target) {
             target.classList.add('cross-highlight');
             target.scrollIntoView({ behavior: 'smooth', block: 'center' });
           }
         }
-      } else if (nodeId.startsWith('hw_')) {
-        const hwId = nodeId;
-        const swIds = mappingData.hwToSw[hwId] || [];
+      } else if (nodeId.indexOf('hw_') === 0) {
+        var swIds = mappingData.hwToSw[nodeId] || [];
         swIds.forEach(function(swId) {
-          const target = document.getElementById(swId);
+          var target = document.getElementById(swId);
           if (target) {
             target.classList.add('cross-highlight');
           }
         });
         if (swIds.length > 0) {
-          const first = document.getElementById(swIds[0]);
+          var first = document.getElementById(swIds[0]);
           if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
       }
     }
 
     function showDetail(node) {
-      const panel = document.getElementById('detail-panel');
-      const content = document.getElementById('detail-content');
-      const nodeId = node.id;
+      var panel = document.getElementById('detail-panel');
+      var content = document.getElementById('detail-content');
+      var nodeId = node.id;
       if (!nodeId) return;
 
-      const meta = nodeMetadata[nodeId] || {};
-      let html = '<table>';
-      for (const [key, value] of Object.entries(meta)) {
+      var meta = nodeMetadata[nodeId] || {};
+      var html = '<table>';
+      for (var key in meta) {
+        if (!meta.hasOwnProperty(key)) continue;
+        var value = meta[key];
         if (typeof value === 'object') {
           html += '<tr><td><b>' + key + '</b></td><td><pre>'
             + JSON.stringify(value, null, 2) + '</pre></td></tr>';
@@ -254,7 +433,7 @@ std::string generateJS(const std::string &vizLevel) {
       fitGraph();
     });
 
-    let zoomLevel = 1.0;
+    var zoomLevel = 1.0;
     function zoomGraph(factor) {
       zoomLevel *= factor;
       document.querySelectorAll('#graph-left svg, #graph-right svg')
@@ -271,7 +450,7 @@ std::string generateJS(const std::string &vizLevel) {
         });
     }
 
-    const modeToggle = document.getElementById('btn-mode-toggle');
+    var modeToggle = document.getElementById('btn-mode-toggle');
     if (vizLevel === 'mapped') {
       modeToggle.style.display = 'inline-block';
       currentMode = 'overlay';
@@ -294,7 +473,7 @@ std::string generateJS(const std::string &vizLevel) {
       document.getElementById('detail-panel').classList.remove('visible');
     });
 
-    initViz();
+    renderGraph();
   )JS";
 
   return js.str();
@@ -336,57 +515,21 @@ std::string generateHTML(const std::string &dotString,
 
   // Embedded data.
   html << "<script>\n";
-  html << "  const vizLevel = \"dfg\";\n";
-  html << "  const dotSources = { primary: \"" << jsStringEscape(dotString)
+  html << "  var vizLevel = \"dfg\";\n";
+  html << "  var dotSources = { primary: \"" << jsStringEscape(dotString)
        << "\" };\n";
-  html << "  const mappingData = { swToHw: {}, hwToSw: {}, routes: {} };\n";
-  html << "  const nodeMetadata = {};\n";
+  html << "  var mappingData = { swToHw: {}, hwToSw: {}, routes: {} };\n";
+  html << "  var nodeMetadata = {};\n";
   html << "</script>\n";
 
-  // viz.js CDN fallback (self-contained inlining is done at build time when
-  // the vendored viz-standalone.js is available).
-  html << "<script src=\"https://unpkg.com/viz.js@2.1.2/viz.js\"></script>\n";
-  html << "<script "
-          "src=\"https://unpkg.com/viz.js@2.1.2/full.render.js\"></script>\n";
-
-  // Use the @viz-js/viz package for modern browsers.
-  html << "<script type=\"module\">\n";
-  html << "  import Viz from "
-          "'https://cdn.jsdelivr.net/npm/@viz-js/viz@3.2.4/+esm';\n";
-  html << "</script>\n";
-
-  // Fallback inline rendering for viz.js v2.x compatibility.
+  // Self-contained inline DOT renderer (no external dependencies).
   html << "<script>\n";
-  html << "  if (typeof Viz === 'undefined') {\n";
-  html << "    // Will be initialized by module import above\n";
-  html << "  }\n";
+  html << inlineRendererJS();
   html << "</script>\n";
 
-  // Renderer with broad compatibility.
+  // Interaction and rendering.
   html << "<script>\n";
-  html << "  // Renderer: try module Viz first, fall back to viz.js v2\n";
-  html << "  async function initRenderer() {\n";
-  html << "    const leftEl = document.getElementById('graph-left');\n";
-  html << "    try {\n";
-  html << "      // Try viz.js v2 (Viz + VizRenderStringSync)\n";
-  html << "      if (typeof Viz === 'function') {\n";
-  html << "        const v = new Viz();\n";
-  html << "        const svg = await v.renderSVGElement(dotSources.primary);\n";
-  html << "        leftEl.appendChild(svg);\n";
-  html << "        return;\n";
-  html << "      }\n";
-  html << "      // Try @viz-js/viz v3\n";
-  html << "      const mod = await import("
-          "'https://cdn.jsdelivr.net/npm/@viz-js/viz@3.2.4/+esm');\n";
-  html << "      const viz = await mod.default.instance();\n";
-  html << "      leftEl.innerHTML = "
-          "viz.renderSVGElement(dotSources.primary).outerHTML;\n";
-  html << "    } catch (e) {\n";
-  html << "      leftEl.innerHTML = '<pre>Graphviz rendering error: ' + "
-          "e.message + '\\nDOT source:\\n' + dotSources.primary + '</pre>';\n";
-  html << "    }\n";
-  html << "  }\n";
-  html << "  window.addEventListener('load', initRenderer);\n";
+  html << generateJS("dfg");
   html << "</script>\n";
 
   html << "</body>\n</html>\n";
@@ -431,21 +574,21 @@ std::string generateMappedHTML(const std::string &overlayDot,
 
   // Embedded data.
   html << "<script>\n";
-  html << "  const vizLevel = \"mapped\";\n";
-  html << "  const dotSources = {\n";
+  html << "  var vizLevel = \"mapped\";\n";
+  html << "  var dotSources = {\n";
   html << "    primary: \"" << jsStringEscape(overlayDot) << "\",\n";
   html << "    overlay: \"" << jsStringEscape(overlayDot) << "\",\n";
   html << "    dfg: \"" << jsStringEscape(dfgDot) << "\",\n";
   html << "    adg: \"" << jsStringEscape(adgDot) << "\"\n";
   html << "  };\n";
-  html << "  const mappingData = " << mappingJson << ";\n";
-  html << "  const nodeMetadata = " << metadataJson << ";\n";
+  html << "  var mappingData = " << mappingJson << ";\n";
+  html << "  var nodeMetadata = " << metadataJson << ";\n";
   html << "</script>\n";
 
-  // viz.js CDN.
-  html << "<script src=\"https://unpkg.com/viz.js@2.1.2/viz.js\"></script>\n";
-  html << "<script "
-          "src=\"https://unpkg.com/viz.js@2.1.2/full.render.js\"></script>\n";
+  // Self-contained inline DOT renderer (no external dependencies).
+  html << "<script>\n";
+  html << inlineRendererJS();
+  html << "</script>\n";
 
   // Interaction JS.
   html << "<script>\n";
