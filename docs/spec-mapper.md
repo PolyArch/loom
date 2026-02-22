@@ -21,9 +21,16 @@ content is intentionally split to avoid duplicated definitions:
 
 ### Inputs
 
-- A software graph that represents compute and communication semantics.
-- A hardware graph (`fabric.module`) that represents legal target resources and
-  connectivity.
+- A software graph (`handshake.func`) that represents compute and
+  communication semantics. The DFG must satisfy these preconditions:
+  - No `handshake.fork` or `handshake.merge` operations (eliminated by
+    the frontend during SCF-to-Handshake conversion).
+  - SSA values may have multiple consumers (fan-out). The mapper handles
+    fan-out through routing infrastructure (`fabric.switch` broadcast or
+    `fabric.temporal_sw`).
+- A hardware graph (`fabric.module`) that represents legal target resources
+  and connectivity. The ADG is flattened (all `fabric.instance` inlined)
+  before mapping begins.
 - Optional mapping policy parameters (objective weights, search budget,
   deterministic seed).
 
@@ -51,7 +58,15 @@ The mapper must perform all of the following:
 6. Report failures with actionable diagnostics.
 
 The mapper must not change hardware topology. It only selects legal usage of
-existing hardware resources.
+existing hardware resources. Both the DFG and ADG are read-only inputs.
+
+### Hardware Prerequisites
+
+The mapper requires `addr_offset_table` support in `fabric.memory` and
+`fabric.extmemory` for correct physical address translation and multi-region
+memory mapping. See [spec-fabric-mem.md](./spec-fabric-mem.md) for the
+`num_region` hardware parameter and `addr_offset_table` runtime
+configuration.
 
 ## Relationship to ADG and Fabric Specs
 

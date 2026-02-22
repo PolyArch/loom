@@ -32,12 +32,29 @@ preserve metric intent and deterministic behavior.
 Measures concentration of mapped software nodes onto limited hardware
 resources.
 
+A **tile class** groups all hardware nodes that share the same PE body
+pattern (identical operation set and internal connectivity). Two
+`fabric.pe` nodes belong to the same tile class if and only if their body
+subgraphs are structurally identical (same operations, same wiring). Two
+`fabric.temporal_pe` FU nodes belong to the same tile class if their parent
+temporal PEs have identical body patterns. The temporal PE virtual node
+itself is not a tile class member (it is not a placement target). Memory
+nodes form separate tile classes per type (`fabric.memory` vs
+`fabric.extmemory`). Routing nodes and boundary sentinel nodes do not
+participate in tile class computation.
+
+For each tile class:
+
+- `cap(tile)` = total number of hardware nodes in the class.
+- `occ(tile)` = number of hardware nodes in the class that have at least
+  one mapped software operation.
+
 Reference formula:
 
 `placement_pressure = sum_tile (occ(tile) / cap(tile))^2`
 
-where `occ(tile)` is mapped-node occupancy and `cap(tile)` is legal capacity for
-that tile class.
+The squaring penalizes unbalanced placement: concentrating operations on a
+few nodes of a tile class is more expensive than spreading them evenly.
 
 Examples:
 
