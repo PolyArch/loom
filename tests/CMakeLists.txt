@@ -1,3 +1,5 @@
+add_subdirectory(mapper)
+
 add_custom_target(check-loom-adg
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/adg_test.sh"
     "${LOOM_RUNTIME_DIR}/loom"
