@@ -167,6 +167,16 @@ fabric.pe @pe_stream(%start: index, %step: index, %bound: index) [latency = [1 :
   fabric.yield %idx, %wc : index, i1
 }
 
+// Sink PEs
+fabric.pe @pe_sink_i1(%v: i1) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> () {
+  handshake.sink %v : i1
+  fabric.yield
+}
+fabric.pe @pe_sink_none(%v: none) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> () {
+  handshake.sink %v : none
+  fabric.yield
+}
+
 // ---------------------------------------------------------------------------
 // Switches (typed crossbars for routing)
 // ---------------------------------------------------------------------------
@@ -222,7 +232,7 @@ fabric.module @loom_cgra_small(
   %join2_0 = fabric.instance @pe_join2(%cn03#2, %cn03#3) {sym_name = "join2_0"} : (none, none) -> none
 
   // ===== Layer 2a: i32 routing crossbar =====
-  %ri32_0:4 = fabric.instance @sw4x4(%ci32_0, %ci32_1, %d0#0, %d1#0)
+  %ri32_0:4 = fabric.instance @sw4x4(%ci32_0, %ci32_1, %fb_i32#0, %fb_i32#1)
     {sym_name = "ri32_0"} : (i32, i32, i32, i32) -> (i32, i32, i32, i32)
   %ri32_1:4 = fabric.instance @sw4x4(%ci32_2, %ci32_3, %d2#0, %d3#0)
     {sym_name = "ri32_1"} : (i32, i32, i32, i32) -> (i32, i32, i32, i32)
@@ -231,7 +241,7 @@ fabric.module @loom_cgra_small(
   %ri64:4 = fabric.switch [connectivity_table = [1, 1, 1, 1]] %ci64_0 : i64 -> i64, i64, i64, i64
 
   // ===== Layer 2c: index routing =====
-  %ridx_0:4 = fabric.instance @sw_index4x4(%cidx_0, %cidx_1, %a0#0, %a0#1)
+  %ridx_0:4 = fabric.instance @sw_index4x4(%cidx_0, %cidx_1, %fb_idx#0, %fb_idx#1)
     {sym_name = "ridx_0"} : (index, index, index, index) -> (index, index, index, index)
 
   // ===== Layer 3: Compute PEs =====
@@ -258,7 +268,7 @@ fabric.module @loom_cgra_small(
   // ===== Layer 4a: i1 routing =====
   %ri1_0:4 = fabric.instance @sw_i1_4x4(%bc_cmp0#0, %bc_cmp0#1, %bc_cmp1#0, %bc_cmp1#1)
     {sym_name = "ri1_0"} : (i1, i1, i1, i1) -> (i1, i1, i1, i1)
-  %ri1_1:4 = fabric.instance @sw_i1_4x4(%bc_cmp0#2, %bc_cmp0#3, %ci1_0, %ci1_1)
+  %ri1_1:4 = fabric.instance @sw_i1_4x4(%fb_i1#0, %fb_i1#1, %ci1_0, %ci1_1)
     {sym_name = "ri1_1"} : (i1, i1, i1, i1) -> (i1, i1, i1, i1)
 
   // ===== Layer 4b: index routing 2 =====
@@ -300,7 +310,7 @@ fabric.module @loom_cgra_small(
   %bc_join1:4 = fabric.switch [connectivity_table = [1, 1, 1, 1]] %join_1 : none -> none, none, none, none
   %bc_join2:4 = fabric.switch [connectivity_table = [1, 1, 1, 1]] %join2_0 : none -> none, none, none, none
 
-  %rnone_0:4 = fabric.instance @sw_none4x4(%bc_join0#0, %bc_join0#1, %bc_join1#0, %bc_join1#1)
+  %rnone_0:4 = fabric.instance @sw_none4x4(%fb_none#0, %fb_none#1, %bc_join1#0, %bc_join1#1)
     {sym_name = "rnone_0"} : (none, none, none, none) -> (none, none, none, none)
   %rnone_1:4 = fabric.instance @sw_none4x4(%bc_join0#2, %bc_join0#3, %bc_join2#0, %bc_join2#1)
     {sym_name = "rnone_1"} : (none, none, none, none) -> (none, none, none, none)
@@ -368,6 +378,16 @@ fabric.module @loom_cgra_small(
   // Output i32 routing
   %rout_0:4 = fabric.instance @sw4x4(%add2, %add3, %inv0, %store0#0)
     {sym_name = "rout_0"} : (i32, i32, i32, i32) -> (i32, i32, i32, i32)
+
+  // Feedback routing switches (backward paths via forward references)
+  %fb_i32:4 = fabric.instance @sw4x4(%rout_0#2, %rout_0#3, %d0#0, %d1#0)
+    {sym_name = "fb_i32"} : (i32, i32, i32, i32) -> (i32, i32, i32, i32)
+  %fb_idx:4 = fabric.instance @sw_index4x4(%ridx_3#0, %ridx_4#0, %a0#0, %a0#1)
+    {sym_name = "fb_idx"} : (index, index, index, index) -> (index, index, index, index)
+  %fb_i1:4 = fabric.instance @sw_i1_4x4(%gate_idx0#1, %gate_idx1#1, %bc_cmp0#2, %bc_cmp0#3)
+    {sym_name = "fb_i1"} : (i1, i1, i1, i1) -> (i1, i1, i1, i1)
+  %fb_none:4 = fabric.instance @sw_none4x4(%rnone_2#3, %bc_cbr_n0_t#3, %bc_join0#0, %bc_join0#1)
+    {sym_name = "fb_none"} : (none, none, none, none) -> (none, none, none, none)
 
   fabric.yield %rout_0#0, %rout_0#1 : i32, i32
 }
