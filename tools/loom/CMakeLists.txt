@@ -1,5 +1,6 @@
 set(LOOM_SOURCES
   loom.cpp
+  loom_args.cpp
 )
 
 add_executable(loom ${LOOM_SOURCES})

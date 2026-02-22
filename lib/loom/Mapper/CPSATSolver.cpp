@@ -46,6 +46,13 @@ int64_t getIntAttr(const Node *node, llvm::StringRef name,
   return dflt;
 }
 
+/// Check if a node is a memory operation.
+bool isMemoryOp(const Node *node) {
+  llvm::StringRef opName = getStrAttr(node, "op_name");
+  return opName.contains("load") || opName.contains("store") ||
+         opName.contains("memory");
+}
+
 /// Check if a node has a specific attribute.
 bool hasAttr(const Node *node, llvm::StringRef name) {
   for (auto &attr : node->attributes)
@@ -385,21 +392,44 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
       if (SolutionBoolValue(response, var)) {
         result.state.mapNode(sw, hw, dfg, adg);
 
-        // Map ports positionally.
+        // Map ports: type-aware for memory ops, positional otherwise.
         const Node *swNode = dfg.getNode(sw);
         const Node *hwNode = adg.getNode(hw);
         if (swNode && hwNode) {
-          for (size_t p = 0;
-               p < swNode->inputPorts.size() && p < hwNode->inputPorts.size();
-               ++p) {
-            result.state.mapPort(swNode->inputPorts[p],
-                                 hwNode->inputPorts[p], dfg, adg);
-          }
-          for (size_t p = 0; p < swNode->outputPorts.size() &&
-                             p < hwNode->outputPorts.size();
-               ++p) {
-            result.state.mapPort(swNode->outputPorts[p],
-                                 hwNode->outputPorts[p], dfg, adg);
+          bool isMem = isMemoryOp(hwNode);
+          if (isMem && swNode->inputPorts.size() <= hwNode->inputPorts.size()) {
+            llvm::SmallVector<bool> hwUsed(hwNode->inputPorts.size(), false);
+            for (size_t p = 0; p < swNode->inputPorts.size(); ++p) {
+              const Port *sp = dfg.getPort(swNode->inputPorts[p]);
+              if (!sp) continue;
+              for (size_t h = 0; h < hwNode->inputPorts.size(); ++h) {
+                if (hwUsed[h]) continue;
+                const Port *hp = adg.getPort(hwNode->inputPorts[h]);
+                if (hp && sp->type == hp->type) {
+                  result.state.mapPort(swNode->inputPorts[p],
+                                       hwNode->inputPorts[h], dfg, adg);
+                  hwUsed[h] = true;
+                  break;
+                }
+              }
+            }
+            for (size_t p = 0; p < swNode->outputPorts.size() &&
+                               p < hwNode->outputPorts.size(); ++p) {
+              result.state.mapPort(swNode->outputPorts[p],
+                                   hwNode->outputPorts[p], dfg, adg);
+            }
+          } else {
+            for (size_t p = 0;
+                 p < swNode->inputPorts.size() && p < hwNode->inputPorts.size();
+                 ++p) {
+              result.state.mapPort(swNode->inputPorts[p],
+                                   hwNode->inputPorts[p], dfg, adg);
+            }
+            for (size_t p = 0; p < swNode->outputPorts.size() &&
+                               p < hwNode->outputPorts.size(); ++p) {
+              result.state.mapPort(swNode->outputPorts[p],
+                                   hwNode->outputPorts[p], dfg, adg);
+            }
           }
         }
         break;
@@ -701,19 +731,57 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
         const Node *swNode = dfg.getNode(sw);
         const Node *hwNode = adg.getNode(hw);
         if (swNode && hwNode) {
-          for (size_t p = 0;
-               p < swNode->inputPorts.size() && p < hwNode->inputPorts.size();
-               ++p) {
-            if (result.state.swPortToHwPort[swNode->inputPorts[p]] == INVALID_ID)
-              result.state.mapPort(swNode->inputPorts[p],
-                                   hwNode->inputPorts[p], dfg, adg);
-          }
-          for (size_t p = 0; p < swNode->outputPorts.size() &&
-                             p < hwNode->outputPorts.size();
-               ++p) {
-            if (result.state.swPortToHwPort[swNode->outputPorts[p]] == INVALID_ID)
-              result.state.mapPort(swNode->outputPorts[p],
-                                   hwNode->outputPorts[p], dfg, adg);
+          bool isMem = isMemoryOp(hwNode);
+          if (isMem && swNode->inputPorts.size() <= hwNode->inputPorts.size()) {
+            llvm::SmallVector<bool> hwUsed(hwNode->inputPorts.size(), false);
+            // Mark already-mapped HW ports.
+            for (size_t h = 0; h < hwNode->inputPorts.size(); ++h) {
+              for (size_t s = 0; s < swNode->inputPorts.size(); ++s) {
+                if (result.state.swPortToHwPort[swNode->inputPorts[s]] ==
+                    hwNode->inputPorts[h])
+                  hwUsed[h] = true;
+              }
+            }
+            for (size_t p = 0; p < swNode->inputPorts.size(); ++p) {
+              if (result.state.swPortToHwPort[swNode->inputPorts[p]] !=
+                  INVALID_ID)
+                continue;
+              const Port *sp = dfg.getPort(swNode->inputPorts[p]);
+              if (!sp) continue;
+              for (size_t h = 0; h < hwNode->inputPorts.size(); ++h) {
+                if (hwUsed[h]) continue;
+                const Port *hp = adg.getPort(hwNode->inputPorts[h]);
+                if (hp && sp->type == hp->type) {
+                  result.state.mapPort(swNode->inputPorts[p],
+                                       hwNode->inputPorts[h], dfg, adg);
+                  hwUsed[h] = true;
+                  break;
+                }
+              }
+            }
+            for (size_t p = 0; p < swNode->outputPorts.size() &&
+                               p < hwNode->outputPorts.size(); ++p) {
+              if (result.state.swPortToHwPort[swNode->outputPorts[p]] ==
+                  INVALID_ID)
+                result.state.mapPort(swNode->outputPorts[p],
+                                     hwNode->outputPorts[p], dfg, adg);
+            }
+          } else {
+            for (size_t p = 0;
+                 p < swNode->inputPorts.size() && p < hwNode->inputPorts.size();
+                 ++p) {
+              if (result.state.swPortToHwPort[swNode->inputPorts[p]] ==
+                  INVALID_ID)
+                result.state.mapPort(swNode->inputPorts[p],
+                                     hwNode->inputPorts[p], dfg, adg);
+            }
+            for (size_t p = 0; p < swNode->outputPorts.size() &&
+                               p < hwNode->outputPorts.size(); ++p) {
+              if (result.state.swPortToHwPort[swNode->outputPorts[p]] ==
+                  INVALID_ID)
+                result.state.mapPort(swNode->outputPorts[p],
+                                     hwNode->outputPorts[p], dfg, adg);
+            }
           }
         }
         break;

@@ -200,11 +200,53 @@ bool TechMapper::isSingleOpCompatible(const Graph &dfg, IdIndex swNode,
     return false;
 
   // Memory operation matching.
+  // Note: handshake.memory and fabric.memory use different operand orderings
+  // (handshake: [st_data, st_addr, ld_addr], fabric: [ld_addr, st_addr, st_data])
+  // so we use multiset type matching instead of positional checking.
   if (hwOp == "fabric.memory" || hwOp == "fabric.extmemory") {
-    if (swOp.contains("load") || swOp.contains("store") ||
-        swOp.contains("memory"))
-      goto check_ports;
-    return false;
+    if (!(swOp.contains("load") || swOp.contains("store") ||
+          swOp.contains("memory")))
+      return false;
+
+    // Port count check.
+    if (sw->inputPorts.size() > hw->inputPorts.size())
+      return false;
+    if (sw->outputPorts.size() > hw->outputPorts.size())
+      return false;
+
+    // Multiset type matching for inputs: collect types, sort, compare.
+    auto collectTypes = [](const Graph &g,
+                           llvm::ArrayRef<IdIndex> portIds) {
+      llvm::SmallVector<mlir::Type, 4> types;
+      for (IdIndex pid : portIds) {
+        const Port *p = g.getPort(pid);
+        if (p && p->type)
+          types.push_back(p->type);
+      }
+      llvm::sort(types, [](mlir::Type a, mlir::Type b) {
+        return a.getAsOpaquePointer() < b.getAsOpaquePointer();
+      });
+      return types;
+    };
+
+    auto swInTypes = collectTypes(dfg, sw->inputPorts);
+    auto hwInTypes = collectTypes(adg, hw->inputPorts);
+    if (swInTypes.size() != hwInTypes.size())
+      return false;
+    for (size_t i = 0; i < swInTypes.size(); ++i) {
+      if (!typesCompatible(swInTypes[i], hwInTypes[i], false))
+        return false;
+    }
+
+    // Output types: positional check (output ordering is compatible).
+    for (size_t i = 0; i < sw->outputPorts.size(); ++i) {
+      const Port *sp = dfg.getPort(sw->outputPorts[i]);
+      const Port *hp = adg.getPort(hw->outputPorts[i]);
+      if (sp && hp && !typesCompatible(sp->type, hp->type, false))
+        return false;
+    }
+
+    return true;
   }
 
   // For PE nodes, check the body pattern.
@@ -552,6 +594,7 @@ CandidateSet TechMapper::map(const Graph &dfg, const Graph &adg) {
         nodeCandidates.push_back(c);
       }
     }
+
   }
 
   // Multi-op group matching for PE bodies with multiple operations.

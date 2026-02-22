@@ -9,6 +9,7 @@
 #include "loom/Mapper/CPSATSolver.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 
 #include "llvm/ADT/DenseSet.h"
 
@@ -370,9 +371,36 @@ std::vector<IdIndex> Mapper::computePlacementOrder(const Graph &dfg) {
   return order;
 }
 
+/// Helper: find the first downstream node connected to a sentinel's output
+/// port in the given graph. Returns INVALID_ID if no edge found.
+static IdIndex findDownstreamNode(const Graph &graph, IdIndex sentinelNodeId) {
+  const Node *sn = graph.getNode(sentinelNodeId);
+  if (!sn || sn->outputPorts.empty())
+    return INVALID_ID;
+
+  IdIndex outPortId = sn->outputPorts[0];
+  const Port *outPort = graph.getPort(outPortId);
+  if (!outPort)
+    return INVALID_ID;
+
+  for (IdIndex edgeId : outPort->connectedEdges) {
+    const Edge *edge = graph.getEdge(edgeId);
+    if (!edge || edge->srcPort != outPortId)
+      continue;
+    const Port *dstPort = graph.getPort(edge->dstPort);
+    if (dstPort)
+      return dstPort->parentNode;
+  }
+  return INVALID_ID;
+}
+
+/// Helper: check if a type is a memref type.
+static bool isMemrefType(mlir::Type type) {
+  return type && mlir::isa<mlir::MemRefType>(type);
+}
+
 void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
                                const Graph &adg) {
-  // Bind DFG sentinels to ADG sentinels by positional matching.
   // Collect DFG and ADG sentinels.
   std::vector<IdIndex> dfgInputSentinels;
   std::vector<IdIndex> dfgOutputSentinels;
@@ -399,37 +427,187 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
       adgOutputSentinels.push_back(i);
   }
 
-  // Bind input sentinels: DFG arg i -> ADG arg i.
-  for (size_t i = 0;
-       i < dfgInputSentinels.size() && i < adgInputSentinels.size(); ++i) {
-    state.mapNode(dfgInputSentinels[i], adgInputSentinels[i], dfg, adg);
+  // Build memref sentinel -> downstream extmemory maps for both DFG and ADG.
+  // For memref sentinels, we need to bind them to ADG sentinels that connect
+  // to compatible extmemory nodes, not just by type order.
+  llvm::DenseMap<IdIndex, IdIndex> dfgSentinelToExtmem; // DFG sentinel -> DFG extmemory
+  llvm::DenseMap<IdIndex, IdIndex> adgSentinelToExtmem; // ADG sentinel -> ADG extmemory
 
-    // Bind ports positionally.
-    const Node *dfgNode = dfg.getNode(dfgInputSentinels[i]);
-    const Node *adgNode = adg.getNode(adgInputSentinels[i]);
-    if (dfgNode && adgNode) {
+  for (size_t di = 0; di < dfgInputSentinels.size(); ++di) {
+    const Node *dfgNode = dfg.getNode(dfgInputSentinels[di]);
+    if (!dfgNode || dfgNode->outputPorts.empty())
+      continue;
+    mlir::Type dfgType = dfg.getPort(dfgNode->outputPorts[0])->type;
+    if (isMemrefType(dfgType)) {
+      IdIndex downstream = findDownstreamNode(dfg, dfgInputSentinels[di]);
+      if (downstream != INVALID_ID)
+        dfgSentinelToExtmem[dfgInputSentinels[di]] = downstream;
+    }
+  }
+
+  for (size_t ai = 0; ai < adgInputSentinels.size(); ++ai) {
+    const Node *adgNode = adg.getNode(adgInputSentinels[ai]);
+    if (!adgNode || adgNode->outputPorts.empty())
+      continue;
+    mlir::Type adgType = adg.getPort(adgNode->outputPorts[0])->type;
+    if (isMemrefType(adgType)) {
+      IdIndex downstream = findDownstreamNode(adg, adgInputSentinels[ai]);
+      if (downstream != INVALID_ID)
+        adgSentinelToExtmem[adgInputSentinels[ai]] = downstream;
+    }
+  }
+
+  // Bind input sentinels: memref sentinels use extmemory-aware binding,
+  // non-memref sentinels use simple type matching.
+  llvm::DenseSet<size_t> usedAdgIn;
+  llvm::DenseSet<IdIndex> preBoundExtmem; // DFG extmemory nodes pre-bound here
+
+  // First pass: bind memref sentinels by matching their downstream extmemory
+  // node's port signature with ADG extmemory node's port signature.
+  for (size_t di = 0; di < dfgInputSentinels.size(); ++di) {
+    const Node *dfgNode = dfg.getNode(dfgInputSentinels[di]);
+    if (!dfgNode || dfgNode->outputPorts.empty())
+      continue;
+    mlir::Type dfgType = dfg.getPort(dfgNode->outputPorts[0])->type;
+    if (!isMemrefType(dfgType))
+      continue;
+
+    auto dfgExtIt = dfgSentinelToExtmem.find(dfgInputSentinels[di]);
+    if (dfgExtIt == dfgSentinelToExtmem.end())
+      continue;
+    const Node *dfgExtmem = dfg.getNode(dfgExtIt->second);
+    if (!dfgExtmem)
+      continue;
+
+    // Find compatible ADG sentinel: one whose downstream extmemory has
+    // matching input/output port counts.
+    for (size_t ai = 0; ai < adgInputSentinels.size(); ++ai) {
+      if (usedAdgIn.count(ai))
+        continue;
+      const Node *adgNode = adg.getNode(adgInputSentinels[ai]);
+      if (!adgNode || adgNode->outputPorts.empty())
+        continue;
+      mlir::Type adgType = adg.getPort(adgNode->outputPorts[0])->type;
+      if (dfgType != adgType)
+        continue;
+
+      auto adgExtIt = adgSentinelToExtmem.find(adgInputSentinels[ai]);
+      if (adgExtIt == adgSentinelToExtmem.end())
+        continue;
+      const Node *adgExtmem = adg.getNode(adgExtIt->second);
+      if (!adgExtmem)
+        continue;
+
+      // Check port compatibility: DFG extmemory ports must fit in ADG
+      // extmemory ports.
+      if (dfgExtmem->inputPorts.size() > adgExtmem->inputPorts.size())
+        continue;
+      if (dfgExtmem->outputPorts.size() > adgExtmem->outputPorts.size())
+        continue;
+
+      // Bind the sentinel.
+      usedAdgIn.insert(ai);
+      state.mapNode(dfgInputSentinels[di], adgInputSentinels[ai], dfg, adg);
       for (size_t j = 0;
-           j < dfgNode->outputPorts.size() && j < adgNode->outputPorts.size();
+           j < dfgNode->outputPorts.size() &&
+           j < adgNode->outputPorts.size();
            ++j) {
-        state.mapPort(dfgNode->outputPorts[j], adgNode->outputPorts[j],
+        state.mapPort(dfgNode->outputPorts[j], adgNode->outputPorts[j], dfg,
+                      adg);
+      }
+
+      // Also pre-bind the extmemory node so placement is consistent.
+      state.mapNode(dfgExtIt->second, adgExtIt->second, dfg, adg);
+      // Map extmemory ports using type-aware matching (same as placement).
+      llvm::SmallVector<bool> hwUsed(adgExtmem->inputPorts.size(), false);
+      for (size_t si = 0; si < dfgExtmem->inputPorts.size(); ++si) {
+        const Port *sp = dfg.getPort(dfgExtmem->inputPorts[si]);
+        if (!sp)
+          continue;
+        for (size_t hi = 0; hi < adgExtmem->inputPorts.size(); ++hi) {
+          if (hwUsed[hi])
+            continue;
+          const Port *hp = adg.getPort(adgExtmem->inputPorts[hi]);
+          if (hp && sp->type == hp->type) {
+            state.mapPort(dfgExtmem->inputPorts[si],
+                          adgExtmem->inputPorts[hi], dfg, adg);
+            hwUsed[hi] = true;
+            break;
+          }
+        }
+      }
+      for (size_t i = 0;
+           i < dfgExtmem->outputPorts.size() &&
+           i < adgExtmem->outputPorts.size();
+           ++i) {
+        state.mapPort(dfgExtmem->outputPorts[i], adgExtmem->outputPorts[i],
                       dfg, adg);
+      }
+      preBoundExtmem.insert(dfgExtIt->second);
+      break;
+    }
+  }
+
+  // Second pass: bind non-memref sentinels by type matching.
+  for (size_t di = 0; di < dfgInputSentinels.size(); ++di) {
+    const Node *dfgNode = dfg.getNode(dfgInputSentinels[di]);
+    if (!dfgNode || dfgNode->outputPorts.empty())
+      continue;
+    mlir::Type dfgType = dfg.getPort(dfgNode->outputPorts[0])->type;
+    if (isMemrefType(dfgType))
+      continue; // Already handled above.
+
+    for (size_t ai = 0; ai < adgInputSentinels.size(); ++ai) {
+      if (usedAdgIn.count(ai))
+        continue;
+      const Node *adgNode = adg.getNode(adgInputSentinels[ai]);
+      if (!adgNode || adgNode->outputPorts.empty())
+        continue;
+      mlir::Type adgType = adg.getPort(adgNode->outputPorts[0])->type;
+
+      if (dfgType == adgType) {
+        usedAdgIn.insert(ai);
+        state.mapNode(dfgInputSentinels[di], adgInputSentinels[ai], dfg, adg);
+        for (size_t j = 0;
+             j < dfgNode->outputPorts.size() &&
+             j < adgNode->outputPorts.size();
+             ++j) {
+          state.mapPort(dfgNode->outputPorts[j], adgNode->outputPorts[j], dfg,
+                        adg);
+        }
+        break;
       }
     }
   }
 
-  // Bind output sentinels: DFG ret i -> ADG ret i.
-  for (size_t i = 0;
-       i < dfgOutputSentinels.size() && i < adgOutputSentinels.size(); ++i) {
-    state.mapNode(dfgOutputSentinels[i], adgOutputSentinels[i], dfg, adg);
+  // Output sentinel binding: type-aware matching.
+  llvm::DenseSet<size_t> usedAdgOut;
+  for (size_t di = 0; di < dfgOutputSentinels.size(); ++di) {
+    const Node *dfgNode = dfg.getNode(dfgOutputSentinels[di]);
+    if (!dfgNode || dfgNode->inputPorts.empty())
+      continue;
+    mlir::Type dfgType = dfg.getPort(dfgNode->inputPorts[0])->type;
 
-    const Node *dfgNode = dfg.getNode(dfgOutputSentinels[i]);
-    const Node *adgNode = adg.getNode(adgOutputSentinels[i]);
-    if (dfgNode && adgNode) {
-      for (size_t j = 0;
-           j < dfgNode->inputPorts.size() && j < adgNode->inputPorts.size();
-           ++j) {
-        state.mapPort(dfgNode->inputPorts[j], adgNode->inputPorts[j],
-                      dfg, adg);
+    for (size_t ai = 0; ai < adgOutputSentinels.size(); ++ai) {
+      if (usedAdgOut.count(ai))
+        continue;
+      const Node *adgNode = adg.getNode(adgOutputSentinels[ai]);
+      if (!adgNode || adgNode->inputPorts.empty())
+        continue;
+      mlir::Type adgType = adg.getPort(adgNode->inputPorts[0])->type;
+
+      if (dfgType == adgType) {
+        usedAdgOut.insert(ai);
+        state.mapNode(dfgOutputSentinels[di], adgOutputSentinels[ai], dfg,
+                      adg);
+        for (size_t j = 0;
+             j < dfgNode->inputPorts.size() &&
+             j < adgNode->inputPorts.size();
+             ++j) {
+          state.mapPort(dfgNode->inputPorts[j], adgNode->inputPorts[j], dfg,
+                        adg);
+        }
+        break;
       }
     }
   }
@@ -505,6 +683,12 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
   for (IdIndex swNode : order) {
     // Skip nodes already placed atomically as part of a group.
     if (placedInGroup.count(swNode))
+      continue;
+
+    // Skip nodes pre-bound during sentinel binding (e.g., extmemory nodes
+    // bound together with their memref sentinels).
+    if (swNode < state.swNodeToHwNode.size() &&
+        state.swNodeToHwNode[swNode] != INVALID_ID)
       continue;
 
     auto it = candidates.find(swNode);
@@ -596,17 +780,45 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
       if (mapResult != ActionResult::Success)
         return false;
 
-      // Map ports positionally.
       const Node *sw = dfg.getNode(swNode);
       const Node *hw = adg.getNode(bestHw);
       if (sw && hw) {
-        for (size_t i = 0;
-             i < sw->inputPorts.size() && i < hw->inputPorts.size(); ++i) {
-          state.mapPort(sw->inputPorts[i], hw->inputPorts[i], dfg, adg);
-        }
-        for (size_t i = 0;
-             i < sw->outputPorts.size() && i < hw->outputPorts.size(); ++i) {
-          state.mapPort(sw->outputPorts[i], hw->outputPorts[i], dfg, adg);
+        // For memory operations, use type-aware port mapping since
+        // handshake.memory and fabric.memory have different operand orderings.
+        bool isMem = isMemoryOp(hw);
+        if (isMem && sw->inputPorts.size() <= hw->inputPorts.size()) {
+          // Build type-matched mapping: for each SW input, find an unused
+          // HW input with matching type.
+          llvm::SmallVector<bool> hwUsed(hw->inputPorts.size(), false);
+          for (size_t si = 0; si < sw->inputPorts.size(); ++si) {
+            const Port *sp = dfg.getPort(sw->inputPorts[si]);
+            if (!sp) continue;
+            for (size_t hi = 0; hi < hw->inputPorts.size(); ++hi) {
+              if (hwUsed[hi]) continue;
+              const Port *hp = adg.getPort(hw->inputPorts[hi]);
+              if (hp && sp->type == hp->type) {
+                state.mapPort(sw->inputPorts[si], hw->inputPorts[hi],
+                              dfg, adg);
+                hwUsed[hi] = true;
+                break;
+              }
+            }
+          }
+          // Outputs: use positional mapping (output ordering is compatible).
+          for (size_t i = 0;
+               i < sw->outputPorts.size() && i < hw->outputPorts.size(); ++i) {
+            state.mapPort(sw->outputPorts[i], hw->outputPorts[i], dfg, adg);
+          }
+        } else {
+          // Default: map ports positionally.
+          for (size_t i = 0;
+               i < sw->inputPorts.size() && i < hw->inputPorts.size(); ++i) {
+            state.mapPort(sw->inputPorts[i], hw->inputPorts[i], dfg, adg);
+          }
+          for (size_t i = 0;
+               i < sw->outputPorts.size() && i < hw->outputPorts.size(); ++i) {
+            state.mapPort(sw->outputPorts[i], hw->outputPorts[i], dfg, adg);
+          }
         }
       }
     }

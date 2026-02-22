@@ -110,6 +110,30 @@ IdIndex createNodeFromOp(Graph &graph, mlir::Operation &op,
   // Copy hardware attributes from the resolved definition.
   copyHwAttributes(node.get(), resolved, builder);
 
+  // Extract body operations for PE definitions.
+  // When the resolved definition is a fabric.pe, traverse its body region
+  // to collect operation names as a body_ops attribute. This enables the
+  // TechMapper to distinguish between different PE types.
+  if (effectiveOpName == "fabric.pe") {
+    mlir::Operation *peOp = resolved ? resolved : &op;
+    if (peOp->getNumRegions() > 0) {
+      auto &peBody = peOp->getRegion(0);
+      if (!peBody.empty()) {
+        llvm::SmallVector<mlir::Attribute, 4> bodyOps;
+        for (auto &innerOp : peBody.front()) {
+          if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
+            continue;
+          bodyOps.push_back(
+              builder.getStringAttr(innerOp.getName().getStringRef()));
+        }
+        if (!bodyOps.empty()) {
+          node->attributes.push_back(builder.getNamedAttr(
+              "body_ops", builder.getArrayAttr(bodyOps)));
+        }
+      }
+    }
+  }
+
   IdIndex nodeId = graph.addNode(std::move(node));
 
   // Create input ports for operands.

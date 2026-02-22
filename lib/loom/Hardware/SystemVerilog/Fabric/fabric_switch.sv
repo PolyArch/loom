@@ -49,8 +49,8 @@ module fabric_switch #(
   // -----------------------------------------------------------------------
   initial begin : param_check
     int iter_var0, iter_var1;
-    if (NUM_INPUTS > 32 || NUM_OUTPUTS > 32)
-      $fatal(1, "CPL_SWITCH_PORT_LIMIT: max 32 inputs/outputs");
+    if (NUM_INPUTS > 256 || NUM_OUTPUTS > 256)
+      $fatal(1, "CPL_SWITCH_PORT_LIMIT: max 256 inputs/outputs");
 
     // Check each output row has at least one connection
     for (iter_var0 = 0; iter_var0 < NUM_OUTPUTS; iter_var0++) begin : check_row

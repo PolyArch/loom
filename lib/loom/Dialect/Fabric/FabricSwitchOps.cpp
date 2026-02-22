@@ -392,13 +392,13 @@ LogicalResult SwitchOp::verify() {
       return failure();
   }
 
-  if (numInputs > 32)
+  if (numInputs > 256)
     return emitOpError(cplErrMsg(CplError::SWITCH_PORT_LIMIT,
-                       "number of inputs must be <= 32; got "))
+                       "number of inputs must be <= 256; got "))
            << numInputs;
-  if (numOutputs > 32)
+  if (numOutputs > 256)
     return emitOpError(cplErrMsg(CplError::SWITCH_PORT_LIMIT,
-                       "number of outputs must be <= 32; got "))
+                       "number of outputs must be <= 256; got "))
            << numOutputs;
 
   if (auto ct = getConnectivityTable()) {

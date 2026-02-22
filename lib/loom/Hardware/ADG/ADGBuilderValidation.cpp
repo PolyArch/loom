@@ -127,9 +127,9 @@ ValidationResult ADGBuilder::validateADG() {
     if (sw.numIn < 1 || sw.numOut < 1)
       addError(CplError::SWITCH_PORT_ZERO,
                "switch must have at least 1 input and 1 output", loc);
-    if (sw.numIn > 32 || sw.numOut > 32)
+    if (sw.numIn > 256 || sw.numOut > 256)
       addError(CplError::SWITCH_PORT_LIMIT,
-               "switch has more than 32 inputs or outputs", loc);
+               "switch has more than 256 inputs or outputs", loc);
     validateConnectivityTable(sw.connectivity, sw.numIn, sw.numOut,
                               "CPL_SWITCH", loc, addError);
   }

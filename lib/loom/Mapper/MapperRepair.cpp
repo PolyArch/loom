@@ -6,9 +6,29 @@
 
 #include "loom/Mapper/Mapper.h"
 
+#include "mlir/IR/BuiltinAttributes.h"
+
 #include <random>
 
 namespace loom {
+
+namespace {
+/// Get op_name string attribute from a node.
+llvm::StringRef getNodeOpNameRepair(const Node *node) {
+  for (auto &attr : node->attributes)
+    if (attr.getName() == "op_name")
+      if (auto s = mlir::dyn_cast<mlir::StringAttr>(attr.getValue()))
+        return s.getValue();
+  return "";
+}
+
+/// Check if a node is a memory operation.
+bool isMemoryOpRepair(const Node *node) {
+  llvm::StringRef opName = getNodeOpNameRepair(node);
+  return opName.contains("load") || opName.contains("store") ||
+         opName.contains("memory");
+}
+} // namespace
 
 bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
                            const Graph &adg, const CandidateSet &candidates,
@@ -93,21 +113,43 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
             state.unmapNode(swNode, dfg, adg);
             auto result = state.mapNode(swNode, cand.hwNodeId, dfg, adg);
             if (result == ActionResult::Success) {
-              // Remap ports.
+              // Remap ports (type-aware for memory ops).
               const Node *sw = dfg.getNode(swNode);
               const Node *hw = adg.getNode(cand.hwNodeId);
               if (sw && hw) {
-                for (size_t i = 0; i < sw->inputPorts.size() &&
-                                    i < hw->inputPorts.size();
-                     ++i) {
-                  state.mapPort(sw->inputPorts[i], hw->inputPorts[i],
-                                dfg, adg);
-                }
-                for (size_t i = 0; i < sw->outputPorts.size() &&
-                                    i < hw->outputPorts.size();
-                     ++i) {
-                  state.mapPort(sw->outputPorts[i], hw->outputPorts[i],
-                                dfg, adg);
+                bool isMem = isMemoryOpRepair(hw);
+                if (isMem && sw->inputPorts.size() <= hw->inputPorts.size()) {
+                  llvm::SmallVector<bool> hwUsed(hw->inputPorts.size(), false);
+                  for (size_t si = 0; si < sw->inputPorts.size(); ++si) {
+                    const Port *sp = dfg.getPort(sw->inputPorts[si]);
+                    if (!sp) continue;
+                    for (size_t hi = 0; hi < hw->inputPorts.size(); ++hi) {
+                      if (hwUsed[hi]) continue;
+                      const Port *hp = adg.getPort(hw->inputPorts[hi]);
+                      if (hp && sp->type == hp->type) {
+                        state.mapPort(sw->inputPorts[si],
+                                      hw->inputPorts[hi], dfg, adg);
+                        hwUsed[hi] = true;
+                        break;
+                      }
+                    }
+                  }
+                  for (size_t i = 0; i < sw->outputPorts.size() &&
+                                      i < hw->outputPorts.size(); ++i) {
+                    state.mapPort(sw->outputPorts[i], hw->outputPorts[i],
+                                  dfg, adg);
+                  }
+                } else {
+                  for (size_t i = 0; i < sw->inputPorts.size() &&
+                                      i < hw->inputPorts.size(); ++i) {
+                    state.mapPort(sw->inputPorts[i], hw->inputPorts[i],
+                                  dfg, adg);
+                  }
+                  for (size_t i = 0; i < sw->outputPorts.size() &&
+                                      i < hw->outputPorts.size(); ++i) {
+                    state.mapPort(sw->outputPorts[i], hw->outputPorts[i],
+                                  dfg, adg);
+                  }
                 }
               }
               break;
