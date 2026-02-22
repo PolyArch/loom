@@ -153,6 +153,29 @@ ActionResult MappingState::mapEdge(IdIndex swEdge,
 
   swEdgeToHwPaths[swEdge].assign(path.begin(), path.end());
 
+  // Update hwEdgeToSwEdges reverse mapping for each physical edge hop.
+  // Path format: [outPort0, inPort0, outPort1, inPort1, ...]
+  // Physical edge hops are (path[0], path[1]), (path[2], path[3]), etc.
+  for (size_t i = 0; i + 1 < path.size(); i += 2) {
+    IdIndex outPortId = path[i];
+    IdIndex inPortId = path[i + 1];
+
+    // Find the ADG edge connecting outPortId -> inPortId.
+    const Port *outPort = adg.getPort(outPortId);
+    if (!outPort)
+      continue;
+    for (IdIndex edgeId : outPort->connectedEdges) {
+      const Edge *hwEdge = adg.getEdge(edgeId);
+      if (hwEdge && hwEdge->srcPort == outPortId &&
+          hwEdge->dstPort == inPortId) {
+        if (edgeId < hwEdgeToSwEdges.size()) {
+          hwEdgeToSwEdges[edgeId].push_back(swEdge);
+        }
+        break;
+      }
+    }
+  }
+
   ActionRecord record;
   record.type = ActionRecord::MAP_EDGE;
   record.arg0 = swEdge;
@@ -170,6 +193,30 @@ ActionResult MappingState::unmapEdge(IdIndex swEdge,
 
   if (swEdgeToHwPaths[swEdge].empty())
     return ActionResult::FailedHardConstraint;
+
+  // Clean up hwEdgeToSwEdges reverse mapping for each physical edge hop.
+  const auto &path = swEdgeToHwPaths[swEdge];
+  for (size_t i = 0; i + 1 < path.size(); i += 2) {
+    IdIndex outPortId = path[i];
+    IdIndex inPortId = path[i + 1];
+
+    const Port *outPort = adg.getPort(outPortId);
+    if (!outPort)
+      continue;
+    for (IdIndex edgeId : outPort->connectedEdges) {
+      const Edge *hwEdge = adg.getEdge(edgeId);
+      if (hwEdge && hwEdge->srcPort == outPortId &&
+          hwEdge->dstPort == inPortId) {
+        if (edgeId < hwEdgeToSwEdges.size()) {
+          auto &swEdges = hwEdgeToSwEdges[edgeId];
+          swEdges.erase(
+              std::remove(swEdges.begin(), swEdges.end(), swEdge),
+              swEdges.end());
+        }
+        break;
+      }
+    }
+  }
 
   ActionRecord record;
   record.type = ActionRecord::UNMAP_EDGE;

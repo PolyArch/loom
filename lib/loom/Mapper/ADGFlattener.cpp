@@ -8,6 +8,7 @@
 
 #include "loom/Dialect/Fabric/FabricOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SymbolTable.h"
 
@@ -31,25 +32,83 @@ llvm::StringRef classifyOp(llvm::StringRef opName) {
   return "unknown";
 }
 
-/// Helper to create a node from an operation inside the fabric module.
+/// Resolve a fabric.instance to its target definition.
+/// Returns the target operation, or nullptr if not an instance or not found.
+mlir::Operation *resolveInstance(mlir::Operation &op) {
+  if (op.getName().getStringRef() != "fabric.instance")
+    return nullptr;
+
+  auto moduleRef = op.getAttrOfType<mlir::FlatSymbolRefAttr>("module");
+  if (!moduleRef)
+    return nullptr;
+
+  // Walk up to the nearest symbol table (the builtin module).
+  mlir::Operation *symbolTableOp = op.getParentOp();
+  while (symbolTableOp && !symbolTableOp->hasTrait<mlir::OpTrait::SymbolTable>())
+    symbolTableOp = symbolTableOp->getParentOp();
+  if (!symbolTableOp)
+    return nullptr;
+
+  return mlir::SymbolTable::lookupSymbolIn(symbolTableOp, moduleRef);
+}
+
+/// Get the effective op name for a node: resolves instances to their target.
+llvm::StringRef getEffectiveOpName(mlir::Operation &op,
+                                   mlir::Operation *resolved) {
+  if (resolved)
+    return resolved->getName().getStringRef();
+  return op.getName().getStringRef();
+}
+
+/// Copy hardware-relevant attributes from a resolved definition to a node.
+void copyHwAttributes(Node *node, mlir::Operation *resolved,
+                      mlir::Builder &builder) {
+  if (!resolved)
+    return;
+
+  // Copy key hardware parameters by name.
+  static const char *attrsToCopy[] = {
+      "num_instruction", "num_register", "reg_fifo_depth",
+      "num_route_table", "connectivity_table", "ldCount",
+      "stCount", "lsqDepth", "numRegion", "addrOffsetTable",
+      "memref_type", "is_private", "depth", "bypassable",
+      "tag", "table_size", "table", "constant_value",
+      "cont_cond_sel", "lqDepth", "sqDepth",
+      "enable_share_operand_buffer", "operand_buffer_size",
+      "latency", "interval", "output_tag"};
+
+  for (const char *name : attrsToCopy) {
+    if (auto attr = resolved->getAttr(name)) {
+      node->attributes.push_back(builder.getNamedAttr(name, attr));
+    }
+  }
+}
+
+/// Create an ADG node from an operation in the fabric module body.
+/// Handles instance resolution: if the op is fabric.instance, resolves to
+/// the actual definition and uses its type/attributes.
 IdIndex createNodeFromOp(Graph &graph, mlir::Operation &op,
                          mlir::Builder &builder,
                          llvm::DenseMap<mlir::Value, IdIndex> &valueToPort) {
+  mlir::Operation *resolved = resolveInstance(op);
+  llvm::StringRef effectiveOpName = getEffectiveOpName(op, resolved);
+
   auto node = std::make_unique<Node>();
   node->kind = Node::OperationNode;
 
-  llvm::StringRef opName = op.getName().getStringRef();
   node->attributes.push_back(
-      builder.getNamedAttr("op_name", builder.getStringAttr(opName)));
+      builder.getNamedAttr("op_name", builder.getStringAttr(effectiveOpName)));
   node->attributes.push_back(
       builder.getNamedAttr("resource_class",
-                           builder.getStringAttr(classifyOp(opName))));
+                           builder.getStringAttr(classifyOp(effectiveOpName))));
 
-  // Copy sym_name if present.
+  // Copy sym_name from the instance (not the definition).
   if (auto symName = op.getAttrOfType<mlir::StringAttr>("sym_name")) {
-    node->attributes.push_back(
-        builder.getNamedAttr("sym_name", symName));
+    node->attributes.push_back(builder.getNamedAttr("sym_name", symName));
   }
+
+  // Copy hardware attributes from the resolved definition.
+  copyHwAttributes(node.get(), resolved, builder);
 
   IdIndex nodeId = graph.addNode(std::move(node));
 
@@ -78,6 +137,62 @@ IdIndex createNodeFromOp(Graph &graph, mlir::Operation &op,
   return nodeId;
 }
 
+/// Check if a node has a specific string attribute value.
+llvm::StringRef getNodeAttrStr(const Node *node, llvm::StringRef name) {
+  for (auto &attr : node->attributes) {
+    if (attr.getName() == name) {
+      if (auto strAttr = mlir::dyn_cast<mlir::StringAttr>(attr.getValue()))
+        return strAttr.getValue();
+    }
+  }
+  return "";
+}
+
+/// Build connectivity matrix inToOut entries for a switch/temporal_sw node
+/// using its connectivity_table attribute (if present).
+/// If no connectivity_table, assumes full crossbar.
+void buildSwitchConnectivity(
+    const Node *node, ConnectivityMatrix &matrix) {
+  // Find connectivity_table attribute.
+  mlir::DenseI8ArrayAttr connTable;
+  for (auto &attr : node->attributes) {
+    if (attr.getName() == "connectivity_table") {
+      connTable = mlir::dyn_cast<mlir::DenseI8ArrayAttr>(attr.getValue());
+      break;
+    }
+  }
+
+  unsigned numIn = node->inputPorts.size();
+  unsigned numOut = node->outputPorts.size();
+
+  if (!connTable || connTable.empty()) {
+    // Full crossbar: every input connects to every output.
+    for (IdIndex inPortId : node->inputPorts) {
+      for (IdIndex outPortId : node->outputPorts) {
+        matrix.inToOut[inPortId].push_back(outPortId);
+      }
+    }
+    return;
+  }
+
+  // Parse connectivity_table: output-major, table[o * numIn + i] = 1
+  // means output o receives from input i.
+  for (unsigned o = 0; o < numOut; ++o) {
+    for (unsigned i = 0; i < numIn; ++i) {
+      unsigned idx = o * numIn + i;
+      if (idx < static_cast<unsigned>(connTable.size()) && connTable[idx]) {
+        IdIndex inPortId = node->inputPorts[i];
+        IdIndex outPortId = node->outputPorts[o];
+        auto &outPorts = matrix.inToOut[inPortId];
+        if (std::find(outPorts.begin(), outPorts.end(), outPortId) ==
+            outPorts.end()) {
+          outPorts.push_back(outPortId);
+        }
+      }
+    }
+  }
+}
+
 } // namespace
 
 Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
@@ -90,7 +205,6 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
   auto &block = moduleOp.getBody().front();
 
   // --- Phase A: Create sentinel nodes for module I/O ---
-  // Module arguments -> ModuleInputNode sentinels (output ports).
   for (auto arg : block.getArguments()) {
     auto node = std::make_unique<Node>();
     node->kind = Node::ModuleInputNode;
@@ -110,30 +224,34 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
     valueToPort[arg] = portId;
   }
 
-  // --- Phase B: Resolve operations ---
-  // Walk all operations in the module body and create nodes.
-  // fabric.instance is resolved by looking up the referenced module definition.
+  // --- Phase B: Resolve operations and create ADG nodes ---
+  // fabric.instance is resolved by looking up the referenced definition.
   llvm::DenseMap<mlir::Operation *, IdIndex> opToNode;
 
+  // Track which ops are temporal PEs (either direct or via instance).
+  llvm::SmallVector<std::pair<mlir::Operation *, mlir::Operation *>, 4>
+      temporalPEOps; // (body op, resolved definition)
+
   for (auto &op : block) {
-    // Skip the terminator (fabric.yield).
     if (op.hasTrait<mlir::OpTrait::IsTerminator>())
       continue;
 
+    mlir::Operation *resolved = resolveInstance(op);
+    llvm::StringRef effectiveName = getEffectiveOpName(op, resolved);
+
     IdIndex nodeId = createNodeFromOp(graph, op, builder, valueToPort);
     opToNode[&op] = nodeId;
+
+    // Track temporal_pe ops for Phase C.
+    if (effectiveName == "fabric.temporal_pe") {
+      temporalPEOps.push_back({&op, resolved});
+    }
   }
 
   // --- Phase C: Handle temporal_pe ---
-  // temporal_pe creates a virtual node plus FU sub-nodes that share ports.
-  // This is handled implicitly through the node creation above.
-  // The virtual node and FU nodes are distinguished by attributes.
-  // For temporal_pe ops, we add metadata attributes.
-  for (auto &op : block) {
-    if (op.getName().getStringRef() != "fabric.temporal_pe")
-      continue;
-
-    auto it = opToNode.find(&op);
+  // For each temporal_pe, mark virtual node and create FU sub-nodes.
+  for (auto &[bodyOp, resolved] : temporalPEOps) {
+    auto it = opToNode.find(bodyOp);
     if (it == opToNode.end())
       continue;
 
@@ -146,59 +264,57 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
     virtualNode->attributes.push_back(
         builder.getNamedAttr("is_virtual", builder.getUnitAttr()));
 
-    // Extract temporal PE parameters.
-    if (auto numInst = op.getAttrOfType<mlir::IntegerAttr>("num_instruction")) {
-      virtualNode->attributes.push_back(
-          builder.getNamedAttr("num_instruction", numInst));
+    // The temporal_pe body contains FU definitions.
+    // For instances, the body is on the resolved definition.
+    mlir::Operation *tpeOp = resolved ? resolved : bodyOp;
+    if (tpeOp->getNumRegions() == 0)
+      continue;
+
+    auto &tpeBody = tpeOp->getRegion(0);
+    if (tpeBody.empty())
+      continue;
+
+    llvm::SmallVector<IdIndex, 4> fuNodeIds;
+    for (auto &innerOp : tpeBody.front()) {
+      if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
+        continue;
+
+      auto fuNode = std::make_unique<Node>();
+      fuNode->kind = Node::OperationNode;
+
+      // For FU nodes inside temporal_pe, they may also be instances.
+      mlir::Operation *fuResolved = resolveInstance(innerOp);
+      llvm::StringRef fuEffName = getEffectiveOpName(innerOp, fuResolved);
+
+      fuNode->attributes.push_back(
+          builder.getNamedAttr("op_name", builder.getStringAttr(fuEffName)));
+      fuNode->attributes.push_back(
+          builder.getNamedAttr("resource_class",
+                               builder.getStringAttr("functional")));
+      fuNode->attributes.push_back(
+          builder.getNamedAttr("parent_temporal_pe",
+                               builder.getI32IntegerAttr(virtualNodeId)));
+
+      // Copy hardware attributes from the resolved FU definition.
+      copyHwAttributes(fuNode.get(), fuResolved, builder);
+
+      IdIndex fuId = graph.addNode(std::move(fuNode));
+      fuNodeIds.push_back(fuId);
+
+      // FU nodes share the virtual node's ports (reference, not own).
+      Node *fuNodePtr = graph.getNode(fuId);
+      fuNodePtr->inputPorts = virtualNode->inputPorts;
+      fuNodePtr->outputPorts = virtualNode->outputPorts;
     }
-    if (auto numReg = op.getAttrOfType<mlir::IntegerAttr>("num_register")) {
+
+    // Store FU node IDs on the virtual node.
+    for (IdIndex fuId : fuNodeIds) {
       virtualNode->attributes.push_back(
-          builder.getNamedAttr("num_register", numReg));
-    }
-
-    // Create FU sub-nodes from the temporal_pe body.
-    if (op.getNumRegions() > 0) {
-      auto &tpeBody = op.getRegion(0);
-      if (!tpeBody.empty()) {
-        llvm::SmallVector<IdIndex, 4> fuNodeIds;
-        for (auto &innerOp : tpeBody.front()) {
-          if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
-            continue;
-
-          auto fuNode = std::make_unique<Node>();
-          fuNode->kind = Node::OperationNode;
-          fuNode->attributes.push_back(
-              builder.getNamedAttr("op_name",
-                  builder.getStringAttr(innerOp.getName().getStringRef())));
-          fuNode->attributes.push_back(
-              builder.getNamedAttr("resource_class",
-                  builder.getStringAttr("functional")));
-          fuNode->attributes.push_back(
-              builder.getNamedAttr("parent_temporal_pe",
-                  builder.getI32IntegerAttr(virtualNodeId)));
-
-          IdIndex fuId = graph.addNode(std::move(fuNode));
-          fuNodeIds.push_back(fuId);
-
-          // FU nodes share the virtual node's ports (reference, not own).
-          Node *fuNodePtr = graph.getNode(fuId);
-          fuNodePtr->inputPorts = virtualNode->inputPorts;
-          fuNodePtr->outputPorts = virtualNode->outputPorts;
-        }
-
-        // Store FU node IDs on the virtual node.
-        for (IdIndex fuId : fuNodeIds) {
-          virtualNode->attributes.push_back(
-              builder.getNamedAttr(
-                  "fu_node",
-                  builder.getI32IntegerAttr(fuId)));
-        }
-      }
+          builder.getNamedAttr("fu_node", builder.getI32IntegerAttr(fuId)));
     }
   }
 
   // --- Phase D: Create edges for hardware connections ---
-  // Wire edges based on SSA value uses (operand -> defining result).
   for (auto &op : block) {
     if (op.hasTrait<mlir::OpTrait::IsTerminator>())
       continue;
@@ -230,20 +346,12 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
       graph.getPort(srcPortId)->connectedEdges.push_back(edgeId);
       graph.getPort(dstPortId)->connectedEdges.push_back(edgeId);
 
-      // Build connectivity matrix entries.
+      // Build physical edge connectivity.
       matrix.outToIn[srcPortId] = dstPortId;
-
-      // For routing nodes, track internal connectivity.
-      Port *srcPort = graph.getPort(srcPortId);
-      Port *dstPort = graph.getPort(dstPortId);
-      if (srcPort && dstPort && srcPort->parentNode == dstPort->parentNode) {
-        // Internal routing within same node.
-        matrix.inToOut[dstPortId].push_back(srcPortId);
-      }
     }
   }
 
-  // Also handle fabric.yield -> module output sentinels.
+  // Handle fabric.yield -> module output sentinels.
   mlir::Operation *yieldOp = block.getTerminator();
   if (yieldOp && yieldOp->getNumOperands() > 0) {
     for (unsigned i = 0; i < yieldOp->getNumOperands(); ++i) {
@@ -252,7 +360,6 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
       if (srcIt == valueToPort.end())
         continue;
 
-      // Create ModuleOutputNode sentinel for each yield operand.
       auto node = std::make_unique<Node>();
       node->kind = Node::ModuleOutputNode;
       node->attributes.push_back(
@@ -267,7 +374,6 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
       IdIndex portId = graph.addPort(std::move(port));
       graph.getNode(nodeId)->inputPorts.push_back(portId);
 
-      // Create edge.
       IdIndex srcPortId = srcIt->second;
       auto edge = std::make_unique<Edge>();
       edge->srcPort = srcPortId;
@@ -281,31 +387,30 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
     }
   }
 
-  // Build inToOut for routing nodes (input port -> reachable output ports).
-  // Walk through all routing-class nodes.
+  // --- Phase E: Build inToOut for routing nodes ---
+  // Uses connectivity_table for switches, full crossbar for others.
   for (auto *node : graph.nodeRange()) {
     if (node->kind != Node::OperationNode)
       continue;
 
-    bool isRouting = false;
-    for (auto &attr : node->attributes) {
-      if (attr.getName() == "resource_class") {
-        if (auto strAttr = mlir::dyn_cast<mlir::StringAttr>(attr.getValue())) {
-          if (strAttr.getValue() == "routing")
-            isRouting = true;
-        }
-      }
-    }
-    if (!isRouting)
+    llvm::StringRef resClass = getNodeAttrStr(node, "resource_class");
+    if (resClass != "routing")
       continue;
 
-    // For routing nodes, each input port can reach all output ports.
-    for (IdIndex inPortId : node->inputPorts) {
-      for (IdIndex outPortId : node->outputPorts) {
-        auto &outPorts = matrix.inToOut[inPortId];
-        if (std::find(outPorts.begin(), outPorts.end(), outPortId) ==
-            outPorts.end()) {
-          outPorts.push_back(outPortId);
+    llvm::StringRef opName = getNodeAttrStr(node, "op_name");
+
+    if (opName == "fabric.switch" || opName == "fabric.temporal_sw") {
+      // Use connectivity_table if available, else full crossbar.
+      buildSwitchConnectivity(node, matrix);
+    } else {
+      // Single-in-single-out routing (add_tag, map_tag, del_tag, fifo).
+      for (IdIndex inPortId : node->inputPorts) {
+        for (IdIndex outPortId : node->outputPorts) {
+          auto &outPorts = matrix.inToOut[inPortId];
+          if (std::find(outPorts.begin(), outPorts.end(), outPortId) ==
+              outPorts.end()) {
+            outPorts.push_back(outPortId);
+          }
         }
       }
     }

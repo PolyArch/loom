@@ -9,6 +9,18 @@ set(MAPPER_UNIT_TESTS
   graph_ownership_delete
   graph_sentinel_create
   graph_sentinel_adg
+  mapping_state_init
+  mapping_state_map_node
+  mapping_state_map_edge
+  mapping_state_checkpoint
+  validation_c1_compat
+  routing_direct
+  cost_weights
+  action_log_record
+  connectivity_matrix
+  cpsat_mode_select
+  cpsat_subproblem_extract
+  cpsat_available
 )
 
 set(MAPPER_TEST_TARGETS)

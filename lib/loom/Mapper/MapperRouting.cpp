@@ -44,6 +44,32 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
   if (it == connectivity.outToIn.end() || it->second != dstPort)
     return false;
 
+  // C3: Check exclusivity - find the ADG edge and verify it's not
+  // already exclusively used by another SW edge.
+  for (IdIndex edgeId : sp->connectedEdges) {
+    const Edge *hwEdge = adg.getEdge(edgeId);
+    if (!hwEdge || hwEdge->srcPort != srcPort || hwEdge->dstPort != dstPort)
+      continue;
+
+    if (edgeId < state.hwEdgeToSwEdges.size() &&
+        !state.hwEdgeToSwEdges[edgeId].empty()) {
+      // The edge is already used. Check if the destination node is a
+      // routing node (tagged sharing allowed) or exclusive.
+      const Node *dstNode = adg.getNode(dp->parentNode);
+      if (!dstNode)
+        return false;
+      llvm::StringRef resClass = getResClass(dstNode);
+      if (resClass != "routing") {
+        // Exclusive edge already in use.
+        return false;
+      }
+      // For routing nodes, check tag capacity (allow up to 256 tags).
+      if (state.hwEdgeToSwEdges[edgeId].size() >= 256)
+        return false;
+    }
+    break;
+  }
+
   return true;
 }
 
@@ -84,17 +110,17 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort,
   if (srcHwPort == INVALID_ID || dstHwPort == INVALID_ID)
     return path;
 
-  // Direct connection check.
+  // Direct connection check with legality.
   auto directIt = connectivity.outToIn.find(srcHwPort);
   if (directIt != connectivity.outToIn.end() &&
-      directIt->second == dstHwPort) {
+      directIt->second == dstHwPort &&
+      isEdgeLegal(srcHwPort, dstHwPort, state, adg)) {
     path.push_back(srcHwPort);
     path.push_back(dstHwPort);
     return path;
   }
 
-  // BFS through connectivity matrix.
-  // State: current port ID, path so far.
+  // BFS through connectivity matrix with edge legality checks.
   struct BFSEntry {
     IdIndex portId;
     llvm::SmallVector<IdIndex, 8> pathSoFar;
@@ -120,6 +146,10 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort,
 
     IdIndex nextInputPort = physIt->second;
     if (visited.count(nextInputPort))
+      continue;
+
+    // C2/C3: Check if this physical edge is legal.
+    if (!isEdgeLegal(current.portId, nextInputPort, state, adg))
       continue;
 
     visited.insert(nextInputPort);
@@ -185,7 +215,11 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
       continue;
     }
 
-    state.mapEdge(edgeId, path, dfg, adg);
+    auto mapResult = state.mapEdge(edgeId, path, dfg, adg);
+    if (mapResult != ActionResult::Success) {
+      allRouted = false;
+      continue;
+    }
   }
 
   return allRouted;
