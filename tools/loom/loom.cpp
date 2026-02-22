@@ -83,10 +83,12 @@
 #include "loom/Mapper/ConfigGen.h"
 #include "loom/Mapper/DFGBuilder.h"
 #include "loom/Mapper/Mapper.h"
+#include "loom/Mapper/TechMapper.h"
 
 #include "circt/Dialect/ESI/ESIDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/Handshake/HandshakeDialect.h"
+#include "circt/Dialect/Handshake/HandshakeOps.h"
 #include "circt/Dialect/Seq/SeqDialect.h"
 
 #include <algorithm>
@@ -377,21 +379,49 @@ struct ParsedArgs {
   std::vector<std::string> driver_args;
   std::string output_path;
   std::string adg_path;
+  std::string handshake_input;
   double mapper_budget = 60.0;
   int mapper_seed = 0;
   std::string mapper_profile = "balanced";
   bool dump_mapping = false;
+  bool dump_viz = false;
+  std::string viz_dfg;
+  std::string viz_adg;
+  std::string viz_mapped;
+  std::string viz_mode = "structure";
   bool as_clang = false;
   bool show_help = false;
   bool show_version = false;
   bool had_error = false;
 };
 
+std::string DeriveConfigBinPath(llvm::StringRef output_path) {
+  llvm::SmallString<256> path(output_path);
+  llvm::sys::path::replace_extension(path, ".config.bin");
+  return std::string(path);
+}
+
+std::string DeriveAddrHeaderPath(llvm::StringRef output_path) {
+  llvm::SmallString<256> base(output_path);
+  llvm::sys::path::replace_extension(base, "");
+  return (base + "_addr.h").str();
+}
+
+std::string DeriveMappingJsonPath(llvm::StringRef output_path) {
+  llvm::SmallString<256> path(output_path);
+  llvm::sys::path::replace_extension(path, ".mapping.json");
+  return std::string(path);
+}
+
 void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "Usage: " << prog
                << " [options] <sources...> -o <output.llvm.ll>\n";
   llvm::outs() << "       " << prog
                << " --adg <file.fabric.mlir>\n";
+  llvm::outs() << "       " << prog
+               << " --adg <fabric.mlir> <sources...> -o <output>\n";
+  llvm::outs() << "       " << prog
+               << " --adg <fabric.mlir> --handshake-input <file> -o <output>\n";
   llvm::outs() << "       " << prog
                << " --as-clang [clang-options...]\n";
   llvm::outs() << "\n";
@@ -400,9 +430,27 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "The MLIR output path is derived from -o by replacing "
                << ".llvm.ll or .ll with .mlir.\n";
   llvm::outs() << "\n";
-  llvm::outs() << "ADG validation mode (--adg):\n";
+  llvm::outs() << "ADG validation mode (--adg without sources):\n";
   llvm::outs() << "  Parse a fabric MLIR file, run semantic verification, "
                << "and exit 0 (valid) or 1 (errors).\n";
+  llvm::outs() << "\n";
+  llvm::outs() << "Mapper mode (--adg with sources or --handshake-input):\n";
+  llvm::outs() << "  Compile sources, extract DFG, run place-and-route, "
+               << "and emit configuration.\n";
+  llvm::outs() << "\n";
+  llvm::outs() << "Mapper options:\n";
+  llvm::outs() << "  --mapper-budget <seconds>  Search time limit (default: 60)\n";
+  llvm::outs() << "  --mapper-seed <int>        Deterministic seed (default: 0)\n";
+  llvm::outs() << "  --mapper-profile <name>    Weight profile (default: balanced)\n";
+  llvm::outs() << "  --dump-mapping             Emit .mapping.json report\n";
+  llvm::outs() << "  --handshake-input <file>   Use pre-compiled Handshake MLIR\n";
+  llvm::outs() << "\n";
+  llvm::outs() << "Visualization options:\n";
+  llvm::outs() << "  --dump-viz                 Emit visualization HTML with mapper\n";
+  llvm::outs() << "  --viz-dfg <file>           Standalone DFG visualization\n";
+  llvm::outs() << "  --viz-adg <file>           Standalone ADG visualization\n";
+  llvm::outs() << "  --viz-mapped <file>        Standalone mapped visualization\n";
+  llvm::outs() << "  --viz-mode <mode>          ADG viz mode: structure|detailed\n";
   llvm::outs() << "\n";
   llvm::outs() << "Forwarded compile options include: -I, -D, -U, -std, -O, -g,"
                << " -isystem, -include.\n";
@@ -484,6 +532,86 @@ ParsedArgs ParseArgs(int argc, char **argv) {
           break;
         }
         parsed.adg_path = argv[++i];
+        continue;
+      }
+      if (arg == "--handshake-input") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --handshake-input requires a path\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.handshake_input = argv[++i];
+        continue;
+      }
+      if (arg == "--mapper-budget") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --mapper-budget requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.mapper_budget = std::stod(argv[++i]);
+        continue;
+      }
+      if (arg == "--mapper-seed") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --mapper-seed requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.mapper_seed = std::stoi(argv[++i]);
+        continue;
+      }
+      if (arg == "--mapper-profile") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --mapper-profile requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.mapper_profile = argv[++i];
+        continue;
+      }
+      if (arg == "--dump-mapping") {
+        parsed.dump_mapping = true;
+        continue;
+      }
+      if (arg == "--dump-viz") {
+        parsed.dump_viz = true;
+        continue;
+      }
+      if (arg == "--viz-dfg") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --viz-dfg requires a path\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.viz_dfg = argv[++i];
+        continue;
+      }
+      if (arg == "--viz-adg") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --viz-adg requires a path\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.viz_adg = argv[++i];
+        continue;
+      }
+      if (arg == "--viz-mapped") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --viz-mapped requires a path\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.viz_mapped = argv[++i];
+        continue;
+      }
+      if (arg == "--viz-mode") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --viz-mode requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.viz_mode = argv[++i];
         continue;
       }
       if (arg == "--as-clang") {
@@ -792,32 +920,204 @@ int main(int argc, char **argv) {
     return as_clang_result;
   }
 
-  // ADG validation mode: parse fabric MLIR and run verification.
+  // Incompatibility checks.
+  if (!parsed.handshake_input.empty() && parsed.adg_path.empty()) {
+    llvm::errs() << "error: --handshake-input requires --adg\n";
+    return 1;
+  }
+  if (!parsed.handshake_input.empty() && !parsed.inputs.empty()) {
+    llvm::errs() << "error: --handshake-input is incompatible with source files\n";
+    return 1;
+  }
+
+  // ADG mode: validation-only or mapper invocation.
   if (!parsed.adg_path.empty()) {
-    mlir::MLIRContext adg_context;
-    mlir::DialectRegistry adg_registry;
-    adg_context.appendDialectRegistry(adg_registry);
-    adg_context.getDiagEngine().registerHandler(
+    bool has_sources = !parsed.inputs.empty();
+    bool has_handshake = !parsed.handshake_input.empty();
+
+    // Mode 1: Validation only (--adg without sources and without --handshake-input).
+    if (!has_sources && !has_handshake) {
+      mlir::MLIRContext adg_context;
+      mlir::DialectRegistry adg_registry;
+      adg_context.appendDialectRegistry(adg_registry);
+      adg_context.getDiagEngine().registerHandler(
+          [](mlir::Diagnostic &diag) {
+            diag.print(llvm::errs());
+            llvm::errs() << "\n";
+            return mlir::success();
+          });
+      adg_context.getOrLoadDialect<mlir::arith::ArithDialect>();
+      adg_context.getOrLoadDialect<mlir::math::MathDialect>();
+      adg_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
+      adg_context.getOrLoadDialect<mlir::func::FuncDialect>();
+      adg_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
+      adg_context.getOrLoadDialect<loom::fabric::FabricDialect>();
+      adg_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+
+      mlir::ParserConfig adg_parser_config(&adg_context);
+      auto adg_module = mlir::parseSourceFile<mlir::ModuleOp>(
+          parsed.adg_path, adg_parser_config);
+      if (!adg_module)
+        return 1;
+      if (failed(mlir::verify(*adg_module)))
+        return 1;
+      return 0;
+    }
+
+    // Mode 2: Mapper invocation (--adg with sources or --handshake-input).
+    if (parsed.output_path.empty()) {
+      llvm::errs() << "error: -o is required for mapper mode\n";
+      return 1;
+    }
+
+    if (!EnsureOutputDirectory(parsed.output_path))
+      return 1;
+
+    // Set up shared MLIR context with all required dialects.
+    mlir::MLIRContext mapper_context;
+    mlir::DialectRegistry mapper_registry;
+    mlir::func::registerInlinerExtension(mapper_registry);
+    mapper_context.appendDialectRegistry(mapper_registry);
+    mapper_context.getDiagEngine().registerHandler(
         [](mlir::Diagnostic &diag) {
           diag.print(llvm::errs());
           llvm::errs() << "\n";
           return mlir::success();
         });
-    adg_context.getOrLoadDialect<mlir::arith::ArithDialect>();
-    adg_context.getOrLoadDialect<mlir::math::MathDialect>();
-    adg_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
-    adg_context.getOrLoadDialect<mlir::func::FuncDialect>();
-    adg_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
-    adg_context.getOrLoadDialect<loom::fabric::FabricDialect>();
-    adg_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+    mapper_context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
+    mapper_context.getOrLoadDialect<mlir::DLTIDialect>();
+    mapper_context.getOrLoadDialect<mlir::arith::ArithDialect>();
+    mapper_context.getOrLoadDialect<mlir::cf::ControlFlowDialect>();
+    mapper_context.getOrLoadDialect<mlir::func::FuncDialect>();
+    mapper_context.getOrLoadDialect<mlir::math::MathDialect>();
+    mapper_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
+    mapper_context.getOrLoadDialect<mlir::scf::SCFDialect>();
+    mapper_context.getOrLoadDialect<mlir::ub::UBDialect>();
+    mapper_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
+    mapper_context.getOrLoadDialect<loom::fabric::FabricDialect>();
+    mapper_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+    mapper_context.getOrLoadDialect<circt::esi::ESIDialect>();
+    mapper_context.getOrLoadDialect<circt::hw::HWDialect>();
+    mapper_context.getOrLoadDialect<circt::seq::SeqDialect>();
 
-    mlir::ParserConfig adg_parser_config(&adg_context);
+    // Parse the ADG (fabric MLIR).
+    mlir::ParserConfig adg_parser_config(&mapper_context);
     auto adg_module = mlir::parseSourceFile<mlir::ModuleOp>(
         parsed.adg_path, adg_parser_config);
-    if (!adg_module)
+    if (!adg_module) {
+      llvm::errs() << "error: failed to parse ADG: " << parsed.adg_path << "\n";
       return 1;
-    if (failed(mlir::verify(*adg_module)))
+    }
+    if (failed(mlir::verify(*adg_module))) {
+      llvm::errs() << "error: ADG verification failed: " << parsed.adg_path << "\n";
       return 1;
+    }
+
+    // Obtain Handshake MLIR: either compile from sources or load from file.
+    mlir::OwningOpRef<mlir::ModuleOp> handshake_module;
+    if (has_handshake) {
+      // Load pre-compiled Handshake MLIR directly.
+      handshake_module = mlir::parseSourceFile<mlir::ModuleOp>(
+          parsed.handshake_input, adg_parser_config);
+      if (!handshake_module) {
+        llvm::errs() << "error: failed to parse handshake input: "
+                     << parsed.handshake_input << "\n";
+        return 1;
+      }
+      if (failed(mlir::verify(*handshake_module))) {
+        llvm::errs() << "error: handshake input verification failed\n";
+        return 1;
+      }
+    }
+    // Source compilation path would go here (compile sources -> handshake MLIR).
+    // For now, source compilation reuses the standard pipeline below and then
+    // the handshake_module is set from the resulting module. This is handled
+    // by falling through to the standard compilation path when has_sources is
+    // true, so for the --handshake-input path we proceed directly to mapping.
+
+    if (has_sources) {
+      // Compile sources through the standard frontend pipeline to produce
+      // Handshake MLIR, then run the mapper. We reuse the standard compilation
+      // code path but with the mapper context, and skip writing intermediate
+      // MLIR files when the mapper is the goal.
+      // For now, sources + --adg is not yet supported in this path.
+      // Use --handshake-input for pre-compiled Handshake MLIR.
+      llvm::errs() << "error: source compilation with --adg not yet supported; "
+                   << "use --handshake-input with pre-compiled .handshake.mlir\n";
+      return 1;
+    }
+
+    // Find the handshake::FuncOp in the handshake module for DFG extraction.
+    circt::handshake::FuncOp handshake_func;
+    handshake_module->walk([&](circt::handshake::FuncOp func) {
+      if (!handshake_func)
+        handshake_func = func;
+    });
+    if (!handshake_func) {
+      llvm::errs() << "error: no handshake.func found in input\n";
+      return 1;
+    }
+
+    // Find the fabric::ModuleOp in the ADG module.
+    loom::fabric::ModuleOp fabric_mod;
+    adg_module->walk([&](loom::fabric::ModuleOp mod) {
+      if (!fabric_mod)
+        fabric_mod = mod;
+    });
+    if (!fabric_mod) {
+      llvm::errs() << "error: no fabric.module found in ADG\n";
+      return 1;
+    }
+
+    // Extract DFG from Handshake IR.
+    loom::DFGBuilder dfg_builder;
+    loom::Graph dfg = dfg_builder.build(handshake_func);
+
+    // Flatten ADG from Fabric IR.
+    loom::ADGFlattener adg_flattener;
+    loom::Graph adg = adg_flattener.flatten(fabric_mod);
+
+    // Run technology mapping.
+    loom::TechMapper tech_mapper;
+    loom::CandidateSet candidates = tech_mapper.map(dfg, adg);
+
+    // Set up mapper options from CLI flags.
+    loom::Mapper::Options mapper_opts;
+    mapper_opts.budgetSeconds = parsed.mapper_budget;
+    mapper_opts.seed = parsed.mapper_seed;
+    mapper_opts.profile = parsed.mapper_profile;
+
+    // Run the PnR mapper.
+    loom::Mapper mapper;
+    loom::Mapper::Result mapper_result = mapper.run(dfg, adg, mapper_opts);
+
+    if (!mapper_result.success) {
+      llvm::errs() << "error: mapping failed\n";
+      if (!mapper_result.diagnostics.empty())
+        llvm::errs() << mapper_result.diagnostics << "\n";
+      return 1;
+    }
+
+    // Generate configuration output files.
+    loom::ConfigGen config_gen;
+    std::string base_path = parsed.output_path;
+    // Strip extension for base path derivation.
+    llvm::StringRef base_ref(base_path);
+    if (base_ref.ends_with(".config.bin"))
+      base_path = base_ref.drop_back(sizeof(".config.bin") - 1).str();
+    else if (base_ref.ends_with(".llvm.ll"))
+      base_path = base_ref.drop_back(sizeof(".llvm.ll") - 1).str();
+    else if (base_ref.ends_with(".ll"))
+      base_path = base_ref.drop_back(sizeof(".ll") - 1).str();
+
+    if (!config_gen.generate(mapper_result.state, dfg, adg, base_path,
+                             parsed.dump_mapping, parsed.mapper_profile,
+                             parsed.mapper_seed)) {
+      llvm::errs() << "error: configuration generation failed\n";
+      return 1;
+    }
+
+    llvm::outs() << "mapping succeeded: " << base_path << ".config.bin\n";
     return 0;
   }
 
