@@ -719,12 +719,32 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
       // Skip PEs already occupied by another non-group node to prevent
       // port collisions (exclusive PE ports can only serve one operation).
       // Temporal PEs can host multiple SW nodes in different time slots.
+      // Memory nodes allow up to numRegion SW nodes (capacity sharing).
       if (!candidate.isGroup &&
           !state.hwNodeToSwNodes[candidate.hwNodeId].empty()) {
         const Node *hwNode = adg.getNode(candidate.hwNodeId);
-        if (!hwNode ||
-            getNodeResourceClass(hwNode) != "temporal")
+        if (!hwNode)
           continue;
+        llvm::StringRef resClass = getNodeResourceClass(hwNode);
+        if (resClass == "temporal") {
+          // Temporal PEs allow multiple SW nodes in different time slots.
+        } else if (resClass == "memory") {
+          // Memory nodes allow up to numRegion SW nodes.
+          int64_t numRegion = 1;
+          for (auto &attr : hwNode->attributes) {
+            if (attr.getName() == "numRegion") {
+              if (auto intAttr =
+                      mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+                numRegion = intAttr.getInt();
+            }
+          }
+          if (static_cast<int64_t>(
+                  state.hwNodeToSwNodes[candidate.hwNodeId].size()) >=
+              numRegion)
+            continue;
+        } else {
+          continue; // Non-temporal, non-memory PEs enforce exclusivity.
+        }
       }
 
       // For group candidates, verify all members are still unplaced.

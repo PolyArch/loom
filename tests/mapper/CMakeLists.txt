@@ -35,6 +35,7 @@ set(MAPPER_UNIT_TESTS
   template_resource_coverage
   placement_exclusivity
   unmap_node_ports
+  mapper_run_integration
 )
 
 set(MAPPER_TEST_TARGETS)
@@ -62,6 +63,7 @@ endforeach()
 add_custom_target(check-loom-mapper
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_test.sh"
     "${CMAKE_BINARY_DIR}/tests/mapper"
+  COMMAND bash "${CMAKE_SOURCE_DIR}/tests/mapper/unit/template_coverage_real.sh"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS ${MAPPER_TEST_TARGETS}
 )

@@ -29,7 +29,7 @@ if [[ "${1:-}" == "--tier" ]]; then
   TIER="${1:-quick}"; shift || true
 fi
 
-# Quick tier line-count threshold (apps with fewer lines are quick-tier).
+# Quick tier line-count threshold (apps with fewer lines are quick-tier for scheduling).
 QUICK_THRESHOLD=400
 # Mapper budget per tier.
 QUICK_BUDGET=25
@@ -45,13 +45,27 @@ FULL_PASS_RATE=80
 # Smoke test apps (must all pass for quick-tier acceptance).
 SMOKE_APPS=(vecsum dotprod matmul conv2d)
 
+# --- Operation counting ---
+# Counts non-sentinel operations in the first handshake.func body with loom.accel.
+count_ops() {
+  local mlir_file="$1"
+  local count
+  count=$(awk '
+    /handshake\.func.*loom\.accel/ { if (done==0) inside=1; next }
+    inside && /^[[:space:]]*\}/ { inside=0; done=1 }
+    inside && /=/ { ops++ }
+    END { print ops+0 }
+  ' "$mlir_file")
+  echo "$count"
+}
+
 # --- Template selection ---
-# Selects the smallest adequate template for an app based on line count.
+# Selects the smallest adequate template for an app based on operation count.
 select_template() {
-  local line_count="$1"
-  if (( line_count <= 280 )); then
+  local op_count="$1"
+  if (( op_count <= 30 )); then
     echo "loom_cgra_small"
-  elif (( line_count <= 800 )); then
+  elif (( op_count <= 120 )); then
     echo "loom_cgra_medium"
   else
     echo "loom_cgra_large"
@@ -110,7 +124,8 @@ for app_dir in "${app_dirs[@]}"; do
     continue
   fi
 
-  # Classify tier by line count.
+  # Count operations in the accelerator function.
+  op_count=$(count_ops "${handshake_file}")
   line_count=$(wc -l < "${handshake_file}")
   if [[ "${TIER}" == "quick" ]] && (( line_count >= QUICK_THRESHOLD )); then
     # Check if this is a smoke test (always include smoke tests in quick).
@@ -128,7 +143,7 @@ for app_dir in "${app_dirs[@]}"; do
   fi
 
   # Select template and budget.
-  template_name=$(select_template "${line_count}")
+  template_name=$(select_template "${op_count}")
   template_file="${TEMPLATES_DIR}/${template_name}.fabric.mlir"
 
   if [[ ! -f "${template_file}" ]]; then

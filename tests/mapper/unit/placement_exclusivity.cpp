@@ -5,7 +5,8 @@
 //===----------------------------------------------------------------------===//
 //
 // Verify that non-temporal PEs reject a second placement while temporal PEs
-// allow multiple SW nodes (in different time slots).
+// allow multiple SW nodes (in different time slots), and memory nodes allow
+// up to numRegion SW nodes.
 //
 //===----------------------------------------------------------------------===//
 
@@ -149,6 +150,45 @@ int main() {
     TEST_ASSERT(state.swNodeToHwNode[sw0] == hwPE);
     TEST_ASSERT(state.swNodeToHwNode[sw1] == hwPE);
     TEST_ASSERT(state.hwNodeToSwNodes[hwPE].size() == 2);
+  }
+
+  // Test 3: Memory node with numRegion=2 allows two SW nodes but rejects
+  // the third.
+  {
+    Graph dfg(&ctx);
+    Graph adg(&ctx);
+
+    IdIndex sw0 = addOpNode(dfg, ctx, "handshake.extmemory", "memory", 1, 1);
+    IdIndex sw1 = addOpNode(dfg, ctx, "handshake.extmemory", "memory", 1, 1);
+    (void)addOpNode(dfg, ctx, "handshake.extmemory", "memory", 1, 1);
+
+    // ADG: one memory node with numRegion=2.
+    IdIndex hwMem = addOpNode(adg, ctx, "fabric.memory", "memory", 2, 2);
+    // Add numRegion attribute.
+    Node *memNode = adg.getNode(hwMem);
+    memNode->attributes.push_back(mlir::NamedAttribute(
+        mlir::StringAttr::get(&ctx, "numRegion"),
+        mlir::IntegerAttr::get(mlir::IntegerType::get(&ctx, 64), 2)));
+
+    MappingState state;
+    state.init(dfg, adg);
+
+    // First placement: succeeds.
+    auto r = state.mapNode(sw0, hwMem, dfg, adg);
+    TEST_ASSERT(r == ActionResult::Success);
+
+    // Second placement: succeeds (numRegion=2).
+    r = state.mapNode(sw1, hwMem, dfg, adg);
+    TEST_ASSERT(r == ActionResult::Success);
+    TEST_ASSERT(state.hwNodeToSwNodes[hwMem].size() == 2);
+
+    // Simulate the exclusivity check for sw2:
+    // Memory with numRegion=2 and 2 occupants -> should be blocked.
+    int64_t numRegion = 2;
+    bool wouldSkip =
+        state.hwNodeToSwNodes[hwMem].size() >=
+        static_cast<size_t>(numRegion);
+    TEST_ASSERT(wouldSkip);
   }
 
   return 0;

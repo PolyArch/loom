@@ -831,6 +831,9 @@ def generate_module(out):
     lines.append(f"  %andi_i64_0 = fabric.instance @pe_andi_i64({port('i64')}, {port('i64')}) "
                  f'{{sym_name = "andi_i64_0"}} : (i64, i64) -> i64')
     feed("i64", "%andi_i64_0")
+    lines.append(f"  %ori_i64_0 = fabric.instance @pe_ori_i64({port('i64')}, {port('i64')}) "
+                 f'{{sym_name = "ori_i64_0"}} : (i64, i64) -> i64')
+    feed("i64", "%ori_i64_0")
     lines.append(f"  %xori_i64_0 = fabric.instance @pe_xori_i64({port('i64')}, {port('i64')}) "
                  f'{{sym_name = "xori_i64_0"}} : (i64, i64) -> i64')
     feed("i64", "%xori_i64_0")
