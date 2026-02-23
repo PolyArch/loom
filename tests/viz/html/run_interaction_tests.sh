@@ -45,10 +45,23 @@ set -e
 output=$(cat "${tmpfile}")
 rm -f "${tmpfile}"
 
-# Detect process-execution restrictions (sandboxed environments).
-# Patterns cover: EPERM from spawnSync, EACCES, ENOENT, and the
-# browser-launch "Operation not permitted" fatal path.
-if echo "${output}" | grep -qE 'EPERM|EACCES|ENOENT|Operation not permitted|browserType\.launch|Failed to launch'; then
+# Detect browser-launch infrastructure failures (sandboxed environments).
+# Only skip when errors are clearly from browser/process launch, not from
+# functional test failures that happen to mention similar error tokens.
+#
+# Launch-specific signatures:
+#   - "browserType.launch" or "Failed to launch" (Playwright launch path)
+#   - "spawnSync" with EPERM/EACCES/ENOENT (process spawn restrictions)
+#   - "Operation not permitted" on the same line as "launch" or "spawn"
+is_launch_failure=false
+if echo "${output}" | grep -qE 'browserType\.launch|Failed to launch'; then
+  is_launch_failure=true
+elif echo "${output}" | grep -qE 'spawnSync.*(EPERM|EACCES|ENOENT)'; then
+  is_launch_failure=true
+elif echo "${output}" | grep -qiE '(launch|spawn).*(Operation not permitted|EPERM)'; then
+  is_launch_failure=true
+fi
+if [[ "${is_launch_failure}" == "true" ]]; then
   echo "SKIP: Playwright cannot launch browser in this environment" >&2
   echo "${output}" | head -5 >&2
   exit 0
