@@ -115,11 +115,11 @@ run_with_stub \
   0 \
   0
 
-# Test 8: Browser-specific spawn/permission error => SKIP (exit 0).
-# Only skip when spawn/permission error references a browser binary.
+# Test 8: Launch/spawn + browser binary + permission error => SKIP (exit 0).
+# All three markers required: launch/spawn context, browser binary, permission error.
 run_with_stub \
-  "test-8: chromium EPERM => skip" \
-  "Error: chromium process exited with EPERM Operation not permitted" \
+  "test-8: spawn chromium EPERM => skip" \
+  "Error: spawn chromium EPERM Operation not permitted" \
   1 \
   0
 
@@ -137,6 +137,15 @@ run_with_stub \
 run_with_stub \
   "test-10: generic launch EPERM => fail" \
   "FAILED test.spec.js:55 launch worker EPERM denied
+  1 failed" \
+  1 \
+  1
+
+# Test 11: Browser binary + EPERM without launch/spawn context => FAIL (exit non-zero).
+# chromium + EPERM alone must NOT trigger skip without launch/spawn marker.
+run_with_stub \
+  "test-11: chromium EPERM without launch/spawn => fail" \
+  "FAILED interaction.spec.js: chromium helper EPERM while validating app behavior
   1 failed" \
   1 \
   1
