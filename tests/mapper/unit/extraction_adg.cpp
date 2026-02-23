@@ -211,32 +211,47 @@ int main() {
     }
   }
 
-  // Test 5: Sentinel-to-internal 1-to-1 edge mapping.
-  // Each ModuleInputNode output port must have exactly one outgoing edge
+  // Test 5: Sentinel-to-internal 1-to-1 edge cardinality.
+  // Each ModuleInputNode output port must have EXACTLY 1 outgoing edge
   // (1-to-1 connection from sentinel to internal component).
-  // Each ModuleOutputNode input port must have at least one incoming edge
+  // Each ModuleOutputNode input port must have EXACTLY 1 incoming edge
   // (1-to-1 connection from internal component to sentinel).
   {
+    unsigned inputSentinelPorts = 0;
+    unsigned outputSentinelPorts = 0;
+
     for (auto *node : adg.nodeRange()) {
       if (node->kind == Node::ModuleInputNode) {
         for (IdIndex portId : node->outputPorts) {
-          // Sentinel output port must appear in outToIn.
-          TEST_ASSERT(matrix.outToIn.count(portId) > 0);
+          ++inputSentinelPorts;
+          // Sentinel output port must appear exactly once in outToIn.
+          TEST_ASSERT(matrix.outToIn.count(portId) == 1);
+          // The port must have exactly 1 connected edge.
+          const Port *port = adg.getPort(portId);
+          TEST_ASSERT(port != nullptr);
+          TEST_ASSERT(port->connectedEdges.size() == 1);
         }
       } else if (node->kind == Node::ModuleOutputNode) {
         for (IdIndex portId : node->inputPorts) {
-          // Sentinel input port must be the destination of at least one edge.
-          bool foundIncoming = false;
+          ++outputSentinelPorts;
+          // Sentinel input port must be the destination of exactly 1 edge.
+          unsigned incomingCount = 0;
           for (const auto &entry : matrix.outToIn) {
-            if (entry.second == portId) {
-              foundIncoming = true;
-              break;
-            }
+            if (entry.second == portId)
+              ++incomingCount;
           }
-          TEST_ASSERT(foundIncoming);
+          TEST_ASSERT(incomingCount == 1);
+          // The port must have exactly 1 connected edge.
+          const Port *port = adg.getPort(portId);
+          TEST_ASSERT(port != nullptr);
+          TEST_ASSERT(port->connectedEdges.size() == 1);
         }
       }
     }
+
+    // Ensure we actually checked sentinel ports.
+    TEST_ASSERT(inputSentinelPorts > 0);
+    TEST_ASSERT(outputSentinelPorts > 0);
   }
 
   // Test 6: Resource class coverage.

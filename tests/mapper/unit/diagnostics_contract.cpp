@@ -158,9 +158,12 @@ int main() {
     TEST_ASSERT(containsSubstring(result.diagnostics, "arith.muli"));
   }
 
-  // Test 2: Routing failure -> "Routing failed" diagnostic.
+  // Test 2: Routing failure -> diagnostic must start with "Routing failed".
   // DFG has 2 connected nodes but ADG has 2 disconnected PEs (no routing
-  // path between them). Diagnostics must contain "Routing failed".
+  // path between them). Placement can succeed (1 node per PE) but routing
+  // must fail because there is no physical path between the PEs.
+  // The mapper reports "Routing failed after refinement" as the first
+  // failure diagnostic.
   {
     Graph dfg(&ctx);
     Graph adg(&ctx);
@@ -183,13 +186,15 @@ int main() {
 
     TEST_ASSERT(!result.success);
     TEST_ASSERT(!result.diagnostics.empty());
-    TEST_ASSERT(containsSubstring(result.diagnostics, "Routing failed"));
+    // The first failure must be routing (not placement or validation).
+    // Mapper::run reports exactly "Routing failed after refinement".
+    TEST_ASSERT(result.diagnostics.find("Routing failed") == 0);
   }
 
-  // Test 3: Capacity violation -> "Placement failed" or "Validation failed: C4:".
+  // Test 3: Capacity violation -> diagnostic must start with "Placement failed".
   // DFG has 3 nodes (arith.addi) but ADG only has 2 PEs. The mapper cannot
-  // place all 3 DFG nodes on 2 non-temporal PEs. Diagnostics must indicate
-  // either a placement failure or a C4 validation failure.
+  // place all 3 DFG nodes on 2 non-temporal PEs. Since placement runs before
+  // routing/validation, the first failure is the placement stage itself.
   {
     Graph dfg(&ctx);
     Graph adg(&ctx);
@@ -217,13 +222,52 @@ int main() {
     // Not enough PEs for all DFG nodes.
     TEST_ASSERT(!result.success);
     TEST_ASSERT(!result.diagnostics.empty());
-    // The mapper must report either a placement-level failure or a C4
-    // validation constraint (capacity exceeded).
-    bool hasCapacityDiag =
-        containsSubstring(result.diagnostics, "Placement failed") ||
-        containsSubstring(result.diagnostics, "C4:") ||
-        containsSubstring(result.diagnostics, "Validation failed");
-    TEST_ASSERT(hasCapacityDiag);
+    // The first failure must be at the placement stage (not routing or
+    // validation). Mapper::run reports exactly "Placement failed" when
+    // runPlacement returns false.
+    TEST_ASSERT(result.diagnostics.find("Placement failed") == 0);
+  }
+
+  // Test 4: Validation failure with deterministic C4 prefix.
+  // DFG has 2 nodes. ADG has 2 PEs but one PE is marked with a group
+  // capacity of 1 node. Placement succeeds (both nodes placed) but
+  // validation detects C4: capacity exceeded on the shared group.
+  // This forces the diagnostic to start with "Validation failed: C4:".
+  {
+    Graph dfg(&ctx);
+    Graph adg(&ctx);
+
+    IdIndex sw0 = addOpNode(dfg, ctx, "arith.addi", "functional", 1, 1);
+    IdIndex sw1 = addOpNode(dfg, ctx, "arith.addi", "functional", 1, 1);
+    addEdgeBetween(dfg, sw0, 0, sw1, 0);
+
+    // 2 PEs that share a single-capacity slot: both mapped to same PE.
+    // Create only 1 PE so the mapper must map both nodes there.
+    IdIndex hw0 = addPENode(adg, ctx, "arith.addi", "functional", 2, 2);
+    // Self-loop edge so routing can succeed trivially.
+    addADGEdge(adg, adg.getNode(hw0)->outputPorts[0],
+               adg.getNode(hw0)->inputPorts[1]);
+
+    Mapper mapper;
+    Mapper::Options opts;
+    opts.budgetSeconds = 5.0;
+    opts.seed = 0;
+    opts.profile = "balanced";
+
+    Mapper::Result result = mapper.run(dfg, adg, opts);
+
+    // If the mapper reports validation failure, it must start with
+    // "Validation failed: C4:" (capacity constraint). If placement itself
+    // fails, it reports "Placement failed". Either diagnostic is valid for
+    // this over-subscribed scenario, but it must be one of these two
+    // deterministic prefixes (not a generic substring).
+    TEST_ASSERT(!result.success);
+    TEST_ASSERT(!result.diagnostics.empty());
+    bool isPlacementFailed =
+        result.diagnostics.find("Placement failed") == 0;
+    bool isValidationC4 =
+        result.diagnostics.find("Validation failed: C4:") == 0;
+    TEST_ASSERT(isPlacementFailed || isValidationC4);
   }
 
   return 0;

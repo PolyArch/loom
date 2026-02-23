@@ -346,6 +346,104 @@ int main() {
     cleanupConfigFiles(basePathStr);
   }
 
+  // Test 4: Switch route enable bits with exact golden encoding.
+  // ADG: 1 PE (arith.addi, 1 in, 1 out) + 1 switch (2 in, 2 out).
+  // DFG: 1 node (arith.addi).
+  // Manual mapping: SW node -> PE. Route path goes through the switch
+  // from switch input[0] to switch output[1].
+  //
+  // genSwitchConfig packs 1 bit per (input, output) pair:
+  //   for o in [0..numOut), for i in [0..numIn):
+  //     bit at position (o * numIn + i)
+  //
+  // With numIn=2, numOut=2, route input[0]->output[1]:
+  //   bit 0 (o=0,i=0) = 0
+  //   bit 1 (o=0,i=1) = 0
+  //   bit 2 (o=1,i=0) = 1  <-- active transition
+  //   bit 3 (o=1,i=1) = 0
+  // Expected word = 0x4.
+  {
+    Graph dfg(&ctx);
+    Graph adg(&ctx);
+
+    IdIndex sw0 = addOpNode(dfg, ctx, "arith.addi", "functional", 1, 1);
+
+    // ADG: 1 PE + 1 switch.
+    IdIndex hw0 = addPENode(adg, ctx, "arith.addi", "functional", 1, 1);
+    IdIndex csw = addPENode(adg, ctx, "fabric.switch", "routing", 2, 2);
+
+    // Edges: PE out -> switch in[0], switch out[1] -> PE in[0].
+    addADGEdge(adg, adg.getNode(hw0)->outputPorts[0],
+               adg.getNode(csw)->inputPorts[0]);
+    addADGEdge(adg, adg.getNode(csw)->outputPorts[1],
+               adg.getNode(hw0)->inputPorts[0]);
+
+    // Manually construct MappingState.
+    MappingState state;
+    state.init(dfg, adg);
+
+    // Map the DFG node to the PE.
+    state.mapNode(sw0, hw0, dfg, adg);
+    state.mapPort(dfg.getNode(sw0)->inputPorts[0],
+                  adg.getNode(hw0)->inputPorts[0], dfg, adg);
+    state.mapPort(dfg.getNode(sw0)->outputPorts[0],
+                  adg.getNode(hw0)->outputPorts[0], dfg, adg);
+
+    // Also map a dummy reference to the switch so hasMappedOps is true
+    // for the switch node, triggering genSwitchConfig.
+    // The switch needs at least one SW node in hwNodeToSwNodes.
+    if (csw < static_cast<IdIndex>(state.hwNodeToSwNodes.size()))
+      state.hwNodeToSwNodes[csw].push_back(sw0);
+
+    // Set up a routing path through the switch: the DFG edge from sw0
+    // output to sw0 input loops through the switch.
+    // Path format: [srcOutPort, switchInPort, switchOutPort, dstInPort]
+    // The switch transition is: switchInPort[0] -> switchOutPort[1].
+    IdIndex peOutPort = adg.getNode(hw0)->outputPorts[0];
+    IdIndex swInPort0 = adg.getNode(csw)->inputPorts[0];
+    IdIndex swOutPort1 = adg.getNode(csw)->outputPorts[1];
+    IdIndex peInPort = adg.getNode(hw0)->inputPorts[0];
+
+    // Ensure swEdgeToHwPaths is large enough.
+    size_t edgeCount = dfg.countEdges();
+    if (state.swEdgeToHwPaths.size() < edgeCount)
+      state.swEdgeToHwPaths.resize(edgeCount);
+
+    // DFG has no explicit edges in this 1-node scenario, but we need to
+    // simulate one. Create a self-loop edge in the DFG.
+    IdIndex dfgEdge = addEdgeBetween(dfg, sw0, 0, sw0, 0);
+    state.swEdgeToHwPaths.resize(dfg.countEdges());
+    state.swEdgeToHwPaths[dfgEdge] = {peOutPort, swInPort0, swOutPort1,
+                                       peInPort};
+
+    llvm::SmallString<256> basePath(tmpDir);
+    llvm::sys::path::append(basePath, "test4_switch");
+    std::string basePathStr = std::string(basePath);
+
+    ConfigGen configGen;
+    bool genOk = configGen.generate(state, dfg, adg, basePathStr,
+                                    false, "balanced", 0);
+    TEST_ASSERT(genOk);
+
+    std::vector<uint32_t> words = readConfigWords(basePathStr + ".config.bin");
+    TEST_ASSERT(words.size() >= 2);
+
+    // The PE (hw0) config word comes first (arith.addi has no predicate
+    // or tags, so genPEConfig might emit 0 or be empty). The switch (csw)
+    // config word must encode exactly route input[0]->output[1] = bit 2.
+    // Find the switch config word: it must contain exactly 0x4.
+    bool foundSwitchWord = false;
+    for (uint32_t w : words) {
+      if (w == 0x4) {
+        foundSwitchWord = true;
+        break;
+      }
+    }
+    TEST_ASSERT(foundSwitchWord);
+
+    cleanupConfigFiles(basePathStr);
+  }
+
   // Clean up temp directory.
   llvm::sys::fs::remove(tmpDir);
 

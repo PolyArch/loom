@@ -11,6 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "${SCRIPT_DIR}/common.sh"
+source "${SCRIPT_DIR}/vcs_helpers.sh"
 
 ROOT_DIR=$(loom_root)
 TESTS_DIR="${ROOT_DIR}/tests/sv"
@@ -723,28 +724,14 @@ WAVE_EOF
   done
 
   # If simulator is not available, count jobs as skipped without running.
-  # For VCS, do a license-consuming compile probe that matches the real
-  # compile flags used in sim_runner.sh (-sverilog -full64). Only skip
-  # on explicit license-denial signatures; non-license failures remain
-  # hard errors so real regressions are not silently masked.
+  # For VCS, run the shared license probe (vcs_helpers.sh) that matches real
+  # compile flags. Only skip on license denial; non-license failures remain
+  # hard errors so regressions are not silently masked.
   sim_skip=false
   if ! command -v "${sim}" >/dev/null 2>&1; then
     sim_skip=true
   elif [[ "${sim}" == "vcs" ]]; then
-    probe_dir=$(mktemp -d)
-    echo 'module vcs_license_probe; endmodule' > "${probe_dir}/probe.sv"
-    probe_rc=0
-    (cd "${probe_dir}" && timeout 30 vcs -sverilog -full64 probe.sv -o simv \
-      > compile.log 2>&1) || probe_rc=$?
-    if [[ "${probe_rc}" -ne 0 ]]; then
-      if grep -qE 'Failed to obtain|Unable to checkout|license server|License checkout failed' "${probe_dir}/compile.log" 2>/dev/null; then
-        echo "VCS compile license unavailable; skipping VCS tests" >&2
-        sim_skip=true
-      else
-        echo "VCS compile probe failed (non-license error); treating as infrastructure failure" >&2
-      fi
-    fi
-    rm -rf "${probe_dir}"
+    run_vcs_probe
   fi
 
   if [[ "${sim_skip}" == "true" ]]; then
