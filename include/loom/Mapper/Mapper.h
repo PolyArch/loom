@@ -20,9 +20,13 @@
 
 #include <string>
 
+class MapperTestAccess;
+
 namespace loom {
 
 class Mapper {
+  friend class ::MapperTestAccess;
+
 public:
   struct Options {
     double budgetSeconds = 60.0;

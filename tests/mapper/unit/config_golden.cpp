@@ -444,6 +444,145 @@ int main() {
     cleanupConfigFiles(basePathStr);
   }
 
+  // Test 5: Temporal PE config golden encoding.
+  // ADG: 1 temporal PE virtual node (num_instruction=2) + 2 FU child nodes.
+  // DFG: 2 arith.addi nodes, each mapped to one FU child.
+  // temporalPEAssignments: slot 0 -> opcode 0x1A, slot 1 -> opcode 0x3B.
+  //
+  // genTemporalPEConfig packs 8 bits per instruction slot, LSB-first:
+  //   slot 0: bits[0:7]  = 0x1A
+  //   slot 1: bits[8:15] = 0x3B
+  // Expected word = 0x3B1A.
+  {
+    Graph dfg(&ctx);
+    Graph adg(&ctx);
+
+    // Temporal PE virtual node (is_virtual triggers genTemporalPEConfig).
+    auto tpeNode = std::make_unique<Node>();
+    tpeNode->kind = Node::OperationNode;
+    setStringAttr(tpeNode.get(), ctx, "op_name", "fabric.temporal_pe");
+    setStringAttr(tpeNode.get(), ctx, "resource_class", "temporal");
+    setStringAttr(tpeNode.get(), ctx, "sym_name", "tpe0");
+    setIntAttr(tpeNode.get(), ctx, "num_instruction", 2);
+    setIntAttr(tpeNode.get(), ctx, "is_virtual", 1);
+    IdIndex tpeId = adg.addNode(std::move(tpeNode));
+
+    // FU child nodes: parent_temporal_pe points to tpeId.
+    auto makeFuNode = [&](llvm::StringRef symName) -> IdIndex {
+      auto fu = std::make_unique<Node>();
+      fu->kind = Node::OperationNode;
+      setStringAttr(fu.get(), ctx, "op_name", "arith.addi");
+      setStringAttr(fu.get(), ctx, "resource_class", "functional");
+      setStringAttr(fu.get(), ctx, "sym_name", symName);
+      setIntAttr(fu.get(), ctx, "parent_temporal_pe",
+                 static_cast<int64_t>(tpeId));
+      IdIndex fuId = adg.addNode(std::move(fu));
+      // 1 input + 1 output port for each FU.
+      {
+        auto p = std::make_unique<Port>();
+        p->parentNode = fuId;
+        p->direction = Port::Input;
+        IdIndex pid = adg.addPort(std::move(p));
+        adg.getNode(fuId)->inputPorts.push_back(pid);
+      }
+      {
+        auto p = std::make_unique<Port>();
+        p->parentNode = fuId;
+        p->direction = Port::Output;
+        IdIndex pid = adg.addPort(std::move(p));
+        adg.getNode(fuId)->outputPorts.push_back(pid);
+      }
+      return fuId;
+    };
+    IdIndex fu0 = makeFuNode("fu0");
+    IdIndex fu1 = makeFuNode("fu1");
+
+    // DFG: 2 arith.addi nodes.
+    IdIndex sw0 = addOpNode(dfg, ctx, "arith.addi", "functional", 1, 1);
+    IdIndex sw1 = addOpNode(dfg, ctx, "arith.addi", "functional", 1, 1);
+
+    // Manual mapping: each DFG node -> one FU child.
+    MappingState state;
+    state.init(dfg, adg);
+    state.mapNode(sw0, fu0, dfg, adg);
+    state.mapNode(sw1, fu1, dfg, adg);
+
+    // Set up temporal PE assignments.
+    state.temporalPEAssignments.resize(dfg.countNodes());
+    state.temporalPEAssignments[sw0] = {/*slot=*/0, /*tag=*/0,
+                                         /*opcode=*/0x1A};
+    state.temporalPEAssignments[sw1] = {/*slot=*/1, /*tag=*/0,
+                                         /*opcode=*/0x3B};
+
+    llvm::SmallString<256> basePath(tmpDir);
+    llvm::sys::path::append(basePath, "test5_temporal_pe");
+    std::string basePathStr = std::string(basePath);
+
+    ConfigGen configGen;
+    bool genOk = configGen.generate(state, dfg, adg, basePathStr,
+                                    false, "balanced", 0);
+    TEST_ASSERT(genOk);
+
+    std::vector<uint32_t> words = readConfigWords(basePathStr + ".config.bin");
+    // 3 words total: 1 temporal PE instruction word (0x3B1A) +
+    // 2 FU child placeholder words (each 0x0 from genPEConfig).
+    TEST_ASSERT(words.size() == 3);
+    // Temporal PE config: slot 0 = 0x1A, slot 1 = 0x3B, packed LSB-first.
+    TEST_ASSERT(words[0] == 0x3B1AU);
+    // FU child placeholder words.
+    TEST_ASSERT(words[1] == 0x0U);
+    TEST_ASSERT(words[2] == 0x0U);
+
+    cleanupConfigFiles(basePathStr);
+  }
+
+  // Test 6: Temporal SW config golden encoding.
+  // ADG: 1 temporal switch node (num_route_table=3, 2 output ports).
+  // genTemporalSWConfig packs numOut bits per route-table entry, all zeros.
+  //   3 entries * 2 bits = 6 bits -> 1 word.
+  // Expected word = 0x0 (routeMask placeholder is all-zero).
+  {
+    Graph dfg(&ctx);
+    Graph adg(&ctx);
+
+    auto tswNode = std::make_unique<Node>();
+    tswNode->kind = Node::OperationNode;
+    setStringAttr(tswNode.get(), ctx, "op_name", "fabric.temporal_sw");
+    setStringAttr(tswNode.get(), ctx, "resource_class", "routing");
+    setStringAttr(tswNode.get(), ctx, "sym_name", "tsw0");
+    setIntAttr(tswNode.get(), ctx, "num_route_table", 3);
+    IdIndex tswId = adg.addNode(std::move(tswNode));
+
+    // 2 output ports (determines slotWidth = 2 bits per entry).
+    for (unsigned i = 0; i < 2; ++i) {
+      auto p = std::make_unique<Port>();
+      p->parentNode = tswId;
+      p->direction = Port::Output;
+      IdIndex pid = adg.addPort(std::move(p));
+      adg.getNode(tswId)->outputPorts.push_back(pid);
+    }
+
+    // Empty DFG and default MappingState (temporal SW doesn't need mapped ops).
+    MappingState state;
+    state.init(dfg, adg);
+
+    llvm::SmallString<256> basePath(tmpDir);
+    llvm::sys::path::append(basePath, "test6_temporal_sw");
+    std::string basePathStr = std::string(basePath);
+
+    ConfigGen configGen;
+    bool genOk = configGen.generate(state, dfg, adg, basePathStr,
+                                    false, "balanced", 0);
+    TEST_ASSERT(genOk);
+
+    std::vector<uint32_t> words = readConfigWords(basePathStr + ".config.bin");
+    // 3 entries * 2 bits = 6 bits -> 1 word, all zeros.
+    TEST_ASSERT(words.size() == 1);
+    TEST_ASSERT(words[0] == 0x0U);
+
+    cleanupConfigFiles(basePathStr);
+  }
+
   // Clean up temp directory.
   llvm::sys::fs::remove(tmpDir);
 

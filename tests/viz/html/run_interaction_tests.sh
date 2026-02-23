@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Harness for Playwright browser interaction tests.
-# Skips with explicit diagnostic when Playwright is unavailable.
+# Skips with explicit diagnostic when Playwright is unavailable or when
+# the environment restricts process execution (e.g. sandboxed CI).
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR="${SCRIPT_DIR}/../../.."
@@ -34,12 +35,22 @@ fi
 
 echo "Running Playwright browser interaction tests..."
 cd "${ROOT_DIR}"
-output=$(npx playwright test tests/viz/html/interaction.spec.js --reporter=list 2>&1) || true
-exit_code=$?
 
-# Detect process-execution restrictions (e.g. sandboxed environments).
-if echo "${output}" | grep -qE 'EPERM|spawnSync.*EACCES|spawn.*ENOENT'; then
-  echo "SKIP: Playwright cannot spawn processes in this environment" >&2
+# Capture both output and exit status without clobbering $?.
+tmpfile=$(mktemp)
+set +e
+npx playwright test tests/viz/html/interaction.spec.js --reporter=list >"${tmpfile}" 2>&1
+exit_code=$?
+set -e
+output=$(cat "${tmpfile}")
+rm -f "${tmpfile}"
+
+# Detect process-execution restrictions (sandboxed environments).
+# Patterns cover: EPERM from spawnSync, EACCES, ENOENT, and the
+# browser-launch "Operation not permitted" fatal path.
+if echo "${output}" | grep -qE 'EPERM|EACCES|ENOENT|Operation not permitted|browserType\.launch|Failed to launch'; then
+  echo "SKIP: Playwright cannot launch browser in this environment" >&2
+  echo "${output}" | head -5 >&2
   exit 0
 fi
 

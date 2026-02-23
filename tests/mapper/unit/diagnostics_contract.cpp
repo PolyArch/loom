@@ -22,6 +22,19 @@
 
 using namespace loom;
 
+/// Test accessor for private Mapper methods.
+class MapperTestAccess {
+public:
+  static void preprocess(Mapper &mapper, const Graph &adg) {
+    mapper.preprocess(adg);
+  }
+  static bool runValidation(Mapper &mapper, const MappingState &state,
+                            const Graph &dfg, const Graph &adg,
+                            std::string &diagnostics) {
+    return mapper.runValidation(state, dfg, adg, diagnostics);
+  }
+};
+
 namespace {
 
 void setStringAttr(Node *node, mlir::MLIRContext &ctx,
@@ -228,46 +241,100 @@ int main() {
     TEST_ASSERT(result.diagnostics.find("Placement failed") == 0);
   }
 
-  // Test 4: Validation failure with deterministic C4 prefix.
-  // DFG has 2 nodes. ADG has 2 PEs but one PE is marked with a group
-  // capacity of 1 node. Placement succeeds (both nodes placed) but
-  // validation detects C4: capacity exceeded on the shared group.
-  // This forces the diagnostic to start with "Validation failed: C4:".
+  // Test 4: Deterministic C2 validation failure via manual MappingState.
+  // Construct a DFG with 1 node and an ADG with 1 PE. Manually map the
+  // SW node to the HW node correctly, but map a SW output port to an HW
+  // input port (direction mismatch). This passes C1 but fails C2 with
+  // "C2: direction mismatch sw_port=..." as the first validation error.
   {
     Graph dfg(&ctx);
     Graph adg(&ctx);
 
     IdIndex sw0 = addOpNode(dfg, ctx, "arith.addi", "functional", 1, 1);
-    IdIndex sw1 = addOpNode(dfg, ctx, "arith.addi", "functional", 1, 1);
-    addEdgeBetween(dfg, sw0, 0, sw1, 0);
+    IdIndex hw0 = addPENode(adg, ctx, "arith.addi", "functional", 1, 1);
 
-    // 2 PEs that share a single-capacity slot: both mapped to same PE.
-    // Create only 1 PE so the mapper must map both nodes there.
+    // Manually construct MappingState.
+    MappingState state;
+    state.init(dfg, adg);
+    state.mapNode(sw0, hw0, dfg, adg);
+    // Correct port mapping for input (so C1 passes).
+    state.mapPort(dfg.getNode(sw0)->inputPorts[0],
+                  adg.getNode(hw0)->inputPorts[0], dfg, adg);
+    // INTENTIONALLY WRONG: map SW output port to HW input port
+    // (direction mismatch).
+    IdIndex swOutPort = dfg.getNode(sw0)->outputPorts[0];
+    IdIndex hwInPort = adg.getNode(hw0)->inputPorts[0];
+    state.swPortToHwPort[swOutPort] = hwInPort;
+
+    Mapper mapper;
+    std::string validationDiag;
+    bool valid = MapperTestAccess::runValidation(mapper, state, dfg, adg,
+                                                 validationDiag);
+
+    TEST_ASSERT(!valid);
+    TEST_ASSERT(!validationDiag.empty());
+    // The first validation failure must be C2 (port direction mismatch).
+    TEST_ASSERT(validationDiag.find("C2:") == 0);
+    TEST_ASSERT(containsSubstring(validationDiag, "direction mismatch"));
+  }
+
+  // Test 5: Deterministic C4 validation failure via manual MappingState.
+  // Construct a DFG with 2 nodes and an ADG with 1 PE. Manually map both
+  // SW nodes to the same HW node and set up all ports/edges correctly so
+  // C1-C3 pass. C4 must fail with "C4: capacity exceeded on hw_node=..."
+  // because 2 ops are placed on 1 non-temporal PE.
+  {
+    Graph dfg(&ctx);
+    Graph adg(&ctx);
+
+    // DFG: 2 nodes, 1 edge.
+    IdIndex sw0 = addOpNode(dfg, ctx, "arith.addi", "functional", 1, 1);
+    IdIndex sw1 = addOpNode(dfg, ctx, "arith.addi", "functional", 1, 1);
+    IdIndex dfgEdge = addEdgeBetween(dfg, sw0, 0, sw1, 0);
+
+    // ADG: 1 PE with 2 inputs and 2 outputs (enough ports for both ops).
     IdIndex hw0 = addPENode(adg, ctx, "arith.addi", "functional", 2, 2);
-    // Self-loop edge so routing can succeed trivially.
+    // Self-loop edge for routing: output[0] -> input[1].
     addADGEdge(adg, adg.getNode(hw0)->outputPorts[0],
                adg.getNode(hw0)->inputPorts[1]);
 
+    // Manually construct MappingState.
+    MappingState state;
+    state.init(dfg, adg);
+
+    // Map both DFG nodes to the same PE.
+    state.mapNode(sw0, hw0, dfg, adg);
+    state.mapNode(sw1, hw0, dfg, adg);
+
+    // Map ports correctly (different HW ports for each SW node).
+    state.mapPort(dfg.getNode(sw0)->inputPorts[0],
+                  adg.getNode(hw0)->inputPorts[0], dfg, adg);
+    state.mapPort(dfg.getNode(sw0)->outputPorts[0],
+                  adg.getNode(hw0)->outputPorts[0], dfg, adg);
+    state.mapPort(dfg.getNode(sw1)->inputPorts[0],
+                  adg.getNode(hw0)->inputPorts[1], dfg, adg);
+    state.mapPort(dfg.getNode(sw1)->outputPorts[0],
+                  adg.getNode(hw0)->outputPorts[1], dfg, adg);
+
+    // Set up routing path for the DFG edge (sw0 out -> sw1 in).
+    // Path: [hw0_outPort0, hw0_inPort1] (output[0] -> input[1] via edge).
+    state.swEdgeToHwPaths.resize(dfg.countEdges());
+    state.swEdgeToHwPaths[dfgEdge] = {
+        adg.getNode(hw0)->outputPorts[0],
+        adg.getNode(hw0)->inputPorts[1]};
+
     Mapper mapper;
-    Mapper::Options opts;
-    opts.budgetSeconds = 5.0;
-    opts.seed = 0;
-    opts.profile = "balanced";
+    MapperTestAccess::preprocess(mapper, adg);
+    std::string validationDiag;
+    bool valid = MapperTestAccess::runValidation(mapper, state, dfg, adg,
+                                                 validationDiag);
 
-    Mapper::Result result = mapper.run(dfg, adg, opts);
-
-    // If the mapper reports validation failure, it must start with
-    // "Validation failed: C4:" (capacity constraint). If placement itself
-    // fails, it reports "Placement failed". Either diagnostic is valid for
-    // this over-subscribed scenario, but it must be one of these two
-    // deterministic prefixes (not a generic substring).
-    TEST_ASSERT(!result.success);
-    TEST_ASSERT(!result.diagnostics.empty());
-    bool isPlacementFailed =
-        result.diagnostics.find("Placement failed") == 0;
-    bool isValidationC4 =
-        result.diagnostics.find("Validation failed: C4:") == 0;
-    TEST_ASSERT(isPlacementFailed || isValidationC4);
+    TEST_ASSERT(!valid);
+    TEST_ASSERT(!validationDiag.empty());
+    // C1-C3 must pass (valid mapping with correct directions and route).
+    // C4 must fail because 2 ops on 1 non-temporal PE exceeds capacity.
+    TEST_ASSERT(validationDiag.find("C4:") == 0);
+    TEST_ASSERT(containsSubstring(validationDiag, "capacity exceeded"));
   }
 
   return 0;
