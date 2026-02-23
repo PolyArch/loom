@@ -115,12 +115,31 @@ run_with_stub \
   0 \
   0
 
-# Test 8: launch + spawn + Operation not permitted => SKIP (exit 0).
+# Test 8: Browser-specific spawn/permission error => SKIP (exit 0).
+# Only skip when spawn/permission error references a browser binary.
 run_with_stub \
-  "test-8: spawn Operation not permitted => skip" \
-  "spawn chromium: Operation not permitted EPERM" \
+  "test-8: chromium EPERM => skip" \
+  "Error: chromium process exited with EPERM Operation not permitted" \
   1 \
   0
+
+# Test 9: Generic "spawn EPERM" in functional failure => FAIL (exit non-zero).
+# A test that mentions "spawn EPERM" without browser context must NOT skip.
+run_with_stub \
+  "test-9: generic spawn EPERM => fail" \
+  "FAILED interaction.spec.js: helper spawn EPERM while validating app behavior
+  1 failed" \
+  1 \
+  1
+
+# Test 10: Generic "launch EPERM" in functional failure => FAIL (exit non-zero).
+# A test that mentions "launch EPERM" without browser context must NOT skip.
+run_with_stub \
+  "test-10: generic launch EPERM => fail" \
+  "FAILED test.spec.js:55 launch worker EPERM denied
+  1 failed" \
+  1 \
+  1
 
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"

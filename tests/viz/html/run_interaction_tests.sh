@@ -49,16 +49,18 @@ rm -f "${tmpfile}"
 # Only skip when errors are clearly from browser/process launch, not from
 # functional test failures that happen to mention similar error tokens.
 #
-# Launch-specific signatures:
+# Launch-specific signatures (all require browser-binary context):
 #   - "browserType.launch" or "Failed to launch" (Playwright launch path)
 #   - "spawnSync" with EPERM/EACCES/ENOENT (process spawn restrictions)
-#   - "Operation not permitted" on the same line as "launch" or "spawn"
+#   - spawn/launch + browser binary name + permission error
+#
+# Browser binary markers: chromium, chrome, webkit, firefox, ms-playwright
 is_launch_failure=false
 if echo "${output}" | grep -qE 'browserType\.launch|Failed to launch'; then
   is_launch_failure=true
 elif echo "${output}" | grep -qE 'spawnSync.*(EPERM|EACCES|ENOENT)'; then
   is_launch_failure=true
-elif echo "${output}" | grep -qiE '(launch|spawn).*(Operation not permitted|EPERM)'; then
+elif echo "${output}" | grep -qiE '(chromium|chrome|webkit|firefox|ms-playwright).*(EPERM|Operation not permitted)'; then
   is_launch_failure=true
 fi
 if [[ "${is_launch_failure}" == "true" ]]; then
