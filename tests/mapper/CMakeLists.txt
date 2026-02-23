@@ -42,6 +42,10 @@ set(MAPPER_UNIT_TESTS
   adg_connectivity_invariants
   techmapping_exhaustiveness
   viz_dot_export
+  extraction_dfg
+  extraction_adg
+  config_golden
+  diagnostics_contract
 )
 
 set(MAPPER_TEST_TARGETS)
@@ -58,6 +62,8 @@ foreach(test_name ${MAPPER_UNIT_TESTS})
     "${LLVM_BINARY_DIR}/include"
     "${MLIR_SOURCE_DIR}/include"
     "${MLIR_BINARY_DIR}/include"
+    "${CIRCT_SOURCE_DIR}/include"
+    "${CIRCT_BINARY_DIR}/include"
   )
   set_target_properties(${target} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/mapper"
@@ -69,12 +75,19 @@ endforeach()
 # viz_dot_export needs the LoomViz library in addition to LoomMapperCore.
 target_link_libraries(mapper-test-viz_dot_export PRIVATE LoomViz)
 
+# Extraction tests need MLIRParser and dialect libraries for parsing MLIR.
+target_link_libraries(mapper-test-extraction_dfg PRIVATE
+  MLIRParser MLIRMemRefDialect)
+target_link_libraries(mapper-test-extraction_adg PRIVATE
+  MLIRParser MLIRMathDialect MLIRMemRefDialect)
+
 add_custom_target(check-loom-mapper
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_test.sh"
     "${CMAKE_BINARY_DIR}/tests/mapper"
   COMMAND bash "${CMAKE_SOURCE_DIR}/tests/mapper/unit/template_coverage_real.sh"
   COMMAND bash "${CMAKE_SOURCE_DIR}/tests/mapper/unit/template_selection_regression.sh"
   COMMAND bash "${CMAKE_SOURCE_DIR}/tests/mapper/unit/viz_cli_integration.sh"
+  COMMAND bash "${CMAKE_SOURCE_DIR}/tests/mapper/unit/vcs_probe_regression.sh"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS ${MAPPER_TEST_TARGETS}
 )
