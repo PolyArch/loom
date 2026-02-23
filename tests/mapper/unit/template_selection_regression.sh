@@ -2,39 +2,17 @@
 # Regression test for op-count-based template selection.
 # Verifies that count_ops() and select_template() produce expected
 # assignments for representative apps and threshold boundary conditions.
+#
+# Uses the production count_ops/select_template from mapper_helpers.sh
+# (shared with mapper_app_test.sh) to ensure regression coverage is
+# coupled to the actual runtime behavior.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-COMMON_SH="${SCRIPT_DIR}/../../scripts/common.sh"
-APP_SCRIPT="${SCRIPT_DIR}/../../scripts/mapper_app_test.sh"
 APP_DIR="${SCRIPT_DIR}/../../app"
 
-# Source the count_ops and select_template functions.
-# These functions are defined in mapper_app_test.sh; source it selectively.
-# We extract only the functions we need.
-
-count_ops() {
-  local mlir_file="$1"
-  local count
-  count=$(awk '
-    /handshake\.func.*loom\.accel/ { if (done==0) inside=1; next }
-    inside && /^[[:space:]]*\}/ { inside=0; done=1 }
-    inside && /=/ { ops++ }
-    END { print ops+0 }
-  ' "$mlir_file")
-  echo "$count"
-}
-
-select_template() {
-  local op_count="$1"
-  if (( op_count <= 30 )); then
-    echo "loom_cgra_small"
-  elif (( op_count <= 120 )); then
-    echo "loom_cgra_medium"
-  else
-    echo "loom_cgra_large"
-  fi
-}
+# Source the production count_ops and select_template functions.
+source "${SCRIPT_DIR}/../../scripts/mapper_helpers.sh"
 
 exit_code=0
 

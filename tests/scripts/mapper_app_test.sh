@@ -45,32 +45,9 @@ FULL_PASS_RATE=80
 # Smoke test apps (must all pass for quick-tier acceptance).
 SMOKE_APPS=(vecsum dotprod matmul conv2d)
 
-# --- Operation counting ---
-# Counts non-sentinel operations in the first handshake.func body with loom.accel.
-count_ops() {
-  local mlir_file="$1"
-  local count
-  count=$(awk '
-    /handshake\.func.*loom\.accel/ { if (done==0) inside=1; next }
-    inside && /^[[:space:]]*\}/ { inside=0; done=1 }
-    inside && /=/ { ops++ }
-    END { print ops+0 }
-  ' "$mlir_file")
-  echo "$count"
-}
-
-# --- Template selection ---
-# Selects the smallest adequate template for an app based on operation count.
-select_template() {
-  local op_count="$1"
-  if (( op_count <= 30 )); then
-    echo "loom_cgra_small"
-  elif (( op_count <= 120 )); then
-    echo "loom_cgra_medium"
-  else
-    echo "loom_cgra_large"
-  fi
-}
+# --- Operation counting and template selection ---
+# Shared with template_selection_regression.sh to ensure consistency.
+source "${SCRIPT_DIR}/mapper_helpers.sh"
 
 # --- Check prerequisites ---
 loom_require_parallel

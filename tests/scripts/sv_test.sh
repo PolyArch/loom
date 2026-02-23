@@ -722,8 +722,20 @@ WAVE_EOF
     echo "${line}" >> "${PARALLEL_FILE}"
   done
 
-  # If simulator is not available, count jobs as skipped without running
+  # If simulator is not available, count jobs as skipped without running.
+  # For VCS, also do a pre-flight license check (a quick vcs -ID) since the
+  # command may be present but the license server unreachable.
+  sim_skip=false
   if ! command -v "${sim}" >/dev/null 2>&1; then
+    sim_skip=true
+  elif [[ "${sim}" == "vcs" ]]; then
+    if ! vcs -ID >/dev/null 2>&1; then
+      echo "VCS found but license check failed; skipping VCS tests" >&2
+      sim_skip=true
+    fi
+  fi
+
+  if [[ "${sim_skip}" == "true" ]]; then
     job_count=$(grep -cvE '^\s*(#|$)' "${PARALLEL_FILE}" || true)
     LOOM_PASS=0; LOOM_FAIL=0; LOOM_TIMEOUT=0
     LOOM_SKIPPED=${job_count}; LOOM_TOTAL=${job_count}
