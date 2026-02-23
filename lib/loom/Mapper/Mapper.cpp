@@ -242,7 +242,10 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
 
   if (!heuristicValid) {
     result.success = false;
-    result.diagnostics = "Validation failed: " + validationDiag;
+    if (!routingOk && validationDiag.empty())
+      result.diagnostics = "Routing failed after refinement and CP-SAT recovery";
+    else
+      result.diagnostics = "Validation failed: " + validationDiag;
     return result;
   }
 

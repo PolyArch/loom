@@ -36,6 +36,12 @@ set(MAPPER_UNIT_TESTS
   placement_exclusivity
   unmap_node_ports
   mapper_run_integration
+  mapper_grid_integration
+  config_semantic
+  dfg_extraction_invariants
+  adg_connectivity_invariants
+  techmapping_exhaustiveness
+  viz_dot_export
 )
 
 set(MAPPER_TEST_TARGETS)
@@ -60,11 +66,15 @@ foreach(test_name ${MAPPER_UNIT_TESTS})
   list(APPEND MAPPER_TEST_TARGETS ${target})
 endforeach()
 
+# viz_dot_export needs the LoomViz library in addition to LoomMapperCore.
+target_link_libraries(mapper-test-viz_dot_export PRIVATE LoomViz)
+
 add_custom_target(check-loom-mapper
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_test.sh"
     "${CMAKE_BINARY_DIR}/tests/mapper"
   COMMAND bash "${CMAKE_SOURCE_DIR}/tests/mapper/unit/template_coverage_real.sh"
   COMMAND bash "${CMAKE_SOURCE_DIR}/tests/mapper/unit/template_selection_regression.sh"
+  COMMAND bash "${CMAKE_SOURCE_DIR}/tests/mapper/unit/viz_cli_integration.sh"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS ${MAPPER_TEST_TARGETS}
 )

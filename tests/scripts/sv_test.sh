@@ -723,9 +723,10 @@ WAVE_EOF
   done
 
   # If simulator is not available, count jobs as skipped without running.
-  # For VCS, do a license-consuming compile probe: `vcs -ID` returns
-  # success even without a compile license, so we compile a minimal SV
-  # module and check for license-denial errors in the output.
+  # For VCS, do a license-consuming compile probe that matches the real
+  # compile flags used in sim_runner.sh (-sverilog -full64). Only skip
+  # on explicit license-denial signatures; non-license failures remain
+  # hard errors so real regressions are not silently masked.
   sim_skip=false
   if ! command -v "${sim}" >/dev/null 2>&1; then
     sim_skip=true
@@ -733,12 +734,14 @@ WAVE_EOF
     probe_dir=$(mktemp -d)
     echo 'module vcs_license_probe; endmodule' > "${probe_dir}/probe.sv"
     probe_rc=0
-    (cd "${probe_dir}" && timeout 30 vcs -sverilog probe.sv -o simv \
+    (cd "${probe_dir}" && timeout 30 vcs -sverilog -full64 probe.sv -o simv \
       > compile.log 2>&1) || probe_rc=$?
     if [[ "${probe_rc}" -ne 0 ]]; then
-      if grep -qiE 'license|Failed to obtain' "${probe_dir}/compile.log" 2>/dev/null; then
+      if grep -qE 'Failed to obtain|Unable to checkout|license server|License checkout failed' "${probe_dir}/compile.log" 2>/dev/null; then
         echo "VCS compile license unavailable; skipping VCS tests" >&2
         sim_skip=true
+      else
+        echo "VCS compile probe failed (non-license error); treating as infrastructure failure" >&2
       fi
     fi
     rm -rf "${probe_dir}"
