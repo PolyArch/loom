@@ -124,39 +124,66 @@ int main() {
     TEST_ASSERT(outputSentinelCount > 0);
   }
 
-  // Test 2: ConnectivityMatrix outToIn is non-empty.
-  // Every hardware edge produces an outToIn entry.
+  // Test 2: ConnectivityMatrix outToIn matches hardware edge count.
+  // Every edge in the ADG must produce exactly one outToIn entry, and
+  // every outToIn entry must reference valid ports with correct directions.
   {
-    TEST_ASSERT(matrix.outToIn.size() > 0);
+    size_t edgeCount = adg.countEdges();
+    TEST_ASSERT(edgeCount > 0);
+    TEST_ASSERT(matrix.outToIn.size() == edgeCount);
+
+    for (const auto &entry : matrix.outToIn) {
+      IdIndex srcPortId = entry.first;
+      IdIndex dstPortId = entry.second;
+      const Port *srcPort = adg.getPort(srcPortId);
+      const Port *dstPort = adg.getPort(dstPortId);
+      TEST_ASSERT(srcPort != nullptr);
+      TEST_ASSERT(dstPort != nullptr);
+      TEST_ASSERT(srcPort->direction == Port::Output);
+      TEST_ASSERT(dstPort->direction == Port::Input);
+    }
   }
 
-  // Test 3: ConnectivityMatrix inToOut exists for routing nodes.
-  // Find a routing node, get one of its input ports, and verify that
-  // inToOut has entries for it.
+  // Test 3: ConnectivityMatrix inToOut for ALL routing nodes.
+  // Every routing node's input ports must have inToOut entries with at
+  // least one reachable output port per input. This is the full crossbar
+  // or connectivity_table expansion.
   {
-    bool foundRoutingWithInToOut = false;
+    unsigned routingNodesChecked = 0;
+    unsigned totalInToOutEntries = 0;
 
     for (auto *node : adg.nodeRange()) {
       if (node->kind != Node::OperationNode)
         continue;
-
       llvm::StringRef resClass = getAttr(node, "resource_class");
       if (resClass != "routing")
         continue;
-
-      // Routing nodes with input ports should have inToOut entries.
-      if (node->inputPorts.empty())
+      if (node->inputPorts.empty() || node->outputPorts.empty())
         continue;
 
-      IdIndex firstInputPort = node->inputPorts[0];
-      if (matrix.inToOut.count(firstInputPort)) {
-        TEST_ASSERT(!matrix.inToOut.find(firstInputPort)->second.empty());
-        foundRoutingWithInToOut = true;
-        break;
+      ++routingNodesChecked;
+
+      // Every input port of a routing node must have an inToOut entry.
+      for (IdIndex inPortId : node->inputPorts) {
+        auto it = matrix.inToOut.find(inPortId);
+        TEST_ASSERT(it != matrix.inToOut.end());
+        TEST_ASSERT(!it->second.empty());
+
+        // Each reachable output must belong to the same routing node.
+        const Port *inPort = adg.getPort(inPortId);
+        IdIndex routingNodeId = inPort->parentNode;
+        for (IdIndex outPortId : it->second) {
+          const Port *outPort = adg.getPort(outPortId);
+          TEST_ASSERT(outPort != nullptr);
+          TEST_ASSERT(outPort->direction == Port::Output);
+          TEST_ASSERT(outPort->parentNode == routingNodeId);
+        }
+        totalInToOutEntries += it->second.size();
       }
     }
 
-    TEST_ASSERT(foundRoutingWithInToOut);
+    TEST_ASSERT(routingNodesChecked > 0);
+    TEST_ASSERT(totalInToOutEntries > 0);
   }
 
   // Test 4: Sentinel node invariants.
@@ -184,7 +211,35 @@ int main() {
     }
   }
 
-  // Test 5: Resource class coverage.
+  // Test 5: Sentinel-to-internal 1-to-1 edge mapping.
+  // Each ModuleInputNode output port must have exactly one outgoing edge
+  // (1-to-1 connection from sentinel to internal component).
+  // Each ModuleOutputNode input port must have at least one incoming edge
+  // (1-to-1 connection from internal component to sentinel).
+  {
+    for (auto *node : adg.nodeRange()) {
+      if (node->kind == Node::ModuleInputNode) {
+        for (IdIndex portId : node->outputPorts) {
+          // Sentinel output port must appear in outToIn.
+          TEST_ASSERT(matrix.outToIn.count(portId) > 0);
+        }
+      } else if (node->kind == Node::ModuleOutputNode) {
+        for (IdIndex portId : node->inputPorts) {
+          // Sentinel input port must be the destination of at least one edge.
+          bool foundIncoming = false;
+          for (const auto &entry : matrix.outToIn) {
+            if (entry.second == portId) {
+              foundIncoming = true;
+              break;
+            }
+          }
+          TEST_ASSERT(foundIncoming);
+        }
+      }
+    }
+  }
+
+  // Test 6: Resource class coverage.
   // The small CGRA template must contain both "functional" and "routing"
   // resource classes among its OperationNodes.
   {

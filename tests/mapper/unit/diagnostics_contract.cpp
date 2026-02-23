@@ -121,14 +121,20 @@ bool hasContent(const std::string &diag) {
   return false;
 }
 
+/// Check that a diagnostics string contains a given substring.
+bool containsSubstring(const std::string &diag, const std::string &sub) {
+  return diag.find(sub) != std::string::npos;
+}
+
 } // namespace
 
 int main() {
   mlir::MLIRContext ctx;
   ctx.loadAllAvailableDialects();
 
-  // Test 1: Incompatible ops produce diagnostics with content.
+  // Test 1: Incompatible ops -> CandidateBuilder failure.
   // DFG has arith.muli but ADG only supports arith.addi.
+  // Diagnostics must contain "CPL_MAPPER_NO_COMPATIBLE_HW" and the op name.
   {
     Graph dfg(&ctx);
     Graph adg(&ctx);
@@ -147,11 +153,14 @@ int main() {
     TEST_ASSERT(!result.success);
     TEST_ASSERT(!result.diagnostics.empty());
     TEST_ASSERT(hasContent(result.diagnostics));
+    TEST_ASSERT(containsSubstring(result.diagnostics,
+                                  "CPL_MAPPER_NO_COMPATIBLE_HW"));
+    TEST_ASSERT(containsSubstring(result.diagnostics, "arith.muli"));
   }
 
-  // Test 2: Routing failure diagnostics.
+  // Test 2: Routing failure -> "Routing failed" diagnostic.
   // DFG has 2 connected nodes but ADG has 2 disconnected PEs (no routing
-  // path between them).
+  // path between them). Diagnostics must contain "Routing failed".
   {
     Graph dfg(&ctx);
     Graph adg(&ctx);
@@ -174,12 +183,13 @@ int main() {
 
     TEST_ASSERT(!result.success);
     TEST_ASSERT(!result.diagnostics.empty());
-    TEST_ASSERT(hasContent(result.diagnostics));
+    TEST_ASSERT(containsSubstring(result.diagnostics, "Routing failed"));
   }
 
-  // Test 3: Capacity violation diagnostics.
+  // Test 3: Capacity violation -> "Placement failed" or "Validation failed: C4:".
   // DFG has 3 nodes (arith.addi) but ADG only has 2 PEs. The mapper cannot
-  // place all 3 DFG nodes on 2 non-temporal PEs.
+  // place all 3 DFG nodes on 2 non-temporal PEs. Diagnostics must indicate
+  // either a placement failure or a C4 validation failure.
   {
     Graph dfg(&ctx);
     Graph adg(&ctx);
@@ -207,7 +217,13 @@ int main() {
     // Not enough PEs for all DFG nodes.
     TEST_ASSERT(!result.success);
     TEST_ASSERT(!result.diagnostics.empty());
-    TEST_ASSERT(hasContent(result.diagnostics));
+    // The mapper must report either a placement-level failure or a C4
+    // validation constraint (capacity exceeded).
+    bool hasCapacityDiag =
+        containsSubstring(result.diagnostics, "Placement failed") ||
+        containsSubstring(result.diagnostics, "C4:") ||
+        containsSubstring(result.diagnostics, "Validation failed");
+    TEST_ASSERT(hasCapacityDiag);
   }
 
   return 0;

@@ -11,6 +11,11 @@ temp
 tests/.results/
 tests/**/*.parallel.sh
 Output/
+test-results/
+
+# Node.js
+node_modules/
+package-lock.json
 
 # Waveform Debug related
 novas*

@@ -35,6 +35,7 @@ endforeach()
 add_custom_target(check-loom-viz
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/viz_test.sh"
     "${CMAKE_BINARY_DIR}/tests/viz"
+  COMMAND bash "${CMAKE_SOURCE_DIR}/tests/viz/html/run_interaction_tests.sh"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS ${VIZ_TEST_TARGETS}
 )
