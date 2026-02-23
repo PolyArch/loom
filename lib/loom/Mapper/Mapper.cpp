@@ -81,30 +81,43 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   }
 
   // Routing.
-  if (!runRouting(result.state, dfg, adg)) {
+  bool routingOk = runRouting(result.state, dfg, adg);
+  if (!routingOk) {
     // Try refinement/repair.
-    if (!runRefinement(result.state, dfg, adg, candidateResult.candidates,
-                       opts)) {
+    routingOk = runRefinement(result.state, dfg, adg,
+                              candidateResult.candidates, opts);
+  }
+
+  if (!routingOk) {
+    // If CP-SAT sub-problem mode can attempt recovery from unrouted edges,
+    // defer the failure and let the CP-SAT section collect conflict seeds.
+    bool deferToSubProblem = false;
+    if (CPSATSolver::isAvailable()) {
+      auto mode = CPSATSolver::selectMode(dfg, opts.profile);
+      if (mode == CPSATSolver::Mode::SUB_PROBLEM)
+        deferToSubProblem = true;
+    }
+    if (!deferToSubProblem) {
       result.success = false;
       result.diagnostics = "Routing failed after refinement";
       return result;
     }
   }
 
-  // Temporal assignment (for temporal PEs).
-  if (!runTemporalAssignment(result.state, dfg, adg)) {
+  // Temporal assignment (skip when routing failed and CP-SAT recovery pending).
+  if (routingOk && !runTemporalAssignment(result.state, dfg, adg)) {
     result.success = false;
     result.diagnostics = "Temporal assignment failed";
     return result;
   }
 
-  // Validation of heuristic result.
+  // Validation and cost for heuristic result (only meaningful when routing OK).
   std::string validationDiag;
-  bool heuristicValid =
-      runValidation(result.state, dfg, adg, validationDiag);
-
-  // Compute cost for heuristic result.
-  computeCost(result.state, dfg, adg, opts);
+  bool heuristicValid = false;
+  if (routingOk) {
+    heuristicValid = runValidation(result.state, dfg, adg, validationDiag);
+    computeCost(result.state, dfg, adg, opts);
+  }
 
   // CP-SAT solver integration: run if available and profile requests it.
   if (CPSATSolver::isAvailable()) {
@@ -198,6 +211,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
         if (!conflictNodes.empty()) {
           auto subProblem = CPSATSolver::extractSubProblem(
               dfg, conflictNodes, cpsatOpts.subProblemMaxNodes);
+          ++result.cpsatSubProblemCalls;
           cpsatResult = solver.solveSubProblem(
               dfg, adg, subProblem, result.state,
               candidateResult.candidates, connectivity, cpsatOpts);

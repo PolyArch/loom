@@ -389,17 +389,21 @@ int main() {
     TEST_ASSERT(placedCount > 0);
   }
 
-  // Test 7: CP-SAT sub-problem path with >50 DFG nodes.
-  // When OR-Tools is linked, selectMode returns SUB_PROBLEM for >50 nodes.
-  // This test creates 55 DFG nodes on a 55-PE ADG with a central routing
-  // switch. The heuristic runs first, then CP-SAT sub-problem refinement
-  // may be invoked on any conflict region.
+  // Test 7: CP-SAT sub-problem execution with guaranteed conflict seeds.
+  // 55 DFG nodes (chain) on a split ADG: two disconnected clusters with
+  // local routing switches but no cross-cluster connection. The DFG chain
+  // spans both clusters, so at least one edge is unroutable. These
+  // unrouted edges produce conflict seeds, guaranteeing that the CP-SAT
+  // sub-problem refinement path is invoked when OR-Tools is linked.
   {
     Graph dfg(&ctx);
     Graph adg(&ctx);
 
-    // DFG: 55-node chain (exceeds the 50-node threshold for SUB_PROBLEM).
     const int numNodes = 55;
+    const int clusterA = 28;
+    const int clusterB = numNodes - clusterA; // 27
+
+    // DFG: 55-node chain.
     llvm::SmallVector<IdIndex, 64> swNodes;
     for (int i = 0; i < numNodes; ++i) {
       swNodes.push_back(
@@ -409,50 +413,63 @@ int main() {
       addEdgeBetween(dfg, swNodes[i], 0, swNodes[i + 1], 0);
     }
 
-    // Verify that selectMode would choose SUB_PROBLEM for this DFG.
+    // Verify SUB_PROBLEM mode for >50 nodes.
     auto mode = CPSATSolver::selectMode(dfg, "balanced");
     if (CPSATSolver::isAvailable()) {
       TEST_ASSERT(mode == CPSATSolver::Mode::SUB_PROBLEM);
     }
 
-    // ADG: 55 functional PEs + 1 central routing switch with 55 ports.
-    // The switch provides any-to-any routing between all PEs.
+    // ADG: Two disconnected clusters, each with a local routing switch.
+    // Cluster A: 28 PEs + switch (28 in, 28 out).
     llvm::SmallVector<IdIndex, 64> hwPEs;
     for (int i = 0; i < numNodes; ++i) {
       hwPEs.push_back(
           addPENode(adg, ctx, "arith.addi", "functional", 1, 1));
     }
-    IdIndex csw =
-        addPENode(adg, ctx, "fabric.switch", "routing", numNodes, numNodes);
 
-    // Connect all PEs to/from the central switch.
-    for (int i = 0; i < numNodes; ++i) {
+    IdIndex swA =
+        addPENode(adg, ctx, "fabric.switch", "routing", clusterA, clusterA);
+    for (int i = 0; i < clusterA; ++i) {
       addADGEdge(adg, adg.getNode(hwPEs[i])->outputPorts[0],
-                 adg.getNode(csw)->inputPorts[i]);
-      addADGEdge(adg, adg.getNode(csw)->outputPorts[i],
+                 adg.getNode(swA)->inputPorts[i]);
+      addADGEdge(adg, adg.getNode(swA)->outputPorts[i],
                  adg.getNode(hwPEs[i])->inputPorts[0]);
     }
+
+    // Cluster B: 27 PEs + switch (27 in, 27 out).
+    IdIndex swB =
+        addPENode(adg, ctx, "fabric.switch", "routing", clusterB, clusterB);
+    for (int i = 0; i < clusterB; ++i) {
+      addADGEdge(adg, adg.getNode(hwPEs[clusterA + i])->outputPorts[0],
+                 adg.getNode(swB)->inputPorts[i]);
+      addADGEdge(adg, adg.getNode(swB)->outputPorts[i],
+                 adg.getNode(hwPEs[clusterA + i])->inputPorts[0]);
+    }
+    // No cross-cluster connection: edges spanning clusters are unroutable.
 
     Mapper mapper;
     Mapper::Options opts;
     opts.budgetSeconds = 30.0;
     opts.seed = 42;
     opts.profile = "balanced";
+    opts.maxGlobalRestarts = 2;
 
     Mapper::Result result = mapper.run(dfg, adg, opts);
 
-    // With 55 PEs for 55 nodes and full routing through a central switch,
-    // the heuristic should succeed. CP-SAT refinement may or may not
-    // improve the solution depending on conflict detection.
-    TEST_ASSERT(result.success);
+    // The DFG chain spans both disconnected clusters, so at least one
+    // edge is guaranteed to be unroutable. These unrouted edges produce
+    // conflict seeds that trigger CP-SAT sub-problem refinement.
+    if (CPSATSolver::isAvailable()) {
+      TEST_ASSERT(result.cpsatSubProblemCalls > 0);
+    }
 
-    // All nodes should be placed.
+    // Some nodes should be placed regardless of overall success.
     int placedCount = 0;
     for (int i = 0; i < numNodes; ++i) {
       if (result.state.swNodeToHwNode[swNodes[i]] != INVALID_ID)
         ++placedCount;
     }
-    TEST_ASSERT(placedCount == numNodes);
+    TEST_ASSERT(placedCount > 0);
   }
 
   return 0;

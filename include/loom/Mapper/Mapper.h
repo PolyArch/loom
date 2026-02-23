@@ -37,6 +37,7 @@ public:
     bool success = false;
     MappingState state;
     std::string diagnostics;
+    int cpsatSubProblemCalls = 0;
   };
 
   /// Run the full PnR pipeline on the given DFG and ADG.

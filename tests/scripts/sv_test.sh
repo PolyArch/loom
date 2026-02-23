@@ -723,16 +723,25 @@ WAVE_EOF
   done
 
   # If simulator is not available, count jobs as skipped without running.
-  # For VCS, also do a pre-flight license check (a quick vcs -ID) since the
-  # command may be present but the license server unreachable.
+  # For VCS, do a license-consuming compile probe: `vcs -ID` returns
+  # success even without a compile license, so we compile a minimal SV
+  # module and check for license-denial errors in the output.
   sim_skip=false
   if ! command -v "${sim}" >/dev/null 2>&1; then
     sim_skip=true
   elif [[ "${sim}" == "vcs" ]]; then
-    if ! vcs -ID >/dev/null 2>&1; then
-      echo "VCS found but license check failed; skipping VCS tests" >&2
-      sim_skip=true
+    probe_dir=$(mktemp -d)
+    echo 'module vcs_license_probe; endmodule' > "${probe_dir}/probe.sv"
+    probe_rc=0
+    (cd "${probe_dir}" && timeout 30 vcs -sverilog probe.sv -o simv \
+      > compile.log 2>&1) || probe_rc=$?
+    if [[ "${probe_rc}" -ne 0 ]]; then
+      if grep -qiE 'license|Failed to obtain' "${probe_dir}/compile.log" 2>/dev/null; then
+        echo "VCS compile license unavailable; skipping VCS tests" >&2
+        sim_skip=true
+      fi
     fi
+    rm -rf "${probe_dir}"
   fi
 
   if [[ "${sim_skip}" == "true" ]]; then
