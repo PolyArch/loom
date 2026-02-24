@@ -760,16 +760,37 @@ LatticeMeshResult ADGBuilder::latticeMesh(int peRows, int peCols,
       result.swGrid[r][c] = clone(swTemplate, swName);
     }
 
-  // Wire inter-switch mesh connections.
+  // Create reverse-link FIFOs to break combinational loops on West/North edges.
+  auto revFifo = newFifo(lPrefix + "rev_fifo");
+  revFifo.setDepth(2).setType(swDef.portType);
+  FifoHandle revFifoH = revFifo;
+
+  // Wire inter-switch mesh connections (bidirectional).
+  // Forward (East/South): direct connections.
+  // Reverse (West/North): through FIFOs to break combinational loops.
   // Port assignment: N=0, E=1, S=2, W=3, PE ports=4..7
   for (int r = 0; r < swRows; ++r) {
     for (int c = 0; c < swCols; ++c) {
-      // East: SW[r][c] out(1) -> SW[r][c+1] in(3)
-      if (c + 1 < swCols)
+      if (c + 1 < swCols) {
+        // East: SW[r][c] out(1) -> SW[r][c+1] in(3)
         connectPorts(result.swGrid[r][c], 1, result.swGrid[r][c + 1], 3);
-      // South: SW[r][c] out(2) -> SW[r+1][c] in(0)
-      if (r + 1 < swRows)
+        // West: SW[r][c+1] out(3) -> fifo -> SW[r][c] in(1)
+        auto fw = clone(revFifoH,
+                        lPrefix + "fifo_w_" + std::to_string(r) + "_" +
+                            std::to_string(c));
+        connectPorts(result.swGrid[r][c + 1], 3, fw, 0);
+        connectPorts(fw, 0, result.swGrid[r][c], 1);
+      }
+      if (r + 1 < swRows) {
+        // South: SW[r][c] out(2) -> SW[r+1][c] in(0)
         connectPorts(result.swGrid[r][c], 2, result.swGrid[r + 1][c], 0);
+        // North: SW[r+1][c] out(0) -> fifo -> SW[r][c] in(2)
+        auto fn = clone(revFifoH,
+                        lPrefix + "fifo_n_" + std::to_string(r) + "_" +
+                            std::to_string(c));
+        connectPorts(result.swGrid[r + 1][c], 0, fn, 0);
+        connectPorts(fn, 0, result.swGrid[r][c], 2);
+      }
     }
   }
 

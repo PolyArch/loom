@@ -29,7 +29,7 @@ static const std::map<std::string, int> SMALL_INSTANCES = {
     {"pe_divsi", 1}, {"pe_remui", 1}, {"pe_remsi", 1},
     {"pe_addi_i64", 2}, {"pe_subi_i64", 1}, {"pe_muli_i64", 1},
     {"pe_cmpi_i64", 2}, {"pe_shli_i64", 1}, {"pe_remui_i64", 1},
-    {"pe_addi_index", 1}, {"pe_divui_index", 1},
+    {"pe_addi_index", 1}, {"pe_divui_index", 1}, {"pe_divsi_index", 1},
     {"pe_remui_index", 1}, {"pe_muli_index", 1},
     {"pe_andi", 1}, {"pe_ori", 1}, {"pe_xori", 1},
     {"pe_shli", 1}, {"pe_shrui", 1}, {"pe_shrsi", 1},
