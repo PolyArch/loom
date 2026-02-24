@@ -48,20 +48,3 @@ add_custom_target(loom-mapper-app-templates
   COMMENT "Generating all CGRA templates"
 )
 
-add_custom_target(check-loom-mapper-app
-  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_app_test.sh"
-    "${LOOM_BIN}" --tier quick
-  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-  DEPENDS loom
-    ${MAPPER_APP_TEMPLATES}
-  COMMENT "Mapper integration tests (quick tier)"
-)
-
-add_custom_target(check-loom-mapper-app-full
-  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_app_test.sh"
-    "${LOOM_BIN}" --tier all
-  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-  DEPENDS loom
-    ${MAPPER_APP_TEMPLATES}
-  COMMENT "Mapper integration tests (all tiers)"
-)

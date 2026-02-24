@@ -21,7 +21,7 @@ for test_bin in "${TEST_BIN_DIR}"/mapper-test-*; do
   [[ -x "${test_bin}" ]] || continue
   test_name=$(basename "${test_bin}" | sed 's/^mapper-test-//')
   rel_bin=$(loom_relpath "${test_bin}")
-  rel_out="tests/mapper/unit/${test_name}/Output"
+  rel_out="tests/mapper/unit/Output/${test_name}"
   echo "mkdir -p ${rel_out} && ${rel_bin}" >> "${PARALLEL_FILE}"
 done
 
