@@ -73,6 +73,14 @@ enum class ModuleKind {
   Fifo,
 };
 
+/// Check whether a module kind is a pure routing node (pass-through, no
+/// computation). Used to decide whether routingCompatible() should be applied
+/// instead of exact type matching for connected ports.
+inline bool isRoutingKind(ModuleKind k) {
+  return k == ModuleKind::Switch || k == ModuleKind::TemporalSwitch ||
+         k == ModuleKind::Fifo;
+}
+
 //===----------------------------------------------------------------------===//
 // Internal Definition Structs
 //===----------------------------------------------------------------------===//
@@ -238,6 +246,42 @@ struct PortType {
       return scalarType.getTagType() == other.scalarType.getTagType();
     }
     return false;
+  }
+
+  /// Routing-compatible check: allows types with the same bit width to
+  /// connect through routing nodes (switches, FIFOs). For example, f32 and
+  /// i32 both have 32-bit width and can share a width-merged switch plane.
+  /// Index and None types require exact match (never merged with others).
+  /// Tagged types: value bit widths AND tag types must both match.
+  bool routingCompatible(const PortType &other) const {
+    if (matches(other)) return true;
+    if (isMemref || other.isMemref) return false;
+    // Tagged types: both must be tagged with matching tag types and
+    // routing-compatible value widths.
+    bool tagA = scalarType.getKind() == Type::Tagged;
+    bool tagB = other.scalarType.getKind() == Type::Tagged;
+    if (tagA != tagB) return false; // mixed tagged/native: never compatible
+    if (tagA) {
+      Type valA = scalarType.getValueType();
+      Type valB = other.scalarType.getValueType();
+      // Index and None value types: exact match only.
+      if (valA.getKind() == Type::Index || valB.getKind() == Type::Index)
+        return false;
+      if (valA.getKind() == Type::None || valB.getKind() == Type::None)
+        return false;
+      return getTypeDataWidth(valA) == getTypeDataWidth(valB) &&
+             scalarType.getTagType() == other.scalarType.getTagType();
+    }
+    // Index: exact match only (semantically distinct from i64).
+    if (scalarType.getKind() == Type::Index ||
+        other.scalarType.getKind() == Type::Index)
+      return false;
+    // None: exact match only.
+    if (scalarType.getKind() == Type::None ||
+        other.scalarType.getKind() == Type::None)
+      return false;
+    // Other scalars: bit width must match (e.g. i32 == f32 == 32).
+    return getTypeDataWidth(scalarType) == getTypeDataWidth(other.scalarType);
   }
 };
 

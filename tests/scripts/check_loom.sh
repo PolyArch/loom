@@ -24,6 +24,9 @@ any_failure=false
 "${SCRIPT_DIR}/scf_roundtrip.sh" "${LOOM_BIN}" --run || any_failure=true
 "${SCRIPT_DIR}/handshake_ops_stat.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/spec_check.sh" || any_failure=true
+"${SCRIPT_DIR}/mapper_test.sh" "${ROOT_DIR}/build/tests/mapper" || any_failure=true
+"${SCRIPT_DIR}/mapper_app_test.sh" "${LOOM_BIN}" --tier quick || any_failure=true
+"${SCRIPT_DIR}/mapper_app_test.sh" "${LOOM_BIN}" --tier all || true
 
 echo ""
 table_rc=0

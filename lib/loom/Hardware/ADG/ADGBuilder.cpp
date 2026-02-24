@@ -715,6 +715,240 @@ MeshResult ADGBuilder::buildMesh(int rows, int cols, PEHandle peTemplate,
   return result;
 }
 
+//===----------------------------------------------------------------------===//
+// Lattice Mesh Topology
+//===----------------------------------------------------------------------===//
+
+LatticeMeshResult ADGBuilder::latticeMesh(int peRows, int peCols,
+                                          SwitchHandle swTemplate) {
+  if (peRows <= 0)
+    builderError("latticeMesh", "peRows must be positive");
+  if (peCols <= 0)
+    builderError("latticeMesh", "peCols must be positive");
+  if (swTemplate.id >= impl_->switchDefs.size())
+    builderError("latticeMesh", "invalid switch template handle id " +
+                 std::to_string(swTemplate.id));
+
+  auto &swDef = impl_->switchDefs[swTemplate.id];
+  if (swDef.numIn < 8)
+    builderError("latticeMesh",
+                 "switch needs >= 8 input ports for lattice mesh; have " +
+                 std::to_string(swDef.numIn));
+  if (swDef.numOut < 8)
+    builderError("latticeMesh",
+                 "switch needs >= 8 output ports for lattice mesh; have " +
+                 std::to_string(swDef.numOut));
+
+  static unsigned latticeCounter = 0;
+  unsigned latticeId = latticeCounter++;
+  std::string lPrefix = "l" + std::to_string(latticeId) + "_";
+
+  int swRows = peRows + 1;
+  int swCols = peCols + 1;
+
+  LatticeMeshResult result;
+  result.peRows = peRows;
+  result.peCols = peCols;
+  result.swGrid.resize(swRows, std::vector<InstanceHandle>(swCols));
+  result.peGrid.resize(peRows, std::vector<InstanceHandle>(peCols, {0}));
+
+  // Create switch instances.
+  for (int r = 0; r < swRows; ++r)
+    for (int c = 0; c < swCols; ++c) {
+      std::string swName = lPrefix + "sw_" + std::to_string(r) + "_" +
+                           std::to_string(c);
+      result.swGrid[r][c] = clone(swTemplate, swName);
+    }
+
+  // Wire inter-switch mesh connections.
+  // Port assignment: N=0, E=1, S=2, W=3, PE ports=4..7
+  for (int r = 0; r < swRows; ++r) {
+    for (int c = 0; c < swCols; ++c) {
+      // East: SW[r][c] out(1) -> SW[r][c+1] in(3)
+      if (c + 1 < swCols)
+        connectPorts(result.swGrid[r][c], 1, result.swGrid[r][c + 1], 3);
+      // South: SW[r][c] out(2) -> SW[r+1][c] in(0)
+      if (r + 1 < swRows)
+        connectPorts(result.swGrid[r][c], 2, result.swGrid[r + 1][c], 0);
+    }
+  }
+
+  // Do NOT auto-fill here. Call finalizeLattice() after PE placement.
+  return result;
+}
+
+void ADGBuilder::finalizeLattice(LatticeMeshResult &lattice) {
+  int swRows = lattice.peRows + 1;
+  int swCols = lattice.peCols + 1;
+
+  // Determine the switch port type from the first switch instance.
+  unsigned firstSwInst = lattice.swGrid[0][0].id;
+  auto &swDef = impl_->switchDefs[impl_->instances[firstSwInst].defIdx];
+  Type swPortType = swDef.portType;
+
+  // Determine lattice prefix from the first switch name.
+  std::string firstSwName = impl_->instances[firstSwInst].name;
+  std::string lPrefix = firstSwName.substr(0, firstSwName.find("sw_"));
+
+  for (int r = 0; r < swRows; ++r) {
+    for (int c = 0; c < swCols; ++c) {
+      unsigned swInst = lattice.swGrid[r][c].id;
+      unsigned numIn = impl_->getInstanceInputCount(swInst);
+      std::vector<bool> inConnected(numIn, false);
+      for (const auto &conn : impl_->internalConns) {
+        if (conn.dstInst == swInst)
+          inConnected[conn.dstPort] = true;
+      }
+      for (const auto &conn : impl_->inputConns) {
+        if (conn.instIdx == swInst)
+          inConnected[conn.dstPort] = true;
+      }
+      for (unsigned p = 0; p < numIn; ++p) {
+        if (!inConnected[p]) {
+          std::string portName = lPrefix + "sw_" + std::to_string(r) + "_" +
+                                 std::to_string(c) + "_in" +
+                                 std::to_string(p);
+          auto mPort = addModuleInput(portName, swPortType);
+          connectToModuleInput(mPort, lattice.swGrid[r][c], p);
+        }
+      }
+
+      unsigned numOut = impl_->getInstanceOutputCount(swInst);
+      std::vector<bool> outUsed(numOut, false);
+      for (const auto &conn : impl_->internalConns) {
+        if (conn.srcInst == swInst)
+          outUsed[conn.srcPort] = true;
+      }
+      for (const auto &conn : impl_->outputConns) {
+        if (conn.instIdx == swInst)
+          outUsed[conn.srcPort] = true;
+      }
+      for (unsigned p = 0; p < numOut; ++p) {
+        if (!outUsed[p]) {
+          std::string portName = lPrefix + "sw_" + std::to_string(r) + "_" +
+                                 std::to_string(c) + "_out" +
+                                 std::to_string(p);
+          auto mPort = addModuleOutput(portName, swPortType);
+          connectToModuleOutput(lattice.swGrid[r][c], p, mPort);
+        }
+      }
+    }
+  }
+}
+
+/// Helper: wire PE ports to lattice corner switches.
+/// PE input connection order: [UL, LL, UR, LR]
+///   input[0] <- SW[row][col] output 4     (UL)
+///   input[1] <- SW[row+1][col] output 5   (LL)
+///   input[2] <- SW[row][col+1] output 6   (UR)
+///   input[3] <- SW[row+1][col+1] output 7 (LR)
+/// PE output connection order: [LR, UR, LL, UL]
+///   output[0] -> SW[row+1][col+1] input 4 (LR)
+///   output[1] -> SW[row][col+1] input 5   (UR)
+///   output[2] -> SW[row+1][col] input 6   (LL)
+///   output[3] -> SW[row][col] input 7     (UL)
+static void wirePEToLattice(ADGBuilder &builder,
+                             LatticeMeshResult &lattice,
+                             int row, int col,
+                             InstanceHandle pe,
+                             unsigned numIn, unsigned numOut) {
+  // Corner switches
+  auto swUL = lattice.swGrid[row][col];
+  auto swLL = lattice.swGrid[row + 1][col];
+  auto swUR = lattice.swGrid[row][col + 1];
+  auto swLR = lattice.swGrid[row + 1][col + 1];
+
+  // PE inputs from switch outputs (ports 4-7)
+  if (numIn > 0) builder.connectPorts(swUL, 4, pe, 0);
+  if (numIn > 1) builder.connectPorts(swLL, 5, pe, 1);
+  if (numIn > 2) builder.connectPorts(swUR, 6, pe, 2);
+  if (numIn > 3) builder.connectPorts(swLR, 7, pe, 3);
+
+  // PE outputs to switch inputs (ports 4-7)
+  if (numOut > 0) builder.connectPorts(pe, 0, swLR, 4);
+  if (numOut > 1) builder.connectPorts(pe, 1, swUR, 5);
+  if (numOut > 2) builder.connectPorts(pe, 2, swLL, 6);
+  if (numOut > 3) builder.connectPorts(pe, 3, swUL, 7);
+}
+
+/// Helper: validate lattice placement bounds and occupancy.
+static void validateLatticePlacement(const LatticeMeshResult &lattice,
+                                     int row, int col,
+                                     const char *api) {
+  if (row < 0 || row >= lattice.peRows)
+    builderError(api, "row " + std::to_string(row) + " out of range [0, " +
+                 std::to_string(lattice.peRows) + ")");
+  if (col < 0 || col >= lattice.peCols)
+    builderError(api, "col " + std::to_string(col) + " out of range [0, " +
+                 std::to_string(lattice.peCols) + ")");
+  if (lattice.peGrid[row][col].id != 0)
+    builderError(api, "cell (" + std::to_string(row) + ", " +
+                 std::to_string(col) + ") is already occupied");
+}
+
+InstanceHandle ADGBuilder::placePEInLattice(LatticeMeshResult &lattice,
+                                            int row, int col,
+                                            PEHandle peTemplate,
+                                            const std::string &name) {
+  validateLatticePlacement(lattice, row, col, "placePEInLattice(PEHandle)");
+  if (peTemplate.id >= impl_->peDefs.size())
+    builderError("placePEInLattice", "invalid PE template handle");
+
+  auto &peDef = impl_->peDefs[peTemplate.id];
+  unsigned numIn = peDef.inputPorts.size();
+  unsigned numOut = peDef.outputPorts.size();
+  if (numIn > 4)
+    builderError("placePEInLattice", "PE has " + std::to_string(numIn) +
+                 " inputs; max 4 for lattice placement");
+  if (numOut > 4)
+    builderError("placePEInLattice", "PE has " + std::to_string(numOut) +
+                 " outputs; max 4 for lattice placement");
+
+  auto pe = clone(peTemplate, name);
+  lattice.peGrid[row][col] = pe;
+  wirePEToLattice(*this, lattice, row, col, pe, numIn, numOut);
+  return pe;
+}
+
+InstanceHandle ADGBuilder::placePEInLattice(LatticeMeshResult &lattice,
+                                            int row, int col,
+                                            ConstantPEHandle peTemplate,
+                                            const std::string &name) {
+  validateLatticePlacement(lattice, row, col,
+                           "placePEInLattice(ConstantPEHandle)");
+  // ConstantPE: 1 input, 1 output
+  auto pe = clone(peTemplate, name);
+  lattice.peGrid[row][col] = pe;
+  wirePEToLattice(*this, lattice, row, col, pe, 1, 1);
+  return pe;
+}
+
+InstanceHandle ADGBuilder::placePEInLattice(LatticeMeshResult &lattice,
+                                            int row, int col,
+                                            LoadPEHandle peTemplate,
+                                            const std::string &name) {
+  validateLatticePlacement(lattice, row, col,
+                           "placePEInLattice(LoadPEHandle)");
+  // LoadPE: 3 inputs, 2 outputs
+  auto pe = clone(peTemplate, name);
+  lattice.peGrid[row][col] = pe;
+  wirePEToLattice(*this, lattice, row, col, pe, 3, 2);
+  return pe;
+}
+
+InstanceHandle ADGBuilder::placePEInLattice(LatticeMeshResult &lattice,
+                                            int row, int col,
+                                            StorePEHandle peTemplate,
+                                            const std::string &name) {
+  validateLatticePlacement(lattice, row, col,
+                           "placePEInLattice(StorePEHandle)");
+  // StorePE: 3 inputs, 2 outputs
+  auto pe = clone(peTemplate, name);
+  lattice.peGrid[row][col] = pe;
+  wirePEToLattice(*this, lattice, row, col, pe, 3, 2);
+  return pe;
+}
+
 // Validation is in ADGBuilderValidation.cpp.
 
 //===----------------------------------------------------------------------===//

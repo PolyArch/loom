@@ -127,9 +127,9 @@ ValidationResult ADGBuilder::validateADG() {
     if (sw.numIn < 1 || sw.numOut < 1)
       addError(CplError::SWITCH_PORT_ZERO,
                "switch must have at least 1 input and 1 output", loc);
-    if (sw.numIn > 256 || sw.numOut > 256)
+    if (sw.numIn > 32 || sw.numOut > 32)
       addError(CplError::SWITCH_PORT_LIMIT,
-               "switch has more than 256 inputs or outputs", loc);
+               "switch has more than 32 inputs or outputs", loc);
     validateConnectivityTable(sw.connectivity, sw.numIn, sw.numOut,
                               "CPL_SWITCH", loc, addError);
   }
@@ -356,8 +356,7 @@ ValidationResult ADGBuilder::validateADG() {
     std::string loc = "pe @" + pe.name;
     if (pe.inputPorts.empty())
       addError(CplError::PE_EMPTY_BODY, "PE has no input ports", loc);
-    if (pe.outputPorts.empty())
-      addError(CplError::PE_EMPTY_BODY, "PE has no output ports", loc);
+    // Zero-output PEs are valid (e.g. handshake.sink).
     if (pe.bodyMLIR.empty() && pe.singleOp.empty())
       addError(CplError::PE_EMPTY_BODY, "PE has no body or operation", loc);
     // Check for mixed interface (some tagged, some not).
@@ -448,13 +447,21 @@ ValidationResult ADGBuilder::validateADG() {
              "module has no instances", "module @" + impl_->moduleName);
 
   // Graph-level validation: check type compatibility of all connections.
+  // Routing nodes (Switch, TemporalSwitch, Fifo) use routingCompatible()
+  // which allows width-merged types (e.g. f32 through i32-typed switch).
   for (const auto &conn : impl_->internalConns) {
     if (conn.srcInst >= impl_->instances.size() ||
         conn.dstInst >= impl_->instances.size())
       continue;
     auto srcType = impl_->getInstanceOutputPortType(conn.srcInst, conn.srcPort);
     auto dstType = impl_->getInstanceInputPortType(conn.dstInst, conn.dstPort);
-    if (!srcType.matches(dstType)) {
+    bool ok;
+    if (isRoutingKind(impl_->instances[conn.srcInst].kind) ||
+        isRoutingKind(impl_->instances[conn.dstInst].kind))
+      ok = srcType.routingCompatible(dstType);
+    else
+      ok = srcType.matches(dstType);
+    if (!ok) {
       std::string loc =
           impl_->instances[conn.srcInst].name + ":" +
           std::to_string(conn.srcPort) + " -> " +
@@ -475,7 +482,12 @@ ValidationResult ADGBuilder::validateADG() {
     PortType srcType = port.isMemref ? PortType::memref(port.memrefType)
                                      : PortType::scalar(port.type);
     auto dstType = impl_->getInstanceInputPortType(conn.instIdx, conn.dstPort);
-    if (!srcType.widthCompatible(dstType)) {
+    bool ok;
+    if (isRoutingKind(impl_->instances[conn.instIdx].kind))
+      ok = srcType.routingCompatible(dstType);
+    else
+      ok = srcType.widthCompatible(dstType);
+    if (!ok) {
       std::string loc =
           "%" + port.name + " -> " +
           impl_->instances[conn.instIdx].name + ":" +
@@ -495,7 +507,12 @@ ValidationResult ADGBuilder::validateADG() {
     const auto &port = impl_->ports[conn.portIdx];
     PortType dstType = port.isMemref ? PortType::memref(port.memrefType)
                                      : PortType::scalar(port.type);
-    if (!srcType.widthCompatible(dstType)) {
+    bool ok;
+    if (isRoutingKind(impl_->instances[conn.instIdx].kind))
+      ok = srcType.routingCompatible(dstType);
+    else
+      ok = srcType.widthCompatible(dstType);
+    if (!ok) {
       std::string loc =
           impl_->instances[conn.instIdx].name + ":" +
           std::to_string(conn.srcPort) + " -> %" + port.name;

@@ -294,10 +294,17 @@ ParseResult SwitchOp::parse(OpAsmParser &parser, OperationState &result) {
     if (parser.parseColon())
       return failure();
 
-    // Parse uniform input type.
-    Type inputType;
-    if (parser.parseType(inputType))
+    // Parse input types (comma-separated). A single type with multiple
+    // operands is expanded uniformly for backwards compatibility.
+    SmallVector<Type> inputTypes;
+    if (parser.parseTypeList(inputTypes))
       return failure();
+
+    if (inputTypes.size() == 1 && operands.size() > 1)
+      inputTypes.resize(operands.size(), inputTypes[0]);
+    else if (inputTypes.size() != operands.size())
+      return parser.emitError(parser.getNameLoc(), "expected ")
+             << operands.size() << " input types, got " << inputTypes.size();
 
     if (parser.parseArrow())
       return failure();
@@ -307,8 +314,6 @@ ParseResult SwitchOp::parse(OpAsmParser &parser, OperationState &result) {
     if (parser.parseTypeList(outputTypes))
       return failure();
 
-    // All inputs have the same type.
-    SmallVector<Type> inputTypes(operands.size(), inputType);
     if (parser.resolveOperands(operands, inputTypes, parser.getNameLoc(),
                                result.operands))
       return failure();
@@ -354,8 +359,23 @@ void SwitchOp::print(OpAsmPrinter &p) {
       p.printOperands(getInputs());
     }
     p << " : ";
-    if (!getInputs().empty())
-      p.printType(getInputs().front().getType());
+    if (!getInputs().empty()) {
+      // Use compact single-type form when all input types are identical.
+      bool allSame = true;
+      Type firstType = getInputs().front().getType();
+      for (auto v : getInputs()) {
+        if (v.getType() != firstType) {
+          allSame = false;
+          break;
+        }
+      }
+      if (allSame) {
+        p.printType(firstType);
+      } else {
+        llvm::interleaveComma(getInputs().getTypes(), p,
+                              [&](Type t) { p.printType(t); });
+      }
+    }
     p << " -> ";
     llvm::interleaveComma(getOutputs().getTypes(), p,
                           [&](Type t) { p.printType(t); });
@@ -392,13 +412,13 @@ LogicalResult SwitchOp::verify() {
       return failure();
   }
 
-  if (numInputs > 256)
+  if (numInputs > 32)
     return emitOpError(cplErrMsg(CplError::SWITCH_PORT_LIMIT,
-                       "number of inputs must be <= 256; got "))
+                       "number of inputs must be <= 32; got "))
            << numInputs;
-  if (numOutputs > 256)
+  if (numOutputs > 32)
     return emitOpError(cplErrMsg(CplError::SWITCH_PORT_LIMIT,
-                       "number of outputs must be <= 256; got "))
+                       "number of outputs must be <= 32; got "))
            << numOutputs;
 
   if (auto ct = getConnectivityTable()) {

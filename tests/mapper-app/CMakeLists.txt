@@ -8,23 +8,49 @@
 #   ninja check-loom-mapper-app       # quick tier (smoke tests)
 #   ninja check-loom-mapper-app-full  # all tiers
 
-# Template files that must exist for tests to run.
-set(MAPPER_APP_TEMPLATES
-  "${CMAKE_CURRENT_SOURCE_DIR}/templates/loom_cgra_small.fabric.mlir"
-  "${CMAKE_CURRENT_SOURCE_DIR}/templates/loom_cgra_medium.fabric.mlir"
-  "${CMAKE_CURRENT_SOURCE_DIR}/templates/loom_cgra_large.fabric.mlir"
-)
+# Template generator sources and outputs.
+set(TEMPLATES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/templates")
+set(TEMPLATES_BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/templates")
+set(LOOM_BIN "${LOOM_RUNTIME_DIR}/loom")
 
-# Validate that template files are present at configure time.
-foreach(tmpl ${MAPPER_APP_TEMPLATES})
-  if(NOT EXISTS "${tmpl}")
-    message(WARNING "Mapper-app template missing: ${tmpl}")
-  endif()
+set(MAPPER_APP_TEMPLATES)
+set(MAPPER_APP_GEN_TARGETS)
+
+foreach(tier smoke small medium large)
+  set(GEN_SRC "${TEMPLATES_DIR}/gen_${tier}.cpp")
+  set(GEN_BIN "${TEMPLATES_BIN_DIR}/gen_${tier}")
+  set(GEN_OUT "${TEMPLATES_DIR}/loom_cgra_${tier}.fabric.mlir")
+
+  # Compile the generator using loom --as-clang.
+  add_custom_command(
+    OUTPUT "${GEN_BIN}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${TEMPLATES_BIN_DIR}"
+    COMMAND "${LOOM_BIN}" --as-clang "${GEN_SRC}" -o "${GEN_BIN}"
+    DEPENDS loom "${GEN_SRC}" "${TEMPLATES_DIR}/cgra_pe_catalog.h"
+    COMMENT "Compiling ${tier} template generator"
+  )
+
+  # Run the generator to produce the .fabric.mlir template.
+  add_custom_command(
+    OUTPUT "${GEN_OUT}"
+    COMMAND "${GEN_BIN}" "${GEN_OUT}"
+    DEPENDS "${GEN_BIN}"
+    COMMENT "Generating loom_cgra_${tier}.fabric.mlir"
+  )
+
+  list(APPEND MAPPER_APP_TEMPLATES "${GEN_OUT}")
+  list(APPEND MAPPER_APP_GEN_TARGETS "${GEN_OUT}")
 endforeach()
+
+# Convenience target to generate all templates.
+add_custom_target(loom-mapper-app-templates
+  DEPENDS ${MAPPER_APP_GEN_TARGETS}
+  COMMENT "Generating all CGRA templates"
+)
 
 add_custom_target(check-loom-mapper-app
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_app_test.sh"
-    "${LOOM_RUNTIME_DIR}/loom" --tier quick
+    "${LOOM_BIN}" --tier quick
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS loom
     ${MAPPER_APP_TEMPLATES}
@@ -33,7 +59,7 @@ add_custom_target(check-loom-mapper-app
 
 add_custom_target(check-loom-mapper-app-full
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_app_test.sh"
-    "${LOOM_RUNTIME_DIR}/loom" --tier all
+    "${LOOM_BIN}" --tier all
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS loom
     ${MAPPER_APP_TEMPLATES}

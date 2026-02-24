@@ -675,14 +675,40 @@ std::string ADGBuilder::Impl::generateMLIR() const {
   std::map<std::pair<unsigned, int>, std::string> instResultSSA;
   std::map<std::pair<unsigned, int>, std::string> instResultType;
 
+  // For routing-node outputs (Switch), resolve the downstream consumer type
+  // so that SSA values carry per-port types (e.g. f32 when feeding an f32 PE
+  // through an i32-typed switch in a width-merged plane).
+  auto resolveOutputType = [&](unsigned ii, int port) -> std::string {
+    if (instances[ii].kind != ModuleKind::Switch)
+      return getInstanceOutputPortType(ii, port).toMLIR();
+    // Check internal connections from this output.
+    for (const auto &conn : internalConns) {
+      if (conn.srcInst == ii && conn.srcPort == port) {
+        auto dstKind = instances[conn.dstInst].kind;
+        // Routing-to-routing: use own portType (canonical mesh type).
+        if (dstKind == ModuleKind::Switch ||
+            dstKind == ModuleKind::TemporalSwitch ||
+            dstKind == ModuleKind::Fifo)
+          break;
+        return getInstanceInputPortType(conn.dstInst, conn.dstPort).toMLIR();
+      }
+    }
+    // Check module output connections.
+    for (const auto &conn : outputConns) {
+      if (conn.instIdx == ii && conn.srcPort == port) {
+        const auto &p = ports[conn.portIdx];
+        return p.isMemref ? p.memrefType.toMLIR() : p.type.toMLIR();
+      }
+    }
+    return getInstanceOutputPortType(ii, port).toMLIR();
+  };
+
   for (unsigned ii : topoOrder) {
     unsigned numOutputs = getInstanceOutputCount(ii);
     for (unsigned r = 0; r < numOutputs; ++r) {
       std::string name = "%" + std::to_string(ssaCounter + r);
       instResultSSA[{ii, (int)r}] = name;
-      // Use PortType to correctly handle memref outputs (e.g. memory port 0).
-      instResultType[{ii, (int)r}] =
-          getInstanceOutputPortType(ii, r).toMLIR();
+      instResultType[{ii, (int)r}] = resolveOutputType(ii, (int)r);
     }
     ssaCounter += numOutputs;
   }
@@ -1015,7 +1041,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
 
     case ModuleKind::Switch: {
       auto &swDef = switchDefs[inst.defIdx];
-      std::string typeStr = swDef.portType.toMLIR();
+      std::string fallbackType = swDef.portType.toMLIR();
       auto flatConn = flattenConnectivity(swDef.connectivity, swDef.numOut,
                                           swDef.numIn);
 
@@ -1029,10 +1055,31 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         if (o > 0) os << ", ";
         os << operands[o];
       }
-      os << " : " << typeStr << " -> ";
+      // Per-port input types from upstream connections.
+      os << " : ";
+      bool allInputsSame = true;
+      std::string firstInType = operandTypes.empty()
+                                    ? fallbackType
+                                    : (operandTypes[0].empty() ? fallbackType
+                                                               : operandTypes[0]);
+      for (size_t o = 0; o < operandTypes.size(); ++o) {
+        std::string t = operandTypes[o].empty() ? fallbackType : operandTypes[o];
+        if (t != firstInType) allInputsSame = false;
+      }
+      if (allInputsSame) {
+        os << firstInType;
+      } else {
+        for (size_t o = 0; o < operandTypes.size(); ++o) {
+          if (o > 0) os << ", ";
+          os << (operandTypes[o].empty() ? fallbackType : operandTypes[o]);
+        }
+      }
+      os << " -> ";
+      // Per-port output types from pre-allocated downstream resolution.
       for (unsigned o = 0; o < swDef.numOut; ++o) {
         if (o > 0) os << ", ";
-        os << typeStr;
+        auto tit = instResultType.find({ii, (int)o});
+        os << (tit != instResultType.end() ? tit->second : fallbackType);
       }
       os << "\n";
       break;

@@ -98,7 +98,7 @@ MemrefType MemrefType::dynamic1D(Type elemType) {
 
 std::string MemrefType::toMLIR() const {
   if (isDynamic_)
-    return "memref<?x" + elemType_.toMLIR() + ">";
+    return "memref<?x" + elemType_.toMLIR() + ", strided<[1], offset: ?>>";
   return "memref<" + std::to_string(size_) + "x" + elemType_.toMLIR() + ">";
 }
 
