@@ -80,12 +80,6 @@ inline bool isRoutingKind(ModuleKind k) {
          k == ModuleKind::Fifo;
 }
 
-/// Check whether a module kind is a temporal PE. Temporal PEs adapt per-FU
-/// widths internally, so tagged payload widths may differ from connected ports.
-inline bool isTemporalPEKind(ModuleKind k) {
-  return k == ModuleKind::TemporalPE;
-}
-
 //===----------------------------------------------------------------------===//
 // Internal Definition Structs
 //===----------------------------------------------------------------------===//
@@ -263,25 +257,6 @@ struct PortType {
       return wA > 0 && wA == wB;
     }
     return false;
-  }
-
-  /// Temporal-PE-compatible check: like widthCompatible but relaxes tagged
-  /// payload widths. Temporal PEs adapt per-FU widths internally, so
-  /// tagged<bits<32>,i4> is compatible with tagged<bits<16>,i4>.
-  bool temporalPECompatible(const PortType &other) const {
-    if (matches(other)) return true;
-    if (isMemref || other.isMemref) return false;
-    // Both tagged: tag types must match; payload widths may differ.
-    if (scalarType.getKind() == Type::Tagged &&
-        other.scalarType.getKind() == Type::Tagged) {
-      if (scalarType.getTagType() != other.scalarType.getTagType())
-        return false;
-      unsigned wA = getTypeDataWidth(scalarType.getValueType());
-      unsigned wB = getTypeDataWidth(other.scalarType.getValueType());
-      return wA > 0 && wB > 0;
-    }
-    // Non-tagged: fall through to widthCompatible semantics.
-    return widthCompatible(other);
   }
 
   /// Routing-compatible check: allows types with the same bit width to
