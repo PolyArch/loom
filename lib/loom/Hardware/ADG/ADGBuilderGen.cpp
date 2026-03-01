@@ -342,7 +342,17 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
       bodyOutputTypes.push_back(t.isTagged() ? t.getValueType() : t);
 
     if (!pe.bodyMLIR.empty()) {
-      os << pe.bodyMLIR;
+      // Emit ^bb0 header with native body types since the bits-interface
+      // parser no longer pre-supplies block args from the signature.
+      // transformBodyMLIR strips any existing ^bb0 from bodyMLIR and
+      // renames user arg names to %arg0, %arg1, etc.
+      os << "^bb0(";
+      for (size_t i = 0; i < bodyInputTypes.size(); ++i) {
+        if (i > 0) os << ", ";
+        os << "%arg" << i << ": " << bodyInputTypes[i].toMLIR();
+      }
+      os << "):\n";
+      os << transformBodyMLIR(pe.bodyMLIR, pe.inputPorts);
     } else {
       const bool isGate = (pe.singleOp == "dataflow.gate");
       const bool isStream = (pe.singleOp == "dataflow.stream");
