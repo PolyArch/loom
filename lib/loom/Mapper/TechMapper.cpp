@@ -253,12 +253,19 @@ bool TechMapper::isSingleOpCompatible(const Graph &dfg, IdIndex swNode,
 
     // Multiset type matching for inputs: collect types, sort by semantic
     // width so that native↔bits pairs (e.g. i32 vs bits<32>) align.
-    auto typeSortKey = [](mlir::Type t) -> std::tuple<int, unsigned> {
+    auto typeSortKey = [](mlir::Type t) -> std::tuple<int, unsigned, unsigned> {
       if (mlir::isa<mlir::MemRefType>(t))
-        return {0, 0}; // memref sorts first
+        return {0, 0, 0};
       if (mlir::isa<mlir::NoneType>(t))
-        return {2, 0}; // none sorts last
-      return {1, getTechMapBitWidth(t)}; // data types sort by width
+        return {2, 0, 0};
+      if (auto tagged = mlir::dyn_cast<loom::dataflow::TaggedType>(t)) {
+        unsigned valW = getTechMapBitWidth(tagged.getValueType());
+        unsigned tagW = 0;
+        if (auto tagInt = mlir::dyn_cast<mlir::IntegerType>(tagged.getTagType()))
+          tagW = tagInt.getWidth();
+        return {1, valW, tagW};
+      }
+      return {1, getTechMapBitWidth(t), 0};
     };
     auto collectTypes = [&typeSortKey](const Graph &g,
                            llvm::ArrayRef<IdIndex> portIds) {
