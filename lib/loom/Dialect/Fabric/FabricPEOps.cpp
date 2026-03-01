@@ -479,8 +479,9 @@ LogicalResult PEOp::verify() {
                          "PE interface must use !dataflow.bits<N> types; "
                          "native types (i32, f32, index) are not allowed"));
     }
-    if (hasTagged && !hasBitsValue) {
+    if (hasTagged) {
       for (Type t : inputTypes) {
+        if (!isa<dataflow::TaggedType>(t)) continue;
         Type v = getValueType(t);
         if (!isa<NoneType>(v) && !isa<dataflow::BitsType>(v))
           return emitOpError(cplErrMsg(CplError::PE_NATIVE_INTERFACE,
@@ -490,6 +491,7 @@ LogicalResult PEOp::verify() {
                  << v << "'";
       }
       for (Type t : outputTypes) {
+        if (!isa<dataflow::TaggedType>(t)) continue;
         Type v = getValueType(t);
         if (!isa<NoneType>(v) && !isa<dataflow::BitsType>(v))
           return emitOpError(cplErrMsg(CplError::PE_NATIVE_INTERFACE,

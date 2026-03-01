@@ -230,6 +230,8 @@ inline constexpr const char *FIFO_BYPASSED_MISSING =
 // --- Module/Fabric Errors ---
 inline constexpr const char *MODULE_PORT_ORDER =
     "CPL_MODULE_PORT_ORDER";
+inline constexpr const char *MODULE_NATIVE_PORT =
+    "CPL_MODULE_NATIVE_PORT";
 inline constexpr const char *MODULE_EMPTY_BODY =
     "CPL_MODULE_EMPTY_BODY";
 inline constexpr const char *MODULE_MISSING_YIELD =

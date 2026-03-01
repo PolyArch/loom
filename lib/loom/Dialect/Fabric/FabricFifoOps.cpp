@@ -233,11 +233,11 @@ LogicalResult FifoOp::verify() {
              << fnType.getInput(0) << " vs " << fnType.getResult(0);
     if (!isValidFifoType(fnType.getInput(0)))
       return emitOpError(cplErrMsg(CplError::FIFO_INVALID_TYPE,
-                         "type must be a native type or !dataflow.tagged; got "))
+                         "type must be !dataflow.bits<N>, none, or !dataflow.tagged; got "))
              << fnType.getInput(0);
     if (!isValidFifoType(fnType.getResult(0)))
       return emitOpError(cplErrMsg(CplError::FIFO_INVALID_TYPE,
-                         "type must be a native type or !dataflow.tagged; got "))
+                         "type must be !dataflow.bits<N>, none, or !dataflow.tagged; got "))
              << fnType.getResult(0);
     // Named form should have no SSA operands/results.
     if (!getInputs().empty() || !getOutputs().empty())
@@ -259,7 +259,7 @@ LogicalResult FifoOp::verify() {
              << getOutputs().front().getType();
     if (!isValidFifoType(getInputs().front().getType()))
       return emitOpError(cplErrMsg(CplError::FIFO_INVALID_TYPE,
-                         "type must be a native type or !dataflow.tagged; got "))
+                         "type must be !dataflow.bits<N>, none, or !dataflow.tagged; got "))
              << getInputs().front().getType();
   }
 

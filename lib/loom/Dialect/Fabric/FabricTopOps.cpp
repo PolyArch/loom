@@ -279,6 +279,35 @@ LogicalResult ModuleOp::verify() {
   if (failed(checkOrdering(fnType.getResults(), "outputs")))
     return failure();
 
+  // Bits-only module boundary: reject native scalar ports.
+  // Allowed: memref, none, bits<N>, tagged<bits<N>|none, iK>.
+  auto isAllowedModuleType = [](Type t) -> bool {
+    if (isa<MemRefType>(t) || isa<NoneType>(t) || isa<dataflow::BitsType>(t))
+      return true;
+    if (auto tagged = dyn_cast<dataflow::TaggedType>(t)) {
+      Type v = tagged.getValueType();
+      return isa<NoneType>(v) || isa<dataflow::BitsType>(v);
+    }
+    return false;
+  };
+  auto checkModuleTypes = [&](ArrayRef<Type> types,
+                              StringRef label) -> LogicalResult {
+    for (auto [idx, t] : llvm::enumerate(types)) {
+      if (!isAllowedModuleType(t))
+        return emitOpError(cplErrMsg(CplError::MODULE_NATIVE_PORT,
+                           "module "))
+               << label << " port #" << idx
+               << " has native type '" << t
+               << "'; must use !dataflow.bits<N>, none, memref, or "
+                  "!dataflow.tagged<!dataflow.bits<N>|none, iK>";
+    }
+    return success();
+  };
+  if (failed(checkModuleTypes(fnType.getInputs(), "input")))
+    return failure();
+  if (failed(checkModuleTypes(fnType.getResults(), "output")))
+    return failure();
+
   // Body must have at least one non-terminator.
   Block &body = getBody().front();
   bool hasOp = false;

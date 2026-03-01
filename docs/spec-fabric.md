@@ -122,8 +122,8 @@ fabric.module @name(
 
 The argument and result ordering is fixed and must be preserved:
 
-- Inputs: `memref*`, `native*`, `tagged*`
-- Outputs: `memref*`, `native*`, `tagged*`
+- Inputs: `memref*`, `bits*`, `tagged*`
+- Outputs: `memref*`, `bits*`, `tagged*`
 
 ### Port Categories and Semantics
 
@@ -136,24 +136,34 @@ The argument and result ordering is fixed and must be preserved:
     outside.
   - Hardware semantics are similar to an AXI Slave interface.
 
-- **Native value inputs (N ports)**
+- **Bits value inputs (N ports)**
   - Passive streaming inputs, similar to an AXI-Stream slave interface.
+  - Must use `!dataflow.bits<N>` or `none` types. Native types (i32, f32,
+    index) are not allowed at the module boundary.
 
 - **Tagged inputs (O ports)**
   - Passive streaming inputs carrying `!dataflow.tagged` values.
+  - Tagged value types must be `!dataflow.bits<N>` or `none`.
 
-- **Native value outputs (J ports)**
+- **Bits value outputs (J ports)**
   - Active streaming outputs, similar to an AXI-Stream master interface.
+  - Must use `!dataflow.bits<N>` or `none` types.
 
 - **Tagged outputs (K ports)**
   - Active streaming outputs carrying `!dataflow.tagged` values.
+  - Tagged value types must be `!dataflow.bits<N>` or `none`.
 
 ### Constraints
 
 - `M + N + O + I + J + K` must be greater than 0.
   - An accelerator cannot be a completely empty shell.
-- All `tagged` ports must use valid `!dataflow.tagged` types.
-- Port ordering must follow: memref*, native*, tagged* for both inputs and
+- All module ports must use structural types: `memref`, `!dataflow.bits<N>`,
+  `none`, or `!dataflow.tagged<!dataflow.bits<N>|none, iK>`. Native MLIR
+  types (i32, f32, index) are not allowed at the module boundary. Violations
+  raise `CPL_MODULE_NATIVE_PORT`.
+- All `tagged` ports must use valid `!dataflow.tagged` types with
+  `!dataflow.bits<N>` or `none` value types.
+- Port ordering must follow: memref*, bits*, tagged* for both inputs and
   outputs. Violations raise `CPL_MODULE_PORT_ORDER`.
 - The body must contain at least one non-terminator operation. Violations
   raise `CPL_MODULE_EMPTY_BODY`.

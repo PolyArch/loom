@@ -218,15 +218,15 @@ ordering across cycles.
 Stores are paired per tag in FIFO order. For each tag, the queue matches
 `staddr` and `stdata` arrivals in the order they are received.
 
-**Single-port (native, `stCount == 1`):**
+**Single-port (`stCount == 1`):**
 
-Since there is only one logical store port (native, no tags), the queue pairs
+Since there is only one logical store port (no tags), the queue pairs
 `staddr` and `stdata` in strict FIFO order. The first `staddr` matches with
 the first `stdata`, the second with the second, and so on.
 
 **Deadlock detection:**
 
-For each store tag (or the single global store queue in native mode), the
+For each store tag (or the single global store queue in single-port mode), the
 hardware maintains a deadlock counter. The counter behavior is:
 
 - **Imbalance condition**: exactly one of `staddr` or `stdata` has a queued

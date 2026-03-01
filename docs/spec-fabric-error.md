@@ -95,6 +95,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_MEMORY_INVALID_REGION | `numRegion < 1` on `fabric.memory` or `fabric.extmemory` |
 | CPL_FABRIC_TYPE_MISMATCH | A connection inside `fabric.module` uses mismatched types or bit widths without an explicit conversion |
 | CPL_MODULE_PORT_ORDER | `fabric.module` ports are not in the required order: memref*, bits*, tagged* |
+| CPL_MODULE_NATIVE_PORT | `fabric.module` port uses a native type (i32, f32, index, etc.) instead of `!dataflow.bits<N>`, `none`, `memref`, or `!dataflow.tagged` |
 | CPL_MODULE_EMPTY_BODY | `fabric.module` body contains no operations other than the terminator |
 | CPL_MODULE_MISSING_YIELD | `fabric.module` body does not end with `fabric.yield` |
 | CPL_PE_LOADSTORE_BODY | A load/store PE does not contain exactly one `handshake.load` or `handshake.store` |
