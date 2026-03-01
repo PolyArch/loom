@@ -127,7 +127,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_ADG_COMBINATIONAL_LOOP | A cycle exists in the connection graph where every element is combinational (zero-delay), causing signal instability |
 | CPL_FIFO_DEPTH_ZERO | `fabric.fifo` depth must be >= 1 |
 | CPL_FIFO_TYPE_MISMATCH | `fabric.fifo` input and output types do not match |
-| CPL_FIFO_INVALID_TYPE | `fabric.fifo` type must be a native value type or `!dataflow.tagged` |
+| CPL_FIFO_INVALID_TYPE | `fabric.fifo` type must be `!dataflow.bits<N>`, `none`, or `!dataflow.tagged` with `bits<N>`/`none` value |
 | CPL_FIFO_BYPASSED_NOT_BYPASSABLE | `fabric.fifo` has `bypassed` attribute present without `bypassable` |
 | CPL_FIFO_BYPASSED_MISSING | `fabric.fifo` has `bypassable` set but `bypassed` attribute is missing |
 | CPL_FANOUT_MODULE_INNER | SSA result of an operation inside `fabric.module` body has multiple consumers; use switch broadcast for data duplication |
