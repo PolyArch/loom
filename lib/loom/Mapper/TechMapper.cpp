@@ -251,8 +251,16 @@ bool TechMapper::isSingleOpCompatible(const Graph &dfg, IdIndex swNode,
     if (sw->outputPorts.size() > hw->outputPorts.size())
       return false;
 
-    // Multiset type matching for inputs: collect types, sort, compare.
-    auto collectTypes = [](const Graph &g,
+    // Multiset type matching for inputs: collect types, sort by semantic
+    // width so that native↔bits pairs (e.g. i32 vs bits<32>) align.
+    auto typeSortKey = [](mlir::Type t) -> std::tuple<int, unsigned> {
+      if (mlir::isa<mlir::MemRefType>(t))
+        return {0, 0}; // memref sorts first
+      if (mlir::isa<mlir::NoneType>(t))
+        return {2, 0}; // none sorts last
+      return {1, getTechMapBitWidth(t)}; // data types sort by width
+    };
+    auto collectTypes = [&typeSortKey](const Graph &g,
                            llvm::ArrayRef<IdIndex> portIds) {
       llvm::SmallVector<mlir::Type, 4> types;
       for (IdIndex pid : portIds) {
@@ -260,8 +268,8 @@ bool TechMapper::isSingleOpCompatible(const Graph &dfg, IdIndex swNode,
         if (p && p->type)
           types.push_back(p->type);
       }
-      llvm::sort(types, [](mlir::Type a, mlir::Type b) {
-        return a.getAsOpaquePointer() < b.getAsOpaquePointer();
+      llvm::sort(types, [&typeSortKey](mlir::Type a, mlir::Type b) {
+        return typeSortKey(a) < typeSortKey(b);
       });
       return types;
     };
