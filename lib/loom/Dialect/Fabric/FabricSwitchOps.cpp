@@ -648,15 +648,17 @@ LogicalResult TemporalSwOp::verify() {
   unsigned numInputs, numOutputs;
 
   // Helper to verify a tagged type has a valid routing payload value type.
+  // Temporal switch payloads must be bits<N> or none (not nested tagged).
   auto verifyTaggedRoutingPayload = [&](Type t) -> LogicalResult {
     if (!isa<dataflow::TaggedType>(t))
       return emitOpError("all ports must be !dataflow.tagged; got ") << t;
     auto tagged = cast<dataflow::TaggedType>(t);
-    if (!isValidRoutingPayloadType(tagged.getValueType()))
+    Type valT = tagged.getValueType();
+    if (!isa<dataflow::BitsType>(valT) && !isa<NoneType>(valT))
       return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
                          "temporal_sw tagged value type must be "
                          "!dataflow.bits<N> or none; got "))
-             << tagged.getValueType();
+             << valT;
     return success();
   };
 

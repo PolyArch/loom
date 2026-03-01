@@ -664,11 +664,20 @@ LogicalResult InstanceOp::verify() {
   // Compare types against target's function_type.
   // Inside fabric.pe bodies, block args use native types (i32, f32) while
   // the target named PE has bits-typed interface ports. Use width-compatible
-  // matching for instances inside PE bodies; exact matching elsewhere.
+  // matching only when the target port is bits-typed (the native-to-bits
+  // bridge case); native-to-native calls use exact matching.
   auto targetFnType = getTargetFunctionType(target);
   if (targetFnType) {
     auto fnType = *targetFnType;
     bool insidePE = getOperation()->getParentOfType<PEOp>() != nullptr;
+
+    // Width-compatible matching only applies to native↔bits bridge.
+    auto isBitsTarget = [](Type expected) -> bool {
+      Type valT = expected;
+      if (auto tagged = dyn_cast<dataflow::TaggedType>(expected))
+        valT = tagged.getValueType();
+      return isa<dataflow::BitsType>(valT);
+    };
 
     if (getOperands().size() != fnType.getNumInputs())
       return emitOpError(cplErrMsg(CplError::INSTANCE_OPERAND_MISMATCH,
@@ -680,7 +689,8 @@ LogicalResult InstanceOp::verify() {
       Type actual = std::get<0>(pair);
       Type expected = std::get<1>(pair);
       if (actual != expected) {
-        if (insidePE && isWidthCompatible(actual, expected))
+        if (insidePE && isBitsTarget(expected) &&
+            isWidthCompatible(actual, expected))
           continue;
         return emitOpError(cplErrMsg(CplError::INSTANCE_OPERAND_MISMATCH,
                            "operand #"))
@@ -699,7 +709,8 @@ LogicalResult InstanceOp::verify() {
       Type actual = std::get<0>(pair);
       Type expected = std::get<1>(pair);
       if (actual != expected) {
-        if (insidePE && isWidthCompatible(actual, expected))
+        if (insidePE && isBitsTarget(expected) &&
+            isWidthCompatible(actual, expected))
           continue;
         return emitOpError(cplErrMsg(CplError::INSTANCE_RESULT_MISMATCH,
                            "result #"))
