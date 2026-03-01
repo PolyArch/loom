@@ -148,6 +148,8 @@ void FifoOp::print(OpAsmPrinter &p) {
 /// Returns std::nullopt for types without a well-defined bit width (index,
 /// none), which must match exactly.
 static std::optional<unsigned> getNativeBitWidth(Type t) {
+  if (auto bitsType = dyn_cast<dataflow::BitsType>(t))
+    return bitsType.getWidth();
   if (auto intTy = dyn_cast<IntegerType>(t))
     return intTy.getWidth();
   if (isa<Float16Type, BFloat16Type>(t))
@@ -196,22 +198,23 @@ static bool isRoutingTypeCompatible(Type a, Type b) {
   return *widthA == *widthB;
 }
 
-/// Check if a type is a valid native type for fabric.fifo.
+/// Check whether a type is a valid routing payload type.
+/// Routing nodes only accept: BitsType, NoneType, IndexType.
+static bool isValidRoutingPayloadType(Type t) {
+  return isa<loom::dataflow::BitsType>(t) || isa<NoneType>(t) ||
+         isa<IndexType>(t);
+}
+
+/// Check if a type is a valid type for fabric.fifo.
+/// Only routing payload types (bits, none, index) and tagged types with
+/// routing payload value types are allowed.
 static bool isValidFifoType(Type type) {
-  // Native types: i1, i8, i16, i32, i64, f16, bf16, f32, f64, index, none.
-  if (auto intTy = dyn_cast<IntegerType>(type)) {
-    unsigned w = intTy.getWidth();
-    return w == 1 || w == 8 || w == 16 || w == 32 || w == 64;
-  }
-  if (isa<Float16Type, BFloat16Type, Float32Type, Float64Type>(type))
+  // Routing payload types: bits<N>, none, index.
+  if (isValidRoutingPayloadType(type))
     return true;
-  if (isa<IndexType>(type))
-    return true;
-  if (isa<NoneType>(type))
-    return true;
-  // Tagged types.
-  if (isa<loom::dataflow::TaggedType>(type))
-    return true;
+  // Tagged types with valid routing payload value type.
+  if (auto tagged = dyn_cast<loom::dataflow::TaggedType>(type))
+    return isValidRoutingPayloadType(tagged.getValueType());
   return false;
 }
 

@@ -47,6 +47,7 @@ inline unsigned getTypeDataWidth(const Type &t) {
   case Type::F64:   return 64;
   case Type::Index: return 64;
   case Type::None:  return 0;
+  case Type::Bits:  return t.getWidth();
   case Type::Tagged:
     return getTypeDataWidth(t.getValueType());
   }
@@ -253,6 +254,9 @@ struct PortType {
   /// i32 both have 32-bit width and can share a width-merged switch plane.
   /// Index and None types require exact match (never merged with others).
   /// Tagged types: value bit widths AND tag types must both match.
+  /// Bits types: bits<N> is compatible with any native type of width N
+  /// and with other bits<N>. For tagged: tagged<bits<N>,tagT> is
+  /// compatible with tagged<native(N),tagT> when tag types match.
   bool routingCompatible(const PortType &other) const {
     if (matches(other)) return true;
     if (isMemref || other.isMemref) return false;
@@ -264,13 +268,30 @@ struct PortType {
     if (tagA) {
       Type valA = scalarType.getValueType();
       Type valB = other.scalarType.getValueType();
-      // Index and None value types: exact match only.
-      if (valA.getKind() == Type::Index || valB.getKind() == Type::Index)
-        return false;
-      if (valA.getKind() == Type::None || valB.getKind() == Type::None)
-        return false;
+      // Index and None value types: exact match only (unless paired with Bits).
+      bool bitsA = valA.getKind() == Type::Bits;
+      bool bitsB = valB.getKind() == Type::Bits;
+      if (!bitsA && !bitsB) {
+        if (valA.getKind() == Type::Index || valB.getKind() == Type::Index)
+          return false;
+        if (valA.getKind() == Type::None || valB.getKind() == Type::None)
+          return false;
+      }
       return getTypeDataWidth(valA) == getTypeDataWidth(valB) &&
              scalarType.getTagType() == other.scalarType.getTagType();
+    }
+    // Bits type: compatible with any type of matching width.
+    bool bitsA = scalarType.getKind() == Type::Bits;
+    bool bitsB = other.scalarType.getKind() == Type::Bits;
+    if (bitsA || bitsB) {
+      // Bits never matches None (width 0) or Index (semantically distinct).
+      if (!bitsA && (scalarType.getKind() == Type::Index ||
+                     scalarType.getKind() == Type::None))
+        return false;
+      if (!bitsB && (other.scalarType.getKind() == Type::Index ||
+                     other.scalarType.getKind() == Type::None))
+        return false;
+      return getTypeDataWidth(scalarType) == getTypeDataWidth(other.scalarType);
     }
     // Index: exact match only (semantically distinct from i64).
     if (scalarType.getKind() == Type::Index ||

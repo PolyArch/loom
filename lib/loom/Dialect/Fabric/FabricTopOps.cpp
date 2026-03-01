@@ -548,6 +548,72 @@ static bool hasCyclicReference(Operation *start) {
   return false;
 }
 
+/// Get the bit width of a type for routing compatibility checks.
+/// Returns std::nullopt for types without a well-defined bit width.
+static std::optional<unsigned> getRoutingBitWidth(Type t) {
+  if (auto bitsType = dyn_cast<dataflow::BitsType>(t))
+    return bitsType.getWidth();
+  if (auto intTy = dyn_cast<IntegerType>(t))
+    return intTy.getWidth();
+  if (isa<Float16Type, BFloat16Type>(t))
+    return 16u;
+  if (isa<Float32Type>(t))
+    return 32u;
+  if (isa<Float64Type>(t))
+    return 64u;
+  return std::nullopt;
+}
+
+/// Check whether two types are routing-compatible at an instance boundary.
+/// This allows native types (i32, f32) to connect to routing payload types
+/// (bits<32>) through instance port boundaries, since routing nodes declare
+/// their ports as bits<N> while PEs use semantic types.
+/// Rules:
+///   - Exact match: always compatible.
+///   - Both untagged with matching bit width: compatible
+///     (e.g., i32 <-> bits<32>, index <-> index, none <-> none).
+///   - Both tagged with matching value bit widths and tag types: compatible
+///     (e.g., tagged<i32, i4> <-> tagged<bits<32>, i4>).
+///   - Mixed native/tagged: never compatible.
+static bool isInstanceRoutingCompatible(Type actual, Type expected) {
+  if (actual == expected)
+    return true;
+
+  bool isTaggedA = isa<dataflow::TaggedType>(actual);
+  bool isTaggedE = isa<dataflow::TaggedType>(expected);
+
+  // Category mismatch: native-to-tagged is never allowed.
+  if (isTaggedA != isTaggedE)
+    return false;
+
+  if (isTaggedA) {
+    auto tagA = cast<dataflow::TaggedType>(actual);
+    auto tagE = cast<dataflow::TaggedType>(expected);
+    // Tag types must match exactly.
+    if (tagA.getTagType() != tagE.getTagType())
+      return false;
+    // Value types must be bit-width compatible.
+    auto wA = getRoutingBitWidth(tagA.getValueType());
+    auto wE = getRoutingBitWidth(tagE.getValueType());
+    if (!wA || !wE)
+      return tagA.getValueType() == tagE.getValueType();
+    return *wA == *wE;
+  }
+
+  // Both untagged: check bit width compatibility.
+  // Special types (none, index) must match exactly.
+  if (isa<NoneType>(actual) || isa<NoneType>(expected))
+    return actual == expected;
+  if (isa<IndexType>(actual) || isa<IndexType>(expected))
+    return actual == expected;
+
+  auto wA = getRoutingBitWidth(actual);
+  auto wE = getRoutingBitWidth(expected);
+  if (!wA || !wE)
+    return false;
+  return *wA == *wE;
+}
+
 //===----------------------------------------------------------------------===//
 // InstanceOp verify
 //===----------------------------------------------------------------------===//
@@ -570,9 +636,16 @@ LogicalResult InstanceOp::verify() {
 
   // CPL_INSTANCE_OPERAND_MISMATCH / CPL_INSTANCE_RESULT_MISMATCH:
   // Compare types against target's function_type.
+  // For routing node targets (switch, temporal_sw, fifo, tag ops),
+  // use routing-compatible type matching (bit-width compatibility)
+  // instead of exact type matching.
   auto targetFnType = getTargetFunctionType(target);
   if (targetFnType) {
     auto fnType = *targetFnType;
+    bool isRoutingTarget =
+        isa<SwitchOp, TemporalSwOp, FifoOp, AddTagOp, MapTagOp, DelTagOp>(
+            target);
+
     if (getOperands().size() != fnType.getNumInputs())
       return emitOpError(cplErrMsg(CplError::INSTANCE_OPERAND_MISMATCH,
                          "operand count ("))
@@ -580,11 +653,16 @@ LogicalResult InstanceOp::verify() {
              << fnType.getNumInputs() << ")";
     for (auto [idx, pair] : llvm::enumerate(
              llvm::zip(getOperandTypes(), fnType.getInputs()))) {
-      if (std::get<0>(pair) != std::get<1>(pair))
+      Type actual = std::get<0>(pair);
+      Type expected = std::get<1>(pair);
+      if (actual != expected) {
+        if (isRoutingTarget && isInstanceRoutingCompatible(actual, expected))
+          continue;
         return emitOpError(cplErrMsg(CplError::INSTANCE_OPERAND_MISMATCH,
                            "operand #"))
-               << idx << " type " << std::get<0>(pair)
-               << " does not match target input type " << std::get<1>(pair);
+               << idx << " type " << actual
+               << " does not match target input type " << expected;
+      }
     }
 
     if (getResults().size() != fnType.getNumResults())
@@ -594,11 +672,16 @@ LogicalResult InstanceOp::verify() {
              << fnType.getNumResults() << ")";
     for (auto [idx, pair] : llvm::enumerate(
              llvm::zip(getResultTypes(), fnType.getResults()))) {
-      if (std::get<0>(pair) != std::get<1>(pair))
+      Type actual = std::get<0>(pair);
+      Type expected = std::get<1>(pair);
+      if (actual != expected) {
+        if (isRoutingTarget && isInstanceRoutingCompatible(actual, expected))
+          continue;
         return emitOpError(cplErrMsg(CplError::INSTANCE_RESULT_MISMATCH,
                            "result #"))
-               << idx << " type " << std::get<0>(pair)
-               << " does not match target result type " << std::get<1>(pair);
+               << idx << " type " << actual
+               << " does not match target result type " << expected;
+      }
     }
   }
 

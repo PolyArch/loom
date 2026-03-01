@@ -16,6 +16,22 @@ class Dataflow_Type<string name, string typeMnemonic, list<Trait> traits = []>
   let mnemonic = typeMnemonic;
 }
 
+def Dataflow_BitsType : Dataflow_Type<"Bits", "bits"> {
+  let summary = "Width-only data type for routing nodes";
+  let description = [{
+    Represents an N-bit data payload with no semantic type information.
+    Used by routing nodes (switches, FIFOs, tag operations) that forward
+    data without interpreting it.
+
+    Width must be 1-4096 (any integer, not limited to powers of 2).
+
+    Example: `!dataflow.bits<32>`, `!dataflow.bits<16>`, `!dataflow.bits<7>`
+  }];
+  let parameters = (ins "unsigned":$width);
+  let assemblyFormat = "`<` $width `>`";
+  let genVerifyDecl = 1;
+}
+
 def Dataflow_TaggedType : Dataflow_Type<"Tagged", "tagged"> {
   let summary = "Tagged value type pairing a native value with a small integer tag";
   let description = [{

@@ -6,6 +6,7 @@
 
 #include "loom/Mapper/TechMapper.h"
 
+#include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 
@@ -53,6 +54,19 @@ mlir::ArrayAttr getArrayAttr(const Node *node, llvm::StringRef name) {
 /// Check if two types are compatible for mapping purposes.
 /// For routing nodes (pass-through), only bit-width matters.
 /// For functional/memory nodes, strict type checking applies.
+/// Get bit width from a type for tech-mapping purposes.
+unsigned getTechMapBitWidth(mlir::Type type) {
+  if (!type)
+    return 0;
+  if (auto bitsType = mlir::dyn_cast<loom::dataflow::BitsType>(type))
+    return bitsType.getWidth();
+  if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(type))
+    return intTy.getWidth();
+  if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(type))
+    return floatTy.getWidth();
+  return 0;
+}
+
 bool typesCompatible(mlir::Type swType, mlir::Type hwType,
                      bool isRoutingNode) {
   if (!swType || !hwType)
@@ -63,19 +77,9 @@ bool typesCompatible(mlir::Type swType, mlir::Type hwType,
 
   if (isRoutingNode) {
     // For routing nodes, check bit-width compatibility.
-    // Native types: only bit width must match (i32 ~ f32 both 32-bit).
-    unsigned swWidth = 0;
-    unsigned hwWidth = 0;
-
-    if (auto swInt = mlir::dyn_cast<mlir::IntegerType>(swType))
-      swWidth = swInt.getWidth();
-    else if (auto swFloat = mlir::dyn_cast<mlir::FloatType>(swType))
-      swWidth = swFloat.getWidth();
-
-    if (auto hwInt = mlir::dyn_cast<mlir::IntegerType>(hwType))
-      hwWidth = hwInt.getWidth();
-    else if (auto hwFloat = mlir::dyn_cast<mlir::FloatType>(hwType))
-      hwWidth = hwFloat.getWidth();
+    // Native types and bits types: only bit width must match.
+    unsigned swWidth = getTechMapBitWidth(swType);
+    unsigned hwWidth = getTechMapBitWidth(hwType);
 
     if (swWidth > 0 && hwWidth > 0)
       return swWidth <= hwWidth;

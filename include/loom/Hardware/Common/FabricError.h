@@ -205,6 +205,10 @@ inline constexpr const char *MAP_TAG_TABLE_SIZE =
 inline constexpr const char *MAP_TAG_TABLE_LENGTH =
     "CPL_MAP_TAG_TABLE_LENGTH";
 
+// --- Routing Payload Errors ---
+inline constexpr const char *ROUTING_PAYLOAD_NOT_BITS =
+    "CPL_ROUTING_PAYLOAD_NOT_BITS";
+
 // --- FIFO Errors ---
 inline constexpr const char *FIFO_DEPTH_ZERO =
     "CPL_FIFO_DEPTH_ZERO";

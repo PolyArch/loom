@@ -45,7 +45,7 @@ enum class InterfaceCategory { Native, Tagged };
 class Type {
 public:
   enum Kind {
-    I1, I8, I16, I32, I64, IN, BF16, F16, F32, F64, Index, None, Tagged
+    I1, I8, I16, I32, I64, IN, BF16, F16, F32, F64, Index, None, Bits, Tagged
   };
 
   static Type i1() { return Type(I1); }
@@ -60,6 +60,7 @@ public:
   static Type f64() { return Type(F64); }
   static Type index() { return Type(Index); }
   static Type none() { return Type(None); }
+  static Type bits(unsigned w) { return Type(Bits, w); }
   static Type tagged(Type value, Type tag);
 
   Kind getKind() const { return kind_; }

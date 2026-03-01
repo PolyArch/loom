@@ -14,6 +14,12 @@ using namespace mlir;
 using namespace loom;
 using namespace loom::fabric;
 
+/// Check whether a type is a valid routing payload type.
+/// Routing nodes only accept: BitsType, NoneType, IndexType.
+static bool isValidRoutingPayloadType(Type t) {
+  return isa<dataflow::BitsType>(t) || isa<NoneType>(t) || isa<IndexType>(t);
+}
+
 /// Verify tag type width is in [1, 16].
 static LogicalResult verifyTagWidthRange(Operation *op, IntegerType tagType) {
   unsigned w = tagType.getWidth();
@@ -33,6 +39,13 @@ LogicalResult AddTagOp::verify() {
   // CPL_TAG_WIDTH_RANGE
   if (failed(verifyTagWidthRange(getOperation(), resultType.getTagType())))
     return failure();
+
+  // Enforce routing payload type on value.
+  if (!isValidRoutingPayloadType(resultType.getValueType()))
+    return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                       "add_tag value type must be !dataflow.bits<N>, "
+                       "none, or index; got "))
+           << resultType.getValueType();
 
   Type inputType = getValue().getType();
   if (inputType != resultType.getValueType())
@@ -70,6 +83,13 @@ LogicalResult DelTagOp::verify() {
   if (failed(verifyTagWidthRange(getOperation(), inputType.getTagType())))
     return failure();
 
+  // Enforce routing payload type on value.
+  if (!isValidRoutingPayloadType(inputType.getValueType()))
+    return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                       "del_tag value type must be !dataflow.bits<N>, "
+                       "none, or index; got "))
+           << inputType.getValueType();
+
   Type resultType = getResult().getType();
   if (resultType != inputType.getValueType())
     return emitOpError(cplErrMsg(CplError::DEL_TAG_VALUE_TYPE_MISMATCH,
@@ -93,6 +113,13 @@ LogicalResult MapTagOp::verify() {
     return failure();
   if (failed(verifyTagWidthRange(getOperation(), resultType.getTagType())))
     return failure();
+
+  // Enforce routing payload type on value.
+  if (!isValidRoutingPayloadType(inputType.getValueType()))
+    return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                       "map_tag value type must be !dataflow.bits<N>, "
+                       "none, or index; got "))
+           << inputType.getValueType();
 
   if (inputType.getValueType() != resultType.getValueType())
     return emitOpError(cplErrMsg(CplError::MAP_TAG_VALUE_TYPE_MISMATCH,

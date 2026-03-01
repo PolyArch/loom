@@ -46,6 +46,7 @@ std::string Type::toMLIR() const {
   case F64:   return "f64";
   case Index: return "index";
   case None:  return "none";
+  case Bits:  return "!dataflow.bits<" + std::to_string(width_) + ">";
   case Tagged:
     assert(taggedData_ && "Tagged type missing data");
     return "!dataflow.tagged<" + taggedData_->valueType.toMLIR() + ", " +
@@ -73,7 +74,7 @@ bool Type::operator==(const Type &other) const {
   auto [rk, rw] = canonicalizeInt(other.kind_, other.width_);
   if (lk != rk)
     return false;
-  if (lk == IN)
+  if (lk == IN || lk == Bits)
     return lw == rw;
   if (lk == Tagged) {
     if (!taggedData_ || !other.taggedData_)

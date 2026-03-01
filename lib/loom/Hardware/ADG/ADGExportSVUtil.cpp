@@ -41,6 +41,7 @@ unsigned getDataWidthBits(const Type &t) {
   case Type::F64:   return 64;
   case Type::Index: return 64;
   case Type::None:  return 0;
+  case Type::Bits:  return t.getWidth();
   case Type::Tagged:
     return getDataWidthBits(t.getValueType());
   }

@@ -66,14 +66,14 @@ enum WidthPlane {
 
 inline Type widthPlaneToType(WidthPlane wp) {
   switch (wp) {
-  case WP_1:     return Type::i1();
+  case WP_1:     return Type::bits(1);
   case WP_NONE:  return Type::none();
-  case WP_8:     return Type::i8();
-  case WP_16:    return Type::i16();
-  case WP_32:    return Type::i32();
-  case WP_64:    return Type::i64();
+  case WP_8:     return Type::bits(8);
+  case WP_16:    return Type::bits(16);
+  case WP_32:    return Type::bits(32);
+  case WP_64:    return Type::bits(64);
   case WP_INDEX: return Type::index();
-  default:       return Type::i32();
+  default:       return Type::bits(32);
   }
 }
 

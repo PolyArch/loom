@@ -18,10 +18,19 @@ using namespace loom::fabric;
 // Shared verification helpers
 //===----------------------------------------------------------------------===//
 
+/// Check whether a type is a valid routing payload type.
+/// Routing nodes only accept: BitsType, NoneType, IndexType.
+/// IntegerType and FloatTypes are NOT allowed.
+static bool isValidRoutingPayloadType(Type t) {
+  return isa<dataflow::BitsType>(t) || isa<NoneType>(t) || isa<IndexType>(t);
+}
+
 /// Get the bit width of a native type for routing compatibility checks.
 /// Returns std::nullopt for types without a well-defined bit width (index,
 /// none), which must match exactly.
 static std::optional<unsigned> getNativeBitWidth(Type t) {
+  if (auto bitsType = dyn_cast<dataflow::BitsType>(t))
+    return bitsType.getWidth();
   if (auto intTy = dyn_cast<IntegerType>(t))
     return intTy.getWidth();
   if (isa<Float16Type, BFloat16Type>(t))
@@ -400,6 +409,21 @@ LogicalResult SwitchOp::verify() {
     if (!getInputs().empty() || !getOutputs().empty())
       return emitOpError(
           "named switch must not have SSA operands or results");
+    // Enforce routing payload types (bits, none, index only).
+    for (Type t : fnType.getInputs()) {
+      if (!isValidRoutingPayloadType(t))
+        return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                           "switch port type must be !dataflow.bits<N>, "
+                           "none, or index; got "))
+               << t;
+    }
+    for (Type t : fnType.getResults()) {
+      if (!isValidRoutingPayloadType(t))
+        return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                           "switch port type must be !dataflow.bits<N>, "
+                           "none, or index; got "))
+               << t;
+    }
     if (failed(verifyRoutingCompatibleTypes(getOperation(),
                                             fnType.getInputs(),
                                             fnType.getResults())))
@@ -407,6 +431,21 @@ LogicalResult SwitchOp::verify() {
   } else {
     numInputs = getInputs().size();
     numOutputs = getOutputs().size();
+    // Enforce routing payload types (bits, none, index only).
+    for (auto v : getInputs()) {
+      if (!isValidRoutingPayloadType(v.getType()))
+        return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                           "switch port type must be !dataflow.bits<N>, "
+                           "none, or index; got "))
+               << v.getType();
+    }
+    for (auto v : getOutputs()) {
+      if (!isValidRoutingPayloadType(v.getType()))
+        return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                           "switch port type must be !dataflow.bits<N>, "
+                           "none, or index; got "))
+               << v.getType();
+    }
     if (failed(verifyRoutingCompatibleTypes(getOperation(), getInputs(),
                                             getOutputs())))
       return failure();
@@ -602,6 +641,19 @@ LogicalResult TemporalSwOp::verify() {
   bool isNamed = getSymName().has_value();
   unsigned numInputs, numOutputs;
 
+  // Helper to verify a tagged type has a valid routing payload value type.
+  auto verifyTaggedRoutingPayload = [&](Type t) -> LogicalResult {
+    if (!isa<dataflow::TaggedType>(t))
+      return emitOpError("all ports must be !dataflow.tagged; got ") << t;
+    auto tagged = cast<dataflow::TaggedType>(t);
+    if (!isValidRoutingPayloadType(tagged.getValueType()))
+      return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                         "temporal_sw tagged value type must be "
+                         "!dataflow.bits<N>, none, or index; got "))
+             << tagged.getValueType();
+    return success();
+  };
+
   if (isNamed) {
     if (!getFunctionType())
       return emitOpError(
@@ -609,14 +661,13 @@ LogicalResult TemporalSwOp::verify() {
     auto fnType = *getFunctionType();
     numInputs = fnType.getNumInputs();
     numOutputs = fnType.getNumResults();
-    // Verify all types are tagged.
     for (Type t : fnType.getInputs()) {
-      if (!isa<dataflow::TaggedType>(t))
-        return emitOpError("all ports must be !dataflow.tagged; got ") << t;
+      if (failed(verifyTaggedRoutingPayload(t)))
+        return failure();
     }
     for (Type t : fnType.getResults()) {
-      if (!isa<dataflow::TaggedType>(t))
-        return emitOpError("all ports must be !dataflow.tagged; got ") << t;
+      if (failed(verifyTaggedRoutingPayload(t)))
+        return failure();
     }
     if (failed(verifyRoutingCompatibleTypes(getOperation(),
                                             fnType.getInputs(),
@@ -626,14 +677,12 @@ LogicalResult TemporalSwOp::verify() {
     numInputs = getInputs().size();
     numOutputs = getOutputs().size();
     for (auto v : getInputs()) {
-      if (!isa<dataflow::TaggedType>(v.getType()))
-        return emitOpError("all ports must be !dataflow.tagged; got ")
-               << v.getType();
+      if (failed(verifyTaggedRoutingPayload(v.getType())))
+        return failure();
     }
     for (auto v : getOutputs()) {
-      if (!isa<dataflow::TaggedType>(v.getType()))
-        return emitOpError("all ports must be !dataflow.tagged; got ")
-               << v.getType();
+      if (failed(verifyTaggedRoutingPayload(v.getType())))
+        return failure();
     }
     if (failed(verifyRoutingCompatibleTypes(getOperation(), getInputs(),
                                             getOutputs())))

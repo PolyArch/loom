@@ -6,6 +6,7 @@
 
 #include "loom/Mapper/Mapper.h"
 
+#include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 
@@ -28,10 +29,12 @@ llvm::StringRef getResClass(const Node *node) {
   return "";
 }
 
-/// Get bit width from an MLIR type (handles integer, float, and index types).
+/// Get bit width from an MLIR type (handles integer, float, bits, and index types).
 unsigned getTypeBitWidth(mlir::Type type) {
   if (!type)
     return 0;
+  if (auto bitsType = mlir::dyn_cast<loom::dataflow::BitsType>(type))
+    return bitsType.getWidth();
   if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(type))
     return intTy.getWidth();
   if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(type))

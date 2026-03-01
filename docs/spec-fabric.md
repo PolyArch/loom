@@ -34,6 +34,17 @@ streaming:
 
 See [spec-dataflow.md](./spec-dataflow.md) for the tagged type definition.
 
+The dataflow dialect also provides a **bits type** for routing nodes:
+
+- `!dataflow.bits<N>` -- an N-bit data payload with no semantic type information.
+
+Routing nodes (`fabric.switch`, `fabric.temporal_sw`, `fabric.fifo`) may use
+`!dataflow.bits<N>` to declare ports that forward raw bits without interpreting
+data semantics. Width must be 1-4096. A `bits<N>` port is routing-compatible
+with any native type of width N (e.g. `bits<32>` with `i32` or `f32`), and
+`tagged<bits<N>, iK>` is compatible with `tagged<native(N), iK>` when tag types
+match exactly. `bits<N>` is never compatible with `index` or `none`.
+
 Within fabric operations, the term **native value type** follows the exact value
 type set defined in [spec-dataflow.md](./spec-dataflow.md). Vector, tensor,
 memref, complex, and opaque types are not considered native value types.
@@ -199,8 +210,11 @@ interpreting data semantics, so types with equal bit widths are
 interchangeable across their ports. Specifically:
 
 - Native types: only bit width must match (`i32` and `f32` are compatible).
+- `!dataflow.bits<N>`: compatible with any native type of width N and with
+  other `bits<N>`. Never compatible with `index` or `none`.
 - Tagged types: value bit width AND tag bit width must each match; value
-  semantic types may differ.
+  semantic types may differ. `tagged<bits<N>, iK>` is compatible with
+  `tagged<native(N), iK>`.
 - Native-to-tagged mixing is never allowed, even through routing nodes.
 
 Tag boundary operations (`fabric.add_tag`, `fabric.del_tag`, `fabric.map_tag`)
