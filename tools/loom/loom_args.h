@@ -25,12 +25,6 @@ struct ParsedArgs {
   int mapper_seed = 0;
   std::string mapper_profile = "balanced";
   bool dump_mapping = false;
-  bool dump_viz = false;
-  std::string viz_dfg;
-  std::string viz_adg;
-  std::string viz_mapped;
-  std::string mapping_path;
-  std::string viz_mode = "structure";
   bool as_clang = false;
   bool show_help = false;
   bool show_version = false;

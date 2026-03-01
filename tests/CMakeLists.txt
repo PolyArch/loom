@@ -1,6 +1,4 @@
-add_subdirectory(mapper)
 add_subdirectory(mapper-app)
-add_subdirectory(viz)
 
 add_custom_target(check-loom-adg
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/adg_test.sh"

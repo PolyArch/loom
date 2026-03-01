@@ -63,14 +63,6 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "  --mapper-profile <name>    Weight profile (default: balanced)\n";
   llvm::outs() << "  --dump-mapping             Emit .mapping.json report\n";
   llvm::outs() << "  --handshake-input <file>   Use pre-compiled Handshake MLIR\n";
-  llvm::outs() << "  --mapping <file>           Load mapping JSON (for --viz-mapped)\n";
-  llvm::outs() << "\n";
-  llvm::outs() << "Visualization options:\n";
-  llvm::outs() << "  --dump-viz                 Emit visualization HTML with mapper\n";
-  llvm::outs() << "  --viz-dfg <file>           Standalone DFG visualization\n";
-  llvm::outs() << "  --viz-adg <file>           Standalone ADG visualization\n";
-  llvm::outs() << "  --viz-mapped <file>        Standalone mapped visualization\n";
-  llvm::outs() << "  --viz-mode <mode>          ADG viz mode: structure|detailed\n";
   llvm::outs() << "\n";
   llvm::outs() << "Forwarded compile options include: -I, -D, -U, -std, -O, -g,"
                << " -isystem, -include.\n";
@@ -192,55 +184,6 @@ ParsedArgs ParseArgs(int argc, char **argv) {
       }
       if (arg == "--dump-mapping") {
         parsed.dump_mapping = true;
-        continue;
-      }
-      if (arg == "--dump-viz") {
-        parsed.dump_viz = true;
-        continue;
-      }
-      if (arg == "--viz-dfg") {
-        if (i + 1 >= argc) {
-          llvm::errs() << "error: --viz-dfg requires a path\n";
-          parsed.had_error = true;
-          break;
-        }
-        parsed.viz_dfg = argv[++i];
-        continue;
-      }
-      if (arg == "--viz-adg") {
-        if (i + 1 >= argc) {
-          llvm::errs() << "error: --viz-adg requires a path\n";
-          parsed.had_error = true;
-          break;
-        }
-        parsed.viz_adg = argv[++i];
-        continue;
-      }
-      if (arg == "--viz-mapped") {
-        if (i + 1 >= argc) {
-          llvm::errs() << "error: --viz-mapped requires a path\n";
-          parsed.had_error = true;
-          break;
-        }
-        parsed.viz_mapped = argv[++i];
-        continue;
-      }
-      if (arg == "--mapping") {
-        if (i + 1 >= argc) {
-          llvm::errs() << "error: --mapping requires a path\n";
-          parsed.had_error = true;
-          break;
-        }
-        parsed.mapping_path = argv[++i];
-        continue;
-      }
-      if (arg == "--viz-mode") {
-        if (i + 1 >= argc) {
-          llvm::errs() << "error: --viz-mode requires a value\n";
-          parsed.had_error = true;
-          break;
-        }
-        parsed.viz_mode = argv[++i];
         continue;
       }
       if (arg == "--as-clang") {

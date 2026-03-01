@@ -60,7 +60,6 @@ foreach(target_name IN ITEMS loom)
     LoomFabric
     LoomADG
     LoomMapperCore
-    LoomViz
     ${LOOM_MLIR_LIBS}
     ${LOOM_LLVM_LIBS}
   )
