@@ -7,6 +7,7 @@
 #include "loom/Dialect/Fabric/FabricOps.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "loom/Hardware/Common/FabricError.h"
+#include "loom/Hardware/Common/FabricConstants.h"
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpImplementation.h"
@@ -511,11 +512,37 @@ LogicalResult PEOp::verify() {
       return emitOpError("bits-interface PE body must have ")
              << numInputs << " block arguments; got "
              << entryBlock.getNumArguments();
-    // Body args must be concrete native types, not bits<N>.
-    for (auto arg : entryBlock.getArguments()) {
-      if (isa<dataflow::BitsType>(arg.getType()))
+
+    // Helper to get bit width of a type (interface or body).
+    auto getBitWidth = [](Type t) -> std::optional<unsigned> {
+      using namespace loom::dataflow;
+      if (auto bits = dyn_cast<BitsType>(t)) return bits.getWidth();
+      if (auto intTy = dyn_cast<IntegerType>(t)) return intTy.getWidth();
+      if (isa<Float32Type>(t)) return 32u;
+      if (isa<Float64Type>(t)) return 64u;
+      if (isa<Float16Type, BFloat16Type>(t)) return 16u;
+      if (t.isIndex()) return (unsigned)loom::ADDR_BIT_WIDTH;
+      if (isa<NoneType>(t)) return 0u;
+      return std::nullopt;
+    };
+
+    // Each body arg must be a native type (not bits<N>) and width-compatible
+    // with the corresponding interface port's value type.
+    for (unsigned i = 0; i < numInputs; ++i) {
+      Type bodyT = entryBlock.getArgument(i).getType();
+      if (isa<dataflow::BitsType>(bodyT))
         return emitOpError("bits-interface PE body arguments must use "
                            "native types (i32, f32, index, ...), not bits<N>");
+
+      Type ifaceT = inputTypes[i];
+      Type ifaceValT = getValueType(ifaceT);
+      auto ifaceW = getBitWidth(ifaceValT);
+      auto bodyW = getBitWidth(bodyT);
+      if (ifaceW && bodyW && *ifaceW != *bodyW)
+        return emitOpError("bits-interface PE body argument #")
+               << i << " has width " << *bodyW << " (" << bodyT
+               << ") but interface port has width " << *ifaceW << " ("
+               << ifaceValT << ")";
     }
   }
 
