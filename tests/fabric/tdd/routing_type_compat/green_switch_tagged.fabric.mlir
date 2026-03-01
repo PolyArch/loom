@@ -1,11 +1,13 @@
 // RUN: loom --adg %s
 
-// Switch with bit-width-compatible tagged types: tagged<i32,i4> and tagged<f32,i4>.
+// Switch with matching bit-width-compatible types: all ports are bits<32>.
+// (Previously tested tagged types on switches, but regular switches now
+// only accept BitsType/NoneType; tagged routing uses temporal_sw.)
 fabric.module @test_switch_tagged_compat(
-  %a: !dataflow.tagged<i32, i4>,
-  %b: !dataflow.tagged<i32, i4>
-) -> (!dataflow.tagged<f32, i4>) {
+  %a: !dataflow.bits<32>,
+  %b: !dataflow.bits<32>
+) -> (!dataflow.bits<32>) {
   %o0, %o1 = fabric.switch %a, %b
-    : !dataflow.tagged<i32, i4> -> !dataflow.tagged<f32, i4>, !dataflow.tagged<f32, i4>
-  fabric.yield %o0 : !dataflow.tagged<f32, i4>
+    : !dataflow.bits<32> -> !dataflow.bits<32>, !dataflow.bits<32>
+  fabric.yield %o0 : !dataflow.bits<32>
 }

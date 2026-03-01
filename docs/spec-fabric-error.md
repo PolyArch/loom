@@ -80,7 +80,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_MEMORY_PORTS_EMPTY | `ldCount == 0` and `stCount == 0` |
 | CPL_MEMORY_LSQ_WITHOUT_STORE | `lsqDepth != 0` when `stCount == 0` |
 | CPL_MEMORY_LSQ_MIN | `lsqDepth < 1` when `stCount > 0` |
-| CPL_MEMORY_ADDR_TYPE | Address port is not `index` or `!dataflow.tagged<index, iK>` |
+| CPL_MEMORY_ADDR_TYPE | Address port is not `bits<ADDR_BIT_WIDTH>` or `!dataflow.tagged<bits<ADDR_BIT_WIDTH>, iK>` |
 | CPL_MEMORY_DATA_TYPE | Data port element type does not match memref element type |
 | CPL_MEMORY_TAG_REQUIRED | `ldCount > 1` or `stCount > 1` but ports are not tagged |
 | CPL_MEMORY_TAG_FOR_SINGLE | Tagged ports used when `ldCount == 1` or `stCount == 1` |

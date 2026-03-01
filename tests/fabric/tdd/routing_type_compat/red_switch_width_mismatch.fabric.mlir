@@ -2,7 +2,7 @@
 // CHECK: all ports must have bit-width-compatible types
 
 // Switch with incompatible bit widths: i32 inputs, i16 outputs.
-fabric.module @test_switch_width_mismatch(%a: i32, %b: i32) -> (i16) {
-  %o0, %o1 = fabric.switch %a, %b : i32 -> i16, i16
-  fabric.yield %o0 : i16
+fabric.module @test_switch_width_mismatch(%a: !dataflow.bits<32>, %b: !dataflow.bits<32>) -> (!dataflow.bits<16>) {
+  %o0, %o1 = fabric.switch %a, %b : !dataflow.bits<32> -> !dataflow.bits<16>, !dataflow.bits<16>
+  fabric.yield %o0 : !dataflow.bits<16>
 }

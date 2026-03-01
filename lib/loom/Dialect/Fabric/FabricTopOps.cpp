@@ -601,10 +601,8 @@ static bool isInstanceRoutingCompatible(Type actual, Type expected) {
   }
 
   // Both untagged: check bit width compatibility.
-  // Special types (none, index) must match exactly.
+  // NoneType must match exactly.
   if (isa<NoneType>(actual) || isa<NoneType>(expected))
-    return actual == expected;
-  if (isa<IndexType>(actual) || isa<IndexType>(expected))
     return actual == expected;
 
   auto wA = getRoutingBitWidth(actual);
@@ -636,15 +634,16 @@ LogicalResult InstanceOp::verify() {
 
   // CPL_INSTANCE_OPERAND_MISMATCH / CPL_INSTANCE_RESULT_MISMATCH:
   // Compare types against target's function_type.
-  // For routing node targets (switch, temporal_sw, fifo, tag ops),
-  // use routing-compatible type matching (bit-width compatibility)
-  // instead of exact type matching.
+  // For routing node targets (switch, temporal_sw, fifo, tag ops) and PE
+  // targets, use routing-compatible type matching (bit-width compatibility)
+  // instead of exact type matching. PE targets need this because their
+  // interfaces use bits types while their bodies use native types.
   auto targetFnType = getTargetFunctionType(target);
   if (targetFnType) {
     auto fnType = *targetFnType;
     bool isRoutingTarget =
-        isa<SwitchOp, TemporalSwOp, FifoOp, AddTagOp, MapTagOp, DelTagOp>(
-            target);
+        isa<SwitchOp, TemporalSwOp, FifoOp, AddTagOp, MapTagOp, DelTagOp,
+            PEOp>(target);
 
     if (getOperands().size() != fnType.getNumInputs())
       return emitOpError(cplErrMsg(CplError::INSTANCE_OPERAND_MISMATCH,

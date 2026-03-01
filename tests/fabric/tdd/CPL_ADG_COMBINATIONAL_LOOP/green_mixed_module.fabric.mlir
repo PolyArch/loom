@@ -3,16 +3,16 @@
 // A module with combinational output 0 (switch -> yield) and sequential
 // output 1 (switch -> fifo -> yield). Feedback that only uses the sequential
 // output (result #1) must NOT be flagged as a combinational loop.
-fabric.module @mixed(%a: i32, %b: i32) -> (i32, i32) {
-  %sw:2 = fabric.switch [connectivity_table = [1, 1, 1, 1]] %a, %b : i32 -> i32, i32
-  %seq = fabric.fifo [depth = 2] %sw#1 : i32
-  fabric.yield %sw#0, %seq : i32, i32
+fabric.module @mixed(%a: !dataflow.bits<32>, %b: !dataflow.bits<32>) -> (!dataflow.bits<32>, !dataflow.bits<32>) {
+  %sw:2 = fabric.switch [connectivity_table = [1, 1, 1, 1]] %a, %b : !dataflow.bits<32> -> !dataflow.bits<32>, !dataflow.bits<32>
+  %seq = fabric.fifo [depth = 2] %sw#1 : !dataflow.bits<32>
+  fabric.yield %sw#0, %seq : !dataflow.bits<32>, !dataflow.bits<32>
 }
 
-fabric.module @top(%x: i32) -> (i32) {
+fabric.module @top(%x: !dataflow.bits<32>) -> (!dataflow.bits<32>) {
   // Use switch broadcast to duplicate %x for two consumers
-  %bcast:2 = fabric.switch [connectivity_table = [1, 1]] %x : i32 -> i32, i32
-  %u:2 = fabric.instance @mixed(%bcast#0, %v#1) : (i32, i32) -> (i32, i32)
-  %v:2 = fabric.instance @mixed(%bcast#1, %u#1) : (i32, i32) -> (i32, i32)
-  fabric.yield %u#0 : i32
+  %bcast:2 = fabric.switch [connectivity_table = [1, 1]] %x : !dataflow.bits<32> -> !dataflow.bits<32>, !dataflow.bits<32>
+  %u:2 = fabric.instance @mixed(%bcast#0, %v#1) : (!dataflow.bits<32>, !dataflow.bits<32>) -> (!dataflow.bits<32>, !dataflow.bits<32>)
+  %v:2 = fabric.instance @mixed(%bcast#1, %u#1) : (!dataflow.bits<32>, !dataflow.bits<32>) -> (!dataflow.bits<32>, !dataflow.bits<32>)
+  fabric.yield %u#0 : !dataflow.bits<32>
 }

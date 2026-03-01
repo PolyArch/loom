@@ -34,16 +34,22 @@ streaming:
 
 See [spec-dataflow.md](./spec-dataflow.md) for the tagged type definition.
 
-The dataflow dialect also provides a **bits type** for routing nodes:
+The dataflow dialect also provides a **bits type** for fabric interfaces:
 
 - `!dataflow.bits<N>` -- an N-bit data payload with no semantic type information.
 
-Routing nodes (`fabric.switch`, `fabric.temporal_sw`, `fabric.fifo`) may use
-`!dataflow.bits<N>` to declare ports that forward raw bits without interpreting
-data semantics. Width must be 1-4096. A `bits<N>` port is routing-compatible
-with any native type of width N (e.g. `bits<32>` with `i32` or `f32`), and
-`tagged<bits<N>, iK>` is compatible with `tagged<native(N), iK>` when tag types
-match exactly. `bits<N>` is never compatible with `index` or `none`.
+**All inter-node connections in a `fabric.module` use `!dataflow.bits<N>` or
+`!dataflow.tagged<!dataflow.bits<N>, iY>` types.** This includes PE ports,
+memory ports, switch ports, FIFO ports, and tag boundary ports. PEs that need
+integer vs float distinction handle it in the body (`^bb0` block arguments
+use native types like `i32`, `f32`, `index`). Width must be 1-4096.
+
+Address ports (memory addresses, load/store addresses) use `!dataflow.bits<57>`
+(inspired by RISC-V Sv57), intentionally distinct from 32-bit and 64-bit data
+widths. The constant `ADDR_BIT_WIDTH = 57` is centralized in
+`include/loom/Hardware/Common/FabricConstants.h`.
+
+The `none` type remains unchanged for control-only tokens.
 
 Within fabric operations, the term **native value type** follows the exact value
 type set defined in [spec-dataflow.md](./spec-dataflow.md). Vector, tensor,
@@ -203,19 +209,10 @@ Explicit conversions must be represented as operations, such as:
   tag transforms.
 - `fabric.pe` containing explicit casts (e.g., `arith.index_cast`).
 
-**Routing node exception:** The pass-through routing primitives
-`fabric.switch`, `fabric.temporal_sw`, and `fabric.fifo` relax strict type
-matching to bit-width compatibility. These nodes forward raw bits without
-interpreting data semantics, so types with equal bit widths are
-interchangeable across their ports. Specifically:
-
-- Native types: only bit width must match (`i32` and `f32` are compatible).
-- `!dataflow.bits<N>`: compatible with any native type of width N and with
-  other `bits<N>`. Never compatible with `index` or `none`.
-- Tagged types: value bit width AND tag bit width must each match; value
-  semantic types may differ. `tagged<bits<N>, iK>` is compatible with
-  `tagged<native(N), iK>`.
-- Native-to-tagged mixing is never allowed, even through routing nodes.
+Since all fabric interfaces use `bits<N>` types, connections are exact type
+matches. There is no need for routing-compatible relaxation -- a
+`PE(bits<32>) -> Switch(bits<32>) -> PE(bits<32>)` connection uses the same
+exact type throughout. The `none` type must also match exactly.
 
 Tag boundary operations (`fabric.add_tag`, `fabric.del_tag`, `fabric.map_tag`)
 retain strict semantic type matching because they perform type transformations.

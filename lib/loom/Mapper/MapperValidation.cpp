@@ -6,6 +6,8 @@
 
 #include "loom/Mapper/Mapper.h"
 
+#include "loom/Dialect/Dataflow/DataflowTypes.h"
+#include "loom/Hardware/Common/FabricConstants.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 
@@ -58,11 +60,58 @@ bool nodeHasAttr(const Node *node, llvm::StringRef name) {
 unsigned getTypeWidth(mlir::Type type) {
   if (!type)
     return 0;
+  if (auto bitsType = mlir::dyn_cast<loom::dataflow::BitsType>(type))
+    return bitsType.getWidth();
   if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(type))
     return intTy.getWidth();
   if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(type))
     return floatTy.getWidth();
+  if (type.isIndex())
+    return loom::ADDR_BIT_WIDTH;
   return 0;
+}
+
+/// Check if two MLIR types are width-compatible.
+/// Allows matching native types (i32, f32) with bits<N> types of the same
+/// width. IndexType maps to ADDR_BIT_WIDTH (57) for width comparison.
+bool isTypeWidthCompatible(mlir::Type a, mlir::Type b) {
+  if (a == b)
+    return true;
+
+  auto getWidth = [](mlir::Type t) -> std::optional<unsigned> {
+    if (auto bits = mlir::dyn_cast<loom::dataflow::BitsType>(t))
+      return bits.getWidth();
+    if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(t))
+      return intTy.getWidth();
+    if (mlir::isa<mlir::Float32Type>(t))
+      return 32u;
+    if (mlir::isa<mlir::Float64Type>(t))
+      return 64u;
+    if (mlir::isa<mlir::Float16Type, mlir::BFloat16Type>(t))
+      return 16u;
+    if (t.isIndex())
+      return (unsigned)loom::ADDR_BIT_WIDTH;
+    if (mlir::isa<mlir::NoneType>(t))
+      return 0u;
+    return std::nullopt;
+  };
+
+  // For tagged types, check tag types match AND value widths match.
+  auto tagA = mlir::dyn_cast<loom::dataflow::TaggedType>(a);
+  auto tagB = mlir::dyn_cast<loom::dataflow::TaggedType>(b);
+  if (tagA && tagB) {
+    if (tagA.getTagType() != tagB.getTagType())
+      return false;
+    auto wA = getWidth(tagA.getValueType());
+    auto wB = getWidth(tagB.getValueType());
+    return wA && wB && *wA == *wB;
+  }
+  if (tagA || tagB)
+    return false; // one tagged, one not
+
+  auto wA = getWidth(a);
+  auto wB = getWidth(b);
+  return wA && wB && *wA == *wB;
 }
 
 } // namespace
@@ -121,22 +170,14 @@ bool Mapper::validateC2(const MappingState &state, const Graph &dfg,
       const Node *hwNode = adg.getNode(hw->parentNode);
       bool isRouting = hwNode && getNodeResClass(hwNode) == "routing";
 
-      if (isRouting) {
-        // Routing nodes: bit-width must match (relaxed type semantics).
+      if (!isTypeWidthCompatible(sw->type, hw->type)) {
         unsigned swWidth = getTypeWidth(sw->type);
         unsigned hwWidth = getTypeWidth(hw->type);
-        if (swWidth > 0 && hwWidth > 0 && swWidth != hwWidth) {
-          diag = "C2: routing bit-width mismatch sw_port=" +
-                 std::to_string(i) + " (sw=" + std::to_string(swWidth) +
-                 " hw=" + std::to_string(hwWidth) + ")";
-          return false;
-        }
-      } else {
-        // Functional/memory nodes: strict type compatibility.
-        if (sw->type != hw->type) {
-          diag = "C2: type mismatch sw_port=" + std::to_string(i);
-          return false;
-        }
+        diag = "C2: type width mismatch sw_port=" + std::to_string(i) +
+               " (sw=" + std::to_string(swWidth) +
+               " hw=" + std::to_string(hwWidth) + ")" +
+               (isRouting ? " [routing]" : " [functional]");
+        return false;
       }
     }
   }

@@ -1470,7 +1470,7 @@ std::string genLoadPEParams(const LoadPEDef &def) {
   unsigned tw = (def.interface == InterfaceCategory::Tagged) ? def.tagWidth : 0;
   std::ostringstream os;
   os << "    .ELEM_WIDTH(" << ew << "),\n";
-  os << "    .ADDR_WIDTH(" << DEFAULT_ADDR_WIDTH << "),\n";
+  os << "    .ADDR_WIDTH(" << ADDR_BIT_WIDTH << "),\n";
   os << "    .TAG_WIDTH(" << tw << "),\n";
   os << "    .HW_TYPE(" << (def.hwType == HardwareType::TagTransparent ? 1 : 0)
      << "),\n";
@@ -1489,7 +1489,7 @@ std::string genStorePEParams(const StorePEDef &def) {
   unsigned tw = (def.interface == InterfaceCategory::Tagged) ? def.tagWidth : 0;
   std::ostringstream os;
   os << "    .ELEM_WIDTH(" << ew << "),\n";
-  os << "    .ADDR_WIDTH(" << DEFAULT_ADDR_WIDTH << "),\n";
+  os << "    .ADDR_WIDTH(" << ADDR_BIT_WIDTH << "),\n";
   os << "    .TAG_WIDTH(" << tw << "),\n";
   os << "    .HW_TYPE(" << (def.hwType == HardwareType::TagTransparent ? 1 : 0)
      << "),\n";
@@ -1556,7 +1556,7 @@ std::string genMemoryParams(const MemoryDef &def) {
     tw = tagBits;
   }
   std::ostringstream os;
-  os << "    .ADDR_WIDTH(" << DEFAULT_ADDR_WIDTH << "),\n";
+  os << "    .ADDR_WIDTH(" << ADDR_BIT_WIDTH << "),\n";
   os << "    .ELEM_WIDTH(" << ew << "),\n";
   os << "    .TAG_WIDTH(" << tw << "),\n";
   os << "    .LD_COUNT(" << def.ldCount << "),\n";
@@ -1585,7 +1585,7 @@ std::string genExtMemoryParams(const ExtMemoryDef &def) {
     tw = tagBits;
   }
   std::ostringstream os;
-  os << "    .ADDR_WIDTH(" << DEFAULT_ADDR_WIDTH << "),\n";
+  os << "    .ADDR_WIDTH(" << ADDR_BIT_WIDTH << "),\n";
   os << "    .ELEM_WIDTH(" << ew << "),\n";
   os << "    .TAG_WIDTH(" << tw << "),\n";
   os << "    .LD_COUNT(" << def.ldCount << "),\n";

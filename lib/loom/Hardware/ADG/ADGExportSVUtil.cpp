@@ -39,7 +39,7 @@ unsigned getDataWidthBits(const Type &t) {
   case Type::F16:   return 16;
   case Type::F32:   return 32;
   case Type::F64:   return 64;
-  case Type::Index: return 64;
+  case Type::Index: return loom::ADDR_BIT_WIDTH;
   case Type::None:  return 0;
   case Type::Bits:  return t.getWidth();
   case Type::Tagged:
@@ -310,7 +310,7 @@ unsigned parseMLIRTypeWidth(const std::string &typeStr) {
   std::string t = typeStr.substr(s);
   auto e = t.find_first_of(" \t,)");
   if (e != std::string::npos) t = t.substr(0, e);
-  if (t == "index") return 64;
+  if (t == "index") return loom::ADDR_BIT_WIDTH;
   if (t.size() > 1 && (t[0] == 'i' || t[0] == 'f')) {
     unsigned w = 0;
     for (size_t i = 1; i < t.size(); ++i) {

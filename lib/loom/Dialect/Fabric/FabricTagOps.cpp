@@ -15,9 +15,9 @@ using namespace loom;
 using namespace loom::fabric;
 
 /// Check whether a type is a valid routing payload type.
-/// Routing nodes only accept: BitsType, NoneType, IndexType.
+/// Routing nodes only accept: BitsType, NoneType.
 static bool isValidRoutingPayloadType(Type t) {
-  return isa<dataflow::BitsType>(t) || isa<NoneType>(t) || isa<IndexType>(t);
+  return isa<dataflow::BitsType>(t) || isa<NoneType>(t);
 }
 
 /// Verify tag type width is in [1, 16].

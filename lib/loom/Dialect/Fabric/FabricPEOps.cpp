@@ -228,10 +228,19 @@ ParseResult PEOp::parse(OpAsmParser &parser, OperationState &result) {
     result.addAttribute(getFunctionTypeAttrName(result.name),
                         TypeAttr::get(fnType));
 
-    // Derive body block argument types (strip tags).
-    for (auto &arg : entryArgs)
-      arg.type = getValueType(arg.type);
-    bodyArgs.append(entryArgs.begin(), entryArgs.end());
+    // Check if interface uses bits-typed ports.
+    bool hasBitsInterface = llvm::any_of(inputTypes, [](Type t) {
+      Type v = getValueType(t);
+      return isa<dataflow::BitsType>(v);
+    });
+    if (!hasBitsInterface) {
+      // Original path: derive body args from interface types (strip tags).
+      for (auto &arg : entryArgs)
+        arg.type = getValueType(arg.type);
+      bodyArgs.append(entryArgs.begin(), entryArgs.end());
+    }
+    // When hasBitsInterface, bodyArgs stays empty so the parser reads
+    // explicit ^bb0(...) from source (body types are native, not bits).
   } else {
     // Inline form: operands [hw_params] {config} : (types) -> (types) { body }.
     SmallVector<OpAsmParser::UnresolvedOperand> operands;
@@ -263,13 +272,13 @@ ParseResult PEOp::parse(OpAsmParser &parser, OperationState &result) {
 
   // Parse region body.
   auto *body = result.addRegion();
-  if (bodyArgs.empty() && !isNamed) {
-    // Inline form: parse region with block arguments.
-    // Block args have value types (tags stripped).
+  if (bodyArgs.empty()) {
+    // Inline form OR named-bits form: parse ^bb0 from source.
     SmallVector<OpAsmParser::Argument> regionArgs;
     if (parser.parseRegion(*body, regionArgs, /*enableNameShadowing=*/false))
       return failure();
   } else {
+    // Named non-bits form: body args pre-supplied.
     if (parser.parseRegion(*body, bodyArgs))
       return failure();
   }
@@ -377,8 +386,14 @@ void PEOp::print(OpAsmPrinter &p) {
   }
 
   // Print region body.
+  // For bits-interface named PEs, always print block args since they
+  // differ from interface types (body uses native types like i32, f32).
+  bool hasBitsInterface = llvm::any_of(inputTypes, [](Type t) {
+    Type v = getValueType(t);
+    return isa<dataflow::BitsType>(v);
+  });
   p << " ";
-  bool printBlockArgs = !isNamed;
+  bool printBlockArgs = !isNamed || hasBitsInterface;
   p.printRegion(getBody(), /*printEntryBlockArgs=*/printBlockArgs,
                 /*printBlockTerminators=*/true);
 }
@@ -411,25 +426,58 @@ LogicalResult PEOp::verify() {
       outputTypes.push_back(v.getType());
   }
 
-  // Check interface category: all native or all tagged.
-  // NoneType ports (ctrl tokens) are compatible with either interface.
-  bool hasTagged = false, hasNative = false;
+  // Check interface category: native, tagged, or bits.
+  // NoneType ports (ctrl tokens) are compatible with any interface.
+  // Tagged ports (tagged<X, iK>) count as tagged regardless of value type X.
+  // Untagged bits<N> and untagged native (i32/f32/index) are distinct categories.
+  bool hasTagged = false, hasNative = false, hasBits = false;
+  bool hasBitsValue = false; // any port (tagged or not) with bits value type
   for (Type t : inputTypes) {
-    if (isa<dataflow_t>(t))
+    if (isa<NoneType>(t)) continue;
+    if (isa<dataflow_t>(t)) {
       hasTagged = true;
-    else if (!isa<NoneType>(t))
+      if (isa<dataflow::BitsType>(getValueType(t))) hasBitsValue = true;
+    } else if (isa<dataflow::BitsType>(t)) {
+      hasBits = true;
+      hasBitsValue = true;
+    } else {
       hasNative = true;
+    }
   }
   for (Type t : outputTypes) {
-    if (isa<dataflow_t>(t))
+    if (isa<NoneType>(t)) continue;
+    if (isa<dataflow_t>(t)) {
       hasTagged = true;
-    else if (!isa<NoneType>(t))
+      if (isa<dataflow::BitsType>(getValueType(t))) hasBitsValue = true;
+    } else if (isa<dataflow::BitsType>(t)) {
+      hasBits = true;
+      hasBitsValue = true;
+    } else {
       hasNative = true;
+    }
   }
-  if (hasTagged && hasNative)
+  // Mixed tagged/non-tagged or mixed bits/native
+  if ((hasTagged && (hasNative || hasBits)) ||
+      (hasBits && hasNative))
     return emitOpError(cplErrMsg(CplError::PE_MIXED_INTERFACE,
-                       "all ports must be either native or tagged; "
+                       "all ports must be either native, tagged, or bits; "
                        "mixed interface not allowed"));
+
+  // For bits-interface PEs, validate body block args.
+  if (hasBitsValue && isNamed) {
+    Block &entryBlock = getBody().front();
+    // Body arg count must match interface input count.
+    if (entryBlock.getNumArguments() != numInputs)
+      return emitOpError("bits-interface PE body must have ")
+             << numInputs << " block arguments; got "
+             << entryBlock.getNumArguments();
+    // Body args must be concrete native types, not bits<N>.
+    for (auto arg : entryBlock.getArguments()) {
+      if (isa<dataflow::BitsType>(arg.getType()))
+        return emitOpError("bits-interface PE body arguments must use "
+                           "native types (i32, f32, index, ...), not bits<N>");
+    }
+  }
 
   // Validate latency array if present.
   if (auto lat = getLatency()) {
@@ -443,8 +491,8 @@ LogicalResult PEOp::verify() {
       return emitOpError("interval must be a 3-element array [min, typ, max]");
   }
 
-  // Native interface: output_tag must be absent.
-  if (hasNative && getOutputTag())
+  // Non-tagged interface (native or bits): output_tag must be absent.
+  if ((hasNative || hasBits) && getOutputTag())
     return emitOpError(cplErrMsg(CplError::PE_OUTPUT_TAG_NATIVE,
                        "native PE must not have output_tag"));
 

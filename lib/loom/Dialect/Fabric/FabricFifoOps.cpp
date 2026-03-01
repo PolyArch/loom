@@ -199,10 +199,9 @@ static bool isRoutingTypeCompatible(Type a, Type b) {
 }
 
 /// Check whether a type is a valid routing payload type.
-/// Routing nodes only accept: BitsType, NoneType, IndexType.
+/// Routing nodes only accept: BitsType, NoneType.
 static bool isValidRoutingPayloadType(Type t) {
-  return isa<loom::dataflow::BitsType>(t) || isa<NoneType>(t) ||
-         isa<IndexType>(t);
+  return isa<loom::dataflow::BitsType>(t) || isa<NoneType>(t);
 }
 
 /// Check if a type is a valid type for fabric.fifo.

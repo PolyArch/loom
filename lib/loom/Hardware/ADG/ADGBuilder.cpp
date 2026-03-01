@@ -382,7 +382,7 @@ PortHandle ADGBuilder::addModuleInput(const std::string &name,
                                       MemrefType memrefType) {
   unsigned id = impl_->ports.size();
   impl_->ports.push_back(
-      {name, Type::index(), true, memrefType, true});
+      {name, Type::bits(ADDR_BIT_WIDTH), true, memrefType, true});
   return PortHandle{id};
 }
 
@@ -397,7 +397,7 @@ PortHandle ADGBuilder::addModuleOutput(const std::string &name,
                                        MemrefType memrefType) {
   unsigned id = impl_->ports.size();
   impl_->ports.push_back(
-      {name, Type::index(), true, memrefType, false});
+      {name, Type::bits(ADDR_BIT_WIDTH), true, memrefType, false});
   return PortHandle{id};
 }
 
@@ -1207,8 +1207,8 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
     if (port == 0) {
       // addr input
       return (def.interface == InterfaceCategory::Tagged)
-                 ? Type::tagged(Type::index(), Type::iN(def.tagWidth))
-                 : Type::index();
+                 ? Type::tagged(Type::bits(ADDR_BIT_WIDTH), Type::iN(def.tagWidth))
+                 : Type::bits(ADDR_BIT_WIDTH);
     }
     if (port == 1) {
       // data_from_mem input
@@ -1228,8 +1228,8 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
     if (port == 0) {
       // addr input
       return (def.interface == InterfaceCategory::Tagged)
-                 ? Type::tagged(Type::index(), Type::iN(def.tagWidth))
-                 : Type::index();
+                 ? Type::tagged(Type::bits(ADDR_BIT_WIDTH), Type::iN(def.tagWidth))
+                 : Type::bits(ADDR_BIT_WIDTH);
     }
     if (port == 1) {
       // data input
@@ -1254,14 +1254,14 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
     unsigned idx = (unsigned)port;
     if (def.ldCount > 0) {
       if (idx == 0)
-        return isTagged ? Type::tagged(Type::index(), uniformTag)
-                        : Type::index();
+        return isTagged ? Type::tagged(Type::bits(ADDR_BIT_WIDTH), uniformTag)
+                        : Type::bits(ADDR_BIT_WIDTH);
       idx--;
     }
     // idx 0 = st_addr, idx 1 = st_data
     if (idx == 0)
-      return isTagged ? Type::tagged(Type::index(), uniformTag)
-                      : Type::index();
+      return isTagged ? Type::tagged(Type::bits(ADDR_BIT_WIDTH), uniformTag)
+                      : Type::bits(ADDR_BIT_WIDTH);
     return isTagged ? Type::tagged(elemType, uniformTag)
                     : elemType;
   }
@@ -1269,7 +1269,7 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
     auto &def = extMemoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
     // First input is memref (special)
-    if (port == 0) return Type::index();
+    if (port == 0) return Type::bits(ADDR_BIT_WIDTH);
     unsigned adjPort = (unsigned)port - 1;
 
     bool isTagged = def.ldCount > 1 || def.stCount > 1;
@@ -1278,14 +1278,14 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
     // Presence-based: [ld_addr?] [st_addr? st_data?]
     if (def.ldCount > 0) {
       if (adjPort == 0)
-        return isTagged ? Type::tagged(Type::index(), uniformTag)
-                        : Type::index();
+        return isTagged ? Type::tagged(Type::bits(ADDR_BIT_WIDTH), uniformTag)
+                        : Type::bits(ADDR_BIT_WIDTH);
       adjPort--;
     }
     // adjPort 0 = st_addr, adjPort 1 = st_data
     if (adjPort == 0)
-      return isTagged ? Type::tagged(Type::index(), uniformTag)
-                      : Type::index();
+      return isTagged ? Type::tagged(Type::bits(ADDR_BIT_WIDTH), uniformTag)
+                      : Type::bits(ADDR_BIT_WIDTH);
     return isTagged ? Type::tagged(elemType, uniformTag)
                     : elemType;
   }
@@ -1336,20 +1336,20 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
     auto &def = loadPEDefs[inst.defIdx];
     if (def.interface == InterfaceCategory::Tagged) {
       Type tagType = Type::iN(def.tagWidth);
-      if (port == 0) return Type::tagged(Type::index(), tagType);   // addr_to_mem
+      if (port == 0) return Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType);   // addr_to_mem
       return Type::tagged(def.dataType, tagType);                    // data_to_comp
     }
-    if (port == 0) return Type::index();   // addr_to_mem
+    if (port == 0) return Type::bits(ADDR_BIT_WIDTH);   // addr_to_mem
     return def.dataType;                    // data_to_comp
   }
   case ModuleKind::StorePE: {
     auto &def = storePEDefs[inst.defIdx];
     if (def.interface == InterfaceCategory::Tagged) {
       Type tagType = Type::iN(def.tagWidth);
-      if (port == 0) return Type::tagged(Type::index(), tagType);   // addr_to_mem
+      if (port == 0) return Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType);   // addr_to_mem
       return Type::tagged(def.dataType, tagType);                    // data_to_mem
     }
-    if (port == 0) return Type::index();   // addr_to_mem
+    if (port == 0) return Type::bits(ADDR_BIT_WIDTH);   // addr_to_mem
     return def.dataType;                    // data_to_mem
   }
   case ModuleKind::Memory: {
@@ -1361,7 +1361,7 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
     // Presence-based output layout: [memref?] [ld_data? ld_done?] [st_done?]
     unsigned idx = (unsigned)port;
     if (!def.isPrivate) {
-      if (idx == 0) return Type::index(); // memref placeholder
+      if (idx == 0) return Type::bits(ADDR_BIT_WIDTH); // memref placeholder
       idx--;
     }
     if (def.ldCount > 0) {

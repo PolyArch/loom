@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/adg.h"
+#include "loom/Hardware/Common/FabricConstants.h"
 
 #include <cassert>
 #include <utility>
@@ -44,7 +45,7 @@ std::string Type::toMLIR() const {
   case F16:   return "f16";
   case F32:   return "f32";
   case F64:   return "f64";
-  case Index: return "index";
+  case Index: return "!dataflow.bits<" + std::to_string(loom::ADDR_BIT_WIDTH) + ">";
   case None:  return "none";
   case Bits:  return "!dataflow.bits<" + std::to_string(width_) + ">";
   case Tagged:

@@ -2,7 +2,7 @@
 // CHECK: CPL_FIFO_BYPASSED_NOT_BYPASSABLE
 
 // Invalid: bypassed set without bypassable.
-fabric.module @test(%a: i32) -> (i32) {
-  %out = fabric.fifo [depth = 2] {bypassed = true} %a : i32
-  fabric.yield %out : i32
+fabric.module @test(%a: !dataflow.bits<32>) -> (!dataflow.bits<32>) {
+  %out = fabric.fifo [depth = 2] {bypassed = true} %a : !dataflow.bits<32>
+  fabric.yield %out : !dataflow.bits<32>
 }

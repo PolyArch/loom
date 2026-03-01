@@ -91,6 +91,23 @@ static std::string getComparePredicateStr(const PEDef &pe) {
   return "";
 }
 
+/// Convert a native ADG Type to its bits<N> equivalent for fabric interface
+/// ports. Preserves none; converts i32->bits<32>, f32->bits<32>,
+/// index->bits<ADDR_BIT_WIDTH>, etc. Tagged types: converts the value type
+/// inside the tag.
+static Type nativeToBitsType(const Type &t) {
+  if (t.getKind() == Type::None) return t;
+  if (t.getKind() == Type::Bits) return t; // already bits
+  if (t.getKind() == Type::Tagged) {
+    Type newVal = nativeToBitsType(t.getValueType());
+    return Type::tagged(newVal, t.getTagType());
+  }
+  // Convert native type to bits<width>
+  unsigned w = getTypeDataWidth(t);
+  if (w == 0) return t; // none-like
+  return Type::bits(w);
+}
+
 /// Determine the constant literal for a given value type.
 /// Floating point types use "0.0", integers use "0".
 static std::string getConstLiteral(Type valueType) {
@@ -266,11 +283,18 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
   std::ostringstream os;
   bool isTagged = pe.interface == InterfaceCategory::Tagged;
 
+  // Convert interface port types to bits<N> equivalents.
+  std::vector<Type> ifInputPorts, ifOutputPorts;
+  for (const auto &t : pe.inputPorts)
+    ifInputPorts.push_back(nativeToBitsType(t));
+  for (const auto &t : pe.outputPorts)
+    ifOutputPorts.push_back(nativeToBitsType(t));
+
   // Emit signature (shared between tagged and native).
   os << "fabric.pe @" << pe.name << "(";
-  for (size_t i = 0; i < pe.inputPorts.size(); ++i) {
+  for (size_t i = 0; i < ifInputPorts.size(); ++i) {
     if (i > 0) os << ", ";
-    os << "%arg" << i << ": " << pe.inputPorts[i].toMLIR();
+    os << "%arg" << i << ": " << ifInputPorts[i].toMLIR();
   }
   os << ")\n";
   emitLatencyInterval(os, pe.latMin, pe.latTyp, pe.latMax, pe.intMin,
@@ -291,11 +315,11 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
   }
 
   os << "    -> (";
-  emitTypeList(os, pe.outputPorts);
+  emitTypeList(os, ifOutputPorts);
   os << ") {\n";
 
   if (isTagged) {
-    // Tagged PE: body operates on value types.
+    // Tagged PE: body operates on value types (native, not bits).
     std::vector<Type> bodyInputTypes, bodyOutputTypes;
     for (const auto &t : pe.inputPorts)
       bodyInputTypes.push_back(t.isTagged() ? t.getValueType() : t);
@@ -338,6 +362,14 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
       }
     }
   } else {
+    // Native PE: body operates on original native types.
+    // Emit explicit ^bb0 header since interface types are bits<N>.
+    os << "^bb0(";
+    for (size_t i = 0; i < pe.inputPorts.size(); ++i) {
+      if (i > 0) os << ", ";
+      os << "%arg" << i << ": " << pe.inputPorts[i].toMLIR();
+    }
+    os << "):\n";
     os << generatePEBody(pe);
   }
   os << "}\n\n";
@@ -352,6 +384,9 @@ ADGBuilder::Impl::generateConstantPEDef(const ConstantPEDef &def) const {
   bool isTagged = outType.isTagged();
   Type valueType = isTagged ? outType.getValueType() : outType;
 
+  // Interface types use bits<N>.
+  Type ifOutType = nativeToBitsType(outType);
+
   std::string ctrlTypeStr =
       isTagged ? Type::tagged(Type::none(), outType.getTagType()).toMLIR()
                : "none";
@@ -362,7 +397,7 @@ ADGBuilder::Impl::generateConstantPEDef(const ConstantPEDef &def) const {
   os << "]\n";
   if (isTagged)
     os << "    {output_tag = [0 : " << outType.getTagType().toMLIR() << "]}\n";
-  os << "    -> (" << outType.toMLIR() << ") {\n";
+  os << "    -> (" << ifOutType.toMLIR() << ") {\n";
 
   std::string constLiteral = getConstLiteral(valueType);
   std::string vStr = valueType.toMLIR();
@@ -372,6 +407,8 @@ ADGBuilder::Impl::generateConstantPEDef(const ConstantPEDef &def) const {
     os << "  %c = handshake.constant %c_native {value = " << constLiteral
        << " : " << vStr << "} : " << vStr << "\n";
   } else {
+    // Emit explicit ^bb0 with native type since interface uses bits<N>.
+    os << "^bb0(%ctrl: none):\n";
     os << "  %c = handshake.constant %ctrl {value = " << constLiteral << " : "
        << vStr << "} : " << vStr << "\n";
   }
@@ -386,13 +423,16 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
   bool isTagged = def.interface == InterfaceCategory::Tagged;
   Type dataType = def.dataType;
   std::string dTypeStr = dataType.toMLIR();
+  // bits<N> equivalents for interface ports.
+  Type bitsAddr = Type::bits(ADDR_BIT_WIDTH);
+  Type bitsData = nativeToBitsType(dataType);
 
   if (isTagged) {
     Type tagType = Type::iN(def.tagWidth);
-    Type taggedData = Type::tagged(dataType, tagType);
-    Type taggedIndex = Type::tagged(Type::index(), tagType);
-    std::string tdStr = taggedData.toMLIR();
-    std::string tiStr = taggedIndex.toMLIR();
+    Type taggedBitsData = Type::tagged(bitsData, tagType);
+    Type taggedBitsAddr = Type::tagged(bitsAddr, tagType);
+    std::string tdStr = taggedBitsData.toMLIR();
+    std::string tiStr = taggedBitsAddr.toMLIR();
     // Ctrl: none for TagOverwrite, tagged<none> for TagTransparent
     std::string ctrlStr = (def.hwType == HardwareType::TagTransparent)
         ? Type::tagged(Type::none(), tagType).toMLIR() : "none";
@@ -415,11 +455,14 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
     os << "}\n\n";
   } else {
     os << "fabric.pe @" << def.name
-       << "(%addr: index, %data_in: " << dTypeStr << ", %ctrl: none)\n";
+       << "(%addr: " << bitsAddr.toMLIR() << ", %data_in: "
+       << bitsData.toMLIR() << ", %ctrl: none)\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
     os << "]\n";
-    os << "    -> (index, " << dTypeStr << ") {\n";
+    os << "    -> (" << bitsAddr.toMLIR() << ", " << bitsData.toMLIR()
+       << ") {\n";
+    os << "^bb0(%addr: index, %data_in: " << dTypeStr << ", %ctrl: none):\n";
     os << "  %ld_d, %ld_a = handshake.load [%addr] %data_in, %ctrl : index, "
        << dTypeStr << "\n";
     os << "  fabric.yield %ld_a, %ld_d : index, " << dTypeStr << "\n";
@@ -434,13 +477,16 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
   bool isTagged = def.interface == InterfaceCategory::Tagged;
   Type dataType = def.dataType;
   std::string dTypeStr = dataType.toMLIR();
+  // bits<N> equivalents for interface ports.
+  Type bitsAddr = Type::bits(ADDR_BIT_WIDTH);
+  Type bitsData = nativeToBitsType(dataType);
 
   if (isTagged) {
     Type tagType = Type::iN(def.tagWidth);
-    Type taggedData = Type::tagged(dataType, tagType);
-    Type taggedIndex = Type::tagged(Type::index(), tagType);
-    std::string tdStr = taggedData.toMLIR();
-    std::string tiStr = taggedIndex.toMLIR();
+    Type taggedBitsData = Type::tagged(bitsData, tagType);
+    Type taggedBitsAddr = Type::tagged(bitsAddr, tagType);
+    std::string tdStr = taggedBitsData.toMLIR();
+    std::string tiStr = taggedBitsAddr.toMLIR();
     // Ctrl: none for TagOverwrite, tagged<none> for TagTransparent
     std::string ctrlStr = (def.hwType == HardwareType::TagTransparent)
         ? Type::tagged(Type::none(), tagType).toMLIR() : "none";
@@ -462,11 +508,14 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
     os << "}\n\n";
   } else {
     os << "fabric.pe @" << def.name
-       << "(%addr: index, %data: " << dTypeStr << ", %ctrl: none)\n";
+       << "(%addr: " << bitsAddr.toMLIR() << ", %data: "
+       << bitsData.toMLIR() << ", %ctrl: none)\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
     os << "]\n";
-    os << "    -> (index, " << dTypeStr << ") {\n";
+    os << "    -> (" << bitsAddr.toMLIR() << ", " << bitsData.toMLIR()
+       << ") {\n";
+    os << "^bb0(%addr: index, %data: " << dTypeStr << ", %ctrl: none):\n";
     os << "  handshake.store [%addr] %data, %ctrl : index, " << dTypeStr
        << "\n";
     os << "  fabric.yield %addr, %data : index, " << dTypeStr << "\n";
@@ -478,7 +527,7 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
 std::string
 ADGBuilder::Impl::generateTemporalPEDef(const TemporalPEDef &def) const {
   std::ostringstream os;
-  Type ifType = def.interfaceType;
+  Type ifType = nativeToBitsType(def.interfaceType);
   std::string ifStr = ifType.toMLIR();
 
   // Determine number of input/output ports from first FU.
@@ -509,6 +558,7 @@ ADGBuilder::Impl::generateTemporalPEDef(const TemporalPEDef &def) const {
   os << ") {\n";
 
   // Emit FU definitions (simpler format without latency/interval).
+  // FU ports remain native types (body-level types are not converted).
   for (unsigned fuIdx : def.fuPEDefIndices) {
     const auto &fu = peDefs[fuIdx];
     os << "  fabric.pe @" << fu.name << "(";
@@ -811,14 +861,14 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           // Ctrl: none for TagOverwrite, tagged<none> for TagTransparent
           Type ctrlType = (lpDef.hwType == HardwareType::TagTransparent)
               ? Type::tagged(Type::none(), tagType) : Type::none();
-          inTypes = {Type::tagged(Type::index(), tagType),
+          inTypes = {Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType),
                      Type::tagged(lpDef.dataType, tagType),
                      ctrlType};
-          outTypes = {Type::tagged(Type::index(), tagType),
+          outTypes = {Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType),
                       Type::tagged(lpDef.dataType, tagType)};
         } else {
-          inTypes = {Type::index(), lpDef.dataType, Type::none()};
-          outTypes = {Type::index(), lpDef.dataType};
+          inTypes = {Type::bits(ADDR_BIT_WIDTH), lpDef.dataType, Type::none()};
+          outTypes = {Type::bits(ADDR_BIT_WIDTH), lpDef.dataType};
         }
         break;
       }
@@ -830,14 +880,14 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           // Ctrl: none for TagOverwrite, tagged<none> for TagTransparent
           Type ctrlType = (spDef.hwType == HardwareType::TagTransparent)
               ? Type::tagged(Type::none(), tagType) : Type::none();
-          inTypes = {Type::tagged(Type::index(), tagType),
+          inTypes = {Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType),
                      Type::tagged(spDef.dataType, tagType),
                      ctrlType};
-          outTypes = {Type::tagged(Type::index(), tagType),
+          outTypes = {Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType),
                       Type::tagged(spDef.dataType, tagType)};
         } else {
-          inTypes = {Type::index(), spDef.dataType, Type::none()};
-          outTypes = {Type::index(), spDef.dataType};
+          inTypes = {Type::bits(ADDR_BIT_WIDTH), spDef.dataType, Type::none()};
+          outTypes = {Type::bits(ADDR_BIT_WIDTH), spDef.dataType};
         }
         break;
       }
@@ -856,6 +906,10 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       default:
         break;
       }
+
+      // Convert interface types to bits<N> equivalents for all PE kinds.
+      for (auto &t : inTypes) t = nativeToBitsType(t);
+      for (auto &t : outTypes) t = nativeToBitsType(t);
 
       if (useInlinePE) {
         // Inline PE form (Pattern B) for tagged PEs.
@@ -935,14 +989,41 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         }
         os << ") {\n";
 
-        // Emit body with value types in ^bb0.
-        // Compute value types from tagged types.
-        std::vector<Type> bodyInTypes;
-        for (const auto &t : inTypes)
-          bodyInTypes.push_back(t.isTagged() ? t.getValueType() : t);
-        std::vector<Type> bodyOutTypes;
-        for (const auto &t : outTypes)
-          bodyOutTypes.push_back(t.isTagged() ? t.getValueType() : t);
+        // Emit body with native value types in ^bb0.
+        // Compute body types from original (pre-bits-conversion) native types.
+        std::vector<Type> bodyInTypes, bodyOutTypes;
+        switch (inst.kind) {
+        case ModuleKind::PE: {
+          auto &pd = peDefs[inst.defIdx];
+          for (const auto &t : pd.inputPorts)
+            bodyInTypes.push_back(t.isTagged() ? t.getValueType() : t);
+          for (const auto &t : pd.outputPorts)
+            bodyOutTypes.push_back(t.isTagged() ? t.getValueType() : t);
+          break;
+        }
+        case ModuleKind::ConstantPE: {
+          auto &cpDef = constantPEDefs[inst.defIdx];
+          bodyInTypes = {Type::none()};
+          bodyOutTypes = {cpDef.outputType.isTagged()
+                              ? cpDef.outputType.getValueType()
+                              : cpDef.outputType};
+          break;
+        }
+        case ModuleKind::LoadPE: {
+          auto &lpDef = loadPEDefs[inst.defIdx];
+          bodyInTypes = {Type::index(), lpDef.dataType, Type::none()};
+          bodyOutTypes = {Type::index(), lpDef.dataType};
+          break;
+        }
+        case ModuleKind::StorePE: {
+          auto &spDef = storePEDefs[inst.defIdx];
+          bodyInTypes = {Type::index(), spDef.dataType, Type::none()};
+          bodyOutTypes = {Type::index(), spDef.dataType};
+          break;
+        }
+        default:
+          break;
+        }
 
         switch (inst.kind) {
         case ModuleKind::PE: {

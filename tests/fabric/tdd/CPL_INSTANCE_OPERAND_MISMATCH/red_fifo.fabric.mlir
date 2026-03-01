@@ -2,9 +2,9 @@
 // CHECK: CPL_INSTANCE_OPERAND_MISMATCH
 
 // Named fifo expects 1 input, but instance provides 2.
-fabric.fifo @buf [depth = 2] : (i32) -> (i32)
+fabric.fifo @buf [depth = 2] : (!dataflow.bits<32>) -> (!dataflow.bits<32>)
 
-fabric.module @top(%a: i32, %b: i32) -> (i32) {
-  %out = fabric.instance @buf(%a, %b) : (i32, i32) -> (i32)
-  fabric.yield %out : i32
+fabric.module @top(%a: !dataflow.bits<32>, %b: !dataflow.bits<32>) -> (!dataflow.bits<32>) {
+  %out = fabric.instance @buf(%a, %b) : (!dataflow.bits<32>, !dataflow.bits<32>) -> (!dataflow.bits<32>)
+  fabric.yield %out : !dataflow.bits<32>
 }

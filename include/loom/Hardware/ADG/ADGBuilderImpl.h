@@ -12,6 +12,7 @@
 #define LOOM_HARDWARE_ADGBUILDERIMPL_H
 
 #include "loom/adg.h"
+#include "loom/Hardware/Common/FabricConstants.h"
 
 #include <cassert>
 #include <cstdio>
@@ -26,8 +27,8 @@ namespace loom {
 namespace adg {
 
 /// Default address width in bits for index type ports (load/store addresses).
-/// Centralized here so that all code-gen paths share the same value.
-static constexpr unsigned DEFAULT_ADDR_WIDTH = 64;
+/// Use ADDR_BIT_WIDTH from FabricConstants.h as the canonical value.
+static constexpr unsigned DEFAULT_ADDR_WIDTH = ADDR_BIT_WIDTH;
 
 //===----------------------------------------------------------------------===//
 // Helper: get data width in bits for a Type (accessible from multiple TUs)
@@ -45,7 +46,7 @@ inline unsigned getTypeDataWidth(const Type &t) {
   case Type::F16:   return 16;
   case Type::F32:   return 32;
   case Type::F64:   return 64;
-  case Type::Index: return 64;
+  case Type::Index: return ADDR_BIT_WIDTH;
   case Type::None:  return 0;
   case Type::Bits:  return t.getWidth();
   case Type::Tagged:
@@ -223,7 +224,7 @@ struct PortType {
   MemrefType memrefType = MemrefType::dynamic1D(Type::i32());
 
   static PortType scalar(Type t) { return {t, false, MemrefType::dynamic1D(Type::i32())}; }
-  static PortType memref(MemrefType m) { return {Type::index(), true, m}; }
+  static PortType memref(MemrefType m) { return {Type::bits(ADDR_BIT_WIDTH), true, m}; }
 
   std::string toMLIR() const {
     return isMemref ? memrefType.toMLIR() : scalarType.toMLIR();
@@ -268,12 +269,10 @@ struct PortType {
     if (tagA) {
       Type valA = scalarType.getValueType();
       Type valB = other.scalarType.getValueType();
-      // Index and None value types: exact match only (unless paired with Bits).
+      // None value types: exact match only (unless paired with Bits).
       bool bitsA = valA.getKind() == Type::Bits;
       bool bitsB = valB.getKind() == Type::Bits;
       if (!bitsA && !bitsB) {
-        if (valA.getKind() == Type::Index || valB.getKind() == Type::Index)
-          return false;
         if (valA.getKind() == Type::None || valB.getKind() == Type::None)
           return false;
       }
@@ -284,19 +283,13 @@ struct PortType {
     bool bitsA = scalarType.getKind() == Type::Bits;
     bool bitsB = other.scalarType.getKind() == Type::Bits;
     if (bitsA || bitsB) {
-      // Bits never matches None (width 0) or Index (semantically distinct).
-      if (!bitsA && (scalarType.getKind() == Type::Index ||
-                     scalarType.getKind() == Type::None))
+      // Bits never matches None (width 0).
+      if (!bitsA && scalarType.getKind() == Type::None)
         return false;
-      if (!bitsB && (other.scalarType.getKind() == Type::Index ||
-                     other.scalarType.getKind() == Type::None))
+      if (!bitsB && other.scalarType.getKind() == Type::None)
         return false;
       return getTypeDataWidth(scalarType) == getTypeDataWidth(other.scalarType);
     }
-    // Index: exact match only (semantically distinct from i64).
-    if (scalarType.getKind() == Type::Index ||
-        other.scalarType.getKind() == Type::Index)
-      return false;
     // None: exact match only.
     if (scalarType.getKind() == Type::None ||
         other.scalarType.getKind() == Type::None)

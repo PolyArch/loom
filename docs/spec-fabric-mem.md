@@ -149,7 +149,9 @@ operand.
 
 Address and data types:
 
-- `ldaddr` and `staddr` must be `index`, or `!dataflow.tagged<index, iK>`.
+- `ldaddr` and `staddr` must be `!dataflow.bits<ADDR_BIT_WIDTH>` (where
+  `ADDR_BIT_WIDTH = 57`), or `!dataflow.tagged<!dataflow.bits<ADDR_BIT_WIDTH>, iK>`.
+  Legacy `index` and `tagged<index, iK>` are also accepted.
 - `lddata` and `stdata` value types must match the memref element type.
 - When tagged, `lddata`, `stdata`, and the corresponding addr must share the
   same tag width.
@@ -270,7 +272,8 @@ Violations of the following constraints are compile-time errors:
 - `ldCount == 0` and `stCount == 0` (`CPL_MEMORY_PORTS_EMPTY`).
 - `lsqDepth != 0` when `stCount == 0` (`CPL_MEMORY_LSQ_WITHOUT_STORE`).
 - `lsqDepth < 1` when `stCount > 0` (`CPL_MEMORY_LSQ_MIN`).
-- Address ports are not `index` or tagged `index` (`CPL_MEMORY_ADDR_TYPE`).
+- Address ports are not `bits<ADDR_BIT_WIDTH>` or tagged `bits<ADDR_BIT_WIDTH>`
+  (`CPL_MEMORY_ADDR_TYPE`).
 - Data value type does not match memref element type (`CPL_MEMORY_DATA_TYPE`).
 - Tagging requirements are not met (`CPL_MEMORY_TAG_REQUIRED`,
   `CPL_MEMORY_TAG_FOR_SINGLE`, `CPL_MEMORY_TAG_WIDTH`).
@@ -309,8 +312,8 @@ Memory module ports have category-specific widths:
 
 | Port Category | Data Width | Notes |
 |---------------|-----------|-------|
-| `ld_addr[i]` | 64 bits (index type) | Fixed address width |
-| `st_addr[i]` | 64 bits (index type) | Fixed address width |
+| `ld_addr[i]` | 57 bits (ADDR_BIT_WIDTH) | Fixed address width |
+| `st_addr[i]` | 57 bits (ADDR_BIT_WIDTH) | Fixed address width |
 | `st_data[i]` | `elemType` width | Element data width |
 | `ld_data[i]` | `elemType` width | Element data width |
 | `ld_done[i]` | 0 bits (none type) | Completion signal only |

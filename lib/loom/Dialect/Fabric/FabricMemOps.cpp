@@ -6,6 +6,7 @@
 
 #include "loom/Dialect/Fabric/FabricOps.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
+#include "loom/Hardware/Common/FabricConstants.h"
 #include "loom/Hardware/Common/FabricError.h"
 
 #include "mlir/IR/BuiltinTypes.h"
@@ -273,12 +274,17 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
   auto inputs = fnType->getInputs();
   auto outputs = fnType->getResults();
 
-  // Helper to check if a type is index or tagged<index, iK>.
+  // Helper to check if a type is an address type:
+  // bits<ADDR_BIT_WIDTH>, tagged<bits<ADDR_BIT_WIDTH>, iK>,
+  // or legacy index / tagged<index, iK>.
   auto isAddrType = [](Type t) -> bool {
-    if (t.isIndex())
-      return true;
+    Type v = t;
     if (auto tagged = dyn_cast<TaggedType>(t))
-      return tagged.getValueType().isIndex();
+      v = tagged.getValueType();
+    if (v.isIndex())
+      return true;
+    if (auto bits = dyn_cast<BitsType>(v))
+      return bits.getWidth() == loom::ADDR_BIT_WIDTH;
     return false;
   };
 
@@ -376,11 +382,31 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
     }
   }
 
+  // Helper to get bit width from a type for width-compatible matching.
+  auto getBitWidth = [](Type t) -> std::optional<unsigned> {
+    if (auto bits = dyn_cast<BitsType>(t)) return bits.getWidth();
+    if (auto intTy = dyn_cast<IntegerType>(t)) return intTy.getWidth();
+    if (isa<Float32Type>(t)) return 32u;
+    if (isa<Float64Type>(t)) return 64u;
+    if (isa<Float16Type, BFloat16Type>(t)) return 16u;
+    if (t.isIndex()) return (unsigned)loom::ADDR_BIT_WIDTH;
+    return std::nullopt;
+  };
+
+  // Helper to check data port value type matches memref element type.
+  // Allows exact match OR width-compatible match (bits<N> vs native type).
+  auto isDataTypeCompatible = [&](Type valT, Type elemT) -> bool {
+    if (valT == elemT) return true;
+    auto valW = getBitWidth(valT);
+    auto elemW = getBitWidth(elemT);
+    return valW && elemW && *valW == *elemW;
+  };
+
   // Validate st_data (singular) if stCount > 0.
   if (stCount > 0 && inIdx < inputs.size()) {
     Type t = inputs[inIdx++];
     Type valT = getValType(t);
-    if (valT != elemType)
+    if (!isDataTypeCompatible(valT, elemType))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_TYPE,
                              "store data port value type "))
              << valT << " does not match memref element type " << elemType;
@@ -403,7 +429,7 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
   if (ldCount > 0 && outIdx < outputs.size()) {
     Type t = outputs[outIdx++];
     Type valT = getValType(t);
-    if (valT != elemType)
+    if (!isDataTypeCompatible(valT, elemType))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_TYPE,
                              "load data port value type "))
              << valT << " does not match memref element type " << elemType;

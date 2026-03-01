@@ -8,6 +8,8 @@
 #include "loom/Mapper/CandidateBuilder.h"
 #include "loom/Mapper/CPSATSolver.h"
 
+#include "loom/Dialect/Dataflow/DataflowTypes.h"
+#include "loom/Hardware/Common/FabricConstants.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 
@@ -48,6 +50,49 @@ bool isMemoryOp(const Node *node) {
   llvm::StringRef opName = getNodeOpName(node);
   return opName.contains("load") || opName.contains("store") ||
          opName.contains("memory");
+}
+
+/// Check if two MLIR types are width-compatible.
+/// Allows matching native types (i32, f32) with bits<N> types of the same
+/// width. IndexType maps to ADDR_BIT_WIDTH (57) for width comparison.
+bool isTypeWidthCompatible(mlir::Type a, mlir::Type b) {
+  if (a == b)
+    return true;
+
+  auto getWidth = [](mlir::Type t) -> std::optional<unsigned> {
+    if (auto bits = mlir::dyn_cast<loom::dataflow::BitsType>(t))
+      return bits.getWidth();
+    if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(t))
+      return intTy.getWidth();
+    if (mlir::isa<mlir::Float32Type>(t))
+      return 32u;
+    if (mlir::isa<mlir::Float64Type>(t))
+      return 64u;
+    if (mlir::isa<mlir::Float16Type, mlir::BFloat16Type>(t))
+      return 16u;
+    if (t.isIndex())
+      return (unsigned)loom::ADDR_BIT_WIDTH;
+    if (mlir::isa<mlir::NoneType>(t))
+      return 0u;
+    return std::nullopt;
+  };
+
+  // For tagged types, check tag types match AND value widths match.
+  auto tagA = mlir::dyn_cast<loom::dataflow::TaggedType>(a);
+  auto tagB = mlir::dyn_cast<loom::dataflow::TaggedType>(b);
+  if (tagA && tagB) {
+    if (tagA.getTagType() != tagB.getTagType())
+      return false;
+    auto wA = getWidth(tagA.getValueType());
+    auto wB = getWidth(tagB.getValueType());
+    return wA && wB && *wA == *wB;
+  }
+  if (tagA || tagB)
+    return false; // one tagged, one not
+
+  auto wA = getWidth(a);
+  auto wB = getWidth(b);
+  return wA && wB && *wA == *wB;
 }
 
 } // namespace
@@ -545,7 +590,7 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
           if (hwUsed[hi])
             continue;
           const Port *hp = adg.getPort(adgExtmem->inputPorts[hi]);
-          if (hp && sp->type == hp->type) {
+          if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
             state.mapPort(dfgExtmem->inputPorts[si],
                           adgExtmem->inputPorts[hi], dfg, adg);
             hwUsed[hi] = true;
@@ -564,7 +609,7 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
             if (hwOutUsed[hi])
               continue;
             const Port *hp = adg.getPort(adgExtmem->outputPorts[hi]);
-            if (hp && sp->type == hp->type) {
+            if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
               state.mapPort(dfgExtmem->outputPorts[si],
                             adgExtmem->outputPorts[hi], dfg, adg);
               hwOutUsed[hi] = true;
@@ -578,7 +623,7 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
     }
   }
 
-  // Second pass: bind non-memref sentinels by type matching.
+  // Second pass: bind non-memref sentinels by width-compatible type matching.
   for (size_t di = 0; di < dfgInputSentinels.size(); ++di) {
     const Node *dfgNode = dfg.getNode(dfgInputSentinels[di]);
     if (!dfgNode || dfgNode->outputPorts.empty())
@@ -595,7 +640,7 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
         continue;
       mlir::Type adgType = adg.getPort(adgNode->outputPorts[0])->type;
 
-      if (dfgType == adgType) {
+      if (isTypeWidthCompatible(dfgType, adgType)) {
         usedAdgIn.insert(ai);
         state.mapNode(dfgInputSentinels[di], adgInputSentinels[ai], dfg, adg);
         for (size_t j = 0;
@@ -610,7 +655,7 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
     }
   }
 
-  // Output sentinel binding: type-aware matching.
+  // Output sentinel binding: width-compatible type matching.
   llvm::DenseSet<size_t> usedAdgOut;
   for (size_t di = 0; di < dfgOutputSentinels.size(); ++di) {
     const Node *dfgNode = dfg.getNode(dfgOutputSentinels[di]);
@@ -626,7 +671,7 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
         continue;
       mlir::Type adgType = adg.getPort(adgNode->inputPorts[0])->type;
 
-      if (dfgType == adgType) {
+      if (isTypeWidthCompatible(dfgType, adgType)) {
         usedAdgOut.insert(ai);
         state.mapNode(dfgOutputSentinels[di], adgOutputSentinels[ai], dfg,
                       adg);
@@ -856,7 +901,7 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
               IdIndex hwPid = hw->inputPorts[hi];
               if (!state.hwPortToSwPorts[hwPid].empty()) continue;
               const Port *hp = adg.getPort(hwPid);
-              if (hp && sp->type == hp->type) {
+              if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
                 state.mapPort(sw->inputPorts[si], hwPid, dfg, adg);
                 break;
               }
@@ -876,7 +921,7 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
               IdIndex hwPid = hw->outputPorts[hi];
               if (!state.hwPortToSwPorts[hwPid].empty()) continue;
               const Port *hp = adg.getPort(hwPid);
-              if (hp && sp->type == hp->type) {
+              if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
                 state.mapPort(sw->outputPorts[si], hwPid, dfg, adg);
                 break;
               }

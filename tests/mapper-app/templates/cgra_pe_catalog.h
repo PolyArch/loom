@@ -14,6 +14,7 @@
 #define CGRA_PE_CATALOG_H
 
 #include <loom/adg.h>
+#include <loom/Hardware/Common/FabricConstants.h>
 
 #include <algorithm>
 #include <cassert>
@@ -33,14 +34,14 @@ enum TypePlane { TP_I32, TP_F32, TP_INDEX, TP_I1, TP_NONE, TP_I64, TP_I16,
 
 inline Type typePlaneToType(TypePlane tp) {
   switch (tp) {
-  case TP_I32:   return Type::i32();
-  case TP_F32:   return Type::f32();
-  case TP_INDEX: return Type::index();
-  case TP_I1:    return Type::i1();
+  case TP_I32:   return Type::bits(32);
+  case TP_F32:   return Type::bits(32);
+  case TP_INDEX: return Type::bits(loom::ADDR_BIT_WIDTH);
+  case TP_I1:    return Type::bits(1);
   case TP_NONE:  return Type::none();
-  case TP_I64:   return Type::i64();
-  case TP_I16:   return Type::i16();
-  default:       return Type::i32();
+  case TP_I64:   return Type::bits(64);
+  case TP_I16:   return Type::bits(16);
+  default:       return Type::bits(32);
   }
 }
 
@@ -72,7 +73,7 @@ inline Type widthPlaneToType(WidthPlane wp) {
   case WP_16:    return Type::bits(16);
   case WP_32:    return Type::bits(32);
   case WP_64:    return Type::bits(64);
-  case WP_INDEX: return Type::index();
+  case WP_INDEX: return Type::bits(loom::ADDR_BIT_WIDTH);
   default:       return Type::bits(32);
   }
 }
@@ -276,26 +277,21 @@ registerAllPEs(ADGBuilder &builder) {
                  const std::vector<std::string> &outTypes,
                  const std::string &body,
                  int16_t latHW) {
-    // Build Type vectors
+    // Build Type vectors -- all interface ports use bits<N> types.
+    // Body types remain native (i32, f32, index).
+    auto nameToPortType = [](const std::string &t) -> Type {
+      if (t == "i32")        return Type::bits(32);
+      if (t == "f32")        return Type::bits(32);
+      if (t == "i64")        return Type::bits(64);
+      if (t == "i16")        return Type::bits(16);
+      if (t == "i1")         return Type::bits(1);
+      if (t == "index")      return Type::bits(loom::ADDR_BIT_WIDTH);
+      if (t == "none")       return Type::none();
+      return Type::bits(32);
+    };
     std::vector<Type> inT, outT;
-    for (auto &t : inTypes) {
-      if (t == "i32")        inT.push_back(Type::i32());
-      else if (t == "f32")   inT.push_back(Type::f32());
-      else if (t == "i64")   inT.push_back(Type::i64());
-      else if (t == "i16")   inT.push_back(Type::i16());
-      else if (t == "i1")    inT.push_back(Type::i1());
-      else if (t == "index") inT.push_back(Type::index());
-      else if (t == "none")  inT.push_back(Type::none());
-    }
-    for (auto &t : outTypes) {
-      if (t == "i32")        outT.push_back(Type::i32());
-      else if (t == "f32")   outT.push_back(Type::f32());
-      else if (t == "i64")   outT.push_back(Type::i64());
-      else if (t == "i16")   outT.push_back(Type::i16());
-      else if (t == "i1")    outT.push_back(Type::i1());
-      else if (t == "index") outT.push_back(Type::index());
-      else if (t == "none")  outT.push_back(Type::none());
-    }
+    for (auto &t : inTypes)  inT.push_back(nameToPortType(t));
+    for (auto &t : outTypes) outT.push_back(nameToPortType(t));
 
     // Build the full MLIR body with header and yield.
     // The body already uses %a0, %a1, etc. We build a ^bb0 header and append
@@ -757,16 +753,16 @@ inline void connectExtMem(ADGBuilder &builder,
     // Tagged ports: connect as direct module I/O
     unsigned maxCount = std::max((unsigned)ldCount, (unsigned)stCount);
     Type tagType = computeMemTagType(maxCount);
-    Type taggedIndex = Type::tagged(Type::index(), tagType);
+    Type taggedAddr = Type::tagged(Type::bits(loom::ADDR_BIT_WIDTH), tagType);
     Type taggedData = Type::tagged(typePlaneToType(dataTp), tagType);
     Type taggedNone = Type::tagged(Type::none(), tagType);
 
     if (layout.ldAddrPort >= 0) {
-      auto p = builder.addModuleInput(name + "_ld_addr", taggedIndex);
+      auto p = builder.addModuleInput(name + "_ld_addr", taggedAddr);
       builder.connectToModuleInput(p, inst, layout.ldAddrPort);
     }
     if (layout.stAddrPort >= 0) {
-      auto p = builder.addModuleInput(name + "_st_addr", taggedIndex);
+      auto p = builder.addModuleInput(name + "_st_addr", taggedAddr);
       builder.connectToModuleInput(p, inst, layout.stAddrPort);
     }
     if (layout.stDataPort >= 0) {
@@ -816,16 +812,16 @@ inline void connectPrivMem(ADGBuilder &builder,
   } else {
     unsigned maxCount = std::max((unsigned)ldCount, (unsigned)stCount);
     Type tagType = computeMemTagType(maxCount);
-    Type taggedIndex = Type::tagged(Type::index(), tagType);
+    Type taggedAddr = Type::tagged(Type::bits(loom::ADDR_BIT_WIDTH), tagType);
     Type taggedData = Type::tagged(typePlaneToType(dataTp), tagType);
     Type taggedNone = Type::tagged(Type::none(), tagType);
 
     if (layout.ldAddrPort >= 0) {
-      auto p = builder.addModuleInput(name + "_ld_addr", taggedIndex);
+      auto p = builder.addModuleInput(name + "_ld_addr", taggedAddr);
       builder.connectToModuleInput(p, inst, layout.ldAddrPort);
     }
     if (layout.stAddrPort >= 0) {
-      auto p = builder.addModuleInput(name + "_st_addr", taggedIndex);
+      auto p = builder.addModuleInput(name + "_st_addr", taggedAddr);
       builder.connectToModuleInput(p, inst, layout.stAddrPort);
     }
     if (layout.stDataPort >= 0) {
