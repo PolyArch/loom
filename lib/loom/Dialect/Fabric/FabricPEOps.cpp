@@ -513,10 +513,9 @@ LogicalResult PEOp::verify() {
              << numInputs << " block arguments; got "
              << entryBlock.getNumArguments();
 
-    // Helper to get bit width of a type (interface or body).
-    auto getBitWidth = [](Type t) -> std::optional<unsigned> {
-      using namespace loom::dataflow;
-      if (auto bits = dyn_cast<BitsType>(t)) return bits.getWidth();
+    // Helper to get bit width of a native scalar type (body arg side).
+    // Returns nullopt for non-native kinds (bits<N>, tagged, memref, etc.).
+    auto getNativeBodyWidth = [](Type t) -> std::optional<unsigned> {
       if (auto intTy = dyn_cast<IntegerType>(t)) return intTy.getWidth();
       if (isa<Float32Type>(t)) return 32u;
       if (isa<Float64Type>(t)) return 64u;
@@ -526,19 +525,28 @@ LogicalResult PEOp::verify() {
       return std::nullopt;
     };
 
-    // Each body arg must be a native type (not bits<N>) and width-compatible
-    // with the corresponding interface port's value type.
+    // Helper to get bit width of an interface value type.
+    auto getIfaceWidth = [](Type t) -> std::optional<unsigned> {
+      using namespace loom::dataflow;
+      if (auto bits = dyn_cast<BitsType>(t)) return bits.getWidth();
+      if (isa<NoneType>(t)) return 0u;
+      return std::nullopt;
+    };
+
+    // Each body arg must be a native scalar type (not bits<N>, memref, tagged,
+    // vector, tensor, etc.) and width-compatible with the corresponding
+    // interface port's value type.
     for (unsigned i = 0; i < numInputs; ++i) {
       Type bodyT = entryBlock.getArgument(i).getType();
-      if (isa<dataflow::BitsType>(bodyT))
-        return emitOpError("bits-interface PE body arguments must use "
-                           "native types (i32, f32, index, ...), not bits<N>");
+      auto bodyW = getNativeBodyWidth(bodyT);
+      if (!bodyW)
+        return emitOpError("bits-interface PE body argument #")
+               << i << " must be a native scalar type "
+               << "(i32, f32, index, ...); got '" << bodyT << "'";
 
-      Type ifaceT = inputTypes[i];
-      Type ifaceValT = getValueType(ifaceT);
-      auto ifaceW = getBitWidth(ifaceValT);
-      auto bodyW = getBitWidth(bodyT);
-      if (ifaceW && bodyW && *ifaceW != *bodyW)
+      Type ifaceValT = getValueType(inputTypes[i]);
+      auto ifaceW = getIfaceWidth(ifaceValT);
+      if (ifaceW && *ifaceW != *bodyW)
         return emitOpError("bits-interface PE body argument #")
                << i << " has width " << *bodyW << " (" << bodyT
                << ") but interface port has width " << *ifaceW << " ("
