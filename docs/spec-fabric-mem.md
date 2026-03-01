@@ -41,28 +41,34 @@ be instantiated via `fabric.instance`.
 
 ### Named Form Syntax
 
+In the examples below, `AW` stands for `ADDR_BIT_WIDTH` (currently 57).
+
 ```mlir
 fabric.memory @scratchpad
     [ldCount = 2, stCount = 2, lsqDepth = 4, is_private = true]
     : memref<1024xi32>,
-      (!dataflow.tagged<index, i2>, !dataflow.tagged<index, i2>,
-       !dataflow.tagged<i32, i2>)
-      -> (!dataflow.tagged<i32, i2>,
+      (!dataflow.tagged<!dataflow.bits<AW>, i2>,
+       !dataflow.tagged<!dataflow.bits<AW>, i2>,
+       !dataflow.tagged<!dataflow.bits<32>, i2>)
+      -> (!dataflow.tagged<!dataflow.bits<32>, i2>,
           !dataflow.tagged<none, i2>,
           !dataflow.tagged<none, i2>)
 
 fabric.extmemory @dram_if
     [ldCount = 1, stCount = 1, lsqDepth = 4]
-    : memref<?xf32>, (index, index, f32) -> (f32, none, none)
+    : memref<?xf32>,
+      (!dataflow.bits<AW>, !dataflow.bits<AW>, !dataflow.bits<32>)
+      -> (!dataflow.bits<32>, none, none)
 ```
 
 Named memory modules can be instantiated with `fabric.instance`:
 
 ```mlir
 %lddata, %lddone, %stdone = fabric.instance @scratchpad(%ldaddr, %staddr, %stdata)
-    : (!dataflow.tagged<index, i2>, !dataflow.tagged<index, i2>,
-       !dataflow.tagged<i32, i2>)
-      -> (!dataflow.tagged<i32, i2>,
+    : (!dataflow.tagged<!dataflow.bits<AW>, i2>,
+       !dataflow.tagged<!dataflow.bits<AW>, i2>,
+       !dataflow.tagged<!dataflow.bits<32>, i2>)
+      -> (!dataflow.tagged<!dataflow.bits<32>, i2>,
           !dataflow.tagged<none, i2>,
           !dataflow.tagged<none, i2>)
 ```
@@ -78,7 +84,9 @@ Single-port example:
 %lddata, %lddone, %stdone = fabric.memory
     [ldCount = 1, stCount = 1, lsqDepth = 4, is_private = true]
     (%ldaddr, %staddr, %stdata)
-    : memref<256xi32>, (index, index, i32) -> (i32, none, none)
+    : memref<256xi32>,
+      (!dataflow.bits<AW>, !dataflow.bits<AW>, !dataflow.bits<32>)
+      -> (!dataflow.bits<32>, none, none)
 ```
 
 Multi-port example with tags:
@@ -88,10 +96,10 @@ Multi-port example with tags:
     [ldCount = 4, stCount = 2, lsqDepth = 8]
     (%memref, %ldaddr, %staddr, %stdata)
     : memref<?xf32>,
-      (!dataflow.tagged<index, i3>,
-       !dataflow.tagged<index, i3>,
-       !dataflow.tagged<f32, i3>)
-      -> (!dataflow.tagged<f32, i3>,
+      (!dataflow.tagged<!dataflow.bits<AW>, i3>,
+       !dataflow.tagged<!dataflow.bits<AW>, i3>,
+       !dataflow.tagged<!dataflow.bits<32>, i3>)
+      -> (!dataflow.tagged<!dataflow.bits<32>, i3>,
           !dataflow.tagged<none, i3>,
           !dataflow.tagged<none, i3>)
 ```
@@ -102,7 +110,8 @@ Memory export example:
 %mem, %lddata, %lddone = fabric.memory
     [ldCount = 1, stCount = 0, is_private = false]
     (%ldaddr)
-    : memref<1024xi16>, (index) -> (memref<1024xi16>, i16, none)
+    : memref<1024xi16>,
+      (!dataflow.bits<AW>) -> (memref<1024xi16>, !dataflow.bits<16>, none)
 
 fabric.yield %mem : memref<1024xi16>
 ```
@@ -149,9 +158,8 @@ operand.
 
 Address and data types:
 
-- `ldaddr` and `staddr` must be `!dataflow.bits<ADDR_BIT_WIDTH>` (where
-  `ADDR_BIT_WIDTH = 57`), or `!dataflow.tagged<!dataflow.bits<ADDR_BIT_WIDTH>, iK>`.
-  Legacy `index` and `tagged<index, iK>` are also accepted.
+- `ldaddr` and `staddr` must be `!dataflow.bits<ADDR_BIT_WIDTH>`,
+  or `!dataflow.tagged<!dataflow.bits<ADDR_BIT_WIDTH>, iK>`.
 - `lddata` and `stdata` value types must match the memref element type.
 - When tagged, `lddata`, `stdata`, and the corresponding addr must share the
   same tag width.
@@ -312,8 +320,8 @@ Memory module ports have category-specific widths:
 
 | Port Category | Data Width | Notes |
 |---------------|-----------|-------|
-| `ld_addr[i]` | 57 bits (ADDR_BIT_WIDTH) | Fixed address width |
-| `st_addr[i]` | 57 bits (ADDR_BIT_WIDTH) | Fixed address width |
+| `ld_addr[i]` | ADDR_BIT_WIDTH bits | Fixed address width |
+| `st_addr[i]` | ADDR_BIT_WIDTH bits | Fixed address width |
 | `st_data[i]` | `elemType` width | Element data width |
 | `ld_data[i]` | `elemType` width | Element data width |
 | `ld_done[i]` | 0 bits (none type) | Completion signal only |
@@ -331,8 +339,8 @@ positive width. When tagged, done port width = `TAG_WIDTH` bits (none carries
 
 ```
 TAG_WIDTH = clog2(max(2,1)) = 1
-ld_addr0: 64 + 1 = 65 bits payload
-st_addr0: 64 + 1 = 65 bits payload
+ld_addr0: ADDR_BIT_WIDTH + 1 bits payload
+st_addr0: ADDR_BIT_WIDTH + 1 bits payload
 st_data0: 32 + 1 = 33 bits payload
 ld_data0: 32 + 1 = 33 bits payload
 ld_done0: 0 + 1  = 1  bit payload (none=0 data bits + TAG_WIDTH)

@@ -38,6 +38,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_SWITCH_COL_EMPTY | A connectivity column has no `1` entries |
 | CPL_SWITCH_PORT_LIMIT | `fabric.switch` has more than 32 inputs or outputs |
 | CPL_SWITCH_ROUTE_LEN_MISMATCH | `route_table` length does not match connected positions |
+| CPL_ROUTING_PAYLOAD_NOT_BITS | A routing node port type is not `!dataflow.bits<N>` or `none` |
 | CPL_TEMPORAL_SW_PORT_ZERO | `fabric.temporal_sw` has zero inputs or outputs |
 | CPL_TEMPORAL_SW_TABLE_SHAPE | `connectivity_table` length is not `num_outputs * num_inputs` |
 | CPL_TEMPORAL_SW_ROW_EMPTY | A connectivity row has no `1` entries |

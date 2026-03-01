@@ -460,7 +460,7 @@ ValidationResult ADGBuilder::validateADG() {
         isRoutingKind(impl_->instances[conn.dstInst].kind))
       ok = srcType.routingCompatible(dstType);
     else
-      ok = srcType.matches(dstType);
+      ok = srcType.widthCompatible(dstType);
     if (!ok) {
       std::string loc =
           impl_->instances[conn.srcInst].name + ":" +

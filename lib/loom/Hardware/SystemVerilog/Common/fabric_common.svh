@@ -28,6 +28,16 @@ interface fabric_stream #(
 endinterface
 
 //===----------------------------------------------------------------------===//
+// Address Bit Width
+//===----------------------------------------------------------------------===//
+// Centralized address bit-width for index-type ports in the fabric.
+//
+// IMPORTANT: When changing this value, also update ADDR_BIT_WIDTH in
+// include/loom/Hardware/Common/FabricConstants.h to match.
+// The spec test check-loom-spec-addrwidth enforces consistency.
+`define FABRIC_ADDR_BIT_WIDTH 57
+
+//===----------------------------------------------------------------------===//
 // Assertion Guard
 //===----------------------------------------------------------------------===//
 

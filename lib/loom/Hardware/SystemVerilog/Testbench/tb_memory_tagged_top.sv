@@ -6,19 +6,21 @@
 
 module tb_memory_tagged_top;
 
+`include "fabric_common.svh"
+
   logic        clk;
   logic        rst_n;
 
   logic        ld_addr_valid;
   logic        ld_addr_ready;
-  logic [64:0] ld_addr_data;
+  logic [`FABRIC_ADDR_BIT_WIDTH:0] ld_addr_data;
   logic        ld_ctrl_valid;
   logic        ld_ctrl_ready;
   logic        ld_ctrl_data;
 
   logic        st_addr_valid;
   logic        st_addr_ready;
-  logic [64:0] st_addr_data;
+  logic [`FABRIC_ADDR_BIT_WIDTH:0] st_addr_data;
   logic        st_data_valid;
   logic        st_data_ready;
   logic [32:0] st_data_data;
@@ -37,10 +39,10 @@ module tb_memory_tagged_top;
   logic        stdone_ready;
   logic        stdone_data;
 
-  // Config port: TAG_WIDTH=1, ADDR_WIDTH=64, NUM_REGION=1
-  // REGION_ENTRY_WIDTH = 1 + 1 + (1+1) + 64 = 68
-  // Layout: [valid(1)] [start_tag(1)] [end_tag(2)] [addr_offset(64)]
-  logic [67:0] m0_cfg_data;
+  // Config port: TAG_WIDTH=1, ADDR_WIDTH=FABRIC_ADDR_BIT_WIDTH, NUM_REGION=1
+  // REGION_ENTRY_WIDTH = 1 + 1 + (1+1) + AW = AW + 4
+  // Layout: [valid(1)] [start_tag(1)] [end_tag(2)] [addr_offset(AW)]
+  logic [`FABRIC_ADDR_BIT_WIDTH+3:0] m0_cfg_data;
 
   logic        error_valid;
   logic [15:0] error_code;
@@ -95,9 +97,9 @@ module tb_memory_tagged_top;
   end
 `endif
 
-  function automatic logic [64:0] pack_addr(
+  function automatic logic [`FABRIC_ADDR_BIT_WIDTH:0] pack_addr(
       input logic tag,
-      input logic [63:0] addr
+      input logic [`FABRIC_ADDR_BIT_WIDTH-1:0] addr
   );
     pack_addr = {tag, addr};
   endfunction
@@ -111,7 +113,7 @@ module tb_memory_tagged_top;
 
   task automatic drive_store(
       input logic tag,
-      input logic [63:0] addr,
+      input logic [`FABRIC_ADDR_BIT_WIDTH-1:0] addr,
       input logic [31:0] data
   );
     integer iter_var0;
@@ -172,7 +174,7 @@ module tb_memory_tagged_top;
     end
   endtask
 
-  task automatic drive_ld_addr(input logic tag, input logic [63:0] addr);
+  task automatic drive_ld_addr(input logic tag, input logic [`FABRIC_ADDR_BIT_WIDTH-1:0] addr);
     integer iter_var0;
     logic accepted;
     begin : drive
@@ -311,10 +313,10 @@ module tb_memory_tagged_top;
     stdone_ready  = 1'b1;
 
     // Region 0: valid=1, start_tag=0, end_tag=2 (half-open [0,2)), addr_offset=0
-    // New layout: bits[63:0]=offset, bits[65:64]=end_tag(2b), bit[66]=start_tag(1b), bit[67]=valid
+    // Layout: bits[AW-1:0]=offset, bits[AW+1:AW]=end_tag(2b), bit[AW+2]=start_tag(1b), bit[AW+3]=valid
     m0_cfg_data = '0;
-    m0_cfg_data[67]    = 1'b1;  // valid
-    m0_cfg_data[65:64] = 2'd2;  // end_tag = 2 (half-open [0,2) covers tags 0 and 1)
+    m0_cfg_data[`FABRIC_ADDR_BIT_WIDTH+3]                        = 1'b1;  // valid
+    m0_cfg_data[`FABRIC_ADDR_BIT_WIDTH+1:`FABRIC_ADDR_BIT_WIDTH] = 2'd2;  // end_tag = 2 (half-open [0,2) covers tags 0 and 1)
 
     repeat (3) @(posedge clk);
     rst_n = 1'b1;
@@ -326,25 +328,25 @@ module tb_memory_tagged_top;
     pass_count = pass_count + 1;
 
     // Tag 0 round-trip.
-    drive_store(1'b0, 64'd5, 32'h0000_1122);
+    drive_store(1'b0, `FABRIC_ADDR_BIT_WIDTH'd5, 32'h0000_1122);
     wait_stdone(1'b0);
-    drive_ld_addr(1'b0, 64'd5);
+    drive_ld_addr(1'b0, `FABRIC_ADDR_BIT_WIDTH'd5);
     drive_ld_ctrl(1'b0);
     wait_ld_out(1'b0, 32'h0000_1122);
     wait_lddone(1'b0);
     pass_count = pass_count + 1;
 
     // Tag 1 round-trip.
-    drive_store(1'b1, 64'd6, 32'h0000_3344);
+    drive_store(1'b1, `FABRIC_ADDR_BIT_WIDTH'd6, 32'h0000_3344);
     wait_stdone(1'b1);
-    drive_ld_addr(1'b1, 64'd6);
+    drive_ld_addr(1'b1, `FABRIC_ADDR_BIT_WIDTH'd6);
     drive_ld_ctrl(1'b1);
     wait_ld_out(1'b1, 32'h0000_3344);
     wait_lddone(1'b1);
     pass_count = pass_count + 1;
 
     // Mismatched ctrl tag should not consume pending tag-1 address.
-    drive_ld_addr(1'b1, 64'd6);
+    drive_ld_addr(1'b1, `FABRIC_ADDR_BIT_WIDTH'd6);
     drive_ld_ctrl(1'b0);
 
     iter_var0 = 0;

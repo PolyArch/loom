@@ -671,13 +671,15 @@ std::string ADGBuilder::Impl::generateMLIR() const {
     if (i > 0) os << ", ";
     const auto &p = ports[inputPortIndices[i]];
     os << "%" << p.name << ": ";
-    os << (p.isMemref ? p.memrefType.toMLIR() : p.type.toMLIR());
+    os << (p.isMemref ? p.memrefType.toMLIR()
+                      : nativeToBitsType(p.type).toMLIR());
   }
   os << ") -> (";
   for (size_t i = 0; i < outputPortIndices.size(); ++i) {
     if (i > 0) os << ", ";
     const auto &p = ports[outputPortIndices[i]];
-    os << (p.isMemref ? p.memrefType.toMLIR() : p.type.toMLIR());
+    os << (p.isMemref ? p.memrefType.toMLIR()
+                      : nativeToBitsType(p.type).toMLIR());
   }
   os << ") {\n";
 
@@ -728,9 +730,15 @@ std::string ADGBuilder::Impl::generateMLIR() const {
   // For routing-node outputs (Switch), resolve the downstream consumer type
   // so that SSA values carry per-port types (e.g. f32 when feeding an f32 PE
   // through an i32-typed switch in a width-merged plane).
+  // Helper to convert a PortType to bits-equivalent MLIR string.
+  auto portTypeToBitsMLIR = [](const PortType &pt) -> std::string {
+    return pt.isMemref ? pt.memrefType.toMLIR()
+                       : nativeToBitsType(pt.scalarType).toMLIR();
+  };
+
   auto resolveOutputType = [&](unsigned ii, int port) -> std::string {
     if (instances[ii].kind != ModuleKind::Switch)
-      return getInstanceOutputPortType(ii, port).toMLIR();
+      return portTypeToBitsMLIR(getInstanceOutputPortType(ii, port));
     // Check internal connections from this output.
     for (const auto &conn : internalConns) {
       if (conn.srcInst == ii && conn.srcPort == port) {
@@ -740,17 +748,19 @@ std::string ADGBuilder::Impl::generateMLIR() const {
             dstKind == ModuleKind::TemporalSwitch ||
             dstKind == ModuleKind::Fifo)
           break;
-        return getInstanceInputPortType(conn.dstInst, conn.dstPort).toMLIR();
+        return portTypeToBitsMLIR(
+            getInstanceInputPortType(conn.dstInst, conn.dstPort));
       }
     }
     // Check module output connections.
     for (const auto &conn : outputConns) {
       if (conn.instIdx == ii && conn.srcPort == port) {
         const auto &p = ports[conn.portIdx];
-        return p.isMemref ? p.memrefType.toMLIR() : p.type.toMLIR();
+        return p.isMemref ? p.memrefType.toMLIR()
+                          : nativeToBitsType(p.type).toMLIR();
       }
     }
-    return getInstanceOutputPortType(ii, port).toMLIR();
+    return portTypeToBitsMLIR(getInstanceOutputPortType(ii, port));
   };
 
   for (unsigned ii : topoOrder) {
@@ -781,7 +791,8 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           const auto &p = ports[inputPortIndices[it->second]];
           operands[conn.dstPort] = "%" + p.name;
           operandTypes[conn.dstPort] =
-              p.isMemref ? p.memrefType.toMLIR() : p.type.toMLIR();
+              p.isMemref ? p.memrefType.toMLIR()
+                         : nativeToBitsType(p.type).toMLIR();
         }
       }
     }
@@ -1122,7 +1133,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
 
     case ModuleKind::Switch: {
       auto &swDef = switchDefs[inst.defIdx];
-      std::string fallbackType = swDef.portType.toMLIR();
+      std::string fallbackType = nativeToBitsType(swDef.portType).toMLIR();
       auto flatConn = flattenConnectivity(swDef.connectivity, swDef.numOut,
                                           swDef.numIn);
 
@@ -1168,7 +1179,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
 
     case ModuleKind::TemporalSwitch: {
       auto &tsDef = temporalSwitchDefs[inst.defIdx];
-      std::string typeStr = tsDef.interfaceType.toMLIR();
+      std::string typeStr = nativeToBitsType(tsDef.interfaceType).toMLIR();
       auto flatConn = flattenConnectivity(tsDef.connectivity, tsDef.numOut,
                                           tsDef.numIn);
 
@@ -1196,7 +1207,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       auto &memDef = memoryDefs[inst.defIdx];
       std::string memrefStr = memDef.shape.toMLIR();
       Type elemType = memDef.shape.getElemType();
-      std::string elemStr = elemType.toMLIR();
+      std::string elemStr = nativeToBitsType(elemType).toMLIR();
 
       // Unified tagging: tagged when max(ldCount, stCount) > 1
       bool isTagged = (memDef.ldCount > 1 || memDef.stCount > 1);
@@ -1261,7 +1272,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       auto &emDef = extMemoryDefs[inst.defIdx];
       std::string memrefStr = emDef.shape.toMLIR();
       Type elemType = emDef.shape.getElemType();
-      std::string elemStr = elemType.toMLIR();
+      std::string elemStr = nativeToBitsType(elemType).toMLIR();
 
       // Unified tagging: tagged when max(ldCount, stCount) > 1
       bool isTagged = (emDef.ldCount > 1 || emDef.stCount > 1);
@@ -1318,17 +1329,19 @@ std::string ADGBuilder::Impl::generateMLIR() const {
 
     case ModuleKind::AddTag: {
       auto &atDef = addTagDefs[inst.defIdx];
+      Type bitsVal = nativeToBitsType(atDef.valueType);
       os << "fabric.add_tag " << operands[0]
          << " {tag = 0 : " << atDef.tagType.toMLIR() << "} : "
-         << atDef.valueType.toMLIR() << " -> "
-         << Type::tagged(atDef.valueType, atDef.tagType).toMLIR() << "\n";
+         << bitsVal.toMLIR() << " -> "
+         << Type::tagged(bitsVal, atDef.tagType).toMLIR() << "\n";
       break;
     }
 
     case ModuleKind::MapTag: {
       auto &mtDef = mapTagDefs[inst.defIdx];
-      Type inTagged = Type::tagged(mtDef.valueType, mtDef.inputTagType);
-      Type outTagged = Type::tagged(mtDef.valueType, mtDef.outputTagType);
+      Type bitsVal = nativeToBitsType(mtDef.valueType);
+      Type inTagged = Type::tagged(bitsVal, mtDef.inputTagType);
+      Type outTagged = Type::tagged(bitsVal, mtDef.outputTagType);
       os << "fabric.map_tag " << operands[0]
          << " {table_size = " << mtDef.tableSize << "} : "
          << inTagged.toMLIR() << " -> " << outTagged.toMLIR() << "\n";
@@ -1337,9 +1350,10 @@ std::string ADGBuilder::Impl::generateMLIR() const {
 
     case ModuleKind::DelTag: {
       auto &dtDef = delTagDefs[inst.defIdx];
-      Type outType = dtDef.inputType.getValueType();
+      Type bitsInput = nativeToBitsType(dtDef.inputType);
+      Type outType = bitsInput.getValueType();
       os << "fabric.del_tag " << operands[0]
-         << " : " << dtDef.inputType.toMLIR() << " -> "
+         << " : " << bitsInput.toMLIR() << " -> "
          << outType.toMLIR() << "\n";
       break;
     }
@@ -1352,7 +1366,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       os << "] ";
       if (fifoDef.bypassable)
         os << "{bypassed = false} ";
-      os << operands[0] << " : " << fifoDef.elementType.toMLIR() << "\n";
+      os << operands[0] << " : " << nativeToBitsType(fifoDef.elementType).toMLIR() << "\n";
       break;
     }
 
@@ -1372,7 +1386,8 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           if (it != instResultSSA.end()) {
             const auto &p = ports[outPortIdx];
             std::string typeStr =
-                p.isMemref ? p.memrefType.toMLIR() : p.type.toMLIR();
+                p.isMemref ? p.memrefType.toMLIR()
+                           : nativeToBitsType(p.type).toMLIR();
             yieldArgs.push_back({it->second, typeStr});
           }
           break;

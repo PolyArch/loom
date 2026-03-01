@@ -6,24 +6,26 @@
 
 module tb_pe_dataflow_stream_top;
 
+`include "fabric_common.svh"
+
   logic        clk;
   logic        rst_n;
 
   logic        start_valid;
   logic        start_ready;
-  logic [63:0] start_data;
+  logic [`FABRIC_ADDR_BIT_WIDTH-1:0] start_data;
 
   logic        step_valid;
   logic        step_ready;
-  logic [63:0] step_data;
+  logic [`FABRIC_ADDR_BIT_WIDTH-1:0] step_data;
 
   logic        bound_valid;
   logic        bound_ready;
-  logic [63:0] bound_data;
+  logic [`FABRIC_ADDR_BIT_WIDTH-1:0] bound_data;
 
   logic        idx_valid;
   logic        idx_ready;
-  logic [63:0] idx_data;
+  logic [`FABRIC_ADDR_BIT_WIDTH-1:0] idx_data;
 
   logic        cont_valid;
   logic        cont_ready;
@@ -71,9 +73,9 @@ module tb_pe_dataflow_stream_top;
 `endif
 
   task automatic drive_triplet(
-      input logic [63:0] s,
-      input logic [63:0] st,
-      input logic [63:0] bd
+      input logic [`FABRIC_ADDR_BIT_WIDTH-1:0] s,
+      input logic [`FABRIC_ADDR_BIT_WIDTH-1:0] st,
+      input logic [`FABRIC_ADDR_BIT_WIDTH-1:0] bd
   );
     integer iter_var0;
     logic accepted;
@@ -105,7 +107,7 @@ module tb_pe_dataflow_stream_top;
     end
   endtask
 
-  task automatic expect_pair(input logic [63:0] expected_idx,
+  task automatic expect_pair(input logic [`FABRIC_ADDR_BIT_WIDTH-1:0] expected_idx,
                              input logic expected_cont);
     integer iter_var0;
     logic seen;
@@ -157,15 +159,15 @@ module tb_pe_dataflow_stream_top;
     pass_count = pass_count + 1;
 
     // start=0, step=2, bound=5 with '<' => (0,T), (2,T), (4,T), (6,F)
-    drive_triplet(64'd0, 64'd2, 64'd5);
-    expect_pair(64'd0, 1'b1);
-    expect_pair(64'd2, 1'b1);
-    expect_pair(64'd4, 1'b1);
-    expect_pair(64'd6, 1'b0);
+    drive_triplet(`FABRIC_ADDR_BIT_WIDTH'd0, `FABRIC_ADDR_BIT_WIDTH'd2, `FABRIC_ADDR_BIT_WIDTH'd5);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd0, 1'b1);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd2, 1'b1);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd4, 1'b1);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd6, 1'b0);
     pass_count = pass_count + 1;
 
     // Backpressure holds current pair stable until both outputs ready.
-    drive_triplet(64'd10, 64'd3, 64'd20);
+    drive_triplet(`FABRIC_ADDR_BIT_WIDTH'd10, `FABRIC_ADDR_BIT_WIDTH'd3, `FABRIC_ADDR_BIT_WIDTH'd20);
     idx_ready = 1'b0;
     cont_ready = 1'b0;
     iter_var0 = 0;
@@ -177,14 +179,14 @@ module tb_pe_dataflow_stream_top;
       $fatal(1, "stream did not produce first output under backpressure");
     end
     #1;
-    if (idx_data !== 64'd10 || cont_data !== 1'b1) begin : bad_first
+    if (idx_data !== `FABRIC_ADDR_BIT_WIDTH'd10 || cont_data !== 1'b1) begin : bad_first
       $fatal(1, "unexpected first output under backpressure idx=%0d cont=%0b", idx_data, cont_data);
     end
 
     repeat (2) begin : hold_check
       @(posedge clk);
       #1;
-      if (idx_data !== 64'd10 || cont_data !== 1'b1) begin : bad_hold
+      if (idx_data !== `FABRIC_ADDR_BIT_WIDTH'd10 || cont_data !== 1'b1) begin : bad_hold
         $fatal(1, "stream output changed while backpressured");
       end
     end
@@ -192,16 +194,16 @@ module tb_pe_dataflow_stream_top;
     idx_ready = 1'b1;
     cont_ready = 1'b1;
     // start=10, step=3, bound=20, '<' => (10,T), (13,T), (16,T), (19,T), (22,F)
-    expect_pair(64'd10, 1'b1);
-    expect_pair(64'd13, 1'b1);
-    expect_pair(64'd16, 1'b1);
-    expect_pair(64'd19, 1'b1);
-    expect_pair(64'd22, 1'b0);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd10, 1'b1);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd13, 1'b1);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd16, 1'b1);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd19, 1'b1);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd22, 1'b0);
     pass_count = pass_count + 1;
 
     // Zero-trip test: start=5, step=1, bound=3, '<' => (5,F)
-    drive_triplet(64'd5, 64'd1, 64'd3);
-    expect_pair(64'd5, 1'b0);
+    drive_triplet(`FABRIC_ADDR_BIT_WIDTH'd5, `FABRIC_ADDR_BIT_WIDTH'd1, `FABRIC_ADDR_BIT_WIDTH'd3);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd5, 1'b0);
     pass_count = pass_count + 1;
 
     // != test: cfg=5'b10000, start=0, step=2, bound=6 => (0,T), (2,T), (4,T), (6,F)
@@ -209,11 +211,11 @@ module tb_pe_dataflow_stream_top;
     // will_continue at the same posedge where the zero-trip test completes.
     @(negedge clk);
     p0_cfg_data = 5'b10000;
-    drive_triplet(64'd0, 64'd2, 64'd6);
-    expect_pair(64'd0, 1'b1);
-    expect_pair(64'd2, 1'b1);
-    expect_pair(64'd4, 1'b1);
-    expect_pair(64'd6, 1'b0);
+    drive_triplet(`FABRIC_ADDR_BIT_WIDTH'd0, `FABRIC_ADDR_BIT_WIDTH'd2, `FABRIC_ADDR_BIT_WIDTH'd6);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd0, 1'b1);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd2, 1'b1);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd4, 1'b1);
+    expect_pair(`FABRIC_ADDR_BIT_WIDTH'd6, 1'b0);
     pass_count = pass_count + 1;
 
     $display("PASS: tb_pe_dataflow_stream_top (%0d checks)", pass_count);

@@ -80,8 +80,13 @@ add_custom_target(check-loom-spec-maxloc
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 
+add_custom_target(check-loom-spec-addrwidth
+  COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/spec/addr-width-alignment.py"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
 add_custom_target(check-loom-spec
-  DEPENDS check-loom-spec-errcode check-loom-spec-maxloc
+  DEPENDS check-loom-spec-errcode check-loom-spec-maxloc check-loom-spec-addrwidth
 )
 
 add_custom_target(check-loom

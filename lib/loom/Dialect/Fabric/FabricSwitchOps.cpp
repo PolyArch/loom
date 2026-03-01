@@ -19,10 +19,16 @@ using namespace loom::fabric;
 //===----------------------------------------------------------------------===//
 
 /// Check whether a type is a valid routing payload type.
-/// Routing nodes only accept: BitsType, NoneType.
+/// Routing nodes accept: BitsType, NoneType, or TaggedType whose value type
+/// is BitsType or NoneType.
 /// IntegerType, FloatTypes, and IndexType are NOT allowed.
 static bool isValidRoutingPayloadType(Type t) {
-  return isa<dataflow::BitsType>(t) || isa<NoneType>(t);
+  if (isa<dataflow::BitsType>(t) || isa<NoneType>(t))
+    return true;
+  if (auto tagged = dyn_cast<dataflow::TaggedType>(t))
+    return isa<dataflow::BitsType>(tagged.getValueType()) ||
+           isa<NoneType>(tagged.getValueType());
+  return false;
 }
 
 /// Get the bit width of a native type for routing compatibility checks.

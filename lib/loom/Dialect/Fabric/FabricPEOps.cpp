@@ -228,11 +228,13 @@ ParseResult PEOp::parse(OpAsmParser &parser, OperationState &result) {
     result.addAttribute(getFunctionTypeAttrName(result.name),
                         TypeAttr::get(fnType));
 
-    // Check if interface uses bits-typed ports.
-    bool hasBitsInterface = llvm::any_of(inputTypes, [](Type t) {
+    // Check if interface uses bits-typed ports (inputs or outputs).
+    auto isBitsValueType = [](Type t) {
       Type v = getValueType(t);
       return isa<dataflow::BitsType>(v);
-    });
+    };
+    bool hasBitsInterface = llvm::any_of(inputTypes, isBitsValueType) ||
+                            llvm::any_of(outputTypes, isBitsValueType);
     if (!hasBitsInterface) {
       // Original path: derive body args from interface types (strip tags).
       for (auto &arg : entryArgs)
@@ -388,10 +390,12 @@ void PEOp::print(OpAsmPrinter &p) {
   // Print region body.
   // For bits-interface named PEs, always print block args since they
   // differ from interface types (body uses native types like i32, f32).
-  bool hasBitsInterface = llvm::any_of(inputTypes, [](Type t) {
+  auto isBitsValueType = [](Type t) {
     Type v = getValueType(t);
     return isa<dataflow::BitsType>(v);
-  });
+  };
+  bool hasBitsInterface = llvm::any_of(inputTypes, isBitsValueType) ||
+                          llvm::any_of(outputTypes, isBitsValueType);
   p << " ";
   bool printBlockArgs = !isNamed || hasBitsInterface;
   p.printRegion(getBody(), /*printEntryBlockArgs=*/printBlockArgs,

@@ -564,35 +564,33 @@ static std::optional<unsigned> getRoutingBitWidth(Type t) {
   return std::nullopt;
 }
 
-/// Check whether two types are routing-compatible at an instance boundary.
-/// This allows native types (i32, f32) to connect to routing payload types
-/// (bits<32>) through instance port boundaries, since routing nodes declare
-/// their ports as bits<N> while PEs use semantic types.
+/// Check whether two types are width-compatible at an instance boundary.
+/// This is needed for fabric.instance calls inside fabric.pe bodies, where
+/// body block args use native types (i32, f32) but the target named PE
+/// interface uses bits<N> types.
 /// Rules:
 ///   - Exact match: always compatible.
 ///   - Both untagged with matching bit width: compatible
-///     (e.g., i32 <-> bits<32>, index <-> index, none <-> none).
+///     (e.g., i32 <-> bits<32>).
 ///   - Both tagged with matching value bit widths and tag types: compatible
 ///     (e.g., tagged<i32, i4> <-> tagged<bits<32>, i4>).
+///   - NoneType must match exactly.
 ///   - Mixed native/tagged: never compatible.
-static bool isInstanceRoutingCompatible(Type actual, Type expected) {
+static bool isWidthCompatible(Type actual, Type expected) {
   if (actual == expected)
     return true;
 
   bool isTaggedA = isa<dataflow::TaggedType>(actual);
   bool isTaggedE = isa<dataflow::TaggedType>(expected);
 
-  // Category mismatch: native-to-tagged is never allowed.
   if (isTaggedA != isTaggedE)
     return false;
 
   if (isTaggedA) {
     auto tagA = cast<dataflow::TaggedType>(actual);
     auto tagE = cast<dataflow::TaggedType>(expected);
-    // Tag types must match exactly.
     if (tagA.getTagType() != tagE.getTagType())
       return false;
-    // Value types must be bit-width compatible.
     auto wA = getRoutingBitWidth(tagA.getValueType());
     auto wE = getRoutingBitWidth(tagE.getValueType());
     if (!wA || !wE)
@@ -600,8 +598,6 @@ static bool isInstanceRoutingCompatible(Type actual, Type expected) {
     return *wA == *wE;
   }
 
-  // Both untagged: check bit width compatibility.
-  // NoneType must match exactly.
   if (isa<NoneType>(actual) || isa<NoneType>(expected))
     return actual == expected;
 
@@ -634,16 +630,13 @@ LogicalResult InstanceOp::verify() {
 
   // CPL_INSTANCE_OPERAND_MISMATCH / CPL_INSTANCE_RESULT_MISMATCH:
   // Compare types against target's function_type.
-  // For routing node targets (switch, temporal_sw, fifo, tag ops) and PE
-  // targets, use routing-compatible type matching (bit-width compatibility)
-  // instead of exact type matching. PE targets need this because their
-  // interfaces use bits types while their bodies use native types.
+  // Inside fabric.pe bodies, block args use native types (i32, f32) while
+  // the target named PE has bits-typed interface ports. Use width-compatible
+  // matching for instances inside PE bodies; exact matching elsewhere.
   auto targetFnType = getTargetFunctionType(target);
   if (targetFnType) {
     auto fnType = *targetFnType;
-    bool isRoutingTarget =
-        isa<SwitchOp, TemporalSwOp, FifoOp, AddTagOp, MapTagOp, DelTagOp,
-            PEOp>(target);
+    bool insidePE = getOperation()->getParentOfType<PEOp>() != nullptr;
 
     if (getOperands().size() != fnType.getNumInputs())
       return emitOpError(cplErrMsg(CplError::INSTANCE_OPERAND_MISMATCH,
@@ -655,7 +648,7 @@ LogicalResult InstanceOp::verify() {
       Type actual = std::get<0>(pair);
       Type expected = std::get<1>(pair);
       if (actual != expected) {
-        if (isRoutingTarget && isInstanceRoutingCompatible(actual, expected))
+        if (insidePE && isWidthCompatible(actual, expected))
           continue;
         return emitOpError(cplErrMsg(CplError::INSTANCE_OPERAND_MISMATCH,
                            "operand #"))
@@ -674,7 +667,7 @@ LogicalResult InstanceOp::verify() {
       Type actual = std::get<0>(pair);
       Type expected = std::get<1>(pair);
       if (actual != expected) {
-        if (isRoutingTarget && isInstanceRoutingCompatible(actual, expected))
+        if (insidePE && isWidthCompatible(actual, expected))
           continue;
         return emitOpError(cplErrMsg(CplError::INSTANCE_RESULT_MISMATCH,
                            "result #"))

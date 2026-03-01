@@ -44,10 +44,11 @@ memory ports, switch ports, FIFO ports, and tag boundary ports. PEs that need
 integer vs float distinction handle it in the body (`^bb0` block arguments
 use native types like `i32`, `f32`, `index`). Width must be 1-4096.
 
-Address ports (memory addresses, load/store addresses) use `!dataflow.bits<57>`
-(inspired by RISC-V Sv57), intentionally distinct from 32-bit and 64-bit data
-widths. The constant `ADDR_BIT_WIDTH = 57` is centralized in
-`include/loom/Hardware/Common/FabricConstants.h`.
+Address ports (memory addresses, load/store addresses) use
+`!dataflow.bits<ADDR_BIT_WIDTH>`, intentionally distinct from 32-bit and 64-bit
+data widths. The constant `ADDR_BIT_WIDTH` (currently 57, inspired by RISC-V
+Sv57) is centralized in `include/loom/Hardware/Common/FabricConstants.h` (C++)
+and `lib/loom/Hardware/SystemVerilog/Common/fabric_common.svh` (SV).
 
 The `none` type remains unchanged for control-only tokens.
 

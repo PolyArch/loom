@@ -237,15 +237,23 @@ struct PortType {
     return scalarType == other.scalarType;
   }
 
-  /// Width-compatible check: allows tagged types with the same tag type but
-  /// different value widths. Used for module-port-to-instance connections
-  /// where the SV generator handles width adaptation via emitDataAssign.
+  /// Width-compatible check: allows types with the same data bit-width
+  /// to be connected. Handles native-to-bits equivalence (e.g. index and
+  /// bits<57>). For tagged types, tag types must match.
   bool widthCompatible(const PortType &other) const {
     if (matches(other)) return true;
     if (isMemref || other.isMemref) return false;
+    // Both tagged: tag types must match.
     if (scalarType.getKind() == Type::Tagged &&
         other.scalarType.getKind() == Type::Tagged) {
       return scalarType.getTagType() == other.scalarType.getTagType();
+    }
+    // Non-tagged: compare data bit-widths.
+    if (scalarType.getKind() != Type::Tagged &&
+        other.scalarType.getKind() != Type::Tagged) {
+      unsigned wA = getTypeDataWidth(scalarType);
+      unsigned wB = getTypeDataWidth(other.scalarType);
+      return wA > 0 && wA == wB;
     }
     return false;
   }

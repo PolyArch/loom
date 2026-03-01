@@ -11,7 +11,7 @@ module tb_memory_top;
 
   // LoadPE inputs
   logic ld_addr_valid, ld_addr_ready;
-  logic [63:0] ld_addr_data;
+  logic [`FABRIC_ADDR_BIT_WIDTH-1:0] ld_addr_data;
   logic ld_data_in_valid, ld_data_in_ready;
   logic [31:0] ld_data_in_data;
   logic ld_ctrl_valid, ld_ctrl_ready;
@@ -19,7 +19,7 @@ module tb_memory_top;
 
   // StorePE inputs
   logic st_addr_valid, st_addr_ready;
-  logic [63:0] st_addr_data;
+  logic [`FABRIC_ADDR_BIT_WIDTH-1:0] st_addr_data;
   logic st_data_valid, st_data_ready;
   logic [31:0] st_data_data;
   logic st_ctrl_valid, st_ctrl_ready;
@@ -38,7 +38,7 @@ module tb_memory_top;
   logic stdone_data;
 
   // Config ports
-  logic [64:0] m0_cfg_data;
+  logic [`FABRIC_ADDR_BIT_WIDTH:0] m0_cfg_data;
 
   logic        error_valid;
   logic [15:0] error_code;
@@ -85,9 +85,9 @@ module tb_memory_top;
     st_data_data = '0;
     st_ctrl_data = '0;
     // Region 0: valid=1, start_tag=0, end_tag=0, addr_offset=0
-    // For untagged memory (TAG_WIDTH=0): bit[64]=valid, bits[63:0]=addr_offset
+    // For untagged memory (TAG_WIDTH=0): bit[AW]=valid, bits[AW-1:0]=addr_offset
     m0_cfg_data = '0;
-    m0_cfg_data[64] = 1'b1;
+    m0_cfg_data[`FABRIC_ADDR_BIT_WIDTH] = 1'b1;
 
     repeat (3) @(posedge clk);
     rst_n = 1;
@@ -101,7 +101,7 @@ module tb_memory_top;
 
     // Check 2: store via StorePE then load via LoadPE
     // StorePE: addr=5, data=0xBEEF, ctrl=1 (fire)
-    st_addr_data = 64'd5;
+    st_addr_data = `FABRIC_ADDR_BIT_WIDTH'd5;
     st_addr_valid = 1;
     st_data_data = 32'hBEEF;
     st_data_valid = 1;
@@ -131,7 +131,7 @@ module tb_memory_top;
     @(posedge clk);
 
     // LoadPE: addr=5, ctrl=1 (fire)
-    ld_addr_data = 64'd5;
+    ld_addr_data = `FABRIC_ADDR_BIT_WIDTH'd5;
     ld_addr_valid = 1;
     ld_data_in_data = '0;
     ld_data_in_valid = 1;
