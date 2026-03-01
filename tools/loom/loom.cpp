@@ -593,22 +593,22 @@ int main(int argc, char **argv) {
   }
 
   // Incompatibility checks.
-  if (!parsed.handshake_input.empty() && parsed.adg_path.empty()) {
-    llvm::errs() << "error: --handshake-input requires --adg\n";
+  if (!parsed.dfg_paths.empty() && parsed.adg_path.empty()) {
+    llvm::errs() << "error: --dfgs requires --adg\n";
     return 1;
   }
-  if (!parsed.handshake_input.empty() && !parsed.inputs.empty()) {
-    llvm::errs() << "error: --handshake-input is incompatible with source files\n";
+  if (!parsed.dfg_paths.empty() && !parsed.inputs.empty()) {
+    llvm::errs() << "error: --dfgs is incompatible with source files\n";
     return 1;
   }
 
   // ADG mode: validation-only or mapper invocation.
   if (!parsed.adg_path.empty()) {
     bool has_sources = !parsed.inputs.empty();
-    bool has_handshake = !parsed.handshake_input.empty();
+    bool has_dfgs = !parsed.dfg_paths.empty();
 
-    // Mode 1: Validation only (--adg without sources and without --handshake-input).
-    if (!has_sources && !has_handshake) {
+    // Mode 1: Validation only (--adg without sources and without --dfgs).
+    if (!has_sources && !has_dfgs) {
       mlir::MLIRContext adg_context;
       mlir::DialectRegistry adg_registry;
       adg_context.appendDialectRegistry(adg_registry);
@@ -636,7 +636,7 @@ int main(int argc, char **argv) {
       return 0;
     }
 
-    // Mode 2: Mapper invocation (--adg with sources or --handshake-input).
+    // Mode 2: Mapper invocation (--adg with sources or --dfgs).
     if (parsed.output_path.empty()) {
       llvm::errs() << "error: -o is required for mapper mode\n";
       return 1;
@@ -685,27 +685,40 @@ int main(int argc, char **argv) {
       return 1;
     }
 
-    // Obtain Handshake MLIR: either compile from sources or load from file.
+    // Obtain Handshake MLIR: either compile from sources or load from --dfgs.
     mlir::OwningOpRef<mlir::ModuleOp> handshake_module;
-    if (has_handshake) {
-      // Load pre-compiled Handshake MLIR directly.
-      handshake_module = mlir::parseSourceFile<mlir::ModuleOp>(
-          parsed.handshake_input, adg_parser_config);
-      if (!handshake_module) {
-        llvm::errs() << "error: failed to parse handshake input: "
-                     << parsed.handshake_input << "\n";
-        return 1;
+    std::vector<mlir::OwningOpRef<mlir::ModuleOp>> dfg_modules;
+    if (has_dfgs) {
+      // Load pre-compiled Handshake MLIR files directly.
+      for (const auto &dfg_path : parsed.dfg_paths) {
+        auto mod = mlir::parseSourceFile<mlir::ModuleOp>(
+            dfg_path, adg_parser_config);
+        if (!mod) {
+          llvm::errs() << "error: failed to parse DFG: " << dfg_path << "\n";
+          return 1;
+        }
+        if (failed(mlir::verify(*mod))) {
+          llvm::errs() << "error: DFG verification failed: " << dfg_path << "\n";
+          return 1;
+        }
+        dfg_modules.push_back(std::move(mod));
       }
-      if (failed(mlir::verify(*handshake_module))) {
-        llvm::errs() << "error: handshake input verification failed\n";
-        return 1;
+      // Use the first module as the primary handshake module, and merge
+      // operations from additional modules into it.
+      handshake_module = std::move(dfg_modules[0]);
+      for (size_t i = 1; i < dfg_modules.size(); ++i) {
+        for (auto &op : llvm::make_early_inc_range(
+                 dfg_modules[i]->getBody()->getOperations())) {
+          op.moveBefore(handshake_module->getBody(),
+                        handshake_module->getBody()->end());
+        }
       }
     }
     // Source compilation path would go here (compile sources -> handshake MLIR).
     // For now, source compilation reuses the standard pipeline below and then
     // the handshake_module is set from the resulting module. This is handled
     // by falling through to the standard compilation path when has_sources is
-    // true, so for the --handshake-input path we proceed directly to mapping.
+    // true, so for the --dfgs path we proceed directly to mapping.
 
     if (has_sources) {
       // Compile sources through the standard frontend pipeline to produce

@@ -54,9 +54,7 @@ The CLI recognizes and handles these options directly:
 - `-o <path>` or `-o<path>`: select the LLVM IR output path.
 - `--adg <file.fabric.mlir>`: validate a fabric MLIR file (see below).
 - `--as-clang`: operate as a standard C++ compiler (see below).
-- `--handshake-input <file.handshake.mlir>`: use pre-compiled Handshake MLIR (see below).
-- `--viz-dfg`, `--viz-adg`, `--viz-mapped`: standalone visualization (see below).
-- `--dump-viz`: emit visualization HTML files alongside mapper outputs.
+- `--dfgs <f1.handshake.mlir[,f2,...]>`: use pre-compiled Handshake MLIR files (see below).
 
 `--` terminates option parsing. All subsequent arguments are treated as input
 files, even if they begin with `-`.
@@ -66,10 +64,10 @@ files, even if they begin with `-`.
 ### `--adg`
 
 `--adg <path>` has two modes depending on whether sources or
-`--handshake-input` are provided:
+`--dfgs` are provided:
 
 **Mode 1: Validation only** (`--adg` without sources and without
-`--handshake-input`):
+`--dfgs`):
 
 - Parses the given fabric MLIR file.
 - Registers Fabric, Dataflow, Handshake, Arith, Math, MemRef, and Func
@@ -82,11 +80,11 @@ files, even if they begin with `-`.
 - Source files and `-o` are ignored in this mode.
 
 **Mode 2: Mapper invocation** (`--adg` with sources + `-o`, or
-`--adg` with `--handshake-input` + `-o`):
+`--adg` with `--dfgs` + `-o`):
 
 - The fabric MLIR is loaded as the ADG (hardware graph).
 - The DFG is extracted from the Handshake MLIR (compiled from sources
-  via Stage A, or directly from `--handshake-input`).
+  via Stage A, or directly from `--dfgs`).
 - The mapper pipeline runs (place, route, temporal, validate).
 - Configuration and mapping artifacts are emitted.
 - See **Stage C: Mapper Invocation** below for full details.
@@ -106,9 +104,11 @@ echo $?  # 0 = valid, 1 = errors
 # Mode 2: Compile + map
 loom --adg my_cgra.fabric.mlir app.cpp -o app.config.bin
 
-# Mode 2: Map from pre-compiled handshake
+# Mode 2: Map from pre-compiled handshake (single or multiple DFGs)
 loom --adg my_cgra.fabric.mlir \
-     --handshake-input app.handshake.mlir -o app.config.bin
+     --dfgs app.handshake.mlir -o app.config.bin
+loom --adg my_cgra.fabric.mlir \
+     --dfgs a.handshake.mlir,b.handshake.mlir -o app.config.bin
 ```
 
 ### `--as-clang`
@@ -283,46 +283,55 @@ sequences complete successfully.
 | `LOOM_REDUCE` | `createAttachLoopAnnotationsPass()` + `createSCFToHandshakeDataflowPass()` |
 | `LOOM_MEMORY_BANK` | `createAttachLoopAnnotationsPass()` + `createSCFToHandshakeDataflowPass()` |
 
-### `--handshake-input`
+### `--dfgs`
 
-When `--handshake-input <path>` is specified alongside `--adg` and `-o`,
+When `--dfgs <path1[,path2,...]>` is specified alongside `--adg` and `-o`,
 `loom` skips compilation (Stages A-B) and feeds the given Handshake MLIR
-file directly to the mapper.
+files directly to the mapper.
+
+**Syntax:** Comma-separated file paths, no spaces between entries.
 
 **Behavior:**
 
-- Parses the given `.handshake.mlir` file and registers all required
+- Parses each `.handshake.mlir` file and registers all required
   dialects (Handshake, Dataflow, Arith, Math, MemRef, Func).
-- Runs MLIR parse and semantic verification on the Handshake input.
+- Runs MLIR parse and semantic verification on each file.
+- Merges all `handshake.func` operations into a single module.
 - Proceeds directly to the mapper pipeline (Stage C).
 - No LLVM IR, LLVM MLIR, SCF MLIR, or Handshake MLIR outputs are
-  generated (the input already is the Handshake MLIR).
-- Source files are ignored when `--handshake-input` is set.
+  generated (the inputs already are Handshake MLIR).
 
 **Use case:**
 
-This mode enables decoupled compilation and mapping workflows, and is
-the primary invocation mode for mapper integration tests (plan-mapper-5).
+This mode enables decoupled compilation and mapping workflows, and
+allows combining DFGs from multiple source files into a single mapping
+session.
 
 **Example:**
 
 ```bash
+# Single DFG file
 loom --adg my_cgra.fabric.mlir \
-     --handshake-input app.handshake.mlir \
+     --dfgs app.handshake.mlir \
      -o app.config.bin --mapper-budget 30
+
+# Multiple DFG files
+loom --adg my_cgra.fabric.mlir \
+     --dfgs kernel_a.handshake.mlir,kernel_b.handshake.mlir \
+     -o app.config.bin
 ```
 
 **Incompatibilities:**
 
-`--handshake-input` requires `--adg` and `-o`. It is incompatible with
-`--as-clang` and source file arguments. If source files are provided
-alongside `--handshake-input`, a usage error is reported.
+`--dfgs` requires `--adg` and `-o`. It is mutually exclusive with
+source file arguments. If source files are provided alongside `--dfgs`,
+a usage error is reported.
 
 ## Stage C: Mapper Invocation
 
-When `--adg` is specified alongside source files (or `--handshake-input`)
+When `--adg` is specified alongside source files (or `--dfgs`)
 and `-o`, the mapper place-and-route pipeline runs after Handshake
-conversion (or directly from the provided Handshake input).
+conversion (or directly from the provided DFG files).
 
 **Behavior:**
 
@@ -368,58 +377,6 @@ Forward references:
 - [spec-mapper.md](./spec-mapper.md)
 - [spec-mapper-model.md](./spec-mapper-model.md)
 - [spec-mapper-algorithm.md](./spec-mapper-algorithm.md)
-
-## Stage C-Viz: Visualization
-
-Visualization outputs can be generated in two modes: standalone or
-combined with the mapper pipeline.
-
-### Standalone Visualization
-
-```bash
-loom --viz-dfg <handshake.mlir> -o <output.html>
-loom --viz-adg <fabric.mlir> -o <output.html> [--viz-mode structure|detailed]
-loom --viz-mapped <mapping.json> \
-     --adg <fabric.mlir> --handshake-input <handshake.mlir> -o <output.html>
-```
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--viz-dfg <file>` | Generate DFG visualization from Handshake MLIR | - |
-| `--viz-adg <file>` | Generate ADG visualization from Fabric MLIR | - |
-| `--viz-mapped <file>` | Generate mapped visualization from mapping JSON | - |
-| `--viz-mode <mode>` | ADG visualization mode: `structure` or `detailed` | `structure` |
-
-Each standalone command produces a single self-contained HTML file at
-the `-o` path. See [spec-viz.md](./spec-viz.md) for output format.
-
-### Combined with Mapper (`--dump-viz`)
-
-When `--dump-viz` is specified alongside `--adg` and sources (or
-`--handshake-input`), visualization HTML files are generated alongside
-mapper outputs:
-
-```bash
-loom <sources> -o <output> --adg <fabric.mlir> --dump-viz
-# Produces alongside mapper outputs:
-#   <output>.dfg.html
-#   <output>.adg.html
-#   <output>.mapped.html
-```
-
-`--dump-viz` has no effect without `--adg` (no mapper = no mapped viz).
-
-**Incompatibilities:**
-
-Standalone `--viz-*` commands are incompatible with `--as-clang` and
-with each other (only one `--viz-*` per invocation). `--dump-viz` is
-compatible with all mapper options.
-
-Forward references:
-
-- [spec-viz.md](./spec-viz.md)
-- [spec-viz-mapped.md](./spec-viz-mapped.md)
-- [spec-viz-gui.md](./spec-viz-gui.md)
 
 ## Stage D Placeholder: Backend Invocation
 

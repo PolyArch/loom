@@ -36,11 +36,12 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "Usage: " << prog
                << " [options] <sources...> -o <output.llvm.ll>\n";
   llvm::outs() << "       " << prog
-               << " --adg <file.fabric.mlir>\n";
+               << " --adg <file.fabric.mlir>  (validation only)\n";
   llvm::outs() << "       " << prog
                << " --adg <fabric.mlir> <sources...> -o <output>\n";
   llvm::outs() << "       " << prog
-               << " --adg <fabric.mlir> --handshake-input <file> -o <output>\n";
+               << " --adg <fabric.mlir> --dfgs <f1.handshake.mlir[,f2,...]>"
+               << " -o <output>\n";
   llvm::outs() << "       " << prog
                << " --as-clang [clang-options...]\n";
   llvm::outs() << "\n";
@@ -53,16 +54,16 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "  Parse a fabric MLIR file, run semantic verification, "
                << "and exit 0 (valid) or 1 (errors).\n";
   llvm::outs() << "\n";
-  llvm::outs() << "Mapper mode (--adg with sources or --handshake-input):\n";
-  llvm::outs() << "  Compile sources, extract DFG, run place-and-route, "
-               << "and emit configuration.\n";
+  llvm::outs() << "Mapper mode (--adg with sources or --dfgs):\n";
+  llvm::outs() << "  Compile sources or load pre-compiled Handshake MLIR, "
+               << "run place-and-route, and emit configuration.\n";
   llvm::outs() << "\n";
   llvm::outs() << "Mapper options:\n";
   llvm::outs() << "  --mapper-budget <seconds>  Search time limit (default: 60)\n";
   llvm::outs() << "  --mapper-seed <int>        Deterministic seed (default: 0)\n";
   llvm::outs() << "  --mapper-profile <name>    Weight profile (default: balanced)\n";
   llvm::outs() << "  --dump-mapping             Emit .mapping.json report\n";
-  llvm::outs() << "  --handshake-input <file>   Use pre-compiled Handshake MLIR\n";
+  llvm::outs() << "  --dfgs <f1[,f2,...]>       Pre-compiled Handshake MLIR files\n";
   llvm::outs() << "\n";
   llvm::outs() << "Forwarded compile options include: -I, -D, -U, -std, -O, -g,"
                << " -isystem, -include.\n";
@@ -146,13 +147,22 @@ ParsedArgs ParseArgs(int argc, char **argv) {
         parsed.adg_path = argv[++i];
         continue;
       }
-      if (arg == "--handshake-input") {
+      if (arg == "--dfgs") {
         if (i + 1 >= argc) {
-          llvm::errs() << "error: --handshake-input requires a path\n";
+          llvm::errs() << "error: --dfgs requires comma-separated paths\n";
           parsed.had_error = true;
           break;
         }
-        parsed.handshake_input = argv[++i];
+        llvm::StringRef val(argv[++i]);
+        llvm::SmallVector<llvm::StringRef, 4> parts;
+        val.split(parts, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+        for (auto &p : parts)
+          parsed.dfg_paths.emplace_back(p.str());
+        if (parsed.dfg_paths.empty()) {
+          llvm::errs() << "error: --dfgs requires at least one path\n";
+          parsed.had_error = true;
+          break;
+        }
         continue;
       }
       if (arg == "--mapper-budget") {

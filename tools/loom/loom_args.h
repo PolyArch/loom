@@ -20,7 +20,7 @@ struct ParsedArgs {
   std::vector<std::string> driver_args;
   std::string output_path;
   std::string adg_path;
-  std::string handshake_input;
+  std::vector<std::string> dfg_paths;
   double mapper_budget = 60.0;
   int mapper_seed = 0;
   std::string mapper_profile = "balanced";
