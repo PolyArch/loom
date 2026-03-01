@@ -43,8 +43,8 @@ LogicalResult AddTagOp::verify() {
   // Enforce routing payload type on value.
   if (!isValidRoutingPayloadType(resultType.getValueType()))
     return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
-                       "add_tag value type must be !dataflow.bits<N>, "
-                       "none, or index; got "))
+                       "add_tag value type must be !dataflow.bits<N> "
+                       "or none; got "))
            << resultType.getValueType();
 
   Type inputType = getValue().getType();
@@ -86,8 +86,8 @@ LogicalResult DelTagOp::verify() {
   // Enforce routing payload type on value.
   if (!isValidRoutingPayloadType(inputType.getValueType()))
     return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
-                       "del_tag value type must be !dataflow.bits<N>, "
-                       "none, or index; got "))
+                       "del_tag value type must be !dataflow.bits<N> "
+                       "or none; got "))
            << inputType.getValueType();
 
   Type resultType = getResult().getType();
@@ -117,8 +117,8 @@ LogicalResult MapTagOp::verify() {
   // Enforce routing payload type on value.
   if (!isValidRoutingPayloadType(inputType.getValueType()))
     return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
-                       "map_tag value type must be !dataflow.bits<N>, "
-                       "none, or index; got "))
+                       "map_tag value type must be !dataflow.bits<N> "
+                       "or none; got "))
            << inputType.getValueType();
 
   if (inputType.getValueType() != resultType.getValueType())

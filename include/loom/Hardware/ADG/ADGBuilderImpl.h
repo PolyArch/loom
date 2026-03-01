@@ -26,9 +26,6 @@
 namespace loom {
 namespace adg {
 
-/// Default address width in bits for index type ports (load/store addresses).
-/// Use ADDR_BIT_WIDTH from FabricConstants.h as the canonical value.
-static constexpr unsigned DEFAULT_ADDR_WIDTH = ADDR_BIT_WIDTH;
 
 //===----------------------------------------------------------------------===//
 // Helper: get data width in bits for a Type (accessible from multiple TUs)
@@ -243,10 +240,16 @@ struct PortType {
   bool widthCompatible(const PortType &other) const {
     if (matches(other)) return true;
     if (isMemref || other.isMemref) return false;
-    // Both tagged: tag types must match.
+    // Both tagged: tag types must match and both payloads must have
+    // non-zero width. Payload widths may differ (temporal PEs handle
+    // width adaptation between interface and per-port FU widths).
     if (scalarType.getKind() == Type::Tagged &&
         other.scalarType.getKind() == Type::Tagged) {
-      return scalarType.getTagType() == other.scalarType.getTagType();
+      if (scalarType.getTagType() != other.scalarType.getTagType())
+        return false;
+      unsigned wA = getTypeDataWidth(scalarType.getValueType());
+      unsigned wB = getTypeDataWidth(other.scalarType.getValueType());
+      return wA > 0 && wB > 0;
     }
     // Non-tagged: compare data bit-widths.
     if (scalarType.getKind() != Type::Tagged &&

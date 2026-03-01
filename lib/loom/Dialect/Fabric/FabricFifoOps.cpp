@@ -145,8 +145,8 @@ void FifoOp::print(OpAsmPrinter &p) {
 //===----------------------------------------------------------------------===//
 
 /// Get the bit width of a native type for routing compatibility checks.
-/// Returns std::nullopt for types without a well-defined bit width (index,
-/// none), which must match exactly.
+/// Returns std::nullopt for types without a well-defined bit width (none),
+/// which must match exactly.
 static std::optional<unsigned> getNativeBitWidth(Type t) {
   if (auto bitsType = dyn_cast<dataflow::BitsType>(t))
     return bitsType.getWidth();
@@ -205,10 +205,10 @@ static bool isValidRoutingPayloadType(Type t) {
 }
 
 /// Check if a type is a valid type for fabric.fifo.
-/// Only routing payload types (bits, none, index) and tagged types with
+/// Only routing payload types (bits, none) and tagged types with
 /// routing payload value types are allowed.
 static bool isValidFifoType(Type type) {
-  // Routing payload types: bits<N>, none, index.
+  // Routing payload types: bits<N>, none.
   if (isValidRoutingPayloadType(type))
     return true;
   // Tagged types with valid routing payload value type.

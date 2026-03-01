@@ -6,6 +6,7 @@
 
 #include "loom/Dialect/Fabric/FabricOps.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
+#include "loom/Hardware/Common/FabricConstants.h"
 #include "loom/Hardware/Common/FabricError.h"
 
 #include "mlir/IR/BuiltinTypes.h"
@@ -561,6 +562,8 @@ static std::optional<unsigned> getRoutingBitWidth(Type t) {
     return 32u;
   if (isa<Float64Type>(t))
     return 64u;
+  if (isa<IndexType>(t))
+    return static_cast<unsigned>(loom::ADDR_BIT_WIDTH);
   return std::nullopt;
 }
 

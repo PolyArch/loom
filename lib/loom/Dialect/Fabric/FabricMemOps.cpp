@@ -275,14 +275,11 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
   auto outputs = fnType->getResults();
 
   // Helper to check if a type is an address type:
-  // bits<ADDR_BIT_WIDTH>, tagged<bits<ADDR_BIT_WIDTH>, iK>,
-  // or legacy index / tagged<index, iK>.
+  // bits<ADDR_BIT_WIDTH> or tagged<bits<ADDR_BIT_WIDTH>, iK>.
   auto isAddrType = [](Type t) -> bool {
     Type v = t;
     if (auto tagged = dyn_cast<TaggedType>(t))
       v = tagged.getValueType();
-    if (v.isIndex())
-      return true;
     if (auto bits = dyn_cast<BitsType>(v))
       return bits.getWidth() == loom::ADDR_BIT_WIDTH;
     return false;
@@ -333,8 +330,9 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
     Type t = inputs[inIdx++];
     if (!isAddrType(t))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_ADDR_TYPE,
-                             "load address port must be index or "
-                             "!dataflow.tagged<index, iK>; got "))
+                             "load address port must be "
+                             "!dataflow.bits<ADDR_BIT_WIDTH> or "
+                             "!dataflow.tagged<!dataflow.bits<ADDR_BIT_WIDTH>, iK>; got "))
              << t;
     if (needTag && !isTagged(t))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_REQUIRED,
@@ -360,8 +358,9 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
     Type t = inputs[inIdx++];
     if (!isAddrType(t))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_ADDR_TYPE,
-                             "store address port must be index or "
-                             "!dataflow.tagged<index, iK>; got "))
+                             "store address port must be "
+                             "!dataflow.bits<ADDR_BIT_WIDTH> or "
+                             "!dataflow.tagged<!dataflow.bits<ADDR_BIT_WIDTH>, iK>; got "))
              << t;
     if (needTag && !isTagged(t))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_REQUIRED,
