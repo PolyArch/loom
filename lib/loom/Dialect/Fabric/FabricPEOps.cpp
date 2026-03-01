@@ -505,7 +505,7 @@ LogicalResult PEOp::verify() {
   }
 
   // For bits-interface PEs, validate body block args.
-  if (hasBitsValue && isNamed) {
+  if (hasBitsValue) {
     Block &entryBlock = getBody().front();
     // Body arg count must match interface input count.
     if (entryBlock.getNumArguments() != numInputs)
