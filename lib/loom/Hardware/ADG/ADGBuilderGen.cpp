@@ -290,11 +290,26 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
   for (const auto &t : pe.outputPorts)
     ifOutputPorts.push_back(nativeToBitsType(t));
 
-  // Emit signature (shared between tagged and native).
+  // Check if interface has bits-typed ports (determines whether the parser
+  // will read ^bb0 from source or pre-supply body args from the signature).
+  auto hasBitsValue = [](const Type &t) {
+    if (t.getKind() == Type::Bits) return true;
+    if (t.isTagged()) return t.getValueType().getKind() == Type::Bits;
+    return false;
+  };
+  bool hasBitsIf = false;
+  for (const auto &t : ifInputPorts) hasBitsIf |= hasBitsValue(t);
+  for (const auto &t : ifOutputPorts) hasBitsIf |= hasBitsValue(t);
+
+  // Emit signature. When hasBitsIf, use %p0/%p1/... to avoid SSA name
+  // collision with body block args (%arg0/%x0) since the parser reads ^bb0
+  // from source. Otherwise use %arg0/%arg1/... matching the body references
+  // (parser pre-supplies these as entry args).
   os << "fabric.pe @" << pe.name << "(";
   for (size_t i = 0; i < ifInputPorts.size(); ++i) {
     if (i > 0) os << ", ";
-    os << "%arg" << i << ": " << ifInputPorts[i].toMLIR();
+    os << "%" << (hasBitsIf ? "p" : "arg") << i << ": "
+       << ifInputPorts[i].toMLIR();
   }
   os << ")\n";
   emitLatencyInterval(os, pe.latMin, pe.latTyp, pe.latMax, pe.intMin,
@@ -363,13 +378,18 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
     }
   } else {
     // Native PE: body operates on original native types.
-    // Emit explicit ^bb0 header since interface types are bits<N>.
-    os << "^bb0(";
-    for (size_t i = 0; i < pe.inputPorts.size(); ++i) {
-      if (i > 0) os << ", ";
-      os << "%arg" << i << ": " << pe.inputPorts[i].toMLIR();
+    if (hasBitsIf) {
+      // Emit explicit ^bb0 header since interface types are bits<N> and
+      // the parser reads block args from source (not from the signature).
+      os << "^bb0(";
+      for (size_t i = 0; i < pe.inputPorts.size(); ++i) {
+        if (i > 0) os << ", ";
+        os << "%arg" << i << ": " << pe.inputPorts[i].toMLIR();
+      }
+      os << "):\n";
     }
-    os << "):\n";
+    // Body code always references %arg0, %arg1, ... which are either
+    // defined by ^bb0 above or pre-supplied by the parser from signature.
     os << generatePEBody(pe);
   }
   os << "}\n\n";
@@ -391,7 +411,7 @@ ADGBuilder::Impl::generateConstantPEDef(const ConstantPEDef &def) const {
       isTagged ? Type::tagged(Type::none(), outType.getTagType()).toMLIR()
                : "none";
 
-  os << "fabric.pe @" << def.name << "(%ctrl: " << ctrlTypeStr << ")\n";
+  os << "fabric.pe @" << def.name << "(%p0: " << ctrlTypeStr << ")\n";
   emitLatencyInterval(os, def.latMin, def.latTyp, def.latMax, def.intMin,
                       def.intTyp, def.intMax);
   os << "]\n";
@@ -455,8 +475,8 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
     os << "}\n\n";
   } else {
     os << "fabric.pe @" << def.name
-       << "(%addr: " << bitsAddr.toMLIR() << ", %data_in: "
-       << bitsData.toMLIR() << ", %ctrl: none)\n";
+       << "(%p0: " << bitsAddr.toMLIR() << ", %p1: "
+       << bitsData.toMLIR() << ", %p2: none)\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
     os << "]\n";
@@ -508,8 +528,8 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
     os << "}\n\n";
   } else {
     os << "fabric.pe @" << def.name
-       << "(%addr: " << bitsAddr.toMLIR() << ", %data: "
-       << bitsData.toMLIR() << ", %ctrl: none)\n";
+       << "(%p0: " << bitsAddr.toMLIR() << ", %p1: "
+       << bitsData.toMLIR() << ", %p2: none)\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
     os << "]\n";

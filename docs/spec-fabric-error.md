@@ -52,6 +52,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_TEMPORAL_SW_SLOT_ORDER | Human-readable `route_table` slot indices are not strictly ascending |
 | CPL_TEMPORAL_SW_IMPLICIT_HOLE | `route_table` has implicit holes when explicit `invalid` entries exist |
 | CPL_TEMPORAL_PE_INTERFACE_NOT_TAGGED | `fabric.temporal_pe` interface type is not tagged |
+| CPL_TEMPORAL_PE_NATIVE_VALUE | `fabric.temporal_pe` tagged value type uses native type instead of `!dataflow.bits<N>` |
 | CPL_TEMPORAL_PE_NUM_INSTRUCTION | `num_instruction` is less than 1 |
 | CPL_TEMPORAL_PE_REG_FIFO_DEPTH | `reg_fifo_depth` is 0 when `num_register > 0`, or nonzero when `num_register = 0` |
 | CPL_TEMPORAL_PE_EMPTY_BODY | A `fabric.temporal_pe` contains no FU definitions in its body |
@@ -83,6 +84,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_MEMORY_LSQ_MIN | `lsqDepth < 1` when `stCount > 0` |
 | CPL_MEMORY_ADDR_TYPE | Address port is not `bits<ADDR_BIT_WIDTH>` or `!dataflow.tagged<bits<ADDR_BIT_WIDTH>, iK>` |
 | CPL_MEMORY_DATA_TYPE | Data port element type does not match memref element type |
+| CPL_MEMORY_DATA_NATIVE | Memory data port uses native type (i32, f32) instead of `!dataflow.bits<N>` |
 | CPL_MEMORY_TAG_REQUIRED | `ldCount > 1` or `stCount > 1` but ports are not tagged |
 | CPL_MEMORY_TAG_FOR_SINGLE | Tagged ports used when `ldCount == 1` or `stCount == 1` |
 | CPL_MEMORY_TAG_WIDTH | Tag width is smaller than `log2Ceil(count)` or mismatched across ports |
@@ -92,7 +94,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_MEMORY_EXTMEM_PRIVATE | `is_private` is supplied on `fabric.extmemory` |
 | CPL_MEMORY_INVALID_REGION | `numRegion < 1` on `fabric.memory` or `fabric.extmemory` |
 | CPL_FABRIC_TYPE_MISMATCH | A connection inside `fabric.module` uses mismatched types or bit widths without an explicit conversion |
-| CPL_MODULE_PORT_ORDER | `fabric.module` ports are not in the required order: memref*, native*, tagged* |
+| CPL_MODULE_PORT_ORDER | `fabric.module` ports are not in the required order: memref*, bits*, tagged* |
 | CPL_MODULE_EMPTY_BODY | `fabric.module` body contains no operations other than the terminator |
 | CPL_MODULE_MISSING_YIELD | `fabric.module` body does not end with `fabric.yield` |
 | CPL_PE_LOADSTORE_BODY | A load/store PE does not contain exactly one `handshake.load` or `handshake.store` |
@@ -114,6 +116,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_PE_NATIVE_INTERFACE_TAGGED_PORTS | A `fabric.pe` with native interface category has tagged ports |
 | CPL_PE_DATAFLOW_BODY | A `fabric.pe` dataflow body violates dataflow exclusivity: mixed dataflow/non-dataflow ops, multiple dataflow ops, or any `fabric.instance` nesting |
 | CPL_PE_MIXED_CONSUMPTION | A `fabric.pe` body mixes full-consume and partial-consume operations |
+| CPL_PE_NATIVE_INTERFACE | A module-level `fabric.pe` uses native types (i32, f32, index) instead of `!dataflow.bits<N>` at the interface |
 | CPL_PE_OUTPUT_TAG_NATIVE | A native `fabric.pe` has `output_tag` attribute (must be absent for native) |
 | CPL_PE_OUTPUT_TAG_MISSING | A tagged non-load/store `fabric.pe` is missing the required `output_tag` attribute |
 | CPL_LOADPE_TRANSPARENT_NATIVE | A load PE uses transparent mode but has native (untagged) interface |

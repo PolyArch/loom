@@ -252,10 +252,10 @@ static CombInfo getCombInfo(Operation *op,
 LogicalResult ModuleOp::verify() {
   auto fnType = getFunctionType();
 
-  // Port ordering: memref* -> native* -> tagged*.
+  // Port ordering: memref* -> bits* -> tagged*.
   auto checkOrdering = [&](ArrayRef<Type> types,
                            StringRef label) -> LogicalResult {
-    // 0 = memref, 1 = native, 2 = tagged
+    // 0 = memref, 1 = bits/none, 2 = tagged
     unsigned lastCat = 0;
     for (Type t : types) {
       unsigned cat;
@@ -268,7 +268,7 @@ LogicalResult ModuleOp::verify() {
       if (cat < lastCat)
         return emitOpError(cplErrCode(CplError::MODULE_PORT_ORDER) + " ")
                << label
-               << " must follow port ordering: memref*, native*, tagged*";
+               << " must follow port ordering: memref*, bits*, tagged*";
       lastCat = cat;
     }
     return success();

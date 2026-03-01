@@ -277,17 +277,18 @@ registerAllPEs(ADGBuilder &builder) {
                  const std::vector<std::string> &outTypes,
                  const std::string &body,
                  int16_t latHW) {
-    // Build Type vectors -- all interface ports use bits<N> types.
-    // Body types remain native (i32, f32, index).
+    // Build Type vectors with NATIVE types. The ADG builder's
+    // nativeToBitsType() converts these to bits<N> for interface emission;
+    // the native types are needed for PE body block args.
     auto nameToPortType = [](const std::string &t) -> Type {
-      if (t == "i32")        return Type::bits(32);
-      if (t == "f32")        return Type::bits(32);
-      if (t == "i64")        return Type::bits(64);
-      if (t == "i16")        return Type::bits(16);
-      if (t == "i1")         return Type::bits(1);
-      if (t == "index")      return Type::bits(loom::ADDR_BIT_WIDTH);
+      if (t == "i32")        return Type::i32();
+      if (t == "f32")        return Type::f32();
+      if (t == "i64")        return Type::i64();
+      if (t == "i16")        return Type::i16();
+      if (t == "i1")         return Type::i1();
+      if (t == "index")      return Type::index();
       if (t == "none")       return Type::none();
-      return Type::bits(32);
+      return Type::i32();
     };
     std::vector<Type> inT, outT;
     for (auto &t : inTypes)  inT.push_back(nameToPortType(t));

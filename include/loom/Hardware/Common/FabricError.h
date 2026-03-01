@@ -102,10 +102,14 @@ inline constexpr const char *PE_DATAFLOW_BODY =
     "CPL_PE_DATAFLOW_BODY";
 inline constexpr const char *PE_MIXED_CONSUMPTION =
     "CPL_PE_MIXED_CONSUMPTION";
+inline constexpr const char *PE_NATIVE_INTERFACE =
+    "CPL_PE_NATIVE_INTERFACE";
 
 // --- Temporal PE Errors ---
 inline constexpr const char *TEMPORAL_PE_INTERFACE_NOT_TAGGED =
     "CPL_TEMPORAL_PE_INTERFACE_NOT_TAGGED";
+inline constexpr const char *TEMPORAL_PE_NATIVE_VALUE =
+    "CPL_TEMPORAL_PE_NATIVE_VALUE";
 inline constexpr const char *TEMPORAL_PE_NUM_INSTRUCTION =
     "CPL_TEMPORAL_PE_NUM_INSTRUCTION";
 inline constexpr const char *TEMPORAL_PE_REG_FIFO_DEPTH =
@@ -178,6 +182,8 @@ inline constexpr const char *MEMORY_TAG_FOR_SINGLE =
     "CPL_MEMORY_TAG_FOR_SINGLE";
 inline constexpr const char *MEMORY_TAG_WIDTH =
     "CPL_MEMORY_TAG_WIDTH";
+inline constexpr const char *MEMORY_DATA_NATIVE =
+    "CPL_MEMORY_DATA_NATIVE";
 inline constexpr const char *MEMORY_STATIC_REQUIRED =
     "CPL_MEMORY_STATIC_REQUIRED";
 inline constexpr const char *MEMORY_PRIVATE_OUTPUT =

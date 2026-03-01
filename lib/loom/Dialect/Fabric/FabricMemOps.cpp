@@ -405,6 +405,11 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
   if (stCount > 0 && inIdx < inputs.size()) {
     Type t = inputs[inIdx++];
     Type valT = getValType(t);
+    if (!isa<NoneType>(valT) && !isa<dataflow::BitsType>(valT))
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_NATIVE,
+                             "store data port must use !dataflow.bits<N>; "
+                             "found native type '"))
+             << valT << "'";
     if (!isDataTypeCompatible(valT, elemType))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_TYPE,
                              "store data port value type "))
@@ -428,6 +433,11 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
   if (ldCount > 0 && outIdx < outputs.size()) {
     Type t = outputs[outIdx++];
     Type valT = getValType(t);
+    if (!isa<NoneType>(valT) && !isa<dataflow::BitsType>(valT))
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_NATIVE,
+                             "load data port must use !dataflow.bits<N>; "
+                             "found native type '"))
+             << valT << "'";
     if (!isDataTypeCompatible(valT, elemType))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_TYPE,
                              "load data port value type "))

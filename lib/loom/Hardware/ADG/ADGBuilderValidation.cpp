@@ -38,11 +38,13 @@ static bool isNativeTypeKind(Type::Kind k) {
   }
 }
 
-/// Check whether a type is a native scalar type, treating Type::IN with a
-/// native integer width (1, 8, 16, 32, 64) as equivalent to the canonical
-/// fixed-width alias.
+/// Check whether a type is a native scalar type or a bits<N> type.
+/// Type::IN with a native integer width (1, 8, 16, 32, 64) is treated as
+/// equivalent to the canonical fixed-width alias.
 static bool isNativeOrEquivalent(Type t) {
   if (isNativeTypeKind(t.getKind()))
+    return true;
+  if (t.getKind() == Type::Bits)
     return true;
   if (t.getKind() == Type::IN) {
     unsigned w = t.getWidth();
@@ -459,6 +461,9 @@ ValidationResult ADGBuilder::validateADG() {
     if (isRoutingKind(impl_->instances[conn.srcInst].kind) ||
         isRoutingKind(impl_->instances[conn.dstInst].kind))
       ok = srcType.routingCompatible(dstType);
+    else if (isTemporalPEKind(impl_->instances[conn.srcInst].kind) ||
+             isTemporalPEKind(impl_->instances[conn.dstInst].kind))
+      ok = srcType.temporalPECompatible(dstType);
     else
       ok = srcType.widthCompatible(dstType);
     if (!ok) {
@@ -485,6 +490,8 @@ ValidationResult ADGBuilder::validateADG() {
     bool ok;
     if (isRoutingKind(impl_->instances[conn.instIdx].kind))
       ok = srcType.routingCompatible(dstType);
+    else if (isTemporalPEKind(impl_->instances[conn.instIdx].kind))
+      ok = srcType.temporalPECompatible(dstType);
     else
       ok = srcType.widthCompatible(dstType);
     if (!ok) {
@@ -510,6 +517,8 @@ ValidationResult ADGBuilder::validateADG() {
     bool ok;
     if (isRoutingKind(impl_->instances[conn.instIdx].kind))
       ok = srcType.routingCompatible(dstType);
+    else if (isTemporalPEKind(impl_->instances[conn.instIdx].kind))
+      ok = srcType.temporalPECompatible(dstType);
     else
       ok = srcType.widthCompatible(dstType);
     if (!ok) {

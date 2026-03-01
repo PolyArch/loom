@@ -467,6 +467,40 @@ LogicalResult PEOp::verify() {
                        "all ports must be either native, tagged, or bits; "
                        "mixed interface not allowed"));
 
+  // Enforce bits-only interface: every non-none port must use bits<N> as
+  // its value type (directly or inside tagged<bits<N>, iK>). Native types
+  // like i32, f32, index are not allowed at the fabric interface level.
+  // Exception: FU PEs inside temporal_pe bodies use native interfaces
+  // because the temporal adapter handles tag stripping and width conversion.
+  bool isFUPE = isa_and_nonnull<TemporalPEOp>(getOperation()->getParentOp());
+  if (!isFUPE) {
+    if (hasNative) {
+      return emitOpError(cplErrMsg(CplError::PE_NATIVE_INTERFACE,
+                         "PE interface must use !dataflow.bits<N> types; "
+                         "native types (i32, f32, index) are not allowed"));
+    }
+    if (hasTagged && !hasBitsValue) {
+      for (Type t : inputTypes) {
+        Type v = getValueType(t);
+        if (!isa<NoneType>(v) && !isa<dataflow::BitsType>(v))
+          return emitOpError(cplErrMsg(CplError::PE_NATIVE_INTERFACE,
+                             "tagged PE interface must use "
+                             "tagged<!dataflow.bits<N>, iK> value types; "
+                             "found native value type '"))
+                 << v << "'";
+      }
+      for (Type t : outputTypes) {
+        Type v = getValueType(t);
+        if (!isa<NoneType>(v) && !isa<dataflow::BitsType>(v))
+          return emitOpError(cplErrMsg(CplError::PE_NATIVE_INTERFACE,
+                             "tagged PE interface must use "
+                             "tagged<!dataflow.bits<N>, iK> value types; "
+                             "found native value type '"))
+                 << v << "'";
+      }
+    }
+  }
+
   // For bits-interface PEs, validate body block args.
   if (hasBitsValue && isNamed) {
     Block &entryBlock = getBody().front();
@@ -877,6 +911,15 @@ LogicalResult TemporalPEOp::verify() {
         return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_TAG_WIDTH,
                            "all ports must use the same tagged type; got "))
                << first << " and " << t;
+    }
+    // The tagged value type must be bits<N>, not a native type.
+    if (auto tagged = dyn_cast<dataflow_t>(first)) {
+      Type v = tagged.getValueType();
+      if (!isa<NoneType>(v) && !isa<dataflow::BitsType>(v))
+        return emitOpError(cplErrMsg(CplError::TEMPORAL_PE_NATIVE_VALUE,
+                           "temporal_pe tagged value type must be "
+                           "!dataflow.bits<N>; found native '"))
+               << v << "'";
     }
   }
 
