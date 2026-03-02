@@ -18,10 +18,10 @@ using namespace loom::fabric;
 // Shared verification helpers
 //===----------------------------------------------------------------------===//
 
-/// Check whether a type is a valid routing payload type.
-/// Routing nodes accept: BitsType, NoneType, or TaggedType whose value type
-/// is BitsType or NoneType.
-/// IntegerType, FloatTypes, and IndexType are not allowed.
+/// Check whether a type is a valid routing payload type for fabric.switch.
+/// Switches accept: BitsType, NoneType, or TaggedType whose value type
+/// is BitsType or NoneType (tagged switches are wider crossbars passing
+/// data+tag without interpretation).
 static bool isValidRoutingPayloadType(Type t) {
   if (isa<dataflow::BitsType>(t) || isa<NoneType>(t))
     return true;
@@ -415,19 +415,21 @@ LogicalResult SwitchOp::verify() {
     if (!getInputs().empty() || !getOutputs().empty())
       return emitOpError(
           "named switch must not have SSA operands or results");
-    // Enforce routing payload types (bits, none only).
+    // Enforce routing payload types (bits, none, or tagged with bits/none).
     for (Type t : fnType.getInputs()) {
       if (!isValidRoutingPayloadType(t))
         return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
-                           "switch port type must be !dataflow.bits<N> "
-                           "or none; got "))
+                           "switch port type must be !dataflow.bits<N>, "
+                           "none, or !dataflow.tagged with bits/none "
+                           "value; got "))
                << t;
     }
     for (Type t : fnType.getResults()) {
       if (!isValidRoutingPayloadType(t))
         return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
-                           "switch port type must be !dataflow.bits<N> "
-                           "or none; got "))
+                           "switch port type must be !dataflow.bits<N>, "
+                           "none, or !dataflow.tagged with bits/none "
+                           "value; got "))
                << t;
     }
     if (failed(verifyRoutingCompatibleTypes(getOperation(),
@@ -437,19 +439,21 @@ LogicalResult SwitchOp::verify() {
   } else {
     numInputs = getInputs().size();
     numOutputs = getOutputs().size();
-    // Enforce routing payload types (bits, none only).
+    // Enforce routing payload types (bits, none, or tagged with bits/none).
     for (auto v : getInputs()) {
       if (!isValidRoutingPayloadType(v.getType()))
         return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
-                           "switch port type must be !dataflow.bits<N> "
-                           "or none; got "))
+                           "switch port type must be !dataflow.bits<N>, "
+                           "none, or !dataflow.tagged with bits/none "
+                           "value; got "))
                << v.getType();
     }
     for (auto v : getOutputs()) {
       if (!isValidRoutingPayloadType(v.getType()))
         return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
-                           "switch port type must be !dataflow.bits<N> "
-                           "or none; got "))
+                           "switch port type must be !dataflow.bits<N>, "
+                           "none, or !dataflow.tagged with bits/none "
+                           "value; got "))
                << v.getType();
     }
     if (failed(verifyRoutingCompatibleTypes(getOperation(), getInputs(),
