@@ -552,6 +552,29 @@ LogicalResult PEOp::verify() {
                << ") but interface port has width " << *ifaceW << " ("
                << ifaceValT << ")";
     }
+
+    // Validate yield operands against declared output interface types.
+    auto *terminator = entryBlock.getTerminator();
+    if (terminator && terminator->getNumOperands() == numOutputs) {
+      for (unsigned i = 0; i < numOutputs; ++i) {
+        Type yieldT = terminator->getOperand(i).getType();
+        // NoneType outputs don't need width matching.
+        Type outValT = getValueType(outputTypes[i]);
+        if (isa<NoneType>(outValT))
+          continue;
+        auto yieldW = getNativeBodyWidth(yieldT);
+        if (!yieldW)
+          return emitOpError("bits-interface PE yield operand #")
+                 << i << " must be a native scalar type "
+                 << "(i32, f32, index, ...); got '" << yieldT << "'";
+        auto outW = getIfaceWidth(outValT);
+        if (outW && *outW != *yieldW)
+          return emitOpError("bits-interface PE yield operand #")
+                 << i << " has width " << *yieldW << " (" << yieldT
+                 << ") but interface output has width " << *outW << " ("
+                 << outValT << ")";
+      }
+    }
   }
 
   // Validate latency array if present.
