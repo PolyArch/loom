@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Dialect/Fabric/FabricTypeUtils.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "loom/Hardware/Common/FabricError.h"
 
@@ -144,61 +145,7 @@ void FifoOp::print(OpAsmPrinter &p) {
 // FifoOp verify
 //===----------------------------------------------------------------------===//
 
-/// Get the bit width of a native type for routing compatibility checks.
-/// Returns std::nullopt for types without a well-defined bit width (none),
-/// which must match exactly.
-static std::optional<unsigned> getNativeBitWidth(Type t) {
-  if (auto bitsType = dyn_cast<dataflow::BitsType>(t))
-    return bitsType.getWidth();
-  if (auto intTy = dyn_cast<IntegerType>(t))
-    return intTy.getWidth();
-  if (isa<Float16Type, BFloat16Type>(t))
-    return 16u;
-  if (isa<Float32Type>(t))
-    return 32u;
-  if (isa<Float64Type>(t))
-    return 64u;
-  return std::nullopt;
-}
-
-/// Check whether two types are compatible for routing through pass-through
-/// nodes (switch, temporal_sw, fifo). Rules:
-///   - Exact match: always compatible.
-///   - Both native with known bit width: compatible if widths match.
-///   - Both tagged: compatible if value bit widths AND tag bit widths match.
-///   - One native, one tagged (category mismatch): never compatible.
-static bool isRoutingTypeCompatible(Type a, Type b) {
-  if (a == b)
-    return true;
-
-  bool isTaggedA = isa<dataflow::TaggedType>(a);
-  bool isTaggedB = isa<dataflow::TaggedType>(b);
-
-  // Category mismatch: native-to-tagged is never allowed.
-  if (isTaggedA != isTaggedB)
-    return false;
-
-  if (isTaggedA) {
-    // Both tagged: value bit widths and tag bit widths must each match.
-    auto tagA = cast<dataflow::TaggedType>(a);
-    auto tagB = cast<dataflow::TaggedType>(b);
-    auto valWidthA = getNativeBitWidth(tagA.getValueType());
-    auto valWidthB = getNativeBitWidth(tagB.getValueType());
-    if (!valWidthA || !valWidthB)
-      return false;
-    return *valWidthA == *valWidthB &&
-           tagA.getTagType().getWidth() == tagB.getTagType().getWidth();
-  }
-
-  // Both native: check bit width equality.
-  auto widthA = getNativeBitWidth(a);
-  auto widthB = getNativeBitWidth(b);
-  if (!widthA || !widthB)
-    return false;
-  return *widthA == *widthB;
-}
-
-/// Check whether a type is a valid routing payload type.
+/// Check whether a type is a valid scalar routing payload type.
 /// Routing nodes only accept: BitsType, NoneType.
 static bool isValidRoutingPayloadType(Type t) {
   return isa<loom::dataflow::BitsType>(t) || isa<NoneType>(t);

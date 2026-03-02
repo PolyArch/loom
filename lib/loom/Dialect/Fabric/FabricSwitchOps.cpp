@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Dialect/Fabric/FabricTypeUtils.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "loom/Hardware/Common/FabricError.h"
 
@@ -29,102 +30,6 @@ static bool isValidRoutingPayloadType(Type t) {
     return isa<dataflow::BitsType>(tagged.getValueType()) ||
            isa<NoneType>(tagged.getValueType());
   return false;
-}
-
-/// Get the bit width of a native type for routing compatibility checks.
-/// Returns std::nullopt for types without a well-defined bit width (none),
-/// which must match exactly.
-static std::optional<unsigned> getNativeBitWidth(Type t) {
-  if (auto bitsType = dyn_cast<dataflow::BitsType>(t))
-    return bitsType.getWidth();
-  if (auto intTy = dyn_cast<IntegerType>(t))
-    return intTy.getWidth();
-  if (isa<Float16Type, BFloat16Type>(t))
-    return 16u;
-  if (isa<Float32Type>(t))
-    return 32u;
-  if (isa<Float64Type>(t))
-    return 64u;
-  return std::nullopt;
-}
-
-/// Check whether two types are compatible for routing through pass-through
-/// nodes (switch, temporal_sw, fifo). Rules:
-///   - Exact match: always compatible.
-///   - Both native with known bit width: compatible if widths match.
-///   - Both tagged: compatible if value bit widths AND tag bit widths match.
-///   - One native, one tagged (category mismatch): never compatible.
-static bool isRoutingTypeCompatible(Type a, Type b) {
-  if (a == b)
-    return true;
-
-  bool isTaggedA = isa<dataflow::TaggedType>(a);
-  bool isTaggedB = isa<dataflow::TaggedType>(b);
-
-  // Category mismatch: native-to-tagged is never allowed.
-  if (isTaggedA != isTaggedB)
-    return false;
-
-  if (isTaggedA) {
-    // Both tagged: value bit widths and tag bit widths must each match.
-    auto tagA = cast<dataflow::TaggedType>(a);
-    auto tagB = cast<dataflow::TaggedType>(b);
-    auto valWidthA = getNativeBitWidth(tagA.getValueType());
-    auto valWidthB = getNativeBitWidth(tagB.getValueType());
-    if (!valWidthA || !valWidthB)
-      return false;
-    return *valWidthA == *valWidthB &&
-           tagA.getTagType().getWidth() == tagB.getTagType().getWidth();
-  }
-
-  // Both native: check bit width equality.
-  auto widthA = getNativeBitWidth(a);
-  auto widthB = getNativeBitWidth(b);
-  if (!widthA || !widthB)
-    return false;
-  return *widthA == *widthB;
-}
-
-/// Verify that all port types on a routing node are bit-width compatible.
-static LogicalResult verifyRoutingCompatibleTypes(Operation *op,
-                                                  OperandRange inputs,
-                                                  ResultRange outputs) {
-  SmallVector<Type> allTypes;
-  for (auto v : inputs)
-    allTypes.push_back(v.getType());
-  for (auto v : outputs)
-    allTypes.push_back(v.getType());
-  if (allTypes.empty())
-    return success();
-  Type first = allTypes.front();
-  for (Type t : allTypes) {
-    if (!isRoutingTypeCompatible(first, t))
-      return op->emitOpError(
-                 "all ports must have bit-width-compatible types; got ")
-             << first << " and " << t;
-  }
-  return success();
-}
-
-/// Overload for TypeRange (used by named forms with function_type attribute).
-static LogicalResult verifyRoutingCompatibleTypes(Operation *op,
-                                                  TypeRange inputTypes,
-                                                  TypeRange outputTypes) {
-  SmallVector<Type> allTypes;
-  for (Type t : inputTypes)
-    allTypes.push_back(t);
-  for (Type t : outputTypes)
-    allTypes.push_back(t);
-  if (allTypes.empty())
-    return success();
-  Type first = allTypes.front();
-  for (Type t : allTypes) {
-    if (!isRoutingTypeCompatible(first, t))
-      return op->emitOpError(
-                 "all ports must have bit-width-compatible types; got ")
-             << first << " and " << t;
-  }
-  return success();
 }
 
 static LogicalResult
@@ -163,63 +68,6 @@ verifyConnectivityTable(Operation *op, ArrayRef<int8_t> table,
              << " input column " << i << " has no connections";
   }
 
-  return success();
-}
-
-/// Verify sparse format rules for human-readable config entries.
-/// Checks: mixed format, ascending slot order, implicit hole consistency.
-static LogicalResult verifySparseFormat(Operation *op, ArrayAttr entries,
-                                        StringRef prefix,
-                                        StringRef mixedCode,
-                                        StringRef orderCode,
-                                        StringRef holeCode) {
-  bool hasHex = false, hasHuman = false, hasExplicitInvalid = false;
-  SmallVector<int64_t> slotIndices;
-
-  for (auto entry : entries) {
-    auto str = dyn_cast<StringAttr>(entry);
-    if (!str)
-      continue;
-    StringRef s = str.getValue();
-    if (s.starts_with("0x") || s.starts_with("0X")) {
-      hasHex = true;
-    } else {
-      hasHuman = true;
-      if (s.contains("invalid"))
-        hasExplicitInvalid = true;
-      // Parse slot index from "prefix[N]: ..."
-      size_t lb = s.find('['), rb = s.find(']');
-      if (lb != StringRef::npos && rb != StringRef::npos && rb > lb) {
-        unsigned idx;
-        if (!s.substr(lb + 1, rb - lb - 1).getAsInteger(10, idx))
-          slotIndices.push_back(idx);
-      }
-    }
-  }
-
-  if (hasHex && hasHuman)
-    return op->emitOpError(mixedCode)
-           << " " << prefix
-           << " entries mix human-readable and hex formats";
-
-  for (unsigned i = 1; i < slotIndices.size(); ++i) {
-    if (slotIndices[i] <= slotIndices[i - 1])
-      return op->emitOpError(orderCode)
-             << " " << prefix
-             << " slot indices must be strictly ascending; got "
-             << slotIndices[i - 1] << " followed by " << slotIndices[i];
-  }
-
-  if (hasExplicitInvalid) {
-    for (unsigned i = 1; i < slotIndices.size(); ++i) {
-      if (slotIndices[i] != slotIndices[i - 1] + 1)
-        return op->emitOpError(holeCode)
-               << " " << prefix << " has implicit hole between slot "
-               << slotIndices[i - 1] << " and " << slotIndices[i]
-               << "; all holes must be explicit when explicit invalid"
-                  " entries exist";
-    }
-  }
   return success();
 }
 

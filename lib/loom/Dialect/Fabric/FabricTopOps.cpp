@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Dialect/Fabric/FabricTypeUtils.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "loom/Hardware/Common/FabricConstants.h"
 #include "loom/Hardware/Common/FabricError.h"
@@ -578,24 +579,6 @@ static bool hasCyclicReference(Operation *start) {
   return false;
 }
 
-/// Get the bit width of a type for routing compatibility checks.
-/// Returns std::nullopt for types without a well-defined bit width.
-static std::optional<unsigned> getRoutingBitWidth(Type t) {
-  if (auto bitsType = dyn_cast<dataflow::BitsType>(t))
-    return bitsType.getWidth();
-  if (auto intTy = dyn_cast<IntegerType>(t))
-    return intTy.getWidth();
-  if (isa<Float16Type, BFloat16Type>(t))
-    return 16u;
-  if (isa<Float32Type>(t))
-    return 32u;
-  if (isa<Float64Type>(t))
-    return 64u;
-  if (isa<IndexType>(t))
-    return static_cast<unsigned>(loom::ADDR_BIT_WIDTH);
-  return std::nullopt;
-}
-
 /// Check whether two types are width-compatible at an instance boundary.
 /// This is needed for fabric.instance calls inside fabric.pe bodies, where
 /// body block args use native types (i32, f32) but the target named PE
@@ -623,8 +606,8 @@ static bool isWidthCompatible(Type actual, Type expected) {
     auto tagE = cast<dataflow::TaggedType>(expected);
     if (tagA.getTagType() != tagE.getTagType())
       return false;
-    auto wA = getRoutingBitWidth(tagA.getValueType());
-    auto wE = getRoutingBitWidth(tagE.getValueType());
+    auto wA = getNativeBitWidth(tagA.getValueType());
+    auto wE = getNativeBitWidth(tagE.getValueType());
     if (!wA || !wE)
       return tagA.getValueType() == tagE.getValueType();
     return *wA == *wE;
@@ -633,8 +616,8 @@ static bool isWidthCompatible(Type actual, Type expected) {
   if (isa<NoneType>(actual) || isa<NoneType>(expected))
     return actual == expected;
 
-  auto wA = getRoutingBitWidth(actual);
-  auto wE = getRoutingBitWidth(expected);
+  auto wA = getNativeBitWidth(actual);
+  auto wE = getNativeBitWidth(expected);
   if (!wA || !wE)
     return false;
   return *wA == *wE;

@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Dialect/Fabric/FabricTypeUtils.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "loom/Hardware/Common/FabricError.h"
 #include "loom/Hardware/Common/FabricConstants.h"
@@ -28,61 +29,15 @@ static Type getValueType(Type t) {
   return t;
 }
 
-/// Verify sparse format rules for human-readable config entries.
-/// Checks: mixed format, ascending slot order, implicit hole consistency.
-static LogicalResult verifySparseFormat(Operation *op, ArrayAttr entries,
-                                        StringRef prefix,
-                                        StringRef mixedCode,
-                                        StringRef orderCode,
-                                        StringRef holeCode) {
-  bool hasHex = false, hasHuman = false, hasExplicitInvalid = false;
-  SmallVector<int64_t> slotIndices;
+/// Check if a type uses bits<N> as its value type (directly or inside tagged).
+static bool isBitsValueType(Type t) {
+  return isa<dataflow::BitsType>(getValueType(t));
+}
 
-  for (auto entry : entries) {
-    auto str = dyn_cast<StringAttr>(entry);
-    if (!str)
-      continue;
-    StringRef s = str.getValue();
-    if (s.starts_with("0x") || s.starts_with("0X")) {
-      hasHex = true;
-    } else {
-      hasHuman = true;
-      if (s.contains("invalid"))
-        hasExplicitInvalid = true;
-      // Parse slot index from "prefix[N]: ..."
-      size_t lb = s.find('['), rb = s.find(']');
-      if (lb != StringRef::npos && rb != StringRef::npos && rb > lb) {
-        unsigned idx;
-        if (!s.substr(lb + 1, rb - lb - 1).getAsInteger(10, idx))
-          slotIndices.push_back(idx);
-      }
-    }
-  }
-
-  if (hasHex && hasHuman)
-    return op->emitOpError(mixedCode)
-           << " " << prefix
-           << " entries mix human-readable and hex formats";
-
-  for (unsigned i = 1; i < slotIndices.size(); ++i) {
-    if (slotIndices[i] <= slotIndices[i - 1])
-      return op->emitOpError(orderCode)
-             << " " << prefix
-             << " slot indices must be strictly ascending; got "
-             << slotIndices[i - 1] << " followed by " << slotIndices[i];
-  }
-
-  if (hasExplicitInvalid) {
-    for (unsigned i = 1; i < slotIndices.size(); ++i) {
-      if (slotIndices[i] != slotIndices[i - 1] + 1)
-        return op->emitOpError(holeCode)
-               << " " << prefix << " has implicit hole between slot "
-               << slotIndices[i - 1] << " and " << slotIndices[i]
-               << "; all holes must be explicit when explicit invalid"
-                  " entries exist";
-    }
-  }
-  return success();
+/// Check if any port in a type range has a bits-typed value component.
+static bool hasBitsInterface(TypeRange inputTypes, TypeRange outputTypes) {
+  return llvm::any_of(inputTypes, isBitsValueType) ||
+         llvm::any_of(outputTypes, isBitsValueType);
 }
 
 /// Parse [key = value, ...] hw params block for PE operations.
@@ -230,13 +185,7 @@ ParseResult PEOp::parse(OpAsmParser &parser, OperationState &result) {
                         TypeAttr::get(fnType));
 
     // Check if interface uses bits-typed ports (inputs or outputs).
-    auto isBitsValueType = [](Type t) {
-      Type v = getValueType(t);
-      return isa<dataflow::BitsType>(v);
-    };
-    bool hasBitsInterface = llvm::any_of(inputTypes, isBitsValueType) ||
-                            llvm::any_of(outputTypes, isBitsValueType);
-    if (!hasBitsInterface) {
+    if (!hasBitsInterface(inputTypes, outputTypes)) {
       // Original path: derive body args from interface types (strip tags).
       for (auto &arg : entryArgs)
         arg.type = getValueType(arg.type);
@@ -391,14 +340,8 @@ void PEOp::print(OpAsmPrinter &p) {
   // Print region body.
   // For bits-interface named PEs, always print block args since they
   // differ from interface types (body uses native types like i32, f32).
-  auto isBitsValueType = [](Type t) {
-    Type v = getValueType(t);
-    return isa<dataflow::BitsType>(v);
-  };
-  bool hasBitsInterface = llvm::any_of(inputTypes, isBitsValueType) ||
-                          llvm::any_of(outputTypes, isBitsValueType);
   p << " ";
-  bool printBlockArgs = !isNamed || hasBitsInterface;
+  bool printBlockArgs = !isNamed || hasBitsInterface(inputTypes, outputTypes);
   p.printRegion(getBody(), /*printEntryBlockArgs=*/printBlockArgs,
                 /*printBlockTerminators=*/true);
 }
@@ -431,25 +374,16 @@ LogicalResult PEOp::verify() {
       outputTypes.push_back(v.getType());
   }
 
-  // Check interface category: native, tagged, or bits.
+  // Classify interface ports: native, tagged, or bits.
   // NoneType ports (ctrl tokens) are compatible with any interface.
   // Tagged ports (tagged<X, iK>) count as tagged regardless of value type X.
   // Untagged bits<N> and untagged native (i32/f32/index) are distinct categories.
   bool hasTagged = false, hasNative = false, hasBits = false;
-  bool hasBitsValue = false; // any port (tagged or not) with bits value type
-  for (Type t : inputTypes) {
-    if (isa<NoneType>(t)) continue;
-    if (isa<dataflow_t>(t)) {
-      hasTagged = true;
-      if (isa<dataflow::BitsType>(getValueType(t))) hasBitsValue = true;
-    } else if (isa<dataflow::BitsType>(t)) {
-      hasBits = true;
-      hasBitsValue = true;
-    } else {
-      hasNative = true;
-    }
-  }
-  for (Type t : outputTypes) {
+  bool hasBitsValue = false;
+  SmallVector<Type> allPortTypes;
+  allPortTypes.append(inputTypes.begin(), inputTypes.end());
+  allPortTypes.append(outputTypes.begin(), outputTypes.end());
+  for (Type t : allPortTypes) {
     if (isa<NoneType>(t)) continue;
     if (isa<dataflow_t>(t)) {
       hasTagged = true;
@@ -481,17 +415,7 @@ LogicalResult PEOp::verify() {
                          "native types (i32, f32, index) are not allowed"));
     }
     if (hasTagged) {
-      for (Type t : inputTypes) {
-        if (!isa<dataflow::TaggedType>(t)) continue;
-        Type v = getValueType(t);
-        if (!isa<NoneType>(v) && !isa<dataflow::BitsType>(v))
-          return emitOpError(cplErrMsg(CplError::PE_NATIVE_INTERFACE,
-                             "tagged PE interface must use "
-                             "tagged<!dataflow.bits<N>, iK> value types; "
-                             "found native value type '"))
-                 << v << "'";
-      }
-      for (Type t : outputTypes) {
+      for (Type t : allPortTypes) {
         if (!isa<dataflow::TaggedType>(t)) continue;
         Type v = getValueType(t);
         if (!isa<NoneType>(v) && !isa<dataflow::BitsType>(v))
