@@ -265,7 +265,8 @@ verifyAddrOffsetTable(Operation *op, int64_t numRegion,
 static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
                                         int64_t stCount, Type memrefType,
                                         bool isPrivate,
-                                        std::optional<FunctionType> fnType) {
+                                        std::optional<FunctionType> fnType,
+                                        bool isExtMemory = false) {
   if (!fnType)
     return success();
 
@@ -277,7 +278,7 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
   // Inline extmemory includes a leading memref operand in its function type;
   // skip it so that inputs aligns with the [ld_addr?][st_addr? st_data?] layout.
   auto inputs = rawInputs;
-  if (!inputs.empty() && isa<MemRefType>(inputs.front()))
+  if (isExtMemory && !inputs.empty() && isa<MemRefType>(inputs.front()))
     inputs = inputs.drop_front();
 
   // Helper to check if a type is an address type:
@@ -633,7 +634,8 @@ LogicalResult ExtMemoryOp::verify() {
     fnType = FunctionType::get(getContext(), inTypes, outTypes);
   }
   if (failed(verifyMemPortTypes(getOperation(), getLdCount(), getStCount(),
-                                getMemrefType(), /*isPrivate=*/false, fnType)))
+                                getMemrefType(), /*isPrivate=*/false, fnType,
+                                /*isExtMemory=*/true)))
     return failure();
 
   return success();
