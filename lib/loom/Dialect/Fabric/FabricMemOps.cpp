@@ -271,8 +271,14 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
 
   auto memref = cast<MemRefType>(memrefType);
   Type elemType = memref.getElementType();
-  auto inputs = fnType->getInputs();
+  auto rawInputs = fnType->getInputs();
   auto outputs = fnType->getResults();
+
+  // Inline extmemory includes a leading memref operand in its function type;
+  // skip it so that inputs aligns with the [ld_addr?][st_addr? st_data?] layout.
+  auto inputs = rawInputs;
+  if (!inputs.empty() && isa<MemRefType>(inputs.front()))
+    inputs = inputs.drop_front();
 
   // Helper to check if a type is an address type:
   // bits<ADDR_BIT_WIDTH> or tagged<bits<ADDR_BIT_WIDTH>, iK>.
