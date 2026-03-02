@@ -766,9 +766,23 @@ std::string ADGBuilder::Impl::generateMLIR() const {
                        : nativeToBitsType(pt.scalarType).toMLIR();
   };
 
+  // Temporal PE MLIR port type helpers: getInstanceInputPortType/OutputPortType
+  // return per-port FU max widths (for SV export), but MLIR generation uses the
+  // declared interface type for temporal PE instance calls.
+  auto getMLIRInputPortType = [&](unsigned instIdx, int port) -> PortType {
+    if (instances[instIdx].kind == ModuleKind::TemporalPE)
+      return PortType::scalar(temporalPEDefs[instances[instIdx].defIdx].interfaceType);
+    return getInstanceInputPortType(instIdx, port);
+  };
+  auto getMLIROutputPortType = [&](unsigned instIdx, int port) -> PortType {
+    if (instances[instIdx].kind == ModuleKind::TemporalPE)
+      return PortType::scalar(temporalPEDefs[instances[instIdx].defIdx].interfaceType);
+    return getInstanceOutputPortType(instIdx, port);
+  };
+
   auto resolveOutputType = [&](unsigned ii, int port) -> std::string {
     if (instances[ii].kind != ModuleKind::Switch)
-      return portTypeToBitsMLIR(getInstanceOutputPortType(ii, port));
+      return portTypeToBitsMLIR(getMLIROutputPortType(ii, port));
     // Check internal connections from this output.
     for (const auto &conn : internalConns) {
       if (conn.srcInst == ii && conn.srcPort == port) {
@@ -779,7 +793,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
             dstKind == ModuleKind::Fifo)
           break;
         return portTypeToBitsMLIR(
-            getInstanceInputPortType(conn.dstInst, conn.dstPort));
+            getMLIRInputPortType(conn.dstInst, conn.dstPort));
       }
     }
     // Check module output connections.
