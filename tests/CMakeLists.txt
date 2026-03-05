@@ -49,6 +49,14 @@ add_custom_target(check-loom-app
   DEPENDS loom mlir-opt mlir-translate
 )
 
+add_custom_target(check-loom-cmsis
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/cmsis_compilation.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+  USES_TERMINAL
+)
+
 add_custom_target(check-loom-fabric-tdd
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/fabric_tdd.sh"
     "${LOOM_RUNTIME_DIR}/loom"

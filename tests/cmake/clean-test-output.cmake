@@ -78,6 +78,18 @@ if(IS_DIRECTORY "${SOURCE_DIR}/tests/spec/Output")
   message(STATUS "Removed ${SOURCE_DIR}/tests/spec/Output")
 endif()
 
+# Remove CMSIS compilation test output
+if(IS_DIRECTORY "${SOURCE_DIR}/tests/cmsis/Output")
+  file(REMOVE_RECURSE "${SOURCE_DIR}/tests/cmsis/Output")
+  message(STATUS "Removed ${SOURCE_DIR}/tests/cmsis/Output")
+endif()
+
+file(GLOB CMSIS_PARALLEL_FILES "${SOURCE_DIR}/tests/cmsis/*.parallel.sh")
+foreach(f IN LISTS CMSIS_PARALLEL_FILES)
+  file(REMOVE "${f}")
+  message(STATUS "Removed ${f}")
+endforeach()
+
 # Remove results directory
 if(IS_DIRECTORY "${SOURCE_DIR}/tests/.results")
   file(REMOVE_RECURSE "${SOURCE_DIR}/tests/.results")
