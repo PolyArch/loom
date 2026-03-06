@@ -23,7 +23,7 @@ CFG_ errors are detected after writing runtime configuration registers or
 tables, before or during execution, and do not require dataflow execution to
 surface.
 
-CFG_ error codes currently use the range 0-11. Codes 12-255 are reserved for
+CFG_ error codes currently use the range 0-15. Codes 16-255 are reserved for
 future use.
 
 RT_ error codes start at 256 and increase sequentially.
@@ -38,6 +38,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_SWITCH_COL_EMPTY | A connectivity column has no `1` entries |
 | CPL_SWITCH_PORT_LIMIT | `fabric.switch` has more than 32 inputs or outputs |
 | CPL_SWITCH_ROUTE_LEN_MISMATCH | `route_table` length does not match connected positions |
+| CPL_ROUTING_PAYLOAD_NOT_BITS | A routing node port type is not `!dataflow.bits<N>`, `none`, or `!dataflow.tagged` with `bits<N>`/`none` value |
 | CPL_TEMPORAL_SW_PORT_ZERO | `fabric.temporal_sw` has zero inputs or outputs |
 | CPL_TEMPORAL_SW_TABLE_SHAPE | `connectivity_table` length is not `num_outputs * num_inputs` |
 | CPL_TEMPORAL_SW_ROW_EMPTY | A connectivity row has no `1` entries |
@@ -51,6 +52,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_TEMPORAL_SW_SLOT_ORDER | Human-readable `route_table` slot indices are not strictly ascending |
 | CPL_TEMPORAL_SW_IMPLICIT_HOLE | `route_table` has implicit holes when explicit `invalid` entries exist |
 | CPL_TEMPORAL_PE_INTERFACE_NOT_TAGGED | `fabric.temporal_pe` interface type is not tagged |
+| CPL_TEMPORAL_PE_NATIVE_VALUE | `fabric.temporal_pe` tagged value type uses native type instead of `!dataflow.bits<N>` |
 | CPL_TEMPORAL_PE_NUM_INSTRUCTION | `num_instruction` is less than 1 |
 | CPL_TEMPORAL_PE_REG_FIFO_DEPTH | `reg_fifo_depth` is 0 when `num_register > 0`, or nonzero when `num_register = 0` |
 | CPL_TEMPORAL_PE_EMPTY_BODY | A `fabric.temporal_pe` contains no FU definitions in its body |
@@ -80,8 +82,9 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_MEMORY_PORTS_EMPTY | `ldCount == 0` and `stCount == 0` |
 | CPL_MEMORY_LSQ_WITHOUT_STORE | `lsqDepth != 0` when `stCount == 0` |
 | CPL_MEMORY_LSQ_MIN | `lsqDepth < 1` when `stCount > 0` |
-| CPL_MEMORY_ADDR_TYPE | Address port is not `index` or `!dataflow.tagged<index, iK>` |
+| CPL_MEMORY_ADDR_TYPE | Address port is not `bits<ADDR_BIT_WIDTH>` or `!dataflow.tagged<bits<ADDR_BIT_WIDTH>, iK>` |
 | CPL_MEMORY_DATA_TYPE | Data port element type does not match memref element type |
+| CPL_MEMORY_DATA_NATIVE | Memory data port uses native type (i32, f32) instead of `!dataflow.bits<N>` |
 | CPL_MEMORY_TAG_REQUIRED | `ldCount > 1` or `stCount > 1` but ports are not tagged |
 | CPL_MEMORY_TAG_FOR_SINGLE | Tagged ports used when `ldCount == 1` or `stCount == 1` |
 | CPL_MEMORY_TAG_WIDTH | Tag width is smaller than `log2Ceil(count)` or mismatched across ports |
@@ -89,8 +92,10 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_MEMORY_PRIVATE_OUTPUT | `fabric.module` yields a memref not produced by `fabric.memory` with `is_private = false` |
 | CPL_MEMORY_EXTMEM_BINDING | `fabric.extmemory` memref operand is not a `fabric.module` memref input |
 | CPL_MEMORY_EXTMEM_PRIVATE | `is_private` is supplied on `fabric.extmemory` |
+| CPL_MEMORY_INVALID_REGION | `numRegion < 1` on `fabric.memory` or `fabric.extmemory` |
 | CPL_FABRIC_TYPE_MISMATCH | A connection inside `fabric.module` uses mismatched types or bit widths without an explicit conversion |
-| CPL_MODULE_PORT_ORDER | `fabric.module` ports are not in the required order: memref*, native*, tagged* |
+| CPL_MODULE_PORT_ORDER | `fabric.module` ports are not in the required order: memref*, bits*, tagged* |
+| CPL_MODULE_NATIVE_PORT | `fabric.module` port uses a native type (i32, f32, index, etc.) instead of `!dataflow.bits<N>`, `none`, `memref`, or `!dataflow.tagged` |
 | CPL_MODULE_EMPTY_BODY | `fabric.module` body contains no operations other than the terminator |
 | CPL_MODULE_MISSING_YIELD | `fabric.module` body does not end with `fabric.yield` |
 | CPL_PE_LOADSTORE_BODY | A load/store PE does not contain exactly one `handshake.load` or `handshake.store` |
@@ -112,6 +117,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_PE_NATIVE_INTERFACE_TAGGED_PORTS | A `fabric.pe` with native interface category has tagged ports |
 | CPL_PE_DATAFLOW_BODY | A `fabric.pe` dataflow body violates dataflow exclusivity: mixed dataflow/non-dataflow ops, multiple dataflow ops, or any `fabric.instance` nesting |
 | CPL_PE_MIXED_CONSUMPTION | A `fabric.pe` body mixes full-consume and partial-consume operations |
+| CPL_PE_NATIVE_INTERFACE | A module-level `fabric.pe` uses native types (i32, f32, index) instead of `!dataflow.bits<N>` at the interface |
 | CPL_PE_OUTPUT_TAG_NATIVE | A native `fabric.pe` has `output_tag` attribute (must be absent for native) |
 | CPL_PE_OUTPUT_TAG_MISSING | A tagged non-load/store `fabric.pe` is missing the required `output_tag` attribute |
 | CPL_LOADPE_TRANSPARENT_NATIVE | A load PE uses transparent mode but has native (untagged) interface |
@@ -121,7 +127,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_ADG_COMBINATIONAL_LOOP | A cycle exists in the connection graph where every element is combinational (zero-delay), causing signal instability |
 | CPL_FIFO_DEPTH_ZERO | `fabric.fifo` depth must be >= 1 |
 | CPL_FIFO_TYPE_MISMATCH | `fabric.fifo` input and output types do not match |
-| CPL_FIFO_INVALID_TYPE | `fabric.fifo` type must be a native value type or `!dataflow.tagged` |
+| CPL_FIFO_INVALID_TYPE | `fabric.fifo` type must be `!dataflow.bits<N>`, `none`, or `!dataflow.tagged` with `bits<N>`/`none` value |
 | CPL_FIFO_BYPASSED_NOT_BYPASSABLE | `fabric.fifo` has `bypassed` attribute present without `bypassable` |
 | CPL_FIFO_BYPASSED_MISSING | `fabric.fifo` has `bypassable` set but `bypassed` attribute is missing |
 | CPL_FANOUT_MODULE_INNER | SSA result of an operation inside `fabric.module` body has multiple consumers; use switch broadcast for data duplication |
@@ -211,6 +217,10 @@ fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
 | 9 | CFG_MAP_TAG_DUP_TAG | `map_tag` has multiple valid entries with the same `src_tag` |
 | 10 | CFG_PE_STREAM_CONT_COND_ONEHOT | `dataflow.stream` `cont_cond_sel` register is not one-hot (`<`, `<=`, `>`, `>=`, `!=`) |
 | 11 | CFG_PE_CMPI_PREDICATE_INVALID | PE cmpi predicate field value >= 10 (only 0-9 are valid for integer comparison) |
+| 12 | CFG_MEMORY_OVERLAP_TAG_REGION | `fabric.memory` addr_offset_table has overlapping tag ranges between valid regions |
+| 13 | CFG_MEMORY_EMPTY_TAG_RANGE | `fabric.memory` addr_offset_table has a region with `end_tag <= start_tag` (empty half-open range) |
+| 14 | CFG_EXTMEMORY_OVERLAP_TAG_REGION | `fabric.extmemory` addr_offset_table has overlapping tag ranges between valid regions (half-open interval overlap) |
+| 15 | CFG_EXTMEMORY_EMPTY_TAG_RANGE | `fabric.extmemory` addr_offset_table has a region with `end_tag <= start_tag` (empty half-open range) |
 
 ## RT_ (Runtime Execution Errors, Hardware Code)
 
@@ -224,6 +234,8 @@ fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
 | 261 | RT_MEMORY_STORE_DEADLOCK | A store request cannot be paired with a matching address or data for the same tag within the default timeout (65535 cycles) |
 | 262 | RT_SWITCH_UNROUTED_INPUT | A `fabric.switch` input with physical connectivity receives a valid token but has no enabled route |
 | 263 | RT_TEMPORAL_SW_UNROUTED_INPUT | A `fabric.temporal_sw` input receives a valid token but the matched route_table slot does not route that input |
+| 264 | RT_MEMORY_NO_MATCH | A `fabric.memory` load/store tag matches no valid region in the addr_offset_table |
+| 265 | RT_EXTMEMORY_NO_MATCH | A `fabric.extmemory` load/store tag matches no valid region in the addr_offset_table |
 
 ## Same-Cycle Error Precedence
 

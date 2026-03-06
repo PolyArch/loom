@@ -6,6 +6,7 @@
 
 #include "loom/Dialect/Fabric/FabricOps.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
+#include "loom/Hardware/Common/FabricConstants.h"
 #include "loom/Hardware/Common/FabricError.h"
 
 #include "mlir/IR/BuiltinTypes.h"
@@ -62,6 +63,20 @@ static ParseResult parseMemHwParams(OpAsmParser &parser,
       if (parser.parseAttribute(attr))
         return failure();
       result.addAttribute("is_private", attr);
+    } else if (keyword == "numRegion") {
+      IntegerAttr attr;
+      if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
+        return failure();
+      result.addAttribute("numRegion", attr);
+    } else if (keyword == "addr_offset_table") {
+      Attribute attr;
+      if (parser.parseAttribute(attr))
+        return failure();
+      if (!isa<DenseI64ArrayAttr>(attr))
+        return parser.emitError(parser.getCurrentLocation(),
+                                "expected array<i64: ...> for "
+                                "addr_offset_table");
+      result.addAttribute("addrOffsetTable", attr);
     } else {
       return parser.emitError(parser.getCurrentLocation(),
                               "unexpected keyword '")
@@ -120,14 +135,22 @@ static ParseResult parseMemTypeSignature(OpAsmParser &parser,
 }
 
 /// Print [hw_params] for memory ops.
-static void printMemHwParams(OpAsmPrinter &p, int64_t ldCount, int64_t stCount,
+static void printMemHwParams(OpAsmPrinter &p, Operation *op,
+                             int64_t ldCount, int64_t stCount,
                              int64_t lsqDepth,
-                             std::optional<bool> isPrivate) {
+                             std::optional<bool> isPrivate,
+                             int64_t numRegion = 1) {
   p << " [ldCount = " << ldCount << ", stCount = " << stCount;
   if (lsqDepth != 0)
     p << ", lsqDepth = " << lsqDepth;
   if (isPrivate)
     p << ", is_private = " << (*isPrivate ? "true" : "false");
+  if (numRegion != 1)
+    p << ", numRegion = " << numRegion;
+  if (auto aot = op->getAttr("addrOffsetTable")) {
+    p << ", addr_offset_table = ";
+    p.printAttribute(aot);
+  }
   p << "]";
 }
 
@@ -153,7 +176,7 @@ static void printMemTypeSignature(OpAsmPrinter &p, Type memrefType,
 /// Shared memory verification logic.
 static LogicalResult verifyMemCommon(Operation *op, int64_t ldCount,
                                      int64_t stCount, int64_t lsqDepth,
-                                     Type memrefType) {
+                                     int64_t numRegion, Type memrefType) {
   if (ldCount == 0 && stCount == 0)
     return op->emitOpError(cplErrMsg(CplError::MEMORY_PORTS_EMPTY,
                            "ldCount and stCount cannot both be 0"));
@@ -166,8 +189,74 @@ static LogicalResult verifyMemCommon(Operation *op, int64_t ldCount,
     return op->emitOpError(cplErrMsg(CplError::MEMORY_LSQ_MIN,
                            "lsqDepth must be >= 1 when stCount > 0"));
 
+  if (numRegion < 1)
+    return op->emitOpError(cplErrMsg(CplError::MEMORY_INVALID_REGION,
+                           "numRegion must be >= 1"));
+
   if (!isa<MemRefType>(memrefType))
     return op->emitOpError("memref_type must be a memref type");
+
+  return success();
+}
+
+/// Verify addr_offset_table entries against numRegion, tag ranges, and overlap.
+static LogicalResult
+verifyAddrOffsetTable(Operation *op, int64_t numRegion,
+                      std::optional<ArrayRef<int64_t>> aotOpt,
+                      const char *emptyRangeCode, const char *overlapCode) {
+  if (!aotOpt)
+    return success();
+
+  ArrayRef<int64_t> table = *aotOpt;
+
+  // Each entry has 4 fields: [valid, start_tag, end_tag, base_addr].
+  // The flat array must have exactly numRegion * 4 values.
+  if (table.size() % 4 != 0)
+    return op->emitOpError(
+        "addr_offset_table must have 4 fields per entry "
+        "(valid, start_tag, end_tag, base_addr); got ")
+           << table.size() << " values";
+
+  int64_t actualEntries = static_cast<int64_t>(table.size()) / 4;
+  if (actualEntries != numRegion)
+    return op->emitOpError("addr_offset_table has ")
+           << actualEntries << " entries but numRegion is " << numRegion;
+
+  // Per-entry validation.
+  for (int64_t i = 0; i < numRegion; ++i) {
+    int64_t valid = table[i * 4];
+    int64_t startTag = table[i * 4 + 1];
+    int64_t endTag = table[i * 4 + 2];
+
+    if (valid != 0 && valid != 1)
+      return op->emitOpError("addr_offset_table entry ")
+             << i << " has invalid valid field " << valid;
+
+    if (valid) {
+      // Half-open interval: start_tag < end_tag required.
+      if (endTag <= startTag)
+        return op->emitOpError(cplErrMsg(emptyRangeCode,
+                               "addr_offset_table entry "))
+               << i << " has end_tag " << endTag
+               << " <= start_tag " << startTag;
+    }
+  }
+
+  // Check pairwise overlap among valid entries using half-open interval test.
+  for (int64_t i = 0; i < numRegion; ++i) {
+    if (table[i * 4] == 0) continue;
+    int64_t aStart = table[i * 4 + 1];
+    int64_t aEnd = table[i * 4 + 2];
+    for (int64_t j = i + 1; j < numRegion; ++j) {
+      if (table[j * 4] == 0) continue;
+      int64_t bStart = table[j * 4 + 1];
+      int64_t bEnd = table[j * 4 + 2];
+      if (aStart < bEnd && bStart < aEnd)
+        return op->emitOpError(cplErrMsg(overlapCode,
+                               "addr_offset_table entries "))
+               << i << " and " << j << " have overlapping tag ranges";
+    }
+  }
 
   return success();
 }
@@ -176,21 +265,30 @@ static LogicalResult verifyMemCommon(Operation *op, int64_t ldCount,
 static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
                                         int64_t stCount, Type memrefType,
                                         bool isPrivate,
-                                        std::optional<FunctionType> fnType) {
+                                        std::optional<FunctionType> fnType,
+                                        bool isExtMemory = false) {
   if (!fnType)
     return success();
 
   auto memref = cast<MemRefType>(memrefType);
   Type elemType = memref.getElementType();
-  auto inputs = fnType->getInputs();
+  auto rawInputs = fnType->getInputs();
   auto outputs = fnType->getResults();
 
-  // Helper to check if a type is index or tagged<index, iK>.
+  // Inline extmemory includes a leading memref operand in its function type;
+  // skip it so that inputs aligns with the [ld_addr?][st_addr? st_data?] layout.
+  auto inputs = rawInputs;
+  if (isExtMemory && !inputs.empty() && isa<MemRefType>(inputs.front()))
+    inputs = inputs.drop_front();
+
+  // Helper to check if a type is an address type:
+  // bits<ADDR_BIT_WIDTH> or tagged<bits<ADDR_BIT_WIDTH>, iK>.
   auto isAddrType = [](Type t) -> bool {
-    if (t.isIndex())
-      return true;
+    Type v = t;
     if (auto tagged = dyn_cast<TaggedType>(t))
-      return tagged.getValueType().isIndex();
+      v = tagged.getValueType();
+    if (auto bits = dyn_cast<BitsType>(v))
+      return bits.getWidth() == loom::ADDR_BIT_WIDTH;
     return false;
   };
 
@@ -239,8 +337,9 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
     Type t = inputs[inIdx++];
     if (!isAddrType(t))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_ADDR_TYPE,
-                             "load address port must be index or "
-                             "!dataflow.tagged<index, iK>; got "))
+                             "load address port must be "
+                             "!dataflow.bits<ADDR_BIT_WIDTH> or "
+                             "!dataflow.tagged<!dataflow.bits<ADDR_BIT_WIDTH>, iK>; got "))
              << t;
     if (needTag && !isTagged(t))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_REQUIRED,
@@ -266,8 +365,9 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
     Type t = inputs[inIdx++];
     if (!isAddrType(t))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_ADDR_TYPE,
-                             "store address port must be index or "
-                             "!dataflow.tagged<index, iK>; got "))
+                             "store address port must be "
+                             "!dataflow.bits<ADDR_BIT_WIDTH> or "
+                             "!dataflow.tagged<!dataflow.bits<ADDR_BIT_WIDTH>, iK>; got "))
              << t;
     if (needTag && !isTagged(t))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_REQUIRED,
@@ -288,11 +388,36 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
     }
   }
 
+  // Helper to get bit width from a type for width-compatible matching.
+  auto getBitWidth = [](Type t) -> std::optional<unsigned> {
+    if (auto bits = dyn_cast<BitsType>(t)) return bits.getWidth();
+    if (auto intTy = dyn_cast<IntegerType>(t)) return intTy.getWidth();
+    if (isa<Float32Type>(t)) return 32u;
+    if (isa<Float64Type>(t)) return 64u;
+    if (isa<Float16Type, BFloat16Type>(t)) return 16u;
+    if (t.isIndex()) return (unsigned)loom::ADDR_BIT_WIDTH;
+    return std::nullopt;
+  };
+
+  // Helper to check data port value type matches memref element type.
+  // Allows exact match OR width-compatible match (bits<N> vs native type).
+  auto isDataTypeCompatible = [&](Type valT, Type elemT) -> bool {
+    if (valT == elemT) return true;
+    auto valW = getBitWidth(valT);
+    auto elemW = getBitWidth(elemT);
+    return valW && elemW && *valW == *elemW;
+  };
+
   // Validate st_data (singular) if stCount > 0.
   if (stCount > 0 && inIdx < inputs.size()) {
     Type t = inputs[inIdx++];
     Type valT = getValType(t);
-    if (valT != elemType)
+    if (!isa<NoneType>(valT) && !isa<dataflow::BitsType>(valT))
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_NATIVE,
+                             "store data port must use !dataflow.bits<N>; "
+                             "found native type '"))
+             << valT << "'";
+    if (!isDataTypeCompatible(valT, elemType))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_TYPE,
                              "store data port value type "))
              << valT << " does not match memref element type " << elemType;
@@ -315,7 +440,12 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
   if (ldCount > 0 && outIdx < outputs.size()) {
     Type t = outputs[outIdx++];
     Type valT = getValType(t);
-    if (valT != elemType)
+    if (!isa<NoneType>(valT) && !isa<dataflow::BitsType>(valT))
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_NATIVE,
+                             "load data port must use !dataflow.bits<N>; "
+                             "found native type '"))
+             << valT << "'";
+    if (!isDataTypeCompatible(valT, elemType))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_TYPE,
                              "load data port value type "))
              << valT << " does not match memref element type " << elemType;
@@ -363,7 +493,8 @@ void MemoryOp::print(OpAsmPrinter &p) {
   if (isNamed)
     p << " @" << *getSymName();
 
-  printMemHwParams(p, getLdCount(), getStCount(), getLsqDepth(), getIsPrivate());
+  printMemHwParams(p, getOperation(), getLdCount(), getStCount(), getLsqDepth(),
+                   getIsPrivate(), getNumRegion());
 
   SmallVector<Type> inputTypes, outputTypes;
   if (isNamed) {
@@ -383,7 +514,12 @@ void MemoryOp::print(OpAsmPrinter &p) {
 
 LogicalResult MemoryOp::verify() {
   if (failed(verifyMemCommon(getOperation(), getLdCount(), getStCount(),
-                             getLsqDepth(), getMemrefType())))
+                             getLsqDepth(), getNumRegion(), getMemrefType())))
+    return failure();
+
+  if (failed(verifyAddrOffsetTable(
+          getOperation(), getNumRegion(), getAddrOffsetTable(),
+          "CFG_MEMORY_EMPTY_TAG_RANGE", "CFG_MEMORY_OVERLAP_TAG_REGION")))
     return failure();
 
   // Static shape required for on-chip memory.
@@ -439,8 +575,8 @@ void ExtMemoryOp::print(OpAsmPrinter &p) {
   if (isNamed)
     p << " @" << *getSymName();
 
-  printMemHwParams(p, getLdCount(), getStCount(), getLsqDepth(),
-                   /*isPrivate=*/std::nullopt);
+  printMemHwParams(p, getOperation(), getLdCount(), getStCount(), getLsqDepth(),
+                   /*isPrivate=*/std::nullopt, getNumRegion());
 
   SmallVector<Type> inputTypes, outputTypes;
   if (isNamed) {
@@ -460,7 +596,13 @@ void ExtMemoryOp::print(OpAsmPrinter &p) {
 
 LogicalResult ExtMemoryOp::verify() {
   if (failed(verifyMemCommon(getOperation(), getLdCount(), getStCount(),
-                             getLsqDepth(), getMemrefType())))
+                             getLsqDepth(), getNumRegion(), getMemrefType())))
+    return failure();
+
+  if (failed(verifyAddrOffsetTable(
+          getOperation(), getNumRegion(), getAddrOffsetTable(),
+          "CFG_EXTMEMORY_EMPTY_TAG_RANGE",
+          "CFG_EXTMEMORY_OVERLAP_TAG_REGION")))
     return failure();
 
   // CPL_MEMORY_EXTMEM_PRIVATE: is_private must not be present.
@@ -492,7 +634,8 @@ LogicalResult ExtMemoryOp::verify() {
     fnType = FunctionType::get(getContext(), inTypes, outTypes);
   }
   if (failed(verifyMemPortTypes(getOperation(), getLdCount(), getStCount(),
-                                getMemrefType(), /*isPrivate=*/false, fnType)))
+                                getMemrefType(), /*isPrivate=*/false, fnType,
+                                /*isExtMemory=*/true)))
     return failure();
 
   return success();

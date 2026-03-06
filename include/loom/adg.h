@@ -45,7 +45,7 @@ enum class InterfaceCategory { Native, Tagged };
 class Type {
 public:
   enum Kind {
-    I1, I8, I16, I32, I64, IN, BF16, F16, F32, F64, Index, None, Tagged
+    I1, I8, I16, I32, I64, IN, BF16, F16, F32, F64, Index, None, Bits, Tagged
   };
 
   static Type i1() { return Type(I1); }
@@ -60,6 +60,7 @@ public:
   static Type f64() { return Type(F64); }
   static Type index() { return Type(Index); }
   static Type none() { return Type(None); }
+  static Type bits(unsigned w) { return Type(Bits, w); }
   static Type tagged(Type value, Type tag);
 
   Kind getKind() const { return kind_; }
@@ -205,6 +206,15 @@ struct MeshResult {
   std::vector<std::vector<InstanceHandle>> swGrid;
 };
 
+/// Result of latticeMesh(). Switches form a (peRows+1)x(peCols+1) grid.
+/// PEs are placed in cells between switches via placePEInLattice().
+struct LatticeMeshResult {
+  int peRows;
+  int peCols;
+  std::vector<std::vector<InstanceHandle>> swGrid;  // [peRows+1][peCols+1]
+  std::vector<std::vector<InstanceHandle>> peGrid;   // [peRows][peCols]
+};
+
 //===----------------------------------------------------------------------===//
 // Builder Classes
 //===----------------------------------------------------------------------===//
@@ -342,6 +352,7 @@ public:
   MemoryBuilder &setStorePorts(unsigned count);
   MemoryBuilder &setQueueDepth(unsigned depth);
   MemoryBuilder &setPrivate(bool isPrivate);
+  MemoryBuilder &setNumRegion(unsigned n);
   MemoryBuilder &setShape(MemrefType shape);
 
   operator MemoryHandle() const;
@@ -359,6 +370,7 @@ public:
   ExtMemoryBuilder &setLoadPorts(unsigned count);
   ExtMemoryBuilder &setStorePorts(unsigned count);
   ExtMemoryBuilder &setQueueDepth(unsigned depth);
+  ExtMemoryBuilder &setNumRegion(unsigned n);
   ExtMemoryBuilder &setShape(MemrefType shape);
 
   operator ExtMemoryHandle() const;
@@ -571,6 +583,35 @@ public:
   /// Build a regular mesh/torus of PEs and switches.
   MeshResult buildMesh(int rows, int cols, PEHandle peTemplate,
                        SwitchHandle swTemplate, Topology topology);
+
+  /// Create a lattice mesh of switches with inter-switch connections.
+  /// PEs are placed in cells between switches via placePEInLattice().
+  /// Switch template must have >= 8 input and >= 8 output ports.
+  LatticeMeshResult latticeMesh(int peRows, int peCols,
+                                SwitchHandle swTemplate);
+
+  /// Place a PE in a lattice cell. Connects PE ports to corner switches.
+  InstanceHandle placePEInLattice(LatticeMeshResult &lattice, int row, int col,
+                                  PEHandle peTemplate, const std::string &name);
+
+  /// Place a constant PE in a lattice cell.
+  InstanceHandle placePEInLattice(LatticeMeshResult &lattice, int row, int col,
+                                  ConstantPEHandle peTemplate,
+                                  const std::string &name);
+
+  /// Place a load PE in a lattice cell.
+  InstanceHandle placePEInLattice(LatticeMeshResult &lattice, int row, int col,
+                                  LoadPEHandle peTemplate,
+                                  const std::string &name);
+
+  /// Place a store PE in a lattice cell.
+  InstanceHandle placePEInLattice(LatticeMeshResult &lattice, int row, int col,
+                                  StorePEHandle peTemplate,
+                                  const std::string &name);
+
+  /// Finalize a lattice mesh: auto-fill unconnected switch ports as module I/O.
+  /// Must be called after all placePEInLattice() calls are done.
+  void finalizeLattice(LatticeMeshResult &lattice);
 
   // --- Query ---
 

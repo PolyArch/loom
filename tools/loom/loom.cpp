@@ -78,11 +78,20 @@
 #include "loom/Conversion/SCFPostProcess.h"
 #include "loom/Dialect/Dataflow/DataflowDialect.h"
 #include "loom/Dialect/Fabric/FabricDialect.h"
+#include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Mapper/ADGFlattener.h"
+#include "loom/Mapper/ConfigGen.h"
+#include "loom/Mapper/DFGBuilder.h"
+#include "loom/Mapper/Mapper.h"
+#include "loom/Mapper/TechMapper.h"
 
 #include "circt/Dialect/ESI/ESIDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/Handshake/HandshakeDialect.h"
+#include "circt/Dialect/Handshake/HandshakeOps.h"
 #include "circt/Dialect/Seq/SeqDialect.h"
+
+#include "loom_args.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -91,6 +100,17 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+using loom::tool::ParsedArgs;
+using loom::tool::ParseArgs;
+using loom::tool::PrintUsage;
+using loom::tool::PrintVersion;
+using loom::tool::DefaultOutputPath;
+using loom::tool::BuildDriverArgs;
+using loom::tool::HasResourceDirArg;
+using loom::tool::DeriveConfigBinPath;
+using loom::tool::DeriveAddrHeaderPath;
+using loom::tool::DeriveMappingJsonPath;
 
 namespace {
 
@@ -367,219 +387,8 @@ void ApplyIntrinsicAnnotations(mlir::ModuleOp module) {
   });
 }
 
-struct ParsedArgs {
-  std::vector<std::string> inputs;
-  std::vector<std::string> driver_args;
-  std::string output_path;
-  std::string adg_path;
-  bool as_clang = false;
-  bool show_help = false;
-  bool show_version = false;
-  bool had_error = false;
-};
 
-void PrintUsage(llvm::StringRef prog) {
-  llvm::outs() << "Usage: " << prog
-               << " [options] <sources...> -o <output.llvm.ll>\n";
-  llvm::outs() << "       " << prog
-               << " --adg <file.fabric.mlir>\n";
-  llvm::outs() << "       " << prog
-               << " --as-clang [clang-options...]\n";
-  llvm::outs() << "\n";
-  llvm::outs() << "Compile and link C++ sources into a single LLVM IR file "
-               << "and emit LLVM dialect MLIR.\n";
-  llvm::outs() << "The MLIR output path is derived from -o by replacing "
-               << ".llvm.ll or .ll with .mlir.\n";
-  llvm::outs() << "\n";
-  llvm::outs() << "ADG validation mode (--adg):\n";
-  llvm::outs() << "  Parse a fabric MLIR file, run semantic verification, "
-               << "and exit 0 (valid) or 1 (errors).\n";
-  llvm::outs() << "\n";
-  llvm::outs() << "Forwarded compile options include: -I, -D, -U, -std, -O, -g,"
-               << " -isystem, -include.\n";
-  llvm::outs() << "Linker options (-l, -L, -Wl, -shared, -static) are ignored.\n";
-}
 
-void PrintVersion() {
-  llvm::outs() << "loom based on " << clang::getClangFullVersion() << "\n";
-}
-
-bool IsLinkerFlag(llvm::StringRef arg) {
-  if (arg == "-l" || arg == "-L" || arg == "-Xlinker")
-    return true;
-  if (arg.starts_with("-l") || arg.starts_with("-L"))
-    return true;
-  if (arg.starts_with("-Wl,"))
-    return true;
-  if (arg == "-shared" || arg == "-static")
-    return true;
-  return false;
-}
-
-bool LinkerFlagConsumesValue(llvm::StringRef arg) {
-  return arg == "-l" || arg == "-L" || arg == "-Xlinker";
-}
-
-bool ClangFlagConsumesValue(llvm::StringRef arg) {
-  return arg == "-I" || arg == "-isystem" || arg == "-iquote" ||
-         arg == "-idirafter" || arg == "-D" || arg == "-U" ||
-         arg == "-include" || arg == "-include-pch" ||
-         arg == "-imacros" || arg == "-isysroot" || arg == "-sysroot" ||
-         arg == "-stdlib" || arg == "-std" || arg == "-target" ||
-         arg == "-gcc-toolchain" || arg == "-MF" || arg == "-MT" ||
-         arg == "-MQ" || arg == "-fmodule-file" ||
-         arg == "-fmodule-map-file" || arg == "-resource-dir" ||
-         arg == "-Xclang" || arg == "-Xpreprocessor" || arg == "-Xassembler";
-}
-
-bool IsDashX(llvm::StringRef arg) {
-  return arg == "-x" || (arg.starts_with("-x") && arg.size() > 2);
-}
-
-bool HasResourceDirArg(const std::vector<std::string> &args) {
-  for (size_t i = 0; i < args.size(); ++i) {
-    llvm::StringRef arg(args[i]);
-    if (arg == "-resource-dir")
-      return true;
-    if (arg.starts_with("-resource-dir="))
-      return true;
-  }
-  return false;
-}
-
-ParsedArgs ParseArgs(int argc, char **argv) {
-  ParsedArgs parsed;
-  bool passthrough_inputs = false;
-
-  for (int i = 1; i < argc; ++i) {
-    llvm::StringRef arg(argv[i]);
-
-    if (!passthrough_inputs && arg == "--") {
-      passthrough_inputs = true;
-      continue;
-    }
-
-    if (!passthrough_inputs) {
-      if (arg == "-h" || arg == "--help") {
-        parsed.show_help = true;
-        continue;
-      }
-      if (arg == "--version") {
-        parsed.show_version = true;
-        continue;
-      }
-      if (arg == "--adg") {
-        if (i + 1 >= argc) {
-          llvm::errs() << "error: --adg requires a path\n";
-          parsed.had_error = true;
-          break;
-        }
-        parsed.adg_path = argv[++i];
-        continue;
-      }
-      if (arg == "--as-clang") {
-        parsed.as_clang = true;
-        // Collect all remaining arguments as passthrough to clang.
-        for (++i; i < argc; ++i)
-          parsed.driver_args.emplace_back(argv[i]);
-        break;
-      }
-      if (arg == "-o") {
-        if (i + 1 >= argc) {
-          llvm::errs() << "error: -o requires a path\n";
-          parsed.had_error = true;
-          break;
-        }
-        parsed.output_path = argv[++i];
-        continue;
-      }
-      if (arg.starts_with("-o") && arg.size() > 2) {
-        parsed.output_path = arg.substr(2).str();
-        continue;
-      }
-
-      if (IsLinkerFlag(arg)) {
-        if (LinkerFlagConsumesValue(arg) && i + 1 < argc)
-          ++i;
-        continue;
-      }
-    }
-
-    if (!passthrough_inputs && !arg.empty() && arg[0] == '-') {
-      parsed.driver_args.emplace_back(arg.str());
-      if (ClangFlagConsumesValue(arg)) {
-        if (i + 1 >= argc) {
-          llvm::errs() << "error: option requires a value: " << arg << "\n";
-          parsed.had_error = true;
-          break;
-        }
-        parsed.driver_args.emplace_back(argv[++i]);
-      }
-      continue;
-    }
-
-    parsed.inputs.emplace_back(arg.str());
-  }
-
-  return parsed;
-}
-
-std::string DefaultOutputPath(const std::vector<std::string> &inputs) {
-  if (inputs.empty())
-    return "a.llvm.ll";
-
-  if (inputs.size() == 1) {
-    llvm::SmallString<256> path(inputs.front());
-    llvm::StringRef stem = llvm::sys::path::stem(path);
-    if (!stem.empty()) {
-      llvm::SmallString<256> output;
-      output.assign(stem);
-      output.append(".llvm.ll");
-      return std::string(output);
-    }
-  }
-
-  return "a.llvm.ll";
-}
-
-std::vector<std::string> BuildDriverArgs(
-    const std::vector<std::string> &user_args) {
-  std::vector<std::string> args = user_args;
-
-  bool has_opt_level = false;
-  bool has_dash_x = false;
-  bool has_compile_only = false;
-  for (const auto &arg : args) {
-    if (!arg.empty() && arg[0] == '-' && arg.size() >= 2 && arg[1] == 'O') {
-      has_opt_level = true;
-    }
-    if (IsDashX(arg)) {
-      has_dash_x = true;
-    }
-    if (arg == "-c" || arg == "-S" || arg == "-E") {
-      has_compile_only = true;
-    }
-  }
-
-  if (!has_dash_x) {
-    args.emplace_back("-x");
-    args.emplace_back("c++");
-  }
-
-  if (!has_compile_only) {
-    args.emplace_back("-c");
-  }
-
-  if (!has_opt_level) {
-    args.emplace_back("-O1");
-  }
-  args.emplace_back("-emit-llvm");
-  args.emplace_back("-g");
-  args.emplace_back("-gno-column-info");
-  args.emplace_back("-fno-discard-value-names");
-
-  return args;
-}
 
 bool IsCC1Command(const clang::driver::Command &cmd) {
   if (cmd.getCreator().isLinkJob())
@@ -783,32 +592,434 @@ int main(int argc, char **argv) {
     return as_clang_result;
   }
 
-  // ADG validation mode: parse fabric MLIR and run verification.
+  // Incompatibility checks.
+  if (!parsed.dfg_paths.empty() && parsed.adg_path.empty()) {
+    llvm::errs() << "error: --dfgs requires --adg\n";
+    return 1;
+  }
+  if (!parsed.dfg_paths.empty() && !parsed.inputs.empty()) {
+    llvm::errs() << "error: --dfgs is incompatible with source files\n";
+    return 1;
+  }
+
+  // ADG mode: validation-only or mapper invocation.
   if (!parsed.adg_path.empty()) {
-    mlir::MLIRContext adg_context;
-    mlir::DialectRegistry adg_registry;
-    adg_context.appendDialectRegistry(adg_registry);
-    adg_context.getDiagEngine().registerHandler(
+    bool has_sources = !parsed.inputs.empty();
+    bool has_dfgs = !parsed.dfg_paths.empty();
+
+    // Mode 1: Validation only (--adg without sources and without --dfgs).
+    if (!has_sources && !has_dfgs) {
+      mlir::MLIRContext adg_context;
+      mlir::DialectRegistry adg_registry;
+      adg_context.appendDialectRegistry(adg_registry);
+      adg_context.getDiagEngine().registerHandler(
+          [](mlir::Diagnostic &diag) {
+            diag.print(llvm::errs());
+            llvm::errs() << "\n";
+            return mlir::success();
+          });
+      adg_context.getOrLoadDialect<mlir::arith::ArithDialect>();
+      adg_context.getOrLoadDialect<mlir::math::MathDialect>();
+      adg_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
+      adg_context.getOrLoadDialect<mlir::func::FuncDialect>();
+      adg_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
+      adg_context.getOrLoadDialect<loom::fabric::FabricDialect>();
+      adg_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+
+      mlir::ParserConfig adg_parser_config(&adg_context);
+      auto adg_module = mlir::parseSourceFile<mlir::ModuleOp>(
+          parsed.adg_path, adg_parser_config);
+      if (!adg_module)
+        return 1;
+      if (failed(mlir::verify(*adg_module)))
+        return 1;
+      return 0;
+    }
+
+    // Mode 2: Mapper invocation (--adg with sources or --dfgs).
+    if (parsed.output_path.empty()) {
+      llvm::errs() << "error: -o is required for mapper mode\n";
+      return 1;
+    }
+
+    if (!EnsureOutputDirectory(parsed.output_path))
+      return 1;
+
+    // Set up shared MLIR context with all required dialects.
+    mlir::MLIRContext mapper_context;
+    mlir::DialectRegistry mapper_registry;
+    mlir::func::registerInlinerExtension(mapper_registry);
+    mapper_context.appendDialectRegistry(mapper_registry);
+    mapper_context.getDiagEngine().registerHandler(
         [](mlir::Diagnostic &diag) {
           diag.print(llvm::errs());
           llvm::errs() << "\n";
           return mlir::success();
         });
-    adg_context.getOrLoadDialect<mlir::arith::ArithDialect>();
-    adg_context.getOrLoadDialect<mlir::math::MathDialect>();
-    adg_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
-    adg_context.getOrLoadDialect<mlir::func::FuncDialect>();
-    adg_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
-    adg_context.getOrLoadDialect<loom::fabric::FabricDialect>();
-    adg_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+    mapper_context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
+    mapper_context.getOrLoadDialect<mlir::DLTIDialect>();
+    mapper_context.getOrLoadDialect<mlir::arith::ArithDialect>();
+    mapper_context.getOrLoadDialect<mlir::cf::ControlFlowDialect>();
+    mapper_context.getOrLoadDialect<mlir::func::FuncDialect>();
+    mapper_context.getOrLoadDialect<mlir::math::MathDialect>();
+    mapper_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
+    mapper_context.getOrLoadDialect<mlir::scf::SCFDialect>();
+    mapper_context.getOrLoadDialect<mlir::ub::UBDialect>();
+    mapper_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
+    mapper_context.getOrLoadDialect<loom::fabric::FabricDialect>();
+    mapper_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+    mapper_context.getOrLoadDialect<circt::esi::ESIDialect>();
+    mapper_context.getOrLoadDialect<circt::hw::HWDialect>();
+    mapper_context.getOrLoadDialect<circt::seq::SeqDialect>();
 
-    mlir::ParserConfig adg_parser_config(&adg_context);
+    // Parse the ADG (fabric MLIR).
+    mlir::ParserConfig adg_parser_config(&mapper_context);
     auto adg_module = mlir::parseSourceFile<mlir::ModuleOp>(
         parsed.adg_path, adg_parser_config);
-    if (!adg_module)
+    if (!adg_module) {
+      llvm::errs() << "error: failed to parse ADG: " << parsed.adg_path << "\n";
       return 1;
-    if (failed(mlir::verify(*adg_module)))
+    }
+    if (failed(mlir::verify(*adg_module))) {
+      llvm::errs() << "error: ADG verification failed: " << parsed.adg_path << "\n";
       return 1;
+    }
+
+    // Obtain Handshake MLIR: either compile from sources or load from --dfgs.
+    mlir::OwningOpRef<mlir::ModuleOp> handshake_module;
+    std::vector<mlir::OwningOpRef<mlir::ModuleOp>> dfg_modules;
+    if (has_dfgs) {
+      // Load pre-compiled Handshake MLIR files directly.
+      for (const auto &dfg_path : parsed.dfg_paths) {
+        auto mod = mlir::parseSourceFile<mlir::ModuleOp>(
+            dfg_path, adg_parser_config);
+        if (!mod) {
+          llvm::errs() << "error: failed to parse DFG: " << dfg_path << "\n";
+          return 1;
+        }
+        if (failed(mlir::verify(*mod))) {
+          llvm::errs() << "error: DFG verification failed: " << dfg_path << "\n";
+          return 1;
+        }
+        dfg_modules.push_back(std::move(mod));
+      }
+      // Use the first module as the primary handshake module, and merge
+      // operations from additional modules into it.
+      handshake_module = std::move(dfg_modules[0]);
+      for (size_t i = 1; i < dfg_modules.size(); ++i) {
+        for (auto &op : llvm::make_early_inc_range(
+                 dfg_modules[i]->getBody()->getOperations())) {
+          op.moveBefore(handshake_module->getBody(),
+                        handshake_module->getBody()->end());
+        }
+      }
+    }
+    // Source compilation path would go here (compile sources -> handshake MLIR).
+    // For now, source compilation reuses the standard pipeline below and then
+    // the handshake_module is set from the resulting module. This is handled
+    // by falling through to the standard compilation path when has_sources is
+    // true, so for the --dfgs path we proceed directly to mapping.
+
+    if (has_sources) {
+      // Compile sources through the standard frontend pipeline to produce
+      // Handshake MLIR, then continue with the mapper below.
+
+      // Derive base path for Stage A output files.
+      std::string sa_base = parsed.output_path;
+      {
+        llvm::StringRef bp(sa_base);
+        if (bp.ends_with(".config.bin"))
+          sa_base = bp.drop_back(sizeof(".config.bin") - 1).str();
+        else if (bp.ends_with(".llvm.ll"))
+          sa_base = bp.drop_back(sizeof(".llvm.ll") - 1).str();
+        else if (bp.ends_with(".ll"))
+          sa_base = bp.drop_back(sizeof(".ll") - 1).str();
+      }
+      std::string sa_ll_path = sa_base + ".llvm.ll";
+      mlir::OpPrintingFlags sa_print_flags;
+      sa_print_flags.enableDebugInfo(true, false);
+
+      llvm::InitializeNativeTarget();
+      llvm::InitializeNativeTargetAsmPrinter();
+      llvm::InitializeNativeTargetAsmParser();
+
+      std::string src_exe =
+          llvm::sys::fs::getMainExecutable(argv[0],
+                                           reinterpret_cast<void *>(&main));
+      std::vector<std::string> src_drv_args =
+          BuildDriverArgs(parsed.driver_args);
+      if (!HasResourceDirArg(src_drv_args)) {
+        llvm::SmallString<256> rdir =
+            llvm::sys::path::parent_path(src_exe);
+        rdir = llvm::sys::path::parent_path(rdir);
+        llvm::sys::path::append(rdir, "lib", "clang");
+        src_drv_args.push_back("-resource-dir=" + rdir.str().str());
+      }
+
+      clang::DiagnosticOptions src_diag_opts;
+      auto src_diag_client =
+          std::make_unique<clang::TextDiagnosticPrinter>(
+              llvm::errs(), src_diag_opts);
+      auto src_diags = clang::CompilerInstance::createDiagnostics(
+          *llvm::vfs::getRealFileSystem(), src_diag_opts,
+          src_diag_client.get(), /*ShouldOwnClient=*/false);
+
+      clang::driver::Driver src_driver(
+          src_exe, llvm::sys::getDefaultTargetTriple(), *src_diags);
+      src_driver.setTitle("loom");
+      src_driver.setCheckInputsExist(true);
+
+      std::vector<const char *> src_cmdline;
+      src_cmdline.reserve(1 + src_drv_args.size() + parsed.inputs.size());
+      src_cmdline.push_back(src_exe.c_str());
+      for (const auto &a : src_drv_args)
+        src_cmdline.push_back(a.c_str());
+      for (const auto &inp : parsed.inputs)
+        src_cmdline.push_back(inp.c_str());
+
+      std::unique_ptr<clang::driver::Compilation> src_comp(
+          src_driver.BuildCompilation(src_cmdline));
+      if (!src_comp) {
+        llvm::errs() << "error: failed to build compilation\n";
+        return 1;
+      }
+
+      llvm::LLVMContext src_llvm_ctx;
+      std::unique_ptr<llvm::Module> src_linked;
+      unsigned src_count = 0;
+
+      for (const auto &job : src_comp->getJobs()) {
+        if (!IsCC1Command(job))
+          continue;
+        auto inv = std::make_shared<clang::CompilerInvocation>();
+        if (!clang::CompilerInvocation::CreateFromArgs(
+                *inv, job.getArguments(), *src_diags, argv[0])) {
+          llvm::errs() << "error: failed to build compiler invocation\n";
+          return 1;
+        }
+        if (inv->getFrontendOpts().Inputs.empty()) {
+          llvm::errs() << "error: missing input in compiler invocation\n";
+          return 1;
+        }
+        inv->getCodeGenOpts().setDebugInfo(
+            llvm::codegenoptions::FullDebugInfo);
+
+        auto src_mod = CompileInvocation(inv, src_llvm_ctx);
+        if (!src_mod) {
+          llvm::errs() << "error: failed to compile source\n";
+          return 1;
+        }
+        if (!src_linked) {
+          src_linked = std::move(src_mod);
+          src_count++;
+          continue;
+        }
+        llvm::Linker linker(*src_linked);
+        if (linker.linkInModule(std::move(src_mod))) {
+          llvm::errs() << "error: failed to link source module\n";
+          return 1;
+        }
+        src_count++;
+      }
+
+      if (src_count == 0) {
+        llvm::errs() << "error: no compilation jobs generated\n";
+        return 1;
+      }
+
+      std::string src_vfy_err;
+      llvm::raw_string_ostream src_vfy_os(src_vfy_err);
+      if (llvm::verifyModule(*src_linked, &src_vfy_os)) {
+        llvm::errs() << "error: linked module verification failed\n"
+                     << src_vfy_os.str() << "\n";
+        return 1;
+      }
+
+      StripUnsupportedAttributes(*src_linked);
+      AnnotationMap src_annot = CollectGlobalAnnotations(*src_linked);
+
+      // Write Stage A: LLVM IR.
+      {
+        EnsureOutputDirectory(sa_ll_path);
+        std::error_code sa_ec;
+        llvm::raw_fd_ostream sa_out(sa_ll_path, sa_ec, llvm::sys::fs::OF_Text);
+        if (!sa_ec) {
+          src_linked->print(sa_out, nullptr);
+          sa_out.flush();
+        }
+      }
+
+      // Translate LLVM IR to MLIR using the mapper context.
+      auto src_mlir = mlir::translateLLVMIRToModule(
+          std::move(src_linked), &mapper_context,
+          /*emitExpensiveWarnings=*/false,
+          /*dropDICompositeTypeElements=*/false,
+          /*loadAllDialects=*/false);
+      if (!src_mlir) {
+        llvm::errs() << "error: LLVM IR to MLIR translation failed\n";
+        return 1;
+      }
+
+      ApplySymbolAnnotations(*src_mlir, src_annot);
+      ApplyIntrinsicAnnotations(*src_mlir);
+      ApplyLoopMarkerAnnotations(*src_mlir);
+
+      if (failed(mlir::verify(*src_mlir))) {
+        llvm::errs() << "error: MLIR verification failed\n";
+        return 1;
+      }
+
+      // Write Stage A: MLIR.
+      {
+        std::string sa_mlir_path = DeriveMlirOutputPath(sa_ll_path);
+        EnsureOutputDirectory(sa_mlir_path);
+        std::error_code sa_ec;
+        llvm::raw_fd_ostream sa_out(sa_mlir_path, sa_ec, llvm::sys::fs::OF_Text);
+        if (!sa_ec) {
+          src_mlir->print(sa_out, sa_print_flags);
+          sa_out.flush();
+        }
+      }
+
+      // Run LLVMToSCF pipeline.
+      mlir::PassManager scf_pm(&mapper_context);
+      scf_pm.addPass(loom::createConvertLLVMToSCFPass());
+      scf_pm.addPass(mlir::createCanonicalizerPass());
+      scf_pm.addPass(mlir::createCSEPass());
+      scf_pm.addPass(mlir::createMem2Reg());
+      scf_pm.addPass(mlir::createCanonicalizerPass());
+      scf_pm.addPass(mlir::createCSEPass());
+      scf_pm.addPass(mlir::createLiftControlFlowToSCFPass());
+      scf_pm.addPass(mlir::createLoopInvariantCodeMotionPass());
+      scf_pm.addPass(mlir::createCanonicalizerPass());
+      scf_pm.addPass(mlir::createCSEPass());
+      scf_pm.addPass(loom::createUpliftWhileToForPass());
+      scf_pm.addPass(mlir::createCanonicalizerPass());
+      scf_pm.addPass(mlir::createCSEPass());
+      scf_pm.addPass(loom::createAttachLoopAnnotationsPass());
+      scf_pm.addPass(loom::createMarkWhileStreamablePass());
+      if (failed(scf_pm.run(*src_mlir))) {
+        llvm::errs() << "error: LLVMToSCF conversion failed\n";
+        return 1;
+      }
+
+      // Write Stage A: SCF MLIR.
+      {
+        std::string sa_scf_path = DeriveScfOutputPath(sa_ll_path);
+        EnsureOutputDirectory(sa_scf_path);
+        std::error_code sa_ec;
+        llvm::raw_fd_ostream sa_out(sa_scf_path, sa_ec, llvm::sys::fs::OF_Text);
+        if (!sa_ec) {
+          src_mlir->print(sa_out, sa_print_flags);
+          sa_out.flush();
+        }
+      }
+
+      // Run SCFToHandshake pipeline.
+      mlir::PassManager hs_pm(&mapper_context);
+      hs_pm.addPass(loom::createSCFToHandshakeDataflowPass());
+      hs_pm.addPass(mlir::createCanonicalizerPass());
+      hs_pm.addPass(mlir::createCSEPass());
+      if (failed(hs_pm.run(*src_mlir))) {
+        llvm::errs() << "error: SCFToHandshake conversion failed\n";
+        return 1;
+      }
+
+      if (failed(mlir::verify(*src_mlir))) {
+        llvm::errs() << "error: Handshake verification failed\n";
+        return 1;
+      }
+
+      // Write Stage A: Handshake MLIR.
+      {
+        std::string sa_hs_path = DeriveHandshakeOutputPath(sa_ll_path);
+        EnsureOutputDirectory(sa_hs_path);
+        std::error_code sa_ec;
+        llvm::raw_fd_ostream sa_out(sa_hs_path, sa_ec, llvm::sys::fs::OF_Text);
+        if (!sa_ec) {
+          src_mlir->print(sa_out, sa_print_flags);
+          sa_out.flush();
+        }
+      }
+
+      handshake_module = std::move(src_mlir);
+    }
+
+    // Find the handshake::FuncOp in the handshake module for DFG extraction.
+    circt::handshake::FuncOp handshake_func;
+    handshake_module->walk([&](circt::handshake::FuncOp func) {
+      llvm::StringRef name = func.getName();
+      bool isEsi = name.ends_with("_esi");
+      if (!handshake_func ||
+          (!isEsi && handshake_func.getName().ends_with("_esi")))
+        handshake_func = func;
+    });
+    if (!handshake_func) {
+      llvm::errs() << "error: no handshake.func found in input\n";
+      return 77;
+    }
+
+    // Find the fabric::ModuleOp in the ADG module.
+    loom::fabric::ModuleOp fabric_mod;
+    adg_module->walk([&](loom::fabric::ModuleOp mod) {
+      if (!fabric_mod)
+        fabric_mod = mod;
+    });
+    if (!fabric_mod) {
+      llvm::errs() << "error: no fabric.module found in ADG\n";
+      return 1;
+    }
+
+    // Extract DFG from Handshake IR.
+    loom::DFGBuilder dfg_builder;
+    loom::Graph dfg = dfg_builder.build(handshake_func);
+
+    // Flatten ADG from Fabric IR.
+    loom::ADGFlattener adg_flattener;
+    loom::Graph adg = adg_flattener.flatten(fabric_mod);
+
+    // Run technology mapping.
+    loom::TechMapper tech_mapper;
+    loom::CandidateSet candidates = tech_mapper.map(dfg, adg);
+
+    // Set up mapper options from CLI flags.
+    loom::Mapper::Options mapper_opts;
+    mapper_opts.budgetSeconds = parsed.mapper_budget;
+    mapper_opts.seed = parsed.mapper_seed;
+    mapper_opts.profile = parsed.mapper_profile;
+
+    // Run the PnR mapper.
+    loom::Mapper mapper;
+    loom::Mapper::Result mapper_result = mapper.run(dfg, adg, mapper_opts);
+
+    if (!mapper_result.success) {
+      llvm::errs() << "error: mapping failed\n";
+      if (!mapper_result.diagnostics.empty())
+        llvm::errs() << mapper_result.diagnostics << "\n";
+      return 1;
+    }
+
+    // Generate configuration output files.
+    loom::ConfigGen config_gen;
+    std::string base_path = parsed.output_path;
+    // Strip extension for base path derivation.
+    llvm::StringRef base_ref(base_path);
+    if (base_ref.ends_with(".config.bin"))
+      base_path = base_ref.drop_back(sizeof(".config.bin") - 1).str();
+    else if (base_ref.ends_with(".llvm.ll"))
+      base_path = base_ref.drop_back(sizeof(".llvm.ll") - 1).str();
+    else if (base_ref.ends_with(".ll"))
+      base_path = base_ref.drop_back(sizeof(".ll") - 1).str();
+
+    if (!config_gen.generate(mapper_result.state, dfg, adg, base_path,
+                             parsed.dump_mapping, parsed.mapper_profile,
+                             parsed.mapper_seed)) {
+      llvm::errs() << "error: configuration generation failed\n";
+      return 1;
+    }
+
+    llvm::outs() << "mapping succeeded: " << base_path << ".config.bin\n";
+
     return 0;
   }
 

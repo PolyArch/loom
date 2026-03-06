@@ -78,6 +78,10 @@ compile_and_run_verilator() {
   local outdir="$2"
   shift 2
 
+  # Disable ccache during Verilator compilation to avoid temp-directory
+  # permission errors under parallel execution.
+  export CCACHE_DISABLE=1
+
   # Auto-derive include search paths from source file directories
   local inc_dirs=()
   for a in "$@"; do

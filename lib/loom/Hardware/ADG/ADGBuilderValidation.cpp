@@ -38,11 +38,13 @@ static bool isNativeTypeKind(Type::Kind k) {
   }
 }
 
-/// Check whether a type is a native scalar type, treating Type::IN with a
-/// native integer width (1, 8, 16, 32, 64) as equivalent to the canonical
-/// fixed-width alias.
+/// Check whether a type is a native scalar type or a bits<N> type.
+/// Type::IN with a native integer width (1, 8, 16, 32, 64) is treated as
+/// equivalent to the canonical fixed-width alias.
 static bool isNativeOrEquivalent(Type t) {
   if (isNativeTypeKind(t.getKind()))
+    return true;
+  if (t.getKind() == Type::Bits)
     return true;
   if (t.getKind() == Type::IN) {
     unsigned w = t.getWidth();
@@ -255,6 +257,9 @@ ValidationResult ADGBuilder::validateADG() {
     if (mem.shape.isDynamic())
       addError(CplError::MEMORY_STATIC_REQUIRED,
                "fabric.memory requires static memref shape", loc);
+    if (mem.numRegion < 1)
+      addError(CplError::MEMORY_INVALID_REGION,
+               "numRegion must be >= 1", loc);
   }
 
   // Validate external memory definitions.
@@ -262,6 +267,9 @@ ValidationResult ADGBuilder::validateADG() {
     const auto &em = impl_->extMemoryDefs[i];
     std::string loc = "extmemory @" + em.name;
     validateMemoryPorts(em.ldCount, em.stCount, em.lsqDepth, loc, addError);
+    if (em.numRegion < 1)
+      addError(CplError::MEMORY_INVALID_REGION,
+               "numRegion must be >= 1", loc);
   }
 
   // Validate map_tag definitions.
@@ -350,8 +358,7 @@ ValidationResult ADGBuilder::validateADG() {
     std::string loc = "pe @" + pe.name;
     if (pe.inputPorts.empty())
       addError(CplError::PE_EMPTY_BODY, "PE has no input ports", loc);
-    if (pe.outputPorts.empty())
-      addError(CplError::PE_EMPTY_BODY, "PE has no output ports", loc);
+    // Zero-output PEs are valid (e.g. handshake.sink).
     if (pe.bodyMLIR.empty() && pe.singleOp.empty())
       addError(CplError::PE_EMPTY_BODY, "PE has no body or operation", loc);
     // Check for mixed interface (some tagged, some not).
@@ -441,14 +448,42 @@ ValidationResult ADGBuilder::validateADG() {
     addError(CplError::MODULE_EMPTY_BODY,
              "module has no instances", "module @" + impl_->moduleName);
 
+  // Temporal PE boundary type helper: getInstanceInputPortType/OutputPortType
+  // return per-port FU max widths for SV export, but MLIR generation uses the
+  // declared interface type. Use interface type here for validation consistency.
+  auto getValidationInputPortType = [&](unsigned instIdx, int port) -> PortType {
+    const auto &inst = impl_->instances[instIdx];
+    if (inst.kind == ModuleKind::TemporalPE) {
+      auto &tpeDef = impl_->temporalPEDefs[inst.defIdx];
+      return PortType::scalar(tpeDef.interfaceType);
+    }
+    return impl_->getInstanceInputPortType(instIdx, port);
+  };
+  auto getValidationOutputPortType = [&](unsigned instIdx, int port) -> PortType {
+    const auto &inst = impl_->instances[instIdx];
+    if (inst.kind == ModuleKind::TemporalPE) {
+      auto &tpeDef = impl_->temporalPEDefs[inst.defIdx];
+      return PortType::scalar(tpeDef.interfaceType);
+    }
+    return impl_->getInstanceOutputPortType(instIdx, port);
+  };
+
   // Graph-level validation: check type compatibility of all connections.
+  // Routing nodes (Switch, TemporalSwitch, Fifo) use routingCompatible()
+  // which allows width-merged types (e.g. f32 through i32-typed switch).
   for (const auto &conn : impl_->internalConns) {
     if (conn.srcInst >= impl_->instances.size() ||
         conn.dstInst >= impl_->instances.size())
       continue;
-    auto srcType = impl_->getInstanceOutputPortType(conn.srcInst, conn.srcPort);
-    auto dstType = impl_->getInstanceInputPortType(conn.dstInst, conn.dstPort);
-    if (!srcType.matches(dstType)) {
+    auto srcType = getValidationOutputPortType(conn.srcInst, conn.srcPort);
+    auto dstType = getValidationInputPortType(conn.dstInst, conn.dstPort);
+    bool ok;
+    if (isRoutingKind(impl_->instances[conn.srcInst].kind) ||
+        isRoutingKind(impl_->instances[conn.dstInst].kind))
+      ok = srcType.routingCompatible(dstType);
+    else
+      ok = srcType.widthCompatible(dstType);
+    if (!ok) {
       std::string loc =
           impl_->instances[conn.srcInst].name + ":" +
           std::to_string(conn.srcPort) + " -> " +
@@ -468,8 +503,13 @@ ValidationResult ADGBuilder::validateADG() {
     const auto &port = impl_->ports[conn.portIdx];
     PortType srcType = port.isMemref ? PortType::memref(port.memrefType)
                                      : PortType::scalar(port.type);
-    auto dstType = impl_->getInstanceInputPortType(conn.instIdx, conn.dstPort);
-    if (!srcType.widthCompatible(dstType)) {
+    auto dstType = getValidationInputPortType(conn.instIdx, conn.dstPort);
+    bool ok;
+    if (isRoutingKind(impl_->instances[conn.instIdx].kind))
+      ok = srcType.routingCompatible(dstType);
+    else
+      ok = srcType.widthCompatible(dstType);
+    if (!ok) {
       std::string loc =
           "%" + port.name + " -> " +
           impl_->instances[conn.instIdx].name + ":" +
@@ -485,11 +525,16 @@ ValidationResult ADGBuilder::validateADG() {
     if (conn.instIdx >= impl_->instances.size() ||
         conn.portIdx >= impl_->ports.size())
       continue;
-    auto srcType = impl_->getInstanceOutputPortType(conn.instIdx, conn.srcPort);
+    auto srcType = getValidationOutputPortType(conn.instIdx, conn.srcPort);
     const auto &port = impl_->ports[conn.portIdx];
     PortType dstType = port.isMemref ? PortType::memref(port.memrefType)
                                      : PortType::scalar(port.type);
-    if (!srcType.widthCompatible(dstType)) {
+    bool ok;
+    if (isRoutingKind(impl_->instances[conn.instIdx].kind))
+      ok = srcType.routingCompatible(dstType);
+    else
+      ok = srcType.widthCompatible(dstType);
+    if (!ok) {
       std::string loc =
           impl_->instances[conn.instIdx].name + ":" +
           std::to_string(conn.srcPort) + " -> %" + port.name;

@@ -11,6 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "${SCRIPT_DIR}/common.sh"
+source "${SCRIPT_DIR}/vcs_helpers.sh"
 
 ROOT_DIR=$(loom_root)
 TESTS_DIR="${ROOT_DIR}/tests/sv"
@@ -722,8 +723,18 @@ WAVE_EOF
     echo "${line}" >> "${PARALLEL_FILE}"
   done
 
-  # If simulator is not available, count jobs as skipped without running
+  # If simulator is not available, count jobs as skipped without running.
+  # For VCS, run the shared license probe (vcs_helpers.sh) that matches real
+  # compile flags. Only skip on license denial; non-license failures remain
+  # hard errors so regressions are not silently masked.
+  sim_skip=false
   if ! command -v "${sim}" >/dev/null 2>&1; then
+    sim_skip=true
+  elif [[ "${sim}" == "vcs" ]]; then
+    run_vcs_probe
+  fi
+
+  if [[ "${sim_skip}" == "true" ]]; then
     job_count=$(grep -cvE '^\s*(#|$)' "${PARALLEL_FILE}" || true)
     LOOM_PASS=0; LOOM_FAIL=0; LOOM_TIMEOUT=0
     LOOM_SKIPPED=${job_count}; LOOM_TOTAL=${job_count}

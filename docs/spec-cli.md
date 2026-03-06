@@ -54,6 +54,7 @@ The CLI recognizes and handles these options directly:
 - `-o <path>` or `-o<path>`: select the LLVM IR output path.
 - `--adg <file.fabric.mlir>`: validate a fabric MLIR file (see below).
 - `--as-clang`: operate as a standard C++ compiler (see below).
+- `--dfgs <f1.handshake.mlir[,f2,...]>`: use pre-compiled Handshake MLIR files (see below).
 
 `--` terminates option parsing. All subsequent arguments are treated as input
 files, even if they begin with `-`.
@@ -62,32 +63,52 @@ files, even if they begin with `-`.
 
 ### `--adg`
 
-When `--adg <path>` is specified, `loom` operates in ADG validation mode.
+`--adg <path>` has two modes depending on whether sources or
+`--dfgs` are provided:
 
-**Behavior:**
+**Mode 1: Validation only** (`--adg` without sources and without
+`--dfgs`):
 
-- Parses the given fabric MLIR file
-- Registers Fabric, Dataflow, Handshake, Arith, Math, MemRef, and Func dialects
-- Runs MLIR parse and semantic verification
-- Exits 0 if the file is valid, 1 if any errors are detected
+- Parses the given fabric MLIR file.
+- Registers Fabric, Dataflow, Handshake, Arith, Math, MemRef, and Func
+  dialects.
+- Runs MLIR parse and semantic verification.
+- Exits 0 if the file is valid, 1 if any errors are detected.
 - Error codes are emitted to stderr with `[CPL_XXX]` prefix
-  (see [spec-fabric-error.md](./spec-fabric-error.md))
-- No MLIR/SCF/Handshake outputs are generated
-- Source files and `-o` are ignored when `--adg` is set
+  (see [spec-fabric-error.md](./spec-fabric-error.md)).
+- No MLIR/SCF/Handshake outputs are generated.
+- Source files and `-o` are ignored in this mode.
+
+**Mode 2: Mapper invocation** (`--adg` with sources + `-o`, or
+`--adg` with `--dfgs` + `-o`):
+
+- The fabric MLIR is loaded as the ADG (hardware graph).
+- The DFG is extracted from the Handshake MLIR (compiled from sources
+  via Stage A, or directly from `--dfgs`).
+- The mapper pipeline runs (place, route, temporal, validate).
+- Configuration and mapping artifacts are emitted.
+- See **Stage C: Mapper Invocation** below for full details.
 
 **Incompatibilities:**
 
-`--adg` is incompatible with `--as-clang`. If both are specified, behavior is
-undefined.
+`--adg` is incompatible with `--as-clang`. If both are specified, a
+usage error is reported.
 
-**Example:**
+**Examples:**
 
 ```bash
-# Validate an ADG fabric MLIR file
+# Mode 1: Validate an ADG fabric MLIR file
 loom --adg my_cgra.fabric.mlir
-
-# Check exit code
 echo $?  # 0 = valid, 1 = errors
+
+# Mode 2: Compile + map
+loom --adg my_cgra.fabric.mlir app.cpp -o app.config.bin
+
+# Mode 2: Map from pre-compiled handshake (single or multiple DFGs)
+loom --adg my_cgra.fabric.mlir \
+     --dfgs app.handshake.mlir -o app.config.bin
+loom --adg my_cgra.fabric.mlir \
+     --dfgs a.handshake.mlir,b.handshake.mlir -o app.config.bin
 ```
 
 ### `--as-clang`
@@ -262,11 +283,94 @@ sequences complete successfully.
 | `LOOM_REDUCE` | `createAttachLoopAnnotationsPass()` + `createSCFToHandshakeDataflowPass()` |
 | `LOOM_MEMORY_BANK` | `createAttachLoopAnnotationsPass()` + `createSCFToHandshakeDataflowPass()` |
 
-## Stage C Placeholder: Mapper Invocation
+### `--dfgs`
 
-Stage C (mapper place-and-route) CLI surface is specified in mapper documents.
-This document currently specifies Stage A frontend behavior and `--as-clang`
-behavior used to compile Stage B ADG programs.
+When `--dfgs <path1[,path2,...]>` is specified alongside `--adg` and `-o`,
+`loom` skips compilation (Stages A-B) and feeds the given Handshake MLIR
+files directly to the mapper.
+
+**Syntax:** Comma-separated file paths, no spaces between entries.
+
+**Behavior:**
+
+- Parses each `.handshake.mlir` file and registers all required
+  dialects (Handshake, Dataflow, Arith, Math, MemRef, Func).
+- Runs MLIR parse and semantic verification on each file.
+- Merges all `handshake.func` operations into a single module.
+- Proceeds directly to the mapper pipeline (Stage C).
+- No LLVM IR, LLVM MLIR, SCF MLIR, or Handshake MLIR outputs are
+  generated (the inputs already are Handshake MLIR).
+
+**Use case:**
+
+This mode enables decoupled compilation and mapping workflows, and
+allows combining DFGs from multiple source files into a single mapping
+session.
+
+**Example:**
+
+```bash
+# Single DFG file
+loom --adg my_cgra.fabric.mlir \
+     --dfgs app.handshake.mlir \
+     -o app.config.bin --mapper-budget 30
+
+# Multiple DFG files
+loom --adg my_cgra.fabric.mlir \
+     --dfgs kernel_a.handshake.mlir,kernel_b.handshake.mlir \
+     -o app.config.bin
+```
+
+**Incompatibilities:**
+
+`--dfgs` requires `--adg` and `-o`. It is mutually exclusive with
+source file arguments. If source files are provided alongside `--dfgs`,
+a usage error is reported.
+
+## Stage C: Mapper Invocation
+
+When `--adg` is specified alongside source files (or `--dfgs`)
+and `-o`, the mapper place-and-route pipeline runs after Handshake
+conversion (or directly from the provided DFG files).
+
+**Behavior:**
+
+- Parses `<fabric.mlir>` into the ADG (hardware graph).
+- Extracts the DFG from the Handshake MLIR produced by Stage A.
+- Runs the mapper pipeline (place, route, temporal assign, validate).
+- Emits configuration and mapping artifacts.
+
+**Mapper-specific options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--mapper-budget <seconds>` | Search time limit for CP-SAT solver | 60 |
+| `--mapper-seed <int>` | Deterministic seed for tie-breaking | 0 (deterministic) |
+| `--mapper-profile <name>` | Weight profile: `balanced`, `cpsat_full`, `heuristic_only`, `throughput_first`, `area_power_first`, `deterministic_debug` | `balanced` |
+| `--dump-mapping` | Emit human-readable mapping report | off |
+
+**Mapper outputs** (in addition to Stage A outputs):
+
+| File | Description |
+|------|-------------|
+| `<name>.config.bin` | Binary config_mem image |
+| `<name>_addr.h` | C header with per-node addresses and masks |
+| `<name>.mapping.json` | Mapping report (only with `--dump-mapping`) |
+
+Output path derivation follows the same `-o` base name convention as
+Stage A.
+
+**Exit codes:**
+
+- `0`: Mapping succeeded.
+- `1`: Mapping failed (no valid mapping under constraints). Diagnostics
+  are emitted to stderr per
+  [spec-mapper-algorithm.md](./spec-mapper-algorithm.md).
+
+**Incompatibilities:**
+
+`--adg` with source files requires `-o`. `--adg` without source files
+operates in validation-only mode (existing behavior).
 
 Forward references:
 
@@ -313,6 +417,7 @@ Forward references:
 - [spec-mapper.md](./spec-mapper.md): Mapper place-and-route bridge from Handshake to Fabric
 - [spec-mapper-model.md](./spec-mapper-model.md): Mapper data model and hard constraints
 - [spec-mapper-algorithm.md](./spec-mapper-algorithm.md): Mapper algorithm contract
+- [spec-mapper-output.md](./spec-mapper-output.md): Mapper output formats (mapping.json, config.bin, addr.h)
 - [spec-adg.md](./spec-adg.md): ADG stage definition and outputs
 - [spec-adg-sysc.md](./spec-adg-sysc.md): SystemC backend artifacts
 - [spec-adg-sv.md](./spec-adg-sv.md): SystemVerilog backend artifacts
@@ -320,3 +425,6 @@ Forward references:
 - [spec-cosim.md](./spec-cosim.md): Co-simulation stage overview and authority map
 - [spec-cosim-runtime.md](./spec-cosim-runtime.md): Host runtime and threading contract
 - [spec-cosim-validation.md](./spec-cosim-validation.md): End-to-end validation requirements
+- [spec-viz.md](./spec-viz.md): Visualization specification
+- [spec-viz-mapped.md](./spec-viz-mapped.md): Mapped visualization conventions
+- [spec-viz-gui.md](./spec-viz-gui.md): Browser viewer specification

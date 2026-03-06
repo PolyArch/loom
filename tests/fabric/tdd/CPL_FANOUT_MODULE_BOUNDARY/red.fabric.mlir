@@ -3,13 +3,14 @@
 
 // A module input argument feeds two instance input ports without
 // switch broadcast. This must be rejected.
-fabric.pe @add(%a: i32, %b: i32) -> (i32) {
+fabric.pe @add(%a: !dataflow.bits<32>, %b: !dataflow.bits<32>) -> (!dataflow.bits<32>) {
+  ^bb0(%a: i32, %b: i32):
   %r = arith.addi %a, %b : i32
   fabric.yield %r : i32
 }
 
-fabric.module @top(%x: i32) -> (i32) {
+fabric.module @top(%x: !dataflow.bits<32>) -> (!dataflow.bits<32>) {
   // %x used twice: feeds both inputs of @add
-  %sum = fabric.instance @add(%x, %x) : (i32, i32) -> (i32)
-  fabric.yield %sum : i32
+  %sum = fabric.instance @add(%x, %x) : (!dataflow.bits<32>, !dataflow.bits<32>) -> (!dataflow.bits<32>)
+  fabric.yield %sum : !dataflow.bits<32>
 }

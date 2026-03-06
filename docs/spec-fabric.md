@@ -34,6 +34,24 @@ streaming:
 
 See [spec-dataflow.md](./spec-dataflow.md) for the tagged type definition.
 
+The dataflow dialect also provides a **bits type** for fabric interfaces:
+
+- `!dataflow.bits<N>` -- an N-bit data payload with no semantic type information.
+
+**All inter-node connections in a `fabric.module` use `!dataflow.bits<N>` or
+`!dataflow.tagged<!dataflow.bits<N>, iY>` types.** This includes PE ports,
+memory ports, switch ports, FIFO ports, and tag boundary ports. PEs that need
+integer vs float distinction handle it in the body (`^bb0` block arguments
+use native types like `i32`, `f32`, `index`). Width must be 1-4096.
+
+Address ports (memory addresses, load/store addresses) use
+`!dataflow.bits<ADDR_BIT_WIDTH>`, intentionally distinct from 32-bit and 64-bit
+data widths. The constant `ADDR_BIT_WIDTH` (currently 57, inspired by RISC-V
+Sv57) is centralized in `include/loom/Hardware/Common/FabricConstants.h` (C++)
+and `lib/loom/Hardware/SystemVerilog/Common/fabric_common.svh` (SV).
+
+The `none` type remains unchanged for control-only tokens.
+
 Within fabric operations, the term **native value type** follows the exact value
 type set defined in [spec-dataflow.md](./spec-dataflow.md). Vector, tensor,
 memref, complex, and opaque types are not considered native value types.
@@ -104,8 +122,8 @@ fabric.module @name(
 
 The argument and result ordering is fixed and must be preserved:
 
-- Inputs: `memref*`, `native*`, `tagged*`
-- Outputs: `memref*`, `native*`, `tagged*`
+- Inputs: `memref*`, `bits*`, `tagged*`
+- Outputs: `memref*`, `bits*`, `tagged*`
 
 ### Port Categories and Semantics
 
@@ -118,24 +136,34 @@ The argument and result ordering is fixed and must be preserved:
     outside.
   - Hardware semantics are similar to an AXI Slave interface.
 
-- **Native value inputs (N ports)**
+- **Bits value inputs (N ports)**
   - Passive streaming inputs, similar to an AXI-Stream slave interface.
+  - Must use `!dataflow.bits<N>` or `none` types. Native types (i32, f32,
+    index) are not allowed at the module boundary.
 
 - **Tagged inputs (O ports)**
   - Passive streaming inputs carrying `!dataflow.tagged` values.
+  - Tagged value types must be `!dataflow.bits<N>` or `none`.
 
-- **Native value outputs (J ports)**
+- **Bits value outputs (J ports)**
   - Active streaming outputs, similar to an AXI-Stream master interface.
+  - Must use `!dataflow.bits<N>` or `none` types.
 
 - **Tagged outputs (K ports)**
   - Active streaming outputs carrying `!dataflow.tagged` values.
+  - Tagged value types must be `!dataflow.bits<N>` or `none`.
 
 ### Constraints
 
 - `M + N + O + I + J + K` must be greater than 0.
   - An accelerator cannot be a completely empty shell.
-- All `tagged` ports must use valid `!dataflow.tagged` types.
-- Port ordering must follow: memref*, native*, tagged* for both inputs and
+- All module ports must use structural types: `memref`, `!dataflow.bits<N>`,
+  `none`, or `!dataflow.tagged<!dataflow.bits<N>|none, iK>`. Native MLIR
+  types (i32, f32, index) are not allowed at the module boundary. Violations
+  raise `CPL_MODULE_NATIVE_PORT`.
+- All `tagged` ports must use valid `!dataflow.tagged` types with
+  `!dataflow.bits<N>` or `none` value types.
+- Port ordering must follow: memref*, bits*, tagged* for both inputs and
   outputs. Violations raise `CPL_MODULE_PORT_ORDER`.
 - The body must contain at least one non-terminator operation. Violations
   raise `CPL_MODULE_EMPTY_BODY`.
@@ -191,6 +219,14 @@ Explicit conversions must be represented as operations, such as:
 - `fabric.add_tag`, `fabric.del_tag`, and `fabric.map_tag` for tag boundaries or
   tag transforms.
 - `fabric.pe` containing explicit casts (e.g., `arith.index_cast`).
+
+Since all fabric interfaces use `bits<N>` types, connections are exact type
+matches. There is no need for routing-compatible relaxation -- a
+`PE(bits<32>) -> Switch(bits<32>) -> PE(bits<32>)` connection uses the same
+exact type throughout. The `none` type must also match exactly.
+
+Tag boundary operations (`fabric.add_tag`, `fabric.del_tag`, `fabric.map_tag`)
+retain strict semantic type matching because they perform type transformations.
 
 ### Port Connection Invariants
 

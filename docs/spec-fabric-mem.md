@@ -41,28 +41,34 @@ be instantiated via `fabric.instance`.
 
 ### Named Form Syntax
 
+In the examples below, `AW` stands for `ADDR_BIT_WIDTH` (currently 57).
+
 ```mlir
 fabric.memory @scratchpad
     [ldCount = 2, stCount = 2, lsqDepth = 4, is_private = true]
     : memref<1024xi32>,
-      (!dataflow.tagged<index, i2>, !dataflow.tagged<index, i2>,
-       !dataflow.tagged<i32, i2>)
-      -> (!dataflow.tagged<i32, i2>,
+      (!dataflow.tagged<!dataflow.bits<AW>, i2>,
+       !dataflow.tagged<!dataflow.bits<AW>, i2>,
+       !dataflow.tagged<!dataflow.bits<32>, i2>)
+      -> (!dataflow.tagged<!dataflow.bits<32>, i2>,
           !dataflow.tagged<none, i2>,
           !dataflow.tagged<none, i2>)
 
 fabric.extmemory @dram_if
     [ldCount = 1, stCount = 1, lsqDepth = 4]
-    : memref<?xf32>, (index, index, f32) -> (f32, none, none)
+    : memref<?xf32>,
+      (!dataflow.bits<AW>, !dataflow.bits<AW>, !dataflow.bits<32>)
+      -> (!dataflow.bits<32>, none, none)
 ```
 
 Named memory modules can be instantiated with `fabric.instance`:
 
 ```mlir
 %lddata, %lddone, %stdone = fabric.instance @scratchpad(%ldaddr, %staddr, %stdata)
-    : (!dataflow.tagged<index, i2>, !dataflow.tagged<index, i2>,
-       !dataflow.tagged<i32, i2>)
-      -> (!dataflow.tagged<i32, i2>,
+    : (!dataflow.tagged<!dataflow.bits<AW>, i2>,
+       !dataflow.tagged<!dataflow.bits<AW>, i2>,
+       !dataflow.tagged<!dataflow.bits<32>, i2>)
+      -> (!dataflow.tagged<!dataflow.bits<32>, i2>,
           !dataflow.tagged<none, i2>,
           !dataflow.tagged<none, i2>)
 ```
@@ -78,7 +84,9 @@ Single-port example:
 %lddata, %lddone, %stdone = fabric.memory
     [ldCount = 1, stCount = 1, lsqDepth = 4, is_private = true]
     (%ldaddr, %staddr, %stdata)
-    : memref<256xi32>, (index, index, i32) -> (i32, none, none)
+    : memref<256xi32>,
+      (!dataflow.bits<AW>, !dataflow.bits<AW>, !dataflow.bits<32>)
+      -> (!dataflow.bits<32>, none, none)
 ```
 
 Multi-port example with tags:
@@ -88,10 +96,10 @@ Multi-port example with tags:
     [ldCount = 4, stCount = 2, lsqDepth = 8]
     (%memref, %ldaddr, %staddr, %stdata)
     : memref<?xf32>,
-      (!dataflow.tagged<index, i3>,
-       !dataflow.tagged<index, i3>,
-       !dataflow.tagged<f32, i3>)
-      -> (!dataflow.tagged<f32, i3>,
+      (!dataflow.tagged<!dataflow.bits<AW>, i3>,
+       !dataflow.tagged<!dataflow.bits<AW>, i3>,
+       !dataflow.tagged<!dataflow.bits<32>, i3>)
+      -> (!dataflow.tagged<!dataflow.bits<32>, i3>,
           !dataflow.tagged<none, i3>,
           !dataflow.tagged<none, i3>)
 ```
@@ -102,7 +110,8 @@ Memory export example:
 %mem, %lddata, %lddone = fabric.memory
     [ldCount = 1, stCount = 0, is_private = false]
     (%ldaddr)
-    : memref<1024xi16>, (index) -> (memref<1024xi16>, i16, none)
+    : memref<1024xi16>,
+      (!dataflow.bits<AW>) -> (memref<1024xi16>, !dataflow.bits<16>, none)
 
 fabric.yield %mem : memref<1024xi16>
 ```
@@ -117,6 +126,12 @@ All attributes in this section are hardware parameters.
 - `is_private` (only for `fabric.memory`): if `true`, the memory is private to
   the module. If `false`, the memory exposes an output memref that must be
   yielded by `fabric.module`. The default is `true`.
+- `numRegion`: number of entries in the addr_offset_table. Must be >= 1.
+  The default is `1`. Each region entry contains a valid bit, start_tag,
+  end_tag, and addr_offset. At runtime, a load/store tag is matched against
+  the [start_tag, end_tag) half-open range of each valid region, and the corresponding
+  addr_offset is added to the memory address. CONFIG_WIDTH for a memory is
+  `numRegion * (1 + 2 * TAG_WIDTH + ADDR_WIDTH)`.
 - `fabric.extmemory` does not support `is_private`. Supplying `is_private` on
   `fabric.extmemory` is invalid (`CPL_MEMORY_EXTMEM_PRIVATE`).
 
@@ -143,7 +158,8 @@ operand.
 
 Address and data types:
 
-- `ldaddr` and `staddr` must be `index`, or `!dataflow.tagged<index, iK>`.
+- `ldaddr` and `staddr` must be `!dataflow.bits<ADDR_BIT_WIDTH>`,
+  or `!dataflow.tagged<!dataflow.bits<ADDR_BIT_WIDTH>, iK>`.
 - `lddata` and `stdata` value types must match the memref element type.
 - When tagged, `lddata`, `stdata`, and the corresponding addr must share the
   same tag width.
@@ -202,15 +218,15 @@ ordering across cycles.
 Stores are paired per tag in FIFO order. For each tag, the queue matches
 `staddr` and `stdata` arrivals in the order they are received.
 
-**Single-port (native, `stCount == 1`):**
+**Single-port (`stCount == 1`):**
 
-Since there is only one logical store port (native, no tags), the queue pairs
+Since there is only one logical store port (no tags), the queue pairs
 `staddr` and `stdata` in strict FIFO order. The first `staddr` matches with
 the first `stdata`, the second with the second, and so on.
 
 **Deadlock detection:**
 
-For each store tag (or the single global store queue in native mode), the
+For each store tag (or the single global store queue in single-port mode), the
 hardware maintains a deadlock counter. The counter behavior is:
 
 - **Imbalance condition**: exactly one of `staddr` or `stdata` has a queued
@@ -264,7 +280,8 @@ Violations of the following constraints are compile-time errors:
 - `ldCount == 0` and `stCount == 0` (`CPL_MEMORY_PORTS_EMPTY`).
 - `lsqDepth != 0` when `stCount == 0` (`CPL_MEMORY_LSQ_WITHOUT_STORE`).
 - `lsqDepth < 1` when `stCount > 0` (`CPL_MEMORY_LSQ_MIN`).
-- Address ports are not `index` or tagged `index` (`CPL_MEMORY_ADDR_TYPE`).
+- Address ports are not `bits<ADDR_BIT_WIDTH>` or tagged `bits<ADDR_BIT_WIDTH>`
+  (`CPL_MEMORY_ADDR_TYPE`).
 - Data value type does not match memref element type (`CPL_MEMORY_DATA_TYPE`).
 - Tagging requirements are not met (`CPL_MEMORY_TAG_REQUIRED`,
   `CPL_MEMORY_TAG_FOR_SINGLE`, `CPL_MEMORY_TAG_WIDTH`).
@@ -273,6 +290,19 @@ Violations of the following constraints are compile-time errors:
   (`CPL_MEMORY_EXTMEM_BINDING`).
 - `is_private` is supplied on `fabric.extmemory`
   (`CPL_MEMORY_EXTMEM_PRIVATE`).
+- `numRegion < 1` (`CPL_MEMORY_INVALID_REGION`).
+
+Runtime configuration errors (detected in hardware):
+
+- Overlapping tag ranges between valid regions in addr_offset_table
+  (`CFG_MEMORY_OVERLAP_TAG_REGION`, `CFG_EXTMEMORY_OVERLAP_TAG_REGION`).
+- A region has `end_tag <= start_tag` (empty half-open range)
+  (`CFG_MEMORY_EMPTY_TAG_RANGE`, `CFG_EXTMEMORY_EMPTY_TAG_RANGE`).
+
+Runtime execution errors (detected in hardware):
+
+- A load/store tag matches no valid region in the addr_offset_table
+  (`RT_MEMORY_NO_MATCH`, `RT_EXTMEMORY_NO_MATCH`).
 
 ## Interaction with Load/Store PEs
 
@@ -290,8 +320,8 @@ Memory module ports have category-specific widths:
 
 | Port Category | Data Width | Notes |
 |---------------|-----------|-------|
-| `ld_addr[i]` | 64 bits (index type) | Fixed address width |
-| `st_addr[i]` | 64 bits (index type) | Fixed address width |
+| `ld_addr[i]` | ADDR_BIT_WIDTH bits | Fixed address width |
+| `st_addr[i]` | ADDR_BIT_WIDTH bits | Fixed address width |
 | `st_data[i]` | `elemType` width | Element data width |
 | `ld_data[i]` | `elemType` width | Element data width |
 | `ld_done[i]` | 0 bits (none type) | Completion signal only |
@@ -309,8 +339,8 @@ positive width. When tagged, done port width = `TAG_WIDTH` bits (none carries
 
 ```
 TAG_WIDTH = clog2(max(2,1)) = 1
-ld_addr0: 64 + 1 = 65 bits payload
-st_addr0: 64 + 1 = 65 bits payload
+ld_addr0: ADDR_BIT_WIDTH + 1 bits payload
+st_addr0: ADDR_BIT_WIDTH + 1 bits payload
 st_data0: 32 + 1 = 33 bits payload
 ld_data0: 32 + 1 = 33 bits payload
 ld_done0: 0 + 1  = 1  bit payload (none=0 data bits + TAG_WIDTH)

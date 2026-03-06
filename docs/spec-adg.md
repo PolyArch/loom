@@ -332,7 +332,7 @@ and the Loom compiler pipeline.
 | `DOTMode::Detailed` | Includes runtime config visualization |
 
 For node styles, edge styles, and unmapped element conventions, see
-[spec-viz-hw.md](./spec-viz-hw.md).
+[spec-viz-adg.md](./spec-viz-adg.md).
 
 ### SystemC Export
 

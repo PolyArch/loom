@@ -5,7 +5,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Dialect/Fabric/FabricTypeUtils.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
+#include "loom/Hardware/Common/FabricConstants.h"
 #include "loom/Hardware/Common/FabricError.h"
 
 #include "mlir/IR/BuiltinTypes.h"
@@ -251,10 +253,10 @@ static CombInfo getCombInfo(Operation *op,
 LogicalResult ModuleOp::verify() {
   auto fnType = getFunctionType();
 
-  // Port ordering: memref* -> native* -> tagged*.
+  // Port ordering: memref* -> bits* -> tagged*.
   auto checkOrdering = [&](ArrayRef<Type> types,
                            StringRef label) -> LogicalResult {
-    // 0 = memref, 1 = native, 2 = tagged
+    // 0 = memref, 1 = bits/none, 2 = tagged
     unsigned lastCat = 0;
     for (Type t : types) {
       unsigned cat;
@@ -267,7 +269,7 @@ LogicalResult ModuleOp::verify() {
       if (cat < lastCat)
         return emitOpError(cplErrCode(CplError::MODULE_PORT_ORDER) + " ")
                << label
-               << " must follow port ordering: memref*, native*, tagged*";
+               << " must follow port ordering: memref*, bits*, tagged*";
       lastCat = cat;
     }
     return success();
@@ -276,6 +278,35 @@ LogicalResult ModuleOp::verify() {
   if (failed(checkOrdering(fnType.getInputs(), "inputs")))
     return failure();
   if (failed(checkOrdering(fnType.getResults(), "outputs")))
+    return failure();
+
+  // Bits-only module boundary: reject native scalar ports.
+  // Allowed: memref, none, bits<N>, tagged<bits<N>|none, iK>.
+  auto isAllowedModuleType = [](Type t) -> bool {
+    if (isa<MemRefType>(t) || isa<NoneType>(t) || isa<dataflow::BitsType>(t))
+      return true;
+    if (auto tagged = dyn_cast<dataflow::TaggedType>(t)) {
+      Type v = tagged.getValueType();
+      return isa<NoneType>(v) || isa<dataflow::BitsType>(v);
+    }
+    return false;
+  };
+  auto checkModuleTypes = [&](ArrayRef<Type> types,
+                              StringRef label) -> LogicalResult {
+    for (auto [idx, t] : llvm::enumerate(types)) {
+      if (!isAllowedModuleType(t))
+        return emitOpError(cplErrMsg(CplError::MODULE_NATIVE_PORT,
+                           "module "))
+               << label << " port #" << idx
+               << " has native type '" << t
+               << "'; must use !dataflow.bits<N>, none, memref, or "
+                  "!dataflow.tagged<!dataflow.bits<N>|none, iK>";
+    }
+    return success();
+  };
+  if (failed(checkModuleTypes(fnType.getInputs(), "input")))
+    return failure();
+  if (failed(checkModuleTypes(fnType.getResults(), "output")))
     return failure();
 
   // Body must have at least one non-terminator.
@@ -548,6 +579,50 @@ static bool hasCyclicReference(Operation *start) {
   return false;
 }
 
+/// Check whether two types are width-compatible at an instance boundary.
+/// This is needed for fabric.instance calls inside fabric.pe bodies, where
+/// body block args use native types (i32, f32) but the target named PE
+/// interface uses bits<N> types.
+/// Rules:
+///   - Exact match: always compatible.
+///   - Both untagged with matching bit width: compatible
+///     (e.g., i32 <-> bits<32>).
+///   - Both tagged with matching value bit widths and tag types: compatible
+///     (e.g., tagged<i32, i4> <-> tagged<bits<32>, i4>).
+///   - NoneType must match exactly.
+///   - Mixed native/tagged: never compatible.
+static bool isWidthCompatible(Type actual, Type expected) {
+  if (actual == expected)
+    return true;
+
+  bool isTaggedA = isa<dataflow::TaggedType>(actual);
+  bool isTaggedE = isa<dataflow::TaggedType>(expected);
+
+  if (isTaggedA != isTaggedE)
+    return false;
+
+  if (isTaggedA) {
+    auto tagA = cast<dataflow::TaggedType>(actual);
+    auto tagE = cast<dataflow::TaggedType>(expected);
+    if (tagA.getTagType() != tagE.getTagType())
+      return false;
+    auto wA = getNativeBitWidth(tagA.getValueType());
+    auto wE = getNativeBitWidth(tagE.getValueType());
+    if (!wA || !wE)
+      return tagA.getValueType() == tagE.getValueType();
+    return *wA == *wE;
+  }
+
+  if (isa<NoneType>(actual) || isa<NoneType>(expected))
+    return actual == expected;
+
+  auto wA = getNativeBitWidth(actual);
+  auto wE = getNativeBitWidth(expected);
+  if (!wA || !wE)
+    return false;
+  return *wA == *wE;
+}
+
 //===----------------------------------------------------------------------===//
 // InstanceOp verify
 //===----------------------------------------------------------------------===//
@@ -570,9 +645,23 @@ LogicalResult InstanceOp::verify() {
 
   // CPL_INSTANCE_OPERAND_MISMATCH / CPL_INSTANCE_RESULT_MISMATCH:
   // Compare types against target's function_type.
+  // Inside fabric.pe bodies, block args use native types (i32, f32) while
+  // the target named PE has bits-typed interface ports. Use width-compatible
+  // matching only when the target port is bits-typed (the native-to-bits
+  // bridge case); native-to-native calls use exact matching.
   auto targetFnType = getTargetFunctionType(target);
   if (targetFnType) {
     auto fnType = *targetFnType;
+    bool insidePE = getOperation()->getParentOfType<PEOp>() != nullptr;
+
+    // Width-compatible matching only applies to native↔bits bridge.
+    auto isBitsTarget = [](Type expected) -> bool {
+      Type valT = expected;
+      if (auto tagged = dyn_cast<dataflow::TaggedType>(expected))
+        valT = tagged.getValueType();
+      return isa<dataflow::BitsType>(valT);
+    };
+
     if (getOperands().size() != fnType.getNumInputs())
       return emitOpError(cplErrMsg(CplError::INSTANCE_OPERAND_MISMATCH,
                          "operand count ("))
@@ -580,11 +669,17 @@ LogicalResult InstanceOp::verify() {
              << fnType.getNumInputs() << ")";
     for (auto [idx, pair] : llvm::enumerate(
              llvm::zip(getOperandTypes(), fnType.getInputs()))) {
-      if (std::get<0>(pair) != std::get<1>(pair))
+      Type actual = std::get<0>(pair);
+      Type expected = std::get<1>(pair);
+      if (actual != expected) {
+        if (insidePE && isBitsTarget(expected) &&
+            isWidthCompatible(actual, expected))
+          continue;
         return emitOpError(cplErrMsg(CplError::INSTANCE_OPERAND_MISMATCH,
                            "operand #"))
-               << idx << " type " << std::get<0>(pair)
-               << " does not match target input type " << std::get<1>(pair);
+               << idx << " type " << actual
+               << " does not match target input type " << expected;
+      }
     }
 
     if (getResults().size() != fnType.getNumResults())
@@ -594,11 +689,17 @@ LogicalResult InstanceOp::verify() {
              << fnType.getNumResults() << ")";
     for (auto [idx, pair] : llvm::enumerate(
              llvm::zip(getResultTypes(), fnType.getResults()))) {
-      if (std::get<0>(pair) != std::get<1>(pair))
+      Type actual = std::get<0>(pair);
+      Type expected = std::get<1>(pair);
+      if (actual != expected) {
+        if (insidePE && isBitsTarget(expected) &&
+            isWidthCompatible(actual, expected))
+          continue;
         return emitOpError(cplErrMsg(CplError::INSTANCE_RESULT_MISMATCH,
                            "result #"))
-               << idx << " type " << std::get<0>(pair)
-               << " does not match target result type " << std::get<1>(pair);
+               << idx << " type " << actual
+               << " does not match target result type " << expected;
+      }
     }
   }
 

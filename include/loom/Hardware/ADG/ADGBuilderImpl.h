@@ -12,6 +12,7 @@
 #define LOOM_HARDWARE_ADGBUILDERIMPL_H
 
 #include "loom/adg.h"
+#include "loom/Hardware/Common/FabricConstants.h"
 
 #include <cassert>
 #include <cstdio>
@@ -25,9 +26,6 @@
 namespace loom {
 namespace adg {
 
-/// Default address width in bits for index type ports (load/store addresses).
-/// Centralized here so that all code-gen paths share the same value.
-static constexpr unsigned DEFAULT_ADDR_WIDTH = 64;
 
 //===----------------------------------------------------------------------===//
 // Helper: get data width in bits for a Type (accessible from multiple TUs)
@@ -45,8 +43,9 @@ inline unsigned getTypeDataWidth(const Type &t) {
   case Type::F16:   return 16;
   case Type::F32:   return 32;
   case Type::F64:   return 64;
-  case Type::Index: return 64;
+  case Type::Index: return ADDR_BIT_WIDTH;
   case Type::None:  return 0;
+  case Type::Bits:  return t.getWidth();
   case Type::Tagged:
     return getTypeDataWidth(t.getValueType());
   }
@@ -72,6 +71,14 @@ enum class ModuleKind {
   StorePE,
   Fifo,
 };
+
+/// Check whether a module kind is a pure routing node (pass-through, no
+/// computation). Used to decide whether routingCompatible() should be applied
+/// instead of exact type matching for connected ports.
+inline bool isRoutingKind(ModuleKind k) {
+  return k == ModuleKind::Switch || k == ModuleKind::TemporalSwitch ||
+         k == ModuleKind::Fifo;
+}
 
 //===----------------------------------------------------------------------===//
 // Internal Definition Structs
@@ -149,6 +156,7 @@ struct MemoryDef {
   unsigned stCount = 0;
   unsigned lsqDepth = 0;
   bool isPrivate = true;
+  unsigned numRegion = 1;
   MemrefType shape = MemrefType::static1D(64, Type::i32());
 };
 
@@ -157,6 +165,7 @@ struct ExtMemoryDef {
   unsigned ldCount = 1;
   unsigned stCount = 0;
   unsigned lsqDepth = 0;
+  unsigned numRegion = 1;
   MemrefType shape = MemrefType::dynamic1D(Type::i32());
 };
 
@@ -212,7 +221,7 @@ struct PortType {
   MemrefType memrefType = MemrefType::dynamic1D(Type::i32());
 
   static PortType scalar(Type t) { return {t, false, MemrefType::dynamic1D(Type::i32())}; }
-  static PortType memref(MemrefType m) { return {Type::index(), true, m}; }
+  static PortType memref(MemrefType m) { return {Type::bits(ADDR_BIT_WIDTH), true, m}; }
 
   std::string toMLIR() const {
     return isMemref ? memrefType.toMLIR() : scalarType.toMLIR();
@@ -225,17 +234,77 @@ struct PortType {
     return scalarType == other.scalarType;
   }
 
-  /// Width-compatible check: allows tagged types with the same tag type but
-  /// different value widths. Used for module-port-to-instance connections
-  /// where the SV generator handles width adaptation via emitDataAssign.
+  /// Width-compatible check: allows types with the same data bit-width
+  /// to be connected. Handles native-to-bits equivalence (e.g. index and
+  /// bits<57>). For tagged types, tag types must match.
   bool widthCompatible(const PortType &other) const {
     if (matches(other)) return true;
     if (isMemref || other.isMemref) return false;
+    // Both tagged: tag types AND payload widths must match.
     if (scalarType.getKind() == Type::Tagged &&
         other.scalarType.getKind() == Type::Tagged) {
-      return scalarType.getTagType() == other.scalarType.getTagType();
+      if (scalarType.getTagType() != other.scalarType.getTagType())
+        return false;
+      unsigned wA = getTypeDataWidth(scalarType.getValueType());
+      unsigned wB = getTypeDataWidth(other.scalarType.getValueType());
+      return wA > 0 && wA == wB;
+    }
+    // Non-tagged: compare data bit-widths.
+    if (scalarType.getKind() != Type::Tagged &&
+        other.scalarType.getKind() != Type::Tagged) {
+      unsigned wA = getTypeDataWidth(scalarType);
+      unsigned wB = getTypeDataWidth(other.scalarType);
+      return wA > 0 && wA == wB;
     }
     return false;
+  }
+
+  /// Routing-compatible check: allows types with the same bit width to
+  /// connect through routing nodes (switches, FIFOs). For example, f32 and
+  /// i32 both have 32-bit width and can share a width-merged switch plane.
+  /// Index and None types require exact match (never merged with others).
+  /// Tagged types: value bit widths AND tag types must both match.
+  /// Bits types: bits<N> is compatible with any native type of width N
+  /// and with other bits<N>. For tagged: tagged<bits<N>,tagT> is
+  /// compatible with tagged<native(N),tagT> when tag types match.
+  bool routingCompatible(const PortType &other) const {
+    if (matches(other)) return true;
+    if (isMemref || other.isMemref) return false;
+    // Tagged types: both must be tagged with matching tag types and
+    // routing-compatible value widths.
+    bool tagA = scalarType.getKind() == Type::Tagged;
+    bool tagB = other.scalarType.getKind() == Type::Tagged;
+    if (tagA != tagB) return false; // mixed tagged/native: never compatible
+    if (tagA) {
+      Type valA = scalarType.getValueType();
+      Type valB = other.scalarType.getValueType();
+      // None value types: exact match only (unless paired with Bits).
+      bool bitsA = valA.getKind() == Type::Bits;
+      bool bitsB = valB.getKind() == Type::Bits;
+      if (!bitsA && !bitsB) {
+        if (valA.getKind() == Type::None || valB.getKind() == Type::None)
+          return false;
+      }
+      return getTypeDataWidth(valA) == getTypeDataWidth(valB) &&
+             scalarType.getTagType() == other.scalarType.getTagType();
+    }
+    // Bits type: compatible with any type of matching width.
+    bool bitsA = scalarType.getKind() == Type::Bits;
+    bool bitsB = other.scalarType.getKind() == Type::Bits;
+    if (bitsA || bitsB) {
+      // Bits never matches None (width 0).
+      if (!bitsA && scalarType.getKind() == Type::None)
+        return false;
+      if (!bitsB && other.scalarType.getKind() == Type::None)
+        return false;
+      return getTypeDataWidth(scalarType) == getTypeDataWidth(other.scalarType);
+    }
+    // None: exact match only.
+    if (scalarType.getKind() == Type::None ||
+        other.scalarType.getKind() == Type::None)
+      return false;
+    // Other scalars: bit width must match (e.g. i32 == f32 == 32).
+    return getTypeDataWidth(scalarType) == getTypeDataWidth(other.scalarType);
   }
 };
 

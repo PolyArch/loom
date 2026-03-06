@@ -91,6 +91,23 @@ static std::string getComparePredicateStr(const PEDef &pe) {
   return "";
 }
 
+/// Convert a native ADG Type to its bits<N> equivalent for fabric interface
+/// ports. Preserves none; converts i32->bits<32>, f32->bits<32>,
+/// index->bits<ADDR_BIT_WIDTH>, etc. Tagged types: converts the value type
+/// inside the tag.
+static Type nativeToBitsType(const Type &t) {
+  if (t.getKind() == Type::None) return t;
+  if (t.getKind() == Type::Bits) return t; // already bits
+  if (t.getKind() == Type::Tagged) {
+    Type newVal = nativeToBitsType(t.getValueType());
+    return Type::tagged(newVal, t.getTagType());
+  }
+  // Convert native type to bits<width>
+  unsigned w = getTypeDataWidth(t);
+  if (w == 0) return t; // none-like
+  return Type::bits(w);
+}
+
 /// Determine the constant literal for a given value type.
 /// Floating point types use "0.0", integers use "0".
 static std::string getConstLiteral(Type valueType) {
@@ -266,11 +283,33 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
   std::ostringstream os;
   bool isTagged = pe.interface == InterfaceCategory::Tagged;
 
-  // Emit signature (shared between tagged and native).
+  // Convert interface port types to bits<N> equivalents.
+  std::vector<Type> ifInputPorts, ifOutputPorts;
+  for (const auto &t : pe.inputPorts)
+    ifInputPorts.push_back(nativeToBitsType(t));
+  for (const auto &t : pe.outputPorts)
+    ifOutputPorts.push_back(nativeToBitsType(t));
+
+  // Check if interface has bits-typed ports (determines whether the parser
+  // will read ^bb0 from source or pre-supply body args from the signature).
+  auto hasBitsValue = [](const Type &t) {
+    if (t.getKind() == Type::Bits) return true;
+    if (t.isTagged()) return t.getValueType().getKind() == Type::Bits;
+    return false;
+  };
+  bool hasBitsIf = false;
+  for (const auto &t : ifInputPorts) hasBitsIf |= hasBitsValue(t);
+  for (const auto &t : ifOutputPorts) hasBitsIf |= hasBitsValue(t);
+
+  // Emit signature. When hasBitsIf, use %p0/%p1/... to avoid SSA name
+  // collision with body block args (%arg0/%x0) since the parser reads ^bb0
+  // from source. Otherwise use %arg0/%arg1/... matching the body references
+  // (parser pre-supplies these as entry args).
   os << "fabric.pe @" << pe.name << "(";
-  for (size_t i = 0; i < pe.inputPorts.size(); ++i) {
+  for (size_t i = 0; i < ifInputPorts.size(); ++i) {
     if (i > 0) os << ", ";
-    os << "%arg" << i << ": " << pe.inputPorts[i].toMLIR();
+    os << "%" << (hasBitsIf ? "p" : "arg") << i << ": "
+       << ifInputPorts[i].toMLIR();
   }
   os << ")\n";
   emitLatencyInterval(os, pe.latMin, pe.latTyp, pe.latMax, pe.intMin,
@@ -291,11 +330,11 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
   }
 
   os << "    -> (";
-  emitTypeList(os, pe.outputPorts);
+  emitTypeList(os, ifOutputPorts);
   os << ") {\n";
 
   if (isTagged) {
-    // Tagged PE: body operates on value types.
+    // Tagged PE: body operates on value types (native, not bits).
     std::vector<Type> bodyInputTypes, bodyOutputTypes;
     for (const auto &t : pe.inputPorts)
       bodyInputTypes.push_back(t.isTagged() ? t.getValueType() : t);
@@ -303,7 +342,17 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
       bodyOutputTypes.push_back(t.isTagged() ? t.getValueType() : t);
 
     if (!pe.bodyMLIR.empty()) {
-      os << pe.bodyMLIR;
+      // Emit ^bb0 header with native body types since the bits-interface
+      // parser no longer pre-supplies block args from the signature.
+      // transformBodyMLIR strips any existing ^bb0 from bodyMLIR and
+      // renames user arg names to %arg0, %arg1, etc.
+      os << "^bb0(";
+      for (size_t i = 0; i < bodyInputTypes.size(); ++i) {
+        if (i > 0) os << ", ";
+        os << "%arg" << i << ": " << bodyInputTypes[i].toMLIR();
+      }
+      os << "):\n";
+      os << transformBodyMLIR(pe.bodyMLIR, pe.inputPorts);
     } else {
       const bool isGate = (pe.singleOp == "dataflow.gate");
       const bool isStream = (pe.singleOp == "dataflow.stream");
@@ -338,6 +387,19 @@ std::string ADGBuilder::Impl::generatePEDef(const PEDef &pe) const {
       }
     }
   } else {
+    // Native PE: body operates on original native types.
+    if (hasBitsIf) {
+      // Emit explicit ^bb0 header since interface types are bits<N> and
+      // the parser reads block args from source (not from the signature).
+      os << "^bb0(";
+      for (size_t i = 0; i < pe.inputPorts.size(); ++i) {
+        if (i > 0) os << ", ";
+        os << "%arg" << i << ": " << pe.inputPorts[i].toMLIR();
+      }
+      os << "):\n";
+    }
+    // Body code always references %arg0, %arg1, ... which are either
+    // defined by ^bb0 above or pre-supplied by the parser from signature.
     os << generatePEBody(pe);
   }
   os << "}\n\n";
@@ -352,17 +414,20 @@ ADGBuilder::Impl::generateConstantPEDef(const ConstantPEDef &def) const {
   bool isTagged = outType.isTagged();
   Type valueType = isTagged ? outType.getValueType() : outType;
 
+  // Interface types use bits<N>.
+  Type ifOutType = nativeToBitsType(outType);
+
   std::string ctrlTypeStr =
       isTagged ? Type::tagged(Type::none(), outType.getTagType()).toMLIR()
                : "none";
 
-  os << "fabric.pe @" << def.name << "(%ctrl: " << ctrlTypeStr << ")\n";
+  os << "fabric.pe @" << def.name << "(%p0: " << ctrlTypeStr << ")\n";
   emitLatencyInterval(os, def.latMin, def.latTyp, def.latMax, def.intMin,
                       def.intTyp, def.intMax);
   os << "]\n";
   if (isTagged)
     os << "    {output_tag = [0 : " << outType.getTagType().toMLIR() << "]}\n";
-  os << "    -> (" << outType.toMLIR() << ") {\n";
+  os << "    -> (" << ifOutType.toMLIR() << ") {\n";
 
   std::string constLiteral = getConstLiteral(valueType);
   std::string vStr = valueType.toMLIR();
@@ -372,6 +437,8 @@ ADGBuilder::Impl::generateConstantPEDef(const ConstantPEDef &def) const {
     os << "  %c = handshake.constant %c_native {value = " << constLiteral
        << " : " << vStr << "} : " << vStr << "\n";
   } else {
+    // Emit explicit ^bb0 with native type since interface uses bits<N>.
+    os << "^bb0(%ctrl: none):\n";
     os << "  %c = handshake.constant %ctrl {value = " << constLiteral << " : "
        << vStr << "} : " << vStr << "\n";
   }
@@ -386,13 +453,16 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
   bool isTagged = def.interface == InterfaceCategory::Tagged;
   Type dataType = def.dataType;
   std::string dTypeStr = dataType.toMLIR();
+  // bits<N> equivalents for interface ports.
+  Type bitsAddr = Type::bits(ADDR_BIT_WIDTH);
+  Type bitsData = nativeToBitsType(dataType);
 
   if (isTagged) {
     Type tagType = Type::iN(def.tagWidth);
-    Type taggedData = Type::tagged(dataType, tagType);
-    Type taggedIndex = Type::tagged(Type::index(), tagType);
-    std::string tdStr = taggedData.toMLIR();
-    std::string tiStr = taggedIndex.toMLIR();
+    Type taggedBitsData = Type::tagged(bitsData, tagType);
+    Type taggedBitsAddr = Type::tagged(bitsAddr, tagType);
+    std::string tdStr = taggedBitsData.toMLIR();
+    std::string tiStr = taggedBitsAddr.toMLIR();
     // Ctrl: none for TagOverwrite, tagged<none> for TagTransparent
     std::string ctrlStr = (def.hwType == HardwareType::TagTransparent)
         ? Type::tagged(Type::none(), tagType).toMLIR() : "none";
@@ -415,11 +485,14 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
     os << "}\n\n";
   } else {
     os << "fabric.pe @" << def.name
-       << "(%addr: index, %data_in: " << dTypeStr << ", %ctrl: none)\n";
+       << "(%p0: " << bitsAddr.toMLIR() << ", %p1: "
+       << bitsData.toMLIR() << ", %p2: none)\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
     os << "]\n";
-    os << "    -> (index, " << dTypeStr << ") {\n";
+    os << "    -> (" << bitsAddr.toMLIR() << ", " << bitsData.toMLIR()
+       << ") {\n";
+    os << "^bb0(%addr: index, %data_in: " << dTypeStr << ", %ctrl: none):\n";
     os << "  %ld_d, %ld_a = handshake.load [%addr] %data_in, %ctrl : index, "
        << dTypeStr << "\n";
     os << "  fabric.yield %ld_a, %ld_d : index, " << dTypeStr << "\n";
@@ -434,13 +507,16 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
   bool isTagged = def.interface == InterfaceCategory::Tagged;
   Type dataType = def.dataType;
   std::string dTypeStr = dataType.toMLIR();
+  // bits<N> equivalents for interface ports.
+  Type bitsAddr = Type::bits(ADDR_BIT_WIDTH);
+  Type bitsData = nativeToBitsType(dataType);
 
   if (isTagged) {
     Type tagType = Type::iN(def.tagWidth);
-    Type taggedData = Type::tagged(dataType, tagType);
-    Type taggedIndex = Type::tagged(Type::index(), tagType);
-    std::string tdStr = taggedData.toMLIR();
-    std::string tiStr = taggedIndex.toMLIR();
+    Type taggedBitsData = Type::tagged(bitsData, tagType);
+    Type taggedBitsAddr = Type::tagged(bitsAddr, tagType);
+    std::string tdStr = taggedBitsData.toMLIR();
+    std::string tiStr = taggedBitsAddr.toMLIR();
     // Ctrl: none for TagOverwrite, tagged<none> for TagTransparent
     std::string ctrlStr = (def.hwType == HardwareType::TagTransparent)
         ? Type::tagged(Type::none(), tagType).toMLIR() : "none";
@@ -462,11 +538,14 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
     os << "}\n\n";
   } else {
     os << "fabric.pe @" << def.name
-       << "(%addr: index, %data: " << dTypeStr << ", %ctrl: none)\n";
+       << "(%p0: " << bitsAddr.toMLIR() << ", %p1: "
+       << bitsData.toMLIR() << ", %p2: none)\n";
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
     os << "]\n";
-    os << "    -> (index, " << dTypeStr << ") {\n";
+    os << "    -> (" << bitsAddr.toMLIR() << ", " << bitsData.toMLIR()
+       << ") {\n";
+    os << "^bb0(%addr: index, %data: " << dTypeStr << ", %ctrl: none):\n";
     os << "  handshake.store [%addr] %data, %ctrl : index, " << dTypeStr
        << "\n";
     os << "  fabric.yield %addr, %data : index, " << dTypeStr << "\n";
@@ -478,7 +557,7 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
 std::string
 ADGBuilder::Impl::generateTemporalPEDef(const TemporalPEDef &def) const {
   std::ostringstream os;
-  Type ifType = def.interfaceType;
+  Type ifType = nativeToBitsType(def.interfaceType);
   std::string ifStr = ifType.toMLIR();
 
   // Determine number of input/output ports from first FU.
@@ -509,6 +588,7 @@ ADGBuilder::Impl::generateTemporalPEDef(const TemporalPEDef &def) const {
   os << ") {\n";
 
   // Emit FU definitions (simpler format without latency/interval).
+  // FU ports remain native types (body-level types are not converted).
   for (unsigned fuIdx : def.fuPEDefIndices) {
     const auto &fu = peDefs[fuIdx];
     os << "  fabric.pe @" << fu.name << "(";
@@ -621,13 +701,15 @@ std::string ADGBuilder::Impl::generateMLIR() const {
     if (i > 0) os << ", ";
     const auto &p = ports[inputPortIndices[i]];
     os << "%" << p.name << ": ";
-    os << (p.isMemref ? p.memrefType.toMLIR() : p.type.toMLIR());
+    os << (p.isMemref ? p.memrefType.toMLIR()
+                      : nativeToBitsType(p.type).toMLIR());
   }
   os << ") -> (";
   for (size_t i = 0; i < outputPortIndices.size(); ++i) {
     if (i > 0) os << ", ";
     const auto &p = ports[outputPortIndices[i]];
-    os << (p.isMemref ? p.memrefType.toMLIR() : p.type.toMLIR());
+    os << (p.isMemref ? p.memrefType.toMLIR()
+                      : nativeToBitsType(p.type).toMLIR());
   }
   os << ") {\n";
 
@@ -675,14 +757,62 @@ std::string ADGBuilder::Impl::generateMLIR() const {
   std::map<std::pair<unsigned, int>, std::string> instResultSSA;
   std::map<std::pair<unsigned, int>, std::string> instResultType;
 
+  // For routing-node outputs (Switch), resolve the downstream consumer type
+  // so that SSA values carry per-port types (e.g. f32 when feeding an f32 PE
+  // through an i32-typed switch in a width-merged plane).
+  // Helper to convert a PortType to bits-equivalent MLIR string.
+  auto portTypeToBitsMLIR = [](const PortType &pt) -> std::string {
+    return pt.isMemref ? pt.memrefType.toMLIR()
+                       : nativeToBitsType(pt.scalarType).toMLIR();
+  };
+
+  // Temporal PE MLIR port type helpers: getInstanceInputPortType/OutputPortType
+  // return per-port FU max widths (for SV export), but MLIR generation uses the
+  // declared interface type for temporal PE instance calls.
+  auto getMLIRInputPortType = [&](unsigned instIdx, int port) -> PortType {
+    if (instances[instIdx].kind == ModuleKind::TemporalPE)
+      return PortType::scalar(temporalPEDefs[instances[instIdx].defIdx].interfaceType);
+    return getInstanceInputPortType(instIdx, port);
+  };
+  auto getMLIROutputPortType = [&](unsigned instIdx, int port) -> PortType {
+    if (instances[instIdx].kind == ModuleKind::TemporalPE)
+      return PortType::scalar(temporalPEDefs[instances[instIdx].defIdx].interfaceType);
+    return getInstanceOutputPortType(instIdx, port);
+  };
+
+  auto resolveOutputType = [&](unsigned ii, int port) -> std::string {
+    if (instances[ii].kind != ModuleKind::Switch)
+      return portTypeToBitsMLIR(getMLIROutputPortType(ii, port));
+    // Check internal connections from this output.
+    for (const auto &conn : internalConns) {
+      if (conn.srcInst == ii && conn.srcPort == port) {
+        auto dstKind = instances[conn.dstInst].kind;
+        // Routing-to-routing: use own portType (canonical mesh type).
+        if (dstKind == ModuleKind::Switch ||
+            dstKind == ModuleKind::TemporalSwitch ||
+            dstKind == ModuleKind::Fifo)
+          break;
+        return portTypeToBitsMLIR(
+            getMLIRInputPortType(conn.dstInst, conn.dstPort));
+      }
+    }
+    // Check module output connections.
+    for (const auto &conn : outputConns) {
+      if (conn.instIdx == ii && conn.srcPort == port) {
+        const auto &p = ports[conn.portIdx];
+        return p.isMemref ? p.memrefType.toMLIR()
+                          : nativeToBitsType(p.type).toMLIR();
+      }
+    }
+    return portTypeToBitsMLIR(getInstanceOutputPortType(ii, port));
+  };
+
   for (unsigned ii : topoOrder) {
     unsigned numOutputs = getInstanceOutputCount(ii);
     for (unsigned r = 0; r < numOutputs; ++r) {
       std::string name = "%" + std::to_string(ssaCounter + r);
       instResultSSA[{ii, (int)r}] = name;
-      // Use PortType to correctly handle memref outputs (e.g. memory port 0).
-      instResultType[{ii, (int)r}] =
-          getInstanceOutputPortType(ii, r).toMLIR();
+      instResultType[{ii, (int)r}] = resolveOutputType(ii, (int)r);
     }
     ssaCounter += numOutputs;
   }
@@ -705,7 +835,8 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           const auto &p = ports[inputPortIndices[it->second]];
           operands[conn.dstPort] = "%" + p.name;
           operandTypes[conn.dstPort] =
-              p.isMemref ? p.memrefType.toMLIR() : p.type.toMLIR();
+              p.isMemref ? p.memrefType.toMLIR()
+                         : nativeToBitsType(p.type).toMLIR();
         }
       }
     }
@@ -785,14 +916,14 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           // Ctrl: none for TagOverwrite, tagged<none> for TagTransparent
           Type ctrlType = (lpDef.hwType == HardwareType::TagTransparent)
               ? Type::tagged(Type::none(), tagType) : Type::none();
-          inTypes = {Type::tagged(Type::index(), tagType),
+          inTypes = {Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType),
                      Type::tagged(lpDef.dataType, tagType),
                      ctrlType};
-          outTypes = {Type::tagged(Type::index(), tagType),
+          outTypes = {Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType),
                       Type::tagged(lpDef.dataType, tagType)};
         } else {
-          inTypes = {Type::index(), lpDef.dataType, Type::none()};
-          outTypes = {Type::index(), lpDef.dataType};
+          inTypes = {Type::bits(ADDR_BIT_WIDTH), lpDef.dataType, Type::none()};
+          outTypes = {Type::bits(ADDR_BIT_WIDTH), lpDef.dataType};
         }
         break;
       }
@@ -804,14 +935,14 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           // Ctrl: none for TagOverwrite, tagged<none> for TagTransparent
           Type ctrlType = (spDef.hwType == HardwareType::TagTransparent)
               ? Type::tagged(Type::none(), tagType) : Type::none();
-          inTypes = {Type::tagged(Type::index(), tagType),
+          inTypes = {Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType),
                      Type::tagged(spDef.dataType, tagType),
                      ctrlType};
-          outTypes = {Type::tagged(Type::index(), tagType),
+          outTypes = {Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType),
                       Type::tagged(spDef.dataType, tagType)};
         } else {
-          inTypes = {Type::index(), spDef.dataType, Type::none()};
-          outTypes = {Type::index(), spDef.dataType};
+          inTypes = {Type::bits(ADDR_BIT_WIDTH), spDef.dataType, Type::none()};
+          outTypes = {Type::bits(ADDR_BIT_WIDTH), spDef.dataType};
         }
         break;
       }
@@ -830,6 +961,10 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       default:
         break;
       }
+
+      // Convert interface types to bits<N> equivalents for all PE kinds.
+      for (auto &t : inTypes) t = nativeToBitsType(t);
+      for (auto &t : outTypes) t = nativeToBitsType(t);
 
       if (useInlinePE) {
         // Inline PE form (Pattern B) for tagged PEs.
@@ -909,14 +1044,41 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         }
         os << ") {\n";
 
-        // Emit body with value types in ^bb0.
-        // Compute value types from tagged types.
-        std::vector<Type> bodyInTypes;
-        for (const auto &t : inTypes)
-          bodyInTypes.push_back(t.isTagged() ? t.getValueType() : t);
-        std::vector<Type> bodyOutTypes;
-        for (const auto &t : outTypes)
-          bodyOutTypes.push_back(t.isTagged() ? t.getValueType() : t);
+        // Emit body with native value types in ^bb0.
+        // Compute body types from original (pre-bits-conversion) native types.
+        std::vector<Type> bodyInTypes, bodyOutTypes;
+        switch (inst.kind) {
+        case ModuleKind::PE: {
+          auto &pd = peDefs[inst.defIdx];
+          for (const auto &t : pd.inputPorts)
+            bodyInTypes.push_back(t.isTagged() ? t.getValueType() : t);
+          for (const auto &t : pd.outputPorts)
+            bodyOutTypes.push_back(t.isTagged() ? t.getValueType() : t);
+          break;
+        }
+        case ModuleKind::ConstantPE: {
+          auto &cpDef = constantPEDefs[inst.defIdx];
+          bodyInTypes = {Type::none()};
+          bodyOutTypes = {cpDef.outputType.isTagged()
+                              ? cpDef.outputType.getValueType()
+                              : cpDef.outputType};
+          break;
+        }
+        case ModuleKind::LoadPE: {
+          auto &lpDef = loadPEDefs[inst.defIdx];
+          bodyInTypes = {Type::index(), lpDef.dataType, Type::none()};
+          bodyOutTypes = {Type::index(), lpDef.dataType};
+          break;
+        }
+        case ModuleKind::StorePE: {
+          auto &spDef = storePEDefs[inst.defIdx];
+          bodyInTypes = {Type::index(), spDef.dataType, Type::none()};
+          bodyOutTypes = {Type::index(), spDef.dataType};
+          break;
+        }
+        default:
+          break;
+        }
 
         switch (inst.kind) {
         case ModuleKind::PE: {
@@ -1015,7 +1177,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
 
     case ModuleKind::Switch: {
       auto &swDef = switchDefs[inst.defIdx];
-      std::string typeStr = swDef.portType.toMLIR();
+      std::string fallbackType = nativeToBitsType(swDef.portType).toMLIR();
       auto flatConn = flattenConnectivity(swDef.connectivity, swDef.numOut,
                                           swDef.numIn);
 
@@ -1029,10 +1191,31 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         if (o > 0) os << ", ";
         os << operands[o];
       }
-      os << " : " << typeStr << " -> ";
+      // Per-port input types from upstream connections.
+      os << " : ";
+      bool allInputsSame = true;
+      std::string firstInType = operandTypes.empty()
+                                    ? fallbackType
+                                    : (operandTypes[0].empty() ? fallbackType
+                                                               : operandTypes[0]);
+      for (size_t o = 0; o < operandTypes.size(); ++o) {
+        std::string t = operandTypes[o].empty() ? fallbackType : operandTypes[o];
+        if (t != firstInType) allInputsSame = false;
+      }
+      if (allInputsSame) {
+        os << firstInType;
+      } else {
+        for (size_t o = 0; o < operandTypes.size(); ++o) {
+          if (o > 0) os << ", ";
+          os << (operandTypes[o].empty() ? fallbackType : operandTypes[o]);
+        }
+      }
+      os << " -> ";
+      // Per-port output types from pre-allocated downstream resolution.
       for (unsigned o = 0; o < swDef.numOut; ++o) {
         if (o > 0) os << ", ";
-        os << typeStr;
+        auto tit = instResultType.find({ii, (int)o});
+        os << (tit != instResultType.end() ? tit->second : fallbackType);
       }
       os << "\n";
       break;
@@ -1040,7 +1223,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
 
     case ModuleKind::TemporalSwitch: {
       auto &tsDef = temporalSwitchDefs[inst.defIdx];
-      std::string typeStr = tsDef.interfaceType.toMLIR();
+      std::string typeStr = nativeToBitsType(tsDef.interfaceType).toMLIR();
       auto flatConn = flattenConnectivity(tsDef.connectivity, tsDef.numOut,
                                           tsDef.numIn);
 
@@ -1068,7 +1251,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       auto &memDef = memoryDefs[inst.defIdx];
       std::string memrefStr = memDef.shape.toMLIR();
       Type elemType = memDef.shape.getElemType();
-      std::string elemStr = elemType.toMLIR();
+      std::string elemStr = nativeToBitsType(elemType).toMLIR();
 
       // Unified tagging: tagged when max(ldCount, stCount) > 1
       bool isTagged = (memDef.ldCount > 1 || memDef.stCount > 1);
@@ -1084,6 +1267,8 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       if (memDef.lsqDepth > 0)
         os << ", lsqDepth = " << memDef.lsqDepth;
       os << ", is_private = " << (memDef.isPrivate ? "true" : "false");
+      if (memDef.numRegion != 1)
+        os << ", numRegion = " << memDef.numRegion;
       os << "]\n      (";
       for (size_t o = 0; o < operands.size(); ++o) {
         if (o > 0) os << ", ";
@@ -1131,7 +1316,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       auto &emDef = extMemoryDefs[inst.defIdx];
       std::string memrefStr = emDef.shape.toMLIR();
       Type elemType = emDef.shape.getElemType();
-      std::string elemStr = elemType.toMLIR();
+      std::string elemStr = nativeToBitsType(elemType).toMLIR();
 
       // Unified tagging: tagged when max(ldCount, stCount) > 1
       bool isTagged = (emDef.ldCount > 1 || emDef.stCount > 1);
@@ -1146,6 +1331,8 @@ std::string ADGBuilder::Impl::generateMLIR() const {
          << ", stCount = " << emDef.stCount;
       if (emDef.lsqDepth > 0)
         os << ", lsqDepth = " << emDef.lsqDepth;
+      if (emDef.numRegion != 1)
+        os << ", numRegion = " << emDef.numRegion;
       os << "]\n      (";
       for (size_t o = 0; o < operands.size(); ++o) {
         if (o > 0) os << ", ";
@@ -1186,17 +1373,19 @@ std::string ADGBuilder::Impl::generateMLIR() const {
 
     case ModuleKind::AddTag: {
       auto &atDef = addTagDefs[inst.defIdx];
+      Type bitsVal = nativeToBitsType(atDef.valueType);
       os << "fabric.add_tag " << operands[0]
          << " {tag = 0 : " << atDef.tagType.toMLIR() << "} : "
-         << atDef.valueType.toMLIR() << " -> "
-         << Type::tagged(atDef.valueType, atDef.tagType).toMLIR() << "\n";
+         << bitsVal.toMLIR() << " -> "
+         << Type::tagged(bitsVal, atDef.tagType).toMLIR() << "\n";
       break;
     }
 
     case ModuleKind::MapTag: {
       auto &mtDef = mapTagDefs[inst.defIdx];
-      Type inTagged = Type::tagged(mtDef.valueType, mtDef.inputTagType);
-      Type outTagged = Type::tagged(mtDef.valueType, mtDef.outputTagType);
+      Type bitsVal = nativeToBitsType(mtDef.valueType);
+      Type inTagged = Type::tagged(bitsVal, mtDef.inputTagType);
+      Type outTagged = Type::tagged(bitsVal, mtDef.outputTagType);
       os << "fabric.map_tag " << operands[0]
          << " {table_size = " << mtDef.tableSize << "} : "
          << inTagged.toMLIR() << " -> " << outTagged.toMLIR() << "\n";
@@ -1205,9 +1394,10 @@ std::string ADGBuilder::Impl::generateMLIR() const {
 
     case ModuleKind::DelTag: {
       auto &dtDef = delTagDefs[inst.defIdx];
-      Type outType = dtDef.inputType.getValueType();
+      Type bitsInput = nativeToBitsType(dtDef.inputType);
+      Type outType = bitsInput.getValueType();
       os << "fabric.del_tag " << operands[0]
-         << " : " << dtDef.inputType.toMLIR() << " -> "
+         << " : " << bitsInput.toMLIR() << " -> "
          << outType.toMLIR() << "\n";
       break;
     }
@@ -1220,7 +1410,7 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       os << "] ";
       if (fifoDef.bypassable)
         os << "{bypassed = false} ";
-      os << operands[0] << " : " << fifoDef.elementType.toMLIR() << "\n";
+      os << operands[0] << " : " << nativeToBitsType(fifoDef.elementType).toMLIR() << "\n";
       break;
     }
 
@@ -1240,7 +1430,8 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           if (it != instResultSSA.end()) {
             const auto &p = ports[outPortIdx];
             std::string typeStr =
-                p.isMemref ? p.memrefType.toMLIR() : p.type.toMLIR();
+                p.isMemref ? p.memrefType.toMLIR()
+                           : nativeToBitsType(p.type).toMLIR();
             yieldArgs.push_back({it->second, typeStr});
           }
           break;

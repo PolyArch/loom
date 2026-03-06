@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Dialect/Fabric/FabricTypeUtils.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "loom/Hardware/Common/FabricError.h"
 
@@ -18,23 +19,17 @@ using namespace loom::fabric;
 // Shared verification helpers
 //===----------------------------------------------------------------------===//
 
-static LogicalResult verifyUniformType(Operation *op,
-                                       OperandRange inputs,
-                                       ResultRange outputs) {
-  SmallVector<Type> allTypes;
-  for (auto v : inputs)
-    allTypes.push_back(v.getType());
-  for (auto v : outputs)
-    allTypes.push_back(v.getType());
-  if (allTypes.empty())
-    return success();
-  Type first = allTypes.front();
-  for (Type t : allTypes) {
-    if (t != first)
-      return op->emitOpError("all ports must have the same type; got ")
-             << first << " and " << t;
-  }
-  return success();
+/// Check whether a type is a valid routing payload type for fabric.switch.
+/// Switches accept: BitsType, NoneType, or TaggedType whose value type
+/// is BitsType or NoneType (tagged switches are wider crossbars passing
+/// data+tag without interpretation).
+static bool isValidRoutingPayloadType(Type t) {
+  if (isa<dataflow::BitsType>(t) || isa<NoneType>(t))
+    return true;
+  if (auto tagged = dyn_cast<dataflow::TaggedType>(t))
+    return isa<dataflow::BitsType>(tagged.getValueType()) ||
+           isa<NoneType>(tagged.getValueType());
+  return false;
 }
 
 static LogicalResult
@@ -73,63 +68,6 @@ verifyConnectivityTable(Operation *op, ArrayRef<int8_t> table,
              << " input column " << i << " has no connections";
   }
 
-  return success();
-}
-
-/// Verify sparse format rules for human-readable config entries.
-/// Checks: mixed format, ascending slot order, implicit hole consistency.
-static LogicalResult verifySparseFormat(Operation *op, ArrayAttr entries,
-                                        StringRef prefix,
-                                        StringRef mixedCode,
-                                        StringRef orderCode,
-                                        StringRef holeCode) {
-  bool hasHex = false, hasHuman = false, hasExplicitInvalid = false;
-  SmallVector<int64_t> slotIndices;
-
-  for (auto entry : entries) {
-    auto str = dyn_cast<StringAttr>(entry);
-    if (!str)
-      continue;
-    StringRef s = str.getValue();
-    if (s.starts_with("0x") || s.starts_with("0X")) {
-      hasHex = true;
-    } else {
-      hasHuman = true;
-      if (s.contains("invalid"))
-        hasExplicitInvalid = true;
-      // Parse slot index from "prefix[N]: ..."
-      size_t lb = s.find('['), rb = s.find(']');
-      if (lb != StringRef::npos && rb != StringRef::npos && rb > lb) {
-        unsigned idx;
-        if (!s.substr(lb + 1, rb - lb - 1).getAsInteger(10, idx))
-          slotIndices.push_back(idx);
-      }
-    }
-  }
-
-  if (hasHex && hasHuman)
-    return op->emitOpError(mixedCode)
-           << " " << prefix
-           << " entries mix human-readable and hex formats";
-
-  for (unsigned i = 1; i < slotIndices.size(); ++i) {
-    if (slotIndices[i] <= slotIndices[i - 1])
-      return op->emitOpError(orderCode)
-             << " " << prefix
-             << " slot indices must be strictly ascending; got "
-             << slotIndices[i - 1] << " followed by " << slotIndices[i];
-  }
-
-  if (hasExplicitInvalid) {
-    for (unsigned i = 1; i < slotIndices.size(); ++i) {
-      if (slotIndices[i] != slotIndices[i - 1] + 1)
-        return op->emitOpError(holeCode)
-               << " " << prefix << " has implicit hole between slot "
-               << slotIndices[i - 1] << " and " << slotIndices[i]
-               << "; all holes must be explicit when explicit invalid"
-                  " entries exist";
-    }
-  }
   return success();
 }
 
@@ -219,10 +157,17 @@ ParseResult SwitchOp::parse(OpAsmParser &parser, OperationState &result) {
     if (parser.parseColon())
       return failure();
 
-    // Parse uniform input type.
-    Type inputType;
-    if (parser.parseType(inputType))
+    // Parse input types (comma-separated). A single type with multiple
+    // operands is expanded uniformly for backwards compatibility.
+    SmallVector<Type> inputTypes;
+    if (parser.parseTypeList(inputTypes))
       return failure();
+
+    if (inputTypes.size() == 1 && operands.size() > 1)
+      inputTypes.resize(operands.size(), inputTypes[0]);
+    else if (inputTypes.size() != operands.size())
+      return parser.emitError(parser.getNameLoc(), "expected ")
+             << operands.size() << " input types, got " << inputTypes.size();
 
     if (parser.parseArrow())
       return failure();
@@ -232,8 +177,6 @@ ParseResult SwitchOp::parse(OpAsmParser &parser, OperationState &result) {
     if (parser.parseTypeList(outputTypes))
       return failure();
 
-    // All inputs have the same type.
-    SmallVector<Type> inputTypes(operands.size(), inputType);
     if (parser.resolveOperands(operands, inputTypes, parser.getNameLoc(),
                                result.operands))
       return failure();
@@ -279,8 +222,23 @@ void SwitchOp::print(OpAsmPrinter &p) {
       p.printOperands(getInputs());
     }
     p << " : ";
-    if (!getInputs().empty())
-      p.printType(getInputs().front().getType());
+    if (!getInputs().empty()) {
+      // Use compact single-type form when all input types are identical.
+      bool allSame = true;
+      Type firstType = getInputs().front().getType();
+      for (auto v : getInputs()) {
+        if (v.getType() != firstType) {
+          allSame = false;
+          break;
+        }
+      }
+      if (allSame) {
+        p.printType(firstType);
+      } else {
+        llvm::interleaveComma(getInputs().getTypes(), p,
+                              [&](Type t) { p.printType(t); });
+      }
+    }
     p << " -> ";
     llvm::interleaveComma(getOutputs().getTypes(), p,
                           [&](Type t) { p.printType(t); });
@@ -305,10 +263,49 @@ LogicalResult SwitchOp::verify() {
     if (!getInputs().empty() || !getOutputs().empty())
       return emitOpError(
           "named switch must not have SSA operands or results");
+    // Enforce routing payload types (bits, none, or tagged with bits/none).
+    for (Type t : fnType.getInputs()) {
+      if (!isValidRoutingPayloadType(t))
+        return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                           "switch port type must be !dataflow.bits<N>, "
+                           "none, or !dataflow.tagged with bits/none "
+                           "value; got "))
+               << t;
+    }
+    for (Type t : fnType.getResults()) {
+      if (!isValidRoutingPayloadType(t))
+        return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                           "switch port type must be !dataflow.bits<N>, "
+                           "none, or !dataflow.tagged with bits/none "
+                           "value; got "))
+               << t;
+    }
+    if (failed(verifyRoutingCompatibleTypes(getOperation(),
+                                            fnType.getInputs(),
+                                            fnType.getResults())))
+      return failure();
   } else {
     numInputs = getInputs().size();
     numOutputs = getOutputs().size();
-    if (failed(verifyUniformType(getOperation(), getInputs(), getOutputs())))
+    // Enforce routing payload types (bits, none, or tagged with bits/none).
+    for (auto v : getInputs()) {
+      if (!isValidRoutingPayloadType(v.getType()))
+        return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                           "switch port type must be !dataflow.bits<N>, "
+                           "none, or !dataflow.tagged with bits/none "
+                           "value; got "))
+               << v.getType();
+    }
+    for (auto v : getOutputs()) {
+      if (!isValidRoutingPayloadType(v.getType()))
+        return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                           "switch port type must be !dataflow.bits<N>, "
+                           "none, or !dataflow.tagged with bits/none "
+                           "value; got "))
+               << v.getType();
+    }
+    if (failed(verifyRoutingCompatibleTypes(getOperation(), getInputs(),
+                                            getOutputs())))
       return failure();
   }
 
@@ -502,6 +499,21 @@ LogicalResult TemporalSwOp::verify() {
   bool isNamed = getSymName().has_value();
   unsigned numInputs, numOutputs;
 
+  // Helper to verify a tagged type has a valid routing payload value type.
+  // Temporal switch payloads must be bits<N> or none (not nested tagged).
+  auto verifyTaggedRoutingPayload = [&](Type t) -> LogicalResult {
+    if (!isa<dataflow::TaggedType>(t))
+      return emitOpError("all ports must be !dataflow.tagged; got ") << t;
+    auto tagged = cast<dataflow::TaggedType>(t);
+    Type valT = tagged.getValueType();
+    if (!isa<dataflow::BitsType>(valT) && !isa<NoneType>(valT))
+      return emitOpError(cplErrMsg(CplError::ROUTING_PAYLOAD_NOT_BITS,
+                         "temporal_sw tagged value type must be "
+                         "!dataflow.bits<N> or none; got "))
+             << valT;
+    return success();
+  };
+
   if (isNamed) {
     if (!getFunctionType())
       return emitOpError(
@@ -509,29 +521,31 @@ LogicalResult TemporalSwOp::verify() {
     auto fnType = *getFunctionType();
     numInputs = fnType.getNumInputs();
     numOutputs = fnType.getNumResults();
-    // Verify all types are tagged.
     for (Type t : fnType.getInputs()) {
-      if (!isa<dataflow::TaggedType>(t))
-        return emitOpError("all ports must be !dataflow.tagged; got ") << t;
+      if (failed(verifyTaggedRoutingPayload(t)))
+        return failure();
     }
     for (Type t : fnType.getResults()) {
-      if (!isa<dataflow::TaggedType>(t))
-        return emitOpError("all ports must be !dataflow.tagged; got ") << t;
+      if (failed(verifyTaggedRoutingPayload(t)))
+        return failure();
     }
+    if (failed(verifyRoutingCompatibleTypes(getOperation(),
+                                            fnType.getInputs(),
+                                            fnType.getResults())))
+      return failure();
   } else {
     numInputs = getInputs().size();
     numOutputs = getOutputs().size();
     for (auto v : getInputs()) {
-      if (!isa<dataflow::TaggedType>(v.getType()))
-        return emitOpError("all ports must be !dataflow.tagged; got ")
-               << v.getType();
+      if (failed(verifyTaggedRoutingPayload(v.getType())))
+        return failure();
     }
     for (auto v : getOutputs()) {
-      if (!isa<dataflow::TaggedType>(v.getType()))
-        return emitOpError("all ports must be !dataflow.tagged; got ")
-               << v.getType();
+      if (failed(verifyTaggedRoutingPayload(v.getType())))
+        return failure();
     }
-    if (failed(verifyUniformType(getOperation(), getInputs(), getOutputs())))
+    if (failed(verifyRoutingCompatibleTypes(getOperation(), getInputs(),
+                                            getOutputs())))
       return failure();
   }
 

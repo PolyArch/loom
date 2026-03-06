@@ -314,6 +314,11 @@ MemoryBuilder &MemoryBuilder::setPrivate(bool isPrivate) {
   return *this;
 }
 
+MemoryBuilder &MemoryBuilder::setNumRegion(unsigned n) {
+  builder_->impl_->memoryDefs[defId_].numRegion = n;
+  return *this;
+}
+
 MemoryBuilder &MemoryBuilder::setShape(MemrefType shape) {
   builder_->impl_->memoryDefs[defId_].shape = shape;
   return *this;
@@ -342,6 +347,11 @@ ExtMemoryBuilder &ExtMemoryBuilder::setStorePorts(unsigned count) {
 
 ExtMemoryBuilder &ExtMemoryBuilder::setQueueDepth(unsigned depth) {
   builder_->impl_->extMemoryDefs[defId_].lsqDepth = depth;
+  return *this;
+}
+
+ExtMemoryBuilder &ExtMemoryBuilder::setNumRegion(unsigned n) {
+  builder_->impl_->extMemoryDefs[defId_].numRegion = n;
   return *this;
 }
 

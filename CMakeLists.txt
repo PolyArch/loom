@@ -16,6 +16,16 @@ if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
   unset(_LOOM_CLANGXX CACHE)
 endif()
 
+# Use ccache if available to speed up rebuilds.
+if(NOT DEFINED CMAKE_C_COMPILER_LAUNCHER AND NOT DEFINED CMAKE_CXX_COMPILER_LAUNCHER)
+  find_program(_LOOM_CCACHE ccache)
+  if(_LOOM_CCACHE)
+    set(CMAKE_C_COMPILER_LAUNCHER "${_LOOM_CCACHE}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${_LOOM_CCACHE}")
+  endif()
+  unset(_LOOM_CCACHE CACHE)
+endif()
+
 project(loom LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -33,7 +43,7 @@ set(CIRCT_INCLUDE_TOOLS OFF CACHE BOOL "")
 set(CIRCT_BUILD_TOOLS OFF CACHE BOOL "")
 set(ESI_RUNTIME OFF CACHE BOOL "")
 
-add_subdirectory(externals/llvm-project/llvm)
+add_subdirectory(externals)
 
 list(APPEND CMAKE_MODULE_PATH
   "${CMAKE_CURRENT_SOURCE_DIR}/externals/llvm-project/llvm/cmake/modules"

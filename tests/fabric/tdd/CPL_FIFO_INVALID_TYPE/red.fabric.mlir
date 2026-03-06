@@ -1,8 +1,10 @@
 // RUN: not loom --adg %s 2>&1 | FileCheck %s
 // CHECK: CPL_FIFO_INVALID_TYPE
 
-// FIFO with an invalid type (i3 is not a native type).
-fabric.module @test_fifo_invalid_type(%a: i3) -> (i3) {
-  %out = fabric.fifo [depth = 2] %a : i3
-  fabric.yield %out : i3
+// Named FIFO with an invalid type (i3 is not bits<N> or none).
+fabric.fifo @bad_fifo [depth = 2] : (i3) -> (i3)
+
+fabric.module @test(%a: !dataflow.bits<32>) -> (!dataflow.bits<32>) {
+  %out = fabric.instance @bad_fifo(%a) : (!dataflow.bits<32>) -> (!dataflow.bits<32>)
+  fabric.yield %out : !dataflow.bits<32>
 }

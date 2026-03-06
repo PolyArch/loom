@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Dialect/Fabric/FabricTypeUtils.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "loom/Hardware/Common/FabricError.h"
 
@@ -144,22 +145,22 @@ void FifoOp::print(OpAsmPrinter &p) {
 // FifoOp verify
 //===----------------------------------------------------------------------===//
 
-/// Check if a type is a valid native type for fabric.fifo.
+/// Check whether a type is a valid scalar routing payload type.
+/// Routing nodes only accept: BitsType, NoneType.
+static bool isValidRoutingPayloadType(Type t) {
+  return isa<loom::dataflow::BitsType>(t) || isa<NoneType>(t);
+}
+
+/// Check if a type is a valid type for fabric.fifo.
+/// Only routing payload types (bits, none) and tagged types with
+/// routing payload value types are allowed.
 static bool isValidFifoType(Type type) {
-  // Native types: i1, i8, i16, i32, i64, f16, bf16, f32, f64, index, none.
-  if (auto intTy = dyn_cast<IntegerType>(type)) {
-    unsigned w = intTy.getWidth();
-    return w == 1 || w == 8 || w == 16 || w == 32 || w == 64;
-  }
-  if (isa<Float16Type, BFloat16Type, Float32Type, Float64Type>(type))
+  // Routing payload types: bits<N>, none.
+  if (isValidRoutingPayloadType(type))
     return true;
-  if (isa<IndexType>(type))
-    return true;
-  if (isa<NoneType>(type))
-    return true;
-  // Tagged types.
-  if (isa<loom::dataflow::TaggedType>(type))
-    return true;
+  // Tagged types with valid routing payload value type.
+  if (auto tagged = dyn_cast<loom::dataflow::TaggedType>(type))
+    return isValidRoutingPayloadType(tagged.getValueType());
   return false;
 }
 
@@ -173,14 +174,18 @@ LogicalResult FifoOp::verify() {
     auto fnType = *getFunctionType();
     if (fnType.getNumInputs() != 1 || fnType.getNumResults() != 1)
       return emitOpError("named fifo must have exactly 1 input and 1 output");
-    if (fnType.getInput(0) != fnType.getResult(0))
+    if (!isRoutingTypeCompatible(fnType.getInput(0), fnType.getResult(0)))
       return emitOpError(cplErrMsg(CplError::FIFO_TYPE_MISMATCH,
-                         "input type must match output type; got "))
+                         "input and output types must be bit-width compatible; got "))
              << fnType.getInput(0) << " vs " << fnType.getResult(0);
     if (!isValidFifoType(fnType.getInput(0)))
       return emitOpError(cplErrMsg(CplError::FIFO_INVALID_TYPE,
-                         "type must be a native type or !dataflow.tagged; got "))
+                         "type must be !dataflow.bits<N>, none, or !dataflow.tagged; got "))
              << fnType.getInput(0);
+    if (!isValidFifoType(fnType.getResult(0)))
+      return emitOpError(cplErrMsg(CplError::FIFO_INVALID_TYPE,
+                         "type must be !dataflow.bits<N>, none, or !dataflow.tagged; got "))
+             << fnType.getResult(0);
     // Named form should have no SSA operands/results.
     if (!getInputs().empty() || !getOutputs().empty())
       return emitOpError(
@@ -193,14 +198,15 @@ LogicalResult FifoOp::verify() {
     if (getOutputs().size() != 1)
       return emitOpError("inline fifo must have exactly 1 output; got ")
              << getOutputs().size();
-    if (getInputs().front().getType() != getOutputs().front().getType())
+    if (!isRoutingTypeCompatible(getInputs().front().getType(),
+                                getOutputs().front().getType()))
       return emitOpError(cplErrMsg(CplError::FIFO_TYPE_MISMATCH,
-                         "input type must match output type; got "))
+                         "input and output types must be bit-width compatible; got "))
              << getInputs().front().getType() << " vs "
              << getOutputs().front().getType();
     if (!isValidFifoType(getInputs().front().getType()))
       return emitOpError(cplErrMsg(CplError::FIFO_INVALID_TYPE,
-                         "type must be a native type or !dataflow.tagged; got "))
+                         "type must be !dataflow.bits<N>, none, or !dataflow.tagged; got "))
              << getInputs().front().getType();
   }
 

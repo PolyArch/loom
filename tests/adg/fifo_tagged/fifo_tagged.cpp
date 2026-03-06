@@ -74,7 +74,7 @@ int main() {
 
   const char *mlir = "Output/fifo_tagged.fabric.mlir";
   assert(mlirCount(mlir, "fabric.fifo") == 1 && "expected 1 fifo instance");
-  assert(mlirCount(mlir, "!dataflow.tagged<i32, i4>") >= 1 &&
+  assert(mlirCount(mlir, "!dataflow.tagged<!dataflow.bits<32>, i4>") >= 1 &&
          "expected tagged type in fifo");
 
   return 0;
