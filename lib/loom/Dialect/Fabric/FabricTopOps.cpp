@@ -115,32 +115,192 @@ struct CombInfo {
   }
 };
 
-/// Helper: extract connectivity-based operandDeps from a switch-like op.
-/// The connectivity_table is a flat DenseI8ArrayAttr of size numOut*numIn,
-/// stored output-major: table[o * numIn + i] = 1 means output o receives
-/// from input i. Returns per-output operandDeps using the table, or
-/// full-connectivity deps if no table is present.
-static CombInfo
-getSwitchCombInfo(Operation *op, unsigned numResults, unsigned numOperands) {
-  CombInfo info;
-  info.resultMask = llvm::SmallBitVector(numResults, true);
-  auto ctAttr = op->getAttrOfType<DenseI8ArrayAttr>("connectivity_table");
-  if (ctAttr) {
-    auto ct = ctAttr.asArrayRef();
-    for (unsigned o = 0; o < numResults; ++o) {
-      llvm::SmallBitVector deps(numOperands);
-      for (unsigned i = 0; i < numOperands; ++i) {
-        unsigned flatIdx = o * numOperands + i;
-        if (flatIdx < ct.size() && ct[flatIdx])
-          deps.set(i);
+/// Compute a union route bitmask from a TemporalSwOp's route_table (ArrayAttr).
+/// Each valid slot contributes its route bits (which connected positions are
+/// enabled). Returns a SmallBitVector of size `popcount(connectivity_table)`.
+/// If no route_table is present, returns an empty (all-false) vector.
+static llvm::SmallBitVector
+getTemporalSwRouteUnion(Operation *op, ArrayRef<int8_t> ct,
+                        unsigned numOutputs, unsigned numInputs) {
+  // Count connected positions (popcount of connectivity table).
+  unsigned popcount = 0;
+  for (int8_t v : ct)
+    if (v == 1)
+      ++popcount;
+
+  llvm::SmallBitVector unionBits(popcount);
+  auto rtAttr = op->getAttrOfType<ArrayAttr>("route_table");
+  if (!rtAttr)
+    return unionBits;
+
+  for (Attribute slotAttr : rtAttr) {
+    auto strAttr = dyn_cast<StringAttr>(slotAttr);
+    if (!strAttr)
+      continue;
+    StringRef slot = strAttr.getValue();
+    if (slot.contains("invalid"))
+      continue;
+
+    if (slot.starts_with("0x")) {
+      // Hex format: extract route bits from slot encoding.
+      // Slot format: slot[M+K : M+1] are the K route bits (M = tag width).
+      // For union purposes, decode the hex value and extract the route-bit
+      // region. Tag width = ceil(log2(numOutputs * numInputs)) but we just
+      // need the K route bits at bits [M+K-1 : M]. Since the exact tag width
+      // isn't stored on the op, use a simpler approach: parse the hex, mask
+      // out the lower tag bits, and take the next popcount bits.
+      //
+      // Find tag width from interface type (tagged<V, iK>).
+      // For inline ops, get tag type from the first SSA operand.
+      // For named ops, get it from the function_type attribute.
+      unsigned tagWidth = 0;
+      if (op->getNumOperands() > 0) {
+        if (auto tagged =
+                dyn_cast<dataflow::TaggedType>(op->getOperand(0).getType())) {
+          if (auto intTy = dyn_cast<IntegerType>(tagged.getTagType()))
+            tagWidth = intTy.getWidth();
+        }
+      } else if (auto ftAttr = op->getAttrOfType<TypeAttr>("function_type")) {
+        if (auto ft = dyn_cast<FunctionType>(ftAttr.getValue())) {
+          if (!ft.getInputs().empty()) {
+            if (auto tagged =
+                    dyn_cast<dataflow::TaggedType>(ft.getInputs().front())) {
+              if (auto intTy = dyn_cast<IntegerType>(tagged.getTagType()))
+                tagWidth = intTy.getWidth();
+            }
+          }
+        }
       }
-      info.operandDeps.push_back(deps);
+      // Parse hex value.
+      uint64_t hexVal = 0;
+      slot.substr(2).getAsInteger(16, hexVal);
+      // Route bits are at [tagWidth + popcount - 1 : tagWidth].
+      uint64_t routeBits = (hexVal >> tagWidth) & ((1ULL << popcount) - 1);
+      for (unsigned b = 0; b < popcount; ++b) {
+        if (routeBits & (1ULL << b))
+          unionBits.set(b);
+      }
+    } else {
+      // Human-readable format: parse "O[out]<-I[in]" pairs.
+      // Map each (out, in) to the route-bit position (row-major order of
+      // connected positions in connectivity_table).
+      //
+      // Build a mapping from (out, in) -> bit position.
+      SmallVector<std::pair<unsigned, unsigned>> connectedPos;
+      for (unsigned o = 0; o < numOutputs; ++o)
+        for (unsigned i = 0; i < numInputs; ++i)
+          if (ct[o * numInputs + i] == 1)
+            connectedPos.push_back({o, i});
+
+      StringRef routes = slot;
+      while (!routes.empty()) {
+        size_t oPos = routes.find("O[");
+        if (oPos == StringRef::npos)
+          break;
+        routes = routes.substr(oPos + 2);
+        size_t oBracket = routes.find(']');
+        if (oBracket == StringRef::npos)
+          break;
+        unsigned outIdx;
+        if (routes.substr(0, oBracket).getAsInteger(10, outIdx))
+          break;
+        routes = routes.substr(oBracket + 1);
+        size_t iPos = routes.find("I[");
+        if (iPos == StringRef::npos)
+          break;
+        routes = routes.substr(iPos + 2);
+        size_t iBracket = routes.find(']');
+        if (iBracket == StringRef::npos)
+          break;
+        unsigned inIdx;
+        if (routes.substr(0, iBracket).getAsInteger(10, inIdx))
+          break;
+        routes = routes.substr(iBracket + 1);
+        // Find the bit position for (outIdx, inIdx).
+        for (unsigned b = 0; b < connectedPos.size(); ++b) {
+          if (connectedPos[b].first == outIdx &&
+              connectedPos[b].second == inIdx) {
+            unionBits.set(b);
+            break;
+          }
+        }
+      }
     }
-  } else {
-    // No connectivity table: full crossbar -- all outputs depend on all inputs.
-    return CombInfo::fullConnectivity(numResults, numOperands);
+  }
+  return unionBits;
+}
+
+/// Helper: expand a route bitmask (one bit per connected position) against a
+/// connectivity_table into per-output operandDeps. The route bits are ordered
+/// row-major over connected positions in the connectivity table.
+static CombInfo
+expandRouteBitsToInfo(ArrayRef<int8_t> ct, const llvm::SmallBitVector &routeBits,
+                      unsigned numResults, unsigned numOperands) {
+  CombInfo info;
+  info.resultMask.resize(numResults);
+  unsigned bitIdx = 0;
+  for (unsigned o = 0; o < numResults; ++o) {
+    llvm::SmallBitVector deps(numOperands);
+    for (unsigned i = 0; i < numOperands; ++i) {
+      unsigned flatIdx = o * numOperands + i;
+      if (flatIdx < ct.size() && ct[flatIdx] == 1) {
+        if (bitIdx < routeBits.size() && routeBits.test(bitIdx))
+          deps.set(i);
+        ++bitIdx;
+      }
+    }
+    if (deps.any())
+      info.resultMask.set(o);
+    info.operandDeps.push_back(deps);
   }
   return info;
+}
+
+/// Helper: extract combinational path info from a switch-like op.
+/// The connectivity_table is a flat DenseI8ArrayAttr of size numOut*numIn,
+/// stored output-major: table[o * numIn + i] = 1 means output o receives
+/// from input i.
+///
+/// Configuration-aware: if route_table is absent (unconfigured switch), the
+/// switch contributes no combinational edges (empty CombInfo). Only when a
+/// route_table is present does the switch become combinational on the paths
+/// that the routing configuration actually enables.
+static CombInfo
+getSwitchCombInfo(Operation *op, unsigned numResults, unsigned numOperands) {
+  auto ctAttr = op->getAttrOfType<DenseI8ArrayAttr>("connectivity_table");
+
+  // Synthesize default full-crossbar connectivity if absent (per spec,
+  // missing connectivity_table means all-1s full crossbar).
+  SmallVector<int8_t> defaultCt;
+  auto getConnectivity = [&]() -> ArrayRef<int8_t> {
+    if (ctAttr)
+      return ctAttr.asArrayRef();
+    defaultCt.assign(numResults * numOperands, 1);
+    return ArrayRef<int8_t>(defaultCt);
+  };
+
+  // SwitchOp: check DenseI8ArrayAttr route_table.
+  if (auto rtAttr = op->getAttrOfType<DenseI8ArrayAttr>("route_table")) {
+    auto ct = getConnectivity();
+    // Build route bitmask from DenseI8 route_table.
+    llvm::SmallBitVector routeBits(rtAttr.size());
+    for (unsigned b = 0; b < rtAttr.size(); ++b) {
+      if (rtAttr[b])
+        routeBits.set(b);
+    }
+    return expandRouteBitsToInfo(ct, routeBits, numResults, numOperands);
+  }
+
+  // TemporalSwOp: check ArrayAttr route_table.
+  if (auto rtAttr = op->getAttrOfType<ArrayAttr>("route_table")) {
+    auto ct = getConnectivity();
+    auto unionBits =
+        getTemporalSwRouteUnion(op, ct, numResults, numOperands);
+    return expandRouteBitsToInfo(ct, unionBits, numResults, numOperands);
+  }
+
+  // No route_table: unconfigured switch contributes no combinational edges.
+  return CombInfo::empty(numResults);
 }
 
 /// Compute combinational path info for `op`. For SwitchOp/TemporalSwOp,
@@ -459,9 +619,9 @@ LogicalResult ModuleOp::verify() {
       }
 
       if (hasCombLoop)
-        return emitOpError(cplErrMsg(CplError::ADG_COMBINATIONAL_LOOP,
-            "a cycle of purely combinational operations exists; "
-            "insert a fabric.fifo or sequential element to break it"));
+        return emitOpError(cplErrMsg(CfgError::ADG_COMBINATIONAL_LOOP,
+            "route_table configuration creates a combinational loop; "
+            "change routing or insert a fabric.fifo to break it"));
     }
   }
 
@@ -498,8 +658,8 @@ LogicalResult ModuleOp::verify() {
 // Instance helpers
 //===----------------------------------------------------------------------===//
 
-/// Get the function_type from a target operation that may be a ModuleOp, PEOp,
-/// TemporalPEOp, SwitchOp, TemporalSwOp, MemoryOp, ExtMemoryOp, or FifoOp.
+/// Get the function_type from a target operation. Only PEOp, TemporalPEOp,
+/// and ModuleOp are valid instance targets.
 static std::optional<FunctionType> getTargetFunctionType(Operation *target) {
   if (auto mod = dyn_cast<ModuleOp>(target))
     return mod.getFunctionType();
@@ -510,31 +670,6 @@ static std::optional<FunctionType> getTargetFunctionType(Operation *target) {
   }
   if (auto tpe = dyn_cast<TemporalPEOp>(target))
     return tpe.getFunctionType();
-  if (auto sw = dyn_cast<SwitchOp>(target)) {
-    if (auto ft = sw.getFunctionType())
-      return *ft;
-    return std::nullopt;
-  }
-  if (auto tsw = dyn_cast<TemporalSwOp>(target)) {
-    if (auto ft = tsw.getFunctionType())
-      return *ft;
-    return std::nullopt;
-  }
-  if (auto mem = dyn_cast<MemoryOp>(target)) {
-    if (auto ft = mem.getFunctionType())
-      return *ft;
-    return std::nullopt;
-  }
-  if (auto ext = dyn_cast<ExtMemoryOp>(target)) {
-    if (auto ft = ext.getFunctionType())
-      return *ft;
-    return std::nullopt;
-  }
-  if (auto fifo = dyn_cast<FifoOp>(target)) {
-    if (auto ft = fifo.getFunctionType())
-      return *ft;
-    return std::nullopt;
-  }
   return std::nullopt;
 }
 
@@ -634,6 +769,15 @@ LogicalResult InstanceOp::verify() {
     return emitOpError(cplErrMsg(CplError::INSTANCE_UNRESOLVED,
                        "referenced symbol '"))
            << getModule() << "' does not exist";
+
+  // CPL_INSTANCE_ILLEGAL_TARGET: only PE, TemporalPE, and ModuleOp are
+  // valid instance targets. Switch, FIFO, memory, and extmemory should be
+  // used inline.
+  if (!isa<PEOp, TemporalPEOp, ModuleOp>(target))
+    return emitOpError(cplErrMsg(CplError::INSTANCE_ILLEGAL_TARGET,
+                       "fabric.instance may only target fabric.pe, "
+                       "fabric.temporal_pe, or fabric.module; '"))
+           << getModule() << "' is not a valid target";
 
   // CPL_PE_INSTANCE_ILLEGAL_TARGET: inside fabric.pe, only named fabric.pe
   // targets are legal.

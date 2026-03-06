@@ -1,5 +1,3 @@
-add_subdirectory(mapper-app)
-
 add_custom_target(check-loom-adg
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/adg_test.sh"
     "${LOOM_RUNTIME_DIR}/loom"
@@ -68,6 +66,13 @@ add_custom_target(check-loom-sv
     "${LOOM_RUNTIME_DIR}/loom"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS loom loom-sdk
+)
+
+add_custom_target(check-loom-mapper-unit-smoke
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_unit_smoke.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
 )
 
 add_custom_target(check-loom-spec-errcode

@@ -124,7 +124,7 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_LOADPE_TRANSPARENT_QUEUE_DEPTH | A transparent load PE has nonzero `queue_depth` |
 | CPL_STOREPE_TRANSPARENT_NATIVE | A store PE uses transparent mode but has native (untagged) interface |
 | CPL_STOREPE_TRANSPARENT_QUEUE_DEPTH | A transparent store PE has nonzero `queue_depth` |
-| CPL_ADG_COMBINATIONAL_LOOP | A cycle exists in the connection graph where every element is combinational (zero-delay), causing signal instability |
+| CPL_INSTANCE_ILLEGAL_TARGET | `fabric.instance` targets an operation that is not `fabric.pe`, `fabric.temporal_pe`, or `fabric.module` |
 | CPL_FIFO_DEPTH_ZERO | `fabric.fifo` depth must be >= 1 |
 | CPL_FIFO_TYPE_MISMATCH | `fabric.fifo` input and output types do not match |
 | CPL_FIFO_INVALID_TYPE | `fabric.fifo` type must be `!dataflow.bits<N>`, `none`, or `!dataflow.tagged` with `bits<N>`/`none` value |
@@ -209,6 +209,7 @@ fabric.pe @no_tag(%a: !dataflow.tagged<i32, i4>) -> (!dataflow.tagged<i32, i4>)
 |------|--------|-----------|
 | 0 | OK | No error |
 | 1 | CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT | Multiple inputs route to the same output (fan-in) |
+| 2 | CFG_ADG_COMBINATIONAL_LOOP | A `route_table` configuration creates a cycle where every element is combinational (zero-delay), causing signal instability |
 | 4 | CFG_TEMPORAL_SW_ROUTE_SAME_TAG_INPUTS_TO_SAME_OUTPUT | In one temporal-sw slot, multiple inputs route to the same output (per-slot fan-in) |
 | 5 | CFG_TEMPORAL_SW_DUP_TAG | Duplicate tags in `route_table` slots |
 | 6 | CFG_TEMPORAL_PE_DUP_TAG | Duplicate tags in `instruction_mem` |

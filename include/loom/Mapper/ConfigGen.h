@@ -15,6 +15,9 @@
 #include "loom/Mapper/Graph.h"
 #include "loom/Mapper/MappingState.h"
 
+#include "llvm/ADT/DenseMap.h"
+#include "mlir/IR/Operation.h"
+
 #include <string>
 #include <vector>
 
@@ -39,6 +42,13 @@ public:
   bool writeMappingJson(const MappingState &state, const Graph &dfg,
                         const Graph &adg, const std::string &path,
                         const std::string &profile, int seed);
+
+  /// Write a configured copy of the fabric MLIR with route_table attributes
+  /// set on switch ops according to the mapping result.
+  bool writeConfiguredFabric(
+      const MappingState &state, const Graph &adg,
+      const llvm::DenseMap<mlir::Operation *, IdIndex> &opMap,
+      mlir::Operation *adgModule, const std::string &path);
 
 private:
   /// Per-node config fragment: node name -> (word offset, word count, data).

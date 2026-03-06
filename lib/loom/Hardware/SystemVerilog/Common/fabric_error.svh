@@ -28,7 +28,8 @@ localparam logic [15:0] FABRIC_OK = 16'd0;
 // Switch: multiple inputs route to the same output (fan-in)
 localparam logic [15:0] CFG_SWITCH_ROUTE_MIX_INPUTS_TO_SAME_OUTPUT = 16'd1;
 
-// Code 2 reserved (was CFG_SWITCH_ROUTE_MULTI_IN, removed)
+// Combinational loop created by route_table configuration
+localparam logic [15:0] CFG_ADG_COMBINATIONAL_LOOP = 16'd2;
 
 // Code 3 reserved (was CFG_TEMPORAL_SW_ROUTE_MULTI_OUT, removed)
 

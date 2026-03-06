@@ -265,6 +265,7 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
 
     IdIndex nodeId = createNodeFromOp(graph, op, builder, valueToPort);
     opToNode[&op] = nodeId;
+    opMap[&op] = nodeId;
 
     // Track temporal_pe ops for Phase C.
     if (effectiveName == "fabric.temporal_pe") {

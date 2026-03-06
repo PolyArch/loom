@@ -932,10 +932,12 @@ Performs comprehensive validation of the constructed ADG.
    - LSQ depth requirements met
 
 7. **Combinational loop detection**
-   - A cycle where every element is combinational (zero-delay) is forbidden
-   - Combinational ops: Switch, TemporalSwitch, AddTag, MapTag, DelTag
-   - Sequential ops break loops: PE, TemporalPE, Memory, ExtMemory, Fifo
-   - Violations raise `CPL_ADG_COMBINATIONAL_LOOP`
+   - A cycle where every element is combinational (zero-delay) is a
+     configuration error (`CFG_ADG_COMBINATIONAL_LOOP`), detected only when
+     `route_table` attributes create the cycle
+   - Unconfigured switches (no `route_table`) contribute no combinational edges
+   - This check is performed by `ModuleOp::verify()` in the Fabric dialect,
+     not in ADGBuilder validation (ADGBuilder has no route_table data)
 
 7. **Template deduplication**
    - Multiple module definitions with identical hardware structure are merged

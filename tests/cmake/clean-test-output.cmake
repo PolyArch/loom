@@ -78,6 +78,22 @@ if(IS_DIRECTORY "${SOURCE_DIR}/tests/spec/Output")
   message(STATUS "Removed ${SOURCE_DIR}/tests/spec/Output")
 endif()
 
+# Remove mapper smoke test output directories
+file(GLOB_RECURSE MAPPER_OUTPUT_DIRS "${SOURCE_DIR}/tests/mapper/*/Output")
+foreach(dir IN LISTS MAPPER_OUTPUT_DIRS)
+  if(IS_DIRECTORY "${dir}")
+    file(REMOVE_RECURSE "${dir}")
+    message(STATUS "Removed ${dir}")
+  endif()
+endforeach()
+
+# Remove mapper parallel files
+file(GLOB MAPPER_PARALLEL_FILES "${SOURCE_DIR}/tests/mapper/*/*.parallel.sh")
+foreach(f IN LISTS MAPPER_PARALLEL_FILES)
+  file(REMOVE "${f}")
+  message(STATUS "Removed ${f}")
+endforeach()
+
 # Remove results directory
 if(IS_DIRECTORY "${SOURCE_DIR}/tests/.results")
   file(REMOVE_RECURSE "${SOURCE_DIR}/tests/.results")

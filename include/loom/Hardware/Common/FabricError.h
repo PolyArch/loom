@@ -4,11 +4,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Single source of truth for all CPL_ (compile-time) error code symbols.
-// Other files that emit CPL_ errors should include this header and use these
-// constants instead of inline string literals.
+// Single source of truth for all CPL_ (compile-time) and CFG_ (configuration)
+// error code symbols used in C++. Other files that emit these errors should
+// include this header and use these constants instead of inline string literals.
 //
-// CFG_ and RT_ (hardware runtime) error codes are defined in:
+// CFG_ and RT_ (hardware runtime) error codes are also defined in:
 //   lib/loom/Hardware/SystemVerilog/Common/fabric_error.svh
 //
 // The normative specification for all error codes is:
@@ -248,6 +248,8 @@ inline constexpr const char *INSTANCE_RESULT_MISMATCH =
     "CPL_INSTANCE_RESULT_MISMATCH";
 inline constexpr const char *INSTANCE_CYCLIC_REFERENCE =
     "CPL_INSTANCE_CYCLIC_REFERENCE";
+inline constexpr const char *INSTANCE_ILLEGAL_TARGET =
+    "CPL_INSTANCE_ILLEGAL_TARGET";
 
 // --- Connection Errors ---
 inline constexpr const char *FANOUT_MODULE_INNER =
@@ -262,8 +264,6 @@ inline constexpr const char *INPUT_UNCONNECTED =
     "CPL_INPUT_UNCONNECTED";
 inline constexpr const char *MULTI_DRIVER =
     "CPL_MULTI_DRIVER";
-inline constexpr const char *ADG_COMBINATIONAL_LOOP =
-    "CPL_ADG_COMBINATIONAL_LOOP";
 
 // --- Handshake Conversion Errors ---
 inline constexpr const char *HANDSHAKE_CTRL_MULTI_MEM =
@@ -271,12 +271,21 @@ inline constexpr const char *HANDSHAKE_CTRL_MULTI_MEM =
 
 } // namespace CplError
 
-/// Format a bracketed error prefix: "[CPL_FOO] msg"
+/// Configuration-time error code constants (CFG_ prefix).
+/// These errors depend on runtime configuration data (e.g. route_table).
+namespace CfgError {
+
+inline constexpr const char *ADG_COMBINATIONAL_LOOP =
+    "CFG_ADG_COMBINATIONAL_LOOP";
+
+} // namespace CfgError
+
+/// Format a bracketed error prefix: "[CPL_FOO] msg" or "[CFG_BAR] msg"
 inline std::string cplErrMsg(const char *code, const char *msg) {
   return std::string("[") + code + "] " + msg;
 }
 
-/// Format a bracketed error code: "[CPL_FOO]"
+/// Format a bracketed error code: "[CPL_FOO]" or "[CFG_BAR]"
 inline std::string cplErrCode(const char *code) {
   return std::string("[") + code + "]";
 }

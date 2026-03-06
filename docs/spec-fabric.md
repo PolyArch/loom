@@ -177,9 +177,11 @@ See [spec-fabric-error.md](./spec-fabric-error.md) for error code definitions.
 The body of `fabric.module` uses **Graph region** semantics (MLIR
 `RegionKind::Graph`), which allows forward references between operations.
 This is necessary because hardware interconnect graphs naturally contain
-cycles (e.g., torus wraparound, feedback loops). Physical cycles are allowed
-as long as they are not **combinational loops** (cycles where every element
-has zero delay). See `CPL_ADG_COMBINATIONAL_LOOP` in
+cycles (e.g., torus wraparound, feedback loops). Physical cycles among
+combinational elements are allowed as long as the **runtime routing
+configuration** (`route_table`) does not create a combinational loop.
+Unconfigured switches (no `route_table`) contribute no combinational
+edges. See `CFG_ADG_COMBINATIONAL_LOOP` in
 [spec-fabric-error.md](./spec-fabric-error.md).
 
 Only fabric operations are allowed at the module level.
@@ -288,14 +290,12 @@ Instantiates a named fabric module or hardware component.
 ### Constraints
 
 - The referenced symbol must be one of:
-  - `fabric.module`
   - `fabric.pe`
   - `fabric.temporal_pe`
-  - `fabric.switch`
-  - `fabric.temporal_sw`
-  - `fabric.memory`
-  - `fabric.extmemory`
-  - `fabric.fifo`
+  - `fabric.module`
+- Switch, FIFO, memory, and extmemory operations should be used inline, not
+  as named definitions with instance references. Violations raise
+  `CPL_INSTANCE_ILLEGAL_TARGET`.
 - The referenced symbol must exist. Violations raise
   `CPL_INSTANCE_UNRESOLVED`.
 - Operand count and types must match the referenced module signature.

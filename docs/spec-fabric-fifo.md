@@ -111,6 +111,11 @@ property is what allows FIFOs to break combinational loops: a cycle containing
 at least one FIFO is not a combinational loop because the FIFO introduces a
 clock boundary.
 
+**Note:** The combinational loop check (`CFG_ADG_COMBINATIONAL_LOOP`) is
+configuration-aware: it only fires when `route_table` attributes on switches
+create a cycle. Physical bidirectional connections between unconfigured
+switches are allowed.
+
 ## Backpressure Behavior
 
 `fabric.fifo` participates in valid/ready handshaking:

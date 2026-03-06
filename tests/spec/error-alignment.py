@@ -58,6 +58,7 @@ def extract_svh_codes(root: Path) -> set[str]:
 
 
 CPL_ERROR_NS_RE = re.compile(r"CplError::([A-Z][A-Z_]*[A-Z])\b")
+CFG_ERROR_NS_RE = re.compile(r"CfgError::([A-Z][A-Z_]*[A-Z])\b")
 
 
 def build_usage_map(root: Path) -> dict[str, set[str]]:
@@ -66,6 +67,7 @@ def build_usage_map(root: Path) -> dict[str, set[str]]:
     Searches for:
     - Full error code strings (CFG_XXX, RT_XXX, CPL_XXX)
     - CplError::XXX namespace references (mapped back to CPL_XXX)
+    - CfgError::XXX namespace references (mapped back to CFG_XXX)
     """
     usage: dict[str, set[str]] = {}
     search_paths = [str(root / d) for d in SEARCH_DIRS]
@@ -98,6 +100,22 @@ def build_usage_map(root: Path) -> dict[str, set[str]]:
         m = CPL_ERROR_NS_RE.fullmatch(ref)
         if m:
             code = "CPL_" + m.group(1)
+            usage.setdefault(code, set()).add(filepath)
+
+    # Search for CfgError::XXX namespace references (C++ usage pattern)
+    cmd = [
+        "rg", "-o", "--no-line-number", "--no-heading",
+        r"CfgError::[A-Z][A-Z_]*[A-Z]\b",
+    ] + search_paths
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    for line in result.stdout.splitlines():
+        if ":" not in line:
+            continue
+        filepath, ref = line.split(":", 1)
+        ref = ref.strip()
+        m = CFG_ERROR_NS_RE.fullmatch(ref)
+        if m:
+            code = "CFG_" + m.group(1)
             usage.setdefault(code, set()).add(filepath)
 
     return usage

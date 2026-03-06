@@ -75,8 +75,9 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
 def Fabric_InstanceOp : Fabric_Op<"instance", []> {
   let summary = "Instantiate a named fabric component";
   let description = [{
-    Instantiates a named fabric component (module, PE, switch, memory, etc.)
+    Instantiates a named fabric component (PE, temporal PE, or module)
     with the given operands and produces the corresponding results.
+    Switch, FIFO, memory, and extmemory operations should be used inline.
   }];
 
   let arguments = (ins

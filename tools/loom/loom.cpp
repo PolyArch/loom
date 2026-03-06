@@ -1018,6 +1018,15 @@ int main(int argc, char **argv) {
       return 1;
     }
 
+    // Emit configured fabric MLIR with route_table set on switches.
+    std::string fabric_path = base_path + ".fabric.mlir";
+    if (!config_gen.writeConfiguredFabric(mapper_result.state, adg,
+                                          adg_flattener.opMap,
+                                          adg_module.get(), fabric_path)) {
+      llvm::errs() << "warning: failed to write configured fabric: "
+                    << fabric_path << "\n";
+    }
+
     llvm::outs() << "mapping succeeded: " << base_path << ".config.bin\n";
 
     return 0;

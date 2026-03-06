@@ -206,9 +206,14 @@ void SwitchOp::print(OpAsmPrinter &p) {
 
   // Print optional {route_table = [...]}.
   if (getRouteTable().has_value()) {
-    p << " {route_table = ";
-    p.printAttribute(getRouteTableAttr());
-    p << "}";
+    p << " {route_table = [";
+    auto rt = *getRouteTable();
+    for (size_t i = 0; i < rt.size(); ++i) {
+      if (i > 0)
+        p << ", ";
+      p << static_cast<int>(rt[i]);
+    }
+    p << "]}";
   }
 
   if (isNamed) {

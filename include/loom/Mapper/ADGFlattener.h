@@ -16,6 +16,9 @@
 #include "loom/Mapper/ConnectivityMatrix.h"
 #include "loom/Mapper/Graph.h"
 
+#include "llvm/ADT/DenseMap.h"
+#include "mlir/IR/Operation.h"
+
 namespace loom {
 namespace fabric {
 class ModuleOp;
@@ -29,6 +32,9 @@ public:
 
   /// Get the connectivity matrix built during flatten().
   const ConnectivityMatrix &getConnectivityMatrix() const { return matrix; }
+
+  /// Mapping from MLIR Operation* to ADG node ID, populated during flatten().
+  llvm::DenseMap<mlir::Operation *, IdIndex> opMap;
 
 private:
   ConnectivityMatrix matrix;

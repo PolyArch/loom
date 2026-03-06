@@ -6,7 +6,10 @@
 
 #include "loom/Mapper/ConfigGen.h"
 
+#include "loom/Dialect/Fabric/FabricOps.h"
+
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
@@ -146,9 +149,9 @@ void genPEConfig(const Node *hwNode, const MappingState &state,
     packBits(words, bitPos, static_cast<uint64_t>(contCond), 5);
   }
 
-  // Ensure at least one word.
-  if (words.empty())
-    words.push_back(0);
+  // If no config bits were packed, leave words empty so the caller skips
+  // this node. Native compute PEs without tags/cmp/constant have
+  // CONFIG_WIDTH = 0 and must not occupy config_mem space.
 }
 
 /// Generate switch configuration: route enable bits based on actual routing.
@@ -401,7 +404,7 @@ bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
     bool hasConfig = false;
     if ((opName == "fabric.pe" || resClass == "functional") && hasMappedOps)
       hasConfig = true;
-    if (opName == "fabric.switch" && hasMappedOps)
+    if (opName == "fabric.switch")
       hasConfig = true;
     if (opName == "fabric.temporal_sw")
       hasConfig = true;
@@ -771,6 +774,88 @@ bool ConfigGen::writeMappingJson(const MappingState &state, const Graph &dfg,
   json.attributeEnd();
 
   json.objectEnd();
+  return true;
+}
+
+bool ConfigGen::writeConfiguredFabric(
+    const MappingState &state, const Graph &adg,
+    const llvm::DenseMap<mlir::Operation *, IdIndex> &opMap,
+    mlir::Operation *adgModule, const std::string &path) {
+  mlir::Builder builder(adgModule->getContext());
+
+  // Walk the top-level module body for fabric.module ops, then walk their
+  // body for fabric.switch ops.
+  adgModule->walk([&](fabric::SwitchOp switchOp) {
+    mlir::Operation *op = switchOp.getOperation();
+    auto it = opMap.find(op);
+    if (it == opMap.end())
+      return;
+    IdIndex hwId = it->second;
+
+    const Node *hwNode = adg.getNode(hwId);
+    if (!hwNode)
+      return;
+
+    unsigned numIn = hwNode->inputPorts.size();
+    unsigned numOut = hwNode->outputPorts.size();
+    if (numIn == 0 || numOut == 0)
+      return;
+
+    // Build active (output, input) transitions from routed paths.
+    llvm::DenseSet<uint64_t> activeTransitions;
+    for (const auto &pathVec : state.swEdgeToHwPaths) {
+      if (pathVec.empty())
+        continue;
+      for (size_t j = 1; j + 1 < pathVec.size(); j += 2) {
+        IdIndex inPortId = pathVec[j];
+        IdIndex outPortId = pathVec[j + 1];
+        const Port *inPort = adg.getPort(inPortId);
+        if (!inPort || inPort->parentNode != hwId)
+          continue;
+        for (unsigned i = 0; i < numIn; ++i) {
+          if (hwNode->inputPorts[i] == inPortId) {
+            for (unsigned o = 0; o < numOut; ++o) {
+              if (hwNode->outputPorts[o] == outPortId) {
+                uint64_t key = (static_cast<uint64_t>(o) << 32) | i;
+                activeTransitions.insert(key);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Get connectivity_table from the MLIR op attribute.
+    auto connTable = switchOp.getConnectivityTableAttr();
+
+    // Build compressed route_table: only entries where connectivity == 1.
+    llvm::SmallVector<int8_t> routeTable;
+    for (unsigned o = 0; o < numOut; ++o) {
+      for (unsigned i = 0; i < numIn; ++i) {
+        unsigned idx = o * numIn + i;
+        bool connected = true;
+        if (connTable && !connTable.empty()) {
+          connected =
+              idx < static_cast<unsigned>(connTable.size()) && connTable[idx];
+        }
+        if (!connected)
+          continue;
+        uint64_t key = (static_cast<uint64_t>(o) << 32) | i;
+        routeTable.push_back(activeTransitions.count(key) ? 1 : 0);
+      }
+    }
+
+    switchOp.setRouteTableAttr(
+        mlir::DenseI8ArrayAttr::get(builder.getContext(), routeTable));
+  });
+
+  // Write the modified module to disk.
+  std::error_code ec;
+  llvm::raw_fd_ostream out(path, ec, llvm::sys::fs::OF_Text);
+  if (ec)
+    return false;
+  adgModule->print(out);
+  out << "\n";
   return true;
 }
 
