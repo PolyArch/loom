@@ -27,9 +27,9 @@ class ConfigGen {
 public:
   /// Generate all output files from a completed mapping.
   /// basePath: output path prefix (e.g., "output/kernel")
-  /// dumpMapping: if true, also write .mapping.json
+  /// Always writes: .config.bin, _addr.h, .map.json, .map.txt
   bool generate(const MappingState &state, const Graph &dfg, const Graph &adg,
-                const std::string &basePath, bool dumpMapping,
+                const std::string &basePath,
                 const std::string &profile, int seed);
 
   /// Write the binary config image.
@@ -38,10 +38,14 @@ public:
   /// Write the C address header.
   bool writeAddrHeader(const std::string &path);
 
-  /// Write the JSON mapping report.
-  bool writeMappingJson(const MappingState &state, const Graph &dfg,
-                        const Graph &adg, const std::string &path,
-                        const std::string &profile, int seed);
+  /// Write the JSON mapping report (.map.json).
+  bool writeMapJson(const MappingState &state, const Graph &dfg,
+                    const Graph &adg, const std::string &path,
+                    const std::string &profile, int seed);
+
+  /// Write the human-readable mapping report (.map.txt).
+  bool writeMapText(const MappingState &state, const Graph &dfg,
+                    const Graph &adg, const std::string &path);
 
   /// Write a configured copy of the fabric MLIR with route_table attributes
   /// set on switch ops according to the mapping result.

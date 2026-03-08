@@ -9,15 +9,27 @@
 #include "loom/Dialect/Fabric/FabricOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SymbolTable.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Path.h"
 
 namespace loom {
 
 namespace {
+
+/// Extract a human-readable location string from an MLIR Location.
+std::string extractLocStr(mlir::Location loc) {
+  if (auto fileLoc = mlir::dyn_cast<mlir::FileLineColLoc>(loc)) {
+    return (llvm::sys::path::filename(fileLoc.getFilename()) + ":" +
+            llvm::Twine(fileLoc.getLine()))
+        .str();
+  }
+  return "";
+}
 
 /// Classify an operation name into a resource category for node attributes.
 llvm::StringRef classifyOp(llvm::StringRef opName) {
@@ -105,6 +117,13 @@ IdIndex createNodeFromOp(Graph &graph, mlir::Operation &op,
   // Copy sym_name from the instance (not the definition).
   if (auto symName = op.getAttrOfType<mlir::StringAttr>("sym_name")) {
     node->attributes.push_back(builder.getNamedAttr("sym_name", symName));
+  }
+
+  // Store source location for human-readable mapping output.
+  std::string locStr = extractLocStr(op.getLoc());
+  if (!locStr.empty()) {
+    node->attributes.push_back(
+        builder.getNamedAttr("loc", builder.getStringAttr(locStr)));
   }
 
   // Copy hardware attributes from the resolved definition.
@@ -235,6 +254,12 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
     node->attributes.push_back(
         builder.getNamedAttr("arg_index",
                              builder.getI32IntegerAttr(arg.getArgNumber())));
+
+    std::string argLocStr = extractLocStr(arg.getLoc());
+    if (!argLocStr.empty()) {
+      node->attributes.push_back(
+          builder.getNamedAttr("loc", builder.getStringAttr(argLocStr)));
+    }
 
     IdIndex nodeId = graph.addNode(std::move(node));
 
@@ -389,6 +414,12 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
       node->kind = Node::ModuleOutputNode;
       node->attributes.push_back(
           builder.getNamedAttr("ret_index", builder.getI32IntegerAttr(i)));
+
+      std::string yieldLocStr = extractLocStr(yieldOp->getLoc());
+      if (!yieldLocStr.empty()) {
+        node->attributes.push_back(
+            builder.getNamedAttr("loc", builder.getStringAttr(yieldLocStr)));
+      }
 
       IdIndex nodeId = graph.addNode(std::move(node));
 

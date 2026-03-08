@@ -100,6 +100,8 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
 
   // C3: Check exclusivity - find the ADG edge and verify it's not
   // already exclusively used by another SW edge.
+  // Only edges whose source port carries a tagged type
+  // (dataflow.tagged<bits<N>, iM>) support sharing, up to 2^M tags.
   for (IdIndex edgeId : sp->connectedEdges) {
     const Edge *hwEdge = adg.getEdge(edgeId);
     if (!hwEdge || hwEdge->srcPort != srcPort || hwEdge->dstPort != dstPort)
@@ -107,17 +109,16 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
 
     if (edgeId < state.hwEdgeToSwEdges.size() &&
         !state.hwEdgeToSwEdges[edgeId].empty()) {
-      // The edge is already used. Check if the destination node is a
-      // routing node (tagged sharing allowed) or exclusive.
-      if (!dstNode)
-        return false;
-      llvm::StringRef resClass = getResClass(dstNode);
-      if (resClass != "routing") {
-        // Exclusive edge already in use.
-        return false;
-      }
-      // For routing nodes, check tag capacity (allow up to 256 tags).
-      if (state.hwEdgeToSwEdges[edgeId].size() >= 256)
+      // Edge already in use. Check if source port is tagged.
+      auto taggedType =
+          mlir::dyn_cast<loom::dataflow::TaggedType>(sp->type);
+      if (!taggedType)
+        return false; // Non-tagged edge: exclusive.
+
+      // Tagged edge: capacity is 2^tagWidth.
+      unsigned tagWidth = taggedType.getTagType().getWidth();
+      unsigned maxTags = 1u << tagWidth;
+      if (state.hwEdgeToSwEdges[edgeId].size() >= maxTags)
         return false;
     }
     break;
@@ -136,6 +137,16 @@ IdIndex Mapper::allocateTag(IdIndex hwPort, const MappingState &state,
   if (!port)
     return 0;
 
+  // Derive max tag from the port's tagged type (2^tagWidth).
+  unsigned maxTag = 0;
+  if (auto taggedType =
+          mlir::dyn_cast<loom::dataflow::TaggedType>(port->type)) {
+    unsigned tagWidth = taggedType.getTagType().getWidth();
+    maxTag = 1u << tagWidth;
+  }
+  if (maxTag == 0)
+    return INVALID_ID; // Non-tagged port cannot allocate tags.
+
   for (IdIndex edgeId : port->connectedEdges) {
     if (edgeId >= state.hwEdgeToSwEdges.size())
       continue;
@@ -147,8 +158,8 @@ IdIndex Mapper::allocateTag(IdIndex hwPort, const MappingState &state,
     }
   }
 
-  // Find smallest available tag.
-  for (IdIndex tag = 0; tag < 256; ++tag) {
+  // Find smallest available tag within the type-derived capacity.
+  for (IdIndex tag = 0; tag < maxTag; ++tag) {
     if (!usedTags.count(tag))
       return tag;
   }

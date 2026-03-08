@@ -7,7 +7,7 @@
 #include "loom/Mapper/Mapper.h"
 #include "loom/Mapper/TypeCompat.h"
 
-#include "loom/Dialect/Dataflow/DataflowTypes.h"
+#include "loom/Dialect/Dataflow/DataflowTypes.h"  // TaggedType, BitsType
 #include "loom/Hardware/Common/FabricConstants.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -238,27 +238,35 @@ bool Mapper::validateC3(const MappingState &state, const Graph &dfg,
     }
   }
 
-  // Check C3 exclusivity: no exclusive HW edge used by more than one SW edge.
+  // Check C3 exclusivity: only edges with tagged port types
+  // (dataflow.tagged<bits<N>, iM>) may be shared, up to 2^M tags.
   for (IdIndex e = 0; e < static_cast<IdIndex>(state.hwEdgeToSwEdges.size());
        ++e) {
     const auto &swEdges = state.hwEdgeToSwEdges[e];
     if (swEdges.size() <= 1)
       continue;
 
-    // Check if the destination is a routing node (allows tagged sharing).
     const Edge *hwEdge = adg.getEdge(e);
     if (!hwEdge)
       continue;
-    const Port *dstPort = adg.getPort(hwEdge->dstPort);
-    if (!dstPort)
+    const Port *srcPort = adg.getPort(hwEdge->srcPort);
+    if (!srcPort)
       continue;
-    const Node *dstNode = adg.getNode(dstPort->parentNode);
-    if (!dstNode)
-      continue;
-    llvm::StringRef resClass = getNodeResClass(dstNode);
-    if (resClass != "routing" && swEdges.size() > 1) {
-      diag = "C3: exclusive hw_edge=" + std::to_string(e) +
-             " used by " + std::to_string(swEdges.size()) + " sw edges";
+
+    auto taggedType =
+        mlir::dyn_cast<loom::dataflow::TaggedType>(srcPort->type);
+    if (!taggedType) {
+      diag = "C3: non-tagged hw_edge=" + std::to_string(e) +
+             " shared by " + std::to_string(swEdges.size()) + " sw edges";
+      return false;
+    }
+
+    unsigned tagWidth = taggedType.getTagType().getWidth();
+    unsigned maxTags = 1u << tagWidth;
+    if (swEdges.size() > maxTags) {
+      diag = "C3: tag capacity exceeded on hw_edge=" + std::to_string(e) +
+             " (" + std::to_string(swEdges.size()) + "/" +
+             std::to_string(maxTags) + ")";
       return false;
     }
   }

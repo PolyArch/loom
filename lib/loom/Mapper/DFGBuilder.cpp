@@ -8,13 +8,30 @@
 
 #include "circt/Dialect/Handshake/HandshakeOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace loom {
+
+namespace {
+
+/// Extract a human-readable location string from an MLIR Location.
+/// Returns "filename:line" for FileLineColLoc, empty string otherwise.
+std::string extractLocStr(mlir::Location loc) {
+  if (auto fileLoc = mlir::dyn_cast<mlir::FileLineColLoc>(loc)) {
+    return (llvm::sys::path::filename(fileLoc.getFilename()) + ":" +
+            llvm::Twine(fileLoc.getLine()))
+        .str();
+  }
+  return "";
+}
+
+} // namespace
 
 Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
   Graph graph(funcOp.getContext());
@@ -46,6 +63,12 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
     node->attributes.push_back(
         builder.getNamedAttr("op_name",
                              builder.getStringAttr(op.getName().getStringRef())));
+
+    std::string locStr = extractLocStr(op.getLoc());
+    if (!locStr.empty()) {
+      node->attributes.push_back(
+          builder.getNamedAttr("loc", builder.getStringAttr(locStr)));
+    }
 
     IdIndex nodeId = graph.addNode(std::move(node));
     opToNode[&op] = nodeId;
@@ -81,6 +104,12 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
         builder.getNamedAttr("arg_index",
                              builder.getI32IntegerAttr(arg.getArgNumber())));
 
+    std::string argLocStr = extractLocStr(arg.getLoc());
+    if (!argLocStr.empty()) {
+      node->attributes.push_back(
+          builder.getNamedAttr("loc", builder.getStringAttr(argLocStr)));
+    }
+
     IdIndex nodeId = graph.addNode(std::move(node));
 
     auto port = std::make_unique<Port>();
@@ -103,6 +132,12 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
       node->attributes.push_back(
           builder.getNamedAttr("ret_index",
                                builder.getI32IntegerAttr(i)));
+
+      std::string retLocStr = extractLocStr(returnOp->getLoc());
+      if (!retLocStr.empty()) {
+        node->attributes.push_back(
+            builder.getNamedAttr("loc", builder.getStringAttr(retLocStr)));
+      }
 
       IdIndex nodeId = graph.addNode(std::move(node));
       outputSentinelNodes.push_back(nodeId);

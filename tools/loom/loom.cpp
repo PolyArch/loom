@@ -110,7 +110,7 @@ using loom::tool::BuildDriverArgs;
 using loom::tool::HasResourceDirArg;
 using loom::tool::DeriveConfigBinPath;
 using loom::tool::DeriveAddrHeaderPath;
-using loom::tool::DeriveMappingJsonPath;
+using loom::tool::DeriveMapJsonPath;
 
 namespace {
 
@@ -992,17 +992,9 @@ int main(int argc, char **argv) {
     loom::Mapper mapper;
     loom::Mapper::Result mapper_result = mapper.run(dfg, adg, mapper_opts);
 
-    if (!mapper_result.success) {
-      llvm::errs() << "error: mapping failed\n";
-      if (!mapper_result.diagnostics.empty())
-        llvm::errs() << mapper_result.diagnostics << "\n";
-      return 1;
-    }
-
-    // Generate configuration output files.
+    // Derive base path for output files.
     loom::ConfigGen config_gen;
     std::string base_path = parsed.output_path;
-    // Strip extension for base path derivation.
     llvm::StringRef base_ref(base_path);
     if (base_ref.ends_with(".config.bin"))
       base_path = base_ref.drop_back(sizeof(".config.bin") - 1).str();
@@ -1011,9 +1003,19 @@ int main(int argc, char **argv) {
     else if (base_ref.ends_with(".ll"))
       base_path = base_ref.drop_back(sizeof(".ll") - 1).str();
 
+    if (!mapper_result.success) {
+      llvm::errs() << "error: mapping failed\n";
+      if (!mapper_result.diagnostics.empty())
+        llvm::errs() << mapper_result.diagnostics << "\n";
+      // Write .map.txt even on failure to show partial/unmapped state.
+      config_gen.writeMapText(mapper_result.state, dfg, adg,
+                              base_path + ".map.txt");
+      return 1;
+    }
+
+    // Generate all output files (.config.bin, _addr.h, .map.json, .map.txt).
     if (!config_gen.generate(mapper_result.state, dfg, adg, base_path,
-                             parsed.dump_mapping, parsed.mapper_profile,
-                             parsed.mapper_seed)) {
+                             parsed.mapper_profile, parsed.mapper_seed)) {
       llvm::errs() << "error: configuration generation failed\n";
       return 1;
     }

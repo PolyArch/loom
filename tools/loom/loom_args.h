@@ -24,7 +24,6 @@ struct ParsedArgs {
   double mapper_budget = 60.0;
   int mapper_seed = 0;
   std::string mapper_profile = "balanced";
-  bool dump_mapping = false;
   bool as_clang = false;
   bool show_help = false;
   bool show_version = false;
@@ -33,7 +32,7 @@ struct ParsedArgs {
 
 std::string DeriveConfigBinPath(llvm::StringRef output_path);
 std::string DeriveAddrHeaderPath(llvm::StringRef output_path);
-std::string DeriveMappingJsonPath(llvm::StringRef output_path);
+std::string DeriveMapJsonPath(llvm::StringRef output_path);
 void PrintUsage(llvm::StringRef prog);
 void PrintVersion();
 bool IsLinkerFlag(llvm::StringRef arg);

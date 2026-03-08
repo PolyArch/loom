@@ -362,8 +362,7 @@ IdIndex findNodeId(const Graph &adg, const Node *target) {
 
 bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
                          const Graph &adg, const std::string &basePath,
-                         bool dumpMapping, const std::string &profile,
-                         int seed) {
+                         const std::string &profile, int seed) {
   nodeConfigs.clear();
   configBlob.clear();
   totalConfigWords = 0;
@@ -463,11 +462,10 @@ bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
     return false;
   if (!writeAddrHeader(basePath + "_addr.h"))
     return false;
-  if (dumpMapping) {
-    if (!writeMappingJson(state, dfg, adg, basePath + ".mapping.json",
-                          profile, seed))
-      return false;
-  }
+  if (!writeMapJson(state, dfg, adg, basePath + ".map.json", profile, seed))
+    return false;
+  if (!writeMapText(state, dfg, adg, basePath + ".map.txt"))
+    return false;
 
   return true;
 }
@@ -510,7 +508,7 @@ bool ConfigGen::writeAddrHeader(const std::string &path) {
   return true;
 }
 
-bool ConfigGen::writeMappingJson(const MappingState &state, const Graph &dfg,
+bool ConfigGen::writeMapJson(const MappingState &state, const Graph &dfg,
                                  const Graph &adg, const std::string &path,
                                  const std::string &profile, int seed) {
   std::error_code ec;
@@ -774,6 +772,298 @@ bool ConfigGen::writeMappingJson(const MappingState &state, const Graph &dfg,
   json.attributeEnd();
 
   json.objectEnd();
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// writeMapText -- human-readable mapping report (.map.txt)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Get a display name for a DFG (software) node.
+std::string swNodeDisplayName(const Node *node, IdIndex id) {
+  if (node->kind == Node::ModuleInputNode) {
+    int64_t idx = getNodeIntAttr(node, "arg_index", -1);
+    return "ModuleInput(arg" + std::to_string(idx >= 0 ? idx : id) + ")";
+  }
+  if (node->kind == Node::ModuleOutputNode) {
+    int64_t idx = getNodeIntAttr(node, "ret_index", -1);
+    return "ModuleOutput(ret" + std::to_string(idx >= 0 ? idx : id) + ")";
+  }
+  llvm::StringRef opName = getNodeOpName(node);
+  return opName.empty() ? ("node_" + std::to_string(id)) : opName.str();
+}
+
+/// Get a display name for an ADG (hardware) node.
+std::string hwNodeDisplayName(const Node *node, IdIndex id) {
+  if (node->kind == Node::ModuleInputNode) {
+    int64_t idx = getNodeIntAttr(node, "arg_index", -1);
+    return "in" + std::to_string(idx >= 0 ? idx : id);
+  }
+  if (node->kind == Node::ModuleOutputNode) {
+    int64_t idx = getNodeIntAttr(node, "ret_index", -1);
+    return "out" + std::to_string(idx >= 0 ? idx : id);
+  }
+  llvm::StringRef symName = getNodeName(node);
+  if (!symName.empty())
+    return symName.str();
+  return "node_" + std::to_string(id);
+}
+
+/// Get a description string for an ADG node (op_name, resource_class).
+std::string hwNodeDesc(const Node *node) {
+  if (node->kind == Node::ModuleInputNode)
+    return "ModuleInput";
+  if (node->kind == Node::ModuleOutputNode)
+    return "ModuleOutput";
+  llvm::StringRef opName = getNodeOpName(node);
+  llvm::StringRef resClass = getNodeResClass(node);
+  std::string desc;
+  if (!opName.empty())
+    desc = opName.str();
+  if (!resClass.empty()) {
+    if (!desc.empty())
+      desc += ", ";
+    desc += resClass.str();
+  }
+  return desc;
+}
+
+/// Get the "loc" string attribute from a node, or empty string.
+llvm::StringRef getNodeLocStr(const Node *node) {
+  for (auto &attr : node->attributes) {
+    if (attr.getName() == "loc") {
+      if (auto strAttr = mlir::dyn_cast<mlir::StringAttr>(attr.getValue()))
+        return strAttr.getValue();
+    }
+  }
+  return "";
+}
+
+/// Format a port reference as "nodeName:in0" or "nodeName:out0".
+std::string formatPortRef(const Graph &graph, IdIndex portId,
+                          bool isHwGraph) {
+  const Port *port = graph.getPort(portId);
+  if (!port)
+    return "port_" + std::to_string(portId);
+
+  const Node *node = graph.getNode(port->parentNode);
+  if (!node)
+    return "port_" + std::to_string(portId);
+
+  std::string nodeName = isHwGraph
+      ? hwNodeDisplayName(node, port->parentNode)
+      : swNodeDisplayName(node, port->parentNode);
+
+  // Find port index within the node's input or output port list.
+  const auto &portList = (port->direction == Port::Input)
+      ? node->inputPorts : node->outputPorts;
+  unsigned portIdx = 0;
+  for (unsigned i = 0; i < portList.size(); ++i) {
+    if (portList[i] == portId) {
+      portIdx = i;
+      break;
+    }
+  }
+
+  std::string dir = (port->direction == Port::Input) ? "in" : "out";
+  return nodeName + ":" + dir + std::to_string(portIdx);
+}
+
+} // namespace
+
+bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
+                              const Graph &adg, const std::string &path) {
+  std::error_code ec;
+  llvm::raw_fd_ostream out(path, ec, llvm::sys::fs::OF_Text);
+  if (ec)
+    return false;
+
+  // --- Header ---
+  out << "=== Mapping Report ===\n\n";
+
+  // --- SW Node List ---
+  unsigned swNodeCount = 0;
+  for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.nodes.size()); ++i) {
+    if (dfg.getNode(i))
+      ++swNodeCount;
+  }
+  out << "--- SW Node List (" << swNodeCount << " nodes) ---\n";
+  for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.nodes.size()); ++i) {
+    const Node *node = dfg.getNode(i);
+    if (!node)
+      continue;
+    out << "  [N" << i << "] " << swNodeDisplayName(node, i);
+    llvm::StringRef loc = getNodeLocStr(node);
+    if (!loc.empty())
+      out << "  " << loc;
+    out << "\n";
+  }
+  out << "\n";
+
+  // --- SW Edge List ---
+  unsigned swEdgeCount = 0;
+  for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
+    if (dfg.getEdge(i))
+      ++swEdgeCount;
+  }
+  out << "--- SW Edge List (" << swEdgeCount << " edges) ---\n";
+  for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
+    const Edge *edge = dfg.getEdge(i);
+    if (!edge)
+      continue;
+    out << "  [E" << i << "] "
+        << formatPortRef(dfg, edge->srcPort, false)
+        << " -> "
+        << formatPortRef(dfg, edge->dstPort, false);
+    // Use destination node's location for the edge.
+    const Port *dstPort = dfg.getPort(edge->dstPort);
+    if (dstPort) {
+      const Node *dstNode = dfg.getNode(dstPort->parentNode);
+      if (dstNode) {
+        llvm::StringRef loc = getNodeLocStr(dstNode);
+        if (!loc.empty())
+          out << "  " << loc;
+      }
+    }
+    out << "\n";
+  }
+  out << "\n";
+
+  // --- HW Node List ---
+  unsigned hwNodeCount = 0;
+  for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
+    if (adg.getNode(i))
+      ++hwNodeCount;
+  }
+  out << "--- HW Node List (" << hwNodeCount << " nodes) ---\n";
+  for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
+    const Node *node = adg.getNode(i);
+    if (!node)
+      continue;
+    out << "  [H" << i << "] " << hwNodeDisplayName(node, i);
+    std::string desc = hwNodeDesc(node);
+    if (!desc.empty())
+      out << " (" << desc << ")";
+    llvm::StringRef loc = getNodeLocStr(node);
+    if (!loc.empty())
+      out << "  " << loc;
+    out << "\n";
+  }
+  out << "\n";
+
+  // --- Node Mapping ---
+  unsigned mappedNodeCount = 0;
+  for (IdIndex i = 0; i < static_cast<IdIndex>(state.swNodeToHwNode.size());
+       ++i) {
+    if (state.swNodeToHwNode[i] != INVALID_ID && dfg.getNode(i))
+      ++mappedNodeCount;
+  }
+  out << "--- Node Mapping (" << mappedNodeCount << " mapped) ---\n";
+  for (IdIndex i = 0; i < static_cast<IdIndex>(state.swNodeToHwNode.size());
+       ++i) {
+    IdIndex hwId = state.swNodeToHwNode[i];
+    const Node *swNode = dfg.getNode(i);
+    if (!swNode)
+      continue;
+    if (hwId == INVALID_ID) {
+      out << "  [N" << i << "] " << swNodeDisplayName(swNode, i)
+          << " -> UNMAPPED\n";
+      continue;
+    }
+    const Node *hwNode = adg.getNode(hwId);
+    out << "  [N" << i << "] " << swNodeDisplayName(swNode, i)
+        << " -> [H" << hwId << "] "
+        << (hwNode ? hwNodeDisplayName(hwNode, hwId) : "???") << "\n";
+  }
+  out << "\n";
+
+  // --- Edge Routing ---
+  unsigned routedEdgeCount = 0;
+  for (IdIndex i = 0; i < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
+       ++i) {
+    if (!state.swEdgeToHwPaths[i].empty() && dfg.getEdge(i))
+      ++routedEdgeCount;
+  }
+  out << "--- Edge Routing (" << routedEdgeCount << " routed) ---\n";
+  for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
+    const Edge *edge = dfg.getEdge(i);
+    if (!edge)
+      continue;
+
+    out << "  [E" << i << "] "
+        << formatPortRef(dfg, edge->srcPort, false)
+        << " -> "
+        << formatPortRef(dfg, edge->dstPort, false) << "\n";
+
+    if (i >= state.swEdgeToHwPaths.size() ||
+        state.swEdgeToHwPaths[i].empty()) {
+      out << "    Route: UNROUTED\n\n";
+      continue;
+    }
+
+    const auto &hwPath = state.swEdgeToHwPaths[i];
+    out << "    Route: ";
+    for (size_t j = 0; j < hwPath.size(); ++j) {
+      if (j > 0)
+        out << " -> ";
+      out << formatPortRef(adg, hwPath[j], true);
+    }
+    out << "\n";
+    out << "    Hops: " << (hwPath.size() / 2) << "\n";
+    out << "\n";
+  }
+
+  // --- Unmapped ---
+  out << "--- Unmapped ---\n";
+  bool hasUnmapped = false;
+
+  for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.nodes.size()); ++i) {
+    const Node *node = dfg.getNode(i);
+    if (!node)
+      continue;
+    if (i >= state.swNodeToHwNode.size() ||
+        state.swNodeToHwNode[i] == INVALID_ID) {
+      if (!hasUnmapped) {
+        out << "  Nodes:\n";
+        hasUnmapped = true;
+      }
+      out << "    [N" << i << "] " << swNodeDisplayName(node, i) << "\n";
+    }
+  }
+
+  bool hasUnroutedEdges = false;
+  for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
+    const Edge *edge = dfg.getEdge(i);
+    if (!edge)
+      continue;
+    if (i >= state.swEdgeToHwPaths.size() ||
+        state.swEdgeToHwPaths[i].empty()) {
+      if (!hasUnroutedEdges) {
+        out << "  Edges:\n";
+        hasUnroutedEdges = true;
+        hasUnmapped = true;
+      }
+      out << "    [E" << i << "] "
+          << formatPortRef(dfg, edge->srcPort, false) << " -> "
+          << formatPortRef(dfg, edge->dstPort, false) << "\n";
+    }
+  }
+
+  if (!hasUnmapped)
+    out << "  (none)\n";
+  out << "\n";
+
+  // --- Cost ---
+  out << "--- Cost ---\n";
+  out << llvm::format("  total           = %.4f\n", state.totalCost);
+  out << llvm::format("  placement       = %.4f\n", state.placementPressure);
+  out << llvm::format("  routing         = %.4f\n", state.routingCost);
+  out << llvm::format("  temporal        = %.4f\n", state.temporalCost);
+  out << llvm::format("  perfProxy       = %.4f\n", state.perfProxyCost);
+  out << llvm::format("  configFootprint = %.4f\n", state.configFootprint);
+
   return true;
 }
 

@@ -26,9 +26,9 @@ std::string DeriveAddrHeaderPath(llvm::StringRef output_path) {
   return (base + "_addr.h").str();
 }
 
-std::string DeriveMappingJsonPath(llvm::StringRef output_path) {
+std::string DeriveMapJsonPath(llvm::StringRef output_path) {
   llvm::SmallString<256> path(output_path);
-  llvm::sys::path::replace_extension(path, ".mapping.json");
+  llvm::sys::path::replace_extension(path, ".map.json");
   return std::string(path);
 }
 
@@ -62,7 +62,6 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "  --mapper-budget <seconds>  Search time limit (default: 60)\n";
   llvm::outs() << "  --mapper-seed <int>        Deterministic seed (default: 0)\n";
   llvm::outs() << "  --mapper-profile <name>    Weight profile (default: balanced)\n";
-  llvm::outs() << "  --dump-mapping             Emit .mapping.json report\n";
   llvm::outs() << "  --dfgs <f1[,f2,...]>       Pre-compiled Handshake MLIR files\n";
   llvm::outs() << "\n";
   llvm::outs() << "Forwarded compile options include: -I, -D, -U, -std, -O, -g,"
@@ -192,10 +191,7 @@ ParsedArgs ParseArgs(int argc, char **argv) {
         parsed.mapper_profile = argv[++i];
         continue;
       }
-      if (arg == "--dump-mapping") {
-        parsed.dump_mapping = true;
-        continue;
-      }
+      // --dump-mapping removed: .map.json and .map.txt are always emitted.
       if (arg == "--as-clang") {
         parsed.as_clang = true;
         // Collect all remaining arguments as passthrough to clang.
