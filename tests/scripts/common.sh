@@ -299,9 +299,20 @@ loom_write_result() {
   mkdir -p "${results_dir}"
   local fname
   fname=$(echo "${suite_name}" | tr ' ' '_' | tr '[:upper:]' '[:lower:]')
+  # Prefix with group number to control display order:
+  # 1=Specification, 2=Frontend, 3=Handshake, 4=Fabric, 5=Mapper
+  local prefix
+  case "${fname}" in
+    specification*) prefix="1_" ;;
+    frontend_*)     prefix="2_" ;;
+    handshake_*)    prefix="3_" ;;
+    fabric_*)       prefix="4_" ;;
+    mapper_*)       prefix="5_" ;;
+    *)              prefix="9_" ;;
+  esac
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
     "${suite_name}" "${LOOM_TOTAL}" "${LOOM_PASS}" "${LOOM_FAIL}" "${LOOM_TIMEOUT}" "${LOOM_SKIPPED:-0}" \
-    > "${results_dir}/${fname}.tsv"
+    > "${results_dir}/${prefix}${fname}.tsv"
 }
 
 loom_print_table() {

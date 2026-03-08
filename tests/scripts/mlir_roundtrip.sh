@@ -111,4 +111,4 @@ for app_dir in "${app_dirs[@]}"; do
   echo "${line}" >> "${PARALLEL_FILE}"
 done
 
-loom_run_suite "${PARALLEL_FILE}" "MLIR Roundtrip" "mlir"
+loom_run_suite "${PARALLEL_FILE}" "Frontend MLIR Roundtrip" "mlir"

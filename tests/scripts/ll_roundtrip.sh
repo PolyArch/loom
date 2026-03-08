@@ -106,4 +106,4 @@ for app_dir in "${app_dirs[@]}"; do
   echo "${line}" >> "${PARALLEL_FILE}"
 done
 
-loom_run_suite "${PARALLEL_FILE}" "LLVM Roundtrip" "llvm"
+loom_run_suite "${PARALLEL_FILE}" "Frontend LLVM Roundtrip" "llvm"

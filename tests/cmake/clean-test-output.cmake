@@ -78,8 +78,8 @@ if(IS_DIRECTORY "${SOURCE_DIR}/tests/spec/Output")
   message(STATUS "Removed ${SOURCE_DIR}/tests/spec/Output")
 endif()
 
-# Remove mapper smoke test output directories
-file(GLOB_RECURSE MAPPER_OUTPUT_DIRS "${SOURCE_DIR}/tests/mapper/*/Output")
+# Remove mapper smoke test output directories (structure: tests/mapper/<category>/<name>/Output)
+file(GLOB MAPPER_OUTPUT_DIRS "${SOURCE_DIR}/tests/mapper/*/*/Output")
 foreach(dir IN LISTS MAPPER_OUTPUT_DIRS)
   if(IS_DIRECTORY "${dir}")
     file(REMOVE_RECURSE "${dir}")
