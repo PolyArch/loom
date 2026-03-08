@@ -871,6 +871,27 @@ std::string formatPortRef(const Graph &graph, IdIndex portId,
   return nodeName + ":" + dir + std::to_string(portIdx);
 }
 
+/// Check if a DFG edge is internal to an operation group (both endpoints
+/// mapped to the same HW node). Such edges are handled inside the PE and
+/// do not need switch-fabric routing.
+bool isInternalGroupEdge(const Edge *edge, const Graph &dfg,
+                         const MappingState &state) {
+  const Port *srcPort = dfg.getPort(edge->srcPort);
+  const Port *dstPort = dfg.getPort(edge->dstPort);
+  if (!srcPort || !dstPort)
+    return false;
+  IdIndex srcSwNode = srcPort->parentNode;
+  IdIndex dstSwNode = dstPort->parentNode;
+  if (srcSwNode == INVALID_ID || dstSwNode == INVALID_ID)
+    return false;
+  if (srcSwNode >= state.swNodeToHwNode.size() ||
+      dstSwNode >= state.swNodeToHwNode.size())
+    return false;
+  IdIndex srcHwNode = state.swNodeToHwNode[srcSwNode];
+  IdIndex dstHwNode = state.swNodeToHwNode[dstSwNode];
+  return srcHwNode != INVALID_ID && srcHwNode == dstHwNode;
+}
+
 } // namespace
 
 bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
@@ -981,12 +1002,21 @@ bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
 
   // --- Edge Routing ---
   unsigned routedEdgeCount = 0;
-  for (IdIndex i = 0; i < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
-       ++i) {
-    if (!state.swEdgeToHwPaths[i].empty() && dfg.getEdge(i))
+  unsigned internalEdgeCount = 0;
+  for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
+    const Edge *edge = dfg.getEdge(i);
+    if (!edge)
+      continue;
+    if (isInternalGroupEdge(edge, dfg, state))
+      ++internalEdgeCount;
+    else if (i < state.swEdgeToHwPaths.size() &&
+             !state.swEdgeToHwPaths[i].empty())
       ++routedEdgeCount;
   }
-  out << "--- Edge Routing (" << routedEdgeCount << " routed) ---\n";
+  out << "--- Edge Routing (" << routedEdgeCount << " routed";
+  if (internalEdgeCount > 0)
+    out << ", " << internalEdgeCount << " internal";
+  out << ") ---\n";
   for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
     const Edge *edge = dfg.getEdge(i);
     if (!edge)
@@ -996,6 +1026,12 @@ bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
         << formatPortRef(dfg, edge->srcPort, false)
         << " -> "
         << formatPortRef(dfg, edge->dstPort, false) << "\n";
+
+    // Internal group edges are handled inside the PE, no routing needed.
+    if (isInternalGroupEdge(edge, dfg, state)) {
+      out << "    Route: INTERNAL (within PE group)\n\n";
+      continue;
+    }
 
     if (i >= state.swEdgeToHwPaths.size() ||
         state.swEdgeToHwPaths[i].empty()) {
@@ -1037,6 +1073,9 @@ bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
   for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
     const Edge *edge = dfg.getEdge(i);
     if (!edge)
+      continue;
+    // Skip internal group edges (handled inside PE, not a routing failure).
+    if (isInternalGroupEdge(edge, dfg, state))
       continue;
     if (i >= state.swEdgeToHwPaths.size() ||
         state.swEdgeToHwPaths[i].empty()) {

@@ -65,7 +65,8 @@ bool isRoutingTypeCompatible(mlir::Type srcType, mlir::Type dstType) {
 } // namespace
 
 bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
-                         const MappingState &state, const Graph &adg) {
+                         const MappingState &state, const Graph &adg,
+                         const Graph *dfg, IdIndex swEdgeId) {
   const Port *sp = adg.getPort(srcPort);
   const Port *dp = adg.getPort(dstPort);
   if (!sp || !dp)
@@ -109,17 +110,37 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
 
     if (edgeId < state.hwEdgeToSwEdges.size() &&
         !state.hwEdgeToSwEdges[edgeId].empty()) {
-      // Edge already in use. Check if source port is tagged.
+      // Edge already in use. Check if sharing is legal.
       auto taggedType =
           mlir::dyn_cast<loom::dataflow::TaggedType>(sp->type);
-      if (!taggedType)
-        return false; // Non-tagged edge: exclusive.
-
-      // Tagged edge: capacity is 2^tagWidth.
-      unsigned tagWidth = taggedType.getTagType().getWidth();
-      unsigned maxTags = 1u << tagWidth;
-      if (state.hwEdgeToSwEdges[edgeId].size() >= maxTags)
-        return false;
+      if (!taggedType) {
+        // Non-tagged edge: check for valid fan-out sharing.
+        // Fan-out is allowed when all SW edges on this HW edge originate
+        // from the same DFG source port (they carry the same data value).
+        bool isFanout = false;
+        if (dfg && swEdgeId != INVALID_ID) {
+          const Edge *swEdge = dfg->getEdge(swEdgeId);
+          if (swEdge) {
+            isFanout = true;
+            for (IdIndex existingSwId : state.hwEdgeToSwEdges[edgeId]) {
+              const Edge *existingSw = dfg->getEdge(existingSwId);
+              if (!existingSw ||
+                  existingSw->srcPort != swEdge->srcPort) {
+                isFanout = false;
+                break;
+              }
+            }
+          }
+        }
+        if (!isFanout)
+          return false; // Non-tagged, non-fanout: exclusive.
+      } else {
+        // Tagged edge: capacity is 2^tagWidth.
+        unsigned tagWidth = taggedType.getTagType().getWidth();
+        unsigned maxTags = 1u << tagWidth;
+        if (state.hwEdgeToSwEdges[edgeId].size() >= maxTags)
+          return false;
+      }
     }
     break;
   }
@@ -169,7 +190,8 @@ IdIndex Mapper::allocateTag(IdIndex hwPort, const MappingState &state,
 
 llvm::SmallVector<IdIndex, 8>
 Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort,
-                 const MappingState &state, const Graph &adg) {
+                 const MappingState &state, const Graph &adg,
+                 const Graph *dfg, IdIndex swEdgeId) {
   llvm::SmallVector<IdIndex, 8> path;
 
   if (srcHwPort == INVALID_ID || dstHwPort == INVALID_ID)
@@ -179,7 +201,7 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort,
   auto directIt = connectivity.outToIn.find(srcHwPort);
   if (directIt != connectivity.outToIn.end() &&
       directIt->second == dstHwPort &&
-      isEdgeLegal(srcHwPort, dstHwPort, state, adg)) {
+      isEdgeLegal(srcHwPort, dstHwPort, state, adg, dfg, swEdgeId)) {
     path.push_back(srcHwPort);
     path.push_back(dstHwPort);
     return path;
@@ -214,7 +236,8 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort,
       continue;
 
     // C2/C3: Check if this physical edge is legal.
-    if (!isEdgeLegal(current.portId, nextInputPort, state, adg))
+    if (!isEdgeLegal(current.portId, nextInputPort, state, adg,
+                     dfg, swEdgeId))
       continue;
 
     visited.insert(nextInputPort);
@@ -275,6 +298,24 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
         dstSwPort >= state.swPortToHwPort.size())
       continue;
 
+    // Skip internal group edges: if both endpoints map to the same HW
+    // node (via operation group placement), the connection is handled
+    // inside the PE and does not need switch-fabric routing.
+    const Port *srcSwPortPtr = dfg.getPort(srcSwPort);
+    const Port *dstSwPortPtr = dfg.getPort(dstSwPort);
+    if (srcSwPortPtr && dstSwPortPtr) {
+      IdIndex srcSwNode = srcSwPortPtr->parentNode;
+      IdIndex dstSwNode = dstSwPortPtr->parentNode;
+      if (srcSwNode != INVALID_ID && dstSwNode != INVALID_ID &&
+          srcSwNode < state.swNodeToHwNode.size() &&
+          dstSwNode < state.swNodeToHwNode.size()) {
+        IdIndex srcHwNode = state.swNodeToHwNode[srcSwNode];
+        IdIndex dstHwNode = state.swNodeToHwNode[dstSwNode];
+        if (srcHwNode != INVALID_ID && srcHwNode == dstHwNode)
+          continue; // Internal group edge, skip routing.
+      }
+    }
+
     IdIndex srcHwPort = state.swPortToHwPort[srcSwPort];
     IdIndex dstHwPort = state.swPortToHwPort[dstSwPort];
 
@@ -283,8 +324,8 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
       continue;
     }
 
-    // Find a path through the ADG.
-    auto path = findPath(srcHwPort, dstHwPort, state, adg);
+    // Find a path through the ADG (pass DFG + edge ID for fan-out sharing).
+    auto path = findPath(srcHwPort, dstHwPort, state, adg, &dfg, edgeId);
     if (path.empty()) {
       allRouted = false;
       continue;

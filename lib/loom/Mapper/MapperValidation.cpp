@@ -256,9 +256,29 @@ bool Mapper::validateC3(const MappingState &state, const Graph &dfg,
     auto taggedType =
         mlir::dyn_cast<loom::dataflow::TaggedType>(srcPort->type);
     if (!taggedType) {
-      diag = "C3: non-tagged hw_edge=" + std::to_string(e) +
-             " shared by " + std::to_string(swEdges.size()) + " sw edges";
-      return false;
+      // Non-tagged edge shared by multiple SW edges: check if this is
+      // valid fan-out (all SW edges originate from the same DFG source port).
+      bool isFanout = true;
+      IdIndex commonSrcPort = INVALID_ID;
+      for (IdIndex swEdgeId : swEdges) {
+        const Edge *swEdge = dfg.getEdge(swEdgeId);
+        if (!swEdge) {
+          isFanout = false;
+          break;
+        }
+        if (commonSrcPort == INVALID_ID) {
+          commonSrcPort = swEdge->srcPort;
+        } else if (swEdge->srcPort != commonSrcPort) {
+          isFanout = false;
+          break;
+        }
+      }
+      if (!isFanout) {
+        diag = "C3: non-tagged hw_edge=" + std::to_string(e) +
+               " shared by " + std::to_string(swEdges.size()) + " sw edges";
+        return false;
+      }
+      continue; // Valid fan-out, skip tag capacity check.
     }
 
     unsigned tagWidth = taggedType.getTagType().getWidth();
@@ -557,11 +577,26 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
     }
   }
 
-  // Check all edges are routed.
+  // Check all edges are routed (skip internal group edges).
   for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
     const Edge *edge = dfg.getEdge(i);
     if (!edge)
       continue;
+    // Skip internal group edges: both endpoints mapped to the same HW node.
+    const Port *srcPort = dfg.getPort(edge->srcPort);
+    const Port *dstPort = dfg.getPort(edge->dstPort);
+    if (srcPort && dstPort) {
+      IdIndex srcSwNode = srcPort->parentNode;
+      IdIndex dstSwNode = dstPort->parentNode;
+      if (srcSwNode != INVALID_ID && dstSwNode != INVALID_ID &&
+          srcSwNode < state.swNodeToHwNode.size() &&
+          dstSwNode < state.swNodeToHwNode.size()) {
+        IdIndex srcHwNode = state.swNodeToHwNode[srcSwNode];
+        IdIndex dstHwNode = state.swNodeToHwNode[dstSwNode];
+        if (srcHwNode != INVALID_ID && srcHwNode == dstHwNode)
+          continue; // Internal group edge, no routing needed.
+      }
+    }
     if (i >= state.swEdgeToHwPaths.size() ||
         state.swEdgeToHwPaths[i].empty()) {
       diagnostics = "Unrouted edge " + std::to_string(i);

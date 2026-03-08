@@ -87,7 +87,8 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
             continue;
 
           // First try without rip-up.
-          auto path = findPath(srcHwPort, dstHwPort, state, adg);
+          auto path = findPath(srcHwPort, dstHwPort, state, adg,
+                               &dfg, edgeId);
           if (!path.empty()) {
             state.mapEdge(edgeId, path, dfg, adg);
             continue;
@@ -114,7 +115,8 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
             state.unmapEdge(ripId, dfg, adg);
 
           // Try routing the failed edge again.
-          path = findPath(srcHwPort, dstHwPort, state, adg);
+          path = findPath(srcHwPort, dstHwPort, state, adg,
+                          &dfg, edgeId);
           if (!path.empty())
             state.mapEdge(edgeId, path, dfg, adg);
 
@@ -130,7 +132,8 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
             IdIndex rDst = state.swPortToHwPort[ripEdge->dstPort];
             if (rSrc == INVALID_ID || rDst == INVALID_ID)
               continue;
-            auto ripPath = findPath(rSrc, rDst, state, adg);
+            auto ripPath = findPath(rSrc, rDst, state, adg,
+                                    &dfg, ripId);
             if (!ripPath.empty())
               state.mapEdge(ripId, ripPath, dfg, adg);
           }

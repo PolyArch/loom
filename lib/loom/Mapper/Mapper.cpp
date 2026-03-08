@@ -803,37 +803,81 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
 
     if (bestCand->isGroup && bestCand->swNodeIds.size() > 1) {
       // Group placement: bind ALL SW nodes in the group to the same
-      // HW PE atomically.
-      unsigned inPortOffset = 0;
-      unsigned outPortOffset = 0;
+      // HW PE atomically. Only external ports (those NOT connected to
+      // another group member) are bound to PE physical ports.
+      llvm::DenseSet<IdIndex> groupMemberSet(bestCand->swNodeIds.begin(),
+                                              bestCand->swNodeIds.end());
 
+      // Map all group member nodes first.
       for (IdIndex groupSwNode : bestCand->swNodeIds) {
         auto mapResult = state.mapNode(groupSwNode, bestHw, dfg, adg);
         if (mapResult != ActionResult::Success)
           return false;
+        placedInGroup.insert(groupSwNode);
+      }
 
-        // Map ports with offsets so group members share the PE ports.
+      // Bind only external ports to PE physical ports.
+      unsigned inPortOffset = 0;
+      unsigned outPortOffset = 0;
+      const Node *hw = adg.getNode(bestHw);
+
+      for (IdIndex groupSwNode : bestCand->swNodeIds) {
         const Node *sw = dfg.getNode(groupSwNode);
-        const Node *hw = adg.getNode(bestHw);
-        if (sw && hw) {
-          for (size_t i = 0; i < sw->inputPorts.size() &&
-                             (inPortOffset + i) < hw->inputPorts.size();
-               ++i) {
-            state.mapPort(sw->inputPorts[i],
-                          hw->inputPorts[inPortOffset + i], dfg, adg);
-          }
-          inPortOffset += sw->inputPorts.size();
+        if (!sw || !hw)
+          continue;
 
-          for (size_t i = 0; i < sw->outputPorts.size() &&
-                             (outPortOffset + i) < hw->outputPorts.size();
-               ++i) {
-            state.mapPort(sw->outputPorts[i],
-                          hw->outputPorts[outPortOffset + i], dfg, adg);
+        // Bind external input ports: skip inputs driven by group members.
+        for (size_t i = 0; i < sw->inputPorts.size(); ++i) {
+          const Port *inPort = dfg.getPort(sw->inputPorts[i]);
+          if (!inPort)
+            continue;
+          bool isInternal = false;
+          for (IdIndex edgeId : inPort->connectedEdges) {
+            const Edge *edge = dfg.getEdge(edgeId);
+            if (!edge || edge->dstPort != sw->inputPorts[i])
+              continue;
+            const Port *srcPort = dfg.getPort(edge->srcPort);
+            if (srcPort && groupMemberSet.count(srcPort->parentNode)) {
+              isInternal = true;
+              break;
+            }
           }
-          outPortOffset += sw->outputPorts.size();
+          if (isInternal)
+            continue;
+          if (inPortOffset < hw->inputPorts.size()) {
+            state.mapPort(sw->inputPorts[i],
+                          hw->inputPorts[inPortOffset], dfg, adg);
+            ++inPortOffset;
+          }
         }
 
-        placedInGroup.insert(groupSwNode);
+        // Bind external output ports: skip outputs consumed only by
+        // group members.
+        for (size_t i = 0; i < sw->outputPorts.size(); ++i) {
+          const Port *outPort = dfg.getPort(sw->outputPorts[i]);
+          if (!outPort)
+            continue;
+          bool allConsumersInternal = true;
+          bool hasConsumers = false;
+          for (IdIndex edgeId : outPort->connectedEdges) {
+            const Edge *edge = dfg.getEdge(edgeId);
+            if (!edge || edge->srcPort != sw->outputPorts[i])
+              continue;
+            hasConsumers = true;
+            const Port *dstPort = dfg.getPort(edge->dstPort);
+            if (!dstPort || !groupMemberSet.count(dstPort->parentNode)) {
+              allConsumersInternal = false;
+              break;
+            }
+          }
+          if (hasConsumers && allConsumersInternal)
+            continue;
+          if (outPortOffset < hw->outputPorts.size()) {
+            state.mapPort(sw->outputPorts[i],
+                          hw->outputPorts[outPortOffset], dfg, adg);
+            ++outPortOffset;
+          }
+        }
       }
 
       // Record group binding for C4 validation.

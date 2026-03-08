@@ -72,9 +72,13 @@ private:
   // --- Routing helpers ---
   llvm::SmallVector<IdIndex, 8> findPath(IdIndex srcHwPort, IdIndex dstHwPort,
                                          const MappingState &state,
-                                         const Graph &adg);
+                                         const Graph &adg,
+                                         const Graph *dfg = nullptr,
+                                         IdIndex swEdgeId = INVALID_ID);
   bool isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
-                   const MappingState &state, const Graph &adg);
+                   const MappingState &state, const Graph &adg,
+                   const Graph *dfg = nullptr,
+                   IdIndex swEdgeId = INVALID_ID);
   IdIndex allocateTag(IdIndex hwPort, const MappingState &state,
                       const Graph &adg);
 

@@ -148,6 +148,41 @@ IdIndex createNodeFromOp(Graph &graph, mlir::Operation &op,
         if (!bodyOps.empty()) {
           node->attributes.push_back(builder.getNamedAttr(
               "body_ops", builder.getArrayAttr(bodyOps)));
+
+          // Extract body_edges: internal use-def connections between body ops.
+          // Each body_edge is a pair (src_op_index, dst_op_index) indicating
+          // that operation src produces a value consumed by operation dst.
+          llvm::SmallVector<mlir::Attribute, 4> bodyEdges;
+          llvm::DenseMap<mlir::Operation *, unsigned> opToIndex;
+          unsigned opIdx = 0;
+          for (auto &innerOp : peBody.front()) {
+            if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
+              continue;
+            opToIndex[&innerOp] = opIdx++;
+          }
+          for (auto &innerOp : peBody.front()) {
+            if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
+              continue;
+            auto dstIt = opToIndex.find(&innerOp);
+            if (dstIt == opToIndex.end())
+              continue;
+            unsigned dstIdx = dstIt->second;
+            for (mlir::Value operand : innerOp.getOperands()) {
+              if (auto *defOp = operand.getDefiningOp()) {
+                auto srcIt = opToIndex.find(defOp);
+                if (srcIt != opToIndex.end()) {
+                  bodyEdges.push_back(
+                      builder.getI32IntegerAttr(srcIt->second));
+                  bodyEdges.push_back(
+                      builder.getI32IntegerAttr(dstIdx));
+                }
+              }
+            }
+          }
+          if (!bodyEdges.empty()) {
+            node->attributes.push_back(builder.getNamedAttr(
+                "body_edges", builder.getArrayAttr(bodyEdges)));
+          }
         }
       }
     }

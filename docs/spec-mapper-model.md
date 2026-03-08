@@ -466,6 +466,51 @@ matching is tractable. The matcher should:
 2. For each pattern, scan the DFG for all valid matches.
 3. Record each match as a candidate operation group.
 
+### PE Body Internal Edges and Port Binding
+
+A PE body subgraph may contain internal edges (producer-consumer
+connections between operations within the same body). These internal
+edges are handled entirely inside the PE hardware and are NOT routed
+through the switch fabric.
+
+**Body edge extraction**: During ADG flattening, the mapper must extract
+`body_edges` from each multi-operation PE body. A `body_edge` is a pair
+`(src_op_index, dst_op_index)` indicating that operation `src` in the body
+produces a result consumed by operation `dst`. This connectivity is derived
+from the SSA use-def chain within the PE body region.
+
+**Port classification**: PE physical input/output ports correspond to the
+PE body's block arguments and yield operands. For a multi-operation body,
+each PE input port feeds exactly one body operation operand, and some
+operation operands receive values from other body operations (internal
+edges) rather than from PE input ports. The port classification is:
+
+- **External input port**: a PE input port that feeds a body operation
+  operand not produced by another body operation.
+- **Internal input**: a body operation operand whose value is produced
+  by another operation within the same body. This does NOT consume a
+  PE physical input port.
+- **External output port**: a PE output port driven by a body operation
+  result that is yielded to the outside.
+- **Internal output**: a body operation result consumed only by other
+  body operations. This does NOT consume a PE physical output port.
+
+**Group port binding rule**: When mapping an operation group to a
+multi-op PE, only external DFG ports (those NOT connected to another
+group member) are bound to PE physical ports. Internal DFG edges
+(connecting two group members) correspond to body internal edges and
+are satisfied inside the PE without routing.
+
+Port binding order follows group member order (matching the PE body
+operation order). For each group member in order, its external input
+ports are bound to consecutive PE input ports, and its external output
+ports are bound to consecutive PE output ports.
+
+**Routing exclusion**: DFG edges whose source and destination nodes are
+both mapped to the same hardware PE (via operation group placement) are
+internal edges. They must NOT be routed through the switch fabric. The
+routing stage must skip these edges.
+
 ### Runtime-Configurable Parameters
 
 Certain operation attributes are runtime-configurable and do not affect

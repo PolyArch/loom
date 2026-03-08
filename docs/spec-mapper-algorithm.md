@@ -208,6 +208,12 @@ a hardware edge (tagged sharing):
    assigned (via `fabric.add_tag` or `fabric.map_tag`), subsequent routing
    nodes must preserve or legally transform it.
 
+**Internal group edge exclusion**: DFG edges whose source and destination
+nodes are both mapped to the same hardware PE (via operation group
+placement) are internal edges satisfied inside the PE body. The routing
+stage must skip these edges entirely -- they require no switch-fabric
+path and must not be counted as routing failures.
+
 **Route failure**: If no legal path exists for an edge, flag it for the
 repair stage.
 
