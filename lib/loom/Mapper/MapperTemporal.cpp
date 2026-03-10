@@ -72,7 +72,20 @@ bool Mapper::runTemporalAssignment(MappingState &state, const Graph &dfg,
     if (static_cast<int64_t>(swOps.size()) > numInstruction)
       return false;
 
-    // Assign sequential slots and tags.
+    // Build FU node ID -> FU body index map for correct opcode derivation.
+    // The opcode is the FU's position among the parent TPE's fu_node attributes.
+    llvm::DenseMap<IdIndex, IdIndex> fuNodeToIndex;
+    {
+      IdIndex fuIdx = 0;
+      for (auto &attr : tpeNode->attributes) {
+        if (attr.getName() == "fu_node") {
+          if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+            fuNodeToIndex[static_cast<IdIndex>(intAttr.getInt())] = fuIdx++;
+        }
+      }
+    }
+
+    // Assign sequential slots and tags, with correct FU-body-position opcodes.
     for (size_t i = 0; i < swOps.size(); ++i) {
       IdIndex swNode = swOps[i];
       if (swNode >= state.temporalPEAssignments.size())
@@ -80,7 +93,13 @@ bool Mapper::runTemporalAssignment(MappingState &state, const Graph &dfg,
 
       state.temporalPEAssignments[swNode].slot = static_cast<IdIndex>(i);
       state.temporalPEAssignments[swNode].tag = static_cast<IdIndex>(i);
-      state.temporalPEAssignments[swNode].opcode = static_cast<IdIndex>(i);
+
+      // Derive opcode from FU body position, not slot index.
+      IdIndex hwNodeId = state.swNodeToHwNode[swNode];
+      auto fuIt = fuNodeToIndex.find(hwNodeId);
+      state.temporalPEAssignments[swNode].opcode =
+          (fuIt != fuNodeToIndex.end()) ? fuIt->second
+                                        : static_cast<IdIndex>(i);
     }
 
     // Assign registers for intra-PE edges.
@@ -115,6 +134,26 @@ bool Mapper::runTemporalAssignment(MappingState &state, const Graph &dfg,
           }
 
           if (sameTPE) {
+            // Skip inter-slot edges that were routed through the switch
+            // fabric (they don't use internal temporal registers).
+            if (edgeId < state.swEdgeToHwPaths.size() &&
+                !state.swEdgeToHwPaths[edgeId].empty())
+              continue;
+
+            // Skip group-internal edges (FU body handles the connection).
+            IdIndex srcHwNode = state.swNodeToHwNode[swId];
+            auto groupIt = state.groupBindings.find(srcHwNode);
+            if (groupIt != state.groupBindings.end()) {
+              bool srcInGroup = false, dstInGroup = false;
+              for (IdIndex gid : groupIt->second) {
+                if (gid == swId) srcInGroup = true;
+                if (gid == dstSwNode) dstInGroup = true;
+              }
+              if (srcInGroup && dstInGroup)
+                continue;
+            }
+
+            // Allocate temporal register for true intra-TPE register-routed edge.
             if (edgeId < state.registerAssignments.size()) {
               state.registerAssignments[edgeId] = regCount++;
               if (static_cast<int64_t>(regCount) > numRegister)

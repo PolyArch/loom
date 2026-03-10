@@ -128,7 +128,24 @@ bool Mapper::validateC2(const MappingState &state, const Graph &dfg,
       const Node *hwNode = adg.getNode(hw->parentNode);
       bool isRouting = hwNode && getNodeResClass(hwNode) == "routing";
 
-      if (!isTypeWidthCompatible(sw->type, hw->type)) {
+      // For temporal PE FU nodes, use tagged-unwrap comparison.
+      // The port's parentNode is the virtual temporal PE (port owner), but
+      // the SW node is mapped to an FU sub-node. Look up the actual mapped
+      // HW node for the SW port's parent node.
+      bool temporalFU = false;
+      if (sw->parentNode != INVALID_ID &&
+          sw->parentNode < state.swNodeToHwNode.size()) {
+        IdIndex mappedHw = state.swNodeToHwNode[sw->parentNode];
+        if (mappedHw != INVALID_ID) {
+          const Node *mappedHwNode = adg.getNode(mappedHw);
+          temporalFU = isTemporalPEFU(mappedHwNode);
+        }
+      }
+
+      bool typeOk = temporalFU
+                        ? isTypeWidthCompatibleForTemporalFU(sw->type, hw->type)
+                        : isTypeWidthCompatible(sw->type, hw->type);
+      if (!typeOk) {
         unsigned swWidth = getTypeWidth(sw->type);
         unsigned hwWidth = getTypeWidth(hw->type);
         diag = "C2: type width mismatch sw_port=" + std::to_string(i) +
@@ -582,7 +599,9 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
     const Edge *edge = dfg.getEdge(i);
     if (!edge)
       continue;
-    // Skip internal group edges: both endpoints mapped to the same HW node.
+    // Skip internal group edges: both endpoints mapped to the same HW node
+    // AND both are members of a tech-mapped group on that node.
+    // Inter-slot edges on temporal FU sub-nodes must be routed.
     const Port *srcPort = dfg.getPort(edge->srcPort);
     const Port *dstPort = dfg.getPort(edge->dstPort);
     if (srcPort && dstPort) {
@@ -593,8 +612,20 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
           dstSwNode < state.swNodeToHwNode.size()) {
         IdIndex srcHwNode = state.swNodeToHwNode[srcSwNode];
         IdIndex dstHwNode = state.swNodeToHwNode[dstSwNode];
-        if (srcHwNode != INVALID_ID && srcHwNode == dstHwNode)
-          continue; // Internal group edge, no routing needed.
+        if (srcHwNode != INVALID_ID && srcHwNode == dstHwNode) {
+          bool isGroupInternal = false;
+          auto groupIt = state.groupBindings.find(srcHwNode);
+          if (groupIt != state.groupBindings.end()) {
+            bool srcInGroup = false, dstInGroup = false;
+            for (IdIndex gid : groupIt->second) {
+              if (gid == srcSwNode) srcInGroup = true;
+              if (gid == dstSwNode) dstInGroup = true;
+            }
+            isGroupInternal = srcInGroup && dstInGroup;
+          }
+          if (isGroupInternal)
+            continue; // Truly internal group edge, no routing needed.
+        }
       }
     }
     if (i >= state.swEdgeToHwPaths.size() ||

@@ -4,11 +4,14 @@ add_subdirectory(Mapper)
 
 
 set(LOOM_CONVERSION_SOURCES
+  Conversion/LLVMToSCFArith.cpp
+  Conversion/LLVMToSCFCalls.cpp
   Conversion/LLVMToSCFFunction.cpp
   Conversion/LLVMToSCFGlobals.cpp
   Conversion/LLVMToSCFPass.cpp
   Conversion/LLVMToSCFSupport.cpp
   Conversion/SCFPostProcess.cpp
+  Conversion/SCFSubviewElim.cpp
   Conversion/SCFToHandshake.cpp
   Conversion/SCFToHandshakeAnalysis.cpp
   Conversion/SCFToHandshakeConvert.cpp

@@ -344,6 +344,9 @@ std::optional<Type> InferPointerElementType(Value value) {
         if (auto strong =
                 recordCandidate(NormalizeScalarType(scalar, context)))
           return strong;
+        // Trace through GEP result to find actual element type from
+        // downstream loads/stores (e.g., byte-offset GEP -> typed load).
+        worklist.push_back(gepOp.getResult());
         continue;
       }
 
@@ -418,6 +421,43 @@ std::optional<Type> InferPointerElementType(Value value) {
             worklist.push_back(dst);
           continue;
         }
+      }
+
+      // Trace pointer values through branch terminators to destination
+      // block arguments so that type inference spans across basic blocks.
+      if (auto brOp = llvm::dyn_cast<LLVM::BrOp>(user)) {
+        auto operands = brOp.getOperands();
+        auto it = llvm::find(operands, current);
+        if (it != operands.end()) {
+          unsigned idx =
+              static_cast<unsigned>(it - operands.begin());
+          Block *dest = brOp.getDest();
+          if (idx < dest->getNumArguments())
+            worklist.push_back(dest->getArgument(idx));
+        }
+        continue;
+      }
+
+      if (auto condBrOp = llvm::dyn_cast<LLVM::CondBrOp>(user)) {
+        auto trueOps = condBrOp.getTrueDestOperands();
+        for (unsigned i = 0; i < trueOps.size(); ++i) {
+          if (trueOps[i] == current) {
+            Block *dest = condBrOp.getTrueDest();
+            if (i < dest->getNumArguments())
+              worklist.push_back(dest->getArgument(i));
+            break;
+          }
+        }
+        auto falseOps = condBrOp.getFalseDestOperands();
+        for (unsigned i = 0; i < falseOps.size(); ++i) {
+          if (falseOps[i] == current) {
+            Block *dest = condBrOp.getFalseDest();
+            if (i < dest->getNumArguments())
+              worklist.push_back(dest->getArgument(i));
+            break;
+          }
+        }
+        continue;
       }
 
     }
@@ -614,6 +654,10 @@ Value MaterializeSubview(OpBuilder &builder, Location loc, Value base,
 
 Value MaterializeMemrefPointer(OpBuilder &builder, Location loc,
                                       const PointerInfo &info) {
+  if (!info.base || !llvm::isa<MemRefType>(info.base.getType()))
+    return nullptr;
+  if (info.index && !llvm::isa<IndexType>(info.index.getType()))
+    return nullptr;
   Value result = nullptr;
   if (IsZeroIndex(info.index)) {
     result = info.base;
@@ -632,6 +676,69 @@ Value MaterializeMemrefPointer(OpBuilder &builder, Location loc,
   if (memrefType == targetType)
     return result;
   return memref::CastOp::create(builder, loc, targetType, result);
+}
+
+Value MaterializeBranchPointer(OpBuilder &builder, Location loc,
+                               const PointerInfo &info, Type destArgType) {
+  if (!info.base)
+    return nullptr;
+  auto destMemref = llvm::dyn_cast<MemRefType>(destArgType);
+  if (!destMemref || destMemref.getElementType() == info.elementType)
+    return MaterializeMemrefPointer(builder, loc, info);
+
+  Type destElemType = destMemref.getElementType();
+  auto baseMemref = llvm::dyn_cast<MemRefType>(info.base.getType());
+
+  // Fast path: base memref already has the destination element type.
+  // Scale the index from PointerInfo's element type to destination and go.
+  if (baseMemref && baseMemref.getElementType() == destElemType) {
+    PointerInfo adjusted = info;
+    adjusted.index = ScaleIndexBetweenElementTypes(
+        builder, loc, info.index, info.elementType, destElemType);
+    adjusted.elementType = destElemType;
+    return MaterializeMemrefPointer(builder, loc, adjusted);
+  }
+
+  // i8 base -> typed destination: use memref.view to reinterpret bytes.
+  // memref.view can convert memref<?xi8> to memref<?xDestElem>.
+  if (baseMemref && IsI8Type(baseMemref.getElementType()) &&
+      baseMemref.getLayout().isIdentity()) {
+    Value byteOffset = info.index;
+    if (!byteOffset)
+      byteOffset = BuildIndexConstant(builder, loc, 0);
+
+    Value totalBytes = memref::DimOp::create(builder, loc, info.base, 0);
+    Value remaining =
+        arith::SubIOp::create(builder, loc, totalBytes, byteOffset);
+    int64_t destSize = GetByteSize(destElemType);
+    Value elemCount = remaining;
+    if (destSize > 1)
+      elemCount = arith::DivUIOp::create(
+          builder, loc, remaining,
+          BuildIndexConstant(builder, loc, destSize));
+
+    auto viewType =
+        MakeMemRefType(destElemType, baseMemref.getMemorySpace());
+    auto viewed = memref::ViewOp::create(builder, loc, viewType, info.base,
+                                         byteOffset, ValueRange{elemCount});
+    auto targetType =
+        MakeStridedMemRefType(destElemType, baseMemref.getMemorySpace());
+    if (viewType == targetType)
+      return viewed;
+    return memref::CastOp::create(builder, loc, targetType, viewed);
+  }
+
+  // Non-i8 base -> different typed destination (e.g., f32 base -> i8 dest).
+  // Materialize a subview in the base's native element type as fallback.
+  Type baseElemType =
+      baseMemref ? baseMemref.getElementType() : info.elementType;
+  PointerInfo nativeInfo = info;
+  if (baseElemType != info.elementType) {
+    nativeInfo.index = ScaleIndexBetweenElementTypes(
+        builder, loc, info.index, info.elementType, baseElemType);
+    nativeInfo.elementType = baseElemType;
+  }
+  return MaterializeMemrefPointer(builder, loc, nativeInfo);
 }
 
 Value MaterializeLLVMPointer(OpBuilder &builder, Location loc,

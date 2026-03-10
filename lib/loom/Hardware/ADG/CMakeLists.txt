@@ -7,6 +7,7 @@ add_llvm_library(LoomADG
   ADGExportSV.cpp
   ADGExportSVGen.cpp
   ADGExportSVUtil.cpp
+  ADGGen.cpp
 
   LINK_LIBS PUBLIC
     LoomFabric

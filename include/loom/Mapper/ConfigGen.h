@@ -47,10 +47,12 @@ public:
   bool writeMapText(const MappingState &state, const Graph &dfg,
                     const Graph &adg, const std::string &path);
 
-  /// Write a configured copy of the fabric MLIR with route_table attributes
-  /// set on switch ops according to the mapping result.
+  /// Write a configured copy of the fabric MLIR with runtime configuration
+  /// attributes set on all configurable ops according to the mapping result:
+  /// route_table on switches, instruction_mem on temporal PE instances,
+  /// output_tag on tagged PE instances, and tag on add_tag ops.
   bool writeConfiguredFabric(
-      const MappingState &state, const Graph &adg,
+      const MappingState &state, const Graph &dfg, const Graph &adg,
       const llvm::DenseMap<mlir::Operation *, IdIndex> &opMap,
       mlir::Operation *adgModule, const std::string &path);
 

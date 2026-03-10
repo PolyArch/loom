@@ -1182,9 +1182,12 @@ std::string ADGBuilder::Impl::generateMLIR() const {
                                           swDef.numIn);
 
       os << "fabric.switch [connectivity_table = [";
-      for (size_t i = 0; i < flatConn.size(); ++i) {
-        if (i > 0) os << ", ";
-        os << flatConn[i];
+      for (unsigned o = 0; o < swDef.numOut; ++o) {
+        if (o > 0) os << ", ";
+        os << '"';
+        for (unsigned i = 0; i < swDef.numIn; ++i)
+          os << flatConn[o * swDef.numIn + i];
+        os << '"';
       }
       os << "]] ";
       for (size_t o = 0; o < operands.size(); ++o) {
@@ -1229,9 +1232,12 @@ std::string ADGBuilder::Impl::generateMLIR() const {
 
       os << "fabric.temporal_sw [num_route_table = " << tsDef.numRouteTable
          << ", connectivity_table = [";
-      for (size_t i = 0; i < flatConn.size(); ++i) {
-        if (i > 0) os << ", ";
-        os << flatConn[i];
+      for (unsigned o = 0; o < tsDef.numOut; ++o) {
+        if (o > 0) os << ", ";
+        os << '"';
+        for (unsigned i = 0; i < tsDef.numIn; ++i)
+          os << flatConn[o * tsDef.numIn + i];
+        os << '"';
       }
       os << "]] ";
       for (size_t o = 0; o < operands.size(); ++o) {

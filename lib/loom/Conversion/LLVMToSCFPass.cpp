@@ -11,11 +11,13 @@
 
 #include "loom/Conversion/LLVMToSCF.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/CrashRecoveryContext.h"
 
 using namespace mlir;
 
@@ -50,17 +52,48 @@ public:
     for (auto func : module.getOps<LLVM::LLVMFuncOp>())
       llvmFunctions.push_back(func);
 
+    llvm::CrashRecoveryContext::Enable();
     for (LLVM::LLVMFuncOp func : llvmFunctions) {
       if (varargFunctions.contains(func.getName()))
         continue;
       if (IsRawPointerCallee(func.getName()))
         continue;
-      if (failed(convertFunction(module, func, builder, convertedGlobals,
-                                 varargFunctions))) {
+
+      // Snapshot existing func.func ops so we can detect new ones on crash.
+      llvm::DenseSet<Operation *> existingFuncs;
+      for (auto f : module.getOps<mlir::func::FuncOp>())
+        existingFuncs.insert(f.getOperation());
+
+      // Use CrashRecoveryContext to catch segfaults in conversion of
+      // individual functions, so one bad function doesn't kill the pipeline.
+      bool crashed = false;
+      LogicalResult result = failure();
+      {
+        llvm::CrashRecoveryContext CRC;
+        crashed = !CRC.RunSafely([&]() {
+          result = convertFunction(module, func, builder, convertedGlobals,
+                                   varargFunctions);
+        });
+      }
+      if (crashed) {
+        llvm::errs() << "warning: conversion of function '" << func.getName()
+                      << "' crashed, skipping\n";
+        // Clean up: erase any new func.func that was partially created.
+        llvm::SmallVector<mlir::func::FuncOp, 2> toErase;
+        for (auto f : module.getOps<mlir::func::FuncOp>()) {
+          if (!existingFuncs.contains(f.getOperation()))
+            toErase.push_back(f);
+        }
+        for (auto f : toErase)
+          f.erase();
+        continue;
+      }
+      if (failed(result)) {
         signalPassFailure();
         return;
       }
     }
+    llvm::CrashRecoveryContext::Disable();
 
     llvm::SmallVector<LLVM::GlobalOp, 8> globalsToErase;
     for (auto &entry : convertedGlobals)

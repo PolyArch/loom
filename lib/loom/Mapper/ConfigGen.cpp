@@ -358,6 +358,196 @@ IdIndex findNodeId(const Graph &adg, const Node *target) {
   return INVALID_ID;
 }
 
+/// Look up an operation by sym_name attribute, searching from the outermost
+/// parent module. Used to resolve fabric.instance targets.
+mlir::Operation *lookupSymbolInModule(mlir::Operation *from,
+                                      llvm::StringRef name) {
+  mlir::Operation *scope = from;
+  while (scope->getParentOp())
+    scope = scope->getParentOp();
+
+  mlir::Operation *result = nullptr;
+  scope->walk([&](mlir::Operation *op) -> mlir::WalkResult {
+    if (auto attr = op->getAttrOfType<mlir::StringAttr>("sym_name")) {
+      if (attr.getValue() == name) {
+        result = op;
+        return mlir::WalkResult::interrupt();
+      }
+    }
+    return mlir::WalkResult::advance();
+  });
+  return result;
+}
+
+/// Build instruction_mem ArrayAttr for a temporal PE instance.
+/// Returns empty ArrayAttr if no entries are generated.
+mlir::ArrayAttr buildInstructionMem(
+    const Node *hwNode, IdIndex hwId, const MappingState &state,
+    const Graph &dfg, const Graph &adg,
+    fabric::InstanceOp instanceOp, mlir::Builder &builder) {
+  int64_t numInst = getNodeIntAttr(hwNode, "num_instruction", 0);
+  int64_t numReg = getNodeIntAttr(hwNode, "num_register", 0);
+  if (numInst <= 0)
+    return {};
+
+  // Guard: skip if registers are used (requires reg() source/dest encoding).
+  if (numReg > 0)
+    return {};
+
+  // Collect FU sub-node IDs in body order (ascending node ID == body order,
+  // since ADGFlattener creates FU nodes sequentially in body order).
+  llvm::SmallVector<IdIndex, 4> fuNodeIds;
+  for (IdIndex nodeId = 0;
+       nodeId < static_cast<IdIndex>(adg.nodes.size()); ++nodeId) {
+    const Node *node = adg.getNode(nodeId);
+    if (!node || node->kind != Node::OperationNode)
+      continue;
+    int64_t parentTPE = getNodeIntAttr(node, "parent_temporal_pe", -1);
+    if (parentTPE == static_cast<int64_t>(hwId))
+      fuNodeIds.push_back(nodeId);
+  }
+
+  // Build fuNodeId -> fuIndex map.
+  llvm::DenseMap<IdIndex, unsigned> fuNodeToIndex;
+  for (unsigned i = 0; i < fuNodeIds.size(); ++i)
+    fuNodeToIndex[fuNodeIds[i]] = i;
+
+  // Get FU names from the TemporalPEOp definition body.
+  llvm::SmallVector<std::string, 4> fuNames;
+  mlir::Operation *target =
+      lookupSymbolInModule(instanceOp.getOperation(), instanceOp.getModule());
+  if (auto tpeOp = mlir::dyn_cast_or_null<fabric::TemporalPEOp>(target)) {
+    for (auto &innerOp : tpeOp.getBody().front()) {
+      if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
+        continue;
+      if (auto symName =
+              innerOp.getAttrOfType<mlir::StringAttr>("sym_name"))
+        fuNames.push_back(symName.getValue().str());
+      else
+        fuNames.push_back("fu_" + std::to_string(fuNames.size()));
+    }
+  }
+
+  // Get port counts from the virtual node.
+  unsigned numOutputs = hwNode->outputPorts.size();
+  unsigned numInputs = hwNode->inputPorts.size();
+
+  // Build instruction entries (sparse format: only populated slots).
+  llvm::SmallVector<mlir::Attribute, 4> entries;
+  for (int64_t slot = 0; slot < numInst; ++slot) {
+    // Find SW node assigned to this slot on a FU of this TPE.
+    for (IdIndex swId = 0;
+         swId < static_cast<IdIndex>(state.temporalPEAssignments.size());
+         ++swId) {
+      const auto &tpa = state.temporalPEAssignments[swId];
+      if (tpa.slot != static_cast<IdIndex>(slot))
+        continue;
+
+      // Verify this SW node is mapped to a FU of this temporal PE.
+      if (swId >= state.swNodeToHwNode.size())
+        continue;
+      IdIndex mappedFuId = state.swNodeToHwNode[swId];
+      auto fuIdxIt = fuNodeToIndex.find(mappedFuId);
+      if (fuIdxIt == fuNodeToIndex.end())
+        continue;
+
+      // Derive correct opcode from FU body position (not tpa.opcode).
+      unsigned opcode = fuIdxIt->second;
+      int64_t tag = tpa.tag != INVALID_ID
+          ? static_cast<int64_t>(tpa.tag) : 0;
+
+      std::string fuName = opcode < fuNames.size()
+          ? fuNames[opcode]
+          : "fu_" + std::to_string(opcode);
+
+      // Format: inst[S]: when(tag=T) out(0), ... = fuName(O) in(0), in(1)
+      std::string entry = "inst[" + std::to_string(slot) + "]: when(tag=" +
+                          std::to_string(tag) + ") ";
+
+      for (unsigned o = 0; o < numOutputs; ++o) {
+        if (o > 0)
+          entry += ", ";
+        entry += "out(" + std::to_string(o) + ")";
+      }
+
+      entry += " = " + fuName + "(" + std::to_string(opcode) + ") ";
+
+      for (unsigned i = 0; i < numInputs; ++i) {
+        if (i > 0)
+          entry += ", ";
+        entry += "in(" + std::to_string(i) + ")";
+      }
+
+      entries.push_back(builder.getStringAttr(entry));
+      break;
+    }
+  }
+
+  if (entries.empty())
+    return {};
+  return builder.getArrayAttr(entries);
+}
+
+/// Set output_tag attribute on a tagged PE instance based on temporal
+/// assignment of the mapped SW node.
+void buildPEOutputTag(const Node *hwNode, IdIndex hwId,
+                      const MappingState &state,
+                      fabric::InstanceOp instanceOp,
+                      mlir::Builder &builder) {
+  if (!nodeHasAttr(hwNode, "output_tag"))
+    return;
+
+  unsigned numOutputs = hwNode->outputPorts.size();
+  if (numOutputs == 0)
+    return;
+
+  // Get tag value from the first mapped SW node's temporal assignment.
+  uint64_t tagVal = 0;
+  if (hwId < state.hwNodeToSwNodes.size() &&
+      !state.hwNodeToSwNodes[hwId].empty()) {
+    IdIndex swId = state.hwNodeToSwNodes[hwId][0];
+    if (swId < state.temporalPEAssignments.size()) {
+      const auto &tpa = state.temporalPEAssignments[swId];
+      if (tpa.tag != INVALID_ID)
+        tagVal = tpa.tag;
+    }
+  }
+
+  llvm::SmallVector<mlir::Attribute, 4> tagAttrs;
+  auto i64Type = builder.getIntegerType(64);
+  for (unsigned o = 0; o < numOutputs; ++o)
+    tagAttrs.push_back(builder.getIntegerAttr(i64Type, tagVal));
+
+  instanceOp->setAttr("output_tag", builder.getArrayAttr(tagAttrs));
+}
+
+/// Set compare_predicate attribute on a PE instance when the mapped SW
+/// node is a comparison operation.
+void buildComparePredicate(const Node *hwNode, IdIndex hwId,
+                           const MappingState &state, const Graph &dfg,
+                           fabric::InstanceOp instanceOp,
+                           mlir::Builder &builder) {
+  if (hwId >= state.hwNodeToSwNodes.size())
+    return;
+
+  for (IdIndex swId : state.hwNodeToSwNodes[hwId]) {
+    const Node *swNode = dfg.getNode(swId);
+    if (!swNode)
+      continue;
+    llvm::StringRef swOp = getNodeOpName(swNode);
+    if (swOp.starts_with("arith.cmp")) {
+      for (auto &a : swNode->attributes) {
+        if (a.getName() == "predicate") {
+          if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(a.getValue())) {
+            instanceOp->setAttr("compare_predicate", ia);
+            return;
+          }
+        }
+      }
+    }
+  }
+}
+
 } // namespace
 
 bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
@@ -872,8 +1062,9 @@ std::string formatPortRef(const Graph &graph, IdIndex portId,
 }
 
 /// Check if a DFG edge is internal to an operation group (both endpoints
-/// mapped to the same HW node). Such edges are handled inside the PE and
-/// do not need switch-fabric routing.
+/// mapped to the same HW node AND both are members of a tech-mapped group).
+/// Such edges are handled inside the PE and do not need switch-fabric
+/// routing. Inter-slot edges on temporal FU sub-nodes are NOT group-internal.
 bool isInternalGroupEdge(const Edge *edge, const Graph &dfg,
                          const MappingState &state) {
   const Port *srcPort = dfg.getPort(edge->srcPort);
@@ -889,7 +1080,19 @@ bool isInternalGroupEdge(const Edge *edge, const Graph &dfg,
     return false;
   IdIndex srcHwNode = state.swNodeToHwNode[srcSwNode];
   IdIndex dstHwNode = state.swNodeToHwNode[dstSwNode];
-  return srcHwNode != INVALID_ID && srcHwNode == dstHwNode;
+  if (srcHwNode == INVALID_ID || srcHwNode != dstHwNode)
+    return false;
+  // Both mapped to same HW node: only truly internal if both are in
+  // the same group binding (tech-mapped group).
+  auto groupIt = state.groupBindings.find(srcHwNode);
+  if (groupIt == state.groupBindings.end())
+    return false;
+  bool srcInGroup = false, dstInGroup = false;
+  for (IdIndex gid : groupIt->second) {
+    if (gid == srcSwNode) srcInGroup = true;
+    if (gid == dstSwNode) dstInGroup = true;
+  }
+  return srcInGroup && dstInGroup;
 }
 
 } // namespace
@@ -1107,13 +1310,12 @@ bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
 }
 
 bool ConfigGen::writeConfiguredFabric(
-    const MappingState &state, const Graph &adg,
+    const MappingState &state, const Graph &dfg, const Graph &adg,
     const llvm::DenseMap<mlir::Operation *, IdIndex> &opMap,
     mlir::Operation *adgModule, const std::string &path) {
   mlir::Builder builder(adgModule->getContext());
 
-  // Walk the top-level module body for fabric.module ops, then walk their
-  // body for fabric.switch ops.
+  // Walk switch ops and set route_table.
   adgModule->walk([&](fabric::SwitchOp switchOp) {
     mlir::Operation *op = switchOp.getOperation();
     auto it = opMap.find(op);
@@ -1176,6 +1378,90 @@ bool ConfigGen::writeConfiguredFabric(
 
     switchOp.setRouteTableAttr(
         mlir::DenseI8ArrayAttr::get(builder.getContext(), routeTable));
+  });
+
+  // Walk instance ops and set runtime config attributes.
+  adgModule->walk([&](fabric::InstanceOp instanceOp) {
+    auto it = opMap.find(instanceOp.getOperation());
+    if (it == opMap.end())
+      return;
+    IdIndex hwId = it->second;
+    const Node *hwNode = adg.getNode(hwId);
+    if (!hwNode)
+      return;
+
+    // Temporal PE instance: set instruction_mem.
+    if (nodeHasAttr(hwNode, "is_virtual")) {
+      auto instrMem = buildInstructionMem(hwNode, hwId, state, dfg, adg,
+                                          instanceOp, builder);
+      if (instrMem && !instrMem.empty())
+        instanceOp->setAttr("instruction_mem", instrMem);
+      return;
+    }
+
+    // Tagged PE instance: set output_tag.
+    buildPEOutputTag(hwNode, hwId, state, instanceOp, builder);
+
+    // PE with comparison: set compare_predicate.
+    buildComparePredicate(hwNode, hwId, state, dfg, instanceOp, builder);
+  });
+
+  // Walk add_tag ops and set mapper-assigned tag values.
+  adgModule->walk([&](fabric::AddTagOp addTagOp) {
+    auto it = opMap.find(addTagOp.getOperation());
+    if (it == opMap.end())
+      return;
+    IdIndex hwId = it->second;
+    const Node *hwNode = adg.getNode(hwId);
+    if (!hwNode)
+      return;
+
+    // Collect all port IDs owned by this add_tag node.
+    llvm::DenseSet<IdIndex> nodePortIds;
+    for (IdIndex pid : hwNode->inputPorts)
+      nodePortIds.insert(pid);
+    for (IdIndex pid : hwNode->outputPorts)
+      nodePortIds.insert(pid);
+
+    // Scan routed SW edges to find one whose HW path goes through this node.
+    for (IdIndex edgeId = 0;
+         edgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
+         ++edgeId) {
+      const auto &pathVec = state.swEdgeToHwPaths[edgeId];
+      bool usesNode = false;
+      for (IdIndex portId : pathVec) {
+        if (nodePortIds.count(portId)) {
+          usesNode = true;
+          break;
+        }
+      }
+      if (!usesNode)
+        continue;
+
+      // Found an edge routed through this add_tag.
+      // Get the destination SW node's temporal PE assignment tag.
+      const Edge *swEdge = dfg.getEdge(edgeId);
+      if (!swEdge)
+        continue;
+      const Port *dstPort = dfg.getPort(swEdge->dstPort);
+      if (!dstPort || dstPort->parentNode == INVALID_ID)
+        continue;
+      IdIndex dstSwNode = dstPort->parentNode;
+
+      if (dstSwNode < state.temporalPEAssignments.size()) {
+        const auto &tpa = state.temporalPEAssignments[dstSwNode];
+        if (tpa.tag != INVALID_ID) {
+          auto resultType = mlir::dyn_cast<loom::dataflow::TaggedType>(
+              addTagOp.getResult().getType());
+          if (resultType) {
+            auto tagType = resultType.getTagType();
+            addTagOp.setTagAttr(
+                mlir::IntegerAttr::get(tagType, tpa.tag));
+          }
+          break;
+        }
+      }
+    }
   });
 
   // Write the modified module to disk.

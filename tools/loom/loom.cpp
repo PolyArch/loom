@@ -79,6 +79,8 @@
 #include "loom/Dialect/Dataflow/DataflowDialect.h"
 #include "loom/Dialect/Fabric/FabricDialect.h"
 #include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Hardware/ADG/ADGGen.h"
+#include "loom/Hardware/Common/FabricConstants.h"
 #include "loom/Mapper/ADGFlattener.h"
 #include "loom/Mapper/ConfigGen.h"
 #include "loom/Mapper/DFGBuilder.h"
@@ -592,9 +594,183 @@ int main(int argc, char **argv) {
     return as_clang_result;
   }
 
+  // Mutual exclusion: --gen-adg and its sub-flags vs --adg.
+  {
+    bool has_gen_flags = parsed.gen_adg || parsed.gen_topology != "mesh" ||
+                         parsed.gen_track != 1 ||
+                         parsed.gen_fifo_mode != "none" ||
+                         parsed.gen_fifo_depth != 2 ||
+                         parsed.gen_fifo_bypassable;
+    if (has_gen_flags && !parsed.adg_path.empty()) {
+      llvm::errs()
+          << "error: ADG generation flags (--gen-adg, --gen-topology, "
+             "--gen-track, --gen-fifo-*) are incompatible with --adg\n";
+      return 1;
+    }
+    if (!parsed.gen_adg && has_gen_flags) {
+      llvm::errs()
+          << "error: --gen-topology/--gen-track/--gen-fifo-* require --gen-adg\n";
+      return 1;
+    }
+  }
+
+  // ADG generation mode: --gen-adg --dfgs ... -o output.fabric.mlir
+  if (parsed.gen_adg) {
+    if (parsed.dfg_paths.empty()) {
+      llvm::errs() << "error: --gen-adg requires --dfgs\n";
+      return 1;
+    }
+    if (parsed.output_path.empty()) {
+      llvm::errs() << "error: --gen-adg requires -o\n";
+      return 1;
+    }
+    if (!EnsureOutputDirectory(parsed.output_path))
+      return 1;
+
+    // Set up MLIR context for parsing handshake DFGs.
+    mlir::MLIRContext gen_context;
+    mlir::DialectRegistry gen_registry;
+    gen_context.appendDialectRegistry(gen_registry);
+    gen_context.getDiagEngine().registerHandler(
+        [](mlir::Diagnostic &diag) {
+          diag.print(llvm::errs());
+          llvm::errs() << "\n";
+          return mlir::success();
+        });
+    gen_context.getOrLoadDialect<mlir::arith::ArithDialect>();
+    gen_context.getOrLoadDialect<mlir::math::MathDialect>();
+    gen_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
+    gen_context.getOrLoadDialect<mlir::func::FuncDialect>();
+    gen_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
+    gen_context.getOrLoadDialect<loom::fabric::FabricDialect>();
+    gen_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+
+    // Parse all DFG files.
+    mlir::ParserConfig gen_parser_config(&gen_context);
+    std::vector<mlir::OwningOpRef<mlir::ModuleOp>> gen_modules;
+    for (const auto &dfg_path : parsed.dfg_paths) {
+      auto mod = mlir::parseSourceFile<mlir::ModuleOp>(
+          dfg_path, gen_parser_config);
+      if (!mod) {
+        llvm::errs() << "error: failed to parse DFG: " << dfg_path << "\n";
+        return 1;
+      }
+      gen_modules.push_back(std::move(mod));
+    }
+
+    // Analyze each handshake.func to extract PE requirements.
+    loom::adg::MergedRequirements merged_reqs;
+    unsigned num_dfgs = 0;
+    for (auto &mod : gen_modules) {
+      mod->walk([&](circt::handshake::FuncOp func) {
+        if (func.getName().ends_with("_esi"))
+          return;
+        loom::adg::SingleDFGAnalysis analysis;
+
+        // Walk all operations in the function body.
+        for (auto &op : func.getBody().front()) {
+          if (op.hasTrait<mlir::OpTrait::IsTerminator>())
+            continue;
+
+          loom::adg::PESpec spec;
+          spec.opName = op.getName().getStringRef().str();
+
+          // Extract input widths from operand types.
+          for (auto operand : op.getOperands()) {
+            mlir::Type ty = operand.getType();
+            unsigned w = 0;
+            if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty))
+              w = intTy.getWidth();
+            else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty))
+              w = floatTy.getWidth();
+            else if (ty.isIndex())
+              w = loom::ADDR_BIT_WIDTH;
+            if (w > 0)
+              spec.inWidths.push_back(w);
+          }
+          // Extract output widths from result types.
+          for (auto result : op.getResults()) {
+            mlir::Type ty = result.getType();
+            unsigned w = 0;
+            if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty))
+              w = intTy.getWidth();
+            else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty))
+              w = floatTy.getWidth();
+            else if (ty.isIndex())
+              w = loom::ADDR_BIT_WIDTH;
+            if (w > 0)
+              spec.outWidths.push_back(w);
+          }
+
+          if (!spec.inWidths.empty() && !spec.outWidths.empty())
+            analysis.peCounts[spec]++;
+        }
+
+        // Count function inputs by width.
+        for (auto arg : func.getBody().front().getArguments()) {
+          mlir::Type ty = arg.getType();
+          unsigned w = 0;
+          if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty))
+            w = intTy.getWidth();
+          else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty))
+            w = floatTy.getWidth();
+          else if (ty.isIndex())
+            w = 64;
+          if (w > 0)
+            analysis.inputsByWidth[w]++;
+        }
+
+        // Count function outputs by width.
+        auto returnOp = func.getBody().front().getTerminator();
+        if (returnOp) {
+          for (auto operand : returnOp->getOperands()) {
+            mlir::Type ty = operand.getType();
+            unsigned w = 0;
+            if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty))
+              w = intTy.getWidth();
+            else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty))
+              w = floatTy.getWidth();
+            else if (ty.isIndex())
+              w = loom::ADDR_BIT_WIDTH;
+            if (w > 0)
+              analysis.outputsByWidth[w]++;
+          }
+        }
+
+        merged_reqs.mergeFrom(analysis);
+        num_dfgs++;
+      });
+    }
+
+    if (num_dfgs == 0) {
+      llvm::errs() << "error: no handshake.func found in DFG files\n";
+      return 1;
+    }
+
+    // Configure generation.
+    loom::adg::GenConfig gen_config;
+    if (parsed.gen_topology == "cube")
+      gen_config.topology = loom::adg::GenConfig::Cube3D;
+    gen_config.numSwitchTrack = parsed.gen_track;
+    if (parsed.gen_fifo_mode == "single")
+      gen_config.fifoMode = loom::adg::GenConfig::FifoSingle;
+    else if (parsed.gen_fifo_mode == "dual")
+      gen_config.fifoMode = loom::adg::GenConfig::FifoDual;
+    gen_config.fifoDepth = parsed.gen_fifo_depth;
+    gen_config.fifoBypassable = parsed.gen_fifo_bypassable;
+
+    // Generate the ADG.
+    loom::adg::ADGGen gen;
+    gen.generate(merged_reqs, gen_config, parsed.output_path,
+                 "genadg_" + std::to_string(num_dfgs));
+
+    llvm::outs() << "generated ADG: " << parsed.output_path << "\n";
+    return 0;
+  }
+
   // Incompatibility checks.
   if (!parsed.dfg_paths.empty() && parsed.adg_path.empty()) {
-    llvm::errs() << "error: --dfgs requires --adg\n";
+    llvm::errs() << "error: --dfgs requires --adg or --gen-adg\n";
     return 1;
   }
   if (!parsed.dfg_paths.empty() && !parsed.inputs.empty()) {
@@ -893,6 +1069,9 @@ int main(int argc, char **argv) {
       scf_pm.addPass(mlir::createLoopInvariantCodeMotionPass());
       scf_pm.addPass(mlir::createCanonicalizerPass());
       scf_pm.addPass(mlir::createCSEPass());
+      scf_pm.addPass(loom::createEliminateSubviewBumpsPass());
+      scf_pm.addPass(mlir::createCanonicalizerPass());
+      scf_pm.addPass(mlir::createCSEPass());
       scf_pm.addPass(loom::createUpliftWhileToForPass());
       scf_pm.addPass(mlir::createCanonicalizerPass());
       scf_pm.addPass(mlir::createCSEPass());
@@ -1022,7 +1201,7 @@ int main(int argc, char **argv) {
 
     // Emit configured fabric MLIR with route_table set on switches.
     std::string fabric_path = base_path + ".fabric.mlir";
-    if (!config_gen.writeConfiguredFabric(mapper_result.state, adg,
+    if (!config_gen.writeConfiguredFabric(mapper_result.state, dfg, adg,
                                           adg_flattener.opMap,
                                           adg_module.get(), fabric_path)) {
       llvm::errs() << "warning: failed to write configured fabric: "
@@ -1259,6 +1438,9 @@ int main(int argc, char **argv) {
   pass_manager.addPass(mlir::createCSEPass());
   pass_manager.addPass(mlir::createLiftControlFlowToSCFPass());
   pass_manager.addPass(mlir::createLoopInvariantCodeMotionPass());
+  pass_manager.addPass(mlir::createCanonicalizerPass());
+  pass_manager.addPass(mlir::createCSEPass());
+  pass_manager.addPass(loom::createEliminateSubviewBumpsPass());
   pass_manager.addPass(mlir::createCanonicalizerPass());
   pass_manager.addPass(mlir::createCSEPass());
   pass_manager.addPass(loom::createUpliftWhileToForPass());

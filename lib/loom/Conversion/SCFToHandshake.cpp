@@ -742,15 +742,21 @@ static mlir::LogicalResult rewriteLoadsForGroup(
     mlir::Block &block,
     const llvm::DenseMap<mlir::Value, std::pair<mlir::Value, mlir::Value>>
         &mergedArgs) {
-  for (mlir::Operation &op : block) {
+  // Walk all ops recursively (including nested regions like scf.while bodies)
+  // to rewrite memref uses that reference merged args.
+  mlir::LogicalResult result = mlir::success();
+  block.walk([&](mlir::Operation *op) {
+    if (mlir::failed(result))
+      return mlir::WalkResult::interrupt();
     if (auto load = mlir::dyn_cast<mlir::memref::LoadOp>(op)) {
       mlir::Value root = loom::detail::getMemrefRoot(load.getMemref());
       auto it = mergedArgs.find(root);
       if (it == mergedArgs.end())
-        continue;
+        return mlir::WalkResult::advance();
       if (load.getIndices().size() != 1) {
-        return load.emitError(
-            "alias-merged memrefs require rank-1 indices");
+        load.emitError("alias-merged memrefs require rank-1 indices");
+        result = mlir::failure();
+        return mlir::WalkResult::interrupt();
       }
       mlir::OpBuilder builder(load);
       mlir::Value index = load.getIndices().front();
@@ -759,16 +765,17 @@ static mlir::LogicalResult rewriteLoadsForGroup(
           mlir::arith::AddIOp::create(builder, load.getLoc(), index, offset);
       load->setOperand(0, it->second.first);
       load->setOperand(1, newIndex);
-      continue;
+      return mlir::WalkResult::advance();
     }
     if (auto store = mlir::dyn_cast<mlir::memref::StoreOp>(op)) {
       mlir::Value root = loom::detail::getMemrefRoot(store.getMemref());
       auto it = mergedArgs.find(root);
       if (it == mergedArgs.end())
-        continue;
+        return mlir::WalkResult::advance();
       if (store.getIndices().size() != 1) {
-        return store.emitError(
-            "alias-merged memrefs require rank-1 indices");
+        store.emitError("alias-merged memrefs require rank-1 indices");
+        result = mlir::failure();
+        return mlir::WalkResult::interrupt();
       }
       mlir::OpBuilder builder(store);
       mlir::Value index = store.getIndices().front();
@@ -777,10 +784,18 @@ static mlir::LogicalResult rewriteLoadsForGroup(
           mlir::arith::AddIOp::create(builder, store.getLoc(), index, offset);
       store->setOperand(1, it->second.first);
       store->setOperand(2, newIndex);
-      continue;
+      return mlir::WalkResult::advance();
     }
-  }
-  return mlir::success();
+    if (auto castOp = mlir::dyn_cast<mlir::memref::CastOp>(op)) {
+      auto it = mergedArgs.find(castOp.getSource());
+      if (it == mergedArgs.end())
+        return mlir::WalkResult::advance();
+      castOp->setOperand(0, it->second.first);
+      return mlir::WalkResult::advance();
+    }
+    return mlir::WalkResult::advance();
+  });
+  return result;
 }
 
 struct PackedCallValues {
@@ -923,36 +938,61 @@ static mlir::LogicalResult mergeAliasGroups(
     groups[root].memberIndices.push_back(memrefArgs[i]);
   }
 
+  // Check if all uses of a memref arg are rewritable (load, store, cast).
+  auto argHasOnlyRewritableUses = [&](unsigned argIdx) -> bool {
+    mlir::Value arg = func.getArgument(argIdx);
+    for (mlir::OpOperand &use : arg.getUses()) {
+      mlir::Operation *user = use.getOwner();
+      if (mlir::isa<mlir::memref::LoadOp>(user) ||
+          mlir::isa<mlir::memref::StoreOp>(user) ||
+          mlir::isa<mlir::memref::CastOp>(user))
+        continue;
+      return false;
+    }
+    return true;
+  };
+
   llvm::SmallVector<MergeGroup, 4> mergeGroups;
   for (auto &entry : groups) {
     MergeGroup group = entry.second;
     if (group.memberIndices.size() <= 1)
       continue;
     llvm::sort(group.memberIndices);
+
+    // Skip groups where any member has non-rewritable uses (e.g., scf.while
+    // operands, func.call args). These cannot be safely merged.
+    bool canMerge = true;
+    for (unsigned idx : group.memberIndices) {
+      if (!argHasOnlyRewritableUses(idx)) {
+        canMerge = false;
+        break;
+      }
+    }
+    if (!canMerge)
+      continue;
+
     mlir::MemRefType firstType =
         mlir::dyn_cast<mlir::MemRefType>(
             func.getArgument(group.memberIndices.front()).getType());
     if (!firstType || firstType.getRank() != 1)
-      return func.emitError(
-          "alias merge requires rank-1 memref arguments");
+      continue;
     group.elemType = firstType.getElementType();
     if (getElementByteSize(group.elemType) == 0)
-      return func.emitError(
-          "alias merge requires integer or float element types");
+      continue;
     group.memorySpace = firstType.getMemorySpace();
+    bool compatible = true;
     for (unsigned idx : group.memberIndices) {
       auto type =
           mlir::dyn_cast<mlir::MemRefType>(func.getArgument(idx).getType());
-      if (!type || type.getRank() != 1)
-        return func.emitError(
-            "alias merge requires rank-1 memref arguments");
-      if (type.getElementType() != group.elemType)
-        return func.emitError(
-            "alias merge requires identical element types");
-      if (type.getMemorySpace() != group.memorySpace)
-        return func.emitError(
-            "alias merge requires identical memory spaces");
+      if (!type || type.getRank() != 1 ||
+          type.getElementType() != group.elemType ||
+          type.getMemorySpace() != group.memorySpace) {
+        compatible = false;
+        break;
+      }
     }
+    if (!compatible)
+      continue;
     group.commonType = mlir::MemRefType::get(
         {mlir::ShapedType::kDynamic}, group.elemType,
         mlir::MemRefLayoutAttrInterface(), group.memorySpace);
@@ -1107,12 +1147,21 @@ struct SCFToHandshakeDataflowPass
       accelNames.insert(func.getName());
     }
 
-    for (func::FuncOp func : accelFuncs) {
-      SymbolTable symbols(module);
-      if (failed(inlineCallsInAccel(func, symbols))) {
-        signalPassFailure();
-        return;
+    // Inline calls in accel functions. If a function has uninlineable
+    // external calls, de-accelerate it (skip handshake conversion).
+    {
+      llvm::SmallVector<func::FuncOp, 8> inlineable;
+      for (func::FuncOp func : accelFuncs) {
+        SymbolTable symbols(module);
+        if (failed(inlineCallsInAccel(func, symbols))) {
+          llvm::errs() << "warning: de-accelerating '" << func.getName()
+                        << "' (contains uninlineable calls)\n";
+          accelNames.erase(func.getName());
+          continue;
+        }
+        inlineable.push_back(func);
       }
+      accelFuncs = std::move(inlineable);
     }
 
     for (func::FuncOp func : accelFuncs) {

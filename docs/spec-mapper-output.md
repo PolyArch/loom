@@ -14,7 +14,9 @@ Output files are generated in Stage C of the Loom pipeline
 |------|------|-------------|
 | `<name>.config.bin` | always (with `--adg` + sources) | Binary config_mem image |
 | `<name>_addr.h` | always (with `--adg` + sources) | C header with per-node addresses |
-| `<name>.mapping.json` | `--dump-mapping` | Machine-readable mapping report |
+| `<name>.map.json` | always (with `--adg` + sources) | Machine-readable mapping report |
+| `<name>.map.txt` | always (with `--adg` + sources) | Human-readable mapping report |
+| `<name>.fabric.mlir` | always (with `--adg` + sources) | Configured fabric MLIR |
 
 ## mapping.json Schema
 
@@ -170,6 +172,26 @@ The `mapping.json` file and the HTML viewer's embedded JSON
 
 When `--viz-mapped <mapping.json>` is invoked, the viewer reads the
 mapping.json file and generates the embedded viewer JSON internally.
+
+## Configured Fabric MLIR (`<name>.fabric.mlir`)
+
+A copy of the input fabric MLIR with runtime configuration attributes set on
+all configurable operations according to the mapping result:
+
+- `fabric.switch`: `route_table` attribute (crossbar enable bits per output-input pair)
+- `fabric.instance` targeting `fabric.temporal_pe`: `instruction_mem` attribute
+  (human-readable format per spec-fabric-temporal_pe.md, e.g.,
+  `"inst[0]: when(tag=0) out(0) = fu_add(0) in(0), in(1)"`)
+- `fabric.instance` targeting tagged `fabric.pe`: `output_tag` attribute
+  (array of integer tag values per output port)
+- `fabric.add_tag`: `tag` attribute updated to mapper-assigned tag value
+
+The opcode in `instruction_mem` entries is derived from the FU body order in
+the `fabric.temporal_pe` definition, not from the `opcode` field in
+`mapping.json` (which has a known derivation bug).
+
+When `num_register > 0`, `instruction_mem` emission is skipped because
+register source/destination encoding is not yet implemented.
 
 ## Related Documents
 

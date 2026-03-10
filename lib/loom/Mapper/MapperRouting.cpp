@@ -299,8 +299,10 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
       continue;
 
     // Skip internal group edges: if both endpoints map to the same HW
-    // node (via operation group placement), the connection is handled
-    // inside the PE and does not need switch-fabric routing.
+    // node AND both are members of a tech-mapped group on that node,
+    // the connection is handled inside the PE (FU body) and does not
+    // need switch-fabric routing. Inter-slot edges on temporal FU
+    // sub-nodes are NOT group-internal and must be routed.
     const Port *srcSwPortPtr = dfg.getPort(srcSwPort);
     const Port *dstSwPortPtr = dfg.getPort(dstSwPort);
     if (srcSwPortPtr && dstSwPortPtr) {
@@ -311,8 +313,21 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
           dstSwNode < state.swNodeToHwNode.size()) {
         IdIndex srcHwNode = state.swNodeToHwNode[srcSwNode];
         IdIndex dstHwNode = state.swNodeToHwNode[dstSwNode];
-        if (srcHwNode != INVALID_ID && srcHwNode == dstHwNode)
-          continue; // Internal group edge, skip routing.
+        if (srcHwNode != INVALID_ID && srcHwNode == dstHwNode) {
+          // Only skip if both nodes are in the same group binding.
+          bool isGroupInternal = false;
+          auto groupIt = state.groupBindings.find(srcHwNode);
+          if (groupIt != state.groupBindings.end()) {
+            bool srcInGroup = false, dstInGroup = false;
+            for (IdIndex gid : groupIt->second) {
+              if (gid == srcSwNode) srcInGroup = true;
+              if (gid == dstSwNode) dstInGroup = true;
+            }
+            isGroupInternal = srcInGroup && dstInGroup;
+          }
+          if (isGroupInternal)
+            continue; // Truly internal group edge, skip routing.
+        }
       }
     }
 

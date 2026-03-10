@@ -24,6 +24,12 @@ struct ParsedArgs {
   double mapper_budget = 60.0;
   int mapper_seed = 0;
   std::string mapper_profile = "balanced";
+  bool gen_adg = false;
+  std::string gen_topology = "mesh"; // "mesh" or "cube"
+  unsigned gen_track = 1;
+  std::string gen_fifo_mode = "none"; // "none", "single", or "dual"
+  unsigned gen_fifo_depth = 2;
+  bool gen_fifo_bypassable = false;
   bool as_clang = false;
   bool show_help = false;
   bool show_version = false;

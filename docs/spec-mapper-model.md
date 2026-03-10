@@ -347,6 +347,8 @@ points to the virtual temporal PE node (the physical owner). Each FU node's
 FU node attributes record:
 
 - The temporal PE virtual node ID they belong to.
+- `body_ops` extracted from their inner `fabric.pe` body, enabling
+  TechMapper pattern matching.
 
 Virtual node attributes record:
 
@@ -675,6 +677,13 @@ compatible. Compatibility is determined by:
    `handshake.extmemory` -> `fabric.extmemory`).
 
 ### C2: Port and Type Compatibility
+
+**Temporal PE FU type relaxation**: For FU sub-nodes within a temporal PE
+(those with `parent_temporal_pe` attribute), port type checks unwrap tagged
+types to their value component before comparing widths. This reflects that
+"tags are stripped at the FU boundary" (spec-fabric-temporal_pe.md). A native
+DFG port `i32` is compatible with tagged FU port `tagged<bits<32>, i4>` if
+value widths match. This relaxation applies ONLY to temporal PE FU nodes.
 
 Mapped ports must satisfy:
 

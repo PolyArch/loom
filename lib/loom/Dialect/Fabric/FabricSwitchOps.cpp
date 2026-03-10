@@ -11,6 +11,8 @@
 
 #include "mlir/IR/OpImplementation.h"
 
+#include <string>
+
 using namespace mlir;
 using namespace loom;
 using namespace loom::fabric;
@@ -71,6 +73,162 @@ verifyConnectivityTable(Operation *op, ArrayRef<int8_t> table,
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// Compact binary format helpers for connectivity/route tables
+//===----------------------------------------------------------------------===//
+
+/// Expand a binary digit string ("0110") into flat 0/1 values.
+static ParseResult expandBinaryString(OpAsmParser &parser, StringRef s,
+                                      SmallVectorImpl<int8_t> &values) {
+  for (char c : s) {
+    if (c != '0' && c != '1')
+      return parser.emitError(parser.getCurrentLocation(),
+                              "invalid character in binary string");
+    values.push_back(c == '1' ? 1 : 0);
+  }
+  return success();
+}
+
+/// Parse connectivity/route table values in one of two formats:
+///   New: ["0110", "1010", "1111"]  (per-row binary strings, preserves width)
+///   Old: [1, 0, 1, 1, 0, 1, ...]  (flat 0/1 integers, backward compat)
+/// The first element's token type (string vs integer) determines the format.
+static ParseResult parseConnTableValues(OpAsmParser &parser,
+                                        DenseI8ArrayAttr &result) {
+  if (parser.parseLSquare())
+    return failure();
+
+  if (succeeded(parser.parseOptionalRSquare())) {
+    result = DenseI8ArrayAttr::get(parser.getContext(), {});
+    return success();
+  }
+
+  SmallVector<int8_t> values;
+
+  // Try string format first (new compact binary).
+  std::string firstStr;
+  if (succeeded(parser.parseOptionalString(&firstStr))) {
+    if (expandBinaryString(parser, firstStr, values))
+      return failure();
+    while (succeeded(parser.parseOptionalComma())) {
+      std::string s;
+      if (parser.parseString(&s))
+        return failure();
+      if (expandBinaryString(parser, s, values))
+        return failure();
+    }
+  } else {
+    // Fall back to old flat integer format.
+    int64_t val;
+    if (parser.parseInteger(val))
+      return failure();
+    values.push_back(static_cast<int8_t>(val));
+    while (succeeded(parser.parseOptionalComma())) {
+      if (parser.parseInteger(val))
+        return failure();
+      values.push_back(static_cast<int8_t>(val));
+    }
+  }
+
+  if (parser.parseRSquare())
+    return failure();
+
+  result = DenseI8ArrayAttr::get(parser.getContext(), values);
+  return success();
+}
+
+/// Parse route_table values (same dual-format as connectivity_table).
+static ParseResult parseRouteTableValues(OpAsmParser &parser,
+                                         DenseI8ArrayAttr &result) {
+  if (parser.parseLSquare())
+    return failure();
+
+  if (succeeded(parser.parseOptionalRSquare())) {
+    result = DenseI8ArrayAttr::get(parser.getContext(), {});
+    return success();
+  }
+
+  SmallVector<int8_t> values;
+
+  std::string firstStr;
+  if (succeeded(parser.parseOptionalString(&firstStr))) {
+    if (expandBinaryString(parser, firstStr, values))
+      return failure();
+    while (succeeded(parser.parseOptionalComma())) {
+      std::string s;
+      if (parser.parseString(&s))
+        return failure();
+      if (expandBinaryString(parser, s, values))
+        return failure();
+    }
+  } else {
+    int64_t val;
+    if (parser.parseInteger(val))
+      return failure();
+    values.push_back(static_cast<int8_t>(val));
+    while (succeeded(parser.parseOptionalComma())) {
+      if (parser.parseInteger(val))
+        return failure();
+      values.push_back(static_cast<int8_t>(val));
+    }
+  }
+
+  if (parser.parseRSquare())
+    return failure();
+
+  result = DenseI8ArrayAttr::get(parser.getContext(), values);
+  return success();
+}
+
+/// Print connectivity_table in compact per-row binary string format.
+/// Example: ["0110", "1010", "1111"] for a 3-out x 4-in table.
+static void printConnTable(OpAsmPrinter &p, ArrayRef<int8_t> ct,
+                           unsigned numInputs) {
+  if (numInputs == 0)
+    return;
+  unsigned numOutputs = ct.size() / numInputs;
+  p << "[";
+  for (unsigned o = 0; o < numOutputs; ++o) {
+    if (o > 0)
+      p << ", ";
+    std::string row;
+    row.reserve(numInputs);
+    for (unsigned i = 0; i < numInputs; ++i)
+      row.push_back(ct[o * numInputs + i] ? '1' : '0');
+    p.printString(row);
+  }
+  p << "]";
+}
+
+/// Print route_table in compact per-row binary string format using
+/// connectivity_table popcounts as per-row widths.
+/// Example: ["01", "10", "111"] where each row width = popcount of that
+/// connectivity row.
+static void printRouteTable(OpAsmPrinter &p, ArrayRef<int8_t> rt,
+                            ArrayRef<int8_t> ct, unsigned numInputs) {
+  if (numInputs == 0)
+    return;
+  unsigned numOutputs = ct.size() / numInputs;
+  p << "[";
+  unsigned rtIdx = 0;
+  for (unsigned o = 0; o < numOutputs; ++o) {
+    if (o > 0)
+      p << ", ";
+    unsigned pop = 0;
+    for (unsigned i = 0; i < numInputs; ++i)
+      if (ct[o * numInputs + i] == 1)
+        ++pop;
+    std::string row;
+    row.reserve(pop);
+    for (unsigned b = 0; b < pop; ++b) {
+      if (rtIdx < rt.size())
+        row.push_back(rt[rtIdx++] ? '1' : '0');
+    }
+    p.printString(row);
+  }
+  p << "]";
+}
+
 /// Parse the [hw_param = val, ...] bracket section for fabric.switch.
 /// Returns true if brackets were parsed. Populates connectivity_table
 /// and route_table attributes.
@@ -94,7 +252,7 @@ static ParseResult parseSwitchHwParams(OpAsmParser &parser,
 
     if (keyword == "connectivity_table") {
       DenseI8ArrayAttr attr;
-      if (parser.parseCustomAttributeWithFallback(attr))
+      if (parseConnTableValues(parser, attr))
         return failure();
       result.addAttribute(
           SwitchOp::getConnectivityTableAttrName(result.name), attr);
@@ -133,7 +291,7 @@ ParseResult SwitchOp::parse(OpAsmParser &parser, OperationState &result) {
     if (parser.parseKeyword("route_table") || parser.parseEqual())
       return failure();
     DenseI8ArrayAttr attr;
-    if (parser.parseCustomAttributeWithFallback(attr))
+    if (parseRouteTableValues(parser, attr))
       return failure();
     result.addAttribute(SwitchOp::getRouteTableAttrName(result.name), attr);
     if (parser.parseRBrace())
@@ -192,28 +350,35 @@ void SwitchOp::print(OpAsmPrinter &p) {
   if (isNamed)
     p << " @" << *getSymName();
 
+  // Derive numInputs for table printing.
+  unsigned numInputs = isNamed ? (*getFunctionType()).getNumInputs()
+                               : getInputs().size();
+
   // Print [hw_params] if any are present.
   if (getConnectivityTable().has_value()) {
-    p << " [connectivity_table = [";
     auto ct = *getConnectivityTable();
-    for (size_t i = 0; i < ct.size(); ++i) {
-      if (i > 0)
-        p << ", ";
-      p << static_cast<int>(ct[i]);
-    }
-    p << "]]";
+    p << " [connectivity_table = ";
+    printConnTable(p, ct, numInputs);
+    p << "]";
   }
 
   // Print optional {route_table = [...]}.
   if (getRouteTable().has_value()) {
-    p << " {route_table = [";
     auto rt = *getRouteTable();
-    for (size_t i = 0; i < rt.size(); ++i) {
-      if (i > 0)
-        p << ", ";
-      p << static_cast<int>(rt[i]);
+    p << " {route_table = ";
+    if (getConnectivityTable().has_value()) {
+      auto ct = *getConnectivityTable();
+      printRouteTable(p, rt, ct, numInputs);
+    } else {
+      p << "[";
+      for (size_t i = 0; i < rt.size(); ++i) {
+        if (i > 0)
+          p << ", ";
+        p << static_cast<int>(rt[i]);
+      }
+      p << "]";
     }
-    p << "]}";
+    p << "}";
   }
 
   if (isNamed) {
@@ -391,7 +556,7 @@ ParseResult TemporalSwOp::parse(OpAsmParser &parser, OperationState &result) {
       result.addAttribute(getNumRouteTableAttrName(result.name), attr);
     } else if (keyword == "connectivity_table") {
       DenseI8ArrayAttr attr;
-      if (parser.parseCustomAttributeWithFallback(attr))
+      if (parseConnTableValues(parser, attr))
         return failure();
       result.addAttribute(getConnectivityTableAttrName(result.name), attr);
     } else {
@@ -459,16 +624,15 @@ void TemporalSwOp::print(OpAsmPrinter &p) {
   if (isNamed)
     p << " @" << *getSymName();
 
+  // Derive numInputs for table printing.
+  unsigned numInputs = isNamed ? (*getFunctionType()).getNumInputs()
+                               : getInputs().size();
+
   // Print [hw_params] (always present: num_route_table is required).
   p << " [num_route_table = " << getNumRouteTable();
   if (auto ct = getConnectivityTable()) {
-    p << ", connectivity_table = [";
-    for (size_t i = 0; i < ct->size(); ++i) {
-      if (i > 0)
-        p << ", ";
-      p << static_cast<int>((*ct)[i]);
-    }
-    p << "]";
+    p << ", connectivity_table = ";
+    printConnTable(p, *ct, numInputs);
   }
   p << "]";
 

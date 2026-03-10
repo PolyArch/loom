@@ -43,6 +43,8 @@ void PrintUsage(llvm::StringRef prog) {
                << " --adg <fabric.mlir> --dfgs <f1.handshake.mlir[,f2,...]>"
                << " -o <output>\n";
   llvm::outs() << "       " << prog
+               << " --gen-adg --dfgs <f1[,f2,...]> -o <output.fabric.mlir>\n";
+  llvm::outs() << "       " << prog
                << " --as-clang [clang-options...]\n";
   llvm::outs() << "\n";
   llvm::outs() << "Compile and link C++ sources into a single LLVM IR file "
@@ -63,6 +65,14 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "  --mapper-seed <int>        Deterministic seed (default: 0)\n";
   llvm::outs() << "  --mapper-profile <name>    Weight profile (default: balanced)\n";
   llvm::outs() << "  --dfgs <f1[,f2,...]>       Pre-compiled Handshake MLIR files\n";
+  llvm::outs() << "\n";
+  llvm::outs() << "ADG generation mode (--gen-adg with --dfgs):\n";
+  llvm::outs() << "  Analyze DFGs and generate a matching ADG.\n";
+  llvm::outs() << "  --gen-topology <mesh|cube>  Lattice topology (default: mesh)\n";
+  llvm::outs() << "  --gen-track <n>             Switch track count (default: 1)\n";
+  llvm::outs() << "  --gen-fifo-mode <mode>      FIFO insertion: none|single|dual (default: none)\n";
+  llvm::outs() << "  --gen-fifo-depth <n>        FIFO depth (default: 2)\n";
+  llvm::outs() << "  --gen-fifo-bypassable       Set FIFOs as bypassable\n";
   llvm::outs() << "\n";
   llvm::outs() << "Forwarded compile options include: -I, -D, -U, -std, -O, -g,"
                << " -isystem, -include.\n";
@@ -189,6 +199,50 @@ ParsedArgs ParseArgs(int argc, char **argv) {
           break;
         }
         parsed.mapper_profile = argv[++i];
+        continue;
+      }
+      if (arg == "--gen-adg") {
+        parsed.gen_adg = true;
+        continue;
+      }
+      if (arg == "--gen-topology") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --gen-topology requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.gen_topology = argv[++i];
+        continue;
+      }
+      if (arg == "--gen-track") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --gen-track requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.gen_track = static_cast<unsigned>(std::stoul(argv[++i]));
+        continue;
+      }
+      if (arg == "--gen-fifo-mode") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --gen-fifo-mode requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.gen_fifo_mode = argv[++i];
+        continue;
+      }
+      if (arg == "--gen-fifo-depth") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --gen-fifo-depth requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.gen_fifo_depth = static_cast<unsigned>(std::stoul(argv[++i]));
+        continue;
+      }
+      if (arg == "--gen-fifo-bypassable") {
+        parsed.gen_fifo_bypassable = true;
         continue;
       }
       // --dump-mapping removed: .map.json and .map.txt are always emitted.

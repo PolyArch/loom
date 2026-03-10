@@ -747,7 +747,35 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
           continue;
         llvm::StringRef resClass = getNodeResourceClass(hwNode);
         if (resClass == "temporal") {
-          // Temporal PEs allow multiple SW nodes in different time slots.
+          // Virtual temporal PE node (defensive, never a placement target).
+        } else if (isTemporalPEFU(hwNode)) {
+          // Temporal FU sub-node: allow multi-slot sharing up to
+          // num_instruction from the parent TPE.
+          int64_t parentTPEId = -1;
+          for (auto &attr : hwNode->attributes) {
+            if (attr.getName() == "parent_temporal_pe") {
+              if (auto intAttr =
+                      mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+                parentTPEId = intAttr.getInt();
+            }
+          }
+          if (parentTPEId >= 0) {
+            const Node *tpeNode = adg.getNode(static_cast<IdIndex>(parentTPEId));
+            int64_t numInstruction = 1;
+            if (tpeNode) {
+              for (auto &attr : tpeNode->attributes) {
+                if (attr.getName() == "num_instruction") {
+                  if (auto intAttr =
+                          mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+                    numInstruction = intAttr.getInt();
+                }
+              }
+            }
+            if (static_cast<int64_t>(
+                    state.hwNodeToSwNodes[candidate.hwNodeId].size()) >=
+                numInstruction)
+              continue; // Capacity exceeded.
+          }
         } else if (resClass == "memory") {
           // Memory nodes allow up to numRegion SW nodes.
           int64_t numRegion = 1;
@@ -895,15 +923,24 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
         // Type-aware port mapping: match SW ports to HW ports by type
         // to ensure edges stay within their type plane for routing.
         // Also skip HW ports already used by other SW nodes on the same PE.
+        // For temporal PE FU nodes, use tagged-unwrap type comparison.
+        bool temporalFU = isTemporalPEFU(hw);
+        auto portTypeOk = [temporalFU](mlir::Type swType, mlir::Type hwType) {
+          return temporalFU
+                     ? isTypeWidthCompatibleForTemporalFU(swType, hwType)
+                     : isTypeWidthCompatible(swType, hwType);
+        };
         if (sw->inputPorts.size() <= hw->inputPorts.size()) {
           for (size_t si = 0; si < sw->inputPorts.size(); ++si) {
             const Port *sp = dfg.getPort(sw->inputPorts[si]);
             if (!sp) continue;
             for (size_t hi = 0; hi < hw->inputPorts.size(); ++hi) {
               IdIndex hwPid = hw->inputPorts[hi];
-              if (!state.hwPortToSwPorts[hwPid].empty()) continue;
+              // Temporal FU sub-nodes share ports (time-multiplexed).
+              if (!temporalFU && !state.hwPortToSwPorts[hwPid].empty())
+                continue;
               const Port *hp = adg.getPort(hwPid);
-              if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
+              if (hp && portTypeOk(sp->type, hp->type)) {
                 state.mapPort(sw->inputPorts[si], hwPid, dfg, adg);
                 break;
               }
@@ -921,9 +958,11 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
             if (!sp) continue;
             for (size_t hi = 0; hi < hw->outputPorts.size(); ++hi) {
               IdIndex hwPid = hw->outputPorts[hi];
-              if (!state.hwPortToSwPorts[hwPid].empty()) continue;
+              // Temporal FU sub-nodes share ports (time-multiplexed).
+              if (!temporalFU && !state.hwPortToSwPorts[hwPid].empty())
+                continue;
               const Port *hp = adg.getPort(hwPid);
-              if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
+              if (hp && portTypeOk(sp->type, hp->type)) {
                 state.mapPort(sw->outputPorts[si], hwPid, dfg, adg);
                 break;
               }

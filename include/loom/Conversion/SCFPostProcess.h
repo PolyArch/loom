@@ -25,6 +25,7 @@ namespace loom {
 std::unique_ptr<mlir::Pass> createUpliftWhileToForPass();
 std::unique_ptr<mlir::Pass> createAttachLoopAnnotationsPass();
 std::unique_ptr<mlir::Pass> createMarkWhileStreamablePass();
+std::unique_ptr<mlir::Pass> createEliminateSubviewBumpsPass();
 
 } // namespace loom
 

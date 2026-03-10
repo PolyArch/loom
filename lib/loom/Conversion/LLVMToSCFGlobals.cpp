@@ -26,8 +26,37 @@ LogicalResult convertGlobals(ModuleOp module, OpBuilder &builder,
       continue;
     }
     Attribute valueAttr = global.getValueAttr();
-    if (!valueAttr)
+    if (!valueAttr) {
+      // External global (no initializer) -- register it so AddressOfOp
+      // can resolve the reference.
+      std::string originalName = global.getName().str();
+      std::string renamedName = originalName + ".llvm";
+      global.setSymName(renamedName);
+
+      SmallVector<int64_t, 4> extDims;
+      Type extScalar = GetScalarType(global.getType(), extDims);
+      extScalar = NormalizeScalarType(extScalar, module.getContext());
+      if (!llvm::isa<IntegerType>(extScalar) &&
+          !llvm::isa<FloatType>(extScalar)) {
+        continue;
+      }
+      int64_t extCount = 1;
+      for (int64_t dim : extDims)
+        extCount *= dim;
+      if (extCount == 0)
+        extCount = 1;
+      MemRefType extMemrefType =
+          MemRefType::get({extCount}, extScalar, MemRefLayoutAttrInterface(),
+                          global.getAddrSpaceAttr());
+      builder.setInsertionPoint(global);
+      auto extGlobal = memref::GlobalOp::create(
+          builder, global.getLoc(), originalName, StringAttr(), extMemrefType,
+          Attribute(), global.getConstant(), global.getAlignmentAttr());
+      CopyLoomAnnotations(global.getOperation(), extGlobal.getOperation());
+      out[originalName] = {extMemrefType, global};
+      (void)extGlobal;
       continue;
+    }
 
     std::string originalName = global.getName().str();
     std::string renamedName = originalName + ".llvm";

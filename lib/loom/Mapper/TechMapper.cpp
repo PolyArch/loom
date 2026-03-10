@@ -291,18 +291,35 @@ check_ports:
     return false;
 
   // Check type compatibility for each port pair.
+  // Temporal PE FU nodes have tagged ports but operate on native values
+  // internally -- tags are stripped at the FU boundary.
   bool isRouting = (hwClass == "routing");
+  bool temporalFU = isTemporalPEFU(hw);
   for (size_t i = 0; i < sw->inputPorts.size(); ++i) {
     const Port *sp = dfg.getPort(sw->inputPorts[i]);
     const Port *hp = adg.getPort(hw->inputPorts[i]);
-    if (sp && hp && !typesCompatible(sp->type, hp->type, isRouting))
-      return false;
+    if (!sp || !hp)
+      continue;
+    if (temporalFU) {
+      if (!isTypeWidthCompatibleForTemporalFU(sp->type, hp->type))
+        return false;
+    } else {
+      if (!typesCompatible(sp->type, hp->type, isRouting))
+        return false;
+    }
   }
   for (size_t i = 0; i < sw->outputPorts.size(); ++i) {
     const Port *sp = dfg.getPort(sw->outputPorts[i]);
     const Port *hp = adg.getPort(hw->outputPorts[i]);
-    if (sp && hp && !typesCompatible(sp->type, hp->type, isRouting))
-      return false;
+    if (!sp || !hp)
+      continue;
+    if (temporalFU) {
+      if (!isTypeWidthCompatibleForTemporalFU(sp->type, hp->type))
+        return false;
+    } else {
+      if (!typesCompatible(sp->type, hp->type, isRouting))
+        return false;
+    }
   }
 
   return true;

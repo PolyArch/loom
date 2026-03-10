@@ -96,6 +96,67 @@ void copyHwAttributes(Node *node, mlir::Operation *resolved,
   }
 }
 
+/// Extract body_ops and body_edges from a fabric.pe operation's body region
+/// and attach them as attributes on the given node. This enables the
+/// TechMapper to distinguish between different PE types.
+void extractPEBodyOps(mlir::Operation *peOp, Node *node,
+                      mlir::Builder &builder) {
+  if (!peOp || !node || peOp->getNumRegions() == 0)
+    return;
+
+  auto &peBody = peOp->getRegion(0);
+  if (peBody.empty())
+    return;
+
+  llvm::SmallVector<mlir::Attribute, 4> bodyOps;
+  for (auto &innerOp : peBody.front()) {
+    if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
+      continue;
+    bodyOps.push_back(
+        builder.getStringAttr(innerOp.getName().getStringRef()));
+  }
+  if (bodyOps.empty())
+    return;
+
+  node->attributes.push_back(builder.getNamedAttr(
+      "body_ops", builder.getArrayAttr(bodyOps)));
+
+  // Extract body_edges: internal use-def connections between body ops.
+  // Each body_edge is a pair (src_op_index, dst_op_index) indicating
+  // that operation src produces a value consumed by operation dst.
+  llvm::SmallVector<mlir::Attribute, 4> bodyEdges;
+  llvm::DenseMap<mlir::Operation *, unsigned> opToIndex;
+  unsigned opIdx = 0;
+  for (auto &innerOp : peBody.front()) {
+    if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
+      continue;
+    opToIndex[&innerOp] = opIdx++;
+  }
+  for (auto &innerOp : peBody.front()) {
+    if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
+      continue;
+    auto dstIt = opToIndex.find(&innerOp);
+    if (dstIt == opToIndex.end())
+      continue;
+    unsigned dstIdx = dstIt->second;
+    for (mlir::Value operand : innerOp.getOperands()) {
+      if (auto *defOp = operand.getDefiningOp()) {
+        auto srcIt = opToIndex.find(defOp);
+        if (srcIt != opToIndex.end()) {
+          bodyEdges.push_back(
+              builder.getI32IntegerAttr(srcIt->second));
+          bodyEdges.push_back(
+              builder.getI32IntegerAttr(dstIdx));
+        }
+      }
+    }
+  }
+  if (!bodyEdges.empty()) {
+    node->attributes.push_back(builder.getNamedAttr(
+        "body_edges", builder.getArrayAttr(bodyEdges)));
+  }
+}
+
 /// Create an ADG node from an operation in the fabric module body.
 /// Handles instance resolution: if the op is fabric.instance, resolves to
 /// the actual definition and uses its type/attributes.
@@ -130,62 +191,9 @@ IdIndex createNodeFromOp(Graph &graph, mlir::Operation &op,
   copyHwAttributes(node.get(), resolved, builder);
 
   // Extract body operations for PE definitions.
-  // When the resolved definition is a fabric.pe, traverse its body region
-  // to collect operation names as a body_ops attribute. This enables the
-  // TechMapper to distinguish between different PE types.
   if (effectiveOpName == "fabric.pe") {
     mlir::Operation *peOp = resolved ? resolved : &op;
-    if (peOp->getNumRegions() > 0) {
-      auto &peBody = peOp->getRegion(0);
-      if (!peBody.empty()) {
-        llvm::SmallVector<mlir::Attribute, 4> bodyOps;
-        for (auto &innerOp : peBody.front()) {
-          if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
-            continue;
-          bodyOps.push_back(
-              builder.getStringAttr(innerOp.getName().getStringRef()));
-        }
-        if (!bodyOps.empty()) {
-          node->attributes.push_back(builder.getNamedAttr(
-              "body_ops", builder.getArrayAttr(bodyOps)));
-
-          // Extract body_edges: internal use-def connections between body ops.
-          // Each body_edge is a pair (src_op_index, dst_op_index) indicating
-          // that operation src produces a value consumed by operation dst.
-          llvm::SmallVector<mlir::Attribute, 4> bodyEdges;
-          llvm::DenseMap<mlir::Operation *, unsigned> opToIndex;
-          unsigned opIdx = 0;
-          for (auto &innerOp : peBody.front()) {
-            if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
-              continue;
-            opToIndex[&innerOp] = opIdx++;
-          }
-          for (auto &innerOp : peBody.front()) {
-            if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
-              continue;
-            auto dstIt = opToIndex.find(&innerOp);
-            if (dstIt == opToIndex.end())
-              continue;
-            unsigned dstIdx = dstIt->second;
-            for (mlir::Value operand : innerOp.getOperands()) {
-              if (auto *defOp = operand.getDefiningOp()) {
-                auto srcIt = opToIndex.find(defOp);
-                if (srcIt != opToIndex.end()) {
-                  bodyEdges.push_back(
-                      builder.getI32IntegerAttr(srcIt->second));
-                  bodyEdges.push_back(
-                      builder.getI32IntegerAttr(dstIdx));
-                }
-              }
-            }
-          }
-          if (!bodyEdges.empty()) {
-            node->attributes.push_back(builder.getNamedAttr(
-                "body_edges", builder.getArrayAttr(bodyEdges)));
-          }
-        }
-      }
-    }
+    extractPEBodyOps(peOp, node.get(), builder);
   }
 
   IdIndex nodeId = graph.addNode(std::move(node));
@@ -382,6 +390,12 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
 
       // Copy hardware attributes from the resolved FU definition.
       copyHwAttributes(fuNode.get(), fuResolved, builder);
+
+      // Extract body_ops for FU nodes that are fabric.pe definitions.
+      if (fuEffName == "fabric.pe") {
+        mlir::Operation *fuPeOp = fuResolved ? fuResolved : &innerOp;
+        extractPEBodyOps(fuPeOp, fuNode.get(), builder);
+      }
 
       IdIndex fuId = graph.addNode(std::move(fuNode));
       fuNodeIds.push_back(fuId);

@@ -21,7 +21,7 @@ OUTPUT_BASE="${ROOT_DIR}/tests/cmsis"
 
 # Baseline: minimum number of files expected to reach handshake MLIR.
 # Update this value as pipeline improvements increase the pass count.
-BASELINE_PASS=5
+BASELINE_PASS=299
 
 if [[ ! -d "${CMSIS_DSP_SOURCE}" ]]; then
   echo "error: cmsis-core submodule not found at ${CMSIS_DSP_SOURCE}" >&2
@@ -69,7 +69,7 @@ while IFS= read -r -d '' source_file; do
   # empty module from files whose content is guarded by unset macros).
   line="mkdir -p ${out_dir}/Output"
   line+=" && ${rel_loom} -xc ${annotated_rel}"
-  line+=" -DARM_FLOAT16_SUPPORTED"
+  line+=" -DARM_FLOAT16_SUPPORTED -D__fp16=_Float16 -Dfloat16_t=_Float16"
   line+=" -I ${rel_dsp_include} -I ${rel_core_include}"
   line+=" -o ${out_dir}/Output/${base}.llvm.ll"
   line+=" && grep -q 'handshake\.func' ${out_dir}/Output/${base}.handshake.mlir"

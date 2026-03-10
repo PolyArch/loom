@@ -300,12 +300,13 @@ loom_write_result() {
   local fname
   fname=$(echo "${suite_name}" | tr ' ' '_' | tr '[:upper:]' '[:lower:]')
   # Prefix with group number to control display order:
-  # 1=Specification, 2=Frontend, 3=Handshake, 4=Fabric, 5=Mapper
+  # 1=Specification, 2=Frontend, 3=Handshake, 4=Fabric, 5=Mapper, 6=FabricGen
   local prefix
   case "${fname}" in
     specification*) prefix="1_" ;;
     frontend_*)     prefix="2_" ;;
     handshake_*)    prefix="3_" ;;
+    fabric_gen*)    prefix="6_" ;;
     fabric_*)       prefix="4_" ;;
     mapper_*)       prefix="5_" ;;
     *)              prefix="9_" ;;

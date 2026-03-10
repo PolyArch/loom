@@ -172,15 +172,24 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
               const Node *sw = dfg.getNode(swNode);
               const Node *hw = adg.getNode(cand.hwNodeId);
               if (sw && hw) {
+                bool temporalFU = isTemporalPEFU(hw);
+                auto portTypeOk = [temporalFU](mlir::Type swType,
+                                               mlir::Type hwType) {
+                  return temporalFU
+                             ? isTypeWidthCompatibleForTemporalFU(swType,
+                                                                  hwType)
+                             : isTypeWidthCompatible(swType, hwType);
+                };
                 if (sw->inputPorts.size() <= hw->inputPorts.size()) {
                   for (size_t si = 0; si < sw->inputPorts.size(); ++si) {
                     const Port *sp = dfg.getPort(sw->inputPorts[si]);
                     if (!sp) continue;
                     for (size_t hi = 0; hi < hw->inputPorts.size(); ++hi) {
                       IdIndex hwPid = hw->inputPorts[hi];
-                      if (!state.hwPortToSwPorts[hwPid].empty()) continue;
+                      if (!temporalFU && !state.hwPortToSwPorts[hwPid].empty())
+                        continue;
                       const Port *hp = adg.getPort(hwPid);
-                      if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
+                      if (hp && portTypeOk(sp->type, hp->type)) {
                         state.mapPort(sw->inputPorts[si], hwPid,
                                       dfg, adg);
                         break;
@@ -200,9 +209,10 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
                     if (!sp) continue;
                     for (size_t hi = 0; hi < hw->outputPorts.size(); ++hi) {
                       IdIndex hwPid = hw->outputPorts[hi];
-                      if (!state.hwPortToSwPorts[hwPid].empty()) continue;
+                      if (!temporalFU && !state.hwPortToSwPorts[hwPid].empty())
+                        continue;
                       const Port *hp = adg.getPort(hwPid);
-                      if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
+                      if (hp && portTypeOk(sp->type, hp->type)) {
                         state.mapPort(sw->outputPorts[si], hwPid,
                                       dfg, adg);
                         break;

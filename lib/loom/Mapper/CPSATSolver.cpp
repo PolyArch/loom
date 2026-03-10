@@ -261,8 +261,17 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
     if (resClass == "functional") {
       bool isTemporal =
           hasAttr(hwNode, "parent_temporal_pe") || hasAttr(hwNode, "is_virtual");
-      int64_t capacity =
-          isTemporal ? getIntAttr(hwNode, "num_instruction", 1) : 1;
+      int64_t capacity = 1;
+      if (isTemporal) {
+        // FU sub-nodes store num_instruction on the parent TPE node.
+        int64_t parentTPEId = getIntAttr(hwNode, "parent_temporal_pe", -1);
+        if (parentTPEId >= 0) {
+          const Node *tpeNode = adg.getNode(static_cast<IdIndex>(parentTPEId));
+          capacity = tpeNode ? getIntAttr(tpeNode, "num_instruction", 1) : 1;
+        } else {
+          capacity = getIntAttr(hwNode, "num_instruction", 1);
+        }
+      }
 
       // Detect groups targeting this HW node.
       llvm::DenseMap<uint64_t, llvm::SmallVector<IdIndex, 4>> groupsAtHw;
@@ -397,10 +406,18 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
         result.state.mapNode(sw, hw, dfg, adg);
 
         // Map ports: type-aware for memory ops, positional otherwise.
+        // For temporal PE FU nodes, use tagged-unwrap comparison.
         const Node *swNode = dfg.getNode(sw);
         const Node *hwNode = adg.getNode(hw);
         if (swNode && hwNode) {
           bool isMem = isMemoryOp(hwNode);
+          bool temporalFU = isTemporalPEFU(hwNode);
+          auto portTypeOk = [temporalFU](mlir::Type swType,
+                                         mlir::Type hwType) {
+            return temporalFU
+                       ? isTypeWidthCompatibleForTemporalFU(swType, hwType)
+                       : isTypeWidthCompatible(swType, hwType);
+          };
           if (isMem && swNode->inputPorts.size() <= hwNode->inputPorts.size()) {
             llvm::SmallVector<bool> hwUsed(hwNode->inputPorts.size(), false);
             for (size_t p = 0; p < swNode->inputPorts.size(); ++p) {
@@ -409,7 +426,7 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
               for (size_t h = 0; h < hwNode->inputPorts.size(); ++h) {
                 if (hwUsed[h]) continue;
                 const Port *hp = adg.getPort(hwNode->inputPorts[h]);
-                if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
+                if (hp && portTypeOk(sp->type, hp->type)) {
                   result.state.mapPort(swNode->inputPorts[p],
                                        hwNode->inputPorts[h], dfg, adg);
                   hwUsed[h] = true;
@@ -581,8 +598,16 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
     if (resClass == "functional") {
       bool isTemporal =
           hasAttr(hwNode, "parent_temporal_pe") || hasAttr(hwNode, "is_virtual");
-      int64_t rawCapacity =
-          isTemporal ? getIntAttr(hwNode, "num_instruction", 1) : 1;
+      int64_t rawCapacity = 1;
+      if (isTemporal) {
+        int64_t parentTPEId = getIntAttr(hwNode, "parent_temporal_pe", -1);
+        if (parentTPEId >= 0) {
+          const Node *tpeNode = adg.getNode(static_cast<IdIndex>(parentTPEId));
+          rawCapacity = tpeNode ? getIntAttr(tpeNode, "num_instruction", 1) : 1;
+        } else {
+          rawCapacity = getIntAttr(hwNode, "num_instruction", 1);
+        }
+      }
       int remaining = static_cast<int>(rawCapacity) - fixedCount;
 
       // Detect groups targeting this HW node among sub-problem nodes.
@@ -736,6 +761,13 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
         const Node *hwNode = adg.getNode(hw);
         if (swNode && hwNode) {
           bool isMem = isMemoryOp(hwNode);
+          bool temporalFU = isTemporalPEFU(hwNode);
+          auto portTypeOk = [temporalFU](mlir::Type swType,
+                                         mlir::Type hwType) {
+            return temporalFU
+                       ? isTypeWidthCompatibleForTemporalFU(swType, hwType)
+                       : isTypeWidthCompatible(swType, hwType);
+          };
           if (isMem && swNode->inputPorts.size() <= hwNode->inputPorts.size()) {
             llvm::SmallVector<bool> hwUsed(hwNode->inputPorts.size(), false);
             // Mark already-mapped HW ports.
@@ -755,7 +787,7 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
               for (size_t h = 0; h < hwNode->inputPorts.size(); ++h) {
                 if (hwUsed[h]) continue;
                 const Port *hp = adg.getPort(hwNode->inputPorts[h]);
-                if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
+                if (hp && portTypeOk(sp->type, hp->type)) {
                   result.state.mapPort(swNode->inputPorts[p],
                                        hwNode->inputPorts[h], dfg, adg);
                   hwUsed[h] = true;

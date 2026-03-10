@@ -122,6 +122,10 @@ mlir::Value MaterializeSubview(mlir::OpBuilder &builder, mlir::Location loc,
                                mlir::Value length);
 mlir::Value MaterializeMemrefPointer(mlir::OpBuilder &builder, mlir::Location loc,
                                      const PointerInfo &info);
+mlir::Value MaterializeBranchPointer(mlir::OpBuilder &builder,
+                                     mlir::Location loc,
+                                     const PointerInfo &info,
+                                     mlir::Type destArgType);
 mlir::Value MaterializeLLVMPointer(mlir::OpBuilder &builder, mlir::Location loc,
                                    const PointerInfo &info);
 
