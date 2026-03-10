@@ -69,17 +69,26 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
                          const Graph *dfg, IdIndex swEdgeId) {
   const Port *sp = adg.getPort(srcPort);
   const Port *dp = adg.getPort(dstPort);
-  if (!sp || !dp)
+  if (!sp || !dp) {
+    if (log)
+      log->logEdgeRejection(srcPort, dstPort, "null port");
     return false;
+  }
 
   // Direction check: source must be output, dest must be input.
-  if (sp->direction != Port::Output || dp->direction != Port::Input)
+  if (sp->direction != Port::Output || dp->direction != Port::Input) {
+    if (log)
+      log->logEdgeRejection(srcPort, dstPort, "direction mismatch");
     return false;
+  }
 
   // Check physical connectivity exists.
   auto it = connectivity.outToIn.find(srcPort);
-  if (it == connectivity.outToIn.end() || it->second != dstPort)
+  if (it == connectivity.outToIn.end() || it->second != dstPort) {
+    if (log)
+      log->logEdgeRejection(srcPort, dstPort, "no physical connectivity");
     return false;
+  }
 
   // C2: Bit-width compatibility for routing hops.
   // For routing nodes, enforce that bit widths match along the path.
@@ -93,8 +102,12 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
     // If either endpoint is a routing node, enforce bit-width compatibility.
     if (srcIsRouting || dstIsRouting) {
       if (sp->type && dp->type) {
-        if (!isRoutingTypeCompatible(sp->type, dp->type))
+        if (!isRoutingTypeCompatible(sp->type, dp->type)) {
+          if (log)
+            log->logEdgeRejection(srcPort, dstPort,
+                                  "C2 bit-width mismatch (routing)");
           return false;
+        }
       }
     }
   }
@@ -132,14 +145,30 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
             }
           }
         }
-        if (!isFanout)
+        if (!isFanout) {
+          if (log)
+            log->logEdgeRejection(
+                srcPort, dstPort,
+                "C3 exclusive (non-tagged, non-fanout, used by " +
+                    std::to_string(state.hwEdgeToSwEdges[edgeId].size()) +
+                    " SW edges)");
           return false; // Non-tagged, non-fanout: exclusive.
+        }
       } else {
         // Tagged edge: capacity is 2^tagWidth.
         unsigned tagWidth = taggedType.getTagType().getWidth();
         unsigned maxTags = 1u << tagWidth;
-        if (state.hwEdgeToSwEdges[edgeId].size() >= maxTags)
+        if (state.hwEdgeToSwEdges[edgeId].size() >= maxTags) {
+          if (log)
+            log->logEdgeRejection(
+                srcPort, dstPort,
+                "C3 tag capacity exhausted (i" +
+                    std::to_string(tagWidth) + " max=" +
+                    std::to_string(maxTags) + " used=" +
+                    std::to_string(state.hwEdgeToSwEdges[edgeId].size()) +
+                    ")");
           return false;
+        }
       }
     }
     break;
@@ -342,15 +371,23 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
     // Find a path through the ADG (pass DFG + edge ID for fan-out sharing).
     auto path = findPath(srcHwPort, dstHwPort, state, adg, &dfg, edgeId);
     if (path.empty()) {
+      if (log)
+        log->logRouteAttempt(edgeId, srcHwPort, dstHwPort, false, 0);
       allRouted = false;
       continue;
     }
 
     auto mapResult = state.mapEdge(edgeId, path, dfg, adg);
     if (mapResult != ActionResult::Success) {
+      if (log)
+        log->logRouteAttempt(edgeId, srcHwPort, dstHwPort, false, 0);
       allRouted = false;
       continue;
     }
+
+    if (log)
+      log->logRouteAttempt(edgeId, srcHwPort, dstHwPort, true,
+                           static_cast<unsigned>(path.size() / 2));
   }
 
   return allRouted;

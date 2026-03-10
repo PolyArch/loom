@@ -141,14 +141,23 @@ LogicalResult FunctionConverter::convert() {
   }
 
   // --- Block and argument initialization ---
+  // Two-pass approach: first add all block arguments (which may cause
+  // reallocation of the block's internal storage), then retrieve stable
+  // BlockArgument handles by index to populate the maps.
+  struct ArgMapping {
+    unsigned newArgIdx;
+    BlockArgument oldArg;
+    bool isPointer;
+    Type elemType; // only valid if isPointer
+  };
   for (Block &oldBlock : func.getBody()) {
     Block *newBlock = new Block();
     newFunc.getBody().push_back(newBlock);
     blockMap[&oldBlock] = newBlock;
-    OpBuilder blockBuilder(module.getContext());
-    blockBuilder.setInsertionPointToStart(newBlock);
-    Value zeroIndex = BuildIndexConstant(blockBuilder, func.getLoc(), 0);
     bool isEntryBlock = (&oldBlock == &func.getBody().front());
+
+    // Pass 1: add all block arguments.
+    SmallVector<ArgMapping, 8> mappings;
     for (BlockArgument arg : oldBlock.getArguments()) {
       Type oldType = arg.getType();
       if (IsPointerType(oldType)) {
@@ -160,16 +169,36 @@ LogicalResult FunctionConverter::convert() {
         if (!elemType)
           elemType = IntegerType::get(module.getContext(), 8);
         auto memrefType = MakeStridedMemRefType(*elemType);
-        auto newArg = newBlock->addArgument(memrefType, arg.getLoc());
-        PointerInfo info{newArg, zeroIndex, *elemType};
-        pointerMap[arg] = info;
+        unsigned idx = newBlock->getNumArguments();
+        newBlock->addArgument(memrefType, arg.getLoc());
+        mappings.push_back({idx, arg, true, *elemType});
         continue;
       }
-      auto newArg = newBlock->addArgument(
+      unsigned idx = newBlock->getNumArguments();
+      newBlock->addArgument(
           NormalizeScalarType(oldType, module.getContext()), arg.getLoc());
-      valueMap[arg] = newArg;
+      mappings.push_back({idx, arg, false, {}});
     }
-    // Set up promoted pointer load arguments on the entry block.
+    // Add promoted pointer load arguments on the entry block.
+    if (isEntryBlock) {
+      for (size_t i = 0; i < promotedLoads.size(); ++i) {
+        newBlock->addArgument(MakeStridedMemRefType(promotedLoads[i].elemType),
+                              func.getLoc());
+      }
+    }
+
+    // Pass 2: retrieve stable BlockArgument handles and populate maps.
+    OpBuilder blockBuilder(module.getContext());
+    blockBuilder.setInsertionPointToStart(newBlock);
+    Value zeroIndex = BuildIndexConstant(blockBuilder, func.getLoc(), 0);
+    for (auto &m : mappings) {
+      Value newArg = newBlock->getArgument(m.newArgIdx);
+      if (m.isPointer) {
+        pointerMap[m.oldArg] = {newArg, zeroIndex, m.elemType};
+      } else {
+        valueMap[m.oldArg] = newArg;
+      }
+    }
     if (isEntryBlock) {
       unsigned baseArgCount = oldBlock.getNumArguments();
       for (size_t i = 0; i < promotedLoads.size(); ++i) {
@@ -178,8 +207,6 @@ LogicalResult FunctionConverter::convert() {
         PointerInfo info{newArg, zeroIndex, promotedLoads[i].elemType};
         pointerMap[promotedLoads[i].loadOp.getResult()] = info;
         promotedPtrLoads.insert(promotedLoads[i].loadOp.getResult());
-        // Mark promoted pointer args as noalias so that alias merge in
-        // SCFToHandshake does not group them with other memref arguments.
         newFunc.setArgAttr(newArgIdx, "loom.noalias", builder.getUnitAttr());
       }
     }
@@ -506,6 +533,135 @@ FailureOr<bool> FunctionConverter::handleMemoryOps(Operation &op,
     auto baseInfo = LookupPointer(pointerMap, gepOp.getBase());
     if (!baseInfo)
       return gepOp.emitError("missing GEP base"), failure();
+    if (!isValidPointerInfo(*baseInfo))
+      return gepOp.emitError("invalid GEP base pointer"), failure();
+
+    // Struct-containing GEP: compute byte offsets by walking type hierarchy.
+    if (ContainsStructType(gepOp.getElemType())) {
+      LLVM::GEPIndicesAdaptor<ValueRange> ixAdaptor(
+          gepOp.getRawConstantIndicesAttr(), gepOp.getDynamicIndices());
+      Value byteOff = nullptr;
+      Type currType = gepOp.getElemType();
+
+      auto addByteOffset = [&](Value term) {
+        if (!byteOff)
+          byteOff = term;
+        else
+          byteOff = arith::AddIOp::create(builder, loc, byteOff, term);
+      };
+
+      for (size_t i = 0; i < ixAdaptor.size(); ++i) {
+        Value ixVal;
+        int64_t constIx = 0;
+        bool isConst = false;
+        auto item = ixAdaptor[i];
+        if (auto attr = llvm::dyn_cast<IntegerAttr>(item)) {
+          constIx = attr.getInt();
+          isConst = true;
+          ixVal = BuildIndexConstant(builder, loc, constIx);
+        } else if (auto val = llvm::dyn_cast<Value>(item)) {
+          auto mapped = LookupValue(valueMap, val);
+          if (!mapped)
+            return gepOp.emitError("missing GEP index"), failure();
+          ixVal = ToIndexValue(builder, loc, *mapped);
+          if (!ixVal)
+            return gepOp.emitError("invalid GEP index type"), failure();
+        } else {
+          return gepOp.emitError("unsupported GEP index"), failure();
+        }
+
+        if (i == 0) {
+          // First index: skip N * sizeof(elemType) bytes.
+          int64_t elemSize = GetLLVMTypeByteSize(currType);
+          if (elemSize > 0 && !(isConst && constIx == 0)) {
+            Value sizeVal = BuildIndexConstant(builder, loc, elemSize);
+            addByteOffset(arith::MulIOp::create(builder, loc, ixVal, sizeVal));
+          }
+        } else if (auto structTy =
+                       llvm::dyn_cast<LLVM::LLVMStructType>(currType)) {
+          if (!isConst)
+            return gepOp.emitError("non-constant struct field index"),
+                   failure();
+          int64_t fieldOff = GetStructFieldByteOffset(structTy, constIx);
+          if (fieldOff > 0)
+            addByteOffset(BuildIndexConstant(builder, loc, fieldOff));
+          currType = structTy.getBody()[constIx];
+        } else if (auto arrayTy =
+                       llvm::dyn_cast<LLVM::LLVMArrayType>(currType)) {
+          int64_t eSize = GetLLVMTypeByteSize(arrayTy.getElementType());
+          if (eSize > 0 && !(isConst && constIx == 0)) {
+            Value sizeVal = BuildIndexConstant(builder, loc, eSize);
+            addByteOffset(arith::MulIOp::create(builder, loc, ixVal, sizeVal));
+          }
+          currType = arrayTy.getElementType();
+        } else {
+          // Primitive type at this level -- treat as i8 offset.
+          if (!(isConst && constIx == 0))
+            addByteOffset(ixVal);
+        }
+      }
+
+      if (!byteOff)
+        byteOff = BuildIndexConstant(builder, loc, 0);
+
+      // Add base's existing byte offset.
+      if (!IsZeroIndex(baseInfo->index)) {
+        Value baseBytes = baseInfo->index;
+        int64_t baseElemSize = GetByteSize(baseInfo->elementType);
+        if (baseElemSize > 1) {
+          Value s = BuildIndexConstant(builder, loc, baseElemSize);
+          baseBytes = arith::MulIOp::create(builder, loc, baseInfo->index, s);
+        }
+        byteOff = arith::AddIOp::create(builder, loc, baseBytes, byteOff);
+      }
+
+      // Determine the final element type after walking all indices.
+      Type finalElem = IntegerType::get(module.getContext(), 8);
+      if (llvm::isa<IntegerType>(currType) || llvm::isa<FloatType>(currType))
+        finalElem = NormalizeScalarType(currType, module.getContext());
+
+      // If base is i8 memref and final type is non-i8, use memref.view for
+      // typed access so downstream loads/stores work at the right type.
+      auto baseMemref =
+          llvm::dyn_cast<MemRefType>(baseInfo->base.getType());
+      if (baseMemref && IsI8Type(baseMemref.getElementType()) &&
+          !IsI8Type(finalElem) && baseMemref.getLayout().isIdentity()) {
+        int64_t eSize = GetByteSize(finalElem);
+        Value totalBytes =
+            memref::DimOp::create(builder, loc, baseInfo->base, 0);
+        Value remaining =
+            arith::SubIOp::create(builder, loc, totalBytes, byteOff);
+        Value elemCount = remaining;
+        if (eSize > 1) {
+          Value s = BuildIndexConstant(builder, loc, eSize);
+          elemCount = arith::DivUIOp::create(builder, loc, remaining, s);
+        }
+        auto viewType =
+            MakeMemRefType(finalElem, baseMemref.getMemorySpace());
+        auto viewed = memref::ViewOp::create(builder, loc, viewType,
+                                             baseInfo->base, byteOff,
+                                             ValueRange{elemCount});
+        PointerInfo info{viewed, BuildIndexConstant(builder, loc, 0),
+                         finalElem};
+        pointerMap[gepOp.getResult()] = info;
+        return true;
+      }
+
+      // Base is i8 and final is i8, or non-identity layout: use byte offset.
+      if (baseMemref && IsI8Type(baseInfo->elementType)) {
+        PointerInfo info{baseInfo->base, byteOff, finalElem};
+        pointerMap[gepOp.getResult()] = info;
+        return true;
+      }
+
+      // Base has non-i8 element: scale byte offset to base element type.
+      Value scaled = ScaleIndexBetweenElementTypes(
+          builder, loc, byteOff, IntegerType::get(module.getContext(), 8),
+          baseInfo->elementType);
+      PointerInfo info{baseInfo->base, scaled, baseInfo->elementType};
+      pointerMap[gepOp.getResult()] = info;
+      return true;
+    }
 
     SmallVector<int64_t, 4> dims;
     Type scalar = GetScalarType(gepOp.getElemType(), dims);
@@ -612,6 +768,8 @@ FailureOr<bool> FunctionConverter::handleMemoryOps(Operation &op,
       auto srcInfo = LookupPointer(pointerMap, bitcastOp.getArg());
       if (!srcInfo)
         return bitcastOp.emitError("missing bitcast source"), failure();
+      if (!isValidPointerInfo(*srcInfo))
+        return bitcastOp.emitError("invalid bitcast source pointer"), failure();
       Type targetElem = srcInfo->elementType;
       if (auto inferred = InferPointerElementType(bitcastOp.getResult()))
         targetElem = *inferred;
@@ -684,6 +842,8 @@ FailureOr<bool> FunctionConverter::handleLoadStore(Operation &op,
       return loadOp.emitError("missing load pointer for address ")
                  << loadOp.getAddr(),
              failure();
+    if (!isValidPointerInfo(*ptrInfo))
+      return loadOp.emitError("invalid pointer base for load"), failure();
     Type accessType =
         NormalizeScalarType(loadOp.getResult().getType(), module.getContext());
     Value index = ptrInfo->index;
@@ -728,6 +888,8 @@ FailureOr<bool> FunctionConverter::handleLoadStore(Operation &op,
     auto ptrInfo = LookupPointer(pointerMap, storeOp.getAddr());
     if (!ptrInfo)
       return storeOp.emitError("missing store pointer"), failure();
+    if (!isValidPointerInfo(*ptrInfo))
+      return storeOp.emitError("invalid pointer base for store"), failure();
 
     // Pointer-valued store to non-slot address: skip gracefully.
     // The memref model cannot store a memref into a memref.
@@ -769,10 +931,17 @@ FailureOr<bool> FunctionConverter::handleTerminatorOps(Operation &op,
       return switchOp.emitError("missing switch flag"), failure();
 
     Block *defaultDest = blockMap[switchOp.getDefaultDestination()];
+    if (!defaultDest)
+      return switchOp.emitError("unmapped default destination"), failure();
     SmallVector<Value, 4> defaultOperands;
     unsigned defaultArgIdx = 0;
     for (Value operand : switchOp.getDefaultOperands()) {
+      if (defaultArgIdx >= defaultDest->getNumArguments())
+        return switchOp.emitError("too many default operands"), failure();
       if (auto ptrInfo = LookupPointer(pointerMap, operand)) {
+        if (!isValidPointerInfo(*ptrInfo))
+          return switchOp.emitError("invalid pointer for default operand"),
+                 failure();
         Type destArgTy = defaultDest->getArgument(defaultArgIdx).getType();
         Value brPtr =
             MaterializeBranchPointer(builder, loc, *ptrInfo, destArgTy);
@@ -806,6 +975,9 @@ FailureOr<bool> FunctionConverter::handleTerminatorOps(Operation &op,
       unsigned caseArgIdx = 0;
       for (Value operand : caseOps) {
         if (auto ptrInfo = LookupPointer(pointerMap, operand)) {
+          if (!isValidPointerInfo(*ptrInfo))
+            return switchOp.emitError("invalid pointer for case operand"),
+                   failure();
           Type destArgTy = caseDest->getArgument(caseArgIdx).getType();
           Value brPtr =
               MaterializeBranchPointer(builder, loc, *ptrInfo, destArgTy);
@@ -833,10 +1005,17 @@ FailureOr<bool> FunctionConverter::handleTerminatorOps(Operation &op,
 
   if (auto brOp = llvm::dyn_cast<LLVM::BrOp>(op)) {
     Block *dest = blockMap[brOp.getDest()];
+    if (!dest)
+      return brOp.emitError("unmapped branch destination"), failure();
     SmallVector<Value, 4> operands;
     unsigned argIdx = 0;
     for (Value operand : brOp.getOperands()) {
+      if (argIdx >= dest->getNumArguments())
+        return brOp.emitError("too many branch operands"), failure();
       if (auto ptrInfo = LookupPointer(pointerMap, operand)) {
+        if (!isValidPointerInfo(*ptrInfo))
+          return brOp.emitError("invalid pointer base for branch operand"),
+                 failure();
         Type destArgTy = dest->getArgument(argIdx).getType();
         Value brPtr =
             MaterializeBranchPointer(builder, loc, *ptrInfo, destArgTy);
@@ -863,10 +1042,17 @@ FailureOr<bool> FunctionConverter::handleTerminatorOps(Operation &op,
       return condBrOp.emitError("missing condition"), failure();
 
     Block *trueDest = blockMap[condBrOp.getTrueDest()];
+    if (!trueDest)
+      return condBrOp.emitError("unmapped true destination"), failure();
     SmallVector<Value, 4> trueOperands;
     unsigned trueArgIdx = 0;
     for (Value operand : condBrOp.getTrueDestOperands()) {
+      if (trueArgIdx >= trueDest->getNumArguments())
+        return condBrOp.emitError("too many true branch operands"), failure();
       if (auto ptrInfo = LookupPointer(pointerMap, operand)) {
+        if (!isValidPointerInfo(*ptrInfo))
+          return condBrOp.emitError("invalid pointer for true operand"),
+                 failure();
         Type destArgTy = trueDest->getArgument(trueArgIdx).getType();
         Value brPtr =
             MaterializeBranchPointer(builder, loc, *ptrInfo, destArgTy);
@@ -885,10 +1071,17 @@ FailureOr<bool> FunctionConverter::handleTerminatorOps(Operation &op,
     }
 
     Block *falseDest = blockMap[condBrOp.getFalseDest()];
+    if (!falseDest)
+      return condBrOp.emitError("unmapped false destination"), failure();
     SmallVector<Value, 4> falseOperands;
     unsigned falseArgIdx = 0;
     for (Value operand : condBrOp.getFalseDestOperands()) {
+      if (falseArgIdx >= falseDest->getNumArguments())
+        return condBrOp.emitError("too many false branch operands"), failure();
       if (auto ptrInfo = LookupPointer(pointerMap, operand)) {
+        if (!isValidPointerInfo(*ptrInfo))
+          return condBrOp.emitError("invalid pointer for false operand"),
+                 failure();
         Type destArgTy = falseDest->getArgument(falseArgIdx).getType();
         Value brPtr =
             MaterializeBranchPointer(builder, loc, *ptrInfo, destArgTy);

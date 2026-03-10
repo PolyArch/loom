@@ -18,6 +18,12 @@ if [[ "${1:-}" == "--single" ]]; then
   output_dir="${TEST_DIR}/Output"
   mkdir -p "${output_dir}"
 
+  # Check for xfail marker: if .xfail exists, mapper failure = PASS.
+  xfail=false
+  if [[ -f "${TEST_DIR}/.xfail" ]]; then
+    xfail=true
+  fi
+
   # Discover ADG and DFG files.
   mapfile -t adg_files < <(find "${TEST_DIR}" -maxdepth 1 -name "*.fabric.mlir" | sort)
   mapfile -t dfg_files < <(find "${TEST_DIR}" -maxdepth 1 -name "*.handshake.mlir" | sort)
@@ -27,15 +33,24 @@ if [[ "${1:-}" == "--single" ]]; then
     for dfg in "${dfg_files[@]}"; do
       dfg_name=$(basename "${dfg}" .handshake.mlir)
       out_base="${output_dir}/${dfg_name}_on_${adg_name}"
-      "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget 10
 
-      # Validate the configured fabric MLIR output.
-      configured="${out_base}.fabric.mlir"
-      if [[ ! -f "${configured}" ]]; then
-        echo "FAIL: configured fabric not found: ${configured}" >&2
-        exit 1
+      if "${xfail}"; then
+        # xfail mode: mapper MUST fail (non-zero exit).
+        if "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget 10 2>/dev/null; then
+          echo "XFAIL: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
+          exit 1
+        fi
+      else
+        "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget 10
+
+        # Validate the configured fabric MLIR output.
+        configured="${out_base}.fabric.mlir"
+        if [[ ! -f "${configured}" ]]; then
+          echo "FAIL: configured fabric not found: ${configured}" >&2
+          exit 1
+        fi
+        "${LOOM_BIN}" --adg "${configured}"
       fi
-      "${LOOM_BIN}" --adg "${configured}"
     done
   done
   exit 0

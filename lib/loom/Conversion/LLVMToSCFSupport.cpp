@@ -33,6 +33,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <optional>
 
@@ -90,6 +91,13 @@ Type GetScalarType(Type type, SmallVectorImpl<int64_t> &dims) {
     dims.push_back(arrayTy.getNumElements());
     type = arrayTy.getElementType();
   }
+  // Flatten struct types to i8 bytes.
+  if (auto structTy = llvm::dyn_cast<LLVM::LLVMStructType>(type)) {
+    int64_t byteSize = GetLLVMTypeByteSize(type);
+    if (byteSize > 0)
+      dims.push_back(byteSize);
+    return IntegerType::get(type.getContext(), 8);
+  }
   return type;
 }
 
@@ -97,6 +105,8 @@ Type NormalizeScalarType(Type type, MLIRContext *context) {
   if (llvm::isa<IntegerType>(type) || llvm::isa<FloatType>(type))
     return type;
   if (llvm::isa<LLVM::LLVMPointerType>(type))
+    return IntegerType::get(context, 8);
+  if (llvm::isa<LLVM::LLVMStructType>(type))
     return IntegerType::get(context, 8);
   return type;
 }
@@ -111,6 +121,95 @@ int64_t GetByteSize(Type type) {
     return static_cast<int64_t>((width + 7) / 8);
   }
   return 0;
+}
+
+static int64_t GetLLVMTypeAlignmentImpl(Type type) {
+  if (auto intTy = llvm::dyn_cast<IntegerType>(type)) {
+    int64_t size = static_cast<int64_t>((intTy.getWidth() + 7) / 8);
+    return std::min(size, static_cast<int64_t>(8));
+  }
+  if (auto floatTy = llvm::dyn_cast<FloatType>(type)) {
+    int64_t size = static_cast<int64_t>((floatTy.getWidth() + 7) / 8);
+    return std::min(size, static_cast<int64_t>(8));
+  }
+  if (llvm::isa<LLVM::LLVMPointerType>(type))
+    return 8;
+  if (auto arrayTy = llvm::dyn_cast<LLVM::LLVMArrayType>(type))
+    return GetLLVMTypeAlignmentImpl(arrayTy.getElementType());
+  if (auto structTy = llvm::dyn_cast<LLVM::LLVMStructType>(type)) {
+    if (structTy.isPacked())
+      return 1;
+    int64_t maxAlign = 1;
+    for (Type fieldTy : structTy.getBody())
+      maxAlign = std::max(maxAlign, GetLLVMTypeAlignmentImpl(fieldTy));
+    return maxAlign;
+  }
+  return 1;
+}
+
+int64_t GetLLVMTypeByteSize(Type type) {
+  if (auto intTy = llvm::dyn_cast<IntegerType>(type))
+    return static_cast<int64_t>((intTy.getWidth() + 7) / 8);
+  if (auto floatTy = llvm::dyn_cast<FloatType>(type))
+    return static_cast<int64_t>((floatTy.getWidth() + 7) / 8);
+  if (llvm::isa<LLVM::LLVMPointerType>(type))
+    return 8;
+  if (auto arrayTy = llvm::dyn_cast<LLVM::LLVMArrayType>(type))
+    return arrayTy.getNumElements() *
+           GetLLVMTypeByteSize(arrayTy.getElementType());
+  if (auto structTy = llvm::dyn_cast<LLVM::LLVMStructType>(type)) {
+    if (structTy.isOpaque())
+      return 0;
+    auto body = structTy.getBody();
+    if (body.empty())
+      return 0;
+    if (structTy.isPacked()) {
+      int64_t total = 0;
+      for (Type fieldTy : body)
+        total += GetLLVMTypeByteSize(fieldTy);
+      return total;
+    }
+    int64_t offset = 0;
+    int64_t maxAlign = 1;
+    for (Type fieldTy : body) {
+      int64_t fieldAlign = GetLLVMTypeAlignmentImpl(fieldTy);
+      offset = llvm::alignTo(offset, fieldAlign);
+      offset += GetLLVMTypeByteSize(fieldTy);
+      maxAlign = std::max(maxAlign, fieldAlign);
+    }
+    return llvm::alignTo(offset, maxAlign);
+  }
+  return 0;
+}
+
+int64_t GetStructFieldByteOffset(LLVM::LLVMStructType structTy,
+                                 unsigned fieldIndex) {
+  auto body = structTy.getBody();
+  if (structTy.isPacked()) {
+    int64_t offset = 0;
+    for (unsigned i = 0; i < fieldIndex && i < body.size(); ++i)
+      offset += GetLLVMTypeByteSize(body[i]);
+    return offset;
+  }
+  int64_t offset = 0;
+  for (unsigned i = 0; i < fieldIndex && i < body.size(); ++i) {
+    int64_t fieldAlign = GetLLVMTypeAlignmentImpl(body[i]);
+    offset = llvm::alignTo(offset, fieldAlign);
+    offset += GetLLVMTypeByteSize(body[i]);
+  }
+  if (fieldIndex < body.size()) {
+    int64_t fieldAlign = GetLLVMTypeAlignmentImpl(body[fieldIndex]);
+    offset = llvm::alignTo(offset, fieldAlign);
+  }
+  return offset;
+}
+
+bool ContainsStructType(Type type) {
+  if (llvm::isa<LLVM::LLVMStructType>(type))
+    return true;
+  if (auto arrayTy = llvm::dyn_cast<LLVM::LLVMArrayType>(type))
+    return ContainsStructType(arrayTy.getElementType());
+  return false;
 }
 
 Value BuildIndexConstant(OpBuilder &builder, Location loc, int64_t value);
@@ -658,6 +757,15 @@ Value MaterializeMemrefPointer(OpBuilder &builder, Location loc,
     return nullptr;
   if (info.index && !llvm::isa<IndexType>(info.index.getType()))
     return nullptr;
+
+  auto baseMemrefType = llvm::cast<MemRefType>(info.base.getType());
+
+  // If the base element type differs from the pointer's logical element type,
+  // we cannot create a valid memref.cast.  Return nullptr so the caller can
+  // emit a proper diagnostic instead of hitting an MLIR verifier assert.
+  if (baseMemrefType.getElementType() != info.elementType)
+    return nullptr;
+
   Value result = nullptr;
   if (IsZeroIndex(info.index)) {
     result = info.base;

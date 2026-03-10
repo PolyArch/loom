@@ -15,6 +15,7 @@
 
 #include "loom/Mapper/ConnectivityMatrix.h"
 #include "loom/Mapper/Graph.h"
+#include "loom/Mapper/MapperLog.h"
 #include "loom/Mapper/MappingState.h"
 #include "loom/Mapper/TechMapper.h"
 
@@ -35,6 +36,7 @@ public:
     int maxLocalRepairs = 10;
     int maxGlobalRestarts = 3;
     int maxRefinementIterations = 50;
+    bool verbose = false;
   };
 
   struct Result {
@@ -42,6 +44,7 @@ public:
     MappingState state;
     std::string diagnostics;
     int cpsatSubProblemCalls = 0;
+    MapperLog log;
   };
 
   /// Run the full PnR pipeline on the given DFG and ADG.
@@ -104,6 +107,8 @@ private:
   ConnectivityMatrix connectivity;
   /// Min-hop cost between pairs of ADG nodes (node ID -> node ID -> hops).
   llvm::DenseMap<IdIndex, llvm::DenseMap<IdIndex, unsigned>> minHopCosts;
+  /// Verbose log (non-owning pointer, set during run()).
+  MapperLog *log = nullptr;
 };
 
 } // namespace loom

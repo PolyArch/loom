@@ -201,6 +201,10 @@ ParsedArgs ParseArgs(int argc, char **argv) {
         parsed.mapper_profile = argv[++i];
         continue;
       }
+      if (arg == "--mapper-verbose") {
+        parsed.mapper_verbose = true;
+        continue;
+      }
       if (arg == "--gen-adg") {
         parsed.gen_adg = true;
         continue;

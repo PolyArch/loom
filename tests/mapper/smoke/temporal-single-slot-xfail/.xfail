@@ -1,0 +1,2 @@
+Mapper is expected to fail: dual-addi requires 2 instruction slots but
+fabric only has num_instruction=1. Capacity exceeded.

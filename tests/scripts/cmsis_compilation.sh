@@ -21,7 +21,7 @@ OUTPUT_BASE="${ROOT_DIR}/tests/cmsis"
 
 # Baseline: minimum number of files expected to reach handshake MLIR.
 # Update this value as pipeline improvements increase the pass count.
-BASELINE_PASS=299
+BASELINE_PASS=321
 
 if [[ ! -d "${CMSIS_DSP_SOURCE}" ]]; then
   echo "error: cmsis-core submodule not found at ${CMSIS_DSP_SOURCE}" >&2

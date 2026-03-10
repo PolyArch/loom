@@ -144,6 +144,8 @@ FailureOr<bool> FunctionConverter::handleCallOp(Operation &op, Location loc) {
   operands.reserve(callOp.getNumOperands());
   for (Value operand : callOp.getOperands()) {
     if (auto ptrInfo = LookupPointer(pointerMap, operand)) {
+      if (!isValidPointerInfo(*ptrInfo))
+        return callOp.emitError("invalid pointer for call operand"), failure();
       if (isVarArg || isRawPtrCall)
         operands.push_back(MaterializeLLVMPointer(builder, loc, *ptrInfo));
       else

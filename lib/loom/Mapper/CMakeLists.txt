@@ -11,6 +11,7 @@ add_llvm_library(LoomMapperCore
   MapperRepair.cpp
   MapperValidation.cpp
   MapperCost.cpp
+  MapperLog.cpp
   ConfigGen.cpp
   CPSATSolver.cpp
 

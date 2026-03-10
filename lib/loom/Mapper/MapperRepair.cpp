@@ -33,6 +33,15 @@ bool isMemoryOpRepair(const Node *node) {
          opName.contains("memory");
 }
 
+/// Get the "resource_class" attribute from a node, or empty string.
+llvm::StringRef getNodeResourceClassRepair(const Node *node) {
+  for (auto &attr : node->attributes)
+    if (attr.getName() == "resource_class")
+      if (auto s = mlir::dyn_cast<mlir::StringAttr>(attr.getValue()))
+        return s.getValue();
+  return "";
+}
+
 } // namespace
 
 bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
@@ -60,8 +69,16 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
         }
       }
 
-      if (failedEdges.empty())
+      if (failedEdges.empty()) {
+        if (log)
+          log->logRefinement(attempt, 0, true);
         return true; // All edges routed.
+      }
+
+      if (log)
+        log->logRefinement(attempt,
+                           static_cast<unsigned>(failedEdges.size()),
+                           false);
 
       // Strategy selection based on attempt number.
       if (attempt < 6) {
@@ -167,63 +184,60 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
             state.unmapNode(swNode, dfg, adg);
             auto result = state.mapNode(swNode, cand.hwNodeId, dfg, adg);
             if (result == ActionResult::Success) {
-              // Remap ports using type-aware matching, skipping
-              // HW ports already used by other SW nodes.
+              // Remap ports: positional for PE/temporal PE,
+              // type-based inputs + positional outputs for memory.
               const Node *sw = dfg.getNode(swNode);
               const Node *hw = adg.getNode(cand.hwNodeId);
               if (sw && hw) {
-                bool temporalFU = isTemporalPEFU(hw);
-                auto portTypeOk = [temporalFU](mlir::Type swType,
-                                               mlir::Type hwType) {
-                  return temporalFU
-                             ? isTypeWidthCompatibleForTemporalFU(swType,
-                                                                  hwType)
-                             : isTypeWidthCompatible(swType, hwType);
-                };
-                if (sw->inputPorts.size() <= hw->inputPorts.size()) {
+                bool isMemory =
+                    (getNodeResourceClassRepair(hw) == "memory");
+
+                if (isMemory) {
+                  // Memory inputs: type-based greedy search.
+                  llvm::DenseSet<IdIndex> usedInNode;
                   for (size_t si = 0; si < sw->inputPorts.size(); ++si) {
                     const Port *sp = dfg.getPort(sw->inputPorts[si]);
                     if (!sp) continue;
-                    for (size_t hi = 0; hi < hw->inputPorts.size(); ++hi) {
+                    for (size_t hi = 0; hi < hw->inputPorts.size();
+                         ++hi) {
                       IdIndex hwPid = hw->inputPorts[hi];
-                      if (!temporalFU && !state.hwPortToSwPorts[hwPid].empty())
+                      if (!state.hwPortToSwPorts[hwPid].empty())
+                        continue;
+                      if (usedInNode.count(hwPid))
                         continue;
                       const Port *hp = adg.getPort(hwPid);
-                      if (hp && portTypeOk(sp->type, hp->type)) {
+                      if (hp &&
+                          isTypeWidthCompatible(sp->type, hp->type)) {
                         state.mapPort(sw->inputPorts[si], hwPid,
                                       dfg, adg);
+                        usedInNode.insert(hwPid);
                         break;
                       }
                     }
                   }
-                } else {
-                  for (size_t i = 0; i < sw->inputPorts.size() &&
-                                      i < hw->inputPorts.size(); ++i) {
-                    state.mapPort(sw->inputPorts[i], hw->inputPorts[i],
-                                  dfg, adg);
-                  }
-                }
-                if (sw->outputPorts.size() <= hw->outputPorts.size()) {
-                  for (size_t si = 0; si < sw->outputPorts.size(); ++si) {
-                    const Port *sp = dfg.getPort(sw->outputPorts[si]);
-                    if (!sp) continue;
-                    for (size_t hi = 0; hi < hw->outputPorts.size(); ++hi) {
-                      IdIndex hwPid = hw->outputPorts[hi];
-                      if (!temporalFU && !state.hwPortToSwPorts[hwPid].empty())
-                        continue;
-                      const Port *hp = adg.getPort(hwPid);
-                      if (hp && portTypeOk(sp->type, hp->type)) {
-                        state.mapPort(sw->outputPorts[si], hwPid,
-                                      dfg, adg);
-                        break;
-                      }
-                    }
+                  // Memory outputs: positional.
+                  for (size_t i = 0;
+                       i < sw->outputPorts.size() &&
+                       i < hw->outputPorts.size();
+                       ++i) {
+                    state.mapPort(sw->outputPorts[i],
+                                  hw->outputPorts[i], dfg, adg);
                   }
                 } else {
-                  for (size_t i = 0; i < sw->outputPorts.size() &&
-                                      i < hw->outputPorts.size(); ++i) {
-                    state.mapPort(sw->outputPorts[i], hw->outputPorts[i],
-                                  dfg, adg);
+                  // PE / temporal PE FU: positional mapping.
+                  for (size_t i = 0;
+                       i < sw->inputPorts.size() &&
+                       i < hw->inputPorts.size();
+                       ++i) {
+                    state.mapPort(sw->inputPorts[i],
+                                  hw->inputPorts[i], dfg, adg);
+                  }
+                  for (size_t i = 0;
+                       i < sw->outputPorts.size() &&
+                       i < hw->outputPorts.size();
+                       ++i) {
+                    state.mapPort(sw->outputPorts[i],
+                                  hw->outputPorts[i], dfg, adg);
                   }
                 }
               }
@@ -238,6 +252,9 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
 
     // If we still have failures after max local repairs, try global restart.
     if (globalRestart + 1 < opts.maxGlobalRestarts) {
+      if (log)
+        log->info("Global restart " + std::to_string(globalRestart + 1) +
+                  "/" + std::to_string(opts.maxGlobalRestarts));
       state.restore(checkpoint);
       // Clear all edge routing state (both forward and reverse mappings)
       // before re-routing from scratch.

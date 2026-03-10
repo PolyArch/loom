@@ -9,6 +9,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Conversion/LLVMToSCF.h"
+#include "mlir/Dialect/LLVMIR/LLVMAttrs.h"
 
 using namespace mlir;
 
@@ -100,6 +101,18 @@ LogicalResult convertGlobals(ModuleOp module, OpBuilder &builder,
     } else if (auto floatAttr = llvm::dyn_cast<FloatAttr>(valueAttr)) {
       auto tensorType = RankedTensorType::get({1}, scalar);
       initAttr = DenseElementsAttr::get(tensorType, {floatAttr.getValue()});
+    } else if (llvm::isa<LLVM::ZeroAttr>(valueAttr) ||
+               llvm::isa<LLVM::UndefAttr>(valueAttr)) {
+      // Zero/undef initializer (common for struct globals) -> all-zeros.
+      auto tensorType = RankedTensorType::get({totalCount}, scalar);
+      if (auto intScalar = llvm::dyn_cast<IntegerType>(scalar)) {
+        initAttr = DenseElementsAttr::get(
+            tensorType, APInt::getZero(intScalar.getWidth()));
+      } else if (auto floatScalar = llvm::dyn_cast<FloatType>(scalar)) {
+        initAttr = DenseElementsAttr::get(
+            tensorType,
+            APFloat::getZero(floatScalar.getFloatSemantics()));
+      }
     } else {
       global.emitError("unsupported global initializer");
       return failure();

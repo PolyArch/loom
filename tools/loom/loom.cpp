@@ -1166,6 +1166,7 @@ int main(int argc, char **argv) {
     mapper_opts.budgetSeconds = parsed.mapper_budget;
     mapper_opts.seed = parsed.mapper_seed;
     mapper_opts.profile = parsed.mapper_profile;
+    mapper_opts.verbose = parsed.mapper_verbose;
 
     // Run the PnR mapper.
     loom::Mapper mapper;
@@ -1189,6 +1190,9 @@ int main(int argc, char **argv) {
       // Write .map.txt even on failure to show partial/unmapped state.
       config_gen.writeMapText(mapper_result.state, dfg, adg,
                               base_path + ".map.txt");
+      // Write verbose log even on failure.
+      if (mapper_result.log.isEnabled())
+        mapper_result.log.writeToFile(base_path + ".log");
       return 1;
     }
 
@@ -1207,6 +1211,10 @@ int main(int argc, char **argv) {
       llvm::errs() << "warning: failed to write configured fabric: "
                     << fabric_path << "\n";
     }
+
+    // Write verbose log on success.
+    if (mapper_result.log.isEnabled())
+      mapper_result.log.writeToFile(base_path + ".log");
 
     llvm::outs() << "mapping succeeded: " << base_path << ".config.bin\n";
 

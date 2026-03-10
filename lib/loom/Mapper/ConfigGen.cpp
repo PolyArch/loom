@@ -6,6 +6,7 @@
 
 #include "loom/Mapper/ConfigGen.h"
 
+#include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "loom/Dialect/Fabric/FabricOps.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
@@ -283,8 +284,12 @@ void genTemporalPEConfig(const Node *hwNode, const MappingState &state,
 }
 
 /// Generate temporal switch configuration: route table entries.
+/// Per spec: each slot is valid(1) | tag(M) | routes(K) bits,
+/// where M = tag width, K = number of connected positions in
+/// connectivity_table.
 void genTemporalSWConfig(const Node *hwNode, const MappingState &state,
-                         const Graph &adg, std::vector<uint32_t> &words) {
+                         const Graph &adg, IdIndex hwId,
+                         std::vector<uint32_t> &words) {
   int64_t numRouteTable = getNodeIntAttr(hwNode, "num_route_table", 0);
   if (numRouteTable <= 0) {
     words.push_back(0);
@@ -294,12 +299,66 @@ void genTemporalSWConfig(const Node *hwNode, const MappingState &state,
   uint32_t bitPos = 0;
   words.clear();
 
+  // Determine tag width from port types.
+  unsigned tagWidth = 4;
+  for (IdIndex portId : hwNode->inputPorts) {
+    const Port *port = adg.getPort(portId);
+    if (!port)
+      continue;
+    if (auto taggedType =
+            mlir::dyn_cast<loom::dataflow::TaggedType>(port->type)) {
+      tagWidth = taggedType.getTagType().getWidth();
+      break;
+    }
+  }
+
+  // Count connected positions (K) from connectivity_table.
+  unsigned numIn = hwNode->inputPorts.size();
   unsigned numOut = hwNode->outputPorts.size();
-  unsigned slotWidth = numOut > 0 ? numOut : 1;
+  unsigned K = numOut * numIn; // Default: full crossbar
+  mlir::DenseI8ArrayAttr connTable;
+  for (auto &attr : hwNode->attributes) {
+    if (attr.getName() == "connectivity_table") {
+      connTable = mlir::dyn_cast<mlir::DenseI8ArrayAttr>(attr.getValue());
+      break;
+    }
+  }
+  if (connTable && static_cast<unsigned>(connTable.size()) == numOut * numIn) {
+    K = 0;
+    for (int64_t i = 0; i < connTable.size(); ++i) {
+      if (connTable[i] != 0)
+        ++K;
+    }
+  }
+
+  // Per spec: slot_width = 1 (valid) + M (tag) + K (routes)
+  unsigned slotWidth = 1 + tagWidth + K;
+
+  // Look up per-slot route masks from temporal SW assignments.
+  const llvm::SmallVector<TemporalSWAssignment, 4> *assignments = nullptr;
+  if (hwId < state.temporalSWAssignments.size() &&
+      !state.temporalSWAssignments[hwId].empty()) {
+    assignments = &state.temporalSWAssignments[hwId];
+  }
 
   for (int64_t rt = 0; rt < numRouteTable; ++rt) {
     uint64_t routeMask = 0;
-    packBits(words, bitPos, routeMask, slotWidth);
+    uint64_t tagVal = 0;
+    uint64_t valid = 0;
+    if (assignments) {
+      for (const auto &tswa : *assignments) {
+        if (tswa.slot == static_cast<IdIndex>(rt)) {
+          routeMask = tswa.routeMask;
+          tagVal = tswa.tag != INVALID_ID ? tswa.tag : 0;
+          valid = 1;
+          break;
+        }
+      }
+    }
+    // Pack: valid(1) | tag(M) | routes(K), LSB first
+    uint64_t slotWord = (routeMask << (1 + tagWidth)) |
+                        (tagVal << 1) | valid;
+    packBits(words, bitPos, slotWord, slotWidth);
   }
 
   if (words.empty())
@@ -390,9 +449,7 @@ mlir::ArrayAttr buildInstructionMem(
   if (numInst <= 0)
     return {};
 
-  // Guard: skip if registers are used (requires reg() source/dest encoding).
-  if (numReg > 0)
-    return {};
+  (void)numReg; // Register encoding handled inline below.
 
   // Collect FU sub-node IDs in body order (ascending node ID == body order,
   // since ADGFlattener creates FU nodes sequentially in body order).
@@ -460,22 +517,121 @@ mlir::ArrayAttr buildInstructionMem(
           ? fuNames[opcode]
           : "fu_" + std::to_string(opcode);
 
-      // Format: inst[S]: when(tag=T) out(0), ... = fuName(O) in(0), in(1)
+      // Format: inst[S]: when(tag=T) dest, ... = fuName(O) src, ...
+      // dest: out(idx) or reg(idx), src: in(idx) or reg(idx)
       std::string entry = "inst[" + std::to_string(slot) + "]: when(tag=" +
                           std::to_string(tag) + ") ";
 
-      for (unsigned o = 0; o < numOutputs; ++o) {
-        if (o > 0)
-          entry += ", ";
-        entry += "out(" + std::to_string(o) + ")";
+      // Get DFG node for register-aware encoding.
+      const Node *swNode = dfg.getNode(swId);
+
+      // Destinations: check if result edges use registers.
+      bool firstDest = true;
+      if (swNode) {
+        for (unsigned o = 0; o < swNode->outputPorts.size(); ++o) {
+          IdIndex swPortId = swNode->outputPorts[o];
+          const Port *swPort = dfg.getPort(swPortId);
+          if (!swPort)
+            continue;
+
+          bool hasRegDest = false;
+          bool hasOutDest = false;
+          IdIndex regIdx = INVALID_ID;
+
+          for (IdIndex edgeId : swPort->connectedEdges) {
+            const Edge *edge = dfg.getEdge(edgeId);
+            if (!edge || edge->srcPort != swPortId)
+              continue;
+            if (edgeId < state.registerAssignments.size() &&
+                state.registerAssignments[edgeId] != INVALID_ID) {
+              hasRegDest = true;
+              regIdx = state.registerAssignments[edgeId];
+            } else {
+              hasOutDest = true;
+            }
+          }
+
+          if (hasRegDest) {
+            if (!firstDest)
+              entry += ", ";
+            entry += "reg(" + std::to_string(regIdx) + ")";
+            firstDest = false;
+          }
+          if (hasOutDest) {
+            if (!firstDest)
+              entry += ", ";
+            entry += "out(" + std::to_string(o) + ")";
+            firstDest = false;
+          }
+          if (!hasRegDest && !hasOutDest) {
+            if (!firstDest)
+              entry += ", ";
+            entry += "out(" + std::to_string(o) + ")";
+            firstDest = false;
+          }
+        }
+      } else {
+        for (unsigned o = 0; o < numOutputs; ++o) {
+          if (!firstDest)
+            entry += ", ";
+          entry += "out(" + std::to_string(o) + ")";
+          firstDest = false;
+        }
       }
 
       entry += " = " + fuName + "(" + std::to_string(opcode) + ") ";
 
-      for (unsigned i = 0; i < numInputs; ++i) {
-        if (i > 0)
-          entry += ", ";
-        entry += "in(" + std::to_string(i) + ")";
+      // Sources: check if operand edges use registers.
+      bool firstSrc = true;
+      if (swNode) {
+        for (unsigned i = 0; i < swNode->inputPorts.size(); ++i) {
+          IdIndex swPortId = swNode->inputPorts[i];
+          const Port *swPort = dfg.getPort(swPortId);
+          if (!swPort)
+            continue;
+
+          bool isReg = false;
+          IdIndex regIdx = INVALID_ID;
+
+          for (IdIndex edgeId : swPort->connectedEdges) {
+            const Edge *edge = dfg.getEdge(edgeId);
+            if (!edge || edge->dstPort != swPortId)
+              continue;
+            if (edgeId < state.registerAssignments.size() &&
+                state.registerAssignments[edgeId] != INVALID_ID) {
+              isReg = true;
+              regIdx = state.registerAssignments[edgeId];
+              break;
+            }
+          }
+
+          if (!firstSrc)
+            entry += ", ";
+          if (isReg) {
+            entry += "reg(" + std::to_string(regIdx) + ")";
+          } else {
+            // Find HW input port index via port mapping.
+            unsigned hwInIdx = i;
+            if (swPortId < state.swPortToHwPort.size()) {
+              IdIndex hwPortId = state.swPortToHwPort[swPortId];
+              for (unsigned hi = 0; hi < hwNode->inputPorts.size(); ++hi) {
+                if (hwNode->inputPorts[hi] == hwPortId) {
+                  hwInIdx = hi;
+                  break;
+                }
+              }
+            }
+            entry += "in(" + std::to_string(hwInIdx) + ")";
+          }
+          firstSrc = false;
+        }
+      } else {
+        for (unsigned i = 0; i < numInputs; ++i) {
+          if (!firstSrc)
+            entry += ", ";
+          entry += "in(" + std::to_string(i) + ")";
+          firstSrc = false;
+        }
       }
 
       entries.push_back(builder.getStringAttr(entry));
@@ -617,7 +773,7 @@ bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
     } else if (opName == "fabric.switch") {
       genSwitchConfig(hwNode, state, adg, hwId, nc.words);
     } else if (opName == "fabric.temporal_sw") {
-      genTemporalSWConfig(hwNode, state, adg, nc.words);
+      genTemporalSWConfig(hwNode, state, adg, hwId, nc.words);
     } else if (resClass == "memory") {
       genMemoryConfig(hwNode, state, dfg, adg, hwId, nc.words);
     }
@@ -1378,6 +1534,93 @@ bool ConfigGen::writeConfiguredFabric(
 
     switchOp.setRouteTableAttr(
         mlir::DenseI8ArrayAttr::get(builder.getContext(), routeTable));
+  });
+
+  // Walk temporal switch ops and set route_table from temporal SW assignments.
+  adgModule->walk([&](fabric::TemporalSwOp tswOp) {
+    auto it = opMap.find(tswOp.getOperation());
+    if (it == opMap.end())
+      return;
+    IdIndex hwId = it->second;
+
+    const Node *hwNode = adg.getNode(hwId);
+    if (!hwNode)
+      return;
+
+    int64_t numRouteTable = getNodeIntAttr(hwNode, "num_route_table", 0);
+    if (numRouteTable <= 0)
+      return;
+
+    unsigned numIn = hwNode->inputPorts.size();
+    unsigned numOut = hwNode->outputPorts.size();
+    if (numOut == 0)
+      return;
+
+    // Look up temporal SW assignments for this node.
+    const llvm::SmallVector<TemporalSWAssignment, 4> *assignments = nullptr;
+    if (hwId < state.temporalSWAssignments.size() &&
+        !state.temporalSWAssignments[hwId].empty()) {
+      assignments = &state.temporalSWAssignments[hwId];
+    }
+
+    // Build human-readable route_table entries.
+    llvm::SmallVector<mlir::Attribute, 4> routeEntries;
+    for (int64_t rt = 0; rt < numRouteTable; ++rt) {
+      uint64_t routeMask = 0;
+      int64_t tagVal = -1;
+      if (assignments) {
+        for (const auto &tswa : *assignments) {
+          if (tswa.slot == static_cast<IdIndex>(rt)) {
+            routeMask = tswa.routeMask;
+            if (tswa.tag != INVALID_ID)
+              tagVal = static_cast<int64_t>(tswa.tag);
+            break;
+          }
+        }
+      }
+
+      // Format: route_table[N]: when(tag=T) O[o]<-I[i], ...
+      std::string entry = "route_table[" + std::to_string(rt) + "]: ";
+      if (tagVal < 0 && routeMask == 0) {
+        entry += "invalid";
+      } else {
+        if (tagVal >= 0)
+          entry += "when(tag=" + std::to_string(tagVal) + ") ";
+
+        // Decode routeMask (connected-position bits) back to (output, input).
+        // Get connectivity_table for proper decoding.
+        auto connTable = tswOp.getConnectivityTableAttr();
+        bool firstRoute = true;
+        unsigned posIdx = 0;
+        for (unsigned o = 0; o < numOut; ++o) {
+          for (unsigned i = 0; i < numIn; ++i) {
+            bool connected = true;
+            unsigned flatIdx = o * numIn + i;
+            if (connTable && !connTable.empty()) {
+              connected = flatIdx < static_cast<unsigned>(connTable.size()) &&
+                          connTable[flatIdx];
+            }
+            if (!connected)
+              continue;
+            if (routeMask & (1ULL << posIdx)) {
+              if (!firstRoute)
+                entry += ", ";
+              entry += "O[" + std::to_string(o) + "]<-I[" +
+                       std::to_string(i) + "]";
+              firstRoute = false;
+            }
+            ++posIdx;
+          }
+        }
+        if (firstRoute)
+          entry += "(idle)";
+      }
+
+      routeEntries.push_back(builder.getStringAttr(entry));
+    }
+
+    if (!routeEntries.empty())
+      tswOp->setAttr("route_table", builder.getArrayAttr(routeEntries));
   });
 
   // Walk instance ops and set runtime config attributes.

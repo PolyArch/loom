@@ -17,7 +17,6 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/CrashRecoveryContext.h"
 
 using namespace mlir;
 
@@ -52,33 +51,24 @@ public:
     for (auto func : module.getOps<LLVM::LLVMFuncOp>())
       llvmFunctions.push_back(func);
 
-    llvm::CrashRecoveryContext::Enable();
     for (LLVM::LLVMFuncOp func : llvmFunctions) {
       if (varargFunctions.contains(func.getName()))
         continue;
       if (IsRawPointerCallee(func.getName()))
         continue;
 
-      // Snapshot existing func.func ops so we can detect new ones on crash.
+      // Snapshot existing func.func ops so we can clean up on failure.
       llvm::DenseSet<Operation *> existingFuncs;
       for (auto f : module.getOps<mlir::func::FuncOp>())
         existingFuncs.insert(f.getOperation());
 
-      // Use CrashRecoveryContext to catch segfaults in conversion of
-      // individual functions, so one bad function doesn't kill the pipeline.
-      bool crashed = false;
-      LogicalResult result = failure();
-      {
-        llvm::CrashRecoveryContext CRC;
-        crashed = !CRC.RunSafely([&]() {
-          result = convertFunction(module, func, builder, convertedGlobals,
-                                   varargFunctions);
-        });
-      }
-      if (crashed) {
+      LogicalResult result = convertFunction(module, func, builder,
+                                             convertedGlobals,
+                                             varargFunctions);
+      if (failed(result)) {
         llvm::errs() << "warning: conversion of function '" << func.getName()
-                      << "' crashed, skipping\n";
-        // Clean up: erase any new func.func that was partially created.
+                      << "' failed, skipping\n";
+        // Erase any partially-created func.func ops from this conversion.
         llvm::SmallVector<mlir::func::FuncOp, 2> toErase;
         for (auto f : module.getOps<mlir::func::FuncOp>()) {
           if (!existingFuncs.contains(f.getOperation()))
@@ -88,12 +78,7 @@ public:
           f.erase();
         continue;
       }
-      if (failed(result)) {
-        signalPassFailure();
-        return;
-      }
     }
-    llvm::CrashRecoveryContext::Disable();
 
     llvm::SmallVector<LLVM::GlobalOp, 8> globalsToErase;
     for (auto &entry : convertedGlobals)

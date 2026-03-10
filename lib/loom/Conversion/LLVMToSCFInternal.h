@@ -78,6 +78,17 @@ public:
   llvm::DenseSet<mlir::Value> promotedPtrLoads;
 };
 
+/// Validate that a PointerInfo has a usable base memref and index.
+inline bool isValidPointerInfo(const PointerInfo &info) {
+  if (!info.base)
+    return false;
+  if (!llvm::isa<mlir::MemRefType>(info.base.getType()))
+    return false;
+  if (info.index && !llvm::isa<mlir::IndexType>(info.index.getType()))
+    return false;
+  return true;
+}
+
 } // namespace loom::llvm_to_scf
 
 #endif // LOOM_CONVERSION_LLVMTOSCFINTERNAL_H

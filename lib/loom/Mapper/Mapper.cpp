@@ -60,35 +60,88 @@ bool isMemoryOp(const Node *node) {
 Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
                            const Options &opts) {
   Result result;
+  result.log.setEnabled(opts.verbose);
+  log = &result.log;
 
   // Preprocessing: build connectivity matrix and min-hop costs.
+  log->beginStage("Preprocessing");
   preprocess(adg);
+  {
+    unsigned hwNodes = 0, hwEdges = 0;
+    for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i)
+      if (adg.getNode(i)) ++hwNodes;
+    for (IdIndex i = 0; i < static_cast<IdIndex>(adg.edges.size()); ++i)
+      if (adg.getEdge(i)) ++hwEdges;
+    unsigned swNodes = 0, swEdges = 0;
+    for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.nodes.size()); ++i)
+      if (dfg.getNode(i)) ++swNodes;
+    for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i)
+      if (dfg.getEdge(i)) ++swEdges;
+    log->info("ADG: " + std::to_string(hwNodes) + " nodes, " +
+              std::to_string(hwEdges) + " edges");
+    log->info("DFG: " + std::to_string(swNodes) + " nodes, " +
+              std::to_string(swEdges) + " edges");
+    log->info("Connectivity inToOut entries: " +
+              std::to_string(connectivity.inToOut.size()));
+    log->info("Min-hop BFS entries: " +
+              std::to_string(minHopCosts.size()));
+  }
+  log->endStage();
 
   // Tech-mapping: build candidate sets.
+  log->beginStage("Candidate Building");
   CandidateBuilder candidateBuilder;
   auto candidateResult = candidateBuilder.build(dfg, adg);
   if (!candidateResult.success) {
+    log->info("FAILED: " + candidateResult.diagnostics);
+    log->endStage();
     result.success = false;
     result.diagnostics = candidateResult.diagnostics;
     return result;
   }
+  {
+    unsigned totalCandidates = 0;
+    for (auto &[swId, cands] : candidateResult.candidates)
+      totalCandidates += cands.size();
+    log->info("Total candidates: " + std::to_string(totalCandidates) +
+              " across " +
+              std::to_string(candidateResult.candidates.size()) +
+              " SW nodes");
+  }
+  log->endStage();
 
   // Initialize mapping state.
   result.state.init(dfg, adg);
 
   // Placement.
+  log->beginStage("Placement");
   if (!runPlacement(result.state, dfg, adg, candidateResult.candidates, opts)) {
+    log->info("FAILED: placement could not find valid assignment");
+    log->logStateSummary(result.state, dfg, adg);
+    log->endStage();
     result.success = false;
     result.diagnostics = "Placement failed";
     return result;
   }
+  log->logStateSummary(result.state, dfg, adg);
+  log->endStage();
 
   // Routing.
+  log->beginStage("Routing");
   bool routingOk = runRouting(result.state, dfg, adg);
+  log->logStateSummary(result.state, dfg, adg);
   if (!routingOk) {
+    log->info("Initial routing incomplete, entering refinement");
+    log->endStage();
+
     // Try refinement/repair.
+    log->beginStage("Refinement");
     routingOk = runRefinement(result.state, dfg, adg,
                               candidateResult.candidates, opts);
+    log->logStateSummary(result.state, dfg, adg);
+    log->endStage();
+  } else {
+    log->endStage();
   }
 
   if (!routingOk) {
@@ -108,19 +161,29 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   }
 
   // Temporal assignment (skip when routing failed and CP-SAT recovery pending).
+  log->beginStage("Temporal Assignment");
   if (routingOk && !runTemporalAssignment(result.state, dfg, adg)) {
+    log->info("FAILED: temporal assignment error");
+    log->endStage();
     result.success = false;
     result.diagnostics = "Temporal assignment failed";
     return result;
   }
+  log->endStage();
 
   // Validation and cost for heuristic result (only meaningful when routing OK).
+  log->beginStage("Validation & Cost");
   std::string validationDiag;
   bool heuristicValid = false;
   if (routingOk) {
     heuristicValid = runValidation(result.state, dfg, adg, validationDiag);
+    log->logValidation("heuristic", heuristicValid, validationDiag);
     computeCost(result.state, dfg, adg, opts);
+    log->logCost(result.state.totalCost, result.state.placementPressure,
+                 result.state.routingCost, result.state.temporalCost,
+                 result.state.perfProxyCost, result.state.configFootprint);
   }
+  log->endStage();
 
   // CP-SAT solver integration: run if available and profile requests it.
   if (CPSATSolver::isAvailable()) {
@@ -691,6 +754,47 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
     }
   }
 
+  // Successor-side scoring: for outgoing edges to already-mapped consumers,
+  // reward proximity and penalize unreachability.
+  for (IdIndex outPortId : sw->outputPorts) {
+    const Port *outPort = dfg.getPort(outPortId);
+    if (!outPort)
+      continue;
+
+    for (IdIndex edgeId : outPort->connectedEdges) {
+      const Edge *edge = dfg.getEdge(edgeId);
+      if (!edge || edge->srcPort != outPortId)
+        continue;
+
+      const Port *dstPort = dfg.getPort(edge->dstPort);
+      if (!dstPort)
+        continue;
+
+      IdIndex dstSwNode = dstPort->parentNode;
+      if (dstSwNode == INVALID_ID || dstSwNode >= state.swNodeToHwNode.size())
+        continue;
+
+      IdIndex dstHwNode = state.swNodeToHwNode[dstSwNode];
+      if (dstHwNode == INVALID_ID)
+        continue;
+
+      // Check if hwNode can reach dstHwNode.
+      auto hopsIt = minHopCosts.find(hwNode);
+      if (hopsIt != minHopCosts.end()) {
+        auto hopIt = hopsIt->second.find(dstHwNode);
+        if (hopIt != hopsIt->second.end()) {
+          unsigned hops = hopIt->second;
+          score += 10.0 / (1.0 + hops);
+        } else {
+          // Destination unreachable from this HW node: strong penalty.
+          score -= 1000.0;
+        }
+      } else {
+        score -= 1000.0;
+      }
+    }
+  }
+
   // Utilization penalty: prefer less-used nodes.
   if (hwNode < state.hwNodeToSwNodes.size()) {
     score -= 5.0 * state.hwNodeToSwNodes[hwNode].size();
@@ -824,10 +928,19 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
     }
 
     if (!bestCand || bestCand->hwNodeId == INVALID_ID) {
+      log->info("No candidate for SW N" + std::to_string(swNode) +
+                " (" + getNodeOpName(dfg.getNode(swNode)).str() + ")");
       return false;
     }
 
     IdIndex bestHw = bestCand->hwNodeId;
+    {
+      const Node *swN = dfg.getNode(swNode);
+      const Node *hwN = adg.getNode(bestHw);
+      llvm::StringRef swName = swN ? getNodeOpName(swN) : "";
+      llvm::StringRef hwName = hwN ? getNodeOpName(hwN) : "";
+      log->logPlacement(swNode, bestHw, swName, hwName, bestScore);
+    }
 
     if (bestCand->isGroup && bestCand->swNodeIds.size() > 1) {
       // Group placement: bind ALL SW nodes in the group to the same
@@ -920,57 +1033,47 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
       const Node *sw = dfg.getNode(swNode);
       const Node *hw = adg.getNode(bestHw);
       if (sw && hw) {
-        // Type-aware port mapping: match SW ports to HW ports by type
-        // to ensure edges stay within their type plane for routing.
-        // Also skip HW ports already used by other SW nodes on the same PE.
-        // For temporal PE FU nodes, use tagged-unwrap type comparison.
-        bool temporalFU = isTemporalPEFU(hw);
-        auto portTypeOk = [temporalFU](mlir::Type swType, mlir::Type hwType) {
-          return temporalFU
-                     ? isTypeWidthCompatibleForTemporalFU(swType, hwType)
-                     : isTypeWidthCompatible(swType, hwType);
-        };
-        if (sw->inputPorts.size() <= hw->inputPorts.size()) {
+        bool isMemory = (getNodeResourceClass(hw) == "memory");
+
+        if (isMemory) {
+          // Memory inputs: type-based greedy search (handles operand
+          // reordering between handshake and fabric memory conventions).
+          llvm::DenseSet<IdIndex> usedInNode;
           for (size_t si = 0; si < sw->inputPorts.size(); ++si) {
             const Port *sp = dfg.getPort(sw->inputPorts[si]);
             if (!sp) continue;
             for (size_t hi = 0; hi < hw->inputPorts.size(); ++hi) {
               IdIndex hwPid = hw->inputPorts[hi];
-              // Temporal FU sub-nodes share ports (time-multiplexed).
-              if (!temporalFU && !state.hwPortToSwPorts[hwPid].empty())
+              if (!state.hwPortToSwPorts[hwPid].empty())
+                continue;
+              if (usedInNode.count(hwPid))
                 continue;
               const Port *hp = adg.getPort(hwPid);
-              if (hp && portTypeOk(sp->type, hp->type)) {
+              if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
                 state.mapPort(sw->inputPorts[si], hwPid, dfg, adg);
+                usedInNode.insert(hwPid);
                 break;
               }
             }
           }
-        } else {
+          // Memory outputs: positional mapping.
           for (size_t i = 0;
-               i < sw->inputPorts.size() && i < hw->inputPorts.size(); ++i) {
+               i < sw->outputPorts.size() && i < hw->outputPorts.size();
+               ++i) {
+            state.mapPort(sw->outputPorts[i], hw->outputPorts[i], dfg, adg);
+          }
+        } else {
+          // PE / temporal PE FU: positional mapping for both inputs and
+          // outputs. Port positions are semantically fixed (no internal
+          // mux), and TechMapper validates compatibility positionally.
+          for (size_t i = 0;
+               i < sw->inputPorts.size() && i < hw->inputPorts.size();
+               ++i) {
             state.mapPort(sw->inputPorts[i], hw->inputPorts[i], dfg, adg);
           }
-        }
-        if (sw->outputPorts.size() <= hw->outputPorts.size()) {
-          for (size_t si = 0; si < sw->outputPorts.size(); ++si) {
-            const Port *sp = dfg.getPort(sw->outputPorts[si]);
-            if (!sp) continue;
-            for (size_t hi = 0; hi < hw->outputPorts.size(); ++hi) {
-              IdIndex hwPid = hw->outputPorts[hi];
-              // Temporal FU sub-nodes share ports (time-multiplexed).
-              if (!temporalFU && !state.hwPortToSwPorts[hwPid].empty())
-                continue;
-              const Port *hp = adg.getPort(hwPid);
-              if (hp && portTypeOk(sp->type, hp->type)) {
-                state.mapPort(sw->outputPorts[si], hwPid, dfg, adg);
-                break;
-              }
-            }
-          }
-        } else {
           for (size_t i = 0;
-               i < sw->outputPorts.size() && i < hw->outputPorts.size(); ++i) {
+               i < sw->outputPorts.size() && i < hw->outputPorts.size();
+               ++i) {
             state.mapPort(sw->outputPorts[i], hw->outputPorts[i], dfg, adg);
           }
         }

@@ -75,6 +75,10 @@ bool IsRawPointerCallee(llvm::StringRef callee);
 mlir::Type GetScalarType(mlir::Type type, llvm::SmallVectorImpl<int64_t> &dims);
 mlir::Type NormalizeScalarType(mlir::Type type, mlir::MLIRContext *context);
 int64_t GetByteSize(mlir::Type type);
+int64_t GetLLVMTypeByteSize(mlir::Type type);
+int64_t GetStructFieldByteOffset(mlir::LLVM::LLVMStructType structTy,
+                                 unsigned fieldIndex);
+bool ContainsStructType(mlir::Type type);
 
 mlir::Value BuildIndexConstant(mlir::OpBuilder &builder, mlir::Location loc,
                                int64_t value);
