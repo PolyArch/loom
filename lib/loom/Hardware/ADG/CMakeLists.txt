@@ -8,6 +8,8 @@ add_llvm_library(LoomADG
   ADGExportSVGen.cpp
   ADGExportSVUtil.cpp
   ADGGen.cpp
+  ADGGenCube3D.cpp
+  ADGGenTemporal.cpp
 
   LINK_LIBS PUBLIC
     LoomFabric

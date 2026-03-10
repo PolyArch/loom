@@ -1075,11 +1075,12 @@ unsigned ADGBuilder::Impl::getInstanceInputCount(unsigned instIdx) const {
   case ModuleKind::Switch:
     return switchDefs[inst.defIdx].numIn;
   case ModuleKind::TemporalPE: {
-    // Temporal PE has same number of I/O as its FU interface.
+    // Temporal PE input count is the max across all FU sub-PEs.
     auto &tpe = temporalPEDefs[inst.defIdx];
-    if (!tpe.fuPEDefIndices.empty())
-      return peDefs[tpe.fuPEDefIndices[0]].inputPorts.size();
-    return 1;
+    unsigned maxIn = 1;
+    for (unsigned fuIdx : tpe.fuPEDefIndices)
+      maxIn = std::max(maxIn, (unsigned)peDefs[fuIdx].inputPorts.size());
+    return maxIn;
   }
   case ModuleKind::TemporalSwitch:
     return temporalSwitchDefs[inst.defIdx].numIn;
@@ -1125,10 +1126,12 @@ unsigned ADGBuilder::Impl::getInstanceOutputCount(unsigned instIdx) const {
   case ModuleKind::Switch:
     return switchDefs[inst.defIdx].numOut;
   case ModuleKind::TemporalPE: {
+    // Temporal PE output count is the max across all FU sub-PEs.
     auto &tpe = temporalPEDefs[inst.defIdx];
-    if (!tpe.fuPEDefIndices.empty())
-      return peDefs[tpe.fuPEDefIndices[0]].outputPorts.size();
-    return 1;
+    unsigned maxOut = 1;
+    for (unsigned fuIdx : tpe.fuPEDefIndices)
+      maxOut = std::max(maxOut, (unsigned)peDefs[fuIdx].outputPorts.size());
+    return maxOut;
   }
   case ModuleKind::TemporalSwitch:
     return temporalSwitchDefs[inst.defIdx].numOut;

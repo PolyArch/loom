@@ -79,6 +79,7 @@
 #include "loom/Dialect/Dataflow/DataflowDialect.h"
 #include "loom/Dialect/Fabric/FabricDialect.h"
 #include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Analysis/DFGAnalysis.h"
 #include "loom/Hardware/ADG/ADGGen.h"
 #include "loom/Hardware/Common/FabricConstants.h"
 #include "loom/Mapper/ADGFlattener.h"
@@ -600,18 +601,107 @@ int main(int argc, char **argv) {
                          parsed.gen_track != 1 ||
                          parsed.gen_fifo_mode != "none" ||
                          parsed.gen_fifo_depth != 2 ||
-                         parsed.gen_fifo_bypassable;
+                         parsed.gen_fifo_bypassable ||
+                         parsed.gen_temporal;
     if (has_gen_flags && !parsed.adg_path.empty()) {
       llvm::errs()
           << "error: ADG generation flags (--gen-adg, --gen-topology, "
-             "--gen-track, --gen-fifo-*) are incompatible with --adg\n";
+             "--gen-track, --gen-fifo-*, --gen-temporal) are incompatible "
+             "with --adg\n";
       return 1;
     }
     if (!parsed.gen_adg && has_gen_flags) {
       llvm::errs()
-          << "error: --gen-topology/--gen-track/--gen-fifo-* require --gen-adg\n";
+          << "error: --gen-topology/--gen-track/--gen-fifo-*/--gen-temporal "
+             "require --gen-adg\n";
       return 1;
     }
+  }
+
+  // DFG analysis standalone mode: --dfg-analyze --dfgs ... -o output
+  if (parsed.dfg_analyze && !parsed.gen_adg && parsed.adg_path.empty()) {
+    if (parsed.dfg_paths.empty()) {
+      llvm::errs() << "error: --dfg-analyze requires --dfgs\n";
+      return 1;
+    }
+    if (parsed.output_path.empty() && !parsed.dump_analysis) {
+      llvm::errs() << "error: --dfg-analyze requires -o or --dump-analysis\n";
+      return 1;
+    }
+
+    // Set up MLIR context for parsing handshake DFGs.
+    mlir::MLIRContext analyze_context;
+    mlir::DialectRegistry analyze_registry;
+    analyze_context.appendDialectRegistry(analyze_registry);
+    analyze_context.getDiagEngine().registerHandler(
+        [](mlir::Diagnostic &diag) {
+          diag.print(llvm::errs());
+          llvm::errs() << "\n";
+          return mlir::success();
+        });
+    analyze_context.getOrLoadDialect<mlir::arith::ArithDialect>();
+    analyze_context.getOrLoadDialect<mlir::math::MathDialect>();
+    analyze_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
+    analyze_context.getOrLoadDialect<mlir::func::FuncDialect>();
+    analyze_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
+    analyze_context.getOrLoadDialect<loom::fabric::FabricDialect>();
+    analyze_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+
+    // Parse all DFG files.
+    mlir::ParserConfig analyze_parser_config(&analyze_context);
+    std::vector<mlir::OwningOpRef<mlir::ModuleOp>> analyze_modules;
+    for (const auto &dfg_path : parsed.dfg_paths) {
+      auto mod = mlir::parseSourceFile<mlir::ModuleOp>(
+          dfg_path, analyze_parser_config);
+      if (!mod) {
+        llvm::errs() << "error: failed to parse DFG: " << dfg_path << "\n";
+        return 1;
+      }
+      analyze_modules.push_back(std::move(mod));
+    }
+
+    // Configure analysis.
+    loom::analysis::DFGAnalysisConfig analysis_config;
+    analysis_config.temporalThreshold = parsed.temporal_threshold;
+    analysis_config.dumpAnalysis = parsed.dump_analysis;
+
+    // Run Level A analysis on each handshake.func.
+    for (auto &mod : analyze_modules) {
+      mod->walk([&](circt::handshake::FuncOp func) {
+        loom::analysis::analyzeMLIR(func, analysis_config);
+      });
+    }
+
+    // Run Level B analysis (recurrence, critical path, temporal score).
+    // Build a temporary DFG Graph for each func to run graph-level analysis,
+    // then write refined attributes back to MLIR ops.
+    for (auto &mod : analyze_modules) {
+      mod->walk([&](circt::handshake::FuncOp func) {
+        loom::DFGBuilder dfg_builder;
+        loom::Graph dfg = dfg_builder.build(func);
+        loom::analysis::analyzeGraph(dfg, analysis_config);
+
+        // Write Level B results back to MLIR ops.
+        loom::analysis::writeBackToMLIR(dfg, func);
+
+        if (parsed.dump_analysis)
+          loom::analysis::dumpAnalysisSummary(func);
+      });
+    }
+
+    // Write annotated MLIR output.
+    if (!parsed.output_path.empty()) {
+      std::error_code ec;
+      llvm::raw_fd_ostream outFile(parsed.output_path, ec);
+      if (ec) {
+        llvm::errs() << "error: cannot open output: " << ec.message() << "\n";
+        return 1;
+      }
+      for (auto &mod : analyze_modules)
+        mod->print(outFile);
+      llvm::outs() << "analyzed DFG: " << parsed.output_path << "\n";
+    }
+    return 0;
   }
 
   // ADG generation mode: --gen-adg --dfgs ... -o output.fabric.mlir
@@ -658,8 +748,43 @@ int main(int argc, char **argv) {
       gen_modules.push_back(std::move(mod));
     }
 
+    // Run DFG analysis if requested or if temporal generation needs it.
+    bool run_analysis = parsed.dfg_analyze || parsed.gen_temporal;
+    if (run_analysis) {
+      loom::analysis::DFGAnalysisConfig analysis_config;
+      analysis_config.temporalThreshold = parsed.temporal_threshold;
+      analysis_config.dumpAnalysis = parsed.dump_analysis;
+
+      // Level A: analyze MLIR attributes.
+      for (auto &mod : gen_modules) {
+        mod->walk([&](circt::handshake::FuncOp func) {
+          if (func.getName().ends_with("_esi"))
+            return;
+          loom::analysis::analyzeMLIR(func, analysis_config);
+        });
+      }
+
+      // Level B: build temporary DFG Graph for graph-level analysis
+      // (recurrence, critical path, temporal score), then write refined
+      // attributes back to MLIR ops.
+      for (auto &mod : gen_modules) {
+        mod->walk([&](circt::handshake::FuncOp func) {
+          if (func.getName().ends_with("_esi"))
+            return;
+          loom::DFGBuilder dfg_builder;
+          loom::Graph dfg = dfg_builder.build(func);
+          loom::analysis::analyzeGraph(dfg, analysis_config);
+          loom::analysis::writeBackToMLIR(dfg, func);
+          if (parsed.dump_analysis)
+            loom::analysis::dumpAnalysisSummary(func);
+        });
+      }
+    }
+
     // Analyze each handshake.func to extract PE requirements.
     loom::adg::MergedRequirements merged_reqs;
+    loom::adg::MergedRequirements spatial_reqs;
+    loom::adg::MergedRequirements temporal_reqs;
     unsigned num_dfgs = 0;
     for (auto &mod : gen_modules) {
       mod->walk([&](circt::handshake::FuncOp func) {
@@ -672,8 +797,34 @@ int main(int argc, char **argv) {
           if (op.hasTrait<mlir::OpTrait::IsTerminator>())
             continue;
 
+          std::string opName = op.getName().getStringRef().str();
+
+          // Detect external memory operations and build MemorySpec.
+          if (auto extMemOp =
+                  mlir::dyn_cast<circt::handshake::ExternalMemoryOp>(&op)) {
+            loom::adg::MemorySpec memSpec;
+            memSpec.ldCount = extMemOp.getLdCount();
+            memSpec.stCount = extMemOp.getStCount();
+            auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(
+                extMemOp.getMemref().getType());
+            if (memrefTy) {
+              mlir::Type elemTy = memrefTy.getElementType();
+              if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(elemTy))
+                memSpec.dataWidth = intTy.getWidth();
+              else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(elemTy))
+                memSpec.dataWidth = floatTy.getWidth();
+            }
+            analysis.memoryCounts[memSpec]++;
+            continue;
+          }
+
+          // Skip all handshake.* control/memory ops from PE counting.
+          // Compute PEs come from arith.*, math.*, etc.
+          if (llvm::StringRef(opName).starts_with("handshake."))
+            continue;
+
           loom::adg::PESpec spec;
-          spec.opName = op.getName().getStringRef().str();
+          spec.opName = opName;
 
           // Extract input widths from operand types.
           for (auto operand : op.getOperands()) {
@@ -702,8 +853,26 @@ int main(int argc, char **argv) {
               spec.outWidths.push_back(w);
           }
 
-          if (!spec.inWidths.empty() && !spec.outWidths.empty())
+          if (!spec.inWidths.empty() && !spec.outWidths.empty()) {
             analysis.peCounts[spec]++;
+
+            // Partition into spatial/temporal if analysis data is present.
+            if (run_analysis && parsed.gen_temporal) {
+              auto dict = loom::analysis::getAnalysisDict(&op);
+              double tscore = 0.0;
+              if (dict) {
+                if (auto a = dict.getAs<mlir::FloatAttr>("temporal_score"))
+                  tscore = a.getValueAsDouble();
+              }
+              // Ops with forced-spatial semantics or score below threshold
+              // go to spatial; eligible ops above threshold go to temporal.
+              if (!loom::analysis::isForcedSpatialOp(opName) &&
+                  tscore >= parsed.temporal_threshold) {
+                // This op is a temporal candidate; will be counted
+                // separately below after the walk.
+              }
+            }
+          }
         }
 
         // Count function inputs by width.
@@ -715,7 +884,7 @@ int main(int argc, char **argv) {
           else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty))
             w = floatTy.getWidth();
           else if (ty.isIndex())
-            w = 64;
+            w = loom::ADDR_BIT_WIDTH;
           if (w > 0)
             analysis.inputsByWidth[w]++;
         }
@@ -758,6 +927,85 @@ int main(int argc, char **argv) {
       gen_config.fifoMode = loom::adg::GenConfig::FifoDual;
     gen_config.fifoDepth = parsed.gen_fifo_depth;
     gen_config.fifoBypassable = parsed.gen_fifo_bypassable;
+    gen_config.genTemporal = parsed.gen_temporal;
+
+    // If analysis-driven temporal generation is active, partition PE counts
+    // into spatial-only and temporal-eligible requirements.
+    if (run_analysis && parsed.gen_temporal) {
+      // Build partitioned requirements by re-walking DFGs.
+      for (auto &mod : gen_modules) {
+        mod->walk([&](circt::handshake::FuncOp func) {
+          if (func.getName().ends_with("_esi"))
+            return;
+          loom::adg::SingleDFGAnalysis spatial_analysis;
+          loom::adg::SingleDFGAnalysis temporal_analysis;
+
+          for (auto &op : func.getBody().front()) {
+            if (op.hasTrait<mlir::OpTrait::IsTerminator>())
+              continue;
+            std::string opName = op.getName().getStringRef().str();
+
+            // Skip memory and handshake ops (always spatial, handled
+            // separately via I/O and memory requirements).
+            if (mlir::isa<circt::handshake::ExternalMemoryOp>(&op))
+              continue;
+            if (llvm::StringRef(opName).starts_with("handshake."))
+              continue;
+
+            loom::adg::PESpec spec;
+            spec.opName = opName;
+            for (auto operand : op.getOperands()) {
+              mlir::Type ty = operand.getType();
+              unsigned w = 0;
+              if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty))
+                w = intTy.getWidth();
+              else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty))
+                w = floatTy.getWidth();
+              else if (ty.isIndex())
+                w = loom::ADDR_BIT_WIDTH;
+              if (w > 0)
+                spec.inWidths.push_back(w);
+            }
+            for (auto result : op.getResults()) {
+              mlir::Type ty = result.getType();
+              unsigned w = 0;
+              if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty))
+                w = intTy.getWidth();
+              else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty))
+                w = floatTy.getWidth();
+              else if (ty.isIndex())
+                w = loom::ADDR_BIT_WIDTH;
+              if (w > 0)
+                spec.outWidths.push_back(w);
+            }
+
+            if (spec.inWidths.empty() || spec.outWidths.empty())
+              continue;
+
+            double tscore = 0.0;
+            auto dict = loom::analysis::getAnalysisDict(&op);
+            if (dict) {
+              if (auto a = dict.getAs<mlir::FloatAttr>("temporal_score"))
+                tscore = a.getValueAsDouble();
+            }
+
+            if (!loom::analysis::isForcedSpatialOp(opName) &&
+                tscore >= parsed.temporal_threshold) {
+              temporal_analysis.peCounts[spec]++;
+            } else {
+              spatial_analysis.peCounts[spec]++;
+            }
+          }
+
+          spatial_reqs.mergeFrom(spatial_analysis);
+          temporal_reqs.mergeFrom(temporal_analysis);
+        });
+      }
+
+      // Store partition info on GenConfig for temporal generation.
+      gen_config.temporalPECounts = temporal_reqs.peMaxCounts;
+      gen_config.spatialPECounts = spatial_reqs.peMaxCounts;
+    }
 
     // Generate the ADG.
     loom::adg::ADGGen gen;
@@ -1152,6 +1400,25 @@ int main(int argc, char **argv) {
     // Extract DFG from Handshake IR.
     loom::DFGBuilder dfg_builder;
     loom::Graph dfg = dfg_builder.build(handshake_func);
+
+    // Run Level B graph analysis only if Level A attrs are present on the DFG
+    // (i.e., --dfg-analyze was used during DFG compilation or gen-adg).
+    // Without Level A data, skip to preserve backward-compatible mapper behavior.
+    {
+      bool has_level_a = false;
+      for (auto *node : dfg.nodeRange()) {
+        if (node && node->kind == loom::Node::OperationNode &&
+            loom::analysis::hasAnalysisAttr(node, "loom.loop_depth")) {
+          has_level_a = true;
+          break;
+        }
+      }
+      if (has_level_a) {
+        loom::analysis::DFGAnalysisConfig analysis_config;
+        analysis_config.temporalThreshold = parsed.temporal_threshold;
+        loom::analysis::analyzeGraph(dfg, analysis_config);
+      }
+    }
 
     // Flatten ADG from Fabric IR.
     loom::ADGFlattener adg_flattener;

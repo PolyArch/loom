@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Mapper/Mapper.h"
+#include "loom/Analysis/DFGAnalysis.h"
 #include "loom/Mapper/CandidateBuilder.h"
 #include "loom/Mapper/CPSATSolver.h"
 #include "loom/Mapper/TypeCompat.h"
@@ -447,9 +448,20 @@ std::vector<IdIndex> Mapper::computePlacementOrder(const Graph &dfg) {
   // Memory ops first (most constrained).
   order.insert(order.end(), memOps.begin(), memOps.end());
 
-  // Then compute ops in topological order (approximated by ID order since
-  // DFG nodes are created in program order).
-  order.insert(order.end(), computeOps.begin(), computeOps.end());
+  // Separate compute ops into critical-path and non-critical-path.
+  // Critical-path ops are placed first for maximum placement freedom.
+  std::vector<IdIndex> cpOps;
+  std::vector<IdIndex> nonCpOps;
+  for (IdIndex id : computeOps) {
+    const Node *node = dfg.getNode(id);
+    if (node && analysis::getAnalysisBoolAttr(node, "loom.on_critical_path"))
+      cpOps.push_back(id);
+    else
+      nonCpOps.push_back(id);
+  }
+
+  order.insert(order.end(), cpOps.begin(), cpOps.end());
+  order.insert(order.end(), nonCpOps.begin(), nonCpOps.end());
 
   return order;
 }
@@ -798,6 +810,24 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
   // Utilization penalty: prefer less-used nodes.
   if (hwNode < state.hwNodeToSwNodes.size()) {
     score -= 5.0 * state.hwNodeToSwNodes[hwNode].size();
+  }
+
+  // Analysis-aware affinity: if DFG node has loom.temporal_score, add a
+  // bonus for matching spatial/temporal placement.
+  if (analysis::hasAnalysisAttr(sw, "loom.temporal_score")) {
+    double temporalScore =
+        analysis::getAnalysisFloatAttr(sw, "loom.temporal_score", 0.5);
+    const Node *hw = adg.getNode(hwNode);
+    if (hw) {
+      bool hwIsTemporal = isTemporalPEFU(hw);
+      if (hwIsTemporal) {
+        // Temporal PE: bonus for high temporal_score ops.
+        score += 5.0 * temporalScore;
+      } else {
+        // Spatial PE: bonus for low temporal_score ops.
+        score += 5.0 * (1.0 - temporalScore);
+      }
+    }
   }
 
   return score;

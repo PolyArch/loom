@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Mapper/CPSATSolver.h"
+#include "loom/Analysis/DFGAnalysis.h"
 #include "loom/Mapper/TypeCompat.h"
 
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
@@ -362,11 +363,30 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
     }
   }
 
-  // Objective: minimize placement pressure.
+  // Objective: minimize placement pressure + spatial/temporal affinity penalty.
   LinearExpr objective;
   for (auto &[hwId, swVarPairs] : hwNodeSwVars) {
-    for (auto &[sw, var] : swVarPairs)
-      objective += var;
+    for (auto &[sw, var] : swVarPairs) {
+      // Base placement cost: 1 per placed op.
+      int64_t cost = 1;
+
+      // Add affinity penalty for spatial/temporal mismatch.
+      const Node *swNode = dfg.getNode(sw);
+      const Node *hwNode = adg.getNode(hwId);
+      if (swNode && hwNode &&
+          analysis::hasAnalysisAttr(swNode, "loom.temporal_score")) {
+        double tscore = analysis::getAnalysisFloatAttr(
+            swNode, "loom.temporal_score", 0.5);
+        bool hwIsTemporal = hasAttr(hwNode, "parent_temporal_pe") ||
+                            hasAttr(hwNode, "is_virtual");
+        // Penalty for mismatch (scaled to integer for CP-SAT).
+        if (hwIsTemporal && tscore < 0.3)
+          cost += 2; // Low-score op on temporal PE.
+        else if (!hwIsTemporal && tscore > 0.7)
+          cost += 2; // High-score op on spatial PE.
+      }
+      objective += LinearExpr::Term(var, cost);
+    }
   }
   model.Minimize(objective);
 

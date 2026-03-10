@@ -42,6 +42,11 @@ if [[ "${1:-}" == "--single" ]]; then
   # Validate the generated ADG.
   "${LOOM_BIN}" --adg "${adg_path}"
 
+  # If .gen_only marker exists, skip mapping (gen + validate only).
+  if [[ -f "${TEST_DIR}/.gen_only" ]]; then
+    exit 0
+  fi
+
   # Map each DFG to the generated ADG.
   for dfg in "${dfg_files[@]}"; do
     dfg_name=$(basename "${dfg}" .handshake.mlir)

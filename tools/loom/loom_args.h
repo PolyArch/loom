@@ -31,6 +31,10 @@ struct ParsedArgs {
   std::string gen_fifo_mode = "none"; // "none", "single", or "dual"
   unsigned gen_fifo_depth = 2;
   bool gen_fifo_bypassable = false;
+  bool gen_temporal = false;
+  bool dfg_analyze = false;
+  double temporal_threshold = 0.5;
+  bool dump_analysis = false;
   bool as_clang = false;
   bool show_help = false;
   bool show_version = false;

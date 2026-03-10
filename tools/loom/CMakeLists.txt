@@ -56,6 +56,7 @@ foreach(target_name IN ITEMS loom)
     clangAST
     clangLex
     clangBasic
+    LoomAnalysis
     LoomConversion
     LoomFabric
     LoomADG

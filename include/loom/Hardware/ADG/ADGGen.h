@@ -44,6 +44,20 @@ struct PESpec {
 };
 
 //===----------------------------------------------------------------------===//
+// Memory Specification
+//===----------------------------------------------------------------------===//
+
+/// Describes an external memory group needed in the generated ADG.
+struct MemorySpec {
+  unsigned ldCount = 0;  // number of load ports
+  unsigned stCount = 0;  // number of store ports
+  unsigned dataWidth = 32; // data bit width (e.g. 32 for f32)
+
+  bool operator<(const MemorySpec &o) const;
+  bool operator==(const MemorySpec &o) const;
+};
+
+//===----------------------------------------------------------------------===//
 // DFG Analysis Results
 //===----------------------------------------------------------------------===//
 
@@ -55,6 +69,8 @@ struct SingleDFGAnalysis {
   std::map<unsigned, unsigned> inputsByWidth;
   /// Bit width -> number of module output ports of that width.
   std::map<unsigned, unsigned> outputsByWidth;
+  /// Memory group -> instance count needed by this DFG.
+  std::map<MemorySpec, unsigned> memoryCounts;
 };
 
 /// Merged requirements from multiple DFGs. The generated ADG must support
@@ -66,6 +82,8 @@ struct MergedRequirements {
   std::map<unsigned, unsigned> maxInputsByWidth;
   /// Bit width -> max output port count across all DFGs.
   std::map<unsigned, unsigned> maxOutputsByWidth;
+  /// Memory group -> max count across all DFGs.
+  std::map<MemorySpec, unsigned> maxMemoryCounts;
 
   /// Merge a single DFG analysis into the aggregate requirements.
   void mergeFrom(const SingleDFGAnalysis &analysis);
@@ -91,6 +109,17 @@ struct GenConfig {
   FifoMode fifoMode = FifoNone;
   unsigned fifoDepth = 2;
   bool fifoBypassable = false;
+
+  /// Enable temporal domain generation (dual-mesh with bridges).
+  bool genTemporal = false;
+  unsigned temporalTagWidth = 4;
+  unsigned temporalNumInstruction = 4;
+
+  /// Analysis-driven spatial/temporal PE partition.
+  /// When non-empty, temporal generation uses these instead of duplicating
+  /// all PEs. If empty, falls back to duplicating all PEs (original behavior).
+  std::map<PESpec, unsigned> spatialPECounts;
+  std::map<PESpec, unsigned> temporalPECounts;
 };
 
 //===----------------------------------------------------------------------===//

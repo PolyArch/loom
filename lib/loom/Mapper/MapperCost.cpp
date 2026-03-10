@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Mapper/Mapper.h"
+#include "loom/Analysis/DFGAnalysis.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 
@@ -211,6 +212,39 @@ void Mapper::computeCost(MappingState &state, const Graph &dfg,
   if (edgeCount > 0)
     state.perfProxyCost /= static_cast<double>(edgeCount);
   state.perfProxyCost += 0.3 * iiPressure + 0.2 * queuePressure;
+
+  // Incorporate spatial/temporal affinity mismatch penalty from analysis data.
+  // If DFG nodes have loom.temporal_score, penalize mismatches where
+  // high-score ops are on spatial PEs or low-score ops are on temporal PEs.
+  double affinityPenalty = 0.0;
+  unsigned affinityCount = 0;
+  for (IdIndex swId = 0;
+       swId < static_cast<IdIndex>(state.swNodeToHwNode.size()); ++swId) {
+    IdIndex hwId = state.swNodeToHwNode[swId];
+    if (hwId == INVALID_ID)
+      continue;
+    const Node *swNode = dfg.getNode(swId);
+    const Node *hwNode = adg.getNode(hwId);
+    if (!swNode || !hwNode)
+      continue;
+    if (!analysis::hasAnalysisAttr(swNode, "loom.temporal_score"))
+      continue;
+
+    double tscore = analysis::getAnalysisFloatAttr(
+        swNode, "loom.temporal_score", 0.5);
+    bool isTemporal = hasAttr(hwNode, "parent_temporal_pe");
+
+    // Mismatch: temporal-preferred op on spatial PE, or vice versa.
+    double mismatch = 0.0;
+    if (isTemporal && tscore < 0.3)
+      mismatch = 0.3 - tscore; // Low-score op on temporal PE.
+    else if (!isTemporal && tscore > 0.7)
+      mismatch = tscore - 0.7; // High-score op on spatial PE.
+    affinityPenalty += mismatch;
+    ++affinityCount;
+  }
+  if (affinityCount > 0)
+    state.perfProxyCost += 0.1 * affinityPenalty / affinityCount;
 
   // --- Config Footprint ---
   // non_default_words / total_config_words.

@@ -73,6 +73,13 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "  --gen-fifo-mode <mode>      FIFO insertion: none|single|dual (default: none)\n";
   llvm::outs() << "  --gen-fifo-depth <n>        FIFO depth (default: 2)\n";
   llvm::outs() << "  --gen-fifo-bypassable       Set FIFOs as bypassable\n";
+  llvm::outs() << "  --gen-temporal              Generate temporal domain (dual-mesh with bridges)\n";
+  llvm::outs() << "\n";
+  llvm::outs() << "DFG analysis mode (--dfg-analyze with --dfgs):\n";
+  llvm::outs() << "  Analyze DFGs and output annotated MLIR with loom.analysis attrs.\n";
+  llvm::outs() << "  --dfg-analyze               Enable DFG analysis pass\n";
+  llvm::outs() << "  --temporal-threshold <f>     Temporal score threshold (default: 0.5)\n";
+  llvm::outs() << "  --dump-analysis              Print analysis summary to stdout\n";
   llvm::outs() << "\n";
   llvm::outs() << "Forwarded compile options include: -I, -D, -U, -std, -O, -g,"
                << " -isystem, -include.\n";
@@ -247,6 +254,27 @@ ParsedArgs ParseArgs(int argc, char **argv) {
       }
       if (arg == "--gen-fifo-bypassable") {
         parsed.gen_fifo_bypassable = true;
+        continue;
+      }
+      if (arg == "--gen-temporal") {
+        parsed.gen_temporal = true;
+        continue;
+      }
+      if (arg == "--dfg-analyze") {
+        parsed.dfg_analyze = true;
+        continue;
+      }
+      if (arg == "--temporal-threshold") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --temporal-threshold requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.temporal_threshold = std::stod(argv[++i]);
+        continue;
+      }
+      if (arg == "--dump-analysis") {
+        parsed.dump_analysis = true;
         continue;
       }
       // --dump-mapping removed: .map.json and .map.txt are always emitted.

@@ -70,6 +70,16 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
           builder.getNamedAttr("loc", builder.getStringAttr(locStr)));
     }
 
+    // Copy loom.analysis dict attrs to graph node (flattened with "loom." prefix).
+    if (auto analysisDict =
+            op.getAttrOfType<mlir::DictionaryAttr>("loom.analysis")) {
+      for (auto entry : analysisDict) {
+        std::string key = ("loom." + entry.getName().getValue()).str();
+        node->attributes.push_back(
+            builder.getNamedAttr(key, entry.getValue()));
+      }
+    }
+
     IdIndex nodeId = graph.addNode(std::move(node));
     opToNode[&op] = nodeId;
 
