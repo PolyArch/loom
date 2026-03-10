@@ -7,3 +7,6 @@
 [submodule "externals/or-tools"]
 	path = externals/or-tools
 	url = git@github.com:google/or-tools.git
+[submodule "externals/cmsis-core"]
+	path = externals/cmsis-core
+	url = git@github.com:STMicroelectronics/cmsis-core.git
