@@ -17,6 +17,7 @@ set(VIZ_EMBEDDED_ASSETS
 )
 
 set(VIZ_ASSET_SOURCES "")
+set(VIZ_ASSET_HEADERS "")
 
 foreach(asset_file ${VIZ_EMBEDDED_ASSETS})
   string(REGEX REPLACE "[^a-zA-Z0-9]" "_" asset_symbol "${asset_file}")
@@ -37,6 +38,7 @@ foreach(asset_file ${VIZ_EMBEDDED_ASSETS})
   )
 
   list(APPEND VIZ_ASSET_SOURCES "${generated_c}")
+  list(APPEND VIZ_ASSET_HEADERS "${generated_h}")
 endforeach()
 
 # --- Library target -----------------------------------------------------
@@ -44,6 +46,7 @@ endforeach()
 add_llvm_library(LoomViz
   VizHTMLExporter.cpp
   ${VIZ_ASSET_SOURCES}
+  ${VIZ_ASSET_HEADERS}
 
   LINK_LIBS PUBLIC
     MLIRIR

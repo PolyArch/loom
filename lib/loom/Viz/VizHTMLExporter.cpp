@@ -314,58 +314,69 @@ GridCoord extractGridFromName(llvm::StringRef name, int meshBandSize = 10) {
   return gc;
 }
 
-// ---- FIFO midpoint inference ----
-// For FIFO nodes without grid coordinates, infer position as midpoint of
-// the two connected switch/PE nodes.
+// ---- Neighbor-based coordinate inference ----
+// For nodes without grid coordinates (switches, FIFOs, tag ops, etc.),
+// infer position as the centroid of all connected neighbors that have
+// known coordinates. Run iteratively so that chains of unplaced nodes
+// propagate coordinates from placed anchors.
 
-void inferFIFOCoords(
+void inferMissingCoords(
     const Graph &adg,
     llvm::DenseMap<IdIndex, GridCoord> &nodeCoords,
     const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer) {
-  for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
-    const Node *node = adg.getNode(i);
-    if (!node || fuToContainer.count(i))
-      continue;
-    if (nodeCoords.count(i) && nodeCoords[i].valid)
-      continue;
+  // Iterate until no new coordinates are inferred (handles chains).
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
+      const Node *node = adg.getNode(i);
+      if (!node || fuToContainer.count(i))
+        continue;
+      if (nodeCoords.count(i) && nodeCoords[i].valid)
+        continue;
 
-    llvm::StringRef opName = getNodeStrAttr(node, "op_name");
-    if (!opName.starts_with("fabric.fifo"))
-      continue;
+      // Collect coordinates from all connected neighbors.
+      int sumCol = 0, sumRow = 0, count = 0;
+      auto collectNeighbor = [&](IdIndex parentNode) {
+        IdIndex resolved = parentNode;
+        if (fuToContainer.count(resolved))
+          resolved = fuToContainer.lookup(resolved);
+        if (nodeCoords.count(resolved) && nodeCoords[resolved].valid) {
+          sumCol += nodeCoords[resolved].col;
+          sumRow += nodeCoords[resolved].row;
+          count++;
+        }
+      };
 
-    // Find connected nodes via edges.
-    GridCoord srcGC, dstGC;
-    for (IdIndex pid : node->inputPorts) {
-      const Port *p = adg.getPort(pid);
-      if (!p) continue;
-      for (IdIndex eid : p->connectedEdges) {
-        const Edge *e = adg.getEdge(eid);
-        if (!e) continue;
-        const Port *sp = adg.getPort(e->srcPort);
-        if (sp && nodeCoords.count(sp->parentNode) &&
-            nodeCoords[sp->parentNode].valid)
-          srcGC = nodeCoords[sp->parentNode];
+      for (IdIndex pid : node->inputPorts) {
+        const Port *p = adg.getPort(pid);
+        if (!p) continue;
+        for (IdIndex eid : p->connectedEdges) {
+          const Edge *e = adg.getEdge(eid);
+          if (!e) continue;
+          const Port *sp = adg.getPort(e->srcPort);
+          if (sp) collectNeighbor(sp->parentNode);
+        }
       }
-    }
-    for (IdIndex pid : node->outputPorts) {
-      const Port *p = adg.getPort(pid);
-      if (!p) continue;
-      for (IdIndex eid : p->connectedEdges) {
-        const Edge *e = adg.getEdge(eid);
-        if (!e) continue;
-        const Port *dp = adg.getPort(e->dstPort);
-        if (dp && nodeCoords.count(dp->parentNode) &&
-            nodeCoords[dp->parentNode].valid)
-          dstGC = nodeCoords[dp->parentNode];
+      for (IdIndex pid : node->outputPorts) {
+        const Port *p = adg.getPort(pid);
+        if (!p) continue;
+        for (IdIndex eid : p->connectedEdges) {
+          const Edge *e = adg.getEdge(eid);
+          if (!e) continue;
+          const Port *dp = adg.getPort(e->dstPort);
+          if (dp) collectNeighbor(dp->parentNode);
+        }
       }
-    }
 
-    if (srcGC.valid && dstGC.valid) {
-      GridCoord mid;
-      mid.col = (srcGC.col + dstGC.col) / 2;
-      mid.row = (srcGC.row + dstGC.row) / 2;
-      mid.valid = true;
-      nodeCoords[i] = mid;
+      if (count > 0) {
+        GridCoord gc;
+        gc.col = sumCol / count;
+        gc.row = sumRow / count;
+        gc.valid = true;
+        nodeCoords[i] = gc;
+        changed = true;
+      }
     }
   }
 }
@@ -558,13 +569,23 @@ std::string jsonEscape(llvm::StringRef s) {
 
 // ---- MLIR attribute extraction helpers ----
 
-/// Get the arith comparison predicate name.
-static const char *arithCmpPredicateName(int64_t pred) {
-  // arith::CmpIPredicate values
+/// Get the arith.cmpi predicate name.
+static const char *arithCmpIPredicateName(int64_t pred) {
   static const char *names[] = {
     "eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"
   };
   if (pred >= 0 && pred < 10)
+    return names[pred];
+  return "?";
+}
+
+/// Get the arith.cmpf predicate name.
+static const char *arithCmpFPredicateName(int64_t pred) {
+  static const char *names[] = {
+    "false", "oeq", "ogt", "oge", "olt", "ole", "one", "ord",
+    "ueq", "ugt", "uge", "ult", "ule", "une", "uno", "true"
+  };
+  if (pred >= 0 && pred < 16)
     return names[pred];
   return "?";
 }
@@ -591,9 +612,13 @@ static std::string getMLIRLabelSuffix(mlir::Operation *op) {
   }
 
   // arith.cmpi / arith.cmpf: show predicate
-  if (opName == "arith.cmpi" || opName == "arith.cmpf") {
+  if (opName == "arith.cmpi") {
     if (auto predAttr = op->getAttrOfType<mlir::IntegerAttr>("predicate"))
-      return std::string(" ") + arithCmpPredicateName(predAttr.getInt());
+      return std::string(" ") + arithCmpIPredicateName(predAttr.getInt());
+  }
+  if (opName == "arith.cmpf") {
+    if (auto predAttr = op->getAttrOfType<mlir::IntegerAttr>("predicate"))
+      return std::string(" ") + arithCmpFPredicateName(predAttr.getInt());
   }
 
   // dataflow.stream: show step_op
@@ -630,9 +655,13 @@ static void writeMLIRAttrs(llvm::json::OStream &json, mlir::Operation *op) {
     }
   }
 
-  if (opName == "arith.cmpi" || opName == "arith.cmpf") {
+  if (opName == "arith.cmpi") {
     if (auto predAttr = op->getAttrOfType<mlir::IntegerAttr>("predicate"))
-      json.attribute("predicate", arithCmpPredicateName(predAttr.getInt()));
+      json.attribute("predicate", arithCmpIPredicateName(predAttr.getInt()));
+  }
+  if (opName == "arith.cmpf") {
+    if (auto predAttr = op->getAttrOfType<mlir::IntegerAttr>("predicate"))
+      json.attribute("predicate", arithCmpFPredicateName(predAttr.getInt()));
   }
 
   if (opName == "dataflow.stream") {
@@ -855,8 +884,8 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
       nodeCoords[i] = gc;
   }
 
-  // Infer FIFO midpoint coords from connected nodes.
-  inferFIFOCoords(adg, nodeCoords, fuToContainer);
+  // Infer coordinates for unplaced nodes from connected neighbors.
+  inferMissingCoords(adg, nodeCoords, fuToContainer);
 
   // Nodes
   json.attributeBegin("nodes");
