@@ -22,18 +22,30 @@ namespace loom {
 
 /// Prune unused resources from a domain ADG before single-app mapping.
 ///
-/// Two-phase pruning:
-///   1. Functional pruning: Run TechMapper to find candidates, then remove
-///      all functional PE nodes that are not compatible with any DFG
-///      operation. Candidate PEs are always retained.
-///   2. Routing pruning: BFS from retained endpoints (functional, memory,
-///      module I/O) to find reachable routing nodes. Remove routing nodes
-///      not reachable from any retained endpoint.
+/// Endpoint-driven mask builder:
+///   1. Run TechMapper to compute the full candidate universe (DFG -> ADG
+///      node compatibility) for both functional PEs and memory nodes.
+///   2. Partition candidate PEs into compatibility classes (PEs with
+///      identical DFG-operation capability sets are interchangeable).
+///   3. Compute demand per class using fractional allocation: each DFG
+///      operation distributes 1 unit of demand across its compatible
+///      classes. Retain ceil(demand) + (minCandidates-1) PEs per class.
+///   4. Remove all functional PEs not retained (both non-candidates and
+///      surplus candidates beyond computed demand).
+///   5. Remove memory nodes not referenced by any DFG candidate. Domain
+///      ADGs provision memory groups for all apps; surplus memory nodes
+///      with high port counts consume switch capacity needed for routing.
+///   6. Steiner-tree routing pruning: approximate a minimum subgraph
+///      connecting retained endpoints via Voronoi-boundary BFS, then
+///      expand by a buffer for routing redundancy.
+///   7. Iteratively prune dead-end routing nodes: routing nodes with no
+///      endpoint connections and at most one routing neighbor are removed.
 ///
-/// Memory nodes, module I/O sentinels, and virtual temporal PE nodes are
-/// always retained.
+/// Module I/O sentinels and virtual temporal PE nodes with retained FU
+/// sub-nodes are always retained.
 ///
-/// \p minCandidates is reserved for future use (candidate-thinning pass).
+/// \p minCandidates controls deterministic slack: each compatibility class
+///    retains at least ceil(demand) + (minCandidates - 1) PEs.
 ///
 /// The ADG graph is modified in-place. Callers should clone() the original
 /// graph before calling this function if the original must be preserved.
