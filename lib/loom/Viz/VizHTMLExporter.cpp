@@ -63,6 +63,103 @@ llvm::DenseMap<IdIndex, IdIndex> buildFUToContainerMap(const Graph &adg) {
   return fuToContainer;
 }
 
+// ---- DFG node-to-MLIR-op correlation map ----
+// Walks the handshake.func body in the same order as DFGBuilder to build
+// a map from DFG graph node ID to the original MLIR Operation.
+
+using DFGOpMap = llvm::DenseMap<IdIndex, mlir::Operation *>;
+
+DFGOpMap buildDFGNodeToOpMap(mlir::ModuleOp dfgModule) {
+  DFGOpMap result;
+  if (!dfgModule)
+    return result;
+
+  // Find the handshake.func inside the module.
+  circt::handshake::FuncOp funcOp;
+  dfgModule.walk([&](circt::handshake::FuncOp op) { funcOp = op; });
+  if (!funcOp)
+    return result;
+
+  auto &block = funcOp.getBody().front();
+
+  // DFGBuilder creates nodes in this order:
+  // 1. OperationNodes: non-terminator ops in block order
+  // 2. ModuleInputNodes: block arguments (no MLIR Op)
+  // 3. ModuleOutputNodes: return operands (no MLIR Op)
+  IdIndex nodeId = 0;
+  for (auto &op : block) {
+    if (op.hasTrait<mlir::OpTrait::IsTerminator>())
+      continue;
+    result[nodeId] = &op;
+    nodeId++;
+  }
+  return result;
+}
+
+// ---- PE body ops map from fabric MLIR module ----
+// Maps PE instance sym_name to list of body operation names.
+
+using BodyOpsMap = llvm::StringMap<llvm::SmallVector<std::string, 4>>;
+
+/// Extract body operation names from a fabric.pe body region.
+static llvm::SmallVector<std::string, 4>
+extractPEBodyOps(mlir::Operation *peOp) {
+  llvm::SmallVector<std::string, 4> ops;
+  if (!peOp || peOp->getNumRegions() == 0)
+    return ops;
+  for (auto &innerOp : peOp->getRegion(0).front()) {
+    if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
+      continue;
+    ops.push_back(innerOp.getName().getStringRef().str());
+  }
+  return ops;
+}
+
+BodyOpsMap buildPEBodyOpsMap(mlir::Operation *fabricModule) {
+  BodyOpsMap result;
+  if (!fabricModule)
+    return result;
+
+  // Build a map from PE/TPE definition sym_name to body ops.
+  BodyOpsMap defBodyOps;
+
+  fabricModule->walk([&](fabric::PEOp peOp) {
+    auto sym = peOp->getAttrOfType<mlir::StringAttr>("sym_name");
+    if (!sym)
+      return;
+    defBodyOps[sym.getValue()] = extractPEBodyOps(peOp.getOperation());
+  });
+
+  // For temporal PEs, collect the body ops from all contained FU (fabric.pe)
+  // definitions.
+  fabricModule->walk([&](fabric::TemporalPEOp tpeOp) {
+    auto sym = tpeOp->getAttrOfType<mlir::StringAttr>("sym_name");
+    if (!sym)
+      return;
+    llvm::SmallVector<std::string, 4> combined;
+    for (auto &innerOp : tpeOp.getBody().front()) {
+      if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
+        continue;
+      auto innerBody = extractPEBodyOps(&innerOp);
+      combined.append(innerBody.begin(), innerBody.end());
+    }
+    defBodyOps[sym.getValue()] = std::move(combined);
+  });
+
+  // Walk fabric.instance ops to map instance sym_name to target body ops.
+  fabricModule->walk([&](fabric::InstanceOp instOp) {
+    auto instSym = instOp->getAttrOfType<mlir::StringAttr>("sym_name");
+    if (!instSym)
+      return;
+    llvm::StringRef targetName = instOp.getModule();
+    auto it = defBodyOps.find(targetName);
+    if (it != defBodyOps.end())
+      result[instSym.getValue()] = it->second;
+  });
+
+  return result;
+}
+
 // ---- Grid coordinate extraction from node names ----
 
 struct GridCoord {
@@ -75,20 +172,22 @@ GridCoord extractGridFromName(llvm::StringRef name) {
   GridCoord gc;
   std::string nameStr = name.str();
 
+  // Pattern: sw_w<W>_<D>_<R>_<C> -> (C*2, R*2) per depth layer (must be first)
+  static const std::regex reSW_WD("sw_w(\\d+)_(\\d+)_(\\d+)_(\\d+)");
   // Pattern: sw_w<W>_<R>_<C> -> (C*2, R*2)
   static const std::regex reSW_W("sw_w(\\d+)_(\\d+)_(\\d+)");
   // Pattern: l<L>_sw_<R>_<C> -> (C*2, R*2)
   static const std::regex reL_SW("l(\\d+)_sw_(\\d+)_(\\d+)");
   // Pattern: sw_<R>_<C> -> (C*2, R*2)
   static const std::regex reSW("^sw_(\\d+)_(\\d+)$");
-  // Pattern: <type>_r<R>_c<C> -> (C*2+1, R*2+1)
+  // Pattern: tsw_<R>_<C> -> (C*2, R*2) in temporal band
+  static const std::regex reTSW("^tsw_(\\d+)_(\\d+)$");
+  // Pattern: tpe_r<R>_c<C> -> (C*2+1, R*2+1) temporal PE instances
+  static const std::regex reTPE_RC("tpe_r(\\d+)_c(\\d+)");
+  // Pattern: <type>_r<R>_c<C> -> (C*2+1, R*2+1) PE instances
   static const std::regex rePE_RC("_r(\\d+)_c(\\d+)$");
   // Pattern: pe_<R>_<C> -> (C*2+1, R*2+1)
   static const std::regex rePE("^pe_(\\d+)_(\\d+)$");
-  // Pattern: tsw_<R>_<C> -> (C*2, R*2) in temporal band
-  static const std::regex reTSW("^tsw_(\\d+)_(\\d+)$");
-  // Pattern: sw_w<W>_<D>_<R>_<C> -> (C*2, R*2) per depth layer
-  static const std::regex reSW_WD("sw_w(\\d+)_(\\d+)_(\\d+)_(\\d+)");
 
   std::smatch m;
 
@@ -112,6 +211,10 @@ GridCoord extractGridFromName(llvm::StringRef name) {
     gc.col = std::stoi(m[2]) * 2;
     gc.row = std::stoi(m[1]) * 2;
     gc.valid = true;
+  } else if (std::regex_search(nameStr, m, reTPE_RC)) {
+    gc.col = std::stoi(m[2]) * 2 + 1;
+    gc.row = std::stoi(m[1]) * 2 + 1;
+    gc.valid = true;
   } else if (std::regex_search(nameStr, m, rePE_RC)) {
     gc.col = std::stoi(m[2]) * 2 + 1;
     gc.row = std::stoi(m[1]) * 2 + 1;
@@ -123,6 +226,62 @@ GridCoord extractGridFromName(llvm::StringRef name) {
   }
 
   return gc;
+}
+
+// ---- FIFO midpoint inference ----
+// For FIFO nodes without grid coordinates, infer position as midpoint of
+// the two connected switch/PE nodes.
+
+void inferFIFOCoords(
+    const Graph &adg,
+    llvm::DenseMap<IdIndex, GridCoord> &nodeCoords,
+    const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer) {
+  for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
+    const Node *node = adg.getNode(i);
+    if (!node || fuToContainer.count(i))
+      continue;
+    if (nodeCoords.count(i) && nodeCoords[i].valid)
+      continue;
+
+    llvm::StringRef opName = getNodeStrAttr(node, "op_name");
+    if (!opName.starts_with("fabric.fifo"))
+      continue;
+
+    // Find connected nodes via edges.
+    GridCoord srcGC, dstGC;
+    for (IdIndex pid : node->inputPorts) {
+      const Port *p = adg.getPort(pid);
+      if (!p) continue;
+      for (IdIndex eid : p->connectedEdges) {
+        const Edge *e = adg.getEdge(eid);
+        if (!e) continue;
+        const Port *sp = adg.getPort(e->srcPort);
+        if (sp && nodeCoords.count(sp->parentNode) &&
+            nodeCoords[sp->parentNode].valid)
+          srcGC = nodeCoords[sp->parentNode];
+      }
+    }
+    for (IdIndex pid : node->outputPorts) {
+      const Port *p = adg.getPort(pid);
+      if (!p) continue;
+      for (IdIndex eid : p->connectedEdges) {
+        const Edge *e = adg.getEdge(eid);
+        if (!e) continue;
+        const Port *dp = adg.getPort(e->dstPort);
+        if (dp && nodeCoords.count(dp->parentNode) &&
+            nodeCoords[dp->parentNode].valid)
+          dstGC = nodeCoords[dp->parentNode];
+      }
+    }
+
+    if (srcGC.valid && dstGC.valid) {
+      GridCoord mid;
+      mid.col = (srcGC.col + dstGC.col) / 2;
+      mid.row = (srcGC.row + dstGC.row) / 2;
+      mid.valid = true;
+      nodeCoords[i] = mid;
+    }
+  }
 }
 
 // ---- Node type classification ----
@@ -146,7 +305,8 @@ struct AreaInfo {
   double cost = 1.0;
 };
 
-AreaInfo computeArea(const Node *node, const Graph &adg) {
+AreaInfo computeArea(const Node *node, const Graph &adg,
+                     const BodyOpsMap &bodyOps) {
   AreaInfo a;
   std::string type = nodeTypeStr(node);
 
@@ -160,9 +320,36 @@ AreaInfo computeArea(const Node *node, const Graph &adg) {
   } else if (type == "fabric.switch" || type == "fabric.temporal_sw") {
     a.w = 1; a.h = 1; a.cost = 1.0;
   } else {
-    // PE: scale by body complexity
-    int64_t bodyOps = getNodeIntAttr(node, "body_op_count", 1);
-    a.cost = std::max(1.0, static_cast<double>(bodyOps));
+    // PE: scale by body complexity from fabric module.
+    llvm::StringRef symName = getNodeStrAttr(node, "sym_name");
+    auto it = bodyOps.find(symName);
+    int opCount = 1;
+    bool hasFloat = false;
+    bool has64bit = false;
+    if (it != bodyOps.end()) {
+      opCount = std::max(1, static_cast<int>(it->second.size()));
+      for (auto &op : it->second) {
+        if (op.find("addf") != std::string::npos ||
+            op.find("mulf") != std::string::npos ||
+            op.find("divf") != std::string::npos ||
+            op.find("math.") != std::string::npos)
+          hasFloat = true;
+      }
+    }
+    // Check first output port for 64-bit type
+    if (!node->outputPorts.empty()) {
+      const Port *p = adg.getPort(node->outputPorts[0]);
+      if (p && p->type) {
+        if (auto intT = mlir::dyn_cast<mlir::IntegerType>(p->type))
+          has64bit = intT.getWidth() > 32;
+        if (mlir::isa<mlir::Float64Type>(p->type))
+          has64bit = true;
+      }
+    }
+    double c = static_cast<double>(opCount);
+    if (hasFloat) c *= 1.5;
+    if (has64bit) c *= 1.5;
+    a.cost = std::max(1.0, c);
     a.w = 1; a.h = 1;
   }
   return a;
@@ -247,6 +434,98 @@ std::string jsonEscape(llvm::StringRef s) {
   return result;
 }
 
+// ---- MLIR attribute extraction helpers ----
+
+/// Get the arith comparison predicate name.
+static const char *arithCmpPredicateName(int64_t pred) {
+  // arith::CmpIPredicate values
+  static const char *names[] = {
+    "eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"
+  };
+  if (pred >= 0 && pred < 10)
+    return names[pred];
+  return "?";
+}
+
+/// Extract MLIR-specific label enrichment for a DFG operation.
+static std::string getMLIRLabelSuffix(mlir::Operation *op) {
+  if (!op)
+    return "";
+  llvm::StringRef opName = op->getName().getStringRef();
+
+  // handshake.constant: show constant value
+  if (opName == "handshake.constant") {
+    if (auto val = op->getAttr("value")) {
+      std::string str;
+      llvm::raw_string_ostream os(str);
+      if (auto intA = mlir::dyn_cast<mlir::IntegerAttr>(val))
+        os << intA.getInt();
+      else if (auto fpA = mlir::dyn_cast<mlir::FloatAttr>(val))
+        os << fpA.getValueAsDouble();
+      else
+        val.print(os);
+      return " = " + str;
+    }
+  }
+
+  // arith.cmpi / arith.cmpf: show predicate
+  if (opName == "arith.cmpi" || opName == "arith.cmpf") {
+    if (auto predAttr = op->getAttrOfType<mlir::IntegerAttr>("predicate"))
+      return std::string(" ") + arithCmpPredicateName(predAttr.getInt());
+  }
+
+  // dataflow.stream: show step_op
+  if (opName == "dataflow.stream") {
+    if (auto stepOp = op->getAttrOfType<mlir::StringAttr>("step_op"))
+      return " [" + stepOp.getValue().str() + "]";
+  }
+
+  // handshake.extmemory / handshake.memory: show ldCount/stCount
+  if (opName == "handshake.extmemory" || opName == "handshake.memory") {
+    std::string suffix;
+    if (auto ld = op->getAttrOfType<mlir::IntegerAttr>("ldCount"))
+      suffix += " ld=" + std::to_string(ld.getInt());
+    if (auto st = op->getAttrOfType<mlir::IntegerAttr>("stCount"))
+      suffix += " st=" + std::to_string(st.getInt());
+    return suffix;
+  }
+
+  return "";
+}
+
+/// Extract MLIR-specific attributes into a JSON attrs object.
+static void writeMLIRAttrs(llvm::json::OStream &json, mlir::Operation *op) {
+  if (!op)
+    return;
+  llvm::StringRef opName = op->getName().getStringRef();
+
+  if (opName == "handshake.constant") {
+    if (auto val = op->getAttr("value")) {
+      std::string str;
+      llvm::raw_string_ostream os(str);
+      val.print(os);
+      json.attribute("value", str);
+    }
+  }
+
+  if (opName == "arith.cmpi" || opName == "arith.cmpf") {
+    if (auto predAttr = op->getAttrOfType<mlir::IntegerAttr>("predicate"))
+      json.attribute("predicate", arithCmpPredicateName(predAttr.getInt()));
+  }
+
+  if (opName == "dataflow.stream") {
+    if (auto stepOp = op->getAttrOfType<mlir::StringAttr>("step_op"))
+      json.attribute("step_op", stepOp.getValue());
+  }
+
+  if (opName == "handshake.extmemory" || opName == "handshake.memory") {
+    if (auto ld = op->getAttrOfType<mlir::IntegerAttr>("ldCount"))
+      json.attribute("ldCount", ld.getInt());
+    if (auto st = op->getAttrOfType<mlir::IntegerAttr>("stCount"))
+      json.attribute("stCount", st.getInt());
+  }
+}
+
 // ---- DFG node styles for DOT ----
 
 struct DFGNodeStyle {
@@ -296,7 +575,7 @@ DFGNodeStyle dfgNodeStyle(llvm::StringRef opName, Node::Kind kind) {
 
 // ---- Build the DOT string for the DFG ----
 
-std::string buildDFGDot(const Graph &dfg) {
+std::string buildDFGDot(const Graph &dfg, const DFGOpMap &dfgOpMap) {
   std::string dot;
   llvm::raw_string_ostream os(dot);
 
@@ -326,6 +605,12 @@ std::string buildDFGDot(const Graph &dfg) {
       label = "ret" + std::to_string(retIdx >= 0 ? retIdx : static_cast<int64_t>(i));
     } else {
       label = opName.str();
+
+      // Enrich label with MLIR-specific attributes
+      auto opIt = dfgOpMap.find(i);
+      if (opIt != dfgOpMap.end())
+        label += getMLIRLabelSuffix(opIt->second);
+
       // Add type summary from first output port
       if (!node->outputPorts.empty()) {
         const Port *port = dfg.getPort(node->outputPorts[0]);
@@ -390,9 +675,38 @@ std::string buildDFGDot(const Graph &dfg) {
 
 void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
                        const MappingState &state,
-                       const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer) {
+                       const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer,
+                       const BodyOpsMap &bodyOps) {
   llvm::json::OStream json(os, 2);
   json.objectBegin();
+
+  // Pre-compute grid coordinates for all nodes (needed for FIFO inference).
+  llvm::DenseMap<IdIndex, GridCoord> nodeCoords;
+  for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
+    const Node *node = adg.getNode(i);
+    if (!node || fuToContainer.count(i))
+      continue;
+
+    GridCoord gc;
+    int64_t vizCol = getNodeIntAttr(node, "viz_col", -1);
+    int64_t vizRow = getNodeIntAttr(node, "viz_row", -1);
+    if (vizCol >= 0 && vizRow >= 0) {
+      gc.col = static_cast<int>(vizCol);
+      gc.row = static_cast<int>(vizRow);
+      gc.valid = true;
+    }
+    if (!gc.valid) {
+      llvm::StringRef symName = getNodeStrAttr(node, "sym_name");
+      std::string name = symName.empty() ? ("node_" + std::to_string(i))
+                                         : symName.str();
+      gc = extractGridFromName(name);
+    }
+    if (gc.valid)
+      nodeCoords[i] = gc;
+  }
+
+  // Infer FIFO midpoint coords from connected nodes.
+  inferFIFOCoords(adg, nodeCoords, fuToContainer);
 
   // Nodes
   json.attributeBegin("nodes");
@@ -413,22 +727,12 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
     llvm::StringRef resClass = getNodeStrAttr(node, "resource_class");
     std::string classStr = resClass.empty() ? "functional" : resClass.str();
 
-    // Grid coordinates
-    GridCoord gc;
-    // Priority 1: viz_row/viz_col attributes
-    int64_t vizCol = getNodeIntAttr(node, "viz_col", -1);
-    int64_t vizRow = getNodeIntAttr(node, "viz_row", -1);
-    if (vizCol >= 0 && vizRow >= 0) {
-      gc.col = static_cast<int>(vizCol);
-      gc.row = static_cast<int>(vizRow);
-      gc.valid = true;
-    }
-    // Priority 2: name extraction
-    if (!gc.valid)
-      gc = extractGridFromName(name);
+    // Grid coordinates (from pre-computed map)
+    auto coordIt = nodeCoords.find(i);
+    bool hasCoord = coordIt != nodeCoords.end() && coordIt->second.valid;
 
-    // Area
-    AreaInfo area = computeArea(node, adg);
+    // Area (using body ops for complexity)
+    AreaInfo area = computeArea(node, adg, bodyOps);
 
     // Primary bit width (from first output port)
     int bw = 32;
@@ -444,9 +748,9 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
     json.attribute("type", type);
     json.attribute("class", classStr);
 
-    if (gc.valid) {
-      json.attribute("gridCol", gc.col);
-      json.attribute("gridRow", gc.row);
+    if (hasCoord) {
+      json.attribute("gridCol", coordIt->second.col);
+      json.attribute("gridRow", coordIt->second.row);
     } else {
       json.attributeBegin("gridCol"); json.rawValue("null"); json.attributeEnd();
       json.attributeBegin("gridRow"); json.rawValue("null"); json.attributeEnd();
@@ -461,16 +765,17 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
     json.attributeBegin("params");
     json.objectBegin();
 
-    // Body ops for PEs
+    // Body ops for PEs (from fabric module)
     if (type == "fabric.pe") {
-      llvm::StringRef bodyOp = getNodeStrAttr(node, "op_name");
-      if (!bodyOp.empty()) {
-        json.attributeBegin("body_ops");
-        json.arrayBegin();
-        json.value(bodyOp);
-        json.arrayEnd();
-        json.attributeEnd();
+      auto it = bodyOps.find(symName);
+      json.attributeBegin("body_ops");
+      json.arrayBegin();
+      if (it != bodyOps.end()) {
+        for (auto &op : it->second)
+          json.value(op);
       }
+      json.arrayEnd();
+      json.attributeEnd();
     }
 
     // Temporal PE: collect FU info
@@ -479,6 +784,17 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
       int64_t numReg = getNodeIntAttr(node, "num_register", 0);
       json.attribute("num_instruction", numInst);
       json.attribute("num_register", numReg);
+
+      // Body ops from all FUs in this temporal PE
+      auto it = bodyOps.find(symName);
+      if (it != bodyOps.end() && !it->second.empty()) {
+        json.attributeBegin("body_ops");
+        json.arrayBegin();
+        for (auto &op : it->second)
+          json.value(op);
+        json.arrayEnd();
+        json.attributeEnd();
+      }
 
       json.attributeBegin("fuNodes");
       json.arrayBegin();
@@ -540,8 +856,7 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
       valueBw = bitWidthFromType(srcPort->type);
       totalBw = valueBw;
 
-      // Check for tagged type
-      if (printType(srcPort->type).find("tagged") != std::string::npos) {
+      if (eType == "tagged") {
         tagBw = getNodeIntAttr(adg.getNode(srcNode), "tag_width", 4);
         totalBw = valueBw + tagBw;
       }
@@ -729,7 +1044,8 @@ void writeMappingDataJSON(llvm::raw_ostream &os, const Graph &adg,
 
 void writeSWMetadataJSON(llvm::raw_ostream &os, const Graph &dfg,
                          const MappingState &state,
-                         const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer) {
+                         const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer,
+                         const DFGOpMap &dfgOpMap) {
   llvm::json::OStream json(os, 2);
   json.objectBegin();
 
@@ -765,7 +1081,7 @@ void writeSWMetadataJSON(llvm::raw_ostream &os, const Graph &dfg,
       json.attribute("hwTarget", "hw_" + std::to_string(hwId));
     }
 
-    // Attrs (selected interesting ones)
+    // Attrs: graph attributes + MLIR-specific attributes
     json.attributeBegin("attrs");
     json.objectBegin();
     for (auto &attr : node->attributes) {
@@ -777,6 +1093,10 @@ void writeSWMetadataJSON(llvm::raw_ostream &os, const Graph &dfg,
       else if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
         json.attribute(name, intAttr.getInt());
     }
+    // Add MLIR-specific attrs from the original operation
+    auto opIt = dfgOpMap.find(i);
+    if (opIt != dfgOpMap.end())
+      writeMLIRAttrs(json, opIt->second);
     json.objectEnd();
     json.attributeEnd();
 
@@ -791,7 +1111,8 @@ void writeSWMetadataJSON(llvm::raw_ostream &os, const Graph &dfg,
 
 void writeHWMetadataJSON(llvm::raw_ostream &os, const Graph &adg,
                          const MappingState &state,
-                         const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer) {
+                         const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer,
+                         const BodyOpsMap &bodyOps) {
   llvm::json::OStream json(os, 2);
   json.objectBegin();
 
@@ -808,14 +1129,17 @@ void writeHWMetadataJSON(llvm::raw_ostream &os, const Graph &adg,
     llvm::StringRef symName = getNodeStrAttr(node, "sym_name");
     json.attribute("name", symName.empty() ? ("node_" + std::to_string(i))
                                            : symName);
-    json.attribute("type", nodeTypeStr(node));
+    std::string type = nodeTypeStr(node);
+    json.attribute("type", type);
 
-    // Body ops
-    llvm::StringRef bodyOp = getNodeStrAttr(node, "op_name");
+    // Body ops (from fabric module via bodyOps map)
     json.attributeBegin("body_ops");
     json.arrayBegin();
-    if (!bodyOp.empty())
-      json.value(bodyOp);
+    auto it = bodyOps.find(symName);
+    if (it != bodyOps.end()) {
+      for (auto &op : it->second)
+        json.value(op);
+    }
     json.arrayEnd();
     json.attributeEnd();
 
@@ -827,12 +1151,33 @@ void writeHWMetadataJSON(llvm::raw_ostream &os, const Graph &adg,
     json.objectEnd();
     json.attributeEnd();
 
-    // Mapped SW nodes
+    // Mapped SW nodes: for temporal PE containers, aggregate from FU sub-nodes.
     json.attributeBegin("mappedSw");
     json.arrayBegin();
-    if (i < state.hwNodeToSwNodes.size()) {
-      for (IdIndex swId : state.hwNodeToSwNodes[i])
+    if (type == "fabric.temporal_pe") {
+      // Collect SW nodes mapped to any FU sub-node of this container.
+      llvm::SmallVector<IdIndex, 4> aggregated;
+      for (auto &kv : fuToContainer) {
+        if (kv.second != i)
+          continue;
+        IdIndex fuId = kv.first;
+        if (fuId < state.hwNodeToSwNodes.size()) {
+          for (IdIndex swId : state.hwNodeToSwNodes[fuId])
+            aggregated.push_back(swId);
+        }
+      }
+      // Also include direct mappings to the container itself.
+      if (i < state.hwNodeToSwNodes.size()) {
+        for (IdIndex swId : state.hwNodeToSwNodes[i])
+          aggregated.push_back(swId);
+      }
+      for (IdIndex swId : aggregated)
         json.value("sw_" + std::to_string(swId));
+    } else {
+      if (i < state.hwNodeToSwNodes.size()) {
+        for (IdIndex swId : state.hwNodeToSwNodes[i])
+          json.value("sw_" + std::to_string(swId));
+      }
     }
     json.arrayEnd();
     json.attributeEnd();
@@ -850,10 +1195,9 @@ void writeHWMetadataJSON(llvm::raw_ostream &os, const Graph &adg,
 
 bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
                                const MappingState &state,
-                               mlir::ModuleOp mlirModule,
+                               mlir::ModuleOp dfgModule,
+                               mlir::Operation *fabricModule,
                                const std::string &basePath) {
-  (void)mlirModule; // Reserved for future use.
-
   std::string outPath = basePath + ".viz.html";
   std::error_code ec;
   llvm::raw_fd_ostream out(outPath, ec, llvm::sys::fs::OF_Text);
@@ -864,15 +1208,17 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
   }
 
   auto fuToContainer = buildFUToContainerMap(adg);
+  auto dfgOpMap = buildDFGNodeToOpMap(dfgModule);
+  auto bodyOps = buildPEBodyOpsMap(fabricModule);
 
-  // Build DFG DOT string
-  std::string dfgDotStr = buildDFGDot(dfg);
+  // Build DFG DOT string (with MLIR-enriched labels)
+  std::string dfgDotStr = buildDFGDot(dfg, dfgOpMap);
 
   // Build JSON data strings
   std::string adgJsonStr;
   {
     llvm::raw_string_ostream ss(adgJsonStr);
-    writeADGGraphJSON(ss, adg, state, fuToContainer);
+    writeADGGraphJSON(ss, adg, state, fuToContainer, bodyOps);
   }
 
   std::string mappingJsonStr;
@@ -884,13 +1230,13 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
   std::string swMetaStr;
   {
     llvm::raw_string_ostream ss(swMetaStr);
-    writeSWMetadataJSON(ss, dfg, state, fuToContainer);
+    writeSWMetadataJSON(ss, dfg, state, fuToContainer, dfgOpMap);
   }
 
   std::string hwMetaStr;
   {
     llvm::raw_string_ostream ss(hwMetaStr);
-    writeHWMetadataJSON(ss, adg, state, fuToContainer);
+    writeHWMetadataJSON(ss, adg, state, fuToContainer, bodyOps);
   }
 
   // Derive title

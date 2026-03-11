@@ -1534,7 +1534,8 @@ int main(int argc, char **argv) {
     {
       loom::VizHTMLExporter viz_exporter;
       if (!viz_exporter.emitHTML(adg, dfg, mapper_result.state,
-                                 handshake_module.get(), base_path)) {
+                                 handshake_module.get(),
+                                 adg_module.get(), base_path)) {
         llvm::errs() << "warning: failed to write visualization: "
                       << base_path << ".viz.html\n";
       }

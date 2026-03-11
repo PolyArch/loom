@@ -26,9 +26,12 @@ class VizHTMLExporter {
 public:
   /// Emit a self-contained .viz.html file at <basePath>.viz.html.
   /// Returns true on success.
+  /// \p dfgModule is the Handshake MLIR module (for DFG attribute enrichment).
+  /// \p fabricModule is the fabric MLIR module (for PE body ops extraction).
   bool emitHTML(const Graph &adg, const Graph &dfg,
                 const MappingState &state,
-                mlir::ModuleOp mlirModule,
+                mlir::ModuleOp dfgModule,
+                mlir::Operation *fabricModule,
                 const std::string &basePath);
 };
 

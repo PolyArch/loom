@@ -40,6 +40,11 @@ if [[ "${1:-}" == "--single" ]]; then
           echo "XFAIL: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
           exit 1
         fi
+        # Verify viz.html is NOT generated on failure.
+        if [[ -f "${out_base}.viz.html" ]]; then
+          echo "XFAIL: viz.html should not exist on failure: ${out_base}.viz.html" >&2
+          exit 1
+        fi
       else
         "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget 10
 
@@ -50,6 +55,19 @@ if [[ "${1:-}" == "--single" ]]; then
           exit 1
         fi
         "${LOOM_BIN}" --adg "${configured}"
+
+        # Validate that .viz.html was generated and contains expected markers.
+        viz_file="${out_base}.viz.html"
+        if [[ ! -f "${viz_file}" ]]; then
+          echo "FAIL: viz.html not found: ${viz_file}" >&2
+          exit 1
+        fi
+        for marker in adgGraph dfgDot mappingData swNodeMetadata hwNodeMetadata; do
+          if ! grep -q "${marker}" "${viz_file}"; then
+            echo "FAIL: viz.html missing marker '${marker}': ${viz_file}" >&2
+            exit 1
+          fi
+        done
       fi
     done
   done
