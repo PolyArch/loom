@@ -1261,15 +1261,6 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       Type elemType = memDef.shape.getElemType();
       std::string elemStr = nativeToBitsType(elemType).toMLIR();
 
-      // Unified tagging: tagged when max(ldCount, stCount) > 1
-      bool isTagged = (memDef.ldCount > 1 || memDef.stCount > 1);
-
-      // Derive tag type string from first data port operand type.
-      // Input layout (presence-based): [ld_addr?] [st_addr? st_data?]
-      std::string tagTypeStr;
-      if (isTagged && !operandTypes.empty())
-        tagTypeStr = extractTagType(operandTypes[0]);
-
       os << "fabric.memory\n      [ldCount = " << memDef.ldCount
          << ", stCount = " << memDef.stCount;
       if (memDef.lsqDepth > 0)
@@ -1289,32 +1280,26 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         os << operandTypes[o];
       }
       os << ") -> (";
-      // Output types (presence-based): [memref?] [ld_data? ld_done?] [st_done?]
+      // Per-port output layout: [memref?] [ld_data * L, ld_done * L, st_done * S]
       bool first = true;
       if (!memDef.isPrivate) {
         os << memrefStr;
         first = false;
       }
-      if (memDef.ldCount > 0) {
+      for (unsigned i = 0; i < memDef.ldCount; ++i) {
         if (!first) os << ", ";
         first = false;
-        if (isTagged)
-          os << "!dataflow.tagged<" << elemStr << ", " << tagTypeStr << ">";
-        else
-          os << elemStr;
-        os << ", ";
-        if (isTagged)
-          os << "!dataflow.tagged<none, " << tagTypeStr << ">";
-        else
-          os << "none";
+        os << elemStr;
       }
-      if (memDef.stCount > 0) {
+      for (unsigned i = 0; i < memDef.ldCount; ++i) {
         if (!first) os << ", ";
         first = false;
-        if (isTagged)
-          os << "!dataflow.tagged<none, " << tagTypeStr << ">";
-        else
-          os << "none";
+        os << "none";
+      }
+      for (unsigned i = 0; i < memDef.stCount; ++i) {
+        if (!first) os << ", ";
+        first = false;
+        os << "none";
       }
       os << ")\n";
       break;
@@ -1325,15 +1310,6 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       std::string memrefStr = emDef.shape.toMLIR();
       Type elemType = emDef.shape.getElemType();
       std::string elemStr = nativeToBitsType(elemType).toMLIR();
-
-      // Unified tagging: tagged when max(ldCount, stCount) > 1
-      bool isTagged = (emDef.ldCount > 1 || emDef.stCount > 1);
-
-      // Input layout (presence-based): [memref(0)] [ld_addr?] [st_addr? st_data?]
-      // Derive tag type string from first data port after memref.
-      std::string tagTypeStr;
-      if (isTagged && operandTypes.size() > 1)
-        tagTypeStr = extractTagType(operandTypes[1]);
 
       os << "fabric.extmemory\n      [ldCount = " << emDef.ldCount
          << ", stCount = " << emDef.stCount;
@@ -1353,27 +1329,22 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         os << operandTypes[o];
       }
       os << ") -> (";
-      // Output types (presence-based): [ld_data? ld_done?] [st_done?]
+      // Per-port output layout: [ld_data * L, ld_done * L, st_done * S]
       bool first = true;
-      if (emDef.ldCount > 0) {
-        if (isTagged)
-          os << "!dataflow.tagged<" << elemStr << ", " << tagTypeStr << ">";
-        else
-          os << elemStr;
-        os << ", ";
-        if (isTagged)
-          os << "!dataflow.tagged<none, " << tagTypeStr << ">";
-        else
-          os << "none";
-        first = false;
-      }
-      if (emDef.stCount > 0) {
+      for (unsigned i = 0; i < emDef.ldCount; ++i) {
         if (!first) os << ", ";
         first = false;
-        if (isTagged)
-          os << "!dataflow.tagged<none, " << tagTypeStr << ">";
-        else
-          os << "none";
+        os << elemStr;
+      }
+      for (unsigned i = 0; i < emDef.ldCount; ++i) {
+        if (!first) os << ", ";
+        first = false;
+        os << "none";
+      }
+      for (unsigned i = 0; i < emDef.stCount; ++i) {
+        if (!first) os << ", ";
+        first = false;
+        os << "none";
       }
       os << ")\n";
       break;

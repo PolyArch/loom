@@ -68,16 +68,16 @@ int main() {
   builder.connectToModuleOutput(chain_in_4_pass, 0, mesh_out);
 
   // Memory connected to corner PE[0][0] output as store data
-  // Memory inputs: [ld_addr, st_addr, st_data]
-  builder.connectToModuleInput(ld_addr, mem0, 0);
-  builder.connectToModuleInput(st_addr, mem0, 1);
+  // Memory inputs (ld=1, st=1): [st_data(0), st_addr(1), ld_addr(2)]
   auto chain_in_1 = builder.addModuleInput("chain_in_1", Type::i32());
-  builder.connectToModuleInput(chain_in_1, mem0, 2);
-  // Memory outputs (private, 1ld+1st): [lddata(0), lddone(1), stdone(2)]
+  builder.connectToModuleInput(chain_in_1, mem0, 0);  // st_data_0
+  builder.connectToModuleInput(st_addr, mem0, 1);      // st_addr_0
+  builder.connectToModuleInput(ld_addr, mem0, 2);      // ld_addr_0
+  // Memory outputs (1 ld, 1 st): [ld_data(0), ld_done(1), st_done(2)]
   builder.connectToModuleOutput(mem0, 0, lddata);
   auto lddone = builder.addModuleOutput("lddone", Type::none());
-  builder.connectToModuleOutput(mem0, 1, lddone);
-  builder.connectToModuleOutput(mem0, 2, stdone);
+  builder.connectToModuleOutput(mem0, 1, lddone);     // ld_done_0
+  builder.connectToModuleOutput(mem0, 2, stdone);      // st_done_0
 
   builder.exportMLIR("Output/mixed_torus_with_mem.fabric.mlir");
   return 0;

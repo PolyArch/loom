@@ -598,7 +598,7 @@ int main(int argc, char **argv) {
   // Mutual exclusion: --gen-adg and its sub-flags vs --adg.
   {
     bool has_gen_flags = parsed.gen_adg || parsed.gen_topology != "mesh" ||
-                         parsed.gen_track != 1 ||
+                         parsed.gen_track != 2 ||
                          parsed.gen_fifo_mode != "none" ||
                          parsed.gen_fifo_depth != 2 ||
                          parsed.gen_fifo_bypassable ||
@@ -820,14 +820,6 @@ int main(int argc, char **argv) {
                   mlir::dyn_cast<circt::handshake::MemoryOp>(&op)) {
             unsigned ld = memOp.getLdCount();
             unsigned st = memOp.getStCount();
-            if (ld > 1 || st > 1) {
-              llvm::errs()
-                  << "warning: skipping multi-port handshake.memory"
-                  << " (ld=" << ld << ", st=" << st << ")"
-                  << " -- tagged multi-port memory generation"
-                  << " not yet supported\n";
-              continue;
-            }
             loom::adg::MemorySpec memSpec;
             memSpec.kind = loom::adg::MemKind::OnChip;
             memSpec.ldCount = ld;
@@ -837,8 +829,10 @@ int main(int argc, char **argv) {
               mlir::Type elemTy = memrefTy.getElementType();
               if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(elemTy))
                 memSpec.dataWidth = intTy.getWidth();
-              else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(elemTy))
+              else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(elemTy)) {
                 memSpec.dataWidth = floatTy.getWidth();
+                memSpec.isFloat = true;
+              }
               if (memrefTy.hasStaticShape())
                 memSpec.memCapacity = memrefTy.getNumElements();
             }
@@ -859,8 +853,10 @@ int main(int argc, char **argv) {
               mlir::Type elemTy = memrefTy.getElementType();
               if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(elemTy))
                 memSpec.dataWidth = intTy.getWidth();
-              else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(elemTy))
+              else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(elemTy)) {
                 memSpec.dataWidth = floatTy.getWidth();
+                memSpec.isFloat = true;
+              }
             }
             analysis.memoryCounts[memSpec]++;
             continue;
@@ -934,16 +930,25 @@ int main(int argc, char **argv) {
         }
 
         // Count function inputs by width.
+        // NoneType (width 0) must be counted so the width-0 lattice gets
+        // I/O slots for control tokens (used by handshake.join etc.).
+        // Memref args are handled separately by extmemory and are skipped.
         for (auto arg : func.getBody().front().getArguments()) {
           mlir::Type ty = arg.getType();
+          if (mlir::isa<mlir::MemRefType>(ty))
+            continue;
           unsigned w = 0;
-          if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty))
-            w = intTy.getWidth();
-          else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty))
-            w = floatTy.getWidth();
-          else if (ty.isIndex())
-            w = loom::ADDR_BIT_WIDTH;
-          if (w > 0)
+          bool known = false;
+          if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty)) {
+            w = intTy.getWidth(); known = true;
+          } else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty)) {
+            w = floatTy.getWidth(); known = true;
+          } else if (ty.isIndex()) {
+            w = loom::ADDR_BIT_WIDTH; known = true;
+          } else if (mlir::isa<mlir::NoneType>(ty)) {
+            w = 0; known = true;
+          }
+          if (known)
             analysis.inputsByWidth[w]++;
         }
 
@@ -953,13 +958,17 @@ int main(int argc, char **argv) {
           for (auto operand : returnOp->getOperands()) {
             mlir::Type ty = operand.getType();
             unsigned w = 0;
-            if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty))
-              w = intTy.getWidth();
-            else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty))
-              w = floatTy.getWidth();
-            else if (ty.isIndex())
-              w = loom::ADDR_BIT_WIDTH;
-            if (w > 0)
+            bool known = false;
+            if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty)) {
+              w = intTy.getWidth(); known = true;
+            } else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty)) {
+              w = floatTy.getWidth(); known = true;
+            } else if (ty.isIndex()) {
+              w = loom::ADDR_BIT_WIDTH; known = true;
+            } else if (mlir::isa<mlir::NoneType>(ty)) {
+              w = 0; known = true;
+            }
+            if (known)
               analysis.outputsByWidth[w]++;
           }
         }

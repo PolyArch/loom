@@ -27,7 +27,7 @@ struct ParsedArgs {
   bool mapper_verbose = false;
   bool gen_adg = false;
   std::string gen_topology = "mesh"; // "mesh" or "cube"
-  unsigned gen_track = 1;
+  unsigned gen_track = 2;
   std::string gen_fifo_mode = "none"; // "none", "single", or "dual"
   unsigned gen_fifo_depth = 2;
   bool gen_fifo_bypassable = false;

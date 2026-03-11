@@ -1,0 +1,286 @@
+#di_basic_type = #llvm.di_basic_type<tag = DW_TAG_base_type, name = "int", sizeInBits = 32, encoding = DW_ATE_signed>
+#di_basic_type1 = #llvm.di_basic_type<tag = DW_TAG_base_type, name = "unsigned int", sizeInBits = 32, encoding = DW_ATE_unsigned>
+#di_file = #llvm.di_file<"tests/app/popcount/main.cpp" in "/home/sihao/github.com/PolyArch/loom">
+#di_file1 = #llvm.di_file<"tests/app/popcount/popcount.cpp" in "/home/sihao/github.com/PolyArch/loom">
+#di_null_type = #llvm.di_null_type
+#loc7 = loc("tests/app/popcount/main.cpp":25:0)
+#loc14 = loc("tests/app/popcount/popcount.cpp":32:0)
+#loc21 = loc("tests/app/popcount/popcount.cpp":13:0)
+#loc24 = loc("tests/app/popcount/popcount.cpp":20:0)
+#di_compile_unit = #llvm.di_compile_unit<id = distinct[0]<>, sourceLanguage = DW_LANG_C_plus_plus_14, file = #di_file, producer = "clang version 23.0.0git (https://github.com/llvm/llvm-project.git b7c1a6f8b447fba6fff47d309eb7ba1bc22e8c53)", isOptimized = false, emissionKind = Full, nameTableKind = None>
+#di_compile_unit1 = #llvm.di_compile_unit<id = distinct[1]<>, sourceLanguage = DW_LANG_C_plus_plus_14, file = #di_file1, producer = "clang version 23.0.0git (https://github.com/llvm/llvm-project.git b7c1a6f8b447fba6fff47d309eb7ba1bc22e8c53)", isOptimized = false, emissionKind = Full, nameTableKind = None>
+#di_derived_type = #llvm.di_derived_type<tag = DW_TAG_typedef, name = "__uint32_t", baseType = #di_basic_type1>
+#di_subroutine_type = #llvm.di_subroutine_type<types = #di_basic_type>
+#di_derived_type1 = #llvm.di_derived_type<tag = DW_TAG_typedef, name = "uint32_t", baseType = #di_derived_type>
+#di_subprogram = #llvm.di_subprogram<id = distinct[2]<>, compileUnit = #di_compile_unit, scope = #di_file, name = "main", file = #di_file, line = 5, scopeLine = 5, subprogramFlags = Definition, type = #di_subroutine_type>
+#di_derived_type2 = #llvm.di_derived_type<tag = DW_TAG_const_type, baseType = #di_derived_type1>
+#di_derived_type3 = #llvm.di_derived_type<tag = DW_TAG_pointer_type, baseType = #di_derived_type1, sizeInBits = 64>
+#di_lexical_block1 = #llvm.di_lexical_block<scope = #di_subprogram, file = #di_file, line = 25>
+#di_derived_type4 = #llvm.di_derived_type<tag = DW_TAG_pointer_type, baseType = #di_derived_type2, sizeInBits = 64>
+#di_derived_type5 = #llvm.di_derived_type<tag = DW_TAG_restrict_type, baseType = #di_derived_type3>
+#di_lexical_block3 = #llvm.di_lexical_block<scope = #di_lexical_block1, file = #di_file, line = 25>
+#di_derived_type6 = #llvm.di_derived_type<tag = DW_TAG_restrict_type, baseType = #di_derived_type4>
+#loc37 = loc(fused<#di_lexical_block3>[#loc7])
+#di_subroutine_type1 = #llvm.di_subroutine_type<types = #di_null_type, #di_derived_type6, #di_derived_type5, #di_derived_type2>
+#di_subprogram1 = #llvm.di_subprogram<id = distinct[3]<>, compileUnit = #di_compile_unit1, scope = #di_file1, name = "popcount_dsa", linkageName = "_Z12popcount_dsaPKjPjj", file = #di_file1, line = 32, scopeLine = 34, subprogramFlags = Definition, type = #di_subroutine_type1>
+#di_subprogram2 = #llvm.di_subprogram<id = distinct[4]<>, compileUnit = #di_compile_unit1, scope = #di_file1, name = "popcount_cpu", linkageName = "_Z12popcount_cpuPKjPjj", file = #di_file1, line = 13, scopeLine = 15, subprogramFlags = Definition, type = #di_subroutine_type1>
+#di_lexical_block9 = #llvm.di_lexical_block<scope = #di_subprogram2, file = #di_file1, line = 16>
+#loc42 = loc(fused<#di_subprogram1>[#loc14])
+#loc44 = loc(fused<#di_subprogram2>[#loc21])
+#di_lexical_block11 = #llvm.di_lexical_block<scope = #di_lexical_block9, file = #di_file1, line = 16>
+#di_lexical_block13 = #llvm.di_lexical_block<scope = #di_lexical_block11, file = #di_file1, line = 16>
+#loc52 = loc(fused<#di_lexical_block13>[#loc24])
+module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vector<4xi64>, !llvm.ptr<271> = dense<32> : vector<4xi64>, !llvm.ptr<272> = dense<64> : vector<4xi64>, i64 = dense<64> : vector<2xi64>, i128 = dense<128> : vector<2xi64>, f80 = dense<128> : vector<2xi64>, !llvm.ptr = dense<64> : vector<4xi64>, i1 = dense<8> : vector<2xi64>, i8 = dense<8> : vector<2xi64>, i16 = dense<16> : vector<2xi64>, i32 = dense<32> : vector<2xi64>, f16 = dense<16> : vector<2xi64>, f64 = dense<64> : vector<2xi64>, f128 = dense<128> : vector<2xi64>, "dlti.endianness" = "little", "dlti.mangling_mode" = "e", "dlti.legal_int_widths" = array<i32: 8, 16, 32, 64>, "dlti.stack_alignment" = 128 : i64>, llvm.ident = "clang version 23.0.0git (https://github.com/llvm/llvm-project.git b7c1a6f8b447fba6fff47d309eb7ba1bc22e8c53)", llvm.module_asm = [], llvm.target_triple = "x86_64-unknown-linux-gnu"} {
+  memref.global constant @".str" : memref<18xi8> = dense<[112, 111, 112, 99, 111, 117, 110, 116, 58, 32, 70, 65, 73, 76, 69, 68, 10, 0]> {alignment = 1 : i64} loc(#loc)
+  memref.global constant @".str.1" : memref<18xi8> = dense<[112, 111, 112, 99, 111, 117, 110, 116, 58, 32, 80, 65, 83, 83, 69, 68, 10, 0]> {alignment = 1 : i64} loc(#loc)
+  memref.global constant @".str.4" : memref<11xi8> = dense<[108, 111, 111, 109, 46, 97, 99, 99, 101, 108, 0]> loc(#loc)
+  memref.global constant @".str.1.5" : memref<32xi8> = dense<[116, 101, 115, 116, 115, 47, 97, 112, 112, 47, 112, 111, 112, 99, 111, 117, 110, 116, 47, 112, 111, 112, 99, 111, 117, 110, 116, 46, 99, 112, 112, 0]> loc(#loc)
+  llvm.module_flags [#llvm.mlir.module_flag<max, "Dwarf Version", 5 : i32>, #llvm.mlir.module_flag<warning, "Debug Info Version", 3 : i32>, #llvm.mlir.module_flag<error, "wchar_size", 4 : i32>, #llvm.mlir.module_flag<min, "PIC Level", 2 : i32>, #llvm.mlir.module_flag<max, "PIE Level", 2 : i32>, #llvm.mlir.module_flag<max, "uwtable", 2 : i32>, #llvm.mlir.module_flag<max, "frame-pointer", 2 : i32>] loc(#loc)
+  func.func @main() -> i32 {
+    %true = arith.constant true loc(#loc29)
+    %false = arith.constant false loc(#loc29)
+    %0 = seq.const_clock  low loc(#loc29)
+    %c1 = arith.constant 1 : index loc(#loc36)
+    %c256 = arith.constant 256 : index loc(#loc36)
+    %c0 = arith.constant 0 : index loc(#loc36)
+    %c2_i32 = arith.constant 2 : i32 loc(#loc29)
+    %1 = ub.poison : i32 loc(#loc29)
+    %c1_i32 = arith.constant 1 : i32 loc(#loc3)
+    %c0_i32 = arith.constant 0 : i32 loc(#loc3)
+    %c16_i32 = arith.constant 16 : i32 loc(#loc3)
+    %c305419896_i32 = arith.constant 305419896 : i32 loc(#loc3)
+    %c256_i32 = arith.constant 256 : i32 loc(#loc3)
+    %2 = memref.get_global @".str.1" : memref<18xi8> loc(#loc3)
+    %3 = memref.get_global @".str" : memref<18xi8> loc(#loc3)
+    %alloca = memref.alloca() : memref<256xi32> loc(#loc3)
+    %alloca_0 = memref.alloca() : memref<256xi32> loc(#loc3)
+    %alloca_1 = memref.alloca() : memref<256xi32> loc(#loc3)
+    scf.for unsigned %arg0 = %c0 to %c256 step %c1 {
+      %8 = arith.index_cast %arg0 : index to i32 loc(#loc36)
+      %9 = arith.muli %8, %c305419896_i32 : i32 loc(#loc38)
+      %10 = arith.shli %8, %c16_i32 : i32 loc(#loc38)
+      %11 = arith.addi %9, %10 : i32 loc(#loc38)
+      %12 = arith.extui %8 : i32 to i64 loc(#loc38)
+      %13 = arith.index_cast %12 : i64 to index loc(#loc38)
+      memref.store %11, %alloca[%13] : memref<256xi32> loc(#loc38)
+    } loc(#loc36)
+    %cast = memref.cast %alloca : memref<256xi32> to memref<?xi32, strided<[1], offset: ?>> loc(#loc30)
+    %cast_2 = memref.cast %alloca_0 : memref<256xi32> to memref<?xi32, strided<[1], offset: ?>> loc(#loc30)
+    call @_Z12popcount_cpuPKjPjj(%cast, %cast_2, %c256_i32) : (memref<?xi32, strided<[1], offset: ?>>, memref<?xi32, strided<[1], offset: ?>>, i32) -> () loc(#loc30)
+    %cast_3 = memref.cast %alloca_1 : memref<256xi32> to memref<?xi32, strided<[1], offset: ?>> loc(#loc31)
+    %chanOutput, %ready = esi.wrap.vr %cast, %true : memref<?xi32, strided<[1], offset: ?>> loc(#loc31)
+    %chanOutput_4, %ready_5 = esi.wrap.vr %cast_3, %true : memref<?xi32, strided<[1], offset: ?>> loc(#loc31)
+    %chanOutput_6, %ready_7 = esi.wrap.vr %c256_i32, %true : i32 loc(#loc31)
+    %chanOutput_8, %ready_9 = esi.wrap.vr %true, %true : i1 loc(#loc31)
+    %4 = handshake.esi_instance @_Z12popcount_dsaPKjPjj_esi "_Z12popcount_dsaPKjPjj_inst0" clk %0 rst %false(%chanOutput, %chanOutput_4, %chanOutput_6, %chanOutput_8) : (!esi.channel<memref<?xi32, strided<[1], offset: ?>>>, !esi.channel<memref<?xi32, strided<[1], offset: ?>>>, !esi.channel<i32>, !esi.channel<i1>) -> !esi.channel<i1> loc(#loc31)
+    %rawOutput, %valid = esi.unwrap.vr %4, %true : i1 loc(#loc31)
+    %5:2 = scf.while (%arg0 = %c0_i32) : (i32) -> (i32, i32) {
+      %8 = arith.cmpi ult, %arg0, %c256_i32 : i32 loc(#loc37)
+      %9:3 = scf.if %8 -> (i32, i32, i32) {
+        %11 = arith.extui %arg0 : i32 to i64 loc(#loc39)
+        %12 = arith.index_cast %11 : i64 to index loc(#loc39)
+        %13 = memref.load %alloca_0[%12] : memref<256xi32> loc(#loc39)
+        %14 = memref.load %alloca_1[%12] : memref<256xi32> loc(#loc39)
+        %15 = arith.cmpi ne, %13, %14 : i32 loc(#loc39)
+        %16 = arith.extui %15 : i1 to i32 loc(#loc39)
+        %17 = arith.cmpi eq, %13, %14 : i32 loc(#loc39)
+        %18 = arith.extui %17 : i1 to i32 loc(#loc39)
+        %19 = scf.if %15 -> (i32) {
+          scf.yield %1 : i32 loc(#loc39)
+        } else {
+          %20 = arith.addi %arg0, %c1_i32 : i32 loc(#loc37)
+          scf.yield %20 : i32 loc(#loc37)
+        } loc(#loc39)
+        scf.yield %19, %16, %18 : i32, i32, i32 loc(#loc35)
+      } else {
+        scf.yield %1, %c2_i32, %c0_i32 : i32, i32, i32 loc(#loc35)
+      } loc(#loc35)
+      %10 = arith.trunci %9#2 : i32 to i1 loc(#loc37)
+      scf.condition(%10) %9#0, %9#1 : i32, i32 loc(#loc37)
+    } do {
+    ^bb0(%arg0: i32 loc(fused<#di_lexical_block3>[#loc7]), %arg1: i32 loc(fused<#di_lexical_block3>[#loc7])):
+      scf.yield %arg0 : i32 loc(#loc37)
+    } loc(#loc37)
+    %6 = arith.index_castui %5#1 : i32 to index loc(#loc37)
+    %7 = scf.index_switch %6 -> i32 
+    case 1 {
+      %intptr = memref.extract_aligned_pointer_as_index %3 : memref<18xi8> -> index loc(#loc40)
+      %8 = arith.index_cast %intptr : index to i64 loc(#loc40)
+      %9 = llvm.inttoptr %8 : i64 to !llvm.ptr loc(#loc40)
+      %10 = llvm.call @printf(%9) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr) -> i32 loc(#loc40)
+      scf.yield %c1_i32 : i32 loc(#loc41)
+    }
+    default {
+      %intptr = memref.extract_aligned_pointer_as_index %2 : memref<18xi8> -> index loc(#loc32)
+      %8 = arith.index_cast %intptr : index to i64 loc(#loc32)
+      %9 = llvm.inttoptr %8 : i64 to !llvm.ptr loc(#loc32)
+      %10 = llvm.call @printf(%9) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr) -> i32 loc(#loc32)
+      scf.yield %c0_i32 : i32 loc(#loc33)
+    } loc(#loc37)
+    return %7 : i32 loc(#loc34)
+  } loc(#loc29)
+  llvm.func @printf(!llvm.ptr {llvm.noundef}, ...) -> i32 attributes {frame_pointer = #llvm.framePointerKind<all>, passthrough = [["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>, tune_cpu = "generic"} loc(#loc3)
+  handshake.func @_Z12popcount_dsaPKjPjj_esi(%arg0: memref<?xi32, strided<[1], offset: ?>> loc(fused<#di_subprogram1>[#loc14]), %arg1: memref<?xi32, strided<[1], offset: ?>> loc(fused<#di_subprogram1>[#loc14]), %arg2: i32 loc(fused<#di_subprogram1>[#loc14]), %arg3: i1 loc(fused<#di_subprogram1>[#loc14]), ...) -> i1 attributes {argNames = ["input_data", "output_count", "N", "start_token"], loom.annotations = ["loom.accel"], resNames = ["done_token"]} {
+    %0 = handshake.join %arg3 : i1 loc(#loc42)
+    %1 = handshake.join %0 : none loc(#loc42)
+    %2 = handshake.constant %1 {value = 1 : index} : index loc(#loc46)
+    %3 = handshake.constant %1 {value = 0 : index} : index loc(#loc46)
+    %4 = handshake.constant %1 {value = 1 : i32} : i32 loc(#loc3)
+    %5 = handshake.constant %1 {value = 0 : i32} : i32 loc(#loc3)
+    %6 = arith.index_cast %arg2 : i32 to index loc(#loc46)
+    %index, %willContinue = dataflow.stream %3, %2, %6 {loom.annotations = ["loom.loop.parallel=auto", "loom.loop.unroll factor=8"]} loc(#loc46)
+    %afterValue, %afterCond = dataflow.gate %index, %willContinue : index, i1 -> index, i1 loc(#loc46)
+    %7 = dataflow.invariant %afterCond, %1 : i1, none -> none loc(#loc46)
+    %8 = arith.index_cast %afterValue : index to i32 loc(#loc46)
+    %9 = arith.extui %8 : i32 to i64 loc(#loc48)
+    %10 = arith.index_cast %9 : i64 to index loc(#loc48)
+    %dataResult, %addressResults = handshake.load [%10] %20#0, %trueResult_7 : index, i32 loc(#loc48)
+    %11 = dataflow.invariant %afterCond, %5 : i1, i32 -> i32 loc(#loc49)
+    %12 = handshake.constant %7 {value = 1 : index} : index loc(#loc49)
+    %13 = arith.index_cast %dataResult : i32 to index loc(#loc49)
+    %14 = arith.index_cast %11 : i32 to index loc(#loc49)
+    %index_0, %willContinue_1 = dataflow.stream %13, %12, %14 {step_op = ">>=", stop_cond = "!="} loc(#loc49)
+    %afterValue_2, %afterCond_3 = dataflow.gate %index_0, %willContinue_1 : index, i1 -> index, i1 loc(#loc49)
+    %15 = dataflow.carry %willContinue_1, %11, %19 : i1, i32, i32 -> i32 loc(#loc49)
+    %afterValue_4, %afterCond_5 = dataflow.gate %15, %willContinue_1 : i32, i1 -> i32, i1 loc(#loc49)
+    handshake.sink %afterCond_5 : i1 loc(#loc49)
+    %trueResult, %falseResult = handshake.cond_br %willContinue_1, %15 : i32 loc(#loc49)
+    %16 = arith.index_cast %afterValue_2 : index to i32 loc(#loc49)
+    %17 = dataflow.invariant %afterCond, %4 : i1, i32 -> i32 loc(#loc54)
+    %18 = arith.andi %16, %17 : i32 loc(#loc54)
+    %19 = arith.addi %afterValue_4, %18 : i32 loc(#loc54)
+    %dataResult_6, %addressResult = handshake.store [%10] %falseResult, %trueResult_9 : index, i32 loc(#loc50)
+    %20:2 = handshake.extmemory[ld = 1, st = 0] (%arg0 : memref<?xi32, strided<[1], offset: ?>>) (%addressResults) {id = 0 : i32} : (index) -> (i32, none) loc(#loc42)
+    %21 = handshake.extmemory[ld = 0, st = 1] (%arg1 : memref<?xi32, strided<[1], offset: ?>>) (%dataResult_6, %addressResult) {id = 1 : i32} : (i32, index) -> none loc(#loc42)
+    %22 = dataflow.carry %willContinue, %1, %20#1 : i1, none, none -> none loc(#loc46)
+    %trueResult_7, %falseResult_8 = handshake.cond_br %willContinue, %22 : none loc(#loc46)
+    %23 = dataflow.carry %willContinue, %1, %21 : i1, none, none -> none loc(#loc46)
+    %trueResult_9, %falseResult_10 = handshake.cond_br %willContinue, %23 : none loc(#loc46)
+    %24 = handshake.join %falseResult_8, %falseResult_10 : none, none loc(#loc42)
+    %25 = handshake.constant %24 {value = true} : i1 loc(#loc42)
+    handshake.return %25 : i1 loc(#loc42)
+  } loc(#loc42)
+  handshake.func @_Z12popcount_dsaPKjPjj(%arg0: memref<?xi32, strided<[1], offset: ?>> loc(fused<#di_subprogram1>[#loc14]), %arg1: memref<?xi32, strided<[1], offset: ?>> loc(fused<#di_subprogram1>[#loc14]), %arg2: i32 loc(fused<#di_subprogram1>[#loc14]), %arg3: none loc(fused<#di_subprogram1>[#loc14]), ...) -> none attributes {argNames = ["input_data", "output_count", "N", "start_token"], loom.annotations = ["loom.accel"], resNames = ["done_token"]} {
+    %0 = handshake.join %arg3 : none loc(#loc42)
+    %1 = handshake.constant %0 {value = 1 : index} : index loc(#loc46)
+    %2 = handshake.constant %0 {value = 0 : index} : index loc(#loc46)
+    %3 = handshake.constant %0 {value = 1 : i32} : i32 loc(#loc3)
+    %4 = handshake.constant %0 {value = 0 : i32} : i32 loc(#loc3)
+    %5 = arith.index_cast %arg2 : i32 to index loc(#loc46)
+    %index, %willContinue = dataflow.stream %2, %1, %5 {loom.annotations = ["loom.loop.parallel=auto", "loom.loop.unroll factor=8"]} loc(#loc46)
+    %afterValue, %afterCond = dataflow.gate %index, %willContinue : index, i1 -> index, i1 loc(#loc46)
+    %6 = dataflow.invariant %afterCond, %0 : i1, none -> none loc(#loc46)
+    %7 = arith.index_cast %afterValue : index to i32 loc(#loc46)
+    %8 = arith.extui %7 : i32 to i64 loc(#loc48)
+    %9 = arith.index_cast %8 : i64 to index loc(#loc48)
+    %dataResult, %addressResults = handshake.load [%9] %19#0, %trueResult_7 : index, i32 loc(#loc48)
+    %10 = dataflow.invariant %afterCond, %4 : i1, i32 -> i32 loc(#loc49)
+    %11 = handshake.constant %6 {value = 1 : index} : index loc(#loc49)
+    %12 = arith.index_cast %dataResult : i32 to index loc(#loc49)
+    %13 = arith.index_cast %10 : i32 to index loc(#loc49)
+    %index_0, %willContinue_1 = dataflow.stream %12, %11, %13 {step_op = ">>=", stop_cond = "!="} loc(#loc49)
+    %afterValue_2, %afterCond_3 = dataflow.gate %index_0, %willContinue_1 : index, i1 -> index, i1 loc(#loc49)
+    %14 = dataflow.carry %willContinue_1, %10, %18 : i1, i32, i32 -> i32 loc(#loc49)
+    %afterValue_4, %afterCond_5 = dataflow.gate %14, %willContinue_1 : i32, i1 -> i32, i1 loc(#loc49)
+    handshake.sink %afterCond_5 : i1 loc(#loc49)
+    %trueResult, %falseResult = handshake.cond_br %willContinue_1, %14 : i32 loc(#loc49)
+    %15 = arith.index_cast %afterValue_2 : index to i32 loc(#loc49)
+    %16 = dataflow.invariant %afterCond, %3 : i1, i32 -> i32 loc(#loc54)
+    %17 = arith.andi %15, %16 : i32 loc(#loc54)
+    %18 = arith.addi %afterValue_4, %17 : i32 loc(#loc54)
+    %dataResult_6, %addressResult = handshake.store [%9] %falseResult, %trueResult_9 : index, i32 loc(#loc50)
+    %19:2 = handshake.extmemory[ld = 1, st = 0] (%arg0 : memref<?xi32, strided<[1], offset: ?>>) (%addressResults) {id = 0 : i32} : (index) -> (i32, none) loc(#loc42)
+    %20 = handshake.extmemory[ld = 0, st = 1] (%arg1 : memref<?xi32, strided<[1], offset: ?>>) (%dataResult_6, %addressResult) {id = 1 : i32} : (i32, index) -> none loc(#loc42)
+    %21 = dataflow.carry %willContinue, %0, %19#1 : i1, none, none -> none loc(#loc46)
+    %trueResult_7, %falseResult_8 = handshake.cond_br %willContinue, %21 : none loc(#loc46)
+    %22 = dataflow.carry %willContinue, %0, %20 : i1, none, none -> none loc(#loc46)
+    %trueResult_9, %falseResult_10 = handshake.cond_br %willContinue, %22 : none loc(#loc46)
+    %23 = handshake.join %falseResult_8, %falseResult_10 : none, none loc(#loc42)
+    handshake.return %23 : none loc(#loc43)
+  } loc(#loc42)
+  func.func @_Z12popcount_cpuPKjPjj(%arg0: memref<?xi32, strided<[1], offset: ?>> {loom.noalias} loc(fused<#di_subprogram2>[#loc21]), %arg1: memref<?xi32, strided<[1], offset: ?>> {loom.noalias} loc(fused<#di_subprogram2>[#loc21]), %arg2: i32 loc(fused<#di_subprogram2>[#loc21])) {
+    %c1 = arith.constant 1 : index loc(#loc47)
+    %c1_i32 = arith.constant 1 : i32 loc(#loc3)
+    %c0_i32 = arith.constant 0 : i32 loc(#loc3)
+    %c0 = arith.constant 0 : index loc(#loc47)
+    %0 = arith.index_cast %arg2 : i32 to index loc(#loc47)
+    scf.for unsigned %arg3 = %c0 to %0 step %c1 {
+      %1 = arith.index_cast %arg3 : index to i32 loc(#loc47)
+      %2 = arith.extui %1 : i32 to i64 loc(#loc51)
+      %3 = arith.index_cast %2 : i64 to index loc(#loc51)
+      %4 = memref.load %arg0[%3] : memref<?xi32, strided<[1], offset: ?>> loc(#loc51)
+      %5:2 = scf.while (%arg4 = %4, %arg5 = %c0_i32) : (i32, i32) -> (i32, i32) {
+        %6 = arith.cmpi ne, %arg4, %c0_i32 : i32 loc(#loc52)
+        scf.condition(%6) %arg4, %arg5 : i32, i32 loc(#loc52)
+      } do {
+      ^bb0(%arg4: i32 loc(fused<#di_lexical_block13>[#loc24]), %arg5: i32 loc(fused<#di_lexical_block13>[#loc24])):
+        %6 = arith.andi %arg4, %c1_i32 : i32 loc(#loc55)
+        %7 = arith.addi %arg5, %6 : i32 loc(#loc55)
+        %8 = arith.shrui %arg4, %c1_i32 : i32 loc(#loc56)
+        scf.yield %8, %7 : i32, i32 loc(#loc52)
+      } attributes {loom.stream = {cmp_on_update = false, iv = 0 : i64, step_op = ">>=", stop_cond = "!="}} loc(#loc52)
+      memref.store %5#1, %arg1[%3] : memref<?xi32, strided<[1], offset: ?>> loc(#loc53)
+    } loc(#loc47)
+    return loc(#loc45)
+  } loc(#loc44)
+} loc(#loc)
+#loc = loc("tests/app/popcount/main.cpp":0:0)
+#loc1 = loc("tests/app/popcount/main.cpp":5:0)
+#loc2 = loc("tests/app/popcount/main.cpp":10:0)
+#loc3 = loc(unknown)
+#loc4 = loc("tests/app/popcount/main.cpp":11:0)
+#loc5 = loc("tests/app/popcount/main.cpp":19:0)
+#loc6 = loc("tests/app/popcount/main.cpp":22:0)
+#loc8 = loc("tests/app/popcount/main.cpp":26:0)
+#loc9 = loc("tests/app/popcount/main.cpp":27:0)
+#loc10 = loc("tests/app/popcount/main.cpp":28:0)
+#loc11 = loc("tests/app/popcount/main.cpp":32:0)
+#loc12 = loc("tests/app/popcount/main.cpp":33:0)
+#loc13 = loc("tests/app/popcount/main.cpp":34:0)
+#loc15 = loc("tests/app/popcount/popcount.cpp":37:0)
+#loc16 = loc("tests/app/popcount/popcount.cpp":38:0)
+#loc17 = loc("tests/app/popcount/popcount.cpp":41:0)
+#loc18 = loc("tests/app/popcount/popcount.cpp":42:0)
+#loc19 = loc("tests/app/popcount/popcount.cpp":46:0)
+#loc20 = loc("tests/app/popcount/popcount.cpp":48:0)
+#loc22 = loc("tests/app/popcount/popcount.cpp":16:0)
+#loc23 = loc("tests/app/popcount/popcount.cpp":17:0)
+#loc25 = loc("tests/app/popcount/popcount.cpp":21:0)
+#loc26 = loc("tests/app/popcount/popcount.cpp":22:0)
+#loc27 = loc("tests/app/popcount/popcount.cpp":25:0)
+#loc28 = loc("tests/app/popcount/popcount.cpp":27:0)
+#di_lexical_block = #llvm.di_lexical_block<scope = #di_subprogram, file = #di_file, line = 10>
+#loc29 = loc(fused<#di_subprogram>[#loc1])
+#loc30 = loc(fused<#di_subprogram>[#loc5])
+#loc31 = loc(fused<#di_subprogram>[#loc6])
+#loc32 = loc(fused<#di_subprogram>[#loc11])
+#loc33 = loc(fused<#di_subprogram>[#loc12])
+#loc34 = loc(fused<#di_subprogram>[#loc13])
+#di_lexical_block2 = #llvm.di_lexical_block<scope = #di_lexical_block, file = #di_file, line = 10>
+#loc35 = loc(fused<#di_lexical_block1>[#loc7])
+#di_lexical_block4 = #llvm.di_lexical_block<scope = #di_lexical_block2, file = #di_file, line = 10>
+#di_lexical_block5 = #llvm.di_lexical_block<scope = #di_lexical_block3, file = #di_file, line = 25>
+#loc36 = loc(fused<#di_lexical_block2>[#loc2])
+#di_lexical_block6 = #llvm.di_lexical_block<scope = #di_lexical_block5, file = #di_file, line = 26>
+#loc38 = loc(fused<#di_lexical_block4>[#loc4])
+#di_lexical_block7 = #llvm.di_lexical_block<scope = #di_lexical_block6, file = #di_file, line = 26>
+#loc39 = loc(fused<#di_lexical_block6>[#loc8])
+#di_lexical_block8 = #llvm.di_lexical_block<scope = #di_subprogram1, file = #di_file1, line = 37>
+#loc40 = loc(fused<#di_lexical_block7>[#loc9])
+#loc41 = loc(fused<#di_lexical_block7>[#loc10])
+#loc43 = loc(fused<#di_subprogram1>[#loc20])
+#loc45 = loc(fused<#di_subprogram2>[#loc28])
+#di_lexical_block10 = #llvm.di_lexical_block<scope = #di_lexical_block8, file = #di_file1, line = 37>
+#di_lexical_block12 = #llvm.di_lexical_block<scope = #di_lexical_block10, file = #di_file1, line = 37>
+#loc46 = loc(fused<#di_lexical_block10>[#loc15])
+#loc47 = loc(fused<#di_lexical_block11>[#loc22])
+#di_lexical_block14 = #llvm.di_lexical_block<scope = #di_lexical_block12, file = #di_file1, line = 41>
+#di_lexical_block15 = #llvm.di_lexical_block<scope = #di_lexical_block13, file = #di_file1, line = 20>
+#loc48 = loc(fused<#di_lexical_block12>[#loc16])
+#loc49 = loc(fused<#di_lexical_block12>[#loc17])
+#loc50 = loc(fused<#di_lexical_block12>[#loc19])
+#loc51 = loc(fused<#di_lexical_block13>[#loc23])
+#loc53 = loc(fused<#di_lexical_block13>[#loc27])
+#loc54 = loc(fused<#di_lexical_block14>[#loc18])
+#loc55 = loc(fused<#di_lexical_block15>[#loc25])
+#loc56 = loc(fused<#di_lexical_block15>[#loc26])

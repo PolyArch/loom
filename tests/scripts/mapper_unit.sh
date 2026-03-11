@@ -29,6 +29,11 @@ if [[ "${1:-}" == "--single" ]]; then
   mapfile -t adg_files < <(find "${TEST_DIR}" -maxdepth 1 -name "*.fabric.mlir" | sort)
   mapfile -t dfg_files < <(find "${TEST_DIR}" -maxdepth 1 -name "*.handshake.mlir" | sort)
 
+  if [[ ${#adg_files[@]} -eq 0 || ${#dfg_files[@]} -eq 0 ]]; then
+    echo "FAIL: ${TEST_DIR} has no .fabric.mlir or .handshake.mlir files" >&2
+    exit 1
+  fi
+
   for adg in "${adg_files[@]}"; do
     adg_name=$(basename "${adg}" .fabric.mlir)
     for dfg in "${dfg_files[@]}"; do

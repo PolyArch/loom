@@ -253,8 +253,17 @@ struct SwPortMap {
   std::vector<int> dirOut;
 
   // PE port indices by corner role: 0=UL, 1=LL, 2=UR, 3=LR.
-  int peOut[4] = {-1, -1, -1, -1};
-  int peIn[4] = {-1, -1, -1, -1};
+  // Supports >4 PE ports per cell: overflow ports wrap around corners
+  // via index % 4. Each vector entry is a switch port index.
+  std::vector<int> peOutVec;  // switch-out -> PE-in (one per PE input)
+  std::vector<int> peInVec;   // PE-out -> switch-in (one per PE output)
+
+  // Per-corner start offset and count within peOutVec/peInVec.
+  // Corner numbering: 0=UL, 1=LL, 2=UR, 3=LR.
+  unsigned peOutCornerOff[4] = {0, 0, 0, 0};
+  unsigned peOutCornerCnt[4] = {0, 0, 0, 0};
+  unsigned peInCornerOff[4] = {0, 0, 0, 0};
+  unsigned peInCornerCnt[4] = {0, 0, 0, 0};
 
   // Module I/O port indices on this switch (in assignment order).
   std::vector<int> modIn;

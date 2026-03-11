@@ -318,75 +318,12 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
     return static_cast<unsigned>(std::ceil(std::log2(count)));
   };
 
-  // Presence-based input layout: [ld_addr?] [st_addr? st_data?]
-  unsigned expectedInputs = 0;
-  if (ldCount > 0) expectedInputs++;       // ld_addr
-  if (stCount > 0) expectedInputs += 2;    // st_addr + st_data
+  // Per-port input layout:
+  //   [st_data_0, st_addr_0, ..., st_data_{S-1}, st_addr_{S-1},
+  //    ld_addr_0, ..., ld_addr_{L-1}]
+  unsigned expectedInputs = stCount * 2 + ldCount;
   if (inputs.size() != expectedInputs)
     return success(); // Port count mismatch handled elsewhere.
-
-  // Uniform tagging rule: if ldCount > 1 OR stCount > 1, all ports tagged.
-  bool needTag = (ldCount > 1 || stCount > 1);
-  unsigned maxCount = std::max(ldCount, stCount);
-
-  // Track current input port index.
-  unsigned inIdx = 0;
-
-  // Validate ld_addr (singular) if ldCount > 0.
-  if (ldCount > 0 && inIdx < inputs.size()) {
-    Type t = inputs[inIdx++];
-    if (!isAddrType(t))
-      return op->emitOpError(cplErrMsg(CplError::MEMORY_ADDR_TYPE,
-                             "load address port must be "
-                             "!dataflow.bits<ADDR_BIT_WIDTH> or "
-                             "!dataflow.tagged<!dataflow.bits<ADDR_BIT_WIDTH>, iK>; got "))
-             << t;
-    if (needTag && !isTagged(t))
-      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_REQUIRED,
-                             "load address port must be tagged when "
-                             "ldCount > 1 or stCount > 1"));
-    if (!needTag && isTagged(t))
-      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_FOR_SINGLE,
-                             "load address port must not be tagged "
-                             "when both ldCount <= 1 and stCount <= 1"));
-    if (needTag && isTagged(t)) {
-      unsigned tw = getTagWidth(t);
-      unsigned minW = minTagWidth(maxCount);
-      if (tw < minW)
-        return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_WIDTH,
-                               "load address port tag width "))
-               << tw << " is smaller than log2Ceil(max(ldCount,stCount)) = "
-               << minW;
-    }
-  }
-
-  // Validate st_addr (singular) if stCount > 0.
-  if (stCount > 0 && inIdx < inputs.size()) {
-    Type t = inputs[inIdx++];
-    if (!isAddrType(t))
-      return op->emitOpError(cplErrMsg(CplError::MEMORY_ADDR_TYPE,
-                             "store address port must be "
-                             "!dataflow.bits<ADDR_BIT_WIDTH> or "
-                             "!dataflow.tagged<!dataflow.bits<ADDR_BIT_WIDTH>, iK>; got "))
-             << t;
-    if (needTag && !isTagged(t))
-      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_REQUIRED,
-                             "store address port must be tagged when "
-                             "ldCount > 1 or stCount > 1"));
-    if (!needTag && isTagged(t))
-      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_FOR_SINGLE,
-                             "store address port must not be tagged "
-                             "when both ldCount <= 1 and stCount <= 1"));
-    if (needTag && isTagged(t)) {
-      unsigned tw = getTagWidth(t);
-      unsigned minW = minTagWidth(maxCount);
-      if (tw < minW)
-        return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_WIDTH,
-                               "store address port tag width "))
-               << tw << " is smaller than log2Ceil(max(ldCount,stCount)) = "
-               << minW;
-    }
-  }
 
   // Helper to get bit width from a type for width-compatible matching.
   auto getBitWidth = [](Type t) -> std::optional<unsigned> {
@@ -400,7 +337,6 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
   };
 
   // Helper to check data port value type matches memref element type.
-  // Allows exact match OR width-compatible match (bits<N> vs native type).
   auto isDataTypeCompatible = [&](Type valT, Type elemT) -> bool {
     if (valT == elemT) return true;
     auto valW = getBitWidth(valT);
@@ -408,36 +344,54 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
     return valW && elemW && *valW == *elemW;
   };
 
-  // Validate st_data (singular) if stCount > 0.
-  if (stCount > 0 && inIdx < inputs.size()) {
-    Type t = inputs[inIdx++];
-    Type valT = getValType(t);
-    if (!isa<NoneType>(valT) && !isa<dataflow::BitsType>(valT))
+  // Validate store pairs (interleaved data, addr per store port).
+  for (unsigned s = 0; s < stCount; ++s) {
+    unsigned dataIdx = s * 2;
+    unsigned addrIdx = s * 2 + 1;
+
+    // Store data
+    Type dt = inputs[dataIdx];
+    Type dtVal = getValType(dt);
+    if (!isa<NoneType>(dtVal) && !isa<dataflow::BitsType>(dtVal))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_NATIVE,
                              "store data port must use !dataflow.bits<N>; "
                              "found native type '"))
-             << valT << "'";
-    if (!isDataTypeCompatible(valT, elemType))
+             << dtVal << "'";
+    if (!isDataTypeCompatible(dtVal, elemType))
       return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_TYPE,
                              "store data port value type "))
-             << valT << " does not match memref element type " << elemType;
-    if (needTag && !isTagged(t))
-      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_REQUIRED,
-                             "store data port must be tagged when "
-                             "ldCount > 1 or stCount > 1"));
-    if (!needTag && isTagged(t))
-      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_FOR_SINGLE,
-                             "store data port must not be tagged "
-                             "when both ldCount <= 1 and stCount <= 1"));
+             << dtVal << " does not match memref element type " << elemType;
+
+    // Store addr
+    Type at = inputs[addrIdx];
+    if (!isAddrType(at))
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_ADDR_TYPE,
+                             "store address port must be "
+                             "!dataflow.bits<ADDR_BIT_WIDTH> or "
+                             "!dataflow.tagged<!dataflow.bits<ADDR_BIT_WIDTH>, iK>; got "))
+             << at;
   }
 
-  // Presence-based output layout: [memref?] [ld_data? ld_done?] [st_done?]
+  // Validate load addresses.
+  for (unsigned l = 0; l < ldCount; ++l) {
+    unsigned idx = stCount * 2 + l;
+    Type t = inputs[idx];
+    if (!isAddrType(t))
+      return op->emitOpError(cplErrMsg(CplError::MEMORY_ADDR_TYPE,
+                             "load address port must be "
+                             "!dataflow.bits<ADDR_BIT_WIDTH> or "
+                             "!dataflow.tagged<!dataflow.bits<ADDR_BIT_WIDTH>, iK>; got "))
+             << t;
+  }
+
+  // Per-port output layout:
+  //   [memref? (non-private), ld_data * L, ld_done * L, st_done * S]
   unsigned outIdx = 0;
   if (!isPrivate && outputs.size() > 0 && isa<MemRefType>(outputs[0]))
-    outIdx++; // Skip memref output.
+    outIdx++;
 
-  // Validate ld_data (singular) if ldCount > 0.
-  if (ldCount > 0 && outIdx < outputs.size()) {
+  // Validate load data ports.
+  for (unsigned l = 0; l < ldCount && outIdx < outputs.size(); ++l) {
     Type t = outputs[outIdx++];
     Type valT = getValType(t);
     if (!isa<NoneType>(valT) && !isa<dataflow::BitsType>(valT))
@@ -449,18 +403,7 @@ static LogicalResult verifyMemPortTypes(Operation *op, int64_t ldCount,
       return op->emitOpError(cplErrMsg(CplError::MEMORY_DATA_TYPE,
                              "load data port value type "))
              << valT << " does not match memref element type " << elemType;
-    if (needTag && !isTagged(t))
-      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_REQUIRED,
-                             "load data port must be tagged when "
-                             "ldCount > 1 or stCount > 1"));
-    if (!needTag && isTagged(t))
-      return op->emitOpError(cplErrMsg(CplError::MEMORY_TAG_FOR_SINGLE,
-                             "load data port must not be tagged "
-                             "when both ldCount <= 1 and stCount <= 1"));
   }
-
-  // ld_done and st_done: skip detailed type checking for now
-  // (they carry tag or none, validated structurally by port count)
 
   return success();
 }

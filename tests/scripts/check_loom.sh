@@ -26,6 +26,9 @@ any_failure=false
 "${SCRIPT_DIR}/mapper_unit_smoke.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/mapper_unit.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/mapper_combine.sh" "${LOOM_BIN}" || any_failure=true
+"${SCRIPT_DIR}/mapper_stress.sh" "${LOOM_BIN}" anchor || any_failure=true
+# Mapper App (Tier 3) is informational: failures are tracked but don't block CI.
+"${SCRIPT_DIR}/mapper_app.sh" "${LOOM_BIN}" || true
 "${SCRIPT_DIR}/fabric_gen.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/dfg_analysis.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/spec_check.sh" || any_failure=true

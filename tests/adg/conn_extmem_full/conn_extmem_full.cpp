@@ -41,13 +41,13 @@ int main() {
   builder.connectToModuleInput(a, add0, 0);
   builder.connectToModuleInput(b, add0, 1);
 
-  // ExtMemory inputs: [memref, ld_addr, st_addr, st_data]
+  // ExtMemory inputs (ld=1, st=1): [memref(0), st_data(1), st_addr(2), ld_addr(3)]
   builder.connectToModuleInput(mref, em0, 0);
-  builder.connectToModuleInput(ld_addr, em0, 1);
-  builder.connectToModuleInput(st_addr, em0, 2);
-  builder.connectPorts(add0, 0, em0, 3); // adder -> st_data
+  builder.connectPorts(add0, 0, em0, 1);           // adder -> st_data_0
+  builder.connectToModuleInput(st_addr, em0, 2);    // st_addr_0
+  builder.connectToModuleInput(ld_addr, em0, 3);    // ld_addr_0
 
-  // ExtMemory outputs: [lddata, lddone, stdone]
+  // ExtMemory outputs (1 ld, 1 st): [ld_data(0), ld_done(1), st_done(2)]
   builder.connectToModuleOutput(em0, 0, lddata);
   builder.connectToModuleOutput(em0, 1, lddone);
   builder.connectToModuleOutput(em0, 2, stdone);

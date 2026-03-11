@@ -1086,19 +1086,13 @@ unsigned ADGBuilder::Impl::getInstanceInputCount(unsigned instIdx) const {
     return temporalSwitchDefs[inst.defIdx].numIn;
   case ModuleKind::Memory: {
     auto &mem = memoryDefs[inst.defIdx];
-    // Presence-based: at most ld_addr + st_addr + st_data
-    unsigned count = 0;
-    if (mem.ldCount > 0) count++;      // ld_addr
-    if (mem.stCount > 0) count += 2;   // st_addr + st_data
-    return count;
+    // Per-port: [st_data_0, st_addr_0, ..., ld_addr_0, ...]
+    return mem.stCount * 2 + mem.ldCount;
   }
   case ModuleKind::ExtMemory: {
     auto &mem = extMemoryDefs[inst.defIdx];
-    // Presence-based: memref_bind + ld_addr? + st_addr? + st_data?
-    unsigned count = 1;                // memref binding (always present)
-    if (mem.ldCount > 0) count++;      // ld_addr
-    if (mem.stCount > 0) count += 2;   // st_addr + st_data
-    return count;
+    // Per-port: [memref, st_data_0, st_addr_0, ..., ld_addr_0, ...]
+    return 1 + mem.stCount * 2 + mem.ldCount;
   }
   case ModuleKind::AddTag:
     return 1; // value in
@@ -1137,20 +1131,16 @@ unsigned ADGBuilder::Impl::getInstanceOutputCount(unsigned instIdx) const {
     return temporalSwitchDefs[inst.defIdx].numOut;
   case ModuleKind::Memory: {
     auto &mem = memoryDefs[inst.defIdx];
-    // Presence-based: memref? + ld_data? + ld_done? + st_done?
+    // Per-port: [memref? (non-private), ld_data * L, ld_done * L, st_done * S]
     unsigned count = 0;
-    if (!mem.isPrivate) count++;       // memref output
-    if (mem.ldCount > 0) count += 2;   // ld_data + ld_done
-    if (mem.stCount > 0) count++;       // st_done
+    if (!mem.isPrivate) count++;
+    count += mem.ldCount * 2 + mem.stCount;
     return count;
   }
   case ModuleKind::ExtMemory: {
     auto &mem = extMemoryDefs[inst.defIdx];
-    // Presence-based: ld_data? + ld_done? + st_done?
-    unsigned count = 0;
-    if (mem.ldCount > 0) count += 2;   // ld_data + ld_done
-    if (mem.stCount > 0) count++;       // st_done
-    return count;
+    // Per-port: [ld_data * L, ld_done * L, st_done * S]
+    return mem.ldCount * 2 + mem.stCount;
   }
   case ModuleKind::AddTag:
     return 1; // tagged out
@@ -1250,23 +1240,16 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
   case ModuleKind::Memory: {
     auto &def = memoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
-    bool isTagged = def.ldCount > 1 || def.stCount > 1;
-    Type uniformTag = computeTagType(std::max(def.ldCount, def.stCount));
 
-    // Presence-based input layout: [ld_addr?] [st_addr? st_data?]
+    // Per-port input layout (DFG convention):
+    // [st_data_0, st_addr_0, ..., st_data_{S-1}, st_addr_{S-1}, ld_addr_0, ..., ld_addr_{L-1}]
     unsigned idx = (unsigned)port;
-    if (def.ldCount > 0) {
-      if (idx == 0)
-        return isTagged ? Type::tagged(Type::bits(ADDR_BIT_WIDTH), uniformTag)
-                        : Type::bits(ADDR_BIT_WIDTH);
-      idx--;
+    if (idx < def.stCount * 2) {
+      // Store pairs: even = data, odd = addr
+      return (idx % 2 == 0) ? elemType : Type::bits(ADDR_BIT_WIDTH);
     }
-    // idx 0 = st_addr, idx 1 = st_data
-    if (idx == 0)
-      return isTagged ? Type::tagged(Type::bits(ADDR_BIT_WIDTH), uniformTag)
-                      : Type::bits(ADDR_BIT_WIDTH);
-    return isTagged ? Type::tagged(elemType, uniformTag)
-                    : elemType;
+    // Load addresses
+    return Type::bits(ADDR_BIT_WIDTH);
   }
   case ModuleKind::ExtMemory: {
     auto &def = extMemoryDefs[inst.defIdx];
@@ -1275,22 +1258,12 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
     if (port == 0) return Type::bits(ADDR_BIT_WIDTH);
     unsigned adjPort = (unsigned)port - 1;
 
-    bool isTagged = def.ldCount > 1 || def.stCount > 1;
-    Type uniformTag = computeTagType(std::max(def.ldCount, def.stCount));
-
-    // Presence-based: [ld_addr?] [st_addr? st_data?]
-    if (def.ldCount > 0) {
-      if (adjPort == 0)
-        return isTagged ? Type::tagged(Type::bits(ADDR_BIT_WIDTH), uniformTag)
-                        : Type::bits(ADDR_BIT_WIDTH);
-      adjPort--;
+    // Per-port (DFG convention):
+    // [st_data_0, st_addr_0, ..., ld_addr_0, ..., ld_addr_{L-1}]
+    if (adjPort < def.stCount * 2) {
+      return (adjPort % 2 == 0) ? elemType : Type::bits(ADDR_BIT_WIDTH);
     }
-    // adjPort 0 = st_addr, adjPort 1 = st_data
-    if (adjPort == 0)
-      return isTagged ? Type::tagged(Type::bits(ADDR_BIT_WIDTH), uniformTag)
-                      : Type::bits(ADDR_BIT_WIDTH);
-    return isTagged ? Type::tagged(elemType, uniformTag)
-                    : elemType;
+    return Type::bits(ADDR_BIT_WIDTH);
   }
   }
   return Type::i32();
@@ -1358,42 +1331,32 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
   case ModuleKind::Memory: {
     auto &def = memoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
-    bool isTagged = def.ldCount > 1 || def.stCount > 1;
-    Type uniformTag = computeTagType(std::max(def.ldCount, def.stCount));
 
-    // Presence-based output layout: [memref?] [ld_data? ld_done?] [st_done?]
+    // Per-port output layout: [memref? (non-private), ld_data * L, ld_done * L, st_done * S]
     unsigned idx = (unsigned)port;
     if (!def.isPrivate) {
       if (idx == 0) return Type::bits(ADDR_BIT_WIDTH); // memref placeholder
       idx--;
     }
-    if (def.ldCount > 0) {
-      if (idx == 0)
-        return isTagged ? Type::tagged(elemType, uniformTag) : elemType; // ld_data
-      if (idx == 1)
-        return isTagged ? Type::tagged(Type::none(), uniformTag) : Type::none(); // ld_done
-      idx -= 2;
-    }
-    // st_done
-    return isTagged ? Type::tagged(Type::none(), uniformTag) : Type::none();
+    if (idx < def.ldCount)
+      return elemType;
+    idx -= def.ldCount;
+    if (idx < def.ldCount)
+      return Type::none();
+    return Type::none();
   }
   case ModuleKind::ExtMemory: {
     auto &def = extMemoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
-    bool isTagged = def.ldCount > 1 || def.stCount > 1;
-    Type uniformTag = computeTagType(std::max(def.ldCount, def.stCount));
 
-    // Presence-based output layout: [ld_data? ld_done?] [st_done?]
+    // Per-port output layout: [ld_data * L, ld_done * L, st_done * S]
     unsigned idx = (unsigned)port;
-    if (def.ldCount > 0) {
-      if (idx == 0)
-        return isTagged ? Type::tagged(elemType, uniformTag) : elemType; // ld_data
-      if (idx == 1)
-        return isTagged ? Type::tagged(Type::none(), uniformTag) : Type::none(); // ld_done
-      idx -= 2;
-    }
-    // st_done
-    return isTagged ? Type::tagged(Type::none(), uniformTag) : Type::none();
+    if (idx < def.ldCount)
+      return elemType;
+    idx -= def.ldCount;
+    if (idx < def.ldCount)
+      return Type::none();
+    return Type::none();
   }
   default:
     return Type::i32();

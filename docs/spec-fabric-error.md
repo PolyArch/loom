@@ -85,9 +85,6 @@ RT_ error codes start at 256 and increase sequentially.
 | CPL_MEMORY_ADDR_TYPE | Address port is not `bits<ADDR_BIT_WIDTH>` or `!dataflow.tagged<bits<ADDR_BIT_WIDTH>, iK>` |
 | CPL_MEMORY_DATA_TYPE | Data port element type does not match memref element type |
 | CPL_MEMORY_DATA_NATIVE | Memory data port uses native type (i32, f32) instead of `!dataflow.bits<N>` |
-| CPL_MEMORY_TAG_REQUIRED | `ldCount > 1` or `stCount > 1` but ports are not tagged |
-| CPL_MEMORY_TAG_FOR_SINGLE | Tagged ports used when `ldCount == 1` or `stCount == 1` |
-| CPL_MEMORY_TAG_WIDTH | Tag width is smaller than `log2Ceil(count)` or mismatched across ports |
 | CPL_MEMORY_STATIC_REQUIRED | `fabric.memory` uses a dynamic memref type |
 | CPL_MEMORY_PRIVATE_OUTPUT | `fabric.module` yields a memref not produced by `fabric.memory` with `is_private = false` |
 | CPL_MEMORY_EXTMEM_BINDING | `fabric.extmemory` memref operand is not a `fabric.module` memref input |

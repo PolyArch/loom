@@ -55,6 +55,7 @@ struct MemorySpec {
   unsigned ldCount = 0;    // number of load ports
   unsigned stCount = 0;    // number of store ports
   unsigned dataWidth = 32; // data bit width (e.g. 32 for f32)
+  bool isFloat = false;    // true if data element is a float type
   MemKind kind = MemKind::External; // on-chip SRAM vs external interface
   unsigned memCapacity = 0; // static element count for OnChip (e.g. 256)
 
@@ -104,7 +105,7 @@ struct MergedRequirements {
 struct GenConfig {
   enum Topology { Mesh2D, Cube3D };
   Topology topology = Mesh2D;
-  unsigned numSwitchTrack = 1;
+  unsigned numSwitchTrack = 2;
 
   /// Controls FIFO insertion on inter-switch edges.
   /// none:   no FIFOs on any direction (both direct).

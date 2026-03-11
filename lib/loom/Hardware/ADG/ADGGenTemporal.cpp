@@ -144,14 +144,25 @@ void generateTemporal(ADGBuilder &builder, const MergedRequirements &reqs,
         }
 
         // PE output ports (switch out -> TPE input).
-        if (r < (int)tpeRows && c < (int)tpeCols && tCells[r][c].numIn > 0)
-          pm.peOut[0] = static_cast<int>(outIdx++);
-        if (r > 0 && c < (int)tpeCols && tCells[r - 1][c].numIn > 1)
-          pm.peOut[1] = static_cast<int>(outIdx++);
+        // Corner 0 (UL): cell (r, c); Corner 1 (LL): cell (r-1, c).
+        if (r < (int)tpeRows && c < (int)tpeCols && tCells[r][c].numIn > 0) {
+          pm.peOutCornerOff[0] = pm.peOutVec.size();
+          pm.peOutCornerCnt[0] = 1;
+          pm.peOutVec.push_back(static_cast<int>(outIdx++));
+        }
+        if (r > 0 && c < (int)tpeCols && tCells[r - 1][c].numIn > 1) {
+          pm.peOutCornerOff[1] = pm.peOutVec.size();
+          pm.peOutCornerCnt[1] = 1;
+          pm.peOutVec.push_back(static_cast<int>(outIdx++));
+        }
 
         // PE input ports (TPE output -> switch in).
-        if (r > 0 && c > 0 && tCells[r - 1][c - 1].numOut > 0)
-          pm.peIn[3] = static_cast<int>(inIdx++);
+        // Corner 3 (LR): cell (r-1, c-1).
+        if (r > 0 && c > 0 && tCells[r - 1][c - 1].numOut > 0) {
+          pm.peInCornerOff[3] = pm.peInVec.size();
+          pm.peInCornerCnt[3] = 1;
+          pm.peInVec.push_back(static_cast<int>(inIdx++));
+        }
 
         // Cross-mesh output: rightmost column (c == tswCols - 1) -> del_tag.
         if (c == tswCols - 1 && r < tswRows)
@@ -250,20 +261,23 @@ void generateTemporal(ADGBuilder &builder, const MergedRequirements &reqs,
               "tpe_r" + std::to_string(r) + "_c" + std::to_string(c);
           auto tpeInst = builder.clone(tpeDef, instName);
 
-          // Input[0] <- UL switch (r, c)
-          int swOut0 = tswPorts[r][c].peOut[0];
-          if (swOut0 >= 0)
+          // Input[0] <- UL switch (r, c), corner 0
+          if (tswPorts[r][c].peOutCornerCnt[0] > 0) {
+            int swOut0 = tswPorts[r][c].peOutVec[tswPorts[r][c].peOutCornerOff[0]];
             builder.connectPorts(tswGrid[r][c], swOut0, tpeInst, 0);
+          }
 
-          // Input[1] <- LL switch (r+1, c)
-          int swOut1 = tswPorts[r + 1][c].peOut[1];
-          if (swOut1 >= 0)
+          // Input[1] <- LL switch (r+1, c), corner 1
+          if (tswPorts[r + 1][c].peOutCornerCnt[1] > 0) {
+            int swOut1 = tswPorts[r + 1][c].peOutVec[tswPorts[r + 1][c].peOutCornerOff[1]];
             builder.connectPorts(tswGrid[r + 1][c], swOut1, tpeInst, 1);
+          }
 
-          // Output[0] -> LR switch (r+1, c+1)
-          int swIn0 = tswPorts[r + 1][c + 1].peIn[3];
-          if (swIn0 >= 0)
+          // Output[0] -> LR switch (r+1, c+1), corner 3
+          if (tswPorts[r + 1][c + 1].peInCornerCnt[3] > 0) {
+            int swIn0 = tswPorts[r + 1][c + 1].peInVec[tswPorts[r + 1][c + 1].peInCornerOff[3]];
             builder.connectPorts(tpeInst, 0, tswGrid[r + 1][c + 1], swIn0);
+          }
 
           ++placed;
         }

@@ -27,10 +27,12 @@ int main() {
   auto lddone = builder.addModuleOutput("lddone", Type::none());
   auto stdone = builder.addModuleOutput("stdone", Type::none());
 
+  // ExtMemory inputs (ld=1, st=1): [memref(0), st_data(1), st_addr(2), ld_addr(3)]
   builder.connectToModuleInput(mref, inst, 0);
-  builder.connectToModuleInput(ldaddr, inst, 1);
-  builder.connectToModuleInput(staddr, inst, 2);
-  builder.connectToModuleInput(stdata, inst, 3);
+  builder.connectToModuleInput(stdata, inst, 1);    // st_data_0
+  builder.connectToModuleInput(staddr, inst, 2);    // st_addr_0
+  builder.connectToModuleInput(ldaddr, inst, 3);    // ld_addr_0
+  // ExtMemory outputs (1 ld, 1 st): [ld_data(0), ld_done(1), st_done(2)]
   builder.connectToModuleOutput(inst, 0, lddata);
   builder.connectToModuleOutput(inst, 1, lddone);
   builder.connectToModuleOutput(inst, 2, stdone);

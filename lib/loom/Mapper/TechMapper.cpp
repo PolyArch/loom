@@ -630,6 +630,32 @@ CandidateSet TechMapper::map(const Graph &dfg, const Graph &adg) {
   // Merge and prioritize candidates.
   mergeCandidates(candidates);
 
+  // Sort each candidate list so exact-port-count matches appear first.
+  // This prevents a DFG node with fewer ports (e.g., 1-input join) from
+  // stealing a larger PE (e.g., 3-input join) when an exact-match PE exists.
+  for (auto &[swId, cands] : candidates) {
+    const Node *swNode = dfg.getNode(swId);
+    if (!swNode)
+      continue;
+    size_t swIn = swNode->inputPorts.size();
+    size_t swOut = swNode->outputPorts.size();
+    std::stable_sort(cands.begin(), cands.end(),
+                     [&](const Candidate &a, const Candidate &b) {
+                       // Group candidates always come first.
+                       if (a.isGroup != b.isGroup)
+                         return a.isGroup > b.isGroup;
+                       const Node *ha = adg.getNode(a.hwNodeId);
+                       const Node *hb = adg.getNode(b.hwNodeId);
+                       if (!ha || !hb)
+                         return false;
+                       bool aExact = (ha->inputPorts.size() == swIn &&
+                                      ha->outputPorts.size() == swOut);
+                       bool bExact = (hb->inputPorts.size() == swIn &&
+                                      hb->outputPorts.size() == swOut);
+                       return aExact > bExact;
+                     });
+  }
+
   return candidates;
 }
 

@@ -59,4 +59,26 @@ if [[ -d "${SMOKE_DIR}" ]]; then
   fi
 fi
 
-loom_run_suite "${PARALLEL_FILE}" "Mapper Smoke" "mapper-smoke" "30"
+# Tier 2: pick first S* stress dir if any.
+STRESS_DIR="${ROOT_DIR}/tests/mapper/stress"
+if [[ -d "${STRESS_DIR}" ]]; then
+  rel_stress_script=$(loom_relpath "${SCRIPT_DIR}/mapper_stress.sh")
+  first_stress=$(find "${STRESS_DIR}" -mindepth 1 -maxdepth 1 -type d -name "S*" | sort | head -1)
+  if [[ -n "${first_stress}" ]]; then
+    rel_test=$(loom_relpath "${first_stress}")
+    rel_out="${rel_test}/Output"
+    echo "mkdir -p ${rel_out} && ${rel_stress_script} --single ${rel_loom} ${rel_test} 50" \
+      >> "${PARALLEL_FILE}"
+  fi
+fi
+
+# Tier 3: pick one representative app for gen+map smoke.
+rel_app_script=$(loom_relpath "${SCRIPT_DIR}/mapper_app.sh")
+first_app="vecsum"
+if [[ -d "${ROOT_DIR}/tests/app/${first_app}" ]]; then
+  rel_out="tests/app/${first_app}/Output"
+  echo "mkdir -p ${rel_out} && ${rel_app_script} --single ${rel_loom} ${first_app}" \
+    >> "${PARALLEL_FILE}"
+fi
+
+loom_run_suite "${PARALLEL_FILE}" "Mapper Smoke" "mapper-smoke" "60"

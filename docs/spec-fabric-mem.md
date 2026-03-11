@@ -297,8 +297,7 @@ Violations of the following constraints are compile-time errors:
 - Address ports are not `bits<ADDR_BIT_WIDTH>` or tagged `bits<ADDR_BIT_WIDTH>`
   (`CPL_MEMORY_ADDR_TYPE`).
 - Data value type does not match memref element type (`CPL_MEMORY_DATA_TYPE`).
-- Tagging requirements are not met (`CPL_MEMORY_TAG_REQUIRED`,
-  `CPL_MEMORY_TAG_FOR_SINGLE`, `CPL_MEMORY_TAG_WIDTH`).
+- Per-port input count mismatch (`stCount * 2 + ldCount` for Memory).
 - Dynamic memref shape on `fabric.memory` (`CPL_MEMORY_STATIC_REQUIRED`).
 - `fabric.extmemory` memref operand is not a module memref input
   (`CPL_MEMORY_EXTMEM_BINDING`).
