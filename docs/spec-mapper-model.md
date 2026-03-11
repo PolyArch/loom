@@ -685,6 +685,20 @@ types to their value component before comparing widths. This reflects that
 DFG port `i32` is compatible with tagged FU port `tagged<bits<32>, i4>` if
 value widths match. This relaxation applies ONLY to temporal PE FU nodes.
 
+**Positional port binding invariant**: For PE and temporal PE FU nodes,
+port binding is strictly positional: SW input port `i` maps to HW input
+port `i`, SW output port `i` maps to HW output port `i`. TechMapper
+validates candidates using this same positional assumption via
+`isSingleOpCompatible`.
+
+**Memory operand reordering contract**: Memory nodes use type-based greedy
+binding for inputs because `handshake.memory` and `fabric.memory` use
+different operand orderings (handshake: `[st_data, st_addr, ld_addr]`,
+fabric: `[ld_addr, st_addr, st_data]`). Type differentiation (address
+`bits<ADDR_BIT_WIDTH>` vs data `bits<elem_width>`) resolves the reordering.
+Memory outputs use positional binding since both conventions agree on
+output order `[ld_data, ld_done, st_done]`.
+
 Mapped ports must satisfy:
 
 - Native/tagged category compatibility (native cannot connect to tagged

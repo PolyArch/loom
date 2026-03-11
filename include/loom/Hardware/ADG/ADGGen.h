@@ -47,11 +47,16 @@ struct PESpec {
 // Memory Specification
 //===----------------------------------------------------------------------===//
 
-/// Describes an external memory group needed in the generated ADG.
+/// Distinguishes on-chip (fabric.memory) from external (fabric.extmemory).
+enum class MemKind { External, OnChip };
+
+/// Describes a memory group needed in the generated ADG.
 struct MemorySpec {
-  unsigned ldCount = 0;  // number of load ports
-  unsigned stCount = 0;  // number of store ports
+  unsigned ldCount = 0;    // number of load ports
+  unsigned stCount = 0;    // number of store ports
   unsigned dataWidth = 32; // data bit width (e.g. 32 for f32)
+  MemKind kind = MemKind::External; // on-chip SRAM vs external interface
+  unsigned memCapacity = 0; // static element count for OnChip (e.g. 256)
 
   bool operator<(const MemorySpec &o) const;
   bool operator==(const MemorySpec &o) const;

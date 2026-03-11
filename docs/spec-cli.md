@@ -17,9 +17,15 @@ Key differences:
 
 ```
 loom [options] <sources...> -o <output.llvm.ll>
+loom --adg <file.fabric.mlir>
+loom --adg <fabric.mlir> [sources...|-dfgs <f1[,f2,...]>] -o <output> [mapper-options]
+loom --gen-adg --dfgs <f1[,f2,...]> -o <output.fabric.mlir> [gen-options]
+loom --dfg-analyze --dfgs <f1[,f2,...]> -o <output.mlir> [analysis-options]
+loom --as-clang [clang-options...] [sources...]
 ```
 
-`-o` is required.
+`-o` is required in all modes except ADG validation-only (`--adg` without
+sources/DFGs) and `--help`/`--version`.
 
 ## Outputs
 
@@ -51,10 +57,12 @@ The CLI recognizes and handles these options directly:
 
 - `-h`, `--help`: print usage and exit.
 - `--version`: print the tool version and exit.
-- `-o <path>` or `-o<path>`: select the LLVM IR output path.
-- `--adg <file.fabric.mlir>`: validate a fabric MLIR file (see below).
+- `-o <path>` or `-o<path>`: select output path.
+- `--adg <file.fabric.mlir>`: validate a fabric MLIR file or specify ADG for mapping (see below).
 - `--as-clang`: operate as a standard C++ compiler (see below).
 - `--dfgs <f1.handshake.mlir[,f2,...]>`: use pre-compiled Handshake MLIR files (see below).
+- `--gen-adg`: enable ADG generation mode from DFG analysis (see below).
+- `--dfg-analyze`: enable standalone DFG analysis pass (see below).
 
 `--` terminates option parsing. All subsequent arguments are treated as input
 files, even if they begin with `-`.
@@ -327,6 +335,108 @@ loom --adg my_cgra.fabric.mlir \
 source file arguments. If source files are provided alongside `--dfgs`,
 a usage error is reported.
 
+### `--gen-adg`
+
+When `--gen-adg` is specified alongside `--dfgs` and `-o`, `loom` analyzes the
+given DFGs and generates a matching ADG (Architecture Description Graph) that
+contains the hardware resources required to map those DFGs.
+
+**Behavior:**
+
+- Parses each `.handshake.mlir` file from `--dfgs`.
+- Analyzes PE operation requirements, data widths, and memory interfaces.
+- Generates a lattice-based ADG with switches, PEs, and memory modules.
+- Exports the generated ADG to the `-o` path as fabric MLIR.
+
+**ADG generation options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--gen-topology <mesh\|cube>` | Lattice topology: 2D mesh or 3D cube | `mesh` |
+| `--gen-track <n>` | Switch routing track count (more tracks = more routing resources) | 1 |
+| `--gen-fifo-mode <none\|single\|dual>` | FIFO insertion mode on inter-switch edges | `none` |
+| `--gen-fifo-depth <n>` | FIFO depth when FIFOs are enabled | 2 |
+| `--gen-fifo-bypassable` | Make inserted FIFOs bypassable (combinational path available) | off |
+| `--gen-temporal` | Generate temporal domain (dual-mesh with tag bridges for time-multiplexed execution) | off |
+
+**Combinable with DFG analysis:**
+
+`--gen-adg` can be combined with `--dfg-analyze` and `--dump-analysis` to
+enable analysis-guided generation. When `--dfg-analyze` is active during
+generation, the analysis results (loop depth, execution frequency, temporal
+score) drive spatial/temporal PE partitioning.
+
+**Examples:**
+
+```bash
+# Basic ADG generation from one DFG
+loom --gen-adg --dfgs app.handshake.mlir -o app.fabric.mlir
+
+# Multi-DFG generation with extra routing tracks
+loom --gen-adg --dfgs a.handshake.mlir,b.handshake.mlir \
+     -o combined.fabric.mlir --gen-track 2
+
+# Generation with Cube3D topology and FIFOs
+loom --gen-adg --dfgs app.handshake.mlir -o app.fabric.mlir \
+     --gen-topology cube --gen-fifo-mode single --gen-fifo-depth 4
+
+# Analysis-guided temporal generation
+loom --gen-adg --dfg-analyze --dump-analysis \
+     --dfgs app.handshake.mlir -o app.fabric.mlir \
+     --gen-temporal --temporal-threshold 0.3
+```
+
+**Incompatibilities:**
+
+`--gen-adg` is mutually exclusive with `--adg`. `--gen-adg` requires `--dfgs`
+and `-o`. Generation-specific options (`--gen-topology`, `--gen-track`,
+`--gen-fifo-*`, `--gen-temporal`) are only meaningful with `--gen-adg`.
+
+### `--dfg-analyze`
+
+When `--dfg-analyze` is specified alongside `--dfgs`, `loom` runs the DFG
+analysis pass on the given Handshake MLIR files. The analysis computes
+per-operation metrics and annotates the MLIR with `loom.analysis` attributes.
+
+**Behavior:**
+
+- Parses each `.handshake.mlir` file from `--dfgs`.
+- Runs two-level analysis:
+  - Level A (MLIR-level): loop depth, execution frequency
+  - Level B (graph-level): recurrence detection, critical path, temporal score
+- Annotates operations with `loom.analysis` attributes containing computed
+  metrics.
+- Outputs annotated MLIR to the `-o` path.
+
+**Analysis options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--dfg-analyze` | Enable DFG analysis pass | off |
+| `--temporal-threshold <f>` | Temporal score threshold for classifying ops as temporal candidates (0.0-1.0) | 0.5 |
+| `--dump-analysis` | Print analysis summary to stdout (operation counts, temporal scores, partitioning) | off |
+
+**Standalone vs combined usage:**
+
+- **Standalone**: `--dfg-analyze --dfgs ... -o ...` runs analysis only and
+  outputs annotated MLIR.
+- **With `--gen-adg`**: analysis results guide ADG generation (spatial/temporal
+  PE partitioning based on temporal scores).
+- **With `--adg` (mapper)**: if the DFG has pre-annotated `loom.analysis`
+  attributes, the mapper can use them for placement heuristics.
+
+**Examples:**
+
+```bash
+# Standalone analysis with summary output
+loom --dfg-analyze --dump-analysis \
+     --dfgs app.handshake.mlir -o app.analyzed.mlir
+
+# Analysis with custom temporal threshold
+loom --dfg-analyze --temporal-threshold 0.3 \
+     --dfgs app.handshake.mlir -o app.analyzed.mlir
+```
+
 ## Stage C: Mapper Invocation
 
 When `--adg` is specified alongside source files (or `--dfgs`)
@@ -347,7 +457,7 @@ conversion (or directly from the provided DFG files).
 | `--mapper-budget <seconds>` | Search time limit for CP-SAT solver | 60 |
 | `--mapper-seed <int>` | Deterministic seed for tie-breaking | 0 (deterministic) |
 | `--mapper-profile <name>` | Weight profile: `balanced`, `cpsat_full`, `heuristic_only`, `throughput_first`, `area_power_first`, `deterministic_debug` | `balanced` |
-| `--dump-mapping` | Emit human-readable mapping report | off |
+| `--mapper-verbose` | Enable verbose mapper logging | off |
 
 **Mapper outputs** (in addition to Stage A outputs):
 
@@ -355,7 +465,9 @@ conversion (or directly from the provided DFG files).
 |------|-------------|
 | `<name>.config.bin` | Binary config_mem image |
 | `<name>_addr.h` | C header with per-node addresses and masks |
-| `<name>.mapping.json` | Mapping report (only with `--dump-mapping`) |
+| `<name>.map.json` | Machine-readable mapping metadata (always emitted) |
+| `<name>.map.txt` | Human-readable mapping report (always emitted) |
+| `<name>.fabric.mlir` | Configured fabric MLIR with route tables (always emitted) |
 
 Output path derivation follows the same `-o` base name convention as
 Stage A.
@@ -408,6 +520,67 @@ Forward references:
 - `1`: Usage error, compilation failure, MLIR conversion failure, verification
   failure, or output/write failure.
 
+## Complete CLI Reference
+
+All user-visible command-line options in one table:
+
+### General Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `-h`, `--help` | flag | - | Print usage and exit |
+| `--version` | flag | - | Print version and exit |
+| `-o <path>` | string | (required) | Output file path |
+| `--` | separator | - | Treat all following arguments as input files |
+
+### ADG and DFG Input Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--adg <path>` | string | (none) | Load fabric MLIR as ADG (validation or mapping) |
+| `--dfgs <f1[,f2,...]>` | string | (none) | Comma-separated pre-compiled Handshake MLIR files |
+| `--as-clang` | flag | off | Invoke clang driver mode (compile ADG programs) |
+
+### Mapper Options (used with `--adg` + sources/DFGs)
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--mapper-budget <seconds>` | double | 60 | CP-SAT solver search time limit |
+| `--mapper-seed <int>` | int | 0 | Deterministic seed for reproducible mapping |
+| `--mapper-profile <name>` | string | `balanced` | Weight profile (`balanced`, `cpsat_full`, `heuristic_only`, `throughput_first`, `area_power_first`, `deterministic_debug`) |
+| `--mapper-verbose` | flag | off | Enable verbose mapper logging |
+
+### ADG Generation Options (used with `--gen-adg`)
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--gen-adg` | flag | off | Enable ADG generation from DFG analysis |
+| `--gen-topology <mesh\|cube>` | string | `mesh` | Lattice topology (2D mesh or 3D cube) |
+| `--gen-track <n>` | unsigned | 1 | Switch routing track count |
+| `--gen-fifo-mode <none\|single\|dual>` | string | `none` | FIFO insertion mode on inter-switch edges |
+| `--gen-fifo-depth <n>` | unsigned | 2 | FIFO depth when FIFOs are enabled |
+| `--gen-fifo-bypassable` | flag | off | Make inserted FIFOs bypassable |
+| `--gen-temporal` | flag | off | Generate temporal domain (dual-mesh with tag bridges) |
+
+### DFG Analysis Options (used with `--dfg-analyze`)
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--dfg-analyze` | flag | off | Enable DFG analysis pass |
+| `--temporal-threshold <f>` | double | 0.5 | Temporal score threshold for op classification |
+| `--dump-analysis` | flag | off | Print analysis summary to stdout |
+
+### Operating Modes
+
+| Mode | Invocation | Description |
+|------|-----------|-------------|
+| Compilation | `loom <sources> -o <out>` | Compile C++ to LLVM IR, then to MLIR (LLVM -> SCF -> Handshake) |
+| ADG Validation | `loom --adg <fabric.mlir>` | Parse and verify fabric MLIR, exit 0/1 |
+| Mapping | `loom --adg <fabric.mlir> --dfgs <dfgs> -o <out>` | Place-and-route DFGs onto ADG |
+| ADG Generation | `loom --gen-adg --dfgs <dfgs> -o <out.fabric.mlir>` | Generate ADG from DFG requirements |
+| DFG Analysis | `loom --dfg-analyze --dfgs <dfgs> -o <out.mlir>` | Analyze DFGs and annotate with metrics |
+| Clang Driver | `loom --as-clang [args...]` | Standard C++ compiler with ADG lib linking |
+
 ## Related Documents
 
 - [spec-loom.md](./spec-loom.md): End-to-end Loom compilation and mapping pipeline
@@ -417,7 +590,8 @@ Forward references:
 - [spec-mapper.md](./spec-mapper.md): Mapper place-and-route bridge from Handshake to Fabric
 - [spec-mapper-model.md](./spec-mapper-model.md): Mapper data model and hard constraints
 - [spec-mapper-algorithm.md](./spec-mapper-algorithm.md): Mapper algorithm contract
-- [spec-mapper-output.md](./spec-mapper-output.md): Mapper output formats (mapping.json, config.bin, addr.h)
+- [spec-mapper-output.md](./spec-mapper-output.md): Mapper output formats (map.json, map.txt, config.bin, addr.h)
+- [spec-fabric-mem.md](./spec-fabric-mem.md): Memory specification (fabric.memory, fabric.extmemory)
 - [spec-adg.md](./spec-adg.md): ADG stage definition and outputs
 - [spec-adg-sysc.md](./spec-adg-sysc.md): SystemC backend artifacts
 - [spec-adg-sv.md](./spec-adg-sv.md): SystemVerilog backend artifacts

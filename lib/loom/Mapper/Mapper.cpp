@@ -631,25 +631,14 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
           }
         }
       }
-      {
-        llvm::SmallVector<bool> hwOutUsed(adgExtmem->outputPorts.size(),
-                                          false);
-        for (size_t si = 0; si < dfgExtmem->outputPorts.size(); ++si) {
-          const Port *sp = dfg.getPort(dfgExtmem->outputPorts[si]);
-          if (!sp)
-            continue;
-          for (size_t hi = 0; hi < adgExtmem->outputPorts.size(); ++hi) {
-            if (hwOutUsed[hi])
-              continue;
-            const Port *hp = adg.getPort(adgExtmem->outputPorts[hi]);
-            if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
-              state.mapPort(dfgExtmem->outputPorts[si],
-                            adgExtmem->outputPorts[hi], dfg, adg);
-              hwOutUsed[hi] = true;
-              break;
-            }
-          }
-        }
+      // Extmemory outputs: positional mapping (matches single-op
+      // placement and TechMapper convention).
+      for (size_t i = 0;
+           i < dfgExtmem->outputPorts.size() &&
+           i < adgExtmem->outputPorts.size();
+           ++i) {
+        state.mapPort(dfgExtmem->outputPorts[i],
+                      adgExtmem->outputPorts[i], dfg, adg);
       }
       preBoundExtmem.insert(dfgExtIt->second);
       break;

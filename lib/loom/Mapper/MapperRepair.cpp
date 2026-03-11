@@ -26,13 +26,6 @@ llvm::StringRef getNodeOpNameRepair(const Node *node) {
   return "";
 }
 
-/// Check if a node is a memory operation.
-bool isMemoryOpRepair(const Node *node) {
-  llvm::StringRef opName = getNodeOpNameRepair(node);
-  return opName.contains("load") || opName.contains("store") ||
-         opName.contains("memory");
-}
-
 /// Get the "resource_class" attribute from a node, or empty string.
 llvm::StringRef getNodeResourceClassRepair(const Node *node) {
   for (auto &attr : node->attributes)

@@ -168,6 +168,37 @@ compute operations.
 
 Select the best candidate and commit `MapNode`.
 
+#### Port Binding Strategy
+
+After node placement, the mapper binds software ports to hardware ports.
+The binding strategy depends on node type:
+
+- **PE / temporal PE FU**: positional for both inputs and outputs. Port
+  positions are semantically fixed (no internal mux). TechMapper validates
+  compatibility positionally via `isSingleOpCompatible`. SW input port `i`
+  maps to HW input port `i`, SW output port `i` maps to HW output port `i`.
+
+- **Memory nodes** (`resource_class=memory`): type-based greedy for inputs
+  (handles operand reordering between `handshake.memory` input order
+  `[st_data, st_addr, ld_addr]` and `fabric.memory` input order
+  `[ld_addr, st_addr, st_data]`). Positional for outputs (both conventions
+  agree on output order `[ld_data, ld_done, st_done]`).
+
+- **Group/techmap**: sequential offset binding for external ports only.
+  Internal ports (connected to other group members) are skipped. External
+  input ports are bound to consecutive PE input ports, and external output
+  ports to consecutive PE output ports, in group member order.
+
+- **Non-memref sentinels**: type-compatible matching for sentinel-to-sentinel
+  node binding (defensive: handles potential ordering mismatches between DFG
+  and ADG sentinel lists). Port binding within each matched sentinel pair is
+  positional.
+
+- **Memref sentinels**: special-cased with downstream extmemory compatibility
+  check (memref type equality + port count `<=`). Pre-binds the downstream
+  extmemory node with type-based greedy inputs (same rationale as memory
+  nodes) and positional outputs.
+
 **Operation group handling**: When a multi-operation PE body match is
 selected, all operations in the group are placed simultaneously to the
 same hardware node via batch `MapNode`.

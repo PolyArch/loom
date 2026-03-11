@@ -51,13 +51,6 @@ int64_t getIntAttr(const Node *node, llvm::StringRef name,
   return dflt;
 }
 
-/// Check if a node is a memory operation.
-bool isMemoryOp(const Node *node) {
-  llvm::StringRef opName = getStrAttr(node, "op_name");
-  return opName.contains("load") || opName.contains("store") ||
-         opName.contains("memory");
-}
-
 /// Check if a node has a specific attribute.
 bool hasAttr(const Node *node, llvm::StringRef name) {
   for (auto &attr : node->attributes)
@@ -430,14 +423,7 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
         const Node *swNode = dfg.getNode(sw);
         const Node *hwNode = adg.getNode(hw);
         if (swNode && hwNode) {
-          bool isMem = isMemoryOp(hwNode);
-          bool temporalFU = isTemporalPEFU(hwNode);
-          auto portTypeOk = [temporalFU](mlir::Type swType,
-                                         mlir::Type hwType) {
-            return temporalFU
-                       ? isTypeWidthCompatibleForTemporalFU(swType, hwType)
-                       : isTypeWidthCompatible(swType, hwType);
-          };
+          bool isMem = (getStrAttr(hwNode, "resource_class") == "memory");
           if (isMem && swNode->inputPorts.size() <= hwNode->inputPorts.size()) {
             llvm::SmallVector<bool> hwUsed(hwNode->inputPorts.size(), false);
             for (size_t p = 0; p < swNode->inputPorts.size(); ++p) {
@@ -446,7 +432,7 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
               for (size_t h = 0; h < hwNode->inputPorts.size(); ++h) {
                 if (hwUsed[h]) continue;
                 const Port *hp = adg.getPort(hwNode->inputPorts[h]);
-                if (hp && portTypeOk(sp->type, hp->type)) {
+                if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
                   result.state.mapPort(swNode->inputPorts[p],
                                        hwNode->inputPorts[h], dfg, adg);
                   hwUsed[h] = true;
@@ -780,14 +766,7 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
         const Node *swNode = dfg.getNode(sw);
         const Node *hwNode = adg.getNode(hw);
         if (swNode && hwNode) {
-          bool isMem = isMemoryOp(hwNode);
-          bool temporalFU = isTemporalPEFU(hwNode);
-          auto portTypeOk = [temporalFU](mlir::Type swType,
-                                         mlir::Type hwType) {
-            return temporalFU
-                       ? isTypeWidthCompatibleForTemporalFU(swType, hwType)
-                       : isTypeWidthCompatible(swType, hwType);
-          };
+          bool isMem = (getStrAttr(hwNode, "resource_class") == "memory");
           if (isMem && swNode->inputPorts.size() <= hwNode->inputPorts.size()) {
             llvm::SmallVector<bool> hwUsed(hwNode->inputPorts.size(), false);
             // Mark already-mapped HW ports.
@@ -807,7 +786,7 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
               for (size_t h = 0; h < hwNode->inputPorts.size(); ++h) {
                 if (hwUsed[h]) continue;
                 const Port *hp = adg.getPort(hwNode->inputPorts[h]);
-                if (hp && portTypeOk(sp->type, hp->type)) {
+                if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
                   result.state.mapPort(swNode->inputPorts[p],
                                        hwNode->inputPorts[h], dfg, adg);
                   hwUsed[h] = true;

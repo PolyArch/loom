@@ -81,16 +81,20 @@ bool PESpec::operator==(const PESpec &o) const {
 //===----------------------------------------------------------------------===//
 
 bool MemorySpec::operator<(const MemorySpec &o) const {
+  if (kind != o.kind)
+    return kind < o.kind;
   if (ldCount != o.ldCount)
     return ldCount < o.ldCount;
   if (stCount != o.stCount)
     return stCount < o.stCount;
-  return dataWidth < o.dataWidth;
+  if (dataWidth != o.dataWidth)
+    return dataWidth < o.dataWidth;
+  return memCapacity < o.memCapacity;
 }
 
 bool MemorySpec::operator==(const MemorySpec &o) const {
-  return ldCount == o.ldCount && stCount == o.stCount &&
-         dataWidth == o.dataWidth;
+  return kind == o.kind && ldCount == o.ldCount && stCount == o.stCount &&
+         dataWidth == o.dataWidth && memCapacity == o.memCapacity;
 }
 
 //===----------------------------------------------------------------------===//
@@ -132,8 +136,10 @@ std::string MergedRequirements::computeHash() const {
   for (const auto &[w, c] : maxOutputsByWidth)
     os << "out" << w << "x" << c;
   for (const auto &[spec, count] : maxMemoryCounts)
-    os << "mem" << spec.ldCount << "l" << spec.stCount << "s"
-       << spec.dataWidth << "w" << "x" << count;
+    os << (spec.kind == MemKind::OnChip ? "omem" : "mem")
+       << spec.ldCount << "l" << spec.stCount << "s"
+       << spec.dataWidth << "w" << "cap" << spec.memCapacity
+       << "x" << count;
   size_t h = hasher(os.str());
   std::ostringstream hex;
   hex << std::hex << (h & 0xFFFFFFFF);
@@ -671,6 +677,11 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
 
   std::map<unsigned, unsigned> nextCellByWidth;
 
+  // Cache PE definitions to avoid duplicate symbol names.
+  std::map<std::string, PEHandle> regularPEDefs;
+  std::map<unsigned, LoadPEHandle> loadPEDefs;
+  std::map<unsigned, StorePEHandle> storePEDefs;
+
   for (auto &p : placements) {
     // Allocate cells in each width's lattice.
     for (auto &[w, wp] : p.portsByWidth) {
@@ -692,28 +703,41 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
 
     switch (p.kind) {
     case PEPlacement::RegularPE: {
-      PEHandle peHandle = createPEDef(builder, *p.spec);
-      std::string instName = p.spec->peName() + "_r" + std::to_string(nr) +
+      std::string defName = p.spec->peName();
+      auto it = regularPEDefs.find(defName);
+      if (it == regularPEDefs.end()) {
+        PEHandle peHandle = createPEDef(builder, *p.spec);
+        it = regularPEDefs.emplace(defName, peHandle).first;
+      }
+      std::string instName = defName + "_r" + std::to_string(nr) +
                              "_c" + std::to_string(nc);
-      peInst = builder.clone(peHandle, instName);
+      peInst = builder.clone(it->second, instName);
       break;
     }
     case PEPlacement::MemLoadPE: {
-      LoadPEHandle loadDef =
-          builder.newLoadPE("load_pe_w" + std::to_string(p.dataWidth))
-              .setDataType(widthToNativeType(p.dataWidth));
+      auto it = loadPEDefs.find(p.dataWidth);
+      if (it == loadPEDefs.end()) {
+        LoadPEHandle loadDef =
+            builder.newLoadPE("load_pe_w" + std::to_string(p.dataWidth))
+                .setDataType(widthToNativeType(p.dataWidth));
+        it = loadPEDefs.emplace(p.dataWidth, loadDef).first;
+      }
       std::string instName =
           "load_pe_r" + std::to_string(nr) + "_c" + std::to_string(nc);
-      peInst = builder.clone(loadDef, instName);
+      peInst = builder.clone(it->second, instName);
       break;
     }
     case PEPlacement::MemStorePE: {
-      StorePEHandle storeDef =
-          builder.newStorePE("store_pe_w" + std::to_string(p.dataWidth))
-              .setDataType(widthToNativeType(p.dataWidth));
+      auto it = storePEDefs.find(p.dataWidth);
+      if (it == storePEDefs.end()) {
+        StorePEHandle storeDef =
+            builder.newStorePE("store_pe_w" + std::to_string(p.dataWidth))
+                .setDataType(widthToNativeType(p.dataWidth));
+        it = storePEDefs.emplace(p.dataWidth, storeDef).first;
+      }
       std::string instName =
           "store_pe_r" + std::to_string(nr) + "_c" + std::to_string(nc);
-      peInst = builder.clone(storeDef, instName);
+      peInst = builder.clone(it->second, instName);
       break;
     }
     }
@@ -775,85 +799,122 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
   unsigned memIdx = 0;
   for (const auto &[memSpec, count] : reqs.maxMemoryCounts) {
     Type elemType = widthToNativeType(memSpec.dataWidth);
-    MemrefType memrefTy = MemrefType::dynamic1D(elemType);
+    bool isOnChip = (memSpec.kind == MemKind::OnChip);
+    unsigned lsqDepth = (memSpec.stCount > 0)
+                            ? std::max(1u, memSpec.stCount)
+                            : 0;
 
-    ExtMemoryHandle extMemDef =
-        builder.newExtMemory("extmem_" + std::to_string(memIdx))
-            .setLoadPorts(memSpec.ldCount)
-            .setStorePorts(memSpec.stCount)
-            .setShape(memrefTy);
+    // Create memory definition: on-chip (fabric.memory) or external
+    // (fabric.extmemory). The builder has separate handle types for each,
+    // so we store both and use the appropriate one.
+    MemoryHandle onChipDef{0};
+    ExtMemoryHandle extMemDef{0};
+    if (isOnChip) {
+      unsigned capacity =
+          memSpec.memCapacity > 0 ? memSpec.memCapacity : 64;
+      MemrefType memrefTy = MemrefType::static1D(capacity, elemType);
+      auto memBuilder =
+          builder.newMemory("mem_" + std::to_string(memIdx));
+      memBuilder.setLoadPorts(memSpec.ldCount)
+          .setStorePorts(memSpec.stCount)
+          .setPrivate(true)
+          .setShape(memrefTy);
+      if (lsqDepth > 0)
+        memBuilder.setQueueDepth(lsqDepth);
+      onChipDef = memBuilder;
+    } else {
+      MemrefType memrefTy = MemrefType::dynamic1D(elemType);
+      auto extBuilder =
+          builder.newExtMemory("extmem_" + std::to_string(memIdx));
+      extBuilder.setLoadPorts(memSpec.ldCount)
+          .setStorePorts(memSpec.stCount)
+          .setShape(memrefTy);
+      if (lsqDepth > 0)
+        extBuilder.setQueueDepth(lsqDepth);
+      extMemDef = extBuilder;
+    }
 
     for (unsigned i = 0; i < count; ++i) {
       std::string instName =
-          "extmem_" + std::to_string(memIdx) + "_" + std::to_string(i);
-      InstanceHandle extInst = builder.clone(extMemDef, instName);
+          (isOnChip ? "mem_" : "extmem_") + std::to_string(memIdx) +
+          "_" + std::to_string(i);
+      InstanceHandle memInst = isOnChip
+                                   ? builder.clone(onChipDef, instName)
+                                   : builder.clone(extMemDef, instName);
 
-      // Connect memref module input to ExtMem port 0.
-      std::string memPortName =
-          "mem_" + std::to_string(memIdx) + "_" + std::to_string(i);
-      PortHandle memPort = builder.addModuleInput(memPortName, memrefTy);
-      builder.connectToModuleInput(memPort, extInst, 0);
+      // For extmemory: connect memref module input to port 0.
+      // For on-chip memory: no memref input port.
+      unsigned memInPort = 0;
+      if (!isOnChip) {
+        Type extElemType = widthToNativeType(memSpec.dataWidth);
+        MemrefType extMemrefTy = MemrefType::dynamic1D(extElemType);
+        std::string memPortName =
+            "mem_" + std::to_string(memIdx) + "_" + std::to_string(i);
+        PortHandle memPort =
+            builder.addModuleInput(memPortName, extMemrefTy);
+        builder.connectToModuleInput(memPort, memInst, 0);
+        memInPort = 1; // Skip memref port
+      }
 
-      // ExtMem port layout (after memref):
-      //   inputs:  [ld_addr_0..ld_addr_N, st_addr_0..st_addr_M, st_data_0..st_data_M]
-      //   outputs: [ld_data_0..ld_data_N, ld_done_0..ld_done_N, st_done_0..st_done_M]
-      unsigned extInPort = 1; // Start after memref
+      // Memory port layout (after optional memref):
+      //   inputs:  [ld_addr, st_addr, st_data]
+      //   outputs: [ld_data, ld_done, st_done]
 
-      // Load addr: lattice 57-bit output → ExtMem input
+      // Load addr: lattice 57-bit output -> memory input
       for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
         auto &lat = lattices[ADDR_BIT_WIDTH];
         unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
         auto &slot = lat.outputSlots[slotIdx];
         builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
-                             slot.switchPort, extInst, extInPort++);
+                             slot.switchPort, memInst, memInPort++);
       }
 
-      // Store addr: lattice 57-bit output → ExtMem input
+      // Store addr: lattice 57-bit output -> memory input
       for (unsigned st = 0; st < memSpec.stCount; ++st) {
         auto &lat = lattices[ADDR_BIT_WIDTH];
         unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
         auto &slot = lat.outputSlots[slotIdx];
         builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
-                             slot.switchPort, extInst, extInPort++);
+                             slot.switchPort, memInst, memInPort++);
       }
 
-      // Store data: lattice W-bit output → ExtMem input
+      // Store data: lattice W-bit output -> memory input
       for (unsigned st = 0; st < memSpec.stCount; ++st) {
         auto &lat = lattices[memSpec.dataWidth];
         unsigned slotIdx = nextExtOutSlot[memSpec.dataWidth]++;
         auto &slot = lat.outputSlots[slotIdx];
         builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
-                             slot.switchPort, extInst, extInPort++);
+                             slot.switchPort, memInst, memInPort++);
       }
 
-      unsigned extOutPort = 0;
+      unsigned memOutPort = 0;
 
-      // Load data: ExtMem output → lattice W-bit input
+      // Load data: memory output -> lattice W-bit input
       for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
         auto &lat = lattices[memSpec.dataWidth];
         unsigned slotIdx = nextExtInSlot[memSpec.dataWidth]++;
         auto &slot = lat.inputSlots[slotIdx];
-        builder.connectPorts(extInst, extOutPort++,
+        builder.connectPorts(memInst, memOutPort++,
                              lat.swGrid[slot.swRow][slot.swCol],
                              slot.switchPort);
       }
 
-      // Load done: ExtMem output → lattice none input
+      // Load done: memory output -> lattice none input
       for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
         auto &lat = lattices[0];
         unsigned slotIdx = nextExtInSlot[0]++;
         auto &slot = lat.inputSlots[slotIdx];
-        builder.connectPorts(extInst, extOutPort++,
+        builder.connectPorts(memInst, memOutPort++,
                              lat.swGrid[slot.swRow][slot.swCol],
                              slot.switchPort);
       }
 
-      // Store done: ExtMem output → lattice none input
+      // Store done: memory output -> lattice none input
       for (unsigned st = 0; st < memSpec.stCount; ++st) {
         auto &lat = lattices[0];
         unsigned slotIdx = nextExtInSlot[0]++;
         auto &slot = lat.inputSlots[slotIdx];
-        builder.connectPorts(extInst, extOutPort++,
+        builder.connectPorts(memInst, memOutPort++,
                              lat.swGrid[slot.swRow][slot.swCol],
                              slot.switchPort);
       }

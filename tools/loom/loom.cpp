@@ -639,13 +639,21 @@ int main(int argc, char **argv) {
           llvm::errs() << "\n";
           return mlir::success();
         });
+    analyze_context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
+    analyze_context.getOrLoadDialect<mlir::DLTIDialect>();
     analyze_context.getOrLoadDialect<mlir::arith::ArithDialect>();
+    analyze_context.getOrLoadDialect<mlir::cf::ControlFlowDialect>();
+    analyze_context.getOrLoadDialect<mlir::func::FuncDialect>();
     analyze_context.getOrLoadDialect<mlir::math::MathDialect>();
     analyze_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
-    analyze_context.getOrLoadDialect<mlir::func::FuncDialect>();
+    analyze_context.getOrLoadDialect<mlir::scf::SCFDialect>();
+    analyze_context.getOrLoadDialect<mlir::ub::UBDialect>();
     analyze_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
     analyze_context.getOrLoadDialect<loom::fabric::FabricDialect>();
     analyze_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+    analyze_context.getOrLoadDialect<circt::esi::ESIDialect>();
+    analyze_context.getOrLoadDialect<circt::hw::HWDialect>();
+    analyze_context.getOrLoadDialect<circt::seq::SeqDialect>();
 
     // Parse all DFG files.
     mlir::ParserConfig analyze_parser_config(&analyze_context);
@@ -727,13 +735,21 @@ int main(int argc, char **argv) {
           llvm::errs() << "\n";
           return mlir::success();
         });
+    gen_context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
+    gen_context.getOrLoadDialect<mlir::DLTIDialect>();
     gen_context.getOrLoadDialect<mlir::arith::ArithDialect>();
+    gen_context.getOrLoadDialect<mlir::cf::ControlFlowDialect>();
+    gen_context.getOrLoadDialect<mlir::func::FuncDialect>();
     gen_context.getOrLoadDialect<mlir::math::MathDialect>();
     gen_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
-    gen_context.getOrLoadDialect<mlir::func::FuncDialect>();
+    gen_context.getOrLoadDialect<mlir::scf::SCFDialect>();
+    gen_context.getOrLoadDialect<mlir::ub::UBDialect>();
     gen_context.getOrLoadDialect<loom::dataflow::DataflowDialect>();
     gen_context.getOrLoadDialect<loom::fabric::FabricDialect>();
     gen_context.getOrLoadDialect<circt::handshake::HandshakeDialect>();
+    gen_context.getOrLoadDialect<circt::esi::ESIDialect>();
+    gen_context.getOrLoadDialect<circt::hw::HWDialect>();
+    gen_context.getOrLoadDialect<circt::seq::SeqDialect>();
 
     // Parse all DFG files.
     mlir::ParserConfig gen_parser_config(&gen_context);
@@ -799,10 +815,42 @@ int main(int argc, char **argv) {
 
           std::string opName = op.getName().getStringRef().str();
 
-          // Detect external memory operations and build MemorySpec.
+          // Detect on-chip memory operations (handshake.memory).
+          if (auto memOp =
+                  mlir::dyn_cast<circt::handshake::MemoryOp>(&op)) {
+            unsigned ld = memOp.getLdCount();
+            unsigned st = memOp.getStCount();
+            if (ld > 1 || st > 1) {
+              llvm::errs()
+                  << "warning: skipping multi-port handshake.memory"
+                  << " (ld=" << ld << ", st=" << st << ")"
+                  << " -- tagged multi-port memory generation"
+                  << " not yet supported\n";
+              continue;
+            }
+            loom::adg::MemorySpec memSpec;
+            memSpec.kind = loom::adg::MemKind::OnChip;
+            memSpec.ldCount = ld;
+            memSpec.stCount = st;
+            mlir::MemRefType memrefTy = memOp.getMemRefType();
+            if (memrefTy) {
+              mlir::Type elemTy = memrefTy.getElementType();
+              if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(elemTy))
+                memSpec.dataWidth = intTy.getWidth();
+              else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(elemTy))
+                memSpec.dataWidth = floatTy.getWidth();
+              if (memrefTy.hasStaticShape())
+                memSpec.memCapacity = memrefTy.getNumElements();
+            }
+            analysis.memoryCounts[memSpec]++;
+            continue;
+          }
+
+          // Detect external memory operations (handshake.extmemory).
           if (auto extMemOp =
                   mlir::dyn_cast<circt::handshake::ExternalMemoryOp>(&op)) {
             loom::adg::MemorySpec memSpec;
+            memSpec.kind = loom::adg::MemKind::External;
             memSpec.ldCount = extMemOp.getLdCount();
             memSpec.stCount = extMemOp.getStCount();
             auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(
@@ -947,6 +995,8 @@ int main(int argc, char **argv) {
 
             // Skip memory and handshake ops (always spatial, handled
             // separately via I/O and memory requirements).
+            if (mlir::isa<circt::handshake::MemoryOp>(&op))
+              continue;
             if (mlir::isa<circt::handshake::ExternalMemoryOp>(&op))
               continue;
             if (llvm::StringRef(opName).starts_with("handshake."))

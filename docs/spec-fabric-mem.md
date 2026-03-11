@@ -154,6 +154,20 @@ For `fabric.extmemory`, the first operand is always the memref input that binds
 to a `fabric.module` memref input port. For `fabric.memory`, there is no memref
 operand.
 
+### Operand Ordering Convention
+
+Fabric memory input operand order: `(ld_addr, st_addr, st_data)`. For
+`fabric.extmemory`, the memref operand is prepended, giving
+`(memref, ld_addr, st_addr, st_data)`.
+
+Fabric memory output result order: `(ld_data, ld_done, st_done)`.
+
+Note that `handshake.memory` / `handshake.extmemory` may use a different
+input operand ordering (e.g., `[st_data, st_addr, ld_addr]`). The mapper
+handles this mismatch via type-based input port binding for memory nodes
+(see [spec-mapper-algorithm.md](./spec-mapper-algorithm.md), Port Binding
+Strategy).
+
 ### Type Rules
 
 Address and data types:

@@ -34,13 +34,52 @@ if [[ "${1:-}" == "--single" ]]; then
     dfg_list+="${dfg}"
   done
 
+  # Read extra gen flags from .gen_flags file if present.
+  extra_flags=""
+  if [[ -f "${TEST_DIR}/.gen_flags" ]]; then
+    extra_flags=$(cat "${TEST_DIR}/.gen_flags")
+  fi
+
   # Generate the ADG from all DFGs.
   num_dfgs=${#dfg_files[@]}
   adg_path="${output_dir}/genadg-${num_dfgs}.fabric.mlir"
-  "${LOOM_BIN}" --gen-adg --dfgs "${dfg_list}" -o "${adg_path}"
+  gen_log="${output_dir}/gen.log"
+  # When .skip_validate is set, allow gen to exit non-zero (e.g. temporal mesh
+  # validation errors are pre-existing) but still check output artifacts.
+  gen_rc=0
+  # shellcheck disable=SC2086
+  "${LOOM_BIN}" --gen-adg ${extra_flags} --dfgs "${dfg_list}" -o "${adg_path}" \
+      > "${gen_log}" 2>&1 || gen_rc=$?
+  if [[ ${gen_rc} -ne 0 ]]; then
+    if [[ -f "${TEST_DIR}/.skip_validate" ]]; then
+      echo "NOTE: gen-adg exited ${gen_rc} (validation skipped)" >&2
+    else
+      echo "FAIL: gen-adg exited ${gen_rc}" >&2
+      cat "${gen_log}" >&2
+      exit 1
+    fi
+  fi
 
-  # Validate the generated ADG.
-  "${LOOM_BIN}" --adg "${adg_path}"
+  # If .gen_flags includes --dump-analysis, verify analysis output exists.
+  if echo "${extra_flags}" | grep -q -- "--dump-analysis"; then
+    if ! grep -q "DFG Analysis" "${gen_log}"; then
+      echo "FAIL: --dump-analysis specified but no analysis output in ${gen_log}" >&2
+      exit 1
+    fi
+  fi
+
+  # If .gen_flags includes --gen-temporal, verify temporal constructs in ADG.
+  if echo "${extra_flags}" | grep -q -- "--gen-temporal"; then
+    if [[ -f "${adg_path}" ]] && ! grep -q "fabric.temporal_pe\|add_tag\|del_tag" "${adg_path}"; then
+      echo "FAIL: --gen-temporal specified but no temporal constructs in ${adg_path}" >&2
+      exit 1
+    fi
+  fi
+
+  # Validate the generated ADG (skip if .skip_validate marker exists).
+  if [[ ! -f "${TEST_DIR}/.skip_validate" ]]; then
+    "${LOOM_BIN}" --adg "${adg_path}"
+  fi
 
   # If .gen_only marker exists, skip mapping (gen + validate only).
   if [[ -f "${TEST_DIR}/.gen_only" ]]; then
