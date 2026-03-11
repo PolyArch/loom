@@ -23,11 +23,11 @@ classify_domain() {
     matmul|gemm|gemv|mat*|syrk|cholesky|lu_decomp|transpose*) echo "matrix" ;;
     fir*|iir*|convolve*|fft*|dct*|dwt*|downsample*|upsample*) echo "dsp" ;;
     conv2d|depthwise*|maxpool*|relu*|softmax*|batchnorm*|layer*|neural*|col2im*) echo "neural" ;;
-    spmv|spmm|sparse*|csr*|coo*|gather*|scatter*|compact*) echo "sparse" ;;
+    spmv|spmm|spmsp*|sparse*|csr*|coo*|gather*|scatter*|compact*) echo "sparse" ;;
     stencil*|jacobi*|blur*|sobel*|gauss*|edge*|median*) echo "stencil" ;;
     *sort*|binary_search*|search*|bsearch*|bitonic*|compare_swap*|merge*) echo "sort-search" ;;
     cumsum|reduce*|prefix*|scan*|histogram*) echo "reduction" ;;
-    crc*|popcount|clz|ctz|bit*|byte_swap|hash*) echo "bit-hash" ;;
+    crc*|popcount|clz|ctz|bit*|byte_swap|hash*|find_first_set) echo "bit-hash" ;;
     delta*|encode*|decode*|compress*|run_length*|lzw*) echo "encoding" ;;
     edit_distance*|lcs*|needle*|smith*|dynamic*|knapsack*) echo "dp-string" ;;
     *) echo "misc" ;;
@@ -53,6 +53,38 @@ find_handshake_dfg() {
   done
 
   return 1
+}
+
+score_domain_adg_config() {
+  local domain="$1"
+  local adg_path="$2"
+  shift 2
+  local apps=("$@")
+  local score=0
+  local score_dir="${DOMAIN_ADG_DIR}/.${domain}.score.$$"
+
+  rm -rf "${score_dir}"
+  mkdir -p "${score_dir}"
+
+  for app in "${apps[@]}"; do
+    local dfg=""
+    dfg="$(find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" || true)"
+    if [[ -z "${dfg}" ]]; then
+      continue
+    fi
+
+    local out_base="${score_dir}/${app}"
+    local map_log="${out_base}.log"
+    if "${LOOM_BIN}" --adg "${adg_path}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget 200 --mapper-mask-domain > "${map_log}" 2>&1; then
+      local configured="${out_base}.fabric.mlir"
+      if [[ -f "${configured}" ]] && "${LOOM_BIN}" --adg "${configured}" >> "${map_log}" 2>&1; then
+        ((score += 1))
+      fi
+    fi
+  done
+
+  rm -rf "${score_dir}"
+  echo "${score}"
 }
 
 # --- Single mode ---
@@ -212,10 +244,11 @@ for domain in "${!domain_dfgs[@]}"; do
   dfg_list="${domain_dfgs[${domain}]}"
   adg_path="${DOMAIN_ADG_DIR}/${domain}.fabric.mlir"
   gen_log="${DOMAIN_ADG_DIR}/${domain}_gen.log"
+  score_file="${DOMAIN_ADG_DIR}/${domain}_gen_score.txt"
 
   # Domain ADG generation strategy depends on domain size:
-  # - Small domains (<=20 DFGs): use best-config (try all, keep last valid)
-  #   to maximize routing resources, since the ADG stays manageable.
+  # - Small domains (<=20 DFGs): score each valid config by how many apps in
+  #   that domain map back to the shared ADG, then keep the best-scoring one.
   # - Large domains (>20 DFGs): use first-valid (stop at first success)
   #   to avoid generating massive ADGs that cause per-app mapping timeouts.
   dfg_count=$(echo "${dfg_list}" | tr ',' '\n' | wc -l)
@@ -238,6 +271,8 @@ for domain in "${!domain_dfgs[@]}"; do
   fi
   gen_ok=false
   gen_used_cfg=""
+  best_score=-1
+  domain_app_list=(${domain_apps[${domain}]})
   for gen_cfg in "${gen_configs[@]}"; do
     if "${use_best_config}"; then
       tmp_adg="${adg_path}.tmp"
@@ -248,7 +283,20 @@ for domain in "${!domain_dfgs[@]}"; do
     if "${LOOM_BIN}" --gen-adg --dfgs "${dfg_list}" -o "${tmp_adg}" ${gen_cfg} > "${gen_log}" 2>&1; then
       if "${LOOM_BIN}" --adg "${tmp_adg}" >> "${gen_log}" 2>&1; then
         if "${use_best_config}"; then
-          mv "${tmp_adg}" "${adg_path}"
+          score=$(score_domain_adg_config "${domain}" "${tmp_adg}" "${domain_app_list[@]}")
+          if (( score > best_score )); then
+            mv "${tmp_adg}" "${adg_path}"
+            gen_ok=true
+            gen_used_cfg="${gen_cfg}"
+            best_score=${score}
+            echo "${best_score}/${dfg_count}" > "${score_file}"
+            if (( best_score == dfg_count )); then
+              break
+            fi
+          else
+            rm -f "${tmp_adg}"
+          fi
+          continue
         fi
         gen_ok=true
         gen_used_cfg="${gen_cfg}"
@@ -269,9 +317,13 @@ for domain in "${!domain_dfgs[@]}"; do
 
   if "${gen_ok}"; then
     echo "${gen_used_cfg:-default}" > "${DOMAIN_ADG_DIR}/${domain}_gen_config.txt"
+    if ! "${use_best_config}"; then
+      rm -f "${score_file}"
+    fi
   else
     echo "Warning: domain ADG generation failed for ${domain}" >&2
     rm -f "${adg_path}"
+    rm -f "${score_file}"
   fi
 done
 

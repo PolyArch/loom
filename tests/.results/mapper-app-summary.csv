@@ -6,8 +6,8 @@ binary_search,sort-search,pass,domain-b10,,domain
 bisection_step,misc,pass,domain-b10,,domain
 bit_reverse,bit-hash,pass,domain-b10,,domain
 bitonic_stage,sort-search,pass,domain-b10,,domain
-bitonic_stage-modified,sort-search,pass,analyze-track4-b200,,per-app
-bitonic_stage-tweak,sort-search,pass,analyze-track4-b200,,per-app
+bitonic_stage-modified,sort-search,pass,domain-b10,,domain
+bitonic_stage-tweak,sort-search,pass,domain-b10,,domain
 bitrev,bit-hash,pass,domain-b10,,domain
 bitrev_complex,bit-hash,pass,domain-b10,,domain
 breadth_first_search,misc,fail,,missing_handshake,per-app
@@ -40,7 +40,7 @@ edge_update,stencil,pass,domain-b10,,domain
 edge_update_batch,stencil,pass,domain-b10,,domain
 edit_distance_step,dp-string,pass,domain-b10,,domain
 fft_butterfly,dsp,pass,domain-b10,,domain
-find_first_set,misc,pass,analyze-default,,per-app
+find_first_set,bit-hash,pass,domain-b10,,domain
 fir_filter,dsp,pass,domain-b10,,domain
 fir_filter_stateful,dsp,pass,domain-b10,,domain
 gather,sparse,pass,domain-b10,,domain
@@ -56,7 +56,7 @@ im2col,misc,pass,domain-b10,,domain
 integrate_trapz,misc,pass,domain-b10,,domain
 interpolate_linear,misc,pass,domain-b10,,domain
 jacobi_stencil_5pt,stencil,pass,domain-b10,,domain
-jacobi_stencil_7pt,stencil,pass,analyze-track4-b200,,per-app
+jacobi_stencil_7pt,stencil,pass,domain-b10,,domain
 kmp_table,misc,pass,domain-b10,,domain
 line_intersect,misc,pass,domain-b10,,domain
 lower_bound,misc,pass,domain-b10,,domain
@@ -96,9 +96,9 @@ sort_bubble,sort-search,pass,domain-b10,,domain
 sort_insertion,sort-search,pass,domain-b10,,domain
 sort_merge,sort-search,fail,,missing_handshake,per-app
 sort_quick,sort-search,pass,domain-b10,,domain
-spmm,sparse,pass,analyze-track3,,per-app
-spmspm,misc,pass,analyze-track4-b200,,per-app
-spmspv,misc,pass,domain-b10,,domain
+spmm,sparse,pass,domain-b10,,domain
+spmspm,sparse,pass,domain-b10,,domain
+spmspv,sparse,pass,domain-b10,,domain
 spmv,sparse,pass,domain-b10,,domain
 stream_nested,misc,pass,domain-b10,,domain
 stream_update,misc,pass,domain-b10,,domain

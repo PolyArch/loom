@@ -1,1 +1,1 @@
---dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable
+--dfg-analyze --dump-analysis --gen-track 4

@@ -1,1 +1,1 @@
---dfg-analyze --dump-analysis --gen-temporal --temporal-threshold 0.7 --gen-track 5 --gen-fifo-mode dual
+--dfg-analyze --dump-analysis --gen-track 3
