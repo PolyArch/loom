@@ -125,6 +125,13 @@ add_custom_target(check-loom-mapper-smoke
   DEPENDS loom
 )
 
+add_custom_target(check-loom-mapper-app
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_app.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
 add_custom_target(check-loom-spec-errcode
   COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/spec/error-alignment.py"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"

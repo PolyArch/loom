@@ -1092,6 +1092,7 @@ int main(int argc, char **argv) {
             llvm::errs() << "\n";
             return mlir::success();
           });
+      adg_context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
       adg_context.getOrLoadDialect<mlir::arith::ArithDialect>();
       adg_context.getOrLoadDialect<mlir::math::MathDialect>();
       adg_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
