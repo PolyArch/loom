@@ -92,6 +92,50 @@ if [[ "${1:-}" == "--single" ]]; then
           fi
         fi
 
+        # Tagged PE output_tag placement assertion: if the input ADG has
+        # any PE definition with output_tag, verify that placed instances
+        # carry output_tag in the configured output and unplaced instances
+        # do not. This ensures the mapper produces output_tag only where
+        # it recorded a tag assignment.
+        if grep -q '{output_tag' "${adg}"; then
+          map_json="${out_base}.map.json"
+          if [[ -f "${map_json}" ]]; then
+            # Find PE definition names whose body line has output_tag.
+            tagged_defs=""
+            while IFS= read -r def_name; do
+              tagged_defs+="${def_name} "
+            done < <(grep -B5 '{output_tag' "${adg}" | grep 'fabric\.pe @' | sed 's/.*fabric\.pe @\([^ (]*\).*/\1/')
+
+            if [[ -n "${tagged_defs}" ]]; then
+              placed_pes=$(grep '"hwNodeName"' "${map_json}" | sed 's/.*: *"\([^"]*\)".*/\1/')
+
+              for pe_def in ${tagged_defs}; do
+                while IFS= read -r inst_line; do
+                  sym=$(echo "${inst_line}" | sed -n 's/.*sym_name = "\([^"]*\)".*/\1/p')
+                  [[ -z "${sym}" ]] && continue
+
+                  is_placed=false
+                  for pn in ${placed_pes}; do
+                    [[ "${pn}" == "${sym}" ]] && is_placed=true
+                  done
+
+                  if "${is_placed}"; then
+                    if ! echo "${inst_line}" | grep -q 'output_tag = \['; then
+                      echo "FAIL: placed tagged PE '${sym}' missing output_tag: ${configured}" >&2
+                      exit 1
+                    fi
+                  else
+                    if echo "${inst_line}" | grep -q 'output_tag = \['; then
+                      echo "FAIL: unplaced tagged PE '${sym}' has spurious output_tag: ${configured}" >&2
+                      exit 1
+                    fi
+                  fi
+                done < <(grep "fabric\.instance @${pe_def}" "${configured}")
+              done
+            fi
+          fi
+        fi
+
         # Verify add_tag.tag values are well-formed integer assignments.
         if grep -q "fabric.add_tag" "${configured}"; then
           if grep "fabric.add_tag" "${configured}" | grep -vq '{tag = [0-9]'; then

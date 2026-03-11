@@ -100,14 +100,17 @@ if [[ "${1:-}" == "--single" ]]; then
   # Per-app escalation: (gen_flags, map_budget, label)
   # Each step tries progressively more routing resources and mapper budget.
   configs=(
-    "|10|default"
-    "|50|budget50"
-    "--gen-track 3|50|track3"
-    "--gen-track 3|200|track3-b200"
-    "--gen-track 4|200|track4-b200"
-    "--gen-track 4 --gen-fifo-mode dual|200|track4-fifo"
-    "--gen-track 5|200|track5-b200"
-    "--gen-track 5 --gen-fifo-mode dual|200|track5-fifo"
+    "--dfg-analyze|10|analyze-default"
+    "--dfg-analyze|50|analyze-b50"
+    "--dfg-analyze --gen-track 3|50|analyze-track3"
+    "--dfg-analyze --gen-track 3|200|analyze-track3-b200"
+    "--dfg-analyze --gen-track 4|200|analyze-track4-b200"
+    "--dfg-analyze --gen-track 4 --gen-fifo-mode dual|200|analyze-track4-fifo"
+    "--dfg-analyze --gen-track 5|200|analyze-track5-b200"
+    "--dfg-analyze --gen-track 5 --gen-fifo-mode dual|200|analyze-track5-fifo"
+    "--dfg-analyze --gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable|200|analyze-track5-bypass"
+    "--dfg-analyze --gen-temporal --gen-track 3|200|analyze-temporal-track3"
+    "--dfg-analyze --gen-temporal --gen-track 5 --gen-fifo-mode dual|200|analyze-temporal-track5"
   )
 
   failure_class="unknown"
@@ -121,13 +124,14 @@ if [[ "${1:-}" == "--single" ]]; then
     # Generate ADG from DFG.
     # shellcheck disable=SC2086
     if ! "${LOOM_BIN}" --gen-adg --dfgs "${dfg}" -o "${adg_path}" ${gen_extra} > "${gen_log}" 2>&1; then
-      failure_class="adg_gen"
+      # Only set adg_gen if we haven't reached a more informative stage yet.
+      [[ "${failure_class}" != "mapper" && "${failure_class}" != "config_validate" ]] && failure_class="adg_gen"
       continue
     fi
 
     # Validate the generated ADG.
     if ! "${LOOM_BIN}" --adg "${adg_path}" >> "${gen_log}" 2>&1; then
-      failure_class="adg_validate"
+      [[ "${failure_class}" != "mapper" && "${failure_class}" != "config_validate" ]] && failure_class="adg_validate"
       continue
     fi
 
@@ -215,18 +219,21 @@ for domain in "${!domain_dfgs[@]}"; do
   #   to avoid generating massive ADGs that cause per-app mapping timeouts.
   dfg_count=$(echo "${dfg_list}" | tr ',' '\n' | wc -l)
   gen_configs=(
-    ""
-    "--gen-track 3"
-    "--gen-track 4"
-    "--gen-track 5"
-    "--gen-track 5 --gen-fifo-mode dual"
-    "--gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable"
+    "--dfg-analyze"
+    "--dfg-analyze --gen-track 3"
+    "--dfg-analyze --gen-track 4"
+    "--dfg-analyze --gen-track 5"
+    "--dfg-analyze --gen-track 5 --gen-fifo-mode dual"
+    "--dfg-analyze --gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable"
+    "--dfg-analyze --gen-temporal --gen-track 3"
+    "--dfg-analyze --gen-temporal --gen-track 5 --gen-fifo-mode dual"
   )
   use_best_config=true
   if (( dfg_count > 20 )); then
     use_best_config=false
   fi
   gen_ok=false
+  gen_used_cfg=""
   for gen_cfg in "${gen_configs[@]}"; do
     if "${use_best_config}"; then
       tmp_adg="${adg_path}.tmp"
@@ -240,6 +247,7 @@ for domain in "${!domain_dfgs[@]}"; do
           mv "${tmp_adg}" "${adg_path}"
         fi
         gen_ok=true
+        gen_used_cfg="${gen_cfg}"
         if ! "${use_best_config}"; then
           break
         fi
@@ -255,7 +263,9 @@ for domain in "${!domain_dfgs[@]}"; do
     fi
   done
 
-  if ! "${gen_ok}"; then
+  if "${gen_ok}"; then
+    echo "${gen_used_cfg:-default}" > "${DOMAIN_ADG_DIR}/${domain}_gen_config.txt"
+  else
     echo "Warning: domain ADG generation failed for ${domain}" >&2
     rm -f "${adg_path}"
   fi
