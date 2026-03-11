@@ -219,7 +219,9 @@ static int meshLetterOffset(char letter, int bandSize) {
   return (letter - 'a') * bandSize;
 }
 
-GridCoord extractGridFromName(llvm::StringRef name, int meshBandSize = 10) {
+GridCoord extractGridFromName(llvm::StringRef name, int meshBandSize = 10,
+                              int temporalRowOffset = 0,
+                              int planeBandSize = 0) {
   GridCoord gc;
   std::string nameStr = name.str();
 
@@ -257,15 +259,21 @@ GridCoord extractGridFromName(llvm::StringRef name, int meshBandSize = 10) {
   std::smatch m;
 
   if (std::regex_search(nameStr, m, reSW_WD)) {
-    gc.col = std::stoi(m[4]) * 2;
+    // sw_w<W>_<D>_<R>_<C>: offset by (width * depth) plane bands.
+    int depth = std::stoi(m[2]);
+    gc.col = depth * planeBandSize + std::stoi(m[4]) * 2;
     gc.row = std::stoi(m[3]) * 2;
     gc.valid = true;
   } else if (std::regex_search(nameStr, m, reSW_W)) {
-    gc.col = std::stoi(m[3]) * 2;
+    // sw_w<W>_<R>_<C>: width plane (no separate depth axis).
+    int width = std::stoi(m[1]);
+    gc.col = width * planeBandSize + std::stoi(m[3]) * 2;
     gc.row = std::stoi(m[2]) * 2;
     gc.valid = true;
   } else if (std::regex_search(nameStr, m, reL_SW)) {
-    gc.col = std::stoi(m[3]) * 2;
+    // l<L>_sw_<R>_<C>: lattice instance offset.
+    int lattice = std::stoi(m[1]);
+    gc.col = lattice * planeBandSize + std::stoi(m[3]) * 2;
     gc.row = std::stoi(m[2]) * 2;
     gc.valid = true;
   } else if (std::regex_search(nameStr, m, reSW)) {
@@ -273,8 +281,9 @@ GridCoord extractGridFromName(llvm::StringRef name, int meshBandSize = 10) {
     gc.row = std::stoi(m[1]) * 2;
     gc.valid = true;
   } else if (std::regex_search(nameStr, m, reTSW)) {
+    // tsw_<R>_<C>: temporal switches offset below spatial grid.
     gc.col = std::stoi(m[2]) * 2;
-    gc.row = std::stoi(m[1]) * 2;
+    gc.row = temporalRowOffset + std::stoi(m[1]) * 2;
     gc.valid = true;
   } else if (std::regex_search(nameStr, m, rePE_MESH)) {
     int offset = meshLetterOffset(m[1].str()[0], meshBandSize);
@@ -282,8 +291,9 @@ GridCoord extractGridFromName(llvm::StringRef name, int meshBandSize = 10) {
     gc.row = std::stoi(m[2]) * 2 + 1;
     gc.valid = true;
   } else if (std::regex_search(nameStr, m, reTPE_RC)) {
+    // tpe_rR_cC: temporal PEs offset below spatial grid.
     gc.col = std::stoi(m[2]) * 2 + 1;
-    gc.row = std::stoi(m[1]) * 2 + 1;
+    gc.row = temporalRowOffset + std::stoi(m[1]) * 2 + 1;
     gc.valid = true;
   } else if (std::regex_search(nameStr, m, rePE_RC)) {
     gc.col = std::stoi(m[2]) * 2 + 1;
@@ -837,31 +847,49 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
   llvm::json::OStream json(os, 2);
   json.objectBegin();
 
-  // First pass: scan for the max mesh column index to compute dynamic band
-  // size, then extract grid coordinates for all nodes in a second pass.
-  // Band = (maxCol + 1) * 2 + 2, so each mesh letter gets enough space.
-  int meshBandSize = 10; // default fallback
+  // First pass: scan node names to compute layout parameters:
+  // - meshBandSize: column band per mesh letter (for pe_<letter>_R_C)
+  // - temporalRowOffset: row offset for temporal domain (tsw/tpe_rR_cC)
+  // - planeBandSize: column offset per width/depth/lattice plane
+  int meshBandSize = 10;
+  int temporalRowOffset = 0;
+  int planeBandSize = 0;
   {
-    // Match 2D names: pe_a_0_3 -> col=3; also 1D names: pe_a_7 -> idx=7.
     static const std::regex rePeMesh2D("^(?:pe|tpe)_[a-z]_(\\d+)_(\\d+)$");
     static const std::regex rePeMesh1D("^(?:pe|tpe)_[a-z]_(\\d+)$");
-    int maxIdx = 0;
+    static const std::regex reSpatialSW("^sw_(\\d+)_(\\d+)$");
+    static const std::regex reSpatialPE("^pe_(\\d+)_(\\d+)$");
+    int maxMeshIdx = 0;
+    int maxSpatialRow = 0;
+    int maxSpatialCol = 0;
     for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
       const Node *node = adg.getNode(i);
       if (!node || fuToContainer.count(i))
         continue;
       llvm::StringRef sn = getNodeStrAttr(node, "sym_name");
-      if (sn.empty() ||
-          (!sn.starts_with("pe_") && !sn.starts_with("tpe_")))
-        continue;
+      if (sn.empty()) continue;
       std::string nameStr = sn.str();
       std::smatch m;
-      if (std::regex_match(nameStr, m, rePeMesh2D))
-        maxIdx = std::max(maxIdx, std::stoi(m[2]));
-      else if (std::regex_match(nameStr, m, rePeMesh1D))
-        maxIdx = std::max(maxIdx, std::stoi(m[1]));
+      if (sn.starts_with("pe_") || sn.starts_with("tpe_")) {
+        if (std::regex_match(nameStr, m, rePeMesh2D))
+          maxMeshIdx = std::max(maxMeshIdx, std::stoi(m[2]));
+        else if (std::regex_match(nameStr, m, rePeMesh1D))
+          maxMeshIdx = std::max(maxMeshIdx, std::stoi(m[1]));
+      }
+      // Track spatial grid extent for temporal offset.
+      if (std::regex_match(nameStr, m, reSpatialSW)) {
+        maxSpatialRow = std::max(maxSpatialRow, std::stoi(m[1]));
+        maxSpatialCol = std::max(maxSpatialCol, std::stoi(m[2]));
+      } else if (std::regex_match(nameStr, m, reSpatialPE)) {
+        maxSpatialRow = std::max(maxSpatialRow, std::stoi(m[1]));
+        maxSpatialCol = std::max(maxSpatialCol, std::stoi(m[2]));
+      }
     }
-    meshBandSize = std::max(10, (maxIdx + 1) * 2 + 2);
+    meshBandSize = std::max(10, (maxMeshIdx + 1) * 2 + 2);
+    // Temporal domain starts after the spatial grid with a 2-cell gap.
+    temporalRowOffset = (maxSpatialRow + 1) * 2 + 2;
+    // Width/depth/lattice planes offset by the spatial grid width.
+    planeBandSize = std::max(10, (maxSpatialCol + 1) * 2 + 2);
   }
 
   // Pre-compute grid coordinates for all nodes (needed for FIFO inference).
@@ -883,7 +911,8 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
       llvm::StringRef symName = getNodeStrAttr(node, "sym_name");
       std::string name = symName.empty() ? ("node_" + std::to_string(i))
                                          : symName.str();
-      gc = extractGridFromName(name, meshBandSize);
+      gc = extractGridFromName(name, meshBandSize, temporalRowOffset,
+                               planeBandSize);
     }
     if (gc.valid)
       nodeCoords[i] = gc;
