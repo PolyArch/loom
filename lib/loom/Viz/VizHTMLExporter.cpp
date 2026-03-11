@@ -32,6 +32,13 @@ namespace loom {
 
 namespace {
 
+// ---- ID string helpers ----
+
+std::string hwId(IdIndex i) { return "hw_" + std::to_string(i); }
+std::string swId(IdIndex i) { return "sw_" + std::to_string(i); }
+std::string hwEdgeId(IdIndex i) { return "hwedge_" + std::to_string(i); }
+std::string swEdgeId(IdIndex i) { return "swedge_" + std::to_string(i); }
+
 // ---- Attribute helpers ----
 
 llvm::StringRef getNodeStrAttr(const Node *node, llvm::StringRef name) {
@@ -49,6 +56,21 @@ int64_t getNodeIntAttr(const Node *node, llvm::StringRef name,
       if (auto i = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
         return i.getInt();
   return dflt;
+}
+
+/// Return the sym_name attribute if present, otherwise "node_<i>".
+std::string nodeName(const Node *node, IdIndex i) {
+  llvm::StringRef sn = getNodeStrAttr(node, "sym_name");
+  return sn.empty() ? ("node_" + std::to_string(i)) : sn.str();
+}
+
+/// Resolve a node index through the FU-to-container map.
+/// Returns the container index if the node is a sub-FU, otherwise the
+/// original index.
+IdIndex resolveContainer(
+    IdIndex id, const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer) {
+  auto it = fuToContainer.find(id);
+  return it != fuToContainer.end() ? it->second : id;
 }
 
 /// Get the body_ops array attribute from a node (set by ADGFlattener).
@@ -201,6 +223,29 @@ BodyOpsMap buildPEBodyOpsMap(mlir::Operation *fabricModule) {
   });
 
   return result;
+}
+
+/// Look up body ops for a node: first try the bodyOps map (fabric module),
+/// then fall back to the graph node's body_ops attribute.
+llvm::SmallVector<std::string, 4>
+lookupBodyOps(const Node *node, llvm::StringRef symName,
+              const BodyOpsMap &bodyOps) {
+  auto it = bodyOps.find(symName);
+  if (it != bodyOps.end())
+    return it->second;
+  return getNodeBodyOps(node);
+}
+
+/// Write body ops as a JSON array attribute, using the bodyOps map with
+/// graph-node fallback.
+void writeBodyOpsJSON(llvm::json::OStream &json, const Node *node,
+                      llvm::StringRef symName, const BodyOpsMap &bodyOps) {
+  json.attributeBegin("body_ops");
+  json.arrayBegin();
+  for (auto &op : lookupBodyOps(node, symName, bodyOps))
+    json.value(op);
+  json.arrayEnd();
+  json.attributeEnd();
 }
 
 // ---- Grid coordinate extraction from node names ----
@@ -361,9 +406,7 @@ void inferMissingCoords(
       // Collect coordinates from all connected neighbors.
       int sumCol = 0, sumRow = 0, count = 0;
       auto collectNeighbor = [&](IdIndex parentNode) {
-        IdIndex resolved = parentNode;
-        if (fuToContainer.count(resolved))
-          resolved = fuToContainer.lookup(resolved);
+        IdIndex resolved = resolveContainer(parentNode, fuToContainer);
         if (nodeCoords.count(resolved) && nodeCoords[resolved].valid) {
           sumCol += nodeCoords[resolved].col;
           sumRow += nodeCoords[resolved].row;
@@ -448,28 +491,16 @@ AreaInfo computeArea(const Node *node, const Graph &adg,
   } else {
     // PE: scale by body complexity from fabric module or graph node.
     llvm::StringRef symName = getNodeStrAttr(node, "sym_name");
-    auto it = bodyOps.find(symName);
-    const llvm::SmallVector<std::string, 4> *opsPtr = nullptr;
-    llvm::SmallVector<std::string, 4> nodeOps;
-    if (it != bodyOps.end()) {
-      opsPtr = &it->second;
-    } else {
-      nodeOps = getNodeBodyOps(node);
-      if (!nodeOps.empty())
-        opsPtr = &nodeOps;
-    }
-    int opCount = 1;
+    auto ops = lookupBodyOps(node, symName, bodyOps);
+    int opCount = std::max(1, static_cast<int>(ops.size()));
     bool hasFloat = false;
     bool has64bit = false;
-    if (opsPtr) {
-      opCount = std::max(1, static_cast<int>(opsPtr->size()));
-      for (auto &op : *opsPtr) {
-        if (op.find("addf") != std::string::npos ||
-            op.find("mulf") != std::string::npos ||
-            op.find("divf") != std::string::npos ||
-            op.find("math.") != std::string::npos)
-          hasFloat = true;
-      }
+    for (auto &op : ops) {
+      if (op.find("addf") != std::string::npos ||
+          op.find("mulf") != std::string::npos ||
+          op.find("divf") != std::string::npos ||
+          op.find("math.") != std::string::npos)
+        hasFloat = true;
     }
     // Check first output port for 64-bit type
     if (!node->outputPorts.empty()) {
@@ -779,7 +810,7 @@ std::string buildDFGDot(const Graph &dfg, const DFGOpMap &dfgOpMap) {
     const Node *node = dfg.getNode(i);
     if (!node) continue;
 
-    std::string nodeId = "sw_" + std::to_string(i);
+    std::string nodeId = swId(i);
     llvm::StringRef opName = getNodeStrAttr(node, "op_name");
     auto style = dfgNodeStyle(opName, node->kind);
 
@@ -837,17 +868,14 @@ std::string buildDFGDot(const Graph &dfg, const DFGOpMap &dfgOpMap) {
     const Port *dstPort = dfg.getPort(edge->dstPort);
     if (!srcPort || !dstPort) continue;
 
-    std::string srcId = "sw_" + std::to_string(srcPort->parentNode);
-    std::string dstId = "sw_" + std::to_string(dstPort->parentNode);
-    std::string edgeId = "swedge_" + std::to_string(i);
+    std::string srcNodeId = swId(srcPort->parentNode);
+    std::string dstNodeId = swId(dstPort->parentNode);
+    std::string edgeLabel = swEdgeId(i);
 
-    // Check if control edge
-    bool isControl = false;
-    if (srcPort->type && mlir::isa<mlir::NoneType>(srcPort->type))
-      isControl = true;
+    bool isControl = srcPort->type && mlir::isa<mlir::NoneType>(srcPort->type);
 
-    os << "  \"" << srcId << "\" -> \"" << dstId << "\" ["
-       << "id=\"" << edgeId << "\"";
+    os << "  \"" << srcNodeId << "\" -> \"" << dstNodeId << "\" ["
+       << "id=\"" << edgeLabel << "\"";
     if (isControl)
       os << ", style=dashed, color=\"#999999\", penwidth=1.0";
     else
@@ -938,11 +966,9 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
       gc.valid = true;
     }
     if (!gc.valid) {
-      llvm::StringRef symName = getNodeStrAttr(node, "sym_name");
-      std::string name = symName.empty() ? ("node_" + std::to_string(i))
-                                         : symName.str();
-      gc = extractGridFromName(name, meshBandSize, temporalRowOffset,
-                               planeBandSize, meshBaseOffset);
+      gc = extractGridFromName(nodeName(node, i), meshBandSize,
+                               temporalRowOffset, planeBandSize,
+                               meshBaseOffset);
     }
     if (gc.valid)
       nodeCoords[i] = gc;
@@ -963,9 +989,9 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
     if (fuToContainer.count(i))
       continue;
 
-    std::string id = "hw_" + std::to_string(i);
+    std::string id = hwId(i);
     llvm::StringRef symName = getNodeStrAttr(node, "sym_name");
-    std::string name = symName.empty() ? ("node_" + std::to_string(i)) : symName.str();
+    std::string name = nodeName(node, i);
     std::string type = nodeTypeStr(node);
     llvm::StringRef resClass = getNodeStrAttr(node, "resource_class");
     std::string classStr;
@@ -1013,37 +1039,21 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
     json.attributeBegin("params");
     json.objectBegin();
 
-    // Body ops for PEs (from fabric module, or from graph node attribute
-    // for inline fabric.pe ops that bypass fabric.instance).
     if (type == "fabric.pe") {
-      auto it = bodyOps.find(symName);
-      json.attributeBegin("body_ops");
-      json.arrayBegin();
-      if (it != bodyOps.end()) {
-        for (auto &op : it->second)
-          json.value(op);
-      } else {
-        auto nodeOps = getNodeBodyOps(node);
-        for (auto &op : nodeOps)
-          json.value(op);
-      }
-      json.arrayEnd();
-      json.attributeEnd();
+      writeBodyOpsJSON(json, node, symName, bodyOps);
     }
 
-    // Temporal PE: collect FU info
     if (type == "fabric.temporal_pe") {
-      int64_t numInst = getNodeIntAttr(node, "num_instruction", 0);
-      int64_t numReg = getNodeIntAttr(node, "num_register", 0);
-      json.attribute("num_instruction", numInst);
-      json.attribute("num_register", numReg);
+      json.attribute("num_instruction",
+                     getNodeIntAttr(node, "num_instruction", 0));
+      json.attribute("num_register",
+                     getNodeIntAttr(node, "num_register", 0));
 
-      // Body ops from all FUs in this temporal PE
-      auto it = bodyOps.find(symName);
-      if (it != bodyOps.end() && !it->second.empty()) {
+      auto ops = lookupBodyOps(node, symName, bodyOps);
+      if (!ops.empty()) {
         json.attributeBegin("body_ops");
         json.arrayBegin();
-        for (auto &op : it->second)
+        for (auto &op : ops)
           json.value(op);
         json.arrayEnd();
         json.attributeEnd();
@@ -1060,7 +1070,7 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
           auto idxIt = fuLocalIndex.find(j);
           int localIdx = idxIt != fuLocalIndex.end() ? idxIt->second : 0;
           json.objectBegin();
-          json.attribute("id", "hw_" + std::to_string(j));
+          json.attribute("id", hwId(j));
           json.attribute("name",
                          name + "/fu_" + std::to_string(localIdx));
           // Use body_ops for semantic FU identity (e.g., "arith.addi")
@@ -1106,15 +1116,8 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
     const Port *dstPort = adg.getPort(edge->dstPort);
     if (!srcPort || !dstPort) continue;
 
-    // Resolve parent nodes (skip edges between FU sub-nodes and container)
-    IdIndex srcNode = srcPort->parentNode;
-    IdIndex dstNode = dstPort->parentNode;
-
-    // Resolve FU -> container
-    if (fuToContainer.count(srcNode))
-      srcNode = fuToContainer.lookup(srcNode);
-    if (fuToContainer.count(dstNode))
-      dstNode = fuToContainer.lookup(dstNode);
+    IdIndex srcNode = resolveContainer(srcPort->parentNode, fuToContainer);
+    IdIndex dstNode = resolveContainer(dstPort->parentNode, fuToContainer);
 
     std::string eType = edgeTypeStr(edge, adg);
     int totalBw = 32;
@@ -1136,9 +1139,9 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
     }
 
     json.objectBegin();
-    json.attribute("id", "hwedge_" + std::to_string(i));
-    json.attribute("srcNode", "hw_" + std::to_string(srcNode));
-    json.attribute("dstNode", "hw_" + std::to_string(dstNode));
+    json.attribute("id", hwEdgeId(i));
+    json.attribute("srcNode", hwId(srcNode));
+    json.attribute("dstNode", hwId(dstNode));
     json.attribute("srcPort", std::to_string(edge->srcPort));
     json.attribute("dstPort", std::to_string(edge->dstPort));
     json.attribute("edgeType", eType);
@@ -1175,12 +1178,9 @@ void writeMappingDataJSON(llvm::raw_ostream &os, const Graph &adg,
   json.objectBegin();
   for (IdIndex i = 0; i < static_cast<IdIndex>(state.swNodeToHwNode.size());
        ++i) {
-    IdIndex hwId = state.swNodeToHwNode[i];
-    if (hwId == INVALID_ID) continue;
-    // Resolve FU to container
-    if (fuToContainer.count(hwId))
-      hwId = fuToContainer.lookup(hwId);
-    json.attribute("sw_" + std::to_string(i), "hw_" + std::to_string(hwId));
+    IdIndex hw = resolveContainer(state.swNodeToHwNode[i], fuToContainer);
+    if (hw == INVALID_ID) continue;
+    json.attribute(swId(i), hwId(hw));
   }
   json.objectEnd();
   json.attributeEnd();
@@ -1191,17 +1191,15 @@ void writeMappingDataJSON(llvm::raw_ostream &os, const Graph &adg,
   llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> hwToSwAgg;
   for (IdIndex i = 0; i < static_cast<IdIndex>(state.swNodeToHwNode.size());
        ++i) {
-    IdIndex hwId = state.swNodeToHwNode[i];
-    if (hwId == INVALID_ID) continue;
-    if (fuToContainer.count(hwId))
-      hwId = fuToContainer.lookup(hwId);
-    hwToSwAgg[hwId].push_back(i);
+    IdIndex hw = resolveContainer(state.swNodeToHwNode[i], fuToContainer);
+    if (hw == INVALID_ID) continue;
+    hwToSwAgg[hw].push_back(i);
   }
   for (auto &kv : hwToSwAgg) {
-    json.attributeBegin("hw_" + std::to_string(kv.first));
+    json.attributeBegin(hwId(kv.first));
     json.arrayBegin();
-    for (IdIndex swId : kv.second)
-      json.value("sw_" + std::to_string(swId));
+    for (IdIndex sw : kv.second)
+      json.value(swId(sw));
     json.arrayEnd();
     json.attributeEnd();
   }
@@ -1217,8 +1215,7 @@ void writeMappingDataJSON(llvm::raw_ostream &os, const Graph &adg,
     const auto &pathVec = state.swEdgeToHwPaths[i];
     if (pathVec.empty()) continue;
 
-    std::string key = "swedge_" + std::to_string(i);
-    json.attributeBegin(key);
+    json.attributeBegin(swEdgeId(i));
     json.objectBegin();
 
     json.attributeBegin("hwPath");
@@ -1228,20 +1225,20 @@ void writeMappingDataJSON(llvm::raw_ostream &os, const Graph &adg,
       json.attribute("src", std::to_string(pathVec[j]));
       json.attribute("dst", std::to_string(pathVec[j + 1]));
 
-      // Resolve hwEdgeId by finding the ADG edge connecting these ports
-      std::string hwEdgeId;
+      // Resolve edge ID by finding the ADG edge connecting these ports
+      std::string resolvedEdgeId;
       const Port *srcP = adg.getPort(pathVec[j]);
       if (srcP) {
         for (IdIndex eid : srcP->connectedEdges) {
           const Edge *e = adg.getEdge(eid);
           if (e && e->srcPort == pathVec[j] && e->dstPort == pathVec[j + 1]) {
-            hwEdgeId = "hwedge_" + std::to_string(eid);
+            resolvedEdgeId = hwEdgeId(eid);
             break;
           }
         }
       }
-      if (!hwEdgeId.empty())
-        json.attribute("hwEdgeId", hwEdgeId);
+      if (!resolvedEdgeId.empty())
+        json.attribute("hwEdgeId", resolvedEdgeId);
 
       json.objectEnd();
     }
@@ -1265,28 +1262,19 @@ void writeMappingDataJSON(llvm::raw_ostream &os, const Graph &adg,
     const auto &tpa = state.temporalPEAssignments[i];
     if (tpa.slot == INVALID_ID) continue;
 
-    json.attributeBegin("sw_" + std::to_string(i));
+    json.attributeBegin(swId(i));
     json.objectBegin();
 
-    // Find container
-    IdIndex hwId = INVALID_ID;
-    if (i < state.swNodeToHwNode.size())
-      hwId = state.swNodeToHwNode[i];
-    IdIndex containerId = INVALID_ID;
-    if (hwId != INVALID_ID && fuToContainer.count(hwId))
-      containerId = fuToContainer.lookup(hwId);
-
-    if (containerId != INVALID_ID) {
-      json.attribute("container", "hw_" + std::to_string(containerId));
-      llvm::StringRef containerName =
-          getNodeStrAttr(adg.getNode(containerId), "sym_name");
-      auto idxIt = fuLocalIndex.find(hwId);
+    // Find container for temporal PE assignment
+    IdIndex hw = (i < state.swNodeToHwNode.size())
+                     ? state.swNodeToHwNode[i] : INVALID_ID;
+    if (hw != INVALID_ID && fuToContainer.count(hw)) {
+      IdIndex container = fuToContainer.lookup(hw);
+      json.attribute("container", hwId(container));
+      std::string cName = nodeName(adg.getNode(container), container);
+      auto idxIt = fuLocalIndex.find(hw);
       int localIdx = idxIt != fuLocalIndex.end() ? idxIt->second : 0;
-      json.attribute("fuName",
-                     (containerName.empty()
-                          ? "tpe_" + std::to_string(containerId)
-                          : containerName.str()) +
-                         "/fu_" + std::to_string(localIdx));
+      json.attribute("fuName", cName + "/fu_" + std::to_string(localIdx));
     }
 
     json.attribute("slot", static_cast<int64_t>(tpa.slot));
@@ -1305,7 +1293,7 @@ void writeMappingDataJSON(llvm::raw_ostream &os, const Graph &adg,
        i < static_cast<IdIndex>(state.registerAssignments.size()); ++i) {
     if (state.registerAssignments[i] == INVALID_ID) continue;
 
-    json.attributeBegin("swedge_" + std::to_string(i));
+    json.attributeBegin(swEdgeId(i));
     json.objectBegin();
     json.attribute("registerIndex",
                    static_cast<int64_t>(state.registerAssignments[i]));
@@ -1331,8 +1319,7 @@ void writeSWMetadataJSON(llvm::raw_ostream &os, const Graph &dfg,
     const Node *node = dfg.getNode(i);
     if (!node) continue;
 
-    std::string key = "sw_" + std::to_string(i);
-    json.attributeBegin(key);
+    json.attributeBegin(swId(i));
     json.objectBegin();
 
     llvm::StringRef opName = getNodeStrAttr(node, "op_name");
@@ -1345,18 +1332,14 @@ void writeSWMetadataJSON(llvm::raw_ostream &os, const Graph &dfg,
         json.attribute("types", printType(port->type));
     }
 
-    // Loc
     llvm::StringRef loc = getNodeStrAttr(node, "loc");
     if (!loc.empty())
       json.attribute("loc", loc);
 
-    // HW target
     if (i < state.swNodeToHwNode.size() &&
         state.swNodeToHwNode[i] != INVALID_ID) {
-      IdIndex hwId = state.swNodeToHwNode[i];
-      if (fuToContainer.count(hwId))
-        hwId = fuToContainer.lookup(hwId);
-      json.attribute("hwTarget", "hw_" + std::to_string(hwId));
+      IdIndex hw = resolveContainer(state.swNodeToHwNode[i], fuToContainer);
+      json.attribute("hwTarget", hwId(hw));
     }
 
     // Attrs: graph attributes + MLIR-specific attributes
@@ -1400,33 +1383,16 @@ void writeHWMetadataJSON(llvm::raw_ostream &os, const Graph &adg,
     // Skip FU sub-nodes
     if (fuToContainer.count(i)) continue;
 
-    std::string key = "hw_" + std::to_string(i);
-    json.attributeBegin(key);
+    json.attributeBegin(hwId(i));
     json.objectBegin();
 
     llvm::StringRef symName = getNodeStrAttr(node, "sym_name");
-    json.attribute("name", symName.empty() ? ("node_" + std::to_string(i))
-                                           : symName);
+    json.attribute("name", nodeName(node, i));
     std::string type = nodeTypeStr(node);
     json.attribute("type", type);
 
-    // Body ops (from fabric module, or from graph node attribute for
-    // inline fabric.pe ops that bypass fabric.instance).
-    json.attributeBegin("body_ops");
-    json.arrayBegin();
-    auto it = bodyOps.find(symName);
-    if (it != bodyOps.end()) {
-      for (auto &op : it->second)
-        json.value(op);
-    } else {
-      auto nodeOps = getNodeBodyOps(node);
-      for (auto &op : nodeOps)
-        json.value(op);
-    }
-    json.arrayEnd();
-    json.attributeEnd();
+    writeBodyOpsJSON(json, node, symName, bodyOps);
 
-    // Port counts
     json.attributeBegin("ports");
     json.objectBegin();
     json.attribute("in", static_cast<int64_t>(node->inputPorts.size()));
@@ -1438,28 +1404,25 @@ void writeHWMetadataJSON(llvm::raw_ostream &os, const Graph &adg,
     json.attributeBegin("mappedSw");
     json.arrayBegin();
     if (type == "fabric.temporal_pe") {
-      // Collect SW nodes mapped to any FU sub-node of this container.
       llvm::SmallVector<IdIndex, 4> aggregated;
       for (auto &kv : fuToContainer) {
         if (kv.second != i)
           continue;
-        IdIndex fuId = kv.first;
-        if (fuId < state.hwNodeToSwNodes.size()) {
-          for (IdIndex swId : state.hwNodeToSwNodes[fuId])
-            aggregated.push_back(swId);
+        if (kv.first < state.hwNodeToSwNodes.size()) {
+          for (IdIndex sw : state.hwNodeToSwNodes[kv.first])
+            aggregated.push_back(sw);
         }
       }
-      // Also include direct mappings to the container itself.
       if (i < state.hwNodeToSwNodes.size()) {
-        for (IdIndex swId : state.hwNodeToSwNodes[i])
-          aggregated.push_back(swId);
+        for (IdIndex sw : state.hwNodeToSwNodes[i])
+          aggregated.push_back(sw);
       }
-      for (IdIndex swId : aggregated)
-        json.value("sw_" + std::to_string(swId));
+      for (IdIndex sw : aggregated)
+        json.value(swId(sw));
     } else {
       if (i < state.hwNodeToSwNodes.size()) {
-        for (IdIndex swId : state.hwNodeToSwNodes[i])
-          json.value("sw_" + std::to_string(swId));
+        for (IdIndex sw : state.hwNodeToSwNodes[i])
+          json.value(swId(sw));
       }
     }
     json.arrayEnd();
