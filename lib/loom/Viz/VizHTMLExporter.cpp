@@ -590,6 +590,20 @@ std::string jsonEscape(llvm::StringRef s) {
   return result;
 }
 
+/// Escape a string for use inside a DOT double-quoted label.
+/// Only escapes double quotes; preserves DOT escape sequences like \n.
+std::string dotLabelEscape(llvm::StringRef s) {
+  std::string result;
+  result.reserve(s.size());
+  for (char c : s) {
+    if (c == '"')
+      result += "\\\"";
+    else
+      result += c;
+  }
+  return result;
+}
+
 // ---- MLIR attribute extraction helpers ----
 
 /// Get the arith.cmpi predicate name.
@@ -795,7 +809,7 @@ std::string buildDFGDot(const Graph &dfg, const DFGOpMap &dfgOpMap) {
 
     os << "  \"" << nodeId << "\" ["
        << "id=\"" << nodeId << "\", "
-       << "label=\"" << jsonEscape(label) << "\", "
+       << "label=\"" << dotLabelEscape(label) << "\", "
        << "shape=" << style.shape << ", "
        << "fillcolor=\"" << style.fillColor << "\""
        << "];\n";
