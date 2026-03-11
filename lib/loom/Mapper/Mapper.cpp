@@ -559,6 +559,10 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
 
   // First pass: bind memref sentinels by matching their downstream extmemory
   // node's port signature with ADG extmemory node's port signature.
+  // Sort memref sentinel indices by descending extmemory port count so the
+  // most constrained DFG extmemory nodes bind first (prevents small DFG
+  // extmemory from stealing large ADG extmemory slots).
+  llvm::SmallVector<size_t> memrefOrder;
   for (size_t di = 0; di < dfgInputSentinels.size(); ++di) {
     const Node *dfgNode = dfg.getNode(dfgInputSentinels[di]);
     if (!dfgNode || dfgNode->outputPorts.empty())
@@ -566,6 +570,25 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
     mlir::Type dfgType = dfg.getPort(dfgNode->outputPorts[0])->type;
     if (!isMemrefType(dfgType))
       continue;
+    memrefOrder.push_back(di);
+  }
+  llvm::sort(memrefOrder, [&](size_t a, size_t b) {
+    auto getExtmemPortCount = [&](size_t idx) -> size_t {
+      auto it = dfgSentinelToExtmem.find(dfgInputSentinels[idx]);
+      if (it == dfgSentinelToExtmem.end())
+        return 0;
+      const Node *ext = dfg.getNode(it->second);
+      if (!ext)
+        return 0;
+      return ext->inputPorts.size() + ext->outputPorts.size();
+    };
+    return getExtmemPortCount(a) > getExtmemPortCount(b);
+  });
+  for (size_t di : memrefOrder) {
+    const Node *dfgNode = dfg.getNode(dfgInputSentinels[di]);
+    if (!dfgNode || dfgNode->outputPorts.empty())
+      continue;
+    mlir::Type dfgType = dfg.getPort(dfgNode->outputPorts[0])->type;
 
     auto dfgExtIt = dfgSentinelToExtmem.find(dfgInputSentinels[di]);
     if (dfgExtIt == dfgSentinelToExtmem.end())
@@ -828,8 +851,30 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
   // Bind sentinels first.
   bindSentinelPorts(state, dfg, adg);
 
-  // Compute placement order.
+  // Compute placement order, then refine by candidate scarcity (MRV).
   auto order = computePlacementOrder(dfg);
+
+  // Refine order with MRV (most constrained variable first) within each
+  // priority tier. Nodes with fewer candidates are placed first, preventing
+  // more-flexible nodes from stealing scarce PE slots.
+  auto getTier = [&](IdIndex id) -> int {
+    const Node *n = dfg.getNode(id);
+    if (n && isMemoryOp(n))
+      return 0;
+    if (n && analysis::getAnalysisBoolAttr(n, "loom.on_critical_path"))
+      return 1;
+    return 2;
+  };
+  llvm::stable_sort(order, [&](IdIndex a, IdIndex b) {
+    int tA = getTier(a), tB = getTier(b);
+    if (tA != tB)
+      return tA < tB;
+    auto itA = candidates.find(a);
+    auto itB = candidates.find(b);
+    size_t cA = itA != candidates.end() ? itA->second.size() : 0;
+    size_t cB = itB != candidates.end() ? itB->second.size() : 0;
+    return cA < cB;
+  });
 
   std::mt19937 rng(opts.seed);
 

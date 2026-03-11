@@ -8,9 +8,10 @@ effective routing capacity below the threshold needed for edge routing.
 Method: Generated sort-search domain ADGs with increasing app subsets
 (1,2,3,5,7,9 apps) and mapped binary_search to each. Controlled variable
 is the number of apps in the domain; all other flags held constant
-(--dfg-analyze --gen-track 3).
+(--dfg-analyze --gen-track 3). Results were collected in an interactive
+session and are summarized below (raw CSVs were not preserved).
 
-Results (ab-results-track3.csv):
+Results (collected during experiment, not checked in as raw artifact):
 
   apps  PEs  switches  ADG_lines  binary_search_maps
   1     83   265       522        PASS
@@ -30,51 +31,49 @@ Key findings:
    The mapper places all nodes but cannot find routing paths for these
    edges through the congested switch network.
 
-3. Track/FIFO configs don't help: For the 2-app case, all 5 track/FIFO
-   configurations (t3, t4, t5, t5-fifo, t5-fifo-bypass) generate
-   byte-identical ADGs (md5: 12df8670...). The gen-track and gen-fifo-mode
-   flags have no effect when the PE set is determined by multi-app union.
-
-4. Monotonic degradation: As apps increase, PE and switch counts grow,
+3. Monotonic degradation: As apps increase, PE and switch counts grow,
    and the mapping gap widens (more unused PEs consuming switch ports).
 
 Root Cause - Memory Node Port Consumption:
 
-5. Domain ADGs provision memory nodes for ALL apps in the domain.
+4. Domain ADGs provision memory nodes for ALL apps in the domain.
    A per-app binary_search ADG has 3 memory nodes; an 8-app sort-search
    domain has 14 memory nodes. Each memory node has multiple load/store
    ports (some with 10-17 ports), each consuming a switch connection.
-   The 11 surplus memory nodes occupy 100+ switch ports that would
-   otherwise be available for routing binary_search's memory edges.
+   The surplus memory nodes occupy switch ports that would otherwise be
+   available for routing binary_search's memory edges.
 
-6. The 3 unmapped edges (E20, E53, E67) are all extmemory->load data
+5. The 3 unmapped edges in the n=2 case are all extmemory->load data
    paths. These edges need to route from memory nodes through switches
    to load PEs, but the switch ports near memory nodes are consumed by
    surplus memory node connections from other domains' apps.
 
 Masking Fix (--mapper-mask-domain):
 
-7. The endpoint-driven mask builder (pruneDomainADG) now removes:
+6. The endpoint-driven mask builder (pruneDomainADG) removes:
    - Functional PEs not needed by the target DFG (compatibility-class
      demand thinning with deterministic slack)
    - Memory nodes not referenced by any DFG candidate
    - Dead-end routing nodes disconnected after endpoint removal
    - Steiner tree routing approximation for further cleanup
 
-8. Weak-witness regression: On the checked-in sort-search domain ADG,
-   binary_search FAILS unmasked (3 unrouted edges) and PASSES masked,
-   robust across all mapper seeds (0-9) and budgets. The asymmetry is
-   reproducible on both track-3 and track-5+temporal domain configs.
+7. Weak-witness regression (verified in mapper_smoke.sh):
+   On the checked-in sort-search domain ADG
+   (tests/.results/domain-adgs/sort-search.fabric.mlir),
+   binary_search FAILS unmasked and PASSES masked. This asymmetry
+   is tested as part of the mapper smoke suite:
+     ! loom --adg <sort-search> --dfgs <binary_search> --mapper-budget 15
+     && loom --adg <sort-search> --dfgs <binary_search> --mapper-mask-domain --mapper-budget 15
 
-9. All three known weak witnesses now pass with masking:
+8. All three known weak witnesses pass with masking:
    - binary_search on sort-search domain: FAIL->PASS
    - compact on sparse domain: FAIL->PASS
    - hist_bin on misc domain: FAIL->PASS
 
 Conclusion: Domain routing failures are caused by surplus memory node
-port consumption, not PE port consumption alone. Memory nodes in domain
-ADGs are sized for all apps' combined load/store requirements; when
-mapping a single app, the unused memory ports block switch capacity
-needed for the active app's memory data paths. The masking fix removes
-both surplus functional PEs and unused memory nodes, freeing switch
-capacity and enabling successful routing.
+port consumption. Memory nodes in domain ADGs are sized for all apps'
+combined load/store requirements; when mapping a single app, the unused
+memory ports block switch capacity needed for the active app's memory
+data paths. The masking fix removes both surplus functional PEs and
+unused memory nodes, freeing switch capacity and enabling successful
+routing.
