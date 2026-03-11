@@ -35,11 +35,11 @@ module tb_fabric_pe_store;
 
   logic               out0_valid;
   logic               out0_ready;
-  logic [ADDR_PW-1:0] out0_data;
+  logic [ELEM_PW-1:0] out0_data;
 
   logic               out1_valid;
   logic               out1_ready;
-  logic [ELEM_PW-1:0] out1_data;
+  logic [ADDR_PW-1:0] out1_data;
 
   logic [CFG_PW-1:0] cfg_data;
 
@@ -162,10 +162,10 @@ module tb_fabric_pe_store;
       if (out0_valid !== 1'b1 || out1_valid !== 1'b1) begin : check_match1_valid
         $fatal(1, "transparent: expected matched store for tag 1");
       end
-      if (out0_data !== ((ADDR_PW'(1) << ADDR_WIDTH) | ADDR_PW'(11))) begin : check_match1_addr
+      if (out1_data !== ((ADDR_PW'(1) << ADDR_WIDTH) | ADDR_PW'(11))) begin : check_match1_addr
         $fatal(1, "transparent: wrong matched address for tag 1");
       end
-      if (out1_data !== ((ELEM_PW'(1) << ELEM_WIDTH) | ELEM_PW'(32'h2222))) begin : check_match1_data
+      if (out0_data !== ((ELEM_PW'(1) << ELEM_WIDTH) | ELEM_PW'(32'h2222))) begin : check_match1_data
         $fatal(1, "transparent: wrong matched data for tag 1");
       end
       @(posedge clk);
@@ -183,10 +183,10 @@ module tb_fabric_pe_store;
       if (out0_valid !== 1'b1 || out1_valid !== 1'b1) begin : check_match0_valid
         $fatal(1, "transparent: expected matched store for tag 0");
       end
-      if (out0_data !== ((ADDR_PW'(0) << ADDR_WIDTH) | ADDR_PW'(10))) begin : check_match0_addr
+      if (out1_data !== ((ADDR_PW'(0) << ADDR_WIDTH) | ADDR_PW'(10))) begin : check_match0_addr
         $fatal(1, "transparent: wrong matched address for tag 0");
       end
-      if (out1_data !== ((ELEM_PW'(0) << ELEM_WIDTH) | ELEM_PW'(32'h1111))) begin : check_match0_data
+      if (out0_data !== ((ELEM_PW'(0) << ELEM_WIDTH) | ELEM_PW'(32'h1111))) begin : check_match0_data
         $fatal(1, "transparent: wrong matched data for tag 0");
       end
       @(posedge clk);
@@ -331,13 +331,13 @@ module tb_fabric_pe_store;
       if (out0_valid !== 1'b1 || out1_valid !== 1'b1) begin : check_lif_valid
         $fatal(1, "lowest-index-first store: expected outputs to fire");
       end
-      // out0 = addr tag=1, addr=90.
-      if (out0_data !== ((ADDR_PW'(1) << ADDR_WIDTH) | ADDR_PW'(90))) begin : check_lif_addr
-        $fatal(1, "lowest-index-first store: expected tag=1 addr=90, got 0x%0h", out0_data);
+      // out1 = addr tag=1, addr=90.
+      if (out1_data !== ((ADDR_PW'(1) << ADDR_WIDTH) | ADDR_PW'(90))) begin : check_lif_addr
+        $fatal(1, "lowest-index-first store: expected tag=1 addr=90, got 0x%0h", out1_data);
       end
-      // out1 = data tag=1, data=0xDD01.
-      if (out1_data !== ((ELEM_PW'(1) << ELEM_WIDTH) | ELEM_PW'(32'hDD01))) begin : check_lif_data
-        $fatal(1, "lowest-index-first store: expected tag=1 data=0xDD01, got 0x%0h", out1_data);
+      // out0 = data tag=1, data=0xDD01.
+      if (out0_data !== ((ELEM_PW'(1) << ELEM_WIDTH) | ELEM_PW'(32'hDD01))) begin : check_lif_data
+        $fatal(1, "lowest-index-first store: expected tag=1 data=0xDD01, got 0x%0h", out0_data);
       end
       @(posedge clk);
       pass_count = pass_count + 1;

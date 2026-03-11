@@ -1339,21 +1339,21 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
     auto &def = loadPEDefs[inst.defIdx];
     if (def.interface == InterfaceCategory::Tagged) {
       Type tagType = Type::iN(def.tagWidth);
-      if (port == 0) return Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType);   // addr_to_mem
-      return Type::tagged(def.dataType, tagType);                    // data_to_comp
+      if (port == 0) return Type::tagged(def.dataType, tagType);                    // data_to_comp
+      return Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType);   // addr_to_mem
     }
-    if (port == 0) return Type::bits(ADDR_BIT_WIDTH);   // addr_to_mem
-    return def.dataType;                    // data_to_comp
+    if (port == 0) return def.dataType;                    // data_to_comp
+    return Type::bits(ADDR_BIT_WIDTH);   // addr_to_mem
   }
   case ModuleKind::StorePE: {
     auto &def = storePEDefs[inst.defIdx];
     if (def.interface == InterfaceCategory::Tagged) {
       Type tagType = Type::iN(def.tagWidth);
-      if (port == 0) return Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType);   // addr_to_mem
-      return Type::tagged(def.dataType, tagType);                    // data_to_mem
+      if (port == 0) return Type::tagged(def.dataType, tagType);                    // data_to_mem
+      return Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType);   // addr_to_mem
     }
-    if (port == 0) return Type::bits(ADDR_BIT_WIDTH);   // addr_to_mem
-    return def.dataType;                    // data_to_mem
+    if (port == 0) return def.dataType;                    // data_to_mem
+    return Type::bits(ADDR_BIT_WIDTH);   // addr_to_mem
   }
   case ModuleKind::Memory: {
     auto &def = memoryDefs[inst.defIdx];

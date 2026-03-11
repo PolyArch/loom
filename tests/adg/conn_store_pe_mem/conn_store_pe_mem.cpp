@@ -33,10 +33,10 @@ int main() {
   builder.connectToModuleInput(addr, st0, 0);
   builder.connectToModuleInput(data, st0, 1);
   builder.connectToModuleInput(ctrl, st0, 2);
-  // StorePE outputs: [addr_to_mem(0), data_to_mem(1)]
-  // Connect StorePE -> memory st_addr(0) and st_data(1)
-  builder.connectPorts(st0, 0, mem0, 0);
-  builder.connectPorts(st0, 1, mem0, 1);
+  // StorePE outputs: [data_to_mem(0), addr_to_mem(1)]
+  // Connect StorePE -> memory st_addr(1) and st_data(0)
+  builder.connectPorts(st0, 1, mem0, 0);
+  builder.connectPorts(st0, 0, mem0, 1);
   // Memory outputs (ldCount=0, stCount=1): [st_done(0)]
   builder.connectToModuleOutput(mem0, 0, done);
 

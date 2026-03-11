@@ -477,11 +477,11 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
     os << "]\n";
     os << "    {output_tag = [0 : " << tagType.toMLIR()
        << ", 0 : " << tagType.toMLIR() << "]}\n";
-    os << "    -> (" << tiStr << ", " << tdStr << ") {\n";
+    os << "    -> (" << tdStr << ", " << tiStr << ") {\n";
     os << "^bb0(%x: index, %y: " << dTypeStr << ", %c: none):\n";
     os << "  %ld_d, %ld_a = handshake.load [%x] %y, %c : index, "
        << dTypeStr << "\n";
-    os << "  fabric.yield %ld_a, %ld_d : index, " << dTypeStr << "\n";
+    os << "  fabric.yield %ld_d, %ld_a : " << dTypeStr << ", index\n";
     os << "}\n\n";
   } else {
     os << "fabric.pe @" << def.name
@@ -490,12 +490,12 @@ ADGBuilder::Impl::generateLoadPEDef(const LoadPEDef &def) const {
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
     os << "]\n";
-    os << "    -> (" << bitsAddr.toMLIR() << ", " << bitsData.toMLIR()
+    os << "    -> (" << bitsData.toMLIR() << ", " << bitsAddr.toMLIR()
        << ") {\n";
     os << "^bb0(%addr: index, %data_in: " << dTypeStr << ", %ctrl: none):\n";
     os << "  %ld_d, %ld_a = handshake.load [%addr] %data_in, %ctrl : index, "
        << dTypeStr << "\n";
-    os << "  fabric.yield %ld_a, %ld_d : index, " << dTypeStr << "\n";
+    os << "  fabric.yield %ld_d, %ld_a : " << dTypeStr << ", index\n";
     os << "}\n\n";
   }
   return os.str();
@@ -531,10 +531,11 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
     os << "]\n";
     os << "    {output_tag = [0 : " << tagType.toMLIR()
        << ", 0 : " << tagType.toMLIR() << "]}\n";
-    os << "    -> (" << tiStr << ", " << tdStr << ") {\n";
+    os << "    -> (" << tdStr << ", " << tiStr << ") {\n";
     os << "^bb0(%x: index, %y: " << dTypeStr << ", %c: none):\n";
-    os << "  handshake.store [%x] %y, %c : index, " << dTypeStr << "\n";
-    os << "  fabric.yield %x, %y : index, " << dTypeStr << "\n";
+    os << "  %st_d, %st_a = handshake.store [%x] %y, %c : index, "
+       << dTypeStr << "\n";
+    os << "  fabric.yield %st_d, %st_a : " << dTypeStr << ", index\n";
     os << "}\n\n";
   } else {
     os << "fabric.pe @" << def.name
@@ -543,12 +544,12 @@ ADGBuilder::Impl::generateStorePEDef(const StorePEDef &def) const {
     os << "    [latency = [1 : i16, 1 : i16, 1 : i16]";
     os << ", interval = [1 : i16, 1 : i16, 1 : i16]";
     os << "]\n";
-    os << "    -> (" << bitsAddr.toMLIR() << ", " << bitsData.toMLIR()
+    os << "    -> (" << bitsData.toMLIR() << ", " << bitsAddr.toMLIR()
        << ") {\n";
     os << "^bb0(%addr: index, %data: " << dTypeStr << ", %ctrl: none):\n";
-    os << "  handshake.store [%addr] %data, %ctrl : index, " << dTypeStr
-       << "\n";
-    os << "  fabric.yield %addr, %data : index, " << dTypeStr << "\n";
+    os << "  %st_d, %st_a = handshake.store [%addr] %data, %ctrl : index, "
+       << dTypeStr << "\n";
+    os << "  fabric.yield %st_d, %st_a : " << dTypeStr << ", index\n";
     os << "}\n\n";
   }
   return os.str();
@@ -919,11 +920,11 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           inTypes = {Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType),
                      Type::tagged(lpDef.dataType, tagType),
                      ctrlType};
-          outTypes = {Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType),
-                      Type::tagged(lpDef.dataType, tagType)};
+          outTypes = {Type::tagged(lpDef.dataType, tagType),
+                      Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType)};
         } else {
           inTypes = {Type::bits(ADDR_BIT_WIDTH), lpDef.dataType, Type::none()};
-          outTypes = {Type::bits(ADDR_BIT_WIDTH), lpDef.dataType};
+          outTypes = {lpDef.dataType, Type::bits(ADDR_BIT_WIDTH)};
         }
         break;
       }
@@ -938,11 +939,11 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           inTypes = {Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType),
                      Type::tagged(spDef.dataType, tagType),
                      ctrlType};
-          outTypes = {Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType),
-                      Type::tagged(spDef.dataType, tagType)};
+          outTypes = {Type::tagged(spDef.dataType, tagType),
+                      Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType)};
         } else {
           inTypes = {Type::bits(ADDR_BIT_WIDTH), spDef.dataType, Type::none()};
-          outTypes = {Type::bits(ADDR_BIT_WIDTH), spDef.dataType};
+          outTypes = {spDef.dataType, Type::bits(ADDR_BIT_WIDTH)};
         }
         break;
       }
@@ -1067,13 +1068,13 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         case ModuleKind::LoadPE: {
           auto &lpDef = loadPEDefs[inst.defIdx];
           bodyInTypes = {Type::index(), lpDef.dataType, Type::none()};
-          bodyOutTypes = {Type::index(), lpDef.dataType};
+          bodyOutTypes = {lpDef.dataType, Type::index()};
           break;
         }
         case ModuleKind::StorePE: {
           auto &spDef = storePEDefs[inst.defIdx];
           bodyInTypes = {Type::index(), spDef.dataType, Type::none()};
-          bodyOutTypes = {Type::index(), spDef.dataType};
+          bodyOutTypes = {spDef.dataType, Type::index()};
           break;
         }
         default:
@@ -1133,17 +1134,18 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           os << "  ^bb0(%x: index, %y: " << dTypeStr << ", %c: none):\n";
           os << "    %ld_d, %ld_a = handshake.load [%x] %y, %c : index, "
              << dTypeStr << "\n";
-          os << "    fabric.yield %ld_a, %ld_d : index, "
-             << dTypeStr << "\n";
+          os << "    fabric.yield %ld_d, %ld_a : " << dTypeStr
+             << ", index\n";
           break;
         }
         case ModuleKind::StorePE: {
           auto &spDef = storePEDefs[inst.defIdx];
           std::string dTypeStr = spDef.dataType.toMLIR();
           os << "  ^bb0(%x: index, %y: " << dTypeStr << ", %c: none):\n";
-          os << "    handshake.store [%x] %y, %c : index, " << dTypeStr
-             << "\n";
-          os << "    fabric.yield %x, %y : index, " << dTypeStr << "\n";
+          os << "    %st_d, %st_a = handshake.store [%x] %y, %c : index, "
+             << dTypeStr << "\n";
+          os << "    fabric.yield %st_d, %st_a : " << dTypeStr
+             << ", index\n";
           break;
         }
         default:

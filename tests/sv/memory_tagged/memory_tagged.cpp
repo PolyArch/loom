@@ -65,15 +65,15 @@ int main() {
   builder.connectToModuleInput(st_ctrl, st0, 2);
 
   // Memory connections
-  builder.connectPorts(ld0, 0, m0, 0); // load address
-  builder.connectPorts(st0, 0, m0, 1); // store address
-  builder.connectPorts(st0, 1, m0, 2); // store data
+  builder.connectPorts(ld0, 1, m0, 0); // load address
+  builder.connectPorts(st0, 1, m0, 1); // store address
+  builder.connectPorts(st0, 0, m0, 2); // store data
 
   // Memory load data returns through load PE data input
   builder.connectPorts(m0, 0, ld0, 1);
 
   // Expose load output and done channels
-  builder.connectToModuleOutput(ld0, 1, ld_out);
+  builder.connectToModuleOutput(ld0, 0, ld_out);
   builder.connectToModuleOutput(m0, 1, lddone);
   builder.connectToModuleOutput(m0, 2, stdone);
 

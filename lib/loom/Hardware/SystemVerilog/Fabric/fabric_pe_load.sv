@@ -47,15 +47,15 @@ module fabric_pe_load #(
     output logic               in2_ready,
     input  logic [CTRL_PW-1:0] in2_data,
 
-    // Output 0: address to memory (index type, tagged when TAG_WIDTH > 0)
+    // Output 0: data to compute (elemType, possibly tagged)
     output logic               out0_valid,
     input  logic               out0_ready,
-    output logic [ADDR_PW-1:0] out0_data,
+    output logic [ELEM_PW-1:0] out0_data,
 
-    // Output 1: data to compute (elemType, possibly tagged)
+    // Output 1: address to memory (index type, tagged when TAG_WIDTH > 0)
     output logic               out1_valid,
     input  logic               out1_ready,
-    output logic [ELEM_PW-1:0] out1_data,
+    output logic [ADDR_PW-1:0] out1_data,
 
     // Configuration
     input  logic [CONFIG_WIDTH > 0 ? CONFIG_WIDTH-1 : 0 : 0] cfg_data
@@ -90,29 +90,29 @@ module fabric_pe_load #(
       logic [SAFE_AW-1:0] addr_value;
       assign addr_value = in0_data[ADDR_WIDTH-1:0];
 
-      // Forward address to memory (out0), with tag if tagged
-      assign out0_valid = sync_valid;
+      // Forward address to memory (out1), with tag if tagged
+      assign out1_valid = sync_valid;
       if (TAG_WIDTH > 0) begin : g_addr_tag
         logic [TAG_WIDTH-1:0] output_tag;
         assign output_tag = cfg_data[TAG_WIDTH-1:0];
-        assign out0_data  = {output_tag, addr_value};
+        assign out1_data  = {output_tag, addr_value};
       end else begin : g_addr_no_tag
-        assign out0_data  = addr_value;
+        assign out1_data  = addr_value;
       end
 
       logic fire;
-      assign fire = sync_valid && out0_ready;
+      assign fire = sync_valid && out1_ready;
       assign in0_ready = fire;
       assign in2_ready = fire;
 
-      // Forward memory data (in1) to compute (out1), attaching output_tag
+      // Forward memory data (in1) to compute (out0), attaching output_tag
       if (TAG_WIDTH > 0) begin : g_tag_attach
-        assign out1_data = {g_addr_tag.output_tag, in1_data[ELEM_WIDTH-1:0]};
+        assign out0_data = {g_addr_tag.output_tag, in1_data[ELEM_WIDTH-1:0]};
       end else begin : g_no_tag
-        assign out1_data = in1_data;
+        assign out0_data = in1_data;
       end
-      assign out1_valid = in1_valid;
-      assign in1_ready  = out1_ready;
+      assign out0_valid = in1_valid;
+      assign in1_ready  = out0_ready;
     end else begin : g_transparent
       // TagTransparent: queue addr and ctrl arrivals, then match by tag.
       localparam int SAFE_QD = (QUEUE_DEPTH > 0) ? QUEUE_DEPTH : 1;
@@ -193,19 +193,19 @@ module fabric_pe_load #(
       logic match_fire;
       assign addr_push = in0_valid && in0_ready;
       assign ctrl_push = in2_valid && in2_ready;
-      assign match_fire = match_found && out0_ready;
+      assign match_fire = match_found && out1_ready;
 
       assign in0_ready = addr_free_found;
       assign in2_ready = ctrl_free_found;
 
-      // out0 emits the matched request tag+address.
-      assign out0_valid = match_found;
-      assign out0_data  = {match_tag, addr_q_value[match_addr_idx]};
+      // out1 emits the matched request tag+address.
+      assign out1_valid = match_found;
+      assign out1_data  = {match_tag, addr_q_value[match_addr_idx]};
 
-      // out1 forwards memory response token unchanged in transparent mode.
-      assign out1_valid = in1_valid;
-      assign in1_ready  = out1_ready;
-      assign out1_data  = in1_data;
+      // out0 forwards memory response token unchanged in transparent mode.
+      assign out0_valid = in1_valid;
+      assign in1_ready  = out0_ready;
+      assign out0_data  = in1_data;
 
       always_ff @(posedge clk or negedge rst_n) begin : queue_state
         integer iter_var0;

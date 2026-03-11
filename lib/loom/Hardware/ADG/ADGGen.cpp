@@ -38,6 +38,15 @@ unsigned PESpec::primaryWidth() const {
 
 bool PESpec::isCrossWidth() const {
   unsigned pw = primaryWidth();
+  // If primaryWidth was derived from outputs (no non-zero input matches it),
+  // the outputs differ from the inputs and the name must reflect that.
+  if (pw > 0) {
+    bool pwFromInput = false;
+    for (unsigned w : inWidths)
+      if (w == pw) { pwFromInput = true; break; }
+    if (!pwFromInput)
+      return true;
+  }
   for (unsigned w : outWidths) {
     if (w != pw)
       return true;
@@ -553,15 +562,16 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
   }
 
   // LoadPEs: addr(57-bit) + data(W-bit) + ctrl(none/0-bit).
+  // DFG handshake.load outputs (data, addr), so PE out[0]=data, out[1]=addr.
   for (const auto &[memSpec, count] : reqs.maxMemoryCounts) {
     for (unsigned i = 0; i < memSpec.ldCount * count; ++i) {
       PEPlacement p;
       p.kind = PEPlacement::MemLoadPE;
       p.dataWidth = memSpec.dataWidth;
       // LoadPE ports: in[0]=addr(57), in[1]=data(W), in[2]=ctrl(none)
-      //              out[0]=addr(57), out[1]=data(W)
-      p.portsByWidth[ADDR_BIT_WIDTH] = {{0}, {0}};
-      p.portsByWidth[memSpec.dataWidth] = {{1}, {1}};
+      //              out[0]=data(W), out[1]=addr(57)
+      p.portsByWidth[ADDR_BIT_WIDTH] = {{0}, {1}};
+      p.portsByWidth[memSpec.dataWidth] = {{1}, {0}};
       p.portsByWidth[0] = {{2}, {}};
 
       for (auto &[w, wp] : p.portsByWidth)
@@ -573,13 +583,14 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
   }
 
   // StorePEs: same port layout as LoadPEs.
+  // DFG handshake.store outputs (data, addr), so PE out[0]=data, out[1]=addr.
   for (const auto &[memSpec, count] : reqs.maxMemoryCounts) {
     for (unsigned i = 0; i < memSpec.stCount * count; ++i) {
       PEPlacement p;
       p.kind = PEPlacement::MemStorePE;
       p.dataWidth = memSpec.dataWidth;
-      p.portsByWidth[ADDR_BIT_WIDTH] = {{0}, {0}};
-      p.portsByWidth[memSpec.dataWidth] = {{1}, {1}};
+      p.portsByWidth[ADDR_BIT_WIDTH] = {{0}, {1}};
+      p.portsByWidth[memSpec.dataWidth] = {{1}, {0}};
       p.portsByWidth[0] = {{2}, {}};
 
       for (auto &[w, wp] : p.portsByWidth)

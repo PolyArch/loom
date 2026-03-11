@@ -101,6 +101,89 @@ inline bool conversionHasFloatOutput(const std::string &opName) {
          opName == "arith.extf" || opName == "arith.truncf";
 }
 
+/// True if the operation is a handshake control/dataflow operation
+/// that needs custom PE body generation.
+inline bool isHandshakeOp(const std::string &opName) {
+  return opName == "handshake.join" || opName == "handshake.sink" ||
+         opName == "handshake.constant" || opName == "handshake.cond_br" ||
+         opName == "handshake.mux";
+}
+
+/// Build MLIR body string for a handshake PE.
+/// Each handshake op has a distinct assembly format requiring custom emission.
+inline std::string buildHandshakeBody(const PESpec &spec) {
+  std::vector<Type> inTypes;
+  for (unsigned w : spec.inWidths)
+    inTypes.push_back(widthToNativeType(w));
+
+  std::ostringstream os;
+  os << "^bb0(";
+  for (size_t i = 0; i < inTypes.size(); ++i) {
+    if (i > 0) os << ", ";
+    os << "%arg" << i << ": " << inTypes[i].toMLIR();
+  }
+  os << "):\n";
+
+  if (spec.opName == "handshake.join") {
+    // handshake.join %arg0, %arg1 : type0, type1
+    // Output is always none.
+    os << "  %0 = handshake.join ";
+    for (size_t i = 0; i < inTypes.size(); ++i) {
+      if (i > 0) os << ", ";
+      os << "%arg" << i;
+    }
+    os << " : ";
+    for (size_t i = 0; i < inTypes.size(); ++i) {
+      if (i > 0) os << ", ";
+      os << inTypes[i].toMLIR();
+    }
+    os << "\n";
+    os << "  fabric.yield %0 : none";
+  } else if (spec.opName == "handshake.sink") {
+    // handshake.sink %arg0 : type0
+    // Zero outputs.
+    os << "  handshake.sink %arg0 : " << inTypes[0].toMLIR() << "\n";
+    os << "  fabric.yield";
+  } else if (spec.opName == "handshake.constant") {
+    // handshake.constant %ctrl {value = 0 : outType} : outType
+    // Input is none (control token), output is the constant type.
+    assert(!spec.outWidths.empty());
+    Type outType = widthToNativeType(spec.outWidths[0]);
+    std::string outStr = outType.toMLIR();
+    std::string zeroVal = "0";
+    auto vk = outType.getKind();
+    if (vk == Type::F16 || vk == Type::BF16 ||
+        vk == Type::F32 || vk == Type::F64)
+      zeroVal = "0.000000e+00";
+    os << "  %0 = handshake.constant %arg0 {value = "
+       << zeroVal << " : " << outStr << "} : " << outStr << "\n";
+    os << "  fabric.yield %0 : " << outStr;
+  } else if (spec.opName == "handshake.cond_br") {
+    // %t, %f = handshake.cond_br %cond, %data : dataType
+    // First input is i1 condition, second is data. Two outputs of data type.
+    assert(inTypes.size() >= 2);
+    std::string dataStr = inTypes[1].toMLIR();
+    os << "  %0, %1 = handshake.cond_br %arg0, %arg1 : " << dataStr << "\n";
+    os << "  fabric.yield %0, %1 : " << dataStr << ", " << dataStr;
+  } else if (spec.opName == "handshake.mux") {
+    // %r = handshake.mux %select [%in0, %in1, ...] : selectType, dataType
+    // First input is select (usually index), rest are data inputs.
+    assert(inTypes.size() >= 2 && !spec.outWidths.empty());
+    std::string selStr = inTypes[0].toMLIR();
+    std::string dataStr = inTypes[1].toMLIR();
+    os << "  %0 = handshake.mux %arg0 [";
+    for (size_t i = 1; i < inTypes.size(); ++i) {
+      if (i > 1) os << ", ";
+      os << "%arg" << i;
+    }
+    os << "] : " << selStr << ", " << dataStr << "\n";
+    Type outType = widthToNativeType(spec.outWidths[0]);
+    os << "  fabric.yield %0 : " << outType.toMLIR();
+  }
+
+  return os.str();
+}
+
 /// Build MLIR body string for a conversion PE.
 inline std::string buildConversionBody(const PESpec &spec) {
   assert(spec.inWidths.size() == 1 && spec.outWidths.size() == 1);
@@ -211,6 +294,8 @@ inline PEHandle createPEDef(ADGBuilder &builder, const PESpec &spec) {
                        .setOutputPorts(outTypes);
   if (isConversionOp(spec.opName))
     peBuilder.setBodyMLIR(buildConversionBody(spec));
+  else if (isHandshakeOp(spec.opName))
+    peBuilder.setBodyMLIR(buildHandshakeBody(spec));
   else
     peBuilder.addOp(spec.opName);
   return peBuilder;

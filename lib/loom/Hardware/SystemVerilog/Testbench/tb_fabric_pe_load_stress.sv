@@ -37,11 +37,11 @@ module tb_fabric_pe_load_stress;
 
   logic               out0_valid;
   logic               out0_ready;
-  logic [ADDR_PW-1:0] out0_data;
+  logic [ELEM_PW-1:0] out0_data;
 
   logic               out1_valid;
   logic               out1_ready;
-  logic [ELEM_PW-1:0] out1_data;
+  logic [ADDR_PW-1:0] out1_data;
 
   logic [0:0] cfg_data;
 
@@ -111,15 +111,15 @@ module tb_fabric_pe_load_stress;
     int iter_var1;
     int tag_sel;
     int match_tag;
-    int out0_hs_count;
     int out1_hs_count;
+    int out0_hs_count;
     int addr_push_count;
     int ctrl_push_count;
     logic addr_expect_full;
     logic ctrl_expect_full;
     logic addr_push;
     logic ctrl_push;
-    logic out0_fire;
+    logic out1_fire;
     logic [ADDR_WIDTH-1:0] pending_addr_value [TAG_COUNT];
     logic [TAG_COUNT-1:0] pending_addr_valid;
     logic [TAG_COUNT-1:0] pending_ctrl_valid;
@@ -128,8 +128,8 @@ module tb_fabric_pe_load_stress;
     rng = SEED;
     addr_occ = 0;
     ctrl_occ = 0;
-    out0_hs_count = 0;
     out1_hs_count = 0;
+    out0_hs_count = 0;
     addr_push_count = 0;
     ctrl_push_count = 0;
     pending_addr_valid = '0;
@@ -145,8 +145,8 @@ module tb_fabric_pe_load_stress;
     in1_data = '0;
     in2_valid = 1'b0;
     in2_data = '0;
-    out0_ready = 1'b0;
-    out1_ready = 1'b1;
+    out0_ready = 1'b1;
+    out1_ready = 1'b0;
     cfg_data = '0;
 
     repeat (3) @(posedge clk);
@@ -159,7 +159,7 @@ module tb_fabric_pe_load_stress;
       in0_valid = 1'b1;
       in0_data = pack_addr(iter_var0 % TAG_COUNT, 32'h0100 + iter_var0);
       in2_valid = 1'b0;
-      out0_ready = 1'b0;
+      out1_ready = 1'b0;
       #1;
       if (in0_ready !== 1'b1) begin : addr_fill_ready
         $fatal(1, "address queue should accept entry %0d", iter_var0);
@@ -189,7 +189,7 @@ module tb_fabric_pe_load_stress;
       in0_valid = 1'b0;
       in2_valid = 1'b1;
       in2_data = TAG_WIDTH'(iter_var0 % TAG_COUNT);
-      out0_ready = 1'b0;
+      out1_ready = 1'b0;
       #1;
       if (in2_ready !== 1'b1) begin : ctrl_fill_ready
         $fatal(1, "control queue should accept entry %0d", iter_var0);
@@ -232,9 +232,9 @@ module tb_fabric_pe_load_stress;
 
       @(negedge clk);
       rng = lcg_next(rng);
-      out0_ready = iter_var0[0] || rng[0];
+      out1_ready = iter_var0[0] || rng[0];
       rng = lcg_next(rng);
-      out1_ready = iter_var0[1] || rng[1];
+      out0_ready = iter_var0[1] || rng[1];
 
       rng = lcg_next(rng);
       in1_valid = rng[0];
@@ -270,45 +270,45 @@ module tb_fabric_pe_load_stress;
         $fatal(1, "in2_ready mismatch at cycle=%0d occ=%0d", iter_var0, ctrl_occ);
       end
 
-      if ((match_tag >= 0 && out0_valid !== 1'b1) ||
-          (match_tag < 0 && out0_valid !== 1'b0)) begin : check_out0_valid
-        $fatal(1, "out0_valid mismatch at cycle=%0d match_tag=%0d", iter_var0, match_tag);
+      if ((match_tag >= 0 && out1_valid !== 1'b1) ||
+          (match_tag < 0 && out1_valid !== 1'b0)) begin : check_out1_valid
+        $fatal(1, "out1_valid mismatch at cycle=%0d match_tag=%0d", iter_var0, match_tag);
       end
 
-      if (match_tag >= 0) begin : check_out0_data
-        if (out0_data[ADDR_WIDTH +: TAG_WIDTH] !== TAG_WIDTH'(match_tag)) begin : bad_match_tag
-          $fatal(1, "out0 tag mismatch at cycle=%0d", iter_var0);
+      if (match_tag >= 0) begin : check_out1_data
+        if (out1_data[ADDR_WIDTH +: TAG_WIDTH] !== TAG_WIDTH'(match_tag)) begin : bad_match_tag
+          $fatal(1, "out1 tag mismatch at cycle=%0d", iter_var0);
         end
-        if (out0_data[ADDR_WIDTH-1:0] !== pending_addr_value[match_tag]) begin : bad_match_addr
-          $fatal(1, "out0 address mismatch at cycle=%0d", iter_var0);
+        if (out1_data[ADDR_WIDTH-1:0] !== pending_addr_value[match_tag]) begin : bad_match_addr
+          $fatal(1, "out1 address mismatch at cycle=%0d", iter_var0);
         end
       end
 
-      if (out1_valid !== in1_valid) begin : check_out1_valid
-        $fatal(1, "out1_valid should track in1_valid at cycle=%0d", iter_var0);
+      if (out0_valid !== in1_valid) begin : check_out0_valid
+        $fatal(1, "out0_valid should track in1_valid at cycle=%0d", iter_var0);
       end
-      if (in1_ready !== out1_ready) begin : check_in1_ready
-        $fatal(1, "in1_ready should track out1_ready at cycle=%0d", iter_var0);
+      if (in1_ready !== out0_ready) begin : check_in1_ready
+        $fatal(1, "in1_ready should track out0_ready at cycle=%0d", iter_var0);
       end
-      if (out1_data !== in1_data) begin : check_out1_data
-        $fatal(1, "out1_data passthrough mismatch at cycle=%0d", iter_var0);
+      if (out0_data !== in1_data) begin : check_out0_data
+        $fatal(1, "out0_data passthrough mismatch at cycle=%0d", iter_var0);
       end
 
       addr_push = (in0_valid && in0_ready);
       ctrl_push = (in2_valid && in2_ready);
-      out0_fire = (out0_valid && out0_ready);
-      if (out0_fire && match_tag < 0) begin : check_fire_match
-        $fatal(1, "out0 fired without a match at cycle=%0d", iter_var0);
+      out1_fire = (out1_valid && out1_ready);
+      if (out1_fire && match_tag < 0) begin : check_fire_match
+        $fatal(1, "out1 fired without a match at cycle=%0d", iter_var0);
       end
 
       @(posedge clk);
 
-      if (out0_fire) begin : apply_pop
+      if (out1_fire) begin : apply_pop
         pending_addr_valid[match_tag] = 1'b0;
         pending_ctrl_valid[match_tag] = 1'b0;
         addr_occ = addr_occ - 1;
         ctrl_occ = ctrl_occ - 1;
-        out0_hs_count = out0_hs_count + 1;
+        out1_hs_count = out1_hs_count + 1;
       end
 
       if (addr_push) begin : apply_addr_push
@@ -324,25 +324,25 @@ module tb_fabric_pe_load_stress;
         ctrl_push_count = ctrl_push_count + 1;
       end
 
-      if (in1_valid && out1_ready) begin : count_out1_hs
-        out1_hs_count = out1_hs_count + 1;
+      if (in1_valid && out0_ready) begin : count_out0_hs
+        out0_hs_count = out0_hs_count + 1;
       end
     end
 
     if (addr_push_count < 20 || ctrl_push_count < 20) begin : check_push_count
       $fatal(1, "too few queue pushes: addr=%0d ctrl=%0d", addr_push_count, ctrl_push_count);
     end
-    if (out0_hs_count < 20) begin : check_out0_hs_count
+    if (out1_hs_count < 20) begin : check_out1_hs_count
       $fatal(1, "too few matched load handshakes: %0d (addr_push=%0d ctrl_push=%0d)",
-             out0_hs_count, addr_push_count, ctrl_push_count);
+             out1_hs_count, addr_push_count, ctrl_push_count);
     end
-    if (out1_hs_count < 40) begin : check_out1_hs_count
-      $fatal(1, "too few memory-data pass-through handshakes: %0d", out1_hs_count);
+    if (out0_hs_count < 40) begin : check_out0_hs_count
+      $fatal(1, "too few memory-data pass-through handshakes: %0d", out0_hs_count);
     end
     pass_count = pass_count + 1;
 
-    $display("PASS: tb_fabric_pe_load_stress (%0d checks, out0_hs=%0d, out1_hs=%0d)",
-             pass_count, out0_hs_count, out1_hs_count);
+    $display("PASS: tb_fabric_pe_load_stress (%0d checks, out1_hs=%0d, out0_hs=%0d)",
+             pass_count, out1_hs_count, out0_hs_count);
     $finish;
   end
 

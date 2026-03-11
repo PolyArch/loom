@@ -866,9 +866,13 @@ int main(int argc, char **argv) {
             continue;
           }
 
-          // Skip all handshake.* control/memory ops from PE counting.
-          // Compute PEs come from arith.*, math.*, etc.
-          if (llvm::StringRef(opName).starts_with("handshake."))
+          // Skip handshake ops already handled by dedicated builders.
+          // handshake.memory/extmemory: counted above (memory builders).
+          // handshake.return: skipped above (terminator check).
+          // handshake.load/store: mapped via memory module LoadPE/StorePE.
+          // Remaining handshake ops (join, sink, constant, cond_br, mux)
+          // are treated as compute PEs.
+          if (opName == "handshake.load" || opName == "handshake.store")
             continue;
 
           loom::adg::PESpec spec;
@@ -884,8 +888,11 @@ int main(int argc, char **argv) {
               w = floatTy.getWidth();
             else if (ty.isIndex())
               w = loom::ADDR_BIT_WIDTH;
-            if (w > 0)
-              spec.inWidths.push_back(w);
+            else if (mlir::isa<mlir::NoneType>(ty))
+              w = 0;
+            else
+              continue;
+            spec.inWidths.push_back(w);
           }
           // Extract output widths from result types.
           for (auto result : op.getResults()) {
@@ -897,11 +904,14 @@ int main(int argc, char **argv) {
               w = floatTy.getWidth();
             else if (ty.isIndex())
               w = loom::ADDR_BIT_WIDTH;
-            if (w > 0)
-              spec.outWidths.push_back(w);
+            else if (mlir::isa<mlir::NoneType>(ty))
+              w = 0;
+            else
+              continue;
+            spec.outWidths.push_back(w);
           }
 
-          if (!spec.inWidths.empty() && !spec.outWidths.empty()) {
+          if (!spec.inWidths.empty()) {
             analysis.peCounts[spec]++;
 
             // Partition into spatial/temporal if analysis data is present.
