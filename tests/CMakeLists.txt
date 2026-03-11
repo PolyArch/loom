@@ -83,6 +83,13 @@ add_custom_target(check-loom-mapper-unit-smoke
   DEPENDS loom
 )
 
+add_custom_target(check-loom-viz-serializer
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/viz_serializer_regression.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
 add_custom_target(check-loom-fabric-gen
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/fabric_gen.sh"
     "${LOOM_RUNTIME_DIR}/loom"

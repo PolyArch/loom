@@ -40,6 +40,11 @@ if [[ "${1:-}" == "--single" ]]; then
           echo "XFAIL: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
           exit 1
         fi
+        # Verify viz.html is NOT generated on failure.
+        if [[ -f "${out_base}.viz.html" ]]; then
+          echo "XFAIL: viz.html should not exist on failure: ${out_base}.viz.html" >&2
+          exit 1
+        fi
       else
         "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget 10
 
@@ -91,6 +96,29 @@ if [[ "${1:-}" == "--single" ]]; then
             echo "FAIL: add_tag op missing or malformed tag value: ${configured}" >&2
             exit 1
           fi
+        fi
+
+        # Validate that .viz.html was generated and contains expected markers.
+        viz_file="${out_base}.viz.html"
+        if [[ ! -f "${viz_file}" ]]; then
+          echo "FAIL: viz.html not found: ${viz_file}" >&2
+          exit 1
+        fi
+        for marker in adgGraph dfgDot mappingData swNodeMetadata hwNodeMetadata; do
+          if ! grep -q "${marker}" "${viz_file}"; then
+            echo "FAIL: viz.html missing marker '${marker}': ${viz_file}" >&2
+            exit 1
+          fi
+        done
+
+        # Run serializer validation (temporal flag for temporal/mixed ADGs).
+        viz_check_args=("${viz_file}")
+        if [[ "${adg_name}" == *temporal* || "${adg_name}" == *mixed* ]]; then
+          viz_check_args+=("--temporal")
+        fi
+        if ! python3 "${SCRIPT_DIR}/viz_serializer_check.py" "${viz_check_args[@]}"; then
+          echo "FAIL: viz serializer check failed: ${viz_file}" >&2
+          exit 1
         fi
       fi
     done
