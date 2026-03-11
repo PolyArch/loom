@@ -49,6 +49,24 @@ int64_t getNodeIntAttr(const Node *node, llvm::StringRef name,
   return dflt;
 }
 
+/// Get the body_ops array attribute from a node (set by ADGFlattener).
+llvm::SmallVector<std::string, 4>
+getNodeBodyOps(const Node *node) {
+  llvm::SmallVector<std::string, 4> ops;
+  for (auto &attr : node->attributes) {
+    if (attr.getName() == "body_ops") {
+      if (auto arr = mlir::dyn_cast<mlir::ArrayAttr>(attr.getValue())) {
+        for (auto el : arr) {
+          if (auto s = mlir::dyn_cast<mlir::StringAttr>(el))
+            ops.push_back(s.getValue().str());
+        }
+      }
+      break;
+    }
+  }
+  return ops;
+}
+
 // ---- FU-to-container map (temporal PE aggregation) ----
 
 llvm::DenseMap<IdIndex, IdIndex> buildFUToContainerMap(const Graph &adg) {
@@ -61,6 +79,24 @@ llvm::DenseMap<IdIndex, IdIndex> buildFUToContainerMap(const Graph &adg) {
       fuToContainer[i] = static_cast<IdIndex>(parent);
   }
   return fuToContainer;
+}
+
+// Build per-container local FU index map (stable ordering by global ID).
+// Returns: global FU node ID -> local index within its container (0, 1, ...).
+llvm::DenseMap<IdIndex, int>
+buildFULocalIndexMap(const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer) {
+  // Group FU IDs by container, sorted by ID for stable ordering.
+  llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> containerFUs;
+  for (const auto &entry : fuToContainer)
+    containerFUs[entry.second].push_back(entry.first);
+  for (auto &entry : containerFUs)
+    std::sort(entry.second.begin(), entry.second.end());
+
+  llvm::DenseMap<IdIndex, int> localIndex;
+  for (const auto &entry : containerFUs)
+    for (int idx = 0; idx < static_cast<int>(entry.second.size()); ++idx)
+      localIndex[entry.second[idx]] = idx;
+  return localIndex;
 }
 
 // ---- DFG node-to-MLIR-op correlation map ----
@@ -168,10 +204,18 @@ struct GridCoord {
   bool valid = false;
 };
 
+/// Mesh column offset: each mesh letter gets a band of 10 grid columns
+/// to avoid coordinate collisions between independent meshes (e.g., Mesh A
+/// and Mesh B in mixed-temporal fabrics).
+static int meshLetterOffset(char letter) {
+  return (letter - 'a') * 10;
+}
+
 GridCoord extractGridFromName(llvm::StringRef name) {
   GridCoord gc;
   std::string nameStr = name.str();
 
+  // ---- Switch patterns (even positions) ----
   // Pattern: sw_w<W>_<D>_<R>_<C> -> (C*2, R*2) per depth layer (must be first)
   static const std::regex reSW_WD("sw_w(\\d+)_(\\d+)_(\\d+)_(\\d+)");
   // Pattern: sw_w<W>_<R>_<C> -> (C*2, R*2)
@@ -182,12 +226,20 @@ GridCoord extractGridFromName(llvm::StringRef name) {
   static const std::regex reSW("^sw_(\\d+)_(\\d+)$");
   // Pattern: tsw_<R>_<C> -> (C*2, R*2) in temporal band
   static const std::regex reTSW("^tsw_(\\d+)_(\\d+)$");
+
+  // ---- PE/TPE patterns with mesh prefix (odd positions) ----
+  // Pattern: (pe|tpe)_<letter>_<R>_<C> -> mesh-offset + (C*2+1, R*2+1)
+  // e.g., pe_a_0_1 -> mesh A, row 0, col 1
+  static const std::regex rePE_MESH("^(?:pe|tpe)_([a-z])_(\\d+)_(\\d+)$");
   // Pattern: tpe_r<R>_c<C> -> (C*2+1, R*2+1) temporal PE instances
   static const std::regex reTPE_RC("tpe_r(\\d+)_c(\\d+)");
   // Pattern: <type>_r<R>_c<C> -> (C*2+1, R*2+1) PE instances
   static const std::regex rePE_RC("_r(\\d+)_c(\\d+)$");
   // Pattern: pe_<R>_<C> -> (C*2+1, R*2+1)
   static const std::regex rePE("^pe_(\\d+)_(\\d+)$");
+  // Pattern: tpe_<letter> -> single-letter ordinal (a=row0, b=row1, ...)
+  // Used when temporal PEs have no explicit row/col in their name.
+  static const std::regex reTPE_LETTER("^tpe_([a-z])$");
 
   std::smatch m;
 
@@ -211,6 +263,11 @@ GridCoord extractGridFromName(llvm::StringRef name) {
     gc.col = std::stoi(m[2]) * 2;
     gc.row = std::stoi(m[1]) * 2;
     gc.valid = true;
+  } else if (std::regex_search(nameStr, m, rePE_MESH)) {
+    int offset = meshLetterOffset(m[1].str()[0]);
+    gc.col = offset + std::stoi(m[3]) * 2 + 1;
+    gc.row = std::stoi(m[2]) * 2 + 1;
+    gc.valid = true;
   } else if (std::regex_search(nameStr, m, reTPE_RC)) {
     gc.col = std::stoi(m[2]) * 2 + 1;
     gc.row = std::stoi(m[1]) * 2 + 1;
@@ -222,6 +279,11 @@ GridCoord extractGridFromName(llvm::StringRef name) {
   } else if (std::regex_search(nameStr, m, rePE)) {
     gc.col = std::stoi(m[2]) * 2 + 1;
     gc.row = std::stoi(m[1]) * 2 + 1;
+    gc.valid = true;
+  } else if (std::regex_search(nameStr, m, reTPE_LETTER)) {
+    int ordinal = m[1].str()[0] - 'a';
+    gc.col = 1;
+    gc.row = ordinal * 2 + 1;
     gc.valid = true;
   }
 
@@ -676,6 +738,7 @@ std::string buildDFGDot(const Graph &dfg, const DFGOpMap &dfgOpMap) {
 void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
                        const MappingState &state,
                        const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer,
+                       const llvm::DenseMap<IdIndex, int> &fuLocalIndex,
                        const BodyOpsMap &bodyOps) {
   llvm::json::OStream json(os, 2);
   json.objectBegin();
@@ -803,12 +866,28 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
         if (!fuNode) continue;
         int64_t parent = getNodeIntAttr(fuNode, "parent_temporal_pe", -1);
         if (parent == static_cast<int64_t>(i)) {
+          // Use per-container local index for stable FU identity.
+          auto idxIt = fuLocalIndex.find(j);
+          int localIdx = idxIt != fuLocalIndex.end() ? idxIt->second : 0;
           json.objectBegin();
           json.attribute("id", "hw_" + std::to_string(j));
-          json.attribute("name", name + "/fu_" + std::to_string(j));
-          llvm::StringRef fuOp = getNodeStrAttr(fuNode, "op_name");
-          if (!fuOp.empty())
-            json.attribute("op", fuOp);
+          json.attribute("name",
+                         name + "/fu_" + std::to_string(localIdx));
+          // Use body_ops for semantic FU identity (e.g., "arith.addi")
+          // instead of the generic "fabric.pe" op_name.
+          auto fuBodyOps = getNodeBodyOps(fuNode);
+          if (!fuBodyOps.empty()) {
+            std::string opStr;
+            for (size_t k = 0; k < fuBodyOps.size(); ++k) {
+              if (k > 0) opStr += "+";
+              opStr += fuBodyOps[k];
+            }
+            json.attribute("op", opStr);
+          } else {
+            llvm::StringRef fuOp = getNodeStrAttr(fuNode, "op_name");
+            if (!fuOp.empty())
+              json.attribute("op", fuOp);
+          }
           json.objectEnd();
         }
       }
@@ -885,7 +964,8 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
 
 void writeMappingDataJSON(llvm::raw_ostream &os, const Graph &adg,
                           const Graph &dfg, const MappingState &state,
-                          const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer) {
+                          const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer,
+                          const llvm::DenseMap<IdIndex, int> &fuLocalIndex) {
   // Route color palette
   static const char *palette[] = {
     "#e6194b","#3cb44b","#4363d8","#f58231",
@@ -1004,11 +1084,15 @@ void writeMappingDataJSON(llvm::raw_ostream &os, const Graph &adg,
 
     if (containerId != INVALID_ID) {
       json.attribute("container", "hw_" + std::to_string(containerId));
-      llvm::StringRef containerName = getNodeStrAttr(adg.getNode(containerId), "sym_name");
+      llvm::StringRef containerName =
+          getNodeStrAttr(adg.getNode(containerId), "sym_name");
+      auto idxIt = fuLocalIndex.find(hwId);
+      int localIdx = idxIt != fuLocalIndex.end() ? idxIt->second : 0;
       json.attribute("fuName",
-                     (containerName.empty() ? "tpe_" + std::to_string(containerId)
-                                            : containerName.str()) +
-                         "/fu_" + std::to_string(hwId));
+                     (containerName.empty()
+                          ? "tpe_" + std::to_string(containerId)
+                          : containerName.str()) +
+                         "/fu_" + std::to_string(localIdx));
     }
 
     json.attribute("slot", static_cast<int64_t>(tpa.slot));
@@ -1208,6 +1292,7 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
   }
 
   auto fuToContainer = buildFUToContainerMap(adg);
+  auto fuLocalIndex = buildFULocalIndexMap(fuToContainer);
   auto dfgOpMap = buildDFGNodeToOpMap(dfgModule);
   auto bodyOps = buildPEBodyOpsMap(fabricModule);
 
@@ -1218,13 +1303,13 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
   std::string adgJsonStr;
   {
     llvm::raw_string_ostream ss(adgJsonStr);
-    writeADGGraphJSON(ss, adg, state, fuToContainer, bodyOps);
+    writeADGGraphJSON(ss, adg, state, fuToContainer, fuLocalIndex, bodyOps);
   }
 
   std::string mappingJsonStr;
   {
     llvm::raw_string_ostream ss(mappingJsonStr);
-    writeMappingDataJSON(ss, adg, dfg, state, fuToContainer);
+    writeMappingDataJSON(ss, adg, dfg, state, fuToContainer, fuLocalIndex);
   }
 
   std::string swMetaStr;

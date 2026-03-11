@@ -68,6 +68,16 @@ if [[ "${1:-}" == "--single" ]]; then
             exit 1
           fi
         done
+
+        # Run serializer validation (temporal flag for temporal/mixed ADGs).
+        viz_check_args=("${viz_file}")
+        if [[ "${adg_name}" == *temporal* || "${adg_name}" == *mixed* ]]; then
+          viz_check_args+=("--temporal")
+        fi
+        if ! python3 "${SCRIPT_DIR}/viz_serializer_check.py" "${viz_check_args[@]}"; then
+          echo "FAIL: viz serializer check failed: ${viz_file}" >&2
+          exit 1
+        fi
       fi
     done
   done
