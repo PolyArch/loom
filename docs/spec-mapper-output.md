@@ -17,6 +17,7 @@ Output files are generated in Stage C of the Loom pipeline
 | `<name>.map.json` | always (with `--adg` + sources) | Machine-readable mapping report |
 | `<name>.map.txt` | always (with `--adg` + sources) | Human-readable mapping report |
 | `<name>.fabric.mlir` | always (with `--adg` + sources) | Configured fabric MLIR |
+| `<name>.viz.html` | on success (with `--adg` + sources) | Self-contained visualization |
 
 ## mapping.json Schema
 
@@ -160,18 +161,19 @@ addresses and masks. Used by the host runtime to program `config_mem`.
 
 ## Relationship to Visualization Data
 
-The `mapping.json` file and the HTML viewer's embedded JSON
+The `mapping.json` file and the `.viz.html` viewer's embedded JSON
 ([spec-viz-mapped.md](./spec-viz-mapped.md)) serve different purposes:
 
-- `mapping.json`: complete machine-readable report for tooling and
-  `--viz-mapped` standalone visualization input.
-- Embedded HTML JSON (`mappingData`, `nodeMetadata`, `dotSources`):
-  viewer-specific data derived from `mapping.json` content plus DOT
-  generation. The `HTMLViewer` exporter reads `mapping.json` (or
-  `MappingState` directly) and produces the embedded JSON.
+- `mapping.json`: complete machine-readable report for tooling.
+- Embedded HTML JSON (`adgGraph`, `dfgDot`, `mappingData`,
+  `swNodeMetadata`, `hwNodeMetadata`): viewer-specific data derived
+  from the mapper `Graph` and `MappingState` by `VizHTMLExporter`.
+  The exporter serializes these structures directly into the HTML
+  at build time, without reading `mapping.json`.
 
-When `--viz-mapped <mapping.json>` is invoked, the viewer reads the
-mapping.json file and generates the embedded viewer JSON internally.
+The `.viz.html` file is generated automatically alongside other output
+artifacts when mapping succeeds. It is self-contained and requires no
+network access or external files.
 
 ## Configured Fabric MLIR (`<name>.fabric.mlir`)
 

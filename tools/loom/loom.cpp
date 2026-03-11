@@ -84,6 +84,7 @@
 #include "loom/Hardware/Common/FabricConstants.h"
 #include "loom/Mapper/ADGFlattener.h"
 #include "loom/Mapper/ConfigGen.h"
+#include "loom/Viz/VizHTMLExporter.h"
 #include "loom/Mapper/DFGBuilder.h"
 #include "loom/Mapper/Mapper.h"
 #include "loom/Mapper/TechMapper.h"
@@ -1527,6 +1528,16 @@ int main(int argc, char **argv) {
                                           adg_module.get(), fabric_path)) {
       llvm::errs() << "warning: failed to write configured fabric: "
                     << fabric_path << "\n";
+    }
+
+    // Emit self-contained visualization HTML.
+    {
+      loom::VizHTMLExporter viz_exporter;
+      if (!viz_exporter.emitHTML(adg, dfg, mapper_result.state,
+                                 handshake_module.get(), base_path)) {
+        llvm::errs() << "warning: failed to write visualization: "
+                      << base_path << ".viz.html\n";
+      }
     }
 
     // Write verbose log on success.

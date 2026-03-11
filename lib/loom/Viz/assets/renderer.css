@@ -1,0 +1,195 @@
+/* Loom Visualization Renderer Styles */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%; height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+  overflow: hidden;
+  background: #1a1a2e;
+  color: #e0e0e0;
+}
+
+/* Toolbar */
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 16px;
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+  height: 40px;
+  z-index: 100;
+}
+
+#title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e94560;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 300px;
+}
+
+#mode-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+#mode-buttons button, #btn-fit, #btn-restore {
+  padding: 3px 10px;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+#mode-buttons button:hover, #btn-fit:hover, #btn-restore:hover {
+  background: #0f3460;
+}
+
+#mode-buttons button.active {
+  background: #e94560;
+  border-color: #e94560;
+  color: white;
+}
+
+#btn-restore {
+  display: none;
+}
+
+#status-bar {
+  font-size: 11px;
+  color: #888;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* Graph area */
+#graph-area {
+  display: flex;
+  width: 100%;
+  height: calc(100% - 40px);
+  position: relative;
+}
+
+#panel-adg, #panel-dfg {
+  position: relative;
+  overflow: hidden;
+  background: #f8f9fa;
+}
+
+#panel-adg { flex: 0 0 55%; }
+#panel-dfg { flex: 0 0 45%; }
+
+.panel-header {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  padding: 4px 12px;
+  background: rgba(22, 33, 62, 0.9);
+  color: #e0e0e0;
+  font-size: 12px;
+  font-weight: 600;
+  z-index: 10;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid #0f3460;
+}
+
+#panel-divider {
+  width: 5px;
+  cursor: col-resize;
+  background: #0f3460;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+#panel-divider:hover {
+  background: #e94560;
+}
+
+#svg-adg, #svg-dfg {
+  width: 100%;
+  height: 100%;
+}
+
+/* Detail panel */
+#detail-panel {
+  display: none;
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  max-height: 40%;
+  background: #16213e;
+  border-top: 2px solid #e94560;
+  padding: 12px 16px;
+  overflow-y: auto;
+  z-index: 50;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+#detail-panel.visible { display: block; }
+
+#detail-content {
+  white-space: pre-wrap;
+  font-family: "Fira Code", "Cascadia Code", monospace;
+}
+
+#detail-close {
+  position: absolute;
+  top: 8px; right: 12px;
+  background: none;
+  border: 1px solid #e94560;
+  color: #e94560;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+#detail-close:hover {
+  background: #e94560;
+  color: white;
+}
+
+/* Highlight classes (per spec-viz-gui.md) */
+.node-highlight { stroke: #ff6600 !important; stroke-width: 3px !important; }
+.cross-highlight { stroke: #0066ff !important; stroke-width: 3px !important; stroke-dasharray: 5,3 !important; }
+.route-trace { stroke: #ff3300 !important; stroke-width: 4px !important; }
+/* ADG node type styles */
+.adg-node { cursor: pointer; transition: opacity 0.15s; }
+.adg-node text { font-size: 10px; pointer-events: none; }
+.adg-edge { fill: none; transition: opacity 0.15s; }
+
+/* Grid lines */
+.grid-line { stroke: #e0e0e0; stroke-width: 0.5; stroke-dasharray: 2,4; }
+
+/* DFG panel SVG nodes */
+#panel-dfg .node { cursor: pointer; }
+
+/* Single-panel maximize */
+.panel-maximized { flex: 0 0 100% !important; }
+.panel-hidden { display: none !important; }
+.divider-hidden { display: none !important; }
+
+/* Overlay mode */
+.unmapped-node {
+  fill: white !important;
+  opacity: 0.4;
+  stroke-dasharray: 4,2;
+}
+
+.route-overlay {
+  fill: none;
+  opacity: 0.6;
+  pointer-events: visibleStroke;
+  cursor: pointer;
+}
+
+.base-edge-overlay {
+  opacity: 0.2 !important;
+}
