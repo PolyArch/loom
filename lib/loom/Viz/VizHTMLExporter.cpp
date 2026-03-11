@@ -480,6 +480,24 @@ std::string edgeTypeStr(const Edge *edge, const Graph &g) {
   return "native";
 }
 
+// ---- Script-safe string escaping ----
+// Replace "</" with "<\/" to prevent early termination of <script> blocks
+// when embedded data contains user-controlled strings (sym_name, loc, etc.).
+
+std::string scriptSafe(const std::string &s) {
+  std::string result;
+  result.reserve(s.size());
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] == '<' && i + 1 < s.size() && s[i + 1] == '/') {
+      result += "<\\/";
+      ++i; // skip the '/'
+    } else {
+      result += s[i];
+    }
+  }
+  return result;
+}
+
 // ---- Bit width extraction ----
 
 int bitWidthFromType(mlir::Type type) {
@@ -790,8 +808,10 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
   // Band = (maxCol + 1) * 2 + 2, so each mesh letter gets enough space.
   int meshBandSize = 10; // default fallback
   {
-    static const std::regex rePeMeshCol("^(?:pe|tpe)_[a-z]_(\\d+)_(\\d+)$");
-    int maxCol = 0;
+    // Match 2D names: pe_a_0_3 -> col=3; also 1D names: pe_a_7 -> idx=7.
+    static const std::regex rePeMesh2D("^(?:pe|tpe)_[a-z]_(\\d+)_(\\d+)$");
+    static const std::regex rePeMesh1D("^(?:pe|tpe)_[a-z]_(\\d+)$");
+    int maxIdx = 0;
     for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
       const Node *node = adg.getNode(i);
       if (!node || fuToContainer.count(i))
@@ -802,10 +822,12 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
         continue;
       std::string nameStr = sn.str();
       std::smatch m;
-      if (std::regex_match(nameStr, m, rePeMeshCol))
-        maxCol = std::max(maxCol, std::stoi(m[2]));
+      if (std::regex_match(nameStr, m, rePeMesh2D))
+        maxIdx = std::max(maxIdx, std::stoi(m[2]));
+      else if (std::regex_match(nameStr, m, rePeMesh1D))
+        maxIdx = std::max(maxIdx, std::stoi(m[1]));
     }
-    meshBandSize = std::max(10, (maxCol + 1) * 2 + 2);
+    meshBandSize = std::max(10, (maxIdx + 1) * 2 + 2);
   }
 
   // Pre-compute grid coordinates for all nodes (needed for FIFO inference).
@@ -1454,13 +1476,14 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
       << "  <button id=\"detail-close\">Close</button>\n"
       << "</div>\n\n";
 
-  // Embedded data
+  // Embedded data (scriptSafe prevents "</script>" in user strings from
+  // terminating the block early).
   out << "<script>\n"
-      << "const adgGraph = " << adgJsonStr << ";\n\n"
-      << "const dfgDot = \"" << jsonEscape(dfgDotStr) << "\";\n\n"
-      << "const mappingData = " << mappingJsonStr << ";\n\n"
-      << "const swNodeMetadata = " << swMetaStr << ";\n\n"
-      << "const hwNodeMetadata = " << hwMetaStr << ";\n"
+      << "const adgGraph = " << scriptSafe(adgJsonStr) << ";\n\n"
+      << "const dfgDot = \"" << scriptSafe(jsonEscape(dfgDotStr)) << "\";\n\n"
+      << "const mappingData = " << scriptSafe(mappingJsonStr) << ";\n\n"
+      << "const swNodeMetadata = " << scriptSafe(swMetaStr) << ";\n\n"
+      << "const hwNodeMetadata = " << scriptSafe(hwMetaStr) << ";\n"
       << "</script>\n\n";
 
   // Vendored assets
