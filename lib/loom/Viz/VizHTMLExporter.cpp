@@ -6,7 +6,9 @@
 
 #include "loom/Viz/VizHTMLExporter.h"
 
+#include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Dialect/Fabric/FabricTypeUtils.h"
 
 #include "circt/Dialect/Handshake/HandshakeOps.h"
 
@@ -110,9 +112,14 @@ DFGOpMap buildDFGNodeToOpMap(mlir::ModuleOp dfgModule) {
   if (!dfgModule)
     return result;
 
-  // Find the handshake.func inside the module.
+  // Find the mapped handshake.func (prefer the first non-_esi function).
   circt::handshake::FuncOp funcOp;
-  dfgModule.walk([&](circt::handshake::FuncOp op) { funcOp = op; });
+  dfgModule.walk([&](circt::handshake::FuncOp op) {
+    if (!funcOp ||
+        (!op.getName().ends_with("_esi") &&
+         funcOp.getName().ends_with("_esi")))
+      funcOp = op;
+  });
   if (!funcOp)
     return result;
 
@@ -204,14 +211,15 @@ struct GridCoord {
   bool valid = false;
 };
 
-/// Mesh column offset: each mesh letter gets a band of 10 grid columns
-/// to avoid coordinate collisions between independent meshes (e.g., Mesh A
-/// and Mesh B in mixed-temporal fabrics).
-static int meshLetterOffset(char letter) {
-  return (letter - 'a') * 10;
+/// Mesh column offset: each mesh letter gets a band of columns to avoid
+/// coordinate collisions between independent meshes (e.g., Mesh A and Mesh B
+/// in mixed-temporal fabrics). The band size is computed dynamically from the
+/// actual mesh dimensions to prevent overlap when meshes exceed 5 columns.
+static int meshLetterOffset(char letter, int bandSize) {
+  return (letter - 'a') * bandSize;
 }
 
-GridCoord extractGridFromName(llvm::StringRef name) {
+GridCoord extractGridFromName(llvm::StringRef name, int meshBandSize = 10) {
   GridCoord gc;
   std::string nameStr = name.str();
 
@@ -264,7 +272,7 @@ GridCoord extractGridFromName(llvm::StringRef name) {
     gc.row = std::stoi(m[1]) * 2;
     gc.valid = true;
   } else if (std::regex_search(nameStr, m, rePE_MESH)) {
-    int offset = meshLetterOffset(m[1].str()[0]);
+    int offset = meshLetterOffset(m[1].str()[0], meshBandSize);
     gc.col = offset + std::stoi(m[3]) * 2 + 1;
     gc.row = std::stoi(m[2]) * 2 + 1;
     gc.valid = true;
@@ -349,6 +357,12 @@ void inferFIFOCoords(
 // ---- Node type classification ----
 
 std::string nodeTypeStr(const Node *node) {
+  // Boundary sentinels (module I/O) have no op_name or resource_class.
+  if (node->kind == Node::ModuleInputNode)
+    return "input";
+  if (node->kind == Node::ModuleOutputNode)
+    return "output";
+
   llvm::StringRef opName = getNodeStrAttr(node, "op_name");
   if (opName.starts_with("fabric."))
     return opName.str();
@@ -435,10 +449,9 @@ std::string edgeTypeStr(const Edge *edge, const Graph &g) {
   mlir::Type type = srcPort->type;
   if (!type) return "native";
 
-  std::string typeStr = printType(type);
-  if (typeStr.find("tagged") != std::string::npos) return "tagged";
-  if (typeStr.find("memref") != std::string::npos) return "memref";
-  if (typeStr.find("none") != std::string::npos) return "control";
+  if (mlir::isa<dataflow::TaggedType>(type)) return "tagged";
+  if (mlir::isa<mlir::MemRefType>(type)) return "memref";
+  if (mlir::isa<mlir::NoneType>(type)) return "control";
   return "native";
 }
 
@@ -446,12 +459,16 @@ std::string edgeTypeStr(const Edge *edge, const Graph &g) {
 
 int bitWidthFromType(mlir::Type type) {
   if (!type) return 32;
-  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
-    return intType.getWidth();
-  if (mlir::isa<mlir::Float32Type>(type)) return 32;
-  if (mlir::isa<mlir::Float64Type>(type)) return 64;
-  if (mlir::isa<mlir::Float16Type>(type)) return 16;
-  if (type.isIndex()) return 64;
+  // TaggedType = value width + tag width.
+  if (auto taggedType = mlir::dyn_cast<dataflow::TaggedType>(type)) {
+    auto valWidth = fabric::getNativeBitWidth(taggedType.getValueType());
+    int tagWidth = taggedType.getTagType().getWidth();
+    return (valWidth ? static_cast<int>(*valWidth) : 32) + tagWidth;
+  }
+  // getNativeBitWidth handles BitsType, IntegerType, FloatType, IndexType.
+  auto width = fabric::getNativeBitWidth(type);
+  if (width)
+    return static_cast<int>(*width);
   if (mlir::isa<mlir::NoneType>(type)) return 1;
   return 32;
 }
@@ -743,6 +760,29 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
   llvm::json::OStream json(os, 2);
   json.objectBegin();
 
+  // First pass: scan for the max mesh column index to compute dynamic band
+  // size, then extract grid coordinates for all nodes in a second pass.
+  // Band = (maxCol + 1) * 2 + 2, so each mesh letter gets enough space.
+  int meshBandSize = 10; // default fallback
+  {
+    static const std::regex rePeMeshCol("^(?:pe|tpe)_[a-z]_(\\d+)_(\\d+)$");
+    int maxCol = 0;
+    for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
+      const Node *node = adg.getNode(i);
+      if (!node || fuToContainer.count(i))
+        continue;
+      llvm::StringRef sn = getNodeStrAttr(node, "sym_name");
+      if (sn.empty() ||
+          (!sn.starts_with("pe_") && !sn.starts_with("tpe_")))
+        continue;
+      std::string nameStr = sn.str();
+      std::smatch m;
+      if (std::regex_match(nameStr, m, rePeMeshCol))
+        maxCol = std::max(maxCol, std::stoi(m[2]));
+    }
+    meshBandSize = std::max(10, (maxCol + 1) * 2 + 2);
+  }
+
   // Pre-compute grid coordinates for all nodes (needed for FIFO inference).
   llvm::DenseMap<IdIndex, GridCoord> nodeCoords;
   for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
@@ -762,7 +802,7 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
       llvm::StringRef symName = getNodeStrAttr(node, "sym_name");
       std::string name = symName.empty() ? ("node_" + std::to_string(i))
                                          : symName.str();
-      gc = extractGridFromName(name);
+      gc = extractGridFromName(name, meshBandSize);
     }
     if (gc.valid)
       nodeCoords[i] = gc;
@@ -788,7 +828,12 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
     std::string name = symName.empty() ? ("node_" + std::to_string(i)) : symName.str();
     std::string type = nodeTypeStr(node);
     llvm::StringRef resClass = getNodeStrAttr(node, "resource_class");
-    std::string classStr = resClass.empty() ? "functional" : resClass.str();
+    std::string classStr;
+    if (node->kind == Node::ModuleInputNode ||
+        node->kind == Node::ModuleOutputNode)
+      classStr = "boundary";
+    else
+      classStr = resClass.empty() ? "functional" : resClass.str();
 
     // Grid coordinates (from pre-computed map)
     auto coordIt = nodeCoords.find(i);
