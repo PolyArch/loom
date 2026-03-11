@@ -248,6 +248,11 @@ GridCoord extractGridFromName(llvm::StringRef name, int meshBandSize = 10) {
   // Pattern: tpe_<letter> -> single-letter ordinal (a=row0, b=row1, ...)
   // Used when temporal PEs have no explicit row/col in their name.
   static const std::regex reTPE_LETTER("^tpe_([a-z])$");
+  // Pattern: tpe_<N> -> single numeric ordinal (e.g., tpe_0, tpe_1)
+  static const std::regex reTPE_NUM("^tpe_(\\d+)$");
+  // Pattern: (pe|tpe)_<letter>_<N> -> 1D mesh with single index
+  // e.g., pe_a_0 -> mesh A, index 0 (placed in column)
+  static const std::regex rePE_MESH_1D("^(?:pe|tpe)_([a-z])_(\\d+)$");
 
   std::smatch m;
 
@@ -292,6 +297,17 @@ GridCoord extractGridFromName(llvm::StringRef name, int meshBandSize = 10) {
     int ordinal = m[1].str()[0] - 'a';
     gc.col = 1;
     gc.row = ordinal * 2 + 1;
+    gc.valid = true;
+  } else if (std::regex_search(nameStr, m, reTPE_NUM)) {
+    int ordinal = std::stoi(m[1]);
+    gc.col = 1;
+    gc.row = ordinal * 2 + 1;
+    gc.valid = true;
+  } else if (std::regex_search(nameStr, m, rePE_MESH_1D)) {
+    int offset = meshLetterOffset(m[1].str()[0], meshBandSize);
+    int idx = std::stoi(m[2]);
+    gc.col = offset + idx * 2 + 1;
+    gc.row = 1;
     gc.valid = true;
   }
 
@@ -991,12 +1007,16 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
     int tagBw = 0;
 
     if (srcPort->type) {
-      valueBw = bitWidthFromType(srcPort->type);
-      totalBw = valueBw;
-
-      if (eType == "tagged") {
-        tagBw = getNodeIntAttr(adg.getNode(srcNode), "tag_width", 4);
+      if (auto taggedType =
+              mlir::dyn_cast<dataflow::TaggedType>(srcPort->type)) {
+        // Decompose tagged type into value and tag widths directly.
+        auto valW = fabric::getNativeBitWidth(taggedType.getValueType());
+        valueBw = valW ? static_cast<int>(*valW) : 32;
+        tagBw = taggedType.getTagType().getWidth();
         totalBw = valueBw + tagBw;
+      } else {
+        valueBw = bitWidthFromType(srcPort->type);
+        totalBw = valueBw;
       }
     }
 
