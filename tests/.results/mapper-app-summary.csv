@@ -4,12 +4,12 @@ axpy,vector,pass,domain-b10,,domain
 batchnorm,neural,pass,domain-b10,,domain
 binary_search,sort-search,pass,domain-b10,,domain
 bisection_step,misc,pass,domain-b10,,domain
+bit_reverse,bit-hash,pass,domain-b10,,domain
 bitonic_stage,sort-search,pass,domain-b10,,domain
 bitonic_stage-modified,sort-search,pass,analyze-track4-b200,,per-app
 bitonic_stage-tweak,sort-search,pass,analyze-track4-b200,,per-app
 bitrev,bit-hash,pass,domain-b10,,domain
 bitrev_complex,bit-hash,pass,domain-b10,,domain
-bit_reverse,bit-hash,pass,domain-b10,,domain
 breadth_first_search,misc,fail,,missing_handshake,per-app
 byte_swap,bit-hash,pass,domain-b10,,domain
 cdma,misc,pass,domain-b10,,domain
@@ -32,8 +32,8 @@ delta_decode,encoding,pass,domain-b10,,domain
 delta_encode,encoding,pass,domain-b10,,domain
 depthwise_conv,neural,pass,domain-b10,,domain
 distance_point,misc,pass,domain-b10,,domain
-dotprod,vector,fail,,missing_handshake,per-app
 dot_product_3d,vector,pass,domain-b10,,domain
+dotprod,vector,pass,domain-b10,,domain
 downsample,dsp,pass,domain-b10,,domain
 downsample_avg,dsp,pass,domain-b10,,domain
 edge_update,stencil,pass,domain-b10,,domain

@@ -34,6 +34,27 @@ classify_domain() {
   esac
 }
 
+find_handshake_dfg() {
+  local output_dir="$1"
+  local app_name="$2"
+  local candidate=""
+
+  for opt in O0 O1 O2 O3 ""; do
+    if [[ -n "${opt}" ]]; then
+      candidate="${output_dir}/${app_name}.${opt}.handshake.mlir"
+    else
+      candidate="${output_dir}/${app_name}.handshake.mlir"
+    fi
+    if [[ -f "${candidate}" ]] &&
+       grep -q "handshake.func" "${candidate}" 2>/dev/null; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 # --- Single mode ---
 if [[ "${1:-}" == "--single" ]]; then
   shift
@@ -56,31 +77,13 @@ if [[ "${1:-}" == "--single" ]]; then
   rm -f "${output_dir}/${APP_NAME}_failure_class.txt"
   rm -f "${output_dir}/${APP_NAME}_adg_source.txt"
 
-  # Find the handshake DFG (prefer O0, fall back to untagged).
-  dfg=""
-  for opt in O0 O1 O2 O3 ""; do
-    if [[ -n "${opt}" ]]; then
-      candidate="${output_dir}/${APP_NAME}.${opt}.handshake.mlir"
-    else
-      candidate="${output_dir}/${APP_NAME}.handshake.mlir"
-    fi
-    if [[ -f "${candidate}" ]]; then
-      dfg="${candidate}"
-      break
-    fi
-  done
+  # Find the handshake DFG (prefer O0, fall back to untagged). Each candidate
+  # must both exist and contain handshake.func, not just func.func.
+  dfg="$(find_handshake_dfg "${output_dir}" "${APP_NAME}" || true)"
   if [[ -z "${dfg}" ]]; then
     echo "missing_handshake" > "${output_dir}/${APP_NAME}_failure_class.txt"
     echo "per-app" > "${output_dir}/${APP_NAME}_adg_source.txt"
-    echo "FAIL: no handshake.mlir found for ${APP_NAME}" >&2
-    exit 1
-  fi
-
-  # Check that the DFG actually contains handshake.func (not just func.func).
-  if ! grep -q "handshake.func" "${dfg}"; then
-    echo "missing_handshake" > "${output_dir}/${APP_NAME}_failure_class.txt"
-    echo "per-app" > "${output_dir}/${APP_NAME}_adg_source.txt"
-    echo "FAIL: ${dfg} has no handshake.func (lowering incomplete)" >&2
+    echo "FAIL: no valid handshake.mlir found for ${APP_NAME}" >&2
     exit 1
   fi
 
@@ -192,21 +195,8 @@ for app in "${app_names[@]}"; do
   domain=$(classify_domain "${app}")
   domain_apps["${domain}"]+="${app} "
 
-  # Find DFG path for this app (prefer O0, fall back to untagged).
-  dfg=""
-  for opt in O0 O1 O2 O3 ""; do
-    if [[ -n "${opt}" ]]; then
-      candidate="${APP_DIR}/${app}/Output/${app}.${opt}.handshake.mlir"
-    else
-      candidate="${APP_DIR}/${app}/Output/${app}.handshake.mlir"
-    fi
-    if [[ -f "${candidate}" ]]; then
-      dfg="${candidate}"
-      break
-    fi
-  done
-  # Only include DFGs that actually contain handshake.func (not just func.func).
-  if [[ -n "${dfg}" ]] && grep -q "handshake.func" "${dfg}"; then
+  dfg="$(find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" || true)"
+  if [[ -n "${dfg}" ]]; then
     if [[ -n "${domain_dfgs[${domain}]:-}" ]]; then
       domain_dfgs["${domain}"]+=",${dfg}"
     else
