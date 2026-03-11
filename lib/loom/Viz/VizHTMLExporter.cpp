@@ -396,15 +396,24 @@ AreaInfo computeArea(const Node *node, const Graph &adg,
   } else if (type == "fabric.switch" || type == "fabric.temporal_sw") {
     a.w = 1; a.h = 1; a.cost = 1.0;
   } else {
-    // PE: scale by body complexity from fabric module.
+    // PE: scale by body complexity from fabric module or graph node.
     llvm::StringRef symName = getNodeStrAttr(node, "sym_name");
     auto it = bodyOps.find(symName);
+    const llvm::SmallVector<std::string, 4> *opsPtr = nullptr;
+    llvm::SmallVector<std::string, 4> nodeOps;
+    if (it != bodyOps.end()) {
+      opsPtr = &it->second;
+    } else {
+      nodeOps = getNodeBodyOps(node);
+      if (!nodeOps.empty())
+        opsPtr = &nodeOps;
+    }
     int opCount = 1;
     bool hasFloat = false;
     bool has64bit = false;
-    if (it != bodyOps.end()) {
-      opCount = std::max(1, static_cast<int>(it->second.size()));
-      for (auto &op : it->second) {
+    if (opsPtr) {
+      opCount = std::max(1, static_cast<int>(opsPtr->size()));
+      for (auto &op : *opsPtr) {
         if (op.find("addf") != std::string::npos ||
             op.find("mulf") != std::string::npos ||
             op.find("divf") != std::string::npos ||
@@ -873,13 +882,18 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
     json.attributeBegin("params");
     json.objectBegin();
 
-    // Body ops for PEs (from fabric module)
+    // Body ops for PEs (from fabric module, or from graph node attribute
+    // for inline fabric.pe ops that bypass fabric.instance).
     if (type == "fabric.pe") {
       auto it = bodyOps.find(symName);
       json.attributeBegin("body_ops");
       json.arrayBegin();
       if (it != bodyOps.end()) {
         for (auto &op : it->second)
+          json.value(op);
+      } else {
+        auto nodeOps = getNodeBodyOps(node);
+        for (auto &op : nodeOps)
           json.value(op);
       }
       json.arrayEnd();
@@ -1261,12 +1275,17 @@ void writeHWMetadataJSON(llvm::raw_ostream &os, const Graph &adg,
     std::string type = nodeTypeStr(node);
     json.attribute("type", type);
 
-    // Body ops (from fabric module via bodyOps map)
+    // Body ops (from fabric module, or from graph node attribute for
+    // inline fabric.pe ops that bypass fabric.instance).
     json.attributeBegin("body_ops");
     json.arrayBegin();
     auto it = bodyOps.find(symName);
     if (it != bodyOps.end()) {
       for (auto &op : it->second)
+        json.value(op);
+    } else {
+      auto nodeOps = getNodeBodyOps(node);
+      for (auto &op : nodeOps)
         json.value(op);
     }
     json.arrayEnd();
