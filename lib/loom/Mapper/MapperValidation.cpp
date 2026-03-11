@@ -142,8 +142,21 @@ bool Mapper::validateC2(const MappingState &state, const Graph &dfg,
         }
       }
 
+      // Detect non-temporal tagged PE via output_tag attribute.
+      bool taggedPE = false;
+      if (!temporalFU && hwNode) {
+        for (auto &attr : hwNode->attributes) {
+          if (attr.getName().getValue() == "output_tag") {
+            taggedPE = true;
+            break;
+          }
+        }
+      }
+
       bool typeOk = temporalFU
                         ? isTypeWidthCompatibleForTemporalFU(sw->type, hw->type)
+                    : taggedPE
+                        ? isTypeWidthCompatibleForTaggedPE(sw->type, hw->type)
                         : isTypeWidthCompatible(sw->type, hw->type);
       if (!typeOk) {
         unsigned swWidth = getTypeWidth(sw->type);

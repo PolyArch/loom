@@ -290,11 +290,17 @@ struct CellInfo {
 /// Create a PE definition from a PESpec and return its handle.
 inline PEHandle createPEDef(ADGBuilder &builder, const PESpec &spec) {
   std::vector<Type> inTypes, outTypes;
-  bool useFloat = isFloatOp(spec.opName);
+  // Conversion ops have asymmetric float/int inputs and outputs.
+  bool convFloatIn = isConversionOp(spec.opName) &&
+                     conversionHasFloatInput(spec.opName);
+  bool convFloatOut = isConversionOp(spec.opName) &&
+                      conversionHasFloatOutput(spec.opName);
+  bool useFloatIn = isFloatOp(spec.opName) || convFloatIn;
+  bool useFloatOut = isFloatOp(spec.opName) || convFloatOut;
   for (unsigned w : spec.inWidths)
-    inTypes.push_back(useFloat ? widthToFloatType(w) : widthToNativeType(w));
+    inTypes.push_back(useFloatIn ? widthToFloatType(w) : widthToNativeType(w));
   for (unsigned w : spec.outWidths)
-    outTypes.push_back(useFloat ? widthToFloatType(w) : widthToNativeType(w));
+    outTypes.push_back(useFloatOut ? widthToFloatType(w) : widthToNativeType(w));
 
   auto peBuilder = builder.newPE(spec.peName())
                        .setLatency(1, 1, 1)

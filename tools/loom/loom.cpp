@@ -874,6 +874,14 @@ int main(int argc, char **argv) {
           loom::adg::PESpec spec;
           spec.opName = opName;
 
+          // Normalize ub.poison to handshake.constant: both produce a
+          // constant value. Add a synthetic none input (width 0) to match
+          // the constant PE signature (1 trigger + 1 output).
+          if (opName == "ub.poison") {
+            spec.opName = "handshake.constant";
+            spec.inWidths.push_back(0);
+          }
+
           // Extract input widths from operand types.
           for (auto operand : op.getOperands()) {
             mlir::Type ty = operand.getType();
