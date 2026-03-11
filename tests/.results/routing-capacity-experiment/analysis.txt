@@ -1,0 +1,79 @@
+Routing-Capacity A/B Experiment Analysis
+=========================================
+
+Hypothesis: Domain ADG mapping failures are caused by unused PE instances
+consuming switch ports, reducing effective routing capacity below the
+threshold needed for BFS edge routing.
+
+Method: Generated sort-search domain ADGs with increasing app subsets
+(1,2,3,5,7,9 apps) and mapped binary_search to each. Controlled variable
+is the number of apps in the domain; all other flags held constant
+(--dfg-analyze --gen-track 3).
+
+Results (ab-results-track3.csv):
+
+  apps  PEs  switches  ADG_lines  binary_search_maps
+  1     83   265       522        PASS
+  2     86   299       582        FAIL
+  3     123  387       732        FAIL
+  5     144  511       938        FAIL
+  7     148  511       955        FAIL
+  9     174  659       1167       FAIL
+
+Key findings:
+
+1. Sharp threshold: n=1 (83 PEs) maps successfully; n=2 (86 PEs) fails.
+   Adding just 3 PEs and 34 switches breaks routing.
+
+2. Failure mode: In the n=2 case, 177 of 180 edges route successfully.
+   Only 3 edges are unmapped (E20, E26, E48):
+     - E20: handshake.extmemory:out0 -> handshake.load:in1
+     - E26: dataflow.invariant:out0 -> arith.subi:in0
+     - E48: dataflow.invariant:out0 -> arith.divsi:in1
+   The mapper places all nodes but cannot find routing paths for these
+   3 edges through the congested switch network.
+
+3. Track/FIFO configs don't help: For the 2-app case, all 5 track/FIFO
+   configurations (t3, t4, t5, t5-fifo, t5-fifo-bypass) generate
+   byte-identical ADGs (md5: 12df8670...). The gen-track and gen-fifo-mode
+   flags have no effect when the PE set is determined by multi-app union.
+
+4. Monotonic degradation: As apps increase, PE and switch counts grow,
+   and the mapping gap widens (more unused PEs consuming switch ports).
+
+PE Masking Evaluation (--mapper-mask-domain):
+
+5. Non-candidate PE removal: TechMapper-based masking correctly
+   identifies functional PEs that are incompatible with the target DFG.
+   On the 8-app sort-search domain, 36 of 225 PEs (16%) are non-
+   candidates for binary_search and are safely removed.
+
+6. Candidate PE removal is unsafe: Removing PEs that ARE candidates
+   for some DFG operation breaks placement feasibility due to candidate
+   overlap (multiple DFG ops compete for the same PE instances). Testing
+   with minCandidates guards at 2 and 3 still caused placement failures
+   because per-node guards do not guarantee global bipartite matching
+   feasibility.
+
+7. Routing pruning via BFS finds no removable routing nodes in mesh
+   topologies. After removing non-candidate PEs, all routing (switch)
+   nodes remain reachable from retained endpoints because the mesh
+   interconnect preserves full switch-to-switch connectivity.
+
+8. Masking does not change mapping outcomes: Exhaustive testing across
+   domain sizes (2-8 apps), track counts (1-3), mapper seeds (0-30),
+   and budgets (15-120s) found no configuration where masking converts
+   a failing case to a passing one. The routing congestion is caused by
+   mesh topology size (switch count), not by surplus PE port consumption.
+   Masking safely preserves all passing cases.
+
+Conclusion: Domain routing failures are caused by the BFS router's
+inability to find paths through large mesh topologies, not by surplus
+PEs consuming switch ports. PE masking (removing non-candidates) is
+safe but does not improve routing outcomes. Improving domain pass rates
+requires either:
+  - A negotiation-based router (e.g., PathFinder/VPR-style)
+  - A* pathfinding with congestion-aware cost functions
+  - Sub-domain splitting (grouping related apps to reduce mesh size)
+  - Topology-aware PE placement (co-locating used PEs to reduce hop
+    distance)

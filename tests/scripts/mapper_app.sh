@@ -56,10 +56,14 @@ if [[ "${1:-}" == "--single" ]]; then
   rm -f "${output_dir}/${APP_NAME}_failure_class.txt"
   rm -f "${output_dir}/${APP_NAME}_adg_source.txt"
 
-  # Find the handshake DFG (prefer O0).
+  # Find the handshake DFG (prefer O0, fall back to untagged).
   dfg=""
-  for opt in O0 O1 O2 O3; do
-    candidate="${output_dir}/${APP_NAME}.${opt}.handshake.mlir"
+  for opt in O0 O1 O2 O3 ""; do
+    if [[ -n "${opt}" ]]; then
+      candidate="${output_dir}/${APP_NAME}.${opt}.handshake.mlir"
+    else
+      candidate="${output_dir}/${APP_NAME}.handshake.mlir"
+    fi
     if [[ -f "${candidate}" ]]; then
       dfg="${candidate}"
       break
@@ -188,10 +192,14 @@ for app in "${app_names[@]}"; do
   domain=$(classify_domain "${app}")
   domain_apps["${domain}"]+="${app} "
 
-  # Find DFG path for this app.
+  # Find DFG path for this app (prefer O0, fall back to untagged).
   dfg=""
-  for opt in O0 O1 O2 O3; do
-    candidate="${APP_DIR}/${app}/Output/${app}.${opt}.handshake.mlir"
+  for opt in O0 O1 O2 O3 ""; do
+    if [[ -n "${opt}" ]]; then
+      candidate="${APP_DIR}/${app}/Output/${app}.${opt}.handshake.mlir"
+    else
+      candidate="${APP_DIR}/${app}/Output/${app}.handshake.mlir"
+    fi
     if [[ -f "${candidate}" ]]; then
       dfg="${candidate}"
       break

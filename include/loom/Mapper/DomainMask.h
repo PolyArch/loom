@@ -4,11 +4,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Prunes unused functional nodes from a domain ADG before single-app mapping.
+// Prunes unused resources from a domain ADG before single-app mapping.
 // Domain ADGs provision PEs for all apps in a domain; when mapping a single
 // app, unused PEs consume switch ports and cause routing congestion. This
-// utility removes functional nodes that are not compatible with the current
-// DFG, freeing switch ports for routing.
+// utility removes functional nodes not compatible with the current DFG and
+// then removes routing nodes no longer reachable from retained endpoints.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,19 +20,20 @@
 
 namespace loom {
 
-/// Prune surplus functional nodes from a domain ADG before single-app mapping.
+/// Prune unused resources from a domain ADG before single-app mapping.
 ///
-/// Domain ADGs provision PEs for all apps in a domain. When mapping a single
-/// app, unused PEs consume switch ports and cause routing congestion. This
-/// utility removes surplus functional nodes using coverage-safe greedy removal:
+/// Two-phase pruning:
+///   1. Functional pruning: Run TechMapper to find candidates, then remove
+///      all functional PE nodes that are not compatible with any DFG
+///      operation. Candidate PEs are always retained.
+///   2. Routing pruning: BFS from retained endpoints (functional, memory,
+///      module I/O) to find reachable routing nodes. Remove routing nodes
+///      not reachable from any retained endpoint.
 ///
-///   1. Run TechMapper to find all ADG candidates for each DFG node.
-///   2. Remove functional nodes not compatible with any DFG node.
-///   3. Greedily remove the least-useful compatible nodes while ensuring
-///      every DFG node retains at least \p minCandidates candidates.
+/// Memory nodes, module I/O sentinels, and virtual temporal PE nodes are
+/// always retained.
 ///
-/// Memory nodes, module I/O sentinels, routing nodes, and virtual temporal
-/// PE nodes are always retained.
+/// \p minCandidates is reserved for future use (candidate-thinning pass).
 ///
 /// The ADG graph is modified in-place. Callers should clone() the original
 /// graph before calling this function if the original must be preserved.

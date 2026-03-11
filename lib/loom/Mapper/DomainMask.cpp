@@ -13,7 +13,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/IR/BuiltinAttributes.h"
 
-#include <algorithm>
+#include <queue>
 
 #define DEBUG_TYPE "domain-mask"
 
@@ -48,140 +48,147 @@ bool isRemovableFunctional(const Node *node) {
   return true;
 }
 
-} // anonymous namespace
+/// BFS from retained endpoint nodes to find all reachable routing nodes.
+/// Returns the set of routing node IDs that are reachable from at least one
+/// retained endpoint (functional, memory, or module I/O).
+llvm::DenseSet<IdIndex> findReachableRoutingNodes(const Graph &adg) {
+  llvm::DenseSet<IdIndex> reachable;
+  std::queue<IdIndex> worklist;
 
-void pruneDomainADG(Graph &adg, const Graph &dfg, unsigned minCandidates) {
-  // Run tech-mapping on the full ADG to discover which HW nodes are
-  // compatible with each DFG operation.
-  TechMapper techMapper;
-  CandidateSet candidates = techMapper.map(dfg, adg);
+  // Seed the BFS with all retained non-routing endpoint nodes.
+  for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
+    const Node *node = adg.getNode(i);
+    if (!node)
+      continue;
 
-  // Count DFG operations that have at least one functional candidate.
-  llvm::DenseSet<IdIndex> dfgNeedsFunctional;
-  for (auto &[swId, candList] : candidates) {
-    for (auto &cand : candList) {
-      const Node *hw = adg.getNode(cand.hwNodeId);
-      if (hw && getAttrStr(hw, "resource_class") == "functional") {
-        dfgNeedsFunctional.insert(swId);
-        break;
+    llvm::StringRef resClass = getAttrStr(node, "resource_class");
+    bool isRouting = (resClass == "routing");
+
+    // Module I/O sentinels, memory, functional, and unknown-class nodes
+    // are endpoints that anchor the routing subgraph.
+    if (!isRouting) {
+      for (IdIndex portId : node->inputPorts)
+        worklist.push(portId);
+      for (IdIndex portId : node->outputPorts)
+        worklist.push(portId);
+    }
+  }
+
+  // BFS through edges to discover reachable routing nodes.
+  llvm::DenseSet<IdIndex> visitedPorts;
+  while (!worklist.empty()) {
+    IdIndex portId = worklist.front();
+    worklist.pop();
+
+    if (!visitedPorts.insert(portId).second)
+      continue;
+
+    const Port *port = adg.getPort(portId);
+    if (!port)
+      continue;
+
+    for (IdIndex edgeId : port->connectedEdges) {
+      const Edge *edge = adg.getEdge(edgeId);
+      if (!edge)
+        continue;
+
+      IdIndex otherPortId = (edge->srcPort == portId) ? edge->dstPort
+                                                      : edge->srcPort;
+      if (visitedPorts.count(otherPortId))
+        continue;
+
+      const Port *otherPort = adg.getPort(otherPortId);
+      if (!otherPort)
+        continue;
+
+      IdIndex otherNodeId = otherPort->parentNode;
+      const Node *otherNode = adg.getNode(otherNodeId);
+      if (!otherNode)
+        continue;
+
+      llvm::StringRef otherClass = getAttrStr(otherNode, "resource_class");
+      if (otherClass == "routing") {
+        reachable.insert(otherNodeId);
+
+        for (IdIndex pid : otherNode->inputPorts)
+          worklist.push(pid);
+        for (IdIndex pid : otherNode->outputPorts)
+          worklist.push(pid);
       }
     }
   }
-  unsigned demand = dfgNeedsFunctional.size();
 
-  // Build reverse map: hwNodeId -> set of DFG nodes that use it as candidate.
-  llvm::DenseMap<IdIndex, llvm::DenseSet<IdIndex>> reverseMap;
+  return reachable;
+}
+
+} // anonymous namespace
+
+void pruneDomainADG(Graph &adg, const Graph &dfg, unsigned minCandidates) {
+  // Run tech-mapping to discover which HW nodes are compatible with each
+  // DFG operation.
+  TechMapper techMapper;
+  CandidateSet candidates = techMapper.map(dfg, adg);
+
+  // Build set of HW functional nodes that serve at least one DFG operation.
+  llvm::DenseSet<IdIndex> usedFunctional;
   for (auto &[swId, candList] : candidates) {
-    for (auto &cand : candList)
-      reverseMap[cand.hwNodeId].insert(swId);
+    for (auto &cand : candList) {
+      const Node *hw = adg.getNode(cand.hwNodeId);
+      if (hw && getAttrStr(hw, "resource_class") == "functional")
+        usedFunctional.insert(cand.hwNodeId);
+    }
   }
 
-  // Current candidate count per DFG node.
-  llvm::DenseMap<IdIndex, unsigned> candCount;
-  for (auto &[swId, candList] : candidates)
-    candCount[swId] = static_cast<unsigned>(candList.size());
-
-  // Collect all removable functional nodes with their "usefulness" score.
-  struct HwEntry {
-    unsigned useCount;
-    IdIndex hwId;
-  };
-  llvm::SmallVector<HwEntry, 128> hwEntries;
+  // Remove all functional PEs that are NOT candidates for any DFG operation.
+  // These nodes consume switch ports without any possibility of placement use.
+  // Candidate PEs (useCount > 0) are always retained to avoid breaking
+  // placement feasibility.
+  llvm::SmallVector<IdIndex, 64> functionalToRemove;
+  unsigned totalFunctional = 0;
   for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
     Node *node = adg.getNode(i);
     if (!isRemovableFunctional(node))
       continue;
+    totalFunctional++;
 
-    unsigned useCount = 0;
-    auto it = reverseMap.find(i);
-    if (it != reverseMap.end())
-      useCount = it->second.size();
-
-    hwEntries.push_back({useCount, i});
+    if (!usedFunctional.count(i))
+      functionalToRemove.push_back(i);
   }
 
-  unsigned totalFunctional = hwEntries.size();
+  // Cascade-delete removed PEs (ports and edges removed automatically).
+  for (IdIndex id : functionalToRemove)
+    adg.removeNode(id);
 
-  // Compute removal budget: at most half the surplus beyond demand.
-  // This prevents over-pruning that breaks bipartite matching feasibility.
-  unsigned surplus = totalFunctional > demand ? totalFunctional - demand : 0;
-  unsigned maxRemovals = surplus / 2;
+  // After functional pruning, find routing nodes still reachable from
+  // retained endpoints. Remove unreachable routing nodes to further
+  // free routing capacity.
+  llvm::DenseSet<IdIndex> reachableRouting = findReachableRoutingNodes(adg);
 
-  // If the surplus is tiny relative to demand, masking won't help routing
-  // meaningfully. Skip to avoid breaking placement for marginal gain.
-  if (surplus < demand / 4) {
-    LLVM_DEBUG(llvm::dbgs() << "DomainMask: surplus too small (" << surplus
-                            << " surplus for " << demand
-                            << " demand), skipping\n");
-    return;
+  llvm::SmallVector<IdIndex, 64> routingToRemove;
+  for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
+    const Node *node = adg.getNode(i);
+    if (!node)
+      continue;
+    if (node->kind == Node::ModuleInputNode ||
+        node->kind == Node::ModuleOutputNode)
+      continue;
+    if (getAttrStr(node, "resource_class") != "routing")
+      continue;
+    if (!reachableRouting.count(i))
+      routingToRemove.push_back(i);
   }
 
-  // Sort by ascending usefulness: least-useful nodes removed first.
-  std::sort(hwEntries.begin(), hwEntries.end(),
-            [](const HwEntry &a, const HwEntry &b) {
-              return a.useCount < b.useCount;
-            });
-
-  // Greedy coverage-safe removal with removal budget cap.
-  // Guards:
-  //   1. Per-node guard: each DFG node keeps > minCandidates candidates.
-  //   2. Budget cap: total removals <= maxRemovals.
-  llvm::SmallVector<IdIndex, 64> toRemove;
-
-  for (auto &entry : hwEntries) {
-    if (toRemove.size() >= maxRemovals)
-      break;
-
-    IdIndex hwId = entry.hwId;
-
-    // Nodes not serving any DFG operation: always remove (within budget).
-    if (entry.useCount == 0) {
-      toRemove.push_back(hwId);
-      continue;
-    }
-
-    // Check per-node safety: all served DFG nodes keep > minCandidates.
-    auto revIt = reverseMap.find(hwId);
-    if (revIt == reverseMap.end()) {
-      toRemove.push_back(hwId);
-      continue;
-    }
-
-    bool safe = true;
-    for (IdIndex swId : revIt->second) {
-      auto ccIt = candCount.find(swId);
-      if (ccIt == candCount.end() || ccIt->second <= minCandidates) {
-        safe = false;
-        break;
-      }
-    }
-
-    if (!safe)
-      continue;
-
-    // Safe to remove: decrement candidate counts.
-    for (IdIndex swId : revIt->second) {
-      auto ccIt = candCount.find(swId);
-      if (ccIt != candCount.end())
-        ccIt->second--;
-    }
-    toRemove.push_back(hwId);
-  }
+  for (IdIndex id : routingToRemove)
+    adg.removeNode(id);
 
   LLVM_DEBUG({
-    unsigned remaining =
-        totalFunctional - static_cast<unsigned>(toRemove.size());
-    llvm::dbgs() << "DomainMask: " << toRemove.size() << " of "
-                 << totalFunctional << " functional nodes removed"
-                 << " (remaining=" << remaining << ", demand=" << demand
-                 << ", surplus=" << surplus
-                 << ", maxRemovals=" << maxRemovals
-                 << ", minCandidates=" << minCandidates << ")\n";
+    unsigned funcRemaining =
+        totalFunctional - static_cast<unsigned>(functionalToRemove.size());
+    llvm::dbgs() << "DomainMask: removed " << functionalToRemove.size()
+                 << " functional + " << routingToRemove.size()
+                 << " routing nodes (funcRemaining=" << funcRemaining
+                 << ", candidates=" << usedFunctional.size() << ")\n";
   });
-
-  // Remove unneeded nodes (cascade-deletes their ports and edges).
-  for (IdIndex id : toRemove)
-    adg.removeNode(id);
 }
 
 } // namespace loom

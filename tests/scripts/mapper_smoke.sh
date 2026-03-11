@@ -81,17 +81,27 @@ if [[ -d "${ROOT_DIR}/tests/app/${first_app}" ]]; then
     >> "${PARALLEL_FILE}"
 fi
 
-# Domain mask: generate 2-app domain ADG and map one app with --mapper-mask-domain.
-# Uses two apps that individually map at track-3, verifying masking doesn't break mapping.
-MASK_APP1="dotprod"
-MASK_APP2="vecsum"
-dfg1="${ROOT_DIR}/tests/app/${MASK_APP1}/Output/${MASK_APP1}.O0.handshake.mlir"
-dfg2="${ROOT_DIR}/tests/app/${MASK_APP2}/Output/${MASK_APP2}.O0.handshake.mlir"
-if [[ -f "${dfg1}" && -f "${dfg2}" ]]; then
-  rel_dfg1=$(loom_relpath "${dfg1}")
-  rel_dfg2=$(loom_relpath "${dfg2}")
+# Domain mask: generate multi-app domain ADG and map one app with --mapper-mask-domain.
+# Uses apps that individually map at track-3, verifying masking doesn't break mapping.
+# Searches for any two apps with existing handshake DFGs.
+mask_dfgs=()
+INCLUDE_DIR="${ROOT_DIR}/include"
+rel_include=$(loom_relpath "${INCLUDE_DIR}")
+for mask_app in sort_bubble binary_search vecsum; do
+  for opt in "" ".O0"; do
+    candidate="${ROOT_DIR}/tests/app/${mask_app}/Output/${mask_app}${opt}.handshake.mlir"
+    if [[ -f "${candidate}" ]] && grep -q "handshake.func" "${candidate}" 2>/dev/null; then
+      mask_dfgs+=("${candidate}")
+      break
+    fi
+  done
+  [[ ${#mask_dfgs[@]} -ge 2 ]] && break
+done
+if [[ ${#mask_dfgs[@]} -ge 2 ]]; then
+  rel_dfg1=$(loom_relpath "${mask_dfgs[0]}")
+  rel_dfg2=$(loom_relpath "${mask_dfgs[1]}")
   mask_out="tests/.results/domain-mask-smoke"
-  # Generate domain ADG then map with masking.
+  # Generate domain ADG then map first app with masking.
   echo "mkdir -p ${mask_out} && ${rel_loom} --gen-adg --gen-track 3 --dfgs ${rel_dfg1},${rel_dfg2} -o ${mask_out}/domain && cp ${mask_out}/domain ${mask_out}/domain.fabric.mlir && ${rel_loom} --adg ${mask_out}/domain.fabric.mlir --dfgs ${rel_dfg1} -o ${mask_out}/masked --mapper-mask-domain --mapper-budget 15" \
     >> "${PARALLEL_FILE}"
 fi
