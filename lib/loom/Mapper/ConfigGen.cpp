@@ -644,8 +644,9 @@ mlir::ArrayAttr buildInstructionMem(
   return builder.getArrayAttr(entries);
 }
 
-/// Set output_tag attribute on a tagged PE instance based on temporal
-/// assignment of the mapped SW node.
+/// Set output_tag attribute on a tagged PE instance.
+/// For non-temporal tagged PEs, reads from taggedPEOutputTags (populated
+/// during placement). For temporal PEs, derives from temporalPEAssignments.
 void buildPEOutputTag(const Node *hwNode, IdIndex hwId,
                       const MappingState &state,
                       fabric::InstanceOp instanceOp,
@@ -657,10 +658,14 @@ void buildPEOutputTag(const Node *hwNode, IdIndex hwId,
   if (numOutputs == 0)
     return;
 
-  // Get tag value from the first mapped SW node's temporal assignment.
+  // Non-temporal tagged PE: read from explicit tag assignment.
   uint64_t tagVal = 0;
-  if (hwId < state.hwNodeToSwNodes.size() &&
-      !state.hwNodeToSwNodes[hwId].empty()) {
+  auto tagIt = state.taggedPEOutputTags.find(hwId);
+  if (tagIt != state.taggedPEOutputTags.end()) {
+    tagVal = tagIt->second;
+  } else if (hwId < state.hwNodeToSwNodes.size() &&
+             !state.hwNodeToSwNodes[hwId].empty()) {
+    // Temporal PE: derive from temporal assignment.
     IdIndex swId = state.hwNodeToSwNodes[hwId][0];
     if (swId < state.temporalPEAssignments.size()) {
       const auto &tpa = state.temporalPEAssignments[swId];

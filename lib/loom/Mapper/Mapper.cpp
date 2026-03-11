@@ -1043,6 +1043,16 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
       // Record group binding for C4 validation.
       state.groupBindings[bestHw] = llvm::SmallVector<IdIndex, 4>(
           bestCand->swNodeIds.begin(), bestCand->swNodeIds.end());
+
+      // Record tag assignment for tagged non-temporal PEs (group placement).
+      if (hw && !isTemporalPEFU(hw)) {
+        for (auto &attr : hw->attributes) {
+          if (attr.getName().getValue() == "output_tag") {
+            state.taggedPEOutputTags[bestHw] = 0;
+            break;
+          }
+        }
+      }
     } else {
       // Single-op placement.
       auto mapResult = state.mapNode(swNode, bestHw, dfg, adg);
@@ -1094,6 +1104,16 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
                i < sw->outputPorts.size() && i < hw->outputPorts.size();
                ++i) {
             state.mapPort(sw->outputPorts[i], hw->outputPorts[i], dfg, adg);
+          }
+        }
+
+        // Record tag assignment for tagged non-temporal PEs.
+        if (!isMemory && !isTemporalPEFU(hw)) {
+          for (auto &attr : hw->attributes) {
+            if (attr.getName().getValue() == "output_tag") {
+              state.taggedPEOutputTags[bestHw] = 0;
+              break;
+            }
           }
         }
       }

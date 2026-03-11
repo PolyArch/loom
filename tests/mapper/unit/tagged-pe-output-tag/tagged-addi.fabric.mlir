@@ -81,15 +81,15 @@ module {
     %fifo_st11_st10 = fabric.fifo [depth = 2] %st11#1
         : !dataflow.tagged<!dataflow.bits<32>, i4>
 
-    // Tagged PE instances with output_tag attribute.
+    // Tagged PE instances (no output_tag -- mapper must produce it).
     %pe_out0 = fabric.instance @pe_tagged_addi(%st00#2, %st01#2)
-        {sym_name = "pe_0", output_tag = [0 : i4]}
+        {sym_name = "pe_0"}
         : (!dataflow.tagged<!dataflow.bits<32>, i4>,
            !dataflow.tagged<!dataflow.bits<32>, i4>)
           -> !dataflow.tagged<!dataflow.bits<32>, i4>
 
     %pe_out1 = fabric.instance @pe_tagged_addi(%st10#2, %st11#2)
-        {sym_name = "pe_1", output_tag = [0 : i4]}
+        {sym_name = "pe_1"}
         : (!dataflow.tagged<!dataflow.bits<32>, i4>,
            !dataflow.tagged<!dataflow.bits<32>, i4>)
           -> !dataflow.tagged<!dataflow.bits<32>, i4>

@@ -72,6 +72,14 @@ if [[ "${1:-}" == "--single" ]]; then
     exit 1
   fi
 
+  # Check that the DFG actually contains handshake.func (not just func.func).
+  if ! grep -q "handshake.func" "${dfg}"; then
+    echo "missing_handshake" > "${output_dir}/${APP_NAME}_failure_class.txt"
+    echo "per-app" > "${output_dir}/${APP_NAME}_adg_source.txt"
+    echo "FAIL: ${dfg} has no handshake.func (lowering incomplete)" >&2
+    exit 1
+  fi
+
   # If a domain ADG is provided, try mapping to it first.
   if [[ -n "${DOMAIN_ADG}" && -f "${DOMAIN_ADG}" ]]; then
     budgets=(10 50 200)

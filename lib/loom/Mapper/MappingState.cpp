@@ -32,6 +32,7 @@ void MappingState::init(const Graph &dfg, const Graph &adg) {
   registerAssignments.assign(swEdges, INVALID_ID);
 
   groupBindings.clear();
+  taggedPEOutputTags.clear();
 
   totalCost = 0.0;
   placementPressure = 0.0;
@@ -283,6 +284,7 @@ MappingState::Checkpoint MappingState::save() const {
   cp.temporalSWAssignments = temporalSWAssignments;
   cp.registerAssignments = registerAssignments;
   cp.groupBindings = groupBindings;
+  cp.taggedPEOutputTags = taggedPEOutputTags;
   cp.totalCost = totalCost;
   cp.actionLogSize = actionLog.size();
   return cp;
@@ -299,6 +301,7 @@ void MappingState::restore(const Checkpoint &cp) {
   temporalSWAssignments = cp.temporalSWAssignments;
   registerAssignments = cp.registerAssignments;
   groupBindings = cp.groupBindings;
+  taggedPEOutputTags = cp.taggedPEOutputTags;
   totalCost = cp.totalCost;
   actionLog.resize(cp.actionLogSize);
 }
