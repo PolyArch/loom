@@ -24,6 +24,7 @@ any_failure=false
 "${SCRIPT_DIR}/scf_roundtrip.sh" "${LOOM_BIN}" --run || any_failure=true
 "${SCRIPT_DIR}/handshake_ops_stat.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/mapper_unit_smoke.sh" "${LOOM_BIN}" || any_failure=true
+"${SCRIPT_DIR}/viz_serializer_regression.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/fabric_gen.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/dfg_analysis.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/spec_check.sh" || any_failure=true

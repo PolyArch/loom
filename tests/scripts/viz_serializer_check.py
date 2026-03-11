@@ -15,8 +15,13 @@ import sys
 
 def extract_json_block(html, var_name):
     """Extract a JSON object assigned to a const variable in HTML."""
-    pattern = r'const\s+' + re.escape(var_name) + r'\s*=\s*(\{.*?\});\s*\n'
+    # Try pattern ending with next const (works for non-last variables)
+    pattern = r'const\s+' + re.escape(var_name) + r'\s*=\s*(\{.*?\});\s*\n\s*const'
     m = re.search(pattern, html, re.DOTALL)
+    if not m:
+        # Fallback: for the last variable before script/code
+        pattern = r'const\s+' + re.escape(var_name) + r'\s*=\s*(\{.*?\});\s*\n'
+        m = re.search(pattern, html, re.DOTALL)
     if not m:
         return None
     try:
@@ -72,7 +77,7 @@ def validate_adg_graph(adg, temporal=False):
                         f"temporal node '{name}' has null coordinates"
                     )
 
-    # FU nodes in PE params must use local indices (fu_0, fu_1, ...)
+    # FU nodes in PE params must use contiguous local indices (fu_0, fu_1, ...)
     global_fu_re = re.compile(r'/fu_(\d+)$')
     for n in nodes:
         fu_nodes = n.get("params", {}).get("fuNodes", [])
@@ -83,23 +88,32 @@ def validate_adg_graph(adg, temporal=False):
             if m:
                 idx = int(m.group(1))
                 seen_indices.add(idx)
-        # Local indices should start at 0 and be contiguous
-        if seen_indices and min(seen_indices) != 0:
-            errors.append(
-                f"FU indices in '{n.get('name', '?')}' don't start at 0: "
-                f"{sorted(seen_indices)}"
-            )
+        if seen_indices:
+            expected = set(range(len(seen_indices)))
+            if seen_indices != expected:
+                errors.append(
+                    f"FU indices in '{n.get('name', '?')}' are not "
+                    f"contiguous 0..{len(seen_indices)-1}: "
+                    f"{sorted(seen_indices)}"
+                )
 
-    # Temporal FU nodes must have body ops
+    # Temporal FU nodes must have semantic body ops (not generic labels)
     if temporal:
         for n in nodes:
             if "temporal_pe" in n.get("type", ""):
                 fu_nodes = n.get("params", {}).get("fuNodes", [])
                 for fu in fu_nodes:
-                    if not fu.get("op"):
+                    op = fu.get("op", "")
+                    if not op:
                         errors.append(
                             f"temporal FU '{fu.get('name', '?')}' "
                             f"missing op field"
+                        )
+                    elif op in ("fabric.pe", "fabric.temporal_pe"):
+                        errors.append(
+                            f"temporal FU '{fu.get('name', '?')}' "
+                            f"has generic '{op}' label instead of "
+                            f"semantic body-op identity"
                         )
 
     return errors
@@ -114,6 +128,14 @@ def validate_dfg_dot(dot_str):
         errors.append("dfgDot missing 'digraph' keyword")
     if "->" not in dot_str:
         errors.append("dfgDot has no edges (missing '->')")
+    # Validate stable sw_ prefixed node IDs
+    sw_nodes = re.findall(r'"(sw_\d+)"', dot_str)
+    if not sw_nodes:
+        errors.append("dfgDot has no stable sw_ prefixed node IDs")
+    # Validate stable swedge_ prefixed edge IDs
+    sw_edges = re.findall(r'id="(swedge_\d+)"', dot_str)
+    if not sw_edges:
+        errors.append("dfgDot has no stable swedge_ prefixed edge IDs")
     return errors
 
 
@@ -132,13 +154,23 @@ def validate_mapping_data(mapping):
     return errors
 
 
-def validate_metadata(meta, label):
-    """Validate metadata JSON structure."""
+def validate_metadata(meta, label, required_fields=None):
+    """Validate metadata JSON structure and representative fields."""
     errors = []
     if not meta:
         return [f"{label} is empty or missing"]
     if not isinstance(meta, dict) or len(meta) == 0:
         errors.append(f"{label} has no entries")
+        return errors
+    # Spot-check: first entry must contain required fields
+    if required_fields:
+        first_key = next(iter(meta))
+        first_val = meta[first_key]
+        for field in required_fields:
+            if field not in first_val:
+                errors.append(
+                    f"{label}['{first_key}'] missing field '{field}'"
+                )
     return errors
 
 
@@ -168,10 +200,14 @@ def main():
     all_errors.extend(validate_mapping_data(mapping))
 
     sw_meta = extract_json_block(html, "swNodeMetadata")
-    all_errors.extend(validate_metadata(sw_meta, "swNodeMetadata"))
+    all_errors.extend(validate_metadata(
+        sw_meta, "swNodeMetadata", required_fields=["op", "types"]
+    ))
 
     hw_meta = extract_json_block(html, "hwNodeMetadata")
-    all_errors.extend(validate_metadata(hw_meta, "hwNodeMetadata"))
+    all_errors.extend(validate_metadata(
+        hw_meta, "hwNodeMetadata", required_fields=["name", "type", "ports"]
+    ))
 
     if all_errors:
         print(f"FAIL: {viz_path}", file=sys.stderr)
