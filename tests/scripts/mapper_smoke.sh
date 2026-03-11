@@ -75,6 +75,7 @@ fi
 # Tier 3: pick one representative app for gen+map smoke.
 rel_app_script=$(loom_relpath "${SCRIPT_DIR}/mapper_app.sh")
 first_app="vecsum"
+loom_ensure_app_handshake "${LOOM_BIN}" "${ROOT_DIR}/tests/app/${first_app}" >/dev/null 2>&1 || true
 if [[ -d "${ROOT_DIR}/tests/app/${first_app}" ]]; then
   rel_out="tests/app/${first_app}/Output"
   echo "mkdir -p ${rel_out} && ${rel_app_script} --single ${rel_loom} ${first_app}" \
@@ -88,6 +89,7 @@ fi
 # and functional nodes are pruned and the mapping succeeds.
 DOMAIN_ADG="${ROOT_DIR}/tests/.results/domain-adgs/sort-search.fabric.mlir"
 BS_DFG=""
+loom_ensure_app_handshake "${LOOM_BIN}" "${ROOT_DIR}/tests/app/binary_search" >/dev/null 2>&1 || true
 for opt in "" ".O0" ".O1" ".O2" ".O3"; do
   candidate="${ROOT_DIR}/tests/app/binary_search/Output/binary_search${opt}.handshake.mlir"
   if [[ -f "${candidate}" ]] && grep -q "handshake.func" "${candidate}" 2>/dev/null; then

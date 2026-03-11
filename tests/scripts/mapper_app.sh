@@ -19,40 +19,21 @@ APP_DIR="${ROOT_DIR}/tests/app"
 classify_domain() {
   local app="$1"
   case "${app}" in
-    vecsum|vecadd|vecdot|vec*|axpy|dotprod|dot_product*|cross_product) echo "vector" ;;
-    matmul|gemm|gemv|mat*|syrk|cholesky|lu_decomp|transpose*) echo "matrix" ;;
-    fir*|iir*|convolve*|fft*|dct*|dwt*|downsample*|upsample*) echo "dsp" ;;
-    conv2d|depthwise*|maxpool*|relu*|softmax*|batchnorm*|layer*|neural*|col2im*) echo "neural" ;;
+    vecsum|vecadd|vecdot|vec*|axpy|dotprod|dot_product*|cross_product|normalize*) echo "vector" ;;
+    matmul|gemm|gemv|mat*|mmtile|outer|syrk|cholesky|lu_decomp|transpose*|tridiag_solve|trsv_*) echo "matrix" ;;
+    fir*|iir*|convolve*|fft*|ifft*|dct*|dwt*|downsample*|upsample*|window_*) echo "dsp" ;;
+    conv2d|depthwise*|im2col|maxpool*|pool_*|relu*|sigmoid|softmax*|batchnorm*|layer*|neural*|col2im*) echo "neural" ;;
     spmv|spmm|spmsp*|sparse*|csr*|coo*|gather*|scatter*|compact*) echo "sparse" ;;
     stencil*|jacobi*|blur*|sobel*|gauss*|edge*|median*) echo "stencil" ;;
-    *sort*|binary_search*|search*|bsearch*|bitonic*|compare_swap*|merge*) echo "sort-search" ;;
-    cumsum|reduce*|prefix*|scan*|histogram*) echo "reduction" ;;
-    crc*|popcount|clz|ctz|bit*|byte_swap|hash*|find_first_set) echo "bit-hash" ;;
-    delta*|encode*|decode*|compress*|run_length*|lzw*) echo "encoding" ;;
-    edit_distance*|lcs*|needle*|smith*|dynamic*|knapsack*) echo "dp-string" ;;
+    *sort*|binary_search*|search*|bsearch*|bitonic*|compare_swap*|lower_bound|merge*|partition|upper_bound) echo "sort-search" ;;
+    autocorrelation|correlation|covariance|cumsum|hist_bin|histogram*|integrate_trapz|mean|moving_avg|prefix*|quantile|reduce*|scan*|stream_*|variance) echo "reduction" ;;
+    crc*|popcount|clz|ctz|bit*|byte_swap|find_first_set|gf_mul|hash*|modexp|modmul|pack_bits|parity|rotate_bits|sbox_lookup|string_hash|unpack_bits|xor_block) echo "bit-hash" ;;
+    delta*|encode*|decode*|compress*|rle_*|run_length*|lzw*) echo "encoding" ;;
+    edit_distance*|kmp_table|lcs*|needle*|smith*|dynamic*|knapsack*|string_compare|wildcard_match) echo "dp-string" ;;
+    distance_point|interpolate_linear|line_intersect|quat_mult|transform_point) echo "geometry" ;;
+    bisection_step|newton_iter|runge_kutta_step) echo "iterative" ;;
     *) echo "misc" ;;
   esac
-}
-
-find_handshake_dfg() {
-  local output_dir="$1"
-  local app_name="$2"
-  local candidate=""
-
-  for opt in O0 O1 O2 O3 ""; do
-    if [[ -n "${opt}" ]]; then
-      candidate="${output_dir}/${app_name}.${opt}.handshake.mlir"
-    else
-      candidate="${output_dir}/${app_name}.handshake.mlir"
-    fi
-    if [[ -f "${candidate}" ]] &&
-       grep -q "handshake.func" "${candidate}" 2>/dev/null; then
-      echo "${candidate}"
-      return 0
-    fi
-  done
-
-  return 1
 }
 
 score_domain_adg_config() {
@@ -68,7 +49,7 @@ score_domain_adg_config() {
 
   for app in "${apps[@]}"; do
     local dfg=""
-    dfg="$(find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" || true)"
+    dfg="$(loom_find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" || true)"
     if [[ -z "${dfg}" ]]; then
       continue
     fi
@@ -109,9 +90,10 @@ if [[ "${1:-}" == "--single" ]]; then
   rm -f "${output_dir}/${APP_NAME}_failure_class.txt"
   rm -f "${output_dir}/${APP_NAME}_adg_source.txt"
 
-  # Find the handshake DFG (prefer O0, fall back to untagged). Each candidate
-  # must both exist and contain handshake.func, not just func.func.
-  dfg="$(find_handshake_dfg "${output_dir}" "${APP_NAME}" || true)"
+  # Find or regenerate the handshake DFG. Each candidate must both exist and
+  # contain handshake.func, not just func.func.
+  loom_ensure_app_handshake "${LOOM_BIN}" "${app_dir}" >/dev/null 2>&1 || true
+  dfg="$(loom_find_handshake_dfg "${output_dir}" "${APP_NAME}" || true)"
   if [[ -z "${dfg}" ]]; then
     echo "missing_handshake" > "${output_dir}/${APP_NAME}_failure_class.txt"
     echo "per-app" > "${output_dir}/${APP_NAME}_adg_source.txt"
@@ -221,13 +203,28 @@ if [[ ${#app_names[@]} -eq 0 ]]; then
 fi
 
 # Group apps by domain and collect DFG paths.
+need_handshake_refresh=false
+for app in "${app_names[@]}"; do
+  if loom_find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" >/dev/null; then
+    continue
+  fi
+  if loom_has_sources "${APP_DIR}/${app}"; then
+    need_handshake_refresh=true
+    break
+  fi
+done
+
+if "${need_handshake_refresh}"; then
+  "${SCRIPT_DIR}/handshake.sh" "${LOOM_BIN}" || true
+fi
+
 declare -A domain_apps
 declare -A domain_dfgs
 for app in "${app_names[@]}"; do
   domain=$(classify_domain "${app}")
   domain_apps["${domain}"]+="${app} "
 
-  dfg="$(find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" || true)"
+  dfg="$(loom_find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" || true)"
   if [[ -n "${dfg}" ]]; then
     if [[ -n "${domain_dfgs[${domain}]:-}" ]]; then
       domain_dfgs["${domain}"]+=",${dfg}"

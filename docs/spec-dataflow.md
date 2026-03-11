@@ -420,6 +420,13 @@ that access. If a control chain depends on done tokens from other memory
 interfaces, the compiler raises `CPL_HANDSHAKE_CTRL_MULTI_MEM`. See
 [spec-dataflow-error.md](./spec-dataflow-error.md).
 
+Each lowered `handshake.memory` / `handshake.extmemory` must also have at least
+one load or store port. If lowering would otherwise create
+`handshake.memory[ld = 0, st = 0]` or `handshake.extmemory[ld = 0, st = 0]`
+(for example, from an accel memref argument with no `handshake.load` or
+`handshake.store` uses), the compiler raises `CPL_MEMORY_PORTS_EMPTY` instead
+of emitting the illegal operation.
+
 ## Operation: `dataflow.gate`
 
 A stream adapter that aligns before-region and after-region loop streams.

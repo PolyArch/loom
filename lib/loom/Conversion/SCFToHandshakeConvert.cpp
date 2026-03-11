@@ -1040,7 +1040,8 @@ mlir::LogicalResult HandshakeConversion::run() {
   if (!sawReturn)
     return func.emitError("missing func.return in accel function");
 
-  finalizeMemory();
+  if (mlir::failed(finalizeMemory()))
+    return mlir::failure();
   if (mlir::failed(buildMemoryControl()))
     return mlir::failure();
   if (mlir::failed(verifyMemoryControl()))

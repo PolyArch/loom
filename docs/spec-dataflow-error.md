@@ -18,6 +18,7 @@ errors for dataflow behavior after embedding into Fabric hardware are defined in
 | Symbol | Condition |
 |--------|-----------|
 | CPL_HANDSHAKE_CTRL_MULTI_MEM | A `handshake.load` or `handshake.store` control token depends on done tokens from a memory interface that is not the one associated with that access. The control chain must be rooted at the `handshake.func` start token, or depend only on done tokens produced by the same `handshake.extmemory` or `handshake.memory` used by the access. |
+| CPL_MEMORY_PORTS_EMPTY | Lowering would create `handshake.memory` or `handshake.extmemory` with `ld == 0` and `st == 0`, including accel memref arguments that have no `handshake.load` or `handshake.store` uses. |
 | CPL_DATAFLOW_CARRY_CTRL_TYPE | `dataflow.carry` operand `%d` is not `i1`. |
 | CPL_DATAFLOW_CARRY_TYPE_MISMATCH | `dataflow.carry` operands `%a` and `%b` have different types, or the result `%o` type does not match `%a` and `%b`. All three must have the same type. |
 | CPL_DATAFLOW_INVARIANT_CTRL_TYPE | `dataflow.invariant` operand `%d` is not `i1`. |

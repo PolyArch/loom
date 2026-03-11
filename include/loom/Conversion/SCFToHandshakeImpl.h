@@ -79,7 +79,7 @@ private:
   mlir::Value makeBool(mlir::Location loc, bool value);
   mlir::Value makeDummyData(mlir::Location loc, mlir::Type type);
   void updateInvariantCond(RegionState &state, mlir::Value cond);
-  void finalizeMemory();
+  mlir::LogicalResult finalizeMemory();
   mlir::LogicalResult buildMemoryControl();
   mlir::LogicalResult verifyMemoryControl();
   void assignHandshakeNames();

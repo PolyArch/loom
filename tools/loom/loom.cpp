@@ -78,6 +78,7 @@
 #include "loom/Conversion/SCFPostProcess.h"
 #include "loom/Dialect/Dataflow/DataflowDialect.h"
 #include "loom/Dialect/Fabric/FabricDialect.h"
+#include "loom/Hardware/Common/FabricError.h"
 #include "loom/Dialect/Fabric/FabricOps.h"
 #include "loom/Analysis/DFGAnalysis.h"
 #include "loom/Hardware/ADG/ADGGen.h"
@@ -803,6 +804,7 @@ int main(int argc, char **argv) {
     loom::adg::MergedRequirements spatial_reqs;
     loom::adg::MergedRequirements temporal_reqs;
     unsigned num_dfgs = 0;
+    bool invalid_gen_dfg = false;
     for (auto &mod : gen_modules) {
       mod->walk([&](circt::handshake::FuncOp func) {
         if (func.getName().ends_with("_esi"))
@@ -821,6 +823,13 @@ int main(int argc, char **argv) {
                   mlir::dyn_cast<circt::handshake::MemoryOp>(&op)) {
             unsigned ld = memOp.getLdCount();
             unsigned st = memOp.getStCount();
+            if (ld == 0 && st == 0) {
+              op.emitError(loom::cplErrMsg(
+                  loom::CplError::MEMORY_PORTS_EMPTY,
+                  "handshake.memory must have at least one load or store port"));
+              invalid_gen_dfg = true;
+              break;
+            }
             loom::adg::MemorySpec memSpec;
             memSpec.kind = loom::adg::MemKind::OnChip;
             memSpec.ldCount = ld;
@@ -844,6 +853,13 @@ int main(int argc, char **argv) {
           // Detect external memory operations (handshake.extmemory).
           if (auto extMemOp =
                   mlir::dyn_cast<circt::handshake::ExternalMemoryOp>(&op)) {
+            if (extMemOp.getLdCount() == 0 && extMemOp.getStCount() == 0) {
+              op.emitError(loom::cplErrMsg(
+                  loom::CplError::MEMORY_PORTS_EMPTY,
+                  "handshake.extmemory must have at least one load or store port"));
+              invalid_gen_dfg = true;
+              break;
+            }
             loom::adg::MemorySpec memSpec;
             memSpec.kind = loom::adg::MemKind::External;
             memSpec.ldCount = extMemOp.getLdCount();
@@ -938,6 +954,9 @@ int main(int argc, char **argv) {
           }
         }
 
+        if (invalid_gen_dfg)
+          return;
+
         // Count function inputs by width.
         // NoneType (width 0) must be counted so the width-0 lattice gets
         // I/O slots for control tokens (used by handshake.join etc.).
@@ -986,6 +1005,9 @@ int main(int argc, char **argv) {
         num_dfgs++;
       });
     }
+
+    if (invalid_gen_dfg)
+      return 1;
 
     if (num_dfgs == 0) {
       llvm::errs() << "error: no handshake.func found in DFG files\n";
