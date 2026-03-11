@@ -334,6 +334,11 @@ void inferMissingCoords(
         continue;
       if (nodeCoords.count(i) && nodeCoords[i].valid)
         continue;
+      // Skip boundary sentinels: the renderer places them at the
+      // top/bottom boundary only when their coordinates are null.
+      if (node->kind == Node::ModuleInputNode ||
+          node->kind == Node::ModuleOutputNode)
+        continue;
 
       // Collect coordinates from all connected neighbors.
       int sumCol = 0, sumRow = 0, count = 0;
