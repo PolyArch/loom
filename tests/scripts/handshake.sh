@@ -122,7 +122,7 @@ for app_dir in "${app_dirs[@]}"; do
   echo "${line}" >> "${PARALLEL_FILE}"
 done
 
-SUITE_NAME=${LOOM_SUMMARY_PREFIX:-"Handshake${HANDSHAKE_TAG:+ ${HANDSHAKE_TAG}}"}
+SUITE_NAME=${LOOM_SUMMARY_PREFIX:-"Handshake ${HANDSHAKE_TAG:-Default}"}
 LOG_TAG="${HANDSHAKE_TAG:+${HANDSHAKE_TAG}.}handshake"
 
 loom_run_suite "${PARALLEL_FILE}" "${SUITE_NAME}" "${LOG_TAG}"

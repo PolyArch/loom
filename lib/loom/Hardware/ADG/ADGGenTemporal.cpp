@@ -90,7 +90,9 @@ void generateTemporal(ADGBuilder &builder, const MergedRequirements &reqs,
     TemporalPEHandle tpeDef = tpeBuilder;
 
     // Compute temporal mesh dimensions (same as native mesh).
-    auto [tpeRows, tpeCols] = computeMesh2DDims(nativePECount);
+    auto tpeDims = computeMesh2DDims(nativePECount);
+    unsigned tpeRows = tpeDims.first;
+    unsigned tpeCols = tpeDims.second;
     int tswRows = static_cast<int>(tpeRows) + 1;
     int tswCols = static_cast<int>(tpeCols) + 1;
 

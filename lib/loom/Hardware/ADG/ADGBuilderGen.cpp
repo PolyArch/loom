@@ -1259,7 +1259,9 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       auto &memDef = memoryDefs[inst.defIdx];
       std::string memrefStr = memDef.shape.toMLIR();
       Type elemType = memDef.shape.getElemType();
-      std::string elemStr = nativeToBitsType(elemType).toMLIR();
+      Type dataType = getMemoryDataPortType(nativeToBitsType(elemType),
+                                            memDef.ldCount, memDef.stCount);
+      Type doneType = getMemoryDonePortType(memDef.ldCount, memDef.stCount);
 
       os << "fabric.memory\n      [ldCount = " << memDef.ldCount
          << ", stCount = " << memDef.stCount;
@@ -1280,26 +1282,21 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         os << operandTypes[o];
       }
       os << ") -> (";
-      // Per-port output layout: [memref?] [ld_data * L, ld_done * L, st_done * S]
+      // Output layout: [memref?], [ld_data, ld_done] (if ldCount>0), [st_done] (if stCount>0)
       bool first = true;
       if (!memDef.isPrivate) {
         os << memrefStr;
         first = false;
       }
-      for (unsigned i = 0; i < memDef.ldCount; ++i) {
+      if (memDef.ldCount > 0) {
         if (!first) os << ", ";
         first = false;
-        os << elemStr;
+        os << dataType.toMLIR();
+        os << ", " << doneType.toMLIR();
       }
-      for (unsigned i = 0; i < memDef.ldCount; ++i) {
+      if (memDef.stCount > 0) {
         if (!first) os << ", ";
-        first = false;
-        os << "none";
-      }
-      for (unsigned i = 0; i < memDef.stCount; ++i) {
-        if (!first) os << ", ";
-        first = false;
-        os << "none";
+        os << doneType.toMLIR();
       }
       os << ")\n";
       break;
@@ -1309,7 +1306,9 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       auto &emDef = extMemoryDefs[inst.defIdx];
       std::string memrefStr = emDef.shape.toMLIR();
       Type elemType = emDef.shape.getElemType();
-      std::string elemStr = nativeToBitsType(elemType).toMLIR();
+      Type dataType = getMemoryDataPortType(nativeToBitsType(elemType),
+                                            emDef.ldCount, emDef.stCount);
+      Type doneType = getMemoryDonePortType(emDef.ldCount, emDef.stCount);
 
       os << "fabric.extmemory\n      [ldCount = " << emDef.ldCount
          << ", stCount = " << emDef.stCount;
@@ -1329,22 +1328,16 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         os << operandTypes[o];
       }
       os << ") -> (";
-      // Per-port output layout: [ld_data * L, ld_done * L, st_done * S]
+      // Output layout: [ld_data, ld_done] (if ldCount>0), [st_done] (if stCount>0)
       bool first = true;
-      for (unsigned i = 0; i < emDef.ldCount; ++i) {
-        if (!first) os << ", ";
+      if (emDef.ldCount > 0) {
+        os << dataType.toMLIR();
+        os << ", " << doneType.toMLIR();
         first = false;
-        os << elemStr;
       }
-      for (unsigned i = 0; i < emDef.ldCount; ++i) {
+      if (emDef.stCount > 0) {
         if (!first) os << ", ";
-        first = false;
-        os << "none";
-      }
-      for (unsigned i = 0; i < emDef.stCount; ++i) {
-        if (!first) os << ", ";
-        first = false;
-        os << "none";
+        os << doneType.toMLIR();
       }
       os << ")\n";
       break;

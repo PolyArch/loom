@@ -982,161 +982,97 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
       top << "  );\n\n";
       break;
     }
-    case ModuleKind::Memory: {
-      const auto &def = memoryDefs[inst.defIdx];
-      top << "  fabric_memory #(\n" << genMemoryParams(def) << "\n  ) "
-          << inst.name << " (\n";
-      top << "    .clk(clk), .rst_n(rst_n),\n";
-      // Named port connections mapped from indexed wires
-      {
-        unsigned inPort = 0;
-        unsigned outPort = 0;
-        // ld_addr input
-        if (def.ldCount > 0) {
-          top << "    .ld_addr_valid(" << inst.name << "_in" << inPort << "_valid),\n";
-          top << "    .ld_addr_ready(" << inst.name << "_in" << inPort << "_ready),\n";
-          top << "    .ld_addr_data(" << inst.name << "_in" << inPort << "_data),\n";
-          inPort++;
-        } else {
-          top << "    .ld_addr_valid(1'b0), .ld_addr_ready(), .ld_addr_data('0),\n";
-        }
-        // st_addr + st_data inputs
-        if (def.stCount > 0) {
-          top << "    .st_addr_valid(" << inst.name << "_in" << inPort << "_valid),\n";
-          top << "    .st_addr_ready(" << inst.name << "_in" << inPort << "_ready),\n";
-          top << "    .st_addr_data(" << inst.name << "_in" << inPort << "_data),\n";
-          inPort++;
-          top << "    .st_data_valid(" << inst.name << "_in" << inPort << "_valid),\n";
-          top << "    .st_data_ready(" << inst.name << "_in" << inPort << "_ready),\n";
-          top << "    .st_data_data(" << inst.name << "_in" << inPort << "_data),\n";
-          inPort++;
-        } else {
-          top << "    .st_addr_valid(1'b0), .st_addr_ready(), .st_addr_data('0),\n";
-          top << "    .st_data_valid(1'b0), .st_data_ready(), .st_data_data('0),\n";
-        }
-        // memref output (non-private)
+    case ModuleKind::Memory:
+    case ModuleKind::ExtMemory: {
+      bool isExt = inst.kind == ModuleKind::ExtMemory;
+      unsigned ldCount = isExt ? extMemoryDefs[inst.defIdx].ldCount
+                               : memoryDefs[inst.defIdx].ldCount;
+      unsigned stCount = isExt ? extMemoryDefs[inst.defIdx].stCount
+                               : memoryDefs[inst.defIdx].stCount;
+      bool isPrivate = isExt ? true : memoryDefs[inst.defIdx].isPrivate;
+      unsigned tw = computeMemoryTagWidth(ldCount, stCount);
+      unsigned baseIn = isExt ? 1 : 0; // extmemory in0 is memref_bind
+
+      // Input port index: [memref?(ext)], [st_data, st_addr](if stCount>0), [ld_addr](if ldCount>0)
+      unsigned stDataIn = baseIn;
+      unsigned stAddrIn = baseIn + 1;
+      unsigned ldAddrIn = baseIn + (stCount > 0 ? 2 : 0);
+      // Output port index: [memref?(non-private mem)], [ld_data, ld_done](if ldCount>0), [st_done](if stCount>0)
+      unsigned outBase = (!isPrivate && !isExt) ? 1 : 0;
+      unsigned ldDataOut = outBase;
+      unsigned ldDoneOut = outBase + 1;
+      unsigned stDoneOut = outBase + (ldCount > 0 ? 2 : 0);
+
+      // Instantiate memory module (directly connected to ADG ports)
+      if (isExt) {
+        const auto &def = extMemoryDefs[inst.defIdx];
+        top << "  fabric_extmemory #(\n" << genExtMemoryParams(def) << "\n  ) "
+            << inst.name << " (\n";
+        top << "    .clk(clk), .rst_n(rst_n),\n";
+        top << "    .memref_bind_valid(" << inst.name << "_in0_valid),\n";
+        top << "    .memref_bind_ready(" << inst.name << "_in0_ready),\n";
+        top << "    .memref_bind_data(" << inst.name << "_in0_data),\n";
+      } else {
+        const auto &def = memoryDefs[inst.defIdx];
+        top << "  fabric_memory #(\n" << genMemoryParams(def) << "\n  ) "
+            << inst.name << " (\n";
+        top << "    .clk(clk), .rst_n(rst_n),\n";
+      }
+      // Load address port
+      if (ldCount > 0) {
+        top << "    .ld_addr_valid(" << inst.name << "_in" << ldAddrIn << "_valid),\n";
+        top << "    .ld_addr_ready(" << inst.name << "_in" << ldAddrIn << "_ready),\n";
+        top << "    .ld_addr_data(" << inst.name << "_in" << ldAddrIn << "_data),\n";
+      } else {
+        top << "    .ld_addr_valid(1'b0), .ld_addr_ready(), .ld_addr_data('0),\n";
+      }
+      // Store address + data ports
+      if (stCount > 0) {
+        top << "    .st_addr_valid(" << inst.name << "_in" << stAddrIn << "_valid),\n";
+        top << "    .st_addr_ready(" << inst.name << "_in" << stAddrIn << "_ready),\n";
+        top << "    .st_addr_data(" << inst.name << "_in" << stAddrIn << "_data),\n";
+        top << "    .st_data_valid(" << inst.name << "_in" << stDataIn << "_valid),\n";
+        top << "    .st_data_ready(" << inst.name << "_in" << stDataIn << "_ready),\n";
+        top << "    .st_data_data(" << inst.name << "_in" << stDataIn << "_data),\n";
+      } else {
+        top << "    .st_addr_valid(1'b0), .st_addr_ready(), .st_addr_data('0),\n";
+        top << "    .st_data_valid(1'b0), .st_data_ready(), .st_data_data('0),\n";
+      }
+      // Load data + done outputs
+      if (ldCount > 0) {
+        top << "    .ld_data_valid(" << inst.name << "_out" << ldDataOut << "_valid),\n";
+        top << "    .ld_data_ready(" << inst.name << "_out" << ldDataOut << "_ready),\n";
+        top << "    .ld_data_data(" << inst.name << "_out" << ldDataOut << "_data),\n";
+        top << "    .ld_done_valid(" << inst.name << "_out" << ldDoneOut << "_valid),\n";
+        top << "    .ld_done_ready(" << inst.name << "_out" << ldDoneOut << "_ready),\n";
+        top << "    .ld_done_data(" << inst.name << "_out" << ldDoneOut << "_data),\n";
+      } else {
+        top << "    .ld_data_valid(), .ld_data_ready(1'b1), .ld_data_data(),\n";
+        top << "    .ld_done_valid(), .ld_done_ready(1'b1), .ld_done_data(),\n";
+      }
+      // Store done output
+      if (stCount > 0) {
+        top << "    .st_done_valid(" << inst.name << "_out" << stDoneOut << "_valid),\n";
+        top << "    .st_done_ready(" << inst.name << "_out" << stDoneOut << "_ready),\n";
+        top << "    .st_done_data(" << inst.name << "_out" << stDoneOut << "_data),\n";
+      } else {
+        top << "    .st_done_valid(), .st_done_ready(1'b1), .st_done_data(),\n";
+      }
+      // memref output (memory only, non-private)
+      if (!isExt) {
+        const auto &def = memoryDefs[inst.defIdx];
         if (!def.isPrivate) {
-          top << "    .memref_valid(" << inst.name << "_out" << outPort << "_valid),\n";
-          top << "    .memref_ready(" << inst.name << "_out" << outPort << "_ready),\n";
-          outPort++;
+          top << "    .memref_valid(" << inst.name << "_out0_valid),\n";
+          top << "    .memref_ready(" << inst.name << "_out0_ready),\n";
         } else {
           top << "    .memref_valid(), .memref_ready(1'b1),\n";
         }
-        // ld_data + ld_done outputs
-        if (def.ldCount > 0) {
-          top << "    .ld_data_valid(" << inst.name << "_out" << outPort << "_valid),\n";
-          top << "    .ld_data_ready(" << inst.name << "_out" << outPort << "_ready),\n";
-          top << "    .ld_data_data(" << inst.name << "_out" << outPort << "_data),\n";
-          outPort++;
-          top << "    .ld_done_valid(" << inst.name << "_out" << outPort << "_valid),\n";
-          top << "    .ld_done_ready(" << inst.name << "_out" << outPort << "_ready),\n";
-          top << "    .ld_done_data(" << inst.name << "_out" << outPort << "_data),\n";
-          outPort++;
-        } else {
-          top << "    .ld_data_valid(), .ld_data_ready(1'b1), .ld_data_data(),\n";
-          top << "    .ld_done_valid(), .ld_done_ready(1'b1), .ld_done_data(),\n";
-        }
-        // st_done output
-        if (def.stCount > 0) {
-          top << "    .st_done_valid(" << inst.name << "_out" << outPort << "_valid),\n";
-          top << "    .st_done_ready(" << inst.name << "_out" << outPort << "_ready),\n";
-          top << "    .st_done_data(" << inst.name << "_out" << outPort << "_data),\n";
-          outPort++;
-        } else {
-          top << "    .st_done_valid(), .st_done_ready(1'b1), .st_done_data(),\n";
-        }
       }
+      // cfg_data
       {
-        unsigned tw = 0;
-        if (def.ldCount > 1 || def.stCount > 1) {
-          unsigned maxCount = std::max(def.ldCount, def.stCount);
-          unsigned tagBits = 1;
-          while ((1u << tagBits) < maxCount)
-            ++tagBits;
-          tw = tagBits;
-        }
-        unsigned cfgBits = def.numRegion * (1 + tw + ((tw > 0) ? tw + 1 : 0) + ADDR_BIT_WIDTH);
-        if (cfgBits > 0)
-          top << "    .cfg_data(" << inst.name << "_cfg_data),\n";
-        else
-          top << "    .cfg_data('0),\n";
-      }
-      top << "    .error_valid(" << inst.name << "_error_valid),\n";
-      top << "    .error_code(" << inst.name << "_error_code)\n";
-      top << "  );\n\n";
-      break;
-    }
-    case ModuleKind::ExtMemory: {
-      const auto &def = extMemoryDefs[inst.defIdx];
-      top << "  fabric_extmemory #(\n" << genExtMemoryParams(def) << "\n  ) "
-          << inst.name << " (\n";
-      top << "    .clk(clk), .rst_n(rst_n),\n";
-      // Named port connections mapped from indexed wires
-      {
-        unsigned inPort = 0;
-        unsigned outPort = 0;
-        // memref_bind input (always port 0)
-        top << "    .memref_bind_valid(" << inst.name << "_in" << inPort << "_valid),\n";
-        top << "    .memref_bind_ready(" << inst.name << "_in" << inPort << "_ready),\n";
-        top << "    .memref_bind_data(" << inst.name << "_in" << inPort << "_data),\n";
-        inPort++;
-        // ld_addr input
-        if (def.ldCount > 0) {
-          top << "    .ld_addr_valid(" << inst.name << "_in" << inPort << "_valid),\n";
-          top << "    .ld_addr_ready(" << inst.name << "_in" << inPort << "_ready),\n";
-          top << "    .ld_addr_data(" << inst.name << "_in" << inPort << "_data),\n";
-          inPort++;
-        } else {
-          top << "    .ld_addr_valid(1'b0), .ld_addr_ready(), .ld_addr_data('0),\n";
-        }
-        // st_addr + st_data inputs
-        if (def.stCount > 0) {
-          top << "    .st_addr_valid(" << inst.name << "_in" << inPort << "_valid),\n";
-          top << "    .st_addr_ready(" << inst.name << "_in" << inPort << "_ready),\n";
-          top << "    .st_addr_data(" << inst.name << "_in" << inPort << "_data),\n";
-          inPort++;
-          top << "    .st_data_valid(" << inst.name << "_in" << inPort << "_valid),\n";
-          top << "    .st_data_ready(" << inst.name << "_in" << inPort << "_ready),\n";
-          top << "    .st_data_data(" << inst.name << "_in" << inPort << "_data),\n";
-          inPort++;
-        } else {
-          top << "    .st_addr_valid(1'b0), .st_addr_ready(), .st_addr_data('0),\n";
-          top << "    .st_data_valid(1'b0), .st_data_ready(), .st_data_data('0),\n";
-        }
-        // ld_data + ld_done outputs
-        if (def.ldCount > 0) {
-          top << "    .ld_data_valid(" << inst.name << "_out" << outPort << "_valid),\n";
-          top << "    .ld_data_ready(" << inst.name << "_out" << outPort << "_ready),\n";
-          top << "    .ld_data_data(" << inst.name << "_out" << outPort << "_data),\n";
-          outPort++;
-          top << "    .ld_done_valid(" << inst.name << "_out" << outPort << "_valid),\n";
-          top << "    .ld_done_ready(" << inst.name << "_out" << outPort << "_ready),\n";
-          top << "    .ld_done_data(" << inst.name << "_out" << outPort << "_data),\n";
-          outPort++;
-        } else {
-          top << "    .ld_data_valid(), .ld_data_ready(1'b1), .ld_data_data(),\n";
-          top << "    .ld_done_valid(), .ld_done_ready(1'b1), .ld_done_data(),\n";
-        }
-        // st_done output
-        if (def.stCount > 0) {
-          top << "    .st_done_valid(" << inst.name << "_out" << outPort << "_valid),\n";
-          top << "    .st_done_ready(" << inst.name << "_out" << outPort << "_ready),\n";
-          top << "    .st_done_data(" << inst.name << "_out" << outPort << "_data),\n";
-          outPort++;
-        } else {
-          top << "    .st_done_valid(), .st_done_ready(1'b1), .st_done_data(),\n";
-        }
-      }
-      {
-        unsigned tw = 0;
-        if (def.ldCount > 1 || def.stCount > 1) {
-          unsigned maxCount = std::max(def.ldCount, def.stCount);
-          unsigned tagBits = 1;
-          while ((1u << tagBits) < maxCount)
-            ++tagBits;
-          tw = tagBits;
-        }
-        unsigned cfgBits = def.numRegion * (1 + tw + ((tw > 0) ? tw + 1 : 0) + ADDR_BIT_WIDTH);
+        unsigned numRegion = isExt ? extMemoryDefs[inst.defIdx].numRegion
+                                   : memoryDefs[inst.defIdx].numRegion;
+        unsigned cfgBits = numRegion * (1 + tw + ((tw > 0) ? tw + 1 : 0) + ADDR_BIT_WIDTH);
         if (cfgBits > 0)
           top << "    .cfg_data(" << inst.name << "_cfg_data),\n";
         else
@@ -1297,6 +1233,7 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
         dstInst.name + "_in" + std::to_string(conn.dstPort) + "_ready");
   }
 
+  // Emit ready for instance output ports.
   // Emit ready for instance output ports.
   // Validation (CPL_FANOUT_MODULE_INNER) guarantees at most one sink.
   for (const auto &[srcKey, sources] : readySources) {

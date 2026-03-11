@@ -1086,13 +1086,13 @@ unsigned ADGBuilder::Impl::getInstanceInputCount(unsigned instIdx) const {
     return temporalSwitchDefs[inst.defIdx].numIn;
   case ModuleKind::Memory: {
     auto &mem = memoryDefs[inst.defIdx];
-    // Per-port: [st_data_0, st_addr_0, ..., ld_addr_0, ...]
-    return mem.stCount * 2 + mem.ldCount;
+    // [st_data, st_addr] (if stCount>0), [ld_addr] (if ldCount>0)
+    return (mem.stCount > 0 ? 2 : 0) + (mem.ldCount > 0 ? 1 : 0);
   }
   case ModuleKind::ExtMemory: {
     auto &mem = extMemoryDefs[inst.defIdx];
-    // Per-port: [memref, st_data_0, st_addr_0, ..., ld_addr_0, ...]
-    return 1 + mem.stCount * 2 + mem.ldCount;
+    // [memref, st_data, st_addr] (if stCount>0), [ld_addr] (if ldCount>0)
+    return 1 + (mem.stCount > 0 ? 2 : 0) + (mem.ldCount > 0 ? 1 : 0);
   }
   case ModuleKind::AddTag:
     return 1; // value in
@@ -1131,16 +1131,17 @@ unsigned ADGBuilder::Impl::getInstanceOutputCount(unsigned instIdx) const {
     return temporalSwitchDefs[inst.defIdx].numOut;
   case ModuleKind::Memory: {
     auto &mem = memoryDefs[inst.defIdx];
-    // Per-port: [memref? (non-private), ld_data * L, ld_done * L, st_done * S]
+    // [memref?], [ld_data, ld_done] (if ldCount>0), [st_done] (if stCount>0)
     unsigned count = 0;
     if (!mem.isPrivate) count++;
-    count += mem.ldCount * 2 + mem.stCount;
+    if (mem.ldCount > 0) count += 2;
+    if (mem.stCount > 0) count++;
     return count;
   }
   case ModuleKind::ExtMemory: {
     auto &mem = extMemoryDefs[inst.defIdx];
-    // Per-port: [ld_data * L, ld_done * L, st_done * S]
-    return mem.ldCount * 2 + mem.stCount;
+    // [ld_data, ld_done] (if ldCount>0), [st_done] (if stCount>0)
+    return (mem.ldCount > 0 ? 2 : 0) + (mem.stCount > 0 ? 1 : 0);
   }
   case ModuleKind::AddTag:
     return 1; // tagged out
@@ -1240,30 +1241,34 @@ Type ADGBuilder::Impl::getInstanceInputType(unsigned instIdx, int port) const {
   case ModuleKind::Memory: {
     auto &def = memoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
+    Type addrType = getMemoryAddrPortType(def.ldCount, def.stCount);
+    Type dataType = getMemoryDataPortType(elemType, def.ldCount, def.stCount);
 
-    // Per-port input layout (DFG convention):
-    // [st_data_0, st_addr_0, ..., st_data_{S-1}, st_addr_{S-1}, ld_addr_0, ..., ld_addr_{L-1}]
+    // Input layout: [st_data, st_addr] (if stCount>0), [ld_addr] (if ldCount>0)
     unsigned idx = (unsigned)port;
-    if (idx < def.stCount * 2) {
-      // Store pairs: even = data, odd = addr
-      return (idx % 2 == 0) ? elemType : Type::bits(ADDR_BIT_WIDTH);
+    if (def.stCount > 0) {
+      if (idx == 0) return dataType; // st_data
+      if (idx == 1) return addrType; // st_addr
+      idx -= 2;
     }
-    // Load addresses
-    return Type::bits(ADDR_BIT_WIDTH);
+    return addrType; // ld_addr
   }
   case ModuleKind::ExtMemory: {
     auto &def = extMemoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
+    Type addrType = getMemoryAddrPortType(def.ldCount, def.stCount);
+    Type dataType = getMemoryDataPortType(elemType, def.ldCount, def.stCount);
     // First input is memref (special)
     if (port == 0) return Type::bits(ADDR_BIT_WIDTH);
     unsigned adjPort = (unsigned)port - 1;
 
-    // Per-port (DFG convention):
-    // [st_data_0, st_addr_0, ..., ld_addr_0, ..., ld_addr_{L-1}]
-    if (adjPort < def.stCount * 2) {
-      return (adjPort % 2 == 0) ? elemType : Type::bits(ADDR_BIT_WIDTH);
+    // [st_data, st_addr] (if stCount>0), [ld_addr] (if ldCount>0)
+    if (def.stCount > 0) {
+      if (adjPort == 0) return dataType; // st_data
+      if (adjPort == 1) return addrType; // st_addr
+      adjPort -= 2;
     }
-    return Type::bits(ADDR_BIT_WIDTH);
+    return addrType; // ld_addr
   }
   }
   return Type::i32();
@@ -1331,32 +1336,36 @@ Type ADGBuilder::Impl::getInstanceOutputType(unsigned instIdx, int port) const {
   case ModuleKind::Memory: {
     auto &def = memoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
+    Type dataType = getMemoryDataPortType(elemType, def.ldCount, def.stCount);
+    Type doneType = getMemoryDonePortType(def.ldCount, def.stCount);
 
-    // Per-port output layout: [memref? (non-private), ld_data * L, ld_done * L, st_done * S]
+    // Output layout: [memref?], [ld_data, ld_done] (if ldCount>0), [st_done] (if stCount>0)
     unsigned idx = (unsigned)port;
     if (!def.isPrivate) {
       if (idx == 0) return Type::bits(ADDR_BIT_WIDTH); // memref placeholder
       idx--;
     }
-    if (idx < def.ldCount)
-      return elemType;
-    idx -= def.ldCount;
-    if (idx < def.ldCount)
-      return Type::none();
-    return Type::none();
+    if (def.ldCount > 0) {
+      if (idx == 0) return dataType; // ld_data
+      if (idx == 1) return doneType; // ld_done
+      idx -= 2;
+    }
+    return doneType; // st_done
   }
   case ModuleKind::ExtMemory: {
     auto &def = extMemoryDefs[inst.defIdx];
     Type elemType = def.shape.getElemType();
+    Type dataType = getMemoryDataPortType(elemType, def.ldCount, def.stCount);
+    Type doneType = getMemoryDonePortType(def.ldCount, def.stCount);
 
-    // Per-port output layout: [ld_data * L, ld_done * L, st_done * S]
+    // Output layout: [ld_data, ld_done] (if ldCount>0), [st_done] (if stCount>0)
     unsigned idx = (unsigned)port;
-    if (idx < def.ldCount)
-      return elemType;
-    idx -= def.ldCount;
-    if (idx < def.ldCount)
-      return Type::none();
-    return Type::none();
+    if (def.ldCount > 0) {
+      if (idx == 0) return dataType; // ld_data
+      if (idx == 1) return doneType; // ld_done
+      idx -= 2;
+    }
+    return doneType; // st_done
   }
   default:
     return Type::i32();

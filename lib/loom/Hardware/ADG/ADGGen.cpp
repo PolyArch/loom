@@ -198,8 +198,9 @@ static WidthLattice buildWidthLattice(
   if (totalCells == 0 && numIOIn == 0 && numIOOut == 0)
     return lattice;
 
-  auto [peRows, peCols] = computeMesh2DDims(
-      totalCells > 0 ? totalCells : 1);
+  auto peDims = computeMesh2DDims(totalCells > 0 ? totalCells : 1);
+  unsigned peRows = peDims.first;
+  unsigned peCols = peDims.second;
   lattice.peRows = peRows;
   lattice.peCols = peCols;
   lattice.swRows = static_cast<int>(peRows) + 1;

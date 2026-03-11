@@ -52,6 +52,38 @@ inline unsigned getTypeDataWidth(const Type &t) {
   return 32;
 }
 
+inline unsigned computeMemoryTagWidth(unsigned ldCount, unsigned stCount) {
+  unsigned maxCount = (ldCount > stCount) ? ldCount : stCount;
+  if (maxCount <= 1)
+    return 0;
+  unsigned tagWidth = 1;
+  while ((1u << tagWidth) < maxCount)
+    ++tagWidth;
+  return tagWidth;
+}
+
+inline Type getMemoryAddrPortType(unsigned ldCount, unsigned stCount) {
+  unsigned tagWidth = computeMemoryTagWidth(ldCount, stCount);
+  if (tagWidth == 0)
+    return Type::bits(ADDR_BIT_WIDTH);
+  return Type::tagged(Type::bits(ADDR_BIT_WIDTH), Type::iN(tagWidth));
+}
+
+inline Type getMemoryDataPortType(Type elemType, unsigned ldCount,
+                                  unsigned stCount) {
+  unsigned tagWidth = computeMemoryTagWidth(ldCount, stCount);
+  if (tagWidth == 0)
+    return elemType;
+  return Type::tagged(elemType, Type::iN(tagWidth));
+}
+
+inline Type getMemoryDonePortType(unsigned ldCount, unsigned stCount) {
+  unsigned tagWidth = computeMemoryTagWidth(ldCount, stCount);
+  if (tagWidth == 0)
+    return Type::none();
+  return Type::tagged(Type::none(), Type::iN(tagWidth));
+}
+
 //===----------------------------------------------------------------------===//
 // Module Definition Kinds
 //===----------------------------------------------------------------------===//
