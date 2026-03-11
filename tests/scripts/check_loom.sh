@@ -22,8 +22,16 @@ any_failure=false
 "${SCRIPT_DIR}/ll_roundtrip.sh" "${LOOM_BIN}" --run || any_failure=true
 "${SCRIPT_DIR}/mlir_roundtrip.sh" "${LOOM_BIN}" --run || any_failure=true
 "${SCRIPT_DIR}/scf_roundtrip.sh" "${LOOM_BIN}" --run || any_failure=true
+"${SCRIPT_DIR}/handshake.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/handshake_ops_stat.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/mapper_unit_smoke.sh" "${LOOM_BIN}" || any_failure=true
+"${SCRIPT_DIR}/mapper_unit.sh" "${LOOM_BIN}" || any_failure=true
+"${SCRIPT_DIR}/mapper_combine.sh" "${LOOM_BIN}" || any_failure=true
+"${SCRIPT_DIR}/mapper_stress.sh" "${LOOM_BIN}" anchor || any_failure=true
+"${SCRIPT_DIR}/mapper_stress.sh" "${LOOM_BIN}" full || any_failure=true
+# Mapper App (Tier 3) is informational: failures are tracked but don't block CI.
+"${SCRIPT_DIR}/mapper_app.sh" "${LOOM_BIN}" || true
+"${SCRIPT_DIR}/viz_serializer_regression.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/fabric_gen.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/dfg_analysis.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/spec_check.sh" || any_failure=true

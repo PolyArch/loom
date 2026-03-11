@@ -41,11 +41,9 @@ int main() {
   builder.connectToModuleInput(ld_data_in, ld0, 1);
   builder.connectToModuleInput(ld_ctrl, ld0, 2);
 
-  // LoadPE outputs: [addr_to_mem(0), data_to_comp(1)]
+  // LoadPE outputs: [data_to_comp(0), addr_to_mem(1)]
   auto ld_data_out = builder.addModuleOutput("ld_data_out", Type::i32());
-  builder.connectToModuleOutput(ld0, 1, ld_data_out);
-  // LoadPE addr_to_mem -> memory ld_addr (port 0)
-  builder.connectPorts(ld0, 0, m0, 0);
+  builder.connectToModuleOutput(ld0, 0, ld_data_out);
 
   // StorePE inputs: [addr(0), data(1), ctrl(2)]
   auto st_addr = builder.addModuleInput("st_addr", Type::index());
@@ -55,10 +53,10 @@ int main() {
   builder.connectToModuleInput(st_data, st0, 1);
   builder.connectToModuleInput(st_ctrl, st0, 2);
 
-  // StorePE outputs: [addr_to_mem(0), data_to_mem(1)]
-  // StorePE -> memory st_addr(1) and st_data(2)
-  builder.connectPorts(st0, 0, m0, 1);
-  builder.connectPorts(st0, 1, m0, 2);
+  // Memory inputs (ld=1, st=1): [st_data(0), st_addr(1), ld_addr(2)]
+  builder.connectPorts(st0, 0, m0, 0);  // store data -> st_data_0
+  builder.connectPorts(st0, 1, m0, 1);  // store addr -> st_addr_0
+  builder.connectPorts(ld0, 1, m0, 2);  // load addr -> ld_addr_0
 
   // Memory outputs (private, 1 ld, 1 st): [ld_data(0), ld_done(1), st_done(2)]
   auto lddata = builder.addModuleOutput("lddata", Type::i32());

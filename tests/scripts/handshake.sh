@@ -44,6 +44,11 @@ if [[ "${1:-}" == "--single" ]]; then
       exit 1
     fi
 
+    if grep -Eq 'handshake\\.(extmemory|memory)\\[ld = 0, st = 0\\]' "${output_handshake}"; then
+      echo "invalid zero-port handshake memory op: ${output_handshake}" >&2
+      exit 1
+    fi
+
     if [[ "${CHECK_HANDSHAKE_MEMREF}" == "true" ]]; then
       python3 - "${output_handshake}" <<'PY'
 import sys
@@ -112,6 +117,7 @@ for app_dir in "${app_dirs[@]}"; do
   line="mkdir -p ${rel_out}"
   line+=" && ${rel_loom}${extra_str}${rel_sources} -I ${rel_include} -I ${rel_app} -o ${rel_out}/${ll_name}"
   line+=" && test -f ${rel_out}/${hs_name}"
+  line+=" && ! grep -Eq 'handshake\\.(extmemory|memory)\\[ld = 0, st = 0\\]' ${rel_out}/${hs_name}"
 
   echo "${line}" >> "${PARALLEL_FILE}"
 done

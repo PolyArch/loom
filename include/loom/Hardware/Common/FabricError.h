@@ -176,12 +176,6 @@ inline constexpr const char *MEMORY_ADDR_TYPE =
     "CPL_MEMORY_ADDR_TYPE";
 inline constexpr const char *MEMORY_DATA_TYPE =
     "CPL_MEMORY_DATA_TYPE";
-inline constexpr const char *MEMORY_TAG_REQUIRED =
-    "CPL_MEMORY_TAG_REQUIRED";
-inline constexpr const char *MEMORY_TAG_FOR_SINGLE =
-    "CPL_MEMORY_TAG_FOR_SINGLE";
-inline constexpr const char *MEMORY_TAG_WIDTH =
-    "CPL_MEMORY_TAG_WIDTH";
 inline constexpr const char *MEMORY_DATA_NATIVE =
     "CPL_MEMORY_DATA_NATIVE";
 inline constexpr const char *MEMORY_STATIC_REQUIRED =

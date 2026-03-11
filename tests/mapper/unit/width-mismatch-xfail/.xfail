@@ -1,0 +1,2 @@
+Mapper is expected to fail: DFG operates on i32 values but fabric
+only has i64-width PEs. Width mismatch prevents mapping.

@@ -80,6 +80,23 @@ inline bool isTemporalPEFU(const Node *node) {
   return false;
 }
 
+/// Type width check with tagged-type unwrapping for non-temporal tagged PEs.
+/// If HW type is tagged and SW type is native, unwraps the tagged value type
+/// before comparing widths. This allows native DFG operations to be placed on
+/// standalone tagged PEs that produce tagged outputs with output_tag config.
+inline bool isTypeWidthCompatibleForTaggedPE(mlir::Type swType,
+                                             mlir::Type hwType) {
+  if (isTypeWidthCompatible(swType, hwType))
+    return true;
+
+  // Unwrap tagged HW type for comparison with native SW type.
+  auto tagHw = mlir::dyn_cast<loom::dataflow::TaggedType>(hwType);
+  if (tagHw && !mlir::isa<loom::dataflow::TaggedType>(swType))
+    return isTypeWidthCompatible(swType, tagHw.getValueType());
+
+  return false;
+}
+
 /// Type width check with tagged-type unwrapping for temporal PE FU boundary.
 /// If HW type is tagged and SW type is native, unwraps the tagged value type
 /// before comparing widths. Per spec: "Each FU type operates on value-only

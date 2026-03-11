@@ -1,4 +1,4 @@
-//===-- memory_multi_port.cpp - ADG test: multi-port tagged mem -*- C++ -*-===//
+//===-- memory_multi_port.cpp - ADG test: multi-port memory ----*- C++ -*-===//
 //
 // Part of the Loom project.
 //
@@ -11,28 +11,29 @@ using namespace loom::adg;
 int main() {
   ADGBuilder builder("memory_multi_port");
 
-  auto tagType = Type::iN(1);
-  auto taggedIndex = Type::tagged(Type::index(), tagType);
-  auto taggedData = Type::tagged(Type::i32(), tagType);
-  auto taggedNone = Type::tagged(Type::none(), tagType);
-
-  auto mem = builder.newMemory("spad_tagged")
+  auto mem = builder.newMemory("spad_multi_ld")
       .setLoadPorts(2)
       .setStorePorts(0)
       .setShape(MemrefType::static1D(64, Type::i32()));
 
   auto inst = builder.clone(mem, "mem0");
 
-  // Singular tagged load address input (TAG_WIDTH=1 for ldCount=2)
-  auto ld_addr = builder.addModuleInput("ld_addr", taggedIndex);
-  // Singular tagged outputs: ld_data + ld_done
-  auto ld_data = builder.addModuleOutput("ld_data", taggedData);
-  auto ld_done = builder.addModuleOutput("ld_done", taggedNone);
+  // Per-port model: each load port is an individual untagged port
+  auto ld_addr_0 = builder.addModuleInput("ld_addr_0", Type::index());
+  auto ld_addr_1 = builder.addModuleInput("ld_addr_1", Type::index());
+  auto ld_data_0 = builder.addModuleOutput("ld_data_0", Type::i32());
+  auto ld_data_1 = builder.addModuleOutput("ld_data_1", Type::i32());
+  auto ld_done_0 = builder.addModuleOutput("ld_done_0", Type::none());
+  auto ld_done_1 = builder.addModuleOutput("ld_done_1", Type::none());
 
-  // Memory (ldCount=2, stCount=0): inputs=[ld_addr(0)], outputs=[ld_data(0), ld_done(1)]
-  builder.connectToModuleInput(ld_addr, inst, 0);
-  builder.connectToModuleOutput(inst, 0, ld_data);
-  builder.connectToModuleOutput(inst, 1, ld_done);
+  // Memory inputs (ld=2, st=0): [ld_addr_0(0), ld_addr_1(1)]
+  builder.connectToModuleInput(ld_addr_0, inst, 0);    // ld_addr_0
+  builder.connectToModuleInput(ld_addr_1, inst, 1);    // ld_addr_1
+  // Memory outputs: [ld_data_0(0), ld_data_1(1), ld_done_0(2), ld_done_1(3)]
+  builder.connectToModuleOutput(inst, 0, ld_data_0);   // ld_data_0
+  builder.connectToModuleOutput(inst, 1, ld_data_1);   // ld_data_1
+  builder.connectToModuleOutput(inst, 2, ld_done_0);   // ld_done_0
+  builder.connectToModuleOutput(inst, 3, ld_done_1);   // ld_done_1
 
   builder.exportMLIR("Output/memory_multi_port.fabric.mlir");
   return 0;

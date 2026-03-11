@@ -55,10 +55,10 @@ int main() {
   // Compute: lddata + operand -> result
   builder.connectToModuleInput(operand, add0, 1);
 
-  // Store memory inputs (ldCount=0, stCount=1): [st_addr(0), st_data(1)]
-  builder.connectToModuleInput(st_addr, mem_st0, 0);
-  builder.connectPorts(add0, 0, mem_st0, 1); // adder result -> st_data
-  // Store memory outputs (ldCount=0, stCount=1): [st_done(0)]
+  // Store memory inputs (ld=0, st=1): [st_data(0), st_addr(1)]
+  builder.connectPorts(add0, 0, mem_st0, 0);         // adder result -> st_data_0
+  builder.connectToModuleInput(st_addr, mem_st0, 1);  // st_addr_0
+  // Store memory outputs (ld=0, st=1): [st_done(0)]
   builder.connectToModuleOutput(mem_st0, 0, stdone);
 
   builder.exportMLIR("Output/mixed_load_store_pipe.fabric.mlir");

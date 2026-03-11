@@ -78,13 +78,16 @@
 #include "loom/Conversion/SCFPostProcess.h"
 #include "loom/Dialect/Dataflow/DataflowDialect.h"
 #include "loom/Dialect/Fabric/FabricDialect.h"
+#include "loom/Hardware/Common/FabricError.h"
 #include "loom/Dialect/Fabric/FabricOps.h"
 #include "loom/Analysis/DFGAnalysis.h"
 #include "loom/Hardware/ADG/ADGGen.h"
 #include "loom/Hardware/Common/FabricConstants.h"
 #include "loom/Mapper/ADGFlattener.h"
 #include "loom/Mapper/ConfigGen.h"
+#include "loom/Viz/VizHTMLExporter.h"
 #include "loom/Mapper/DFGBuilder.h"
+#include "loom/Mapper/DomainMask.h"
 #include "loom/Mapper/Mapper.h"
 #include "loom/Mapper/TechMapper.h"
 
@@ -598,7 +601,7 @@ int main(int argc, char **argv) {
   // Mutual exclusion: --gen-adg and its sub-flags vs --adg.
   {
     bool has_gen_flags = parsed.gen_adg || parsed.gen_topology != "mesh" ||
-                         parsed.gen_track != 1 ||
+                         parsed.gen_track != 2 ||
                          parsed.gen_fifo_mode != "none" ||
                          parsed.gen_fifo_depth != 2 ||
                          parsed.gen_fifo_bypassable ||
@@ -802,6 +805,7 @@ int main(int argc, char **argv) {
     loom::adg::MergedRequirements spatial_reqs;
     loom::adg::MergedRequirements temporal_reqs;
     unsigned num_dfgs = 0;
+    bool invalid_gen_dfg = false;
     for (auto &mod : gen_modules) {
       mod->walk([&](circt::handshake::FuncOp func) {
         if (func.getName().ends_with("_esi"))
@@ -820,13 +824,12 @@ int main(int argc, char **argv) {
                   mlir::dyn_cast<circt::handshake::MemoryOp>(&op)) {
             unsigned ld = memOp.getLdCount();
             unsigned st = memOp.getStCount();
-            if (ld > 1 || st > 1) {
-              llvm::errs()
-                  << "warning: skipping multi-port handshake.memory"
-                  << " (ld=" << ld << ", st=" << st << ")"
-                  << " -- tagged multi-port memory generation"
-                  << " not yet supported\n";
-              continue;
+            if (ld == 0 && st == 0) {
+              op.emitError(loom::cplErrMsg(
+                  loom::CplError::MEMORY_PORTS_EMPTY,
+                  "handshake.memory must have at least one load or store port"));
+              invalid_gen_dfg = true;
+              break;
             }
             loom::adg::MemorySpec memSpec;
             memSpec.kind = loom::adg::MemKind::OnChip;
@@ -837,8 +840,10 @@ int main(int argc, char **argv) {
               mlir::Type elemTy = memrefTy.getElementType();
               if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(elemTy))
                 memSpec.dataWidth = intTy.getWidth();
-              else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(elemTy))
+              else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(elemTy)) {
                 memSpec.dataWidth = floatTy.getWidth();
+                memSpec.isFloat = true;
+              }
               if (memrefTy.hasStaticShape())
                 memSpec.memCapacity = memrefTy.getNumElements();
             }
@@ -849,6 +854,13 @@ int main(int argc, char **argv) {
           // Detect external memory operations (handshake.extmemory).
           if (auto extMemOp =
                   mlir::dyn_cast<circt::handshake::ExternalMemoryOp>(&op)) {
+            if (extMemOp.getLdCount() == 0 && extMemOp.getStCount() == 0) {
+              op.emitError(loom::cplErrMsg(
+                  loom::CplError::MEMORY_PORTS_EMPTY,
+                  "handshake.extmemory must have at least one load or store port"));
+              invalid_gen_dfg = true;
+              break;
+            }
             loom::adg::MemorySpec memSpec;
             memSpec.kind = loom::adg::MemKind::External;
             memSpec.ldCount = extMemOp.getLdCount();
@@ -859,20 +871,34 @@ int main(int argc, char **argv) {
               mlir::Type elemTy = memrefTy.getElementType();
               if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(elemTy))
                 memSpec.dataWidth = intTy.getWidth();
-              else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(elemTy))
+              else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(elemTy)) {
                 memSpec.dataWidth = floatTy.getWidth();
+                memSpec.isFloat = true;
+              }
             }
             analysis.memoryCounts[memSpec]++;
             continue;
           }
 
-          // Skip all handshake.* control/memory ops from PE counting.
-          // Compute PEs come from arith.*, math.*, etc.
-          if (llvm::StringRef(opName).starts_with("handshake."))
+          // Skip handshake ops already handled by dedicated builders.
+          // handshake.memory/extmemory: counted above (memory builders).
+          // handshake.return: skipped above (terminator check).
+          // handshake.load/store: mapped via memory module LoadPE/StorePE.
+          // Remaining handshake ops (join, sink, constant, cond_br, mux)
+          // are treated as compute PEs.
+          if (opName == "handshake.load" || opName == "handshake.store")
             continue;
 
           loom::adg::PESpec spec;
           spec.opName = opName;
+
+          // Normalize ub.poison to handshake.constant: both produce a
+          // constant value. Add a synthetic none input (width 0) to match
+          // the constant PE signature (1 trigger + 1 output).
+          if (opName == "ub.poison") {
+            spec.opName = "handshake.constant";
+            spec.inWidths.push_back(0);
+          }
 
           // Extract input widths from operand types.
           for (auto operand : op.getOperands()) {
@@ -884,8 +910,11 @@ int main(int argc, char **argv) {
               w = floatTy.getWidth();
             else if (ty.isIndex())
               w = loom::ADDR_BIT_WIDTH;
-            if (w > 0)
-              spec.inWidths.push_back(w);
+            else if (mlir::isa<mlir::NoneType>(ty))
+              w = 0;
+            else
+              continue;
+            spec.inWidths.push_back(w);
           }
           // Extract output widths from result types.
           for (auto result : op.getResults()) {
@@ -897,11 +926,14 @@ int main(int argc, char **argv) {
               w = floatTy.getWidth();
             else if (ty.isIndex())
               w = loom::ADDR_BIT_WIDTH;
-            if (w > 0)
-              spec.outWidths.push_back(w);
+            else if (mlir::isa<mlir::NoneType>(ty))
+              w = 0;
+            else
+              continue;
+            spec.outWidths.push_back(w);
           }
 
-          if (!spec.inWidths.empty() && !spec.outWidths.empty()) {
+          if (!spec.inWidths.empty()) {
             analysis.peCounts[spec]++;
 
             // Partition into spatial/temporal if analysis data is present.
@@ -923,17 +955,29 @@ int main(int argc, char **argv) {
           }
         }
 
+        if (invalid_gen_dfg)
+          return;
+
         // Count function inputs by width.
+        // NoneType (width 0) must be counted so the width-0 lattice gets
+        // I/O slots for control tokens (used by handshake.join etc.).
+        // Memref args are handled separately by extmemory and are skipped.
         for (auto arg : func.getBody().front().getArguments()) {
           mlir::Type ty = arg.getType();
+          if (mlir::isa<mlir::MemRefType>(ty))
+            continue;
           unsigned w = 0;
-          if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty))
-            w = intTy.getWidth();
-          else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty))
-            w = floatTy.getWidth();
-          else if (ty.isIndex())
-            w = loom::ADDR_BIT_WIDTH;
-          if (w > 0)
+          bool known = false;
+          if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty)) {
+            w = intTy.getWidth(); known = true;
+          } else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty)) {
+            w = floatTy.getWidth(); known = true;
+          } else if (ty.isIndex()) {
+            w = loom::ADDR_BIT_WIDTH; known = true;
+          } else if (mlir::isa<mlir::NoneType>(ty)) {
+            w = 0; known = true;
+          }
+          if (known)
             analysis.inputsByWidth[w]++;
         }
 
@@ -943,13 +987,17 @@ int main(int argc, char **argv) {
           for (auto operand : returnOp->getOperands()) {
             mlir::Type ty = operand.getType();
             unsigned w = 0;
-            if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty))
-              w = intTy.getWidth();
-            else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty))
-              w = floatTy.getWidth();
-            else if (ty.isIndex())
-              w = loom::ADDR_BIT_WIDTH;
-            if (w > 0)
+            bool known = false;
+            if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty)) {
+              w = intTy.getWidth(); known = true;
+            } else if (auto floatTy = mlir::dyn_cast<mlir::FloatType>(ty)) {
+              w = floatTy.getWidth(); known = true;
+            } else if (ty.isIndex()) {
+              w = loom::ADDR_BIT_WIDTH; known = true;
+            } else if (mlir::isa<mlir::NoneType>(ty)) {
+              w = 0; known = true;
+            }
+            if (known)
               analysis.outputsByWidth[w]++;
           }
         }
@@ -958,6 +1006,9 @@ int main(int argc, char **argv) {
         num_dfgs++;
       });
     }
+
+    if (invalid_gen_dfg)
+      return 1;
 
     if (num_dfgs == 0) {
       llvm::errs() << "error: no handshake.func found in DFG files\n";
@@ -1092,6 +1143,7 @@ int main(int argc, char **argv) {
             llvm::errs() << "\n";
             return mlir::success();
           });
+      adg_context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
       adg_context.getOrLoadDialect<mlir::arith::ArithDialect>();
       adg_context.getOrLoadDialect<mlir::math::MathDialect>();
       adg_context.getOrLoadDialect<mlir::memref::MemRefDialect>();
@@ -1474,6 +1526,13 @@ int main(int argc, char **argv) {
     loom::ADGFlattener adg_flattener;
     loom::Graph adg = adg_flattener.flatten(fabric_mod);
 
+    // Optionally prune unused domain resources before mapping.
+    // This reduces routing congestion when mapping a single app to a
+    // multi-app domain ADG by removing PE instances not needed by this DFG.
+    if (parsed.mapper_mask_domain) {
+      loom::pruneDomainADG(adg, dfg);
+    }
+
     // Run technology mapping.
     loom::TechMapper tech_mapper;
     loom::CandidateSet candidates = tech_mapper.map(dfg, adg);
@@ -1527,6 +1586,17 @@ int main(int argc, char **argv) {
                                           adg_module.get(), fabric_path)) {
       llvm::errs() << "warning: failed to write configured fabric: "
                     << fabric_path << "\n";
+    }
+
+    // Emit self-contained visualization HTML.
+    {
+      loom::VizHTMLExporter viz_exporter;
+      if (!viz_exporter.emitHTML(adg, dfg, mapper_result.state,
+                                 handshake_module.get(),
+                                 adg_module.get(), base_path)) {
+        llvm::errs() << "warning: failed to write visualization: "
+                      << base_path << ".viz.html\n";
+      }
     }
 
     // Write verbose log on success.

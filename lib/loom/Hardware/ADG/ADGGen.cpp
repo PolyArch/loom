@@ -38,6 +38,15 @@ unsigned PESpec::primaryWidth() const {
 
 bool PESpec::isCrossWidth() const {
   unsigned pw = primaryWidth();
+  // If primaryWidth was derived from outputs (no non-zero input matches it),
+  // the outputs differ from the inputs and the name must reflect that.
+  if (pw > 0) {
+    bool pwFromInput = false;
+    for (unsigned w : inWidths)
+      if (w == pw) { pwFromInput = true; break; }
+    if (!pwFromInput)
+      return true;
+  }
   for (unsigned w : outWidths) {
     if (w != pw)
       return true;
@@ -89,12 +98,15 @@ bool MemorySpec::operator<(const MemorySpec &o) const {
     return stCount < o.stCount;
   if (dataWidth != o.dataWidth)
     return dataWidth < o.dataWidth;
+  if (isFloat != o.isFloat)
+    return isFloat < o.isFloat;
   return memCapacity < o.memCapacity;
 }
 
 bool MemorySpec::operator==(const MemorySpec &o) const {
   return kind == o.kind && ldCount == o.ldCount && stCount == o.stCount &&
-         dataWidth == o.dataWidth && memCapacity == o.memCapacity;
+         dataWidth == o.dataWidth && isFloat == o.isFloat &&
+         memCapacity == o.memCapacity;
 }
 
 //===----------------------------------------------------------------------===//
@@ -152,6 +164,7 @@ struct PEPlacement {
   Kind kind;
   const PESpec *spec = nullptr; // For RegularPE
   unsigned dataWidth = 0;       // For MemLoadPE/MemStorePE
+  bool isFloat = false;         // For MemLoadPE/MemStorePE: true if float data
 
   // Per-width port mapping: which global PE ports connect to each width.
   struct WidthPorts {
@@ -276,32 +289,68 @@ static WidthLattice buildWidthLattice(
       }
 
       // PE output ports (switch out -> PE input).
-      // UL corner of cell (r, c): feeds PE input[0].
-      if (r < (int)peRows && c < (int)peCols && cellGrid[r][c].numIn > 0)
-        pm.peOut[0] = static_cast<int>(outIdx++);
-      // LL corner of cell (r-1, c): feeds PE input[1].
-      if (r > 0 && c < (int)peCols && cellGrid[r - 1][c].numIn > 1)
-        pm.peOut[1] = static_cast<int>(outIdx++);
-      // UR corner of cell (r, c-1): feeds PE input[2].
-      if (r < (int)peRows && c > 0 && cellGrid[r][c - 1].numIn > 2)
-        pm.peOut[2] = static_cast<int>(outIdx++);
-      // LR corner of cell (r-1, c-1): feeds PE input[3].
-      if (r > 0 && c > 0 && cellGrid[r - 1][c - 1].numIn > 3)
-        pm.peOut[3] = static_cast<int>(outIdx++);
+      // Corner roles: 0=UL, 1=LL, 2=UR, 3=LR.
+      // For cells needing >4 PE inputs, overflow wraps around corners.
+      // Input port localIdx goes to corner localIdx%4.
+      auto peInPortsForCorner = [&](int corner) -> unsigned {
+        int cr, cc;
+        switch (corner) {
+        case 0: cr = r;     cc = c;     break; // UL: cell (r, c)
+        case 1: cr = r - 1; cc = c;     break; // LL: cell (r-1, c)
+        case 2: cr = r;     cc = c - 1; break; // UR: cell (r, c-1)
+        case 3: cr = r - 1; cc = c - 1; break; // LR: cell (r-1, c-1)
+        default: return 0;
+        }
+        if (cr < 0 || cc < 0 || cr >= (int)peRows || cc >= (int)peCols)
+          return 0;
+        unsigned total = cellGrid[cr][cc].numIn;
+        unsigned count = 0;
+        for (unsigned i = corner; i < total; i += 4)
+          count++;
+        return count;
+      };
+      unsigned peOutOff = 0;
+      for (int corner = 0; corner < 4; ++corner) {
+        unsigned n = peInPortsForCorner(corner);
+        pm.peOutCornerOff[corner] = peOutOff;
+        pm.peOutCornerCnt[corner] = n;
+        for (unsigned k = 0; k < n; ++k)
+          pm.peOutVec.push_back(static_cast<int>(outIdx++));
+        peOutOff += n;
+      }
 
       // PE input ports (PE output -> switch in).
-      // LR of cell (r-1, c-1): receives PE output[0].
-      if (r > 0 && c > 0 && cellGrid[r - 1][c - 1].numOut > 0)
-        pm.peIn[3] = static_cast<int>(inIdx++);
-      // UR of cell (r, c-1): receives PE output[1].
-      if (r < (int)peRows && c > 0 && cellGrid[r][c - 1].numOut > 1)
-        pm.peIn[2] = static_cast<int>(inIdx++);
-      // LL of cell (r-1, c): receives PE output[2].
-      if (r > 0 && c < (int)peCols && cellGrid[r - 1][c].numOut > 2)
-        pm.peIn[1] = static_cast<int>(inIdx++);
-      // UL of cell (r, c): receives PE output[3].
-      if (r < (int)peRows && c < (int)peCols && cellGrid[r][c].numOut > 3)
-        pm.peIn[0] = static_cast<int>(inIdx++);
+      // Output corners reversed: localIdx%4 0=LR, 1=UR, 2=LL, 3=UL.
+      // Allocation corner numbering: 0=UL, 1=LL, 2=UR, 3=LR.
+      // Cell at alloc corner c sends output ports with localIdx%4 == (3-c).
+      auto peOutPortsForCorner = [&](int corner) -> unsigned {
+        int cr, cc;
+        switch (corner) {
+        case 0: cr = r;     cc = c;     break; // UL: cell (r, c)
+        case 1: cr = r - 1; cc = c;     break; // LL: cell (r-1, c)
+        case 2: cr = r;     cc = c - 1; break; // UR: cell (r, c-1)
+        case 3: cr = r - 1; cc = c - 1; break; // LR: cell (r-1, c-1)
+        default: return 0;
+        }
+        if (cr < 0 || cc < 0 || cr >= (int)peRows || cc >= (int)peCols)
+          return 0;
+        unsigned total = cellGrid[cr][cc].numOut;
+        unsigned count = 0;
+        unsigned start = 3 - corner; // reversed output corner mapping
+        for (unsigned i = start; i < total; i += 4)
+          count++;
+        return count;
+      };
+      // Allocate in reverse corner order (LR=3, UR=2, LL=1, UL=0)
+      unsigned peInOff = 0;
+      for (int corner = 3; corner >= 0; --corner) {
+        unsigned n = peOutPortsForCorner(corner);
+        pm.peInCornerOff[corner] = peInOff;
+        pm.peInCornerCnt[corner] = n;
+        for (unsigned k = 0; k < n; ++k)
+          pm.peInVec.push_back(static_cast<int>(inIdx++));
+        peInOff += n;
+      }
 
       // I/O ports on this switch.
       auto inIt = swIOInCount.find({r, c});
@@ -472,29 +521,42 @@ static void wirePEPortToCell(
     InstanceHandle peInst, unsigned globalPort,
     bool isInput, unsigned localIdx) {
 
+  unsigned corner = localIdx % 4;
+  unsigned wrapIdx = localIdx / 4;
+
   if (isInput) {
-    int swR, swC, slot;
-    switch (localIdx) {
-    case 0: swR = cellRow;     swC = cellCol;     slot = 0; break; // UL
-    case 1: swR = cellRow + 1; swC = cellCol;     slot = 1; break; // LL
-    case 2: swR = cellRow;     swC = cellCol + 1; slot = 2; break; // UR
-    case 3: swR = cellRow + 1; swC = cellCol + 1; slot = 3; break; // LR
+    // Input corner assignment: 0=UL, 1=LL, 2=UR, 3=LR.
+    int swR, swC;
+    switch (corner) {
+    case 0: swR = cellRow;     swC = cellCol;     break; // UL
+    case 1: swR = cellRow + 1; swC = cellCol;     break; // LL
+    case 2: swR = cellRow;     swC = cellCol + 1; break; // UR
+    case 3: swR = cellRow + 1; swC = cellCol + 1; break; // LR
     default: return;
     }
-    int swOut = lattice.swPorts[swR][swC].peOut[slot];
+    auto &pm = lattice.swPorts[swR][swC];
+    // Cell is at allocation corner 'corner' on this switch.
+    assert(wrapIdx < pm.peOutCornerCnt[corner]);
+    unsigned idx = pm.peOutCornerOff[corner] + wrapIdx;
+    int swOut = pm.peOutVec[idx];
     assert(swOut >= 0);
     builder.connectPorts(lattice.swGrid[swR][swC], swOut, peInst, globalPort);
   } else {
-    // Output corners reversed: LR=0, UR=1, LL=2, UL=3
-    int swR, swC, slot;
-    switch (localIdx) {
-    case 0: swR = cellRow + 1; swC = cellCol + 1; slot = 3; break; // LR
-    case 1: swR = cellRow;     swC = cellCol + 1; slot = 2; break; // UR
-    case 2: swR = cellRow + 1; swC = cellCol;     slot = 1; break; // LL
-    case 3: swR = cellRow;     swC = cellCol;     slot = 0; break; // UL
+    // Output corner assignment (reversed): 0=LR, 1=UR, 2=LL, 3=UL.
+    int swR, swC;
+    switch (corner) {
+    case 0: swR = cellRow + 1; swC = cellCol + 1; break; // LR
+    case 1: swR = cellRow;     swC = cellCol + 1; break; // UR
+    case 2: swR = cellRow + 1; swC = cellCol;     break; // LL
+    case 3: swR = cellRow;     swC = cellCol;     break; // UL
     default: return;
     }
-    int swIn = lattice.swPorts[swR][swC].peIn[slot];
+    auto &pm = lattice.swPorts[swR][swC];
+    // Wiring corner N maps to allocation corner (3-N).
+    unsigned allocCorner = 3 - corner;
+    assert(wrapIdx < pm.peInCornerCnt[allocCorner]);
+    unsigned idx = pm.peInCornerOff[allocCorner] + wrapIdx;
+    int swIn = pm.peInVec[idx];
     assert(swIn >= 0);
     builder.connectPorts(peInst, globalPort, lattice.swGrid[swR][swC], swIn);
   }
@@ -553,15 +615,17 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
   }
 
   // LoadPEs: addr(57-bit) + data(W-bit) + ctrl(none/0-bit).
+  // DFG handshake.load outputs (data, addr), so PE out[0]=data, out[1]=addr.
   for (const auto &[memSpec, count] : reqs.maxMemoryCounts) {
     for (unsigned i = 0; i < memSpec.ldCount * count; ++i) {
       PEPlacement p;
       p.kind = PEPlacement::MemLoadPE;
       p.dataWidth = memSpec.dataWidth;
+      p.isFloat = memSpec.isFloat;
       // LoadPE ports: in[0]=addr(57), in[1]=data(W), in[2]=ctrl(none)
-      //              out[0]=addr(57), out[1]=data(W)
-      p.portsByWidth[ADDR_BIT_WIDTH] = {{0}, {0}};
-      p.portsByWidth[memSpec.dataWidth] = {{1}, {1}};
+      //              out[0]=data(W), out[1]=addr(57)
+      p.portsByWidth[ADDR_BIT_WIDTH] = {{0}, {1}};
+      p.portsByWidth[memSpec.dataWidth] = {{1}, {0}};
       p.portsByWidth[0] = {{2}, {}};
 
       for (auto &[w, wp] : p.portsByWidth)
@@ -573,13 +637,15 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
   }
 
   // StorePEs: same port layout as LoadPEs.
+  // DFG handshake.store outputs (data, addr), so PE out[0]=data, out[1]=addr.
   for (const auto &[memSpec, count] : reqs.maxMemoryCounts) {
     for (unsigned i = 0; i < memSpec.stCount * count; ++i) {
       PEPlacement p;
       p.kind = PEPlacement::MemStorePE;
       p.dataWidth = memSpec.dataWidth;
-      p.portsByWidth[ADDR_BIT_WIDTH] = {{0}, {0}};
-      p.portsByWidth[memSpec.dataWidth] = {{1}, {1}};
+      p.isFloat = memSpec.isFloat;
+      p.portsByWidth[ADDR_BIT_WIDTH] = {{0}, {1}};
+      p.portsByWidth[memSpec.dataWidth] = {{1}, {0}};
       p.portsByWidth[0] = {{2}, {}};
 
       for (auto &[w, wp] : p.portsByWidth)
@@ -617,20 +683,9 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
     extMemInByWidth[0] += (memSpec.ldCount + memSpec.stCount) * n;
   }
 
-  // Temporal bridge I/O: for each width with temporal PEs, add_tag needs
-  // native output slots and del_tag needs native input slots.
+  // Temporal bridge I/O: the temporal mesh creates its own module I/O ports
+  // for add_tag and del_tag bridges; native mesh does not reserve bridge slots.
   std::map<unsigned, unsigned> bridgeOutByWidth, bridgeInByWidth;
-  if (config.genTemporal) {
-    std::map<unsigned, unsigned> tempPECountByWidth;
-    for (const auto &[spec, count] : reqs.peMaxCounts)
-      tempPECountByWidth[spec.primaryWidth()] += count;
-    for (auto &[w, peCount] : tempPECountByWidth) {
-      auto [tpeRows, tpeCols] = computeMesh2DDims(peCount);
-      unsigned tswRows = tpeRows + 1;
-      bridgeOutByWidth[w] = tswRows;
-      bridgeInByWidth[w] = tswRows;
-    }
-  }
 
   // Total I/O per width = DFG I/O + ExtMem I/O + temporal bridge I/O.
   std::map<unsigned, unsigned> totalInByWidth, totalOutByWidth;
@@ -715,12 +770,17 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
       break;
     }
     case PEPlacement::MemLoadPE: {
-      auto it = loadPEDefs.find(p.dataWidth);
+      // Key includes isFloat to distinguish i32 vs f32 LoadPEs.
+      unsigned key = p.dataWidth | (p.isFloat ? 0x80000000u : 0);
+      auto it = loadPEDefs.find(key);
       if (it == loadPEDefs.end()) {
+        Type dataType = p.isFloat ? widthToFloatType(p.dataWidth)
+                                  : widthToNativeType(p.dataWidth);
+        std::string suffix = p.isFloat ? "f" : "";
         LoadPEHandle loadDef =
-            builder.newLoadPE("load_pe_w" + std::to_string(p.dataWidth))
-                .setDataType(widthToNativeType(p.dataWidth));
-        it = loadPEDefs.emplace(p.dataWidth, loadDef).first;
+            builder.newLoadPE("load_pe_w" + std::to_string(p.dataWidth) + suffix)
+                .setDataType(dataType);
+        it = loadPEDefs.emplace(key, loadDef).first;
       }
       std::string instName =
           "load_pe_r" + std::to_string(nr) + "_c" + std::to_string(nc);
@@ -728,12 +788,16 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
       break;
     }
     case PEPlacement::MemStorePE: {
-      auto it = storePEDefs.find(p.dataWidth);
+      unsigned key = p.dataWidth | (p.isFloat ? 0x80000000u : 0);
+      auto it = storePEDefs.find(key);
       if (it == storePEDefs.end()) {
+        Type dataType = p.isFloat ? widthToFloatType(p.dataWidth)
+                                  : widthToNativeType(p.dataWidth);
+        std::string suffix = p.isFloat ? "f" : "";
         StorePEHandle storeDef =
-            builder.newStorePE("store_pe_w" + std::to_string(p.dataWidth))
-                .setDataType(widthToNativeType(p.dataWidth));
-        it = storePEDefs.emplace(p.dataWidth, storeDef).first;
+            builder.newStorePE("store_pe_w" + std::to_string(p.dataWidth) + suffix)
+                .setDataType(dataType);
+        it = storePEDefs.emplace(key, storeDef).first;
       }
       std::string instName =
           "store_pe_r" + std::to_string(nr) + "_c" + std::to_string(nc);
@@ -798,7 +862,8 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
 
   unsigned memIdx = 0;
   for (const auto &[memSpec, count] : reqs.maxMemoryCounts) {
-    Type elemType = widthToNativeType(memSpec.dataWidth);
+    Type elemType = memSpec.isFloat ? widthToFloatType(memSpec.dataWidth)
+                                    : widthToNativeType(memSpec.dataWidth);
     bool isOnChip = (memSpec.kind == MemKind::OnChip);
     unsigned lsqDepth = (memSpec.stCount > 0)
                             ? std::max(1u, memSpec.stCount)
@@ -846,7 +911,9 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
       // For on-chip memory: no memref input port.
       unsigned memInPort = 0;
       if (!isOnChip) {
-        Type extElemType = widthToNativeType(memSpec.dataWidth);
+        Type extElemType = memSpec.isFloat
+                               ? widthToFloatType(memSpec.dataWidth)
+                               : widthToNativeType(memSpec.dataWidth);
         MemrefType extMemrefTy = MemrefType::dynamic1D(extElemType);
         std::string memPortName =
             "mem_" + std::to_string(memIdx) + "_" + std::to_string(i);
@@ -856,32 +923,35 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
         memInPort = 1; // Skip memref port
       }
 
-      // Memory port layout (after optional memref):
-      //   inputs:  [ld_addr, st_addr, st_data]
-      //   outputs: [ld_data, ld_done, st_done]
+      // Memory input port layout (DFG convention, after optional memref):
+      //   [st_data_0, st_addr_0, ..., st_data_{S-1}, st_addr_{S-1},
+      //    ld_addr_0, ..., ld_addr_{L-1}]
+      // Output layout: [ld_data * L, ld_done * L, st_done * S]
 
-      // Load addr: lattice 57-bit output -> memory input
+      // Store pairs: interleaved (data, addr) per store port
+      for (unsigned st = 0; st < memSpec.stCount; ++st) {
+        // Store data
+        {
+          auto &lat = lattices[memSpec.dataWidth];
+          unsigned slotIdx = nextExtOutSlot[memSpec.dataWidth]++;
+          auto &slot = lat.outputSlots[slotIdx];
+          builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
+                               slot.switchPort, memInst, memInPort++);
+        }
+        // Store addr
+        {
+          auto &lat = lattices[ADDR_BIT_WIDTH];
+          unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
+          auto &slot = lat.outputSlots[slotIdx];
+          builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
+                               slot.switchPort, memInst, memInPort++);
+        }
+      }
+
+      // Load addresses
       for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
         auto &lat = lattices[ADDR_BIT_WIDTH];
         unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
-        auto &slot = lat.outputSlots[slotIdx];
-        builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
-                             slot.switchPort, memInst, memInPort++);
-      }
-
-      // Store addr: lattice 57-bit output -> memory input
-      for (unsigned st = 0; st < memSpec.stCount; ++st) {
-        auto &lat = lattices[ADDR_BIT_WIDTH];
-        unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
-        auto &slot = lat.outputSlots[slotIdx];
-        builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
-                             slot.switchPort, memInst, memInPort++);
-      }
-
-      // Store data: lattice W-bit output -> memory input
-      for (unsigned st = 0; st < memSpec.stCount; ++st) {
-        auto &lat = lattices[memSpec.dataWidth];
-        unsigned slotIdx = nextExtOutSlot[memSpec.dataWidth]++;
         auto &slot = lat.outputSlots[slotIdx];
         builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
                              slot.switchPort, memInst, memInPort++);

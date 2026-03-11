@@ -40,6 +40,11 @@ if [[ "${1:-}" == "--single" ]]; then
           echo "XFAIL: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
           exit 1
         fi
+        # Verify viz.html is NOT generated on failure.
+        if [[ -f "${out_base}.viz.html" ]]; then
+          echo "XFAIL: viz.html should not exist on failure: ${out_base}.viz.html" >&2
+          exit 1
+        fi
       else
         "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget 10
 
@@ -50,6 +55,71 @@ if [[ "${1:-}" == "--single" ]]; then
           exit 1
         fi
         "${LOOM_BIN}" --adg "${configured}"
+
+        # Verify config attributes.
+        if grep -q "fabric.switch" "${adg}" && ! grep -q "route_table" "${configured}"; then
+          echo "FAIL: configured fabric missing route_table: ${configured}" >&2
+          exit 1
+        fi
+
+        if grep -qE "fabric\.(ext)?memory" "${adg}"; then
+          if ! grep -q "addr_offset_table" "${configured}"; then
+            echo "FAIL: configured fabric missing addr_offset_table: ${configured}" >&2
+            exit 1
+          fi
+          config_bin="${out_base}.config.bin"
+          if [[ ! -s "${config_bin}" ]]; then
+            echo "FAIL: memory ADG missing config.bin: ${config_bin}" >&2
+            exit 1
+          fi
+        fi
+
+        # Verify instruction_mem is well-formed when present.
+        if grep -q "instruction_mem" "${configured}"; then
+          if ! grep -q 'instruction_mem = \["inst' "${configured}"; then
+            echo "FAIL: instruction_mem present but malformed: ${configured}" >&2
+            exit 1
+          fi
+        fi
+
+        # Verify output_tag is well-formed when present.
+        if grep -q "output_tag" "${configured}"; then
+          if ! grep -qE 'output_tag = \[' "${configured}"; then
+            echo "FAIL: output_tag present but malformed: ${configured}" >&2
+            exit 1
+          fi
+        fi
+
+        # Verify add_tag.tag values are well-formed integer assignments.
+        if grep -q "fabric.add_tag" "${configured}"; then
+          if grep "fabric.add_tag" "${configured}" | grep -vq '{tag = [0-9]'; then
+            echo "FAIL: add_tag op missing or malformed tag value: ${configured}" >&2
+            exit 1
+          fi
+        fi
+
+        # Validate that .viz.html was generated and contains expected markers.
+        viz_file="${out_base}.viz.html"
+        if [[ ! -f "${viz_file}" ]]; then
+          echo "FAIL: viz.html not found: ${viz_file}" >&2
+          exit 1
+        fi
+        for marker in adgGraph dfgDot mappingData swNodeMetadata hwNodeMetadata; do
+          if ! grep -q "${marker}" "${viz_file}"; then
+            echo "FAIL: viz.html missing marker '${marker}': ${viz_file}" >&2
+            exit 1
+          fi
+        done
+
+        # Run serializer validation (temporal flag for temporal/mixed ADGs).
+        viz_check_args=("${viz_file}")
+        if [[ "${adg_name}" == *temporal* || "${adg_name}" == *mixed* ]]; then
+          viz_check_args+=("--temporal")
+        fi
+        if ! python3 "${SCRIPT_DIR}/viz_serializer_check.py" "${viz_check_args[@]}"; then
+          echo "FAIL: viz serializer check failed: ${viz_file}" >&2
+          exit 1
+        fi
       fi
     done
   done

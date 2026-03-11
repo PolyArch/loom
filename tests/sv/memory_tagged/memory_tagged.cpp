@@ -64,18 +64,19 @@ int main() {
   builder.connectToModuleInput(st_data, st0, 1);
   builder.connectToModuleInput(st_ctrl, st0, 2);
 
-  // Memory connections
-  builder.connectPorts(ld0, 0, m0, 0); // load address
-  builder.connectPorts(st0, 0, m0, 1); // store address
-  builder.connectPorts(st0, 1, m0, 2); // store data
+  // Memory connections (per-port model, ld=2, st=2)
+  // Memory inputs: [st_data_0, st_addr_0, st_data_1, st_addr_1, ld_addr_0, ld_addr_1]
+  builder.connectPorts(st0, 0, m0, 0); // store data -> st_data_0
+  builder.connectPorts(st0, 1, m0, 1); // store address -> st_addr_0
+  builder.connectPorts(ld0, 1, m0, 4); // load address -> ld_addr_0
 
-  // Memory load data returns through load PE data input
-  builder.connectPorts(m0, 0, ld0, 1);
+  // Memory outputs: [ld_data_0, ld_data_1, ld_done_0, ld_done_1, st_done_0, st_done_1]
+  builder.connectPorts(m0, 0, ld0, 1); // ld_data_0 -> load PE data input
 
   // Expose load output and done channels
-  builder.connectToModuleOutput(ld0, 1, ld_out);
-  builder.connectToModuleOutput(m0, 1, lddone);
-  builder.connectToModuleOutput(m0, 2, stdone);
+  builder.connectToModuleOutput(ld0, 0, ld_out);
+  builder.connectToModuleOutput(m0, 2, lddone);  // ld_done_0
+  builder.connectToModuleOutput(m0, 4, stdone);   // st_done_0
 
   builder.exportMLIR("Output/memory_tagged.fabric.mlir");
   builder.exportSV("Output/sv");

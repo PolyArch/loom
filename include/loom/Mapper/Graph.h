@@ -150,6 +150,10 @@ public:
 
   mlir::MLIRContext *context = nullptr;
 
+  /// Deep-copy this graph. All nodes, ports, and edges are cloned with the
+  /// same ID-as-Index positions preserved.
+  Graph clone() const;
+
   /// Pre-allocate storage for expected graph size. Call before bulk insertion
   /// to avoid repeated reallocations.
   void reserve(size_t nodeHint, size_t portHint, size_t edgeHint) {

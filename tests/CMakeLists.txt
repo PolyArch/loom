@@ -83,8 +83,57 @@ add_custom_target(check-loom-mapper-unit-smoke
   DEPENDS loom
 )
 
+add_custom_target(check-loom-viz-serializer
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/viz_serializer_regression.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
 add_custom_target(check-loom-fabric-gen
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/fabric_gen.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-mapper-unit
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_unit.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-mapper-combine
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_combine.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-mapper-anchor
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_stress.sh"
+    "${LOOM_RUNTIME_DIR}/loom" anchor
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-mapper-full
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_stress.sh"
+    "${LOOM_RUNTIME_DIR}/loom" full
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-mapper-smoke
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_smoke.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-mapper-app
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_app.sh"
     "${LOOM_RUNTIME_DIR}/loom"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   DEPENDS loom

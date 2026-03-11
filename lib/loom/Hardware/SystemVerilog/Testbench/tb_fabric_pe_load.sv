@@ -35,11 +35,11 @@ module tb_fabric_pe_load;
 
   logic               out0_valid;
   logic               out0_ready;
-  logic [ADDR_PW-1:0] out0_data;
+  logic [ELEM_PW-1:0] out0_data;
 
   logic               out1_valid;
   logic               out1_ready;
-  logic [ELEM_PW-1:0] out1_data;
+  logic [ADDR_PW-1:0] out1_data;
 
   logic [CFG_PW-1:0] cfg_data;
 
@@ -94,16 +94,16 @@ module tb_fabric_pe_load;
       in2_data = CTRL_PW'(1);
       in2_valid = 1'b1;
       #1;
-      if (out0_valid !== 1'b1) begin : check_out0_valid
-        $fatal(1, "overwrite: out0_valid should assert when addr+ctrl are valid");
+      if (out1_valid !== 1'b1) begin : check_out1_valid
+        $fatal(1, "overwrite: out1_valid should assert when addr+ctrl are valid");
       end
       @(posedge clk);
       in0_valid = 1'b0;
       in2_valid = 1'b0;
 
       if (TAG_WIDTH > 0) begin : check_tagged_addr
-        if (out0_data[ADDR_WIDTH +: TAG_WIDTH] !== TAG_WIDTH'(2)) begin : bad_tag
-          $fatal(1, "overwrite: out0 tag mismatch");
+        if (out1_data[ADDR_WIDTH +: TAG_WIDTH] !== TAG_WIDTH'(2)) begin : bad_tag
+          $fatal(1, "overwrite: out1 tag mismatch");
         end
       end
       pass_count = pass_count + 1;
@@ -149,10 +149,10 @@ module tb_fabric_pe_load;
       in2_data = CTRL_PW'(1);
       in2_valid = 1'b1;
       #1;
-      if (out0_valid !== 1'b1) begin : check_match1_valid
+      if (out1_valid !== 1'b1) begin : check_match1_valid
         $fatal(1, "transparent: expected match for tag 1");
       end
-      if (out0_data !== ((ADDR_PW'(1) << ADDR_WIDTH) | ADDR_PW'(4))) begin : check_match1_data
+      if (out1_data !== ((ADDR_PW'(1) << ADDR_WIDTH) | ADDR_PW'(4))) begin : check_match1_data
         $fatal(1, "transparent: wrong matched address for tag 1");
       end
       @(posedge clk);
@@ -162,28 +162,28 @@ module tb_fabric_pe_load;
       in2_data = CTRL_PW'(0);
       in2_valid = 1'b1;
       #1;
-      if (out0_valid !== 1'b1) begin : check_match0_valid
+      if (out1_valid !== 1'b1) begin : check_match0_valid
         $fatal(1, "transparent: expected match for tag 0");
       end
-      if (out0_data !== ((ADDR_PW'(0) << ADDR_WIDTH) | ADDR_PW'(3))) begin : check_match0_data
+      if (out1_data !== ((ADDR_PW'(0) << ADDR_WIDTH) | ADDR_PW'(3))) begin : check_match0_data
         $fatal(1, "transparent: wrong matched address for tag 0");
       end
       @(posedge clk);
       in2_valid = 1'b0;
 
-      // Verify out1 forwards memory token unchanged in transparent mode.
+      // Verify out0 forwards memory token unchanged in transparent mode.
       in1_data = (ELEM_PW'(2) << ELEM_WIDTH) | ELEM_PW'(32'hA5A5);
       in1_valid = 1'b1;
-      out1_ready = 1'b0;
+      out0_ready = 1'b0;
       #1;
-      if (in1_ready !== 1'b0 || out1_valid !== 1'b1) begin : check_out1_backpressure
-        $fatal(1, "transparent: out1 handshake/backpressure mismatch");
+      if (in1_ready !== 1'b0 || out0_valid !== 1'b1) begin : check_out0_backpressure
+        $fatal(1, "transparent: out0 handshake/backpressure mismatch");
       end
 
-      out1_ready = 1'b1;
+      out0_ready = 1'b1;
       #1;
-      if (in1_ready !== 1'b1 || out1_data !== in1_data) begin : check_out1_passthrough
-        $fatal(1, "transparent: out1 must pass through tagged memory data unchanged");
+      if (in1_ready !== 1'b1 || out0_data !== in1_data) begin : check_out0_passthrough
+        $fatal(1, "transparent: out0 must pass through tagged memory data unchanged");
       end
       @(posedge clk);
       in1_valid = 1'b0;
@@ -194,15 +194,15 @@ module tb_fabric_pe_load;
       in0_valid = 1'b0;
       in1_valid = 1'b0;
       in2_valid = 1'b0;
-      out0_ready = 1'b0;
-      out1_ready = 1'b1;
+      out0_ready = 1'b1;
+      out1_ready = 1'b0;
       repeat (3) @(posedge clk);
       rst_n = 1'b1;
       @(posedge clk);
 
       // Fill addr queue with QUEUE_DEPTH entries (tags 0 and 1).
-      // Block out0_ready so matches cannot drain the queue.
-      out0_ready = 1'b0;
+      // Block out1_ready so matches cannot drain the queue.
+      out1_ready = 1'b0;
       for (iter_var0 = 0; iter_var0 < QUEUE_DEPTH; iter_var0 = iter_var0 + 1) begin : fill_addr_q
         @(negedge clk);
         in0_data = (ADDR_PW'(iter_var0) << ADDR_WIDTH) | ADDR_PW'(50 + iter_var0);
@@ -222,10 +222,10 @@ module tb_fabric_pe_load;
         $fatal(1, "backpressure: in2_ready should be 1 when ctrl queue has space");
       end
 
-      // Drain by enabling out0_ready and sending matching ctrl token.
+      // Drain by enabling out1_ready and sending matching ctrl token.
       // Set stimulus at negedge to avoid races with always_ff.
       @(negedge clk);
-      out0_ready = 1'b1;
+      out1_ready = 1'b1;
       in2_data = CTRL_PW'(0);
       in2_valid = 1'b1;
       @(posedge clk);
@@ -259,8 +259,8 @@ module tb_fabric_pe_load;
       rst_n = 1'b1;
       @(posedge clk);
 
-      // Block out0 so matches queue up but don't fire.
-      out0_ready = 1'b0;
+      // Block out1 so matches queue up but don't fire.
+      out1_ready = 1'b0;
 
       // Enqueue addr tag=1 at slot 0 (first free slot).
       @(negedge clk);
@@ -293,18 +293,18 @@ module tb_fabric_pe_load;
       @(negedge clk);
       in2_valid = 1'b0;
 
-      // All four entries now in queues. Release out0_ready at negedge.
+      // All four entries now in queues. Release out1_ready at negedge.
       // Match_find scans addr slots from index 0:
       // slot 0 has tag=1, ctrl has tag=1 -> match. Fires tag=1 first.
       @(negedge clk);
-      out0_ready = 1'b1;
+      out1_ready = 1'b1;
       #1;
-      if (out0_valid !== 1'b1) begin : check_lif_valid
+      if (out1_valid !== 1'b1) begin : check_lif_valid
         $fatal(1, "lowest-index-first: expected output to fire");
       end
-      // out0_data should have tag=1, addr=70.
-      if (out0_data !== ((ADDR_PW'(1) << ADDR_WIDTH) | ADDR_PW'(70))) begin : check_lif_data
-        $fatal(1, "lowest-index-first: expected tag=1 addr=70 first, got 0x%0h", out0_data);
+      // out1_data should have tag=1, addr=70.
+      if (out1_data !== ((ADDR_PW'(1) << ADDR_WIDTH) | ADDR_PW'(70))) begin : check_lif_data
+        $fatal(1, "lowest-index-first: expected tag=1 addr=70 first, got 0x%0h", out1_data);
       end
       @(posedge clk);
       pass_count = pass_count + 1;

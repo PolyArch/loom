@@ -7,8 +7,8 @@
 // Memory store adapter PE. Synchronizes address + data + control,
 // forwards address and data to memory.
 //
-// Output 0: addr_to_mem (index type)
-// Output 1: data_to_mem (elemType)
+// Output 0: data_to_mem (elemType)
+// Output 1: addr_to_mem (index type)
 // Load/store PEs do NOT output a done token; done comes from memory.
 //
 // TagOverwrite mode: synchronize addr+data+ctrl, attach output_tag.
@@ -51,15 +51,15 @@ module fabric_pe_store #(
     output logic               in2_ready,
     input  logic [CTRL_PW-1:0] in2_data,
 
-    // Output 0: address to memory (index type, tagged when TAG_WIDTH > 0)
+    // Output 0: data to memory (elemType, tagged when TAG_WIDTH > 0)
     output logic               out0_valid,
     input  logic               out0_ready,
-    output logic [ADDR_PW-1:0] out0_data,
+    output logic [ELEM_PW-1:0] out0_data,
 
-    // Output 1: data to memory (elemType, tagged when TAG_WIDTH > 0)
+    // Output 1: address to memory (index type, tagged when TAG_WIDTH > 0)
     output logic               out1_valid,
     input  logic               out1_ready,
-    output logic [ELEM_PW-1:0] out1_data,
+    output logic [ADDR_PW-1:0] out1_data,
 
     // Configuration
     input  logic [CONFIG_WIDTH > 0 ? CONFIG_WIDTH-1 : 0 : 0] cfg_data
@@ -102,19 +102,19 @@ module fabric_pe_store #(
       logic fire;
       assign fire = all_valid && both_out_ready;
 
-      // out0: address to memory (with tag if tagged)
+      // out0: data to memory (with tag if tagged)
       assign out0_valid = all_valid && out1_ready;
-      // out1: data to memory (with tag if tagged)
+      // out1: address to memory (with tag if tagged)
       assign out1_valid = all_valid && out0_ready;
 
       if (TAG_WIDTH > 0) begin : g_tag_out
         logic [TAG_WIDTH-1:0] output_tag;
         assign output_tag = cfg_data[TAG_WIDTH-1:0];
-        assign out0_data  = {output_tag, addr_value};
-        assign out1_data  = {output_tag, data_value};
+        assign out0_data  = {output_tag, data_value};
+        assign out1_data  = {output_tag, addr_value};
       end else begin : g_no_tag_out
-        assign out0_data  = addr_value;
-        assign out1_data  = data_value;
+        assign out0_data  = data_value;
+        assign out1_data  = addr_value;
       end
 
       assign in0_ready = fire;
@@ -248,8 +248,8 @@ module fabric_pe_store #(
       // Keep output channels atomic: consume both in the same cycle.
       assign out0_valid = match_found && out1_ready;
       assign out1_valid = match_found && out0_ready;
-      assign out0_data  = {match_tag, match_addr_value};
-      assign out1_data  = {match_tag, match_data_value};
+      assign out0_data  = {match_tag, match_data_value};
+      assign out1_data  = {match_tag, match_addr_value};
 
       always_ff @(posedge clk or negedge rst_n) begin : queue_state
         integer iter_var0;

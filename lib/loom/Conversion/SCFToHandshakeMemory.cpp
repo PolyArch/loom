@@ -385,7 +385,7 @@ static void attachGlobalConstant(mlir::ModuleOp module,
 
 } // namespace
 
-void HandshakeConversion::finalizeMemory() {
+mlir::LogicalResult HandshakeConversion::finalizeMemory() {
   mlir::OpBuilder::InsertionGuard guard(builder);
   mlir::Operation *returnOp = nullptr;
   handshakeFunc.walk([&](circt::handshake::ReturnOp ret) {
@@ -429,6 +429,19 @@ void HandshakeConversion::finalizeMemory() {
   for (mlir::Value memrefValue : memrefs) {
     llvm::SmallVector<MemAccess *, 4> &loads = loadsByMemref[memrefValue];
     llvm::SmallVector<MemAccess *, 4> &stores = storesByMemref[memrefValue];
+
+    if (loads.empty() && stores.empty()) {
+      if (auto arg = mlir::dyn_cast<mlir::BlockArgument>(memrefValue)) {
+        func.emitError(cplErrMsg(
+            CplError::MEMORY_PORTS_EMPTY,
+            "accel memref argument #"))
+            << arg.getArgNumber()
+            << " has no load/store uses; refusing to emit "
+               "handshake.extmemory[ld = 0, st = 0]";
+        return mlir::failure();
+      }
+      continue;
+    }
 
     llvm::SmallVector<mlir::Value, 4> operands;
     operands.reserve(loads.size() + stores.size());
@@ -506,6 +519,8 @@ void HandshakeConversion::finalizeMemory() {
     for (mlir::OpOperand *use : uses)
       use->set(cast.getResult());
   }
+
+  return mlir::success();
 }
 
 namespace {

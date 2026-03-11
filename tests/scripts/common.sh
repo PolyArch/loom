@@ -98,6 +98,57 @@ loom_find_sources() {
   find "$1" -maxdepth 1 -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) | sort
 }
 
+loom_has_sources() {
+  local dir="$1"
+  mapfile -t _sources < <(loom_find_sources "${dir}")
+  [[ ${#_sources[@]} -gt 0 ]]
+}
+
+loom_find_handshake_dfg() {
+  local output_dir="$1"
+  local app_name="$2"
+  local candidate=""
+
+  for opt in O0 O1 O2 O3 ""; do
+    if [[ -n "${opt}" ]]; then
+      candidate="${output_dir}/${app_name}.${opt}.handshake.mlir"
+    else
+      candidate="${output_dir}/${app_name}.handshake.mlir"
+    fi
+    if [[ -f "${candidate}" ]] &&
+       grep -q "handshake.func" "${candidate}" 2>/dev/null; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+loom_ensure_app_handshake() {
+  local loom_bin="$1"
+  local app_dir="$2"
+  shift 2 || true
+
+  local app_name
+  app_name=$(basename "${app_dir}")
+  local output_dir="${app_dir}/Output"
+
+  if loom_find_handshake_dfg "${output_dir}" "${app_name}" >/dev/null; then
+    return 0
+  fi
+
+  if ! loom_has_sources "${app_dir}"; then
+    return 1
+  fi
+
+  local scripts_dir
+  scripts_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  "${scripts_dir}/handshake.sh" --single "${loom_bin}" "${app_dir}" "$@" || true
+
+  loom_find_handshake_dfg "${output_dir}" "${app_name}" >/dev/null
+}
+
 # Discover app/test directories, exit with error if none found.
 # Sets the caller's array variable (name passed as $2) to the list of directories.
 loom_discover_dirs() {

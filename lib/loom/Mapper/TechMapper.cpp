@@ -155,6 +155,10 @@ bool TechMapper::isOpNameCompatible(llvm::StringRef swOp,
       hwOp.starts_with("dataflow.stream"))
     return true;
 
+  // ub.poison produces an undefined constant value; map to constant PE.
+  if (swOp == "ub.poison" && hwOp == "handshake.constant")
+    return true;
+
   return false;
 }
 
@@ -293,8 +297,19 @@ check_ports:
   // Check type compatibility for each port pair.
   // Temporal PE FU nodes have tagged ports but operate on native values
   // internally -- tags are stripped at the FU boundary.
+  // Non-temporal tagged PEs (with output_tag attribute) also accept native DFG
+  // ops -- the tag wrapper is transparent at the PE boundary.
   bool isRouting = (hwClass == "routing");
   bool temporalFU = isTemporalPEFU(hw);
+  bool taggedPE = false;
+  if (!temporalFU) {
+    for (auto &attr : hw->attributes) {
+      if (attr.getName().getValue() == "output_tag") {
+        taggedPE = true;
+        break;
+      }
+    }
+  }
   for (size_t i = 0; i < sw->inputPorts.size(); ++i) {
     const Port *sp = dfg.getPort(sw->inputPorts[i]);
     const Port *hp = adg.getPort(hw->inputPorts[i]);
@@ -302,6 +317,9 @@ check_ports:
       continue;
     if (temporalFU) {
       if (!isTypeWidthCompatibleForTemporalFU(sp->type, hp->type))
+        return false;
+    } else if (taggedPE) {
+      if (!isTypeWidthCompatibleForTaggedPE(sp->type, hp->type))
         return false;
     } else {
       if (!typesCompatible(sp->type, hp->type, isRouting))
@@ -315,6 +333,9 @@ check_ports:
       continue;
     if (temporalFU) {
       if (!isTypeWidthCompatibleForTemporalFU(sp->type, hp->type))
+        return false;
+    } else if (taggedPE) {
+      if (!isTypeWidthCompatibleForTaggedPE(sp->type, hp->type))
         return false;
     } else {
       if (!typesCompatible(sp->type, hp->type, isRouting))
@@ -629,6 +650,32 @@ CandidateSet TechMapper::map(const Graph &dfg, const Graph &adg) {
 
   // Merge and prioritize candidates.
   mergeCandidates(candidates);
+
+  // Sort each candidate list so exact-port-count matches appear first.
+  // This prevents a DFG node with fewer ports (e.g., 1-input join) from
+  // stealing a larger PE (e.g., 3-input join) when an exact-match PE exists.
+  for (auto &[swId, cands] : candidates) {
+    const Node *swNode = dfg.getNode(swId);
+    if (!swNode)
+      continue;
+    size_t swIn = swNode->inputPorts.size();
+    size_t swOut = swNode->outputPorts.size();
+    std::stable_sort(cands.begin(), cands.end(),
+                     [&](const Candidate &a, const Candidate &b) {
+                       // Group candidates always come first.
+                       if (a.isGroup != b.isGroup)
+                         return a.isGroup > b.isGroup;
+                       const Node *ha = adg.getNode(a.hwNodeId);
+                       const Node *hb = adg.getNode(b.hwNodeId);
+                       if (!ha || !hb)
+                         return false;
+                       bool aExact = (ha->inputPorts.size() == swIn &&
+                                      ha->outputPorts.size() == swOut);
+                       bool bExact = (hb->inputPorts.size() == swIn &&
+                                      hb->outputPorts.size() == swOut);
+                       return aExact > bExact;
+                     });
+  }
 
   return candidates;
 }

@@ -1,0 +1,2 @@
+Mapper is expected to fail: DFG has 3 operations but fabric only has
+2 PEs. Insufficient hardware resources to map all operations.

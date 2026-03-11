@@ -93,6 +93,13 @@ public:
   // multiple SW nodes on the same non-temporal PE when they form a group.
   llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> groupBindings;
 
+  // --- Non-temporal tagged PE output tag assignments ---
+  // Maps HW node ID to the output tag value for tagged non-temporal PEs.
+  // Populated during placement when a native DFG op is mapped onto a
+  // tagged non-temporal PE (one with output_tag attribute).
+  // Used by ConfigGen::buildPEOutputTag to emit output_tag on instances.
+  llvm::DenseMap<IdIndex, uint64_t> taggedPEOutputTags;
+
   // --- Cost metrics ---
   double totalCost = 0.0;
   double placementPressure = 0.0;
@@ -138,6 +145,7 @@ public:
     std::vector<llvm::SmallVector<TemporalSWAssignment, 4>> temporalSWAssignments;
     std::vector<IdIndex> registerAssignments;
     llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> groupBindings;
+    llvm::DenseMap<IdIndex, uint64_t> taggedPEOutputTags;
     double totalCost;
     size_t actionLogSize;
   };

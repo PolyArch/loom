@@ -65,6 +65,7 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "  --mapper-seed <int>        Deterministic seed (default: 0)\n";
   llvm::outs() << "  --mapper-profile <name>    Weight profile (default: balanced)\n";
   llvm::outs() << "  --dfgs <f1[,f2,...]>       Pre-compiled Handshake MLIR files\n";
+  llvm::outs() << "  --mapper-mask-domain       Prune unused domain ADG resources before mapping\n";
   llvm::outs() << "\n";
   llvm::outs() << "ADG generation mode (--gen-adg with --dfgs):\n";
   llvm::outs() << "  Analyze DFGs and generate a matching ADG.\n";
@@ -210,6 +211,10 @@ ParsedArgs ParseArgs(int argc, char **argv) {
       }
       if (arg == "--mapper-verbose") {
         parsed.mapper_verbose = true;
+        continue;
+      }
+      if (arg == "--mapper-mask-domain") {
+        parsed.mapper_mask_domain = true;
         continue;
       }
       if (arg == "--gen-adg") {

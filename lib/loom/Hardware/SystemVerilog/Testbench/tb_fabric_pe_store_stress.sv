@@ -37,11 +37,11 @@ module tb_fabric_pe_store_stress;
 
   logic               out0_valid;
   logic               out0_ready;
-  logic [ADDR_PW-1:0] out0_data;
+  logic [ELEM_PW-1:0] out0_data;
 
   logic               out1_valid;
   logic               out1_ready;
-  logic [ELEM_PW-1:0] out1_data;
+  logic [ADDR_PW-1:0] out1_data;
 
   logic [0:0] cfg_data;
 
@@ -333,17 +333,17 @@ module tb_fabric_pe_store_stress;
       end
 
       if (match_tag >= 0) begin : check_out_data
-        if (out0_data[ADDR_WIDTH +: TAG_WIDTH] !== TAG_WIDTH'(match_tag)) begin : bad_addr_tag
-          $fatal(1, "out0 tag mismatch at cycle=%0d", iter_var0);
-        end
-        if (out0_data[ADDR_WIDTH-1:0] !== pending_addr_value[match_tag]) begin : bad_addr_value
-          $fatal(1, "out0 address mismatch at cycle=%0d", iter_var0);
-        end
-        if (out1_data[ELEM_WIDTH +: TAG_WIDTH] !== TAG_WIDTH'(match_tag)) begin : bad_data_tag
+        if (out1_data[ADDR_WIDTH +: TAG_WIDTH] !== TAG_WIDTH'(match_tag)) begin : bad_addr_tag
           $fatal(1, "out1 tag mismatch at cycle=%0d", iter_var0);
         end
-        if (out1_data[ELEM_WIDTH-1:0] !== pending_data_value[match_tag]) begin : bad_data_value
-          $fatal(1, "out1 data mismatch at cycle=%0d", iter_var0);
+        if (out1_data[ADDR_WIDTH-1:0] !== pending_addr_value[match_tag]) begin : bad_addr_value
+          $fatal(1, "out1 address mismatch at cycle=%0d", iter_var0);
+        end
+        if (out0_data[ELEM_WIDTH +: TAG_WIDTH] !== TAG_WIDTH'(match_tag)) begin : bad_data_tag
+          $fatal(1, "out0 tag mismatch at cycle=%0d", iter_var0);
+        end
+        if (out0_data[ELEM_WIDTH-1:0] !== pending_data_value[match_tag]) begin : bad_data_value
+          $fatal(1, "out0 data mismatch at cycle=%0d", iter_var0);
         end
       end
 

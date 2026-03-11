@@ -15,6 +15,48 @@
 
 namespace loom {
 
+Graph Graph::clone() const {
+  Graph g(context);
+  g.nodes.resize(nodes.size());
+  g.ports.resize(ports.size());
+  g.edges.resize(edges.size());
+
+  for (size_t i = 0; i < nodes.size(); ++i) {
+    if (nodes[i]) {
+      auto n = std::make_unique<Node>();
+      n->kind = nodes[i]->kind;
+      n->inputPorts = nodes[i]->inputPorts;
+      n->outputPorts = nodes[i]->outputPorts;
+      n->attributes = nodes[i]->attributes;
+      g.nodes[i] = std::move(n);
+    }
+  }
+
+  for (size_t i = 0; i < ports.size(); ++i) {
+    if (ports[i]) {
+      auto p = std::make_unique<Port>();
+      p->parentNode = ports[i]->parentNode;
+      p->direction = ports[i]->direction;
+      p->type = ports[i]->type;
+      p->connectedEdges = ports[i]->connectedEdges;
+      p->attributes = ports[i]->attributes;
+      g.ports[i] = std::move(p);
+    }
+  }
+
+  for (size_t i = 0; i < edges.size(); ++i) {
+    if (edges[i]) {
+      auto e = std::make_unique<Edge>();
+      e->srcPort = edges[i]->srcPort;
+      e->dstPort = edges[i]->dstPort;
+      e->attributes = edges[i]->attributes;
+      g.edges[i] = std::move(e);
+    }
+  }
+
+  return g;
+}
+
 IdIndex Graph::addNode(std::unique_ptr<Node> node) {
   IdIndex id = static_cast<IdIndex>(nodes.size());
   nodes.push_back(std::move(node));

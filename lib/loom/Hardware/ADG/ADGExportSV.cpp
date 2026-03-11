@@ -70,9 +70,9 @@ void ADGBuilder::Impl::generateSV(const std::string &directory) const {
     unsigned addrWidth = 0;
     unsigned dataWidth = 0;
     std::string peName;
-    if ((srcInst.kind == ModuleKind::LoadPE && conn.srcPort == 0) ||
-        (srcInst.kind == ModuleKind::StorePE && conn.srcPort == 0)) {
-      // LoadPE out0 or StorePE out0 connects to a memory address port
+    if ((srcInst.kind == ModuleKind::LoadPE && conn.srcPort == 1) ||
+        (srcInst.kind == ModuleKind::StorePE && conn.srcPort == 1)) {
+      // LoadPE out1 or StorePE out1 connects to a memory address port
       if (dstInst.kind == ModuleKind::Memory) {
         const auto &mdef = memoryDefs[dstInst.defIdx];
         unsigned md = mdef.shape.isDynamic() ? 64 : mdef.shape.getSize();

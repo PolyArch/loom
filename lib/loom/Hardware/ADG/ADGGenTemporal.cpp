@@ -44,8 +44,12 @@ void generateTemporal(ADGBuilder &builder, const MergedRequirements &reqs,
   // Collect unique PE specs grouped by width plane.
   // Each width plane gets one temporal PE definition containing all
   // unique ops as FU sub-PEs.
+  // Filter out cross-width ops (e.g. extui i32->i64) whose output exceeds
+  // the width plane's interface type. These stay on the native mesh.
   std::map<unsigned, std::vector<PESpec>> specsByWidth;
   for (const auto &[spec, count] : temporalCounts) {
+    if (spec.isCrossWidth())
+      continue;
     unsigned w = spec.primaryWidth();
     specsByWidth[w].push_back(spec);
   }
@@ -99,8 +103,12 @@ void generateTemporal(ADGBuilder &builder, const MergedRequirements &reqs,
     // first create switches, then wire inter-switch connections, then place TPEs.
 
     // Compute per-switch port maps (reuse 2D scheme).
-    // TPEs have 2 inputs and 1 output to match the mixed-temporal reference.
-    unsigned tpeInCount = 2, tpeOutCount = 1;
+    // Derive actual TPE port counts from max across all FU sub-PEs.
+    unsigned tpeInCount = 1, tpeOutCount = 1;
+    for (const auto &spec : specs) {
+      tpeInCount = std::max(tpeInCount, (unsigned)spec.inWidths.size());
+      tpeOutCount = std::max(tpeOutCount, (unsigned)spec.outWidths.size());
+    }
 
     struct TCellInfo {
       unsigned numIn = 0, numOut = 0;
@@ -144,14 +152,64 @@ void generateTemporal(ADGBuilder &builder, const MergedRequirements &reqs,
         }
 
         // PE output ports (switch out -> TPE input).
-        if (r < (int)tpeRows && c < (int)tpeCols && tCells[r][c].numIn > 0)
-          pm.peOut[0] = static_cast<int>(outIdx++);
-        if (r > 0 && c < (int)tpeCols && tCells[r - 1][c].numIn > 1)
-          pm.peOut[1] = static_cast<int>(outIdx++);
+        // Same corner scheme as native mesh: UL=0, LL=1, UR=2, LR=3.
+        // Port localIdx maps to corner localIdx%4, with wrap-around.
+        auto tpeInForCorner = [&](int corner) -> unsigned {
+          int cr, cc;
+          switch (corner) {
+          case 0: cr = r;     cc = c;     break;
+          case 1: cr = r - 1; cc = c;     break;
+          case 2: cr = r;     cc = c - 1; break;
+          case 3: cr = r - 1; cc = c - 1; break;
+          default: return 0;
+          }
+          if (cr < 0 || cc < 0 || cr >= (int)tpeRows || cc >= (int)tpeCols)
+            return 0;
+          unsigned total = tCells[cr][cc].numIn;
+          unsigned count = 0;
+          for (unsigned i = corner; i < total; i += 4)
+            count++;
+          return count;
+        };
+        for (int corner = 0; corner < 4; ++corner) {
+          unsigned n = tpeInForCorner(corner);
+          if (n > 0) {
+            pm.peOutCornerOff[corner] = pm.peOutVec.size();
+            pm.peOutCornerCnt[corner] = n;
+            for (unsigned k = 0; k < n; ++k)
+              pm.peOutVec.push_back(static_cast<int>(outIdx++));
+          }
+        }
 
         // PE input ports (TPE output -> switch in).
-        if (r > 0 && c > 0 && tCells[r - 1][c - 1].numOut > 0)
-          pm.peIn[3] = static_cast<int>(inIdx++);
+        // Output corner reversal: wiring corner 0=LR, 1=UR, 2=LL, 3=UL.
+        auto tpeOutForCorner = [&](int corner) -> unsigned {
+          int cr, cc;
+          switch (corner) {
+          case 0: cr = r;     cc = c;     break;
+          case 1: cr = r - 1; cc = c;     break;
+          case 2: cr = r;     cc = c - 1; break;
+          case 3: cr = r - 1; cc = c - 1; break;
+          default: return 0;
+          }
+          if (cr < 0 || cc < 0 || cr >= (int)tpeRows || cc >= (int)tpeCols)
+            return 0;
+          unsigned total = tCells[cr][cc].numOut;
+          unsigned count = 0;
+          unsigned start = 3 - corner;
+          for (unsigned i = start; i < total; i += 4)
+            count++;
+          return count;
+        };
+        for (int corner = 0; corner < 4; ++corner) {
+          unsigned n = tpeOutForCorner(corner);
+          if (n > 0) {
+            pm.peInCornerOff[corner] = pm.peInVec.size();
+            pm.peInCornerCnt[corner] = n;
+            for (unsigned k = 0; k < n; ++k)
+              pm.peInVec.push_back(static_cast<int>(inIdx++));
+          }
+        }
 
         // Cross-mesh output: rightmost column (c == tswCols - 1) -> del_tag.
         if (c == tswCols - 1 && r < tswRows)
@@ -241,7 +299,7 @@ void generateTemporal(ADGBuilder &builder, const MergedRequirements &reqs,
       }
     }
 
-    // Place temporal PE instances.
+    // Place temporal PE instances using same corner scheme as native mesh.
     {
       unsigned placed = 0;
       for (unsigned r = 0; r < tpeRows && placed < nativePECount; ++r) {
@@ -250,20 +308,48 @@ void generateTemporal(ADGBuilder &builder, const MergedRequirements &reqs,
               "tpe_r" + std::to_string(r) + "_c" + std::to_string(c);
           auto tpeInst = builder.clone(tpeDef, instName);
 
-          // Input[0] <- UL switch (r, c)
-          int swOut0 = tswPorts[r][c].peOut[0];
-          if (swOut0 >= 0)
-            builder.connectPorts(tswGrid[r][c], swOut0, tpeInst, 0);
+          // Wire inputs: localIdx -> corner (localIdx%4), wrapIdx (localIdx/4)
+          // Input corners: UL=0, LL=1, UR=2, LR=3.
+          for (unsigned p = 0; p < tpeInCount; ++p) {
+            unsigned corner = p % 4;
+            unsigned wrapIdx = p / 4;
+            int swR, swC;
+            switch (corner) {
+            case 0: swR = r;     swC = c;     break;
+            case 1: swR = r + 1; swC = c;     break;
+            case 2: swR = r;     swC = c + 1; break;
+            case 3: swR = r + 1; swC = c + 1; break;
+            default: continue;
+            }
+            auto &pm = tswPorts[swR][swC];
+            if (wrapIdx < pm.peOutCornerCnt[corner]) {
+              unsigned idx = pm.peOutCornerOff[corner] + wrapIdx;
+              int swOut = pm.peOutVec[idx];
+              builder.connectPorts(tswGrid[swR][swC], swOut, tpeInst, p);
+            }
+          }
 
-          // Input[1] <- LL switch (r+1, c)
-          int swOut1 = tswPorts[r + 1][c].peOut[1];
-          if (swOut1 >= 0)
-            builder.connectPorts(tswGrid[r + 1][c], swOut1, tpeInst, 1);
-
-          // Output[0] -> LR switch (r+1, c+1)
-          int swIn0 = tswPorts[r + 1][c + 1].peIn[3];
-          if (swIn0 >= 0)
-            builder.connectPorts(tpeInst, 0, tswGrid[r + 1][c + 1], swIn0);
+          // Wire outputs: localIdx -> reversed corner, wrapIdx
+          // Output corners (reversed): 0=LR, 1=UR, 2=LL, 3=UL.
+          for (unsigned p = 0; p < tpeOutCount; ++p) {
+            unsigned corner = p % 4;
+            unsigned wrapIdx = p / 4;
+            int swR, swC;
+            switch (corner) {
+            case 0: swR = r + 1; swC = c + 1; break;
+            case 1: swR = r;     swC = c + 1; break;
+            case 2: swR = r + 1; swC = c;     break;
+            case 3: swR = r;     swC = c;     break;
+            default: continue;
+            }
+            auto &pm = tswPorts[swR][swC];
+            unsigned allocCorner = 3 - corner;
+            if (wrapIdx < pm.peInCornerCnt[allocCorner]) {
+              unsigned idx = pm.peInCornerOff[allocCorner] + wrapIdx;
+              int swIn = pm.peInVec[idx];
+              builder.connectPorts(tpeInst, p, tswGrid[swR][swC], swIn);
+            }
+          }
 
           ++placed;
         }

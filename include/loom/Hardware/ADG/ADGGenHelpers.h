@@ -47,6 +47,27 @@ inline Type widthToNativeType(unsigned w) {
   }
 }
 
+/// True if the operation requires floating-point body types.
+inline bool isFloatOp(const std::string &opName) {
+  return opName == "arith.addf" || opName == "arith.subf" ||
+         opName == "arith.mulf" || opName == "arith.divf" ||
+         opName == "arith.negf" || opName == "arith.cmpf" ||
+         opName == "math.absf" || opName == "math.cos" ||
+         opName == "math.sin" || opName == "math.exp" ||
+         opName == "math.log2" || opName == "math.sqrt" ||
+         opName == "math.fma";
+}
+
+/// Map a bit width to its native float MLIR type representation.
+inline Type widthToFloatType(unsigned w) {
+  switch (w) {
+  case 16: return Type::f16();
+  case 32: return Type::f32();
+  case 64: return Type::f64();
+  default: return widthToNativeType(w); // fallback (e.g. i1 for cmp output)
+  }
+}
+
 /// True if the operation is a conversion/cast operation.
 inline bool isConversionOp(const std::string &opName) {
   return opName == "arith.extsi" || opName == "arith.extui" ||
@@ -63,11 +84,115 @@ inline std::string widthToTypeStr(unsigned w) {
   return "i" + std::to_string(w);
 }
 
+/// Format a width as a float MLIR type string (16 -> "f16", 32 -> "f32", etc).
+inline std::string widthToFloatTypeStr(unsigned w) {
+  return "f" + std::to_string(w);
+}
+
+/// True if conversion op has a float input (fptosi, fptoui, extf, truncf).
+inline bool conversionHasFloatInput(const std::string &opName) {
+  return opName == "arith.fptosi" || opName == "arith.fptoui" ||
+         opName == "arith.extf" || opName == "arith.truncf";
+}
+
+/// True if conversion op has a float output (sitofp, uitofp, extf, truncf).
+inline bool conversionHasFloatOutput(const std::string &opName) {
+  return opName == "arith.sitofp" || opName == "arith.uitofp" ||
+         opName == "arith.extf" || opName == "arith.truncf";
+}
+
+/// True if the operation is a handshake control/dataflow operation
+/// that needs custom PE body generation.
+inline bool isHandshakeOp(const std::string &opName) {
+  return opName == "handshake.join" || opName == "handshake.sink" ||
+         opName == "handshake.constant" || opName == "handshake.cond_br" ||
+         opName == "handshake.mux";
+}
+
+/// Build MLIR body string for a handshake PE.
+/// Each handshake op has a distinct assembly format requiring custom emission.
+inline std::string buildHandshakeBody(const PESpec &spec) {
+  std::vector<Type> inTypes;
+  for (unsigned w : spec.inWidths)
+    inTypes.push_back(widthToNativeType(w));
+
+  std::ostringstream os;
+  os << "^bb0(";
+  for (size_t i = 0; i < inTypes.size(); ++i) {
+    if (i > 0) os << ", ";
+    os << "%arg" << i << ": " << inTypes[i].toMLIR();
+  }
+  os << "):\n";
+
+  if (spec.opName == "handshake.join") {
+    // handshake.join %arg0, %arg1 : type0, type1
+    // Output is always none.
+    os << "  %0 = handshake.join ";
+    for (size_t i = 0; i < inTypes.size(); ++i) {
+      if (i > 0) os << ", ";
+      os << "%arg" << i;
+    }
+    os << " : ";
+    for (size_t i = 0; i < inTypes.size(); ++i) {
+      if (i > 0) os << ", ";
+      os << inTypes[i].toMLIR();
+    }
+    os << "\n";
+    os << "  fabric.yield %0 : none";
+  } else if (spec.opName == "handshake.sink") {
+    // handshake.sink %arg0 : type0
+    // Zero outputs.
+    os << "  handshake.sink %arg0 : " << inTypes[0].toMLIR() << "\n";
+    os << "  fabric.yield";
+  } else if (spec.opName == "handshake.constant") {
+    // handshake.constant %ctrl {value = 0 : outType} : outType
+    // Input is none (control token), output is the constant type.
+    assert(!spec.outWidths.empty());
+    Type outType = widthToNativeType(spec.outWidths[0]);
+    std::string outStr = outType.toMLIR();
+    std::string zeroVal = "0";
+    auto vk = outType.getKind();
+    if (vk == Type::F16 || vk == Type::BF16 ||
+        vk == Type::F32 || vk == Type::F64)
+      zeroVal = "0.000000e+00";
+    os << "  %0 = handshake.constant %arg0 {value = "
+       << zeroVal << " : " << outStr << "} : " << outStr << "\n";
+    os << "  fabric.yield %0 : " << outStr;
+  } else if (spec.opName == "handshake.cond_br") {
+    // %t, %f = handshake.cond_br %cond, %data : dataType
+    // First input is i1 condition, second is data. Two outputs of data type.
+    assert(inTypes.size() >= 2);
+    std::string dataStr = inTypes[1].toMLIR();
+    os << "  %0, %1 = handshake.cond_br %arg0, %arg1 : " << dataStr << "\n";
+    os << "  fabric.yield %0, %1 : " << dataStr << ", " << dataStr;
+  } else if (spec.opName == "handshake.mux") {
+    // %r = handshake.mux %select [%in0, %in1, ...] : selectType, dataType
+    // First input is select (usually index), rest are data inputs.
+    assert(inTypes.size() >= 2 && !spec.outWidths.empty());
+    std::string selStr = inTypes[0].toMLIR();
+    std::string dataStr = inTypes[1].toMLIR();
+    os << "  %0 = handshake.mux %arg0 [";
+    for (size_t i = 1; i < inTypes.size(); ++i) {
+      if (i > 1) os << ", ";
+      os << "%arg" << i;
+    }
+    os << "] : " << selStr << ", " << dataStr << "\n";
+    Type outType = widthToNativeType(spec.outWidths[0]);
+    os << "  fabric.yield %0 : " << outType.toMLIR();
+  }
+
+  return os.str();
+}
+
 /// Build MLIR body string for a conversion PE.
 inline std::string buildConversionBody(const PESpec &spec) {
   assert(spec.inWidths.size() == 1 && spec.outWidths.size() == 1);
-  std::string inTy = widthToTypeStr(spec.inWidths[0]);
-  std::string outTy = widthToTypeStr(spec.outWidths[0]);
+  std::string inTy = conversionHasFloatInput(spec.opName)
+                          ? widthToFloatTypeStr(spec.inWidths[0])
+                          : widthToTypeStr(spec.inWidths[0]);
+  std::string outTy = conversionHasFloatOutput(spec.opName)
+                           ? widthToFloatTypeStr(spec.outWidths[0])
+                           : widthToTypeStr(spec.outWidths[0]);
   std::ostringstream os;
   os << "^bb0(%arg0: " << inTy << "):\n";
   os << "  %0 = " << spec.opName << " %arg0 : " << inTy
@@ -128,8 +253,17 @@ struct SwPortMap {
   std::vector<int> dirOut;
 
   // PE port indices by corner role: 0=UL, 1=LL, 2=UR, 3=LR.
-  int peOut[4] = {-1, -1, -1, -1};
-  int peIn[4] = {-1, -1, -1, -1};
+  // Supports >4 PE ports per cell: overflow ports wrap around corners
+  // via index % 4. Each vector entry is a switch port index.
+  std::vector<int> peOutVec;  // switch-out -> PE-in (one per PE input)
+  std::vector<int> peInVec;   // PE-out -> switch-in (one per PE output)
+
+  // Per-corner start offset and count within peOutVec/peInVec.
+  // Corner numbering: 0=UL, 1=LL, 2=UR, 3=LR.
+  unsigned peOutCornerOff[4] = {0, 0, 0, 0};
+  unsigned peOutCornerCnt[4] = {0, 0, 0, 0};
+  unsigned peInCornerOff[4] = {0, 0, 0, 0};
+  unsigned peInCornerCnt[4] = {0, 0, 0, 0};
 
   // Module I/O port indices on this switch (in assignment order).
   std::vector<int> modIn;
@@ -156,10 +290,17 @@ struct CellInfo {
 /// Create a PE definition from a PESpec and return its handle.
 inline PEHandle createPEDef(ADGBuilder &builder, const PESpec &spec) {
   std::vector<Type> inTypes, outTypes;
+  // Conversion ops have asymmetric float/int inputs and outputs.
+  bool convFloatIn = isConversionOp(spec.opName) &&
+                     conversionHasFloatInput(spec.opName);
+  bool convFloatOut = isConversionOp(spec.opName) &&
+                      conversionHasFloatOutput(spec.opName);
+  bool useFloatIn = isFloatOp(spec.opName) || convFloatIn;
+  bool useFloatOut = isFloatOp(spec.opName) || convFloatOut;
   for (unsigned w : spec.inWidths)
-    inTypes.push_back(widthToNativeType(w));
+    inTypes.push_back(useFloatIn ? widthToFloatType(w) : widthToNativeType(w));
   for (unsigned w : spec.outWidths)
-    outTypes.push_back(widthToNativeType(w));
+    outTypes.push_back(useFloatOut ? widthToFloatType(w) : widthToNativeType(w));
 
   auto peBuilder = builder.newPE(spec.peName())
                        .setLatency(1, 1, 1)
@@ -168,6 +309,8 @@ inline PEHandle createPEDef(ADGBuilder &builder, const PESpec &spec) {
                        .setOutputPorts(outTypes);
   if (isConversionOp(spec.opName))
     peBuilder.setBodyMLIR(buildConversionBody(spec));
+  else if (isHandshakeOp(spec.opName))
+    peBuilder.setBodyMLIR(buildHandshakeBody(spec));
   else
     peBuilder.addOp(spec.opName);
   return peBuilder;

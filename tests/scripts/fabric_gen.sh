@@ -99,6 +99,27 @@ if [[ "${1:-}" == "--single" ]]; then
       exit 1
     fi
     "${LOOM_BIN}" --adg "${configured}"
+
+    # Memory tests: verify addr_offset_table MLIR attribute in configured output.
+    if grep -qE "fabric\.(ext)?memory" "${adg_path}"; then
+      if ! grep -q "addr_offset_table" "${configured}"; then
+        echo "FAIL: configured fabric missing addr_offset_table: ${configured}" >&2
+        exit 1
+      fi
+      config_bin="${out_base}.config.bin"
+      if [[ ! -s "${config_bin}" ]]; then
+        echo "FAIL: memory ADG missing config.bin: ${config_bin}" >&2
+        exit 1
+      fi
+    fi
+
+    # Verify output_tag is well-formed when present.
+    if grep -q "output_tag" "${configured}"; then
+      if ! grep -qE 'output_tag = \[' "${configured}"; then
+        echo "FAIL: output_tag present but malformed: ${configured}" >&2
+        exit 1
+      fi
+    fi
   done
   exit 0
 fi

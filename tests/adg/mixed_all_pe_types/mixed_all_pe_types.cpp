@@ -64,14 +64,14 @@ int main() {
   builder.connectToModuleInput(ld_addr, ld0, 0);
   builder.connectToModuleInput(ld_data, ld0, 1);
   builder.connectToModuleInput(ld_ctrl, ld0, 2);
-  builder.connectToModuleOutput(ld0, 0, ld_addr_out);
-  builder.connectToModuleOutput(ld0, 1, ld_out);
+  builder.connectToModuleOutput(ld0, 0, ld_out);
+  builder.connectToModuleOutput(ld0, 1, ld_addr_out);
 
-  // Store PE: addr, data, ctrl -> addr_out, done
+  // Store PE: addr, data, ctrl -> data_out, addr_out
   builder.connectToModuleInput(st_addr, st0, 0);
   builder.connectToModuleInput(st_ctrl, st0, 2);
-  builder.connectToModuleOutput(st0, 0, st_addr_out);
-  builder.connectToModuleOutput(st0, 1, st_data_out);
+  builder.connectToModuleOutput(st0, 0, st_data_out);
+  builder.connectToModuleOutput(st0, 1, st_addr_out);
 
   builder.exportMLIR("Output/mixed_all_pe_types.fabric.mlir");
   return 0;

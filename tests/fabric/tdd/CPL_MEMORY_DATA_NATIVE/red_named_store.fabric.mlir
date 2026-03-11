@@ -3,7 +3,8 @@
 
 // Named memory with native i32 store data port (must use bits<32>).
 // Top-level named form avoids module-boundary interception.
+// Per-port input layout: [st_data_0, st_addr_0]
 fabric.memory @bad_native_store_data
     [ldCount = 0, stCount = 1, lsqDepth = 4]
     : memref<64xi32>,
-      (!dataflow.bits<57>, i32) -> (none)
+      (i32, !dataflow.bits<57>) -> (none)
