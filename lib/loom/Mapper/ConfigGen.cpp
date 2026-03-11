@@ -1649,6 +1649,49 @@ bool ConfigGen::writeConfiguredFabric(
     buildComparePredicate(hwNode, hwId, state, dfg, instanceOp, builder);
   });
 
+  // Walk memory ops and set addr_offset_table MLIR attribute.
+  auto setMemoryAddrOffset = [&](mlir::Operation *op) {
+    auto it = opMap.find(op);
+    if (it == opMap.end())
+      return;
+    IdIndex hwId = it->second;
+    const Node *hwNode = adg.getNode(hwId);
+    if (!hwNode)
+      return;
+    if (hwId >= state.hwNodeToSwNodes.size() ||
+        state.hwNodeToSwNodes[hwId].empty())
+      return;
+
+    int64_t numRegion = getNodeIntAttr(hwNode, "numRegion", 1);
+    size_t mappedCount = state.hwNodeToSwNodes[hwId].size();
+    size_t regionCount =
+        std::min(mappedCount, static_cast<size_t>(numRegion));
+
+    // Build flat array: [valid, start_tag, end_tag, base_addr] per region.
+    llvm::SmallVector<int64_t> table;
+    for (size_t r = 0; r < static_cast<size_t>(numRegion); ++r) {
+      if (r < regionCount) {
+        table.push_back(1);                          // valid
+        table.push_back(static_cast<int64_t>(r));    // start_tag
+        table.push_back(static_cast<int64_t>(r + 1)); // end_tag
+        table.push_back(0);                          // base_addr
+      } else {
+        table.push_back(0); // valid = 0
+        table.push_back(0); // start_tag
+        table.push_back(0); // end_tag
+        table.push_back(0); // base_addr
+      }
+    }
+
+    op->setAttr("addrOffsetTable",
+                builder.getDenseI64ArrayAttr(table));
+  };
+
+  adgModule->walk(
+      [&](fabric::MemoryOp memOp) { setMemoryAddrOffset(memOp); });
+  adgModule->walk(
+      [&](fabric::ExtMemoryOp memOp) { setMemoryAddrOffset(memOp); });
+
   // Walk add_tag ops and set mapper-assigned tag values.
   adgModule->walk([&](fabric::AddTagOp addTagOp) {
     auto it = opMap.find(addTagOp.getOperation());

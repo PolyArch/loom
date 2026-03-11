@@ -63,9 +63,12 @@ if [[ "${1:-}" == "--single" ]]; then
           exit 1
         fi
 
-        # Conditional config assertions based on ADG contents.
-        # Memory tests: verify config.bin is generated (contains addr_offset_table).
+        # Memory tests: verify addr_offset_table MLIR attribute in configured output.
         if grep -qE "fabric\.(ext)?memory" "${adg}"; then
+          if ! grep -q "addr_offset_table" "${configured}"; then
+            echo "FAIL: configured fabric missing addr_offset_table: ${configured}" >&2
+            exit 1
+          fi
           config_bin="${out_base}.config.bin"
           if [[ ! -s "${config_bin}" ]]; then
             echo "FAIL: memory ADG missing config.bin: ${config_bin}" >&2
@@ -77,6 +80,22 @@ if [[ "${1:-}" == "--single" ]]; then
         if grep -q "instruction_mem" "${configured}"; then
           if ! grep -q 'instruction_mem = \["inst' "${configured}"; then
             echo "FAIL: instruction_mem present but malformed: ${configured}" >&2
+            exit 1
+          fi
+        fi
+
+        # Verify output_tag is well-formed when present (array of integer values).
+        if grep -q "output_tag" "${configured}"; then
+          if ! grep -qE 'output_tag = \[' "${configured}"; then
+            echo "FAIL: output_tag present but malformed: ${configured}" >&2
+            exit 1
+          fi
+        fi
+
+        # Verify add_tag.tag values are well-formed integer assignments.
+        if grep -q "fabric.add_tag" "${configured}"; then
+          if grep "fabric.add_tag" "${configured}" | grep -vq '{tag = [0-9]'; then
+            echo "FAIL: add_tag op missing or malformed tag value: ${configured}" >&2
             exit 1
           fi
         fi

@@ -61,6 +61,8 @@ if [[ "${1:-}" == "--single" ]]; then
     fi
   done
   if [[ -z "${dfg}" ]]; then
+    echo "missing_handshake" > "${output_dir}/${APP_NAME}_failure_class.txt"
+    echo "per-app" > "${output_dir}/${APP_NAME}_adg_source.txt"
     echo "FAIL: no handshake.mlir found for ${APP_NAME}" >&2
     exit 1
   fi
@@ -75,6 +77,7 @@ if [[ "${1:-}" == "--single" ]]; then
         configured="${out_base}.fabric.mlir"
         if [[ -f "${configured}" ]] && "${LOOM_BIN}" --adg "${configured}" >> "${map_log}" 2>&1; then
           echo "domain-b${b}" > "${output_dir}/${APP_NAME}_success_config.txt"
+          echo "domain" > "${output_dir}/${APP_NAME}_adg_source.txt"
           exit 0
         fi
       fi
@@ -129,12 +132,14 @@ if [[ "${1:-}" == "--single" ]]; then
     fi
     if "${LOOM_BIN}" --adg "${configured}" >> "${map_log}" 2>&1; then
       echo "${label}" > "${output_dir}/${APP_NAME}_success_config.txt"
+      echo "per-app" > "${output_dir}/${APP_NAME}_adg_source.txt"
       exit 0
     fi
     failure_class="config_validate"
   done
 
   echo "${failure_class}" > "${output_dir}/${APP_NAME}_failure_class.txt"
+  echo "per-app" > "${output_dir}/${APP_NAME}_adg_source.txt"
   echo "FAIL: all escalation configs failed for ${APP_NAME} (${failure_class})" >&2
   exit 1
 fi
@@ -230,41 +235,54 @@ for app in "${app_names[@]}"; do
   echo "${line}" >> "${PARALLEL_FILE}"
 done
 
+loom_run_suite_no_exit "${PARALLEL_FILE}" "Mapper App" "mapper-app" "120"
 suite_rc=0
-loom_run_suite "${PARALLEL_FILE}" "Mapper App" "mapper-app" "120" || suite_rc=$?
+if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
+  suite_rc=1
+fi
 
 # Generate per-domain CSV summary with failure classification.
 CSV_DIR="${ROOT_DIR}/tests/.results"
 mkdir -p "${CSV_DIR}"
 CSV_FILE="${CSV_DIR}/mapper-app-summary.csv"
-echo "app,domain,status,config,failure_class" > "${CSV_FILE}"
+echo "app,domain,status,config,failure_class,adg_source" > "${CSV_FILE}"
 
 for app in "${app_names[@]}"; do
   domain=$(classify_domain "${app}")
   success_file="${APP_DIR}/${app}/Output/${app}_success_config.txt"
   fail_file="${APP_DIR}/${app}/Output/${app}_failure_class.txt"
+  source_file="${APP_DIR}/${app}/Output/${app}_adg_source.txt"
+  adg_source=""
+  if [[ -f "${source_file}" ]]; then
+    adg_source=$(cat "${source_file}")
+  fi
   if [[ -f "${success_file}" ]]; then
     config=$(cat "${success_file}")
-    echo "${app},${domain},pass,${config}," >> "${CSV_FILE}"
+    echo "${app},${domain},pass,${config},,${adg_source}" >> "${CSV_FILE}"
   else
     fclass=""
     if [[ -f "${fail_file}" ]]; then
       fclass=$(cat "${fail_file}")
     fi
-    echo "${app},${domain},fail,,${fclass}" >> "${CSV_FILE}"
+    echo "${app},${domain},fail,,${fclass},${adg_source}" >> "${CSV_FILE}"
   fi
 done
 
-# Generate per-domain summary.
+# Generate per-domain summary with domain vs per-app provenance breakdown.
 DOMAIN_CSV="${CSV_DIR}/mapper-app-domains.csv"
-echo "domain,total,pass,fail,pass_rate" > "${DOMAIN_CSV}"
+echo "domain,total,pass,fail,pass_rate,domain_pass,perapp_pass" > "${DOMAIN_CSV}"
 
-declare -A dom_total dom_pass
-while IFS=, read -r csv_app csv_domain csv_status csv_config csv_fclass; do
+declare -A dom_total dom_pass dom_domain_pass dom_perapp_pass
+while IFS=, read -r csv_app csv_domain csv_status csv_config csv_fclass csv_source; do
   [[ "${csv_app}" == "app" ]] && continue  # Skip header
   dom_total["${csv_domain}"]=$(( ${dom_total["${csv_domain}"]:-0} + 1 ))
   if [[ "${csv_status}" == "pass" ]]; then
     dom_pass["${csv_domain}"]=$(( ${dom_pass["${csv_domain}"]:-0} + 1 ))
+    if [[ "${csv_source}" == "domain" ]]; then
+      dom_domain_pass["${csv_domain}"]=$(( ${dom_domain_pass["${csv_domain}"]:-0} + 1 ))
+    else
+      dom_perapp_pass["${csv_domain}"]=$(( ${dom_perapp_pass["${csv_domain}"]:-0} + 1 ))
+    fi
   fi
 done < "${CSV_FILE}"
 
@@ -272,12 +290,14 @@ for domain in $(echo "${!dom_total[@]}" | tr ' ' '\n' | sort); do
   total="${dom_total[${domain}]}"
   pass="${dom_pass[${domain}]:-0}"
   fail=$(( total - pass ))
+  domain_p="${dom_domain_pass[${domain}]:-0}"
+  perapp_p="${dom_perapp_pass[${domain}]:-0}"
   if [[ "${total}" -gt 0 ]]; then
     rate=$(( pass * 100 / total ))
   else
     rate=0
   fi
-  echo "${domain},${total},${pass},${fail},${rate}%" >> "${DOMAIN_CSV}"
+  echo "${domain},${total},${pass},${fail},${rate}%,${domain_p},${perapp_p}" >> "${DOMAIN_CSV}"
 done
 
 echo "CSV summary: ${CSV_FILE}"
