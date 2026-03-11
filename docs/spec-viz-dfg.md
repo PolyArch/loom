@@ -2,112 +2,114 @@
 
 ## Overview
 
-This document defines DOT/Graphviz visual conventions for software
-dataflow graphs (DFGs) extracted from `handshake.func`.
+This document defines the layout and visual conventions for software dataflow
+graph (DFG) visualization. The DFG is rendered using the Graphviz `dot` engine
+via viz.js (WebAssembly) for automatic hierarchical top-to-bottom layout.
 
 This is the DFG counterpart to
 [spec-viz-adg.md](./spec-viz-adg.md) (hardware visualization).
 
-## Graph Direction
+## Layout
 
-`rankdir=TB` (top-to-bottom): data flows from inputs at top to outputs
-at bottom, following dependency order.
+### Engine
+
+The DFG is rendered by generating a DOT graph description from the DFG `Graph`
+and passing it to the viz.js `dot` engine. This produces an SVG element with
+automatic hierarchical layout.
+
+### Graph Direction
+
+`rankdir=TB` (top-to-bottom). Data flows from inputs at the top to outputs at
+the bottom.
+
+### Rank Constraints
+
+- `handshake.func` block arguments (`ModuleInputNode` sentinels) use
+  `rank=source` (topmost rank).
+- `handshake.return` operands (`ModuleOutputNode` sentinels) use
+  `rank=sink` (bottommost rank).
+
+This ensures function arguments always appear at the top and return values
+always appear at the bottom, regardless of graph topology.
 
 ## Node Styles
 
 | Operation | Shape | Fill Color | Text Color |
-|-----------|-------|------------|------------|
-| `arith.*` | box | lightblue | black |
-| `handshake.constant` | ellipse | gold | black |
-| `handshake.cond_br` | diamond | lightyellow | black |
-| `handshake.mux` | invtriangle | lightyellow | black |
-| `handshake.join` | triangle | lightyellow | black |
-| `handshake.load` | box | skyblue | black |
-| `handshake.store` | box | lightsalmon | black |
-| `handshake.memory` | cylinder | skyblue | black |
-| `handshake.extmemory` | hexagon | gold | black |
-| `handshake.sink` | point | gray | - |
-| `dataflow.carry` | octagon | lightgreen | black |
-| `dataflow.gate` | octagon | palegreen | black |
-| `dataflow.invariant` | octagon | mintcream | black |
-| `dataflow.stream` | doubleoctagon | lightgreen | black |
-| `math.*` | box | plum | black |
-| `ModuleInputNode` | invhouse | lightpink | black |
-| `ModuleOutputNode` | house | lightcoral | black |
-| Unknown/fallback | star | red | white |
+|-----------|-------|-----------|-----------|
+| `arith.*` | box | #add8e6 (light blue) | black |
+| `handshake.constant` | ellipse | #ffd700 (gold) | black |
+| `handshake.cond_br` | diamond | #ffffe0 (light yellow) | black |
+| `handshake.mux` | invtriangle | #ffffe0 | black |
+| `handshake.join` | triangle | #ffffe0 | black |
+| `handshake.load` | box | #87ceeb (sky blue) | black |
+| `handshake.store` | box | #ffa07a (light salmon) | black |
+| `handshake.memory` | cylinder | #87ceeb | black |
+| `handshake.extmemory` | hexagon | #ffd700 | black |
+| `handshake.sink` | point | #999999 | - |
+| `dataflow.carry` | octagon | #90ee90 (light green) | black |
+| `dataflow.gate` | octagon | #98fb98 (pale green) | black |
+| `dataflow.invariant` | octagon | #f5fffa (mint cream) | black |
+| `dataflow.stream` | doubleoctagon | #90ee90 | black |
+| `math.*` | box | #dda0dd (plum) | black |
+| ModuleInputNode | invhouse | #ffb6c1 (light pink) | black |
+| ModuleOutputNode | house | #f08080 (light coral) | black |
+| Unknown/fallback | star | #ff0000 (red) | white |
 
 ## Edge Styles
 
 | Edge Type | Line Style | Color | Width |
-|-----------|------------|-------|-------|
-| Data dependency | solid | black | 2.0 |
-| Control token (`none` type) | dashed | gray | 1.0 |
+|-----------|-----------|-------|-------|
+| Data dependency | solid | #333333 | 2.0 |
+| Control token (`none` type) | dashed | #999999 | 1.0 |
 
-Fan-out edges (one output port to multiple consumers) use the same
-style as regular data edges. Each consumer edge is drawn separately.
+Fan-out edges (one output port to multiple consumers) use the same style as
+regular data edges. Each consumer edge is drawn separately.
 
-## Label Templates
+## Node Labels
 
-### Node Labels
+Template:
 
 ```
 <operation_name>
 <result_type_summary>
-<source_location>
 ```
-
-- `operation_name`: MLIR operation name (e.g., `arith.addi`).
-- `result_type_summary`: abbreviated result types (e.g., `i32`, `f32`).
-- `source_location`: from MLIR `loc` attribute, format `<file>:<line>`.
 
 Operation-specific additions:
 
 - `handshake.constant`: include constant value.
-- `dataflow.stream`: include `step_op` and loop annotations.
+- `dataflow.stream`: include `step_op` annotation.
 - `handshake.memory`/`extmemory`: include `ldCount`/`stCount`.
 - `arith.cmpi`/`arith.cmpf`: include predicate name.
 
-### Edge Labels
+Source location (`loc` attribute) is stored in `swNodeMetadata` for display in
+the detail panel but is not shown in the node label to keep labels compact.
 
-- No label by default.
-- When ambiguity exists (multiple edges between same node pair), show
-  port indices: `out0->in1`.
+### Metadata Source
 
-## Port Rendering
+The mapper's DFG `Graph` only stores `op_name`, `loc`, and port types. The
+operation-specific attributes listed above (constant values, predicates,
+`step_op`, `ldCount`/`stCount`) are **not** preserved in the `Graph`. The
+C++ exporter (`VizHTMLExporter`) therefore receives the original MLIR
+`handshake.func` module in addition to the mapper `Graph`, and extracts
+these attributes directly from MLIR operations by correlating each `Graph`
+node back to its source MLIR op via the `loc` attribute or a node-to-op
+map built during DFG extraction.
 
-### Compact Mode (default)
+## Edge Labels
 
-No explicit port fields. Ports inferred from edges.
+No labels by default. When multiple edges exist between the same node pair,
+port indices are shown: `out0->in1`.
 
-### Detailed Mode (optional)
+## Stable DOM Identities
 
-Record-style labels with explicit input/output ports:
+The DOT exporter must emit stable `id` attributes on all nodes and edges so
+that the browser-side JS can locate SVG elements for cross-highlighting:
 
-- Inputs: `in0`, `in1`, ...
-- Outputs: `out0`, `out1`, ...
-- Memory ports: `ldaddr`, `lddata`, `staddr`, `stdata`, `lddone`, `stdone`
+- Node IDs: `id="sw_<sw_node_id>"` (e.g., `id="sw_0"` for DFG node 0).
+- Edge IDs: `id="swedge_<sw_edge_id>"` (e.g., `id="swedge_2"`).
 
-## Source Location Extraction
-
-MLIR operations carry `loc` attributes:
-
-```mlir
-%0 = arith.addi %a, %b : i32 loc("vecadd.cpp":15:3)
-```
-
-The DOT exporter extracts location info and embeds it as:
-
-- A line in the node label (compact: `vecadd.cpp:15`).
-- A `data-loc` attribute on the DOT node (for viewer interaction).
-
-Fused locations are resolved to the first concrete file location.
-
-## Sentinel Nodes
-
-Sentinel nodes (`ModuleInputNode`, `ModuleOutputNode`) use the same
-styles as ADG sentinel nodes for visual consistency.
-
-Labels include the block argument index or return operand index.
+After viz.js renders the DOT to SVG, the renderer JS uses these IDs to attach
+hover/click handlers and to look up `mappingData` for cross-highlighting.
 
 ## Related Documents
 
