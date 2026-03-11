@@ -215,13 +215,14 @@ struct GridCoord {
 /// coordinate collisions between independent meshes (e.g., Mesh A and Mesh B
 /// in mixed-temporal fabrics). The band size is computed dynamically from the
 /// actual mesh dimensions to prevent overlap when meshes exceed 5 columns.
-static int meshLetterOffset(char letter, int bandSize) {
-  return (letter - 'a') * bandSize;
+static int meshLetterOffset(char letter, int bandSize, int baseOffset) {
+  return baseOffset + (letter - 'a') * bandSize;
 }
 
 GridCoord extractGridFromName(llvm::StringRef name, int meshBandSize = 10,
                               int temporalRowOffset = 0,
-                              int planeBandSize = 0) {
+                              int planeBandSize = 0,
+                              int meshBaseOffset = 0) {
   GridCoord gc;
   std::string nameStr = name.str();
 
@@ -286,7 +287,7 @@ GridCoord extractGridFromName(llvm::StringRef name, int meshBandSize = 10,
     gc.row = temporalRowOffset + std::stoi(m[1]) * 2;
     gc.valid = true;
   } else if (std::regex_search(nameStr, m, rePE_MESH)) {
-    int offset = meshLetterOffset(m[1].str()[0], meshBandSize);
+    int offset = meshLetterOffset(m[1].str()[0], meshBandSize, meshBaseOffset);
     gc.col = offset + std::stoi(m[3]) * 2 + 1;
     gc.row = std::stoi(m[2]) * 2 + 1;
     gc.valid = true;
@@ -314,7 +315,7 @@ GridCoord extractGridFromName(llvm::StringRef name, int meshBandSize = 10,
     gc.row = ordinal * 2 + 1;
     gc.valid = true;
   } else if (std::regex_search(nameStr, m, rePE_MESH_1D)) {
-    int offset = meshLetterOffset(m[1].str()[0], meshBandSize);
+    int offset = meshLetterOffset(m[1].str()[0], meshBandSize, meshBaseOffset);
     int idx = std::stoi(m[2]);
     gc.col = offset + idx * 2 + 1;
     gc.row = 1;
@@ -348,6 +349,13 @@ void inferMissingCoords(
       // top/bottom boundary only when their coordinates are null.
       if (node->kind == Node::ModuleInputNode ||
           node->kind == Node::ModuleOutputNode)
+        continue;
+      // Skip anonymous nodes (no sym_name): these are inline ops like
+      // switches/FIFOs that lack naming info. Leave them unplaced so
+      // the renderer's fallback layout handles them properly instead
+      // of stacking them on top of their neighbors.
+      llvm::StringRef sn = getNodeStrAttr(node, "sym_name");
+      if (sn.empty())
         continue;
 
       // Collect coordinates from all connected neighbors.
@@ -849,9 +857,11 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
 
   // First pass: scan node names to compute layout parameters:
   // - meshBandSize: column band per mesh letter (for pe_<letter>_R_C)
+  // - meshBaseOffset: column offset so lettered meshes start after base grid
   // - temporalRowOffset: row offset for temporal domain (tsw/tpe_rR_cC)
   // - planeBandSize: column offset per width/depth/lattice plane
   int meshBandSize = 10;
+  int meshBaseOffset = 0;
   int temporalRowOffset = 0;
   int planeBandSize = 0;
   {
@@ -862,6 +872,7 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
     int maxMeshIdx = 0;
     int maxSpatialRow = 0;
     int maxSpatialCol = 0;
+    bool hasBaseGrid = false;
     for (IdIndex i = 0; i < static_cast<IdIndex>(adg.nodes.size()); ++i) {
       const Node *node = adg.getNode(i);
       if (!node || fuToContainer.count(i))
@@ -876,16 +887,21 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
         else if (std::regex_match(nameStr, m, rePeMesh1D))
           maxMeshIdx = std::max(maxMeshIdx, std::stoi(m[1]));
       }
-      // Track spatial grid extent for temporal offset.
+      // Track spatial (unlettered) grid extent.
       if (std::regex_match(nameStr, m, reSpatialSW)) {
         maxSpatialRow = std::max(maxSpatialRow, std::stoi(m[1]));
         maxSpatialCol = std::max(maxSpatialCol, std::stoi(m[2]));
+        hasBaseGrid = true;
       } else if (std::regex_match(nameStr, m, reSpatialPE)) {
         maxSpatialRow = std::max(maxSpatialRow, std::stoi(m[1]));
         maxSpatialCol = std::max(maxSpatialCol, std::stoi(m[2]));
+        hasBaseGrid = true;
       }
     }
     meshBandSize = std::max(10, (maxMeshIdx + 1) * 2 + 2);
+    // Lettered meshes start after the base grid (if one exists).
+    if (hasBaseGrid)
+      meshBaseOffset = (maxSpatialCol + 1) * 2 + 2;
     // Temporal domain starts after the spatial grid with a 2-cell gap.
     temporalRowOffset = (maxSpatialRow + 1) * 2 + 2;
     // Width/depth/lattice planes offset by the spatial grid width.
@@ -912,7 +928,7 @@ void writeADGGraphJSON(llvm::raw_ostream &os, const Graph &adg,
       std::string name = symName.empty() ? ("node_" + std::to_string(i))
                                          : symName.str();
       gc = extractGridFromName(name, meshBandSize, temporalRowOffset,
-                               planeBandSize);
+                               planeBandSize, meshBaseOffset);
     }
     if (gc.valid)
       nodeCoords[i] = gc;
