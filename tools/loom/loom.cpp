@@ -85,6 +85,7 @@
 #include "loom/Mapper/ADGFlattener.h"
 #include "loom/Mapper/ConfigGen.h"
 #include "loom/Mapper/DFGBuilder.h"
+#include "loom/Mapper/DomainMask.h"
 #include "loom/Mapper/Mapper.h"
 #include "loom/Mapper/TechMapper.h"
 
@@ -1501,6 +1502,13 @@ int main(int argc, char **argv) {
     // Flatten ADG from Fabric IR.
     loom::ADGFlattener adg_flattener;
     loom::Graph adg = adg_flattener.flatten(fabric_mod);
+
+    // Optionally prune unused domain resources before mapping.
+    // This reduces routing congestion when mapping a single app to a
+    // multi-app domain ADG by removing PE instances not needed by this DFG.
+    if (parsed.mapper_mask_domain) {
+      loom::pruneDomainADG(adg, dfg);
+    }
 
     // Run technology mapping.
     loom::TechMapper tech_mapper;

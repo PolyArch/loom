@@ -25,6 +25,7 @@ struct ParsedArgs {
   int mapper_seed = 0;
   std::string mapper_profile = "balanced";
   bool mapper_verbose = false;
+  bool mapper_mask_domain = false;
   bool gen_adg = false;
   std::string gen_topology = "mesh"; // "mesh" or "cube"
   unsigned gen_track = 2;

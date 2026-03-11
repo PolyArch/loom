@@ -81,4 +81,19 @@ if [[ -d "${ROOT_DIR}/tests/app/${first_app}" ]]; then
     >> "${PARALLEL_FILE}"
 fi
 
+# Domain mask: generate 2-app domain ADG and map one app with --mapper-mask-domain.
+# Uses two apps that individually map at track-3, verifying masking doesn't break mapping.
+MASK_APP1="dotprod"
+MASK_APP2="vecsum"
+dfg1="${ROOT_DIR}/tests/app/${MASK_APP1}/Output/${MASK_APP1}.O0.handshake.mlir"
+dfg2="${ROOT_DIR}/tests/app/${MASK_APP2}/Output/${MASK_APP2}.O0.handshake.mlir"
+if [[ -f "${dfg1}" && -f "${dfg2}" ]]; then
+  rel_dfg1=$(loom_relpath "${dfg1}")
+  rel_dfg2=$(loom_relpath "${dfg2}")
+  mask_out="tests/.results/domain-mask-smoke"
+  # Generate domain ADG then map with masking.
+  echo "mkdir -p ${mask_out} && ${rel_loom} --gen-adg --gen-track 3 --dfgs ${rel_dfg1},${rel_dfg2} -o ${mask_out}/domain && cp ${mask_out}/domain ${mask_out}/domain.fabric.mlir && ${rel_loom} --adg ${mask_out}/domain.fabric.mlir --dfgs ${rel_dfg1} -o ${mask_out}/masked --mapper-mask-domain --mapper-budget 15" \
+    >> "${PARALLEL_FILE}"
+fi
+
 loom_run_suite "${PARALLEL_FILE}" "Mapper Smoke" "mapper-smoke" "60"

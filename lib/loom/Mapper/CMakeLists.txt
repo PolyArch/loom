@@ -14,6 +14,7 @@ add_llvm_library(LoomMapperCore
   MapperLog.cpp
   ConfigGen.cpp
   CPSATSolver.cpp
+  DomainMask.cpp
 
   LINK_LIBS PUBLIC
     MLIRIR

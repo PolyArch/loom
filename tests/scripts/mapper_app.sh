@@ -86,7 +86,7 @@ if [[ "${1:-}" == "--single" ]]; then
     for b in "${budgets[@]}"; do
       out_base="${output_dir}/${APP_NAME}_domain_b${b}"
       map_log="${output_dir}/${APP_NAME}_domain_b${b}.log"
-      if "${LOOM_BIN}" --adg "${DOMAIN_ADG}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget "${b}" > "${map_log}" 2>&1; then
+      if "${LOOM_BIN}" --adg "${DOMAIN_ADG}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget "${b}" --mapper-mask-domain > "${map_log}" 2>&1; then
         configured="${out_base}.fabric.mlir"
         if [[ -f "${configured}" ]] && "${LOOM_BIN}" --adg "${configured}" >> "${map_log}" 2>&1; then
           echo "domain-b${b}" > "${output_dir}/${APP_NAME}_success_config.txt"
