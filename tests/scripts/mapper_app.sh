@@ -82,7 +82,7 @@ if [[ "${1:-}" == "--single" ]]; then
 
   # If a domain ADG is provided, try mapping to it first.
   if [[ -n "${DOMAIN_ADG}" && -f "${DOMAIN_ADG}" ]]; then
-    budgets=(10 50 200)
+    budgets=(10 50 200 500)
     for b in "${budgets[@]}"; do
       out_base="${output_dir}/${APP_NAME}_domain_b${b}"
       map_log="${output_dir}/${APP_NAME}_domain_b${b}.log"
@@ -190,7 +190,8 @@ for app in "${app_names[@]}"; do
       break
     fi
   done
-  if [[ -n "${dfg}" ]]; then
+  # Only include DFGs that actually contain handshake.func (not just func.func).
+  if [[ -n "${dfg}" ]] && grep -q "handshake.func" "${dfg}"; then
     if [[ -n "${domain_dfgs[${domain}]:-}" ]]; then
       domain_dfgs["${domain}"]+=",${dfg}"
     else
@@ -207,14 +208,49 @@ for domain in "${!domain_dfgs[@]}"; do
   adg_path="${DOMAIN_ADG_DIR}/${domain}.fabric.mlir"
   gen_log="${DOMAIN_ADG_DIR}/${domain}_gen.log"
 
-  # Try escalation for domain ADG generation.
+  # Domain ADG generation strategy depends on domain size:
+  # - Small domains (<=20 DFGs): use best-config (try all, keep last valid)
+  #   to maximize routing resources, since the ADG stays manageable.
+  # - Large domains (>20 DFGs): use first-valid (stop at first success)
+  #   to avoid generating massive ADGs that cause per-app mapping timeouts.
+  dfg_count=$(echo "${dfg_list}" | tr ',' '\n' | wc -l)
+  gen_configs=(
+    ""
+    "--gen-track 3"
+    "--gen-track 4"
+    "--gen-track 5"
+    "--gen-track 5 --gen-fifo-mode dual"
+    "--gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable"
+  )
+  use_best_config=true
+  if (( dfg_count > 20 )); then
+    use_best_config=false
+  fi
   gen_ok=false
-  for gen_cfg in "" "--gen-track 3" "--gen-track 4" "--gen-track 5" "--gen-track 5 --gen-fifo-mode dual"; do
+  for gen_cfg in "${gen_configs[@]}"; do
+    if "${use_best_config}"; then
+      tmp_adg="${adg_path}.tmp"
+    else
+      tmp_adg="${adg_path}"
+    fi
     # shellcheck disable=SC2086
-    if "${LOOM_BIN}" --gen-adg --dfgs "${dfg_list}" -o "${adg_path}" ${gen_cfg} > "${gen_log}" 2>&1; then
-      if "${LOOM_BIN}" --adg "${adg_path}" >> "${gen_log}" 2>&1; then
+    if "${LOOM_BIN}" --gen-adg --dfgs "${dfg_list}" -o "${tmp_adg}" ${gen_cfg} > "${gen_log}" 2>&1; then
+      if "${LOOM_BIN}" --adg "${tmp_adg}" >> "${gen_log}" 2>&1; then
+        if "${use_best_config}"; then
+          mv "${tmp_adg}" "${adg_path}"
+        fi
         gen_ok=true
-        break
+        if ! "${use_best_config}"; then
+          break
+        fi
+      else
+        if "${use_best_config}"; then
+          rm -f "${tmp_adg}"
+        fi
+      fi
+    else
+      if "${use_best_config}"; then
+        rm -f "${tmp_adg}"
       fi
     fi
   done

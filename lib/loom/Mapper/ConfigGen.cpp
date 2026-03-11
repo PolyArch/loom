@@ -660,19 +660,27 @@ void buildPEOutputTag(const Node *hwNode, IdIndex hwId,
 
   // Non-temporal tagged PE: read from explicit tag assignment.
   uint64_t tagVal = 0;
+  bool hasAssignment = false;
   auto tagIt = state.taggedPEOutputTags.find(hwId);
   if (tagIt != state.taggedPEOutputTags.end()) {
     tagVal = tagIt->second;
+    hasAssignment = true;
   } else if (hwId < state.hwNodeToSwNodes.size() &&
              !state.hwNodeToSwNodes[hwId].empty()) {
     // Temporal PE: derive from temporal assignment.
     IdIndex swId = state.hwNodeToSwNodes[hwId][0];
     if (swId < state.temporalPEAssignments.size()) {
       const auto &tpa = state.temporalPEAssignments[swId];
-      if (tpa.tag != INVALID_ID)
+      if (tpa.tag != INVALID_ID) {
         tagVal = tpa.tag;
+        hasAssignment = true;
+      }
     }
   }
+
+  // Only emit output_tag on PEs that have a recorded assignment.
+  if (!hasAssignment)
+    return;
 
   llvm::SmallVector<mlir::Attribute, 4> tagAttrs;
   auto i64Type = builder.getIntegerType(64);
