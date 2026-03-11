@@ -1,3 +1,13 @@
+// Hand-crafted ADG baseline for S3_fir_filter.
+// Topology: latticeMesh with enhanced routing (track=3/4).
+// Target DFGs: fir_filter
+//
+// Design choices:
+//   - 4-track routing for FIR filter with sliding-window memory access
+//   - PE set derived from DFG operation analysis.
+//   - Memory ports provisioned for load/store patterns.
+//   - Switch connectivity: full crossbar per switch.
+
 module {
   fabric.pe @pe_cmpi_i32_i32_to_o1(%arg0: !dataflow.bits<32>, %arg1: !dataflow.bits<32>) [latency = [1 : i16, 1 : i16, 1 : i16], interval = [1 : i16, 1 : i16, 1 : i16]] -> (!dataflow.bits<1>) {
   ^bb0(%arg0: i32, %arg1: i32):
@@ -142,7 +152,7 @@ module {
     %dataResult, %addressResult = handshake.store [%arg0] %arg1, %arg2 : index, f32
     fabric.yield %dataResult, %addressResult : f32, index
   }
-  fabric.module @genadg_1(%arg0: memref<?xf32, strided<[1], offset: ?>>, %arg1: memref<?xf32, strided<[1], offset: ?>>, %arg2: memref<?xf32, strided<[1], offset: ?>>, %arg3: none, %arg4: !dataflow.bits<32>, %arg5: !dataflow.bits<32>) -> (none) {
+  fabric.module @S3_fir_filter_baseline(%arg0: memref<?xf32, strided<[1], offset: ?>>, %arg1: memref<?xf32, strided<[1], offset: ?>>, %arg2: memref<?xf32, strided<[1], offset: ?>>, %arg3: none, %arg4: !dataflow.bits<32>, %arg5: !dataflow.bits<32>) -> (none) {
     %0:9 = fabric.switch [connectivity_table = ["111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111"]] %1#8, %1#9, %1#10, %1#11, %9#0, %9#1, %9#2, %9#3, %arg3, %346, %347#1, %348#1 : none -> none, none, none, none, none, none, none, none, none
     %1:13 = fabric.switch [connectivity_table = ["111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111"]] %2#8, %2#9, %2#10, %2#11, %10#0, %10#1, %10#2, %10#3, %0#0, %0#1, %0#2, %0#3 : none -> none, none, none, none, none, none, none, none, none, none, none, none, none
     %2:13 = fabric.switch [connectivity_table = ["111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111", "111111111111"]] %3#8, %3#9, %3#10, %3#11, %11#0, %11#1, %11#2, %11#3, %1#0, %1#1, %1#2, %1#3 : none -> none, none, none, none, none, none, none, none, none, none, none, none, none

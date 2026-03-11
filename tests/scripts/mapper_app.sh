@@ -51,6 +51,11 @@ if [[ "${1:-}" == "--single" ]]; then
   output_dir="${app_dir}/Output"
   mkdir -p "${output_dir}"
 
+  # Remove stale marker files from previous runs to prevent false results.
+  rm -f "${output_dir}/${APP_NAME}_success_config.txt"
+  rm -f "${output_dir}/${APP_NAME}_failure_class.txt"
+  rm -f "${output_dir}/${APP_NAME}_adg_source.txt"
+
   # Find the handshake DFG (prefer O0).
   dfg=""
   for opt in O0 O1 O2 O3; do
@@ -85,6 +90,7 @@ if [[ "${1:-}" == "--single" ]]; then
   fi
 
   # Per-app escalation: (gen_flags, map_budget, label)
+  # Each step tries progressively more routing resources and mapper budget.
   configs=(
     "|10|default"
     "|50|budget50"
@@ -92,8 +98,8 @@ if [[ "${1:-}" == "--single" ]]; then
     "--gen-track 3|200|track3-b200"
     "--gen-track 4|200|track4-b200"
     "--gen-track 4 --gen-fifo-mode dual|200|track4-fifo"
-    "--gen-topology cube|200|cube"
-    "--gen-topology cube --gen-track 3|200|cube-track3"
+    "--gen-track 5|200|track5-b200"
+    "--gen-track 5 --gen-fifo-mode dual|200|track5-fifo"
   )
 
   failure_class="unknown"
@@ -195,7 +201,7 @@ for domain in "${!domain_dfgs[@]}"; do
 
   # Try escalation for domain ADG generation.
   gen_ok=false
-  for gen_cfg in "" "--gen-track 3" "--gen-track 4" "--gen-topology cube"; do
+  for gen_cfg in "" "--gen-track 3" "--gen-track 4" "--gen-track 5" "--gen-track 5 --gen-fifo-mode dual"; do
     # shellcheck disable=SC2086
     if "${LOOM_BIN}" --gen-adg --dfgs "${dfg_list}" -o "${adg_path}" ${gen_cfg} > "${gen_log}" 2>&1; then
       if "${LOOM_BIN}" --adg "${adg_path}" >> "${gen_log}" 2>&1; then
