@@ -47,6 +47,27 @@ inline Type widthToNativeType(unsigned w) {
   }
 }
 
+/// True if the operation requires floating-point body types.
+inline bool isFloatOp(const std::string &opName) {
+  return opName == "arith.addf" || opName == "arith.subf" ||
+         opName == "arith.mulf" || opName == "arith.divf" ||
+         opName == "arith.negf" || opName == "arith.cmpf" ||
+         opName == "math.absf" || opName == "math.cos" ||
+         opName == "math.sin" || opName == "math.exp" ||
+         opName == "math.log2" || opName == "math.sqrt" ||
+         opName == "math.fma";
+}
+
+/// Map a bit width to its native float MLIR type representation.
+inline Type widthToFloatType(unsigned w) {
+  switch (w) {
+  case 16: return Type::f16();
+  case 32: return Type::f32();
+  case 64: return Type::f64();
+  default: return widthToNativeType(w); // fallback (e.g. i1 for cmp output)
+  }
+}
+
 /// True if the operation is a conversion/cast operation.
 inline bool isConversionOp(const std::string &opName) {
   return opName == "arith.extsi" || opName == "arith.extui" ||
@@ -63,11 +84,32 @@ inline std::string widthToTypeStr(unsigned w) {
   return "i" + std::to_string(w);
 }
 
+/// Format a width as a float MLIR type string (16 -> "f16", 32 -> "f32", etc).
+inline std::string widthToFloatTypeStr(unsigned w) {
+  return "f" + std::to_string(w);
+}
+
+/// True if conversion op has a float input (fptosi, fptoui, extf, truncf).
+inline bool conversionHasFloatInput(const std::string &opName) {
+  return opName == "arith.fptosi" || opName == "arith.fptoui" ||
+         opName == "arith.extf" || opName == "arith.truncf";
+}
+
+/// True if conversion op has a float output (sitofp, uitofp, extf, truncf).
+inline bool conversionHasFloatOutput(const std::string &opName) {
+  return opName == "arith.sitofp" || opName == "arith.uitofp" ||
+         opName == "arith.extf" || opName == "arith.truncf";
+}
+
 /// Build MLIR body string for a conversion PE.
 inline std::string buildConversionBody(const PESpec &spec) {
   assert(spec.inWidths.size() == 1 && spec.outWidths.size() == 1);
-  std::string inTy = widthToTypeStr(spec.inWidths[0]);
-  std::string outTy = widthToTypeStr(spec.outWidths[0]);
+  std::string inTy = conversionHasFloatInput(spec.opName)
+                          ? widthToFloatTypeStr(spec.inWidths[0])
+                          : widthToTypeStr(spec.inWidths[0]);
+  std::string outTy = conversionHasFloatOutput(spec.opName)
+                           ? widthToFloatTypeStr(spec.outWidths[0])
+                           : widthToTypeStr(spec.outWidths[0]);
   std::ostringstream os;
   os << "^bb0(%arg0: " << inTy << "):\n";
   os << "  %0 = " << spec.opName << " %arg0 : " << inTy
@@ -156,10 +198,11 @@ struct CellInfo {
 /// Create a PE definition from a PESpec and return its handle.
 inline PEHandle createPEDef(ADGBuilder &builder, const PESpec &spec) {
   std::vector<Type> inTypes, outTypes;
+  bool useFloat = isFloatOp(spec.opName);
   for (unsigned w : spec.inWidths)
-    inTypes.push_back(widthToNativeType(w));
+    inTypes.push_back(useFloat ? widthToFloatType(w) : widthToNativeType(w));
   for (unsigned w : spec.outWidths)
-    outTypes.push_back(widthToNativeType(w));
+    outTypes.push_back(useFloat ? widthToFloatType(w) : widthToNativeType(w));
 
   auto peBuilder = builder.newPE(spec.peName())
                        .setLatency(1, 1, 1)

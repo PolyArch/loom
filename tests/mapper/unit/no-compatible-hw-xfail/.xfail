@@ -1,0 +1,2 @@
+Mapper is expected to fail: DFG requires arith.addi but fabric only has
+arith.muli PEs. No compatible hardware module available.

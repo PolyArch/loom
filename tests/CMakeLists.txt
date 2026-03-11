@@ -90,6 +90,41 @@ add_custom_target(check-loom-fabric-gen
   DEPENDS loom
 )
 
+add_custom_target(check-loom-mapper-unit
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_unit.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-mapper-combine
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_combine.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-mapper-anchor
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_stress.sh"
+    "${LOOM_RUNTIME_DIR}/loom" anchor
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-mapper-full
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_stress.sh"
+    "${LOOM_RUNTIME_DIR}/loom" full
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-mapper-smoke
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/mapper_smoke.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
 add_custom_target(check-loom-spec-errcode
   COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/spec/error-alignment.py"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
