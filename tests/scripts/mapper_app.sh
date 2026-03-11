@@ -100,17 +100,20 @@ if [[ "${1:-}" == "--single" ]]; then
   # Per-app escalation: (gen_flags, map_budget, label)
   # Each step tries progressively more routing resources and mapper budget.
   configs=(
-    "--dfg-analyze|10|analyze-default"
-    "--dfg-analyze|50|analyze-b50"
-    "--dfg-analyze --gen-track 3|50|analyze-track3"
-    "--dfg-analyze --gen-track 3|200|analyze-track3-b200"
-    "--dfg-analyze --gen-track 4|200|analyze-track4-b200"
-    "--dfg-analyze --gen-track 4 --gen-fifo-mode dual|200|analyze-track4-fifo"
-    "--dfg-analyze --gen-track 5|200|analyze-track5-b200"
-    "--dfg-analyze --gen-track 5 --gen-fifo-mode dual|200|analyze-track5-fifo"
-    "--dfg-analyze --gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable|200|analyze-track5-bypass"
-    "--dfg-analyze --gen-temporal --gen-track 3|200|analyze-temporal-track3"
-    "--dfg-analyze --gen-temporal --gen-track 5 --gen-fifo-mode dual|200|analyze-temporal-track5"
+    "--dfg-analyze --dump-analysis|10|analyze-default"
+    "--dfg-analyze --dump-analysis|50|analyze-b50"
+    "--dfg-analyze --dump-analysis --gen-track 3|50|analyze-track3"
+    "--dfg-analyze --dump-analysis --gen-track 3|200|analyze-track3-b200"
+    "--dfg-analyze --dump-analysis --gen-track 4|200|analyze-track4-b200"
+    "--dfg-analyze --dump-analysis --gen-track 4 --gen-fifo-mode dual|200|analyze-track4-fifo"
+    "--dfg-analyze --dump-analysis --gen-track 5|200|analyze-track5-b200"
+    "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual|200|analyze-track5-fifo"
+    "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable|200|analyze-track5-bypass"
+    "--dfg-analyze --dump-analysis --gen-temporal --gen-track 3|200|analyze-temporal-track3"
+    "--dfg-analyze --dump-analysis --gen-temporal --gen-track 5 --gen-fifo-mode dual|200|analyze-temporal-track5"
+    "--dfg-analyze --dump-analysis --gen-temporal --temporal-threshold 0.3 --gen-track 5 --gen-fifo-mode dual|200|analyze-temporal-t03"
+    "--dfg-analyze --dump-analysis --gen-temporal --temporal-threshold 0.7 --gen-track 5 --gen-fifo-mode dual|200|analyze-temporal-t07"
+    "--dfg-analyze --dump-analysis --gen-topology cube --gen-track 3|200|analyze-cube-track3"
   )
 
   failure_class="unknown"
@@ -219,14 +222,17 @@ for domain in "${!domain_dfgs[@]}"; do
   #   to avoid generating massive ADGs that cause per-app mapping timeouts.
   dfg_count=$(echo "${dfg_list}" | tr ',' '\n' | wc -l)
   gen_configs=(
-    "--dfg-analyze"
-    "--dfg-analyze --gen-track 3"
-    "--dfg-analyze --gen-track 4"
-    "--dfg-analyze --gen-track 5"
-    "--dfg-analyze --gen-track 5 --gen-fifo-mode dual"
-    "--dfg-analyze --gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable"
-    "--dfg-analyze --gen-temporal --gen-track 3"
-    "--dfg-analyze --gen-temporal --gen-track 5 --gen-fifo-mode dual"
+    "--dfg-analyze --dump-analysis"
+    "--dfg-analyze --dump-analysis --gen-track 3"
+    "--dfg-analyze --dump-analysis --gen-track 4"
+    "--dfg-analyze --dump-analysis --gen-track 5"
+    "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual"
+    "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable"
+    "--dfg-analyze --dump-analysis --gen-temporal --gen-track 3"
+    "--dfg-analyze --dump-analysis --gen-temporal --gen-track 5 --gen-fifo-mode dual"
+    "--dfg-analyze --dump-analysis --gen-temporal --temporal-threshold 0.3 --gen-track 5 --gen-fifo-mode dual"
+    "--dfg-analyze --dump-analysis --gen-temporal --temporal-threshold 0.7 --gen-track 5 --gen-fifo-mode dual"
+    "--dfg-analyze --dump-analysis --gen-topology cube --gen-track 3"
   )
   use_best_config=true
   if (( dfg_count > 20 )); then
