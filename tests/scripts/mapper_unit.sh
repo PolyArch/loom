@@ -57,10 +57,28 @@ if [[ "${1:-}" == "--single" ]]; then
         fi
         "${LOOM_BIN}" --adg "${configured}"
 
-        # Verify mapper wrote route_table config attributes.
-        if ! grep -q "route_table" "${configured}"; then
+        # Verify mapper wrote route_table config attributes (when switches present).
+        if grep -q "fabric.switch" "${adg}" && ! grep -q "route_table" "${configured}"; then
           echo "FAIL: configured fabric missing route_table: ${configured}" >&2
           exit 1
+        fi
+
+        # Conditional config assertions based on ADG contents.
+        # Memory tests: verify config.bin is generated (contains addr_offset_table).
+        if grep -qE "fabric\.(ext)?memory" "${adg}"; then
+          config_bin="${out_base}.config.bin"
+          if [[ ! -s "${config_bin}" ]]; then
+            echo "FAIL: memory ADG missing config.bin: ${config_bin}" >&2
+            exit 1
+          fi
+        fi
+
+        # Verify instruction_mem is well-formed when present.
+        if grep -q "instruction_mem" "${configured}"; then
+          if ! grep -q 'instruction_mem = \["inst' "${configured}"; then
+            echo "FAIL: instruction_mem present but malformed: ${configured}" >&2
+            exit 1
+          fi
         fi
       fi
     done

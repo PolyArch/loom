@@ -50,6 +50,28 @@ if [[ "${1:-}" == "--single" ]]; then
           exit 1
         fi
         "${LOOM_BIN}" --adg "${configured}"
+
+        # Verify config attributes.
+        if grep -q "fabric.switch" "${adg}" && ! grep -q "route_table" "${configured}"; then
+          echo "FAIL: configured fabric missing route_table: ${configured}" >&2
+          exit 1
+        fi
+
+        if grep -qE "fabric\.(ext)?memory" "${adg}"; then
+          config_bin="${out_base}.config.bin"
+          if [[ ! -s "${config_bin}" ]]; then
+            echo "FAIL: memory ADG missing config.bin: ${config_bin}" >&2
+            exit 1
+          fi
+        fi
+
+        # Verify instruction_mem is well-formed when present.
+        if grep -q "instruction_mem" "${configured}"; then
+          if ! grep -q 'instruction_mem = \["inst' "${configured}"; then
+            echo "FAIL: instruction_mem present but malformed: ${configured}" >&2
+            exit 1
+          fi
+        fi
       fi
     done
   done
