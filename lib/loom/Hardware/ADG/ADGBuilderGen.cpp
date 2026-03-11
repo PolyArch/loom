@@ -561,11 +561,11 @@ ADGBuilder::Impl::generateTemporalPEDef(const TemporalPEDef &def) const {
   Type ifType = nativeToBitsType(def.interfaceType);
   std::string ifStr = ifType.toMLIR();
 
-  // Determine number of input/output ports from first FU.
+  // Determine number of input/output ports as max across all FUs.
   unsigned numIn = 1, numOut = 1;
-  if (!def.fuPEDefIndices.empty()) {
-    numIn = peDefs[def.fuPEDefIndices[0]].inputPorts.size();
-    numOut = peDefs[def.fuPEDefIndices[0]].outputPorts.size();
+  for (unsigned fuIdx : def.fuPEDefIndices) {
+    numIn = std::max(numIn, (unsigned)peDefs[fuIdx].inputPorts.size());
+    numOut = std::max(numOut, (unsigned)peDefs[fuIdx].outputPorts.size());
   }
 
   os << "fabric.temporal_pe @" << def.name << "(";

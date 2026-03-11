@@ -683,20 +683,9 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
     extMemInByWidth[0] += (memSpec.ldCount + memSpec.stCount) * n;
   }
 
-  // Temporal bridge I/O: for each width with temporal PEs, add_tag needs
-  // native output slots and del_tag needs native input slots.
+  // Temporal bridge I/O: the temporal mesh creates its own module I/O ports
+  // for add_tag and del_tag bridges; native mesh does not reserve bridge slots.
   std::map<unsigned, unsigned> bridgeOutByWidth, bridgeInByWidth;
-  if (config.genTemporal) {
-    std::map<unsigned, unsigned> tempPECountByWidth;
-    for (const auto &[spec, count] : reqs.peMaxCounts)
-      tempPECountByWidth[spec.primaryWidth()] += count;
-    for (auto &[w, peCount] : tempPECountByWidth) {
-      auto [tpeRows, tpeCols] = computeMesh2DDims(peCount);
-      unsigned tswRows = tpeRows + 1;
-      bridgeOutByWidth[w] = tswRows;
-      bridgeInByWidth[w] = tswRows;
-    }
-  }
 
   // Total I/O per width = DFG I/O + ExtMem I/O + temporal bridge I/O.
   std::map<unsigned, unsigned> totalInByWidth, totalOutByWidth;
