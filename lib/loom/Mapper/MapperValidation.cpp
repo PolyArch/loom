@@ -12,7 +12,6 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 
-#include "llvm/ADT/DenseSet.h"
 
 namespace loom {
 
@@ -89,13 +88,21 @@ bool getBridgePortsVal(const Node *node,
   return bridgeInPorts || bridgeOutPorts;
 }
 
-/// Get bridge temporal_sw node IDs from a node's attributes.
-mlir::DenseI32ArrayAttr getBridgeTswNodes(const Node *node) {
+/// Get bridge mux/demux temporal_sw node IDs from a node's attributes.
+/// ADGFlattener stores these as "bridge_mux_nodes" and "bridge_demux_nodes".
+void getBridgeMuxDemuxNodes(const Node *node,
+                            mlir::DenseI32ArrayAttr &muxNodes,
+                            mlir::DenseI32ArrayAttr &demuxNodes) {
+  muxNodes = {};
+  demuxNodes = {};
   for (auto &attr : node->attributes) {
-    if (attr.getName() == "bridge_temporal_sw_nodes")
-      return mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+    if (attr.getName() == "bridge_mux_nodes")
+      muxNodes =
+          mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+    else if (attr.getName() == "bridge_demux_nodes")
+      demuxNodes =
+          mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
   }
-  return {};
 }
 
 } // namespace
@@ -486,33 +493,46 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
       }
 
       // Bridge memory validation: check port bindings go to bridge boundary
-      // ports and temporal_sw nodes have assignments.
+      // ports and temporal_sw mux/demux nodes have assignments.
       mlir::DenseI32ArrayAttr bridgeInPorts, bridgeOutPorts;
       if (getBridgePortsVal(hwNode, bridgeInPorts, bridgeOutPorts)) {
-        // Verify bridge temporal_sw nodes have temporal assignments.
-        auto tswNodes = getBridgeTswNodes(hwNode);
-        if (tswNodes) {
-          for (int32_t tswId : tswNodes.asArrayRef()) {
+        // Verify bridge mux/demux temporal_sw nodes have assignments.
+        mlir::DenseI32ArrayAttr muxNodes, demuxNodes;
+        getBridgeMuxDemuxNodes(hwNode, muxNodes, demuxNodes);
+        auto checkTswAssign = [&](mlir::DenseI32ArrayAttr nodes,
+                                  const char *label) -> bool {
+          if (!nodes)
+            return true;
+          for (int32_t tswId : nodes.asArrayRef()) {
             auto tswIdx = static_cast<IdIndex>(tswId);
             if (tswIdx >= state.temporalSWAssignments.size() ||
                 state.temporalSWAssignments[tswIdx].empty()) {
-              diag = "C4: bridge temporal_sw " + std::to_string(tswId) +
+              diag = "C4: bridge " + std::string(label) + " " +
+                     std::to_string(tswId) +
                      " for memory hw_node=" + std::to_string(i) +
                      " has no temporal assignment";
               return false;
             }
           }
-        }
+          return true;
+        };
+        if (!checkTswAssign(muxNodes, "mux"))
+          return false;
+        if (!checkTswAssign(demuxNodes, "demux"))
+          return false;
 
         // Verify that mapped DFG ports bind to bridge boundary ports.
+        // For extmemory, skip memref at input port 0 (binds directly).
+        // For memory, all input ports go through bridge boundary.
+        bool isExtMem =
+            (getNodeOpName(hwNode) == "fabric.extmemory");
+        unsigned swInSkip = isExtMem ? 1 : 0;
+
         for (IdIndex swId : swNodes) {
           const Node *swNode = dfg.getNode(swId);
           if (!swNode)
             continue;
-          // Check input port bindings (skip memref port at input[0]).
-          // Both fabric.memory and fabric.extmemory have memref at
-          // port 0 which binds directly, not through bridge boundary.
-          unsigned swInSkip = 1;
+          // Check input port bindings.
           for (size_t p = swInSkip; p < swNode->inputPorts.size(); ++p) {
             IdIndex swPort = swNode->inputPorts[p];
             if (swPort >= state.swPortToHwPort.size())
@@ -520,7 +540,6 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
             IdIndex hwPort = state.swPortToHwPort[swPort];
             if (hwPort == INVALID_ID)
               continue;
-            // Verify the bound HW port is in bridge boundary.
             if (bridgeInPorts) {
               bool found = false;
               for (int32_t bp : bridgeInPorts.asArrayRef()) {
@@ -530,7 +549,32 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
                 }
               }
               if (!found) {
-                diag = "C4: DFG port " + std::to_string(swPort) +
+                diag = "C4: DFG input port " + std::to_string(swPort) +
+                       " bound to non-bridge hw_port " +
+                       std::to_string(hwPort) + " on bridge memory " +
+                       std::to_string(i);
+                return false;
+              }
+            }
+          }
+          // Check output port bindings (all outputs through bridge).
+          for (size_t p = 0; p < swNode->outputPorts.size(); ++p) {
+            IdIndex swPort = swNode->outputPorts[p];
+            if (swPort >= state.swPortToHwPort.size())
+              continue;
+            IdIndex hwPort = state.swPortToHwPort[swPort];
+            if (hwPort == INVALID_ID)
+              continue;
+            if (bridgeOutPorts) {
+              bool found = false;
+              for (int32_t bp : bridgeOutPorts.asArrayRef()) {
+                if (static_cast<IdIndex>(bp) == hwPort) {
+                  found = true;
+                  break;
+                }
+              }
+              if (!found) {
+                diag = "C4: DFG output port " + std::to_string(swPort) +
                        " bound to non-bridge hw_port " +
                        std::to_string(hwPort) + " on bridge memory " +
                        std::to_string(i);

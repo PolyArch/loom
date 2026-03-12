@@ -235,13 +235,11 @@ bool TechMapper::isSingleOpCompatible(const Graph &dfg, IdIndex swNode,
         const Port *sp0 = dfg.getPort(sw->inputPorts[0]);
         if (!sp0 || !mlir::isa<mlir::MemRefType>(sp0->type))
           return false;
-        // Compare memref element type against ADG extmemory memref port.
+        // Compare full memref type against ADG extmemory memref port.
         if (!hw->inputPorts.empty()) {
           const Port *hp0 = adg.getPort(hw->inputPorts[0]);
           if (hp0 && mlir::isa<mlir::MemRefType>(hp0->type)) {
-            auto swMemRef = mlir::cast<mlir::MemRefType>(sp0->type);
-            auto hwMemRef = mlir::cast<mlir::MemRefType>(hp0->type);
-            if (swMemRef.getElementType() != hwMemRef.getElementType())
+            if (sp0->type != hp0->type)
               return false;
           }
         }

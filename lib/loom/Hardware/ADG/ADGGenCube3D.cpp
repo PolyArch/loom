@@ -211,6 +211,8 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
   std::vector<std::map<unsigned, std::tuple<unsigned, unsigned, unsigned>>>
       placementCells(placements.size());
 
+  unsigned globalModInIdx = 0;
+  unsigned globalModOutIdx = 0;
   for (auto &[width, numCells] : cellsPerWidth) {
     CubeGrid &cube = cubeMap[width];
     if (numCells == 0)
@@ -588,7 +590,8 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
       for (unsigned k = 0; k < modInAssigns.size(); ++k) {
         auto &a = modInAssigns[k];
         auto port = builder.addModuleInput(
-            "in_" + std::to_string(k), widthToNativeType(width));
+            "in_" + std::to_string(globalModInIdx++),
+            widthToNativeType(width));
         unsigned localIdx = swModInIdx[{a.swD, a.swR, a.swC}]++;
         auto &pm = cube.swPorts[a.swD][a.swR][a.swC];
         builder.connectToModuleInput(
@@ -600,7 +603,8 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
       for (unsigned k = 0; k < modOutAssigns.size(); ++k) {
         auto &a = modOutAssigns[k];
         auto port = builder.addModuleOutput(
-            "out_" + std::to_string(k), widthToNativeType(width));
+            "out_" + std::to_string(globalModOutIdx++),
+            widthToNativeType(width));
         unsigned localIdx = swModOutIdx[{a.swD, a.swR, a.swC}]++;
         auto &pm = cube.swPorts[a.swD][a.swR][a.swC];
         builder.connectToModuleOutput(

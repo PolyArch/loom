@@ -1663,12 +1663,13 @@ bool ConfigGen::writeConfiguredFabric(
     const Node *hwNode = adg.getNode(hwId);
     if (!hwNode)
       return;
-    if (hwId >= state.hwNodeToSwNodes.size() ||
-        state.hwNodeToSwNodes[hwId].empty())
-      return;
+
+    bool hasMapped = (hwId < state.hwNodeToSwNodes.size() &&
+                      !state.hwNodeToSwNodes[hwId].empty());
 
     int64_t numRegion = getNodeIntAttr(hwNode, "numRegion", 1);
-    size_t mappedCount = state.hwNodeToSwNodes[hwId].size();
+    size_t mappedCount =
+        hasMapped ? state.hwNodeToSwNodes[hwId].size() : 0;
     size_t regionCount =
         std::min(mappedCount, static_cast<size_t>(numRegion));
 
@@ -1678,13 +1679,18 @@ bool ConfigGen::writeConfiguredFabric(
     bool isBridgeMemory = (ldCount > 1 || stCount > 1);
     int64_t tagCount = std::max(ldCount, stCount);
 
+    // For unmapped bridge memory, ensure at least one region covers the full
+    // tag range so bridge tags remain valid even when the memory is unused.
+    size_t effectiveRegionCount = regionCount;
+    if (isBridgeMemory && regionCount == 0 && numRegion > 0)
+      effectiveRegionCount = 1;
+
     // Build flat array: [valid, start_tag, end_tag, base_addr] per region.
     llvm::SmallVector<int64_t> table;
     for (size_t r = 0; r < static_cast<size_t>(numRegion); ++r) {
-      if (r < regionCount) {
+      if (r < effectiveRegionCount) {
         table.push_back(1); // valid
         if (isBridgeMemory) {
-          // Bridge memory: region covers full tag range [0, tagCount).
           table.push_back(0);        // start_tag
           table.push_back(tagCount); // end_tag
         } else {
@@ -1693,10 +1699,7 @@ bool ConfigGen::writeConfiguredFabric(
         }
         table.push_back(0); // base_addr
       } else {
-        table.push_back(0); // valid = 0
-        table.push_back(0); // start_tag
-        table.push_back(0); // end_tag
-        table.push_back(0); // base_addr
+        table.append({0, 0, 0, 0}); // invalid region
       }
     }
 

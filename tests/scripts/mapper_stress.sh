@@ -13,12 +13,14 @@ APP_DIR="${ROOT_DIR}/tests/app"
 
 # --- Config parsing helpers ---
 
-# Parse a stress.cfg file and set: CFG_APPS, CFG_GEN_FLAGS, CFG_DFG_VARIANT.
+# Parse a stress.cfg file and set: CFG_APPS, CFG_GEN_FLAGS, CFG_DFG_VARIANT,
+# CFG_CHECK_BRIDGE_TAGS.
 parse_stress_cfg() {
   local cfg_file="$1"
   CFG_APPS=()
   CFG_GEN_FLAGS=""
   CFG_DFG_VARIANT=""
+  CFG_CHECK_BRIDGE_TAGS=false
 
   while IFS= read -r line; do
     # Strip comments and trim.
@@ -37,6 +39,10 @@ parse_stress_cfg() {
     elif [[ "${line}" == dfg_variant:* ]]; then
       CFG_DFG_VARIANT="${line#dfg_variant:}"
       CFG_DFG_VARIANT="${CFG_DFG_VARIANT#"${CFG_DFG_VARIANT%%[![:space:]]*}"}"
+    elif [[ "${line}" == check_bridge_tags:* ]]; then
+      local val="${line#check_bridge_tags:}"
+      val="${val#"${val%%[![:space:]]*}"}"
+      [[ "${val}" == "true" ]] && CFG_CHECK_BRIDGE_TAGS=true
     fi
   done < "${cfg_file}"
 }
@@ -138,6 +144,11 @@ if [[ "${1:-}" == "--single" ]]; then
             exit 1
           fi
           "${LOOM_BIN}" --adg "${configured}"
+
+          # Optional bridge tag coverage check.
+          if "${CFG_CHECK_BRIDGE_TAGS}"; then
+            python3 "${SCRIPT_DIR}/check_bridge_tags.py" "${configured}"
+          fi
         fi
       done
     done
