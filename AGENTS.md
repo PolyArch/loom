@@ -4,6 +4,14 @@ Loom is a full stack framework for Domain-specific Accelerator, from C++ source 
 # Documentation
 - Check `docs` to understand `loom` design specification, there are important concepts like: `dataflow`, `fabric`, `adg`, `cosim`, each one of them has its own specification documents.
 
+# Spec-First Development (MANDATORY)
+All code changes MUST use the specification documents (`docs/spec-*.md`) as the authoritative implementation baseline. Spec is code.
+- Before implementing or modifying any feature, read the relevant `docs/spec-*.md` first.
+- If the current implementation deviates from spec, the code MUST be aligned to spec.
+- If after careful analysis you believe the codebase diverges significantly from spec, or that the spec contains fundamental contradictions, you MUST stop and notify the user. Do NOT proceed with an implementation that deviates from spec under any circumstances.
+- When in doubt, the spec wins. Never assume the existing code is correct over what the spec says.
+- When uncertain or unclear about any design decision, read `docs/spec-*.md` first before proceeding.
+
 # Project Rules
 - Header files (like .h/.cuh etc) in `include`; Implementation files (like .c/.cpp/.cu etc) in `lib`.
 - When splitting files, split them into multiple `.cpp`/`.h` files (not `.inc` includes).
