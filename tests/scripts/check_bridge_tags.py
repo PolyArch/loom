@@ -107,6 +107,28 @@ def get_tag_ranges(table: list[int]) -> list[tuple[int, int]]:
     return ranges
 
 
+def compute_expected_words(
+        ld_count: int, st_count: int, num_region: int
+) -> int:
+    """Compute expected 32-bit word count for a bridge memory config.
+
+    Uses the same formula as RTL/genMemoryConfig:
+      tw = clog2(max(ldCount, stCount))
+      bits_per_region = ADDR_BIT_WIDTH + (tw+1) + tw + 1
+      total_bits = num_region * bits_per_region
+      words = ceil(total_bits / 32)
+    """
+    is_bridge = (ld_count > 1 or st_count > 1)
+    tw = 0
+    if is_bridge:
+        tw = 1
+        while (1 << tw) < max(ld_count, st_count):
+            tw += 1
+    bits_per_region = ADDR_BIT_WIDTH + 1 + (tw + (tw + 1) if tw > 0 else 0)
+    total_bits = num_region * bits_per_region
+    return (total_bits + 31) // 32
+
+
 def extract_num_region(rest: str) -> int:
     """Extract numRegion from a memory/extmemory op (default 1)."""
     m = re.search(r'numRegion\s*=\s*(\d+)', rest)
@@ -218,8 +240,14 @@ def verify_config_binary(mlir_text: str, addr_text: str,
                 f"bridge memory %{name} (node {node_id}) not in _addr.h")
             continue
         word_offset, word_count = addr_map[node_id]
-        if word_count == 0:
-            violations.append(f"bridge memory %{name} has size 0 in _addr.h")
+        num_region = extract_num_region(info["rest"])
+        expected_words = compute_expected_words(ld_count, st_count, num_region)
+        if word_count != expected_words:
+            violations.append(
+                f"bridge memory %{name}: _addr.h word count {word_count} "
+                f"!= expected {expected_words} "
+                f"(numRegion={num_region}, ldCount={ld_count}, "
+                f"stCount={st_count})")
             continue
         byte_end = (word_offset + word_count) * 4
         if byte_end > len(config_data):
@@ -229,7 +257,6 @@ def verify_config_binary(mlir_text: str, addr_text: str,
             continue
         words = list(struct.unpack_from(
             f'<{word_count}I', config_data, word_offset * 4))
-        num_region = extract_num_region(info["rest"])
         bin_regions = decode_memory_config(
             words, ld_count, st_count, num_region=num_region)
         # Parse MLIR table: [valid, start, end, base] * N
@@ -400,64 +427,123 @@ def main() -> int:
     return 0
 
 
-def run_self_tests() -> int:
-    """Verify decode_memory_config handles numRegion > active regions."""
-    errors = []
+def _build_test_config_words(
+        ld_count: int, st_count: int, num_region: int,
+        regions: list[tuple[int, int, int, int]]
+) -> list[int]:
+    """Pack region tuples (valid, start_tag, end_tag, addr_offset) into words.
 
-    # Build synthetic config for bridge memory: ldCount=2, stCount=0,
-    # numRegion=2, only region 0 active (valid=1, start_tag=0, end_tag=2).
-    # RTL layout per region (low-to-high):
-    #   addr_offset[57], end_tag[tw+1], start_tag[tw], valid[1]
-    # tw = clog2(max(2, 0)) = 1, so bits_per_region = 57+2+1+1 = 61.
-    ld_count, st_count, num_region = 2, 0, 2
-    tw = 1
-    bits_per_region = ADDR_BIT_WIDTH + (tw + 1) + tw + 1  # 57+2+1+1 = 61
+    Uses the same RTL layout as genMemoryConfig / decode_memory_config.
+    """
+    is_bridge = (ld_count > 1 or st_count > 1)
+    tw = 0
+    if is_bridge:
+        tw = 1
+        while (1 << tw) < max(ld_count, st_count):
+            tw += 1
+    bits_per_region = ADDR_BIT_WIDTH + 1 + (tw + (tw + 1) if tw > 0 else 0)
 
     combined = 0
     bit_pos = 0
-    # Region 0: active (addr_offset=0, end_tag=2, start_tag=0, valid=1).
-    combined |= (0 << bit_pos)             # addr_offset = 0
-    bit_pos += ADDR_BIT_WIDTH
-    combined |= (2 << bit_pos)             # end_tag = 2
-    bit_pos += tw + 1
-    combined |= (0 << bit_pos)             # start_tag = 0
-    bit_pos += tw
-    combined |= (1 << bit_pos)             # valid = 1
-    bit_pos += 1
-    # Region 1: inactive (all zeros, valid=0).
-    bit_pos += bits_per_region  # skip with zeros
+    for valid, start_tag, end_tag, addr_off in regions:
+        combined |= (addr_off << bit_pos)
+        bit_pos += ADDR_BIT_WIDTH
+        if tw > 0:
+            combined |= (end_tag << bit_pos)
+            bit_pos += tw + 1
+            combined |= (start_tag << bit_pos)
+            bit_pos += tw
+        combined |= (valid << bit_pos)
+        bit_pos += 1
+    # Pad remaining regions (if fewer tuples than num_region) with zeros.
+    for _ in range(num_region - len(regions)):
+        bit_pos += bits_per_region
 
     total_bits = num_region * bits_per_region
     num_words = (total_bits + 31) // 32
-    words = []
-    for i in range(num_words):
-        words.append((combined >> (32 * i)) & 0xFFFFFFFF)
+    return [(combined >> (32 * i)) & 0xFFFFFFFF for i in range(num_words)]
+
+
+def run_self_tests() -> int:
+    """Verify decode_memory_config and verify_config_binary."""
+    errors = []
+    ld_count, st_count, num_region = 2, 0, 2
+
+    # --- Test 1: decode_memory_config with numRegion > active regions ---
+    words = _build_test_config_words(
+        ld_count, st_count, num_region,
+        [(1, 0, 2, 0)])  # region 0 active, region 1 zero-padded
 
     regions = decode_memory_config(words, ld_count, st_count,
                                    num_region=num_region)
     if len(regions) != 2:
-        errors.append(f"expected 2 regions, got {len(regions)}")
+        errors.append(f"decode: expected 2 regions, got {len(regions)}")
     else:
         v0, s0, e0, a0 = regions[0]
         if (v0, s0, e0, a0) != (1, 0, 2, 0):
             errors.append(
-                f"region 0: expected (1,0,2,0), got ({v0},{s0},{e0},{a0})")
+                f"decode region 0: expected (1,0,2,0), got "
+                f"({v0},{s0},{e0},{a0})")
         v1, s1, e1, a1 = regions[1]
         if (v1, s1, e1, a1) != (0, 0, 0, 0):
             errors.append(
-                f"region 1: expected (0,0,0,0), got ({v1},{s1},{e1},{a1})")
+                f"decode region 1: expected (0,0,0,0), got "
+                f"({v1},{s1},{e1},{a1})")
 
-    # Without num_region, decoder should still find 2 regions from bit count.
+    # Inferred path should match explicit.
     regions2 = decode_memory_config(words, ld_count, st_count)
     if len(regions2) != len(regions):
         errors.append(
             f"inferred region count {len(regions2)} != explicit {len(regions)}")
 
+    # --- Synthetic fixtures for verify_config_binary ---
+    # MLIR: bridge extmemory with numRegion=2, addr_offset_table covers both.
+    mlir_fixture = (
+        "%mem0 = fabric.extmemory "
+        "[ldCount = 2, stCount = 0, numRegion = 2] "
+        "addr_offset_table = array<i64: 1, 0, 2, 0, 0, 0, 0, 0>, "
+        "config_node_id = 100 "
+        ": memref<?xi32>")
+
+    expected_wc = compute_expected_words(ld_count, st_count, num_region)
+    config_bin = struct.pack(f'<{expected_wc}I', *words)
+
+    # --- Test 2: verify_config_binary PASS with correct word count ---
+    addr_h_ok = (
+        f"#define LOOM_ADDR_NODE_100 0\n"
+        f"#define LOOM_SIZE_NODE_100 {expected_wc}\n")
+    v = verify_config_binary(mlir_fixture, addr_h_ok, config_bin)
+    if v:
+        errors.append(f"verify pass case: unexpected violations: {v}")
+
+    # --- Test 3: verify_config_binary FAIL with truncated word count ---
+    truncated_wc = expected_wc - 1
+    addr_h_trunc = (
+        f"#define LOOM_ADDR_NODE_100 0\n"
+        f"#define LOOM_SIZE_NODE_100 {truncated_wc}\n")
+    trunc_bin = config_bin[:truncated_wc * 4]
+    v = verify_config_binary(mlir_fixture, addr_h_trunc, trunc_bin)
+    if not v:
+        errors.append("verify truncated case: expected violation but got none")
+    elif "word count" not in v[0]:
+        errors.append(f"verify truncated case: wrong violation: {v[0]}")
+
+    # --- Test 4: verify_config_binary FAIL with wrong addr_offset ---
+    bad_words = _build_test_config_words(
+        ld_count, st_count, num_region,
+        [(1, 0, 2, 42)])  # addr_offset=42 but MLIR says 0
+    bad_bin = struct.pack(f'<{expected_wc}I', *bad_words)
+    v = verify_config_binary(mlir_fixture, addr_h_ok, bad_bin)
+    if not v:
+        errors.append("verify bad addr_offset: expected violation but none")
+    elif "addr_offset" not in v[0]:
+        errors.append(f"verify bad addr_offset: wrong violation: {v[0]}")
+
     if errors:
         for e in errors:
             print(f"  SELF-TEST FAIL: {e}")
         return 1
-    print("[PASS] Self-tests passed (decode_memory_config padding)")
+    print("[PASS] Self-tests passed (decode + verify_config_binary)")
     return 0
 
 
