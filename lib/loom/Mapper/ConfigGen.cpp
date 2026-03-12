@@ -386,9 +386,8 @@ void genMemoryConfig(const Node *hwNode, const MappingState &state,
       packBits(words, bitPos, 0, ADDR_BIT_WIDTH); // addr_offset
       if (tw > 0) {
         uint64_t endTag, startTag;
-        if (isBridge && activeCount == 1) {
-          startTag = 0;
-          endTag = static_cast<uint64_t>(tagCount);
+        if (isBridge) { // Bridge: [0, tagCount) for every active region.
+          startTag = 0; endTag = static_cast<uint64_t>(tagCount);
         } else {
           startTag = static_cast<uint64_t>(r);
           endTag = static_cast<uint64_t>(r + 1);

@@ -961,43 +961,137 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
                                      hwNode->inputPorts[0], dfg, adg);
               swInSkip2 = 1;
             }
-            // Type-aware greedy matching with port reservation.
+            // Category-aware greedy matching with port reservation.
+            int32_t storeInCount2 =
+                getIntAttr(hwNode, "bridge_store_input_count", -1);
+            int32_t ldDataOutCount2 =
+                getIntAttr(hwNode, "bridge_ld_data_output_count", -1);
+
             if (bridgeInPorts2) {
-              for (size_t p = swInSkip2; p < swNode->inputPorts.size(); ++p) {
+              unsigned storeInBound2 =
+                  (storeInCount2 > 0)
+                      ? static_cast<unsigned>(storeInCount2) : 0;
+              unsigned inSize2 =
+                  static_cast<unsigned>(bridgeInPorts2.size());
+
+              // Detect DFG store inputs by (data, addr) pair pattern.
+              unsigned dfgStoreIns2 = 0;
+              if (storeInBound2 >= 2) {
+                const Port *stDataRef = adg.getPort(
+                    static_cast<IdIndex>(bridgeInPorts2[0]));
+                for (size_t si = swInSkip2;
+                     si + 1 < swNode->inputPorts.size(); si += 2) {
+                  const Port *sp = dfg.getPort(swNode->inputPorts[si]);
+                  if (sp && stDataRef &&
+                      isTypeWidthCompatible(sp->type, stDataRef->type))
+                    dfgStoreIns2 += 2;
+                  else
+                    break;
+                }
+              }
+
+              for (size_t p = swInSkip2; p < swNode->inputPorts.size();
+                   ++p) {
                 if (result.state.swPortToHwPort[swNode->inputPorts[p]] !=
                     INVALID_ID)
                   continue;
                 const Port *sp = dfg.getPort(swNode->inputPorts[p]);
                 if (!sp) continue;
-                for (int32_t pid : bridgeInPorts2.asArrayRef()) {
-                  auto hwPid = static_cast<IdIndex>(pid);
+                unsigned relIdx = p - swInSkip2;
+                bool isStore = (relIdx < dfgStoreIns2);
+                unsigned lo = isStore ? 0 : storeInBound2;
+                unsigned hi = isStore ? storeInBound2 : inSize2;
+                bool found = false;
+                for (unsigned bi = lo; bi < hi; ++bi) {
+                  auto hwPid =
+                      static_cast<IdIndex>(bridgeInPorts2[bi]);
                   if (!result.state.hwPortToSwPorts[hwPid].empty())
                     continue;
                   const Port *hp = adg.getPort(hwPid);
                   if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
                     result.state.mapPort(swNode->inputPorts[p], hwPid,
                                          dfg, adg);
+                    found = true;
                     break;
+                  }
+                }
+                if (!found) {
+                  for (unsigned bi = 0; bi < inSize2; ++bi) {
+                    auto hwPid =
+                        static_cast<IdIndex>(bridgeInPorts2[bi]);
+                    if (!result.state.hwPortToSwPorts[hwPid].empty())
+                      continue;
+                    const Port *hp = adg.getPort(hwPid);
+                    if (hp &&
+                        isTypeWidthCompatible(sp->type, hp->type)) {
+                      result.state.mapPort(swNode->inputPorts[p], hwPid,
+                                           dfg, adg);
+                      break;
+                    }
                   }
                 }
               }
             }
             if (bridgeOutPorts2) {
+              int ldOut2 = (ldDataOutCount2 > 0) ? ldDataOutCount2 : 0;
+              int ldDoneStart2 = ldOut2;
+              int stDoneStart2 = ldOut2 * 2;
+              int total2 = static_cast<int>(bridgeOutPorts2.size());
+
+              unsigned dfgLdData2 = 0;
+              const Port *ldDRef =
+                  (ldOut2 > 0) ? adg.getPort(
+                      static_cast<IdIndex>(bridgeOutPorts2[0])) : nullptr;
+              for (size_t i = 0; i < swNode->outputPorts.size(); ++i) {
+                const Port *sp = dfg.getPort(swNode->outputPorts[i]);
+                if (sp && ldDRef &&
+                    isTypeWidthCompatible(sp->type, ldDRef->type))
+                  ++dfgLdData2;
+                else
+                  break;
+              }
+
               for (size_t p = 0; p < swNode->outputPorts.size(); ++p) {
                 if (result.state.swPortToHwPort[swNode->outputPorts[p]] !=
                     INVALID_ID)
                   continue;
                 const Port *sp = dfg.getPort(swNode->outputPorts[p]);
                 if (!sp) continue;
-                for (int32_t pid : bridgeOutPorts2.asArrayRef()) {
-                  auto hwPid = static_cast<IdIndex>(pid);
+                int lo, hi;
+                if (p < dfgLdData2) {
+                  lo = 0; hi = ldDoneStart2;
+                } else if (p < dfgLdData2 * 2) {
+                  lo = ldDoneStart2; hi = stDoneStart2;
+                } else {
+                  lo = stDoneStart2; hi = total2;
+                }
+                bool found = false;
+                for (int bi = lo; bi < hi; ++bi) {
+                  auto hwPid =
+                      static_cast<IdIndex>(bridgeOutPorts2[bi]);
                   if (!result.state.hwPortToSwPorts[hwPid].empty())
                     continue;
                   const Port *hp = adg.getPort(hwPid);
                   if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
                     result.state.mapPort(swNode->outputPorts[p], hwPid,
                                          dfg, adg);
+                    found = true;
                     break;
+                  }
+                }
+                if (!found) {
+                  for (int bi = 0; bi < total2; ++bi) {
+                    auto hwPid =
+                        static_cast<IdIndex>(bridgeOutPorts2[bi]);
+                    if (!result.state.hwPortToSwPorts[hwPid].empty())
+                      continue;
+                    const Port *hp = adg.getPort(hwPid);
+                    if (hp &&
+                        isTypeWidthCompatible(sp->type, hp->type)) {
+                      result.state.mapPort(swNode->outputPorts[p], hwPid,
+                                           dfg, adg);
+                      break;
+                    }
                   }
                 }
               }
