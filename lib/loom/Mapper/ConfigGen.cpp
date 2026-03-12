@@ -1690,9 +1690,9 @@ bool ConfigGen::writeConfiguredFabric(
     for (size_t r = 0; r < static_cast<size_t>(numRegion); ++r) {
       if (r < effectiveRegionCount) {
         table.push_back(1);
-        if (isBridgeMemory && effectiveRegionCount == 1) {
-          table.push_back(0);
-          table.push_back(tagCount);
+        if (isBridgeMemory) {
+          // Bridge lane tags span [0, tagCount) for every active region.
+          table.push_back(0); table.push_back(tagCount);
         } else {
           table.push_back(static_cast<int64_t>(r));
           table.push_back(static_cast<int64_t>(r + 1));

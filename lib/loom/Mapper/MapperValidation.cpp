@@ -526,11 +526,14 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
         }
         llvm::SmallVector<std::pair<int64_t, int64_t>, 4> tagRanges;
         for (size_t r = 0; r < effectiveRegCnt; ++r) {
-          if (isBridge && effectiveRegCnt == 1)
+          if (isBridge) {
+            // Bridge lane tags always span [0, tagCount) for every region,
+            // matching ConfigGen's addr_offset_table generation.
             tagRanges.push_back({0, tagCount});
-          else
+          } else {
             tagRanges.push_back({static_cast<int64_t>(r),
                                  static_cast<int64_t>(r + 1)});
+          }
         }
 
         auto validateBridgeTsw = [&](mlir::DenseI32ArrayAttr nodes,
