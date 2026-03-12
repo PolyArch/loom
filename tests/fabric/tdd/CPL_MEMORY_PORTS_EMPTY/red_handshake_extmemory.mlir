@@ -1,4 +1,5 @@
-// RUN: rm -rf %S/Output && mkdir -p %S/Output
+// RUN: mkdir -p %S/Output
+// RUN: rm -f %S/Output/red_handshake_extmemory.fabric.mlir
 // RUN: not loom --gen-adg --dfgs %s -o %S/Output/red_handshake_extmemory.fabric.mlir 2>&1 | FileCheck %s
 // CHECK: CPL_MEMORY_PORTS_EMPTY
 

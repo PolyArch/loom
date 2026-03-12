@@ -89,9 +89,9 @@ if [[ "${1:-}" == "--single" ]]; then
   output_dir="${TEST_DIR}/Output"
   mkdir -p "${output_dir}"
 
-  xfail=false
-  if [[ -f "${TEST_DIR}/.xfail" ]]; then
-    xfail=true
+  negative=false
+  if [[ -f "${TEST_DIR}/.negative" ]]; then
+    negative=true
   fi
 
   cfg_file="${TEST_DIR}/stress.cfg"
@@ -130,9 +130,9 @@ if [[ "${1:-}" == "--single" ]]; then
         dfg_name=$(basename "${dfg}" .handshake.mlir)
         out_base="${output_dir}/${dfg_name}_on_${adg_name}"
 
-        if "${xfail}"; then
+        if "${negative}"; then
           if "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget "${BUDGET}" 2>/dev/null; then
-            echo "XFAIL: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
+            echo "NEGATIVE: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
             exit 1
           fi
         else
@@ -169,9 +169,9 @@ if [[ "${1:-}" == "--single" ]]; then
         dfg_name=$(basename "${dfg}" .handshake.mlir)
         out_base="${output_dir}/${dfg_name}_on_${adg_name}"
 
-        if "${xfail}"; then
+        if "${negative}"; then
           if "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget "${BUDGET}" 2>/dev/null; then
-            echo "XFAIL: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
+            echo "NEGATIVE: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
             exit 1
           fi
         else

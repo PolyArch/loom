@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Mapper/Mapper.h"
+#include "loom/Mapper/BridgeBinding.h"
 #include "loom/Mapper/TypeCompat.h"
 
 #include "loom/Dialect/Dataflow/DataflowTypes.h"  // TaggedType, BitsType
@@ -69,40 +70,6 @@ unsigned getTypeWidth(mlir::Type type) {
   if (type.isIndex())
     return loom::ADDR_BIT_WIDTH;
   return 0;
-}
-
-/// Get bridge boundary port arrays from a node's attributes.
-bool getBridgePortsVal(const Node *node,
-                       mlir::DenseI32ArrayAttr &bridgeInPorts,
-                       mlir::DenseI32ArrayAttr &bridgeOutPorts) {
-  bridgeInPorts = {};
-  bridgeOutPorts = {};
-  for (auto &attr : node->attributes) {
-    if (attr.getName() == "bridge_input_ports")
-      bridgeInPorts =
-          mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
-    else if (attr.getName() == "bridge_output_ports")
-      bridgeOutPorts =
-          mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
-  }
-  return bridgeInPorts || bridgeOutPorts;
-}
-
-/// Get bridge mux/demux temporal_sw node IDs from a node's attributes.
-/// ADGFlattener stores these as "bridge_mux_nodes" and "bridge_demux_nodes".
-void getBridgeMuxDemuxNodes(const Node *node,
-                            mlir::DenseI32ArrayAttr &muxNodes,
-                            mlir::DenseI32ArrayAttr &demuxNodes) {
-  muxNodes = {};
-  demuxNodes = {};
-  for (auto &attr : node->attributes) {
-    if (attr.getName() == "bridge_mux_nodes")
-      muxNodes =
-          mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
-    else if (attr.getName() == "bridge_demux_nodes")
-      demuxNodes =
-          mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
-  }
 }
 
 } // namespace
@@ -494,29 +461,19 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
 
       // Bridge memory validation: check port bindings go to bridge boundary
       // ports and temporal_sw mux/demux nodes have assignments.
-      mlir::DenseI32ArrayAttr bridgeInPorts, bridgeOutPorts;
-      if (getBridgePortsVal(hwNode, bridgeInPorts, bridgeOutPorts)) {
-        // Validate bridge mux/demux temporal_sw assignments.
-        mlir::DenseI32ArrayAttr muxNodes, demuxNodes;
-        getBridgeMuxDemuxNodes(hwNode, muxNodes, demuxNodes);
-
+      BridgeInfo bridgeVal = BridgeInfo::extract(hwNode);
+      if (bridgeVal.hasBridge) {
         // Collect valid tag ranges from this memory's config.
         int64_t ldCount = getNodeIntAttr(hwNode, "ldCount", 1);
         int64_t stCount = getNodeIntAttr(hwNode, "stCount", 1);
         int64_t tagCount = std::max(ldCount, stCount);
         bool isBridge = (ldCount > 1 || stCount > 1);
-        // Build tag ranges covering all numRegion entries (matching ConfigGen
-        // which emits numRegion entries, padding unused ones with valid=0).
-        // Use numRegion for bridge memories so partial-lane mappings are
-        // accepted by validation even if not all regions are mapped.
         size_t mappedCnt =
             (i < state.hwNodeToSwNodes.size() &&
              !state.hwNodeToSwNodes[i].empty())
             ? state.hwNodeToSwNodes[i].size() : 0;
-        // Bridge: single region [0, tagCount); non-bridge: per-mapping.
-        size_t effectiveRegCnt = isBridge
-            ? 1
-            : std::min(mappedCnt, static_cast<size_t>(numRegion));
+        size_t effectiveRegCnt =
+            std::min(mappedCnt, static_cast<size_t>(numRegion));
         llvm::SmallVector<std::pair<int64_t, int64_t>, 4> tagRanges;
         for (size_t r = 0; r < effectiveRegCnt; ++r) {
           if (isBridge)
@@ -526,16 +483,16 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
                                  static_cast<int64_t>(r + 1)});
         }
 
-        auto validateBridgeTsw = [&](mlir::DenseI32ArrayAttr nodes,
-                                     const char *label) -> bool {
-          if (!nodes)
+        auto validateBridgeTsw =
+            [&](llvm::ArrayRef<IdIndex> tswNodes,
+                const char *label) -> bool {
+          if (tswNodes.empty())
             return true;
-          for (int32_t tswId : nodes.asArrayRef()) {
-            auto tswIdx = static_cast<IdIndex>(tswId);
+          for (IdIndex tswIdx : tswNodes) {
             if (tswIdx >= state.temporalSWAssignments.size() ||
                 state.temporalSWAssignments[tswIdx].empty()) {
               diag = "C4: bridge " + std::string(label) + " " +
-                     std::to_string(tswId) +
+                     std::to_string(tswIdx) +
                      " for memory hw_node=" + std::to_string(i) +
                      " has no temporal assignment";
               return false;
@@ -546,7 +503,6 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
                 ? getNodeIntAttr(tswNode, "num_route_table", 0) : 0;
             unsigned tswNumIn = tswNode ? tswNode->inputPorts.size() : 0;
             unsigned tswNumOut = tswNode ? tswNode->outputPorts.size() : 0;
-            // Parse connectivity_table for route-mask validation.
             mlir::DenseI8ArrayAttr connTable;
             if (tswNode) {
               for (auto &attr : tswNode->attributes) {
@@ -557,7 +513,6 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
                 }
               }
             }
-            // Build connected (out, in) positions for fan-in checking.
             unsigned K = tswNumOut * tswNumIn;
             llvm::SmallVector<std::pair<unsigned, unsigned>> connPos;
             if (connTable &&
@@ -573,33 +528,28 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
             }
             llvm::DenseSet<IdIndex> usedTags;
             for (const auto &a : assigns) {
-              // Slot bounds check.
               if (numRT > 0 &&
                   static_cast<int64_t>(a.slot) >= numRT) {
                 diag = "C4: bridge " + std::string(label) +
-                       " tsw=" + std::to_string(tswId) +
+                       " tsw=" + std::to_string(tswIdx) +
                        " slot " + std::to_string(a.slot) +
                        " exceeds num_route_table " +
                        std::to_string(numRT);
                 return false;
               }
-              // Duplicate tag check.
               if (a.tag != INVALID_ID &&
                   !usedTags.insert(a.tag).second) {
                 diag = "C4: bridge " + std::string(label) +
-                       " tsw=" + std::to_string(tswId) +
+                       " tsw=" + std::to_string(tswIdx) +
                        " duplicate tag " + std::to_string(a.tag);
                 return false;
               }
-              // Route-mask legality: only K valid bit positions.
               if (K > 0 && a.routeMask >= (1ULL << K)) {
                 diag = "C4: bridge " + std::string(label) +
-                       " tsw=" + std::to_string(tswId) +
+                       " tsw=" + std::to_string(tswIdx) +
                        " route mask exceeds K=" + std::to_string(K);
                 return false;
               }
-              // One-input-per-output: each output selects at most one
-              // routed input per slot (spec rule).
               if (!connPos.empty()) {
                 llvm::DenseMap<unsigned, unsigned> outFanIn;
                 for (unsigned k = 0; k < connPos.size(); ++k)
@@ -608,7 +558,7 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
                 for (auto &[outIdx, cnt] : outFanIn) {
                   if (cnt > 1) {
                     diag = "C4: bridge " + std::string(label) +
-                           " tsw=" + std::to_string(tswId) +
+                           " tsw=" + std::to_string(tswIdx) +
                            " slot " + std::to_string(a.slot) +
                            " routes " + std::to_string(cnt) +
                            " inputs to output " + std::to_string(outIdx);
@@ -616,7 +566,6 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
                   }
                 }
               }
-              // Validate tag against memory's addr_offset_table ranges.
               if (a.tag != INVALID_ID && !tagRanges.empty()) {
                 auto t = static_cast<int64_t>(a.tag);
                 bool covered = false;
@@ -624,7 +573,7 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
                   if (t >= s && t < e) { covered = true; break; }
                 if (!covered) {
                   diag = "C4: bridge " + std::string(label) +
-                         " tsw=" + std::to_string(tswId) +
+                         " tsw=" + std::to_string(tswIdx) +
                          " tag " + std::to_string(a.tag) +
                          " not covered by addr_offset_table";
                   return false;
@@ -634,14 +583,12 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
           }
           return true;
         };
-        if (!validateBridgeTsw(muxNodes, "mux"))
+        if (!validateBridgeTsw(bridgeVal.muxNodes, "mux"))
           return false;
-        if (!validateBridgeTsw(demuxNodes, "demux"))
+        if (!validateBridgeTsw(bridgeVal.demuxNodes, "demux"))
           return false;
 
         // Verify that mapped DFG ports bind to bridge boundary ports.
-        // For extmemory, skip memref at input port 0 (binds directly).
-        // For memory, all input ports go through bridge boundary.
         bool isExtMem =
             (getNodeOpName(hwNode) == "fabric.extmemory");
         unsigned swInSkip = isExtMem ? 1 : 0;
@@ -650,7 +597,6 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
           const Node *swNode = dfg.getNode(swId);
           if (!swNode)
             continue;
-          // Check input port bindings.
           for (size_t p = swInSkip; p < swNode->inputPorts.size(); ++p) {
             IdIndex swPort = swNode->inputPorts[p];
             if (swPort >= state.swPortToHwPort.size())
@@ -658,10 +604,10 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
             IdIndex hwPort = state.swPortToHwPort[swPort];
             if (hwPort == INVALID_ID)
               continue;
-            if (bridgeInPorts) {
+            if (!bridgeVal.inputPorts.empty()) {
               bool found = false;
-              for (int32_t bp : bridgeInPorts.asArrayRef()) {
-                if (static_cast<IdIndex>(bp) == hwPort) {
+              for (IdIndex bp : bridgeVal.inputPorts) {
+                if (bp == hwPort) {
                   found = true;
                   break;
                 }
@@ -675,7 +621,6 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
               }
             }
           }
-          // Check output port bindings (all outputs through bridge).
           for (size_t p = 0; p < swNode->outputPorts.size(); ++p) {
             IdIndex swPort = swNode->outputPorts[p];
             if (swPort >= state.swPortToHwPort.size())
@@ -683,10 +628,10 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
             IdIndex hwPort = state.swPortToHwPort[swPort];
             if (hwPort == INVALID_ID)
               continue;
-            if (bridgeOutPorts) {
+            if (!bridgeVal.outputPorts.empty()) {
               bool found = false;
-              for (int32_t bp : bridgeOutPorts.asArrayRef()) {
-                if (static_cast<IdIndex>(bp) == hwPort) {
+              for (IdIndex bp : bridgeVal.outputPorts) {
+                if (bp == hwPort) {
                   found = true;
                   break;
                 }

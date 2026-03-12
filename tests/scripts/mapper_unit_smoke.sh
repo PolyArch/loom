@@ -18,10 +18,10 @@ if [[ "${1:-}" == "--single" ]]; then
   output_dir="${TEST_DIR}/Output"
   mkdir -p "${output_dir}"
 
-  # Check for xfail marker: if .xfail exists, mapper failure = PASS.
-  xfail=false
-  if [[ -f "${TEST_DIR}/.xfail" ]]; then
-    xfail=true
+  # Check for negative marker: if .negative exists, mapper failure = PASS.
+  negative=false
+  if [[ -f "${TEST_DIR}/.negative" ]]; then
+    negative=true
   fi
 
   # Discover ADG and DFG files.
@@ -34,15 +34,15 @@ if [[ "${1:-}" == "--single" ]]; then
       dfg_name=$(basename "${dfg}" .handshake.mlir)
       out_base="${output_dir}/${dfg_name}_on_${adg_name}"
 
-      if "${xfail}"; then
-        # xfail mode: mapper MUST fail (non-zero exit).
+      if "${negative}"; then
+        # negative mode: mapper MUST fail (non-zero exit).
         if "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget 10 2>/dev/null; then
-          echo "XFAIL: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
+          echo "NEGATIVE: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
           exit 1
         fi
         # Verify viz.html is NOT generated on failure.
         if [[ -f "${out_base}.viz.html" ]]; then
-          echo "XFAIL: viz.html should not exist on failure: ${out_base}.viz.html" >&2
+          echo "NEGATIVE: viz.html should not exist on failure: ${out_base}.viz.html" >&2
           exit 1
         fi
       else

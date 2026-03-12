@@ -861,6 +861,36 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
         "bridge_output_ports",
         mlir::DenseI32ArrayAttr::get(builder.getContext(), outPorts)));
 
+    // Emit per-port category arrays (parallel to port arrays).
+    // Input: store inputs interleaved [st_data, st_addr] per lane, then ld_addr.
+    // Output: [ld_data * ldCount, ld_done * ldCount, st_done * stCount].
+    // Categories: 0=StData, 1=StAddr, 2=LdAddr, 3=LdData, 4=LdDone, 5=StDone.
+    {
+      llvm::SmallVector<int32_t> inCats;
+      for (unsigned i = 0; i < bridgeInputPorts.size(); ++i) {
+        if (i < bridgeStoreInputCount)
+          inCats.push_back((i % 2 == 0) ? 0 : 1); // StData / StAddr
+        else
+          inCats.push_back(2); // LdAddr
+      }
+      node->attributes.push_back(builder.getNamedAttr(
+          "bridge_input_categories",
+          mlir::DenseI32ArrayAttr::get(builder.getContext(), inCats)));
+
+      llvm::SmallVector<int32_t> outCats;
+      for (unsigned i = 0; i < bridgeOutputPorts.size(); ++i) {
+        if (i < bridgeLdDataOutputCount)
+          outCats.push_back(3); // LdData
+        else if (i < bridgeLdDataOutputCount * 2)
+          outCats.push_back(4); // LdDone
+        else
+          outCats.push_back(5); // StDone
+      }
+      node->attributes.push_back(builder.getNamedAttr(
+          "bridge_output_categories",
+          mlir::DenseI32ArrayAttr::get(builder.getContext(), outCats)));
+    }
+
     // Store bridge temporal_sw node IDs for temporal assignment.
     if (!muxNodes.empty()) {
       llvm::SmallVector<int32_t> muxIds(muxNodes.begin(), muxNodes.end());

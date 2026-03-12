@@ -367,7 +367,8 @@ Mapper::findPathRelaxed(IdIndex srcHwPort, IdIndex dstHwPort,
     nextPath.push_back(nextInputPort);
 
     if (nextInputPort == dstHwPort) {
-      // Found path. Collect blocking SW edges along this path.
+      // Found path. Collect blocking SW edges along this path,
+      // skipping tagged edges that still have spare capacity.
       for (size_t i = 0; i + 1 < nextPath.size(); i += 2) {
         IdIndex outPort = nextPath[i];
         IdIndex inPort = nextPath[i + 1];
@@ -378,10 +379,19 @@ Mapper::findPathRelaxed(IdIndex srcHwPort, IdIndex dstHwPort,
           const Edge *hwE = adg.getEdge(hwEdgeId);
           if (!hwE || hwE->srcPort != outPort || hwE->dstPort != inPort)
             continue;
-          if (hwEdgeId < state.hwEdgeToSwEdges.size()) {
-            for (IdIndex swEdge : state.hwEdgeToSwEdges[hwEdgeId])
-              blockingEdges.push_back(swEdge);
+          if (hwEdgeId >= state.hwEdgeToSwEdges.size() ||
+              state.hwEdgeToSwEdges[hwEdgeId].empty())
+            continue;
+          // Tagged edges support sharing up to 2^tagWidth flows.
+          if (auto taggedType =
+                  mlir::dyn_cast<loom::dataflow::TaggedType>(op->type)) {
+            unsigned tagWidth = taggedType.getTagType().getWidth();
+            unsigned maxTags = 1u << tagWidth;
+            if (state.hwEdgeToSwEdges[hwEdgeId].size() < maxTags)
+              continue; // Spare tag capacity; not a blocker.
           }
+          for (IdIndex swEdge : state.hwEdgeToSwEdges[hwEdgeId])
+            blockingEdges.push_back(swEdge);
         }
       }
       return nextPath;

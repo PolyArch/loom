@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Mapper/Mapper.h"
+#include "loom/Mapper/BridgeBinding.h"
 #include "loom/Mapper/TypeCompat.h"
 
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
@@ -35,32 +36,6 @@ llvm::StringRef getNodeResourceClassRepair(const Node *node) {
   return "";
 }
 
-/// Get bridge boundary port arrays from a node's attributes.
-bool getBridgePortsRepair(const Node *node,
-                          mlir::DenseI32ArrayAttr &bridgeInPorts,
-                          mlir::DenseI32ArrayAttr &bridgeOutPorts) {
-  bridgeInPorts = {};
-  bridgeOutPorts = {};
-  for (auto &attr : node->attributes) {
-    if (attr.getName() == "bridge_input_ports")
-      bridgeInPorts =
-          mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
-    else if (attr.getName() == "bridge_output_ports")
-      bridgeOutPorts =
-          mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
-  }
-  return bridgeInPorts || bridgeOutPorts;
-}
-
-/// Get an integer attribute from a node.
-int64_t getIntAttrRepair(const Node *node, llvm::StringRef name,
-                         int64_t dflt = -1) {
-  for (auto &attr : node->attributes)
-    if (attr.getName() == name)
-      if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
-        return ia.getInt();
-  return dflt;
-}
 
 } // namespace
 
@@ -225,143 +200,17 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
                 bool isMemory =
                     (getNodeResourceClassRepair(hw) == "memory");
 
-                mlir::DenseI32ArrayAttr bridgeInPR, bridgeOutPR;
-                bool hasBridgeR = isMemory &&
-                    getBridgePortsRepair(hw, bridgeInPR, bridgeOutPR);
+                BridgeInfo bridgeR = BridgeInfo::extract(hw);
 
-                if (hasBridgeR) {
-                  // Bridge memory: category-aware binding.
-                  unsigned swInSkipR = 0;
-                  if (getNodeOpNameRepair(hw) == "fabric.extmemory" &&
-                      !sw->inputPorts.empty()) {
-                    state.mapPort(sw->inputPorts[0],
-                                  hw->inputPorts[0], dfg, adg);
-                    swInSkipR = 1;
-                  }
-                  int32_t storeInCntR = getIntAttrRepair(
-                      hw, "bridge_store_input_count", -1);
-                  int32_t ldDataOutCntR = getIntAttrRepair(
-                      hw, "bridge_ld_data_output_count", -1);
-
-                  if (bridgeInPR) {
-                    unsigned stBoundR =
-                        (storeInCntR > 0)
-                            ? static_cast<unsigned>(storeInCntR) : 0;
-                    unsigned inSzR =
-                        static_cast<unsigned>(bridgeInPR.size());
-                    // DFG store input count from stCount attr.
-                    int64_t dfgStC = getIntAttrRepair(sw, "stCount", 0);
-                    unsigned dfgStIns =
-                        static_cast<unsigned>(dfgStC) * 2;
-                    for (size_t p = swInSkipR;
-                         p < sw->inputPorts.size(); ++p) {
-                      const Port *sp = dfg.getPort(sw->inputPorts[p]);
-                      if (!sp) continue;
-                      unsigned rel = p - swInSkipR;
-                      bool isSt = (rel < dfgStIns);
-                      unsigned lo = isSt ? 0 : stBoundR;
-                      unsigned hi = isSt ? stBoundR : inSzR;
-                      bool found = false;
-                      for (unsigned bi = lo; bi < hi; ++bi) {
-                        auto hwPid =
-                            static_cast<IdIndex>(bridgeInPR[bi]);
-                        if (!state.hwPortToSwPorts[hwPid].empty())
-                          continue;
-                        const Port *hp = adg.getPort(hwPid);
-                        if (hp && isTypeWidthCompatible(
-                                      sp->type, hp->type)) {
-                          state.mapPort(sw->inputPorts[p], hwPid,
-                                        dfg, adg);
-                          found = true;
-                          break;
-                        }
-                      }
-                      if (!found) {
-                        for (unsigned bi = 0; bi < inSzR; ++bi) {
-                          auto hwPid =
-                              static_cast<IdIndex>(bridgeInPR[bi]);
-                          if (!state.hwPortToSwPorts[hwPid].empty())
-                            continue;
-                          const Port *hp = adg.getPort(hwPid);
-                          if (hp && isTypeWidthCompatible(
-                                        sp->type, hp->type)) {
-                            state.mapPort(sw->inputPorts[p], hwPid,
-                                          dfg, adg);
-                            break;
-                          }
-                        }
-                      }
-                    }
-                  }
-                  if (bridgeOutPR) {
-                    int ldOutR =
-                        (ldDataOutCntR > 0) ? ldDataOutCntR : 0;
-                    int ldDoneStR = ldOutR;
-                    int stDoneStR = ldOutR * 2;
-                    int totR =
-                        static_cast<int>(bridgeOutPR.size());
-                    // Count DFG ld_data outputs.
-                    unsigned dfgLdD = 0;
-                    const Port *ldDRef =
-                        (ldOutR > 0) ? adg.getPort(
-                            static_cast<IdIndex>(bridgeOutPR[0]))
-                                     : nullptr;
-                    for (size_t i = 0; i < sw->outputPorts.size();
-                         ++i) {
-                      const Port *sp =
-                          dfg.getPort(sw->outputPorts[i]);
-                      if (sp && ldDRef &&
-                          isTypeWidthCompatible(sp->type,
-                                                ldDRef->type))
-                        ++dfgLdD;
-                      else
-                        break;
-                    }
-                    for (size_t p = 0; p < sw->outputPorts.size();
-                         ++p) {
-                      const Port *sp =
-                          dfg.getPort(sw->outputPorts[p]);
-                      if (!sp) continue;
-                      int lo, hi;
-                      if (p < dfgLdD) {
-                        lo = 0; hi = ldDoneStR;
-                      } else if (p < dfgLdD * 2) {
-                        lo = ldDoneStR; hi = stDoneStR;
-                      } else {
-                        lo = stDoneStR; hi = totR;
-                      }
-                      bool found = false;
-                      for (int bi = lo; bi < hi; ++bi) {
-                        auto hwPid =
-                            static_cast<IdIndex>(bridgeOutPR[bi]);
-                        if (!state.hwPortToSwPorts[hwPid].empty())
-                          continue;
-                        const Port *hp = adg.getPort(hwPid);
-                        if (hp && isTypeWidthCompatible(
-                                      sp->type, hp->type)) {
-                          state.mapPort(sw->outputPorts[p], hwPid,
-                                        dfg, adg);
-                          found = true;
-                          break;
-                        }
-                      }
-                      if (!found) {
-                        for (int bi = 0; bi < totR; ++bi) {
-                          auto hwPid =
-                              static_cast<IdIndex>(bridgeOutPR[bi]);
-                          if (!state.hwPortToSwPorts[hwPid].empty())
-                            continue;
-                          const Port *hp = adg.getPort(hwPid);
-                          if (hp && isTypeWidthCompatible(
-                                        sp->type, hp->type)) {
-                            state.mapPort(sw->outputPorts[p], hwPid,
-                                          dfg, adg);
-                            break;
-                          }
-                        }
-                      }
-                    }
-                  }
+                if (bridgeR.hasBridge) {
+                  bool isExtMemR =
+                      (getNodeOpNameRepair(hw) == "fabric.extmemory");
+                  DfgMemoryInfo memR =
+                      DfgMemoryInfo::extract(sw, dfg, isExtMemR);
+                  bindBridgeInputs(bridgeR, memR, sw, hw, dfg, adg,
+                                   state);
+                  bindBridgeOutputs(bridgeR, memR, sw, hw, dfg, adg,
+                                    state);
                 } else if (isMemory) {
                   // Single-port memory: type-based greedy search.
                   llvm::DenseSet<IdIndex> usedInNode;

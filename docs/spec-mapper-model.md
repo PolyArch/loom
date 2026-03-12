@@ -699,6 +699,46 @@ fabric: `[ld_addr, st_addr, st_data]`). Type differentiation (address
 Memory outputs use positional binding since both conventions agree on
 output order `[ld_data, ld_done, st_done]`.
 
+**Bridge memory port binding**: Multi-port bridge memories
+(`fabric.memory` / `fabric.extmemory` nodes with bridge metadata) use
+category-aware greedy binding instead of type-only greedy binding.
+Each bridge port carries an explicit category from the
+`bridge_input_categories` / `bridge_output_categories` integer arrays
+on the ADG node. The six categories are:
+
+| Value | Category | Direction | Description |
+|-------|----------|-----------|-------------|
+| 0 | StData | input | Store data lane |
+| 1 | StAddr | input | Store address lane |
+| 2 | LdAddr | input | Load address lane |
+| 3 | LdData | output | Load data lane |
+| 4 | LdDone | output | Load done token |
+| 5 | StDone | output | Store done token |
+
+The category arrays are parallel to the existing `bridge_input_ports`
+and `bridge_output_ports` arrays: `bridge_input_categories[i]` is the
+category of `bridge_input_ports[i]`.
+
+DFG-side port classification uses `stCount` and `ldCount` attributes.
+DFG inputs follow a fixed ordering: store inputs occupy indices
+`[0, stCount*2)` with even indices as StData and odd indices as
+StAddr; load address inputs occupy `[stCount*2, end)` as LdAddr.
+DFG outputs follow: `[0, ldCount)` as LdData,
+`[ldCount, 2*ldCount)` as LdDone, `[2*ldCount, end)` as StDone.
+
+Binding is strict: each DFG port is classified and matched only to a
+bridge port with the same category and compatible type width. No
+fallback to full-range matching is permitted. This eliminates
+ambiguity in partial-lane scenarios (e.g., `st=1` DFG on `st=2` HW).
+
+For backward compatibility, when `bridge_input_categories` is absent
+(older ADGs), categories are reconstructed from the legacy split
+points (`bridge_store_input_count`, `bridge_ld_data_output_count`)
+using the ADGFlattener ordering invariant: inputs interleaved as
+`[st_data, st_addr]` pairs in `[0, storeInputCount)`, then `ld_addr`
+in `[storeInputCount, end)`; outputs concatenated as
+`[ld_data][ld_done][st_done]`.
+
 Mapped ports must satisfy:
 
 - Native/tagged category compatibility (native cannot connect to tagged

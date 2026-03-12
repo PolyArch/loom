@@ -26,8 +26,8 @@ if [[ -d "${UNIT_DIR}" ]]; then
   rel_unit_script=$(loom_relpath "${SCRIPT_DIR}/mapper_unit.sh")
   count=0
   while IFS= read -r d; do
-    # Skip xfail directories for smoke.
-    [[ -f "${d}/.xfail" ]] && continue
+    # Skip negative directories for smoke.
+    [[ -f "${d}/.negative" ]] && continue
     rel_test=$(loom_relpath "${d}")
     rel_out="${rel_test}/Output"
     echo "mkdir -p ${rel_out} && ${rel_unit_script} --single ${rel_loom} ${rel_test}" \

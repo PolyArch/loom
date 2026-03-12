@@ -373,7 +373,7 @@ void genMemoryConfig(const Node *hwNode, const MappingState &state,
   bool hasMapped = (hwId < state.hwNodeToSwNodes.size() &&
                     !state.hwNodeToSwNodes[hwId].empty());
   size_t mappedCount = hasMapped ? state.hwNodeToSwNodes[hwId].size() : 0;
-  // Bridge: 1 region [0, tagCount) (tags=lanes, placement caps at 1).
+  // Bridge: each active region uses [0, tagCount) (tags=lanes).
   size_t activeCount = isBridge
       ? 1 : std::min(mappedCount, static_cast<size_t>(numRegion));
 
@@ -1681,7 +1681,7 @@ bool ConfigGen::writeConfiguredFabric(
     bool isBridgeMemory = (ldCount > 1 || stCount > 1);
     int64_t tagCount = std::max(ldCount, stCount);
 
-    // Bridge: single region [0, tagCount); non-bridge: per-mapping regions.
+    // Bridge: each active region uses [0, tagCount); non-bridge: per-mapping.
     size_t effectiveRegionCount =
         isBridgeMemory ? 1 : regionCount;
 

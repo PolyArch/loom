@@ -2,6 +2,7 @@ add_llvm_library(LoomMapperCore
   Graph.cpp
   DFGBuilder.cpp
   ADGFlattener.cpp
+  BridgeBinding.cpp
   TechMapper.cpp
   CandidateBuilder.cpp
   MappingState.cpp

@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Mapper/TechMapper.h"
+#include "loom/Mapper/BridgeBinding.h"
 #include "loom/Mapper/TypeCompat.h"
 
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
@@ -209,33 +210,16 @@ bool TechMapper::isSingleOpCompatible(const Graph &dfg, IdIndex swNode,
       return false;
 
     // Check for bridge-boundary metadata (multi-port memory).
-    mlir::DenseI32ArrayAttr bridgeInPorts;
-    mlir::DenseI32ArrayAttr bridgeOutPorts;
-    for (auto &attr : hw->attributes) {
-      if (attr.getName() == "bridge_input_ports")
-        bridgeInPorts =
-            mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
-      else if (attr.getName() == "bridge_output_ports")
-        bridgeOutPorts =
-            mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
-    }
-
-    if (bridgeInPorts || bridgeOutPorts) {
-      // Multi-port memory with bridge: match against bridge boundary ports.
-      // Bridge boundary ports are native (untagged) and in DFG-compatible
-      // order, so we can use positional type matching.
-
-      // For extmemory, DFG port 0 is memref. It maps directly to ADG port 0
-      // (not through bridge). Remaining DFG ports map to bridge boundary.
-      unsigned swInSkip = 0;
-      if (hwOp == "fabric.extmemory") {
-        // DFG extmemory has memref at input[0]; check memref compatibility.
+    BridgeInfo bridge = BridgeInfo::extract(hw);
+    if (bridge.hasBridge) {
+      // Extmemory: validate memref at DFG input[0].
+      bool isExtMem = (hwOp == "fabric.extmemory");
+      if (isExtMem) {
         if (sw->inputPorts.empty())
           return false;
         const Port *sp0 = dfg.getPort(sw->inputPorts[0]);
         if (!sp0 || !mlir::isa<mlir::MemRefType>(sp0->type))
           return false;
-        // Compare full memref type against ADG extmemory memref port.
         if (!hw->inputPorts.empty()) {
           const Port *hp0 = adg.getPort(hw->inputPorts[0]);
           if (hp0 && mlir::isa<mlir::MemRefType>(hp0->type)) {
@@ -243,72 +227,10 @@ bool TechMapper::isSingleOpCompatible(const Graph &dfg, IdIndex swNode,
               return false;
           }
         }
-        swInSkip = 1;
       }
 
-      // Input port count: DFG non-memref inputs must fit bridge boundary.
-      unsigned swInCount = sw->inputPorts.size() - swInSkip;
-      unsigned hwBridgeInCount = bridgeInPorts ? bridgeInPorts.size() : 0;
-      if (swInCount > hwBridgeInCount)
-        return false;
-
-      // Output port count: DFG outputs must fit bridge boundary.
-      unsigned hwBridgeOutCount = bridgeOutPorts ? bridgeOutPorts.size() : 0;
-      if (sw->outputPorts.size() > hwBridgeOutCount)
-        return false;
-
-      // Input type matching: greedy subset check. Each DFG port must find
-      // an unused bridge port with compatible type (handles partial lane use).
-      {
-        llvm::SmallVector<bool, 8> hwUsed(
-            bridgeInPorts ? bridgeInPorts.size() : 0, false);
-        for (unsigned i = swInSkip; i < sw->inputPorts.size(); ++i) {
-          const Port *sp = dfg.getPort(sw->inputPorts[i]);
-          if (!sp || !sp->type)
-            continue;
-          bool found = false;
-          for (size_t hi = 0; hi < hwUsed.size(); ++hi) {
-            if (hwUsed[hi])
-              continue;
-            const Port *hp =
-                adg.getPort(static_cast<IdIndex>(bridgeInPorts[hi]));
-            if (hp && typesCompatible(sp->type, hp->type, false)) {
-              hwUsed[hi] = true;
-              found = true;
-              break;
-            }
-          }
-          if (!found)
-            return false;
-        }
-      }
-
-      // Output type matching: greedy subset check (same logic).
-      {
-        llvm::SmallVector<bool, 8> hwUsed(
-            bridgeOutPorts ? bridgeOutPorts.size() : 0, false);
-        for (size_t i = 0; i < sw->outputPorts.size(); ++i) {
-          const Port *sp = dfg.getPort(sw->outputPorts[i]);
-          if (!sp || !sp->type)
-            continue;
-          bool found = false;
-          for (size_t hi = 0; hi < hwUsed.size(); ++hi) {
-            if (hwUsed[hi])
-              continue;
-            const Port *hp =
-                adg.getPort(static_cast<IdIndex>(bridgeOutPorts[hi]));
-            if (hp && typesCompatible(sp->type, hp->type, false)) {
-              hwUsed[hi] = true;
-              found = true;
-              break;
-            }
-          }
-          if (!found)
-            return false;
-        }
-      }
-
-      return true;
+      DfgMemoryInfo mem = DfgMemoryInfo::extract(sw, dfg, isExtMem);
+      return isBridgeCompatible(bridge, mem, sw, dfg, adg);
     }
 
     // Single-port memory (no bridge): original matching logic.
