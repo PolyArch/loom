@@ -29,7 +29,7 @@ void string_compare_cpu(const uint32_t* __restrict__ input_str_a,
 }
 
 // Accelerator implementation of string comparison
-LOOM_NO_ACCEL
+LOOM_ACCEL()
 void string_compare_dsa(const uint32_t* __restrict__ input_str_a,
                         const uint32_t* __restrict__ input_str_b,
                         uint32_t* __restrict__ output_result,

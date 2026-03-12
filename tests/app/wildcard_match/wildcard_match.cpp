@@ -41,7 +41,7 @@ void wildcard_match_cpu(const uint32_t* __restrict__ input_text,
 }
 
 // Accelerator implementation of single character wildcard matching
-// NOTE: No LOOM_* pragmas intentionally - this is a no-pragma baseline test
+LOOM_ACCEL()
 void wildcard_match_dsa(const uint32_t* __restrict__ input_text,
                         const uint32_t* __restrict__ input_pattern,
                         uint32_t* __restrict__ output_match,
