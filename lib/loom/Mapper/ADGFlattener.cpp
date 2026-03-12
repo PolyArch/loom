@@ -766,12 +766,9 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
     }
 
     // Trace output bridges per category.
-    // ADG memory output layout: [memref?] [ld_data, ld_done] (if ldCount>0),
-    //                            [st_done] (if stCount>0)
-    // DFG output layout:         [ld_data] (if ldCount>0),
-    //                            [st_done] (if stCount>0),
-    //                            [ld_done] (if ldCount>0)
-    // We store boundary ports in DFG order: ld_data, st_done, ld_done.
+    // Memory output layout: [memref?] [ld_data, ld_done] (if ldCount>0),
+    //                        [st_done] (if stCount>0)
+    // Boundary ports stored in spec order: ld_data, ld_done, st_done.
     llvm::SmallVector<IdIndex, 8> ldDataBoundary, ldDoneBoundary,
         stDoneBoundary;
     llvm::SmallVector<IdIndex, 4> demuxNodes;
@@ -793,11 +790,11 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
         demuxNodes.push_back(demuxId);
     }
 
-    // Reorder to DFG output order: ld_data, st_done, ld_done.
+    // Output order matches spec: ld_data, ld_done, st_done.
     llvm::SmallVector<IdIndex, 8> bridgeOutputPorts;
     bridgeOutputPorts.append(ldDataBoundary.begin(), ldDataBoundary.end());
-    bridgeOutputPorts.append(stDoneBoundary.begin(), stDoneBoundary.end());
     bridgeOutputPorts.append(ldDoneBoundary.begin(), ldDoneBoundary.end());
+    bridgeOutputPorts.append(stDoneBoundary.begin(), stDoneBoundary.end());
 
     // Skip if detection failed (incomplete bridge).
     if (bridgeInputPorts.empty() && bridgeOutputPorts.empty())

@@ -367,10 +367,13 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
       }
     } else if (resClass == "memory") {
       int64_t numRegion = getIntAttr(hwNode, "numRegion", 1);
+      int64_t ldC = getIntAttr(hwNode, "ldCount", 1);
+      int64_t stC = getIntAttr(hwNode, "stCount", 1);
+      int64_t cap = (ldC > 1 || stC > 1) ? 1 : numRegion;
       LinearExpr sum;
       for (auto &[sw, var] : swVarPairs)
         sum += var;
-      model.AddLessOrEqual(sum, numRegion);
+      model.AddLessOrEqual(sum, cap);
     }
   }
 
@@ -762,7 +765,10 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
       }
     } else if (resClass == "memory") {
       int64_t numRegion = getIntAttr(hwNode, "numRegion", 1);
-      int remaining = static_cast<int>(numRegion) - fixedCount;
+      int64_t ldC = getIntAttr(hwNode, "ldCount", 1);
+      int64_t stC = getIntAttr(hwNode, "stCount", 1);
+      int64_t cap = (ldC > 1 || stC > 1) ? 1 : numRegion;
+      int remaining = static_cast<int>(cap) - fixedCount;
       LinearExpr sum;
       for (auto &[sw, var] : swVarPairs)
         sum += var;

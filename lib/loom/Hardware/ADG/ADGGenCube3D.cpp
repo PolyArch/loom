@@ -684,25 +684,33 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
                              std::to_string(pc);
       peInst = builder.clone(peTemplateCache[peKey], instName);
     } else if (p.kind == PEPlacement3D::Load) {
-      if (loadTemplateCache.find(p.dataWidth) == loadTemplateCache.end()) {
-        loadTemplateCache[p.dataWidth] =
-            builder.newLoadPE("load_pe_w" + std::to_string(p.dataWidth))
-                .setDataType(widthToNativeType(p.dataWidth));
+      unsigned key = p.dataWidth | (p.isFloat ? 0x80000000u : 0);
+      if (loadTemplateCache.find(key) == loadTemplateCache.end()) {
+        Type dt = p.isFloat ? widthToFloatType(p.dataWidth)
+                            : widthToNativeType(p.dataWidth);
+        std::string suffix = (p.isFloat ? "f" : "w") +
+                             std::to_string(p.dataWidth);
+        loadTemplateCache[key] =
+            builder.newLoadPE("load_pe_" + suffix).setDataType(dt);
       }
       std::string instName = "load_pe_d" + std::to_string(pd) + "_r" +
                              std::to_string(pr) + "_c" +
                              std::to_string(pc);
-      peInst = builder.clone(loadTemplateCache[p.dataWidth], instName);
+      peInst = builder.clone(loadTemplateCache[key], instName);
     } else {
-      if (storeTemplateCache.find(p.dataWidth) == storeTemplateCache.end()) {
-        storeTemplateCache[p.dataWidth] =
-            builder.newStorePE("store_pe_w" + std::to_string(p.dataWidth))
-                .setDataType(widthToNativeType(p.dataWidth));
+      unsigned key = p.dataWidth | (p.isFloat ? 0x80000000u : 0);
+      if (storeTemplateCache.find(key) == storeTemplateCache.end()) {
+        Type dt = p.isFloat ? widthToFloatType(p.dataWidth)
+                            : widthToNativeType(p.dataWidth);
+        std::string suffix = (p.isFloat ? "f" : "w") +
+                             std::to_string(p.dataWidth);
+        storeTemplateCache[key] =
+            builder.newStorePE("store_pe_" + suffix).setDataType(dt);
       }
       std::string instName = "store_pe_d" + std::to_string(pd) + "_r" +
                              std::to_string(pr) + "_c" +
                              std::to_string(pc);
-      peInst = builder.clone(storeTemplateCache[p.dataWidth], instName);
+      peInst = builder.clone(storeTemplateCache[key], instName);
     }
 
     // Wire PE ports to each width plane's cube.
