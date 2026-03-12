@@ -143,10 +143,7 @@ void genPEConfig(const Node *hwNode, const MappingState &state,
   int64_t contCond = getNodeIntAttr(hwNode, "cont_cond_sel", -1);
   if (contCond >= 0)
     packBits(words, bitPos, static_cast<uint64_t>(contCond), 5);
-
-  // If no config bits were packed, leave words empty so the caller skips
-  // this node. Native compute PEs without tags/cmp/constant have
-  // CONFIG_WIDTH = 0 and must not occupy config_mem space.
+  // If no config bits were packed, leave words empty so caller skips node.
 }
 
 /// Generate switch configuration: route enable bits based on actual routing.
@@ -223,8 +220,7 @@ void genTemporalPEConfig(const Node *hwNode, const MappingState &state,
   uint32_t bitPos = 0;
   words.clear();
 
-  // Collect all FU nodes belonging to this temporal PE.
-  // FU nodes have parent_temporal_pe == hwId.
+  // Collect FU nodes belonging to this temporal PE.
   llvm::SmallVector<IdIndex, 4> fuNodes;
   for (IdIndex nodeId = 0; nodeId < static_cast<IdIndex>(adg.nodes.size());
        ++nodeId) {
@@ -304,9 +300,8 @@ void genTemporalSWConfig(const Node *hwNode, const MappingState &state,
   }
 
   // Count connected positions (K) from connectivity_table.
-  unsigned numIn = hwNode->inputPorts.size();
-  unsigned numOut = hwNode->outputPorts.size();
-  unsigned K = numOut * numIn; // Default: full crossbar
+  unsigned numIn = hwNode->inputPorts.size(), numOut = hwNode->outputPorts.size();
+  unsigned K = numOut * numIn;
   mlir::DenseI8ArrayAttr connTable;
   for (auto &attr : hwNode->attributes) {
     if (attr.getName() == "connectivity_table") {
@@ -376,27 +371,32 @@ void genMemoryConfig(const Node *hwNode, const MappingState &state,
       ++tw;
   }
 
+  if (numRegion == 0)
+    return;
   bool hasMapped = (hwId < state.hwNodeToSwNodes.size() &&
                     !state.hwNodeToSwNodes[hwId].empty());
   size_t mappedCount = hasMapped ? state.hwNodeToSwNodes[hwId].size() : 0;
-  size_t regionCount = std::min(mappedCount, static_cast<size_t>(numRegion));
-  if (isBridge && regionCount == 0 && numRegion > 0)
-    regionCount = 1;
-  if (regionCount == 0)
-    return;
+  size_t activeCount = std::min(mappedCount, static_cast<size_t>(numRegion));
+  if (isBridge && activeCount == 0)
+    activeCount = 1;
 
+  unsigned bitsPerRegion = ADDR_BIT_WIDTH + 1 + (tw > 0 ? tw + (tw + 1) : 0);
   uint32_t bitPos = 0;
-  for (size_t r = 0; r < regionCount; ++r) {
-    // Pack low-to-high: addr_offset, end_tag, start_tag, valid.
-    packBits(words, bitPos, 0, ADDR_BIT_WIDTH); // addr_offset
-    if (tw > 0) {
-      uint64_t endTag = isBridge ? static_cast<uint64_t>(tagCount)
-                                 : static_cast<uint64_t>(r + 1);
-      uint64_t startTag = isBridge ? 0 : static_cast<uint64_t>(r);
-      packBits(words, bitPos, endTag, tw + 1);  // end_tag
-      packBits(words, bitPos, startTag, tw);     // start_tag
+  for (size_t r = 0; r < static_cast<size_t>(numRegion); ++r) {
+    if (r < activeCount) {
+      packBits(words, bitPos, 0, ADDR_BIT_WIDTH); // addr_offset
+      if (tw > 0) {
+        uint64_t endTag = isBridge ? static_cast<uint64_t>(tagCount)
+                                   : static_cast<uint64_t>(r + 1);
+        uint64_t startTag = isBridge ? 0 : static_cast<uint64_t>(r);
+        packBits(words, bitPos, endTag, tw + 1);  // end_tag
+        packBits(words, bitPos, startTag, tw);     // start_tag
+      }
+      packBits(words, bitPos, 1, 1); // valid
+    } else {
+      // Inactive region: all-zero bits (valid=0).
+      packBits(words, bitPos, 0, bitsPerRegion);
     }
-    packBits(words, bitPos, 1, 1); // valid
   }
 }
 

@@ -191,6 +191,9 @@ if [[ "${1:-}" == "--single" ]]; then
 fi
 
 # --- Batch mode ---
+# Run Python self-tests for bridge tag checker before stress tests.
+python3 "${SCRIPT_DIR}/check_bridge_tags.py" --self-test
+
 LOOM_BIN=$(loom_resolve_bin "${1:-${ROOT_DIR}/build/bin/loom}"); shift || true
 
 # --anchor selects S1-S2 only; --full selects S1-S6 (default: --full).

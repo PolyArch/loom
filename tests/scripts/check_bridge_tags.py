@@ -107,6 +107,12 @@ def get_tag_ranges(table: list[int]) -> list[tuple[int, int]]:
     return ranges
 
 
+def extract_num_region(rest: str) -> int:
+    """Extract numRegion from a memory/extmemory op (default 1)."""
+    m = re.search(r'numRegion\s*=\s*(\d+)', rest)
+    return int(m.group(1)) if m else 1
+
+
 def extract_ld_st_count(rest: str) -> tuple[int, int]:
     """Extract ldCount and stCount from a memory/extmemory op."""
     ld, st = 1, 1
@@ -130,13 +136,17 @@ def parse_addr_header(text: str) -> dict[str, tuple[int, int]]:
 
 
 def decode_memory_config(
-        words: list[int], ld_count: int, st_count: int
+        words: list[int], ld_count: int, st_count: int,
+        num_region: int | None = None
 ) -> list[tuple[int, int, int, int]]:
     """Decode config words into (valid, start_tag, end_tag, addr_offset).
 
     Field layout per region (low-to-high):
       addr_offset(ADDR_BIT_WIDTH), end_tag(tw+1), start_tag(tw), valid(1)
     where tw = clog2(max(ldCount, stCount)).
+
+    If num_region is given, decode exactly that many regions (hardware sizes
+    config by numRegion). Otherwise infer from total bit count.
     """
     is_bridge = (ld_count > 1 or st_count > 1)
     tw = 0
@@ -152,12 +162,15 @@ def decode_memory_config(
     for idx, w in enumerate(words):
         combined |= (w << (32 * idx))
 
-    total_bits = len(words) * 32
-    num_regions = total_bits // bits_per_region if bits_per_region > 0 else 0
+    if num_region is not None:
+        n_regions = num_region
+    else:
+        total_bits = len(words) * 32
+        n_regions = total_bits // bits_per_region if bits_per_region > 0 else 0
 
     regions = []
     bit_pos = 0
-    for _ in range(num_regions):
+    for _ in range(n_regions):
         addr_off = (combined >> bit_pos) & ((1 << ADDR_BIT_WIDTH) - 1)
         bit_pos += ADDR_BIT_WIDTH
         end_tag, start_tag = 0, 0
@@ -216,30 +229,41 @@ def verify_config_binary(mlir_text: str, addr_text: str,
             continue
         words = list(struct.unpack_from(
             f'<{word_count}I', config_data, word_offset * 4))
-        bin_regions = decode_memory_config(words, ld_count, st_count)
+        num_region = extract_num_region(info["rest"])
+        bin_regions = decode_memory_config(
+            words, ld_count, st_count, num_region=num_region)
         # Parse MLIR table: [valid, start, end, base] * N
         mlir_regions = []
         for j in range(0, len(mlir_table) - 3, 4):
             mlir_regions.append(
                 (mlir_table[j], mlir_table[j+1], mlir_table[j+2],
                  mlir_table[j+3]))
-        for r_idx, (m_valid, m_start, m_end, _) in enumerate(mlir_regions):
-            if r_idx >= len(bin_regions):
-                if m_valid:
-                    violations.append(
-                        f"bridge memory %{name} region {r_idx}: "
-                        f"MLIR valid but absent in config.bin")
-                continue
-            b_valid, b_start, b_end, _ = bin_regions[r_idx]
+        # Require exact region count match (hardware always has numRegion).
+        if len(bin_regions) != len(mlir_regions):
+            violations.append(
+                f"bridge memory %{name}: region count mismatch "
+                f"(bin={len(bin_regions)}, mlir={len(mlir_regions)})")
+            continue
+        for r_idx, (m_valid, m_start, m_end, m_base) in enumerate(
+                mlir_regions):
+            b_valid, b_start, b_end, b_base = bin_regions[r_idx]
             if b_valid != m_valid:
                 violations.append(
                     f"bridge memory %{name} region {r_idx}: "
                     f"valid mismatch (bin={b_valid}, mlir={m_valid})")
-            elif m_valid and (b_start != m_start or b_end != m_end):
-                violations.append(
-                    f"bridge memory %{name} region {r_idx}: "
-                    f"tag range mismatch "
-                    f"(bin=[{b_start},{b_end}), mlir=[{m_start},{m_end}))")
+            elif m_valid:
+                mismatches = []
+                if b_start != m_start or b_end != m_end:
+                    mismatches.append(
+                        f"tags bin=[{b_start},{b_end}) "
+                        f"mlir=[{m_start},{m_end})")
+                if b_base != m_base:
+                    mismatches.append(
+                        f"addr_offset bin={b_base} mlir={m_base}")
+                if mismatches:
+                    violations.append(
+                        f"bridge memory %{name} region {r_idx}: "
+                        + ", ".join(mismatches))
     return violations
 
 
@@ -376,5 +400,68 @@ def main() -> int:
     return 0
 
 
+def run_self_tests() -> int:
+    """Verify decode_memory_config handles numRegion > active regions."""
+    errors = []
+
+    # Build synthetic config for bridge memory: ldCount=2, stCount=0,
+    # numRegion=2, only region 0 active (valid=1, start_tag=0, end_tag=2).
+    # RTL layout per region (low-to-high):
+    #   addr_offset[57], end_tag[tw+1], start_tag[tw], valid[1]
+    # tw = clog2(max(2, 0)) = 1, so bits_per_region = 57+2+1+1 = 61.
+    ld_count, st_count, num_region = 2, 0, 2
+    tw = 1
+    bits_per_region = ADDR_BIT_WIDTH + (tw + 1) + tw + 1  # 57+2+1+1 = 61
+
+    combined = 0
+    bit_pos = 0
+    # Region 0: active (addr_offset=0, end_tag=2, start_tag=0, valid=1).
+    combined |= (0 << bit_pos)             # addr_offset = 0
+    bit_pos += ADDR_BIT_WIDTH
+    combined |= (2 << bit_pos)             # end_tag = 2
+    bit_pos += tw + 1
+    combined |= (0 << bit_pos)             # start_tag = 0
+    bit_pos += tw
+    combined |= (1 << bit_pos)             # valid = 1
+    bit_pos += 1
+    # Region 1: inactive (all zeros, valid=0).
+    bit_pos += bits_per_region  # skip with zeros
+
+    total_bits = num_region * bits_per_region
+    num_words = (total_bits + 31) // 32
+    words = []
+    for i in range(num_words):
+        words.append((combined >> (32 * i)) & 0xFFFFFFFF)
+
+    regions = decode_memory_config(words, ld_count, st_count,
+                                   num_region=num_region)
+    if len(regions) != 2:
+        errors.append(f"expected 2 regions, got {len(regions)}")
+    else:
+        v0, s0, e0, a0 = regions[0]
+        if (v0, s0, e0, a0) != (1, 0, 2, 0):
+            errors.append(
+                f"region 0: expected (1,0,2,0), got ({v0},{s0},{e0},{a0})")
+        v1, s1, e1, a1 = regions[1]
+        if (v1, s1, e1, a1) != (0, 0, 0, 0):
+            errors.append(
+                f"region 1: expected (0,0,0,0), got ({v1},{s1},{e1},{a1})")
+
+    # Without num_region, decoder should still find 2 regions from bit count.
+    regions2 = decode_memory_config(words, ld_count, st_count)
+    if len(regions2) != len(regions):
+        errors.append(
+            f"inferred region count {len(regions2)} != explicit {len(regions)}")
+
+    if errors:
+        for e in errors:
+            print(f"  SELF-TEST FAIL: {e}")
+        return 1
+    print("[PASS] Self-tests passed (decode_memory_config padding)")
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--self-test":
+        sys.exit(run_self_tests())
     sys.exit(main())
