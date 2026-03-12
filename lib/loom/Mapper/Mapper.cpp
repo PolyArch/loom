@@ -1015,30 +1015,19 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
               continue; // Capacity exceeded.
           }
         } else if (resClass == "memory") {
-          // Memory nodes allow up to numRegion SW nodes, but bridge-backed
-          // memories (ldCount > 1 or stCount > 1) are limited to 1 because
-          // their boundary ports/tags cannot be shared across mappings.
+          // Memory nodes allow up to numRegion SW nodes (including bridge-
+          // backed memories -- their disjoint tag ranges support multi-region).
           int64_t numRegion = 1;
-          int64_t ldCount = 1, stCount = 1;
           for (auto &attr : hwNode->attributes) {
             if (attr.getName() == "numRegion") {
               if (auto intAttr =
                       mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
                 numRegion = intAttr.getInt();
-            } else if (attr.getName() == "ldCount") {
-              if (auto intAttr =
-                      mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
-                ldCount = intAttr.getInt();
-            } else if (attr.getName() == "stCount") {
-              if (auto intAttr =
-                      mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
-                stCount = intAttr.getInt();
             }
           }
-          int64_t capacity = (ldCount > 1 || stCount > 1) ? 1 : numRegion;
           if (static_cast<int64_t>(
                   state.hwNodeToSwNodes[candidate.hwNodeId].size()) >=
-              capacity)
+              numRegion)
             continue;
         } else {
           continue; // Non-temporal, non-memory PEs enforce exclusivity.
