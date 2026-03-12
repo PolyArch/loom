@@ -504,6 +504,23 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
         int64_t ldCount = getNodeIntAttr(hwNode, "ldCount", 1);
         int64_t stCount = getNodeIntAttr(hwNode, "stCount", 1);
         int64_t tagCount = std::max(ldCount, stCount);
+        bool isBridge = (ldCount > 1 || stCount > 1);
+        // Build addr_offset_table tag ranges matching ConfigGen layout.
+        size_t mappedCnt =
+            (i < state.hwNodeToSwNodes.size() &&
+             !state.hwNodeToSwNodes[i].empty())
+            ? state.hwNodeToSwNodes[i].size() : 0;
+        size_t regCnt = std::min(mappedCnt, static_cast<size_t>(numRegion));
+        if (isBridge && regCnt == 0 && numRegion > 0)
+          regCnt = 1;
+        llvm::SmallVector<std::pair<int64_t, int64_t>, 4> tagRanges;
+        for (size_t r = 0; r < regCnt; ++r) {
+          if (isBridge)
+            tagRanges.push_back({0, tagCount});
+          else
+            tagRanges.push_back({static_cast<int64_t>(r),
+                                 static_cast<int64_t>(r + 1)});
+        }
 
         auto validateBridgeTsw = [&](mlir::DenseI32ArrayAttr nodes,
                                      const char *label) -> bool {
@@ -536,13 +553,19 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
                 }
               }
             }
+            // Build connected (out, in) positions for fan-in checking.
             unsigned K = tswNumOut * tswNumIn;
+            llvm::SmallVector<std::pair<unsigned, unsigned>> connPos;
             if (connTable &&
-                static_cast<unsigned>(connTable.size()) == K) {
+                static_cast<unsigned>(connTable.size()) ==
+                    tswNumOut * tswNumIn) {
               K = 0;
-              for (int64_t ci = 0; ci < connTable.size(); ++ci)
-                if (connTable[ci] != 0)
-                  ++K;
+              for (unsigned oi = 0; oi < tswNumOut; ++oi)
+                for (unsigned ii = 0; ii < tswNumIn; ++ii)
+                  if (connTable[oi * tswNumIn + ii] != 0) {
+                    connPos.push_back({oi, ii});
+                    ++K;
+                  }
             }
             llvm::DenseSet<IdIndex> usedTags;
             for (const auto &a : assigns) {
@@ -571,15 +594,37 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
                        " route mask exceeds K=" + std::to_string(K);
                 return false;
               }
-              // Tag value must be in [0, tagCount) for bridge memory.
-              if (a.tag != INVALID_ID &&
-                  static_cast<int64_t>(a.tag) >= tagCount) {
-                diag = "C4: bridge " + std::string(label) +
-                       " tsw=" + std::to_string(tswId) +
-                       " tag " + std::to_string(a.tag) +
-                       " exceeds memory tagCount " +
-                       std::to_string(tagCount);
-                return false;
+              // One-input-per-output: each output selects at most one
+              // routed input per slot (spec rule).
+              if (!connPos.empty()) {
+                llvm::DenseMap<unsigned, unsigned> outFanIn;
+                for (unsigned k = 0; k < connPos.size(); ++k)
+                  if (a.routeMask & (1ULL << k))
+                    ++outFanIn[connPos[k].first];
+                for (auto &[outIdx, cnt] : outFanIn) {
+                  if (cnt > 1) {
+                    diag = "C4: bridge " + std::string(label) +
+                           " tsw=" + std::to_string(tswId) +
+                           " slot " + std::to_string(a.slot) +
+                           " routes " + std::to_string(cnt) +
+                           " inputs to output " + std::to_string(outIdx);
+                    return false;
+                  }
+                }
+              }
+              // Validate tag against memory's addr_offset_table ranges.
+              if (a.tag != INVALID_ID && !tagRanges.empty()) {
+                auto t = static_cast<int64_t>(a.tag);
+                bool covered = false;
+                for (auto &[s, e] : tagRanges)
+                  if (t >= s && t < e) { covered = true; break; }
+                if (!covered) {
+                  diag = "C4: bridge " + std::string(label) +
+                         " tsw=" + std::to_string(tswId) +
+                         " tag " + std::to_string(a.tag) +
+                         " not covered by addr_offset_table";
+                  return false;
+                }
               }
             }
           }

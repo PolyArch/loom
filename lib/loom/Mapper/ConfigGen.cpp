@@ -7,6 +7,7 @@
 #include "loom/Mapper/ConfigGen.h"
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "loom/Dialect/Fabric/FabricOps.h"
+#include "loom/Hardware/Common/FabricConstants.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/Support/FileSystem.h"
@@ -355,42 +356,47 @@ void genTemporalSWConfig(const Node *hwNode, const MappingState &state,
     words.push_back(0);
 }
 
-/// Generate memory configuration (addr_offset_table) with proper format.
-/// Emits REGION_ENTRY_WIDTH format: {valid, start_tag, end_tag, addr_offset}.
+/// Generate memory config matching RTL layout (low-to-high per region:
+/// addr_offset[ADDR_BIT_WIDTH], end_tag[tw+1], start_tag[tw], valid[1]).
 void genMemoryConfig(const Node *hwNode, const MappingState &state,
                      const Graph &dfg, const Graph &adg, IdIndex hwId,
                      std::vector<uint32_t> &words) {
   int64_t numRegion = getNodeIntAttr(hwNode, "numRegion", 1);
-  int64_t tagWidth = getNodeIntAttr(hwNode, "tag_width", 4);
   int64_t ldCount = getNodeIntAttr(hwNode, "ldCount", 1);
   int64_t stCount = getNodeIntAttr(hwNode, "stCount", 1);
   bool isBridge = (ldCount > 1 || stCount > 1);
   int64_t tagCount = std::max(ldCount, stCount);
 
+  // Derive tag width: clog2(max(ldCount, stCount)), matching ADGExportSV.
+  unsigned tw = 0;
+  if (isBridge) {
+    unsigned maxCount = static_cast<unsigned>(tagCount);
+    tw = 1;
+    while ((1u << tw) < maxCount)
+      ++tw;
+  }
+
   bool hasMapped = (hwId < state.hwNodeToSwNodes.size() &&
                     !state.hwNodeToSwNodes[hwId].empty());
   size_t mappedCount = hasMapped ? state.hwNodeToSwNodes[hwId].size() : 0;
   size_t regionCount = std::min(mappedCount, static_cast<size_t>(numRegion));
-
-  // Unmapped bridge memory: emit one default region covering [0, tagCount).
   if (isBridge && regionCount == 0 && numRegion > 0)
     regionCount = 1;
-
   if (regionCount == 0)
     return;
 
   uint32_t bitPos = 0;
   for (size_t r = 0; r < regionCount; ++r) {
-    packBits(words, bitPos, 1, 1);
-    if (isBridge) {
-      packBits(words, bitPos, 0, static_cast<unsigned>(tagWidth));
-      packBits(words, bitPos, static_cast<uint64_t>(tagCount),
-               static_cast<unsigned>(tagWidth + 1));
-    } else {
-      packBits(words, bitPos, r, static_cast<unsigned>(tagWidth));
-      packBits(words, bitPos, r + 1, static_cast<unsigned>(tagWidth + 1));
+    // Pack low-to-high: addr_offset, end_tag, start_tag, valid.
+    packBits(words, bitPos, 0, ADDR_BIT_WIDTH); // addr_offset
+    if (tw > 0) {
+      uint64_t endTag = isBridge ? static_cast<uint64_t>(tagCount)
+                                 : static_cast<uint64_t>(r + 1);
+      uint64_t startTag = isBridge ? 0 : static_cast<uint64_t>(r);
+      packBits(words, bitPos, endTag, tw + 1);  // end_tag
+      packBits(words, bitPos, startTag, tw);     // start_tag
     }
-    packBits(words, bitPos, 0, 16);
+    packBits(words, bitPos, 1, 1); // valid
   }
 }
 
@@ -749,11 +755,8 @@ bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
     bool hasConfig = false;
     if ((opName == "fabric.pe" || resClass == "functional") && hasMappedOps)
       hasConfig = true;
-    if (opName == "fabric.switch")
-      hasConfig = true;
-    if (opName == "fabric.temporal_sw")
-      hasConfig = true;
-    if (opName == "fabric.add_tag" || opName == "fabric.map_tag")
+    if (opName == "fabric.switch" || opName == "fabric.temporal_sw" ||
+        opName == "fabric.add_tag" || opName == "fabric.map_tag")
       hasConfig = true;
     if (opName == "fabric.fifo" && nodeHasAttr(hwNode, "bypassable"))
       hasConfig = true;
@@ -1669,21 +1672,16 @@ bool ConfigGen::writeConfiguredFabric(
 
     bool hasMapped = (hwId < state.hwNodeToSwNodes.size() &&
                       !state.hwNodeToSwNodes[hwId].empty());
-
     int64_t numRegion = getNodeIntAttr(hwNode, "numRegion", 1);
-    size_t mappedCount =
-        hasMapped ? state.hwNodeToSwNodes[hwId].size() : 0;
+    size_t mappedCount = hasMapped ? state.hwNodeToSwNodes[hwId].size() : 0;
     size_t regionCount =
         std::min(mappedCount, static_cast<size_t>(numRegion));
-
-    // Check for bridge metadata: multi-port memory uses tags [0, tagCount).
     int64_t ldCount = getNodeIntAttr(hwNode, "ldCount", 1);
     int64_t stCount = getNodeIntAttr(hwNode, "stCount", 1);
     bool isBridgeMemory = (ldCount > 1 || stCount > 1);
     int64_t tagCount = std::max(ldCount, stCount);
 
-    // For unmapped bridge memory, ensure at least one region covers the full
-    // tag range so bridge tags remain valid even when the memory is unused.
+    // Unmapped bridge memory: ensure at least one region for full tag range.
     size_t effectiveRegionCount = regionCount;
     if (isBridgeMemory && regionCount == 0 && numRegion > 0)
       effectiveRegionCount = 1;
@@ -1707,6 +1705,9 @@ bool ConfigGen::writeConfiguredFabric(
     }
 
     op->setAttr("addrOffsetTable", builder.getDenseI64ArrayAttr(table));
+    // Emit config node ID so external tools can correlate with _addr.h.
+    op->setAttr("loom.configNodeId",
+                builder.getI64IntegerAttr(static_cast<int64_t>(hwId)));
   };
   adgModule->walk(
       [&](fabric::MemoryOp memOp) { setMemoryAddrOffset(memOp); });
@@ -1796,5 +1797,4 @@ bool ConfigGen::writeConfiguredFabric(
   out << "\n";
   return true;
 }
-
 } // namespace loom

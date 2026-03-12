@@ -77,6 +77,11 @@ static ParseResult parseMemHwParams(OpAsmParser &parser,
                                 "expected array<i64: ...> for "
                                 "addr_offset_table");
       result.addAttribute("addrOffsetTable", attr);
+    } else if (keyword == "config_node_id") {
+      IntegerAttr attr;
+      if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
+        return failure();
+      result.addAttribute("loom.configNodeId", attr);
     } else if (keyword == "viz_row" || keyword == "viz_col") {
       IntegerAttr attr;
       if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
@@ -156,6 +161,8 @@ static void printMemHwParams(OpAsmPrinter &p, Operation *op,
     p << ", addr_offset_table = ";
     p.printAttribute(aot);
   }
+  if (auto cnid = op->getAttr("loom.configNodeId"))
+    p << ", config_node_id = " << cast<IntegerAttr>(cnid).getInt();
   if (auto vizRow = op->getAttr("viz_row"))
     p << ", viz_row = " << cast<IntegerAttr>(vizRow).getInt();
   if (auto vizCol = op->getAttr("viz_col"))

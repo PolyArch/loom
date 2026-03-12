@@ -145,9 +145,15 @@ if [[ "${1:-}" == "--single" ]]; then
           fi
           "${LOOM_BIN}" --adg "${configured}"
 
-          # Optional bridge tag coverage check.
+          # Optional bridge tag coverage and config binary check.
           if "${CFG_CHECK_BRIDGE_TAGS}"; then
-            python3 "${SCRIPT_DIR}/check_bridge_tags.py" "${configured}"
+            addr_h="${out_base}_addr.h"
+            config_bin="${out_base}.config.bin"
+            if [[ -f "${addr_h}" && -f "${config_bin}" ]]; then
+              python3 "${SCRIPT_DIR}/check_bridge_tags.py" "${configured}" "${addr_h}" "${config_bin}"
+            else
+              python3 "${SCRIPT_DIR}/check_bridge_tags.py" "${configured}"
+            fi
           fi
         fi
       done
