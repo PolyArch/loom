@@ -505,12 +505,17 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
         int64_t stCount = getNodeIntAttr(hwNode, "stCount", 1);
         int64_t tagCount = std::max(ldCount, stCount);
         bool isBridge = (ldCount > 1 || stCount > 1);
-        // Build addr_offset_table tag ranges matching ConfigGen layout.
+        // Build tag ranges covering all numRegion entries (matching ConfigGen
+        // which emits numRegion entries, padding unused ones with valid=0).
+        // Use numRegion for bridge memories so partial-lane mappings are
+        // accepted by validation even if not all regions are mapped.
         size_t mappedCnt =
             (i < state.hwNodeToSwNodes.size() &&
              !state.hwNodeToSwNodes[i].empty())
             ? state.hwNodeToSwNodes[i].size() : 0;
-        size_t regCnt = std::min(mappedCnt, static_cast<size_t>(numRegion));
+        size_t regCnt = isBridge ? static_cast<size_t>(numRegion)
+                                 : std::min(mappedCnt,
+                                            static_cast<size_t>(numRegion));
         if (isBridge && regCnt == 0 && numRegion > 0)
           regCnt = 1;
         llvm::SmallVector<std::pair<int64_t, int64_t>, 4> tagRanges;

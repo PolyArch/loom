@@ -642,29 +642,57 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
         if (dfgExtmem->outputPorts.size() > bridgeOutCount)
           continue;
 
-        // Per-port type compatibility: each DFG port must be width-compatible
-        // with its corresponding bridge boundary port.
+        // Per-port type compatibility via greedy matching: each DFG port
+        // must find an unused bridge port with compatible type.
         bool typeMismatch = false;
-        for (unsigned si = 1; si < dfgExtmem->inputPorts.size(); ++si) {
-          const Port *sp = dfg.getPort(dfgExtmem->inputPorts[si]);
-          unsigned bi = si - 1;
-          if (!sp || bi >= bridgeInCount)
-            break;
-          const Port *bp =
-              adg.getPort(static_cast<IdIndex>(bridgeInPorts[bi]));
-          if (!bp || !isTypeWidthCompatible(sp->type, bp->type)) {
-            typeMismatch = true;
-            break;
+        llvm::SmallVector<int, 8> inMatch(dfgExtmem->inputPorts.size(), -1);
+        {
+          llvm::SmallVector<bool, 8> used(bridgeInCount, false);
+          for (unsigned si = 1; si < dfgExtmem->inputPorts.size(); ++si) {
+            const Port *sp = dfg.getPort(dfgExtmem->inputPorts[si]);
+            if (!sp)
+              continue;
+            bool found = false;
+            for (unsigned bi = 0; bi < bridgeInCount; ++bi) {
+              if (used[bi])
+                continue;
+              const Port *bp =
+                  adg.getPort(static_cast<IdIndex>(bridgeInPorts[bi]));
+              if (bp && isTypeWidthCompatible(sp->type, bp->type)) {
+                used[bi] = true;
+                inMatch[si] = static_cast<int>(bi);
+                found = true;
+                break;
+              }
+            }
+            if (!found) {
+              typeMismatch = true;
+              break;
+            }
           }
         }
+        llvm::SmallVector<int, 8> outMatch(
+            dfgExtmem->outputPorts.size(), -1);
         if (!typeMismatch) {
+          llvm::SmallVector<bool, 8> used(bridgeOutCount, false);
           for (size_t i = 0; i < dfgExtmem->outputPorts.size(); ++i) {
             const Port *sp = dfg.getPort(dfgExtmem->outputPorts[i]);
-            if (!sp || i >= bridgeOutCount)
-              break;
-            const Port *bp =
-                adg.getPort(static_cast<IdIndex>(bridgeOutPorts[i]));
-            if (!bp || !isTypeWidthCompatible(sp->type, bp->type)) {
+            if (!sp)
+              continue;
+            bool found = false;
+            for (unsigned bi = 0; bi < bridgeOutCount; ++bi) {
+              if (used[bi])
+                continue;
+              const Port *bp =
+                  adg.getPort(static_cast<IdIndex>(bridgeOutPorts[bi]));
+              if (bp && isTypeWidthCompatible(sp->type, bp->type)) {
+                used[bi] = true;
+                outMatch[i] = static_cast<int>(bi);
+                found = true;
+                break;
+              }
+            }
+            if (!found) {
               typeMismatch = true;
               break;
             }
@@ -694,23 +722,20 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
                         adgExtmem->inputPorts[0], dfg, adg);
         }
 
-        // Bind non-memref DFG input ports to bridge boundary input ports.
+        // Bind non-memref DFG input ports using greedy match results.
         for (size_t si = 1; si < dfgExtmem->inputPorts.size(); ++si) {
-          size_t bridgeIdx = si - 1;
-          if (bridgeIdx < static_cast<size_t>(bridgeInPorts.size())) {
-            state.mapPort(
-                dfgExtmem->inputPorts[si],
-                static_cast<IdIndex>(bridgeInPorts[bridgeIdx]), dfg, adg);
-          }
+          if (inMatch[si] >= 0)
+            state.mapPort(dfgExtmem->inputPorts[si],
+                          static_cast<IdIndex>(bridgeInPorts[inMatch[si]]),
+                          dfg, adg);
         }
 
-        // Bind DFG output ports to bridge boundary output ports (DFG order).
+        // Bind DFG output ports using greedy match results.
         for (size_t i = 0; i < dfgExtmem->outputPorts.size(); ++i) {
-          if (i < static_cast<size_t>(bridgeOutPorts.size())) {
-            state.mapPort(
-                dfgExtmem->outputPorts[i],
-                static_cast<IdIndex>(bridgeOutPorts[i]), dfg, adg);
-          }
+          if (outMatch[i] >= 0)
+            state.mapPort(dfgExtmem->outputPorts[i],
+                          static_cast<IdIndex>(bridgeOutPorts[outMatch[i]]),
+                          dfg, adg);
         }
 
         preBoundExtmem.insert(dfgExtIt->second);
@@ -1242,23 +1267,20 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
             }
 
             // Bind non-memref inputs to bridge boundary input ports
-            // using type-aware greedy matching (handles partial lane use).
+            // using type-aware greedy matching. Check state.hwPortToSwPorts
+            // to skip ports already bound by another region's DFG memory.
             if (bridgeInPorts) {
-              llvm::SmallVector<bool, 8> hwUsed(bridgeInPorts.size(), false);
               for (size_t si = swInSkip; si < sw->inputPorts.size(); ++si) {
                 const Port *sp = dfg.getPort(sw->inputPorts[si]);
                 if (!sp)
                   continue;
-                for (size_t hi = 0; hi < hwUsed.size(); ++hi) {
-                  if (hwUsed[hi])
+                for (int32_t pid : bridgeInPorts.asArrayRef()) {
+                  auto hwPid = static_cast<IdIndex>(pid);
+                  if (!state.hwPortToSwPorts[hwPid].empty())
                     continue;
-                  const Port *hp = adg.getPort(
-                      static_cast<IdIndex>(bridgeInPorts[hi]));
+                  const Port *hp = adg.getPort(hwPid);
                   if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
-                    state.mapPort(sw->inputPorts[si],
-                                  static_cast<IdIndex>(bridgeInPorts[hi]),
-                                  dfg, adg);
-                    hwUsed[hi] = true;
+                    state.mapPort(sw->inputPorts[si], hwPid, dfg, adg);
                     break;
                   }
                 }
@@ -1267,21 +1289,17 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
 
             // Bind outputs to bridge boundary output ports (type-aware).
             if (bridgeOutPorts) {
-              llvm::SmallVector<bool, 8> hwUsed(bridgeOutPorts.size(), false);
               for (size_t i = 0; i < sw->outputPorts.size(); ++i) {
                 const Port *sp = dfg.getPort(sw->outputPorts[i]);
                 if (!sp)
                   continue;
-                for (size_t hi = 0; hi < hwUsed.size(); ++hi) {
-                  if (hwUsed[hi])
+                for (int32_t pid : bridgeOutPorts.asArrayRef()) {
+                  auto hwPid = static_cast<IdIndex>(pid);
+                  if (!state.hwPortToSwPorts[hwPid].empty())
                     continue;
-                  const Port *hp = adg.getPort(
-                      static_cast<IdIndex>(bridgeOutPorts[hi]));
+                  const Port *hp = adg.getPort(hwPid);
                   if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
-                    state.mapPort(sw->outputPorts[i],
-                                  static_cast<IdIndex>(bridgeOutPorts[hi]),
-                                  dfg, adg);
-                    hwUsed[hi] = true;
+                    state.mapPort(sw->outputPorts[i], hwPid, dfg, adg);
                     break;
                   }
                 }
