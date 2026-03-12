@@ -475,23 +475,10 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
               unsigned inSize =
                   static_cast<unsigned>(bridgeInPorts.size());
 
-              // Count DFG store inputs by (data, addr) pair detection.
-              unsigned dfgStoreIns = 0;
-              if (storeInBound >= 2) {
-                const Port *storeDataRef = adg.getPort(
-                    static_cast<IdIndex>(bridgeInPorts[0]));
-                for (size_t si = swInSkip;
-                     si + 1 < swNode->inputPorts.size(); si += 2) {
-                  const Port *sp = dfg.getPort(swNode->inputPorts[si]);
-                  if (sp && storeDataRef &&
-                      isTypeWidthCompatible(sp->type,
-                                            storeDataRef->type)) {
-                    dfgStoreIns += 2;
-                  } else {
-                    break;
-                  }
-                }
-              }
+              // DFG store input count from DFG node's stCount attr.
+              int64_t dfgStCnt = getIntAttr(swNode, "stCount", 0);
+              unsigned dfgStoreIns =
+                  static_cast<unsigned>(dfgStCnt) * 2;
 
               for (size_t p = swInSkip; p < swNode->inputPorts.size();
                    ++p) {
@@ -974,21 +961,10 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
               unsigned inSize2 =
                   static_cast<unsigned>(bridgeInPorts2.size());
 
-              // Detect DFG store inputs by (data, addr) pair pattern.
-              unsigned dfgStoreIns2 = 0;
-              if (storeInBound2 >= 2) {
-                const Port *stDataRef = adg.getPort(
-                    static_cast<IdIndex>(bridgeInPorts2[0]));
-                for (size_t si = swInSkip2;
-                     si + 1 < swNode->inputPorts.size(); si += 2) {
-                  const Port *sp = dfg.getPort(swNode->inputPorts[si]);
-                  if (sp && stDataRef &&
-                      isTypeWidthCompatible(sp->type, stDataRef->type))
-                    dfgStoreIns2 += 2;
-                  else
-                    break;
-                }
-              }
+              // DFG store input count from DFG node's stCount attr.
+              int64_t dfgStCnt2 = getIntAttr(swNode, "stCount", 0);
+              unsigned dfgStoreIns2 =
+                  static_cast<unsigned>(dfgStCnt2) * 2;
 
               for (size_t p = swInSkip2; p < swNode->inputPorts.size();
                    ++p) {

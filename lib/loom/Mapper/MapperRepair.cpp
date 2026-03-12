@@ -249,23 +249,10 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
                             ? static_cast<unsigned>(storeInCntR) : 0;
                     unsigned inSzR =
                         static_cast<unsigned>(bridgeInPR.size());
-                    // Detect DFG store inputs by pair pattern.
-                    unsigned dfgStIns = 0;
-                    if (stBoundR >= 2) {
-                      const Port *sdRef = adg.getPort(
-                          static_cast<IdIndex>(bridgeInPR[0]));
-                      for (size_t si = swInSkipR;
-                           si + 1 < sw->inputPorts.size(); si += 2) {
-                        const Port *sp =
-                            dfg.getPort(sw->inputPorts[si]);
-                        if (sp && sdRef &&
-                            isTypeWidthCompatible(sp->type,
-                                                  sdRef->type))
-                          dfgStIns += 2;
-                        else
-                          break;
-                      }
-                    }
+                    // DFG store input count from stCount attr.
+                    int64_t dfgStC = getIntAttrRepair(sw, "stCount", 0);
+                    unsigned dfgStIns =
+                        static_cast<unsigned>(dfgStC) * 2;
                     for (size_t p = swInSkipR;
                          p < sw->inputPorts.size(); ++p) {
                       const Port *sp = dfg.getPort(sw->inputPorts[p]);

@@ -54,6 +54,15 @@ bool isMemoryOp(const Node *node) {
          opName.contains("memory");
 }
 
+/// Get an integer attribute from a node, or default value.
+int64_t getNodeInt(const Node *node, llvm::StringRef name, int64_t dflt = -1) {
+  for (auto &attr : node->attributes)
+    if (attr.getName() == name)
+      if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+        return ia.getInt();
+  return dflt;
+}
+
 } // namespace
 
 // --- Pipeline orchestration ---
@@ -662,22 +671,9 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
                   ? static_cast<unsigned>(sentStoreInCount)
                   : 0;
 
-          // Count DFG store inputs by detecting (data, addr) pairs.
-          unsigned dfgStoreIns = 0;
-          if (storeInBound >= 2) {
-            const Port *storeDataRef =
-                adg.getPort(static_cast<IdIndex>(bridgeInPorts[0]));
-            for (size_t si = 1; si + 1 < dfgExtmem->inputPorts.size();
-                 si += 2) {
-              const Port *sp = dfg.getPort(dfgExtmem->inputPorts[si]);
-              if (sp && storeDataRef &&
-                  isTypeWidthCompatible(sp->type, storeDataRef->type)) {
-                dfgStoreIns += 2;
-              } else {
-                break;
-              }
-            }
-          }
+          // DFG store input count from DFG node's stCount attr.
+          int64_t dfgStCnt = getNodeInt(dfgExtmem, "stCount", 0);
+          unsigned dfgStoreIns = static_cast<unsigned>(dfgStCnt) * 2;
 
           llvm::SmallVector<bool, 8> used(bridgeInCount, false);
           for (unsigned si = 1; si < dfgExtmem->inputPorts.size(); ++si) {
@@ -1389,25 +1385,11 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
                 }
                 return false;
               };
-              // Count DFG store inputs by detecting (data, addr) pairs.
-              // Bridge store data ports are at even indices within store range.
-              // A store data port type differs from addr type, so check if
-              // a DFG port matches bridge store data port [0] specifically.
-              unsigned dfgStoreIns = 0;
-              if (storeInCount >= 2) {
-                const Port *storeDataRef = adg.getPort(
-                    static_cast<IdIndex>(bridgeInPorts[0]));
-                for (size_t si = swInSkip;
-                     si + 1 < sw->inputPorts.size(); si += 2) {
-                  const Port *sp = dfg.getPort(sw->inputPorts[si]);
-                  if (sp && storeDataRef &&
-                      isTypeWidthCompatible(sp->type, storeDataRef->type)) {
-                    dfgStoreIns += 2;
-                  } else {
-                    break;
-                  }
-                }
-              }
+              // Determine DFG store input count from DFG node's stCount attr
+              // (each store has data + addr pair = 2 ports).
+              int64_t dfgStCount = getNodeInt(sw, "stCount", 0);
+              unsigned dfgStoreIns =
+                  static_cast<unsigned>(dfgStCount) * 2;
               for (size_t si = swInSkip; si < sw->inputPorts.size(); ++si) {
                 unsigned relIdx = si - swInSkip;
                 bool isStore = (relIdx < dfgStoreIns);

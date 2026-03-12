@@ -80,6 +80,12 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
       }
     }
 
+    // Copy ldCount/stCount from handshake memory ops for mapper use.
+    for (llvm::StringRef attrName : {"ldCount", "stCount"}) {
+      if (auto attr = op.getAttr(attrName))
+        node->attributes.push_back(builder.getNamedAttr(attrName, attr));
+    }
+
     IdIndex nodeId = graph.addNode(std::move(node));
     opToNode[&op] = nodeId;
 

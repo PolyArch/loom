@@ -362,12 +362,10 @@ void genMemoryConfig(const Node *hwNode, const MappingState &state,
   bool isBridge = (ldCount > 1 || stCount > 1);
   int64_t tagCount = std::max(ldCount, stCount);
 
-  unsigned tw = 0; // clog2(max(ldCount, stCount))
-  if (isBridge) {
-    unsigned maxCount = static_cast<unsigned>(tagCount);
-    tw = 1;
-    while ((1u << tw) < maxCount)
-      ++tw;
+  unsigned tw = 0;
+  if (isBridge) { // clog2(max(ldCount, stCount))
+    unsigned mc = static_cast<unsigned>(tagCount);
+    tw = 1; while ((1u << tw) < mc) ++tw;
   }
 
   if (numRegion == 0)
@@ -397,8 +395,10 @@ void genMemoryConfig(const Node *hwNode, const MappingState &state,
       }
       packBits(words, bitPos, 1, 1); // valid
     } else {
-      // Inactive region: all-zero bits (valid=0).
-      packBits(words, bitPos, 0, bitsPerRegion);
+      // Inactive region: pack fields individually (avoids UB for >64-bit).
+      packBits(words, bitPos, 0, ADDR_BIT_WIDTH);
+      if (tw > 0) { packBits(words, bitPos, 0, tw + 1); packBits(words, bitPos, 0, tw); }
+      packBits(words, bitPos, 0, 1); // valid=0
     }
   }
 }
