@@ -642,6 +642,37 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
         if (dfgExtmem->outputPorts.size() > bridgeOutCount)
           continue;
 
+        // Per-port type compatibility: each DFG port must be width-compatible
+        // with its corresponding bridge boundary port.
+        bool typeMismatch = false;
+        for (unsigned si = 1; si < dfgExtmem->inputPorts.size(); ++si) {
+          const Port *sp = dfg.getPort(dfgExtmem->inputPorts[si]);
+          unsigned bi = si - 1;
+          if (!sp || bi >= bridgeInCount)
+            break;
+          const Port *bp =
+              adg.getPort(static_cast<IdIndex>(bridgeInPorts[bi]));
+          if (!bp || !isTypeWidthCompatible(sp->type, bp->type)) {
+            typeMismatch = true;
+            break;
+          }
+        }
+        if (!typeMismatch) {
+          for (size_t i = 0; i < dfgExtmem->outputPorts.size(); ++i) {
+            const Port *sp = dfg.getPort(dfgExtmem->outputPorts[i]);
+            if (!sp || i >= bridgeOutCount)
+              break;
+            const Port *bp =
+                adg.getPort(static_cast<IdIndex>(bridgeOutPorts[i]));
+            if (!bp || !isTypeWidthCompatible(sp->type, bp->type)) {
+              typeMismatch = true;
+              break;
+            }
+          }
+        }
+        if (typeMismatch)
+          continue;
+
         // Bind the sentinel.
         usedAdgIn.insert(ai);
         state.mapNode(dfgInputSentinels[di], adgInputSentinels[ai], dfg, adg);

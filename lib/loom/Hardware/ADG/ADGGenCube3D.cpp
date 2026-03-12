@@ -233,9 +233,9 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
     cube.totalCells = peRows * peCols * peDepths;
     std::string wp = std::to_string(width);
 
-    // Prune excess cells from the far corner.
+    // Prune excess cells beyond dimCells (which includes margin).
     unsigned excess =
-        cube.totalCells > numCells ? cube.totalCells - numCells : 0;
+        cube.totalCells > dimCells ? cube.totalCells - dimCells : 0;
     cube.pruned.assign(
         peDepths, std::vector<std::vector<bool>>(
                       peRows, std::vector<bool>(peCols, false)));
