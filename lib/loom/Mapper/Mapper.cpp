@@ -619,6 +619,7 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
       // Check for bridge-boundary metadata on ADG extmemory (multi-port).
       mlir::DenseI32ArrayAttr bridgeInPorts;
       mlir::DenseI32ArrayAttr bridgeOutPorts;
+      int32_t sentStoreInCount = -1, sentLdDataOutCount = -1;
       for (auto &attr : adgExtmem->attributes) {
         if (attr.getName() == "bridge_input_ports")
           bridgeInPorts =
@@ -626,6 +627,13 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
         else if (attr.getName() == "bridge_output_ports")
           bridgeOutPorts =
               mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+        else if (attr.getName() == "bridge_store_input_count") {
+          if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+            sentStoreInCount = ia.getInt();
+        } else if (attr.getName() == "bridge_ld_data_output_count") {
+          if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+            sentLdDataOutCount = ia.getInt();
+        }
       }
 
       if (bridgeInPorts || bridgeOutPorts) {
@@ -642,27 +650,71 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
         if (dfgExtmem->outputPorts.size() > bridgeOutCount)
           continue;
 
-        // Per-port type compatibility via greedy matching: each DFG port
-        // must find an unused bridge port with compatible type.
+        // Per-port type compatibility via category-aware greedy matching.
+        // Store inputs occupy [0, sentStoreInCount), load inputs occupy
+        // [sentStoreInCount, bridgeInCount). DFG store inputs are detected
+        // by (data, addr) pair pattern matching.
         bool typeMismatch = false;
         llvm::SmallVector<int, 8> inMatch(dfgExtmem->inputPorts.size(), -1);
         {
+          unsigned storeInBound =
+              (sentStoreInCount > 0)
+                  ? static_cast<unsigned>(sentStoreInCount)
+                  : 0;
+
+          // Count DFG store inputs by detecting (data, addr) pairs.
+          unsigned dfgStoreIns = 0;
+          if (storeInBound >= 2) {
+            const Port *storeDataRef =
+                adg.getPort(static_cast<IdIndex>(bridgeInPorts[0]));
+            for (size_t si = 1; si + 1 < dfgExtmem->inputPorts.size();
+                 si += 2) {
+              const Port *sp = dfg.getPort(dfgExtmem->inputPorts[si]);
+              if (sp && storeDataRef &&
+                  isTypeWidthCompatible(sp->type, storeDataRef->type)) {
+                dfgStoreIns += 2;
+              } else {
+                break;
+              }
+            }
+          }
+
           llvm::SmallVector<bool, 8> used(bridgeInCount, false);
           for (unsigned si = 1; si < dfgExtmem->inputPorts.size(); ++si) {
             const Port *sp = dfg.getPort(dfgExtmem->inputPorts[si]);
             if (!sp)
               continue;
+            unsigned relIdx = si - 1;
+            bool isStore = (relIdx < dfgStoreIns);
+            int lo = isStore ? 0 : static_cast<int>(storeInBound);
+            int hi = isStore ? static_cast<int>(storeInBound)
+                             : static_cast<int>(bridgeInCount);
             bool found = false;
-            for (unsigned bi = 0; bi < bridgeInCount; ++bi) {
+            for (int bi = lo; bi < hi; ++bi) {
               if (used[bi])
                 continue;
               const Port *bp =
                   adg.getPort(static_cast<IdIndex>(bridgeInPorts[bi]));
               if (bp && isTypeWidthCompatible(sp->type, bp->type)) {
                 used[bi] = true;
-                inMatch[si] = static_cast<int>(bi);
+                inMatch[si] = bi;
                 found = true;
                 break;
+              }
+            }
+            // Fallback: search full range.
+            if (!found) {
+              for (unsigned bi = 0; bi < bridgeInCount; ++bi) {
+                if (used[bi])
+                  continue;
+                const Port *bp =
+                    adg.getPort(static_cast<IdIndex>(bridgeInPorts[bi]));
+                if (bp && isTypeWidthCompatible(sp->type, bp->type)) {
+                  used[bi] = true;
+                  inMatch[si] = static_cast<int>(bi);
+                  found = true;
+                  break;
+                }
               }
             }
             if (!found) {
@@ -674,22 +726,67 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
         llvm::SmallVector<int, 8> outMatch(
             dfgExtmem->outputPorts.size(), -1);
         if (!typeMismatch) {
+          // Three-way output category split:
+          // ld_data [0, ldOut), ld_done [ldOut, 2*ldOut), st_done [2*ldOut, end)
+          int ldOut = (sentLdDataOutCount > 0) ? sentLdDataOutCount : 0;
+          int ldDoneStart = ldOut;
+          int stDoneStart = ldOut * 2;
+          int total = static_cast<int>(bridgeOutCount);
+
+          // Count DFG ld_data outputs (data-width type, sequential from start).
+          unsigned dfgLdData = 0;
+          const Port *ldDataRef =
+              (ldOut > 0)
+                  ? adg.getPort(static_cast<IdIndex>(bridgeOutPorts[0]))
+                  : nullptr;
+          for (size_t i = 0; i < dfgExtmem->outputPorts.size(); ++i) {
+            const Port *sp = dfg.getPort(dfgExtmem->outputPorts[i]);
+            if (sp && ldDataRef &&
+                isTypeWidthCompatible(sp->type, ldDataRef->type))
+              ++dfgLdData;
+            else
+              break;
+          }
+
           llvm::SmallVector<bool, 8> used(bridgeOutCount, false);
           for (size_t i = 0; i < dfgExtmem->outputPorts.size(); ++i) {
             const Port *sp = dfg.getPort(dfgExtmem->outputPorts[i]);
             if (!sp)
               continue;
+            int lo, hi;
+            if (i < dfgLdData) {
+              lo = 0; hi = ldDoneStart;         // ld_data range
+            } else if (i < dfgLdData * 2) {
+              lo = ldDoneStart; hi = stDoneStart; // ld_done range
+            } else {
+              lo = stDoneStart; hi = total;       // st_done range
+            }
             bool found = false;
-            for (unsigned bi = 0; bi < bridgeOutCount; ++bi) {
+            for (int bi = lo; bi < hi; ++bi) {
               if (used[bi])
                 continue;
               const Port *bp =
                   adg.getPort(static_cast<IdIndex>(bridgeOutPorts[bi]));
               if (bp && isTypeWidthCompatible(sp->type, bp->type)) {
                 used[bi] = true;
-                outMatch[i] = static_cast<int>(bi);
+                outMatch[i] = bi;
                 found = true;
                 break;
+              }
+            }
+            // Fallback: search full range.
+            if (!found) {
+              for (int bi = 0; bi < total; ++bi) {
+                if (used[bi])
+                  continue;
+                const Port *bp =
+                    adg.getPort(static_cast<IdIndex>(bridgeOutPorts[bi]));
+                if (bp && isTypeWidthCompatible(sp->type, bp->type)) {
+                  used[bi] = true;
+                  outMatch[i] = bi;
+                  found = true;
+                  break;
+                }
               }
             }
             if (!found) {

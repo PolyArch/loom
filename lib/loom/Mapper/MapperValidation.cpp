@@ -513,14 +513,20 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
             (i < state.hwNodeToSwNodes.size() &&
              !state.hwNodeToSwNodes[i].empty())
             ? state.hwNodeToSwNodes[i].size() : 0;
-        size_t regCnt = isBridge ? static_cast<size_t>(numRegion)
-                                 : std::min(mappedCnt,
-                                            static_cast<size_t>(numRegion));
-        if (isBridge && regCnt == 0 && numRegion > 0)
-          regCnt = 1;
+        // Match ConfigGen's effectiveRegionCount logic: use mappedCnt
+        // (clamped to [1, numRegion] for bridge), not bare numRegion.
+        size_t effectiveRegCnt;
+        if (isBridge) {
+          effectiveRegCnt = mappedCnt > 0
+              ? std::min(mappedCnt, static_cast<size_t>(numRegion))
+              : 1;
+        } else {
+          effectiveRegCnt =
+              std::min(mappedCnt, static_cast<size_t>(numRegion));
+        }
         llvm::SmallVector<std::pair<int64_t, int64_t>, 4> tagRanges;
-        for (size_t r = 0; r < regCnt; ++r) {
-          if (isBridge && regCnt == 1)
+        for (size_t r = 0; r < effectiveRegCnt; ++r) {
+          if (isBridge && effectiveRegCnt == 1)
             tagRanges.push_back({0, tagCount});
           else
             tagRanges.push_back({static_cast<int64_t>(r),
