@@ -836,6 +836,20 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
     }
 
     // Store bridge-boundary metadata as node attributes.
+    // Record category split points so binding can distinguish st vs ld ports.
+    // Input ordering: [st0_data, st0_addr, ..., stN_data, stN_addr,
+    //                  ld0_addr, ..., ldN_addr]
+    // -> store inputs occupy [0, stCount*2), load inputs occupy [stCount*2, end)
+    // Output ordering: [ld_data * ldCount, ld_done * ldCount, st_done * stCount]
+    // -> ld_data occupies [0, ldCount)
+    unsigned bridgeStoreInputCount = stCount * 2;
+    unsigned bridgeLdDataOutputCount = ldCount;
+    node->attributes.push_back(builder.getNamedAttr(
+        "bridge_store_input_count",
+        builder.getI32IntegerAttr(bridgeStoreInputCount)));
+    node->attributes.push_back(builder.getNamedAttr(
+        "bridge_ld_data_output_count",
+        builder.getI32IntegerAttr(bridgeLdDataOutputCount)));
     llvm::SmallVector<int32_t> inPorts(bridgeInputPorts.begin(),
                                        bridgeInputPorts.end());
     llvm::SmallVector<int32_t> outPorts(bridgeOutputPorts.begin(),

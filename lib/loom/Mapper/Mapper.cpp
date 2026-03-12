@@ -1240,6 +1240,7 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
           // Check for bridge-boundary metadata (multi-port memory).
           mlir::DenseI32ArrayAttr bridgeInPorts;
           mlir::DenseI32ArrayAttr bridgeOutPorts;
+          int32_t storeInCount = -1;
           for (auto &attr : hw->attributes) {
             if (attr.getName() == "bridge_input_ports")
               bridgeInPorts =
@@ -1247,14 +1248,16 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
             else if (attr.getName() == "bridge_output_ports")
               bridgeOutPorts =
                   mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+            else if (attr.getName() == "bridge_store_input_count") {
+              if (auto ia =
+                      mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+                storeInCount = ia.getInt();
+            }
           }
 
           if (bridgeInPorts || bridgeOutPorts) {
             // Multi-port memory with bridge: bind DFG ports to bridge
             // boundary ports (add_tag inputs / del_tag outputs).
-            // For on-chip memory, all ports go through bridge.
-            // For extmemory, memref (port 0) is direct; the rest go through
-            // bridge. But extmemory is pre-bound in bindSentinelPorts.
             bool isExtMem =
                 (getNodeResourceClass(hw) == "memory" &&
                  getNodeOpName(hw) == "fabric.extmemory");
@@ -1266,28 +1269,64 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
               state.mapPort(sw->inputPorts[0], hw->inputPorts[0], dfg, adg);
             }
 
-            // Bind non-memref inputs to bridge boundary input ports
-            // using type-aware greedy matching. Check state.hwPortToSwPorts
-            // to skip ports already bound by another region's DFG memory.
+            // Bind non-memref inputs to bridge boundary input ports.
+            // Use category-aware matching: bridge inputs [0, storeInCount)
+            // are store ports, [storeInCount, end) are load ports. Each DFG
+            // port searches only within its matching category range, then
+            // falls back to type-only matching across the full range.
             if (bridgeInPorts) {
-              for (size_t si = swInSkip; si < sw->inputPorts.size(); ++si) {
+              auto bindInRange = [&](size_t si, int lo, int hi) -> bool {
                 const Port *sp = dfg.getPort(sw->inputPorts[si]);
-                if (!sp)
-                  continue;
-                for (int32_t pid : bridgeInPorts.asArrayRef()) {
-                  auto hwPid = static_cast<IdIndex>(pid);
+                if (!sp) return false;
+                for (int bi = lo; bi < hi; ++bi) {
+                  auto hwPid = static_cast<IdIndex>(bridgeInPorts[bi]);
                   if (!state.hwPortToSwPorts[hwPid].empty())
                     continue;
                   const Port *hp = adg.getPort(hwPid);
                   if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
                     state.mapPort(sw->inputPorts[si], hwPid, dfg, adg);
-                    break;
+                    return true;
                   }
+                }
+                return false;
+              };
+              // DFG non-memref input layout: store ports first, then load.
+              // Count DFG store input ports by matching against store range.
+              unsigned dfgStoreIns = 0;
+              if (storeInCount > 0) {
+                for (size_t si = swInSkip; si < sw->inputPorts.size(); ++si) {
+                  const Port *sp = dfg.getPort(sw->inputPorts[si]);
+                  if (!sp) continue;
+                  bool matchesStore = false;
+                  for (int bi = 0; bi < storeInCount; ++bi) {
+                    const Port *hp = adg.getPort(
+                        static_cast<IdIndex>(bridgeInPorts[bi]));
+                    if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
+                      matchesStore = true;
+                      break;
+                    }
+                  }
+                  if (matchesStore)
+                    ++dfgStoreIns;
+                  else
+                    break; // Store ports end here.
+                }
+              }
+              for (size_t si = swInSkip; si < sw->inputPorts.size(); ++si) {
+                unsigned relIdx = si - swInSkip;
+                bool isStore = (relIdx < dfgStoreIns);
+                int lo = isStore ? 0 : storeInCount;
+                int hi = isStore ? storeInCount
+                                 : static_cast<int>(bridgeInPorts.size());
+                if (storeInCount < 0 || !bindInRange(si, lo, hi)) {
+                  // Fallback: search full range.
+                  bindInRange(si, 0, static_cast<int>(bridgeInPorts.size()));
                 }
               }
             }
 
-            // Bind outputs to bridge boundary output ports (type-aware).
+            // Bind outputs to bridge boundary output ports (type-aware
+            // with port reservation).
             if (bridgeOutPorts) {
               for (size_t i = 0; i < sw->outputPorts.size(); ++i) {
                 const Port *sp = dfg.getPort(sw->outputPorts[i]);

@@ -229,24 +229,41 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
                     swInSkipR = 1;
                   }
                   if (bridgeInPR) {
-                    for (size_t p = swInSkipR, b = 0;
-                         p < sw->inputPorts.size() &&
-                         b < static_cast<size_t>(bridgeInPR.size());
-                         ++p, ++b) {
-                      state.mapPort(
-                          sw->inputPorts[p],
-                          static_cast<IdIndex>(bridgeInPR[b]), dfg, adg);
+                    for (size_t p = swInSkipR;
+                         p < sw->inputPorts.size(); ++p) {
+                      const Port *sp = dfg.getPort(sw->inputPorts[p]);
+                      if (!sp) continue;
+                      for (int32_t pid : bridgeInPR.asArrayRef()) {
+                        auto hwPid = static_cast<IdIndex>(pid);
+                        if (!state.hwPortToSwPorts[hwPid].empty())
+                          continue;
+                        const Port *hp = adg.getPort(hwPid);
+                        if (hp &&
+                            isTypeWidthCompatible(sp->type, hp->type)) {
+                          state.mapPort(sw->inputPorts[p], hwPid,
+                                        dfg, adg);
+                          break;
+                        }
+                      }
                     }
                   }
                   if (bridgeOutPR) {
                     for (size_t p = 0;
-                         p < sw->outputPorts.size() &&
-                         p < static_cast<size_t>(bridgeOutPR.size());
-                         ++p) {
-                      state.mapPort(
-                          sw->outputPorts[p],
-                          static_cast<IdIndex>(bridgeOutPR[p]),
-                          dfg, adg);
+                         p < sw->outputPorts.size(); ++p) {
+                      const Port *sp = dfg.getPort(sw->outputPorts[p]);
+                      if (!sp) continue;
+                      for (int32_t pid : bridgeOutPR.asArrayRef()) {
+                        auto hwPid = static_cast<IdIndex>(pid);
+                        if (!state.hwPortToSwPorts[hwPid].empty())
+                          continue;
+                        const Port *hp = adg.getPort(hwPid);
+                        if (hp &&
+                            isTypeWidthCompatible(sp->type, hp->type)) {
+                          state.mapPort(sw->outputPorts[p], hwPid,
+                                        dfg, adg);
+                          break;
+                        }
+                      }
                     }
                   }
                 } else if (isMemory) {

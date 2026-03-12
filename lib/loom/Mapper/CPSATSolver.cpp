@@ -457,26 +457,41 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
                                    hwNode->inputPorts[0], dfg, adg);
               swInSkip = 1;
             }
-            // Map remaining DFG inputs to bridge boundary input ports.
+            // Map remaining DFG inputs to bridge boundary input ports
+            // using type-aware greedy matching with port reservation.
             if (bridgeInPorts) {
-              for (size_t p = swInSkip, b = 0;
-                   p < swNode->inputPorts.size() &&
-                   b < static_cast<size_t>(bridgeInPorts.size());
-                   ++p, ++b) {
-                result.state.mapPort(
-                    swNode->inputPorts[p],
-                    static_cast<IdIndex>(bridgeInPorts[b]), dfg, adg);
+              for (size_t p = swInSkip; p < swNode->inputPorts.size(); ++p) {
+                const Port *sp = dfg.getPort(swNode->inputPorts[p]);
+                if (!sp) continue;
+                for (int32_t pid : bridgeInPorts.asArrayRef()) {
+                  auto hwPid = static_cast<IdIndex>(pid);
+                  if (!result.state.hwPortToSwPorts[hwPid].empty())
+                    continue;
+                  const Port *hp = adg.getPort(hwPid);
+                  if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
+                    result.state.mapPort(swNode->inputPorts[p], hwPid,
+                                         dfg, adg);
+                    break;
+                  }
+                }
               }
             }
             // Map DFG outputs to bridge boundary output ports.
             if (bridgeOutPorts) {
-              for (size_t p = 0;
-                   p < swNode->outputPorts.size() &&
-                   p < static_cast<size_t>(bridgeOutPorts.size());
-                   ++p) {
-                result.state.mapPort(
-                    swNode->outputPorts[p],
-                    static_cast<IdIndex>(bridgeOutPorts[p]), dfg, adg);
+              for (size_t p = 0; p < swNode->outputPorts.size(); ++p) {
+                const Port *sp = dfg.getPort(swNode->outputPorts[p]);
+                if (!sp) continue;
+                for (int32_t pid : bridgeOutPorts.asArrayRef()) {
+                  auto hwPid = static_cast<IdIndex>(pid);
+                  if (!result.state.hwPortToSwPorts[hwPid].empty())
+                    continue;
+                  const Port *hp = adg.getPort(hwPid);
+                  if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
+                    result.state.mapPort(swNode->outputPorts[p], hwPid,
+                                         dfg, adg);
+                    break;
+                  }
+                }
               }
             }
           } else if (isMem &&
