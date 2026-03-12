@@ -109,7 +109,7 @@ loom_find_handshake_dfg() {
   local app_name="$2"
   local candidate=""
 
-  for opt in O0 O1 O2 O3 ""; do
+  for opt in "" O3 O2 O1 O0; do
     if [[ -n "${opt}" ]]; then
       candidate="${output_dir}/${app_name}.${opt}.handshake.mlir"
     else

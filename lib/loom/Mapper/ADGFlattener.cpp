@@ -553,7 +553,11 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
         if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
           stCount = intAttr.getInt();
       } else if (attr.getName() == "is_private") {
-        isPrivate = true; // UnitAttr presence means private.
+        if (auto boolAttr =
+                mlir::dyn_cast<mlir::BoolAttr>(attr.getValue()))
+          isPrivate = boolAttr.getValue();
+        else
+          isPrivate = true; // UnitAttr presence means private.
       }
     }
 

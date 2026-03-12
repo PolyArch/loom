@@ -35,6 +35,23 @@ llvm::StringRef getNodeResourceClassRepair(const Node *node) {
   return "";
 }
 
+/// Get bridge boundary port arrays from a node's attributes.
+bool getBridgePortsRepair(const Node *node,
+                          mlir::DenseI32ArrayAttr &bridgeInPorts,
+                          mlir::DenseI32ArrayAttr &bridgeOutPorts) {
+  bridgeInPorts = {};
+  bridgeOutPorts = {};
+  for (auto &attr : node->attributes) {
+    if (attr.getName() == "bridge_input_ports")
+      bridgeInPorts =
+          mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+    else if (attr.getName() == "bridge_output_ports")
+      bridgeOutPorts =
+          mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+  }
+  return bridgeInPorts || bridgeOutPorts;
+}
+
 } // namespace
 
 bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
@@ -198,8 +215,42 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
                 bool isMemory =
                     (getNodeResourceClassRepair(hw) == "memory");
 
-                if (isMemory) {
-                  // Memory inputs: type-based greedy search.
+                mlir::DenseI32ArrayAttr bridgeInPR, bridgeOutPR;
+                bool hasBridgeR = isMemory &&
+                    getBridgePortsRepair(hw, bridgeInPR, bridgeOutPR);
+
+                if (hasBridgeR) {
+                  // Bridge memory: bind DFG ports to bridge boundary.
+                  unsigned swInSkipR = 0;
+                  if (getNodeOpNameRepair(hw) == "fabric.extmemory" &&
+                      !sw->inputPorts.empty()) {
+                    state.mapPort(sw->inputPorts[0],
+                                  hw->inputPorts[0], dfg, adg);
+                    swInSkipR = 1;
+                  }
+                  if (bridgeInPR) {
+                    for (size_t p = swInSkipR, b = 0;
+                         p < sw->inputPorts.size() &&
+                         b < static_cast<size_t>(bridgeInPR.size());
+                         ++p, ++b) {
+                      state.mapPort(
+                          sw->inputPorts[p],
+                          static_cast<IdIndex>(bridgeInPR[b]), dfg, adg);
+                    }
+                  }
+                  if (bridgeOutPR) {
+                    for (size_t p = 0;
+                         p < sw->outputPorts.size() &&
+                         p < static_cast<size_t>(bridgeOutPR.size());
+                         ++p) {
+                      state.mapPort(
+                          sw->outputPorts[p],
+                          static_cast<IdIndex>(bridgeOutPR[p]),
+                          dfg, adg);
+                    }
+                  }
+                } else if (isMemory) {
+                  // Single-port memory: type-based greedy search.
                   llvm::DenseSet<IdIndex> usedInNode;
                   for (size_t si = 0; si < sw->inputPorts.size(); ++si) {
                     const Port *sp = dfg.getPort(sw->inputPorts[si]);

@@ -372,37 +372,29 @@ void genMemoryConfig(const Node *hwNode, const MappingState &state,
                      std::vector<uint32_t> &words) {
   int64_t numRegion = getNodeIntAttr(hwNode, "numRegion", 1);
 
-  // Memory has CONFIG_WIDTH = 0 in hardware; emit addr_offset_table
-  // entries for software reference.
   if (hwId >= state.hwNodeToSwNodes.size() ||
-      state.hwNodeToSwNodes[hwId].empty()) {
-    return; // No mapped operations, no config needed.
-  }
+      state.hwNodeToSwNodes[hwId].empty())
+    return;
 
-  // Determine tag width from attributes (default 4 bits).
   int64_t tagWidth = getNodeIntAttr(hwNode, "tag_width", 4);
-
-  // Accumulate bit position across all regions. Each region entry is
-  // packed contiguously: {valid(1), start_tag, end_tag, addr_offset}.
-  unsigned addrWidth = 16;
-  (void)addrWidth; // Width documented for reference.
+  int64_t ldCount = getNodeIntAttr(hwNode, "ldCount", 1);
+  int64_t stCount = getNodeIntAttr(hwNode, "stCount", 1);
+  bool isBridge = (ldCount > 1 || stCount > 1);
+  int64_t tagCount = std::max(ldCount, stCount);
   uint32_t bitPos = 0;
 
   for (size_t r = 0; r < state.hwNodeToSwNodes[hwId].size() &&
                       static_cast<int64_t>(r) < numRegion;
        ++r) {
-    // valid bit: 1 (this region is active).
     packBits(words, bitPos, 1, 1);
-
-    // start_tag: region index used as tag range start.
-    uint64_t startTag = r;
-    packBits(words, bitPos, startTag, static_cast<unsigned>(tagWidth));
-
-    // end_tag: start_tag + 1 (half-open interval).
-    uint64_t endTag = r + 1;
-    packBits(words, bitPos, endTag, static_cast<unsigned>(tagWidth + 1));
-
-    // addr_offset: 0 for now (base address offset for this region).
+    if (isBridge) {
+      packBits(words, bitPos, 0, static_cast<unsigned>(tagWidth));
+      packBits(words, bitPos, static_cast<uint64_t>(tagCount),
+               static_cast<unsigned>(tagWidth + 1));
+    } else {
+      packBits(words, bitPos, r, static_cast<unsigned>(tagWidth));
+      packBits(words, bitPos, r + 1, static_cast<unsigned>(tagWidth + 1));
+    }
     packBits(words, bitPos, 0, 16);
   }
 }
@@ -1680,14 +1672,26 @@ bool ConfigGen::writeConfiguredFabric(
     size_t regionCount =
         std::min(mappedCount, static_cast<size_t>(numRegion));
 
+    // Check for bridge metadata: multi-port memory uses tags [0, tagCount).
+    int64_t ldCount = getNodeIntAttr(hwNode, "ldCount", 1);
+    int64_t stCount = getNodeIntAttr(hwNode, "stCount", 1);
+    bool isBridgeMemory = (ldCount > 1 || stCount > 1);
+    int64_t tagCount = std::max(ldCount, stCount);
+
     // Build flat array: [valid, start_tag, end_tag, base_addr] per region.
     llvm::SmallVector<int64_t> table;
     for (size_t r = 0; r < static_cast<size_t>(numRegion); ++r) {
       if (r < regionCount) {
-        table.push_back(1);                          // valid
-        table.push_back(static_cast<int64_t>(r));    // start_tag
-        table.push_back(static_cast<int64_t>(r + 1)); // end_tag
-        table.push_back(0);                          // base_addr
+        table.push_back(1); // valid
+        if (isBridgeMemory) {
+          // Bridge memory: region covers full tag range [0, tagCount).
+          table.push_back(0);        // start_tag
+          table.push_back(tagCount); // end_tag
+        } else {
+          table.push_back(static_cast<int64_t>(r));     // start_tag
+          table.push_back(static_cast<int64_t>(r + 1)); // end_tag
+        }
+        table.push_back(0); // base_addr
       } else {
         table.push_back(0); // valid = 0
         table.push_back(0); // start_tag

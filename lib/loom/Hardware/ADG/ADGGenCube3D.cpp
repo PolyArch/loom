@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cmath>
 #include <map>
+#include <set>
 #include <tuple>
 #include <vector>
 
@@ -54,7 +55,6 @@ struct SwPortMap3D {
 //===----------------------------------------------------------------------===//
 
 struct CellInfo3D {
-  const PESpec *spec = nullptr;
   unsigned numIn = 0;
   unsigned numOut = 0;
 };
@@ -64,9 +64,6 @@ struct CellInfo3D {
 //===----------------------------------------------------------------------===//
 
 /// Enumerate boundary switches in a 3D grid via cutting planes from (0,0,0).
-/// A switch at (d, r, c) is "boundary" if at least one of its 6 directions
-/// has no neighbor (i.e., it's on the surface of the grid).
-/// Planes sweep outward: distance k = d + r + c, from 0 to maxDist.
 static std::vector<std::tuple<int, int, int>>
 planeCutSweep3D(int swDepths, int swRows, int swCols) {
   std::vector<std::tuple<int, int, int>> result;
@@ -77,7 +74,6 @@ planeCutSweep3D(int swDepths, int swRows, int swCols) {
         int c = k - d - r;
         if (c < 0 || c >= swCols)
           continue;
-        // Check if this switch is on the boundary.
         bool onBoundary = (d == 0 || d == swDepths - 1 ||
                            r == 0 || r == swRows - 1 ||
                            c == 0 || c == swCols - 1);
@@ -90,161 +86,219 @@ planeCutSweep3D(int swDepths, int swRows, int swCols) {
 }
 
 //===----------------------------------------------------------------------===//
+// PE placement with per-width port mapping
+//===----------------------------------------------------------------------===//
+
+struct WidthPorts3D {
+  std::vector<unsigned> inPorts;
+  std::vector<unsigned> outPorts;
+};
+
+struct PEPlacement3D {
+  enum Kind { Regular, Load, Store };
+  Kind kind;
+  const PESpec *spec = nullptr;
+  unsigned dataWidth = 0;
+  bool isFloat = false;
+  std::map<unsigned, WidthPorts3D> portsByWidth;
+};
+
+//===----------------------------------------------------------------------===//
+// Per-width cube grid data
+//===----------------------------------------------------------------------===//
+
+struct CubeGrid {
+  unsigned peRows = 0, peCols = 0, peDepths = 0;
+  int swRows = 0, swCols = 0, swDepths = 0;
+  unsigned totalCells = 0;
+  std::vector<std::vector<std::vector<InstanceHandle>>> swGrid;
+  std::vector<std::vector<std::vector<SwPortMap3D>>> swPorts;
+  std::vector<std::vector<std::vector<bool>>> pruned;
+  std::vector<std::vector<std::vector<CellInfo3D>>> cells;
+};
+
+//===----------------------------------------------------------------------===//
+// 8-corner topology definitions
+//===----------------------------------------------------------------------===//
+
+struct Corner3D {
+  int dd, dr, dc;
+  unsigned corner;
+};
+
+static const Corner3D kInCorners[8] = {
+    {0, 0, 0, 0}, {1, 0, 0, 1}, {0, 1, 0, 2}, {0, 0, 1, 3},
+    {0, 1, 1, 4}, {1, 0, 1, 5}, {1, 1, 0, 6}, {1, 1, 1, 7}};
+
+static const Corner3D kOutCorners[8] = {
+    {1, 1, 1, 7}, {1, 1, 0, 6}, {1, 0, 1, 5}, {0, 1, 1, 4},
+    {0, 0, 1, 3}, {0, 1, 0, 2}, {1, 0, 0, 1}, {0, 0, 0, 0}};
+
+//===----------------------------------------------------------------------===//
 // Cube3D generation
 //===----------------------------------------------------------------------===//
 
 void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
                     const GenConfig &config) {
 
-  // Group PEs by width plane.
-  std::map<unsigned, std::vector<std::pair<PESpec, unsigned>>> pesByWidth;
-  for (const auto &[spec, count] : reqs.peMaxCounts) {
-    unsigned w = spec.primaryWidth();
-    pesByWidth[w].push_back({spec, count});
-  }
-  for (const auto &[w, _] : reqs.maxInputsByWidth)
-    pesByWidth[w];
-  for (const auto &[w, _] : reqs.maxOutputsByWidth)
-    pesByWidth[w];
+  //=================================================================
+  // Build placement list with per-width port mapping
+  //=================================================================
 
-  // Count memory PEs per width plane.
-  std::map<unsigned, unsigned> loadPEsByWidth;
-  std::map<unsigned, unsigned> storePEsByWidth;
-  for (const auto &[memSpec, count] : reqs.maxMemoryCounts) {
-    loadPEsByWidth[memSpec.dataWidth] += memSpec.ldCount * count;
-    storePEsByWidth[memSpec.dataWidth] += memSpec.stCount * count;
-    pesByWidth[memSpec.dataWidth];
+  std::vector<PEPlacement3D> placements;
+  std::map<unsigned, unsigned> cellsPerWidth;
+
+  // Regular PEs: group ports by width (mixed-width PEs span multiple planes).
+  for (const auto &[spec, count] : reqs.peMaxCounts) {
+    for (unsigned i = 0; i < count; ++i) {
+      PEPlacement3D p;
+      p.kind = PEPlacement3D::Regular;
+      p.spec = &spec;
+      for (unsigned k = 0; k < spec.inWidths.size(); ++k)
+        p.portsByWidth[spec.inWidths[k]].inPorts.push_back(k);
+      for (unsigned k = 0; k < spec.outWidths.size(); ++k)
+        p.portsByWidth[spec.outWidths[k]].outPorts.push_back(k);
+      for (auto &[w, _] : p.portsByWidth)
+        cellsPerWidth[w]++;
+      placements.push_back(std::move(p));
+    }
   }
+
+  // Load PEs: in[0]=addr(57), in[1]=data(W), in[2]=ctrl(none/0)
+  //          out[0]=data(W), out[1]=addr(57)
+  for (const auto &[memSpec, memCount] : reqs.maxMemoryCounts) {
+    for (unsigned i = 0; i < memSpec.ldCount * memCount; ++i) {
+      PEPlacement3D p;
+      p.kind = PEPlacement3D::Load;
+      p.dataWidth = memSpec.dataWidth;
+      p.isFloat = memSpec.isFloat;
+      p.portsByWidth[ADDR_BIT_WIDTH] = {{0}, {1}};
+      p.portsByWidth[memSpec.dataWidth] = {{1}, {0}};
+      p.portsByWidth[0] = {{2}, {}};
+      for (auto &[w, _] : p.portsByWidth)
+        cellsPerWidth[w]++;
+      placements.push_back(std::move(p));
+    }
+    for (unsigned i = 0; i < memSpec.stCount * memCount; ++i) {
+      PEPlacement3D p;
+      p.kind = PEPlacement3D::Store;
+      p.dataWidth = memSpec.dataWidth;
+      p.isFloat = memSpec.isFloat;
+      p.portsByWidth[ADDR_BIT_WIDTH] = {{0}, {1}};
+      p.portsByWidth[memSpec.dataWidth] = {{1}, {0}};
+      p.portsByWidth[0] = {{2}, {}};
+      for (auto &[w, _] : p.portsByWidth)
+        cellsPerWidth[w]++;
+      placements.push_back(std::move(p));
+    }
+  }
+
+  // Ensure I/O width planes exist.
+  for (const auto &[w, _] : reqs.maxInputsByWidth)
+    cellsPerWidth[w] += 0;
+  for (const auto &[w, _] : reqs.maxOutputsByWidth)
+    cellsPerWidth[w] += 0;
 
   unsigned T = config.numSwitchTrack;
 
-  for (auto &[width, peList] : pesByWidth) {
-    unsigned totalPEs = 0;
-    for (const auto &[spec, count] : peList)
-      totalPEs += count;
-    unsigned nLoad = 0, nStore = 0;
-    {
-      auto it = loadPEsByWidth.find(width);
-      if (it != loadPEsByWidth.end())
-        nLoad = it->second;
-    }
-    {
-      auto it = storePEsByWidth.find(width);
-      if (it != storePEsByWidth.end())
-        nStore = it->second;
-    }
-    totalPEs += nLoad + nStore;
+  //=================================================================
+  // Build cube grids per width plane
+  //=================================================================
 
-    auto [peRows, peCols, peDepths] = computeCube3DDims(totalPEs);
-    int swRows = static_cast<int>(peRows) + 1;
-    int swCols = static_cast<int>(peCols) + 1;
-    int swDepths = static_cast<int>(peDepths) + 1;
+  std::map<unsigned, CubeGrid> cubeMap;
+
+  // Cell assignment: [placementIdx][width] = (d, r, c)
+  std::vector<std::map<unsigned, std::tuple<unsigned, unsigned, unsigned>>>
+      placementCells(placements.size());
+
+  for (auto &[width, numCells] : cellsPerWidth) {
+    CubeGrid &cube = cubeMap[width];
+    if (numCells == 0)
+      numCells = 1;
+
+    auto [peRows, peCols, peDepths] = computeCube3DDims(numCells);
+    cube.peRows = peRows;
+    cube.peCols = peCols;
+    cube.peDepths = peDepths;
+    cube.swRows = static_cast<int>(peRows) + 1;
+    cube.swCols = static_cast<int>(peCols) + 1;
+    cube.swDepths = static_cast<int>(peDepths) + 1;
+    cube.totalCells = peRows * peCols * peDepths;
     std::string wp = std::to_string(width);
 
-    // Prune excess cells: iterate (d, c, r) removing from last.
-    unsigned totalCells = peRows * peCols * peDepths;
-    unsigned excessCells = totalCells > totalPEs ? totalCells - totalPEs : 0;
-
-    // Mark pruned cells.
-    std::vector<std::vector<std::vector<bool>>> pruned(
-        peDepths,
-        std::vector<std::vector<bool>>(peRows, std::vector<bool>(peCols, false)));
+    // Prune excess cells from the far corner.
+    unsigned excess =
+        cube.totalCells > numCells ? cube.totalCells - numCells : 0;
+    cube.pruned.assign(
+        peDepths, std::vector<std::vector<bool>>(
+                      peRows, std::vector<bool>(peCols, false)));
     {
-      unsigned remaining = excessCells;
-      for (int d = static_cast<int>(peDepths) - 1; d >= 0 && remaining > 0; --d) {
-        for (int c = static_cast<int>(peCols) - 1; c >= 0 && remaining > 0; --c) {
-          for (int r = static_cast<int>(peRows) - 1; r >= 0 && remaining > 0; --r) {
-            pruned[d][r][c] = true;
-            --remaining;
+      unsigned rem = excess;
+      for (int d = (int)peDepths - 1; d >= 0 && rem > 0; --d)
+        for (int c = (int)peCols - 1; c >= 0 && rem > 0; --c)
+          for (int r = (int)peRows - 1; r >= 0 && rem > 0; --r) {
+            cube.pruned[d][r][c] = true;
+            --rem;
           }
+    }
+
+    // Assign placements to cells in this width plane.
+    cube.cells.assign(
+        peDepths, std::vector<std::vector<CellInfo3D>>(
+                      peRows, std::vector<CellInfo3D>(peCols)));
+    unsigned cellIdx = 0;
+    for (unsigned pi = 0; pi < placements.size(); ++pi) {
+      auto it = placements[pi].portsByWidth.find(width);
+      if (it == placements[pi].portsByWidth.end())
+        continue;
+      auto &wp_data = it->second;
+      while (cellIdx < cube.totalCells) {
+        unsigned d = cellIdx / (peRows * peCols);
+        unsigned r = (cellIdx % (peRows * peCols)) / peCols;
+        unsigned c = cellIdx % peCols;
+        if (!cube.pruned[d][r][c]) {
+          cube.cells[d][r][c] = {(unsigned)wp_data.inPorts.size(),
+                                 (unsigned)wp_data.outPorts.size()};
+          placementCells[pi][width] = {d, r, c};
+          ++cellIdx;
+          break;
         }
+        ++cellIdx;
       }
     }
 
-    // Populate 3D PE cell grid.
-    std::vector<std::vector<std::vector<CellInfo3D>>> cells(
-        peDepths,
-        std::vector<std::vector<CellInfo3D>>(
-            peRows, std::vector<CellInfo3D>(peCols)));
-    {
-      unsigned cellIdx = 0;
-      for (const auto &[spec, count] : peList) {
-        for (unsigned i = 0; i < count; ++i) {
-          // Find next non-pruned cell.
-          while (cellIdx < totalCells) {
-            unsigned d = cellIdx / (peRows * peCols);
-            unsigned rem = cellIdx % (peRows * peCols);
-            unsigned r = rem / peCols;
-            unsigned c = rem % peCols;
-            if (!pruned[d][r][c]) {
-              cells[d][r][c] = {&spec, (unsigned)spec.inWidths.size(),
-                                (unsigned)spec.outWidths.size()};
-              ++cellIdx;
-              break;
-            }
-            ++cellIdx;
-          }
-        }
-      }
-      // LoadPEs (3 inputs, 2 outputs).
-      for (unsigned i = 0; i < nLoad; ++i) {
-        while (cellIdx < totalCells) {
-          unsigned d = cellIdx / (peRows * peCols);
-          unsigned rem = cellIdx % (peRows * peCols);
-          unsigned r = rem / peCols;
-          unsigned c = rem % peCols;
-          if (!pruned[d][r][c]) {
-            cells[d][r][c] = {nullptr, 3, 2};
-            ++cellIdx;
-            break;
-          }
-          ++cellIdx;
-        }
-      }
-      // StorePEs (3 inputs, 2 outputs).
-      for (unsigned i = 0; i < nStore; ++i) {
-        while (cellIdx < totalCells) {
-          unsigned d = cellIdx / (peRows * peCols);
-          unsigned rem = cellIdx % (peRows * peCols);
-          unsigned r = rem / peCols;
-          unsigned c = rem % peCols;
-          if (!pruned[d][r][c]) {
-            cells[d][r][c] = {nullptr, 3, 2};
-            ++cellIdx;
-            break;
-          }
-          ++cellIdx;
-        }
-      }
-    }
-
-    // Module I/O counts.
+    // Module I/O counts for this width.
     unsigned numModIn = 0, numModOut = 0;
     {
-      auto it = reqs.maxInputsByWidth.find(width);
-      if (it != reqs.maxInputsByWidth.end())
-        numModIn = it->second;
+      auto it2 = reqs.maxInputsByWidth.find(width);
+      if (it2 != reqs.maxInputsByWidth.end())
+        numModIn = it2->second;
     }
     {
-      auto it = reqs.maxOutputsByWidth.find(width);
-      if (it != reqs.maxOutputsByWidth.end())
-        numModOut = it->second;
+      auto it2 = reqs.maxOutputsByWidth.find(width);
+      if (it2 != reqs.maxOutputsByWidth.end())
+        numModOut = it2->second;
     }
 
     // 3D plane-cut sweep for I/O assignment.
-    auto sweep3D = planeCutSweep3D(swDepths, swRows, swCols);
+    auto sweep3D = planeCutSweep3D(cube.swDepths, cube.swRows, cube.swCols);
 
-    struct ModIOAssign3D { int swD, swR, swC; };
+    struct ModIOAssign3D {
+      int swD, swR, swC;
+    };
 
-    // Assign module inputs from (0,0,0) corner outward.
     std::vector<ModIOAssign3D> modInAssigns;
     {
       unsigned assigned = 0;
       for (auto [d, r, c] : sweep3D) {
         if (assigned >= numModIn)
           break;
-        bool hasDir[6] = {r > 0, c < swCols - 1, r < swRows - 1, c > 0,
-                          d > 0, d < swDepths - 1};
+        bool hasDir[6] = {r > 0,
+                          c < cube.swCols - 1,
+                          r < cube.swRows - 1,
+                          c > 0,
+                          d > 0,
+                          d < cube.swDepths - 1};
         for (int dir = 0; dir < 6 && assigned < numModIn; ++dir) {
           if (!hasDir[dir]) {
             for (unsigned t = 0; t < T && assigned < numModIn; ++t) {
@@ -256,19 +310,22 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
       }
     }
 
-    // Assign module outputs from far corner inward.
     std::vector<ModIOAssign3D> modOutAssigns;
     {
       unsigned assigned = 0;
-      for (int i = static_cast<int>(sweep3D.size()) - 1; i >= 0; --i) {
+      for (int i = (int)sweep3D.size() - 1; i >= 0; --i) {
         if (assigned >= numModOut)
           break;
         auto [d, r, c] = sweep3D[i];
-        bool hasDir[6] = {r > 0, c < swCols - 1, r < swRows - 1, c > 0,
-                          d > 0, d < swDepths - 1};
+        bool hasDir[6] = {r > 0,
+                          c < cube.swCols - 1,
+                          r < cube.swRows - 1,
+                          c > 0,
+                          d > 0,
+                          d < cube.swDepths - 1};
         for (int dir = 5; dir >= 0 && assigned < numModOut; --dir) {
           if (!hasDir[dir]) {
-            for (int t = static_cast<int>(T) - 1;
+            for (int t = (int)T - 1;
                  t >= 0 && assigned < numModOut; --t) {
               modOutAssigns.push_back({d, r, c});
               ++assigned;
@@ -278,7 +335,6 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
       }
     }
 
-    // Count module I/O per switch.
     std::map<std::tuple<int, int, int>, unsigned> swModInCnt, swModOutCnt;
     for (auto &a : modInAssigns)
       swModInCnt[{a.swD, a.swR, a.swC}]++;
@@ -289,35 +345,25 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
     // Compute per-switch 3D port maps
     //=================================================================
 
-    std::vector<std::vector<std::vector<SwPortMap3D>>> swPorts(
-        swDepths,
+    cube.swPorts.assign(
+        cube.swDepths,
         std::vector<std::vector<SwPortMap3D>>(
-            swRows, std::vector<SwPortMap3D>(swCols)));
+            cube.swRows, std::vector<SwPortMap3D>(cube.swCols)));
 
-    // 8-corner mapping: for cell (d, r, c), corner index maps to switch offset.
-    // corner 0: (d, r, c)        corner 1: (d+1, r, c)
-    // corner 2: (d, r+1, c)      corner 3: (d, r, c+1)
-    // corner 4: (d, r+1, c+1)    corner 5: (d+1, r, c+1)
-    // corner 6: (d+1, r+1, c)    corner 7: (d+1, r+1, c+1)
-    // Input order: 0,1,2,3,4,5,6,7. Output order: 7,6,5,4,3,2,1,0 (reversed).
-
-    for (int d = 0; d < swDepths; ++d) {
-      for (int r = 0; r < swRows; ++r) {
-        for (int c = 0; c < swCols; ++c) {
-          auto &pm = swPorts[d][r][c];
+    for (int d = 0; d < cube.swDepths; ++d) {
+      for (int r = 0; r < cube.swRows; ++r) {
+        for (int c = 0; c < cube.swCols; ++c) {
+          auto &pm = cube.swPorts[d][r][c];
           pm.dirIn.assign(6 * T, -1);
           pm.dirOut.assign(6 * T, -1);
           unsigned inIdx = 0, outIdx = 0;
 
-          // 6 directional ports.
-          bool hasDir[6] = {
-              r > 0,              // N
-              c < swCols - 1,     // E
-              r < swRows - 1,     // S
-              c > 0,              // W
-              d > 0,              // Up
-              d < swDepths - 1    // Down
-          };
+          bool hasDir[6] = {r > 0,
+                            c < cube.swCols - 1,
+                            r < cube.swRows - 1,
+                            c > 0,
+                            d > 0,
+                            d < cube.swDepths - 1};
           for (int dir = 0; dir < 6; ++dir) {
             if (hasDir[dir]) {
               for (unsigned t = 0; t < T; ++t) {
@@ -328,71 +374,55 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
           }
 
           // PE output ports (switch out -> PE input) for 8 corners.
-          // Corner 0: cell(d, r, c) input[0]
           if (d < (int)peDepths && r < (int)peRows && c < (int)peCols &&
-              cells[d][r][c].numIn > 0)
+              cube.cells[d][r][c].numIn > 0)
             pm.peOut[0] = static_cast<int>(outIdx++);
-          // Corner 1: cell(d-1, r, c) input[1]
           if (d > 0 && r < (int)peRows && c < (int)peCols &&
-              cells[d - 1][r][c].numIn > 1)
+              cube.cells[d - 1][r][c].numIn > 1)
             pm.peOut[1] = static_cast<int>(outIdx++);
-          // Corner 2: cell(d, r-1, c) input[2]
           if (d < (int)peDepths && r > 0 && c < (int)peCols &&
-              cells[d][r - 1][c].numIn > 2)
+              cube.cells[d][r - 1][c].numIn > 2)
             pm.peOut[2] = static_cast<int>(outIdx++);
-          // Corner 3: cell(d, r, c-1) input[3]
           if (d < (int)peDepths && r < (int)peRows && c > 0 &&
-              cells[d][r][c - 1].numIn > 3)
+              cube.cells[d][r][c - 1].numIn > 3)
             pm.peOut[3] = static_cast<int>(outIdx++);
-          // Corner 4: cell(d, r-1, c-1) input[4]
           if (d < (int)peDepths && r > 0 && c > 0 &&
-              cells[d][r - 1][c - 1].numIn > 4)
+              cube.cells[d][r - 1][c - 1].numIn > 4)
             pm.peOut[4] = static_cast<int>(outIdx++);
-          // Corner 5: cell(d-1, r, c-1) input[5]
           if (d > 0 && r < (int)peRows && c > 0 &&
-              cells[d - 1][r][c - 1].numIn > 5)
+              cube.cells[d - 1][r][c - 1].numIn > 5)
             pm.peOut[5] = static_cast<int>(outIdx++);
-          // Corner 6: cell(d-1, r-1, c) input[6]
           if (d > 0 && r > 0 && c < (int)peCols &&
-              cells[d - 1][r - 1][c].numIn > 6)
+              cube.cells[d - 1][r - 1][c].numIn > 6)
             pm.peOut[6] = static_cast<int>(outIdx++);
-          // Corner 7: cell(d-1, r-1, c-1) input[7]
           if (d > 0 && r > 0 && c > 0 &&
-              cells[d - 1][r - 1][c - 1].numIn > 7)
+              cube.cells[d - 1][r - 1][c - 1].numIn > 7)
             pm.peOut[7] = static_cast<int>(outIdx++);
 
           // PE input ports (PE output -> switch in) in reverse corner order.
-          // Corner 7: cell(d-1, r-1, c-1) output[0]
           if (d > 0 && r > 0 && c > 0 &&
-              cells[d - 1][r - 1][c - 1].numOut > 0)
+              cube.cells[d - 1][r - 1][c - 1].numOut > 0)
             pm.peIn[7] = static_cast<int>(inIdx++);
-          // Corner 6: cell(d-1, r-1, c) output[1]
           if (d > 0 && r > 0 && c < (int)peCols &&
-              cells[d - 1][r - 1][c].numOut > 1)
+              cube.cells[d - 1][r - 1][c].numOut > 1)
             pm.peIn[6] = static_cast<int>(inIdx++);
-          // Corner 5: cell(d-1, r, c-1) output[2]
           if (d > 0 && r < (int)peRows && c > 0 &&
-              cells[d - 1][r][c - 1].numOut > 2)
+              cube.cells[d - 1][r][c - 1].numOut > 2)
             pm.peIn[5] = static_cast<int>(inIdx++);
-          // Corner 4: cell(d, r-1, c-1) output[3]
           if (d < (int)peDepths && r > 0 && c > 0 &&
-              cells[d][r - 1][c - 1].numOut > 3)
+              cube.cells[d][r - 1][c - 1].numOut > 3)
             pm.peIn[4] = static_cast<int>(inIdx++);
-          // Corner 3: cell(d, r, c-1) output[4]
           if (d < (int)peDepths && r < (int)peRows && c > 0 &&
-              cells[d][r][c - 1].numOut > 4)
+              cube.cells[d][r][c - 1].numOut > 4)
             pm.peIn[3] = static_cast<int>(inIdx++);
-          // Corner 2: cell(d, r-1, c) output[5]
           if (d < (int)peDepths && r > 0 && c < (int)peCols &&
-              cells[d][r - 1][c].numOut > 5)
+              cube.cells[d][r - 1][c].numOut > 5)
             pm.peIn[2] = static_cast<int>(inIdx++);
-          // Corner 1: cell(d-1, r, c) output[6]
           if (d > 0 && r < (int)peRows && c < (int)peCols &&
-              cells[d - 1][r][c].numOut > 6)
+              cube.cells[d - 1][r][c].numOut > 6)
             pm.peIn[1] = static_cast<int>(inIdx++);
-          // Corner 0: cell(d, r, c) output[7]
           if (d < (int)peDepths && r < (int)peRows && c < (int)peCols &&
-              cells[d][r][c].numOut > 7)
+              cube.cells[d][r][c].numOut > 7)
             pm.peIn[0] = static_cast<int>(inIdx++);
 
           // Module I/O ports.
@@ -413,19 +443,19 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
     }
 
     //=================================================================
-    // Build 3D ADG
+    // Create switch templates and instances
     //=================================================================
 
-    // Create switch templates.
     std::map<std::pair<unsigned, unsigned>, SwitchHandle> swTemplates;
-    for (int d = 0; d < swDepths; ++d) {
-      for (int r = 0; r < swRows; ++r) {
-        for (int c = 0; c < swCols; ++c) {
-          auto &pm = swPorts[d][r][c];
+    for (int d = 0; d < cube.swDepths; ++d) {
+      for (int r = 0; r < cube.swRows; ++r) {
+        for (int c = 0; c < cube.swCols; ++c) {
+          auto &pm = cube.swPorts[d][r][c];
           auto key = std::make_pair(pm.numIn, pm.numOut);
           if (swTemplates.find(key) == swTemplates.end()) {
-            std::string name = "sw_w" + wp + "_" + std::to_string(pm.numIn) +
-                               "x" + std::to_string(pm.numOut);
+            std::string name = "sw_w" + wp + "_" +
+                               std::to_string(pm.numIn) + "x" +
+                               std::to_string(pm.numOut);
             swTemplates[key] = builder.newSwitch(name)
                                    .setPortCount(pm.numIn, pm.numOut)
                                    .setType(widthToNativeType(width));
@@ -434,24 +464,28 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
       }
     }
 
-    // Create switch instances.
-    std::vector<std::vector<std::vector<InstanceHandle>>> swGrid(
-        swDepths,
+    cube.swGrid.assign(
+        cube.swDepths,
         std::vector<std::vector<InstanceHandle>>(
-            swRows, std::vector<InstanceHandle>(swCols)));
-    for (int d = 0; d < swDepths; ++d) {
-      for (int r = 0; r < swRows; ++r) {
-        for (int c = 0; c < swCols; ++c) {
-          auto &pm = swPorts[d][r][c];
+            cube.swRows, std::vector<InstanceHandle>(cube.swCols)));
+    for (int d = 0; d < cube.swDepths; ++d) {
+      for (int r = 0; r < cube.swRows; ++r) {
+        for (int c = 0; c < cube.swCols; ++c) {
+          auto &pm = cube.swPorts[d][r][c];
           auto key = std::make_pair(pm.numIn, pm.numOut);
-          std::string instName = "sw_" + std::to_string(d) + "_" +
-                                 std::to_string(r) + "_" + std::to_string(c);
-          swGrid[d][r][c] = builder.clone(swTemplates[key], instName);
+          std::string instName = "sw_w" + wp + "_" + std::to_string(d) +
+                                 "_" + std::to_string(r) + "_" +
+                                 std::to_string(c);
+          cube.swGrid[d][r][c] =
+              builder.clone(swTemplates[key], instName);
         }
       }
     }
 
-    // Create FIFO templates.
+    //=================================================================
+    // Create FIFOs and wire inter-switch connections
+    //=================================================================
+
     bool useFwd = (config.fifoMode == GenConfig::FifoDual);
     bool useRev = (config.fifoMode != GenConfig::FifoNone);
     FifoHandle fwdFifo{0}, revFifo{0};
@@ -484,193 +518,195 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
       }
     };
 
-    // Wire 6-direction inter-switch connections.
-    for (int d = 0; d < swDepths; ++d) {
-      for (int r = 0; r < swRows; ++r) {
-        for (int c = 0; c < swCols; ++c) {
-          auto &pm = swPorts[d][r][c];
-          std::string pos = std::to_string(d) + "_" + std::to_string(r) +
-                            "_" + std::to_string(c);
+    for (int d = 0; d < cube.swDepths; ++d) {
+      for (int r = 0; r < cube.swRows; ++r) {
+        for (int c = 0; c < cube.swCols; ++c) {
+          auto &pm = cube.swPorts[d][r][c];
+          std::string pos = std::to_string(d) + "_" +
+                            std::to_string(r) + "_" + std::to_string(c);
 
           // East: (d,r,c) -> (d,r,c+1)
-          if (c + 1 < swCols) {
-            auto &pmE = swPorts[d][r][c + 1];
+          if (c + 1 < cube.swCols) {
+            auto &pmE = cube.swPorts[d][r][c + 1];
             for (unsigned t = 0; t < T; ++t) {
               int so = pm.dirOut[1 * T + t], di = pmE.dirIn[3 * T + t];
               assert(so >= 0 && di >= 0);
-              connectDir3D(swGrid[d][r][c], so, swGrid[d][r][c + 1], di,
-                           useFwd, fwdFifo, "fifo_e_t" + std::to_string(t) + "_" + pos);
+              connectDir3D(cube.swGrid[d][r][c], so,
+                           cube.swGrid[d][r][c + 1], di, useFwd, fwdFifo,
+                           "fifo_e_t" + std::to_string(t) + "_" + pos);
               int rso = pmE.dirOut[3 * T + t], rdi = pm.dirIn[1 * T + t];
               assert(rso >= 0 && rdi >= 0);
-              connectDir3D(swGrid[d][r][c + 1], rso, swGrid[d][r][c], rdi,
-                           useRev, revFifo, "fifo_w_t" + std::to_string(t) + "_" + pos);
+              connectDir3D(cube.swGrid[d][r][c + 1], rso,
+                           cube.swGrid[d][r][c], rdi, useRev, revFifo,
+                           "fifo_w_t" + std::to_string(t) + "_" + pos);
             }
           }
 
           // South: (d,r,c) -> (d,r+1,c)
-          if (r + 1 < swRows) {
-            auto &pmS = swPorts[d][r + 1][c];
+          if (r + 1 < cube.swRows) {
+            auto &pmS = cube.swPorts[d][r + 1][c];
             for (unsigned t = 0; t < T; ++t) {
               int so = pm.dirOut[2 * T + t], di = pmS.dirIn[0 * T + t];
               assert(so >= 0 && di >= 0);
-              connectDir3D(swGrid[d][r][c], so, swGrid[d][r + 1][c], di,
-                           useFwd, fwdFifo, "fifo_s_t" + std::to_string(t) + "_" + pos);
+              connectDir3D(cube.swGrid[d][r][c], so,
+                           cube.swGrid[d][r + 1][c], di, useFwd, fwdFifo,
+                           "fifo_s_t" + std::to_string(t) + "_" + pos);
               int rso = pmS.dirOut[0 * T + t], rdi = pm.dirIn[2 * T + t];
               assert(rso >= 0 && rdi >= 0);
-              connectDir3D(swGrid[d][r + 1][c], rso, swGrid[d][r][c], rdi,
-                           useRev, revFifo, "fifo_n_t" + std::to_string(t) + "_" + pos);
+              connectDir3D(cube.swGrid[d][r + 1][c], rso,
+                           cube.swGrid[d][r][c], rdi, useRev, revFifo,
+                           "fifo_n_t" + std::to_string(t) + "_" + pos);
             }
           }
 
           // Down: (d,r,c) -> (d+1,r,c)
-          if (d + 1 < swDepths) {
-            auto &pmD = swPorts[d + 1][r][c];
+          if (d + 1 < cube.swDepths) {
+            auto &pmD = cube.swPorts[d + 1][r][c];
             for (unsigned t = 0; t < T; ++t) {
               int so = pm.dirOut[5 * T + t], di = pmD.dirIn[4 * T + t];
               assert(so >= 0 && di >= 0);
-              connectDir3D(swGrid[d][r][c], so, swGrid[d + 1][r][c], di,
-                           useFwd, fwdFifo, "fifo_d_t" + std::to_string(t) + "_" + pos);
+              connectDir3D(cube.swGrid[d][r][c], so,
+                           cube.swGrid[d + 1][r][c], di, useFwd, fwdFifo,
+                           "fifo_d_t" + std::to_string(t) + "_" + pos);
               int rso = pmD.dirOut[4 * T + t], rdi = pm.dirIn[5 * T + t];
               assert(rso >= 0 && rdi >= 0);
-              connectDir3D(swGrid[d + 1][r][c], rso, swGrid[d][r][c], rdi,
-                           useRev, revFifo, "fifo_u_t" + std::to_string(t) + "_" + pos);
+              connectDir3D(cube.swGrid[d + 1][r][c], rso,
+                           cube.swGrid[d][r][c], rdi, useRev, revFifo,
+                           "fifo_u_t" + std::to_string(t) + "_" + pos);
             }
           }
         }
       }
     }
 
-    // Helper: wire PE to 8-corner switches.
-    auto wirePE3D = [&](InstanceHandle peInst, int pd, int pr, int pc,
-                        unsigned nIn, unsigned nOut) {
-      // Input connections in corner order 0..7.
-      struct { int dd, dr, dc; unsigned corner; } inCorners[] = {
-        {0, 0, 0, 0}, {1, 0, 0, 1}, {0, 1, 0, 2}, {0, 0, 1, 3},
-        {0, 1, 1, 4}, {1, 0, 1, 5}, {1, 1, 0, 6}, {1, 1, 1, 7}
-      };
-      for (unsigned k = 0; k < nIn && k < 8; ++k) {
-        auto &ic = inCorners[k];
-        int sd = pd + ic.dd, sr = pr + ic.dr, sc = pc + ic.dc;
-        int swOut = swPorts[sd][sr][sc].peOut[ic.corner];
-        assert(swOut >= 0);
-        builder.connectPorts(swGrid[sd][sr][sc], swOut, peInst,
-                             static_cast<int>(k));
-      }
-      // Output connections in reverse corner order 7..0.
-      struct { int dd, dr, dc; unsigned corner; } outCorners[] = {
-        {1, 1, 1, 7}, {1, 1, 0, 6}, {1, 0, 1, 5}, {0, 1, 1, 4},
-        {0, 0, 1, 3}, {0, 1, 0, 2}, {1, 0, 0, 1}, {0, 0, 0, 0}
-      };
-      for (unsigned k = 0; k < nOut && k < 8; ++k) {
-        auto &oc = outCorners[k];
-        int sd = pd + oc.dd, sr = pr + oc.dr, sc = pc + oc.dc;
-        int swIn = swPorts[sd][sr][sc].peIn[oc.corner];
-        assert(swIn >= 0);
-        builder.connectPorts(peInst, static_cast<int>(k),
-                             swGrid[sd][sr][sc], swIn);
-      }
-    };
+    //=================================================================
+    // Module I/O
+    //=================================================================
 
-    // Create PE instances and wire to corner switches.
-    {
-      unsigned cellIdx = 0;
-      // Regular PEs.
-      for (const auto &[spec, count] : peList) {
-        PEHandle peHandle = createPEDef(builder, spec);
-        for (unsigned i = 0; i < count; ++i) {
-          while (cellIdx < totalCells) {
-            unsigned cd = cellIdx / (peRows * peCols);
-            unsigned rem = cellIdx % (peRows * peCols);
-            unsigned cr = rem / peCols;
-            unsigned cc = rem % peCols;
-            if (!pruned[cd][cr][cc]) {
-              std::string instName = spec.peName() + "_d" + std::to_string(cd) +
-                                     "_r" + std::to_string(cr) +
-                                     "_c" + std::to_string(cc);
-              auto peInst = builder.clone(peHandle, instName);
-              wirePE3D(peInst, cd, cr, cc, spec.inWidths.size(),
-                       spec.outWidths.size());
-              ++cellIdx;
-              break;
-            }
-            ++cellIdx;
-          }
-        }
-      }
-      // LoadPEs.
-      if (nLoad > 0) {
-        LoadPEHandle loadDef =
-            builder.newLoadPE("load_pe_w" + wp)
-                .setDataType(widthToNativeType(width));
-        for (unsigned i = 0; i < nLoad; ++i) {
-          while (cellIdx < totalCells) {
-            unsigned cd = cellIdx / (peRows * peCols);
-            unsigned rem = cellIdx % (peRows * peCols);
-            unsigned cr = rem / peCols;
-            unsigned cc = rem % peCols;
-            if (!pruned[cd][cr][cc]) {
-              std::string instName = "load_pe_d" + std::to_string(cd) +
-                                     "_r" + std::to_string(cr) +
-                                     "_c" + std::to_string(cc);
-              auto peInst = builder.clone(loadDef, instName);
-              wirePE3D(peInst, cd, cr, cc, 3, 2);
-              ++cellIdx;
-              break;
-            }
-            ++cellIdx;
-          }
-        }
-      }
-      // StorePEs.
-      if (nStore > 0) {
-        StorePEHandle storeDef =
-            builder.newStorePE("store_pe_w" + wp)
-                .setDataType(widthToNativeType(width));
-        for (unsigned i = 0; i < nStore; ++i) {
-          while (cellIdx < totalCells) {
-            unsigned cd = cellIdx / (peRows * peCols);
-            unsigned rem = cellIdx % (peRows * peCols);
-            unsigned cr = rem / peCols;
-            unsigned cc = rem % peCols;
-            if (!pruned[cd][cr][cc]) {
-              std::string instName = "store_pe_d" + std::to_string(cd) +
-                                     "_r" + std::to_string(cr) +
-                                     "_c" + std::to_string(cc);
-              auto peInst = builder.clone(storeDef, instName);
-              wirePE3D(peInst, cd, cr, cc, 3, 2);
-              ++cellIdx;
-              break;
-            }
-            ++cellIdx;
-          }
-        }
-      }
-    }
-
-    // Module I/O.
     {
       std::map<std::tuple<int, int, int>, unsigned> swModInIdx;
       for (unsigned k = 0; k < modInAssigns.size(); ++k) {
         auto &a = modInAssigns[k];
-        auto port = builder.addModuleInput("in_" + std::to_string(k),
-                                           widthToNativeType(width));
+        auto port = builder.addModuleInput(
+            "in_" + std::to_string(k), widthToNativeType(width));
         unsigned localIdx = swModInIdx[{a.swD, a.swR, a.swC}]++;
-        auto &pm = swPorts[a.swD][a.swR][a.swC];
-        builder.connectToModuleInput(port, swGrid[a.swD][a.swR][a.swC],
-                                     pm.modIn[localIdx]);
+        auto &pm = cube.swPorts[a.swD][a.swR][a.swC];
+        builder.connectToModuleInput(
+            port, cube.swGrid[a.swD][a.swR][a.swC], pm.modIn[localIdx]);
       }
     }
     {
       std::map<std::tuple<int, int, int>, unsigned> swModOutIdx;
       for (unsigned k = 0; k < modOutAssigns.size(); ++k) {
         auto &a = modOutAssigns[k];
-        auto port = builder.addModuleOutput("out_" + std::to_string(k),
-                                            widthToNativeType(width));
+        auto port = builder.addModuleOutput(
+            "out_" + std::to_string(k), widthToNativeType(width));
         unsigned localIdx = swModOutIdx[{a.swD, a.swR, a.swC}]++;
-        auto &pm = swPorts[a.swD][a.swR][a.swC];
-        builder.connectToModuleOutput(swGrid[a.swD][a.swR][a.swC],
-                                      pm.modOut[localIdx], port);
+        auto &pm = cube.swPorts[a.swD][a.swR][a.swC];
+        builder.connectToModuleOutput(
+            cube.swGrid[a.swD][a.swR][a.swC], pm.modOut[localIdx], port);
       }
+    }
+  } // end per-width cube loop
+
+  //=================================================================
+  // Create PE instances and wire to cube grids
+  //=================================================================
+
+  // Multi-width wiring: connect PE ports to the correct width plane's
+  // cube switches based on per-port width assignment.
+  auto wirePE3DPorts = [&](InstanceHandle peInst, int pd, int pr, int pc,
+                           const std::vector<unsigned> &inPortIndices,
+                           const std::vector<unsigned> &outPortIndices,
+                           CubeGrid &cube) {
+    for (unsigned k = 0; k < inPortIndices.size() && k < 8; ++k) {
+      auto &ic = kInCorners[k];
+      int sd = pd + ic.dd, sr = pr + ic.dr, sc = pc + ic.dc;
+      int swOut = cube.swPorts[sd][sr][sc].peOut[ic.corner];
+      if (swOut >= 0) {
+        builder.connectPorts(cube.swGrid[sd][sr][sc], swOut, peInst,
+                             static_cast<int>(inPortIndices[k]));
+      }
+    }
+    for (unsigned k = 0; k < outPortIndices.size() && k < 8; ++k) {
+      auto &oc = kOutCorners[k];
+      int sd = pd + oc.dd, sr = pr + oc.dr, sc = pc + oc.dc;
+      int swIn = cube.swPorts[sd][sr][sc].peIn[oc.corner];
+      if (swIn >= 0) {
+        builder.connectPorts(peInst,
+                             static_cast<int>(outPortIndices[k]),
+                             cube.swGrid[sd][sr][sc], swIn);
+      }
+    }
+  };
+
+  // PE template caches.
+  std::map<std::string, PEHandle> peTemplateCache;
+  std::map<unsigned, LoadPEHandle> loadTemplateCache;
+  std::map<unsigned, StorePEHandle> storeTemplateCache;
+
+  for (unsigned pi = 0; pi < placements.size(); ++pi) {
+    auto &p = placements[pi];
+
+    // Determine the primary width for naming (first available cell position).
+    unsigned primaryW = 0;
+    if (p.kind == PEPlacement3D::Regular)
+      primaryW = p.spec->primaryWidth();
+    else
+      primaryW = p.dataWidth;
+    auto cellIt = placementCells[pi].find(primaryW);
+    if (cellIt == placementCells[pi].end()) {
+      // Fallback: use the first available width.
+      if (placementCells[pi].empty())
+        continue;
+      cellIt = placementCells[pi].begin();
+      primaryW = cellIt->first;
+    }
+    auto [pd, pr, pc] = cellIt->second;
+
+    // Create PE instance.
+    InstanceHandle peInst{0};
+    if (p.kind == PEPlacement3D::Regular) {
+      std::string peKey = p.spec->peName();
+      if (peTemplateCache.find(peKey) == peTemplateCache.end())
+        peTemplateCache[peKey] = createPEDef(builder, *p.spec);
+      std::string instName = peKey + "_d" + std::to_string(pd) + "_r" +
+                             std::to_string(pr) + "_c" +
+                             std::to_string(pc);
+      peInst = builder.clone(peTemplateCache[peKey], instName);
+    } else if (p.kind == PEPlacement3D::Load) {
+      if (loadTemplateCache.find(p.dataWidth) == loadTemplateCache.end()) {
+        loadTemplateCache[p.dataWidth] =
+            builder.newLoadPE("load_pe_w" + std::to_string(p.dataWidth))
+                .setDataType(widthToNativeType(p.dataWidth));
+      }
+      std::string instName = "load_pe_d" + std::to_string(pd) + "_r" +
+                             std::to_string(pr) + "_c" +
+                             std::to_string(pc);
+      peInst = builder.clone(loadTemplateCache[p.dataWidth], instName);
+    } else {
+      if (storeTemplateCache.find(p.dataWidth) == storeTemplateCache.end()) {
+        storeTemplateCache[p.dataWidth] =
+            builder.newStorePE("store_pe_w" + std::to_string(p.dataWidth))
+                .setDataType(widthToNativeType(p.dataWidth));
+      }
+      std::string instName = "store_pe_d" + std::to_string(pd) + "_r" +
+                             std::to_string(pr) + "_c" +
+                             std::to_string(pc);
+      peInst = builder.clone(storeTemplateCache[p.dataWidth], instName);
+    }
+
+    // Wire PE ports to each width plane's cube.
+    for (auto &[width, wp_data] : p.portsByWidth) {
+      auto pcIt = placementCells[pi].find(width);
+      if (pcIt == placementCells[pi].end())
+        continue;
+      auto cubeIt = cubeMap.find(width);
+      if (cubeIt == cubeMap.end())
+        continue;
+      auto [wd, wr, wc] = pcIt->second;
+      wirePE3DPorts(peInst, wd, wr, wc, wp_data.inPorts,
+                    wp_data.outPorts, cubeIt->second);
     }
   }
 }

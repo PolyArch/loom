@@ -59,6 +59,24 @@ bool hasAttr(const Node *node, llvm::StringRef name) {
   return false;
 }
 
+/// Get bridge boundary port arrays from a node's attributes.
+/// Returns true if bridge metadata is present.
+bool getBridgePorts(const Node *node,
+                    mlir::DenseI32ArrayAttr &bridgeInPorts,
+                    mlir::DenseI32ArrayAttr &bridgeOutPorts) {
+  bridgeInPorts = {};
+  bridgeOutPorts = {};
+  for (auto &attr : node->attributes) {
+    if (attr.getName() == "bridge_input_ports")
+      bridgeInPorts =
+          mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+    else if (attr.getName() == "bridge_output_ports")
+      bridgeOutPorts =
+          mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+  }
+  return bridgeInPorts || bridgeOutPorts;
+}
+
 /// Collect DFG neighbor nodes via edges.
 llvm::SmallVector<IdIndex, 8> getNeighbors(const Graph &dfg, IdIndex swNode) {
   llvm::SmallVector<IdIndex, 8> neighbors;
@@ -424,7 +442,45 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
         const Node *hwNode = adg.getNode(hw);
         if (swNode && hwNode) {
           bool isMem = (getStrAttr(hwNode, "resource_class") == "memory");
-          if (isMem && swNode->inputPorts.size() <= hwNode->inputPorts.size()) {
+          // Use bridge boundary ports for multi-port memory.
+          mlir::DenseI32ArrayAttr bridgeInPorts, bridgeOutPorts;
+          bool hasBridge =
+              isMem && getBridgePorts(hwNode, bridgeInPorts, bridgeOutPorts);
+
+          if (hasBridge) {
+            // Bridge memory: bind DFG ports to bridge boundary ports.
+            unsigned swInSkip = 0;
+            if (getStrAttr(hwNode, "op_name") == "fabric.extmemory" &&
+                !swNode->inputPorts.empty()) {
+              // DFG input[0] is memref -> ADG input[0].
+              result.state.mapPort(swNode->inputPorts[0],
+                                   hwNode->inputPorts[0], dfg, adg);
+              swInSkip = 1;
+            }
+            // Map remaining DFG inputs to bridge boundary input ports.
+            if (bridgeInPorts) {
+              for (size_t p = swInSkip, b = 0;
+                   p < swNode->inputPorts.size() &&
+                   b < static_cast<size_t>(bridgeInPorts.size());
+                   ++p, ++b) {
+                result.state.mapPort(
+                    swNode->inputPorts[p],
+                    static_cast<IdIndex>(bridgeInPorts[b]), dfg, adg);
+              }
+            }
+            // Map DFG outputs to bridge boundary output ports.
+            if (bridgeOutPorts) {
+              for (size_t p = 0;
+                   p < swNode->outputPorts.size() &&
+                   p < static_cast<size_t>(bridgeOutPorts.size());
+                   ++p) {
+                result.state.mapPort(
+                    swNode->outputPorts[p],
+                    static_cast<IdIndex>(bridgeOutPorts[p]), dfg, adg);
+              }
+            }
+          } else if (isMem &&
+                     swNode->inputPorts.size() <= hwNode->inputPorts.size()) {
             llvm::SmallVector<bool> hwUsed(hwNode->inputPorts.size(), false);
             for (size_t p = 0; p < swNode->inputPorts.size(); ++p) {
               const Port *sp = dfg.getPort(swNode->inputPorts[p]);
@@ -767,7 +823,47 @@ CPSATSolver::Result CPSATSolver::solveSubProblem(
         const Node *hwNode = adg.getNode(hw);
         if (swNode && hwNode) {
           bool isMem = (getStrAttr(hwNode, "resource_class") == "memory");
-          if (isMem && swNode->inputPorts.size() <= hwNode->inputPorts.size()) {
+          mlir::DenseI32ArrayAttr bridgeInPorts2, bridgeOutPorts2;
+          bool hasBridge2 =
+              isMem && getBridgePorts(hwNode, bridgeInPorts2, bridgeOutPorts2);
+
+          if (hasBridge2) {
+            // Bridge memory: bind DFG ports to bridge boundary ports.
+            unsigned swInSkip2 = 0;
+            if (getStrAttr(hwNode, "op_name") == "fabric.extmemory" &&
+                !swNode->inputPorts.empty()) {
+              if (result.state.swPortToHwPort[swNode->inputPorts[0]] ==
+                  INVALID_ID)
+                result.state.mapPort(swNode->inputPorts[0],
+                                     hwNode->inputPorts[0], dfg, adg);
+              swInSkip2 = 1;
+            }
+            if (bridgeInPorts2) {
+              for (size_t p = swInSkip2, b = 0;
+                   p < swNode->inputPorts.size() &&
+                   b < static_cast<size_t>(bridgeInPorts2.size());
+                   ++p, ++b) {
+                if (result.state.swPortToHwPort[swNode->inputPorts[p]] ==
+                    INVALID_ID)
+                  result.state.mapPort(
+                      swNode->inputPorts[p],
+                      static_cast<IdIndex>(bridgeInPorts2[b]), dfg, adg);
+              }
+            }
+            if (bridgeOutPorts2) {
+              for (size_t p = 0;
+                   p < swNode->outputPorts.size() &&
+                   p < static_cast<size_t>(bridgeOutPorts2.size());
+                   ++p) {
+                if (result.state.swPortToHwPort[swNode->outputPorts[p]] ==
+                    INVALID_ID)
+                  result.state.mapPort(
+                      swNode->outputPorts[p],
+                      static_cast<IdIndex>(bridgeOutPorts2[p]), dfg, adg);
+              }
+            }
+          } else if (isMem &&
+                     swNode->inputPorts.size() <= hwNode->inputPorts.size()) {
             llvm::SmallVector<bool> hwUsed(hwNode->inputPorts.size(), false);
             // Mark already-mapped HW ports.
             for (size_t h = 0; h < hwNode->inputPorts.size(); ++h) {

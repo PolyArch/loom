@@ -237,6 +237,10 @@ if [[ "${1:-}" == "--gen-domain" ]]; then
     "--dfg-analyze --dump-analysis --gen-temporal --gen-track 5 --gen-fifo-mode dual --gen-pe-margin 0.5"
     "--dfg-analyze --dump-analysis --gen-temporal --temporal-threshold 0.3 --gen-track 5 --gen-fifo-mode dual"
     "--dfg-analyze --dump-analysis --gen-temporal --temporal-threshold 0.7 --gen-track 5 --gen-fifo-mode dual"
+    "--dfg-analyze --dump-analysis --gen-track 6 --gen-fifo-mode dual --gen-pe-margin 0.5"
+    "--dfg-analyze --dump-analysis --gen-track 6 --gen-fifo-mode dual --gen-pe-margin 1.0"
+    "--dfg-analyze --dump-analysis --gen-track 7 --gen-fifo-mode dual --gen-pe-margin 0.5"
+    "--dfg-analyze --dump-analysis --gen-track 7 --gen-fifo-mode dual --gen-pe-margin 1.0"
     "--dfg-analyze --dump-analysis --gen-topology cube --gen-track 3"
   )
 

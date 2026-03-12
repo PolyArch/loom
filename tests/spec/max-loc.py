@@ -20,7 +20,7 @@ EXTENSIONS = {
 MAX_LINES = 1800
 
 # Directory names to skip (generated artifacts, not project source)
-SKIP_DIRS = {"Output", "__pycache__"}
+SKIP_DIRS = {"Output", "__pycache__", ".results"}
 
 
 def main() -> int:
