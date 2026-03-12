@@ -75,6 +75,7 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "  --gen-fifo-depth <n>        FIFO depth (default: 2)\n";
   llvm::outs() << "  --gen-fifo-bypassable       Set FIFOs as bypassable\n";
   llvm::outs() << "  --gen-temporal              Generate temporal domain (dual-mesh with bridges)\n";
+  llvm::outs() << "  --gen-pe-margin <f>         Routing margin: extra empty cells (e.g. 0.5 = 50%)\n";
   llvm::outs() << "\n";
   llvm::outs() << "DFG analysis mode (--dfg-analyze with --dfgs):\n";
   llvm::outs() << "  Analyze DFGs and output annotated MLIR with loom.analysis attrs.\n";
@@ -266,6 +267,15 @@ ParsedArgs ParseArgs(int argc, char **argv) {
       }
       if (arg == "--gen-temporal") {
         parsed.gen_temporal = true;
+        continue;
+      }
+      if (arg == "--gen-pe-margin") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --gen-pe-margin requires a value\n";
+          parsed.had_error = true;
+          continue;
+        }
+        parsed.gen_pe_margin = std::stod(argv[++i]);
         continue;
       }
       if (arg == "--dfg-analyze") {

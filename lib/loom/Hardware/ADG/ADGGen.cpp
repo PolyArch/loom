@@ -199,7 +199,13 @@ static WidthLattice buildWidthLattice(
   if (totalCells == 0 && numIOIn == 0 && numIOOut == 0)
     return lattice;
 
-  auto peDims = computeMesh2DDims(totalCells > 0 ? totalCells : 1);
+  // Apply routing margin: inflate the cell count to provide extra
+  // empty routing cells in the mesh.
+  unsigned dimCells = totalCells > 0 ? totalCells : 1;
+  if (config.peMargin > 0.0 && dimCells > 1)
+    dimCells = static_cast<unsigned>(
+        std::ceil(dimCells * (1.0 + config.peMargin)));
+  auto peDims = computeMesh2DDims(dimCells);
   unsigned peRows = peDims.first;
   unsigned peCols = peDims.second;
   lattice.peRows = peRows;
@@ -856,10 +862,17 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
   //=================================================================
 
   // Track which I/O slot to use next per width (after DFG I/O slots).
-  std::map<unsigned, unsigned> nextExtInSlot, nextExtOutSlot;
+  // For inputs (del_tag → lattice): allocate forward from after DFG inputs.
+  // For outputs (lattice → add_tag): allocate BACKWARDS from the end of
+  // the output slots array. DFG outputs start at the bottom-right corner
+  // (index 0), so bridges from the opposite end land on top-left corner
+  // switches, maximally spreading the routing load.
+  std::map<unsigned, unsigned> nextExtInSlot;
+  std::map<unsigned, int> nextExtOutSlotRev;
   for (auto &[w, _] : lattices) {
     nextExtInSlot[w] = dfgInByWidth[w];
-    nextExtOutSlot[w] = dfgOutByWidth[w];
+    nextExtOutSlotRev[w] =
+        static_cast<int>(lattices[w].outputSlots.size()) - 1;
   }
 
   unsigned memIdx = 0;
@@ -995,14 +1008,14 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
         for (unsigned st = 0; st < memSpec.stCount; ++st) {
           {
             auto &lat = lattices[memSpec.dataWidth];
-            unsigned slotIdx = nextExtOutSlot[memSpec.dataWidth]++;
+            int slotIdx = nextExtOutSlotRev[memSpec.dataWidth]--;
             auto &slot = lat.outputSlots[slotIdx];
             builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
                                  slot.switchPort, memInst, memInPort++);
           }
           {
             auto &lat = lattices[ADDR_BIT_WIDTH];
-            unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
+            int slotIdx = nextExtOutSlotRev[ADDR_BIT_WIDTH]--;
             auto &slot = lat.outputSlots[slotIdx];
             builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
                                  slot.switchPort, memInst, memInPort++);
@@ -1012,7 +1025,7 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
         // Load addresses
         for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
           auto &lat = lattices[ADDR_BIT_WIDTH];
-          unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
+          int slotIdx = nextExtOutSlotRev[ADDR_BIT_WIDTH]--;
           auto &slot = lat.outputSlots[slotIdx];
           builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
                                slot.switchPort, memInst, memInPort++);
@@ -1058,7 +1071,7 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
           std::vector<InstanceHandle> stDataATs;
           for (unsigned st = 0; st < memSpec.stCount; ++st) {
             auto &lat = lattices[memSpec.dataWidth];
-            unsigned slotIdx = nextExtOutSlot[memSpec.dataWidth]++;
+            int slotIdx = nextExtOutSlotRev[memSpec.dataWidth]--;
             auto &slot = lat.outputSlots[slotIdx];
             InstanceHandle at =
                 builder
@@ -1085,7 +1098,7 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
           std::vector<InstanceHandle> stAddrATs;
           for (unsigned st = 0; st < memSpec.stCount; ++st) {
             auto &lat = lattices[ADDR_BIT_WIDTH];
-            unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
+            int slotIdx = nextExtOutSlotRev[ADDR_BIT_WIDTH]--;
             auto &slot = lat.outputSlots[slotIdx];
             InstanceHandle at =
                 builder
@@ -1114,7 +1127,7 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
           std::vector<InstanceHandle> ldAddrATs;
           for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
             auto &lat = lattices[ADDR_BIT_WIDTH];
-            unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
+            int slotIdx = nextExtOutSlotRev[ADDR_BIT_WIDTH]--;
             auto &slot = lat.outputSlots[slotIdx];
             InstanceHandle at =
                 builder

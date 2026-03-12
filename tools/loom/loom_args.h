@@ -33,6 +33,7 @@ struct ParsedArgs {
   unsigned gen_fifo_depth = 2;
   bool gen_fifo_bypassable = false;
   bool gen_temporal = false;
+  double gen_pe_margin = 0.0;
   bool dfg_analyze = false;
   double temporal_threshold = 0.5;
   bool dump_analysis = false;

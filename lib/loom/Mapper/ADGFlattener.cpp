@@ -711,29 +711,44 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
     };
 
     // Trace input bridges per category.
-    // Memory input layout: [memref?] [st_data, st_addr] (if stCount>0),
-    //                      [ld_addr] (if ldCount>0)
+    // ADG memory input layout: [memref?] [st_data, st_addr] (if stCount>0),
+    //                          [ld_addr] (if ldCount>0)
+    // DFG memory input layout: [memref?] [st0_data, st0_addr, st1_data,
+    //                           st1_addr, ...] (interleaved per store lane),
+    //                          [ld0_addr, ld1_addr, ...]
+    // We collect in ADG order, then interleave to match DFG ordering.
     llvm::SmallVector<IdIndex, 8> bridgeInputPorts;
     llvm::SmallVector<IdIndex, 8> allAddTagNodes;
     llvm::SmallVector<IdIndex, 4> muxNodes;
     unsigned memInIdx = isExtMem ? 1 : 0; // Skip memref for extmemory.
 
+    llvm::SmallVector<IdIndex, 4> stDataBoundary, stAddrBoundary;
+    llvm::SmallVector<IdIndex, 4> stDataATNodes, stAddrATNodes;
     if (stCount > 0) {
-      llvm::SmallVector<IdIndex, 4> atNodes;
       IdIndex muxId;
-      auto stDataBoundary =
-          traceInputBridge(memInIdx++, stCount, atNodes, muxId);
-      bridgeInputPorts.append(stDataBoundary.begin(), stDataBoundary.end());
-      allAddTagNodes.append(atNodes.begin(), atNodes.end());
+      stDataBoundary = traceInputBridge(memInIdx++, stCount,
+                                         stDataATNodes, muxId);
       if (muxId != INVALID_ID)
         muxNodes.push_back(muxId);
-      atNodes.clear();
-      auto stAddrBoundary =
-          traceInputBridge(memInIdx++, stCount, atNodes, muxId);
-      bridgeInputPorts.append(stAddrBoundary.begin(), stAddrBoundary.end());
-      allAddTagNodes.append(atNodes.begin(), atNodes.end());
+      stAddrBoundary = traceInputBridge(memInIdx++, stCount,
+                                         stAddrATNodes, muxId);
       if (muxId != INVALID_ID)
         muxNodes.push_back(muxId);
+
+      // Interleave st_data and st_addr per lane to match DFG ordering:
+      // [st0_data, st0_addr, st1_data, st1_addr, ...]
+      for (unsigned lane = 0; lane < stCount; ++lane) {
+        if (lane < stDataBoundary.size())
+          bridgeInputPorts.push_back(stDataBoundary[lane]);
+        if (lane < stAddrBoundary.size())
+          bridgeInputPorts.push_back(stAddrBoundary[lane]);
+      }
+      for (unsigned lane = 0; lane < stCount; ++lane) {
+        if (lane < stDataATNodes.size())
+          allAddTagNodes.push_back(stDataATNodes[lane]);
+        if (lane < stAddrATNodes.size())
+          allAddTagNodes.push_back(stAddrATNodes[lane]);
+      }
     }
     if (ldCount > 0) {
       llvm::SmallVector<IdIndex, 4> atNodes;
@@ -785,27 +800,37 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
       continue;
 
     // Set bridge_lane_index on each add_tag node for ConfigGen.
-    // The allAddTagNodes vector has groups ordered by category:
-    // [stData(stCount), stAddr(stCount), ldAddr(ldCount)].
-    // Each group's add_tag nodes get lane indices 0..count-1.
+    // The allAddTagNodes vector is interleaved per store lane:
+    // [st0_data_at, st0_addr_at, st1_data_at, st1_addr_at, ...,
+    //  ld0_addr_at, ld1_addr_at, ...].
+    // Each data/addr pair in a lane shares the same lane index.
     {
       unsigned idx = 0;
-      auto setLaneIndices = [&](unsigned count) {
-        for (unsigned lane = 0; lane < count && idx < allAddTagNodes.size();
-             ++lane, ++idx) {
-          Node *atNode = graph.getNode(allAddTagNodes[idx]);
-          if (atNode) {
+      // Store lanes: each lane has 2 add_tag nodes (data + addr).
+      for (unsigned lane = 0; lane < stCount && idx < allAddTagNodes.size();
+           ++lane) {
+        // st_data add_tag for this lane
+        if (idx < allAddTagNodes.size()) {
+          Node *atNode = graph.getNode(allAddTagNodes[idx++]);
+          if (atNode)
             atNode->attributes.push_back(builder.getNamedAttr(
                 "bridge_lane_index", builder.getI32IntegerAttr(lane)));
-          }
         }
-      };
-      if (stCount > 0) {
-        setLaneIndices(stCount); // st_data
-        setLaneIndices(stCount); // st_addr
+        // st_addr add_tag for this lane
+        if (idx < allAddTagNodes.size()) {
+          Node *atNode = graph.getNode(allAddTagNodes[idx++]);
+          if (atNode)
+            atNode->attributes.push_back(builder.getNamedAttr(
+                "bridge_lane_index", builder.getI32IntegerAttr(lane)));
+        }
       }
-      if (ldCount > 0) {
-        setLaneIndices(ldCount); // ld_addr
+      // Load lanes: each has 1 add_tag node (addr).
+      for (unsigned lane = 0; lane < ldCount && idx < allAddTagNodes.size();
+           ++lane) {
+        Node *atNode = graph.getNode(allAddTagNodes[idx++]);
+        if (atNode)
+          atNode->attributes.push_back(builder.getNamedAttr(
+              "bridge_lane_index", builder.getI32IntegerAttr(lane)));
       }
     }
 

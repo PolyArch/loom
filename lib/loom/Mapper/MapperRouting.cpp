@@ -29,6 +29,24 @@ llvm::StringRef getResClass(const Node *node) {
   return "";
 }
 
+/// Get the "op_name" attribute from a node, or empty string.
+llvm::StringRef getOpName(const Node *node) {
+  for (auto &attr : node->attributes) {
+    if (attr.getName() == "op_name") {
+      if (auto strAttr = mlir::dyn_cast<mlir::StringAttr>(attr.getValue()))
+        return strAttr.getValue();
+    }
+  }
+  return "";
+}
+
+/// Check if a DFG node is a memory-related operation.
+bool isMemoryOp(const Node *node) {
+  auto name = getOpName(node);
+  return name.contains("memory") || name.contains("extmemory") ||
+         name.contains("load") || name.contains("store");
+}
+
 /// Get bit width from an MLIR type (handles integer, float, bits, and index types).
 unsigned getTypeBitWidth(mlir::Type type) {
   if (!type)
@@ -298,20 +316,156 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort,
   return path; // Empty = no path found.
 }
 
+llvm::SmallVector<IdIndex, 8>
+Mapper::findPathRelaxed(IdIndex srcHwPort, IdIndex dstHwPort,
+                        const MappingState &state, const Graph &adg,
+                        llvm::SmallVector<IdIndex, 8> &blockingEdges) {
+  llvm::SmallVector<IdIndex, 8> path;
+  blockingEdges.clear();
+
+  if (srcHwPort == INVALID_ID || dstHwPort == INVALID_ID)
+    return path;
+
+  // BFS ignoring C3 exclusivity but enforcing C2 bit-width compatibility.
+  // Track which HW edges along the path have SW edges assigned (blockers).
+  struct BFSEntry {
+    IdIndex portId;
+    llvm::SmallVector<IdIndex, 8> pathSoFar;
+  };
+
+  std::queue<BFSEntry> bfsQueue;
+  llvm::DenseSet<IdIndex> visited;
+
+  BFSEntry start;
+  start.portId = srcHwPort;
+  start.pathSoFar.push_back(srcHwPort);
+  bfsQueue.push(start);
+  visited.insert(srcHwPort);
+
+  while (!bfsQueue.empty()) {
+    auto current = bfsQueue.front();
+    bfsQueue.pop();
+
+    auto physIt = connectivity.outToIn.find(current.portId);
+    if (physIt == connectivity.outToIn.end())
+      continue;
+
+    IdIndex nextInputPort = physIt->second;
+    if (visited.count(nextInputPort))
+      continue;
+
+    // C2: check bit-width compatibility (skip C3 exclusivity).
+    const Port *sp = adg.getPort(current.portId);
+    const Port *dp = adg.getPort(nextInputPort);
+    if (sp && dp && sp->type && dp->type) {
+      if (!isRoutingTypeCompatible(sp->type, dp->type))
+        continue;
+    }
+
+    visited.insert(nextInputPort);
+    auto nextPath = current.pathSoFar;
+    nextPath.push_back(nextInputPort);
+
+    if (nextInputPort == dstHwPort) {
+      // Found path. Collect blocking SW edges along this path.
+      for (size_t i = 0; i + 1 < nextPath.size(); i += 2) {
+        IdIndex outPort = nextPath[i];
+        IdIndex inPort = nextPath[i + 1];
+        const Port *op = adg.getPort(outPort);
+        if (!op)
+          continue;
+        for (IdIndex hwEdgeId : op->connectedEdges) {
+          const Edge *hwE = adg.getEdge(hwEdgeId);
+          if (!hwE || hwE->srcPort != outPort || hwE->dstPort != inPort)
+            continue;
+          if (hwEdgeId < state.hwEdgeToSwEdges.size()) {
+            for (IdIndex swEdge : state.hwEdgeToSwEdges[hwEdgeId])
+              blockingEdges.push_back(swEdge);
+          }
+        }
+      }
+      return nextPath;
+    }
+
+    auto internalIt = connectivity.inToOut.find(nextInputPort);
+    if (internalIt != connectivity.inToOut.end()) {
+      for (IdIndex outPortId : internalIt->second) {
+        if (visited.count(outPortId))
+          continue;
+        visited.insert(outPortId);
+        BFSEntry next;
+        next.portId = outPortId;
+        next.pathSoFar = nextPath;
+        next.pathSoFar.push_back(outPortId);
+        bfsQueue.push(next);
+      }
+    }
+  }
+
+  return path; // Empty = no relaxed path found.
+}
+
 bool Mapper::runRouting(MappingState &state, const Graph &dfg,
                         const Graph &adg, int seed) {
   bool allRouted = true;
 
-  // Build edge order (optionally shuffled for deadlock avoidance).
-  std::vector<IdIndex> edgeOrder;
+  // Build edge order: prioritize memory-connected edges (most constrained
+  // destinations) so they get first pick of routing channels, then shuffle
+  // the rest for deadlock avoidance.
+  std::vector<IdIndex> memEdges, otherEdges;
   for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
-    if (dfg.getEdge(i))
-      edgeOrder.push_back(i);
+    const Edge *e = dfg.getEdge(i);
+    if (!e)
+      continue;
+    // Check if either endpoint maps to a memory/bridge HW node.
+    bool isMemEdge = false;
+    for (IdIndex swPort : {e->srcPort, e->dstPort}) {
+      if (swPort >= state.swPortToHwPort.size())
+        continue;
+      IdIndex hwPort = state.swPortToHwPort[swPort];
+      if (hwPort == INVALID_ID)
+        continue;
+      const Port *hp = adg.getPort(hwPort);
+      if (!hp || hp->parentNode == INVALID_ID)
+        continue;
+      const Node *hwNode = adg.getNode(hp->parentNode);
+      if (hwNode) {
+        auto rc = getResClass(hwNode);
+        if (rc == "memory" || rc == "bridge")
+          isMemEdge = true;
+      }
+    }
+    // Also prioritize edges to/from DFG sentinel nodes and memory ops.
+    const Port *sp = dfg.getPort(e->srcPort);
+    const Port *dp = dfg.getPort(e->dstPort);
+    if (sp && sp->parentNode != INVALID_ID) {
+      const Node *n = dfg.getNode(sp->parentNode);
+      if (n && (n->kind == Node::ModuleInputNode ||
+                n->kind == Node::ModuleOutputNode ||
+                isMemoryOp(n)))
+        isMemEdge = true;
+    }
+    if (dp && dp->parentNode != INVALID_ID) {
+      const Node *n = dfg.getNode(dp->parentNode);
+      if (n && (n->kind == Node::ModuleInputNode ||
+                n->kind == Node::ModuleOutputNode ||
+                isMemoryOp(n)))
+        isMemEdge = true;
+    }
+    if (isMemEdge)
+      memEdges.push_back(i);
+    else
+      otherEdges.push_back(i);
   }
   if (seed >= 0) {
     std::mt19937 rng(static_cast<unsigned>(seed));
-    std::shuffle(edgeOrder.begin(), edgeOrder.end(), rng);
+    std::shuffle(memEdges.begin(), memEdges.end(), rng);
+    std::shuffle(otherEdges.begin(), otherEdges.end(), rng);
   }
+  std::vector<IdIndex> edgeOrder;
+  edgeOrder.reserve(memEdges.size() + otherEdges.size());
+  edgeOrder.insert(edgeOrder.end(), memEdges.begin(), memEdges.end());
+  edgeOrder.insert(edgeOrder.end(), otherEdges.begin(), otherEdges.end());
 
   // Route each DFG edge.
   for (IdIndex edgeId : edgeOrder) {

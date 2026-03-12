@@ -144,10 +144,18 @@ if [[ "${1:-}" == "--single" ]]; then
     "--dfg-analyze --dump-analysis --gen-track 5|200|analyze-track5-b200"
     "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual|200|analyze-track5-fifo"
     "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable|200|analyze-track5-bypass"
+    "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual --gen-pe-margin 0.5|500|analyze-track5-margin50"
+    "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual --gen-pe-margin 1.0|500|analyze-track5-margin100"
+    "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable --gen-pe-margin 1.0|500|analyze-track5-full"
+    "--dfg-analyze --dump-analysis --gen-track 6 --gen-fifo-mode dual --gen-pe-margin 0.5|500|analyze-track6-margin50"
+    "--dfg-analyze --dump-analysis --gen-track 6 --gen-fifo-mode dual --gen-pe-margin 1.0|500|analyze-track6-margin100"
+    "--dfg-analyze --dump-analysis --gen-track 7 --gen-fifo-mode dual --gen-pe-margin 0.5|500|analyze-track7-margin50"
+    "--dfg-analyze --dump-analysis --gen-track 7 --gen-fifo-mode dual --gen-pe-margin 1.0|500|analyze-track7-margin100"
     "--dfg-analyze --dump-analysis --gen-temporal --gen-track 3|200|analyze-temporal-track3"
     "--dfg-analyze --dump-analysis --gen-temporal --gen-track 5 --gen-fifo-mode dual|200|analyze-temporal-track5"
     "--dfg-analyze --dump-analysis --gen-temporal --temporal-threshold 0.3 --gen-track 5 --gen-fifo-mode dual|200|analyze-temporal-t03"
     "--dfg-analyze --dump-analysis --gen-temporal --temporal-threshold 0.7 --gen-track 5 --gen-fifo-mode dual|200|analyze-temporal-t07"
+    "--dfg-analyze --dump-analysis --gen-temporal --gen-track 5 --gen-fifo-mode dual --gen-pe-margin 0.5|500|analyze-temporal-margin50"
     "--dfg-analyze --dump-analysis --gen-topology cube --gen-track 3|200|analyze-cube-track3"
   )
 
@@ -222,8 +230,11 @@ if [[ "${1:-}" == "--gen-domain" ]]; then
     "--dfg-analyze --dump-analysis --gen-track 5"
     "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual"
     "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable"
+    "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual --gen-pe-margin 0.5"
+    "--dfg-analyze --dump-analysis --gen-track 5 --gen-fifo-mode dual --gen-fifo-bypassable --gen-pe-margin 0.5"
     "--dfg-analyze --dump-analysis --gen-temporal --gen-track 3"
     "--dfg-analyze --dump-analysis --gen-temporal --gen-track 5 --gen-fifo-mode dual"
+    "--dfg-analyze --dump-analysis --gen-temporal --gen-track 5 --gen-fifo-mode dual --gen-pe-margin 0.5"
     "--dfg-analyze --dump-analysis --gen-temporal --temporal-threshold 0.3 --gen-track 5 --gen-fifo-mode dual"
     "--dfg-analyze --dump-analysis --gen-temporal --temporal-threshold 0.7 --gen-track 5 --gen-fifo-mode dual"
     "--dfg-analyze --dump-analysis --gen-topology cube --gen-track 3"
@@ -384,7 +395,7 @@ for app in "${app_names[@]}"; do
   echo "${line}" >> "${PARALLEL_FILE}"
 done
 
-loom_run_suite_no_exit "${PARALLEL_FILE}" "Mapper App" "mapper-app" "120"
+loom_run_suite_no_exit "${PARALLEL_FILE}" "Mapper App" "mapper-app" "240"
 suite_rc=0
 if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
   suite_rc=1

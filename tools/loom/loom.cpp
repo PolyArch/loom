@@ -605,6 +605,7 @@ int main(int argc, char **argv) {
                          parsed.gen_fifo_mode != "none" ||
                          parsed.gen_fifo_depth != 2 ||
                          parsed.gen_fifo_bypassable ||
+                         parsed.gen_pe_margin > 0.0 ||
                          parsed.gen_temporal;
     if (has_gen_flags && !parsed.adg_path.empty()) {
       llvm::errs()
@@ -1026,6 +1027,7 @@ int main(int argc, char **argv) {
       gen_config.fifoMode = loom::adg::GenConfig::FifoDual;
     gen_config.fifoDepth = parsed.gen_fifo_depth;
     gen_config.fifoBypassable = parsed.gen_fifo_bypassable;
+    gen_config.peMargin = parsed.gen_pe_margin;
     gen_config.genTemporal = parsed.gen_temporal;
 
     // If analysis-driven temporal generation is active, partition PE counts
@@ -1543,6 +1545,15 @@ int main(int argc, char **argv) {
     mapper_opts.seed = parsed.mapper_seed;
     mapper_opts.profile = parsed.mapper_profile;
     mapper_opts.verbose = parsed.mapper_verbose;
+
+    // Scale heuristic refinement effort with budget.
+    if (parsed.mapper_budget >= 200.0) {
+      mapper_opts.maxGlobalRestarts = 8;
+      mapper_opts.maxLocalRepairs = 12;
+    } else if (parsed.mapper_budget >= 50.0) {
+      mapper_opts.maxGlobalRestarts = 5;
+      mapper_opts.maxLocalRepairs = 10;
+    }
 
     // Run the PnR mapper.
     loom::Mapper mapper;

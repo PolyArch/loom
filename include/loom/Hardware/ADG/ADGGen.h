@@ -121,6 +121,11 @@ struct GenConfig {
   unsigned temporalTagWidth = 4;
   unsigned temporalNumInstruction = 4;
 
+  /// Routing margin: fraction of additional empty cells to add beyond the
+  /// minimum PE count.  A value of 0.5 adds 50% more cells, giving the mesh
+  /// more routing capacity.  0.0 disables (default).
+  double peMargin = 0.0;
+
   /// Analysis-driven spatial/temporal PE partition.
   /// When non-empty, temporal generation uses these instead of duplicating
   /// all PEs. If empty, falls back to duplicating all PEs (original behavior).

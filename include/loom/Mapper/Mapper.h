@@ -78,6 +78,14 @@ private:
                                          const Graph &adg,
                                          const Graph *dfg = nullptr,
                                          IdIndex swEdgeId = INVALID_ID);
+
+  /// Find shortest path ignoring C3 exclusivity, collecting SW edge IDs
+  /// that block the path into \p blockingEdges.
+  llvm::SmallVector<IdIndex, 8>
+  findPathRelaxed(IdIndex srcHwPort, IdIndex dstHwPort,
+                  const MappingState &state, const Graph &adg,
+                  llvm::SmallVector<IdIndex, 8> &blockingEdges);
+
   bool isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
                    const MappingState &state, const Graph &adg,
                    const Graph *dfg = nullptr,

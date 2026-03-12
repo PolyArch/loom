@@ -75,9 +75,10 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
 
       // Strategy selection based on attempt number.
       if (attempt < 6) {
-        // Rip-up and reroute: for each failed edge, remove SW edges that
-        // block the needed HW path, route the failed edge, then re-route
-        // the ripped-up edges.
+        // Path-aware rip-up: use relaxed BFS to find the shortest path
+        // ignoring exclusivity, then rip up all blocking SW edges along
+        // that path. This targets the actual bottleneck, not just the
+        // destination port.
         for (IdIndex edgeId : failedEdges) {
           const Edge *edge = dfg.getEdge(edgeId);
           if (!edge)
@@ -104,18 +105,30 @@ bool Mapper::runRefinement(MappingState &state, const Graph &dfg,
             continue;
           }
 
-          // Rip-up: find SW edges that use HW edges on the potential path
-          // to the destination. Collect SW edges connected to the dest
-          // HW port's incoming HW edges.
+          // Use relaxed BFS to find blocking edges along the shortest
+          // path (ignoring C3 exclusivity).
+          llvm::SmallVector<IdIndex, 8> blockingEdges;
+          auto relaxedPath = findPathRelaxed(srcHwPort, dstHwPort,
+                                             state, adg, blockingEdges);
+
           llvm::SmallVector<IdIndex, 4> rippedEdges;
-          const Port *dstP = adg.getPort(dstHwPort);
-          if (dstP) {
-            for (IdIndex hwEdgeId : dstP->connectedEdges) {
-              if (hwEdgeId >= state.hwEdgeToSwEdges.size())
-                continue;
-              for (IdIndex swEdge : state.hwEdgeToSwEdges[hwEdgeId]) {
-                if (swEdge != edgeId)
-                  rippedEdges.push_back(swEdge);
+          if (!relaxedPath.empty() && !blockingEdges.empty()) {
+            // Rip up all blocking edges along the relaxed path.
+            for (IdIndex swEdge : blockingEdges) {
+              if (swEdge != edgeId)
+                rippedEdges.push_back(swEdge);
+            }
+          } else {
+            // Fallback: rip edges at the destination port.
+            const Port *dstP = adg.getPort(dstHwPort);
+            if (dstP) {
+              for (IdIndex hwEdgeId : dstP->connectedEdges) {
+                if (hwEdgeId >= state.hwEdgeToSwEdges.size())
+                  continue;
+                for (IdIndex swEdge : state.hwEdgeToSwEdges[hwEdgeId]) {
+                  if (swEdge != edgeId)
+                    rippedEdges.push_back(swEdge);
+                }
               }
             }
           }
