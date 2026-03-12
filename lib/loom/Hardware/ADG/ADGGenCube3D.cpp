@@ -217,8 +217,13 @@ void generateCube3D(ADGBuilder &builder, const MergedRequirements &reqs,
     CubeGrid &cube = cubeMap[width];
     if (numCells == 0)
       numCells = 1;
+    // Apply PE margin to provide extra routing cells, matching mesh path.
+    unsigned dimCells = numCells;
+    if (config.peMargin > 0.0 && dimCells > 1)
+      dimCells = static_cast<unsigned>(
+          std::ceil(dimCells * (1.0 + config.peMargin)));
 
-    auto [peRows, peCols, peDepths] = computeCube3DDims(numCells);
+    auto [peRows, peCols, peDepths] = computeCube3DDims(dimCells);
     cube.peRows = peRows;
     cube.peCols = peCols;
     cube.peDepths = peDepths;

@@ -362,8 +362,7 @@ void genMemoryConfig(const Node *hwNode, const MappingState &state,
   bool isBridge = (ldCount > 1 || stCount > 1);
   int64_t tagCount = std::max(ldCount, stCount);
 
-  // Derive tag width: clog2(max(ldCount, stCount)), matching ADGExportSV.
-  unsigned tw = 0;
+  unsigned tw = 0; // clog2(max(ldCount, stCount))
   if (isBridge) {
     unsigned maxCount = static_cast<unsigned>(tagCount);
     tw = 1;
@@ -386,9 +385,14 @@ void genMemoryConfig(const Node *hwNode, const MappingState &state,
     if (r < activeCount) {
       packBits(words, bitPos, 0, ADDR_BIT_WIDTH); // addr_offset
       if (tw > 0) {
-        uint64_t endTag = isBridge ? static_cast<uint64_t>(tagCount)
-                                   : static_cast<uint64_t>(r + 1);
-        uint64_t startTag = isBridge ? 0 : static_cast<uint64_t>(r);
+        uint64_t endTag, startTag;
+        if (isBridge && activeCount == 1) {
+          startTag = 0;
+          endTag = static_cast<uint64_t>(tagCount);
+        } else {
+          startTag = static_cast<uint64_t>(r);
+          endTag = static_cast<uint64_t>(r + 1);
+        }
         packBits(words, bitPos, endTag, tw + 1);  // end_tag
         packBits(words, bitPos, startTag, tw);     // start_tag
       }
@@ -1653,10 +1657,7 @@ bool ConfigGen::writeConfiguredFabric(
       return;
     }
 
-    // Tagged PE instance: set output_tag.
     buildPEOutputTag(hwNode, hwId, state, instanceOp, builder);
-
-    // PE with comparison: set compare_predicate.
     buildComparePredicate(hwNode, hwId, state, dfg, instanceOp, builder);
   });
 
@@ -1681,26 +1682,24 @@ bool ConfigGen::writeConfiguredFabric(
     bool isBridgeMemory = (ldCount > 1 || stCount > 1);
     int64_t tagCount = std::max(ldCount, stCount);
 
-    // Unmapped bridge memory: ensure at least one region for full tag range.
     size_t effectiveRegionCount = regionCount;
     if (isBridgeMemory && regionCount == 0 && numRegion > 0)
       effectiveRegionCount = 1;
 
-    // Build flat array: [valid, start_tag, end_tag, base_addr] per region.
-    llvm::SmallVector<int64_t> table;
+    llvm::SmallVector<int64_t> table; // [valid, start, end, base] * numRegion
     for (size_t r = 0; r < static_cast<size_t>(numRegion); ++r) {
       if (r < effectiveRegionCount) {
-        table.push_back(1); // valid
-        if (isBridgeMemory) {
-          table.push_back(0);        // start_tag
-          table.push_back(tagCount); // end_tag
+        table.push_back(1);
+        if (isBridgeMemory && effectiveRegionCount == 1) {
+          table.push_back(0);
+          table.push_back(tagCount);
         } else {
-          table.push_back(static_cast<int64_t>(r));     // start_tag
-          table.push_back(static_cast<int64_t>(r + 1)); // end_tag
+          table.push_back(static_cast<int64_t>(r));
+          table.push_back(static_cast<int64_t>(r + 1));
         }
-        table.push_back(0); // base_addr
+        table.push_back(0);
       } else {
-        table.append({0, 0, 0, 0}); // invalid region
+        table.append({0, 0, 0, 0});
       }
     }
 
@@ -1798,3 +1797,4 @@ bool ConfigGen::writeConfiguredFabric(
   return true;
 }
 } // namespace loom
+
