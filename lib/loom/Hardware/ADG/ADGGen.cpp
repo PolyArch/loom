@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Hardware/ADG/ADGGen.h"
+#include "loom/Hardware/ADG/ADGBuilderImpl.h"
 #include "loom/Hardware/ADG/ADGGenHelpers.h"
 
 #include <algorithm>
@@ -900,6 +901,66 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
       extMemDef = extBuilder;
     }
 
+    // Determine whether this memory needs tagged bridge networks.
+    // Multi-port memory (ldCount>1 or stCount>1) uses single tagged ports
+    // per category. TAG_WIDTH = clog2(max(ldCount, stCount)).
+    unsigned tagWidth =
+        computeMemoryTagWidth(memSpec.ldCount, memSpec.stCount);
+
+    // Pre-build temporal_sw definitions for tagged bridges (shared across
+    // instances of this memSpec). Only needed when tagWidth > 0.
+    Type tagType = Type::none();
+    Type taggedAddrType = Type::none();
+    Type taggedDataType = Type::none();
+    Type taggedDoneType = Type::none();
+    TemporalSwitchHandle stDataMuxDef{0}, stAddrMuxDef{0}, ldAddrMuxDef{0};
+    TemporalSwitchHandle ldDataDemuxDef{0}, ldDoneDemuxDef{0};
+    TemporalSwitchHandle stDoneDemuxDef{0};
+
+    if (tagWidth > 0) {
+      std::string mp = std::to_string(memIdx);
+      tagType = Type::iN(tagWidth);
+      taggedAddrType =
+          Type::tagged(Type::bits(ADDR_BIT_WIDTH), tagType);
+      taggedDataType = Type::tagged(elemType, tagType);
+      taggedDoneType = Type::tagged(Type::none(), tagType);
+
+      if (memSpec.stCount > 1) {
+        stDataMuxDef =
+            builder.newTemporalSwitch("tsw_st_data_mux_m" + mp)
+                .setPortCount(memSpec.stCount, 1)
+                .setNumRouteTable(memSpec.stCount)
+                .setInterface(taggedDataType);
+        stAddrMuxDef =
+            builder.newTemporalSwitch("tsw_st_addr_mux_m" + mp)
+                .setPortCount(memSpec.stCount, 1)
+                .setNumRouteTable(memSpec.stCount)
+                .setInterface(taggedAddrType);
+        stDoneDemuxDef =
+            builder.newTemporalSwitch("tsw_st_done_demux_m" + mp)
+                .setPortCount(1, memSpec.stCount)
+                .setNumRouteTable(memSpec.stCount)
+                .setInterface(taggedDoneType);
+      }
+      if (memSpec.ldCount > 1) {
+        ldAddrMuxDef =
+            builder.newTemporalSwitch("tsw_ld_addr_mux_m" + mp)
+                .setPortCount(memSpec.ldCount, 1)
+                .setNumRouteTable(memSpec.ldCount)
+                .setInterface(taggedAddrType);
+        ldDataDemuxDef =
+            builder.newTemporalSwitch("tsw_ld_data_demux_m" + mp)
+                .setPortCount(1, memSpec.ldCount)
+                .setNumRouteTable(memSpec.ldCount)
+                .setInterface(taggedDataType);
+        ldDoneDemuxDef =
+            builder.newTemporalSwitch("tsw_ld_done_demux_m" + mp)
+                .setPortCount(1, memSpec.ldCount)
+                .setNumRouteTable(memSpec.ldCount)
+                .setInterface(taggedDoneType);
+      }
+    }
+
     for (unsigned i = 0; i < count; ++i) {
       std::string instName =
           (isOnChip ? "mem_" : "extmem_") + std::to_string(memIdx) +
@@ -924,70 +985,266 @@ void ADGGen::generate(const MergedRequirements &reqs, const GenConfig &config,
         memInPort = 1; // Skip memref port
       }
 
-      // Memory input port layout (DFG convention, after optional memref):
-      //   [st_data_0, st_addr_0, ..., st_data_{S-1}, st_addr_{S-1},
-      //    ld_addr_0, ..., ld_addr_{L-1}]
-      // Output layout: [ld_data * L, ld_done * L, st_done * S]
+      if (tagWidth == 0) {
+        // Single-port memory: direct wiring (untagged).
+        // Memory port layout (after optional memref):
+        //   Inputs:  [st_data, st_addr] (if stCount>0), [ld_addr]
+        //   Outputs: [ld_data, ld_done] (if ldCount>0), [st_done]
 
-      // Store pairs: interleaved (data, addr) per store port
-      for (unsigned st = 0; st < memSpec.stCount; ++st) {
-        // Store data
-        {
-          auto &lat = lattices[memSpec.dataWidth];
-          unsigned slotIdx = nextExtOutSlot[memSpec.dataWidth]++;
-          auto &slot = lat.outputSlots[slotIdx];
-          builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
-                               slot.switchPort, memInst, memInPort++);
+        // Store data + addr
+        for (unsigned st = 0; st < memSpec.stCount; ++st) {
+          {
+            auto &lat = lattices[memSpec.dataWidth];
+            unsigned slotIdx = nextExtOutSlot[memSpec.dataWidth]++;
+            auto &slot = lat.outputSlots[slotIdx];
+            builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
+                                 slot.switchPort, memInst, memInPort++);
+          }
+          {
+            auto &lat = lattices[ADDR_BIT_WIDTH];
+            unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
+            auto &slot = lat.outputSlots[slotIdx];
+            builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
+                                 slot.switchPort, memInst, memInPort++);
+          }
         }
-        // Store addr
-        {
+
+        // Load addresses
+        for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
           auto &lat = lattices[ADDR_BIT_WIDTH];
           unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
           auto &slot = lat.outputSlots[slotIdx];
           builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
                                slot.switchPort, memInst, memInPort++);
         }
-      }
 
-      // Load addresses
-      for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
-        auto &lat = lattices[ADDR_BIT_WIDTH];
-        unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
-        auto &slot = lat.outputSlots[slotIdx];
-        builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
-                             slot.switchPort, memInst, memInPort++);
-      }
+        unsigned memOutPort = 0;
 
-      unsigned memOutPort = 0;
+        for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
+          auto &lat = lattices[memSpec.dataWidth];
+          unsigned slotIdx = nextExtInSlot[memSpec.dataWidth]++;
+          auto &slot = lat.inputSlots[slotIdx];
+          builder.connectPorts(memInst, memOutPort++,
+                               lat.swGrid[slot.swRow][slot.swCol],
+                               slot.switchPort);
+        }
 
-      // Load data: memory output -> lattice W-bit input
-      for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
-        auto &lat = lattices[memSpec.dataWidth];
-        unsigned slotIdx = nextExtInSlot[memSpec.dataWidth]++;
-        auto &slot = lat.inputSlots[slotIdx];
-        builder.connectPorts(memInst, memOutPort++,
-                             lat.swGrid[slot.swRow][slot.swCol],
-                             slot.switchPort);
-      }
+        for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
+          auto &lat = lattices[0];
+          unsigned slotIdx = nextExtInSlot[0]++;
+          auto &slot = lat.inputSlots[slotIdx];
+          builder.connectPorts(memInst, memOutPort++,
+                               lat.swGrid[slot.swRow][slot.swCol],
+                               slot.switchPort);
+        }
 
-      // Load done: memory output -> lattice none input
-      for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
-        auto &lat = lattices[0];
-        unsigned slotIdx = nextExtInSlot[0]++;
-        auto &slot = lat.inputSlots[slotIdx];
-        builder.connectPorts(memInst, memOutPort++,
-                             lat.swGrid[slot.swRow][slot.swCol],
-                             slot.switchPort);
-      }
+        for (unsigned st = 0; st < memSpec.stCount; ++st) {
+          auto &lat = lattices[0];
+          unsigned slotIdx = nextExtInSlot[0]++;
+          auto &slot = lat.inputSlots[slotIdx];
+          builder.connectPorts(memInst, memOutPort++,
+                               lat.swGrid[slot.swRow][slot.swCol],
+                               slot.switchPort);
+        }
+      } else {
+        // Multi-port memory: tagged bridge networks.
+        // Memory has single tagged port per category. Per-lane lattice
+        // slots connect through add_tag -> [temporal_sw mux] -> memory
+        // for inputs, and memory -> [temporal_sw demux] -> del_tag ->
+        // lattice for outputs.
 
-      // Store done: memory output -> lattice none input
-      for (unsigned st = 0; st < memSpec.stCount; ++st) {
-        auto &lat = lattices[0];
-        unsigned slotIdx = nextExtInSlot[0]++;
-        auto &slot = lat.inputSlots[slotIdx];
-        builder.connectPorts(memInst, memOutPort++,
-                             lat.swGrid[slot.swRow][slot.swCol],
-                             slot.switchPort);
+        // --- INPUT: st_data ---
+        if (memSpec.stCount > 0) {
+          std::vector<InstanceHandle> stDataATs;
+          for (unsigned st = 0; st < memSpec.stCount; ++st) {
+            auto &lat = lattices[memSpec.dataWidth];
+            unsigned slotIdx = nextExtOutSlot[memSpec.dataWidth]++;
+            auto &slot = lat.outputSlots[slotIdx];
+            InstanceHandle at =
+                builder
+                    .newAddTag(instName + "_st_data_at" +
+                               std::to_string(st))
+                    .setValueType(elemType)
+                    .setTagType(tagType);
+            builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
+                                 slot.switchPort, at, 0);
+            stDataATs.push_back(at);
+          }
+          if (memSpec.stCount == 1) {
+            builder.connectPorts(stDataATs[0], 0, memInst, memInPort);
+          } else {
+            InstanceHandle mux = builder.clone(
+                stDataMuxDef, instName + "_st_data_mux");
+            for (unsigned st = 0; st < memSpec.stCount; ++st)
+              builder.connectPorts(stDataATs[st], 0, mux, st);
+            builder.connectPorts(mux, 0, memInst, memInPort);
+          }
+          memInPort++;
+
+          // --- INPUT: st_addr ---
+          std::vector<InstanceHandle> stAddrATs;
+          for (unsigned st = 0; st < memSpec.stCount; ++st) {
+            auto &lat = lattices[ADDR_BIT_WIDTH];
+            unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
+            auto &slot = lat.outputSlots[slotIdx];
+            InstanceHandle at =
+                builder
+                    .newAddTag(instName + "_st_addr_at" +
+                               std::to_string(st))
+                    .setValueType(Type::bits(ADDR_BIT_WIDTH))
+                    .setTagType(tagType);
+            builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
+                                 slot.switchPort, at, 0);
+            stAddrATs.push_back(at);
+          }
+          if (memSpec.stCount == 1) {
+            builder.connectPorts(stAddrATs[0], 0, memInst, memInPort);
+          } else {
+            InstanceHandle mux = builder.clone(
+                stAddrMuxDef, instName + "_st_addr_mux");
+            for (unsigned st = 0; st < memSpec.stCount; ++st)
+              builder.connectPorts(stAddrATs[st], 0, mux, st);
+            builder.connectPorts(mux, 0, memInst, memInPort);
+          }
+          memInPort++;
+        }
+
+        // --- INPUT: ld_addr ---
+        if (memSpec.ldCount > 0) {
+          std::vector<InstanceHandle> ldAddrATs;
+          for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
+            auto &lat = lattices[ADDR_BIT_WIDTH];
+            unsigned slotIdx = nextExtOutSlot[ADDR_BIT_WIDTH]++;
+            auto &slot = lat.outputSlots[slotIdx];
+            InstanceHandle at =
+                builder
+                    .newAddTag(instName + "_ld_addr_at" +
+                               std::to_string(ld))
+                    .setValueType(Type::bits(ADDR_BIT_WIDTH))
+                    .setTagType(tagType);
+            builder.connectPorts(lat.swGrid[slot.swRow][slot.swCol],
+                                 slot.switchPort, at, 0);
+            ldAddrATs.push_back(at);
+          }
+          if (memSpec.ldCount == 1) {
+            builder.connectPorts(ldAddrATs[0], 0, memInst, memInPort);
+          } else {
+            InstanceHandle mux = builder.clone(
+                ldAddrMuxDef, instName + "_ld_addr_mux");
+            for (unsigned ld = 0; ld < memSpec.ldCount; ++ld)
+              builder.connectPorts(ldAddrATs[ld], 0, mux, ld);
+            builder.connectPorts(mux, 0, memInst, memInPort);
+          }
+          memInPort++;
+        }
+
+        unsigned memOutPort = 0;
+
+        // --- OUTPUT: ld_data ---
+        if (memSpec.ldCount > 0) {
+          if (memSpec.ldCount == 1) {
+            InstanceHandle dt =
+                builder
+                    .newDelTag(instName + "_ld_data_dt0")
+                    .setInputType(taggedDataType);
+            builder.connectPorts(memInst, memOutPort, dt, 0);
+            auto &lat = lattices[memSpec.dataWidth];
+            unsigned slotIdx = nextExtInSlot[memSpec.dataWidth]++;
+            auto &slot = lat.inputSlots[slotIdx];
+            builder.connectPorts(
+                dt, 0, lat.swGrid[slot.swRow][slot.swCol],
+                slot.switchPort);
+          } else {
+            InstanceHandle demux = builder.clone(
+                ldDataDemuxDef, instName + "_ld_data_demux");
+            builder.connectPorts(memInst, memOutPort, demux, 0);
+            for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
+              InstanceHandle dt =
+                  builder
+                      .newDelTag(instName + "_ld_data_dt" +
+                                 std::to_string(ld))
+                      .setInputType(taggedDataType);
+              builder.connectPorts(demux, ld, dt, 0);
+              auto &lat = lattices[memSpec.dataWidth];
+              unsigned slotIdx = nextExtInSlot[memSpec.dataWidth]++;
+              auto &slot = lat.inputSlots[slotIdx];
+              builder.connectPorts(
+                  dt, 0, lat.swGrid[slot.swRow][slot.swCol],
+                  slot.switchPort);
+            }
+          }
+          memOutPort++;
+
+          // --- OUTPUT: ld_done ---
+          if (memSpec.ldCount == 1) {
+            InstanceHandle dt =
+                builder
+                    .newDelTag(instName + "_ld_done_dt0")
+                    .setInputType(taggedDoneType);
+            builder.connectPorts(memInst, memOutPort, dt, 0);
+            auto &lat = lattices[0];
+            unsigned slotIdx = nextExtInSlot[0]++;
+            auto &slot = lat.inputSlots[slotIdx];
+            builder.connectPorts(
+                dt, 0, lat.swGrid[slot.swRow][slot.swCol],
+                slot.switchPort);
+          } else {
+            InstanceHandle demux = builder.clone(
+                ldDoneDemuxDef, instName + "_ld_done_demux");
+            builder.connectPorts(memInst, memOutPort, demux, 0);
+            for (unsigned ld = 0; ld < memSpec.ldCount; ++ld) {
+              InstanceHandle dt =
+                  builder
+                      .newDelTag(instName + "_ld_done_dt" +
+                                 std::to_string(ld))
+                      .setInputType(taggedDoneType);
+              builder.connectPorts(demux, ld, dt, 0);
+              auto &lat = lattices[0];
+              unsigned slotIdx = nextExtInSlot[0]++;
+              auto &slot = lat.inputSlots[slotIdx];
+              builder.connectPorts(
+                  dt, 0, lat.swGrid[slot.swRow][slot.swCol],
+                  slot.switchPort);
+            }
+          }
+          memOutPort++;
+        }
+
+        // --- OUTPUT: st_done ---
+        if (memSpec.stCount > 0) {
+          if (memSpec.stCount == 1) {
+            InstanceHandle dt =
+                builder
+                    .newDelTag(instName + "_st_done_dt0")
+                    .setInputType(taggedDoneType);
+            builder.connectPorts(memInst, memOutPort, dt, 0);
+            auto &lat = lattices[0];
+            unsigned slotIdx = nextExtInSlot[0]++;
+            auto &slot = lat.inputSlots[slotIdx];
+            builder.connectPorts(
+                dt, 0, lat.swGrid[slot.swRow][slot.swCol],
+                slot.switchPort);
+          } else {
+            InstanceHandle demux = builder.clone(
+                stDoneDemuxDef, instName + "_st_done_demux");
+            builder.connectPorts(memInst, memOutPort, demux, 0);
+            for (unsigned st = 0; st < memSpec.stCount; ++st) {
+              InstanceHandle dt =
+                  builder
+                      .newDelTag(instName + "_st_done_dt" +
+                                 std::to_string(st))
+                      .setInputType(taggedDoneType);
+              builder.connectPorts(demux, st, dt, 0);
+              auto &lat = lattices[0];
+              unsigned slotIdx = nextExtInSlot[0]++;
+              auto &slot = lat.inputSlots[slotIdx];
+              builder.connectPorts(
+                  dt, 0, lat.swGrid[slot.swRow][slot.swCol],
+                  slot.switchPort);
+            }
+          }
+          memOutPort++;
+        }
       }
     }
     ++memIdx;
