@@ -616,6 +616,77 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
       if (!adgExtmem)
         continue;
 
+      // Check for bridge-boundary metadata on ADG extmemory (multi-port).
+      mlir::DenseI32ArrayAttr bridgeInPorts;
+      mlir::DenseI32ArrayAttr bridgeOutPorts;
+      for (auto &attr : adgExtmem->attributes) {
+        if (attr.getName() == "bridge_input_ports")
+          bridgeInPorts =
+              mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+        else if (attr.getName() == "bridge_output_ports")
+          bridgeOutPorts =
+              mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+      }
+
+      if (bridgeInPorts || bridgeOutPorts) {
+        // Multi-port extmemory with bridge. DFG port 0 is memref (direct),
+        // remaining DFG ports map to bridge boundary ports.
+        unsigned dfgNonMemrefIns = dfgExtmem->inputPorts.size() > 0
+                                       ? dfgExtmem->inputPorts.size() - 1
+                                       : 0;
+        unsigned bridgeInCount = bridgeInPorts ? bridgeInPorts.size() : 0;
+        unsigned bridgeOutCount = bridgeOutPorts ? bridgeOutPorts.size() : 0;
+
+        if (dfgNonMemrefIns > bridgeInCount)
+          continue;
+        if (dfgExtmem->outputPorts.size() > bridgeOutCount)
+          continue;
+
+        // Bind the sentinel.
+        usedAdgIn.insert(ai);
+        state.mapNode(dfgInputSentinels[di], adgInputSentinels[ai], dfg, adg);
+        for (size_t j = 0;
+             j < dfgNode->outputPorts.size() &&
+             j < adgNode->outputPorts.size();
+             ++j) {
+          state.mapPort(dfgNode->outputPorts[j], adgNode->outputPorts[j], dfg,
+                        adg);
+        }
+
+        // Pre-bind extmemory node on real ADG extmemory.
+        state.mapNode(dfgExtIt->second, adgExtIt->second, dfg, adg);
+
+        // Bind memref port (DFG input 0 -> ADG input 0).
+        if (!dfgExtmem->inputPorts.empty() &&
+            !adgExtmem->inputPorts.empty()) {
+          state.mapPort(dfgExtmem->inputPorts[0],
+                        adgExtmem->inputPorts[0], dfg, adg);
+        }
+
+        // Bind non-memref DFG input ports to bridge boundary input ports.
+        for (size_t si = 1; si < dfgExtmem->inputPorts.size(); ++si) {
+          size_t bridgeIdx = si - 1;
+          if (bridgeIdx < static_cast<size_t>(bridgeInPorts.size())) {
+            state.mapPort(
+                dfgExtmem->inputPorts[si],
+                static_cast<IdIndex>(bridgeInPorts[bridgeIdx]), dfg, adg);
+          }
+        }
+
+        // Bind DFG output ports to bridge boundary output ports (DFG order).
+        for (size_t i = 0; i < dfgExtmem->outputPorts.size(); ++i) {
+          if (i < static_cast<size_t>(bridgeOutPorts.size())) {
+            state.mapPort(
+                dfgExtmem->outputPorts[i],
+                static_cast<IdIndex>(bridgeOutPorts[i]), dfg, adg);
+          }
+        }
+
+        preBoundExtmem.insert(dfgExtIt->second);
+        break;
+      }
+
+      // Single-port extmemory: original logic.
       // Check port compatibility: DFG extmemory ports must fit in ADG
       // extmemory ports.
       if (dfgExtmem->inputPorts.size() > adgExtmem->inputPorts.size())
@@ -654,8 +725,7 @@ void Mapper::bindSentinelPorts(MappingState &state, const Graph &dfg,
           }
         }
       }
-      // Extmemory outputs: positional mapping (matches single-op
-      // placement and TechMapper convention).
+      // Extmemory outputs: positional mapping.
       for (size_t i = 0;
            i < dfgExtmem->outputPorts.size() &&
            i < adgExtmem->outputPorts.size();
@@ -1110,31 +1180,86 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
         bool isMemory = (getNodeResourceClass(hw) == "memory");
 
         if (isMemory) {
-          // Memory inputs: type-based greedy search (handles operand
-          // reordering between handshake and fabric memory conventions).
-          llvm::DenseSet<IdIndex> usedInNode;
-          for (size_t si = 0; si < sw->inputPorts.size(); ++si) {
-            const Port *sp = dfg.getPort(sw->inputPorts[si]);
-            if (!sp) continue;
-            for (size_t hi = 0; hi < hw->inputPorts.size(); ++hi) {
-              IdIndex hwPid = hw->inputPorts[hi];
-              if (!state.hwPortToSwPorts[hwPid].empty())
-                continue;
-              if (usedInNode.count(hwPid))
-                continue;
-              const Port *hp = adg.getPort(hwPid);
-              if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
-                state.mapPort(sw->inputPorts[si], hwPid, dfg, adg);
-                usedInNode.insert(hwPid);
-                break;
+          // Check for bridge-boundary metadata (multi-port memory).
+          mlir::DenseI32ArrayAttr bridgeInPorts;
+          mlir::DenseI32ArrayAttr bridgeOutPorts;
+          for (auto &attr : hw->attributes) {
+            if (attr.getName() == "bridge_input_ports")
+              bridgeInPorts =
+                  mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+            else if (attr.getName() == "bridge_output_ports")
+              bridgeOutPorts =
+                  mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+          }
+
+          if (bridgeInPorts || bridgeOutPorts) {
+            // Multi-port memory with bridge: bind DFG ports to bridge
+            // boundary ports (add_tag inputs / del_tag outputs).
+            // For on-chip memory, all ports go through bridge.
+            // For extmemory, memref (port 0) is direct; the rest go through
+            // bridge. But extmemory is pre-bound in bindSentinelPorts.
+            bool isExtMem =
+                (getNodeResourceClass(hw) == "memory" &&
+                 getNodeOpName(hw) == "fabric.extmemory");
+            unsigned swInSkip = isExtMem ? 1 : 0;
+
+            // Bind memref port directly (extmemory only).
+            if (isExtMem && !sw->inputPorts.empty() &&
+                !hw->inputPorts.empty()) {
+              state.mapPort(sw->inputPorts[0], hw->inputPorts[0], dfg, adg);
+            }
+
+            // Bind non-memref inputs to bridge boundary input ports.
+            if (bridgeInPorts) {
+              for (size_t si = swInSkip; si < sw->inputPorts.size(); ++si) {
+                size_t bridgeIdx = si - swInSkip;
+                if (bridgeIdx <
+                    static_cast<size_t>(bridgeInPorts.size())) {
+                  state.mapPort(
+                      sw->inputPorts[si],
+                      static_cast<IdIndex>(bridgeInPorts[bridgeIdx]),
+                      dfg, adg);
+                }
               }
             }
-          }
-          // Memory outputs: positional mapping.
-          for (size_t i = 0;
-               i < sw->outputPorts.size() && i < hw->outputPorts.size();
-               ++i) {
-            state.mapPort(sw->outputPorts[i], hw->outputPorts[i], dfg, adg);
+
+            // Bind outputs to bridge boundary output ports (DFG order).
+            if (bridgeOutPorts) {
+              for (size_t i = 0; i < sw->outputPorts.size(); ++i) {
+                if (i < static_cast<size_t>(bridgeOutPorts.size())) {
+                  state.mapPort(
+                      sw->outputPorts[i],
+                      static_cast<IdIndex>(bridgeOutPorts[i]),
+                      dfg, adg);
+                }
+              }
+            }
+          } else {
+            // Single-port memory: original greedy type-based input binding.
+            llvm::DenseSet<IdIndex> usedInNode;
+            for (size_t si = 0; si < sw->inputPorts.size(); ++si) {
+              const Port *sp = dfg.getPort(sw->inputPorts[si]);
+              if (!sp) continue;
+              for (size_t hi = 0; hi < hw->inputPorts.size(); ++hi) {
+                IdIndex hwPid = hw->inputPorts[hi];
+                if (!state.hwPortToSwPorts[hwPid].empty())
+                  continue;
+                if (usedInNode.count(hwPid))
+                  continue;
+                const Port *hp = adg.getPort(hwPid);
+                if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
+                  state.mapPort(sw->inputPorts[si], hwPid, dfg, adg);
+                  usedInNode.insert(hwPid);
+                  break;
+                }
+              }
+            }
+            // Memory outputs: positional mapping.
+            for (size_t i = 0;
+                 i < sw->outputPorts.size() && i < hw->outputPorts.size();
+                 ++i) {
+              state.mapPort(sw->outputPorts[i], hw->outputPorts[i], dfg, adg);
+            }
           }
         } else {
           // PE / temporal PE FU: positional mapping for both inputs and

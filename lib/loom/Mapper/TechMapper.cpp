@@ -199,22 +199,112 @@ bool TechMapper::isSingleOpCompatible(const Graph &dfg, IdIndex swNode,
     return false;
 
   // Memory operation matching.
-  // Note: handshake.memory and fabric.memory use different operand orderings
-  // (handshake: [st_data, st_addr, ld_addr], fabric: [ld_addr, st_addr, st_data])
-  // so we use multiset type matching instead of positional checking.
+  // Handshake and fabric memory use per-category ordering; for multi-port
+  // memory (ldCount>1 or stCount>1), the ADG uses single tagged ports while
+  // the DFG uses per-lane native ports. Bridge boundary metadata (added by
+  // ADGFlattener Phase F) provides per-lane native boundary ports.
   if (hwOp == "fabric.memory" || hwOp == "fabric.extmemory") {
     if (!(swOp.contains("load") || swOp.contains("store") ||
           swOp.contains("memory")))
       return false;
 
+    // Check for bridge-boundary metadata (multi-port memory).
+    mlir::DenseI32ArrayAttr bridgeInPorts;
+    mlir::DenseI32ArrayAttr bridgeOutPorts;
+    for (auto &attr : hw->attributes) {
+      if (attr.getName() == "bridge_input_ports")
+        bridgeInPorts =
+            mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+      else if (attr.getName() == "bridge_output_ports")
+        bridgeOutPorts =
+            mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+    }
+
+    if (bridgeInPorts || bridgeOutPorts) {
+      // Multi-port memory with bridge: match against bridge boundary ports.
+      // Bridge boundary ports are native (untagged) and in DFG-compatible
+      // order, so we can use positional type matching.
+
+      // For extmemory, DFG port 0 is memref. It maps directly to ADG port 0
+      // (not through bridge). Remaining DFG ports map to bridge boundary.
+      unsigned swInSkip = 0;
+      if (hwOp == "fabric.extmemory") {
+        // DFG extmemory has memref at input[0]; check memref compatibility.
+        if (sw->inputPorts.empty())
+          return false;
+        const Port *sp0 = dfg.getPort(sw->inputPorts[0]);
+        if (!sp0 || !mlir::isa<mlir::MemRefType>(sp0->type))
+          return false;
+        swInSkip = 1;
+      }
+
+      // Input port count: DFG non-memref inputs must fit bridge boundary.
+      unsigned swInCount = sw->inputPorts.size() - swInSkip;
+      unsigned hwBridgeInCount = bridgeInPorts ? bridgeInPorts.size() : 0;
+      if (swInCount > hwBridgeInCount)
+        return false;
+
+      // Output port count: DFG outputs must fit bridge boundary.
+      unsigned hwBridgeOutCount = bridgeOutPorts ? bridgeOutPorts.size() : 0;
+      if (sw->outputPorts.size() > hwBridgeOutCount)
+        return false;
+
+      // Input type matching: multiset (order may differ across categories).
+      auto typeSortKey =
+          [](mlir::Type t) -> std::tuple<int, unsigned, unsigned> {
+        if (mlir::isa<mlir::MemRefType>(t))
+          return {0, 0, 0};
+        if (mlir::isa<mlir::NoneType>(t))
+          return {2, 0, 0};
+        return {1, getTechMapBitWidth(t), 0};
+      };
+
+      llvm::SmallVector<mlir::Type, 4> swInTypes, hwInTypes;
+      for (unsigned i = swInSkip; i < sw->inputPorts.size(); ++i) {
+        const Port *p = dfg.getPort(sw->inputPorts[i]);
+        if (p && p->type)
+          swInTypes.push_back(p->type);
+      }
+      for (int32_t pid : bridgeInPorts.asArrayRef()) {
+        const Port *p = adg.getPort(static_cast<IdIndex>(pid));
+        if (p && p->type)
+          hwInTypes.push_back(p->type);
+      }
+      llvm::sort(swInTypes, [&typeSortKey](mlir::Type a, mlir::Type b) {
+        return typeSortKey(a) < typeSortKey(b);
+      });
+      llvm::sort(hwInTypes, [&typeSortKey](mlir::Type a, mlir::Type b) {
+        return typeSortKey(a) < typeSortKey(b);
+      });
+      if (swInTypes.size() != hwInTypes.size())
+        return false;
+      for (size_t i = 0; i < swInTypes.size(); ++i) {
+        if (!typesCompatible(swInTypes[i], hwInTypes[i], false))
+          return false;
+      }
+
+      // Output type matching: positional (bridge outputs are in DFG order).
+      for (size_t i = 0; i < sw->outputPorts.size(); ++i) {
+        const Port *sp = dfg.getPort(sw->outputPorts[i]);
+        if (!sp || i >= static_cast<size_t>(bridgeOutPorts.size()))
+          return false;
+        const Port *hp =
+            adg.getPort(static_cast<IdIndex>(bridgeOutPorts[i]));
+        if (sp && hp && !typesCompatible(sp->type, hp->type, false))
+          return false;
+      }
+
+      return true;
+    }
+
+    // Single-port memory (no bridge): original matching logic.
     // Port count check.
     if (sw->inputPorts.size() > hw->inputPorts.size())
       return false;
     if (sw->outputPorts.size() > hw->outputPorts.size())
       return false;
 
-    // Multiset type matching for inputs: collect types, sort by semantic
-    // width so that native↔bits pairs (e.g. i32 vs bits<32>) align.
+    // Multiset type matching for inputs.
     auto typeSortKey = [](mlir::Type t) -> std::tuple<int, unsigned, unsigned> {
       if (mlir::isa<mlir::MemRefType>(t))
         return {0, 0, 0};
@@ -252,7 +342,7 @@ bool TechMapper::isSingleOpCompatible(const Graph &dfg, IdIndex swNode,
         return false;
     }
 
-    // Output types: positional check (output ordering is compatible).
+    // Output types: positional check.
     for (size_t i = 0; i < sw->outputPorts.size(); ++i) {
       const Port *sp = dfg.getPort(sw->outputPorts[i]);
       const Port *hp = adg.getPort(hw->outputPorts[i]);

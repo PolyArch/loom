@@ -1715,6 +1715,22 @@ bool ConfigGen::writeConfiguredFabric(
     if (!hwNode)
       return;
 
+    // Check if this is a bridge add_tag with a direct lane index.
+    for (auto &attr : hwNode->attributes) {
+      if (attr.getName() == "bridge_lane_index") {
+        if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue())) {
+          auto resultType = mlir::dyn_cast<loom::dataflow::TaggedType>(
+              addTagOp.getResult().getType());
+          if (resultType) {
+            auto tagType = resultType.getTagType();
+            addTagOp.setTagAttr(
+                mlir::IntegerAttr::get(tagType, intAttr.getInt()));
+          }
+          return; // Bridge add_tag handled.
+        }
+      }
+    }
+
     // Collect all port IDs owned by this add_tag node.
     llvm::DenseSet<IdIndex> nodePortIds;
     for (IdIndex pid : hwNode->inputPorts)

@@ -437,6 +437,84 @@ bool Mapper::runTemporalAssignment(MappingState &state, const Graph &dfg,
         return false;
     }
 
+    // --- Bridge temporal_sw assignment ---
+    // Populate route tables for bridge mux/demux temporal_sw nodes that are
+    // part of multi-port memory bridge clusters. These are not on routed DFG
+    // edge paths, so the scanning logic below won't find them.
+    for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(adg.nodes.size());
+         ++hwId) {
+      const Node *hwNode = adg.getNode(hwId);
+      if (!hwNode || hwNode->kind != Node::OperationNode)
+        continue;
+      if (getStrAttr(hwNode, "resource_class") != "memory")
+        continue;
+
+      auto getBridgeNodes =
+          [&](llvm::StringRef name) -> mlir::DenseI32ArrayAttr {
+        for (auto &attr : hwNode->attributes) {
+          if (attr.getName() == name)
+            return mlir::dyn_cast<mlir::DenseI32ArrayAttr>(attr.getValue());
+        }
+        return {};
+      };
+
+      auto populateBridgeTSW = [&](mlir::DenseI32ArrayAttr nodeIds) {
+        if (!nodeIds)
+          return;
+        for (int32_t tswId : nodeIds.asArrayRef()) {
+          if (tswId < 0 ||
+              tswId >= static_cast<int32_t>(adg.nodes.size()))
+            continue;
+          const Node *tswNode = adg.getNode(static_cast<IdIndex>(tswId));
+          if (!tswNode)
+            continue;
+
+          unsigned numIn = tswNode->inputPorts.size();
+          unsigned numOut = tswNode->outputPorts.size();
+          bool isMux = (numIn > numOut);
+          unsigned laneCount = isMux ? numIn : numOut;
+
+          auto connTable = getConnTable(tswNode);
+          auto &assignments =
+              state.temporalSWAssignments[static_cast<IdIndex>(tswId)];
+
+          for (unsigned lane = 0; lane < laneCount; ++lane) {
+            bool exists = false;
+            for (const auto &tswa : assignments) {
+              if (tswa.slot == static_cast<IdIndex>(lane)) {
+                exists = true;
+                break;
+              }
+            }
+            if (exists)
+              continue;
+
+            unsigned oi = isMux ? 0 : lane;
+            unsigned ii = isMux ? lane : 0;
+            IdIndex posIdx = connectedPosIdx(connTable, numIn, oi, ii);
+            if (posIdx == INVALID_ID && !connTable) {
+              // No connectivity table: assume full crossbar.
+              posIdx = static_cast<IdIndex>(oi * numIn + ii);
+            }
+
+            uint64_t routeMask = 0;
+            if (posIdx != INVALID_ID)
+              routeMask = (1ULL << posIdx);
+            assignments.push_back({static_cast<IdIndex>(lane),
+                                   static_cast<IdIndex>(lane), routeMask});
+
+            if (log)
+              log->info("Bridge TSW: H" + std::to_string(tswId) +
+                        " lane=" + std::to_string(lane) +
+                        " routeMask=" + std::to_string(routeMask));
+          }
+        }
+      };
+
+      populateBridgeTSW(getBridgeNodes("bridge_mux_nodes"));
+      populateBridgeTSW(getBridgeNodes("bridge_demux_nodes"));
+    }
+
     // --- Populate temporalSWAssignments (sub-task 2c) ---
     //
     // Scan routed paths to build temporal_sw route table entries.

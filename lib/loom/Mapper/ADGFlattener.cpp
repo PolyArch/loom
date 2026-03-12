@@ -193,8 +193,9 @@ IdIndex createNodeFromOp(Graph &graph, mlir::Operation &op,
         builder.getNamedAttr("loc", builder.getStringAttr(locStr)));
   }
 
-  // Copy hardware attributes from the resolved definition.
-  copyHwAttributes(node.get(), resolved, builder);
+  // Copy hardware attributes from the resolved definition, or from the op
+  // itself when it is a direct definition (not wrapped in fabric.instance).
+  copyHwAttributes(node.get(), resolved ? resolved : &op, builder);
 
   // Extract body operations for PE definitions.
   if (effectiveOpName == "fabric.pe") {
@@ -524,6 +525,315 @@ Graph ADGFlattener::flatten(fabric::ModuleOp moduleOp) {
           }
         }
       }
+    }
+  }
+
+  // --- Phase F: Detect memory bridge clusters ---
+  // For multi-port memory nodes, identify the surrounding add_tag/temporal_sw/
+  // del_tag bridge nodes and store boundary port metadata on the memory node.
+  // This enables the TechMapper to match DFG per-lane ports against bridge
+  // boundary ports rather than the memory's aggregated tagged ports.
+  for (IdIndex nodeId = 0; nodeId < static_cast<IdIndex>(graph.nodes.size());
+       ++nodeId) {
+    Node *node = graph.getNode(nodeId);
+    if (!node || node->kind != Node::OperationNode)
+      continue;
+    if (getNodeAttrStr(node, "resource_class") != "memory")
+      continue;
+
+    // Get ldCount and stCount to determine if bridge detection is needed.
+    unsigned ldCount = 0, stCount = 0;
+    bool isPrivate = false;
+    bool isExtMem = (getNodeAttrStr(node, "op_name") == "fabric.extmemory");
+    for (auto &attr : node->attributes) {
+      if (attr.getName() == "ldCount") {
+        if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+          ldCount = intAttr.getInt();
+      } else if (attr.getName() == "stCount") {
+        if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+          stCount = intAttr.getInt();
+      } else if (attr.getName() == "is_private") {
+        isPrivate = true; // UnitAttr presence means private.
+      }
+    }
+
+    // Single-port memory: no bridge cluster needed.
+    if (ldCount <= 1 && stCount <= 1)
+      continue;
+
+    // Helper: given a port, find the source port of the edge feeding it (for
+    // input ports) or the dest port of the edge leaving it (for output ports).
+    auto findFeedingPort = [&](IdIndex portId) -> IdIndex {
+      const Port *p = graph.getPort(portId);
+      if (!p)
+        return INVALID_ID;
+      for (IdIndex edgeId : p->connectedEdges) {
+        const Edge *e = graph.getEdge(edgeId);
+        if (e && e->dstPort == portId)
+          return e->srcPort;
+      }
+      return INVALID_ID;
+    };
+
+    auto findConsumingPort = [&](IdIndex portId) -> IdIndex {
+      const Port *p = graph.getPort(portId);
+      if (!p)
+        return INVALID_ID;
+      for (IdIndex edgeId : p->connectedEdges) {
+        const Edge *e = graph.getEdge(edgeId);
+        if (e && e->srcPort == portId)
+          return e->dstPort;
+      }
+      return INVALID_ID;
+    };
+
+    // Helper: given a port, find the parent node's op_name.
+    auto getPortOwnerOp = [&](IdIndex portId) -> llvm::StringRef {
+      const Port *p = graph.getPort(portId);
+      if (!p)
+        return "";
+      const Node *n = graph.getNode(p->parentNode);
+      if (!n)
+        return "";
+      return getNodeAttrStr(n, "op_name");
+    };
+
+    // Trace input bridge for one memory input port category.
+    // Returns the boundary input port IDs (add_tag input ports) in lane order.
+    auto traceInputBridge =
+        [&](unsigned memInputPortIdx, unsigned laneCount,
+            llvm::SmallVectorImpl<IdIndex> &addTagNodes,
+            IdIndex &muxNodeId) -> llvm::SmallVector<IdIndex, 4> {
+      muxNodeId = INVALID_ID;
+      llvm::SmallVector<IdIndex, 4> boundary;
+      if (memInputPortIdx >= node->inputPorts.size())
+        return boundary;
+
+      IdIndex memInPortId = node->inputPorts[memInputPortIdx];
+      IdIndex srcPortId = findFeedingPort(memInPortId);
+      if (srcPortId == INVALID_ID)
+        return boundary;
+
+      llvm::StringRef srcOp = getPortOwnerOp(srcPortId);
+      if (srcOp == "fabric.add_tag") {
+        // Single-lane: add_tag directly feeds memory.
+        const Port *srcPort = graph.getPort(srcPortId);
+        if (srcPort) {
+          const Node *atNode = graph.getNode(srcPort->parentNode);
+          if (atNode && !atNode->inputPorts.empty()) {
+            boundary.push_back(atNode->inputPorts[0]);
+            addTagNodes.push_back(srcPort->parentNode);
+          }
+        }
+      } else if (srcOp == "fabric.temporal_sw") {
+        // Multi-lane: temporal_sw feeds memory. Trace each temporal_sw input
+        // back to its feeding add_tag node.
+        const Port *srcPort = graph.getPort(srcPortId);
+        if (srcPort) {
+          const Node *tswNode = graph.getNode(srcPort->parentNode);
+          if (tswNode) {
+            muxNodeId = srcPort->parentNode;
+            for (unsigned lane = 0; lane < tswNode->inputPorts.size() &&
+                                    lane < laneCount;
+                 ++lane) {
+              IdIndex tswInPort = tswNode->inputPorts[lane];
+              IdIndex atOutPort = findFeedingPort(tswInPort);
+              if (atOutPort != INVALID_ID &&
+                  getPortOwnerOp(atOutPort) == "fabric.add_tag") {
+                const Port *aop = graph.getPort(atOutPort);
+                if (aop) {
+                  const Node *atNode = graph.getNode(aop->parentNode);
+                  if (atNode && !atNode->inputPorts.empty()) {
+                    boundary.push_back(atNode->inputPorts[0]);
+                    addTagNodes.push_back(aop->parentNode);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      return boundary;
+    };
+
+    // Trace output bridge for one memory output port category.
+    // Returns the boundary output port IDs (del_tag output ports) in lane
+    // order.
+    auto traceOutputBridge =
+        [&](unsigned memOutputPortIdx, unsigned laneCount,
+            IdIndex &demuxNodeId) -> llvm::SmallVector<IdIndex, 4> {
+      demuxNodeId = INVALID_ID;
+      llvm::SmallVector<IdIndex, 4> boundary;
+      if (memOutputPortIdx >= node->outputPorts.size())
+        return boundary;
+
+      IdIndex memOutPortId = node->outputPorts[memOutputPortIdx];
+      IdIndex dstPortId = findConsumingPort(memOutPortId);
+      if (dstPortId == INVALID_ID)
+        return boundary;
+
+      llvm::StringRef dstOp = getPortOwnerOp(dstPortId);
+      if (dstOp == "fabric.del_tag") {
+        // Single-lane: memory directly feeds del_tag.
+        const Port *dstPort = graph.getPort(dstPortId);
+        if (dstPort) {
+          const Node *dtNode = graph.getNode(dstPort->parentNode);
+          if (dtNode && !dtNode->outputPorts.empty())
+            boundary.push_back(dtNode->outputPorts[0]);
+        }
+      } else if (dstOp == "fabric.temporal_sw") {
+        // Multi-lane: memory feeds temporal_sw demux. Trace each temporal_sw
+        // output to its consuming del_tag node.
+        const Port *dstPort = graph.getPort(dstPortId);
+        if (dstPort) {
+          const Node *tswNode = graph.getNode(dstPort->parentNode);
+          if (tswNode) {
+            demuxNodeId = dstPort->parentNode;
+            for (unsigned lane = 0; lane < tswNode->outputPorts.size() &&
+                                    lane < laneCount;
+                 ++lane) {
+              IdIndex tswOutPort = tswNode->outputPorts[lane];
+              IdIndex dtInPort = findConsumingPort(tswOutPort);
+              if (dtInPort != INVALID_ID &&
+                  getPortOwnerOp(dtInPort) == "fabric.del_tag") {
+                const Port *dip = graph.getPort(dtInPort);
+                if (dip) {
+                  const Node *dtNode = graph.getNode(dip->parentNode);
+                  if (dtNode && !dtNode->outputPorts.empty())
+                    boundary.push_back(dtNode->outputPorts[0]);
+                }
+              }
+            }
+          }
+        }
+      }
+      return boundary;
+    };
+
+    // Trace input bridges per category.
+    // Memory input layout: [memref?] [st_data, st_addr] (if stCount>0),
+    //                      [ld_addr] (if ldCount>0)
+    llvm::SmallVector<IdIndex, 8> bridgeInputPorts;
+    llvm::SmallVector<IdIndex, 8> allAddTagNodes;
+    llvm::SmallVector<IdIndex, 4> muxNodes;
+    unsigned memInIdx = isExtMem ? 1 : 0; // Skip memref for extmemory.
+
+    if (stCount > 0) {
+      llvm::SmallVector<IdIndex, 4> atNodes;
+      IdIndex muxId;
+      auto stDataBoundary =
+          traceInputBridge(memInIdx++, stCount, atNodes, muxId);
+      bridgeInputPorts.append(stDataBoundary.begin(), stDataBoundary.end());
+      allAddTagNodes.append(atNodes.begin(), atNodes.end());
+      if (muxId != INVALID_ID)
+        muxNodes.push_back(muxId);
+      atNodes.clear();
+      auto stAddrBoundary =
+          traceInputBridge(memInIdx++, stCount, atNodes, muxId);
+      bridgeInputPorts.append(stAddrBoundary.begin(), stAddrBoundary.end());
+      allAddTagNodes.append(atNodes.begin(), atNodes.end());
+      if (muxId != INVALID_ID)
+        muxNodes.push_back(muxId);
+    }
+    if (ldCount > 0) {
+      llvm::SmallVector<IdIndex, 4> atNodes;
+      IdIndex muxId;
+      auto ldAddrBoundary =
+          traceInputBridge(memInIdx++, ldCount, atNodes, muxId);
+      bridgeInputPorts.append(ldAddrBoundary.begin(), ldAddrBoundary.end());
+      allAddTagNodes.append(atNodes.begin(), atNodes.end());
+      if (muxId != INVALID_ID)
+        muxNodes.push_back(muxId);
+    }
+
+    // Trace output bridges per category.
+    // ADG memory output layout: [memref?] [ld_data, ld_done] (if ldCount>0),
+    //                            [st_done] (if stCount>0)
+    // DFG output layout:         [ld_data] (if ldCount>0),
+    //                            [st_done] (if stCount>0),
+    //                            [ld_done] (if ldCount>0)
+    // We store boundary ports in DFG order: ld_data, st_done, ld_done.
+    llvm::SmallVector<IdIndex, 8> ldDataBoundary, ldDoneBoundary,
+        stDoneBoundary;
+    llvm::SmallVector<IdIndex, 4> demuxNodes;
+    unsigned memOutIdx = (!isPrivate && !isExtMem) ? 1 : 0; // Skip memref.
+
+    if (ldCount > 0) {
+      IdIndex demuxId;
+      ldDataBoundary = traceOutputBridge(memOutIdx++, ldCount, demuxId);
+      if (demuxId != INVALID_ID)
+        demuxNodes.push_back(demuxId);
+      ldDoneBoundary = traceOutputBridge(memOutIdx++, ldCount, demuxId);
+      if (demuxId != INVALID_ID)
+        demuxNodes.push_back(demuxId);
+    }
+    if (stCount > 0) {
+      IdIndex demuxId;
+      stDoneBoundary = traceOutputBridge(memOutIdx++, stCount, demuxId);
+      if (demuxId != INVALID_ID)
+        demuxNodes.push_back(demuxId);
+    }
+
+    // Reorder to DFG output order: ld_data, st_done, ld_done.
+    llvm::SmallVector<IdIndex, 8> bridgeOutputPorts;
+    bridgeOutputPorts.append(ldDataBoundary.begin(), ldDataBoundary.end());
+    bridgeOutputPorts.append(stDoneBoundary.begin(), stDoneBoundary.end());
+    bridgeOutputPorts.append(ldDoneBoundary.begin(), ldDoneBoundary.end());
+
+    // Skip if detection failed (incomplete bridge).
+    if (bridgeInputPorts.empty() && bridgeOutputPorts.empty())
+      continue;
+
+    // Set bridge_lane_index on each add_tag node for ConfigGen.
+    // The allAddTagNodes vector has groups ordered by category:
+    // [stData(stCount), stAddr(stCount), ldAddr(ldCount)].
+    // Each group's add_tag nodes get lane indices 0..count-1.
+    {
+      unsigned idx = 0;
+      auto setLaneIndices = [&](unsigned count) {
+        for (unsigned lane = 0; lane < count && idx < allAddTagNodes.size();
+             ++lane, ++idx) {
+          Node *atNode = graph.getNode(allAddTagNodes[idx]);
+          if (atNode) {
+            atNode->attributes.push_back(builder.getNamedAttr(
+                "bridge_lane_index", builder.getI32IntegerAttr(lane)));
+          }
+        }
+      };
+      if (stCount > 0) {
+        setLaneIndices(stCount); // st_data
+        setLaneIndices(stCount); // st_addr
+      }
+      if (ldCount > 0) {
+        setLaneIndices(ldCount); // ld_addr
+      }
+    }
+
+    // Store bridge-boundary metadata as node attributes.
+    llvm::SmallVector<int32_t> inPorts(bridgeInputPorts.begin(),
+                                       bridgeInputPorts.end());
+    llvm::SmallVector<int32_t> outPorts(bridgeOutputPorts.begin(),
+                                        bridgeOutputPorts.end());
+    node->attributes.push_back(builder.getNamedAttr(
+        "bridge_input_ports",
+        mlir::DenseI32ArrayAttr::get(builder.getContext(), inPorts)));
+    node->attributes.push_back(builder.getNamedAttr(
+        "bridge_output_ports",
+        mlir::DenseI32ArrayAttr::get(builder.getContext(), outPorts)));
+
+    // Store bridge temporal_sw node IDs for temporal assignment.
+    if (!muxNodes.empty()) {
+      llvm::SmallVector<int32_t> muxIds(muxNodes.begin(), muxNodes.end());
+      node->attributes.push_back(builder.getNamedAttr(
+          "bridge_mux_nodes",
+          mlir::DenseI32ArrayAttr::get(builder.getContext(), muxIds)));
+    }
+    if (!demuxNodes.empty()) {
+      llvm::SmallVector<int32_t> demuxIds(demuxNodes.begin(),
+                                           demuxNodes.end());
+      node->attributes.push_back(builder.getNamedAttr(
+          "bridge_demux_nodes",
+          mlir::DenseI32ArrayAttr::get(builder.getContext(), demuxIds)));
     }
   }
 
