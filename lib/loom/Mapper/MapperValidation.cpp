@@ -496,11 +496,17 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
       // ports and temporal_sw mux/demux nodes have assignments.
       mlir::DenseI32ArrayAttr bridgeInPorts, bridgeOutPorts;
       if (getBridgePortsVal(hwNode, bridgeInPorts, bridgeOutPorts)) {
-        // Verify bridge mux/demux temporal_sw nodes have assignments.
+        // Validate bridge mux/demux temporal_sw assignments.
         mlir::DenseI32ArrayAttr muxNodes, demuxNodes;
         getBridgeMuxDemuxNodes(hwNode, muxNodes, demuxNodes);
-        auto checkTswAssign = [&](mlir::DenseI32ArrayAttr nodes,
-                                  const char *label) -> bool {
+
+        // Collect valid tag ranges from this memory's config.
+        int64_t ldCount = getNodeIntAttr(hwNode, "ldCount", 1);
+        int64_t stCount = getNodeIntAttr(hwNode, "stCount", 1);
+        int64_t tagCount = std::max(ldCount, stCount);
+
+        auto validateBridgeTsw = [&](mlir::DenseI32ArrayAttr nodes,
+                                     const char *label) -> bool {
           if (!nodes)
             return true;
           for (int32_t tswId : nodes.asArrayRef()) {
@@ -513,12 +519,75 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
                      " has no temporal assignment";
               return false;
             }
+            const auto &assigns = state.temporalSWAssignments[tswIdx];
+            const Node *tswNode = adg.getNode(tswIdx);
+            int64_t numRT = tswNode
+                ? getNodeIntAttr(tswNode, "num_route_table", 0) : 0;
+            unsigned tswNumIn = tswNode ? tswNode->inputPorts.size() : 0;
+            unsigned tswNumOut = tswNode ? tswNode->outputPorts.size() : 0;
+            // Parse connectivity_table for route-mask validation.
+            mlir::DenseI8ArrayAttr connTable;
+            if (tswNode) {
+              for (auto &attr : tswNode->attributes) {
+                if (attr.getName() == "connectivity_table") {
+                  connTable = mlir::dyn_cast<mlir::DenseI8ArrayAttr>(
+                      attr.getValue());
+                  break;
+                }
+              }
+            }
+            unsigned K = tswNumOut * tswNumIn;
+            if (connTable &&
+                static_cast<unsigned>(connTable.size()) == K) {
+              K = 0;
+              for (int64_t ci = 0; ci < connTable.size(); ++ci)
+                if (connTable[ci] != 0)
+                  ++K;
+            }
+            llvm::DenseSet<IdIndex> usedTags;
+            for (const auto &a : assigns) {
+              // Slot bounds check.
+              if (numRT > 0 &&
+                  static_cast<int64_t>(a.slot) >= numRT) {
+                diag = "C4: bridge " + std::string(label) +
+                       " tsw=" + std::to_string(tswId) +
+                       " slot " + std::to_string(a.slot) +
+                       " exceeds num_route_table " +
+                       std::to_string(numRT);
+                return false;
+              }
+              // Duplicate tag check.
+              if (a.tag != INVALID_ID &&
+                  !usedTags.insert(a.tag).second) {
+                diag = "C4: bridge " + std::string(label) +
+                       " tsw=" + std::to_string(tswId) +
+                       " duplicate tag " + std::to_string(a.tag);
+                return false;
+              }
+              // Route-mask legality: only K valid bit positions.
+              if (K > 0 && a.routeMask >= (1ULL << K)) {
+                diag = "C4: bridge " + std::string(label) +
+                       " tsw=" + std::to_string(tswId) +
+                       " route mask exceeds K=" + std::to_string(K);
+                return false;
+              }
+              // Tag value must be in [0, tagCount) for bridge memory.
+              if (a.tag != INVALID_ID &&
+                  static_cast<int64_t>(a.tag) >= tagCount) {
+                diag = "C4: bridge " + std::string(label) +
+                       " tsw=" + std::to_string(tswId) +
+                       " tag " + std::to_string(a.tag) +
+                       " exceeds memory tagCount " +
+                       std::to_string(tagCount);
+                return false;
+              }
+            }
           }
           return true;
         };
-        if (!checkTswAssign(muxNodes, "mux"))
+        if (!validateBridgeTsw(muxNodes, "mux"))
           return false;
-        if (!checkTswAssign(demuxNodes, "demux"))
+        if (!validateBridgeTsw(demuxNodes, "demux"))
           return false;
 
         // Verify that mapped DFG ports bind to bridge boundary ports.

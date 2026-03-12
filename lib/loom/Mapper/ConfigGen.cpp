@@ -5,16 +5,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Mapper/ConfigGen.h"
-
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "loom/Dialect/Fabric/FabricOps.h"
-
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
-
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/FileSystem.h"
 
 namespace loom {
 
@@ -99,7 +96,6 @@ void genPEConfig(const Node *hwNode, const MappingState &state,
   }
 
   uint32_t bitPos = 0;
-
   // Pack output tags (ascending output index).
   if (tagWidth > 0) {
     for (unsigned o = 0; o < numOutputs; ++o) {
@@ -140,15 +136,12 @@ void genPEConfig(const Node *hwNode, const MappingState &state,
 
   // Pack constant value if present.
   int64_t constVal = getNodeIntAttr(hwNode, "constant_value", -1);
-  if (constVal >= 0) {
+  if (constVal >= 0)
     packBits(words, bitPos, static_cast<uint64_t>(constVal), 32);
-  }
-
   // Pack cont_cond_sel if present (5 bits for dataflow.stream).
   int64_t contCond = getNodeIntAttr(hwNode, "cont_cond_sel", -1);
-  if (contCond >= 0) {
+  if (contCond >= 0)
     packBits(words, bitPos, static_cast<uint64_t>(contCond), 5);
-  }
 
   // If no config bits were packed, leave words empty so the caller skips
   // this node. Native compute PEs without tags/cmp/constant have
@@ -171,11 +164,8 @@ void genSwitchConfig(const Node *hwNode, const MappingState &state,
   words.clear();
 
   // Build a set of (inputPort, outputPort) pairs that are actually used
-  // by routed SW edges.
+  // by routed SW edges. Scan all routed edges for transitions through this node.
   llvm::DenseSet<uint64_t> activeTransitions;
-
-  // Scan all routed edges to find which input->output transitions
-  // pass through this switch node.
   for (const auto &pathVec : state.swEdgeToHwPaths) {
     if (pathVec.empty())
       continue;
@@ -371,21 +361,26 @@ void genMemoryConfig(const Node *hwNode, const MappingState &state,
                      const Graph &dfg, const Graph &adg, IdIndex hwId,
                      std::vector<uint32_t> &words) {
   int64_t numRegion = getNodeIntAttr(hwNode, "numRegion", 1);
-
-  if (hwId >= state.hwNodeToSwNodes.size() ||
-      state.hwNodeToSwNodes[hwId].empty())
-    return;
-
   int64_t tagWidth = getNodeIntAttr(hwNode, "tag_width", 4);
   int64_t ldCount = getNodeIntAttr(hwNode, "ldCount", 1);
   int64_t stCount = getNodeIntAttr(hwNode, "stCount", 1);
   bool isBridge = (ldCount > 1 || stCount > 1);
   int64_t tagCount = std::max(ldCount, stCount);
-  uint32_t bitPos = 0;
 
-  for (size_t r = 0; r < state.hwNodeToSwNodes[hwId].size() &&
-                      static_cast<int64_t>(r) < numRegion;
-       ++r) {
+  bool hasMapped = (hwId < state.hwNodeToSwNodes.size() &&
+                    !state.hwNodeToSwNodes[hwId].empty());
+  size_t mappedCount = hasMapped ? state.hwNodeToSwNodes[hwId].size() : 0;
+  size_t regionCount = std::min(mappedCount, static_cast<size_t>(numRegion));
+
+  // Unmapped bridge memory: emit one default region covering [0, tagCount).
+  if (isBridge && regionCount == 0 && numRegion > 0)
+    regionCount = 1;
+
+  if (regionCount == 0)
+    return;
+
+  uint32_t bitPos = 0;
+  for (size_t r = 0; r < regionCount; ++r) {
     packBits(words, bitPos, 1, 1);
     if (isBridge) {
       packBits(words, bitPos, 0, static_cast<unsigned>(tagWidth));
@@ -762,6 +757,14 @@ bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
       hasConfig = true;
     if (opName == "fabric.fifo" && nodeHasAttr(hwNode, "bypassable"))
       hasConfig = true;
+    // Unmapped bridge memory needs a default addr_offset_table config
+    // so that bridge tags remain valid even when unused.
+    if (resClass == "memory" && !hasMappedOps) {
+      int64_t lc = getNodeIntAttr(hwNode, "ldCount", 1);
+      int64_t sc = getNodeIntAttr(hwNode, "stCount", 1);
+      if (lc > 1 || sc > 1)
+        hasConfig = true;
+    }
 
     if (!hasConfig && !hasMappedOps)
       continue;
@@ -1703,10 +1706,8 @@ bool ConfigGen::writeConfiguredFabric(
       }
     }
 
-    op->setAttr("addrOffsetTable",
-                builder.getDenseI64ArrayAttr(table));
+    op->setAttr("addrOffsetTable", builder.getDenseI64ArrayAttr(table));
   };
-
   adgModule->walk(
       [&](fabric::MemoryOp memOp) { setMemoryAddrOffset(memOp); });
   adgModule->walk(

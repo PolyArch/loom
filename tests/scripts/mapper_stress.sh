@@ -187,11 +187,11 @@ fi
 # --- Batch mode ---
 LOOM_BIN=$(loom_resolve_bin "${1:-${ROOT_DIR}/build/bin/loom}"); shift || true
 
-# --anchor selects S1-S2 only; --full selects S1-S5 (default: --full).
+# --anchor selects S1-S2 only; --full selects S1-S6 (default: --full).
 MODE="${1:-full}"; shift || true
 case "${MODE}" in
   --anchor|anchor) PATTERN="S[12]-*" ; BUDGET=50 ; TIMEOUT=120 ; SUITE="Mapper Anchor" ;;
-  --full|full|*)   PATTERN="S[1-5]-*"; BUDGET=200; TIMEOUT=300 ; SUITE="Mapper Stress" ;;
+  --full|full|*)   PATTERN="S[1-6]-*"; BUDGET=200; TIMEOUT=300 ; SUITE="Mapper Stress" ;;
 esac
 
 loom_require_parallel
