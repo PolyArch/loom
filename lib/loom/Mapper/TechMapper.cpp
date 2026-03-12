@@ -257,49 +257,55 @@ bool TechMapper::isSingleOpCompatible(const Graph &dfg, IdIndex swNode,
       if (sw->outputPorts.size() > hwBridgeOutCount)
         return false;
 
-      // Input type matching: multiset (order may differ across categories).
-      auto typeSortKey =
-          [](mlir::Type t) -> std::tuple<int, unsigned, unsigned> {
-        if (mlir::isa<mlir::MemRefType>(t))
-          return {0, 0, 0};
-        if (mlir::isa<mlir::NoneType>(t))
-          return {2, 0, 0};
-        return {1, getTechMapBitWidth(t), 0};
-      };
-
-      llvm::SmallVector<mlir::Type, 4> swInTypes, hwInTypes;
-      for (unsigned i = swInSkip; i < sw->inputPorts.size(); ++i) {
-        const Port *p = dfg.getPort(sw->inputPorts[i]);
-        if (p && p->type)
-          swInTypes.push_back(p->type);
-      }
-      for (int32_t pid : bridgeInPorts.asArrayRef()) {
-        const Port *p = adg.getPort(static_cast<IdIndex>(pid));
-        if (p && p->type)
-          hwInTypes.push_back(p->type);
-      }
-      llvm::sort(swInTypes, [&typeSortKey](mlir::Type a, mlir::Type b) {
-        return typeSortKey(a) < typeSortKey(b);
-      });
-      llvm::sort(hwInTypes, [&typeSortKey](mlir::Type a, mlir::Type b) {
-        return typeSortKey(a) < typeSortKey(b);
-      });
-      if (swInTypes.size() > hwInTypes.size())
-        return false;
-      for (size_t i = 0; i < swInTypes.size(); ++i) {
-        if (!typesCompatible(swInTypes[i], hwInTypes[i], false))
-          return false;
+      // Input type matching: greedy subset check. Each DFG port must find
+      // an unused bridge port with compatible type (handles partial lane use).
+      {
+        llvm::SmallVector<bool, 8> hwUsed(
+            bridgeInPorts ? bridgeInPorts.size() : 0, false);
+        for (unsigned i = swInSkip; i < sw->inputPorts.size(); ++i) {
+          const Port *sp = dfg.getPort(sw->inputPorts[i]);
+          if (!sp || !sp->type)
+            continue;
+          bool found = false;
+          for (size_t hi = 0; hi < hwUsed.size(); ++hi) {
+            if (hwUsed[hi])
+              continue;
+            const Port *hp =
+                adg.getPort(static_cast<IdIndex>(bridgeInPorts[hi]));
+            if (hp && typesCompatible(sp->type, hp->type, false)) {
+              hwUsed[hi] = true;
+              found = true;
+              break;
+            }
+          }
+          if (!found)
+            return false;
+        }
       }
 
-      // Output type matching: positional (bridge outputs are in DFG order).
-      for (size_t i = 0; i < sw->outputPorts.size(); ++i) {
-        const Port *sp = dfg.getPort(sw->outputPorts[i]);
-        if (!sp || i >= static_cast<size_t>(bridgeOutPorts.size()))
-          return false;
-        const Port *hp =
-            adg.getPort(static_cast<IdIndex>(bridgeOutPorts[i]));
-        if (sp && hp && !typesCompatible(sp->type, hp->type, false))
-          return false;
+      // Output type matching: greedy subset check (same logic).
+      {
+        llvm::SmallVector<bool, 8> hwUsed(
+            bridgeOutPorts ? bridgeOutPorts.size() : 0, false);
+        for (size_t i = 0; i < sw->outputPorts.size(); ++i) {
+          const Port *sp = dfg.getPort(sw->outputPorts[i]);
+          if (!sp || !sp->type)
+            continue;
+          bool found = false;
+          for (size_t hi = 0; hi < hwUsed.size(); ++hi) {
+            if (hwUsed[hi])
+              continue;
+            const Port *hp =
+                adg.getPort(static_cast<IdIndex>(bridgeOutPorts[hi]));
+            if (hp && typesCompatible(sp->type, hp->type, false)) {
+              hwUsed[hi] = true;
+              found = true;
+              break;
+            }
+          }
+          if (!found)
+            return false;
+        }
       }
 
       return true;
