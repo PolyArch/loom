@@ -256,6 +256,11 @@ static ParseResult parseSwitchHwParams(OpAsmParser &parser,
         return failure();
       result.addAttribute(
           SwitchOp::getConnectivityTableAttrName(result.name), attr);
+    } else if (keyword == "viz_row" || keyword == "viz_col") {
+      IntegerAttr attr;
+      if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
+        return failure();
+      result.addAttribute(keyword, attr);
     } else {
       return parser.emitError(parser.getCurrentLocation(),
                               "unexpected keyword '")
@@ -355,10 +360,25 @@ void SwitchOp::print(OpAsmPrinter &p) {
                                : getInputs().size();
 
   // Print [hw_params] if any are present.
-  if (getConnectivityTable().has_value()) {
-    auto ct = *getConnectivityTable();
-    p << " [connectivity_table = ";
-    printConnTable(p, ct, numInputs);
+  if (getConnectivityTable().has_value() ||
+      getOperation()->getAttr("viz_row")) {
+    p << " [";
+    bool firstParam = true;
+    if (getConnectivityTable().has_value()) {
+      auto ct = *getConnectivityTable();
+      p << "connectivity_table = ";
+      printConnTable(p, ct, numInputs);
+      firstParam = false;
+    }
+    if (auto vizRow = getOperation()->getAttr("viz_row")) {
+      if (!firstParam) p << ", ";
+      p << "viz_row = " << cast<IntegerAttr>(vizRow).getInt();
+      firstParam = false;
+    }
+    if (auto vizCol = getOperation()->getAttr("viz_col")) {
+      if (!firstParam) p << ", ";
+      p << "viz_col = " << cast<IntegerAttr>(vizCol).getInt();
+    }
     p << "]";
   }
 
@@ -559,6 +579,11 @@ ParseResult TemporalSwOp::parse(OpAsmParser &parser, OperationState &result) {
       if (parseConnTableValues(parser, attr))
         return failure();
       result.addAttribute(getConnectivityTableAttrName(result.name), attr);
+    } else if (keyword == "viz_row" || keyword == "viz_col") {
+      IntegerAttr attr;
+      if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
+        return failure();
+      result.addAttribute(keyword, attr);
     } else {
       return parser.emitError(parser.getCurrentLocation(),
                               "unexpected keyword '")
@@ -634,6 +659,10 @@ void TemporalSwOp::print(OpAsmPrinter &p) {
     p << ", connectivity_table = ";
     printConnTable(p, *ct, numInputs);
   }
+  if (auto vizRow = getOperation()->getAttr("viz_row"))
+    p << ", viz_row = " << cast<IntegerAttr>(vizRow).getInt();
+  if (auto vizCol = getOperation()->getAttr("viz_col"))
+    p << ", viz_col = " << cast<IntegerAttr>(vizCol).getInt();
   p << "]";
 
   // Print optional {route_table = [...]}.

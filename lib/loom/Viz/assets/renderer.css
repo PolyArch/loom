@@ -170,7 +170,7 @@ html, body {
 .edge-dimmed { opacity: 0.15; }
 
 /* Grid lines */
-.grid-line { stroke: #e0e0e0; stroke-width: 0.5; stroke-dasharray: 2,4; }
+.grid-line { stroke: #d0d0d0; stroke-width: 0.5; stroke-dasharray: none; opacity: 0.6; }
 
 /* DFG panel SVG nodes */
 #panel-dfg .node { cursor: pointer; }
@@ -182,8 +182,9 @@ html, body {
 
 /* Overlay mode */
 .unmapped-node {
-  fill: white !important;
-  opacity: 0.4;
+  fill: #e8e8e8 !important;
+  opacity: 0.25;
+  stroke: #ccc !important;
   stroke-dasharray: 4,2;
 }
 

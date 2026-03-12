@@ -9,6 +9,69 @@ source "${SCRIPT_DIR}/common.sh"
 
 ROOT_DIR=$(loom_root)
 STRESS_DIR="${ROOT_DIR}/tests/mapper/stress"
+APP_DIR="${ROOT_DIR}/tests/app"
+
+# --- Config parsing helpers ---
+
+# Parse a stress.cfg file and set: CFG_APPS, CFG_GEN_FLAGS, CFG_DFG_VARIANT.
+parse_stress_cfg() {
+  local cfg_file="$1"
+  CFG_APPS=()
+  CFG_GEN_FLAGS=""
+  CFG_DFG_VARIANT=""
+
+  while IFS= read -r line; do
+    # Strip comments and trim.
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "${line}" ]] && continue
+
+    if [[ "${line}" == apps:* ]]; then
+      local val="${line#apps:}"
+      val="${val#"${val%%[![:space:]]*}"}"
+      read -ra CFG_APPS <<< "${val}"
+    elif [[ "${line}" == gen_flags:* ]]; then
+      CFG_GEN_FLAGS="${line#gen_flags:}"
+      CFG_GEN_FLAGS="${CFG_GEN_FLAGS#"${CFG_GEN_FLAGS%%[![:space:]]*}"}"
+    elif [[ "${line}" == dfg_variant:* ]]; then
+      CFG_DFG_VARIANT="${line#dfg_variant:}"
+      CFG_DFG_VARIANT="${CFG_DFG_VARIANT#"${CFG_DFG_VARIANT%%[![:space:]]*}"}"
+    fi
+  done < "${cfg_file}"
+}
+
+# Resolve the DFG handshake file for a given app name.
+# Uses CFG_DFG_VARIANT if set, otherwise unsuffixed default.
+resolve_dfg() {
+  local loom_bin="$1"
+  local app_name="$2"
+  local app_dir="${APP_DIR}/${app_name}"
+  local output_dir="${app_dir}/Output"
+
+  local dfg_file=""
+  if [[ -n "${CFG_DFG_VARIANT}" ]]; then
+    dfg_file="${output_dir}/${app_name}.${CFG_DFG_VARIANT}.handshake.mlir"
+  else
+    dfg_file="${output_dir}/${app_name}.handshake.mlir"
+  fi
+
+  if [[ -f "${dfg_file}" ]]; then
+    echo "${dfg_file}"
+    return 0
+  fi
+
+  # Try to generate it.
+  loom_ensure_app_handshake "${loom_bin}" "${app_dir}" || true
+
+  if [[ -f "${dfg_file}" ]]; then
+    echo "${dfg_file}"
+    return 0
+  fi
+
+  echo "error: DFG not found: ${dfg_file}" >&2
+  return 1
+}
 
 # --- Single mode ---
 if [[ "${1:-}" == "--single" ]]; then
@@ -25,32 +88,88 @@ if [[ "${1:-}" == "--single" ]]; then
     xfail=true
   fi
 
-  mapfile -t adg_files < <(find "${TEST_DIR}" -maxdepth 1 -name "*.fabric.mlir" | sort)
-  mapfile -t dfg_files < <(find "${TEST_DIR}" -maxdepth 1 -name "*.handshake.mlir" | sort)
+  cfg_file="${TEST_DIR}/stress.cfg"
 
-  for adg in "${adg_files[@]}"; do
-    adg_name=$(basename "${adg}" .fabric.mlir)
-    for dfg in "${dfg_files[@]}"; do
-      dfg_name=$(basename "${dfg}" .handshake.mlir)
-      out_base="${output_dir}/${dfg_name}_on_${adg_name}"
+  if [[ -f "${cfg_file}" ]]; then
+    # Config-driven mode.
+    parse_stress_cfg "${cfg_file}"
+    dir_name=$(basename "${TEST_DIR}")
 
-      if "${xfail}"; then
-        if "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget "${BUDGET}" 2>/dev/null; then
-          echo "XFAIL: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
-          exit 1
-        fi
-      else
-        "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget "${BUDGET}"
-
-        configured="${out_base}.fabric.mlir"
-        if [[ ! -f "${configured}" ]]; then
-          echo "FAIL: configured fabric not found: ${configured}" >&2
-          exit 1
-        fi
-        "${LOOM_BIN}" --adg "${configured}"
-      fi
+    # Resolve DFGs from tests/app/.
+    dfg_files=()
+    for app in "${CFG_APPS[@]}"; do
+      dfg=$(resolve_dfg "${LOOM_BIN}" "${app}")
+      dfg_files+=("${dfg}")
     done
-  done
+
+    # Generate ADG if gen_flags are present.
+    adg_files=()
+    if [[ -n "${CFG_GEN_FLAGS}" ]]; then
+      gen_adg="${output_dir}/${dir_name}.fabric.mlir"
+      dfg_list=$(IFS=,; echo "${dfg_files[*]}")
+      # shellcheck disable=SC2086
+      "${LOOM_BIN}" --gen-adg --dfgs "${dfg_list}" -o "${gen_adg}" ${CFG_GEN_FLAGS}
+      adg_files+=("${gen_adg}")
+    fi
+
+    # Also collect any in-directory hand-crafted ADGs (e.g. noMem.fabric.mlir).
+    while IFS= read -r f; do
+      adg_files+=("${f}")
+    done < <(find "${TEST_DIR}" -maxdepth 1 -name "*.fabric.mlir" | sort)
+
+    # Map each (DFG, ADG) pair.
+    for adg in "${adg_files[@]}"; do
+      adg_name=$(basename "${adg}" .fabric.mlir)
+      for dfg in "${dfg_files[@]}"; do
+        dfg_name=$(basename "${dfg}" .handshake.mlir)
+        out_base="${output_dir}/${dfg_name}_on_${adg_name}"
+
+        if "${xfail}"; then
+          if "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget "${BUDGET}" 2>/dev/null; then
+            echo "XFAIL: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
+            exit 1
+          fi
+        else
+          "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget "${BUDGET}"
+
+          configured="${out_base}.fabric.mlir"
+          if [[ ! -f "${configured}" ]]; then
+            echo "FAIL: configured fabric not found: ${configured}" >&2
+            exit 1
+          fi
+          "${LOOM_BIN}" --adg "${configured}"
+        fi
+      done
+    done
+  else
+    # Fallback: file-discovery mode (for temporal tests and others without stress.cfg).
+    mapfile -t adg_files < <(find "${TEST_DIR}" -maxdepth 1 -name "*.fabric.mlir" | sort)
+    mapfile -t dfg_files < <(find "${TEST_DIR}" -maxdepth 1 -name "*.handshake.mlir" | sort)
+
+    for adg in "${adg_files[@]}"; do
+      adg_name=$(basename "${adg}" .fabric.mlir)
+      for dfg in "${dfg_files[@]}"; do
+        dfg_name=$(basename "${dfg}" .handshake.mlir)
+        out_base="${output_dir}/${dfg_name}_on_${adg_name}"
+
+        if "${xfail}"; then
+          if "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget "${BUDGET}" 2>/dev/null; then
+            echo "XFAIL: mapper unexpectedly succeeded for ${dfg_name} on ${adg_name}" >&2
+            exit 1
+          fi
+        else
+          "${LOOM_BIN}" --adg "${adg}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget "${BUDGET}"
+
+          configured="${out_base}.fabric.mlir"
+          if [[ ! -f "${configured}" ]]; then
+            echo "FAIL: configured fabric not found: ${configured}" >&2
+            exit 1
+          fi
+          "${LOOM_BIN}" --adg "${configured}"
+        fi
+      done
+    done
+  fi
   exit 0
 fi
 
@@ -80,6 +199,23 @@ if [[ ${#test_dirs[@]} -eq 0 ]]; then
   echo "${SUITE}: no matching directories found, skipping"
   exit 0
 fi
+
+# Pre-resolve: collect all unique apps from stress.cfg files and ensure their
+# handshakes exist BEFORE launching parallel jobs. This prevents concurrent
+# writes when multiple stress tests share the same app.
+declare -A seen_apps
+for test_dir in "${test_dirs[@]}"; do
+  cfg_file="${test_dir}/stress.cfg"
+  if [[ -f "${cfg_file}" ]]; then
+    parse_stress_cfg "${cfg_file}"
+    for app in "${CFG_APPS[@]}"; do
+      if [[ -z "${seen_apps[${app}]+_}" ]]; then
+        seen_apps["${app}"]=1
+        loom_ensure_app_handshake "${LOOM_BIN}" "${APP_DIR}/${app}" || true
+      fi
+    done
+  fi
+done
 
 PARALLEL_FILE="${STRESS_DIR}/mapper_stress.parallel.sh"
 

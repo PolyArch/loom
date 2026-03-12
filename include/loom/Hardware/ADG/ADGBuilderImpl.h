@@ -235,6 +235,8 @@ struct InstanceDef {
   ModuleKind kind;
   unsigned defIdx; // index into the appropriate *Def vector
   std::string name;
+  int vizRow = -1; // visualization grid row (-1 = unset)
+  int vizCol = -1; // visualization grid column (-1 = unset)
 };
 
 struct ModulePort {

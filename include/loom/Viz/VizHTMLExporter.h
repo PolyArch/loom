@@ -32,7 +32,8 @@ public:
                 const MappingState &state,
                 mlir::ModuleOp dfgModule,
                 mlir::Operation *fabricModule,
-                const std::string &basePath);
+                const std::string &basePath,
+                bool vizNeato = false);
 };
 
 } // namespace loom

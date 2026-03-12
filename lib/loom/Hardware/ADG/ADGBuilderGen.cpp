@@ -1160,8 +1160,24 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           os << operands[o];
         }
         os << ")";
-        if (!inst.name.empty())
-          os << " {sym_name = \"" << inst.name << "\"}";
+        if (!inst.name.empty() || inst.vizRow >= 0) {
+          os << " {";
+          bool firstAttr = true;
+          if (!inst.name.empty()) {
+            os << "sym_name = \"" << inst.name << "\"";
+            firstAttr = false;
+          }
+          if (inst.vizRow >= 0) {
+            if (!firstAttr) os << ", ";
+            os << "viz_row = " << inst.vizRow;
+            firstAttr = false;
+          }
+          if (inst.vizCol >= 0) {
+            if (!firstAttr) os << ", ";
+            os << "viz_col = " << inst.vizCol;
+          }
+          os << "}";
+        }
         os << " : (";
         for (size_t p = 0; p < inTypes.size(); ++p) {
           if (p > 0) os << ", ";
@@ -1191,7 +1207,12 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           os << flatConn[o * swDef.numIn + i];
         os << '"';
       }
-      os << "]] ";
+      os << "]";
+      if (inst.vizRow >= 0)
+        os << ", viz_row = " << inst.vizRow;
+      if (inst.vizCol >= 0)
+        os << ", viz_col = " << inst.vizCol;
+      os << "] ";
       for (size_t o = 0; o < operands.size(); ++o) {
         if (o > 0) os << ", ";
         os << operands[o];
@@ -1241,7 +1262,12 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           os << flatConn[o * tsDef.numIn + i];
         os << '"';
       }
-      os << "]] ";
+      os << "]";
+      if (inst.vizRow >= 0)
+        os << ", viz_row = " << inst.vizRow;
+      if (inst.vizCol >= 0)
+        os << ", viz_col = " << inst.vizCol;
+      os << "] ";
       for (size_t o = 0; o < operands.size(); ++o) {
         if (o > 0) os << ", ";
         os << operands[o];
@@ -1270,6 +1296,10 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       os << ", is_private = " << (memDef.isPrivate ? "true" : "false");
       if (memDef.numRegion != 1)
         os << ", numRegion = " << memDef.numRegion;
+      if (inst.vizRow >= 0)
+        os << ", viz_row = " << inst.vizRow;
+      if (inst.vizCol >= 0)
+        os << ", viz_col = " << inst.vizCol;
       os << "]\n      (";
       for (size_t o = 0; o < operands.size(); ++o) {
         if (o > 0) os << ", ";
@@ -1316,6 +1346,10 @@ std::string ADGBuilder::Impl::generateMLIR() const {
         os << ", lsqDepth = " << emDef.lsqDepth;
       if (emDef.numRegion != 1)
         os << ", numRegion = " << emDef.numRegion;
+      if (inst.vizRow >= 0)
+        os << ", viz_row = " << inst.vizRow;
+      if (inst.vizCol >= 0)
+        os << ", viz_col = " << inst.vizCol;
       os << "]\n      (";
       for (size_t o = 0; o < operands.size(); ++o) {
         if (o > 0) os << ", ";
@@ -1379,6 +1413,10 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       os << "fabric.fifo [depth = " << fifoDef.depth;
       if (fifoDef.bypassable)
         os << ", bypassable";
+      if (inst.vizRow >= 0)
+        os << ", viz_row = " << inst.vizRow;
+      if (inst.vizCol >= 0)
+        os << ", viz_col = " << inst.vizCol;
       os << "] ";
       if (fifoDef.bypassable)
         os << "{bypassed = false} ";

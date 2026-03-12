@@ -45,6 +45,8 @@ endforeach()
 
 add_llvm_library(LoomViz
   VizHTMLExporter.cpp
+  VizGridLayout.cpp
+  VizJSONWriters.cpp
   ${VIZ_ASSET_SOURCES}
   ${VIZ_ASSET_HEADERS}
 

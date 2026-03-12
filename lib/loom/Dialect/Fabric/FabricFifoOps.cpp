@@ -50,16 +50,26 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
   result.addAttribute(getDepthAttrName(result.name), depthAttr);
 
-  // Parse optional `, bypassable`.
-  if (succeeded(parser.parseOptionalComma())) {
-    StringRef bypassKw;
-    if (parser.parseKeyword(&bypassKw))
+  // Parse remaining optional params: bypassable, viz_row, viz_col.
+  while (succeeded(parser.parseOptionalComma())) {
+    StringRef kw;
+    if (parser.parseKeyword(&kw))
       return failure();
-    if (bypassKw != "bypassable")
+    if (kw == "bypassable") {
+      result.addAttribute(getBypassableAttrName(result.name),
+                          parser.getBuilder().getUnitAttr());
+    } else if (kw == "viz_row" || kw == "viz_col") {
+      if (parser.parseEqual())
+        return failure();
+      IntegerAttr attr;
+      if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
+        return failure();
+      result.addAttribute(kw, attr);
+    } else {
       return parser.emitError(parser.getCurrentLocation(),
-                              "expected 'bypassable' keyword");
-    result.addAttribute(getBypassableAttrName(result.name),
-                        parser.getBuilder().getUnitAttr());
+                              "unexpected keyword '")
+             << kw << "' in fifo hardware parameters";
+    }
   }
 
   if (parser.parseRSquare())
@@ -122,6 +132,10 @@ void FifoOp::print(OpAsmPrinter &p) {
   p << " [depth = " << getDepth();
   if (getBypassable())
     p << ", bypassable";
+  if (auto vizRow = getOperation()->getAttr("viz_row"))
+    p << ", viz_row = " << cast<IntegerAttr>(vizRow).getInt();
+  if (auto vizCol = getOperation()->getAttr("viz_col"))
+    p << ", viz_col = " << cast<IntegerAttr>(vizCol).getInt();
   p << "]";
 
   if (getBypassed().has_value()) {

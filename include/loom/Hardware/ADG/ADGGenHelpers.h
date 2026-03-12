@@ -206,13 +206,15 @@ inline std::string buildConversionBody(const PESpec &spec) {
 //===----------------------------------------------------------------------===//
 
 /// Compute 2D mesh dimensions for a given PE count.
+/// Returns {rows, cols} where rows <= cols and rows * cols >= peCount.
 inline std::pair<unsigned, unsigned> computeMesh2DDims(unsigned peCount) {
   if (peCount == 0)
     return {1, 1};
-  unsigned dim = static_cast<unsigned>(std::ceil(std::sqrt(peCount)));
-  if (dim == 0)
-    dim = 1;
-  return {dim, dim};
+  unsigned cols = static_cast<unsigned>(std::ceil(std::sqrt(peCount)));
+  if (cols == 0)
+    cols = 1;
+  unsigned rows = (peCount + cols - 1) / cols;
+  return {rows, cols};
 }
 
 //===----------------------------------------------------------------------===//

@@ -82,6 +82,9 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "  --temporal-threshold <f>     Temporal score threshold (default: 0.5)\n";
   llvm::outs() << "  --dump-analysis              Print analysis summary to stdout\n";
   llvm::outs() << "\n";
+  llvm::outs() << "Visualization options:\n";
+  llvm::outs() << "  --viz-neato                  Use neato-style stress majorization layout\n";
+  llvm::outs() << "\n";
   llvm::outs() << "Forwarded compile options include: -I, -D, -U, -std, -O, -g,"
                << " -isystem, -include.\n";
   llvm::outs() << "Linker options (-l, -L, -Wl, -shared, -static) are ignored.\n";
@@ -280,6 +283,10 @@ ParsedArgs ParseArgs(int argc, char **argv) {
       }
       if (arg == "--dump-analysis") {
         parsed.dump_analysis = true;
+        continue;
+      }
+      if (arg == "--viz-neato") {
+        parsed.viz_neato = true;
         continue;
       }
       // --dump-mapping removed: .map.json and .map.txt are always emitted.

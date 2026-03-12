@@ -758,6 +758,8 @@ LatticeMeshResult ADGBuilder::latticeMesh(int peRows, int peCols,
       std::string swName = lPrefix + "sw_" + std::to_string(r) + "_" +
                            std::to_string(c);
       result.swGrid[r][c] = clone(swTemplate, swName);
+      impl_->instances[result.swGrid[r][c].id].vizRow = r * 2;
+      impl_->instances[result.swGrid[r][c].id].vizCol = c * 2;
     }
 
   // Create reverse-link FIFOs to break combinational loops on West/North edges.
@@ -778,6 +780,8 @@ LatticeMeshResult ADGBuilder::latticeMesh(int peRows, int peCols,
         auto fw = clone(revFifoH,
                         lPrefix + "fifo_w_" + std::to_string(r) + "_" +
                             std::to_string(c));
+        impl_->instances[fw.id].vizRow = r * 2;
+        impl_->instances[fw.id].vizCol = c * 2 + 1;
         connectPorts(result.swGrid[r][c + 1], 3, fw, 0);
         connectPorts(fw, 0, result.swGrid[r][c], 1);
       }
@@ -788,6 +792,8 @@ LatticeMeshResult ADGBuilder::latticeMesh(int peRows, int peCols,
         auto fn = clone(revFifoH,
                         lPrefix + "fifo_n_" + std::to_string(r) + "_" +
                             std::to_string(c));
+        impl_->instances[fn.id].vizRow = r * 2 + 1;
+        impl_->instances[fn.id].vizCol = c * 2;
         connectPorts(result.swGrid[r + 1][c], 0, fn, 0);
         connectPorts(fn, 0, result.swGrid[r][c], 2);
       }
@@ -926,6 +932,8 @@ InstanceHandle ADGBuilder::placePEInLattice(LatticeMeshResult &lattice,
                  " outputs; max 4 for lattice placement");
 
   auto pe = clone(peTemplate, name);
+  impl_->instances[pe.id].vizRow = row * 2 + 1;
+  impl_->instances[pe.id].vizCol = col * 2 + 1;
   lattice.peGrid[row][col] = pe;
   wirePEToLattice(*this, lattice, row, col, pe, numIn, numOut);
   return pe;
@@ -939,6 +947,8 @@ InstanceHandle ADGBuilder::placePEInLattice(LatticeMeshResult &lattice,
                            "placePEInLattice(ConstantPEHandle)");
   // ConstantPE: 1 input, 1 output
   auto pe = clone(peTemplate, name);
+  impl_->instances[pe.id].vizRow = row * 2 + 1;
+  impl_->instances[pe.id].vizCol = col * 2 + 1;
   lattice.peGrid[row][col] = pe;
   wirePEToLattice(*this, lattice, row, col, pe, 1, 1);
   return pe;
@@ -952,6 +962,8 @@ InstanceHandle ADGBuilder::placePEInLattice(LatticeMeshResult &lattice,
                            "placePEInLattice(LoadPEHandle)");
   // LoadPE: 3 inputs, 2 outputs
   auto pe = clone(peTemplate, name);
+  impl_->instances[pe.id].vizRow = row * 2 + 1;
+  impl_->instances[pe.id].vizCol = col * 2 + 1;
   lattice.peGrid[row][col] = pe;
   wirePEToLattice(*this, lattice, row, col, pe, 3, 2);
   return pe;
@@ -965,6 +977,8 @@ InstanceHandle ADGBuilder::placePEInLattice(LatticeMeshResult &lattice,
                            "placePEInLattice(StorePEHandle)");
   // StorePE: 3 inputs, 2 outputs
   auto pe = clone(peTemplate, name);
+  impl_->instances[pe.id].vizRow = row * 2 + 1;
+  impl_->instances[pe.id].vizCol = col * 2 + 1;
   lattice.peGrid[row][col] = pe;
   wirePEToLattice(*this, lattice, row, col, pe, 3, 2);
   return pe;

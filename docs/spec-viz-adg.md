@@ -57,10 +57,10 @@ Grid coordinates for each node are determined by the first available source:
 1. **Explicit attributes** (`viz_row`, `viz_col`): If the ADG node carries
    `viz_row` and `viz_col` integer attributes, these are used directly as
    `(gridCol, gridRow) = (viz_col, viz_row)`. This is the preferred method.
-   **Note**: These attributes do not exist in the current codebase. Adding
-   them to ADGGen/ADGBuilder and the ADGFlattener attribute whitelist is a
-   prerequisite task (see plan). Until then, name-based extraction is the
-   primary method.
+   ADGBuilder automatically sets these for lattice mesh topologies:
+   switches at (even, even), PEs at (odd, odd), west FIFOs at (even, odd),
+   north FIFOs at (odd, even). The attributes are emitted in MLIR by
+   ADGBuilderGen and copied through by ADGFlattener.
 
 2. **Name-based extraction** (current primary method): The C++ exporter
    attempts regex extraction from node names. The following patterns reflect

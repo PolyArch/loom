@@ -36,6 +36,7 @@ struct ParsedArgs {
   bool dfg_analyze = false;
   double temporal_threshold = 0.5;
   bool dump_analysis = false;
+  bool viz_neato = false;
   bool as_clang = false;
   bool show_help = false;
   bool show_version = false;

@@ -180,6 +180,12 @@ IdIndex createNodeFromOp(Graph &graph, mlir::Operation &op,
     node->attributes.push_back(builder.getNamedAttr("sym_name", symName));
   }
 
+  // Copy visualization grid coordinates from the instance.
+  if (auto vizRow = op.getAttrOfType<mlir::IntegerAttr>("viz_row"))
+    node->attributes.push_back(builder.getNamedAttr("viz_row", vizRow));
+  if (auto vizCol = op.getAttrOfType<mlir::IntegerAttr>("viz_col"))
+    node->attributes.push_back(builder.getNamedAttr("viz_col", vizCol));
+
   // Store source location for human-readable mapping output.
   std::string locStr = extractLocStr(op.getLoc());
   if (!locStr.empty()) {
