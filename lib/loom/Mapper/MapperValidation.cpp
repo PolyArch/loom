@@ -513,27 +513,17 @@ bool Mapper::validateC4(const MappingState &state, const Graph &dfg,
             (i < state.hwNodeToSwNodes.size() &&
              !state.hwNodeToSwNodes[i].empty())
             ? state.hwNodeToSwNodes[i].size() : 0;
-        // Match ConfigGen's effectiveRegionCount logic: use mappedCnt
-        // (clamped to [1, numRegion] for bridge), not bare numRegion.
-        size_t effectiveRegCnt;
-        if (isBridge) {
-          effectiveRegCnt = mappedCnt > 0
-              ? std::min(mappedCnt, static_cast<size_t>(numRegion))
-              : 1;
-        } else {
-          effectiveRegCnt =
-              std::min(mappedCnt, static_cast<size_t>(numRegion));
-        }
+        // Bridge: single region [0, tagCount); non-bridge: per-mapping.
+        size_t effectiveRegCnt = isBridge
+            ? 1
+            : std::min(mappedCnt, static_cast<size_t>(numRegion));
         llvm::SmallVector<std::pair<int64_t, int64_t>, 4> tagRanges;
         for (size_t r = 0; r < effectiveRegCnt; ++r) {
-          if (isBridge) {
-            // Bridge lane tags always span [0, tagCount) for every region,
-            // matching ConfigGen's addr_offset_table generation.
+          if (isBridge)
             tagRanges.push_back({0, tagCount});
-          } else {
+          else
             tagRanges.push_back({static_cast<int64_t>(r),
                                  static_cast<int64_t>(r + 1)});
-          }
         }
 
         auto validateBridgeTsw = [&](mlir::DenseI32ArrayAttr nodes,

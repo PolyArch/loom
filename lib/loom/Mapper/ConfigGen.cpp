@@ -375,9 +375,9 @@ void genMemoryConfig(const Node *hwNode, const MappingState &state,
   bool hasMapped = (hwId < state.hwNodeToSwNodes.size() &&
                     !state.hwNodeToSwNodes[hwId].empty());
   size_t mappedCount = hasMapped ? state.hwNodeToSwNodes[hwId].size() : 0;
-  size_t activeCount = std::min(mappedCount, static_cast<size_t>(numRegion));
-  if (isBridge && activeCount == 0)
-    activeCount = 1;
+  // Bridge: single region [0, tagCount); non-bridge: per-mapping regions.
+  size_t activeCount = isBridge
+      ? 1 : std::min(mappedCount, static_cast<size_t>(numRegion));
 
   unsigned bitsPerRegion = ADDR_BIT_WIDTH + 1 + (tw > 0 ? tw + (tw + 1) : 0);
   uint32_t bitPos = 0;
@@ -1681,9 +1681,9 @@ bool ConfigGen::writeConfiguredFabric(
     bool isBridgeMemory = (ldCount > 1 || stCount > 1);
     int64_t tagCount = std::max(ldCount, stCount);
 
-    size_t effectiveRegionCount = regionCount;
-    if (isBridgeMemory && regionCount == 0 && numRegion > 0)
-      effectiveRegionCount = 1;
+    // Bridge: single region [0, tagCount); non-bridge: per-mapping regions.
+    size_t effectiveRegionCount =
+        isBridgeMemory ? 1 : regionCount;
 
     llvm::SmallVector<int64_t> table; // [valid, start, end, base] * numRegion
     for (size_t r = 0; r < static_cast<size_t>(numRegion); ++r) {
