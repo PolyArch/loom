@@ -1164,19 +1164,24 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
               continue; // Capacity exceeded.
           }
         } else if (resClass == "memory") {
-          // Memory nodes allow up to numRegion SW nodes (including bridge-
-          // backed memories -- their disjoint tag ranges support multi-region).
+          // Memory nodes allow up to numRegion SW nodes. Bridge-backed
+          // memories are capped at 1 since tags encode lane indices.
           int64_t numRegion = 1;
+          bool isBridgeMem = false;
           for (auto &attr : hwNode->attributes) {
             if (attr.getName() == "numRegion") {
               if (auto intAttr =
                       mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
                 numRegion = intAttr.getInt();
+            } else if (attr.getName() == "bridge_input_ports" ||
+                       attr.getName() == "bridge_output_ports") {
+              isBridgeMem = true;
             }
           }
+          int64_t cap = isBridgeMem ? 1 : numRegion;
           if (static_cast<int64_t>(
                   state.hwNodeToSwNodes[candidate.hwNodeId].size()) >=
-              numRegion)
+              cap)
             continue;
         } else {
           continue; // Non-temporal, non-memory PEs enforce exclusivity.

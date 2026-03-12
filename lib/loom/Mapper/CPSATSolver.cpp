@@ -367,10 +367,14 @@ CPSATSolver::Result CPSATSolver::solveFullProblem(
       }
     } else if (resClass == "memory") {
       int64_t numRegion = getIntAttr(hwNode, "numRegion", 1);
+      // Bridge memories cap at 1 (tags encode lane indices, not regions).
+      mlir::DenseI32ArrayAttr bIn, bOut;
+      bool isBridge = getBridgePorts(hwNode, bIn, bOut);
+      int64_t cap = isBridge ? 1 : numRegion;
       LinearExpr sum;
       for (auto &[sw, var] : swVarPairs)
         sum += var;
-      model.AddLessOrEqual(sum, numRegion);
+      model.AddLessOrEqual(sum, cap);
     }
   }
 

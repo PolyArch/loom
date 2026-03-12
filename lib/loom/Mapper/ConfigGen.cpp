@@ -373,7 +373,7 @@ void genMemoryConfig(const Node *hwNode, const MappingState &state,
   bool hasMapped = (hwId < state.hwNodeToSwNodes.size() &&
                     !state.hwNodeToSwNodes[hwId].empty());
   size_t mappedCount = hasMapped ? state.hwNodeToSwNodes[hwId].size() : 0;
-  // Bridge: single region [0, tagCount); non-bridge: per-mapping regions.
+  // Bridge: 1 region [0, tagCount) (tags=lanes, placement caps at 1).
   size_t activeCount = isBridge
       ? 1 : std::min(mappedCount, static_cast<size_t>(numRegion));
 
