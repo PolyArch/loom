@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """Check that every programmed bridge add_tag value is covered by the
 specific downstream memory's addr_offset_table tag range.
 

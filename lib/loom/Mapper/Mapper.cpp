@@ -1270,10 +1270,12 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
             }
 
             // Bind non-memref inputs to bridge boundary input ports.
-            // Use category-aware matching: bridge inputs [0, storeInCount)
-            // are store ports, [storeInCount, end) are load ports. Each DFG
-            // port searches only within its matching category range, then
-            // falls back to type-only matching across the full range.
+            // Bridge inputs: [st0_data, st0_addr, ..., ld0_addr, ...].
+            // storeInCount separates store range [0, storeInCount) from load
+            // range [storeInCount, end). Store inputs come in (data, addr)
+            // pairs; detect them by checking if the first port of each pair
+            // matches a bridge store data port (unique data-width type that
+            // differs from the addr-width type shared by st_addr and ld_addr).
             if (bridgeInPorts) {
               auto bindInRange = [&](size_t si, int lo, int hi) -> bool {
                 const Port *sp = dfg.getPort(sw->inputPorts[si]);
@@ -1290,26 +1292,23 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
                 }
                 return false;
               };
-              // DFG non-memref input layout: store ports first, then load.
-              // Count DFG store input ports by matching against store range.
+              // Count DFG store inputs by detecting (data, addr) pairs.
+              // Bridge store data ports are at even indices within store range.
+              // A store data port type differs from addr type, so check if
+              // a DFG port matches bridge store data port [0] specifically.
               unsigned dfgStoreIns = 0;
-              if (storeInCount > 0) {
-                for (size_t si = swInSkip; si < sw->inputPorts.size(); ++si) {
+              if (storeInCount >= 2) {
+                const Port *storeDataRef = adg.getPort(
+                    static_cast<IdIndex>(bridgeInPorts[0]));
+                for (size_t si = swInSkip;
+                     si + 1 < sw->inputPorts.size(); si += 2) {
                   const Port *sp = dfg.getPort(sw->inputPorts[si]);
-                  if (!sp) continue;
-                  bool matchesStore = false;
-                  for (int bi = 0; bi < storeInCount; ++bi) {
-                    const Port *hp = adg.getPort(
-                        static_cast<IdIndex>(bridgeInPorts[bi]));
-                    if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
-                      matchesStore = true;
-                      break;
-                    }
+                  if (sp && storeDataRef &&
+                      isTypeWidthCompatible(sp->type, storeDataRef->type)) {
+                    dfgStoreIns += 2;
+                  } else {
+                    break;
                   }
-                  if (matchesStore)
-                    ++dfgStoreIns;
-                  else
-                    break; // Store ports end here.
                 }
               }
               for (size_t si = swInSkip; si < sw->inputPorts.size(); ++si) {
@@ -1319,27 +1318,74 @@ bool Mapper::runPlacement(MappingState &state, const Graph &dfg,
                 int hi = isStore ? storeInCount
                                  : static_cast<int>(bridgeInPorts.size());
                 if (storeInCount < 0 || !bindInRange(si, lo, hi)) {
-                  // Fallback: search full range.
                   bindInRange(si, 0, static_cast<int>(bridgeInPorts.size()));
                 }
               }
             }
 
-            // Bind outputs to bridge boundary output ports (type-aware
-            // with port reservation).
+            // Bind outputs to bridge boundary output ports.
+            // Output layout: [ld_data * ldCount, ld_done * ldCount,
+            //                 st_done * stCount].
+            // Use bridge_ld_data_output_count to split ld_data from the rest.
+            // ld_data has data-width type; ld_done and st_done share none type.
+            // Bind within category ranges using port reservation.
             if (bridgeOutPorts) {
+              int32_t ldDataOutCount = -1;
+              for (auto &attr : hw->attributes) {
+                if (attr.getName() == "bridge_ld_data_output_count") {
+                  if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(
+                          attr.getValue()))
+                    ldDataOutCount = ia.getInt();
+                }
+              }
               for (size_t i = 0; i < sw->outputPorts.size(); ++i) {
                 const Port *sp = dfg.getPort(sw->outputPorts[i]);
                 if (!sp)
                   continue;
-                for (int32_t pid : bridgeOutPorts.asArrayRef()) {
-                  auto hwPid = static_cast<IdIndex>(pid);
-                  if (!state.hwPortToSwPorts[hwPid].empty())
-                    continue;
-                  const Port *hp = adg.getPort(hwPid);
-                  if (hp && isTypeWidthCompatible(sp->type, hp->type)) {
-                    state.mapPort(sw->outputPorts[i], hwPid, dfg, adg);
-                    break;
+                // Try category-matched range first, then full fallback.
+                bool bound = false;
+                if (ldDataOutCount >= 0) {
+                  // ld_data range is [0, ldDataOutCount).
+                  // ld_done + st_done range is [ldDataOutCount, end).
+                  // Check if this DFG port is a ld_data (data-width) type.
+                  const Port *ldDataRef =
+                      (ldDataOutCount > 0)
+                          ? adg.getPort(static_cast<IdIndex>(
+                                bridgeOutPorts[0]))
+                          : nullptr;
+                  bool isLdData = ldDataRef &&
+                      isTypeWidthCompatible(sp->type, ldDataRef->type);
+                  int lo = isLdData ? 0 : ldDataOutCount;
+                  int hi = isLdData
+                      ? ldDataOutCount
+                      : static_cast<int>(bridgeOutPorts.size());
+                  for (int bi = lo; bi < hi; ++bi) {
+                    auto hwPid =
+                        static_cast<IdIndex>(bridgeOutPorts[bi]);
+                    if (!state.hwPortToSwPorts[hwPid].empty())
+                      continue;
+                    const Port *hp = adg.getPort(hwPid);
+                    if (hp &&
+                        isTypeWidthCompatible(sp->type, hp->type)) {
+                      state.mapPort(sw->outputPorts[i], hwPid, dfg,
+                                    adg);
+                      bound = true;
+                      break;
+                    }
+                  }
+                }
+                if (!bound) {
+                  for (int32_t pid : bridgeOutPorts.asArrayRef()) {
+                    auto hwPid = static_cast<IdIndex>(pid);
+                    if (!state.hwPortToSwPorts[hwPid].empty())
+                      continue;
+                    const Port *hp = adg.getPort(hwPid);
+                    if (hp &&
+                        isTypeWidthCompatible(sp->type, hp->type)) {
+                      state.mapPort(sw->outputPorts[i], hwPid, dfg,
+                                    adg);
+                      break;
+                    }
                   }
                 }
               }
