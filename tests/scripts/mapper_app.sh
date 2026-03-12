@@ -41,29 +41,43 @@ score_domain_adg_config() {
   local adg_path="$2"
   shift 2
   local apps=("$@")
-  local score=0
   local score_dir="${DOMAIN_ADG_DIR}/.${domain}.score.$$"
 
   rm -rf "${score_dir}"
   mkdir -p "${score_dir}"
 
+  # Build parallel job file: one mapping job per app.
+  local score_jobs
+  score_jobs=$(mktemp)
   for app in "${apps[@]}"; do
     local dfg=""
     dfg="$(loom_find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" || true)"
     if [[ -z "${dfg}" ]]; then
       continue
     fi
-
     local out_base="${score_dir}/${app}"
-    local map_log="${out_base}.log"
-    if "${LOOM_BIN}" --adg "${adg_path}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget 200 --mapper-mask-domain > "${map_log}" 2>&1; then
-      local configured="${out_base}.fabric.mlir"
-      if [[ -f "${configured}" ]] && "${LOOM_BIN}" --adg "${configured}" >> "${map_log}" 2>&1; then
-        ((score += 1))
-      fi
-    fi
+    echo "${LOOM_BIN} --adg ${adg_path} --dfgs ${dfg} -o ${out_base} --mapper-budget 200 --mapper-mask-domain > ${out_base}.log 2>&1 && [ -f ${out_base}.fabric.mlir ] && ${LOOM_BIN} --adg ${out_base}.fabric.mlir >> ${out_base}.log 2>&1" >> "${score_jobs}"
   done
 
+  # Run scoring in parallel.
+  local joblog
+  joblog=$(mktemp)
+  local max_jobs
+  max_jobs=$(loom_resolve_jobs)
+  parallel --joblog "${joblog}" --timeout 30 -j "${max_jobs}" \
+    --halt never < "${score_jobs}" 2>/dev/null || true
+
+  # Count successes from joblog (skip header line).
+  local score=0
+  local first=true
+  while IFS=$'\t' read -r _seq _host _start _runtime _send _receive exitval _signal _command; do
+    if "${first}"; then first=false; continue; fi
+    if [[ "${exitval}" -eq 0 ]]; then
+      ((score += 1)) || true
+    fi
+  done < "${joblog}"
+
+  rm -f "${score_jobs}" "${joblog}"
   rm -rf "${score_dir}"
   echo "${score}"
 }
@@ -186,68 +200,20 @@ if [[ "${1:-}" == "--single" ]]; then
   exit 1
 fi
 
-# --- Domain-grouped batch mode ---
-LOOM_BIN=$(loom_resolve_bin "${1:-${ROOT_DIR}/build/bin/loom}"); shift || true
+# --- Domain ADG generation mode (one domain, called in parallel) ---
+if [[ "${1:-}" == "--gen-domain" ]]; then
+  shift
+  LOOM_BIN=$(loom_resolve_bin "$1"); shift
+  domain="$1"; shift
 
-loom_require_parallel
+  DOMAIN_ADG_DIR="${ROOT_DIR}/tests/.results/domain-adgs"
+  dfg_list=$(cat "${DOMAIN_ADG_DIR}/${domain}_dfgs.txt")
+  read -ra domain_app_list <<< "$(cat "${DOMAIN_ADG_DIR}/${domain}_apps.txt")"
 
-# Discover all app directories.
-app_names=()
-while IFS= read -r d; do
-  app_names+=("$(basename "${d}")")
-done < <(find "${APP_DIR}" -mindepth 1 -maxdepth 1 -type d | sort)
-
-if [[ ${#app_names[@]} -eq 0 ]]; then
-  echo "Mapper App: no apps found, skipping"
-  exit 0
-fi
-
-# Group apps by domain and collect DFG paths.
-need_handshake_refresh=false
-for app in "${app_names[@]}"; do
-  if loom_find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" >/dev/null; then
-    continue
-  fi
-  if loom_has_sources "${APP_DIR}/${app}"; then
-    need_handshake_refresh=true
-    break
-  fi
-done
-
-if "${need_handshake_refresh}"; then
-  "${SCRIPT_DIR}/handshake.sh" "${LOOM_BIN}" || true
-fi
-
-declare -A domain_apps
-declare -A domain_dfgs
-for app in "${app_names[@]}"; do
-  domain=$(classify_domain "${app}")
-  domain_apps["${domain}"]+="${app} "
-
-  dfg="$(loom_find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" || true)"
-  if [[ -n "${dfg}" ]]; then
-    if [[ -n "${domain_dfgs[${domain}]:-}" ]]; then
-      domain_dfgs["${domain}"]+=",${dfg}"
-    else
-      domain_dfgs["${domain}"]="${dfg}"
-    fi
-  fi
-done
-
-# Generate one ADG per domain from all DFGs in that domain.
-DOMAIN_ADG_DIR="${ROOT_DIR}/tests/.results/domain-adgs"
-mkdir -p "${DOMAIN_ADG_DIR}"
-for domain in "${!domain_dfgs[@]}"; do
-  dfg_list="${domain_dfgs[${domain}]}"
   adg_path="${DOMAIN_ADG_DIR}/${domain}.fabric.mlir"
   gen_log="${DOMAIN_ADG_DIR}/${domain}_gen.log"
   score_file="${DOMAIN_ADG_DIR}/${domain}_gen_score.txt"
 
-  # Domain ADG generation strategy depends on domain size:
-  # - Small domains (<=20 DFGs): score each valid config by how many apps in
-  #   that domain map back to the shared ADG, then keep the best-scoring one.
-  # - Large domains (>20 DFGs): use first-valid (stop at first success)
-  #   to avoid generating massive ADGs that cause per-app mapping timeouts.
   dfg_count=$(echo "${dfg_list}" | tr ',' '\n' | wc -l)
   gen_configs=(
     "--dfg-analyze --dump-analysis"
@@ -262,6 +228,7 @@ for domain in "${!domain_dfgs[@]}"; do
     "--dfg-analyze --dump-analysis --gen-temporal --temporal-threshold 0.7 --gen-track 5 --gen-fifo-mode dual"
     "--dfg-analyze --dump-analysis --gen-topology cube --gen-track 3"
   )
+
   use_best_config=true
   if (( dfg_count > 20 )); then
     use_best_config=false
@@ -269,7 +236,6 @@ for domain in "${!domain_dfgs[@]}"; do
   gen_ok=false
   gen_used_cfg=""
   best_score=-1
-  domain_app_list=(${domain_apps[${domain}]})
   for gen_cfg in "${gen_configs[@]}"; do
     if "${use_best_config}"; then
       tmp_adg="${adg_path}.tmp"
@@ -322,7 +288,77 @@ for domain in "${!domain_dfgs[@]}"; do
     rm -f "${adg_path}"
     rm -f "${score_file}"
   fi
+  exit 0
+fi
+
+# --- Domain-grouped batch mode ---
+LOOM_BIN=$(loom_resolve_bin "${1:-${ROOT_DIR}/build/bin/loom}"); shift || true
+
+loom_require_parallel
+
+# Discover all app directories.
+app_names=()
+while IFS= read -r d; do
+  app_names+=("$(basename "${d}")")
+done < <(find "${APP_DIR}" -mindepth 1 -maxdepth 1 -type d | sort)
+
+if [[ ${#app_names[@]} -eq 0 ]]; then
+  echo "Mapper App: no apps found, skipping"
+  exit 0
+fi
+
+# Group apps by domain and collect DFG paths.
+need_handshake_refresh=false
+for app in "${app_names[@]}"; do
+  if loom_find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" >/dev/null; then
+    continue
+  fi
+  if loom_has_sources "${APP_DIR}/${app}"; then
+    need_handshake_refresh=true
+    break
+  fi
 done
+
+if "${need_handshake_refresh}"; then
+  "${SCRIPT_DIR}/handshake.sh" "${LOOM_BIN}" || true
+fi
+
+declare -A domain_apps
+declare -A domain_dfgs
+for app in "${app_names[@]}"; do
+  domain=$(classify_domain "${app}")
+  domain_apps["${domain}"]+="${app} "
+
+  dfg="$(loom_find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" || true)"
+  if [[ -n "${dfg}" ]]; then
+    if [[ -n "${domain_dfgs[${domain}]:-}" ]]; then
+      domain_dfgs["${domain}"]+=",${dfg}"
+    else
+      domain_dfgs["${domain}"]="${dfg}"
+    fi
+  fi
+done
+
+# Generate one ADG per domain from all DFGs in that domain (in parallel).
+DOMAIN_ADG_DIR="${ROOT_DIR}/tests/.results/domain-adgs"
+mkdir -p "${DOMAIN_ADG_DIR}"
+
+# Write per-domain metadata files for the parallel workers.
+for domain in "${!domain_dfgs[@]}"; do
+  echo "${domain_dfgs[${domain}]}" > "${DOMAIN_ADG_DIR}/${domain}_dfgs.txt"
+  echo "${domain_apps[${domain}]}" > "${DOMAIN_ADG_DIR}/${domain}_apps.txt"
+done
+
+# Run domain ADG generation in parallel (one job per domain).
+DOMAIN_GEN_FILE=$(mktemp)
+for domain in "${!domain_dfgs[@]}"; do
+  echo "${SCRIPT_DIR}/mapper_app.sh --gen-domain ${LOOM_BIN} ${domain}" >> "${DOMAIN_GEN_FILE}"
+done
+
+domain_gen_jobs=$(loom_resolve_jobs)
+parallel --timeout 600 -j "${domain_gen_jobs}" \
+  --halt never < "${DOMAIN_GEN_FILE}" 2>/dev/null || true
+rm -f "${DOMAIN_GEN_FILE}"
 
 # Build parallel job file: map each app, optionally passing domain ADG.
 PARALLEL_FILE="${APP_DIR}/mapper_app.parallel.sh"
