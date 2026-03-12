@@ -148,11 +148,15 @@ def extract_ld_st_count(rest: str) -> tuple[int, int]:
 
 
 def parse_addr_header(text: str) -> dict[str, tuple[int, int]]:
-    """Parse _addr.h to get {node_id: (word_offset, word_count)}."""
+    """Parse _addr.h to get {suffix: (word_offset, word_count)}.
+
+    Matches both LOOM_ADDR_NODE_<id> and LOOM_ADDR_<SYM_NAME> forms.
+    Keys are the full uppercase suffix after ``LOOM_ADDR_``/``LOOM_SIZE_``.
+    """
     addrs: dict[str, list[int]] = {}
-    for m in re.finditer(r'LOOM_ADDR_NODE_(\d+)\s+(\d+)', text):
+    for m in re.finditer(r'LOOM_ADDR_(\S+)\s+(\d+)', text):
         addrs.setdefault(m.group(1), [0, 0])[0] = int(m.group(2))
-    for m in re.finditer(r'LOOM_SIZE_NODE_(\d+)\s+(\d+)', text):
+    for m in re.finditer(r'LOOM_SIZE_(\S+)\s+(\d+)', text):
         addrs.setdefault(m.group(1), [0, 0])[1] = int(m.group(2))
     return {k: (v[0], v[1]) for k, v in addrs.items()}
 
@@ -213,6 +217,12 @@ def extract_config_node_id(rest: str) -> str | None:
     return m.group(1) if m else None
 
 
+def extract_sym_name(rest: str) -> str | None:
+    """Extract sym_name attribute from a memory/extmemory op."""
+    m = re.search(r'sym_name\s*=\s*"([^"]+)"', rest)
+    return m.group(1) if m else None
+
+
 def verify_config_binary(mlir_text: str, addr_text: str,
                          config_data: bytes) -> list[str]:
     """Verify .config.bin matches .fabric.mlir for bridge memories."""
@@ -230,16 +240,25 @@ def verify_config_binary(mlir_text: str, addr_text: str,
         if mlir_table is None:
             continue
         # Use configNodeId attribute to correlate with _addr.h.
+        # ConfigGen emits LOOM_ADDR_<SYM_NAME> when sym_name is present,
+        # otherwise LOOM_ADDR_NODE_<id>. Try both keys.
         node_id = extract_config_node_id(info["rest"])
         if node_id is None:
             violations.append(
                 f"bridge memory %{name} has no configNodeId attribute")
             continue
-        if node_id not in addr_map:
+        addr_key = "NODE_" + node_id
+        if addr_key not in addr_map:
+            sym = extract_sym_name(info["rest"])
+            if sym:
+                upper = sym.upper().replace('.', '_').replace('-', '_')
+                if upper in addr_map:
+                    addr_key = upper
+        if addr_key not in addr_map:
             violations.append(
                 f"bridge memory %{name} (node {node_id}) not in _addr.h")
             continue
-        word_offset, word_count = addr_map[node_id]
+        word_offset, word_count = addr_map[addr_key]
         num_region = extract_num_region(info["rest"])
         expected_words = compute_expected_words(ld_count, st_count, num_region)
         if word_count != expected_words:

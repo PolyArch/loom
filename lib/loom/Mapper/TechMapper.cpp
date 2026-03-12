@@ -284,7 +284,7 @@ bool TechMapper::isSingleOpCompatible(const Graph &dfg, IdIndex swNode,
       llvm::sort(hwInTypes, [&typeSortKey](mlir::Type a, mlir::Type b) {
         return typeSortKey(a) < typeSortKey(b);
       });
-      if (swInTypes.size() != hwInTypes.size())
+      if (swInTypes.size() > hwInTypes.size())
         return false;
       for (size_t i = 0; i < swInTypes.size(); ++i) {
         if (!typesCompatible(swInTypes[i], hwInTypes[i], false))
