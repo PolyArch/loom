@@ -157,6 +157,13 @@ add_custom_target(check-loom-simulator-app-perapp
   DEPENDS loom
 )
 
+add_custom_target(check-loom-simulator-app-perapp-subset
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/simulator_app.sh"
+    "${LOOM_RUNTIME_DIR}/loom" per-app-subset
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
 add_custom_target(check-loom-simulator-app-domain
   COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/simulator_app.sh"
     "${LOOM_RUNTIME_DIR}/loom" per-domain

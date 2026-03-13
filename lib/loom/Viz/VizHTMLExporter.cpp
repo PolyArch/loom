@@ -315,7 +315,8 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
                                const std::string &basePath,
                                bool vizNeato,
                                const std::vector<sim::TraceEvent> *traceEvents,
-                               uint64_t totalCycles, uint64_t configCycles) {
+                               uint64_t totalCycles, uint64_t configCycles,
+                               const std::vector<sim::PerfSnapshot> *nodePerf) {
   std::string outPath = basePath + ".viz.html";
   std::error_code ec;
   llvm::raw_fd_ostream out(outPath, ec, llvm::sys::fs::OF_Text);
@@ -421,7 +422,7 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
   std::string traceJsonStr;
   if (hasTrace) {
     llvm::raw_string_ostream ss(traceJsonStr);
-    writeTraceDataJSON(ss, *traceEvents, totalCycles, configCycles);
+    writeTraceDataJSON(ss, *traceEvents, totalCycles, configCycles, nodePerf);
   } else {
     traceJsonStr = "null";
   }

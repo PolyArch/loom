@@ -730,6 +730,13 @@ void writeHWMetadataJSON(llvm::raw_ostream &os, const Graph &adg,
     json.objectBegin();
     json.attribute("in", static_cast<int64_t>(node->inputPorts.size()));
     json.attribute("out", static_cast<int64_t>(node->outputPorts.size()));
+    // Export input port IDs for route-highlighting by port index.
+    json.attributeBegin("inputIds");
+    json.arrayBegin();
+    for (auto portId : node->inputPorts)
+      json.value(std::to_string(portId));
+    json.arrayEnd();
+    json.attributeEnd();
     json.objectEnd();
     json.attributeEnd();
 
@@ -772,7 +779,8 @@ void writeHWMetadataJSON(llvm::raw_ostream &os, const Graph &adg,
 
 void writeTraceDataJSON(llvm::raw_ostream &os,
                         const std::vector<sim::TraceEvent> &events,
-                        uint64_t totalCycles, uint64_t configCycles) {
+                        uint64_t totalCycles, uint64_t configCycles,
+                        const std::vector<sim::PerfSnapshot> *nodePerf) {
   // Per-cycle event: [hwNodeId, eventKind, arg0, arg1]
   // arg0/arg1 preserved for EV_ROUTE_USE (srcPort, dstPort identity).
   struct CycleEvent {
@@ -791,17 +799,40 @@ void writeTraceDataJSON(llvm::raw_ostream &os,
         {ev.hwNodeId, static_cast<uint8_t>(ev.eventKind), ev.arg0, ev.arg1});
   }
 
-  // Compute per-node utilization from events for stat overlay.
-  std::map<uint32_t, uint64_t> nodeFireCount;
-  std::map<uint32_t, uint64_t> nodeStallInCount;
-  std::map<uint32_t, uint64_t> nodeStallOutCount;
-  for (const auto &ev : events) {
-    if (ev.eventKind == sim::EV_NODE_FIRE)
-      nodeFireCount[ev.hwNodeId]++;
-    else if (ev.eventKind == sim::EV_NODE_STALL_IN)
-      nodeStallInCount[ev.hwNodeId]++;
-    else if (ev.eventKind == sim::EV_NODE_STALL_OUT)
-      nodeStallOutCount[ev.hwNodeId]++;
+  // Compute per-node utilization: prefer stat data when available,
+  // fall back to trace event counting.
+  std::map<uint32_t, double> nodeUtil;
+  if (nodePerf && !nodePerf->empty()) {
+    for (const auto &np : *nodePerf) {
+      uint64_t total = np.activeCycles + np.stallCyclesIn + np.stallCyclesOut;
+      double util = (total > 0)
+                        ? static_cast<double>(np.activeCycles) / total
+                        : 0.0;
+      nodeUtil[np.nodeIndex] = util;
+    }
+  } else {
+    std::map<uint32_t, uint64_t> nodeFireCount;
+    std::map<uint32_t, uint64_t> nodeStallInCount;
+    std::map<uint32_t, uint64_t> nodeStallOutCount;
+    for (const auto &ev : events) {
+      if (ev.eventKind == sim::EV_NODE_FIRE)
+        nodeFireCount[ev.hwNodeId]++;
+      else if (ev.eventKind == sim::EV_NODE_STALL_IN)
+        nodeStallInCount[ev.hwNodeId]++;
+      else if (ev.eventKind == sim::EV_NODE_STALL_OUT)
+        nodeStallOutCount[ev.hwNodeId]++;
+    }
+    std::set<uint32_t> allNodes;
+    for (const auto &kv : nodeFireCount) allNodes.insert(kv.first);
+    for (const auto &kv : nodeStallInCount) allNodes.insert(kv.first);
+    for (const auto &kv : nodeStallOutCount) allNodes.insert(kv.first);
+    for (uint32_t nid : allNodes) {
+      uint64_t fire = nodeFireCount.count(nid) ? nodeFireCount[nid] : 0;
+      uint64_t stallIn = nodeStallInCount.count(nid) ? nodeStallInCount[nid] : 0;
+      uint64_t stallOut = nodeStallOutCount.count(nid) ? nodeStallOutCount[nid] : 0;
+      uint64_t total = fire + stallIn + stallOut;
+      nodeUtil[nid] = (total > 0) ? static_cast<double>(fire) / total : 0.0;
+    }
   }
 
   llvm::json::OStream json(os, /*IndentSize=*/0);
@@ -835,22 +866,12 @@ void writeTraceDataJSON(llvm::raw_ostream &os,
   json.objectEnd();
   json.attributeEnd();
 
-  // Per-node utilization for heatmap overlay.
+  // Per-node utilization for heatmap overlay (from stat data or trace).
   json.attributeBegin("nodeUtilization");
   json.objectBegin();
-  // Collect all unique node IDs.
-  std::set<uint32_t> allNodes;
-  for (const auto &kv : nodeFireCount) allNodes.insert(kv.first);
-  for (const auto &kv : nodeStallInCount) allNodes.insert(kv.first);
-  for (const auto &kv : nodeStallOutCount) allNodes.insert(kv.first);
-  for (uint32_t nid : allNodes) {
-    uint64_t fire = nodeFireCount.count(nid) ? nodeFireCount[nid] : 0;
-    uint64_t stallIn = nodeStallInCount.count(nid) ? nodeStallInCount[nid] : 0;
-    uint64_t stallOut = nodeStallOutCount.count(nid) ? nodeStallOutCount[nid] : 0;
-    uint64_t total = fire + stallIn + stallOut;
-    double util = (total > 0) ? static_cast<double>(fire) / total : 0.0;
-    json.attributeBegin(std::to_string(nid));
-    json.value(util);
+  for (const auto &kv : nodeUtil) {
+    json.attributeBegin(std::to_string(kv.first));
+    json.value(kv.second);
     json.attributeEnd();
   }
   json.objectEnd();

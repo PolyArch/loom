@@ -1243,13 +1243,19 @@ int main(int argc, char **argv) {
     // Run event-driven simulation if --simulate was requested (before viz
     // so trace data can be embedded in the HTML).
     const std::vector<loom::sim::TraceEvent> *vizTracePtr = nullptr;
+    const std::vector<loom::sim::PerfSnapshot> *vizNodePerfPtr = nullptr;
     uint64_t vizTotalCycles = 0, vizConfigCycles = 0;
     if (parsed.simulate) {
       auto simTotalStart = std::chrono::steady_clock::now();
 
       loom::sim::SimConfig simConfig;
       simConfig.maxCycles = parsed.sim_max_cycles;
-      simConfig.traceMode = loom::sim::TraceMode::Full;
+      if (parsed.sim_trace_mode == "off")
+        simConfig.traceMode = loom::sim::TraceMode::Off;
+      else if (parsed.sim_trace_mode == "summary")
+        simConfig.traceMode = loom::sim::TraceMode::Summary;
+      else
+        simConfig.traceMode = loom::sim::TraceMode::Full;
 
       loom::sim::EventSimSession session(simConfig);
       std::string simErr;
@@ -1330,28 +1336,67 @@ int main(int argc, char **argv) {
         return 1;
       }
 
-      // Collect actual outputs from all boundary output ports.
+      // Collect actual outputs from the first invocation.
       unsigned totalOutputTokens = 0;
-      for (unsigned p = 0; p < numOutputPorts; ++p)
-        totalOutputTokens += session.getOutput(p).size();
+      std::vector<std::vector<uint64_t>> firstRunOutputs(numOutputPorts);
+      for (unsigned p = 0; p < numOutputPorts; ++p) {
+        firstRunOutputs[p] = session.getOutput(p);
+        totalOutputTokens += firstRunOutputs[p].size();
+      }
 
-      // Run CPU oracle comparison. Since we don't have a host-side
-      // interpreter for the DFG, we verify that the simulation produced
-      // a non-zero number of output tokens (liveness check).
+      // CPU oracle: repeated-invocation consistency check.
+      // Reset execution state, re-feed same inputs, re-invoke, compare outputs.
       auto hostOracleStart = std::chrono::steady_clock::now();
-      std::vector<std::vector<uint64_t>> refOutputs;
-      auto compareResult = session.compare(refOutputs);
+      bool oraclePass = false;
+      unsigned oracleMismatches = 0;
+      std::string oracleDetail;
+
+      if (totalOutputTokens > 0 || numOutputPorts == 0) {
+        // Re-run with same inputs for consistency oracle.
+        simErr = session.resetExecution();
+        if (!simErr.empty()) {
+          oracleDetail = "resetExecution failed: " + simErr;
+        } else {
+          // Re-feed same test vectors.
+          for (unsigned p = 0; p < numInputPorts; ++p) {
+            std::vector<uint64_t> testData(testVectorLen);
+            for (unsigned t = 0; t < testVectorLen; ++t)
+              testData[t] = static_cast<uint64_t>(p * testVectorLen + t + 1);
+            simErr = session.setInput(p, testData);
+            if (!simErr.empty()) break;
+          }
+
+          if (simErr.empty()) {
+            auto [simResult2, runErr2] = session.invoke();
+            if (runErr2.empty()) {
+              // Compare first-run outputs against second-run outputs.
+              auto compareResult = session.compare(firstRunOutputs);
+              oraclePass = compareResult.pass;
+              oracleMismatches = compareResult.mismatches;
+              if (!oraclePass)
+                oracleDetail = compareResult.details;
+            } else {
+              oracleDetail = "re-invoke failed: " + runErr2;
+            }
+          } else {
+            oracleDetail = "re-setInput failed: " + simErr;
+          }
+        }
+      } else {
+        oracleDetail = "no output tokens produced";
+      }
       auto hostOracleEnd = std::chrono::steady_clock::now();
 
-      // Report oracle verdict (liveness check always, even on timeout).
-      bool livenessPass = (totalOutputTokens > 0) || (numOutputPorts == 0);
+      // Report oracle verdict.
       llvm::outs() << "  oracle: "
-                    << (livenessPass ? "PASS" : "FAIL")
+                    << (oraclePass ? "PASS" : "FAIL")
                     << " (" << totalOutputTokens << " output tokens from "
                     << numOutputPorts << " ports";
-      if (compareResult.mismatches > 0)
-        llvm::outs() << ", " << compareResult.mismatches << " mismatches";
+      if (oracleMismatches > 0)
+        llvm::outs() << ", " << oracleMismatches << " mismatches";
       llvm::outs() << ")\n";
+      if (!oraclePass && !oracleDetail.empty())
+        llvm::outs() << "  oracle detail: " << oracleDetail << "\n";
 
       auto simTotalEnd = std::chrono::steady_clock::now();
 
@@ -1366,12 +1411,14 @@ int main(int argc, char **argv) {
       timing.totalSeconds =
           std::chrono::duration<double>(simTotalEnd - simTotalStart).count();
 
-      // Write trace file.
+      // Write trace file (only in Full mode).
       std::string tracePath = base_path + ".trace";
-      if (!loom::sim::writeTraceFile(tracePath, simResult.traceEvents))
-        llvm::errs() << "warning: failed to write trace: " << tracePath << "\n";
+      if (simConfig.traceMode == loom::sim::TraceMode::Full) {
+        if (!loom::sim::writeTraceFile(tracePath, simResult.traceEvents))
+          llvm::errs() << "warning: failed to write trace: " << tracePath << "\n";
+      }
 
-      // Write stat file.
+      // Write stat file (always, regardless of trace mode).
       std::string statPath = base_path + ".stat";
       if (!loom::sim::writeStatFile(statPath, simResult, timing))
         llvm::errs() << "warning: failed to write stat: " << statPath << "\n";
@@ -1380,22 +1427,26 @@ int main(int argc, char **argv) {
                     << ": " << simResult.totalCycles << " cycles ("
                     << simResult.configCycles << " config + "
                     << (simResult.totalCycles - simResult.configCycles) << " exec)\n";
-      llvm::outs() << "  trace: " << tracePath << " ("
-                    << simResult.traceEvents.size() << " events)\n";
+      if (simConfig.traceMode == loom::sim::TraceMode::Full) {
+        llvm::outs() << "  trace: " << tracePath << " ("
+                      << simResult.traceEvents.size() << " events)\n";
+      }
       llvm::outs() << "  stat:  " << statPath << "\n";
 
       vizTracePtr = &simResult.traceEvents;
+      vizNodePerfPtr = &simResult.nodePerf;
       vizTotalCycles = simResult.totalCycles;
       vizConfigCycles = simResult.configCycles;
 
-      // Emit visualization with trace data.
+      // Emit visualization with trace data and stat-based heatmap.
       {
         loom::VizHTMLExporter viz_exporter;
         if (!viz_exporter.emitHTML(adg, dfg, mapper_result.state,
                                    handshake_module.get(),
                                    adg_module.get(), base_path,
                                    parsed.viz_neato, vizTracePtr,
-                                   vizTotalCycles, vizConfigCycles)) {
+                                   vizTotalCycles, vizConfigCycles,
+                                   vizNodePerfPtr)) {
           llvm::errs() << "warning: failed to write visualization: "
                         << base_path << ".viz.html\n";
         }

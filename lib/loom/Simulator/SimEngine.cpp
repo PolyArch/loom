@@ -66,6 +66,11 @@ bool SimEngine::buildFromGraph(const Graph &adg) {
       }
     }
 
+    // Use the same fallback naming as ConfigGen: node_<id> when sym_name
+    // is absent, so external config slices match by name.
+    if (nodeName.empty())
+      nodeName = "node_" + std::to_string(nodeIdx);
+
     if (node->kind == Node::ModuleInputNode) {
       // Boundary input: create channels for each output port.
       for (auto portId : node->outputPorts) {
@@ -503,6 +508,7 @@ SimResult SimEngine::run() {
   result.nodePerf.resize(modules_.size());
   for (size_t i = 0; i < modules_.size(); ++i) {
     result.nodePerf[i] = modules_[i]->getPerfSnapshot();
+    result.nodePerf[i].nodeIndex = modules_[i]->hwNodeId;
     if (i < moduleConfigWrites_.size())
       result.nodePerf[i].configWrites = moduleConfigWrites_[i];
   }

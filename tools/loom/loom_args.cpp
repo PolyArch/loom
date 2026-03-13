@@ -86,6 +86,7 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "Simulation options:\n";
   llvm::outs() << "  --simulate                   Run event-driven simulator after mapping\n";
   llvm::outs() << "  --sim-max-cycles <n>         Maximum simulation cycles (default: 1000000)\n";
+  llvm::outs() << "  --sim-trace-mode <mode>      Trace mode: off, summary, full (default: full)\n";
   llvm::outs() << "\n";
   llvm::outs() << "Visualization options:\n";
   llvm::outs() << "  --viz-neato                  Use neato-style stress majorization layout\n";
@@ -314,6 +315,22 @@ ParsedArgs ParseArgs(int argc, char **argv) {
           break;
         }
         parsed.sim_max_cycles = std::stoull(argv[++i]);
+        continue;
+      }
+      if (arg == "--sim-trace-mode") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --sim-trace-mode requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.sim_trace_mode = argv[++i];
+        if (parsed.sim_trace_mode != "off" &&
+            parsed.sim_trace_mode != "summary" &&
+            parsed.sim_trace_mode != "full") {
+          llvm::errs() << "error: --sim-trace-mode must be off, summary, or full\n";
+          parsed.had_error = true;
+          break;
+        }
         continue;
       }
       // --dump-mapping removed: .map.json and .map.txt are always emitted.

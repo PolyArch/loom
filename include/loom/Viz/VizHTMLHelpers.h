@@ -251,7 +251,8 @@ void writeHWMetadataJSON(llvm::raw_ostream &os, const Graph &adg,
 
 void writeTraceDataJSON(llvm::raw_ostream &os,
                         const std::vector<sim::TraceEvent> &events,
-                        uint64_t totalCycles, uint64_t configCycles);
+                        uint64_t totalCycles, uint64_t configCycles,
+                        const std::vector<sim::PerfSnapshot> *nodePerf = nullptr);
 
 } // namespace loom
 

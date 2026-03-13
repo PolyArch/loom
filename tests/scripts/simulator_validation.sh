@@ -357,6 +357,97 @@ test_sim_port_reporting() {
   fi
 }
 
+# ---- Test 14: Per-node configWrites are non-zero ----
+test_config_writes_nonzero() {
+  local out="${WORK_DIR}/configwrites"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000
+
+  [[ -s "${out}.stat" ]] || { echo "stat file missing"; return 1; }
+
+  python3 -c "
+import json, sys
+d = json.load(open('${out}.stat'))
+nz = sum(1 for np in d['nodePerf'] if np.get('configWrites', 0) > 0)
+assert nz > 0, f'no nodes with configWrites>0 (total nodes: {len(d[\"nodePerf\"])})'
+tcw = d['summary']['totalConfigWrites']
+assert tcw > 0, f'totalConfigWrites is zero'
+cor = d['summary']['configOverheadRatio']
+assert cor > 0, f'configOverheadRatio is zero'
+" || return 1
+}
+
+# ---- Test 15: Deterministic outputs across runs ----
+test_deterministic_outputs() {
+  local out1="${WORK_DIR}/detout1"
+  local out2="${WORK_DIR}/detout2"
+
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out1}" \
+    --mapper-budget 10 --mapper-seed 42 --simulate --sim-max-cycles 10000
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out2}" \
+    --mapper-budget 10 --mapper-seed 42 --simulate --sim-max-cycles 10000
+
+  # Stat files should report identical cycle and output counts.
+  python3 -c "
+import json, sys
+d1 = json.load(open('${out1}.stat'))
+d2 = json.load(open('${out2}.stat'))
+assert d1['totalCycles'] == d2['totalCycles'], 'totalCycles differ'
+s1, s2 = d1['summary'], d2['summary']
+assert s1['totalTokensOut'] == s2['totalTokensOut'], 'totalTokensOut differ'
+assert s1['totalConfigWrites'] == s2['totalConfigWrites'], 'totalConfigWrites differ'
+" || return 1
+}
+
+# ---- Test 16: Oracle output tokens present ----
+test_oracle_output_tokens() {
+  local out="${WORK_DIR}/oracle_tokens"
+  local log="${WORK_DIR}/oracle_tokens_output.log"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || true
+
+  # The oracle line should report at least some output tokens for an active design.
+  if ! grep -qE 'oracle: (PASS|FAIL) \([0-9]+ output tokens' "${log}"; then
+    echo "oracle output token count missing"
+    cat "${log}"
+    return 1
+  fi
+}
+
+# ---- Test 17: Trace mode off produces no trace file ----
+test_trace_mode_off() {
+  local out="${WORK_DIR}/traceoff"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 \
+    --sim-trace-mode off 2>&1 || true
+
+  # Stat file should still be produced.
+  [[ -s "${out}.stat" ]] || { echo "stat file should exist even in off mode"; return 1; }
+
+  # Trace file should NOT exist in Off mode.
+  if [[ -f "${out}.trace" ]]; then
+    echo "trace file should not exist in off mode"
+    return 1
+  fi
+}
+
+# ---- Test 18: Trace mode summary produces stat only ----
+test_trace_mode_summary() {
+  local out="${WORK_DIR}/tracesummary"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 \
+    --sim-trace-mode summary 2>&1 || true
+
+  # Stat file should exist.
+  [[ -s "${out}.stat" ]] || { echo "stat file should exist in summary mode"; return 1; }
+
+  # Trace file should NOT exist in Summary mode.
+  if [[ -f "${out}.trace" ]]; then
+    echo "trace file should not exist in summary mode"
+    return 1
+  fi
+}
+
 echo "Simulator Validation Tests"
 echo "=========================="
 run_test "basic-artifacts" test_basic_artifacts
@@ -372,6 +463,11 @@ run_test "oracle-verdict-present" test_oracle_verdict_present
 run_test "corrupted-adg-reject" test_corrupted_adg_reject
 run_test "stat-complete-artifact-set" test_stat_complete_artifact_set
 run_test "sim-port-reporting" test_sim_port_reporting
+run_test "config-writes-nonzero" test_config_writes_nonzero
+run_test "deterministic-outputs" test_deterministic_outputs
+run_test "oracle-output-tokens" test_oracle_output_tokens
+run_test "trace-mode-off" test_trace_mode_off
+run_test "trace-mode-summary" test_trace_mode_summary
 
 echo ""
 echo "Results: ${pass}/${total} passed, ${fail} failed"

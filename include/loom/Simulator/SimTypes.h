@@ -88,6 +88,7 @@ struct TraceEvent {
 //===----------------------------------------------------------------------===//
 
 struct PerfSnapshot {
+  uint32_t nodeIndex = 0; // hwNodeId from the ADG graph.
   uint64_t activeCycles = 0;
   uint64_t stallCyclesIn = 0;
   uint64_t stallCyclesOut = 0;
