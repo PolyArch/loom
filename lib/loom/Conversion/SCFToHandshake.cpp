@@ -385,6 +385,20 @@ static void rewriteHostCalls(ModuleOp module,
       call.erase();
     }
   });
+
+  // Remove original (non-ESI) handshake functions that have been replaced
+  // by ESI wrappers. After rewriting, the originals are dead code.
+  llvm::SmallVector<circt::handshake::FuncOp, 4> toErase;
+  module.walk([&](circt::handshake::FuncOp func) {
+    StringRef name = func.getName();
+    if (name.ends_with("_esi"))
+      return;
+    std::string esiName = (name + "_esi").str();
+    if (module.lookupSymbol<circt::handshake::FuncOp>(esiName))
+      toErase.push_back(func);
+  });
+  for (auto func : toErase)
+    func.erase();
 }
 
 static void collectCallSites(ModuleOp module, StringRef callee,
