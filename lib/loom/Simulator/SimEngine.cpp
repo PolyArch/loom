@@ -487,13 +487,15 @@ SimResult SimEngine::run() {
   // Emit config write events and count total config writes.
   result.totalConfigWrites = configWords;
   if (config_.traceMode != TraceMode::Off) {
-    if (kindAllowed(EV_CONFIG_WRITE) && nodeAllowed(0) && coreAllowed(0)) {
+    if (kindAllowed(EV_CONFIG_WRITE) && nodeAllowed(0) &&
+        coreAllowed(config_.coreId)) {
       for (uint64_t w = 0; w < configWords; ++w) {
         uint64_t writeCycle = w / config_.configWordsPerCycle;
         TraceEvent ev;
         ev.cycle = writeCycle;
         ev.epochId = epochId_;
         ev.invocationId = invocationId_;
+        ev.coreId = config_.coreId;
         ev.eventKind = EV_CONFIG_WRITE;
         ev.arg0 = static_cast<uint32_t>(w);
         allTraceEvents_.push_back(ev);
@@ -503,11 +505,13 @@ SimResult SimEngine::run() {
 
   // Emit invocation start (subject to kind, node, and core filters).
   if (config_.traceMode == TraceMode::Full) {
-    if (kindAllowed(EV_INVOCATION_START) && nodeAllowed(0) && coreAllowed(0)) {
+    if (kindAllowed(EV_INVOCATION_START) && nodeAllowed(0) &&
+        coreAllowed(config_.coreId)) {
       TraceEvent ev;
       ev.cycle = currentCycle_;
       ev.epochId = epochId_;
       ev.invocationId = invocationId_;
+      ev.coreId = config_.coreId;
       ev.eventKind = EV_INVOCATION_START;
       allTraceEvents_.push_back(ev);
     }
@@ -527,11 +531,13 @@ SimResult SimEngine::run() {
 
   // Emit invocation done (subject to kind, node, and core filters).
   if (config_.traceMode == TraceMode::Full) {
-    if (kindAllowed(EV_INVOCATION_DONE) && nodeAllowed(0) && coreAllowed(0)) {
+    if (kindAllowed(EV_INVOCATION_DONE) && nodeAllowed(0) &&
+        coreAllowed(config_.coreId)) {
       TraceEvent ev;
       ev.cycle = currentCycle_;
       ev.epochId = epochId_;
       ev.invocationId = invocationId_;
+      ev.coreId = config_.coreId;
       ev.eventKind = EV_INVOCATION_DONE;
       allTraceEvents_.push_back(ev);
     }
@@ -700,10 +706,11 @@ void SimEngine::emitTraceEvents() {
   for (auto &mod : modules_)
     mod->collectTraceEvents(cycleEvents_, currentCycle_);
 
-  // Tag events with session info.
+  // Tag events with session info and core ID.
   for (auto &ev : cycleEvents_) {
     ev.epochId = epochId_;
     ev.invocationId = invocationId_;
+    ev.coreId = config_.coreId;
   }
 
   // Apply trace filters: remove events not matching any active whitelist.

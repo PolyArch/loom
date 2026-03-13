@@ -902,33 +902,9 @@ void writeTraceDataJSON(llvm::raw_ostream &os,
       }
     }
 
-    // Try to build per-window stats from trace events.
-    struct WinStat {
-      uint64_t fire = 0, stallIn = 0, stallOut = 0;
-    };
-    std::map<unsigned, std::map<uint32_t, WinStat>> windowStats;
-    bool hasEventData = false;
-    for (const auto &ev : events) {
-      if (ev.cycle < configCycles)
-        continue;
-      unsigned win = static_cast<unsigned>(
-          (ev.cycle - configCycles) / windowSize);
-      if (win >= numWindows)
-        win = numWindows - 1;
-      auto &ws = windowStats[win][ev.hwNodeId];
-      if (ev.eventKind == sim::EV_NODE_FIRE) {
-        ws.fire++;
-        hasEventData = true;
-      } else if (ev.eventKind == sim::EV_NODE_STALL_IN) {
-        ws.stallIn++;
-        hasEventData = true;
-      } else if (ev.eventKind == sim::EV_NODE_STALL_OUT) {
-        ws.stallOut++;
-        hasEventData = true;
-      }
-      statNodes.insert(ev.hwNodeId);
-    }
-
+    // statTimeline is always derived from PerfSnapshot aggregate stats,
+    // independent of trace mode and trace-event filtering. This ensures
+    // consistent stat playback across Full/Summary/Off modes.
     if (!statNodes.empty()) {
       json.attributeBegin("statTimeline");
       json.objectBegin();
@@ -947,31 +923,11 @@ void writeTraceDataJSON(llvm::raw_ostream &os,
         json.attributeBegin(std::to_string(nid));
         json.arrayBegin();
         for (unsigned w = 0; w < numWindows; ++w) {
-          if (hasEventData) {
-            // Fine-grained: per-window utilization from trace events.
-            auto it = windowStats.find(w);
-            if (it != windowStats.end()) {
-              auto nit = it->second.find(nid);
-              if (nit != it->second.end()) {
-                auto &s = nit->second;
-                uint64_t total = s.fire + s.stallIn + s.stallOut;
-                double util = total > 0
-                                  ? static_cast<double>(s.fire) / total
-                                  : 0.0;
-                json.value(util);
-              } else {
-                json.value(0.0);
-              }
-            } else {
-              json.value(0.0);
-            }
-          } else {
-            // No per-cycle events: use aggregate PerfSnapshot utilization.
-            // This gives a constant value across all windows, matching
-            // the overall node utilization from nodePerf.
-            auto pit = perfUtil.find(nid);
-            json.value(pit != perfUtil.end() ? pit->second : 0.0);
-          }
+          // Use aggregate PerfSnapshot utilization for all windows.
+          // This provides a constant utilization value across the timeline,
+          // matching the overall node utilization from nodePerf.
+          auto pit = perfUtil.find(nid);
+          json.value(pit != perfUtil.end() ? pit->second : 0.0);
         }
         json.arrayEnd();
         json.attributeEnd();

@@ -231,8 +231,11 @@ test_sim_low_max_cycles() {
   local out="${WORK_DIR}/timeout"
   # Use 5 max-cycles. Config overhead may push total beyond this.
   # The simulation should still produce valid output artifacts.
+  local rc=0
   "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
-    --mapper-budget 10 --simulate --sim-max-cycles 5 || true
+    --mapper-budget 10 --simulate --sim-max-cycles 5 || rc=$?
+  # Exit 1 (timeout) is expected; crash (>128) is not.
+  [[ $rc -le 128 ]] || { echo "loom crashed (exit=$rc)"; return 1; }
 
   # Stat file should exist even when cycle budget is tight.
   [[ -s "${out}.stat" ]] || { echo "stat file missing"; return 1; }
@@ -274,8 +277,10 @@ test_viz_heatmap_data() {
 test_oracle_verdict_present() {
   local out="${WORK_DIR}/oracle_verdict"
   local log="${WORK_DIR}/oracle_verdict_output.log"
+  local rc=0
   "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
-    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || true
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || rc=$?
+  [[ $rc -le 128 ]] || { echo "loom crashed (exit=$rc)"; return 1; }
 
   # Oracle verdict line should always be printed (PASS or FAIL).
   if ! grep -qE 'oracle: (PASS|FAIL)' "${log}"; then
@@ -340,8 +345,10 @@ assert len(d['nodePerf']) > 0, 'nodePerf is empty'
 test_sim_port_reporting() {
   local out="${WORK_DIR}/port_report"
   local log="${WORK_DIR}/port_report_output.log"
+  local rc=0
   "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
-    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || true
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || rc=$?
+  [[ $rc -le 128 ]] || { echo "loom crashed (exit=$rc)"; return 1; }
 
   # Input port count and token count should be reported.
   if ! grep -qE 'inputs: [0-9]+ ports x [0-9]+ tokens' "${log}"; then
@@ -403,8 +410,10 @@ assert s1['totalConfigWrites'] == s2['totalConfigWrites'], 'totalConfigWrites di
 test_oracle_output_tokens() {
   local out="${WORK_DIR}/oracle_tokens"
   local log="${WORK_DIR}/oracle_tokens_output.log"
+  local rc=0
   "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
-    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || true
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || rc=$?
+  [[ $rc -le 128 ]] || { echo "loom crashed (exit=$rc)"; return 1; }
 
   # The oracle line should report at least some output tokens for an active design.
   if ! grep -qE 'oracle: (PASS|FAIL) \([0-9]+ output tokens' "${log}"; then
@@ -417,9 +426,11 @@ test_oracle_output_tokens() {
 # ---- Test 17: Trace mode off produces no trace file ----
 test_trace_mode_off() {
   local out="${WORK_DIR}/traceoff"
+  local rc=0
   "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
     --mapper-budget 10 --simulate --sim-max-cycles 10000 \
-    --sim-trace-mode off 2>&1 || true
+    --sim-trace-mode off 2>&1 || rc=$?
+  [[ $rc -le 128 ]] || { echo "loom crashed (exit=$rc)"; return 1; }
 
   # Stat file should still be produced.
   [[ -s "${out}.stat" ]] || { echo "stat file should exist even in off mode"; return 1; }
@@ -434,9 +445,11 @@ test_trace_mode_off() {
 # ---- Test 18: Trace mode summary produces stat only ----
 test_trace_mode_summary() {
   local out="${WORK_DIR}/tracesummary"
+  local rc=0
   "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
     --mapper-budget 10 --simulate --sim-max-cycles 10000 \
-    --sim-trace-mode summary 2>&1 || true
+    --sim-trace-mode summary 2>&1 || rc=$?
+  [[ $rc -le 128 ]] || { echo "loom crashed (exit=$rc)"; return 1; }
 
   # Stat file should exist.
   [[ -s "${out}.stat" ]] || { echo "stat file should exist in summary mode"; return 1; }
@@ -472,9 +485,11 @@ assert has_nonseq, 'nodeIndex values are all sequential (0,1,2...) not hardware 
 # ---- Test 20: Summary mode viz has no populated cycleEvents ----
 test_summary_viz_no_events() {
   local out="${WORK_DIR}/summary_viz"
+  local rc=0
   "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
     --mapper-budget 10 --simulate --sim-max-cycles 10000 \
-    --sim-trace-mode summary 2>&1 || true
+    --sim-trace-mode summary 2>&1 || rc=$?
+  [[ $rc -le 128 ]] || { echo "loom crashed (exit=$rc)"; return 1; }
 
   [[ -f "${out}.viz.html" ]] || { echo "viz.html missing"; return 1; }
 
@@ -509,9 +524,11 @@ assert len(util) > 0, 'nodeUtilization should be present'
 # ---- Test 21: Off mode viz still has stat overlay ----
 test_off_viz_stat_overlay() {
   local out="${WORK_DIR}/off_viz"
+  local rc=0
   "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
     --mapper-budget 10 --simulate --sim-max-cycles 10000 \
-    --sim-trace-mode off 2>&1 || true
+    --sim-trace-mode off 2>&1 || rc=$?
+  [[ $rc -le 128 ]] || { echo "loom crashed (exit=$rc)"; return 1; }
 
   [[ -f "${out}.viz.html" ]] || { echo "viz.html missing"; return 1; }
 

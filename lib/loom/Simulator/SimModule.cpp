@@ -341,7 +341,10 @@ std::unique_ptr<SimModule> createSimModule(
     unsigned tagWidth = static_cast<unsigned>(getIntAttr(intAttrs, "tag_width", 4));
     unsigned addrWidth = static_cast<unsigned>(getIntAttr(intAttrs, "addr_width", 32));
     unsigned numRegion = static_cast<unsigned>(getIntAttr(intAttrs, "num_region", 1));
-    uint32_t extLatency = static_cast<uint32_t>(getIntAttr(intAttrs, "ext_latency", isExternal ? 10 : 0));
+    // Use ext_latency from node attributes if present; otherwise 0.
+    // Zero-latency simplifies handshake: load response is combinational,
+    // avoiding pipeline-induced deadlocks in the dataflow graph.
+    uint32_t extLatency = static_cast<uint32_t>(getIntAttr(intAttrs, "ext_latency", 0));
     mod = std::make_unique<SimMemory>(isExternal, ldCount, stCount, dataWidth,
                                        tagWidth, addrWidth, numRegion,
                                        extLatency);

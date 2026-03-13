@@ -82,8 +82,10 @@ private:
 
   /// Port layout per spec-fabric-mem.md (multi-port memory):
   /// For ldCount=L, stCount=S:
-  ///   Inputs:  [ld_addr_0..L-1, st_addr_0..S-1, st_data_0..S-1]
+  ///   Inputs:  [memref?] [ld_addr_0..L-1, st_addr_0..S-1, st_data_0..S-1]
   ///   Outputs: [ld_data_0..L-1, ld_done_0..L-1, st_done_0..S-1]
+  /// extmemory has a memref input at index 0; fabric.memory does not.
+  unsigned portOffset_ = 0;
 
   /// Read from memory (on-chip or external).
   uint64_t memRead(uint64_t addr) const;

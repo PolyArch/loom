@@ -156,6 +156,8 @@ struct SimConfig {
   TraceMode traceMode = TraceMode::Full;
   /// Maximum cycles before timeout (0 = no limit).
   uint64_t maxCycles = 1000000;
+  /// Core ID assigned to this simulation engine instance.
+  uint16_t coreId = 0;
 
   /// Trace filters (empty = include all).
   /// When non-empty, only events matching the filter are collected.

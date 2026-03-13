@@ -17,7 +17,8 @@ SimMemory::SimMemory(bool isExternal, unsigned ldCount, unsigned stCount,
                      unsigned numRegion, uint32_t extLatency)
     : isExternal_(isExternal), ldCount_(ldCount), stCount_(stCount),
       dataWidth_(dataWidth), tagWidth_(tagWidth), addrWidth_(addrWidth),
-      numRegion_(numRegion), extLatency_(extLatency) {
+      numRegion_(numRegion), extLatency_(extLatency),
+      portOffset_(isExternal ? 1 : 0) {
   if (!isExternal_)
     onChipMem_.resize(kDefaultOnChipSize, 0);
   addrOffsetTable_.resize(numRegion_);
@@ -155,12 +156,20 @@ void SimMemory::evaluateCombinational() {
       ldCount_ > stCount_ ? ldCount_ : stCount_);
 
   // Port layout per spec-fabric-mem.md:
-  //   Inputs:  [ld_addr_0..L-1, st_addr_0..S-1, st_data_0..S-1]
+  //   Inputs:  [memref?] [ld_addr_0..L-1, st_addr_0..S-1, st_data_0..S-1]
   //   Outputs: [ld_data_0..L-1, ld_done_0..L-1, st_done_0..S-1]
+  // extmemory has memref at input 0; portOffset_ skips it.
+
+  // For extmemory, accept the memref reference input unconditionally.
+  if (portOffset_ > 0 && !inputs.empty())
+    inputs[0]->ready = true;
 
   // Handle loads.
-  for (unsigned l = 0; l < ldCount_ && l < inputs.size(); ++l) {
-    auto *ldAddr = inputs[l];
+  for (unsigned l = 0; l < ldCount_; ++l) {
+    unsigned ldAddrIdx = portOffset_ + l;
+    if (ldAddrIdx >= inputs.size())
+      continue;
+    auto *ldAddr = inputs[ldAddrIdx];
     unsigned ldDataIdx = l;
     unsigned ldDoneIdx = ldCount_ + l;
 
@@ -257,8 +266,8 @@ void SimMemory::evaluateCombinational() {
   // spec-fabric-mem.md store-queue pairing semantics. Each input is accepted
   // on its own; pairing happens in advanceClock via storePairQueues_.
   for (unsigned s = 0; s < stCount_; ++s) {
-    unsigned stAddrIdx = ldCount_ + s;
-    unsigned stDataIdx = ldCount_ + stCount_ + s;
+    unsigned stAddrIdx = portOffset_ + ldCount_ + s;
+    unsigned stDataIdx = portOffset_ + ldCount_ + stCount_ + s;
     unsigned stDoneIdx = ldCount_ * 2 + s;
 
     if (stAddrIdx >= inputs.size() || stDataIdx >= inputs.size())
@@ -317,11 +326,14 @@ void SimMemory::advanceClock() {
 
   // Read-before-write: issue new delayed loads BEFORE processing stores,
   // so loads read the value at the beginning of the cycle per spec.
-  for (unsigned l = 0; l < ldCount_ && l < inputs.size(); ++l) {
-    if (inputs[l]->transferred() && extLatency_ > 0) {
+  for (unsigned l = 0; l < ldCount_; ++l) {
+    unsigned ldAddrIdx = portOffset_ + l;
+    if (ldAddrIdx >= inputs.size())
+      continue;
+    if (inputs[ldAddrIdx]->transferred() && extLatency_ > 0) {
       bool matched = false;
       uint64_t resolvedAddr =
-          resolveAddr(inputs[l]->data, inputs[l]->tag, matched);
+          resolveAddr(inputs[ldAddrIdx]->data, inputs[ldAddrIdx]->tag, matched);
       if (!matched && tagWidth_ > 0) {
         uint16_t noMatchErr = isExternal_ ? RtError::RT_EXTMEMORY_NO_MATCH
                                           : RtError::RT_MEMORY_NO_MATCH;
@@ -329,7 +341,7 @@ void SimMemory::advanceClock() {
       } else {
         PendingLoad pl;
         pl.data = memRead(resolvedAddr);
-        pl.tag = inputs[l]->tag;
+        pl.tag = inputs[ldAddrIdx]->tag;
         pl.readyCycle = currentSimCycle_ + extLatency_;
         pl.laneIdx = l;
         pendingLoads_.push_back(pl);
@@ -365,8 +377,8 @@ void SimMemory::advanceClock() {
   // Process stores: pair staddr/stdata per tag in FIFO order, then write.
   // This comes AFTER loads to preserve read-before-write semantics.
   for (unsigned s = 0; s < stCount_; ++s) {
-    unsigned stAddrIdx = ldCount_ + s;
-    unsigned stDataIdx = ldCount_ + stCount_ + s;
+    unsigned stAddrIdx = portOffset_ + ldCount_ + s;
+    unsigned stDataIdx = portOffset_ + ldCount_ + stCount_ + s;
 
     if (stAddrIdx >= inputs.size() || stDataIdx >= inputs.size())
       continue;

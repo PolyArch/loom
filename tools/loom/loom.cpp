@@ -1499,9 +1499,10 @@ int main(int argc, char **argv) {
         }
 
         // Sub-test 9: Config-during-run rejection.
-        // Test that loadConfig is rejected from Configured state (which is
-        // the state between loadConfig and invoke completion) AND verify that
-        // after invoke completes (Verified state), loadConfig is accepted.
+        // Test that loadConfig is rejected from Configured state (after
+        // loadConfig but before invoke) and from Draining state (after
+        // invoke but before compare). Verify that loadConfig IS accepted
+        // from Verified state (after compare, for reconfiguration).
         {
           loom::sim::EventSimSession s3(simConfig);
           std::string err = s3.connect();
@@ -1514,19 +1515,24 @@ int main(int argc, char **argv) {
             // Now in Configured state. loadConfig should be rejected.
             std::string rejectErr = s3.loadConfig(configBlob, simSlices);
             ok = ok && !rejectErr.empty();
-            // Complete an invoke cycle to reach Verified.
+            // Complete an invoke cycle to reach Draining state.
             auto inputs = makeInputs();
             for (unsigned p = 0; p < nIn; ++p)
               s3.setInput(p, inputs[p]);
             auto [r, iErr] = s3.invoke();
             ok = ok && iErr.empty();
-            // After invoke, loadConfig should be accepted (Verified->Ready
-            // or the session allows reconfiguration from Verified).
+            // In Draining state. loadConfig should also be rejected.
+            std::string drainingRejectErr =
+                s3.loadConfig(configBlob, simSlices);
+            ok = ok && !drainingRejectErr.empty();
+            // Transition to Verified by calling compare with self-outputs.
+            std::vector<std::vector<uint64_t>> s3Outputs(nOut);
+            for (unsigned p = 0; p < nOut; ++p)
+              s3Outputs[p] = s3.getOutput(p);
+            auto cmpResult = s3.compare(s3Outputs);
+            // After compare, in Verified state. loadConfig should succeed.
             std::string reloadErr = s3.loadConfig(configBlob, simSlices);
-            // Reconfiguration attempt: if it succeeds, good. If rejected
-            // from Verified, that's also a valid session state machine
-            // behavior. The key requirement is the Configured rejection.
-            (void)reloadErr;
+            ok = ok && reloadErr.empty();
           }
           stReport("config-during-run-reject", ok, err.c_str());
         }
@@ -1595,7 +1601,10 @@ int main(int argc, char **argv) {
         return stFail > 0 ? 1 : 0;
       }
 
-      // Build deterministic test vectors for boundary input ports.
+      // Build boundary test vectors for simulation.
+      // The handshake IR represents the compiled application; boundary ports
+      // correspond to the app's input/output interface. These test vectors
+      // exercise the dataflow with deterministic patterns.
       unsigned numInputPorts = session.getNumInputPorts();
       unsigned numOutputPorts = session.getNumOutputPorts();
       const unsigned testVectorLen = 4;
@@ -1606,8 +1615,10 @@ int main(int argc, char **argv) {
           testInputs[p][t] = static_cast<uint64_t>(p * testVectorLen + t + 1);
       }
 
-      // CPU reference execution: interpret the handshake DFG on the host
-      // to compute expected outputs for the same test inputs.
+      // Host reference execution: interpret the handshake DFG directly
+      // to compute expected outputs for the same boundary inputs. This is
+      // the CPU oracle path - it executes the same compiled application
+      // logic that the hardware accelerator will execute, but in software.
       auto hostStart = std::chrono::steady_clock::now();
       auto cpuRef = loom::sim::cpuReferenceExecute(
           handshake_module.get(), testInputs);
@@ -1718,7 +1729,8 @@ int main(int argc, char **argv) {
       auto simTotalEnd = std::chrono::steady_clock::now();
 
       // Compute host timing breakdown.
-      // host_exec_time: CPU reference execution; accel_exec_time: simulator.
+      // host_exec_time: handshake IR interpretation (CPU oracle).
+      // accel_exec_time: cycle-accurate hardware simulation.
       loom::sim::HostTiming timing;
       timing.configSeconds =
           std::chrono::duration<double>(configEnd - configStart).count();
