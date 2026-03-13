@@ -198,3 +198,14 @@ html, body {
 .base-edge-overlay {
   opacity: 0.2 !important;
 }
+
+.active-routing-node {
+  opacity: 0.85;
+  stroke-width: 2px !important;
+  stroke: #444 !important;
+}
+
+.crossbar-line {
+  opacity: 0.75;
+  pointer-events: none;
+}
