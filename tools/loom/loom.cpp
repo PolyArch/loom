@@ -1358,6 +1358,27 @@ int main(int argc, char **argv) {
       }
       auto configEnd = std::chrono::steady_clock::now();
 
+      // Route completeness audit: check all ADG-edge-connected switch inputs
+      // have configured routes. This catches mapper routing gaps before they
+      // manifest as deadlocks during simulation.
+      auto auditResult = session.auditRoutes();
+      if (!auditResult.pass) {
+        llvm::outs() << "  route audit: FAIL ("
+                      << auditResult.diagnostics.size() << " issues)\n";
+        for (const auto &d : auditResult.diagnostics) {
+          llvm::outs() << "    [" << (d.level == loom::sim::AuditDiagnostic::Error
+                                          ? "ERROR"
+                                          : d.level == loom::sim::AuditDiagnostic::Warning
+                                                ? "WARN"
+                                                : "INFO")
+                        << "] " << d.moduleName
+                        << " (hwNode=" << d.hwNodeId << "): "
+                        << d.message << "\n";
+        }
+      } else {
+        llvm::outs() << "  route audit: PASS\n";
+      }
+
       // Session validation harness: exercise the EventSimSession state machine.
       if (parsed.sim_session_test) {
         unsigned stPass = 0, stFail = 0;

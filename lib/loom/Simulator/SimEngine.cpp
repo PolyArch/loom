@@ -128,11 +128,16 @@ bool SimEngine::buildFromGraph(const Graph &adg) {
       channels_.push_back(std::move(ch));
     }
 
-    fprintf(stderr, "[DBG-MOD] module=%zu hwNode=%u name=%s op=%s nIn=%u nOut=%u\n",
-            modules_.size(), mod->hwNodeId, nodeName.c_str(),
-            nodeOpName.c_str(), nIn, nOut);
     modules_.push_back(std::move(mod));
   }
+
+  // Build hwNodeId -> module index for O(1) lookup during edge wiring.
+  std::unordered_map<uint32_t, size_t> hwNodeToModIdx;
+  for (size_t m = 0; m < modules_.size(); ++m)
+    hwNodeToModIdx[modules_[m]->hwNodeId] = m;
+
+  // Initialize connected input tracking.
+  connectedInputMap_.resize(modules_.size());
 
   // Second pass: wire input channels via edges.
   for (size_t edgeIdx = 0; edgeIdx < adg.edges.size(); ++edgeIdx) {
@@ -162,18 +167,23 @@ bool SimEngine::buildFromGraph(const Graph &adg) {
     }
 
     // Find the module that owns this destination node.
-    for (auto &mod : modules_) {
-      if (mod->hwNodeId == dstPort->parentNode) {
-        // Find which input port index this is.
-        for (unsigned i = 0; i < dstNode->inputPorts.size(); ++i) {
-          if (dstNode->inputPorts[i] == edge->dstPort) {
-            // Ensure input vector is large enough.
-            if (mod->inputs.size() <= i)
-              mod->inputs.resize(i + 1, nullptr);
-            mod->inputs[i] = ch;
-            break;
-          }
-        }
+    auto modIt = hwNodeToModIdx.find(dstPort->parentNode);
+    if (modIt == hwNodeToModIdx.end())
+      continue;
+
+    size_t modIdx = modIt->second;
+    auto &mod = modules_[modIdx];
+
+    // Find which input port index this is.
+    for (unsigned i = 0; i < dstNode->inputPorts.size(); ++i) {
+      if (dstNode->inputPorts[i] == edge->dstPort) {
+        if (mod->inputs.size() <= i)
+          mod->inputs.resize(i + 1, nullptr);
+        mod->inputs[i] = ch;
+        // Track that this input was connected by a real ADG edge.
+        if (connectedInputMap_[modIdx].size() <= i)
+          connectedInputMap_[modIdx].resize(i + 1, false);
+        connectedInputMap_[modIdx][i] = true;
         break;
       }
     }
@@ -198,6 +208,26 @@ bool SimEngine::buildFromGraph(const Graph &adg) {
   computeTopologicalOrder();
 
   return true;
+}
+
+AuditResult SimEngine::auditRoutes() const {
+  AuditResult result;
+  result.pass = true;
+
+  for (size_t m = 0; m < modules_.size(); ++m) {
+    const auto &connMap =
+        (m < connectedInputMap_.size()) ? connectedInputMap_[m]
+                                         : std::vector<bool>{};
+    std::vector<AuditDiagnostic> modDiags;
+    modules_[m]->auditRoutes(connMap, modDiags);
+    for (auto &d : modDiags) {
+      if (d.level == AuditDiagnostic::Error)
+        result.pass = false;
+      result.diagnostics.push_back(std::move(d));
+    }
+  }
+
+  return result;
 }
 
 void SimEngine::computeTopologicalOrder() {
@@ -449,6 +479,7 @@ SimResult SimEngine::run() {
   // Validate config rate.
   if (config_.configWordsPerCycle == 0) {
     result.success = false;
+    result.termination = RunTermination::ContractError;
     result.errorMessage = "configWordsPerCycle must be > 0";
     return result;
   }
@@ -547,7 +578,6 @@ SimResult SimEngine::run() {
     }
   }
 
-  result.success = isComplete();
   result.totalCycles = currentCycle_;
   result.traceEvents = allTraceEvents_;
 
@@ -560,8 +590,28 @@ SimResult SimEngine::run() {
       result.nodePerf[i].configWrites = moduleConfigWrites_[i];
   }
 
-  if (!result.success)
-    result.errorMessage = "Simulation did not complete within cycle limit";
+  // Classify termination reason.
+  if (isComplete()) {
+    result.success = true;
+    result.termination = RunTermination::Completed;
+  } else {
+    result.success = false;
+    // Check for device errors on any module.
+    bool hasDeviceError = false;
+    for (auto &mod : modules_) {
+      if (mod->hasError()) {
+        hasDeviceError = true;
+        break;
+      }
+    }
+    if (hasDeviceError) {
+      result.termination = RunTermination::DeviceError;
+      result.errorMessage = "Simulation terminated: device error on one or more modules";
+    } else {
+      result.termination = RunTermination::Timeout;
+      result.errorMessage = "Simulation did not complete within cycle limit";
+    }
+  }
 
   return result;
 }
@@ -667,8 +717,6 @@ void SimEngine::advanceBoundaryState() {
       outputCollectors_[i].data.push_back(ch->data);
       if (ch->hasTag)
         outputCollectors_[i].tags.push_back(ch->tag);
-      fprintf(stderr, "[DBG-BOUT] port=%u data=%lu cycle=%lu\n",
-              i, ch->data, currentCycle_);
     }
   }
 }
@@ -681,25 +729,12 @@ bool SimEngine::isComplete() const {
   }
 
   // Check if any module still has pending tokens (output valid).
-  static uint64_t lastComplDbg = 0;
-  bool anyPending = false;
-  for (size_t m = 0; m < modules_.size(); ++m) {
-    for (size_t o = 0; o < modules_[m]->outputs.size(); ++o) {
-      if (modules_[m]->outputs[o]->valid) {
-        anyPending = true;
-        if (currentCycle_ - lastComplDbg > 5000) {
-          fprintf(stderr, "[DBG-COMPL] cycle=%lu pending: module=%zu "
-                  "hwNode=%u output=%zu data=%lu\n",
-                  currentCycle_, m, modules_[m]->hwNodeId,
-                  o, modules_[m]->outputs[o]->data);
-        }
-      }
+  for (auto &mod : modules_) {
+    for (auto *out : mod->outputs) {
+      if (out->valid)
+        return false;
     }
   }
-  if (anyPending && currentCycle_ - lastComplDbg > 5000)
-    lastComplDbg = currentCycle_;
-  if (anyPending)
-    return false;
 
   // Require at least one cycle of actual execution to avoid immediate
   // termination when no boundary inputs were provided. Most Loom apps

@@ -32,6 +32,7 @@ namespace sim {
 /// Result of a simulation run.
 struct SimResult {
   bool success = false;
+  RunTermination termination = RunTermination::Timeout;
   uint64_t totalCycles = 0;
   uint64_t configCycles = 0;
   uint64_t totalConfigWrites = 0;
@@ -82,6 +83,11 @@ public:
 
   /// Run the simulation until completion or timeout.
   SimResult run();
+
+  /// Audit route completeness: check that every ADG-edge-connected switch
+  /// input has a configured route. Returns pass/fail with diagnostics.
+  /// Must be called after buildFromGraph() and loadConfig().
+  AuditResult auditRoutes() const;
 
   /// Reset the engine for a new invocation (preserves configuration).
   void resetExecution();
@@ -169,6 +175,10 @@ private:
 
   /// Whether a combinational loop was detected (Kahn's didn't visit all).
   bool hasCombLoop_ = false;
+
+  /// Per-module: which input ports were wired by an ADG edge (not dummy).
+  /// connectedInputMap_[moduleIndex][inputPortIndex] = true if connected.
+  std::vector<std::vector<bool>> connectedInputMap_;
 
   /// Compute topological order of combinational modules.
   void computeTopologicalOrder();

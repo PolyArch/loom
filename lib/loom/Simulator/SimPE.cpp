@@ -806,23 +806,6 @@ void SimPE::evaluateStream() {
     uint64_t step = inputs[1]->data;
     uint64_t bound = inputs[2]->data;
 
-    // DEBUG: print stream initial phase values (only first call per bound)
-    static uint64_t lastDbgBound = ~0ULL;
-    static unsigned dbgCount = 0;
-    if (bound != lastDbgBound) {
-      fprintf(stderr, "[DBG-STREAM] hwNode=%u initial: start=%lu step=%lu "
-              "bound=%lu contCondSel=0x%02x outIdx.ready=%d outCont.ready=%d\n",
-              hwNodeId, start, step, bound, contCondSel_,
-              outIdx->ready, outCont->ready);
-      lastDbgBound = bound;
-      dbgCount = 0;
-    } else if (dbgCount < 3) {
-      fprintf(stderr, "[DBG-STREAM] hwNode=%u initial(repeat): "
-              "outIdx.ready=%d outCont.ready=%d\n",
-              hwNodeId, outIdx->ready, outCont->ready);
-      dbgCount++;
-    }
-
     // Per spec-dataflow.md: step must be nonzero.
     if (step == 0) {
       latchError(RtError::RT_DATAFLOW_STREAM_ZERO_STEP);
@@ -860,27 +843,6 @@ void SimPE::evaluateStream() {
     outCont->valid = true;
     outCont->data = willContinue ? 1 : 0;
     driveOutputTag(outCont, -1);
-
-    // DEBUG: report block phase when stuck (output not ready)
-    static uint64_t blockDbgCount = 0;
-    static uint64_t lastBoundDbg = ~0ULL;
-    if (streamBoundReg_ != lastBoundDbg) {
-      fprintf(stderr, "[DBG-STREAM] hwNode=%u block: nextIdx=%lu bound=%lu "
-              "cont=%d outIdx.r=%d outCont.r=%d\n",
-              hwNodeId, streamNextIdx_, streamBoundReg_,
-              willContinue ? 1 : 0, outIdx->ready, outCont->ready);
-      lastBoundDbg = streamBoundReg_;
-      blockDbgCount = 0;
-    }
-    if (!outIdx->ready || !outCont->ready) {
-      if (blockDbgCount < 5) {
-        fprintf(stderr, "[DBG-STREAM] hwNode=%u block STUCK: nextIdx=%lu "
-                "bound=%lu cont=%d outIdx.r=%d outCont.r=%d\n",
-                hwNodeId, streamNextIdx_, streamBoundReg_,
-                willContinue ? 1 : 0, outIdx->ready, outCont->ready);
-        blockDbgCount++;
-      }
-    }
 
     // No inputs consumed in block phase.
     for (auto *in : inputs)
@@ -1112,9 +1074,6 @@ void SimPE::advanceClock() {
         if (willContinue) {
           streamNextIdx_ = computeNext(streamNextIdx_, streamStepReg_);
         } else {
-          fprintf(stderr, "[DBG-STREAM] hwNode=%u block->initial: "
-                  "nextIdx=%lu bound=%lu\n",
-                  hwNodeId, streamNextIdx_, streamBoundReg_);
           streamInitialPhase_ = true;
         }
       }

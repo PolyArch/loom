@@ -161,5 +161,38 @@ void SimSwitch::collectTraceEvents(std::vector<TraceEvent> &events,
   }
 }
 
+void SimSwitch::auditRoutes(const std::vector<bool> &connectedInputs,
+                            std::vector<AuditDiagnostic> &diags) const {
+  unsigned unroutedCount = 0;
+  unsigned routedCount = 0;
+
+  for (unsigned i = 0; i < numInputs_ && i < connectedInputs.size(); ++i) {
+    if (!connectedInputs[i])
+      continue; // Not connected by an ADG edge -- skip.
+    if (i < inputTargets_.size() && !inputTargets_[i].empty()) {
+      ++routedCount;
+      continue;
+    }
+    ++unroutedCount;
+  }
+
+  // Report a summary diagnostic if any connected inputs lack routes.
+  // Physical mesh edges create many connections that the mapper may not use
+  // for a given mapping, so this is a warning rather than an error. The
+  // truly problematic case (DFG-mapped edge with no route) requires
+  // mapper-level audit info which is not available at the simulator level.
+  if (unroutedCount > 0) {
+    AuditDiagnostic d;
+    d.level = AuditDiagnostic::Warning;
+    d.hwNodeId = hwNodeId;
+    d.moduleName = name;
+    d.message = std::to_string(unroutedCount) +
+                " of " + std::to_string(unroutedCount + routedCount) +
+                " connected input(s) have no configured route. Routed: " +
+                std::to_string(routedCount) + ".";
+    diags.push_back(std::move(d));
+  }
+}
+
 } // namespace sim
 } // namespace loom

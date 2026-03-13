@@ -142,6 +142,34 @@ enum class TraceMode : uint8_t {
 };
 
 //===----------------------------------------------------------------------===//
+// Run termination classification
+//===----------------------------------------------------------------------===//
+
+enum class RunTermination : uint8_t {
+  Completed = 0,    // All inputs consumed, all outputs drained.
+  Timeout = 1,      // Exceeded maxCycles without completing.
+  DeviceError = 2,  // A module latched a runtime error (RT_* code).
+  ContractError = 3 // Structural violation (e.g. unrouted input, missing config).
+};
+
+//===----------------------------------------------------------------------===//
+// Route audit diagnostic
+//===----------------------------------------------------------------------===//
+
+struct AuditDiagnostic {
+  enum Level { Info, Warning, Error };
+  Level level = Error;
+  uint32_t hwNodeId = 0;
+  std::string moduleName;
+  std::string message;
+};
+
+struct AuditResult {
+  bool pass = true;
+  std::vector<AuditDiagnostic> diagnostics;
+};
+
+//===----------------------------------------------------------------------===//
 // Simulation configuration
 //===----------------------------------------------------------------------===//
 

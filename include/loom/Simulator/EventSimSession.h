@@ -127,6 +127,9 @@ public:
   /// Get the number of boundary output ports (valid after buildFromGraph).
   unsigned getNumOutputPorts() const;
 
+  /// Audit route completeness (valid after loadConfig).
+  AuditResult auditRoutes() const;
+
 private:
   mutable std::mutex mu_;
   SessionState state_ = SessionState::Created;

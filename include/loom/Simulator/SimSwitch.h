@@ -30,6 +30,8 @@ public:
   void collectTraceEvents(std::vector<TraceEvent> &events,
                           uint64_t cycle) override;
   PerfSnapshot getPerfSnapshot() const override { return perf_; }
+  void auditRoutes(const std::vector<bool> &connectedInputs,
+                   std::vector<AuditDiagnostic> &diags) const override;
 
 private:
   unsigned numInputs_;

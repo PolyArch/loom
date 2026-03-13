@@ -61,6 +61,15 @@ public:
   virtual void collectTraceEvents(std::vector<TraceEvent> &events,
                                   uint64_t cycle) = 0;
 
+  /// Audit route configuration. Returns diagnostics for unrouted or
+  /// misconfigured ports. connectedInputs[i] is true if input port i was
+  /// wired by an ADG edge (not a dummy channel).
+  virtual void auditRoutes(const std::vector<bool> &connectedInputs,
+                           std::vector<AuditDiagnostic> &diags) const {
+    (void)connectedInputs;
+    (void)diags;
+  }
+
   /// Get current performance counters.
   virtual PerfSnapshot getPerfSnapshot() const = 0;
 
@@ -104,6 +113,12 @@ public:
       pendingErrorCode_ = code;
     }
   }
+
+  /// Returns true if a sticky error is latched.
+  bool hasError() const { return errorValid_; }
+
+  /// Returns the sticky error code (RtError::OK if none).
+  uint16_t getErrorCode() const { return errorCode_; }
 
   /// Finalize pending error into sticky state. Called once per cycle
   /// after all combinational evaluation is complete.

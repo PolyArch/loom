@@ -366,5 +366,19 @@ unsigned EventSimSession::getNumOutputPorts() const {
   return engine_ ? engine_->getNumOutputPorts() : 0;
 }
 
+AuditResult EventSimSession::auditRoutes() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (!engine_) {
+    AuditResult r;
+    r.pass = false;
+    AuditDiagnostic d;
+    d.level = AuditDiagnostic::Error;
+    d.message = "no engine built";
+    r.diagnostics.push_back(d);
+    return r;
+  }
+  return engine_->auditRoutes();
+}
+
 } // namespace sim
 } // namespace loom
