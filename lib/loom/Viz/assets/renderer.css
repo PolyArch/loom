@@ -158,8 +158,23 @@ html, body {
 
 /* Highlight classes (per spec-viz-gui.md) */
 .node-highlight { stroke: #ff6600 !important; stroke-width: 3px !important; }
-.cross-highlight { stroke: #0066ff !important; stroke-width: 3px !important; stroke-dasharray: 5,3 !important; }
-.route-trace { stroke: #ff3300 !important; stroke-width: 4px !important; }
+
+@keyframes cross-blink {
+  0%, 100% { stroke: #ff4400; stroke-width: 5px; opacity: 1; }
+  50% { stroke: #ffaa00; stroke-width: 3px; opacity: 0.5; }
+}
+.cross-highlight {
+  animation: cross-blink 0.8s ease-in-out infinite !important;
+  stroke-dasharray: none !important;
+}
+
+@keyframes route-blink {
+  0%, 100% { stroke: #ff3300; stroke-width: 5px; opacity: 1; }
+  50% { stroke: #ff9900; stroke-width: 3px; opacity: 0.4; }
+}
+.route-trace {
+  animation: route-blink 0.8s ease-in-out infinite !important;
+}
 /* ADG node type styles */
 .adg-node { cursor: pointer; transition: opacity 0.15s; }
 .adg-node text { font-size: 10px; pointer-events: none; }
