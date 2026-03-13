@@ -108,11 +108,44 @@ private:
   /// Invariant stored value (latched from %a in initial stage).
   uint64_t invariantStoredValue_ = 0;
 
-  /// Gate: true if the first element hasn't been processed yet.
-  bool gateFirstElement_ = true;
+  /// Carry/invariant: true when initial value has been latched but not yet output.
+  bool initLatched_ = false;
+  uint64_t initLatchedValue_ = 0;
 
-  /// Gate: buffered before_value from previous cycle (for the one-element shift).
-  uint64_t gateBufferedValue_ = 0;
+  /// Stream helpers (used by both evaluateCombinational and advanceClock).
+  bool streamEvalCont(int64_t idx, int64_t bound) const {
+    if (contCondSel_ & 0x01) return idx < bound;
+    if (contCondSel_ & 0x02) return idx <= bound;
+    if (contCondSel_ & 0x04) return idx > bound;
+    if (contCondSel_ & 0x08) return idx >= bound;
+    if (contCondSel_ & 0x10) return idx != bound;
+    return false;
+  }
+  uint64_t streamComputeNext(uint64_t idx, uint64_t step) const {
+    if (stepOp_ == "-=") return maskToWidth(idx - step);
+    if (stepOp_ == "*=") return maskToWidth(idx * step);
+    if (stepOp_ == "/=") return step != 0 ? maskToWidth(idx / step) : 0;
+    if (stepOp_ == "<<=") return maskToWidth(idx << (step & 63));
+    if (stepOp_ == ">>=") return maskToWidth(idx >> (step & 63));
+    return maskToWidth(idx + step);
+  }
+
+  /// Gate state machine (4 states, consume/produce never overlap):
+  ///   0 = INIT: consume first (value, cond) pair. No output.
+  ///   1 = HEAD: output after_value[0] from latch. No input.
+  ///   2 = WAIT: consume next (value, cond) pair. No output.
+  ///   3 = BLOCK: output latched (value, cond). No input.
+  ///             If latched cond=F: output only cond (tail cut).
+  unsigned gateState_ = 0;
+  uint64_t gateLatchedValue_ = 0;
+  bool gateLatchedCond_ = false;
+  /// Per-output acceptance for current logical step.
+  /// Once set, evaluateCombinational drives valid=false on that leg.
+  /// Cleared when PE advances state (all legs accepted).
+  bool gateOutAccepted_[2] = {false, false};
+
+  /// Stream per-output acceptance (same semantics as gate).
+  bool streamOutAccepted_[2] = {false, false};
 
   /// Sign-extend a value from dataWidth_ to 64 bits.
   int64_t signExt(uint64_t v) const;

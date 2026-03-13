@@ -29,9 +29,14 @@ void SimPE::reset() {
   perf_ = PerfSnapshot();
   // Reset dataflow state machines.
   dataflowInitialStage_ = true;
+  initLatched_ = false;
+  initLatchedValue_ = 0;
   invariantStoredValue_ = 0;
-  gateFirstElement_ = true;
-  gateBufferedValue_ = 0;
+  gateState_ = 0;
+  gateLatchedValue_ = 0;
+  gateLatchedCond_ = false;
+  gateOutAccepted_[0] = gateOutAccepted_[1] = false;
+  streamOutAccepted_[0] = streamOutAccepted_[1] = false;
   streamInitialPhase_ = true;
   streamNextIdx_ = 0;
   streamBoundReg_ = 0;
@@ -562,12 +567,23 @@ void SimPE::evaluateLoad() {
 }
 
 //===----------------------------------------------------------------------===//
-// Store PE: all three inputs must synchronize before producing outputs.
-// Per spec-fabric-pe.md: store fires when addr, data, AND ctrl are all ready.
+// Store PE: two independent data paths (mirrors load PE design).
+// Decoupled to avoid structural deadlock when addr is broadcast with loads.
 //
 // Ports:
 //   in0 = addr_from_comp, in1 = data_from_comp, in2 = ctrl
 //   out0 = addr_to_mem,   out1 = data_to_mem
+//
+// Path 1 (addr + ctrl sync → addr_to_mem):
+//   out0_valid = in0_valid && in2_valid
+//   fire = sync_valid && out0_ready
+//   in0_ready = in2_ready = fire
+//
+// Path 2 (data passthrough, independent):
+//   out1_valid = in1_valid
+//   in1_ready  = out1_ready
+//
+// Pairing of addr and data happens at the memory side (SimMemory store queue).
 //===----------------------------------------------------------------------===//
 
 void SimPE::evaluateStore() {
@@ -580,21 +596,22 @@ void SimPE::evaluateStore() {
   SimChannel *addrOut = outputs[0]; // addr_to_mem
   SimChannel *dataOut = outputs[1]; // data_to_mem
 
-  bool allSync = addrIn->valid && dataIn->valid && ctrlIn->valid;
-
-  addrOut->valid = allSync;
+  // Path 1: addr + ctrl → addr_to_mem
+  bool addrCtrlSync = addrIn->valid && ctrlIn->valid;
+  addrOut->valid = addrCtrlSync;
   addrOut->data = addrIn->data;
   driveOutputTag(addrOut, 0);
 
-  dataOut->valid = allSync;
+  bool addrFire = addrCtrlSync && addrOut->ready;
+  addrIn->ready = addrFire;
+  ctrlIn->ready = addrFire;
+
+  // Path 2: data_from_comp → data_to_mem (independent)
+  dataOut->valid = dataIn->valid;
   dataOut->data = dataIn->data;
   driveOutputTag(dataOut, 1);
 
-  bool allOutReady = addrOut->ready && dataOut->ready;
-  bool fire = allSync && allOutReady;
-  addrIn->ready = fire;
-  dataIn->ready = fire;
-  ctrlIn->ready = fire;
+  dataIn->ready = dataOut->ready;
 }
 
 //===----------------------------------------------------------------------===//
@@ -609,23 +626,22 @@ void SimPE::evaluateCarry() {
 
   auto *out = outputs[0];
 
-  if (dataflowInitialStage_) {
-    // Initial stage: consume one element from %a, emit on %o.
-    // Do NOT consume %d in this stage.
-    if (inputs.size() <= 1 || !inputs[1]->valid) {
-      out->valid = false;
-      for (auto *in : inputs)
-        in->ready = false;
-      return;
+  if (dataflowInitialStage_ && !initLatched_) {
+    // WAIT: consume %a (input[1]). No output. Latch value.
+    out->valid = false;
+    if (inputs.size() > 1 && inputs[1]->valid) {
+      inputs[0]->ready = false;
+      inputs[1]->ready = true;
+      if (inputs.size() > 2) inputs[2]->ready = false;
+    } else {
+      for (auto *in : inputs) in->ready = false;
     }
+  } else if (dataflowInitialStage_ && initLatched_) {
+    // PRODUCE: output latched initial value. No input consumed.
     out->valid = true;
-    out->data = inputs[1]->data;
-    driveOutputTag(out, 1);
-    // Ready only on %a (input[1]), not on %d or %b.
-    inputs[0]->ready = false;
-    inputs[1]->ready = out->ready;
-    if (inputs.size() > 2)
-      inputs[2]->ready = false;
+    out->data = initLatchedValue_;
+    driveOutputTag(out, -1);
+    for (auto *in : inputs) in->ready = false;
   } else {
     // Block stage: consume %d. If true, also consume %b and emit.
     if (inputs.empty() || !inputs[0]->valid) {
@@ -673,19 +689,22 @@ void SimPE::evaluateInvariant() {
 
   auto *out = outputs[0];
 
-  if (dataflowInitialStage_) {
-    // Initial stage: consume one element from %a, emit on %o, store value.
-    if (inputs.size() <= 1 || !inputs[1]->valid) {
-      out->valid = false;
-      for (auto *in : inputs)
-        in->ready = false;
-      return;
+  if (dataflowInitialStage_ && !initLatched_) {
+    // WAIT: consume %a (input[1]). No output. Latch value.
+    out->valid = false;
+    if (inputs.size() > 1 && inputs[1]->valid) {
+      inputs[0]->ready = false;
+      inputs[1]->ready = true;
+      if (inputs.size() > 2) inputs[2]->ready = false;
+    } else {
+      for (auto *in : inputs) in->ready = false;
     }
+  } else if (dataflowInitialStage_ && initLatched_) {
+    // PRODUCE: output latched initial value. No input consumed.
     out->valid = true;
-    out->data = inputs[1]->data;
-    driveOutputTag(out, 1);
-    inputs[0]->ready = false;
-    inputs[1]->ready = out->ready;
+    out->data = initLatchedValue_;
+    driveOutputTag(out, -1);
+    for (auto *in : inputs) in->ready = false;
   } else {
     // Block stage: consume %d. If true, emit stored value.
     if (inputs.empty() || !inputs[0]->valid) {
@@ -736,63 +755,69 @@ void SimPE::evaluateGate() {
   auto *outVal = outputs[0];   // after_value
   auto *outCond = outputs[1];  // after_cond
 
-  if (!inputs[0]->valid || !inputs[1]->valid) {
+  switch (gateState_) {
+  case 0: // INIT: consume first (value, cond) pair. No output.
     outVal->valid = false;
     outCond->valid = false;
-    inputs[0]->ready = false;
-    inputs[1]->ready = false;
-    return;
-  }
-
-  bool cond = (inputs[1]->data & 1) != 0;
-
-  if (gateFirstElement_) {
-    // Initial phase: consume first (value, cond) pair.
-    if (!cond) {
-      // Zero-trip: before_cond has length 1 (just false). Outputs are empty.
-      // Consume both inputs, produce no output, stay in initial phase.
-      outVal->valid = false;
-      outCond->valid = false;
+    if (inputs[0]->valid && inputs[1]->valid) {
       inputs[0]->ready = true;
       inputs[1]->ready = true;
     } else {
-      // Head cut: output after_value[0] = before_value[0].
-      // Discard before_cond[0] (the head element). No after_cond yet.
-      outVal->valid = true;
-      outVal->data = inputs[0]->data;
-      driveOutputTag(outVal, 0);
-      outCond->valid = false;
-      // Consume when port 0 accepted. Port 1 is invalid so ignore its ready.
-      bool accept = outVal->ready;
-      inputs[0]->ready = accept;
-      inputs[1]->ready = accept;
+      inputs[0]->ready = false;
+      inputs[1]->ready = false;
     }
-  } else {
-    // Block phase: have already output at least after_value[0].
-    if (cond) {
-      // Continuing: output both after_value and after_cond from current inputs.
+    break;
+
+  case 1: // HEAD: output after_value[0] from latch. No input accepted.
+    if (gateLatchedCond_ && !gateOutAccepted_[0]) {
       outVal->valid = true;
-      outVal->data = inputs[0]->data;
+      outVal->data = gateLatchedValue_;
       driveOutputTag(outVal, 0);
-      outCond->valid = true;
-      outCond->data = 1; // after_cond = true (before_cond[i+1] mapped to current cond)
-      driveOutputTag(outCond, -1);
-      // Consume when both outputs accepted.
-      bool accept = outVal->ready && outCond->ready;
-      inputs[0]->ready = accept;
-      inputs[1]->ready = accept;
     } else {
-      // Tail cut: cond=false means stream ends. Output only after_cond=false.
-      // Discard the current value (tail of before_value).
       outVal->valid = false;
-      outCond->valid = true;
-      outCond->data = 0; // after_cond = false (terminator)
-      driveOutputTag(outCond, -1);
-      // Consume when port 1 accepted.
-      bool accept = outCond->ready;
-      inputs[0]->ready = accept;
-      inputs[1]->ready = accept;
     }
+    outCond->valid = false;
+    inputs[0]->ready = false;
+    inputs[1]->ready = false;
+    break;
+
+  case 2: // WAIT: consume next (value, cond) pair. No output.
+    outVal->valid = false;
+    outCond->valid = false;
+    if (inputs[0]->valid && inputs[1]->valid) {
+      inputs[0]->ready = true;
+      inputs[1]->ready = true;
+    } else {
+      inputs[0]->ready = false;
+      inputs[1]->ready = false;
+    }
+    break;
+
+  case 3: // BLOCK: output latched (value, cond). No input accepted.
+    if (gateLatchedCond_) {
+      // Continuing: output both (only legs not yet accepted).
+      outVal->valid = !gateOutAccepted_[0];
+      if (outVal->valid) {
+        outVal->data = gateLatchedValue_;
+        driveOutputTag(outVal, 0);
+      }
+      outCond->valid = !gateOutAccepted_[1];
+      if (outCond->valid) {
+        outCond->data = 1;
+        driveOutputTag(outCond, -1);
+      }
+    } else {
+      // Tail cut: only output after_cond=false (if not yet accepted).
+      outVal->valid = false;
+      outCond->valid = !gateOutAccepted_[1];
+      if (outCond->valid) {
+        outCond->data = 0;
+        driveOutputTag(outCond, -1);
+      }
+    }
+    inputs[0]->ready = false;
+    inputs[1]->ready = false;
+    break;
   }
 }
 
@@ -812,85 +837,35 @@ void SimPE::evaluateStream() {
   auto *outIdx = outputs[0];
   auto *outCont = outputs[1];
 
-  // Helper: evaluate continuation condition using contCondSel_ (5-bit one-hot).
-  auto evalCont = [this](int64_t idx, int64_t bound) -> bool {
-    if (contCondSel_ & 0x01) return idx < bound;
-    if (contCondSel_ & 0x02) return idx <= bound;
-    if (contCondSel_ & 0x04) return idx > bound;
-    if (contCondSel_ & 0x08) return idx >= bound;
-    if (contCondSel_ & 0x10) return idx != bound;
-    return false;
-  };
-
-  // Helper: compute next index using stepOp_ from fabric.pe definition.
-  auto computeNext = [this](uint64_t idx, uint64_t step) -> uint64_t {
-    if (stepOp_ == "-=")
-      return maskToWidth(idx - step);
-    if (stepOp_ == "*=")
-      return maskToWidth(idx * step);
-    if (stepOp_ == "/=")
-      return step != 0 ? maskToWidth(idx / step) : 0;
-    if (stepOp_ == "<<=")
-      return maskToWidth(idx << (step & 63));
-    if (stepOp_ == ">>=")
-      return maskToWidth(idx >> (step & 63));
-    // Default: += .
-    return maskToWidth(idx + step);
-  };
-
   if (streamInitialPhase_) {
-    // Wait for all 3 inputs: start, step, bound.
-    if (!inputs[0]->valid || !inputs[1]->valid || !inputs[2]->valid) {
-      outIdx->valid = false;
-      outCont->valid = false;
+    // WAIT_INPUT: accept 3 scalar inputs. No output.
+    outIdx->valid = false;
+    outCont->valid = false;
+    if (inputs[0]->valid && inputs[1]->valid && inputs[2]->valid) {
+      inputs[0]->ready = true;
+      inputs[1]->ready = true;
+      inputs[2]->ready = true;
+    } else {
       for (auto *in : inputs)
         in->ready = false;
-      return;
     }
-
-    uint64_t start = inputs[0]->data;
-    uint64_t step = inputs[1]->data;
-    uint64_t bound = inputs[2]->data;
-
-    // Per spec-dataflow.md: step must be nonzero.
-    if (step == 0) {
-      latchError(RtError::RT_DATAFLOW_STREAM_ZERO_STEP);
-      outIdx->valid = false;
-      outCont->valid = false;
-      for (auto *in : inputs)
-        in->ready = false;
-      return;
-    }
-    bool willContinue = evalCont(signExt(start), signExt(bound));
-
-    outIdx->valid = true;
-    outIdx->data = start;
-    driveOutputTag(outIdx, 0);
-    outCont->valid = true;
-    outCont->data = willContinue ? 1 : 0;
-    driveOutputTag(outCont, -1);
-
-    // Accept inputs when both outputs are ready.
-    bool accept = outIdx->ready && outCont->ready;
-    for (auto *in : inputs)
-      in->ready = accept;
-
-    // Latch step/bound for block phase. State transition in advanceClock.
-    // (streamNextIdx_, streamBoundReg_, streamStepReg_ are set in advanceClock
-    // when the transfer actually occurs.)
   } else {
-    // Block phase: emit nextIdxReg and willContinue.
-    bool willContinue = evalCont(signExt(streamNextIdx_),
-                                 signExt(streamBoundReg_));
+    // PRODUCE: drive (idx, cont) from registers. Hold until both accepted.
+    // Per-output acceptance: only drive valid on legs not yet accepted.
+    bool willContinue = streamEvalCont(signExt(streamNextIdx_),
+                                       signExt(streamBoundReg_));
+    outIdx->valid = !streamOutAccepted_[0];
+    if (outIdx->valid) {
+      outIdx->data = streamNextIdx_;
+      driveOutputTag(outIdx, -1);
+    }
+    outCont->valid = !streamOutAccepted_[1];
+    if (outCont->valid) {
+      outCont->data = willContinue ? 1 : 0;
+      driveOutputTag(outCont, -1);
+    }
 
-    outIdx->valid = true;
-    outIdx->data = streamNextIdx_;
-    driveOutputTag(outIdx, -1);
-    outCont->valid = true;
-    outCont->data = willContinue ? 1 : 0;
-    driveOutputTag(outCont, -1);
-
-    // No inputs consumed in block phase.
+    // No inputs consumed while producing.
     for (auto *in : inputs)
       in->ready = false;
   }
@@ -1045,99 +1020,135 @@ void SimPE::evaluateSink() {
 void SimPE::advanceClock() {
   // State machine transitions for carry/invariant/gate.
   if (bodyType_ == BodyType::Carry) {
-    if (dataflowInitialStage_) {
-      // Initial: if %a was transferred, transition to block stage.
-      if (inputs.size() > 1 && inputs[1]->transferred())
+    if (dataflowInitialStage_ && !initLatched_) {
+      // WAIT: %a consumed → latch and mark latched.
+      if (inputs.size() > 1 && inputs[1]->transferred()) {
+        initLatchedValue_ = inputs[1]->data;
+        initLatched_ = true;
+      }
+    } else if (dataflowInitialStage_ && initLatched_) {
+      // PRODUCE: output accepted → transition to block.
+      if (!outputs.empty() && outputs[0]->transferred()) {
+        initLatched_ = false;
         dataflowInitialStage_ = false;
+      }
     } else {
       // Block: if %d was transferred with d=false, return to initial.
       if (!inputs.empty() && inputs[0]->transferred() &&
-          (inputs[0]->data & 1) == 0)
+          (inputs[0]->data & 1) == 0) {
         dataflowInitialStage_ = true;
+        initLatched_ = false;
+      }
     }
   } else if (bodyType_ == BodyType::Invariant) {
-    if (dataflowInitialStage_) {
-      // Initial: if %a was transferred, store value and go to block.
+    if (dataflowInitialStage_ && !initLatched_) {
+      // WAIT: %a consumed → latch and mark latched.
       if (inputs.size() > 1 && inputs[1]->transferred()) {
-        invariantStoredValue_ = inputs[1]->data;
+        initLatchedValue_ = inputs[1]->data;
+        invariantStoredValue_ = inputs[1]->data; // Also store for block phase.
+        initLatched_ = true;
+      }
+    } else if (dataflowInitialStage_ && initLatched_) {
+      // PRODUCE: output accepted → transition to block.
+      if (!outputs.empty() && outputs[0]->transferred()) {
+        initLatched_ = false;
         dataflowInitialStage_ = false;
       }
     } else {
       // Block: if %d was transferred with d=false, return to initial.
       if (!inputs.empty() && inputs[0]->transferred() &&
-          (inputs[0]->data & 1) == 0)
+          (inputs[0]->data & 1) == 0) {
         dataflowInitialStage_ = true;
+        initLatched_ = false;
+      }
     }
   } else if (bodyType_ == BodyType::Gate) {
-    if (gateFirstElement_) {
-      // Initial: if both inputs transferred and cond was true, go to block.
+    // 4-state gate: INIT(0) → HEAD(1) → WAIT(2) → BLOCK(3) → WAIT → ...
+    // Consume and produce NEVER happen in the same cycle.
+    switch (gateState_) {
+    case 0: // INIT: if consumed → latch → HEAD
       if (inputs.size() >= 2 && inputs[0]->transferred() &&
           inputs[1]->transferred()) {
-        bool cond = (inputs[1]->data & 1) != 0;
-        if (cond)
-          gateFirstElement_ = false;
-        // If cond was false (zero-trip), stay in initial.
+        gateLatchedValue_ = inputs[0]->data;
+        gateLatchedCond_ = (inputs[1]->data & 1) != 0;
+        gateState_ = 1;
       }
-    } else {
-      // Block: if inputs transferred and cond was false, return to initial.
+      break;
+    case 1: // HEAD: output from latch (only out0)
+      if (!gateLatchedCond_) {
+        gateState_ = 0; // Zero-trip → INIT
+      } else {
+        if (outputs.size() >= 1 && outputs[0]->transferred())
+          gateOutAccepted_[0] = true;
+        if (gateOutAccepted_[0]) {
+          gateOutAccepted_[0] = false;
+          gateState_ = 2; // → WAIT
+        }
+      }
+      break;
+    case 2: // WAIT: if consumed → latch → BLOCK
       if (inputs.size() >= 2 && inputs[0]->transferred() &&
           inputs[1]->transferred()) {
-        bool cond = (inputs[1]->data & 1) != 0;
-        if (!cond)
-          gateFirstElement_ = true;
+        gateLatchedValue_ = inputs[0]->data;
+        gateLatchedCond_ = (inputs[1]->data & 1) != 0;
+        gateOutAccepted_[0] = gateOutAccepted_[1] = false;
+        gateState_ = 3;
       }
+      break;
+    case 3: // BLOCK: per-output acceptance tracking
+      if (gateLatchedCond_) {
+        // Continuing: track each output independently.
+        if (outputs.size() >= 2) {
+          if (outputs[0]->transferred()) gateOutAccepted_[0] = true;
+          if (outputs[1]->transferred()) gateOutAccepted_[1] = true;
+        }
+        if (gateOutAccepted_[0] && gateOutAccepted_[1]) {
+          gateOutAccepted_[0] = gateOutAccepted_[1] = false;
+          gateState_ = 2; // Both accepted → WAIT
+        }
+      } else {
+        // Tail cut: only out1 matters.
+        if (outputs.size() >= 2 && outputs[1]->transferred())
+          gateOutAccepted_[1] = true;
+        if (gateOutAccepted_[1]) {
+          gateOutAccepted_[0] = gateOutAccepted_[1] = false;
+          gateState_ = 0; // → INIT
+        }
+      }
+      break;
     }
   } else if (bodyType_ == BodyType::StreamCont) {
-    // Helper: compute next index using stepOp_.
-    auto computeNext = [this](uint64_t idx, uint64_t step) -> uint64_t {
-      if (stepOp_ == "-=")
-        return maskToWidth(idx - step);
-      if (stepOp_ == "*=")
-        return maskToWidth(idx * step);
-      if (stepOp_ == "/=")
-        return step != 0 ? maskToWidth(idx / step) : 0;
-      if (stepOp_ == "<<=")
-        return maskToWidth(idx << (step & 63));
-      if (stepOp_ == ">>=")
-        return maskToWidth(idx >> (step & 63));
-      return maskToWidth(idx + step);
-    };
-
-    auto evalCont = [this](int64_t idx, int64_t bound) -> bool {
-      if (contCondSel_ & 0x01) return idx < bound;
-      if (contCondSel_ & 0x02) return idx <= bound;
-      if (contCondSel_ & 0x04) return idx > bound;
-      if (contCondSel_ & 0x08) return idx >= bound;
-      if (contCondSel_ & 0x10) return idx != bound;
-      return false;
-    };
-
     if (streamInitialPhase_) {
-      // Initial: if all 3 inputs transferred, latch and transition.
-      if (inputs.size() >= 3 && outputs.size() >= 2 &&
-          outputs[0]->transferred() && outputs[1]->transferred()) {
+      // WAIT_INPUT: if all 3 inputs consumed, latch and → PRODUCE.
+      if (inputs.size() >= 3 && inputs[0]->transferred() &&
+          inputs[1]->transferred() && inputs[2]->transferred()) {
         uint64_t start = inputs[0]->data;
         uint64_t step = inputs[1]->data;
         uint64_t bound = inputs[2]->data;
-        bool willContinue = evalCont(signExt(start), signExt(bound));
-        if (willContinue) {
-          streamNextIdx_ = computeNext(start, step);
-          streamBoundReg_ = bound;
-          streamStepReg_ = step;
-          streamInitialPhase_ = false;
+        if (step == 0) {
+          latchError(RtError::RT_DATAFLOW_STREAM_ZERO_STEP);
+          return;
         }
-        // If !willContinue (zero-trip), remain in initial phase.
+        streamNextIdx_ = start;
+        streamBoundReg_ = bound;
+        streamStepReg_ = step;
+        streamInitialPhase_ = false; // → PRODUCE
       }
     } else {
-      // Block: if outputs transferred, update nextIdx or return to initial.
-      if (outputs.size() >= 2 &&
-          outputs[0]->transferred() && outputs[1]->transferred()) {
-        bool willContinue = evalCont(signExt(streamNextIdx_),
-                                     signExt(streamBoundReg_));
+      // PRODUCE: per-output acceptance tracking.
+      if (outputs.size() >= 2) {
+        if (outputs[0]->transferred()) streamOutAccepted_[0] = true;
+        if (outputs[1]->transferred()) streamOutAccepted_[1] = true;
+      }
+      if (streamOutAccepted_[0] && streamOutAccepted_[1]) {
+        // Both accepted → advance.
+        streamOutAccepted_[0] = streamOutAccepted_[1] = false;
+        bool willContinue = streamEvalCont(signExt(streamNextIdx_),
+                                           signExt(streamBoundReg_));
         if (willContinue) {
-          streamNextIdx_ = computeNext(streamNextIdx_, streamStepReg_);
+          streamNextIdx_ = streamComputeNext(streamNextIdx_, streamStepReg_);
         } else {
-          streamInitialPhase_ = true;
+          streamInitialPhase_ = true; // → WAIT_INPUT
         }
       }
     }
