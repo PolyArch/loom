@@ -29,6 +29,7 @@ void SimMemory::reset() {
   pendingLoads_.clear();
   storePairQueues_.clear();
   storeDeadlockCounters_.clear();
+  pendingStDone_.clear();
   firedThisCycle_ = false;
   currentSimCycle_ = 0;
   errorValid_ = false;
@@ -250,8 +251,9 @@ void SimMemory::evaluateCombinational() {
     }
   }
 
-  // Handle stores.
-  // Per spec-fabric-mem.md: input order is [ld_addr..., st_addr..., st_data...]
+  // Handle stores: accept staddr and stdata independently per
+  // spec-fabric-mem.md store-queue pairing semantics. Each input is accepted
+  // on its own; pairing happens in advanceClock via storePairQueues_.
   for (unsigned s = 0; s < stCount_; ++s) {
     unsigned stAddrIdx = ldCount_ + s;
     unsigned stDataIdx = ldCount_ + stCount_ + s;
@@ -266,42 +268,34 @@ void SimMemory::evaluateCombinational() {
     auto *stData = inputs[stDataIdx];
     auto *stDone = outputs[stDoneIdx];
 
-    if (stData->valid && stAddr->valid) {
-      // Tag OOB check per spec-fabric-mem.md.
-      if (tagWidth_ > 0 && stAddr->tag >= maxTag) {
-        latchError(RtError::RT_MEMORY_TAG_OOB);
-        stDone->valid = false;
-        stData->ready = false;
-        stAddr->ready = false;
-        continue;
-      }
-      // Resolve address through addr_offset_table.
-      bool matched = false;
-      uint64_t resolvedAddr =
-          resolveAddr(stAddr->data, stAddr->tag, matched);
-      if (!matched && tagWidth_ > 0) {
-        uint16_t noMatchErr = isExternal_ ? RtError::RT_EXTMEMORY_NO_MATCH
-                                          : RtError::RT_MEMORY_NO_MATCH;
-        latchError(noMatchErr);
-        stDone->valid = false;
-        stData->ready = false;
-        stAddr->ready = false;
-      } else {
-        stDone->valid = true;
-        stDone->data = 0; // Done token carries no data payload.
-        if (tagWidth_ > 0) {
-          stDone->tag = stAddr->tag;
-          stDone->hasTag = true;
-        }
-        bool accept = stDone->ready;
-        stData->ready = accept;
-        stAddr->ready = accept;
-        firedThisCycle_ = true;
+    // Tag OOB check on stAddr when valid.
+    if (stAddr->valid && tagWidth_ > 0 && stAddr->tag >= maxTag) {
+      latchError(RtError::RT_MEMORY_TAG_OOB);
+      stAddr->ready = false;
+    } else {
+      // Accept stAddr independently if valid (will be queued in advanceClock).
+      stAddr->ready = stAddr->valid;
+    }
+
+    // Accept stData independently if valid.
+    if (stData->valid && tagWidth_ > 0 && stData->tag >= maxTag) {
+      latchError(RtError::RT_MEMORY_TAG_OOB);
+      stData->ready = false;
+    } else {
+      stData->ready = stData->valid;
+    }
+
+    // stDone fires when a paired store completes in advanceClock. Drive it
+    // from the pending-done queue (set in advanceClock when a pair commits).
+    if (!pendingStDone_.empty() && pendingStDone_.front().laneIdx == s) {
+      stDone->valid = true;
+      stDone->data = 0;
+      if (tagWidth_ > 0) {
+        stDone->tag = pendingStDone_.front().tag;
+        stDone->hasTag = true;
       }
     } else {
       stDone->valid = false;
-      stData->ready = false;
-      stAddr->ready = false;
     }
   }
 }
@@ -309,76 +303,19 @@ void SimMemory::evaluateCombinational() {
 void SimMemory::advanceClock() {
   currentSimCycle_++;
 
-  // Process stores: pair staddr/stdata per tag in FIFO order, then write.
-  for (unsigned s = 0; s < stCount_; ++s) {
-    unsigned stAddrIdx = ldCount_ + s;
-    unsigned stDataIdx = ldCount_ + stCount_ + s;
-
-    if (stAddrIdx >= inputs.size() || stDataIdx >= inputs.size())
-      continue;
-
-    uint16_t tag = (tagWidth_ > 0) ? inputs[stAddrIdx]->tag : 0;
-
-    // Queue arriving addr/data into the store pair queue.
-    if (inputs[stAddrIdx]->transferred()) {
-      auto &q = storePairQueues_[tag];
-      // Find an unpaired entry needing addr, or create new.
-      bool paired = false;
-      for (auto &entry : q) {
-        if (!entry.hasAddr) {
-          entry.hasAddr = true;
-          entry.addr = inputs[stAddrIdx]->data;
-          paired = true;
-          break;
-        }
-      }
-      if (!paired) {
-        StorePairEntry e;
-        e.hasAddr = true;
-        e.addr = inputs[stAddrIdx]->data;
-        q.push_back(e);
-      }
-      perf_.tokensIn++;
+  // Consume stDone tokens that were transferred by downstream.
+  while (!pendingStDone_.empty()) {
+    unsigned doneIdx = ldCount_ * 2 + pendingStDone_.front().laneIdx;
+    if (doneIdx < outputs.size() && outputs[doneIdx]->transferred()) {
+      pendingStDone_.pop_front();
+      perf_.tokensOut++;
+    } else {
+      break; // FIFO order: stop at first unconsumed.
     }
-    if (inputs[stDataIdx]->transferred()) {
-      auto &q = storePairQueues_[tag];
-      bool paired = false;
-      for (auto &entry : q) {
-        if (!entry.hasData) {
-          entry.hasData = true;
-          entry.data = inputs[stDataIdx]->data;
-          paired = true;
-          break;
-        }
-      }
-      if (!paired) {
-        StorePairEntry e;
-        e.hasData = true;
-        e.data = inputs[stDataIdx]->data;
-        q.push_back(e);
-      }
-      perf_.tokensIn++;
-    }
-
-    // Dequeue fully paired entries and write to memory.
-    auto &q = storePairQueues_[tag];
-    while (!q.empty() && q.front().hasAddr && q.front().hasData) {
-      auto &front = q.front();
-      bool matched = false;
-      uint64_t resolvedAddr =
-          resolveAddr(front.addr, tag, matched);
-      if (matched || tagWidth_ == 0) {
-        memWrite(resolvedAddr, front.data);
-      }
-      q.pop_front();
-    }
-
-    // Initialize deadlock counter for this tag if not present.
-    if (storeDeadlockCounters_.find(tag) == storeDeadlockCounters_.end())
-      storeDeadlockCounters_[tag] = 0;
   }
 
-  // Issue new loads with latency.
+  // Read-before-write: issue new delayed loads BEFORE processing stores,
+  // so loads read the value at the beginning of the cycle per spec.
   for (unsigned l = 0; l < ldCount_ && l < inputs.size(); ++l) {
     if (inputs[l]->transferred() && extLatency_ > 0) {
       bool matched = false;
@@ -422,6 +359,88 @@ void SimMemory::advanceClock() {
         perf_.tokensOut++;
       }
     }
+  }
+
+  // Process stores: pair staddr/stdata per tag in FIFO order, then write.
+  // This comes AFTER loads to preserve read-before-write semantics.
+  for (unsigned s = 0; s < stCount_; ++s) {
+    unsigned stAddrIdx = ldCount_ + s;
+    unsigned stDataIdx = ldCount_ + stCount_ + s;
+
+    if (stAddrIdx >= inputs.size() || stDataIdx >= inputs.size())
+      continue;
+
+    uint16_t addrTag = (tagWidth_ > 0) ? inputs[stAddrIdx]->tag : 0;
+    uint16_t dataTag = (tagWidth_ > 0) ? inputs[stDataIdx]->tag : 0;
+
+    // Queue arriving addr into the store pair queue.
+    if (inputs[stAddrIdx]->transferred()) {
+      auto &q = storePairQueues_[addrTag];
+      bool paired = false;
+      for (auto &entry : q) {
+        if (!entry.hasAddr) {
+          entry.hasAddr = true;
+          entry.addr = inputs[stAddrIdx]->data;
+          paired = true;
+          break;
+        }
+      }
+      if (!paired) {
+        StorePairEntry e;
+        e.hasAddr = true;
+        e.addr = inputs[stAddrIdx]->data;
+        q.push_back(e);
+      }
+      perf_.tokensIn++;
+      firedThisCycle_ = true;
+    }
+
+    // Queue arriving data into the store pair queue.
+    if (inputs[stDataIdx]->transferred()) {
+      auto &q = storePairQueues_[dataTag];
+      bool paired = false;
+      for (auto &entry : q) {
+        if (!entry.hasData) {
+          entry.hasData = true;
+          entry.data = inputs[stDataIdx]->data;
+          paired = true;
+          break;
+        }
+      }
+      if (!paired) {
+        StorePairEntry e;
+        e.hasData = true;
+        e.data = inputs[stDataIdx]->data;
+        q.push_back(e);
+      }
+      perf_.tokensIn++;
+    }
+
+    // Dequeue fully paired entries and write to memory.
+    // Use addrTag for the queue lookup (addr determines the tag).
+    auto &q = storePairQueues_[addrTag];
+    while (!q.empty() && q.front().hasAddr && q.front().hasData) {
+      auto &front = q.front();
+      bool matched = false;
+      uint64_t resolvedAddr = resolveAddr(front.addr, addrTag, matched);
+      if (matched || tagWidth_ == 0) {
+        memWrite(resolvedAddr, front.data);
+      } else {
+        uint16_t noMatchErr = isExternal_ ? RtError::RT_EXTMEMORY_NO_MATCH
+                                          : RtError::RT_MEMORY_NO_MATCH;
+        latchError(noMatchErr);
+      }
+      // Enqueue stDone token for this lane.
+      PendingStDone done;
+      done.tag = addrTag;
+      done.laneIdx = s;
+      pendingStDone_.push_back(done);
+      q.pop_front();
+    }
+
+    // Initialize deadlock counter for this tag if not present.
+    if (storeDeadlockCounters_.find(addrTag) == storeDeadlockCounters_.end())
+      storeDeadlockCounters_[addrTag] = 0;
   }
 
   // Store deadlock detection per spec-fabric-mem.md.

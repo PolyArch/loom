@@ -47,7 +47,7 @@ public:
 
   bool isCombinational() const override {
     return bodyType_ != BodyType::Carry && bodyType_ != BodyType::Invariant &&
-           bodyType_ != BodyType::Gate;
+           bodyType_ != BodyType::Gate && bodyType_ != BodyType::StreamCont;
   }
   void evaluateCombinational() override;
   void advanceClock() override;
@@ -76,6 +76,17 @@ private:
 
   /// Stream continuation condition selector (5-bit one-hot).
   uint8_t contCondSel_ = 0;
+
+  //--- dataflow.stream state machine ---
+
+  /// Stream phase: true = initial (waiting for start/step/bound),
+  /// false = block (emitting idx/cont each cycle).
+  bool streamInitialPhase_ = true;
+
+  /// Latched registers for the block phase.
+  uint64_t streamNextIdx_ = 0;
+  uint64_t streamBoundReg_ = 0;
+  uint64_t streamStepReg_ = 0;
 
   //--- Dataflow state machines (carry, invariant, gate) ---
 
@@ -113,6 +124,7 @@ private:
   void evaluateCarry();
   void evaluateInvariant();
   void evaluateGate();
+  void evaluateStream();
 
   /// Drive output tag based on tag mode. If srcInputIdx >= 0, uses that
   /// input's tag for TagTransparent; otherwise uses configured outputTags_.

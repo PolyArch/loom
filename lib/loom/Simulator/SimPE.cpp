@@ -31,6 +31,10 @@ void SimPE::reset() {
   dataflowInitialStage_ = true;
   invariantStoredValue_ = 0;
   gateFirstElement_ = true;
+  streamInitialPhase_ = true;
+  streamNextIdx_ = 0;
+  streamBoundReg_ = 0;
+  streamStepReg_ = 0;
 }
 
 void SimPE::configure(const std::vector<uint32_t> &configWords) {
@@ -413,6 +417,10 @@ void SimPE::evaluateCombinational() {
     evaluateGate();
     return;
   }
+  if (bodyType_ == BodyType::StreamCont) {
+    evaluateStream();
+    return;
+  }
 
   // Check all inputs are valid.
   bool allValid = true;
@@ -440,26 +448,6 @@ void SimPE::evaluateCombinational() {
   case BodyType::Compute:
     result = executeOp(operandA, operandB);
     break;
-
-  case BodyType::StreamCont: {
-    // dataflow.stream: compare operandA against operandB using cont_cond_sel.
-    // cont_cond_sel is 5-bit one-hot: [<, <=, >, >=, !=].
-    bool cont = false;
-    int64_t sa = signExt(operandA);
-    int64_t sb = signExt(operandB);
-    if (contCondSel_ & 0x01)
-      cont = (sa < sb);
-    else if (contCondSel_ & 0x02)
-      cont = (sa <= sb);
-    else if (contCondSel_ & 0x04)
-      cont = (sa > sb);
-    else if (contCondSel_ & 0x08)
-      cont = (sa >= sb);
-    else if (contCondSel_ & 0x10)
-      cont = (sa != sb);
-    result = cont ? 1 : 0;
-    break;
-  }
 
   default:
     // Load, Store: pass through first operand.
@@ -667,6 +655,98 @@ void SimPE::evaluateGate() {
   }
 }
 
+//===----------------------------------------------------------------------===//
+// dataflow.stream state machine per spec-dataflow.md
+//   Inputs: [0]=%start, [1]=%step, [2]=%bound
+//   Outputs: [0]=%idx, [1]=%cont (i1)
+//
+//   Initial phase: wait for all 3 inputs, emit (start, willContinue).
+//   Block phase: emit (nextIdxReg, willContinue), update nextIdxReg.
+//===----------------------------------------------------------------------===//
+
+void SimPE::evaluateStream() {
+  if (outputs.size() < 2 || inputs.size() < 3)
+    return;
+
+  auto *outIdx = outputs[0];
+  auto *outCont = outputs[1];
+
+  // Helper: evaluate continuation condition using contCondSel_ (5-bit one-hot).
+  auto evalCont = [this](int64_t idx, int64_t bound) -> bool {
+    if (contCondSel_ & 0x01) return idx < bound;
+    if (contCondSel_ & 0x02) return idx <= bound;
+    if (contCondSel_ & 0x04) return idx > bound;
+    if (contCondSel_ & 0x08) return idx >= bound;
+    if (contCondSel_ & 0x10) return idx != bound;
+    return false;
+  };
+
+  // Helper: compute next index using step_op. The step_op is encoded in the
+  // PE's opcodeStr_. For stream PEs, the opcodeStr_ holds the step_op name.
+  auto computeNext = [this](uint64_t idx, uint64_t step) -> uint64_t {
+    // step_op is determined by the PE's body. Default is +=.
+    if (opcodeStr_ == "dataflow.stream.sub")
+      return maskToWidth(idx - step);
+    if (opcodeStr_ == "dataflow.stream.mul")
+      return maskToWidth(idx * step);
+    if (opcodeStr_ == "dataflow.stream.div")
+      return step != 0 ? maskToWidth(idx / step) : 0;
+    if (opcodeStr_ == "dataflow.stream.shl")
+      return maskToWidth(idx << (step & 63));
+    if (opcodeStr_ == "dataflow.stream.shr")
+      return maskToWidth(idx >> (step & 63));
+    // Default: += (covers "dataflow.stream" and "dataflow.stream.add").
+    return maskToWidth(idx + step);
+  };
+
+  if (streamInitialPhase_) {
+    // Wait for all 3 inputs: start, step, bound.
+    if (!inputs[0]->valid || !inputs[1]->valid || !inputs[2]->valid) {
+      outIdx->valid = false;
+      outCont->valid = false;
+      for (auto *in : inputs)
+        in->ready = false;
+      return;
+    }
+
+    uint64_t start = inputs[0]->data;
+    uint64_t step = inputs[1]->data;
+    uint64_t bound = inputs[2]->data;
+    bool willContinue = evalCont(signExt(start), signExt(bound));
+
+    outIdx->valid = true;
+    outIdx->data = start;
+    driveOutputTag(outIdx, 0);
+    outCont->valid = true;
+    outCont->data = willContinue ? 1 : 0;
+    driveOutputTag(outCont, -1);
+
+    // Accept inputs when both outputs are ready.
+    bool accept = outIdx->ready && outCont->ready;
+    for (auto *in : inputs)
+      in->ready = accept;
+
+    // Latch step/bound for block phase. State transition in advanceClock.
+    // (streamNextIdx_, streamBoundReg_, streamStepReg_ are set in advanceClock
+    // when the transfer actually occurs.)
+  } else {
+    // Block phase: emit nextIdxReg and willContinue.
+    bool willContinue = evalCont(signExt(streamNextIdx_),
+                                 signExt(streamBoundReg_));
+
+    outIdx->valid = true;
+    outIdx->data = streamNextIdx_;
+    driveOutputTag(outIdx, -1);
+    outCont->valid = true;
+    outCont->data = willContinue ? 1 : 0;
+    driveOutputTag(outCont, -1);
+
+    // No inputs consumed in block phase.
+    for (auto *in : inputs)
+      in->ready = false;
+  }
+}
+
 void SimPE::advanceClock() {
   // State machine transitions for carry/invariant/gate.
   if (bodyType_ == BodyType::Carry) {
@@ -704,6 +784,60 @@ void SimPE::advanceClock() {
       if (inputs.size() >= 2 && inputs[1]->transferred() &&
           (inputs[1]->data & 1) == 0)
         gateFirstElement_ = true;
+    }
+  } else if (bodyType_ == BodyType::StreamCont) {
+    // Helper: compute next index using step_op.
+    auto computeNext = [this](uint64_t idx, uint64_t step) -> uint64_t {
+      if (opcodeStr_ == "dataflow.stream.sub")
+        return maskToWidth(idx - step);
+      if (opcodeStr_ == "dataflow.stream.mul")
+        return maskToWidth(idx * step);
+      if (opcodeStr_ == "dataflow.stream.div")
+        return step != 0 ? maskToWidth(idx / step) : 0;
+      if (opcodeStr_ == "dataflow.stream.shl")
+        return maskToWidth(idx << (step & 63));
+      if (opcodeStr_ == "dataflow.stream.shr")
+        return maskToWidth(idx >> (step & 63));
+      return maskToWidth(idx + step);
+    };
+
+    auto evalCont = [this](int64_t idx, int64_t bound) -> bool {
+      if (contCondSel_ & 0x01) return idx < bound;
+      if (contCondSel_ & 0x02) return idx <= bound;
+      if (contCondSel_ & 0x04) return idx > bound;
+      if (contCondSel_ & 0x08) return idx >= bound;
+      if (contCondSel_ & 0x10) return idx != bound;
+      return false;
+    };
+
+    if (streamInitialPhase_) {
+      // Initial: if all 3 inputs transferred, latch and transition.
+      if (inputs.size() >= 3 && outputs.size() >= 2 &&
+          outputs[0]->transferred() && outputs[1]->transferred()) {
+        uint64_t start = inputs[0]->data;
+        uint64_t step = inputs[1]->data;
+        uint64_t bound = inputs[2]->data;
+        bool willContinue = evalCont(signExt(start), signExt(bound));
+        if (willContinue) {
+          streamNextIdx_ = computeNext(start, step);
+          streamBoundReg_ = bound;
+          streamStepReg_ = step;
+          streamInitialPhase_ = false;
+        }
+        // If !willContinue (zero-trip), remain in initial phase.
+      }
+    } else {
+      // Block: if outputs transferred, update nextIdx or return to initial.
+      if (outputs.size() >= 2 &&
+          outputs[0]->transferred() && outputs[1]->transferred()) {
+        bool willContinue = evalCont(signExt(streamNextIdx_),
+                                     signExt(streamBoundReg_));
+        if (willContinue) {
+          streamNextIdx_ = computeNext(streamNextIdx_, streamStepReg_);
+        } else {
+          streamInitialPhase_ = true;
+        }
+      }
     }
   }
 }

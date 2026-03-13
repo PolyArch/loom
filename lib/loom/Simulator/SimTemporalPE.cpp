@@ -173,7 +173,18 @@ void SimTemporalPE::configure(const std::vector<uint32_t> &configWords) {
   }
 
   // Initialize operand buffers and register FIFOs for execution.
+  // Preserve configuration errors across reset() per spec: "error_valid is
+  // sticky after first assertion" and "held until reset". Config errors from
+  // validation above must persist.
+  bool savedErrorValid = errorValid_;
+  uint16_t savedErrorCode = errorCode_;
+  bool savedPendingError = pendingError_;
+  uint16_t savedPendingErrorCode = pendingErrorCode_;
   reset();
+  errorValid_ = savedErrorValid;
+  errorCode_ = savedErrorCode;
+  pendingError_ = savedPendingError;
+  pendingErrorCode_ = savedPendingErrorCode;
 
   // Compute totalReaders for each register FIFO by counting how many
   // instruction operands reference it as a register source.
@@ -473,19 +484,30 @@ void SimTemporalPE::evaluateCombinational() {
       }
       // Backpressure if slot already occupied.
     } else {
-      // Shared buffer: find or create entry.
-      // Accept if there's buffer capacity.
-      bool bufferFull = true;
+      // Shared buffer: ready check must mirror advanceClock insertion logic.
+      // advanceClock targets the entry with LARGEST position for this tag.
+      // If that entry's opValid[i]=0, it inserts there.
+      // If that entry's opValid[i]=1, it creates a new entry.
+      // So: ready if max-pos entry has opValid[i]=0, or buffer has capacity.
+      bool canAccept = false;
+      SharedBufEntry *maxPosEntry = nullptr;
+      unsigned maxPos = 0;
+      bool hasExisting = false;
       for (auto &entry : sharedBuf_) {
-        if (entry.tag == inTag && !entry.opValid[i]) {
-          bufferFull = false;
-          break;
+        if (entry.tag == inTag) {
+          if (!hasExisting || entry.position > maxPos) {
+            maxPos = entry.position;
+            maxPosEntry = &entry;
+          }
+          hasExisting = true;
         }
       }
-      if (bufferFull && sharedBuf_.size() < operandBufferSize_)
-        bufferFull = false; // Can create new entry.
-
-      inputs[i]->ready = !bufferFull;
+      if (hasExisting && maxPosEntry && !maxPosEntry->opValid[i]) {
+        canAccept = true; // Can store in existing max-pos entry.
+      } else if (sharedBuf_.size() < operandBufferSize_) {
+        canAccept = true; // Can create new entry.
+      }
+      inputs[i]->ready = canAccept;
     }
   }
 

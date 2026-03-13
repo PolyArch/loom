@@ -109,6 +109,13 @@ private:
   std::unordered_map<uint16_t, uint32_t> storeDeadlockCounters_;
   static constexpr uint32_t kDeadlockTimeout = 65535;
 
+  /// Pending store-done tokens (from paired store commits in advanceClock).
+  struct PendingStDone {
+    uint16_t tag = 0;
+    unsigned laneIdx = 0;
+  };
+  std::deque<PendingStDone> pendingStDone_;
+
   bool firedThisCycle_ = false;
   uint64_t currentSimCycle_ = 0;
 };
