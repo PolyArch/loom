@@ -17,6 +17,8 @@ void SimFifo::reset() {
   buffer_.clear();
   errorValid_ = false;
   errorCode_ = RtError::OK;
+  pendingError_ = false;
+  pendingErrorCode_ = RtError::OK;
   perf_ = PerfSnapshot();
 }
 

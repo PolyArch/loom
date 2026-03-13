@@ -79,11 +79,20 @@ private:
   /// Mask a value to dataWidth_ bits.
   uint64_t maskToWidth(uint64_t v) const;
 
+  /// Float bit-cast helpers (data stored as uint64_t bit pattern).
+  float toFloat(uint64_t v) const;
+  uint64_t fromFloat(float f) const;
+  double toDouble(uint64_t v) const;
+  uint64_t fromDouble(double d) const;
+
   /// Execute the PE's arithmetic/logic operation.
   uint64_t executeOp(uint64_t a, uint64_t b) const;
 
-  /// Evaluate compare predicate.
-  bool evaluateCmp(uint64_t a, uint64_t b) const;
+  /// Evaluate integer compare predicate (arith.cmpi, 10 predicates).
+  bool evaluateCmpi(uint64_t a, uint64_t b) const;
+
+  /// Evaluate float compare predicate (arith.cmpf, 16 IEEE 754 predicates).
+  bool evaluateCmpf(uint64_t a, uint64_t b) const;
 };
 
 } // namespace sim

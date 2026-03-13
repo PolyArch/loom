@@ -87,31 +87,40 @@ public:
   /// Operation name from the MLIR op (e.g., "fabric.switch").
   std::string opName;
 
-protected:
   //===--------------------------------------------------------------------===//
   // Sticky error state (per spec-fabric-error.md)
   //===--------------------------------------------------------------------===//
 
-  /// Latch an error code per spec-fabric-error.md sticky semantics:
-  /// - First error captured is sticky (later errors in different cycles
-  ///   do NOT overwrite).
-  /// - Among same-cycle contenders, numerically smallest code wins.
+  /// Report an error detected during combinational evaluation.
+  /// Multiple calls per cycle select the numerically smallest code.
+  /// Call commitError() once per cycle to finalize sticky state.
   void latchError(uint16_t code) {
     if (code == RtError::OK)
       return;
-    if (!errorValid_) {
-      // No prior error: capture this one.
-      errorValid_ = true;
-      errorCode_ = code;
+    if (errorValid_)
+      return; // Already sticky from a prior cycle.
+    if (!pendingError_ || code < pendingErrorCode_) {
+      pendingError_ = true;
+      pendingErrorCode_ = code;
     }
-    // If already latched from a prior cycle, do NOT overwrite.
-    // Same-cycle contention is handled by calling latchError multiple
-    // times in one evaluation pass; the first call wins since errorValid_
-    // becomes true immediately.
   }
 
+  /// Finalize pending error into sticky state. Called once per cycle
+  /// after all combinational evaluation is complete.
+  void commitError() {
+    if (pendingError_ && !errorValid_) {
+      errorValid_ = true;
+      errorCode_ = pendingErrorCode_;
+    }
+    pendingError_ = false;
+    pendingErrorCode_ = RtError::OK;
+  }
+
+protected:
   bool errorValid_ = false;
   uint16_t errorCode_ = RtError::OK;
+  bool pendingError_ = false;
+  uint16_t pendingErrorCode_ = RtError::OK;
 
   //===--------------------------------------------------------------------===//
   // Performance counters
@@ -124,6 +133,16 @@ protected:
 /// Returns nullptr if the op name is not recognized.
 std::unique_ptr<SimModule> createSimModule(
     uint32_t hwNodeId, const std::string &name, const std::string &opName,
+    unsigned numInputs, unsigned numOutputs,
+    const std::vector<std::pair<std::string, int64_t>> &intAttrs,
+    const std::vector<std::pair<std::string, std::string>> &strAttrs,
+    const std::vector<std::pair<std::string, std::vector<int8_t>>>
+        &arrayAttrs = {});
+
+/// Compute the CONFIG_WIDTH (in bits) for a fabric module based on its
+/// attributes. Implements the formula table from spec-fabric-config_mem.md.
+unsigned computeConfigWidth(
+    const std::string &opName,
     unsigned numInputs, unsigned numOutputs,
     const std::vector<std::pair<std::string, int64_t>> &intAttrs,
     const std::vector<std::pair<std::string, std::string>> &strAttrs,

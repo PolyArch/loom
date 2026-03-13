@@ -7,6 +7,8 @@
 #include "loom/Simulator/SimTemporalPE.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 
 namespace loom {
 namespace sim {
@@ -65,6 +67,8 @@ void SimTemporalPE::reset() {
   firedThisCycle_ = false;
   errorValid_ = false;
   errorCode_ = RtError::OK;
+  pendingError_ = false;
+  pendingErrorCode_ = RtError::OK;
   perf_ = PerfSnapshot();
 }
 
@@ -237,32 +241,181 @@ bool SimTemporalPE::canFire(unsigned insnIdx) const {
   return true;
 }
 
-uint64_t SimTemporalPE::executeFU(uint8_t opcode,
-                                    const std::vector<uint64_t> &operands) const {
-  // Simple ALU operations. Opcode maps to FU type index.
-  // For now, default to add.
-  uint64_t a = operands.size() > 0 ? operands[0] : 0;
+void SimTemporalPE::setFUDescriptor(unsigned fuIdx,
+                                     const std::string &bodyOp,
+                                     unsigned dataWidth) {
+  if (fuIdx >= fuDescriptors_.size())
+    fuDescriptors_.resize(fuIdx + 1);
+  fuDescriptors_[fuIdx].bodyOp = bodyOp;
+  fuDescriptors_[fuIdx].dataWidth = dataWidth;
+}
+
+uint64_t SimTemporalPE::executeFU(
+    uint8_t opcode, const std::vector<uint64_t> &operands) const {
+  // Dispatch to the FU body identified by opcode. Each FU type is a native
+  // fabric.pe body per spec-fabric-temporal_pe.md.
+  unsigned dw = valueWidth_;
+  std::string bodyOp = "arith.addi"; // Fallback if no descriptor.
+  if (opcode < fuDescriptors_.size()) {
+    bodyOp = fuDescriptors_[opcode].bodyOp;
+    dw = fuDescriptors_[opcode].dataWidth;
+  }
+
+  uint64_t a = !operands.empty() ? operands[0] : 0;
   uint64_t b = operands.size() > 1 ? operands[1] : 0;
 
-  // The actual opcode-to-operation mapping depends on the FU types
-  // configured for this temporal PE. For now, use basic arithmetic.
-  auto mask = [this](uint64_t v) -> uint64_t {
-    if (valueWidth_ >= 64)
+  auto mask = [dw](uint64_t v) -> uint64_t {
+    if (dw >= 64)
       return v;
-    return v & ((1ULL << valueWidth_) - 1);
+    return v & ((1ULL << dw) - 1);
   };
 
-  switch (opcode) {
-  case 0: return mask(a + b);  // add
-  case 1: return mask(a - b);  // sub
-  case 2: return mask(a * b);  // mul
-  case 3: return mask(a & b);  // and
-  case 4: return mask(a | b);  // or
-  case 5: return mask(a ^ b);  // xor
-  case 6: return mask(a << (b & 63)); // shl
-  case 7: return mask(a >> (b & 63)); // shr
-  default: return mask(a + b);
+  auto signExt = [dw](uint64_t v) -> int64_t {
+    if (dw >= 64)
+      return static_cast<int64_t>(v);
+    if (v & (1ULL << (dw - 1)))
+      return static_cast<int64_t>(v | (~0ULL << dw));
+    return static_cast<int64_t>(v);
+  };
+
+  auto toFloat = [](uint64_t v) -> float {
+    float f;
+    uint32_t u = static_cast<uint32_t>(v);
+    std::memcpy(&f, &u, sizeof(f));
+    return f;
+  };
+
+  auto fromFloat = [](float f) -> uint64_t {
+    uint32_t u;
+    std::memcpy(&u, &f, sizeof(u));
+    return u;
+  };
+
+  auto toDouble = [](uint64_t v) -> double {
+    double d;
+    std::memcpy(&d, &v, sizeof(d));
+    return d;
+  };
+
+  auto fromDouble = [](double d) -> uint64_t {
+    uint64_t u;
+    std::memcpy(&u, &d, sizeof(u));
+    return u;
+  };
+
+  // Integer arith ops.
+  if (bodyOp == "arith.addi") return mask(a + b);
+  if (bodyOp == "arith.subi") return mask(a - b);
+  if (bodyOp == "arith.muli") return mask(a * b);
+  if (bodyOp == "arith.divsi")
+    return b != 0 ? mask(static_cast<uint64_t>(signExt(a) / signExt(b))) : 0;
+  if (bodyOp == "arith.divui")
+    return b != 0 ? mask(a / b) : 0;
+  if (bodyOp == "arith.remsi")
+    return b != 0 ? mask(static_cast<uint64_t>(signExt(a) % signExt(b))) : 0;
+  if (bodyOp == "arith.remui")
+    return b != 0 ? mask(a % b) : 0;
+  if (bodyOp == "arith.andi") return mask(a & b);
+  if (bodyOp == "arith.ori") return mask(a | b);
+  if (bodyOp == "arith.xori") return mask(a ^ b);
+  if (bodyOp == "arith.shli") return mask(a << (b & 63));
+  if (bodyOp == "arith.shrsi")
+    return mask(static_cast<uint64_t>(signExt(a) >> (b & 63)));
+  if (bodyOp == "arith.shrui") return mask(a >> (b & 63));
+  if (bodyOp == "arith.extsi")
+    return static_cast<uint64_t>(signExt(a));
+  if (bodyOp == "arith.extui" || bodyOp == "arith.trunci")
+    return mask(a);
+  if (bodyOp == "arith.index_cast" || bodyOp == "arith.index_castui")
+    return mask(a);
+  if (bodyOp == "arith.select")
+    return (a & 1) ? b : (operands.size() > 2 ? operands[2] : 0);
+
+  // Float arith ops.
+  if (bodyOp == "arith.addf") {
+    if (dw <= 32) return fromFloat(toFloat(a) + toFloat(b));
+    return fromDouble(toDouble(a) + toDouble(b));
   }
+  if (bodyOp == "arith.subf") {
+    if (dw <= 32) return fromFloat(toFloat(a) - toFloat(b));
+    return fromDouble(toDouble(a) - toDouble(b));
+  }
+  if (bodyOp == "arith.mulf") {
+    if (dw <= 32) return fromFloat(toFloat(a) * toFloat(b));
+    return fromDouble(toDouble(a) * toDouble(b));
+  }
+  if (bodyOp == "arith.divf") {
+    if (dw <= 32) return fromFloat(toFloat(a) / toFloat(b));
+    return fromDouble(toDouble(a) / toDouble(b));
+  }
+  if (bodyOp == "arith.negf") {
+    if (dw <= 32) return fromFloat(-toFloat(a));
+    return fromDouble(-toDouble(a));
+  }
+
+  // Float-int conversion.
+  if (bodyOp == "arith.fptosi") {
+    if (dw <= 32)
+      return mask(static_cast<uint64_t>(static_cast<int64_t>(toFloat(a))));
+    return static_cast<uint64_t>(static_cast<int64_t>(toDouble(a)));
+  }
+  if (bodyOp == "arith.fptoui") {
+    if (dw <= 32) return mask(static_cast<uint64_t>(toFloat(a)));
+    return static_cast<uint64_t>(toDouble(a));
+  }
+  if (bodyOp == "arith.sitofp") {
+    if (dw <= 32) return fromFloat(static_cast<float>(signExt(a)));
+    return fromDouble(static_cast<double>(signExt(a)));
+  }
+  if (bodyOp == "arith.uitofp") {
+    if (dw <= 32) return fromFloat(static_cast<float>(a));
+    return fromDouble(static_cast<double>(a));
+  }
+
+  // Math ops.
+  if (bodyOp == "math.absf") {
+    if (dw <= 32) return fromFloat(std::fabs(toFloat(a)));
+    return fromDouble(std::fabs(toDouble(a)));
+  }
+  if (bodyOp == "math.cos") {
+    if (dw <= 32) return fromFloat(std::cos(toFloat(a)));
+    return fromDouble(std::cos(toDouble(a)));
+  }
+  if (bodyOp == "math.exp") {
+    if (dw <= 32) return fromFloat(std::exp(toFloat(a)));
+    return fromDouble(std::exp(toDouble(a)));
+  }
+  if (bodyOp == "math.fma") {
+    uint64_t c = operands.size() > 2 ? operands[2] : 0;
+    if (dw <= 32)
+      return fromFloat(std::fma(toFloat(a), toFloat(b), toFloat(c)));
+    return fromDouble(std::fma(toDouble(a), toDouble(b), toDouble(c)));
+  }
+  if (bodyOp == "math.log2") {
+    if (dw <= 32) return fromFloat(std::log2(toFloat(a)));
+    return fromDouble(std::log2(toDouble(a)));
+  }
+  if (bodyOp == "math.sin") {
+    if (dw <= 32) return fromFloat(std::sin(toFloat(a)));
+    return fromDouble(std::sin(toDouble(a)));
+  }
+  if (bodyOp == "math.sqrt") {
+    if (dw <= 32) return fromFloat(std::sqrt(toFloat(a)));
+    return fromDouble(std::sqrt(toDouble(a)));
+  }
+
+  // LLVM ops.
+  if (bodyOp == "llvm.intr.bitreverse") {
+    uint64_t result = 0;
+    for (unsigned i = 0; i < dw; ++i) {
+      if (a & (1ULL << i))
+        result |= (1ULL << (dw - 1 - i));
+    }
+    return result;
+  }
+
+  // Fallback: pass through.
+  return mask(a);
 }
 
 void SimTemporalPE::evaluateCombinational() {

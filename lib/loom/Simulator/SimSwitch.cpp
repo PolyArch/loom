@@ -25,6 +25,8 @@ void SimSwitch::reset() {
   // routeTable_, outputSource_, inputTargets_ are set by configure().
   errorValid_ = false;
   errorCode_ = RtError::OK;
+  pendingError_ = false;
+  pendingErrorCode_ = RtError::OK;
   perf_ = PerfSnapshot();
 }
 

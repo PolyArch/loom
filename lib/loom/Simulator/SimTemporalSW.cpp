@@ -32,6 +32,8 @@ void SimTemporalSW::reset() {
   broadcastOk_.assign(numInputs_, false);
   errorValid_ = false;
   errorCode_ = RtError::OK;
+  pendingError_ = false;
+  pendingErrorCode_ = RtError::OK;
   perf_ = PerfSnapshot();
 }
 

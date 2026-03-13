@@ -75,7 +75,157 @@ std::vector<bool> decodeConnTable(
   return std::vector<bool>(nOut * nIn, true);
 }
 
+/// Ceiling of log2 for positive integers. Returns 0 for x <= 1.
+unsigned log2Ceil(unsigned x) {
+  if (x <= 1)
+    return 0;
+  unsigned r = 0;
+  unsigned v = x - 1;
+  while (v > 0) {
+    v >>= 1;
+    ++r;
+  }
+  return r;
+}
+
 } // namespace
+
+unsigned computeConfigWidth(
+    const std::string &opName, unsigned numInputs, unsigned numOutputs,
+    const std::vector<std::pair<std::string, int64_t>> &intAttrs,
+    const std::vector<std::pair<std::string, std::string>> &strAttrs,
+    const std::vector<std::pair<std::string, std::vector<int8_t>>>
+        &arrayAttrs) {
+
+  if (opName == "fabric.switch") {
+    unsigned nIn =
+        static_cast<unsigned>(getIntAttr(intAttrs, "num_inputs", numInputs));
+    unsigned nOut =
+        static_cast<unsigned>(getIntAttr(intAttrs, "num_outputs", numOutputs));
+    auto conn = decodeConnTable(arrayAttrs, nOut, nIn);
+    unsigned K = 0;
+    for (bool c : conn)
+      if (c)
+        ++K;
+    return K;
+  }
+
+  if (opName == "fabric.fifo") {
+    bool bypassable = hasAttr(intAttrs, "bypassable");
+    return bypassable ? 1 : 0;
+  }
+
+  if (opName == "fabric.add_tag")
+    return static_cast<unsigned>(getIntAttr(intAttrs, "tag_width", 4));
+
+  if (opName == "fabric.map_tag") {
+    unsigned inTW =
+        static_cast<unsigned>(getIntAttr(intAttrs, "in_tag_width", 4));
+    unsigned outTW =
+        static_cast<unsigned>(getIntAttr(intAttrs, "out_tag_width", 4));
+    unsigned tableSize =
+        static_cast<unsigned>(getIntAttr(intAttrs, "table_size", 4));
+    return tableSize * (1 + inTW + outTW);
+  }
+
+  if (opName == "fabric.del_tag")
+    return 0;
+
+  if (opName == "fabric.memory" || opName == "fabric.extmemory") {
+    // Per spec-fabric-mem.md: CONFIG_WIDTH = numRegion * (1 + 2*TW + AW).
+    unsigned numRegion =
+        static_cast<unsigned>(getIntAttr(intAttrs, "num_region", 1));
+    unsigned tagWidth =
+        static_cast<unsigned>(getIntAttr(intAttrs, "tag_width", 4));
+    unsigned addrWidth =
+        static_cast<unsigned>(getIntAttr(intAttrs, "addr_width", 32));
+    return numRegion * (1 + 2 * tagWidth + addrWidth);
+  }
+
+  if (opName == "fabric.temporal_sw") {
+    unsigned tagWidth =
+        static_cast<unsigned>(getIntAttr(intAttrs, "tag_width", 4));
+    unsigned numRouteTable =
+        static_cast<unsigned>(getIntAttr(intAttrs, "num_route_table", 4));
+    unsigned nIn =
+        static_cast<unsigned>(getIntAttr(intAttrs, "num_inputs", numInputs));
+    unsigned nOut =
+        static_cast<unsigned>(getIntAttr(intAttrs, "num_outputs", numOutputs));
+    auto conn = decodeConnTable(arrayAttrs, nOut, nIn);
+    unsigned K = 0;
+    for (bool c : conn)
+      if (c)
+        ++K;
+    unsigned slotWidth = 1 + tagWidth + K;
+    return numRouteTable * slotWidth;
+  }
+
+  if (opName == "fabric.temporal_pe") {
+    unsigned tagWidth =
+        static_cast<unsigned>(getIntAttr(intAttrs, "tag_width", 4));
+    unsigned numInsns =
+        static_cast<unsigned>(getIntAttr(intAttrs, "num_instructions", 4));
+    unsigned numRegs =
+        static_cast<unsigned>(getIntAttr(intAttrs, "num_registers", 0));
+    unsigned numFuTypes =
+        static_cast<unsigned>(getIntAttr(intAttrs, "num_fu_types", 1));
+
+    unsigned O = log2Ceil(numFuTypes);
+    unsigned opcW = (numRegs > 0) ? (1 + log2Ceil(numRegs)) : 0;
+    unsigned resW = opcW + tagWidth;
+    unsigned insnWidth =
+        1 + tagWidth + O + numInputs * opcW + numOutputs * resW;
+
+    // Per-FU cmp ops contribute 4 bits each. The per-FU cmp count is not
+    // available from ADG graph attributes at this level; default to 0.
+    // If FU cmp config is needed, the ADG should provide num_cmp_ops_per_fu.
+    unsigned cmpBits = 0;
+    return cmpBits + numInsns * insnWidth;
+  }
+
+  if (opName == "fabric.pe") {
+    std::string bodyOp = getStrAttr(strAttrs, "body_op", "arith.addi");
+    std::string resClass = getStrAttr(strAttrs, "resource_class", "compute");
+    bool isTagged = hasAttr(intAttrs, "output_tag") ||
+                    getIntAttr(intAttrs, "is_tagged", 0) != 0;
+    unsigned tagWidth =
+        static_cast<unsigned>(getIntAttr(intAttrs, "tag_width", 4));
+    unsigned dataWidth =
+        static_cast<unsigned>(getIntAttr(intAttrs, "data_width", 32));
+
+    bool isCmp = (bodyOp == "arith.cmpi" || bodyOp == "arith.cmpf");
+    unsigned numCmpOps = isCmp ? 1 : 0;
+
+    // Constant PE.
+    if (resClass == "constant") {
+      if (isTagged && numOutputs == 1)
+        return dataWidth + tagWidth;
+      return dataWidth;
+    }
+
+    // Load/Store PE.
+    if (resClass == "load" || resClass == "store") {
+      std::string tagMode = getStrAttr(strAttrs, "tag_mode", "native");
+      if (tagMode == "tag_overwrite" && isTagged)
+        return tagWidth;
+      return 0;
+    }
+
+    // dataflow.stream PE.
+    if (bodyOp == "dataflow.stream") {
+      if (isTagged)
+        return numOutputs * tagWidth + 5;
+      return 5;
+    }
+
+    // General compute (including dataflow.carry, invariant, gate).
+    if (isTagged)
+      return numOutputs * tagWidth + 4 * numCmpOps;
+    return 4 * numCmpOps;
+  }
+
+  return 0;
+}
 
 std::unique_ptr<SimModule> createSimModule(
     uint32_t hwNodeId, const std::string &name, const std::string &opName,
@@ -156,10 +306,20 @@ std::unique_ptr<SimModule> createSimModule(
     unsigned valueWidth = static_cast<unsigned>(getIntAttr(intAttrs, "data_width", 32));
     bool sharedBuf = getIntAttr(intAttrs, "shared_operand_buffer", 0) != 0;
     unsigned bufSize = static_cast<unsigned>(getIntAttr(intAttrs, "operand_buffer_size", numInsns));
-    mod = std::make_unique<SimTemporalPE>(numInputs, numOutputs, tagWidth,
-                                            numInsns, numRegs, regFifoDepth,
-                                            numFuTypes, valueWidth, sharedBuf,
-                                            bufSize);
+    auto tpe = std::make_unique<SimTemporalPE>(numInputs, numOutputs, tagWidth,
+                                                numInsns, numRegs, regFifoDepth,
+                                                numFuTypes, valueWidth, sharedBuf,
+                                                bufSize);
+    // Set per-FU body ops from ADG attributes (fu_body_op_N) if available.
+    for (unsigned f = 0; f < numFuTypes; ++f) {
+      std::string key = "fu_body_op_" + std::to_string(f);
+      std::string fuOp = getStrAttr(strAttrs, key, "arith.addi");
+      std::string dwKey = "fu_data_width_" + std::to_string(f);
+      unsigned fuDw = static_cast<unsigned>(
+          getIntAttr(intAttrs, dwKey, static_cast<int64_t>(valueWidth)));
+      tpe->setFUDescriptor(f, fuOp, fuDw);
+    }
+    mod = std::move(tpe);
   } else if (opName == "fabric.temporal_sw") {
     unsigned tagWidth = static_cast<unsigned>(getIntAttr(intAttrs, "tag_width", 4));
     unsigned numRouteTable = static_cast<unsigned>(getIntAttr(intAttrs, "num_route_table", 4));
@@ -174,9 +334,11 @@ std::unique_ptr<SimModule> createSimModule(
     unsigned dataWidth = static_cast<unsigned>(getIntAttr(intAttrs, "data_width", 32));
     unsigned tagWidth = static_cast<unsigned>(getIntAttr(intAttrs, "tag_width", 4));
     unsigned addrWidth = static_cast<unsigned>(getIntAttr(intAttrs, "addr_width", 32));
+    unsigned numRegion = static_cast<unsigned>(getIntAttr(intAttrs, "num_region", 1));
     uint32_t extLatency = static_cast<uint32_t>(getIntAttr(intAttrs, "ext_latency", isExternal ? 10 : 0));
     mod = std::make_unique<SimMemory>(isExternal, ldCount, stCount, dataWidth,
-                                       tagWidth, addrWidth, extLatency);
+                                       tagWidth, addrWidth, numRegion,
+                                       extLatency);
   }
 
   if (mod) {

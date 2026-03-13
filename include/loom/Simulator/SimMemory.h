@@ -25,7 +25,7 @@ class SimMemory : public SimModule {
 public:
   SimMemory(bool isExternal, unsigned ldCount, unsigned stCount,
             unsigned dataWidth, unsigned tagWidth, unsigned addrWidth,
-            uint32_t extLatency = 0);
+            unsigned numRegion = 1, uint32_t extLatency = 0);
 
   bool isCombinational() const override { return false; }
   void evaluateCombinational() override;
@@ -49,6 +49,7 @@ private:
   unsigned dataWidth_;
   unsigned tagWidth_;
   unsigned addrWidth_;
+  unsigned numRegion_;
   uint32_t extLatency_;
 
   /// On-chip memory storage (for fabric.memory).
@@ -68,18 +69,45 @@ private:
   };
   std::deque<PendingLoad> pendingLoads_;
 
-  /// Port layout (multi-port memory):
+  /// addr_offset_table: per-region tag-to-offset mapping.
+  /// Per spec-fabric-mem.md: each region has valid, start_tag, end_tag,
+  /// addr_offset. A tag matches region i if valid && start_tag <= tag < end_tag.
+  struct AddrOffsetEntry {
+    bool valid = false;
+    uint16_t startTag = 0;
+    uint16_t endTag = 0;
+    uint64_t addrOffset = 0;
+  };
+  std::vector<AddrOffsetEntry> addrOffsetTable_;
+
+  /// Port layout per spec-fabric-mem.md (multi-port memory):
   /// For ldCount=L, stCount=S:
-  ///   Inputs:  [ld_addr_0, ..., ld_addr_{L-1}, st_data_0, st_addr_0, ..., st_data_{S-1}, st_addr_{S-1}]
-  ///   Outputs: [ld_data_0, ..., ld_data_{L-1}, ld_done_0, ..., ld_done_{L-1}, st_done_0, ..., st_done_{S-1}]
-  ///
-  /// For single-port (ldCount<=1, stCount<=1), layout is simpler.
+  ///   Inputs:  [ld_addr_0..L-1, st_addr_0..S-1, st_data_0..S-1]
+  ///   Outputs: [ld_data_0..L-1, ld_done_0..L-1, st_done_0..S-1]
 
   /// Read from memory (on-chip or external).
   uint64_t memRead(uint64_t addr) const;
 
   /// Write to memory (on-chip or external).
   void memWrite(uint64_t addr, uint64_t data);
+
+  /// Resolve address through addr_offset_table. Returns resolved address
+  /// and sets matched=true if a region matched, false otherwise.
+  uint64_t resolveAddr(uint64_t addr, uint16_t tag, bool &matched) const;
+
+  /// Store pairing queue: per-tag (or global for stCount==1) FIFO pairing
+  /// of staddr and stdata arrivals.
+  struct StorePairEntry {
+    uint64_t addr = 0;
+    uint64_t data = 0;
+    bool hasAddr = false;
+    bool hasData = false;
+  };
+  std::unordered_map<uint16_t, std::deque<StorePairEntry>> storePairQueues_;
+
+  /// Deadlock detection counters per store tag.
+  std::unordered_map<uint16_t, uint32_t> storeDeadlockCounters_;
+  static constexpr uint32_t kDeadlockTimeout = 65535;
 
   bool firedThisCycle_ = false;
   uint64_t currentSimCycle_ = 0;

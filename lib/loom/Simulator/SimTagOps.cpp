@@ -19,6 +19,8 @@ void SimAddTag::reset() {
   // Only clear runtime state, NOT configured tag.
   errorValid_ = false;
   errorCode_ = RtError::OK;
+  pendingError_ = false;
+  pendingErrorCode_ = RtError::OK;
   perf_ = PerfSnapshot();
 }
 
@@ -73,6 +75,8 @@ void SimMapTag::reset() {
   // Only clear runtime state, NOT configured table.
   errorValid_ = false;
   errorCode_ = RtError::OK;
+  pendingError_ = false;
+  pendingErrorCode_ = RtError::OK;
   perf_ = PerfSnapshot();
 }
 
@@ -180,6 +184,8 @@ SimDelTag::SimDelTag() = default;
 void SimDelTag::reset() {
   errorValid_ = false;
   errorCode_ = RtError::OK;
+  pendingError_ = false;
+  pendingErrorCode_ = RtError::OK;
   perf_ = PerfSnapshot();
 }
 

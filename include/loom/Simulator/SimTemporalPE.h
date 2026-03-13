@@ -96,12 +96,28 @@ private:
   };
   std::vector<RegFifo> regFifos_;
 
+  /// Per-FU type descriptor. Each FU type corresponds to a native fabric.pe
+  /// body. The opcode from instruction_mem selects the FU type.
+  struct FUDescriptor {
+    std::string bodyOp = "arith.addi"; // Default fallback.
+    unsigned dataWidth = 32;
+  };
+  std::vector<FUDescriptor> fuDescriptors_;
+
   /// Which instruction fired this cycle (-1 if none).
   int firedInstruction_ = -1;
   bool firedThisCycle_ = false;
 
-  /// Helper: execute the FU operation.
-  uint64_t executeFU(uint8_t opcode, const std::vector<uint64_t> &operands) const;
+public:
+  /// Set FU type descriptors (called after construction, from factory).
+  /// fuIdx: FU type index (0..numFuTypes-1).
+  void setFUDescriptor(unsigned fuIdx, const std::string &bodyOp,
+                       unsigned dataWidth);
+
+private:
+  /// Helper: execute the FU operation by dispatching to the correct FU body.
+  uint64_t executeFU(uint8_t opcode,
+                     const std::vector<uint64_t> &operands) const;
 
   /// Helper: check if instruction can fire.
   bool canFire(unsigned insnIdx) const;

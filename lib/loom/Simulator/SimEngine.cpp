@@ -33,6 +33,10 @@ bool SimEngine::buildFromGraph(const Graph &adg) {
   std::unordered_map<uint32_t, SimChannel *> portToChannel;
 
   // First pass: create modules for each non-null node.
+  // Track CONFIG_WIDTH per module for address allocation.
+  moduleConfigMap_.clear();
+  uint32_t currentWordOffset = 0;
+
   for (size_t nodeIdx = 0; nodeIdx < adg.nodes.size(); ++nodeIdx) {
     auto *node = adg.getNode(static_cast<IdIndex>(nodeIdx));
     if (!node)
@@ -79,17 +83,28 @@ bool SimEngine::buildFromGraph(const Graph &adg) {
     }
 
     // Create simulation module.
+    unsigned nIn = static_cast<unsigned>(node->inputPorts.size());
+    unsigned nOut = static_cast<unsigned>(node->outputPorts.size());
     auto mod = createSimModule(
         static_cast<uint32_t>(nodeIdx), nodeName, nodeOpName,
-        static_cast<unsigned>(node->inputPorts.size()),
-        static_cast<unsigned>(node->outputPorts.size()),
-        intAttrs, strAttrs, arrayAttrs);
+        nIn, nOut, intAttrs, strAttrs, arrayAttrs);
 
     if (!mod) {
       llvm::errs() << "SimEngine: unsupported module type '" << nodeOpName
                     << "' at node " << nodeIdx << " (" << nodeName << ")\n";
       continue;
     }
+
+    // Compute CONFIG_WIDTH and allocate config_mem words for this module.
+    unsigned configBits =
+        computeConfigWidth(nodeOpName, nIn, nOut, intAttrs, strAttrs,
+                           arrayAttrs);
+    uint32_t wordCount = (configBits + 31) / 32;
+    ModuleConfigSlice slice;
+    slice.wordOffset = currentWordOffset;
+    slice.wordCount = wordCount;
+    moduleConfigMap_.push_back(slice);
+    currentWordOffset += wordCount;
 
     // Create output channels for this module.
     for (unsigned o = 0; o < node->outputPorts.size(); ++o) {
@@ -228,15 +243,19 @@ void SimEngine::computeTopologicalOrder() {
     }
   }
 
-  // If topological sort didn't include all modules, there's a cycle.
-  // Add remaining modules (they'll be handled by fixed-point iteration).
+  // If topological sort didn't include all modules, there's a combinational
+  // SCC. Latch CFG_ADG_COMBINATIONAL_LOOP on each module in the SCC, and
+  // append them for fixed-point iteration.
   hasCombLoop_ = (combOrder_.size() < n);
   if (hasCombLoop_) {
     std::unordered_set<SimModule *> sorted(combOrder_.begin(),
                                            combOrder_.end());
     for (auto *mod : combModules) {
-      if (sorted.find(mod) == sorted.end())
+      if (sorted.find(mod) == sorted.end()) {
+        mod->latchError(RtError::CFG_ADG_COMBINATIONAL_LOOP);
+        mod->commitError();
         combOrder_.push_back(mod);
+      }
     }
   }
 }
@@ -356,12 +375,8 @@ SimResult SimEngine::run() {
     return result;
   }
 
-  // Check for all-combinational loops.
-  if (hasCombLoop_ && seqModules_.empty()) {
-    result.success = false;
-    result.errorMessage = "All-combinational loop detected with no sequential elements";
-    return result;
-  }
+  // Combinational loops are flagged per-module via CFG_ADG_COMBINATIONAL_LOOP
+  // during computeTopologicalOrder(). Fixed-point iteration handles convergence.
 
   // Configuration overhead cycles.
   uint64_t configWords = configBlob_.size() / 4;
@@ -468,6 +483,10 @@ void SimEngine::stepOneCycle() {
     if (stable)
       break;
   }
+
+  // Commit pending errors (same-cycle min-code precedence).
+  for (auto &mod : modules_)
+    mod->commitError();
 
   emitTraceEvents();
 
