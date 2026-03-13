@@ -25,12 +25,28 @@ namespace loom {
 
 class ConfigGen {
 public:
+  /// Per-module config address slice (public for simulator consumption).
+  struct ConfigSlice {
+    std::string name;
+    uint32_t wordOffset = 0;
+    uint32_t wordCount = 0;
+  };
+
   /// Generate all output files from a completed mapping.
   /// basePath: output path prefix (e.g., "output/kernel")
   /// Always writes: .config.bin, _addr.h, .map.json, .map.txt
   bool generate(const MappingState &state, const Graph &dfg, const Graph &adg,
                 const std::string &basePath,
                 const std::string &profile, int seed);
+
+  /// Get per-module config slices (valid after generate()).
+  /// Each entry maps to an ADG hardware node by position.
+  const std::vector<ConfigSlice> &getConfigSlices() const {
+    return configSlices_;
+  }
+
+  /// Get the total config blob size in bytes (valid after generate()).
+  size_t getConfigBlobSize() const { return configBlob.size(); }
 
   /// Write the binary config image.
   bool writeBinary(const std::string &path);
@@ -69,6 +85,9 @@ private:
   std::vector<uint8_t> configBlob;
   uint32_t totalConfigWords = 0;
   uint32_t wordWidthBits = 32;
+
+  /// Public-facing config slice metadata (populated by generate()).
+  std::vector<ConfigSlice> configSlices_;
 };
 
 } // namespace loom

@@ -181,6 +181,27 @@ std::string EventSimSession::loadConfig(const std::vector<uint8_t> &configBlob) 
   return {};
 }
 
+std::string EventSimSession::loadConfig(
+    const std::vector<uint8_t> &configBlob,
+    const std::vector<SimEngine::ExternalConfigSlice> &slices) {
+  std::lock_guard<std::mutex> lock(mu_);
+
+  if (state_ != SessionState::Ready && state_ != SessionState::Verified) {
+    std::string err =
+        validateTransition(state_, SessionState::Configured);
+    return err.empty() ? "unexpected state for loadConfig" : err;
+  }
+
+  ++epochId_;
+  engine_->setEpochId(epochId_);
+
+  if (!engine_->loadConfig(configBlob, slices))
+    return "failed to load config from blob with slices";
+
+  state_ = SessionState::Configured;
+  return {};
+}
+
 std::string EventSimSession::setInput(unsigned portIdx,
                                        const std::vector<uint64_t> &data,
                                        const std::vector<uint16_t> &tags) {

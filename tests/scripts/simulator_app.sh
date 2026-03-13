@@ -77,13 +77,34 @@ if [[ "${1:-}" == "--single-perapp" ]]; then
     exit 1
   fi
 
-  # Verify output artifacts.
+  # Verify output artifacts exist.
   if [[ ! -f "${sim_out}.trace" ]]; then
     echo "FAIL: trace file not produced for ${APP_NAME}" >&2
     exit 1
   fi
   if [[ ! -f "${sim_out}.stat" ]]; then
     echo "FAIL: stat file not produced for ${APP_NAME}" >&2
+    exit 1
+  fi
+
+  # Verify trace file has correct binary header (LTRC magic).
+  trace_magic=$(head -c 4 "${sim_out}.trace")
+  if [[ "${trace_magic}" != "LTRC" ]]; then
+    echo "FAIL: trace file has invalid magic header for ${APP_NAME}" >&2
+    exit 1
+  fi
+
+  # Verify stat file is valid JSON with success=true and positive cycle count.
+  if ! python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+assert d.get('success') is True, 'success is not true'
+assert d.get('totalCycles', 0) > 0, 'totalCycles is zero'
+assert 'nodePerf' in d, 'nodePerf missing'
+assert 'summary' in d, 'summary missing'
+" "${sim_out}.stat" 2>&1; then
+    echo "FAIL: stat file content invalid for ${APP_NAME}" >&2
     exit 1
   fi
 
@@ -128,13 +149,34 @@ if [[ "${1:-}" == "--single-domain" ]]; then
     exit 1
   fi
 
-  # Verify output artifacts.
+  # Verify output artifacts exist.
   if [[ ! -f "${sim_out}.trace" ]]; then
     echo "FAIL: trace file not produced for ${APP_NAME}" >&2
     exit 1
   fi
   if [[ ! -f "${sim_out}.stat" ]]; then
     echo "FAIL: stat file not produced for ${APP_NAME}" >&2
+    exit 1
+  fi
+
+  # Verify trace file has correct binary header (LTRC magic).
+  trace_magic=$(head -c 4 "${sim_out}.trace")
+  if [[ "${trace_magic}" != "LTRC" ]]; then
+    echo "FAIL: trace file has invalid magic header for ${APP_NAME}" >&2
+    exit 1
+  fi
+
+  # Verify stat file is valid JSON with success=true and positive cycle count.
+  if ! python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+assert d.get('success') is True, 'success is not true'
+assert d.get('totalCycles', 0) > 0, 'totalCycles is zero'
+assert 'nodePerf' in d, 'nodePerf missing'
+assert 'summary' in d, 'summary missing'
+" "${sim_out}.stat" 2>&1; then
+    echo "FAIL: stat file content invalid for ${APP_NAME}" >&2
     exit 1
   fi
 

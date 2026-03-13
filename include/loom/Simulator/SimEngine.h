@@ -34,6 +34,7 @@ struct SimResult {
   bool success = false;
   uint64_t totalCycles = 0;
   uint64_t configCycles = 0;
+  uint64_t totalConfigWrites = 0;
   std::string errorMessage;
 
   /// Per-node performance snapshots (indexed by hwNodeId).
@@ -57,6 +58,16 @@ public:
 
   /// Load configuration from raw bytes.
   bool loadConfig(const std::vector<uint8_t> &configBlob);
+
+  /// Load configuration from raw bytes with mapper-authored config slices.
+  /// Each slice specifies the word offset and count for a module, keyed by name.
+  struct ExternalConfigSlice {
+    std::string name;
+    uint32_t wordOffset = 0;
+    uint32_t wordCount = 0;
+  };
+  bool loadConfig(const std::vector<uint8_t> &configBlob,
+                  const std::vector<ExternalConfigSlice> &slices);
 
   /// Set input data for a specific input port of the accelerator.
   /// portIdx: index of the module input port (boundary input).

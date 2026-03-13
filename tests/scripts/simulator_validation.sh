@@ -155,6 +155,121 @@ test_max_cycles() {
   fi
 }
 
+# ---- Test 6: Trace binary format validation ----
+test_trace_binary_format() {
+  local out="${WORK_DIR}/tracebin"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000
+
+  [[ -s "${out}.trace" ]] || { echo "trace file missing"; return 1; }
+
+  # Verify magic (LTRC), version (1), and event count.
+  python3 -c "
+import struct, sys
+with open('${out}.trace', 'rb') as f:
+    magic = f.read(4)
+    assert magic == b'LTRC', f'bad magic: {magic}'
+    version = struct.unpack('<I', f.read(4))[0]
+    assert version == 1, f'bad version: {version}'
+    count = struct.unpack('<Q', f.read(8))[0]
+    remaining = f.read()
+    event_size = 38  # 8+4+8+2+4+1+1+2+4+4 bytes per packed event
+    actual_events = len(remaining) // event_size
+    assert actual_events == count, f'count mismatch: header={count} actual={actual_events}'
+    assert len(remaining) % event_size == 0, 'trailing bytes in trace file'
+" || return 1
+}
+
+# ---- Test 7: Stat derived metrics validation ----
+test_stat_derived_metrics() {
+  local out="${WORK_DIR}/statmetrics"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000
+
+  [[ -s "${out}.stat" ]] || { echo "stat file missing"; return 1; }
+
+  python3 -c "
+import json, sys
+d = json.load(open('${out}.stat'))
+
+# Check top-level fields.
+for k in ['success', 'totalCycles', 'configCycles', 'executionCycles',
+          'hostTiming', 'nodePerf', 'summary']:
+    assert k in d, f'missing key: {k}'
+
+# Verify executionCycles = totalCycles - configCycles.
+assert d['executionCycles'] == d['totalCycles'] - d['configCycles'], \
+    'executionCycles mismatch'
+
+# Verify hostTiming subfields.
+ht = d['hostTiming']
+for k in ['host_config_time', 'host_exec_time', 'accel_exec_time', 'total_time']:
+    assert k in ht, f'hostTiming missing: {k}'
+
+# Verify summary subfields.
+s = d['summary']
+for k in ['nodeCount', 'totalActiveCycles', 'totalStallInCycles',
+          'totalStallOutCycles', 'totalTokensIn', 'totalTokensOut',
+          'totalConfigWrites', 'configOverheadRatio', 'traceEventCount']:
+    assert k in s, f'summary missing: {k}'
+
+# Verify each nodePerf entry has derived metrics.
+for np in d['nodePerf']:
+    for k in ['utilization', 'inputStallRatio', 'outputStallRatio', 'throughputProxy']:
+        assert k in np, f'nodePerf missing: {k}'
+    # utilization + inputStallRatio + outputStallRatio should sum to ~1.0
+    total_ratio = np['utilization'] + np['inputStallRatio'] + np['outputStallRatio']
+    node_total = np['activeCycles'] + np['stallCyclesIn'] + np['stallCyclesOut']
+    if node_total > 0:
+        assert abs(total_ratio - 1.0) < 0.001, \
+            f'ratio sum={total_ratio} for node {np[\"nodeIndex\"]}'
+" || return 1
+}
+
+# ---- Test 8: Simulation with very low max-cycles ----
+test_sim_low_max_cycles() {
+  local out="${WORK_DIR}/timeout"
+  # Use 5 max-cycles. Config overhead may push total beyond this.
+  # The simulation should still produce valid output artifacts.
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 5 || true
+
+  # Stat file should exist even when cycle budget is tight.
+  [[ -s "${out}.stat" ]] || { echo "stat file missing"; return 1; }
+
+  python3 -c "
+import json
+d = json.load(open('${out}.stat'))
+# totalCycles should be bounded (config overhead + small execution).
+assert d['totalCycles'] <= 50, f'too many cycles for max=5: {d[\"totalCycles\"]}'
+# Should still have valid structure.
+assert 'summary' in d, 'missing summary'
+assert 'nodePerf' in d, 'missing nodePerf'
+" || return 1
+}
+
+# ---- Test 9: Viz heatmap data presence ----
+test_viz_heatmap_data() {
+  local out="${WORK_DIR}/viz_heatmap"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000
+
+  local viz="${out}.viz.html"
+  [[ -f "${viz}" ]] || { echo "viz.html not found"; return 1; }
+
+  # Check nodeUtilization is present in embedded trace data.
+  if ! grep -q 'nodeUtilization' "${viz}"; then
+    echo "viz.html missing nodeUtilization in trace data"
+    return 1
+  fi
+
+  # Check heatmap button is present.
+  if ! grep -q 'trace-heatmap' "${viz}"; then
+    echo "viz.html missing heatmap toggle button"
+    return 1
+  fi
+}
+
 echo "Simulator Validation Tests"
 echo "=========================="
 run_test "basic-artifacts" test_basic_artifacts
@@ -162,6 +277,10 @@ run_test "deterministic-replay" test_deterministic_replay
 run_test "viz-trace-embed" test_viz_trace_embed
 run_test "viz-no-trace" test_viz_no_trace
 run_test "max-cycles" test_max_cycles
+run_test "trace-binary-format" test_trace_binary_format
+run_test "stat-derived-metrics" test_stat_derived_metrics
+run_test "sim-low-max-cycles" test_sim_low_max_cycles
+run_test "viz-heatmap-data" test_viz_heatmap_data
 
 echo ""
 echo "Results: ${pass}/${total} passed, ${fail} failed"

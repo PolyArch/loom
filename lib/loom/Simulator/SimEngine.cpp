@@ -308,6 +308,53 @@ bool SimEngine::loadConfig(const std::vector<uint8_t> &configBlob) {
   return true;
 }
 
+bool SimEngine::loadConfig(const std::vector<uint8_t> &configBlob,
+                           const std::vector<ExternalConfigSlice> &slices) {
+  configBlob_ = configBlob;
+
+  // Build name -> slice index map.
+  std::unordered_map<std::string, const ExternalConfigSlice *> sliceByName;
+  for (const auto &s : slices)
+    sliceByName[s.name] = &s;
+
+  // Parse config blob as 32-bit words.
+  size_t numWords = configBlob_.size() / 4;
+  std::vector<uint32_t> allWords(numWords);
+  for (size_t i = 0; i < numWords; ++i) {
+    allWords[i] = static_cast<uint32_t>(configBlob_[i * 4]) |
+                  (static_cast<uint32_t>(configBlob_[i * 4 + 1]) << 8) |
+                  (static_cast<uint32_t>(configBlob_[i * 4 + 2]) << 16) |
+                  (static_cast<uint32_t>(configBlob_[i * 4 + 3]) << 24);
+  }
+
+  // Apply per-module config slices based on mapper-authored address metadata.
+  for (auto &mod : modules_) {
+    mod->reset();
+
+    auto it = sliceByName.find(mod->name);
+    if (it == sliceByName.end())
+      continue;
+
+    const auto *slice = it->second;
+    if (slice->wordCount == 0)
+      continue;
+    if (slice->wordOffset >= numWords) {
+      llvm::errs() << "SimEngine: config slice for '" << mod->name
+                    << "' offset " << slice->wordOffset
+                    << " exceeds blob size " << numWords << "\n";
+      continue;
+    }
+
+    size_t end = std::min(static_cast<size_t>(slice->wordOffset + slice->wordCount),
+                          numWords);
+    std::vector<uint32_t> modWords(allWords.begin() + slice->wordOffset,
+                                    allWords.begin() + end);
+    mod->configure(modWords);
+  }
+
+  return true;
+}
+
 void SimEngine::setInput(unsigned portIdx, const std::vector<uint64_t> &data,
                          const std::vector<uint16_t> &tags) {
   if (portIdx >= inputQueues_.size())
@@ -389,7 +436,8 @@ SimResult SimEngine::run() {
   result.configCycles = configCycles;
   currentCycle_ = configCycles;
 
-  // Emit config write events.
+  // Emit config write events and count total config writes.
+  result.totalConfigWrites = configWords;
   if (config_.traceMode != TraceMode::Off) {
     for (uint64_t w = 0; w < configWords; ++w) {
       uint64_t writeCycle = w / config_.configWordsPerCycle;
@@ -562,13 +610,26 @@ bool SimEngine::isComplete() const {
       return false;
   }
 
-  // And all modules have no pending tokens (check if any output is still valid).
+  // Check if any module still has pending tokens (output valid).
   for (auto &mod : modules_) {
     for (auto *out : mod->outputs) {
       if (out->valid)
         return false;
     }
   }
+
+  // Require at least one cycle of actual execution to avoid immediate
+  // termination when no boundary inputs were provided. Most Loom apps
+  // receive data through extmemory, not boundary input ports.
+  uint64_t execStart = 0;
+  if (config_.configWordsPerCycle > 0) {
+    uint64_t configWords = configBlob_.size() / 4;
+    execStart = (configWords + config_.configWordsPerCycle - 1) /
+                    config_.configWordsPerCycle +
+                config_.resetOverheadCycles;
+  }
+  if (currentCycle_ <= execStart)
+    return false;
 
   return true;
 }

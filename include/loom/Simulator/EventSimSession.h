@@ -81,6 +81,10 @@ public:
   /// Load configuration from raw bytes (Ready|Verified -> Configured).
   std::string loadConfig(const std::vector<uint8_t> &configBlob);
 
+  /// Load configuration from raw bytes with mapper-authored config slices.
+  std::string loadConfig(const std::vector<uint8_t> &configBlob,
+                         const std::vector<SimEngine::ExternalConfigSlice> &slices);
+
   /// Set input data for a boundary input port.
   /// Only valid in Configured state.
   std::string setInput(unsigned portIdx, const std::vector<uint64_t> &data,

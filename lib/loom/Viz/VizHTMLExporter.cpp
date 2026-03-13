@@ -414,6 +414,7 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
         << "    <option value=\"20\">20x</option>\n"
         << "    <option value=\"100\">100x</option>\n"
         << "  </select></label>\n"
+        << "  <button id=\"trace-heatmap\" title=\"Toggle utilization heatmap\">Heatmap</button>\n"
         << "</div>\n\n";
   }
 

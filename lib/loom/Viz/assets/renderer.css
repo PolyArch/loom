@@ -313,3 +313,24 @@ body:has(#trace-toolbar) #graph-area {
   stroke-width: 3px !important;
   filter: drop-shadow(0 0 3px #cc66ff);
 }
+
+.trace-route-edge {
+  stroke: #44aaff !important;
+  stroke-width: 3px !important;
+  opacity: 1 !important;
+  filter: drop-shadow(0 0 4px #44aaff);
+}
+
+/* Heatmap toggle button */
+#trace-heatmap {
+  padding: 2px 10px;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#trace-heatmap:hover { background: #0f3460; }
+#trace-heatmap.active { background: #e94560; border-color: #e94560; color: white; }

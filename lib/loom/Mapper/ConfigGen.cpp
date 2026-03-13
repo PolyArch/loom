@@ -817,6 +817,17 @@ bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
     }
   }
 
+  // Populate public config slice metadata for simulator consumption.
+  configSlices_.clear();
+  configSlices_.reserve(nodeConfigs.size());
+  for (const auto &nc : nodeConfigs) {
+    ConfigSlice slice;
+    slice.name = nc.name;
+    slice.wordOffset = nc.wordOffset;
+    slice.wordCount = nc.wordCount;
+    configSlices_.push_back(slice);
+  }
+
   // Write output files.
   if (!writeBinary(basePath + ".config.bin"))
     return false;

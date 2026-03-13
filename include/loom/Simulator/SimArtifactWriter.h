@@ -26,7 +26,8 @@ struct SimResult; // Forward declaration.
 /// Host-side timing breakdown for the stat file.
 struct HostTiming {
   double configSeconds = 0.0;
-  double executeSeconds = 0.0;
+  double hostExecSeconds = 0.0;
+  double accelExecSeconds = 0.0;
   double totalSeconds = 0.0;
 };
 

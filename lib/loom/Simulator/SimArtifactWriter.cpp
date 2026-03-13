@@ -22,7 +22,7 @@ namespace sim {
 
 /// Binary trace format:
 ///   Header: 4-byte magic "LTRC", 4-byte version (1), 8-byte event count
-///   Events: packed LoomTraceEvent records (40 bytes each)
+///   Events: packed LoomTraceEvent records (38 bytes each)
 ///     uint64_t cycle
 ///     uint32_t epochId
 ///     uint64_t invocationId
@@ -113,21 +113,34 @@ bool writeStatFile(const std::string &path, const SimResult &result,
     out << "  \"errorMessage\": \"" << escapeJson(result.errorMessage)
         << "\",\n";
 
-  // Host timing.
+  // Host timing breakdown.
   out << "  \"hostTiming\": {\n";
-  out << "    \"configSeconds\": " << timing.configSeconds << ",\n";
-  out << "    \"executeSeconds\": " << timing.executeSeconds << ",\n";
-  out << "    \"totalSeconds\": " << timing.totalSeconds << "\n";
+  out << "    \"host_config_time\": " << timing.configSeconds << ",\n";
+  out << "    \"host_exec_time\": " << timing.hostExecSeconds << ",\n";
+  out << "    \"accel_exec_time\": " << timing.accelExecSeconds << ",\n";
+  out << "    \"total_time\": " << timing.totalSeconds << "\n";
   out << "  },\n";
 
-  // Per-node performance.
+  // Per-node performance with derived metrics.
   out << "  \"nodePerf\": [\n";
   for (size_t i = 0; i < result.nodePerf.size(); ++i) {
     const auto &p = result.nodePerf[i];
-    uint64_t totalCycles = p.activeCycles + p.stallCyclesIn + p.stallCyclesOut;
+    uint64_t nodeTotalCycles = p.activeCycles + p.stallCyclesIn + p.stallCyclesOut;
     double utilization =
-        (totalCycles > 0)
-            ? static_cast<double>(p.activeCycles) / totalCycles
+        (nodeTotalCycles > 0)
+            ? static_cast<double>(p.activeCycles) / nodeTotalCycles
+            : 0.0;
+    double inputStallRatio =
+        (nodeTotalCycles > 0)
+            ? static_cast<double>(p.stallCyclesIn) / nodeTotalCycles
+            : 0.0;
+    double outputStallRatio =
+        (nodeTotalCycles > 0)
+            ? static_cast<double>(p.stallCyclesOut) / nodeTotalCycles
+            : 0.0;
+    double throughputProxy =
+        (p.activeCycles > 0)
+            ? static_cast<double>(p.tokensOut) / p.activeCycles
             : 0.0;
 
     out << "    {\n";
@@ -138,7 +151,10 @@ bool writeStatFile(const std::string &path, const SimResult &result,
     out << "      \"tokensIn\": " << p.tokensIn << ",\n";
     out << "      \"tokensOut\": " << p.tokensOut << ",\n";
     out << "      \"configWrites\": " << p.configWrites << ",\n";
-    out << "      \"utilization\": " << utilization << "\n";
+    out << "      \"utilization\": " << utilization << ",\n";
+    out << "      \"inputStallRatio\": " << inputStallRatio << ",\n";
+    out << "      \"outputStallRatio\": " << outputStallRatio << ",\n";
+    out << "      \"throughputProxy\": " << throughputProxy << "\n";
     out << "    }";
     if (i + 1 < result.nodePerf.size())
       out << ",";
@@ -157,6 +173,15 @@ bool writeStatFile(const std::string &path, const SimResult &result,
     totalTokensOut += p.tokensOut;
   }
 
+  uint64_t execCycles =
+      (result.totalCycles > result.configCycles)
+          ? result.totalCycles - result.configCycles
+          : 0;
+  double configOverheadRatio =
+      (result.totalCycles > 0)
+          ? static_cast<double>(result.configCycles) / result.totalCycles
+          : 0.0;
+
   out << "  \"summary\": {\n";
   out << "    \"nodeCount\": " << result.nodePerf.size() << ",\n";
   out << "    \"totalActiveCycles\": " << totalActive << ",\n";
@@ -164,6 +189,8 @@ bool writeStatFile(const std::string &path, const SimResult &result,
   out << "    \"totalStallOutCycles\": " << totalStallOut << ",\n";
   out << "    \"totalTokensIn\": " << totalTokensIn << ",\n";
   out << "    \"totalTokensOut\": " << totalTokensOut << ",\n";
+  out << "    \"totalConfigWrites\": " << result.totalConfigWrites << ",\n";
+  out << "    \"configOverheadRatio\": " << configOverheadRatio << ",\n";
   out << "    \"traceEventCount\": " << result.traceEvents.size() << "\n";
   out << "  }\n";
 
