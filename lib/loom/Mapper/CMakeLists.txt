@@ -14,6 +14,9 @@ add_llvm_library(LoomMapperCore
   MapperCost.cpp
   MapperLog.cpp
   ConfigGen.cpp
+  ConfigGenUtil.cpp
+  ConfigGenReport.cpp
+  ConfigGenFabric.cpp
   CPSATSolver.cpp
   DomainMask.cpp
 
