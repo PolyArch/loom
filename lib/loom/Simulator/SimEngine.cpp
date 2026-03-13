@@ -302,9 +302,6 @@ bool SimEngine::loadConfig(const std::vector<uint8_t> &configBlob) {
                                         allWords.begin() + end);
         modules_[m]->configure(modWords);
       }
-    } else {
-      // No address map entry - apply all words (fallback for simple cases).
-      modules_[m]->configure(allWords);
     }
   }
 
@@ -337,6 +334,11 @@ std::vector<uint16_t> SimEngine::getOutputTags(unsigned portIdx) const {
 void SimEngine::resetExecution() {
   currentCycle_ = 0;
   invocationId_++;
+
+  // Reset all module runtime state while preserving configuration.
+  for (auto &mod : modules_)
+    mod->reset();
+
   for (auto &ch : channels_) {
     ch->valid = false;
     ch->ready = false;

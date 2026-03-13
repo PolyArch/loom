@@ -150,6 +150,31 @@ add_custom_target(check-loom-mapper-app
   DEPENDS check-loom-mapper-app-domain check-loom-mapper-app-perapp
 )
 
+add_custom_target(check-loom-simulator-app-perapp
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/simulator_app.sh"
+    "${LOOM_RUNTIME_DIR}/loom" per-app
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-simulator-app-domain
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/simulator_app.sh"
+    "${LOOM_RUNTIME_DIR}/loom" per-domain
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
+add_custom_target(check-loom-simulator-app
+  DEPENDS check-loom-simulator-app-domain check-loom-simulator-app-perapp
+)
+
+add_custom_target(check-loom-simulator-validation
+  COMMAND "${CMAKE_SOURCE_DIR}/tests/scripts/simulator_validation.sh"
+    "${LOOM_RUNTIME_DIR}/loom"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  DEPENDS loom
+)
+
 add_custom_target(check-loom-spec-errcode
   COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/spec/error-alignment.py"
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"

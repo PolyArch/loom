@@ -81,6 +81,22 @@ public:
   /// Get the current cycle count.
   uint64_t getCurrentCycle() const { return currentCycle_; }
 
+  /// Set the epoch ID (called by session layer for multi-epoch support).
+  void setEpochId(uint32_t id) { epochId_ = id; }
+
+  /// Set the invocation ID (called by session layer).
+  void setInvocationId(uint64_t id) { invocationId_ = id; }
+
+  /// Get the number of boundary output ports.
+  unsigned getNumOutputPorts() const {
+    return static_cast<unsigned>(boundaryOutputs_.size());
+  }
+
+  /// Get the number of boundary input ports.
+  unsigned getNumInputPorts() const {
+    return static_cast<unsigned>(boundaryInputs_.size());
+  }
+
 private:
   SimConfig config_;
   uint64_t currentCycle_ = 0;

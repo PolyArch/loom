@@ -152,10 +152,12 @@ std::string EventSimSession::loadConfig(const std::string &configBinPath) {
     return err.empty() ? "unexpected state for loadConfig" : err;
   }
 
+  ++epochId_;
+  engine_->setEpochId(epochId_);
+
   if (!engine_->loadConfig(configBinPath))
     return "failed to load config from: " + configBinPath;
 
-  ++epochId_;
   state_ = SessionState::Configured;
   return {};
 }
@@ -169,10 +171,12 @@ std::string EventSimSession::loadConfig(const std::vector<uint8_t> &configBlob) 
     return err.empty() ? "unexpected state for loadConfig" : err;
   }
 
+  ++epochId_;
+  engine_->setEpochId(epochId_);
+
   if (!engine_->loadConfig(configBlob))
     return "failed to load config from blob";
 
-  ++epochId_;
   state_ = SessionState::Configured;
   return {};
 }
@@ -235,9 +239,28 @@ CompareResult EventSimSession::compare(
 
   std::ostringstream details;
 
-  for (unsigned p = 0; p < referenceOutputs.size(); ++p) {
+  // Compare against all ports: max of reference count and actual port count.
+  unsigned numActualPorts = engine_->getNumOutputPorts();
+  unsigned numPorts = std::max(static_cast<unsigned>(referenceOutputs.size()),
+                               numActualPorts);
+
+  for (unsigned p = 0; p < numPorts; ++p) {
     auto actual = engine_->getOutput(p);
-    const auto &expected = referenceOutputs[p];
+    const auto &expected =
+        (p < referenceOutputs.size()) ? referenceOutputs[p]
+                                      : std::vector<uint64_t>{};
+
+    // Port count mismatch: extra accelerator ports with data are failures.
+    if (p >= referenceOutputs.size() && !actual.empty()) {
+      result.pass = false;
+      ++result.mismatches;
+      if (result.mismatches <= 10) {
+        details << "port " << p << ": unexpected accelerator output ("
+                << actual.size() << " elements, no reference)\n";
+      }
+      result.totalOutputs += static_cast<unsigned>(actual.size());
+      continue;
+    }
 
     size_t len = std::max(actual.size(), expected.size());
     result.totalOutputs += static_cast<unsigned>(len);

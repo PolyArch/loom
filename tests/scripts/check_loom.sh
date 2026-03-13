@@ -32,6 +32,10 @@ any_failure=false
 # Mapper App (Tier 3) is informational: failures are tracked but don't block CI.
 "${SCRIPT_DIR}/mapper_app.sh" "${LOOM_BIN}" per-domain || true
 "${SCRIPT_DIR}/mapper_app.sh" "${LOOM_BIN}" per-app || true
+"${SCRIPT_DIR}/simulator_validation.sh" "${LOOM_BIN}" || any_failure=true
+# Simulator App (Tier 3) is informational: failures are tracked but don't block CI.
+"${SCRIPT_DIR}/simulator_app.sh" "${LOOM_BIN}" per-domain || true
+"${SCRIPT_DIR}/simulator_app.sh" "${LOOM_BIN}" per-app || true
 "${SCRIPT_DIR}/viz_serializer_regression.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/fabric_gen.sh" "${LOOM_BIN}" || any_failure=true
 "${SCRIPT_DIR}/dfg_analysis.sh" "${LOOM_BIN}" || any_failure=true

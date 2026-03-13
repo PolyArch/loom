@@ -77,6 +77,11 @@ html, body {
   position: relative;
 }
 
+/* When trace toolbar is present, shrink graph area */
+body:has(#trace-toolbar) #graph-area {
+  height: calc(100% - 76px);
+}
+
 #panel-adg, #panel-dfg {
   position: relative;
   overflow: hidden;
@@ -223,4 +228,88 @@ html, body {
 .crossbar-line {
   opacity: 0.75;
   pointer-events: none;
+}
+
+/* Trace playback toolbar */
+#trace-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px;
+  background: #0d1b2a;
+  border-bottom: 1px solid #0f3460;
+  height: 36px;
+  z-index: 100;
+}
+
+#trace-toolbar button {
+  padding: 2px 10px;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#trace-toolbar button:hover {
+  background: #0f3460;
+}
+
+#trace-slider {
+  flex: 1;
+  min-width: 100px;
+  accent-color: #e94560;
+}
+
+#trace-cycle {
+  font-size: 11px;
+  color: #aaa;
+  white-space: nowrap;
+  min-width: 120px;
+}
+
+#trace-speed {
+  background: #1a1a2e;
+  color: #e0e0e0;
+  border: 1px solid #0f3460;
+  border-radius: 3px;
+  font-size: 11px;
+  padding: 1px 4px;
+}
+
+/* Trace animation highlights */
+@keyframes node-fire {
+  0% { stroke: #00ff88; stroke-width: 4px; }
+  100% { stroke: #00ff88; stroke-width: 2px; }
+}
+
+.trace-fire {
+  stroke: #00ff88 !important;
+  stroke-width: 3px !important;
+  filter: drop-shadow(0 0 4px #00ff88);
+}
+
+.trace-stall-in {
+  stroke: #ff4444 !important;
+  stroke-width: 3px !important;
+  filter: drop-shadow(0 0 4px #ff4444);
+}
+
+.trace-stall-out {
+  stroke: #ffaa00 !important;
+  stroke-width: 3px !important;
+  filter: drop-shadow(0 0 4px #ffaa00);
+}
+
+.trace-route {
+  stroke: #44aaff !important;
+  stroke-width: 3px !important;
+  filter: drop-shadow(0 0 3px #44aaff);
+}
+
+.trace-config {
+  stroke: #cc66ff !important;
+  stroke-width: 3px !important;
+  filter: drop-shadow(0 0 3px #cc66ff);
 }

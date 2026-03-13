@@ -313,7 +313,9 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
                                mlir::ModuleOp dfgModule,
                                mlir::Operation *fabricModule,
                                const std::string &basePath,
-                               bool vizNeato) {
+                               bool vizNeato,
+                               const std::vector<sim::TraceEvent> *traceEvents,
+                               uint64_t totalCycles, uint64_t configCycles) {
   std::string outPath = basePath + ".viz.html";
   std::error_code ec;
   llvm::raw_fd_ostream out(outPath, ec, llvm::sys::fs::OF_Text);
@@ -396,6 +398,33 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
       << "  <button id=\"detail-close\">Close</button>\n"
       << "</div>\n\n";
 
+  // Trace playback toolbar (hidden when no trace data).
+  bool hasTrace = traceEvents && !traceEvents->empty();
+  if (hasTrace) {
+    out << "<div id=\"trace-toolbar\">\n"
+        << "  <button id=\"trace-step-back\" title=\"Step back\">&lt;</button>\n"
+        << "  <button id=\"trace-play\" title=\"Play/Pause\">Play</button>\n"
+        << "  <button id=\"trace-step-fwd\" title=\"Step forward\">&gt;</button>\n"
+        << "  <input id=\"trace-slider\" type=\"range\" min=\"0\" max=\""
+        << totalCycles << "\" value=\"0\">\n"
+        << "  <span id=\"trace-cycle\">Cycle: 0 / " << totalCycles << "</span>\n"
+        << "  <label>Speed: <select id=\"trace-speed\">\n"
+        << "    <option value=\"1\">1x</option>\n"
+        << "    <option value=\"5\" selected>5x</option>\n"
+        << "    <option value=\"20\">20x</option>\n"
+        << "    <option value=\"100\">100x</option>\n"
+        << "  </select></label>\n"
+        << "</div>\n\n";
+  }
+
+  std::string traceJsonStr;
+  if (hasTrace) {
+    llvm::raw_string_ostream ss(traceJsonStr);
+    writeTraceDataJSON(ss, *traceEvents, totalCycles, configCycles);
+  } else {
+    traceJsonStr = "null";
+  }
+
   out << "<script>\n"
       << "const vizConfig = {\"neato\": " << (vizNeato ? "true" : "false")
       << "};\n\n"
@@ -403,7 +432,8 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
       << "const dfgDot = \"" << scriptSafe(jsonEscape(dfgDotStr)) << "\";\n\n"
       << "const mappingData = " << scriptSafe(mappingJsonStr) << ";\n\n"
       << "const swNodeMetadata = " << scriptSafe(swMetaStr) << ";\n\n"
-      << "const hwNodeMetadata = " << scriptSafe(hwMetaStr) << ";\n"
+      << "const hwNodeMetadata = " << scriptSafe(hwMetaStr) << ";\n\n"
+      << "const traceData = " << scriptSafe(traceJsonStr) << ";\n"
       << "</script>\n\n";
 
   out << "<script>\n"

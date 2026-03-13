@@ -15,6 +15,7 @@
 
 #include "loom/Mapper/Graph.h"
 #include "loom/Mapper/MappingState.h"
+#include "loom/Simulator/SimTypes.h"
 
 #include "loom/Dialect/Dataflow/DataflowTypes.h"
 #include "loom/Dialect/Fabric/FabricTypeUtils.h"
@@ -26,6 +27,7 @@
 #include "llvm/Support/JSON.h"
 
 #include <string>
+#include <vector>
 
 namespace loom {
 
@@ -246,6 +248,10 @@ void writeHWMetadataJSON(llvm::raw_ostream &os, const Graph &adg,
                          const MappingState &state,
                          const llvm::DenseMap<IdIndex, IdIndex> &fuToContainer,
                          const BodyOpsMap &bodyOps);
+
+void writeTraceDataJSON(llvm::raw_ostream &os,
+                        const std::vector<sim::TraceEvent> &events,
+                        uint64_t totalCycles, uint64_t configCycles);
 
 } // namespace loom
 

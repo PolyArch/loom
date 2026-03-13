@@ -11,10 +11,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/Viz/VizHTMLHelpers.h"
+#include "loom/Simulator/SimTypes.h"
 
 #include "llvm/Support/raw_ostream.h"
 
 #include <cmath>
+#include <map>
 #include <regex>
 
 namespace loom {
@@ -761,6 +763,54 @@ void writeHWMetadataJSON(llvm::raw_ostream &os, const Graph &adg,
     json.objectEnd();
     json.attributeEnd();
   }
+
+  json.objectEnd();
+}
+
+// ---- Trace data JSON (for simulation playback) ----
+
+void writeTraceDataJSON(llvm::raw_ostream &os,
+                        const std::vector<sim::TraceEvent> &events,
+                        uint64_t totalCycles, uint64_t configCycles) {
+  // Index events by cycle: cycle -> [(hwNodeId, eventKind), ...]
+  std::map<uint64_t, std::vector<std::pair<uint32_t, uint8_t>>> byCycle;
+  for (const auto &ev : events) {
+    if (ev.eventKind == sim::EV_INVOCATION_START ||
+        ev.eventKind == sim::EV_INVOCATION_DONE ||
+        ev.eventKind == sim::EV_DEVICE_ERROR)
+      continue;
+    byCycle[ev.cycle].emplace_back(ev.hwNodeId,
+                                   static_cast<uint8_t>(ev.eventKind));
+  }
+
+  llvm::json::OStream json(os, /*IndentSize=*/0);
+  json.objectBegin();
+
+  json.attributeBegin("totalCycles");
+  json.value(static_cast<int64_t>(totalCycles));
+  json.attributeEnd();
+
+  json.attributeBegin("configCycles");
+  json.value(static_cast<int64_t>(configCycles));
+  json.attributeEnd();
+
+  // Emit per-cycle event arrays as compact [hwNodeId, eventKind] pairs.
+  json.attributeBegin("cycleEvents");
+  json.objectBegin();
+  for (const auto &entry : byCycle) {
+    json.attributeBegin(std::to_string(entry.first));
+    json.arrayBegin();
+    for (const auto &pair : entry.second) {
+      json.arrayBegin();
+      json.value(static_cast<int64_t>(pair.first));
+      json.value(static_cast<int64_t>(pair.second));
+      json.arrayEnd();
+    }
+    json.arrayEnd();
+    json.attributeEnd();
+  }
+  json.objectEnd();
+  json.attributeEnd();
 
   json.objectEnd();
 }

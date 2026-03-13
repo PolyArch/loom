@@ -15,10 +15,12 @@
 
 #include "loom/Mapper/Graph.h"
 #include "loom/Mapper/MappingState.h"
+#include "loom/Simulator/SimTypes.h"
 
 #include "mlir/IR/BuiltinOps.h"
 
 #include <string>
+#include <vector>
 
 namespace loom {
 
@@ -28,12 +30,16 @@ public:
   /// Returns true on success.
   /// \p dfgModule is the Handshake MLIR module (for DFG attribute enrichment).
   /// \p fabricModule is the fabric MLIR module (for PE body ops extraction).
+  /// \p traceEvents optional trace data for simulation playback controls.
+  /// \p totalCycles / \p configCycles are used only when traceEvents is set.
   bool emitHTML(const Graph &adg, const Graph &dfg,
                 const MappingState &state,
                 mlir::ModuleOp dfgModule,
                 mlir::Operation *fabricModule,
                 const std::string &basePath,
-                bool vizNeato = false);
+                bool vizNeato = false,
+                const std::vector<sim::TraceEvent> *traceEvents = nullptr,
+                uint64_t totalCycles = 0, uint64_t configCycles = 0);
 };
 
 } // namespace loom

@@ -1,6 +1,7 @@
 set(LOOM_SOURCES
   loom.cpp
   loom_args.cpp
+  loom_pipeline.cpp
 )
 
 add_executable(loom ${LOOM_SOURCES})
@@ -61,6 +62,7 @@ foreach(target_name IN ITEMS loom)
     LoomFabric
     LoomADG
     LoomMapperCore
+    LoomSimulator
     LoomViz
     ${LOOM_MLIR_LIBS}
     ${LOOM_LLVM_LIBS}

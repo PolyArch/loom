@@ -83,6 +83,10 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "  --temporal-threshold <f>     Temporal score threshold (default: 0.5)\n";
   llvm::outs() << "  --dump-analysis              Print analysis summary to stdout\n";
   llvm::outs() << "\n";
+  llvm::outs() << "Simulation options:\n";
+  llvm::outs() << "  --simulate                   Run event-driven simulator after mapping\n";
+  llvm::outs() << "  --sim-max-cycles <n>         Maximum simulation cycles (default: 1000000)\n";
+  llvm::outs() << "\n";
   llvm::outs() << "Visualization options:\n";
   llvm::outs() << "  --viz-neato                  Use neato-style stress majorization layout\n";
   llvm::outs() << "\n";
@@ -297,6 +301,19 @@ ParsedArgs ParseArgs(int argc, char **argv) {
       }
       if (arg == "--viz-neato") {
         parsed.viz_neato = true;
+        continue;
+      }
+      if (arg == "--simulate") {
+        parsed.simulate = true;
+        continue;
+      }
+      if (arg == "--sim-max-cycles") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --sim-max-cycles requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.sim_max_cycles = std::stoull(argv[++i]);
         continue;
       }
       // --dump-mapping removed: .map.json and .map.txt are always emitted.
