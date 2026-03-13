@@ -1,0 +1,92 @@
+//===-- SimPE.h - Simulated fabric.pe ----------------------------*- C++ -*-===//
+//
+// Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+//
+// PE model per spec-fabric-pe.md. Supports all PE body types:
+//   - Compute (native and tagged, with optional compare predicates)
+//   - Constant (native and tagged)
+//   - Load/Store (TagOverwrite and TagTransparent)
+//   - dataflow.stream, dataflow.carry, dataflow.invariant, dataflow.gate
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef LOOM_SIMULATOR_SIMPE_H
+#define LOOM_SIMULATOR_SIMPE_H
+
+#include "loom/Simulator/SimModule.h"
+
+namespace loom {
+namespace sim {
+
+class SimPE : public SimModule {
+public:
+  /// PE body type classification.
+  enum class BodyType {
+    Compute,       // Arithmetic/logic operation
+    Constant,      // Constant output
+    Load,          // Memory load
+    Store,         // Memory store
+    StreamCont,    // dataflow.stream continuation condition
+    Carry,         // dataflow.carry
+    Invariant,     // dataflow.invariant
+    Gate,          // dataflow.gate
+  };
+
+  /// Tag mode for load/store PEs.
+  enum class TagMode {
+    Native,        // No tags
+    TagOverwrite,  // Output tag from config
+    TagTransparent // Tag passthrough
+  };
+
+  SimPE(BodyType bodyType, unsigned numInputs, unsigned numOutputs,
+        bool isTagged, unsigned tagWidth, unsigned dataWidth,
+        const std::string &opcodeStr, TagMode tagMode = TagMode::Native);
+
+  bool isCombinational() const override { return true; }
+  void evaluateCombinational() override;
+  void reset() override;
+  void configure(const std::vector<uint32_t> &configWords) override;
+  void collectTraceEvents(std::vector<TraceEvent> &events,
+                          uint64_t cycle) override;
+  PerfSnapshot getPerfSnapshot() const override { return perf_; }
+
+private:
+  BodyType bodyType_;
+  bool isTagged_;
+  unsigned tagWidth_;
+  unsigned dataWidth_;
+  std::string opcodeStr_;
+  TagMode tagMode_;
+
+  /// Configured output tags (one per output, for tagged PEs).
+  std::vector<uint16_t> outputTags_;
+
+  /// Constant value (for constant PEs).
+  uint64_t constantValue_ = 0;
+
+  /// Compare predicate (4-bit encoding for cmpi PEs).
+  uint8_t cmpPredicate_ = 0;
+
+  /// Stream continuation condition selector (5-bit one-hot).
+  uint8_t contCondSel_ = 0;
+
+  /// Sign-extend a value from dataWidth_ to 64 bits.
+  int64_t signExt(uint64_t v) const;
+
+  /// Mask a value to dataWidth_ bits.
+  uint64_t maskToWidth(uint64_t v) const;
+
+  /// Execute the PE's arithmetic/logic operation.
+  uint64_t executeOp(uint64_t a, uint64_t b) const;
+
+  /// Evaluate compare predicate.
+  bool evaluateCmp(uint64_t a, uint64_t b) const;
+};
+
+} // namespace sim
+} // namespace loom
+
+#endif // LOOM_SIMULATOR_SIMPE_H

@@ -1,0 +1,503 @@
+//===-- SimTemporalPE.cpp - Simulated fabric.temporal_pe -----------*- C++ -*-===//
+//
+// Part of the Loom project.
+//
+//===----------------------------------------------------------------------===//
+
+#include "loom/Simulator/SimTemporalPE.h"
+
+#include <algorithm>
+
+namespace loom {
+namespace sim {
+
+namespace {
+
+/// Compute ceil(log2(n)), returning 0 for n <= 1.
+unsigned log2Ceil(unsigned n) {
+  unsigned result = 0;
+  unsigned v = n;
+  while (v > 1) {
+    result++;
+    v = (v + 1) / 2;
+  }
+  return result;
+}
+
+} // namespace
+
+SimTemporalPE::SimTemporalPE(unsigned numInputs, unsigned numOutputs,
+                               unsigned tagWidth, unsigned numInstructions,
+                               unsigned numRegisters, unsigned regFifoDepth,
+                               unsigned numFuTypes, unsigned valueWidth,
+                               bool sharedOperandBuffer,
+                               unsigned operandBufferSize)
+    : numInputs_(numInputs), numOutputs_(numOutputs), tagWidth_(tagWidth),
+      numInstructions_(numInstructions), numRegisters_(numRegisters),
+      regFifoDepth_(regFifoDepth), numFuTypes_(numFuTypes),
+      valueWidth_(valueWidth), sharedOperandBuffer_(sharedOperandBuffer),
+      operandBufferSize_(operandBufferSize) {
+  instructions_.resize(numInstructions);
+  regFifos_.resize(numRegisters);
+}
+
+void SimTemporalPE::reset() {
+  // NOTE: Do NOT clear instructions_ here. Instructions are configuration
+  // state set by configure(), not runtime state. reset() only clears
+  // execution state (operand buffers, register FIFOs, errors).
+
+  if (!sharedOperandBuffer_) {
+    perInsnBuf_.opValid.assign(numInstructions_,
+                               std::vector<bool>(numInputs_, false));
+    perInsnBuf_.opValue.assign(numInstructions_,
+                               std::vector<uint64_t>(numInputs_, 0));
+  } else {
+    sharedBuf_.clear();
+  }
+
+  for (auto &rf : regFifos_) {
+    rf.data.clear();
+    rf.readersRemaining = 0;
+    rf.totalReaders = 0;
+  }
+
+  firedInstruction_ = -1;
+  firedThisCycle_ = false;
+  errorValid_ = false;
+  errorCode_ = RtError::OK;
+  perf_ = PerfSnapshot();
+}
+
+void SimTemporalPE::configure(const std::vector<uint32_t> &configWords) {
+  unsigned bitPos = 0;
+
+  auto extractBits = [&](unsigned width) -> uint64_t {
+    uint64_t val = 0;
+    for (unsigned b = 0; b < width; ++b) {
+      unsigned wordIdx = bitPos / 32;
+      unsigned bit = bitPos % 32;
+      if (wordIdx < configWords.size()) {
+        if (configWords[wordIdx] & (1u << bit))
+          val |= (1ULL << b);
+      }
+      ++bitPos;
+    }
+    return val;
+  };
+
+  // Instruction width calculation per spec.
+  unsigned opcodeWidth = (numFuTypes_ > 1) ? log2Ceil(numFuTypes_) : 0;
+  unsigned R = numRegisters_;
+  unsigned logR = (R > 1) ? log2Ceil(R) : 0;
+
+  for (unsigned s = 0; s < numInstructions_; ++s) {
+    auto &insn = instructions_[s];
+    insn.valid = (extractBits(1) != 0);
+    insn.tag = static_cast<uint16_t>(extractBits(tagWidth_));
+
+    if (opcodeWidth > 0)
+      insn.opcode = static_cast<uint8_t>(extractBits(opcodeWidth));
+
+    insn.operands.resize(numInputs_);
+    for (unsigned i = 0; i < numInputs_; ++i) {
+      if (R > 0) {
+        insn.operands[i].isReg = (extractBits(1) != 0);
+        if (logR > 0)
+          insn.operands[i].regIdx = static_cast<unsigned>(extractBits(logR));
+      }
+    }
+
+    insn.results.resize(numOutputs_);
+    for (unsigned o = 0; o < numOutputs_; ++o) {
+      if (R > 0) {
+        insn.results[o].isReg = (extractBits(1) != 0);
+        if (logR > 0)
+          insn.results[o].regIdx = static_cast<unsigned>(extractBits(logR));
+      }
+      insn.results[o].tag = static_cast<uint16_t>(extractBits(tagWidth_));
+    }
+  }
+
+  // Validate: duplicate tags.
+  for (unsigned i = 0; i < numInstructions_; ++i) {
+    if (!instructions_[i].valid)
+      continue;
+    for (unsigned j = i + 1; j < numInstructions_; ++j) {
+      if (instructions_[j].valid &&
+          instructions_[j].tag == instructions_[i].tag)
+        latchError(RtError::CFG_TEMPORAL_PE_DUP_TAG);
+    }
+  }
+
+  // Validate: register indices.
+  for (auto &insn : instructions_) {
+    if (!insn.valid)
+      continue;
+    for (auto &op : insn.operands) {
+      if (op.isReg && op.regIdx >= numRegisters_)
+        latchError(RtError::CFG_TEMPORAL_PE_ILLEGAL_REG);
+    }
+    for (auto &res : insn.results) {
+      if (res.isReg) {
+        if (res.regIdx >= numRegisters_)
+          latchError(RtError::CFG_TEMPORAL_PE_ILLEGAL_REG);
+        if (res.tag != 0)
+          latchError(RtError::CFG_TEMPORAL_PE_REG_TAG_NONZERO);
+      }
+    }
+  }
+
+  // Initialize operand buffers and register FIFOs for execution.
+  reset();
+}
+
+bool SimTemporalPE::canFire(unsigned insnIdx) const {
+  auto &insn = instructions_[insnIdx];
+  if (!insn.valid)
+    return false;
+
+  if (!sharedOperandBuffer_) {
+    // Per-instruction mode: all operands must be ready.
+    for (unsigned i = 0; i < numInputs_; ++i) {
+      if (insn.operands[i].isReg) {
+        // Operand comes from register - check register has data.
+        if (insn.operands[i].regIdx < regFifos_.size() &&
+            regFifos_[insn.operands[i].regIdx].data.empty())
+          return false;
+      } else {
+        if (!perInsnBuf_.opValid[insnIdx][i])
+          return false;
+      }
+    }
+  } else {
+    // Shared buffer mode: find entry with matching tag, position=0,
+    // and all op_valid set.
+    bool found = false;
+    for (auto &entry : sharedBuf_) {
+      if (entry.tag != insn.tag || entry.position != 0)
+        continue;
+      bool allValid = true;
+      for (unsigned i = 0; i < numInputs_; ++i) {
+        if (insn.operands[i].isReg)
+          continue; // Register operands checked separately.
+        if (!entry.opValid[i]) {
+          allValid = false;
+          break;
+        }
+      }
+      if (allValid) {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      return false;
+
+    // Also check register operands.
+    for (unsigned i = 0; i < numInputs_; ++i) {
+      if (insn.operands[i].isReg &&
+          insn.operands[i].regIdx < regFifos_.size() &&
+          regFifos_[insn.operands[i].regIdx].data.empty())
+        return false;
+    }
+  }
+
+  // Check all non-register output channels are ready.
+  for (unsigned o = 0; o < numOutputs_ && o < outputs.size(); ++o) {
+    if (!insn.results[o].isReg && !outputs[o]->ready)
+      return false;
+  }
+
+  // Check register FIFO capacity for register results.
+  for (unsigned o = 0; o < numOutputs_; ++o) {
+    if (insn.results[o].isReg &&
+        insn.results[o].regIdx < regFifos_.size() &&
+        regFifos_[insn.results[o].regIdx].data.size() >= regFifoDepth_)
+      return false;
+  }
+
+  return true;
+}
+
+uint64_t SimTemporalPE::executeFU(uint8_t opcode,
+                                    const std::vector<uint64_t> &operands) const {
+  // Simple ALU operations. Opcode maps to FU type index.
+  // For now, default to add.
+  uint64_t a = operands.size() > 0 ? operands[0] : 0;
+  uint64_t b = operands.size() > 1 ? operands[1] : 0;
+
+  // The actual opcode-to-operation mapping depends on the FU types
+  // configured for this temporal PE. For now, use basic arithmetic.
+  auto mask = [this](uint64_t v) -> uint64_t {
+    if (valueWidth_ >= 64)
+      return v;
+    return v & ((1ULL << valueWidth_) - 1);
+  };
+
+  switch (opcode) {
+  case 0: return mask(a + b);  // add
+  case 1: return mask(a - b);  // sub
+  case 2: return mask(a * b);  // mul
+  case 3: return mask(a & b);  // and
+  case 4: return mask(a | b);  // or
+  case 5: return mask(a ^ b);  // xor
+  case 6: return mask(a << (b & 63)); // shl
+  case 7: return mask(a >> (b & 63)); // shr
+  default: return mask(a + b);
+  }
+}
+
+void SimTemporalPE::evaluateCombinational() {
+  firedThisCycle_ = false;
+  firedInstruction_ = -1;
+
+  // Accept incoming operands (tag matching).
+  for (unsigned i = 0; i < numInputs_ && i < inputs.size(); ++i) {
+    inputs[i]->ready = false; // Default: not ready.
+
+    if (!inputs[i]->valid)
+      continue;
+
+    uint16_t inTag = inputs[i]->tag;
+
+    // Find matching instruction.
+    int matchIdx = -1;
+    for (unsigned s = 0; s < numInstructions_; ++s) {
+      if (instructions_[s].valid && instructions_[s].tag == inTag) {
+        matchIdx = static_cast<int>(s);
+        break;
+      }
+    }
+
+    if (matchIdx < 0) {
+      latchError(RtError::RT_TEMPORAL_PE_NO_MATCH);
+      continue;
+    }
+
+    // Store operand in buffer.
+    if (!sharedOperandBuffer_) {
+      if (!perInsnBuf_.opValid[matchIdx][i]) {
+        inputs[i]->ready = true; // Accept the operand.
+      }
+      // Backpressure if slot already occupied.
+    } else {
+      // Shared buffer: find or create entry.
+      // Accept if there's buffer capacity.
+      bool bufferFull = true;
+      for (auto &entry : sharedBuf_) {
+        if (entry.tag == inTag && !entry.opValid[i]) {
+          bufferFull = false;
+          break;
+        }
+      }
+      if (bufferFull && sharedBuf_.size() < operandBufferSize_)
+        bufferFull = false; // Can create new entry.
+
+      inputs[i]->ready = !bufferFull;
+    }
+  }
+
+  // Check which instruction can fire (at most one per cycle).
+  for (unsigned s = 0; s < numInstructions_; ++s) {
+    if (canFire(s)) {
+      firedInstruction_ = static_cast<int>(s);
+      firedThisCycle_ = true;
+      break;
+    }
+  }
+
+  // Drive outputs for fired instruction.
+  if (firedThisCycle_ && firedInstruction_ >= 0) {
+    auto &insn = instructions_[static_cast<unsigned>(firedInstruction_)];
+
+    // Gather operand values.
+    std::vector<uint64_t> operandValues(numInputs_);
+    if (!sharedOperandBuffer_) {
+      for (unsigned i = 0; i < numInputs_; ++i) {
+        if (insn.operands[i].isReg && insn.operands[i].regIdx < regFifos_.size())
+          operandValues[i] = regFifos_[insn.operands[i].regIdx].data.front();
+        else
+          operandValues[i] = perInsnBuf_.opValue[firedInstruction_][i];
+      }
+    } else {
+      // Find the position-0 entry with matching tag.
+      for (auto &entry : sharedBuf_) {
+        if (entry.tag == insn.tag && entry.position == 0) {
+          for (unsigned i = 0; i < numInputs_; ++i) {
+            if (insn.operands[i].isReg && insn.operands[i].regIdx < regFifos_.size())
+              operandValues[i] = regFifos_[insn.operands[i].regIdx].data.front();
+            else
+              operandValues[i] = entry.opValue[i];
+          }
+          break;
+        }
+      }
+    }
+
+    // Execute FU.
+    uint64_t result = executeFU(insn.opcode, operandValues);
+
+    // Drive output channels.
+    for (unsigned o = 0; o < numOutputs_ && o < outputs.size(); ++o) {
+      if (!insn.results[o].isReg) {
+        outputs[o]->valid = true;
+        outputs[o]->data = result;
+        outputs[o]->tag = insn.results[o].tag;
+        outputs[o]->hasTag = true;
+      }
+    }
+  } else {
+    for (unsigned o = 0; o < outputs.size(); ++o)
+      outputs[o]->valid = false;
+  }
+}
+
+void SimTemporalPE::advanceClock() {
+  // Accept operands that were handshaked.
+  for (unsigned i = 0; i < numInputs_ && i < inputs.size(); ++i) {
+    if (!inputs[i]->transferred())
+      continue;
+
+    uint16_t inTag = inputs[i]->tag;
+    int matchIdx = -1;
+    for (unsigned s = 0; s < numInstructions_; ++s) {
+      if (instructions_[s].valid && instructions_[s].tag == inTag) {
+        matchIdx = static_cast<int>(s);
+        break;
+      }
+    }
+    if (matchIdx < 0)
+      continue;
+
+    if (!sharedOperandBuffer_) {
+      perInsnBuf_.opValid[matchIdx][i] = true;
+      perInsnBuf_.opValue[matchIdx][i] = inputs[i]->data;
+    } else {
+      // Find existing entry or create new one.
+      SharedBufEntry *target = nullptr;
+      unsigned maxPos = 0;
+      for (auto &entry : sharedBuf_) {
+        if (entry.tag == inTag) {
+          if (!entry.opValid[i] && !target)
+            target = &entry;
+          maxPos = std::max(maxPos, entry.position);
+        }
+      }
+      if (!target && sharedBuf_.size() < operandBufferSize_) {
+        sharedBuf_.emplace_back();
+        target = &sharedBuf_.back();
+        target->tag = inTag;
+        target->position = maxPos + 1;
+        target->opValid.resize(numInputs_, false);
+        target->opValue.resize(numInputs_, 0);
+      }
+      if (target) {
+        target->opValid[i] = true;
+        target->opValue[i] = inputs[i]->data;
+      }
+    }
+    perf_.tokensIn++;
+  }
+
+  // Process fired instruction.
+  if (firedThisCycle_ && firedInstruction_ >= 0) {
+    auto &insn = instructions_[static_cast<unsigned>(firedInstruction_)];
+    uint64_t result = 0;
+
+    // Gather operands again for register writes.
+    std::vector<uint64_t> operandValues(numInputs_);
+    if (!sharedOperandBuffer_) {
+      for (unsigned i = 0; i < numInputs_; ++i) {
+        if (insn.operands[i].isReg && insn.operands[i].regIdx < regFifos_.size())
+          operandValues[i] = regFifos_[insn.operands[i].regIdx].data.front();
+        else
+          operandValues[i] = perInsnBuf_.opValue[firedInstruction_][i];
+      }
+      result = executeFU(insn.opcode, operandValues);
+
+      // Clear operand buffer for fired instruction.
+      for (unsigned i = 0; i < numInputs_; ++i)
+        perInsnBuf_.opValid[firedInstruction_][i] = false;
+    } else {
+      // Remove position-0 entry.
+      for (auto it = sharedBuf_.begin(); it != sharedBuf_.end(); ++it) {
+        if (it->tag == insn.tag && it->position == 0) {
+          for (unsigned i = 0; i < numInputs_; ++i) {
+            if (insn.operands[i].isReg && insn.operands[i].regIdx < regFifos_.size())
+              operandValues[i] = regFifos_[insn.operands[i].regIdx].data.front();
+            else
+              operandValues[i] = it->opValue[i];
+          }
+          result = executeFU(insn.opcode, operandValues);
+
+          sharedBuf_.erase(it);
+          // Decrement positions for remaining entries with same tag.
+          for (auto &entry : sharedBuf_) {
+            if (entry.tag == insn.tag && entry.position > 0)
+              entry.position--;
+          }
+          break;
+        }
+      }
+    }
+
+    // Write results to registers or outputs.
+    for (unsigned o = 0; o < numOutputs_; ++o) {
+      if (insn.results[o].isReg && insn.results[o].regIdx < regFifos_.size()) {
+        regFifos_[insn.results[o].regIdx].data.push_back(result);
+      }
+      if (!insn.results[o].isReg && o < outputs.size() &&
+          outputs[o]->transferred())
+        perf_.tokensOut++;
+    }
+
+    // Consume register operands.
+    for (unsigned i = 0; i < numInputs_; ++i) {
+      if (insn.operands[i].isReg && insn.operands[i].regIdx < regFifos_.size()) {
+        auto &rf = regFifos_[insn.operands[i].regIdx];
+        if (!rf.data.empty()) {
+          rf.readersRemaining--;
+          if (rf.readersRemaining == 0) {
+            rf.data.pop_front();
+            rf.readersRemaining = rf.totalReaders;
+          }
+        }
+      }
+    }
+  }
+}
+
+void SimTemporalPE::collectTraceEvents(std::vector<TraceEvent> &events,
+                                         uint64_t cycle) {
+  if (firedThisCycle_) {
+    perf_.activeCycles++;
+    TraceEvent ev;
+    ev.cycle = cycle;
+    ev.hwNodeId = hwNodeId;
+    ev.eventKind = EV_NODE_FIRE;
+    ev.arg0 = static_cast<uint32_t>(firedInstruction_);
+    events.push_back(ev);
+  } else {
+    bool anyInputValid = false;
+    for (auto *in : inputs) {
+      if (in && in->valid) {
+        anyInputValid = true;
+        break;
+      }
+    }
+    if (anyInputValid)
+      perf_.stallCyclesIn++;
+  }
+
+  if (errorValid_) {
+    TraceEvent ev;
+    ev.cycle = cycle;
+    ev.hwNodeId = hwNodeId;
+    ev.eventKind = EV_DEVICE_ERROR;
+    ev.arg0 = errorCode_;
+    events.push_back(ev);
+  }
+}
+
+} // namespace sim
+} // namespace loom

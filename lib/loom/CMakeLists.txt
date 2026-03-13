@@ -2,6 +2,7 @@ add_subdirectory(Analysis)
 add_subdirectory(Dialect)
 add_subdirectory(Hardware)
 add_subdirectory(Mapper)
+add_subdirectory(Simulator)
 add_subdirectory(Viz)
 
 
