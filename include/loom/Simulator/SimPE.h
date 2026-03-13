@@ -57,6 +57,9 @@ public:
                           uint64_t cycle) override;
   PerfSnapshot getPerfSnapshot() const override { return perf_; }
 
+  /// Set the stream step_op (called from factory after construction).
+  void setStepOp(const std::string &op) { stepOp_ = op; }
+
 private:
   BodyType bodyType_;
   bool isTagged_;
@@ -76,6 +79,10 @@ private:
 
   /// Stream continuation condition selector (5-bit one-hot).
   uint8_t contCondSel_ = 0;
+
+  /// Stream step_op (from fabric.pe definition): "+=", "-=", "*=", "/=",
+  /// "<<=", ">>=". Default "+=".
+  std::string stepOp_ = "+=";
 
   //--- dataflow.stream state machine ---
 

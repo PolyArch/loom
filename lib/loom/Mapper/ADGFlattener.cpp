@@ -85,7 +85,7 @@ void copyHwAttributes(Node *node, mlir::Operation *resolved,
       "stCount", "lsqDepth", "numRegion", "addrOffsetTable",
       "memref_type", "is_private", "depth", "bypassable",
       "tag", "table_size", "table", "constant_value",
-      "cont_cond_sel", "lqDepth", "sqDepth",
+      "cont_cond_sel", "step_op", "lqDepth", "sqDepth",
       "enable_share_operand_buffer", "operand_buffer_size",
       "latency", "interval", "output_tag"};
 

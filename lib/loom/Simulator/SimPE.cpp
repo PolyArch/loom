@@ -681,21 +681,19 @@ void SimPE::evaluateStream() {
     return false;
   };
 
-  // Helper: compute next index using step_op. The step_op is encoded in the
-  // PE's opcodeStr_. For stream PEs, the opcodeStr_ holds the step_op name.
+  // Helper: compute next index using stepOp_ from fabric.pe definition.
   auto computeNext = [this](uint64_t idx, uint64_t step) -> uint64_t {
-    // step_op is determined by the PE's body. Default is +=.
-    if (opcodeStr_ == "dataflow.stream.sub")
+    if (stepOp_ == "-=")
       return maskToWidth(idx - step);
-    if (opcodeStr_ == "dataflow.stream.mul")
+    if (stepOp_ == "*=")
       return maskToWidth(idx * step);
-    if (opcodeStr_ == "dataflow.stream.div")
+    if (stepOp_ == "/=")
       return step != 0 ? maskToWidth(idx / step) : 0;
-    if (opcodeStr_ == "dataflow.stream.shl")
+    if (stepOp_ == "<<=")
       return maskToWidth(idx << (step & 63));
-    if (opcodeStr_ == "dataflow.stream.shr")
+    if (stepOp_ == ">>=")
       return maskToWidth(idx >> (step & 63));
-    // Default: += (covers "dataflow.stream" and "dataflow.stream.add").
+    // Default: += .
     return maskToWidth(idx + step);
   };
 
@@ -712,6 +710,16 @@ void SimPE::evaluateStream() {
     uint64_t start = inputs[0]->data;
     uint64_t step = inputs[1]->data;
     uint64_t bound = inputs[2]->data;
+
+    // Per spec-dataflow.md: step must be nonzero.
+    if (step == 0) {
+      latchError(RtError::RT_DATAFLOW_STREAM_ZERO_STEP);
+      outIdx->valid = false;
+      outCont->valid = false;
+      for (auto *in : inputs)
+        in->ready = false;
+      return;
+    }
     bool willContinue = evalCont(signExt(start), signExt(bound));
 
     outIdx->valid = true;
@@ -786,17 +794,17 @@ void SimPE::advanceClock() {
         gateFirstElement_ = true;
     }
   } else if (bodyType_ == BodyType::StreamCont) {
-    // Helper: compute next index using step_op.
+    // Helper: compute next index using stepOp_.
     auto computeNext = [this](uint64_t idx, uint64_t step) -> uint64_t {
-      if (opcodeStr_ == "dataflow.stream.sub")
+      if (stepOp_ == "-=")
         return maskToWidth(idx - step);
-      if (opcodeStr_ == "dataflow.stream.mul")
+      if (stepOp_ == "*=")
         return maskToWidth(idx * step);
-      if (opcodeStr_ == "dataflow.stream.div")
+      if (stepOp_ == "/=")
         return step != 0 ? maskToWidth(idx / step) : 0;
-      if (opcodeStr_ == "dataflow.stream.shl")
+      if (stepOp_ == "<<=")
         return maskToWidth(idx << (step & 63));
-      if (opcodeStr_ == "dataflow.stream.shr")
+      if (stepOp_ == ">>=")
         return maskToWidth(idx >> (step & 63));
       return maskToWidth(idx + step);
     };

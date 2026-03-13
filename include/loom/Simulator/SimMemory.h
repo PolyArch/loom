@@ -102,6 +102,7 @@ private:
     uint64_t data = 0;
     bool hasAddr = false;
     bool hasData = false;
+    unsigned laneIdx = 0;
   };
   std::unordered_map<uint16_t, std::deque<StorePairEntry>> storePairQueues_;
 
@@ -114,7 +115,7 @@ private:
     uint16_t tag = 0;
     unsigned laneIdx = 0;
   };
-  std::deque<PendingStDone> pendingStDone_;
+  std::vector<std::deque<PendingStDone>> pendingStDone_;
 
   bool firedThisCycle_ = false;
   uint64_t currentSimCycle_ = 0;

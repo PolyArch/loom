@@ -294,8 +294,14 @@ std::unique_ptr<SimModule> createSimModule(
       bodyType = SimPE::BodyType::Gate;
     }
 
-    mod = std::make_unique<SimPE>(bodyType, numInputs, numOutputs, isTagged,
-                                   tagWidth, dataWidth, bodyOp, tagMode);
+    auto pe = std::make_unique<SimPE>(bodyType, numInputs, numOutputs, isTagged,
+                                      tagWidth, dataWidth, bodyOp, tagMode);
+    // Plumb step_op from ADG attribute into the stream PE.
+    if (bodyType == SimPE::BodyType::StreamCont) {
+      std::string stepOp = getStrAttr(strAttrs, "step_op", "+=");
+      pe->setStepOp(stepOp);
+    }
+    mod = std::move(pe);
   }
   else if (opName == "fabric.temporal_pe") {
     unsigned tagWidth = static_cast<unsigned>(getIntAttr(intAttrs, "tag_width", 4));

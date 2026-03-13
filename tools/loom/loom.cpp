@@ -1532,22 +1532,25 @@ int main(int argc, char **argv) {
         }
 
         // Sub-test 10: EV_DEVICE_ERROR events are captured in trace.
-        // Run a simulation with Full trace mode, then scan the trace for
-        // EV_DEVICE_ERROR events. If the mapped config happens to trigger a
-        // module error (e.g. tag OOB, no-match), the trace must contain at
-        // least one EV_DEVICE_ERROR. Otherwise verify the trace is non-empty
-        // and the event kind enum is correctly defined.
+        // Inject a deterministic error by loading an all-ones config blob.
+        // This forces every memory region to have startTag == endTag (all
+        // bits set), which triggers CFG_MEMORY_EMPTY_TAG_RANGE -- a sticky
+        // config error that emits EV_DEVICE_ERROR every cycle.
         {
           loom::sim::SimConfig errConfig;
-          errConfig.maxCycles = 100;
+          errConfig.maxCycles = 10;
           errConfig.traceMode = loom::sim::TraceMode::Full;
           loom::sim::EventSimSession s4(errConfig);
           std::string err = s4.connect();
           bool ok = err.empty();
           if (ok) err = s4.buildFromGraph(adg);
           ok = ok && err.empty();
-          if (ok) err = s4.loadConfig(configBlob, simSlices);
-          ok = ok && err.empty();
+          if (ok) {
+            // Deliberately corrupt config to inject a config error.
+            std::vector<uint8_t> badConfig(configBlob.size(), 0xFF);
+            err = s4.loadConfig(badConfig, simSlices);
+            ok = ok && err.empty();
+          }
           if (ok) {
             auto inputs = makeInputs();
             for (unsigned p = 0; p < nIn; ++p)
@@ -1557,17 +1560,14 @@ int main(int argc, char **argv) {
             static_assert(loom::sim::EV_DEVICE_ERROR == 7,
                           "EV_DEVICE_ERROR must be kind 7");
             ok = ok && !res4.traceEvents.empty();
-            // Scan trace for EV_DEVICE_ERROR events to verify the
-            // collection pipeline handles them end-to-end.
+            // Scan trace for EV_DEVICE_ERROR events. The corrupted config
+            // must have produced at least one device error event.
             unsigned deviceErrorCount = 0;
             for (auto &ev : res4.traceEvents) {
               if (ev.eventKind == loom::sim::EV_DEVICE_ERROR)
                 ++deviceErrorCount;
             }
-            // Report count for observability. Test passes as long as the
-            // trace is non-empty (the event pipeline works). If device
-            // errors are present, that further validates the path.
-            (void)deviceErrorCount;
+            ok = ok && deviceErrorCount > 0;
           }
           stReport("device-error-trace-support", ok, err.c_str());
         }

@@ -21,6 +21,7 @@ SimMemory::SimMemory(bool isExternal, unsigned ldCount, unsigned stCount,
   if (!isExternal_)
     onChipMem_.resize(kDefaultOnChipSize, 0);
   addrOffsetTable_.resize(numRegion_);
+  pendingStDone_.resize(stCount_);
 }
 
 void SimMemory::reset() {
@@ -29,7 +30,8 @@ void SimMemory::reset() {
   pendingLoads_.clear();
   storePairQueues_.clear();
   storeDeadlockCounters_.clear();
-  pendingStDone_.clear();
+  for (auto &q : pendingStDone_)
+    q.clear();
   firedThisCycle_ = false;
   currentSimCycle_ = 0;
   errorValid_ = false;
@@ -286,12 +288,12 @@ void SimMemory::evaluateCombinational() {
     }
 
     // stDone fires when a paired store completes in advanceClock. Drive it
-    // from the pending-done queue (set in advanceClock when a pair commits).
-    if (!pendingStDone_.empty() && pendingStDone_.front().laneIdx == s) {
+    // from the per-lane pending-done queue.
+    if (s < pendingStDone_.size() && !pendingStDone_[s].empty()) {
       stDone->valid = true;
       stDone->data = 0;
       if (tagWidth_ > 0) {
-        stDone->tag = pendingStDone_.front().tag;
+        stDone->tag = pendingStDone_[s].front().tag;
         stDone->hasTag = true;
       }
     } else {
@@ -303,14 +305,13 @@ void SimMemory::evaluateCombinational() {
 void SimMemory::advanceClock() {
   currentSimCycle_++;
 
-  // Consume stDone tokens that were transferred by downstream.
-  while (!pendingStDone_.empty()) {
-    unsigned doneIdx = ldCount_ * 2 + pendingStDone_.front().laneIdx;
-    if (doneIdx < outputs.size() && outputs[doneIdx]->transferred()) {
-      pendingStDone_.pop_front();
+  // Consume stDone tokens that were transferred by downstream (per-lane).
+  for (unsigned s = 0; s < stCount_; ++s) {
+    unsigned doneIdx = ldCount_ * 2 + s;
+    if (doneIdx < outputs.size() && s < pendingStDone_.size() &&
+        !pendingStDone_[s].empty() && outputs[doneIdx]->transferred()) {
+      pendingStDone_[s].pop_front();
       perf_.tokensOut++;
-    } else {
-      break; // FIFO order: stop at first unconsumed.
     }
   }
 
@@ -389,6 +390,7 @@ void SimMemory::advanceClock() {
         StorePairEntry e;
         e.hasAddr = true;
         e.addr = inputs[stAddrIdx]->data;
+        e.laneIdx = s;
         q.push_back(e);
       }
       perf_.tokensIn++;
@@ -411,18 +413,21 @@ void SimMemory::advanceClock() {
         StorePairEntry e;
         e.hasData = true;
         e.data = inputs[stDataIdx]->data;
+        e.laneIdx = s;
         q.push_back(e);
       }
       perf_.tokensIn++;
     }
+  }
 
-    // Dequeue fully paired entries and write to memory.
-    // Use addrTag for the queue lookup (addr determines the tag).
-    auto &q = storePairQueues_[addrTag];
+  // Commit fully paired entries from ALL store queues (not just current input
+  // tag). This ensures data-only arrivals that complete a pair are committed
+  // even when no stAddr transfers this cycle.
+  for (auto &[tag, q] : storePairQueues_) {
     while (!q.empty() && q.front().hasAddr && q.front().hasData) {
       auto &front = q.front();
       bool matched = false;
-      uint64_t resolvedAddr = resolveAddr(front.addr, addrTag, matched);
+      uint64_t resolvedAddr = resolveAddr(front.addr, tag, matched);
       if (matched || tagWidth_ == 0) {
         memWrite(resolvedAddr, front.data);
       } else {
@@ -430,34 +435,33 @@ void SimMemory::advanceClock() {
                                           : RtError::RT_MEMORY_NO_MATCH;
         latchError(noMatchErr);
       }
-      // Enqueue stDone token for this lane.
-      PendingStDone done;
-      done.tag = addrTag;
-      done.laneIdx = s;
-      pendingStDone_.push_back(done);
+      // Enqueue stDone token for the originating lane.
+      unsigned lane = front.laneIdx;
+      if (lane < pendingStDone_.size()) {
+        PendingStDone done;
+        done.tag = tag;
+        done.laneIdx = lane;
+        pendingStDone_[lane].push_back(done);
+      }
       q.pop_front();
     }
-
-    // Initialize deadlock counter for this tag if not present.
-    if (storeDeadlockCounters_.find(addrTag) == storeDeadlockCounters_.end())
-      storeDeadlockCounters_[addrTag] = 0;
   }
 
-  // Store deadlock detection per spec-fabric-mem.md.
-  for (auto &[tag, counter] : storeDeadlockCounters_) {
-    auto qIt = storePairQueues_.find(tag);
-    if (qIt == storePairQueues_.end() || qIt->second.empty()) {
-      counter = 0;
+  // Store deadlock detection per spec-fabric-mem.md: detect when a
+  // store queue front has addr but not data (or vice versa) for too long.
+  for (auto &[tag, q] : storePairQueues_) {
+    if (q.empty()) {
+      storeDeadlockCounters_[tag] = 0;
       continue;
     }
-    auto &front = qIt->second.front();
+    auto &front = q.front();
     bool imbalance = (front.hasAddr != front.hasData);
     if (imbalance) {
-      counter++;
-      if (counter >= kDeadlockTimeout)
+      storeDeadlockCounters_[tag]++;
+      if (storeDeadlockCounters_[tag] >= kDeadlockTimeout)
         latchError(RtError::RT_MEMORY_STORE_DEADLOCK);
     } else {
-      counter = 0;
+      storeDeadlockCounters_[tag] = 0;
     }
   }
 }
