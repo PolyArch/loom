@@ -151,6 +151,27 @@ void SimTemporalPE::configure(const std::vector<uint32_t> &configWords) {
     }
   }
 
+  // Validate: single-writer constraint per spec. Each register must have
+  // at most one instruction that writes to it.
+  if (numRegisters_ > 0) {
+    std::vector<int> regWriter(numRegisters_, -1);
+    for (unsigned s = 0; s < numInstructions_; ++s) {
+      if (!instructions_[s].valid)
+        continue;
+      for (auto &res : instructions_[s].results) {
+        if (res.isReg && res.regIdx < numRegisters_) {
+          if (regWriter[res.regIdx] >= 0 &&
+              regWriter[res.regIdx] != static_cast<int>(s)) {
+            // Multiple writers to same register: configuration error.
+            // Use ILLEGAL_REG as the closest error code.
+            latchError(RtError::CFG_TEMPORAL_PE_ILLEGAL_REG);
+          }
+          regWriter[res.regIdx] = static_cast<int>(s);
+        }
+      }
+    }
+  }
+
   // Initialize operand buffers and register FIFOs for execution.
   reset();
 
@@ -544,29 +565,31 @@ void SimTemporalPE::advanceClock() {
       perInsnBuf_.opValid[matchIdx][i] = true;
       perInsnBuf_.opValue[matchIdx][i] = inputs[i]->data;
     } else {
-      // Find existing entry or create new one.
-      SharedBufEntry *target = nullptr;
+      // Shared buffer: per spec, find entry with LARGEST position for this
+      // tag. If that entry's op_valid[i]=0, store there. Otherwise create
+      // new entry with position = max_position + 1.
+      SharedBufEntry *maxPosEntry = nullptr;
       unsigned maxPos = 0;
+      bool hasExisting = false;
       for (auto &entry : sharedBuf_) {
         if (entry.tag == inTag) {
-          if (!entry.opValid[i] && !target)
-            target = &entry;
-          maxPos = std::max(maxPos, entry.position);
+          if (!hasExisting || entry.position > maxPos) {
+            maxPos = entry.position;
+            maxPosEntry = &entry;
+          }
+          hasExisting = true;
         }
       }
-      if (!target && sharedBuf_.size() < operandBufferSize_) {
+
+      SharedBufEntry *target = nullptr;
+      if (hasExisting && maxPosEntry && !maxPosEntry->opValid[i]) {
+        // Max-position entry has open slot for this operand.
+        target = maxPosEntry;
+      } else if (sharedBuf_.size() < operandBufferSize_) {
+        // Create new entry.
         sharedBuf_.emplace_back();
         target = &sharedBuf_.back();
         target->tag = inTag;
-        // First entry for a tag starts at position 0 (not maxPos+1).
-        // Subsequent entries increment from the existing max.
-        bool hasExisting = false;
-        for (auto &e : sharedBuf_) {
-          if (&e != target && e.tag == inTag) {
-            hasExisting = true;
-            break;
-          }
-        }
         target->position = hasExisting ? maxPos + 1 : 0;
         target->opValid.resize(numInputs_, false);
         target->opValue.resize(numInputs_, 0);

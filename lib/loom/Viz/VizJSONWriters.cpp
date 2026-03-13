@@ -880,20 +880,34 @@ void writeTraceDataJSON(llvm::raw_ostream &os,
   // Stat time-axis playback: per-node utilization in time windows.
   // Each window covers a fixed number of cycles. The renderer uses
   // this to animate stat heatmaps across the execution timeline.
+  //
+  // When full trace events are available, derive per-window utilization
+  // from event data for fine-grained playback. When events are absent
+  // (Summary/Off mode or filtered traces), derive from PerfSnapshot
+  // aggregate stats so the timeline is still meaningful.
   if (totalCycles > configCycles) {
     uint64_t execCycles = totalCycles - configCycles;
-    // Use ~20 windows for a smooth timeline (min 1 cycle per window).
     const unsigned numWindows = 20;
     uint64_t windowSize = std::max(execCycles / numWindows, uint64_t(1));
 
-    // Count per-node fire/stall per window from trace events.
-    // windowStats[window][nodeId] = {fire, stallIn, stallOut}
+    // Collect all known node IDs from nodePerf first.
+    std::set<uint32_t> statNodes;
+    std::map<uint32_t, double> perfUtil; // aggregate utilization per node
+    if (nodePerf) {
+      for (const auto &np : *nodePerf) {
+        statNodes.insert(np.nodeIndex);
+        uint64_t total = np.activeCycles + np.stallCyclesIn + np.stallCyclesOut;
+        perfUtil[np.nodeIndex] =
+            total > 0 ? static_cast<double>(np.activeCycles) / total : 0.0;
+      }
+    }
+
+    // Try to build per-window stats from trace events.
     struct WinStat {
       uint64_t fire = 0, stallIn = 0, stallOut = 0;
     };
     std::map<unsigned, std::map<uint32_t, WinStat>> windowStats;
-    std::set<uint32_t> statNodes;
-
+    bool hasEventData = false;
     for (const auto &ev : events) {
       if (ev.cycle < configCycles)
         continue;
@@ -902,19 +916,17 @@ void writeTraceDataJSON(llvm::raw_ostream &os,
       if (win >= numWindows)
         win = numWindows - 1;
       auto &ws = windowStats[win][ev.hwNodeId];
-      if (ev.eventKind == sim::EV_NODE_FIRE)
+      if (ev.eventKind == sim::EV_NODE_FIRE) {
         ws.fire++;
-      else if (ev.eventKind == sim::EV_NODE_STALL_IN)
+        hasEventData = true;
+      } else if (ev.eventKind == sim::EV_NODE_STALL_IN) {
         ws.stallIn++;
-      else if (ev.eventKind == sim::EV_NODE_STALL_OUT)
+        hasEventData = true;
+      } else if (ev.eventKind == sim::EV_NODE_STALL_OUT) {
         ws.stallOut++;
+        hasEventData = true;
+      }
       statNodes.insert(ev.hwNodeId);
-    }
-
-    // Also include nodes from nodePerf that may not have trace events.
-    if (nodePerf) {
-      for (const auto &np : *nodePerf)
-        statNodes.insert(np.nodeIndex);
     }
 
     if (!statNodes.empty()) {
@@ -929,28 +941,36 @@ void writeTraceDataJSON(llvm::raw_ostream &os,
       json.value(static_cast<int64_t>(numWindows));
       json.attributeEnd();
 
-      // Per-node array of utilization values per window.
       json.attributeBegin("nodes");
       json.objectBegin();
       for (uint32_t nid : statNodes) {
         json.attributeBegin(std::to_string(nid));
         json.arrayBegin();
         for (unsigned w = 0; w < numWindows; ++w) {
-          auto it = windowStats.find(w);
-          if (it != windowStats.end()) {
-            auto nit = it->second.find(nid);
-            if (nit != it->second.end()) {
-              auto &s = nit->second;
-              uint64_t total = s.fire + s.stallIn + s.stallOut;
-              double util = total > 0
-                                ? static_cast<double>(s.fire) / total
-                                : 0.0;
-              json.value(util);
+          if (hasEventData) {
+            // Fine-grained: per-window utilization from trace events.
+            auto it = windowStats.find(w);
+            if (it != windowStats.end()) {
+              auto nit = it->second.find(nid);
+              if (nit != it->second.end()) {
+                auto &s = nit->second;
+                uint64_t total = s.fire + s.stallIn + s.stallOut;
+                double util = total > 0
+                                  ? static_cast<double>(s.fire) / total
+                                  : 0.0;
+                json.value(util);
+              } else {
+                json.value(0.0);
+              }
             } else {
               json.value(0.0);
             }
           } else {
-            json.value(0.0);
+            // No per-cycle events: use aggregate PerfSnapshot utilization.
+            // This gives a constant value across all windows, matching
+            // the overall node utilization from nodePerf.
+            auto pit = perfUtil.find(nid);
+            json.value(pit != perfUtil.end() ? pit->second : 0.0);
           }
         }
         json.arrayEnd();

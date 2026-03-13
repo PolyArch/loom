@@ -43,6 +43,7 @@ struct ParsedArgs {
   std::string sim_trace_mode = "full"; // off, summary, full
   std::string sim_trace_filter_kinds; // comma-separated event kind names
   std::string sim_trace_filter_nodes; // comma-separated hwNodeId values
+  std::string sim_trace_filter_cores; // comma-separated coreId values
   bool sim_session_test = false;
   bool as_clang = false;
   bool show_help = false;

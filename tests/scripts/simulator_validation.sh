@@ -527,10 +527,11 @@ test_oracle_verdict_correct() {
   local out="${WORK_DIR}/oracle_verdict"
   local log="${WORK_DIR}/oracle_verdict_output.log"
 
+  local rc=0
   "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
-    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || true
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || rc=$?
 
-  # Oracle verdict should always be present.
+  # Oracle verdict should always be present (regardless of exit code).
   if ! grep -qE 'oracle: (PASS|FAIL)' "${log}"; then
     echo "oracle verdict missing"
     cat "${log}"
@@ -557,11 +558,13 @@ test_oracle_verdict_correct() {
 # ---- Test 23: Trace filter excludes unwanted event kinds ----
 test_trace_filter_kinds() {
   local out="${WORK_DIR}/filter_kinds"
+  local rc=0
   "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
     --mapper-budget 10 --simulate --sim-max-cycles 10000 \
-    --sim-trace-filter-kinds fire 2>&1 || true
+    --sim-trace-filter-kinds fire 2>&1 || rc=$?
 
-  [[ -s "${out}.trace" ]] || { echo "trace file missing"; return 1; }
+  # Exit 1 from timeout is expected; other failures are not.
+  [[ -s "${out}.trace" ]] || { echo "trace file missing (exit=$rc)"; return 1; }
 
   # Parse the trace and verify no route/stall/config events present.
   # Binary format: 16-byte header (magic+version+count), then 38-byte records.
@@ -589,12 +592,12 @@ assert count > 0, 'no events found'
 # ---- Test 24: Trace filter excludes unwanted nodes ----
 test_trace_filter_nodes() {
   local out="${WORK_DIR}/filter_nodes"
-  # Use a single node filter - pick node 0.
+  local rc=0
   "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
     --mapper-budget 10 --simulate --sim-max-cycles 10000 \
-    --sim-trace-filter-nodes 0 2>&1 || true
+    --sim-trace-filter-nodes 0 2>&1 || rc=$?
 
-  [[ -s "${out}.trace" ]] || { echo "trace file missing"; return 1; }
+  [[ -s "${out}.trace" ]] || { echo "trace file missing (exit=$rc)"; return 1; }
 
   python3 -c "
 import struct
@@ -617,8 +620,9 @@ assert nodes_seen <= {0}, f'expected only node 0, got: {nodes_seen}'
 test_cpu_ref_oracle() {
   local out="${WORK_DIR}/cpuref"
   local log="${WORK_DIR}/cpuref_output.log"
+  local rc=0
   "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
-    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || true
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || rc=$?
 
   # The cpu-ref line should appear in the output.
   if ! grep -q 'cpu-ref:' "${log}"; then
@@ -662,12 +666,69 @@ test_session_harness() {
   for sub in "state-after-config" "basic-invoke" "repeated-invocation-same-epoch" \
              "compare-self-pass" "multi-epoch-reconfig" "deliberate-compare-fail" \
              "invalid-state-invoke-before-config" "invalid-state-setinput-connected" \
+             "config-during-run-reject" "device-error-trace-support" \
              "reset-all-to-connected" "disconnect-to-closed"; do
     if ! grep -q "session-test: ${sub}" "${log}"; then
       echo "missing sub-test: ${sub}"
       return 1
     fi
   done
+}
+
+# ---- Test 27: Node filter with nonzero node excludes node 0 ----
+test_trace_filter_nodes_nonzero() {
+  local out="${WORK_DIR}/filter_nodes_nz"
+  local rc=0
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 \
+    --sim-trace-filter-nodes 1 2>&1 || rc=$?
+
+  [[ -s "${out}.trace" ]] || { echo "trace file missing (exit=$rc)"; return 1; }
+
+  python3 -c "
+import struct
+data = open('${out}.trace', 'rb').read()
+hdr_size = 16
+rec_size = 38
+pos = hdr_size
+nodes_seen = set()
+while pos + rec_size <= len(data):
+    node_id = struct.unpack_from('<I', data, pos+22)[0]
+    nodes_seen.add(node_id)
+    pos += rec_size
+
+# Node 0 (system events) must NOT appear. Only node 1 allowed.
+assert 0 not in nodes_seen, f'node 0 should be excluded, got: {nodes_seen}'
+if len(nodes_seen) > 0:
+    assert nodes_seen <= {1}, f'expected only node 1, got: {nodes_seen}'
+" || return 1
+}
+
+# ---- Test 28: Core filter restricts trace to specified core ----
+test_trace_filter_cores() {
+  local out="${WORK_DIR}/filter_cores"
+  local rc=0
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 \
+    --sim-trace-filter-cores 0 2>&1 || rc=$?
+
+  [[ -s "${out}.trace" ]] || { echo "trace file missing (exit=$rc)"; return 1; }
+
+  python3 -c "
+import struct
+data = open('${out}.trace', 'rb').read()
+hdr_size = 16
+rec_size = 38
+pos = hdr_size
+cores_seen = set()
+while pos + rec_size <= len(data):
+    core_id = struct.unpack_from('<H', data, pos+20)[0]
+    cores_seen.add(core_id)
+    pos += rec_size
+
+# Only core 0 should appear.
+assert cores_seen <= {0}, f'expected only core 0, got: {cores_seen}'
+" || return 1
 }
 
 echo "Simulator Validation Tests"
@@ -698,6 +759,8 @@ run_test "trace-filter-kinds" test_trace_filter_kinds
 run_test "trace-filter-nodes" test_trace_filter_nodes
 run_test "cpu-ref-oracle" test_cpu_ref_oracle
 run_test "session-harness" test_session_harness
+run_test "trace-filter-nodes-nonzero" test_trace_filter_nodes_nonzero
+run_test "trace-filter-cores" test_trace_filter_cores
 
 echo ""
 echo "Results: ${pass}/${total} passed, ${fail} failed"

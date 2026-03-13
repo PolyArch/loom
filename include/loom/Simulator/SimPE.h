@@ -45,8 +45,12 @@ public:
         bool isTagged, unsigned tagWidth, unsigned dataWidth,
         const std::string &opcodeStr, TagMode tagMode = TagMode::Native);
 
-  bool isCombinational() const override { return true; }
+  bool isCombinational() const override {
+    return bodyType_ != BodyType::Carry && bodyType_ != BodyType::Invariant &&
+           bodyType_ != BodyType::Gate;
+  }
   void evaluateCombinational() override;
+  void advanceClock() override;
   void reset() override;
   void configure(const std::vector<uint32_t> &configWords) override;
   void collectTraceEvents(std::vector<TraceEvent> &events,
@@ -73,6 +77,17 @@ private:
   /// Stream continuation condition selector (5-bit one-hot).
   uint8_t contCondSel_ = 0;
 
+  //--- Dataflow state machines (carry, invariant, gate) ---
+
+  /// Carry/Invariant stage: true = initial, false = block.
+  bool dataflowInitialStage_ = true;
+
+  /// Invariant stored value (latched from %a in initial stage).
+  uint64_t invariantStoredValue_ = 0;
+
+  /// Gate: true if the first element hasn't been processed yet.
+  bool gateFirstElement_ = true;
+
   /// Sign-extend a value from dataWidth_ to 64 bits.
   int64_t signExt(uint64_t v) const;
 
@@ -93,6 +108,26 @@ private:
 
   /// Evaluate float compare predicate (arith.cmpf, 16 IEEE 754 predicates).
   bool evaluateCmpf(uint64_t a, uint64_t b) const;
+
+  /// Dataflow state machine evaluators.
+  void evaluateCarry();
+  void evaluateInvariant();
+  void evaluateGate();
+
+  /// Drive output tag based on tag mode. If srcInputIdx >= 0, uses that
+  /// input's tag for TagTransparent; otherwise uses configured outputTags_.
+  void driveOutputTag(SimChannel *out, int srcInputIdx) {
+    if (isTagged_) {
+      if (tagMode_ == TagMode::TagTransparent && srcInputIdx >= 0 &&
+          static_cast<unsigned>(srcInputIdx) < inputs.size())
+        out->tag = inputs[srcInputIdx]->tag;
+      else if (tagWidth_ > 0 && !outputTags_.empty())
+        out->tag = outputTags_[0];
+      out->hasTag = true;
+    } else {
+      out->hasTag = false;
+    }
+  }
 };
 
 } // namespace sim

@@ -90,6 +90,7 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "  --sim-trace-filter-kinds <k>  Comma-separated event kinds to include\n";
   llvm::outs() << "                               (fire,stall_in,stall_out,route,config,start,done,error)\n";
   llvm::outs() << "  --sim-trace-filter-nodes <n>  Comma-separated hwNodeIds to include\n";
+  llvm::outs() << "  --sim-trace-filter-cores <c>  Comma-separated coreIds to include\n";
   llvm::outs() << "  --sim-session-test           Run EventSimSession validation harness\n";
   llvm::outs() << "\n";
   llvm::outs() << "Visualization options:\n";
@@ -353,6 +354,15 @@ ParsedArgs ParseArgs(int argc, char **argv) {
           break;
         }
         parsed.sim_trace_filter_nodes = argv[++i];
+        continue;
+      }
+      if (arg == "--sim-trace-filter-cores") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --sim-trace-filter-cores requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.sim_trace_filter_cores = argv[++i];
         continue;
       }
       if (arg == "--sim-session-test") {

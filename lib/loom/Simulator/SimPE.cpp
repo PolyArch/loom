@@ -27,6 +27,10 @@ void SimPE::reset() {
   pendingError_ = false;
   pendingErrorCode_ = RtError::OK;
   perf_ = PerfSnapshot();
+  // Reset dataflow state machines.
+  dataflowInitialStage_ = true;
+  invariantStoredValue_ = 0;
+  gateFirstElement_ = true;
 }
 
 void SimPE::configure(const std::vector<uint32_t> &configWords) {
@@ -396,6 +400,20 @@ void SimPE::evaluateCombinational() {
     return;
   }
 
+  // Dispatch to specialized state-machine evaluators for dataflow ops.
+  if (bodyType_ == BodyType::Carry) {
+    evaluateCarry();
+    return;
+  }
+  if (bodyType_ == BodyType::Invariant) {
+    evaluateInvariant();
+    return;
+  }
+  if (bodyType_ == BodyType::Gate) {
+    evaluateGate();
+    return;
+  }
+
   // Check all inputs are valid.
   bool allValid = true;
   for (auto *in : inputs) {
@@ -423,18 +441,6 @@ void SimPE::evaluateCombinational() {
     result = executeOp(operandA, operandB);
     break;
 
-  case BodyType::Gate:
-    // Input 0 = data, Input 1 = condition (1-bit).
-    if (inputs.size() <= 1 || !(inputs[1]->data & 1)) {
-      for (auto *out : outputs)
-        out->valid = false;
-      for (auto *in : inputs)
-        in->ready = false;
-      return;
-    }
-    result = operandA;
-    break;
-
   case BodyType::StreamCont: {
     // dataflow.stream: compare operandA against operandB using cont_cond_sel.
     // cont_cond_sel is 5-bit one-hot: [<, <=, >, >=, !=].
@@ -456,7 +462,7 @@ void SimPE::evaluateCombinational() {
   }
 
   default:
-    // Load, Store, Carry, Invariant: pass through first operand.
+    // Load, Store: pass through first operand.
     result = operandA;
     break;
   }
@@ -484,6 +490,222 @@ void SimPE::evaluateCombinational() {
   }
   for (auto *in : inputs)
     in->ready = allOutReady;
+}
+
+//===----------------------------------------------------------------------===//
+// dataflow.carry state machine per spec-dataflow.md
+//   Inputs: [0]=%d (i1 ctrl), [1]=%a (initial), [2]=%b (loop-carried)
+//   Output: [0]=%o
+//===----------------------------------------------------------------------===//
+
+void SimPE::evaluateCarry() {
+  if (outputs.empty())
+    return;
+
+  auto *out = outputs[0];
+
+  if (dataflowInitialStage_) {
+    // Initial stage: consume one element from %a, emit on %o.
+    // Do NOT consume %d in this stage.
+    if (inputs.size() <= 1 || !inputs[1]->valid) {
+      out->valid = false;
+      for (auto *in : inputs)
+        in->ready = false;
+      return;
+    }
+    out->valid = true;
+    out->data = inputs[1]->data;
+    driveOutputTag(out, 1);
+    // Ready only on %a (input[1]), not on %d or %b.
+    inputs[0]->ready = false;
+    inputs[1]->ready = out->ready;
+    if (inputs.size() > 2)
+      inputs[2]->ready = false;
+  } else {
+    // Block stage: consume %d. If true, also consume %b and emit.
+    if (inputs.empty() || !inputs[0]->valid) {
+      out->valid = false;
+      for (auto *in : inputs)
+        in->ready = false;
+      return;
+    }
+    bool dVal = (inputs[0]->data & 1) != 0;
+    if (dVal) {
+      // d=true: need %b valid. Emit %b on output.
+      if (inputs.size() <= 2 || !inputs[2]->valid) {
+        out->valid = false;
+        for (auto *in : inputs)
+          in->ready = false;
+        return;
+      }
+      out->valid = true;
+      out->data = inputs[2]->data;
+      driveOutputTag(out, 2);
+      inputs[0]->ready = out->ready;
+      inputs[1]->ready = false;
+      inputs[2]->ready = out->ready;
+    } else {
+      // d=false: consume only %d, no output. Transition handled in
+      // advanceClock.
+      out->valid = false;
+      inputs[0]->ready = true;
+      inputs[1]->ready = false;
+      if (inputs.size() > 2)
+        inputs[2]->ready = false;
+    }
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// dataflow.invariant state machine per spec-dataflow.md
+//   Inputs: [0]=%d (i1 ctrl), [1]=%a (invariant value)
+//   Output: [0]=%o
+//===----------------------------------------------------------------------===//
+
+void SimPE::evaluateInvariant() {
+  if (outputs.empty())
+    return;
+
+  auto *out = outputs[0];
+
+  if (dataflowInitialStage_) {
+    // Initial stage: consume one element from %a, emit on %o, store value.
+    if (inputs.size() <= 1 || !inputs[1]->valid) {
+      out->valid = false;
+      for (auto *in : inputs)
+        in->ready = false;
+      return;
+    }
+    out->valid = true;
+    out->data = inputs[1]->data;
+    driveOutputTag(out, 1);
+    inputs[0]->ready = false;
+    inputs[1]->ready = out->ready;
+  } else {
+    // Block stage: consume %d. If true, emit stored value.
+    if (inputs.empty() || !inputs[0]->valid) {
+      out->valid = false;
+      for (auto *in : inputs)
+        in->ready = false;
+      return;
+    }
+    bool dVal = (inputs[0]->data & 1) != 0;
+    if (dVal) {
+      out->valid = true;
+      out->data = invariantStoredValue_;
+      driveOutputTag(out, -1); // Use configured output tag.
+      inputs[0]->ready = out->ready;
+      if (inputs.size() > 1)
+        inputs[1]->ready = false;
+    } else {
+      // d=false: consume only %d, no output. Transition in advanceClock.
+      out->valid = false;
+      inputs[0]->ready = true;
+      if (inputs.size() > 1)
+        inputs[1]->ready = false;
+    }
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// dataflow.gate state machine per spec-dataflow.md
+//   Inputs: [0]=before_value, [1]=before_cond (i1)
+//   Outputs: [0]=after_value, [1]=after_cond (i1)
+//   Semantics: after_value[i] = before_value[i],
+//              after_cond[i] = before_cond[i+1]
+//===----------------------------------------------------------------------===//
+
+void SimPE::evaluateGate() {
+  if (outputs.size() < 2 || inputs.size() < 2)
+    return;
+
+  auto *outVal = outputs[0];
+  auto *outCond = outputs[1];
+
+  if (!inputs[0]->valid || !inputs[1]->valid) {
+    outVal->valid = false;
+    outCond->valid = false;
+    inputs[0]->ready = false;
+    inputs[1]->ready = false;
+    return;
+  }
+
+  if (gateFirstElement_) {
+    // First element: emit before_value as after_value. Drop before_cond
+    // (it's the head being cut). after_cond not ready yet.
+    outVal->valid = true;
+    outVal->data = inputs[0]->data;
+    driveOutputTag(outVal, 0);
+    outCond->valid = false;
+    // Accept both inputs when outVal is ready.
+    bool accept = outVal->ready;
+    inputs[0]->ready = accept;
+    inputs[1]->ready = accept;
+  } else {
+    bool condVal = (inputs[1]->data & 1) != 0;
+    if (condVal) {
+      // Middle element: emit both value and cond.
+      outVal->valid = true;
+      outVal->data = inputs[0]->data;
+      driveOutputTag(outVal, 0);
+      outCond->valid = true;
+      outCond->data = inputs[1]->data;
+      driveOutputTag(outCond, 1);
+      bool accept = outVal->ready && outCond->ready;
+      inputs[0]->ready = accept;
+      inputs[1]->ready = accept;
+    } else {
+      // Last element (cond=false): emit cond only, drop value (tail cut).
+      outVal->valid = false;
+      outCond->valid = true;
+      outCond->data = 0; // false
+      driveOutputTag(outCond, 1);
+      bool accept = outCond->ready;
+      inputs[0]->ready = accept;
+      inputs[1]->ready = accept;
+    }
+  }
+}
+
+void SimPE::advanceClock() {
+  // State machine transitions for carry/invariant/gate.
+  if (bodyType_ == BodyType::Carry) {
+    if (dataflowInitialStage_) {
+      // Initial: if %a was transferred, transition to block stage.
+      if (inputs.size() > 1 && inputs[1]->transferred())
+        dataflowInitialStage_ = false;
+    } else {
+      // Block: if %d was transferred with d=false, return to initial.
+      if (!inputs.empty() && inputs[0]->transferred() &&
+          (inputs[0]->data & 1) == 0)
+        dataflowInitialStage_ = true;
+    }
+  } else if (bodyType_ == BodyType::Invariant) {
+    if (dataflowInitialStage_) {
+      // Initial: if %a was transferred, store value and go to block.
+      if (inputs.size() > 1 && inputs[1]->transferred()) {
+        invariantStoredValue_ = inputs[1]->data;
+        dataflowInitialStage_ = false;
+      }
+    } else {
+      // Block: if %d was transferred with d=false, return to initial.
+      if (!inputs.empty() && inputs[0]->transferred() &&
+          (inputs[0]->data & 1) == 0)
+        dataflowInitialStage_ = true;
+    }
+  } else if (bodyType_ == BodyType::Gate) {
+    // Track first-element state for the cond shift.
+    if (gateFirstElement_) {
+      if (inputs.size() >= 2 && inputs[0]->transferred() &&
+          inputs[1]->transferred())
+        gateFirstElement_ = false;
+    } else {
+      // After last element (cond=false), reset for next iteration burst.
+      if (inputs.size() >= 2 && inputs[1]->transferred() &&
+          (inputs[1]->data & 1) == 0)
+        gateFirstElement_ = true;
+    }
+  }
 }
 
 void SimPE::collectTraceEvents(std::vector<TraceEvent> &events,

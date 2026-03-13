@@ -161,6 +161,7 @@ struct SimConfig {
   /// When non-empty, only events matching the filter are collected.
   std::vector<EventKind> traceFilterKinds;  // event-kind whitelist
   std::vector<uint32_t> traceFilterNodes;   // hwNodeId whitelist
+  std::vector<uint16_t> traceFilterCores;   // coreId whitelist
 };
 
 } // namespace sim

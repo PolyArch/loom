@@ -147,6 +147,10 @@ void SimMemory::memWrite(uint64_t addr, uint64_t data) {
 void SimMemory::evaluateCombinational() {
   firedThisCycle_ = false;
 
+  // Maximum valid tag per spec-fabric-mem.md tagging rules.
+  uint16_t maxTag = static_cast<uint16_t>(
+      ldCount_ > stCount_ ? ldCount_ : stCount_);
+
   // Port layout per spec-fabric-mem.md:
   //   Inputs:  [ld_addr_0..L-1, st_addr_0..S-1, st_data_0..S-1]
   //   Outputs: [ld_data_0..L-1, ld_done_0..L-1, st_done_0..S-1]
@@ -166,10 +170,12 @@ void SimMemory::evaluateCombinational() {
     // Check for completed pending loads (latency model).
     bool hasPendingResult = false;
     uint64_t pendingData = 0;
+    uint16_t pendingTag = 0;
     for (auto it = pendingLoads_.begin(); it != pendingLoads_.end(); ++it) {
       if (it->laneIdx == l && it->readyCycle <= currentSimCycle_) {
         hasPendingResult = true;
         pendingData = it->data;
+        pendingTag = it->tag;
         break;
       }
     }
@@ -177,10 +183,26 @@ void SimMemory::evaluateCombinational() {
     if (hasPendingResult) {
       ldData->valid = true;
       ldData->data = pendingData;
+      if (tagWidth_ > 0) {
+        ldData->tag = pendingTag;
+        ldData->hasTag = true;
+      }
       ldDone->valid = true;
-      ldDone->data = 1;
+      ldDone->data = 0; // Done token carries no data payload.
+      if (tagWidth_ > 0) {
+        ldDone->tag = pendingTag;
+        ldDone->hasTag = true;
+      }
       ldAddr->ready = false; // Don't accept new addr while serving result.
     } else if (ldAddr->valid && extLatency_ == 0) {
+      // Tag OOB check per spec-fabric-mem.md.
+      if (tagWidth_ > 0 && ldAddr->tag >= maxTag) {
+        latchError(RtError::RT_MEMORY_TAG_OOB);
+        ldData->valid = false;
+        ldDone->valid = false;
+        ldAddr->ready = false;
+        continue;
+      }
       // Zero-latency read: resolve address through addr_offset_table.
       bool matched = false;
       uint64_t resolvedAddr = resolveAddr(ldAddr->data, ldAddr->tag, matched);
@@ -195,12 +217,28 @@ void SimMemory::evaluateCombinational() {
         uint64_t val = memRead(resolvedAddr);
         ldData->valid = true;
         ldData->data = val;
+        if (tagWidth_ > 0) {
+          ldData->tag = ldAddr->tag;
+          ldData->hasTag = true;
+        }
         ldDone->valid = true;
-        ldDone->data = 1;
+        ldDone->data = 0;
+        if (tagWidth_ > 0) {
+          ldDone->tag = ldAddr->tag;
+          ldDone->hasTag = true;
+        }
         ldAddr->ready = ldData->ready && ldDone->ready;
         firedThisCycle_ = true;
       }
     } else if (ldAddr->valid && extLatency_ > 0) {
+      // Tag OOB check.
+      if (tagWidth_ > 0 && ldAddr->tag >= maxTag) {
+        latchError(RtError::RT_MEMORY_TAG_OOB);
+        ldAddr->ready = false;
+        ldData->valid = false;
+        ldDone->valid = false;
+        continue;
+      }
       // Will issue in advanceClock.
       ldData->valid = false;
       ldDone->valid = false;
@@ -229,6 +267,14 @@ void SimMemory::evaluateCombinational() {
     auto *stDone = outputs[stDoneIdx];
 
     if (stData->valid && stAddr->valid) {
+      // Tag OOB check per spec-fabric-mem.md.
+      if (tagWidth_ > 0 && stAddr->tag >= maxTag) {
+        latchError(RtError::RT_MEMORY_TAG_OOB);
+        stDone->valid = false;
+        stData->ready = false;
+        stAddr->ready = false;
+        continue;
+      }
       // Resolve address through addr_offset_table.
       bool matched = false;
       uint64_t resolvedAddr =
@@ -242,7 +288,11 @@ void SimMemory::evaluateCombinational() {
         stAddr->ready = false;
       } else {
         stDone->valid = true;
-        stDone->data = 1;
+        stDone->data = 0; // Done token carries no data payload.
+        if (tagWidth_ > 0) {
+          stDone->tag = stAddr->tag;
+          stDone->hasTag = true;
+        }
         bool accept = stDone->ready;
         stData->ready = accept;
         stAddr->ready = accept;
@@ -259,7 +309,7 @@ void SimMemory::evaluateCombinational() {
 void SimMemory::advanceClock() {
   currentSimCycle_++;
 
-  // Process stores: write to memory.
+  // Process stores: pair staddr/stdata per tag in FIFO order, then write.
   for (unsigned s = 0; s < stCount_; ++s) {
     unsigned stAddrIdx = ldCount_ + s;
     unsigned stDataIdx = ldCount_ + stCount_ + s;
@@ -267,17 +317,65 @@ void SimMemory::advanceClock() {
     if (stAddrIdx >= inputs.size() || stDataIdx >= inputs.size())
       continue;
 
-    if (inputs[stAddrIdx]->transferred() &&
-        inputs[stDataIdx]->transferred()) {
-      // Resolve address.
+    uint16_t tag = (tagWidth_ > 0) ? inputs[stAddrIdx]->tag : 0;
+
+    // Queue arriving addr/data into the store pair queue.
+    if (inputs[stAddrIdx]->transferred()) {
+      auto &q = storePairQueues_[tag];
+      // Find an unpaired entry needing addr, or create new.
+      bool paired = false;
+      for (auto &entry : q) {
+        if (!entry.hasAddr) {
+          entry.hasAddr = true;
+          entry.addr = inputs[stAddrIdx]->data;
+          paired = true;
+          break;
+        }
+      }
+      if (!paired) {
+        StorePairEntry e;
+        e.hasAddr = true;
+        e.addr = inputs[stAddrIdx]->data;
+        q.push_back(e);
+      }
+      perf_.tokensIn++;
+    }
+    if (inputs[stDataIdx]->transferred()) {
+      auto &q = storePairQueues_[tag];
+      bool paired = false;
+      for (auto &entry : q) {
+        if (!entry.hasData) {
+          entry.hasData = true;
+          entry.data = inputs[stDataIdx]->data;
+          paired = true;
+          break;
+        }
+      }
+      if (!paired) {
+        StorePairEntry e;
+        e.hasData = true;
+        e.data = inputs[stDataIdx]->data;
+        q.push_back(e);
+      }
+      perf_.tokensIn++;
+    }
+
+    // Dequeue fully paired entries and write to memory.
+    auto &q = storePairQueues_[tag];
+    while (!q.empty() && q.front().hasAddr && q.front().hasData) {
+      auto &front = q.front();
       bool matched = false;
       uint64_t resolvedAddr =
-          resolveAddr(inputs[stAddrIdx]->data, inputs[stAddrIdx]->tag,
-                      matched);
-      if (matched || tagWidth_ == 0)
-        memWrite(resolvedAddr, inputs[stDataIdx]->data);
-      perf_.tokensIn += 2;
+          resolveAddr(front.addr, tag, matched);
+      if (matched || tagWidth_ == 0) {
+        memWrite(resolvedAddr, front.data);
+      }
+      q.pop_front();
     }
+
+    // Initialize deadlock counter for this tag if not present.
+    if (storeDeadlockCounters_.find(tag) == storeDeadlockCounters_.end())
+      storeDeadlockCounters_[tag] = 0;
   }
 
   // Issue new loads with latency.
@@ -327,8 +425,6 @@ void SimMemory::advanceClock() {
   }
 
   // Store deadlock detection per spec-fabric-mem.md.
-  // For each store tag, check if exactly one of staddr/stdata has queued
-  // entries while the other is empty (imbalance condition).
   for (auto &[tag, counter] : storeDeadlockCounters_) {
     auto qIt = storePairQueues_.find(tag);
     if (qIt == storePairQueues_.end() || qIt->second.empty()) {

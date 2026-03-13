@@ -295,13 +295,28 @@ SUBSET_APPS=(
   edit_distance_step distance_point newton_iter
 )
 
-# Apps with no handshake DFG source get unconditional SKIP.
-# All other failures are FAIL unless the app lacks source files.
+# Checked-in exclusion list: apps that cannot produce DFGs due to known
+# limitations (e.g., unsupported C constructs). All other DFG failures
+# are treated as FAIL.
+EXCLUDED_APPS=(
+  # breadth_first_search uses pointer-based graph traversal not lowerable to handshake
+  breadth_first_search
+  # database_join uses dynamic hash tables not lowerable to handshake
+  database_join
+)
+
 is_skip_allowed() {
   local app="$1"
   local reason="$2"
-  # Only DFG compilation failure (no source or no handshake) is a valid SKIP.
-  [[ "${reason}" == "no_dfg" ]]
+  if [[ "${reason}" != "no_dfg" ]]; then
+    return 1
+  fi
+  for excl in "${EXCLUDED_APPS[@]}"; do
+    if [[ "${app}" == "${excl}" ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 # --- Batch mode: per-app ---
@@ -339,7 +354,7 @@ run_perapp_batch() {
 
   loom_run_suite_no_exit "${PARALLEL_FILE}" "${suite_label}" "sim-app-perapp" "300"
   local suite_rc=0
-  if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
+  if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 || LOOM_SKIPPED > 0 )); then
     suite_rc=1
   fi
 
@@ -435,7 +450,7 @@ run_domain_batch() {
 
   loom_run_suite_no_exit "${PARALLEL_FILE}" "Simulator App (Per-domain ADG)" "sim-app-domain" "300"
   local suite_rc=0
-  if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
+  if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 || LOOM_SKIPPED > 0 )); then
     suite_rc=1
   fi
 

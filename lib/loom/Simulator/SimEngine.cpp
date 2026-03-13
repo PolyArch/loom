@@ -453,13 +453,33 @@ SimResult SimEngine::run() {
   result.configCycles = configCycles;
   currentCycle_ = configCycles;
 
+  // Helpers to check whether a direct-emission event passes the active
+  // trace filters (kind, node, core).  System-level events use hwNodeId=0
+  // and coreId=0, so they are excluded when the whitelist is non-empty and
+  // does not contain 0.
+  auto kindAllowed = [&](EventKind ek) {
+    if (config_.traceFilterKinds.empty()) return true;
+    for (auto k : config_.traceFilterKinds)
+      if (k == ek) return true;
+    return false;
+  };
+  auto nodeAllowed = [&](uint32_t nid) {
+    if (config_.traceFilterNodes.empty()) return true;
+    for (auto n : config_.traceFilterNodes)
+      if (n == nid) return true;
+    return false;
+  };
+  auto coreAllowed = [&](uint16_t cid) {
+    if (config_.traceFilterCores.empty()) return true;
+    for (auto c : config_.traceFilterCores)
+      if (c == cid) return true;
+    return false;
+  };
+
   // Emit config write events and count total config writes.
   result.totalConfigWrites = configWords;
   if (config_.traceMode != TraceMode::Off) {
-    bool configKindOk = config_.traceFilterKinds.empty();
-    for (auto k : config_.traceFilterKinds)
-      if (k == EV_CONFIG_WRITE) { configKindOk = true; break; }
-    if (configKindOk) {
+    if (kindAllowed(EV_CONFIG_WRITE) && nodeAllowed(0) && coreAllowed(0)) {
       for (uint64_t w = 0; w < configWords; ++w) {
         uint64_t writeCycle = w / config_.configWordsPerCycle;
         TraceEvent ev;
@@ -473,12 +493,9 @@ SimResult SimEngine::run() {
     }
   }
 
-  // Emit invocation start (subject to kind filter).
+  // Emit invocation start (subject to kind, node, and core filters).
   if (config_.traceMode == TraceMode::Full) {
-    bool kindOk = config_.traceFilterKinds.empty();
-    for (auto k : config_.traceFilterKinds)
-      if (k == EV_INVOCATION_START) { kindOk = true; break; }
-    if (kindOk) {
+    if (kindAllowed(EV_INVOCATION_START) && nodeAllowed(0) && coreAllowed(0)) {
       TraceEvent ev;
       ev.cycle = currentCycle_;
       ev.epochId = epochId_;
@@ -500,12 +517,9 @@ SimResult SimEngine::run() {
       break;
   }
 
-  // Emit invocation done (subject to kind filter).
+  // Emit invocation done (subject to kind, node, and core filters).
   if (config_.traceMode == TraceMode::Full) {
-    bool kindOk = config_.traceFilterKinds.empty();
-    for (auto k : config_.traceFilterKinds)
-      if (k == EV_INVOCATION_DONE) { kindOk = true; break; }
-    if (kindOk) {
+    if (kindAllowed(EV_INVOCATION_DONE) && nodeAllowed(0) && coreAllowed(0)) {
       TraceEvent ev;
       ev.cycle = currentCycle_;
       ev.epochId = epochId_;
@@ -684,32 +698,29 @@ void SimEngine::emitTraceEvents() {
     ev.invocationId = invocationId_;
   }
 
-  // Apply trace filters: remove events not matching the whitelist.
-  if (!config_.traceFilterKinds.empty() || !config_.traceFilterNodes.empty()) {
+  // Apply trace filters: remove events not matching any active whitelist.
+  if (!config_.traceFilterKinds.empty() || !config_.traceFilterNodes.empty() ||
+      !config_.traceFilterCores.empty()) {
     cycleEvents_.erase(
         std::remove_if(cycleEvents_.begin(), cycleEvents_.end(),
                        [this](const TraceEvent &ev) {
                          if (!config_.traceFilterKinds.empty()) {
                            bool kindMatch = false;
-                           for (auto k : config_.traceFilterKinds) {
-                             if (ev.eventKind == k) {
-                               kindMatch = true;
-                               break;
-                             }
-                           }
-                           if (!kindMatch)
-                             return true;
+                           for (auto k : config_.traceFilterKinds)
+                             if (ev.eventKind == k) { kindMatch = true; break; }
+                           if (!kindMatch) return true;
                          }
                          if (!config_.traceFilterNodes.empty()) {
                            bool nodeMatch = false;
-                           for (auto n : config_.traceFilterNodes) {
-                             if (ev.hwNodeId == n) {
-                               nodeMatch = true;
-                               break;
-                             }
-                           }
-                           if (!nodeMatch)
-                             return true;
+                           for (auto n : config_.traceFilterNodes)
+                             if (ev.hwNodeId == n) { nodeMatch = true; break; }
+                           if (!nodeMatch) return true;
+                         }
+                         if (!config_.traceFilterCores.empty()) {
+                           bool coreMatch = false;
+                           for (auto c : config_.traceFilterCores)
+                             if (ev.coreId == c) { coreMatch = true; break; }
+                           if (!coreMatch) return true;
                          }
                          return false;
                        }),
