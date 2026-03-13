@@ -554,6 +554,122 @@ test_oracle_verdict_correct() {
   fi
 }
 
+# ---- Test 23: Trace filter excludes unwanted event kinds ----
+test_trace_filter_kinds() {
+  local out="${WORK_DIR}/filter_kinds"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 \
+    --sim-trace-filter-kinds fire 2>&1 || true
+
+  [[ -s "${out}.trace" ]] || { echo "trace file missing"; return 1; }
+
+  # Parse the trace and verify no route/stall/config events present.
+  # Binary format: 16-byte header (magic+version+count), then 38-byte records.
+  python3 -c "
+import struct, sys
+data = open('${out}.trace', 'rb').read()
+# Skip 16-byte header (4 magic + 4 version + 8 count).
+hdr_size = 16
+rec_size = 38  # 8+4+8+2+4+1+1+2+4+4
+pos = hdr_size
+count = 0
+kinds_seen = set()
+while pos + rec_size <= len(data):
+    kind = data[pos + 26]  # eventKind offset within record
+    kinds_seen.add(kind)
+    pos += rec_size
+    count += 1
+
+# EV_NODE_FIRE = 0 should be the only kind present.
+assert kinds_seen <= {0}, f'expected only fire(0) events, got kinds: {kinds_seen}'
+assert count > 0, 'no events found'
+" || return 1
+}
+
+# ---- Test 24: Trace filter excludes unwanted nodes ----
+test_trace_filter_nodes() {
+  local out="${WORK_DIR}/filter_nodes"
+  # Use a single node filter - pick node 0.
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 \
+    --sim-trace-filter-nodes 0 2>&1 || true
+
+  [[ -s "${out}.trace" ]] || { echo "trace file missing"; return 1; }
+
+  python3 -c "
+import struct
+data = open('${out}.trace', 'rb').read()
+hdr_size = 16
+rec_size = 38
+pos = hdr_size
+nodes_seen = set()
+while pos + rec_size <= len(data):
+    node_id = struct.unpack_from('<I', data, pos+22)[0]
+    nodes_seen.add(node_id)
+    pos += rec_size
+
+# Only node 0 should appear.
+assert nodes_seen <= {0}, f'expected only node 0, got: {nodes_seen}'
+" || return 1
+}
+
+# ---- Test 25: CPU reference oracle reports cpu-ref verdict ----
+test_cpu_ref_oracle() {
+  local out="${WORK_DIR}/cpuref"
+  local log="${WORK_DIR}/cpuref_output.log"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || true
+
+  # The cpu-ref line should appear in the output.
+  if ! grep -q 'cpu-ref:' "${log}"; then
+    echo "cpu-ref status line missing"
+    cat "${log}"
+    return 1
+  fi
+
+  # Oracle verdict should mention the oracle type (cpu-ref or determinism).
+  if ! grep -qE 'cpu-ref|determinism' "${log}"; then
+    echo "oracle type (cpu-ref/determinism) not reported"
+    cat "${log}"
+    return 1
+  fi
+}
+
+# ---- Test 26: EventSimSession validation harness ----
+test_session_harness() {
+  local out="${WORK_DIR}/session_harness"
+  local log="${WORK_DIR}/session_harness_output.log"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 \
+    --sim-session-test > "${log}" 2>&1
+
+  # Check that all sub-tests passed.
+  if ! grep -q 'Session test results:' "${log}"; then
+    echo "session test harness did not produce results"
+    cat "${log}"
+    return 1
+  fi
+
+  local failed
+  failed=$(grep -c 'FAIL' "${log}" || true)
+  if [[ "${failed}" -gt 1 ]]; then
+    # "0 failed" line always has FAIL in "failed", so >1 means real failures.
+    grep 'FAIL' "${log}" | grep -v '0 failed'
+    return 1
+  fi
+
+  # Verify specific sub-tests ran.
+  for sub in "state-after-config" "basic-invoke" "repeated-invocation-same-epoch" \
+             "compare-self-pass" "multi-epoch-reconfig" "deliberate-compare-fail" \
+             "invalid-state-invoke-before-config" "invalid-state-setinput-connected" \
+             "reset-all-to-connected" "disconnect-to-closed"; do
+    if ! grep -q "session-test: ${sub}" "${log}"; then
+      echo "missing sub-test: ${sub}"
+      return 1
+    fi
+  done
+}
+
 echo "Simulator Validation Tests"
 echo "=========================="
 run_test "basic-artifacts" test_basic_artifacts
@@ -578,6 +694,10 @@ run_test "stat-node-identity" test_stat_node_identity
 run_test "summary-viz-no-events" test_summary_viz_no_events
 run_test "off-viz-stat-overlay" test_off_viz_stat_overlay
 run_test "oracle-verdict-correct" test_oracle_verdict_correct
+run_test "trace-filter-kinds" test_trace_filter_kinds
+run_test "trace-filter-nodes" test_trace_filter_nodes
+run_test "cpu-ref-oracle" test_cpu_ref_oracle
+run_test "session-harness" test_session_harness
 
 echo ""
 echo "Results: ${pass}/${total} passed, ${fail} failed"

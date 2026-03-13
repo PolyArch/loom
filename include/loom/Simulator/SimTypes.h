@@ -156,6 +156,11 @@ struct SimConfig {
   TraceMode traceMode = TraceMode::Full;
   /// Maximum cycles before timeout (0 = no limit).
   uint64_t maxCycles = 1000000;
+
+  /// Trace filters (empty = include all).
+  /// When non-empty, only events matching the filter are collected.
+  std::vector<EventKind> traceFilterKinds;  // event-kind whitelist
+  std::vector<uint32_t> traceFilterNodes;   // hwNodeId whitelist
 };
 
 } // namespace sim

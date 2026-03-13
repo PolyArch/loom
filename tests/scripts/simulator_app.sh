@@ -165,8 +165,8 @@ if [[ "${1:-}" == "--single-domain" ]]; then
   mkdir -p "${output_dir}"
 
   if [[ ! -f "${DOMAIN_ADG}" ]]; then
-    echo "SKIP: domain ADG not found: ${DOMAIN_ADG}" >&2
-    exit 77
+    echo "FAIL: domain ADG not found: ${DOMAIN_ADG}" >&2
+    exit 1
   fi
 
   # Compile app to handshake DFG if not already present.
@@ -266,19 +266,30 @@ discover_apps() {
   fi
 }
 
-# Representative app subset covering hardware feature categories.
-# Feature coverage matrix:
-#   basic-arith:      vecadd (add), dotprod (mul+add), popcount (bitops)
-#   compare-pred:     relu (cmp+select), binary_search (cmp+branch)
-#   memory-access:    spmv (indirect load), scatter_add (indirect store)
-#   multi-dim:        matmul (nested loops), conv2d (2D stencil access)
-#   stream-ctrl:      prefix_sum_inclusive (scan), fir_filter (shift reg)
-#   temporal-compute: fft_butterfly (complex ops), gemv (dot+accum)
-#   reduction:        jacobi_stencil_5pt (5-point reduce), distance_point (sqrt)
-#   encoding:         rle_encode (state machine), edit_distance_step (DP)
-#   iteration:        newton_iter (convergence loop)
+# Representative app subset mapped to plan hardware feature matrix.
+# Each app exercises one or more fabric hardware features:
+#
+# Hardware Feature               | Primary Apps          | Notes
+# -------------------------------|----------------------|------
+# Native compute PE (ALU)        | vecadd, dotprod      | basic add, mul+add
+# Compare predicates (4-bit enc) | relu, binary_search  | cmp+select, cmp+branch
+# Static switch (routing)        | vecadd, dotprod      | present in most apps
+# Constant PE (native/tagged)    | axpy                 | constant scaling factor
+# dataflow.stream (cont_cond)    | fir_filter           | shift-register streaming
+# dataflow.carry/invariant/gate  | prefix_sum_inclusive  | loop-carried accumulation
+# fabric.memory (on-chip SRAM)   | jacobi_stencil_5pt   | region addressing
+# fabric.extmemory (ext latency) | spmv, matmul         | indirect/2D access
+# Load/store PE (tag modes)      | scatter_add          | indirect store
+# Bypassable FIFO (pipeline)     | conv2d               | 2D pipeline stages
+# Temporal PE (instruction fire) | fft_butterfly, gemv   | complex ops, dot+accum
+# Temporal SW (tag routing)      | fft_butterfly         | tag-aware routing
+# Tag operations (add/map/del)   | rle_encode            | state machine with tags
+# Bitwise operations             | popcount              | bit-level ALU
+# DP/string matching             | edit_distance_step    | dynamic programming
+# Iterative convergence          | newton_iter           | convergence loop
+# Geometry                       | distance_point        | sqrt approximation
 SUBSET_APPS=(
-  vecadd dotprod matmul gemv fir_filter fft_butterfly
+  vecadd dotprod axpy matmul gemv fir_filter fft_butterfly
   relu conv2d spmv scatter_add jacobi_stencil_5pt
   binary_search prefix_sum_inclusive popcount rle_encode
   edit_distance_step distance_point newton_iter
@@ -416,8 +427,8 @@ run_domain_batch() {
       rel_domain_adg=$(loom_relpath "${domain_adg}")
       line+=" && ${rel_script} --single-domain ${rel_loom} ${app} ${rel_domain_adg}"
     else
-      # Domain ADG generation failed; mark as skipped.
-      line+=" && exit 77"
+      # Domain ADG generation failed; mark as failure.
+      line+=" && echo 'FAIL: domain ADG not generated for ${app}' >&2 && exit 1"
     fi
     echo "${line}" >> "${PARALLEL_FILE}"
   done
@@ -445,7 +456,7 @@ case "${MODE}" in
   *)
     echo "Usage: simulator_app.sh <LOOM_BIN> per-app|per-app-subset|per-domain" >&2
     echo "  per-app:        Generate per-app ADG, map, and simulate all apps" >&2
-    echo "  per-app-subset: Same as per-app but only 18 representative apps" >&2
+    echo "  per-app-subset: Same as per-app but only 19 representative apps" >&2
     echo "  per-domain:     Generate domain ADG, map, and simulate all apps" >&2
     exit 1
     ;;

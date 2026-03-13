@@ -877,6 +877,93 @@ void writeTraceDataJSON(llvm::raw_ostream &os,
   json.objectEnd();
   json.attributeEnd();
 
+  // Stat time-axis playback: per-node utilization in time windows.
+  // Each window covers a fixed number of cycles. The renderer uses
+  // this to animate stat heatmaps across the execution timeline.
+  if (totalCycles > configCycles) {
+    uint64_t execCycles = totalCycles - configCycles;
+    // Use ~20 windows for a smooth timeline (min 1 cycle per window).
+    const unsigned numWindows = 20;
+    uint64_t windowSize = std::max(execCycles / numWindows, uint64_t(1));
+
+    // Count per-node fire/stall per window from trace events.
+    // windowStats[window][nodeId] = {fire, stallIn, stallOut}
+    struct WinStat {
+      uint64_t fire = 0, stallIn = 0, stallOut = 0;
+    };
+    std::map<unsigned, std::map<uint32_t, WinStat>> windowStats;
+    std::set<uint32_t> statNodes;
+
+    for (const auto &ev : events) {
+      if (ev.cycle < configCycles)
+        continue;
+      unsigned win = static_cast<unsigned>(
+          (ev.cycle - configCycles) / windowSize);
+      if (win >= numWindows)
+        win = numWindows - 1;
+      auto &ws = windowStats[win][ev.hwNodeId];
+      if (ev.eventKind == sim::EV_NODE_FIRE)
+        ws.fire++;
+      else if (ev.eventKind == sim::EV_NODE_STALL_IN)
+        ws.stallIn++;
+      else if (ev.eventKind == sim::EV_NODE_STALL_OUT)
+        ws.stallOut++;
+      statNodes.insert(ev.hwNodeId);
+    }
+
+    // Also include nodes from nodePerf that may not have trace events.
+    if (nodePerf) {
+      for (const auto &np : *nodePerf)
+        statNodes.insert(np.nodeIndex);
+    }
+
+    if (!statNodes.empty()) {
+      json.attributeBegin("statTimeline");
+      json.objectBegin();
+
+      json.attributeBegin("windowSize");
+      json.value(static_cast<int64_t>(windowSize));
+      json.attributeEnd();
+
+      json.attributeBegin("numWindows");
+      json.value(static_cast<int64_t>(numWindows));
+      json.attributeEnd();
+
+      // Per-node array of utilization values per window.
+      json.attributeBegin("nodes");
+      json.objectBegin();
+      for (uint32_t nid : statNodes) {
+        json.attributeBegin(std::to_string(nid));
+        json.arrayBegin();
+        for (unsigned w = 0; w < numWindows; ++w) {
+          auto it = windowStats.find(w);
+          if (it != windowStats.end()) {
+            auto nit = it->second.find(nid);
+            if (nit != it->second.end()) {
+              auto &s = nit->second;
+              uint64_t total = s.fire + s.stallIn + s.stallOut;
+              double util = total > 0
+                                ? static_cast<double>(s.fire) / total
+                                : 0.0;
+              json.value(util);
+            } else {
+              json.value(0.0);
+            }
+          } else {
+            json.value(0.0);
+          }
+        }
+        json.arrayEnd();
+        json.attributeEnd();
+      }
+      json.objectEnd();
+      json.attributeEnd();
+
+      json.objectEnd();
+      json.attributeEnd();
+    }
+  }
+
   json.objectEnd();
 }
 

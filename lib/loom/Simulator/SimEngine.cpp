@@ -456,26 +456,36 @@ SimResult SimEngine::run() {
   // Emit config write events and count total config writes.
   result.totalConfigWrites = configWords;
   if (config_.traceMode != TraceMode::Off) {
-    for (uint64_t w = 0; w < configWords; ++w) {
-      uint64_t writeCycle = w / config_.configWordsPerCycle;
-      TraceEvent ev;
-      ev.cycle = writeCycle;
-      ev.epochId = epochId_;
-      ev.invocationId = invocationId_;
-      ev.eventKind = EV_CONFIG_WRITE;
-      ev.arg0 = static_cast<uint32_t>(w);
-      allTraceEvents_.push_back(ev);
+    bool configKindOk = config_.traceFilterKinds.empty();
+    for (auto k : config_.traceFilterKinds)
+      if (k == EV_CONFIG_WRITE) { configKindOk = true; break; }
+    if (configKindOk) {
+      for (uint64_t w = 0; w < configWords; ++w) {
+        uint64_t writeCycle = w / config_.configWordsPerCycle;
+        TraceEvent ev;
+        ev.cycle = writeCycle;
+        ev.epochId = epochId_;
+        ev.invocationId = invocationId_;
+        ev.eventKind = EV_CONFIG_WRITE;
+        ev.arg0 = static_cast<uint32_t>(w);
+        allTraceEvents_.push_back(ev);
+      }
     }
   }
 
-  // Emit invocation start.
+  // Emit invocation start (subject to kind filter).
   if (config_.traceMode == TraceMode::Full) {
-    TraceEvent ev;
-    ev.cycle = currentCycle_;
-    ev.epochId = epochId_;
-    ev.invocationId = invocationId_;
-    ev.eventKind = EV_INVOCATION_START;
-    allTraceEvents_.push_back(ev);
+    bool kindOk = config_.traceFilterKinds.empty();
+    for (auto k : config_.traceFilterKinds)
+      if (k == EV_INVOCATION_START) { kindOk = true; break; }
+    if (kindOk) {
+      TraceEvent ev;
+      ev.cycle = currentCycle_;
+      ev.epochId = epochId_;
+      ev.invocationId = invocationId_;
+      ev.eventKind = EV_INVOCATION_START;
+      allTraceEvents_.push_back(ev);
+    }
   }
 
   // Main simulation loop.
@@ -490,14 +500,19 @@ SimResult SimEngine::run() {
       break;
   }
 
-  // Emit invocation done.
+  // Emit invocation done (subject to kind filter).
   if (config_.traceMode == TraceMode::Full) {
-    TraceEvent ev;
-    ev.cycle = currentCycle_;
-    ev.epochId = epochId_;
-    ev.invocationId = invocationId_;
-    ev.eventKind = EV_INVOCATION_DONE;
-    allTraceEvents_.push_back(ev);
+    bool kindOk = config_.traceFilterKinds.empty();
+    for (auto k : config_.traceFilterKinds)
+      if (k == EV_INVOCATION_DONE) { kindOk = true; break; }
+    if (kindOk) {
+      TraceEvent ev;
+      ev.cycle = currentCycle_;
+      ev.epochId = epochId_;
+      ev.invocationId = invocationId_;
+      ev.eventKind = EV_INVOCATION_DONE;
+      allTraceEvents_.push_back(ev);
+    }
   }
 
   result.success = isComplete();
@@ -667,6 +682,38 @@ void SimEngine::emitTraceEvents() {
   for (auto &ev : cycleEvents_) {
     ev.epochId = epochId_;
     ev.invocationId = invocationId_;
+  }
+
+  // Apply trace filters: remove events not matching the whitelist.
+  if (!config_.traceFilterKinds.empty() || !config_.traceFilterNodes.empty()) {
+    cycleEvents_.erase(
+        std::remove_if(cycleEvents_.begin(), cycleEvents_.end(),
+                       [this](const TraceEvent &ev) {
+                         if (!config_.traceFilterKinds.empty()) {
+                           bool kindMatch = false;
+                           for (auto k : config_.traceFilterKinds) {
+                             if (ev.eventKind == k) {
+                               kindMatch = true;
+                               break;
+                             }
+                           }
+                           if (!kindMatch)
+                             return true;
+                         }
+                         if (!config_.traceFilterNodes.empty()) {
+                           bool nodeMatch = false;
+                           for (auto n : config_.traceFilterNodes) {
+                             if (ev.hwNodeId == n) {
+                               nodeMatch = true;
+                               break;
+                             }
+                           }
+                           if (!nodeMatch)
+                             return true;
+                         }
+                         return false;
+                       }),
+        cycleEvents_.end());
   }
 
   if (config_.traceMode == TraceMode::Full) {

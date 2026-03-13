@@ -87,6 +87,10 @@ void PrintUsage(llvm::StringRef prog) {
   llvm::outs() << "  --simulate                   Run event-driven simulator after mapping\n";
   llvm::outs() << "  --sim-max-cycles <n>         Maximum simulation cycles (default: 1000000)\n";
   llvm::outs() << "  --sim-trace-mode <mode>      Trace mode: off, summary, full (default: full)\n";
+  llvm::outs() << "  --sim-trace-filter-kinds <k>  Comma-separated event kinds to include\n";
+  llvm::outs() << "                               (fire,stall_in,stall_out,route,config,start,done,error)\n";
+  llvm::outs() << "  --sim-trace-filter-nodes <n>  Comma-separated hwNodeIds to include\n";
+  llvm::outs() << "  --sim-session-test           Run EventSimSession validation harness\n";
   llvm::outs() << "\n";
   llvm::outs() << "Visualization options:\n";
   llvm::outs() << "  --viz-neato                  Use neato-style stress majorization layout\n";
@@ -331,6 +335,28 @@ ParsedArgs ParseArgs(int argc, char **argv) {
           parsed.had_error = true;
           break;
         }
+        continue;
+      }
+      if (arg == "--sim-trace-filter-kinds") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --sim-trace-filter-kinds requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.sim_trace_filter_kinds = argv[++i];
+        continue;
+      }
+      if (arg == "--sim-trace-filter-nodes") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --sim-trace-filter-nodes requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.sim_trace_filter_nodes = argv[++i];
+        continue;
+      }
+      if (arg == "--sim-session-test") {
+        parsed.sim_session_test = true;
         continue;
       }
       // --dump-mapping removed: .map.json and .map.txt are always emitted.

@@ -41,6 +41,9 @@ struct ParsedArgs {
   bool simulate = false;
   uint64_t sim_max_cycles = 1000000;
   std::string sim_trace_mode = "full"; // off, summary, full
+  std::string sim_trace_filter_kinds; // comma-separated event kind names
+  std::string sim_trace_filter_nodes; // comma-separated hwNodeId values
+  bool sim_session_test = false;
   bool as_clang = false;
   bool show_help = false;
   bool show_version = false;

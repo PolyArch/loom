@@ -85,6 +85,7 @@
 #include "loom/Mapper/DomainMask.h"
 #include "loom/Mapper/Mapper.h"
 #include "loom/Mapper/TechMapper.h"
+#include "loom/Simulator/CpuReferenceExecutor.h"
 #include "loom/Simulator/EventSimSession.h"
 #include "loom/Simulator/SimArtifactWriter.h"
 
@@ -1257,6 +1258,41 @@ int main(int argc, char **argv) {
       else
         simConfig.traceMode = loom::sim::TraceMode::Full;
 
+      // Parse trace filter kinds (comma-separated names).
+      if (!parsed.sim_trace_filter_kinds.empty()) {
+        std::string kinds = parsed.sim_trace_filter_kinds;
+        size_t pos = 0;
+        while (pos < kinds.size()) {
+          size_t next = kinds.find(',', pos);
+          std::string name = kinds.substr(pos, next - pos);
+          if (name == "fire") simConfig.traceFilterKinds.push_back(loom::sim::EV_NODE_FIRE);
+          else if (name == "stall_in") simConfig.traceFilterKinds.push_back(loom::sim::EV_NODE_STALL_IN);
+          else if (name == "stall_out") simConfig.traceFilterKinds.push_back(loom::sim::EV_NODE_STALL_OUT);
+          else if (name == "route") simConfig.traceFilterKinds.push_back(loom::sim::EV_ROUTE_USE);
+          else if (name == "config") simConfig.traceFilterKinds.push_back(loom::sim::EV_CONFIG_WRITE);
+          else if (name == "start") simConfig.traceFilterKinds.push_back(loom::sim::EV_INVOCATION_START);
+          else if (name == "done") simConfig.traceFilterKinds.push_back(loom::sim::EV_INVOCATION_DONE);
+          else if (name == "error") simConfig.traceFilterKinds.push_back(loom::sim::EV_DEVICE_ERROR);
+          else {
+            llvm::errs() << "warning: unknown trace filter kind: " << name << "\n";
+          }
+          pos = (next == std::string::npos) ? kinds.size() : next + 1;
+        }
+      }
+
+      // Parse trace filter nodes (comma-separated hwNodeIds).
+      if (!parsed.sim_trace_filter_nodes.empty()) {
+        std::string nodes = parsed.sim_trace_filter_nodes;
+        size_t pos = 0;
+        while (pos < nodes.size()) {
+          size_t next = nodes.find(',', pos);
+          std::string token = nodes.substr(pos, next - pos);
+          simConfig.traceFilterNodes.push_back(
+              static_cast<uint32_t>(std::stoul(token)));
+          pos = (next == std::string::npos) ? nodes.size() : next + 1;
+        }
+      }
+
       loom::sim::EventSimSession session(simConfig);
       std::string simErr;
 
@@ -1306,16 +1342,202 @@ int main(int argc, char **argv) {
       }
       auto configEnd = std::chrono::steady_clock::now();
 
-      // Feed deterministic test vectors to boundary input ports.
-      // Each input port receives a short sequence of sequential values.
+      // Session validation harness: exercise the EventSimSession state machine.
+      if (parsed.sim_session_test) {
+        unsigned stPass = 0, stFail = 0;
+        auto stReport = [&](const char *name, bool ok, const char *detail = "") {
+          if (ok) {
+            ++stPass;
+            llvm::outs() << "  session-test: " << name << " ... PASS\n";
+          } else {
+            ++stFail;
+            llvm::outs() << "  session-test: " << name << " ... FAIL";
+            if (detail[0]) llvm::outs() << ": " << detail;
+            llvm::outs() << "\n";
+          }
+        };
+
+        llvm::outs() << "EventSimSession Validation Harness\n";
+        llvm::outs() << "==================================\n";
+
+        unsigned nIn = session.getNumInputPorts();
+        unsigned nOut = session.getNumOutputPorts();
+        const unsigned tvLen = 4;
+        auto makeInputs = [&]() {
+          std::vector<std::vector<uint64_t>> inp(nIn);
+          for (unsigned p = 0; p < nIn; ++p) {
+            inp[p].resize(tvLen);
+            for (unsigned t = 0; t < tvLen; ++t)
+              inp[p][t] = static_cast<uint64_t>(p * tvLen + t + 1);
+          }
+          return inp;
+        };
+
+        // Sub-test 1: State after loadConfig should be Configured.
+        stReport("state-after-config",
+                 session.getState() == loom::sim::SessionState::Configured);
+
+        // Sub-test 2: Basic invoke cycle.
+        {
+          auto inputs = makeInputs();
+          for (unsigned p = 0; p < nIn; ++p)
+            session.setInput(p, inputs[p]);
+          auto [res, err] = session.invoke();
+          bool ok = err.empty() &&
+                    session.getState() == loom::sim::SessionState::Draining;
+          stReport("basic-invoke", ok, err.c_str());
+        }
+
+        // Sub-test 3: Repeated invocation in one epoch via resetExecution.
+        {
+          std::string err = session.resetExecution();
+          bool ok = err.empty() &&
+                    session.getState() == loom::sim::SessionState::Configured;
+          if (ok) {
+            auto inputs = makeInputs();
+            for (unsigned p = 0; p < nIn; ++p)
+              session.setInput(p, inputs[p]);
+            auto [res2, err2] = session.invoke();
+            ok = err2.empty() &&
+                 session.getState() == loom::sim::SessionState::Draining;
+            if (!ok) err = err2;
+          }
+          stReport("repeated-invocation-same-epoch", ok, err.c_str());
+        }
+
+        // Sub-test 4: compare with correct (self) reference -> should pass.
+        {
+          std::vector<std::vector<uint64_t>> selfRef(nOut);
+          for (unsigned p = 0; p < nOut; ++p)
+            selfRef[p] = session.getOutput(p);
+          auto cmp = session.compare(selfRef);
+          stReport("compare-self-pass", cmp.pass, cmp.details.c_str());
+        }
+
+        // Sub-test 5: Multi-epoch reconfiguration.
+        {
+          // After compare, state is Verified. loadConfig -> new epoch.
+          bool stateOk =
+              session.getState() == loom::sim::SessionState::Verified;
+          uint32_t epoch1 = session.getEpochId();
+          std::string err = session.loadConfig(configBlob, simSlices);
+          bool ok = stateOk && err.empty() &&
+                    session.getState() == loom::sim::SessionState::Configured &&
+                    session.getEpochId() > epoch1;
+          if (!ok && !err.empty())
+            stReport("multi-epoch-reconfig", false, err.c_str());
+          else if (!ok)
+            stReport("multi-epoch-reconfig", false, "epoch did not increment");
+          else {
+            // Run a second epoch invocation.
+            auto inputs = makeInputs();
+            for (unsigned p = 0; p < nIn; ++p)
+              session.setInput(p, inputs[p]);
+            auto [res3, err3] = session.invoke();
+            ok = err3.empty();
+            stReport("multi-epoch-reconfig", ok, err3.c_str());
+          }
+        }
+
+        // Sub-test 6: Deliberate compare failure with wrong reference.
+        {
+          std::vector<std::vector<uint64_t>> badRef(nOut);
+          for (unsigned p = 0; p < nOut; ++p) {
+            badRef[p] = session.getOutput(p);
+            badRef[p].push_back(0xDEADBEEF);
+          }
+          auto cmp = session.compare(badRef);
+          stReport("deliberate-compare-fail", !cmp.pass && cmp.mismatches > 0);
+        }
+
+        // Sub-test 7: Invalid state - invoke in Ready state.
+        {
+          // resetAll goes to Connected, then we'd need buildFromGraph again.
+          // Instead, test setInput in wrong state: disconnect then try.
+          // Use a fresh session to test invoke before config.
+          loom::sim::EventSimSession freshSession(simConfig);
+          std::string err = freshSession.connect();
+          if (!err.empty()) {
+            stReport("invalid-state-invoke-before-config", false, err.c_str());
+          } else {
+            err = freshSession.buildFromGraph(adg);
+            if (!err.empty()) {
+              stReport("invalid-state-invoke-before-config", false, err.c_str());
+            } else {
+              // Now in Ready state - invoke should fail.
+              auto [res, invErr] = freshSession.invoke();
+              stReport("invalid-state-invoke-before-config",
+                       !invErr.empty(), invErr.c_str());
+            }
+          }
+        }
+
+        // Sub-test 8: Invalid state - setInput in Connected state.
+        {
+          loom::sim::EventSimSession s2(simConfig);
+          std::string err = s2.connect();
+          if (!err.empty()) {
+            stReport("invalid-state-setinput-connected", false, err.c_str());
+          } else {
+            std::string siErr = s2.setInput(0, {1, 2, 3});
+            stReport("invalid-state-setinput-connected", !siErr.empty(),
+                     siErr.c_str());
+          }
+        }
+
+        // Sub-test 9: resetAll returns to Connected state.
+        {
+          std::string err = session.resetAll();
+          bool ok = err.empty() &&
+                    session.getState() == loom::sim::SessionState::Connected &&
+                    session.getEpochId() == 0;
+          stReport("reset-all-to-connected", ok, err.c_str());
+        }
+
+        // Sub-test 10: disconnect transitions to Closed.
+        {
+          std::string err = session.disconnect();
+          bool ok = err.empty() &&
+                    session.getState() == loom::sim::SessionState::Closed;
+          stReport("disconnect-to-closed", ok, err.c_str());
+        }
+
+        llvm::outs() << "\nSession test results: " << stPass << "/"
+                      << (stPass + stFail) << " passed, " << stFail
+                      << " failed\n";
+        return stFail > 0 ? 1 : 0;
+      }
+
+      // Build deterministic test vectors for boundary input ports.
       unsigned numInputPorts = session.getNumInputPorts();
       unsigned numOutputPorts = session.getNumOutputPorts();
       const unsigned testVectorLen = 4;
+      std::vector<std::vector<uint64_t>> testInputs(numInputPorts);
       for (unsigned p = 0; p < numInputPorts; ++p) {
-        std::vector<uint64_t> testData(testVectorLen);
+        testInputs[p].resize(testVectorLen);
         for (unsigned t = 0; t < testVectorLen; ++t)
-          testData[t] = static_cast<uint64_t>(p * testVectorLen + t + 1);
-        simErr = session.setInput(p, testData);
+          testInputs[p][t] = static_cast<uint64_t>(p * testVectorLen + t + 1);
+      }
+
+      // CPU reference execution: interpret the handshake DFG on the host
+      // to compute expected outputs for the same test inputs.
+      auto hostStart = std::chrono::steady_clock::now();
+      auto cpuRef = loom::sim::cpuReferenceExecute(
+          handshake_module.get(), testInputs);
+      auto hostEnd = std::chrono::steady_clock::now();
+
+      if (cpuRef.supported) {
+        llvm::outs() << "  cpu-ref: supported ("
+                      << cpuRef.outputs.size() << " output ports)\n";
+      } else {
+        llvm::outs() << "  cpu-ref: unsupported ("
+                      << cpuRef.unsupportedReason
+                      << "), falling back to determinism check\n";
+      }
+
+      // Feed test vectors to the simulator.
+      for (unsigned p = 0; p < numInputPorts; ++p) {
+        simErr = session.setInput(p, testInputs[p]);
         if (!simErr.empty()) {
           llvm::errs() << "simulator setInput error: " << simErr << "\n";
           return 1;
@@ -1326,49 +1548,67 @@ int main(int argc, char **argv) {
                     << testVectorLen << " tokens, outputs: "
                     << numOutputPorts << " ports\n";
 
-      // Run simulation.
-      auto execStart = std::chrono::steady_clock::now();
+      // Run simulation (accelerator execution).
+      auto accelStart = std::chrono::steady_clock::now();
       auto [simResult, runErr] = session.invoke();
-      auto execEnd = std::chrono::steady_clock::now();
+      auto accelEnd = std::chrono::steady_clock::now();
 
       if (!runErr.empty()) {
         llvm::errs() << "simulator error: " << runErr << "\n";
         return 1;
       }
 
-      // Collect reference outputs from the first invocation.
+      // Collect simulator outputs.
       unsigned totalOutputTokens = 0;
-      std::vector<std::vector<uint64_t>> referenceOutputs(numOutputPorts);
+      std::vector<std::vector<uint64_t>> simOutputs(numOutputPorts);
       for (unsigned p = 0; p < numOutputPorts; ++p) {
-        referenceOutputs[p] = session.getOutput(p);
-        totalOutputTokens += referenceOutputs[p].size();
+        simOutputs[p] = session.getOutput(p);
+        totalOutputTokens += simOutputs[p].size();
       }
 
-      auto refEnd = std::chrono::steady_clock::now();
-
-      // Determinism check: reset, re-feed same inputs, re-invoke, compare
-      // against the reference outputs from the first run.
+      // Oracle: compare simulator outputs against CPU reference (primary)
+      // or use determinism check (fallback).
       bool oraclePass = false;
       unsigned oracleMismatches = 0;
       std::string oracleDetail;
 
-      if (simResult.success && (totalOutputTokens > 0 || numOutputPorts == 0)) {
+      if (!simResult.success) {
+        oracleDetail = "simulation timed out";
+      } else if (cpuRef.supported) {
+        // Primary oracle: compare against CPU reference outputs.
+        oraclePass = true;
+        for (unsigned p = 0; p < numOutputPorts && p < cpuRef.outputs.size();
+             ++p) {
+          const auto &expected = cpuRef.outputs[p];
+          const auto &actual = simOutputs[p];
+          size_t len = std::min(expected.size(), actual.size());
+          for (size_t t = 0; t < len; ++t) {
+            if (expected[t] != actual[t]) {
+              oraclePass = false;
+              oracleMismatches++;
+            }
+          }
+          if (expected.size() != actual.size()) {
+            oraclePass = false;
+            oracleMismatches++;
+          }
+        }
+        if (!oraclePass)
+          oracleDetail = "cpu reference mismatch";
+      } else if (totalOutputTokens > 0 || numOutputPorts == 0) {
+        // Fallback: determinism check via second invocation.
         simErr = session.resetExecution();
         if (!simErr.empty()) {
           oracleDetail = "resetExecution failed: " + simErr;
         } else {
           for (unsigned p = 0; p < numInputPorts; ++p) {
-            std::vector<uint64_t> testData(testVectorLen);
-            for (unsigned t = 0; t < testVectorLen; ++t)
-              testData[t] = static_cast<uint64_t>(p * testVectorLen + t + 1);
-            simErr = session.setInput(p, testData);
+            simErr = session.setInput(p, testInputs[p]);
             if (!simErr.empty()) break;
           }
-
           if (simErr.empty()) {
             auto [simResult2, runErr2] = session.invoke();
             if (runErr2.empty()) {
-              auto compareResult = session.compare(referenceOutputs);
+              auto compareResult = session.compare(simOutputs);
               oraclePass = compareResult.pass;
               oracleMismatches = compareResult.mismatches;
               if (!oraclePass)
@@ -1380,8 +1620,6 @@ int main(int argc, char **argv) {
             oracleDetail = "re-setInput failed: " + simErr;
           }
         }
-      } else if (!simResult.success) {
-        oracleDetail = "simulation timed out";
       } else {
         oracleDetail = "no output tokens produced";
       }
@@ -1393,6 +1631,10 @@ int main(int argc, char **argv) {
                     << numOutputPorts << " ports";
       if (oracleMismatches > 0)
         llvm::outs() << ", " << oracleMismatches << " mismatches";
+      if (cpuRef.supported)
+        llvm::outs() << ", cpu-ref";
+      else
+        llvm::outs() << ", determinism";
       llvm::outs() << ")\n";
       if (!oraclePass && !oracleDetail.empty())
         llvm::outs() << "  oracle detail: " << oracleDetail << "\n";
@@ -1400,14 +1642,14 @@ int main(int argc, char **argv) {
       auto simTotalEnd = std::chrono::steady_clock::now();
 
       // Compute host timing breakdown.
-      // host_exec_time covers the reference (first) invocation + output collection.
+      // host_exec_time: CPU reference execution; accel_exec_time: simulator.
       loom::sim::HostTiming timing;
       timing.configSeconds =
           std::chrono::duration<double>(configEnd - configStart).count();
       timing.hostExecSeconds =
-          std::chrono::duration<double>(refEnd - execStart).count();
+          std::chrono::duration<double>(hostEnd - hostStart).count();
       timing.accelExecSeconds =
-          std::chrono::duration<double>(execEnd - execStart).count();
+          std::chrono::duration<double>(accelEnd - accelStart).count();
       timing.totalSeconds =
           std::chrono::duration<double>(simTotalEnd - simTotalStart).count();
 
@@ -1460,8 +1702,8 @@ int main(int argc, char **argv) {
 
       llvm::outs() << "mapping succeeded: " << base_path << ".config.bin\n";
 
-      // Return non-zero when simulation completed but oracle check failed.
-      if (simResult.success && !oraclePass)
+      // Return non-zero on timeout, simulator failure, or oracle failure.
+      if (!simResult.success || !oraclePass)
         return 1;
       return 0;
     } else {

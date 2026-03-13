@@ -10,6 +10,7 @@ add_llvm_library(LoomSimulator
   SimEngine.cpp
   EventSimSession.cpp
   SimArtifactWriter.cpp
+  CpuReferenceExecutor.cpp
 
   LINK_LIBS PUBLIC
     LoomMapperCore

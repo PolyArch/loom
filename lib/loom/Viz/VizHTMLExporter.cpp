@@ -419,11 +419,24 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
         << "    <option value=\"100\">100x</option>\n"
         << "  </select></label>\n"
         << "  <button id=\"trace-heatmap\" title=\"Toggle utilization heatmap\">Heatmap</button>\n"
+        << "  <span style=\"margin-left:12px\">"
+        << "<button id=\"stat-play\" title=\"Stat timeline "
+           "play\">Play</button>"
+        << " <input id=\"stat-timeline-slider\" type=\"range\" min=\"0\" "
+           "max=\"19\" value=\"0\" style=\"width:200px\">"
+        << " <span id=\"stat-timeline-label\">Stat: --</span></span>\n"
         << "</div>\n\n";
   } else if (hasStatData) {
-    // Stat-only heatmap button (no playback controls).
+    // Stat-only heatmap + stat timeline controls.
     out << "<div id=\"trace-toolbar\">\n"
-        << "  <button id=\"trace-heatmap\" title=\"Toggle utilization heatmap\">Heatmap</button>\n"
+        << "  <button id=\"trace-heatmap\" title=\"Toggle utilization "
+           "heatmap\">Heatmap</button>\n"
+        << "  <span style=\"margin-left:12px\">"
+        << "<button id=\"stat-play\" title=\"Stat timeline "
+           "play\">Play</button>"
+        << " <input id=\"stat-timeline-slider\" type=\"range\" min=\"0\" "
+           "max=\"19\" value=\"0\" style=\"width:200px\">"
+        << " <span id=\"stat-timeline-label\">Stat: --</span></span>\n"
         << "</div>\n\n";
   }
 
