@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Mapper App Test (Tier 3)
-# Runs domain-grouped gen-adg + map-back for all real application DFGs.
-# Workflow:
-#   1. Classify each app into a domain group
-#   2. Generate one ADG per domain (from all DFGs in that domain)
-#   3. Map each DFG back to its domain ADG via escalation pipeline
-# Escalation: budget -> tracks -> FIFO -> cube topology.
-# Produces per-domain CSV artifacts with failure classification.
+# Runs gen-adg + map-back for all real application DFGs.
+# Two independent modes:
+#   per-app:    Per-app ADG escalation (22-config pipeline per app)
+#   per-domain: Domain-grouped ADG generation + domain mapping
+# Usage:
+#   mapper_app.sh <LOOM_BIN> per-app
+#   mapper_app.sh <LOOM_BIN> per-domain
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -82,13 +82,11 @@ score_domain_adg_config() {
   echo "${score}"
 }
 
-# --- Single mode ---
-if [[ "${1:-}" == "--single" ]]; then
+# --- Per-app single worker mode ---
+if [[ "${1:-}" == "--single-perapp" ]]; then
   shift
   LOOM_BIN=$(loom_resolve_bin "$1"); shift
   APP_NAME="$1"; shift
-  # Optional: pre-generated domain ADG path
-  DOMAIN_ADG="${1:-}"; shift || true
 
   app_dir="${APP_DIR}/${APP_NAME}"
   if [[ ! -d "${app_dir}" ]]; then
@@ -99,41 +97,20 @@ if [[ "${1:-}" == "--single" ]]; then
   output_dir="${app_dir}/Output"
   mkdir -p "${output_dir}"
 
-  # Remove stale marker files from previous runs to prevent false results.
-  rm -f "${output_dir}/${APP_NAME}_success_config.txt"
-  rm -f "${output_dir}/${APP_NAME}_failure_class.txt"
-  rm -f "${output_dir}/${APP_NAME}_adg_source.txt"
+  # Remove stale per-app markers only.
+  rm -f "${output_dir}/${APP_NAME}_perapp_success_config.txt"
+  rm -f "${output_dir}/${APP_NAME}_perapp_failure_class.txt"
 
-  # Find or regenerate the handshake DFG. Each candidate must both exist and
-  # contain handshake.func, not just func.func.
+  # Find or regenerate the handshake DFG.
   loom_ensure_app_handshake "${LOOM_BIN}" "${app_dir}" >/dev/null 2>&1 || true
   dfg="$(loom_find_handshake_dfg "${output_dir}" "${APP_NAME}" || true)"
   if [[ -z "${dfg}" ]]; then
-    echo "missing_handshake" > "${output_dir}/${APP_NAME}_failure_class.txt"
-    echo "per-app" > "${output_dir}/${APP_NAME}_adg_source.txt"
+    echo "missing_handshake" > "${output_dir}/${APP_NAME}_perapp_failure_class.txt"
     echo "FAIL: no valid handshake.mlir found for ${APP_NAME}" >&2
     exit 1
   fi
 
-  # If a domain ADG is provided, try mapping to it first.
-  if [[ -n "${DOMAIN_ADG}" && -f "${DOMAIN_ADG}" ]]; then
-    budgets=(10 50 200 500)
-    for b in "${budgets[@]}"; do
-      out_base="${output_dir}/${APP_NAME}_domain_b${b}"
-      map_log="${output_dir}/${APP_NAME}_domain_b${b}.log"
-      if "${LOOM_BIN}" --adg "${DOMAIN_ADG}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget "${b}" --mapper-mask-domain > "${map_log}" 2>&1; then
-        configured="${out_base}.fabric.mlir"
-        if [[ -f "${configured}" ]] && "${LOOM_BIN}" --adg "${configured}" >> "${map_log}" 2>&1; then
-          echo "domain-b${b}" > "${output_dir}/${APP_NAME}_success_config.txt"
-          echo "domain" > "${output_dir}/${APP_NAME}_adg_source.txt"
-          exit 0
-        fi
-      fi
-    done
-  fi
-
   # Per-app escalation: (gen_flags, map_budget, label)
-  # Each step tries progressively more routing resources and mapper budget.
   configs=(
     "--dfg-analyze --dump-analysis|10|analyze-default"
     "--dfg-analyze --dump-analysis|50|analyze-b50"
@@ -170,7 +147,6 @@ if [[ "${1:-}" == "--single" ]]; then
     # Generate ADG from DFG.
     # shellcheck disable=SC2086
     if ! "${LOOM_BIN}" --gen-adg --dfgs "${dfg}" -o "${adg_path}" ${gen_extra} > "${gen_log}" 2>&1; then
-      # Only set adg_gen if we haven't reached a more informative stage yet.
       [[ "${failure_class}" != "mapper" && "${failure_class}" != "config_validate" ]] && failure_class="adg_gen"
       continue
     fi
@@ -195,16 +171,69 @@ if [[ "${1:-}" == "--single" ]]; then
       continue
     fi
     if "${LOOM_BIN}" --adg "${configured}" >> "${map_log}" 2>&1; then
-      echo "${label}" > "${output_dir}/${APP_NAME}_success_config.txt"
-      echo "per-app" > "${output_dir}/${APP_NAME}_adg_source.txt"
+      echo "${label}" > "${output_dir}/${APP_NAME}_perapp_success_config.txt"
       exit 0
     fi
     failure_class="config_validate"
   done
 
-  echo "${failure_class}" > "${output_dir}/${APP_NAME}_failure_class.txt"
-  echo "per-app" > "${output_dir}/${APP_NAME}_adg_source.txt"
+  echo "${failure_class}" > "${output_dir}/${APP_NAME}_perapp_failure_class.txt"
   echo "FAIL: all escalation configs failed for ${APP_NAME} (${failure_class})" >&2
+  exit 1
+fi
+
+# --- Per-domain single worker mode ---
+if [[ "${1:-}" == "--single-domain" ]]; then
+  shift
+  LOOM_BIN=$(loom_resolve_bin "$1"); shift
+  APP_NAME="$1"; shift
+  DOMAIN_ADG="$1"; shift
+
+  app_dir="${APP_DIR}/${APP_NAME}"
+  if [[ ! -d "${app_dir}" ]]; then
+    echo "FAIL: app directory not found: ${app_dir}" >&2
+    exit 1
+  fi
+
+  output_dir="${app_dir}/Output"
+  mkdir -p "${output_dir}"
+
+  # Remove stale domain markers only.
+  rm -f "${output_dir}/${APP_NAME}_domain_success_config.txt"
+  rm -f "${output_dir}/${APP_NAME}_domain_failure_class.txt"
+
+  # Find or regenerate the handshake DFG.
+  loom_ensure_app_handshake "${LOOM_BIN}" "${app_dir}" >/dev/null 2>&1 || true
+  dfg="$(loom_find_handshake_dfg "${output_dir}" "${APP_NAME}" || true)"
+  if [[ -z "${dfg}" ]]; then
+    echo "missing_handshake" > "${output_dir}/${APP_NAME}_domain_failure_class.txt"
+    echo "FAIL: no valid handshake.mlir found for ${APP_NAME}" >&2
+    exit 1
+  fi
+
+  # Check domain ADG exists.
+  if [[ ! -f "${DOMAIN_ADG}" ]]; then
+    echo "domain_adg_missing" > "${output_dir}/${APP_NAME}_domain_failure_class.txt"
+    echo "FAIL: domain ADG not found: ${DOMAIN_ADG}" >&2
+    exit 1
+  fi
+
+  # Domain budget escalation.
+  budgets=(10 50 200 500)
+  for b in "${budgets[@]}"; do
+    out_base="${output_dir}/${APP_NAME}_domain_b${b}"
+    map_log="${output_dir}/${APP_NAME}_domain_b${b}.log"
+    if "${LOOM_BIN}" --adg "${DOMAIN_ADG}" --dfgs "${dfg}" -o "${out_base}" --mapper-budget "${b}" --mapper-mask-domain > "${map_log}" 2>&1; then
+      configured="${out_base}.fabric.mlir"
+      if [[ -f "${configured}" ]] && "${LOOM_BIN}" --adg "${configured}" >> "${map_log}" 2>&1; then
+        echo "domain-b${b}" > "${output_dir}/${APP_NAME}_domain_success_config.txt"
+        exit 0
+      fi
+    fi
+  done
+
+  echo "domain_mapper" > "${output_dir}/${APP_NAME}_domain_failure_class.txt"
+  echo "FAIL: all domain budgets failed for ${APP_NAME}" >&2
   exit 1
 fi
 
@@ -306,165 +335,245 @@ if [[ "${1:-}" == "--gen-domain" ]]; then
   exit 0
 fi
 
-# --- Domain-grouped batch mode ---
+# --- Shared batch helpers ---
+
+# Discover all app directories, ensure handshakes if needed.
+discover_apps() {
+  app_names=()
+  while IFS= read -r d; do
+    app_names+=("$(basename "${d}")")
+  done < <(find "${APP_DIR}" -mindepth 1 -maxdepth 1 -type d | sort)
+
+  if [[ ${#app_names[@]} -eq 0 ]]; then
+    echo "Mapper App: no apps found, skipping"
+    exit 0
+  fi
+
+  need_handshake_refresh=false
+  for app in "${app_names[@]}"; do
+    if loom_find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" >/dev/null; then
+      continue
+    fi
+    if loom_has_sources "${APP_DIR}/${app}"; then
+      need_handshake_refresh=true
+      break
+    fi
+  done
+
+  if "${need_handshake_refresh}"; then
+    "${SCRIPT_DIR}/handshake.sh" "${LOOM_BIN}" || true
+  fi
+}
+
+# Generate per-app CSV summary.
+generate_perapp_csv() {
+  local csv_dir="${ROOT_DIR}/tests/.results"
+  mkdir -p "${csv_dir}"
+  local csv_file="${csv_dir}/mapper-app-perapp-summary.csv"
+  echo "app,domain,status,config,failure_class" > "${csv_file}"
+
+  for app in "${app_names[@]}"; do
+    local domain
+    domain=$(classify_domain "${app}")
+    local success_file="${APP_DIR}/${app}/Output/${app}_perapp_success_config.txt"
+    local fail_file="${APP_DIR}/${app}/Output/${app}_perapp_failure_class.txt"
+    if [[ -f "${success_file}" ]]; then
+      local config
+      config=$(cat "${success_file}")
+      echo "${app},${domain},pass,${config}," >> "${csv_file}"
+    else
+      local fclass=""
+      if [[ -f "${fail_file}" ]]; then
+        fclass=$(cat "${fail_file}")
+      fi
+      echo "${app},${domain},fail,,${fclass}" >> "${csv_file}"
+    fi
+  done
+
+  echo "CSV summary: ${csv_file}"
+}
+
+# Generate per-domain CSV summaries.
+generate_domain_csv() {
+  local csv_dir="${ROOT_DIR}/tests/.results"
+  mkdir -p "${csv_dir}"
+  local csv_file="${csv_dir}/mapper-app-domain-summary.csv"
+  echo "app,domain,status,config,failure_class" > "${csv_file}"
+
+  for app in "${app_names[@]}"; do
+    local domain
+    domain=$(classify_domain "${app}")
+    local success_file="${APP_DIR}/${app}/Output/${app}_domain_success_config.txt"
+    local fail_file="${APP_DIR}/${app}/Output/${app}_domain_failure_class.txt"
+    if [[ -f "${success_file}" ]]; then
+      local config
+      config=$(cat "${success_file}")
+      echo "${app},${domain},pass,${config}," >> "${csv_file}"
+    else
+      local fclass=""
+      if [[ -f "${fail_file}" ]]; then
+        fclass=$(cat "${fail_file}")
+      fi
+      echo "${app},${domain},fail,,${fclass}" >> "${csv_file}"
+    fi
+  done
+
+  # Per-domain breakdown.
+  local domain_csv="${csv_dir}/mapper-app-domain-domains.csv"
+  echo "domain,total,pass,fail,pass_rate" > "${domain_csv}"
+
+  declare -A dom_total dom_pass
+  while IFS=, read -r csv_app csv_domain csv_status csv_config csv_fclass; do
+    [[ "${csv_app}" == "app" ]] && continue
+    dom_total["${csv_domain}"]=$(( ${dom_total["${csv_domain}"]:-0} + 1 ))
+    if [[ "${csv_status}" == "pass" ]]; then
+      dom_pass["${csv_domain}"]=$(( ${dom_pass["${csv_domain}"]:-0} + 1 ))
+    fi
+  done < "${csv_file}"
+
+  for domain in $(echo "${!dom_total[@]}" | tr ' ' '\n' | sort); do
+    local total="${dom_total[${domain}]}"
+    local pass="${dom_pass[${domain}]:-0}"
+    local fail=$(( total - pass ))
+    local rate=0
+    if [[ "${total}" -gt 0 ]]; then
+      rate=$(( pass * 100 / total ))
+    fi
+    echo "${domain},${total},${pass},${fail},${rate}%" >> "${domain_csv}"
+  done
+
+  echo "CSV summary: ${csv_file}"
+  echo "Domain summary: ${domain_csv}"
+}
+
+# --- Batch mode: per-app ---
+run_perapp_batch() {
+  discover_apps
+
+  PARALLEL_FILE="${APP_DIR}/mapper_app_perapp.parallel.sh"
+  rel_loom=$(loom_relpath "${LOOM_BIN}")
+  rel_script=$(loom_relpath "${SCRIPT_DIR}/mapper_app.sh")
+
+  loom_write_parallel_header "${PARALLEL_FILE}" \
+    "Mapper App Per-app ADG (Tier 3)" \
+    "Per-app ADG escalation pipeline for all application DFGs."
+
+  for app in "${app_names[@]}"; do
+    local rel_out="tests/app/${app}/Output"
+    local line="mkdir -p ${rel_out}"
+    line+=" && ${rel_script} --single-perapp ${rel_loom} ${app}"
+    echo "${line}" >> "${PARALLEL_FILE}"
+  done
+
+  loom_run_suite_no_exit "${PARALLEL_FILE}" "Mapper App (Per-app ADG)" "mapper-app-perapp" "240"
+  local suite_rc=0
+  if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
+    suite_rc=1
+  fi
+
+  generate_perapp_csv
+  exit "${suite_rc}"
+}
+
+# --- Batch mode: per-domain ---
+run_domain_batch() {
+  discover_apps
+
+  # Group apps by domain and collect DFG paths.
+  declare -A domain_apps
+  declare -A domain_dfgs
+  for app in "${app_names[@]}"; do
+    local domain
+    domain=$(classify_domain "${app}")
+    domain_apps["${domain}"]+="${app} "
+
+    local dfg
+    dfg="$(loom_find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" || true)"
+    if [[ -n "${dfg}" ]]; then
+      if [[ -n "${domain_dfgs[${domain}]:-}" ]]; then
+        domain_dfgs["${domain}"]+=",${dfg}"
+      else
+        domain_dfgs["${domain}"]="${dfg}"
+      fi
+    fi
+  done
+
+  # Generate one ADG per domain from all DFGs in that domain (in parallel).
+  DOMAIN_ADG_DIR="${ROOT_DIR}/tests/.results/domain-adgs"
+  mkdir -p "${DOMAIN_ADG_DIR}"
+
+  # Write per-domain metadata files for the parallel workers.
+  for domain in "${!domain_dfgs[@]}"; do
+    echo "${domain_dfgs[${domain}]}" > "${DOMAIN_ADG_DIR}/${domain}_dfgs.txt"
+    echo "${domain_apps[${domain}]}" > "${DOMAIN_ADG_DIR}/${domain}_apps.txt"
+  done
+
+  # Run domain ADG generation in parallel (one job per domain).
+  local domain_gen_file
+  domain_gen_file=$(mktemp)
+  for domain in "${!domain_dfgs[@]}"; do
+    echo "${SCRIPT_DIR}/mapper_app.sh --gen-domain ${LOOM_BIN} ${domain}" >> "${domain_gen_file}"
+  done
+
+  local domain_gen_jobs
+  domain_gen_jobs=$(loom_resolve_jobs)
+  parallel --timeout 600 -j "${domain_gen_jobs}" \
+    --halt never < "${domain_gen_file}" 2>/dev/null || true
+  rm -f "${domain_gen_file}"
+
+  # Build parallel job file: map each app to its domain ADG.
+  PARALLEL_FILE="${APP_DIR}/mapper_app_domain.parallel.sh"
+  local rel_loom
+  rel_loom=$(loom_relpath "${LOOM_BIN}")
+  local rel_script
+  rel_script=$(loom_relpath "${SCRIPT_DIR}/mapper_app.sh")
+
+  loom_write_parallel_header "${PARALLEL_FILE}" \
+    "Mapper App Per-domain ADG (Tier 3)" \
+    "Domain-grouped ADG generation + domain mapping for all application DFGs."
+
+  for app in "${app_names[@]}"; do
+    local domain
+    domain=$(classify_domain "${app}")
+    local rel_out="tests/app/${app}/Output"
+    local domain_adg="${DOMAIN_ADG_DIR}/${domain}.fabric.mlir"
+
+    local line="mkdir -p ${rel_out}"
+    if [[ -f "${domain_adg}" ]]; then
+      local rel_domain_adg
+      rel_domain_adg=$(loom_relpath "${domain_adg}")
+      line+=" && ${rel_script} --single-domain ${rel_loom} ${app} ${rel_domain_adg}"
+    else
+      # Domain ADG generation failed; write failure marker directly.
+      line+=" && echo domain_adg_missing > ${rel_out}/${app}_domain_failure_class.txt && false"
+    fi
+    echo "${line}" >> "${PARALLEL_FILE}"
+  done
+
+  loom_run_suite_no_exit "${PARALLEL_FILE}" "Mapper App (Per-domain ADG)" "mapper-app-domain" "240"
+  local suite_rc=0
+  if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
+    suite_rc=1
+  fi
+
+  generate_domain_csv
+  exit "${suite_rc}"
+}
+
+# --- Mode dispatch ---
 LOOM_BIN=$(loom_resolve_bin "${1:-${ROOT_DIR}/build/bin/loom}"); shift || true
+MODE="${1:-}"
+shift || true
 
 loom_require_parallel
 
-# Discover all app directories.
-app_names=()
-while IFS= read -r d; do
-  app_names+=("$(basename "${d}")")
-done < <(find "${APP_DIR}" -mindepth 1 -maxdepth 1 -type d | sort)
-
-if [[ ${#app_names[@]} -eq 0 ]]; then
-  echo "Mapper App: no apps found, skipping"
-  exit 0
-fi
-
-# Group apps by domain and collect DFG paths.
-need_handshake_refresh=false
-for app in "${app_names[@]}"; do
-  if loom_find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" >/dev/null; then
-    continue
-  fi
-  if loom_has_sources "${APP_DIR}/${app}"; then
-    need_handshake_refresh=true
-    break
-  fi
-done
-
-if "${need_handshake_refresh}"; then
-  "${SCRIPT_DIR}/handshake.sh" "${LOOM_BIN}" || true
-fi
-
-declare -A domain_apps
-declare -A domain_dfgs
-for app in "${app_names[@]}"; do
-  domain=$(classify_domain "${app}")
-  domain_apps["${domain}"]+="${app} "
-
-  dfg="$(loom_find_handshake_dfg "${APP_DIR}/${app}/Output" "${app}" || true)"
-  if [[ -n "${dfg}" ]]; then
-    if [[ -n "${domain_dfgs[${domain}]:-}" ]]; then
-      domain_dfgs["${domain}"]+=",${dfg}"
-    else
-      domain_dfgs["${domain}"]="${dfg}"
-    fi
-  fi
-done
-
-# Generate one ADG per domain from all DFGs in that domain (in parallel).
-DOMAIN_ADG_DIR="${ROOT_DIR}/tests/.results/domain-adgs"
-mkdir -p "${DOMAIN_ADG_DIR}"
-
-# Write per-domain metadata files for the parallel workers.
-for domain in "${!domain_dfgs[@]}"; do
-  echo "${domain_dfgs[${domain}]}" > "${DOMAIN_ADG_DIR}/${domain}_dfgs.txt"
-  echo "${domain_apps[${domain}]}" > "${DOMAIN_ADG_DIR}/${domain}_apps.txt"
-done
-
-# Run domain ADG generation in parallel (one job per domain).
-DOMAIN_GEN_FILE=$(mktemp)
-for domain in "${!domain_dfgs[@]}"; do
-  echo "${SCRIPT_DIR}/mapper_app.sh --gen-domain ${LOOM_BIN} ${domain}" >> "${DOMAIN_GEN_FILE}"
-done
-
-domain_gen_jobs=$(loom_resolve_jobs)
-parallel --timeout 600 -j "${domain_gen_jobs}" \
-  --halt never < "${DOMAIN_GEN_FILE}" 2>/dev/null || true
-rm -f "${DOMAIN_GEN_FILE}"
-
-# Build parallel job file: map each app, optionally passing domain ADG.
-PARALLEL_FILE="${APP_DIR}/mapper_app.parallel.sh"
-
-rel_loom=$(loom_relpath "${LOOM_BIN}")
-rel_script=$(loom_relpath "${SCRIPT_DIR}/mapper_app.sh")
-
-loom_write_parallel_header "${PARALLEL_FILE}" \
-  "Mapper App Tests (Tier 3)" \
-  "Domain-grouped gen-ADG + map-back with escalation for all application DFGs."
-
-for app in "${app_names[@]}"; do
-  domain=$(classify_domain "${app}")
-  rel_out="tests/app/${app}/Output"
-  domain_adg="${DOMAIN_ADG_DIR}/${domain}.fabric.mlir"
-
-  line="mkdir -p ${rel_out}"
-  line+=" && ${rel_script} --single ${rel_loom} ${app}"
-  if [[ -f "${domain_adg}" ]]; then
-    rel_domain_adg=$(loom_relpath "${domain_adg}")
-    line+=" ${rel_domain_adg}"
-  fi
-  echo "${line}" >> "${PARALLEL_FILE}"
-done
-
-loom_run_suite_no_exit "${PARALLEL_FILE}" "Mapper App" "mapper-app" "240"
-suite_rc=0
-if (( LOOM_FAIL > 0 || LOOM_TIMEOUT > 0 )); then
-  suite_rc=1
-fi
-
-# Generate per-domain CSV summary with failure classification.
-CSV_DIR="${ROOT_DIR}/tests/.results"
-mkdir -p "${CSV_DIR}"
-CSV_FILE="${CSV_DIR}/mapper-app-summary.csv"
-echo "app,domain,status,config,failure_class,adg_source" > "${CSV_FILE}"
-
-for app in "${app_names[@]}"; do
-  domain=$(classify_domain "${app}")
-  success_file="${APP_DIR}/${app}/Output/${app}_success_config.txt"
-  fail_file="${APP_DIR}/${app}/Output/${app}_failure_class.txt"
-  source_file="${APP_DIR}/${app}/Output/${app}_adg_source.txt"
-  adg_source=""
-  if [[ -f "${source_file}" ]]; then
-    adg_source=$(cat "${source_file}")
-  fi
-  if [[ -f "${success_file}" ]]; then
-    config=$(cat "${success_file}")
-    echo "${app},${domain},pass,${config},,${adg_source}" >> "${CSV_FILE}"
-  else
-    fclass=""
-    if [[ -f "${fail_file}" ]]; then
-      fclass=$(cat "${fail_file}")
-    fi
-    echo "${app},${domain},fail,,${fclass},${adg_source}" >> "${CSV_FILE}"
-  fi
-done
-
-# Generate per-domain summary with domain vs per-app provenance breakdown.
-DOMAIN_CSV="${CSV_DIR}/mapper-app-domains.csv"
-echo "domain,total,pass,fail,pass_rate,domain_pass,perapp_pass" > "${DOMAIN_CSV}"
-
-declare -A dom_total dom_pass dom_domain_pass dom_perapp_pass
-while IFS=, read -r csv_app csv_domain csv_status csv_config csv_fclass csv_source; do
-  [[ "${csv_app}" == "app" ]] && continue  # Skip header
-  dom_total["${csv_domain}"]=$(( ${dom_total["${csv_domain}"]:-0} + 1 ))
-  if [[ "${csv_status}" == "pass" ]]; then
-    dom_pass["${csv_domain}"]=$(( ${dom_pass["${csv_domain}"]:-0} + 1 ))
-    if [[ "${csv_source}" == "domain" ]]; then
-      dom_domain_pass["${csv_domain}"]=$(( ${dom_domain_pass["${csv_domain}"]:-0} + 1 ))
-    else
-      dom_perapp_pass["${csv_domain}"]=$(( ${dom_perapp_pass["${csv_domain}"]:-0} + 1 ))
-    fi
-  fi
-done < "${CSV_FILE}"
-
-for domain in $(echo "${!dom_total[@]}" | tr ' ' '\n' | sort); do
-  total="${dom_total[${domain}]}"
-  pass="${dom_pass[${domain}]:-0}"
-  fail=$(( total - pass ))
-  domain_p="${dom_domain_pass[${domain}]:-0}"
-  perapp_p="${dom_perapp_pass[${domain}]:-0}"
-  if [[ "${total}" -gt 0 ]]; then
-    rate=$(( pass * 100 / total ))
-  else
-    rate=0
-  fi
-  echo "${domain},${total},${pass},${fail},${rate}%,${domain_p},${perapp_p}" >> "${DOMAIN_CSV}"
-done
-
-echo "CSV summary: ${CSV_FILE}"
-echo "Domain summary: ${DOMAIN_CSV}"
-
-exit "${suite_rc}"
+case "${MODE}" in
+  per-app)    run_perapp_batch ;;
+  per-domain) run_domain_batch ;;
+  *)
+    echo "Usage: mapper_app.sh <LOOM_BIN> per-app|per-domain" >&2
+    echo "  per-app:    Per-app ADG escalation (22-config pipeline)" >&2
+    echo "  per-domain: Domain-grouped ADG generation + domain mapping" >&2
+    exit 1
+    ;;
+esac
