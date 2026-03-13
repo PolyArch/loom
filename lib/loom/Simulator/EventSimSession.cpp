@@ -380,5 +380,10 @@ AuditResult EventSimSession::auditRoutes() const {
   return engine_->auditRoutes();
 }
 
+unsigned EventSimSession::markDeadOutputSinks() {
+  std::lock_guard<std::mutex> lock(mu_);
+  return engine_ ? engine_->markDeadOutputSinks() : 0;
+}
+
 } // namespace sim
 } // namespace loom

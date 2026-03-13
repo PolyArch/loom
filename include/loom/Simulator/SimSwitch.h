@@ -32,6 +32,7 @@ public:
   PerfSnapshot getPerfSnapshot() const override { return perf_; }
   void auditRoutes(const std::vector<bool> &connectedInputs,
                    std::vector<AuditDiagnostic> &diags) const override;
+  bool inputHasRoute(unsigned portIdx) const override;
 
 private:
   unsigned numInputs_;
@@ -50,6 +51,9 @@ private:
 
   /// Derived: for each input, which outputs it broadcasts to.
   std::vector<std::vector<unsigned>> inputTargets_;
+
+  /// Precomputed: whether each input has any physical connectivity.
+  std::vector<bool> hasPhysicalConnectivity_;
 
   /// Rebuild derived routing maps from routeTable_ and connectivity_.
   void rebuildRouting();

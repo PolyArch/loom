@@ -1358,25 +1358,120 @@ int main(int argc, char **argv) {
       }
       auto configEnd = std::chrono::steady_clock::now();
 
-      // Route completeness audit: check all ADG-edge-connected switch inputs
-      // have configured routes. This catches mapper routing gaps before they
-      // manifest as deadlocks during simulation.
-      auto auditResult = session.auditRoutes();
-      if (!auditResult.pass) {
-        llvm::outs() << "  route audit: FAIL ("
-                      << auditResult.diagnostics.size() << " issues)\n";
-        for (const auto &d : auditResult.diagnostics) {
-          llvm::outs() << "    [" << (d.level == loom::sim::AuditDiagnostic::Error
-                                          ? "ERROR"
-                                          : d.level == loom::sim::AuditDiagnostic::Warning
-                                                ? "WARN"
-                                                : "INFO")
-                        << "] " << d.moduleName
-                        << " (hwNode=" << d.hwNodeId << "): "
-                        << d.message << "\n";
+      // Mark dead output channels as sinks. This handles architecturally
+      // dead paths like gate afterCond that are physically connected in the
+      // ADG but have no DFG consumer/route through the switch network.
+      unsigned deadSinks = session.markDeadOutputSinks();
+      if (deadSinks > 0)
+        llvm::outs() << "  dead output sinks: " << deadSinks << " channel(s)\n";
+
+      // DFG-level route and config audit: check mapper routes and config slices
+      // using full mapper state, DFG, ADG, and config data.
+      {
+        unsigned auditErrors = 0;
+        unsigned auditWarnings = 0;
+        const auto &state = mapper_result.state;
+        const auto &slices = config_gen.getConfigSlices();
+
+        // (a) Check every DFG edge has a non-empty route path.
+        for (size_t ei = 0; ei < dfg.edges.size(); ++ei) {
+          auto *edge = dfg.getEdge(static_cast<loom::IdIndex>(ei));
+          if (!edge) continue;
+          if (ei >= state.swEdgeToHwPaths.size() ||
+              state.swEdgeToHwPaths[ei].empty()) {
+            auto *srcPort = dfg.getPort(edge->srcPort);
+            auto *dstPort = dfg.getPort(edge->dstPort);
+            std::string srcName = srcPort ? std::to_string(srcPort->parentNode) : "?";
+            std::string dstName = dstPort ? std::to_string(dstPort->parentNode) : "?";
+            llvm::outs() << "    [ERROR] DFG edge " << ei
+                          << " (node " << srcName << " -> node " << dstName
+                          << ") has no route path\n";
+            ++auditErrors;
+          }
         }
-      } else {
-        llvm::outs() << "  route audit: PASS\n";
+
+        // (b) Check config slices exist and match expected size.
+        // Build name->slice map from config_gen slices.
+        std::unordered_map<std::string, const loom::ConfigGen::ConfigSlice *>
+            sliceByName;
+        for (const auto &s : slices)
+          sliceByName[s.name] = &s;
+
+        for (size_t ni = 0; ni < adg.nodes.size(); ++ni) {
+          auto *node = adg.getNode(static_cast<loom::IdIndex>(ni));
+          if (!node || node->kind != loom::Node::OperationNode)
+            continue;
+          // Get node name and op_name.
+          std::string nodeName, opName;
+          for (auto &attr : node->attributes) {
+            if (auto sa = mlir::dyn_cast<mlir::StringAttr>(attr.getValue())) {
+              if (attr.getName() == "sym_name") nodeName = sa.getValue().str();
+              else if (attr.getName() == "op_name") opName = sa.getValue().str();
+            }
+          }
+          if (nodeName.empty())
+            nodeName = "node_" + std::to_string(ni);
+
+          // Check if this module is mapped (has any DFG node bound to it).
+          bool isMapped = false;
+          if (ni < state.hwNodeToSwNodes.size() &&
+              !state.hwNodeToSwNodes[ni].empty())
+            isMapped = true;
+
+          if (!isMapped) continue; // Unmapped modules don't need config.
+
+          // Compute expected config width for this module.
+          unsigned nIn = static_cast<unsigned>(node->inputPorts.size());
+          unsigned nOut = static_cast<unsigned>(node->outputPorts.size());
+          std::vector<std::pair<std::string, int64_t>> intAs;
+          std::vector<std::pair<std::string, std::string>> strAs;
+          std::vector<std::pair<std::string, std::vector<int8_t>>> arrAs;
+          for (auto &attr : node->attributes) {
+            if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+              intAs.emplace_back(attr.getName().str(), ia.getInt());
+            else if (auto sa = mlir::dyn_cast<mlir::StringAttr>(attr.getValue()))
+              strAs.emplace_back(attr.getName().str(), sa.getValue().str());
+            else if (auto da = mlir::dyn_cast<mlir::DenseI8ArrayAttr>(attr.getValue())) {
+              std::vector<int8_t> v(da.asArrayRef().begin(), da.asArrayRef().end());
+              arrAs.emplace_back(attr.getName().str(), std::move(v));
+            }
+          }
+          unsigned expectedBits = loom::sim::computeConfigWidth(
+              opName, nIn, nOut, intAs, strAs, arrAs);
+          unsigned expectedWords = (expectedBits + 31) / 32;
+
+          auto it = sliceByName.find(nodeName);
+          if (it == sliceByName.end() && expectedWords > 0) {
+            llvm::outs() << "    [ERROR] Mapped module '" << nodeName
+                          << "' (hwNode=" << ni << ", op=" << opName
+                          << ") expects " << expectedWords
+                          << " config words but has no config slice\n";
+            ++auditErrors;
+          } else if (it != sliceByName.end() &&
+                     it->second->wordCount < expectedWords) {
+            llvm::outs() << "    [ERROR] Mapped module '" << nodeName
+                          << "' config slice has " << it->second->wordCount
+                          << " words but expects " << expectedWords << "\n";
+            ++auditErrors;
+          }
+        }
+
+        // Also run the simulator-level module audit.
+        auto simAudit = session.auditRoutes();
+        for (const auto &d : simAudit.diagnostics) {
+          if (d.level == loom::sim::AuditDiagnostic::Error) ++auditErrors;
+          else if (d.level == loom::sim::AuditDiagnostic::Warning) ++auditWarnings;
+        }
+
+        if (auditErrors > 0) {
+          llvm::outs() << "  route audit: FAIL (" << auditErrors
+                        << " errors, " << auditWarnings << " warnings)\n";
+        } else if (auditWarnings > 0) {
+          llvm::outs() << "  route audit: PASS (" << auditWarnings
+                        << " warnings)\n";
+        } else {
+          llvm::outs() << "  route audit: PASS\n";
+        }
       }
 
       // Session validation harness: exercise the EventSimSession state machine.

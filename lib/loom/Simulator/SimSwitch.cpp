@@ -18,6 +18,17 @@ SimSwitch::SimSwitch(unsigned numInputs, unsigned numOutputs,
   assert(connectivity_.size() == numOutputs_ * numInputs_);
   outputSource_.resize(numOutputs_, -1);
   inputTargets_.resize(numInputs_);
+
+  // Precompute per-input physical connectivity.
+  hasPhysicalConnectivity_.resize(numInputs_, false);
+  for (unsigned i = 0; i < numInputs_; ++i) {
+    for (unsigned o = 0; o < numOutputs_; ++o) {
+      if (connectivity_[o * numInputs_ + i]) {
+        hasPhysicalConnectivity_[i] = true;
+        break;
+      }
+    }
+  }
 }
 
 void SimSwitch::reset() {
@@ -109,11 +120,12 @@ void SimSwitch::evaluateCombinational() {
   // Drive input ready: AND of all broadcast targets' ready signals.
   for (unsigned i = 0; i < numInputs_ && i < inputs.size(); ++i) {
     if (inputTargets_[i].empty()) {
-      // Unrouted input: silently consume (act as implicit sink) to avoid
-      // deadlocking upstream producers.  The mapper may leave some DFG
-      // edges unrouted through the switch network (e.g. dead outputs,
-      // broadcast fan-out not fully configured).
-      inputs[i]->ready = true;
+      // Per spec-fabric-switch.md: an input with physical connectivity but
+      // no enabled route that receives a valid token raises
+      // RT_SWITCH_UNROUTED_INPUT.  Do NOT consume (ready=false).
+      inputs[i]->ready = false;
+      if (inputs[i]->valid && hasPhysicalConnectivity_[i])
+        latchError(RtError::RT_SWITCH_UNROUTED_INPUT);
     } else {
       bool allReady = true;
       for (unsigned targetOut : inputTargets_[i]) {
@@ -159,6 +171,12 @@ void SimSwitch::collectTraceEvents(std::vector<TraceEvent> &events,
     ev.arg0 = errorCode_;
     events.push_back(ev);
   }
+}
+
+bool SimSwitch::inputHasRoute(unsigned portIdx) const {
+  if (portIdx >= inputTargets_.size())
+    return false;
+  return !inputTargets_[portIdx].empty();
 }
 
 void SimSwitch::auditRoutes(const std::vector<bool> &connectedInputs,

@@ -130,6 +130,9 @@ public:
   /// Audit route completeness (valid after loadConfig).
   AuditResult auditRoutes() const;
 
+  /// Mark dead output channels as sinks (valid after loadConfig).
+  unsigned markDeadOutputSinks();
+
 private:
   mutable std::mutex mu_;
   SessionState state_ = SessionState::Created;

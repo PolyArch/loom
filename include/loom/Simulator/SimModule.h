@@ -70,6 +70,13 @@ public:
     (void)diags;
   }
 
+  /// Returns true if the given input port index has a configured route.
+  /// Default: always true (non-switch modules don't have routing).
+  virtual bool inputHasRoute(unsigned portIdx) const {
+    (void)portIdx;
+    return true;
+  }
+
   /// Get current performance counters.
   virtual PerfSnapshot getPerfSnapshot() const = 0;
 

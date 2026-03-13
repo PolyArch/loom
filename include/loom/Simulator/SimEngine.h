@@ -24,6 +24,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace loom {
@@ -88,6 +89,12 @@ public:
   /// input has a configured route. Returns pass/fail with diagnostics.
   /// Must be called after buildFromGraph() and loadConfig().
   AuditResult auditRoutes() const;
+
+  /// Mark dead output channels as always-ready sinks. Detects PE outputs
+  /// that feed unrouted switch inputs (e.g., gate afterCond with no DFG
+  /// consumer) and sets them permanently ready so the PE doesn't deadlock.
+  /// Returns the number of channels marked as sinks.
+  unsigned markDeadOutputSinks();
 
   /// Reset the engine for a new invocation (preserves configuration).
   void resetExecution();
@@ -179,6 +186,9 @@ private:
   /// Per-module: which input ports were wired by an ADG edge (not dummy).
   /// connectedInputMap_[moduleIndex][inputPortIndex] = true if connected.
   std::vector<std::vector<bool>> connectedInputMap_;
+
+  /// Channels marked as dead output sinks (always-ready).
+  std::unordered_set<SimChannel *> deadOutputSinks_;
 
   /// Compute topological order of combinational modules.
   void computeTopologicalOrder();

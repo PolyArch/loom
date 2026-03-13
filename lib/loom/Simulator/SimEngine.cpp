@@ -230,6 +230,44 @@ AuditResult SimEngine::auditRoutes() const {
   return result;
 }
 
+unsigned SimEngine::markDeadOutputSinks() {
+  // For each module output channel, check if it feeds a switch input that
+  // has no configured route. If so, permanently mark that channel as
+  // ready=true so the producing module doesn't deadlock on a dead output.
+  // This handles architecturally dead paths like gate afterCond.
+  //
+  // Build channel -> (consuming module, input index) map.
+  std::unordered_map<SimChannel *, std::pair<SimModule *, unsigned>> chConsumer;
+  for (auto &mod : modules_) {
+    for (unsigned i = 0; i < mod->inputs.size(); ++i) {
+      if (mod->inputs[i])
+        chConsumer[mod->inputs[i]] = {mod.get(), i};
+    }
+  }
+
+  unsigned sinkCount = 0;
+  for (auto &mod : modules_) {
+    for (unsigned o = 0; o < mod->outputs.size(); ++o) {
+      SimChannel *ch = mod->outputs[o];
+      if (!ch) continue;
+
+      auto it = chConsumer.find(ch);
+      if (it == chConsumer.end()) continue; // No consumer module.
+
+      auto *consumer = it->second.first;
+      unsigned inputIdx = it->second.second;
+
+      // Check if the consumer is a switch with no route for this input.
+      if (!consumer->inputHasRoute(inputIdx)) {
+        // Mark this channel as a permanent sink.
+        deadOutputSinks_.insert(ch);
+        ++sinkCount;
+      }
+    }
+  }
+  return sinkCount;
+}
+
 void SimEngine::computeTopologicalOrder() {
   combOrder_.clear();
   seqModules_.clear();
@@ -639,6 +677,11 @@ void SimEngine::stepOneCycle() {
     // Also evaluate combinational logic of sequential modules.
     for (auto *mod : seqModules_)
       mod->evaluateCombinational();
+
+    // Override: drive dead output sink channels as permanently ready.
+    // Must be AFTER combinational eval so switch ready=false is overridden.
+    for (auto *ch : deadOutputSinks_)
+      ch->ready = true;
 
     // Check convergence.
     bool stable = true;

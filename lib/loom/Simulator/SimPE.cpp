@@ -721,11 +721,20 @@ void SimPE::evaluateInvariant() {
 //===----------------------------------------------------------------------===//
 
 void SimPE::evaluateGate() {
+  // dataflow.gate per spec-dataflow.md:
+  //   after_value[i] = before_value[i]    (cuts the tail)
+  //   after_cond[i]  = before_cond[i+1]   (cuts the head)
+  //
+  // Hardware timing (one-element shift):
+  //   Initial: output after_value[0] alone, discard before_cond[0] (head cut)
+  //   Block:   output (after_value, after_cond) together using current inputs
+  //   Tail:    when cond=false, output only after_cond=false, discard value
+  //            (tail cut), then return to initial.
   if (outputs.size() < 2 || inputs.size() < 2)
     return;
 
-  auto *outVal = outputs[0];
-  auto *outCond = outputs[1];
+  auto *outVal = outputs[0];   // after_value
+  auto *outCond = outputs[1];  // after_cond
 
   if (!inputs[0]->valid || !inputs[1]->valid) {
     outVal->valid = false;
@@ -735,19 +744,56 @@ void SimPE::evaluateGate() {
     return;
   }
 
-  // Pass-through mode: emit before_value on output[0], discard afterCond
-  // on output[1].  The compiler IR uses willContinue (N+1 tokens) directly
-  // for carry/cond_br rather than afterCond, so afterCond is dead in the
-  // DFG.  The mapper may not route output[1] through the switch network,
-  // leaving its ready signal permanently false.  Discarding it here avoids
-  // deadlock on the unrouted output.
-  outVal->valid = true;
-  outVal->data = inputs[0]->data;
-  driveOutputTag(outVal, 0);
-  outCond->valid = false; // afterCond discarded -- unused in IR
-  bool accept = outVal->ready;
-  inputs[0]->ready = accept;
-  inputs[1]->ready = accept;
+  bool cond = (inputs[1]->data & 1) != 0;
+
+  if (gateFirstElement_) {
+    // Initial phase: consume first (value, cond) pair.
+    if (!cond) {
+      // Zero-trip: before_cond has length 1 (just false). Outputs are empty.
+      // Consume both inputs, produce no output, stay in initial phase.
+      outVal->valid = false;
+      outCond->valid = false;
+      inputs[0]->ready = true;
+      inputs[1]->ready = true;
+    } else {
+      // Head cut: output after_value[0] = before_value[0].
+      // Discard before_cond[0] (the head element). No after_cond yet.
+      outVal->valid = true;
+      outVal->data = inputs[0]->data;
+      driveOutputTag(outVal, 0);
+      outCond->valid = false;
+      // Consume when port 0 accepted. Port 1 is invalid so ignore its ready.
+      bool accept = outVal->ready;
+      inputs[0]->ready = accept;
+      inputs[1]->ready = accept;
+    }
+  } else {
+    // Block phase: have already output at least after_value[0].
+    if (cond) {
+      // Continuing: output both after_value and after_cond from current inputs.
+      outVal->valid = true;
+      outVal->data = inputs[0]->data;
+      driveOutputTag(outVal, 0);
+      outCond->valid = true;
+      outCond->data = 1; // after_cond = true (before_cond[i+1] mapped to current cond)
+      driveOutputTag(outCond, -1);
+      // Consume when both outputs accepted.
+      bool accept = outVal->ready && outCond->ready;
+      inputs[0]->ready = accept;
+      inputs[1]->ready = accept;
+    } else {
+      // Tail cut: cond=false means stream ends. Output only after_cond=false.
+      // Discard the current value (tail of before_value).
+      outVal->valid = false;
+      outCond->valid = true;
+      outCond->data = 0; // after_cond = false (terminator)
+      driveOutputTag(outCond, -1);
+      // Consume when port 1 accepted.
+      bool accept = outCond->ready;
+      inputs[0]->ready = accept;
+      inputs[1]->ready = accept;
+    }
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -1023,7 +1069,24 @@ void SimPE::advanceClock() {
         dataflowInitialStage_ = true;
     }
   } else if (bodyType_ == BodyType::Gate) {
-    // Pass-through gate: no state machine needed (see evaluateGate comment).
+    if (gateFirstElement_) {
+      // Initial: if both inputs transferred and cond was true, go to block.
+      if (inputs.size() >= 2 && inputs[0]->transferred() &&
+          inputs[1]->transferred()) {
+        bool cond = (inputs[1]->data & 1) != 0;
+        if (cond)
+          gateFirstElement_ = false;
+        // If cond was false (zero-trip), stay in initial.
+      }
+    } else {
+      // Block: if inputs transferred and cond was false, return to initial.
+      if (inputs.size() >= 2 && inputs[0]->transferred() &&
+          inputs[1]->transferred()) {
+        bool cond = (inputs[1]->data & 1) != 0;
+        if (!cond)
+          gateFirstElement_ = true;
+      }
+    }
   } else if (bodyType_ == BodyType::StreamCont) {
     // Helper: compute next index using stepOp_.
     auto computeNext = [this](uint64_t idx, uint64_t step) -> uint64_t {
