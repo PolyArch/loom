@@ -230,38 +230,19 @@ AuditResult SimEngine::auditRoutes() const {
   return result;
 }
 
-unsigned SimEngine::markDeadOutputSinks() {
-  // For each module output channel, check if it feeds a switch input that
-  // has no configured route. If so, permanently mark that channel as
-  // ready=true so the producing module doesn't deadlock on a dead output.
-  // This handles architecturally dead paths like gate afterCond.
-  //
-  // Build channel -> (consuming module, input index) map.
-  std::unordered_map<SimChannel *, std::pair<SimModule *, unsigned>> chConsumer;
-  for (auto &mod : modules_) {
-    for (unsigned i = 0; i < mod->inputs.size(); ++i) {
-      if (mod->inputs[i])
-        chConsumer[mod->inputs[i]] = {mod.get(), i};
-    }
-  }
-
+unsigned SimEngine::markDeadOutputSinks(
+    const std::vector<std::pair<uint32_t, unsigned>> &deadPorts) {
+  // Mark specific (hwNodeId, outputPortIndex) channels as permanently
+  // ready sinks. Only channels that are provably dead from DFG liveness
+  // analysis should be passed here (e.g., gate afterCond with no DFG edge).
+  deadOutputSinks_.clear();
   unsigned sinkCount = 0;
-  for (auto &mod : modules_) {
-    for (unsigned o = 0; o < mod->outputs.size(); ++o) {
-      SimChannel *ch = mod->outputs[o];
-      if (!ch) continue;
-
-      auto it = chConsumer.find(ch);
-      if (it == chConsumer.end()) continue; // No consumer module.
-
-      auto *consumer = it->second.first;
-      unsigned inputIdx = it->second.second;
-
-      // Check if the consumer is a switch with no route for this input.
-      if (!consumer->inputHasRoute(inputIdx)) {
-        // Mark this channel as a permanent sink.
-        deadOutputSinks_.insert(ch);
+  for (auto &[nodeId, portIdx] : deadPorts) {
+    for (auto &mod : modules_) {
+      if (mod->hwNodeId == nodeId && portIdx < mod->outputs.size()) {
+        deadOutputSinks_.insert(mod->outputs[portIdx]);
         ++sinkCount;
+        break;
       }
     }
   }

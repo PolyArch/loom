@@ -380,9 +380,10 @@ AuditResult EventSimSession::auditRoutes() const {
   return engine_->auditRoutes();
 }
 
-unsigned EventSimSession::markDeadOutputSinks() {
+unsigned EventSimSession::markDeadOutputSinks(
+    const std::vector<std::pair<uint32_t, unsigned>> &deadPorts) {
   std::lock_guard<std::mutex> lock(mu_);
-  return engine_ ? engine_->markDeadOutputSinks() : 0;
+  return engine_ ? engine_->markDeadOutputSinks(deadPorts) : 0;
 }
 
 } // namespace sim

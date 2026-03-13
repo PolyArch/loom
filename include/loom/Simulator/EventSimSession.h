@@ -130,8 +130,9 @@ public:
   /// Audit route completeness (valid after loadConfig).
   AuditResult auditRoutes() const;
 
-  /// Mark dead output channels as sinks (valid after loadConfig).
-  unsigned markDeadOutputSinks();
+  /// Mark specific dead output channels as sinks (valid after loadConfig).
+  unsigned markDeadOutputSinks(
+      const std::vector<std::pair<uint32_t, unsigned>> &deadPorts);
 
 private:
   mutable std::mutex mu_;

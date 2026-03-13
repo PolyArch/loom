@@ -1358,12 +1358,45 @@ int main(int argc, char **argv) {
       }
       auto configEnd = std::chrono::steady_clock::now();
 
-      // Mark dead output channels as sinks. This handles architecturally
-      // dead paths like gate afterCond that are physically connected in the
-      // ADG but have no DFG consumer/route through the switch network.
-      unsigned deadSinks = session.markDeadOutputSinks();
-      if (deadSinks > 0)
-        llvm::outs() << "  dead output sinks: " << deadSinks << " channel(s)\n";
+      // Identify DFG-provably-dead output ports and mark them as sinks.
+      // Only gate afterCond (output[1]) with no DFG edge consumer qualifies.
+      // This is NOT a blanket "unrouted = sink" override.
+      {
+        std::vector<std::pair<uint32_t, unsigned>> deadPorts;
+        const auto &state = mapper_result.state;
+        for (size_t ni = 0; ni < dfg.nodes.size(); ++ni) {
+          auto *node = dfg.getNode(static_cast<loom::IdIndex>(ni));
+          if (!node || node->kind != loom::Node::OperationNode)
+            continue;
+          // Check if this is a dataflow.gate node.
+          bool isGate = false;
+          for (auto &attr : node->attributes) {
+            if (attr.getName() == "op_name") {
+              if (auto sa = mlir::dyn_cast<mlir::StringAttr>(attr.getValue()))
+                if (sa.getValue() == "dataflow.gate") isGate = true;
+            }
+          }
+          if (!isGate || node->outputPorts.size() < 2) continue;
+
+          // Check if output[1] (afterCond) has no DFG edge.
+          loom::IdIndex outPortId = node->outputPorts[1];
+          auto *outPort = dfg.getPort(outPortId);
+          if (!outPort || !outPort->connectedEdges.empty()) continue;
+
+          // This gate output[1] is dead. Find the ADG hwNode it's mapped to.
+          if (ni < state.swNodeToHwNode.size() &&
+              state.swNodeToHwNode[ni] != loom::INVALID_ID) {
+            uint32_t hwId = state.swNodeToHwNode[ni];
+            // Gate output[1] maps to PE output port index 1 on the ADG.
+            deadPorts.push_back({hwId, 1});
+          }
+        }
+
+        unsigned deadSinks = session.markDeadOutputSinks(deadPorts);
+        if (deadSinks > 0)
+          llvm::outs() << "  dead output sinks: " << deadSinks
+                        << " (gate afterCond)\n";
+      }
 
       // DFG-level route and config audit: check mapper routes and config slices
       // using full mapper state, DFG, ADG, and config data.
@@ -1856,7 +1889,16 @@ int main(int argc, char **argv) {
       std::string oracleDetail;
 
       if (!simResult.success) {
-        oracleDetail = "simulation timed out";
+        switch (simResult.termination) {
+        case loom::sim::RunTermination::Timeout:
+          oracleDetail = "simulation timed out"; break;
+        case loom::sim::RunTermination::DeviceError:
+          oracleDetail = "device error: " + simResult.errorMessage; break;
+        case loom::sim::RunTermination::ContractError:
+          oracleDetail = "contract error: " + simResult.errorMessage; break;
+        default:
+          oracleDetail = simResult.errorMessage; break;
+        }
       } else if (cpuRef.supported) {
         // Primary oracle: compare against CPU reference outputs using
         // session.compare() which checks ALL ports (not just overlapping).
@@ -1938,10 +1980,19 @@ int main(int argc, char **argv) {
       if (!loom::sim::writeStatFile(statPath, simResult, timing))
         llvm::errs() << "warning: failed to write stat: " << statPath << "\n";
 
-      llvm::outs() << "simulation " << (simResult.success ? "completed" : "timed out")
-                    << ": " << simResult.totalCycles << " cycles ("
-                    << simResult.configCycles << " config + "
-                    << (simResult.totalCycles - simResult.configCycles) << " exec)\n";
+      {
+        const char *termStr = "unknown";
+        switch (simResult.termination) {
+        case loom::sim::RunTermination::Completed: termStr = "completed"; break;
+        case loom::sim::RunTermination::Timeout: termStr = "timed out"; break;
+        case loom::sim::RunTermination::DeviceError: termStr = "device error"; break;
+        case loom::sim::RunTermination::ContractError: termStr = "contract error"; break;
+        }
+        llvm::outs() << "simulation " << termStr
+                      << ": " << simResult.totalCycles << " cycles ("
+                      << simResult.configCycles << " config + "
+                      << (simResult.totalCycles - simResult.configCycles) << " exec)\n";
+      }
       if (simConfig.traceMode == loom::sim::TraceMode::Full) {
         llvm::outs() << "  trace: " << tracePath << " ("
                       << simResult.traceEvents.size() << " events)\n";

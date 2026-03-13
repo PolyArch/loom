@@ -90,11 +90,11 @@ public:
   /// Must be called after buildFromGraph() and loadConfig().
   AuditResult auditRoutes() const;
 
-  /// Mark dead output channels as always-ready sinks. Detects PE outputs
-  /// that feed unrouted switch inputs (e.g., gate afterCond with no DFG
-  /// consumer) and sets them permanently ready so the PE doesn't deadlock.
-  /// Returns the number of channels marked as sinks.
-  unsigned markDeadOutputSinks();
+  /// Mark specific output channels as always-ready sinks. Each entry is
+  /// (hwNodeId, outputPortIndex). Only channels provably dead from DFG
+  /// liveness analysis should be passed (e.g., gate afterCond with no edge).
+  unsigned markDeadOutputSinks(
+      const std::vector<std::pair<uint32_t, unsigned>> &deadPorts);
 
   /// Reset the engine for a new invocation (preserves configuration).
   void resetExecution();

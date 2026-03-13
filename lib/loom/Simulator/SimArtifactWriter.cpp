@@ -101,6 +101,16 @@ bool writeStatFile(const std::string &path, const SimResult &result,
 
   out << "{\n";
   out << "  \"success\": " << (result.success ? "true" : "false") << ",\n";
+  {
+    const char *termStr = "unknown";
+    switch (result.termination) {
+    case RunTermination::Completed: termStr = "completed"; break;
+    case RunTermination::Timeout: termStr = "timeout"; break;
+    case RunTermination::DeviceError: termStr = "device_error"; break;
+    case RunTermination::ContractError: termStr = "contract_error"; break;
+    }
+    out << "  \"termination\": \"" << termStr << "\",\n";
+  }
   out << "  \"totalCycles\": " << result.totalCycles << ",\n";
   out << "  \"configCycles\": " << result.configCycles << ",\n";
   out << "  \"executionCycles\": "
