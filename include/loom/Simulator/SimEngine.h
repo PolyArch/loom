@@ -130,6 +130,16 @@ private:
   /// Config blob for config_mem loader.
   std::vector<uint8_t> configBlob_;
 
+  /// Per-module config address map entry.
+  struct ModuleConfigSlice {
+    uint32_t wordOffset = 0;
+    uint32_t wordCount = 0;
+  };
+  std::vector<ModuleConfigSlice> moduleConfigMap_;
+
+  /// Whether a combinational loop was detected (Kahn's didn't visit all).
+  bool hasCombLoop_ = false;
+
   /// Compute topological order of combinational modules.
   void computeTopologicalOrder();
 
@@ -139,11 +149,14 @@ private:
   /// Check if simulation is complete (all outputs drained).
   bool isComplete() const;
 
-  /// Feed boundary inputs from queues.
-  void feedBoundaryInputs();
+  /// Drive boundary input channels from queues (sets valid/data before eval).
+  void driveBoundaryInputs();
 
-  /// Drain boundary outputs to collectors.
-  void drainBoundaryOutputs();
+  /// Set boundary output channels ready before combinational eval.
+  void driveBoundaryOutputReady();
+
+  /// After eval, advance input queues and collect outputs based on handshake.
+  void advanceBoundaryState();
 
   /// Emit trace events for this cycle.
   void emitTraceEvents();

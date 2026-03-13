@@ -46,7 +46,7 @@ struct SimChannel {
   /// Snapshot for fixed-point convergence detection.
   bool operator==(const SimChannel &o) const {
     return valid == o.valid && ready == o.ready && data == o.data &&
-           tag == o.tag;
+           tag == o.tag && hasTag == o.hasTag;
   }
   bool operator!=(const SimChannel &o) const { return !(*this == o); }
 };

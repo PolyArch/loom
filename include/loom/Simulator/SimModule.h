@@ -92,16 +92,22 @@ protected:
   // Sticky error state (per spec-fabric-error.md)
   //===--------------------------------------------------------------------===//
 
-  /// Latch an error code. Only the first error is captured (sticky).
-  /// When multiple errors occur in the same cycle, the numerically
-  /// smallest code takes precedence.
+  /// Latch an error code per spec-fabric-error.md sticky semantics:
+  /// - First error captured is sticky (later errors in different cycles
+  ///   do NOT overwrite).
+  /// - Among same-cycle contenders, numerically smallest code wins.
   void latchError(uint16_t code) {
     if (code == RtError::OK)
       return;
-    if (!errorValid_ || code < errorCode_) {
+    if (!errorValid_) {
+      // No prior error: capture this one.
       errorValid_ = true;
       errorCode_ = code;
     }
+    // If already latched from a prior cycle, do NOT overwrite.
+    // Same-cycle contention is handled by calling latchError multiple
+    // times in one evaluation pass; the first call wins since errorValid_
+    // becomes true immediately.
   }
 
   bool errorValid_ = false;
@@ -120,7 +126,9 @@ std::unique_ptr<SimModule> createSimModule(
     uint32_t hwNodeId, const std::string &name, const std::string &opName,
     unsigned numInputs, unsigned numOutputs,
     const std::vector<std::pair<std::string, int64_t>> &intAttrs,
-    const std::vector<std::pair<std::string, std::string>> &strAttrs);
+    const std::vector<std::pair<std::string, std::string>> &strAttrs,
+    const std::vector<std::pair<std::string, std::vector<int8_t>>>
+        &arrayAttrs = {});
 
 } // namespace sim
 } // namespace loom

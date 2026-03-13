@@ -20,13 +20,11 @@ SimPE::SimPE(BodyType bodyType, unsigned numInputs, unsigned numOutputs,
 }
 
 void SimPE::reset() {
+  // Only clear runtime state, NOT configured state.
+  // constantValue_, cmpPredicate_, contCondSel_, outputTags_ are set by configure().
   errorValid_ = false;
   errorCode_ = RtError::OK;
   perf_ = PerfSnapshot();
-  constantValue_ = 0;
-  cmpPredicate_ = 0;
-  contCondSel_ = 0;
-  outputTags_.assign(outputTags_.size(), 0);
 }
 
 void SimPE::configure(const std::vector<uint32_t> &configWords) {
@@ -74,11 +72,13 @@ void SimPE::configure(const std::vector<uint32_t> &configWords) {
         outputTags_[o] = static_cast<uint16_t>(extractBits(tagWidth_));
     }
     // Compare predicates (4 bits each) come after output tags.
-    if (opcodeStr_.find("cmpi") != std::string::npos ||
-        opcodeStr_.find("cmpf") != std::string::npos) {
+    if (opcodeStr_.find("cmpi") != std::string::npos) {
       cmpPredicate_ = static_cast<uint8_t>(extractBits(4));
       if (cmpPredicate_ >= 10)
         latchError(RtError::CFG_PE_CMPI_PREDICATE_INVALID);
+    } else if (opcodeStr_.find("cmpf") != std::string::npos) {
+      // cmpf allows all 16 predicate encodings (4-bit).
+      cmpPredicate_ = static_cast<uint8_t>(extractBits(4));
     }
   }
 }

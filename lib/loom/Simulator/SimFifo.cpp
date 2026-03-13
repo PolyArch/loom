@@ -13,8 +13,8 @@ SimFifo::SimFifo(unsigned depth, bool bypassable)
     : depth_(depth), bypassable_(bypassable), bypassed_(false) {}
 
 void SimFifo::reset() {
+  // Clear runtime state (buffer contents), NOT config (bypassed_).
   buffer_.clear();
-  bypassed_ = false;
   errorValid_ = false;
   errorCode_ = RtError::OK;
   perf_ = PerfSnapshot();

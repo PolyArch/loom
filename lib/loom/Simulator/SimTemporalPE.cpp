@@ -149,6 +149,24 @@ void SimTemporalPE::configure(const std::vector<uint32_t> &configWords) {
 
   // Initialize operand buffers and register FIFOs for execution.
   reset();
+
+  // Compute totalReaders for each register FIFO by counting how many
+  // instruction operands reference it as a register source.
+  for (auto &rf : regFifos_) {
+    rf.totalReaders = 0;
+  }
+  for (auto &insn : instructions_) {
+    if (!insn.valid)
+      continue;
+    for (auto &op : insn.operands) {
+      if (op.isReg && op.regIdx < regFifos_.size())
+        regFifos_[op.regIdx].totalReaders++;
+    }
+  }
+  // Initialize readersRemaining to totalReaders for each FIFO.
+  for (auto &rf : regFifos_) {
+    rf.readersRemaining = rf.totalReaders;
+  }
 }
 
 bool SimTemporalPE::canFire(unsigned insnIdx) const {
@@ -387,7 +405,16 @@ void SimTemporalPE::advanceClock() {
         sharedBuf_.emplace_back();
         target = &sharedBuf_.back();
         target->tag = inTag;
-        target->position = maxPos + 1;
+        // First entry for a tag starts at position 0 (not maxPos+1).
+        // Subsequent entries increment from the existing max.
+        bool hasExisting = false;
+        for (auto &e : sharedBuf_) {
+          if (&e != target && e.tag == inTag) {
+            hasExisting = true;
+            break;
+          }
+        }
+        target->position = hasExisting ? maxPos + 1 : 0;
         target->opValid.resize(numInputs_, false);
         target->opValue.resize(numInputs_, 0);
       }

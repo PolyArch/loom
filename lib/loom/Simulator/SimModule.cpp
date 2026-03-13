@@ -48,13 +48,42 @@ bool hasAttr(
   return false;
 }
 
+const std::vector<int8_t> *getArrayAttr(
+    const std::vector<std::pair<std::string, std::vector<int8_t>>> &arrayAttrs,
+    const std::string &name) {
+  for (auto &[k, v] : arrayAttrs) {
+    if (k == name)
+      return &v;
+  }
+  return nullptr;
+}
+
+/// Decode a flat connectivity_table array (output-major, nOut*nIn) into a
+/// vector<bool>. Returns a fully-connected table if the attribute is absent
+/// or the size doesn't match.
+std::vector<bool> decodeConnTable(
+    const std::vector<std::pair<std::string, std::vector<int8_t>>> &arrayAttrs,
+    unsigned nOut, unsigned nIn) {
+  const auto *arr = getArrayAttr(arrayAttrs, "connectivity_table");
+  if (arr && arr->size() == static_cast<size_t>(nOut) * nIn) {
+    std::vector<bool> conn(nOut * nIn);
+    for (size_t i = 0; i < arr->size(); ++i)
+      conn[i] = ((*arr)[i] != 0);
+    return conn;
+  }
+  // Default: fully connected.
+  return std::vector<bool>(nOut * nIn, true);
+}
+
 } // namespace
 
 std::unique_ptr<SimModule> createSimModule(
     uint32_t hwNodeId, const std::string &name, const std::string &opName,
     unsigned numInputs, unsigned numOutputs,
     const std::vector<std::pair<std::string, int64_t>> &intAttrs,
-    const std::vector<std::pair<std::string, std::string>> &strAttrs) {
+    const std::vector<std::pair<std::string, std::string>> &strAttrs,
+    const std::vector<std::pair<std::string, std::vector<int8_t>>>
+        &arrayAttrs) {
 
   std::unique_ptr<SimModule> mod;
 
@@ -62,7 +91,7 @@ std::unique_ptr<SimModule> createSimModule(
     // Build connectivity table from attributes.
     unsigned nIn = static_cast<unsigned>(getIntAttr(intAttrs, "num_inputs", numInputs));
     unsigned nOut = static_cast<unsigned>(getIntAttr(intAttrs, "num_outputs", numOutputs));
-    std::vector<bool> conn(nOut * nIn, true); // Default: fully connected.
+    std::vector<bool> conn = decodeConnTable(arrayAttrs, nOut, nIn);
     mod = std::make_unique<SimSwitch>(nIn, nOut, conn);
   } else if (opName == "fabric.fifo") {
     unsigned depth = static_cast<unsigned>(getIntAttr(intAttrs, "depth", 2));
@@ -136,7 +165,7 @@ std::unique_ptr<SimModule> createSimModule(
     unsigned numRouteTable = static_cast<unsigned>(getIntAttr(intAttrs, "num_route_table", 4));
     unsigned nIn = static_cast<unsigned>(getIntAttr(intAttrs, "num_inputs", numInputs));
     unsigned nOut = static_cast<unsigned>(getIntAttr(intAttrs, "num_outputs", numOutputs));
-    std::vector<bool> conn(nOut * nIn, true); // Default: fully connected.
+    std::vector<bool> conn = decodeConnTable(arrayAttrs, nOut, nIn);
     mod = std::make_unique<SimTemporalSW>(nIn, nOut, tagWidth, numRouteTable, conn);
   } else if (opName == "fabric.memory" || opName == "fabric.extmemory") {
     bool isExternal = (opName == "fabric.extmemory");

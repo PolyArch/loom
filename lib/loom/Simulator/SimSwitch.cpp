@@ -21,13 +21,11 @@ SimSwitch::SimSwitch(unsigned numInputs, unsigned numOutputs,
 }
 
 void SimSwitch::reset() {
+  // Only clear runtime state, NOT configured routing.
+  // routeTable_, outputSource_, inputTargets_ are set by configure().
   errorValid_ = false;
   errorCode_ = RtError::OK;
   perf_ = PerfSnapshot();
-  outputSource_.assign(numOutputs_, -1);
-  for (auto &t : inputTargets_)
-    t.clear();
-  routeTable_.clear();
 }
 
 void SimSwitch::configure(const std::vector<uint32_t> &configWords) {

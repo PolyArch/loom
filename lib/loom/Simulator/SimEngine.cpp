@@ -42,6 +42,7 @@ bool SimEngine::buildFromGraph(const Graph &adg) {
     std::string nodeName, nodeOpName;
     std::vector<std::pair<std::string, int64_t>> intAttrs;
     std::vector<std::pair<std::string, std::string>> strAttrs;
+    std::vector<std::pair<std::string, std::vector<int8_t>>> arrayAttrs;
 
     for (auto &attr : node->attributes) {
       std::string attrName = attr.getName().str();
@@ -53,6 +54,11 @@ bool SimEngine::buildFromGraph(const Graph &adg) {
           nodeName = strAttr.getValue().str();
         else if (attrName == "op_name")
           nodeOpName = strAttr.getValue().str();
+      } else if (auto arrAttr =
+                     mlir::dyn_cast<mlir::DenseI8ArrayAttr>(attr.getValue())) {
+        std::vector<int8_t> vals(arrAttr.asArrayRef().begin(),
+                                 arrAttr.asArrayRef().end());
+        arrayAttrs.emplace_back(attrName, std::move(vals));
       }
     }
 
@@ -77,7 +83,7 @@ bool SimEngine::buildFromGraph(const Graph &adg) {
         static_cast<uint32_t>(nodeIdx), nodeName, nodeOpName,
         static_cast<unsigned>(node->inputPorts.size()),
         static_cast<unsigned>(node->outputPorts.size()),
-        intAttrs, strAttrs);
+        intAttrs, strAttrs, arrayAttrs);
 
     if (!mod) {
       llvm::errs() << "SimEngine: unsupported module type '" << nodeOpName
@@ -224,7 +230,8 @@ void SimEngine::computeTopologicalOrder() {
 
   // If topological sort didn't include all modules, there's a cycle.
   // Add remaining modules (they'll be handled by fixed-point iteration).
-  if (combOrder_.size() < n) {
+  hasCombLoop_ = (combOrder_.size() < n);
+  if (hasCombLoop_) {
     std::unordered_set<SimModule *> sorted(combOrder_.begin(),
                                            combOrder_.end());
     for (auto *mod : combModules) {
@@ -263,12 +270,23 @@ bool SimEngine::loadConfig(const std::vector<uint8_t> &configBlob) {
                   (static_cast<uint32_t>(configBlob_[i * 4 + 3]) << 24);
   }
 
-  // For now, apply all config words to all modules.
-  // TODO: use address map from configured fabric.mlir to route config words
-  // to specific modules based on their config_mem addresses.
-  for (auto &mod : modules_) {
-    mod->reset();
-    mod->configure(allWords);
+  // Apply per-module config slices based on address map.
+  for (size_t m = 0; m < modules_.size(); ++m) {
+    modules_[m]->reset();
+
+    if (m < moduleConfigMap_.size()) {
+      auto &slice = moduleConfigMap_[m];
+      if (slice.wordCount > 0 && slice.wordOffset < numWords) {
+        size_t end = std::min(static_cast<size_t>(slice.wordOffset + slice.wordCount),
+                              numWords);
+        std::vector<uint32_t> modWords(allWords.begin() + slice.wordOffset,
+                                        allWords.begin() + end);
+        modules_[m]->configure(modWords);
+      }
+    } else {
+      // No address map entry - apply all words (fallback for simple cases).
+      modules_[m]->configure(allWords);
+    }
   }
 
   return true;
@@ -305,6 +323,7 @@ void SimEngine::resetExecution() {
     ch->ready = false;
     ch->data = 0;
     ch->tag = 0;
+    ch->hasTag = false;
   }
   for (auto &q : inputQueues_)
     q.pos = 0;
@@ -313,6 +332,8 @@ void SimEngine::resetExecution() {
     c.tags.clear();
   }
   cycleEvents_.clear();
+  // Clear trace buffer between invocations for deterministic output.
+  allTraceEvents_.clear();
 }
 
 void SimEngine::resetAll() {
@@ -328,12 +349,25 @@ void SimEngine::resetAll() {
 SimResult SimEngine::run() {
   SimResult result;
 
+  // Validate config rate.
+  if (config_.configWordsPerCycle == 0) {
+    result.success = false;
+    result.errorMessage = "configWordsPerCycle must be > 0";
+    return result;
+  }
+
+  // Check for all-combinational loops.
+  if (hasCombLoop_ && seqModules_.empty()) {
+    result.success = false;
+    result.errorMessage = "All-combinational loop detected with no sequential elements";
+    return result;
+  }
+
   // Configuration overhead cycles.
   uint64_t configWords = configBlob_.size() / 4;
-  uint64_t configCycles = 0;
-  if (config_.configWordsPerCycle > 0)
-    configCycles = (configWords + config_.configWordsPerCycle - 1) /
-                   config_.configWordsPerCycle;
+  uint64_t configCycles =
+      (configWords + config_.configWordsPerCycle - 1) /
+      config_.configWordsPerCycle;
   configCycles += config_.resetOverheadCycles;
   result.configCycles = configCycles;
   currentCycle_ = configCycles;
@@ -363,7 +397,10 @@ SimResult SimEngine::run() {
   }
 
   // Main simulation loop.
-  while (currentCycle_ < config_.maxCycles + configCycles) {
+  uint64_t maxCycle = (config_.maxCycles > 0)
+                        ? configCycles + config_.maxCycles
+                        : UINT64_MAX;
+  while (currentCycle_ < maxCycle) {
     stepOneCycle();
     currentCycle_++;
 
@@ -397,7 +434,10 @@ SimResult SimEngine::run() {
 }
 
 void SimEngine::stepOneCycle() {
-  feedBoundaryInputs();
+  // Pre-phase: Drive boundary signals BEFORE combinational evaluation.
+  // This ensures producers see boundary ready signals during phase 1.
+  driveBoundaryInputs();
+  driveBoundaryOutputReady();
 
   // Phase 1: Combinational convergence.
   // Iterate until all channel states are stable.
@@ -429,15 +469,19 @@ void SimEngine::stepOneCycle() {
       break;
   }
 
-  drainBoundaryOutputs();
   emitTraceEvents();
 
-  // Phase 2: Sequential state advance.
+  // Phase 2: Sequential state advance + boundary bookkeeping.
+  // Advance boundary queues/collectors based on handshake results.
+  advanceBoundaryState();
+
   for (auto *mod : seqModules_)
     mod->advanceClock();
 }
 
-void SimEngine::feedBoundaryInputs() {
+void SimEngine::driveBoundaryInputs() {
+  // Drive valid/data/tag on boundary input channels from queues.
+  // Do NOT advance queue position here - that happens in advanceBoundaryState.
   for (unsigned i = 0; i < boundaryInputs_.size() && i < inputQueues_.size();
        ++i) {
     auto &q = inputQueues_[i];
@@ -449,22 +493,39 @@ void SimEngine::feedBoundaryInputs() {
       if (q.hasTag && q.pos < q.tags.size()) {
         ch->tag = q.tags[q.pos];
         ch->hasTag = true;
+      } else {
+        ch->hasTag = false;
       }
-      // If handshake occurred, advance queue.
-      if (ch->transferred())
-        q.pos++;
     } else {
       ch->valid = false;
     }
   }
 }
 
-void SimEngine::drainBoundaryOutputs() {
+void SimEngine::driveBoundaryOutputReady() {
+  // Set boundary output channels as ready BEFORE combinational evaluation
+  // so that producers can see the ready signal during phase 1.
+  for (unsigned i = 0;
+       i < boundaryOutputs_.size() && i < outputCollectors_.size(); ++i) {
+    boundaryOutputs_[i]->ready = true;
+  }
+}
+
+void SimEngine::advanceBoundaryState() {
+  // After combinational evaluation, check which handshakes completed
+  // and advance input queues / collect outputs accordingly.
+
+  // Advance input queues where handshake occurred.
+  for (unsigned i = 0; i < boundaryInputs_.size() && i < inputQueues_.size();
+       ++i) {
+    if (boundaryInputs_[i]->transferred())
+      inputQueues_[i].pos++;
+  }
+
+  // Collect outputs where handshake occurred.
   for (unsigned i = 0;
        i < boundaryOutputs_.size() && i < outputCollectors_.size(); ++i) {
     auto *ch = boundaryOutputs_[i];
-    ch->ready = true; // Always ready to accept output.
-
     if (ch->transferred()) {
       outputCollectors_[i].data.push_back(ch->data);
       if (ch->hasTag)

@@ -16,7 +16,7 @@ namespace sim {
 SimAddTag::SimAddTag(unsigned tagWidth) : tagWidth_(tagWidth) {}
 
 void SimAddTag::reset() {
-  configuredTag_ = 0;
+  // Only clear runtime state, NOT configured tag.
   errorValid_ = false;
   errorCode_ = RtError::OK;
   perf_ = PerfSnapshot();
@@ -70,8 +70,7 @@ SimMapTag::SimMapTag(unsigned inTagWidth, unsigned outTagWidth,
 }
 
 void SimMapTag::reset() {
-  for (auto &e : table_)
-    e = MapEntry();
+  // Only clear runtime state, NOT configured table.
   errorValid_ = false;
   errorCode_ = RtError::OK;
   perf_ = PerfSnapshot();

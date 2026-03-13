@@ -24,8 +24,8 @@ SimTemporalSW::SimTemporalSW(unsigned numInputs, unsigned numOutputs,
 }
 
 void SimTemporalSW::reset() {
-  for (auto &slot : routeSlots_)
-    slot = RouteSlot();
+  // Only clear runtime state, NOT configured route slots/routings.
+  // routeSlots_ and slotRoutings_ are set by configure().
   rrPointer_.assign(numOutputs_, 0);
   inputSlotMatch_.assign(numInputs_, -1);
   arbWinner_.assign(numOutputs_, -1);
@@ -33,7 +33,6 @@ void SimTemporalSW::reset() {
   errorValid_ = false;
   errorCode_ = RtError::OK;
   perf_ = PerfSnapshot();
-  slotRoutings_.clear();
 }
 
 void SimTemporalSW::configure(const std::vector<uint32_t> &configWords) {
