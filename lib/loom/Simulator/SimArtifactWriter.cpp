@@ -179,7 +179,7 @@ bool writeStatFile(const std::string &path, const SimResult &result,
           : 0;
   double configOverheadRatio =
       (result.totalCycles > 0)
-          ? static_cast<double>(result.configCycles) / result.totalCycles
+          ? static_cast<double>(result.totalConfigWrites) / result.totalCycles
           : 0.0;
 
   out << "  \"summary\": {\n";

@@ -270,6 +270,93 @@ test_viz_heatmap_data() {
   fi
 }
 
+# ---- Test 10: Oracle verdict appears in simulation output ----
+test_oracle_verdict_present() {
+  local out="${WORK_DIR}/oracle_verdict"
+  local log="${WORK_DIR}/oracle_verdict_output.log"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || true
+
+  # Oracle verdict line should always be printed (PASS or FAIL).
+  if ! grep -qE 'oracle: (PASS|FAIL)' "${log}"; then
+    echo "oracle verdict line missing from simulation output"
+    cat "${log}"
+    return 1
+  fi
+
+  # Output token count should be reported.
+  if ! grep -q 'output tokens from' "${log}"; then
+    echo "output token count missing from oracle line"
+    return 1
+  fi
+}
+
+# ---- Test 11: Corrupted ADG input fails gracefully ----
+test_corrupted_adg_reject() {
+  local bad_adg="${WORK_DIR}/corrupted.fabric.mlir"
+  echo "this is not valid MLIR" > "${bad_adg}"
+  local out="${WORK_DIR}/corrupted_out"
+
+  # loom should fail with non-zero exit code on corrupted input.
+  if "${LOOM_BIN}" --adg "${bad_adg}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 100 > /dev/null 2>&1; then
+    echo "loom should have failed on corrupted ADG but exited 0"
+    return 1
+  fi
+
+  # No artifact files should be produced.
+  if [[ -f "${out}.trace" ]] || [[ -f "${out}.stat" ]]; then
+    echo "artifacts should not exist for corrupted input"
+    return 1
+  fi
+}
+
+# ---- Test 12: Stat file has complete artifact set ----
+test_stat_complete_artifact_set() {
+  local out="${WORK_DIR}/artifact_set"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000
+
+  # All three artifact files should exist together.
+  [[ -s "${out}.trace" ]] || { echo "trace missing"; return 1; }
+  [[ -s "${out}.stat" ]] || { echo "stat missing"; return 1; }
+  [[ -f "${out}.viz.html" ]] || { echo "viz.html missing"; return 1; }
+  [[ -f "${out}.config.bin" ]] || { echo "config.bin missing"; return 1; }
+
+  # Stat should have consistent success field matching cycle behavior.
+  python3 -c "
+import json, sys
+d = json.load(open('${out}.stat'))
+# success field must be boolean.
+assert isinstance(d['success'], bool), 'success is not boolean'
+# totalCycles must be positive.
+assert d['totalCycles'] > 0, 'totalCycles must be positive'
+# nodePerf must have at least one entry.
+assert len(d['nodePerf']) > 0, 'nodePerf is empty'
+" || return 1
+}
+
+# ---- Test 13: Simulation input/output port reporting ----
+test_sim_port_reporting() {
+  local out="${WORK_DIR}/port_report"
+  local log="${WORK_DIR}/port_report_output.log"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || true
+
+  # Input port count and token count should be reported.
+  if ! grep -qE 'inputs: [0-9]+ ports x [0-9]+ tokens' "${log}"; then
+    echo "input port reporting missing"
+    cat "${log}"
+    return 1
+  fi
+
+  # Output port count should be reported.
+  if ! grep -qE 'outputs: [0-9]+ ports' "${log}"; then
+    echo "output port reporting missing"
+    return 1
+  fi
+}
+
 echo "Simulator Validation Tests"
 echo "=========================="
 run_test "basic-artifacts" test_basic_artifacts
@@ -281,6 +368,10 @@ run_test "trace-binary-format" test_trace_binary_format
 run_test "stat-derived-metrics" test_stat_derived_metrics
 run_test "sim-low-max-cycles" test_sim_low_max_cycles
 run_test "viz-heatmap-data" test_viz_heatmap_data
+run_test "oracle-verdict-present" test_oracle_verdict_present
+run_test "corrupted-adg-reject" test_corrupted_adg_reject
+run_test "stat-complete-artifact-set" test_stat_complete_artifact_set
+run_test "sim-port-reporting" test_sim_port_reporting
 
 echo ""
 echo "Results: ${pass}/${total} passed, ${fail} failed"

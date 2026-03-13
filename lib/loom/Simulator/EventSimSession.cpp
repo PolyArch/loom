@@ -356,5 +356,15 @@ const SimResult &EventSimSession::getLastResult() const {
   return lastResult_;
 }
 
+unsigned EventSimSession::getNumInputPorts() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return engine_ ? engine_->getNumInputPorts() : 0;
+}
+
+unsigned EventSimSession::getNumOutputPorts() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return engine_ ? engine_->getNumOutputPorts() : 0;
+}
+
 } // namespace sim
 } // namespace loom

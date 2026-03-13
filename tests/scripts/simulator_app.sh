@@ -108,6 +108,22 @@ assert 'summary' in d, 'summary missing'
     exit 1
   fi
 
+  # Verify viz.html exists and contains embedded trace data.
+  if [[ ! -f "${sim_out}.viz.html" ]]; then
+    echo "FAIL: viz.html not produced for ${APP_NAME}" >&2
+    exit 1
+  fi
+  if ! grep -q 'const traceData = {' "${sim_out}.viz.html"; then
+    echo "FAIL: viz.html missing embedded traceData for ${APP_NAME}" >&2
+    exit 1
+  fi
+
+  # Verify oracle verdict appears in simulation log.
+  if ! grep -qE 'oracle: (PASS|FAIL)' "${sim_log}"; then
+    echo "FAIL: oracle verdict missing from simulation log for ${APP_NAME}" >&2
+    exit 1
+  fi
+
   exit 0
 fi
 
@@ -177,6 +193,22 @@ assert 'nodePerf' in d, 'nodePerf missing'
 assert 'summary' in d, 'summary missing'
 " "${sim_out}.stat" 2>&1; then
     echo "FAIL: stat file content invalid for ${APP_NAME}" >&2
+    exit 1
+  fi
+
+  # Verify viz.html exists and contains embedded trace data.
+  if [[ ! -f "${sim_out}.viz.html" ]]; then
+    echo "FAIL: viz.html not produced for ${APP_NAME}" >&2
+    exit 1
+  fi
+  if ! grep -q 'const traceData = {' "${sim_out}.viz.html"; then
+    echo "FAIL: viz.html missing embedded traceData for ${APP_NAME}" >&2
+    exit 1
+  fi
+
+  # Verify oracle verdict appears in simulation log.
+  if ! grep -qE 'oracle: (PASS|FAIL)' "${sim_log}"; then
+    echo "FAIL: oracle verdict missing from simulation log for ${APP_NAME}" >&2
     exit 1
   fi
 

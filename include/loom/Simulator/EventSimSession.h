@@ -121,6 +121,12 @@ public:
   /// Get last simulation result (valid after invoke()).
   const SimResult &getLastResult() const;
 
+  /// Get the number of boundary input ports (valid after buildFromGraph).
+  unsigned getNumInputPorts() const;
+
+  /// Get the number of boundary output ports (valid after buildFromGraph).
+  unsigned getNumOutputPorts() const;
+
 private:
   mutable std::mutex mu_;
   SessionState state_ = SessionState::Created;

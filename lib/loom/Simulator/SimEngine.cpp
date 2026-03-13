@@ -290,6 +290,7 @@ bool SimEngine::loadConfig(const std::vector<uint8_t> &configBlob) {
   }
 
   // Apply per-module config slices based on address map.
+  moduleConfigWrites_.assign(modules_.size(), 0);
   for (size_t m = 0; m < modules_.size(); ++m) {
     modules_[m]->reset();
 
@@ -301,6 +302,7 @@ bool SimEngine::loadConfig(const std::vector<uint8_t> &configBlob) {
         std::vector<uint32_t> modWords(allWords.begin() + slice.wordOffset,
                                         allWords.begin() + end);
         modules_[m]->configure(modWords);
+        moduleConfigWrites_[m] = modWords.size();
       }
     }
   }
@@ -310,6 +312,13 @@ bool SimEngine::loadConfig(const std::vector<uint8_t> &configBlob) {
 
 bool SimEngine::loadConfig(const std::vector<uint8_t> &configBlob,
                            const std::vector<ExternalConfigSlice> &slices) {
+  // Reject non-word-aligned config blobs.
+  if (configBlob.size() % 4 != 0) {
+    llvm::errs() << "SimEngine: config blob size " << configBlob.size()
+                  << " is not word-aligned (must be multiple of 4)\n";
+    return false;
+  }
+
   configBlob_ = configBlob;
 
   // Build name -> slice index map.
@@ -328,7 +337,9 @@ bool SimEngine::loadConfig(const std::vector<uint8_t> &configBlob,
   }
 
   // Apply per-module config slices based on mapper-authored address metadata.
-  for (auto &mod : modules_) {
+  moduleConfigWrites_.assign(modules_.size(), 0);
+  for (size_t m = 0; m < modules_.size(); ++m) {
+    auto &mod = modules_[m];
     mod->reset();
 
     auto it = sliceByName.find(mod->name);
@@ -338,18 +349,19 @@ bool SimEngine::loadConfig(const std::vector<uint8_t> &configBlob,
     const auto *slice = it->second;
     if (slice->wordCount == 0)
       continue;
-    if (slice->wordOffset >= numWords) {
+    if (slice->wordOffset + slice->wordCount > numWords) {
       llvm::errs() << "SimEngine: config slice for '" << mod->name
-                    << "' offset " << slice->wordOffset
-                    << " exceeds blob size " << numWords << "\n";
-      continue;
+                    << "' [offset=" << slice->wordOffset
+                    << " count=" << slice->wordCount
+                    << "] exceeds blob size " << numWords << " words\n";
+      return false;
     }
 
-    size_t end = std::min(static_cast<size_t>(slice->wordOffset + slice->wordCount),
-                          numWords);
     std::vector<uint32_t> modWords(allWords.begin() + slice->wordOffset,
-                                    allWords.begin() + end);
+                                    allWords.begin() + slice->wordOffset +
+                                        slice->wordCount);
     mod->configure(modWords);
+    moduleConfigWrites_[m] = modWords.size();
   }
 
   return true;
@@ -487,10 +499,13 @@ SimResult SimEngine::run() {
   result.totalCycles = currentCycle_;
   result.traceEvents = allTraceEvents_;
 
-  // Collect per-node performance.
+  // Collect per-node performance and inject config write counts.
   result.nodePerf.resize(modules_.size());
-  for (size_t i = 0; i < modules_.size(); ++i)
+  for (size_t i = 0; i < modules_.size(); ++i) {
     result.nodePerf[i] = modules_[i]->getPerfSnapshot();
+    if (i < moduleConfigWrites_.size())
+      result.nodePerf[i].configWrites = moduleConfigWrites_[i];
+  }
 
   if (!result.success)
     result.errorMessage = "Simulation did not complete within cycle limit";

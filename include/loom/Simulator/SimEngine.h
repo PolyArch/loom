@@ -164,6 +164,9 @@ private:
   };
   std::vector<ModuleConfigSlice> moduleConfigMap_;
 
+  /// Per-module config write counts (populated during loadConfig).
+  std::vector<uint64_t> moduleConfigWrites_;
+
   /// Whether a combinational loop was detected (Kahn's didn't visit all).
   bool hasCombLoop_ = false;
 
