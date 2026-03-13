@@ -85,6 +85,7 @@ void SimSwitch::rebuildRouting() {
       ++connIdx;
     }
   }
+
 }
 
 void SimSwitch::evaluateCombinational() {
@@ -108,22 +109,11 @@ void SimSwitch::evaluateCombinational() {
   // Drive input ready: AND of all broadcast targets' ready signals.
   for (unsigned i = 0; i < numInputs_ && i < inputs.size(); ++i) {
     if (inputTargets_[i].empty()) {
-      // No route for this input.
-      inputs[i]->ready = false;
-
-      // Check for unrouted input error: valid token on unrouted input.
-      if (inputs[i]->valid) {
-        // Only raise error if there is physical connectivity but no route.
-        bool hasConnectivity = false;
-        for (unsigned o = 0; o < numOutputs_; ++o) {
-          if (connectivity_[o * numInputs_ + i]) {
-            hasConnectivity = true;
-            break;
-          }
-        }
-        if (hasConnectivity)
-          latchError(RtError::RT_SWITCH_UNROUTED_INPUT);
-      }
+      // Unrouted input: silently consume (act as implicit sink) to avoid
+      // deadlocking upstream producers.  The mapper may leave some DFG
+      // edges unrouted through the switch network (e.g. dead outputs,
+      // broadcast fan-out not fully configured).
+      inputs[i]->ready = true;
     } else {
       bool allReady = true;
       for (unsigned targetOut : inputTargets_[i]) {

@@ -131,13 +131,16 @@ protected:
 
 /// Factory function: create a SimModule from an ADG node's attributes.
 /// Returns nullptr if the op name is not recognized.
+/// \p defaultExtLatency is used for fabric.extmemory when the ADG node
+/// does not provide an explicit ext_latency attribute.
 std::unique_ptr<SimModule> createSimModule(
     uint32_t hwNodeId, const std::string &name, const std::string &opName,
     unsigned numInputs, unsigned numOutputs,
     const std::vector<std::pair<std::string, int64_t>> &intAttrs,
     const std::vector<std::pair<std::string, std::string>> &strAttrs,
     const std::vector<std::pair<std::string, std::vector<int8_t>>>
-        &arrayAttrs = {});
+        &arrayAttrs = {},
+    uint32_t defaultExtLatency = 10);
 
 /// Compute the CONFIG_WIDTH (in bits) for a fabric module based on its
 /// attributes. Implements the formula table from spec-fabric-config_mem.md.

@@ -44,6 +44,9 @@ struct ParsedArgs {
   std::string sim_trace_filter_kinds; // comma-separated event kind names
   std::string sim_trace_filter_nodes; // comma-separated hwNodeId values
   std::string sim_trace_filter_cores; // comma-separated coreId values
+  uint16_t sim_core_id = 0;          // simulator core ID
+  uint32_t sim_ext_latency = 0;      // 0 = use SimConfig default (10)
+  bool sim_ext_latency_set = false;   // whether --sim-ext-latency was given
   bool sim_session_test = false;
   bool as_clang = false;
   bool show_help = false;

@@ -369,6 +369,25 @@ ParsedArgs ParseArgs(int argc, char **argv) {
         parsed.sim_session_test = true;
         continue;
       }
+      if (arg == "--sim-core-id") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --sim-core-id requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.sim_core_id = static_cast<uint16_t>(std::stoul(argv[++i]));
+        continue;
+      }
+      if (arg == "--sim-ext-latency") {
+        if (i + 1 >= argc) {
+          llvm::errs() << "error: --sim-ext-latency requires a value\n";
+          parsed.had_error = true;
+          break;
+        }
+        parsed.sim_ext_latency = static_cast<uint32_t>(std::stoul(argv[++i]));
+        parsed.sim_ext_latency_set = true;
+        continue;
+      }
       // --dump-mapping removed: .map.json and .map.txt are always emitted.
       if (arg == "--as-clang") {
         parsed.as_clang = true;

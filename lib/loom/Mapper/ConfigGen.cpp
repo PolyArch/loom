@@ -136,9 +136,45 @@ void genPEConfig(const Node *hwNode, const MappingState &state,
   }
 
   // Pack constant value if present.
-  int64_t constVal = getNodeIntAttr(hwNode, "constant_value", -1);
-  if (constVal >= 0)
-    packBits(words, bitPos, static_cast<uint64_t>(constVal), 32);
+  // First check hwNode for constant_value (ADG-level attribute).
+  // Fallback: extract from the mapped DFG node's "value" attribute
+  // (handshake.constant stores its payload as {value = N : iW}).
+  bool foundConst = false;
+  uint64_t constBits = 0;
+  unsigned constWidth = static_cast<unsigned>(
+      getNodeIntAttr(hwNode, "data_width", 32));
+  if (nodeHasAttr(hwNode, "constant_value")) {
+    constBits = static_cast<uint64_t>(
+        getNodeIntAttr(hwNode, "constant_value", 0));
+    foundConst = true;
+  } else if (hwId < state.hwNodeToSwNodes.size()) {
+    for (IdIndex swId : state.hwNodeToSwNodes[hwId]) {
+      const Node *swNode = dfg.getNode(swId);
+      if (!swNode)
+        continue;
+      llvm::StringRef swOp = getNodeOpName(swNode);
+      if (swOp != "handshake.constant")
+        continue;
+      for (auto &a : swNode->attributes) {
+        if (a.getName() == "value") {
+          if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(a.getValue())) {
+            constBits = static_cast<uint64_t>(ia.getInt());
+            foundConst = true;
+          } else if (auto fa =
+                         mlir::dyn_cast<mlir::FloatAttr>(a.getValue())) {
+            // Float constant: store raw bit pattern.
+            auto apf = fa.getValue();
+            constBits = apf.bitcastToAPInt().getZExtValue();
+            foundConst = true;
+          }
+        }
+      }
+      if (foundConst)
+        break;
+    }
+  }
+  if (foundConst)
+    packBits(words, bitPos, constBits, constWidth);
   // Pack cont_cond_sel if present (5 bits for dataflow.stream).
   int64_t contCond = getNodeIntAttr(hwNode, "cont_cond_sel", -1);
   // Fallback: infer cont_cond_sel from the mapped DFG node's stop_cond.

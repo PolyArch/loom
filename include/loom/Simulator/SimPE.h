@@ -32,6 +32,10 @@ public:
     Carry,         // dataflow.carry
     Invariant,     // dataflow.invariant
     Gate,          // dataflow.gate
+    CondBranch,    // handshake.cond_br: route data to one of two outputs
+    Mux,           // handshake.mux: select one of N data inputs
+    Join,          // handshake.join: synchronize all inputs
+    Sink,          // handshake.sink: consume input, no output
   };
 
   /// Tag mode for load/store PEs.
@@ -49,6 +53,7 @@ public:
     return bodyType_ != BodyType::Carry && bodyType_ != BodyType::Invariant &&
            bodyType_ != BodyType::Gate && bodyType_ != BodyType::StreamCont;
   }
+  // Note: CondBranch, Mux, Join, Sink are all combinational (no state).
   void evaluateCombinational() override;
   void advanceClock() override;
   void reset() override;
@@ -135,6 +140,16 @@ private:
   void evaluateInvariant();
   void evaluateGate();
   void evaluateStream();
+
+  /// Load/Store evaluators with spec-correct port semantics.
+  void evaluateLoad();
+  void evaluateStore();
+
+  /// Handshake control evaluators.
+  void evaluateCondBranch();
+  void evaluateMux();
+  void evaluateJoin();
+  void evaluateSink();
 
   /// Drive output tag based on tag mode. If srcInputIdx >= 0, uses that
   /// input's tag for TagTransparent; otherwise uses configured outputTags_.

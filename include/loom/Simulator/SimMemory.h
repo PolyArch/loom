@@ -104,6 +104,7 @@ private:
     uint64_t data = 0;
     bool hasAddr = false;
     bool hasData = false;
+    bool addrHasTag = false; // Whether the address carried a tag.
     unsigned laneIdx = 0;
   };
   std::unordered_map<uint16_t, std::deque<StorePairEntry>> storePairQueues_;

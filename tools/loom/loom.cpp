@@ -1251,6 +1251,9 @@ int main(int argc, char **argv) {
 
       loom::sim::SimConfig simConfig;
       simConfig.maxCycles = parsed.sim_max_cycles;
+      simConfig.coreId = parsed.sim_core_id;
+      if (parsed.sim_ext_latency_set)
+        simConfig.extMemLatency = parsed.sim_ext_latency;
       if (parsed.sim_trace_mode == "off")
         simConfig.traceMode = loom::sim::TraceMode::Off;
       else if (parsed.sim_trace_mode == "summary")
@@ -1602,14 +1605,79 @@ int main(int argc, char **argv) {
       }
 
       // Build boundary test vectors for simulation.
-      // The handshake IR represents the compiled application; boundary ports
-      // correspond to the app's input/output interface. These test vectors
-      // exercise the dataflow with deterministic patterns.
-      unsigned numInputPorts = session.getNumInputPorts();
+      // Only feed tokens to boundary ports that are actually used by the
+      // mapped DFG. The ADG may have more boundary ports than the DFG uses;
+      // feeding tokens to unused ports would prevent completion since those
+      // tokens have no route to drain.
+      unsigned numHwInputPorts = session.getNumInputPorts();
       unsigned numOutputPorts = session.getNumOutputPorts();
-      const unsigned testVectorLen = 4;
-      std::vector<std::vector<uint64_t>> testInputs(numInputPorts);
-      for (unsigned p = 0; p < numInputPorts; ++p) {
+
+      // Count active DFG inputs/outputs from the DFG graph.
+      unsigned numDfgInputs = 0;
+      unsigned numDfgOutputs = 0;
+      for (size_t i = 0; i < dfg.nodes.size(); ++i) {
+        auto *n = dfg.getNode(static_cast<loom::IdIndex>(i));
+        if (!n)
+          continue;
+        if (n->kind == loom::Node::ModuleInputNode)
+          ++numDfgInputs;
+        else if (n->kind == loom::Node::ModuleOutputNode)
+          ++numDfgOutputs;
+      }
+
+      // Determine which ADG boundary input indices are active using the
+      // mapper's port binding. Each DFG ModuleInputNode's output port maps
+      // to a specific ADG ModuleInputNode output port via swPortToHwPort.
+      // We find the boundary input index by matching the ADG port's parent
+      // node against the ordered list of ADG ModuleInputNodes.
+      std::vector<unsigned> activeBoundaryInputs;
+      {
+        // Build ordered list of ADG ModuleInputNode IDs (matches boundary
+        // input indexing in SimEngine::buildFromGraph).
+        std::vector<loom::IdIndex> adgInputNodes;
+        for (size_t ni = 0; ni < adg.nodes.size(); ++ni) {
+          auto *an = adg.getNode(static_cast<loom::IdIndex>(ni));
+          if (an && an->kind == loom::Node::ModuleInputNode)
+            adgInputNodes.push_back(static_cast<loom::IdIndex>(ni));
+        }
+
+        // For each DFG ModuleInputNode, look up its ADG port binding and
+        // find the corresponding boundary input index.
+        for (size_t ni = 0; ni < dfg.nodes.size(); ++ni) {
+          auto *n = dfg.getNode(static_cast<loom::IdIndex>(ni));
+          if (!n || n->kind != loom::Node::ModuleInputNode)
+            continue;
+          if (n->outputPorts.empty())
+            continue;
+          loom::IdIndex dfgPortId = n->outputPorts[0];
+          if (dfgPortId < mapper_result.state.swPortToHwPort.size()) {
+            loom::IdIndex adgPortId =
+                mapper_result.state.swPortToHwPort[dfgPortId];
+            auto *adgPort = adg.getPort(adgPortId);
+            if (adgPort) {
+              for (unsigned bi = 0; bi < adgInputNodes.size(); ++bi) {
+                if (adgInputNodes[bi] == adgPort->parentNode) {
+                  activeBoundaryInputs.push_back(bi);
+                  break;
+                }
+              }
+            }
+          }
+        }
+        // Do NOT sort: the order must match DFG ModuleInputNode iteration
+        // order so that testInputs[p] feeds the correct ADG boundary port.
+      }
+
+      // Fall back to sequential if binding lookup produced nothing.
+      if (activeBoundaryInputs.empty()) {
+        unsigned n = std::min(numDfgInputs, numHwInputPorts);
+        for (unsigned i = 0; i < n; ++i)
+          activeBoundaryInputs.push_back(i);
+      }
+
+      const unsigned testVectorLen = 1;
+      std::vector<std::vector<uint64_t>> testInputs(activeBoundaryInputs.size());
+      for (unsigned p = 0; p < activeBoundaryInputs.size(); ++p) {
         testInputs[p].resize(testVectorLen);
         for (unsigned t = 0; t < testVectorLen; ++t)
           testInputs[p][t] = static_cast<uint64_t>(p * testVectorLen + t + 1);
@@ -1633,18 +1701,19 @@ int main(int argc, char **argv) {
                       << "), falling back to determinism check\n";
       }
 
-      // Feed test vectors to the simulator.
-      for (unsigned p = 0; p < numInputPorts; ++p) {
-        simErr = session.setInput(p, testInputs[p]);
+      // Feed test vectors only to active boundary input ports.
+      for (unsigned p = 0; p < activeBoundaryInputs.size(); ++p) {
+        simErr = session.setInput(activeBoundaryInputs[p], testInputs[p]);
         if (!simErr.empty()) {
           llvm::errs() << "simulator setInput error: " << simErr << "\n";
           return 1;
         }
       }
 
-      llvm::outs() << "  inputs: " << numInputPorts << " ports x "
-                    << testVectorLen << " tokens, outputs: "
-                    << numOutputPorts << " ports\n";
+      llvm::outs() << "  inputs: " << activeBoundaryInputs.size()
+                    << " active ports (of " << numHwInputPorts
+                    << " boundary) x " << testVectorLen
+                    << " tokens, outputs: " << numOutputPorts << " ports\n";
 
       // Run simulation (accelerator execution).
       auto accelStart = std::chrono::steady_clock::now();
@@ -1688,8 +1757,8 @@ int main(int argc, char **argv) {
         if (!simErr.empty()) {
           oracleDetail = "resetExecution failed: " + simErr;
         } else {
-          for (unsigned p = 0; p < numInputPorts; ++p) {
-            simErr = session.setInput(p, testInputs[p]);
+          for (unsigned p = 0; p < activeBoundaryInputs.size(); ++p) {
+            simErr = session.setInput(activeBoundaryInputs[p], testInputs[p]);
             if (!simErr.empty()) break;
           }
           if (simErr.empty()) {

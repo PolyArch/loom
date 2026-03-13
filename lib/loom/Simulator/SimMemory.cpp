@@ -207,35 +207,41 @@ void SimMemory::evaluateCombinational() {
       }
       ldAddr->ready = false; // Don't accept new addr while serving result.
     } else if (ldAddr->valid && extLatency_ == 0) {
-      // Tag OOB check per spec-fabric-mem.md.
-      if (tagWidth_ > 0 && ldAddr->tag >= maxTag) {
+      // Tag OOB check per spec-fabric-mem.md (only when address carries a tag).
+      if (ldAddr->hasTag && tagWidth_ > 0 && ldAddr->tag >= maxTag) {
         latchError(RtError::RT_MEMORY_TAG_OOB);
         ldData->valid = false;
         ldDone->valid = false;
         ldAddr->ready = false;
         continue;
       }
-      // Zero-latency read: resolve address through addr_offset_table.
-      bool matched = false;
-      uint64_t resolvedAddr = resolveAddr(ldAddr->data, ldAddr->tag, matched);
-      if (!matched && tagWidth_ > 0) {
-        uint16_t noMatchErr = isExternal_ ? RtError::RT_EXTMEMORY_NO_MATCH
-                                          : RtError::RT_MEMORY_NO_MATCH;
-        latchError(noMatchErr);
-        ldData->valid = false;
-        ldDone->valid = false;
-        ldAddr->ready = false;
-      } else {
+      // Resolve address: use tag-based addr_offset_table when tagged,
+      // otherwise use raw address directly.
+      uint64_t resolvedAddr = ldAddr->data;
+      if (ldAddr->hasTag && tagWidth_ > 0) {
+        bool matched = false;
+        resolvedAddr = resolveAddr(ldAddr->data, ldAddr->tag, matched);
+        if (!matched) {
+          uint16_t noMatchErr = isExternal_ ? RtError::RT_EXTMEMORY_NO_MATCH
+                                            : RtError::RT_MEMORY_NO_MATCH;
+          latchError(noMatchErr);
+          ldData->valid = false;
+          ldDone->valid = false;
+          ldAddr->ready = false;
+          continue;
+        }
+      }
+      {
         uint64_t val = memRead(resolvedAddr);
         ldData->valid = true;
         ldData->data = val;
-        if (tagWidth_ > 0) {
+        if (ldAddr->hasTag && tagWidth_ > 0) {
           ldData->tag = ldAddr->tag;
           ldData->hasTag = true;
         }
         ldDone->valid = true;
         ldDone->data = 0;
-        if (tagWidth_ > 0) {
+        if (ldAddr->hasTag && tagWidth_ > 0) {
           ldDone->tag = ldAddr->tag;
           ldDone->hasTag = true;
         }
@@ -243,8 +249,8 @@ void SimMemory::evaluateCombinational() {
         firedThisCycle_ = true;
       }
     } else if (ldAddr->valid && extLatency_ > 0) {
-      // Tag OOB check.
-      if (tagWidth_ > 0 && ldAddr->tag >= maxTag) {
+      // Tag OOB check (only when address carries a tag).
+      if (ldAddr->hasTag && tagWidth_ > 0 && ldAddr->tag >= maxTag) {
         latchError(RtError::RT_MEMORY_TAG_OOB);
         ldAddr->ready = false;
         ldData->valid = false;
@@ -279,8 +285,9 @@ void SimMemory::evaluateCombinational() {
     auto *stData = inputs[stDataIdx];
     auto *stDone = outputs[stDoneIdx];
 
-    // Tag OOB check on stAddr when valid.
-    if (stAddr->valid && tagWidth_ > 0 && stAddr->tag >= maxTag) {
+    // Tag OOB check on stAddr when valid (only when tagged).
+    if (stAddr->valid && stAddr->hasTag && tagWidth_ > 0 &&
+        stAddr->tag >= maxTag) {
       latchError(RtError::RT_MEMORY_TAG_OOB);
       stAddr->ready = false;
     } else {
@@ -289,7 +296,8 @@ void SimMemory::evaluateCombinational() {
     }
 
     // Accept stData independently if valid.
-    if (stData->valid && tagWidth_ > 0 && stData->tag >= maxTag) {
+    if (stData->valid && stData->hasTag && tagWidth_ > 0 &&
+        stData->tag >= maxTag) {
       latchError(RtError::RT_MEMORY_TAG_OOB);
       stData->ready = false;
     } else {
@@ -331,17 +339,23 @@ void SimMemory::advanceClock() {
     if (ldAddrIdx >= inputs.size())
       continue;
     if (inputs[ldAddrIdx]->transferred() && extLatency_ > 0) {
-      bool matched = false;
-      uint64_t resolvedAddr =
-          resolveAddr(inputs[ldAddrIdx]->data, inputs[ldAddrIdx]->tag, matched);
-      if (!matched && tagWidth_ > 0) {
-        uint16_t noMatchErr = isExternal_ ? RtError::RT_EXTMEMORY_NO_MATCH
-                                          : RtError::RT_MEMORY_NO_MATCH;
-        latchError(noMatchErr);
-      } else {
+      auto *ldAddr = inputs[ldAddrIdx];
+      uint64_t resolvedAddr = ldAddr->data;
+      bool resolveOk = true;
+      if (ldAddr->hasTag && tagWidth_ > 0) {
+        bool matched = false;
+        resolvedAddr = resolveAddr(ldAddr->data, ldAddr->tag, matched);
+        if (!matched) {
+          uint16_t noMatchErr = isExternal_ ? RtError::RT_EXTMEMORY_NO_MATCH
+                                            : RtError::RT_MEMORY_NO_MATCH;
+          latchError(noMatchErr);
+          resolveOk = false;
+        }
+      }
+      if (resolveOk) {
         PendingLoad pl;
         pl.data = memRead(resolvedAddr);
-        pl.tag = inputs[ldAddrIdx]->tag;
+        pl.tag = ldAddr->tag;
         pl.readyCycle = currentSimCycle_ + extLatency_;
         pl.laneIdx = l;
         pendingLoads_.push_back(pl);
@@ -383,8 +397,10 @@ void SimMemory::advanceClock() {
     if (stAddrIdx >= inputs.size() || stDataIdx >= inputs.size())
       continue;
 
-    uint16_t addrTag = (tagWidth_ > 0) ? inputs[stAddrIdx]->tag : 0;
-    uint16_t dataTag = (tagWidth_ > 0) ? inputs[stDataIdx]->tag : 0;
+    bool addrIsTagged = inputs[stAddrIdx]->hasTag && tagWidth_ > 0;
+    bool dataIsTagged = inputs[stDataIdx]->hasTag && tagWidth_ > 0;
+    uint16_t addrTag = addrIsTagged ? inputs[stAddrIdx]->tag : 0;
+    uint16_t dataTag = dataIsTagged ? inputs[stDataIdx]->tag : 0;
 
     // Queue arriving addr into the store pair queue.
     if (inputs[stAddrIdx]->transferred()) {
@@ -394,6 +410,7 @@ void SimMemory::advanceClock() {
         if (!entry.hasAddr) {
           entry.hasAddr = true;
           entry.addr = inputs[stAddrIdx]->data;
+          entry.addrHasTag = addrIsTagged;
           paired = true;
           break;
         }
@@ -402,6 +419,7 @@ void SimMemory::advanceClock() {
         StorePairEntry e;
         e.hasAddr = true;
         e.addr = inputs[stAddrIdx]->data;
+        e.addrHasTag = addrIsTagged;
         e.laneIdx = s;
         q.push_back(e);
       }
@@ -438,14 +456,20 @@ void SimMemory::advanceClock() {
   for (auto &[tag, q] : storePairQueues_) {
     while (!q.empty() && q.front().hasAddr && q.front().hasData) {
       auto &front = q.front();
-      bool matched = false;
-      uint64_t resolvedAddr = resolveAddr(front.addr, tag, matched);
-      if (matched || tagWidth_ == 0) {
+      uint64_t resolvedAddr = front.addr;
+      bool writeOk = true;
+      if (front.addrHasTag && tagWidth_ > 0) {
+        bool matched = false;
+        resolvedAddr = resolveAddr(front.addr, tag, matched);
+        if (!matched) {
+          uint16_t noMatchErr = isExternal_ ? RtError::RT_EXTMEMORY_NO_MATCH
+                                            : RtError::RT_MEMORY_NO_MATCH;
+          latchError(noMatchErr);
+          writeOk = false;
+        }
+      }
+      if (writeOk) {
         memWrite(resolvedAddr, front.data);
-      } else {
-        uint16_t noMatchErr = isExternal_ ? RtError::RT_EXTMEMORY_NO_MATCH
-                                          : RtError::RT_MEMORY_NO_MATCH;
-        latchError(noMatchErr);
       }
       // Enqueue stDone token for the originating lane.
       unsigned lane = front.laneIdx;

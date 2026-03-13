@@ -82,7 +82,8 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
 
     // Copy operation-specific attributes needed for config generation.
     for (llvm::StringRef attrName :
-         {"ldCount", "stCount", "predicate", "stop_cond", "step_op"}) {
+         {"ldCount", "stCount", "predicate", "stop_cond", "step_op",
+          "value"}) {
       if (auto attr = op.getAttr(attrName))
         node->attributes.push_back(builder.getNamedAttr(attrName, attr));
     }

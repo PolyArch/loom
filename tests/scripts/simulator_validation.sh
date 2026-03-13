@@ -748,6 +748,66 @@ assert cores_seen <= {0}, f'expected only core 0, got: {cores_seen}'
 " || return 1
 }
 
+test_ext_latency_configurable() {
+  # Verify that --sim-ext-latency controls extmemory response delay.
+  # With latency=10, execution should take more cycles than latency=1.
+  local out1="${WORK_DIR}/ext_lat_1"
+  local out10="${WORK_DIR}/ext_lat_10"
+  local rc=0
+
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out1}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 50000 \
+    --sim-ext-latency 1 2>&1 || rc=$?
+  [[ $rc -le 128 ]] || { echo "loom crashed (exit=$rc)"; return 1; }
+  [[ -s "${out1}.stat" ]] || { echo "stat file missing for latency=1"; return 1; }
+
+  rc=0
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out10}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 50000 \
+    --sim-ext-latency 10 2>&1 || rc=$?
+  [[ $rc -le 128 ]] || { echo "loom crashed (exit=$rc)"; return 1; }
+  [[ -s "${out10}.stat" ]] || { echo "stat file missing for latency=10"; return 1; }
+
+  # Verify latency=10 takes more total cycles than latency=1.
+  python3 -c "
+import json
+s1 = json.load(open('${out1}.stat'))
+s10 = json.load(open('${out10}.stat'))
+c1 = s1.get('total_cycles', 0)
+c10 = s10.get('total_cycles', 0)
+assert c10 > c1, f'latency=10 ({c10}) should take more cycles than latency=1 ({c1})'
+" || return 1
+}
+
+test_nonzero_core_filter() {
+  # Verify that --sim-core-id sets the core ID in trace events and
+  # --sim-trace-filter-cores correctly filters by nonzero core.
+  local out="${WORK_DIR}/core_id_7"
+  local rc=0
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 \
+    --sim-core-id 7 --sim-trace-filter-cores 7 2>&1 || rc=$?
+  [[ $rc -le 128 ]] || { echo "loom crashed (exit=$rc)"; return 1; }
+  [[ -s "${out}.trace" ]] || { echo "trace file missing"; return 1; }
+
+  python3 -c "
+import struct
+data = open('${out}.trace', 'rb').read()
+hdr_size = 16
+rec_size = 38
+pos = hdr_size
+cores_seen = set()
+count = 0
+while pos + rec_size <= len(data):
+    core_id = struct.unpack_from('<H', data, pos+20)[0]
+    cores_seen.add(core_id)
+    count += 1
+    pos += rec_size
+assert count > 0, 'no trace events found'
+assert cores_seen == {7}, f'expected only core 7, got: {cores_seen}'
+" || return 1
+}
+
 echo "Simulator Validation Tests"
 echo "=========================="
 run_test "basic-artifacts" test_basic_artifacts
@@ -778,6 +838,8 @@ run_test "cpu-ref-oracle" test_cpu_ref_oracle
 run_test "session-harness" test_session_harness
 run_test "trace-filter-nodes-nonzero" test_trace_filter_nodes_nonzero
 run_test "trace-filter-cores" test_trace_filter_cores
+run_test "ext-latency-configurable" test_ext_latency_configurable
+run_test "nonzero-core-filter" test_nonzero_core_filter
 
 echo ""
 echo "Results: ${pass}/${total} passed, ${fail} failed"

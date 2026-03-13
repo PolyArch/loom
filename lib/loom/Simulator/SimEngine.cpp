@@ -100,7 +100,8 @@ bool SimEngine::buildFromGraph(const Graph &adg) {
     unsigned nOut = static_cast<unsigned>(node->outputPorts.size());
     auto mod = createSimModule(
         static_cast<uint32_t>(nodeIdx), nodeName, nodeOpName,
-        nIn, nOut, intAttrs, strAttrs, arrayAttrs);
+        nIn, nOut, intAttrs, strAttrs, arrayAttrs,
+        config_.extMemLatency);
 
     if (!mod) {
       llvm::errs() << "SimEngine: unsupported module type '" << nodeOpName
@@ -127,6 +128,9 @@ bool SimEngine::buildFromGraph(const Graph &adg) {
       channels_.push_back(std::move(ch));
     }
 
+    fprintf(stderr, "[DBG-MOD] module=%zu hwNode=%u name=%s op=%s nIn=%u nOut=%u\n",
+            modules_.size(), mod->hwNodeId, nodeName.c_str(),
+            nodeOpName.c_str(), nIn, nOut);
     modules_.push_back(std::move(mod));
   }
 
@@ -663,6 +667,8 @@ void SimEngine::advanceBoundaryState() {
       outputCollectors_[i].data.push_back(ch->data);
       if (ch->hasTag)
         outputCollectors_[i].tags.push_back(ch->tag);
+      fprintf(stderr, "[DBG-BOUT] port=%u data=%lu cycle=%lu\n",
+              i, ch->data, currentCycle_);
     }
   }
 }
@@ -675,12 +681,25 @@ bool SimEngine::isComplete() const {
   }
 
   // Check if any module still has pending tokens (output valid).
-  for (auto &mod : modules_) {
-    for (auto *out : mod->outputs) {
-      if (out->valid)
-        return false;
+  static uint64_t lastComplDbg = 0;
+  bool anyPending = false;
+  for (size_t m = 0; m < modules_.size(); ++m) {
+    for (size_t o = 0; o < modules_[m]->outputs.size(); ++o) {
+      if (modules_[m]->outputs[o]->valid) {
+        anyPending = true;
+        if (currentCycle_ - lastComplDbg > 5000) {
+          fprintf(stderr, "[DBG-COMPL] cycle=%lu pending: module=%zu "
+                  "hwNode=%u output=%zu data=%lu\n",
+                  currentCycle_, m, modules_[m]->hwNodeId,
+                  o, modules_[m]->outputs[o]->data);
+        }
+      }
     }
   }
+  if (anyPending && currentCycle_ - lastComplDbg > 5000)
+    lastComplDbg = currentCycle_;
+  if (anyPending)
+    return false;
 
   // Require at least one cycle of actual execution to avoid immediate
   // termination when no boundary inputs were provided. Most Loom apps

@@ -197,7 +197,7 @@ unsigned computeConfigWidth(
     unsigned numCmpOps = isCmp ? 1 : 0;
 
     // Constant PE.
-    if (resClass == "constant") {
+    if (resClass == "constant" || bodyOp == "handshake.constant") {
       if (isTagged && numOutputs == 1)
         return dataWidth + tagWidth;
       return dataWidth;
@@ -233,7 +233,8 @@ std::unique_ptr<SimModule> createSimModule(
     const std::vector<std::pair<std::string, int64_t>> &intAttrs,
     const std::vector<std::pair<std::string, std::string>> &strAttrs,
     const std::vector<std::pair<std::string, std::vector<int8_t>>>
-        &arrayAttrs) {
+        &arrayAttrs,
+    uint32_t defaultExtLatency) {
 
   std::unique_ptr<SimModule> mod;
 
@@ -268,16 +269,16 @@ std::unique_ptr<SimModule> createSimModule(
     SimPE::BodyType bodyType = SimPE::BodyType::Compute;
     SimPE::TagMode tagMode = SimPE::TagMode::Native;
 
-    if (resClass == "constant") {
+    if (resClass == "constant" || bodyOp == "handshake.constant") {
       bodyType = SimPE::BodyType::Constant;
-    } else if (resClass == "load") {
+    } else if (resClass == "load" || bodyOp == "handshake.load") {
       bodyType = SimPE::BodyType::Load;
       std::string tm = getStrAttr(strAttrs, "tag_mode", "native");
       if (tm == "tag_overwrite")
         tagMode = SimPE::TagMode::TagOverwrite;
       else if (tm == "tag_transparent")
         tagMode = SimPE::TagMode::TagTransparent;
-    } else if (resClass == "store") {
+    } else if (resClass == "store" || bodyOp == "handshake.store") {
       bodyType = SimPE::BodyType::Store;
       std::string tm = getStrAttr(strAttrs, "tag_mode", "native");
       if (tm == "tag_overwrite")
@@ -292,6 +293,14 @@ std::unique_ptr<SimModule> createSimModule(
       bodyType = SimPE::BodyType::Invariant;
     } else if (bodyOp == "dataflow.gate") {
       bodyType = SimPE::BodyType::Gate;
+    } else if (bodyOp == "handshake.cond_br") {
+      bodyType = SimPE::BodyType::CondBranch;
+    } else if (bodyOp == "handshake.mux") {
+      bodyType = SimPE::BodyType::Mux;
+    } else if (bodyOp == "handshake.join") {
+      bodyType = SimPE::BodyType::Join;
+    } else if (bodyOp == "handshake.sink") {
+      bodyType = SimPE::BodyType::Sink;
     }
 
     auto pe = std::make_unique<SimPE>(bodyType, numInputs, numOutputs, isTagged,
@@ -335,16 +344,27 @@ std::unique_ptr<SimModule> createSimModule(
     mod = std::make_unique<SimTemporalSW>(nIn, nOut, tagWidth, numRouteTable, conn);
   } else if (opName == "fabric.memory" || opName == "fabric.extmemory") {
     bool isExternal = (opName == "fabric.extmemory");
-    unsigned ldCount = static_cast<unsigned>(getIntAttr(intAttrs, "ld_count", 1));
-    unsigned stCount = static_cast<unsigned>(getIntAttr(intAttrs, "st_count", 1));
+    // ADG uses camelCase "ldCount"/"stCount" attribute names.
+    unsigned ldCount = static_cast<unsigned>(
+        hasAttr(intAttrs, "ldCount")
+            ? getIntAttr(intAttrs, "ldCount", 1)
+            : getIntAttr(intAttrs, "ld_count", 1));
+    unsigned stCount = static_cast<unsigned>(
+        hasAttr(intAttrs, "stCount")
+            ? getIntAttr(intAttrs, "stCount", 1)
+            : getIntAttr(intAttrs, "st_count", 1));
     unsigned dataWidth = static_cast<unsigned>(getIntAttr(intAttrs, "data_width", 32));
     unsigned tagWidth = static_cast<unsigned>(getIntAttr(intAttrs, "tag_width", 4));
     unsigned addrWidth = static_cast<unsigned>(getIntAttr(intAttrs, "addr_width", 32));
     unsigned numRegion = static_cast<unsigned>(getIntAttr(intAttrs, "num_region", 1));
-    // Use ext_latency from node attributes if present; otherwise 0.
-    // Zero-latency simplifies handshake: load response is combinational,
-    // avoiding pipeline-induced deadlocks in the dataflow graph.
-    uint32_t extLatency = static_cast<uint32_t>(getIntAttr(intAttrs, "ext_latency", 0));
+    // Use ext_latency from node attributes if present; otherwise fall back
+    // to the configurable default (SimConfig.extMemLatency, typically 10).
+    // Latency >= 1 is required to break handshake deadlocks: with zero
+    // latency, load address acceptance depends on data output being consumed
+    // by downstream, creating circular dependencies in broadcast topologies.
+    uint32_t extLatency = hasAttr(intAttrs, "ext_latency")
+        ? static_cast<uint32_t>(getIntAttr(intAttrs, "ext_latency", 0))
+        : defaultExtLatency;
     mod = std::make_unique<SimMemory>(isExternal, ldCount, stCount, dataWidth,
                                        tagWidth, addrWidth, numRegion,
                                        extLatency);

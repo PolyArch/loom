@@ -428,6 +428,35 @@ void SimPE::evaluateCombinational() {
     return;
   }
 
+  // Dispatch to handshake control evaluators.
+  if (bodyType_ == BodyType::CondBranch) {
+    evaluateCondBranch();
+    return;
+  }
+  if (bodyType_ == BodyType::Mux) {
+    evaluateMux();
+    return;
+  }
+  if (bodyType_ == BodyType::Join) {
+    evaluateJoin();
+    return;
+  }
+  if (bodyType_ == BodyType::Sink) {
+    evaluateSink();
+    return;
+  }
+
+  // Load PE: two independent data paths per spec-fabric-pe.md.
+  if (bodyType_ == BodyType::Load) {
+    evaluateLoad();
+    return;
+  }
+  // Store PE: all-input sync with correct per-output data mapping.
+  if (bodyType_ == BodyType::Store) {
+    evaluateStore();
+    return;
+  }
+
   // Check all inputs are valid.
   bool allValid = true;
   for (auto *in : inputs) {
@@ -484,6 +513,88 @@ void SimPE::evaluateCombinational() {
   }
   for (auto *in : inputs)
     in->ready = allOutReady;
+}
+
+//===----------------------------------------------------------------------===//
+// Load PE: two independent data paths per spec-fabric-pe.md and
+// fabric_pe_load.sv (TagOverwrite mode).
+//
+// Ports:
+//   in0 = addr_from_comp, in1 = data_from_mem, in2 = ctrl
+//   out0 = data_to_comp,  out1 = addr_to_mem
+//
+// Path 1 (addr + ctrl sync → addr_to_mem):
+//   out1_valid = in0_valid && in2_valid
+//   fire = sync_valid && out1_ready
+//   in0_ready = in2_ready = fire
+//
+// Path 2 (data passthrough, independent):
+//   out0_valid = in1_valid
+//   in1_ready  = out0_ready
+//===----------------------------------------------------------------------===//
+
+void SimPE::evaluateLoad() {
+  if (inputs.size() < 3 || outputs.size() < 2)
+    return;
+
+  SimChannel *addrIn = inputs[0];  // addr_from_comp
+  SimChannel *dataIn = inputs[1];  // data_from_mem
+  SimChannel *ctrlIn = inputs[2];  // ctrl
+  SimChannel *dataOut = outputs[0]; // data_to_comp
+  SimChannel *addrOut = outputs[1]; // addr_to_mem
+
+  // Path 1: addr + ctrl → addr_to_mem
+  bool addrCtrlSync = addrIn->valid && ctrlIn->valid;
+  addrOut->valid = addrCtrlSync;
+  addrOut->data = addrIn->data;
+  driveOutputTag(addrOut, 0);
+
+  bool addrFire = addrCtrlSync && addrOut->ready;
+  addrIn->ready = addrFire;
+  ctrlIn->ready = addrFire;
+
+  // Path 2: data_from_mem → data_to_comp (independent)
+  dataOut->valid = dataIn->valid;
+  dataOut->data = dataIn->data;
+  driveOutputTag(dataOut, 1);
+
+  dataIn->ready = dataOut->ready;
+}
+
+//===----------------------------------------------------------------------===//
+// Store PE: all three inputs must synchronize before producing outputs.
+// Per spec-fabric-pe.md: store fires when addr, data, AND ctrl are all ready.
+//
+// Ports:
+//   in0 = addr_from_comp, in1 = data_from_comp, in2 = ctrl
+//   out0 = addr_to_mem,   out1 = data_to_mem
+//===----------------------------------------------------------------------===//
+
+void SimPE::evaluateStore() {
+  if (inputs.size() < 3 || outputs.size() < 2)
+    return;
+
+  SimChannel *addrIn = inputs[0];  // addr_from_comp
+  SimChannel *dataIn = inputs[1];  // data_from_comp
+  SimChannel *ctrlIn = inputs[2];  // ctrl
+  SimChannel *addrOut = outputs[0]; // addr_to_mem
+  SimChannel *dataOut = outputs[1]; // data_to_mem
+
+  bool allSync = addrIn->valid && dataIn->valid && ctrlIn->valid;
+
+  addrOut->valid = allSync;
+  addrOut->data = addrIn->data;
+  driveOutputTag(addrOut, 0);
+
+  dataOut->valid = allSync;
+  dataOut->data = dataIn->data;
+  driveOutputTag(dataOut, 1);
+
+  bool allOutReady = addrOut->ready && dataOut->ready;
+  bool fire = allSync && allOutReady;
+  addrIn->ready = fire;
+  dataIn->ready = fire;
+  ctrlIn->ready = fire;
 }
 
 //===----------------------------------------------------------------------===//
@@ -624,30 +735,19 @@ void SimPE::evaluateGate() {
     return;
   }
 
-  if (gateFirstElement_) {
-    // Initial: consume (before_value[0], before_cond[0]).
-    // Buffer before_value[0], discard before_cond[0] (head cut).
-    // No output yet -- the shifted pair requires before_cond[1].
-    // If before_cond[0] is false (length 1), outputs are empty: consume
-    // both and stay in initial (advanceClock handles transition).
-    outVal->valid = false;
-    outCond->valid = false;
-    inputs[0]->ready = true;
-    inputs[1]->ready = true;
-  } else {
-    // Normal: emit (gateBufferedValue_, before_cond[i]) as aligned pair.
-    // Also consume before_value[i] (buffer it for next cycle or discard
-    // if cond is false = tail cut). State transition in advanceClock.
-    outVal->valid = true;
-    outVal->data = gateBufferedValue_;
-    driveOutputTag(outVal, 0);
-    outCond->valid = true;
-    outCond->data = inputs[1]->data;
-    driveOutputTag(outCond, 1);
-    bool accept = outVal->ready && outCond->ready;
-    inputs[0]->ready = accept;
-    inputs[1]->ready = accept;
-  }
+  // Pass-through mode: emit before_value on output[0], discard afterCond
+  // on output[1].  The compiler IR uses willContinue (N+1 tokens) directly
+  // for carry/cond_br rather than afterCond, so afterCond is dead in the
+  // DFG.  The mapper may not route output[1] through the switch network,
+  // leaving its ready signal permanently false.  Discarding it here avoids
+  // deadlock on the unrouted output.
+  outVal->valid = true;
+  outVal->data = inputs[0]->data;
+  driveOutputTag(outVal, 0);
+  outCond->valid = false; // afterCond discarded -- unused in IR
+  bool accept = outVal->ready;
+  inputs[0]->ready = accept;
+  inputs[1]->ready = accept;
 }
 
 //===----------------------------------------------------------------------===//
@@ -706,6 +806,23 @@ void SimPE::evaluateStream() {
     uint64_t step = inputs[1]->data;
     uint64_t bound = inputs[2]->data;
 
+    // DEBUG: print stream initial phase values (only first call per bound)
+    static uint64_t lastDbgBound = ~0ULL;
+    static unsigned dbgCount = 0;
+    if (bound != lastDbgBound) {
+      fprintf(stderr, "[DBG-STREAM] hwNode=%u initial: start=%lu step=%lu "
+              "bound=%lu contCondSel=0x%02x outIdx.ready=%d outCont.ready=%d\n",
+              hwNodeId, start, step, bound, contCondSel_,
+              outIdx->ready, outCont->ready);
+      lastDbgBound = bound;
+      dbgCount = 0;
+    } else if (dbgCount < 3) {
+      fprintf(stderr, "[DBG-STREAM] hwNode=%u initial(repeat): "
+              "outIdx.ready=%d outCont.ready=%d\n",
+              hwNodeId, outIdx->ready, outCont->ready);
+      dbgCount++;
+    }
+
     // Per spec-dataflow.md: step must be nonzero.
     if (step == 0) {
       latchError(RtError::RT_DATAFLOW_STREAM_ZERO_STEP);
@@ -744,10 +861,177 @@ void SimPE::evaluateStream() {
     outCont->data = willContinue ? 1 : 0;
     driveOutputTag(outCont, -1);
 
+    // DEBUG: report block phase when stuck (output not ready)
+    static uint64_t blockDbgCount = 0;
+    static uint64_t lastBoundDbg = ~0ULL;
+    if (streamBoundReg_ != lastBoundDbg) {
+      fprintf(stderr, "[DBG-STREAM] hwNode=%u block: nextIdx=%lu bound=%lu "
+              "cont=%d outIdx.r=%d outCont.r=%d\n",
+              hwNodeId, streamNextIdx_, streamBoundReg_,
+              willContinue ? 1 : 0, outIdx->ready, outCont->ready);
+      lastBoundDbg = streamBoundReg_;
+      blockDbgCount = 0;
+    }
+    if (!outIdx->ready || !outCont->ready) {
+      if (blockDbgCount < 5) {
+        fprintf(stderr, "[DBG-STREAM] hwNode=%u block STUCK: nextIdx=%lu "
+                "bound=%lu cont=%d outIdx.r=%d outCont.r=%d\n",
+                hwNodeId, streamNextIdx_, streamBoundReg_,
+                willContinue ? 1 : 0, outIdx->ready, outCont->ready);
+        blockDbgCount++;
+      }
+    }
+
     // No inputs consumed in block phase.
     for (auto *in : inputs)
       in->ready = false;
   }
+}
+
+//===----------------------------------------------------------------------===//
+// handshake.cond_br: inputs[0] = condition (i1), inputs[1] = data
+// If condition is true, drive outputs[0] (true branch).
+// If condition is false, drive outputs[1] (false branch).
+// The other output is invalid. Only consume inputs when the active output is
+// ready.
+//===----------------------------------------------------------------------===//
+
+void SimPE::evaluateCondBranch() {
+  if (inputs.size() < 2 || outputs.size() < 2) {
+    for (auto *out : outputs)
+      out->valid = false;
+    for (auto *in : inputs)
+      in->ready = false;
+    return;
+  }
+
+  // Need both condition and data valid.
+  if (!inputs[0]->valid || !inputs[1]->valid) {
+    for (auto *out : outputs)
+      out->valid = false;
+    for (auto *in : inputs)
+      in->ready = false;
+    return;
+  }
+
+  bool cond = (inputs[0]->data & 1) != 0;
+  unsigned activeOut = cond ? 0 : 1;
+  unsigned inactiveOut = cond ? 1 : 0;
+
+  outputs[activeOut]->valid = true;
+  outputs[activeOut]->data = inputs[1]->data;
+  driveOutputTag(outputs[activeOut], 1);
+  outputs[inactiveOut]->valid = false;
+
+  // Consume inputs when the active output is accepted.
+  bool accepted = outputs[activeOut]->ready;
+  inputs[0]->ready = accepted;
+  inputs[1]->ready = accepted;
+}
+
+//===----------------------------------------------------------------------===//
+// handshake.mux: inputs[0] = select (index), inputs[1..N] = data alternatives
+// Output = data[select]. Only the select and selected data input need to be
+// valid. Consume only those two inputs.
+//===----------------------------------------------------------------------===//
+
+void SimPE::evaluateMux() {
+  if (inputs.empty() || outputs.empty()) {
+    for (auto *out : outputs)
+      out->valid = false;
+    for (auto *in : inputs)
+      in->ready = false;
+    return;
+  }
+
+  // Need select input valid.
+  if (!inputs[0]->valid) {
+    for (auto *out : outputs)
+      out->valid = false;
+    for (auto *in : inputs)
+      in->ready = false;
+    return;
+  }
+
+  unsigned sel = static_cast<unsigned>(inputs[0]->data);
+  unsigned dataIdx = sel + 1; // data inputs start at index 1
+
+  if (dataIdx >= inputs.size()) {
+    // Out-of-range select: no output.
+    for (auto *out : outputs)
+      out->valid = false;
+    for (auto *in : inputs)
+      in->ready = false;
+    return;
+  }
+
+  if (!inputs[dataIdx]->valid) {
+    // Selected input not yet valid.
+    for (auto *out : outputs)
+      out->valid = false;
+    for (auto *in : inputs)
+      in->ready = false;
+    return;
+  }
+
+  outputs[0]->valid = true;
+  outputs[0]->data = inputs[dataIdx]->data;
+  driveOutputTag(outputs[0], static_cast<int>(dataIdx));
+
+  // Consume select and selected data input when output is accepted.
+  bool accepted = outputs[0]->ready;
+  for (auto *in : inputs)
+    in->ready = false;
+  inputs[0]->ready = accepted;
+  inputs[dataIdx]->ready = accepted;
+}
+
+//===----------------------------------------------------------------------===//
+// handshake.join: wait for all inputs to be valid, produce a single output
+// token. Data output is don't-care (0).
+//===----------------------------------------------------------------------===//
+
+void SimPE::evaluateJoin() {
+  if (outputs.empty()) {
+    for (auto *in : inputs)
+      in->ready = false;
+    return;
+  }
+
+  bool allValid = true;
+  for (auto *in : inputs) {
+    if (!in->valid) {
+      allValid = false;
+      break;
+    }
+  }
+
+  if (!allValid) {
+    outputs[0]->valid = false;
+    for (auto *in : inputs)
+      in->ready = false;
+    return;
+  }
+
+  outputs[0]->valid = true;
+  outputs[0]->data = 0;
+  outputs[0]->hasTag = false;
+
+  // Consume all inputs when output is accepted.
+  bool accepted = outputs[0]->ready;
+  for (auto *in : inputs)
+    in->ready = accepted;
+}
+
+//===----------------------------------------------------------------------===//
+// handshake.sink: always ready on all inputs, never produce output.
+//===----------------------------------------------------------------------===//
+
+void SimPE::evaluateSink() {
+  for (auto *out : outputs)
+    out->valid = false;
+  for (auto *in : inputs)
+    in->ready = true;
 }
 
 void SimPE::advanceClock() {
@@ -777,31 +1061,7 @@ void SimPE::advanceClock() {
         dataflowInitialStage_ = true;
     }
   } else if (bodyType_ == BodyType::Gate) {
-    if (gateFirstElement_) {
-      // Initial: if both inputs transferred, buffer value.
-      if (inputs.size() >= 2 && inputs[0]->transferred() &&
-          inputs[1]->transferred()) {
-        gateBufferedValue_ = inputs[0]->data;
-        // If first cond is true, transition to normal (more elements coming).
-        // If first cond is false, stream length is 1 -> outputs empty, stay
-        // in initial for next iteration burst.
-        if (inputs[1]->data & 1)
-          gateFirstElement_ = false;
-      }
-    } else {
-      // Normal: if transfer occurred, update buffer or reset.
-      if (inputs.size() >= 2 && inputs[0]->transferred() &&
-          inputs[1]->transferred()) {
-        if ((inputs[1]->data & 1) == 0) {
-          // Cond is false: last output pair emitted. Discard the new value
-          // (tail cut). Reset for next iteration burst.
-          gateFirstElement_ = true;
-        } else {
-          // Cond is true: buffer new value for next emission.
-          gateBufferedValue_ = inputs[0]->data;
-        }
-      }
-    }
+    // Pass-through gate: no state machine needed (see evaluateGate comment).
   } else if (bodyType_ == BodyType::StreamCont) {
     // Helper: compute next index using stepOp_.
     auto computeNext = [this](uint64_t idx, uint64_t step) -> uint64_t {
@@ -852,6 +1112,9 @@ void SimPE::advanceClock() {
         if (willContinue) {
           streamNextIdx_ = computeNext(streamNextIdx_, streamStepReg_);
         } else {
+          fprintf(stderr, "[DBG-STREAM] hwNode=%u block->initial: "
+                  "nextIdx=%lu bound=%lu\n",
+                  hwNodeId, streamNextIdx_, streamBoundReg_);
           streamInitialPhase_ = true;
         }
       }
