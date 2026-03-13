@@ -8,6 +8,7 @@ add_llvm_library(LoomSimulator
   SimTemporalSW.cpp
   SimMemory.cpp
   SimEngine.cpp
+  EventSimSession.cpp
 
   LINK_LIBS PUBLIC
     LoomMapperCore

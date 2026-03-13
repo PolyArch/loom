@@ -75,6 +75,7 @@ must not be duplicated outside the listed authority.
 | Host runtime API and threading contract | [spec-cosim-runtime.md](./spec-cosim-runtime.md) |
 | SystemC backend binding | [spec-cosim-backend-systemc.md](./spec-cosim-backend-systemc.md) |
 | RTL backend binding | [spec-cosim-backend-rtl.md](./spec-cosim-backend-rtl.md) |
+| Event-driven simulator backend | [spec-cosim-backend-eventsim.md](./spec-cosim-backend-eventsim.md) |
 | Trace and performance data model | [spec-cosim-trace.md](./spec-cosim-trace.md) |
 | End-to-end validation and acceptance | [spec-cosim-validation.md](./spec-cosim-validation.md) |
 
@@ -122,5 +123,6 @@ The `cosim` spec family does not standardize:
 - [spec-cosim-runtime.md](./spec-cosim-runtime.md)
 - [spec-cosim-backend-systemc.md](./spec-cosim-backend-systemc.md)
 - [spec-cosim-backend-rtl.md](./spec-cosim-backend-rtl.md)
+- [spec-cosim-backend-eventsim.md](./spec-cosim-backend-eventsim.md)
 - [spec-cosim-trace.md](./spec-cosim-trace.md)
 - [spec-cosim-validation.md](./spec-cosim-validation.md)

@@ -170,6 +170,7 @@ Backend-specific behavior is constrained to adapters specified in:
 
 - [spec-cosim-backend-systemc.md](./spec-cosim-backend-systemc.md)
 - [spec-cosim-backend-rtl.md](./spec-cosim-backend-rtl.md)
+- [spec-cosim-backend-eventsim.md](./spec-cosim-backend-eventsim.md)
 
 The same host runtime front-end and dispatcher contract must remain valid for
 future physical backends (for example, FPGA runtime backends).
@@ -213,5 +214,6 @@ and validation.
 - [spec-cosim-runtime.md](./spec-cosim-runtime.md)
 - [spec-cosim-backend-systemc.md](./spec-cosim-backend-systemc.md)
 - [spec-cosim-backend-rtl.md](./spec-cosim-backend-rtl.md)
+- [spec-cosim-backend-eventsim.md](./spec-cosim-backend-eventsim.md)
 - [spec-cosim-trace.md](./spec-cosim-trace.md)
 - [spec-cosim-validation.md](./spec-cosim-validation.md)
