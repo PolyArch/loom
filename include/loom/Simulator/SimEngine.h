@@ -96,6 +96,11 @@ public:
   unsigned markDeadOutputSinks(
       const std::vector<std::pair<uint32_t, unsigned>> &deadPorts);
 
+  /// Set backing memory for all extmemory modules.
+  /// The same buffer is shared by all extmemory; each module uses its
+  /// configured addr_offset_table to index into the appropriate region.
+  void setExtMemoryBacking(uint8_t *data, size_t sizeBytes);
+
   /// Reset the engine for a new invocation (preserves configuration).
   void resetExecution();
 

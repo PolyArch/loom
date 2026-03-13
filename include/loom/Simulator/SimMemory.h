@@ -41,6 +41,9 @@ public:
     backingMem_ = mem;
     backingMemSize_ = size;
   }
+  void setBackingMemoryVirtual(uint8_t *data, size_t size) override {
+    setBackingMemory(data, size);
+  }
 
 private:
   bool isExternal_;

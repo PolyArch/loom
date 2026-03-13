@@ -77,6 +77,12 @@ public:
     return true;
   }
 
+  /// Set external memory backing. Only meaningful for memory modules.
+  virtual void setBackingMemoryVirtual(uint8_t *data, size_t size) {
+    (void)data;
+    (void)size;
+  }
+
   /// Get current performance counters.
   virtual PerfSnapshot getPerfSnapshot() const = 0;
 

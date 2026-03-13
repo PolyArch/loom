@@ -130,6 +130,9 @@ public:
   /// Audit route completeness (valid after loadConfig).
   AuditResult auditRoutes() const;
 
+  /// Set backing memory for all extmemory modules.
+  void setExtMemoryBacking(uint8_t *data, size_t sizeBytes);
+
   /// Mark specific dead output channels as sinks (valid after loadConfig).
   unsigned markDeadOutputSinks(
       const std::vector<std::pair<uint32_t, unsigned>> &deadPorts);

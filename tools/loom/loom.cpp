@@ -1351,6 +1351,8 @@ int main(int argc, char **argv) {
         simSlices.push_back(s);
       }
 
+      llvm::outs() << "  config: " << configBlob.size() << " bytes, "
+                    << simSlices.size() << " slices\n";
       simErr = session.loadConfig(configBlob, simSlices);
       if (!simErr.empty()) {
         llvm::errs() << "simulator error: " << simErr << "\n";
@@ -1824,13 +1826,93 @@ int main(int argc, char **argv) {
           activeBoundaryInputs.push_back(i);
       }
 
+      // Generate boundary inputs from the handshake func signature.
+      // For each DFG input, check the MLIR type to determine what value to
+      // provide: memref args get 0 (extmemory handles data internally),
+      // i32/i64/index scalars get a reasonable default, and i1 (start token)
+      // gets 1 (asserted).
       const unsigned testVectorLen = 1;
       std::vector<std::vector<uint64_t>> testInputs(activeBoundaryInputs.size());
-      for (unsigned p = 0; p < activeBoundaryInputs.size(); ++p) {
-        testInputs[p].resize(testVectorLen);
-        for (unsigned t = 0; t < testVectorLen; ++t)
-          testInputs[p][t] = static_cast<uint64_t>(p * testVectorLen + t + 1);
+      {
+        // Collect DFG ModuleInputNode types in order.
+        std::vector<mlir::Type> dfgInputTypes;
+        for (size_t ni = 0; ni < dfg.nodes.size(); ++ni) {
+          auto *n = dfg.getNode(static_cast<loom::IdIndex>(ni));
+          if (!n || n->kind != loom::Node::ModuleInputNode)
+            continue;
+          if (!n->outputPorts.empty()) {
+            auto *port = dfg.getPort(n->outputPorts[0]);
+            dfgInputTypes.push_back(port ? port->type : mlir::Type());
+          }
+        }
+
+        // Also extract argument names from handshake func for diagnostics.
+        auto argNames = handshake_func->getAttrOfType<mlir::ArrayAttr>(
+            "argNames");
+
+        for (unsigned p = 0; p < activeBoundaryInputs.size(); ++p) {
+          testInputs[p].resize(testVectorLen);
+          mlir::Type ty = (p < dfgInputTypes.size()) ? dfgInputTypes[p]
+                                                     : mlir::Type();
+          // Determine value based on type.
+          if (ty && mlir::isa<mlir::MemRefType>(ty)) {
+            // Memref: extmemory reference. Provide 0 (memref token).
+            testInputs[p][0] = 0;
+          } else if (ty && mlir::isa<mlir::IntegerType>(ty)) {
+            auto intTy = mlir::cast<mlir::IntegerType>(ty);
+            if (intTy.getWidth() == 1) {
+              // i1: start token. Assert true.
+              testInputs[p][0] = 1;
+            } else {
+              // i32/i64: likely a scalar parameter (e.g., loop bound N).
+              // Default to 4 (a small but meaningful loop count).
+              testInputs[p][0] = 4;
+            }
+          } else if (ty && mlir::isa<mlir::IndexType>(ty)) {
+            testInputs[p][0] = 4;
+          } else if (ty && mlir::isa<mlir::NoneType>(ty)) {
+            testInputs[p][0] = 0; // Control token.
+          } else {
+            // Unknown type: provide a generic value.
+            testInputs[p][0] = 1;
+          }
+        }
+
+        // Log input types.
+        for (unsigned p = 0; p < activeBoundaryInputs.size(); ++p) {
+          std::string name = "?";
+          if (argNames && p < argNames.size())
+            if (auto sa = mlir::dyn_cast<mlir::StringAttr>(argNames[p]))
+              name = sa.getValue().str();
+          std::string tyStr;
+          if (p < dfgInputTypes.size() && dfgInputTypes[p]) {
+            llvm::raw_string_ostream os(tyStr);
+            dfgInputTypes[p].print(os);
+          }
+          llvm::outs() << "  boundary[" << p << "] " << name << " : "
+                        << tyStr << " = " << testInputs[p][0] << "\n";
+        }
       }
+
+      // Set up extmemory backing with default float test data.
+      // Allocate a shared buffer: each extmemory region is 256 floats.
+      // For vecadd: a[] at region 0, b[] at region 1, c[] at region 2.
+      static constexpr size_t kExtMemRegionFloats = 256;
+      static constexpr size_t kExtMemRegions = 8;
+      std::vector<uint8_t> extMemBacking(
+          kExtMemRegions * kExtMemRegionFloats * sizeof(float), 0);
+      {
+        auto *fptr = reinterpret_cast<float *>(extMemBacking.data());
+        // Fill region 0 (a): 1.0, 2.0, ..., 8.0
+        for (unsigned i = 0; i < kExtMemRegionFloats && i < 8; ++i)
+          fptr[i] = static_cast<float>(i + 1);
+        // Fill region 1 (b): 0.5, 1.0, 1.5, ..., 4.0
+        float *bptr = fptr + kExtMemRegionFloats;
+        for (unsigned i = 0; i < kExtMemRegionFloats && i < 8; ++i)
+          bptr[i] = 0.5f * (i + 1);
+        // Region 2 (c): zero-filled (output destination).
+      }
+      session.setExtMemoryBacking(extMemBacking.data(), extMemBacking.size());
 
       // Host reference execution: interpret the handshake DFG directly
       // to compute expected outputs for the same boundary inputs. This is

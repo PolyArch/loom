@@ -380,6 +380,12 @@ AuditResult EventSimSession::auditRoutes() const {
   return engine_->auditRoutes();
 }
 
+void EventSimSession::setExtMemoryBacking(uint8_t *data, size_t sizeBytes) {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (engine_)
+    engine_->setExtMemoryBacking(data, sizeBytes);
+}
+
 unsigned EventSimSession::markDeadOutputSinks(
     const std::vector<std::pair<uint32_t, unsigned>> &deadPorts) {
   std::lock_guard<std::mutex> lock(mu_);

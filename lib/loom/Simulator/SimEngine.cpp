@@ -249,6 +249,11 @@ unsigned SimEngine::markDeadOutputSinks(
   return sinkCount;
 }
 
+void SimEngine::setExtMemoryBacking(uint8_t *data, size_t sizeBytes) {
+  for (auto &mod : modules_)
+    mod->setBackingMemoryVirtual(data, sizeBytes);
+}
+
 void SimEngine::computeTopologicalOrder() {
   combOrder_.clear();
   seqModules_.clear();
@@ -409,6 +414,12 @@ bool SimEngine::loadConfig(const std::vector<uint8_t> &configBlob,
     mod->reset();
 
     auto it = sliceByName.find(mod->name);
+    if (it == sliceByName.end()) {
+      // Try fallback: "node_<hwNodeId>" (ConfigGen uses hwId, simulator
+      // uses nodeIdx which may differ if there are null nodes in the ADG).
+      std::string fallback = "node_" + std::to_string(mod->hwNodeId);
+      it = sliceByName.find(fallback);
+    }
     if (it == sliceByName.end())
       continue;
 
