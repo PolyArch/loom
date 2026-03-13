@@ -40,7 +40,8 @@ public:
                 bool vizNeato = false,
                 const std::vector<sim::TraceEvent> *traceEvents = nullptr,
                 uint64_t totalCycles = 0, uint64_t configCycles = 0,
-                const std::vector<sim::PerfSnapshot> *nodePerf = nullptr);
+                const std::vector<sim::PerfSnapshot> *nodePerf = nullptr,
+                sim::TraceMode traceMode = sim::TraceMode::Full);
 };
 
 } // namespace loom

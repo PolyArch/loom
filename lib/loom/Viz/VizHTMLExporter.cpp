@@ -316,7 +316,8 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
                                bool vizNeato,
                                const std::vector<sim::TraceEvent> *traceEvents,
                                uint64_t totalCycles, uint64_t configCycles,
-                               const std::vector<sim::PerfSnapshot> *nodePerf) {
+                               const std::vector<sim::PerfSnapshot> *nodePerf,
+                               sim::TraceMode traceMode) {
   std::string outPath = basePath + ".viz.html";
   std::error_code ec;
   llvm::raw_fd_ostream out(outPath, ec, llvm::sys::fs::OF_Text);
@@ -399,9 +400,11 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
       << "  <button id=\"detail-close\">Close</button>\n"
       << "</div>\n\n";
 
-  // Trace playback toolbar (hidden when no trace data).
-  bool hasTrace = traceEvents && !traceEvents->empty();
-  if (hasTrace) {
+  // Trace playback toolbar: only shown when Full trace mode with events.
+  bool hasTraceEvents = traceEvents && !traceEvents->empty() &&
+                        traceMode == sim::TraceMode::Full;
+  bool hasStatData = nodePerf && !nodePerf->empty();
+  if (hasTraceEvents) {
     out << "<div id=\"trace-toolbar\">\n"
         << "  <button id=\"trace-step-back\" title=\"Step back\">&lt;</button>\n"
         << "  <button id=\"trace-play\" title=\"Play/Pause\">Play</button>\n"
@@ -417,12 +420,24 @@ bool VizHTMLExporter::emitHTML(const Graph &adg, const Graph &dfg,
         << "  </select></label>\n"
         << "  <button id=\"trace-heatmap\" title=\"Toggle utilization heatmap\">Heatmap</button>\n"
         << "</div>\n\n";
+  } else if (hasStatData) {
+    // Stat-only heatmap button (no playback controls).
+    out << "<div id=\"trace-toolbar\">\n"
+        << "  <button id=\"trace-heatmap\" title=\"Toggle utilization heatmap\">Heatmap</button>\n"
+        << "</div>\n\n";
   }
 
   std::string traceJsonStr;
-  if (hasTrace) {
+  if (hasTraceEvents) {
+    // Full mode: embed trace events + stat data.
     llvm::raw_string_ostream ss(traceJsonStr);
     writeTraceDataJSON(ss, *traceEvents, totalCycles, configCycles, nodePerf);
+  } else if (hasStatData) {
+    // Summary/Off mode: embed stat-only data (no cycleEvents).
+    llvm::raw_string_ostream ss(traceJsonStr);
+    // Write stat-only JSON with nodeUtilization but no cycleEvents.
+    std::vector<sim::TraceEvent> emptyEvents;
+    writeTraceDataJSON(ss, emptyEvents, totalCycles, configCycles, nodePerf);
   } else {
     traceJsonStr = "null";
   }

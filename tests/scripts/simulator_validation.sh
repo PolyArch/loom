@@ -448,6 +448,112 @@ test_trace_mode_summary() {
   fi
 }
 
+# ---- Test 19: Stat nodeIndex uses hardware node IDs ----
+test_stat_node_identity() {
+  local out="${WORK_DIR}/node_id"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000
+
+  [[ -s "${out}.stat" ]] || { echo "stat file missing"; return 1; }
+
+  # nodeIndex values should not just be sequential 0,1,2... but hardware IDs.
+  # At minimum, some nodeIndex should be > 0 and not equal to array position.
+  python3 -c "
+import json, sys
+d = json.load(open('${out}.stat'))
+nps = d['nodePerf']
+assert len(nps) > 0, 'nodePerf is empty'
+# Check at least one nodeIndex differs from its array position.
+has_nonseq = any(np['nodeIndex'] != i for i, np in enumerate(nps))
+assert has_nonseq, 'nodeIndex values are all sequential (0,1,2...) not hardware IDs'
+" || return 1
+}
+
+# ---- Test 20: Summary mode viz has no populated cycleEvents ----
+test_summary_viz_no_events() {
+  local out="${WORK_DIR}/summary_viz"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 \
+    --sim-trace-mode summary 2>&1 || true
+
+  [[ -f "${out}.viz.html" ]] || { echo "viz.html missing"; return 1; }
+
+  # traceData should NOT be null (stat data should be embedded).
+  if grep -q 'const traceData = null' "${out}.viz.html"; then
+    echo "summary mode should still embed stat-based heatmap data"
+    return 1
+  fi
+
+  # cycleEvents should be empty (no per-cycle trace data in summary mode).
+  python3 -c "
+import sys, json, re
+html = open('${out}.viz.html').read()
+m = re.search(r'const traceData = (\{.*?\});', html, re.DOTALL)
+assert m, 'traceData not found in viz.html'
+td = json.loads(m.group(1))
+events = td.get('cycleEvents', {})
+assert len(events) == 0, f'cycleEvents should be empty in summary mode, has {len(events)} entries'
+# nodeUtilization should be present.
+util = td.get('nodeUtilization', {})
+assert len(util) > 0, 'nodeUtilization should be present'
+" || return 1
+
+  # Playback toolbar step/play buttons should NOT be in the HTML body.
+  # (The JS source code references these IDs, so only check HTML elements.)
+  if grep -q '<button id="trace-play"' "${out}.viz.html"; then
+    echo "summary mode should not have playback controls"
+    return 1
+  fi
+}
+
+# ---- Test 21: Off mode viz still has stat overlay ----
+test_off_viz_stat_overlay() {
+  local out="${WORK_DIR}/off_viz"
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 \
+    --sim-trace-mode off 2>&1 || true
+
+  [[ -f "${out}.viz.html" ]] || { echo "viz.html missing"; return 1; }
+
+  # Should still embed stat data, not null.
+  if grep -q 'const traceData = null' "${out}.viz.html"; then
+    echo "off mode should still embed stat-based heatmap data"
+    return 1
+  fi
+}
+
+# ---- Test 22: Oracle verdict reflects simulation outcome correctly ----
+test_oracle_verdict_correct() {
+  local out="${WORK_DIR}/oracle_verdict"
+  local log="${WORK_DIR}/oracle_verdict_output.log"
+
+  "${LOOM_BIN}" --adg "${ADG}" --dfgs "${DFG}" -o "${out}" \
+    --mapper-budget 10 --simulate --sim-max-cycles 10000 > "${log}" 2>&1 || true
+
+  # Oracle verdict should always be present.
+  if ! grep -qE 'oracle: (PASS|FAIL)' "${log}"; then
+    echo "oracle verdict missing"
+    cat "${log}"
+    return 1
+  fi
+
+  # If simulation timed out, oracle should report FAIL with "timed out" detail.
+  if grep -q 'timed out' "${log}" && grep -q 'oracle: FAIL' "${log}"; then
+    if ! grep -q 'simulation timed out' "${log}"; then
+      echo "oracle should report 'simulation timed out' on timeout"
+      return 1
+    fi
+    return 0
+  fi
+
+  # If simulation completed, oracle should report PASS (deterministic).
+  if grep -q 'simulation completed' "${log}" && ! grep -q 'oracle: PASS' "${log}"; then
+    echo "oracle should PASS for completed deterministic simulation"
+    cat "${log}"
+    return 1
+  fi
+}
+
 echo "Simulator Validation Tests"
 echo "=========================="
 run_test "basic-artifacts" test_basic_artifacts
@@ -468,6 +574,10 @@ run_test "deterministic-outputs" test_deterministic_outputs
 run_test "oracle-output-tokens" test_oracle_output_tokens
 run_test "trace-mode-off" test_trace_mode_off
 run_test "trace-mode-summary" test_trace_mode_summary
+run_test "stat-node-identity" test_stat_node_identity
+run_test "summary-viz-no-events" test_summary_viz_no_events
+run_test "off-viz-stat-overlay" test_off_viz_stat_overlay
+run_test "oracle-verdict-correct" test_oracle_verdict_correct
 
 echo ""
 echo "Results: ${pass}/${total} passed, ${fail} failed"

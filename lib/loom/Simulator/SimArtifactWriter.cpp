@@ -144,7 +144,7 @@ bool writeStatFile(const std::string &path, const SimResult &result,
             : 0.0;
 
     out << "    {\n";
-    out << "      \"nodeIndex\": " << i << ",\n";
+    out << "      \"nodeIndex\": " << p.nodeIndex << ",\n";
     out << "      \"activeCycles\": " << p.activeCycles << ",\n";
     out << "      \"stallCyclesIn\": " << p.stallCyclesIn << ",\n";
     out << "      \"stallCyclesOut\": " << p.stallCyclesOut << ",\n";

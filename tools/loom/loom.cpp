@@ -1336,28 +1336,27 @@ int main(int argc, char **argv) {
         return 1;
       }
 
-      // Collect actual outputs from the first invocation.
+      // Collect reference outputs from the first invocation.
       unsigned totalOutputTokens = 0;
-      std::vector<std::vector<uint64_t>> firstRunOutputs(numOutputPorts);
+      std::vector<std::vector<uint64_t>> referenceOutputs(numOutputPorts);
       for (unsigned p = 0; p < numOutputPorts; ++p) {
-        firstRunOutputs[p] = session.getOutput(p);
-        totalOutputTokens += firstRunOutputs[p].size();
+        referenceOutputs[p] = session.getOutput(p);
+        totalOutputTokens += referenceOutputs[p].size();
       }
 
-      // CPU oracle: repeated-invocation consistency check.
-      // Reset execution state, re-feed same inputs, re-invoke, compare outputs.
-      auto hostOracleStart = std::chrono::steady_clock::now();
+      auto refEnd = std::chrono::steady_clock::now();
+
+      // Determinism check: reset, re-feed same inputs, re-invoke, compare
+      // against the reference outputs from the first run.
       bool oraclePass = false;
       unsigned oracleMismatches = 0;
       std::string oracleDetail;
 
-      if (totalOutputTokens > 0 || numOutputPorts == 0) {
-        // Re-run with same inputs for consistency oracle.
+      if (simResult.success && (totalOutputTokens > 0 || numOutputPorts == 0)) {
         simErr = session.resetExecution();
         if (!simErr.empty()) {
           oracleDetail = "resetExecution failed: " + simErr;
         } else {
-          // Re-feed same test vectors.
           for (unsigned p = 0; p < numInputPorts; ++p) {
             std::vector<uint64_t> testData(testVectorLen);
             for (unsigned t = 0; t < testVectorLen; ++t)
@@ -1369,8 +1368,7 @@ int main(int argc, char **argv) {
           if (simErr.empty()) {
             auto [simResult2, runErr2] = session.invoke();
             if (runErr2.empty()) {
-              // Compare first-run outputs against second-run outputs.
-              auto compareResult = session.compare(firstRunOutputs);
+              auto compareResult = session.compare(referenceOutputs);
               oraclePass = compareResult.pass;
               oracleMismatches = compareResult.mismatches;
               if (!oraclePass)
@@ -1382,10 +1380,11 @@ int main(int argc, char **argv) {
             oracleDetail = "re-setInput failed: " + simErr;
           }
         }
+      } else if (!simResult.success) {
+        oracleDetail = "simulation timed out";
       } else {
         oracleDetail = "no output tokens produced";
       }
-      auto hostOracleEnd = std::chrono::steady_clock::now();
 
       // Report oracle verdict.
       llvm::outs() << "  oracle: "
@@ -1401,11 +1400,12 @@ int main(int argc, char **argv) {
       auto simTotalEnd = std::chrono::steady_clock::now();
 
       // Compute host timing breakdown.
+      // host_exec_time covers the reference (first) invocation + output collection.
       loom::sim::HostTiming timing;
       timing.configSeconds =
           std::chrono::duration<double>(configEnd - configStart).count();
       timing.hostExecSeconds =
-          std::chrono::duration<double>(hostOracleEnd - hostOracleStart).count();
+          std::chrono::duration<double>(refEnd - execStart).count();
       timing.accelExecSeconds =
           std::chrono::duration<double>(execEnd - execStart).count();
       timing.totalSeconds =
@@ -1446,13 +1446,24 @@ int main(int argc, char **argv) {
                                    adg_module.get(), base_path,
                                    parsed.viz_neato, vizTracePtr,
                                    vizTotalCycles, vizConfigCycles,
-                                   vizNodePerfPtr)) {
+                                   vizNodePerfPtr, simConfig.traceMode)) {
           llvm::errs() << "warning: failed to write visualization: "
                         << base_path << ".viz.html\n";
         }
       }
 
       session.disconnect();
+
+      // Write verbose log.
+      if (mapper_result.log.isEnabled())
+        mapper_result.log.writeToFile(base_path + ".log");
+
+      llvm::outs() << "mapping succeeded: " << base_path << ".config.bin\n";
+
+      // Return non-zero when simulation completed but oracle check failed.
+      if (simResult.success && !oraclePass)
+        return 1;
+      return 0;
     } else {
       // Emit visualization without trace data.
       loom::VizHTMLExporter viz_exporter;

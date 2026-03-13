@@ -51,8 +51,12 @@ if [[ "${1:-}" == "--single-perapp" ]]; then
   loom_ensure_app_handshake "${LOOM_BIN}" "${app_dir}" >/dev/null 2>&1 || true
   dfg="$(loom_find_handshake_dfg "${output_dir}" "${APP_NAME}" || true)"
   if [[ -z "${dfg}" ]]; then
-    echo "SKIP: no handshake DFG for ${APP_NAME}" >&2
-    exit 77
+    if is_skip_allowed "${APP_NAME}" "no_dfg"; then
+      echo "SKIP: no handshake DFG for ${APP_NAME}" >&2
+      exit 77
+    fi
+    echo "FAIL: no handshake DFG for ${APP_NAME}" >&2
+    exit 1
   fi
 
   # Generate a per-app ADG from the DFG (escalation: try configs until one works).
@@ -74,8 +78,8 @@ if [[ "${1:-}" == "--single-perapp" ]]; then
     fi
   done
   if ! "${gen_ok}"; then
-    echo "SKIP: gen-adg failed for ${APP_NAME}" >&2
-    exit 77
+    echo "FAIL: gen-adg failed for ${APP_NAME}" >&2
+    exit 1
   fi
 
   sim_out="${output_dir}/${APP_NAME}_sim_perapp"
@@ -84,15 +88,14 @@ if [[ "${1:-}" == "--single-perapp" ]]; then
   if ! "${LOOM_BIN}" --adg "${adg_path}" --dfgs "${dfg}" -o "${sim_out}" \
       --mapper-budget 200 --simulate --sim-max-cycles 100000 \
       > "${sim_log}" 2>&1; then
-    # Mapping or simulation failed; SKIP for self-contained mode.
-    echo "SKIP: map+simulate failed for ${APP_NAME}" >&2
-    exit 77
+    echo "FAIL: map+simulate failed for ${APP_NAME}" >&2
+    exit 1
   fi
 
-  # Check stat file for simulation success (timeout → SKIP).
+  # Check stat file for simulation success (timeout is a FAIL).
   if [[ ! -f "${sim_out}.stat" ]]; then
-    echo "SKIP: no stat file produced for ${APP_NAME}" >&2
-    exit 77
+    echo "FAIL: no stat file produced for ${APP_NAME}" >&2
+    exit 1
   fi
   sim_ok=$(python3 -c "
 import json, sys
@@ -101,8 +104,8 @@ with open(sys.argv[1]) as f:
 print('ok' if d.get('success') is True else 'timeout')
 " "${sim_out}.stat" 2>/dev/null || echo "bad")
   if [[ "${sim_ok}" != "ok" ]]; then
-    echo "SKIP: simulation did not complete successfully for ${APP_NAME} (${sim_ok})" >&2
-    exit 77
+    echo "FAIL: simulation did not complete for ${APP_NAME} (${sim_ok})" >&2
+    exit 1
   fi
 
   # Verify output artifacts exist.
@@ -170,8 +173,12 @@ if [[ "${1:-}" == "--single-domain" ]]; then
   loom_ensure_app_handshake "${LOOM_BIN}" "${app_dir}" >/dev/null 2>&1 || true
   dfg="$(loom_find_handshake_dfg "${output_dir}" "${APP_NAME}" || true)"
   if [[ -z "${dfg}" ]]; then
-    echo "SKIP: no handshake DFG for ${APP_NAME}" >&2
-    exit 77
+    if is_skip_allowed "${APP_NAME}" "no_dfg"; then
+      echo "SKIP: no handshake DFG for ${APP_NAME}" >&2
+      exit 77
+    fi
+    echo "FAIL: no handshake DFG for ${APP_NAME}" >&2
+    exit 1
   fi
 
   sim_out="${output_dir}/${APP_NAME}_sim_domain"
@@ -180,15 +187,14 @@ if [[ "${1:-}" == "--single-domain" ]]; then
   if ! "${LOOM_BIN}" --adg "${DOMAIN_ADG}" --dfgs "${dfg}" -o "${sim_out}" \
       --mapper-budget 200 --mapper-mask-domain --simulate --sim-max-cycles 100000 \
       > "${sim_log}" 2>&1; then
-    # Mapping or simulation failed; SKIP for self-contained mode.
-    echo "SKIP: map+simulate failed for ${APP_NAME}" >&2
-    exit 77
+    echo "FAIL: map+simulate failed for ${APP_NAME}" >&2
+    exit 1
   fi
 
-  # Check stat file for simulation success (timeout → SKIP).
+  # Check stat file for simulation success (timeout is FAIL).
   if [[ ! -f "${sim_out}.stat" ]]; then
-    echo "SKIP: no stat file produced for ${APP_NAME}" >&2
-    exit 77
+    echo "FAIL: no stat file produced for ${APP_NAME}" >&2
+    exit 1
   fi
   sim_ok=$(python3 -c "
 import json, sys
@@ -197,8 +203,8 @@ with open(sys.argv[1]) as f:
 print('ok' if d.get('success') is True else 'timeout')
 " "${sim_out}.stat" 2>/dev/null || echo "bad")
   if [[ "${sim_ok}" != "ok" ]]; then
-    echo "SKIP: simulation did not complete successfully for ${APP_NAME} (${sim_ok})" >&2
-    exit 77
+    echo "FAIL: simulation did not complete for ${APP_NAME} (${sim_ok})" >&2
+    exit 1
   fi
 
   # Verify output artifacts exist.
@@ -260,26 +266,32 @@ discover_apps() {
   fi
 }
 
-# Representative app subset covering all domain categories.
-# vector: vecadd, dotprod
-# matrix: matmul, gemv
-# dsp: fir_filter, fft_butterfly
-# neural: relu, conv2d
-# sparse: spmv, scatter_add
-# stencil: jacobi_stencil_5pt
-# sort-search: binary_search
-# reduction: prefix_sum_inclusive
-# bit-hash: popcount
-# encoding: rle_encode
-# dp-string: edit_distance_step
-# geometry: distance_point
-# iterative: newton_iter
+# Representative app subset covering hardware feature categories.
+# Feature coverage matrix:
+#   basic-arith:      vecadd (add), dotprod (mul+add), popcount (bitops)
+#   compare-pred:     relu (cmp+select), binary_search (cmp+branch)
+#   memory-access:    spmv (indirect load), scatter_add (indirect store)
+#   multi-dim:        matmul (nested loops), conv2d (2D stencil access)
+#   stream-ctrl:      prefix_sum_inclusive (scan), fir_filter (shift reg)
+#   temporal-compute: fft_butterfly (complex ops), gemv (dot+accum)
+#   reduction:        jacobi_stencil_5pt (5-point reduce), distance_point (sqrt)
+#   encoding:         rle_encode (state machine), edit_distance_step (DP)
+#   iteration:        newton_iter (convergence loop)
 SUBSET_APPS=(
   vecadd dotprod matmul gemv fir_filter fft_butterfly
   relu conv2d spmv scatter_add jacobi_stencil_5pt
   binary_search prefix_sum_inclusive popcount rle_encode
   edit_distance_step distance_point newton_iter
 )
+
+# Apps with no handshake DFG source get unconditional SKIP.
+# All other failures are FAIL unless the app lacks source files.
+is_skip_allowed() {
+  local app="$1"
+  local reason="$2"
+  # Only DFG compilation failure (no source or no handshake) is a valid SKIP.
+  [[ "${reason}" == "no_dfg" ]]
+}
 
 # --- Batch mode: per-app ---
 run_perapp_batch() {
