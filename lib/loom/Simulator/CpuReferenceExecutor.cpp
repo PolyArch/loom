@@ -392,6 +392,32 @@ bool evaluateOneToken(
       continue;
     }
 
+    // arith.index_cast / arith.index_castui: cast between index and integer.
+    // In the reference executor, index is treated as 64-bit integer.
+    if (mlir::isa<mlir::arith::IndexCastOp>(op)) {
+      auto it = valueMap.find(op.getOperand(0));
+      if (it == valueMap.end()) {
+        unsupportedReason = "index_cast input not computed";
+        return false;
+      }
+      unsigned srcW = getIntBitWidth(op.getOperand(0).getType());
+      unsigned dstW = getIntBitWidth(op.getResult(0).getType());
+      // index_cast is sign-extending when going from smaller to larger.
+      valueMap[op.getResult(0)] =
+          maskToWidth(static_cast<uint64_t>(signExtend(it->second, srcW)), dstW);
+      continue;
+    }
+    if (mlir::isa<mlir::arith::IndexCastUIOp>(op)) {
+      auto it = valueMap.find(op.getOperand(0));
+      if (it == valueMap.end()) {
+        unsupportedReason = "index_castui input not computed";
+        return false;
+      }
+      unsigned dstW = getIntBitWidth(op.getResult(0).getType());
+      valueMap[op.getResult(0)] = maskToWidth(it->second, dstW);
+      continue;
+    }
+
     // handshake.cond_br: for reference execution, evaluate both paths
     // but only the taken path produces values.
     if (auto condBr =

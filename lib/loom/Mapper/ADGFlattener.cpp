@@ -155,6 +155,41 @@ void extractPEBodyOps(mlir::Operation *peOp, Node *node,
     node->attributes.push_back(builder.getNamedAttr(
         "body_edges", builder.getArrayAttr(bodyEdges)));
   }
+
+  // Propagate selected body-op attributes to the node for config generation.
+  for (auto &innerOp : peBody.front()) {
+    if (innerOp.hasTrait<mlir::OpTrait::IsTerminator>())
+      continue;
+    llvm::StringRef opName = innerOp.getName().getStringRef();
+    if (opName == "dataflow.stream") {
+      // stop_cond → cont_cond_sel (one-hot encoding).
+      if (auto stopCond = innerOp.getAttrOfType<mlir::StringAttr>("stop_cond")) {
+        int64_t sel = 0;
+        llvm::StringRef sc = stopCond.getValue();
+        if (sc == "slt" || sc == "<") sel = 0x01;
+        else if (sc == "sle" || sc == "<=") sel = 0x02;
+        else if (sc == "sgt" || sc == ">") sel = 0x04;
+        else if (sc == "sge" || sc == ">=") sel = 0x08;
+        else if (sc == "ne" || sc == "!=") sel = 0x10;
+        if (sel != 0) {
+          node->attributes.push_back(builder.getNamedAttr(
+              "cont_cond_sel", builder.getI64IntegerAttr(sel)));
+        }
+      }
+      // step_op is already copied via attrsToCopy if present on the definition.
+      // Also propagate from the body op if not already on the definition.
+      if (auto stepOp = innerOp.getAttrOfType<mlir::StringAttr>("step_op")) {
+        bool found = false;
+        for (auto &a : node->attributes) {
+          if (a.getName() == "step_op") { found = true; break; }
+        }
+        if (!found) {
+          node->attributes.push_back(builder.getNamedAttr(
+              "step_op", stepOp));
+        }
+      }
+    }
+  }
 }
 
 /// Create an ADG node from an operation in the fabric module body.

@@ -31,6 +31,7 @@ void SimPE::reset() {
   dataflowInitialStage_ = true;
   invariantStoredValue_ = 0;
   gateFirstElement_ = true;
+  gateBufferedValue_ = 0;
   streamInitialPhase_ = true;
   streamNextIdx_ = 0;
   streamBoundReg_ = 0;
@@ -393,13 +394,18 @@ bool SimPE::evaluateCmpf(uint64_t a, uint64_t b) const {
 
 void SimPE::evaluateCombinational() {
   if (bodyType_ == BodyType::Constant) {
-    // Constant PE: always valid, no inputs needed.
+    // Constant PE: always outputs the configured constant value.
     if (!outputs.empty()) {
       outputs[0]->valid = true;
       outputs[0]->data = constantValue_;
       if (isTagged_)
         outputs[0]->tag = outputTags_[0];
       outputs[0]->hasTag = isTagged_;
+    }
+    // Consume trigger input (if present) when output is ready.
+    if (!inputs.empty()) {
+      bool outReady = outputs.empty() || outputs[0]->ready;
+      inputs[0]->ready = outReady;
     }
     return;
   }
@@ -619,39 +625,28 @@ void SimPE::evaluateGate() {
   }
 
   if (gateFirstElement_) {
-    // First element: emit before_value as after_value. Drop before_cond
-    // (it's the head being cut). after_cond not ready yet.
-    outVal->valid = true;
-    outVal->data = inputs[0]->data;
-    driveOutputTag(outVal, 0);
+    // Initial: consume (before_value[0], before_cond[0]).
+    // Buffer before_value[0], discard before_cond[0] (head cut).
+    // No output yet -- the shifted pair requires before_cond[1].
+    // If before_cond[0] is false (length 1), outputs are empty: consume
+    // both and stay in initial (advanceClock handles transition).
+    outVal->valid = false;
     outCond->valid = false;
-    // Accept both inputs when outVal is ready.
-    bool accept = outVal->ready;
+    inputs[0]->ready = true;
+    inputs[1]->ready = true;
+  } else {
+    // Normal: emit (gateBufferedValue_, before_cond[i]) as aligned pair.
+    // Also consume before_value[i] (buffer it for next cycle or discard
+    // if cond is false = tail cut). State transition in advanceClock.
+    outVal->valid = true;
+    outVal->data = gateBufferedValue_;
+    driveOutputTag(outVal, 0);
+    outCond->valid = true;
+    outCond->data = inputs[1]->data;
+    driveOutputTag(outCond, 1);
+    bool accept = outVal->ready && outCond->ready;
     inputs[0]->ready = accept;
     inputs[1]->ready = accept;
-  } else {
-    bool condVal = (inputs[1]->data & 1) != 0;
-    if (condVal) {
-      // Middle element: emit both value and cond.
-      outVal->valid = true;
-      outVal->data = inputs[0]->data;
-      driveOutputTag(outVal, 0);
-      outCond->valid = true;
-      outCond->data = inputs[1]->data;
-      driveOutputTag(outCond, 1);
-      bool accept = outVal->ready && outCond->ready;
-      inputs[0]->ready = accept;
-      inputs[1]->ready = accept;
-    } else {
-      // Last element (cond=false): emit cond only, drop value (tail cut).
-      outVal->valid = false;
-      outCond->valid = true;
-      outCond->data = 0; // false
-      driveOutputTag(outCond, 1);
-      bool accept = outCond->ready;
-      inputs[0]->ready = accept;
-      inputs[1]->ready = accept;
-    }
   }
 }
 
@@ -782,16 +777,30 @@ void SimPE::advanceClock() {
         dataflowInitialStage_ = true;
     }
   } else if (bodyType_ == BodyType::Gate) {
-    // Track first-element state for the cond shift.
     if (gateFirstElement_) {
+      // Initial: if both inputs transferred, buffer value.
       if (inputs.size() >= 2 && inputs[0]->transferred() &&
-          inputs[1]->transferred())
-        gateFirstElement_ = false;
+          inputs[1]->transferred()) {
+        gateBufferedValue_ = inputs[0]->data;
+        // If first cond is true, transition to normal (more elements coming).
+        // If first cond is false, stream length is 1 -> outputs empty, stay
+        // in initial for next iteration burst.
+        if (inputs[1]->data & 1)
+          gateFirstElement_ = false;
+      }
     } else {
-      // After last element (cond=false), reset for next iteration burst.
-      if (inputs.size() >= 2 && inputs[1]->transferred() &&
-          (inputs[1]->data & 1) == 0)
-        gateFirstElement_ = true;
+      // Normal: if transfer occurred, update buffer or reset.
+      if (inputs.size() >= 2 && inputs[0]->transferred() &&
+          inputs[1]->transferred()) {
+        if ((inputs[1]->data & 1) == 0) {
+          // Cond is false: last output pair emitted. Discard the new value
+          // (tail cut). Reset for next iteration burst.
+          gateFirstElement_ = true;
+        } else {
+          // Cond is true: buffer new value for next emission.
+          gateBufferedValue_ = inputs[0]->data;
+        }
+      }
     }
   } else if (bodyType_ == BodyType::StreamCont) {
     // Helper: compute next index using stepOp_.

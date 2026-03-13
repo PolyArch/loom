@@ -106,6 +106,9 @@ private:
   /// Gate: true if the first element hasn't been processed yet.
   bool gateFirstElement_ = true;
 
+  /// Gate: buffered before_value from previous cycle (for the one-element shift).
+  uint64_t gateBufferedValue_ = 0;
+
   /// Sign-extend a value from dataWidth_ to 64 bits.
   int64_t signExt(uint64_t v) const;
 

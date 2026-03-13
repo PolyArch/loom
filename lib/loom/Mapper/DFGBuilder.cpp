@@ -80,8 +80,9 @@ Graph DFGBuilder::build(circt::handshake::FuncOp funcOp) {
       }
     }
 
-    // Copy ldCount/stCount from handshake memory ops for mapper use.
-    for (llvm::StringRef attrName : {"ldCount", "stCount"}) {
+    // Copy operation-specific attributes needed for config generation.
+    for (llvm::StringRef attrName :
+         {"ldCount", "stCount", "predicate", "stop_cond", "step_op"}) {
       if (auto attr = op.getAttr(attrName))
         node->attributes.push_back(builder.getNamedAttr(attrName, attr));
     }

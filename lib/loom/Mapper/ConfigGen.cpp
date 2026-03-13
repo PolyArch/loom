@@ -141,6 +141,28 @@ void genPEConfig(const Node *hwNode, const MappingState &state,
     packBits(words, bitPos, static_cast<uint64_t>(constVal), 32);
   // Pack cont_cond_sel if present (5 bits for dataflow.stream).
   int64_t contCond = getNodeIntAttr(hwNode, "cont_cond_sel", -1);
+  // Fallback: infer cont_cond_sel from the mapped DFG node's stop_cond.
+  if (contCond < 0 && hwId < state.hwNodeToSwNodes.size()) {
+    for (IdIndex swId : state.hwNodeToSwNodes[hwId]) {
+      const Node *swNode = dfg.getNode(swId);
+      if (!swNode)
+        continue;
+      for (auto &a : swNode->attributes) {
+        if (a.getName() == "stop_cond") {
+          if (auto sa = mlir::dyn_cast<mlir::StringAttr>(a.getValue())) {
+            llvm::StringRef sc = sa.getValue();
+            if (sc == "slt" || sc == "<") contCond = 0x01;
+            else if (sc == "sle" || sc == "<=") contCond = 0x02;
+            else if (sc == "sgt" || sc == ">") contCond = 0x04;
+            else if (sc == "sge" || sc == ">=") contCond = 0x08;
+            else if (sc == "ne" || sc == "!=") contCond = 0x10;
+          }
+        }
+      }
+      if (contCond >= 0)
+        break;
+    }
+  }
   if (contCond >= 0)
     packBits(words, bitPos, static_cast<uint64_t>(contCond), 5);
   // If no config bits were packed, leave words empty so caller skips node.

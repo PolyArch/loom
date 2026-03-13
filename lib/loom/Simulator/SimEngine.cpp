@@ -63,6 +63,14 @@ bool SimEngine::buildFromGraph(const Graph &adg) {
         std::vector<int8_t> vals(arrAttr.asArrayRef().begin(),
                                  arrAttr.asArrayRef().end());
         arrayAttrs.emplace_back(attrName, std::move(vals));
+      } else if (auto strArrAttr =
+                     mlir::dyn_cast<mlir::ArrayAttr>(attr.getValue())) {
+        // Extract body_ops (array of StringAttr) → synthesize body_op string.
+        if (attrName == "body_ops" && !strArrAttr.empty()) {
+          if (auto first =
+                  mlir::dyn_cast<mlir::StringAttr>(strArrAttr[0]))
+            strAttrs.emplace_back("body_op", first.getValue().str());
+        }
       }
     }
 
