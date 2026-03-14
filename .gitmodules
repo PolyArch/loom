@@ -1,0 +1,9 @@
+[submodule "externals/llvm"]
+	path = externals/llvm
+	url = git@github.com:llvm/llvm-project.git
+[submodule "externals/gem5"]
+	path = externals/gem5
+	url = git@github.com:gem5/gem5.git
+[submodule "externals/circt"]
+	path = externals/circt
+	url = git@github.com:llvm/circt.git
