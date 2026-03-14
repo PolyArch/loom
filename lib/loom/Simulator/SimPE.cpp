@@ -31,6 +31,8 @@ void SimPE::reset() {
   dataflowInitialStage_ = true;
   initLatched_ = false;
   initLatchedValue_ = 0;
+  carryDLatched_ = false;
+  carryDValue_ = false;
   invariantStoredValue_ = 0;
   gateState_ = 0;
   gateLatchedValue_ = 0;
@@ -642,37 +644,36 @@ void SimPE::evaluateCarry() {
     out->data = initLatchedValue_;
     driveOutputTag(out, -1);
     for (auto *in : inputs) in->ready = false;
-  } else {
-    // Block stage: consume %d. If true, also consume %b and emit.
-    if (inputs.empty() || !inputs[0]->valid) {
-      out->valid = false;
-      for (auto *in : inputs)
-        in->ready = false;
-      return;
+  } else if (!carryDLatched_) {
+    // Block stage step 1: accept %d independently. No output.
+    // This decouples %d acceptance from %b, preventing broadcast deadlock.
+    out->valid = false;
+    if (!inputs.empty() && inputs[0]->valid) {
+      inputs[0]->ready = true;
+      inputs[1]->ready = false;
+      if (inputs.size() > 2) inputs[2]->ready = false;
+    } else {
+      for (auto *in : inputs) in->ready = false;
     }
-    bool dVal = (inputs[0]->data & 1) != 0;
-    if (dVal) {
-      // d=true: need %b valid. Emit %b on output.
+  } else {
+    // Block stage step 2: %d latched. Act on its value.
+    if (carryDValue_) {
+      // d=true: wait for %b, then emit %b on output.
       if (inputs.size() <= 2 || !inputs[2]->valid) {
         out->valid = false;
-        for (auto *in : inputs)
-          in->ready = false;
+        for (auto *in : inputs) in->ready = false;
         return;
       }
       out->valid = true;
       out->data = inputs[2]->data;
       driveOutputTag(out, 2);
-      inputs[0]->ready = out->ready;
+      inputs[0]->ready = false;
       inputs[1]->ready = false;
       inputs[2]->ready = out->ready;
     } else {
-      // d=false: consume only %d, no output. Transition handled in
-      // advanceClock.
+      // d=false: no output needed. Transition in advanceClock.
       out->valid = false;
-      inputs[0]->ready = true;
-      inputs[1]->ready = false;
-      if (inputs.size() > 2)
-        inputs[2]->ready = false;
+      for (auto *in : inputs) in->ready = false;
     }
   }
 }
@@ -705,28 +706,28 @@ void SimPE::evaluateInvariant() {
     out->data = initLatchedValue_;
     driveOutputTag(out, -1);
     for (auto *in : inputs) in->ready = false;
-  } else {
-    // Block stage: consume %d. If true, emit stored value.
-    if (inputs.empty() || !inputs[0]->valid) {
-      out->valid = false;
-      for (auto *in : inputs)
-        in->ready = false;
-      return;
+  } else if (!carryDLatched_) {
+    // Block stage step 1: accept %d independently. No output.
+    // Reuses carryDLatched_/carryDValue_ (shared with carry).
+    out->valid = false;
+    if (!inputs.empty() && inputs[0]->valid) {
+      inputs[0]->ready = true;
+      if (inputs.size() > 1) inputs[1]->ready = false;
+    } else {
+      for (auto *in : inputs) in->ready = false;
     }
-    bool dVal = (inputs[0]->data & 1) != 0;
-    if (dVal) {
+  } else {
+    // Block stage step 2: %d latched.
+    if (carryDValue_) {
+      // d=true: emit stored invariant value.
       out->valid = true;
       out->data = invariantStoredValue_;
-      driveOutputTag(out, -1); // Use configured output tag.
-      inputs[0]->ready = out->ready;
-      if (inputs.size() > 1)
-        inputs[1]->ready = false;
+      driveOutputTag(out, -1);
+      for (auto *in : inputs) in->ready = false;
     } else {
-      // d=false: consume only %d, no output. Transition in advanceClock.
+      // d=false: no output. Transition in advanceClock.
       out->valid = false;
-      inputs[0]->ready = true;
-      if (inputs.size() > 1)
-        inputs[1]->ready = false;
+      for (auto *in : inputs) in->ready = false;
     }
   }
 }
@@ -1032,12 +1033,25 @@ void SimPE::advanceClock() {
         initLatched_ = false;
         dataflowInitialStage_ = false;
       }
+    } else if (!carryDLatched_) {
+      // Block step 1: %d consumed → latch d value.
+      if (!inputs.empty() && inputs[0]->transferred()) {
+        carryDValue_ = (inputs[0]->data & 1) != 0;
+        carryDLatched_ = true;
+      }
     } else {
-      // Block: if %d was transferred with d=false, return to initial.
-      if (!inputs.empty() && inputs[0]->transferred() &&
-          (inputs[0]->data & 1) == 0) {
+      // Block step 2: d latched.
+      if (carryDValue_) {
+        // d=true: %b consumed and output accepted → clear d latch.
+        if (inputs.size() > 2 && inputs[2]->transferred() &&
+            !outputs.empty() && outputs[0]->transferred()) {
+          carryDLatched_ = false;
+        }
+      } else {
+        // d=false: no %b needed. Return to initial.
         dataflowInitialStage_ = true;
         initLatched_ = false;
+        carryDLatched_ = false;
       }
     }
   } else if (bodyType_ == BodyType::Invariant) {
@@ -1054,12 +1068,23 @@ void SimPE::advanceClock() {
         initLatched_ = false;
         dataflowInitialStage_ = false;
       }
+    } else if (!carryDLatched_) {
+      // Block step 1: %d consumed → latch d value.
+      if (!inputs.empty() && inputs[0]->transferred()) {
+        carryDValue_ = (inputs[0]->data & 1) != 0;
+        carryDLatched_ = true;
+      }
     } else {
-      // Block: if %d was transferred with d=false, return to initial.
-      if (!inputs.empty() && inputs[0]->transferred() &&
-          (inputs[0]->data & 1) == 0) {
+      // Block step 2: d latched.
+      if (carryDValue_) {
+        // d=true: output accepted → clear d latch.
+        if (!outputs.empty() && outputs[0]->transferred())
+          carryDLatched_ = false;
+      } else {
+        // d=false: return to initial.
         dataflowInitialStage_ = true;
         initLatched_ = false;
+        carryDLatched_ = false;
       }
     }
   } else if (bodyType_ == BodyType::Gate) {

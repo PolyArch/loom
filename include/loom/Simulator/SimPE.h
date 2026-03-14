@@ -112,6 +112,10 @@ private:
   bool initLatched_ = false;
   uint64_t initLatchedValue_ = 0;
 
+  /// Carry block phase: true when %d has been latched but %b not yet consumed.
+  bool carryDLatched_ = false;
+  bool carryDValue_ = false; // latched d value (true/false)
+
   /// Stream helpers (used by both evaluateCombinational and advanceClock).
   bool streamEvalCont(int64_t idx, int64_t bound) const {
     if (contCondSel_ & 0x01) return idx < bound;

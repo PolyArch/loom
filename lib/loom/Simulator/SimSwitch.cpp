@@ -105,6 +105,10 @@ void SimSwitch::evaluateCombinational() {
   // in_ready[i] = AND(out_ready[k]) for all broadcast targets k of input i
 
   // Drive output valid/data from routed input.
+  // Note: switch does NOT implement atomic broadcast at the routing level.
+  // Atomic broadcast semantics are the responsibility of the producer PE
+  // (stream, gate, etc.) via registered outputs. The switch simply
+  // propagates valid from input to output combinationally.
   for (unsigned o = 0; o < numOutputs_ && o < outputs.size(); ++o) {
     int src = outputSource_[o];
     if (src >= 0 && static_cast<unsigned>(src) < inputs.size()) {
@@ -116,6 +120,7 @@ void SimSwitch::evaluateCombinational() {
       outputs[o]->valid = false;
     }
   }
+
 
   // Drive input ready: AND of all broadcast targets' ready signals.
   for (unsigned i = 0; i < numInputs_ && i < inputs.size(); ++i) {

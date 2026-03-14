@@ -582,20 +582,38 @@ SimResult SimEngine::run() {
     }
   }
 
+  auto findFirstDeviceError = [&]() -> SimModule * {
+    for (auto &mod : modules_) {
+      if (mod->hasError())
+        return mod.get();
+    }
+    return nullptr;
+  };
+
   // Main simulation loop.
   uint64_t maxCycle = (config_.maxCycles > 0)
                         ? configCycles + config_.maxCycles
                         : UINT64_MAX;
-  while (currentCycle_ < maxCycle) {
+  SimModule *errorMod = findFirstDeviceError();
+  uint64_t errorCycle = currentCycle_;
+  while (currentCycle_ < maxCycle && !errorMod) {
     stepOneCycle();
     currentCycle_++;
+
+    errorMod = findFirstDeviceError();
+    if (errorMod) {
+      errorCycle = currentCycle_ - 1;
+      break;
+    }
 
     if (isComplete())
       break;
   }
 
-  // Emit invocation done (subject to kind, node, and core filters).
-  if (config_.traceMode == TraceMode::Full) {
+  bool completed = !errorMod && isComplete();
+
+  // Emit invocation done only for a clean completion.
+  if (completed && config_.traceMode == TraceMode::Full) {
     if (kindAllowed(EV_INVOCATION_DONE) && nodeAllowed(0) &&
         coreAllowed(config_.coreId)) {
       TraceEvent ev;
@@ -621,26 +639,22 @@ SimResult SimEngine::run() {
   }
 
   // Classify termination reason.
-  if (isComplete()) {
+  if (completed) {
     result.success = true;
     result.termination = RunTermination::Completed;
+  } else if (errorMod) {
+    result.success = false;
+    result.termination = RunTermination::DeviceError;
+    result.errorMessage =
+        "Simulation terminated at cycle " + std::to_string(errorCycle) +
+        ": module '" + errorMod->name + "' (hwNode=" +
+        std::to_string(errorMod->hwNodeId) + ", op=" + errorMod->opName +
+        ") reported device error code " +
+        std::to_string(errorMod->getErrorCode());
   } else {
     result.success = false;
-    // Check for device errors on any module.
-    bool hasDeviceError = false;
-    for (auto &mod : modules_) {
-      if (mod->hasError()) {
-        hasDeviceError = true;
-        break;
-      }
-    }
-    if (hasDeviceError) {
-      result.termination = RunTermination::DeviceError;
-      result.errorMessage = "Simulation terminated: device error on one or more modules";
-    } else {
-      result.termination = RunTermination::Timeout;
-      result.errorMessage = "Simulation did not complete within cycle limit";
-    }
+    result.termination = RunTermination::Timeout;
+    result.errorMessage = "Simulation did not complete within cycle limit";
   }
 
   return result;

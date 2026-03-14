@@ -421,8 +421,6 @@ int main(int argc, char **argv) {
       // Level A: analyze MLIR attributes.
       for (auto &mod : gen_modules) {
         mod->walk([&](circt::handshake::FuncOp func) {
-          if (func.getName().ends_with("_esi"))
-            return;
           loom::analysis::analyzeMLIR(func, analysis_config);
         });
       }
@@ -432,8 +430,6 @@ int main(int argc, char **argv) {
       // attributes back to MLIR ops.
       for (auto &mod : gen_modules) {
         mod->walk([&](circt::handshake::FuncOp func) {
-          if (func.getName().ends_with("_esi"))
-            return;
           loom::DFGBuilder dfg_builder;
           loom::Graph dfg = dfg_builder.build(func);
           loom::analysis::analyzeGraph(dfg, analysis_config);
@@ -452,8 +448,6 @@ int main(int argc, char **argv) {
     bool invalid_gen_dfg = false;
     for (auto &mod : gen_modules) {
       mod->walk([&](circt::handshake::FuncOp func) {
-        if (func.getName().ends_with("_esi"))
-          return;
         loom::adg::SingleDFGAnalysis analysis;
 
         // Walk all operations in the function body.
@@ -679,8 +673,6 @@ int main(int argc, char **argv) {
       // Build partitioned requirements by re-walking DFGs.
       for (auto &mod : gen_modules) {
         mod->walk([&](circt::handshake::FuncOp func) {
-          if (func.getName().ends_with("_esi"))
-            return;
           loom::adg::SingleDFGAnalysis spatial_analysis;
           loom::adg::SingleDFGAnalysis temporal_analysis;
 
@@ -1123,10 +1115,7 @@ int main(int argc, char **argv) {
     // Find the handshake::FuncOp in the handshake module for DFG extraction.
     circt::handshake::FuncOp handshake_func;
     handshake_module->walk([&](circt::handshake::FuncOp func) {
-      llvm::StringRef name = func.getName();
-      bool isEsi = name.ends_with("_esi");
-      if (!handshake_func ||
-          (!isEsi && handshake_func.getName().ends_with("_esi")))
+      if (!handshake_func)
         handshake_func = func;
     });
     if (!handshake_func) {

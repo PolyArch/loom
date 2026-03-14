@@ -189,9 +189,24 @@ void genSwitchConfig(const Node *hwNode, const MappingState &state,
     }
   }
 
-  // Pack route enable bits: for each output, which input is selected.
+  // Pack route enable bits: per spec-fabric-switch.md, one bit per connected
+  // position in connectivity_table, scanned in row-major order (output, input).
+  // Only positions where connectivity_table[o*numIn+i] == 1 get a bit.
+  mlir::DenseI8ArrayAttr connTable;
+  for (auto &attr : hwNode->attributes) {
+    if (attr.getName() == "connectivity_table") {
+      connTable = mlir::dyn_cast<mlir::DenseI8ArrayAttr>(attr.getValue());
+      break;
+    }
+  }
+
   for (unsigned o = 0; o < numOut; ++o) {
     for (unsigned i = 0; i < numIn; ++i) {
+      // Skip unconnected positions.
+      if (connTable &&
+          static_cast<unsigned>(connTable.size()) == numOut * numIn &&
+          connTable[o * numIn + i] == 0)
+        continue;
       uint64_t key = (static_cast<uint64_t>(o) << 32) | i;
       bool enabled = activeTransitions.count(key) > 0;
       packBits(words, bitPos, enabled ? 1 : 0, 1);

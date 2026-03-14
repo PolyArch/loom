@@ -148,7 +148,7 @@ enum class TraceMode : uint8_t {
 enum class RunTermination : uint8_t {
   Completed = 0,    // All inputs consumed, all outputs drained.
   Timeout = 1,      // Exceeded maxCycles without completing.
-  DeviceError = 2,  // A module latched a runtime error (RT_* code).
+  DeviceError = 2,  // A module latched a device error (CFG_/RT_ code).
   ContractError = 3 // Structural violation (e.g. unrouted input, missing config).
 };
 

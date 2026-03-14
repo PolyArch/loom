@@ -488,7 +488,7 @@ Important timing detail:
 - This reflects that the continue condition for iteration `i` is known only
   after the before-region of iteration `i+1` is evaluated.
 
-Example:
+Example (index relationship):
 
 ```
 // before_value: [A, B, C, D, E]
@@ -496,6 +496,62 @@ Example:
 // after_value:  [A, B, C, D]
 // after_cond:   [T, T, T, F]
 ```
+
+### Hardware Timing (Per-Step Output)
+
+The two output ports fire **independently**, not in lockstep. Using `-` to
+indicate that a port produces no valid output at that step:
+
+```
+// before_value: [A, B, C, D, E]
+// before_cond:  [T, T, T, T, F]
+//
+// Step 1: after_value = A,  after_cond = -    (head cut: discard cond[0])
+// Step 2: after_value = B,  after_cond = T    (cond[1] = after_cond[0])
+// Step 3: after_value = C,  after_cond = T    (cond[2] = after_cond[1])
+// Step 4: after_value = D,  after_cond = T    (cond[3] = after_cond[2])
+// Step 5: after_value = -,  after_cond = F    (tail cut: discard value[4])
+```
+
+Observations:
+
+- `after_value` and `after_cond` are temporally **misaligned by one step**.
+  At step 2, `after_value[1] = B` is paired with `after_cond[0] = T`; they
+  share the same step but have different stream indices.
+- The head cut (step 1): `after_value[0]` outputs alone; `before_cond[0]`
+  is consumed but never appears in the output.
+- The tail cut (step 5): `after_cond[N-2]` outputs alone; `before_value[N-1]`
+  is consumed but never appears in the output.
+- Both output streams have `N - 1` elements, but they span `N` time steps.
+
+### State Machine Behavior
+
+`dataflow.gate` is implemented as a three-phase state machine.
+
+Initial phase:
+
+- Wait for both `before_value` and `before_cond` to be valid.
+- If `before_cond` is false: zero-trip. Consume both, produce no output.
+  Remain in initial phase.
+- If `before_cond` is true: output `after_value` (port 0 valid). Do NOT
+  output `after_cond` (port 1 invalid). This is the head cut.
+- Consume both inputs when `after_value` output is accepted.
+- Transition to block phase.
+
+Block phase (continue):
+
+- Wait for both inputs valid. Current `before_cond` is true.
+- Output `after_value` = current `before_value` (port 0 valid).
+- Output `after_cond` = current `before_cond` = true (port 1 valid).
+- Consume both inputs when **both** outputs are accepted.
+
+Block phase (terminate):
+
+- Wait for both inputs valid. Current `before_cond` is false.
+- Do NOT output `after_value` (port 0 invalid). This is the tail cut.
+- Output `after_cond` = false (port 1 valid).
+- Consume both inputs when `after_cond` output is accepted.
+- Transition back to initial phase.
 
 ## Related Documents
 
