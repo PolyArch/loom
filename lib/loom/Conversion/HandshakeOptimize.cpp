@@ -13,8 +13,10 @@
 #include "loom/Conversion/HandshakeOptimize.h"
 
 #include "mlir/IR/Block.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -117,3 +119,76 @@ LogicalResult runHandshakeCleanup(circt::handshake::FuncOp func,
 }
 
 } // namespace loom
+
+// --- Pass wrapper ---
+
+namespace {
+
+struct HandshakeCleanupPass
+    : public mlir::PassWrapper<HandshakeCleanupPass,
+                               mlir::OperationPass<mlir::ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(HandshakeCleanupPass)
+
+  llvm::StringRef getArgument() const override {
+    return "loom-handshake-cleanup";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Insert handshake.sink for dead values, eliminate dead ops "
+           "(fixed-point, runs after canonicalize/CSE)";
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    mlir::OpBuilder builder(module.getContext());
+
+    module.walk([&](circt::handshake::FuncOp func) {
+      // Fixed-point: repeat sink insertion + DCE until stable.
+      // Bounded to prevent infinite loops.
+      for (unsigned iter = 0; iter < 20; ++iter) {
+        bool changed = false;
+
+        // Insert sinks for unused values.
+        llvm::SmallVector<mlir::Value, 16> toSink;
+        func.walk([&](mlir::Operation *op) {
+          if (mlir::isa<circt::handshake::FuncOp,
+                        circt::handshake::ReturnOp,
+                        circt::handshake::SinkOp>(op))
+            return;
+          for (mlir::Value result : op->getResults()) {
+            if (result.use_empty())
+              toSink.push_back(result);
+          }
+        });
+        for (mlir::Value result : toSink) {
+          if (auto *def = result.getDefiningOp()) {
+            builder.setInsertionPointAfter(def);
+            circt::handshake::SinkOp::create(builder, def->getLoc(), result);
+            changed = true;
+          }
+        }
+
+        // Also check block arguments (func args that are unused).
+        for (auto arg : func.getBody().getArguments()) {
+          if (arg.use_empty()) {
+            builder.setInsertionPointToStart(&func.getBody().front());
+            circt::handshake::SinkOp::create(builder, func.getLoc(), arg);
+            changed = true;
+          }
+        }
+
+        if (!changed)
+          break;
+
+        // Run DCE: eliminate ops whose results all feed only sinks.
+        if (failed(loom::runHandshakeCleanup(func, builder)))
+          return signalPassFailure();
+      }
+    });
+  }
+};
+
+} // namespace
+
+std::unique_ptr<mlir::Pass> loom::createHandshakeCleanupPass() {
+  return std::make_unique<HandshakeCleanupPass>();
+}

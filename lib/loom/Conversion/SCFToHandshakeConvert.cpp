@@ -1059,8 +1059,9 @@ mlir::LogicalResult HandshakeConversion::run() {
 
   // insertForks() removed: data duplication at module level uses switch
   // broadcast; PE body wire fanout is valid.
-  if (mlir::failed(loom::runHandshakeCleanup(handshakeFunc, builder)))
-    return mlir::failure();
+  // NOTE: runHandshakeCleanup is NOT called here. It runs as a separate
+  // pass AFTER canonicalize/CSE, so that dead values produced by later
+  // simplification (e.g., afterCond becoming unused) are properly sunk.
 
   bool hasMemrefOp = false;
   handshakeFunc.walk([&](mlir::Operation *op) {

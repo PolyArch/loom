@@ -68,6 +68,7 @@
 
 #include "mlir/Parser/Parser.h"
 
+#include "loom/Conversion/HandshakeOptimize.h"
 #include "loom/Conversion/LLVMToSCF.h"
 #include "loom/Conversion/SCFToHandshake.h"
 #include "loom/Conversion/SCFPostProcess.h"
@@ -1093,6 +1094,7 @@ int main(int argc, char **argv) {
       hs_pm.addPass(loom::createSCFToHandshakeDataflowPass());
       hs_pm.addPass(mlir::createCanonicalizerPass());
       hs_pm.addPass(mlir::createCSEPass());
+      hs_pm.addPass(loom::createHandshakeCleanupPass());
       if (failed(hs_pm.run(*src_mlir))) {
         llvm::errs() << "error: SCFToHandshake conversion failed\n";
         return 1;
@@ -2400,6 +2402,7 @@ int main(int argc, char **argv) {
   handshake_passes.addPass(loom::createSCFToHandshakeDataflowPass());
   handshake_passes.addPass(mlir::createCanonicalizerPass());
   handshake_passes.addPass(mlir::createCSEPass());
+  handshake_passes.addPass(loom::createHandshakeCleanupPass());
 
   if (failed(handshake_passes.run(*mlir_module))) {
     llvm::errs() << "error: failed to convert to handshake stage\n";
