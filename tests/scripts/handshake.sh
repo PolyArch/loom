@@ -105,9 +105,13 @@ loom_write_parallel_header "${PARALLEL_FILE}" \
   "Compiles each C++ app to handshake MLIR via loom."
 
 for app_dir in "${app_dirs[@]}"; do
+  app_name=$(basename "${app_dir}")
+
+  # Skip fuzzer directory: it is a test generator, not a loom app.
+  [[ "${app_name}" == "fuzzer" ]] && continue
+
   rel_sources=$(loom_rel_sources "${app_dir}") || continue
 
-  app_name=$(basename "${app_dir}")
   rel_app=$(loom_relpath "${app_dir}")
   rel_out="${rel_app}/Output"
 
