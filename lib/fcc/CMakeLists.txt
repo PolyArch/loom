@@ -1,0 +1,5 @@
+add_subdirectory(Dialect)
+add_subdirectory(Conversion)
+add_subdirectory(ADG)
+add_subdirectory(Mapper)
+add_subdirectory(Viz)

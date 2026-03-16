@@ -1,0 +1,39 @@
+#ifndef FCC_TOOLS_FCC_ARGS_H
+#define FCC_TOOLS_FCC_ARGS_H
+
+#include <string>
+#include <vector>
+
+namespace fcc {
+
+struct FccArgs {
+  // Input sources
+  std::vector<std::string> sources;
+
+  // Output directory
+  std::string outputDir;
+
+  // Include paths (forwarded to clang)
+  std::vector<std::string> includePaths;
+
+  // ADG path (fabric MLIR)
+  std::string adgPath;
+
+  // Simulation
+  bool simulate = false;
+  unsigned simMaxCycles = 1000000;
+
+  // Mapper
+  unsigned mapperBudget = 60;
+  unsigned mapperSeed = 0;
+
+  // Derived: base name of first source (e.g. "vecadd" from "vecadd.c")
+  std::string baseName;
+};
+
+// Parse command line arguments. Returns true on success.
+bool parseArgs(int argc, char **argv, FccArgs &args);
+
+} // namespace fcc
+
+#endif
