@@ -9,7 +9,7 @@ namespace fcc {
 
 static cl::list<std::string> inputSources(cl::Positional,
                                            cl::desc("<source files>"),
-                                           cl::OneOrMore);
+                                           cl::ZeroOrMore);
 
 static cl::opt<std::string> outputDir("o", cl::desc("Output directory"),
                                        cl::Required);
@@ -19,6 +19,14 @@ static cl::list<std::string> includePaths("I", cl::desc("Include path"),
 
 static cl::opt<std::string> adgPath("adg", cl::desc("Path to .fabric.mlir ADG"),
                                      cl::init(""));
+
+static cl::opt<std::string> dfgPathOpt("dfg",
+                                        cl::desc("Path to pre-built DFG .mlir (skip frontend)"),
+                                        cl::init(""));
+
+static cl::opt<bool> vizOnlyOpt("viz-only",
+                                cl::desc("Visualize ADG/DFG side-by-side without mapping"),
+                                cl::init(false));
 
 static cl::opt<bool> simulate("simulate",
                                cl::desc("Run standalone simulator after mapping"),
@@ -43,14 +51,45 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
   args.outputDir = outputDir;
   args.includePaths.assign(includePaths.begin(), includePaths.end());
   args.adgPath = adgPath;
+  args.dfgPath = dfgPathOpt;
+  args.vizOnly = vizOnlyOpt;
   args.simulate = simulate;
   args.simMaxCycles = simMaxCycles;
   args.mapperBudget = mapperBudget;
   args.mapperSeed = mapperSeed;
 
-  // Derive base name from first source
+  // --viz-only needs at least --dfg or --adg
+  if (args.vizOnly) {
+    if (args.dfgPath.empty() && args.adgPath.empty()) {
+      errs() << "fcc: --viz-only needs at least --dfg or --adg\n";
+      return false;
+    }
+  } else {
+    // Normal mode: need sources or --dfg
+    if (args.sources.empty() && args.dfgPath.empty()) {
+      errs() << "fcc: no input sources and no --dfg specified\n";
+      return false;
+    }
+    // --dfg requires --adg (for mapping)
+    if (!args.dfgPath.empty() && args.adgPath.empty()) {
+      errs() << "fcc: --dfg requires --adg\n";
+      return false;
+    }
+  }
+
+  // Derive base name
   if (!args.sources.empty()) {
     StringRef stem = sys::path::stem(args.sources[0]);
+    args.baseName = stem.str();
+  } else if (!args.dfgPath.empty()) {
+    StringRef stem = sys::path::stem(args.dfgPath);
+    if (stem.ends_with(".dfg"))
+      stem = stem.drop_back(4);
+    args.baseName = stem.str();
+  } else if (!args.adgPath.empty()) {
+    StringRef stem = sys::path::stem(args.adgPath);
+    if (stem.ends_with(".fabric"))
+      stem = stem.drop_back(7);
     args.baseName = stem.str();
   }
 

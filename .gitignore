@@ -1,3 +1,7 @@
 build/
 .cache/
 out/
+node_modules/
+package.json
+package-lock.json
+screenshot.mjs

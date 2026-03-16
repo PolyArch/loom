@@ -19,6 +19,12 @@ struct FccArgs {
   // ADG path (fabric MLIR)
   std::string adgPath;
 
+  // DFG path (handshake MLIR) - skip frontend when provided
+  std::string dfgPath;
+
+  // Viz-only mode: just visualize ADG/DFG side-by-side, no mapping
+  bool vizOnly = false;
+
   // Simulation
   bool simulate = false;
   unsigned simMaxCycles = 1000000;

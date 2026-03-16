@@ -22,6 +22,7 @@ llvm_map_components_to_libnames(LLVM_LIBS
 
 target_link_libraries(fcc PRIVATE
   # FCC libraries
+  FccADG
   FccMapper
   FccConversion
   FccDataflow

@@ -83,8 +83,14 @@ static void buildVecaddADG(const std::string &outputPath) {
       "fu_cond_br", {"i1", "i32"}, {"i32", "i32"}, {"handshake.cond_br"});
 
   // FU: handshake.mux (3 inputs: sel, d0, d1; 1 output)
+  // NOTE: handshake.mux does NOT consume unselected inputs (partial consume).
   auto fuMux = builder.defineFU(
       "fu_mux", {"index", "i32", "i32"}, {"i32"}, {"handshake.mux"});
+
+  // FU: arith.select (3 inputs: cond, true_val, false_val; 1 output)
+  // NOTE: arith.select CONSUMES all inputs (full consume). Different from mux!
+  auto fuSelect = builder.defineFU(
+      "fu_select", {"i1", "i32", "i32"}, {"i32"}, {"arith.select"});
 
   // FU: handshake.join (3 inputs: a, b, c; 1 output)
   // The vecadd DFG has a 3-input join that synchronizes three branches.
@@ -109,21 +115,18 @@ static void buildVecaddADG(const std::string &outputPath) {
       fuAddi, fuCmpi, fuExtui, fuIndexCast,
       fuStream, fuGate, fuCarry,
       fuLoad, fuStore, fuConstant,
-      fuCondBr, fuMux, fuJoin, fuMac
+      fuCondBr, fuMux, fuSelect, fuJoin, fuMac
   };
   auto pe = builder.defineSpatialPE("vecadd_pe", 4, 4, dataWidth, allFUs);
 
   //=== Define Spatial Switch ===
 
-  // Switch: 11 inputs, 11 outputs at bits<32>
+  // Switch: 8 inputs, 8 outputs at bits<32>
   // Ports [0..3] connect to/from local PE
   // Ports [4..7] connect to NSEW neighbors
-  // Ports [8..10] connect to/from external memory (if adjacent)
-  //   Port 8: extmem ldData / stData
-  //   Port 9: extmem stDone / stAddr
-  //   Port 10: extmem ldDone / ldAddr
-  // Full crossbar connectivity
-  unsigned numSwPorts = 11;
+  // No extra extmem ports — extmem uses unused NSEW ports on boundary switches.
+  // This avoids dangling ports on interior switches.
+  unsigned numSwPorts = 8;
   std::vector<unsigned> swWidths(numSwPorts, dataWidth);
   std::vector<std::vector<bool>> fullCrossbar(
       numSwPorts, std::vector<bool>(numSwPorts, true));
@@ -168,28 +171,22 @@ static void buildVecaddADG(const std::string &outputPath) {
   // return value: none (done control token) - use 32-bit boundary
   builder.addScalarOutput("scalar_done", dataWidth);
 
-  //=== Connect ExtMemory to boundary switches ===
+  //=== ExtMemory associations (metadata only) ===
+  //
+  // With torus topology, all 8 SW ports are fully connected.
+  // ExtMem and scalar sentinels are standalone nodes — the mapper routes
+  // data between them and PEs through the switch network.
+  // The connected_sw attribute is metadata for the flattener/viz.
+  builder.associateExtMemWithSW(extMemA, mesh.swGrid[0][0], 4, 4);
+  builder.associateExtMemWithSW(extMemB, mesh.swGrid[0][1], 4, 4);
+  builder.associateExtMemWithSW(extMemC, mesh.swGrid[0][2], 4, 4);
 
-  // Associate each extmem with a nearby boundary switch and create real
-  // SSA connections. ExtMem outputs feed SW input ports 8-10.
-  // SW output ports 8-10 feed ExtMem data inputs (addr/data).
-  // extmem_a -> sw_0_0, extmem_b -> sw_0_1, extmem_c -> sw_0_2
-  builder.associateExtMemWithSW(extMemA, mesh.swGrid[0][0], 8, 8);
-  builder.associateExtMemWithSW(extMemB, mesh.swGrid[0][1], 8, 8);
-  builder.associateExtMemWithSW(extMemC, mesh.swGrid[0][2], 8, 8);
+  //=== Scalar I/O are standalone boundary nodes ===
+  // They don't need explicit port connections — they're SSA values
+  // available in the graph region. The flattener creates sentinel nodes
+  // for them, and the mapper binds DFG sentinels to ADG sentinels.
 
-  //=== Connect scalar inputs to boundary switches ===
-
-  // Scalar inputs feed into unused boundary switch input ports.
-  // sw_0_5 unused inputs: port 4 (north, no row -1) and port 6 (east, no col 6)
-  builder.connectScalarInputToInstance(0, mesh.swGrid[0][5], 4);
-  builder.connectScalarInputToInstance(1, mesh.swGrid[0][5], 6);
-
-  //=== Connect scalar output from boundary switch ===
-
-  // Scalar output comes from a boundary switch's unused output port.
-  // sw_5_5 unused outputs: port 5 (south, no row 6)
-  builder.connectInstanceToScalarOutput(mesh.swGrid[5][5], 5, 0);
+  // Scalar output is also a standalone boundary node (no explicit port wiring).
 
   //=== Export ===
 

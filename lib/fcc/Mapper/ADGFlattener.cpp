@@ -52,6 +52,54 @@ mlir::ArrayAttr extractOpsFromFUBody(fcc::fabric::FunctionUnitOp fuOp,
   return mlir::ArrayAttr::get(ctx, opNames);
 }
 
+/// Extract op names and internal DAG edges from an FU body.
+/// Returns ops as ArrayAttr and edges as ArrayAttr of [srcIdx, dstIdx] pairs.
+std::pair<mlir::ArrayAttr, mlir::ArrayAttr>
+extractFUBodyDAG(fcc::fabric::FunctionUnitOp fuOp, mlir::MLIRContext *ctx) {
+  llvm::SmallVector<mlir::Attribute, 4> opNames;
+  llvm::SmallVector<mlir::Attribute, 4> dagEdges;
+
+  auto &fuBody = fuOp.getBody().front();
+
+  // Map from Value to op index for edge tracking
+  llvm::DenseMap<mlir::Value, int> valueToOpIdx;
+  // Map block args to index -1 (they are FU inputs, not ops)
+  for (auto arg : fuBody.getArguments())
+    valueToOpIdx[arg] = -1;
+
+  int opIdx = 0;
+  for (auto &bodyOp : fuBody.getOperations()) {
+    if (mlir::isa<fcc::fabric::YieldOp>(bodyOp))
+      continue;
+
+    std::string opName = bodyOp.getName().getStringRef().str();
+    opNames.push_back(mlir::StringAttr::get(ctx, opName));
+
+    // Track which ops this op depends on
+    for (auto operand : bodyOp.getOperands()) {
+      auto it = valueToOpIdx.find(operand);
+      if (it != valueToOpIdx.end() && it->second >= 0) {
+        // This op uses the result of op at index it->second
+        auto edge = mlir::ArrayAttr::get(
+            ctx,
+            {mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                     it->second),
+             mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32), opIdx)});
+        dagEdges.push_back(edge);
+      }
+    }
+
+    // Map this op's results to its index
+    for (auto result : bodyOp.getResults())
+      valueToOpIdx[result] = opIdx;
+
+    opIdx++;
+  }
+
+  return {mlir::ArrayAttr::get(ctx, opNames),
+          mlir::ArrayAttr::get(ctx, dagEdges)};
+}
+
 } // namespace
 
 bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
@@ -112,20 +160,19 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
   // (in the yield-handling section at the end).
 
   // Pre-pass: Collect PE and SW definitions by symbol name for instance
-  // resolution. In the raw MLIR text, spatial_pe and spatial_sw are
-  // type definitions, and instances reference them via fabric.instance.
+  // resolution. Scan BOTH the top-level module AND fabric.module body,
+  // since definitions may be at either level.
   llvm::StringMap<fcc::fabric::SpatialPEOp> peDefMap;
   llvm::StringMap<fcc::fabric::SpatialSwOp> swDefMap;
-  for (auto &op : body.getOperations()) {
-    if (auto peOp = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op)) {
-      if (auto symName = peOp.getSymName())
-        peDefMap[*symName] = peOp;
-    }
-    if (auto swOp = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op)) {
-      if (auto symName = swOp.getSymName())
-        swDefMap[*symName] = swOp;
-    }
-  }
+  // Scan top-level module (definitions outside fabric.module)
+  topModule->walk([&](fcc::fabric::SpatialPEOp peOp) {
+    if (auto symName = peOp.getSymName())
+      peDefMap[*symName] = peOp;
+  });
+  topModule->walk([&](fcc::fabric::SpatialSwOp swOp) {
+    if (auto symName = swOp.getSymName())
+      swDefMap[*symName] = swOp;
+  });
 
   // Helper lambda: create FU nodes from a PE definition for a given instance.
   auto createFUNodesFromPE = [&](fcc::fabric::SpatialPEOp peOp,
@@ -136,6 +183,11 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
     pe.peName = instanceName.str();
     pe.row = gridPos.first;
     pe.col = gridPos.second;
+
+    // Set PE-level port counts from the PE function type.
+    auto peFnType = peOp.getFunctionType();
+    pe.numInputPorts = peFnType.getNumInputs();
+    pe.numOutputPorts = peFnType.getNumResults();
 
     auto &peBody = peOp.getBody().front();
     for (auto &innerOp : peBody.getOperations()) {
@@ -157,10 +209,12 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       if (auto opsAttr = fuOp->getAttr("ops")) {
         setNodeAttr(fuNode.get(), "ops", opsAttr, ctx);
       } else {
-        // Extract op names from the FU body when no explicit ops attribute.
-        auto bodyOps = extractOpsFromFUBody(fuOp, ctx);
+        // Extract op names and internal DAG edges from the FU body.
+        auto [bodyOps, dagEdges] = extractFUBodyDAG(fuOp, ctx);
         if (!bodyOps.empty())
           setNodeAttr(fuNode.get(), "ops", bodyOps, ctx);
+        if (!dagEdges.empty())
+          setNodeAttr(fuNode.get(), "internal_edges", dagEdges, ctx);
       }
 
       if (fuOp.getLatency()) {
@@ -299,6 +353,11 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       pe.row = gridPos.first;
       pe.col = gridPos.second;
 
+      // Set PE-level port counts from the PE function type.
+      auto peFnType = peOp.getFunctionType();
+      pe.numInputPorts = peFnType.getNumInputs();
+      pe.numOutputPorts = peFnType.getNumResults();
+
       // Create one FU node per function_unit inside the PE.
       auto &peBody = peOp.getBody().front();
       for (auto &innerOp : peBody.getOperations()) {
@@ -323,10 +382,12 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
         if (auto opsAttr = fuOp->getAttr("ops")) {
           setNodeAttr(fuNode.get(), "ops", opsAttr, ctx);
         } else {
-          // Extract op names from the FU body when no explicit ops attribute.
-          auto bodyOps = extractOpsFromFUBody(fuOp, ctx);
+          // Extract op names and internal DAG edges from the FU body.
+          auto [bodyOps, dagEdges] = extractFUBodyDAG(fuOp, ctx);
           if (!bodyOps.empty())
             setNodeAttr(fuNode.get(), "ops", bodyOps, ctx);
+          if (!dagEdges.empty())
+            setNodeAttr(fuNode.get(), "internal_edges", dagEdges, ctx);
         }
 
         // Store latency and interval.

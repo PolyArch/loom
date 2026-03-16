@@ -940,27 +940,26 @@ MeshResult ADGBuilder::buildMesh(unsigned rows, unsigned cols,
       for (unsigned p = 0; p < peDef.numInputs; ++p)
         connect(result.swGrid[r][c], p, result.peGrid[r][c], p);
 
-      // Inter-switch NSEW connections
-      // SW output ports [numInputs..numInputs+3] are NSEW outputs
-      // SW input ports [numOutputs..numOutputs+3] are NSEW inputs
+      // Inter-switch NSEW connections — TORUS topology
+      // Boundary wraps around to opposite edge (no dangling ports).
       unsigned peOut = peDef.numOutputs;
       unsigned peIn = peDef.numInputs;
-      // North: this SW -> north neighbor SW
-      if (r > 0)
-        connect(result.swGrid[r][c], peIn + 0,
-                result.swGrid[r-1][c], peOut + 1);
-      // South
-      if (r + 1 < rows)
-        connect(result.swGrid[r][c], peIn + 1,
-                result.swGrid[r+1][c], peOut + 0);
-      // East
-      if (c + 1 < cols)
-        connect(result.swGrid[r][c], peIn + 2,
-                result.swGrid[r][c+1], peOut + 3);
-      // West
-      if (c > 0)
-        connect(result.swGrid[r][c], peIn + 3,
-                result.swGrid[r][c-1], peOut + 2);
+      // North: wrap to row (rows-1) if at row 0
+      unsigned northR = (r > 0) ? r - 1 : rows - 1;
+      connect(result.swGrid[r][c], peIn + 0,
+              result.swGrid[northR][c], peOut + 1);
+      // South: wrap to row 0 if at row (rows-1)
+      unsigned southR = (r + 1 < rows) ? r + 1 : 0;
+      connect(result.swGrid[r][c], peIn + 1,
+              result.swGrid[southR][c], peOut + 0);
+      // East: wrap to col 0 if at col (cols-1)
+      unsigned eastC = (c + 1 < cols) ? c + 1 : 0;
+      connect(result.swGrid[r][c], peIn + 2,
+              result.swGrid[r][eastC], peOut + 3);
+      // West: wrap to col (cols-1) if at col 0
+      unsigned westC = (c > 0) ? c - 1 : cols - 1;
+      connect(result.swGrid[r][c], peIn + 3,
+              result.swGrid[r][westC], peOut + 2);
     }
   }
 

@@ -28,6 +28,9 @@ struct PEContainment {
   /// Grid position for proximity scoring.
   int row = 0;
   int col = 0;
+  /// PE-level port counts (from the spatial_pe function type).
+  unsigned numInputPorts = 0;
+  unsigned numOutputPorts = 0;
 };
 
 class ADGFlattener {

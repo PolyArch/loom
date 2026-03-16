@@ -125,28 +125,32 @@ bool DFGBuilder::build(mlir::ModuleOp module, mlir::MLIRContext *ctx) {
     }
   }
 
-  // Create ModuleOutputNode sentinel for the return op.
+  // Create one ModuleOutputNode per return operand.
+  // Each return operand is a separate DFG output (maps to its own ADG output).
   for (auto &op : body.getOperations()) {
     auto returnOp = mlir::dyn_cast<circt::handshake::ReturnOp>(op);
     if (!returnOp)
       continue;
 
-    auto outputNode = std::make_unique<Node>();
-    outputNode->kind = Node::ModuleOutputNode;
-
-    setNodeAttr(outputNode.get(), "op_name",
-                mlir::StringAttr::get(ctx, "module_output"), ctx);
-
     for (unsigned i = 0; i < returnOp.getNumOperands(); ++i) {
+      auto outputNode = std::make_unique<Node>();
+      outputNode->kind = Node::ModuleOutputNode;
+
+      setNodeAttr(outputNode.get(), "op_name",
+                  mlir::StringAttr::get(ctx, "module_output"), ctx);
+      setNodeAttr(outputNode.get(), "result_index",
+                  mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32), i),
+                  ctx);
+
       auto port = std::make_unique<Port>();
       port->direction = Port::Input;
       port->type = returnOp.getOperand(i).getType();
       IdIndex portId = dfg.addPort(std::move(port));
       dfg.ports[portId]->parentNode = static_cast<IdIndex>(dfg.nodes.size());
       outputNode->inputPorts.push_back(portId);
-    }
 
-    dfg.addNode(std::move(outputNode));
+      dfg.addNode(std::move(outputNode));
+    }
   }
 
   // Create edges from SSA value uses.
@@ -182,23 +186,25 @@ bool DFGBuilder::build(mlir::ModuleOp module, mlir::MLIRContext *ctx) {
 
     for (auto &op : body.getOperations()) {
       if (mlir::isa<circt::handshake::ReturnOp>(op)) {
-        // Handle return op: its operands -> output sentinel's input ports.
-        // Find the output sentinel node (last node).
-        IdIndex outNodeId = static_cast<IdIndex>(dfg.nodes.size()) - 1;
-        auto *outNode = dfg.getNode(outNodeId);
-        if (!outNode)
-          continue;
+        // Handle return op: operand i -> output sentinel node i.
+        // Output nodes are at the end of the node list, one per operand.
+        IdIndex numReturnOperands = op.getNumOperands();
+        IdIndex firstOutNodeId =
+            static_cast<IdIndex>(dfg.nodes.size()) - numReturnOperands;
 
         for (unsigned i = 0; i < op.getNumOperands(); ++i) {
           mlir::Value operand = op.getOperand(i);
           auto srcIt = valueToPort.find(operand);
           if (srcIt == valueToPort.end())
             continue;
-          if (i >= outNode->inputPorts.size())
-            break;
+
+          IdIndex outNodeId = firstOutNodeId + i;
+          auto *outNode = dfg.getNode(outNodeId);
+          if (!outNode || outNode->inputPorts.empty())
+            continue;
 
           IdIndex srcPortId = srcIt->second;
-          IdIndex dstPortId = outNode->inputPorts[i];
+          IdIndex dstPortId = outNode->inputPorts[0]; // Each output node has 1 input
 
           auto edge = std::make_unique<Edge>();
           edge->srcPort = srcPortId;

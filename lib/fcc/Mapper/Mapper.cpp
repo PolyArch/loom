@@ -47,11 +47,14 @@ IdIndex findDownstreamNode(const Graph &graph, IdIndex sentinelNodeId) {
 
 /// Known equivalences for ops that may not be explicitly in FU ops lists
 /// but can be mapped to a compatible FU.
+/// NOTE: arith.select and handshake.mux are NOT equivalent!
+/// - handshake.mux: partial-consume (only selected input consumed)
+/// - arith.select: full-consume (all inputs consumed)
+/// They require separate FUs.
 llvm::StringRef getCompatibleOp(llvm::StringRef dfgOpName) {
   if (dfgOpName == "dataflow.invariant")
     return "dataflow.gate";
-  if (dfgOpName == "arith.select")
-    return "handshake.mux";
+  // No other equivalences — arith.select needs its own fu_select
   return "";
 }
 

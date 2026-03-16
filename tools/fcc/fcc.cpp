@@ -6,6 +6,7 @@
 #include "fcc/Dialect/Fabric/FabricDialect.h"
 #include "fcc/Dialect/Fabric/FabricOps.h"
 #include "fcc/Dialect/Fabric/FabricTypes.h"
+#include "fcc/ADG/ADGVerifier.h"
 #include "fcc/Mapper/ADGFlattener.h"
 #include "fcc/Mapper/ConfigGen.h"
 #include "fcc/Mapper/DFGBuilder.h"
@@ -36,6 +37,18 @@
 using namespace mlir;
 using namespace fcc;
 
+static OwningOpRef<ModuleOp>
+loadMLIR(const std::string &path, MLIRContext &context) {
+  llvm::SourceMgr srcMgr;
+  auto buf = llvm::MemoryBuffer::getFile(path);
+  if (!buf) {
+    llvm::errs() << "fcc: cannot open " << path << "\n";
+    return {};
+  }
+  srcMgr.AddNewSourceBuffer(std::move(*buf), llvm::SMLoc());
+  return parseSourceFile<ModuleOp>(srcMgr, &context);
+}
+
 int main(int argc, char **argv) {
   llvm::InitLLVM y(argc, argv);
 
@@ -64,7 +77,131 @@ int main(int argc, char **argv) {
 
   std::string base = args.outputDir + "/" + args.baseName;
 
-  // Stage 1+2: C -> LLVM IR -> MLIR LLVM dialect (in one step)
+  // Helper: load ADG, build DFG, run mapper, generate viz
+  auto runMappingPipeline = [&](OwningOpRef<ModuleOp> &dfgModule) -> int {
+    llvm::outs() << "fcc: loading ADG from " << args.adgPath << "...\n";
+
+    llvm::SourceMgr adgSourceMgr;
+    auto adgBuf = llvm::MemoryBuffer::getFile(args.adgPath);
+    if (!adgBuf) {
+      llvm::errs() << "fcc: cannot open ADG file: " << args.adgPath << "\n";
+      return 1;
+    }
+    adgSourceMgr.AddNewSourceBuffer(std::move(*adgBuf), llvm::SMLoc());
+    auto adgModule = parseSourceFile<ModuleOp>(adgSourceMgr, &context);
+    if (!adgModule) {
+      llvm::errs() << "fcc: failed to parse ADG MLIR\n";
+      return 1;
+    }
+
+    // Verify fabric.module compliance (no dangling ports)
+    if (failed(fcc::verifyFabricModule(*adgModule))) {
+      llvm::errs() << "fcc: ADG fabric.module verification failed\n";
+      return 1;
+    }
+
+    llvm::outs() << "fcc: flattening ADG...\n";
+    fcc::ADGFlattener flattener;
+    if (!flattener.flatten(*adgModule, &context)) {
+      llvm::errs() << "fcc: ADG flattening failed\n";
+      return 1;
+    }
+
+    llvm::outs() << "fcc: building DFG...\n";
+    fcc::DFGBuilder dfgBuilder;
+    if (!dfgBuilder.build(*dfgModule, &context)) {
+      llvm::errs() << "fcc: DFG building failed\n";
+      return 1;
+    }
+
+    llvm::outs() << "fcc: running mapper...\n";
+    fcc::Mapper mapper;
+    fcc::Mapper::Options mapOpts;
+    mapOpts.budgetSeconds = static_cast<double>(args.mapperBudget);
+    mapOpts.seed = static_cast<int>(args.mapperSeed);
+    mapOpts.verbose = true;
+
+    auto mapResult =
+        mapper.run(dfgBuilder.getDFG(), flattener.getADG(), flattener, mapOpts);
+
+    if (!mapResult.success) {
+      llvm::errs() << "fcc: mapping failed: " << mapResult.diagnostics << "\n";
+    }
+
+    llvm::outs() << "fcc: generating config...\n";
+    fcc::ConfigGen configGen;
+    configGen.generate(mapResult.state, dfgBuilder.getDFG(),
+                       flattener.getADG(), flattener, base,
+                       static_cast<int>(args.mapperSeed));
+    llvm::outs() << "fcc: mapping output:\n";
+    llvm::outs() << "  " << base << ".map.json\n";
+    llvm::outs() << "  " << base << ".map.txt\n";
+
+    // Generate visualization with mapping data
+    std::string vizPath = base + ".viz.html";
+    std::string mapJsonPath = base + ".map.json";
+    llvm::outs() << "fcc: generating visualization...\n";
+
+    // We need the original MLIR modules for viz serialization.
+    // adgModule is already loaded above. dfgModule is the parameter.
+    if (failed(fcc::exportVizWithMapping(vizPath, *adgModule, *dfgModule,
+                                          mapJsonPath, &context))) {
+      llvm::errs() << "fcc: warning: visualization generation failed\n";
+    } else {
+      llvm::outs() << "  " << vizPath << "\n";
+    }
+    return 0;
+  };
+
+  // ===== Viz-only mode: just visualize, no mapping =====
+  if (args.vizOnly) {
+    OwningOpRef<ModuleOp> adgMod, dfgMod;
+    if (!args.adgPath.empty()) {
+      adgMod = loadMLIR(args.adgPath, context);
+      if (!adgMod) return 1;
+      if (failed(fcc::verifyFabricModule(*adgMod))) {
+        llvm::errs() << "fcc: ADG fabric.module verification failed\n";
+        return 1;
+      }
+      llvm::outs() << "fcc: loaded ADG from " << args.adgPath << "\n";
+    }
+    if (!args.dfgPath.empty()) {
+      dfgMod = loadMLIR(args.dfgPath, context);
+      if (!dfgMod) return 1;
+      llvm::outs() << "fcc: loaded DFG from " << args.dfgPath << "\n";
+    }
+    std::string vizPath = base + ".viz.html";
+    llvm::outs() << "fcc: generating viz-only...\n";
+    if (failed(fcc::exportVizOnly(
+            vizPath, adgMod ? *adgMod : ModuleOp(),
+            dfgMod ? *dfgMod : ModuleOp(), &context))) {
+      llvm::errs() << "fcc: viz generation failed\n";
+      return 1;
+    }
+    llvm::outs() << "  " << vizPath << "\n";
+    return 0;
+  }
+
+  // ===== DFG-direct mode: skip frontend, load pre-built DFG =====
+  if (!args.dfgPath.empty()) {
+    llvm::outs() << "fcc: loading DFG from " << args.dfgPath << "...\n";
+    llvm::SourceMgr dfgSourceMgr;
+    auto dfgBuf = llvm::MemoryBuffer::getFile(args.dfgPath);
+    if (!dfgBuf) {
+      llvm::errs() << "fcc: cannot open DFG file: " << args.dfgPath << "\n";
+      return 1;
+    }
+    dfgSourceMgr.AddNewSourceBuffer(std::move(*dfgBuf), llvm::SMLoc());
+    auto dfgModule = parseSourceFile<ModuleOp>(dfgSourceMgr, &context);
+    if (!dfgModule) {
+      llvm::errs() << "fcc: failed to parse DFG MLIR\n";
+      return 1;
+    }
+
+    return runMappingPipeline(dfgModule);
+  }
+
+  // ===== Full pipeline: C -> LLVM -> CF -> SCF -> DFG =====
   std::string llPath = base + ".ll";
   llvm::outs() << "fcc: compiling and importing...\n";
   auto module = compileAndImport(args, context, llPath);
@@ -75,7 +212,6 @@ int main(int argc, char **argv) {
   if (failed(writeMLIR(*module, llvmMlirPath)))
     return 1;
 
-  // Stage 3: LLVM dialect -> CF stage
   llvm::outs() << "fcc: converting LLVM to CF...\n";
   if (failed(runLLVMToCF(*module)))
     return 1;
@@ -84,7 +220,6 @@ int main(int argc, char **argv) {
   if (failed(writeMLIR(*module, cfPath)))
     return 1;
 
-  // Stage 4: CF -> SCF
   llvm::outs() << "fcc: lifting CF to SCF...\n";
   if (failed(runCFToSCF(*module)))
     return 1;
@@ -93,7 +228,6 @@ int main(int argc, char **argv) {
   if (failed(writeMLIR(*module, scfPath)))
     return 1;
 
-  // Stage 5: SCF -> DFG (handshake + dataflow)
   llvm::outs() << "fcc: converting SCF to DFG...\n";
   if (failed(runSCFToDFG(*module)))
     return 1;
@@ -102,7 +236,6 @@ int main(int argc, char **argv) {
   if (failed(writeMLIR(*module, dfgPath)))
     return 1;
 
-  // Stage 6: Host code generation
   std::string hostPath = base + "_host.c";
   std::string origSource =
       args.sources.empty() ? "" : args.sources[0];
@@ -118,83 +251,14 @@ int main(int argc, char **argv) {
   llvm::outs() << "  " << dfgPath << "\n";
   llvm::outs() << "  " << hostPath << "\n";
 
-  // If ADG is provided, continue to mapping
   if (!args.adgPath.empty()) {
-    llvm::outs() << "fcc: loading ADG from " << args.adgPath << "...\n";
-
-    // Load and parse the ADG MLIR file.
-    llvm::SourceMgr adgSourceMgr;
-    auto adgBuf = llvm::MemoryBuffer::getFile(args.adgPath);
-    if (!adgBuf) {
-      llvm::errs() << "fcc: cannot open ADG file: " << args.adgPath << "\n";
-      return 1;
-    }
-    adgSourceMgr.AddNewSourceBuffer(std::move(*adgBuf), llvm::SMLoc());
-    auto adgModule = parseSourceFile<ModuleOp>(adgSourceMgr, &context);
-    if (!adgModule) {
-      llvm::errs() << "fcc: failed to parse ADG MLIR\n";
-      return 1;
-    }
-
-    // Flatten the ADG.
-    llvm::outs() << "fcc: flattening ADG...\n";
-    fcc::ADGFlattener flattener;
-    if (!flattener.flatten(*adgModule, &context)) {
-      llvm::errs() << "fcc: ADG flattening failed\n";
-      return 1;
-    }
-
-    // Build the DFG from the compiled handshake.func.
-    llvm::outs() << "fcc: building DFG...\n";
-    fcc::DFGBuilder dfgBuilder;
-    if (!dfgBuilder.build(*module, &context)) {
-      llvm::errs() << "fcc: DFG building failed\n";
-      return 1;
-    }
-
-    // Run the mapper.
-    llvm::outs() << "fcc: running mapper...\n";
-    fcc::Mapper mapper;
-    fcc::Mapper::Options mapOpts;
-    mapOpts.budgetSeconds = static_cast<double>(args.mapperBudget);
-    mapOpts.seed = static_cast<int>(args.mapperSeed);
-    mapOpts.verbose = true;
-
-    auto mapResult =
-        mapper.run(dfgBuilder.getDFG(), flattener.getADG(), flattener, mapOpts);
-
-    if (!mapResult.success) {
-      llvm::errs() << "fcc: mapping failed: " << mapResult.diagnostics << "\n";
-      // Still generate partial output.
-    }
-
-    // Generate config files.
-    llvm::outs() << "fcc: generating config...\n";
-    fcc::ConfigGen configGen;
-    configGen.generate(mapResult.state, dfgBuilder.getDFG(),
-                       flattener.getADG(), flattener, base,
-                       static_cast<int>(args.mapperSeed));
-
-    llvm::outs() << "fcc: mapping output:\n";
-    llvm::outs() << "  " << base << ".map.json\n";
-    llvm::outs() << "  " << base << ".map.txt\n";
-
-    // Generate visualization HTML.
-    std::string vizPath = base + ".viz.html";
-    llvm::outs() << "fcc: generating visualization...\n";
-    if (failed(fcc::exportVisualization(vizPath, flattener.getADG(),
-                                        dfgBuilder.getDFG(), mapResult.state,
-                                        flattener))) {
-      llvm::errs() << "fcc: warning: visualization generation failed\n";
-    } else {
-      llvm::outs() << "  " << vizPath << "\n";
-    }
+    int rc = runMappingPipeline(module);
+    if (rc != 0)
+      return rc;
   }
 
-  // If simulation requested
   if (args.simulate) {
     llvm::outs() << "fcc: simulation (not yet implemented)...\n";
-    // TODO: Batch 5 - standalone simulator
   }
 
   return 0;

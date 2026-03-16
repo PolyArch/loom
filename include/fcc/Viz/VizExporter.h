@@ -1,35 +1,24 @@
 #ifndef FCC_VIZ_VIZEXPORTER_H
 #define FCC_VIZ_VIZEXPORTER_H
 
-#include "fcc/Mapper/ADGFlattener.h"
-#include "fcc/Mapper/Graph.h"
-#include "fcc/Mapper/MappingState.h"
-
-#include "mlir/Support/LogicalResult.h"
-
+#include "mlir/IR/BuiltinOps.h"
 #include <string>
-#include <vector>
 
 namespace fcc {
 
-/// A single trace event for animation playback.
-/// Placeholder for future simulator integration.
-struct TraceEvent {
-  uint64_t cycle = 0;
-  IdIndex hwNodeId = INVALID_ID;
-  enum Kind { Fire, StallIn, StallOut } kind = Fire;
-};
+/// Export a visualization-only HTML (no mapping, just ADG + DFG side-by-side).
+mlir::LogicalResult exportVizOnly(const std::string &outputPath,
+                                  mlir::ModuleOp adgModule,
+                                  mlir::ModuleOp dfgModule,
+                                  mlir::MLIRContext *ctx);
 
-/// Export an interactive HTML visualization of the ADG, DFG, mapping,
-/// and (optionally) trace events.
-///
-/// The output file is fully self-contained and can be opened in any
-/// modern browser.
-mlir::LogicalResult exportVisualization(const std::string &outputPath,
-                                        const Graph &adg, const Graph &dfg,
-                                        const MappingState &mapping,
-                                        const ADGFlattener &flattener,
-                                        const std::vector<TraceEvent> &trace = {});
+/// Export visualization HTML with mapping data (from .map.json file).
+/// The mapping JSON is embedded in the HTML for cross-highlighting.
+mlir::LogicalResult exportVizWithMapping(const std::string &outputPath,
+                                         mlir::ModuleOp adgModule,
+                                         mlir::ModuleOp dfgModule,
+                                         const std::string &mapJsonPath,
+                                         mlir::MLIRContext *ctx);
 
 } // namespace fcc
 

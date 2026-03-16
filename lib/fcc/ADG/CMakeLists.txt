@@ -1,5 +1,6 @@
 add_library(FccADG
   ADGBuilder.cpp
+  ADGVerifier.cpp
 )
 
 target_include_directories(FccADG PUBLIC

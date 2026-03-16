@@ -1,348 +1,42 @@
-/* fcc CGRA Visualization — Blueprint Schematic Theme */
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=DM+Sans:wght@400;500;600&display=swap');
+/* fcc CGRA Visualization */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap');
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 html, body {
   width: 100%; height: 100%;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'JetBrains Mono', monospace;
   overflow: hidden;
   background: #0c1220;
   color: #c8d6e5;
 }
 
-/* ─── Toolbar ─── */
 #toolbar {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 0 20px;
-  background: linear-gradient(180deg, #111b2e 0%, #0c1220 100%);
-  border-bottom: 1px solid #1e3a5f;
-  height: 42px;
-  z-index: 100;
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 20px; background: #111b2e;
+  border-bottom: 1px solid #1e3a5f; height: 42px;
 }
-
-#title {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
-  font-weight: 500;
-  color: #4ecdc4;
-  letter-spacing: 0.5px;
-  white-space: nowrap;
+#title { font-size: 13px; font-weight: 500; color: #4ecdc4; }
+#btn-fit {
+  padding: 4px 12px; border: 1px solid #1e3a5f; border-radius: 3px;
+  background: transparent; color: #8a9bb5; font-size: 11px; cursor: pointer;
 }
+#btn-fit:hover { background: #1e3a5f; color: #c8d6e5; }
+#status-bar { font-size: 10px; color: #4a6380; margin-left: auto; }
 
-#mode-buttons {
-  display: flex;
-  gap: 3px;
-}
-
-#mode-buttons button, #btn-fit, #btn-restore {
-  padding: 4px 12px;
-  border: 1px solid #1e3a5f;
-  border-radius: 3px;
-  background: transparent;
-  color: #8a9bb5;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-#mode-buttons button:hover, #btn-fit:hover, #btn-restore:hover {
-  background: #1e3a5f;
-  color: #c8d6e5;
-}
-
-#mode-buttons button.active {
-  background: #4ecdc4;
-  border-color: #4ecdc4;
-  color: #0c1220;
-  font-weight: 600;
-}
-
-#status-bar {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: #4a6380;
-  margin-left: auto;
-  white-space: nowrap;
-}
-
-/* ─── Panels ─── */
-#graph-area {
-  display: flex;
-  width: 100%;
-  height: calc(100% - 42px);
-  position: relative;
-}
-
-body:has(#trace-toolbar) #graph-area {
-  height: calc(100% - 78px);
-}
-
-#panel-adg, #panel-dfg {
-  position: relative;
-  overflow: hidden;
-  background: #0f1923;
-}
-
-#panel-adg { flex: 0 0 58%; }
-#panel-dfg { flex: 0 0 42%; }
-
+#graph-area { display: flex; width: 100%; height: calc(100% - 42px); }
+#panel-adg, #panel-dfg { position: relative; overflow: hidden; background: #0f1923; }
+#panel-adg { flex: 0 0 55%; }
+#panel-dfg { flex: 0 0 45%; }
 .panel-header {
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  padding: 5px 14px;
-  background: rgba(12, 18, 32, 0.92);
-  backdrop-filter: blur(8px);
-  color: #8a9bb5;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
-  z-index: 10;
-  cursor: pointer;
-  user-select: none;
+  position: absolute; top: 0; left: 0; right: 0;
+  padding: 5px 14px; background: rgba(12,18,32,0.92);
+  color: #8a9bb5; font-size: 11px; font-weight: 500;
+  text-transform: uppercase; z-index: 10;
   border-bottom: 1px solid #1e3a5f;
 }
-
 #panel-divider {
-  width: 4px;
-  cursor: col-resize;
-  background: #1e3a5f;
-  flex-shrink: 0;
-  transition: background 0.15s;
+  width: 4px; cursor: col-resize; background: #1e3a5f; flex-shrink: 0;
 }
 #panel-divider:hover { background: #4ecdc4; }
-
-#svg-adg, #svg-dfg {
-  width: 100%;
-  height: 100%;
-}
-
-/* ─── Detail panel ─── */
-#detail-panel {
-  display: none;
-  position: absolute;
-  bottom: 0; left: 0; right: 0;
-  max-height: 38%;
-  background: rgba(12, 18, 32, 0.96);
-  backdrop-filter: blur(12px);
-  border-top: 2px solid #4ecdc4;
-  padding: 14px 20px;
-  overflow-y: auto;
-  z-index: 50;
-  font-size: 13px;
-  line-height: 1.7;
-}
-#detail-panel.visible { display: block; }
-
-#detail-content {
-  white-space: pre-wrap;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
-  color: #c8d6e5;
-}
-
-#detail-close {
-  position: absolute;
-  top: 10px; right: 14px;
-  background: none;
-  border: 1px solid #4ecdc4;
-  color: #4ecdc4;
-  padding: 2px 10px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  transition: all 0.15s;
-}
-#detail-close:hover { background: #4ecdc4; color: #0c1220; }
-
-/* ─── ADG Schematic Nodes ─── */
-.adg-node { cursor: pointer; transition: opacity 0.2s; }
-.adg-node text {
-  font-family: 'JetBrains Mono', monospace;
-  pointer-events: none;
-}
-.adg-edge { fill: none; transition: opacity 0.2s; }
-
-/* PE Container — dark card with subtle gradient */
-.pe-container {
-  rx: 6; ry: 6;
-  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.4));
-}
-
-/* FU Box inside PE — translucent glass effect */
-.fu-box {
-  pointer-events: none;
-  transition: fill 0.15s, stroke 0.15s;
-  rx: 3; ry: 3;
-}
-.fu-box.fu-mapped {
-  filter: drop-shadow(0 0 4px rgba(78, 205, 196, 0.35));
-}
-.fu-glow {
-  pointer-events: none;
-}
-.adg-node:hover .fu-box {
-  fill: rgba(78, 205, 196, 0.15) !important;
-  stroke: rgba(78, 205, 196, 0.4) !important;
-}
-
-/* Multi-op FU internal DAG arrow */
-.fu-dag-arrow {
-  stroke: rgba(255,255,255,0.3);
-  stroke-width: 1;
-  marker-end: url(#fu-arrow);
-}
-
-/* PE internal routing lines */
-.pe-internal-route {
-  pointer-events: none;
-  opacity: 0.6;
-}
-
-/* SW Node — compact diamond/square */
-.sw-node {
-  rx: 2; ry: 2;
-}
-
-/* ─── Highlights ─── */
-.node-highlight {
-  stroke: #ff6b35 !important;
-  stroke-width: 3px !important;
-  filter: drop-shadow(0 0 8px rgba(255, 107, 53, 0.5)) !important;
-}
-
-@keyframes cross-blink {
-  0%, 100% { stroke: #ff6b35; stroke-width: 4px; opacity: 1; }
-  50% { stroke: #ffd166; stroke-width: 2px; opacity: 0.6; }
-}
-.cross-highlight {
-  animation: cross-blink 0.7s ease-in-out infinite !important;
-  stroke-dasharray: none !important;
-}
-
-.node-dimmed { opacity: 0.15; }
-.edge-dimmed { opacity: 0.08; }
-
-/* Grid background lines */
-.grid-line {
-  stroke: #1a2940;
-  stroke-width: 0.5;
-  opacity: 0.5;
-}
-
-/* DFG panel */
-#panel-dfg .node { cursor: pointer; }
-
-/* Panel maximize */
-.panel-maximized { flex: 0 0 100% !important; }
-.panel-hidden { display: none !important; }
-.divider-hidden { display: none !important; }
-
-/* ─── Overlay mode ─── */
-.unmapped-node {
-  fill: #1a2940 !important;
-  opacity: 0.2;
-  stroke: #2a3f5f !important;
-  stroke-dasharray: 3,3;
-}
-
-.route-overlay {
-  fill: none;
-  opacity: 0.65;
-  pointer-events: visibleStroke;
-  cursor: pointer;
-}
-
-.base-edge-overlay { opacity: 0.12 !important; }
-
-@keyframes route-blink {
-  0%, 100% { stroke: #ff6b35; stroke-width: 4px; opacity: 1; }
-  50% { stroke: #ffd166; stroke-width: 2px; opacity: 0.35; }
-}
-.route-trace {
-  animation: route-blink 0.7s ease-in-out infinite !important;
-}
-
-/* ─── Trace playback ─── */
-#trace-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 20px;
-  background: #0a0f1a;
-  border-bottom: 1px solid #1e3a5f;
-  height: 36px;
-  z-index: 100;
-}
-
-#trace-toolbar button {
-  padding: 3px 12px;
-  border: 1px solid #1e3a5f;
-  border-radius: 3px;
-  background: transparent;
-  color: #8a9bb5;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  cursor: pointer;
-}
-#trace-toolbar button:hover { background: #1e3a5f; }
-
-#trace-slider {
-  flex: 1;
-  min-width: 100px;
-  accent-color: #4ecdc4;
-}
-
-#trace-cycle {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: #4a6380;
-  white-space: nowrap;
-  min-width: 120px;
-}
-
-#trace-speed {
-  background: transparent;
-  color: #8a9bb5;
-  border: 1px solid #1e3a5f;
-  border-radius: 3px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  padding: 2px 6px;
-}
-
-/* Trace highlights */
-.trace-fire {
-  stroke: #06d6a0 !important;
-  stroke-width: 3px !important;
-  filter: drop-shadow(0 0 6px #06d6a0);
-}
-.trace-stall-in {
-  stroke: #ef476f !important;
-  stroke-width: 3px !important;
-  filter: drop-shadow(0 0 6px #ef476f);
-}
-.trace-stall-out {
-  stroke: #ffd166 !important;
-  stroke-width: 3px !important;
-  filter: drop-shadow(0 0 6px #ffd166);
-}
-
-/* ─── Mapping label on PE ─── */
-.mapping-label {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 8px;
-  font-weight: 600;
-  fill: #ffd166;
-  pointer-events: none;
-}
-
-/* ─── Port dots ─── */
-.port-dot-in { fill: #4ecdc4; }
-.port-dot-out { fill: #ff6b35; }
+#svg-adg, #svg-dfg { width: 100%; height: 100%; }
