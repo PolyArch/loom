@@ -422,6 +422,7 @@ private:
 
   // SCF condition maps (for memory control building)
   DenseMap<Operation *, Value> forConds;
+  DenseMap<Operation *, Value> whileConds;
   DenseMap<Operation *, Value> ifConds;
 
   // Return values to finalize
@@ -752,6 +753,7 @@ LogicalResult DFGConverter::convertWhile(scf::WhileOp op,
     return op.emitError("scf.while missing condition");
 
   // Patch carries and invariants to use the real condition
+  whileConds[op] = condValue;
   for (auto &carry : carries)
     carry->setOperand(0, condValue);
   beforeCtrlInv->setOperand(0, condValue);
@@ -1098,9 +1100,11 @@ public:
   MemoryCtrlBuilder(OpBuilder &builder,
                     ArrayRef<MemAccess *> accesses,
                     DenseMap<Operation *, Value> &forConds,
+                    DenseMap<Operation *, Value> &whileConds,
                     DenseMap<Operation *, Value> &ifConds,
                     Value entryControl)
-      : builder(builder), forConds(forConds), ifConds(ifConds),
+      : builder(builder), forConds(forConds), whileConds(whileConds),
+        ifConds(ifConds),
         entryControl(entryControl) {
     sortedAccesses.append(accesses.begin(), accesses.end());
     llvm::sort(sortedAccesses,
@@ -1164,6 +1168,8 @@ private:
                      Value ctrl) {
     if (auto forOp = dyn_cast<scf::ForOp>(child.op))
       return processFor(forOp, parentPath, ctrl);
+    if (auto whileOp = dyn_cast<scf::WhileOp>(child.op))
+      return processWhile(whileOp, parentPath, ctrl);
     if (auto ifOp = dyn_cast<scf::IfOp>(child.op))
       return processIf(ifOp, parentPath, ctrl);
     child.op->emitError("unsupported SCF op in memory control");
@@ -1236,6 +1242,35 @@ private:
     return mux.getResult();
   }
 
+  Value processWhile(scf::WhileOp op, const ScfPath &parentPath, Value ctrl) {
+    auto condIt = whileConds.find(op.getOperation());
+    if (condIt == whileConds.end()) {
+      op.emitError("missing condition for scf.while in memory control");
+      failed = true;
+      return ctrl;
+    }
+    Value wc = condIt->second;
+    Location loc = op.getLoc();
+
+    auto carry = CarryOp::create(builder, loc, ctrl.getType(), wc, ctrl, ctrl);
+    Value loopCtrl = carry.getO();
+
+    ScfPath beforePath = parentPath;
+    beforePath.push_back(PathEntry{op, 0});
+    Value beforeDone = processLevel(beforePath, loopCtrl);
+
+    auto doneBranch = circt::handshake::ConditionalBranchOp::create(
+        builder, loc, wc, beforeDone);
+    Value afterCtrl = doneBranch.getTrueResult();
+    Value exitCtrl = doneBranch.getFalseResult();
+
+    ScfPath afterPath = parentPath;
+    afterPath.push_back(PathEntry{op, 1});
+    Value afterDone = processLevel(afterPath, afterCtrl);
+    carry->setOperand(2, afterDone);
+    return exitCtrl;
+  }
+
   Value makeConstant(Location loc, Attribute value, Type type, Value ctrl) {
     auto typedValue = dyn_cast<TypedAttr>(value);
     if (!typedValue)
@@ -1247,6 +1282,7 @@ private:
 
   OpBuilder &builder;
   DenseMap<Operation *, Value> &forConds;
+  DenseMap<Operation *, Value> &whileConds;
   DenseMap<Operation *, Value> &ifConds;
   SmallVector<MemAccess *, 16> sortedAccesses;
   Value entryControl;
@@ -1278,8 +1314,8 @@ LogicalResult DFGConverter::buildMemoryControl() {
   // For each memory group, build a recursive ctrl-done chain
   SmallVector<Value, 4> doneTokens;
   for (auto &[memref, accesses] : groups) {
-    MemoryCtrlBuilder ctrlBuilder(builder, accesses, forConds, ifConds,
-                                  entryToken);
+    MemoryCtrlBuilder ctrlBuilder(builder, accesses, forConds, whileConds,
+                                  ifConds, entryToken);
     if (failed(ctrlBuilder.run()))
       return failure();
     if (Value done = ctrlBuilder.getDoneToken())
