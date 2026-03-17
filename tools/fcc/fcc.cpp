@@ -13,6 +13,7 @@
 #include "fcc/Mapper/Mapper.h"
 #include "fcc/Mapper/TypeCompat.h"
 #include "fcc/Simulator/SimArtifactWriter.h"
+#include "fcc/Simulator/SimInputSynthesis.h"
 #include "fcc/Simulator/SimSession.h"
 #include "fcc/Viz/VizExporter.h"
 
@@ -229,8 +230,11 @@ int main(int argc, char **argv) {
       llvm::outs() << "fcc: running standalone simulation...\n";
       fcc::sim::SimSession session;
       fcc::sim::SimArtifactWriter artifactWriter;
+      auto synthSetup = fcc::sim::synthesizeSimulationSetup(
+          dfgBuilder.getDFG(), flattener.getADG(), mapResult.state);
       std::string tracePath = base + ".sim.trace";
       std::string statPath = base + ".sim.stat";
+      std::string setupPath = base + ".sim.setup.json";
 
       if (std::string err = session.connect(); !err.empty()) {
         llvm::errs() << "fcc: simulation setup failed: " << err << "\n";
@@ -248,6 +252,38 @@ int main(int argc, char **argv) {
         return 1;
       }
 
+      if (!fcc::sim::writeSetupManifest(synthSetup, setupPath)) {
+        llvm::errs() << "fcc: failed to write simulation setup manifest\n";
+        return 1;
+      }
+
+      for (const auto &input : synthSetup.inputs) {
+        if (std::string err =
+                session.setInput(input.portIdx, input.data, input.tags);
+            !err.empty()) {
+          llvm::errs() << "fcc: failed to bind synthetic input port "
+                       << input.portIdx << ": " << err << "\n";
+          return 1;
+        }
+      }
+
+      std::vector<std::vector<uint8_t>> regionStorage;
+      regionStorage.reserve(synthSetup.memoryRegions.size());
+      for (const auto &region : synthSetup.memoryRegions) {
+        regionStorage.push_back(region.data);
+      }
+      for (size_t idx = 0; idx < synthSetup.memoryRegions.size(); ++idx) {
+        const auto &region = synthSetup.memoryRegions[idx];
+        auto &bytes = regionStorage[idx];
+        if (std::string err = session.setExtMemoryBacking(
+                region.regionId, bytes.data(), bytes.size());
+            !err.empty()) {
+          llvm::errs() << "fcc: failed to bind synthetic memory region "
+                       << region.regionId << ": " << err << "\n";
+          return 1;
+        }
+      }
+
       auto [simResult, invokeErr] = session.invoke();
       if (!artifactWriter.writeTrace(simResult, tracePath) ||
           !artifactWriter.writeStat(simResult, statPath)) {
@@ -257,6 +293,7 @@ int main(int argc, char **argv) {
 
       llvm::outs() << "  " << tracePath << "\n";
       llvm::outs() << "  " << statPath << "\n";
+      llvm::outs() << "  " << setupPath << "\n";
 
       if (!invokeErr.empty()) {
         llvm::errs() << "fcc: simulation invocation failed: " << invokeErr
