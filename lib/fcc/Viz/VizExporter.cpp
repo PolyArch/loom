@@ -424,8 +424,12 @@ static void writeDFGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule) {
   llvm::raw_string_ostream ds(dot);
   ds << "digraph DFG {\\n";
   ds << "  rankdir=TB;\\n";
-  ds << "  node [style=filled, fontsize=11];\\n";
-  ds << "  edge [color=\\\"#555555\\\"];\\n\\n";
+  ds << "  bgcolor=\\\"transparent\\\";\\n";
+  ds << "  graph [bgcolor=\\\"transparent\\\", pad=0.18, "
+        "nodesep=0.34, ranksep=0.46];\\n";
+  ds << "  node [style=filled, fontsize=11, fontname=\\\"monospace\\\", "
+        "fontcolor=\\\"#c8d6e5\\\", color=\\\"#5dade2\\\", penwidth=1.4];\\n";
+  ds << "  edge [color=\\\"#7f95b2\\\", penwidth=1.45, arrowsize=0.72];\\n\\n";
 
   auto &body = funcOp.getBody().front();
   llvm::DenseMap<mlir::Value, std::pair<int, unsigned>> valToPort;
@@ -439,7 +443,8 @@ static void writeDFGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule) {
     std::string nid = "n" + std::to_string(nodeIdx);
     std::string label = "arg" + std::to_string(arg.getArgNumber());
     ds << "  \\\"" << nid << "\\\" [label=\\\"" << label
-       << "\\\", shape=invtriangle, fillcolor=\\\"#90caf9\\\"];\\n";
+       << "\\\", shape=invtriangle, fillcolor=\\\"#214c73\\\", "
+          "color=\\\"#7ec8ff\\\", fontcolor=\\\"#d9ecff\\\"];\\n";
     srcRank += "\\\"" + nid + "\\\"; ";
     valToPort[arg] = {nodeIdx, 0};
     nodeIdx++;
@@ -451,7 +456,8 @@ static void writeDFGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule) {
       // return/end node
       std::string nid = "n" + std::to_string(nodeIdx);
       ds << "  \\\"" << nid << "\\\" [label=\\\"return\\\", shape=triangle, "
-            "fillcolor=\\\"#ef9a9a\\\"];\\n";
+            "fillcolor=\\\"#6a3023\\\", color=\\\"#ff9b7a\\\", "
+            "fontcolor=\\\"#ffe1d8\\\"];\\n";
       sinkRank += "\\\"" + nid + "\\\"; ";
       // edges from operands
       for (auto operand : op.getOperands()) {
@@ -475,13 +481,25 @@ static void writeDFGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule) {
       dfgDisplayName = opName.substr(0, dfgDotPos) + "\\n" + opName.substr(dfgDotPos + 1);
 
     // Color by dialect
-    std::string color = "#e0e0e0";
-    if (opName.find("arith.") == 0) color = "#bbdefb";
-    else if (opName.find("handshake.") == 0) color = "#fff9c4";
-    else if (opName.find("dataflow.") == 0) color = "#c8e6c9";
+    std::string fillColor = "#293548";
+    std::string strokeColor = "#8aa4c2";
+    std::string fontColor = "#c8d6e5";
+    if (opName.find("arith.") == 0) {
+      fillColor = "#1a3050";
+      strokeColor = "#5dade2";
+    } else if (opName.find("handshake.") == 0) {
+      fillColor = "#3a3520";
+      strokeColor = "#ffd166";
+      fontColor = "#ffe29b";
+    } else if (opName.find("dataflow.") == 0) {
+      fillColor = "#203c2f";
+      strokeColor = "#58d68d";
+    }
 
     ds << "  \\\"" << nid << "\\\" [label=\\\"" << dfgDisplayName
-       << "\\\", shape=ellipse, fillcolor=\\\"" << color << "\\\"];\\n";
+       << "\\\", shape=ellipse, fillcolor=\\\"" << fillColor
+       << "\\\", color=\\\"" << strokeColor
+       << "\\\", fontcolor=\\\"" << fontColor << "\\\"];\\n";
 
     // Edges from operands
     for (auto operand : op.getOperands()) {
@@ -504,6 +522,62 @@ static void writeDFGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule) {
   if (!sinkRank.empty())
     ds << "  { rank=sink; " << sinkRank << "}\\n";
   ds << "}\\n";
+
+  // Structured node data for mapping interaction
+  os << "  \"nodes\": [\n";
+  {
+    auto &body2 = funcOp.getBody().front();
+    int ni = 0;
+    bool firstN = true;
+    for (auto arg : body2.getArguments()) {
+      if (!firstN) os << ",\n";
+      firstN = false;
+      os << "    {\"id\": " << ni << ", \"label\": \"arg"
+         << arg.getArgNumber() << "\", \"kind\": \"input\"}";
+      ni++;
+    }
+    for (auto &op2 : body2.getOperations()) {
+      if (!firstN) os << ",\n";
+      firstN = false;
+      if (op2.hasTrait<mlir::OpTrait::IsTerminator>()) {
+        os << "    {\"id\": " << ni << ", \"label\": \"return\", \"kind\": \"output\"}";
+      } else {
+        os << "    {\"id\": " << ni << ", \"label\": \""
+           << jsonEsc(op2.getName().getStringRef().str())
+           << "\", \"kind\": \"op\"}";
+      }
+      ni++;
+    }
+    os << "\n  ],\n";
+  }
+
+  // Structured edge data
+  os << "  \"edges\": [\n";
+  {
+    auto &body3 = funcOp.getBody().front();
+    llvm::DenseMap<mlir::Value, int> valIdx;
+    int ni = 0;
+    for (auto arg : body3.getArguments())
+      valIdx[arg] = ni++;
+    int ei = 0;
+    bool firstE = true;
+    for (auto &op3 : body3.getOperations()) {
+      for (auto operand : op3.getOperands()) {
+        auto it = valIdx.find(operand);
+        if (it != valIdx.end()) {
+          if (!firstE) os << ",\n";
+          firstE = false;
+          os << "    {\"id\": " << ei << ", \"from\": " << it->second
+             << ", \"to\": " << ni << "}";
+          ei++;
+        }
+      }
+      for (unsigned r = 0; r < op3.getNumResults(); ++r)
+        valIdx[op3.getResult(r)] = ni;
+      ni++;
+    }
+    os << "\n  ],\n";
+  }
 
   os << "  \"dot\": \"" << dot << "\"\n}";
 }

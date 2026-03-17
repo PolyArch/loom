@@ -1,5 +1,7 @@
 #include "fcc/Mapper/Mapper.h"
 
+#include "fcc/Dialect/Fabric/FabricTypes.h"
+
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 
@@ -10,6 +12,62 @@
 #include <random>
 
 namespace fcc {
+
+namespace {
+
+bool pathUsesPort(IdIndex portId, const MappingState &state) {
+  for (const auto &path : state.swEdgeToHwPaths) {
+    for (IdIndex usedPort : path) {
+      if (usedPort == portId)
+        return true;
+    }
+  }
+  return false;
+}
+
+bool isSpatialSwitchOutputPort(IdIndex portId, const Graph &adg) {
+  const Port *port = adg.getPort(portId);
+  if (!port || port->direction != Port::Output ||
+      port->parentNode == INVALID_ID)
+    return false;
+
+  const Node *node = adg.getNode(port->parentNode);
+  if (!node)
+    return false;
+
+  if (getNodeAttrStr(node, "resource_class") != "routing")
+    return false;
+
+  // Treat multi-port routing nodes as spatial switch-style crossbars.
+  // Single-in/single-out routing nodes such as FIFOs do not use mux-style
+  // route tables and therefore do not need this exclusivity rule.
+  if (node->inputPorts.size() <= 1 || node->outputPorts.size() <= 1)
+    return false;
+
+  // Temporal/tagged routing can share an output port by tag. The current
+  // spatial_sw path must remain exclusive per output port.
+  return !mlir::isa<fcc::fabric::TaggedType>(port->type);
+}
+
+bool isInternalHopLegal(IdIndex inPortId, IdIndex outPortId,
+                        const MappingState &state, const Graph &adg) {
+  const Port *inPort = adg.getPort(inPortId);
+  const Port *outPort = adg.getPort(outPortId);
+  if (!inPort || !outPort)
+    return false;
+  if (inPort->parentNode == INVALID_ID || outPort->parentNode == INVALID_ID)
+    return false;
+  if (inPort->parentNode != outPort->parentNode)
+    return false;
+
+  if (isSpatialSwitchOutputPort(outPortId, adg) &&
+      pathUsesPort(outPortId, state))
+    return false;
+
+  return true;
+}
+
+} // namespace
 
 bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
                           const MappingState &state, const Graph &adg) {
@@ -99,6 +157,8 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort,
       if (internalIt != connectivity.inToOut.end()) {
         for (IdIndex outPortId : internalIt->second) {
           if (visited.count(outPortId))
+            continue;
+          if (!isInternalHopLegal(nextInputPort, outPortId, state, adg))
             continue;
           visited.insert(outPortId);
 

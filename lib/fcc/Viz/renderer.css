@@ -40,3 +40,79 @@ html, body {
 }
 #panel-divider:hover { background: #4ecdc4; }
 #svg-adg, #svg-dfg { width: 100%; height: 100%; }
+
+/* Mode toggle buttons */
+.mode-btn {
+  padding: 4px 12px; border: 1px solid #1e3a5f; border-radius: 3px;
+  background: transparent; color: #8a9bb5; font-size: 11px; cursor: pointer;
+  transition: all 0.15s ease;
+}
+.mode-btn:hover:not(.disabled) { background: #1e3a5f; color: #c8d6e5; }
+.mode-btn.active { background: #1e3a5f; color: #4ecdc4; border-color: #4ecdc4; }
+.mode-btn.disabled {
+  opacity: 0.35; cursor: not-allowed; pointer-events: none;
+}
+.toolbar-sep { color: #1e3a5f; font-size: 11px; user-select: none; padding: 0 2px; }
+
+/* Mapping toggle button */
+.mapping-toggle {
+  padding: 4px 12px; border: 1px solid #1e3a5f; border-radius: 3px;
+  background: transparent; color: #8a9bb5; font-size: 11px; cursor: pointer;
+  transition: all 0.15s ease;
+}
+.mapping-toggle:hover { background: #1e3a5f; color: #c8d6e5; }
+.mapping-toggle.active {
+  background: #1a3a2a; color: #00b894; border-color: #00b894;
+}
+
+/* Cross-highlight animation */
+@keyframes cross-pulse {
+  0%, 100% { stroke-opacity: 1; }
+  50% { stroke-opacity: 0.4; }
+}
+.cross-highlight-rect {
+  stroke: #4ecdc4; stroke-width: 3; fill: none; pointer-events: none;
+  animation: cross-pulse 1.2s ease-in-out infinite;
+  filter: drop-shadow(0 0 6px rgba(78,205,196,0.6));
+}
+.cross-highlight-dfg {
+  stroke: #4ecdc4 !important; stroke-width: 3 !important;
+  animation: cross-pulse 1.2s ease-in-out infinite;
+  filter: drop-shadow(0 0 6px rgba(78,205,196,0.6));
+}
+.dim-layer { opacity: 0.2; transition: opacity 0.3s ease; }
+.highlight-layer { opacity: 1; transition: opacity 0.3s ease; }
+
+/* Overlay mode badges */
+.overlay-badge {
+  rx: 4; pointer-events: none;
+  filter: drop-shadow(0 0 4px rgba(78,205,196,0.4));
+}
+.overlay-badge-text {
+  pointer-events: none;
+  font-weight: 600;
+}
+.overlay-unmapped { opacity: 0.25; }
+.overlay-used-edge,
+.overlay-used-internal,
+.overlay-used-arrow {
+  pointer-events: none;
+}
+.overlay-used-edge,
+.overlay-used-internal {
+  filter: drop-shadow(0 0 4px rgba(200,214,229,0.28));
+}
+.overlay-used-arrow {
+  filter: drop-shadow(0 0 3px rgba(200,214,229,0.28));
+}
+
+/* SW crossbar routing lines */
+.crossbar-line { pointer-events: none; }
+
+/* Collapsed FU cover */
+.fu-collapsed-cover { pointer-events: none; }
+
+/* Panel states for overlay mode */
+.panel-hidden { display: none !important; }
+.panel-full { flex: 0 0 100% !important; }
+.divider-hidden { display: none !important; }
