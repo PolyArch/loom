@@ -15,9 +15,11 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/RegionGraphTraits.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -229,11 +231,12 @@ LogicalResult FunctionConverter::createBlocks() {
 }
 
 LogicalResult FunctionConverter::convertOps() {
-  for (Block &srcBlock : llvmFunc.getBody()) {
-    Block *dstBlock = blockMap[&srcBlock];
+  Block &entryBlock = llvmFunc.getBody().front();
+  for (Block *srcBlock : llvm::ReversePostOrderTraversal<Block *>(&entryBlock)) {
+    Block *dstBlock = blockMap[srcBlock];
     builder.setInsertionPointToEnd(dstBlock);
 
-    for (Operation &op : srcBlock) {
+    for (Operation &op : *srcBlock) {
       if (failed(convertOp(&op)))
         return failure();
     }
@@ -595,6 +598,8 @@ LogicalResult FunctionConverter::convertBinaryIntOp(Operation *op) {
   Location loc = op->getLoc();
   Value lhs = lookup(op->getOperand(0));
   Value rhs = lookup(op->getOperand(1));
+  if (!lhs || !rhs)
+    return op->emitError("integer binary op has unmapped operand");
   Value result;
 
   if (isa<LLVM::AddOp>(op))
@@ -635,6 +640,8 @@ LogicalResult FunctionConverter::convertBinaryFloatOp(Operation *op) {
 
   if (isa<LLVM::FNegOp>(op)) {
     Value operand = lookup(op->getOperand(0));
+    if (!operand)
+      return op->emitError("floating-point unary op has unmapped operand");
     auto result = arith::NegFOp::create(builder, loc, operand);
     mapValue(op->getResult(0), result);
     return success();
@@ -642,6 +649,8 @@ LogicalResult FunctionConverter::convertBinaryFloatOp(Operation *op) {
 
   Value lhs = lookup(op->getOperand(0));
   Value rhs = lookup(op->getOperand(1));
+  if (!lhs || !rhs)
+    return op->emitError("floating-point binary op has unmapped operand");
   Value result;
 
   if (isa<LLVM::FAddOp>(op))
@@ -664,6 +673,8 @@ LogicalResult FunctionConverter::convertBinaryFloatOp(Operation *op) {
 LogicalResult FunctionConverter::convertCast(Operation *op) {
   Location loc = op->getLoc();
   Value arg = lookup(op->getOperand(0));
+  if (!arg)
+    return op->emitError("cast op has unmapped operand");
   Type dstTy = normalizeScalarType(ctx, op->getResult(0).getType());
   Value result;
 
@@ -695,6 +706,8 @@ LogicalResult FunctionConverter::convertCast(Operation *op) {
 LogicalResult FunctionConverter::convertICmp(LLVM::ICmpOp op) {
   Value lhs = lookup(op.getLhs());
   Value rhs = lookup(op.getRhs());
+  if (!lhs || !rhs)
+    return op.emitError("icmp has unmapped operand");
   auto pred = convertICmpPredicate(op.getPredicate());
   auto result = arith::CmpIOp::create(builder, op.getLoc(), pred, lhs, rhs);
   mapValue(op.getResult(), result);
@@ -704,6 +717,8 @@ LogicalResult FunctionConverter::convertICmp(LLVM::ICmpOp op) {
 LogicalResult FunctionConverter::convertFCmp(LLVM::FCmpOp op) {
   Value lhs = lookup(op.getLhs());
   Value rhs = lookup(op.getRhs());
+  if (!lhs || !rhs)
+    return op.emitError("fcmp has unmapped operand");
   auto pred = convertFCmpPredicate(op.getPredicate());
   auto result = arith::CmpFOp::create(builder, op.getLoc(), pred, lhs, rhs);
   mapValue(op.getResult(), result);
@@ -712,6 +727,8 @@ LogicalResult FunctionConverter::convertFCmp(LLVM::FCmpOp op) {
 
 LogicalResult FunctionConverter::convertSelect(LLVM::SelectOp op) {
   Value cond = lookup(op.getCondition());
+  if (!cond)
+    return op.emitError("select has unmapped condition");
   if (isa<LLVM::LLVMPointerType>(op.getType())) {
     auto truePI = lookupPtr(op.getTrueValue());
     auto falsePI = lookupPtr(op.getFalseValue());
@@ -727,6 +744,8 @@ LogicalResult FunctionConverter::convertSelect(LLVM::SelectOp op) {
   }
   Value trueVal = lookup(op.getTrueValue());
   Value falseVal = lookup(op.getFalseValue());
+  if (!trueVal || !falseVal)
+    return op.emitError("select has unmapped operand");
   auto result = arith::SelectOp::create(builder, op.getLoc(), cond,
                                                  trueVal, falseVal);
   mapValue(op.getResult(), result);

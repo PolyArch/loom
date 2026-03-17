@@ -298,9 +298,22 @@ static int getKindRank(DFGCandidate::Kind kind) {
 // they fit because they reduce mapper pressure and better match the current
 // host-accel split contract.
 static DFGCandidate *selectBest(SmallVectorImpl<DFGCandidate> &candidates) {
+  bool hasFeasibleMemoryCandidate = false;
+  for (auto &candidate : candidates) {
+    if (!candidate.feasible.value_or(false))
+      continue;
+    if (candidate.resources.estimatedMemCount > 0) {
+      hasFeasibleMemoryCandidate = true;
+      break;
+    }
+  }
+
   DFGCandidate *best = nullptr;
   for (auto &candidate : candidates) {
     if (!candidate.feasible.value_or(false))
+      continue;
+    if (hasFeasibleMemoryCandidate &&
+        candidate.resources.estimatedMemCount == 0)
       continue;
     if (!best) {
       best = &candidate;
