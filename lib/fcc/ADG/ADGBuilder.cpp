@@ -618,6 +618,14 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       // Gather input operands from connections
       for (unsigned p = 0; p < pe.numInputs; ++p) {
         if (p > 0) os << ", ";
+        auto scIt = scalarInputConns.find(i);
+        if (scIt != scalarInputConns.end()) {
+          auto scPit = scIt->second.find(p);
+          if (scPit != scIt->second.end()) {
+            os << "%scalar" << scPit->second;
+            continue;
+          }
+        }
         auto it = incomingConns.find(i);
         if (it != incomingConns.end()) {
           auto pit = it->second.find(p);

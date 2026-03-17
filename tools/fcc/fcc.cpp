@@ -11,6 +11,7 @@
 #include "fcc/Mapper/ConfigGen.h"
 #include "fcc/Mapper/DFGBuilder.h"
 #include "fcc/Mapper/Mapper.h"
+#include "fcc/Mapper/TypeCompat.h"
 #include "fcc/Viz/VizExporter.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -34,6 +35,8 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
+
 using namespace mlir;
 using namespace fcc;
 
@@ -47,6 +50,64 @@ loadMLIR(const std::string &path, MLIRContext &context) {
   }
   srcMgr.AddNewSourceBuffer(std::move(*buf), llvm::SMLoc());
   return parseSourceFile<ModuleOp>(srcMgr, &context);
+}
+
+static void attachADGCapacityAttrs(ModuleOp module, const std::string &adgPath,
+                                   MLIRContext &context) {
+  if (adgPath.empty())
+    return;
+
+  auto adgModule = loadMLIR(adgPath, context);
+  if (!adgModule) {
+    llvm::errs() << "fcc: warning: cannot read ADG for capacity summary: "
+                 << adgPath << "\n";
+    return;
+  }
+
+  fcc::ADGFlattener flattener;
+  if (!flattener.flatten(*adgModule, &context)) {
+    llvm::errs() << "fcc: warning: cannot flatten ADG for capacity summary: "
+                 << adgPath << "\n";
+    return;
+  }
+
+  const Graph &adg = flattener.getADG();
+  unsigned totalPEs = flattener.getPEContainment().size();
+  unsigned totalFUs = 0;
+  for (const auto &pe : flattener.getPEContainment())
+    totalFUs += pe.fuNodeIds.size();
+
+  unsigned totalMemModules = 0;
+  unsigned maxDataWidth = 0;
+  for (const Node *node : adg.nodeRange()) {
+    if (getNodeAttrStr(node, "resource_class") == "memory")
+      totalMemModules++;
+  }
+  for (const Port *port : adg.portRange()) {
+    if (auto info = fcc::detail::getPortTypeInfo(port->type)) {
+      maxDataWidth = std::max(maxDataWidth, info->valueWidth);
+      continue;
+    }
+    if (auto memWidth = fcc::detail::getMemRefElementWidth(port->type))
+      maxDataWidth = std::max(maxDataWidth, *memWidth);
+  }
+
+  Builder builder(&context);
+  module->setAttr("fcc.adg_total_pes",
+                  builder.getI64IntegerAttr(static_cast<int64_t>(totalPEs)));
+  module->setAttr("fcc.adg_total_fus",
+                  builder.getI64IntegerAttr(static_cast<int64_t>(totalFUs)));
+  module->setAttr(
+      "fcc.adg_total_mem_modules",
+      builder.getI64IntegerAttr(static_cast<int64_t>(totalMemModules)));
+  module->setAttr(
+      "fcc.adg_max_data_width",
+      builder.getI64IntegerAttr(static_cast<int64_t>(maxDataWidth)));
+
+  llvm::outs() << "fcc: ADG capacity summary: PEs=" << totalPEs
+               << ", FUs=" << totalFUs
+               << ", mem=" << totalMemModules
+               << ", maxWidth=" << maxDataWidth << "\n";
 }
 
 int main(int argc, char **argv) {
@@ -227,6 +288,8 @@ int main(int argc, char **argv) {
   std::string scfPath = base + ".scf.mlir";
   if (failed(writeMLIR(*module, scfPath)))
     return 1;
+
+  attachADGCapacityAttrs(*module, args.adgPath, context);
 
   llvm::outs() << "fcc: converting SCF to DFG...\n";
   if (failed(runSCFToDFG(*module)))

@@ -4,15 +4,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Constructs a 6x6 mesh ADG for the vecadd kernel using the ADGBuilder API,
-// and provides a main() entry point for standalone generation.
+// Constructs a compact domain ADG for the vecadd kernel using the
+// ADGBuilder API, and provides a main() entry point for standalone generation.
 //
-// Each PE has FUs for: arith.addi, arith.cmpi, arith.extui, arith.index_cast,
+// Each PE has FUs for: arith.addi, arith.cmpi, arith.index_cast,
 // dataflow.stream, dataflow.gate, dataflow.carry, handshake.load,
-// handshake.store, handshake.constant, handshake.cond_br, handshake.mux,
-// handshake.join.
+// handshake.store, handshake.constant, handshake.cond_br, handshake.join.
 // 3 extmemory instances (for a, b, c arrays).
-// Boundary scalar and extmem connections to switches.
+// A single central spatial switch connects a bank of homogeneous PEs.
+// This keeps the test small while still exercising the full mapper/viz flow.
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,10 +28,9 @@ using namespace fcc::adg;
 static void buildVecaddADG(const std::string &outputPath) {
   ADGBuilder builder("vecadd_adg");
 
-  // Data width: 32 bits for integer data
-  // This is max(all FU port widths) -- i32 is the widest native type used.
-  // i1, index, none are all narrower and get zero-extended to bits<32>.
-  const unsigned dataWidth = 32;
+  // Use a uniform 64-bit routing plane so i32 / i1 / none / index can all
+  // share the same switch and PE boundary network.
+  const unsigned dataWidth = 64;
 
   //=== Define Function Units ===
 
@@ -42,10 +41,6 @@ static void buildVecaddADG(const std::string &outputPath) {
   // FU: arith.cmpi (2 inputs, 1 output: i1)
   auto fuCmpi = builder.defineFU(
       "fu_cmpi", {"i32", "i32"}, {"i1"}, {"arith.cmpi"});
-
-  // FU: arith.extui (1 input, 1 output)
-  auto fuExtui = builder.defineFU(
-      "fu_extui", {"i1", "i32"}, {"i32"}, {"arith.extui"});
 
   // FU: arith.index_cast (1 input, 1 output)
   auto fuIndexCast = builder.defineFU(
@@ -82,72 +77,71 @@ static void buildVecaddADG(const std::string &outputPath) {
   auto fuCondBr = builder.defineFU(
       "fu_cond_br", {"i1", "i32"}, {"i32", "i32"}, {"handshake.cond_br"});
 
-  // FU: handshake.mux (3 inputs: sel, d0, d1; 1 output)
-  // NOTE: handshake.mux does NOT consume unselected inputs (partial consume).
-  auto fuMux = builder.defineFU(
-      "fu_mux", {"index", "i32", "i32"}, {"i32"}, {"handshake.mux"});
-
-  // FU: arith.select (3 inputs: cond, true_val, false_val; 1 output)
-  // NOTE: arith.select CONSUMES all inputs (full consume). Different from mux!
-  auto fuSelect = builder.defineFU(
-      "fu_select", {"i1", "i32", "i32"}, {"i32"}, {"arith.select"});
-
-  // FU: handshake.join (3 inputs: a, b, c; 1 output)
-  // The vecadd DFG has a 3-input join that synchronizes three branches.
+  // FU: handshake.join
   auto fuJoin = builder.defineFU(
       "fu_join", {"none", "none", "none"}, {"none"}, {"handshake.join"});
 
-  // FU: fu_mac (multiply-add with configurable output via static_mux)
-  // Demonstrates multi-op FU with internal DAG:
-  //   %d = arith.muli %a, %b : i32
-  //   %e = arith.addi %d, %c : i32
-  //   %g = fabric.static_mux {sel=0} %d, %e : i32
-  // sel=0 -> multiply-only output; sel=1 -> multiply-add output.
-  auto fuMac = builder.defineFU(
-      "fu_mac", {"i32", "i32", "i32"}, {"i32"},
-      {"arith.muli", "arith.addi"}, /*latency=*/1, /*interval=*/1);
-
   //=== Define Spatial PE (containing all FUs) ===
 
-  // PE has 4 inputs, 4 outputs at bits<32> width.
-  // This gives enough routing flexibility for the 4x4 mesh.
   std::vector<FUHandle> allFUs = {
-      fuAddi, fuCmpi, fuExtui, fuIndexCast,
+      fuAddi, fuCmpi, fuIndexCast,
       fuStream, fuGate, fuCarry,
       fuLoad, fuStore, fuConstant,
-      fuCondBr, fuMux, fuSelect, fuJoin, fuMac
+      fuCondBr, fuJoin
   };
-  auto pe = builder.defineSpatialPE("vecadd_pe", 4, 4, dataWidth, allFUs);
+  constexpr unsigned kPEInputs = 4;
+  constexpr unsigned kPEOutputs = 4;
+  auto pe = builder.defineSpatialPE("vecadd_pe", kPEInputs, kPEOutputs,
+                                    dataWidth, allFUs);
 
   //=== Define Spatial Switch ===
 
-  // Switch: 8 inputs, 8 outputs at bits<32>
-  // Ports [0..3] connect to/from local PE
-  // Ports [4..7] connect to NSEW neighbors
-  // No extra extmem ports — extmem uses unused NSEW ports on boundary switches.
-  // This avoids dangling ports on interior switches.
-  unsigned numSwPorts = 8;
-  std::vector<unsigned> swWidths(numSwPorts, dataWidth);
+  constexpr unsigned kNumPEs = 24;
+  constexpr unsigned kScalarInputs = 2;
+  constexpr unsigned kScalarOutputs = 1;
+  constexpr unsigned kExtMemOutputPorts = 2 + 2 + 1; // A(ld), B(ld), C(st)
+  constexpr unsigned kExtMemInputPorts = 1 + 1 + 2;  // A(ld), B(ld), C(st)
+
+  const unsigned numSwInputs =
+      kNumPEs * kPEOutputs + kExtMemOutputPorts + kScalarInputs;
+  const unsigned numSwOutputs =
+      kNumPEs * kPEInputs + kExtMemInputPorts + kScalarOutputs;
+
+  std::vector<unsigned> swInputWidths(numSwInputs, dataWidth);
+  std::vector<unsigned> swOutputWidths(numSwOutputs, dataWidth);
   std::vector<std::vector<bool>> fullCrossbar(
-      numSwPorts, std::vector<bool>(numSwPorts, true));
-  auto sw = builder.defineSpatialSW("vecadd_sw", swWidths, swWidths,
-                                    fullCrossbar);
+      numSwOutputs, std::vector<bool>(numSwInputs, true));
+  auto sw = builder.defineSpatialSW("vecadd_sw", swInputWidths,
+                                    swOutputWidths, fullCrossbar);
 
   //=== Define External Memories ===
 
-  auto extMemDef = builder.defineExtMemory("vecadd_extmem", 1, 1);
+  auto ldMemDef = builder.defineExtMemory("vecadd_ldmem", 1, 0);
+  auto stMemDef = builder.defineExtMemory("vecadd_stmem", 0, 1);
 
-  //=== Build 6x6 Mesh ===
-  // spatial_pe uses only 1 FU at a time (opcode selects which FU fires).
-  // vecadd DFG has ~28 ops, so 6x6 = 36 PEs gives enough room.
+  //=== Instantiate Compute Fabric ===
 
-  auto mesh = builder.buildMesh(6, 6, pe, sw);
+  auto swInst = builder.instantiateSW(sw, "sw_0");
+  std::vector<InstanceHandle> peInsts;
+  peInsts.reserve(kNumPEs);
+  for (unsigned i = 0; i < kNumPEs; ++i)
+    peInsts.push_back(
+        builder.instantiatePE(pe, "pe_" + std::to_string(i)));
+
+  unsigned swInputCursor = 0;
+  unsigned swOutputCursor = 0;
+  for (InstanceHandle peInst : peInsts) {
+    for (unsigned p = 0; p < kPEOutputs; ++p)
+      builder.connect(peInst, p, swInst, swInputCursor++);
+    for (unsigned p = 0; p < kPEInputs; ++p)
+      builder.connect(swInst, swOutputCursor++, peInst, p);
+  }
 
   //=== Instantiate External Memories (for arrays a, b, c) ===
 
-  auto extMemA = builder.instantiateExtMem(extMemDef, "extmem_a");
-  auto extMemB = builder.instantiateExtMem(extMemDef, "extmem_b");
-  auto extMemC = builder.instantiateExtMem(extMemDef, "extmem_c");
+  auto extMemA = builder.instantiateExtMem(ldMemDef, "extmem_a");
+  auto extMemB = builder.instantiateExtMem(ldMemDef, "extmem_b");
+  auto extMemC = builder.instantiateExtMem(stMemDef, "extmem_c");
 
   //=== Add module-level memref inputs ===
 
@@ -159,34 +153,29 @@ static void buildVecaddADG(const std::string &outputPath) {
   builder.connectMemrefToExtMem(memB, extMemB);
   builder.connectMemrefToExtMem(memC, extMemC);
 
-  //=== Add scalar boundary inputs (for non-memref handshake.func args) ===
+  //=== Add scalar boundary inputs and outputs ===
 
-  // arg3: i32 (N, the array length) - 32 bits
-  builder.addScalarInput("scalar_n", dataWidth);
-  // arg4: none (start control token) - use 32-bit boundary
-  builder.addScalarInput("scalar_ctrl", dataWidth);
+  auto scalarN = builder.addScalarInput("scalar_n", dataWidth);
+  auto scalarCtrl = builder.addScalarInput("scalar_ctrl", dataWidth);
 
-  //=== Add scalar boundary output (done token) ===
+  auto scalarDone = builder.addScalarOutput("scalar_done", dataWidth);
 
-  // return value: none (done control token) - use 32-bit boundary
-  builder.addScalarOutput("scalar_done", dataWidth);
+  //=== ExtMemory associations ===
 
-  //=== ExtMemory associations (metadata only) ===
-  //
-  // With torus topology, all 8 SW ports are fully connected.
-  // ExtMem and scalar sentinels are standalone nodes — the mapper routes
-  // data between them and PEs through the switch network.
-  // The connected_sw attribute is metadata for the flattener/viz.
-  builder.associateExtMemWithSW(extMemA, mesh.swGrid[0][0], 4, 4);
-  builder.associateExtMemWithSW(extMemB, mesh.swGrid[0][1], 4, 4);
-  builder.associateExtMemWithSW(extMemC, mesh.swGrid[0][2], 4, 4);
+  builder.associateExtMemWithSW(extMemA, swInst, swInputCursor, swOutputCursor);
+  swInputCursor += 2;
+  swOutputCursor += 1;
+  builder.associateExtMemWithSW(extMemB, swInst, swInputCursor, swOutputCursor);
+  swInputCursor += 2;
+  swOutputCursor += 1;
+  builder.associateExtMemWithSW(extMemC, swInst, swInputCursor, swOutputCursor);
+  swInputCursor += 1;
+  swOutputCursor += 2;
 
-  //=== Scalar I/O are standalone boundary nodes ===
-  // They don't need explicit port connections — they're SSA values
-  // available in the graph region. The flattener creates sentinel nodes
-  // for them, and the mapper binds DFG sentinels to ADG sentinels.
-
-  // Scalar output is also a standalone boundary node (no explicit port wiring).
+  // Inject scalar values and expose the completion token.
+  builder.connectScalarInputToInstance(scalarN, swInst, swInputCursor++);
+  builder.connectScalarInputToInstance(scalarCtrl, swInst, swInputCursor++);
+  builder.connectInstanceToScalarOutput(swInst, swOutputCursor++, scalarDone);
 
   //=== Export ===
 

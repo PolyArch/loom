@@ -1,19 +1,21 @@
-//===-- adg.cpp - GUI test ADG generation (2x2 mesh) -----------*- C++ -*-===//
+//===-- adg.cpp - GUI test ADG generation -----------------------*- C++ -*-===//
 //
 // Part of the fcc project.
 //
 //===----------------------------------------------------------------------===//
 //
-// Constructs a small 2x2 mesh ADG for GUI visualization testing.
+// Constructs a small builder-based ADG for GUI visualization testing.
 //
-// Each PE has 4 FUs:
-//   - fu_add:   simple arith.addi
-//   - fu_cmp:   simple arith.cmpi
-//   - fu_mac:   compound multiply-add (arith.muli + arith.addi) with static_mux
-//   - fu_logic: compound bitwise (arith.andi + arith.ori) with static_mux
+// The goal here is not stress-routing. It is a compact, self-consistent
+// builder-based smoke test that exercises PE/FU rendering and simple mapping.
 //
-// 1 extmemory instance (extmem_a), 3 scalar inputs, 1 scalar output.
-// Torus topology on a 2x2 mesh.
+// The ADG uses four tiny PEs wired directly:
+//   - add_pe   : arith.addi
+//   - const_pe : handshake.constant
+//   - mul_pe   : arith.muli
+//   - join_pe  : handshake.join
+//
+// The module exposes three scalar inputs and two scalar outputs.
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,99 +31,52 @@ using namespace fcc::adg;
 static void buildGuiTestADG(const std::string &outputPath) {
   ADGBuilder builder("gui_test_adg");
 
-  // Data width: 32 bits
-  const unsigned dataWidth = 32;
+  const unsigned dataWidth = 64;
 
-  //=== Define Function Units ===
+  //=== Define Function Units and single-purpose PEs ===
 
-  // FU: fu_add - simple adder (2 inputs, 1 output)
   auto fuAdd = builder.defineFU(
       "fu_add", {"i32", "i32"}, {"i32"}, {"arith.addi"});
-
-  // FU: fu_cmp - simple comparator (2 inputs, 1 output: i1)
-  auto fuCmp = builder.defineFU(
-      "fu_cmp", {"i32", "i32"}, {"i1"}, {"arith.cmpi"});
-
-  // FU: fu_mac - compound multiply-add with static_mux
-  //   %d = arith.muli %a, %b : i32
-  //   %e = arith.addi %d, %c : i32
-  //   %g = fabric.static_mux {sel=0} %d, %e : i32
-  auto fuMac = builder.defineFU(
-      "fu_mac", {"i32", "i32", "i32"}, {"i32"},
-      {"arith.muli", "arith.addi"}, /*latency=*/1, /*interval=*/1);
-
-  // FU: fu_logic - compound bitwise with static_mux
-  //   %d = arith.andi %a, %b : i32
-  //   %e = arith.ori %a, %b : i32
-  //   %g = fabric.static_mux {sel=0} %d, %e : i32
-  auto fuLogic = builder.defineFU(
-      "fu_logic", {"i32", "i32"}, {"i32"},
-      {"arith.andi", "arith.ori"}, /*latency=*/1, /*interval=*/1);
-
-  // FU: fu_constant - handshake.constant (1 ctrl input, 1 output)
   auto fuConstant = builder.defineFU(
       "fu_constant", {"none"}, {"i32"}, {"handshake.constant"});
-
-  // FU: fu_join - handshake.join (synchronize control tokens)
+  auto fuMul = builder.defineFU(
+      "fu_mul", {"i32", "i32"}, {"i32"}, {"arith.muli"});
   auto fuJoin = builder.defineFU(
-      "fu_join", {"none", "none"}, {"none"}, {"handshake.join"});
+      "fu_join", {"none"}, {"none"}, {"handshake.join"});
 
-  //=== Define Spatial PE ===
+  auto addPE = builder.defineSpatialPE("add_pe", 2, 1, dataWidth, {fuAdd});
+  auto constPE = builder.defineSpatialPE("const_pe", 1, 1, dataWidth,
+                                         {fuConstant});
+  auto mulPE = builder.defineSpatialPE("mul_pe", 2, 1, dataWidth, {fuMul});
+  auto joinPE = builder.defineSpatialPE("join_pe", 1, 1, dataWidth, {fuJoin});
 
-  // PE: 2 inputs, 2 outputs at bits<32> width
-  std::vector<FUHandle> allFUs = {fuAdd, fuCmp, fuMac, fuLogic,
-                                   fuConstant, fuJoin};
-  auto pe = builder.defineSpatialPE("gui_pe", 2, 2, dataWidth, allFUs);
+  auto addInst = builder.instantiatePE(addPE, "pe_add");
+  auto constInst = builder.instantiatePE(constPE, "pe_const");
+  auto mulInst = builder.instantiatePE(mulPE, "pe_mul");
+  auto joinInst = builder.instantiatePE(joinPE, "pe_join");
 
-  //=== Define Spatial Switch ===
-
-  // Switch: 8 inputs, 8 outputs at bits<32>
-  // Ports [0..1] connect to/from local PE
-  // Ports [2..5] connect to NSEW neighbors
-  // Ports [6..7] reserved for scalar I/O on boundary switches
-  unsigned numSwPorts = 8;
-  std::vector<unsigned> swWidths(numSwPorts, dataWidth);
-  std::vector<std::vector<bool>> fullCrossbar(
-      numSwPorts, std::vector<bool>(numSwPorts, true));
-  auto sw = builder.defineSpatialSW("gui_sw", swWidths, swWidths,
-                                    fullCrossbar);
-
-  //=== Define External Memory ===
-
-  auto extMemDef = builder.defineExtMemory("gui_extmem", 1, 1);
-
-  //=== Build 2x2 Mesh ===
-
-  auto mesh = builder.buildMesh(2, 2, pe, sw);
-
-  //=== Instantiate External Memory ===
-
-  auto extMemA = builder.instantiateExtMem(extMemDef, "extmem_a");
-
-  //=== Add module-level memref input ===
-
-  auto memA = builder.addMemrefInput("mem_a", "memref<?xi32>");
-  builder.connectMemrefToExtMem(memA, extMemA);
-
-  //=== Add scalar boundary inputs and wire to switches ===
+  //=== Add scalar boundary inputs and wire to the PEs ===
 
   auto sIn0 = builder.addScalarInput("scalar_in0", dataWidth);
   auto sIn1 = builder.addScalarInput("scalar_in1", dataWidth);
   auto sCtrl = builder.addScalarInput("scalar_ctrl", dataWidth);
 
-  // Wire scalar inputs to boundary switch ports [6]
-  builder.connectScalarInputToInstance(sIn0, mesh.swGrid[0][0], 6);
-  builder.connectScalarInputToInstance(sIn1, mesh.swGrid[0][1], 6);
-  builder.connectScalarInputToInstance(sCtrl, mesh.swGrid[1][0], 6);
+  builder.connectScalarInputToInstance(sIn0, addInst, 0);
+  builder.connectScalarInputToInstance(sIn1, addInst, 1);
+  builder.connectScalarInputToInstance(sCtrl, constInst, 0);
+  builder.connectScalarInputToInstance(sCtrl, joinInst, 0);
 
-  //=== Add scalar boundary output and wire from switch ===
+  //=== Wire the PE dataflow graph directly ===
 
-  auto sOut0 = builder.addScalarOutput("scalar_done", dataWidth);
-  builder.connectInstanceToScalarOutput(mesh.swGrid[0][0], 6, sOut0);
+  builder.connect(addInst, 0, mulInst, 0);
+  builder.connect(constInst, 0, mulInst, 1);
 
-  //=== ExtMemory association ===
+  //=== Add scalar boundary outputs ===
 
-  builder.associateExtMemWithSW(extMemA, mesh.swGrid[0][0], 2, 2);
+  auto sOut0 = builder.addScalarOutput("scalar_result", dataWidth);
+  auto sOut1 = builder.addScalarOutput("scalar_done", dataWidth);
+  builder.connectInstanceToScalarOutput(mulInst, 0, sOut0);
+  builder.connectInstanceToScalarOutput(joinInst, 0, sOut1);
 
   //=== Export ===
 

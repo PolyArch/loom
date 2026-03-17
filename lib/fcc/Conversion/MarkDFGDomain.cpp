@@ -251,15 +251,11 @@ static bool checkFeasibility(DFGCandidate &candidate,
   }
 
   const auto &r = candidate.resources;
-  // Apply a margin factor of 1.5 for routing overhead
-  unsigned peCapacity =
-      static_cast<unsigned>(adg.totalFUs * 1.5);
-
   bool fits = true;
-  if (r.estimatedPECount > peCapacity) {
+  if (r.estimatedPECount > adg.totalPEs) {
     LLVM_DEBUG(llvm::dbgs()
                << "  INFEASIBLE: PEs " << r.estimatedPECount
-               << " > capacity " << peCapacity << "\n");
+               << " > capacity " << adg.totalPEs << "\n");
     fits = false;
   }
   if (r.estimatedMemCount > adg.totalMemModules) {
@@ -279,28 +275,44 @@ static bool checkFeasibility(DFGCandidate &candidate,
   return fits;
 }
 
-// Select the best feasible candidate. For MVP, pick the first feasible
-// whole-function candidate, falling back to first feasible loop.
+static int getKindRank(DFGCandidate::Kind kind) {
+  switch (kind) {
+  case DFGCandidate::InnerLoop:
+    return 0;
+  case DFGCandidate::LoopNest:
+    return 1;
+  case DFGCandidate::WholeFunction:
+    return 2;
+  }
+  return 3;
+}
+
+// Select the cheapest feasible candidate. Smaller regions are preferred when
+// they fit because they reduce mapper pressure and better match the current
+// host-accel split contract.
 static DFGCandidate *selectBest(SmallVectorImpl<DFGCandidate> &candidates) {
-  // Prefer whole-function candidates (they capture the most work)
-  for (auto &c : candidates) {
-    if (c.feasible.value_or(false) &&
-        c.kind == DFGCandidate::WholeFunction)
-      return &c;
+  DFGCandidate *best = nullptr;
+  for (auto &candidate : candidates) {
+    if (!candidate.feasible.value_or(false))
+      continue;
+    if (!best) {
+      best = &candidate;
+      continue;
+    }
+
+    const auto &lhs = candidate.resources;
+    const auto &rhs = best->resources;
+    auto lhsKey = std::tuple(lhs.estimatedPECount, lhs.estimatedMemCount,
+                             lhs.numControlOps, lhs.maxDataWidth,
+                             getKindRank(candidate.kind),
+                             candidate.params.regionId);
+    auto rhsKey = std::tuple(rhs.estimatedPECount, rhs.estimatedMemCount,
+                             rhs.numControlOps, rhs.maxDataWidth,
+                             getKindRank(best->kind), best->params.regionId);
+    if (lhsKey < rhsKey)
+      best = &candidate;
   }
-  // Fall back to loop nests
-  for (auto &c : candidates) {
-    if (c.feasible.value_or(false) &&
-        c.kind == DFGCandidate::LoopNest)
-      return &c;
-  }
-  // Fall back to inner loops
-  for (auto &c : candidates) {
-    if (c.feasible.value_or(false) &&
-        c.kind == DFGCandidate::InnerLoop)
-      return &c;
-  }
-  return nullptr;
+  return best;
 }
 
 struct MarkDFGDomainPass
@@ -389,6 +401,9 @@ struct MarkDFGDomainPass
         "fcc.dfg_estimated_mem",
         IntegerAttr::get(IntegerType::get(ctx, 32),
                          selected->resources.estimatedMemCount));
+    if (selected->regionRoot != selected->parentFunc.getOperation())
+      selected->regionRoot->setAttr("fcc.selected_dfg_root",
+                                    UnitAttr::get(ctx));
   }
 };
 

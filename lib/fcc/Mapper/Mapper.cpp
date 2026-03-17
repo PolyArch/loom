@@ -357,6 +357,28 @@ bool Mapper::runPlacement(
       return false;
     }
 
+    bool hasUnusedPECandidate = false;
+    for (IdIndex hwId : candIt->second) {
+      const Node *hwNode = adg.getNode(hwId);
+      if (!hwNode)
+        continue;
+      if (!state.hwNodeToSwNodes[hwId].empty()) {
+        if (getNodeAttrStr(hwNode, "resource_class") == "memory") {
+          int64_t numRegion = getNodeAttrInt(hwNode, "numRegion", 1);
+          if (static_cast<int64_t>(state.hwNodeToSwNodes[hwId].size()) >=
+              numRegion)
+            continue;
+        } else {
+          continue;
+        }
+      }
+      llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
+      if (!peName.empty() && !usedPEs.count(peName.str())) {
+        hasUnusedPECandidate = true;
+        break;
+      }
+    }
+
     // Score each candidate and pick the best.
     IdIndex bestHw = INVALID_ID;
     double bestScore = -1e18;
@@ -381,6 +403,8 @@ bool Mapper::runPlacement(
 
       // Prefer unused PEs, but allow reuse if necessary (soft C8).
       llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
+      if (hasUnusedPECandidate && !peName.empty() && usedPEs.count(peName.str()))
+        continue;
 
       double score = scorePlacement(swId, hwId, state, dfg, adg, flattener);
 

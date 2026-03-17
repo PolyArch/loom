@@ -55,16 +55,21 @@ static void findAccelFuncs(ModuleOp module,
     });
 
     // If original func was already removed, infer from handshake.func
-    // signature. For MVP, fall back to a reasonable default.
+    // signature.
     if (info.isMemrefArg.empty()) {
-      // Inspect the handshake.func arguments. Handshake functions have
-      // flattened arguments; we use the dfg metadata if available.
-      if (auto attr =
-              hsfunc->getAttrOfType<IntegerAttr>("fcc.dfg_estimated_mem"))
-        info.numMemRegions = attr.getInt();
-      if (info.numMemRegions == 0)
-        info.numMemRegions = 3; // default for vecadd: a, b, c
-      info.numScalarArgs = 1;   // default for vecadd: n
+      auto argTypes = hsfunc.getFunctionType().getInputs();
+      unsigned payloadArgs =
+          argTypes.empty() ? 0u : static_cast<unsigned>(argTypes.size() - 1);
+      for (unsigned i = 0; i < payloadArgs; ++i) {
+        Type argTy = argTypes[i];
+        if (isa<MemRefType>(argTy)) {
+          info.isMemrefArg.push_back(true);
+          info.numMemRegions++;
+        } else {
+          info.isMemrefArg.push_back(false);
+          info.numScalarArgs++;
+        }
+      }
     }
 
     accelFuncs.push_back(info);

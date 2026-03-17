@@ -34,6 +34,8 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -159,6 +161,212 @@ static bool isLocalToRegion(Value value, Region *region) {
   return false;
 }
 
+static bool isValueDefinedInsideRoot(Operation *root, Value value) {
+  if (!value || !root)
+    return false;
+  if (Operation *def = value.getDefiningOp())
+    return root->isAncestor(def);
+  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    Operation *owner = blockArg.getOwner()->getParentOp();
+    return owner && root->isAncestor(owner);
+  }
+  return false;
+}
+
+static bool isSideEffectFreeOp(Operation *op) {
+  if (!op || op->getNumRegions() != 0)
+    return false;
+  if (auto memEffect = dyn_cast<MemoryEffectOpInterface>(op))
+    return memEffect.hasNoEffect();
+  return false;
+}
+
+static bool isLiveOutOfRoot(Operation *root, Value value) {
+  if (!value || !root)
+    return false;
+  for (OpOperand &use : value.getUses()) {
+    if (!root->isAncestor(use.getOwner()))
+      return true;
+  }
+  return false;
+}
+
+static void collectCandidateInputs(Value value, Operation *root,
+                                   SmallVectorImpl<Value> &inputs,
+                                   DenseSet<Value> &seenInputs,
+                                   DenseSet<Operation *> &visitedPureDefs) {
+  if (!value || isValueDefinedInsideRoot(root, value))
+    return;
+
+  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    if (seenInputs.insert(value).second)
+      inputs.push_back(value);
+    return;
+  }
+
+  Operation *def = value.getDefiningOp();
+  if (!def || !isSideEffectFreeOp(def) || root->isAncestor(def)) {
+    if (seenInputs.insert(value).second)
+      inputs.push_back(value);
+    return;
+  }
+
+  if (!visitedPureDefs.insert(def).second)
+    return;
+  for (Value operand : def->getOperands())
+    collectCandidateInputs(operand, root, inputs, seenInputs, visitedPureDefs);
+}
+
+static Operation *getExtractionRoot(Operation *selectedRoot) {
+  Operation *root = selectedRoot;
+  while (auto parentIf = dyn_cast_or_null<scf::IfOp>(root->getParentOp())) {
+    if (!parentIf.getElseRegion().empty())
+      break;
+    if (!parentIf.getThenRegion().hasOneBlock())
+      break;
+
+    Block &thenBlock = parentIf.getThenRegion().front();
+    Operation *soleOp = nullptr;
+    for (Operation &op : thenBlock) {
+      if (isa<scf::YieldOp>(op))
+        continue;
+      if (soleOp) {
+        soleOp = nullptr;
+        break;
+      }
+      soleOp = &op;
+    }
+    if (soleOp != root)
+      break;
+    root = parentIf.getOperation();
+  }
+  return root;
+}
+
+static FailureOr<func::FuncOp> extractCandidateFunc(func::FuncOp sourceFunc,
+                                                    Operation *selectedRoot) {
+  ModuleOp module = sourceFunc->getParentOfType<ModuleOp>();
+  if (!module)
+    return failure();
+
+  Operation *root = getExtractionRoot(selectedRoot);
+  SmallVector<Value, 8> inputValues;
+  DenseSet<Value> seenInputs;
+  DenseSet<Operation *> visitedPureDefs;
+  root->walk([&](Operation *op) {
+    for (Value operand : op->getOperands())
+      collectCandidateInputs(operand, root, inputValues, seenInputs,
+                             visitedPureDefs);
+  });
+
+  SmallVector<Value, 4> liveOuts;
+  for (Value result : root->getResults()) {
+    if (isLiveOutOfRoot(root, result))
+      liveOuts.push_back(result);
+  }
+
+  OpBuilder moduleBuilder(sourceFunc.getContext());
+  moduleBuilder.setInsertionPoint(sourceFunc);
+
+  SmallVector<Type, 8> inputTypes;
+  for (Value input : inputValues)
+    inputTypes.push_back(input.getType());
+  SmallVector<Type, 4> resultTypes;
+  for (Value liveOut : liveOuts)
+    resultTypes.push_back(liveOut.getType());
+
+  std::string tempName =
+      "__fcc_dfg_candidate_" + sourceFunc.getName().str();
+  auto tempFunc = moduleBuilder.create<func::FuncOp>(
+      root->getLoc(), tempName,
+      moduleBuilder.getFunctionType(inputTypes, resultTypes));
+  if (auto visibility = sourceFunc.getSymVisibilityAttr())
+    tempFunc->setAttr(SymbolTable::getVisibilityAttrName(), visibility);
+
+  Block *entry = tempFunc.addEntryBlock();
+  OpBuilder bodyBuilder(sourceFunc.getContext());
+  bodyBuilder.setInsertionPointToStart(entry);
+
+  DenseMap<Value, unsigned> inputIndex;
+  for (auto [idx, value] : llvm::enumerate(inputValues))
+    inputIndex[value] = idx;
+
+  IRMapping mapping;
+  for (auto [idx, value] : llvm::enumerate(inputValues))
+    mapping.map(value, entry->getArgument(idx));
+
+  std::function<LogicalResult(Value)> materialize =
+      [&](Value value) -> LogicalResult {
+    if (!value || isValueDefinedInsideRoot(root, value))
+      return success();
+    if (mapping.lookupOrNull(value))
+      return success();
+
+    if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+      auto it = inputIndex.find(blockArg);
+      if (it == inputIndex.end()) {
+        sourceFunc.emitError("missing extracted candidate input");
+        return failure();
+      }
+      mapping.map(value, entry->getArgument(it->second));
+      return success();
+    }
+
+    Operation *def = value.getDefiningOp();
+    if (!def || !isSideEffectFreeOp(def) || root->isAncestor(def)) {
+      auto it = inputIndex.find(value);
+      if (it == inputIndex.end()) {
+        sourceFunc.emitError("missing extracted candidate input");
+        return failure();
+      }
+      mapping.map(value, entry->getArgument(it->second));
+      return success();
+    }
+
+    for (Value operand : def->getOperands()) {
+      if (failed(materialize(operand)))
+        return failure();
+    }
+
+    Operation *clone = bodyBuilder.clone(*def, mapping);
+    for (auto [orig, repl] : llvm::zip(def->getResults(), clone->getResults()))
+      mapping.map(orig, repl);
+    return success();
+  };
+
+  bool failedMaterialize = false;
+  root->walk([&](Operation *op) {
+    for (Value operand : op->getOperands()) {
+      if (!isValueDefinedInsideRoot(root, operand) &&
+          failed(materialize(operand))) {
+        failedMaterialize = true;
+        return;
+      }
+    }
+  });
+  if (failedMaterialize) {
+    tempFunc.erase();
+    return failure();
+  }
+
+  Operation *rootClone = bodyBuilder.clone(*root, mapping);
+  for (auto [orig, repl] : llvm::zip(root->getResults(), rootClone->getResults()))
+    mapping.map(orig, repl);
+
+  SmallVector<Value, 4> returnOperands;
+  for (Value liveOut : liveOuts) {
+    Value mapped = mapping.lookupOrNull(liveOut);
+    if (!mapped) {
+      tempFunc.erase();
+      sourceFunc.emitError("missing extracted candidate live-out");
+      return failure();
+    }
+    returnOperands.push_back(mapped);
+  }
+  bodyBuilder.create<func::ReturnOp>(root->getLoc(), returnOperands);
+  return tempFunc;
+}
+
 //===----------------------------------------------------------------------===//
 // DFGConverter: converts a single func.func to handshake.func
 //===----------------------------------------------------------------------===//
@@ -169,6 +377,7 @@ public:
       : func(func), builder(func.getContext()), returnLoc(func.getLoc()) {}
 
   LogicalResult run();
+  circt::handshake::FuncOp getHandshakeFunc() const { return handshakeFunc; }
 
 private:
   // Create handshake constants
@@ -1220,11 +1429,45 @@ struct ConvertSCFToDFGPass
     });
 
     for (func::FuncOp func : candidates) {
-      DFGConverter converter(func);
+      std::string accelName = func.getName().str();
+      Operation *selectedRoot = func.getOperation();
+      func.walk([&](Operation *op) {
+        if (op != func.getOperation() && op->hasAttr("fcc.selected_dfg_root"))
+          selectedRoot = op;
+      });
+
+      func::FuncOp sourceFunc = func;
+      if (selectedRoot != func.getOperation()) {
+        auto extracted = extractCandidateFunc(func, selectedRoot);
+        if (failed(extracted)) {
+          func.emitError("failed to extract selected DFG candidate region");
+          signalPassFailure();
+          return;
+        }
+        sourceFunc = *extracted;
+      }
+
+      DFGConverter converter(sourceFunc);
       if (failed(converter.run())) {
         func.emitError("failed to convert to DFG");
         signalPassFailure();
         return;
+      }
+
+      if (sourceFunc != func) {
+        auto hsFunc = converter.getHandshakeFunc();
+        Attribute regionIdAttr = func->getAttr("fcc.dfg_region_id");
+        Attribute estimatedPEsAttr = func->getAttr("fcc.dfg_estimated_pes");
+        Attribute estimatedMemAttr = func->getAttr("fcc.dfg_estimated_mem");
+        func.erase();
+        hsFunc->setAttr(SymbolTable::getSymbolAttrName(),
+                        StringAttr::get(module.getContext(), accelName));
+        if (regionIdAttr)
+          hsFunc->setAttr("fcc.dfg_region_id", regionIdAttr);
+        if (estimatedPEsAttr)
+          hsFunc->setAttr("fcc.dfg_estimated_pes", estimatedPEsAttr);
+        if (estimatedMemAttr)
+          hsFunc->setAttr("fcc.dfg_estimated_mem", estimatedMemAttr);
       }
     }
   }
