@@ -25,7 +25,8 @@ mlir::LogicalResult runCFToSCF(mlir::ModuleOp module);
 mlir::LogicalResult runSCFToDFG(mlir::ModuleOp module);
 
 // Run host code generation pass.
-// Generates a host C source and fcc_accel.h in the output directory.
+// Generates a host C source together with fcc_accel.h and fcc_accel.c in the
+// output directory.
 mlir::LogicalResult runHostCodeGen(mlir::ModuleOp module,
                                    const std::string &outputPath,
                                    const std::string &originalSource);

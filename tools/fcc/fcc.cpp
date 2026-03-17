@@ -300,6 +300,8 @@ int main(int argc, char **argv) {
     return 1;
 
   std::string hostPath = base + "_host.c";
+  std::string accelHeaderPath = args.outputDir + "/fcc_accel.h";
+  std::string accelRuntimePath = args.outputDir + "/fcc_accel.c";
   std::string origSource =
       args.sources.empty() ? "" : args.sources[0];
   llvm::outs() << "fcc: generating host code...\n";
@@ -312,6 +314,8 @@ int main(int argc, char **argv) {
   llvm::outs() << "  " << cfPath << "\n";
   llvm::outs() << "  " << scfPath << "\n";
   llvm::outs() << "  " << dfgPath << "\n";
+  llvm::outs() << "  " << accelHeaderPath << "\n";
+  llvm::outs() << "  " << accelRuntimePath << "\n";
   llvm::outs() << "  " << hostPath << "\n";
 
   if (!args.adgPath.empty()) {

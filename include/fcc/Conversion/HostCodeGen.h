@@ -11,13 +11,15 @@ class Pass;
 
 namespace fcc {
 
-// Generate a host C source file for the accelerated program.
+// Generate host-facing sources for the accelerated program.
 //
-// This pass examines the MLIR module (after DFG conversion) and generates a
-// host C file that replaces calls to accelerated functions with MMIO driver
-// calls using the fcc_accel_* API.
+// This pass examines the MLIR module (after DFG conversion) and generates:
+// - a host C file that replaces accelerated calls with fcc_accel_* MMIO calls
+// - fcc_accel.h with the runtime-facing API declarations
+// - fcc_accel.c with the thin MMIO runtime implementation
 //
-// The generated host file can be cross-compiled to RISC-V for gem5 simulation.
+// The generated sources can be cross-compiled for RISC-V or built for local
+// host-side smoke checking.
 //
 // Options:
 //   outputPath - path to write the generated .c file

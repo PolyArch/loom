@@ -36,10 +36,10 @@ std::unique_ptr<mlir::Pass> createMarkDFGDomainPass();
 // for memory operations. Non-candidate functions remain as-is.
 std::unique_ptr<mlir::Pass> createConvertSCFToDFGPass();
 
-// Generate host C source with MMIO driver calls for accelerated functions.
-// Writes a host .c file and fcc_accel.h to the output directory.
-// The host code replaces calls to DFG-converted functions with
-// fcc_accel_* API invocations for gem5/RISC-V execution.
+// Generate host-facing sources with MMIO driver calls for accelerated
+// functions. Writes a host .c file together with fcc_accel.h and fcc_accel.c
+// into the output directory. The host code replaces calls to DFG-converted
+// functions with fcc_accel_* API invocations for gem5/RISC-V execution.
 std::unique_ptr<mlir::Pass>
 createHostCodeGenPass(const std::string &outputPath,
                       const std::string &originalSource);
