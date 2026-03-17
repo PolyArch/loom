@@ -28,8 +28,8 @@
 
 using namespace fcc::adg;
 
-static void buildGuiTestADG(const std::string &outputPath) {
-  ADGBuilder builder("gui_test_adg");
+static void buildAllPEsTestADG(const std::string &outputPath) {
+  ADGBuilder builder("all_pes_test_adg");
 
   const unsigned dataWidth = 64;
 
@@ -90,7 +90,7 @@ static void buildGuiTestADG(const std::string &outputPath) {
 static llvm::cl::opt<std::string> outputFile(
     llvm::cl::Positional,
     llvm::cl::desc("<output .fabric.mlir file>"),
-    llvm::cl::init("gui_test.fabric.mlir"));
+    llvm::cl::init("all-pes.fabric.mlir"));
 
 int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(argc, argv,
@@ -106,8 +106,8 @@ int main(int argc, char **argv) {
     }
   }
 
-  llvm::outs() << "Generating GUI test ADG -> " << outputFile << "\n";
-  buildGuiTestADG(outputFile);
+  llvm::outs() << "Generating all-pes test ADG -> " << outputFile << "\n";
+  buildAllPEsTestADG(outputFile);
   llvm::outs() << "Done.\n";
 
   return 0;

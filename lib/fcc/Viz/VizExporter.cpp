@@ -447,53 +447,11 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
   auto &body = fabricMod.getBody().front();
 
   for (auto &op : body.getOperations()) {
-    // spatial_pe definitions inside fabric.module (inline, not via instance)
-    if (auto peOp = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op)) {
-      if (!first) os << ",\n";
-      first = false;
-      auto peFnType = peOp.getFunctionType();
-      os << "    {\"kind\": \"spatial_pe\", \"name\": \""
-         << jsonEsc(peOp.getSymName().value_or("pe").str()) << "\"";
-      os << ", \"numInputs\": " << peFnType.getNumInputs();
-      os << ", \"numOutputs\": " << peFnType.getNumResults();
-      emitPEFUs(peOp);
-      os << "}";
-    }
-
-    if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op)) {
-      if (!first) os << ",\n";
-      first = false;
-      auto peFnType = peOp.getFunctionType();
-      os << "    {\"kind\": \"temporal_pe\", \"name\": \""
-         << jsonEsc(peOp.getSymName().value_or("tpe").str()) << "\"";
-      os << ", \"numInputs\": " << peFnType.getNumInputs();
-      os << ", \"numOutputs\": " << peFnType.getNumResults();
-      emitPEFUs(peOp);
-      os << "}";
-    }
-
-    // spatial_sw definitions
-    if (auto swOp = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op)) {
-      if (!first) os << ",\n";
-      first = false;
-      auto swFnType = swOp.getFunctionType();
-      os << "    {\"kind\": \"spatial_sw\", \"name\": \""
-         << jsonEsc(swOp.getSymName().value_or("sw").str()) << "\"";
-      os << ", \"numInputs\": " << swFnType.getNumInputs();
-      os << ", \"numOutputs\": " << swFnType.getNumResults();
-      os << "}";
-    }
-
-    if (auto tswOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op)) {
-      if (!first) os << ",\n";
-      first = false;
-      auto tswFnType = tswOp.getFunctionType();
-      os << "    {\"kind\": \"temporal_sw\", \"name\": \""
-         << jsonEsc(getRenderName(tswOp.getOperation())) << "\"";
-      os << ", \"numInputs\": " << tswFnType.getNumInputs();
-      os << ", \"numOutputs\": " << tswFnType.getNumResults();
-      os << "}";
-    }
+    // Definitions may be nested inside fabric.module, but visualization should
+    // only render instantiated components, not the definitions themselves.
+    if (mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::TemporalPEOp,
+                  fcc::fabric::SpatialSwOp, fcc::fabric::TemporalSwOp>(op))
+      continue;
 
     if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
       if (!first) os << ",\n";

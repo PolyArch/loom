@@ -1,7 +1,7 @@
 // Simple DFG for GUI visualization testing.
 // Computes: result = (a + b) * 2
 module {
-  handshake.func @gui_test(%arg0: i32, %arg1: i32, %arg2: none, ...) -> (i32, none) attributes {argNames = ["a", "b", "ctrl"], resNames = ["result", "done"]} {
+  handshake.func @all_pes_test(%arg0: i32, %arg1: i32, %arg2: none, ...) -> (i32, none) attributes {argNames = ["a", "b", "ctrl"], resNames = ["result", "done"]} {
     %sum = arith.addi %arg0, %arg1 : i32
     %c2 = handshake.constant %arg2 {value = 2 : i32} : i32
     %product = arith.muli %sum, %c2 : i32
