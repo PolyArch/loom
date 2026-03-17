@@ -18,8 +18,9 @@ check:
 	ninja -C build check-fcc
 
 clean:
-	ninja -C build -t clean fcc FccDataflow FccFabric FccConversion FccADG \
-		FccMapper FccSimulator FccViz 2>/dev/null || true
+	ninja -C build -t clean 2>/dev/null || true
+	rm -rf out node_modules
+	rm -f package-lock.json package.json screenshot.mjs
 
 purge:
 	rm -rf build .cache

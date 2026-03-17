@@ -277,8 +277,8 @@ static FailureOr<func::FuncOp> extractCandidateFunc(func::FuncOp sourceFunc,
 
   std::string tempName =
       "__fcc_dfg_candidate_" + sourceFunc.getName().str();
-  auto tempFunc = moduleBuilder.create<func::FuncOp>(
-      root->getLoc(), tempName,
+  auto tempFunc = func::FuncOp::create(
+      moduleBuilder, root->getLoc(), tempName,
       moduleBuilder.getFunctionType(inputTypes, resultTypes));
   if (auto visibility = sourceFunc.getSymVisibilityAttr())
     tempFunc->setAttr(SymbolTable::getVisibilityAttrName(), visibility);
@@ -363,7 +363,7 @@ static FailureOr<func::FuncOp> extractCandidateFunc(func::FuncOp sourceFunc,
     }
     returnOperands.push_back(mapped);
   }
-  bodyBuilder.create<func::ReturnOp>(root->getLoc(), returnOperands);
+  func::ReturnOp::create(bodyBuilder, root->getLoc(), returnOperands);
   return tempFunc;
 }
 

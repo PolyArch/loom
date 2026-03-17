@@ -305,8 +305,9 @@ LogicalResult FunctionConverter::createBlocks() {
 
       if (isa<LLVM::LLVMPointerType>(srcArg.getType())) {
         // Pointer arg: create PointerInfo with zero index
-        auto zeroIdx = OpBuilder::atBlockBegin(dstBlock)
-                           .create<arith::ConstantIndexOp>(srcArg.getLoc(), 0);
+        OpBuilder blockBuilder = OpBuilder::atBlockBegin(dstBlock);
+        auto zeroIdx =
+            arith::ConstantIndexOp::create(blockBuilder, srcArg.getLoc(), 0);
         Type elemTy;
         if (isEntry && argElemTypes.count(i))
           elemTy = argElemTypes[i];
