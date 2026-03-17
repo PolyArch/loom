@@ -322,11 +322,15 @@ static DFGCandidate *selectBest(SmallVectorImpl<DFGCandidate> &candidates) {
 
     const auto &lhs = candidate.resources;
     const auto &rhs = best->resources;
-    auto lhsKey = std::tuple(lhs.estimatedPECount, lhs.estimatedMemCount,
+    int lhsMemPriority =
+        hasFeasibleMemoryCandidate ? -static_cast<int>(lhs.estimatedMemCount) : 0;
+    int rhsMemPriority =
+        hasFeasibleMemoryCandidate ? -static_cast<int>(rhs.estimatedMemCount) : 0;
+    auto lhsKey = std::tuple(lhsMemPriority, lhs.estimatedPECount,
                              lhs.numControlOps, lhs.maxDataWidth,
                              getKindRank(candidate.kind),
                              candidate.params.regionId);
-    auto rhsKey = std::tuple(rhs.estimatedPECount, rhs.estimatedMemCount,
+    auto rhsKey = std::tuple(rhsMemPriority, rhs.estimatedPECount,
                              rhs.numControlOps, rhs.maxDataWidth,
                              getKindRank(best->kind), best->params.regionId);
     if (lhsKey < rhsKey)

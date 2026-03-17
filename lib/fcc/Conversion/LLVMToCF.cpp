@@ -28,6 +28,89 @@ using namespace fcc;
 
 namespace {
 
+static Type inferPointerElemTypeFromUses(Value ptrVal, unsigned depth = 0) {
+  if (depth > 8)
+    return nullptr;
+
+  Type bestType = nullptr;
+  for (auto &use : ptrVal.getUses()) {
+    Operation *user = use.getOwner();
+
+    if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
+      if (use.getOperandNumber() == 0) {
+        Type elemTy = normalizeScalarType(user->getContext(), gep.getElemType());
+        if (!isa<IntegerType>(elemTy) ||
+            cast<IntegerType>(elemTy).getWidth() != 8)
+          return elemTy;
+        if (!bestType)
+          bestType = elemTy;
+        Type fromGepUses = inferPointerElemTypeFromUses(gep.getResult(), depth + 1);
+        if (fromGepUses)
+          return fromGepUses;
+      }
+    }
+
+    if (auto load = dyn_cast<LLVM::LoadOp>(user)) {
+      Type loadTy =
+          normalizeScalarType(user->getContext(), load.getResult().getType());
+      if (!isa<IntegerType>(loadTy) || cast<IntegerType>(loadTy).getWidth() != 8)
+        return loadTy;
+      if (!bestType)
+        bestType = loadTy;
+    }
+
+    if (auto store = dyn_cast<LLVM::StoreOp>(user)) {
+      if (use.getOperandNumber() == 1) {
+        Type valTy =
+            normalizeScalarType(user->getContext(), store.getValue().getType());
+        if (!isa<IntegerType>(valTy) || cast<IntegerType>(valTy).getWidth() != 8)
+          return valTy;
+        if (!bestType)
+          bestType = valTy;
+      }
+    }
+
+    if (auto br = dyn_cast<LLVM::BrOp>(user)) {
+      unsigned idx = use.getOperandNumber();
+      Block *dest = br.getDest();
+      if (idx < dest->getNumArguments()) {
+        Type fromDest =
+            inferPointerElemTypeFromUses(dest->getArgument(idx), depth + 1);
+        if (fromDest)
+          return fromDest;
+      }
+    }
+
+    if (auto condBr = dyn_cast<LLVM::CondBrOp>(user)) {
+      unsigned idx = use.getOperandNumber();
+      if (idx > 0) {
+        unsigned trueCount = condBr.getTrueDestOperands().size();
+        if (idx - 1 < trueCount) {
+          Block *dest = condBr.getTrueDest();
+          unsigned argIdx = idx - 1;
+          if (argIdx < dest->getNumArguments()) {
+            Type fromDest = inferPointerElemTypeFromUses(dest->getArgument(argIdx),
+                                                         depth + 1);
+            if (fromDest)
+              return fromDest;
+          }
+        } else {
+          Block *dest = condBr.getFalseDest();
+          unsigned argIdx = idx - 1 - trueCount;
+          if (argIdx < dest->getNumArguments()) {
+            Type fromDest = inferPointerElemTypeFromUses(dest->getArgument(argIdx),
+                                                         depth + 1);
+            if (fromDest)
+              return fromDest;
+          }
+        }
+      }
+    }
+  }
+
+  return bestType;
+}
+
 // Per-function converter state.
 struct FunctionConverter {
   LLVM::LLVMFuncOp llvmFunc;
@@ -87,7 +170,8 @@ private:
   PointerInfo lookupPtr(Value v);
   void mapValue(Value oldVal, Value newVal);
   void mapPointer(Value oldPtr, PointerInfo info);
-  SmallVector<Value> materializeBranchArgs(OperandRange args, Block *dest);
+  SmallVector<Value> materializeBranchArgs(Location loc, OperandRange args,
+                                           Block *dest);
   Value createIndexCast(Location loc, Value intVal);
   Value scaleIndex(Location loc, Value idx, Type fromElem, Type toElem);
   Value buildByteSwap(Location loc, Value value);
@@ -207,8 +291,11 @@ LogicalResult FunctionConverter::createBlocks() {
         else
           newTy = buildStridedMemRefType(ctx, IntegerType::get(ctx, 8));
       } else if (isa<LLVM::LLVMPointerType>(srcArg.getType())) {
-        // Non-entry block pointer args: infer from uses or use i8
-        Type elemTy = IntegerType::get(ctx, 8);
+        // Non-entry block pointer args: infer pointee type from downstream uses.
+        Type elemTy = inferPointerElemTypeFromUses(srcArg);
+        if (!elemTy)
+          elemTy = IntegerType::get(ctx, 8);
+        elemTy = normalizeScalarType(ctx, elemTy);
         newTy = buildStridedMemRefType(ctx, elemTy);
       } else {
         newTy = normalizeScalarType(ctx, srcArg.getType());
@@ -223,8 +310,12 @@ LogicalResult FunctionConverter::createBlocks() {
         Type elemTy;
         if (isEntry && argElemTypes.count(i))
           elemTy = argElemTypes[i];
-        else
-          elemTy = IntegerType::get(ctx, 8);
+        else {
+          elemTy = inferPointerElemTypeFromUses(srcArg);
+          if (!elemTy)
+            elemTy = IntegerType::get(ctx, 8);
+          elemTy = normalizeScalarType(ctx, elemTy);
+        }
         mapPointer(srcArg, {dstArg, zeroIdx, elemTy});
       } else {
         mapValue(srcArg, dstArg);
@@ -1056,7 +1147,8 @@ LogicalResult FunctionConverter::convertBr(LLVM::BrOp op) {
   Block *dst = blockMap[op.getDest()];
   if (!dst)
     return op.emitError("branch destination not mapped");
-  auto args = materializeBranchArgs(op.getDestOperands(), op.getDest());
+  auto args =
+      materializeBranchArgs(op.getLoc(), op.getDestOperands(), op.getDest());
   cf::BranchOp::create(builder, op.getLoc(), dst, args);
   return success();
 }
@@ -1068,9 +1160,9 @@ LogicalResult FunctionConverter::convertCondBr(LLVM::CondBrOp op) {
   if (!trueDst || !falseDst)
     return op.emitError("branch destinations not mapped");
 
-  auto trueArgs = materializeBranchArgs(op.getTrueDestOperands(),
+  auto trueArgs = materializeBranchArgs(op.getLoc(), op.getTrueDestOperands(),
                                         op.getTrueDest());
-  auto falseArgs = materializeBranchArgs(op.getFalseDestOperands(),
+  auto falseArgs = materializeBranchArgs(op.getLoc(), op.getFalseDestOperands(),
                                          op.getFalseDest());
   cf::CondBranchOp::create(builder, op.getLoc(), cond, trueDst, trueArgs,
                                     falseDst, falseArgs);
@@ -1116,9 +1208,13 @@ void FunctionConverter::mapPointer(Value oldPtr, PointerInfo info) {
 }
 
 SmallVector<Value>
-FunctionConverter::materializeBranchArgs(OperandRange args, Block *dest) {
+FunctionConverter::materializeBranchArgs(Location loc, OperandRange args,
+                                         Block *dest) {
   SmallVector<Value> result;
-  for (Value v : args) {
+  result.reserve(args.size());
+  for (auto [idx, v] : llvm::enumerate(args)) {
+    Type dstTy = idx < dest->getNumArguments() ? dest->getArgument(idx).getType()
+                                               : Type();
     if (isa<LLVM::LLVMPointerType>(v.getType())) {
       auto pi = lookupPtr(v);
       if (pi.isValid()) {
@@ -1127,7 +1223,42 @@ FunctionConverter::materializeBranchArgs(OperandRange args, Block *dest) {
         result.push_back(pi.base);
       }
     } else {
-      result.push_back(lookup(v));
+      Value mapped = lookup(v);
+      if (!mapped) {
+        result.push_back(mapped);
+        continue;
+      }
+      if (!dstTy || mapped.getType() == dstTy) {
+        result.push_back(mapped);
+        continue;
+      }
+
+      if (isa<IndexType>(dstTy)) {
+        result.push_back(createIndexCast(loc, mapped));
+        continue;
+      }
+
+      if (isa<IndexType>(mapped.getType())) {
+        result.push_back(arith::IndexCastOp::create(builder, loc, dstTy, mapped));
+        continue;
+      }
+
+      auto srcIntTy = dyn_cast<IntegerType>(mapped.getType());
+      auto dstIntTy = dyn_cast<IntegerType>(dstTy);
+      if (srcIntTy && dstIntTy) {
+        if (srcIntTy.getWidth() < dstIntTy.getWidth()) {
+          result.push_back(
+              arith::ExtUIOp::create(builder, loc, dstTy, mapped));
+        } else if (srcIntTy.getWidth() > dstIntTy.getWidth()) {
+          result.push_back(
+              arith::TruncIOp::create(builder, loc, dstTy, mapped));
+        } else {
+          result.push_back(mapped);
+        }
+        continue;
+      }
+
+      result.push_back(mapped);
     }
   }
   return result;
@@ -1206,9 +1337,11 @@ struct ConvertLLVMToCFPassImpl
         continue;
       }
       existingFuncs.insert(converter.newFunc.getOperation());
-      // Erase the old LLVM function after successful conversion
-      llvmFunc->erase();
     }
+
+    for (auto llvmFunc : funcsToConvert)
+      if (llvmFunc->getParentOp())
+        llvmFunc->erase();
 
     // Clean up LLVM module-level ops
     module.walk([](LLVM::ModuleFlagsOp op) { op.erase(); });

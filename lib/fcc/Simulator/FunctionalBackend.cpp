@@ -777,7 +777,9 @@ private:
       return executeStore(nodeId, node);
     if (opMatches(opName, "memory") || opMatches(opName, "extmemory"))
       return executeMemory(nodeId, node);
-    if (opMatches(opName, "index_cast") || opMatches(opName, "index_castui"))
+    if (opMatches(opName, "index_cast") || opMatches(opName, "index_castui") ||
+        opMatches(opName, "trunci") || opMatches(opName, "extui") ||
+        opMatches(opName, "extsi"))
       return executeIndexCast(nodeId, node);
     if (opMatches(opName, "cmpi"))
       return executeCmpi(nodeId, node);

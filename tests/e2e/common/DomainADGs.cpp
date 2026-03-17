@@ -51,6 +51,10 @@ void buildSpatialVectorDomain(const std::string &outputPath,
                        {"arith.select"});
   auto fuIndexCast = builder.defineFU("fu_index_cast", {"i32"}, {"index"},
                                       {"arith.index_cast"});
+  auto fuTrunci = builder.defineFU("fu_trunci", {"i64"}, {"i32"},
+                                   {"arith.trunci"});
+  auto fuExtui = builder.defineFU("fu_extui", {"i32"}, {"i64"},
+                                  {"arith.extui"});
 
   auto fuStream =
       builder.defineFU("fu_stream", {"index", "index", "index"},
@@ -104,7 +108,8 @@ void buildSpatialVectorDomain(const std::string &outputPath,
       fuAndi,          fuOri,          fuXori,         fuShli,
       fuShrui,
       fuMuliIndex,     fuDivuiIndex,   fuCmpi,         fuSelect,
-      fuSelectIndex,   fuIndexCast,    fuStream,       fuGateIndex,
+      fuSelectIndex,   fuIndexCast,    fuTrunci,       fuExtui,        fuStream,
+      fuGateIndex,
       fuGateI32,       fuGateNone,     fuInvariantIndex,
       fuInvariantI32,  fuInvariantNone, fuCarryIndex,  fuCarryI32,
       fuCarryNone,     fuLoad,         fuStore,        fuConstant,
