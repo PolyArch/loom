@@ -38,6 +38,10 @@ void buildSpatialVectorDomain(const std::string &outputPath,
       builder.defineFU("fu_subi", {"i32", "i32"}, {"i32"}, {"arith.subi"});
   auto fuMuli =
       builder.defineFU("fu_muli", {"i32", "i32"}, {"i32"}, {"arith.muli"});
+  auto fuDivui =
+      builder.defineFU("fu_divui", {"i32", "i32"}, {"i32"}, {"arith.divui"});
+  auto fuRemui =
+      builder.defineFU("fu_remui", {"i32", "i32"}, {"i32"}, {"arith.remui"});
   auto fuAndi =
       builder.defineFU("fu_andi", {"i32", "i32"}, {"i32"}, {"arith.andi"});
   auto fuOri =
@@ -115,7 +119,8 @@ void buildSpatialVectorDomain(const std::string &outputPath,
 
   std::vector<FUHandle> allFUs = {
       fuAddi,          fuAddiIndex,    fuSubi,         fuMuli,
-      fuAndi,          fuOri,          fuXori,         fuShli,
+      fuDivui,         fuRemui,        fuAndi,         fuOri,
+      fuXori,          fuShli,
       fuShrui,
       fuMuliIndex,     fuDivuiIndex,   fuCmpi,         fuSelect,
       fuSelectIndex,   fuIndexCast,    fuTrunci,       fuExtui,        fuStream,
