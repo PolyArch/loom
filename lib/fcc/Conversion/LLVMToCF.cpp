@@ -91,6 +91,8 @@ private:
   Value createIndexCast(Location loc, Value intVal);
   Value scaleIndex(Location loc, Value idx, Type fromElem, Type toElem);
   Value buildByteSwap(Location loc, Value value);
+  Value buildFunnelShift(Location loc, Value lhs, Value rhs, Value amount,
+                         bool isLeft);
 };
 
 // Check if an LLVM function can be converted. Returns false for varargs,
@@ -796,6 +798,22 @@ LogicalResult FunctionConverter::convertIntrinsic(LLVM::CallIntrinsicOp op) {
     return success();
   }
 
+  if (name.starts_with("llvm.fshl.") || name.starts_with("llvm.fshr.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 3)
+      return failure();
+    Value lhs = lookup(op.getArgs()[0]);
+    Value rhs = lookup(op.getArgs()[1]);
+    Value amount = lookup(op.getArgs()[2]);
+    if (!lhs || !rhs || !amount)
+      return op.emitError("funnel shift has unmapped operand");
+    Value result =
+        buildFunnelShift(loc, lhs, rhs, amount, name.starts_with("llvm.fshl."));
+    if (!result)
+      return failure();
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
   return failure();
 }
 
@@ -835,6 +853,49 @@ Value FunctionConverter::buildByteSwap(Location loc, Value value) {
   }
 
   return result;
+}
+
+Value FunctionConverter::buildFunnelShift(Location loc, Value lhs, Value rhs,
+                                          Value amount, bool isLeft) {
+  auto valueTy = dyn_cast<IntegerType>(lhs.getType());
+  auto rhsTy = dyn_cast<IntegerType>(rhs.getType());
+  auto amountTy = dyn_cast<IntegerType>(amount.getType());
+  if (!valueTy || !rhsTy || !amountTy)
+    return Value();
+  if (rhsTy != valueTy)
+    return Value();
+
+  unsigned width = valueTy.getWidth();
+  if (width == 0)
+    return Value();
+
+  Value normalizedAmount = amount;
+  if (amountTy.getWidth() < width) {
+    normalizedAmount =
+        arith::ExtUIOp::create(builder, loc, valueTy, normalizedAmount);
+  } else if (amountTy.getWidth() > width) {
+    normalizedAmount =
+        arith::TruncIOp::create(builder, loc, valueTy, normalizedAmount);
+  }
+
+  Value mask = arith::ConstantIntOp::create(builder, loc, valueTy, width - 1);
+  Value bitWidth = arith::ConstantIntOp::create(builder, loc, valueTy, width);
+  normalizedAmount =
+      arith::AndIOp::create(builder, loc, normalizedAmount, mask);
+  Value reverseAmount =
+      arith::SubIOp::create(builder, loc, bitWidth, normalizedAmount);
+  reverseAmount = arith::AndIOp::create(builder, loc, reverseAmount, mask);
+
+  Value lo;
+  Value hi;
+  if (isLeft) {
+    lo = arith::ShLIOp::create(builder, loc, lhs, normalizedAmount);
+    hi = arith::ShRUIOp::create(builder, loc, rhs, reverseAmount);
+  } else {
+    lo = arith::ShRUIOp::create(builder, loc, lhs, normalizedAmount);
+    hi = arith::ShLIOp::create(builder, loc, rhs, reverseAmount);
+  }
+  return arith::OrIOp::create(builder, loc, lo, hi);
 }
 
 //===----------------------------------------------------------------------===//
