@@ -1,5 +1,6 @@
 add_library(FccE2EDomainADGs
   ${CMAKE_SOURCE_DIR}/tests/e2e/common/DomainADGs.cpp
+  ${CMAKE_SOURCE_DIR}/tests/e2e/common/TemporalDomainADGs.cpp
 )
 
 target_include_directories(FccE2EDomainADGs PUBLIC
