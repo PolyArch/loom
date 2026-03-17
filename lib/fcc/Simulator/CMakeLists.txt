@@ -1,4 +1,5 @@
 add_library(FccSimulator STATIC
+  FunctionalBackend.cpp
   SimSession.cpp
   SimArtifactWriter.cpp
   SimInputSynthesis.cpp

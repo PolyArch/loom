@@ -70,7 +70,7 @@ uint32_t getElemSizeLog2(const Node *swNode, const Node *hwNode,
 
 uint64_t synthesizeScalarValue(mlir::Type type, unsigned ordinal) {
   if (type.isIndex())
-    return 4;
+    return 0;
   if (mlir::isa<mlir::NoneType>(type))
     return 0;
   if (auto width = detail::getScalarWidth(type)) {

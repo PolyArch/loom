@@ -1,3 +1,4 @@
+#include "fcc/Simulator/FunctionalBackend.h"
 #include "fcc/Simulator/SimSession.h"
 
 #include <algorithm>
@@ -8,101 +9,6 @@ namespace fcc {
 namespace sim {
 
 namespace {
-
-class NullSimulationBackend final : public SimulationBackend {
-public:
-  explicit NullSimulationBackend(const SimConfig &config) : config(config) {}
-
-  std::string buildFromMappedState(const Graph &dfg, const Graph &adg,
-                                   const MappingState &mapping) override {
-    (void)dfg;
-    (void)mapping;
-    numInputPorts = 0;
-    numOutputPorts = 0;
-    for (const Node *node : adg.nodeRange()) {
-      if (!node)
-        continue;
-      if (node->kind == Node::ModuleInputNode)
-        ++numInputPorts;
-      if (node->kind == Node::ModuleOutputNode)
-        ++numOutputPorts;
-    }
-    boundInputs.assign(numInputPorts, 0);
-    return {};
-  }
-
-  std::string loadConfig(const std::vector<uint8_t> &configBlob) override {
-    configWords = static_cast<uint64_t>((configBlob.size() + 3) / 4);
-    return {};
-  }
-
-  std::string setInput(unsigned portIdx, const std::vector<uint64_t> &data,
-                       const std::vector<uint16_t> &tags) override {
-    (void)tags;
-    if (portIdx >= numInputPorts) {
-      std::ostringstream oss;
-      oss << "input port " << portIdx << " out of range";
-      return oss.str();
-    }
-    if (boundInputs.size() <= portIdx)
-      boundInputs.resize(portIdx + 1, 0);
-    boundInputs[portIdx] = data.size();
-    return {};
-  }
-
-  std::string setExtMemoryBacking(unsigned regionId, uint8_t *data,
-                                  size_t sizeBytes) override {
-    (void)data;
-    if (boundRegions.size() <= regionId)
-      boundRegions.resize(regionId + 1, 0);
-    boundRegions[regionId] = sizeBytes;
-    return {};
-  }
-
-  SimResult invoke(uint32_t epochId, uint64_t invocationId) override {
-    SimResult result;
-    result.success = false;
-    result.termination = RunTermination::ContractError;
-    result.totalCycles = 0;
-    result.configCycles = configWords * config.configWordsPerCycle;
-    result.totalConfigWrites = configWords;
-    result.errorMessage =
-        "standalone simulator backend is not implemented yet";
-
-    if (config.traceMode != TraceMode::Off) {
-      TraceEvent start;
-      start.cycle = 0;
-      start.epochId = epochId;
-      start.invocationId = invocationId;
-      start.coreId = config.coreId;
-      start.eventKind = EventKind::InvocationStart;
-      result.traceEvents.push_back(start);
-
-      TraceEvent error;
-      error.cycle = 0;
-      error.epochId = epochId;
-      error.invocationId = invocationId;
-      error.coreId = config.coreId;
-      error.eventKind = EventKind::DeviceError;
-      error.arg0 = static_cast<uint32_t>(numInputPorts);
-      error.arg1 = static_cast<uint32_t>(numOutputPorts);
-      result.traceEvents.push_back(error);
-    }
-
-    return result;
-  }
-
-  unsigned getNumInputPorts() const override { return numInputPorts; }
-  unsigned getNumOutputPorts() const override { return numOutputPorts; }
-
-private:
-  SimConfig config;
-  unsigned numInputPorts = 0;
-  unsigned numOutputPorts = 0;
-  uint64_t configWords = 0;
-  std::vector<size_t> boundInputs;
-  std::vector<size_t> boundRegions;
-};
 
 } // namespace
 
@@ -166,7 +72,7 @@ const char *sessionStateName(SessionState state) {
 
 std::unique_ptr<SimulationBackend>
 SimSession::createDefaultBackend(const SimConfig &config) {
-  return std::make_unique<NullSimulationBackend>(config);
+  return std::make_unique<FunctionalSimulationBackend>(config);
 }
 
 SimSession::SimSession(std::unique_ptr<SimulationBackend> backend,
