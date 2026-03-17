@@ -1,4 +1,5 @@
 #include "fcc/Mapper/ADGFlattener.h"
+#include "fcc/Mapper/BridgeBinding.h"
 
 #include "fcc/Dialect/Fabric/FabricDialect.h"
 #include "fcc/Dialect/Fabric/FabricOps.h"
@@ -7,6 +8,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Builders.h"
 
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/raw_ostream.h"
@@ -164,6 +166,7 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
   // since definitions may be at either level.
   llvm::StringMap<fcc::fabric::SpatialPEOp> peDefMap;
   llvm::StringMap<fcc::fabric::SpatialSwOp> swDefMap;
+  llvm::StringMap<fcc::fabric::TemporalSwOp> temporalSwDefMap;
   // Scan top-level module (definitions outside fabric.module)
   topModule->walk([&](fcc::fabric::SpatialPEOp peOp) {
     if (auto symName = peOp.getSymName())
@@ -173,6 +176,54 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
     if (auto symName = swOp.getSymName())
       swDefMap[*symName] = swOp;
   });
+  topModule->walk([&](fcc::fabric::TemporalSwOp swOp) {
+    if (auto symName = swOp.getSymName())
+      temporalSwDefMap[*symName] = swOp;
+  });
+
+  llvm::DenseMap<mlir::Operation *, IdIndex> opToNodeId;
+  unsigned autoTemporalSwCount = 0;
+  unsigned autoExtMemCount = 0;
+  unsigned autoMemCount = 0;
+  unsigned autoFifoCount = 0;
+  unsigned autoAddTagCount = 0;
+  unsigned autoDelTagCount = 0;
+  unsigned autoMapTagCount = 0;
+
+  auto getOrCreateOpName = [&](mlir::Operation &op) -> std::string {
+    if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
+      if (auto symName = instOp.getSymName())
+        return symName->str();
+      return ("inst_" + std::to_string(opToNodeId.size()));
+    }
+    if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
+      if (auto symName = extOp.getSymName())
+        return symName->str();
+      return ("extmemory_" + std::to_string(autoExtMemCount++));
+    }
+    if (auto memOp = mlir::dyn_cast<fcc::fabric::MemoryOp>(op)) {
+      if (auto symName = memOp.getSymName())
+        return symName->str();
+      return ("memory_" + std::to_string(autoMemCount++));
+    }
+    if (auto fifoOp = mlir::dyn_cast<fcc::fabric::FifoOp>(op)) {
+      if (auto symName = fifoOp.getSymName())
+        return symName->str();
+      return ("fifo_" + std::to_string(autoFifoCount++));
+    }
+    if (auto tswOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op)) {
+      if (auto symName = tswOp.getSymName())
+        return symName->str();
+      return ("temporal_sw_" + std::to_string(autoTemporalSwCount++));
+    }
+    if (mlir::isa<fcc::fabric::AddTagOp>(op))
+      return ("add_tag_" + std::to_string(autoAddTagCount++));
+    if (mlir::isa<fcc::fabric::DelTagOp>(op))
+      return ("del_tag_" + std::to_string(autoDelTagCount++));
+    if (mlir::isa<fcc::fabric::MapTagOp>(op))
+      return ("map_tag_" + std::to_string(autoMapTagCount++));
+    return op.getName().getStringRef().str();
+  };
 
   // Helper lambda: create FU nodes from a PE definition for a given instance.
   auto createFUNodesFromPE = [&](fcc::fabric::SpatialPEOp peOp,
@@ -201,6 +252,8 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       std::string fuName = fuOp.getSymName().str();
       setNodeAttr(fuNode.get(), "op_name",
                   mlir::StringAttr::get(ctx, fuName), ctx);
+      setNodeAttr(fuNode.get(), "op_kind",
+                  mlir::StringAttr::get(ctx, "function_unit"), ctx);
       setNodeAttr(fuNode.get(), "resource_class",
                   mlir::StringAttr::get(ctx, "functional"), ctx);
       setNodeAttr(fuNode.get(), "pe_name",
@@ -288,6 +341,8 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
 
         setNodeAttr(swNode.get(), "op_name",
                     mlir::StringAttr::get(ctx, instanceName), ctx);
+        setNodeAttr(swNode.get(), "op_kind",
+                    mlir::StringAttr::get(ctx, "spatial_sw"), ctx);
         setNodeAttr(swNode.get(), "resource_class",
                     mlir::StringAttr::get(ctx, "routing"), ctx);
 
@@ -315,6 +370,7 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
         }
 
         IdIndex swNodeId = adg.addNode(std::move(swNode));
+        opToNodeId[instOp.getOperation()] = swNodeId;
         nodeGridPos[swNodeId] = gridPos;
 
         auto *node = adg.getNode(swNodeId);
@@ -327,6 +383,66 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
         for (unsigned i = 0; i < instOp.getNumResults(); ++i) {
           valueToOutputPort[instOp.getResult(i)] = node->outputPorts[i];
         }
+        continue;
+      }
+
+      auto tswIt = temporalSwDefMap.find(moduleName);
+      if (tswIt != temporalSwDefMap.end()) {
+        auto tswDef = tswIt->second;
+        auto tswNode = std::make_unique<Node>();
+        tswNode->kind = Node::OperationNode;
+
+        if (instanceName.empty())
+          instanceName = getOrCreateOpName(op);
+
+        setNodeAttr(tswNode.get(), "op_name",
+                    mlir::StringAttr::get(ctx, instanceName), ctx);
+        setNodeAttr(tswNode.get(), "op_kind",
+                    mlir::StringAttr::get(ctx, "temporal_sw"), ctx);
+        setNodeAttr(tswNode.get(), "resource_class",
+                    mlir::StringAttr::get(ctx, "routing"), ctx);
+        setNodeAttr(tswNode.get(), "num_route_table",
+                    mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                           tswDef.getNumRouteTable()),
+                    ctx);
+        if (auto ct = tswDef.getConnectivityTable())
+          setNodeAttr(tswNode.get(), "connectivity_table", *ct, ctx);
+
+        auto gridPos = parseGridPos(instanceName);
+        auto tswFnType = tswDef.getFunctionType();
+
+        for (unsigned i = 0; i < tswFnType.getNumInputs(); ++i) {
+          auto port = std::make_unique<Port>();
+          port->direction = Port::Input;
+          port->type = tswFnType.getInput(i);
+          IdIndex portId = adg.addPort(std::move(port));
+          adg.ports[portId]->parentNode =
+              static_cast<IdIndex>(adg.nodes.size());
+          tswNode->inputPorts.push_back(portId);
+        }
+
+        for (unsigned i = 0; i < tswFnType.getNumResults(); ++i) {
+          auto port = std::make_unique<Port>();
+          port->direction = Port::Output;
+          port->type = tswFnType.getResult(i);
+          IdIndex portId = adg.addPort(std::move(port));
+          adg.ports[portId]->parentNode =
+              static_cast<IdIndex>(adg.nodes.size());
+          tswNode->outputPorts.push_back(portId);
+        }
+
+        IdIndex tswNodeId = adg.addNode(std::move(tswNode));
+        opToNodeId[instOp.getOperation()] = tswNodeId;
+        nodeGridPos[tswNodeId] = gridPos;
+
+        auto *node = adg.getNode(tswNodeId);
+        for (IdIndex ip : node->inputPorts) {
+          for (IdIndex op : node->outputPorts)
+            connectivity.inToOut[ip].push_back(op);
+        }
+
+        for (unsigned i = 0; i < instOp.getNumResults(); ++i)
+          valueToOutputPort[instOp.getResult(i)] = node->outputPorts[i];
         continue;
       }
 
@@ -373,6 +489,8 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
 
         setNodeAttr(fuNode.get(), "op_name",
                     mlir::StringAttr::get(ctx, fuName), ctx);
+        setNodeAttr(fuNode.get(), "op_kind",
+                    mlir::StringAttr::get(ctx, "function_unit"), ctx);
         setNodeAttr(fuNode.get(), "resource_class",
                     mlir::StringAttr::get(ctx, "functional"), ctx);
         setNodeAttr(fuNode.get(), "pe_name",
@@ -461,6 +579,8 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
 
       setNodeAttr(swNode.get(), "op_name",
                   mlir::StringAttr::get(ctx, swName), ctx);
+      setNodeAttr(swNode.get(), "op_kind",
+                  mlir::StringAttr::get(ctx, "spatial_sw"), ctx);
       setNodeAttr(swNode.get(), "resource_class",
                   mlir::StringAttr::get(ctx, "routing"), ctx);
 
@@ -491,6 +611,7 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       }
 
       IdIndex swNodeId = adg.addNode(std::move(swNode));
+      opToNodeId[swOp.getOperation()] = swNodeId;
       nodeGridPos[swNodeId] = gridPos;
 
       // Register internal connectivity based on connectivity_table.
@@ -508,16 +629,69 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       continue;
     }
 
+    if (auto tswOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op)) {
+      auto tswNode = std::make_unique<Node>();
+      tswNode->kind = Node::OperationNode;
+
+      std::string tswName = getOrCreateOpName(op);
+      setNodeAttr(tswNode.get(), "op_name",
+                  mlir::StringAttr::get(ctx, tswName), ctx);
+      setNodeAttr(tswNode.get(), "op_kind",
+                  mlir::StringAttr::get(ctx, "temporal_sw"), ctx);
+      setNodeAttr(tswNode.get(), "resource_class",
+                  mlir::StringAttr::get(ctx, "routing"), ctx);
+      setNodeAttr(tswNode.get(), "num_route_table",
+                  mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                         tswOp.getNumRouteTable()),
+                  ctx);
+      if (auto ct = tswOp.getConnectivityTable())
+        setNodeAttr(tswNode.get(), "connectivity_table", *ct, ctx);
+
+      auto gridPos = parseGridPos(tswName);
+      auto tswFnType = tswOp.getFunctionType();
+      for (unsigned i = 0; i < tswFnType.getNumInputs(); ++i) {
+        auto port = std::make_unique<Port>();
+        port->direction = Port::Input;
+        port->type = tswFnType.getInput(i);
+        IdIndex portId = adg.addPort(std::move(port));
+        adg.ports[portId]->parentNode =
+            static_cast<IdIndex>(adg.nodes.size());
+        tswNode->inputPorts.push_back(portId);
+      }
+      for (unsigned i = 0; i < tswFnType.getNumResults(); ++i) {
+        auto port = std::make_unique<Port>();
+        port->direction = Port::Output;
+        port->type = tswFnType.getResult(i);
+        IdIndex portId = adg.addPort(std::move(port));
+        adg.ports[portId]->parentNode =
+            static_cast<IdIndex>(adg.nodes.size());
+        tswNode->outputPorts.push_back(portId);
+      }
+
+      IdIndex tswNodeId = adg.addNode(std::move(tswNode));
+      opToNodeId[tswOp.getOperation()] = tswNodeId;
+      nodeGridPos[tswNodeId] = gridPos;
+
+      auto *node = adg.getNode(tswNodeId);
+      for (IdIndex ip : node->inputPorts) {
+        for (IdIndex op : node->outputPorts)
+          connectivity.inToOut[ip].push_back(op);
+      }
+      for (unsigned i = 0; i < tswOp.getNumResults(); ++i)
+        valueToOutputPort[tswOp.getResult(i)] = node->outputPorts[i];
+      continue;
+    }
+
     if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
       auto memNode = std::make_unique<Node>();
       memNode->kind = Node::OperationNode;
 
-      std::string memName;
-      if (auto symName = extOp.getSymName())
-        memName = symName->str();
+      std::string memName = getOrCreateOpName(op);
 
       setNodeAttr(memNode.get(), "op_name",
                   mlir::StringAttr::get(ctx, memName), ctx);
+      setNodeAttr(memNode.get(), "op_kind",
+                  mlir::StringAttr::get(ctx, "extmemory"), ctx);
       setNodeAttr(memNode.get(), "resource_class",
                   mlir::StringAttr::get(ctx, "memory"), ctx);
       setNodeAttr(memNode.get(), "ldCount",
@@ -546,6 +720,18 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
               "connected_sw_detail")) {
         setNodeAttr(memNode.get(), "connected_sw_detail", connSwDetailAttr, ctx);
       }
+      if (auto numRegionAttr =
+              extOp->getAttrOfType<mlir::IntegerAttr>("numRegion")) {
+        setNodeAttr(memNode.get(), "numRegion", numRegionAttr, ctx);
+      }
+      if (auto memrefTypeAttr =
+              extOp->getAttrOfType<mlir::TypeAttr>("memref_type")) {
+        setNodeAttr(memNode.get(), "memref_type", memrefTypeAttr, ctx);
+      }
+      if (auto addrOffsetAttr =
+              extOp->getAttrOfType<mlir::DenseI64ArrayAttr>("addrOffsetTable")) {
+        setNodeAttr(memNode.get(), "addrOffsetTable", addrOffsetAttr, ctx);
+      }
 
       // Create input ports from function type.
       auto memFnType = extOp.getFunctionType();
@@ -571,6 +757,7 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       }
 
       IdIndex memNodeId = adg.addNode(std::move(memNode));
+      opToNodeId[extOp.getOperation()] = memNodeId;
 
       // Internal connectivity.
       auto *node = adg.getNode(memNodeId);
@@ -586,16 +773,80 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       continue;
     }
 
+    if (auto memOp = mlir::dyn_cast<fcc::fabric::MemoryOp>(op)) {
+      auto memNode = std::make_unique<Node>();
+      memNode->kind = Node::OperationNode;
+
+      std::string memName = getOrCreateOpName(op);
+      setNodeAttr(memNode.get(), "op_name",
+                  mlir::StringAttr::get(ctx, memName), ctx);
+      setNodeAttr(memNode.get(), "op_kind",
+                  mlir::StringAttr::get(ctx, "memory"), ctx);
+      setNodeAttr(memNode.get(), "resource_class",
+                  mlir::StringAttr::get(ctx, "memory"), ctx);
+      setNodeAttr(memNode.get(), "ldCount",
+                  mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                         memOp.getLdCount()),
+                  ctx);
+      setNodeAttr(memNode.get(), "stCount",
+                  mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                         memOp.getStCount()),
+                  ctx);
+      if (auto numRegionAttr =
+              memOp->getAttrOfType<mlir::IntegerAttr>("numRegion")) {
+        setNodeAttr(memNode.get(), "numRegion", numRegionAttr, ctx);
+      }
+      if (auto memrefTypeAttr =
+              memOp->getAttrOfType<mlir::TypeAttr>("memref_type")) {
+        setNodeAttr(memNode.get(), "memref_type", memrefTypeAttr, ctx);
+      }
+      if (auto addrOffsetAttr =
+              memOp->getAttrOfType<mlir::DenseI64ArrayAttr>("addrOffsetTable")) {
+        setNodeAttr(memNode.get(), "addrOffsetTable", addrOffsetAttr, ctx);
+      }
+
+      auto memFnType = memOp.getFunctionType();
+      for (unsigned i = 0; i < memFnType.getNumInputs(); ++i) {
+        auto port = std::make_unique<Port>();
+        port->direction = Port::Input;
+        port->type = memFnType.getInput(i);
+        IdIndex portId = adg.addPort(std::move(port));
+        adg.ports[portId]->parentNode =
+            static_cast<IdIndex>(adg.nodes.size());
+        memNode->inputPorts.push_back(portId);
+      }
+      for (unsigned i = 0; i < memFnType.getNumResults(); ++i) {
+        auto port = std::make_unique<Port>();
+        port->direction = Port::Output;
+        port->type = memFnType.getResult(i);
+        IdIndex portId = adg.addPort(std::move(port));
+        adg.ports[portId]->parentNode =
+            static_cast<IdIndex>(adg.nodes.size());
+        memNode->outputPorts.push_back(portId);
+      }
+
+      IdIndex memNodeId = adg.addNode(std::move(memNode));
+      opToNodeId[memOp.getOperation()] = memNodeId;
+      auto *node = adg.getNode(memNodeId);
+      for (IdIndex ip : node->inputPorts) {
+        for (IdIndex op : node->outputPorts)
+          connectivity.inToOut[ip].push_back(op);
+      }
+      for (unsigned i = 0; i < memOp.getNumResults(); ++i)
+        valueToOutputPort[memOp.getResult(i)] = node->outputPorts[i];
+      continue;
+    }
+
     if (auto fifoOp = mlir::dyn_cast<fcc::fabric::FifoOp>(op)) {
       auto fifoNode = std::make_unique<Node>();
       fifoNode->kind = Node::OperationNode;
 
-      std::string fifoName;
-      if (auto symName = fifoOp.getSymName())
-        fifoName = symName->str();
+      std::string fifoName = getOrCreateOpName(op);
 
       setNodeAttr(fifoNode.get(), "op_name",
                   mlir::StringAttr::get(ctx, fifoName), ctx);
+      setNodeAttr(fifoNode.get(), "op_kind",
+                  mlir::StringAttr::get(ctx, "fifo"), ctx);
       setNodeAttr(fifoNode.get(), "resource_class",
                   mlir::StringAttr::get(ctx, "routing"), ctx);
 
@@ -623,6 +874,7 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       }
 
       IdIndex fifoNodeId = adg.addNode(std::move(fifoNode));
+      opToNodeId[fifoOp.getOperation()] = fifoNodeId;
 
       // Internal connectivity.
       auto *node = adg.getNode(fifoNodeId);
@@ -635,6 +887,111 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       for (unsigned i = 0; i < fifoOp.getNumResults(); ++i) {
         valueToOutputPort[fifoOp.getResult(i)] = node->outputPorts[i];
       }
+      continue;
+    }
+
+    if (auto addTagOp = mlir::dyn_cast<fcc::fabric::AddTagOp>(op)) {
+      auto routeNode = std::make_unique<Node>();
+      routeNode->kind = Node::OperationNode;
+      std::string nodeName = getOrCreateOpName(op);
+
+      setNodeAttr(routeNode.get(), "op_name",
+                  mlir::StringAttr::get(ctx, nodeName), ctx);
+      setNodeAttr(routeNode.get(), "op_kind",
+                  mlir::StringAttr::get(ctx, "add_tag"), ctx);
+      setNodeAttr(routeNode.get(), "resource_class",
+                  mlir::StringAttr::get(ctx, "routing"), ctx);
+      if (auto tagAttr = addTagOp->getAttr("tag"))
+        setNodeAttr(routeNode.get(), "tag", tagAttr, ctx);
+
+      auto inPort = std::make_unique<Port>();
+      inPort->direction = Port::Input;
+      inPort->type = addTagOp.getValue().getType();
+      IdIndex inPortId = adg.addPort(std::move(inPort));
+      adg.ports[inPortId]->parentNode = static_cast<IdIndex>(adg.nodes.size());
+      routeNode->inputPorts.push_back(inPortId);
+
+      auto outPort = std::make_unique<Port>();
+      outPort->direction = Port::Output;
+      outPort->type = addTagOp.getResult().getType();
+      IdIndex outPortId = adg.addPort(std::move(outPort));
+      adg.ports[outPortId]->parentNode = static_cast<IdIndex>(adg.nodes.size());
+      routeNode->outputPorts.push_back(outPortId);
+
+      IdIndex nodeId = adg.addNode(std::move(routeNode));
+      opToNodeId[addTagOp.getOperation()] = nodeId;
+      connectivity.inToOut[inPortId].push_back(outPortId);
+      valueToOutputPort[addTagOp.getResult()] = outPortId;
+      continue;
+    }
+
+    if (auto delTagOp = mlir::dyn_cast<fcc::fabric::DelTagOp>(op)) {
+      auto routeNode = std::make_unique<Node>();
+      routeNode->kind = Node::OperationNode;
+      std::string nodeName = getOrCreateOpName(op);
+
+      setNodeAttr(routeNode.get(), "op_name",
+                  mlir::StringAttr::get(ctx, nodeName), ctx);
+      setNodeAttr(routeNode.get(), "op_kind",
+                  mlir::StringAttr::get(ctx, "del_tag"), ctx);
+      setNodeAttr(routeNode.get(), "resource_class",
+                  mlir::StringAttr::get(ctx, "routing"), ctx);
+
+      auto inPort = std::make_unique<Port>();
+      inPort->direction = Port::Input;
+      inPort->type = delTagOp.getTagged().getType();
+      IdIndex inPortId = adg.addPort(std::move(inPort));
+      adg.ports[inPortId]->parentNode = static_cast<IdIndex>(adg.nodes.size());
+      routeNode->inputPorts.push_back(inPortId);
+
+      auto outPort = std::make_unique<Port>();
+      outPort->direction = Port::Output;
+      outPort->type = delTagOp.getResult().getType();
+      IdIndex outPortId = adg.addPort(std::move(outPort));
+      adg.ports[outPortId]->parentNode = static_cast<IdIndex>(adg.nodes.size());
+      routeNode->outputPorts.push_back(outPortId);
+
+      IdIndex nodeId = adg.addNode(std::move(routeNode));
+      opToNodeId[delTagOp.getOperation()] = nodeId;
+      connectivity.inToOut[inPortId].push_back(outPortId);
+      valueToOutputPort[delTagOp.getResult()] = outPortId;
+      continue;
+    }
+
+    if (auto mapTagOp = mlir::dyn_cast<fcc::fabric::MapTagOp>(op)) {
+      auto routeNode = std::make_unique<Node>();
+      routeNode->kind = Node::OperationNode;
+      std::string nodeName = getOrCreateOpName(op);
+
+      setNodeAttr(routeNode.get(), "op_name",
+                  mlir::StringAttr::get(ctx, nodeName), ctx);
+      setNodeAttr(routeNode.get(), "op_kind",
+                  mlir::StringAttr::get(ctx, "map_tag"), ctx);
+      setNodeAttr(routeNode.get(), "resource_class",
+                  mlir::StringAttr::get(ctx, "routing"), ctx);
+      if (auto tableSizeAttr = mapTagOp->getAttr("table_size"))
+        setNodeAttr(routeNode.get(), "table_size", tableSizeAttr, ctx);
+      if (auto tableAttr = mapTagOp->getAttr("table"))
+        setNodeAttr(routeNode.get(), "table", tableAttr, ctx);
+
+      auto inPort = std::make_unique<Port>();
+      inPort->direction = Port::Input;
+      inPort->type = mapTagOp.getTagged().getType();
+      IdIndex inPortId = adg.addPort(std::move(inPort));
+      adg.ports[inPortId]->parentNode = static_cast<IdIndex>(adg.nodes.size());
+      routeNode->inputPorts.push_back(inPortId);
+
+      auto outPort = std::make_unique<Port>();
+      outPort->direction = Port::Output;
+      outPort->type = mapTagOp.getResult().getType();
+      IdIndex outPortId = adg.addPort(std::move(outPort));
+      adg.ports[outPortId]->parentNode = static_cast<IdIndex>(adg.nodes.size());
+      routeNode->outputPorts.push_back(outPortId);
+
+      IdIndex nodeId = adg.addNode(std::move(routeNode));
+      opToNodeId[mapTagOp.getOperation()] = nodeId;
+      connectivity.inToOut[inPortId].push_back(outPortId);
+      valueToOutputPort[mapTagOp.getResult()] = outPortId;
       continue;
     }
   }
@@ -747,82 +1104,29 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
     }
   }
 
-  // Build map: (op, operandIdx) -> vector of input port IDs.
-  // For non-PE consumer ops: direct input port.
-  // For PE consumer ops: all FU input ports in that PE.
-  // We need to find which node/port each operand maps to.
-
-  // Rebuild a map from Operation* to its input port list in the ADG.
-  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<IdIndex, 8>>
-      opToInputPorts;
-
-  // For non-PE ops.
-  {
-    size_t nonPeNodeIdx = 0;
-    for (auto &op : body.getOperations()) {
-      if (mlir::isa<fcc::fabric::SpatialPEOp>(op))
-        continue;
-      if (mlir::isa<fcc::fabric::YieldOp>(op))
-        continue;
-
-      // Find the matching node in the ADG.
-      // Non-PE nodes were added after all PE FU nodes. We need to match them.
-      // Build a different map by name or by op pointer.
-    }
-  }
-
-  // Simpler approach: iterate ops in order and track which ADG nodes they
-  // correspond to. We know the order: all PE FUs first, then switches,
-  // extmemory, fifos in order.
-
-  // Collect non-PE, non-SW-instance ops (extmemory, fifo, etc.) that were
-  // created in pass 1 as standalone ADG nodes with their own SSA results.
-  std::vector<mlir::Operation *> nonPeOps;
-  for (auto &op : body.getOperations()) {
-    if (mlir::isa<fcc::fabric::SpatialPEOp>(op))
-      continue;
-    if (mlir::isa<fcc::fabric::YieldOp>(op))
-      continue;
-    if (mlir::isa<fcc::fabric::SpatialSwOp>(op))
-      continue;
-    if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
-      if (peDefMap.count(instOp.getModule()) ||
-          swDefMap.count(instOp.getModule()))
-        continue;
-    }
-    nonPeOps.push_back(&op);
-  }
-
   // Count total FU nodes.
   IdIndex totalFuNodes = 0;
   for (auto &pe : peContainment)
     totalFuNodes += pe.fuNodeIds.size();
 
-  // The nonPeOps correspond to the last N nodes created in pass 1
-  // (after all sentinel, SW instance, and FU nodes).
-  IdIndex nonPeStartIdx = static_cast<IdIndex>(adg.nodes.size()) -
-                           static_cast<IdIndex>(nonPeOps.size());
-
-  // Wire edges for non-PE/non-SW ops (extmemory, fifo, etc.) based on SSA.
-  for (size_t i = 0; i < nonPeOps.size(); ++i) {
-    IdIndex nodeId = nonPeStartIdx + static_cast<IdIndex>(i);
-    auto *node = adg.getNode(nodeId);
+  // Wire all single-node operations and instances using the explicit
+  // opToNodeId map populated during pass 1.
+  for (auto &op : body.getOperations()) {
+    auto it = opToNodeId.find(&op);
+    if (it == opToNodeId.end())
+      continue;
+    auto *node = adg.getNode(it->second);
     if (!node)
       continue;
 
-    mlir::Operation *op = nonPeOps[i];
-
-    for (unsigned j = 0; j < op->getNumOperands(); ++j) {
-      mlir::Value operand = op->getOperand(j);
+    for (unsigned j = 0; j < op.getNumOperands(); ++j) {
       if (j >= node->inputPorts.size())
         break;
-
-      IdIndex dstPortId = node->inputPorts[j];
-
-      auto srcIt = valueSrcPorts.find(operand);
+      auto srcIt = valueSrcPorts.find(op.getOperand(j));
       if (srcIt == valueSrcPorts.end())
         continue;
 
+      IdIndex dstPortId = node->inputPorts[j];
       for (IdIndex srcPortId : srcIt->second) {
         auto edge = std::make_unique<Edge>();
         edge->srcPort = srcPortId;
@@ -851,56 +1155,6 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
         }
       };
 
-  // Wire SW instance operands based on SSA def-use chains.
-  // Each SW instance op has operands that are SSA values from other ops
-  // (neighboring switches, PEs, etc.). We create edges from the producer's
-  // output port(s) to the corresponding SW input port.
-  for (auto &op : body.getOperations()) {
-    auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op);
-    if (!instOp)
-      continue;
-    if (!swDefMap.count(instOp.getModule()))
-      continue;
-
-    // Find the ADG node for this SW instance by matching the output port.
-    // The first result's output port was registered in valueToOutputPort.
-    if (instOp.getNumResults() == 0)
-      continue;
-    auto outIt = valueToOutputPort.find(instOp.getResult(0));
-    if (outIt == valueToOutputPort.end())
-      continue;
-    IdIndex firstOutPortId = outIt->second;
-    const Port *firstOutPort = adg.getPort(firstOutPortId);
-    if (!firstOutPort)
-      continue;
-    IdIndex swNodeId = firstOutPort->parentNode;
-    auto *swNode = adg.getNode(swNodeId);
-    if (!swNode)
-      continue;
-
-    for (unsigned j = 0; j < instOp.getNumOperands(); ++j) {
-      mlir::Value operand = instOp.getOperand(j);
-      if (j >= swNode->inputPorts.size())
-        break;
-
-      IdIndex dstPortId = swNode->inputPorts[j];
-
-      auto srcIt = valueSrcPorts.find(operand);
-      if (srcIt == valueSrcPorts.end())
-        continue;
-
-      for (IdIndex srcPortId : srcIt->second) {
-        auto edge = std::make_unique<Edge>();
-        edge->srcPort = srcPortId;
-        edge->dstPort = dstPortId;
-        IdIndex edgeId = adg.addEdge(std::move(edge));
-        adg.ports[srcPortId]->connectedEdges.push_back(edgeId);
-        adg.ports[dstPortId]->connectedEdges.push_back(edgeId);
-        connectivity.outToIn[srcPortId].push_back(dstPortId);
-      }
-    }
-  }
-
   // Wire PE instance operands based on SSA def-use chains.
   // Each PE instance has operands from its local switch. We create edges
   // from the producer's output port(s) to ALL FU input ports in that PE
@@ -925,12 +1179,9 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
     }
   }
 
-  // Wire reverse connectivity: SW output ports -> ExtMem input ports.
-  // The ADGBuilder creates connections from ExtMem outputs to SW inputs via
-  // SSA operands, but the reverse direction (SW outputs feeding ExtMem data
-  // inputs) is recorded as metadata on the ExtMem op. We need to explicitly
-  // add these edges so the routing BFS can find paths from compute nodes back
-  // to external memory.
+  // Legacy fallback: wire SW output ports -> ExtMem input ports from metadata.
+  // Newer ADGs spell these edges with real SSA operands on fabric.extmemory,
+  // so this block only runs when the data input ports still have no producer.
   {
     // Build a map from instance name -> SW ADG node ID.
     llvm::DenseMap<llvm::StringRef, IdIndex> swNameToNodeId;
@@ -949,6 +1200,17 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       if (!n)
         continue;
       if (getNodeAttrStr(n, "resource_class") != "memory")
+        continue;
+
+      bool hasStructuredInputs = false;
+      for (unsigned inIdx = 1; inIdx < n->inputPorts.size(); ++inIdx) {
+        const Port *inPort = adg.getPort(n->inputPorts[inIdx]);
+        if (inPort && !inPort->connectedEdges.empty()) {
+          hasStructuredInputs = true;
+          break;
+        }
+      }
+      if (hasStructuredInputs)
         continue;
 
       auto connectSwitchToMemory = [&](llvm::StringRef swName,
@@ -1078,6 +1340,348 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
   //   for block arguments, so SW/PE instances that consume those values
   //   already have edges from the sentinel to their input ports.
   // - Output sentinels: wired above from yield operands via valueSrcPorts.
+
+  {
+    mlir::Builder builder(ctx);
+
+    auto findFeedingPort = [&](IdIndex portId) -> IdIndex {
+      const Port *p = adg.getPort(portId);
+      if (!p)
+        return INVALID_ID;
+      for (IdIndex edgeId : p->connectedEdges) {
+        const Edge *e = adg.getEdge(edgeId);
+        if (e && e->dstPort == portId)
+          return e->srcPort;
+      }
+      return INVALID_ID;
+    };
+
+    auto findConsumingPort = [&](IdIndex portId) -> IdIndex {
+      const Port *p = adg.getPort(portId);
+      if (!p)
+        return INVALID_ID;
+      for (IdIndex edgeId : p->connectedEdges) {
+        const Edge *e = adg.getEdge(edgeId);
+        if (e && e->srcPort == portId)
+          return e->dstPort;
+      }
+      return INVALID_ID;
+    };
+
+    auto getPortOwnerKind = [&](IdIndex portId) -> llvm::StringRef {
+      const Port *p = adg.getPort(portId);
+      if (!p)
+        return "";
+      const Node *n = adg.getNode(p->parentNode);
+      if (!n)
+        return "";
+      return getNodeAttrStr(n, "op_kind");
+    };
+
+    for (IdIndex nodeId = 0; nodeId < static_cast<IdIndex>(adg.nodes.size());
+         ++nodeId) {
+      Node *node = adg.getNode(nodeId);
+      if (!node || node->kind != Node::OperationNode)
+        continue;
+      if (getNodeAttrStr(node, "resource_class") != "memory")
+        continue;
+
+      unsigned ldCount =
+          static_cast<unsigned>(getNodeAttrInt(node, "ldCount", 0));
+      unsigned stCount =
+          static_cast<unsigned>(getNodeAttrInt(node, "stCount", 0));
+      bool isExtMem = getNodeAttrStr(node, "op_kind") == "extmemory";
+
+      if (ldCount <= 1 && stCount <= 1)
+        continue;
+
+      auto traceInputBridge =
+          [&](unsigned memInputPortIdx, unsigned laneCount,
+              llvm::SmallVectorImpl<IdIndex> &addTagNodes,
+              IdIndex &muxNodeId) -> llvm::SmallVector<IdIndex, 4> {
+        muxNodeId = INVALID_ID;
+        llvm::SmallVector<IdIndex, 4> boundary;
+        if (memInputPortIdx >= node->inputPorts.size())
+          return boundary;
+
+        IdIndex memInPortId = node->inputPorts[memInputPortIdx];
+        IdIndex srcPortId = findFeedingPort(memInPortId);
+        if (srcPortId == INVALID_ID)
+          return boundary;
+
+        llvm::StringRef srcKind = getPortOwnerKind(srcPortId);
+        if (srcKind == "add_tag") {
+          const Port *srcPort = adg.getPort(srcPortId);
+          if (!srcPort)
+            return boundary;
+          const Node *atNode = adg.getNode(srcPort->parentNode);
+          if (!atNode || atNode->inputPorts.empty())
+            return boundary;
+          boundary.push_back(atNode->inputPorts[0]);
+          addTagNodes.push_back(srcPort->parentNode);
+          return boundary;
+        }
+
+        if (srcKind != "temporal_sw")
+          return boundary;
+
+        const Port *srcPort = adg.getPort(srcPortId);
+        if (!srcPort)
+          return boundary;
+        const Node *tswNode = adg.getNode(srcPort->parentNode);
+        if (!tswNode)
+          return boundary;
+        muxNodeId = srcPort->parentNode;
+        for (unsigned lane = 0;
+             lane < tswNode->inputPorts.size() && lane < laneCount; ++lane) {
+          IdIndex tswInPort = tswNode->inputPorts[lane];
+          IdIndex atOutPort = findFeedingPort(tswInPort);
+          if (atOutPort == INVALID_ID || getPortOwnerKind(atOutPort) != "add_tag")
+            continue;
+          const Port *aop = adg.getPort(atOutPort);
+          if (!aop)
+            continue;
+          const Node *atNode = adg.getNode(aop->parentNode);
+          if (!atNode || atNode->inputPorts.empty())
+            continue;
+          boundary.push_back(atNode->inputPorts[0]);
+          addTagNodes.push_back(aop->parentNode);
+        }
+        return boundary;
+      };
+
+      auto traceOutputBridge =
+          [&](unsigned memOutputPortIdx, unsigned laneCount,
+              IdIndex &demuxNodeId) -> llvm::SmallVector<IdIndex, 4> {
+        demuxNodeId = INVALID_ID;
+        llvm::SmallVector<IdIndex, 4> boundary;
+        if (memOutputPortIdx >= node->outputPorts.size())
+          return boundary;
+
+        IdIndex memOutPortId = node->outputPorts[memOutputPortIdx];
+        IdIndex dstPortId = findConsumingPort(memOutPortId);
+        if (dstPortId == INVALID_ID)
+          return boundary;
+
+        llvm::StringRef dstKind = getPortOwnerKind(dstPortId);
+        if (dstKind == "del_tag") {
+          const Port *dstPort = adg.getPort(dstPortId);
+          if (!dstPort)
+            return boundary;
+          const Node *dtNode = adg.getNode(dstPort->parentNode);
+          if (dtNode && !dtNode->outputPorts.empty())
+            boundary.push_back(dtNode->outputPorts[0]);
+          return boundary;
+        }
+
+        if (dstKind != "temporal_sw")
+          return boundary;
+
+        const Port *dstPort = adg.getPort(dstPortId);
+        if (!dstPort)
+          return boundary;
+        const Node *tswNode = adg.getNode(dstPort->parentNode);
+        if (!tswNode)
+          return boundary;
+        demuxNodeId = dstPort->parentNode;
+        for (unsigned lane = 0;
+             lane < tswNode->outputPorts.size() && lane < laneCount; ++lane) {
+          IdIndex tswOutPort = tswNode->outputPorts[lane];
+          IdIndex dtInPort = findConsumingPort(tswOutPort);
+          if (dtInPort == INVALID_ID || getPortOwnerKind(dtInPort) != "del_tag")
+            continue;
+          const Port *dip = adg.getPort(dtInPort);
+          if (!dip)
+            continue;
+          const Node *dtNode = adg.getNode(dip->parentNode);
+          if (dtNode && !dtNode->outputPorts.empty())
+            boundary.push_back(dtNode->outputPorts[0]);
+        }
+        return boundary;
+      };
+
+      llvm::SmallVector<IdIndex, 8> bridgeInputPorts;
+      llvm::SmallVector<BridgePortCategory, 8> bridgeInputCats;
+      llvm::SmallVector<unsigned, 8> bridgeInputLanes;
+      llvm::SmallVector<IdIndex, 8> allAddTagNodes;
+      llvm::SmallVector<IdIndex, 4> muxNodes;
+      unsigned memInIdx = isExtMem ? 1 : 0;
+
+      llvm::SmallVector<IdIndex, 4> ldAddrBoundary, stAddrBoundary,
+          stDataBoundary;
+      llvm::SmallVector<IdIndex, 4> ldAddrNodes, stAddrNodes, stDataNodes;
+      if (ldCount > 0) {
+        IdIndex muxId;
+        ldAddrBoundary =
+            traceInputBridge(memInIdx++, ldCount, ldAddrNodes, muxId);
+        if (muxId != INVALID_ID)
+          muxNodes.push_back(muxId);
+      }
+      if (stCount > 0) {
+        IdIndex muxId;
+        stAddrBoundary =
+            traceInputBridge(memInIdx++, stCount, stAddrNodes, muxId);
+        if (muxId != INVALID_ID)
+          muxNodes.push_back(muxId);
+        stDataBoundary =
+            traceInputBridge(memInIdx++, stCount, stDataNodes, muxId);
+        if (muxId != INVALID_ID)
+          muxNodes.push_back(muxId);
+
+        for (unsigned lane = 0; lane < stCount; ++lane) {
+          if (lane < stDataBoundary.size()) {
+            bridgeInputPorts.push_back(stDataBoundary[lane]);
+            bridgeInputCats.push_back(BridgePortCategory::StData);
+            bridgeInputLanes.push_back(lane);
+          }
+          if (lane < stAddrBoundary.size()) {
+            bridgeInputPorts.push_back(stAddrBoundary[lane]);
+            bridgeInputCats.push_back(BridgePortCategory::StAddr);
+            bridgeInputLanes.push_back(lane);
+          }
+          if (lane < stDataNodes.size())
+            allAddTagNodes.push_back(stDataNodes[lane]);
+          if (lane < stAddrNodes.size())
+            allAddTagNodes.push_back(stAddrNodes[lane]);
+        }
+      }
+      for (unsigned lane = 0; lane < ldCount && lane < ldAddrBoundary.size();
+           ++lane) {
+        bridgeInputPorts.push_back(ldAddrBoundary[lane]);
+        bridgeInputCats.push_back(BridgePortCategory::LdAddr);
+        bridgeInputLanes.push_back(lane);
+      }
+      for (unsigned lane = 0; lane < ldCount && lane < ldAddrNodes.size();
+           ++lane)
+        allAddTagNodes.push_back(ldAddrNodes[lane]);
+
+      llvm::SmallVector<IdIndex, 8> bridgeOutputPorts;
+      llvm::SmallVector<BridgePortCategory, 8> bridgeOutputCats;
+      llvm::SmallVector<unsigned, 8> bridgeOutputLanes;
+      llvm::SmallVector<IdIndex, 4> demuxNodes;
+      unsigned memOutIdx = 0;
+
+      if (ldCount > 0) {
+        IdIndex demuxId;
+        auto ldDataBoundary =
+            traceOutputBridge(memOutIdx++, ldCount, demuxId);
+        if (demuxId != INVALID_ID)
+          demuxNodes.push_back(demuxId);
+        for (unsigned lane = 0; lane < ldCount && lane < ldDataBoundary.size();
+             ++lane) {
+          bridgeOutputPorts.push_back(ldDataBoundary[lane]);
+          bridgeOutputCats.push_back(BridgePortCategory::LdData);
+          bridgeOutputLanes.push_back(lane);
+        }
+
+        auto ldDoneBoundary =
+            traceOutputBridge(memOutIdx++, ldCount, demuxId);
+        if (demuxId != INVALID_ID)
+          demuxNodes.push_back(demuxId);
+        for (unsigned lane = 0; lane < ldCount && lane < ldDoneBoundary.size();
+             ++lane) {
+          bridgeOutputPorts.push_back(ldDoneBoundary[lane]);
+          bridgeOutputCats.push_back(BridgePortCategory::LdDone);
+          bridgeOutputLanes.push_back(lane);
+        }
+      }
+      if (stCount > 0) {
+        IdIndex demuxId;
+        auto stDoneBoundary =
+            traceOutputBridge(memOutIdx++, stCount, demuxId);
+        if (demuxId != INVALID_ID)
+          demuxNodes.push_back(demuxId);
+        for (unsigned lane = 0; lane < stCount && lane < stDoneBoundary.size();
+             ++lane) {
+          bridgeOutputPorts.push_back(stDoneBoundary[lane]);
+          bridgeOutputCats.push_back(BridgePortCategory::StDone);
+          bridgeOutputLanes.push_back(lane);
+        }
+      }
+
+      if (bridgeInputPorts.empty() && bridgeOutputPorts.empty())
+        continue;
+
+      {
+        unsigned idx = 0;
+        for (unsigned lane = 0; lane < stCount && idx < allAddTagNodes.size();
+             ++lane) {
+          if (idx < allAddTagNodes.size()) {
+            Node *atNode = adg.getNode(allAddTagNodes[idx++]);
+            if (atNode) {
+              atNode->attributes.push_back(builder.getNamedAttr(
+                  "bridge_lane_index", builder.getI32IntegerAttr(lane)));
+            }
+          }
+          if (idx < allAddTagNodes.size()) {
+            Node *atNode = adg.getNode(allAddTagNodes[idx++]);
+            if (atNode) {
+              atNode->attributes.push_back(builder.getNamedAttr(
+                  "bridge_lane_index", builder.getI32IntegerAttr(lane)));
+            }
+          }
+        }
+        for (unsigned lane = 0; lane < ldCount && idx < allAddTagNodes.size();
+             ++lane) {
+          Node *atNode = adg.getNode(allAddTagNodes[idx++]);
+          if (atNode) {
+            atNode->attributes.push_back(builder.getNamedAttr(
+                "bridge_lane_index", builder.getI32IntegerAttr(lane)));
+          }
+        }
+      }
+
+      llvm::SmallVector<int32_t> inPorts32(bridgeInputPorts.begin(),
+                                           bridgeInputPorts.end());
+      llvm::SmallVector<int32_t> inCats32;
+      llvm::SmallVector<int32_t> inLanes32;
+      for (auto cat : bridgeInputCats)
+        inCats32.push_back(static_cast<int32_t>(cat));
+      for (unsigned lane : bridgeInputLanes)
+        inLanes32.push_back(static_cast<int32_t>(lane));
+      node->attributes.push_back(builder.getNamedAttr(
+          "bridge_input_ports",
+          mlir::DenseI32ArrayAttr::get(builder.getContext(), inPorts32)));
+      node->attributes.push_back(builder.getNamedAttr(
+          "bridge_input_categories",
+          mlir::DenseI32ArrayAttr::get(builder.getContext(), inCats32)));
+      node->attributes.push_back(builder.getNamedAttr(
+          "bridge_input_lanes",
+          mlir::DenseI32ArrayAttr::get(builder.getContext(), inLanes32)));
+
+      llvm::SmallVector<int32_t> outPorts32(bridgeOutputPorts.begin(),
+                                            bridgeOutputPorts.end());
+      llvm::SmallVector<int32_t> outCats32;
+      llvm::SmallVector<int32_t> outLanes32;
+      for (auto cat : bridgeOutputCats)
+        outCats32.push_back(static_cast<int32_t>(cat));
+      for (unsigned lane : bridgeOutputLanes)
+        outLanes32.push_back(static_cast<int32_t>(lane));
+      node->attributes.push_back(builder.getNamedAttr(
+          "bridge_output_ports",
+          mlir::DenseI32ArrayAttr::get(builder.getContext(), outPorts32)));
+      node->attributes.push_back(builder.getNamedAttr(
+          "bridge_output_categories",
+          mlir::DenseI32ArrayAttr::get(builder.getContext(), outCats32)));
+      node->attributes.push_back(builder.getNamedAttr(
+          "bridge_output_lanes",
+          mlir::DenseI32ArrayAttr::get(builder.getContext(), outLanes32)));
+
+      if (!muxNodes.empty()) {
+        llvm::SmallVector<int32_t> muxIds(muxNodes.begin(), muxNodes.end());
+        node->attributes.push_back(builder.getNamedAttr(
+            "bridge_mux_nodes",
+            mlir::DenseI32ArrayAttr::get(builder.getContext(), muxIds)));
+      }
+      if (!demuxNodes.empty()) {
+        llvm::SmallVector<int32_t> demuxIds(demuxNodes.begin(),
+                                            demuxNodes.end());
+        node->attributes.push_back(builder.getNamedAttr(
+            "bridge_demux_nodes",
+            mlir::DenseI32ArrayAttr::get(builder.getContext(), demuxIds)));
+      }
+    }
+  }
 
   // Count connectivity entries.
   size_t totalOutToIn = 0;

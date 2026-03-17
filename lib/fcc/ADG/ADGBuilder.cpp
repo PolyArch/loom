@@ -149,14 +149,6 @@ struct ADGBuilder::Impl {
   std::vector<ScalarToInstanceConn> scalarToInstConns;
   std::vector<InstanceToScalarConn> instToScalarConns;
 
-  struct ExtMemSWAssoc {
-    unsigned extMemInstIdx;
-    unsigned swInstIdx;
-    unsigned swInputPortBase;
-    unsigned swOutputPortBase;
-  };
-  std::vector<ExtMemSWAssoc> extMemSWAssociations;
-
   std::string generateMLIR() const;
   bool validate(std::string &errMsg) const;
 };
@@ -401,6 +393,44 @@ static unsigned getInstanceOutputCount(const std::vector<InstanceDef> &instances
     return 1;
   }
   return 0;
+}
+
+static unsigned getInstanceInputWidth(const std::vector<InstanceDef> &instances,
+                                      const std::vector<PEDef> &peDefs,
+                                      const std::vector<SWDef> &swDefs,
+                                      const std::vector<FIFODef> &fifoDefs,
+                                      unsigned instIdx, unsigned portIdx) {
+  const auto &inst = instances[instIdx];
+  switch (inst.kind) {
+  case InstanceKind::PE:
+    return peDefs[inst.defIdx].bitsWidth;
+  case InstanceKind::SW:
+    return swDefs[inst.defIdx].inputWidths[portIdx];
+  case InstanceKind::FIFO:
+    return fifoDefs[inst.defIdx].bitsWidth;
+  case InstanceKind::ExtMem:
+    return 32;
+  }
+  return 32;
+}
+
+static unsigned getInstanceOutputWidth(const std::vector<InstanceDef> &instances,
+                                       const std::vector<PEDef> &peDefs,
+                                       const std::vector<SWDef> &swDefs,
+                                       const std::vector<FIFODef> &fifoDefs,
+                                       unsigned instIdx, unsigned portIdx) {
+  const auto &inst = instances[instIdx];
+  switch (inst.kind) {
+  case InstanceKind::PE:
+    return peDefs[inst.defIdx].bitsWidth;
+  case InstanceKind::SW:
+    return swDefs[inst.defIdx].outputWidths[portIdx];
+  case InstanceKind::FIFO:
+    return fifoDefs[inst.defIdx].bitsWidth;
+  case InstanceKind::ExtMem:
+    return 32;
+  }
+  return 32;
 }
 
 //===----------------------------------------------------------------------===//
@@ -681,7 +711,8 @@ std::string ADGBuilder::Impl::generateMLIR() const {
     }
     case InstanceKind::ExtMem: {
       const auto &mem = extMemDefs[inst.defIdx];
-      unsigned numOut = mem.ldPorts + mem.stPorts + mem.ldPorts;
+      unsigned numDataInputs = mem.ldPorts + mem.stPorts * 2;
+      unsigned numOut = mem.ldPorts + mem.ldPorts + mem.stPorts;
       if (numOut > 0) {
         os << "  %v" << i;
         if (numOut > 1) os << ":" << numOut;
@@ -690,83 +721,120 @@ std::string ADGBuilder::Impl::generateMLIR() const {
       os << " [ldCount = " << mem.ldPorts
          << ", stCount = " << mem.stPorts
          << ", lsqDepth = " << mem.lsqDepth
-         << ", memref_type = memref<?xi32>]";
-      // Emit attributes dict with memref_arg_index and connected_sw.
-      {
-        bool hasAttrs = false;
-        auto startAttrs = [&]() {
-          if (!hasAttrs) os << " attributes {";
-          else os << ", ";
-          hasAttrs = true;
-        };
+         << ", memrefType = memref<?xi32>]";
+      os << " (";
 
-        for (const auto &mc : memrefConnections) {
-          if (mc.extMemInstIdx == i) {
-            startAttrs();
-            os << "memref_arg_index = " << mc.memrefIdx << " : i32";
-            break;
-          }
-        }
+      bool firstOperand = true;
+      auto emitOperandSep = [&]() {
+        if (!firstOperand)
+          os << ", ";
+        firstOperand = false;
+      };
 
-        // connected_sw records the adjacent switch names for quick lookup.
-        // connected_sw_detail preserves the actual port-base convention so
-        // the flattener can reconstruct SW->ExtMem reverse connectivity.
-        std::set<unsigned> connectedSWInsts;
-        for (const auto &assoc : extMemSWAssociations) {
-          if (assoc.extMemInstIdx == i)
-            connectedSWInsts.insert(assoc.swInstIdx);
-        }
-        if (!connectedSWInsts.empty()) {
-          startAttrs();
-          os << "connected_sw = [";
-          bool first2 = true;
-          for (unsigned swInst : connectedSWInsts) {
-            if (!first2) os << ", ";
-            first2 = false;
-            os << "\"" << instances[swInst].name << "\"";
-          }
-          os << "]";
-
-          startAttrs();
-          os << "connected_sw_detail = [";
-          bool first3 = true;
-          for (const auto &assoc : extMemSWAssociations) {
-            if (assoc.extMemInstIdx != i)
-              continue;
-            if (!first3)
-              os << ", ";
-            first3 = false;
-            os << "{name = \"" << instances[assoc.swInstIdx].name << "\""
-               << ", input_port_base = " << assoc.swInputPortBase << " : i32"
-               << ", output_port_base = " << assoc.swOutputPortBase
-               << " : i32}";
-          }
-          os << "]";
-        }
-
-        if (hasAttrs) os << "}";
+      bool emittedMemref = false;
+      for (const auto &mc : memrefConnections) {
+        if (mc.extMemInstIdx != i)
+          continue;
+        emitOperandSep();
+        os << "%mem" << mc.memrefIdx;
+        emittedMemref = true;
+        break;
+      }
+      if (!emittedMemref) {
+        emitOperandSep();
+        os << "%mem0";
       }
 
-      // Function type: all data ports use uniform 32-bit width for
-      // compatibility with the switch network port widths.
+      auto emitConnectedOperand = [&](unsigned portIdx) {
+        emitOperandSep();
+
+        auto scIt = scalarInputConns.find(i);
+        if (scIt != scalarInputConns.end()) {
+          auto scPit = scIt->second.find(portIdx);
+          if (scPit != scIt->second.end()) {
+            os << "%scalar" << scPit->second;
+            return;
+          }
+        }
+
+        auto it = incomingConns.find(i);
+        if (it != incomingConns.end()) {
+          auto pit = it->second.find(portIdx);
+          if (pit != it->second.end()) {
+            unsigned srcInst = pit->second.first;
+            unsigned srcPort = pit->second.second;
+            unsigned srcOutCount = getInstanceOutputCount(
+                instances, peDefs, swDefs, extMemDefs, srcInst);
+            os << "%v" << srcInst;
+            if (srcOutCount > 1)
+              os << "#" << srcPort;
+            return;
+          }
+        }
+
+        os << "%mem0";
+      };
+
+      for (unsigned p = 0; p < numDataInputs; ++p)
+        emitConnectedOperand(1 + p);
+      os << ")";
+
+      auto getExtMemInputWidth = [&](unsigned portIdx) {
+        auto scIt = scalarInputConns.find(i);
+        if (scIt != scalarInputConns.end()) {
+          auto scPit = scIt->second.find(portIdx);
+          if (scPit != scIt->second.end())
+            return scalarInputs[scPit->second].bitsWidth;
+        }
+        auto it = incomingConns.find(i);
+        if (it != incomingConns.end()) {
+          auto pit = it->second.find(portIdx);
+          if (pit != it->second.end()) {
+            return getInstanceOutputWidth(instances, peDefs, swDefs, fifoDefs,
+                                          pit->second.first, pit->second.second);
+          }
+        }
+        return 32u;
+      };
+
+      auto getExtMemOutputWidth = [&](unsigned portIdx) {
+        for (const auto &conn : connections) {
+          if (conn.srcInst != i || conn.srcPort != portIdx)
+            continue;
+          return getInstanceInputWidth(instances, peDefs, swDefs, fifoDefs,
+                                       conn.dstInst, conn.dstPort);
+        }
+        for (const auto &ic : instToScalarConns) {
+          if (ic.srcInst == i && ic.srcPort == portIdx)
+            return scalarOutputs[ic.scalarOutputIdx].bitsWidth;
+        }
+        return 32u;
+      };
+
       os << " : (memref<?xi32>";
-      for (unsigned s = 0; s < mem.stPorts; ++s)
-        os << ", !fabric.bits<32>, !fabric.bits<32>";
       for (unsigned l = 0; l < mem.ldPorts; ++l)
-        os << ", !fabric.bits<32>";
+        os << ", " << bitsType(getExtMemInputWidth(1 + l));
+      for (unsigned s = 0; s < mem.stPorts; ++s)
+        os << ", " << bitsType(getExtMemInputWidth(1 + mem.ldPorts + s));
+      for (unsigned s = 0; s < mem.stPorts; ++s)
+        os << ", "
+           << bitsType(getExtMemInputWidth(1 + mem.ldPorts + mem.stPorts + s));
       os << ") -> (";
       bool first = true;
       for (unsigned l = 0; l < mem.ldPorts; ++l) {
-        if (!first) os << ", "; first = false;
-        os << "!fabric.bits<32>";
-      }
-      for (unsigned s = 0; s < mem.stPorts; ++s) {
-        if (!first) os << ", "; first = false;
-        os << "!fabric.bits<32>";
+        if (!first) os << ", ";
+        first = false;
+        os << bitsType(getExtMemOutputWidth(l));
       }
       for (unsigned l = 0; l < mem.ldPorts; ++l) {
-        if (!first) os << ", "; first = false;
-        os << "!fabric.bits<32>";
+        if (!first) os << ", ";
+        first = false;
+        os << bitsType(getExtMemOutputWidth(mem.ldPorts + l));
+      }
+      for (unsigned s = 0; s < mem.stPorts; ++s) {
+        if (!first) os << ", ";
+        first = false;
+        os << bitsType(getExtMemOutputWidth(mem.ldPorts * 2 + s));
       }
       os << ")\n";
       break;
@@ -1026,10 +1094,6 @@ void ADGBuilder::associateExtMemWithSW(InstanceHandle extMem,
                                        InstanceHandle sw,
                                        unsigned swInputPortBase,
                                        unsigned swOutputPortBase) {
-  // Store a structural association for metadata (connected_sw attribute).
-  impl_->extMemSWAssociations.push_back(
-      {extMem.id, sw.id, swInputPortBase, swOutputPortBase});
-
   // Create real SSA connections: ExtMem outputs -> SW input ports.
   // ExtMem outputs: [ldData_0..L, stDone_0..S, ldDone_0..L]
   // These feed into SW input ports starting at swInputPortBase.
@@ -1047,9 +1111,7 @@ void ADGBuilder::associateExtMemWithSW(InstanceHandle extMem,
   }
 
   // Reverse direction: SW output ports -> ExtMem input ports.
-  // Recorded in the connection graph for analysis. The extmemory MLIR
-  // op does not take SSA data operands (parser limitation), so this
-  // direction is also captured by the connected_sw attribute metadata.
+  // These are emitted as real SSA operands on the inline fabric.extmemory op.
   unsigned numExtMemDataInputs = mem.stPorts * 2 + mem.ldPorts;
   for (unsigned p = 0; p < numExtMemDataInputs; ++p) {
     impl_->connections.push_back(

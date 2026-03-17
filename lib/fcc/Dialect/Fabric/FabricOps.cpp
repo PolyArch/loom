@@ -764,7 +764,7 @@ LogicalResult FifoOp::verify() {
 // ExtMemoryOp
 //===----------------------------------------------------------------------===//
 
-/// Parse [hw_params] for extmemory: ldCount, stCount, lsqDepth, memref_type.
+/// Parse [hw_params] for extmemory: ldCount, stCount, lsqDepth, memrefType.
 static ParseResult parseExtMemHwParams(OpAsmParser &parser,
                                        OperationState &result) {
   if (failed(parser.parseOptionalLSquare()))
@@ -788,7 +788,7 @@ static ParseResult parseExtMemHwParams(OpAsmParser &parser,
       if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
         return failure();
       result.addAttribute(keyword, attr);
-    } else if (keyword == "memref_type") {
+    } else if (keyword == "memrefType") {
       TypeAttr attr;
       if (parser.parseAttribute(attr))
         return failure();
@@ -805,6 +805,74 @@ static ParseResult parseExtMemHwParams(OpAsmParser &parser,
   return success();
 }
 
+static ParseResult parseOptionalOperandListInParens(
+    OpAsmParser &parser, SmallVectorImpl<OpAsmParser::UnresolvedOperand> &ops,
+    bool &hasOperands) {
+  hasOperands = succeeded(parser.parseOptionalLParen());
+  if (!hasOperands)
+    return success();
+
+  if (failed(parser.parseOptionalRParen())) {
+    do {
+      OpAsmParser::UnresolvedOperand operand;
+      if (parser.parseOperand(operand))
+        return failure();
+      ops.push_back(operand);
+    } while (succeeded(parser.parseOptionalComma()));
+
+    if (parser.parseRParen())
+      return failure();
+  }
+
+  return success();
+}
+
+static ParseResult normalizeMemoryConfigAttrs(OpAsmParser &parser,
+                                              OperationState &result) {
+  auto legacyAttr = result.attributes.get("addr_offset_table");
+  if (!legacyAttr)
+    return success();
+  if (result.attributes.get("addrOffsetTable")) {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "addr_offset_table specified multiple times");
+  }
+  result.attributes.set("addrOffsetTable", legacyAttr);
+  result.attributes.erase("addr_offset_table");
+  return success();
+}
+
+static void printNamedAttrsWithAliases(OpAsmPrinter &p, Operation *op,
+                                       ArrayRef<StringRef> excludes) {
+  SmallVector<NamedAttribute> attrs;
+  for (NamedAttribute attr : op->getAttrs()) {
+    if (llvm::is_contained(excludes, attr.getName().getValue()))
+      continue;
+    attrs.push_back(attr);
+  }
+  if (attrs.empty())
+    return;
+
+  p << " attributes {";
+  bool first = true;
+  for (NamedAttribute attr : attrs) {
+    if (!first)
+      p << ", ";
+    first = false;
+
+    StringRef name = attr.getName().getValue();
+    if (name == "addrOffsetTable")
+      p << "addr_offset_table";
+    else
+      p << name;
+
+    if (mlir::isa<mlir::UnitAttr>(attr.getValue()))
+      continue;
+    p << " = ";
+    p.printAttribute(attr.getValue());
+  }
+  p << "}";
+}
+
 ParseResult ExtMemoryOp::parse(OpAsmParser &parser, OperationState &result) {
   StringAttr nameAttr;
   if (succeeded(parser.parseOptionalSymbolName(nameAttr,
@@ -816,8 +884,15 @@ ParseResult ExtMemoryOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parseExtMemHwParams(parser, result))
     return failure();
 
+  SmallVector<OpAsmParser::UnresolvedOperand> operands;
+  bool hasOperands = false;
+  if (parseOptionalOperandListInParens(parser, operands, hasOperands))
+    return failure();
+
   // Parse {runtime_config} attributes
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+  if (normalizeMemoryConfigAttrs(parser, result))
     return failure();
 
   if (parser.parseColon())
@@ -829,16 +904,17 @@ ParseResult ExtMemoryOp::parse(OpAsmParser &parser, OperationState &result) {
   result.addAttribute("function_type", TypeAttr::get(funcType));
   result.addTypes(funcType.getResults());
 
+  if (hasOperands &&
+      parser.resolveOperands(operands, funcType.getInputs(), parser.getNameLoc(),
+                             result.operands))
+    return failure();
+
   return success();
 }
 
 void ExtMemoryOp::print(OpAsmPrinter &p) {
   if (auto name = getSymName())
     p << " @" << *name;
-
-  // Collect known hw param attr names
-  SmallVector<StringRef> hwParams = {"ldCount", "stCount", "lsqDepth",
-                                     "memref_type", "numRegion"};
 
   // Print [hw_params]
   bool hasHw = false;
@@ -848,30 +924,146 @@ void ExtMemoryOp::print(OpAsmPrinter &p) {
     hasHw = true;
   };
 
-  for (auto name : hwParams) {
-    if (auto attr = (*this)->getAttr(name)) {
-      startHw();
-      p << name << " = ";
-      p.printAttribute(attr);
-    }
+  if (auto attr = (*this)->getAttr("ldCount")) {
+    startHw();
+    p << "ldCount = ";
+    p.printAttribute(attr);
+  }
+  if (auto attr = (*this)->getAttr("stCount")) {
+    startHw();
+    p << "stCount = ";
+    p.printAttribute(attr);
+  }
+  if (auto attr = (*this)->getAttr("lsqDepth")) {
+    startHw();
+    p << "lsqDepth = ";
+    p.printAttribute(attr);
+  }
+  if (auto attr = (*this)->getAttr("memref_type")) {
+    startHw();
+    p << "memrefType = ";
+    p.printAttribute(attr);
+  }
+  if (auto attr = (*this)->getAttr("numRegion")) {
+    startHw();
+    p << "numRegion = ";
+    p.printAttribute(attr);
   }
   if (hasHw)
     p << "]";
 
-  // Print remaining attrs as {key = val}
+  if (getNumOperands() > 0) {
+    p << " (";
+    p.printOperands(getInputs());
+    p << ")";
+  }
+
   SmallVector<StringRef> excludes = {"sym_name", "function_type"};
-  excludes.append(hwParams.begin(), hwParams.end());
-  p.printOptionalAttrDictWithKeyword((*this)->getAttrs(), excludes);
+  excludes.append({"ldCount", "stCount", "lsqDepth", "memref_type",
+                   "numRegion"});
+  printNamedAttrsWithAliases(p, getOperation(), excludes);
   p << " : " << getFunctionType();
 }
 
 LogicalResult ExtMemoryOp::verify() {
+  constexpr int64_t kRegionFieldCount = 5;
+  int64_t numRegion = getNumRegion();
+  if (numRegion < 1)
+    return emitOpError("numRegion must be >= 1");
+
+  auto fnType = getFunctionType();
+  if (fnType.getNumInputs() < 1)
+    return emitOpError("requires a memref input in the function type");
+  if (fnType.getInput(0) != getMemrefType())
+    return emitOpError("function type input 0 must match memrefType");
+
+  if (getNumOperands() > 0) {
+    if (getNumOperands() != fnType.getNumInputs())
+      return emitOpError("operand count must match function_type inputs");
+    auto firstInput = getInputs().front();
+    if (firstInput.getType() != getMemrefType())
+      return emitOpError("operand 0 must match memrefType");
+  }
+
+  auto table = getAddrOffsetTable();
+  if (!table)
+    return success();
+  if (static_cast<int64_t>(table->size()) != numRegion * kRegionFieldCount) {
+    return emitOpError("addr_offset_table length must be numRegion * 5");
+  }
+
+  llvm::SmallVector<std::pair<int64_t, int64_t>, 4> ranges;
+  auto vals = *table;
+  for (int64_t i = 0; i < numRegion; ++i) {
+    int64_t valid = vals[i * kRegionFieldCount + 0];
+    int64_t start = vals[i * kRegionFieldCount + 1];
+    int64_t end = vals[i * kRegionFieldCount + 2];
+    if (valid == 0)
+      continue;
+    if (valid != 1)
+      return emitOpError("addr_offset_table valid flag must be 0 or 1");
+    if (start >= end)
+      return emitOpError("addr_offset_table requires start_tag < end_tag");
+    if (vals[i * kRegionFieldCount + 4] < 0)
+      return emitOpError("addr_offset_table elem_size_log2 must be >= 0");
+    for (auto [otherStart, otherEnd] : ranges) {
+      if (!(end <= otherStart || start >= otherEnd))
+        return emitOpError("addr_offset_table tag ranges must not overlap");
+    }
+    ranges.push_back({start, end});
+  }
   return success();
 }
 
 //===----------------------------------------------------------------------===//
 // MemoryOp
 //===----------------------------------------------------------------------===//
+
+static ParseResult parseMemoryHwParams(OpAsmParser &parser,
+                                       OperationState &result) {
+  if (failed(parser.parseOptionalLSquare()))
+    return success();
+
+  bool first = true;
+  while (true) {
+    if (!first && failed(parser.parseOptionalComma()))
+      break;
+    first = false;
+
+    StringRef keyword;
+    if (parser.parseKeyword(&keyword))
+      return failure();
+
+    if (keyword == "is_private") {
+      result.addAttribute("is_private", parser.getBuilder().getBoolAttr(true));
+      continue;
+    }
+
+    if (parser.parseEqual())
+      return failure();
+
+    if (keyword == "ldCount" || keyword == "stCount" ||
+        keyword == "lsqDepth" || keyword == "numRegion") {
+      IntegerAttr attr;
+      if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
+        return failure();
+      result.addAttribute(keyword, attr);
+    } else if (keyword == "memrefType") {
+      TypeAttr attr;
+      if (parser.parseAttribute(attr))
+        return failure();
+      result.addAttribute("memref_type", attr);
+    } else {
+      return parser.emitError(parser.getCurrentLocation(),
+                              "unexpected keyword '")
+             << keyword << "' in memory hardware parameters";
+    }
+  }
+
+  if (parser.parseRSquare())
+    return failure();
+  return success();
+}
 
 ParseResult MemoryOp::parse(OpAsmParser &parser, OperationState &result) {
   StringAttr nameAttr;
@@ -880,7 +1072,17 @@ ParseResult MemoryOp::parse(OpAsmParser &parser, OperationState &result) {
                                                result.attributes))) {
   }
 
+  if (parseMemoryHwParams(parser, result))
+    return failure();
+
+  SmallVector<OpAsmParser::UnresolvedOperand> operands;
+  bool hasOperands = false;
+  if (parseOptionalOperandListInParens(parser, operands, hasOperands))
+    return failure();
+
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+  if (normalizeMemoryConfigAttrs(parser, result))
     return failure();
 
   if (parser.parseColon())
@@ -892,19 +1094,107 @@ ParseResult MemoryOp::parse(OpAsmParser &parser, OperationState &result) {
   result.addAttribute("function_type", TypeAttr::get(funcType));
   result.addTypes(funcType.getResults());
 
+  if (hasOperands &&
+      parser.resolveOperands(operands, funcType.getInputs(), parser.getNameLoc(),
+                             result.operands))
+    return failure();
+
   return success();
 }
 
 void MemoryOp::print(OpAsmPrinter &p) {
   if (auto name = getSymName())
     p << " @" << *name;
-  p.printOptionalAttrDictWithKeyword(
-      (*this)->getAttrs(),
-      {"sym_name", "function_type"});
+
+  bool hasHw = false;
+  auto startHw = [&]() {
+    if (!hasHw) p << " [";
+    else p << ", ";
+    hasHw = true;
+  };
+
+  if (auto attr = (*this)->getAttr("ldCount")) {
+    startHw();
+    p << "ldCount = ";
+    p.printAttribute(attr);
+  }
+  if (auto attr = (*this)->getAttr("stCount")) {
+    startHw();
+    p << "stCount = ";
+    p.printAttribute(attr);
+  }
+  if (auto attr = (*this)->getAttr("lsqDepth")) {
+    startHw();
+    p << "lsqDepth = ";
+    p.printAttribute(attr);
+  }
+  if (auto attr = (*this)->getAttr("memref_type")) {
+    startHw();
+    p << "memrefType = ";
+    p.printAttribute(attr);
+  }
+  if (getIsPrivate()) {
+    startHw();
+    p << "is_private";
+  }
+  if (auto attr = (*this)->getAttr("numRegion")) {
+    startHw();
+    p << "numRegion = ";
+    p.printAttribute(attr);
+  }
+  if (hasHw)
+    p << "]";
+
+  if (getNumOperands() > 0) {
+    p << " (";
+    p.printOperands(getInputs());
+    p << ")";
+  }
+
+  printNamedAttrsWithAliases(p, getOperation(),
+                             {"sym_name", "function_type", "ldCount",
+                              "stCount", "lsqDepth", "memref_type",
+                              "is_private", "numRegion"});
   p << " : " << getFunctionType();
 }
 
 LogicalResult MemoryOp::verify() {
+  constexpr int64_t kRegionFieldCount = 5;
+  int64_t numRegion = getNumRegion();
+  if (numRegion < 1)
+    return emitOpError("numRegion must be >= 1");
+
+  auto fnType = getFunctionType();
+  if (getNumOperands() > 0 && getNumOperands() != fnType.getNumInputs())
+    return emitOpError("operand count must match function_type inputs");
+
+  auto table = getAddrOffsetTable();
+  if (!table)
+    return success();
+  if (static_cast<int64_t>(table->size()) != numRegion * kRegionFieldCount) {
+    return emitOpError("addr_offset_table length must be numRegion * 5");
+  }
+
+  llvm::SmallVector<std::pair<int64_t, int64_t>, 4> ranges;
+  auto vals = *table;
+  for (int64_t i = 0; i < numRegion; ++i) {
+    int64_t valid = vals[i * kRegionFieldCount + 0];
+    int64_t start = vals[i * kRegionFieldCount + 1];
+    int64_t end = vals[i * kRegionFieldCount + 2];
+    if (valid == 0)
+      continue;
+    if (valid != 1)
+      return emitOpError("addr_offset_table valid flag must be 0 or 1");
+    if (start >= end)
+      return emitOpError("addr_offset_table requires start_tag < end_tag");
+    if (vals[i * kRegionFieldCount + 4] < 0)
+      return emitOpError("addr_offset_table elem_size_log2 must be >= 0");
+    for (auto [otherStart, otherEnd] : ranges) {
+      if (!(end <= otherStart || start >= otherEnd))
+        return emitOpError("addr_offset_table tag ranges must not overlap");
+    }
+    ranges.push_back({start, end});
+  }
   return success();
 }
 

@@ -1,5 +1,6 @@
 add_library(FccMapper STATIC
   Graph.cpp
+  BridgeBinding.cpp
   ADGFlattener.cpp
   DFGBuilder.cpp
   MappingState.cpp

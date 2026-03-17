@@ -134,6 +134,7 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
   // Definitions may be outside fabric.module (referenced by instances inside).
   llvm::StringMap<fcc::fabric::SpatialPEOp> peDefMap;
   llvm::StringMap<fcc::fabric::SpatialSwOp> swDefMap;
+  llvm::StringMap<fcc::fabric::TemporalSwOp> temporalSwDefMap;
   topModule->walk([&](fcc::fabric::SpatialPEOp peOp) {
     auto name = peOp.getSymName();
     if (name) peDefMap[*name] = peOp;
@@ -142,6 +143,65 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
     auto name = swOp.getSymName();
     if (name) swDefMap[*name] = swOp;
   });
+  topModule->walk([&](fcc::fabric::TemporalSwOp swOp) {
+    auto name = swOp.getSymName();
+    if (name) temporalSwDefMap[*name] = swOp;
+  });
+
+  llvm::DenseMap<mlir::Operation *, std::string> renderNameMap;
+  unsigned extMemCount = 0;
+  unsigned memoryCount = 0;
+  unsigned temporalSwCount = 0;
+  unsigned addTagCount = 0;
+  unsigned delTagCount = 0;
+  unsigned mapTagCount = 0;
+  unsigned fifoCount = 0;
+
+  auto getRenderName = [&](mlir::Operation *op) -> std::string {
+    auto it = renderNameMap.find(op);
+    if (it != renderNameMap.end())
+      return it->second;
+
+    std::string name;
+    if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
+      name = instOp.getSymName().value_or("inst").str();
+    } else if (auto peOp = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op)) {
+      name = peOp.getSymName().value_or("pe").str();
+    } else if (auto swOp = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op)) {
+      name = swOp.getSymName().value_or("sw").str();
+    } else if (auto tswOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op)) {
+      if (auto sym = tswOp.getSymName())
+        name = sym->str();
+      else
+        name = "temporal_sw_" + std::to_string(temporalSwCount++);
+    } else if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
+      if (auto sym = extOp.getSymName())
+        name = sym->str();
+      else
+        name = "extmemory_" + std::to_string(extMemCount++);
+    } else if (auto memOp = mlir::dyn_cast<fcc::fabric::MemoryOp>(op)) {
+      if (auto sym = memOp.getSymName())
+        name = sym->str();
+      else
+        name = "memory_" + std::to_string(memoryCount++);
+    } else if (mlir::isa<fcc::fabric::AddTagOp>(op)) {
+      name = "add_tag_" + std::to_string(addTagCount++);
+    } else if (mlir::isa<fcc::fabric::DelTagOp>(op)) {
+      name = "del_tag_" + std::to_string(delTagCount++);
+    } else if (mlir::isa<fcc::fabric::MapTagOp>(op)) {
+      name = "map_tag_" + std::to_string(mapTagCount++);
+    } else if (auto fifoOp = mlir::dyn_cast<fcc::fabric::FifoOp>(op)) {
+      if (auto sym = fifoOp.getSymName())
+        name = sym->str();
+      else
+        name = "fifo_" + std::to_string(fifoCount++);
+    } else {
+      name = op->getName().getStringRef().str();
+    }
+
+    renderNameMap[op] = name;
+    return name;
+  };
 
   // Helper: emit FU details for a PE definition.
   // Extracts full SSA connectivity: inputEdges (arg->op), edges (op->op),
@@ -345,15 +405,73 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
       os << "}";
     }
 
+    if (auto tswOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op)) {
+      if (!first) os << ",\n";
+      first = false;
+      auto tswFnType = tswOp.getFunctionType();
+      os << "    {\"kind\": \"temporal_sw\", \"name\": \""
+         << jsonEsc(getRenderName(tswOp.getOperation())) << "\"";
+      os << ", \"numInputs\": " << tswFnType.getNumInputs();
+      os << ", \"numOutputs\": " << tswFnType.getNumResults();
+      os << "}";
+    }
+
     if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
       if (!first) os << ",\n";
       first = false;
       auto memFnType = extOp.getFunctionType();
       os << "    {\"kind\": \"memory\", \"name\": \""
-         << jsonEsc(extOp.getSymName().value_or("extmem").str()) << "\"";
+         << jsonEsc(getRenderName(extOp.getOperation())) << "\"";
       os << ", \"memoryKind\": \"extmemory\"";
       os << ", \"numInputs\": " << memFnType.getNumInputs();
       os << ", \"numOutputs\": " << memFnType.getNumResults();
+      os << "}";
+    }
+
+    if (auto memOp = mlir::dyn_cast<fcc::fabric::MemoryOp>(op)) {
+      if (!first) os << ",\n";
+      first = false;
+      auto memFnType = memOp.getFunctionType();
+      os << "    {\"kind\": \"memory\", \"name\": \""
+         << jsonEsc(getRenderName(memOp.getOperation())) << "\"";
+      os << ", \"memoryKind\": \"memory\"";
+      os << ", \"numInputs\": " << memFnType.getNumInputs();
+      os << ", \"numOutputs\": " << memFnType.getNumResults();
+      os << "}";
+    }
+
+    if (auto addTagOp = mlir::dyn_cast<fcc::fabric::AddTagOp>(op)) {
+      if (!first) os << ",\n";
+      first = false;
+      os << "    {\"kind\": \"add_tag\", \"name\": \""
+         << jsonEsc(getRenderName(addTagOp.getOperation())) << "\"";
+      os << ", \"numInputs\": 1, \"numOutputs\": 1}";
+    }
+
+    if (auto delTagOp = mlir::dyn_cast<fcc::fabric::DelTagOp>(op)) {
+      if (!first) os << ",\n";
+      first = false;
+      os << "    {\"kind\": \"del_tag\", \"name\": \""
+         << jsonEsc(getRenderName(delTagOp.getOperation())) << "\"";
+      os << ", \"numInputs\": 1, \"numOutputs\": 1}";
+    }
+
+    if (auto mapTagOp = mlir::dyn_cast<fcc::fabric::MapTagOp>(op)) {
+      if (!first) os << ",\n";
+      first = false;
+      os << "    {\"kind\": \"map_tag\", \"name\": \""
+         << jsonEsc(getRenderName(mapTagOp.getOperation())) << "\"";
+      os << ", \"numInputs\": 1, \"numOutputs\": 1}";
+    }
+
+    if (auto fifoOp = mlir::dyn_cast<fcc::fabric::FifoOp>(op)) {
+      if (!first) os << ",\n";
+      first = false;
+      auto fifoFnType = fifoOp.getFunctionType();
+      os << "    {\"kind\": \"fifo\", \"name\": \""
+         << jsonEsc(getRenderName(fifoOp.getOperation())) << "\"";
+      os << ", \"numInputs\": " << fifoFnType.getNumInputs();
+      os << ", \"numOutputs\": " << fifoFnType.getNumResults();
       os << "}";
     }
 
@@ -386,6 +504,15 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
         os << ", \"numInputs\": " << swFnType.getNumInputs();
         os << ", \"numOutputs\": " << swFnType.getNumResults();
         os << "}";
+      } else if (auto tswIt = temporalSwDefMap.find(moduleName);
+                 tswIt != temporalSwDefMap.end()) {
+        auto tswOp = tswIt->second;
+        auto tswFnType = tswOp.getFunctionType();
+        os << "    {\"kind\": \"temporal_sw\", \"name\": \""
+           << jsonEsc(getRenderName(instOp.getOperation())) << "\"";
+        os << ", \"numInputs\": " << tswFnType.getNumInputs();
+        os << ", \"numOutputs\": " << tswFnType.getNumResults();
+        os << "}";
       } else {
         // Generic instance
         os << "    {\"kind\": \"instance\", \"name\": \""
@@ -415,34 +542,34 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
   };
   llvm::DenseMap<mlir::Value, ResultProducer> resultProducerMap;
   for (auto &op : body.getOperations()) {
-    if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
-      std::string instName = instOp.getSymName().value_or("inst").str();
-      for (unsigned i = 0; i < instOp.getNumResults(); ++i)
-        resultProducerMap[instOp.getResult(i)] = {instName, i};
+    if (mlir::isa<fcc::fabric::YieldOp>(op))
       continue;
-    }
-    if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
-      std::string memName = extOp.getSymName().value_or("extmem").str();
-      for (unsigned i = 0; i < extOp.getNumResults(); ++i)
-        resultProducerMap[extOp.getResult(i)] = {memName, i};
-    }
+    if (mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::SpatialSwOp,
+                  fcc::fabric::TemporalSwOp>(op))
+      continue;
+    std::string renderName = getRenderName(&op);
+    for (unsigned i = 0; i < op.getNumResults(); ++i)
+      resultProducerMap[op.getResult(i)] = {renderName, i};
   }
 
-  // Pass 2: trace all operand connections
+  // Pass 2: trace all operand connections for renderable operations.
   for (auto &op : body.getOperations()) {
-    auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op);
-    if (!instOp) continue;
-    std::string instName = instOp.getSymName().value_or("inst").str();
+    if (mlir::isa<fcc::fabric::YieldOp>(op))
+      continue;
+    if (mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::SpatialSwOp,
+                  fcc::fabric::TemporalSwOp>(op))
+      continue;
+    std::string opName = getRenderName(&op);
 
-    for (unsigned i = 0; i < instOp.getNumOperands(); ++i) {
-      auto operand = instOp.getOperand(i);
+    for (unsigned i = 0; i < op.getNumOperands(); ++i) {
+      auto operand = op.getOperand(i);
       // Module input -> instance
       auto argIt = blockArgIdx.find(operand);
       if (argIt != blockArgIdx.end()) {
         if (!firstConn) os << ",\n";
         firstConn = false;
         os << "    {\"from\": \"module_in\", \"fromIdx\": " << argIt->second
-           << ", \"to\": \"" << jsonEsc(instName) << "\", \"toIdx\": " << i
+           << ", \"to\": \"" << jsonEsc(opName) << "\", \"toIdx\": " << i
            << "}";
       }
       // Instance -> instance (now works for circular refs too)
@@ -452,7 +579,7 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
         firstConn = false;
         os << "    {\"from\": \"" << jsonEsc(irIt->second.name)
            << "\", \"fromIdx\": " << irIt->second.idx
-           << ", \"to\": \"" << jsonEsc(instName) << "\", \"toIdx\": " << i
+           << ", \"to\": \"" << jsonEsc(opName) << "\", \"toIdx\": " << i
            << "}";
       }
     }
@@ -465,8 +592,10 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
     auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op);
     if (!extOp)
       continue;
+    if (extOp.getNumOperands() > 0)
+      continue;
 
-    std::string memName = extOp.getSymName().value_or("extmem").str();
+    std::string memName = getRenderName(extOp.getOperation());
     if (auto argIdxAttr =
             extOp->getAttrOfType<mlir::IntegerAttr>("memref_arg_index")) {
       if (!firstConn)

@@ -27,6 +27,7 @@ At minimum, the report should include:
 - `node_mappings`
 - `edge_routings`
 - `port_table`
+- `memory_regions`
 
 ### Required Semantics
 
@@ -50,6 +51,19 @@ At minimum, the report should include:
 - local port index
 - direction
 
+`memory_regions` must identify:
+
+- selected hardware memory node id and name
+- hardware memory kind
+- hardware `num_region`
+- for each occupied region:
+  - software memory node id
+  - backing software memref argument index
+  - selected bridge or tag lane
+  - load/store counts
+  - `elem_size_log2`
+- exported `addr_offset_table`
+
 ## Extended Visualization Payload
 
 FCC should evolve the JSON report to also expose component-local routing facts.
@@ -61,6 +75,14 @@ Recommended sections are:
   - per PE, list of selected ingress and egress mux or demux bindings
 - `fu_configs`
   - selected effective FU configuration per mapped hardware FU
+
+For memory-oriented visualization, `memory_regions` is not optional in
+practice. It is the authoritative bridge between:
+
+- software memref arguments
+- software memory ops
+- chosen hardware memory interfaces
+- region-table configuration
 
 These extensions are strongly recommended because they remove ambiguity from
 mapping-aware visualization.

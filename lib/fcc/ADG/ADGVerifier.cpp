@@ -41,12 +41,14 @@ mlir::LogicalResult verifyFabricModule(mlir::ModuleOp topModule) {
     for (auto result : op.getResults())
       produced.insert(result);
 
-    // Track consumed values (operands of instances and yield)
-    if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
-      for (auto operand : instOp.getOperands())
-        consumed.insert(operand);
-    }
+    // Track consumed SSA operands for all graph-region operations.
+    for (auto operand : op.getOperands())
+      consumed.insert(operand);
+
     if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
+      if (extOp.getNumOperands() > 0)
+        continue;
+
       if (auto argIdxAttr =
               extOp->getAttrOfType<mlir::IntegerAttr>("memref_arg_index")) {
         auto argIdx = static_cast<unsigned>(argIdxAttr.getInt());
@@ -101,10 +103,6 @@ mlir::LogicalResult verifyFabricModule(mlir::ModuleOp topModule) {
                      extOp->getAttrOfType<mlir::ArrayAttr>("connected_sw")) {
         markBackEdgesConsumed(connAttr, /*detailed=*/false);
       }
-    }
-    if (auto yieldOp = mlir::dyn_cast<fcc::fabric::YieldOp>(op)) {
-      for (auto operand : yieldOp.getOperands())
-        consumed.insert(operand);
     }
   }
 

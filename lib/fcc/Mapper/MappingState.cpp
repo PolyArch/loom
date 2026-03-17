@@ -27,8 +27,12 @@ ActionResult MappingState::mapNode(IdIndex swNode, IdIndex hwNode,
   if (swNode >= swNodeToHwNode.size() || hwNode >= hwNodeToSwNodes.size())
     return ActionResult::FailedInternalError;
 
-  // Check if HW node is already occupied.
-  if (!hwNodeToSwNodes[hwNode].empty()) {
+  // Most hardware nodes are exclusive. Memory nodes may host multiple
+  // software memories and are capacity-checked by the mapper before mapNode().
+  const Node *hwN = adg.getNode(hwNode);
+  bool allowMultiOccupancy =
+      hwN && getNodeAttrStr(hwN, "resource_class") == "memory";
+  if (!allowMultiOccupancy && !hwNodeToSwNodes[hwNode].empty()) {
     return ActionResult::FailedResourceUnavailable;
   }
 
@@ -37,8 +41,11 @@ ActionResult MappingState::mapNode(IdIndex swNode, IdIndex hwNode,
 
   // Auto-map ports: match by position.
   const Node *swN = dfg.getNode(swNode);
-  const Node *hwN = adg.getNode(hwNode);
-  if (swN && hwN) {
+  bool skipAutoPorts = false;
+  if (hwN && getNodeAttrStr(hwN, "resource_class") == "memory")
+    skipAutoPorts = true;
+
+  if (swN && hwN && !skipAutoPorts) {
     for (unsigned i = 0;
          i < swN->inputPorts.size() && i < hwN->inputPorts.size(); ++i) {
       mapPort(swN->inputPorts[i], hwN->inputPorts[i], dfg, adg);

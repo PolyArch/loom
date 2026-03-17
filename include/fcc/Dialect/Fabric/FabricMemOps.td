@@ -12,10 +12,11 @@ def Fabric_ExtMemoryOp : Fabric_Op<"extmemory", []> {
   let summary = "External memory interface";
   let description = [{
     Interface to external (off-chip/system) memory. First operand is
-    a memref from the module input. Operand order: memref, then
-    stData1, stAddr1, ..., stDataS, stAddrS, ldAddr1, ..., ldAddrL.
-    Result order: ldData1, ..., ldDataL, stDone1, ..., stDoneS,
-    ldDone1, ..., ldDoneL.
+    a memref from the module input. For single-port memories the hardware
+    interface is memref, ld_addr, st_addr, st_data with outputs
+    ld_data, ld_done, st_done. When ldCount or stCount is greater than 1,
+    the address/data/done ports become tagged aggregate ports rather than
+    expanding positionally.
   }];
   let arguments = (ins
     Variadic<AnyType>:$inputs,

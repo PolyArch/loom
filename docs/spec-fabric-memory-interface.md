@@ -6,16 +6,23 @@ FCC memory-facing hardware uses explicit external-memory resources together with
 switch routing, optional tag transforms, and a backend-independent memory
 backing abstraction.
 
-## MVP Rule
+## Memory-Interface Placement Rule
 
-For the MVP flow, each memref-like software array is mapped to its own
-extmemory-facing hardware resource.
+FCC does not require a one-to-one relationship between software memrefs and
+hardware memory interfaces.
 
-This means:
+Instead:
 
-- one logical array maps to one external-memory region
-- vecadd-style kernels use separate regions for `a`, `b`, and `c`
-- shared-memory aliasing and base-offset packing are not part of the MVP
+- each software `handshake.extmemory` or `handshake.memory` is placed onto a
+  compatible hardware `fabric.extmemory` or `fabric.memory`
+- one hardware memory interface may host multiple software memory regions up to
+  its `numRegion` capacity
+- region selection is part of mapping, not a fixed syntactic binding
+
+This means the mapper may choose either:
+
+- separate hardware memory interfaces for separate software regions
+- or a shared hardware memory interface with multiple regions
 
 ## Single-Port vs Multi-Port Memory
 
@@ -53,11 +60,57 @@ untagged spatial-switch outputs.
 FCC treats external memory as a set of numbered regions. Each region has:
 
 - a region id
+- a tag range
 - a base address
-- a size
+- an element-size code
 - a backing implementation
 
 The accelerator runtime binds these regions before launch.
+
+`addr_offset_table` entries use the FCC tuple:
+
+- `valid`
+- `start_tag`
+- `end_tag`
+- `addr_offset`
+- `elem_size_log2`
+
+`elem_size_log2` follows AXI `AxSIZE` style encoding:
+
+- `0` = 1 byte
+- `1` = 2 bytes
+- `2` = 4 bytes
+- `3` = 8 bytes
+
+The element-size code is per region because different software memory regions
+may share one wider hardware memory interface.
+
+In FCC syntax:
+
+- hardware-structure fields such as `ldCount`, `stCount`, `lsqDepth`,
+  `memrefType`, and `numRegion` belong to `[]`
+- runtime region programming such as `addr_offset_table` belongs to
+  `attributes {}`
+
+## Memref Type Compatibility
+
+For software-to-hardware memory mapping, FCC matches memrefs by element width,
+not by the original scalar kind.
+
+Examples:
+
+- `handshake.extmemory(memref<?xi32>)` may map to
+  `fabric.extmemory(memref<?xi32>)`
+- `handshake.extmemory(memref<?xf32>)` may also map to
+  `fabric.extmemory(memref<?xi32>)`
+- `handshake.extmemory(memref<?xi16>)` may map to
+  `fabric.extmemory(memref<?xi64>)`
+
+The rule is:
+
+- software memref element width must be less than or equal to hardware memory
+  interface element width
+- exact integer-vs-float element kind is not relevant at mapping time
 
 ## Memory Backing Abstraction
 

@@ -71,6 +71,28 @@ For every configured spatial switch:
 Any mapping state that lets two distinct software edges claim conflicting input
 choices for the same spatial-switch output is invalid.
 
+## Memory Interface Contract
+
+Memory-interface placement is a real mapping choice.
+
+For each software memory node, the mapper must preserve:
+
+- which hardware memory interface was selected
+- which region slot of that hardware interface was assigned
+- which tag lane or bridge lane was assigned when tagged memory routing is used
+- which software memref argument backs that region
+
+For memory compatibility:
+
+- software and hardware memrefs are matched by element width
+- software element width may be less than or equal to hardware interface
+  element width
+- exact integer-vs-float element kind is not a compatibility blocker
+
+The memref boundary edge may later be exported as a direct module-interface
+binding, but that export is downstream of placement. It must not be interpreted
+as evidence that memory-interface selection was trivial or predetermined.
+
 ## Hard Constraints
 
 FCC uses the following hard-constraint families:

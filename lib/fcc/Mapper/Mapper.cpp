@@ -1,4 +1,6 @@
 #include "fcc/Mapper/Mapper.h"
+#include "fcc/Mapper/BridgeBinding.h"
+#include "fcc/Mapper/TypeCompat.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -108,14 +110,51 @@ Mapper::buildCandidates(const Graph &dfg, const Graph &adg) {
 
     // Memory ops (extmemory) map to memory nodes in the ADG.
     if (opName.contains("extmemory")) {
+      DfgMemoryInfo memInfo =
+          DfgMemoryInfo::extract(swNode, dfg, /*isExtMem=*/true);
       for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(adg.nodes.size());
            ++hwId) {
         const Node *hwNode = adg.getNode(hwId);
         if (!hwNode)
           continue;
-        if (getNodeAttrStr(hwNode, "resource_class") == "memory") {
-          candidates[swId].push_back(hwId);
+        if (getNodeAttrStr(hwNode, "resource_class") != "memory")
+          continue;
+
+        BridgeInfo bridge = BridgeInfo::extract(hwNode);
+        if (bridge.hasBridge) {
+          if (!isBridgeCompatible(bridge, memInfo, swNode, hwNode, dfg, adg))
+            continue;
+        } else {
+          if (swNode->inputPorts.size() > hwNode->inputPorts.size())
+            continue;
+          if (swNode->outputPorts.size() > hwNode->outputPorts.size())
+            continue;
+
+          if (memInfo.swInSkip > 0) {
+            if (swNode->inputPorts.empty() || hwNode->inputPorts.empty())
+              continue;
+            const Port *swMemPort = dfg.getPort(swNode->inputPorts[0]);
+            const Port *hwMemPort = adg.getPort(hwNode->inputPorts[0]);
+            if (!swMemPort || !hwMemPort ||
+                !canMapSoftwareTypeToHardware(swMemPort->type,
+                                             hwMemPort->type))
+              continue;
+          }
+
+          bool outputTypesOk = true;
+          for (unsigned oi = 0; oi < swNode->outputPorts.size(); ++oi) {
+            const Port *sp = dfg.getPort(swNode->outputPorts[oi]);
+            const Port *hp = adg.getPort(hwNode->outputPorts[oi]);
+            if (!sp || !hp ||
+                !canMapSoftwareTypeToHardware(sp->type, hp->type)) {
+              outputTypesOk = false;
+              break;
+            }
+          }
+          if (!outputTypesOk)
+            continue;
         }
+        candidates[swId].push_back(hwId);
       }
       continue;
     }
@@ -322,9 +361,17 @@ bool Mapper::runPlacement(
       if (!hwNode)
         continue;
 
-      // Check if this HW node is already used.
-      if (!state.hwNodeToSwNodes[hwId].empty())
-        continue;
+      // Memory nodes can host multiple software memories up to numRegion.
+      if (!state.hwNodeToSwNodes[hwId].empty()) {
+        if (getNodeAttrStr(hwNode, "resource_class") == "memory") {
+          int64_t numRegion = getNodeAttrInt(hwNode, "numRegion", 1);
+          if (static_cast<int64_t>(state.hwNodeToSwNodes[hwId].size()) >=
+              numRegion)
+            continue;
+        } else {
+          continue;
+        }
+      }
 
       // Prefer unused PEs, but allow reuse if necessary (soft C8).
       llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
@@ -352,6 +399,62 @@ bool Mapper::runPlacement(
       llvm::errs() << "Mapper: mapNode failed for " << swId << " -> "
                     << bestHw << "\n";
       return false;
+    }
+
+    const Node *placedHwNode = adg.getNode(bestHw);
+    if (swNode && placedHwNode &&
+        getNodeAttrStr(placedHwNode, "resource_class") == "memory") {
+      BridgeInfo bridge = BridgeInfo::extract(placedHwNode);
+      bool isExtMem = (getNodeAttrStr(placedHwNode, "op_kind") == "extmemory");
+      if (bridge.hasBridge) {
+        DfgMemoryInfo memInfo =
+            DfgMemoryInfo::extract(swNode, dfg, isExtMem);
+        if (!bindBridgeInputs(bridge, memInfo, swNode, placedHwNode, dfg, adg,
+                              state) ||
+            !bindBridgeOutputs(bridge, memInfo, swNode, placedHwNode, dfg, adg,
+                               state)) {
+          llvm::errs() << "Mapper: bridge port binding failed for " << swId
+                       << " -> " << bestHw << "\n";
+          return false;
+        }
+      } else {
+        llvm::SmallVector<bool, 8> usedIn(placedHwNode->inputPorts.size(),
+                                          false);
+        for (unsigned si = 0; si < swNode->inputPorts.size(); ++si) {
+          const Port *sp = dfg.getPort(swNode->inputPorts[si]);
+          if (!sp)
+            continue;
+          for (unsigned hi = 0; hi < placedHwNode->inputPorts.size(); ++hi) {
+            if (usedIn[hi])
+              continue;
+            IdIndex hwPid = placedHwNode->inputPorts[hi];
+            if (!state.hwPortToSwPorts[hwPid].empty())
+              continue;
+            const Port *hp = adg.getPort(hwPid);
+            if (hp && canMapSoftwareTypeToHardware(sp->type, hp->type)) {
+              state.mapPort(swNode->inputPorts[si], hwPid, dfg, adg);
+              usedIn[hi] = true;
+              break;
+            }
+          }
+        }
+        for (unsigned oi = 0;
+             oi < swNode->outputPorts.size() &&
+             oi < placedHwNode->outputPorts.size();
+             ++oi) {
+          const Port *sp = dfg.getPort(swNode->outputPorts[oi]);
+          IdIndex hwPid = placedHwNode->outputPorts[oi];
+          const Port *hp = adg.getPort(hwPid);
+          if (!state.hwPortToSwPorts[hwPid].empty())
+            continue;
+          if (!sp || !hp || !canMapSoftwareTypeToHardware(sp->type, hp->type)) {
+            llvm::errs() << "Mapper: output port type mismatch for " << swId
+                         << " -> " << bestHw << "\n";
+            return false;
+          }
+          state.mapPort(swNode->outputPorts[oi], hwPid, dfg, adg);
+        }
+      }
     }
 
     // Mark PE as used.
@@ -415,7 +518,8 @@ bool Mapper::runRefinement(
   std::vector<IdIndex> placedNodes;
   for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.nodes.size()); ++i) {
     if (dfg.getNode(i) && dfg.getNode(i)->kind == Node::OperationNode &&
-        state.swNodeToHwNode[i] != INVALID_ID) {
+        state.swNodeToHwNode[i] != INVALID_ID &&
+        !isMemoryOp(dfg.getNode(i))) {
       placedNodes.push_back(i);
     }
   }
@@ -654,6 +758,17 @@ bool Mapper::bindSentinels(MappingState &state, const Graph &dfg,
         continue;
 
       IdIndex adgSid = adgInputSentinels[ai];
+      const Node *dfgNode = dfg.getNode(dfgSid);
+      const Node *adgNode = adg.getNode(adgSid);
+      if (!dfgNode || !adgNode || dfgNode->outputPorts.empty() ||
+          adgNode->outputPorts.empty())
+        continue;
+      const Port *swPort = dfg.getPort(dfgNode->outputPorts[0]);
+      const Port *hwPort = adg.getPort(adgNode->outputPorts[0]);
+      if (!swPort || !hwPort ||
+          !canMapSoftwareTypeToHardware(swPort->type, hwPort->type))
+        continue;
+
       auto result = state.mapNode(dfgSid, adgSid, dfg, adg);
       if (result == ActionResult::Success) {
         usedAdgIn.insert(ai);
@@ -681,6 +796,17 @@ bool Mapper::bindSentinels(MappingState &state, const Graph &dfg,
         continue;
 
       IdIndex adgSid = adgOutputSentinels[ai];
+      const Node *dfgNode = dfg.getNode(dfgSid);
+      const Node *adgNode = adg.getNode(adgSid);
+      if (!dfgNode || !adgNode || dfgNode->inputPorts.empty() ||
+          adgNode->inputPorts.empty())
+        continue;
+      const Port *swPort = dfg.getPort(dfgNode->inputPorts[0]);
+      const Port *hwPort = adg.getPort(adgNode->inputPorts[0]);
+      if (!swPort || !hwPort ||
+          !canMapSoftwareTypeToHardware(swPort->type, hwPort->type))
+        continue;
+
       auto result = state.mapNode(dfgSid, adgSid, dfg, adg);
       if (result == ActionResult::Success) {
         usedAdgOut.insert(ai);
@@ -904,6 +1030,46 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
               "C3: unrouted edge " + std::to_string(i) + "\n";
           valid = false;
         }
+      }
+    }
+  }
+
+  for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(adg.nodes.size()); ++hwId) {
+    const Node *hwNode = adg.getNode(hwId);
+    if (!hwNode || getNodeAttrStr(hwNode, "resource_class") != "memory")
+      continue;
+
+    int64_t numRegion = getNodeAttrInt(hwNode, "numRegion", 1);
+    if (hwId < state.hwNodeToSwNodes.size() &&
+        static_cast<int64_t>(state.hwNodeToSwNodes[hwId].size()) > numRegion) {
+      diagnostics += "C4: memory region overflow on hw_node " +
+                     std::to_string(hwId) + "\n";
+      valid = false;
+    }
+
+    BridgeInfo bridge = BridgeInfo::extract(hwNode);
+    if (!bridge.hasBridge || hwId >= state.hwNodeToSwNodes.size())
+      continue;
+
+    bool isExtMem = (getNodeAttrStr(hwNode, "op_kind") == "extmemory");
+    llvm::DenseSet<unsigned> usedLanes;
+    for (IdIndex swId : state.hwNodeToSwNodes[hwId]) {
+      const Node *swNode = dfg.getNode(swId);
+      if (!swNode)
+        continue;
+      DfgMemoryInfo memInfo = DfgMemoryInfo::extract(swNode, dfg, isExtMem);
+      auto lane = inferBridgeLane(bridge, memInfo, swNode, state);
+      if (!lane) {
+        diagnostics += "C4: missing bridge lane binding for sw_node " +
+                       std::to_string(swId) + " on hw_node " +
+                       std::to_string(hwId) + "\n";
+        valid = false;
+        continue;
+      }
+      if (!usedLanes.insert(*lane).second) {
+        diagnostics += "C4: duplicate bridge lane " + std::to_string(*lane) +
+                       " on hw_node " + std::to_string(hwId) + "\n";
+        valid = false;
       }
     }
   }
