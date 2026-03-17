@@ -93,6 +93,9 @@ private:
   Value buildByteSwap(Location loc, Value value);
   Value buildFunnelShift(Location loc, Value lhs, Value rhs, Value amount,
                          bool isLeft);
+  Value buildBitReverse(Location loc, Value value);
+  Value buildCtPop(Location loc, Value value);
+  Value buildCountZeros(Location loc, Value value, bool leading);
 };
 
 // Check if an LLVM function can be converted. Returns false for varargs,
@@ -814,6 +817,58 @@ LogicalResult FunctionConverter::convertIntrinsic(LLVM::CallIntrinsicOp op) {
     return success();
   }
 
+  if (name.starts_with("llvm.bitreverse.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value value = lookup(op.getArgs()[0]);
+    if (!value)
+      return op.emitError("bitreverse has unmapped operand");
+    Value result = buildBitReverse(loc, value);
+    if (!result)
+      return failure();
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
+  if (name.starts_with("llvm.ctpop.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value value = lookup(op.getArgs()[0]);
+    if (!value)
+      return op.emitError("ctpop has unmapped operand");
+    Value result = buildCtPop(loc, value);
+    if (!result)
+      return failure();
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
+  if (name.starts_with("llvm.cttz.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value value = lookup(op.getArgs()[0]);
+    if (!value)
+      return op.emitError("cttz has unmapped operand");
+    Value result = buildCountZeros(loc, value, /*leading=*/false);
+    if (!result)
+      return failure();
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
+  if (name.starts_with("llvm.ctlz.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value value = lookup(op.getArgs()[0]);
+    if (!value)
+      return op.emitError("ctlz has unmapped operand");
+    Value result = buildCountZeros(loc, value, /*leading=*/true);
+    if (!result)
+      return failure();
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
   return failure();
 }
 
@@ -896,6 +951,101 @@ Value FunctionConverter::buildFunnelShift(Location loc, Value lhs, Value rhs,
     hi = arith::ShLIOp::create(builder, loc, rhs, reverseAmount);
   }
   return arith::OrIOp::create(builder, loc, lo, hi);
+}
+
+Value FunctionConverter::buildBitReverse(Location loc, Value value) {
+  auto intTy = dyn_cast<IntegerType>(value.getType());
+  if (!intTy)
+    return Value();
+
+  unsigned width = intTy.getWidth();
+  if (width == 0)
+    return Value();
+
+  Value result = arith::ConstantIntOp::create(builder, loc, intTy, 0);
+  Value one = arith::ConstantIntOp::create(builder, loc, intTy, 1);
+  for (unsigned bitIdx = 0; bitIdx < width; ++bitIdx) {
+    unsigned dstShiftAmount = width - 1 - bitIdx;
+
+    Value shifted = value;
+    if (bitIdx != 0) {
+      Value srcShift =
+          arith::ConstantIntOp::create(builder, loc, intTy, bitIdx);
+      shifted = arith::ShRUIOp::create(builder, loc, shifted, srcShift);
+    }
+
+    Value isolated = arith::AndIOp::create(builder, loc, shifted, one);
+    Value reversedBit = isolated;
+    if (dstShiftAmount != 0) {
+      Value dstShift =
+          arith::ConstantIntOp::create(builder, loc, intTy, dstShiftAmount);
+      reversedBit = arith::ShLIOp::create(builder, loc, isolated, dstShift);
+    }
+    result = arith::OrIOp::create(builder, loc, result, reversedBit);
+  }
+  return result;
+}
+
+Value FunctionConverter::buildCtPop(Location loc, Value value) {
+  auto intTy = dyn_cast<IntegerType>(value.getType());
+  if (!intTy)
+    return Value();
+
+  unsigned width = intTy.getWidth();
+  if (width == 0)
+    return Value();
+
+  Value result = arith::ConstantIntOp::create(builder, loc, intTy, 0);
+  Value one = arith::ConstantIntOp::create(builder, loc, intTy, 1);
+  for (unsigned bitIdx = 0; bitIdx < width; ++bitIdx) {
+    Value shifted = value;
+    if (bitIdx != 0) {
+      Value shift =
+          arith::ConstantIntOp::create(builder, loc, intTy, bitIdx);
+      shifted = arith::ShRUIOp::create(builder, loc, shifted, shift);
+    }
+    Value bit = arith::AndIOp::create(builder, loc, shifted, one);
+    result = arith::AddIOp::create(builder, loc, result, bit);
+  }
+  return result;
+}
+
+Value FunctionConverter::buildCountZeros(Location loc, Value value,
+                                         bool leading) {
+  auto intTy = dyn_cast<IntegerType>(value.getType());
+  if (!intTy)
+    return Value();
+
+  unsigned width = intTy.getWidth();
+  if (width == 0)
+    return Value();
+
+  Value zero = arith::ConstantIntOp::create(builder, loc, intTy, 0);
+  Value one = arith::ConstantIntOp::create(builder, loc, intTy, 1);
+  Value result = zero;
+  Value active = arith::ConstantIntOp::create(builder, loc, builder.getI1Type(),
+                                              1);
+
+  for (unsigned bitIdx = 0; bitIdx < width; ++bitIdx) {
+    unsigned shiftAmount = leading ? (width - 1 - bitIdx) : bitIdx;
+    Value shifted = value;
+    if (shiftAmount != 0) {
+      Value shift =
+          arith::ConstantIntOp::create(builder, loc, intTy, shiftAmount);
+      shifted = arith::ShRUIOp::create(builder, loc, shifted, shift);
+    }
+
+    Value bit = arith::AndIOp::create(builder, loc, shifted, one);
+    Value isZero =
+        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq, bit, zero);
+    Value shouldCount = arith::AndIOp::create(builder, loc, active, isZero);
+    Value increment =
+        arith::SelectOp::create(builder, loc, shouldCount, one, zero);
+    result = arith::AddIOp::create(builder, loc, result, increment);
+    active = arith::AndIOp::create(builder, loc, active, isZero);
+  }
+
+  return result;
 }
 
 //===----------------------------------------------------------------------===//
