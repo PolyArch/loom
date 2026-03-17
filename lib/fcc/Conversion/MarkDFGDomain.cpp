@@ -76,8 +76,14 @@ struct ADGCapacity {
   unsigned totalMemModules = 0;
   unsigned maxDataWidth = 64;
 
-  bool isValid() const { return totalPEs > 0; }
+  bool isValid() const { return totalPEs > 0 || totalFUs > 0; }
 };
+
+static unsigned getComputeCapacity(const ADGCapacity &adg) {
+  if (adg.totalFUs > 0)
+    return adg.totalFUs;
+  return adg.totalPEs;
+}
 
 // Count resources in an operation region for quick estimation.
 static ResourceEstimate estimateResources(Operation *root) {
@@ -251,11 +257,12 @@ static bool checkFeasibility(DFGCandidate &candidate,
   }
 
   const auto &r = candidate.resources;
+  const unsigned computeCapacity = getComputeCapacity(adg);
   bool fits = true;
-  if (r.estimatedPECount > adg.totalPEs) {
+  if (computeCapacity > 0 && r.estimatedPECount > computeCapacity) {
     LLVM_DEBUG(llvm::dbgs()
-               << "  INFEASIBLE: PEs " << r.estimatedPECount
-               << " > capacity " << adg.totalPEs << "\n");
+               << "  INFEASIBLE: compute " << r.estimatedPECount
+               << " > capacity " << computeCapacity << "\n");
     fits = false;
   }
   if (r.estimatedMemCount > adg.totalMemModules) {
