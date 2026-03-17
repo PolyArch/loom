@@ -28,6 +28,16 @@ void buildSpatialVectorDomain(const std::string &outputPath,
       builder.defineFU("fu_subi", {"i32", "i32"}, {"i32"}, {"arith.subi"});
   auto fuMuli =
       builder.defineFU("fu_muli", {"i32", "i32"}, {"i32"}, {"arith.muli"});
+  auto fuAndi =
+      builder.defineFU("fu_andi", {"i32", "i32"}, {"i32"}, {"arith.andi"});
+  auto fuOri =
+      builder.defineFU("fu_ori", {"i32", "i32"}, {"i32"}, {"arith.ori"});
+  auto fuXori =
+      builder.defineFU("fu_xori", {"i32", "i32"}, {"i32"}, {"arith.xori"});
+  auto fuShli =
+      builder.defineFU("fu_shli", {"i32", "i32"}, {"i32"}, {"arith.shli"});
+  auto fuShrui =
+      builder.defineFU("fu_shrui", {"i32", "i32"}, {"i32"}, {"arith.shrui"});
   auto fuMuliIndex = builder.defineFU("fu_muli_index", {"index", "index"},
                                       {"index"}, {"arith.muli"});
   auto fuDivuiIndex = builder.defineFU("fu_divui_index", {"index", "index"},
@@ -90,12 +100,16 @@ void buildSpatialVectorDomain(const std::string &outputPath,
                                  {"none"}, {"handshake.join"});
 
   std::vector<FUHandle> allFUs = {
-      fuAddi,        fuAddiIndex,  fuSubi,          fuMuli,        fuMuliIndex,
-      fuDivuiIndex,  fuCmpi,       fuSelect,        fuSelectIndex, fuIndexCast,
-      fuStream,      fuGateIndex,  fuGateI32,       fuGateNone,    fuInvariantIndex,
-      fuInvariantI32, fuInvariantNone, fuCarryIndex, fuCarryI32,   fuCarryNone,
-      fuLoad,        fuStore,      fuConstant,      fuCondBrI32,   fuCondBrNone,
-      fuMuxI32,      fuMuxNone,    fuJoin,
+      fuAddi,          fuAddiIndex,    fuSubi,         fuMuli,
+      fuAndi,          fuOri,          fuXori,         fuShli,
+      fuShrui,
+      fuMuliIndex,     fuDivuiIndex,   fuCmpi,         fuSelect,
+      fuSelectIndex,   fuIndexCast,    fuStream,       fuGateIndex,
+      fuGateI32,       fuGateNone,     fuInvariantIndex,
+      fuInvariantI32,  fuInvariantNone, fuCarryIndex,  fuCarryI32,
+      fuCarryNone,     fuLoad,         fuStore,        fuConstant,
+      fuCondBrI32,     fuCondBrNone,   fuMuxI32,       fuMuxNone,
+      fuJoin,
   };
 
   constexpr unsigned kPEInputs = 4;
