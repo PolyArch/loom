@@ -193,12 +193,23 @@ int main(int argc, char **argv) {
 
     llvm::outs() << "fcc: generating config...\n";
     fcc::ConfigGen configGen;
-    configGen.generate(mapResult.state, dfgBuilder.getDFG(),
-                       flattener.getADG(), flattener, base,
-                       static_cast<int>(args.mapperSeed));
+    if (!configGen.generate(mapResult.state, dfgBuilder.getDFG(),
+                            flattener.getADG(), flattener, base,
+                            static_cast<int>(args.mapperSeed))) {
+      llvm::errs() << "fcc: config generation failed\n";
+      return 1;
+    }
     llvm::outs() << "fcc: mapping output:\n";
+    llvm::outs() << "  " << base << ".config.bin\n";
+    llvm::outs() << "  " << base << ".config.json\n";
+    llvm::outs() << "  " << base << ".config.h\n";
     llvm::outs() << "  " << base << ".map.json\n";
     llvm::outs() << "  " << base << ".map.txt\n";
+    if (!configGen.isConfigComplete()) {
+      llvm::outs() << "fcc: warning: config artifacts currently cover "
+                      "routing/tag/memory state but not all PE/FU runtime "
+                      "configuration\n";
+    }
 
     // Generate visualization with mapping data
     std::string vizPath = base + ".viz.html";
@@ -231,7 +242,8 @@ int main(int argc, char **argv) {
         llvm::errs() << "fcc: simulation graph build failed: " << err << "\n";
         return 1;
       }
-      if (std::string err = session.loadConfig({}); !err.empty()) {
+      if (std::string err = session.loadConfig(configGen.getConfigBlob());
+          !err.empty()) {
         llvm::errs() << "fcc: simulation config load failed: " << err << "\n";
         return 1;
       }

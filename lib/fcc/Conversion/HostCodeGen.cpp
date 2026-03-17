@@ -187,9 +187,35 @@ static std::string generateAccelRuntimeSource() {
   return source;
 }
 
+static std::string generateConfigHeaderStub() {
+  std::string header;
+  llvm::raw_string_ostream os(header);
+  os << "// Empty config stub emitted before mapping\n";
+  os << "#ifndef FCC_ACCEL_CONFIG_H\n";
+  os << "#define FCC_ACCEL_CONFIG_H\n\n";
+  os << "#include <stdint.h>\n\n";
+  os << "static const uint32_t fcc_accel_config_words[] = {0};\n";
+  os << "static const unsigned fcc_accel_config_word_count = 0;\n";
+  os << "static const int fcc_accel_config_complete = 0;\n\n";
+  os << "#endif\n";
+  return header;
+}
+
+static std::string deriveConfigHeaderName(const std::string &outputPath) {
+  llvm::SmallString<128> path(outputPath);
+  llvm::StringRef fileName = llvm::sys::path::filename(path);
+  llvm::SmallString<128> stem(fileName);
+  llvm::sys::path::replace_extension(stem, "");
+  llvm::StringRef stemRef(stem);
+  if (stemRef.ends_with("_host"))
+    stemRef = stemRef.drop_back(5);
+  return (stemRef + ".config.h").str();
+}
+
 // Generate the host C source that replaces accelerated calls with MMIO driver.
 static std::string generateHostSource(const std::string &originalSource,
-                                      ArrayRef<AccelFuncInfo> accelFuncs) {
+                                      ArrayRef<AccelFuncInfo> accelFuncs,
+                                      llvm::StringRef configHeaderName) {
   std::string source;
   llvm::raw_string_ostream os(source);
 
@@ -210,6 +236,7 @@ static std::string generateHostSource(const std::string &originalSource,
   os << "#include <stdio.h>\n";
   os << "#include <stdlib.h>\n";
   os << "#include \"fcc_accel.h\"\n";
+  os << "#include \"" << configHeaderName << "\"\n";
   os << "\n";
 
   // Generate an accel-invoke wrapper for each accelerated function
@@ -276,8 +303,9 @@ static std::string generateHostSource(const std::string &originalSource,
 
     os << "    fcc_accel_init();\n";
     os << "\n";
-    os << "    // TODO: load config from config.bin when available\n";
-    os << "    // fcc_accel_load_config(config_words, config_count);\n";
+    os << "    if (fcc_accel_config_word_count > 0)\n";
+    os << "        fcc_accel_load_config(fcc_accel_config_words,\n";
+    os << "                              fcc_accel_config_word_count);\n";
     os << "\n";
 
     // Set up memory regions
@@ -441,6 +469,10 @@ struct HostCodeGenPass
     llvm::SmallString<256> runtimePath(outputPath);
     llvm::sys::path::remove_filename(runtimePath);
     llvm::sys::path::append(runtimePath, "fcc_accel.c");
+    llvm::SmallString<256> configHeaderPath(outputPath);
+    llvm::sys::path::remove_filename(configHeaderPath);
+    std::string configHeaderName = deriveConfigHeaderName(outputPath);
+    llvm::sys::path::append(configHeaderPath, configHeaderName);
 
     {
       std::error_code ec;
@@ -468,6 +500,19 @@ struct HostCodeGenPass
       llvm::outs() << "fcc: wrote " << runtimePath << "\n";
     }
 
+    {
+      std::error_code ec;
+      llvm::raw_fd_ostream os(configHeaderPath, ec);
+      if (ec) {
+        llvm::errs() << "fcc: cannot write " << configHeaderPath << ": "
+                     << ec.message() << "\n";
+        signalPassFailure();
+        return;
+      }
+      os << generateConfigHeaderStub();
+      llvm::outs() << "fcc: wrote " << configHeaderPath << "\n";
+    }
+
     // Generate the host C source
     {
       std::error_code ec;
@@ -478,7 +523,7 @@ struct HostCodeGenPass
         signalPassFailure();
         return;
       }
-      os << generateHostSource(originalSource, accelFuncs);
+      os << generateHostSource(originalSource, accelFuncs, configHeaderName);
       llvm::outs() << "fcc: wrote " << outputPath << "\n";
     }
   }

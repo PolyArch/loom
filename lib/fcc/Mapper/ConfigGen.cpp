@@ -9,12 +9,65 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cctype>
 #include <map>
+#include <optional>
+#include <set>
+#include <sstream>
 #include <tuple>
 
 namespace fcc {
 
 namespace {
+
+constexpr uint32_t kConfigWordBits = 32;
+
+void packBits(std::vector<uint32_t> &words, uint32_t &bitPos, uint64_t value,
+              unsigned width) {
+  if (width == 0)
+    return;
+  uint32_t wordIndex = bitPos / kConfigWordBits;
+  uint32_t bitIndex = bitPos % kConfigWordBits;
+  uint32_t bitsRemaining = width;
+  uint64_t remainingValue = value;
+
+  while (bitsRemaining > 0) {
+    if (words.size() <= wordIndex)
+      words.resize(wordIndex + 1, 0);
+    uint32_t chunkWidth =
+        std::min<uint32_t>(bitsRemaining, kConfigWordBits - bitIndex);
+    uint32_t chunkMask =
+        chunkWidth == kConfigWordBits
+            ? 0xffffffffu
+            : ((uint32_t{1} << chunkWidth) - 1u);
+    words[wordIndex] |=
+        static_cast<uint32_t>(remainingValue & chunkMask) << bitIndex;
+    remainingValue >>= chunkWidth;
+    bitsRemaining -= chunkWidth;
+    bitIndex = 0;
+    ++wordIndex;
+  }
+
+  bitPos += width;
+}
+
+std::string buildHeaderGuard(llvm::StringRef pathStem) {
+  std::string guard = "FCC_";
+  for (char ch : pathStem) {
+    if (std::isalnum(static_cast<unsigned char>(ch)))
+      guard.push_back(static_cast<char>(std::toupper(ch)));
+    else
+      guard.push_back('_');
+  }
+  guard += "_CONFIG_H";
+  return guard;
+}
+
+std::string getConfigHeaderFilename(llvm::StringRef basePath) {
+  std::string result = basePath.str();
+  result += ".config.h";
+  return result;
+}
 
 struct MemoryRegionEntry {
   IdIndex swNode = INVALID_ID;
@@ -28,6 +81,100 @@ struct MemoryRegionEntry {
 
 bool isSoftwareMemoryInterfaceOp(llvm::StringRef opName) {
   return opName == "handshake.extmemory" || opName == "handshake.memory";
+}
+
+std::optional<uint64_t> getUIntNodeAttr(const Node *node, llvm::StringRef name) {
+  if (!node)
+    return std::nullopt;
+  for (const auto &attr : node->attributes) {
+    if (attr.getName() != name)
+      continue;
+    if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+      return static_cast<uint64_t>(intAttr.getInt());
+  }
+  return std::nullopt;
+}
+
+std::vector<std::string> getBinaryRowsNodeAttr(const Node *node,
+                                               llvm::StringRef name) {
+  std::vector<std::string> rows;
+  if (!node)
+    return rows;
+  for (const auto &attr : node->attributes) {
+    if (attr.getName() != name)
+      continue;
+    auto arrayAttr = mlir::dyn_cast<mlir::ArrayAttr>(attr.getValue());
+    if (!arrayAttr)
+      return rows;
+    for (auto elem : arrayAttr) {
+      if (auto strAttr = mlir::dyn_cast<mlir::StringAttr>(elem))
+        rows.push_back(strAttr.getValue().str());
+    }
+    return rows;
+  }
+  return rows;
+}
+
+bool isConnectedPosition(const std::vector<std::string> &rows, unsigned outIdx,
+                         unsigned inIdx, unsigned numIn) {
+  if (rows.empty())
+    return inIdx < numIn;
+  if (outIdx >= rows.size())
+    return false;
+  const std::string &row = rows[outIdx];
+  if (inIdx >= row.size())
+    return false;
+  return row[inIdx] == '1';
+}
+
+unsigned countConnectedPositions(const std::vector<std::string> &rows,
+                                 unsigned numIn, unsigned numOut) {
+  if (rows.empty())
+    return numIn * numOut;
+  unsigned count = 0;
+  for (unsigned outIdx = 0; outIdx < numOut; ++outIdx) {
+    for (unsigned inIdx = 0; inIdx < numIn; ++inIdx) {
+      if (isConnectedPosition(rows, outIdx, inIdx, numIn))
+        ++count;
+    }
+  }
+  return count;
+}
+
+unsigned connectedPositionOrdinal(const std::vector<std::string> &rows,
+                                  unsigned numIn, unsigned numOut,
+                                  unsigned inputIdx, unsigned outputIdx) {
+  unsigned ordinal = 0;
+  for (unsigned outIdx = 0; outIdx < numOut; ++outIdx) {
+    for (unsigned inIdx = 0; inIdx < numIn; ++inIdx) {
+      if (!isConnectedPosition(rows, outIdx, inIdx, numIn))
+        continue;
+      if (inIdx == inputIdx && outIdx == outputIdx)
+        return ordinal;
+      ++ordinal;
+    }
+  }
+  return ordinal;
+}
+
+int findNodeInputIndex(const Node *node, IdIndex portId) {
+  if (!node)
+    return -1;
+  for (unsigned i = 0; i < node->inputPorts.size(); ++i) {
+    if (node->inputPorts[i] == portId)
+      return static_cast<int>(i);
+  }
+  return -1;
+}
+
+int findNodeOutputIndex(const Node *node, IdIndex portId) {
+  if (!node)
+    return -1;
+  for (unsigned i = 0; i < node->outputPorts.size(); ++i) {
+    if (node->outputPorts[i] == portId)
+      return static_cast<int>(i);
+  }
+  return -1;
 }
 
 mlir::DenseI64ArrayAttr getDenseI64NodeAttr(const Node *node,
@@ -425,11 +572,469 @@ buildExportPathForEdge(IdIndex edgeId, const MappingState &state,
   return path;
 }
 
+struct GeneratedNodeConfig {
+  std::vector<uint32_t> words;
+  bool complete = true;
+};
+
+std::optional<uint64_t>
+findMemoryRegionStartLane(IdIndex swNodeId, IdIndex hwNodeId,
+                          const MappingState &state, const Graph &dfg,
+                          const Graph &adg) {
+  auto regions = collectMemoryRegionsForNode(hwNodeId, state, dfg, adg);
+  for (const auto &region : regions) {
+    if (region.swNode == swNodeId && region.startLane >= 0)
+      return static_cast<uint64_t>(region.startLane);
+  }
+  return std::nullopt;
+}
+
+std::optional<uint64_t>
+inferTemporalRouteTag(IdIndex swEdgeId, llvm::ArrayRef<IdIndex> hwPath,
+                      size_t transitionIndex, const MappingState &state,
+                      const Graph &dfg, const Graph &adg) {
+  const Edge *swEdge = dfg.getEdge(swEdgeId);
+  if (!swEdge)
+    return std::nullopt;
+
+  const Port *swSrcPort = dfg.getPort(swEdge->srcPort);
+  const Port *swDstPort = dfg.getPort(swEdge->dstPort);
+  IdIndex swSrcNodeId =
+      swSrcPort ? swSrcPort->parentNode : static_cast<IdIndex>(INVALID_ID);
+  IdIndex swDstNodeId =
+      swDstPort ? swDstPort->parentNode : static_cast<IdIndex>(INVALID_ID);
+
+  for (int64_t idx = static_cast<int64_t>(transitionIndex); idx >= 0; --idx) {
+    const Node *owner = getPortOwnerNode(adg, hwPath[static_cast<size_t>(idx)]);
+    if (!owner)
+      continue;
+    llvm::StringRef opKind = getNodeAttrStr(owner, "op_kind");
+    if (opKind == "add_tag") {
+      if (auto tag = getUIntNodeAttr(owner, "tag"))
+        return tag;
+    }
+    if (getNodeAttrStr(owner, "resource_class") == "memory") {
+      const Port *ownerPort = adg.getPort(hwPath[static_cast<size_t>(idx)]);
+      if (!ownerPort)
+        continue;
+      IdIndex hwNodeId = ownerPort->parentNode;
+      if (swSrcNodeId != INVALID_ID &&
+          swSrcNodeId < state.swNodeToHwNode.size() &&
+          state.swNodeToHwNode[swSrcNodeId] == hwNodeId) {
+        if (auto lane =
+                findMemoryRegionStartLane(swSrcNodeId, hwNodeId, state, dfg, adg))
+          return lane;
+      }
+      if (swDstNodeId != INVALID_ID &&
+          swDstNodeId < state.swNodeToHwNode.size() &&
+          state.swNodeToHwNode[swDstNodeId] == hwNodeId) {
+        if (auto lane =
+                findMemoryRegionStartLane(swDstNodeId, hwNodeId, state, dfg, adg))
+          return lane;
+      }
+    }
+  }
+
+  for (size_t idx = transitionIndex + 1; idx < hwPath.size(); ++idx) {
+    const Node *owner = getPortOwnerNode(adg, hwPath[idx]);
+    if (!owner)
+      continue;
+    if (getNodeAttrStr(owner, "resource_class") == "memory") {
+      const Port *ownerPort = adg.getPort(hwPath[idx]);
+      if (!ownerPort)
+        continue;
+      IdIndex hwNodeId = ownerPort->parentNode;
+      if (swSrcNodeId != INVALID_ID &&
+          swSrcNodeId < state.swNodeToHwNode.size() &&
+          state.swNodeToHwNode[swSrcNodeId] == hwNodeId) {
+        if (auto lane =
+                findMemoryRegionStartLane(swSrcNodeId, hwNodeId, state, dfg, adg))
+          return lane;
+      }
+      if (swDstNodeId != INVALID_ID &&
+          swDstNodeId < state.swNodeToHwNode.size() &&
+          state.swNodeToHwNode[swDstNodeId] == hwNodeId) {
+        if (auto lane =
+                findMemoryRegionStartLane(swDstNodeId, hwNodeId, state, dfg, adg))
+          return lane;
+      }
+    }
+  }
+
+  return std::nullopt;
+}
+
+GeneratedNodeConfig buildSpatialSwitchConfig(const Node *hwNode, IdIndex hwId,
+                                             const MappingState &state,
+                                             const Graph &dfg,
+                                             const Graph &adg) {
+  GeneratedNodeConfig cfg;
+  if (!hwNode)
+    return cfg;
+  unsigned numIn = hwNode->inputPorts.size();
+  unsigned numOut = hwNode->outputPorts.size();
+  if (numIn == 0 || numOut == 0)
+    return cfg;
+
+  auto rows = getBinaryRowsNodeAttr(hwNode, "connectivity_table");
+  uint32_t bitPos = 0;
+  std::set<std::pair<int, int>> activeTransitions;
+
+  for (IdIndex edgeId = 0;
+       edgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size()); ++edgeId) {
+    auto hwPath = buildExportPathForEdge(edgeId, state, dfg, adg);
+    if (hwPath.size() < 3)
+      continue;
+    for (size_t i = 1; i + 1 < hwPath.size(); i += 2) {
+      IdIndex inPortId = hwPath[i];
+      IdIndex outPortId = hwPath[i + 1];
+      const Port *inPort = adg.getPort(inPortId);
+      const Port *outPort = adg.getPort(outPortId);
+      if (!inPort || !outPort || inPort->parentNode != hwId ||
+          outPort->parentNode != hwId)
+        continue;
+      int inputIdx = findNodeInputIndex(hwNode, inPortId);
+      int outputIdx = findNodeOutputIndex(hwNode, outPortId);
+      if (inputIdx >= 0 && outputIdx >= 0)
+        activeTransitions.insert({inputIdx, outputIdx});
+    }
+  }
+
+  for (unsigned outIdx = 0; outIdx < numOut; ++outIdx) {
+    for (unsigned inIdx = 0; inIdx < numIn; ++inIdx) {
+      if (!isConnectedPosition(rows, outIdx, inIdx, numIn))
+        continue;
+      bool enabled =
+          activeTransitions.count({static_cast<int>(inIdx),
+                                   static_cast<int>(outIdx)}) > 0;
+      packBits(cfg.words, bitPos, enabled ? 1u : 0u, 1);
+    }
+  }
+
+  return cfg;
+}
+
+GeneratedNodeConfig buildTemporalSwitchConfig(const Node *hwNode, IdIndex hwId,
+                                              const MappingState &state,
+                                              const Graph &dfg,
+                                              const Graph &adg) {
+  GeneratedNodeConfig cfg;
+  if (!hwNode)
+    return cfg;
+
+  unsigned numIn = hwNode->inputPorts.size();
+  unsigned numOut = hwNode->outputPorts.size();
+  unsigned slotCount =
+      static_cast<unsigned>(std::max<int64_t>(getNodeAttrInt(hwNode, "num_route_table", 0), 0));
+  if (numIn == 0 || numOut == 0 || slotCount == 0)
+    return cfg;
+
+  auto rows = getBinaryRowsNodeAttr(hwNode, "connectivity_table");
+  unsigned routeBits = countConnectedPositions(rows, numIn, numOut);
+  unsigned tagWidth = 0;
+  for (IdIndex portId : hwNode->inputPorts) {
+    const Port *port = adg.getPort(portId);
+    if (!port)
+      continue;
+    if (auto info = detail::getPortTypeInfo(port->type)) {
+      if (info->isTagged) {
+        tagWidth = info->tagWidth;
+        break;
+      }
+    }
+  }
+  if (tagWidth == 0)
+    tagWidth = 1;
+
+  std::map<uint64_t, std::vector<unsigned>> routesByTag;
+  for (IdIndex edgeId = 0;
+       edgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size()); ++edgeId) {
+    auto hwPath = buildExportPathForEdge(edgeId, state, dfg, adg);
+    if (hwPath.size() < 3)
+      continue;
+    for (size_t i = 1; i + 1 < hwPath.size(); i += 2) {
+      IdIndex inPortId = hwPath[i];
+      IdIndex outPortId = hwPath[i + 1];
+      const Port *inPort = adg.getPort(inPortId);
+      const Port *outPort = adg.getPort(outPortId);
+      if (!inPort || !outPort || inPort->parentNode != hwId ||
+          outPort->parentNode != hwId)
+        continue;
+
+      int inputIdx = findNodeInputIndex(hwNode, inPortId);
+      int outputIdx = findNodeOutputIndex(hwNode, outPortId);
+      if (inputIdx < 0 || outputIdx < 0)
+        continue;
+
+      auto tag = inferTemporalRouteTag(edgeId, hwPath, i, state, dfg, adg);
+      if (!tag) {
+        cfg.complete = false;
+        continue;
+      }
+
+      unsigned ordinal =
+          connectedPositionOrdinal(rows, numIn, numOut, inputIdx, outputIdx);
+      auto &routeBitsForTag = routesByTag[*tag];
+      if (std::find(routeBitsForTag.begin(), routeBitsForTag.end(), ordinal) ==
+          routeBitsForTag.end()) {
+        routeBitsForTag.push_back(ordinal);
+      }
+    }
+  }
+
+  uint32_t bitPos = 0;
+  unsigned emittedSlots = 0;
+  for (const auto &entry : routesByTag) {
+    if (emittedSlots >= slotCount) {
+      cfg.complete = false;
+      break;
+    }
+    packBits(cfg.words, bitPos, 1u, 1);
+    packBits(cfg.words, bitPos, entry.first, tagWidth);
+    for (unsigned ordinal = 0; ordinal < routeBits; ++ordinal) {
+      bool enabled = std::find(entry.second.begin(), entry.second.end(),
+                               ordinal) != entry.second.end();
+      packBits(cfg.words, bitPos, enabled ? 1u : 0u, 1);
+    }
+    ++emittedSlots;
+  }
+  for (; emittedSlots < slotCount; ++emittedSlots) {
+    packBits(cfg.words, bitPos, 0u, 1);
+    packBits(cfg.words, bitPos, 0u, tagWidth);
+    for (unsigned ordinal = 0; ordinal < routeBits; ++ordinal)
+      packBits(cfg.words, bitPos, 0u, 1);
+  }
+
+  return cfg;
+}
+
+GeneratedNodeConfig buildAddTagConfig(const Node *hwNode) {
+  GeneratedNodeConfig cfg;
+  if (auto tag = getUIntNodeAttr(hwNode, "tag"))
+    cfg.words.push_back(static_cast<uint32_t>(*tag));
+  return cfg;
+}
+
+GeneratedNodeConfig buildMapTagConfig(const Node *hwNode) {
+  GeneratedNodeConfig cfg;
+  if (!hwNode)
+    return cfg;
+  unsigned tableSize =
+      static_cast<unsigned>(getNodeAttrInt(hwNode, "table_size", 0));
+  if (tableSize == 0)
+    return cfg;
+
+  std::vector<uint32_t> words;
+  uint32_t bitPos = 0;
+  packBits(words, bitPos, tableSize, 16);
+
+  bool sawTable = false;
+  for (const auto &attr : hwNode->attributes) {
+    if (attr.getName() != "table")
+      continue;
+    auto arrayAttr = mlir::dyn_cast<mlir::ArrayAttr>(attr.getValue());
+    if (!arrayAttr)
+      break;
+    sawTable = true;
+    for (auto elem : arrayAttr) {
+      if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(elem))
+        packBits(words, bitPos, static_cast<uint64_t>(intAttr.getInt()), 16);
+    }
+    break;
+  }
+  if (!sawTable)
+    cfg.complete = false;
+  cfg.words = std::move(words);
+  return cfg;
+}
+
+GeneratedNodeConfig buildMemoryConfig(const Node *hwNode, IdIndex hwId,
+                                      const MappingState &state,
+                                      const Graph &dfg, const Graph &adg) {
+  GeneratedNodeConfig cfg;
+  if (!hwNode)
+    return cfg;
+  auto addrTable = buildAddrOffsetTable(hwNode, hwId, state, dfg, adg);
+  cfg.words.reserve(addrTable.size());
+  for (int64_t value : addrTable)
+    cfg.words.push_back(static_cast<uint32_t>(value));
+  return cfg;
+}
+
 } // namespace
+
+bool ConfigGen::buildConfigArtifacts(const MappingState &state,
+                                     const Graph &dfg, const Graph &adg) {
+  nodeConfigs_.clear();
+  configSlices_.clear();
+  configWords_.clear();
+  configBlob_.clear();
+  configComplete_ = true;
+
+  for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(adg.nodes.size()); ++hwId) {
+    const Node *hwNode = adg.getNode(hwId);
+    if (!hwNode || hwNode->kind != Node::OperationNode)
+      continue;
+
+    GeneratedNodeConfig generated;
+    llvm::StringRef resourceClass = getNodeAttrStr(hwNode, "resource_class");
+    llvm::StringRef opKind = getNodeAttrStr(hwNode, "op_kind");
+
+    if (resourceClass == "routing") {
+      if (opKind == "spatial_sw")
+        generated = buildSpatialSwitchConfig(hwNode, hwId, state, dfg, adg);
+      else if (opKind == "temporal_sw")
+        generated = buildTemporalSwitchConfig(hwNode, hwId, state, dfg, adg);
+      else if (opKind == "add_tag")
+        generated = buildAddTagConfig(hwNode);
+      else if (opKind == "map_tag")
+        generated = buildMapTagConfig(hwNode);
+      else
+        continue;
+    } else if (resourceClass == "memory") {
+      generated = buildMemoryConfig(hwNode, hwId, state, dfg, adg);
+    } else if (resourceClass == "functional") {
+      configComplete_ = false;
+      continue;
+    } else {
+      continue;
+    }
+
+    if (generated.words.empty())
+      continue;
+
+    NodeConfig nodeCfg;
+    nodeCfg.name = getNodeAttrStr(hwNode, "op_name").str();
+    nodeCfg.kind = opKind.str();
+    nodeCfg.hwNode = hwId;
+    nodeCfg.complete = generated.complete;
+    nodeCfg.words = std::move(generated.words);
+    nodeConfigs_.push_back(nodeCfg);
+
+    ConfigSlice slice;
+    slice.name = nodeCfg.name;
+    slice.kind = nodeCfg.kind;
+    slice.hwNode = hwId;
+    slice.wordOffset = static_cast<uint32_t>(configWords_.size());
+    slice.wordCount = static_cast<uint32_t>(nodeCfg.words.size());
+    slice.complete = nodeCfg.complete;
+    configSlices_.push_back(slice);
+
+    configWords_.insert(configWords_.end(), nodeCfg.words.begin(),
+                        nodeCfg.words.end());
+    configComplete_ = configComplete_ && nodeCfg.complete;
+  }
+
+  configBlob_.reserve(configWords_.size() * sizeof(uint32_t));
+  for (uint32_t word : configWords_) {
+    configBlob_.push_back(static_cast<uint8_t>(word & 0xffu));
+    configBlob_.push_back(static_cast<uint8_t>((word >> 8) & 0xffu));
+    configBlob_.push_back(static_cast<uint8_t>((word >> 16) & 0xffu));
+    configBlob_.push_back(static_cast<uint8_t>((word >> 24) & 0xffu));
+  }
+
+  return true;
+}
+
+bool ConfigGen::writeConfigBinary(const std::string &path) const {
+  std::error_code ec;
+  llvm::raw_fd_ostream out(path, ec, llvm::sys::fs::OF_None);
+  if (ec) {
+    llvm::errs() << "ConfigGen: cannot open " << path << ": " << ec.message()
+                 << "\n";
+    return false;
+  }
+  if (!configBlob_.empty())
+    out.write(reinterpret_cast<const char *>(configBlob_.data()),
+              configBlob_.size());
+  return true;
+}
+
+bool ConfigGen::writeConfigJson(const std::string &path) const {
+  std::error_code ec;
+  llvm::raw_fd_ostream out(path, ec, llvm::sys::fs::OF_Text);
+  if (ec) {
+    llvm::errs() << "ConfigGen: cannot open " << path << ": " << ec.message()
+                 << "\n";
+    return false;
+  }
+
+  out << "{\n";
+  out << "  \"word_width_bits\": 32,\n";
+  out << "  \"word_count\": " << configWords_.size() << ",\n";
+  out << "  \"byte_size\": " << configBlob_.size() << ",\n";
+  out << "  \"complete\": " << (configComplete_ ? "true" : "false") << ",\n";
+  out << "  \"coverage_note\": "
+      << (configComplete_
+              ? "\"all currently modeled configurable nodes serialized\""
+              : "\"routing/tag/memory slices serialized; PE and FU runtime config is not fully modeled yet\"")
+      << ",\n";
+  out << "  \"slices\": [\n";
+  for (size_t i = 0; i < configSlices_.size(); ++i) {
+    const auto &slice = configSlices_[i];
+    if (i > 0)
+      out << ",\n";
+    out << "    {\"name\": \"" << slice.name << "\", \"kind\": \""
+        << slice.kind << "\", \"hw_node\": " << slice.hwNode
+        << ", \"word_offset\": " << slice.wordOffset
+        << ", \"word_count\": " << slice.wordCount
+        << ", \"complete\": " << (slice.complete ? "true" : "false") << "}";
+  }
+  out << "\n  ]\n";
+  out << "}\n";
+  return true;
+}
+
+bool ConfigGen::writeConfigHeader(const std::string &path) const {
+  std::error_code ec;
+  llvm::raw_fd_ostream out(path, ec, llvm::sys::fs::OF_Text);
+  if (ec) {
+    llvm::errs() << "ConfigGen: cannot open " << path << ": " << ec.message()
+                 << "\n";
+    return false;
+  }
+
+  std::string guard = buildHeaderGuard(path);
+
+  out << "#ifndef " << guard << "\n";
+  out << "#define " << guard << "\n\n";
+  out << "#include <stdint.h>\n\n";
+  out << "static const uint32_t fcc_accel_config_words[] = {";
+  if (configWords_.empty()) {
+    out << "0";
+  } else {
+    for (size_t i = 0; i < configWords_.size(); ++i) {
+      if (i == 0)
+        out << "\n    ";
+      else if ((i % 6) == 0)
+        out << ",\n    ";
+      else
+        out << ", ";
+      out << "0x";
+      out.write_hex(configWords_[i]);
+    }
+    out << "\n";
+  }
+  out << "};\n";
+  out << "static const unsigned fcc_accel_config_word_count = "
+      << configWords_.size() << ";\n";
+  out << "static const int fcc_accel_config_complete = "
+      << (configComplete_ ? 1 : 0) << ";\n\n";
+  out << "#endif\n";
+  return true;
+}
 
 bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
                           const Graph &adg, const ADGFlattener &flattener,
                           const std::string &basePath, int seed) {
+  if (!buildConfigArtifacts(state, dfg, adg))
+    return false;
+  if (!writeConfigBinary(basePath + ".config.bin"))
+    return false;
+  if (!writeConfigJson(basePath + ".config.json"))
+    return false;
+  if (!writeConfigHeader(getConfigHeaderFilename(basePath)))
+    return false;
   if (!writeMapJson(state, dfg, adg, flattener, basePath + ".map.json", seed))
     return false;
   if (!writeMapText(state, dfg, adg, flattener, basePath + ".map.txt"))
