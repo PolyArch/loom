@@ -16,6 +16,16 @@ using namespace fcc::adg;
 namespace fcc {
 namespace e2e {
 
+static unsigned getExtMemorySwInputPortCount(unsigned ldCount,
+                                             unsigned stCount) {
+  return ldCount + stCount + ldCount;
+}
+
+static unsigned getExtMemorySwOutputPortCount(unsigned ldCount,
+                                              unsigned stCount) {
+  return ldCount + stCount * 2;
+}
+
 void buildSpatialVectorDomain(const std::string &outputPath,
                               const SpatialVectorDomainOptions &opts) {
   ADGBuilder builder(opts.moduleName);
@@ -122,8 +132,10 @@ void buildSpatialVectorDomain(const std::string &outputPath,
   auto pe = builder.defineSpatialPE("vector_pe", kPEInputs, kPEOutputs,
                                     opts.dataWidth, allFUs);
 
-  constexpr unsigned kExtMemInputPorts = 4;
-  constexpr unsigned kExtMemOutputPorts = 5;
+  const unsigned kExtMemInputPorts =
+      getExtMemorySwOutputPortCount(opts.maxLdCount, opts.maxStCount);
+  const unsigned kExtMemOutputPorts =
+      getExtMemorySwInputPortCount(opts.maxLdCount, opts.maxStCount);
   const unsigned numSwInputs =
       opts.numPEs * kPEOutputs +
       opts.numExtMems * kExtMemOutputPorts + opts.numScalarInputs;
@@ -138,7 +150,8 @@ void buildSpatialVectorDomain(const std::string &outputPath,
   auto sw = builder.defineSpatialSW("vector_sw", swInputWidths, swOutputWidths,
                                     fullCrossbar);
 
-  auto rwMem = builder.defineExtMemory("vector_rwmem", 2, 1);
+  auto rwMem = builder.defineExtMemory("vector_rwmem", opts.maxLdCount,
+                                       opts.maxStCount);
 
   auto swInst = builder.instantiateSW(sw, "sw_0");
   std::vector<InstanceHandle> peInsts;

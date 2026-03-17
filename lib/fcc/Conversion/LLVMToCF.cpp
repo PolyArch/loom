@@ -1353,6 +1353,12 @@ struct ConvertLLVMToCFPassImpl
         llvmFunc->erase();
     }
 
+    SmallVector<LLVM::LLVMFuncOp, 8> residualLLVMFuncs;
+    module.walk([&](LLVM::LLVMFuncOp func) { residualLLVMFuncs.push_back(func); });
+    for (LLVM::LLVMFuncOp func : residualLLVMFuncs)
+      if (func->getParentOp())
+        func.erase();
+
     // Clean up LLVM module-level ops
     module.walk([](LLVM::ModuleFlagsOp op) { op.erase(); });
   }

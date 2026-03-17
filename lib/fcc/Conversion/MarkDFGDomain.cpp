@@ -28,6 +28,7 @@ struct ResourceEstimate {
   unsigned maxDataWidth = 0;
   unsigned estimatedPECount = 0;
   unsigned estimatedMemCount = 0;
+  unsigned stateCarryCount = 0;
 };
 
 // Parameters for a DFG candidate variant.
@@ -89,6 +90,13 @@ static unsigned getComputeCapacity(const ADGCapacity &adg) {
 static ResourceEstimate estimateResources(Operation *root) {
   ResourceEstimate est;
   llvm::DenseSet<Value> memrefsSeen;
+
+  if (auto forOp = dyn_cast<scf::ForOp>(root))
+    est.stateCarryCount = static_cast<unsigned>(forOp.getInitArgs().size());
+  else if (auto whileOp = dyn_cast<scf::WhileOp>(root))
+    est.stateCarryCount =
+        std::max(static_cast<unsigned>(whileOp.getBeforeArguments().size()),
+                 whileOp.getNumResults());
 
   root->walk([&](Operation *op) {
     // Arithmetic operations
@@ -326,11 +334,13 @@ static DFGCandidate *selectBest(SmallVectorImpl<DFGCandidate> &candidates) {
         hasFeasibleMemoryCandidate ? -static_cast<int>(lhs.estimatedMemCount) : 0;
     int rhsMemPriority =
         hasFeasibleMemoryCandidate ? -static_cast<int>(rhs.estimatedMemCount) : 0;
-    auto lhsKey = std::tuple(lhsMemPriority, lhs.estimatedPECount,
+    auto lhsKey = std::tuple(lhs.stateCarryCount, lhsMemPriority,
+                             lhs.estimatedPECount,
                              lhs.numControlOps, lhs.maxDataWidth,
                              getKindRank(candidate.kind),
                              candidate.params.regionId);
-    auto rhsKey = std::tuple(rhsMemPriority, rhs.estimatedPECount,
+    auto rhsKey = std::tuple(rhs.stateCarryCount, rhsMemPriority,
+                             rhs.estimatedPECount,
                              rhs.numControlOps, rhs.maxDataWidth,
                              getKindRank(best->kind), best->params.regionId);
     if (lhsKey < rhsKey)

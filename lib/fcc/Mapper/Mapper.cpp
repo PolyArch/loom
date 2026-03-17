@@ -99,6 +99,60 @@ bool isSoftwareMemoryInterfaceOp(llvm::StringRef opName) {
   return opName == "handshake.extmemory" || opName == "handshake.memory";
 }
 
+IdIndex getExpandedMemoryInputPort(const Node *hwNode, bool isExtMem,
+                                   BridgePortCategory cat, unsigned lane) {
+  if (!hwNode)
+    return INVALID_ID;
+  unsigned ldCount =
+      static_cast<unsigned>(std::max<int64_t>(0, getNodeAttrInt(hwNode, "ldCount", 0)));
+  unsigned stCount =
+      static_cast<unsigned>(std::max<int64_t>(0, getNodeAttrInt(hwNode, "stCount", 0)));
+  unsigned portIdx = isExtMem ? 1u : 0u;
+  switch (cat) {
+  case BridgePortCategory::StData:
+    portIdx += lane * 2;
+    break;
+  case BridgePortCategory::StAddr:
+    portIdx += lane * 2 + 1;
+    break;
+  case BridgePortCategory::LdAddr:
+    portIdx += stCount * 2 + lane;
+    break;
+  default:
+    return INVALID_ID;
+  }
+  if (portIdx >= hwNode->inputPorts.size())
+    return INVALID_ID;
+  return hwNode->inputPorts[portIdx];
+}
+
+IdIndex getExpandedMemoryOutputPort(const Node *hwNode,
+                                    BridgePortCategory cat, unsigned lane) {
+  if (!hwNode)
+    return INVALID_ID;
+  unsigned ldCount =
+      static_cast<unsigned>(std::max<int64_t>(0, getNodeAttrInt(hwNode, "ldCount", 0)));
+  unsigned stCount =
+      static_cast<unsigned>(std::max<int64_t>(0, getNodeAttrInt(hwNode, "stCount", 0)));
+  unsigned portIdx = 0;
+  switch (cat) {
+  case BridgePortCategory::LdData:
+    portIdx = lane;
+    break;
+  case BridgePortCategory::StDone:
+    portIdx = ldCount + lane;
+    break;
+  case BridgePortCategory::LdDone:
+    portIdx = ldCount + stCount + lane;
+    break;
+  default:
+    return INVALID_ID;
+  }
+  if (portIdx >= hwNode->outputPorts.size())
+    return INVALID_ID;
+  return hwNode->outputPorts[portIdx];
+}
+
 } // namespace
 
 llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>>
@@ -151,10 +205,31 @@ Mapper::buildCandidates(const Graph &dfg, const Graph &adg) {
               continue;
           }
 
+          bool inputTypesOk = true;
+          for (unsigned si = memInfo.swInSkip; si < swNode->inputPorts.size();
+               ++si) {
+            const Port *sp = dfg.getPort(swNode->inputPorts[si]);
+            BridgePortCategory cat =
+                memInfo.classifyInput(si - memInfo.swInSkip);
+            unsigned lane = memInfo.inputLocalLane(si - memInfo.swInSkip);
+            IdIndex hwPid = getExpandedMemoryInputPort(hwNode, isExtMem, cat, lane);
+            const Port *hp = adg.getPort(hwPid);
+            if (!sp || hwPid == INVALID_ID || !hp ||
+                !canMapSoftwareTypeToHardware(sp->type, hp->type)) {
+              inputTypesOk = false;
+              break;
+            }
+          }
+          if (!inputTypesOk)
+            continue;
+
           bool outputTypesOk = true;
           for (unsigned oi = 0; oi < swNode->outputPorts.size(); ++oi) {
             const Port *sp = dfg.getPort(swNode->outputPorts[oi]);
-            const Port *hp = adg.getPort(hwNode->outputPorts[oi]);
+            BridgePortCategory cat = memInfo.classifyOutput(oi);
+            unsigned lane = memInfo.outputLocalLane(oi);
+            IdIndex hwPid = getExpandedMemoryOutputPort(hwNode, cat, lane);
+            const Port *hp = adg.getPort(hwPid);
             if (!sp || !hp ||
                 !canMapSoftwareTypeToHardware(sp->type, hp->type)) {
               outputTypesOk = false;
@@ -451,49 +526,11 @@ bool Mapper::runPlacement(
                        << " -> " << bestHw << "\n";
           return false;
         }
-      } else {
-        llvm::StringRef hwKind = getNodeAttrStr(placedHwNode, "op_kind");
-        bool isScalarMemory = (hwKind == "memory" || hwKind == "extmemory");
-        if (isScalarMemory) {
+        } else {
+          llvm::StringRef hwKind = getNodeAttrStr(placedHwNode, "op_kind");
+          bool isScalarMemory = (hwKind == "memory" || hwKind == "extmemory");
+          if (isScalarMemory) {
           DfgMemoryInfo memInfo = DfgMemoryInfo::extract(swNode, dfg, isExtMem);
-          auto getScalarMemoryInput = [&](BridgePortCategory cat) -> IdIndex {
-            unsigned idx = isExtMem ? 1 : 0;
-            if (getNodeAttrInt(placedHwNode, "ldCount", 0) > 0) {
-              if (cat == BridgePortCategory::LdAddr &&
-                  idx < placedHwNode->inputPorts.size())
-                return placedHwNode->inputPorts[idx];
-              ++idx;
-            }
-            if (getNodeAttrInt(placedHwNode, "stCount", 0) > 0) {
-              if (cat == BridgePortCategory::StAddr &&
-                  idx < placedHwNode->inputPorts.size())
-                return placedHwNode->inputPorts[idx];
-              ++idx;
-              if (cat == BridgePortCategory::StData &&
-                  idx < placedHwNode->inputPorts.size())
-                return placedHwNode->inputPorts[idx];
-            }
-            return INVALID_ID;
-          };
-          auto getScalarMemoryOutput = [&](BridgePortCategory cat) -> IdIndex {
-            unsigned idx = 0;
-            if (getNodeAttrInt(placedHwNode, "ldCount", 0) > 0) {
-              if (cat == BridgePortCategory::LdData &&
-                  idx < placedHwNode->outputPorts.size())
-                return placedHwNode->outputPorts[idx];
-              ++idx;
-              if (cat == BridgePortCategory::LdDone &&
-                  idx < placedHwNode->outputPorts.size())
-                return placedHwNode->outputPorts[idx];
-              ++idx;
-            }
-            if (getNodeAttrInt(placedHwNode, "stCount", 0) > 0 &&
-                cat == BridgePortCategory::StDone &&
-                idx < placedHwNode->outputPorts.size()) {
-              return placedHwNode->outputPorts[idx];
-            }
-            return INVALID_ID;
-          };
 
           if (memInfo.swInSkip > 0 && !swNode->inputPorts.empty() &&
               !placedHwNode->inputPorts.empty()) {
@@ -515,7 +552,9 @@ bool Mapper::runPlacement(
             IdIndex swPid = swNode->inputPorts[si];
             const Port *sp = dfg.getPort(swPid);
             BridgePortCategory cat = memInfo.classifyInput(si - memInfo.swInSkip);
-            IdIndex hwPid = getScalarMemoryInput(cat);
+            unsigned lane = memInfo.inputLocalLane(si - memInfo.swInSkip);
+            IdIndex hwPid =
+                getExpandedMemoryInputPort(placedHwNode, isExtMem, cat, lane);
             const Port *hp = adg.getPort(hwPid);
             if (!sp || hwPid == INVALID_ID || !hp ||
                 !state.hwPortToSwPorts[hwPid].empty() ||
@@ -531,7 +570,8 @@ bool Mapper::runPlacement(
             IdIndex swPid = swNode->outputPorts[oi];
             const Port *sp = dfg.getPort(swPid);
             BridgePortCategory cat = memInfo.classifyOutput(oi);
-            IdIndex hwPid = getScalarMemoryOutput(cat);
+            unsigned lane = memInfo.outputLocalLane(oi);
+            IdIndex hwPid = getExpandedMemoryOutputPort(placedHwNode, cat, lane);
             const Port *hp = adg.getPort(hwPid);
             if (!sp || hwPid == INVALID_ID || !hp ||
                 !state.hwPortToSwPorts[hwPid].empty() ||
@@ -859,6 +899,8 @@ bool Mapper::bindSentinels(MappingState &state, const Graph &dfg,
     mlir::Type portType = dfg.getPort(node->outputPorts[0])->type;
     if (isMemrefType(portType))
       dfgMemrefSentinels.push_back(sid);
+    else if (isNoneType(portType))
+      continue;
     else
       dfgScalarSentinels.push_back(sid);
   }
@@ -1122,6 +1164,8 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
       if (!node->outputPorts.empty()) {
         const Port *p = dfg.getPort(node->outputPorts[0]);
         if (p && mlir::isa<mlir::MemRefType>(p->type))
+          continue;
+        if (p && isNoneType(p->type))
           continue;
       }
     }

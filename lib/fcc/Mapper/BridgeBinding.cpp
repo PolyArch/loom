@@ -296,9 +296,10 @@ BridgePortCategory DfgMemoryInfo::classifyOutput(unsigned idx) const {
   unsigned ld = static_cast<unsigned>(ldCount);
   if (idx < ld)
     return BridgePortCategory::LdData;
-  if (idx < ld * 2)
-    return BridgePortCategory::LdDone;
-  return BridgePortCategory::StDone;
+  unsigned st = static_cast<unsigned>(stCount);
+  if (idx < ld + st)
+    return BridgePortCategory::StDone;
+  return BridgePortCategory::LdDone;
 }
 
 unsigned DfgMemoryInfo::inputLocalLane(unsigned relIdx) const {
@@ -312,9 +313,10 @@ unsigned DfgMemoryInfo::outputLocalLane(unsigned idx) const {
   unsigned ld = static_cast<unsigned>(ldCount);
   if (idx < ld)
     return idx;
-  if (idx < ld * 2)
+  unsigned st = static_cast<unsigned>(stCount);
+  if (idx < ld + st)
     return idx - ld;
-  return idx - ld * 2;
+  return idx - ld - st;
 }
 
 unsigned DfgMemoryInfo::laneSpan() const {

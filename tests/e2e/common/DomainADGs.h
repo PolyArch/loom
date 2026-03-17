@@ -19,6 +19,8 @@ struct SpatialVectorDomainOptions {
   unsigned dataWidth = 64;
   unsigned numScalarInputs = 4;
   unsigned numScalarOutputs = 2;
+  unsigned maxLdCount = 2;
+  unsigned maxStCount = 1;
 };
 
 void buildSpatialVectorDomain(const std::string &outputPath,
