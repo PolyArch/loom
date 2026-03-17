@@ -32,6 +32,21 @@ Type normalizeScalarType(MLIRContext *ctx, Type llvmType) {
   return llvmType;
 }
 
+Type flattenAllocaElementType(MLIRContext *ctx, Type llvmType,
+                              uint64_t &elementCount) {
+  if (auto arrayTy = dyn_cast<LLVM::LLVMArrayType>(llvmType)) {
+    elementCount *= arrayTy.getNumElements();
+    return flattenAllocaElementType(ctx, arrayTy.getElementType(),
+                                    elementCount);
+  }
+
+  Type scalarTy = normalizeScalarType(ctx, llvmType);
+  if (isa<IntegerType, Float16Type, Float32Type, Float64Type, Float128Type,
+          BFloat16Type>(scalarTy))
+    return scalarTy;
+  return nullptr;
+}
+
 unsigned getTypeBitWidth(Type type) {
   if (auto intTy = dyn_cast<IntegerType>(type))
     return intTy.getWidth();

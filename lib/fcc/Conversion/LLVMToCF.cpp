@@ -670,19 +670,31 @@ LogicalResult FunctionConverter::convertStore(LLVM::StoreOp op) {
 
 LogicalResult FunctionConverter::convertAlloca(LLVM::AllocaOp op) {
   Location loc = op.getLoc();
+  uint64_t elementCount = 1;
   Type elemTy = op.getElemType();
   if (!elemTy)
     elemTy = IntegerType::get(ctx, 8);
-  elemTy = normalizeScalarType(ctx, elemTy);
+  elemTy = flattenAllocaElementType(ctx, elemTy, elementCount);
+  if (!elemTy)
+    return op.emitError("unsupported alloca element type");
 
   Value size = lookup(op.getArraySize());
   Value sizeIdx = createIndexCast(loc, size);
+  if (elementCount != 1) {
+    Value countVal =
+        arith::ConstantIndexOp::create(builder, loc, elementCount);
+    sizeIdx = arith::MulIOp::create(builder, loc, sizeIdx, countVal);
+  }
 
-  auto memrefTy = MemRefType::get({ShapedType::kDynamic}, elemTy);
-  auto alloc = memref::AllocaOp::create(builder, loc, memrefTy,
-                                                 ValueRange{sizeIdx});
+  auto plainMemRefTy = MemRefType::get({ShapedType::kDynamic}, elemTy);
+  auto alloc = memref::AllocaOp::create(builder, loc, plainMemRefTy,
+                                        ValueRange{sizeIdx});
+  Value base = alloc;
+  auto memrefTy = buildStridedMemRefType(ctx, elemTy);
+  if (plainMemRefTy != memrefTy)
+    base = memref::CastOp::create(builder, loc, memrefTy, alloc);
   Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
-  mapPointer(op.getResult(), {alloc, zeroIdx, elemTy});
+  mapPointer(op.getResult(), {base, zeroIdx, elemTy});
   return success();
 }
 
@@ -1337,11 +1349,9 @@ struct ConvertLLVMToCFPassImpl
         continue;
       }
       existingFuncs.insert(converter.newFunc.getOperation());
-    }
-
-    for (auto llvmFunc : funcsToConvert)
       if (llvmFunc->getParentOp())
         llvmFunc->erase();
+    }
 
     // Clean up LLVM module-level ops
     module.walk([](LLVM::ModuleFlagsOp op) { op.erase(); });

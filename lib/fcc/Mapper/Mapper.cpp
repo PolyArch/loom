@@ -23,6 +23,10 @@ bool isMemrefType(mlir::Type type) {
   return mlir::isa<mlir::MemRefType>(type);
 }
 
+bool isNoneType(mlir::Type type) {
+  return mlir::isa<mlir::NoneType>(type);
+}
+
 /// Find the first downstream operation node connected to a sentinel's output.
 IdIndex findDownstreamNode(const Graph &graph, IdIndex sentinelNodeId) {
   const Node *sn = graph.getNode(sentinelNodeId);
@@ -912,6 +916,12 @@ bool Mapper::bindSentinels(MappingState &state, const Graph &dfg,
   llvm::DenseSet<size_t> usedAdgOut;
   for (size_t di = 0; di < dfgOutputSentinels.size(); ++di) {
     IdIndex dfgSid = dfgOutputSentinels[di];
+    const Node *dfgNode = dfg.getNode(dfgSid);
+    if (!dfgNode || dfgNode->inputPorts.empty())
+      continue;
+    const Port *swPort = dfg.getPort(dfgNode->inputPorts[0]);
+    if (swPort && isNoneType(swPort->type))
+      continue;
 
     bool bound = false;
     for (size_t ai = 0; ai < adgOutputSentinels.size(); ++ai) {
@@ -919,12 +929,10 @@ bool Mapper::bindSentinels(MappingState &state, const Graph &dfg,
         continue;
 
       IdIndex adgSid = adgOutputSentinels[ai];
-      const Node *dfgNode = dfg.getNode(dfgSid);
       const Node *adgNode = adg.getNode(adgSid);
       if (!dfgNode || !adgNode || dfgNode->inputPorts.empty() ||
           adgNode->inputPorts.empty())
         continue;
-      const Port *swPort = dfg.getPort(dfgNode->inputPorts[0]);
       const Port *hwPort = adg.getPort(adgNode->inputPorts[0]);
       if (!swPort || !hwPort ||
           !canMapSoftwareTypeToHardware(swPort->type, hwPort->type))
@@ -1114,6 +1122,13 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
       if (!node->outputPorts.empty()) {
         const Port *p = dfg.getPort(node->outputPorts[0]);
         if (p && mlir::isa<mlir::MemRefType>(p->type))
+          continue;
+      }
+    }
+    if (node->kind == Node::ModuleOutputNode) {
+      if (!node->inputPorts.empty()) {
+        const Port *p = dfg.getPort(node->inputPorts[0]);
+        if (p && isNoneType(p->type))
           continue;
       }
     }

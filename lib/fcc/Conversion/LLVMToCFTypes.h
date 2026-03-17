@@ -34,6 +34,14 @@ mlir::MemRefType buildStridedMemRefType(mlir::MLIRContext *ctx,
 // LLVM pointer -> index (for pointer-as-integer patterns).
 mlir::Type normalizeScalarType(mlir::MLIRContext *ctx, mlir::Type llvmType);
 
+// Flatten an LLVM aggregate element type to a memref-compatible scalar element.
+// For LLVM array types, returns the leaf scalar element type and multiplies
+// `elementCount` by the total number of contained scalar elements.
+// Returns null on unsupported aggregates.
+mlir::Type flattenAllocaElementType(mlir::MLIRContext *ctx,
+                                    mlir::Type llvmType,
+                                    uint64_t &elementCount);
+
 // Get byte width of a type (for offset scaling in GEP conversion).
 unsigned getTypeBitWidth(mlir::Type type);
 

@@ -1470,6 +1470,12 @@ struct ConvertSCFToDFGPass
           hsFunc->setAttr("fcc.dfg_estimated_mem", estimatedMemAttr);
       }
     }
+
+    SmallVector<func::FuncOp, 4> residualFuncs;
+    module.walk([&](func::FuncOp func) { residualFuncs.push_back(func); });
+    for (func::FuncOp func : residualFuncs)
+      if (func->getParentOp())
+        func.erase();
   }
 };
 
