@@ -12,6 +12,8 @@
 #include "fcc/Mapper/DFGBuilder.h"
 #include "fcc/Mapper/Mapper.h"
 #include "fcc/Mapper/TypeCompat.h"
+#include "fcc/Simulator/SimArtifactWriter.h"
+#include "fcc/Simulator/SimSession.h"
 #include "fcc/Viz/VizExporter.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -211,6 +213,50 @@ int main(int argc, char **argv) {
     } else {
       llvm::outs() << "  " << vizPath << "\n";
     }
+
+    if (args.simulate) {
+      llvm::outs() << "fcc: running standalone simulation...\n";
+      fcc::sim::SimSession session;
+      fcc::sim::SimArtifactWriter artifactWriter;
+      std::string tracePath = base + ".sim.trace";
+      std::string statPath = base + ".sim.stat";
+
+      if (std::string err = session.connect(); !err.empty()) {
+        llvm::errs() << "fcc: simulation setup failed: " << err << "\n";
+        return 1;
+      }
+      if (std::string err = session.buildFromMappedState(
+              dfgBuilder.getDFG(), flattener.getADG(), mapResult.state);
+          !err.empty()) {
+        llvm::errs() << "fcc: simulation graph build failed: " << err << "\n";
+        return 1;
+      }
+      if (std::string err = session.loadConfig({}); !err.empty()) {
+        llvm::errs() << "fcc: simulation config load failed: " << err << "\n";
+        return 1;
+      }
+
+      auto [simResult, invokeErr] = session.invoke();
+      if (!artifactWriter.writeTrace(simResult, tracePath) ||
+          !artifactWriter.writeStat(simResult, statPath)) {
+        llvm::errs() << "fcc: failed to write simulation artifacts\n";
+        return 1;
+      }
+
+      llvm::outs() << "  " << tracePath << "\n";
+      llvm::outs() << "  " << statPath << "\n";
+
+      if (!invokeErr.empty()) {
+        llvm::errs() << "fcc: simulation invocation failed: " << invokeErr
+                     << "\n";
+        return 1;
+      }
+      if (!simResult.success) {
+        llvm::errs() << "fcc: simulation failed: " << simResult.errorMessage
+                     << "\n";
+        return 1;
+      }
+    }
     return 0;
   };
 
@@ -322,10 +368,6 @@ int main(int argc, char **argv) {
     int rc = runMappingPipeline(module);
     if (rc != 0)
       return rc;
-  }
-
-  if (args.simulate) {
-    llvm::outs() << "fcc: simulation (not yet implemented)...\n";
   }
 
   return 0;

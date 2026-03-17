@@ -24,6 +24,7 @@ target_link_libraries(fcc PRIVATE
   # FCC libraries
   FccADG
   FccMapper
+  FccSimulator
   FccConversion
   FccDataflow
   FccFabric
