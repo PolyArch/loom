@@ -73,6 +73,7 @@ private:
   LogicalResult convertFCmp(LLVM::FCmpOp op);
   LogicalResult convertSelect(LLVM::SelectOp op);
   LogicalResult convertConstant(LLVM::ConstantOp op);
+  LogicalResult convertIntrinsic(LLVM::CallIntrinsicOp op);
 
   // Control flow
   LogicalResult convertBr(LLVM::BrOp op);
@@ -87,6 +88,7 @@ private:
   SmallVector<Value> materializeBranchArgs(OperandRange args, Block *dest);
   Value createIndexCast(Location loc, Value intVal);
   Value scaleIndex(Location loc, Value idx, Type fromElem, Type toElem);
+  Value buildByteSwap(Location loc, Value value);
 };
 
 // Check if an LLVM function can be converted. Returns false for varargs,
@@ -256,6 +258,8 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
         name.starts_with("llvm.var.annotation") ||
         name.starts_with("llvm.assume") ||
         name.starts_with("llvm.experimental"))
+      return success();
+    if (succeeded(convertIntrinsic(callIntr)))
       return success();
     // Void intrinsics we don't understand: skip with warning
     if (callIntr.getNumResults() == 0)
@@ -734,6 +738,84 @@ LogicalResult FunctionConverter::convertConstant(LLVM::ConstantOp op) {
       op.getLoc(), op.getType(), cast<TypedAttr>(op.getValue()));
   mapValue(op.getResult(), result);
   return success();
+}
+
+LogicalResult FunctionConverter::convertIntrinsic(LLVM::CallIntrinsicOp op) {
+  StringRef name = op.getIntrin();
+  Location loc = op.getLoc();
+
+  auto createMinMax = [&](arith::CmpIPredicate pred,
+                          bool chooseLhsWhenTrue) -> LogicalResult {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value lhs = lookup(op.getArgs()[0]);
+    Value rhs = lookup(op.getArgs()[1]);
+    Value cond = arith::CmpIOp::create(builder, loc, pred, lhs, rhs);
+    Value result = chooseLhsWhenTrue
+                       ? arith::SelectOp::create(builder, loc, cond, lhs, rhs)
+                       : arith::SelectOp::create(builder, loc, cond, rhs, lhs);
+    mapValue(op.getResult(0), result);
+    return success();
+  };
+
+  if (name.starts_with("llvm.smin."))
+    return createMinMax(arith::CmpIPredicate::sle, true);
+  if (name.starts_with("llvm.smax."))
+    return createMinMax(arith::CmpIPredicate::sge, true);
+  if (name.starts_with("llvm.umin."))
+    return createMinMax(arith::CmpIPredicate::ule, true);
+  if (name.starts_with("llvm.umax."))
+    return createMinMax(arith::CmpIPredicate::uge, true);
+
+  if (name.starts_with("llvm.bswap.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value result = buildByteSwap(loc, lookup(op.getArgs()[0]));
+    if (!result)
+      return failure();
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
+  return failure();
+}
+
+Value FunctionConverter::buildByteSwap(Location loc, Value value) {
+  auto intTy = dyn_cast<IntegerType>(value.getType());
+  if (!intTy)
+    return Value();
+
+  unsigned width = intTy.getWidth();
+  if (width == 0 || (width % 8) != 0)
+    return Value();
+
+  unsigned numBytes = width / 8;
+  Value result = arith::ConstantIntOp::create(builder, loc, intTy, 0);
+  Value byteMask = arith::ConstantIntOp::create(builder, loc, intTy, 0xff);
+
+  for (unsigned byteIdx = 0; byteIdx < numBytes; ++byteIdx) {
+    unsigned srcShiftAmount = byteIdx * 8;
+    unsigned dstShiftAmount = (numBytes - 1 - byteIdx) * 8;
+
+    Value shifted = value;
+    if (srcShiftAmount != 0) {
+      Value srcShift = arith::ConstantIntOp::create(builder, loc, intTy,
+                                                    srcShiftAmount);
+      shifted = arith::ShRUIOp::create(builder, loc, shifted, srcShift);
+    }
+
+    Value isolated = arith::AndIOp::create(builder, loc, shifted, byteMask);
+    Value dstValue = isolated;
+    if (dstShiftAmount != 0) {
+      Value dstShift = arith::ConstantIntOp::create(builder, loc, intTy,
+                                                    dstShiftAmount);
+      dstValue = arith::ShLIOp::create(builder, loc, isolated, dstShift);
+    }
+
+    result = arith::OrIOp::create(builder, loc, result, dstValue);
+  }
+
+  return result;
 }
 
 //===----------------------------------------------------------------------===//
