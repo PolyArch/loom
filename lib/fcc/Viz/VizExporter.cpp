@@ -133,11 +133,16 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
   // Collect PE/SW definitions from both top-level module and fabric.module.
   // Definitions may be outside fabric.module (referenced by instances inside).
   llvm::StringMap<fcc::fabric::SpatialPEOp> peDefMap;
+  llvm::StringMap<fcc::fabric::TemporalPEOp> temporalPeDefMap;
   llvm::StringMap<fcc::fabric::SpatialSwOp> swDefMap;
   llvm::StringMap<fcc::fabric::TemporalSwOp> temporalSwDefMap;
   topModule->walk([&](fcc::fabric::SpatialPEOp peOp) {
     auto name = peOp.getSymName();
     if (name) peDefMap[*name] = peOp;
+  });
+  topModule->walk([&](fcc::fabric::TemporalPEOp peOp) {
+    auto name = peOp.getSymName();
+    if (name) temporalPeDefMap[*name] = peOp;
   });
   topModule->walk([&](fcc::fabric::SpatialSwOp swOp) {
     auto name = swOp.getSymName();
@@ -206,7 +211,7 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
   // Helper: emit FU details for a PE definition.
   // Extracts full SSA connectivity: inputEdges (arg->op), edges (op->op),
   // outputEdges (op/arg->yield output).
-  auto emitPEFUs = [&](fcc::fabric::SpatialPEOp peOp) {
+  auto emitPEFUs = [&](auto peOp) {
     os << ", \"fus\": [";
     bool firstFU = true;
     auto &peBody = peOp.getBody().front();
@@ -393,6 +398,18 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
       os << "}";
     }
 
+    if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op)) {
+      if (!first) os << ",\n";
+      first = false;
+      auto peFnType = peOp.getFunctionType();
+      os << "    {\"kind\": \"temporal_pe\", \"name\": \""
+         << jsonEsc(peOp.getSymName().value_or("tpe").str()) << "\"";
+      os << ", \"numInputs\": " << peFnType.getNumInputs();
+      os << ", \"numOutputs\": " << peFnType.getNumResults();
+      emitPEFUs(peOp);
+      os << "}";
+    }
+
     // spatial_sw definitions
     if (auto swOp = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op)) {
       if (!first) os << ",\n";
@@ -482,6 +499,7 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
 
       auto moduleName = instOp.getModule();
       auto peIt = peDefMap.find(moduleName);
+      auto temporalPeIt = temporalPeDefMap.find(moduleName);
       auto swIt = swDefMap.find(moduleName);
 
       if (peIt != peDefMap.end()) {
@@ -490,6 +508,16 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
         auto peFnType = peOp.getFunctionType();
         os << "    {\"kind\": \"spatial_pe\", \"name\": \""
            << jsonEsc(instOp.getSymName().value_or("pe").str()) << "\"";
+        os << ", \"defName\": \"" << jsonEsc(moduleName.str()) << "\"";
+        os << ", \"numInputs\": " << peFnType.getNumInputs();
+        os << ", \"numOutputs\": " << peFnType.getNumResults();
+        emitPEFUs(peOp);
+        os << "}";
+      } else if (temporalPeIt != temporalPeDefMap.end()) {
+        auto peOp = temporalPeIt->second;
+        auto peFnType = peOp.getFunctionType();
+        os << "    {\"kind\": \"temporal_pe\", \"name\": \""
+           << jsonEsc(instOp.getSymName().value_or("tpe").str()) << "\"";
         os << ", \"defName\": \"" << jsonEsc(moduleName.str()) << "\"";
         os << ", \"numInputs\": " << peFnType.getNumInputs();
         os << ", \"numOutputs\": " << peFnType.getNumResults();
@@ -544,8 +572,8 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
   for (auto &op : body.getOperations()) {
     if (mlir::isa<fcc::fabric::YieldOp>(op))
       continue;
-    if (mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::SpatialSwOp,
-                  fcc::fabric::TemporalSwOp>(op))
+    if (mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::TemporalPEOp,
+                  fcc::fabric::SpatialSwOp, fcc::fabric::TemporalSwOp>(op))
       continue;
     std::string renderName = getRenderName(&op);
     for (unsigned i = 0; i < op.getNumResults(); ++i)
@@ -556,8 +584,8 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
   for (auto &op : body.getOperations()) {
     if (mlir::isa<fcc::fabric::YieldOp>(op))
       continue;
-    if (mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::SpatialSwOp,
-                  fcc::fabric::TemporalSwOp>(op))
+    if (mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::TemporalPEOp,
+                  fcc::fabric::SpatialSwOp, fcc::fabric::TemporalSwOp>(op))
       continue;
     std::string opName = getRenderName(&op);
 

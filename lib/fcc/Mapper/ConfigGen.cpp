@@ -19,11 +19,16 @@ namespace {
 struct MemoryRegionEntry {
   IdIndex swNode = INVALID_ID;
   int64_t memrefArgIndex = -1;
-  int64_t lane = -1;
+  int64_t startLane = -1;
+  int64_t endLane = -1;
   int64_t ldCount = 0;
   int64_t stCount = 0;
   int64_t elemSizeLog2 = 0;
 };
+
+bool isSoftwareMemoryInterfaceOp(llvm::StringRef opName) {
+  return opName == "handshake.extmemory" || opName == "handshake.memory";
+}
 
 mlir::DenseI64ArrayAttr getDenseI64NodeAttr(const Node *node,
                                             llvm::StringRef name) {
@@ -189,18 +194,22 @@ std::vector<MemoryRegionEntry> collectMemoryRegionsForNode(
     if (auto elemSize = getRegionElemSizeLog2(swNode, hwNode, dfg, adg))
       entry.elemSizeLog2 = *elemSize;
     if (bridge.hasBridge) {
-      auto lane = inferBridgeLane(bridge, memInfo, swNode, state);
-      entry.lane = lane ? static_cast<int64_t>(*lane) : -1;
+      auto laneRange = inferBridgeLaneRange(bridge, memInfo, swNode, state);
+      if (laneRange) {
+        entry.startLane = static_cast<int64_t>(laneRange->start);
+        entry.endLane = static_cast<int64_t>(laneRange->end);
+      }
     } else {
-      entry.lane = static_cast<int64_t>(entries.size());
+      entry.startLane = static_cast<int64_t>(entries.size());
+      entry.endLane = entry.startLane + 1;
     }
     entries.push_back(entry);
   }
 
   std::sort(entries.begin(), entries.end(),
             [](const MemoryRegionEntry &a, const MemoryRegionEntry &b) {
-    if (a.lane != b.lane)
-      return a.lane < b.lane;
+    if (a.startLane != b.startLane)
+      return a.startLane < b.startLane;
     return a.swNode < b.swNode;
   });
   return entries;
@@ -230,7 +239,10 @@ llvm::SmallVector<int64_t, 16> buildAddrOffsetTable(const Node *hwNode,
   for (int64_t slot = 0; slot < numRegion; ++slot) {
     if (static_cast<size_t>(slot) < regions.size()) {
       const auto &region = regions[slot];
-      int64_t lane = regions[slot].lane >= 0 ? regions[slot].lane : slot;
+      int64_t startLane =
+          region.startLane >= 0 ? region.startLane : static_cast<int64_t>(slot);
+      int64_t endLane =
+          region.endLane > startLane ? region.endLane : startLane + 1;
       int64_t base = 0;
       int64_t elemSizeLog2 = region.elemSizeLog2;
       if (!templateVals.empty()) {
@@ -242,8 +254,8 @@ llvm::SmallVector<int64_t, 16> buildAddrOffsetTable(const Node *hwNode,
         base = slot * kDefaultRegionStride;
       }
       table.push_back(1);
-      table.push_back(lane);
-      table.push_back(lane + 1);
+      table.push_back(startLane);
+      table.push_back(endLane);
       table.push_back(base);
       table.push_back(elemSizeLog2);
     } else {
@@ -381,7 +393,8 @@ buildExportPathForEdge(IdIndex edgeId, const MappingState &state,
   const Port *srcPort = dfg.getPort(edge->srcPort);
   if (srcPort && srcPort->parentNode != INVALID_ID) {
     const Node *srcNode = dfg.getNode(srcPort->parentNode);
-    if (srcNode && getNodeAttrStr(srcNode, "op_name") == "handshake.extmemory" &&
+    if (srcNode &&
+        isSoftwareMemoryInterfaceOp(getNodeAttrStr(srcNode, "op_name")) &&
         srcPort->parentNode < state.swNodeToHwNode.size()) {
       IdIndex hwNodeId = state.swNodeToHwNode[srcPort->parentNode];
       if (hwNodeId != INVALID_ID) {
@@ -397,7 +410,8 @@ buildExportPathForEdge(IdIndex edgeId, const MappingState &state,
   const Port *dstPort = dfg.getPort(edge->dstPort);
   if (dstPort && dstPort->parentNode != INVALID_ID) {
     const Node *dstNode = dfg.getNode(dstPort->parentNode);
-    if (dstNode && getNodeAttrStr(dstNode, "op_name") == "handshake.extmemory" &&
+    if (dstNode &&
+        isSoftwareMemoryInterfaceOp(getNodeAttrStr(dstNode, "op_name")) &&
         dstPort->parentNode < state.swNodeToHwNode.size()) {
       IdIndex hwNodeId = state.swNodeToHwNode[dstPort->parentNode];
       if (hwNodeId != INVALID_ID) {
@@ -697,7 +711,8 @@ bool ConfigGen::writeMapJson(const MappingState &state, const Graph &dfg,
       out << "{\"region_index\": " << i;
       out << ", \"sw_node\": " << regions[i].swNode;
       out << ", \"memref_arg_index\": " << regions[i].memrefArgIndex;
-      out << ", \"lane\": " << regions[i].lane;
+      out << ", \"start_lane\": " << regions[i].startLane;
+      out << ", \"end_lane\": " << regions[i].endLane;
       out << ", \"ld_count\": " << regions[i].ldCount;
       out << ", \"st_count\": " << regions[i].stCount;
       out << ", \"elem_size_log2\": " << regions[i].elemSizeLog2 << "}";
@@ -853,7 +868,8 @@ bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
     for (size_t i = 0; i < regions.size(); ++i) {
       out << "  region[" << i << "] <- DFG[" << regions[i].swNode << "]";
       out << " memref_arg=" << regions[i].memrefArgIndex;
-      out << " lane=" << regions[i].lane;
+      out << " lane_range=[" << regions[i].startLane << ", "
+          << regions[i].endLane << ")";
       out << " ld=" << regions[i].ldCount;
       out << " st=" << regions[i].stCount;
       out << " elem_size_log2=" << regions[i].elemSizeLog2 << "\n";

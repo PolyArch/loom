@@ -165,12 +165,17 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
   // resolution. Scan BOTH the top-level module AND fabric.module body,
   // since definitions may be at either level.
   llvm::StringMap<fcc::fabric::SpatialPEOp> peDefMap;
+  llvm::StringMap<fcc::fabric::TemporalPEOp> temporalPeDefMap;
   llvm::StringMap<fcc::fabric::SpatialSwOp> swDefMap;
   llvm::StringMap<fcc::fabric::TemporalSwOp> temporalSwDefMap;
   // Scan top-level module (definitions outside fabric.module)
   topModule->walk([&](fcc::fabric::SpatialPEOp peOp) {
     if (auto symName = peOp.getSymName())
       peDefMap[*symName] = peOp;
+  });
+  topModule->walk([&](fcc::fabric::TemporalPEOp peOp) {
+    if (auto symName = peOp.getSymName())
+      temporalPeDefMap[*symName] = peOp;
   });
   topModule->walk([&](fcc::fabric::SpatialSwOp swOp) {
     if (auto symName = swOp.getSymName())
@@ -226,8 +231,8 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
   };
 
   // Helper lambda: create FU nodes from a PE definition for a given instance.
-  auto createFUNodesFromPE = [&](fcc::fabric::SpatialPEOp peOp,
-                                 llvm::StringRef instanceName) {
+  auto createFUNodesFromPE = [&](auto peOp, llvm::StringRef instanceName,
+                                 llvm::StringRef peKind) {
     auto gridPos = parseGridPos(instanceName);
 
     PEContainment pe;
@@ -258,6 +263,8 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
                   mlir::StringAttr::get(ctx, "functional"), ctx);
       setNodeAttr(fuNode.get(), "pe_name",
                   mlir::StringAttr::get(ctx, instanceName), ctx);
+      setNodeAttr(fuNode.get(), "pe_kind",
+                  mlir::StringAttr::get(ctx, peKind), ctx);
 
       if (auto opsAttr = fuOp->getAttr("ops")) {
         setNodeAttr(fuNode.get(), "ops", opsAttr, ctx);
@@ -328,7 +335,13 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       // Check if this instance references a PE definition.
       auto peIt = peDefMap.find(moduleName);
       if (peIt != peDefMap.end()) {
-        createFUNodesFromPE(peIt->second, instanceName);
+        createFUNodesFromPE(peIt->second, instanceName, "spatial_pe");
+        continue;
+      }
+
+      auto temporalPeIt = temporalPeDefMap.find(moduleName);
+      if (temporalPeIt != temporalPeDefMap.end()) {
+        createFUNodesFromPE(temporalPeIt->second, instanceName, "temporal_pe");
         continue;
       }
 
@@ -461,105 +474,21 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       std::string peName;
       if (auto symName = peOp.getSymName())
         peName = symName->str();
+      createFUNodesFromPE(peOp, peName, "spatial_pe");
+      continue;
+    }
 
-      auto gridPos = parseGridPos(peName);
-
-      PEContainment pe;
-      pe.peName = peName;
-      pe.row = gridPos.first;
-      pe.col = gridPos.second;
-
-      // Set PE-level port counts from the PE function type.
-      auto peFnType = peOp.getFunctionType();
-      pe.numInputPorts = peFnType.getNumInputs();
-      pe.numOutputPorts = peFnType.getNumResults();
-
-      // Create one FU node per function_unit inside the PE.
-      auto &peBody = peOp.getBody().front();
-      for (auto &innerOp : peBody.getOperations()) {
-        auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(innerOp);
-        if (!fuOp)
+    if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op)) {
+      if (auto symName = peOp.getSymName()) {
+        if (temporalPeDefMap.count(*symName))
           continue;
-
-        auto fuNode = std::make_unique<Node>();
-        fuNode->kind = Node::OperationNode;
-
-        // Store metadata as attributes.
-        std::string fuName = fuOp.getSymName().str();
-
-        setNodeAttr(fuNode.get(), "op_name",
-                    mlir::StringAttr::get(ctx, fuName), ctx);
-        setNodeAttr(fuNode.get(), "op_kind",
-                    mlir::StringAttr::get(ctx, "function_unit"), ctx);
-        setNodeAttr(fuNode.get(), "resource_class",
-                    mlir::StringAttr::get(ctx, "functional"), ctx);
-        setNodeAttr(fuNode.get(), "pe_name",
-                    mlir::StringAttr::get(ctx, peName), ctx);
-
-        // Store the ops list from the FU.
-        if (auto opsAttr = fuOp->getAttr("ops")) {
-          setNodeAttr(fuNode.get(), "ops", opsAttr, ctx);
-        } else {
-          // Extract op names and internal DAG edges from the FU body.
-          auto [bodyOps, dagEdges] = extractFUBodyDAG(fuOp, ctx);
-          if (!bodyOps.empty())
-            setNodeAttr(fuNode.get(), "ops", bodyOps, ctx);
-          if (!dagEdges.empty())
-            setNodeAttr(fuNode.get(), "internal_edges", dagEdges, ctx);
-        }
-
-        // Store latency and interval.
-        if (fuOp.getLatency()) {
-          setNodeAttr(fuNode.get(), "latency",
-                      mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
-                                             *fuOp.getLatency()),
-                      ctx);
-        }
-
-        // Create input ports from FU function type.
-        auto fnType = fuOp.getFunctionType();
-        for (unsigned i = 0; i < fnType.getNumInputs(); ++i) {
-          auto port = std::make_unique<Port>();
-          port->direction = Port::Input;
-          port->type = fnType.getInput(i);
-          IdIndex portId = adg.addPort(std::move(port));
-          adg.ports[portId]->parentNode =
-              static_cast<IdIndex>(adg.nodes.size());
-          fuNode->inputPorts.push_back(portId);
-        }
-
-        // Create output ports from FU function type.
-        for (unsigned i = 0; i < fnType.getNumResults(); ++i) {
-          auto port = std::make_unique<Port>();
-          port->direction = Port::Output;
-          port->type = fnType.getResult(i);
-          IdIndex portId = adg.addPort(std::move(port));
-          adg.ports[portId]->parentNode =
-              static_cast<IdIndex>(adg.nodes.size());
-          fuNode->outputPorts.push_back(portId);
-        }
-
-        IdIndex fuNodeId = adg.addNode(std::move(fuNode));
-        pe.fuNodeIds.push_back(fuNodeId);
-        nodeGridPos[fuNodeId] = gridPos;
-
-        // Register internal connectivity: each input can reach each output.
-        for (IdIndex ip : adg.nodes[fuNodeId]->inputPorts) {
-          for (IdIndex op : adg.nodes[fuNodeId]->outputPorts) {
-            connectivity.inToOut[ip].push_back(op);
-          }
-        }
       }
 
-      // Map PE SSA results to the first FU's output ports for connectivity.
-      // In practice, PE outputs are connected via the switch network, so we
-      // track the PE-level SSA values for wiring inter-PE edges.
-      for (unsigned i = 0; i < peOp.getNumResults(); ++i) {
-        // Store the PE output value -> we will handle wiring in pass 2.
-        // For now, just record the value.
-      }
+      std::string peName;
+      if (auto symName = peOp.getSymName())
+        peName = symName->str();
 
-      peContainment.push_back(pe);
+      createFUNodesFromPE(peOp, peName, "temporal_pe");
       continue;
     }
 
@@ -1038,7 +967,7 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
   //     For each FU in that PE: producer output port k -> FU input port 0..N
 
   // Collect PE info: which PE has which results, and which operands.
-  // This handles both direct SpatialPEOp and InstanceOp referencing PEs.
+  // This handles both direct PE ops and InstanceOp referencing PE defs.
   struct PEInfo {
     mlir::Operation *op;
     std::vector<IdIndex> fuNodeIds;
@@ -1056,8 +985,16 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       } else {
         isPE = true;
       }
+    } else if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op)) {
+      if (auto symName = peOp.getSymName()) {
+        if (!temporalPeDefMap.count(*symName))
+          isPE = true;
+      } else {
+        isPE = true;
+      }
     } else if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
-      isPE = peDefMap.count(instOp.getModule()) > 0;
+      isPE = peDefMap.count(instOp.getModule()) > 0 ||
+             temporalPeDefMap.count(instOp.getModule()) > 0;
     }
     if (isPE) {
       PEInfo info;

@@ -43,9 +43,17 @@ struct DfgMemoryInfo {
 
   BridgePortCategory classifyInput(unsigned relIdx) const;
   BridgePortCategory classifyOutput(unsigned idx) const;
+  unsigned inputLocalLane(unsigned relIdx) const;
+  unsigned outputLocalLane(unsigned idx) const;
+  unsigned laneSpan() const;
 
   static DfgMemoryInfo extract(const Node *swNode, const Graph &dfg,
                                bool isExtMem);
+};
+
+struct BridgeLaneRange {
+  unsigned start = 0;
+  unsigned end = 0;
 };
 
 bool isBridgeCompatible(const BridgeInfo &bridge, const DfgMemoryInfo &mem,
@@ -66,6 +74,10 @@ std::optional<unsigned> inferBridgeLane(const BridgeInfo &bridge,
                                         const DfgMemoryInfo &mem,
                                         const Node *swNode,
                                         const MappingState &state);
+
+std::optional<BridgeLaneRange>
+inferBridgeLaneRange(const BridgeInfo &bridge, const DfgMemoryInfo &mem,
+                     const Node *swNode, const MappingState &state);
 
 } // namespace fcc
 
