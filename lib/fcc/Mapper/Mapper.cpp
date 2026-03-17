@@ -3,6 +3,7 @@
 #include "fcc/Mapper/TypeCompat.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 
 #include "llvm/ADT/DenseSet.h"
@@ -103,54 +104,76 @@ IdIndex getExpandedMemoryInputPort(const Node *hwNode, bool isExtMem,
                                    BridgePortCategory cat, unsigned lane) {
   if (!hwNode)
     return INVALID_ID;
+  if (lane != 0)
+    return INVALID_ID;
   unsigned ldCount =
       static_cast<unsigned>(std::max<int64_t>(0, getNodeAttrInt(hwNode, "ldCount", 0)));
   unsigned stCount =
       static_cast<unsigned>(std::max<int64_t>(0, getNodeAttrInt(hwNode, "stCount", 0)));
   unsigned portIdx = isExtMem ? 1u : 0u;
-  switch (cat) {
-  case BridgePortCategory::StData:
-    portIdx += lane * 2;
-    break;
-  case BridgePortCategory::StAddr:
-    portIdx += lane * 2 + 1;
-    break;
-  case BridgePortCategory::LdAddr:
-    portIdx += stCount * 2 + lane;
-    break;
-  default:
-    return INVALID_ID;
+
+  if (ldCount > 0) {
+    if (cat == BridgePortCategory::LdAddr) {
+      if (portIdx >= hwNode->inputPorts.size())
+        return INVALID_ID;
+      return hwNode->inputPorts[portIdx];
+    }
+    ++portIdx;
   }
-  if (portIdx >= hwNode->inputPorts.size())
-    return INVALID_ID;
-  return hwNode->inputPorts[portIdx];
+
+  if (stCount > 0) {
+    if (cat == BridgePortCategory::StAddr) {
+      if (portIdx >= hwNode->inputPorts.size())
+        return INVALID_ID;
+      return hwNode->inputPorts[portIdx];
+    }
+    ++portIdx;
+
+    if (cat == BridgePortCategory::StData) {
+      if (portIdx >= hwNode->inputPorts.size())
+        return INVALID_ID;
+      return hwNode->inputPorts[portIdx];
+    }
+  }
+
+  return INVALID_ID;
 }
 
 IdIndex getExpandedMemoryOutputPort(const Node *hwNode,
                                     BridgePortCategory cat, unsigned lane) {
   if (!hwNode)
     return INVALID_ID;
+  if (lane != 0)
+    return INVALID_ID;
   unsigned ldCount =
       static_cast<unsigned>(std::max<int64_t>(0, getNodeAttrInt(hwNode, "ldCount", 0)));
   unsigned stCount =
       static_cast<unsigned>(std::max<int64_t>(0, getNodeAttrInt(hwNode, "stCount", 0)));
   unsigned portIdx = 0;
-  switch (cat) {
-  case BridgePortCategory::LdData:
-    portIdx = lane;
-    break;
-  case BridgePortCategory::StDone:
-    portIdx = ldCount + lane;
-    break;
-  case BridgePortCategory::LdDone:
-    portIdx = ldCount + stCount + lane;
-    break;
-  default:
-    return INVALID_ID;
+
+  if (ldCount > 0) {
+    if (cat == BridgePortCategory::LdData) {
+      if (portIdx >= hwNode->outputPorts.size())
+        return INVALID_ID;
+      return hwNode->outputPorts[portIdx];
+    }
+    ++portIdx;
+
+    if (cat == BridgePortCategory::LdDone) {
+      if (portIdx >= hwNode->outputPorts.size())
+        return INVALID_ID;
+      return hwNode->outputPorts[portIdx];
+    }
+    ++portIdx;
   }
-  if (portIdx >= hwNode->outputPorts.size())
-    return INVALID_ID;
-  return hwNode->outputPorts[portIdx];
+
+  if (stCount > 0 && cat == BridgePortCategory::StDone) {
+    if (portIdx >= hwNode->outputPorts.size())
+      return INVALID_ID;
+    return hwNode->outputPorts[portIdx];
+  }
+
+  return INVALID_ID;
 }
 
 } // namespace
@@ -899,8 +922,6 @@ bool Mapper::bindSentinels(MappingState &state, const Graph &dfg,
     mlir::Type portType = dfg.getPort(node->outputPorts[0])->type;
     if (isMemrefType(portType))
       dfgMemrefSentinels.push_back(sid);
-    else if (isNoneType(portType))
-      continue;
     else
       dfgScalarSentinels.push_back(sid);
   }
@@ -962,8 +983,6 @@ bool Mapper::bindSentinels(MappingState &state, const Graph &dfg,
     if (!dfgNode || dfgNode->inputPorts.empty())
       continue;
     const Port *swPort = dfg.getPort(dfgNode->inputPorts[0]);
-    if (swPort && isNoneType(swPort->type))
-      continue;
 
     bool bound = false;
     for (size_t ai = 0; ai < adgOutputSentinels.size(); ++ai) {
@@ -1083,24 +1102,37 @@ bool Mapper::bindMemrefSentinels(MappingState &state, const Graph &dfg,
 }
 
 Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
-                            const ADGFlattener &flattener,
-                            const Options &opts) {
+                           const ADGFlattener &flattener,
+                           mlir::ModuleOp adgModule, const Options &opts) {
   Result result;
-  result.state.init(dfg, adg);
+  TechMapper techMapper;
+  TechMapper::Plan techPlan;
+  if (!techMapper.buildPlan(dfg, adgModule, adg, techPlan)) {
+    result.diagnostics = "Tech-mapping failed";
+    llvm::errs() << "Mapper: " << result.diagnostics << "\n";
+    return result;
+  }
+
+  MappingState contractedState;
+  contractedState.init(techPlan.contractedDFG, adg);
+  result.edgeKinds = techPlan.originalEdgeKinds;
 
   // Copy connectivity from flattener.
   connectivity = flattener.getConnectivity();
 
   // Bind sentinels (DFG boundary nodes -> ADG boundary nodes).
   llvm::outs() << "Mapper: binding sentinels...\n";
-  bindSentinels(result.state, dfg, adg);
+  bindSentinels(contractedState, techPlan.contractedDFG, adg);
 
   llvm::outs() << "Mapper: building candidates...\n";
-  auto candidates = buildCandidates(dfg, adg);
+  auto candidates = buildCandidates(techPlan.contractedDFG, adg);
+  for (const auto &entry : techPlan.contractedCandidates)
+    candidates[entry.first] = entry.second;
 
   // Check that all operation nodes have candidates.
-  for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.nodes.size()); ++i) {
-    const Node *node = dfg.getNode(i);
+  for (IdIndex i = 0;
+       i < static_cast<IdIndex>(techPlan.contractedDFG.nodes.size()); ++i) {
+    const Node *node = techPlan.contractedDFG.getNode(i);
     if (!node || node->kind != Node::OperationNode)
       continue;
     if (candidates.find(i) == candidates.end() || candidates[i].empty()) {
@@ -1118,39 +1150,54 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   }
 
   llvm::outs() << "Mapper: placing...\n";
-  if (!runPlacement(result.state, dfg, adg, flattener, candidates, opts)) {
+  if (!runPlacement(contractedState, techPlan.contractedDFG, adg, flattener,
+                    candidates, opts)) {
     result.diagnostics = "Placement failed";
     llvm::errs() << "Mapper: " << result.diagnostics << "\n";
     return result;
   }
 
   llvm::outs() << "Mapper: refining placement...\n";
-  runRefinement(result.state, dfg, adg, flattener, candidates, opts);
+  runRefinement(contractedState, techPlan.contractedDFG, adg, flattener,
+                candidates, opts);
 
   llvm::outs() << "Mapper: binding memref sentinels...\n";
-  bindMemrefSentinels(result.state, dfg, adg);
+  bindMemrefSentinels(contractedState, techPlan.contractedDFG, adg);
 
   llvm::outs() << "Mapper: routing...\n";
-  if (!runRouting(result.state, dfg, adg, opts.seed)) {
+  bool routingSucceeded =
+      runRouting(contractedState, techPlan.contractedDFG, adg, opts.seed);
+  if (!routingSucceeded) {
     result.diagnostics = "Routing failed";
     llvm::errs() << "Mapper: " << result.diagnostics << "\n";
     // Continue anyway to produce partial output.
   }
 
+  if (!techMapper.expandPlanMapping(dfg, adg, techPlan, contractedState,
+                                    result.state, result.fuConfigs)) {
+    result.diagnostics = "Tech-mapping expansion failed";
+    llvm::errs() << "Mapper: " << result.diagnostics << "\n";
+    return result;
+  }
+
   llvm::outs() << "Mapper: validating...\n";
-  if (!runValidation(result.state, dfg, adg, result.diagnostics)) {
+  bool validationSucceeded = runValidation(result.state, dfg, adg,
+                                          result.edgeKinds, result.diagnostics);
+  if (!validationSucceeded) {
     llvm::errs() << "Mapper: validation issues: " << result.diagnostics
                  << "\n";
     // Proceed with partial result.
   }
 
-  result.success = true;
+  result.success = routingSucceeded && validationSucceeded;
   llvm::outs() << "Mapper: done.\n";
   return result;
 }
 
 bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
-                            const Graph &adg, std::string &diagnostics) {
+                           const Graph &adg,
+                           llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                           std::string &diagnostics) {
   bool valid = true;
 
   // C1: All operation nodes are placed. Memref sentinels are exempt
@@ -1165,15 +1212,11 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
         const Port *p = dfg.getPort(node->outputPorts[0]);
         if (p && mlir::isa<mlir::MemRefType>(p->type))
           continue;
-        if (p && isNoneType(p->type))
-          continue;
       }
     }
     if (node->kind == Node::ModuleOutputNode) {
       if (!node->inputPorts.empty()) {
         const Port *p = dfg.getPort(node->inputPorts[0]);
-        if (p && isNoneType(p->type))
-          continue;
       }
     }
     if (node->kind != Node::OperationNode &&
@@ -1193,6 +1236,8 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
   for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
     const Edge *edge = dfg.getEdge(i);
     if (!edge)
+      continue;
+    if (i < edgeKinds.size() && edgeKinds[i] == TechMappedEdgeKind::IntraFU)
       continue;
     if (i >= state.swEdgeToHwPaths.size() ||
         state.swEdgeToHwPaths[i].empty()) {

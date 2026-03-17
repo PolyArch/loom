@@ -31,6 +31,14 @@ Output:
 - selected FU internal configurations
 - coverage and feasibility feedback to Layer 1
 
+Normative Layer-2 behavior:
+
+- enumerate configurable FU variants induced by `fabric.static_mux`
+- derive an effective graph for each variant
+- match DFG subgraphs against those effective graphs
+- score coverage and candidate quality quickly enough for exploration
+- lock the chosen FU configuration before Layer 3
+
 ### Layer 3: Place and Route
 
 This layer performs:
@@ -40,6 +48,10 @@ This layer performs:
 - congestion and legality checks
 - PE mux/demux reconstruction
 - switch route-table reconstruction
+
+When Layer 2 contracts a matched software subgraph into one FU-sized unit,
+Layer 3 operates on that contracted planning view. It does not re-open FU
+configuration search.
 
 ### Layer 4: Validation
 

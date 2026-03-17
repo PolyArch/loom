@@ -769,6 +769,8 @@ private:
       return executeCondBr(nodeId, node);
     if (opMatches(opName, "select"))
       return executeSelect(nodeId, node);
+    if (opMatches(opName, "static_mux"))
+      return executeStaticMux(nodeId, node);
     if (opMatches(opName, "mux"))
       return executeMux(nodeId, node);
     if (opMatches(opName, "load"))
@@ -1127,6 +1129,91 @@ private:
     action.progress = true;
     action.tokensIn = 2;
     action.tokensOut = 1;
+    return action;
+  }
+
+  Action executeStaticMux(IdIndex, const Node *node) {
+    Action action;
+    unsigned numInputs = static_cast<unsigned>(node->inputPorts.size());
+    unsigned numOutputs = static_cast<unsigned>(node->outputPorts.size());
+    if (numInputs == 0 || numOutputs == 0)
+      return action;
+
+    bool disconnect = getNodeAttrBool(node, "disconnect");
+    bool discard = getNodeAttrBool(node, "discard");
+    unsigned sel = 0;
+    if (auto intAttr = mlir::dyn_cast_or_null<mlir::IntegerAttr>(
+            getNodeAttr(node, "sel")))
+      sel = static_cast<unsigned>(intAttr.getInt());
+
+    if (numInputs == 1 && numOutputs == 1) {
+      if (disconnect || discard) {
+        action.error = "1:1 static_mux cannot set discard or disconnect";
+        return action;
+      }
+      if (!hasInputToken(node->inputPorts.front()))
+        return action;
+      Token token = popInputToken(node->inputPorts.front());
+      pushToken(node->outputPorts.front(), token);
+      action.progress = true;
+      action.tokensIn = 1;
+      action.tokensOut = 1;
+      return action;
+    }
+
+    if (disconnect)
+      return action;
+
+    if (numOutputs == 1) {
+      if (sel >= numInputs) {
+        action.error = "static_mux select out of range";
+        return action;
+      }
+
+      unsigned discardedInputs = 0;
+      if (discard) {
+        for (unsigned i = 0; i < numInputs; ++i) {
+          if (i == sel || !hasInputToken(node->inputPorts[i]))
+            continue;
+          (void)popInputToken(node->inputPorts[i]);
+          ++discardedInputs;
+        }
+      }
+
+      if (!hasInputToken(node->inputPorts[sel])) {
+        if (discardedInputs > 0) {
+          action.progress = true;
+          action.tokensIn = discardedInputs;
+        }
+        return action;
+      }
+
+      Token token = popInputToken(node->inputPorts[sel]);
+      pushToken(node->outputPorts.front(), token);
+      action.progress = true;
+      action.tokensIn = discardedInputs + 1;
+      action.tokensOut = 1;
+      return action;
+    }
+
+    if (numInputs == 1) {
+      if (sel >= numOutputs) {
+        action.error = "static_mux select out of range";
+        return action;
+      }
+      if (!hasInputToken(node->inputPorts.front()))
+        return action;
+      Token token = popInputToken(node->inputPorts.front());
+      action.progress = true;
+      action.tokensIn = 1;
+      if (!discard) {
+        pushToken(node->outputPorts[sel], token);
+        action.tokensOut = 1;
+      }
+      return action;
+    }
+
+    action.error = "static_mux must be either M:1 or 1:M";
     return action;
   }
 

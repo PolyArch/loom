@@ -26,7 +26,7 @@ switch model substantially.
 | Compute containers | `fabric.spatial_pe`, `fabric.temporal_pe` |
 | Compute bodies | `fabric.function_unit`, `fabric.static_mux` |
 | Routing | `fabric.spatial_sw`, `fabric.temporal_sw`, `fabric.fifo` |
-| Memory | `fabric.extmemory` and related memory resources |
+| Memory | `fabric.memory`, `fabric.extmemory`, and related memory resources |
 
 ## Type Model
 
@@ -52,6 +52,10 @@ For FCC, this split is especially important for:
 - `spatial_sw` connectivity versus route tables
 - `spatial_pe` structure versus opcode, mux, demux, and FU config selections
 - `function_unit` static structure versus selected `static_mux` settings
+
+When an ADG is given to the mapper, pre-populated runtime-config fields are
+treated as hints unless a more specific spec says otherwise. The mapping output
+is the authoritative source of final runtime configuration.
 
 ## Related Documents
 

@@ -209,8 +209,8 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
   };
 
   // Helper: emit FU details for a PE definition.
-  // Extracts full SSA connectivity: inputEdges (arg->op), edges (op->op),
-  // outputEdges (op/arg->yield output).
+  // Extracts full SSA connectivity with operand/result order:
+  // inputEdges (arg->op), edges (op->op), outputEdges (op/arg->yield output).
   auto emitPEFUs = [&](auto peOp) {
     os << ", \"fus\": [";
     bool firstFU = true;
@@ -227,14 +227,34 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
       os << ", \"numIn\": " << fuFnType.getNumInputs();
       os << ", \"numOut\": " << fuFnType.getNumResults();
 
-      // Map Value -> index: block args are negative (-1 - argIdx), ops are 0+
-      llvm::DenseMap<mlir::Value, int> valToIdx;
-      for (auto arg : fuOp.getBody().front().getArguments())
-        valToIdx[arg] = -1 - static_cast<int>(arg.getArgNumber());
+      struct ValueRef {
+        int owner = -1;      // block args are negative (-1 - argIdx), ops are 0+
+        int resultIdx = 0;   // valid only when owner >= 0
+      };
+      struct InputEdgeRef {
+        int argIdx = -1;
+        int dstOp = -1;
+        int dstOperand = -1;
+      };
+      struct DagEdgeRef {
+        int srcOp = -1;
+        int dstOp = -1;
+        int srcResult = 0;
+        int dstOperand = -1;
+      };
+      struct OutputEdgeRef {
+        int srcOwner = -1;   // arg or op, same encoding as ValueRef::owner
+        int yieldIdx = -1;
+        int srcResult = 0;
+      };
 
-      llvm::SmallVector<std::pair<int,int>, 4> dagEdges;    // op -> op
-      llvm::SmallVector<std::pair<int,int>, 4> inputEdges;  // argIdx -> opIdx
-      llvm::SmallVector<std::pair<int,int>, 4> outputEdges; // valIdx -> yieldIdx
+      llvm::DenseMap<mlir::Value, ValueRef> valToRef;
+      for (auto arg : fuOp.getBody().front().getArguments())
+        valToRef[arg] = {-1 - static_cast<int>(arg.getArgNumber()), 0};
+
+      llvm::SmallVector<DagEdgeRef, 4> dagEdges;        // op -> op
+      llvm::SmallVector<InputEdgeRef, 4> inputEdges;    // argIdx -> opIdx
+      llvm::SmallVector<OutputEdgeRef, 4> outputEdges;  // valIdx -> yieldIdx
 
       os << ", \"ops\": [";
       bool firstOp = true;
@@ -244,9 +264,11 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
         if (auto yieldOp = mlir::dyn_cast<fcc::fabric::YieldOp>(bodyOp)) {
           // Track yield operands -> output connections
           for (unsigned yi = 0; yi < yieldOp.getNumOperands(); ++yi) {
-            auto it = valToIdx.find(yieldOp.getOperand(yi));
-            if (it != valToIdx.end())
-              outputEdges.push_back({it->second, static_cast<int>(yi)});
+            auto it = valToRef.find(yieldOp.getOperand(yi));
+            if (it != valToRef.end()) {
+              outputEdges.push_back(
+                  {it->second.owner, static_cast<int>(yi), it->second.resultIdx});
+            }
           }
           continue;
         }
@@ -256,17 +278,24 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
         os << "\"" << jsonEsc(bodyOp.getName().getStringRef().str()) << "\"";
 
         // Track operand sources
-        for (auto operand : bodyOp.getOperands()) {
-          auto it = valToIdx.find(operand);
-          if (it != valToIdx.end()) {
-            if (it->second >= 0)
-              dagEdges.push_back({it->second, opIdx});  // op -> op
+        for (unsigned operandIdx = 0; operandIdx < bodyOp.getNumOperands();
+             ++operandIdx) {
+          auto operand = bodyOp.getOperand(operandIdx);
+          auto it = valToRef.find(operand);
+          if (it != valToRef.end()) {
+            if (it->second.owner >= 0) {
+              dagEdges.push_back({it->second.owner, opIdx,
+                                  it->second.resultIdx,
+                                  static_cast<int>(operandIdx)});  // op -> op
+            }
             else
-              inputEdges.push_back({-(it->second + 1), opIdx}); // arg -> op
+              inputEdges.push_back({-(it->second.owner + 1), opIdx,
+                                    static_cast<int>(operandIdx)}); // arg -> op
           }
         }
-        for (auto result : bodyOp.getResults())
-          valToIdx[result] = opIdx;
+        for (unsigned resultIdx = 0; resultIdx < bodyOp.getNumResults();
+             ++resultIdx)
+          valToRef[bodyOp.getResult(resultIdx)] = {opIdx, static_cast<int>(resultIdx)};
         opIdx++;
       }
       os << "]";
@@ -276,7 +305,8 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
         os << ", \"edges\": [";
         for (size_t k = 0; k < dagEdges.size(); ++k) {
           if (k > 0) os << ", ";
-          os << "[" << dagEdges[k].first << ", " << dagEdges[k].second << "]";
+          os << "[" << dagEdges[k].srcOp << ", " << dagEdges[k].dstOp << ", "
+             << dagEdges[k].srcResult << ", " << dagEdges[k].dstOperand << "]";
         }
         os << "]";
       }
@@ -286,7 +316,8 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
         os << ", \"inputEdges\": [";
         for (size_t k = 0; k < inputEdges.size(); ++k) {
           if (k > 0) os << ", ";
-          os << "[" << inputEdges[k].first << ", " << inputEdges[k].second << "]";
+          os << "[" << inputEdges[k].argIdx << ", " << inputEdges[k].dstOp
+             << ", " << inputEdges[k].dstOperand << "]";
         }
         os << "]";
       }
@@ -296,7 +327,8 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
         os << ", \"outputEdges\": [";
         for (size_t k = 0; k < outputEdges.size(); ++k) {
           if (k > 0) os << ", ";
-          os << "[" << outputEdges[k].first << ", " << outputEdges[k].second << "]";
+          os << "[" << outputEdges[k].srcOwner << ", " << outputEdges[k].yieldIdx
+             << ", " << outputEdges[k].srcResult << "]";
         }
         os << "]";
       }
@@ -358,18 +390,18 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
         os << "}\\n";
         // Input -> op edges
         for (auto &ie : inputEdges)
-          os << "  in" << ie.first << " -> op" << ie.second
+          os << "  in" << ie.argIdx << " -> op" << ie.dstOp
              << " [color=\\\"#4ecdc4\\\"];\\n";
         // Op -> op edges
         for (auto &de : dagEdges)
-          os << "  op" << de.first << " -> op" << de.second << ";\\n";
+          os << "  op" << de.srcOp << " -> op" << de.dstOp << ";\\n";
         // Op/arg -> output edges
         for (auto &oe : outputEdges) {
-          if (oe.first >= 0)
-            os << "  op" << oe.first << " -> out" << oe.second
+          if (oe.srcOwner >= 0)
+            os << "  op" << oe.srcOwner << " -> out" << oe.yieldIdx
                << " [color=\\\"#ff6b35\\\"];\\n";
           else
-            os << "  in" << (-(oe.first + 1)) << " -> out" << oe.second
+            os << "  in" << (-(oe.srcOwner + 1)) << " -> out" << oe.yieldIdx
                << " [style=dashed, color=\\\"#888888\\\"];\\n";
         }
         os << "}\\n\"";

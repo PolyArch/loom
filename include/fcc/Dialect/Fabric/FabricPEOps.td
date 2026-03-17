@@ -33,9 +33,15 @@ def Fabric_FunctionUnitOp : Fabric_Op<"function_unit", [
 def Fabric_StaticMuxOp : Fabric_Op<"static_mux", []> {
   let summary = "Statically-configured runtime-programmable multiplexer";
   let description = [{
-    N-input, 1-output mux. Control: sel (log2Ceil(N) bits) +
-    disconnect (1 bit) + discard (1 bit). Can ONLY appear inside
+    A statically-configured runtime-programmable routing primitive inside
     fabric.function_unit.
+
+    It supports:
+    - N-input, 1-output mux
+    - 1-input, N-output demux
+
+    Control: sel (log2Ceil(N) bits) + disconnect (1 bit) + discard (1 bit).
+    Can ONLY appear inside fabric.function_unit.
   }];
   let arguments = (ins
     Variadic<AnyType>:$inputs,
@@ -43,10 +49,11 @@ def Fabric_StaticMuxOp : Fabric_Op<"static_mux", []> {
     DefaultValuedAttr<BoolAttr, "false">:$discard,
     DefaultValuedAttr<BoolAttr, "false">:$disconnect
   );
-  let results = (outs AnyType:$result);
+  let results = (outs Variadic<AnyType>:$results);
   let assemblyFormat = [{
-    $inputs attr-dict `:` type($inputs) `->` type($result)
+    $inputs attr-dict `:` type($inputs) `->` type($results)
   }];
+  let hasVerifier = 1;
 }
 
 // fabric.spatial_pe - spatial processing element (container for FUs)

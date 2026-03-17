@@ -113,6 +113,20 @@ static void attachADGCapacityAttrs(ModuleOp module, const std::string &adgPath,
                << ", maxWidth=" << maxDataWidth << "\n";
 }
 
+static void warnMapperOwnedRuntimeConfig(ModuleOp adgModule) {
+  unsigned muxCount = 0;
+  adgModule->walk([&](fcc::fabric::StaticMuxOp muxOp) {
+    (void)muxOp;
+    ++muxCount;
+  });
+  if (muxCount == 0)
+    return;
+  llvm::errs()
+      << "fcc: warning: ADG contains " << muxCount
+      << " fabric.static_mux runtime-config hints; mapper treats them as "
+         "initial values and may overwrite sel/discard/disconnect\n";
+}
+
 int main(int argc, char **argv) {
   llvm::InitLLVM y(argc, argv);
 
@@ -163,6 +177,7 @@ int main(int argc, char **argv) {
       llvm::errs() << "fcc: ADG fabric.module verification failed\n";
       return 1;
     }
+    warnMapperOwnedRuntimeConfig(*adgModule);
 
     llvm::outs() << "fcc: flattening ADG...\n";
     fcc::ADGFlattener flattener;
@@ -186,7 +201,8 @@ int main(int argc, char **argv) {
     mapOpts.verbose = true;
 
     auto mapResult =
-        mapper.run(dfgBuilder.getDFG(), flattener.getADG(), flattener, mapOpts);
+        mapper.run(dfgBuilder.getDFG(), flattener.getADG(), flattener,
+                   *adgModule, mapOpts);
 
     if (!mapResult.success) {
       llvm::errs() << "fcc: mapping failed: " << mapResult.diagnostics << "\n";
@@ -195,7 +211,8 @@ int main(int argc, char **argv) {
     llvm::outs() << "fcc: generating config...\n";
     fcc::ConfigGen configGen;
     if (!configGen.generate(mapResult.state, dfgBuilder.getDFG(),
-                            flattener.getADG(), flattener, base,
+                            flattener.getADG(), flattener,
+                            mapResult.edgeKinds, mapResult.fuConfigs, base,
                             static_cast<int>(args.mapperSeed))) {
       llvm::errs() << "fcc: config generation failed\n";
       return 1;
@@ -225,6 +242,9 @@ int main(int argc, char **argv) {
     } else {
       llvm::outs() << "  " << vizPath << "\n";
     }
+
+    if (!mapResult.success)
+      return 1;
 
     if (args.simulate) {
       llvm::outs() << "fcc: running standalone simulation...\n";

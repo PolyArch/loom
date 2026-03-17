@@ -4,6 +4,9 @@
 #include "fcc/Mapper/ADGFlattener.h"
 #include "fcc/Mapper/Graph.h"
 #include "fcc/Mapper/MappingState.h"
+#include "fcc/Mapper/TechMapper.h"
+
+#include "llvm/ADT/ArrayRef.h"
 
 #include <string>
 #include <cstdint>
@@ -24,8 +27,10 @@ public:
 
   /// Generate config artifacts together with mapping reports.
   bool generate(const MappingState &state, const Graph &dfg, const Graph &adg,
-                const ADGFlattener &flattener, const std::string &basePath,
-                int seed);
+                const ADGFlattener &flattener,
+                llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                llvm::ArrayRef<FUConfigSelection> fuConfigs,
+                const std::string &basePath, int seed);
 
   const std::vector<uint8_t> &getConfigBlob() const { return configBlob_; }
   const std::vector<uint32_t> &getConfigWords() const { return configWords_; }
@@ -47,15 +52,19 @@ private:
   };
 
   bool buildConfigArtifacts(const MappingState &state, const Graph &dfg,
-                            const Graph &adg);
+                            const Graph &adg,
+                            llvm::ArrayRef<FUConfigSelection> fuConfigs);
   bool writeConfigBinary(const std::string &path) const;
   bool writeConfigJson(const std::string &path) const;
   bool writeConfigHeader(const std::string &path) const;
   bool writeMapJson(const MappingState &state, const Graph &dfg,
                     const Graph &adg, const ADGFlattener &flattener,
+                    llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                    llvm::ArrayRef<FUConfigSelection> fuConfigs,
                     const std::string &path, int seed);
   bool writeMapText(const MappingState &state, const Graph &dfg,
                     const Graph &adg, const ADGFlattener &flattener,
+                    llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                     const std::string &path);
 
   std::vector<NodeConfig> nodeConfigs_;

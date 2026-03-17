@@ -35,6 +35,15 @@ The normative mapper pipeline is:
 6. validation
 7. output generation
 
+More specifically:
+
+- Layer 2 tech-mapping may enumerate `fabric.static_mux` selections, derive an
+  effective FU graph, and contract a matched software subgraph into one
+  placeable unit
+- Layer 3 placement and routing operate on that locked choice and must not
+  mutate FU-internal configuration
+- final reports are expanded back to original DFG-node and DFG-edge identity
+
 ## Read-Only Inputs
 
 The mapper consumes:

@@ -4,6 +4,7 @@ add_library(FccMapper STATIC
   ADGFlattener.cpp
   DFGBuilder.cpp
   MappingState.cpp
+  TechMapper.cpp
   Mapper.cpp
   MapperRouting.cpp
   ConfigGen.cpp

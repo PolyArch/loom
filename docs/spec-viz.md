@@ -67,6 +67,16 @@ route, including:
 The highlighted hardware path must be semantically continuous from the software
 edge's source to its destination.
 
+## Mapping-On Function Unit Requirements
+
+When one or more software operations are tech-mapped into one configurable FU:
+
+- the FU should remain visually identifiable as one hardware component
+- software edges that become FU-internal edges should not be shown as unrouted
+  inter-component failures
+- the selected `fabric.static_mux` choice should be visible in the FU view
+  whenever that choice materially changes the effective graph
+
 ## Interaction Requirements
 
 - component hit regions should not swallow border-port clicks unnecessarily

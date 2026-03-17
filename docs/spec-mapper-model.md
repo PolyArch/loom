@@ -28,6 +28,22 @@ However, flattening must not destroy the information required to reconstruct:
 
 This is a hard contract, not an optimization hint.
 
+### Contracted Tech-Mapped View
+
+After FU-configuration selection, the mapper may build a contracted DFG view in
+which one matched software subgraph is represented as one placeable unit.
+
+This contracted view is a planning artifact for Layer 3. It must preserve:
+
+- the identity of every original software node covered by the unit
+- the original software edges that become FU-internal edges
+- the hardware FU instance and locked FU configuration associated with the
+  contracted unit
+- the external software-to-hardware port bindings of the contracted unit
+
+Layer 3 may place and route the contracted view, but final reporting must be
+expanded back to the original software DFG.
+
 ## Canonical Route Semantics
 
 For FCC, a routed software edge is not just an arbitrary port sequence. It must
@@ -81,6 +97,9 @@ For each software memory node, the mapper must preserve:
 - which region slot of that hardware interface was assigned
 - which tag lane or bridge lane was assigned when tagged memory routing is used
 - which software memref argument backs that region
+- how software operand and result order was bridged to the hardware family
+  order of load-address, store-address, store-data and load-data, load-done,
+  store-done
 
 For memory compatibility:
 
@@ -107,6 +126,36 @@ FCC uses the following hard-constraint families:
 - `C8 PE exclusivity`: one spatial PE may host at most one active spatial FU
 - `C9 FU config consistency`: one physical temporal FU must not require
   incompatible internal configurations simultaneously
+
+## Runtime-Config Hint Contract
+
+An ADG may carry textual runtime-config fields on hardware ops, especially on
+`fabric.static_mux`.
+
+For mapping semantics:
+
+- these fields are hints, not locked decisions
+- Layer 2 may overwrite them when selecting an effective FU graph
+- Layer 3 must treat the Layer-2 result as fixed and must not reselect FU
+  internal configuration
+- a degenerate `1:1` `fabric.static_mux` is treated as transparent routing and
+  should not survive as a meaningful tech-mapping decision
+
+This contract exists so hand-authored ADGs remain legal while the mapper still
+owns the final runtime configuration.
+
+## Intra-FU Edge Semantics
+
+When tech-mapping contracts a software subgraph into one physical FU, some
+original software edges become intra-FU edges.
+
+For such edges:
+
+- they are valid mapped edges
+- they do not require a separate inter-component hardware route
+- reports and visualization must distinguish them from unrouted failures
+- config generation must attribute them to the selected FU configuration, not to
+  switch or PE-exterior routing
 
 ## Output-Oriented Mapping Requirements
 

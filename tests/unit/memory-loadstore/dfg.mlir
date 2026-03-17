@@ -6,7 +6,7 @@ module {
       -> (i32, none, none)
       attributes {
         argNames = ["idx_ld", "idx_st", "val_st", "ctrl_ld", "ctrl_st"],
-        resNames = ["load_data", "load_done", "store_done"]
+        resNames = ["load_data", "store_done", "load_done"]
       } {
     %lddata, %ldaddr = load [%idx_ld] %memif#0, %ctrl_ld : index, i32
     %stdata, %staddr = store [%idx_st] %val_st, %ctrl_st : index, i32

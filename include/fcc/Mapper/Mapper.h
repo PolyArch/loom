@@ -4,11 +4,16 @@
 #include "fcc/Mapper/ADGFlattener.h"
 #include "fcc/Mapper/Graph.h"
 #include "fcc/Mapper/MappingState.h"
+#include "fcc/Mapper/TechMapper.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <string>
+
+namespace mlir {
+class ModuleOp;
+}
 
 namespace fcc {
 
@@ -24,12 +29,15 @@ public:
   struct Result {
     bool success = false;
     MappingState state;
+    std::vector<TechMappedEdgeKind> edgeKinds;
+    llvm::SmallVector<FUConfigSelection, 4> fuConfigs;
     std::string diagnostics;
   };
 
   /// Run the full PnR pipeline.
   Result run(const Graph &dfg, const Graph &adg,
-             const ADGFlattener &flattener, const Options &opts);
+             const ADGFlattener &flattener, mlir::ModuleOp adgModule,
+             const Options &opts);
 
 private:
   // Tech-mapping: match DFG ops to ADG FU types.
@@ -65,7 +73,9 @@ private:
 
   // Validation.
   bool runValidation(const MappingState &state, const Graph &dfg,
-                     const Graph &adg, std::string &diagnostics);
+                     const Graph &adg,
+                     llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                     std::string &diagnostics);
 
   // Routing helpers.
   llvm::SmallVector<IdIndex, 8> findPath(IdIndex srcHwPort, IdIndex dstHwPort,

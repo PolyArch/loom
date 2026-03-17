@@ -9,7 +9,7 @@ module {
       -> (i32, i32, none, none, none, none)
       attributes {
         argNames = ["idx_ld0", "idx_ld1", "idx_st0", "val_st0", "idx_st1", "val_st1", "ctrl_ld0", "ctrl_ld1", "ctrl_st0", "ctrl_st1"],
-        resNames = ["data0", "data1", "ld_done0", "ld_done1", "st_done0", "st_done1"]
+        resNames = ["data0", "data1", "st_done0", "st_done1", "load_done0", "load_done1"]
       } {
     %lddata0, %ldaddr0 = load [%idx_ld0] %memif#0, %ctrl_ld0 : index, i32
     %lddata1, %ldaddr1 = load [%idx_ld1] %memif#1, %ctrl_ld1 : index, i32

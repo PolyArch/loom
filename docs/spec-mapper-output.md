@@ -42,6 +42,8 @@ At minimum, the report should include:
 
 - software edge id
 - a route description whose step semantics are reconstructable
+- whether the edge is routed through inter-component hardware or absorbed as an
+  intra-FU edge by tech-mapping
 
 `port_table` must identify:
 
@@ -75,6 +77,8 @@ Recommended sections are:
   - per PE, list of selected ingress and egress mux or demux bindings
 - `fu_configs`
   - selected effective FU configuration per mapped hardware FU
+  - software nodes absorbed into that FU
+  - selected `static_mux` fields such as `sel`
 
 For memory-oriented visualization, `memory_regions` is not optional in
 practice. It is the authoritative bridge between:

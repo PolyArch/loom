@@ -39,7 +39,7 @@ module {
         : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
           -> (!fabric.bits<64>, !fabric.bits<64>)
 
-    fabric.yield %pe_ld#0, %mem0#1, %mem0#2
+    fabric.yield %pe_ld#0, %mem0#2, %mem0#1
         : !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>
   }
 }

@@ -139,7 +139,7 @@ module {
     %stdone1 = fabric.del_tag %tsw_st_done#1
         : !fabric.tagged<none, i1> -> none
 
-    fabric.yield %pe_ld0#0, %pe_ld1#0, %lddone0, %lddone1, %stdone0, %stdone1
+    fabric.yield %pe_ld0#0, %pe_ld1#0, %stdone0, %stdone1, %lddone0, %lddone1
         : i32, i32, none, none, none, none
   }
 }

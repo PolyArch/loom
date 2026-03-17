@@ -861,10 +861,39 @@ GeneratedNodeConfig buildMemoryConfig(const Node *hwNode, IdIndex hwId,
   return cfg;
 }
 
+const FUConfigSelection *
+findFUConfigSelection(llvm::ArrayRef<FUConfigSelection> fuConfigs,
+                      IdIndex hwNodeId) {
+  for (const auto &selection : fuConfigs) {
+    if (selection.hwNodeId == hwNodeId)
+      return &selection;
+  }
+  return nullptr;
+}
+
+GeneratedNodeConfig
+buildFunctionUnitConfig(llvm::ArrayRef<FUConfigSelection> fuConfigs,
+                        IdIndex hwId) {
+  GeneratedNodeConfig cfg;
+  const FUConfigSelection *selection = findFUConfigSelection(fuConfigs, hwId);
+  if (!selection)
+    return cfg;
+  for (const auto &field : selection->fields) {
+    uint32_t word = static_cast<uint32_t>(field.sel & 0xffffu);
+    if (field.discard)
+      word |= (1u << 16);
+    if (field.disconnect)
+      word |= (1u << 17);
+    cfg.words.push_back(word);
+  }
+  return cfg;
+}
+
 } // namespace
 
 bool ConfigGen::buildConfigArtifacts(const MappingState &state,
-                                     const Graph &dfg, const Graph &adg) {
+                                     const Graph &dfg, const Graph &adg,
+                                     llvm::ArrayRef<FUConfigSelection> fuConfigs) {
   nodeConfigs_.clear();
   configSlices_.clear();
   configWords_.clear();
@@ -894,8 +923,11 @@ bool ConfigGen::buildConfigArtifacts(const MappingState &state,
     } else if (resourceClass == "memory") {
       generated = buildMemoryConfig(hwNode, hwId, state, dfg, adg);
     } else if (resourceClass == "functional") {
-      configComplete_ = false;
-      continue;
+      generated = buildFunctionUnitConfig(fuConfigs, hwId);
+      if (generated.words.empty()) {
+        configComplete_ = false;
+        continue;
+      }
     } else {
       continue;
     }
@@ -967,7 +999,7 @@ bool ConfigGen::writeConfigJson(const std::string &path) const {
   out << "  \"coverage_note\": "
       << (configComplete_
               ? "\"all currently modeled configurable nodes serialized\""
-              : "\"routing/tag/memory slices serialized; PE and FU runtime config is not fully modeled yet\"")
+              : "\"routing/tag/memory slices serialized; tech-mapped function_unit mux selections are serialized; PE mux/demux and remaining runtime config are not fully modeled yet\"")
       << ",\n";
   out << "  \"slices\": [\n";
   for (size_t i = 0; i < configSlices_.size(); ++i) {
@@ -1025,9 +1057,11 @@ bool ConfigGen::writeConfigHeader(const std::string &path) const {
 }
 
 bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
-                          const Graph &adg, const ADGFlattener &flattener,
-                          const std::string &basePath, int seed) {
-  if (!buildConfigArtifacts(state, dfg, adg))
+                         const Graph &adg, const ADGFlattener &flattener,
+                         llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                         llvm::ArrayRef<FUConfigSelection> fuConfigs,
+                         const std::string &basePath, int seed) {
+  if (!buildConfigArtifacts(state, dfg, adg, fuConfigs))
     return false;
   if (!writeConfigBinary(basePath + ".config.bin"))
     return false;
@@ -1035,16 +1069,20 @@ bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
     return false;
   if (!writeConfigHeader(getConfigHeaderFilename(basePath)))
     return false;
-  if (!writeMapJson(state, dfg, adg, flattener, basePath + ".map.json", seed))
+  if (!writeMapJson(state, dfg, adg, flattener, edgeKinds, fuConfigs,
+                    basePath + ".map.json", seed))
     return false;
-  if (!writeMapText(state, dfg, adg, flattener, basePath + ".map.txt"))
+  if (!writeMapText(state, dfg, adg, flattener, edgeKinds,
+                    basePath + ".map.txt"))
     return false;
   return true;
 }
 
 bool ConfigGen::writeMapJson(const MappingState &state, const Graph &dfg,
-                              const Graph &adg, const ADGFlattener &flattener,
-                              const std::string &path, int seed) {
+                             const Graph &adg, const ADGFlattener &flattener,
+                             llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                             llvm::ArrayRef<FUConfigSelection> fuConfigs,
+                             const std::string &path, int seed) {
   std::error_code ec;
   llvm::raw_fd_ostream out(path, ec, llvm::sys::fs::OF_Text);
   if (ec) {
@@ -1092,19 +1130,33 @@ bool ConfigGen::writeMapJson(const MappingState &state, const Graph &dfg,
     const Edge *edge = dfg.getEdge(eid);
     if (!edge)
       continue;
-    if (eid >= state.swEdgeToHwPaths.size() ||
-        state.swEdgeToHwPaths[eid].empty())
-      continue;
-
-    auto exportPath = buildExportPathForEdge(eid, state, dfg, adg);
-    if (exportPath.empty())
-      continue;
 
     if (!first)
       out << ",\n";
     first = false;
 
-    out << "    {\"sw_edge\": " << eid << ", \"path\": [";
+    out << "    {\"sw_edge\": " << eid;
+    if (eid < edgeKinds.size() && edgeKinds[eid] == TechMappedEdgeKind::IntraFU) {
+      IdIndex hwNodeId = INVALID_ID;
+      const Port *srcPort = dfg.getPort(edge->srcPort);
+      if (srcPort && srcPort->parentNode != INVALID_ID &&
+          srcPort->parentNode < state.swNodeToHwNode.size()) {
+        hwNodeId = state.swNodeToHwNode[srcPort->parentNode];
+      }
+      out << ", \"kind\": \"intra_fu\"";
+      if (hwNodeId != INVALID_ID)
+        out << ", \"hw_node\": " << hwNodeId;
+      out << ", \"path\": []}";
+      continue;
+    }
+
+    if (eid >= state.swEdgeToHwPaths.size() || state.swEdgeToHwPaths[eid].empty()) {
+      out << ", \"kind\": \"unrouted\", \"path\": []}";
+      continue;
+    }
+
+    auto exportPath = buildExportPathForEdge(eid, state, dfg, adg);
+    out << ", \"kind\": \"routed\", \"path\": [";
     for (size_t i = 0; i < exportPath.size(); ++i) {
       if (i > 0)
         out << ", ";
@@ -1289,6 +1341,37 @@ bool ConfigGen::writeMapJson(const MappingState &state, const Graph &dfg,
 
   out << "\n  ],\n";
 
+  out << "  \"fu_configs\": [\n";
+  first = true;
+  for (const auto &selection : fuConfigs) {
+    if (!first)
+      out << ",\n";
+    first = false;
+    out << "    {\"hw_node\": " << selection.hwNodeId;
+    out << ", \"hw_name\": \"" << selection.hwName << "\"";
+    out << ", \"pe_name\": \"" << selection.peName << "\"";
+    out << ", \"sw_nodes\": [";
+    for (size_t i = 0; i < selection.swNodeIds.size(); ++i) {
+      if (i > 0)
+        out << ", ";
+      out << selection.swNodeIds[i];
+    }
+    out << "], \"fields\": [";
+    for (size_t i = 0; i < selection.fields.size(); ++i) {
+      if (i > 0)
+        out << ", ";
+      const auto &field = selection.fields[i];
+      out << "{\"op_index\": " << field.opIndex;
+      out << ", \"op_name\": \"" << field.opName << "\"";
+      out << ", \"sel\": " << field.sel;
+      out << ", \"discard\": " << (field.discard ? "true" : "false");
+      out << ", \"disconnect\": " << (field.disconnect ? "true" : "false")
+          << "}";
+    }
+    out << "]}";
+  }
+  out << "\n  ],\n";
+
   out << "  \"memory_regions\": [\n";
   first = true;
   for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(adg.nodes.size());
@@ -1338,8 +1421,9 @@ bool ConfigGen::writeMapJson(const MappingState &state, const Graph &dfg,
 }
 
 bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
-                              const Graph &adg, const ADGFlattener &flattener,
-                              const std::string &path) {
+                             const Graph &adg, const ADGFlattener &flattener,
+                             llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                             const std::string &path) {
   std::error_code ec;
   llvm::raw_fd_ostream out(path, ec, llvm::sys::fs::OF_Text);
   if (ec) {
@@ -1414,8 +1498,16 @@ bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
       out << "node " << dstPort->parentNode;
     }
 
-    if (eid < state.swEdgeToHwPaths.size() &&
-        !state.swEdgeToHwPaths[eid].empty()) {
+    if (eid < edgeKinds.size() && edgeKinds[eid] == TechMappedEdgeKind::IntraFU) {
+      IdIndex hwNodeId = INVALID_ID;
+      if (srcPort && srcPort->parentNode != INVALID_ID &&
+          srcPort->parentNode < state.swNodeToHwNode.size())
+        hwNodeId = state.swNodeToHwNode[srcPort->parentNode];
+      out << " : INTRA_FU";
+      if (hwNodeId != INVALID_ID)
+        out << " (hw_node " << hwNodeId << ")";
+    } else if (eid < state.swEdgeToHwPaths.size() &&
+               !state.swEdgeToHwPaths[eid].empty()) {
       auto path = buildExportPathForEdge(eid, state, dfg, adg);
       // Detect synthetic memref-binding path (same port for src and dst).
       if (path.size() == 2 && path[0] == path[1]) {
@@ -1444,11 +1536,19 @@ bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
       if (fuId < state.hwNodeToSwNodes.size() &&
           !state.hwNodeToSwNodes[fuId].empty()) {
         used = true;
-        const Node *swNode = dfg.getNode(state.hwNodeToSwNodes[fuId][0]);
         out << pe.peName << " (" << pe.row << "," << pe.col << "): "
             << getNodeAttrStr(adg.getNode(fuId), "op_name");
-        if (swNode)
-          out << " <- " << getNodeAttrStr(swNode, "op_name");
+        out << " <- [";
+        for (size_t i = 0; i < state.hwNodeToSwNodes[fuId].size(); ++i) {
+          if (i > 0)
+            out << ", ";
+          const Node *swNode = dfg.getNode(state.hwNodeToSwNodes[fuId][i]);
+          if (swNode)
+            out << getNodeAttrStr(swNode, "op_name");
+          else
+            out << state.hwNodeToSwNodes[fuId][i];
+        }
+        out << "]";
         out << "\n";
       }
     }

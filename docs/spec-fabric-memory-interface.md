@@ -32,6 +32,55 @@ memory routing.
 When `ldCount > 1` or `stCount > 1`, FCC uses tagged memory routing so multiple
 logical streams can share one memory-facing endpoint.
 
+## Hardware Interface Families
+
+FCC hardware memory interfaces are organized by signal family, not by software
+operand order.
+
+`fabric.memory` uses these physical families:
+
+- inputs: `load_addr`, `store_addr`, `store_data`
+- outputs: `load_data`, `load_done`, `store_done`
+
+Family omission is structural:
+
+- if `ldCount = 0`, there is no `load_addr`, `load_data`, or `load_done`
+- if `stCount = 0`, there is no `store_addr`, `store_data`, or `store_done`
+
+When `ldCount > 1` or `stCount > 1`, the family still appears once
+physically, but its payload becomes tagged.
+
+`fabric.memory` may additionally expose a memref-style externally visible view
+when `is_private` is not true. That memref represents a slave-style,
+memory-mapped access path into the scratchpad.
+
+`fabric.extmemory` uses the same request and response family order, but always
+consumes one incoming module memref operand first. That memref represents the
+master-style backing memory interface that the accelerator actively accesses.
+
+## Software Memory-Op Order
+
+Software memory ops use CIRCT Handshake ordering, which is intentionally
+different from hardware family order.
+
+`handshake.memory` uses:
+
+- operands: all stores first as `(stdata1, staddr1, stdata2, staddr2, ...)`,
+  then all loads as `(ldaddr1, ldaddr2, ...)`
+- results: all load data as `(lddata1, lddata2, ...)`, then all completion
+  tokens ordered like the request operands:
+  `(stnone1, stnone2, ..., ldnone1, ldnone2, ...)`
+
+`handshake.extmemory` uses the same load and store ordering, with one leading
+memref operand naming the backing memory object.
+
+The mapper must therefore bridge between:
+
+- software request order: store-first, then load addresses
+- hardware family order: load address first, then store address/data
+- software result order: load data, then store done, then load done
+- hardware family order: load data, then load done, then store done
+
 ## Tagged Multi-Port Memory Mechanism
 
 For multi-port memory access:
@@ -84,6 +133,15 @@ The accelerator runtime binds these regions before launch.
 
 The element-size code is per region because different software memory regions
 may share one wider hardware memory interface.
+
+This region model works together with tagged family ports:
+
+- `addr_offset_table` identifies which tag range belongs to which software
+  region, where that region starts, and what element size it uses
+- tagged request and response ports carry the stream identity for that region
+  or logical access lane
+- different tags may progress independently
+- requests with the same tag must preserve order
 
 In FCC syntax:
 

@@ -48,8 +48,87 @@ Its control structure is:
 Key rules:
 
 - `sel` participates in tech-mapping search
-- `disconnect` and `discard` are derived from the selected effective graph
+- `disconnect` and `discard` are runtime configuration bits with handshake
+  semantics
 - the selected FU configuration is fixed before place-and-route
+
+## `fabric.static_mux` Operational Semantics
+
+`fabric.static_mux` is a handshake-aware routing primitive.
+
+It supports two structural modes:
+
+- `M:1`: multiple inputs, one output
+- `1:M`: one input, multiple outputs
+
+### `disconnect = 1`
+
+When `disconnect = 1`, the static mux is fully inert:
+
+- no input is accepted
+- input-side `ready` behaves as permanently low
+- `sel` is ignored
+- this rule is identical for `M:1` and `1:M`
+
+### `M:1` with `disconnect = 0`
+
+The selected input is `sel`.
+
+If `discard = 0`:
+
+- the selected input is forwarded to the output
+- non-selected inputs are not accepted
+- non-selected input-side `ready` behaves as low
+
+If `discard = 1`:
+
+- the selected input is forwarded to the output
+- non-selected inputs are accepted and drained locally
+- non-selected input-side `ready` behaves as high
+
+### `1:M` with `disconnect = 0`
+
+The selected output is `sel`.
+
+If `discard = 0`:
+
+- the input is forwarded only to the selected output
+- non-selected outputs remain invalid
+
+If `discard = 1`:
+
+- the input is accepted and drained locally
+- all outputs remain invalid
+- input-side `ready` behaves as high
+
+### `1:1` Degenerate Case
+
+A `1:1` static mux is semantically dead routing structure.
+
+Normative rules:
+
+- `discard` and `disconnect` must both be `0`
+- the mux is treated as transparent pass-through
+- mapper normalization and effective-graph extraction should behave as if the
+  input and output were directly connected
+
+## Runtime-Config Ownership
+
+`fabric.static_mux` may appear in an ADG with textual runtime-config fields such
+as `sel`, `disconnect`, and `discard`.
+
+For mapper input, these fields are not authoritative final state. They are
+treated as mapper-owned runtime-config hints:
+
+- they may provide an initial default for visualization or hand-authored ADGs
+- the mapper may overwrite them during tech-mapping
+- the mapping result is the authoritative source of the selected FU
+  configuration
+
+This is a normative distinction between:
+
+- structural ADG syntax
+- mapper-selected runtime configuration
 
 ## Effective Graph
 
@@ -59,6 +138,15 @@ Instead, the mapper reasons about the effective graph after applying the chosen
 
 This distinction is normative. A DFG match is valid only against the effective
 graph, not merely against all operations textually present in the FU body.
+
+The effective graph may cover:
+
+- a single software operation
+- a software subgraph with multiple operations
+
+The matching rule is structural and generic. It is not defined per named FU
+such as `mac`; any FU with internal `static_mux` nodes participates in the same
+configuration-enumeration and effective-graph extraction model.
 
 ## Relationship to PE Configuration
 

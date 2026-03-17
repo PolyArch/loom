@@ -112,6 +112,57 @@ LogicalResult InstanceOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// StaticMuxOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult StaticMuxOp::verify() {
+  auto *parent = (*this)->getParentOp();
+  bool insideFU = false;
+  while (parent) {
+    if (mlir::isa<FunctionUnitOp>(parent)) {
+      insideFU = true;
+      break;
+    }
+    parent = parent->getParentOp();
+  }
+  if (!insideFU)
+    return emitOpError("must appear inside fabric.function_unit");
+
+  unsigned numInputs = getInputs().size();
+  unsigned numResults = getResults().size();
+  if (numInputs == 0 || numResults == 0)
+    return emitOpError("must have at least one input and one result");
+  if (numInputs > 1 && numResults > 1)
+    return emitOpError("must be either M:1 or 1:M, not M:N");
+
+  mlir::Type expectedType = numInputs > 0 ? getInputs().front().getType()
+                                          : getResults().front().getType();
+  for (mlir::Value input : getInputs()) {
+    if (input.getType() != expectedType)
+      return emitOpError("requires all input types to match");
+  }
+  for (mlir::Value result : getResults()) {
+    if (result.getType() != expectedType)
+      return emitOpError("requires all result types to match input types");
+  }
+
+  if (numInputs == 1 && numResults == 1 &&
+      (getDiscard() || getDisconnect())) {
+    return emitOpError("1:1 static_mux cannot set discard or disconnect");
+  }
+
+  if (!getDisconnect()) {
+    unsigned fanout = std::max(numInputs, numResults);
+    if (getSel() < 0 || static_cast<uint64_t>(getSel()) >= fanout) {
+      return emitOpError("sel out of range for ")
+             << fanout << "-way static_mux";
+    }
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // SpatialPEOp
 //===----------------------------------------------------------------------===//
 
