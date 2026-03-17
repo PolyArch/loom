@@ -108,6 +108,36 @@ static std::string dfgResultName(mlir::Operation *op, unsigned idx) {
   return ("O" + std::to_string(idx));
 }
 
+static std::string getADGName(mlir::ModuleOp topModule) {
+  if (!topModule) return "";
+  fcc::fabric::ModuleOp fabricMod;
+  topModule->walk([&](fcc::fabric::ModuleOp mod) { fabricMod = mod; });
+  if (!fabricMod) return "";
+  return fabricMod.getSymName().str();
+}
+
+static std::string getDFGName(mlir::ModuleOp topModule) {
+  if (!topModule) return "";
+  circt::handshake::FuncOp funcOp;
+  topModule->walk([&](circt::handshake::FuncOp func) {
+    if (!funcOp) funcOp = func;
+  });
+  if (!funcOp) return "";
+  return funcOp.getName().str();
+}
+
+static std::string makeVizTitle(mlir::ModuleOp adgModule,
+                                mlir::ModuleOp dfgModule,
+                                bool hasMapping) {
+  std::string adgName = getADGName(adgModule);
+  std::string dfgName = getDFGName(dfgModule);
+  if (!dfgName.empty() && !adgName.empty())
+    return dfgName + (hasMapping ? " on " : " and ") + adgName;
+  if (!dfgName.empty()) return dfgName;
+  if (!adgName.empty()) return adgName;
+  return hasMapping ? "fcc viz (mapped)" : "fcc viz";
+}
+
 // ---- Serialize fabric.module to JSON ----
 
 static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
@@ -936,7 +966,7 @@ mlir::LogicalResult exportVizOnly(const std::string &outputPath,
     return mlir::failure();
   }
 
-  std::string title = "fcc viz";
+  std::string title = makeVizTitle(adgModule, dfgModule, false);
 
   // Serialize data
   std::string adgJson;
@@ -1032,7 +1062,7 @@ mlir::LogicalResult exportVizWithMapping(const std::string &outputPath,
     dfgJson = "null";
   }
 
-  std::string title = "fcc viz (mapped)";
+  std::string title = makeVizTitle(adgModule, dfgModule, true);
 
   out << "<!DOCTYPE html>\n<html>\n<head>\n"
       << "  <meta charset=\"UTF-8\">\n"
