@@ -542,6 +542,10 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
               "connected_sw")) {
         setNodeAttr(memNode.get(), "connected_sw", connSwAttr, ctx);
       }
+      if (auto connSwDetailAttr = extOp->getAttrOfType<mlir::ArrayAttr>(
+              "connected_sw_detail")) {
+        setNodeAttr(memNode.get(), "connected_sw_detail", connSwDetailAttr, ctx);
+      }
 
       // Create input ports from function type.
       auto memFnType = extOp.getFunctionType();
@@ -924,9 +928,9 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
   // Wire reverse connectivity: SW output ports -> ExtMem input ports.
   // The ADGBuilder creates connections from ExtMem outputs to SW inputs via
   // SSA operands, but the reverse direction (SW outputs feeding ExtMem data
-  // inputs) is only recorded as metadata (connected_sw attribute).
-  // We need to explicitly add these edges so the routing BFS can find paths
-  // from compute nodes back to external memory.
+  // inputs) is recorded as metadata on the ExtMem op. We need to explicitly
+  // add these edges so the routing BFS can find paths from compute nodes back
+  // to external memory.
   {
     // Build a map from instance name -> SW ADG node ID.
     llvm::DenseMap<llvm::StringRef, IdIndex> swNameToNodeId;
@@ -947,7 +951,67 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       if (getNodeAttrStr(n, "resource_class") != "memory")
         continue;
 
-      // Find the connected_sw attribute.
+      auto connectSwitchToMemory = [&](llvm::StringRef swName,
+                                       unsigned swOutputBase) {
+        auto swIt = swNameToNodeId.find(swName);
+        if (swIt == swNameToNodeId.end())
+          return;
+        IdIndex swNodeId = swIt->second;
+        auto *swNode = adg.getNode(swNodeId);
+        if (!swNode)
+          return;
+
+        unsigned numExtMemDataInputs = n->inputPorts.size() > 1
+                                           ? n->inputPorts.size() - 1
+                                           : 0;
+        for (unsigned p = 0; p < numExtMemDataInputs; ++p) {
+          unsigned swOutIdx = swOutputBase + p;
+          unsigned extMemInIdx = 1 + p; // Skip memref port at 0.
+          if (swOutIdx >= swNode->outputPorts.size() ||
+              extMemInIdx >= n->inputPorts.size())
+            break;
+
+          IdIndex srcPortId = swNode->outputPorts[swOutIdx];
+          IdIndex dstPortId = n->inputPorts[extMemInIdx];
+          connectivity.outToIn[srcPortId].push_back(dstPortId);
+
+          auto edge = std::make_unique<Edge>();
+          edge->srcPort = srcPortId;
+          edge->dstPort = dstPortId;
+          IdIndex edgeId = adg.addEdge(std::move(edge));
+          adg.ports[srcPortId]->connectedEdges.push_back(edgeId);
+          adg.ports[dstPortId]->connectedEdges.push_back(edgeId);
+        }
+      };
+
+      bool usedDetailedMetadata = false;
+      for (auto &attr : n->attributes) {
+        if (attr.getName() != "connected_sw_detail")
+          continue;
+        auto arrayAttr = mlir::dyn_cast<mlir::ArrayAttr>(attr.getValue());
+        if (!arrayAttr)
+          continue;
+        usedDetailedMetadata = true;
+        for (auto elem : arrayAttr) {
+          auto dictAttr = mlir::dyn_cast<mlir::DictionaryAttr>(elem);
+          if (!dictAttr)
+            continue;
+          auto nameAttr = dictAttr.getAs<mlir::StringAttr>("name");
+          if (!nameAttr)
+            continue;
+          unsigned swOutputBase = 0;
+          if (auto outBaseAttr =
+                  dictAttr.getAs<mlir::IntegerAttr>("output_port_base")) {
+            swOutputBase = static_cast<unsigned>(outBaseAttr.getInt());
+          }
+          connectSwitchToMemory(nameAttr.getValue(), swOutputBase);
+        }
+      }
+
+      if (usedDetailedMetadata)
+        continue;
+
+      // Legacy fallback for older ADGs that only recorded switch names.
       for (auto &attr : n->attributes) {
         if (attr.getName() != "connected_sw")
           continue;
@@ -958,48 +1022,7 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
           auto strAttr = mlir::dyn_cast<mlir::StringAttr>(elem);
           if (!strAttr)
             continue;
-          auto swIt = swNameToNodeId.find(strAttr.getValue());
-          if (swIt == swNameToNodeId.end())
-            continue;
-          IdIndex swNodeId = swIt->second;
-          auto *swNode = adg.getNode(swNodeId);
-          if (!swNode)
-            continue;
-
-          // The ExtMem data input ports start after the memref port (port 0).
-          // SW output ports for ExtMem start at port 8 (same base as input).
-          // ADGBuilder uses swOutputPortBase = 8, same as swInputPortBase.
-          // ExtMem has: input port 0 = memref, ports 1..N = data inputs.
-          // SW has: output ports 8..8+N-1 for ExtMem data.
-
-          // Get the ExtMem function type to determine the number of data input
-          // ports (excluding the memref port at index 0).
-          unsigned numExtMemDataInputs = n->inputPorts.size() > 1
-                                             ? n->inputPorts.size() - 1
-                                             : 0;
-          unsigned swOutputBase = 8; // Matches ADGBuilder convention.
-
-          for (unsigned p = 0; p < numExtMemDataInputs; ++p) {
-            unsigned swOutIdx = swOutputBase + p;
-            unsigned extMemInIdx = 1 + p; // Skip memref port at 0.
-            if (swOutIdx >= swNode->outputPorts.size() ||
-                extMemInIdx >= n->inputPorts.size())
-              break;
-
-            IdIndex srcPortId = swNode->outputPorts[swOutIdx];
-            IdIndex dstPortId = n->inputPorts[extMemInIdx];
-
-            // Add connectivity entry.
-            connectivity.outToIn[srcPortId].push_back(dstPortId);
-
-            // Also create an ADG edge for this connection.
-            auto edge = std::make_unique<Edge>();
-            edge->srcPort = srcPortId;
-            edge->dstPort = dstPortId;
-            IdIndex edgeId = adg.addEdge(std::move(edge));
-            adg.ports[srcPortId]->connectedEdges.push_back(edgeId);
-            adg.ports[dstPortId]->connectedEdges.push_back(edgeId);
-          }
+          connectSwitchToMemory(strAttr.getValue(), /*swOutputBase=*/4);
         }
       }
     }

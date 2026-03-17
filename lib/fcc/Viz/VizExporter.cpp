@@ -58,6 +58,56 @@ static std::string scriptSafe(const std::string &s) {
   return r;
 }
 
+static std::string printType(mlir::Type type) {
+  if (!type) return "";
+  std::string s;
+  llvm::raw_string_ostream os(s);
+  type.print(os);
+  return s;
+}
+
+static std::string dfgEdgeType(mlir::Type type) {
+  if (!type) return "data";
+  if (mlir::isa<mlir::MemRefType>(type)) return "memref";
+  if (mlir::isa<mlir::NoneType>(type)) return "control";
+  return "data";
+}
+
+static std::string dfgOperandName(mlir::Operation *op, unsigned idx) {
+  if (auto load = mlir::dyn_cast<circt::handshake::LoadOp>(op))
+    return load.getOperandName(idx);
+  if (auto store = mlir::dyn_cast<circt::handshake::StoreOp>(op))
+    return store.getOperandName(idx);
+  if (auto memory = mlir::dyn_cast<circt::handshake::MemoryOp>(op))
+    return memory.getOperandName(idx);
+  if (auto ext = mlir::dyn_cast<circt::handshake::ExternalMemoryOp>(op))
+    return ext.getOperandName(idx);
+  if (auto mux = mlir::dyn_cast<circt::handshake::MuxOp>(op))
+    return mux.getOperandName(idx);
+  if (auto cbr = mlir::dyn_cast<circt::handshake::ConditionalBranchOp>(op))
+    return cbr.getOperandName(idx);
+  if (auto constant = mlir::dyn_cast<circt::handshake::ConstantOp>(op))
+    return constant.getOperandName(idx);
+  return ("I" + std::to_string(idx));
+}
+
+static std::string dfgResultName(mlir::Operation *op, unsigned idx) {
+  if (auto load = mlir::dyn_cast<circt::handshake::LoadOp>(op))
+    return load.getResultName(idx);
+  if (auto store = mlir::dyn_cast<circt::handshake::StoreOp>(op))
+    return store.getResultName(idx);
+  if (auto memory = mlir::dyn_cast<circt::handshake::MemoryOp>(op))
+    return memory.getResultName(idx);
+  if (auto ext = mlir::dyn_cast<circt::handshake::ExternalMemoryOp>(op))
+    return ext.getResultName(idx);
+  if (auto cbr = mlir::dyn_cast<circt::handshake::ConditionalBranchOp>(op))
+    return cbr.getResultName(idx);
+  if (auto ctrlMerge =
+          mlir::dyn_cast<circt::handshake::ControlMergeOp>(op))
+    return ctrlMerge.getResultName(idx);
+  return ("O" + std::to_string(idx));
+}
+
 // ---- Serialize fabric.module to JSON ----
 
 static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
@@ -295,6 +345,18 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
       os << "}";
     }
 
+    if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
+      if (!first) os << ",\n";
+      first = false;
+      auto memFnType = extOp.getFunctionType();
+      os << "    {\"kind\": \"memory\", \"name\": \""
+         << jsonEsc(extOp.getSymName().value_or("extmem").str()) << "\"";
+      os << ", \"memoryKind\": \"extmemory\"";
+      os << ", \"numInputs\": " << memFnType.getNumInputs();
+      os << ", \"numOutputs\": " << memFnType.getNumResults();
+      os << "}";
+    }
+
     // instances - resolve to PE/SW definitions for FU details
     if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
       if (!first) os << ",\n";
@@ -346,15 +408,24 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
   for (auto arg : body.getArguments())
     blockArgIdx[arg] = static_cast<int>(arg.getArgNumber());
 
-  // Pass 1: collect ALL instance results first (handles forward references)
-  struct InstResult { std::string name; unsigned idx; };
-  llvm::DenseMap<mlir::Value, InstResult> instResultMap;
+  // Pass 1: collect all producer results first (handles forward references).
+  struct ResultProducer {
+    std::string name;
+    unsigned idx;
+  };
+  llvm::DenseMap<mlir::Value, ResultProducer> resultProducerMap;
   for (auto &op : body.getOperations()) {
-    auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op);
-    if (!instOp) continue;
-    std::string instName = instOp.getSymName().value_or("inst").str();
-    for (unsigned i = 0; i < instOp.getNumResults(); ++i)
-      instResultMap[instOp.getResult(i)] = {instName, i};
+    if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
+      std::string instName = instOp.getSymName().value_or("inst").str();
+      for (unsigned i = 0; i < instOp.getNumResults(); ++i)
+        resultProducerMap[instOp.getResult(i)] = {instName, i};
+      continue;
+    }
+    if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
+      std::string memName = extOp.getSymName().value_or("extmem").str();
+      for (unsigned i = 0; i < extOp.getNumResults(); ++i)
+        resultProducerMap[extOp.getResult(i)] = {memName, i};
+    }
   }
 
   // Pass 2: trace all operand connections
@@ -375,8 +446,8 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
            << "}";
       }
       // Instance -> instance (now works for circular refs too)
-      auto irIt = instResultMap.find(operand);
-      if (irIt != instResultMap.end()) {
+      auto irIt = resultProducerMap.find(operand);
+      if (irIt != resultProducerMap.end()) {
         if (!firstConn) os << ",\n";
         firstConn = false;
         os << "    {\"from\": \"" << jsonEsc(irIt->second.name)
@@ -387,12 +458,80 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
     }
   }
 
+  // Module memref bindings and SW->ExtMem reverse links come from ExtMemory
+  // metadata because the Fabric inline syntax does not spell them out as SSA
+  // operands.
+  for (auto &op : body.getOperations()) {
+    auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op);
+    if (!extOp)
+      continue;
+
+    std::string memName = extOp.getSymName().value_or("extmem").str();
+    if (auto argIdxAttr =
+            extOp->getAttrOfType<mlir::IntegerAttr>("memref_arg_index")) {
+      if (!firstConn)
+        os << ",\n";
+      firstConn = false;
+      os << "    {\"from\": \"module_in\", \"fromIdx\": "
+         << argIdxAttr.getInt() << ", \"to\": \"" << jsonEsc(memName)
+         << "\", \"toIdx\": 0}";
+    }
+
+    auto emitExtMemBackEdges = [&](mlir::ArrayAttr detailAttr,
+                                   bool detailed) {
+      for (auto elem : detailAttr) {
+        llvm::StringRef swName;
+        int64_t outputBase = detailed ? 0 : 4;
+        if (detailed) {
+          auto dictAttr = mlir::dyn_cast<mlir::DictionaryAttr>(elem);
+          if (!dictAttr)
+            continue;
+          auto nameAttr = dictAttr.getAs<mlir::StringAttr>("name");
+          if (!nameAttr)
+            continue;
+          swName = nameAttr.getValue();
+          if (auto outBaseAttr =
+                  dictAttr.getAs<mlir::IntegerAttr>("output_port_base")) {
+            outputBase = outBaseAttr.getInt();
+          }
+        } else {
+          auto strAttr = mlir::dyn_cast<mlir::StringAttr>(elem);
+          if (!strAttr)
+            continue;
+          swName = strAttr.getValue();
+        }
+
+        unsigned numDataInputs =
+            extOp.getFunctionType().getNumInputs() > 0
+                ? extOp.getFunctionType().getNumInputs() - 1
+                : 0;
+        for (unsigned p = 0; p < numDataInputs; ++p) {
+          if (!firstConn)
+            os << ",\n";
+          firstConn = false;
+          os << "    {\"from\": \"" << jsonEsc(swName.str())
+             << "\", \"fromIdx\": " << (outputBase + static_cast<int64_t>(p))
+             << ", \"to\": \"" << jsonEsc(memName) << "\", \"toIdx\": "
+             << (1 + p) << "}";
+        }
+      }
+    };
+
+    if (auto detailAttr =
+            extOp->getAttrOfType<mlir::ArrayAttr>("connected_sw_detail")) {
+      emitExtMemBackEdges(detailAttr, /*detailed=*/true);
+    } else if (auto connAttr =
+                   extOp->getAttrOfType<mlir::ArrayAttr>("connected_sw")) {
+      emitExtMemBackEdges(connAttr, /*detailed=*/false);
+    }
+  }
+
   // Yield: instance results -> module outputs
   auto yieldOp = mlir::dyn_cast<fcc::fabric::YieldOp>(body.getTerminator());
   if (yieldOp) {
     for (unsigned i = 0; i < yieldOp->getNumOperands(); ++i) {
-      auto ir = instResultMap.find(yieldOp->getOperand(i));
-      if (ir != instResultMap.end()) {
+      auto ir = resultProducerMap.find(yieldOp->getOperand(i));
+      if (ir != resultProducerMap.end()) {
         if (!firstConn) os << ",\n";
         firstConn = false;
         os << "    {\"from\": \"" << jsonEsc(ir->second.name)
@@ -419,167 +558,180 @@ static void writeDFGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule) {
     return;
   }
 
-  // Build DOT
-  std::string dot;
-  llvm::raw_string_ostream ds(dot);
-  ds << "digraph DFG {\\n";
-  ds << "  rankdir=TB;\\n";
-  ds << "  bgcolor=\\\"transparent\\\";\\n";
-  ds << "  graph [bgcolor=\\\"transparent\\\", pad=0.18, "
-        "nodesep=0.34, ranksep=0.46];\\n";
-  ds << "  node [style=filled, fontsize=11, fontname=\\\"monospace\\\", "
-        "fontcolor=\\\"#c8d6e5\\\", color=\\\"#5dade2\\\", penwidth=1.4];\\n";
-  ds << "  edge [color=\\\"#7f95b2\\\", penwidth=1.45, arrowsize=0.72];\\n\\n";
-
   auto &body = funcOp.getBody().front();
-  llvm::DenseMap<mlir::Value, std::pair<int, unsigned>> valToPort;
+  auto argNames = funcOp->getAttrOfType<mlir::ArrayAttr>("argNames");
+  auto resNames = funcOp->getAttrOfType<mlir::ArrayAttr>("resNames");
 
-  // Nodes
-  int nodeIdx = 0;
-  std::string srcRank, sinkRank;
-
-  // Block arguments as inputs
-  for (auto arg : body.getArguments()) {
-    std::string nid = "n" + std::to_string(nodeIdx);
-    std::string label = "arg" + std::to_string(arg.getArgNumber());
-    ds << "  \\\"" << nid << "\\\" [label=\\\"" << label
-       << "\\\", shape=invtriangle, fillcolor=\\\"#214c73\\\", "
-          "color=\\\"#7ec8ff\\\", fontcolor=\\\"#d9ecff\\\"];\\n";
-    srcRank += "\\\"" + nid + "\\\"; ";
-    valToPort[arg] = {nodeIdx, 0};
-    nodeIdx++;
-  }
-
-  // Operations
+  llvm::SmallVector<mlir::Operation *, 16> ops;
+  circt::handshake::ReturnOp returnOp;
   for (auto &op : body.getOperations()) {
-    if (op.hasTrait<mlir::OpTrait::IsTerminator>()) {
-      // return/end node
-      std::string nid = "n" + std::to_string(nodeIdx);
-      ds << "  \\\"" << nid << "\\\" [label=\\\"return\\\", shape=triangle, "
-            "fillcolor=\\\"#6a3023\\\", color=\\\"#ff9b7a\\\", "
-            "fontcolor=\\\"#ffe1d8\\\"];\\n";
-      sinkRank += "\\\"" + nid + "\\\"; ";
-      // edges from operands
-      for (auto operand : op.getOperands()) {
-        auto it = valToPort.find(operand);
-        if (it != valToPort.end()) {
-          ds << "  \\\"n" << it->second.first << "\\\" -> \\\"" << nid
-             << "\\\";\\n";
-        }
-      }
-      nodeIdx++;
+    if (auto ret = mlir::dyn_cast<circt::handshake::ReturnOp>(op)) {
+      returnOp = ret;
       continue;
     }
-
-    std::string nid = "n" + std::to_string(nodeIdx);
-    std::string opName = op.getName().getStringRef().str();
-
-    // Split "dialect.op" into "dialect\nop" for two-line label
-    std::string dfgDisplayName = opName;
-    auto dfgDotPos = opName.find('.');
-    if (dfgDotPos != std::string::npos)
-      dfgDisplayName = opName.substr(0, dfgDotPos) + "\\n" + opName.substr(dfgDotPos + 1);
-
-    // Color by dialect
-    std::string fillColor = "#293548";
-    std::string strokeColor = "#8aa4c2";
-    std::string fontColor = "#c8d6e5";
-    if (opName.find("arith.") == 0) {
-      fillColor = "#1a3050";
-      strokeColor = "#5dade2";
-    } else if (opName.find("handshake.") == 0) {
-      fillColor = "#3a3520";
-      strokeColor = "#ffd166";
-      fontColor = "#ffe29b";
-    } else if (opName.find("dataflow.") == 0) {
-      fillColor = "#203c2f";
-      strokeColor = "#58d68d";
-    }
-
-    ds << "  \\\"" << nid << "\\\" [label=\\\"" << dfgDisplayName
-       << "\\\", shape=ellipse, fillcolor=\\\"" << fillColor
-       << "\\\", color=\\\"" << strokeColor
-       << "\\\", fontcolor=\\\"" << fontColor << "\\\"];\\n";
-
-    // Edges from operands
-    for (auto operand : op.getOperands()) {
-      auto it = valToPort.find(operand);
-      if (it != valToPort.end()) {
-        ds << "  \\\"n" << it->second.first << "\\\" -> \\\"" << nid
-           << "\\\";\\n";
-      }
-    }
-
-    // Map results
-    for (unsigned i = 0; i < op.getNumResults(); ++i)
-      valToPort[op.getResult(i)] = {nodeIdx, i};
-
-    nodeIdx++;
+    ops.push_back(&op);
   }
 
-  if (!srcRank.empty())
-    ds << "\\n  { rank=source; " << srcRank << "}\\n";
-  if (!sinkRank.empty())
-    ds << "  { rank=sink; " << sinkRank << "}\\n";
-  ds << "}\\n";
+  llvm::DenseMap<mlir::Value, std::pair<int, unsigned>> valueToNodePort;
 
-  // Structured node data for mapping interaction
+  os << "  \"func\": \"" << jsonEsc(funcOp.getName().str()) << "\",\n";
   os << "  \"nodes\": [\n";
-  {
-    auto &body2 = funcOp.getBody().front();
-    int ni = 0;
-    bool firstN = true;
-    for (auto arg : body2.getArguments()) {
-      if (!firstN) os << ",\n";
-      firstN = false;
-      os << "    {\"id\": " << ni << ", \"label\": \"arg"
-         << arg.getArgNumber() << "\", \"kind\": \"input\"}";
-      ni++;
+  bool firstNode = true;
+  int nodeId = 0;
+
+  auto emitPortArray = [&](llvm::StringRef key, unsigned count, auto nameFn,
+                           auto typeFn) {
+    os << ", \"" << key << "\": [";
+    for (unsigned i = 0; i < count; ++i) {
+      if (i > 0) os << ", ";
+      os << "{\"index\": " << i << ", \"name\": \""
+         << jsonEsc(nameFn(i)) << "\", \"type\": \""
+         << jsonEsc(typeFn(i)) << "\"}";
     }
-    for (auto &op2 : body2.getOperations()) {
-      if (!firstN) os << ",\n";
-      firstN = false;
-      if (op2.hasTrait<mlir::OpTrait::IsTerminator>()) {
-        os << "    {\"id\": " << ni << ", \"label\": \"return\", \"kind\": \"output\"}";
-      } else {
-        os << "    {\"id\": " << ni << ", \"label\": \""
-           << jsonEsc(op2.getName().getStringRef().str())
-           << "\", \"kind\": \"op\"}";
-      }
-      ni++;
+    os << "]";
+  };
+
+  for (auto arg : body.getArguments()) {
+    if (!firstNode) os << ",\n";
+    firstNode = false;
+
+    std::string argName;
+    if (argNames && arg.getArgNumber() < argNames.size()) {
+      if (auto str =
+              mlir::dyn_cast<mlir::StringAttr>(argNames[arg.getArgNumber()]))
+        argName = str.getValue().str();
     }
-    os << "\n  ],\n";
+    std::string typeStr = printType(arg.getType());
+    os << "    {\"id\": " << nodeId << ", \"kind\": \"input\""
+       << ", \"label\": \"arg" << arg.getArgNumber() << "\""
+       << ", \"arg_index\": " << arg.getArgNumber()
+       << ", \"name\": \"" << jsonEsc(argName) << "\""
+       << ", \"type\": \"" << jsonEsc(typeStr) << "\"";
+    emitPortArray("inputs", 0,
+                  [&](unsigned) { return std::string(); },
+                  [&](unsigned) { return std::string(); });
+    emitPortArray("outputs", 1,
+                  [&](unsigned) {
+                    return !argName.empty() ? argName : std::string("value");
+                  },
+                  [&](unsigned) { return typeStr; });
+    os << "}";
+    valueToNodePort[arg] = {nodeId, 0};
+    nodeId++;
   }
 
-  // Structured edge data
+  for (auto *op : ops) {
+    if (!firstNode) os << ",\n";
+    firstNode = false;
+
+    std::string opName = op->getName().getStringRef().str();
+    std::string displayName = opName;
+    size_t dotPos = displayName.find('.');
+    if (dotPos != std::string::npos)
+      displayName =
+          displayName.substr(0, dotPos) + "\n" + displayName.substr(dotPos + 1);
+
+    os << "    {\"id\": " << nodeId << ", \"kind\": \"op\""
+       << ", \"label\": \"" << jsonEsc(opName) << "\""
+       << ", \"display\": \"" << jsonEsc(displayName) << "\""
+       << ", \"op\": \"" << jsonEsc(opName) << "\"";
+    emitPortArray(
+        "inputs", op->getNumOperands(),
+        [&](unsigned i) { return dfgOperandName(op, i); },
+        [&](unsigned i) { return printType(op->getOperand(i).getType()); });
+    emitPortArray(
+        "outputs", op->getNumResults(),
+        [&](unsigned i) { return dfgResultName(op, i); },
+        [&](unsigned i) { return printType(op->getResult(i).getType()); });
+    os << "}";
+
+    for (unsigned i = 0; i < op->getNumResults(); ++i)
+      valueToNodePort[op->getResult(i)] = {nodeId, i};
+    nodeId++;
+  }
+
+  if (returnOp) {
+    for (unsigned i = 0; i < returnOp.getNumOperands(); ++i) {
+      if (!firstNode) os << ",\n";
+      firstNode = false;
+
+      std::string resName;
+      if (resNames && i < resNames.size()) {
+        if (auto str = mlir::dyn_cast<mlir::StringAttr>(resNames[i]))
+          resName = str.getValue().str();
+      }
+      std::string typeStr = printType(returnOp.getOperand(i).getType());
+      os << "    {\"id\": " << nodeId << ", \"kind\": \"output\""
+         << ", \"label\": \"return\""
+         << ", \"result_index\": " << i
+         << ", \"name\": \"" << jsonEsc(resName) << "\""
+         << ", \"type\": \"" << jsonEsc(typeStr) << "\"";
+      emitPortArray("inputs", 1,
+                    [&](unsigned) {
+                      return !resName.empty() ? resName : std::string("value");
+                    },
+                    [&](unsigned) { return typeStr; });
+      emitPortArray("outputs", 0,
+                    [&](unsigned) { return std::string(); },
+                    [&](unsigned) { return std::string(); });
+      os << "}";
+      nodeId++;
+    }
+  }
+  os << "\n  ],\n";
+
+  llvm::DenseMap<mlir::Operation *, int> opToNodeId;
+  int firstOpNodeId = static_cast<int>(body.getNumArguments());
+  for (unsigned i = 0; i < ops.size(); ++i)
+    opToNodeId[ops[i]] = firstOpNodeId + static_cast<int>(i);
+
+  int firstOutputNodeId = firstOpNodeId + static_cast<int>(ops.size());
   os << "  \"edges\": [\n";
-  {
-    auto &body3 = funcOp.getBody().front();
-    llvm::DenseMap<mlir::Value, int> valIdx;
-    int ni = 0;
-    for (auto arg : body3.getArguments())
-      valIdx[arg] = ni++;
-    int ei = 0;
-    bool firstE = true;
-    for (auto &op3 : body3.getOperations()) {
-      for (auto operand : op3.getOperands()) {
-        auto it = valIdx.find(operand);
-        if (it != valIdx.end()) {
-          if (!firstE) os << ",\n";
-          firstE = false;
-          os << "    {\"id\": " << ei << ", \"from\": " << it->second
-             << ", \"to\": " << ni << "}";
-          ei++;
-        }
-      }
-      for (unsigned r = 0; r < op3.getNumResults(); ++r)
-        valIdx[op3.getResult(r)] = ni;
-      ni++;
+  bool firstEdge = true;
+  int edgeId = 0;
+
+  for (auto *op : ops) {
+    int dstNodeId = opToNodeId[op];
+    for (unsigned i = 0; i < op->getNumOperands(); ++i) {
+      auto it = valueToNodePort.find(op->getOperand(i));
+      if (it == valueToNodePort.end())
+        continue;
+      if (!firstEdge) os << ",\n";
+      firstEdge = false;
+      std::string typeStr = printType(op->getOperand(i).getType());
+      os << "    {\"id\": " << edgeId
+         << ", \"from\": " << it->second.first
+         << ", \"from_port\": " << it->second.second
+         << ", \"to\": " << dstNodeId
+         << ", \"to_port\": " << i
+         << ", \"edge_type\": \"" << dfgEdgeType(op->getOperand(i).getType())
+         << "\", \"value_type\": \"" << jsonEsc(typeStr) << "\"}";
+      edgeId++;
     }
-    os << "\n  ],\n";
   }
 
-  os << "  \"dot\": \"" << dot << "\"\n}";
+  if (returnOp) {
+    for (unsigned i = 0; i < returnOp.getNumOperands(); ++i) {
+      auto it = valueToNodePort.find(returnOp.getOperand(i));
+      if (it == valueToNodePort.end())
+        continue;
+      if (!firstEdge) os << ",\n";
+      firstEdge = false;
+      std::string typeStr = printType(returnOp.getOperand(i).getType());
+      os << "    {\"id\": " << edgeId
+         << ", \"from\": " << it->second.first
+         << ", \"from_port\": " << it->second.second
+         << ", \"to\": " << (firstOutputNodeId + static_cast<int>(i))
+         << ", \"to_port\": 0"
+         << ", \"edge_type\": \""
+         << dfgEdgeType(returnOp.getOperand(i).getType())
+         << "\", \"value_type\": \"" << jsonEsc(typeStr) << "\"}";
+      edgeId++;
+    }
+  }
+  os << "\n  ],\n";
+
+  os << "  \"dot\": null\n}";
 }
 
 // ---- Public API ----
@@ -646,10 +798,8 @@ mlir::LogicalResult exportVizOnly(const std::string &outputPath,
       << "const MAPPING_DATA = null;\n"
       << "</script>\n\n";
 
-  // D3.js + Graphviz WASM from CDN
-  out << "<script src=\"https://d3js.org/d3.v7.min.js\"></script>\n";
-  out << "<script src=\"https://unpkg.com/@viz-js/"
-         "viz@3.2.4/lib/viz-standalone.js\"></script>\n\n";
+  // Bundled D3 for self-contained local viewing.
+  out << "<script>\n" << viz::D3_MIN_JS << "\n</script>\n\n";
 
   // Renderer JS
   out << "<script>\n" << viz::RENDERER_JS << "\n</script>\n\n";
@@ -725,9 +875,7 @@ mlir::LogicalResult exportVizWithMapping(const std::string &outputPath,
       << "const MAPPING_DATA = " << scriptSafe(mapJson) << ";\n"
       << "</script>\n\n";
 
-  out << "<script src=\"https://d3js.org/d3.v7.min.js\"></script>\n";
-  out << "<script src=\"https://unpkg.com/@viz-js/"
-         "viz@3.2.4/lib/viz-standalone.js\"></script>\n\n";
+  out << "<script>\n" << viz::D3_MIN_JS << "\n</script>\n\n";
   out << "<script>\n" << viz::RENDERER_JS << "\n</script>\n\n";
   out << "</body>\n</html>\n";
 

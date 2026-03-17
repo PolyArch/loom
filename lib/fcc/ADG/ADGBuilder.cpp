@@ -152,6 +152,8 @@ struct ADGBuilder::Impl {
   struct ExtMemSWAssoc {
     unsigned extMemInstIdx;
     unsigned swInstIdx;
+    unsigned swInputPortBase;
+    unsigned swOutputPortBase;
   };
   std::vector<ExtMemSWAssoc> extMemSWAssociations;
 
@@ -706,9 +708,9 @@ std::string ADGBuilder::Impl::generateMLIR() const {
           }
         }
 
-        // connected_sw attribute records which switches this extmem is
-        // adjacent to. ExtMem outputs also feed into these switches as
-        // real SSA operands (visible in the SW instance operand lists).
+        // connected_sw records the adjacent switch names for quick lookup.
+        // connected_sw_detail preserves the actual port-base convention so
+        // the flattener can reconstruct SW->ExtMem reverse connectivity.
         std::set<unsigned> connectedSWInsts;
         for (const auto &assoc : extMemSWAssociations) {
           if (assoc.extMemInstIdx == i)
@@ -722,6 +724,22 @@ std::string ADGBuilder::Impl::generateMLIR() const {
             if (!first2) os << ", ";
             first2 = false;
             os << "\"" << instances[swInst].name << "\"";
+          }
+          os << "]";
+
+          startAttrs();
+          os << "connected_sw_detail = [";
+          bool first3 = true;
+          for (const auto &assoc : extMemSWAssociations) {
+            if (assoc.extMemInstIdx != i)
+              continue;
+            if (!first3)
+              os << ", ";
+            first3 = false;
+            os << "{name = \"" << instances[assoc.swInstIdx].name << "\""
+               << ", input_port_base = " << assoc.swInputPortBase << " : i32"
+               << ", output_port_base = " << assoc.swOutputPortBase
+               << " : i32}";
           }
           os << "]";
         }
@@ -1009,7 +1027,8 @@ void ADGBuilder::associateExtMemWithSW(InstanceHandle extMem,
                                        unsigned swInputPortBase,
                                        unsigned swOutputPortBase) {
   // Store a structural association for metadata (connected_sw attribute).
-  impl_->extMemSWAssociations.push_back({extMem.id, sw.id});
+  impl_->extMemSWAssociations.push_back(
+      {extMem.id, sw.id, swInputPortBase, swOutputPortBase});
 
   // Create real SSA connections: ExtMem outputs -> SW input ports.
   // ExtMem outputs: [ldData_0..L, stDone_0..S, ldDone_0..L]
