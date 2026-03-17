@@ -24,6 +24,18 @@ struct TemporalReductionDomainOptions {
 void buildTemporalReductionDomain(const std::string &outputPath,
                                   const TemporalReductionDomainOptions &opts);
 
+struct TemporalScanDomainOptions {
+  std::string moduleName;
+  unsigned dataWidth = 64;
+  std::string memrefType = "memref<?xi32>";
+  unsigned numRegister = 0;
+  unsigned numInstruction = 24;
+  unsigned regFifoDepth = 0;
+};
+
+void buildTemporalScanDomain(const std::string &outputPath,
+                             const TemporalScanDomainOptions &opts);
+
 } // namespace e2e
 } // namespace fcc
 
