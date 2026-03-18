@@ -2,6 +2,7 @@ add_mlir_dialect_library(FccFabric
   FabricDialect.cpp
   FabricTypes.cpp
   FabricOps.cpp
+  FabricOpsMemory.cpp
 
   DEPENDS
     FccFabricDialectIncGen

@@ -67,6 +67,15 @@ public:
   std::pair<int, int> getNodeGridPos(IdIndex nodeId) const;
 
 private:
+  /// Create ADG nodes for all hardware resources (Pass 1).
+  void flattenCreateNodes(struct FlattenContext &fctx, mlir::Block &body);
+
+  /// Wire edges from SSA def-use chains and legacy metadata (Pass 2).
+  void flattenWireEdges(struct FlattenContext &fctx, mlir::Block &body);
+
+  /// Analyze bridge port topology for multi-lane memory nodes.
+  void flattenAnalyzeBridges(struct FlattenContext &fctx);
+
   Graph adg;
   ConnectivityMatrix connectivity;
   std::vector<PEContainment> peContainment;

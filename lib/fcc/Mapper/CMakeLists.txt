@@ -3,12 +3,19 @@ add_library(FccMapper STATIC
   BridgeBinding.cpp
   TagRuntime.cpp
   ADGFlattener.cpp
+  ADGFlattenerWiring.cpp
   DFGBuilder.cpp
   MappingState.cpp
   TechMapper.cpp
+  TechMapperVariants.cpp
   Mapper.cpp
+  MapperPlacement.cpp
+  MapperRefinement.cpp
   MapperRouting.cpp
+  MapperRoutingStrategy.cpp
   ConfigGen.cpp
+  ConfigGenHelpers.cpp
+  ConfigGenConfig.cpp
 )
 
 target_include_directories(FccMapper PUBLIC
