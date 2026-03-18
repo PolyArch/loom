@@ -37,7 +37,16 @@ using namespace mlir;
 
 namespace fcc {
 
-// Compile a single C source to LLVM Module using in-process clang.
+static llvm::StringRef detectClangInputLanguage(const std::string &srcPath) {
+  llvm::StringRef ext = llvm::sys::path::extension(srcPath);
+  if (ext.equals_insensitive(".cc") || ext.equals_insensitive(".cpp") ||
+      ext.equals_insensitive(".cxx") || ext.equals_insensitive(".c++") ||
+      ext == ".C")
+    return "c++";
+  return "c";
+}
+
+// Compile a single C/C++ source to LLVM Module using in-process clang.
 static std::unique_ptr<llvm::Module>
 compileOneSource(const std::string &srcPath, llvm::LLVMContext &llvmCtx,
                  const FccArgs &args) {
@@ -54,7 +63,8 @@ compileOneSource(const std::string &srcPath, llvm::LLVMContext &llvmCtx,
   llvm::SmallVector<const char *> driverArgs;
   driverArgs.push_back("clang");
   driverArgs.push_back("-x");
-  driverArgs.push_back("c");
+  llvm::StringRef inputLang = detectClangInputLanguage(srcPath);
+  driverArgs.push_back(inputLang.data());
   driverArgs.push_back("-O1");
   driverArgs.push_back("-c");
   driverArgs.push_back("-emit-llvm");

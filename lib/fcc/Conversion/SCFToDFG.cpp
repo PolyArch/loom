@@ -78,6 +78,85 @@ struct MemAccess {
   Value doneToken;
 };
 
+std::optional<unsigned> getModuleUIntAttr(ModuleOp module,
+                                          llvm::StringRef name) {
+  if (!module)
+    return std::nullopt;
+  if (auto attr = module->getAttrOfType<IntegerAttr>(name))
+    return static_cast<unsigned>(attr.getInt());
+  return std::nullopt;
+}
+
+Value buildCappedJoinTree(OpBuilder &builder, Location loc,
+                          llvm::ArrayRef<Value> inputs, unsigned maxFanin) {
+  assert(maxFanin > 0 && "maxFanin must be positive");
+  if (inputs.empty())
+    return Value();
+  if (inputs.size() == 1)
+    return inputs.front();
+  if (inputs.size() <= maxFanin)
+    return circt::handshake::JoinOp::create(builder, loc,
+                                            builder.getNoneType(), inputs)
+        .getResult();
+
+  SmallVector<Value, 8> current(inputs.begin(), inputs.end());
+  SmallVector<Value, 8> next;
+  while (current.size() > maxFanin) {
+    next.clear();
+    for (size_t base = 0; base < current.size(); base += maxFanin) {
+      auto chunk = llvm::ArrayRef<Value>(current).slice(
+          base, std::min<size_t>(maxFanin, current.size() - base));
+      if (chunk.size() == 1)
+        next.push_back(chunk.front());
+      else
+        next.push_back(circt::handshake::JoinOp::create(
+                           builder, loc, builder.getNoneType(), chunk)
+                           .getResult());
+    }
+    current.assign(next.begin(), next.end());
+  }
+
+  if (current.size() == 1)
+    return current.front();
+  return circt::handshake::JoinOp::create(builder, loc, builder.getNoneType(),
+                                          current)
+      .getResult();
+}
+
+LogicalResult capHandshakeJoinFanIn(ModuleOp module, unsigned maxFanin) {
+  if (maxFanin == 0)
+    return success();
+
+  SmallVector<circt::handshake::JoinOp, 8> joins;
+  module.walk([&](circt::handshake::JoinOp joinOp) {
+    if (joinOp->getNumOperands() > maxFanin)
+      joins.push_back(joinOp);
+  });
+
+  if (joins.empty())
+    return success();
+
+  if (maxFanin < 2) {
+    if (auto func = joins.front()->getParentOfType<circt::handshake::FuncOp>())
+      return func.emitError("ADG max join fan-in is too small to legalize a "
+                            "multi-input handshake.join");
+    return joins.front()->emitError(
+        "ADG max join fan-in is too small to legalize a multi-input "
+        "handshake.join");
+  }
+
+  for (circt::handshake::JoinOp joinOp : joins) {
+    OpBuilder builder(joinOp);
+    SmallVector<Value, 8> operands(joinOp->getOperands().begin(),
+                                   joinOp->getOperands().end());
+    Value replacement =
+        buildCappedJoinTree(builder, joinOp.getLoc(), operands, maxFanin);
+    joinOp.getResult().replaceAllUsesWith(replacement);
+    joinOp.erase();
+  }
+  return success();
+}
+
 // State for a region being converted (function body, loop body, if branch)
 struct RegionState {
   Region *region = nullptr;
@@ -1457,6 +1536,8 @@ struct ConvertSCFToDFGPass
 
   void runOnOperation() override {
     auto module = getOperation();
+    unsigned maxJoinFanin =
+        getModuleUIntAttr(module, "fcc.adg_max_join_fanin").value_or(0);
 
     SmallVector<func::FuncOp, 4> candidates;
     module.walk([&](func::FuncOp func) {
@@ -1512,6 +1593,9 @@ struct ConvertSCFToDFGPass
     for (func::FuncOp func : residualFuncs)
       if (func->getParentOp())
         func.erase();
+
+    if (failed(capHandshakeJoinFanIn(module, maxJoinFanin)))
+      signalPassFailure();
   }
 };
 

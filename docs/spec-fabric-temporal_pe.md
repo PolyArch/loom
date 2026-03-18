@@ -58,3 +58,12 @@ The operand-buffer mode is a hardware parameter, not runtime config:
 - `enable_share_operand_buffer = true`: one shared operand buffer with per-tag
   FIFO behavior
 - `operand_buffer_size` is only meaningful in shared-buffer mode
+
+Unlike `fabric.spatial_pe`, a `fabric.temporal_pe` may activate multiple
+distinct physical `function_unit` instances across its instruction slots, as
+long as:
+
+- the number of occupied slots does not exceed `num_instruction`
+- per-slot operand and result routing is legal
+- repeated use of one physical `function_unit` does not require incompatible
+  persistent internal configuration

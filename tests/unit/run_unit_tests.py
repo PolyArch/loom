@@ -118,6 +118,53 @@ def shell_join(parts: List[str]) -> str:
     return " ".join(shlex.quote(part) for part in parts)
 
 
+def get_adg_path(case: UnitCase) -> Path:
+    if case.generated_fabric_file is not None:
+        return case.generated_fabric_file
+    if case.fabric_file is not None:
+        return case.fabric_file
+    raise RuntimeError(f"case {case.name} has no ADG source")
+
+
+def normalize_adg_stem(path: Path) -> str:
+    stem = path.stem
+    if stem.endswith(".fabric"):
+        return stem[:-7]
+    return stem
+
+
+def create_legacy_artifact_aliases(case: UnitCase) -> list[Path]:
+    dfg_stem = case.dfg_file.stem
+    adg_stem = normalize_adg_stem(get_adg_path(case))
+    mixed_base = case.output_dir / f"{dfg_stem}.{adg_stem}"
+    legacy_base = case.output_dir / dfg_stem
+    if mixed_base == legacy_base:
+        return []
+
+    created: list[Path] = []
+    for suffix in (
+        ".config.bin",
+        ".config.json",
+        ".config.h",
+        ".map.json",
+        ".map.txt",
+        ".viz.html",
+        ".sim.trace",
+        ".sim.stat",
+        ".sim.setup.json",
+    ):
+        src = Path(f"{mixed_base}{suffix}")
+        dst = Path(f"{legacy_base}{suffix}")
+        if not src.exists() or dst.exists():
+            continue
+        try:
+            dst.symlink_to(src.name)
+        except OSError:
+            shutil.copyfile(src, dst)
+        created.append(dst)
+    return created
+
+
 def render_run_script(case: UnitCase, repo_root: Path) -> str:
     lines = [
         "#!/usr/bin/env bash",
@@ -258,9 +305,17 @@ def run_case(case: UnitCase, repo_root: Path, timeout_sec: int) -> UnitResult:
         return UnitResult(case=case, status="pass", return_code=0)
 
     if return_code == 0:
-        checker_status, checker_code = run_optional_checker(
-            case, repo_root, timeout_sec, run_out, run_err
-        )
+        alias_paths = create_legacy_artifact_aliases(case)
+        try:
+            checker_status, checker_code = run_optional_checker(
+                case, repo_root, timeout_sec, run_out, run_err
+            )
+        finally:
+            for alias in alias_paths:
+                try:
+                    alias.unlink()
+                except FileNotFoundError:
+                    pass
         if checker_status == "timeout":
             with run_err.open("a", encoding="utf-8") as err_handle:
                 err_handle.write(

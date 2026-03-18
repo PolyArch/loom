@@ -13,6 +13,8 @@ Placement rules:
 
 ## Structural Rules
 
+- input port count must be in `1..32`
+- output port count must be in `1..32`
 - every port must be `!fabric.tagged<...>`
 - all ports must use exactly the same tagged type
 - `num_route_table >= 1`

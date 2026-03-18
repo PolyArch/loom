@@ -25,6 +25,7 @@ enum class FUConfigFieldKind : uint8_t {
   CmpIPredicate = 2,
   CmpFPredicate = 3,
   StreamContCond = 4,
+  JoinMask = 5,
 };
 
 struct FUConfigField {

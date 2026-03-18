@@ -15,6 +15,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <set>
@@ -24,6 +25,8 @@
 namespace fcc {
 
 namespace {
+
+constexpr unsigned kMaxHardwareJoinFanin = 64;
 
 enum class RefKind : uint8_t {
   Input = 0,
@@ -125,6 +128,8 @@ llvm::StringRef configFieldKindName(FUConfigFieldKind kind) {
     return "cmpf_predicate";
   case FUConfigFieldKind::StreamContCond:
     return "stream_cont_cond";
+  case FUConfigFieldKind::JoinMask:
+    return "join_mask";
   }
   return "unknown";
 }
@@ -160,6 +165,12 @@ getConfigurableOpFieldSpec(mlir::Operation &op) {
     return std::make_pair(FUConfigFieldKind::CmpFPredicate, 4u);
   if (opName == "dataflow.stream")
     return std::make_pair(FUConfigFieldKind::StreamContCond, 5u);
+  if (opName == "handshake.join" && op.getNumOperands() > 0) {
+    if (op.getNumOperands() > kMaxHardwareJoinFanin)
+      return std::nullopt;
+    return std::make_pair(FUConfigFieldKind::JoinMask,
+                          static_cast<unsigned>(op.getNumOperands()));
+  }
   return std::nullopt;
 }
 
@@ -170,6 +181,8 @@ std::optional<uint64_t> extractFieldValueFromNode(const Node *swNode,
 
   switch (field.kind) {
   case FUConfigFieldKind::Mux:
+    return field.value;
+  case FUConfigFieldKind::JoinMask:
     return field.value;
   case FUConfigFieldKind::ConstantValue: {
     mlir::Attribute attr = getNodeAttr(swNode, "value");
@@ -312,6 +325,8 @@ std::string buildFamilySignature(const VariantFamily &family) {
     if (field.kind == FUConfigFieldKind::Mux)
       os << ":" << field.sel << ":" << field.discard << ":"
          << field.disconnect;
+    else if (field.kind == FUConfigFieldKind::JoinMask)
+      os << ":" << field.value;
   }
   os << ")";
   return os.str();
@@ -386,7 +401,8 @@ resolveValueRef(mlir::Value value,
 
 std::optional<VariantFamily>
 buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
-                   const llvm::DenseMap<mlir::Operation *, unsigned> &muxSelection) {
+                   const llvm::DenseMap<mlir::Operation *, unsigned> &muxSelection,
+                   const llvm::DenseMap<mlir::Operation *, uint64_t> &joinSelection) {
   if (!hwNode)
     return std::nullopt;
 
@@ -439,7 +455,20 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
     if (!reachableOps.insert(ref->index).second)
       return true;
     mlir::Operation *op = bodyOps[ref->index];
-    for (mlir::Value operand : op->getOperands()) {
+    uint64_t joinMask = 0;
+    bool useJoinMask = false;
+    if (op->getName().getStringRef() == "handshake.join") {
+      auto it = joinSelection.find(op);
+      if (it != joinSelection.end()) {
+        joinMask = it->second;
+        useJoinMask = true;
+      }
+    }
+    for (unsigned operandIdx = 0; operandIdx < op->getNumOperands();
+         ++operandIdx) {
+      if (useJoinMask && ((joinMask >> operandIdx) & 1u) == 0)
+        continue;
+      mlir::Value operand = op->getOperand(operandIdx);
       if (!self(self, operand))
         return false;
     }
@@ -468,7 +497,20 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
 
   for (unsigned compactIdx = 0; compactIdx < family.ops.size(); ++compactIdx) {
     mlir::Operation *op = bodyOps[family.ops[compactIdx].bodyOpIndex];
-    for (mlir::Value operand : op->getOperands()) {
+    uint64_t joinMask = 0;
+    bool useJoinMask = false;
+    if (op->getName().getStringRef() == "handshake.join") {
+      auto it = joinSelection.find(op);
+      if (it != joinSelection.end()) {
+        joinMask = it->second;
+        useJoinMask = true;
+      }
+    }
+    for (unsigned operandIdx = 0; operandIdx < op->getNumOperands();
+         ++operandIdx) {
+      if (useJoinMask && ((joinMask >> operandIdx) & 1u) == 0)
+        continue;
+      mlir::Value operand = op->getOperand(operandIdx);
       auto ref = resolveValueRef(operand, bodyOpToIndex, muxSelection);
       if (!ref)
         return std::nullopt;
@@ -593,6 +635,13 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
     field.templateOpIndex = mapped->second;
     field.opName = bodyOp.getName().getStringRef().str();
     field.bitWidth = spec->second;
+    if (field.kind == FUConfigFieldKind::JoinMask) {
+      auto joinIt = joinSelection.find(&bodyOp);
+      if (joinIt == joinSelection.end())
+        return std::nullopt;
+      field.value = joinIt->second;
+      field.sel = field.value;
+    }
     family.configFields.push_back(std::move(field));
   }
 
@@ -608,7 +657,8 @@ bool materializeConfigFields(const Graph &dfg, const VariantFamily &family,
   out.reserve(family.configFields.size());
   for (const auto &templField : family.configFields) {
     FUConfigField field = templField;
-    if (field.kind != FUConfigFieldKind::Mux) {
+    if (field.kind != FUConfigFieldKind::Mux &&
+        field.kind != FUConfigFieldKind::JoinMask) {
       if (field.templateOpIndex >= swNodesByOp.size())
         return false;
       IdIndex swNodeId = swNodesByOp[field.templateOpIndex];
@@ -628,45 +678,75 @@ void collectVariantsForFU(
     fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
     llvm::SmallVectorImpl<VariantFamily> &variants) {
   llvm::SmallVector<fcc::fabric::MuxOp, 4> muxes;
+  llvm::SmallVector<mlir::Operation *, 4> joins;
   fuOp.walk([&](fcc::fabric::MuxOp muxOp) {
     if (!isMuxPassThrough(muxOp))
       muxes.push_back(muxOp);
   });
+  for (mlir::Operation &bodyOp : fuOp.getBody().front().getOperations()) {
+    if (mlir::isa<fcc::fabric::YieldOp>(bodyOp))
+      continue;
+    if (bodyOp.getName().getStringRef() == "handshake.join")
+      joins.push_back(&bodyOp);
+  }
 
-  if (muxes.empty()) {
-    llvm::DenseMap<mlir::Operation *, unsigned> empty;
-    auto family = buildVariantFamily(fuOp, hwNode, empty);
+  llvm::DenseMap<mlir::Operation *, unsigned> muxSelection;
+  llvm::DenseMap<mlir::Operation *, uint64_t> joinSelection;
+
+  auto emitFamily = [&]() {
+    auto family = buildVariantFamily(fuOp, hwNode, muxSelection, joinSelection);
     if (family)
       variants.push_back(*family);
+  };
+
+  std::function<void(size_t)> enumerateJoins = [&](size_t joinIdx) {
+    if (joinIdx == joins.size()) {
+      emitFamily();
+      return;
+    }
+
+    mlir::Operation *joinOp = joins[joinIdx];
+    unsigned inputCount = joinOp->getNumOperands();
+    if (inputCount == 0 || inputCount > kMaxHardwareJoinFanin)
+      return;
+
+    std::function<void(unsigned, uint64_t)> enumerateMasks =
+        [&](unsigned bit, uint64_t mask) {
+          if (bit == inputCount) {
+            if (mask != 0) {
+              joinSelection[joinOp] = mask;
+              enumerateJoins(joinIdx + 1);
+            }
+            return;
+          }
+          enumerateMasks(bit + 1, mask);
+          enumerateMasks(bit + 1, mask | (uint64_t{1} << bit));
+        };
+    enumerateMasks(0, 0);
+    joinSelection.erase(joinOp);
+  };
+
+  std::function<void(size_t)> enumerateMuxes = [&](size_t muxIdx) {
+    if (muxIdx == muxes.size()) {
+      enumerateJoins(0);
+      return;
+    }
+
+    fcc::fabric::MuxOp muxOp = muxes[muxIdx];
+    unsigned branchCount = getMuxBranchCount(muxOp);
+    for (unsigned sel = 0; sel < branchCount; ++sel) {
+      muxSelection[muxOp.getOperation()] = sel;
+      enumerateMuxes(muxIdx + 1);
+    }
+    muxSelection.erase(muxOp.getOperation());
+  };
+
+  if (muxes.empty() && joins.empty()) {
+    emitFamily();
     return;
   }
 
-  llvm::SmallVector<unsigned, 4> limits;
-  limits.reserve(muxes.size());
-  for (fcc::fabric::MuxOp muxOp : muxes)
-    limits.push_back(getMuxBranchCount(muxOp));
-
-  llvm::SmallVector<unsigned, 4> state(muxes.size(), 0);
-  while (true) {
-    llvm::DenseMap<mlir::Operation *, unsigned> selection;
-    for (size_t i = 0; i < muxes.size(); ++i)
-      selection[muxes[i].getOperation()] = state[i];
-
-    auto family = buildVariantFamily(fuOp, hwNode, selection);
-    if (family)
-      variants.push_back(*family);
-
-    size_t carry = muxes.size();
-    while (carry > 0) {
-      --carry;
-      state[carry] += 1;
-      if (state[carry] < limits[carry])
-        break;
-      state[carry] = 0;
-    }
-    if (carry == 0 && state[0] == 0)
-      break;
-  }
+  enumerateMuxes(0);
 }
 
 bool portsMatchProducer(const Graph &dfg, IdIndex producerNodeId,

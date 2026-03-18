@@ -145,6 +145,10 @@ extractFUConfigFieldWidths(fcc::fabric::FunctionUnitOp fuOp,
       widths.push_back(5);
       continue;
     }
+    if (opName == "handshake.join") {
+      widths.push_back(static_cast<int64_t>(bodyOp.getNumOperands()));
+      continue;
+    }
   }
   if (widths.empty())
     return {};

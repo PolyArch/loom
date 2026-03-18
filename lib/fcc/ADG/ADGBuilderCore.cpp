@@ -19,6 +19,9 @@ namespace adg {
 
 namespace detail {
 
+constexpr unsigned kMaxHardwareJoinFanin = 64;
+constexpr unsigned kMaxSwitchPorts = 32;
+
 std::string bitsType(unsigned width) {
   return "!fabric.bits<" + std::to_string(width) + ">";
 }
@@ -532,6 +535,11 @@ FUHandle ADGBuilder::defineJoinFU(const std::string &name,
                                   const std::string &inputType,
                                   unsigned latency,
                                   unsigned interval) {
+  if (inputCount == 0)
+    llvm::report_fatal_error("defineJoinFU requires inputCount >= 1");
+  if (inputCount > kMaxHardwareJoinFanin)
+    llvm::report_fatal_error(
+        "defineJoinFU supports at most 64 hardware join inputs");
   std::vector<std::string> inputTypes(inputCount, inputType);
   return defineFU(name, inputTypes, {"none"}, {"handshake.join"}, latency,
                   interval);
@@ -647,6 +655,10 @@ SWHandle ADGBuilder::defineSpatialSW(const std::string &name,
                                      const std::vector<unsigned> &outputWidths,
                                      const std::vector<std::vector<bool>> &conn,
                                      int decomposableBits) {
+  if (inputWidths.size() > detail::kMaxSwitchPorts)
+    llvm::report_fatal_error("defineSpatialSW requires at most 32 input ports");
+  if (outputWidths.size() > detail::kMaxSwitchPorts)
+    llvm::report_fatal_error("defineSpatialSW requires at most 32 output ports");
   std::vector<std::string> inputTypes;
   std::vector<std::string> outputTypes;
   inputTypes.reserve(inputWidths.size());
@@ -664,6 +676,10 @@ SWHandle ADGBuilder::defineSpatialSW(const std::string &name,
                                      const std::vector<std::string> &outputTypes,
                                      const std::vector<std::vector<bool>> &conn,
                                      int decomposableBits) {
+  if (inputTypes.size() > detail::kMaxSwitchPorts)
+    llvm::report_fatal_error("defineSpatialSW requires at most 32 input ports");
+  if (outputTypes.size() > detail::kMaxSwitchPorts)
+    llvm::report_fatal_error("defineSpatialSW requires at most 32 output ports");
   unsigned id = impl_->swDefs.size();
   SWDef sw;
   sw.name = name;
@@ -701,6 +717,10 @@ SWHandle ADGBuilder::defineTemporalSW(
     const std::vector<std::string> &outputTypes,
     const std::vector<std::vector<bool>> &connectivity,
     unsigned numRouteTable) {
+  if (inputTypes.size() > detail::kMaxSwitchPorts)
+    llvm::report_fatal_error("defineTemporalSW requires at most 32 input ports");
+  if (outputTypes.size() > detail::kMaxSwitchPorts)
+    llvm::report_fatal_error("defineTemporalSW requires at most 32 output ports");
   unsigned id = impl_->swDefs.size();
   SWDef sw;
   sw.name = name;

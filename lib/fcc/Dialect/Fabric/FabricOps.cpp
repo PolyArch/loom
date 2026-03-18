@@ -8,6 +8,8 @@ using namespace fcc::fabric;
 
 namespace {
 
+constexpr unsigned kMaxSwitchPorts = 32;
+
 static std::optional<unsigned> getFabricScalarWidth(mlir::Type type) {
   if (auto bits = mlir::dyn_cast<fcc::fabric::BitsType>(type))
     return bits.getWidth();
@@ -839,6 +841,19 @@ LogicalResult FunctionUnitOp::verify() {
     return emitOpError(
         "must appear directly inside the top-level module, fabric.module, fabric.spatial_pe, or fabric.temporal_pe");
   }
+
+  for (mlir::Operation &bodyOp : getBody().front().getOperations()) {
+    if (mlir::isa<fcc::fabric::YieldOp>(bodyOp))
+      continue;
+    if (bodyOp.getName().getStringRef() != "handshake.join")
+      continue;
+    if (bodyOp.getNumOperands() == 0)
+      return emitOpError(
+          "handshake.join inside fabric.function_unit requires at least one input");
+    if (bodyOp.getNumOperands() > 64)
+      return emitOpError(
+          "handshake.join inside fabric.function_unit supports at most 64 inputs");
+  }
   return success();
 }
 
@@ -982,6 +997,14 @@ LogicalResult SpatialSwOp::verify() {
   auto funcType = getFunctionType();
   if (funcType.getNumInputs() == 0 || funcType.getNumResults() == 0)
     return emitOpError("must have at least one input and one output");
+  if (funcType.getNumInputs() > kMaxSwitchPorts) {
+    return emitOpError("may have at most ")
+           << kMaxSwitchPorts << " input ports";
+  }
+  if (funcType.getNumResults() > kMaxSwitchPorts) {
+    return emitOpError("may have at most ")
+           << kMaxSwitchPorts << " output ports";
+  }
 
   bool sawTagged = false;
   bool sawNonTagged = false;
@@ -1166,6 +1189,14 @@ LogicalResult TemporalSwOp::verify() {
   auto funcType = getFunctionType();
   if (funcType.getNumInputs() == 0 || funcType.getNumResults() == 0)
     return emitOpError("must have at least one input and one output");
+  if (funcType.getNumInputs() > kMaxSwitchPorts) {
+    return emitOpError("may have at most ")
+           << kMaxSwitchPorts << " input ports";
+  }
+  if (funcType.getNumResults() > kMaxSwitchPorts) {
+    return emitOpError("may have at most ")
+           << kMaxSwitchPorts << " output ports";
+  }
 
   if (getNumRouteTable() < 1)
     return emitOpError("num_route_table must be >= 1");

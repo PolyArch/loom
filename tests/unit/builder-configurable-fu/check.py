@@ -59,6 +59,7 @@ def main() -> int:
         return config["words"][start:end]
 
     const_words = slice_words("pe_const")
+    join_words = slice_words("pe_join")
     cmpi_words = slice_words("pe_cmpi")
     cmpf_words = slice_words("pe_cmpf")
     stream_words = slice_words("pe_stream")
@@ -75,6 +76,42 @@ def main() -> int:
     const_offset += 2
     if read_bits(const_words, const_offset, 32) != 42:
         raise SystemExit("unexpected handshake.constant config value")
+
+    join_field = get_fu_field(mapping, "pe_join", "join_mask")
+    join_offset = 1
+    join_sel_bits = bit_width_for_choices(4)
+    join_muxes = []
+    for _ in range(4):
+        join_muxes.append(decode_mux(join_words, join_offset, join_sel_bits))
+        join_offset += join_sel_bits + 2
+    if decode_mux(join_words, join_offset, 0) != (0, False, False):
+        raise SystemExit("unexpected join output demux")
+    join_offset += 2
+    if read_bits(join_words, join_offset, 4) != join_field["value"]:
+        raise SystemExit("join mask bits do not match fu_configs")
+    if join_field["value"].bit_count() != 3:
+        raise SystemExit("join mask should enable exactly three hardware inputs")
+    if ((join_field["value"] >> 1) & 1) == 0:
+        raise SystemExit("join mask must enable hardware input1 for the i32 operand")
+    active_ports = []
+    for port_idx, mux in enumerate(join_muxes):
+        sel, discard, disconnect = mux
+        if discard:
+            raise SystemExit(f"join input mux{port_idx} should not discard")
+        active = ((join_field["value"] >> port_idx) & 1) != 0
+        if active != (not disconnect):
+            raise SystemExit(f"join input mux{port_idx} activity does not match join mask")
+        if active:
+            active_ports.append(port_idx)
+    if len(active_ports) != 3:
+        raise SystemExit("join should use exactly three hardware input ports")
+    if 1 not in active_ports:
+        raise SystemExit("join should route the i32 operand through hardware input1")
+    if join_muxes[1][0] != 1:
+        raise SystemExit("join input mux1 should select PE input1 (the i32 operand)")
+    none_selects = sorted(join_muxes[idx][0] for idx in active_ports if idx != 1)
+    if none_selects != [0, 2]:
+        raise SystemExit("join should route the two none operands from PE inputs 0 and 2")
 
     cmpi_field = get_fu_field(mapping, "pe_cmpi", "cmpi_predicate")
     cmpi_offset = 1
@@ -130,6 +167,7 @@ def main() -> int:
 
     expected_pairs = {
         ("handshake.constant", "fu_constant"),
+        ("handshake.join", "fu_join"),
         ("arith.cmpi", "fu_cmpi"),
         ("arith.cmpf", "fu_cmpf"),
         ("dataflow.stream", "fu_stream"),
@@ -139,7 +177,8 @@ def main() -> int:
     if missing:
         raise SystemExit(f"missing expected node mappings: {sorted(missing)}")
 
-    for text in ("value=42", "predicate=", "cont_cond=!="):
+    join_display = f"join_mask=0b{join_field['value']:04b}"
+    for text in ("value=42", join_display, "predicate=", "cont_cond=!="):
         if text not in html:
             raise SystemExit(f"viz html missing config text {text!r}")
 

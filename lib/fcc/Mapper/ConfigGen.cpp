@@ -87,6 +87,8 @@ llvm::StringRef configFieldKindName(FUConfigFieldKind kind) {
     return "cmpf_predicate";
   case FUConfigFieldKind::StreamContCond:
     return "stream_cont_cond";
+  case FUConfigFieldKind::JoinMask:
+    return "join_mask";
   }
   return "unknown";
 }
@@ -115,6 +117,14 @@ std::string formatConfigFieldValue(const FUConfigField &field) {
     default:
       return ("cont_cond=" + std::to_string(field.value));
     }
+  case FUConfigFieldKind::JoinMask: {
+    std::string bits;
+    bits.reserve(field.bitWidth);
+    for (unsigned bit = 0; bit < field.bitWidth; ++bit)
+      bits.push_back(((field.value >> (field.bitWidth - 1 - bit)) & 1u) ? '1'
+                                                                         : '0');
+    return "join_mask=0b" + bits;
+  }
   }
   return std::to_string(field.value);
 }
@@ -1483,11 +1493,16 @@ buildFunctionUnitConfig(llvm::ArrayRef<FUConfigSelection> fuConfigs,
   if (!selection)
     return cfg;
   for (const auto &field : selection->fields) {
-    uint32_t word = static_cast<uint32_t>(field.sel & 0xffffu);
-    if (field.discard)
-      word |= (1u << 16);
-    if (field.disconnect)
-      word |= (1u << 17);
+    uint32_t word = 0;
+    if (field.kind == FUConfigFieldKind::Mux) {
+      word = static_cast<uint32_t>(field.sel & 0xffffu);
+      if (field.discard)
+        word |= (1u << 16);
+      if (field.disconnect)
+        word |= (1u << 17);
+    } else {
+      word = static_cast<uint32_t>(field.value & 0xffffffffu);
+    }
     cfg.words.push_back(word);
   }
   return cfg;

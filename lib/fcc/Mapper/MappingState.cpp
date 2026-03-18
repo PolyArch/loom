@@ -3,6 +3,32 @@
 
 namespace fcc {
 
+namespace {
+
+bool isSpatialPEFunctionalNode(const Node *node) {
+  return node && getNodeAttrStr(node, "resource_class") == "functional" &&
+         getNodeAttrStr(node, "pe_kind") == "spatial_pe";
+}
+
+bool hasConflictingSpatialPEOccupant(IdIndex targetHwNode, llvm::StringRef peName,
+                                     const std::vector<IdIndex> &swNodeToHwNode,
+                                     const Graph &adg) {
+  if (peName.empty())
+    return false;
+  for (IdIndex mappedHwNode : swNodeToHwNode) {
+    if (mappedHwNode == INVALID_ID || mappedHwNode == targetHwNode)
+      continue;
+    const Node *otherHwNode = adg.getNode(mappedHwNode);
+    if (!isSpatialPEFunctionalNode(otherHwNode))
+      continue;
+    if (getNodeAttrStr(otherHwNode, "pe_name") == peName)
+      return true;
+  }
+  return false;
+}
+
+} // namespace
+
 void MappingState::init(const Graph &dfg, const Graph &adg) {
   size_t swNodes = dfg.nodes.size();
   size_t swPorts = dfg.ports.size();
@@ -34,6 +60,12 @@ ActionResult MappingState::mapNode(IdIndex swNode, IdIndex hwNode,
       hwN && getNodeAttrStr(hwN, "resource_class") == "memory";
   if (!allowMultiOccupancy && !hwNodeToSwNodes[hwNode].empty()) {
     return ActionResult::FailedResourceUnavailable;
+  }
+
+  if (isSpatialPEFunctionalNode(hwN) &&
+      hasConflictingSpatialPEOccupant(hwNode, getNodeAttrStr(hwN, "pe_name"),
+                                      swNodeToHwNode, adg)) {
+    return ActionResult::FailedHardConstraint;
   }
 
   swNodeToHwNode[swNode] = hwNode;

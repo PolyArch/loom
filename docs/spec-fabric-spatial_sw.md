@@ -29,6 +29,8 @@ Key hardware parameters are:
 
 Port rules:
 
+- input port count must be in `1..32`
+- output port count must be in `1..32`
 - all ports must share one tag-kind
 - a `spatial_sw` may be entirely non-tagged or entirely tagged
 - mixing tagged and non-tagged ports is not allowed

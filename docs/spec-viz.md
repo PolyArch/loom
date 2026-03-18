@@ -7,7 +7,7 @@ available, explains how software edges traverse hardware resources.
 
 The viewer is a self-contained HTML artifact.
 
-When available, the viewer may also consume explicit layout metadata bound from
+Builder-produced ADGs are expected to carry explicit layout metadata bound from
 the ADG's `fabric.module`.
 
 ## Rendering Stack
@@ -23,10 +23,19 @@ ADG visualization supports two layout sources:
 
 - inferred layout computed by the renderer
 - explicit layout loaded from a sidecar JSON referenced by
-  `fabric.module attributes {viz_file = "..."}`
+  `fabric.module attributes {viz_file = "..."}` 
 
-When explicit layout metadata is present, the renderer should prefer it over
-heuristic placement for the referenced components.
+Normative rules:
+
+- ADGs emitted by the FCC ADG Builder always emit a sidecar layout file and
+  bind it through `viz_file`
+- topology helpers such as ring, mesh, torus, chess, lattice, cube, and
+  star-like generators must precompute coordinates instead of delegating
+  placement to the browser
+- generic Builder-produced ADGs that do not use a known topology helper must
+  still emit a non-overlapping sidecar placement for all components
+- when explicit layout metadata is present, the renderer must prefer it over
+  heuristic placement for the referenced components
 
 The current sidecar schema is:
 
@@ -51,6 +60,13 @@ The viewer should support:
 - mapping on or off
 - an ADG-focused overlay mode when mapping is enabled
 
+Default initial view:
+
+- when mapping data is present, the page should open as `Mapping On` with
+  `Overlay`
+- when mapping data is absent, the page should open as `Mapping Off` with
+  `Side-by-side`
+
 ## Base ADG Routing Requirements
 
 Module-level hardware edges must satisfy these visual constraints:
@@ -65,6 +81,11 @@ constraints apply on top of the supplied geometry. The renderer should not
 discard explicit placement and then recompute a different base component
 layout.
 
+When mapping is off, the base ADG rendering must still draw the routed
+module-level hardware edges. The renderer must not switch to a reduced
+"fast-path" picture that hides hardware routing or substantially coarsens node
+appearance merely because mapping overlays are disabled.
+
 ## Mapping-On Spatial PE Requirements
 
 When mapping is enabled and a `spatial_pe` is shown:
@@ -78,6 +99,8 @@ When mapping is enabled and a `spatial_pe` is shown:
 - unused FUs may be collapsed to a visibly smaller placeholder, not merely
   dimmed
 - collapsed FUs may omit detailed ports and internal DAG rendering
+- PE-internal FU layout should remain roughly square overall rather than
+  degenerating into one long horizontal strip when many FUs are collapsed
 
 ## Mapping-On Spatial Switch Requirements
 

@@ -7,20 +7,23 @@ visualization-oriented outputs.
 
 ## Output Families
 
+Mapping outputs are mixed software-plus-hardware artifacts and therefore use
+the naming family `<dfg>.<adg>.*`.
+
 The main mapping outputs are:
 
-- `<base>.map.json`
-- `<base>.map.txt`
-- `<base>.viz.html`
-- `<base>.config.json`
-- `<base>.config.bin`
-- `<base>.config.h`
+- `<dfg>.<adg>.map.json`
+- `<dfg>.<adg>.map.txt`
+- `<dfg>.<adg>.viz.html`
+- `<dfg>.<adg>.config.json`
+- `<dfg>.<adg>.config.bin`
+- `<dfg>.<adg>.config.h`
 
 Additional config or simulation artifacts may be produced by later stages.
 
 ## Config JSON
 
-`<base>.config.json` is the authoritative structured summary of serialized
+`<dfg>.<adg>.config.json` is the authoritative structured summary of serialized
 runtime configuration.
 
 It must include:
@@ -109,12 +112,13 @@ Recommended sections are:
   - per switch, list of configured `input_index -> output_index` selections
 - `pe_routes`
   - per PE, list of selected ingress and egress mux or demux bindings
-- `fu_configs`
+  - `fu_configs`
   - selected effective FU configuration per mapped hardware FU
   - software nodes absorbed into that FU
   - selected `mux` fields such as `sel`
   - configurable software-op fields such as:
     - `handshake.constant` literal value
+    - `handshake.join` active-input bitmask `join_mask`
     - `arith.cmpi` / `arith.cmpf` predicate
     - `dataflow.stream` continuation condition
 - `tag_configs`

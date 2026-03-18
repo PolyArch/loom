@@ -161,6 +161,13 @@ such as `defineConstantFU(...)`, `defineCmpiFU(...)`, or `defineStreamFU(...)`
 exist for ops whose configurable payload cannot be expressed only by input and
 result types.
 
+`defineJoinFU(name, inputCount, ...)` defines the maximum hardware join fan-in
+supported by that `fabric.function_unit`. The current Builder accepts
+`1..64` inputs for one hardware join. Mapper tech-mapping may later bind a
+smaller software `handshake.join` onto that FU by emitting a `join_mask`
+runtime-config field, but it may not exceed the hardware fan-in declared by
+the Builder-generated FU body.
+
 `defineSingleFUSpatialPE(...)` is the preferred helper when a user wants one
 `fabric.spatial_pe` that wraps exactly one `fabric.function_unit`. This is the
 common pattern for quick sketches, chess-like meshes, and small builder-based

@@ -33,6 +33,37 @@ bool isTemporalPENode(const Node *hwNode) {
          getNodeAttrStr(hwNode, "pe_kind") == "temporal_pe";
 }
 
+bool isSpatialPENode(const Node *hwNode) {
+  return hwNode && getNodeAttrStr(hwNode, "resource_class") == "functional" &&
+         getNodeAttrStr(hwNode, "pe_kind") == "spatial_pe";
+}
+
+const PEContainment *findPEContainmentByName(const ADGFlattener &flattener,
+                                             llvm::StringRef peName);
+
+bool isSpatialPEName(const ADGFlattener &flattener, llvm::StringRef peName) {
+  const PEContainment *pe = findPEContainmentByName(flattener, peName);
+  return pe && pe->peKind == "spatial_pe";
+}
+
+bool isSpatialPEOccupied(const MappingState &state, const Graph &adg,
+                         const ADGFlattener &flattener, llvm::StringRef peName,
+                         IdIndex ignoreHwNode = INVALID_ID) {
+  if (peName.empty())
+    return false;
+  if (!isSpatialPEName(flattener, peName))
+    return false;
+  for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(state.hwNodeToSwNodes.size());
+       ++hwId) {
+    if (hwId == ignoreHwNode || state.hwNodeToSwNodes[hwId].empty())
+      continue;
+    const Node *hwNode = adg.getNode(hwId);
+    if (hwNode && getNodeAttrStr(hwNode, "pe_name") == peName)
+      return true;
+  }
+  return false;
+}
+
 const PEContainment *findPEContainmentByName(const ADGFlattener &flattener,
                                              llvm::StringRef peName) {
   for (const auto &pe : flattener.getPEContainment()) {
@@ -562,9 +593,6 @@ bool Mapper::runPlacement(
 
   auto order = computePlacementOrder(dfg);
 
-  // Track which PE has been used (C8: at most one FU per spatial_pe).
-  std::set<std::string> usedPEs;
-
   for (IdIndex swId : order) {
     const Node *swNode = dfg.getNode(swId);
     if (!swNode)
@@ -585,28 +613,6 @@ bool Mapper::runPlacement(
       llvm::errs() << "Mapper: no candidates for DFG node " << swId
                     << " (" << getNodeAttrStr(swNode, "op_name") << ")\n";
       return false;
-    }
-
-    bool hasUnusedPECandidate = false;
-    for (IdIndex hwId : candIt->second) {
-      const Node *hwNode = adg.getNode(hwId);
-      if (!hwNode)
-        continue;
-      if (!state.hwNodeToSwNodes[hwId].empty()) {
-        if (getNodeAttrStr(hwNode, "resource_class") == "memory") {
-          int64_t numRegion = getNodeAttrInt(hwNode, "numRegion", 1);
-          if (static_cast<int64_t>(state.hwNodeToSwNodes[hwId].size()) >=
-              numRegion)
-            continue;
-        } else {
-          continue;
-        }
-      }
-      llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
-      if (!peName.empty() && !usedPEs.count(peName.str())) {
-        hasUnusedPECandidate = true;
-        break;
-      }
     }
 
     // Score each candidate and pick the best.
@@ -631,16 +637,11 @@ bool Mapper::runPlacement(
         }
       }
 
-      // Prefer unused PEs, but allow reuse if necessary (soft C8).
       llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
-      if (hasUnusedPECandidate && !peName.empty() && usedPEs.count(peName.str()))
+      if (isSpatialPEOccupied(state, adg, flattener, peName))
         continue;
 
       double score = scorePlacement(swId, hwId, state, dfg, adg, flattener);
-
-      // Prefer unused PEs (soft C8 penalty).
-      if (!peName.empty() && usedPEs.count(peName.str()))
-        score -= 100.0;
 
       if (score > bestScore || bestHw == INVALID_ID) {
         bestScore = score;
@@ -775,14 +776,6 @@ bool Mapper::runPlacement(
       }
     }
 
-    // Mark PE as used.
-    const Node *hwNode = adg.getNode(bestHw);
-    if (hwNode) {
-      llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
-      if (!peName.empty())
-        usedPEs.insert(peName.str());
-    }
-
     if (opts.verbose) {
       llvm::outs() << "  Placed " << getNodeAttrStr(swNode, "op_name")
                     << " (node " << swId << ") -> HW node " << bestHw << "\n";
@@ -906,7 +899,8 @@ bool Mapper::runRefinement(
         continue;
       llvm::StringRef peNameA = getNodeAttrStr(hwNodeA, "pe_name");
       llvm::StringRef peNameB = getNodeAttrStr(hwNodeB, "pe_name");
-      if (!peNameA.empty() && !peNameB.empty() && peNameA == peNameB)
+      if (!peNameA.empty() && peNameA == peNameB &&
+          isSpatialPEName(flattener, peNameA))
         continue;
 
       state.unmapNode(swA, dfg, adg);
@@ -941,7 +935,7 @@ bool Mapper::runRefinement(
         if (!hwNode)
           continue;
         llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
-        if (!peName.empty()) {
+        if (!peName.empty() && isSpatialPEName(flattener, peName)) {
           // Check if any other node is on the same PE.
           bool peConflict = false;
           for (IdIndex other : placedNodes) {
@@ -1460,6 +1454,24 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
         }
       }
       usedLaneRanges.push_back(*laneRange);
+    }
+  }
+
+  llvm::StringMap<llvm::DenseSet<IdIndex>> activeSpatialFUsByPE;
+  for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(adg.nodes.size()); ++hwId) {
+    if (hwId >= state.hwNodeToSwNodes.size() || state.hwNodeToSwNodes[hwId].empty())
+      continue;
+    const Node *hwNode = adg.getNode(hwId);
+    llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
+    if (peName.empty() || !isSpatialPEName(flattener, peName))
+      continue;
+    activeSpatialFUsByPE[peName].insert(hwId);
+  }
+  for (const auto &entry : activeSpatialFUsByPE) {
+    if (entry.getValue().size() > 1) {
+      diagnostics += "C8: multiple active function_unit instances in spatial_pe " +
+                     entry.getKey().str() + "\n";
+      valid = false;
     }
   }
 

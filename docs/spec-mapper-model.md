@@ -204,7 +204,8 @@ FCC uses the following hard-constraint families:
 - `C5 Temporal legality`: slot, tag, and register limits must hold
 - `C6 Config encoding`: config fragments must fit the target encodings
 - `C7 Decomposable fill`: every decomposable output lane must be driven
-- `C8 PE exclusivity`: one spatial PE may host at most one active spatial FU
+- `C8 PE exclusivity`: one spatial PE may host at most one active physical
+  spatial FU, and the mapper must reject placements that violate this
 - `C9 FU config consistency`: one physical temporal FU must not require
   incompatible internal configurations simultaneously
 

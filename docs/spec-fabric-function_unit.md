@@ -180,6 +180,7 @@ Current configurable body fields are:
 
 - `fabric.mux`
 - `handshake.constant`
+- `handshake.join`
 - `arith.cmpi`
 - `arith.cmpf`
 - `dataflow.stream`
@@ -192,10 +193,37 @@ its own local encoding:
 - `fabric.mux`: `[sel | discard | disconnect]`
 - `handshake.constant`: literal result value bits, zero-extended or truncated
   to the result bit width
+- `handshake.join`: one activity bit per hardware join input, ordered by FU
+  body operand order; bit `1` means that input participates in the current
+  software join, bit `0` means that input is ignored for this mapping
 - `arith.cmpi`: 4-bit predicate encoding using the MLIR predicate enum value
 - `arith.cmpf`: 4-bit predicate encoding using the MLIR predicate enum value
 - `dataflow.stream`: 5-bit `cont_cond` one-hot encoding in the order
   `<, <=, >, >=, !=`
+
+### Configurable `handshake.join`
+
+FCC treats a `handshake.join` inside one `fabric.function_unit` as a fixed
+maximum hardware join fan-in.
+
+Normative rules:
+
+- the hardware join fan-in equals the number of textual operands in the FU body
+- the current FCC hardware/config encoding supports hardware join fan-in in the
+  range `1..64`
+- the emitted runtime-config field width equals that hardware fan-in
+- a software `handshake.join` with smaller fan-in may map onto that hardware
+  join if the mapper selects a subset of hardware inputs
+- the selected subset is encoded as the `join_mask` bitfield described above
+
+Example:
+
+- hardware FU body contains a 4-input `handshake.join`
+- software DFG contains a 3-input `handshake.join`
+- mapper may bind it with `join_mask = 0b1101`
+
+This means hardware inputs `0`, `2`, and `3` participate in the join, while
+hardware input `1` is disabled for that mapped software node.
 
 FCC does not carry Loom's earlier `output_tag` PE-body config field into
 `fabric.function_unit`. Runtime tag handling is modeled explicitly through

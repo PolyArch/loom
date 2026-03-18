@@ -3,8 +3,8 @@
 ## Overview
 
 `fabric.spatial_pe` is a spatial compute container that holds multiple
-`function_unit` instances. At runtime, one FU choice is active through the PE's
-configuration state.
+`function_unit` instances. At runtime, exactly zero or one FU choice is active
+through the PE's configuration state.
 
 ## Structural Model
 
@@ -106,8 +106,16 @@ For an unused `spatial_pe`, the default serialized state is:
 
 ## Mapping Implications
 
-The mapper may place at most one FU from a `spatial_pe` for a given spatial
-workload context.
+The mapper must activate at most one physical `function_unit` inside one
+`spatial_pe` for a given mapping result.
+
+Normative implications:
+
+- this is a hard legality rule, not a placement preference
+- multiple software operations may still map into that one active
+  `function_unit` through tech-mapping
+- a mapping that requires two distinct physical `function_unit` instances from
+  the same `spatial_pe` is illegal and must be rejected
 
 Even when the flattened ADG exposes FU nodes directly, the mapping result must
 still be able to answer these questions for every routed software edge:

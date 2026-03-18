@@ -837,13 +837,8 @@ std::string ADGBuilder::Impl::generateVizJson() const {
                             kSwitchPortPitch);
   };
 
-  auto computeBoxInfo = [&](unsigned instIdx) -> BoxInfo {
+  auto estimateBoxInfo = [&](unsigned instIdx) -> BoxInfo {
     BoxInfo info;
-    auto it = vizPlacements.find(instIdx);
-    if (it == vizPlacements.end())
-      return info;
-    info.centerX = it->second.centerX;
-    info.centerY = it->second.centerY;
     const auto &inst = instances[instIdx];
     switch (inst.kind) {
     case InstanceKind::PE: {
@@ -896,6 +891,76 @@ std::string ADGBuilder::Impl::generateVizJson() const {
       break;
     }
     info.valid = true;
+    return info;
+  };
+
+  auto computeEffectivePlacements = [&]() {
+    std::map<unsigned, VizPlacement> placements = vizPlacements;
+
+    double placedMinX = 0.0;
+    double placedMaxY = 0.0;
+    bool havePlaced = false;
+    for (const auto &[instIdx, placement] : placements) {
+      BoxInfo info = estimateBoxInfo(instIdx);
+      if (!info.valid)
+        continue;
+      double boxMinX = placement.centerX - info.width / 2.0;
+      double boxMaxY = placement.centerY + info.height / 2.0;
+      if (!havePlaced) {
+        placedMinX = boxMinX;
+        placedMaxY = boxMaxY;
+        havePlaced = true;
+      } else {
+        placedMinX = std::min(placedMinX, boxMinX);
+        placedMaxY = std::max(placedMaxY, boxMaxY);
+      }
+    }
+
+    constexpr double kAutoGapX = 88.0;
+    constexpr double kAutoGapY = 108.0;
+    constexpr double kAutoWrapWidth = 3600.0;
+    double startX = havePlaced ? placedMinX : 120.0;
+    double cursorX = startX;
+    double cursorY = havePlaced ? placedMaxY + 160.0 : 120.0;
+    double rowHeight = 0.0;
+    int packedRow = havePlaced ? 1000 : 0;
+    int packedCol = 0;
+    for (unsigned instIdx = 0; instIdx < instances.size(); ++instIdx) {
+      if (placements.count(instIdx))
+        continue;
+      BoxInfo info = estimateBoxInfo(instIdx);
+      if (!info.valid)
+        continue;
+      if (cursorX > startX &&
+          cursorX + info.width > startX + kAutoWrapWidth) {
+        cursorX = startX;
+        cursorY += rowHeight + kAutoGapY;
+        rowHeight = 0.0;
+        ++packedRow;
+        packedCol = 0;
+      }
+      placements[instIdx] = {cursorX + info.width / 2.0,
+                             cursorY + info.height / 2.0, packedRow,
+                             packedCol++};
+      cursorX += info.width + kAutoGapX;
+      rowHeight = std::max(rowHeight, info.height);
+    }
+    return placements;
+  };
+
+  std::map<unsigned, VizPlacement> placements = computeEffectivePlacements();
+
+  auto computeBoxInfo = [&](unsigned instIdx) -> BoxInfo {
+    BoxInfo info = estimateBoxInfo(instIdx);
+    if (!info.valid)
+      return info;
+    auto it = placements.find(instIdx);
+    if (it == placements.end()) {
+      info.valid = false;
+      return info;
+    }
+    info.centerX = it->second.centerX;
+    info.centerY = it->second.centerY;
     return info;
   };
 
@@ -1157,8 +1222,8 @@ std::string ADGBuilder::Impl::generateVizJson() const {
 
   bool first = true;
   for (size_t instIdx = 0; instIdx < instances.size(); ++instIdx) {
-    auto it = vizPlacements.find(static_cast<unsigned>(instIdx));
-    if (it == vizPlacements.end())
+    auto it = placements.find(static_cast<unsigned>(instIdx));
+    if (it == placements.end())
       continue;
 
     if (!first)
@@ -1230,8 +1295,8 @@ std::string ADGBuilder::Impl::generateVizJson() const {
   };
   for (size_t connIdx = 0; connIdx < connections.size(); ++connIdx) {
     const auto &conn = connections[connIdx];
-    if (vizPlacements.find(conn.srcInst) == vizPlacements.end() ||
-        vizPlacements.find(conn.dstInst) == vizPlacements.end())
+    if (placements.find(conn.srcInst) == placements.end() ||
+        placements.find(conn.dstInst) == placements.end())
       continue;
     const auto &srcInst = instances[conn.srcInst];
     const auto &dstInst = instances[conn.dstInst];
@@ -1245,7 +1310,7 @@ std::string ADGBuilder::Impl::generateVizJson() const {
                     pts);
   }
   for (const auto &sc : scalarToInstConns) {
-    if (vizPlacements.find(sc.dstInst) == vizPlacements.end())
+    if (placements.find(sc.dstInst) == placements.end())
       continue;
     std::vector<RoutePt> pts =
         routeModuleInputConnection(sc.scalarIdx, sc.dstInst, sc.dstPort);
@@ -1253,7 +1318,7 @@ std::string ADGBuilder::Impl::generateVizJson() const {
                     sc.dstPort, pts);
   }
   for (const auto &ic : instToScalarConns) {
-    if (vizPlacements.find(ic.srcInst) == vizPlacements.end())
+    if (placements.find(ic.srcInst) == placements.end())
       continue;
     std::vector<RoutePt> pts =
         routeModuleOutputConnection(ic.srcInst, ic.srcPort, ic.scalarOutputIdx);
@@ -1274,12 +1339,10 @@ void ADGBuilder::exportMLIR(const std::string &path) {
 
   std::string vizFileName;
   std::string vizJsonText;
-  if (!impl_->vizPlacements.empty()) {
-    llvm::SmallString<256> vizPath(path);
-    llvm::sys::path::replace_extension(vizPath, "viz.json");
-    vizFileName = std::string(llvm::sys::path::filename(vizPath));
-    vizJsonText = impl_->generateVizJson();
-  }
+  llvm::SmallString<256> vizPath(path);
+  llvm::sys::path::replace_extension(vizPath, "viz.json");
+  vizFileName = std::string(llvm::sys::path::filename(vizPath));
+  vizJsonText = impl_->generateVizJson();
 
   std::string mlirText = impl_->generateMLIR(vizFileName);
 

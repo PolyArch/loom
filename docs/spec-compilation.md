@@ -18,7 +18,7 @@ FCC compilation is organized into these conceptual stages:
 
 ## Canonical Artifact Flow
 
-The intended artifact family is:
+The software-only artifact family is:
 
 ```text
 <name>.ll
@@ -30,6 +30,26 @@ The intended artifact family is:
 
 Exact emission policy may vary by mode, but these stage boundaries are
 architecturally significant.
+
+When compilation continues into mapping against a selected ADG, later artifacts
+that contain both software and hardware meaning must switch to mixed naming:
+
+```text
+<dfg>.<adg>.map.json
+<dfg>.<adg>.map.txt
+<dfg>.<adg>.config.json
+<dfg>.<adg>.config.bin
+<dfg>.<adg>.config.h
+<dfg>.<adg>.viz.html
+```
+
+Hardware-only artifacts such as the ADG itself continue to use `<adg>.*`
+names, for example:
+
+```text
+<adg>.fabric.mlir
+<adg>.fabric.viz.json
+```
 
 ## DFG-Domain Selection
 
@@ -54,6 +74,29 @@ Important FCC-side requirements include:
   reconstruction and later validation
 - unused outputs are handled by discard semantics rather than by introducing
   `handshake.sink` as the primary model
+
+### Join Fan-In Legalization
+
+The DFG stage must also respect the hardware join capacity exported by the ADG.
+
+Normative rules:
+
+- the ADG exporter annotates the selected hardware with a maximum supported
+  `handshake.join` fan-in
+- FCC lowers this limit into the compilation pipeline as
+  `fcc.adg_max_join_fanin`
+- if the software DFG contains a `handshake.join` whose fan-in is less than or
+  equal to that limit, it may remain unchanged
+- if the software DFG contains a `handshake.join` whose fan-in exceeds that
+  limit, FCC must rewrite it into a tree of smaller joins whose fan-in does
+  not exceed the hardware limit
+- the current mapper/config encoding supports hardware join fan-in up to `64`
+- if the hardware limit is less than `2`, FCC must reject any software join
+  whose fan-in is greater than `1`
+
+This legalization happens before mapping. The mapper therefore only needs to
+handle software joins whose fan-in is within the ADG-advertised hardware
+capacity.
 
 ## Multi-Port Memory and Tagging
 

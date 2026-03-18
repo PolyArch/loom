@@ -58,10 +58,12 @@ The FCC target validation matrix includes at least:
     `enable_share_operand_buffer`, `operand_buffer_size`, `num_instruction`,
     `num_register`, and `reg_fifo_depth`
 13. tagged `spatial_sw` positive and negative tests, including the rule that
-    tagged spatial switches cannot be decomposable
+    tagged spatial switches cannot be decomposable, and the hard limit of at
+    most `32` input ports and `32` output ports
 14. `temporal_sw` structural validation, including:
-    all ports tagged and same type, positive `num_route_table`, and valid
-    `connectivity_table` row dimensions
+    all ports tagged and same type, positive `num_route_table`, valid
+    `connectivity_table` row dimensions, and the hard limit of at most `32`
+    input ports and `32` output ports
 15. focused tagged-path tests that distinguish:
     source tags that remain distinct after width adaptation, and
     source tags that collapse to one observed hardware tag and must be rejected

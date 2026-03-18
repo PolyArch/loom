@@ -55,6 +55,20 @@ loadMLIR(const std::string &path, MLIRContext &context) {
   return parseSourceFile<ModuleOp>(srcMgr, &context);
 }
 
+static std::string deriveAdgStem(const std::string &adgPath) {
+  if (adgPath.empty())
+    return "";
+  llvm::StringRef stem = llvm::sys::path::stem(adgPath);
+  if (stem.ends_with(".fabric"))
+    stem = stem.drop_back(7);
+  return stem.str();
+}
+
+static std::string joinOutputBase(const std::string &outputDir,
+                                  const std::string &stem) {
+  return outputDir + "/" + stem;
+}
+
 static void attachADGCapacityAttrs(ModuleOp module, const std::string &adgPath,
                                    MLIRContext &context) {
   if (adgPath.empty())
@@ -82,6 +96,7 @@ static void attachADGCapacityAttrs(ModuleOp module, const std::string &adgPath,
 
   unsigned totalMemModules = 0;
   unsigned maxDataWidth = 0;
+  unsigned maxJoinFanin = 0;
   for (const Node *node : adg.nodeRange()) {
     if (getNodeAttrStr(node, "resource_class") == "memory")
       totalMemModules++;
@@ -95,6 +110,14 @@ static void attachADGCapacityAttrs(ModuleOp module, const std::string &adgPath,
       maxDataWidth = std::max(maxDataWidth, *memWidth);
   }
 
+  adgModule->walk([&](fcc::fabric::FunctionUnitOp fuOp) {
+    for (mlir::Operation &bodyOp : fuOp.getBody().front().getOperations()) {
+      if (bodyOp.getName().getStringRef() == "handshake.join")
+        maxJoinFanin =
+            std::max<unsigned>(maxJoinFanin, bodyOp.getNumOperands());
+    }
+  });
+
   Builder builder(&context);
   module->setAttr("fcc.adg_total_pes",
                   builder.getI64IntegerAttr(static_cast<int64_t>(totalPEs)));
@@ -106,11 +129,15 @@ static void attachADGCapacityAttrs(ModuleOp module, const std::string &adgPath,
   module->setAttr(
       "fcc.adg_max_data_width",
       builder.getI64IntegerAttr(static_cast<int64_t>(maxDataWidth)));
+  module->setAttr(
+      "fcc.adg_max_join_fanin",
+      builder.getI64IntegerAttr(static_cast<int64_t>(maxJoinFanin)));
 
   llvm::outs() << "fcc: ADG capacity summary: PEs=" << totalPEs
                << ", FUs=" << totalFUs
                << ", mem=" << totalMemModules
-               << ", maxWidth=" << maxDataWidth << "\n";
+               << ", maxWidth=" << maxDataWidth
+               << ", maxJoin=" << maxJoinFanin << "\n";
 }
 
 static void warnMapperOwnedRuntimeConfig(ModuleOp adgModule) {
@@ -153,7 +180,16 @@ int main(int argc, char **argv) {
   MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
-  std::string base = args.outputDir + "/" + args.baseName;
+  const std::string softwareStem = args.baseName;
+  const std::string adgStem = deriveAdgStem(args.adgPath);
+  const std::string softwareBase = joinOutputBase(args.outputDir, softwareStem);
+  const std::string hardwareBase =
+      joinOutputBase(args.outputDir, adgStem.empty() ? softwareStem : adgStem);
+  const std::string mixedStem =
+      !softwareStem.empty() && !adgStem.empty()
+          ? softwareStem + "." + adgStem
+          : (softwareStem.empty() ? adgStem : softwareStem);
+  const std::string mixedBase = joinOutputBase(args.outputDir, mixedStem);
 
   // Helper: load ADG, build DFG, run mapper, generate viz
   auto runMappingPipeline = [&](OwningOpRef<ModuleOp> &dfgModule) -> int {
@@ -212,17 +248,17 @@ int main(int argc, char **argv) {
     fcc::ConfigGen configGen;
     if (!configGen.generate(mapResult.state, dfgBuilder.getDFG(),
                             flattener.getADG(), flattener,
-                            mapResult.edgeKinds, mapResult.fuConfigs, base,
+                            mapResult.edgeKinds, mapResult.fuConfigs, mixedBase,
                             static_cast<int>(args.mapperSeed))) {
       llvm::errs() << "fcc: config generation failed\n";
       return 1;
     }
     llvm::outs() << "fcc: mapping output:\n";
-    llvm::outs() << "  " << base << ".config.bin\n";
-    llvm::outs() << "  " << base << ".config.json\n";
-    llvm::outs() << "  " << base << ".config.h\n";
-    llvm::outs() << "  " << base << ".map.json\n";
-    llvm::outs() << "  " << base << ".map.txt\n";
+    llvm::outs() << "  " << mixedBase << ".config.bin\n";
+    llvm::outs() << "  " << mixedBase << ".config.json\n";
+    llvm::outs() << "  " << mixedBase << ".config.h\n";
+    llvm::outs() << "  " << mixedBase << ".map.json\n";
+    llvm::outs() << "  " << mixedBase << ".map.txt\n";
     if (!configGen.isConfigComplete()) {
       llvm::outs() << "fcc: warning: config artifacts include all currently "
                       "serialized slice families, but some slice contents are "
@@ -230,8 +266,8 @@ int main(int argc, char **argv) {
     }
 
     // Generate visualization with mapping data
-    std::string vizPath = base + ".viz.html";
-    std::string mapJsonPath = base + ".map.json";
+    std::string vizPath = mixedBase + ".viz.html";
+    std::string mapJsonPath = mixedBase + ".map.json";
     llvm::outs() << "fcc: generating visualization...\n";
 
     // We need the original MLIR modules for viz serialization.
@@ -253,9 +289,9 @@ int main(int argc, char **argv) {
       fcc::sim::SimArtifactWriter artifactWriter;
       auto synthSetup = fcc::sim::synthesizeSimulationSetup(
           dfgBuilder.getDFG(), flattener.getADG(), mapResult.state);
-      std::string tracePath = base + ".sim.trace";
-      std::string statPath = base + ".sim.stat";
-      std::string setupPath = base + ".sim.setup.json";
+      std::string tracePath = mixedBase + ".sim.trace";
+      std::string statPath = mixedBase + ".sim.stat";
+      std::string setupPath = mixedBase + ".sim.setup.json";
 
       if (std::string err = session.connect(); !err.empty()) {
         llvm::errs() << "fcc: simulation setup failed: " << err << "\n";
@@ -347,7 +383,11 @@ int main(int argc, char **argv) {
       if (!dfgMod) return 1;
       llvm::outs() << "fcc: loaded DFG from " << args.dfgPath << "\n";
     }
-    std::string vizPath = base + ".viz.html";
+    std::string vizPath =
+        (!args.adgPath.empty() && !args.dfgPath.empty())
+            ? mixedBase + ".viz.html"
+            : (args.adgPath.empty() ? softwareBase + ".viz.html"
+                                    : hardwareBase + ".viz.html");
     llvm::outs() << "fcc: generating viz-only...\n";
     if (failed(fcc::exportVizOnly(
             vizPath, adgMod ? *adgMod : ModuleOp(),
@@ -379,13 +419,13 @@ int main(int argc, char **argv) {
   }
 
   // ===== Full pipeline: C -> LLVM -> CF -> SCF -> DFG =====
-  std::string llPath = base + ".ll";
+  std::string llPath = softwareBase + ".ll";
   llvm::outs() << "fcc: compiling and importing...\n";
   auto module = compileAndImport(args, context, llPath);
   if (!module)
     return 1;
 
-  std::string llvmMlirPath = base + ".llvm.mlir";
+  std::string llvmMlirPath = softwareBase + ".llvm.mlir";
   if (failed(writeMLIR(*module, llvmMlirPath)))
     return 1;
 
@@ -393,7 +433,7 @@ int main(int argc, char **argv) {
   if (failed(runLLVMToCF(*module)))
     return 1;
 
-  std::string cfPath = base + ".cf.mlir";
+  std::string cfPath = softwareBase + ".cf.mlir";
   if (failed(writeMLIR(*module, cfPath)))
     return 1;
 
@@ -401,7 +441,7 @@ int main(int argc, char **argv) {
   if (failed(runCFToSCF(*module)))
     return 1;
 
-  std::string scfPath = base + ".scf.mlir";
+  std::string scfPath = softwareBase + ".scf.mlir";
   if (failed(writeMLIR(*module, scfPath)))
     return 1;
 
@@ -411,11 +451,11 @@ int main(int argc, char **argv) {
   if (failed(runSCFToDFG(*module)))
     return 1;
 
-  std::string dfgPath = base + ".dfg.mlir";
+  std::string dfgPath = softwareBase + ".dfg.mlir";
   if (failed(writeMLIR(*module, dfgPath)))
     return 1;
 
-  std::string hostPath = base + "_host.c";
+  std::string hostPath = softwareBase + "_host.c";
   std::string accelHeaderPath = args.outputDir + "/fcc_accel.h";
   std::string accelRuntimePath = args.outputDir + "/fcc_accel.c";
   std::string origSource =

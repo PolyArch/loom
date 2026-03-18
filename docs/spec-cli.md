@@ -51,24 +51,47 @@ This mode emits HTML visualization without running mapping.
 
 ## Output Artifact Family
 
-Let `<base>` be the derived stem for the current invocation. FCC emits
-artifacts under the requested output directory.
+FCC emits artifacts under the requested output directory using three naming
+families:
 
-Current output families include:
+- software-only: `<dfg>.*`
+- hardware-only: `<adg>.*`
+- mixed software-plus-hardware: `<dfg>.<adg>.*`
 
-- `<base>.map.json`
-- `<base>.map.txt`
-- `<base>.viz.html`
+Representative outputs include:
 
-The full target artifact family may also include intermediate lowering results,
-configuration binaries, host-side files, simulation traces, and statistics.
+- software-only:
+  - `<dfg>.ll`
+  - `<dfg>.llvm.mlir`
+  - `<dfg>.cf.mlir`
+  - `<dfg>.scf.mlir`
+  - `<dfg>.dfg.mlir`
+- hardware-only:
+  - `<adg>.fabric.mlir`
+  - `<adg>.fabric.viz.json`
+- mixed:
+  - `<dfg>.<adg>.map.json`
+  - `<dfg>.<adg>.map.txt`
+  - `<dfg>.<adg>.config.json`
+  - `<dfg>.<adg>.config.bin`
+  - `<dfg>.<adg>.config.h`
+  - `<dfg>.<adg>.viz.html`
+
+The full target artifact family may also include host-side files, simulation
+traces, and statistics.
 
 ## Naming Rules
 
-- If source files are provided, `<base>` is derived from the first source file.
-- If only `--dfg` is provided, `<base>` is derived from the DFG file stem.
-- If only `--adg` is provided in visualization-only mode, `<base>` is derived
-  from the ADG file stem.
+- If source files are provided, `<dfg>` is derived from the first source file.
+- If only `--dfg` is provided, `<dfg>` is derived from the DFG file stem.
+- If `--adg` is provided, `<adg>` is derived from the ADG file stem after
+  dropping the trailing `.fabric` stem component when present.
+- Mixed artifacts must use both names when both software and hardware are part
+  of the artifact's meaning.
+- Visualization-only mode follows the same rule:
+  - with both DFG and ADG: `<dfg>.<adg>.viz.html`
+  - with only DFG: `<dfg>.viz.html`
+  - with only ADG: `<adg>.viz.html`
 
 ## CLI Responsibilities
 
@@ -78,7 +101,7 @@ The CLI is responsible for:
 - selecting the correct pipeline mode
 - creating the output directory
 - invoking verification where required
-- deriving the base artifact name
+- deriving the software, hardware, and mixed artifact stems
 
 The CLI is not the authority for mapping semantics, route legality, or Fabric
 configuration encoding. Those are defined by the corresponding subsystem specs.

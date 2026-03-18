@@ -183,11 +183,15 @@ MeshResult ADGBuilder::buildLatticeMesh(
     return degree;
   };
 
-  const unsigned maxSwitchDegree = 4;
-  const double maxSwitchBox = std::max(80.0, maxSwitchDegree * 30.0 + 30.0);
-  const double approxFuBoxW = 132.0;
+  auto estimateSwitchSide = [&](unsigned numInputs, unsigned numOutputs) {
+    unsigned maxSideSlots =
+        std::max((numInputs + 1) / 2, (numOutputs + 1) / 2);
+    return std::max(84.0, 32.0 + (static_cast<double>(maxSideSlots) + 1.0) *
+                                     24.0);
+  };
+  const double approxFuBoxW = 140.0;
   const double approxFuGap = 12.0;
-  const double approxPEPadX = 40.0;
+  const double approxPEPadX = 60.0;
   double approxPEBoxW = 200.0;
   for (unsigned r = 0; r < rows; ++r) {
     for (unsigned c = 0; c < cols; ++c) {
@@ -204,13 +208,28 @@ MeshResult ADGBuilder::buildLatticeMesh(
     }
   }
   const double approxPEBoxH = 200.0;
-  const double componentGap = 40.0;
-  const double stepX =
-      std::max(480.0, maxSwitchBox + approxPEBoxW + componentGap);
-  const double stepY =
-      std::max(480.0, maxSwitchBox + approxPEBoxH + componentGap);
-  const double originX = maxSwitchBox / 2.0 + 80.0;
-  const double originY = maxSwitchBox / 2.0 + 80.0;
+  double maxSwitchBox = 84.0;
+  for (unsigned r = 0; r < rows; ++r) {
+    for (unsigned c = 0; c < cols; ++c) {
+      unsigned degree = switchDegree(r, c);
+      unsigned extraInputs =
+          (r == 0 && c == 0) ? options.topLeftExtraInputs : 0;
+      unsigned extraOutputs =
+          (r + 1 == rows && c + 1 == cols) ? options.bottomRightExtraOutputs : 0;
+      maxSwitchBox =
+          std::max(maxSwitchBox,
+                   estimateSwitchSide(peOutputCount + degree + extraInputs,
+                                      peInputCount + degree + extraOutputs));
+    }
+  }
+  const double cellGapX = 56.0;
+  const double cellGapY = 72.0;
+  const double cellStepX = maxSwitchBox + approxPEBoxW + cellGapX;
+  const double cellStepY = std::max(maxSwitchBox, approxPEBoxH) + cellGapY;
+  const double originX = maxSwitchBox / 2.0 + 100.0;
+  const double originY = std::max(maxSwitchBox, approxPEBoxH) / 2.0 + 100.0;
+  const double peOffsetX =
+      maxSwitchBox / 2.0 + cellGapX / 2.0 + approxPEBoxW / 2.0;
 
   for (unsigned r = 0; r < rows; ++r) {
     for (unsigned c = 0; c < cols; ++c) {
@@ -224,7 +243,8 @@ MeshResult ADGBuilder::buildLatticeMesh(
       std::string swName = "sw_" + std::to_string(r) + "_" + std::to_string(c);
       auto swInst = instantiateSW(swHandle, swName);
       result.swGrid[r][c] = swInst;
-      setInstanceVizPosition(swInst, originX + c * stepX, originY + r * stepY,
+      setInstanceVizPosition(swInst, originX + c * cellStepX,
+                             originY + r * cellStepY,
                              r, c);
     }
   }
@@ -234,8 +254,8 @@ MeshResult ADGBuilder::buildLatticeMesh(
       std::string peName = "pe_" + std::to_string(r) + "_" + std::to_string(c);
       auto peInst = instantiatePE(selectedPEs[r][c], peName);
       result.peGrid[r][c] = peInst;
-      setInstanceVizPosition(peInst, originX + c * stepX, originY + r * stepY,
-                             r, c);
+      setInstanceVizPosition(peInst, originX + c * cellStepX + peOffsetX,
+                             originY + r * cellStepY, r, c);
     }
   }
 
@@ -685,11 +705,11 @@ CubeResult ADGBuilder::buildCube(
       std::max(620.0, maxSwitchBox + approxPEBoxW + componentGap);
   const double switchStepY =
       std::max(620.0, maxSwitchBox + approxPEBoxH + componentGap);
-  const double depthOffsetX = switchStepX * 0.32;
-  const double depthOffsetY = switchStepY * -0.24;
+  const double sliceGapX = 220.0;
+  const double sliceOffsetX =
+      static_cast<double>(cols + 1) * switchStepX + sliceGapX;
   const double originX = maxSwitchBox / 2.0 + 120.0;
-  const double originY = maxSwitchBox / 2.0 + 180.0 +
-                         static_cast<double>(depths - 1) * (-depthOffsetY);
+  const double originY = maxSwitchBox / 2.0 + 180.0;
 
   for (unsigned sd = 0; sd <= depths; ++sd) {
     for (unsigned sr = 0; sr <= rows; ++sr) {
@@ -706,8 +726,9 @@ CubeResult ADGBuilder::buildCube(
                              std::to_string(sr) + "_" + std::to_string(sc);
         auto inst = instantiateSW(swHandle, swName);
         result.swGrid[sd][sr][sc] = inst;
-        double x = originX + sc * switchStepX + sd * depthOffsetX;
-        double y = originY + sr * switchStepY + sd * depthOffsetY;
+        double sliceOriginX = originX + sd * sliceOffsetX;
+        double x = sliceOriginX + sc * switchStepX;
+        double y = originY + sr * switchStepY;
         setInstanceVizPosition(inst, x, y,
                                static_cast<int>(sd * (rows + 1) + sr),
                                static_cast<int>(sc));
@@ -722,8 +743,9 @@ CubeResult ADGBuilder::buildCube(
                              std::to_string(r) + "_" + std::to_string(c);
         auto inst = instantiatePE(selectedPEs[d][r][c], peName);
         result.peGrid[d][r][c] = inst;
-        double x = originX + (c + 0.5) * switchStepX + (d + 0.5) * depthOffsetX;
-        double y = originY + (r + 0.5) * switchStepY + (d + 0.5) * depthOffsetY;
+        double sliceOriginX = originX + d * sliceOffsetX;
+        double x = sliceOriginX + (c + 0.5) * switchStepX;
+        double y = originY + (r + 0.5) * switchStepY;
         setInstanceVizPosition(inst, x, y,
                                static_cast<int>(d * rows + r),
                                static_cast<int>(c));
