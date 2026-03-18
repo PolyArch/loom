@@ -98,7 +98,7 @@ std::optional<IdIndex> findCompatibleBridgePort(
     if (!state.hwPortToSwPorts[hwPid].empty())
       continue;
     const Port *hp = adg.getPort(hwPid);
-    if (hp && canMapSoftwareTypeToHardware(swType, hp->type))
+    if (hp && canMapSoftwareTypeToBridgeHardware(swType, hp->type))
       return hwPid;
   }
   return std::nullopt;
@@ -118,7 +118,7 @@ bool isMappedPortCompatible(IdIndex mappedHwPort, llvm::ArrayRef<IdIndex> ports,
     if (categories[i] != targetCategory || lanes[i] != targetLane)
       return false;
     const Port *hp = adg.getPort(mappedHwPort);
-    return hp && canMapSoftwareTypeToHardware(swType, hp->type);
+    return hp && canMapSoftwareTypeToBridgeHardware(swType, hp->type);
   }
   return false;
 }

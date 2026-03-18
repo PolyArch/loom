@@ -1,11 +1,13 @@
 #include "fcc/Mapper/ConfigGen.h"
 #include "fcc/Mapper/BridgeBinding.h"
+#include "fcc/Mapper/TagRuntime.h"
 #include "fcc/Mapper/TypeCompat.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -67,6 +69,18 @@ std::string getConfigHeaderFilename(llvm::StringRef basePath) {
   std::string result = basePath.str();
   result += ".config.h";
   return result;
+}
+
+unsigned bitWidthForChoices(unsigned count) {
+  return count > 1 ? llvm::Log2_32_Ceil(count) : 0;
+}
+
+void packMuxField(std::vector<uint32_t> &words, uint32_t &bitPos,
+                  unsigned selBits, uint64_t sel, bool discard,
+                  bool disconnect) {
+  packBits(words, bitPos, sel, selBits);
+  packBits(words, bitPos, discard ? 1u : 0u, 1);
+  packBits(words, bitPos, disconnect ? 1u : 0u, 1);
 }
 
 struct MemoryRegionEntry {
@@ -188,6 +202,18 @@ mlir::DenseI64ArrayAttr getDenseI64NodeAttr(const Node *node,
   return {};
 }
 
+std::optional<uint64_t> getUIntEdgeAttr(const Edge *edge, llvm::StringRef name) {
+  if (!edge)
+    return std::nullopt;
+  for (const auto &attr : edge->attributes) {
+    if (attr.getName() != name)
+      continue;
+    if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+      return static_cast<uint64_t>(intAttr.getInt());
+  }
+  return std::nullopt;
+}
+
 mlir::Type getTypeNodeAttr(const Node *node, llvm::StringRef name) {
   if (!node)
     return {};
@@ -198,13 +224,6 @@ mlir::Type getTypeNodeAttr(const Node *node, llvm::StringRef name) {
       return typeAttr.getValue();
   }
   return {};
-}
-
-const Node *getPortOwnerNode(const Graph &graph, IdIndex portId) {
-  const Port *port = graph.getPort(portId);
-  if (!port || port->parentNode == INVALID_ID)
-    return nullptr;
-  return graph.getNode(port->parentNode);
 }
 
 IdIndex findFeedingPort(const Graph &graph, IdIndex inputPortId) {
@@ -260,6 +279,144 @@ IdIndex findSwitchInputFromMemory(const Graph &graph, const Node *switchNode,
       return inPortId;
   }
   return INVALID_ID;
+}
+
+bool isBridgeTraversalNode(llvm::StringRef opKind) {
+  return opKind == "add_tag" || opKind == "del_tag" || opKind == "map_tag" ||
+         opKind == "spatial_sw" || opKind == "temporal_sw" ||
+         opKind == "fifo";
+}
+
+llvm::SmallVector<IdIndex, 8>
+findBridgePathForward(const Graph &graph, IdIndex startPortId,
+                      IdIndex hwMemoryNodeId) {
+  llvm::SmallVector<IdIndex, 8> empty;
+  const Port *startPort = graph.getPort(startPortId);
+  if (!startPort)
+    return empty;
+  if (startPort->parentNode == hwMemoryNodeId &&
+      startPort->direction == Port::Input)
+    return empty;
+
+  llvm::SmallVector<IdIndex, 16> queue;
+  llvm::DenseMap<IdIndex, IdIndex> prev;
+  queue.push_back(startPortId);
+  prev[startPortId] = INVALID_ID;
+
+  IdIndex found = INVALID_ID;
+  size_t cursor = 0;
+  while (cursor < queue.size()) {
+    IdIndex portId = queue[cursor++];
+    const Port *port = graph.getPort(portId);
+    if (!port)
+      continue;
+
+    if (portId != startPortId && port->parentNode == hwMemoryNodeId &&
+        port->direction == Port::Input) {
+      const Node *owner = graph.getNode(port->parentNode);
+      if (owner && getNodeAttrStr(owner, "resource_class") == "memory") {
+        found = portId;
+        break;
+      }
+    }
+
+    auto tryPush = [&](IdIndex nextPortId) {
+      if (nextPortId == INVALID_ID || prev.count(nextPortId))
+        return;
+      prev[nextPortId] = portId;
+      queue.push_back(nextPortId);
+    };
+
+    if (port->direction == Port::Input) {
+      const Node *owner = getPortOwnerNode(graph, portId);
+      if (!owner)
+        continue;
+      if (!isBridgeTraversalNode(getNodeAttrStr(owner, "op_kind")))
+        continue;
+      for (IdIndex outPortId : owner->outputPorts)
+        tryPush(outPortId);
+      continue;
+    }
+
+    for (IdIndex consumerPortId : findConsumingPorts(graph, portId))
+      tryPush(consumerPortId);
+  }
+
+  if (found == INVALID_ID)
+    return empty;
+
+  llvm::SmallVector<IdIndex, 8> path;
+  for (IdIndex cur = found; cur != INVALID_ID; cur = prev.lookup(cur))
+    path.push_back(cur);
+  std::reverse(path.begin(), path.end());
+  if (!path.empty())
+    path.erase(path.begin());
+  return path;
+}
+
+llvm::SmallVector<IdIndex, 8>
+findBridgePathBackward(const Graph &graph, IdIndex startPortId,
+                       IdIndex hwMemoryNodeId) {
+  llvm::SmallVector<IdIndex, 8> empty;
+  const Port *startPort = graph.getPort(startPortId);
+  if (!startPort)
+    return empty;
+  if (startPort->parentNode == hwMemoryNodeId &&
+      startPort->direction == Port::Output)
+    return empty;
+
+  llvm::SmallVector<IdIndex, 16> queue;
+  llvm::DenseMap<IdIndex, IdIndex> prev;
+  queue.push_back(startPortId);
+  prev[startPortId] = INVALID_ID;
+
+  IdIndex found = INVALID_ID;
+  size_t cursor = 0;
+  while (cursor < queue.size()) {
+    IdIndex portId = queue[cursor++];
+    const Port *port = graph.getPort(portId);
+    if (!port)
+      continue;
+
+    if (portId != startPortId && port->parentNode == hwMemoryNodeId &&
+        port->direction == Port::Output) {
+      const Node *owner = graph.getNode(port->parentNode);
+      if (owner && getNodeAttrStr(owner, "resource_class") == "memory") {
+        found = portId;
+        break;
+      }
+    }
+
+    auto tryPush = [&](IdIndex nextPortId) {
+      if (nextPortId == INVALID_ID || prev.count(nextPortId))
+        return;
+      prev[nextPortId] = portId;
+      queue.push_back(nextPortId);
+    };
+
+    if (port->direction == Port::Output) {
+      const Node *owner = getPortOwnerNode(graph, portId);
+      if (!owner)
+        continue;
+      if (!isBridgeTraversalNode(getNodeAttrStr(owner, "op_kind")))
+        continue;
+      for (IdIndex inPortId : owner->inputPorts)
+        tryPush(inPortId);
+      continue;
+    }
+
+    tryPush(findFeedingPort(graph, portId));
+  }
+
+  if (found == INVALID_ID)
+    return empty;
+
+  llvm::SmallVector<IdIndex, 8> path;
+  for (IdIndex cur = found; cur != INVALID_ID; cur = prev.lookup(cur))
+    path.push_back(cur);
+  if (!path.empty() && path.back() == startPortId)
+    path.pop_back();
+  return path;
 }
 
 int64_t findDfgMemrefArgIndex(const Node *swNode, const Graph &dfg) {
@@ -415,111 +572,13 @@ llvm::SmallVector<int64_t, 16> buildAddrOffsetTable(const Node *hwNode,
 llvm::SmallVector<IdIndex, 8> buildBridgeInputSuffix(const Graph &adg,
                                                      IdIndex boundaryInPortId,
                                                      IdIndex hwMemoryNodeId) {
-  llvm::SmallVector<IdIndex, 8> suffix;
-  const Node *boundaryOwner = getPortOwnerNode(adg, boundaryInPortId);
-  if (!boundaryOwner)
-    return suffix;
-
-  if (getNodeAttrStr(boundaryOwner, "resource_class") == "memory")
-    return suffix;
-
-  llvm::StringRef ownerKind = getNodeAttrStr(boundaryOwner, "op_kind");
-  if (ownerKind == "add_tag") {
-    if (boundaryOwner->outputPorts.empty())
-      return suffix;
-    IdIndex addTagOutPort = boundaryOwner->outputPorts[0];
-    for (IdIndex nextInPortId : findConsumingPorts(adg, addTagOutPort)) {
-      const Node *nextNode = getPortOwnerNode(adg, nextInPortId);
-      if (!nextNode)
-        continue;
-
-      if (getNodeAttrStr(nextNode, "op_kind") == "temporal_sw") {
-        for (IdIndex tswOutPort : nextNode->outputPorts) {
-          IdIndex memInPortId =
-              findMemoryInputFromSwitchOutput(adg, tswOutPort, hwMemoryNodeId);
-          if (memInPortId == INVALID_ID)
-            continue;
-          suffix.push_back(addTagOutPort);
-          suffix.push_back(nextInPortId);
-          suffix.push_back(tswOutPort);
-          suffix.push_back(memInPortId);
-          return suffix;
-        }
-      }
-
-      if (getNodeAttrStr(nextNode, "resource_class") == "memory" &&
-          nextInPortId != boundaryInPortId) {
-        suffix.push_back(addTagOutPort);
-        suffix.push_back(nextInPortId);
-        return suffix;
-      }
-    }
-    return suffix;
-  }
-
-  if (ownerKind == "temporal_sw") {
-    for (IdIndex tswOutPort : boundaryOwner->outputPorts) {
-      IdIndex memInPortId =
-          findMemoryInputFromSwitchOutput(adg, tswOutPort, hwMemoryNodeId);
-      if (memInPortId == INVALID_ID)
-        continue;
-      suffix.push_back(tswOutPort);
-      suffix.push_back(memInPortId);
-      return suffix;
-    }
-  }
-
-  return suffix;
+  return findBridgePathForward(adg, boundaryInPortId, hwMemoryNodeId);
 }
 
 llvm::SmallVector<IdIndex, 8> buildBridgeOutputPrefix(const Graph &adg,
                                                       IdIndex boundaryOutPortId,
                                                       IdIndex hwMemoryNodeId) {
-  llvm::SmallVector<IdIndex, 8> prefix;
-  const Node *boundaryOwner = getPortOwnerNode(adg, boundaryOutPortId);
-  if (!boundaryOwner)
-    return prefix;
-
-  if (getNodeAttrStr(boundaryOwner, "resource_class") == "memory")
-    return prefix;
-
-  llvm::StringRef ownerKind = getNodeAttrStr(boundaryOwner, "op_kind");
-  if (ownerKind == "del_tag") {
-    if (boundaryOwner->inputPorts.empty())
-      return prefix;
-    IdIndex delTagInPort = boundaryOwner->inputPorts[0];
-    IdIndex prevOutPort = findFeedingPort(adg, delTagInPort);
-    const Node *prevNode = getPortOwnerNode(adg, prevOutPort);
-    if (!prevNode)
-      return prefix;
-
-    if (getNodeAttrStr(prevNode, "op_kind") == "temporal_sw") {
-      IdIndex tswInPort = findSwitchInputFromMemory(adg, prevNode, hwMemoryNodeId);
-      if (tswInPort != INVALID_ID) {
-        prefix.push_back(findFeedingPort(adg, tswInPort));
-        prefix.push_back(tswInPort);
-        prefix.push_back(prevOutPort);
-        prefix.push_back(delTagInPort);
-      }
-      return prefix;
-    }
-
-    if (getNodeAttrStr(prevNode, "resource_class") == "memory") {
-      prefix.push_back(prevOutPort);
-      prefix.push_back(delTagInPort);
-    }
-    return prefix;
-  }
-
-  if (ownerKind == "temporal_sw") {
-    IdIndex tswInPort = findSwitchInputFromMemory(adg, boundaryOwner, hwMemoryNodeId);
-    if (tswInPort != INVALID_ID) {
-      prefix.push_back(findFeedingPort(adg, tswInPort));
-      prefix.push_back(tswInPort);
-    }
-  }
-
-  return prefix;
+  return findBridgePathBackward(adg, boundaryOutPortId, hwMemoryNodeId);
 }
 
 llvm::SmallVector<IdIndex, 16>
@@ -590,75 +649,204 @@ findMemoryRegionStartLane(IdIndex swNodeId, IdIndex hwNodeId,
 }
 
 std::optional<uint64_t>
-inferTemporalRouteTag(IdIndex swEdgeId, llvm::ArrayRef<IdIndex> hwPath,
-                      size_t transitionIndex, const MappingState &state,
-                      const Graph &dfg, const Graph &adg) {
+computeSoftwareMemoryPortLane(IdIndex swNodeId, IdIndex swPortId, bool isOutput,
+                              IdIndex hwNodeId, const MappingState &state,
+                              const Graph &dfg, const Graph &adg) {
+  if (swNodeId == INVALID_ID || swPortId == INVALID_ID ||
+      swNodeId >= state.swNodeToHwNode.size() ||
+      state.swNodeToHwNode[swNodeId] != hwNodeId)
+    return std::nullopt;
+
+  const Node *swNode = dfg.getNode(swNodeId);
+  if (!swNode)
+    return std::nullopt;
+  llvm::StringRef opName = getNodeAttrStr(swNode, "op_name");
+  if (!isSoftwareMemoryInterfaceOp(opName))
+    return std::nullopt;
+
+  bool isExtMem = opName == "handshake.extmemory";
+  DfgMemoryInfo mem = DfgMemoryInfo::extract(swNode, dfg, isExtMem);
+  auto baseLane = findMemoryRegionStartLane(swNodeId, hwNodeId, state, dfg, adg);
+  if (!baseLane)
+    return std::nullopt;
+
+  if (isOutput) {
+    for (unsigned idx = 0; idx < swNode->outputPorts.size(); ++idx) {
+      if (swNode->outputPorts[idx] != swPortId)
+        continue;
+      return *baseLane + mem.outputLocalLane(idx);
+    }
+    return std::nullopt;
+  }
+
+  for (unsigned idx = mem.swInSkip; idx < swNode->inputPorts.size(); ++idx) {
+    if (swNode->inputPorts[idx] != swPortId)
+      continue;
+    return *baseLane + mem.inputLocalLane(idx - mem.swInSkip);
+  }
+  return std::nullopt;
+}
+
+// Compute the runtime tag value associated with one software node.
+// This is not a hardware tag-width inference; hardware tag shape comes from the
+// tagged port types declared by the ADG.
+std::optional<uint64_t>
+computeRuntimeTagValueAlongPath(IdIndex swEdgeId, llvm::ArrayRef<IdIndex> hwPath,
+                                size_t uptoIndex, const MappingState &state,
+                                const Graph &dfg, const Graph &adg) {
+  return fcc::computeRuntimeTagValueAlongMappedPath(swEdgeId, hwPath, uptoIndex,
+                                                    state, dfg, adg);
+}
+
+std::optional<size_t> findLastTaggedPortIndex(llvm::ArrayRef<IdIndex> hwPath,
+                                              const Graph &adg) {
+  for (size_t i = hwPath.size(); i > 0; --i) {
+    const Port *port = adg.getPort(hwPath[i - 1]);
+    if (!port)
+      continue;
+    if (auto info = detail::getPortTypeInfo(port->type)) {
+      if (info->isTagged)
+        return i - 1;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<uint64_t> computeTemporalNodeTagValue(IdIndex swNodeId,
+                                                    const MappingState &state,
+                                                    const Graph &dfg,
+                                                    const Graph &adg) {
+  if (swNodeId == INVALID_ID)
+    return std::nullopt;
+  const Node *swNode = dfg.getNode(swNodeId);
+  if (!swNode)
+    return std::nullopt;
+
+  std::optional<uint64_t> tag;
+  auto considerEdge = [&](IdIndex swEdgeId) -> bool {
+    auto hwPath = buildExportPathForEdge(swEdgeId, state, dfg, adg);
+    if (hwPath.empty())
+      return true;
+    size_t observeIndex = hwPath.size() - 1;
+    if (auto taggedIndex = findLastTaggedPortIndex(hwPath, adg))
+      observeIndex = *taggedIndex;
+    auto edgeTag = computeRuntimeTagValueAlongPath(swEdgeId, hwPath,
+                                                   observeIndex, state, dfg,
+                                                   adg);
+    if (!edgeTag)
+      return true;
+    if (tag && *tag != *edgeTag)
+        return false;
+    tag = *edgeTag;
+    return true;
+  };
+
+  for (IdIndex portId : swNode->inputPorts) {
+    const Port *port = dfg.getPort(portId);
+    if (!port)
+      continue;
+    for (IdIndex edgeId : port->connectedEdges) {
+      const Edge *edge = dfg.getEdge(edgeId);
+      if (!edge || edge->dstPort != portId)
+        continue;
+      if (!considerEdge(edgeId))
+        return std::nullopt;
+    }
+  }
+
+  if (tag)
+    return tag;
+
+  for (IdIndex portId : swNode->outputPorts) {
+    const Port *port = dfg.getPort(portId);
+    if (!port)
+      continue;
+    for (IdIndex edgeId : port->connectedEdges) {
+      const Edge *edge = dfg.getEdge(edgeId);
+      if (!edge || edge->srcPort != portId)
+        continue;
+      if (!considerEdge(edgeId))
+        return std::nullopt;
+    }
+  }
+
+  return tag;
+}
+
+std::optional<uint64_t>
+computeTemporalNodeIngressTagValue(IdIndex swNodeId, const MappingState &state,
+                                   const Graph &dfg, const Graph &adg) {
+  if (swNodeId == INVALID_ID)
+    return std::nullopt;
+  const Node *swNode = dfg.getNode(swNodeId);
+  if (!swNode)
+    return std::nullopt;
+
+  std::optional<uint64_t> tag;
+  for (IdIndex portId : swNode->inputPorts) {
+    const Port *port = dfg.getPort(portId);
+    if (!port)
+      continue;
+    for (IdIndex edgeId : port->connectedEdges) {
+      const Edge *edge = dfg.getEdge(edgeId);
+      if (!edge || edge->dstPort != portId)
+        continue;
+      auto hwPath = buildExportPathForEdge(edgeId, state, dfg, adg);
+      if (hwPath.empty())
+        continue;
+      size_t observeIndex = hwPath.size() - 1;
+      if (auto taggedIndex = findLastTaggedPortIndex(hwPath, adg))
+        observeIndex = *taggedIndex;
+      auto edgeTag = computeRuntimeTagValueAlongPath(edgeId, hwPath,
+                                                     observeIndex, state, dfg,
+                                                     adg);
+      if (!edgeTag)
+        continue;
+      if (tag && *tag != *edgeTag)
+        return std::nullopt;
+      tag = *edgeTag;
+    }
+  }
+
+  return tag;
+}
+
+// Compute the runtime tag value seen by one routed software edge at a temporal
+// routing/config boundary. This does not infer any hardware tag parameter.
+std::optional<uint64_t>
+computeTemporalRouteTagValue(IdIndex swEdgeId, llvm::ArrayRef<IdIndex> hwPath,
+                             size_t transitionIndex, const MappingState &state,
+                             const Graph &dfg, const Graph &adg) {
+  if (auto tag = computeRuntimeTagValueAlongPath(swEdgeId, hwPath,
+                                                 transitionIndex, state, dfg,
+                                                 adg)) {
+    return tag;
+  }
+
   const Edge *swEdge = dfg.getEdge(swEdgeId);
   if (!swEdge)
     return std::nullopt;
-
   const Port *swSrcPort = dfg.getPort(swEdge->srcPort);
   const Port *swDstPort = dfg.getPort(swEdge->dstPort);
   IdIndex swSrcNodeId =
       swSrcPort ? swSrcPort->parentNode : static_cast<IdIndex>(INVALID_ID);
   IdIndex swDstNodeId =
       swDstPort ? swDstPort->parentNode : static_cast<IdIndex>(INVALID_ID);
-
-  for (int64_t idx = static_cast<int64_t>(transitionIndex); idx >= 0; --idx) {
-    const Node *owner = getPortOwnerNode(adg, hwPath[static_cast<size_t>(idx)]);
-    if (!owner)
-      continue;
-    llvm::StringRef opKind = getNodeAttrStr(owner, "op_kind");
-    if (opKind == "add_tag") {
-      if (auto tag = getUIntNodeAttr(owner, "tag"))
-        return tag;
+  if (swSrcNodeId != INVALID_ID) {
+    if (auto tag =
+            computeTemporalNodeIngressTagValue(swSrcNodeId, state, dfg, adg)) {
+      return tag;
     }
-    if (getNodeAttrStr(owner, "resource_class") == "memory") {
-      const Port *ownerPort = adg.getPort(hwPath[static_cast<size_t>(idx)]);
-      if (!ownerPort)
-        continue;
-      IdIndex hwNodeId = ownerPort->parentNode;
-      if (swSrcNodeId != INVALID_ID &&
-          swSrcNodeId < state.swNodeToHwNode.size() &&
-          state.swNodeToHwNode[swSrcNodeId] == hwNodeId) {
-        if (auto lane =
-                findMemoryRegionStartLane(swSrcNodeId, hwNodeId, state, dfg, adg))
-          return lane;
-      }
-      if (swDstNodeId != INVALID_ID &&
-          swDstNodeId < state.swNodeToHwNode.size() &&
-          state.swNodeToHwNode[swDstNodeId] == hwNodeId) {
-        if (auto lane =
-                findMemoryRegionStartLane(swDstNodeId, hwNodeId, state, dfg, adg))
-          return lane;
-      }
-    }
+    if (auto tag = computeTemporalNodeTagValue(swSrcNodeId, state, dfg, adg))
+      return tag;
   }
-
-  for (size_t idx = transitionIndex + 1; idx < hwPath.size(); ++idx) {
-    const Node *owner = getPortOwnerNode(adg, hwPath[idx]);
-    if (!owner)
-      continue;
-    if (getNodeAttrStr(owner, "resource_class") == "memory") {
-      const Port *ownerPort = adg.getPort(hwPath[idx]);
-      if (!ownerPort)
-        continue;
-      IdIndex hwNodeId = ownerPort->parentNode;
-      if (swSrcNodeId != INVALID_ID &&
-          swSrcNodeId < state.swNodeToHwNode.size() &&
-          state.swNodeToHwNode[swSrcNodeId] == hwNodeId) {
-        if (auto lane =
-                findMemoryRegionStartLane(swSrcNodeId, hwNodeId, state, dfg, adg))
-          return lane;
-      }
-      if (swDstNodeId != INVALID_ID &&
-          swDstNodeId < state.swNodeToHwNode.size() &&
-          state.swNodeToHwNode[swDstNodeId] == hwNodeId) {
-        if (auto lane =
-                findMemoryRegionStartLane(swDstNodeId, hwNodeId, state, dfg, adg))
-          return lane;
-      }
+  if (swDstNodeId != INVALID_ID) {
+    if (auto tag =
+            computeTemporalNodeIngressTagValue(swDstNodeId, state, dfg, adg)) {
+      return tag;
     }
+    if (auto tag = computeTemporalNodeTagValue(swDstNodeId, state, dfg, adg))
+      return tag;
   }
 
   return std::nullopt;
@@ -731,6 +919,8 @@ GeneratedNodeConfig buildTemporalSwitchConfig(const Node *hwNode, IdIndex hwId,
 
   auto rows = getBinaryRowsNodeAttr(hwNode, "connectivity_table");
   unsigned routeBits = countConnectedPositions(rows, numIn, numOut);
+  // Hardware tag width is a native parameter of the switch interface and comes
+  // directly from the tagged port type, not from any runtime tag-value scan.
   unsigned tagWidth = 0;
   for (IdIndex portId : hwNode->inputPorts) {
     const Port *port = adg.getPort(portId);
@@ -766,7 +956,8 @@ GeneratedNodeConfig buildTemporalSwitchConfig(const Node *hwNode, IdIndex hwId,
       if (inputIdx < 0 || outputIdx < 0)
         continue;
 
-      auto tag = inferTemporalRouteTag(edgeId, hwPath, i, state, dfg, adg);
+      auto tag =
+          computeTemporalRouteTagValue(edgeId, hwPath, i, state, dfg, adg);
       if (!tag) {
         cfg.complete = false;
         continue;
@@ -871,6 +1062,290 @@ findFUConfigSelection(llvm::ArrayRef<FUConfigSelection> fuConfigs,
   return nullptr;
 }
 
+const Edge *findEdgeByPorts(const Graph &graph, IdIndex srcPortId,
+                            IdIndex dstPortId) {
+  const Port *srcPort = graph.getPort(srcPortId);
+  if (!srcPort)
+    return nullptr;
+  for (IdIndex edgeId : srcPort->connectedEdges) {
+    const Edge *edge = graph.getEdge(edgeId);
+    if (edge && edge->srcPort == srcPortId && edge->dstPort == dstPortId)
+      return edge;
+  }
+  return nullptr;
+}
+
+llvm::SmallVector<unsigned, 4> getFUConfigFieldWidths(const Node *hwNode) {
+  llvm::SmallVector<unsigned, 4> widths;
+  auto attr = getDenseI64NodeAttr(hwNode, "fu_config_field_widths");
+  if (!attr)
+    return widths;
+  for (int64_t width : attr.asArrayRef()) {
+    if (width > 0)
+      widths.push_back(static_cast<unsigned>(width));
+  }
+  return widths;
+}
+
+unsigned getFUConfigBitWidth(const Node *hwNode) {
+  return static_cast<unsigned>(
+      std::max<int64_t>(0, getNodeAttrInt(hwNode, "fu_config_bits", 0)));
+}
+
+void packFUConfigBits(std::vector<uint32_t> &words, uint32_t &bitPos,
+                      const Node *hwNode,
+                      const FUConfigSelection *selection, bool &complete) {
+  auto widths = getFUConfigFieldWidths(hwNode);
+  if (widths.empty())
+    return;
+
+  size_t fieldCount = widths.size();
+  size_t selectedCount = selection ? selection->fields.size() : 0;
+  if (selection && selectedCount != fieldCount)
+    complete = false;
+
+  for (size_t i = 0; i < fieldCount; ++i) {
+    unsigned width = widths[i];
+    unsigned selBits = width >= 2 ? width - 2 : 0;
+    uint64_t sel = 0;
+    bool discard = false;
+    bool disconnect = false;
+    if (selection && i < selectedCount) {
+      sel = selection->fields[i].sel;
+      discard = selection->fields[i].discard;
+      disconnect = selection->fields[i].disconnect;
+    }
+    packMuxField(words, bitPos, selBits, sel, discard, disconnect);
+  }
+}
+
+struct PERouteSummary {
+  llvm::DenseMap<IdIndex, llvm::SmallVector<int, 4>> inputPortSelects;
+  llvm::DenseMap<IdIndex, llvm::SmallVector<int, 4>> outputPortSelects;
+  llvm::DenseMap<IdIndex, llvm::SmallVector<uint64_t, 4>> tagsByFU;
+  bool complete = true;
+};
+
+struct TemporalRegisterBinding {
+  IdIndex swEdgeId = INVALID_ID;
+  IdIndex writerSwNode = INVALID_ID;
+  IdIndex readerSwNode = INVALID_ID;
+  IdIndex writerHwNode = INVALID_ID;
+  IdIndex readerHwNode = INVALID_ID;
+  IdIndex srcSwPort = INVALID_ID;
+  unsigned writerOutputIndex = 0;
+  unsigned readerInputIndex = 0;
+  unsigned registerIndex = 0;
+  std::string peName;
+};
+
+struct TemporalConfigPlan {
+  llvm::SmallVector<std::pair<unsigned, IdIndex>, 8> usedFUs;
+  llvm::DenseMap<IdIndex, unsigned> slotByFU;
+  llvm::DenseMap<IdIndex, llvm::SmallVector<std::optional<unsigned>, 4>>
+      operandRegsByFU;
+  llvm::DenseMap<IdIndex, llvm::SmallVector<std::optional<unsigned>, 4>>
+      resultRegsByFU;
+  llvm::SmallVector<TemporalRegisterBinding, 8> registerBindings;
+  bool complete = true;
+};
+
+TemporalConfigPlan buildTemporalConfigPlan(
+    const PEContainment &pe, const MappingState &state, const Graph &dfg,
+    const Graph &adg, llvm::ArrayRef<TechMappedEdgeKind> edgeKinds) {
+  TemporalConfigPlan plan;
+
+  for (unsigned ordinal = 0; ordinal < pe.fuNodeIds.size(); ++ordinal) {
+    IdIndex fuId = pe.fuNodeIds[ordinal];
+    const Node *fuNode = adg.getNode(fuId);
+    if (!fuNode)
+      continue;
+    plan.operandRegsByFU[fuId].assign(fuNode->inputPorts.size(), std::nullopt);
+    plan.resultRegsByFU[fuId].assign(fuNode->outputPorts.size(), std::nullopt);
+    if (fuId < state.hwNodeToSwNodes.size() && !state.hwNodeToSwNodes[fuId].empty()) {
+      plan.slotByFU[fuId] = static_cast<unsigned>(plan.usedFUs.size());
+      plan.usedFUs.push_back({ordinal, fuId});
+    }
+  }
+
+  llvm::DenseMap<IdIndex, unsigned> regBySrcPort;
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId) {
+    if (edgeId >= edgeKinds.size() ||
+        edgeKinds[edgeId] != TechMappedEdgeKind::TemporalReg)
+      continue;
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    const Port *srcPort = dfg.getPort(edge->srcPort);
+    const Port *dstPort = dfg.getPort(edge->dstPort);
+    if (!srcPort || !dstPort || srcPort->parentNode == INVALID_ID ||
+        dstPort->parentNode == INVALID_ID)
+      continue;
+
+    IdIndex writerSwNode = srcPort->parentNode;
+    IdIndex readerSwNode = dstPort->parentNode;
+    if (writerSwNode >= state.swNodeToHwNode.size() ||
+        readerSwNode >= state.swNodeToHwNode.size())
+      continue;
+    IdIndex writerHwNode = state.swNodeToHwNode[writerSwNode];
+    IdIndex readerHwNode = state.swNodeToHwNode[readerSwNode];
+    if (writerHwNode == INVALID_ID || readerHwNode == INVALID_ID)
+      continue;
+    const Node *writerHw = adg.getNode(writerHwNode);
+    const Node *readerHw = adg.getNode(readerHwNode);
+    if (!writerHw || !readerHw)
+      continue;
+    llvm::StringRef writerPE = getNodeAttrStr(writerHw, "pe_name");
+    if (writerPE.empty() || writerPE != pe.peName ||
+        writerPE != getNodeAttrStr(readerHw, "pe_name"))
+      continue;
+
+    int writerOutputIdx = findNodeOutputIndex(dfg.getNode(writerSwNode), edge->srcPort);
+    int readerInputIdx = findNodeInputIndex(dfg.getNode(readerSwNode), edge->dstPort);
+    if (writerOutputIdx < 0 || readerInputIdx < 0) {
+      plan.complete = false;
+      continue;
+    }
+
+    unsigned regIdx = 0;
+    auto foundReg = regBySrcPort.find(edge->srcPort);
+    if (foundReg == regBySrcPort.end()) {
+      regIdx = static_cast<unsigned>(regBySrcPort.size());
+      regBySrcPort[edge->srcPort] = regIdx;
+    } else {
+      regIdx = foundReg->second;
+    }
+
+    if (regIdx >= pe.numRegister) {
+      plan.complete = false;
+      continue;
+    }
+
+    auto &resultRegs = plan.resultRegsByFU[writerHwNode];
+    auto &operandRegs = plan.operandRegsByFU[readerHwNode];
+    if (static_cast<size_t>(writerOutputIdx) >= resultRegs.size() ||
+        static_cast<size_t>(readerInputIdx) >= operandRegs.size()) {
+      plan.complete = false;
+      continue;
+    }
+    if (resultRegs[writerOutputIdx].has_value() &&
+        *resultRegs[writerOutputIdx] != regIdx)
+      plan.complete = false;
+    if (operandRegs[readerInputIdx].has_value() &&
+        *operandRegs[readerInputIdx] != regIdx)
+      plan.complete = false;
+
+    resultRegs[writerOutputIdx] = regIdx;
+    operandRegs[readerInputIdx] = regIdx;
+
+    TemporalRegisterBinding binding;
+    binding.swEdgeId = edgeId;
+    binding.writerSwNode = writerSwNode;
+    binding.readerSwNode = readerSwNode;
+    binding.writerHwNode = writerHwNode;
+    binding.readerHwNode = readerHwNode;
+    binding.srcSwPort = edge->srcPort;
+    binding.writerOutputIndex = static_cast<unsigned>(writerOutputIdx);
+    binding.readerInputIndex = static_cast<unsigned>(readerInputIdx);
+    binding.registerIndex = regIdx;
+    binding.peName = pe.peName;
+    plan.registerBindings.push_back(std::move(binding));
+  }
+
+  return plan;
+}
+
+PERouteSummary collectPERouteSummary(const PEContainment &pe,
+                                     const MappingState &state,
+                                     const Graph &dfg, const Graph &adg) {
+  PERouteSummary summary;
+  llvm::DenseSet<IdIndex> fuSet(pe.fuNodeIds.begin(), pe.fuNodeIds.end());
+
+  for (IdIndex fuId : pe.fuNodeIds) {
+    const Node *fuNode = adg.getNode(fuId);
+    if (!fuNode)
+      continue;
+    summary.inputPortSelects[fuId].assign(fuNode->inputPorts.size(), -1);
+    summary.outputPortSelects[fuId].assign(fuNode->outputPorts.size(), -1);
+  }
+
+  for (IdIndex swEdgeId = 0;
+       swEdgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
+       ++swEdgeId) {
+    auto hwPath = buildExportPathForEdge(swEdgeId, state, dfg, adg);
+    if (hwPath.size() < 2)
+      continue;
+
+    for (size_t i = 0; i + 1 < hwPath.size(); ++i) {
+      IdIndex srcPortId = hwPath[i];
+      IdIndex dstPortId = hwPath[i + 1];
+      const Port *srcPort = adg.getPort(srcPortId);
+      const Port *dstPort = adg.getPort(dstPortId);
+      if (!srcPort || !dstPort)
+        continue;
+
+      const Edge *flatEdge = findEdgeByPorts(adg, srcPortId, dstPortId);
+      if (!flatEdge)
+        continue;
+
+      if (dstPort->parentNode != INVALID_ID && fuSet.contains(dstPort->parentNode)) {
+        auto peInputIndex = getUIntEdgeAttr(flatEdge, "pe_input_index");
+        if (peInputIndex) {
+          const Node *fuNode = adg.getNode(dstPort->parentNode);
+          int inputIdx = findNodeInputIndex(fuNode, dstPortId);
+          if (fuNode && inputIdx >= 0) {
+            auto &slots = summary.inputPortSelects[dstPort->parentNode];
+            if (static_cast<size_t>(inputIdx) < slots.size()) {
+              if (slots[inputIdx] >= 0 &&
+                  slots[inputIdx] != static_cast<int>(*peInputIndex))
+                summary.complete = false;
+              slots[inputIdx] = static_cast<int>(*peInputIndex);
+            }
+            if (pe.peKind == "temporal_pe") {
+              if (auto tag =
+                      computeTemporalRouteTagValue(swEdgeId, hwPath, i, state,
+                                                   dfg, adg)) {
+                auto &tags = summary.tagsByFU[dstPort->parentNode];
+                if (std::find(tags.begin(), tags.end(), *tag) == tags.end())
+                  tags.push_back(*tag);
+              }
+            }
+          }
+        }
+      }
+
+      if (srcPort->parentNode != INVALID_ID && fuSet.contains(srcPort->parentNode)) {
+        auto peOutputIndex = getUIntEdgeAttr(flatEdge, "pe_output_index");
+        if (peOutputIndex) {
+          const Node *fuNode = adg.getNode(srcPort->parentNode);
+          int outputIdx = findNodeOutputIndex(fuNode, srcPortId);
+          if (fuNode && outputIdx >= 0) {
+            auto &slots = summary.outputPortSelects[srcPort->parentNode];
+            if (static_cast<size_t>(outputIdx) < slots.size()) {
+              if (slots[outputIdx] >= 0 &&
+                  slots[outputIdx] != static_cast<int>(*peOutputIndex))
+                summary.complete = false;
+              slots[outputIdx] = static_cast<int>(*peOutputIndex);
+            }
+            if (pe.peKind == "temporal_pe") {
+              if (auto tag = computeTemporalRouteTagValue(swEdgeId, hwPath,
+                                                          i + 1, state, dfg,
+                                                          adg)) {
+                auto &tags = summary.tagsByFU[srcPort->parentNode];
+                if (std::find(tags.begin(), tags.end(), *tag) == tags.end())
+                  tags.push_back(*tag);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return summary;
+}
+
 GeneratedNodeConfig
 buildFunctionUnitConfig(llvm::ArrayRef<FUConfigSelection> fuConfigs,
                         IdIndex hwId) {
@@ -889,10 +1364,293 @@ buildFunctionUnitConfig(llvm::ArrayRef<FUConfigSelection> fuConfigs,
   return cfg;
 }
 
+GeneratedNodeConfig buildSpatialPEConfig(const PEContainment &pe,
+                                         const MappingState &state,
+                                         const Graph &dfg, const Graph &adg,
+                                         llvm::ArrayRef<FUConfigSelection> fuConfigs,
+                                         bool &globalComplete) {
+  GeneratedNodeConfig cfg;
+  bool complete = true;
+  unsigned fuCount = pe.fuNodeIds.size();
+  if (fuCount == 0)
+    return cfg;
+
+  unsigned opcodeBits = bitWidthForChoices(fuCount);
+  unsigned peInputSelBits = bitWidthForChoices(pe.numInputPorts);
+  unsigned peOutputSelBits = bitWidthForChoices(pe.numOutputPorts);
+
+  unsigned maxFuInputs = 0;
+  unsigned maxFuOutputs = 0;
+  unsigned maxFuConfigBits = 0;
+  IdIndex activeFuId = INVALID_ID;
+  unsigned activeOpcode = 0;
+  unsigned usedFuCount = 0;
+  for (unsigned ordinal = 0; ordinal < fuCount; ++ordinal) {
+    IdIndex fuId = pe.fuNodeIds[ordinal];
+    const Node *fuNode = adg.getNode(fuId);
+    if (!fuNode)
+      continue;
+    maxFuInputs = std::max<unsigned>(maxFuInputs, fuNode->inputPorts.size());
+    maxFuOutputs = std::max<unsigned>(maxFuOutputs, fuNode->outputPorts.size());
+    maxFuConfigBits = std::max<unsigned>(maxFuConfigBits, getFUConfigBitWidth(fuNode));
+    if (fuId < state.hwNodeToSwNodes.size() && !state.hwNodeToSwNodes[fuId].empty()) {
+      ++usedFuCount;
+      if (activeFuId == INVALID_ID) {
+        activeFuId = fuId;
+        activeOpcode = ordinal;
+      }
+    }
+  }
+
+  if (usedFuCount > 1)
+    complete = false;
+
+  PERouteSummary routes;
+  if (activeFuId != INVALID_ID)
+    routes = collectPERouteSummary(pe, state, dfg, adg);
+
+  uint32_t bitPos = 0;
+  bool enabled = activeFuId != INVALID_ID;
+  packBits(cfg.words, bitPos, enabled ? 1u : 0u, 1);
+  packBits(cfg.words, bitPos, activeOpcode, opcodeBits);
+
+  const Node *activeFu = enabled ? adg.getNode(activeFuId) : nullptr;
+  auto inputSelects =
+      (enabled && routes.inputPortSelects.count(activeFuId))
+          ? routes.inputPortSelects.lookup(activeFuId)
+          : llvm::SmallVector<int, 4>();
+  auto outputSelects =
+      (enabled && routes.outputPortSelects.count(activeFuId))
+          ? routes.outputPortSelects.lookup(activeFuId)
+          : llvm::SmallVector<int, 4>();
+
+  for (unsigned inputIdx = 0; inputIdx < maxFuInputs; ++inputIdx) {
+    bool disconnect = true;
+    bool discard = false;
+    uint64_t sel = 0;
+    if (enabled && activeFu && inputIdx < activeFu->inputPorts.size()) {
+      if (inputIdx < inputSelects.size() && inputSelects[inputIdx] >= 0) {
+        sel = static_cast<uint64_t>(inputSelects[inputIdx]);
+        disconnect = false;
+      }
+    }
+    packMuxField(cfg.words, bitPos, peInputSelBits, sel, discard, disconnect);
+  }
+
+  for (unsigned outputIdx = 0; outputIdx < maxFuOutputs; ++outputIdx) {
+    bool disconnect = true;
+    bool discard = false;
+    uint64_t sel = 0;
+    if (enabled && activeFu && outputIdx < activeFu->outputPorts.size()) {
+      if (outputIdx < outputSelects.size() && outputSelects[outputIdx] >= 0) {
+        sel = static_cast<uint64_t>(outputSelects[outputIdx]);
+        disconnect = false;
+      } else {
+        disconnect = false;
+        discard = true;
+      }
+    }
+    packMuxField(cfg.words, bitPos, peOutputSelBits, sel, discard, disconnect);
+  }
+
+  if (maxFuConfigBits > 0) {
+    if (enabled && activeFu) {
+      const FUConfigSelection *selection =
+          findFUConfigSelection(fuConfigs, activeFuId);
+      uint32_t configStart = bitPos;
+      packFUConfigBits(cfg.words, bitPos, activeFu, selection, complete);
+      unsigned actualBits = bitPos - configStart;
+      if (actualBits < maxFuConfigBits)
+        packBits(cfg.words, bitPos, 0u, maxFuConfigBits - actualBits);
+      else if (actualBits > maxFuConfigBits)
+        complete = false;
+    } else {
+      packBits(cfg.words, bitPos, 0u, maxFuConfigBits);
+    }
+  }
+
+  cfg.complete = complete;
+  globalComplete = globalComplete && complete;
+  return cfg;
+}
+
+GeneratedNodeConfig buildTemporalPEConfig(const PEContainment &pe,
+                                          const MappingState &state,
+                                          const Graph &dfg, const Graph &adg,
+                                          llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                                          llvm::ArrayRef<FUConfigSelection> fuConfigs,
+                                          bool &globalComplete) {
+  GeneratedNodeConfig cfg;
+  bool complete = true;
+  unsigned fuCount = pe.fuNodeIds.size();
+  if (fuCount == 0 || pe.numInstruction == 0)
+    return cfg;
+
+  unsigned opcodeBits = bitWidthForChoices(fuCount);
+  unsigned regIdxBits = bitWidthForChoices(pe.numRegister);
+  unsigned operandCfgWidth = pe.numRegister > 0 ? (1 + regIdxBits) : 0;
+  unsigned inputMuxWidth = bitWidthForChoices(pe.numInputPorts) + 2;
+  unsigned outputMuxWidth = bitWidthForChoices(pe.numOutputPorts) + 2;
+  unsigned resultCfgWidth =
+      pe.tagWidth + (pe.numRegister > 0 ? (1 + regIdxBits) : 0);
+
+  unsigned maxFuInputs = 0;
+  unsigned maxFuOutputs = 0;
+  for (IdIndex fuId : pe.fuNodeIds) {
+    const Node *fuNode = adg.getNode(fuId);
+    if (!fuNode)
+      continue;
+    maxFuInputs = std::max<unsigned>(maxFuInputs, fuNode->inputPorts.size());
+    maxFuOutputs = std::max<unsigned>(maxFuOutputs, fuNode->outputPorts.size());
+  }
+
+  PERouteSummary routes = collectPERouteSummary(pe, state, dfg, adg);
+  complete = complete && routes.complete;
+  TemporalConfigPlan temporalPlan =
+      buildTemporalConfigPlan(pe, state, dfg, adg, edgeKinds);
+  complete = complete && temporalPlan.complete;
+  auto &usedFUs = temporalPlan.usedFUs;
+  if (usedFUs.size() > pe.numInstruction)
+    complete = false;
+
+  uint32_t bitPos = 0;
+  for (unsigned slot = 0; slot < pe.numInstruction; ++slot) {
+    bool valid = slot < usedFUs.size();
+    uint64_t tag = 0;
+    unsigned opcode = 0;
+    const Node *fuNode = nullptr;
+    llvm::SmallVector<int, 4> inputSelects;
+    llvm::SmallVector<int, 4> outputSelects;
+
+    if (valid) {
+      opcode = usedFUs[slot].first;
+      IdIndex fuId = usedFUs[slot].second;
+      fuNode = adg.getNode(fuId);
+      if (routes.inputPortSelects.count(fuId))
+        inputSelects = routes.inputPortSelects.lookup(fuId);
+      if (routes.outputPortSelects.count(fuId))
+        outputSelects = routes.outputPortSelects.lookup(fuId);
+      auto tags = routes.tagsByFU.lookup(fuId);
+      if (tags.empty()) {
+        complete = false;
+      } else {
+        tag = tags.front();
+        if (tags.size() > 1)
+          complete = false;
+      }
+    }
+
+    packBits(cfg.words, bitPos, valid ? 1u : 0u, 1);
+    packBits(cfg.words, bitPos, tag, pe.tagWidth);
+    packBits(cfg.words, bitPos, opcode, opcodeBits);
+
+    for (unsigned operandIdx = 0; operandIdx < maxFuInputs; ++operandIdx) {
+      if (operandCfgWidth == 0)
+        continue;
+      uint64_t regIdx = 0;
+      bool isReg = false;
+      if (valid && fuNode) {
+        auto found = temporalPlan.operandRegsByFU.find(usedFUs[slot].second);
+        if (found != temporalPlan.operandRegsByFU.end() &&
+            operandIdx < found->second.size() &&
+            found->second[operandIdx].has_value()) {
+          regIdx = *found->second[operandIdx];
+          isReg = true;
+        }
+      }
+      packBits(cfg.words, bitPos, regIdx, regIdxBits);
+      packBits(cfg.words, bitPos, isReg ? 1u : 0u, 1);
+    }
+
+    for (unsigned inputIdx = 0; inputIdx < maxFuInputs; ++inputIdx) {
+      bool disconnect = true;
+      bool discard = false;
+      uint64_t sel = 0;
+      bool isReg = false;
+      if (valid && fuNode) {
+        auto found = temporalPlan.operandRegsByFU.find(usedFUs[slot].second);
+        if (found != temporalPlan.operandRegsByFU.end() &&
+            inputIdx < found->second.size() &&
+            found->second[inputIdx].has_value()) {
+          isReg = true;
+        }
+      }
+      if (!isReg && valid && fuNode && inputIdx < fuNode->inputPorts.size()) {
+        if (inputIdx < inputSelects.size() && inputSelects[inputIdx] >= 0) {
+          sel = static_cast<uint64_t>(inputSelects[inputIdx]);
+          disconnect = false;
+        }
+      }
+      packMuxField(cfg.words, bitPos, inputMuxWidth - 2, sel, discard,
+                   disconnect);
+    }
+
+    for (unsigned outputIdx = 0; outputIdx < maxFuOutputs; ++outputIdx) {
+      bool disconnect = true;
+      bool discard = false;
+      uint64_t sel = 0;
+      if (valid && fuNode && outputIdx < fuNode->outputPorts.size()) {
+        if (outputIdx < outputSelects.size() && outputSelects[outputIdx] >= 0) {
+          sel = static_cast<uint64_t>(outputSelects[outputIdx]);
+          disconnect = false;
+        } else {
+          disconnect = false;
+          discard = true;
+        }
+      }
+      packMuxField(cfg.words, bitPos, outputMuxWidth - 2, sel, discard,
+                   disconnect);
+    }
+
+    for (unsigned resultIdx = 0; resultIdx < maxFuOutputs; ++resultIdx) {
+      if (resultCfgWidth == 0)
+        continue;
+      uint64_t resultTag = 0;
+      uint64_t regIdx = 0;
+      bool isReg = false;
+      if (valid && fuNode) {
+        auto found = temporalPlan.resultRegsByFU.find(usedFUs[slot].second);
+        if (found != temporalPlan.resultRegsByFU.end() &&
+            resultIdx < found->second.size() &&
+            found->second[resultIdx].has_value()) {
+          regIdx = *found->second[resultIdx];
+          isReg = true;
+        }
+      }
+      if (isReg) {
+        resultTag = 0;
+        if (resultIdx < outputSelects.size() && outputSelects[resultIdx] >= 0)
+          complete = false;
+      } else if (valid && fuNode && resultIdx < fuNode->outputPorts.size() &&
+                 resultIdx < outputSelects.size() &&
+                 outputSelects[resultIdx] >= 0) {
+        resultTag = tag;
+      }
+      packBits(cfg.words, bitPos, resultTag, pe.tagWidth);
+      if (pe.numRegister > 0) {
+        packBits(cfg.words, bitPos, regIdx, regIdxBits);
+        packBits(cfg.words, bitPos, isReg ? 1u : 0u, 1);
+      }
+    }
+  }
+
+  for (IdIndex fuId : pe.fuNodeIds) {
+    const Node *fuNode = adg.getNode(fuId);
+    const FUConfigSelection *selection = findFUConfigSelection(fuConfigs, fuId);
+    packFUConfigBits(cfg.words, bitPos, fuNode, selection, complete);
+  }
+
+  cfg.complete = complete;
+  globalComplete = globalComplete && complete;
+  return cfg;
+}
+
 } // namespace
 
 bool ConfigGen::buildConfigArtifacts(const MappingState &state,
                                      const Graph &dfg, const Graph &adg,
+                                     const ADGFlattener &flattener,
+                                     llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                                      llvm::ArrayRef<FUConfigSelection> fuConfigs) {
   nodeConfigs_.clear();
   configSlices_.clear();
@@ -922,12 +1680,6 @@ bool ConfigGen::buildConfigArtifacts(const MappingState &state,
         continue;
     } else if (resourceClass == "memory") {
       generated = buildMemoryConfig(hwNode, hwId, state, dfg, adg);
-    } else if (resourceClass == "functional") {
-      generated = buildFunctionUnitConfig(fuConfigs, hwId);
-      if (generated.words.empty()) {
-        configComplete_ = false;
-        continue;
-      }
     } else {
       continue;
     }
@@ -955,6 +1707,43 @@ bool ConfigGen::buildConfigArtifacts(const MappingState &state,
     configWords_.insert(configWords_.end(), nodeCfg.words.begin(),
                         nodeCfg.words.end());
     configComplete_ = configComplete_ && nodeCfg.complete;
+  }
+
+  for (const auto &pe : flattener.getPEContainment()) {
+    GeneratedNodeConfig generated;
+    if (pe.peKind == "spatial_pe") {
+      generated = buildSpatialPEConfig(pe, state, dfg, adg, fuConfigs,
+                                       configComplete_);
+    } else if (pe.peKind == "temporal_pe") {
+      generated = buildTemporalPEConfig(pe, state, dfg, adg, edgeKinds,
+                                        fuConfigs,
+                                        configComplete_);
+    } else {
+      continue;
+    }
+
+    if (generated.words.empty())
+      continue;
+
+    NodeConfig nodeCfg;
+    nodeCfg.name = pe.peName;
+    nodeCfg.kind = pe.peKind;
+    nodeCfg.hwNode = INVALID_ID;
+    nodeCfg.complete = generated.complete;
+    nodeCfg.words = std::move(generated.words);
+    nodeConfigs_.push_back(nodeCfg);
+
+    ConfigSlice slice;
+    slice.name = nodeCfg.name;
+    slice.kind = nodeCfg.kind;
+    slice.hwNode = INVALID_ID;
+    slice.wordOffset = static_cast<uint32_t>(configWords_.size());
+    slice.wordCount = static_cast<uint32_t>(nodeCfg.words.size());
+    slice.complete = nodeCfg.complete;
+    configSlices_.push_back(slice);
+
+    configWords_.insert(configWords_.end(), nodeCfg.words.begin(),
+                        nodeCfg.words.end());
   }
 
   configBlob_.reserve(configWords_.size() * sizeof(uint32_t));
@@ -998,16 +1787,28 @@ bool ConfigGen::writeConfigJson(const std::string &path) const {
   out << "  \"complete\": " << (configComplete_ ? "true" : "false") << ",\n";
   out << "  \"coverage_note\": "
       << (configComplete_
-              ? "\"all currently modeled configurable nodes serialized\""
-              : "\"routing/tag/memory slices serialized; tech-mapped function_unit mux selections are serialized; PE mux/demux and remaining runtime config are not fully modeled yet\"")
+              ? "\"all currently modeled configurable slices serialized\""
+              : "\"routing, tag, memory, spatial_pe, and temporal_pe slices serialized; some slice contents remain partially modeled\"")
       << ",\n";
+  out << "  \"words\": [";
+  for (size_t i = 0; i < configWords_.size(); ++i) {
+    if (i > 0)
+      out << ", ";
+    out << configWords_[i];
+  }
+  out << "],\n";
   out << "  \"slices\": [\n";
   for (size_t i = 0; i < configSlices_.size(); ++i) {
     const auto &slice = configSlices_[i];
     if (i > 0)
       out << ",\n";
     out << "    {\"name\": \"" << slice.name << "\", \"kind\": \""
-        << slice.kind << "\", \"hw_node\": " << slice.hwNode
+        << slice.kind << "\", \"hw_node\": ";
+    if (slice.hwNode == INVALID_ID)
+      out << "null";
+    else
+      out << slice.hwNode;
+    out
         << ", \"word_offset\": " << slice.wordOffset
         << ", \"word_count\": " << slice.wordCount
         << ", \"complete\": " << (slice.complete ? "true" : "false") << "}";
@@ -1061,7 +1862,7 @@ bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
                          llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                          llvm::ArrayRef<FUConfigSelection> fuConfigs,
                          const std::string &basePath, int seed) {
-  if (!buildConfigArtifacts(state, dfg, adg, fuConfigs))
+  if (!buildConfigArtifacts(state, dfg, adg, flattener, edgeKinds, fuConfigs))
     return false;
   if (!writeConfigBinary(basePath + ".config.bin"))
     return false;
@@ -1144,6 +1945,20 @@ bool ConfigGen::writeMapJson(const MappingState &state, const Graph &dfg,
         hwNodeId = state.swNodeToHwNode[srcPort->parentNode];
       }
       out << ", \"kind\": \"intra_fu\"";
+      if (hwNodeId != INVALID_ID)
+        out << ", \"hw_node\": " << hwNodeId;
+      out << ", \"path\": []}";
+      continue;
+    }
+    if (eid < edgeKinds.size() &&
+        edgeKinds[eid] == TechMappedEdgeKind::TemporalReg) {
+      IdIndex hwNodeId = INVALID_ID;
+      const Port *srcPort = dfg.getPort(edge->srcPort);
+      if (srcPort && srcPort->parentNode != INVALID_ID &&
+          srcPort->parentNode < state.swNodeToHwNode.size()) {
+        hwNodeId = state.swNodeToHwNode[srcPort->parentNode];
+      }
+      out << ", \"kind\": \"temporal_reg\"";
       if (hwNodeId != INVALID_ID)
         out << ", \"hw_node\": " << hwNodeId;
       out << ", \"path\": []}";
@@ -1372,6 +2187,29 @@ bool ConfigGen::writeMapJson(const MappingState &state, const Graph &dfg,
   }
   out << "\n  ],\n";
 
+  out << "  \"temporal_registers\": [\n";
+  first = true;
+  for (const auto &pe : flattener.getPEContainment()) {
+    if (pe.peKind != "temporal_pe")
+      continue;
+    auto temporalPlan = buildTemporalConfigPlan(pe, state, dfg, adg, edgeKinds);
+    for (const auto &binding : temporalPlan.registerBindings) {
+      if (!first)
+        out << ",\n";
+      first = false;
+      out << "    {\"pe_name\": \"" << binding.peName << "\"";
+      out << ", \"sw_edge\": " << binding.swEdgeId;
+      out << ", \"register_index\": " << binding.registerIndex;
+      out << ", \"writer_sw_node\": " << binding.writerSwNode;
+      out << ", \"reader_sw_node\": " << binding.readerSwNode;
+      out << ", \"writer_hw_node\": " << binding.writerHwNode;
+      out << ", \"reader_hw_node\": " << binding.readerHwNode;
+      out << ", \"writer_output_index\": " << binding.writerOutputIndex;
+      out << ", \"reader_input_index\": " << binding.readerInputIndex << "}";
+    }
+  }
+  out << "\n  ],\n";
+
   out << "  \"memory_regions\": [\n";
   first = true;
   for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(adg.nodes.size());
@@ -1506,6 +2344,9 @@ bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
       out << " : INTRA_FU";
       if (hwNodeId != INVALID_ID)
         out << " (hw_node " << hwNodeId << ")";
+    } else if (eid < edgeKinds.size() &&
+               edgeKinds[eid] == TechMappedEdgeKind::TemporalReg) {
+      out << " : TEMPORAL_REG";
     } else if (eid < state.swEdgeToHwPaths.size() &&
                !state.swEdgeToHwPaths[eid].empty()) {
       auto path = buildExportPathForEdge(eid, state, dfg, adg);
@@ -1526,6 +2367,24 @@ bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
     }
     out << "\n";
   }
+
+  out << "\n--- Temporal Registers ---\n";
+  bool emittedTemporalReg = false;
+  for (const auto &pe : flattener.getPEContainment()) {
+    if (pe.peKind != "temporal_pe")
+      continue;
+    auto temporalPlan = buildTemporalConfigPlan(pe, state, dfg, adg, edgeKinds);
+    for (const auto &binding : temporalPlan.registerBindings) {
+      emittedTemporalReg = true;
+      out << pe.peName << " reg[" << binding.registerIndex << "] <- edge["
+          << binding.swEdgeId << "] writer_sw=" << binding.writerSwNode
+          << " reader_sw=" << binding.readerSwNode << " writer_out="
+          << binding.writerOutputIndex << " reader_in="
+          << binding.readerInputIndex << "\n";
+    }
+  }
+  if (!emittedTemporalReg)
+    out << "(none)\n";
 
   // PE utilization summary.
   out << "\n--- PE Utilization ---\n";

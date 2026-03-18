@@ -769,10 +769,10 @@ private:
       return executeCondBr(nodeId, node);
     if (opMatches(opName, "select"))
       return executeSelect(nodeId, node);
-    if (opMatches(opName, "static_mux"))
-      return executeStaticMux(nodeId, node);
-    if (opMatches(opName, "mux"))
-      return executeMux(nodeId, node);
+    if (opName == "handshake.mux")
+      return executeHandshakeMux(nodeId, node);
+    if (opName == "fabric.mux")
+      return executeFabricMux(nodeId, node);
     if (opMatches(opName, "load"))
       return executeLoad(nodeId, node);
     if (opMatches(opName, "store"))
@@ -1107,7 +1107,7 @@ private:
     return action;
   }
 
-  Action executeMux(IdIndex, const Node *node) {
+  Action executeHandshakeMux(IdIndex, const Node *node) {
     Action action;
     if (node->inputPorts.size() < 2 || node->outputPorts.empty())
       return action;
@@ -1132,7 +1132,7 @@ private:
     return action;
   }
 
-  Action executeStaticMux(IdIndex, const Node *node) {
+  Action executeFabricMux(IdIndex, const Node *node) {
     Action action;
     unsigned numInputs = static_cast<unsigned>(node->inputPorts.size());
     unsigned numOutputs = static_cast<unsigned>(node->outputPorts.size());
@@ -1148,7 +1148,7 @@ private:
 
     if (numInputs == 1 && numOutputs == 1) {
       if (disconnect || discard) {
-        action.error = "1:1 static_mux cannot set discard or disconnect";
+        action.error = "1:1 mux cannot set discard or disconnect";
         return action;
       }
       if (!hasInputToken(node->inputPorts.front()))
@@ -1166,7 +1166,7 @@ private:
 
     if (numOutputs == 1) {
       if (sel >= numInputs) {
-        action.error = "static_mux select out of range";
+        action.error = "mux select out of range";
         return action;
       }
 
@@ -1198,7 +1198,7 @@ private:
 
     if (numInputs == 1) {
       if (sel >= numOutputs) {
-        action.error = "static_mux select out of range";
+        action.error = "mux select out of range";
         return action;
       }
       if (!hasInputToken(node->inputPorts.front()))
@@ -1213,7 +1213,7 @@ private:
       return action;
     }
 
-    action.error = "static_mux must be either M:1 or 1:M";
+    action.error = "mux must be either M:1 or 1:M";
     return action;
   }
 

@@ -61,6 +61,7 @@ private:
 
   // BFS routing.
   bool runRouting(MappingState &state, const Graph &dfg, const Graph &adg,
+                  llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                   int seed = -1);
 
   // Sentinel binding: map DFG boundary nodes to ADG boundary nodes.
@@ -73,21 +74,35 @@ private:
 
   // Validation.
   bool runValidation(const MappingState &state, const Graph &dfg,
-                     const Graph &adg,
+                     const Graph &adg, const ADGFlattener &flattener,
                      llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                      std::string &diagnostics);
 
   // Routing helpers.
   llvm::SmallVector<IdIndex, 8> findPath(IdIndex srcHwPort, IdIndex dstHwPort,
+                                          IdIndex swEdgeId,
                                           const MappingState &state,
+                                          const Graph &dfg,
                                           const Graph &adg);
   bool isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
-                   const MappingState &state, const Graph &adg);
+                   IdIndex swEdgeId,
+                   llvm::ArrayRef<IdIndex> candidatePath,
+                   const MappingState &state, const Graph &dfg,
+                   const Graph &adg);
   bool isEdgeRoutable(IdIndex edgeId, const MappingState &state,
                       const Graph &dfg);
   bool routeOnePass(MappingState &state, const Graph &dfg, const Graph &adg,
+                    llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                     const std::vector<IdIndex> &edgeOrder,
                     unsigned &routed, unsigned &total);
+  bool hasTaggedPathConflict(IdIndex swEdgeId,
+                             llvm::ArrayRef<IdIndex> candidatePath,
+                             const MappingState &state, const Graph &dfg,
+                             const Graph &adg);
+  bool validateTaggedPathConflicts(const MappingState &state, const Graph &dfg,
+                                   const Graph &adg,
+                                   llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                                   std::string &diagnostics);
 
   // Placement scoring.
   double scorePlacement(IdIndex swNode, IdIndex hwNode,

@@ -6,6 +6,8 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <string>
+
 namespace mlir {
 class ModuleOp;
 class MLIRContext;
@@ -24,6 +26,7 @@ struct ConnectivityMatrix {
 /// PE containment record: which FU nodes belong to which PE.
 struct PEContainment {
   std::string peName;
+  std::string peKind;
   llvm::SmallVector<IdIndex, 8> fuNodeIds;
   /// Grid position for proximity scoring.
   int row = 0;
@@ -31,6 +34,13 @@ struct PEContainment {
   /// PE-level port counts (from the spatial_pe function type).
   unsigned numInputPorts = 0;
   unsigned numOutputPorts = 0;
+  /// Temporal PE attributes. Spatial PE keeps these zeroed.
+  unsigned numInstruction = 0;
+  unsigned numRegister = 0;
+  unsigned regFifoDepth = 0;
+  unsigned tagWidth = 0;
+  bool enableShareOperandBuffer = false;
+  unsigned operandBufferSize = 0;
 };
 
 class ADGFlattener {

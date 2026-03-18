@@ -64,6 +64,23 @@ route, including:
 - switch-internal `Input -> Output` segments
 - PE-internal ingress and egress wiring
 
+When routing passes through boundary-tagging resources, the highlighted path
+must also include:
+
+- `fabric.add_tag`
+- `fabric.map_tag`
+- `fabric.del_tag`
+
+For tagged memory-interface bridges:
+
+- ingress routes may pass through `fabric.add_tag`, `fabric.map_tag`, one or
+  more tagged `fabric.spatial_sw`, and optionally tagged `fabric.temporal_sw`
+- egress response routes should highlight the actual tagged path, which may
+  include `fabric.map_tag` before the `fabric.temporal_sw` split stage and
+  `fabric.del_tag` only at the final non-tagged boundary
+- the renderer must not assume one fixed bridge micro-topology for memory or
+  extmemory traffic
+
 The highlighted hardware path must be semantically continuous from the software
 edge's source to its destination.
 
@@ -74,7 +91,7 @@ When one or more software operations are tech-mapped into one configurable FU:
 - the FU should remain visually identifiable as one hardware component
 - software edges that become FU-internal edges should not be shown as unrouted
   inter-component failures
-- the selected `fabric.static_mux` choice should be visible in the FU view
+- the selected `fabric.mux` choice should be visible in the FU view
   whenever that choice materially changes the effective graph
 
 ## Interaction Requirements

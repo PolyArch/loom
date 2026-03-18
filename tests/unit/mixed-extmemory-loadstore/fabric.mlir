@@ -36,6 +36,13 @@ module {
     fabric.yield
   }
 
+  fabric.spatial_pe @none_sink(%p0: none) -> () {
+    fabric.function_unit @fu_sink(%arg0: none) -> () [latency = 1, interval = 1] {
+      fabric.yield
+    }
+    fabric.yield
+  }
+
   fabric.module @mixed_extmemory_loadstore_test(
       %dram: memref<?xi32>,
       %idx_ld: index, %idx_st: index, %val_st: i32,
@@ -84,13 +91,14 @@ module {
         : (!fabric.tagged<none, i1>)
           -> (!fabric.tagged<none, i1>,
               !fabric.tagged<none, i1>)
-
     %lddata = fabric.del_tag %ext0#0
         : !fabric.tagged<!fabric.bits<32>, i1> -> i32
     %lddone = fabric.del_tag %ext0#1
         : !fabric.tagged<none, i1> -> none
     %stdone0 = fabric.del_tag %tsw_st_done#0
         : !fabric.tagged<none, i1> -> none
+    fabric.instance @none_sink(%stdone0) {sym_name = "pe_sink"}
+        : (none) -> ()
     %stdone = fabric.del_tag %tsw_st_done#1
         : !fabric.tagged<none, i1> -> none
 

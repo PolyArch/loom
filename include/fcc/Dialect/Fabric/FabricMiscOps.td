@@ -40,9 +40,7 @@ def Fabric_MapTagOp : Fabric_Op<"map_tag", []> {
     OptionalAttr<ArrayAttr>:$table
   );
   let results = (outs AnyType:$result);
-  let assemblyFormat = [{
-    $tagged attr-dict `:` type($tagged) `->` type($result)
-  }];
+  let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 

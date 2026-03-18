@@ -8,11 +8,11 @@ module {
       -> (!fabric.tagged<!fabric.bits<64>, i1>,
           !fabric.tagged<!fabric.bits<64>, i1>,
           !fabric.tagged<!fabric.bits<64>, i1>)
-      attributes {
+      [
         num_register = 0 : i64,
         num_instruction = 16 : i64,
         reg_fifo_depth = 0 : i64
-      } {
+      ] {
     fabric.function_unit @fu_join(%a: none) -> (none)
         [latency = 1, interval = 1] {
       %0 = handshake.join %a : none

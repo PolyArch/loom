@@ -386,7 +386,7 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
           for (auto &bodyOp2 : fuOp.getBody().front().getOperations()) {
             if (mlir::isa<fcc::fabric::YieldOp>(bodyOp2)) continue;
             std::string on = bodyOp2.getName().getStringRef().str();
-            bool isMux = (on.find("static_mux") != std::string::npos);
+            bool isMux = (on.find("mux") != std::string::npos);
             std::string displayName = on;
             auto dotPos = on.find('.');
             if (dotPos != std::string::npos)

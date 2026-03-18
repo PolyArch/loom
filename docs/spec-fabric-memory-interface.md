@@ -50,6 +50,20 @@ Family omission is structural:
 When `ldCount > 1` or `stCount > 1`, the family still appears once
 physically, but its payload becomes tagged.
 
+For a tagged hardware memory-family port:
+
+- tagged versus non-tagged is a hardware parameter
+- `tagWidth` is a hardware parameter
+- the concrete tag carried by one software stream is a runtime value
+
+For `fabric.memory` and `fabric.extmemory`, the tagged family width must be
+large enough to encode the maximum logical lane count:
+
+- `tagWidth >= log2Ceil(max(ldCount, stCount))`
+
+The mapper may assign or transform runtime tag values, but it does not infer
+the hardware tag width.
+
 `fabric.memory` may additionally expose a memref-style externally visible view
 when `is_private` is not true. That memref represents a slave-style,
 memory-mapped access path into the scratchpad.
@@ -90,19 +104,87 @@ For multi-port memory access:
 3. the memory demultiplexes by tag internally
 4. return data or completion tokens preserve tag identity on the way back
 
-This mechanism requires:
+This mechanism does not require one fixed micro-topology.
 
-- tag-add operations on ingress
-- tagged switch routing across the relevant path
-- tag-aware split or delete on egress
+The essential requirement is:
+
+- software streams that share one hardware tagged memory-family port must carry
+  distinct runtime tag values along the shared portion of the path
+
+Those runtime tag values may be introduced or transformed in multiple ways:
+
+- by `fabric.add_tag`
+- by `fabric.map_tag`
+- by a hierarchy of tagged routing stages
+
+They may be merged:
+
+- through one centralized tagged switch
+- or through multiple staged tagged switches
+
+They may be stripped on egress by `fabric.del_tag`, but stripping is only
+required when the destination side expects a non-tagged value.
+
+In other words, FCC does not require a canonical chain such as:
+
+- `add_tag -> one switch -> memory`
+- or `memory -> one switch -> del_tag`
+
+Bridge extraction for mapper and visualization purposes may therefore stop at
+the nearest tagged route-stage port that bounds the shared memory path, even
+when no explicit `fabric.add_tag` or `fabric.del_tag` exists at the compute
+container side. This is valid when the compute-facing side already remains
+tagged.
+
+For conflict checking and route validation, FCC must compare software streams
+on the full bridge-expanded shared path, not only on the truncated
+place-and-route boundary path stored in mapper state. Shared tagged resources
+may appear entirely inside the recovered bridge suffix or prefix.
+
+What matters is the semantic contract:
+
+- a shared tagged family port must see distinct runtime tag values for the
+  logically different software streams that share it
+- any `fabric.map_tag` on that path changes the runtime tag value seen by later
+  tag-dependent routing or execution stages
+- operations other than `fabric.add_tag`, `fabric.map_tag`, and
+  `fabric.del_tag` do not change tagged shape; they only transport it
 
 ## Relationship to Switch Semantics
 
 Tagged memory traffic still obeys the switch rules of the enclosing routing
 resources. The only difference is that payload identity includes a tag field.
 
-The memory tagging scheme does not authorize illegal structural merging in
-untagged spatial-switch outputs.
+FCC may carry tagged memory traffic through:
+
+- `fabric.temporal_sw`, when route choice is tag-dependent
+- `fabric.spatial_sw`, when route choice is tag-agnostic and the tag is only
+  part of the payload
+
+In current FCC memory-bridge design intent:
+
+- ingress request mixing may use any tagged, tag-compatible routing path
+- tagged `fabric.spatial_sw` is legal for tag-agnostic merging
+- tagged `fabric.temporal_sw` is legal for tag-dependent merging or splitting
+- ingress may use one stage or multiple hierarchical stages of tagged routing
+- if an ingress path already carries a tag before it reaches the memory-family
+  port, that path-derived tag remains authoritative
+- the software lane id is only a fallback runtime-tag source when the routed
+  path has not attached any tag yet
+- egress may apply `fabric.map_tag` before the tag-dependent split if the
+  response tag namespace must be rewritten
+- egress separation may keep the tag when the destination remains tagged
+- egress separation uses `fabric.del_tag` only when the destination expects a
+  non-tagged value
+
+The memory tagging scheme does not authorize illegal structural merging at one
+spatial-switch output, whether the spatial switch payload is tagged or
+non-tagged.
+
+This remains true after tag-width adaptation. Two source-side tag values that
+start out different may still be illegal if they collapse to the same observed
+runtime tag on one shared tagged resource after LSB alignment, truncation, or
+zero-extension along the routed hardware path.
 
 ## Memory Region Model
 

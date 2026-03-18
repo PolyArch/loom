@@ -18,6 +18,12 @@ A function unit provides:
 `function_unit` is not a top-level routing resource. It lives inside
 `spatial_pe` or `temporal_pe`.
 
+Textual syntax follows the Fabric-wide split:
+
+- fixed FU structure parameters such as `latency` and `interval` live in `[]`
+- `fabric.mux` runtime control fields such as `sel`, `discard`, and
+  `disconnect` live in braces
+
 ## Port Semantics
 
 - FU ports use native semantic types such as `i32`, `f32`, `index`, or `none`.
@@ -33,17 +39,23 @@ hardware DAG.
 This DAG may be:
 
 - fixed, for single-op or fixed multi-op FUs
-- configurable, when `fabric.static_mux` is present
+- configurable, when `fabric.mux` is present
 
-## `fabric.static_mux`
+## `fabric.mux`
 
-`fabric.static_mux` is the primitive that makes FU shape configurable.
+`fabric.mux` is the primitive that makes FU shape configurable.
 
 Its control structure is:
 
 - `sel`
-- `disconnect`
 - `discard`
+- `disconnect`
+
+The encoded field order is low-to-high:
+
+- `sel`
+- `discard`
+- `disconnect`
 
 Key rules:
 
@@ -52,9 +64,9 @@ Key rules:
   semantics
 - the selected FU configuration is fixed before place-and-route
 
-## `fabric.static_mux` Operational Semantics
+## `fabric.mux` Operational Semantics
 
-`fabric.static_mux` is a handshake-aware routing primitive.
+`fabric.mux` is a handshake-aware routing primitive.
 
 It supports two structural modes:
 
@@ -114,7 +126,7 @@ Normative rules:
 
 ## Runtime-Config Ownership
 
-`fabric.static_mux` may appear in an ADG with textual runtime-config fields such
+`fabric.mux` may appear in an ADG with textual runtime-config fields such
 as `sel`, `disconnect`, and `discard`.
 
 For mapper input, these fields are not authoritative final state. They are
@@ -134,7 +146,7 @@ This is a normative distinction between:
 
 For mapping purposes, the FU is not represented only by its syntactic body.
 Instead, the mapper reasons about the effective graph after applying the chosen
-`static_mux` selections.
+`mux` selections.
 
 This distinction is normative. A DFG match is valid only against the effective
 graph, not merely against all operations textually present in the FU body.
@@ -145,7 +157,7 @@ The effective graph may cover:
 - a software subgraph with multiple operations
 
 The matching rule is structural and generic. It is not defined per named FU
-such as `mac`; any FU with internal `static_mux` nodes participates in the same
+such as `mac`; any FU with internal `mux` nodes participates in the same
 configuration-enumeration and effective-graph extraction model.
 
 ## Relationship to PE Configuration

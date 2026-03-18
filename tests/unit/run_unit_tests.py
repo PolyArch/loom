@@ -35,6 +35,42 @@ class UnitResult:
     return_code: int
 
 
+def get_case_suffix(case: UnitCase) -> str:
+    unit_name = case.dfg_file.parent.name
+    if case.name == unit_name:
+        return ""
+    prefix = unit_name + "-"
+    if case.name.startswith(prefix):
+        return case.name[len(prefix):]
+    return case.name
+
+
+def get_expect_fail_file(case: UnitCase) -> Path | None:
+    unit_dir = case.dfg_file.parent
+    suffix = get_case_suffix(case)
+    candidates = []
+    if suffix:
+        candidates.append(unit_dir / f"expect-fail-{suffix}.txt")
+    candidates.append(unit_dir / "expect-fail.txt")
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
+def load_expect_fail_patterns(case: UnitCase) -> list[str] | None:
+    path = get_expect_fail_file(case)
+    if path is None:
+        return None
+    patterns = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        patterns.append(text)
+    return patterns
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
@@ -116,6 +152,40 @@ def render_run_script(case: UnitCase, repo_root: Path) -> str:
     return "\n".join(lines)
 
 
+def run_optional_checker(case: UnitCase, repo_root: Path, timeout_sec: int,
+                         run_out: Path, run_err: Path) -> tuple[str, int]:
+    unit_dir = case.dfg_file.parent
+    checker_py = unit_dir / "check.py"
+    checker_sh = unit_dir / "check.sh"
+
+    if checker_py.exists():
+        cmd = [sys.executable, str(checker_py), case.name, str(case.output_dir)]
+    elif checker_sh.exists():
+        cmd = [str(checker_sh), case.name, str(case.output_dir)]
+    else:
+        return ("pass", 0)
+
+    with run_out.open("a", encoding="utf-8") as out_handle, run_err.open(
+        "a", encoding="utf-8"
+    ) as err_handle:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=repo_root,
+            stdout=out_handle,
+            stderr=err_handle,
+            start_new_session=True,
+        )
+        try:
+            return_code = proc.wait(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            terminate_process_tree(proc)
+            return ("timeout", 124)
+
+    if return_code == 0:
+        return ("pass", 0)
+    return ("fail", return_code)
+
+
 def write_run_script(case: UnitCase, repo_root: Path) -> Path:
     case.output_dir.mkdir(parents=True, exist_ok=True)
     run_cmd = case.output_dir / "run.cmd"
@@ -145,6 +215,7 @@ def run_case(case: UnitCase, repo_root: Path, timeout_sec: int) -> UnitResult:
     run_cmd = write_run_script(case, repo_root)
     run_out = case.output_dir / "run.out"
     run_err = case.output_dir / "run.err"
+    expect_fail_patterns = load_expect_fail_patterns(case)
 
     with run_out.open("w", encoding="utf-8") as out_handle, run_err.open(
         "w", encoding="utf-8"
@@ -164,7 +235,44 @@ def run_case(case: UnitCase, repo_root: Path, timeout_sec: int) -> UnitResult:
             err_handle.flush()
             return UnitResult(case=case, status="timeout", return_code=124)
 
+    if expect_fail_patterns is not None:
+        if return_code == 0:
+            with run_err.open("a", encoding="utf-8") as err_handle:
+                err_handle.write(
+                    "\nExpected this unit case to fail, but it succeeded.\n"
+                )
+            return UnitResult(case=case, status="fail", return_code=0)
+
+        combined = run_out.read_text(encoding="utf-8") + "\n" + run_err.read_text(
+            encoding="utf-8"
+        )
+        missing = [pattern for pattern in expect_fail_patterns if pattern not in combined]
+        if missing:
+            with run_err.open("a", encoding="utf-8") as err_handle:
+                err_handle.write(
+                    "\nExpected failure patterns were not found:\n"
+                )
+                for pattern in missing:
+                    err_handle.write(f"  - {pattern}\n")
+            return UnitResult(case=case, status="fail", return_code=return_code)
+        return UnitResult(case=case, status="pass", return_code=0)
+
     if return_code == 0:
+        checker_status, checker_code = run_optional_checker(
+            case, repo_root, timeout_sec, run_out, run_err
+        )
+        if checker_status == "timeout":
+            with run_err.open("a", encoding="utf-8") as err_handle:
+                err_handle.write(
+                    f"\nTimed out after {timeout_sec} seconds while running unit checker.\n"
+                )
+            return UnitResult(case=case, status="timeout", return_code=124)
+        if checker_status == "fail":
+            with run_err.open("a", encoding="utf-8") as err_handle:
+                err_handle.write(
+                    f"\nUnit checker failed with exit code {checker_code}.\n"
+                )
+            return UnitResult(case=case, status="fail", return_code=checker_code)
         return UnitResult(case=case, status="pass", return_code=0)
     return UnitResult(case=case, status="fail", return_code=return_code)
 

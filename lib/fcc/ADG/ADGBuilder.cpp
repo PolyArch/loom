@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "fcc/ADG/ADGBuilder.h"
+#include "fcc/ADG/ADGVerifier.h"
 
 #include "fcc/Dialect/Dataflow/DataflowDialect.h"
 #include "fcc/Dialect/Fabric/FabricDialect.h"
@@ -171,8 +172,8 @@ static void emitFUBody(std::ostringstream &os, const FUDef &fu,
     return;
   }
 
-  // Multi-op FU: generate an internal DAG with static_mux output selection.
-  // For FUs with 2+ ops, chain them and add a fabric.static_mux at the output.
+  // Multi-op FU: generate an internal DAG with mux output selection.
+  // For FUs with 2+ ops, chain them and add a fabric.mux at the output.
   if (fu.ops.size() >= 2) {
     // Generate the first op (e.g. arith.muli %a, %b -> %d)
     const std::string &op0 = fu.ops[0];
@@ -191,9 +192,9 @@ static void emitFUBody(std::ostringstream &os, const FUDef &fu,
          << fu.outputTypes[0] << "\n";
     }
 
-    // Generate fabric.static_mux to select between the two results.
-    // Format: fabric.static_mux %d, %e {sel = 0 : i64} : T, T -> T
-    os << indent << "  %g = fabric.static_mux"
+    // Generate fabric.mux to select between the two results.
+    // Format: fabric.mux %d, %e {sel = 0 : i64} : T, T -> T
+    os << indent << "  %g = fabric.mux"
        << " %d, %e"
        << " {sel = 0 : i64, discard = false, disconnect = false}"
        << " : " << fu.outputTypes[0] << ", " << fu.outputTypes[0]
@@ -1242,6 +1243,12 @@ void ADGBuilder::exportMLIR(const std::string &path) {
 
   if (failed(mlir::verify(*module))) {
     llvm::errs() << "error: generated MLIR failed verification\n";
+    llvm::errs() << "--- generated MLIR ---\n" << mlirText << "---\n";
+    std::exit(1);
+  }
+
+  if (failed(fcc::verifyFabricModule(*module))) {
+    llvm::errs() << "error: generated ADG failed fabric.module verification\n";
     llvm::errs() << "--- generated MLIR ---\n" << mlirText << "---\n";
     std::exit(1);
   }

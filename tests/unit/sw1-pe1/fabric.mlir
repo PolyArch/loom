@@ -11,7 +11,7 @@ module {
     fabric.function_unit @fu_mac(%arg0: i32, %arg1: i32, %arg2: i32) -> (i32, i32) [latency = 1, interval = 1] {
       %d = arith.muli %arg0, %arg1 : i32
       %e = arith.addi %d, %arg2 : i32
-      %g = fabric.static_mux %d, %e {sel = 0 : i64, discard = false, disconnect = false} : i32, i32 -> i32
+      %g = fabric.mux %d, %e {sel = 0 : i64, discard = false, disconnect = false} : i32, i32 -> i32
       fabric.yield %g, %d : i32, i32
     }
     fabric.yield

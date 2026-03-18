@@ -32,18 +32,53 @@ mapping and visualization model.
 
 ## Configuration Layout
 
-The spatial PE configuration contains:
+The spatial PE configuration is one container-local record.
+
+Its low-to-high bit layout is:
+
+- `spatial_pe_enable`
+- `opcode`
+- input mux controls
+- output demux controls
+- FU internal config payload
+
+`spatial_pe_enable` is the least-significant bit. When it is `0`, the PE is
+architecturally inactive and may be used for clock gating or power gating.
+
+The remaining payload contains:
 
 - opcode selection for the active FU
 - one input-mux control word per maximum FU input count
 - one output-demux control word per maximum FU output count
 - one FU internal config payload sized by the maximum FU config width
 
-Each mux or demux control word contains:
+Opcode numbering is derived from `function_unit` definition order inside the
+`spatial_pe` body, starting from `0`.
+
+The number of mux or demux control words is derived from:
+
+- `max_fu_inputs` across all FUs in the PE
+- `max_fu_outputs` across all FUs in the PE
+
+Each mux or demux control field is encoded low-to-high as:
 
 - `sel`
-- `disconnect`
 - `discard`
+- `disconnect`
+
+The FU-internal config payload is concatenated in two nested orders:
+
+- `function_unit` order follows the `spatial_pe` body definition order
+- within one `function_unit`, `fabric.mux` fields follow body occurrence
+  order
+
+For an unused `spatial_pe`, the default serialized state is:
+
+- `spatial_pe_enable = 0`
+- `opcode = 0`
+- all input mux fields use `disconnect = 1`
+- all output demux fields use `disconnect = 1`
+- all FU-internal config bits are `0`
 
 ## Disconnect and Discard
 
@@ -51,7 +86,8 @@ Each mux or demux control word contains:
 
 - normal: selected PE input reaches the FU input
 - disconnect: FU input is inert
-- discard: selected PE input is drained without reaching the FU
+- discard is reserved in the same field shape and follows the same handshake
+  meaning as other mux-like controls when used
 
 ### Output Demux
 

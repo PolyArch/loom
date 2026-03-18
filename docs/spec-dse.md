@@ -23,7 +23,7 @@ architecture must preserve the candidate abstraction.
 ### Layer 2: Tech-Mapping Co-Design
 
 This layer matches DFG patterns against configurable `function_unit` DAGs.
-It is FCC-specific because `fabric.static_mux` changes FU behavior.
+It is FCC-specific because `fabric.mux` changes FU behavior.
 
 Output:
 
@@ -33,7 +33,7 @@ Output:
 
 Normative Layer-2 behavior:
 
-- enumerate configurable FU variants induced by `fabric.static_mux`
+- enumerate configurable FU variants induced by `fabric.mux`
 - derive an effective graph for each variant
 - match DFG subgraphs against those effective graphs
 - score coverage and candidate quality quickly enough for exploration

@@ -12,8 +12,30 @@ The main mapping outputs are:
 - `<base>.map.json`
 - `<base>.map.txt`
 - `<base>.viz.html`
+- `<base>.config.json`
+- `<base>.config.bin`
+- `<base>.config.h`
 
 Additional config or simulation artifacts may be produced by later stages.
+
+## Config JSON
+
+`<base>.config.json` is the authoritative structured summary of serialized
+runtime configuration.
+
+It must include:
+
+- flattened `words`
+- per-slice metadata with `word_offset`, `word_count`, and completeness
+- container slices for `spatial_pe` and `temporal_pe`, not only primitive
+  routing or memory nodes
+
+For `spatial_pe`, the slice low bit is `spatial_pe_enable`, followed by opcode,
+PE input mux controls, PE output demux controls, and the selected FU-internal
+config payload.
+
+For `temporal_pe`, the slice low region is instruction memory ordered by slot,
+and the high region stores persistent per-function_unit internal config bits.
 
 ## JSON Mapping Report
 
@@ -27,6 +49,7 @@ At minimum, the report should include:
 - `node_mappings`
 - `edge_routings`
 - `port_table`
+- `temporal_registers`
 - `memory_regions`
 
 ### Required Semantics
@@ -44,6 +67,8 @@ At minimum, the report should include:
 - a route description whose step semantics are reconstructable
 - whether the edge is routed through inter-component hardware or absorbed as an
   intra-FU edge by tech-mapping
+- whether the edge is an internal temporal-register dependency rather than an
+  inter-component route
 
 `port_table` must identify:
 
@@ -66,6 +91,15 @@ At minimum, the report should include:
   - `elem_size_log2`
 - exported `addr_offset_table`
 
+`temporal_registers` must identify:
+
+- temporal PE name
+- software edge id
+- allocated register index
+- writer software and hardware node ids
+- reader software and hardware node ids
+- writer output index and reader input index
+
 ## Extended Visualization Payload
 
 FCC should evolve the JSON report to also expose component-local routing facts.
@@ -78,7 +112,10 @@ Recommended sections are:
 - `fu_configs`
   - selected effective FU configuration per mapped hardware FU
   - software nodes absorbed into that FU
-  - selected `static_mux` fields such as `sel`
+  - selected `mux` fields such as `sel`
+- `temporal_registers`
+  - explicit register-backed dependencies inside `temporal_pe`
+  - the assigned register index per writer result
 
 For memory-oriented visualization, `memory_regions` is not optional in
 practice. It is the authoritative bridge between:

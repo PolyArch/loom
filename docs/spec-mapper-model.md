@@ -75,6 +75,15 @@ answer:
 - which FU output port produced the value
 - which PE output port was selected for egress
 
+This information is also required for container-level config generation.
+A legal spatial mapping must be reconstructable into:
+
+- `spatial_pe_enable`
+- active FU opcode
+- PE input-mux selections
+- PE output-demux selections
+- selected FU-internal config bits
+
 ## Spatial Switch Contract
 
 For every configured spatial switch:
@@ -101,6 +110,53 @@ For each software memory node, the mapper must preserve:
   order of load-address, store-address, store-data and load-data, load-done,
   store-done
 
+When tagged routing is involved, the mapper computes runtime tag values for the
+mapped software flows and validates them against the hardware `tagWidth`
+already declared by the ADG. The mapper does not infer tagged versus
+non-tagged shape or hardware tag width.
+
+The comparison point is the runtime tag value observed at the actual hardware
+resource being shared, not only the source-side software notion of tag. This
+matters because FCC hardware connections allow tagged width mismatch with LSB
+alignment:
+
+- tagged wide to tagged narrow truncates high tag bits
+- tagged narrow to tagged wide zero-extends high tag bits
+
+Therefore, if two software flows share one tagged hardware edge or one tagged
+routing output, the mapper must compare the runtime tag values observed at that
+resource after any earlier `add_tag`, `map_tag`, and width adaptation along
+the routed hardware path.
+
+For memory-family routes, this comparison uses the bridge-expanded export path,
+not only the truncated boundary path used internally during placement and
+routing. Shared tagged resources inside recovered bridge suffixes or prefixes
+must still participate in conflict detection.
+
+For memory-family routing, the runtime tag value is attached to the specific
+software lane carried by one DFG edge, not merely to the region base lane.
+If `fabric.map_tag` appears on the routed path, later tag-dependent hardware
+must observe the remapped runtime tag value. `fabric.map_tag` may also change
+the declared tag width at that explicit boundary, but it must not change the
+value payload width.
+
+Bridge-boundary recovery for tagged memory families is based on route meaning,
+not on one fixed helper-op pattern. A legal bridge may terminate at:
+
+- an explicit `fabric.add_tag` / `fabric.del_tag` boundary
+- or a tagged route-stage boundary port when the adjacent compute-side region
+  already remains tagged
+
+When mapper propagates runtime tags for a memory-family route, an explicit tag
+already carried on the routed hardware path has priority. The software lane id
+acts only as a fallback source when the path has not attached any runtime tag
+yet.
+
+For `fabric.temporal_sw`, one observed runtime tag may not require multiple
+different input-to-output transitions within the same switch instance.
+Designs that collapse distinct software flows to one observed tag before a
+temporal split must be rejected.
+
 For memory compatibility:
 
 - software and hardware memrefs are matched by element width
@@ -111,6 +167,31 @@ For memory compatibility:
 The memref boundary edge may later be exported as a direct module-interface
 binding, but that export is downstream of placement. It must not be interpreted
 as evidence that memory-interface selection was trivial or predetermined.
+
+## Temporal PE Contract
+
+For every configured temporal PE, the mapper must preserve enough information
+to serialize:
+
+- slot validity
+- instruction tag
+- opcode
+- operand-routing state
+- input-mux selections
+- output-demux selections
+- result-tag defaults
+- internal temporal register assignments
+- persistent per-function_unit config state
+
+For current FCC register-backed temporal edges:
+
+- an internal dependency between two software nodes mapped into the same
+  `temporal_pe` is represented as a `temporal_reg` edge, not as a routed
+  inter-component hardware path
+- register assignment is keyed by the writer software output port
+- one writer may feed multiple readers through the same register
+- total distinct writer output ports mapped this way must not exceed
+  `num_register`
 
 ## Hard Constraints
 
@@ -127,10 +208,24 @@ FCC uses the following hard-constraint families:
 - `C9 FU config consistency`: one physical temporal FU must not require
   incompatible internal configurations simultaneously
 
+For op compatibility:
+
+- `dataflow.invariant` and `dataflow.gate` are distinct compatibility classes
+- the mapper must not treat one as an alias of the other
+
+Current implementation note:
+
+- the mapper now emits an explicit failure when one forced temporal placement
+  would require incompatible `fabric.mux` settings on the same physical
+  `function_unit`
+- repeated temporal reuse of one physical `function_unit` with identical
+  internal config is not yet expanded into multiple slots by the current
+  mapper
+
 ## Runtime-Config Hint Contract
 
 An ADG may carry textual runtime-config fields on hardware ops, especially on
-`fabric.static_mux`.
+`fabric.mux`.
 
 For mapping semantics:
 
@@ -138,7 +233,7 @@ For mapping semantics:
 - Layer 2 may overwrite them when selecting an effective FU graph
 - Layer 3 must treat the Layer-2 result as fixed and must not reselect FU
   internal configuration
-- a degenerate `1:1` `fabric.static_mux` is treated as transparent routing and
+- a degenerate `1:1` `fabric.mux` is treated as transparent routing and
   should not survive as a meaningful tech-mapping decision
 
 This contract exists so hand-authored ADGs remain legal while the mapper still

@@ -1,0 +1,1 @@
+operand_buffer_size must be absent when enable_share_operand_buffer is false

@@ -33,7 +33,7 @@ Loom's PE model is replaced by a containerized PE model:
 
 FCC introduces configurable hardware DAGs inside `function_unit`:
 
-- `fabric.static_mux` makes one physical FU represent multiple effective graphs
+- `fabric.mux` makes one physical FU represent multiple effective graphs
 - tech-mapping must choose the FU configuration, not just the FU instance
 - FU configuration is part of hardware-software co-design, not only backend
   encoding

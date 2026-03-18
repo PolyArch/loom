@@ -1,0 +1,1 @@
+reg_fifo_depth must be at least 1 when num_register is greater than 0

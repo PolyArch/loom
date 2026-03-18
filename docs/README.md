@@ -28,13 +28,14 @@ future work under this repository.
 | Spec | Description |
 |------|-------------|
 | [spec-adg-builder.md](./spec-adg-builder.md) | ADG Builder responsibilities and fabric-generation contract |
+| [spec-dataflow.md](./spec-dataflow.md) | FCC dataflow dialect semantics and mapping expectations |
 
 ## Fabric Dialect
 
 | Spec | Description |
 |------|-------------|
 | [spec-fabric.md](./spec-fabric.md) | Fabric dialect overview and operation taxonomy |
-| [spec-fabric-function_unit.md](./spec-fabric-function_unit.md) | `fabric.function_unit` and `fabric.static_mux` semantics |
+| [spec-fabric-function_unit.md](./spec-fabric-function_unit.md) | `fabric.function_unit` and `fabric.mux` semantics |
 | [spec-fabric-memory-interface.md](./spec-fabric-memory-interface.md) | Extmemory-facing routing, tagged multi-port memory, and memory region contract |
 | [spec-fabric-spatial_pe.md](./spec-fabric-spatial_pe.md) | `fabric.spatial_pe` container, mux/demux model, config layout |
 | [spec-fabric-spatial_sw.md](./spec-fabric-spatial_sw.md) | `fabric.spatial_sw`, decomposable routing, route-table semantics |

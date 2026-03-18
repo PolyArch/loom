@@ -15,9 +15,14 @@ def Fabric_SpatialSwOp : Fabric_Op<"spatial_sw", []> {
     sub-lane decomposition: -1 = non-decomposable, positive value D means
     every port is decomposed into W/D independent sub-lanes.
 
+    Ports may be either all non-tagged or all tagged. When tagged, routing is
+    still tag-agnostic: the tag bits are carried as payload and do not affect
+    route selection.
+
     connectivity_table and route_table use binary strings, one per output
     (sub-)lane. For decomposable switches, tables operate at sub-lane
-    granularity. discard_bit is per logical input port.
+    granularity. discard_bit is per logical input port. Tagged spatial switches
+    may not be decomposable.
   }];
   let arguments = (ins
     Variadic<AnyType>:$inputs,

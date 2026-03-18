@@ -5,6 +5,10 @@
 `fabric.spatial_sw` is FCC's configurable routing switch. It replaces Loom's
 older `fabric.switch` naming and adds decomposable routing support.
 
+Unlike `fabric.temporal_sw`, a `fabric.spatial_sw` never makes routing
+decisions based on tag value. If its ports are tagged, the tag travels as part
+of the payload only.
+
 ## Hardware Parameters
 
 Key hardware parameters are:
@@ -13,6 +17,13 @@ Key hardware parameters are:
 - output port count and widths
 - `connectivity_table`
 - `decomposable_bits`
+
+Port rules:
+
+- all ports must share one tag-kind
+- a `spatial_sw` may be entirely non-tagged or entirely tagged
+- mixing tagged and non-tagged ports is not allowed
+- tagged `spatial_sw` is legal, but tagged `spatial_sw` cannot be decomposable
 
 `connectivity_table` defines which input positions may legally drive which
 output positions.
@@ -39,9 +50,35 @@ granularity.
 Important rules:
 
 - every port width must be divisible by `decomposable_bits`
+- only non-tagged `spatial_sw` may use decomposition
 - `connectivity_table` and `route_table` are interpreted at sub-lane granularity
 - output sub-lanes must be fully driven
 - unused input sub-lanes may be implicitly drained
+
+## Tagged Spatial Routing
+
+For tagged ports:
+
+- the route choice still depends only on the configured `route_table`
+- the switch does not intentionally rewrite tagged shape
+- the switch behaves like a tag-agnostic carrier, not like a slot-indexed
+  `temporal_sw`
+
+If a tagged path reaches the switch through narrower or wider tagged hardware
+connections elsewhere in the ADG, the runtime tag value observed at the switch
+port follows FCC's general hardware-connection rule:
+
+- tag bits are LSB-aligned
+- wide to narrow truncates
+- narrow to wide zero-extends
+
+One important FCC use case is memory or extmemory ingress:
+
+- multiple tagged request streams may be merged through a tagged
+  `fabric.spatial_sw`
+- this is legal because ingress merging is tag-agnostic
+- response-side tagged separation is different and still requires
+  `fabric.temporal_sw`
 
 ## Fill and Broadcast Rules
 

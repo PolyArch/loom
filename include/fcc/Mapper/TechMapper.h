@@ -37,6 +37,7 @@ struct FUConfigSelection {
 enum class TechMappedEdgeKind : uint8_t {
   Routed = 0,
   IntraFU = 1,
+  TemporalReg = 2,
 };
 
 class TechMapper {

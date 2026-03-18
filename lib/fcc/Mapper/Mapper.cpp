@@ -28,6 +28,131 @@ bool isNoneType(mlir::Type type) {
   return mlir::isa<mlir::NoneType>(type);
 }
 
+bool isTemporalPENode(const Node *hwNode) {
+  return hwNode && getNodeAttrStr(hwNode, "resource_class") == "functional" &&
+         getNodeAttrStr(hwNode, "pe_kind") == "temporal_pe";
+}
+
+const PEContainment *findPEContainmentByName(const ADGFlattener &flattener,
+                                             llvm::StringRef peName) {
+  for (const auto &pe : flattener.getPEContainment()) {
+    if (pe.peName == peName)
+      return &pe;
+  }
+  return nullptr;
+}
+
+bool sameConfigFields(llvm::ArrayRef<FUConfigField> lhs,
+                      llvm::ArrayRef<FUConfigField> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (size_t i = 0; i < lhs.size(); ++i) {
+    if (lhs[i].opIndex != rhs[i].opIndex || lhs[i].opName != rhs[i].opName ||
+        lhs[i].sel != rhs[i].sel || lhs[i].discard != rhs[i].discard ||
+        lhs[i].disconnect != rhs[i].disconnect) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool detectForcedTemporalConfigConflict(
+    const TechMapper::Plan &plan, const Graph &adg, std::string &diagnostics) {
+  llvm::DenseMap<IdIndex, llvm::SmallVector<const TechMapper::Unit *, 4>>
+      forcedByHwNode;
+
+  for (const auto &unit : plan.units) {
+    if (unit.contractedNodeId == INVALID_ID || unit.candidates.empty())
+      continue;
+    if (unit.candidates.size() != 1)
+      continue;
+    IdIndex hwNodeId = unit.candidates.front().hwNodeId;
+    const Node *hwNode = adg.getNode(hwNodeId);
+    if (!isTemporalPENode(hwNode))
+      continue;
+    forcedByHwNode[hwNodeId].push_back(&unit);
+  }
+
+  for (const auto &it : forcedByHwNode) {
+    IdIndex hwNodeId = it.first;
+    const auto &units = it.second;
+    if (units.size() < 2)
+      continue;
+
+    llvm::ArrayRef<FUConfigField> firstConfig = units.front()->candidates.front().configFields;
+    for (size_t i = 1; i < units.size(); ++i) {
+      llvm::ArrayRef<FUConfigField> otherConfig =
+          units[i]->candidates.front().configFields;
+      if (sameConfigFields(firstConfig, otherConfig))
+        continue;
+
+      const Node *hwNode = adg.getNode(hwNodeId);
+      diagnostics = "Temporal function_unit config conflict on hw node " +
+                    std::to_string(hwNodeId);
+      if (hwNode) {
+        llvm::StringRef hwName = getNodeAttrStr(hwNode, "op_name");
+        llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
+        if (!hwName.empty())
+          diagnostics += " (" + hwName.str() + ")";
+        if (!peName.empty())
+          diagnostics += " in " + peName.str();
+      }
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void classifyTemporalRegisterEdges(const MappingState &state, const Graph &dfg,
+                                   const Graph &adg,
+                                   const ADGFlattener &flattener,
+                                   std::vector<TechMappedEdgeKind> &edgeKinds) {
+  if (edgeKinds.size() < dfg.edges.size())
+    edgeKinds.resize(dfg.edges.size(), TechMappedEdgeKind::Routed);
+
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId) {
+    if (edgeKinds[edgeId] != TechMappedEdgeKind::Routed)
+      continue;
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+
+    const Port *srcPort = dfg.getPort(edge->srcPort);
+    const Port *dstPort = dfg.getPort(edge->dstPort);
+    if (!srcPort || !dstPort || srcPort->parentNode == INVALID_ID ||
+        dstPort->parentNode == INVALID_ID)
+      continue;
+
+    IdIndex srcNodeId = srcPort->parentNode;
+    IdIndex dstNodeId = dstPort->parentNode;
+    if (srcNodeId >= state.swNodeToHwNode.size() ||
+        dstNodeId >= state.swNodeToHwNode.size())
+      continue;
+    IdIndex srcHwNodeId = state.swNodeToHwNode[srcNodeId];
+    IdIndex dstHwNodeId = state.swNodeToHwNode[dstNodeId];
+    if (srcHwNodeId == INVALID_ID || dstHwNodeId == INVALID_ID ||
+        srcHwNodeId == dstHwNodeId)
+      continue;
+
+    const Node *srcHwNode = adg.getNode(srcHwNodeId);
+    const Node *dstHwNode = adg.getNode(dstHwNodeId);
+    if (!isTemporalPENode(srcHwNode) || !isTemporalPENode(dstHwNode))
+      continue;
+    llvm::StringRef srcPE = getNodeAttrStr(srcHwNode, "pe_name");
+    llvm::StringRef dstPE = getNodeAttrStr(dstHwNode, "pe_name");
+    if (srcPE.empty() || srcPE != dstPE)
+      continue;
+
+    const PEContainment *pe = findPEContainmentByName(flattener, srcPE);
+    if (!pe || pe->numRegister == 0)
+      continue;
+
+    edgeKinds[edgeId] = TechMappedEdgeKind::TemporalReg;
+  }
+}
+
 /// Find the first downstream operation node connected to a sentinel's output.
 IdIndex findDownstreamNode(const Graph &graph, IdIndex sentinelNodeId) {
   const Node *sn = graph.getNode(sentinelNodeId);
@@ -59,8 +184,6 @@ IdIndex findDownstreamNode(const Graph &graph, IdIndex sentinelNodeId) {
 /// - arith.select: full-consume (all inputs consumed)
 /// They require separate FUs.
 llvm::StringRef getCompatibleOp(llvm::StringRef dfgOpName) {
-  if (dfgOpName == "dataflow.invariant")
-    return "dataflow.gate";
   // No other equivalences — arith.select needs its own fu_select
   return "";
 }
@@ -209,7 +332,9 @@ Mapper::buildCandidates(const Graph &dfg, const Graph &adg) {
 
         BridgeInfo bridge = BridgeInfo::extract(hwNode);
         if (bridge.hasBridge) {
-          if (!isBridgeCompatible(bridge, memInfo, swNode, hwNode, dfg, adg))
+          bool bridgeOk =
+              isBridgeCompatible(bridge, memInfo, swNode, hwNode, dfg, adg);
+          if (!bridgeOk)
             continue;
         } else {
           if (swNode->inputPorts.size() > hwNode->inputPorts.size())
@@ -1116,6 +1241,8 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   MappingState contractedState;
   contractedState.init(techPlan.contractedDFG, adg);
   result.edgeKinds = techPlan.originalEdgeKinds;
+  std::vector<TechMappedEdgeKind> contractedEdgeKinds(
+      techPlan.contractedDFG.edges.size(), TechMappedEdgeKind::Routed);
 
   // Copy connectivity from flattener.
   connectivity = flattener.getConnectivity();
@@ -1128,6 +1255,11 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   auto candidates = buildCandidates(techPlan.contractedDFG, adg);
   for (const auto &entry : techPlan.contractedCandidates)
     candidates[entry.first] = entry.second;
+
+  if (detectForcedTemporalConfigConflict(techPlan, adg, result.diagnostics)) {
+    llvm::errs() << "Mapper: " << result.diagnostics << "\n";
+    return result;
+  }
 
   // Check that all operation nodes have candidates.
   for (IdIndex i = 0;
@@ -1161,12 +1293,15 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   runRefinement(contractedState, techPlan.contractedDFG, adg, flattener,
                 candidates, opts);
 
+  classifyTemporalRegisterEdges(contractedState, techPlan.contractedDFG, adg,
+                                flattener, contractedEdgeKinds);
+
   llvm::outs() << "Mapper: binding memref sentinels...\n";
   bindMemrefSentinels(contractedState, techPlan.contractedDFG, adg);
 
   llvm::outs() << "Mapper: routing...\n";
-  bool routingSucceeded =
-      runRouting(contractedState, techPlan.contractedDFG, adg, opts.seed);
+  bool routingSucceeded = runRouting(contractedState, techPlan.contractedDFG,
+                                     adg, contractedEdgeKinds, opts.seed);
   if (!routingSucceeded) {
     result.diagnostics = "Routing failed";
     llvm::errs() << "Mapper: " << result.diagnostics << "\n";
@@ -1180,8 +1315,23 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     return result;
   }
 
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId) {
+    if (edgeId >= result.edgeKinds.size() ||
+        result.edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU)
+      continue;
+    if (edgeId >= techPlan.originalEdgeToContractedEdge.size())
+      continue;
+    IdIndex contractedEdgeId = techPlan.originalEdgeToContractedEdge[edgeId];
+    if (contractedEdgeId == INVALID_ID ||
+        contractedEdgeId >= contractedEdgeKinds.size())
+      continue;
+    if (contractedEdgeKinds[contractedEdgeId] == TechMappedEdgeKind::TemporalReg)
+      result.edgeKinds[edgeId] = TechMappedEdgeKind::TemporalReg;
+  }
+
   llvm::outs() << "Mapper: validating...\n";
-  bool validationSucceeded = runValidation(result.state, dfg, adg,
+  bool validationSucceeded = runValidation(result.state, dfg, adg, flattener,
                                           result.edgeKinds, result.diagnostics);
   if (!validationSucceeded) {
     llvm::errs() << "Mapper: validation issues: " << result.diagnostics
@@ -1195,7 +1345,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
 }
 
 bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
-                           const Graph &adg,
+                           const Graph &adg, const ADGFlattener &flattener,
                            llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                            std::string &diagnostics) {
   bool valid = true;
@@ -1237,7 +1387,9 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
     const Edge *edge = dfg.getEdge(i);
     if (!edge)
       continue;
-    if (i < edgeKinds.size() && edgeKinds[i] == TechMappedEdgeKind::IntraFU)
+    if (i < edgeKinds.size() &&
+        (edgeKinds[i] == TechMappedEdgeKind::IntraFU ||
+         edgeKinds[i] == TechMappedEdgeKind::TemporalReg))
       continue;
     if (i >= state.swEdgeToHwPaths.size() ||
         state.swEdgeToHwPaths[i].empty()) {
@@ -1307,6 +1459,53 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
       usedLaneRanges.push_back(*laneRange);
     }
   }
+
+  llvm::StringMap<llvm::DenseSet<IdIndex>> temporalRegsByPE;
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId) {
+    if (edgeId >= edgeKinds.size() ||
+        edgeKinds[edgeId] != TechMappedEdgeKind::TemporalReg)
+      continue;
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+
+    const Port *srcPort = dfg.getPort(edge->srcPort);
+    const Port *dstPort = dfg.getPort(edge->dstPort);
+    if (!srcPort || !dstPort || srcPort->parentNode == INVALID_ID ||
+        dstPort->parentNode == INVALID_ID)
+      continue;
+    IdIndex srcNodeId = srcPort->parentNode;
+    IdIndex dstNodeId = dstPort->parentNode;
+    if (srcNodeId >= state.swNodeToHwNode.size() ||
+        dstNodeId >= state.swNodeToHwNode.size())
+      continue;
+    IdIndex srcHwId = state.swNodeToHwNode[srcNodeId];
+    IdIndex dstHwId = state.swNodeToHwNode[dstNodeId];
+    const Node *srcHwNode = adg.getNode(srcHwId);
+    const Node *dstHwNode = adg.getNode(dstHwId);
+    if (!isTemporalPENode(srcHwNode) || !isTemporalPENode(dstHwNode))
+      continue;
+    llvm::StringRef peName = getNodeAttrStr(srcHwNode, "pe_name");
+    if (peName.empty() || peName != getNodeAttrStr(dstHwNode, "pe_name"))
+      continue;
+    temporalRegsByPE[peName].insert(edge->srcPort);
+  }
+
+  for (const auto &entry : temporalRegsByPE) {
+    const PEContainment *pe =
+        findPEContainmentByName(flattener, entry.getKey());
+    if (!pe)
+      continue;
+    if (entry.getValue().size() > pe->numRegister) {
+      diagnostics += "C5.2: temporal register overflow on " +
+                     entry.getKey().str() + "\n";
+      valid = false;
+    }
+  }
+
+  if (!validateTaggedPathConflicts(state, dfg, adg, edgeKinds, diagnostics))
+    valid = false;
 
   return valid;
 }

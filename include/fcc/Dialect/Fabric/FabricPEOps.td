@@ -14,7 +14,7 @@ def Fabric_FunctionUnitOp : Fabric_Op<"function_unit", [
   let summary = "Configurable computation unit";
   let description = [{
     Defines a function unit (FU) that performs computation inside a PE.
-    The body may contain multiple ops connected via fabric.static_mux
+    The body may contain multiple ops connected via fabric.mux
     to form a configurable hardware DAG. FU ports use native types.
   }];
   let arguments = (ins
@@ -29,8 +29,8 @@ def Fabric_FunctionUnitOp : Fabric_Op<"function_unit", [
   let hasVerifier = 1;
 }
 
-// fabric.static_mux - configurable mux inside function_unit
-def Fabric_StaticMuxOp : Fabric_Op<"static_mux", []> {
+// fabric.mux - configurable mux inside function_unit
+def Fabric_MuxOp : Fabric_Op<"mux", []> {
   let summary = "Statically-configured runtime-programmable multiplexer";
   let description = [{
     A statically-configured runtime-programmable routing primitive inside

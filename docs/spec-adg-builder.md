@@ -33,6 +33,20 @@ The ADG Builder's Fabric MLIR must carry enough information for later stages to:
 - recover switch port identities
 - generate visualization that still understands the structural hierarchy
 
+Builder-emitted ADGs and hand-authored ADGs consumed by the mapper are subject
+to the same `verifyFabricModule` contract.
+
+At minimum, a conforming `fabric.module` must satisfy:
+
+- no dangling hardware outputs inside the graph
+- no dangling module input ports
+- no instance or inline-graph input-count mismatch against the declared module
+  type
+- no non-tagged to tagged hardware connection, nor tagged to non-tagged
+  connection
+- module-result connections whose tag-kind is compatible with the declared
+  `fabric.module` function type
+
 ## Flattening Boundary
 
 The builder itself does not perform mapping-oriented flattening.

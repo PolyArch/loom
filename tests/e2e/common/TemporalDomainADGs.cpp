@@ -54,11 +54,11 @@ void buildTemporalReductionDomain(const std::string &outputPath,
   *os << "      -> (" << taggedTy << ",\n";
   *os << "          " << taggedTy << ",\n";
   *os << "          " << taggedTy << ")\n";
-  *os << "      attributes {\n";
+  *os << "      [\n";
   *os << "        num_register = " << opts.numRegister << " : i64,\n";
   *os << "        num_instruction = " << opts.numInstruction << " : i64,\n";
   *os << "        reg_fifo_depth = " << opts.regFifoDepth << " : i64\n";
-  *os << "      } {\n";
+  *os << "      ] {\n";
   *os << "    fabric.function_unit @fu_join(%a: none) -> (none)\n";
   *os << "        [latency = 1, interval = 1] {\n";
   *os << "      %0 = handshake.join %a : none\n";
@@ -236,11 +236,11 @@ void buildTemporalScanDomain(const std::string &outputPath,
   *os << "          " << taggedTy << ",\n";
   *os << "          " << taggedTy << ",\n";
   *os << "          " << taggedTy << ")\n";
-  *os << "      attributes {\n";
+  *os << "      [\n";
   *os << "        num_register = " << opts.numRegister << " : i64,\n";
   *os << "        num_instruction = " << opts.numInstruction << " : i64,\n";
   *os << "        reg_fifo_depth = " << opts.regFifoDepth << " : i64\n";
-  *os << "      } {\n";
+  *os << "      ] {\n";
   *os << "    fabric.function_unit @fu_join(%a: none) -> (none)\n";
   *os << "        [latency = 1, interval = 1] {\n";
   *os << "      %0 = handshake.join %a : none\n";

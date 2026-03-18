@@ -74,8 +74,6 @@ void addNodeAttr(Node *node, llvm::StringRef key, mlir::Attribute value,
 }
 
 llvm::StringRef getCompatibleOp(llvm::StringRef dfgOpName) {
-  if (dfgOpName == "dataflow.invariant")
-    return "dataflow.gate";
   return "";
 }
 
@@ -204,20 +202,20 @@ std::string buildFamilySignature(const VariantFamily &family) {
   return os.str();
 }
 
-bool isStaticMuxPassThrough(fcc::fabric::StaticMuxOp muxOp) {
+bool isMuxPassThrough(fcc::fabric::MuxOp muxOp) {
   return muxOp.getInputs().size() == 1 && muxOp.getResults().size() == 1;
 }
 
-bool isStaticMuxFanIn(fcc::fabric::StaticMuxOp muxOp) {
+bool isMuxFanIn(fcc::fabric::MuxOp muxOp) {
   return muxOp.getInputs().size() > 1 && muxOp.getResults().size() == 1;
 }
 
-bool isStaticMuxFanOut(fcc::fabric::StaticMuxOp muxOp) {
+bool isMuxFanOut(fcc::fabric::MuxOp muxOp) {
   return muxOp.getInputs().size() == 1 && muxOp.getResults().size() > 1;
 }
 
-unsigned getStaticMuxBranchCount(fcc::fabric::StaticMuxOp muxOp) {
-  return isStaticMuxFanOut(muxOp) ? muxOp.getResults().size()
+unsigned getMuxBranchCount(fcc::fabric::MuxOp muxOp) {
+  return isMuxFanOut(muxOp) ? muxOp.getResults().size()
                                   : muxOp.getInputs().size();
 }
 
@@ -227,10 +225,10 @@ resolveValueRef(mlir::Value value,
                 const llvm::DenseMap<mlir::Operation *, unsigned> &muxSelection) {
   mlir::Value cur = value;
   while (auto *defOp = cur.getDefiningOp()) {
-    auto muxOp = mlir::dyn_cast<fcc::fabric::StaticMuxOp>(defOp);
+    auto muxOp = mlir::dyn_cast<fcc::fabric::MuxOp>(defOp);
     if (!muxOp)
       break;
-    if (isStaticMuxPassThrough(muxOp)) {
+    if (isMuxPassThrough(muxOp)) {
       cur = muxOp.getInputs().front();
       continue;
     }
@@ -238,14 +236,14 @@ resolveValueRef(mlir::Value value,
     auto it = muxSelection.find(defOp);
     unsigned sel =
         (it != muxSelection.end()) ? it->second : static_cast<unsigned>(muxOp.getSel());
-    if (isStaticMuxFanIn(muxOp)) {
+    if (isMuxFanIn(muxOp)) {
       if (sel >= muxOp.getInputs().size())
         return std::nullopt;
       cur = muxOp.getInputs()[sel];
       continue;
     }
 
-    if (isStaticMuxFanOut(muxOp)) {
+    if (isMuxFanOut(muxOp)) {
       auto result = mlir::dyn_cast<mlir::OpResult>(cur);
       if (!result || sel >= muxOp.getResults().size() ||
           static_cast<unsigned>(result.getResultNumber()) != sel)
@@ -297,8 +295,8 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
     if (mlir::isa<fcc::fabric::YieldOp>(bodyOp))
       continue;
     displayOpIndex[&bodyOp] = anyOpOrdinal++;
-    if (auto muxOp = mlir::dyn_cast<fcc::fabric::StaticMuxOp>(bodyOp)) {
-      if (!isStaticMuxPassThrough(muxOp))
+    if (auto muxOp = mlir::dyn_cast<fcc::fabric::MuxOp>(bodyOp)) {
+      if (!isMuxPassThrough(muxOp))
         staticMuxes.push_back(&bodyOp);
       continue;
     }
@@ -386,7 +384,7 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
   }
 
   for (size_t muxOrdinal = 0; muxOrdinal < staticMuxes.size(); ++muxOrdinal) {
-    auto muxOp = mlir::cast<fcc::fabric::StaticMuxOp>(staticMuxes[muxOrdinal]);
+    auto muxOp = mlir::cast<fcc::fabric::MuxOp>(staticMuxes[muxOrdinal]);
     auto it = muxSelection.find(muxOp.getOperation());
     FUConfigField field;
     field.opIndex = displayOpIndex.lookup(muxOp.getOperation());
@@ -397,7 +395,7 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
       mlir::Value cur = operand;
       while (auto *defOp = cur.getDefiningOp()) {
         if (defOp == muxOp.getOperation()) {
-          if (isStaticMuxFanOut(muxOp)) {
+          if (isMuxFanOut(muxOp)) {
             auto result = mlir::dyn_cast<mlir::OpResult>(cur);
             if (result &&
                 static_cast<unsigned>(result.getResultNumber()) == field.sel)
@@ -407,24 +405,24 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
           }
           break;
         }
-        auto nestedMux = mlir::dyn_cast<fcc::fabric::StaticMuxOp>(defOp);
+        auto nestedMux = mlir::dyn_cast<fcc::fabric::MuxOp>(defOp);
         if (!nestedMux)
           break;
         auto nestedIt = muxSelection.find(defOp);
         unsigned nestedSel = (nestedIt != muxSelection.end())
                                  ? nestedIt->second
                                  : static_cast<unsigned>(nestedMux.getSel());
-        if (isStaticMuxPassThrough(nestedMux)) {
+        if (isMuxPassThrough(nestedMux)) {
           cur = nestedMux.getInputs().front();
           continue;
         }
-        if (isStaticMuxFanIn(nestedMux)) {
+        if (isMuxFanIn(nestedMux)) {
           if (nestedSel >= nestedMux.getInputs().size())
             break;
           cur = nestedMux.getInputs()[nestedSel];
           continue;
         }
-        if (isStaticMuxFanOut(nestedMux)) {
+        if (isMuxFanOut(nestedMux)) {
           auto nestedResult = mlir::dyn_cast<mlir::OpResult>(cur);
           if (!nestedResult ||
               nestedSel >= nestedMux.getResults().size() ||
@@ -439,7 +437,7 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
       if (selectedOutputUsed)
         break;
     }
-    if (isStaticMuxFanOut(muxOp)) {
+    if (isMuxFanOut(muxOp)) {
       field.disconnect = false;
       field.discard = !selectedOutputUsed;
     } else {
@@ -456,9 +454,9 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
 void collectVariantsForFU(
     fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
     llvm::SmallVectorImpl<VariantFamily> &variants) {
-  llvm::SmallVector<fcc::fabric::StaticMuxOp, 4> muxes;
-  fuOp.walk([&](fcc::fabric::StaticMuxOp muxOp) {
-    if (!isStaticMuxPassThrough(muxOp))
+  llvm::SmallVector<fcc::fabric::MuxOp, 4> muxes;
+  fuOp.walk([&](fcc::fabric::MuxOp muxOp) {
+    if (!isMuxPassThrough(muxOp))
       muxes.push_back(muxOp);
   });
 
@@ -472,8 +470,8 @@ void collectVariantsForFU(
 
   llvm::SmallVector<unsigned, 4> limits;
   limits.reserve(muxes.size());
-  for (fcc::fabric::StaticMuxOp muxOp : muxes)
-    limits.push_back(getStaticMuxBranchCount(muxOp));
+  for (fcc::fabric::MuxOp muxOp : muxes)
+    limits.push_back(getMuxBranchCount(muxOp));
 
   llvm::SmallVector<unsigned, 4> state(muxes.size(), 0);
   while (true) {

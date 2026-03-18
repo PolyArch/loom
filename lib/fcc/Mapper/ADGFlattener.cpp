@@ -11,9 +11,11 @@
 #include "mlir/IR/Builders.h"
 
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <regex>
+#include <type_traits>
 
 namespace fcc {
 
@@ -35,6 +37,12 @@ std::pair<int, int> parseGridPos(llvm::StringRef name) {
 void setNodeAttr(Node *node, llvm::StringRef key, mlir::Attribute val,
                  mlir::MLIRContext *ctx) {
   node->attributes.push_back(
+      mlir::NamedAttribute(mlir::StringAttr::get(ctx, key), val));
+}
+
+void setEdgeAttr(Edge *edge, llvm::StringRef key, mlir::Attribute val,
+                 mlir::MLIRContext *ctx) {
+  edge->attributes.push_back(
       mlir::NamedAttribute(mlir::StringAttr::get(ctx, key), val));
 }
 
@@ -100,6 +108,27 @@ extractFUBodyDAG(fcc::fabric::FunctionUnitOp fuOp, mlir::MLIRContext *ctx) {
 
   return {mlir::ArrayAttr::get(ctx, opNames),
           mlir::ArrayAttr::get(ctx, dagEdges)};
+}
+
+mlir::DenseI64ArrayAttr
+extractFUConfigFieldWidths(fcc::fabric::FunctionUnitOp fuOp,
+                           mlir::MLIRContext *ctx) {
+  llvm::SmallVector<int64_t, 4> widths;
+  for (mlir::Operation &bodyOp : fuOp.getBody().front().getOperations()) {
+    auto muxOp = mlir::dyn_cast<fcc::fabric::MuxOp>(bodyOp);
+    if (!muxOp)
+      continue;
+    unsigned numInputs = muxOp.getInputs().size();
+    unsigned numResults = muxOp.getResults().size();
+    if (numInputs == 1 && numResults == 1)
+      continue;
+    unsigned branchCount = std::max(numInputs, numResults);
+    unsigned selBits = branchCount > 1 ? llvm::Log2_32_Ceil(branchCount) : 0;
+    widths.push_back(static_cast<int64_t>(selBits + 2));
+  }
+  if (widths.empty())
+    return {};
+  return mlir::DenseI64ArrayAttr::get(ctx, widths);
 }
 
 } // namespace
@@ -232,11 +261,17 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
 
   // Helper lambda: create FU nodes from a PE definition for a given instance.
   auto createFUNodesFromPE = [&](auto peOp, llvm::StringRef instanceName,
-                                 llvm::StringRef peKind) {
+                                 llvm::StringRef peKind,
+                                 unsigned numInstruction,
+                                 unsigned numRegister,
+                                 unsigned regFifoDepth, unsigned tagWidth,
+                                 bool enableShareOperandBuffer,
+                                 unsigned operandBufferSize) {
     auto gridPos = parseGridPos(instanceName);
 
     PEContainment pe;
     pe.peName = instanceName.str();
+    pe.peKind = peKind.str();
     pe.row = gridPos.first;
     pe.col = gridPos.second;
 
@@ -244,6 +279,12 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
     auto peFnType = peOp.getFunctionType();
     pe.numInputPorts = peFnType.getNumInputs();
     pe.numOutputPorts = peFnType.getNumResults();
+    pe.numInstruction = numInstruction;
+    pe.numRegister = numRegister;
+    pe.regFifoDepth = regFifoDepth;
+    pe.tagWidth = tagWidth;
+    pe.enableShareOperandBuffer = enableShareOperandBuffer;
+    pe.operandBufferSize = operandBufferSize;
 
     auto &peBody = peOp.getBody().front();
     for (auto &innerOp : peBody.getOperations()) {
@@ -275,6 +316,21 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
           setNodeAttr(fuNode.get(), "ops", bodyOps, ctx);
         if (!dagEdges.empty())
           setNodeAttr(fuNode.get(), "internal_edges", dagEdges, ctx);
+      }
+
+      if (auto fieldWidths = extractFUConfigFieldWidths(fuOp, ctx)) {
+        setNodeAttr(fuNode.get(), "fu_config_field_widths", fieldWidths, ctx);
+        int64_t totalBits = 0;
+        for (int64_t width : fieldWidths.asArrayRef())
+          totalBits += width;
+        setNodeAttr(fuNode.get(), "fu_config_bits",
+                    mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                           totalBits),
+                    ctx);
+      } else {
+        setNodeAttr(fuNode.get(), "fu_config_bits",
+                    mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 0),
+                    ctx);
       }
 
       if (fuOp.getLatency()) {
@@ -335,13 +391,29 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       // Check if this instance references a PE definition.
       auto peIt = peDefMap.find(moduleName);
       if (peIt != peDefMap.end()) {
-        createFUNodesFromPE(peIt->second, instanceName, "spatial_pe");
+        createFUNodesFromPE(peIt->second, instanceName, "spatial_pe", 0, 0, 0,
+                            0, false, 0);
         continue;
       }
 
       auto temporalPeIt = temporalPeDefMap.find(moduleName);
       if (temporalPeIt != temporalPeDefMap.end()) {
-        createFUNodesFromPE(temporalPeIt->second, instanceName, "temporal_pe");
+        auto temporalFnType = temporalPeIt->second.getFunctionType();
+        unsigned tagWidth = 0;
+        if (temporalFnType.getNumInputs() > 0) {
+          if (auto tagged =
+                  mlir::dyn_cast<fcc::fabric::TaggedType>(temporalFnType.getInput(0))) {
+            if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(tagged.getTagType()))
+              tagWidth = intTy.getWidth();
+          }
+        }
+        createFUNodesFromPE(
+            temporalPeIt->second, instanceName, "temporal_pe",
+            static_cast<unsigned>(std::max<int64_t>(0, temporalPeIt->second.getNumInstruction())),
+            static_cast<unsigned>(std::max<int64_t>(0, temporalPeIt->second.getNumRegister())),
+            static_cast<unsigned>(std::max<int64_t>(0, temporalPeIt->second.getRegFifoDepth())),
+            tagWidth, temporalPeIt->second.getEnableShareOperandBuffer(),
+            static_cast<unsigned>(temporalPeIt->second.getOperandBufferSize().value_or(0)));
         continue;
       }
 
@@ -474,7 +546,7 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       std::string peName;
       if (auto symName = peOp.getSymName())
         peName = symName->str();
-      createFUNodesFromPE(peOp, peName, "spatial_pe");
+      createFUNodesFromPE(peOp, peName, "spatial_pe", 0, 0, 0, 0, false, 0);
       continue;
     }
 
@@ -487,8 +559,22 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       std::string peName;
       if (auto symName = peOp.getSymName())
         peName = symName->str();
-
-      createFUNodesFromPE(peOp, peName, "temporal_pe");
+      auto temporalFnType = peOp.getFunctionType();
+      unsigned tagWidth = 0;
+      if (temporalFnType.getNumInputs() > 0) {
+        if (auto tagged =
+                mlir::dyn_cast<fcc::fabric::TaggedType>(temporalFnType.getInput(0))) {
+          if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(tagged.getTagType()))
+            tagWidth = intTy.getWidth();
+        }
+      }
+      createFUNodesFromPE(
+          peOp, peName, "temporal_pe",
+          static_cast<unsigned>(std::max<int64_t>(0, peOp.getNumInstruction())),
+          static_cast<unsigned>(std::max<int64_t>(0, peOp.getNumRegister())),
+          static_cast<unsigned>(std::max<int64_t>(0, peOp.getRegFifoDepth())),
+          tagWidth, peOp.getEnableShareOperandBuffer(),
+          static_cast<unsigned>(peOp.getOperandBufferSize().value_or(0)));
       continue;
     }
 
@@ -1019,11 +1105,15 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
   // 3. Create edges from producer output port(s) to consumer input port(s).
 
   // Build map: Value -> vector of output port IDs (for PEs, all FU outputs).
-  llvm::DenseMap<mlir::Value, llvm::SmallVector<IdIndex, 4>> valueSrcPorts;
+  struct SourceBinding {
+    IdIndex portId = INVALID_ID;
+    int peOutputIndex = -1;
+  };
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<SourceBinding, 4>> valueSrcPorts;
 
   // Non-PE ops: already mapped in valueToOutputPort.
   for (auto &kv : valueToOutputPort) {
-    valueSrcPorts[kv.first].push_back(kv.second);
+    valueSrcPorts[kv.first].push_back({kv.second, -1});
   }
 
   // PE ops: map each PE result to all FU output ports in that PE.
@@ -1035,7 +1125,7 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
         if (!fuNode)
           continue;
         for (IdIndex op : fuNode->outputPorts) {
-          valueSrcPorts[val].push_back(op);
+          valueSrcPorts[val].push_back({op, static_cast<int>(r)});
         }
       }
     }
@@ -1064,10 +1154,17 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
         continue;
 
       IdIndex dstPortId = node->inputPorts[j];
-      for (IdIndex srcPortId : srcIt->second) {
+      for (const SourceBinding &binding : srcIt->second) {
+        IdIndex srcPortId = binding.portId;
         auto edge = std::make_unique<Edge>();
         edge->srcPort = srcPortId;
         edge->dstPort = dstPortId;
+        if (binding.peOutputIndex >= 0) {
+          setEdgeAttr(edge.get(), "pe_output_index",
+                      mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                             binding.peOutputIndex),
+                      ctx);
+        }
         IdIndex edgeId = adg.addEdge(std::move(edge));
         adg.ports[srcPortId]->connectedEdges.push_back(edgeId);
         adg.ports[dstPortId]->connectedEdges.push_back(edgeId);
@@ -1078,12 +1175,26 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
 
   // Helper: create edges from a set of source ports to a set of dest ports.
   auto createEdgesBetweenPorts =
-      [&](llvm::ArrayRef<IdIndex> srcPorts, llvm::ArrayRef<IdIndex> dstPorts) {
-        for (IdIndex srcPortId : srcPorts) {
+      [&](llvm::ArrayRef<SourceBinding> srcPorts, llvm::ArrayRef<IdIndex> dstPorts,
+          int peInputIndex) {
+        for (const SourceBinding &binding : srcPorts) {
+          IdIndex srcPortId = binding.portId;
           for (IdIndex dstPortId : dstPorts) {
             auto edge = std::make_unique<Edge>();
             edge->srcPort = srcPortId;
             edge->dstPort = dstPortId;
+            if (binding.peOutputIndex >= 0) {
+              setEdgeAttr(edge.get(), "pe_output_index",
+                          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                                 binding.peOutputIndex),
+                          ctx);
+            }
+            if (peInputIndex >= 0) {
+              setEdgeAttr(edge.get(), "pe_input_index",
+                          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                                 peInputIndex),
+                          ctx);
+            }
             IdIndex edgeId = adg.addEdge(std::move(edge));
             adg.ports[srcPortId]->connectedEdges.push_back(edgeId);
             adg.ports[dstPortId]->connectedEdges.push_back(edgeId);
@@ -1111,7 +1222,8 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
         auto *fuNode = adg.getNode(fuId);
         if (!fuNode)
           continue;
-        createEdgesBetweenPorts(srcIt->second, fuNode->inputPorts);
+        createEdgesBetweenPorts(srcIt->second, fuNode->inputPorts,
+                                static_cast<int>(j));
       }
     }
   }
@@ -1259,10 +1371,17 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       mlir::Value yieldOperand = yieldOp.getOperand(i);
       auto srcIt = valueSrcPorts.find(yieldOperand);
       if (srcIt != valueSrcPorts.end()) {
-        for (IdIndex srcPortId : srcIt->second) {
+        for (const SourceBinding &binding : srcIt->second) {
+          IdIndex srcPortId = binding.portId;
           auto edge = std::make_unique<Edge>();
           edge->srcPort = srcPortId;
           edge->dstPort = portId;
+          if (binding.peOutputIndex >= 0) {
+            setEdgeAttr(edge.get(), "pe_output_index",
+                        mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                               binding.peOutputIndex),
+                        ctx);
+          }
           IdIndex edgeId = adg.addEdge(std::move(edge));
           adg.ports[srcPortId]->connectedEdges.push_back(edgeId);
           adg.ports[portId]->connectedEdges.push_back(edgeId);
@@ -1303,6 +1422,20 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
           return e->dstPort;
       }
       return INVALID_ID;
+    };
+
+    auto findConsumingPorts = [&](IdIndex portId)
+        -> llvm::SmallVector<IdIndex, 4> {
+      llvm::SmallVector<IdIndex, 4> consumers;
+      const Port *p = adg.getPort(portId);
+      if (!p)
+        return consumers;
+      for (IdIndex edgeId : p->connectedEdges) {
+        const Edge *e = adg.getEdge(edgeId);
+        if (e && e->srcPort == portId)
+          consumers.push_back(e->dstPort);
+      }
+      return consumers;
     };
 
     auto getPortOwnerKind = [&](IdIndex portId) -> llvm::StringRef {
@@ -1346,43 +1479,79 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
         if (srcPortId == INVALID_ID)
           return boundary;
 
-        llvm::StringRef srcKind = getPortOwnerKind(srcPortId);
-        if (srcKind == "add_tag") {
-          const Port *srcPort = adg.getPort(srcPortId);
-          if (!srcPort)
-            return boundary;
-          const Node *atNode = adg.getNode(srcPort->parentNode);
-          if (!atNode || atNode->inputPorts.empty())
-            return boundary;
-          boundary.push_back(atNode->inputPorts[0]);
-          addTagNodes.push_back(srcPort->parentNode);
-          return boundary;
-        }
+        llvm::DenseSet<IdIndex> seenOutputs;
+        llvm::DenseSet<IdIndex> seenBoundaryPorts;
+        llvm::DenseSet<IdIndex> seenRouteNodes;
+        llvm::SmallVector<std::pair<IdIndex, IdIndex>, 4> boundaryPairs;
 
-        if (srcKind != "temporal_sw")
-          return boundary;
+        std::function<bool(IdIndex)> visitOutputPort = [&](IdIndex outPortId) {
+          if (outPortId == INVALID_ID || !seenOutputs.insert(outPortId).second)
+            return false;
+          const Port *outPort = adg.getPort(outPortId);
+          if (!outPort || outPort->direction != Port::Output)
+            return false;
+          const Node *owner = adg.getNode(outPort->parentNode);
+          if (!owner)
+            return false;
 
-        const Port *srcPort = adg.getPort(srcPortId);
-        if (!srcPort)
-          return boundary;
-        const Node *tswNode = adg.getNode(srcPort->parentNode);
-        if (!tswNode)
-          return boundary;
-        muxNodeId = srcPort->parentNode;
-        for (unsigned lane = 0;
-             lane < tswNode->inputPorts.size() && lane < laneCount; ++lane) {
-          IdIndex tswInPort = tswNode->inputPorts[lane];
-          IdIndex atOutPort = findFeedingPort(tswInPort);
-          if (atOutPort == INVALID_ID || getPortOwnerKind(atOutPort) != "add_tag")
-            continue;
-          const Port *aop = adg.getPort(atOutPort);
-          if (!aop)
-            continue;
-          const Node *atNode = adg.getNode(aop->parentNode);
-          if (!atNode || atNode->inputPorts.empty())
-            continue;
-          boundary.push_back(atNode->inputPorts[0]);
-          addTagNodes.push_back(aop->parentNode);
+          llvm::StringRef kind = getNodeAttrStr(owner, "op_kind");
+          if (kind == "add_tag") {
+            if (owner->inputPorts.empty())
+              return false;
+            IdIndex boundaryPort = owner->inputPorts[0];
+            bool inserted = seenBoundaryPorts.insert(boundaryPort).second;
+            if (inserted)
+              boundaryPairs.push_back({boundaryPort, outPort->parentNode});
+            return inserted;
+          }
+
+          if (kind == "map_tag" || kind == "del_tag" || kind == "fifo") {
+            if (owner->inputPorts.empty())
+              return false;
+            return visitOutputPort(findFeedingPort(owner->inputPorts[0]));
+          }
+
+          if (kind == "spatial_sw" || kind == "temporal_sw") {
+            if (seenRouteNodes.insert(outPort->parentNode).second &&
+                muxNodeId == INVALID_ID) {
+              muxNodeId = outPort->parentNode;
+            }
+            bool foundBoundary = false;
+            for (IdIndex inPortId : owner->inputPorts) {
+              IdIndex upstreamOutPortId = findFeedingPort(inPortId);
+              if (visitOutputPort(upstreamOutPortId)) {
+                foundBoundary = true;
+                continue;
+              }
+              const Port *inPort = adg.getPort(inPortId);
+              if (inPort && mlir::isa<fcc::fabric::TaggedType>(inPort->type) &&
+                  seenBoundaryPorts.insert(inPortId).second) {
+                boundaryPairs.push_back({inPortId, INVALID_ID});
+                foundBoundary = true;
+              }
+            }
+            return foundBoundary;
+          }
+
+          if (mlir::isa<fcc::fabric::TaggedType>(outPort->type)) {
+            bool inserted = seenBoundaryPorts.insert(outPortId).second;
+            if (inserted)
+              boundaryPairs.push_back({outPortId, INVALID_ID});
+            return inserted;
+          }
+          return false;
+        };
+
+        visitOutputPort(srcPortId);
+        llvm::sort(boundaryPairs,
+                   [](const auto &lhs, const auto &rhs) {
+                     return lhs.first < rhs.first;
+                   });
+        if (boundaryPairs.size() > laneCount)
+          boundaryPairs.resize(laneCount);
+        for (const auto &entry : boundaryPairs) {
+          boundary.push_back(entry.first);
+          addTagNodes.push_back(entry.second);
         }
         return boundary;
       };
@@ -1396,44 +1565,81 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
           return boundary;
 
         IdIndex memOutPortId = node->outputPorts[memOutputPortIdx];
-        IdIndex dstPortId = findConsumingPort(memOutPortId);
-        if (dstPortId == INVALID_ID)
-          return boundary;
+        llvm::DenseSet<IdIndex> seenInputs;
+        llvm::DenseSet<IdIndex> seenBoundaryPorts;
+        llvm::DenseSet<IdIndex> seenRouteNodes;
 
-        llvm::StringRef dstKind = getPortOwnerKind(dstPortId);
-        if (dstKind == "del_tag") {
-          const Port *dstPort = adg.getPort(dstPortId);
-          if (!dstPort)
-            return boundary;
-          const Node *dtNode = adg.getNode(dstPort->parentNode);
-          if (dtNode && !dtNode->outputPorts.empty())
-            boundary.push_back(dtNode->outputPorts[0]);
-          return boundary;
-        }
+        std::function<bool(IdIndex)> visitInputPort = [&](IdIndex inPortId) {
+          if (inPortId == INVALID_ID || !seenInputs.insert(inPortId).second)
+            return false;
+          const Port *inPort = adg.getPort(inPortId);
+          if (!inPort || inPort->direction != Port::Input)
+            return false;
+          const Node *owner = adg.getNode(inPort->parentNode);
+          if (!owner)
+            return false;
 
-        if (dstKind != "temporal_sw")
-          return boundary;
+          llvm::StringRef kind = getNodeAttrStr(owner, "op_kind");
+          if (kind == "del_tag") {
+            if (!owner->outputPorts.empty()) {
+              IdIndex boundaryPort = owner->outputPorts[0];
+              bool inserted = seenBoundaryPorts.insert(boundaryPort).second;
+              if (inserted)
+                boundary.push_back(boundaryPort);
+              return inserted;
+            }
+            return false;
+          }
 
-        const Port *dstPort = adg.getPort(dstPortId);
-        if (!dstPort)
-          return boundary;
-        const Node *tswNode = adg.getNode(dstPort->parentNode);
-        if (!tswNode)
-          return boundary;
-        demuxNodeId = dstPort->parentNode;
-        for (unsigned lane = 0;
-             lane < tswNode->outputPorts.size() && lane < laneCount; ++lane) {
-          IdIndex tswOutPort = tswNode->outputPorts[lane];
-          IdIndex dtInPort = findConsumingPort(tswOutPort);
-          if (dtInPort == INVALID_ID || getPortOwnerKind(dtInPort) != "del_tag")
-            continue;
-          const Port *dip = adg.getPort(dtInPort);
-          if (!dip)
-            continue;
-          const Node *dtNode = adg.getNode(dip->parentNode);
-          if (dtNode && !dtNode->outputPorts.empty())
-            boundary.push_back(dtNode->outputPorts[0]);
-        }
+          if (kind == "add_tag" || kind == "map_tag" || kind == "fifo") {
+            bool foundBoundary = false;
+            for (IdIndex outPortId : owner->outputPorts) {
+              for (IdIndex nextInPortId : findConsumingPorts(outPortId))
+                foundBoundary |= visitInputPort(nextInPortId);
+            }
+            return foundBoundary;
+          }
+
+          if (kind == "spatial_sw" || kind == "temporal_sw") {
+            if (seenRouteNodes.insert(inPort->parentNode).second &&
+                demuxNodeId == INVALID_ID) {
+              demuxNodeId = inPort->parentNode;
+            }
+            bool foundBoundary = false;
+            for (IdIndex outPortId : owner->outputPorts) {
+              bool branchFound = false;
+              for (IdIndex nextInPortId : findConsumingPorts(outPortId))
+                branchFound |= visitInputPort(nextInPortId);
+              if (branchFound) {
+                foundBoundary = true;
+                continue;
+              }
+              const Port *outPort = adg.getPort(outPortId);
+              if (outPort &&
+                  mlir::isa<fcc::fabric::TaggedType>(outPort->type) &&
+                  seenBoundaryPorts.insert(outPortId).second) {
+                boundary.push_back(outPortId);
+                foundBoundary = true;
+              }
+            }
+            return foundBoundary;
+          }
+
+          if (mlir::isa<fcc::fabric::TaggedType>(inPort->type)) {
+            bool inserted = seenBoundaryPorts.insert(inPortId).second;
+            if (inserted)
+              boundary.push_back(inPortId);
+            return inserted;
+          }
+          return false;
+        };
+
+        for (IdIndex dstPortId : findConsumingPorts(memOutPortId))
+          visitInputPort(dstPortId);
+
+        llvm::sort(boundary);
+        if (boundary.size() > laneCount)
+          boundary.resize(laneCount);
         return boundary;
       };
 
@@ -1536,8 +1742,9 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
         }
       }
 
-      if (bridgeInputPorts.empty() && bridgeOutputPorts.empty())
+      if (bridgeInputPorts.empty() && bridgeOutputPorts.empty()) {
         continue;
+      }
 
       {
         unsigned idx = 0;

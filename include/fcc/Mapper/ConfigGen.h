@@ -52,7 +52,8 @@ private:
   };
 
   bool buildConfigArtifacts(const MappingState &state, const Graph &dfg,
-                            const Graph &adg,
+                            const Graph &adg, const ADGFlattener &flattener,
+                            llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                             llvm::ArrayRef<FUConfigSelection> fuConfigs);
   bool writeConfigBinary(const std::string &path) const;
   bool writeConfigJson(const std::string &path) const;

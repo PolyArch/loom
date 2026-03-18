@@ -115,7 +115,7 @@ static void attachADGCapacityAttrs(ModuleOp module, const std::string &adgPath,
 
 static void warnMapperOwnedRuntimeConfig(ModuleOp adgModule) {
   unsigned muxCount = 0;
-  adgModule->walk([&](fcc::fabric::StaticMuxOp muxOp) {
+  adgModule->walk([&](fcc::fabric::MuxOp muxOp) {
     (void)muxOp;
     ++muxCount;
   });
@@ -123,7 +123,7 @@ static void warnMapperOwnedRuntimeConfig(ModuleOp adgModule) {
     return;
   llvm::errs()
       << "fcc: warning: ADG contains " << muxCount
-      << " fabric.static_mux runtime-config hints; mapper treats them as "
+      << " fabric.mux runtime-config hints; mapper treats them as "
          "initial values and may overwrite sel/discard/disconnect\n";
 }
 
@@ -224,9 +224,9 @@ int main(int argc, char **argv) {
     llvm::outs() << "  " << base << ".map.json\n";
     llvm::outs() << "  " << base << ".map.txt\n";
     if (!configGen.isConfigComplete()) {
-      llvm::outs() << "fcc: warning: config artifacts currently cover "
-                      "routing/tag/memory state but not all PE/FU runtime "
-                      "configuration\n";
+      llvm::outs() << "fcc: warning: config artifacts include all currently "
+                      "serialized slice families, but some slice contents are "
+                      "still incomplete\n";
     }
 
     // Generate visualization with mapping data

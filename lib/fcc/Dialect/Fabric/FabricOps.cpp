@@ -5,6 +5,65 @@
 using namespace mlir;
 using namespace fcc::fabric;
 
+namespace {
+
+static std::optional<unsigned> getFabricScalarWidth(mlir::Type type) {
+  if (auto bits = mlir::dyn_cast<fcc::fabric::BitsType>(type))
+    return bits.getWidth();
+  if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(type))
+    return intTy.getWidth();
+  if (mlir::isa<mlir::Float16Type, mlir::BFloat16Type>(type))
+    return 16u;
+  if (mlir::isa<mlir::Float32Type>(type))
+    return 32u;
+  if (mlir::isa<mlir::Float64Type>(type))
+    return 64u;
+  if (type.isIndex())
+    return static_cast<unsigned>(fcc::fabric::ADDR_BIT_WIDTH);
+  if (mlir::isa<mlir::NoneType>(type))
+    return 0u;
+  return std::nullopt;
+}
+
+static std::optional<unsigned> getSpatialSwitchPayloadWidth(mlir::Type type) {
+  if (auto tagged = mlir::dyn_cast<fcc::fabric::TaggedType>(type))
+    return getFabricScalarWidth(tagged.getValueType());
+  return getFabricScalarWidth(type);
+}
+
+static LogicalResult verifyBinaryRowTable(ArrayAttr tableAttr, unsigned expectedRows,
+                                         unsigned expectedCols,
+                                         Operation *op,
+                                         llvm::StringRef name) {
+  if (!tableAttr)
+    return success();
+  if (tableAttr.size() != expectedRows) {
+    return op->emitOpError() << name << " must have " << expectedRows
+                             << " row(s), got " << tableAttr.size();
+  }
+  for (unsigned rowIdx = 0; rowIdx < tableAttr.size(); ++rowIdx) {
+    auto strAttr = mlir::dyn_cast<mlir::StringAttr>(tableAttr[rowIdx]);
+    if (!strAttr) {
+      return op->emitOpError() << name << " row " << rowIdx
+                               << " must be a binary string";
+    }
+    llvm::StringRef row = strAttr.getValue();
+    if (row.size() != expectedCols) {
+      return op->emitOpError() << name << " row " << rowIdx << " must have "
+                               << expectedCols << " column(s), got "
+                               << row.size();
+    }
+    for (char ch : row) {
+      if (ch != '0' && ch != '1')
+        return op->emitOpError() << name << " row " << rowIdx
+                                 << " must contain only '0' or '1'";
+    }
+  }
+  return success();
+}
+
+} // namespace
+
 //===----------------------------------------------------------------------===//
 // ModuleOp
 //===----------------------------------------------------------------------===//
@@ -112,10 +171,10 @@ LogicalResult InstanceOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// StaticMuxOp
+// MuxOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult StaticMuxOp::verify() {
+LogicalResult MuxOp::verify() {
   auto *parent = (*this)->getParentOp();
   bool insideFU = false;
   while (parent) {
@@ -148,14 +207,14 @@ LogicalResult StaticMuxOp::verify() {
 
   if (numInputs == 1 && numResults == 1 &&
       (getDiscard() || getDisconnect())) {
-    return emitOpError("1:1 static_mux cannot set discard or disconnect");
+    return emitOpError("1:1 mux cannot set discard or disconnect");
   }
 
   if (!getDisconnect()) {
     unsigned fanout = std::max(numInputs, numResults);
     if (getSel() < 0 || static_cast<uint64_t>(getSel()) >= fanout) {
       return emitOpError("sel out of range for ")
-             << fanout << "-way static_mux";
+             << fanout << "-way mux";
     }
   }
 
@@ -258,6 +317,80 @@ LogicalResult SpatialPEOp::verify() {
 // TemporalPEOp
 //===----------------------------------------------------------------------===//
 
+static ParseResult parseTemporalPEHwParams(OpAsmParser &parser,
+                                           OperationState &result) {
+  if (failed(parser.parseOptionalLSquare())) {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected temporal_pe hardware parameters in []");
+  }
+
+  bool sawNumRegister = false;
+  bool sawNumInstruction = false;
+  bool sawRegFifoDepth = false;
+  bool sawEnableShareOperandBuffer = false;
+
+  bool first = true;
+  while (true) {
+    if (!first && failed(parser.parseOptionalComma()))
+      break;
+    first = false;
+
+    StringRef keyword;
+    if (parser.parseKeyword(&keyword))
+      return failure();
+    if (parser.parseEqual())
+      return failure();
+
+    if (keyword == "num_register" || keyword == "num_instruction" ||
+        keyword == "reg_fifo_depth" || keyword == "operand_buffer_size") {
+      Attribute attr;
+      if (parser.parseAttribute(attr))
+        return failure();
+      auto intAttr = mlir::dyn_cast<IntegerAttr>(attr);
+      if (!intAttr) {
+        return parser.emitError(parser.getCurrentLocation(),
+                                "expected integer attribute for temporal_pe hardware parameter '")
+               << keyword << "'";
+      }
+      result.addAttribute(keyword, intAttr);
+      sawNumRegister |= (keyword == "num_register");
+      sawNumInstruction |= (keyword == "num_instruction");
+      sawRegFifoDepth |= (keyword == "reg_fifo_depth");
+    } else if (keyword == "enable_share_operand_buffer") {
+      Attribute attr;
+      if (parser.parseAttribute(attr))
+        return failure();
+      auto boolAttr = mlir::dyn_cast<BoolAttr>(attr);
+      if (!boolAttr) {
+        return parser.emitError(parser.getCurrentLocation(),
+                                "expected bool attribute for temporal_pe hardware parameter '")
+               << keyword << "'";
+      }
+      result.addAttribute(keyword, boolAttr);
+      sawEnableShareOperandBuffer = true;
+    } else {
+      return parser.emitError(parser.getCurrentLocation(),
+                              "unexpected keyword '")
+             << keyword << "' in temporal_pe hardware parameters";
+    }
+  }
+
+  if (parser.parseRSquare())
+    return failure();
+
+  if (!sawNumRegister || !sawNumInstruction || !sawRegFifoDepth) {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "temporal_pe hardware parameters must include "
+                            "num_register, num_instruction, and reg_fifo_depth");
+  }
+  if (!sawEnableShareOperandBuffer) {
+    result.addAttribute("enable_share_operand_buffer",
+                        parser.getBuilder().getBoolAttr(false));
+  }
+
+  return success();
+}
+
 ParseResult TemporalPEOp::parse(OpAsmParser &parser, OperationState &result) {
   StringAttr nameAttr;
   if (succeeded(parser.parseOptionalSymbolName(nameAttr,
@@ -304,6 +437,9 @@ ParseResult TemporalPEOp::parse(OpAsmParser &parser, OperationState &result) {
   result.addAttribute("function_type", TypeAttr::get(funcType));
   result.addTypes(resultTypes);
 
+  if (parseTemporalPEHwParams(parser, result))
+    return failure();
+
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
 
@@ -334,14 +470,65 @@ void TemporalPEOp::print(OpAsmPrinter &p) {
     llvm::interleaveComma(funcType.getResults(), p);
     p << ")";
   }
+
+  p << " [num_register = ";
+  p.printAttribute((*this)->getAttr("num_register"));
+  p << ", num_instruction = ";
+  p.printAttribute((*this)->getAttr("num_instruction"));
+  p << ", reg_fifo_depth = ";
+  p.printAttribute((*this)->getAttr("reg_fifo_depth"));
+  p << ", enable_share_operand_buffer = ";
+  p.printAttribute((*this)->getAttr("enable_share_operand_buffer"));
+  if (auto operandBufferSize = (*this)->getAttr("operand_buffer_size")) {
+    p << ", operand_buffer_size = ";
+    p.printAttribute(operandBufferSize);
+  }
+  p << "]";
+
   p.printOptionalAttrDictWithKeyword(
       (*this)->getAttrs(),
-      {"sym_name", "function_type"});
+      {"sym_name", "function_type", "num_register", "num_instruction",
+       "reg_fifo_depth", "enable_share_operand_buffer",
+       "operand_buffer_size"});
   p << " ";
   p.printRegion(getBody(), false);
 }
 
 LogicalResult TemporalPEOp::verify() {
+  if (getNumInstruction() <= 0)
+    return emitOpError("num_instruction must be greater than 0");
+
+  if (getNumRegister() < 0)
+    return emitOpError("num_register must be greater than or equal to 0");
+
+  if (getRegFifoDepth() < 0)
+    return emitOpError("reg_fifo_depth must be greater than or equal to 0");
+
+  if (getNumRegister() == 0) {
+    if (getRegFifoDepth() != 0) {
+      return emitOpError(
+          "reg_fifo_depth must be 0 when num_register is 0");
+    }
+  } else if (getRegFifoDepth() < 1) {
+    return emitOpError(
+        "reg_fifo_depth must be at least 1 when num_register is greater than 0");
+  }
+
+  if (getEnableShareOperandBuffer()) {
+    if (!getOperandBufferSize()) {
+      return emitOpError(
+          "operand_buffer_size must be present when enable_share_operand_buffer is true");
+    }
+    int64_t size = *getOperandBufferSize();
+    if (size < 1 || size > 8192) {
+      return emitOpError(
+          "operand_buffer_size must be in range [1, 8192]");
+    }
+  } else if (getOperandBufferSize()) {
+    return emitOpError(
+        "operand_buffer_size must be absent when enable_share_operand_buffer is false");
+  }
+
   return success();
 }
 
@@ -613,6 +800,63 @@ void SpatialSwOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult SpatialSwOp::verify() {
+  auto funcType = getFunctionType();
+  if (funcType.getNumInputs() == 0 || funcType.getNumResults() == 0)
+    return emitOpError("must have at least one input and one output");
+
+  bool sawTagged = false;
+  bool sawNonTagged = false;
+  auto classifyPort = [&](mlir::Type type) {
+    if (mlir::isa<fcc::fabric::TaggedType>(type))
+      sawTagged = true;
+    else
+      sawNonTagged = true;
+  };
+
+  for (mlir::Type type : funcType.getInputs())
+    classifyPort(type);
+  for (mlir::Type type : funcType.getResults())
+    classifyPort(type);
+
+  if (sawTagged && sawNonTagged) {
+    return emitOpError(
+        "all ports must share the same tag-kind; mixing tagged and non-tagged ports is not allowed");
+  }
+
+  int64_t decomposableBits = getDecomposableBits();
+  if (decomposableBits == 0 || decomposableBits < -1) {
+    return emitOpError(
+        "decomposable_bits must be -1 or a positive integer");
+  }
+
+  if (sawTagged && decomposableBits != -1) {
+    return emitOpError(
+        "tagged spatial_sw cannot be decomposable");
+  }
+
+  if (decomposableBits > 0) {
+    for (mlir::Type type : funcType.getInputs()) {
+      auto width = getSpatialSwitchPayloadWidth(type);
+      if (!width) {
+        return emitOpError("unsupported port type for decomposable spatial_sw: ")
+               << type;
+      }
+      if ((*width % static_cast<unsigned>(decomposableBits)) != 0) {
+        return emitOpError("input payload width must be divisible by decomposable_bits");
+      }
+    }
+    for (mlir::Type type : funcType.getResults()) {
+      auto width = getSpatialSwitchPayloadWidth(type);
+      if (!width) {
+        return emitOpError("unsupported port type for decomposable spatial_sw: ")
+               << type;
+      }
+      if ((*width % static_cast<unsigned>(decomposableBits)) != 0) {
+        return emitOpError("output payload width must be divisible by decomposable_bits");
+      }
+    }
+  }
+
   return success();
 }
 
@@ -718,6 +962,54 @@ void TemporalSwOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult TemporalSwOp::verify() {
+  auto funcType = getFunctionType();
+  if (funcType.getNumInputs() == 0 || funcType.getNumResults() == 0)
+    return emitOpError("must have at least one input and one output");
+
+  if (getNumRouteTable() < 1)
+    return emitOpError("num_route_table must be >= 1");
+
+  mlir::Type canonicalType;
+  auto verifyPortType = [&](mlir::Type type, llvm::StringRef role,
+                            unsigned idx) -> LogicalResult {
+    auto tagged = mlir::dyn_cast<fcc::fabric::TaggedType>(type);
+    if (!tagged) {
+      return emitOpError() << role << " " << idx
+                           << " must be !fabric.tagged";
+    }
+    if (!canonicalType) {
+      canonicalType = type;
+      return success();
+    }
+    if (type != canonicalType) {
+      return emitOpError() << "all ports must have the same tagged type; "
+                           << role << " " << idx << " has type " << type
+                           << " but expected " << canonicalType;
+    }
+    return success();
+  };
+
+  for (unsigned i = 0; i < funcType.getNumInputs(); ++i) {
+    if (failed(verifyPortType(funcType.getInput(i), "input", i)))
+      return failure();
+  }
+  for (unsigned i = 0; i < funcType.getNumResults(); ++i) {
+    if (failed(verifyPortType(funcType.getResult(i), "output", i)))
+      return failure();
+  }
+
+  if (failed(verifyBinaryRowTable(getConnectivityTable().value_or(ArrayAttr()),
+                                  funcType.getNumResults(),
+                                  funcType.getNumInputs(), getOperation(),
+                                  "connectivity_table"))) {
+    return failure();
+  }
+
+  if (auto routeTable = getRouteTable()) {
+    if (routeTable->size() > static_cast<unsigned>(getNumRouteTable()))
+      return emitOpError("route_table cannot contain more rows than num_route_table");
+  }
+
   return success();
 }
 
@@ -1261,7 +1553,118 @@ LogicalResult DelTagOp::verify() {
   return success();
 }
 
+static ParseResult parseMapTagHwParams(OpAsmParser &parser,
+                                       OperationState &result) {
+  if (failed(parser.parseOptionalLSquare())) {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected map_tag hardware parameters in []");
+  }
+
+  StringRef keyword;
+  if (parser.parseKeyword(&keyword) || keyword != "table_size")
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected table_size in map_tag hardware parameters");
+  if (parser.parseEqual())
+    return failure();
+
+  Attribute tableSizeAttr;
+  if (parser.parseAttribute(tableSizeAttr)) {
+    return failure();
+  }
+  auto intAttr = mlir::dyn_cast<IntegerAttr>(tableSizeAttr);
+  if (!intAttr) {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected integer attribute for map_tag table_size");
+  }
+  result.addAttribute("table_size", intAttr);
+
+  if (failed(parser.parseOptionalComma()) == false) {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "unexpected extra map_tag hardware parameter");
+  }
+
+  if (parser.parseRSquare())
+    return failure();
+  return success();
+}
+
+ParseResult MapTagOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand tagged;
+  Type inputType, outputType;
+
+  if (parser.parseOperand(tagged))
+    return failure();
+  if (parseMapTagHwParams(parser, result))
+    return failure();
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+  if (parser.parseColon() || parser.parseType(inputType) || parser.parseArrow() ||
+      parser.parseType(outputType)) {
+    return failure();
+  }
+
+  if (parser.resolveOperand(tagged, inputType, result.operands))
+    return failure();
+  result.addTypes(outputType);
+  return success();
+}
+
+void MapTagOp::print(OpAsmPrinter &p) {
+  p << " " << getTagged();
+  p << " [table_size = ";
+  p.printAttribute((*this)->getAttr("table_size"));
+  p << "]";
+  p.printOptionalAttrDictWithKeyword((*this)->getAttrs(), {"table_size"});
+  p << " : " << getTagged().getType() << " -> " << getResult().getType();
+}
+
 LogicalResult MapTagOp::verify() {
+  auto inputType = mlir::dyn_cast<fcc::fabric::TaggedType>(getTagged().getType());
+  auto outputType = mlir::dyn_cast<fcc::fabric::TaggedType>(getResult().getType());
+  if (!inputType || !outputType)
+    return emitOpError("requires tagged input and tagged result types");
+
+  if (inputType.getValueType() != outputType.getValueType())
+    return emitOpError("requires identical tagged value types");
+
+  auto inputTagType = mlir::dyn_cast<mlir::IntegerType>(inputType.getTagType());
+  auto outputTagType = mlir::dyn_cast<mlir::IntegerType>(outputType.getTagType());
+  if (!inputTagType || !outputTagType)
+    return emitOpError("requires integer tag types");
+
+  auto tableSizeAttr = getTableSizeAttr();
+  if (!tableSizeAttr)
+    return emitOpError("requires table_size hardware parameter");
+  int64_t tableSize = tableSizeAttr.getInt();
+  if (tableSize <= 0)
+    return emitOpError("table_size must be positive");
+
+  if (inputTagType.getWidth() < 63) {
+    uint64_t maxEntries = uint64_t{1} << inputTagType.getWidth();
+    if (static_cast<uint64_t>(tableSize) > maxEntries) {
+      return emitOpError("table_size exceeds input tag domain");
+    }
+  }
+
+  auto tableAttr = getTable();
+  if (tableAttr && static_cast<int64_t>(tableAttr->size()) != tableSize) {
+    return emitOpError("table length must match table_size");
+  }
+
+  if (tableAttr && outputTagType.getWidth() < 63) {
+    uint64_t maxOutput = uint64_t{1} << outputTagType.getWidth();
+    for (Attribute attr : *tableAttr) {
+      auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr);
+      if (!intAttr)
+        return emitOpError("table entries must be integers");
+      int64_t value = intAttr.getInt();
+      if (value < 0)
+        return emitOpError("table entries must be non-negative");
+      if (static_cast<uint64_t>(value) >= maxOutput)
+        return emitOpError("table entry exceeds output tag domain");
+    }
+  }
+
   return success();
 }
 

@@ -5,10 +5,18 @@
 
 namespace fcc {
 
-/// Verify fabric.module compliance:
-/// - No dangling ports: every instance result must be used,
-///   every instance operand must come from a defined value.
-/// Returns success if valid, failure with diagnostics if not.
+/// Verify a top-level MLIR module containing a fabric.module.
+///
+/// This performs two layers of checking:
+/// - regular MLIR verification for Fabric op-local invariants
+/// - fabric.module graph checks shared by builder-emitted ADGs and
+///   hand-authored ADGs consumed by the mapper
+///
+/// The graph-level checks currently include:
+/// - no dangling top-level hardware outputs
+/// - no dangling fabric.module input ports
+/// - no dangling inline hardware input ports
+/// - hardware graph connections must preserve tag-kind compatibility
 mlir::LogicalResult verifyFabricModule(mlir::ModuleOp topModule);
 
 } // namespace fcc

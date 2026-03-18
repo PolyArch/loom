@@ -118,6 +118,21 @@ inline bool canMapSoftwareTypeToHardware(mlir::Type swType, mlir::Type hwType) {
   return true;
 }
 
+/// Bridge boundaries for software memory/extmemory may appear on already-tagged
+/// hardware ports. In that case the software type maps against the tagged
+/// payload's value type, while the runtime tag value is supplied by the bridge
+/// path rather than by the software op itself.
+inline bool canMapSoftwareTypeToBridgeHardware(mlir::Type swType,
+                                               mlir::Type hwType) {
+  if (canMapSoftwareTypeToHardware(swType, hwType))
+    return true;
+
+  auto taggedHwType = mlir::dyn_cast<fcc::fabric::TaggedType>(hwType);
+  if (!taggedHwType)
+    return false;
+  return canMapSoftwareTypeToHardware(swType, taggedHwType.getValueType());
+}
+
 } // namespace fcc
 
 #endif // FCC_MAPPER_TYPECOMPAT_H

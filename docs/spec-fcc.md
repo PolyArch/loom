@@ -11,7 +11,7 @@ architectural changes:
 1. `function_unit` becomes an explicit level inside `spatial_pe` and
    `temporal_pe`.
 2. A configurable hardware DAG is allowed inside `function_unit` through
-   `fabric.static_mux`, making tech-mapping a hardware-software co-design step.
+   `fabric.mux`, making tech-mapping a hardware-software co-design step.
 3. `spatial_sw` supports decomposable routing, so switch configuration may
    operate at sub-lane granularity instead of only logical-port granularity.
 
@@ -59,7 +59,7 @@ The normative FCC flow is:
 - `spatial_sw` route selection is a mux model: each output chooses one input at
   the relevant granularity. Multiple inputs may not drive the same output in
   one configuration.
-- `fabric.static_mux` configuration is selected during tech-mapping and is not
+- `fabric.mux` configuration is selected during tech-mapping and is not
   rewritten during placement or routing.
 
 ## Scope of This Spec Set
