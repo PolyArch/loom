@@ -1,5 +1,7 @@
 add_library(FccADG
-  ADGBuilder.cpp
+  ADGBuilderCore.cpp
+  ADGBuilderEmit.cpp
+  ADGBuilderTopology.cpp
   ADGVerifier.cpp
 )
 

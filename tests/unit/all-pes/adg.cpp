@@ -35,20 +35,30 @@ static void buildAllPEsTestADG(const std::string &outputPath) {
 
   //=== Define Function Units and single-purpose PEs ===
 
-  auto fuAdd = builder.defineFU(
-      "fu_add", {"i32", "i32"}, {"i32"}, {"arith.addi"});
-  auto fuConstant = builder.defineFU(
-      "fu_constant", {"none"}, {"i32"}, {"handshake.constant"});
-  auto fuMul = builder.defineFU(
-      "fu_mul", {"i32", "i32"}, {"i32"}, {"arith.muli"});
-  auto fuJoin = builder.defineFU(
-      "fu_join", {"none"}, {"none"}, {"handshake.join"});
+  auto fuAdd = builder.defineBinaryFU("fu_add", "arith.addi", "i32", "i32");
 
-  auto addPE = builder.defineSpatialPE("add_pe", 2, 1, dataWidth, {fuAdd});
-  auto constPE = builder.defineSpatialPE("const_pe", 1, 1, dataWidth,
-                                         {fuConstant});
-  auto mulPE = builder.defineSpatialPE("mul_pe", 2, 1, dataWidth, {fuMul});
-  auto joinPE = builder.defineSpatialPE("join_pe", 1, 1, dataWidth, {fuJoin});
+  FunctionUnitSpec constantSpec;
+  constantSpec.name = "fu_constant";
+  constantSpec.inputTypes = {"none"};
+  constantSpec.outputTypes = {"i32"};
+  constantSpec.ops = {"handshake.constant"};
+  auto fuConstant = builder.defineFU(constantSpec);
+
+  auto fuMul = builder.defineBinaryFU("fu_mul", "arith.muli", "i32", "i32");
+
+  FunctionUnitSpec joinSpec;
+  joinSpec.name = "fu_join";
+  joinSpec.inputTypes = {"none"};
+  joinSpec.outputTypes = {"none"};
+  joinSpec.ops = {"handshake.join"};
+  auto fuJoin = builder.defineFU(joinSpec);
+
+  auto addPE = builder.defineSingleFUSpatialPE("add_pe", 2, 1, dataWidth, fuAdd);
+  auto constPE =
+      builder.defineSingleFUSpatialPE("const_pe", 1, 1, dataWidth, fuConstant);
+  auto mulPE = builder.defineSingleFUSpatialPE("mul_pe", 2, 1, dataWidth, fuMul);
+  auto joinPE =
+      builder.defineSingleFUSpatialPE("join_pe", 1, 1, dataWidth, fuJoin);
 
   auto addInst = builder.instantiatePE(addPE, "pe_add");
   auto constInst = builder.instantiatePE(constPE, "pe_const");
@@ -61,10 +71,9 @@ static void buildAllPEsTestADG(const std::string &outputPath) {
   auto sIn1 = builder.addScalarInput("scalar_in1", dataWidth);
   auto sCtrl = builder.addScalarInput("scalar_ctrl", dataWidth);
 
-  builder.connectScalarInputToInstance(sIn0, addInst, 0);
-  builder.connectScalarInputToInstance(sIn1, addInst, 1);
-  builder.connectScalarInputToInstance(sCtrl, constInst, 0);
-  builder.connectScalarInputToInstance(sCtrl, joinInst, 0);
+  builder.connectInputVectorToInstance({sIn0, sIn1}, addInst);
+  builder.connectInputToInstance(sCtrl, constInst, 0);
+  builder.connectInputToInstance(sCtrl, joinInst, 0);
 
   //=== Wire the PE dataflow graph directly ===
 
@@ -75,8 +84,8 @@ static void buildAllPEsTestADG(const std::string &outputPath) {
 
   auto sOut0 = builder.addScalarOutput("scalar_result", dataWidth);
   auto sOut1 = builder.addScalarOutput("scalar_done", dataWidth);
-  builder.connectInstanceToScalarOutput(mulInst, 0, sOut0);
-  builder.connectInstanceToScalarOutput(joinInst, 0, sOut1);
+  builder.connectInstanceToOutputVector(mulInst, 0, {sOut0});
+  builder.connectInstanceToOutputVector(joinInst, 0, {sOut1});
 
   //=== Export ===
 

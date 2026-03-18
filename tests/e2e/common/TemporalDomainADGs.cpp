@@ -5,14 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "TemporalDomainADGs.h"
-
-#include "llvm/Support/FileSystem.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/ADT/Twine.h"
-
-#include <memory>
-#include <sstream>
-#include <system_error>
+#include "fcc/ADG/ADGBuilder.h"
 
 namespace fcc {
 namespace e2e {
@@ -25,388 +18,213 @@ static std::string taggedBitsType(unsigned width) {
   return "!fabric.tagged<" + bitsType(width) + ", i1>";
 }
 
-static std::unique_ptr<llvm::raw_fd_ostream>
-openOutput(const std::string &outputPath) {
-  std::error_code ec;
-  auto os =
-      std::make_unique<llvm::raw_fd_ostream>(outputPath, ec,
-                                             llvm::sys::fs::OF_Text);
-  if (ec)
-    llvm::report_fatal_error(llvm::Twine("cannot open output file: ") +
-                             outputPath);
-  return os;
-}
-
 void buildTemporalReductionDomain(const std::string &outputPath,
                                   const TemporalReductionDomainOptions &opts) {
-  auto os = openOutput(outputPath);
-
   const std::string bitsTy = bitsType(opts.dataWidth);
   const std::string taggedTy = taggedBitsType(opts.dataWidth);
+  fcc::adg::ADGBuilder builder(opts.moduleName);
 
-  *os << "module {\n";
-  *os << "  fabric.temporal_pe @tpe_reduce(\n";
-  *os << "      %p0: " << taggedTy << ",\n";
-  *os << "      %p1: " << taggedTy << ",\n";
-  *os << "      %p2: " << taggedTy << ",\n";
-  *os << "      %p3: " << taggedTy << ",\n";
-  *os << "      %p4: " << taggedTy << ")\n";
-  *os << "      -> (" << taggedTy << ",\n";
-  *os << "          " << taggedTy << ",\n";
-  *os << "          " << taggedTy << ")\n";
-  *os << "      [\n";
-  *os << "        num_register = " << opts.numRegister << " : i64,\n";
-  *os << "        num_instruction = " << opts.numInstruction << " : i64,\n";
-  *os << "        reg_fifo_depth = " << opts.regFifoDepth << " : i64\n";
-  *os << "      ] {\n";
-  *os << "    fabric.function_unit @fu_join(%a: none) -> (none)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.join %a : none\n";
-  *os << "      fabric.yield %0 : none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_join_1(%a: none, %b: none) -> (none)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.join %a, %b : none, none\n";
-  *os << "      fabric.yield %0 : none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_const_index(%ctrl: none) -> (index)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.constant %ctrl {value = 0 : index} : index\n";
-  *os << "      fabric.yield %0 : index\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_const_index_1(%ctrl: none) -> (index)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.constant %ctrl {value = 0 : index} : index\n";
-  *os << "      fabric.yield %0 : index\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_const_i32(%ctrl: none) -> (i32)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.constant %ctrl {value = 0 : i32} : i32\n";
-  *os << "      fabric.yield %0 : i32\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_index_cast(%arg0: i32) -> (index)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = arith.index_cast %arg0 : i32 to index\n";
-  *os << "      fabric.yield %0 : index\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_stream(%start: index, %step: index, %bound: index)\n";
-  *os << "        -> (index, i1) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = dataflow.stream %start, %step, %bound\n";
-  *os << "          {step_op = \"+=\", cont_cond = \"<\"}\n";
-  *os << "          : (index, index, index) -> (index, i1)\n";
-  *os << "      fabric.yield %0, %1 : index, i1\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_gate_index(%value: index, %cond: i1)\n";
-  *os << "        -> (index, i1) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = dataflow.gate %value, %cond : index, i1 -> index, i1\n";
-  *os << "      fabric.yield %0, %1 : index, i1\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_gate_i32(%value: i32, %cond: i1)\n";
-  *os << "        -> (i32, i1) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = dataflow.gate %value, %cond : i32, i1 -> i32, i1\n";
-  *os << "      fabric.yield %0, %1 : i32, i1\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_carry_i32(%cond: i1, %a: i32, %b: i32)\n";
-  *os << "        -> (i32) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = dataflow.carry %cond, %a, %b : i1, i32, i32 -> i32\n";
-  *os << "      fabric.yield %0 : i32\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_carry_none(%cond: i1, %a: none, %b: none)\n";
-  *os << "        -> (none) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = dataflow.carry %cond, %a, %b : i1, none, none -> none\n";
-  *os << "      fabric.yield %0 : none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_carry_none_1(%cond: i1, %a: none, %b: none)\n";
-  *os << "        -> (none) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = dataflow.carry %cond, %a, %b : i1, none, none -> none\n";
-  *os << "      fabric.yield %0 : none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_cond_br_i32(%cond: i1, %value: i32)\n";
-  *os << "        -> (i32, i32) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = handshake.cond_br %cond, %value : i32\n";
-  *os << "      fabric.yield %0, %1 : i32, i32\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_cond_br_none(%cond: i1, %value: none)\n";
-  *os << "        -> (none, none) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = handshake.cond_br %cond, %value : none\n";
-  *os << "      fabric.yield %0, %1 : none, none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_cond_br_none_1(%cond: i1, %value: none)\n";
-  *os << "        -> (none, none) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = handshake.cond_br %cond, %value : none\n";
-  *os << "      fabric.yield %0, %1 : none, none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_load(%addr: index, %data: i32, %ctrl: none)\n";
-  *os << "        -> (i32, index) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = handshake.load [%addr] %data, %ctrl : index, i32\n";
-  *os << "      fabric.yield %0, %1 : i32, index\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_addi(%a: i32, %b: i32) -> (i32)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = arith.addi %a, %b : i32\n";
-  *os << "      fabric.yield %0 : i32\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_cmpi(%a: i32, %b: i32) -> (i1)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = arith.cmpi eq, %a, %b : i32\n";
-  *os << "      fabric.yield %0 : i1\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_select_index(%cond: i1, %a: index, %b: index)\n";
-  *os << "        -> (index) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = arith.select %cond, %a, %b : index\n";
-  *os << "      fabric.yield %0 : index\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_mux_i32(%sel: index, %a: i32, %b: i32)\n";
-  *os << "        -> (i32) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.mux %sel [%a, %b] : index, i32\n";
-  *os << "      fabric.yield %0 : i32\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_mux_none(%sel: index, %a: none, %b: none)\n";
-  *os << "        -> (none) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.mux %sel [%a, %b] : index, none\n";
-  *os << "      fabric.yield %0 : none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_mux_none_1(%sel: index, %a: none, %b: none)\n";
-  *os << "        -> (none) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.mux %sel [%a, %b] : index, none\n";
-  *os << "      fabric.yield %0 : none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.yield\n";
-  *os << "  }\n\n";
-  *os << "  fabric.module @" << opts.moduleName << "(\n";
-  *os << "      %mem0: " << opts.memrefType << ",\n";
-  *os << "      %n: " << bitsTy << ",\n";
-  *os << "      %init: " << bitsTy << ",\n";
-  *os << "      %ctrl: " << bitsTy << ")\n";
-  *os << "      -> (" << bitsTy << ", " << bitsTy << ") {\n";
-  *os << "    %ext0:2 = fabric.extmemory @extmem_0\n";
-  *os << "        [ldCount = 1, stCount = 0, lsqDepth = 0, memrefType = "
-     << opts.memrefType << "]\n";
-  *os << "        (%mem0, %addr_bits)\n";
-  *os << "        : (" << opts.memrefType << ", " << bitsTy << ")\n";
-  *os << "          -> (" << bitsTy << ", " << bitsTy << ")\n\n";
-  *os << "    %tag_n = fabric.add_tag %n {tag = 0 : i64}\n";
-  *os << "        : " << bitsTy << " -> " << taggedTy << "\n";
-  *os << "    %tag_init = fabric.add_tag %init {tag = 0 : i64}\n";
-  *os << "        : " << bitsTy << " -> " << taggedTy << "\n";
-  *os << "    %tag_ctrl = fabric.add_tag %ctrl {tag = 0 : i64}\n";
-  *os << "        : " << bitsTy << " -> " << taggedTy << "\n";
-  *os << "    %tag_lddata = fabric.add_tag %ext0#0 {tag = 0 : i64}\n";
-  *os << "        : " << bitsTy << " -> " << taggedTy << "\n";
-  *os << "    %tag_lddone = fabric.add_tag %ext0#1 {tag = 0 : i64}\n";
-  *os << "        : " << bitsTy << " -> " << taggedTy << "\n\n";
-  *os << "    %tpe0:3 = fabric.instance @tpe_reduce(\n";
-  *os << "        %tag_n, %tag_init, %tag_ctrl, %tag_lddata, %tag_lddone)\n";
-  *os << "        {sym_name = \"tpe_0\"}\n";
-  *os << "        : (" << taggedTy << ",\n";
-  *os << "           " << taggedTy << ",\n";
-  *os << "           " << taggedTy << ",\n";
-  *os << "           " << taggedTy << ",\n";
-  *os << "           " << taggedTy << ")\n";
-  *os << "          -> (" << taggedTy << ",\n";
-  *os << "              " << taggedTy << ",\n";
-  *os << "              " << taggedTy << ")\n\n";
-  *os << "    %addr_bits = fabric.del_tag %tpe0#0\n";
-  *os << "        : " << taggedTy << " -> " << bitsTy << "\n";
-  *os << "    %sum_bits = fabric.del_tag %tpe0#1\n";
-  *os << "        : " << taggedTy << " -> " << bitsTy << "\n";
-  *os << "    %done_bits = fabric.del_tag %tpe0#2\n";
-  *os << "        : " << taggedTy << " -> " << bitsTy << "\n\n";
-  *os << "    fabric.yield %sum_bits, %done_bits : " << bitsTy << ", " << bitsTy
-     << "\n";
-  *os << "  }\n";
-  *os << "}\n";
+  std::vector<fcc::adg::FUHandle> fus;
+  fus.push_back(builder.defineJoinFU("fu_join", 1));
+  fus.push_back(builder.defineJoinFU("fu_join_1", 2));
+  fus.push_back(
+      builder.defineConstantFU("fu_const_index", "index", "0 : index"));
+  fus.push_back(
+      builder.defineConstantFU("fu_const_index_1", "index", "0 : index"));
+  fus.push_back(builder.defineConstantFU("fu_const_i32", "i32", "0 : i32"));
+  fus.push_back(builder.defineIndexCastFU("fu_index_cast", "i32", "index"));
+  fus.push_back(builder.defineStreamFU("fu_stream"));
+  fus.push_back(builder.defineGateFU("fu_gate_index", "index"));
+  fus.push_back(builder.defineGateFU("fu_gate_i32", "i32"));
+  fus.push_back(builder.defineCarryFU("fu_carry_i32", "i32"));
+  fus.push_back(builder.defineCarryFU("fu_carry_none", "none"));
+  fus.push_back(builder.defineCarryFU("fu_carry_none_1", "none"));
+  fus.push_back(builder.defineCondBrFU("fu_cond_br_i32", "i32"));
+  fus.push_back(builder.defineCondBrFU("fu_cond_br_none", "none"));
+  fus.push_back(builder.defineCondBrFU("fu_cond_br_none_1", "none"));
+  fus.push_back(builder.defineLoadFU("fu_load", "index", "i32"));
+  fus.push_back(builder.defineBinaryFU("fu_addi", "arith.addi", "i32", "i32"));
+  fus.push_back(builder.defineCmpiFU("fu_cmpi", "i32", "eq"));
+  fus.push_back(builder.defineSelectFU("fu_select_index", "index"));
+  fus.push_back(builder.defineMuxFU("fu_mux_i32", "i32"));
+  fus.push_back(builder.defineMuxFU("fu_mux_none", "none"));
+  fus.push_back(builder.defineMuxFU("fu_mux_none_1", "none"));
+
+  fcc::adg::TemporalPESpec peSpec;
+  peSpec.name = "tpe_reduce";
+  peSpec.inputTypes = {taggedTy, taggedTy, taggedTy, taggedTy, taggedTy};
+  peSpec.outputTypes = {taggedTy, taggedTy, taggedTy};
+  peSpec.functionUnits = fus;
+  peSpec.numRegister = opts.numRegister;
+  peSpec.numInstruction = opts.numInstruction;
+  peSpec.regFifoDepth = opts.regFifoDepth;
+  auto tpe = builder.defineTemporalPE(peSpec);
+
+  fcc::adg::ExtMemorySpec extSpec;
+  extSpec.name = "extmem_0";
+  extSpec.ldPorts = 1;
+  extSpec.stPorts = 0;
+  extSpec.lsqDepth = 0;
+  extSpec.memrefType = opts.memrefType;
+  auto ext = builder.defineExtMemory(extSpec);
+
+  auto memrefs = builder.addMemrefInputs("mem", 1, opts.memrefType);
+  auto mem0 = memrefs[0];
+  auto inputs = builder.addInputs("arg", {bitsTy, bitsTy, bitsTy});
+  auto outputs = builder.addOutputs("out", {bitsTy, bitsTy});
+  auto n = inputs[0];
+  auto init = inputs[1];
+  auto ctrl = inputs[2];
+  auto sumOut = outputs[0];
+  auto doneOut = outputs[1];
+
+  auto extInsts = builder.instantiateExtMemArray(1, ext, "ext");
+  auto extInst = extInsts[0];
+  builder.connectMemrefToExtMem(mem0, extInst);
+
+  auto tags =
+      builder.createAddTagBank(bitsTy, taggedTy, {0, 0, 0, 0, 0});
+  auto tagN = tags[0];
+  auto tagInit = tags[1];
+  auto tagCtrl = tags[2];
+  auto tagLdData = tags[3];
+  auto tagLdDone = tags[4];
+
+  builder.connectInputToInstance(n, tagN, 0);
+  builder.connectInputToInstance(init, tagInit, 0);
+  builder.connectInputToInstance(ctrl, tagCtrl, 0);
+  builder.connect(extInst, 0, tagLdData, 0);
+  builder.connect(extInst, 1, tagLdDone, 0);
+
+  auto tpeInst = builder.instantiatePE(tpe, "tpe_0");
+  builder.connect(tagN, 0, tpeInst, 0);
+  builder.connect(tagInit, 0, tpeInst, 1);
+  builder.connect(tagCtrl, 0, tpeInst, 2);
+  builder.connect(tagLdData, 0, tpeInst, 3);
+  builder.connect(tagLdDone, 0, tpeInst, 4);
+
+  auto dels = builder.createDelTagBank(taggedTy, bitsTy, 3);
+  auto delAddr = dels[0];
+  auto delSum = dels[1];
+  auto delDone = dels[2];
+  builder.connect(tpeInst, 0, delAddr, 0);
+  builder.connect(tpeInst, 1, delSum, 0);
+  builder.connect(tpeInst, 2, delDone, 0);
+  builder.connect(delAddr, 0, extInst, 1);
+  builder.connectInstanceToOutput(delSum, 0, sumOut);
+  builder.connectInstanceToOutput(delDone, 0, doneOut);
+
+  builder.exportMLIR(outputPath);
 }
 
 void buildTemporalScanDomain(const std::string &outputPath,
                              const TemporalScanDomainOptions &opts) {
-  auto os = openOutput(outputPath);
-
   const std::string bitsTy = bitsType(opts.dataWidth);
   const std::string taggedTy = taggedBitsType(opts.dataWidth);
+  fcc::adg::ADGBuilder builder(opts.moduleName);
 
-  *os << "module {\n";
-  *os << "  fabric.temporal_pe @tpe_scan(\n";
-  *os << "      %p0: " << taggedTy << ",\n";
-  *os << "      %p1: " << taggedTy << ",\n";
-  *os << "      %p2: " << taggedTy << ",\n";
-  *os << "      %p3: " << taggedTy << ",\n";
-  *os << "      %p4: " << taggedTy << ")\n";
-  *os << "      -> (" << taggedTy << ",\n";
-  *os << "          " << taggedTy << ",\n";
-  *os << "          " << taggedTy << ",\n";
-  *os << "          " << taggedTy << ")\n";
-  *os << "      [\n";
-  *os << "        num_register = " << opts.numRegister << " : i64,\n";
-  *os << "        num_instruction = " << opts.numInstruction << " : i64,\n";
-  *os << "        reg_fifo_depth = " << opts.regFifoDepth << " : i64\n";
-  *os << "      ] {\n";
-  *os << "    fabric.function_unit @fu_join(%a: none) -> (none)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.join %a : none\n";
-  *os << "      fabric.yield %0 : none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_join_1(%a: none, %b: none) -> (none)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.join %a, %b : none, none\n";
-  *os << "      fabric.yield %0 : none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_const_index(%ctrl: none) -> (index)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.constant %ctrl {value = 0 : index} : index\n";
-  *os << "      fabric.yield %0 : index\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_const_index_1(%ctrl: none) -> (index)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.constant %ctrl {value = 1 : index} : index\n";
-  *os << "      fabric.yield %0 : index\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_const_i32(%ctrl: none) -> (i32)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.constant %ctrl {value = 0 : i32} : i32\n";
-  *os << "      fabric.yield %0 : i32\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_index_cast(%arg0: i32) -> (index)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = arith.index_cast %arg0 : i32 to index\n";
-  *os << "      fabric.yield %0 : index\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_stream(%start: index, %step: index, %bound: index)\n";
-  *os << "        -> (index, i1) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = dataflow.stream %start, %step, %bound\n";
-  *os << "          {step_op = \"+=\", cont_cond = \"<\"}\n";
-  *os << "          : (index, index, index) -> (index, i1)\n";
-  *os << "      fabric.yield %0, %1 : index, i1\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_gate_index(%value: index, %cond: i1)\n";
-  *os << "        -> (index, i1) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = dataflow.gate %value, %cond : index, i1 -> index, i1\n";
-  *os << "      fabric.yield %0, %1 : index, i1\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_gate_i32(%value: i32, %cond: i1)\n";
-  *os << "        -> (i32, i1) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = dataflow.gate %value, %cond : i32, i1 -> i32, i1\n";
-  *os << "      fabric.yield %0, %1 : i32, i1\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_carry_i32(%cond: i1, %a: i32, %b: i32)\n";
-  *os << "        -> (i32) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = dataflow.carry %cond, %a, %b : i1, i32, i32 -> i32\n";
-  *os << "      fabric.yield %0 : i32\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_carry_none(%cond: i1, %a: none, %b: none)\n";
-  *os << "        -> (none) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = dataflow.carry %cond, %a, %b : i1, none, none -> none\n";
-  *os << "      fabric.yield %0 : none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_carry_none_1(%cond: i1, %a: none, %b: none)\n";
-  *os << "        -> (none) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = dataflow.carry %cond, %a, %b : i1, none, none -> none\n";
-  *os << "      fabric.yield %0 : none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_cond_br_none(%cond: i1, %value: none)\n";
-  *os << "        -> (none, none) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = handshake.cond_br %cond, %value : none\n";
-  *os << "      fabric.yield %0, %1 : none, none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_cond_br_none_1(%cond: i1, %value: none)\n";
-  *os << "        -> (none, none) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = handshake.cond_br %cond, %value : none\n";
-  *os << "      fabric.yield %0, %1 : none, none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_cond_br_none_2(%cond: i1, %value: none)\n";
-  *os << "        -> (none, none) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = handshake.cond_br %cond, %value : none\n";
-  *os << "      fabric.yield %0, %1 : none, none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_load(%addr: index, %data: i32, %ctrl: none)\n";
-  *os << "        -> (i32, index) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = handshake.load [%addr] %data, %ctrl : index, i32\n";
-  *os << "      fabric.yield %0, %1 : i32, index\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_store(%addr: index, %data: i32, %ctrl: none)\n";
-  *os << "        -> (i32, index) [latency = 1, interval = 1] {\n";
-  *os << "      %0, %1 = handshake.store [%addr] %data, %ctrl : index, i32\n";
-  *os << "      fabric.yield %0, %1 : i32, index\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_addi(%a: i32, %b: i32) -> (i32)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = arith.addi %a, %b : i32\n";
-  *os << "      fabric.yield %0 : i32\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_cmpi(%a: i32, %b: i32) -> (i1)\n";
-  *os << "        [latency = 1, interval = 1] {\n";
-  *os << "      %0 = arith.cmpi eq, %a, %b : i32\n";
-  *os << "      fabric.yield %0 : i1\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_select_index(%cond: i1, %a: index, %b: index)\n";
-  *os << "        -> (index) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = arith.select %cond, %a, %b : index\n";
-  *os << "      fabric.yield %0 : index\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_mux_none(%sel: index, %a: none, %b: none)\n";
-  *os << "        -> (none) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.mux %sel [%a, %b] : index, none\n";
-  *os << "      fabric.yield %0 : none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.function_unit @fu_mux_none_1(%sel: index, %a: none, %b: none)\n";
-  *os << "        -> (none) [latency = 1, interval = 1] {\n";
-  *os << "      %0 = handshake.mux %sel [%a, %b] : index, none\n";
-  *os << "      fabric.yield %0 : none\n";
-  *os << "    }\n\n";
-  *os << "    fabric.yield\n";
-  *os << "  }\n\n";
-  *os << "  fabric.module @" << opts.moduleName << "(\n";
-  *os << "      %mem_in: " << opts.memrefType << ",\n";
-  *os << "      %mem_out: " << opts.memrefType << ",\n";
-  *os << "      %n: " << bitsTy << ",\n";
-  *os << "      %ctrl: " << bitsTy << ")\n";
-  *os << "      -> (" << bitsTy << ") {\n";
-  *os << "    %ld0:2 = fabric.extmemory @extmem_in\n";
-  *os << "        [ldCount = 1, stCount = 0, lsqDepth = 0, memrefType = "
-     << opts.memrefType << "]\n";
-  *os << "        (%mem_in, %ld_addr_bits)\n";
-  *os << "        : (" << opts.memrefType << ", " << bitsTy << ")\n";
-  *os << "          -> (" << bitsTy << ", " << bitsTy << ")\n\n";
-  *os << "    %st0 = fabric.extmemory @extmem_out\n";
-  *os << "        [ldCount = 0, stCount = 1, lsqDepth = 0, memrefType = "
-     << opts.memrefType << "]\n";
-  *os << "        (%mem_out, %st_addr_bits, %st_data_bits)\n";
-  *os << "        : (" << opts.memrefType << ", " << bitsTy << ", " << bitsTy
-     << ")\n";
-  *os << "          -> (" << bitsTy << ")\n\n";
-  *os << "    %tag_n = fabric.add_tag %n {tag = 0 : i64}\n";
-  *os << "        : " << bitsTy << " -> " << taggedTy << "\n";
-  *os << "    %tag_ctrl = fabric.add_tag %ctrl {tag = 0 : i64}\n";
-  *os << "        : " << bitsTy << " -> " << taggedTy << "\n";
-  *os << "    %tag_lddata = fabric.add_tag %ld0#0 {tag = 0 : i64}\n";
-  *os << "        : " << bitsTy << " -> " << taggedTy << "\n";
-  *os << "    %tag_lddone = fabric.add_tag %ld0#1 {tag = 0 : i64}\n";
-  *os << "        : " << bitsTy << " -> " << taggedTy << "\n";
-  *os << "    %tag_stdone = fabric.add_tag %st0 {tag = 0 : i64}\n";
-  *os << "        : " << bitsTy << " -> " << taggedTy << "\n\n";
-  *os << "    %tpe0:4 = fabric.instance @tpe_scan(\n";
-  *os << "        %tag_n, %tag_ctrl, %tag_lddata, %tag_lddone, %tag_stdone)\n";
-  *os << "        {sym_name = \"tpe_0\"}\n";
-  *os << "        : (" << taggedTy << ",\n";
-  *os << "           " << taggedTy << ",\n";
-  *os << "           " << taggedTy << ",\n";
-  *os << "           " << taggedTy << ",\n";
-  *os << "           " << taggedTy << ")\n";
-  *os << "          -> (" << taggedTy << ",\n";
-  *os << "              " << taggedTy << ",\n";
-  *os << "              " << taggedTy << ",\n";
-  *os << "              " << taggedTy << ")\n\n";
-  *os << "    %ld_addr_bits = fabric.del_tag %tpe0#0\n";
-  *os << "        : " << taggedTy << " -> " << bitsTy << "\n";
-  *os << "    %st_data_bits = fabric.del_tag %tpe0#1\n";
-  *os << "        : " << taggedTy << " -> " << bitsTy << "\n";
-  *os << "    %st_addr_bits = fabric.del_tag %tpe0#2\n";
-  *os << "        : " << taggedTy << " -> " << bitsTy << "\n";
-  *os << "    %done_bits = fabric.del_tag %tpe0#3\n";
-  *os << "        : " << taggedTy << " -> " << bitsTy << "\n\n";
-  *os << "    fabric.yield %done_bits : " << bitsTy << "\n";
-  *os << "  }\n";
-  *os << "}\n";
+  std::vector<fcc::adg::FUHandle> fus;
+  fus.push_back(builder.defineJoinFU("fu_join", 1));
+  fus.push_back(builder.defineJoinFU("fu_join_1", 2));
+  fus.push_back(
+      builder.defineConstantFU("fu_const_index", "index", "0 : index"));
+  fus.push_back(
+      builder.defineConstantFU("fu_const_index_1", "index", "1 : index"));
+  fus.push_back(builder.defineConstantFU("fu_const_i32", "i32", "0 : i32"));
+  fus.push_back(builder.defineIndexCastFU("fu_index_cast", "i32", "index"));
+  fus.push_back(builder.defineStreamFU("fu_stream"));
+  fus.push_back(builder.defineGateFU("fu_gate_index", "index"));
+  fus.push_back(builder.defineGateFU("fu_gate_i32", "i32"));
+  fus.push_back(builder.defineCarryFU("fu_carry_i32", "i32"));
+  fus.push_back(builder.defineCarryFU("fu_carry_none", "none"));
+  fus.push_back(builder.defineCarryFU("fu_carry_none_1", "none"));
+  fus.push_back(builder.defineCondBrFU("fu_cond_br_none", "none"));
+  fus.push_back(builder.defineCondBrFU("fu_cond_br_none_1", "none"));
+  fus.push_back(builder.defineCondBrFU("fu_cond_br_none_2", "none"));
+  fus.push_back(builder.defineLoadFU("fu_load", "index", "i32"));
+  fus.push_back(builder.defineStoreFU("fu_store", "index", "i32"));
+  fus.push_back(builder.defineBinaryFU("fu_addi", "arith.addi", "i32", "i32"));
+  fus.push_back(builder.defineCmpiFU("fu_cmpi", "i32", "eq"));
+  fus.push_back(builder.defineSelectFU("fu_select_index", "index"));
+  fus.push_back(builder.defineMuxFU("fu_mux_none", "none"));
+  fus.push_back(builder.defineMuxFU("fu_mux_none_1", "none"));
+
+  fcc::adg::TemporalPESpec peSpec;
+  peSpec.name = "tpe_scan";
+  peSpec.inputTypes = {taggedTy, taggedTy, taggedTy, taggedTy, taggedTy};
+  peSpec.outputTypes = {taggedTy, taggedTy, taggedTy, taggedTy};
+  peSpec.functionUnits = fus;
+  peSpec.numRegister = opts.numRegister;
+  peSpec.numInstruction = opts.numInstruction;
+  peSpec.regFifoDepth = opts.regFifoDepth;
+  auto tpe = builder.defineTemporalPE(peSpec);
+
+  fcc::adg::ExtMemorySpec memInSpec;
+  memInSpec.name = "extmem_in";
+  memInSpec.ldPorts = 1;
+  memInSpec.stPorts = 0;
+  memInSpec.lsqDepth = 0;
+  memInSpec.memrefType = opts.memrefType;
+  auto extIn = builder.defineExtMemory(memInSpec);
+
+  fcc::adg::ExtMemorySpec memOutSpec;
+  memOutSpec.name = "extmem_out";
+  memOutSpec.ldPorts = 0;
+  memOutSpec.stPorts = 1;
+  memOutSpec.lsqDepth = 0;
+  memOutSpec.memrefType = opts.memrefType;
+  auto extOut = builder.defineExtMemory(memOutSpec);
+
+  auto memrefs = builder.addMemrefInputs("mem", 2, opts.memrefType);
+  auto memIn = memrefs[0];
+  auto memOut = memrefs[1];
+  auto inputs = builder.addInputs("arg", {bitsTy, bitsTy});
+  auto outputs = builder.addOutputs("out", {bitsTy});
+  auto n = inputs[0];
+  auto ctrl = inputs[1];
+  auto doneOut = outputs[0];
+
+  auto ldInsts = builder.instantiateExtMemArray(1, extIn, "ld");
+  auto stInsts = builder.instantiateExtMemArray(1, extOut, "st");
+  auto ldInst = ldInsts[0];
+  auto stInst = stInsts[0];
+  builder.connectMemrefToExtMem(memIn, ldInst);
+  builder.connectMemrefToExtMem(memOut, stInst);
+
+  auto tags = builder.createAddTagBank(bitsTy, taggedTy, {0, 0, 0, 0, 0});
+  auto tagN = tags[0];
+  auto tagCtrl = tags[1];
+  auto tagLdData = tags[2];
+  auto tagLdDone = tags[3];
+  auto tagStDone = tags[4];
+  builder.connectInputToInstance(n, tagN, 0);
+  builder.connectInputToInstance(ctrl, tagCtrl, 0);
+  builder.connect(ldInst, 0, tagLdData, 0);
+  builder.connect(ldInst, 1, tagLdDone, 0);
+  builder.connect(stInst, 0, tagStDone, 0);
+
+  auto tpeInst = builder.instantiatePE(tpe, "tpe_0");
+  builder.connect(tagN, 0, tpeInst, 0);
+  builder.connect(tagCtrl, 0, tpeInst, 1);
+  builder.connect(tagLdData, 0, tpeInst, 2);
+  builder.connect(tagLdDone, 0, tpeInst, 3);
+  builder.connect(tagStDone, 0, tpeInst, 4);
+
+  auto dels = builder.createDelTagBank(taggedTy, bitsTy, 4);
+  auto delLdAddr = dels[0];
+  auto delStData = dels[1];
+  auto delStAddr = dels[2];
+  auto delDone = dels[3];
+  builder.connect(tpeInst, 0, delLdAddr, 0);
+  builder.connect(tpeInst, 1, delStData, 0);
+  builder.connect(tpeInst, 2, delStAddr, 0);
+  builder.connect(tpeInst, 3, delDone, 0);
+  builder.connect(delLdAddr, 0, ldInst, 1);
+  builder.connect(delStAddr, 0, stInst, 1);
+  builder.connect(delStData, 0, stInst, 2);
+  builder.connectInstanceToOutput(delDone, 0, doneOut);
+
+  builder.exportMLIR(outputPath);
 }
 
 } // namespace e2e

@@ -35,51 +35,39 @@ static void buildVecaddADG(const std::string &outputPath) {
   //=== Define Function Units ===
 
   // FU: arith.addi (2 inputs, 1 output)
-  auto fuAddi = builder.defineFU(
-      "fu_addi", {"i32", "i32"}, {"i32"}, {"arith.addi"});
+  auto fuAddi =
+      builder.defineBinaryFU("fu_addi", "arith.addi", "i32", "i32");
 
   // FU: arith.cmpi (2 inputs, 1 output: i1)
-  auto fuCmpi = builder.defineFU(
-      "fu_cmpi", {"i32", "i32"}, {"i1"}, {"arith.cmpi"});
+  auto fuCmpi = builder.defineCmpiFU("fu_cmpi", "i32", "eq");
 
   // FU: arith.index_cast (1 input, 1 output)
-  auto fuIndexCast = builder.defineFU(
-      "fu_index_cast", {"index", "i32"}, {"i32"}, {"arith.index_cast"});
+  auto fuIndexCast = builder.defineIndexCastFU("fu_index_cast", "index", "i32");
 
   // FU: dataflow.stream (3 inputs: start, step, bound; 2 outputs: index, i1)
-  auto fuStream = builder.defineFU(
-      "fu_stream", {"index", "index", "index"}, {"index", "i1"},
-      {"dataflow.stream"});
+  auto fuStream = builder.defineStreamFU("fu_stream");
 
   // FU: dataflow.gate (2 inputs: value, cond; 2 outputs: value, cond)
-  auto fuGate = builder.defineFU(
-      "fu_gate", {"i32", "i1"}, {"i32", "i1"}, {"dataflow.gate"});
+  auto fuGate = builder.defineGateFU("fu_gate", "i32");
 
   // FU: dataflow.carry (3 inputs: d, a, b; 1 output)
-  auto fuCarry = builder.defineFU(
-      "fu_carry", {"i1", "i32", "i32"}, {"i32"}, {"dataflow.carry"});
+  auto fuCarry = builder.defineCarryFU("fu_carry", "i32");
 
   // FU: handshake.load (3 inputs: addr, data_in, ctrl; 2 outputs: data, addr)
-  auto fuLoad = builder.defineFU(
-      "fu_load", {"index", "i32", "none"}, {"i32", "index"},
-      {"handshake.load"});
+  auto fuLoad = builder.defineLoadFU("fu_load", "index", "i32");
 
   // FU: handshake.store (3 inputs: addr, data, ctrl; 2 outputs: data, addr)
-  auto fuStore = builder.defineFU(
-      "fu_store", {"index", "i32", "none"}, {"i32", "index"},
-      {"handshake.store"});
+  auto fuStore = builder.defineStoreFU("fu_store", "index", "i32");
 
   // FU: handshake.constant (1 input: ctrl; 1 output: value)
-  auto fuConstant = builder.defineFU(
-      "fu_constant", {"none"}, {"i32"}, {"handshake.constant"});
+  auto fuConstant =
+      builder.defineConstantFU("fu_constant", "i32", "0 : i32");
 
   // FU: handshake.cond_br (2 inputs: cond, data; 2 outputs: true, false)
-  auto fuCondBr = builder.defineFU(
-      "fu_cond_br", {"i1", "i32"}, {"i32", "i32"}, {"handshake.cond_br"});
+  auto fuCondBr = builder.defineCondBrFU("fu_cond_br", "i32");
 
   // FU: handshake.join
-  auto fuJoin = builder.defineFU(
-      "fu_join", {"none", "none", "none"}, {"none"}, {"handshake.join"});
+  auto fuJoin = builder.defineJoinFU("fu_join", 3);
 
   //=== Define Spatial PE (containing all FUs) ===
 
@@ -121,61 +109,33 @@ static void buildVecaddADG(const std::string &outputPath) {
 
   //=== Instantiate Compute Fabric ===
 
-  auto swInst = builder.instantiateSW(sw, "sw_0");
-  std::vector<InstanceHandle> peInsts;
-  peInsts.reserve(kNumPEs);
-  for (unsigned i = 0; i < kNumPEs; ++i)
-    peInsts.push_back(
-        builder.instantiatePE(pe, "pe_" + std::to_string(i)));
+  //=== Instantiate Compute Fabric, Memory Banks, and Boundary Ports ===
 
-  unsigned swInputCursor = 0;
-  unsigned swOutputCursor = 0;
-  for (InstanceHandle peInst : peInsts) {
-    for (unsigned p = 0; p < kPEOutputs; ++p)
-      builder.connect(peInst, p, swInst, swInputCursor++);
-    for (unsigned p = 0; p < kPEInputs; ++p)
-      builder.connect(swInst, swOutputCursor++, peInst, p);
-  }
+  SwitchBankDomainSpec loadDomain;
+  loadDomain.sw = sw;
+  loadDomain.pe = pe;
+  loadDomain.numPEs = kNumPEs;
+  loadDomain.peInputCount = kPEInputs;
+  loadDomain.peOutputCount = kPEOutputs;
+  loadDomain.extMem = ldMemDef;
+  loadDomain.numExtMems = 2;
+  loadDomain.swInputPortsPerExtMem = 2;
+  loadDomain.swOutputPortsPerExtMem = 1;
+  loadDomain.extMemPrefix = "extmem_ld";
+  loadDomain.extMemrefType = "memref<?xi32>";
+  loadDomain.scalarInputTypes = {"!fabric.bits<64>", "!fabric.bits<64>"};
+  loadDomain.scalarOutputTypes = {};
+  auto domain = builder.buildSwitchBankDomain(loadDomain);
 
-  //=== Instantiate External Memories (for arrays a, b, c) ===
+  auto stMems = builder.instantiateExtMemArray(1, stMemDef, "extmem_st");
+  auto memC = builder.addMemrefInput("mem_2", "memref<?xi32>");
+  builder.connectMemrefToExtMem(memC, stMems[0]);
+  domain.cursor = builder.associateExtMemBankWithSW(stMems, domain.sw, 1, 2,
+                                                    domain.cursor);
 
-  auto extMemA = builder.instantiateExtMem(ldMemDef, "extmem_a");
-  auto extMemB = builder.instantiateExtMem(ldMemDef, "extmem_b");
-  auto extMemC = builder.instantiateExtMem(stMemDef, "extmem_c");
-
-  //=== Add module-level memref inputs ===
-
-  auto memA = builder.addMemrefInput("mem_a", "memref<?xi32>");
-  auto memB = builder.addMemrefInput("mem_b", "memref<?xi32>");
-  auto memC = builder.addMemrefInput("mem_c", "memref<?xi32>");
-
-  builder.connectMemrefToExtMem(memA, extMemA);
-  builder.connectMemrefToExtMem(memB, extMemB);
-  builder.connectMemrefToExtMem(memC, extMemC);
-
-  //=== Add scalar boundary inputs and outputs ===
-
-  auto scalarN = builder.addScalarInput("scalar_n", dataWidth);
-  auto scalarCtrl = builder.addScalarInput("scalar_ctrl", dataWidth);
-
-  auto scalarDone = builder.addScalarOutput("scalar_done", dataWidth);
-
-  //=== ExtMemory associations ===
-
-  builder.associateExtMemWithSW(extMemA, swInst, swInputCursor, swOutputCursor);
-  swInputCursor += 2;
-  swOutputCursor += 1;
-  builder.associateExtMemWithSW(extMemB, swInst, swInputCursor, swOutputCursor);
-  swInputCursor += 2;
-  swOutputCursor += 1;
-  builder.associateExtMemWithSW(extMemC, swInst, swInputCursor, swOutputCursor);
-  swInputCursor += 1;
-  swOutputCursor += 2;
-
-  // Inject scalar values and expose the completion token.
-  builder.connectScalarInputToInstance(scalarN, swInst, swInputCursor++);
-  builder.connectScalarInputToInstance(scalarCtrl, swInst, swInputCursor++);
-  builder.connectInstanceToScalarOutput(swInst, swOutputCursor++, scalarDone);
+  auto scalarDone = builder.addScalarOutput("scalar_out_0", dataWidth);
+  builder.connectInstanceToOutput(domain.sw, domain.cursor.nextOutputPort,
+                                  scalarDone);
 
   //=== Export ===
 

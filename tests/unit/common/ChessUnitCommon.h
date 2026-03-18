@@ -23,12 +23,9 @@ inline void buildChessUnitADG(const std::string &outputPath,
   fcc::adg::ADGBuilder builder(moduleName);
   constexpr unsigned dataWidth = 64;
 
-  auto fuAdd = builder.defineFU("fu_add", {"i32", "i32"}, {"i32"},
-                                {"arith.addi"});
-  auto pe = builder.defineSpatialPE("chess_pe",
-                                    /*numInputs=*/4,
-                                    /*numOutputs=*/4,
-                                    dataWidth, {fuAdd});
+  auto fuAdd = builder.defineBinaryFU("fu_add", "arith.addi", "i32", "i32");
+
+  auto pe = builder.defineSingleFUSpatialPE("chess_pe", 4, 4, dataWidth, fuAdd);
 
   constexpr unsigned topLeftBoundaryInputs = 3;
   constexpr unsigned bottomRightBoundaryOutputs = 1;
@@ -42,16 +39,10 @@ inline void buildChessUnitADG(const std::string &outputPath,
   auto in2 = builder.addScalarInput("c", dataWidth);
   auto out0 = builder.addScalarOutput("result", dataWidth);
 
-  auto swTopLeft = mesh.swGrid[0][0];
-  auto swBottomRight = mesh.swGrid[rows][cols];
-  constexpr unsigned topLeftBaseDegree = 3;
-  constexpr unsigned bottomRightBaseDegree = 3;
-
-  builder.connectScalarInputToInstance(in0, swTopLeft, topLeftBaseDegree + 0);
-  builder.connectScalarInputToInstance(in1, swTopLeft, topLeftBaseDegree + 1);
-  builder.connectScalarInputToInstance(in2, swTopLeft, topLeftBaseDegree + 2);
-  builder.connectInstanceToScalarOutput(swBottomRight, bottomRightBaseDegree,
-                                        out0);
+  builder.connectInputToPort(in0, mesh.ingressPorts[0]);
+  builder.connectInputToPort(in1, mesh.ingressPorts[1]);
+  builder.connectInputToPort(in2, mesh.ingressPorts[2]);
+  builder.connectPortToOutput(mesh.egressPorts[0], out0);
 
   builder.exportMLIR(outputPath);
 }
