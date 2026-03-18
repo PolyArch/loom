@@ -38,7 +38,7 @@ struct InstanceHandle { unsigned id; };
 
 struct MeshResult {
   std::vector<std::vector<InstanceHandle>> peGrid;  // [rows][cols]
-  std::vector<std::vector<InstanceHandle>> swGrid;   // [rows][cols]
+  std::vector<std::vector<InstanceHandle>> swGrid;  // topology-specific
 };
 
 //===----------------------------------------------------------------------===//
@@ -139,6 +139,28 @@ public:
   /// Returns the grid of PE and switch instance handles.
   MeshResult buildMesh(unsigned rows, unsigned cols,
                        PEHandle pe, SWHandle sw);
+
+  /// Build a chessboard-style mesh: spatial_pe instances occupy cell centers
+  /// and spatial_sw instances occupy cell corners.
+  ///
+  /// The returned switch grid has shape [rows + 1][cols + 1]. Each PE is
+  /// connected to its four surrounding corner switches using the first four
+  /// PE inputs/outputs in NW, NE, SW, SE order.
+  ///
+  /// This helper expects the PE template to provide at least four inputs and
+  /// four outputs for the network-facing ports.
+  MeshResult buildChessMesh(unsigned rows, unsigned cols, PEHandle pe,
+                            int decomposableBits = -1,
+                            unsigned topLeftExtraInputs = 0,
+                            unsigned bottomRightExtraOutputs = 0);
+
+  /// Attach explicit visualization coordinates to an instantiated component.
+  /// The exported fabric.mlir will reference a sidecar *.viz.json file, and
+  /// the visualization renderer will prefer these coordinates over inferred
+  /// layout when available.
+  void setInstanceVizPosition(InstanceHandle inst, double centerX,
+                              double centerY, int gridRow = -1,
+                              int gridCol = -1);
 
   // --- Module I/O ---
 

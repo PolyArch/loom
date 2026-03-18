@@ -25,9 +25,12 @@
 #include "circt/Dialect/Handshake/HandshakeDialect.h"
 
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <map>
 #include <set>
@@ -125,6 +128,13 @@ struct InstanceToScalarConn {
   unsigned scalarOutputIdx;
 };
 
+struct VizPlacement {
+  double centerX = 0.0;
+  double centerY = 0.0;
+  int gridRow = -1;
+  int gridCol = -1;
+};
+
 //===----------------------------------------------------------------------===//
 // Builder Implementation
 //===----------------------------------------------------------------------===//
@@ -149,8 +159,10 @@ struct ADGBuilder::Impl {
 
   std::vector<ScalarToInstanceConn> scalarToInstConns;
   std::vector<InstanceToScalarConn> instToScalarConns;
+  std::map<unsigned, VizPlacement> vizPlacements;
 
-  std::string generateMLIR() const;
+  std::string generateMLIR(llvm::StringRef vizFileName) const;
+  std::string generateVizJson() const;
   bool validate(std::string &errMsg) const;
 };
 
@@ -438,7 +450,7 @@ static unsigned getInstanceOutputWidth(const std::vector<InstanceDef> &instances
 // Full MLIR generation (instance-based)
 //===----------------------------------------------------------------------===//
 
-std::string ADGBuilder::Impl::generateMLIR() const {
+std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
   std::ostringstream os;
 
   // Top-level module wrapper required for parseSourceFile<ModuleOp>.
@@ -462,7 +474,10 @@ std::string ADGBuilder::Impl::generateMLIR() const {
     if (i > 0) os << ", ";
     os << bitsType(scalarOutputs[i].bitsWidth);
   }
-  os << ") {\n";
+  os << ")";
+  if (!vizFileName.empty())
+    os << " attributes {viz_file = \"" << vizFileName.str() << "\"}";
+  os << " {\n";
 
   // Collect which PE and SW definitions are actually used.
   std::set<unsigned> usedPEDefs, usedSWDefs, usedExtMemDefs, usedFIFODefs;
@@ -639,11 +654,10 @@ std::string ADGBuilder::Impl::generateMLIR() const {
             continue;
           }
         }
-        // Self-loop unconnected input from own output.
-        // Graph region allows this circular reference.
-        unsigned selfPort = p < numOut ? p : 0;
-        os << "%v" << i;
-        if (numOut > 1) os << "#" << selfPort;
+        llvm::report_fatal_error(
+            "ADGBuilder attempted to emit a spatial_pe with an unconnected "
+            "input port; fix the ADG description instead of relying on "
+            "implicit self-loops");
       }
       os << ") {sym_name = \"" << inst.name << "\"}";
 
@@ -697,11 +711,10 @@ std::string ADGBuilder::Impl::generateMLIR() const {
             continue;
           }
         }
-        // Self-loop unconnected input: feed from own output port.
-        // Graph region allows this circular reference.
-        unsigned selfPort = p < numOut ? p : 0;
-        os << "%v" << i;
-        if (numOut > 1) os << "#" << selfPort;
+        llvm::report_fatal_error(
+            "ADGBuilder attempted to emit a spatial_sw with an unconnected "
+            "input port; fix the ADG description instead of relying on "
+            "implicit self-loops");
       }
       os << ") {sym_name = \"" << inst.name << "\"}";
 
@@ -904,6 +917,464 @@ std::string ADGBuilder::Impl::generateMLIR() const {
   return os.str();
 }
 
+std::string ADGBuilder::Impl::generateVizJson() const {
+  struct BoxInfo {
+    double centerX = 0.0;
+    double centerY = 0.0;
+    double width = 0.0;
+    double height = 0.0;
+    unsigned numInputs = 0;
+    unsigned numOutputs = 0;
+    bool valid = false;
+  };
+  struct RoutePt {
+    double x = 0.0;
+    double y = 0.0;
+  };
+
+  auto computePEWidth = [&](const PEDef &peDef) {
+    const double approxFuBoxW = 140.0;
+    const double approxFuGap = 12.0;
+    const double approxPEPadX = 60.0;
+    return std::max(200.0,
+                    peDef.fuIndices.size() * approxFuBoxW +
+                        std::max(0.0, static_cast<double>(peDef.fuIndices.size()) - 1.0) *
+                            approxFuGap +
+                        approxPEPadX);
+  };
+  auto computePEHeight = [&](const PEDef &) {
+    return 200.0;
+  };
+  constexpr double kSwitchPortPitch = 24.0;
+  constexpr double kSwitchMinSide = 84.0;
+  auto buildPortSideCounts = [&](unsigned count, unsigned sideCount) {
+    std::array<unsigned, 4> counts = {0, 0, 0, 0};
+    for (unsigned idx = 0; idx < count; ++idx)
+      counts[idx % sideCount] += 1;
+    return counts;
+  };
+  auto buildPEPortSideCounts = [&](unsigned count) {
+    std::array<unsigned, 2> counts = {0, 0};
+    for (unsigned idx = 0; idx < count; ++idx)
+      counts[idx % 2] += 1;
+    return counts;
+  };
+  auto computeSWSide = [&](const SWDef &swDef) {
+    std::array<unsigned, 4> inCounts =
+        buildPortSideCounts(swDef.inputWidths.size(), 2);
+    std::array<unsigned, 4> outCounts =
+        buildPortSideCounts(swDef.outputWidths.size(), 2);
+    unsigned maxSideSlots = 0;
+    maxSideSlots = std::max(maxSideSlots, inCounts[0]);
+    maxSideSlots = std::max(maxSideSlots, inCounts[1]);
+    maxSideSlots = std::max(maxSideSlots, outCounts[0]);
+    maxSideSlots = std::max(maxSideSlots, outCounts[1]);
+    return std::max(kSwitchMinSide,
+                    32.0 + (static_cast<double>(std::max(1U, maxSideSlots)) + 1.0) *
+                        kSwitchPortPitch);
+  };
+  auto computeBoxInfo = [&](unsigned instIdx) -> BoxInfo {
+    BoxInfo info;
+    auto it = vizPlacements.find(instIdx);
+    if (it == vizPlacements.end())
+      return info;
+    info.centerX = it->second.centerX;
+    info.centerY = it->second.centerY;
+    const auto &inst = instances[instIdx];
+    switch (inst.kind) {
+    case InstanceKind::PE: {
+      const auto &peDef = peDefs[inst.defIdx];
+      info.width = computePEWidth(peDef);
+      info.height = computePEHeight(peDef);
+      info.numInputs = peDef.numInputs;
+      info.numOutputs = peDef.numOutputs;
+      break;
+    }
+    case InstanceKind::SW: {
+      const auto &swDef = swDefs[inst.defIdx];
+      double side = computeSWSide(swDef);
+      info.width = side;
+      info.height = side;
+      info.numInputs = swDef.inputWidths.size();
+      info.numOutputs = swDef.outputWidths.size();
+      break;
+    }
+    case InstanceKind::ExtMem: {
+      const auto &memDef = extMemDefs[inst.defIdx];
+      info.width = 170.0;
+      info.height = 80.0;
+      info.numInputs = 1 + memDef.ldPorts + memDef.stPorts * 2;
+      info.numOutputs = memDef.ldPorts + memDef.stPorts + memDef.ldPorts;
+      break;
+    }
+    case InstanceKind::FIFO: {
+      info.width = 100.0;
+      info.height = 56.0;
+      info.numInputs = 1;
+      info.numOutputs = 1;
+      break;
+    }
+    }
+    info.valid = true;
+    return info;
+  };
+  struct ModuleBounds {
+    double x = 0.0;
+    double y = 0.0;
+    double w = 0.0;
+    double h = 0.0;
+    bool valid = false;
+  };
+  auto computeModuleBounds = [&]() -> ModuleBounds {
+    ModuleBounds bounds;
+    bool haveContent = false;
+    double actualMinX = 0.0;
+    double actualMinY = 0.0;
+    double actualMaxX = 0.0;
+    double actualMaxY = 0.0;
+    for (size_t instIdx = 0; instIdx < instances.size(); ++instIdx) {
+      BoxInfo box = computeBoxInfo(static_cast<unsigned>(instIdx));
+      if (!box.valid)
+        continue;
+      double boxMinX = box.centerX - box.width / 2.0;
+      double boxMinY = box.centerY - box.height / 2.0;
+      double boxMaxX = box.centerX + box.width / 2.0;
+      double boxMaxY = box.centerY + box.height / 2.0;
+      if (!haveContent) {
+        actualMinX = boxMinX;
+        actualMinY = boxMinY;
+        actualMaxX = boxMaxX;
+        actualMaxY = boxMaxY;
+        haveContent = true;
+      } else {
+        actualMinX = std::min(actualMinX, boxMinX);
+        actualMinY = std::min(actualMinY, boxMinY);
+        actualMaxX = std::max(actualMaxX, boxMaxX);
+        actualMaxY = std::max(actualMaxY, boxMaxY);
+      }
+    }
+    if (!haveContent)
+      return bounds;
+    double contentW = actualMaxX - actualMinX;
+    double contentH = actualMaxY - actualMinY;
+    double contentArea = contentW * contentH;
+    double margin = std::max(60.0, std::round(std::sqrt(contentArea / 4.0)));
+    bounds.x = actualMinX - margin;
+    bounds.y = actualMinY - margin - 28.0;
+    bounds.w = contentW + margin * 2.0;
+    bounds.h = contentH + margin * 2.0 + 28.0;
+    bounds.valid = true;
+    return bounds;
+  };
+  auto computeInputPortPos = [&](const BoxInfo &box, const InstanceDef &inst,
+                                 unsigned portIdx) -> RoutePt {
+    RoutePt pt;
+    if (inst.kind == InstanceKind::PE) {
+      const auto &peDef = peDefs[inst.defIdx];
+      std::array<unsigned, 2> sideCounts =
+          buildPEPortSideCounts(peDef.numInputs);
+      unsigned sideIdx = portIdx % 2;
+      unsigned localIdx = portIdx / 2;
+      double ratio = static_cast<double>(localIdx + 1) /
+                     static_cast<double>(sideCounts[sideIdx] + 1);
+      if (sideIdx == 0) {
+        pt.x = (box.centerX - box.width / 2.0) + box.width * ratio;
+        pt.y = box.centerY - box.height / 2.0;
+      } else {
+        pt.x = box.centerX - box.width / 2.0;
+        pt.y = (box.centerY - box.height / 2.0) + box.height * ratio;
+      }
+    } else if (inst.kind == InstanceKind::SW) {
+      const auto &swDef = swDefs[inst.defIdx];
+      std::array<unsigned, 4> inCounts =
+          buildPortSideCounts(swDef.inputWidths.size(), 2);
+      unsigned sideIdx = portIdx % 2;
+      unsigned localIdx = portIdx / 2;
+      unsigned slotCount = inCounts[sideIdx];
+      double ratio = static_cast<double>(localIdx + 1) /
+                     static_cast<double>(slotCount + 1);
+      switch (sideIdx) {
+      case 0:
+        pt.x = (box.centerX - box.width / 2.0) + box.width * ratio;
+        pt.y = box.centerY - box.height / 2.0;
+        break;
+      default:
+        pt.x = box.centerX - box.width / 2.0;
+        pt.y = (box.centerY - box.height / 2.0) + box.height * ratio;
+        break;
+      }
+    } else {
+      pt.x = box.centerX - box.width / 2.0;
+      pt.y = box.centerY - box.height / 2.0 + 16.0 +
+             (box.height - 32.0) * (static_cast<double>(portIdx + 1) /
+                                    static_cast<double>(box.numInputs + 1));
+    }
+    return pt;
+  };
+  auto computeOutputPortPos = [&](const BoxInfo &box, const InstanceDef &inst,
+                                  unsigned portIdx) -> RoutePt {
+    RoutePt pt;
+    if (inst.kind == InstanceKind::PE) {
+      const auto &peDef = peDefs[inst.defIdx];
+      std::array<unsigned, 2> sideCounts =
+          buildPEPortSideCounts(peDef.numOutputs);
+      unsigned sideIdx = portIdx % 2;
+      unsigned localIdx = portIdx / 2;
+      double ratio = static_cast<double>(localIdx + 1) /
+                     static_cast<double>(sideCounts[sideIdx] + 1);
+      if (sideIdx == 0) {
+        pt.x = box.centerX + box.width / 2.0;
+        pt.y = (box.centerY - box.height / 2.0) + box.height * ratio;
+      } else {
+        pt.x = (box.centerX - box.width / 2.0) + box.width * ratio;
+        pt.y = box.centerY + box.height / 2.0;
+      }
+    } else if (inst.kind == InstanceKind::SW) {
+      const auto &swDef = swDefs[inst.defIdx];
+      std::array<unsigned, 4> outCounts =
+          buildPortSideCounts(swDef.outputWidths.size(), 2);
+      unsigned sideIdx = portIdx % 2;
+      unsigned localIdx = portIdx / 2;
+      unsigned slotCount = outCounts[sideIdx];
+      double ratio = static_cast<double>(localIdx + 1) /
+                     static_cast<double>(slotCount + 1);
+      switch (sideIdx) {
+      case 0:
+        pt.x = box.centerX + box.width / 2.0;
+        pt.y = (box.centerY - box.height / 2.0) + box.height * ratio;
+        break;
+      default:
+        pt.x = (box.centerX - box.width / 2.0) + box.width * ratio;
+        pt.y = box.centerY + box.height / 2.0;
+        break;
+      }
+    } else {
+      pt.x = box.centerX + box.width / 2.0;
+      pt.y = box.centerY - box.height / 2.0 + 16.0 +
+             (box.height - 32.0) * (static_cast<double>(portIdx + 1) /
+                                    static_cast<double>(box.numOutputs + 1));
+    }
+    return pt;
+  };
+  ModuleBounds moduleBounds = computeModuleBounds();
+  auto computeModuleInputPortPos = [&](unsigned portIdx) -> RoutePt {
+    RoutePt pt;
+    pt.x = moduleBounds.x + moduleBounds.w *
+           (static_cast<double>(portIdx + 1) /
+            static_cast<double>(scalarInputs.size() + 1));
+    pt.y = moduleBounds.y;
+    return pt;
+  };
+  auto computeModuleOutputPortPos = [&](unsigned portIdx) -> RoutePt {
+    RoutePt pt;
+    pt.x = moduleBounds.x + moduleBounds.w *
+           (static_cast<double>(portIdx + 1) /
+            static_cast<double>(scalarOutputs.size() + 1));
+    pt.y = moduleBounds.y + moduleBounds.h;
+    return pt;
+  };
+  auto routeModuleInputConnection = [&](unsigned scalarIdx, unsigned dstInstIdx,
+                                        unsigned dstPortIdx)
+      -> std::vector<RoutePt> {
+    if (!moduleBounds.valid)
+      return {};
+    BoxInfo dstBox = computeBoxInfo(dstInstIdx);
+    if (!dstBox.valid)
+      return {};
+    const auto &dstInst = instances[dstInstIdx];
+    RoutePt srcPort = computeModuleInputPortPos(scalarIdx);
+    RoutePt dstPort = computeInputPortPos(dstBox, dstInst, dstPortIdx);
+    const int signedLane = static_cast<int>(scalarIdx % 5) - 2;
+    const double laneOffset = static_cast<double>(signedLane) * 7.0;
+    const double entryY = moduleBounds.y + 42.0 + std::abs(laneOffset);
+    const double dstApproachX = dstPort.x - (24.0 + std::abs(laneOffset));
+    std::vector<RoutePt> pts;
+    pts.push_back({srcPort.x, entryY});
+    if (std::abs(srcPort.x - dstApproachX) > 0.5)
+      pts.push_back({dstApproachX, entryY});
+    if (std::abs(entryY - dstPort.y) > 0.5)
+      pts.push_back({dstApproachX, dstPort.y});
+    return pts;
+  };
+  auto routeModuleOutputConnection = [&](unsigned srcInstIdx, unsigned srcPortIdx,
+                                         unsigned scalarOutIdx)
+      -> std::vector<RoutePt> {
+    if (!moduleBounds.valid)
+      return {};
+    BoxInfo srcBox = computeBoxInfo(srcInstIdx);
+    if (!srcBox.valid)
+      return {};
+    const auto &srcInst = instances[srcInstIdx];
+    RoutePt srcPort = computeOutputPortPos(srcBox, srcInst, srcPortIdx);
+    RoutePt dstPort = computeModuleOutputPortPos(scalarOutIdx);
+    const int signedLane = static_cast<int>(scalarOutIdx % 5) - 2;
+    const double laneOffset = static_cast<double>(signedLane) * 7.0;
+    const double exitX = srcPort.x + (24.0 + std::abs(laneOffset));
+    const double corridorY = moduleBounds.y + moduleBounds.h - 42.0 -
+                             std::abs(laneOffset);
+    std::vector<RoutePt> pts;
+    pts.push_back({exitX, srcPort.y});
+    if (std::abs(srcPort.y - corridorY) > 0.5)
+      pts.push_back({exitX, corridorY});
+    if (std::abs(exitX - dstPort.x) > 0.5)
+      pts.push_back({dstPort.x, corridorY});
+    return pts;
+  };
+  auto routeConnection = [&](const Connection &conn,
+                             unsigned routeOrdinal) -> std::vector<RoutePt> {
+    BoxInfo srcBox = computeBoxInfo(conn.srcInst);
+    BoxInfo dstBox = computeBoxInfo(conn.dstInst);
+    if (!srcBox.valid || !dstBox.valid)
+      return {};
+
+    const auto &srcInst = instances[conn.srcInst];
+    const auto &dstInst = instances[conn.dstInst];
+    RoutePt srcPort = computeOutputPortPos(srcBox, srcInst, conn.srcPort);
+    RoutePt dstPort = computeInputPortPos(dstBox, dstInst, conn.dstPort);
+
+    const int signedLane = static_cast<int>(routeOrdinal % 5) - 2;
+    const double laneOffset = static_cast<double>(signedLane) * 7.0;
+    const double margin = 22.0 + std::abs(laneOffset) * 0.5;
+    const double srcRight = srcBox.centerX + srcBox.width / 2.0;
+    const double dstLeft = dstBox.centerX - dstBox.width / 2.0;
+    const double srcTop = srcBox.centerY - srcBox.height / 2.0;
+    const double srcBottom = srcBox.centerY + srcBox.height / 2.0;
+    const double dstTop = dstBox.centerY - dstBox.height / 2.0;
+    const double dstBottom = dstBox.centerY + dstBox.height / 2.0;
+
+    std::vector<RoutePt> pts;
+    if (srcBox.centerX + 1.0 < dstBox.centerX) {
+      double corridorX = (srcRight + dstLeft) / 2.0 + laneOffset;
+      pts.push_back({corridorX, srcPort.y});
+      if (std::abs(srcPort.y - dstPort.y) > 0.5)
+        pts.push_back({corridorX, dstPort.y});
+      return pts;
+    }
+
+    double srcExitX = srcRight + margin;
+    double dstEntryX = dstLeft - margin;
+    bool routeAbove = srcBox.centerY <= dstBox.centerY;
+    double corridorY = routeAbove
+      ? std::min(srcTop, dstTop) - margin - std::abs(laneOffset)
+      : std::max(srcBottom, dstBottom) + margin + std::abs(laneOffset);
+    pts.push_back({srcExitX, srcPort.y});
+    pts.push_back({srcExitX, corridorY});
+    pts.push_back({dstEntryX, corridorY});
+    pts.push_back({dstEntryX, dstPort.y});
+    return pts;
+  };
+  std::map<unsigned, std::map<unsigned, std::pair<unsigned, unsigned>>>
+      incomingConns;
+  for (const auto &conn : connections)
+    incomingConns[conn.dstInst][conn.dstPort] = {conn.srcInst, conn.srcPort};
+
+  std::map<unsigned, std::map<unsigned, unsigned>> scalarInputConns;
+  for (const auto &sc : scalarToInstConns)
+    scalarInputConns[sc.dstInst][sc.dstPort] = sc.scalarIdx;
+
+  std::ostringstream os;
+  os << "{\n"
+     << "  \"version\": 1,\n"
+     << "  \"components\": [\n";
+
+  bool first = true;
+  for (size_t instIdx = 0; instIdx < instances.size(); ++instIdx) {
+    auto it = vizPlacements.find(static_cast<unsigned>(instIdx));
+    if (it == vizPlacements.end())
+      continue;
+
+    if (!first)
+      os << ",\n";
+    first = false;
+
+    const auto &inst = instances[instIdx];
+    const auto &placement = it->second;
+    const char *kindName = "instance";
+    switch (inst.kind) {
+    case InstanceKind::PE:
+      kindName = "spatial_pe";
+      break;
+    case InstanceKind::SW:
+      kindName = "spatial_sw";
+      break;
+    case InstanceKind::ExtMem:
+      kindName = "extmemory";
+      break;
+    case InstanceKind::FIFO:
+      kindName = "fifo";
+      break;
+    }
+
+    os << "    {\"name\": \"" << inst.name << "\""
+       << ", \"kind\": \"" << kindName << "\""
+       << ", \"center_x\": " << placement.centerX
+       << ", \"center_y\": " << placement.centerY;
+    if (placement.gridRow >= 0)
+      os << ", \"grid_row\": " << placement.gridRow;
+    if (placement.gridCol >= 0)
+      os << ", \"grid_col\": " << placement.gridCol;
+    os << "}";
+  }
+
+  os << "\n  ],\n"
+     << "  \"routes\": [\n";
+
+  bool firstRoute = true;
+  std::map<std::pair<unsigned, unsigned>, unsigned> nextPairOrdinal;
+  auto emitRouteRecord = [&](llvm::StringRef fromName, unsigned fromPort,
+                             llvm::StringRef toName, unsigned toPort,
+                             const std::vector<RoutePt> &pts) {
+    if (!firstRoute)
+      os << ",\n";
+    firstRoute = false;
+    os << "    {\"from\": \"" << fromName.str() << "\""
+       << ", \"from_port\": " << fromPort
+       << ", \"to\": \"" << toName.str() << "\""
+       << ", \"to_port\": " << toPort
+       << ", \"points\": [";
+    for (size_t ptIdx = 0; ptIdx < pts.size(); ++ptIdx) {
+      if (ptIdx > 0)
+        os << ", ";
+      os << "{\"x\": " << pts[ptIdx].x
+         << ", \"y\": " << pts[ptIdx].y << "}";
+    }
+    os << "]}";
+  };
+  for (size_t connIdx = 0; connIdx < connections.size(); ++connIdx) {
+    const auto &conn = connections[connIdx];
+    if (vizPlacements.find(conn.srcInst) == vizPlacements.end() ||
+        vizPlacements.find(conn.dstInst) == vizPlacements.end())
+      continue;
+    const auto &srcInst = instances[conn.srcInst];
+    const auto &dstInst = instances[conn.dstInst];
+    auto pairKey = std::make_pair(std::min(conn.srcInst, conn.dstInst),
+                                  std::max(conn.srcInst, conn.dstInst));
+    unsigned pairOrdinal = nextPairOrdinal[pairKey]++;
+    std::vector<RoutePt> pts = routeConnection(conn, pairOrdinal);
+
+    emitRouteRecord(srcInst.name, conn.srcPort, dstInst.name, conn.dstPort, pts);
+  }
+  for (const auto &sc : scalarToInstConns) {
+    if (vizPlacements.find(sc.dstInst) == vizPlacements.end())
+      continue;
+    std::vector<RoutePt> pts =
+        routeModuleInputConnection(sc.scalarIdx, sc.dstInst, sc.dstPort);
+    emitRouteRecord("module_in", sc.scalarIdx, instances[sc.dstInst].name,
+                    sc.dstPort, pts);
+  }
+  for (const auto &ic : instToScalarConns) {
+    if (vizPlacements.find(ic.srcInst) == vizPlacements.end())
+      continue;
+    std::vector<RoutePt> pts =
+        routeModuleOutputConnection(ic.srcInst, ic.srcPort, ic.scalarOutputIdx);
+    emitRouteRecord(instances[ic.srcInst].name, ic.srcPort, "module_out",
+                    ic.scalarOutputIdx, pts);
+  }
+  os << "\n  ]\n"
+     << "}\n";
+  return os.str();
+}
+
 //===----------------------------------------------------------------------===//
 // ADGBuilder Public API
 //===----------------------------------------------------------------------===//
@@ -1061,6 +1532,165 @@ MeshResult ADGBuilder::buildMesh(unsigned rows, unsigned cols,
   return result;
 }
 
+MeshResult ADGBuilder::buildChessMesh(unsigned rows, unsigned cols, PEHandle pe,
+                                      int decomposableBits,
+                                      unsigned topLeftExtraInputs,
+                                      unsigned bottomRightExtraOutputs) {
+  MeshResult result;
+  result.peGrid.resize(rows, std::vector<InstanceHandle>(cols));
+  result.swGrid.resize(rows + 1, std::vector<InstanceHandle>(cols + 1));
+
+  const auto &peDef = impl_->peDefs[pe.id];
+  assert(peDef.numInputs >= 4 &&
+         "buildChessMesh expects at least four PE input ports");
+  assert(peDef.numOutputs >= 4 &&
+         "buildChessMesh expects at least four PE output ports");
+
+  std::map<std::pair<unsigned, unsigned>, SWHandle> switchTemplateCache;
+  auto makeSwitchTemplate = [&](unsigned numInputs,
+                                unsigned numOutputs) -> SWHandle {
+    auto key = std::make_pair(numInputs, numOutputs);
+    auto it = switchTemplateCache.find(key);
+    if (it != switchTemplateCache.end())
+      return it->second;
+
+    std::vector<unsigned> inputWidths(numInputs, peDef.bitsWidth);
+    std::vector<unsigned> outputWidths(numOutputs, peDef.bitsWidth);
+    std::vector<std::vector<bool>> fullCrossbar(
+        numOutputs, std::vector<bool>(numInputs, true));
+    std::string name = "__chess_sw_" + std::to_string(numInputs) + "x" +
+                       std::to_string(numOutputs) + "_" +
+                       std::to_string(impl_->swDefs.size());
+    auto handle = defineSpatialSW(name, inputWidths, outputWidths, fullCrossbar,
+                                  decomposableBits);
+    switchTemplateCache[key] = handle;
+    return handle;
+  };
+
+  auto switchDegree = [&](unsigned sr, unsigned sc) -> unsigned {
+    unsigned degree = 0;
+    if (sr > 0)
+      degree++;
+    if (sr + 1 < rows + 1)
+      degree++;
+    if (sc > 0)
+      degree++;
+    if (sc + 1 < cols + 1)
+      degree++;
+
+    if (sr > 0 && sc > 0)
+      degree++;
+    if (sr > 0 && sc < cols)
+      degree++;
+    if (sr < rows && sc > 0)
+      degree++;
+    if (sr < rows && sc < cols)
+      degree++;
+    return degree;
+  };
+
+  const unsigned maxSwitchDegree = 8;
+  const double maxSwitchBox = std::max(80.0, maxSwitchDegree * 30.0 + 30.0);
+  const double approxFuBoxW = 132.0;
+  const double approxFuGap = 12.0;
+  const double approxPEPadX = 40.0;
+  const double approxPEBoxW =
+      std::max(200.0,
+               peDef.fuIndices.size() * approxFuBoxW +
+                   std::max(0.0, static_cast<double>(peDef.fuIndices.size()) - 1.0) *
+                       approxFuGap +
+                   approxPEPadX);
+  const double approxPEBoxH = 200.0;
+  const double componentGap = 40.0;
+  const double switchStepX =
+      std::max(520.0, maxSwitchBox + approxPEBoxW + componentGap);
+  const double switchStepY =
+      std::max(520.0, maxSwitchBox + approxPEBoxH + componentGap);
+  const double originX = maxSwitchBox / 2.0 + 80.0;
+  const double originY = maxSwitchBox / 2.0 + 80.0;
+
+  for (unsigned sr = 0; sr <= rows; ++sr) {
+    for (unsigned sc = 0; sc <= cols; ++sc) {
+      unsigned degree = switchDegree(sr, sc);
+      unsigned numInputs = degree;
+      unsigned numOutputs = degree;
+      if (sr == 0 && sc == 0)
+        numInputs += topLeftExtraInputs;
+      if (sr == rows && sc == cols)
+        numOutputs += bottomRightExtraOutputs;
+      SWHandle swHandle = makeSwitchTemplate(numInputs, numOutputs);
+      std::string swName = "sw_" + std::to_string(sr) + "_" +
+                           std::to_string(sc);
+      auto inst = instantiateSW(swHandle, swName);
+      result.swGrid[sr][sc] = inst;
+      setInstanceVizPosition(inst, originX + sc * switchStepX,
+                             originY + sr * switchStepY, sr, sc);
+    }
+  }
+
+  for (unsigned r = 0; r < rows; ++r) {
+    for (unsigned c = 0; c < cols; ++c) {
+      std::string peName = "pe_" + std::to_string(r) + "_" +
+                           std::to_string(c);
+      auto inst = instantiatePE(pe, peName);
+      result.peGrid[r][c] = inst;
+      setInstanceVizPosition(inst, originX + (c + 0.5) * switchStepX,
+                             originY + (r + 0.5) * switchStepY, r, c);
+    }
+  }
+
+  std::map<std::pair<unsigned, unsigned>, unsigned> nextSwitchSlot;
+  auto allocSwitchSlot = [&](unsigned sr, unsigned sc) -> unsigned {
+    auto key = std::make_pair(sr, sc);
+    unsigned slot = nextSwitchSlot[key];
+    nextSwitchSlot[key] = slot + 1;
+    return slot;
+  };
+
+  auto connectSwitchBidirectional = [&](unsigned sr0, unsigned sc0,
+                                        unsigned sr1, unsigned sc1) {
+    unsigned slot0 = allocSwitchSlot(sr0, sc0);
+    unsigned slot1 = allocSwitchSlot(sr1, sc1);
+    auto sw0 = result.swGrid[sr0][sc0];
+    auto sw1 = result.swGrid[sr1][sc1];
+    connect(sw0, slot0, sw1, slot1);
+    connect(sw1, slot1, sw0, slot0);
+  };
+
+  for (unsigned sr = 0; sr <= rows; ++sr) {
+    for (unsigned sc = 0; sc + 1 <= cols; ++sc) {
+      if (sc + 1 <= cols)
+        connectSwitchBidirectional(sr, sc, sr, sc + 1);
+    }
+  }
+  for (unsigned sr = 0; sr + 1 <= rows; ++sr) {
+    for (unsigned sc = 0; sc <= cols; ++sc) {
+      if (sr + 1 <= rows)
+        connectSwitchBidirectional(sr, sc, sr + 1, sc);
+    }
+  }
+
+  auto connectPEToSwitch = [&](unsigned r, unsigned c, unsigned peSlot,
+                               unsigned sr, unsigned sc) {
+    unsigned swSlot = allocSwitchSlot(sr, sc);
+    auto peInst = result.peGrid[r][c];
+    auto swInst = result.swGrid[sr][sc];
+    connect(peInst, peSlot, swInst, swSlot);
+    connect(swInst, swSlot, peInst, peSlot);
+  };
+
+  for (unsigned r = 0; r < rows; ++r) {
+    for (unsigned c = 0; c < cols; ++c) {
+      connectPEToSwitch(r, c, 0, r, c);
+      connectPEToSwitch(r, c, 1, r, c + 1);
+      connectPEToSwitch(r, c, 2, r + 1, c);
+      connectPEToSwitch(r, c, 3, r + 1, c + 1);
+    }
+  }
+
+  return result;
+}
+
 unsigned ADGBuilder::addMemrefInput(const std::string &name,
                                     const std::string &memrefTypeStr) {
   unsigned idx = impl_->memrefInputs.size();
@@ -1128,6 +1758,12 @@ void ADGBuilder::associateExtMemWithSW(InstanceHandle extMem,
   }
 }
 
+void ADGBuilder::setInstanceVizPosition(InstanceHandle inst, double centerX,
+                                        double centerY, int gridRow,
+                                        int gridCol) {
+  impl_->vizPlacements[inst.id] = {centerX, centerY, gridRow, gridCol};
+}
+
 bool ADGBuilder::Impl::validate(std::string &errMsg) const {
   bool valid = true;
   std::ostringstream errs;
@@ -1143,6 +1779,12 @@ bool ADGBuilder::Impl::validate(std::string &errMsg) const {
   // Track scalar connections
   for (const auto &sc : scalarToInstConns) {
     connectedInputs[sc.dstInst].insert(sc.dstPort);
+  }
+  for (const auto &ic : instToScalarConns) {
+    connectedOutputs[ic.srcInst].insert(ic.srcPort);
+  }
+  for (const auto &mc : memrefConnections) {
+    connectedInputs[mc.extMemInstIdx].insert(0);
   }
 
   for (size_t i = 0; i < instances.size(); ++i) {
@@ -1177,29 +1819,18 @@ bool ADGBuilder::Impl::validate(std::string &errMsg) const {
       break;
     }
 
-    // Check inputs (for ExtMem, skip port 0 which is memref)
-    unsigned startPort = (inst.kind == InstanceKind::ExtMem) ? 1 : 0;
-    for (unsigned p = startPort; p < numIn; ++p) {
+    // Check inputs
+    for (unsigned p = 0; p < numIn; ++p) {
       if (connectedInputs[i].find(p) == connectedInputs[i].end()) {
-        // Boundary PE/SW ports use self-loops (allowed), but FIFO and
-        // ExtMem data ports should be connected.
-        if (inst.kind == InstanceKind::FIFO) {
-          errs << "  dangling input: " << inst.name << " port " << p << "\n";
-          valid = false;
-        }
+        errs << "  dangling input: " << inst.name << " port " << p << "\n";
+        valid = false;
       }
     }
 
-    // Check outputs: at least one consumer for FIFO/ExtMem
-    if (inst.kind == InstanceKind::FIFO) {
-      bool hasConsumer = false;
-      for (unsigned p = 0; p < numOut; ++p) {
-        if (connectedOutputs[i].find(p) != connectedOutputs[i].end())
-          hasConsumer = true;
-      }
-      if (!hasConsumer) {
-        errs << "  dangling output: " << inst.name
-             << " has no consumers\n";
+    // Check outputs
+    for (unsigned p = 0; p < numOut; ++p) {
+      if (connectedOutputs[i].find(p) == connectedOutputs[i].end()) {
+        errs << "  dangling output: " << inst.name << " port " << p << "\n";
         valid = false;
       }
     }
@@ -1213,10 +1844,20 @@ void ADGBuilder::exportMLIR(const std::string &path) {
   // Run validation
   std::string valErr;
   if (!impl_->validate(valErr)) {
-    llvm::errs() << "warning: ADG validation found issues:\n" << valErr;
+    llvm::report_fatal_error(llvm::Twine("ADGBuilder validation failed:\n") +
+                             valErr);
   }
 
-  std::string mlirText = impl_->generateMLIR();
+  std::string vizFileName;
+  std::string vizJsonText;
+  if (!impl_->vizPlacements.empty()) {
+    llvm::SmallString<256> vizPath(path);
+    llvm::sys::path::replace_extension(vizPath, "viz.json");
+    vizFileName = std::string(llvm::sys::path::filename(vizPath));
+    vizJsonText = impl_->generateVizJson();
+  }
+
+  std::string mlirText = impl_->generateMLIR(vizFileName);
 
   mlir::MLIRContext context;
   context.getDiagEngine().registerHandler([](mlir::Diagnostic &diag) {
@@ -1266,6 +1907,21 @@ void ADGBuilder::exportMLIR(const std::string &path) {
 
   output << mlirText;
   output.flush();
+
+  if (!vizJsonText.empty()) {
+    llvm::SmallString<256> vizPath(path);
+    llvm::sys::path::replace_extension(vizPath, "viz.json");
+    std::error_code vizEc;
+    llvm::raw_fd_ostream vizOut(vizPath, vizEc, llvm::sys::fs::OF_Text);
+    if (vizEc) {
+      llvm::errs() << "error: cannot write viz sidecar: "
+                   << vizPath << "\n";
+      llvm::errs() << vizEc.message() << "\n";
+      std::exit(1);
+    }
+    vizOut << vizJsonText;
+    vizOut.flush();
+  }
 }
 
 } // namespace adg

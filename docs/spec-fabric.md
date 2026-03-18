@@ -217,6 +217,15 @@ Structural attributes are not part of this split. Names and type metadata such
 as `sym_name`, `module` symbol references, and `function_type` remain part of
 the operation's structural syntax.
 
+One additional structural attribute is currently standardized for
+visualization:
+
+- `fabric.module` may carry `attributes {viz_file = "..."}` to reference a
+  sidecar JSON file that provides explicit visualization layout metadata
+
+`viz_file` is neither a hardware parameter nor runtime configuration. It is a
+structural pointer consumed by visualization tooling.
+
 ## Related Documents
 
 - [spec-fabric-function_unit.md](./spec-fabric-function_unit.md)

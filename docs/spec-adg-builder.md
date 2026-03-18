@@ -5,6 +5,10 @@
 The ADG Builder is responsible for producing Fabric MLIR that accurately
 describes the available hardware architecture before mapping.
 
+For topologies whose geometry is already known at construction time, the
+builder may also emit a visualization sidecar and bind it from the generated
+`fabric.module`.
+
 ## Responsibilities
 
 The builder must define:
@@ -14,6 +18,10 @@ The builder must define:
   and memory resources as needed
 - module boundary ports
 - inter-instance connectivity
+
+When helper APIs already know intended component positions, they should prefer
+emitting explicit layout metadata instead of forcing the visualization layer to
+infer one later.
 
 ## FCC-Specific Construction Rules
 
@@ -57,6 +65,33 @@ This is particularly important for:
 
 - PE exterior ports versus FU-local ports
 - switch-local connectivity versus module-level wiring
+
+## Visualization Sidecar Contract
+
+When a builder emits explicit layout metadata, it should:
+
+- write a sidecar JSON file adjacent to the generated `fabric.mlir`
+- attach `attributes {viz_file = "relative-or-local-name.json"}` to the
+  generated `fabric.module`
+
+The current sidecar schema is:
+
+- top-level `version`
+- top-level `components`
+- each component entry contains:
+  - `name`
+  - `kind`
+  - `center_x`
+  - `center_y`
+  - optional `grid_row`
+  - optional `grid_col`
+
+Component identity is currently name-based. Builders that intend to bind
+explicit visualization metadata should therefore emit stable component names.
+
+This mechanism is intended for topology-aware layouts such as chess meshes,
+lattice meshes, torus-like fabrics, or other regular structures where the
+builder already knows the desired geometry.
 
 ## Relationship to Other Specs
 

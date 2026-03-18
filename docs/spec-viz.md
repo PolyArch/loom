@@ -7,12 +7,41 @@ available, explains how software edges traverse hardware resources.
 
 The viewer is a self-contained HTML artifact.
 
+When available, the viewer may also consume explicit layout metadata bound from
+the ADG's `fabric.module`.
+
 ## Rendering Stack
 
 FCC currently uses:
 
 - Graphviz WASM for hierarchical DFG rendering
 - D3.js for ADG layout, routing overlays, and interaction
+
+## ADG Layout Sources
+
+ADG visualization supports two layout sources:
+
+- inferred layout computed by the renderer
+- explicit layout loaded from a sidecar JSON referenced by
+  `fabric.module attributes {viz_file = "..."}`
+
+When explicit layout metadata is present, the renderer should prefer it over
+heuristic placement for the referenced components.
+
+The current sidecar schema is:
+
+- top-level `version`
+- top-level `components`
+- each component entry contains:
+  - `name`
+  - `kind`
+  - `center_x`
+  - `center_y`
+  - optional `grid_row`
+  - optional `grid_col`
+
+The sidecar path is resolved relative to the source `fabric.mlir` path when the
+`viz_file` attribute stores a relative path.
 
 ## Display Modes
 
@@ -30,6 +59,11 @@ Module-level hardware edges must satisfy these visual constraints:
 - they do not share routed segments
 - they may cross, but crossings should use a hop-over effect
 - they should avoid gratuitous local loops, U-turns, and spurs
+
+For topology-aware ADGs that provide explicit component coordinates, these
+constraints apply on top of the supplied geometry. The renderer should not
+discard explicit placement and then recompute a different base component
+layout.
 
 ## Mapping-On Spatial PE Requirements
 

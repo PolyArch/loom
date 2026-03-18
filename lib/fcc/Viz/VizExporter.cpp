@@ -14,6 +14,7 @@
 
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace fcc {
@@ -136,6 +137,40 @@ static std::string makeVizTitle(mlir::ModuleOp adgModule,
   if (!dfgName.empty()) return dfgName;
   if (!adgName.empty()) return adgName;
   return hasMapping ? "fcc viz (mapped)" : "fcc viz";
+}
+
+static std::string loadVizSidecarJson(mlir::ModuleOp adgModule,
+                                      llvm::StringRef adgSourcePath) {
+  if (!adgModule)
+    return "null";
+
+  fcc::fabric::ModuleOp fabricMod;
+  adgModule->walk([&](fcc::fabric::ModuleOp mod) {
+    if (!fabricMod)
+      fabricMod = mod;
+  });
+  if (!fabricMod)
+    return "null";
+
+  auto pathAttr = fabricMod->getAttrOfType<mlir::StringAttr>("viz_file");
+  if (!pathAttr)
+    return "null";
+
+  llvm::SmallString<256> resolved(pathAttr.getValue());
+  if (!llvm::sys::path::is_absolute(resolved) && !adgSourcePath.empty()) {
+    llvm::SmallString<256> baseDir(adgSourcePath);
+    llvm::sys::path::remove_filename(baseDir);
+    llvm::sys::path::append(baseDir, resolved);
+    resolved = baseDir;
+  }
+
+  auto buffer = llvm::MemoryBuffer::getFile(resolved);
+  if (!buffer) {
+    llvm::errs() << "fcc viz: warning: cannot open ADG viz sidecar "
+                 << resolved << "\n";
+    return "null";
+  }
+  return (*buffer)->getBuffer().str();
 }
 
 // ---- Serialize fabric.module to JSON ----
@@ -1050,6 +1085,7 @@ static void writeDFGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule) {
 mlir::LogicalResult exportVizOnly(const std::string &outputPath,
                                   mlir::ModuleOp adgModule,
                                   mlir::ModuleOp dfgModule,
+                                  const std::string &adgSourcePath,
                                   mlir::MLIRContext *ctx) {
   std::error_code ec;
   llvm::raw_fd_ostream out(outputPath, ec, llvm::sys::fs::OF_Text);
@@ -1076,6 +1112,7 @@ mlir::LogicalResult exportVizOnly(const std::string &outputPath,
   } else {
     dfgJson = "null";
   }
+  std::string adgLayoutJson = loadVizSidecarJson(adgModule, adgSourcePath);
 
   // Emit HTML
   out << "<!DOCTYPE html>\n<html>\n<head>\n"
@@ -1105,6 +1142,7 @@ mlir::LogicalResult exportVizOnly(const std::string &outputPath,
   // Embedded data
   out << "<script>\n"
       << "const ADG_DATA = " << scriptSafe(adgJson) << ";\n\n"
+      << "const ADG_LAYOUT_DATA = " << scriptSafe(adgLayoutJson) << ";\n\n"
       << "const DFG_DATA = " << scriptSafe(dfgJson) << ";\n"
       << "const MAPPING_DATA = null;\n"
       << "</script>\n\n";
@@ -1124,6 +1162,7 @@ mlir::LogicalResult exportVizWithMapping(const std::string &outputPath,
                                          mlir::ModuleOp adgModule,
                                          mlir::ModuleOp dfgModule,
                                          const std::string &mapJsonPath,
+                                         const std::string &adgSourcePath,
                                          mlir::MLIRContext *ctx) {
   std::error_code ec;
   llvm::raw_fd_ostream out(outputPath, ec, llvm::sys::fs::OF_Text);
@@ -1153,6 +1192,7 @@ mlir::LogicalResult exportVizWithMapping(const std::string &outputPath,
   } else {
     dfgJson = "null";
   }
+  std::string adgLayoutJson = loadVizSidecarJson(adgModule, adgSourcePath);
 
   std::string title = makeVizTitle(adgModule, dfgModule, true);
 
@@ -1182,6 +1222,7 @@ mlir::LogicalResult exportVizWithMapping(const std::string &outputPath,
 
   out << "<script>\n"
       << "const ADG_DATA = " << scriptSafe(adgJson) << ";\n\n"
+      << "const ADG_LAYOUT_DATA = " << scriptSafe(adgLayoutJson) << ";\n\n"
       << "const DFG_DATA = " << scriptSafe(dfgJson) << ";\n\n"
       << "const MAPPING_DATA = " << scriptSafe(mapJson) << ";\n"
       << "</script>\n\n";

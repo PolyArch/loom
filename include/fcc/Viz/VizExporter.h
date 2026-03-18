@@ -10,6 +10,7 @@ namespace fcc {
 mlir::LogicalResult exportVizOnly(const std::string &outputPath,
                                   mlir::ModuleOp adgModule,
                                   mlir::ModuleOp dfgModule,
+                                  const std::string &adgSourcePath,
                                   mlir::MLIRContext *ctx);
 
 /// Export visualization HTML with mapping data (from .map.json file).
@@ -18,6 +19,7 @@ mlir::LogicalResult exportVizWithMapping(const std::string &outputPath,
                                          mlir::ModuleOp adgModule,
                                          mlir::ModuleOp dfgModule,
                                          const std::string &mapJsonPath,
+                                         const std::string &adgSourcePath,
                                          mlir::MLIRContext *ctx);
 
 } // namespace fcc

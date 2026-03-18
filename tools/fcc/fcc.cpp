@@ -237,7 +237,8 @@ int main(int argc, char **argv) {
     // We need the original MLIR modules for viz serialization.
     // adgModule is already loaded above. dfgModule is the parameter.
     if (failed(fcc::exportVizWithMapping(vizPath, *adgModule, *dfgModule,
-                                          mapJsonPath, &context))) {
+                                        mapJsonPath, args.adgPath,
+                                        &context))) {
       llvm::errs() << "fcc: warning: visualization generation failed\n";
     } else {
       llvm::outs() << "  " << vizPath << "\n";
@@ -350,7 +351,7 @@ int main(int argc, char **argv) {
     llvm::outs() << "fcc: generating viz-only...\n";
     if (failed(fcc::exportVizOnly(
             vizPath, adgMod ? *adgMod : ModuleOp(),
-            dfgMod ? *dfgMod : ModuleOp(), &context))) {
+            dfgMod ? *dfgMod : ModuleOp(), args.adgPath, &context))) {
       llvm::errs() << "fcc: viz generation failed\n";
       return 1;
     }
