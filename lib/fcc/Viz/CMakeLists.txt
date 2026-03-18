@@ -31,6 +31,9 @@ add_custom_target(fcc_viz_assets DEPENDS ${VIZ_ASSETS_OUT})
 
 add_library(FccViz STATIC
   VizExporter.cpp
+  VizExporterADG.cpp
+  VizExporterDFG.cpp
+  VizExporterLayout.cpp
 )
 
 add_dependencies(FccViz fcc_viz_assets)

@@ -2,13 +2,6 @@
 
 #include "VizAssets.h"
 
-// Since CMakeLists.txt is not modified, compile the split files as part of
-// this translation unit.  Each file is a proper .cpp with its own includes
-// and could be compiled independently if added to the build.
-#include "VizExporterLayout.cpp" // NOLINT(build/include)
-#include "VizExporterADG.cpp"    // NOLINT(build/include)
-#include "VizExporterDFG.cpp"    // NOLINT(build/include)
-
 namespace fcc {
 namespace viz_detail {
 
