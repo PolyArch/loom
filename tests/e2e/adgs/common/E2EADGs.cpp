@@ -269,13 +269,12 @@ void buildTinyAdd1PE(const std::string &outputPath) {
   builder.exportMLIR(outputPath);
 }
 
-void buildSumArrayDemoChess7x7(const std::string &outputPath) {
-  const std::string moduleName = "sum_array_demo_chess_7x7";
+static void buildSumArrayDemoChess(const std::string &outputPath,
+                                   const std::string &moduleName,
+                                   unsigned rows, unsigned cols) {
   ADGBuilder builder(moduleName);
   auto computePE = buildSpatialKernelPE(builder, moduleName, 4, 4);
 
-  constexpr unsigned kRows = 7;
-  constexpr unsigned kCols = 7;
   constexpr unsigned kNumExtMems = 1;
   constexpr unsigned kScalarInputs = 2;
   constexpr unsigned kScalarOutputs = 2;
@@ -288,16 +287,16 @@ void buildSumArrayDemoChess7x7(const std::string &outputPath) {
   options.topRightExtraOutputs = kNumExtMems * kExtMemMeshOutputs;
   options.bottomRightExtraOutputs = kScalarOutputs;
   auto mesh = builder.buildChessMesh(
-      kRows, kCols,
+      rows, cols,
       [&](unsigned, unsigned) { return computePE.pe; }, options);
   assert(mesh.ingressPorts.size() ==
              kScalarInputs + kNumExtMems * kExtMemMeshInputs &&
-         "sum-array-demo-chess-7x7 expects top-left and top-right ingress ports");
+         "sum-array demo chess expects top-left and top-right ingress ports");
   assert(mesh.egressPorts.size() ==
              kNumExtMems * kExtMemMeshOutputs + kScalarOutputs &&
-         "sum-array-demo-chess-7x7 expects top-right extmem egress and bottom-right scalar egress");
-  assert(mesh.egressPorts[0].instance.id == mesh.swGrid[0][kCols].id &&
-         "sum-array-demo-chess-7x7 expects first egress at top-right switch");
+         "sum-array demo chess expects top-right extmem egress and bottom-right scalar egress");
+  assert(mesh.egressPorts[0].instance.id == mesh.swGrid[0][cols].id &&
+         "sum-array demo chess expects first egress at top-right switch");
 
   auto extMem = builder.defineExtMemory(moduleName + "_mem", 1, 0);
   auto extMems = builder.instantiateExtMemArray(kNumExtMems, extMem, "extmem");
@@ -327,36 +326,52 @@ void buildSumArrayDemoChess7x7(const std::string &outputPath) {
     unsigned degree = 0;
     if (sr > 0)
       degree++;
-    if (sr + 1 < kRows + 1)
+    if (sr + 1 < rows + 1)
       degree++;
     if (sc > 0)
       degree++;
-    if (sc + 1 < kCols + 1)
+    if (sc + 1 < cols + 1)
       degree++;
     if (sr > 0 && sc > 0)
       degree++;
-    if (sr > 0 && sc < kCols)
+    if (sr > 0 && sc < cols)
       degree++;
-    if (sr < kRows && sc > 0)
+    if (sr < rows && sc > 0)
       degree++;
-    if (sr < kRows && sc < kCols)
+    if (sr < rows && sc < cols)
       degree++;
     return degree;
   };
 
   unsigned egressIdx = 0;
-  unsigned topRightExtraOutputBase = switchDegree(0, kCols);
+  unsigned topRightExtraOutputBase = switchDegree(0, cols);
   for (unsigned idx = 0; idx < kExtMemMeshOutputs; ++idx, ++egressIdx)
-    builder.connect(mesh.swGrid[0][kCols], topRightExtraOutputBase + idx,
+    builder.connect(mesh.swGrid[0][cols], topRightExtraOutputBase + idx,
                     extMems[0], 1 + idx);
 
   for (unsigned idx = 0; idx < outputs.size(); ++idx, ++egressIdx)
     builder.connectPortToOutput(mesh.egressPorts[egressIdx], outputs[idx]);
 
   setExtMemStripLayout(builder, extMems,
-                       260.0 + static_cast<double>(kCols) * 520.0,
-                       -120.0 + static_cast<double>(kRows) * 8.0, 180.0);
+                       260.0 + static_cast<double>(cols) * 520.0,
+                       -120.0 + static_cast<double>(rows) * 8.0, 180.0);
   builder.exportMLIR(outputPath);
+}
+
+void buildSumArrayDemoChess6x6(const std::string &outputPath) {
+  buildSumArrayDemoChess(outputPath, "sum_array_demo_chess_6x6", 6, 6);
+}
+
+void buildSumArrayDemoChess4x4(const std::string &outputPath) {
+  buildSumArrayDemoChess(outputPath, "sum_array_demo_chess_4x4", 4, 4);
+}
+
+void buildSumArrayDemoChess5x5(const std::string &outputPath) {
+  buildSumArrayDemoChess(outputPath, "sum_array_demo_chess_5x5", 5, 5);
+}
+
+void buildSumArrayDemoChess7x7(const std::string &outputPath) {
+  buildSumArrayDemoChess(outputPath, "sum_array_demo_chess_7x7", 7, 7);
 }
 
 void buildTinyStar4PE(const std::string &outputPath) {

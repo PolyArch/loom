@@ -95,6 +95,9 @@ endfunction()
 
 set(FCC_E2E_ADGS
   tiny-add-1pe
+  sum-array-demo-chess-4x4
+  sum-array-demo-chess-5x5
+  sum-array-demo-chess-6x6
   sum-array-demo-chess-7x7
   tiny-star-4pe
   medium-star-8pe
@@ -109,6 +112,9 @@ foreach(hw_name IN LISTS FCC_E2E_ADGS)
 endforeach()
 
 set(FCC_E2E_PAIRS
+  "sum-array|sum-array-demo-chess-4x4"
+  "sum-array|sum-array-demo-chess-5x5"
+  "sum-array|sum-array-demo-chess-6x6"
   "sum-array|sum-array-demo-chess-7x7"
   "vecadd|vecadd-demo-chess-5x5"
   "vecadd|tiny-star-4pe"
