@@ -23,10 +23,17 @@ html, body {
 #btn-fit:hover { background: #1e3a5f; color: #c8d6e5; }
 #status-bar { font-size: 10px; color: #4a6380; margin-left: auto; }
 
-#graph-area { display: flex; width: 100%; height: calc(100% - 42px); }
-#panel-adg, #panel-dfg { position: relative; overflow: hidden; background: #0f1923; }
-#panel-adg { flex: 0 0 55%; }
-#panel-dfg { flex: 0 0 45%; }
+#graph-area {
+  --dfg-panel-width: 45%;
+  display: grid;
+  grid-template-columns: minmax(0, var(--dfg-panel-width)) 4px minmax(0, calc(100% - var(--dfg-panel-width) - 4px));
+  width: 100%;
+  height: calc(100% - 42px);
+}
+#panel-adg, #panel-dfg { position: relative; overflow: hidden; background: #0f1923; min-width: 0; min-height: 0; }
+#panel-dfg { grid-column: 1; }
+#panel-divider { grid-column: 2; }
+#panel-adg { grid-column: 3; }
 .panel-header {
   position: absolute; top: 0; left: 0; right: 0;
   padding: 5px 14px; background: rgba(12,18,32,0.92);
@@ -34,9 +41,7 @@ html, body {
   text-transform: uppercase; z-index: 10;
   border-bottom: 1px solid #1e3a5f;
 }
-#panel-divider {
-  width: 4px; cursor: col-resize; background: #1e3a5f; flex-shrink: 0;
-}
+#panel-divider { width: 4px; cursor: col-resize; background: #1e3a5f; }
 #panel-divider:hover { background: #4ecdc4; }
 #svg-adg, #svg-dfg { width: 100%; height: 100%; }
 
@@ -79,6 +84,28 @@ html, body {
   animation: cross-pulse 1.2s ease-in-out infinite;
   filter: drop-shadow(0 0 6px rgba(78,205,196,0.6));
 }
+.cross-highlight-dfg-edge {
+  stroke-width: 3.2 !important;
+  opacity: 1 !important;
+  animation: cross-pulse 1.2s ease-in-out infinite;
+  filter: drop-shadow(0 0 6px rgba(78,205,196,0.6));
+}
+.cross-highlight-dfg-arrow {
+  opacity: 1 !important;
+  animation: cross-pulse 1.2s ease-in-out infinite;
+  filter: drop-shadow(0 0 6px rgba(78,205,196,0.6));
+}
+.cross-highlight-hw-edge {
+  stroke-width: 3 !important;
+  opacity: 1 !important;
+  animation: cross-pulse 1.2s ease-in-out infinite;
+  filter: drop-shadow(0 0 6px rgba(78,205,196,0.6));
+}
+.cross-highlight-hw-arrow {
+  opacity: 1 !important;
+  animation: cross-pulse 1.2s ease-in-out infinite;
+  filter: drop-shadow(0 0 6px rgba(78,205,196,0.6));
+}
 .dim-layer { opacity: 0.2; transition: opacity 0.3s ease; }
 .highlight-layer { opacity: 1; transition: opacity 0.3s ease; }
 
@@ -113,5 +140,8 @@ html, body {
 
 /* Panel states for overlay mode */
 .panel-hidden { display: none !important; }
-.panel-full { flex: 0 0 100% !important; }
+.panel-full {
+  grid-column: 1 / 4 !important;
+  width: 100% !important;
+}
 .divider-hidden { display: none !important; }

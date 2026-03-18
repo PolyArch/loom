@@ -34,12 +34,24 @@
 #include <cassert>
 #include <iomanip>
 #include <map>
+#include <cmath>
 #include <sstream>
 
 namespace fcc {
 namespace adg {
 
 using namespace detail;
+
+static double computeModuleMarginForAreaRatio(double contentW, double contentH,
+                                              double areaRatio) {
+  if (contentW <= 0.0 || contentH <= 0.0)
+    return 24.0;
+  double sum = contentW + contentH;
+  double extraArea = std::max(0.0, areaRatio) * contentW * contentH;
+  double disc = sum * sum + 4.0 * extraArea;
+  double margin = (std::sqrt(std::max(0.0, disc)) - sum) / 4.0;
+  return std::max(24.0, std::round(margin));
+}
 
 std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
   std::ostringstream os;
@@ -1332,8 +1344,7 @@ std::string ADGBuilder::Impl::generateVizJson() const {
       return bounds;
     double contentW = actualMaxX - actualMinX;
     double contentH = actualMaxY - actualMinY;
-    double contentArea = contentW * contentH;
-    double margin = std::max(60.0, std::round(std::sqrt(contentArea / 4.0)));
+    double margin = computeModuleMarginForAreaRatio(contentW, contentH, 0.20);
     bounds.x = actualMinX - margin;
     bounds.y = actualMinY - margin - 28.0;
     bounds.w = contentW + margin * 2.0;
