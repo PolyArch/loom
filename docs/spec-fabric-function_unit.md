@@ -18,6 +18,17 @@ A function unit provides:
 `function_unit` is not a top-level routing resource. It lives inside
 `spatial_pe` or `temporal_pe`.
 
+Definition and instantiation rules:
+
+- a `fabric.function_unit` definition may live at the top level, in one
+  `fabric.module`, or locally inside one `spatial_pe` or `temporal_pe`
+- actual instantiation is only legal inside `spatial_pe` or `temporal_pe`
+- PE-local instantiation may be expressed either by:
+  - a direct local `fabric.function_unit` body
+  - `fabric.instance` targeting a visible `fabric.function_unit`
+- a `fabric.instance` of `fabric.function_unit` inside one PE does not carry
+  Fabric-edge operands or results; it only selects one local FU definition
+
 Textual syntax follows the Fabric-wide split:
 
 - fixed FU structure parameters such as `latency` and `interval` live in `[]`

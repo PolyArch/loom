@@ -131,6 +131,26 @@ extractFUConfigFieldWidths(fcc::fabric::FunctionUnitOp fuOp,
   return mlir::DenseI64ArrayAttr::get(ctx, widths);
 }
 
+std::optional<llvm::StringRef> getNamedDefinition(mlir::Operation &op) {
+  if (auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(op))
+    return fuOp.getSymName();
+  if (auto peOp = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op))
+    return peOp.getSymName();
+  if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op))
+    return peOp.getSymName();
+  if (auto swOp = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op))
+    return swOp.getSymName();
+  if (auto swOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op))
+    return swOp.getSymName();
+  if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op))
+    return extOp.getSymName();
+  if (auto memOp = mlir::dyn_cast<fcc::fabric::MemoryOp>(op))
+    return memOp.getSymName();
+  if (auto fifoOp = mlir::dyn_cast<fcc::fabric::FifoOp>(op))
+    return fifoOp.getSymName();
+  return std::nullopt;
+}
+
 } // namespace
 
 bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
@@ -190,29 +210,80 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
   // Module output sentinels will be created after all ops are processed
   // (in the yield-handling section at the end).
 
-  // Pre-pass: Collect PE and SW definitions by symbol name for instance
-  // resolution. Scan BOTH the top-level module AND fabric.module body,
-  // since definitions may be at either level.
+  llvm::DenseMap<mlir::Block *, llvm::DenseSet<llvm::StringRef>>
+      referencedTargetsByBlock;
+  topModule.walk([&](fcc::fabric::InstanceOp instOp) {
+    referencedTargetsByBlock[instOp->getBlock()].insert(instOp.getModule());
+  });
+
+  auto isDefinitionOp = [&](mlir::Operation *op,
+                            llvm::StringRef name) -> bool {
+    if (mlir::isa<fcc::fabric::FunctionUnitOp>(op))
+      return true;
+    if (!mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::TemporalPEOp,
+                   fcc::fabric::SpatialSwOp, fcc::fabric::TemporalSwOp,
+                   fcc::fabric::ExtMemoryOp, fcc::fabric::MemoryOp,
+                   fcc::fabric::FifoOp>(op)) {
+      return false;
+    }
+    return !op->hasAttr("inline_instantiation");
+  };
+
+  // Pre-pass: Collect definition symbols for instance resolution.
   llvm::StringMap<fcc::fabric::SpatialPEOp> peDefMap;
   llvm::StringMap<fcc::fabric::TemporalPEOp> temporalPeDefMap;
   llvm::StringMap<fcc::fabric::SpatialSwOp> swDefMap;
   llvm::StringMap<fcc::fabric::TemporalSwOp> temporalSwDefMap;
-  // Scan top-level module (definitions outside fabric.module)
+  llvm::StringMap<fcc::fabric::ExtMemoryOp> extMemoryDefMap;
+  llvm::StringMap<fcc::fabric::MemoryOp> memoryDefMap;
+  llvm::StringMap<fcc::fabric::FifoOp> fifoDefMap;
+  llvm::StringMap<fcc::fabric::FunctionUnitOp> functionUnitDefMap;
   topModule->walk([&](fcc::fabric::SpatialPEOp peOp) {
-    if (auto symName = peOp.getSymName())
-      peDefMap[*symName] = peOp;
+    if (auto symNameAttr = peOp.getSymNameAttr();
+        symNameAttr && isDefinitionOp(peOp.getOperation(),
+                                      symNameAttr.getValue()))
+      peDefMap[symNameAttr.getValue()] = peOp;
   });
   topModule->walk([&](fcc::fabric::TemporalPEOp peOp) {
-    if (auto symName = peOp.getSymName())
-      temporalPeDefMap[*symName] = peOp;
+    if (auto symNameAttr = peOp.getSymNameAttr();
+        symNameAttr && isDefinitionOp(peOp.getOperation(),
+                                      symNameAttr.getValue()))
+      temporalPeDefMap[symNameAttr.getValue()] = peOp;
   });
   topModule->walk([&](fcc::fabric::SpatialSwOp swOp) {
-    if (auto symName = swOp.getSymName())
-      swDefMap[*symName] = swOp;
+    if (auto symNameAttr = swOp.getSymNameAttr();
+        symNameAttr && isDefinitionOp(swOp.getOperation(),
+                                      symNameAttr.getValue()))
+      swDefMap[symNameAttr.getValue()] = swOp;
   });
   topModule->walk([&](fcc::fabric::TemporalSwOp swOp) {
-    if (auto symName = swOp.getSymName())
-      temporalSwDefMap[*symName] = swOp;
+    if (auto symNameAttr = swOp.getSymNameAttr();
+        symNameAttr && isDefinitionOp(swOp.getOperation(),
+                                      symNameAttr.getValue()))
+      temporalSwDefMap[symNameAttr.getValue()] = swOp;
+  });
+  topModule->walk([&](fcc::fabric::ExtMemoryOp extOp) {
+    if (auto symNameAttr = extOp.getSymNameAttr();
+        symNameAttr && isDefinitionOp(extOp.getOperation(),
+                                      symNameAttr.getValue()))
+      extMemoryDefMap[symNameAttr.getValue()] = extOp;
+  });
+  topModule->walk([&](fcc::fabric::MemoryOp memOp) {
+    if (auto symNameAttr = memOp.getSymNameAttr();
+        symNameAttr && isDefinitionOp(memOp.getOperation(),
+                                      symNameAttr.getValue()))
+      memoryDefMap[symNameAttr.getValue()] = memOp;
+  });
+  topModule->walk([&](fcc::fabric::FifoOp fifoOp) {
+    if (auto symNameAttr = fifoOp.getSymNameAttr();
+        symNameAttr && isDefinitionOp(fifoOp.getOperation(),
+                                      symNameAttr.getValue()))
+      fifoDefMap[symNameAttr.getValue()] = fifoOp;
+  });
+  topModule->walk([&](fcc::fabric::FunctionUnitOp fuOp) {
+    auto symName = fuOp.getSymNameAttr().getValue();
+    if (isDefinitionOp(fuOp.getOperation(), symName))
+      functionUnitDefMap[symName] = fuOp;
   });
 
   llvm::DenseMap<mlir::Operation *, IdIndex> opToNodeId;
@@ -231,23 +302,23 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       return ("inst_" + std::to_string(opToNodeId.size()));
     }
     if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
-      if (auto symName = extOp.getSymName())
-        return symName->str();
+      if (auto symNameAttr = extOp.getSymNameAttr())
+        return symNameAttr.getValue().str();
       return ("extmemory_" + std::to_string(autoExtMemCount++));
     }
     if (auto memOp = mlir::dyn_cast<fcc::fabric::MemoryOp>(op)) {
-      if (auto symName = memOp.getSymName())
-        return symName->str();
+      if (auto symNameAttr = memOp.getSymNameAttr())
+        return symNameAttr.getValue().str();
       return ("memory_" + std::to_string(autoMemCount++));
     }
     if (auto fifoOp = mlir::dyn_cast<fcc::fabric::FifoOp>(op)) {
-      if (auto symName = fifoOp.getSymName())
-        return symName->str();
+      if (auto symNameAttr = fifoOp.getSymNameAttr())
+        return symNameAttr.getValue().str();
       return ("fifo_" + std::to_string(autoFifoCount++));
     }
     if (auto tswOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op)) {
-      if (auto symName = tswOp.getSymName())
-        return symName->str();
+      if (auto symNameAttr = tswOp.getSymNameAttr())
+        return symNameAttr.getValue().str();
       return ("temporal_sw_" + std::to_string(autoTemporalSwCount++));
     }
     if (mlir::isa<fcc::fabric::AddTagOp>(op))
@@ -286,16 +357,14 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
     pe.enableShareOperandBuffer = enableShareOperandBuffer;
     pe.operandBufferSize = operandBufferSize;
 
-    auto &peBody = peOp.getBody().front();
-    for (auto &innerOp : peBody.getOperations()) {
-      auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(innerOp);
-      if (!fuOp)
-        continue;
-
+    auto instantiateFU = [&](fcc::fabric::FunctionUnitOp fuOp,
+                             llvm::StringRef fuInstanceName) {
       auto fuNode = std::make_unique<Node>();
       fuNode->kind = Node::OperationNode;
 
-      std::string fuName = fuOp.getSymName().str();
+      std::string fuName = fuInstanceName.str();
+      if (fuName.empty())
+        fuName = fuOp.getSymName().str();
       setNodeAttr(fuNode.get(), "op_name",
                   mlir::StringAttr::get(ctx, fuName), ctx);
       setNodeAttr(fuNode.get(), "op_kind",
@@ -370,6 +439,31 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
           connectivity.inToOut[ip].push_back(op);
         }
       }
+    };
+
+    auto &peBody = peOp.getBody().front();
+    auto referencedIt = referencedTargetsByBlock.find(&peBody);
+    const llvm::DenseSet<llvm::StringRef> *referencedTargets =
+        referencedIt != referencedTargetsByBlock.end() ? &referencedIt->second
+                                                       : nullptr;
+    for (auto &innerOp : peBody.getOperations()) {
+      if (auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(innerOp)) {
+        llvm::StringRef symName = fuOp.getSymNameAttr().getValue();
+        if (!symName.empty() && referencedTargets &&
+            referencedTargets->contains(symName))
+          continue;
+        instantiateFU(fuOp, symName);
+        continue;
+      }
+
+      auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(innerOp);
+      if (!instOp)
+        continue;
+      auto fuIt = functionUnitDefMap.find(instOp.getModule());
+      if (fuIt == functionUnitDefMap.end())
+        continue;
+      instantiateFU(fuIt->second,
+                    instOp.getSymName().value_or(instOp.getModule()));
     }
 
     peContainment.push_back(pe);
@@ -531,34 +625,217 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
         continue;
       }
 
+      auto extIt = extMemoryDefMap.find(moduleName);
+      if (extIt != extMemoryDefMap.end()) {
+        auto extDef = extIt->second;
+        auto memNode = std::make_unique<Node>();
+        memNode->kind = Node::OperationNode;
+
+        if (instanceName.empty())
+          instanceName = moduleName.str();
+        setNodeAttr(memNode.get(), "op_name",
+                    mlir::StringAttr::get(ctx, instanceName), ctx);
+        setNodeAttr(memNode.get(), "op_kind",
+                    mlir::StringAttr::get(ctx, "extmemory"), ctx);
+        setNodeAttr(memNode.get(), "resource_class",
+                    mlir::StringAttr::get(ctx, "memory"), ctx);
+        setNodeAttr(memNode.get(), "ldCount",
+                    mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                           extDef.getLdCount()),
+                    ctx);
+        setNodeAttr(memNode.get(), "stCount",
+                    mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                           extDef.getStCount()),
+                    ctx);
+        if (auto numRegionAttr =
+                extDef->getAttrOfType<mlir::IntegerAttr>("numRegion")) {
+          setNodeAttr(memNode.get(), "numRegion", numRegionAttr, ctx);
+        }
+        if (auto memrefTypeAttr =
+                extDef->getAttrOfType<mlir::TypeAttr>("memref_type")) {
+          setNodeAttr(memNode.get(), "memref_type", memrefTypeAttr, ctx);
+        }
+        if (auto addrOffsetAttr =
+                extDef->getAttrOfType<mlir::DenseI64ArrayAttr>("addrOffsetTable")) {
+          setNodeAttr(memNode.get(), "addrOffsetTable", addrOffsetAttr, ctx);
+        }
+
+        auto memFnType = extDef.getFunctionType();
+        for (unsigned i = 0; i < memFnType.getNumInputs(); ++i) {
+          auto port = std::make_unique<Port>();
+          port->direction = Port::Input;
+          port->type = memFnType.getInput(i);
+          IdIndex portId = adg.addPort(std::move(port));
+          adg.ports[portId]->parentNode =
+              static_cast<IdIndex>(adg.nodes.size());
+          memNode->inputPorts.push_back(portId);
+        }
+        for (unsigned i = 0; i < memFnType.getNumResults(); ++i) {
+          auto port = std::make_unique<Port>();
+          port->direction = Port::Output;
+          port->type = memFnType.getResult(i);
+          IdIndex portId = adg.addPort(std::move(port));
+          adg.ports[portId]->parentNode =
+              static_cast<IdIndex>(adg.nodes.size());
+          memNode->outputPorts.push_back(portId);
+        }
+
+        IdIndex memNodeId = adg.addNode(std::move(memNode));
+        opToNodeId[instOp.getOperation()] = memNodeId;
+        nodeGridPos[memNodeId] = parseGridPos(instanceName);
+        auto *node = adg.getNode(memNodeId);
+        for (IdIndex ip : node->inputPorts)
+          for (IdIndex opPort : node->outputPorts)
+            connectivity.inToOut[ip].push_back(opPort);
+        for (unsigned i = 0; i < instOp.getNumResults(); ++i)
+          valueToOutputPort[instOp.getResult(i)] = node->outputPorts[i];
+        continue;
+      }
+
+      auto memIt = memoryDefMap.find(moduleName);
+      if (memIt != memoryDefMap.end()) {
+        auto memDef = memIt->second;
+        auto memNode = std::make_unique<Node>();
+        memNode->kind = Node::OperationNode;
+
+        if (instanceName.empty())
+          instanceName = moduleName.str();
+        setNodeAttr(memNode.get(), "op_name",
+                    mlir::StringAttr::get(ctx, instanceName), ctx);
+        setNodeAttr(memNode.get(), "op_kind",
+                    mlir::StringAttr::get(ctx, "memory"), ctx);
+        setNodeAttr(memNode.get(), "resource_class",
+                    mlir::StringAttr::get(ctx, "memory"), ctx);
+        setNodeAttr(memNode.get(), "ldCount",
+                    mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                           memDef.getLdCount()),
+                    ctx);
+        setNodeAttr(memNode.get(), "stCount",
+                    mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                           memDef.getStCount()),
+                    ctx);
+        if (auto numRegionAttr =
+                memDef->getAttrOfType<mlir::IntegerAttr>("numRegion")) {
+          setNodeAttr(memNode.get(), "numRegion", numRegionAttr, ctx);
+        }
+        if (auto memrefTypeAttr =
+                memDef->getAttrOfType<mlir::TypeAttr>("memref_type")) {
+          setNodeAttr(memNode.get(), "memref_type", memrefTypeAttr, ctx);
+        }
+        if (auto addrOffsetAttr =
+                memDef->getAttrOfType<mlir::DenseI64ArrayAttr>("addrOffsetTable")) {
+          setNodeAttr(memNode.get(), "addrOffsetTable", addrOffsetAttr, ctx);
+        }
+
+        auto memFnType = memDef.getFunctionType();
+        for (unsigned i = 0; i < memFnType.getNumInputs(); ++i) {
+          auto port = std::make_unique<Port>();
+          port->direction = Port::Input;
+          port->type = memFnType.getInput(i);
+          IdIndex portId = adg.addPort(std::move(port));
+          adg.ports[portId]->parentNode =
+              static_cast<IdIndex>(adg.nodes.size());
+          memNode->inputPorts.push_back(portId);
+        }
+        for (unsigned i = 0; i < memFnType.getNumResults(); ++i) {
+          auto port = std::make_unique<Port>();
+          port->direction = Port::Output;
+          port->type = memFnType.getResult(i);
+          IdIndex portId = adg.addPort(std::move(port));
+          adg.ports[portId]->parentNode =
+              static_cast<IdIndex>(adg.nodes.size());
+          memNode->outputPorts.push_back(portId);
+        }
+
+        IdIndex memNodeId = adg.addNode(std::move(memNode));
+        opToNodeId[instOp.getOperation()] = memNodeId;
+        nodeGridPos[memNodeId] = parseGridPos(instanceName);
+        auto *node = adg.getNode(memNodeId);
+        for (IdIndex ip : node->inputPorts)
+          for (IdIndex opPort : node->outputPorts)
+            connectivity.inToOut[ip].push_back(opPort);
+        for (unsigned i = 0; i < instOp.getNumResults(); ++i)
+          valueToOutputPort[instOp.getResult(i)] = node->outputPorts[i];
+        continue;
+      }
+
+      auto fifoIt = fifoDefMap.find(moduleName);
+      if (fifoIt != fifoDefMap.end()) {
+        auto fifoDef = fifoIt->second;
+        auto fifoNode = std::make_unique<Node>();
+        fifoNode->kind = Node::OperationNode;
+
+        if (instanceName.empty())
+          instanceName = moduleName.str();
+        setNodeAttr(fifoNode.get(), "op_name",
+                    mlir::StringAttr::get(ctx, instanceName), ctx);
+        setNodeAttr(fifoNode.get(), "op_kind",
+                    mlir::StringAttr::get(ctx, "fifo"), ctx);
+        setNodeAttr(fifoNode.get(), "resource_class",
+                    mlir::StringAttr::get(ctx, "buffer"), ctx);
+
+        auto fifoFnType = fifoDef.getFunctionType();
+        for (unsigned i = 0; i < fifoFnType.getNumInputs(); ++i) {
+          auto port = std::make_unique<Port>();
+          port->direction = Port::Input;
+          port->type = fifoFnType.getInput(i);
+          IdIndex portId = adg.addPort(std::move(port));
+          adg.ports[portId]->parentNode =
+              static_cast<IdIndex>(adg.nodes.size());
+          fifoNode->inputPorts.push_back(portId);
+        }
+        for (unsigned i = 0; i < fifoFnType.getNumResults(); ++i) {
+          auto port = std::make_unique<Port>();
+          port->direction = Port::Output;
+          port->type = fifoFnType.getResult(i);
+          IdIndex portId = adg.addPort(std::move(port));
+          adg.ports[portId]->parentNode =
+              static_cast<IdIndex>(adg.nodes.size());
+          fifoNode->outputPorts.push_back(portId);
+        }
+
+        IdIndex fifoNodeId = adg.addNode(std::move(fifoNode));
+        opToNodeId[instOp.getOperation()] = fifoNodeId;
+        nodeGridPos[fifoNodeId] = parseGridPos(instanceName);
+        auto *node = adg.getNode(fifoNodeId);
+        for (IdIndex ip : node->inputPorts)
+          for (IdIndex opPort : node->outputPorts)
+            connectivity.inToOut[ip].push_back(opPort);
+        for (unsigned i = 0; i < instOp.getNumResults(); ++i)
+          valueToOutputPort[instOp.getResult(i)] = node->outputPorts[i];
+        continue;
+      }
+
       // Unknown instance type -- skip.
       continue;
     }
 
     if (auto peOp = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op)) {
-      // If this PE has a sym_name and is referenced by InstanceOps,
-      // skip it here (instances are handled above).
-      if (auto symName = peOp.getSymName()) {
-        if (peDefMap.count(*symName))
-          continue;
-      }
+      if (!peOp->hasAttr("inline_instantiation"))
+        continue;
+
+      llvm::StringRef symName;
+      if (auto symNameAttr = peOp.getSymNameAttr())
+        symName = symNameAttr.getValue();
 
       std::string peName;
-      if (auto symName = peOp.getSymName())
-        peName = symName->str();
+      if (!symName.empty())
+        peName = symName.str();
       createFUNodesFromPE(peOp, peName, "spatial_pe", 0, 0, 0, 0, false, 0);
       continue;
     }
 
     if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op)) {
-      if (auto symName = peOp.getSymName()) {
-        if (temporalPeDefMap.count(*symName))
-          continue;
-      }
+      if (!peOp->hasAttr("inline_instantiation"))
+        continue;
+
+      llvm::StringRef symName;
+      if (auto symNameAttr = peOp.getSymNameAttr())
+        symName = symNameAttr.getValue();
 
       std::string peName;
-      if (auto symName = peOp.getSymName())
-        peName = symName->str();
+      if (!symName.empty())
+        peName = symName.str();
       auto temporalFnType = peOp.getFunctionType();
       unsigned tagWidth = 0;
       if (temporalFnType.getNumInputs() > 0) {
@@ -579,18 +856,18 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
     }
 
     if (auto swOp = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op)) {
-      // Skip SW definitions that are referenced by InstanceOps.
-      if (auto symName = swOp.getSymName()) {
-        if (swDefMap.count(*symName))
-          continue;
-      }
+      if (!swOp->hasAttr("inline_instantiation"))
+        continue;
+      llvm::StringRef symName;
+      if (auto symNameAttr = swOp.getSymNameAttr())
+        symName = symNameAttr.getValue();
 
       auto swNode = std::make_unique<Node>();
       swNode->kind = Node::OperationNode;
 
       std::string swName;
-      if (auto symName = swOp.getSymName())
-        swName = symName->str();
+      if (!symName.empty())
+        swName = symName.str();
 
       setNodeAttr(swNode.get(), "op_name",
                   mlir::StringAttr::get(ctx, swName), ctx);
@@ -645,6 +922,11 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
     }
 
     if (auto tswOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op)) {
+      if (!tswOp->hasAttr("inline_instantiation"))
+        continue;
+      llvm::StringRef symName;
+      if (auto symNameAttr = tswOp.getSymNameAttr())
+        symName = symNameAttr.getValue();
       auto tswNode = std::make_unique<Node>();
       tswNode->kind = Node::OperationNode;
 
@@ -698,6 +980,11 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
     }
 
     if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
+      if (!extOp->hasAttr("inline_instantiation"))
+        continue;
+      llvm::StringRef symName;
+      if (auto symNameAttr = extOp.getSymNameAttr())
+        symName = symNameAttr.getValue();
       auto memNode = std::make_unique<Node>();
       memNode->kind = Node::OperationNode;
 
@@ -789,6 +1076,11 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
     }
 
     if (auto memOp = mlir::dyn_cast<fcc::fabric::MemoryOp>(op)) {
+      if (!memOp->hasAttr("inline_instantiation"))
+        continue;
+      llvm::StringRef symName;
+      if (auto symNameAttr = memOp.getSymNameAttr())
+        symName = symNameAttr.getValue();
       auto memNode = std::make_unique<Node>();
       memNode->kind = Node::OperationNode;
 
@@ -853,6 +1145,11 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
     }
 
     if (auto fifoOp = mlir::dyn_cast<fcc::fabric::FifoOp>(op)) {
+      if (!fifoOp->hasAttr("inline_instantiation"))
+        continue;
+      llvm::StringRef symName;
+      if (auto symNameAttr = fifoOp.getSymNameAttr())
+        symName = symNameAttr.getValue();
       auto fifoNode = std::make_unique<Node>();
       fifoNode->kind = Node::OperationNode;
 
@@ -1064,20 +1361,9 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
   for (auto &op : body.getOperations()) {
     bool isPE = false;
     if (auto peOp = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op)) {
-      // Skip definitions that are referenced by instances.
-      if (auto symName = peOp.getSymName()) {
-        if (!peDefMap.count(*symName))
-          isPE = true;
-      } else {
-        isPE = true;
-      }
+      isPE = peOp->hasAttr("inline_instantiation");
     } else if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op)) {
-      if (auto symName = peOp.getSymName()) {
-        if (!temporalPeDefMap.count(*symName))
-          isPE = true;
-      } else {
-        isPE = true;
-      }
+      isPE = peOp->hasAttr("inline_instantiation");
     } else if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
       isPE = peDefMap.count(instOp.getModule()) > 0 ||
              temporalPeDefMap.count(instOp.getModule()) > 0;

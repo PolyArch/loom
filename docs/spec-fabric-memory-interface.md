@@ -6,6 +6,15 @@ FCC memory-facing hardware uses explicit external-memory resources together with
 switch routing, optional tag transforms, and a backend-independent memory
 backing abstraction.
 
+Placement rules:
+
+- `fabric.memory` and `fabric.extmemory` definitions may appear directly in the
+  top-level module or in `fabric.module`
+- inline `fabric.memory` and `fabric.extmemory` instantiations may appear
+  directly only in `fabric.module`
+- `fabric.instance` targeting one `fabric.memory` or `fabric.extmemory`
+  definition may appear directly only in `fabric.module`
+
 ## Memory-Interface Placement Rule
 
 FCC does not require a one-to-one relationship between software memrefs and

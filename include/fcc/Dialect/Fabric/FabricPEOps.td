@@ -73,6 +73,7 @@ def Fabric_SpatialPEOp : Fabric_Op<"spatial_pe", [
     - FU internal config: max(fu_cfg_bits) across all FUs
   }];
   let arguments = (ins
+    Variadic<AnyType>:$inputs,
     OptionalAttr<SymbolNameAttr>:$sym_name,
     TypeAttrOf<FunctionType>:$function_type
   );
@@ -93,6 +94,7 @@ def Fabric_TemporalPEOp : Fabric_Op<"temporal_pe", [
     All ports must be !fabric.tagged. Body contains FU definitions.
   }];
   let arguments = (ins
+    Variadic<AnyType>:$inputs,
     OptionalAttr<SymbolNameAttr>:$sym_name,
     TypeAttrOf<FunctionType>:$function_type,
     I64Attr:$num_register,

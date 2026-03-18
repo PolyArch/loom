@@ -82,6 +82,14 @@ The FCC target validation matrix includes at least:
     width-adapting tagged `fabric.spatial_sw`, and one `fabric.temporal_sw`
     split, including negative cases where distinct source tags collapse to one
     observed tag before the temporal split
+20. structural validation of Fabric definition and instantiation placement,
+    including:
+    `fabric.function_unit` visibility and instantiation hosts,
+    inline-only `fabric.mux` and tag-boundary ops,
+    module-level component inline placement restricted to `fabric.module`,
+    lexical same-host duplicate-definition rejection across operation kinds,
+    and rejection of `fabric.instance` in unsupported hosts or with PE-local
+    SSA operands or results
 
 ## Compare Policies
 

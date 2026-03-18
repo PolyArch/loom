@@ -19,6 +19,15 @@ A temporal PE contains:
 - per-FU persistent internal configuration
 - one operand-buffer hardware mode selection
 
+Placement and definition rules:
+
+- `fabric.temporal_pe` definitions may appear directly in the top-level module
+  or in `fabric.module`
+- inline `fabric.temporal_pe` instantiations may appear directly only in
+  `fabric.module`
+- a `temporal_pe` body may contain `fabric.function_unit` definitions and
+  `fabric.instance` uses that target `fabric.function_unit`
+
 Textual assembly follows the Fabric-wide split:
 
 - hardware parameters live in `[]`
@@ -169,6 +178,10 @@ Key properties:
 - other Fabric operations may route tagged payloads, but only
   `fabric.add_tag`, `fabric.map_tag`, and `fabric.del_tag` may change tagged
   shape at a boundary
+- `fabric.temporal_sw` definitions may appear directly in the top-level module
+  or in `fabric.module`
+- inline `fabric.temporal_sw` instantiations may appear directly only in
+  `fabric.module`
 
 ## Relationship to Spatial Components
 

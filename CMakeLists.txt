@@ -72,16 +72,19 @@ include_directories(${CMAKE_BINARY_DIR}/include)
 list(APPEND CMAKE_MODULE_PATH "${LLVM_BINARY_DIR}/lib/cmake/llvm")
 list(APPEND CMAKE_MODULE_PATH "${MLIR_BINARY_DIR}/lib/cmake/mlir")
 
-# Copy clang built-in headers to build/lib/clang/include/
-set(CLANG_SOURCE_DIR "${CMAKE_SOURCE_DIR}/externals/llvm/clang")
-set(FCC_RESOURCE_DIR "${CMAKE_BINARY_DIR}/lib/clang")
-add_custom_target(fcc_clang_resource ALL
-  COMMAND "${CMAKE_COMMAND}" -E make_directory "${FCC_RESOURCE_DIR}/include"
-  COMMAND "${CMAKE_COMMAND}" -E copy_directory
-          "${CLANG_SOURCE_DIR}/lib/Headers"
-          "${FCC_RESOURCE_DIR}/include"
-  BYPRODUCTS "${FCC_RESOURCE_DIR}/include/stdarg.h"
-)
+# Reuse Clang's generated resource-header directory directly instead of copying
+# it into a second build-local location. The extra copy was racy under
+# concurrent Ninja invocations and could fail spuriously.
+get_target_property(FCC_CLANG_RESOURCE_INCLUDE_DIR
+  clang-resource-headers INTERFACE_INCLUDE_DIRECTORIES)
+if(NOT FCC_CLANG_RESOURCE_INCLUDE_DIR)
+  message(FATAL_ERROR "Unable to query clang-resource-headers include dir")
+endif()
+list(GET FCC_CLANG_RESOURCE_INCLUDE_DIR 0 FCC_CLANG_RESOURCE_INCLUDE_DIR)
+string(REGEX REPLACE "^\\$<BUILD_INTERFACE:([^>]+)>$" "\\1"
+  FCC_CLANG_RESOURCE_INCLUDE_DIR "${FCC_CLANG_RESOURCE_INCLUDE_DIR}")
+get_filename_component(FCC_RESOURCE_DIR
+  "${FCC_CLANG_RESOURCE_INCLUDE_DIR}" DIRECTORY)
 
 # Tablegen include directories
 set(MLIR_TABLEGEN_FLAGS "-I${FCC_INCLUDE_DIR}" ${MLIR_TABLEGEN_FLAGS})

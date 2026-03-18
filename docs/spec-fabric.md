@@ -89,6 +89,93 @@ For `fabric.map_tag`, the value payload type must remain unchanged. `map_tag`
 may rewrite runtime tag values and may also change the tag width between its
 input and result tagged types.
 
+## Definition and Instantiation Rules
+
+FCC distinguishes named definitions from inline instantiations by structural
+syntax, not by whether an op happens to have SSA results on the left-hand side.
+
+For module-level Fabric components:
+
+- a named definition has no operand list and contributes reusable structure to
+  its host scope
+- an inline instantiation carries an operand list and contributes one graph
+  node directly to the enclosing `fabric.module`
+
+Current parser and verifier materialize this distinction through the
+operation-local `inline_instantiation` marker. This is an implementation detail,
+but the normative semantic distinction is:
+
+- definitions establish symbols
+- inline instantiations do not establish instantiable definition targets
+
+### `fabric.function_unit`
+
+- a `fabric.function_unit` definition may appear directly inside:
+  - the top-level `builtin.module`
+  - `fabric.module`
+  - `fabric.spatial_pe`
+  - `fabric.temporal_pe`
+- `fabric.function_unit` may only be instantiated inside:
+  - `fabric.spatial_pe`
+  - `fabric.temporal_pe`
+- inside one PE, a function unit may be provided either:
+  - by a direct local `fabric.function_unit` body
+  - by `fabric.instance` targeting a visible `fabric.function_unit`
+
+An instance inside one PE must target `fabric.function_unit`, and it must not
+carry SSA operands or SSA results. PE-local function-unit binding is structural,
+not a routed Fabric edge.
+
+### `fabric.mux`
+
+- `fabric.mux` may appear only directly inside `fabric.function_unit`
+- it is inline-only and is not instantiable through `fabric.instance`
+
+### Module-Level Components
+
+The following operations are module-level Fabric components:
+
+- `fabric.spatial_pe`
+- `fabric.temporal_pe`
+- `fabric.spatial_sw`
+- `fabric.temporal_sw`
+- `fabric.memory`
+- `fabric.extmemory`
+- `fabric.fifo`
+
+For these operations:
+
+- named definitions may appear directly inside:
+  - the top-level `builtin.module`
+  - `fabric.module`
+- inline instantiations may appear directly only inside `fabric.module`
+- `fabric.instance` targeting one of these definitions may appear directly only
+  inside `fabric.module`
+
+### Inline-Only Boundary Operations
+
+The following operations are inline-only graph nodes:
+
+- `fabric.add_tag`
+- `fabric.map_tag`
+- `fabric.del_tag`
+
+They may appear directly only inside `fabric.module`.
+
+### Name Resolution and Host Scope
+
+Named definitions are resolved lexically by host scope. The relevant host scopes
+are:
+
+- the top-level `builtin.module`
+- `fabric.module`
+- `fabric.spatial_pe`
+- `fabric.temporal_pe`
+
+Two named definitions in the same host scope may not share the same name, even
+if they have different Fabric operation kinds. This conflict space is shared
+across module types so that `fabric.instance` resolution remains unambiguous.
+
 ## Hardware Parameters vs Runtime Configuration
 
 Each operation separates:

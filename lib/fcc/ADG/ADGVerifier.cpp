@@ -4,7 +4,9 @@
 #include "fcc/Dialect/Fabric/FabricOps.h"
 #include "fcc/Mapper/TypeCompat.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/IR/Verifier.h"
@@ -14,44 +16,172 @@ namespace fcc {
 namespace {
 
 using SymbolTargetMap = llvm::StringMap<mlir::Operation *>;
+using ScopeDefinitionMap =
+    llvm::DenseMap<mlir::Block *, llvm::StringMap<mlir::Operation *>>;
 
-bool isDefinitionOnlyOp(mlir::Operation &op,
-                        const llvm::DenseSet<llvm::StringRef> &referencedSyms) {
-  if (mlir::isa<fcc::fabric::FunctionUnitOp, fcc::fabric::SpatialPEOp,
-                fcc::fabric::TemporalPEOp>(op))
+std::optional<llvm::StringRef> getDefinitionName(mlir::Operation &op) {
+  if (auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(op))
+    return fuOp.getSymName();
+  if (auto peOp = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op))
+    return peOp.getSymName();
+  if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op))
+    return peOp.getSymName();
+  if (auto swOp = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op))
+    return swOp.getSymName();
+  if (auto swOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op))
+    return swOp.getSymName();
+  if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op))
+    return extOp.getSymName();
+  if (auto memOp = mlir::dyn_cast<fcc::fabric::MemoryOp>(op))
+    return memOp.getSymName();
+  if (auto fifoOp = mlir::dyn_cast<fcc::fabric::FifoOp>(op))
+    return fifoOp.getSymName();
+  return std::nullopt;
+}
+
+bool isNamedDefinitionOp(mlir::Operation &op) {
+  return getDefinitionName(op).has_value();
+}
+
+bool isModuleLevelComponentDef(mlir::Operation &op) {
+  return mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::TemporalPEOp,
+                   fcc::fabric::SpatialSwOp, fcc::fabric::TemporalSwOp,
+                   fcc::fabric::ExtMemoryOp, fcc::fabric::MemoryOp,
+                   fcc::fabric::FifoOp>(op);
+}
+
+bool isFunctionUnitDef(mlir::Operation &op) {
+  return mlir::isa<fcc::fabric::FunctionUnitOp>(op);
+}
+
+bool isInlineInstantiationOp(mlir::Operation &op) {
+  return op.hasAttr("inline_instantiation");
+}
+
+bool isActualDefinitionOp(mlir::Operation &op) {
+  if (isFunctionUnitDef(op))
+    return true;
+  if (!isModuleLevelComponentDef(op))
+    return false;
+  return !isInlineInstantiationOp(op);
+}
+
+bool isDefinitionScopeOwner(mlir::Operation *op) {
+  return mlir::isa_and_nonnull<mlir::ModuleOp, fcc::fabric::ModuleOp,
+                               fcc::fabric::SpatialPEOp,
+                               fcc::fabric::TemporalPEOp>(op);
+}
+
+llvm::StringRef getDefinitionKind(mlir::Operation &op) {
+  if (mlir::isa<fcc::fabric::FunctionUnitOp>(op))
+    return "fabric.function_unit";
+  if (mlir::isa<fcc::fabric::SpatialPEOp>(op))
+    return "fabric.spatial_pe";
+  if (mlir::isa<fcc::fabric::TemporalPEOp>(op))
+    return "fabric.temporal_pe";
+  if (mlir::isa<fcc::fabric::SpatialSwOp>(op))
+    return "fabric.spatial_sw";
+  if (mlir::isa<fcc::fabric::TemporalSwOp>(op))
+    return "fabric.temporal_sw";
+  if (mlir::isa<fcc::fabric::ExtMemoryOp>(op))
+    return "fabric.extmemory";
+  if (mlir::isa<fcc::fabric::MemoryOp>(op))
+    return "fabric.memory";
+  if (mlir::isa<fcc::fabric::FifoOp>(op))
+    return "fabric.fifo";
+  return op.getName().getStringRef();
+}
+
+void collectDefinitionsInBlock(mlir::Block &block, ScopeDefinitionMap &scopes,
+                               bool &ok) {
+  auto &scopeMap = scopes[&block];
+  for (mlir::Operation &op : block.getOperations()) {
+    if (!isActualDefinitionOp(op))
+      continue;
+    auto defName = getDefinitionName(op);
+    if (!defName)
+      continue;
+    auto it = scopeMap.find(*defName);
+    if (it != scopeMap.end()) {
+      llvm::errs() << "fabric verify: duplicate definition name '" << *defName
+                   << "' in the same host scope between "
+                   << getDefinitionKind(*it->second) << " and "
+                   << getDefinitionKind(op) << "\n";
+      ok = false;
+      continue;
+    }
+    scopeMap[*defName] = &op;
+  }
+}
+
+void collectDefinitionScopes(mlir::ModuleOp topModule, ScopeDefinitionMap &scopes,
+                             bool &ok) {
+  topModule.walk([&](mlir::Operation *op) {
+    if (!isDefinitionScopeOwner(op))
+      return;
+    if (auto *region = op->getNumRegions() > 0 ? &op->getRegion(0) : nullptr) {
+      if (!region->empty())
+        collectDefinitionsInBlock(region->front(), scopes, ok);
+    }
+  });
+}
+
+llvm::SmallVector<mlir::Block *, 4>
+getDefinitionSearchBlocks(mlir::Operation *anchor) {
+  llvm::SmallVector<mlir::Block *, 4> blocks;
+  mlir::Block *block = anchor ? anchor->getBlock() : nullptr;
+  while (block) {
+    blocks.push_back(block);
+    mlir::Operation *parent = block->getParentOp();
+    if (!parent)
+      break;
+    block = parent->getBlock();
+  }
+  return blocks;
+}
+
+mlir::Operation *resolveDefinition(mlir::Operation *anchor, llvm::StringRef name,
+                                   const ScopeDefinitionMap &scopes) {
+  for (mlir::Block *block : getDefinitionSearchBlocks(anchor)) {
+    auto it = scopes.find(block);
+    if (it == scopes.end())
+      continue;
+    auto defIt = it->second.find(name);
+    if (defIt != it->second.end())
+      return defIt->second;
+  }
+  return nullptr;
+}
+
+bool isDefinitionOnlyOp(mlir::Operation &op) {
+  if (mlir::isa<fcc::fabric::FunctionUnitOp>(op))
     return true;
 
-  if (auto swOp = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op)) {
-    auto symName = swOp.getSymName();
-    return symName && referencedSyms.contains(*symName);
-  }
-  if (auto swOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op)) {
-    auto symName = swOp.getSymName();
-    return symName && referencedSyms.contains(*symName);
-  }
+  if (isModuleLevelComponentDef(op))
+    return !isInlineInstantiationOp(op);
   return false;
 }
 
-bool isGraphNodeOp(mlir::Operation &op,
-                   const llvm::DenseSet<llvm::StringRef> &referencedSyms) {
-  if (mlir::isa<fcc::fabric::InstanceOp, fcc::fabric::ExtMemoryOp,
-                fcc::fabric::MemoryOp, fcc::fabric::FifoOp,
-                fcc::fabric::AddTagOp, fcc::fabric::DelTagOp,
-                fcc::fabric::MapTagOp>(op)) {
+bool isGraphNodeOp(mlir::Operation &op) {
+  if (mlir::isa<fcc::fabric::InstanceOp, fcc::fabric::AddTagOp,
+                fcc::fabric::DelTagOp, fcc::fabric::MapTagOp>(op)) {
     return true;
   }
-  if (mlir::isa<fcc::fabric::SpatialSwOp, fcc::fabric::TemporalSwOp>(op))
-    return !isDefinitionOnlyOp(op, referencedSyms);
+  if (mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::TemporalPEOp,
+                fcc::fabric::SpatialSwOp, fcc::fabric::TemporalSwOp,
+                fcc::fabric::ExtMemoryOp, fcc::fabric::MemoryOp,
+                fcc::fabric::FifoOp>(op))
+    return !isDefinitionOnlyOp(op);
   return false;
 }
 
 std::optional<mlir::FunctionType> getDeclaredFunctionType(mlir::Operation &op,
-                                                          const SymbolTargetMap &targets) {
+                                                          const ScopeDefinitionMap &scopes) {
   if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
-    auto targetIt = targets.find(instOp.getModule());
-    if (targetIt == targets.end())
+    mlir::Operation *target =
+        resolveDefinition(instOp.getOperation(), instOp.getModule(), scopes);
+    if (!target)
       return std::nullopt;
-    auto *target = targetIt->second;
     if (auto pe = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(target))
       return pe.getFunctionType();
     if (auto pe = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(target))
@@ -60,6 +190,14 @@ std::optional<mlir::FunctionType> getDeclaredFunctionType(mlir::Operation &op,
       return sw.getFunctionType();
     if (auto sw = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(target))
       return sw.getFunctionType();
+    if (auto ext = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(target))
+      return ext.getFunctionType();
+    if (auto mem = mlir::dyn_cast<fcc::fabric::MemoryOp>(target))
+      return mem.getFunctionType();
+    if (auto fifo = mlir::dyn_cast<fcc::fabric::FifoOp>(target))
+      return fifo.getFunctionType();
+    if (auto fu = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(target))
+      return fu.getFunctionType();
     return std::nullopt;
   }
   if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op))
@@ -68,6 +206,10 @@ std::optional<mlir::FunctionType> getDeclaredFunctionType(mlir::Operation &op,
     return memOp.getFunctionType();
   if (auto fifoOp = mlir::dyn_cast<fcc::fabric::FifoOp>(op))
     return fifoOp.getFunctionType();
+  if (auto peOp = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op))
+    return peOp.getFunctionType();
+  if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op))
+    return peOp.getFunctionType();
   if (auto swOp = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op))
     return swOp.getFunctionType();
   if (auto swOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op))
@@ -92,6 +234,10 @@ std::string describeOp(mlir::Operation &op) {
     return printNamed(swOp);
   if (auto swOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op))
     return printNamed(swOp);
+  if (auto peOp = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op))
+    return printNamed(peOp);
+  if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op))
+    return printNamed(peOp);
   if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op))
     return printNamed(extOp);
   if (auto memOp = mlir::dyn_cast<fcc::fabric::MemoryOp>(op))
@@ -117,32 +263,58 @@ mlir::LogicalResult verifyFabricModule(mlir::ModuleOp topModule) {
 
   auto &body = fabricMod.getBody().front();
 
-  llvm::DenseSet<llvm::StringRef> referencedSyms;
-  for (auto &op : body.getOperations()) {
-    if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op))
-      referencedSyms.insert(instOp.getModule());
-  }
+  ScopeDefinitionMap definitionScopes;
+  collectDefinitionScopes(topModule, definitionScopes, ok);
 
-  SymbolTargetMap symbolTargets;
-  topModule.walk([&](mlir::Operation *op) {
-    if (auto peOp = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op))
-      if (auto symName = peOp.getSymName())
-        symbolTargets[*symName] = op;
-    if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op))
-      if (auto symName = peOp.getSymName())
-        symbolTargets[*symName] = op;
-    if (auto swOp = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op))
-      if (auto symName = swOp.getSymName())
-        symbolTargets[*symName] = op;
-    if (auto swOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op))
-      if (auto symName = swOp.getSymName())
-        symbolTargets[*symName] = op;
+  topModule.walk([&](fcc::fabric::InstanceOp instOp) {
+    mlir::Operation *parent = instOp->getBlock()->getParentOp();
+    mlir::Operation *target =
+        resolveDefinition(instOp.getOperation(), instOp.getModule(), definitionScopes);
+    if (!target) {
+      llvm::errs() << "fabric verify: instance target '" << instOp.getModule()
+                   << "' cannot be resolved from the current host scope\n";
+      ok = false;
+      return;
+    }
+
+    if (mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::TemporalPEOp>(parent)) {
+      if (!mlir::isa<fcc::fabric::FunctionUnitOp>(target)) {
+        llvm::errs() << "fabric verify: instances inside "
+                     << parent->getName().getStringRef()
+                     << " must target fabric.function_unit, but '"
+                     << instOp.getModule() << "' resolves to "
+                     << getDefinitionKind(*target) << "\n";
+        ok = false;
+      }
+      if (instOp.getNumOperands() != 0 || instOp.getNumResults() != 0) {
+        llvm::errs() << "fabric verify: function_unit instance '"
+                     << instOp.getModule()
+                     << "' inside a PE must not carry SSA operands or results\n";
+        ok = false;
+      }
+      return;
+    }
+
+    if (mlir::isa<fcc::fabric::ModuleOp>(parent)) {
+      if (!mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::TemporalPEOp,
+                     fcc::fabric::SpatialSwOp, fcc::fabric::TemporalSwOp,
+                     fcc::fabric::ExtMemoryOp, fcc::fabric::MemoryOp,
+                     fcc::fabric::FifoOp>(target)) {
+        llvm::errs() << "fabric verify: instances inside fabric.module must target "
+                     << "fabric.{spatial_pe, temporal_pe, spatial_sw, temporal_sw, "
+                        "memory, extmemory, fifo}, but '"
+                     << instOp.getModule() << "' resolves to "
+                     << getDefinitionKind(*target) << "\n";
+        ok = false;
+      }
+      return;
+    }
   });
 
   llvm::DenseSet<mlir::Value> consumed;
 
   for (auto &op : body.getOperations()) {
-    if (!isGraphNodeOp(op, referencedSyms) &&
+    if (!isGraphNodeOp(op) &&
         !mlir::isa<fcc::fabric::YieldOp>(op)) {
       continue;
     }
@@ -152,12 +324,12 @@ mlir::LogicalResult verifyFabricModule(mlir::ModuleOp topModule) {
   }
 
   for (auto &op : body.getOperations()) {
-    if (!isGraphNodeOp(op, referencedSyms))
+    if (!isGraphNodeOp(op))
       continue;
 
     std::string opDesc = describeOp(op);
 
-    if (auto fnType = getDeclaredFunctionType(op, symbolTargets)) {
+    if (auto fnType = getDeclaredFunctionType(op, definitionScopes)) {
       if (fnType->getNumInputs() != op.getNumOperands()) {
         llvm::errs() << "fabric verify: dangling input ports on " << opDesc
                      << " — expected " << fnType->getNumInputs()
@@ -198,7 +370,7 @@ mlir::LogicalResult verifyFabricModule(mlir::ModuleOp topModule) {
         }
       }
     } else if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
-      llvm::errs() << "fabric verify: " << opDesc << " references unknown target '"
+      llvm::errs() << "fabric verify: " << opDesc << " references unknown or invalid target '"
                    << instOp.getModule() << "'\n";
       ok = false;
     }

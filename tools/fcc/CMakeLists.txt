@@ -75,7 +75,7 @@ target_compile_definitions(fcc PRIVATE
   FCC_CLANG_RESOURCE_DIR="${FCC_RESOURCE_DIR}"
 )
 
-add_dependencies(fcc fcc_clang_resource clang-headers)
+add_dependencies(fcc clang-resource-headers clang-headers)
 
 set_target_properties(fcc PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${FCC_RUNTIME_DIR}

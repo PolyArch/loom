@@ -699,15 +699,38 @@ bool TechMapper::buildPlan(const Graph &dfg, mlir::ModuleOp adgModule,
 
   llvm::SmallVector<VariantFamily, 16> familyList;
 
+  llvm::DenseMap<mlir::Block *, llvm::DenseSet<llvm::StringRef>>
+      referencedTargetsByBlock;
+  adgModule.walk([&](fcc::fabric::InstanceOp instOp) {
+    referencedTargetsByBlock[instOp->getBlock()].insert(instOp.getModule());
+  });
+
+  auto isDefinitionOp = [&](mlir::Operation *op,
+                            llvm::StringRef name) -> bool {
+    if (mlir::isa<fcc::fabric::FunctionUnitOp>(op))
+      return true;
+    if (!mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::TemporalPEOp>(op))
+      return false;
+    return !op->hasAttr("inline_instantiation");
+  };
+
   llvm::StringMap<fcc::fabric::SpatialPEOp> peDefs;
   llvm::StringMap<fcc::fabric::TemporalPEOp> temporalPeDefs;
+  llvm::StringMap<fcc::fabric::FunctionUnitOp> functionUnitDefs;
   adgModule->walk([&](fcc::fabric::SpatialPEOp peOp) {
-    if (auto sym = peOp.getSymName())
-      peDefs[*sym] = peOp;
+    if (auto symAttr = peOp.getSymNameAttr();
+        symAttr && isDefinitionOp(peOp.getOperation(), symAttr.getValue()))
+      peDefs[symAttr.getValue()] = peOp;
   });
   adgModule->walk([&](fcc::fabric::TemporalPEOp peOp) {
-    if (auto sym = peOp.getSymName())
-      temporalPeDefs[*sym] = peOp;
+    if (auto symAttr = peOp.getSymNameAttr();
+        symAttr && isDefinitionOp(peOp.getOperation(), symAttr.getValue()))
+      temporalPeDefs[symAttr.getValue()] = peOp;
+  });
+  adgModule->walk([&](fcc::fabric::FunctionUnitOp fuOp) {
+    auto symName = fuOp.getSymNameAttr().getValue();
+    if (isDefinitionOp(fuOp.getOperation(), symName))
+      functionUnitDefs[symName] = fuOp;
   });
 
   if (auto fabricMod = [&]() -> fcc::fabric::ModuleOp {
@@ -718,136 +741,102 @@ bool TechMapper::buildPlan(const Graph &dfg, mlir::ModuleOp adgModule,
         });
         return found;
       }()) {
+    auto visitPEFunctionUnits =
+        [&](auto peOp, llvm::StringRef peName,
+            auto &&visitor) {
+          auto &peBody = peOp.getBody().front();
+          auto referencedIt = referencedTargetsByBlock.find(&peBody);
+          const llvm::DenseSet<llvm::StringRef> *referencedTargets =
+              referencedIt != referencedTargetsByBlock.end()
+                  ? &referencedIt->second
+                  : nullptr;
+          for (mlir::Operation &bodyOp : peBody.getOperations()) {
+            if (auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(bodyOp)) {
+              llvm::StringRef symName = fuOp.getSymNameAttr().getValue();
+              if (!symName.empty() && referencedTargets &&
+                  referencedTargets->contains(symName))
+                continue;
+              visitor(fuOp, symName.str());
+              continue;
+            }
+            auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(bodyOp);
+            if (!instOp)
+              continue;
+            auto fuIt = functionUnitDefs.find(instOp.getModule());
+            if (fuIt == functionUnitDefs.end())
+              continue;
+            visitor(fuIt->second,
+                    instOp.getSymName().value_or(instOp.getModule()).str());
+          }
+        };
+
+    auto recordVariantsForPE = [&](llvm::StringRef peName,
+                                   fcc::fabric::FunctionUnitOp fuOp,
+                                   const std::string &fuName) {
+      IdIndex hwNodeId = findFunctionUnitNode(adg, peName, fuName);
+      if (hwNodeId == INVALID_ID)
+        return;
+      const Node *hwNode = adg.getNode(hwNodeId);
+      llvm::SmallVector<VariantFamily, 8> variants;
+      collectVariantsForFU(fuOp, hwNode, variants);
+      for (auto &variant : variants) {
+        bool merged = false;
+        for (auto &family : familyList) {
+          if (family.signature != variant.signature)
+            continue;
+          family.hwNodeIds.push_back(hwNodeId);
+          merged = true;
+          break;
+        }
+        if (!merged) {
+          variant.hwNodeIds.clear();
+          variant.hwNodeIds.push_back(hwNodeId);
+          familyList.push_back(std::move(variant));
+        }
+      }
+    };
+
     for (mlir::Operation &op : fabricMod.getBody().front().getOperations()) {
       if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
         std::string peName =
             instOp.getSymName().value_or(instOp.getModule()).str();
         auto peIt = peDefs.find(instOp.getModule());
         if (peIt != peDefs.end()) {
-          for (mlir::Operation &bodyOp : peIt->second.getBody().front().getOperations()) {
-            auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(bodyOp);
-            if (!fuOp)
-              continue;
-            IdIndex hwNodeId =
-                findFunctionUnitNode(adg, peName, fuOp.getSymName().str());
-            if (hwNodeId == INVALID_ID)
-              continue;
-            const Node *hwNode = adg.getNode(hwNodeId);
-            llvm::SmallVector<VariantFamily, 8> variants;
-            collectVariantsForFU(fuOp, hwNode, variants);
-            for (auto &variant : variants) {
-              bool merged = false;
-              for (auto &family : familyList) {
-                if (family.signature != variant.signature)
-                  continue;
-                family.hwNodeIds.push_back(hwNodeId);
-                merged = true;
-                break;
-              }
-              if (!merged) {
-                variant.hwNodeIds.clear();
-                variant.hwNodeIds.push_back(hwNodeId);
-                familyList.push_back(std::move(variant));
-              }
-            }
-          }
+          visitPEFunctionUnits(
+              peIt->second, peName,
+              [&](fcc::fabric::FunctionUnitOp fuOp, const std::string &fuName) {
+                recordVariantsForPE(peName, fuOp, fuName);
+              });
           continue;
         }
         auto temporalPeIt = temporalPeDefs.find(instOp.getModule());
         if (temporalPeIt != temporalPeDefs.end()) {
-          for (mlir::Operation &bodyOp :
-               temporalPeIt->second.getBody().front().getOperations()) {
-            auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(bodyOp);
-            if (!fuOp)
-              continue;
-            IdIndex hwNodeId =
-                findFunctionUnitNode(adg, peName, fuOp.getSymName().str());
-            if (hwNodeId == INVALID_ID)
-              continue;
-            const Node *hwNode = adg.getNode(hwNodeId);
-            llvm::SmallVector<VariantFamily, 8> variants;
-            collectVariantsForFU(fuOp, hwNode, variants);
-            for (auto &variant : variants) {
-              bool merged = false;
-              for (auto &family : familyList) {
-                if (family.signature != variant.signature)
-                  continue;
-                family.hwNodeIds.push_back(hwNodeId);
-                merged = true;
-                break;
-              }
-              if (!merged) {
-                variant.hwNodeIds.clear();
-                variant.hwNodeIds.push_back(hwNodeId);
-                familyList.push_back(std::move(variant));
-              }
-            }
-          }
+          visitPEFunctionUnits(
+              temporalPeIt->second, peName,
+              [&](fcc::fabric::FunctionUnitOp fuOp, const std::string &fuName) {
+                recordVariantsForPE(peName, fuOp, fuName);
+              });
         }
         continue;
       }
 
       if (auto peOp = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op)) {
         llvm::StringRef peName = peOp.getSymName().value_or("");
-        for (mlir::Operation &bodyOp : peOp.getBody().front().getOperations()) {
-          auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(bodyOp);
-          if (!fuOp)
-            continue;
-          IdIndex hwNodeId =
-              findFunctionUnitNode(adg, peName, fuOp.getSymName().str());
-          if (hwNodeId == INVALID_ID)
-            continue;
-          const Node *hwNode = adg.getNode(hwNodeId);
-          llvm::SmallVector<VariantFamily, 8> variants;
-          collectVariantsForFU(fuOp, hwNode, variants);
-          for (auto &variant : variants) {
-            bool merged = false;
-            for (auto &family : familyList) {
-              if (family.signature != variant.signature)
-                continue;
-              family.hwNodeIds.push_back(hwNodeId);
-              merged = true;
-              break;
-            }
-            if (!merged) {
-              variant.hwNodeIds.clear();
-              variant.hwNodeIds.push_back(hwNodeId);
-              familyList.push_back(std::move(variant));
-            }
-          }
-        }
+        visitPEFunctionUnits(
+            peOp, peName,
+            [&](fcc::fabric::FunctionUnitOp fuOp, const std::string &fuName) {
+              recordVariantsForPE(peName, fuOp, fuName);
+            });
         continue;
       }
 
       if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op)) {
         llvm::StringRef peName = peOp.getSymName().value_or("");
-        for (mlir::Operation &bodyOp : peOp.getBody().front().getOperations()) {
-          auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(bodyOp);
-          if (!fuOp)
-            continue;
-          IdIndex hwNodeId =
-              findFunctionUnitNode(adg, peName, fuOp.getSymName().str());
-          if (hwNodeId == INVALID_ID)
-            continue;
-          const Node *hwNode = adg.getNode(hwNodeId);
-          llvm::SmallVector<VariantFamily, 8> variants;
-          collectVariantsForFU(fuOp, hwNode, variants);
-          for (auto &variant : variants) {
-            bool merged = false;
-            for (auto &family : familyList) {
-              if (family.signature != variant.signature)
-                continue;
-              family.hwNodeIds.push_back(hwNodeId);
-              merged = true;
-              break;
-            }
-            if (!merged) {
-              variant.hwNodeIds.clear();
-              variant.hwNodeIds.push_back(hwNodeId);
-              familyList.push_back(std::move(variant));
-            }
-          }
-        }
+        visitPEFunctionUnits(
+            peOp, peName,
+            [&](fcc::fabric::FunctionUnitOp fuOp, const std::string &fuName) {
+              recordVariantsForPE(peName, fuOp, fuName);
+            });
       }
     }
   }

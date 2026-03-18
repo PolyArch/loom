@@ -9,6 +9,15 @@ Unlike `fabric.temporal_sw`, a `fabric.spatial_sw` never makes routing
 decisions based on tag value. If its ports are tagged, the tag travels as part
 of the payload only.
 
+Placement rules:
+
+- a `fabric.spatial_sw` definition may appear directly in the top-level module
+  or in `fabric.module`
+- an inline `fabric.spatial_sw` instantiation may appear directly only in
+  `fabric.module`
+- `fabric.instance` targeting one `fabric.spatial_sw` definition may appear
+  directly only in `fabric.module`
+
 ## Hardware Parameters
 
 Key hardware parameters are:

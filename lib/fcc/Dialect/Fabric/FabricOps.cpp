@@ -1,4 +1,5 @@
 #include "fcc/Dialect/Fabric/FabricOps.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 
@@ -62,13 +63,52 @@ static LogicalResult verifyBinaryRowTable(ArrayAttr tableAttr, unsigned expected
   return success();
 }
 
+static mlir::Operation *getDirectRegionParent(mlir::Operation *op) {
+  if (!op)
+    return nullptr;
+  mlir::Block *block = op->getBlock();
+  if (!block)
+    return nullptr;
+  return block->getParentOp();
+}
+
+template <typename... OpTys>
+static bool hasDirectRegionParentOfType(mlir::Operation *op) {
+  if (mlir::Operation *parent = getDirectRegionParent(op))
+    return mlir::isa<OpTys...>(parent);
+  return false;
+}
+
+static ParseResult parseOptionalOperandListInParens(
+    OpAsmParser &parser, SmallVectorImpl<OpAsmParser::UnresolvedOperand> &ops,
+    bool &hasOperands) {
+  hasOperands = succeeded(parser.parseOptionalLParen());
+  if (!hasOperands)
+    return success();
+
+  if (failed(parser.parseOptionalRParen())) {
+    do {
+      OpAsmParser::UnresolvedOperand operand;
+      if (parser.parseOperand(operand))
+        return failure();
+      ops.push_back(operand);
+    } while (succeeded(parser.parseOptionalComma()));
+
+    if (parser.parseRParen())
+      return failure();
+  }
+
+  return success();
+}
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
 // ModuleOp
 //===----------------------------------------------------------------------===//
 
-ParseResult ModuleOp::parse(OpAsmParser &parser, OperationState &result) {
+ParseResult fcc::fabric::ModuleOp::parse(OpAsmParser &parser,
+                                         OperationState &result) {
   StringAttr nameAttr;
   if (parser.parseSymbolName(nameAttr, SymbolTable::getSymbolAttrName(),
                              result.attributes))
@@ -126,7 +166,7 @@ ParseResult ModuleOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-void ModuleOp::print(OpAsmPrinter &p) {
+void fcc::fabric::ModuleOp::print(OpAsmPrinter &p) {
   p << " @" << getSymName() << "(";
   auto funcType = getFunctionType();
   auto &body = getBody().front();
@@ -148,7 +188,7 @@ void ModuleOp::print(OpAsmPrinter &p) {
   p.printRegion(getBody(), false);
 }
 
-LogicalResult ModuleOp::verify() {
+LogicalResult fcc::fabric::ModuleOp::verify() {
   // Basic verification - yield operands match results
   auto &body = getBody().front();
   auto yieldOp = dyn_cast<YieldOp>(body.getTerminator());
@@ -167,6 +207,11 @@ LogicalResult ModuleOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult InstanceOp::verify() {
+  if (!hasDirectRegionParentOfType<fcc::fabric::ModuleOp, SpatialPEOp,
+                                   TemporalPEOp>(getOperation())) {
+    return emitOpError(
+        "must appear directly inside fabric.module, fabric.spatial_pe, or fabric.temporal_pe");
+  }
   return success();
 }
 
@@ -175,17 +220,8 @@ LogicalResult InstanceOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult MuxOp::verify() {
-  auto *parent = (*this)->getParentOp();
-  bool insideFU = false;
-  while (parent) {
-    if (mlir::isa<FunctionUnitOp>(parent)) {
-      insideFU = true;
-      break;
-    }
-    parent = parent->getParentOp();
-  }
-  if (!insideFU)
-    return emitOpError("must appear inside fabric.function_unit");
+  if (!hasDirectRegionParentOfType<FunctionUnitOp>(getOperation()))
+    return emitOpError("must appear directly inside fabric.function_unit");
 
   unsigned numInputs = getInputs().size();
   unsigned numResults = getResults().size();
@@ -221,6 +257,23 @@ LogicalResult MuxOp::verify() {
   return success();
 }
 
+template <typename OpTy>
+LogicalResult verifyModuleLevelComponentPlacement(OpTy op) {
+  mlir::Operation *parent = op->getParentOp();
+  if (!mlir::isa_and_nonnull<mlir::ModuleOp, fcc::fabric::ModuleOp>(parent)) {
+    return op.emitOpError(
+        "must appear directly inside the top-level module or fabric.module");
+  }
+
+  if (op->hasAttr("inline_instantiation") &&
+      !mlir::isa<fcc::fabric::ModuleOp>(parent)) {
+    return op.emitOpError(
+        "inline instantiation must appear directly inside fabric.module");
+  }
+
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // SpatialPEOp
 //===----------------------------------------------------------------------===//
@@ -236,6 +289,41 @@ ParseResult SpatialPEOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::Argument> args;
   SmallVector<Type> argTypes, resultTypes;
+  SmallVector<OpAsmParser::UnresolvedOperand> operands;
+  bool inlineInstantiation = succeeded(parser.parseOptionalKeyword("inputs"));
+
+  if (inlineInstantiation) {
+    result.addAttribute("inline_instantiation",
+                        parser.getBuilder().getUnitAttr());
+    bool hasOperands = false;
+    if (parseOptionalOperandListInParens(parser, operands, hasOperands))
+      return failure();
+    if (!hasOperands) {
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected operand list after 'inputs'");
+    }
+
+    if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+      return failure();
+    if (parser.parseColon())
+      return failure();
+
+    FunctionType funcType;
+    if (parser.parseType(funcType))
+      return failure();
+    result.addAttribute("function_type", TypeAttr::get(funcType));
+    result.addTypes(funcType.getResults());
+    if (parser.resolveOperands(operands, funcType.getInputs(),
+                               parser.getNameLoc(), result.operands))
+      return failure();
+
+    auto *body = result.addRegion();
+    if (parser.parseRegion(*body))
+      return failure();
+    if (body->empty())
+      body->emplaceBlock();
+    return success();
+  }
 
   if (parser.parseLParen())
     return failure();
@@ -289,6 +377,19 @@ void SpatialPEOp::print(OpAsmPrinter &p) {
     p << " @" << *name;
 
   auto funcType = getFunctionType();
+  if (getNumOperands() > 0) {
+    p << " inputs(";
+    p.printOperands(getInputs());
+    p << ")";
+    p.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
+                                       {"sym_name", "function_type",
+                                        "inline_instantiation"});
+    p << " : " << funcType;
+    p << " ";
+    p.printRegion(getBody(), false);
+    return;
+  }
+
   auto &body = getBody().front();
   p << "(";
   for (unsigned i = 0; i < funcType.getNumInputs(); ++i) {
@@ -310,7 +411,7 @@ void SpatialPEOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult SpatialPEOp::verify() {
-  return success();
+  return verifyModuleLevelComponentPlacement(*this);
 }
 
 //===----------------------------------------------------------------------===//
@@ -401,54 +502,91 @@ ParseResult TemporalPEOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::Argument> args;
   SmallVector<Type> argTypes, resultTypes;
-
-  if (parser.parseLParen())
-    return failure();
-  if (failed(parser.parseOptionalRParen())) {
-    do {
-      OpAsmParser::Argument arg;
-      Type argType;
-      if (parser.parseArgument(arg) || parser.parseColonType(argType))
-        return failure();
-      arg.type = argType;
-      args.push_back(arg);
-      argTypes.push_back(argType);
-    } while (succeeded(parser.parseOptionalComma()));
-    if (parser.parseRParen())
-      return failure();
-  }
-
-  if (succeeded(parser.parseOptionalArrow())) {
-    if (parser.parseLParen())
-      return failure();
+  SmallVector<OpAsmParser::UnresolvedOperand> operands;
+  if (succeeded(parser.parseOptionalLParen())) {
     if (failed(parser.parseOptionalRParen())) {
       do {
-        Type t;
-        if (parser.parseType(t))
+        OpAsmParser::Argument arg;
+        Type argType;
+        if (parser.parseArgument(arg) || parser.parseColonType(argType))
           return failure();
-        resultTypes.push_back(t);
+        arg.type = argType;
+        args.push_back(arg);
+        argTypes.push_back(argType);
       } while (succeeded(parser.parseOptionalComma()));
       if (parser.parseRParen())
         return failure();
     }
-  }
 
-  auto funcType = FunctionType::get(parser.getContext(), argTypes, resultTypes);
+    if (succeeded(parser.parseOptionalArrow())) {
+      if (parser.parseLParen())
+        return failure();
+      if (failed(parser.parseOptionalRParen())) {
+        do {
+          Type t;
+          if (parser.parseType(t))
+            return failure();
+          resultTypes.push_back(t);
+        } while (succeeded(parser.parseOptionalComma()));
+        if (parser.parseRParen())
+          return failure();
+      }
+    }
+
+    auto funcType =
+        FunctionType::get(parser.getContext(), argTypes, resultTypes);
   result.addAttribute("function_type", TypeAttr::get(funcType));
   result.addTypes(resultTypes);
 
   if (parseTemporalPEHwParams(parser, result))
     return failure();
+    if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+      return failure();
 
+    auto *body = result.addRegion();
+    if (parser.parseRegion(*body, args))
+      return failure();
+    if (body->empty())
+      body->emplaceBlock();
+    return success();
+  }
+
+  if (parseTemporalPEHwParams(parser, result))
+    return failure();
+  if (failed(parser.parseOptionalKeyword("inputs"))) {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected '(' for a temporal_pe definition or "
+                            "'inputs' for inline instantiation");
+  }
+
+  result.addAttribute("inline_instantiation",
+                      parser.getBuilder().getUnitAttr());
+  bool hasOperands = false;
+  if (parseOptionalOperandListInParens(parser, operands, hasOperands))
+    return failure();
+  if (!hasOperands) {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected operand list after 'inputs'");
+  }
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+  if (parser.parseColon())
+    return failure();
+
+  FunctionType funcType;
+  if (parser.parseType(funcType))
+    return failure();
+  result.addAttribute("function_type", TypeAttr::get(funcType));
+  result.addTypes(funcType.getResults());
+  if (parser.resolveOperands(operands, funcType.getInputs(), parser.getNameLoc(),
+                             result.operands))
     return failure();
 
   auto *body = result.addRegion();
-  if (parser.parseRegion(*body, args))
+  if (parser.parseRegion(*body))
     return failure();
   if (body->empty())
     body->emplaceBlock();
-
   return success();
 }
 
@@ -457,19 +595,6 @@ void TemporalPEOp::print(OpAsmPrinter &p) {
     p << " @" << *name;
 
   auto funcType = getFunctionType();
-  auto &body = getBody().front();
-  p << "(";
-  for (unsigned i = 0; i < funcType.getNumInputs(); ++i) {
-    if (i > 0)
-      p << ", ";
-    p.printRegionArgument(body.getArgument(i));
-  }
-  p << ")";
-  if (funcType.getNumResults() > 0) {
-    p << " -> (";
-    llvm::interleaveComma(funcType.getResults(), p);
-    p << ")";
-  }
 
   p << " [num_register = ";
   p.printAttribute((*this)->getAttr("num_register"));
@@ -485,16 +610,44 @@ void TemporalPEOp::print(OpAsmPrinter &p) {
   }
   p << "]";
 
-  p.printOptionalAttrDictWithKeyword(
-      (*this)->getAttrs(),
-      {"sym_name", "function_type", "num_register", "num_instruction",
-       "reg_fifo_depth", "enable_share_operand_buffer",
-       "operand_buffer_size"});
+  SmallVector<StringRef> excludes = {
+      "sym_name", "function_type", "num_register", "num_instruction",
+      "reg_fifo_depth", "enable_share_operand_buffer", "operand_buffer_size",
+      "inline_instantiation"};
+  if (getNumOperands() > 0) {
+    p << " inputs(";
+    p.printOperands(getInputs());
+    p << ")";
+    p.printOptionalAttrDictWithKeyword((*this)->getAttrs(), excludes);
+    p << " : " << funcType;
+    p << " ";
+    p.printRegion(getBody(), false);
+    return;
+  }
+
+  auto &body = getBody().front();
+  p << "(";
+  for (unsigned i = 0; i < funcType.getNumInputs(); ++i) {
+    if (i > 0)
+      p << ", ";
+    p.printRegionArgument(body.getArgument(i));
+  }
+  p << ")";
+  if (funcType.getNumResults() > 0) {
+    p << " -> (";
+    llvm::interleaveComma(funcType.getResults(), p);
+    p << ")";
+  }
+
+  p.printOptionalAttrDictWithKeyword((*this)->getAttrs(), excludes);
   p << " ";
   p.printRegion(getBody(), false);
 }
 
 LogicalResult TemporalPEOp::verify() {
+  if (failed(verifyModuleLevelComponentPlacement(*this)))
+    return failure();
+
   if (getNumInstruction() <= 0)
     return emitOpError("num_instruction must be greater than 0");
 
@@ -681,6 +834,11 @@ void FunctionUnitOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult FunctionUnitOp::verify() {
+  if (!hasDirectRegionParentOfType<mlir::ModuleOp, fcc::fabric::ModuleOp,
+                                   SpatialPEOp, TemporalPEOp>(getOperation())) {
+    return emitOpError(
+        "must appear directly inside the top-level module, fabric.module, fabric.spatial_pe, or fabric.temporal_pe");
+  }
   return success();
 }
 
@@ -743,6 +901,14 @@ ParseResult SpatialSwOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parseSWHwParams(parser, result))
     return failure();
 
+  SmallVector<OpAsmParser::UnresolvedOperand> operands;
+  bool hasOperands = false;
+  if (parseOptionalOperandListInParens(parser, operands, hasOperands))
+    return failure();
+  if (hasOperands)
+    result.addAttribute("inline_instantiation",
+                        parser.getBuilder().getUnitAttr());
+
   // Parse optional {runtime_config} attributes
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
@@ -756,6 +922,10 @@ ParseResult SpatialSwOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
   result.addAttribute("function_type", TypeAttr::get(funcType));
   result.addTypes(funcType.getResults());
+  if (hasOperands &&
+      parser.resolveOperands(operands, funcType.getInputs(), parser.getNameLoc(),
+                             result.operands))
+    return failure();
 
   return success();
 }
@@ -791,15 +961,24 @@ void SpatialSwOp::print(OpAsmPrinter &p) {
   if (hasHwParams)
     p << "]";
 
+  if (getNumOperands() > 0) {
+    p << " (";
+    p.printOperands(getInputs());
+    p << ")";
+  }
+
   // Print remaining attrs as {key = val}
   p.printOptionalAttrDictWithKeyword(
       (*this)->getAttrs(),
       {"sym_name", "function_type", "connectivity_table", "route_table",
-       "decomposable_bits"});
+       "decomposable_bits", "inline_instantiation"});
   p << " : " << getFunctionType();
 }
 
 LogicalResult SpatialSwOp::verify() {
+  if (failed(verifyModuleLevelComponentPlacement(*this)))
+    return failure();
+
   auto funcType = getFunctionType();
   if (funcType.getNumInputs() == 0 || funcType.getNumResults() == 0)
     return emitOpError("must have at least one input and one output");
@@ -915,6 +1094,14 @@ ParseResult TemporalSwOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parseTemporalSWHwParams(parser, result))
     return failure();
 
+  SmallVector<OpAsmParser::UnresolvedOperand> operands;
+  bool hasOperands = false;
+  if (parseOptionalOperandListInParens(parser, operands, hasOperands))
+    return failure();
+  if (hasOperands)
+    result.addAttribute("inline_instantiation",
+                        parser.getBuilder().getUnitAttr());
+
   // Parse {runtime_config} (route_table, etc.)
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
@@ -927,6 +1114,10 @@ ParseResult TemporalSwOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
   result.addAttribute("function_type", TypeAttr::get(funcType));
   result.addTypes(funcType.getResults());
+  if (hasOperands &&
+      parser.resolveOperands(operands, funcType.getInputs(), parser.getNameLoc(),
+                             result.operands))
+    return failure();
 
   return success();
 }
@@ -954,14 +1145,24 @@ void TemporalSwOp::print(OpAsmPrinter &p) {
   if (hasHw)
     p << "]";
 
+  if (getNumOperands() > 0) {
+    p << " (";
+    p.printOperands(getInputs());
+    p << ")";
+  }
+
   // Print {runtime_config} (route_table, etc.)
   p.printOptionalAttrDictWithKeyword(
       (*this)->getAttrs(),
-      {"sym_name", "function_type", "num_route_table", "connectivity_table"});
+      {"sym_name", "function_type", "num_route_table", "connectivity_table",
+       "inline_instantiation"});
   p << " : " << getFunctionType();
 }
 
 LogicalResult TemporalSwOp::verify() {
+  if (failed(verifyModuleLevelComponentPlacement(*this)))
+    return failure();
+
   auto funcType = getFunctionType();
   if (funcType.getNumInputs() == 0 || funcType.getNumResults() == 0)
     return emitOpError("must have at least one input and one output");
@@ -1066,6 +1267,14 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parseFifoHwParams(parser, result))
     return failure();
 
+  SmallVector<OpAsmParser::UnresolvedOperand> operands;
+  bool hasOperands = false;
+  if (parseOptionalOperandListInParens(parser, operands, hasOperands))
+    return failure();
+  if (hasOperands)
+    result.addAttribute("inline_instantiation",
+                        parser.getBuilder().getUnitAttr());
+
   // Parse {runtime_config} (bypassed, etc.)
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
@@ -1078,6 +1287,10 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
   result.addAttribute("function_type", TypeAttr::get(funcType));
   result.addTypes(funcType.getResults());
+  if (hasOperands &&
+      parser.resolveOperands(operands, funcType.getInputs(), parser.getNameLoc(),
+                             result.operands))
+    return failure();
 
   return success();
 }
@@ -1092,15 +1305,22 @@ void FifoOp::print(OpAsmPrinter &p) {
     p << ", bypassable";
   p << "]";
 
+  if (getNumOperands() > 0) {
+    p << " (";
+    p.printOperands(getInputs());
+    p << ")";
+  }
+
   // Print {runtime_config} (bypassed, etc.)
   p.printOptionalAttrDictWithKeyword(
       (*this)->getAttrs(),
-      {"sym_name", "function_type", "depth", "bypassable"});
+      {"sym_name", "function_type", "depth", "bypassable",
+       "inline_instantiation"});
   p << " : " << getFunctionType();
 }
 
 LogicalResult FifoOp::verify() {
-  return success();
+  return verifyModuleLevelComponentPlacement(*this);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1145,28 +1365,6 @@ static ParseResult parseExtMemHwParams(OpAsmParser &parser,
 
   if (parser.parseRSquare())
     return failure();
-  return success();
-}
-
-static ParseResult parseOptionalOperandListInParens(
-    OpAsmParser &parser, SmallVectorImpl<OpAsmParser::UnresolvedOperand> &ops,
-    bool &hasOperands) {
-  hasOperands = succeeded(parser.parseOptionalLParen());
-  if (!hasOperands)
-    return success();
-
-  if (failed(parser.parseOptionalRParen())) {
-    do {
-      OpAsmParser::UnresolvedOperand operand;
-      if (parser.parseOperand(operand))
-        return failure();
-      ops.push_back(operand);
-    } while (succeeded(parser.parseOptionalComma()));
-
-    if (parser.parseRParen())
-      return failure();
-  }
-
   return success();
 }
 
@@ -1231,6 +1429,9 @@ ParseResult ExtMemoryOp::parse(OpAsmParser &parser, OperationState &result) {
   bool hasOperands = false;
   if (parseOptionalOperandListInParens(parser, operands, hasOperands))
     return failure();
+  if (hasOperands)
+    result.addAttribute("inline_instantiation",
+                        parser.getBuilder().getUnitAttr());
 
   // Parse {runtime_config} attributes
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
@@ -1303,12 +1504,15 @@ void ExtMemoryOp::print(OpAsmPrinter &p) {
 
   SmallVector<StringRef> excludes = {"sym_name", "function_type"};
   excludes.append({"ldCount", "stCount", "lsqDepth", "memref_type",
-                   "numRegion"});
+                   "numRegion", "inline_instantiation"});
   printNamedAttrsWithAliases(p, getOperation(), excludes);
   p << " : " << getFunctionType();
 }
 
 LogicalResult ExtMemoryOp::verify() {
+  if (failed(verifyModuleLevelComponentPlacement(*this)))
+    return failure();
+
   constexpr int64_t kRegionFieldCount = 5;
   int64_t numRegion = getNumRegion();
   if (numRegion < 1)
@@ -1422,6 +1626,9 @@ ParseResult MemoryOp::parse(OpAsmParser &parser, OperationState &result) {
   bool hasOperands = false;
   if (parseOptionalOperandListInParens(parser, operands, hasOperands))
     return failure();
+  if (hasOperands)
+    result.addAttribute("inline_instantiation",
+                        parser.getBuilder().getUnitAttr());
 
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
@@ -1497,11 +1704,15 @@ void MemoryOp::print(OpAsmPrinter &p) {
   printNamedAttrsWithAliases(p, getOperation(),
                              {"sym_name", "function_type", "ldCount",
                               "stCount", "lsqDepth", "memref_type",
-                              "is_private", "numRegion"});
+                              "is_private", "numRegion",
+                              "inline_instantiation"});
   p << " : " << getFunctionType();
 }
 
 LogicalResult MemoryOp::verify() {
+  if (failed(verifyModuleLevelComponentPlacement(*this)))
+    return failure();
+
   constexpr int64_t kRegionFieldCount = 5;
   int64_t numRegion = getNumRegion();
   if (numRegion < 1)
@@ -1546,10 +1757,14 @@ LogicalResult MemoryOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult AddTagOp::verify() {
+  if (!hasDirectRegionParentOfType<fcc::fabric::ModuleOp>(getOperation()))
+    return emitOpError("must appear directly inside fabric.module");
   return success();
 }
 
 LogicalResult DelTagOp::verify() {
+  if (!hasDirectRegionParentOfType<fcc::fabric::ModuleOp>(getOperation()))
+    return emitOpError("must appear directly inside fabric.module");
   return success();
 }
 
@@ -1619,6 +1834,9 @@ void MapTagOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult MapTagOp::verify() {
+  if (!hasDirectRegionParentOfType<fcc::fabric::ModuleOp>(getOperation()))
+    return emitOpError("must appear directly inside fabric.module");
+
   auto inputType = mlir::dyn_cast<fcc::fabric::TaggedType>(getTagged().getType());
   auto outputType = mlir::dyn_cast<fcc::fabric::TaggedType>(getResult().getType());
   if (!inputType || !outputType)

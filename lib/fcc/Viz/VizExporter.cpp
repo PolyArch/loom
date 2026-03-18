@@ -160,27 +160,66 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
   os << "  \"numInputs\": " << fnType.getNumInputs()
      << ", \"numOutputs\": " << fnType.getNumResults() << ",\n";
 
-  // Collect PE/SW definitions from both top-level module and fabric.module.
-  // Definitions may be outside fabric.module (referenced by instances inside).
+  llvm::DenseMap<mlir::Block *, llvm::DenseSet<llvm::StringRef>>
+      referencedTargetsByBlock;
+  topModule.walk([&](fcc::fabric::InstanceOp instOp) {
+    referencedTargetsByBlock[instOp->getBlock()].insert(instOp.getModule());
+  });
+
+  auto isDefinitionOp = [&](mlir::Operation *op,
+                            llvm::StringRef name) -> bool {
+    if (mlir::isa<fcc::fabric::FunctionUnitOp>(op))
+      return true;
+    if (!mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::TemporalPEOp,
+                   fcc::fabric::SpatialSwOp, fcc::fabric::TemporalSwOp,
+                   fcc::fabric::ExtMemoryOp, fcc::fabric::MemoryOp>(op)) {
+      return false;
+    }
+    return !op->hasAttr("inline_instantiation");
+  };
+
+  // Collect definition symbols from both top-level module and fabric.module.
   llvm::StringMap<fcc::fabric::SpatialPEOp> peDefMap;
   llvm::StringMap<fcc::fabric::TemporalPEOp> temporalPeDefMap;
   llvm::StringMap<fcc::fabric::SpatialSwOp> swDefMap;
   llvm::StringMap<fcc::fabric::TemporalSwOp> temporalSwDefMap;
+  llvm::StringMap<fcc::fabric::ExtMemoryOp> extMemoryDefMap;
+  llvm::StringMap<fcc::fabric::MemoryOp> memoryDefMap;
+  llvm::StringMap<fcc::fabric::FunctionUnitOp> functionUnitDefMap;
   topModule->walk([&](fcc::fabric::SpatialPEOp peOp) {
-    auto name = peOp.getSymName();
-    if (name) peDefMap[*name] = peOp;
+    if (auto nameAttr = peOp.getSymNameAttr();
+        nameAttr && isDefinitionOp(peOp.getOperation(), nameAttr.getValue()))
+      peDefMap[nameAttr.getValue()] = peOp;
   });
   topModule->walk([&](fcc::fabric::TemporalPEOp peOp) {
-    auto name = peOp.getSymName();
-    if (name) temporalPeDefMap[*name] = peOp;
+    if (auto nameAttr = peOp.getSymNameAttr();
+        nameAttr && isDefinitionOp(peOp.getOperation(), nameAttr.getValue()))
+      temporalPeDefMap[nameAttr.getValue()] = peOp;
   });
   topModule->walk([&](fcc::fabric::SpatialSwOp swOp) {
-    auto name = swOp.getSymName();
-    if (name) swDefMap[*name] = swOp;
+    if (auto nameAttr = swOp.getSymNameAttr();
+        nameAttr && isDefinitionOp(swOp.getOperation(), nameAttr.getValue()))
+      swDefMap[nameAttr.getValue()] = swOp;
   });
   topModule->walk([&](fcc::fabric::TemporalSwOp swOp) {
-    auto name = swOp.getSymName();
-    if (name) temporalSwDefMap[*name] = swOp;
+    if (auto nameAttr = swOp.getSymNameAttr();
+        nameAttr && isDefinitionOp(swOp.getOperation(), nameAttr.getValue()))
+      temporalSwDefMap[nameAttr.getValue()] = swOp;
+  });
+  topModule->walk([&](fcc::fabric::ExtMemoryOp extOp) {
+    if (auto nameAttr = extOp.getSymNameAttr();
+        nameAttr && isDefinitionOp(extOp.getOperation(), nameAttr.getValue()))
+      extMemoryDefMap[nameAttr.getValue()] = extOp;
+  });
+  topModule->walk([&](fcc::fabric::MemoryOp memOp) {
+    if (auto nameAttr = memOp.getSymNameAttr();
+        nameAttr && isDefinitionOp(memOp.getOperation(), nameAttr.getValue()))
+      memoryDefMap[nameAttr.getValue()] = memOp;
+  });
+  topModule->walk([&](fcc::fabric::FunctionUnitOp fuOp) {
+    auto symName = fuOp.getSymNameAttr().getValue();
+    if (isDefinitionOp(fuOp.getOperation(), symName))
+      functionUnitDefMap[symName] = fuOp;
   });
 
   llvm::DenseMap<mlir::Operation *, std::string> renderNameMap;
@@ -205,18 +244,18 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
     } else if (auto swOp = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op)) {
       name = swOp.getSymName().value_or("sw").str();
     } else if (auto tswOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op)) {
-      if (auto sym = tswOp.getSymName())
-        name = sym->str();
+      if (auto symAttr = tswOp.getSymNameAttr())
+        name = symAttr.getValue().str();
       else
         name = "temporal_sw_" + std::to_string(temporalSwCount++);
     } else if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
-      if (auto sym = extOp.getSymName())
-        name = sym->str();
+      if (auto symAttr = extOp.getSymNameAttr())
+        name = symAttr.getValue().str();
       else
         name = "extmemory_" + std::to_string(extMemCount++);
     } else if (auto memOp = mlir::dyn_cast<fcc::fabric::MemoryOp>(op)) {
-      if (auto sym = memOp.getSymName())
-        name = sym->str();
+      if (auto symAttr = memOp.getSymNameAttr())
+        name = symAttr.getValue().str();
       else
         name = "memory_" + std::to_string(memoryCount++);
     } else if (mlir::isa<fcc::fabric::AddTagOp>(op)) {
@@ -226,8 +265,8 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
     } else if (mlir::isa<fcc::fabric::MapTagOp>(op)) {
       name = "map_tag_" + std::to_string(mapTagCount++);
     } else if (auto fifoOp = mlir::dyn_cast<fcc::fabric::FifoOp>(op)) {
-      if (auto sym = fifoOp.getSymName())
-        name = sym->str();
+      if (auto symAttr = fifoOp.getSymNameAttr())
+        name = symAttr.getValue().str();
       else
         name = "fifo_" + std::to_string(fifoCount++);
     } else {
@@ -245,15 +284,35 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
     os << ", \"fus\": [";
     bool firstFU = true;
     auto &peBody = peOp.getBody().front();
+    auto referencedIt = referencedTargetsByBlock.find(&peBody);
+    const llvm::DenseSet<llvm::StringRef> *referencedTargets =
+        referencedIt != referencedTargetsByBlock.end() ? &referencedIt->second
+                                                       : nullptr;
     for (auto &innerOp : peBody.getOperations()) {
-      auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(innerOp);
-      if (!fuOp) continue;
+      fcc::fabric::FunctionUnitOp fuOp;
+      std::string fuName;
+      if (auto directFu = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(innerOp)) {
+        llvm::StringRef symName = directFu.getSymNameAttr().getValue();
+        if (!symName.empty() && referencedTargets &&
+            referencedTargets->contains(symName))
+          continue;
+        fuOp = directFu;
+        fuName = directFu.getSymName().str();
+      } else if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(innerOp)) {
+        auto fuIt = functionUnitDefMap.find(instOp.getModule());
+        if (fuIt == functionUnitDefMap.end())
+          continue;
+        fuOp = fuIt->second;
+        fuName = instOp.getSymName().value_or(instOp.getModule()).str();
+      } else {
+        continue;
+      }
 
       if (!firstFU) os << ", ";
       firstFU = false;
 
       auto fuFnType = fuOp.getFunctionType();
-      os << "{\"name\": \"" << jsonEsc(fuOp.getSymName().str()) << "\"";
+      os << "{\"name\": \"" << jsonEsc(fuName) << "\"";
       os << ", \"numIn\": " << fuFnType.getNumInputs();
       os << ", \"numOut\": " << fuFnType.getNumResults();
 
@@ -447,13 +506,84 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
   auto &body = fabricMod.getBody().front();
 
   for (auto &op : body.getOperations()) {
-    // Definitions may be nested inside fabric.module, but visualization should
-    // only render instantiated components, not the definitions themselves.
-    if (mlir::isa<fcc::fabric::SpatialPEOp, fcc::fabric::TemporalPEOp,
-                  fcc::fabric::SpatialSwOp, fcc::fabric::TemporalSwOp>(op))
+    if (auto peOp = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op)) {
+      if (!peOp->hasAttr("inline_instantiation"))
+        continue;
+      llvm::StringRef symName;
+      if (auto symNameAttr = peOp.getSymNameAttr())
+        symName = symNameAttr.getValue();
+      if (!first) os << ",\n";
+      first = false;
+      auto peFnType = peOp.getFunctionType();
+      os << "    {\"kind\": \"spatial_pe\", \"name\": \""
+         << jsonEsc(getRenderName(peOp.getOperation())) << "\"";
+      if (!symName.empty())
+        os << ", \"defName\": \"" << jsonEsc(symName.str()) << "\"";
+      os << ", \"numInputs\": " << peFnType.getNumInputs();
+      os << ", \"numOutputs\": " << peFnType.getNumResults();
+      emitPEFUs(peOp);
+      os << "}";
       continue;
+    }
+    if (auto peOp = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op)) {
+      if (!peOp->hasAttr("inline_instantiation"))
+        continue;
+      llvm::StringRef symName;
+      if (auto symNameAttr = peOp.getSymNameAttr())
+        symName = symNameAttr.getValue();
+      if (!first) os << ",\n";
+      first = false;
+      auto peFnType = peOp.getFunctionType();
+      os << "    {\"kind\": \"temporal_pe\", \"name\": \""
+         << jsonEsc(getRenderName(peOp.getOperation())) << "\"";
+      if (!symName.empty())
+        os << ", \"defName\": \"" << jsonEsc(symName.str()) << "\"";
+      os << ", \"numInputs\": " << peFnType.getNumInputs();
+      os << ", \"numOutputs\": " << peFnType.getNumResults();
+      emitPEFUs(peOp);
+      os << "}";
+      continue;
+    }
+    if (auto swOp = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op)) {
+      if (!swOp->hasAttr("inline_instantiation"))
+        continue;
+      llvm::StringRef symName;
+      if (auto symNameAttr = swOp.getSymNameAttr())
+        symName = symNameAttr.getValue();
+      if (!first) os << ",\n";
+      first = false;
+      auto swFnType = swOp.getFunctionType();
+      os << "    {\"kind\": \"spatial_sw\", \"name\": \""
+         << jsonEsc(getRenderName(swOp.getOperation())) << "\"";
+      if (!symName.empty())
+        os << ", \"defName\": \"" << jsonEsc(symName.str()) << "\"";
+      os << ", \"numInputs\": " << swFnType.getNumInputs();
+      os << ", \"numOutputs\": " << swFnType.getNumResults();
+      os << "}";
+      continue;
+    }
+    if (auto swOp = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op)) {
+      if (!swOp->hasAttr("inline_instantiation"))
+        continue;
+      llvm::StringRef symName;
+      if (auto symNameAttr = swOp.getSymNameAttr())
+        symName = symNameAttr.getValue();
+      if (!first) os << ",\n";
+      first = false;
+      auto swFnType = swOp.getFunctionType();
+      os << "    {\"kind\": \"temporal_sw\", \"name\": \""
+         << jsonEsc(getRenderName(swOp.getOperation())) << "\"";
+      if (!symName.empty())
+        os << ", \"defName\": \"" << jsonEsc(symName.str()) << "\"";
+      os << ", \"numInputs\": " << swFnType.getNumInputs();
+      os << ", \"numOutputs\": " << swFnType.getNumResults();
+      os << "}";
+      continue;
+    }
 
     if (auto extOp = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op)) {
+      if (!extOp->hasAttr("inline_instantiation"))
+        continue;
       if (!first) os << ",\n";
       first = false;
       auto memFnType = extOp.getFunctionType();
@@ -466,6 +596,8 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
     }
 
     if (auto memOp = mlir::dyn_cast<fcc::fabric::MemoryOp>(op)) {
+      if (!memOp->hasAttr("inline_instantiation"))
+        continue;
       if (!first) os << ",\n";
       first = false;
       auto memFnType = memOp.getFunctionType();
@@ -502,6 +634,8 @@ static void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
     }
 
     if (auto fifoOp = mlir::dyn_cast<fcc::fabric::FifoOp>(op)) {
+      if (!fifoOp->hasAttr("inline_instantiation"))
+        continue;
       if (!first) os << ",\n";
       first = false;
       auto fifoFnType = fifoOp.getFunctionType();

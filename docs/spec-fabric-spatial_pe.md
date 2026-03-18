@@ -17,6 +17,15 @@ A spatial PE contains:
 - output demuxes from FU outputs to PE outputs
 - shared opcode and FU internal configuration state
 
+Placement and definition rules:
+
+- `fabric.spatial_pe` definitions may appear directly in the top-level module
+  or in `fabric.module`
+- inline `fabric.spatial_pe` instantiations may appear directly only in
+  `fabric.module`
+- a `spatial_pe` body may contain `fabric.function_unit` definitions and
+  `fabric.instance` uses that target `fabric.function_unit`
+
 ## Port Model
 
 PE exterior ports use structural bit types. FU ports use native semantic types.

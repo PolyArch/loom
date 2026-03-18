@@ -1,0 +1,1 @@
+inline instantiation must appear directly inside fabric.module
