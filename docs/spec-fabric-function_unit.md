@@ -18,6 +18,18 @@ A function unit provides:
 `function_unit` is not a top-level routing resource. It lives inside
 `spatial_pe` or `temporal_pe`.
 
+Normative structural restrictions:
+
+- all inputs must be consumed:
+  every `function_unit` block argument must be consumed by at least one body
+  operation
+- all outputs must be driven:
+  the operand count of the terminator `fabric.yield` must equal the result
+  count declared by the `function_unit` type
+- input-to-output passthrough is illegal:
+  a `fabric.yield` operand must not be a direct block argument of the same
+  `function_unit`
+
 Definition and instantiation rules:
 
 - a `fabric.function_unit` definition may live at the top level, in one

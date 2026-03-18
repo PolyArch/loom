@@ -97,12 +97,21 @@ For an unused `spatial_pe`, the default serialized state is:
 - disconnect: FU input is inert
 - discard is reserved in the same field shape and follows the same handshake
   meaning as other mux-like controls when used
+- the PE input mux is a selector only
+- it must not be used to merge multiple distinct software flows into one FU
+  input
+- flow mixing is legal only inside `fabric.spatial_sw` or
+  `fabric.temporal_sw`
 
 ### Output Demux
 
 - normal: FU output reaches a selected PE output
 - disconnect: the route is severed
 - discard: FU output is drained locally
+- the PE output demux is a selector only
+- it must not be used to broadcast one software flow to multiple PE outputs
+- dataflow broadcast is legal only inside `fabric.spatial_sw` or
+  `fabric.temporal_sw`
 
 ## Mapping Implications
 
@@ -116,6 +125,13 @@ Normative implications:
   `function_unit` through tech-mapping
 - a mapping that requires two distinct physical `function_unit` instances from
   the same `spatial_pe` is illegal and must be rejected
+- `function_unit` instances inside a `spatial_pe` are compute resources only
+- they may terminate routed edges at FU inputs or originate routed edges at FU
+  outputs
+- they must not be used as generic transit hops to relay unrelated traffic
+- multiple software edges that originate at the same non-switch hardware output
+  must enter the same next hardware input if they are to be legal
+- any later fanout must happen inside a switch, not at the PE boundary
 
 Even when the flattened ADG exposes FU nodes directly, the mapping result must
 still be able to answer these questions for every routed software edge:

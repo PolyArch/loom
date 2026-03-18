@@ -94,9 +94,12 @@ function(fcc_add_e2e_pair app_name hw_name)
 endfunction()
 
 set(FCC_E2E_ADGS
+  tiny-add-1pe
+  sum-array-demo-chess-7x7
   tiny-star-4pe
   medium-star-8pe
   wide-star-16pe
+  vecadd-demo-chess-5x5
   medium-chess-6x6
   medium-chess-10x10
 )
@@ -106,6 +109,8 @@ foreach(hw_name IN LISTS FCC_E2E_ADGS)
 endforeach()
 
 set(FCC_E2E_PAIRS
+  "sum-array|sum-array-demo-chess-7x7"
+  "vecadd|vecadd-demo-chess-5x5"
   "vecadd|tiny-star-4pe"
   "dotprod|tiny-star-4pe"
   "gemv|medium-star-8pe"

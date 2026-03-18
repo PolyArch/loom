@@ -59,11 +59,17 @@ static void buildAllPEsTestADG(const std::string &outputPath) {
   auto mulPE = builder.defineSingleFUSpatialPE("mul_pe", 2, 1, dataWidth, fuMul);
   auto joinPE =
       builder.defineSingleFUSpatialPE("join_pe", 1, 1, dataWidth, fuJoin);
+  auto ctrlFanout = builder.defineSpatialSW(
+      SpatialSWSpec{.name = "ctrl_fanout",
+                    .inputWidths = {dataWidth},
+                    .outputWidths = {dataWidth, dataWidth},
+                    .connectivity = {{true}, {true}}});
 
   auto addInst = builder.instantiatePE(addPE, "pe_add");
   auto constInst = builder.instantiatePE(constPE, "pe_const");
   auto mulInst = builder.instantiatePE(mulPE, "pe_mul");
   auto joinInst = builder.instantiatePE(joinPE, "pe_join");
+  auto ctrlFanoutInst = builder.instantiateSW(ctrlFanout, "sw_ctrl");
 
   //=== Add scalar boundary inputs and wire to the PEs ===
 
@@ -72,8 +78,9 @@ static void buildAllPEsTestADG(const std::string &outputPath) {
   auto sCtrl = builder.addScalarInput("scalar_ctrl", dataWidth);
 
   builder.connectInputVectorToInstance({sIn0, sIn1}, addInst);
-  builder.connectInputToInstance(sCtrl, constInst, 0);
-  builder.connectInputToInstance(sCtrl, joinInst, 0);
+  builder.connectInputToInstance(sCtrl, ctrlFanoutInst, 0);
+  builder.connect(ctrlFanoutInst, 0, constInst, 0);
+  builder.connect(ctrlFanoutInst, 1, joinInst, 0);
 
   //=== Wire the PE dataflow graph directly ===
 

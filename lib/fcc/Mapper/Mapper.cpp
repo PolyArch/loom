@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <optional>
 #include <queue>
 #include <random>
 #include <set>
@@ -36,6 +38,10 @@ bool isTemporalPENode(const Node *hwNode) {
 bool isSpatialPENode(const Node *hwNode) {
   return hwNode && getNodeAttrStr(hwNode, "resource_class") == "functional" &&
          getNodeAttrStr(hwNode, "pe_kind") == "spatial_pe";
+}
+
+bool isRoutingResourceNode(const Node *hwNode) {
+  return hwNode && getNodeAttrStr(hwNode, "resource_class") == "routing";
 }
 
 const PEContainment *findPEContainmentByName(const ADGFlattener &flattener,
@@ -333,6 +339,191 @@ IdIndex getExpandedMemoryOutputPort(const Node *hwNode,
   return INVALID_ID;
 }
 
+double classifyEdgePlacementWeight(const Graph &dfg, IdIndex edgeId) {
+  const Edge *edge = dfg.getEdge(edgeId);
+  if (!edge)
+    return 1.0;
+  const Port *srcPort = dfg.getPort(edge->srcPort);
+  const Port *dstPort = dfg.getPort(edge->dstPort);
+  const Node *srcNode =
+      (srcPort && srcPort->parentNode != INVALID_ID)
+          ? dfg.getNode(srcPort->parentNode)
+          : nullptr;
+  const Node *dstNode =
+      (dstPort && dstPort->parentNode != INVALID_ID)
+          ? dfg.getNode(dstPort->parentNode)
+          : nullptr;
+
+  double weight = 1.0;
+  if ((srcPort && isNoneType(srcPort->type)) || (dstPort && isNoneType(dstPort->type)))
+    weight += 0.35;
+  if ((srcNode && (srcNode->kind == Node::ModuleInputNode ||
+                   srcNode->kind == Node::ModuleOutputNode)) ||
+      (dstNode && (dstNode->kind == Node::ModuleInputNode ||
+                   dstNode->kind == Node::ModuleOutputNode)))
+    weight += 1.75;
+  if (isMemoryOp(srcNode) || isMemoryOp(dstNode))
+    weight += 1.50;
+
+  auto isControlHub = [](const Node *node) {
+    if (!node)
+      return false;
+    llvm::StringRef opName = getNodeAttrStr(node, "op_name");
+    return opName == "dataflow.carry" || opName == "dataflow.gate" ||
+           opName == "handshake.cond_br" || opName == "handshake.join" ||
+           opName == "handshake.mux";
+  };
+  if (isControlHub(srcNode) || isControlHub(dstNode))
+    weight += 0.40;
+  return weight;
+}
+
+double computeNodePriorityWeight(IdIndex swNode, const Graph &dfg) {
+  const Node *node = dfg.getNode(swNode);
+  if (!node)
+    return 0.0;
+  double weight = 0.0;
+  for (IdIndex portId : node->inputPorts) {
+    const Port *port = dfg.getPort(portId);
+    if (!port)
+      continue;
+    for (IdIndex edgeId : port->connectedEdges) {
+      const Edge *edge = dfg.getEdge(edgeId);
+      if (edge && edge->dstPort == portId)
+        weight += classifyEdgePlacementWeight(dfg, edgeId);
+    }
+  }
+  for (IdIndex portId : node->outputPorts) {
+    const Port *port = dfg.getPort(portId);
+    if (!port)
+      continue;
+    for (IdIndex edgeId : port->connectedEdges) {
+      const Edge *edge = dfg.getEdge(edgeId);
+      if (edge && edge->srcPort == portId)
+        weight += classifyEdgePlacementWeight(dfg, edgeId);
+    }
+  }
+  if (isMemoryOp(node))
+    weight += 4.0;
+  return weight;
+}
+
+std::optional<std::pair<double, double>>
+estimateNodePlacementPos(IdIndex swNode, const MappingState &state,
+                         const Graph &dfg, const ADGFlattener &flattener,
+                         const llvm::DenseMap<IdIndex,
+                                              llvm::SmallVector<IdIndex, 4>>
+                             &candidates) {
+  if (swNode < state.swNodeToHwNode.size()) {
+    IdIndex mappedHw = state.swNodeToHwNode[swNode];
+    if (mappedHw != INVALID_ID) {
+      auto [row, col] = flattener.getNodeGridPos(mappedHw);
+      if (row >= 0 && col >= 0)
+        return std::make_pair(static_cast<double>(row),
+                              static_cast<double>(col));
+    }
+  }
+
+  auto it = candidates.find(swNode);
+  if (it == candidates.end() || it->second.empty())
+    return std::nullopt;
+  if (it->second.size() > 4)
+    return std::nullopt;
+
+  double rowSum = 0.0;
+  double colSum = 0.0;
+  unsigned count = 0;
+  for (IdIndex hwNode : it->second) {
+    auto [row, col] = flattener.getNodeGridPos(hwNode);
+    if (row < 0 || col < 0)
+      continue;
+    rowSum += static_cast<double>(row);
+    colSum += static_cast<double>(col);
+    ++count;
+  }
+  if (count == 0)
+    return std::nullopt;
+  return std::make_pair(rowSum / count, colSum / count);
+}
+
+double computeLocalSpreadPenalty(IdIndex hwNode, const MappingState &state,
+                                 const Graph &adg,
+                                 const ADGFlattener &flattener) {
+  auto [row, col] = flattener.getNodeGridPos(hwNode);
+  if (row < 0 || col < 0)
+    return 0.0;
+
+  unsigned sameRow = 0;
+  unsigned sameCol = 0;
+  unsigned nearby = 0;
+  for (IdIndex otherHw = 0;
+       otherHw < static_cast<IdIndex>(state.hwNodeToSwNodes.size()); ++otherHw) {
+    if (otherHw == hwNode || state.hwNodeToSwNodes[otherHw].empty())
+      continue;
+    const Node *otherNode = adg.getNode(otherHw);
+    if (!otherNode || getNodeAttrStr(otherNode, "resource_class") != "functional")
+      continue;
+    auto [otherRow, otherCol] = flattener.getNodeGridPos(otherHw);
+    if (otherRow < 0 || otherCol < 0)
+      continue;
+    if (otherRow == row)
+      ++sameRow;
+    if (otherCol == col)
+      ++sameCol;
+    if (std::abs(otherRow - row) + std::abs(otherCol - col) <= 2)
+      ++nearby;
+  }
+
+  return 0.12 * static_cast<double>(sameRow + sameCol) +
+         0.25 * static_cast<double>(nearby);
+}
+
+std::vector<IdIndex>
+collectUnroutedEdges(const MappingState &state, const Graph &dfg,
+                     llvm::ArrayRef<TechMappedEdgeKind> edgeKinds) {
+  std::vector<IdIndex> failedEdges;
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId) {
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    if (edgeId < edgeKinds.size() &&
+        (edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU ||
+         edgeKinds[edgeId] == TechMappedEdgeKind::TemporalReg))
+      continue;
+    if (edgeId >= state.swEdgeToHwPaths.size() || state.swEdgeToHwPaths[edgeId].empty())
+      failedEdges.push_back(edgeId);
+  }
+  return failedEdges;
+}
+
+unsigned countRoutedEdges(const MappingState &state, const Graph &dfg,
+                          llvm::ArrayRef<TechMappedEdgeKind> edgeKinds) {
+  unsigned routed = 0;
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId) {
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    if (edgeId < edgeKinds.size() &&
+        (edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU ||
+         edgeKinds[edgeId] == TechMappedEdgeKind::TemporalReg)) {
+      ++routed;
+      continue;
+    }
+    if (edgeId < state.swEdgeToHwPaths.size() && !state.swEdgeToHwPaths[edgeId].empty())
+      ++routed;
+  }
+  return routed;
+}
+
+size_t computeTotalMappedPathLen(const MappingState &state) {
+  size_t totalPathLen = 0;
+  for (const auto &path : state.swEdgeToHwPaths)
+    totalPathLen += path.size();
+  return totalPathLen;
+}
+
 } // namespace
 
 llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>>
@@ -507,26 +698,62 @@ std::vector<IdIndex> Mapper::computePlacementOrder(const Graph &dfg) {
       order.push_back(i);
   }
 
+  llvm::stable_sort(order, [&](IdIndex lhs, IdIndex rhs) {
+    const Node *lhsNode = dfg.getNode(lhs);
+    const Node *rhsNode = dfg.getNode(rhs);
+    auto nodeRank = [&](IdIndex id, const Node *node) {
+      if (!node || node->kind != Node::OperationNode)
+        return std::pair<double, double>{-1.0, -1.0};
+      double priority = computeNodePriorityWeight(id, dfg);
+      double boundary =
+          (isMemoryOp(node) ? 1.0 : 0.0) +
+          (getNodeAttrStr(node, "op_name") == "handshake.load" ? 1.0 : 0.0) +
+          (getNodeAttrStr(node, "op_name") == "handshake.store" ? 1.0 : 0.0);
+      return std::pair<double, double>{boundary, priority};
+    };
+    auto lhsRank = nodeRank(lhs, lhsNode);
+    auto rhsRank = nodeRank(rhs, rhsNode);
+    if (lhsRank.first != rhsRank.first)
+      return lhsRank.first > rhsRank.first;
+    if (lhsRank.second != rhsRank.second)
+      return lhsRank.second > rhsRank.second;
+    return lhs < rhs;
+  });
+
   return order;
 }
 
 double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
                                const MappingState &state, const Graph &dfg,
                                const Graph &adg,
-                               const ADGFlattener &flattener) {
-  double score = 0.0;
-
-  // Proximity to already-placed neighbors.
-  auto [hwRow, hwCol] = flattener.getNodeGridPos(hwNode);
+                               const ADGFlattener &flattener,
+                               const llvm::DenseMap<IdIndex,
+                                                    llvm::SmallVector<IdIndex, 4>>
+                                   &candidates) {
+  auto hwPos = flattener.getNodeGridPos(hwNode);
+  int hwRow = hwPos.first;
+  int hwCol = hwPos.second;
+  if (hwRow < 0 || hwCol < 0)
+    return -1.0e18;
 
   const Node *swN = dfg.getNode(swNode);
   if (!swN)
-    return score;
+    return 0.0;
 
-  int neighborCount = 0;
-  double totalDist = 0.0;
+  double weightedDist = 0.0;
+  double totalWeight = 0.0;
+  auto accumulateNeighbor = [&](IdIndex otherSwNode, IdIndex edgeId) {
+    auto estimate =
+        estimateNodePlacementPos(otherSwNode, state, dfg, flattener, candidates);
+    if (!estimate)
+      return;
+    double edgeWeight = classifyEdgePlacementWeight(dfg, edgeId);
+    weightedDist += edgeWeight *
+                    (std::abs(static_cast<double>(hwRow) - estimate->first) +
+                     std::abs(static_cast<double>(hwCol) - estimate->second));
+    totalWeight += edgeWeight;
+  };
 
-  // Check input edges: are sources already placed?
   for (IdIndex ipId : swN->inputPorts) {
     const Port *ip = dfg.getPort(ipId);
     if (!ip)
@@ -538,21 +765,10 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
       const Port *srcPort = dfg.getPort(edge->srcPort);
       if (!srcPort || srcPort->parentNode == INVALID_ID)
         continue;
-      IdIndex srcSwNode = srcPort->parentNode;
-      if (srcSwNode < state.swNodeToHwNode.size()) {
-        IdIndex srcHwNode = state.swNodeToHwNode[srcSwNode];
-        if (srcHwNode != INVALID_ID) {
-          auto [sRow, sCol] = flattener.getNodeGridPos(srcHwNode);
-          if (hwRow >= 0 && sRow >= 0) {
-            totalDist += std::abs(hwRow - sRow) + std::abs(hwCol - sCol);
-          }
-          neighborCount++;
-        }
-      }
+      accumulateNeighbor(srcPort->parentNode, eid);
     }
   }
 
-  // Check output edges: are destinations already placed?
   for (IdIndex opId : swN->outputPorts) {
     const Port *op = dfg.getPort(opId);
     if (!op)
@@ -564,25 +780,18 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
       const Port *dstPort = dfg.getPort(edge->dstPort);
       if (!dstPort || dstPort->parentNode == INVALID_ID)
         continue;
-      IdIndex dstSwNode = dstPort->parentNode;
-      if (dstSwNode < state.swNodeToHwNode.size()) {
-        IdIndex dstHwNode = state.swNodeToHwNode[dstSwNode];
-        if (dstHwNode != INVALID_ID) {
-          auto [dRow, dCol] = flattener.getNodeGridPos(dstHwNode);
-          if (hwRow >= 0 && dRow >= 0) {
-            totalDist += std::abs(hwRow - dRow) + std::abs(hwCol - dCol);
-          }
-          neighborCount++;
-        }
-      }
+      accumulateNeighbor(dstPort->parentNode, eid);
     }
   }
 
-  if (neighborCount > 0)
-    score = -totalDist / neighborCount; // Negative because lower distance is
-                                         // better.
+  double cost = 0.0;
+  if (totalWeight > 0.0)
+    cost += weightedDist / totalWeight;
+  else
+    cost += 0.25 * (std::abs(hwRow) + std::abs(hwCol));
 
-  return score;
+  cost += 0.6 * computeLocalSpreadPenalty(hwNode, state, adg, flattener);
+  return -cost;
 }
 
 bool Mapper::runPlacement(
@@ -592,6 +801,23 @@ bool Mapper::runPlacement(
     const Options &opts) {
 
   auto order = computePlacementOrder(dfg);
+  llvm::stable_sort(order, [&](IdIndex lhs, IdIndex rhs) {
+    const Node *lhsNode = dfg.getNode(lhs);
+    const Node *rhsNode = dfg.getNode(rhs);
+    auto candidateCount = [&](IdIndex swId, const Node *node) -> size_t {
+      if (!node || node->kind != Node::OperationNode)
+        return std::numeric_limits<size_t>::max();
+      auto it = candidates.find(swId);
+      if (it == candidates.end())
+        return std::numeric_limits<size_t>::max();
+      return it->second.size();
+    };
+    size_t lhsCount = candidateCount(lhs, lhsNode);
+    size_t rhsCount = candidateCount(rhs, rhsNode);
+    if (lhsCount != rhsCount)
+      return lhsCount < rhsCount;
+    return false;
+  });
 
   for (IdIndex swId : order) {
     const Node *swNode = dfg.getNode(swId);
@@ -641,7 +867,8 @@ bool Mapper::runPlacement(
       if (isSpatialPEOccupied(state, adg, flattener, peName))
         continue;
 
-      double score = scorePlacement(swId, hwId, state, dfg, adg, flattener);
+      double score =
+          scorePlacement(swId, hwId, state, dfg, adg, flattener, candidates);
 
       if (score > bestScore || bestHw == INVALID_ID) {
         bestScore = score;
@@ -789,7 +1016,23 @@ double Mapper::computeTotalCost(const MappingState &state, const Graph &dfg,
                                 const Graph &adg,
                                 const ADGFlattener &flattener) {
   double cost = 0.0;
-  // Sum Manhattan distances of all placed neighbor pairs across DFG edges.
+  int maxRow = -1;
+  int maxCol = -1;
+  for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(state.hwNodeToSwNodes.size());
+       ++hwId) {
+    if (state.hwNodeToSwNodes[hwId].empty())
+      continue;
+    auto [row, col] = flattener.getNodeGridPos(hwId);
+    if (row >= 0 && col >= 0) {
+      maxRow = std::max(maxRow, row);
+      maxCol = std::max(maxCol, col);
+    }
+  }
+  std::vector<double> rowCutLoad(
+      maxRow >= 0 ? static_cast<size_t>(maxRow) + 1 : 0, 0.0);
+  std::vector<double> colCutLoad(
+      maxCol >= 0 ? static_cast<size_t>(maxCol) + 1 : 0, 0.0);
+
   for (IdIndex eid = 0; eid < static_cast<IdIndex>(dfg.edges.size()); ++eid) {
     const Edge *edge = dfg.getEdge(eid);
     if (!edge)
@@ -810,9 +1053,24 @@ double Mapper::computeTotalCost(const MappingState &state, const Graph &dfg,
       continue;
     auto [sr, sc] = flattener.getNodeGridPos(srcHw);
     auto [dr, dc] = flattener.getNodeGridPos(dstHw);
-    if (sr >= 0 && dr >= 0)
-      cost += std::abs(sr - dr) + std::abs(sc - dc);
+    if (sr >= 0 && dr >= 0) {
+      double edgeWeight = classifyEdgePlacementWeight(dfg, eid);
+      int dist = std::abs(sr - dr) + std::abs(sc - dc);
+      cost += edgeWeight * static_cast<double>(dist);
+      for (int row = std::min(sr, dr); row < std::max(sr, dr) &&
+                                       row < static_cast<int>(rowCutLoad.size());
+           ++row)
+        rowCutLoad[row] += edgeWeight;
+      for (int col = std::min(sc, dc); col < std::max(sc, dc) &&
+                                       col < static_cast<int>(colCutLoad.size());
+           ++col)
+        colCutLoad[col] += edgeWeight;
+    }
   }
+  for (double load : rowCutLoad)
+    cost += 0.015 * load * load;
+  for (double load : colCutLoad)
+    cost += 0.015 * load * load;
   return cost;
 }
 
@@ -919,13 +1177,11 @@ bool Mapper::runRefinement(
       if (candIt == candidates.end() || candIt->second.size() < 2)
         continue;
 
-      // Pick a random candidate that is not occupied.
       auto &candList = candIt->second;
-      std::uniform_int_distribution<size_t> candDist(0, candList.size() - 1);
       IdIndex hwNew = INVALID_ID;
-      // Try a few random candidates.
-      for (int attempt = 0; attempt < 8; ++attempt) {
-        IdIndex cand = candList[candDist(rng)];
+      double bestCandScore = -1.0e18;
+      llvm::SmallVector<IdIndex, 8> topCandidates;
+      for (IdIndex cand : candList) {
         if (cand == hwOld)
           continue;
         if (!state.hwNodeToSwNodes[cand].empty())
@@ -954,8 +1210,20 @@ bool Mapper::runRefinement(
           if (peConflict)
             continue;
         }
-        hwNew = cand;
-        break;
+        double candScore =
+            scorePlacement(swN, cand, state, dfg, adg, flattener, candidates);
+        if (candScore > bestCandScore + 1e-9) {
+          bestCandScore = candScore;
+          topCandidates.clear();
+          topCandidates.push_back(cand);
+        } else if (std::abs(candScore - bestCandScore) <= 1e-9 &&
+                   topCandidates.size() < 8) {
+          topCandidates.push_back(cand);
+        }
+      }
+      if (!topCandidates.empty()) {
+        std::uniform_int_distribution<size_t> candDist(0, topCandidates.size() - 1);
+        hwNew = topCandidates[candDist(rng)];
       }
       if (hwNew == INVALID_ID)
         continue;
@@ -998,6 +1266,116 @@ bool Mapper::runRefinement(
   }
 
   return true;
+}
+
+bool Mapper::runLocalRepair(
+    MappingState &state, const MappingState::Checkpoint &baseCheckpoint,
+    llvm::ArrayRef<IdIndex> failedEdges, const Graph &dfg, const Graph &adg,
+    const ADGFlattener &flattener,
+    const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
+    llvm::ArrayRef<TechMappedEdgeKind> edgeKinds, const Options &opts) {
+  if (failedEdges.empty())
+    return true;
+
+  llvm::DenseMap<IdIndex, double> hotspotWeights;
+  for (IdIndex edgeId : failedEdges) {
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    const Port *srcPort = dfg.getPort(edge->srcPort);
+    const Port *dstPort = dfg.getPort(edge->dstPort);
+    if (!srcPort || !dstPort || srcPort->parentNode == INVALID_ID ||
+        dstPort->parentNode == INVALID_ID)
+      continue;
+    double weight = classifyEdgePlacementWeight(dfg, edgeId);
+    hotspotWeights[srcPort->parentNode] += weight;
+    hotspotWeights[dstPort->parentNode] += weight;
+  }
+
+  std::vector<IdIndex> hotspots;
+  hotspots.reserve(hotspotWeights.size());
+  for (const auto &it : hotspotWeights) {
+    const Node *node = dfg.getNode(it.first);
+    if (!node || node->kind != Node::OperationNode || isMemoryOp(node))
+      continue;
+    hotspots.push_back(it.first);
+  }
+  llvm::stable_sort(hotspots, [&](IdIndex lhs, IdIndex rhs) {
+    double lhsWeight = hotspotWeights.lookup(lhs);
+    double rhsWeight = hotspotWeights.lookup(rhs);
+    if (lhsWeight != rhsWeight)
+      return lhsWeight > rhsWeight;
+    return lhs < rhs;
+  });
+
+  auto bestCheckpoint = state.save();
+  unsigned bestRouted = countRoutedEdges(state, dfg, edgeKinds);
+  size_t bestPathLen = computeTotalMappedPathLen(state);
+  bool bestAllRouted = false;
+
+  unsigned maxHotspots = std::min<unsigned>(hotspots.size(), 8);
+  for (unsigned hotIdx = 0; hotIdx < maxHotspots; ++hotIdx) {
+    state.restore(baseCheckpoint);
+    IdIndex swNode = hotspots[hotIdx];
+    IdIndex oldHw = state.swNodeToHwNode[swNode];
+    auto candIt = candidates.find(swNode);
+    if (oldHw == INVALID_ID || candIt == candidates.end())
+      continue;
+
+    llvm::SmallVector<std::pair<double, IdIndex>, 16> rankedCandidates;
+    for (IdIndex candHw : candIt->second) {
+      if (candHw == oldHw)
+        continue;
+      if (!state.hwNodeToSwNodes[candHw].empty())
+        continue;
+
+      const Node *candNode = adg.getNode(candHw);
+      if (!candNode)
+        continue;
+      llvm::StringRef peName = getNodeAttrStr(candNode, "pe_name");
+      if (!peName.empty() && isSpatialPEOccupied(state, adg, flattener, peName, candHw))
+        continue;
+
+      double candScore =
+          scorePlacement(swNode, candHw, state, dfg, adg, flattener, candidates);
+      rankedCandidates.push_back({-candScore, candHw});
+    }
+
+    llvm::stable_sort(rankedCandidates, [&](const auto &lhs, const auto &rhs) {
+      if (lhs.first != rhs.first)
+        return lhs.first < rhs.first;
+      return lhs.second < rhs.second;
+    });
+
+    unsigned maxMoves = std::min<unsigned>(rankedCandidates.size(), 6);
+    for (unsigned moveIdx = 0; moveIdx < maxMoves; ++moveIdx) {
+      state.restore(baseCheckpoint);
+      state.unmapNode(swNode, dfg, adg);
+      if (state.mapNode(swNode, rankedCandidates[moveIdx].second, dfg, adg) !=
+          ActionResult::Success) {
+        state.restore(baseCheckpoint);
+        continue;
+      }
+
+      bool allRouted = runRouting(state, dfg, adg, edgeKinds, opts.seed);
+      unsigned routed = countRoutedEdges(state, dfg, edgeKinds);
+      size_t totalPathLen = computeTotalMappedPathLen(state);
+      if (allRouted || routed > bestRouted ||
+          (routed == bestRouted && totalPathLen < bestPathLen)) {
+        bestCheckpoint = state.save();
+        bestRouted = routed;
+        bestPathLen = totalPathLen;
+        bestAllRouted = allRouted;
+        if (allRouted) {
+          state.restore(bestCheckpoint);
+          return true;
+        }
+      }
+    }
+  }
+
+  state.restore(bestCheckpoint);
+  return bestAllRouted;
 }
 
 bool Mapper::bindSentinels(MappingState &state, const Graph &dfg,
@@ -1295,14 +1673,27 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
 
   llvm::outs() << "Mapper: binding memref sentinels...\n";
   bindMemrefSentinels(contractedState, techPlan.contractedDFG, adg);
+  auto preRoutingCheckpoint = contractedState.save();
 
   llvm::outs() << "Mapper: routing...\n";
   bool routingSucceeded = runRouting(contractedState, techPlan.contractedDFG,
                                      adg, contractedEdgeKinds, opts.seed);
   if (!routingSucceeded) {
-    result.diagnostics = "Routing failed";
-    llvm::errs() << "Mapper: " << result.diagnostics << "\n";
-    // Continue anyway to produce partial output.
+    auto failedEdges =
+        collectUnroutedEdges(contractedState, techPlan.contractedDFG, contractedEdgeKinds);
+    if (!failedEdges.empty()) {
+      llvm::outs() << "Mapper: local repair...\n";
+      contractedState.restore(preRoutingCheckpoint);
+      routingSucceeded = runLocalRepair(contractedState, preRoutingCheckpoint,
+                                        failedEdges, techPlan.contractedDFG,
+                                        adg, flattener, candidates,
+                                        contractedEdgeKinds, opts);
+    }
+    if (!routingSucceeded) {
+      result.diagnostics = "Routing failed";
+      llvm::errs() << "Mapper: " << result.diagnostics << "\n";
+      // Continue anyway to produce partial output.
+    }
   }
 
   if (!techMapper.expandPlanMapping(dfg, adg, techPlan, contractedState,
@@ -1408,6 +1799,72 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
         }
       }
     }
+  }
+
+  for (IdIndex edgeId = 0;
+       edgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size()); ++edgeId) {
+    if (edgeId < edgeKinds.size() &&
+        (edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU ||
+         edgeKinds[edgeId] == TechMappedEdgeKind::TemporalReg))
+      continue;
+    const auto &path = state.swEdgeToHwPaths[edgeId];
+    if (path.size() < 3)
+      continue;
+
+    for (size_t pathIdx = 1; pathIdx + 1 < path.size(); ++pathIdx) {
+      const Port *port = adg.getPort(path[pathIdx]);
+      if (!port || port->parentNode == INVALID_ID)
+        continue;
+      const Node *owner = adg.getNode(port->parentNode);
+      if (!owner)
+        continue;
+      if (getNodeAttrStr(owner, "resource_class") != "functional")
+        continue;
+      diagnostics += "C9: routed edge " + std::to_string(edgeId) +
+                     " illegally traverses functional node " +
+                     getNodeAttrStr(owner, "op_name").str() + "\n";
+      valid = false;
+      break;
+    }
+  }
+
+  llvm::DenseMap<IdIndex, IdIndex> firstHopByNonRoutingSource;
+  for (IdIndex edgeId = 0;
+       edgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size()); ++edgeId) {
+    if (edgeId < edgeKinds.size() &&
+        (edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU ||
+         edgeKinds[edgeId] == TechMappedEdgeKind::TemporalReg))
+      continue;
+    const auto &path = state.swEdgeToHwPaths[edgeId];
+    if (path.size() < 2)
+      continue;
+
+    IdIndex srcPortId = path.front();
+    IdIndex firstHopInputId = path[1];
+    const Port *srcPort = adg.getPort(srcPortId);
+    const Port *firstHopInput = adg.getPort(firstHopInputId);
+    if (!srcPort || !firstHopInput || srcPort->direction != Port::Output ||
+        firstHopInput->direction != Port::Input ||
+        srcPort->parentNode == INVALID_ID)
+      continue;
+
+    const Node *owner = adg.getNode(srcPort->parentNode);
+    if (isRoutingResourceNode(owner))
+      continue;
+
+    auto it = firstHopByNonRoutingSource.find(srcPortId);
+    if (it == firstHopByNonRoutingSource.end()) {
+      firstHopByNonRoutingSource[srcPortId] = firstHopInputId;
+      continue;
+    }
+    if (it->second == firstHopInputId)
+      continue;
+
+    diagnostics += "C10: non-routing source port " + std::to_string(srcPortId) +
+                   " fans out to multiple next hops (" +
+                   std::to_string(it->second) + " and " +
+                   std::to_string(firstHopInputId) + ")\n";
+    valid = false;
   }
 
   for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(adg.nodes.size()); ++hwId) {

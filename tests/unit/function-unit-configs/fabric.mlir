@@ -1,4 +1,7 @@
 module {
+  fabric.spatial_sw @ctrl_fanout [connectivity_table = ["1", "1"]] : (none) -> (none, none)
+  fabric.spatial_sw @a_fanout [connectivity_table = ["1", "1"]] : (i32) -> (i32, i32)
+
   fabric.spatial_pe @const_pe(%ctrl: none) -> (i32) {
     fabric.function_unit @fu_constant(%arg0: none) -> (i32)
         [latency = 1, interval = 1] {
@@ -56,11 +59,15 @@ module {
       %af: f32, %bf: f32,
       %start: index, %step: index, %bound: index)
       -> (i32, none, i1, i1, index, i1) {
-    %const = fabric.instance @const_pe(%ctrl) {sym_name = "pe_const"}
+    %ctrl_f:2 = fabric.instance @ctrl_fanout(%ctrl) {sym_name = "sw_ctrl"}
+        : (none) -> (none, none)
+    %a_f:2 = fabric.instance @a_fanout(%a) {sym_name = "sw_a"}
+        : (i32) -> (i32, i32)
+    %const = fabric.instance @const_pe(%ctrl_f#0) {sym_name = "pe_const"}
         : (none) -> (i32)
-    %join = fabric.instance @join_pe(%ctrl, %a, %ctrl2, %join_guard)
+    %join = fabric.instance @join_pe(%ctrl_f#1, %a_f#0, %ctrl2, %join_guard)
         {sym_name = "pe_join"} : (none, i32, none, i1) -> (none)
-    %cmpi = fabric.instance @cmpi_pe(%a, %b) {sym_name = "pe_cmpi"}
+    %cmpi = fabric.instance @cmpi_pe(%a_f#1, %b) {sym_name = "pe_cmpi"}
         : (i32, i32) -> (i1)
     %cmpf = fabric.instance @cmpf_pe(%af, %bf) {sym_name = "pe_cmpf"}
         : (f32, f32) -> (i1)

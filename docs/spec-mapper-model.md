@@ -62,6 +62,14 @@ Canonical route steps may include:
 Not every edge uses all step types, but the chosen representation must preserve
 which step occurred where.
 
+One important negative rule is also part of canonical route semantics:
+
+- a `function_unit` is a compute endpoint, not a generic routing resource
+- a routed software edge may start at a mapped FU output or end at a mapped FU
+  input
+- a routed software edge must not traverse through an unrelated or unmapped FU
+  as an intermediate hop
+
 ## Spatial PE Contract
 
 Even if the flattened graph exposes only FU nodes as placeable compute
@@ -83,6 +91,17 @@ A legal spatial mapping must be reconstructable into:
 - PE input-mux selections
 - PE output-demux selections
 - selected FU-internal config bits
+
+PE-local routing selectors are not general-purpose flow transformers:
+
+- a PE input mux may choose one ingress source for one FU input
+- a PE output demux may choose one egress destination for one FU output
+- neither structure may be used as a flow mixer or as a broadcast fabric
+- if one software value fans out to multiple consumers, that fanout must occur
+  at a switch input and then branch through multiple switch outputs
+- if multiple software values merge toward one consumer path, that merge must
+  occur through explicit software semantics or through switch routing, not by
+  collapsing multiple PE-local ingress choices into one FU input
 
 ## Spatial Switch Contract
 
@@ -208,6 +227,11 @@ FCC uses the following hard-constraint families:
   spatial FU, and the mapper must reject placements that violate this
 - `C9 FU config consistency`: one physical temporal FU must not require
   incompatible internal configurations simultaneously
+- `C10 FU transit prohibition`: routed paths must not use functional nodes as
+  intermediate routing hops
+- `C11 Broadcast locality`: a non-switch hardware output must not fan out to
+  multiple different next-hop inputs; dataflow broadcast or flow mixing may
+  only occur inside `fabric.spatial_sw` or `fabric.temporal_sw`
 
 For op compatibility:
 
@@ -222,6 +246,14 @@ Current implementation note:
 - repeated temporal reuse of one physical `function_unit` with identical
   internal config is not yet expanded into multiple slots by the current
   mapper
+
+## Determinism Contract
+
+For a fixed mapper seed and fixed inputs:
+
+- placement and routing must be deterministic
+- randomized search order may depend on the seed
+- equal-cost tie breaks must still resolve in a stable order
 
 ## Runtime-Config Hint Contract
 

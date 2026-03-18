@@ -398,6 +398,11 @@ The sidecar contains:
 This allows the renderer to reuse builder-provided geometry instead of
 recomputing layout and routing on the fly.
 
+For Builder-produced ADGs that do not come from a topology helper with explicit
+geometry, export should still precompute a non-overlapping sidecar placement
+offline. A graph-layout pass comparable to Graphviz `neato` is the intended
+fallback, and its result should be serialized before HTML generation.
+
 ## Validation Contract
 
 Builder-emitted ADGs and hand-authored ADGs consumed by the mapper are subject

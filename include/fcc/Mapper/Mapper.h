@@ -59,6 +59,13 @@ private:
       const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
       const Options &opts);
 
+  bool runLocalRepair(
+      MappingState &state, const MappingState::Checkpoint &baseCheckpoint,
+      llvm::ArrayRef<IdIndex> failedEdges, const Graph &dfg, const Graph &adg,
+      const ADGFlattener &flattener,
+      const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
+      llvm::ArrayRef<TechMappedEdgeKind> edgeKinds, const Options &opts);
+
   // BFS routing.
   bool runRouting(MappingState &state, const Graph &dfg, const Graph &adg,
                   llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
@@ -80,10 +87,12 @@ private:
 
   // Routing helpers.
   llvm::SmallVector<IdIndex, 8> findPath(IdIndex srcHwPort, IdIndex dstHwPort,
-                                          IdIndex swEdgeId,
-                                          const MappingState &state,
-                                          const Graph &dfg,
-                                          const Graph &adg);
+                                         IdIndex swEdgeId,
+                                         const MappingState &state,
+                                         const Graph &dfg, const Graph &adg,
+                                         const llvm::DenseMap<IdIndex, double>
+                                             &routingOutputHistory,
+                                         IdIndex forcedFirstHop = INVALID_ID);
   bool isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
                    IdIndex swEdgeId,
                    llvm::ArrayRef<IdIndex> candidatePath,
@@ -94,6 +103,7 @@ private:
   bool routeOnePass(MappingState &state, const Graph &dfg, const Graph &adg,
                     llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                     const std::vector<IdIndex> &edgeOrder,
+                    const llvm::DenseMap<IdIndex, double> &routingOutputHistory,
                     unsigned &routed, unsigned &total);
   bool hasTaggedPathConflict(IdIndex swEdgeId,
                              llvm::ArrayRef<IdIndex> candidatePath,
@@ -107,7 +117,10 @@ private:
   // Placement scoring.
   double scorePlacement(IdIndex swNode, IdIndex hwNode,
                         const MappingState &state, const Graph &dfg,
-                        const Graph &adg, const ADGFlattener &flattener);
+                        const Graph &adg, const ADGFlattener &flattener,
+                        const llvm::DenseMap<IdIndex,
+                                             llvm::SmallVector<IdIndex, 4>>
+                            &candidates);
 
   // Compute total placement cost (sum of edge distances).
   double computeTotalCost(const MappingState &state, const Graph &dfg,

@@ -67,3 +67,20 @@ long as:
 - per-slot operand and result routing is legal
 - repeated use of one physical `function_unit` does not require incompatible
   persistent internal configuration
+
+`function_unit` instances inside a `temporal_pe` are compute resources, not
+generic routing resources. Routed inter-component edges may terminate at FU
+inputs or originate at FU outputs, but they must not traverse through
+unrelated FU instances as intermediate transit hops.
+
+Temporal PE operand routing and result routing are selectors, not generic
+mixing or broadcasting structures:
+
+- one operand path selects one PE-side ingress for one FU input
+- one result path selects one PE-side egress for one FU output
+- they must not be used to merge multiple distinct software flows before a FU
+  input
+- they must not be used to broadcast one software flow to multiple PE-side
+  outputs
+- flow mixing and dataflow broadcast are legal only inside
+  `fabric.spatial_sw` or `fabric.temporal_sw`

@@ -52,6 +52,16 @@ static void buildConfigurableFUADG(const std::string &outputPath) {
                     .inputTypes = {"index", "index", "index"},
                     .outputTypes = {"index", "i1"},
                     .functionUnits = {fuStream}});
+  auto ctrlFanout = builder.defineSpatialSW(
+      SpatialSWSpec{.name = "ctrl_fanout",
+                    .inputTypes = {"none"},
+                    .outputTypes = {"none", "none"},
+                    .connectivity = {{true}, {true}}});
+  auto aFanout = builder.defineSpatialSW(
+      SpatialSWSpec{.name = "a_fanout",
+                    .inputTypes = {"i32"},
+                    .outputTypes = {"i32", "i32"},
+                    .connectivity = {{true}, {true}}});
 
   auto ctrl = builder.addInput("ctrl", "none");
   auto ctrl2 = builder.addInput("ctrl2", "none");
@@ -76,13 +86,17 @@ static void buildConfigurableFUADG(const std::string &outputPath) {
   auto cmpiInst = builder.instantiatePE(cmpiPE, "pe_cmpi");
   auto cmpfInst = builder.instantiatePE(cmpfPE, "pe_cmpf");
   auto streamInst = builder.instantiatePE(streamPE, "pe_stream");
+  auto ctrlFanoutInst = builder.instantiateSW(ctrlFanout, "sw_ctrl");
+  auto aFanoutInst = builder.instantiateSW(aFanout, "sw_a");
 
-  builder.connectInputToInstance(ctrl, constInst, 0);
-  builder.connectInputToInstance(ctrl, joinInst, 0);
-  builder.connectInputToInstance(a, joinInst, 1);
+  builder.connectInputToInstance(ctrl, ctrlFanoutInst, 0);
+  builder.connectInputToInstance(a, aFanoutInst, 0);
+  builder.connect(ctrlFanoutInst, 0, constInst, 0);
+  builder.connect(ctrlFanoutInst, 1, joinInst, 0);
+  builder.connect(aFanoutInst, 0, joinInst, 1);
   builder.connectInputToInstance(ctrl2, joinInst, 2);
   builder.connectInputToInstance(joinGuard, joinInst, 3);
-  builder.connectInputToInstance(a, cmpiInst, 0);
+  builder.connect(aFanoutInst, 1, cmpiInst, 0);
   builder.connectInputToInstance(b, cmpiInst, 1);
   builder.connectInputToInstance(af, cmpfInst, 0);
   builder.connectInputToInstance(bf, cmpfInst, 1);

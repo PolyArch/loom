@@ -34,6 +34,10 @@ Normative rules:
   placement to the browser
 - generic Builder-produced ADGs that do not use a known topology helper must
   still emit a non-overlapping sidecar placement for all components
+- for those generic Builder-produced ADGs, the non-overlapping sidecar
+  placement should be computed offline during artifact generation, using a
+  graph-layout pass comparable to Graphviz `neato`, rather than computed in the
+  browser at HTML open time
 - when explicit layout metadata is present, the renderer must prefer it over
   heuristic placement for the referenced components
 
@@ -98,6 +102,9 @@ When mapping is enabled and a `spatial_pe` is shown:
   module-level hardware edges
 - unused FUs may be collapsed to a visibly smaller placeholder, not merely
   dimmed
+- if a `spatial_pe` or `temporal_pe` has no mapped `function_unit` at all,
+  then under `Mapping On` all of its internal `function_unit`s must be rendered
+  in the collapsed state
 - collapsed FUs may omit detailed ports and internal DAG rendering
 - PE-internal FU layout should remain roughly square overall rather than
   degenerating into one long horizontal strip when many FUs are collapsed

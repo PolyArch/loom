@@ -1,6 +1,8 @@
 #ifndef FCC_TOOLS_FCC_ARGS_H
 #define FCC_TOOLS_FCC_ARGS_H
 
+#include "fcc/Viz/VizExporter.h"
+
 #include <string>
 #include <vector>
 
@@ -24,6 +26,7 @@ struct FccArgs {
 
   // Viz-only mode: just visualize ADG/DFG side-by-side, no mapping
   bool vizOnly = false;
+  VizLayoutMode vizLayout = VizLayoutMode::Default;
 
   // Simulation
   bool simulate = false;

@@ -38,6 +38,7 @@ module {
 
   fabric.spatial_pe @none_sink(%p0: none) -> () {
     fabric.function_unit @fu_sink(%arg0: none) -> () [latency = 1, interval = 1] {
+      %0 = handshake.join %arg0 : none
       fabric.yield
     }
     fabric.yield

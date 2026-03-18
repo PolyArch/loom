@@ -23,13 +23,16 @@
 #include "circt/Dialect/Handshake/HandshakeDialect.h"
 
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <iomanip>
 #include <map>
 #include <sstream>
 
@@ -794,19 +797,108 @@ std::string ADGBuilder::Impl::generateVizJson() const {
     double y = 0.0;
   };
 
-  auto computePEWidth = [&](const PEDef &peDef) {
-    const double approxFuBoxW = 140.0;
-    const double approxFuGap = 12.0;
-    const double approxPEPadX = 60.0;
-    return std::max(200.0,
-                    peDef.fuIndices.size() * approxFuBoxW +
-                        std::max(0.0,
-                                 static_cast<double>(peDef.fuIndices.size()) -
-                                     1.0) *
-                            approxFuGap +
-                        approxPEPadX);
+  auto estimateFUBox = [&](const FUDef &fu) -> std::pair<double, double> {
+    unsigned opCount = static_cast<unsigned>(
+        std::max<size_t>(1, fu.ops.empty() ? (fu.rawBody.empty() ? 1 : 4)
+                                           : fu.ops.size()));
+    unsigned cols =
+        std::max(1U, static_cast<unsigned>(std::ceil(std::sqrt(opCount))));
+    unsigned rows = (opCount + cols - 1) / cols;
+    double opW = opCount > 1 ? 62.0 : 56.0;
+    double opH = 34.0;
+    double channelGap = 32.0;
+    double colGap = 36.0;
+    double innerPadX = 14.0;
+    double innerTop = 26.0;
+    double innerBottom = 22.0;
+    double rowWidth =
+        static_cast<double>(cols) * opW +
+        static_cast<double>(std::max(0U, cols - 1)) * colGap;
+    double portSpanW = std::max(
+        {opW,
+         (std::max(0.0, static_cast<double>(fu.inputTypes.size()) - 1.0) *
+              26.0) +
+             opW,
+         (std::max(0.0, static_cast<double>(fu.outputTypes.size()) - 1.0) *
+              26.0) +
+             opW});
+    double innerW = std::max(104.0, std::max(rowWidth, portSpanW));
+    double innerH = static_cast<double>(rows) * opH +
+                    static_cast<double>(rows + 1) * channelGap;
+    return {innerW + innerPadX * 2.0, innerTop + innerH + innerBottom};
   };
-  auto computePEHeight = [&](const PEDef &) { return 200.0; };
+
+  auto computePEBox = [&](const PEDef &peDef) -> std::pair<double, double> {
+    constexpr double kFuBoxMargin = 12.0;
+    constexpr double kPeInnerPadX = 20.0;
+    constexpr double kPeInnerPadY = 30.0;
+    constexpr double kRowGap = 14.0;
+    constexpr double kPeMinW = 200.0;
+    constexpr double kPeMinH = 90.0;
+
+    if (peDef.fuIndices.empty())
+      return {kPeMinW, kPeMinH};
+
+    std::vector<double> fuWidths;
+    std::vector<double> fuHeights;
+    fuWidths.reserve(peDef.fuIndices.size());
+    fuHeights.reserve(peDef.fuIndices.size());
+    for (unsigned fuIdx : peDef.fuIndices) {
+      auto [boxW, boxH] = estimateFUBox(fuDefs[fuIdx]);
+      fuWidths.push_back(boxW);
+      fuHeights.push_back(boxH);
+    }
+
+    double bestW = kPeMinW;
+    double bestH = kPeMinH;
+    double bestScore = std::numeric_limits<double>::infinity();
+    for (unsigned cols = 1; cols <= fuWidths.size(); ++cols) {
+      double contentW = 0.0;
+      double contentH = 0.0;
+      unsigned start = 0;
+      while (start < fuWidths.size()) {
+        unsigned end =
+            std::min<unsigned>(static_cast<unsigned>(fuWidths.size()), start + cols);
+        double rowWidth = 0.0;
+        double rowHeight = 0.0;
+        for (unsigned i = start; i < end; ++i) {
+          rowWidth += fuWidths[i];
+          if (i > start)
+            rowWidth += kFuBoxMargin;
+          rowHeight = std::max(rowHeight, fuHeights[i]);
+        }
+        contentW = std::max(contentW, rowWidth);
+        contentH += rowHeight;
+        if (end < fuWidths.size())
+          contentH += kRowGap;
+        start = end;
+      }
+
+      double candidateW =
+          std::max(kPeMinW, contentW + kPeInnerPadX * 2.0);
+      double candidateH =
+          std::max(kPeMinH, contentH + kPeInnerPadY * 2.0);
+      double longSide = std::max(candidateW, candidateH);
+      double shortSide = std::max(1.0, std::min(candidateW, candidateH));
+      double aspectPenalty = longSide / shortSide;
+      double areaPenalty = candidateW * candidateH;
+      double score = (aspectPenalty - 1.0) * 1000.0 + areaPenalty * 0.0001;
+      if (score < bestScore) {
+        bestScore = score;
+        bestW = candidateW;
+        bestH = candidateH;
+      }
+    }
+
+    return {bestW, bestH};
+  };
+
+  auto computePEWidth = [&](const PEDef &peDef) {
+    return computePEBox(peDef).first;
+  };
+  auto computePEHeight = [&](const PEDef &peDef) {
+    return computePEBox(peDef).second;
+  };
   constexpr double kSwitchPortPitch = 24.0;
   constexpr double kSwitchMinSide = 84.0;
   auto buildPortSideCounts = [&](unsigned count, unsigned sideCount) {
@@ -897,54 +989,290 @@ std::string ADGBuilder::Impl::generateVizJson() const {
   auto computeEffectivePlacements = [&]() {
     std::map<unsigned, VizPlacement> placements = vizPlacements;
 
-    double placedMinX = 0.0;
-    double placedMaxY = 0.0;
-    bool havePlaced = false;
-    for (const auto &[instIdx, placement] : placements) {
-      BoxInfo info = estimateBoxInfo(instIdx);
-      if (!info.valid)
-        continue;
-      double boxMinX = placement.centerX - info.width / 2.0;
-      double boxMaxY = placement.centerY + info.height / 2.0;
-      if (!havePlaced) {
-        placedMinX = boxMinX;
-        placedMaxY = boxMaxY;
-        havePlaced = true;
-      } else {
-        placedMinX = std::min(placedMinX, boxMinX);
-        placedMaxY = std::max(placedMaxY, boxMaxY);
+    auto packUnplacedInstances = [&](std::map<unsigned, VizPlacement> &packed) {
+      double placedMinX = 0.0;
+      double placedMaxY = 0.0;
+      bool havePlaced = false;
+      for (const auto &[instIdx, placement] : packed) {
+        BoxInfo info = estimateBoxInfo(instIdx);
+        if (!info.valid)
+          continue;
+        double boxMinX = placement.centerX - info.width / 2.0;
+        double boxMaxY = placement.centerY + info.height / 2.0;
+        if (!havePlaced) {
+          placedMinX = boxMinX;
+          placedMaxY = boxMaxY;
+          havePlaced = true;
+        } else {
+          placedMinX = std::min(placedMinX, boxMinX);
+          placedMaxY = std::max(placedMaxY, boxMaxY);
+        }
       }
-    }
 
-    constexpr double kAutoGapX = 88.0;
-    constexpr double kAutoGapY = 108.0;
-    constexpr double kAutoWrapWidth = 3600.0;
-    double startX = havePlaced ? placedMinX : 120.0;
-    double cursorX = startX;
-    double cursorY = havePlaced ? placedMaxY + 160.0 : 120.0;
-    double rowHeight = 0.0;
-    int packedRow = havePlaced ? 1000 : 0;
-    int packedCol = 0;
-    for (unsigned instIdx = 0; instIdx < instances.size(); ++instIdx) {
-      if (placements.count(instIdx))
-        continue;
-      BoxInfo info = estimateBoxInfo(instIdx);
-      if (!info.valid)
-        continue;
-      if (cursorX > startX &&
-          cursorX + info.width > startX + kAutoWrapWidth) {
-        cursorX = startX;
-        cursorY += rowHeight + kAutoGapY;
-        rowHeight = 0.0;
-        ++packedRow;
-        packedCol = 0;
+      constexpr double kAutoGapX = 88.0;
+      constexpr double kAutoGapY = 108.0;
+      constexpr double kAutoWrapWidth = 3600.0;
+      double startX = havePlaced ? placedMinX : 120.0;
+      double cursorX = startX;
+      double cursorY = havePlaced ? placedMaxY + 160.0 : 120.0;
+      double rowHeight = 0.0;
+      int packedRow = havePlaced ? 1000 : 0;
+      int packedCol = 0;
+      for (unsigned instIdx = 0; instIdx < instances.size(); ++instIdx) {
+        if (packed.count(instIdx))
+          continue;
+        BoxInfo info = estimateBoxInfo(instIdx);
+        if (!info.valid)
+          continue;
+        if (cursorX > startX &&
+            cursorX + info.width > startX + kAutoWrapWidth) {
+          cursorX = startX;
+          cursorY += rowHeight + kAutoGapY;
+          rowHeight = 0.0;
+          ++packedRow;
+          packedCol = 0;
+        }
+        packed[instIdx] = {cursorX + info.width / 2.0,
+                           cursorY + info.height / 2.0, packedRow,
+                           packedCol++};
+        cursorX += info.width + kAutoGapX;
+        rowHeight = std::max(rowHeight, info.height);
       }
-      placements[instIdx] = {cursorX + info.width / 2.0,
-                             cursorY + info.height / 2.0, packedRow,
-                             packedCol++};
-      cursorX += info.width + kAutoGapX;
-      rowHeight = std::max(rowHeight, info.height);
-    }
+    };
+
+    auto computeNeatoPlacements =
+        [&]() -> std::optional<std::map<unsigned, VizPlacement>> {
+      if (!vizPlacements.empty())
+        return std::nullopt;
+
+      std::vector<unsigned> autoInsts;
+      for (unsigned instIdx = 0; instIdx < instances.size(); ++instIdx) {
+        if (placements.count(instIdx))
+          continue;
+        BoxInfo info = estimateBoxInfo(instIdx);
+        if (info.valid)
+          autoInsts.push_back(instIdx);
+      }
+      if (autoInsts.size() < 2)
+        return std::nullopt;
+
+      auto neatoPath = llvm::sys::findProgramByName("neato");
+      if (!neatoPath)
+        return std::nullopt;
+
+      std::map<std::pair<unsigned, unsigned>, unsigned> edgeMultiplicity;
+      for (const auto &conn : connections) {
+        if (conn.srcInst == conn.dstInst)
+          continue;
+        auto key = std::make_pair(std::min(conn.srcInst, conn.dstInst),
+                                  std::max(conn.srcInst, conn.dstInst));
+        edgeMultiplicity[key] += 1;
+      }
+
+      llvm::SmallString<128> dotPath;
+      llvm::SmallString<128> plainPath;
+      int dotFd = -1;
+      int plainFd = -1;
+      if (llvm::sys::fs::createTemporaryFile("fcc_adg_layout", "dot", dotFd,
+                                             dotPath))
+        return std::nullopt;
+      if (llvm::sys::fs::createTemporaryFile("fcc_adg_layout", "plain",
+                                             plainFd, plainPath)) {
+        llvm::sys::fs::remove(dotPath);
+        return std::nullopt;
+      }
+
+      auto cleanupTempFiles = [&]() {
+        llvm::sys::fs::remove(dotPath);
+        llvm::sys::fs::remove(plainPath);
+      };
+
+      {
+        llvm::raw_fd_ostream dotOS(dotFd, true);
+        auto dotNum = [&](double value) {
+          std::ostringstream ss;
+          ss << std::fixed << std::setprecision(6) << value;
+          return ss.str();
+        };
+        constexpr double kGraphvizUnit = 72.0;
+        constexpr double kNodePad = 72.0;
+        dotOS << "graph G {\n";
+        dotOS << "  graph [layout=neato, overlap=false, sep=\"+48\", "
+                 "esep=\"+24\", splines=false, notranslate=true];\n";
+        dotOS << "  node [shape=box, fixedsize=true, margin=0, label=\"\"];\n";
+        dotOS << "  edge [len=2.4];\n";
+        for (unsigned instIdx : autoInsts) {
+          BoxInfo info = estimateBoxInfo(instIdx);
+          if (!info.valid)
+            continue;
+          double widthIn = std::max(0.25, (info.width + kNodePad) / kGraphvizUnit);
+          double heightIn =
+              std::max(0.25, (info.height + kNodePad) / kGraphvizUnit);
+          dotOS << "  n" << instIdx << " [width=" << dotNum(widthIn)
+                << ", height=" << dotNum(heightIn) << "];\n";
+        }
+        for (const auto &[key, multiplicity] : edgeMultiplicity) {
+          if (!std::binary_search(autoInsts.begin(), autoInsts.end(), key.first) ||
+              !std::binary_search(autoInsts.begin(), autoInsts.end(), key.second))
+            continue;
+          unsigned weight = std::min(8U, multiplicity);
+          dotOS << "  n" << key.first << " -- n" << key.second
+                << " [weight=" << weight << "];\n";
+        }
+        dotOS << "}\n";
+      }
+      {
+        llvm::raw_fd_ostream plainOS(plainFd, true);
+        plainOS.flush();
+      }
+
+      std::string errMsg;
+      bool execFailed = false;
+      std::string neatoPathStr = *neatoPath;
+      std::string dotPathStr = dotPath.str().str();
+      std::string plainPathStr = plainPath.str().str();
+      llvm::SmallVector<llvm::StringRef, 5> args = {
+          llvm::StringRef(neatoPathStr), llvm::StringRef("-Tplain"),
+          llvm::StringRef(dotPathStr), llvm::StringRef("-o"),
+          llvm::StringRef(plainPathStr)};
+      int rc = llvm::sys::ExecuteAndWait(neatoPathStr, args, std::nullopt, {},
+                                         0, 0, &errMsg, &execFailed);
+      if (rc != 0 || execFailed) {
+        cleanupTempFiles();
+        return std::nullopt;
+      }
+
+      auto plainBuf = llvm::MemoryBuffer::getFile(plainPath);
+      if (!plainBuf) {
+        cleanupTempFiles();
+        return std::nullopt;
+      }
+
+      std::map<unsigned, VizPlacement> neatoPlacements = placements;
+      std::istringstream plainStream((*plainBuf)->getBuffer().str());
+      std::string lineStr;
+      while (std::getline(plainStream, lineStr)) {
+        llvm::StringRef line(lineStr);
+        line = line.trim();
+        if (line.empty())
+          continue;
+
+        std::istringstream lineStream(line.str());
+        std::string kind;
+        lineStream >> kind;
+        if (kind != "node")
+          continue;
+
+        std::string nodeName;
+        double xIn = 0.0;
+        double yIn = 0.0;
+        double widthIn = 0.0;
+        double heightIn = 0.0;
+        lineStream >> nodeName >> xIn >> yIn >> widthIn >> heightIn;
+        if (nodeName.size() <= 1 || nodeName[0] != 'n')
+          continue;
+
+        unsigned instIdx = 0;
+        try {
+          instIdx = static_cast<unsigned>(std::stoul(nodeName.substr(1)));
+        } catch (...) {
+          continue;
+        }
+
+        constexpr double kGraphvizUnit = 72.0;
+        neatoPlacements[instIdx] = {xIn * kGraphvizUnit, yIn * kGraphvizUnit,
+                                    -1, -1};
+      }
+      cleanupTempFiles();
+
+      bool haveAutoPlacement = false;
+      double minLeft = 0.0;
+      double minTop = 0.0;
+      for (unsigned instIdx : autoInsts) {
+        auto it = neatoPlacements.find(instIdx);
+        if (it == neatoPlacements.end())
+          continue;
+        BoxInfo info = estimateBoxInfo(instIdx);
+        if (!info.valid)
+          continue;
+        double left = it->second.centerX - info.width / 2.0;
+        double top = it->second.centerY - info.height / 2.0;
+        if (!haveAutoPlacement) {
+          minLeft = left;
+          minTop = top;
+          haveAutoPlacement = true;
+        } else {
+          minLeft = std::min(minLeft, left);
+          minTop = std::min(minTop, top);
+        }
+      }
+      if (!haveAutoPlacement)
+        return std::nullopt;
+
+      double shiftX = 120.0 - minLeft;
+      double shiftY = 120.0 - minTop;
+      for (unsigned instIdx : autoInsts) {
+        auto it = neatoPlacements.find(instIdx);
+        if (it == neatoPlacements.end())
+          continue;
+        it->second.centerX += shiftX;
+        it->second.centerY += shiftY;
+      }
+      return neatoPlacements;
+    };
+
+    if (auto neatoPlacements = computeNeatoPlacements())
+      return *neatoPlacements;
+
+    auto resolvePlacementOverlaps =
+        [&](std::map<unsigned, VizPlacement> &resolvedPlacements) {
+          constexpr double kMinGap = 48.0;
+          for (unsigned iter = 0; iter < 256; ++iter) {
+            bool moved = false;
+            for (auto itA = resolvedPlacements.begin();
+                 itA != resolvedPlacements.end(); ++itA) {
+              auto itB = itA;
+              ++itB;
+              for (; itB != resolvedPlacements.end(); ++itB) {
+                BoxInfo boxA = estimateBoxInfo(itA->first);
+                BoxInfo boxB = estimateBoxInfo(itB->first);
+                if (!boxA.valid || !boxB.valid)
+                  continue;
+                double dx = itB->second.centerX - itA->second.centerX;
+                double dy = itB->second.centerY - itA->second.centerY;
+                double overlapX =
+                    (boxA.width + boxB.width) / 2.0 + kMinGap - std::abs(dx);
+                double overlapY =
+                    (boxA.height + boxB.height) / 2.0 + kMinGap - std::abs(dy);
+                if (overlapX <= 0.0 || overlapY <= 0.0)
+                  continue;
+
+                moved = true;
+                if (std::abs(dx) < 1e-3)
+                  dx = (itA->first < itB->first) ? -1.0 : 1.0;
+                if (std::abs(dy) < 1e-3)
+                  dy = (itA->first < itB->first) ? -1.0 : 1.0;
+
+                if (overlapX < overlapY) {
+                  double shift = overlapX / 2.0 + 1.0;
+                  double sign = dx < 0.0 ? -1.0 : 1.0;
+                  itA->second.centerX -= sign * shift;
+                  itB->second.centerX += sign * shift;
+                } else {
+                  double shift = overlapY / 2.0 + 1.0;
+                  double sign = dy < 0.0 ? -1.0 : 1.0;
+                  itA->second.centerY -= sign * shift;
+                  itB->second.centerY += sign * shift;
+                }
+              }
+            }
+            if (!moved)
+              break;
+          }
+        };
+
+    packUnplacedInstances(placements);
+    resolvePlacementOverlaps(placements);
     return placements;
   };
 

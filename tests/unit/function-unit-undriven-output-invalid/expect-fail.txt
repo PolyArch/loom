@@ -1,0 +1,1 @@
+yield operand count mismatch with function_unit results

@@ -44,10 +44,20 @@ This mode emits HTML visualization without running mapping.
 | `--adg <path>` | Fabric MLIR ADG input |
 | `--dfg <path>` | Pre-built DFG input |
 | `--viz-only` | Visualization-only mode |
+| `--viz-layout <default\|neato>` | Visualization layout source selection |
 | `--simulate` | Run standalone simulation after mapping |
 | `--sim-max-cycles <n>` | Simulation cycle budget |
 | `--mapper-budget <s>` | Mapper time budget in seconds |
 | `--mapper-seed <n>` | Deterministic mapper seed |
+
+`--viz-layout` semantics:
+
+- `default`:
+  - if the ADG provides an explicit sidecar layout, use it
+  - otherwise, use an offline neato-style auto-layout
+- `neato`:
+  - always ignore explicit sidecar placement and emit an offline neato-style
+    layout instead
 
 ## Output Artifact Family
 

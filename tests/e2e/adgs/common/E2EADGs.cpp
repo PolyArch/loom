@@ -2,6 +2,7 @@
 
 #include "fcc/ADG/ADGBuilder.h"
 
+#include <cassert>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -14,8 +15,8 @@ namespace e2e {
 namespace {
 
 constexpr unsigned kDataWidth = 64;
-constexpr unsigned kPEInputs = 24;
-constexpr unsigned kPEOutputs = 24;
+constexpr unsigned kDensePEInputs = 24;
+constexpr unsigned kDensePEOutputs = 24;
 
 std::string bitsType(unsigned width = kDataWidth) {
   return "!fabric.bits<" + std::to_string(width) + ">";
@@ -23,13 +24,15 @@ std::string bitsType(unsigned width = kDataWidth) {
 
 struct SpatialKernelPE {
   PEHandle pe;
-  unsigned inputs = kPEInputs;
-  unsigned outputs = kPEOutputs;
+  unsigned inputs = kDensePEInputs;
+  unsigned outputs = kDensePEOutputs;
   unsigned fuCount = 0;
 };
 
 SpatialKernelPE buildSpatialKernelPE(ADGBuilder &builder,
-                                     const std::string &prefix) {
+                                     const std::string &prefix,
+                                     unsigned numInputs = kDensePEInputs,
+                                     unsigned numOutputs = kDensePEOutputs) {
   auto fuAdd = builder.defineBinaryFU(prefix + "_add", "arith.addi", "i32",
                                       "i32");
   auto fuSub = builder.defineBinaryFU(prefix + "_sub", "arith.subi", "i32",
@@ -67,11 +70,10 @@ SpatialKernelPE buildSpatialKernelPE(ADGBuilder &builder,
 
   auto pe = builder.defineSpatialPE(
       prefix + "_pe",
-      std::vector<std::string>(kPEInputs, bitsType()),
-      std::vector<std::string>(kPEOutputs, bitsType()),
+      std::vector<std::string>(numInputs, bitsType()),
+      std::vector<std::string>(numOutputs, bitsType()),
       fus);
-  return {pe, kPEInputs, kPEOutputs,
-          static_cast<unsigned>(fus.size())};
+  return {pe, numInputs, numOutputs, static_cast<unsigned>(fus.size())};
 }
 
 void applyStarLayout(ADGBuilder &builder, InstanceHandle sw,
@@ -245,8 +247,224 @@ void buildChessDomain(const std::string &moduleName,
 
 } // namespace
 
+void buildTinyAdd1PE(const std::string &outputPath) {
+  const std::string moduleName = "tiny_add_1pe";
+  ADGBuilder builder(moduleName);
+
+  auto fuAdd =
+      builder.defineBinaryFU(moduleName + "_add", "arith.addi", "i32", "i32");
+  auto pe = builder.defineSingleFUSpatialPE(moduleName + "_pe", 2, 1,
+                                            kDataWidth, fuAdd);
+  auto peInst = builder.instantiatePE(pe, "pe_0");
+
+  auto lhs = builder.addScalarInput("lhs", kDataWidth);
+  auto rhs = builder.addScalarInput("rhs", kDataWidth);
+  auto sum = builder.addScalarOutput("sum", kDataWidth);
+
+  builder.connectInputToInstance(lhs, peInst, 0);
+  builder.connectInputToInstance(rhs, peInst, 1);
+  builder.connectInstanceToOutput(peInst, 0, sum);
+
+  builder.setInstanceVizPosition(peInst, 0.0, 0.0, 0, 0);
+  builder.exportMLIR(outputPath);
+}
+
+void buildSumArrayDemoChess7x7(const std::string &outputPath) {
+  const std::string moduleName = "sum_array_demo_chess_7x7";
+  ADGBuilder builder(moduleName);
+  auto computePE = buildSpatialKernelPE(builder, moduleName, 4, 4);
+
+  constexpr unsigned kRows = 7;
+  constexpr unsigned kCols = 7;
+  constexpr unsigned kNumExtMems = 1;
+  constexpr unsigned kScalarInputs = 2;
+  constexpr unsigned kScalarOutputs = 2;
+  constexpr unsigned kExtMemMeshInputs = 2;
+  constexpr unsigned kExtMemMeshOutputs = 1;
+
+  ChessMeshOptions options;
+  options.topLeftExtraInputs = kScalarInputs;
+  options.topRightExtraInputs = kNumExtMems * kExtMemMeshInputs;
+  options.topRightExtraOutputs = kNumExtMems * kExtMemMeshOutputs;
+  options.bottomRightExtraOutputs = kScalarOutputs;
+  auto mesh = builder.buildChessMesh(
+      kRows, kCols,
+      [&](unsigned, unsigned) { return computePE.pe; }, options);
+  assert(mesh.ingressPorts.size() ==
+             kScalarInputs + kNumExtMems * kExtMemMeshInputs &&
+         "sum-array-demo-chess-7x7 expects top-left and top-right ingress ports");
+  assert(mesh.egressPorts.size() ==
+             kNumExtMems * kExtMemMeshOutputs + kScalarOutputs &&
+         "sum-array-demo-chess-7x7 expects top-right extmem egress and bottom-right scalar egress");
+  assert(mesh.egressPorts[0].instance.id == mesh.swGrid[0][kCols].id &&
+         "sum-array-demo-chess-7x7 expects first egress at top-right switch");
+
+  auto extMem = builder.defineExtMemory(moduleName + "_mem", 1, 0);
+  auto extMems = builder.instantiateExtMemArray(kNumExtMems, extMem, "extmem");
+  auto memrefs =
+      builder.addMemrefInputs("buffer", kNumExtMems, "memref<?xi32>");
+  for (unsigned idx = 0; idx < extMems.size(); ++idx)
+    builder.connectMemrefToExtMem(memrefs[idx], extMems[idx]);
+
+  std::vector<unsigned> inputs = builder.addInputs(
+      "scalar", std::vector<std::string>(kScalarInputs, bitsType()));
+  std::vector<unsigned> outputs = builder.addOutputs(
+      "scalar_out", std::vector<std::string>(kScalarOutputs, bitsType()));
+
+  unsigned ingressIdx = 0;
+  for (unsigned idx = 0; idx < inputs.size(); ++idx, ++ingressIdx)
+    builder.connectInputToPort(inputs[idx], mesh.ingressPorts[ingressIdx]);
+
+  for (InstanceHandle mem : extMems) {
+    for (unsigned outPort = 0; outPort < kExtMemMeshInputs; ++outPort) {
+      builder.connect(mem, outPort, mesh.ingressPorts[ingressIdx].instance,
+                      mesh.ingressPorts[ingressIdx].port);
+      ++ingressIdx;
+    }
+  }
+
+  auto switchDegree = [&](unsigned sr, unsigned sc) -> unsigned {
+    unsigned degree = 0;
+    if (sr > 0)
+      degree++;
+    if (sr + 1 < kRows + 1)
+      degree++;
+    if (sc > 0)
+      degree++;
+    if (sc + 1 < kCols + 1)
+      degree++;
+    if (sr > 0 && sc > 0)
+      degree++;
+    if (sr > 0 && sc < kCols)
+      degree++;
+    if (sr < kRows && sc > 0)
+      degree++;
+    if (sr < kRows && sc < kCols)
+      degree++;
+    return degree;
+  };
+
+  unsigned egressIdx = 0;
+  unsigned topRightExtraOutputBase = switchDegree(0, kCols);
+  for (unsigned idx = 0; idx < kExtMemMeshOutputs; ++idx, ++egressIdx)
+    builder.connect(mesh.swGrid[0][kCols], topRightExtraOutputBase + idx,
+                    extMems[0], 1 + idx);
+
+  for (unsigned idx = 0; idx < outputs.size(); ++idx, ++egressIdx)
+    builder.connectPortToOutput(mesh.egressPorts[egressIdx], outputs[idx]);
+
+  setExtMemStripLayout(builder, extMems,
+                       260.0 + static_cast<double>(kCols) * 520.0,
+                       -120.0 + static_cast<double>(kRows) * 8.0, 180.0);
+  builder.exportMLIR(outputPath);
+}
+
 void buildTinyStar4PE(const std::string &outputPath) {
-  buildStarDomain("tiny_star_4pe", outputPath, 4, 3, 4, 2);
+  const std::string moduleName = "tiny_star_4pe";
+  ADGBuilder builder(moduleName);
+  auto computePE = buildSpatialKernelPE(builder, moduleName, 4, 4);
+
+  constexpr unsigned kNumPEs = 4;
+  constexpr unsigned kNumExtMems = 3;
+  constexpr unsigned kScalarInputs = 4;
+  constexpr unsigned kScalarOutputs = 2;
+  constexpr unsigned kLeafLinkPorts = 1;
+  constexpr unsigned kExtMemSWInputs = 2 + 1 + 2;
+  constexpr unsigned kExtMemSWOutputs = 2 + 2;
+
+  auto leafSW = builder.defineFullCrossbarSpatialSW(
+      moduleName + "_leaf_sw", computePE.outputs + kLeafLinkPorts,
+      computePE.inputs + kLeafLinkPorts, kDataWidth);
+  auto centerSW = builder.defineFullCrossbarSpatialSW(
+      moduleName + "_center_sw",
+      kNumPEs * kLeafLinkPorts + kNumExtMems * kExtMemSWInputs +
+          kScalarInputs,
+      kNumPEs * kLeafLinkPorts + kNumExtMems * kExtMemSWOutputs +
+          kScalarOutputs,
+      kDataWidth);
+  auto extMem = builder.defineExtMemory(moduleName + "_mem", 2, 1);
+
+  auto centerInst = builder.instantiateSW(centerSW, "sw_center");
+  auto leafInsts = builder.instantiateSWArray(kNumPEs, leafSW, "sw_leaf");
+  auto peInsts = builder.instantiatePEArray(kNumPEs, computePE.pe, "pe");
+
+  for (unsigned idx = 0; idx < kNumPEs; ++idx) {
+    builder.connectPEBankToSwitch(leafInsts[idx], {peInsts[idx]},
+                                  computePE.inputs, computePE.outputs);
+    builder.connect(leafInsts[idx], computePE.outputs, centerInst, idx);
+    builder.connect(centerInst, idx, leafInsts[idx], computePE.inputs);
+  }
+
+  auto extMemInsts =
+      builder.instantiateExtMemArray(kNumExtMems, extMem, "extmem");
+  auto memrefs =
+      builder.addMemrefInputs("buffer", kNumExtMems, "memref<?xi32>");
+  for (unsigned idx = 0; idx < extMemInsts.size(); ++idx)
+    builder.connectMemrefToExtMem(memrefs[idx], extMemInsts[idx]);
+
+  unsigned centerInBase = kNumPEs * kLeafLinkPorts;
+  unsigned centerOutBase = kNumPEs * kLeafLinkPorts;
+  for (unsigned idx = 0; idx < extMemInsts.size(); ++idx) {
+    builder.associateExtMemWithSW(extMemInsts[idx], centerInst, centerInBase,
+                                  centerOutBase);
+    centerInBase += kExtMemSWInputs;
+    centerOutBase += kExtMemSWOutputs;
+  }
+
+  auto scalarInputs = builder.addInputs(
+      "scalar", std::vector<std::string>(kScalarInputs, bitsType()));
+  auto scalarOutputs = builder.addOutputs(
+      "scalar_out", std::vector<std::string>(kScalarOutputs, bitsType()));
+  builder.connectInputVectorToInstance(scalarInputs, centerInst, centerInBase);
+  builder.connectInstanceToOutputVector(centerInst, centerOutBase,
+                                        scalarOutputs);
+
+  auto estimatePEWidth = [&](unsigned fuCount) {
+    const double approxFuBoxW = 140.0;
+    const double approxFuGap = 12.0;
+    const double approxPEPadX = 60.0;
+    return std::max(220.0,
+                    static_cast<double>(fuCount) * approxFuBoxW +
+                        std::max(0.0, static_cast<double>(fuCount) - 1.0) *
+                            approxFuGap +
+                        approxPEPadX);
+  };
+  auto estimateSwitchSide = [&](unsigned numInputs, unsigned numOutputs) {
+    unsigned maxSideSlots =
+        std::max((numInputs + 1) / 2, (numOutputs + 1) / 2);
+    return std::max(96.0, 32.0 + (static_cast<double>(maxSideSlots) + 1.0) *
+                                     24.0);
+  };
+
+  const double peW = estimatePEWidth(computePE.fuCount);
+  const double peH = 220.0;
+  const double leafSide =
+      estimateSwitchSide(computePE.outputs + kLeafLinkPorts,
+                         computePE.inputs + kLeafLinkPorts);
+  const double centerSide = estimateSwitchSide(
+      kNumPEs * kLeafLinkPorts + kNumExtMems * kExtMemSWInputs +
+          kScalarInputs,
+      kNumPEs * kLeafLinkPorts + kNumExtMems * kExtMemSWOutputs +
+          kScalarOutputs);
+
+  builder.setInstanceVizPosition(centerInst, 0.0, 0.0, 0, 0);
+
+  const double peRadius =
+      std::hypot(peW / 2.0, peH / 2.0) + leafSide / 2.0 + 320.0;
+  const double leafRadius = centerSide / 2.0 + leafSide / 2.0 + 120.0;
+  const double angleStep = 2.0 * M_PI / static_cast<double>(kNumPEs);
+  for (unsigned idx = 0; idx < kNumPEs; ++idx) {
+    const double angle = angleStep * static_cast<double>(idx);
+    builder.setInstanceVizPosition(
+        leafInsts[idx], leafRadius * std::cos(angle),
+        leafRadius * std::sin(angle), 1, static_cast<int>(idx));
+    builder.setInstanceVizPosition(
+        peInsts[idx], peRadius * std::cos(angle), peRadius * std::sin(angle), 2,
+        static_cast<int>(idx));
+  }
+
+  setExtMemStripLayout(builder, extMemInsts, -peRadius - 360.0, -180.0, 180.0);
+  builder.exportMLIR(outputPath);
 }
 
 void buildMediumStar8PE(const std::string &outputPath) {
@@ -255,6 +473,51 @@ void buildMediumStar8PE(const std::string &outputPath) {
 
 void buildWideStar16PE(const std::string &outputPath) {
   buildStarDomain("wide_star_16pe", outputPath, 16, 6, 8, 4);
+}
+
+void buildVecaddDemoChess5x5(const std::string &outputPath) {
+  const std::string moduleName = "vecadd_demo_chess_5x5";
+  ADGBuilder builder(moduleName);
+  auto computePE = buildSpatialKernelPE(builder, moduleName, 4, 4);
+
+  constexpr unsigned kRows = 6;
+  constexpr unsigned kCols = 6;
+  constexpr unsigned kNumExtMems = 3;
+  constexpr unsigned kScalarInputs = 2;
+  constexpr unsigned kScalarOutputs = 1;
+
+  ChessMeshOptions options;
+  options.topLeftExtraInputs = kNumExtMems * 5 + kScalarInputs;
+  options.bottomRightExtraOutputs = kNumExtMems * 4 + kScalarOutputs;
+  auto mesh = builder.buildChessMesh(
+      kRows, kCols,
+      [&](unsigned, unsigned) { return computePE.pe; }, options);
+
+  auto extMem = builder.defineExtMemory(moduleName + "_mem", 2, 1);
+  auto extMems = builder.instantiateExtMemArray(kNumExtMems, extMem, "extmem");
+  auto memrefs =
+      builder.addMemrefInputs("buffer", kNumExtMems, "memref<?xi32>");
+  for (unsigned idx = 0; idx < extMems.size(); ++idx)
+    builder.connectMemrefToExtMem(memrefs[idx], extMems[idx]);
+
+  wireExtMemIngressEgress(builder, mesh, extMems, 0, 0);
+
+  std::vector<unsigned> inputs = builder.addInputs(
+      "scalar", std::vector<std::string>(kScalarInputs, bitsType()));
+  std::vector<unsigned> outputs = builder.addOutputs(
+      "scalar_out", std::vector<std::string>(kScalarOutputs, bitsType()));
+
+  unsigned ingressIdx = kNumExtMems * 5;
+  for (unsigned idx = 0; idx < inputs.size(); ++idx, ++ingressIdx)
+    builder.connectInputToPort(inputs[idx], mesh.ingressPorts[ingressIdx]);
+
+  unsigned egressIdx = kNumExtMems * 4;
+  for (unsigned idx = 0; idx < outputs.size(); ++idx, ++egressIdx)
+    builder.connectPortToOutput(mesh.egressPorts[egressIdx], outputs[idx]);
+
+  setExtMemStripLayout(builder, extMems, -420.0,
+                       -220.0 + static_cast<double>(kRows) * 8.0, 180.0);
+  builder.exportMLIR(outputPath);
 }
 
 void buildMediumChess6x6(const std::string &outputPath) {

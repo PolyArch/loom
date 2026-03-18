@@ -28,6 +28,11 @@ static cl::opt<bool> vizOnlyOpt("viz-only",
                                 cl::desc("Visualize ADG/DFG side-by-side without mapping"),
                                 cl::init(false));
 
+static cl::opt<std::string> vizLayoutOpt(
+    "viz-layout",
+    cl::desc("Visualization layout mode: default or neato"),
+    cl::init("default"));
+
 static cl::opt<bool> simulate("simulate",
                                cl::desc("Run standalone simulator after mapping"),
                                cl::init(false));
@@ -53,6 +58,14 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
   args.adgPath = adgPath;
   args.dfgPath = dfgPathOpt;
   args.vizOnly = vizOnlyOpt;
+  if (vizLayoutOpt == "default")
+    args.vizLayout = VizLayoutMode::Default;
+  else if (vizLayoutOpt == "neato")
+    args.vizLayout = VizLayoutMode::Neato;
+  else {
+    errs() << "fcc: --viz-layout must be 'default' or 'neato'\n";
+    return false;
+  }
   args.simulate = simulate;
   args.simMaxCycles = simMaxCycles;
   args.mapperBudget = mapperBudget;

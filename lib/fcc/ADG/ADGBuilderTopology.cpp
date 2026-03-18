@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <limits>
 #include <map>
 #include <tuple>
 #include <utility>
@@ -17,6 +19,104 @@ namespace fcc {
 namespace adg {
 
 using namespace detail;
+
+static std::pair<double, double>
+estimateTopologyFUBox(const std::vector<FUDef> &fuDefs, unsigned fuIdx) {
+  const auto &fu = fuDefs[fuIdx];
+  unsigned opCount = static_cast<unsigned>(
+      std::max<size_t>(1, fu.ops.empty() ? (fu.rawBody.empty() ? 1 : 4)
+                                         : fu.ops.size()));
+  unsigned cols =
+      std::max(1U, static_cast<unsigned>(std::ceil(std::sqrt(opCount))));
+  unsigned rows = (opCount + cols - 1) / cols;
+  double opW = opCount > 1 ? 62.0 : 56.0;
+  double opH = 34.0;
+  double channelGap = 32.0;
+  double colGap = 36.0;
+  double innerPadX = 14.0;
+  double innerTop = 26.0;
+  double innerBottom = 22.0;
+  double rowWidth = static_cast<double>(cols) * opW +
+                    static_cast<double>(std::max(0U, cols - 1)) * colGap;
+  double portSpanW =
+      std::max({opW,
+                (std::max(0.0,
+                          static_cast<double>(fu.inputTypes.size()) - 1.0) *
+                     26.0) +
+                    opW,
+                (std::max(0.0,
+                          static_cast<double>(fu.outputTypes.size()) - 1.0) *
+                     26.0) +
+                    opW});
+  double innerW = std::max(104.0, std::max(rowWidth, portSpanW));
+  double innerH =
+      static_cast<double>(rows) * opH + static_cast<double>(rows + 1) * channelGap;
+  return {innerW + innerPadX * 2.0, innerTop + innerH + innerBottom};
+}
+
+static std::pair<double, double>
+estimateTopologyPEBox(const std::vector<FUDef> &fuDefs, const PEDef &peDef) {
+  constexpr double kFuBoxMargin = 12.0;
+  constexpr double kPeInnerPadX = 20.0;
+  constexpr double kPeInnerPadY = 30.0;
+  constexpr double kRowGap = 14.0;
+  constexpr double kPeMinW = 200.0;
+  constexpr double kPeMinH = 90.0;
+
+  if (peDef.fuIndices.empty())
+    return {kPeMinW, kPeMinH};
+
+  std::vector<double> fuWidths;
+  std::vector<double> fuHeights;
+  fuWidths.reserve(peDef.fuIndices.size());
+  fuHeights.reserve(peDef.fuIndices.size());
+  for (unsigned fuIdx : peDef.fuIndices) {
+    auto [boxW, boxH] = estimateTopologyFUBox(fuDefs, fuIdx);
+    fuWidths.push_back(boxW);
+    fuHeights.push_back(boxH);
+  }
+
+  double bestW = kPeMinW;
+  double bestH = kPeMinH;
+  double bestScore = std::numeric_limits<double>::infinity();
+  for (unsigned cols = 1; cols <= fuWidths.size(); ++cols) {
+    double contentW = 0.0;
+    double contentH = 0.0;
+    unsigned start = 0;
+    while (start < fuWidths.size()) {
+      unsigned end =
+          std::min<unsigned>(static_cast<unsigned>(fuWidths.size()), start + cols);
+      double rowWidth = 0.0;
+      double rowHeight = 0.0;
+      for (unsigned i = start; i < end; ++i) {
+        rowWidth += fuWidths[i];
+        if (i > start)
+          rowWidth += kFuBoxMargin;
+        rowHeight = std::max(rowHeight, fuHeights[i]);
+      }
+      contentW = std::max(contentW, rowWidth);
+      contentH += rowHeight;
+      if (end < fuWidths.size())
+        contentH += kRowGap;
+      start = end;
+    }
+
+    double candidateW = std::max(kPeMinW, contentW + kPeInnerPadX * 2.0);
+    double candidateH = std::max(kPeMinH, contentH + kPeInnerPadY * 2.0);
+    double longSide = std::max(candidateW, candidateH);
+    double shortSide = std::max(1.0, std::min(candidateW, candidateH));
+    double aspectPenalty = longSide / shortSide;
+    double areaPenalty = candidateW * candidateH;
+    double score = (aspectPenalty - 1.0) * 1000.0 + areaPenalty * 0.0001;
+    if (score < bestScore) {
+      bestScore = score;
+      bestW = candidateW;
+      bestH = candidateH;
+    }
+  }
+
+  return {bestW, bestH};
+}
 
 MeshResult ADGBuilder::buildMesh(unsigned rows, unsigned cols, PEHandle pe,
                                  SWHandle sw) {
@@ -189,25 +289,16 @@ MeshResult ADGBuilder::buildLatticeMesh(
     return std::max(84.0, 32.0 + (static_cast<double>(maxSideSlots) + 1.0) *
                                      24.0);
   };
-  const double approxFuBoxW = 140.0;
-  const double approxFuGap = 12.0;
-  const double approxPEPadX = 60.0;
   double approxPEBoxW = 200.0;
+  double approxPEBoxH = 90.0;
   for (unsigned r = 0; r < rows; ++r) {
     for (unsigned c = 0; c < cols; ++c) {
       const auto &cellPEDef = impl_->peDefs[selectedPEs[r][c].id];
-      approxPEBoxW = std::max(
-          approxPEBoxW,
-          std::max(200.0,
-                   cellPEDef.fuIndices.size() * approxFuBoxW +
-                       std::max(0.0,
-                                static_cast<double>(cellPEDef.fuIndices.size()) -
-                                    1.0) *
-                           approxFuGap +
-                       approxPEPadX));
+      auto [boxW, boxH] = estimateTopologyPEBox(impl_->fuDefs, cellPEDef);
+      approxPEBoxW = std::max(approxPEBoxW, boxW);
+      approxPEBoxH = std::max(approxPEBoxH, boxH);
     }
   }
-  const double approxPEBoxH = 200.0;
   double maxSwitchBox = 84.0;
   for (unsigned r = 0; r < rows; ++r) {
     for (unsigned c = 0; c < cols; ++c) {
@@ -419,25 +510,16 @@ MeshResult ADGBuilder::buildChessMesh(
 
   const unsigned maxSwitchDegree = 8;
   const double maxSwitchBox = std::max(80.0, maxSwitchDegree * 30.0 + 30.0);
-  const double approxFuBoxW = 132.0;
-  const double approxFuGap = 12.0;
-  const double approxPEPadX = 40.0;
   double approxPEBoxW = 200.0;
+  double approxPEBoxH = 90.0;
   for (unsigned r = 0; r < rows; ++r) {
     for (unsigned c = 0; c < cols; ++c) {
       const auto &cellPEDef = impl_->peDefs[selectedPEs[r][c].id];
-      approxPEBoxW = std::max(
-          approxPEBoxW,
-          std::max(200.0,
-                   cellPEDef.fuIndices.size() * approxFuBoxW +
-                       std::max(0.0,
-                                static_cast<double>(cellPEDef.fuIndices.size()) -
-                                    1.0) *
-                           approxFuGap +
-                       approxPEPadX));
+      auto [boxW, boxH] = estimateTopologyPEBox(impl_->fuDefs, cellPEDef);
+      approxPEBoxW = std::max(approxPEBoxW, boxW);
+      approxPEBoxH = std::max(approxPEBoxH, boxH);
     }
   }
-  const double approxPEBoxH = 200.0;
   const double componentGap = 40.0;
   const double switchStepX =
       std::max(520.0, maxSwitchBox + approxPEBoxW + componentGap);
@@ -453,6 +535,10 @@ MeshResult ADGBuilder::buildChessMesh(
       unsigned numOutputs = degree;
       if (sr == 0 && sc == 0)
         numInputs += options.topLeftExtraInputs;
+      if (sr == 0 && sc == cols)
+        numInputs += options.topRightExtraInputs;
+      if (sr == 0 && sc == cols)
+        numOutputs += options.topRightExtraOutputs;
       if (sr == rows && sc == cols)
         numOutputs += options.bottomRightExtraOutputs;
       SWHandle swHandle = makeSwitchTemplate(numInputs, numOutputs);
@@ -528,6 +614,19 @@ MeshResult ADGBuilder::buildChessMesh(
     auto swInst = result.swGrid[0][0];
     for (unsigned idx = 0; idx < options.topLeftExtraInputs; ++idx)
       result.ingressPorts.push_back({swInst, topLeftDegree + idx});
+  }
+  if (options.topRightExtraInputs > 0) {
+    unsigned topRightDegree = switchDegree(0, cols);
+    auto swInst = result.swGrid[0][cols];
+    for (unsigned idx = 0; idx < options.topRightExtraInputs; ++idx)
+      result.ingressPorts.push_back({swInst, topRightDegree + idx});
+  }
+  if (options.topRightExtraOutputs > 0) {
+    unsigned topRightDegree = switchDegree(0, cols);
+    auto swInst = result.swGrid[0][cols];
+    for (unsigned idx = 0; idx < options.topRightExtraOutputs; ++idx)
+      result.egressPorts.push_back(
+          {swInst, topRightDegree + options.topRightExtraInputs + idx});
   }
   if (options.bottomRightExtraOutputs > 0) {
     unsigned bottomRightDegree = switchDegree(rows, cols);
@@ -679,27 +778,18 @@ CubeResult ADGBuilder::buildCube(
 
   const unsigned maxSwitchDegree = 14;
   const double maxSwitchBox = std::max(84.0, maxSwitchDegree * 22.0 + 36.0);
-  const double approxFuBoxW = 132.0;
-  const double approxFuGap = 12.0;
-  const double approxPEPadX = 40.0;
   double approxPEBoxW = 200.0;
+  double approxPEBoxH = 90.0;
   for (unsigned d = 0; d < depths; ++d) {
     for (unsigned r = 0; r < rows; ++r) {
       for (unsigned c = 0; c < cols; ++c) {
         const auto &cellPEDef = impl_->peDefs[selectedPEs[d][r][c].id];
-        approxPEBoxW = std::max(
-            approxPEBoxW,
-            std::max(220.0,
-                     cellPEDef.fuIndices.size() * approxFuBoxW +
-                         std::max(0.0,
-                                  static_cast<double>(cellPEDef.fuIndices.size()) -
-                                      1.0) *
-                             approxFuGap +
-                         approxPEPadX));
+        auto [boxW, boxH] = estimateTopologyPEBox(impl_->fuDefs, cellPEDef);
+        approxPEBoxW = std::max(approxPEBoxW, boxW);
+        approxPEBoxH = std::max(approxPEBoxH, boxH);
       }
     }
   }
-  const double approxPEBoxH = 200.0;
   const double componentGap = 52.0;
   const double switchStepX =
       std::max(620.0, maxSwitchBox + approxPEBoxW + componentGap);

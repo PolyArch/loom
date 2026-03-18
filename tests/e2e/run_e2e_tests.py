@@ -75,6 +75,37 @@ def load_cases(manifest_path: Path) -> List[E2ECase]:
     return cases
 
 
+def validate_case_naming(case: E2ECase) -> None:
+    if "." not in case.name:
+        raise RuntimeError(
+            f"e2e case name '{case.name}' must be '<app>.<adg>'"
+        )
+
+    app_name, hw_name = case.name.split(".", 1)
+    if case.app_source.parent.name != app_name:
+        raise RuntimeError(
+            f"e2e case '{case.name}' does not match app path "
+            f"'{case.app_source.parent.name}'"
+        )
+    if case.output_dir.name != case.name:
+        raise RuntimeError(
+            f"e2e output dir '{case.output_dir.name}' must equal case name "
+            f"'{case.name}'"
+        )
+    expected_fabric_name = f"{hw_name}.fabric.mlir"
+    if case.generated_fabric_file.name != expected_fabric_name:
+        raise RuntimeError(
+            f"e2e ADG artifact '{case.generated_fabric_file.name}' must be "
+            f"'{expected_fabric_name}' for case '{case.name}'"
+        )
+    expected_output_dir = case.output_dir / expected_fabric_name
+    if case.generated_fabric_file != expected_output_dir:
+        raise RuntimeError(
+            f"e2e ADG artifact path '{case.generated_fabric_file}' must live "
+            f"under output dir '{case.output_dir}'"
+        )
+
+
 def shell_join(parts: List[str]) -> str:
     return " ".join(shlex.quote(part) for part in parts)
 
@@ -163,6 +194,8 @@ def main() -> int:
     selected = set(args.tests)
 
     cases = load_cases(manifest_path)
+    for case in cases:
+        validate_case_naming(case)
     if selected:
         cases = [case for case in cases if case.name in selected]
 

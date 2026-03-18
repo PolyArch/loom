@@ -842,6 +842,31 @@ LogicalResult FunctionUnitOp::verify() {
         "must appear directly inside the top-level module, fabric.module, fabric.spatial_pe, or fabric.temporal_pe");
   }
 
+  auto &body = getBody().front();
+  auto yieldOp = mlir::dyn_cast<fcc::fabric::YieldOp>(body.getTerminator());
+  if (!yieldOp)
+    return emitOpError("expected fabric.yield terminator");
+
+  auto funcType = getFunctionType();
+  if (yieldOp.getNumOperands() != funcType.getNumResults()) {
+    return emitOpError("yield operand count mismatch with function_unit results");
+  }
+
+  for (mlir::Value operand : yieldOp.getOperands()) {
+    if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(operand)) {
+      (void)blockArg;
+      return emitOpError(
+          "passthrough function_unit is illegal; fabric.yield operands must not be direct block arguments");
+    }
+  }
+
+  for (mlir::BlockArgument arg : body.getArguments()) {
+    if (arg.use_empty()) {
+      return emitOpError(
+          "all function_unit arguments must be consumed by the body");
+    }
+  }
+
   for (mlir::Operation &bodyOp : getBody().front().getOperations()) {
     if (mlir::isa<fcc::fabric::YieldOp>(bodyOp))
       continue;

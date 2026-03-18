@@ -274,6 +274,7 @@ int main(int argc, char **argv) {
     // adgModule is already loaded above. dfgModule is the parameter.
     if (failed(fcc::exportVizWithMapping(vizPath, *adgModule, *dfgModule,
                                         mapJsonPath, args.adgPath,
+                                        args.vizLayout,
                                         &context))) {
       llvm::errs() << "fcc: warning: visualization generation failed\n";
     } else {
@@ -391,7 +392,8 @@ int main(int argc, char **argv) {
     llvm::outs() << "fcc: generating viz-only...\n";
     if (failed(fcc::exportVizOnly(
             vizPath, adgMod ? *adgMod : ModuleOp(),
-            dfgMod ? *dfgMod : ModuleOp(), args.adgPath, &context))) {
+            dfgMod ? *dfgMod : ModuleOp(), args.adgPath,
+            args.vizLayout, &context))) {
       llvm::errs() << "fcc: viz generation failed\n";
       return 1;
     }

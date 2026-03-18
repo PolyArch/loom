@@ -15,6 +15,7 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cmath>
 #include <regex>
 #include <type_traits>
 
@@ -173,6 +174,77 @@ std::optional<llvm::StringRef> getNamedDefinition(mlir::Operation &op) {
   if (auto fifoOp = mlir::dyn_cast<fcc::fabric::FifoOp>(op))
     return fifoOp.getSymName();
   return std::nullopt;
+}
+
+void inferMissingNodeGridPositions(
+    Graph &adg, llvm::DenseMap<IdIndex, std::pair<int, int>> &nodeGridPos) {
+  auto collectNeighborSamples =
+      [&](IdIndex nodeId) -> llvm::SmallVector<std::pair<int, int>, 8> {
+    llvm::SmallVector<std::pair<int, int>, 8> samples;
+    const Node *node = adg.getNode(nodeId);
+    if (!node)
+      return samples;
+
+    auto addSamplesForPort = [&](IdIndex portId) {
+      const Port *port = adg.getPort(portId);
+      if (!port)
+        return;
+      for (IdIndex edgeId : port->connectedEdges) {
+        const Edge *edge = adg.getEdge(edgeId);
+        if (!edge)
+          continue;
+        IdIndex otherPortId = INVALID_ID;
+        if (edge->srcPort == portId)
+          otherPortId = edge->dstPort;
+        else if (edge->dstPort == portId)
+          otherPortId = edge->srcPort;
+        if (otherPortId == INVALID_ID)
+          continue;
+        const Port *otherPort = adg.getPort(otherPortId);
+        if (!otherPort || otherPort->parentNode == INVALID_ID ||
+            otherPort->parentNode == nodeId)
+          continue;
+        auto it = nodeGridPos.find(otherPort->parentNode);
+        if (it == nodeGridPos.end())
+          continue;
+        samples.push_back(it->second);
+      }
+    };
+
+    for (IdIndex portId : node->inputPorts)
+      addSamplesForPort(portId);
+    for (IdIndex portId : node->outputPorts)
+      addSamplesForPort(portId);
+    return samples;
+  };
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (IdIndex nodeId = 0; nodeId < static_cast<IdIndex>(adg.nodes.size());
+         ++nodeId) {
+      if (!adg.getNode(nodeId) || nodeGridPos.count(nodeId))
+        continue;
+
+      auto samples = collectNeighborSamples(nodeId);
+      if (samples.empty())
+        continue;
+
+      double rowSum = 0.0;
+      double colSum = 0.0;
+      for (const auto &[row, col] : samples) {
+        rowSum += static_cast<double>(row);
+        colSum += static_cast<double>(col);
+      }
+
+      int row =
+          static_cast<int>(std::lround(rowSum / static_cast<double>(samples.size())));
+      int col =
+          static_cast<int>(std::lround(colSum / static_cast<double>(samples.size())));
+      nodeGridPos[nodeId] = {row, col};
+      changed = true;
+    }
+  }
 }
 
 } // namespace
@@ -457,12 +529,6 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
       IdIndex fuNodeId = adg.addNode(std::move(fuNode));
       pe.fuNodeIds.push_back(fuNodeId);
       nodeGridPos[fuNodeId] = gridPos;
-
-      for (IdIndex ip : adg.nodes[fuNodeId]->inputPorts) {
-        for (IdIndex op : adg.nodes[fuNodeId]->outputPorts) {
-          connectivity.inToOut[ip].push_back(op);
-        }
-      }
     };
 
     auto &peBody = peOp.getBody().front();
@@ -2183,6 +2249,8 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
     else if (n->kind == Node::ModuleOutputNode)
       outputSentinels++;
   }
+
+  inferMissingNodeGridPositions(adg, nodeGridPos);
 
   llvm::outs() << "ADGFlattener: " << adg.countNodes() << " nodes, "
                << adg.countPorts() << " ports, " << adg.countEdges()
