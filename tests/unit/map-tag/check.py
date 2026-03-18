@@ -34,10 +34,26 @@ def main() -> int:
     words = config["words"][
         map_tag_slice["word_offset"]:map_tag_slice["word_offset"] + map_tag_slice["word_count"]
     ]
-    if read_bits(words, 0, 16) != 2:
-        raise SystemExit(f"unexpected map_tag table_size words: {words}")
-    if read_bits(words, 16, 16) != 0 or read_bits(words, 32, 16) != 1:
-        raise SystemExit(f"unexpected map_tag table contents: {words}")
+    entries = mapping.get("tag_configs", [])
+    add_tag_cfg = next((entry for entry in entries if entry["name"] == "add_tag_0"), None)
+    map_tag_cfg = next((entry for entry in entries if entry["name"] == "map_tag_0"), None)
+    if add_tag_cfg is None or add_tag_cfg.get("tag") != 0:
+        raise SystemExit(f"unexpected add_tag config payload: {add_tag_cfg}")
+    if map_tag_cfg is None:
+        raise SystemExit("missing map_tag tag_configs entry")
+    expected_table = [
+        {"valid": True, "src_tag": 0, "dst_tag": 0},
+        {"valid": True, "src_tag": 1, "dst_tag": 1},
+    ]
+    if map_tag_cfg.get("table") != expected_table:
+        raise SystemExit(f"unexpected structured map_tag table: {map_tag_cfg}")
+
+    # Entry layout is low-to-high: valid, src_tag, dst_tag.
+    # With i1 -> i1 tags, each entry uses 3 bits.
+    entry0 = (read_bits(words, 0, 1), read_bits(words, 1, 1), read_bits(words, 2, 1))
+    entry1 = (read_bits(words, 3, 1), read_bits(words, 4, 1), read_bits(words, 5, 1))
+    if entry0 != (1, 0, 0) or entry1 != (1, 1, 1):
+        raise SystemExit(f"unexpected packed map_tag table contents: {words}")
 
     port_info = {entry["id"]: entry for entry in mapping["port_table"]}
     routed = [entry for entry in mapping["edge_routings"] if entry["kind"] == "routed"]

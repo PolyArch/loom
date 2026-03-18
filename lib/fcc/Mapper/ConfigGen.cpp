@@ -75,6 +75,50 @@ unsigned bitWidthForChoices(unsigned count) {
   return count > 1 ? llvm::Log2_32_Ceil(count) : 0;
 }
 
+llvm::StringRef configFieldKindName(FUConfigFieldKind kind) {
+  switch (kind) {
+  case FUConfigFieldKind::Mux:
+    return "mux";
+  case FUConfigFieldKind::ConstantValue:
+    return "constant_value";
+  case FUConfigFieldKind::CmpIPredicate:
+    return "cmpi_predicate";
+  case FUConfigFieldKind::CmpFPredicate:
+    return "cmpf_predicate";
+  case FUConfigFieldKind::StreamContCond:
+    return "stream_cont_cond";
+  }
+  return "unknown";
+}
+
+std::string formatConfigFieldValue(const FUConfigField &field) {
+  switch (field.kind) {
+  case FUConfigFieldKind::Mux:
+    return ("sel=" + std::to_string(field.sel));
+  case FUConfigFieldKind::ConstantValue:
+    return ("value=" + std::to_string(field.value));
+  case FUConfigFieldKind::CmpIPredicate:
+  case FUConfigFieldKind::CmpFPredicate:
+    return ("predicate=" + std::to_string(field.value));
+  case FUConfigFieldKind::StreamContCond:
+    switch (field.value) {
+    case 1u << 0:
+      return "cont_cond=<";
+    case 1u << 1:
+      return "cont_cond=<=";
+    case 1u << 2:
+      return "cont_cond=>";
+    case 1u << 3:
+      return "cont_cond=>=";
+    case 1u << 4:
+      return "cont_cond=!=";
+    default:
+      return ("cont_cond=" + std::to_string(field.value));
+    }
+  }
+  return std::to_string(field.value);
+}
+
 void packMuxField(std::vector<uint32_t> &words, uint32_t &bitPos,
                   unsigned selBits, uint64_t sel, bool discard,
                   bool disconnect) {
@@ -107,6 +151,72 @@ std::optional<uint64_t> getUIntNodeAttr(const Node *node, llvm::StringRef name) 
       return static_cast<uint64_t>(intAttr.getInt());
   }
   return std::nullopt;
+}
+
+struct MapTagTableEntry {
+  bool valid = false;
+  uint64_t srcTag = 0;
+  uint64_t dstTag = 0;
+};
+
+llvm::SmallVector<MapTagTableEntry, 8> getMapTagTableEntries(const Node *node) {
+  llvm::SmallVector<MapTagTableEntry, 8> entries;
+  if (!node)
+    return entries;
+  for (const auto &attr : node->attributes) {
+    if (attr.getName() != "table")
+      continue;
+    auto arrayAttr = mlir::dyn_cast<mlir::ArrayAttr>(attr.getValue());
+    if (!arrayAttr)
+      return entries;
+    for (size_t idx = 0; idx < arrayAttr.size(); ++idx) {
+      mlir::Attribute elem = arrayAttr[idx];
+      if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(elem)) {
+        MapTagTableEntry entry;
+        entry.valid = true;
+        entry.srcTag = static_cast<uint64_t>(idx);
+        entry.dstTag = static_cast<uint64_t>(intAttr.getInt());
+        entries.push_back(entry);
+        continue;
+      }
+      auto tupleAttr = mlir::dyn_cast<mlir::ArrayAttr>(elem);
+      if (!tupleAttr || tupleAttr.size() != 3)
+        continue;
+      auto validAttr = mlir::dyn_cast<mlir::IntegerAttr>(tupleAttr[0]);
+      auto srcAttr = mlir::dyn_cast<mlir::IntegerAttr>(tupleAttr[1]);
+      auto dstAttr = mlir::dyn_cast<mlir::IntegerAttr>(tupleAttr[2]);
+      if (!validAttr || !srcAttr || !dstAttr)
+        continue;
+      MapTagTableEntry entry;
+      entry.valid = validAttr.getInt() != 0;
+      entry.srcTag = static_cast<uint64_t>(srcAttr.getInt());
+      entry.dstTag = static_cast<uint64_t>(dstAttr.getInt());
+      entries.push_back(entry);
+    }
+    return entries;
+  }
+  return entries;
+}
+
+std::pair<unsigned, unsigned> getMapTagTagWidths(const Node *node,
+                                                 const Graph &adg) {
+  unsigned inWidth = 0;
+  unsigned outWidth = 0;
+  if (!node)
+    return {inWidth, outWidth};
+  if (!node->inputPorts.empty()) {
+    if (const Port *port = adg.getPort(node->inputPorts.front())) {
+      if (auto info = detail::getPortTypeInfo(port->type); info && info->isTagged)
+        inWidth = info->tagWidth;
+    }
+  }
+  if (!node->outputPorts.empty()) {
+    if (const Port *port = adg.getPort(node->outputPorts.front())) {
+      if (auto info = detail::getPortTypeInfo(port->type); info && info->isTagged)
+        outWidth = info->tagWidth;
+    }
+  }
+  return {inWidth, outWidth};
 }
 
 std::vector<std::string> getBinaryRowsNodeAttr(const Node *node,
@@ -549,12 +659,14 @@ llvm::SmallVector<int64_t, 16> buildAddrOffsetTable(const Node *hwNode,
           region.endLane > startLane ? region.endLane : startLane + 1;
       int64_t base = 0;
       int64_t elemSizeLog2 = region.elemSizeLog2;
+      bool isExtMemory = getNodeAttrStr(hwNode, "op_kind") == "extmemory";
       if (!templateVals.empty()) {
-        base = templateVals[slot * kRegionFieldCount + 3];
+        if (!isExtMemory)
+          base = templateVals[slot * kRegionFieldCount + 3];
         elemSizeLog2 = templateVals[slot * kRegionFieldCount + 4];
-      } else if (region.memrefArgIndex >= 0) {
+      } else if (!isExtMemory && region.memrefArgIndex >= 0) {
         base = region.memrefArgIndex * kDefaultRegionStride;
-      } else {
+      } else if (!isExtMemory) {
         base = slot * kDefaultRegionStride;
       }
       table.push_back(1);
@@ -1006,7 +1118,7 @@ GeneratedNodeConfig buildAddTagConfig(const Node *hwNode) {
   return cfg;
 }
 
-GeneratedNodeConfig buildMapTagConfig(const Node *hwNode) {
+GeneratedNodeConfig buildMapTagConfig(const Node *hwNode, const Graph &adg) {
   GeneratedNodeConfig cfg;
   if (!hwNode)
     return cfg;
@@ -1015,26 +1127,20 @@ GeneratedNodeConfig buildMapTagConfig(const Node *hwNode) {
   if (tableSize == 0)
     return cfg;
 
+  auto [inputTagWidth, outputTagWidth] = getMapTagTagWidths(hwNode, adg);
   std::vector<uint32_t> words;
   uint32_t bitPos = 0;
-  packBits(words, bitPos, tableSize, 16);
-
-  bool sawTable = false;
-  for (const auto &attr : hwNode->attributes) {
-    if (attr.getName() != "table")
-      continue;
-    auto arrayAttr = mlir::dyn_cast<mlir::ArrayAttr>(attr.getValue());
-    if (!arrayAttr)
-      break;
-    sawTable = true;
-    for (auto elem : arrayAttr) {
-      if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(elem))
-        packBits(words, bitPos, static_cast<uint64_t>(intAttr.getInt()), 16);
-    }
-    break;
-  }
-  if (!sawTable)
+  auto entries = getMapTagTableEntries(hwNode);
+  if (entries.size() != tableSize)
     cfg.complete = false;
+  for (unsigned idx = 0; idx < tableSize; ++idx) {
+    MapTagTableEntry entry;
+    if (idx < entries.size())
+      entry = entries[idx];
+    packBits(words, bitPos, entry.valid ? 1u : 0u, 1);
+    packBits(words, bitPos, entry.srcTag, inputTagWidth);
+    packBits(words, bitPos, entry.dstTag, outputTagWidth);
+  }
   cfg.words = std::move(words);
   return cfg;
 }
@@ -1049,6 +1155,27 @@ GeneratedNodeConfig buildMemoryConfig(const Node *hwNode, IdIndex hwId,
   cfg.words.reserve(addrTable.size());
   for (int64_t value : addrTable)
     cfg.words.push_back(static_cast<uint32_t>(value));
+  return cfg;
+}
+
+GeneratedNodeConfig buildFifoConfig(const Node *hwNode) {
+  GeneratedNodeConfig cfg;
+  if (!hwNode)
+    return cfg;
+  bool bypassable = false;
+  bool bypassed = false;
+  for (const auto &attr : hwNode->attributes) {
+    if (attr.getName() == "bypassable") {
+      if (mlir::isa<mlir::BoolAttr>(attr.getValue()))
+        bypassable = mlir::cast<mlir::BoolAttr>(attr.getValue()).getValue();
+    } else if (attr.getName() == "bypassed") {
+      if (auto boolAttr = mlir::dyn_cast<mlir::BoolAttr>(attr.getValue()))
+        bypassed = boolAttr.getValue();
+    }
+  }
+  if (!bypassable)
+    return cfg;
+  cfg.words.push_back(bypassed ? 1u : 0u);
   return cfg;
 }
 
@@ -1106,16 +1233,18 @@ void packFUConfigBits(std::vector<uint32_t> &words, uint32_t &bitPos,
 
   for (size_t i = 0; i < fieldCount; ++i) {
     unsigned width = widths[i];
-    unsigned selBits = width >= 2 ? width - 2 : 0;
-    uint64_t sel = 0;
-    bool discard = false;
-    bool disconnect = false;
     if (selection && i < selectedCount) {
-      sel = selection->fields[i].sel;
-      discard = selection->fields[i].discard;
-      disconnect = selection->fields[i].disconnect;
+      const auto &field = selection->fields[i];
+      if (field.kind == FUConfigFieldKind::Mux) {
+        unsigned selBits = width >= 2 ? width - 2 : 0;
+        packMuxField(words, bitPos, selBits, field.sel, field.discard,
+                     field.disconnect);
+      } else {
+        packBits(words, bitPos, field.value, width);
+      }
+      continue;
     }
-    packMuxField(words, bitPos, selBits, sel, discard, disconnect);
+    packBits(words, bitPos, 0u, width);
   }
 }
 
@@ -1675,7 +1804,9 @@ bool ConfigGen::buildConfigArtifacts(const MappingState &state,
       else if (opKind == "add_tag")
         generated = buildAddTagConfig(hwNode);
       else if (opKind == "map_tag")
-        generated = buildMapTagConfig(hwNode);
+        generated = buildMapTagConfig(hwNode, adg);
+      else if (opKind == "fifo")
+        generated = buildFifoConfig(hwNode);
       else
         continue;
     } else if (resourceClass == "memory") {
@@ -2178,12 +2309,84 @@ bool ConfigGen::writeMapJson(const MappingState &state, const Graph &dfg,
       const auto &field = selection.fields[i];
       out << "{\"op_index\": " << field.opIndex;
       out << ", \"op_name\": \"" << field.opName << "\"";
-      out << ", \"sel\": " << field.sel;
-      out << ", \"discard\": " << (field.discard ? "true" : "false");
-      out << ", \"disconnect\": " << (field.disconnect ? "true" : "false")
-          << "}";
+      out << ", \"kind\": \"" << configFieldKindName(field.kind) << "\"";
+      out << ", \"bit_width\": " << field.bitWidth;
+      out << ", \"value\": " << field.value;
+      out << ", \"display\": \"" << formatConfigFieldValue(field) << "\"";
+      if (field.kind == FUConfigFieldKind::Mux) {
+        out << ", \"sel\": " << field.sel;
+        out << ", \"discard\": " << (field.discard ? "true" : "false");
+        out << ", \"disconnect\": "
+            << (field.disconnect ? "true" : "false");
+      }
+      out << "}";
     }
     out << "]}";
+  }
+  out << "\n  ],\n";
+
+  out << "  \"tag_configs\": [\n";
+  first = true;
+  for (const auto &slice : configSlices_) {
+    if (slice.kind != "add_tag" && slice.kind != "map_tag")
+      continue;
+    const Node *hwNode =
+        slice.hwNode == INVALID_ID ? nullptr : adg.getNode(slice.hwNode);
+    if (!first)
+      out << ",\n";
+    first = false;
+    out << "    {\"name\": \"" << slice.name << "\", \"kind\": \""
+        << slice.kind << "\", \"complete\": "
+        << (slice.complete ? "true" : "false");
+    if (slice.kind == "add_tag") {
+      out << ", \"tag\": " << getNodeAttrInt(hwNode, "tag", 0);
+    } else {
+      out << ", \"table_size\": " << getNodeAttrInt(hwNode, "table_size", 0);
+      auto [inTagWidth, outTagWidth] = getMapTagTagWidths(hwNode, adg);
+      out << ", \"input_tag_width\": " << inTagWidth;
+      out << ", \"output_tag_width\": " << outTagWidth;
+      out << ", \"table\": [";
+      bool firstElem = true;
+      for (const auto &entry : getMapTagTableEntries(hwNode)) {
+        if (!firstElem)
+          out << ", ";
+        firstElem = false;
+        out << "{\"valid\": " << (entry.valid ? "true" : "false")
+            << ", \"src_tag\": " << entry.srcTag
+            << ", \"dst_tag\": " << entry.dstTag << "}";
+      }
+      out << "]";
+    }
+    out << "}";
+  }
+  out << "\n  ],\n";
+
+  out << "  \"fifo_configs\": [\n";
+  first = true;
+  for (const auto &slice : configSlices_) {
+    if (slice.kind != "fifo")
+      continue;
+    const Node *hwNode =
+        slice.hwNode == INVALID_ID ? nullptr : adg.getNode(slice.hwNode);
+    bool bypassable = false;
+    bool bypassed = false;
+    for (const auto &attr : hwNode->attributes) {
+      if (attr.getName() == "bypassable") {
+        if (auto boolAttr = mlir::dyn_cast<mlir::BoolAttr>(attr.getValue()))
+          bypassable = boolAttr.getValue();
+      } else if (attr.getName() == "bypassed") {
+        if (auto boolAttr = mlir::dyn_cast<mlir::BoolAttr>(attr.getValue()))
+          bypassed = boolAttr.getValue();
+      }
+    }
+    if (!first)
+      out << ",\n";
+    first = false;
+    out << "    {\"name\": \"" << slice.name << "\", \"complete\": "
+        << (slice.complete ? "true" : "false");
+    out << ", \"bypassable\": " << (bypassable ? "true" : "false");
+    out << ", \"bypassed\": " << (bypassed ? "true" : "false");
+    out << "}";
   }
   out << "\n  ],\n";
 

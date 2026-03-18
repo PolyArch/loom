@@ -113,6 +113,19 @@ Recommended sections are:
   - selected effective FU configuration per mapped hardware FU
   - software nodes absorbed into that FU
   - selected `mux` fields such as `sel`
+  - configurable software-op fields such as:
+    - `handshake.constant` literal value
+    - `arith.cmpi` / `arith.cmpf` predicate
+    - `dataflow.stream` continuation condition
+- `tag_configs`
+  - per-tag-boundary runtime configuration
+  - `fabric.add_tag` exports one constant `tag`
+  - `fabric.map_tag` exports `table_size`, tag widths, and the full structured
+    table entries `[valid, src_tag, dst_tag]`
+- `fifo_configs`
+  - per-FIFO runtime configuration
+  - only present for bypassable FIFOs
+  - exports whether the FIFO is currently bypassed
 - `temporal_registers`
   - explicit register-backed dependencies inside `temporal_pe`
   - the assigned register index per writer result

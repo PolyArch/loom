@@ -36,10 +36,13 @@ future work under this repository.
 |------|-------------|
 | [spec-fabric.md](./spec-fabric.md) | Fabric dialect overview and operation taxonomy |
 | [spec-fabric-function_unit.md](./spec-fabric-function_unit.md) | `fabric.function_unit` and `fabric.mux` semantics |
+| [spec-fabric-fifo.md](./spec-fabric-fifo.md) | `fabric.fifo` structure, legality, and runtime bypass config |
+| [spec-fabric-tag.md](./spec-fabric-tag.md) | `fabric.add_tag`, `fabric.map_tag`, and `fabric.del_tag` |
 | [spec-fabric-memory-interface.md](./spec-fabric-memory-interface.md) | Extmemory-facing routing, tagged multi-port memory, and memory region contract |
 | [spec-fabric-spatial_pe.md](./spec-fabric-spatial_pe.md) | `fabric.spatial_pe` container, mux/demux model, config layout |
 | [spec-fabric-spatial_sw.md](./spec-fabric-spatial_sw.md) | `fabric.spatial_sw`, decomposable routing, route-table semantics |
-| [spec-fabric-temporal.md](./spec-fabric-temporal.md) | `fabric.temporal_pe` and `fabric.temporal_sw` summary |
+| [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md) | `fabric.temporal_pe` structure, slot encoding, and register model |
+| [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md) | `fabric.temporal_sw` tag-matching route-table semantics |
 
 ## Mapper
 

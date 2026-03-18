@@ -1233,10 +1233,10 @@ static ParseResult parseFifoHwParams(OpAsmParser &parser,
     StringRef keyword;
     if (parser.parseKeyword(&keyword))
       return failure();
-    if (parser.parseEqual())
-      return failure();
 
     if (keyword == "depth") {
+      if (parser.parseEqual())
+        return failure();
       IntegerAttr attr;
       if (parser.parseAttribute(attr, parser.getBuilder().getIntegerType(64)))
         return failure();
@@ -1320,7 +1320,25 @@ void FifoOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult FifoOp::verify() {
-  return verifyModuleLevelComponentPlacement(*this);
+  if (failed(verifyModuleLevelComponentPlacement(*this)))
+    return failure();
+
+  auto fnType = getFunctionType();
+  if (fnType.getNumInputs() != 1 || fnType.getNumResults() != 1)
+    return emitOpError("must have exactly one input and one output");
+  if (fnType.getInput(0) != fnType.getResult(0))
+    return emitOpError("input and output types must match");
+  if (getDepth() < 1)
+    return emitOpError("depth must be at least 1");
+
+  bool bypassable = static_cast<bool>(getBypassable());
+  bool bypassed = false;
+  if (auto attr = mlir::dyn_cast_or_null<mlir::BoolAttr>((*this)->getAttr("bypassed")))
+    bypassed = attr.getValue();
+  if (bypassed && !bypassable)
+    return emitOpError("bypassed requires bypassable");
+
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -1856,6 +1874,8 @@ LogicalResult MapTagOp::verify() {
   int64_t tableSize = tableSizeAttr.getInt();
   if (tableSize <= 0)
     return emitOpError("table_size must be positive");
+  if (tableSize > 256)
+    return emitOpError("table_size must be <= 256");
 
   if (inputTagType.getWidth() < 63) {
     uint64_t maxEntries = uint64_t{1} << inputTagType.getWidth();
@@ -1869,17 +1889,52 @@ LogicalResult MapTagOp::verify() {
     return emitOpError("table length must match table_size");
   }
 
-  if (tableAttr && outputTagType.getWidth() < 63) {
-    uint64_t maxOutput = uint64_t{1} << outputTagType.getWidth();
-    for (Attribute attr : *tableAttr) {
-      auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr);
-      if (!intAttr)
-        return emitOpError("table entries must be integers");
-      int64_t value = intAttr.getInt();
-      if (value < 0)
-        return emitOpError("table entries must be non-negative");
-      if (static_cast<uint64_t>(value) >= maxOutput)
-        return emitOpError("table entry exceeds output tag domain");
+  uint64_t maxInput =
+      inputTagType.getWidth() < 63 ? (uint64_t{1} << inputTagType.getWidth()) : 0;
+  uint64_t maxOutput = outputTagType.getWidth() < 63
+                           ? (uint64_t{1} << outputTagType.getWidth())
+                           : 0;
+
+  if (tableAttr) {
+    for (int64_t index = 0, e = static_cast<int64_t>(tableAttr->size()); index < e;
+         ++index) {
+      Attribute attr = (*tableAttr)[static_cast<size_t>(index)];
+      if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr)) {
+        int64_t value = intAttr.getInt();
+        if (value < 0)
+          return emitOpError("legacy table entries must be non-negative");
+        if (outputTagType.getWidth() < 63 &&
+            static_cast<uint64_t>(value) >= maxOutput) {
+          return emitOpError("legacy table entry exceeds output tag domain");
+        }
+        continue;
+      }
+
+      auto entry = mlir::dyn_cast<mlir::ArrayAttr>(attr);
+      if (!entry || entry.size() != 3)
+        return emitOpError("table entries must be integers or [valid, src_tag, dst_tag] triples");
+
+      auto validAttr = mlir::dyn_cast<mlir::IntegerAttr>(entry[0]);
+      auto srcAttr = mlir::dyn_cast<mlir::IntegerAttr>(entry[1]);
+      auto dstAttr = mlir::dyn_cast<mlir::IntegerAttr>(entry[2]);
+      if (!validAttr || !srcAttr || !dstAttr)
+        return emitOpError("map_tag table triple entries must contain integers");
+
+      int64_t valid = validAttr.getInt();
+      int64_t src = srcAttr.getInt();
+      int64_t dst = dstAttr.getInt();
+      if (valid != 0 && valid != 1)
+        return emitOpError("map_tag table valid bit must be 0 or 1");
+      if (src < 0 || dst < 0)
+        return emitOpError("map_tag table src_tag and dst_tag must be non-negative");
+      if (inputTagType.getWidth() < 63 &&
+          static_cast<uint64_t>(src) >= maxInput) {
+        return emitOpError("map_tag table src_tag exceeds input tag domain");
+      }
+      if (outputTagType.getWidth() < 63 &&
+          static_cast<uint64_t>(dst) >= maxOutput) {
+        return emitOpError("map_tag table dst_tag exceeds output tag domain");
+      }
     }
   }
 

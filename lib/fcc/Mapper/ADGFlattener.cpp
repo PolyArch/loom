@@ -1,5 +1,6 @@
 #include "fcc/Mapper/ADGFlattener.h"
 #include "fcc/Mapper/BridgeBinding.h"
+#include "fcc/Mapper/TypeCompat.h"
 
 #include "fcc/Dialect/Fabric/FabricDialect.h"
 #include "fcc/Dialect/Fabric/FabricOps.h"
@@ -115,16 +116,35 @@ extractFUConfigFieldWidths(fcc::fabric::FunctionUnitOp fuOp,
                            mlir::MLIRContext *ctx) {
   llvm::SmallVector<int64_t, 4> widths;
   for (mlir::Operation &bodyOp : fuOp.getBody().front().getOperations()) {
-    auto muxOp = mlir::dyn_cast<fcc::fabric::MuxOp>(bodyOp);
-    if (!muxOp)
+    if (mlir::isa<fcc::fabric::YieldOp>(bodyOp))
       continue;
-    unsigned numInputs = muxOp.getInputs().size();
-    unsigned numResults = muxOp.getResults().size();
-    if (numInputs == 1 && numResults == 1)
+    if (auto muxOp = mlir::dyn_cast<fcc::fabric::MuxOp>(bodyOp)) {
+      unsigned numInputs = muxOp.getInputs().size();
+      unsigned numResults = muxOp.getResults().size();
+      if (numInputs == 1 && numResults == 1)
+        continue;
+      unsigned branchCount = std::max(numInputs, numResults);
+      unsigned selBits = branchCount > 1 ? llvm::Log2_32_Ceil(branchCount) : 0;
+      widths.push_back(static_cast<int64_t>(selBits + 2));
       continue;
-    unsigned branchCount = std::max(numInputs, numResults);
-    unsigned selBits = branchCount > 1 ? llvm::Log2_32_Ceil(branchCount) : 0;
-    widths.push_back(static_cast<int64_t>(selBits + 2));
+    }
+
+    llvm::StringRef opName = bodyOp.getName().getStringRef();
+    if (opName == "handshake.constant") {
+      if (bodyOp.getNumResults() == 0)
+        continue;
+      if (auto width = detail::getScalarWidth(bodyOp.getResult(0).getType()))
+        widths.push_back(static_cast<int64_t>(*width));
+      continue;
+    }
+    if (opName == "arith.cmpi" || opName == "arith.cmpf") {
+      widths.push_back(4);
+      continue;
+    }
+    if (opName == "dataflow.stream") {
+      widths.push_back(5);
+      continue;
+    }
   }
   if (widths.empty())
     return {};
@@ -772,7 +792,21 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
         setNodeAttr(fifoNode.get(), "op_kind",
                     mlir::StringAttr::get(ctx, "fifo"), ctx);
         setNodeAttr(fifoNode.get(), "resource_class",
-                    mlir::StringAttr::get(ctx, "buffer"), ctx);
+                    mlir::StringAttr::get(ctx, "routing"), ctx);
+        setNodeAttr(fifoNode.get(), "depth",
+                    mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                           fifoDef.getDepth()),
+                    ctx);
+        setNodeAttr(fifoNode.get(), "bypassable",
+                    mlir::BoolAttr::get(ctx, static_cast<bool>(fifoDef.getBypassable())),
+                    ctx);
+        bool bypassed = false;
+        if (auto attr = mlir::dyn_cast_or_null<mlir::BoolAttr>(
+                fifoDef->getAttr("bypassed"))) {
+          bypassed = attr.getValue();
+        }
+        setNodeAttr(fifoNode.get(), "bypassed",
+                    mlir::BoolAttr::get(ctx, bypassed), ctx);
 
         auto fifoFnType = fifoDef.getFunctionType();
         for (unsigned i = 0; i < fifoFnType.getNumInputs(); ++i) {
@@ -1161,6 +1195,19 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
                   mlir::StringAttr::get(ctx, "fifo"), ctx);
       setNodeAttr(fifoNode.get(), "resource_class",
                   mlir::StringAttr::get(ctx, "routing"), ctx);
+      setNodeAttr(fifoNode.get(), "depth",
+                  mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                         fifoOp.getDepth()),
+                  ctx);
+      setNodeAttr(fifoNode.get(), "bypassable",
+                  mlir::BoolAttr::get(ctx, static_cast<bool>(fifoOp.getBypassable())),
+                  ctx);
+      bool bypassed = false;
+      if (auto attr =
+              mlir::dyn_cast_or_null<mlir::BoolAttr>(fifoOp->getAttr("bypassed")))
+        bypassed = attr.getValue();
+      setNodeAttr(fifoNode.get(), "bypassed",
+                  mlir::BoolAttr::get(ctx, bypassed), ctx);
 
       // Create input ports from function type.
       auto fifoFnType = fifoOp.getFunctionType();

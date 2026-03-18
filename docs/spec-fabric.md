@@ -208,7 +208,7 @@ Examples:
 - `fabric.mux ... {sel = 0 : i64, discard = false, disconnect = false}`
 - `fabric.temporal_pe ... [num_register = 0 : i64, num_instruction = 4 : i64,
   reg_fifo_depth = 0 : i64] attributes {instruction_mem = [...] }`
-- `fabric.map_tag ... [table_size = 4 : i64] attributes {table = [...] }`
+- `fabric.map_tag ... [table_size = 4 : i64] attributes {table = [[1, 0, 3], ...] }`
 - `fabric.memory` or `fabric.extmemory` use `[]` for fixed memory-interface
   structure and `attributes {}` for region programming such as
   `addr_offset_table`
@@ -220,7 +220,10 @@ the operation's structural syntax.
 ## Related Documents
 
 - [spec-fabric-function_unit.md](./spec-fabric-function_unit.md)
+- [spec-fabric-fifo.md](./spec-fabric-fifo.md)
+- [spec-fabric-tag.md](./spec-fabric-tag.md)
 - [spec-fabric-memory-interface.md](./spec-fabric-memory-interface.md)
 - [spec-fabric-spatial_pe.md](./spec-fabric-spatial_pe.md)
 - [spec-fabric-spatial_sw.md](./spec-fabric-spatial_sw.md)
-- [spec-fabric-temporal.md](./spec-fabric-temporal.md)
+- [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md)
+- [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md)

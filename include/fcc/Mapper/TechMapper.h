@@ -9,6 +9,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -18,9 +19,21 @@ class ModuleOp;
 
 namespace fcc {
 
+enum class FUConfigFieldKind : uint8_t {
+  Mux = 0,
+  ConstantValue = 1,
+  CmpIPredicate = 2,
+  CmpFPredicate = 3,
+  StreamContCond = 4,
+};
+
 struct FUConfigField {
+  FUConfigFieldKind kind = FUConfigFieldKind::Mux;
   unsigned opIndex = 0;
+  unsigned templateOpIndex = std::numeric_limits<unsigned>::max();
   std::string opName;
+  unsigned bitWidth = 0;
+  uint64_t value = 0;
   uint64_t sel = 0;
   bool discard = false;
   bool disconnect = false;

@@ -47,8 +47,11 @@ bool sameConfigFields(llvm::ArrayRef<FUConfigField> lhs,
   if (lhs.size() != rhs.size())
     return false;
   for (size_t i = 0; i < lhs.size(); ++i) {
-    if (lhs[i].opIndex != rhs[i].opIndex || lhs[i].opName != rhs[i].opName ||
-        lhs[i].sel != rhs[i].sel || lhs[i].discard != rhs[i].discard ||
+    if (lhs[i].kind != rhs[i].kind || lhs[i].opIndex != rhs[i].opIndex ||
+        lhs[i].opName != rhs[i].opName ||
+        lhs[i].bitWidth != rhs[i].bitWidth ||
+        lhs[i].value != rhs[i].value || lhs[i].sel != rhs[i].sel ||
+        lhs[i].discard != rhs[i].discard ||
         lhs[i].disconnect != rhs[i].disconnect) {
       return false;
     }

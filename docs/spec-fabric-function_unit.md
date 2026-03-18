@@ -171,6 +171,36 @@ The matching rule is structural and generic. It is not defined per named FU
 such as `mac`; any FU with internal `mux` nodes participates in the same
 configuration-enumeration and effective-graph extraction model.
 
+## FU-Internal Runtime Configuration
+
+FCC treats one `fabric.function_unit`'s runtime configuration payload as the
+concatenation of all configurable body fields in body occurrence order.
+
+Current configurable body fields are:
+
+- `fabric.mux`
+- `handshake.constant`
+- `arith.cmpi`
+- `arith.cmpf`
+- `dataflow.stream`
+
+No other body operation currently contributes runtime configuration bits.
+
+The serialized payload is low-to-high in body occurrence order. Each field uses
+its own local encoding:
+
+- `fabric.mux`: `[sel | discard | disconnect]`
+- `handshake.constant`: literal result value bits, zero-extended or truncated
+  to the result bit width
+- `arith.cmpi`: 4-bit predicate encoding using the MLIR predicate enum value
+- `arith.cmpf`: 4-bit predicate encoding using the MLIR predicate enum value
+- `dataflow.stream`: 5-bit `cont_cond` one-hot encoding in the order
+  `<, <=, >, >=, !=`
+
+FCC does not carry Loom's earlier `output_tag` PE-body config field into
+`fabric.function_unit`. Runtime tag handling is modeled explicitly through
+tagged ports and tag-boundary operations instead.
+
 ## Relationship to PE Configuration
 
 - In `spatial_pe`, only one FU is active at a time, so the PE reuses one FU

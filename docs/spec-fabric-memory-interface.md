@@ -241,6 +241,19 @@ In FCC syntax:
 - runtime region programming such as `addr_offset_table` belongs to
   `attributes {}`
 
+One important FCC distinction is ownership of the region base address:
+
+- for `fabric.memory`, the mapper may compute on-chip base offsets directly
+- for `fabric.extmemory`, the mapper does not know the host virtual or physical
+  base address of the backing memory object
+
+Therefore:
+
+- `fabric.extmemory` configuration emitted by the mapper always serializes
+  `addr_offset` as `0`
+- the host runtime is responsible for patching or programming the actual
+  base address before launch
+
 ## Memref Type Compatibility
 
 For software-to-hardware memory mapping, FCC matches memrefs by element width,

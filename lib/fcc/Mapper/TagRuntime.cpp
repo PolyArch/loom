@@ -8,6 +8,12 @@ namespace fcc {
 
 namespace {
 
+struct MapTagTableEntry {
+  bool valid = false;
+  uint64_t srcTag = 0;
+  uint64_t dstTag = 0;
+};
+
 std::optional<uint64_t> getUIntNodeAttr(const Node *node, llvm::StringRef name) {
   if (!node)
     return std::nullopt;
@@ -18,6 +24,45 @@ std::optional<uint64_t> getUIntNodeAttr(const Node *node, llvm::StringRef name) 
       return static_cast<uint64_t>(intAttr.getInt());
   }
   return std::nullopt;
+}
+
+llvm::SmallVector<MapTagTableEntry, 8> getMapTagTableEntries(const Node *node) {
+  llvm::SmallVector<MapTagTableEntry, 8> entries;
+  if (!node)
+    return entries;
+  for (const auto &attr : node->attributes) {
+    if (attr.getName() != "table")
+      continue;
+    auto arrayAttr = mlir::dyn_cast<mlir::ArrayAttr>(attr.getValue());
+    if (!arrayAttr)
+      return entries;
+    for (size_t idx = 0; idx < arrayAttr.size(); ++idx) {
+      mlir::Attribute elem = arrayAttr[idx];
+      if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(elem)) {
+        MapTagTableEntry entry;
+        entry.valid = true;
+        entry.srcTag = static_cast<uint64_t>(idx);
+        entry.dstTag = static_cast<uint64_t>(intAttr.getInt());
+        entries.push_back(entry);
+        continue;
+      }
+      auto tupleAttr = mlir::dyn_cast<mlir::ArrayAttr>(elem);
+      if (!tupleAttr || tupleAttr.size() != 3)
+        continue;
+      auto validAttr = mlir::dyn_cast<mlir::IntegerAttr>(tupleAttr[0]);
+      auto srcAttr = mlir::dyn_cast<mlir::IntegerAttr>(tupleAttr[1]);
+      auto dstAttr = mlir::dyn_cast<mlir::IntegerAttr>(tupleAttr[2]);
+      if (!validAttr || !srcAttr || !dstAttr)
+        continue;
+      MapTagTableEntry entry;
+      entry.valid = validAttr.getInt() != 0;
+      entry.srcTag = static_cast<uint64_t>(srcAttr.getInt());
+      entry.dstTag = static_cast<uint64_t>(dstAttr.getInt());
+      entries.push_back(entry);
+    }
+    return entries;
+  }
+  return entries;
 }
 
 bool isSoftwareMemoryInterfaceOpName(llvm::StringRef opName) {
@@ -113,21 +158,21 @@ std::optional<uint64_t> applyMapTagTableValue(const Node *mapTagNode,
 
   unsigned tableSize =
       static_cast<unsigned>(getNodeAttrInt(mapTagNode, "table_size", 0));
-  if (tableSize == 0 || *tag >= tableSize)
+  if (tableSize == 0)
     return std::nullopt;
-
-  for (const auto &attr : mapTagNode->attributes) {
-    if (attr.getName() != "table")
+  auto entries = getMapTagTableEntries(mapTagNode);
+  if (entries.size() != tableSize)
+    return std::nullopt;
+  std::optional<uint64_t> mapped;
+  for (const auto &entry : entries) {
+    if (!entry.valid || entry.srcTag != *tag)
       continue;
-    auto arrayAttr = mlir::dyn_cast<mlir::ArrayAttr>(attr.getValue());
-    if (!arrayAttr || *tag >= arrayAttr.size())
+    if (mapped)
       return std::nullopt;
-    auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(arrayAttr[*tag]);
-    if (!intAttr)
-      return std::nullopt;
-    return static_cast<uint64_t>(intAttr.getInt());
+    mapped = entry.dstTag;
   }
-
+  if (mapped)
+    return mapped;
   return std::nullopt;
 }
 

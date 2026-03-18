@@ -3,16 +3,19 @@
 
 #include "fcc/Dialect/Fabric/FabricOps.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <set>
 #include <tuple>
@@ -65,6 +68,7 @@ struct Match {
   llvm::SmallVector<TechMapper::PortBinding, 4> inputBindings;
   llvm::SmallVector<TechMapper::PortBinding, 4> outputBindings;
   llvm::SmallVector<IdIndex, 4> internalEdges;
+  llvm::SmallVector<FUConfigField, 4> configFields;
 };
 
 void addNodeAttr(Node *node, llvm::StringRef key, mlir::Attribute value,
@@ -91,6 +95,114 @@ std::string printType(mlir::Type type) {
   llvm::raw_string_ostream os(text);
   type.print(os);
   return text;
+}
+
+mlir::Attribute getNodeAttr(const Node *node, llvm::StringRef name) {
+  if (!node)
+    return {};
+  for (const auto &attr : node->attributes) {
+    if (attr.getName() == name)
+      return attr.getValue();
+  }
+  return {};
+}
+
+unsigned getTypeBitWidth(mlir::Type type) {
+  if (auto width = detail::getScalarWidth(type))
+    return *width;
+  return 0;
+}
+
+llvm::StringRef configFieldKindName(FUConfigFieldKind kind) {
+  switch (kind) {
+  case FUConfigFieldKind::Mux:
+    return "mux";
+  case FUConfigFieldKind::ConstantValue:
+    return "constant_value";
+  case FUConfigFieldKind::CmpIPredicate:
+    return "cmpi_predicate";
+  case FUConfigFieldKind::CmpFPredicate:
+    return "cmpf_predicate";
+  case FUConfigFieldKind::StreamContCond:
+    return "stream_cont_cond";
+  }
+  return "unknown";
+}
+
+std::optional<uint64_t> encodeStreamContCond(llvm::StringRef cond) {
+  if (cond == "<")
+    return 1u << 0;
+  if (cond == "<=")
+    return 1u << 1;
+  if (cond == ">")
+    return 1u << 2;
+  if (cond == ">=")
+    return 1u << 3;
+  if (cond == "!=")
+    return 1u << 4;
+  return std::nullopt;
+}
+
+std::optional<std::pair<FUConfigFieldKind, unsigned>>
+getConfigurableOpFieldSpec(mlir::Operation &op) {
+  llvm::StringRef opName = op.getName().getStringRef();
+  if (opName == "handshake.constant") {
+    if (op.getNumResults() == 0)
+      return std::nullopt;
+    unsigned bitWidth = getTypeBitWidth(op.getResult(0).getType());
+    if (bitWidth == 0)
+      return std::nullopt;
+    return std::make_pair(FUConfigFieldKind::ConstantValue, bitWidth);
+  }
+  if (opName == "arith.cmpi")
+    return std::make_pair(FUConfigFieldKind::CmpIPredicate, 4u);
+  if (opName == "arith.cmpf")
+    return std::make_pair(FUConfigFieldKind::CmpFPredicate, 4u);
+  if (opName == "dataflow.stream")
+    return std::make_pair(FUConfigFieldKind::StreamContCond, 5u);
+  return std::nullopt;
+}
+
+std::optional<uint64_t> extractFieldValueFromNode(const Node *swNode,
+                                                  const FUConfigField &field) {
+  if (!swNode)
+    return std::nullopt;
+
+  switch (field.kind) {
+  case FUConfigFieldKind::Mux:
+    return field.value;
+  case FUConfigFieldKind::ConstantValue: {
+    mlir::Attribute attr = getNodeAttr(swNode, "value");
+    if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr))
+      return intAttr.getValue().getZExtValue();
+    if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr))
+      return floatAttr.getValue().bitcastToAPInt().getZExtValue();
+    return std::nullopt;
+  }
+  case FUConfigFieldKind::CmpIPredicate: {
+    mlir::Attribute attr = getNodeAttr(swNode, "predicate");
+    if (auto predAttr = mlir::dyn_cast<mlir::arith::CmpIPredicateAttr>(attr))
+      return static_cast<uint64_t>(predAttr.getValue());
+    if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr))
+      return static_cast<uint64_t>(intAttr.getInt());
+    return std::nullopt;
+  }
+  case FUConfigFieldKind::CmpFPredicate: {
+    mlir::Attribute attr = getNodeAttr(swNode, "predicate");
+    if (auto predAttr = mlir::dyn_cast<mlir::arith::CmpFPredicateAttr>(attr))
+      return static_cast<uint64_t>(predAttr.getValue());
+    if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr))
+      return static_cast<uint64_t>(intAttr.getInt());
+    return std::nullopt;
+  }
+  case FUConfigFieldKind::StreamContCond: {
+    mlir::Attribute attr = getNodeAttr(swNode, "cont_cond");
+    if (auto strAttr = mlir::dyn_cast<mlir::StringAttr>(attr))
+      return encodeStreamContCond(strAttr.getValue());
+    return std::nullopt;
+  }
+  }
+  return std::nullopt;
 }
 
 IdIndex findProducerPort(const Graph &graph, IdIndex inputPortId) {
@@ -195,8 +307,11 @@ std::string buildFamilySignature(const VariantFamily &family) {
     if (i)
       os << ";";
     const auto &field = family.configFields[i];
-    os << field.opIndex << ":" << field.sel << ":" << field.discard << ":"
-       << field.disconnect;
+    os << configFieldKindName(field.kind) << ":" << field.opIndex << ":"
+       << field.bitWidth;
+    if (field.kind == FUConfigFieldKind::Mux)
+      os << ":" << field.sel << ":" << field.discard << ":"
+         << field.disconnect;
   }
   os << ")";
   return os.str();
@@ -277,7 +392,7 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
 
   VariantFamily family;
   family.hwName = fuOp.getSymName().str();
-  family.configurable = !muxSelection.empty();
+  family.configurable = false;
 
   auto fnType = fuOp.getFunctionType();
   for (mlir::Type type : fnType.getInputs())
@@ -387,9 +502,15 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
     auto muxOp = mlir::cast<fcc::fabric::MuxOp>(staticMuxes[muxOrdinal]);
     auto it = muxSelection.find(muxOp.getOperation());
     FUConfigField field;
+    field.kind = FUConfigFieldKind::Mux;
     field.opIndex = displayOpIndex.lookup(muxOp.getOperation());
     field.opName = muxOp->getName().getStringRef().str();
+    field.bitWidth =
+        (getMuxBranchCount(muxOp) > 1 ? llvm::Log2_32_Ceil(getMuxBranchCount(muxOp))
+                                      : 0) +
+        2;
     field.sel = (it != muxSelection.end()) ? it->second : 0;
+    field.value = field.sel;
     bool selectedOutputUsed = false;
     for (mlir::Value operand : yieldOp.getOperands()) {
       mlir::Value cur = operand;
@@ -447,8 +568,60 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
     family.configFields.push_back(field);
   }
 
+  for (mlir::Operation &bodyOp : fuOp.getBody().front().getOperations()) {
+    if (mlir::isa<fcc::fabric::YieldOp>(bodyOp))
+      continue;
+    if (auto muxOp = mlir::dyn_cast<fcc::fabric::MuxOp>(bodyOp)) {
+      if (!isMuxPassThrough(muxOp))
+        continue;
+    }
+
+    auto spec = getConfigurableOpFieldSpec(bodyOp);
+    if (!spec)
+      continue;
+    auto compactIt = bodyOpToIndex.find(&bodyOp);
+    if (compactIt == bodyOpToIndex.end() ||
+        !reachableOps.contains(compactIt->second))
+      continue;
+    auto mapped = oldToCompact.find(compactIt->second);
+    if (mapped == oldToCompact.end())
+      return std::nullopt;
+
+    FUConfigField field;
+    field.kind = spec->first;
+    field.opIndex = displayOpIndex.lookup(&bodyOp);
+    field.templateOpIndex = mapped->second;
+    field.opName = bodyOp.getName().getStringRef().str();
+    field.bitWidth = spec->second;
+    family.configFields.push_back(std::move(field));
+  }
+
+  family.configurable = !family.configFields.empty();
   family.signature = buildFamilySignature(family);
   return family;
+}
+
+bool materializeConfigFields(const Graph &dfg, const VariantFamily &family,
+                             llvm::ArrayRef<IdIndex> swNodesByOp,
+                             llvm::SmallVectorImpl<FUConfigField> &out) {
+  out.clear();
+  out.reserve(family.configFields.size());
+  for (const auto &templField : family.configFields) {
+    FUConfigField field = templField;
+    if (field.kind != FUConfigFieldKind::Mux) {
+      if (field.templateOpIndex >= swNodesByOp.size())
+        return false;
+      IdIndex swNodeId = swNodesByOp[field.templateOpIndex];
+      const Node *swNode = dfg.getNode(swNodeId);
+      auto value = extractFieldValueFromNode(swNode, field);
+      if (!value)
+        return false;
+      field.value = *value;
+      field.sel = *value;
+    }
+    out.push_back(std::move(field));
+  }
+  return true;
 }
 
 void collectVariantsForFU(
@@ -592,6 +765,8 @@ bool buildMatchBindings(const Graph &dfg, const VariantFamily &family,
 
   for (const auto &binding : outputHwBySwPort)
     match.outputBindings.push_back({binding.first, binding.second});
+  if (!materializeConfigFields(dfg, family, swNodesByOp, match.configFields))
+    return false;
   return true;
 }
 
@@ -896,7 +1071,8 @@ bool TechMapper::buildPlan(const Graph &dfg, mlir::ModuleOp adgModule,
     for (IdIndex hwNodeId : familyList[match.familyIndex].hwNodeIds) {
       TechMapper::Candidate candidate;
       candidate.hwNodeId = hwNodeId;
-      candidate.configFields = familyList[match.familyIndex].configFields;
+      candidate.configFields.assign(match.configFields.begin(),
+                                    match.configFields.end());
       unit.candidates.push_back(std::move(candidate));
     }
     int unitIndex = static_cast<int>(plan.units.size());
