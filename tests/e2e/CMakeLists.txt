@@ -102,7 +102,7 @@ set(FCC_E2E_ADGS
   tiny-star-4pe
   medium-star-8pe
   wide-star-16pe
-  vecadd-demo-chess-5x5
+  vecadd-demo-chess-6x6
   medium-chess-6x6
   medium-chess-10x10
 )
@@ -116,7 +116,7 @@ set(FCC_E2E_PAIRS
   "sum-array|sum-array-demo-chess-5x5"
   "sum-array|sum-array-demo-chess-6x6"
   "sum-array|sum-array-demo-chess-7x7"
-  "vecadd|vecadd-demo-chess-5x5"
+  "vecadd|vecadd-demo-chess-6x6"
   "vecadd|tiny-star-4pe"
   "dotprod|tiny-star-4pe"
   "gemv|medium-star-8pe"

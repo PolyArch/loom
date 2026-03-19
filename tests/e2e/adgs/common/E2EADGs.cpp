@@ -186,12 +186,20 @@ void setExtMemStripLayout(ADGBuilder &builder,
   }
 }
 
-void wireExtMemIngressEgress(ADGBuilder &builder, const MeshResult &mesh,
-                             const std::vector<InstanceHandle> &extMems,
-                             unsigned ingressBase, unsigned egressBase) {
-  unsigned ingressIdx = ingressBase;
-  unsigned egressIdx = egressBase;
-  for (InstanceHandle mem : extMems) {
+void wireRoundRobinExtMemIngressEgress(
+    ADGBuilder &builder, const MeshResult &mesh,
+    const std::vector<InstanceHandle> &extMems, unsigned topLeftIngressCount,
+    unsigned bottomLeftEgressCount) {
+  unsigned leftIngressIdx = 0;
+  unsigned rightIngressIdx = topLeftIngressCount;
+  unsigned leftEgressIdx = 0;
+  unsigned rightEgressIdx = bottomLeftEgressCount;
+
+  for (unsigned memIdx = 0; memIdx < extMems.size(); ++memIdx) {
+    InstanceHandle mem = extMems[memIdx];
+    unsigned &ingressIdx = (memIdx % 2 == 0) ? leftIngressIdx : rightIngressIdx;
+    unsigned &egressIdx = (memIdx % 2 == 0) ? leftEgressIdx : rightEgressIdx;
+
     for (unsigned outPort = 0; outPort < 5; ++outPort) {
       builder.connect(mem, outPort, mesh.ingressPorts[ingressIdx].instance,
                       mesh.ingressPorts[ingressIdx].port);
@@ -213,8 +221,14 @@ void buildChessDomain(const std::string &moduleName,
   auto computePE = buildSpatialKernelPE(builder, moduleName);
 
   ChessMeshOptions options;
-  options.topLeftExtraInputs = numExtMems * 5 + scalarInputs;
-  options.bottomRightExtraOutputs = numExtMems * 4 + scalarOutputs;
+  const unsigned leftIngressMems = (numExtMems + 1) / 2;
+  const unsigned rightIngressMems = numExtMems / 2;
+  const unsigned leftEgressMems = (numExtMems + 1) / 2;
+  const unsigned rightEgressMems = numExtMems / 2;
+  options.topLeftExtraInputs = leftIngressMems * 5 + scalarInputs;
+  options.topRightExtraInputs = rightIngressMems * 5;
+  options.bottomLeftExtraOutputs = leftEgressMems * 4;
+  options.bottomRightExtraOutputs = rightEgressMems * 4 + scalarOutputs;
   auto mesh = builder.buildChessMesh(
       rows, cols,
       [&](unsigned, unsigned) { return computePE.pe; }, options);
@@ -225,14 +239,16 @@ void buildChessDomain(const std::string &moduleName,
   for (unsigned idx = 0; idx < extMems.size(); ++idx)
     builder.connectMemrefToExtMem(memrefs[idx], extMems[idx]);
 
-  wireExtMemIngressEgress(builder, mesh, extMems, 0, 0);
+  wireRoundRobinExtMemIngressEgress(builder, mesh, extMems,
+                                    options.topLeftExtraInputs,
+                                    options.bottomLeftExtraOutputs);
 
   std::vector<unsigned> inputs = builder.addInputs(
       "scalar", std::vector<std::string>(scalarInputs, bitsType()));
   std::vector<unsigned> outputs = builder.addOutputs(
       "scalar_out", std::vector<std::string>(scalarOutputs, bitsType()));
 
-  unsigned ingressIdx = numExtMems * 5;
+  unsigned ingressIdx = leftIngressMems * 5;
   for (unsigned idx = 0; idx < inputs.size(); ++idx, ++ingressIdx)
     builder.connectInputToPort(inputs[idx], mesh.ingressPorts[ingressIdx]);
 
@@ -490,8 +506,8 @@ void buildWideStar16PE(const std::string &outputPath) {
   buildStarDomain("wide_star_16pe", outputPath, 16, 6, 8, 4);
 }
 
-void buildVecaddDemoChess5x5(const std::string &outputPath) {
-  const std::string moduleName = "vecadd_demo_chess_5x5";
+void buildVecaddDemoChess6x6(const std::string &outputPath) {
+  const std::string moduleName = "vecadd_demo_chess_6x6";
   ADGBuilder builder(moduleName);
   auto computePE = buildSpatialKernelPE(builder, moduleName, 4, 4);
 
@@ -502,8 +518,14 @@ void buildVecaddDemoChess5x5(const std::string &outputPath) {
   constexpr unsigned kScalarOutputs = 1;
 
   ChessMeshOptions options;
-  options.topLeftExtraInputs = kNumExtMems * 5 + kScalarInputs;
-  options.bottomRightExtraOutputs = kNumExtMems * 4 + kScalarOutputs;
+  const unsigned leftIngressMems = (kNumExtMems + 1) / 2;
+  const unsigned rightIngressMems = kNumExtMems / 2;
+  const unsigned leftEgressMems = (kNumExtMems + 1) / 2;
+  const unsigned rightEgressMems = kNumExtMems / 2;
+  options.topLeftExtraInputs = leftIngressMems * 5 + kScalarInputs;
+  options.topRightExtraInputs = rightIngressMems * 5;
+  options.bottomLeftExtraOutputs = leftEgressMems * 4;
+  options.bottomRightExtraOutputs = rightEgressMems * 4 + kScalarOutputs;
   auto mesh = builder.buildChessMesh(
       kRows, kCols,
       [&](unsigned, unsigned) { return computePE.pe; }, options);
@@ -515,14 +537,16 @@ void buildVecaddDemoChess5x5(const std::string &outputPath) {
   for (unsigned idx = 0; idx < extMems.size(); ++idx)
     builder.connectMemrefToExtMem(memrefs[idx], extMems[idx]);
 
-  wireExtMemIngressEgress(builder, mesh, extMems, 0, 0);
+  wireRoundRobinExtMemIngressEgress(builder, mesh, extMems,
+                                    options.topLeftExtraInputs,
+                                    options.bottomLeftExtraOutputs);
 
   std::vector<unsigned> inputs = builder.addInputs(
       "scalar", std::vector<std::string>(kScalarInputs, bitsType()));
   std::vector<unsigned> outputs = builder.addOutputs(
       "scalar_out", std::vector<std::string>(kScalarOutputs, bitsType()));
 
-  unsigned ingressIdx = kNumExtMems * 5;
+  unsigned ingressIdx = leftIngressMems * 5;
   for (unsigned idx = 0; idx < inputs.size(); ++idx, ++ingressIdx)
     builder.connectInputToPort(inputs[idx], mesh.ingressPorts[ingressIdx]);
 

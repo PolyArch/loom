@@ -49,6 +49,8 @@ public:
                        const Graph &dfg, const Graph &adg);
   ActionResult mapEdge(IdIndex swEdge, llvm::ArrayRef<IdIndex> path,
                        const Graph &dfg, const Graph &adg);
+  ActionResult unmapEdge(IdIndex swEdge, const Graph &adg);
+  void clearRoutes(const Graph &adg, bool preserveDirectBindings = true);
 
   /// Checkpoint/restore for SA.
   struct Checkpoint {

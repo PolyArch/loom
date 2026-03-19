@@ -792,31 +792,75 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
     return path;
   }
 
-  struct SearchEntry {
-    double cost = 0.0;
-    IdIndex portId;
-    llvm::SmallVector<IdIndex, 8> pathSoFar;
+  struct TrailNode {
+    IdIndex portId = INVALID_ID;
+    int prevTrail = -1;
+    unsigned depth = 0;
   };
 
-struct SearchEntryLess {
+  struct SearchEntry {
+    double gCost = 0.0;
+    double fCost = 0.0;
+    IdIndex portId = INVALID_ID;
+    int trailIndex = -1;
+    unsigned depth = 0;
+  };
+
+  struct SearchEntryLess {
     bool operator()(const SearchEntry &lhs, const SearchEntry &rhs) const {
-      if (std::abs(lhs.cost - rhs.cost) > 1e-9)
-        return lhs.cost > rhs.cost;
-      if (lhs.pathSoFar.size() != rhs.pathSoFar.size())
-        return lhs.pathSoFar.size() > rhs.pathSoFar.size();
+      if (std::abs(lhs.fCost - rhs.fCost) > 1e-9)
+        return lhs.fCost > rhs.fCost;
+      if (std::abs(lhs.gCost - rhs.gCost) > 1e-9)
+        return lhs.gCost > rhs.gCost;
+      if (lhs.depth != rhs.depth)
+        return lhs.depth > rhs.depth;
       return lhs.portId > rhs.portId;
     }
+  };
+
+  auto estimateRemainingCost = [&](IdIndex currentPortId) -> double {
+    if (!activeFlattener)
+      return 0.0;
+    const Port *currentPort = adg.getPort(currentPortId);
+    const Port *dstPort = adg.getPort(dstHwPort);
+    if (!currentPort || !dstPort || currentPort->parentNode == INVALID_ID ||
+        dstPort->parentNode == INVALID_ID)
+      return 0.0;
+    auto [srcRow, srcCol] =
+        activeFlattener->getNodeGridPos(currentPort->parentNode);
+    auto [dstRow, dstCol] =
+        activeFlattener->getNodeGridPos(dstPort->parentNode);
+    if (srcRow < 0 || srcCol < 0 || dstRow < 0 || dstCol < 0)
+      return 0.0;
+    int manhattan = std::abs(srcRow - dstRow) + std::abs(srcCol - dstCol);
+    return static_cast<double>(manhattan) * 0.5;
+  };
+
+  llvm::SmallVector<TrailNode, 64> trails;
+  trails.push_back({srcHwPort, -1, 0});
+
+  auto buildPathFromTrail = [&](int trailIndex,
+                                IdIndex appendPort = INVALID_ID) {
+    llvm::SmallVector<IdIndex, 16> reversed;
+    while (trailIndex >= 0) {
+      reversed.push_back(trails[trailIndex].portId);
+      trailIndex = trails[trailIndex].prevTrail;
+    }
+
+    llvm::SmallVector<IdIndex, 8> rebuiltPath;
+    rebuiltPath.reserve(reversed.size() + (appendPort == INVALID_ID ? 0 : 1));
+    for (auto it = reversed.rbegin(); it != reversed.rend(); ++it)
+      rebuiltPath.push_back(*it);
+    if (appendPort != INVALID_ID)
+      rebuiltPath.push_back(appendPort);
+    return rebuiltPath;
   };
 
   std::priority_queue<SearchEntry, std::vector<SearchEntry>, SearchEntryLess>
       worklist;
   llvm::DenseMap<IdIndex, double> bestCost;
 
-  SearchEntry start;
-  start.cost = 0.0;
-  start.portId = srcHwPort;
-  start.pathSoFar.push_back(srcHwPort);
-  worklist.push(start);
+  worklist.push({0.0, estimateRemainingCost(srcHwPort), srcHwPort, 0, 0});
   bestCost[srcHwPort] = 0.0;
 
   while (!worklist.empty()) {
@@ -824,7 +868,7 @@ struct SearchEntryLess {
     worklist.pop();
 
     auto bestIt = bestCost.find(current.portId);
-    if (bestIt != bestCost.end() && current.cost > bestIt->second + 1e-9)
+    if (bestIt != bestCost.end() && current.gCost > bestIt->second + 1e-9)
       continue;
 
     const Port *currentPort = adg.getPort(current.portId);
@@ -832,8 +876,9 @@ struct SearchEntryLess {
       continue;
 
     if (current.portId == dstHwPort) {
-      if (!hasTaggedPathConflict(swEdgeId, current.pathSoFar, state, dfg, adg))
-        return current.pathSoFar;
+      auto candidatePath = buildPathFromTrail(current.trailIndex);
+      if (!hasTaggedPathConflict(swEdgeId, candidatePath, state, dfg, adg))
+        return candidatePath;
       continue;
     }
 
@@ -846,21 +891,23 @@ struct SearchEntryLess {
         if (current.portId == srcHwPort && forcedFirstHop != INVALID_ID &&
             nextInputPort != forcedFirstHop)
           continue;
-        auto nextPath = current.pathSoFar;
-        nextPath.push_back(nextInputPort);
+        auto nextPath = buildPathFromTrail(current.trailIndex, nextInputPort);
 
         if (!isEdgeLegal(current.portId, nextInputPort, swEdgeId, nextPath,
                          state, dfg, adg))
           continue;
 
-        double nextCost = current.cost + 1.0;
+        double nextCost = current.gCost + 1.0;
         auto nextBestIt = bestCost.find(nextInputPort);
         if (nextBestIt != bestCost.end() &&
             nextCost >= nextBestIt->second - 1e-9)
           continue;
 
         bestCost[nextInputPort] = nextCost;
-        worklist.push({nextCost, nextInputPort, std::move(nextPath)});
+        int nextTrailIndex = static_cast<int>(trails.size());
+        trails.push_back({nextInputPort, current.trailIndex, current.depth + 1});
+        worklist.push({nextCost, nextCost + estimateRemainingCost(nextInputPort),
+                       nextInputPort, nextTrailIndex, current.depth + 1});
       }
       continue;
     }
@@ -870,8 +917,7 @@ struct SearchEntryLess {
       continue;
 
     for (IdIndex outPortId : internalIt->second) {
-      auto outPath = current.pathSoFar;
-      outPath.push_back(outPortId);
+      auto outPath = buildPathFromTrail(current.trailIndex, outPortId);
       if (!isInternalHopLegal(current.portId, outPortId, swEdgeId, outPath,
                               state, dfg, adg))
         continue;
@@ -881,14 +927,18 @@ struct SearchEntryLess {
           it != routingOutputHistory.end())
         historyPenalty = it->second;
 
-      double nextCost = current.cost + 1.0 + historyPenalty;
+      double nextCost = current.gCost + 1.0 + historyPenalty;
       auto nextBestIt = bestCost.find(outPortId);
       if (nextBestIt != bestCost.end() &&
           nextCost >= nextBestIt->second - 1e-9)
         continue;
 
       bestCost[outPortId] = nextCost;
-      worklist.push({nextCost, outPortId, std::move(outPath)});
+      int nextTrailIndex = static_cast<int>(trails.size());
+      trails.push_back({outPortId, current.trailIndex, current.depth + 1});
+      worklist.push(
+          {nextCost, nextCost + estimateRemainingCost(outPortId), outPortId,
+           nextTrailIndex, current.depth + 1});
     }
   }
 

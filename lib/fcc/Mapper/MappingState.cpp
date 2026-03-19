@@ -1,6 +1,8 @@
 #include "fcc/Mapper/MappingState.h"
 #include "fcc/Mapper/Graph.h"
 
+#include <algorithm>
+
 namespace fcc {
 
 namespace {
@@ -106,8 +108,31 @@ ActionResult MappingState::unmapNode(IdIndex swNode,
     vec.erase(std::remove(vec.begin(), vec.end(), swNode), vec.end());
   }
 
-  // Unmap ports.
+  // Any routed software edge incident to this node becomes invalid once the
+  // node or its ports move, including synthetic direct bindings for extmemory.
   const Node *swN = dfg.getNode(swNode);
+  if (swN) {
+    llvm::SmallVector<IdIndex, 16> incidentEdges;
+    auto collectIncidentEdges = [&](llvm::ArrayRef<IdIndex> ports) {
+      for (IdIndex pid : ports) {
+        const Port *port = dfg.getPort(pid);
+        if (!port)
+          continue;
+        for (IdIndex edgeId : port->connectedEdges) {
+          if (std::find(incidentEdges.begin(), incidentEdges.end(), edgeId) ==
+              incidentEdges.end()) {
+            incidentEdges.push_back(edgeId);
+          }
+        }
+      }
+    };
+    collectIncidentEdges(swN->inputPorts);
+    collectIncidentEdges(swN->outputPorts);
+    for (IdIndex edgeId : incidentEdges)
+      unmapEdge(edgeId, adg);
+  }
+
+  // Unmap ports.
   if (swN) {
     for (IdIndex pid : swN->inputPorts) {
       if (pid < swPortToHwPort.size()) {
@@ -151,6 +176,9 @@ ActionResult MappingState::mapEdge(IdIndex swEdge,
   if (swEdge >= swEdgeToHwPaths.size())
     return ActionResult::FailedInternalError;
 
+  if (!swEdgeToHwPaths[swEdge].empty())
+    unmapEdge(swEdge, adg);
+
   swEdgeToHwPaths[swEdge].assign(path.begin(), path.end());
 
   // Track HW edge usage.
@@ -174,6 +202,50 @@ ActionResult MappingState::mapEdge(IdIndex swEdge,
   }
 
   return ActionResult::Success;
+}
+
+ActionResult MappingState::unmapEdge(IdIndex swEdge, const Graph &adg) {
+  if (swEdge >= swEdgeToHwPaths.size())
+    return ActionResult::FailedInternalError;
+
+  auto &path = swEdgeToHwPaths[swEdge];
+  if (path.empty())
+    return ActionResult::Success;
+
+  for (size_t i = 0; i + 1 < path.size(); i += 2) {
+    IdIndex outPort = path[i];
+    IdIndex inPort = path[i + 1];
+    const Port *op = adg.getPort(outPort);
+    if (!op)
+      continue;
+    for (IdIndex edgeId : op->connectedEdges) {
+      const Edge *hwEdge = adg.getEdge(edgeId);
+      if (!hwEdge || hwEdge->srcPort != outPort || hwEdge->dstPort != inPort)
+        continue;
+      if (edgeId < hwEdgeToSwEdges.size()) {
+        auto &mappedEdges = hwEdgeToSwEdges[edgeId];
+        mappedEdges.erase(
+            std::remove(mappedEdges.begin(), mappedEdges.end(), swEdge),
+            mappedEdges.end());
+      }
+      break;
+    }
+  }
+
+  path.clear();
+  return ActionResult::Success;
+}
+
+void MappingState::clearRoutes(const Graph &adg, bool preserveDirectBindings) {
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(swEdgeToHwPaths.size());
+       ++edgeId) {
+    const auto &path = swEdgeToHwPaths[edgeId];
+    if (path.empty())
+      continue;
+    if (preserveDirectBindings && path.size() == 2 && path[0] == path[1])
+      continue;
+    unmapEdge(edgeId, adg);
+  }
 }
 
 MappingState::Checkpoint MappingState::save() const {

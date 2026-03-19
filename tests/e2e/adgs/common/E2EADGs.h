@@ -14,7 +14,7 @@ void buildSumArrayDemoChess7x7(const std::string &outputPath);
 void buildTinyStar4PE(const std::string &outputPath);
 void buildMediumStar8PE(const std::string &outputPath);
 void buildWideStar16PE(const std::string &outputPath);
-void buildVecaddDemoChess5x5(const std::string &outputPath);
+void buildVecaddDemoChess6x6(const std::string &outputPath);
 void buildMediumChess6x6(const std::string &outputPath);
 void buildMediumChess10x10(const std::string &outputPath);
 

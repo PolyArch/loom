@@ -539,6 +539,8 @@ MeshResult ADGBuilder::buildChessMesh(
         numInputs += options.topRightExtraInputs;
       if (sr == 0 && sc == cols)
         numOutputs += options.topRightExtraOutputs;
+      if (sr == rows && sc == 0)
+        numOutputs += options.bottomLeftExtraOutputs;
       if (sr == rows && sc == cols)
         numOutputs += options.bottomRightExtraOutputs;
       SWHandle swHandle = makeSwitchTemplate(numInputs, numOutputs);
@@ -627,6 +629,12 @@ MeshResult ADGBuilder::buildChessMesh(
     for (unsigned idx = 0; idx < options.topRightExtraOutputs; ++idx)
       result.egressPorts.push_back(
           {swInst, topRightDegree + options.topRightExtraInputs + idx});
+  }
+  if (options.bottomLeftExtraOutputs > 0) {
+    unsigned bottomLeftDegree = switchDegree(rows, 0);
+    auto swInst = result.swGrid[rows][0];
+    for (unsigned idx = 0; idx < options.bottomLeftExtraOutputs; ++idx)
+      result.egressPorts.push_back({swInst, bottomLeftDegree + idx});
   }
   if (options.bottomRightExtraOutputs > 0) {
     unsigned bottomRightDegree = switchDegree(rows, cols);

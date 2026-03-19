@@ -7,6 +7,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace fcc {
@@ -16,6 +17,10 @@ namespace fcc {
 // ---------------------------------------------------------------------------
 
 namespace {
+
+bool isDirectBindingPath(llvm::ArrayRef<IdIndex> path) {
+  return path.size() == 2 && path[0] == path[1];
+}
 
 bool isNonRoutingOutputPort(IdIndex portId, const Graph &adg) {
   const Port *port = adg.getPort(portId);
@@ -78,9 +83,10 @@ bool isBoundarySinkNode(const Node *node) {
       getNodeAttrStr(node, "op_name"));
 }
 
-void collectUnroutedBoundarySinkEdges(
-    const std::vector<IdIndex> &edgeOrder, const MappingState &state,
-    const Graph &dfg, llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+void collectUnroutedSinkEdgesForNode(
+    IdIndex dstSwNode, const std::vector<IdIndex> &edgeOrder,
+    const MappingState &state, const Graph &dfg,
+    llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
     llvm::SmallVectorImpl<IdIndex> &groupedEdges) {
   groupedEdges.clear();
   for (IdIndex edgeId : edgeOrder) {
@@ -94,16 +100,67 @@ void collectUnroutedBoundarySinkEdges(
     if (edgeId >= state.swEdgeToHwPaths.size() ||
         !state.swEdgeToHwPaths[edgeId].empty())
       continue;
-    if (edge->dstPort >= state.swPortToHwPort.size() ||
-        state.swPortToHwPort[edge->dstPort] == INVALID_ID)
-      continue;
     const Port *dstPort = dfg.getPort(edge->dstPort);
     if (!dstPort || dstPort->parentNode == INVALID_ID)
       continue;
-    const Node *dstNode = dfg.getNode(dstPort->parentNode);
-    if (!isBoundarySinkNode(dstNode))
+    if (dstPort->parentNode != dstSwNode)
       continue;
     groupedEdges.push_back(edgeId);
+  }
+}
+
+void collectRepairSiblingEdges(IdIndex failedEdgeId,
+                               const std::vector<IdIndex> &edgeOrder,
+                               const MappingState &state, const Graph &dfg,
+                               llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                               llvm::SmallVectorImpl<IdIndex> &siblings) {
+  siblings.clear();
+  const Edge *failedEdge = dfg.getEdge(failedEdgeId);
+  if (!failedEdge)
+    return;
+
+  IdIndex failedSrcHwPort =
+      failedEdge->srcPort < state.swPortToHwPort.size()
+          ? state.swPortToHwPort[failedEdge->srcPort]
+          : INVALID_ID;
+  const Port *failedSrcPort = dfg.getPort(failedEdge->srcPort);
+  const Port *failedDstPort = dfg.getPort(failedEdge->dstPort);
+  IdIndex failedSrcSwNode =
+      (failedSrcPort && failedSrcPort->parentNode != INVALID_ID)
+          ? failedSrcPort->parentNode
+          : INVALID_ID;
+  IdIndex failedDstSwNode =
+      (failedDstPort && failedDstPort->parentNode != INVALID_ID)
+          ? failedDstPort->parentNode
+          : INVALID_ID;
+
+  llvm::DenseSet<IdIndex> seen;
+  for (IdIndex edgeId : edgeOrder) {
+    if (edgeId < edgeKinds.size() &&
+        (edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU ||
+         edgeKinds[edgeId] == TechMappedEdgeKind::TemporalReg))
+      continue;
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    const Port *srcPort = dfg.getPort(edge->srcPort);
+    const Port *dstPort = dfg.getPort(edge->dstPort);
+    if (!srcPort || !dstPort || srcPort->parentNode == INVALID_ID ||
+        dstPort->parentNode == INVALID_ID)
+      continue;
+    IdIndex srcHwPort =
+        edge->srcPort < state.swPortToHwPort.size()
+            ? state.swPortToHwPort[edge->srcPort]
+            : INVALID_ID;
+    bool sameSourcePort =
+        failedSrcHwPort != INVALID_ID && srcHwPort == failedSrcHwPort;
+    bool sameSinkNode = dstPort->parentNode == failedDstSwNode;
+    bool sameEndpointPair = srcPort->parentNode == failedSrcSwNode &&
+                            dstPort->parentNode == failedDstSwNode;
+    if (!sameSourcePort && !sameSinkNode && !sameEndpointPair)
+      continue;
+    if (seen.insert(edgeId).second)
+      siblings.push_back(edgeId);
   }
 }
 
@@ -144,6 +201,160 @@ unsigned getRoutingPriority(IdIndex edgeId, const Graph &dfg) {
   return 5;
 }
 
+void collectFailedRoutingHotspots(
+    llvm::ArrayRef<IdIndex> failedEdges, const MappingState &state,
+    const Graph &dfg, const Graph &adg,
+    llvm::DenseSet<IdIndex> &hotspotPorts,
+    llvm::DenseSet<IdIndex> &hotspotNodes) {
+  hotspotPorts.clear();
+  hotspotNodes.clear();
+
+  auto recordPort = [&](IdIndex hwPortId) {
+    if (hwPortId == INVALID_ID)
+      return;
+    hotspotPorts.insert(hwPortId);
+    const Port *hwPort = adg.getPort(hwPortId);
+    if (!hwPort || hwPort->parentNode == INVALID_ID)
+      return;
+    hotspotNodes.insert(hwPort->parentNode);
+  };
+
+  for (IdIndex edgeId : failedEdges) {
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    if (edge->srcPort < state.swPortToHwPort.size())
+      recordPort(state.swPortToHwPort[edge->srcPort]);
+    if (edge->dstPort < state.swPortToHwPort.size())
+      recordPort(state.swPortToHwPort[edge->dstPort]);
+  }
+}
+
+bool routedEdgeTouchesHotspot(llvm::ArrayRef<IdIndex> path,
+                              const llvm::DenseSet<IdIndex> &hotspotPorts,
+                              const llvm::DenseSet<IdIndex> &hotspotNodes,
+                              const Graph &adg) {
+  if (path.empty())
+    return false;
+  for (IdIndex portId : path) {
+    if (hotspotPorts.contains(portId))
+      return true;
+    const Port *port = adg.getPort(portId);
+    if (!port || port->parentNode == INVALID_ID)
+      continue;
+    if (hotspotNodes.contains(port->parentNode))
+      return true;
+  }
+  return false;
+}
+
+void collectSelectiveRipupEdges(
+    llvm::ArrayRef<IdIndex> failedEdges, const std::vector<IdIndex> &edgeOrder,
+    const MappingState &state, const Graph &dfg, const Graph &adg,
+    llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+    llvm::SmallVectorImpl<IdIndex> &ripupEdges) {
+  ripupEdges.clear();
+
+  llvm::DenseSet<IdIndex> hotspotPorts;
+  llvm::DenseSet<IdIndex> hotspotNodes;
+  collectFailedRoutingHotspots(failedEdges, state, dfg, adg, hotspotPorts,
+                               hotspotNodes);
+  const bool tightRipup = failedEdges.size() <= 4;
+
+  llvm::DenseSet<IdIndex> seen;
+  for (IdIndex edgeId : failedEdges) {
+    if (seen.insert(edgeId).second)
+      ripupEdges.push_back(edgeId);
+  }
+
+  if (failedEdges.size() <= 6) {
+    llvm::SmallVector<IdIndex, 16> siblings;
+    for (IdIndex edgeId : failedEdges) {
+      collectRepairSiblingEdges(edgeId, edgeOrder, state, dfg, edgeKinds,
+                                siblings);
+      for (IdIndex siblingEdgeId : siblings) {
+        if (seen.insert(siblingEdgeId).second)
+          ripupEdges.push_back(siblingEdgeId);
+      }
+    }
+  }
+
+  for (IdIndex edgeId : edgeOrder) {
+    if (edgeId < edgeKinds.size() &&
+        (edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU ||
+         edgeKinds[edgeId] == TechMappedEdgeKind::TemporalReg))
+      continue;
+    if (edgeId >= state.swEdgeToHwPaths.size())
+      continue;
+    const auto &path = state.swEdgeToHwPaths[edgeId];
+    if (path.empty() || isDirectBindingPath(path))
+      continue;
+    llvm::DenseSet<IdIndex> emptyNodes;
+    if (!routedEdgeTouchesHotspot(path, hotspotPorts,
+                                  tightRipup ? emptyNodes : hotspotNodes,
+                                  adg))
+      continue;
+    if (seen.insert(edgeId).second)
+      ripupEdges.push_back(edgeId);
+  }
+
+  if (tightRipup && ripupEdges.size() < std::max<size_t>(8, failedEdges.size() * 2)) {
+    const size_t targetRipup = std::min<size_t>(18, edgeOrder.size());
+    for (IdIndex edgeId : edgeOrder) {
+      if (ripupEdges.size() >= targetRipup)
+        break;
+      if (edgeId < edgeKinds.size() &&
+          (edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU ||
+           edgeKinds[edgeId] == TechMappedEdgeKind::TemporalReg))
+        continue;
+      if (edgeId >= state.swEdgeToHwPaths.size())
+        continue;
+      const auto &path = state.swEdgeToHwPaths[edgeId];
+      if (path.empty() || isDirectBindingPath(path))
+        continue;
+      if (!routedEdgeTouchesHotspot(path, hotspotPorts, hotspotNodes, adg))
+        continue;
+      if (seen.insert(edgeId).second)
+        ripupEdges.push_back(edgeId);
+    }
+  }
+}
+
+void dumpFailedEdgeDiagnostics(llvm::ArrayRef<IdIndex> failedEdges,
+                               const MappingState &state, const Graph &dfg,
+                               unsigned limit) {
+  unsigned emitted = 0;
+  for (IdIndex edgeId : failedEdges) {
+    if (emitted >= limit)
+      break;
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    const Port *srcPort = dfg.getPort(edge->srcPort);
+    const Port *dstPort = dfg.getPort(edge->dstPort);
+    const Node *srcNode =
+        (srcPort && srcPort->parentNode != INVALID_ID)
+            ? dfg.getNode(srcPort->parentNode)
+            : nullptr;
+    const Node *dstNode =
+        (dstPort && dstPort->parentNode != INVALID_ID)
+            ? dfg.getNode(dstPort->parentNode)
+            : nullptr;
+    IdIndex srcHwPort =
+        edge->srcPort < state.swPortToHwPort.size() ? state.swPortToHwPort[edge->srcPort]
+                                                    : INVALID_ID;
+    IdIndex dstHwPort =
+        edge->dstPort < state.swPortToHwPort.size() ? state.swPortToHwPort[edge->dstPort]
+                                                    : INVALID_ID;
+    llvm::outs() << "    failed edge " << edgeId << ": "
+                 << (srcNode ? getNodeAttrStr(srcNode, "op_name") : "<src>")
+                 << " -> "
+                 << (dstNode ? getNodeAttrStr(dstNode, "op_name") : "<dst>")
+                 << " (hw " << srcHwPort << " -> " << dstHwPort << ")\n";
+    ++emitted;
+  }
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -161,14 +372,44 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
   routed = 0;
   total = 0;
   llvm::DenseSet<IdIndex> processedFanoutSources;
-  bool processedBoundarySinks = false;
-  llvm::DenseSet<IdIndex> processedBoundarySinkEdges;
+  llvm::DenseSet<IdIndex> processedSinkNodes;
+  llvm::DenseSet<IdIndex> processedSinkEdges;
+  auto estimatePortDistance = [&](IdIndex lhsPortId, IdIndex rhsPortId) {
+    if (!activeFlattener)
+      return 0.0;
+    const Port *lhsPort = adg.getPort(lhsPortId);
+    const Port *rhsPort = adg.getPort(rhsPortId);
+    if (!lhsPort || !rhsPort || lhsPort->parentNode == INVALID_ID ||
+        rhsPort->parentNode == INVALID_ID)
+      return 0.0;
+    auto [lhsRow, lhsCol] =
+        activeFlattener->getNodeGridPos(lhsPort->parentNode);
+    auto [rhsRow, rhsCol] =
+        activeFlattener->getNodeGridPos(rhsPort->parentNode);
+    if (lhsRow < 0 || lhsCol < 0 || rhsRow < 0 || rhsCol < 0)
+      return 0.0;
+    return static_cast<double>(std::abs(lhsRow - rhsRow) +
+                               std::abs(lhsCol - rhsCol));
+  };
+  auto rankFirstHopChoices = [&](IdIndex dstHwPort,
+                                 llvm::SmallVectorImpl<IdIndex> &choices,
+                                 unsigned limit) {
+    llvm::stable_sort(choices, [&](IdIndex lhs, IdIndex rhs) {
+      double lhsScore = estimatePortDistance(lhs, dstHwPort);
+      double rhsScore = estimatePortDistance(rhs, dstHwPort);
+      if (std::abs(lhsScore - rhsScore) > 1e-9)
+        return lhsScore < rhsScore;
+      return lhs < rhs;
+    });
+    if (limit != 0 && choices.size() > limit)
+      choices.resize(limit);
+  };
 
   for (IdIndex edgeId : edgeOrder) {
     const Edge *edge = dfg.getEdge(edgeId);
     if (!edge)
       continue;
-    if (processedBoundarySinkEdges.contains(edgeId))
+    if (processedSinkEdges.contains(edgeId))
       continue;
     if (edgeId < edgeKinds.size() &&
         (edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU ||
@@ -192,13 +433,17 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
         (dstSwPortPtr && dstSwPortPtr->parentNode != INVALID_ID)
             ? dfg.getNode(dstSwPortPtr->parentNode)
             : nullptr;
+    IdIndex dstSwNodeId =
+        (dstSwPortPtr && dstSwPortPtr->parentNode != INVALID_ID)
+            ? dstSwPortPtr->parentNode
+            : INVALID_ID;
 
-    if (isBoundarySinkNode(dstSwNode) && !processedBoundarySinks) {
+    if (dstSwNodeId != INVALID_ID && !processedSinkNodes.contains(dstSwNodeId)) {
       llvm::SmallVector<IdIndex, 8> outputEdges;
-      collectUnroutedBoundarySinkEdges(edgeOrder, state, dfg, edgeKinds,
-                                       outputEdges);
-      if (outputEdges.size() > 1 && outputEdges.size() <= 6) {
-        processedBoundarySinks = true;
+      collectUnroutedSinkEdgesForNode(dstSwNodeId, edgeOrder, state, dfg,
+                                      edgeKinds, outputEdges);
+      if (outputEdges.size() > 1 && outputEdges.size() <= 8) {
+        processedSinkNodes.insert(dstSwNodeId);
         unsigned bestSuccessCount = 0;
         size_t bestTotalPathLen = std::numeric_limits<size_t>::max();
         llvm::SmallVector<IdIndex, 8> bestOrder;
@@ -228,6 +473,9 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
           }
           if (choices.empty())
             choices.push_back(INVALID_ID);
+          if (choices.front() != INVALID_ID)
+            rankFirstHopChoices(state.swPortToHwPort[groupedEdge->dstPort],
+                                choices, 2);
           firstHopChoices[groupedEdgeId] = std::move(choices);
         }
 
@@ -258,7 +506,9 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
                 return;
               }
 
-              for (size_t idx = 0; idx < remainingEdges.size(); ++idx) {
+              const size_t edgeBranchLimit =
+                  std::min<size_t>(remainingEdges.size(), 2);
+              for (size_t idx = 0; idx < edgeBranchLimit; ++idx) {
                 IdIndex groupedEdgeId = remainingEdges[idx];
                 const Edge *groupedEdge = dfg.getEdge(groupedEdgeId);
                 if (!groupedEdge)
@@ -311,7 +561,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
           bestOrder.assign(outputEdges.begin(), outputEdges.end());
 
         for (IdIndex groupedEdgeId : outputEdges)
-          processedBoundarySinkEdges.insert(groupedEdgeId);
+          processedSinkEdges.insert(groupedEdgeId);
 
         for (IdIndex groupedEdgeId : bestOrder) {
           ++total;
@@ -344,7 +594,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
         }
         continue;
       }
-      processedBoundarySinks = true;
+      processedSinkNodes.insert(dstSwNodeId);
     }
 
     if (isNonRoutingOutputPort(srcHwPort, adg)) {
@@ -370,6 +620,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
               std::unique(firstHopCandidates.begin(), firstHopCandidates.end()),
               firstHopCandidates.end());
         }
+        if (!firstHopCandidates.empty() && firstHopCandidates.front() != INVALID_ID)
+          rankFirstHopChoices(dstHwPort, firstHopCandidates, 2);
 
         unsigned bestSuccessCount = 0;
         size_t bestTotalPathLen = std::numeric_limits<size_t>::max();
@@ -462,7 +714,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
 bool Mapper::runRouting(MappingState &state, const Graph &dfg,
                         const Graph &adg,
                         llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
-                        int seed) {
+                        const Options &opts) {
   // Build edge order: memory edges first.
   std::vector<IdIndex> memEdges, otherEdges;
   for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
@@ -527,10 +779,10 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
 
   llvm::outs() << "  Initial routing: " << routed << "/" << total << " edges\n";
 
-  // Rip-up and reroute: if some edges failed, rip up ALL routes and retry
-  // with different ordering. Repeat up to maxRipupPasses times.
-  const int maxRipupPasses = 10;
-  for (int pass = 0; pass < maxRipupPasses && !allRouted; ++pass) {
+  // Failed-edge driven repair: only rip up the neighborhood around failed
+  // edges so later place/route rounds can preserve working regions.
+  const unsigned maxRipupPasses = std::max(1u, opts.selectiveRipupPasses);
+  for (unsigned pass = 0; pass < maxRipupPasses && !allRouted; ++pass) {
     // Collect failed edge IDs.
     std::vector<IdIndex> failedEdges;
     for (IdIndex edgeId : edgeOrder) {
@@ -553,16 +805,24 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
     if (failedEdges.empty())
       break;
 
-    llvm::outs() << "  Rip-up pass " << (pass + 1) << ": " << failedEdges.size()
-                 << " failed edges, ripping up all routes\n";
+    llvm::stable_sort(failedEdges, edgeOrderLess);
+    llvm::SmallVector<IdIndex, 16> ripupEdges;
+    collectSelectiveRipupEdges(failedEdges, edgeOrder, state, dfg, adg,
+                               edgeKinds, ripupEdges);
 
-    for (IdIndex edgeId : edgeOrder) {
+    llvm::outs() << "  Repair pass " << (pass + 1) << ": " << failedEdges.size()
+                 << " failed edges, ripping up " << ripupEdges.size()
+                 << " routes\n";
+    if (opts.verbose)
+      dumpFailedEdgeDiagnostics(failedEdges, state, dfg, 6);
+
+    for (IdIndex edgeId : ripupEdges) {
       if (edgeId >= state.swEdgeToHwPaths.size())
         continue;
       const auto &path = state.swEdgeToHwPaths[edgeId];
       if (path.empty())
         continue;
-      if (path.size() == 2 && path[0] == path[1])
+      if (isDirectBindingPath(path))
         continue;
       for (IdIndex portId : path) {
         if (!routing_detail::isRoutingCrossbarOutputPort(portId, adg))
@@ -571,42 +831,28 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
       }
     }
 
-    // Rip up all routed edges (clear paths) but keep pre-routed memref edges.
-    for (IdIndex edgeId : edgeOrder) {
-      if (edgeId < state.swEdgeToHwPaths.size() &&
-          !state.swEdgeToHwPaths[edgeId].empty()) {
-        // Check if this is a pre-routed memref binding (path length 2 with
-        // identical ports). Keep those intact.
-        auto &path = state.swEdgeToHwPaths[edgeId];
-        if (path.size() == 2 && path[0] == path[1])
-          continue;
-        state.swEdgeToHwPaths[edgeId].clear();
-      }
-    }
+    for (IdIndex edgeId : ripupEdges)
+      state.unmapEdge(edgeId, adg);
 
-    // Rebuild edge order: failed edges first, then others. Within each group,
-    // keep a deterministic heuristic order so a fixed seed implies a stable
-    // routing result.
-    llvm::stable_sort(failedEdges, edgeOrderLess);
     std::vector<IdIndex> remainingEdges;
-    llvm::DenseSet<IdIndex> failedSet;
-    for (IdIndex eid : failedEdges)
-      failedSet.insert(eid);
+    llvm::DenseSet<IdIndex> ripupSet;
+    for (IdIndex eid : ripupEdges)
+      ripupSet.insert(eid);
     for (IdIndex eid : edgeOrder) {
-      if (!failedSet.count(eid))
+      if (!ripupSet.count(eid))
         remainingEdges.push_back(eid);
     }
     llvm::stable_sort(remainingEdges, edgeOrderLess);
 
     std::vector<IdIndex> newOrder;
-    newOrder.reserve(failedEdges.size() + remainingEdges.size());
-    newOrder.insert(newOrder.end(), failedEdges.begin(), failedEdges.end());
+    newOrder.reserve(ripupEdges.size() + remainingEdges.size());
+    newOrder.insert(newOrder.end(), ripupEdges.begin(), ripupEdges.end());
     newOrder.insert(newOrder.end(), remainingEdges.begin(),
                     remainingEdges.end());
 
     allRouted = routeOnePass(state, dfg, adg, edgeKinds, newOrder,
                              routingOutputHistory, routed, total);
-    llvm::outs() << "  Rip-up pass " << (pass + 1) << " result: " << routed
+    llvm::outs() << "  Repair pass " << (pass + 1) << " result: " << routed
                  << "/" << total << " edges\n";
 
     size_t totalPathLen = computeTotalPathLen(state);

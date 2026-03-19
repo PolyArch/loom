@@ -234,6 +234,15 @@ int main(int argc, char **argv) {
     fcc::Mapper::Options mapOpts;
     mapOpts.budgetSeconds = static_cast<double>(args.mapperBudget);
     mapOpts.seed = static_cast<int>(args.mapperSeed);
+    mapOpts.lanes = args.mapperLanes;
+    mapOpts.interleavedRounds = args.mapperInterleavedRounds;
+    mapOpts.selectiveRipupPasses = args.mapperSelectiveRipupPasses;
+    mapOpts.placementMoveRadius = args.mapperPlacementMoveRadius;
+    mapOpts.cpSatGlobalNodeLimit = args.mapperCpSatGlobalNodeLimit;
+    mapOpts.cpSatNeighborhoodNodeLimit =
+        args.mapperCpSatNeighborhoodNodeLimit;
+    mapOpts.cpSatTimeLimitSeconds = args.mapperCpSatTimeLimitSeconds;
+    mapOpts.enableCPSat = args.mapperEnableCpSat;
     mapOpts.verbose = true;
 
     auto mapResult =

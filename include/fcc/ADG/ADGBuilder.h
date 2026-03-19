@@ -188,6 +188,7 @@ struct ChessMeshOptions {
   unsigned topLeftExtraInputs = 0;
   unsigned topRightExtraInputs = 0;
   unsigned topRightExtraOutputs = 0;
+  unsigned bottomLeftExtraOutputs = 0;
   unsigned bottomRightExtraOutputs = 0;
 };
 

@@ -35,6 +35,14 @@ struct FccArgs {
   // Mapper
   unsigned mapperBudget = 60;
   unsigned mapperSeed = 0;
+  unsigned mapperLanes = 0;
+  unsigned mapperInterleavedRounds = 4;
+  unsigned mapperSelectiveRipupPasses = 3;
+  unsigned mapperPlacementMoveRadius = 3;
+  unsigned mapperCpSatGlobalNodeLimit = 24;
+  unsigned mapperCpSatNeighborhoodNodeLimit = 8;
+  double mapperCpSatTimeLimitSeconds = 0.75;
+  bool mapperEnableCpSat = true;
 
   // Derived: base name of first source (e.g. "vecadd" from "vecadd.c")
   std::string baseName;

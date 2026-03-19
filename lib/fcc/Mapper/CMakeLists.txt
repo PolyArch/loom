@@ -11,6 +11,7 @@ add_library(FccMapper STATIC
   Mapper.cpp
   MapperPlacement.cpp
   MapperRefinement.cpp
+  MapperCPSat.cpp
   MapperRouting.cpp
   MapperRoutingStrategy.cpp
   ConfigGen.cpp
@@ -29,3 +30,9 @@ target_link_libraries(FccMapper PUBLIC
   MLIRIR
   MLIRSupport
 )
+
+if(FCC_ENABLE_ORTOOLS AND TARGET ortools::ortools)
+  target_link_libraries(FccMapper PUBLIC ortools::ortools)
+  target_compile_definitions(FccMapper PRIVATE FCC_HAVE_ORTOOLS=1)
+  target_compile_features(FccMapper PRIVATE cxx_std_20)
+endif()

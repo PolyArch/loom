@@ -1,8 +1,10 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.24)
 project(fcc LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+option(FCC_ENABLE_ORTOOLS "Enable OR-Tools backed CP-SAT mapper stages" ON)
 
 # Use ccache if available
 find_program(CCACHE_PROGRAM ccache)
@@ -35,7 +37,7 @@ set(MLIR_ENABLE_BINDINGS_PYTHON OFF CACHE BOOL "" FORCE)
 set(LLVM_EXTERNAL_PROJECTS "circt" CACHE STRING "" FORCE)
 set(LLVM_EXTERNAL_CIRCT_SOURCE_DIR "${CMAKE_SOURCE_DIR}/externals/circt" CACHE STRING "" FORCE)
 set(CIRCT_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
-set(CIRCT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(CIRCT_BUILD_TOOLS ON CACHE BOOL "" FORCE)
 set(CIRCT_ENABLE_ESI_RUNTIME OFF CACHE BOOL "" FORCE)
 
 # Key directory variables

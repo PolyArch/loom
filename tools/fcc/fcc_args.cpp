@@ -49,6 +49,46 @@ static cl::opt<unsigned> mapperSeed("mapper-seed",
                                      cl::desc("Deterministic seed"),
                                      cl::init(0));
 
+static cl::opt<unsigned> mapperLanes(
+    "mapper-lanes",
+    cl::desc("Number of parallel placement-and-route lanes (0 = auto)"),
+    cl::init(0));
+
+static cl::opt<unsigned> mapperInterleavedRounds(
+    "mapper-interleaved-rounds",
+    cl::desc("Number of place-route interleaving rounds"),
+    cl::init(4));
+
+static cl::opt<unsigned> mapperSelectiveRipupPasses(
+    "mapper-selective-ripup-passes",
+    cl::desc("Number of failed-edge selective rip-up passes per routing round"),
+    cl::init(3));
+
+static cl::opt<unsigned> mapperPlacementMoveRadius(
+    "mapper-placement-move-radius",
+    cl::desc("Detailed placement move radius in Manhattan distance (0 = unrestricted)"),
+    cl::init(3));
+
+static cl::opt<unsigned> mapperCpSatGlobalNodeLimit(
+    "mapper-cpsat-global-node-limit",
+    cl::desc("Maximum node count for CP-SAT global placement"),
+    cl::init(24));
+
+static cl::opt<unsigned> mapperCpSatNeighborhoodNodeLimit(
+    "mapper-cpsat-neighborhood-node-limit",
+    cl::desc("Maximum node count for CP-SAT neighborhood repair"),
+    cl::init(8));
+
+static cl::opt<double> mapperCpSatTimeLimitSeconds(
+    "mapper-cpsat-time-limit",
+    cl::desc("Per-solve CP-SAT time limit in seconds"),
+    cl::init(0.75));
+
+static cl::opt<bool> mapperEnableCpSat(
+    "mapper-enable-cpsat",
+    cl::desc("Enable OR-Tools CP-SAT placement refinement"),
+    cl::init(true));
+
 bool parseArgs(int argc, char **argv, FccArgs &args) {
   cl::ParseCommandLineOptions(argc, argv, "fcc - fabric compiler\n");
 
@@ -70,6 +110,14 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
   args.simMaxCycles = simMaxCycles;
   args.mapperBudget = mapperBudget;
   args.mapperSeed = mapperSeed;
+  args.mapperLanes = mapperLanes;
+  args.mapperInterleavedRounds = mapperInterleavedRounds;
+  args.mapperSelectiveRipupPasses = mapperSelectiveRipupPasses;
+  args.mapperPlacementMoveRadius = mapperPlacementMoveRadius;
+  args.mapperCpSatGlobalNodeLimit = mapperCpSatGlobalNodeLimit;
+  args.mapperCpSatNeighborhoodNodeLimit = mapperCpSatNeighborhoodNodeLimit;
+  args.mapperCpSatTimeLimitSeconds = mapperCpSatTimeLimitSeconds;
+  args.mapperEnableCpSat = mapperEnableCpSat;
 
   // --viz-only needs at least --dfg or --adg
   if (args.vizOnly) {

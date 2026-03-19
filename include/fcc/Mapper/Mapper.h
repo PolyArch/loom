@@ -23,6 +23,14 @@ public:
     double budgetSeconds = 60.0;
     int seed = 0;
     std::string profile = "balanced";
+    unsigned lanes = 0;
+    unsigned interleavedRounds = 4;
+    unsigned selectiveRipupPasses = 3;
+    unsigned placementMoveRadius = 3;
+    unsigned cpSatGlobalNodeLimit = 24;
+    unsigned cpSatNeighborhoodNodeLimit = 8;
+    double cpSatTimeLimitSeconds = 0.75;
+    bool enableCPSat = true;
     bool verbose = false;
   };
 
@@ -35,9 +43,8 @@ public:
   };
 
   /// Run the full PnR pipeline.
-  Result run(const Graph &dfg, const Graph &adg,
-             const ADGFlattener &flattener, mlir::ModuleOp adgModule,
-             const Options &opts);
+  Result run(const Graph &dfg, const Graph &adg, const ADGFlattener &flattener,
+             mlir::ModuleOp adgModule, const Options &opts);
 
 private:
   // Tech-mapping: match DFG ops to ADG FU types.
@@ -64,12 +71,38 @@ private:
       llvm::ArrayRef<IdIndex> failedEdges, const Graph &dfg, const Graph &adg,
       const ADGFlattener &flattener,
       const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
-      llvm::ArrayRef<TechMappedEdgeKind> edgeKinds, const Options &opts);
+      std::vector<TechMappedEdgeKind> &edgeKinds, const Options &opts);
+
+  bool runExactRoutingRepair(MappingState &state,
+                             llvm::ArrayRef<IdIndex> failedEdges,
+                             const Graph &dfg, const Graph &adg,
+                             const ADGFlattener &flattener,
+                             llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                             const Options &opts);
+
+  bool runInterleavedPlaceRoute(
+      MappingState &state, const Graph &dfg, const Graph &adg,
+      const ADGFlattener &flattener,
+      const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
+      std::vector<TechMappedEdgeKind> &edgeKinds, const Options &opts);
+
+  bool runCPSatGlobalPlacement(
+      MappingState &state, const Graph &dfg, const Graph &adg,
+      const ADGFlattener &flattener,
+      const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
+      const Options &opts);
+
+  bool runCPSatNeighborhoodRepair(
+      MappingState &state, const MappingState::Checkpoint &baseCheckpoint,
+      llvm::ArrayRef<IdIndex> failedEdges, const Graph &dfg, const Graph &adg,
+      const ADGFlattener &flattener,
+      const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
+      std::vector<TechMappedEdgeKind> &edgeKinds, const Options &opts);
 
   // BFS routing.
   bool runRouting(MappingState &state, const Graph &dfg, const Graph &adg,
                   llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
-                  int seed = -1);
+                  const Options &opts);
 
   // Sentinel binding: map DFG boundary nodes to ADG boundary nodes.
   bool bindSentinels(MappingState &state, const Graph &dfg, const Graph &adg);
@@ -79,6 +112,12 @@ private:
   bool bindMemrefSentinels(MappingState &state, const Graph &dfg,
                            const Graph &adg);
 
+  // Rebind scalar input sentinels after placement using a placement-aware
+  // assignment to ADG boundary inputs.
+  bool rebindScalarInputSentinels(MappingState &state, const Graph &dfg,
+                                  const Graph &adg,
+                                  const ADGFlattener &flattener);
+
   // Validation.
   bool runValidation(const MappingState &state, const Graph &dfg,
                      const Graph &adg, const ADGFlattener &flattener,
@@ -86,15 +125,12 @@ private:
                      std::string &diagnostics);
 
   // Routing helpers.
-  llvm::SmallVector<IdIndex, 8> findPath(IdIndex srcHwPort, IdIndex dstHwPort,
-                                         IdIndex swEdgeId,
-                                         const MappingState &state,
-                                         const Graph &dfg, const Graph &adg,
-                                         const llvm::DenseMap<IdIndex, double>
-                                             &routingOutputHistory,
-                                         IdIndex forcedFirstHop = INVALID_ID);
-  bool isEdgeLegal(IdIndex srcPort, IdIndex dstPort,
-                   IdIndex swEdgeId,
+  llvm::SmallVector<IdIndex, 8>
+  findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
+           const MappingState &state, const Graph &dfg, const Graph &adg,
+           const llvm::DenseMap<IdIndex, double> &routingOutputHistory,
+           IdIndex forcedFirstHop = INVALID_ID);
+  bool isEdgeLegal(IdIndex srcPort, IdIndex dstPort, IdIndex swEdgeId,
                    llvm::ArrayRef<IdIndex> candidatePath,
                    const MappingState &state, const Graph &dfg,
                    const Graph &adg);
@@ -115,21 +151,24 @@ private:
                                    std::string &diagnostics);
 
   // Placement scoring.
-  double scorePlacement(IdIndex swNode, IdIndex hwNode,
-                        const MappingState &state, const Graph &dfg,
-                        const Graph &adg, const ADGFlattener &flattener,
-                        const llvm::DenseMap<IdIndex,
-                                             llvm::SmallVector<IdIndex, 4>>
-                            &candidates);
+  double scorePlacement(
+      IdIndex swNode, IdIndex hwNode, const MappingState &state,
+      const Graph &dfg, const Graph &adg, const ADGFlattener &flattener,
+      const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates);
 
   // Compute total placement cost (sum of edge distances).
   double computeTotalCost(const MappingState &state, const Graph &dfg,
                           const Graph &adg, const ADGFlattener &flattener);
 
+  // Rebind ports after placing a node, including memory-interface ports.
+  bool bindMappedNodePorts(IdIndex swNode, MappingState &state,
+                           const Graph &dfg, const Graph &adg);
+
   // Topological order for greedy placement.
   std::vector<IdIndex> computePlacementOrder(const Graph &dfg);
 
   ConnectivityMatrix connectivity;
+  const ADGFlattener *activeFlattener = nullptr;
 };
 
 } // namespace fcc

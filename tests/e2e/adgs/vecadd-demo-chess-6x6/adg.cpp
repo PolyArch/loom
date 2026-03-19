@@ -7,11 +7,11 @@
 
 static llvm::cl::opt<std::string> outputFile(
     llvm::cl::Positional, llvm::cl::desc("<output .fabric.mlir file>"),
-    llvm::cl::init("vecadd-demo-chess-5x5.fabric.mlir"));
+    llvm::cl::init("vecadd-demo-chess-6x6.fabric.mlir"));
 
 int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(argc, argv,
-                                    "vecadd-demo-chess-5x5 ADG generator\n");
+                                    "vecadd-demo-chess-6x6 ADG generator\n");
 
   auto parent = llvm::sys::path::parent_path(outputFile);
   if (!parent.empty()) {
@@ -22,6 +22,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  fcc::e2e::buildVecaddDemoChess5x5(outputFile);
+  fcc::e2e::buildVecaddDemoChess6x6(outputFile);
   return 0;
 }
