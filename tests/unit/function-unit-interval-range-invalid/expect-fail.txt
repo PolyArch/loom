@@ -1,0 +1,1 @@
+interval must be -1 or at least 1

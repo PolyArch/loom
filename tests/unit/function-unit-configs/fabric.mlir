@@ -43,7 +43,7 @@ module {
   fabric.spatial_pe @stream_pe(%start: index, %step: index, %bound: index)
       -> (index, i1) {
     fabric.function_unit @fu_stream(%arg0: index, %arg1: index, %arg2: index)
-        -> (index, i1) [latency = 1, interval = 1] {
+        -> (index, i1) [latency = -1, interval = -1] {
       %0, %1 = dataflow.stream %arg0, %arg1, %arg2
           {step_op = "+=", cont_cond = "<"} : (index, index, index) -> (index, i1)
       fabric.yield %0, %1 : index, i1

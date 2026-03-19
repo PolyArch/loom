@@ -18,6 +18,10 @@ A function unit provides:
 `function_unit` is not a top-level routing resource. It lives inside
 `spatial_pe` or `temporal_pe`.
 
+The detailed operation-class and timing model for `latency`, `interval`, and
+temporal-PE completion behavior lives in
+[spec-fabric-function_unit-ops.md](./spec-fabric-function_unit-ops.md).
+
 Normative structural restrictions:
 
 - all inputs must be consumed:
@@ -46,6 +50,15 @@ Textual syntax follows the Fabric-wide split:
 - fixed FU structure parameters such as `latency` and `interval` live in `[]`
 - `fabric.mux` runtime control fields such as `sel`, `discard`, and
   `disconnect` live in braces
+
+Normative timing summary:
+
+- `latency` models fire-to-FU-local-completion delay
+- `interval` models minimum intrinsic fire-to-next-fire spacing
+- both are meaningful only when the FU has single-fire single-result-set
+  behavior
+- if one firing may produce multiple result sets over time, both parameters
+  must be `-1`
 
 ## Port Semantics
 
@@ -258,3 +271,8 @@ Visualization must preserve the distinction between:
 
 When mapping is enabled, the displayed route from a PE exterior port to a FU
 port is part of the PE mux or demux fabric, not part of the FU internal DAG.
+
+## Related Documents
+
+- [spec-fabric-function_unit-ops.md](./spec-fabric-function_unit-ops.md)
+- [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md)

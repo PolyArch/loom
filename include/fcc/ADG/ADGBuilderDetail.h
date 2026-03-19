@@ -33,8 +33,8 @@ struct FUDef {
   std::vector<std::string> outputTypes;
   std::vector<std::string> ops;
   std::string rawBody;
-  unsigned latency = 1;
-  unsigned interval = 1;
+  std::int64_t latency = 1;
+  std::int64_t interval = 1;
 };
 
 struct PEDef {
@@ -189,7 +189,29 @@ namespace detail {
 
 std::string bitsType(unsigned width);
 
+std::string taggedType(llvm::StringRef valueType, unsigned tagWidth);
+
 std::optional<unsigned> tryParseBitsWidth(llvm::StringRef typeStr);
+
+std::optional<unsigned> tryParseScalarWidth(llvm::StringRef typeStr);
+
+std::optional<std::string> tryParseMemrefElementType(llvm::StringRef typeStr);
+
+unsigned getMinMemoryTagWidth(unsigned laneCount);
+
+unsigned getMemoryInputCount(unsigned ldPorts, unsigned stPorts, bool isExtMem);
+
+unsigned getMemoryOutputCount(unsigned ldPorts, unsigned stPorts,
+                              bool hasPublicMemrefResult);
+
+std::string getDefaultMemoryInputType(unsigned ldPorts, unsigned stPorts,
+                                      llvm::StringRef memrefType, bool isExtMem,
+                                      unsigned portIdx);
+
+std::string getDefaultMemoryOutputType(unsigned ldPorts, unsigned stPorts,
+                                       llvm::StringRef memrefType,
+                                       bool hasPublicMemrefResult,
+                                       unsigned portIdx);
 
 std::optional<unsigned> inferUniformBitsWidth(
     const std::vector<std::string> &types, unsigned prefixCount);
@@ -208,6 +230,7 @@ std::string getInstanceInputType(const std::vector<InstanceDef> &instances,
                                  const std::vector<PEDef> &peDefs,
                                  const std::vector<SWDef> &swDefs,
                                  const std::vector<MemoryDef> &memoryDefs,
+                                 const std::vector<ExtMemDef> &extMemDefs,
                                  const std::vector<AddTagNodeDef> &addTagDefs,
                                  const std::vector<MapTagNodeDef> &mapTagDefs,
                                  const std::vector<DelTagNodeDef> &delTagDefs,

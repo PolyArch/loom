@@ -1,0 +1,1 @@
+function_unit containing dataflow.stream must use latency = -1 and interval = -1

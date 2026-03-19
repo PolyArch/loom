@@ -5,8 +5,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "fcc/ADG/ADGBuilderDetail.h"
+#include "fcc/Dialect/Fabric/FabricTypes.h"
 
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <cassert>
@@ -26,6 +28,12 @@ std::string bitsType(unsigned width) {
   return "!fabric.bits<" + std::to_string(width) + ">";
 }
 
+std::string taggedType(llvm::StringRef valueType, unsigned tagWidth) {
+  return ("!fabric.tagged<" + valueType + ", i" + std::to_string(tagWidth) +
+          ">")
+      .str();
+}
+
 std::optional<unsigned> tryParseBitsWidth(llvm::StringRef typeStr) {
   if (!typeStr.consume_front("!fabric.bits<") || !typeStr.consume_back(">"))
     return std::nullopt;
@@ -33,6 +41,133 @@ std::optional<unsigned> tryParseBitsWidth(llvm::StringRef typeStr) {
   if (typeStr.getAsInteger(10, width))
     return std::nullopt;
   return width;
+}
+
+std::optional<unsigned> tryParseScalarWidth(llvm::StringRef typeStr) {
+  if (auto width = tryParseBitsWidth(typeStr))
+    return width;
+  if (typeStr == "index")
+    return fcc::fabric::getConfiguredIndexBitWidth();
+  if (typeStr == "none")
+    return 0u;
+  if (typeStr == "f16" || typeStr == "bf16")
+    return 16u;
+  if (typeStr == "f32")
+    return 32u;
+  if (typeStr == "f64")
+    return 64u;
+  if (!typeStr.empty() && typeStr.front() == 'i') {
+    llvm::StringRef digits = typeStr.drop_front();
+    unsigned width = 0;
+    if (!digits.empty() && !digits.getAsInteger(10, width))
+      return width;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> tryParseMemrefElementType(llvm::StringRef typeStr) {
+  if (!typeStr.consume_front("memref<") || !typeStr.consume_back(">"))
+    return std::nullopt;
+  size_t split = typeStr.rfind('x');
+  if (split == llvm::StringRef::npos || split + 1 >= typeStr.size())
+    return std::nullopt;
+  return typeStr.substr(split + 1).str();
+}
+
+unsigned getMinMemoryTagWidth(unsigned laneCount) {
+  if (laneCount <= 1)
+    return 0;
+  return llvm::Log2_64_Ceil(static_cast<uint64_t>(laneCount));
+}
+
+unsigned getMemoryInputCount(unsigned ldPorts, unsigned stPorts, bool isExtMem) {
+  unsigned count = isExtMem ? 1u : 0u;
+  if (ldPorts > 0)
+    ++count;
+  if (stPorts > 0)
+    count += 2;
+  return count;
+}
+
+unsigned getMemoryOutputCount(unsigned ldPorts, unsigned stPorts,
+                              bool hasPublicMemrefResult) {
+  unsigned count = 0;
+  if (ldPorts > 0)
+    count += 2;
+  if (stPorts > 0)
+    ++count;
+  if (hasPublicMemrefResult)
+    ++count;
+  return count;
+}
+
+static std::string getMemoryAddressType(unsigned tagWidth) {
+  std::string valueType = bitsType(64);
+  if (tagWidth == 0)
+    return valueType;
+  return taggedType(valueType, tagWidth);
+}
+
+static std::string getMemoryDataType(llvm::StringRef memrefType,
+                                     unsigned tagWidth) {
+  std::string valueType = bitsType(64);
+  if (tagWidth == 0)
+    return valueType;
+  return taggedType(valueType, tagWidth);
+}
+
+static std::string getMemoryDoneType(unsigned tagWidth) {
+  std::string valueType = bitsType(64);
+  if (tagWidth == 0)
+    return valueType;
+  return taggedType(valueType, tagWidth);
+}
+
+std::string getDefaultMemoryInputType(unsigned ldPorts, unsigned stPorts,
+                                      llvm::StringRef memrefType, bool isExtMem,
+                                      unsigned portIdx) {
+  unsigned tagWidth =
+      getMinMemoryTagWidth(std::max<unsigned>(ldPorts, stPorts));
+  if (isExtMem) {
+    if (portIdx == 0)
+      return memrefType.str();
+    --portIdx;
+  }
+  if (ldPorts > 0) {
+    if (portIdx == 0)
+      return getMemoryAddressType(tagWidth);
+    --portIdx;
+  }
+  if (stPorts > 0) {
+    if (portIdx == 0)
+      return getMemoryAddressType(tagWidth);
+    if (portIdx == 1)
+      return getMemoryDataType(memrefType, tagWidth);
+  }
+  return bitsType(64);
+}
+
+std::string getDefaultMemoryOutputType(unsigned ldPorts, unsigned stPorts,
+                                       llvm::StringRef memrefType,
+                                       bool hasPublicMemrefResult,
+                                       unsigned portIdx) {
+  unsigned tagWidth =
+      getMinMemoryTagWidth(std::max<unsigned>(ldPorts, stPorts));
+  if (ldPorts > 0) {
+    if (portIdx == 0)
+      return getMemoryDataType(memrefType, tagWidth);
+    if (portIdx == 1)
+      return getMemoryDoneType(tagWidth);
+    portIdx -= 2;
+  }
+  if (stPorts > 0) {
+    if (portIdx == 0)
+      return getMemoryDoneType(tagWidth);
+    --portIdx;
+  }
+  if (hasPublicMemrefResult && portIdx == 0)
+    return memrefType.str();
+  return bitsType(64);
 }
 
 std::optional<unsigned> inferUniformBitsWidth(
@@ -250,14 +385,11 @@ unsigned getInstanceOutputCount(const std::vector<InstanceDef> &instances,
     return swDefs[inst.defIdx].outputTypes.size();
   case InstanceKind::Memory: {
     const auto &mem = memoryDefs[inst.defIdx];
-    unsigned count = mem.ldPorts + mem.stPorts + mem.ldPorts;
-    if (!mem.isPrivate)
-      count += 1;
-    return count;
+    return getMemoryOutputCount(mem.ldPorts, mem.stPorts, !mem.isPrivate);
   }
   case InstanceKind::ExtMem: {
     const auto &mem = extMemDefs[inst.defIdx];
-    return mem.ldPorts + mem.stPorts + mem.ldPorts;
+    return getMemoryOutputCount(mem.ldPorts, mem.stPorts, false);
   }
   case InstanceKind::FIFO:
     return 1;
@@ -273,6 +405,7 @@ std::string getInstanceInputType(const std::vector<InstanceDef> &instances,
                                  const std::vector<PEDef> &peDefs,
                                  const std::vector<SWDef> &swDefs,
                                  const std::vector<MemoryDef> &memoryDefs,
+                                 const std::vector<ExtMemDef> &extMemDefs,
                                  const std::vector<AddTagNodeDef> &addTagDefs,
                                  const std::vector<MapTagNodeDef> &mapTagDefs,
                                  const std::vector<DelTagNodeDef> &delTagDefs,
@@ -286,14 +419,16 @@ std::string getInstanceInputType(const std::vector<InstanceDef> &instances,
     return swDefs[inst.defIdx].inputTypes[portIdx];
   case InstanceKind::Memory: {
     const auto &mem = memoryDefs[inst.defIdx];
-    if (portIdx < mem.ldPorts + mem.stPorts * 2)
-      return bitsType(64);
-    return mem.memrefType;
+    return getDefaultMemoryInputType(mem.ldPorts, mem.stPorts, mem.memrefType,
+                                     false, portIdx);
   }
   case InstanceKind::FIFO:
     return bitsType(fifoDefs[inst.defIdx].bitsWidth);
   case InstanceKind::ExtMem:
-    return bitsType(64);
+    return getDefaultMemoryInputType(extMemDefs[inst.defIdx].ldPorts,
+                                     extMemDefs[inst.defIdx].stPorts,
+                                     extMemDefs[inst.defIdx].memrefType, true,
+                                     portIdx);
   case InstanceKind::AddTag:
     return addTagDefs[inst.defIdx].inputType;
   case InstanceKind::MapTag:
@@ -322,17 +457,15 @@ std::string getInstanceOutputType(const std::vector<InstanceDef> &instances,
     return swDefs[inst.defIdx].outputTypes[portIdx];
   case InstanceKind::Memory: {
     const auto &mem = memoryDefs[inst.defIdx];
-    if (portIdx < mem.ldPorts + mem.stPorts + mem.ldPorts)
-      return bitsType(64);
-    return mem.memrefType;
+    return getDefaultMemoryOutputType(mem.ldPorts, mem.stPorts, mem.memrefType,
+                                      !mem.isPrivate, portIdx);
   }
   case InstanceKind::FIFO:
     return bitsType(fifoDefs[inst.defIdx].bitsWidth);
   case InstanceKind::ExtMem: {
     const auto &mem = extMemDefs[inst.defIdx];
-    if (portIdx < mem.ldPorts + mem.stPorts + mem.ldPorts)
-      return bitsType(64);
-    return bitsType(64);
+    return getDefaultMemoryOutputType(mem.ldPorts, mem.stPorts, mem.memrefType,
+                                      false, portIdx);
   }
   case InstanceKind::AddTag:
     return addTagDefs[inst.defIdx].outputType;
@@ -359,7 +492,8 @@ FUHandle ADGBuilder::defineFU(const std::string &name,
                               const std::vector<std::string> &inputTypes,
                               const std::vector<std::string> &outputTypes,
                               const std::vector<std::string> &ops,
-                              unsigned latency, unsigned interval) {
+                              std::int64_t latency,
+                              std::int64_t interval) {
   unsigned id = impl_->fuDefs.size();
   impl_->fuDefs.push_back(
       {name, inputTypes, outputTypes, ops, "", latency, interval});
@@ -378,8 +512,8 @@ FUHandle ADGBuilder::defineFUWithBody(const std::string &name,
                                       const std::vector<std::string> &inputTypes,
                                       const std::vector<std::string> &outputTypes,
                                       const std::string &rawBody,
-                                      unsigned latency,
-                                      unsigned interval) {
+                                      std::int64_t latency,
+                                      std::int64_t interval) {
   unsigned id = impl_->fuDefs.size();
   impl_->fuDefs.push_back(
       {name, inputTypes, outputTypes, {}, rawBody, latency, interval});
@@ -390,8 +524,8 @@ FUHandle ADGBuilder::defineUnaryFU(const std::string &name,
                                    const std::string &opName,
                                    const std::string &inputType,
                                    const std::string &resultType,
-                                   unsigned latency,
-                                   unsigned interval) {
+                                   std::int64_t latency,
+                                   std::int64_t interval) {
   return defineFU(name, {inputType}, {resultType}, {opName}, latency,
                   interval);
 }
@@ -400,8 +534,8 @@ FUHandle ADGBuilder::defineBinaryFU(const std::string &name,
                                     const std::string &opName,
                                     const std::string &operandType,
                                     const std::string &resultType,
-                                    unsigned latency,
-                                    unsigned interval) {
+                                    std::int64_t latency,
+                                    std::int64_t interval) {
   return defineBinaryFU(name, opName, operandType, operandType, resultType,
                         latency, interval);
 }
@@ -411,8 +545,8 @@ FUHandle ADGBuilder::defineBinaryFU(const std::string &name,
                                     const std::string &lhsType,
                                     const std::string &rhsType,
                                     const std::string &resultType,
-                                    unsigned latency,
-                                    unsigned interval) {
+                                    std::int64_t latency,
+                                    std::int64_t interval) {
   return defineFU(name, {lhsType, rhsType}, {resultType}, {opName}, latency,
                   interval);
 }
@@ -420,8 +554,8 @@ FUHandle ADGBuilder::defineBinaryFU(const std::string &name,
 FUHandle ADGBuilder::defineConstantFU(const std::string &name,
                                       const std::string &resultType,
                                       const std::string &valueLiteral,
-                                      unsigned latency,
-                                      unsigned interval) {
+                                      std::int64_t latency,
+                                      std::int64_t interval) {
   std::string rawBody;
   rawBody += "%0 = handshake.constant %arg0 {value = " + valueLiteral + "} : " +
              resultType + "\n";
@@ -433,8 +567,8 @@ FUHandle ADGBuilder::defineConstantFU(const std::string &name,
 FUHandle ADGBuilder::defineCmpiFU(const std::string &name,
                                   const std::string &operandType,
                                   const std::string &predicate,
-                                  unsigned latency,
-                                  unsigned interval) {
+                                  std::int64_t latency,
+                                  std::int64_t interval) {
   std::string rawBody;
   rawBody += "%0 = arith.cmpi " + predicate + ", %arg0, %arg1 : " +
              operandType + "\n";
@@ -446,8 +580,8 @@ FUHandle ADGBuilder::defineCmpiFU(const std::string &name,
 FUHandle ADGBuilder::defineCmpfFU(const std::string &name,
                                   const std::string &operandType,
                                   const std::string &predicate,
-                                  unsigned latency,
-                                  unsigned interval) {
+                                  std::int64_t latency,
+                                  std::int64_t interval) {
   std::string rawBody;
   rawBody += "%0 = arith.cmpf " + predicate + ", %arg0, %arg1 : " +
              operandType + "\n";
@@ -460,8 +594,8 @@ FUHandle ADGBuilder::defineStreamFU(const std::string &name,
                                     const std::string &indexType,
                                     const std::string &stepOp,
                                     const std::string &contCond,
-                                    unsigned latency,
-                                    unsigned interval) {
+                                    std::int64_t latency,
+                                    std::int64_t interval) {
   std::string rawBody;
   rawBody += "%0, %1 = dataflow.stream %arg0, %arg1, %arg2 {step_op = \"" +
              stepOp + "\", cont_cond = \"" + contCond + "\"} : (" + indexType +
@@ -475,48 +609,48 @@ FUHandle ADGBuilder::defineStreamFU(const std::string &name,
 FUHandle ADGBuilder::defineIndexCastFU(const std::string &name,
                                        const std::string &inputType,
                                        const std::string &resultType,
-                                       unsigned latency,
-                                       unsigned interval) {
+                                       std::int64_t latency,
+                                       std::int64_t interval) {
   return defineFU(name, {inputType}, {resultType}, {"arith.index_cast"},
                   latency, interval);
 }
 
 FUHandle ADGBuilder::defineSelectFU(const std::string &name,
                                     const std::string &valueType,
-                                    unsigned latency,
-                                    unsigned interval) {
+                                    std::int64_t latency,
+                                    std::int64_t interval) {
   return defineFU(name, {"i1", valueType, valueType}, {valueType},
                   {"arith.select"}, latency, interval);
 }
 
 FUHandle ADGBuilder::defineGateFU(const std::string &name,
                                   const std::string &valueType,
-                                  unsigned latency,
-                                  unsigned interval) {
+                                  std::int64_t latency,
+                                  std::int64_t interval) {
   return defineFU(name, {valueType, "i1"}, {valueType, "i1"},
                   {"dataflow.gate"}, latency, interval);
 }
 
 FUHandle ADGBuilder::defineCarryFU(const std::string &name,
                                    const std::string &valueType,
-                                   unsigned latency,
-                                   unsigned interval) {
+                                   std::int64_t latency,
+                                   std::int64_t interval) {
   return defineFU(name, {"i1", valueType, valueType}, {valueType},
                   {"dataflow.carry"}, latency, interval);
 }
 
 FUHandle ADGBuilder::defineInvariantFU(const std::string &name,
                                        const std::string &valueType,
-                                       unsigned latency,
-                                       unsigned interval) {
+                                       std::int64_t latency,
+                                       std::int64_t interval) {
   return defineFU(name, {"i1", valueType}, {valueType},
                   {"dataflow.invariant"}, latency, interval);
 }
 
 FUHandle ADGBuilder::defineCondBrFU(const std::string &name,
                                     const std::string &valueType,
-                                    unsigned latency,
-                                    unsigned interval) {
+                                    std::int64_t latency,
+                                    std::int64_t interval) {
   return defineFU(name, {"i1", valueType}, {valueType, valueType},
                   {"handshake.cond_br"}, latency, interval);
 }
@@ -524,8 +658,8 @@ FUHandle ADGBuilder::defineCondBrFU(const std::string &name,
 FUHandle ADGBuilder::defineMuxFU(const std::string &name,
                                  const std::string &valueType,
                                  const std::string &indexType,
-                                 unsigned latency,
-                                 unsigned interval) {
+                                 std::int64_t latency,
+                                 std::int64_t interval) {
   return defineFU(name, {indexType, valueType, valueType}, {valueType},
                   {"handshake.mux"}, latency, interval);
 }
@@ -533,8 +667,8 @@ FUHandle ADGBuilder::defineMuxFU(const std::string &name,
 FUHandle ADGBuilder::defineJoinFU(const std::string &name,
                                   unsigned inputCount,
                                   const std::string &inputType,
-                                  unsigned latency,
-                                  unsigned interval) {
+                                  std::int64_t latency,
+                                  std::int64_t interval) {
   if (inputCount == 0)
     llvm::report_fatal_error("defineJoinFU requires inputCount >= 1");
   if (inputCount > kMaxHardwareJoinFanin)
@@ -548,8 +682,8 @@ FUHandle ADGBuilder::defineJoinFU(const std::string &name,
 FUHandle ADGBuilder::defineLoadFU(const std::string &name,
                                   const std::string &addrType,
                                   const std::string &dataType,
-                                  unsigned latency,
-                                  unsigned interval) {
+                                  std::int64_t latency,
+                                  std::int64_t interval) {
   return defineFU(name, {addrType, dataType, "none"}, {dataType, addrType},
                   {"handshake.load"}, latency, interval);
 }
@@ -557,8 +691,8 @@ FUHandle ADGBuilder::defineLoadFU(const std::string &name,
 FUHandle ADGBuilder::defineStoreFU(const std::string &name,
                                    const std::string &addrType,
                                    const std::string &dataType,
-                                   unsigned latency,
-                                   unsigned interval) {
+                                   std::int64_t latency,
+                                   std::int64_t interval) {
   return defineFU(name, {addrType, dataType, "none"}, {dataType, addrType},
                   {"handshake.store"}, latency, interval);
 }
@@ -1159,11 +1293,11 @@ void ADGBuilder::associateExtMemWithSW(InstanceHandle extMem, InstanceHandle sw,
   assert(extMemInst.kind == InstanceKind::ExtMem);
   const auto &mem = impl_->extMemDefs[extMemInst.defIdx];
 
-  unsigned numExtMemOutputs = mem.ldPorts + mem.stPorts + mem.ldPorts;
+  unsigned numExtMemOutputs = getMemoryOutputCount(mem.ldPorts, mem.stPorts, false);
   for (unsigned p = 0; p < numExtMemOutputs; ++p)
     impl_->connections.push_back({extMem.id, p, sw.id, swInputPortBase + p});
 
-  unsigned numExtMemDataInputs = mem.stPorts * 2 + mem.ldPorts;
+  unsigned numExtMemDataInputs = getMemoryInputCount(mem.ldPorts, mem.stPorts, false);
   for (unsigned p = 0; p < numExtMemDataInputs; ++p)
     impl_->connections.push_back({sw.id, swOutputPortBase + p, extMem.id, 1 + p});
 }
@@ -1188,11 +1322,13 @@ void ADGBuilder::associateMemoryWithSW(InstanceHandle memory, InstanceHandle sw,
   assert(memInst.kind == InstanceKind::Memory);
   const auto &mem = impl_->memoryDefs[memInst.defIdx];
 
-  unsigned numMemoryOutputs = mem.ldPorts + mem.stPorts + mem.ldPorts;
+  unsigned numMemoryOutputs =
+      getMemoryOutputCount(mem.ldPorts, mem.stPorts, false);
   for (unsigned p = 0; p < numMemoryOutputs; ++p)
     impl_->connections.push_back({memory.id, p, sw.id, swInputPortBase + p});
 
-  unsigned numMemoryInputs = mem.ldPorts + mem.stPorts * 2;
+  unsigned numMemoryInputs =
+      getMemoryInputCount(mem.ldPorts, mem.stPorts, false);
   for (unsigned p = 0; p < numMemoryInputs; ++p)
     impl_->connections.push_back({sw.id, swOutputPortBase + p, memory.id, p});
 }
@@ -1278,8 +1414,8 @@ SwitchBankDomainResult ADGBuilder::buildSwitchBankDomain(
                                         memoryDef.memrefType);
       result.memoryMemrefOutputs =
           addOutputs(spec.memoryMemrefOutputPrefix, memTypes);
-      const unsigned memrefPort = memoryDef.ldPorts + memoryDef.stPorts +
-                                  memoryDef.ldPorts;
+      const unsigned memrefPort =
+          getMemoryOutputCount(memoryDef.ldPorts, memoryDef.stPorts, false);
       for (unsigned idx = 0; idx < result.memoryInstances.size(); ++idx)
         connectInstanceToOutput(result.memoryInstances[idx], memrefPort,
                                 result.memoryMemrefOutputs[idx]);
@@ -1333,19 +1469,14 @@ bool ADGBuilder::Impl::validate(std::string &errMsg) const {
     }
     case InstanceKind::Memory: {
       const auto &mem = memoryDefs[inst.defIdx];
-      numIn = mem.ldPorts + mem.stPorts * 2;
-      numOut = mem.ldPorts + mem.stPorts + mem.ldPorts +
-               (mem.isPrivate ? 0 : 1);
+      numIn = getMemoryInputCount(mem.ldPorts, mem.stPorts, false);
+      numOut = getMemoryOutputCount(mem.ldPorts, mem.stPorts, !mem.isPrivate);
       break;
     }
     case InstanceKind::ExtMem: {
       const auto &mem = extMemDefs[inst.defIdx];
-      numIn = 1;
-      for (unsigned s = 0; s < mem.stPorts; ++s)
-        numIn += 2;
-      for (unsigned l = 0; l < mem.ldPorts; ++l)
-        numIn += 1;
-      numOut = mem.ldPorts + mem.stPorts + mem.ldPorts;
+      numIn = getMemoryInputCount(mem.ldPorts, mem.stPorts, true);
+      numOut = getMemoryOutputCount(mem.ldPorts, mem.stPorts, false);
       break;
     }
     case InstanceKind::FIFO:

@@ -5,7 +5,7 @@ module {
       %bound: !fabric.bits<64>)
       -> (!fabric.bits<64>, !fabric.bits<1>) {
     fabric.function_unit @fu_stream(%fu_start: index, %fu_step: index, %fu_bound: index)
-        -> (index, i1) [latency = 1, interval = 1] {
+        -> (index, i1) [latency = -1, interval = -1] {
       %0, %1 = dataflow.stream %fu_start, %fu_step, %fu_bound
           {step_op = "+=", cont_cond = "<"}
           : (index, index, index) -> (index, i1)

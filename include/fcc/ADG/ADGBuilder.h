@@ -116,8 +116,8 @@ struct FunctionUnitSpec {
   std::vector<std::string> outputTypes;
   std::vector<std::string> ops;
   std::string rawBody;
-  unsigned latency = 1;
-  unsigned interval = 1;
+  std::int64_t latency = 1;
+  std::int64_t interval = 1;
 };
 
 struct SpatialPESpec {
@@ -235,7 +235,7 @@ public:
                     const std::vector<std::string> &inputTypes,
                     const std::vector<std::string> &outputTypes,
                     const std::vector<std::string> &ops,
-                    unsigned latency = 1, unsigned interval = 1);
+                    std::int64_t latency = 1, std::int64_t interval = 1);
   FUHandle defineFU(const FunctionUnitSpec &spec);
 
   /// Define a function unit whose body is provided as raw MLIR text.
@@ -245,26 +245,30 @@ public:
                             const std::vector<std::string> &inputTypes,
                             const std::vector<std::string> &outputTypes,
                             const std::string &rawBody,
-                            unsigned latency = 1, unsigned interval = 1);
+                            std::int64_t latency = 1,
+                            std::int64_t interval = 1);
 
   /// Define a single-input single-output function unit for one software op.
   FUHandle defineUnaryFU(const std::string &name, const std::string &opName,
                          const std::string &inputType,
                          const std::string &resultType,
-                         unsigned latency = 1, unsigned interval = 1);
+                         std::int64_t latency = 1,
+                         std::int64_t interval = 1);
 
   /// Define a two-input function unit whose operands share one type.
   FUHandle defineBinaryFU(const std::string &name, const std::string &opName,
                           const std::string &operandType,
                           const std::string &resultType,
-                          unsigned latency = 1, unsigned interval = 1);
+                          std::int64_t latency = 1,
+                          std::int64_t interval = 1);
 
   /// Define a two-input function unit whose operands may use distinct types.
   FUHandle defineBinaryFU(const std::string &name, const std::string &opName,
                           const std::string &lhsType,
                           const std::string &rhsType,
                           const std::string &resultType,
-                          unsigned latency = 1, unsigned interval = 1);
+                          std::int64_t latency = 1,
+                          std::int64_t interval = 1);
 
   /// Define a handshake.constant function unit with a structured literal.
   /// valueLiteral must include both value text and result type, for example
@@ -272,83 +276,97 @@ public:
   FUHandle defineConstantFU(const std::string &name,
                             const std::string &resultType,
                             const std::string &valueLiteral,
-                            unsigned latency = 1, unsigned interval = 1);
+                            std::int64_t latency = 1,
+                            std::int64_t interval = 1);
 
   /// Define an arith.cmpi function unit with the given predicate mnemonic,
   /// for example "eq", "sgt", or "ult".
   FUHandle defineCmpiFU(const std::string &name,
                         const std::string &operandType,
                         const std::string &predicate,
-                        unsigned latency = 1, unsigned interval = 1);
+                        std::int64_t latency = 1,
+                        std::int64_t interval = 1);
 
   /// Define an arith.cmpf function unit with the given predicate mnemonic,
   /// for example "oeq", "ogt", or "une".
   FUHandle defineCmpfFU(const std::string &name,
                         const std::string &operandType,
                         const std::string &predicate,
-                        unsigned latency = 1, unsigned interval = 1);
+                        std::int64_t latency = 1,
+                        std::int64_t interval = 1);
 
   /// Define a dataflow.stream function unit with structured stream controls.
   FUHandle defineStreamFU(const std::string &name,
                           const std::string &indexType = "index",
                           const std::string &stepOp = "+=",
                           const std::string &contCond = "<",
-                          unsigned latency = 1, unsigned interval = 1);
+                          std::int64_t latency = -1,
+                          std::int64_t interval = -1);
 
   /// Define an arith.index_cast-style function unit.
   FUHandle defineIndexCastFU(const std::string &name,
                              const std::string &inputType,
                              const std::string &resultType = "index",
-                             unsigned latency = 1, unsigned interval = 1);
+                             std::int64_t latency = 1,
+                             std::int64_t interval = 1);
 
   /// Define an arith.select function unit.
   FUHandle defineSelectFU(const std::string &name,
                           const std::string &valueType,
-                          unsigned latency = 1, unsigned interval = 1);
+                          std::int64_t latency = 1,
+                          std::int64_t interval = 1);
 
   /// Define a dataflow.gate function unit.
   FUHandle defineGateFU(const std::string &name,
                         const std::string &valueType,
-                        unsigned latency = 1, unsigned interval = 1);
+                        std::int64_t latency = 1,
+                        std::int64_t interval = 1);
 
   /// Define a dataflow.carry function unit.
   FUHandle defineCarryFU(const std::string &name,
                          const std::string &valueType,
-                         unsigned latency = 1, unsigned interval = 1);
+                         std::int64_t latency = 1,
+                         std::int64_t interval = 1);
 
   /// Define a dataflow.invariant function unit.
   FUHandle defineInvariantFU(const std::string &name,
                              const std::string &valueType,
-                             unsigned latency = 1, unsigned interval = 1);
+                             std::int64_t latency = 1,
+                             std::int64_t interval = 1);
 
   /// Define a handshake.cond_br function unit.
   FUHandle defineCondBrFU(const std::string &name,
                           const std::string &valueType,
-                          unsigned latency = 1, unsigned interval = 1);
+                          std::int64_t latency = 1,
+                          std::int64_t interval = 1);
 
   /// Define a two-way handshake.mux function unit.
   FUHandle defineMuxFU(const std::string &name,
                        const std::string &valueType,
                        const std::string &indexType = "index",
-                       unsigned latency = 1, unsigned interval = 1);
+                       std::int64_t latency = 1,
+                       std::int64_t interval = 1);
 
   /// Define a handshake.join function unit.
   FUHandle defineJoinFU(const std::string &name,
                         unsigned inputCount,
                         const std::string &inputType = "none",
-                        unsigned latency = 1, unsigned interval = 1);
+                        std::int64_t latency = 1,
+                        std::int64_t interval = 1);
 
   /// Define a handshake.load function unit.
   FUHandle defineLoadFU(const std::string &name,
                         const std::string &addrType,
                         const std::string &dataType,
-                        unsigned latency = 1, unsigned interval = 1);
+                        std::int64_t latency = 1,
+                        std::int64_t interval = 1);
 
   /// Define a handshake.store function unit.
   FUHandle defineStoreFU(const std::string &name,
                          const std::string &addrType,
                          const std::string &dataType,
-                         unsigned latency = 1, unsigned interval = 1);
+                         std::int64_t latency = 1,
+                         std::int64_t interval = 1);
 
   // --- Spatial PE definitions ---
 

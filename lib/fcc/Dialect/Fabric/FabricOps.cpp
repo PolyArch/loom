@@ -30,7 +30,7 @@ fcc::fabric::detail::getFabricScalarWidth(mlir::Type type) {
   if (mlir::isa<mlir::Float64Type>(type))
     return 64u;
   if (type.isIndex())
-    return static_cast<unsigned>(fcc::fabric::ADDR_BIT_WIDTH);
+    return fcc::fabric::getConfiguredIndexBitWidth();
   if (mlir::isa<mlir::NoneType>(type))
     return 0u;
   return std::nullopt;
@@ -873,6 +873,22 @@ LogicalResult FunctionUnitOp::verify() {
         "must appear directly inside the top-level module, fabric.module, fabric.spatial_pe, or fabric.temporal_pe");
   }
 
+  auto latencyAttr = getLatencyAttr();
+  auto intervalAttr = getIntervalAttr();
+  if (!latencyAttr || !intervalAttr) {
+    return emitOpError(
+        "must specify both latency and interval hardware parameters");
+  }
+
+  std::int64_t latency = latencyAttr.getInt();
+  std::int64_t interval = intervalAttr.getInt();
+  if (latency < -1) {
+    return emitOpError("latency must be -1 or at least 0");
+  }
+  if (interval < -1 || interval == 0) {
+    return emitOpError("interval must be -1 or at least 1");
+  }
+
   auto &body = getBody().front();
   auto yieldOp = mlir::dyn_cast<fcc::fabric::YieldOp>(body.getTerminator());
   if (!yieldOp)
@@ -898,9 +914,12 @@ LogicalResult FunctionUnitOp::verify() {
     }
   }
 
+  bool hasStreamBehavior = false;
   for (mlir::Operation &bodyOp : getBody().front().getOperations()) {
     if (mlir::isa<fcc::fabric::YieldOp>(bodyOp))
       continue;
+    if (bodyOp.getName().getStringRef() == "dataflow.stream")
+      hasStreamBehavior = true;
     if (bodyOp.getName().getStringRef() != "handshake.join")
       continue;
     if (bodyOp.getNumOperands() == 0)
@@ -909,6 +928,16 @@ LogicalResult FunctionUnitOp::verify() {
     if (bodyOp.getNumOperands() > 64)
       return emitOpError(
           "handshake.join inside fabric.function_unit supports at most 64 inputs");
+  }
+
+  if (hasStreamBehavior) {
+    if (latency != -1 || interval != -1) {
+      return emitOpError(
+          "function_unit containing dataflow.stream must use latency = -1 and interval = -1");
+    }
+  } else if (latency == -1 || interval == -1) {
+    return emitOpError(
+        "latency = -1 and interval = -1 are reserved for multi-beat or multi-result-set behaviors such as dataflow.stream");
   }
   return success();
 }

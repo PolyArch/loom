@@ -7,6 +7,7 @@
 - operand routing and result routing state
 - optional internal registers
 - persistent per-function_unit internal configuration
+- FU-local output registers and result arbitration
 
 Placement rules:
 
@@ -72,6 +73,43 @@ long as:
 generic routing resources. Routed inter-component edges may terminate at FU
 inputs or originate at FU outputs, but they must not traverse through
 unrelated FU instances as intermediate transit hops.
+
+## FU Completion and Output Drain
+
+Detailed FU timing rules live in
+[spec-fabric-function_unit-ops.md](./spec-fabric-function_unit-ops.md). The
+temporal-PE-specific completion model is summarized here.
+
+Normative rules:
+
+- at most one FU may fire per cycle
+- every FU output port has an FU-local output register
+- every FU completion writes to those FU-local output registers first
+- no FU may bypass that register stage and drive a PE egress directly
+- an FU is busy while any of its output registers still holds an undrained
+  valid result
+- a busy FU must not fire again, even if the selected instruction and operand
+  readiness would otherwise allow it
+
+## Result Arbitration
+
+When multiple FU-local output registers contend for PE egress service, the
+temporal PE uses round-robin arbitration.
+
+Normative rules:
+
+- arbitration priority is based on FU definition order
+- FU definition order is the same order used for opcode numbering
+- after reset, the smallest opcode has initial priority
+- after each successful grant, arbitration continues from the next FU in
+  cyclic order
+
+Therefore the externally visible result time at a temporal-PE egress is:
+
+- fire time
+- plus FU-local `latency`
+- plus any arbitration wait while the result remains buffered in the FU-local
+  output register
 
 Temporal PE operand routing and result routing are selectors, not generic
 mixing or broadcasting structures:
