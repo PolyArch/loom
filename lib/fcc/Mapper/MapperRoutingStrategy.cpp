@@ -823,6 +823,8 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
   unsigned total = 0;
   bool allRouted = routeOnePass(state, dfg, adg, edgeKinds, edgeOrder,
                                 routingOutputHistory, routed, total, opts);
+  auto initialStats =
+      mapper_detail::computeRoutingEdgeStats(state, dfg, edgeKinds);
 
   auto computeTotalPathLen = [&](const MappingState &routingState) -> size_t {
     size_t totalPathLen = 0;
@@ -837,7 +839,10 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
   size_t bestTotalPathLen = computeTotalPathLen(state);
   bool bestAllRouted = allRouted;
 
-  llvm::outs() << "  Initial routing: " << routed << "/" << total << " edges\n";
+  llvm::outs() << "  Initial routing: router " << routed << "/" << total
+               << ", overall " << initialStats.routedOverallEdges << "/"
+               << initialStats.overallEdges << ", prebound "
+               << initialStats.directBindingEdges << "\n";
 
   // Failed-edge driven repair: only rip up the neighborhood around failed
   // edges so later place/route rounds can preserve working regions.
@@ -915,8 +920,13 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
 
     allRouted = routeOnePass(state, dfg, adg, edgeKinds, newOrder,
                              routingOutputHistory, routed, total, opts);
-    llvm::outs() << "  Repair pass " << (pass + 1) << " result: " << routed
-                 << "/" << total << " edges\n";
+    auto repairStats =
+        mapper_detail::computeRoutingEdgeStats(state, dfg, edgeKinds);
+    llvm::outs() << "  Repair pass " << (pass + 1) << " result: router "
+                 << routed << "/" << total << ", overall "
+                 << repairStats.routedOverallEdges << "/"
+                 << repairStats.overallEdges << ", prebound "
+                 << repairStats.directBindingEdges << "\n";
 
     size_t totalPathLen = computeTotalPathLen(state);
     if (routed > bestRouted ||
@@ -930,8 +940,11 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
   }
 
   state.restore(bestCheckpoint);
-  llvm::outs() << "  Final routing: " << bestRouted << "/" << bestTotal
-               << " edges\n";
+  auto bestStats = mapper_detail::computeRoutingEdgeStats(state, dfg, edgeKinds);
+  llvm::outs() << "  Final routing: router " << bestRouted << "/"
+               << bestTotal << ", overall " << bestStats.routedOverallEdges
+               << "/" << bestStats.overallEdges << ", prebound "
+               << bestStats.directBindingEdges << "\n";
   return bestAllRouted;
 }
 

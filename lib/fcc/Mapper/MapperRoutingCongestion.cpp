@@ -212,6 +212,7 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
     bool allRouted = routeOnePass(state, dfg, adg, edgeKinds, edgeOrder,
                                   routingOutputHistory, routed, total, opts,
                                   &congestion);
+    auto stats = computeRoutingEdgeStats(state, dfg, edgeKinds);
 
     size_t totalPathLen = 0;
     for (const auto &path : state.swEdgeToHwPaths)
@@ -223,8 +224,10 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
       bestTotal = total;
       bestPathLen = totalPathLen;
       llvm::outs() << "  Negotiated routing converged at iteration "
-                   << (iter + 1) << ": " << routed << "/" << total
-                   << " edges\n";
+                   << (iter + 1) << ": router " << routed << "/" << total
+                   << ", overall " << stats.routedOverallEdges << "/"
+                   << stats.overallEdges << ", prebound "
+                   << stats.directBindingEdges << "\n";
       state.restore(bestCheckpoint);
       return true;
     }
@@ -240,8 +243,10 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
       ++stagnantIterations;
     }
 
-    llvm::outs() << "  Negotiated routing iteration " << (iter + 1) << ": "
-                 << routed << "/" << total << " edges\n";
+    llvm::outs() << "  Negotiated routing iteration " << (iter + 1)
+                 << ": router " << routed << "/" << total << ", overall "
+                 << stats.routedOverallEdges << "/" << stats.overallEdges
+                 << ", prebound " << stats.directBindingEdges << "\n";
     emitBestSnapshot("negotiated-iter");
 
     if (opts.congestion.routingOutputHistoryDecay < 1.0) {
@@ -273,8 +278,11 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
   }
 
   state.restore(bestCheckpoint);
-  llvm::outs() << "  Negotiated routing best: " << bestRouted << "/"
-               << bestTotal << " edges\n";
+  auto bestStats = computeRoutingEdgeStats(state, dfg, edgeKinds);
+  llvm::outs() << "  Negotiated routing best: router " << bestRouted << "/"
+               << bestTotal << ", overall " << bestStats.routedOverallEdges
+               << "/" << bestStats.overallEdges << ", prebound "
+               << bestStats.directBindingEdges << "\n";
   return bestRouted == bestTotal && bestTotal != 0;
 }
 

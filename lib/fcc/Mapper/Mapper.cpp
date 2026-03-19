@@ -713,11 +713,15 @@ bool Mapper::runInterleavedPlaceRoute(
     updateBest(allRouted);
     emitBestSnapshot("interleaved-round");
 
-    unsigned routed = countRoutedEdges(state, dfg, edgeKinds);
+    auto edgeStats = computeRoutingEdgeStats(state, dfg, edgeKinds);
     auto failedEdges = collectUnroutedEdges(state, dfg, edgeKinds);
     llvm::outs() << "  Interleaved round " << (round + 1) << "/" << rounds
-                 << ": routed " << routed << "/" << dfg.edges.size()
-                 << " edges, failed " << failedEdges.size() << "\n";
+                 << ": overall " << edgeStats.routedOverallEdges << "/"
+                 << edgeStats.overallEdges << ", router "
+                 << edgeStats.routedRouterEdges << "/"
+                 << edgeStats.routerEdges << ", prebound "
+                 << edgeStats.directBindingEdges << ", failed router "
+                 << failedEdges.size() << "\n";
     if (allRouted) {
       state.restore(bestCheckpoint);
       return true;
@@ -1023,7 +1027,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     if (!attempt.placementSucceeded)
       continue;
     if (opts.verbose && laneCount > 1) {
-      llvm::outs() << "  Lane " << attempt.laneIndex << ": routed "
+      llvm::outs() << "  Lane " << attempt.laneIndex << ": routed overall "
                    << attempt.routedEdges << "/"
                    << techPlan.contractedDFG.edges.size()
                    << " edges, pathLen=" << attempt.totalPathLen
@@ -1049,8 +1053,8 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   activeBudgetExceeded_ = bestIt->budgetExceeded;
   activeBudgetExceededStage_ = bestIt->budgetExceededStage;
   if (opts.verbose && laneCount > 1) {
-    llvm::outs() << "Mapper: selected lane " << bestIt->laneIndex << " (routed "
-                 << bestIt->routedEdges << "/"
+    llvm::outs() << "Mapper: selected lane " << bestIt->laneIndex
+                 << " (routed overall " << bestIt->routedEdges << "/"
                  << techPlan.contractedDFG.edges.size() << ")\n";
   }
   if (!routingSucceeded) {

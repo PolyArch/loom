@@ -105,6 +105,20 @@ double computeUnroutedPenalty(const MappingState &state, const Graph &dfg,
                               llvm::ArrayRef<TechMappedEdgeKind> edgeKinds);
 
 // Edge collection and counting.
+struct RoutingEdgeStats {
+  unsigned overallEdges = 0;
+  unsigned fixedInternalEdges = 0;
+  unsigned directBindingEdges = 0;
+  unsigned routerEdges = 0;
+  unsigned routedOverallEdges = 0;
+  unsigned routedRouterEdges = 0;
+  unsigned unroutedRouterEdges = 0;
+};
+
+RoutingEdgeStats computeRoutingEdgeStats(
+    const MappingState &state, const Graph &dfg,
+    llvm::ArrayRef<TechMappedEdgeKind> edgeKinds);
+
 std::vector<IdIndex>
 collectUnroutedEdges(const MappingState &state, const Graph &dfg,
                      llvm::ArrayRef<TechMappedEdgeKind> edgeKinds);

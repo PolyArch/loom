@@ -627,6 +627,50 @@ collectUnroutedEdges(const MappingState &state, const Graph &dfg,
   return failedEdges;
 }
 
+RoutingEdgeStats computeRoutingEdgeStats(const MappingState &state,
+                                         const Graph &dfg,
+                                         llvm::ArrayRef<TechMappedEdgeKind>
+                                             edgeKinds) {
+  RoutingEdgeStats stats;
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId) {
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    ++stats.overallEdges;
+
+    bool fixedInternal =
+        edgeId < edgeKinds.size() &&
+        (edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU ||
+         edgeKinds[edgeId] == TechMappedEdgeKind::TemporalReg);
+    if (fixedInternal) {
+      ++stats.fixedInternalEdges;
+      ++stats.routedOverallEdges;
+      continue;
+    }
+
+    bool hasPath = edgeId < state.swEdgeToHwPaths.size() &&
+                   !state.swEdgeToHwPaths[edgeId].empty();
+    bool directBinding =
+        hasPath && state.swEdgeToHwPaths[edgeId].size() == 2 &&
+        state.swEdgeToHwPaths[edgeId][0] == state.swEdgeToHwPaths[edgeId][1];
+    if (directBinding) {
+      ++stats.directBindingEdges;
+      ++stats.routedOverallEdges;
+      continue;
+    }
+
+    ++stats.routerEdges;
+    if (hasPath) {
+      ++stats.routedOverallEdges;
+      ++stats.routedRouterEdges;
+    } else {
+      ++stats.unroutedRouterEdges;
+    }
+  }
+  return stats;
+}
+
 unsigned countRoutedEdges(const MappingState &state, const Graph &dfg,
                           llvm::ArrayRef<TechMappedEdgeKind> edgeKinds) {
   unsigned routed = 0;
