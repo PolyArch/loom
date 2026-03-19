@@ -28,20 +28,31 @@ The FCC mapper must:
 The normative mapper pipeline is:
 
 1. tech-mapping
-2. initial placement
+2. coarse placement
 3. placement refinement
-4. routing
-5. discard and disconnect assignment
-6. validation
-7. output generation
+4. boundary rebinding and route preparation
+5. interleaved place-and-route refinement
+6. local or exact repair
+7. validation
+8. output generation
 
 More specifically:
 
 - Layer 2 tech-mapping may enumerate `fabric.mux` selections, derive an
   effective FU graph, and contract a matched software subgraph into one
   placeable unit
-- Layer 3 placement and routing operate on that locked choice and must not
-  mutate FU-internal configuration
+- coarse placement may come from greedy placement or from a bounded CP-SAT
+  solve on small enough problems
+- placement refinement may include route-aware simulated annealing and
+  congestion-aware scoring, but must not mutate FU-internal configuration
+- routing is not a one-shot terminal stage in the current architecture;
+  FCC may run multiple interleaved place or route rounds, negotiated
+  congestion routing passes, and selective rip-up or reroute attempts
+- repair may include targeted local re-placement, exact routing repair, or
+  bounded CP-SAT neighborhood repair
+- the default implementation may explore multiple parallel mapper lanes with
+  different seeds and then select the best deterministic winner by routed-edge
+  count, cost, and lane index
 - final reports are expanded back to original DFG-node and DFG-edge identity
 
 ## Read-Only Inputs
@@ -64,6 +75,9 @@ Compared with Loom, FCC mapping must account for:
 - FU-internal configuration selection
 - non-positional PE port routing through muxes and demuxes
 - decomposable switch semantics
+- shared-memory bridge structure and runtime tag representability
+- interleaved place-and-route instead of one fixed place-then-route pass
+- negotiated congestion routing and bounded exact repair
 - visualization payloads that preserve component-local route meaning
 
 ## Related Documents

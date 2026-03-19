@@ -5,7 +5,7 @@ module {
   fabric.spatial_pe @gate_pe(%cond: !fabric.bits<1>, %value: !fabric.bits<32>)
       -> (!fabric.bits<32>) {
     fabric.function_unit @fu_gate(%fu_cond: i1, %fu_value: i32) -> (i32)
-        [latency = 1, interval = 1] {
+        [latency = -1, interval = -1] {
       %0, %1 = dataflow.gate %fu_value, %fu_cond : i32, i1 -> i32, i1
       fabric.yield %0 : i32
     }
@@ -15,7 +15,7 @@ module {
   fabric.spatial_pe @invariant_pe(%cond: !fabric.bits<1>, %value: !fabric.bits<32>)
       -> (!fabric.bits<32>) {
     fabric.function_unit @fu_invariant(%fu_cond: i1, %fu_value: i32) -> (i32)
-        [latency = 1, interval = 1] {
+        [latency = -1, interval = -1] {
       %0 = dataflow.invariant %fu_cond, %fu_value : i1, i32 -> i32
       fabric.yield %0 : i32
     }

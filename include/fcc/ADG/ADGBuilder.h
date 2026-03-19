@@ -319,20 +319,20 @@ public:
   /// Define a dataflow.gate function unit.
   FUHandle defineGateFU(const std::string &name,
                         const std::string &valueType,
-                        std::int64_t latency = 1,
-                        std::int64_t interval = 1);
+                        std::int64_t latency = -1,
+                        std::int64_t interval = -1);
 
   /// Define a dataflow.carry function unit.
   FUHandle defineCarryFU(const std::string &name,
                          const std::string &valueType,
-                         std::int64_t latency = 1,
-                         std::int64_t interval = 1);
+                         std::int64_t latency = -1,
+                         std::int64_t interval = -1);
 
   /// Define a dataflow.invariant function unit.
   FUHandle defineInvariantFU(const std::string &name,
                              const std::string &valueType,
-                             std::int64_t latency = 1,
-                             std::int64_t interval = 1);
+                             std::int64_t latency = -1,
+                             std::int64_t interval = -1);
 
   /// Define a handshake.cond_br function unit.
   FUHandle defineCondBrFU(const std::string &name,

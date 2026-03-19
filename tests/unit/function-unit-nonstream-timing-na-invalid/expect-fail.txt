@@ -1,1 +1,1 @@
-latency = -1 and interval = -1 are reserved for multi-beat or multi-result-set behaviors such as dataflow.stream
+latency = -1 and interval = -1 are reserved for dedicated dataflow function_units

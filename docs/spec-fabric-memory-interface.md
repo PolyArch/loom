@@ -191,9 +191,14 @@ spatial-switch output, whether the spatial switch payload is tagged or
 non-tagged.
 
 This remains true after tag-width adaptation. Two source-side tag values that
-start out different may still be illegal if they collapse to the same observed
-runtime tag on one shared tagged resource after LSB alignment, truncation, or
-zero-extension along the routed hardware path.
+start out different may still be illegal if their routed path would require one
+of them to become unrepresentable on a tagged hardware port, or if an explicit
+later tag transform makes them equal on a shared tagged resource.
+
+FCC must not treat implicit width adaptation itself as a legal tag-rewrite
+mechanism. Only explicit `fabric.add_tag`, `fabric.map_tag`, or
+`fabric.del_tag` boundaries may change the runtime tag meaning seen by later
+shared tagged resources.
 
 ## Memory Region Model
 

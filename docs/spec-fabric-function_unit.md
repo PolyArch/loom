@@ -22,6 +22,10 @@ The detailed operation-class and timing model for `latency`, `interval`, and
 temporal-PE completion behavior lives in
 [spec-fabric-function_unit-ops.md](./spec-fabric-function_unit-ops.md).
 
+The detailed packing and serialization rules for FU-internal runtime
+configuration live in
+[spec-fabric-config_mem.md](./spec-fabric-config_mem.md).
+
 Normative structural restrictions:
 
 - all inputs must be consumed:
@@ -48,17 +52,15 @@ Definition and instantiation rules:
 Textual syntax follows the Fabric-wide split:
 
 - fixed FU structure parameters such as `latency` and `interval` live in `[]`
-- `fabric.mux` runtime control fields such as `sel`, `discard`, and
-  `disconnect` live in braces
+- FU-internal runtime-configurable fields live in braces
 
-Normative timing summary:
+This document intentionally does not restate the full timing-class rules.
+`spec-fabric-function_unit-ops.md` is the single normative source for:
 
-- `latency` models fire-to-FU-local-completion delay
-- `interval` models minimum intrinsic fire-to-next-fire spacing
-- both are meaningful only when the FU has single-fire single-result-set
-  behavior
-- if one firing may produce multiple result sets over time, both parameters
-  must be `-1`
+- what `latency` and `interval` mean
+- when `-1` is required or forbidden
+- which FU bodies are treated as dedicated dataflow state machines
+- how temporal-PE output draining changes observable completion time
 
 ## Port Semantics
 
@@ -77,88 +79,23 @@ This DAG may be:
 - fixed, for single-op or fixed multi-op FUs
 - configurable, when `fabric.mux` is present
 
-## `fabric.mux`
+## FU-Internal Configurability
 
-`fabric.mux` is the primitive that makes FU shape configurable.
+FCC allows one FU body to contain configurable internal structure, primarily
+through `fabric.mux` and a small set of runtime-configurable body operations.
 
-Its control structure is:
+This document intentionally does not duplicate the normative definitions for:
 
-- `sel`
-- `discard`
-- `disconnect`
+- which body operations are configurable
+- the semantic distinction between `fabric.mux`, `handshake.mux`, and
+  `arith.select`
+- `fabric.mux` handshake behavior
+- the low-to-high bit layout of configurable fields
 
-The encoded field order is low-to-high:
+These are defined in:
 
-- `sel`
-- `discard`
-- `disconnect`
-
-Key rules:
-
-- `sel` participates in tech-mapping search
-- `disconnect` and `discard` are runtime configuration bits with handshake
-  semantics
-- the selected FU configuration is fixed before place-and-route
-
-## `fabric.mux` Operational Semantics
-
-`fabric.mux` is a handshake-aware routing primitive.
-
-It supports two structural modes:
-
-- `M:1`: multiple inputs, one output
-- `1:M`: one input, multiple outputs
-
-### `disconnect = 1`
-
-When `disconnect = 1`, the static mux is fully inert:
-
-- no input is accepted
-- input-side `ready` behaves as permanently low
-- `sel` is ignored
-- this rule is identical for `M:1` and `1:M`
-
-### `M:1` with `disconnect = 0`
-
-The selected input is `sel`.
-
-If `discard = 0`:
-
-- the selected input is forwarded to the output
-- non-selected inputs are not accepted
-- non-selected input-side `ready` behaves as low
-
-If `discard = 1`:
-
-- the selected input is forwarded to the output
-- non-selected inputs are accepted and drained locally
-- non-selected input-side `ready` behaves as high
-
-### `1:M` with `disconnect = 0`
-
-The selected output is `sel`.
-
-If `discard = 0`:
-
-- the input is forwarded only to the selected output
-- non-selected outputs remain invalid
-
-If `discard = 1`:
-
-- the input is accepted and drained locally
-- all outputs remain invalid
-- input-side `ready` behaves as high
-
-### `1:1` Degenerate Case
-
-A `1:1` static mux is semantically dead routing structure.
-
-Normative rules:
-
-- `discard` and `disconnect` must both be `0`
-- the mux is treated as transparent pass-through
-- mapper normalization and effective-graph extraction should behave as if the
-  input and output were directly connected
+- [spec-fabric-function_unit-ops.md](./spec-fabric-function_unit-ops.md)
+- [spec-fabric-config_mem.md](./spec-fabric-config_mem.md)
 
 ## Runtime-Config Ownership
 
@@ -198,57 +135,19 @@ configuration-enumeration and effective-graph extraction model.
 
 ## FU-Internal Runtime Configuration
 
-FCC treats one `fabric.function_unit`'s runtime configuration payload as the
-concatenation of all configurable body fields in body occurrence order.
+One FU contributes a runtime-configuration payload composed from the
+configurable body fields that appear in its body.
 
-Current configurable body fields are:
+The authoritative definition of:
 
-- `fabric.mux`
-- `handshake.constant`
-- `handshake.join`
-- `arith.cmpi`
-- `arith.cmpf`
-- `dataflow.stream`
+- which fields contribute payload bits
+- field-local encodings
+- body-occurrence ordering
+- special handling of configurable `handshake.join`
 
-No other body operation currently contributes runtime configuration bits.
-
-The serialized payload is low-to-high in body occurrence order. Each field uses
-its own local encoding:
-
-- `fabric.mux`: `[sel | discard | disconnect]`
-- `handshake.constant`: literal result value bits, zero-extended or truncated
-  to the result bit width
-- `handshake.join`: one activity bit per hardware join input, ordered by FU
-  body operand order; bit `1` means that input participates in the current
-  software join, bit `0` means that input is ignored for this mapping
-- `arith.cmpi`: 4-bit predicate encoding using the MLIR predicate enum value
-- `arith.cmpf`: 4-bit predicate encoding using the MLIR predicate enum value
-- `dataflow.stream`: 5-bit `cont_cond` one-hot encoding in the order
-  `<, <=, >, >=, !=`
-
-### Configurable `handshake.join`
-
-FCC treats a `handshake.join` inside one `fabric.function_unit` as a fixed
-maximum hardware join fan-in.
-
-Normative rules:
-
-- the hardware join fan-in equals the number of textual operands in the FU body
-- the current FCC hardware/config encoding supports hardware join fan-in in the
-  range `1..64`
-- the emitted runtime-config field width equals that hardware fan-in
-- a software `handshake.join` with smaller fan-in may map onto that hardware
-  join if the mapper selects a subset of hardware inputs
-- the selected subset is encoded as the `join_mask` bitfield described above
-
-Example:
-
-- hardware FU body contains a 4-input `handshake.join`
-- software DFG contains a 3-input `handshake.join`
-- mapper may bind it with `join_mask = 0b1101`
-
-This means hardware inputs `0`, `2`, and `3` participate in the join, while
-hardware input `1` is disabled for that mapped software node.
+lives in [spec-fabric-config_mem.md](./spec-fabric-config_mem.md), with the
+semantic meaning of each configurable body operation defined in
+[spec-fabric-function_unit-ops.md](./spec-fabric-function_unit-ops.md).
 
 FCC does not carry Loom's earlier `output_tag` PE-body config field into
 `fabric.function_unit`. Runtime tag handling is modeled explicitly through

@@ -35,6 +35,7 @@ future work under this repository.
 | Spec | Description |
 |------|-------------|
 | [spec-fabric.md](./spec-fabric.md) | Fabric dialect overview and operation taxonomy |
+| [spec-fabric-config_mem.md](./spec-fabric-config_mem.md) | Unified config bitstream model, slice ordering, and per-resource packing |
 | [spec-fabric-function_unit.md](./spec-fabric-function_unit.md) | `fabric.function_unit` and `fabric.mux` semantics |
 | [spec-fabric-fifo.md](./spec-fabric-fifo.md) | `fabric.fifo` structure, legality, and runtime bypass config |
 | [spec-fabric-tag.md](./spec-fabric-tag.md) | `fabric.add_tag`, `fabric.map_tag`, and `fabric.del_tag` |

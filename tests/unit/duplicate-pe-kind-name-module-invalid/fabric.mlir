@@ -21,8 +21,7 @@ module {
       fabric.function_unit @fu_add_t(%x: i32, %y: i32, %z: i32) -> (i32)
           [latency = 1, interval = 1] {
         %sum = arith.addi %x, %y : i32
-        %zero = arith.constant 0 : i32
-        %unused = arith.addi %z, %zero : i32
+        %unused = arith.xori %z, %z : i32
         fabric.yield %sum : i32
       }
       fabric.yield

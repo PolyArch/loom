@@ -1,0 +1,1 @@
+function_unit inputs must use native semantic types

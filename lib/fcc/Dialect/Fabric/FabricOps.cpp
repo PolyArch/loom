@@ -6,12 +6,92 @@
 //===----------------------------------------------------------------------===//
 
 #include "FabricOpsInternal.h"
+#include "llvm/ADT/StringSwitch.h"
 
 using namespace mlir;
 using namespace fcc::fabric;
 using fcc::fabric::detail::hasDirectRegionParentOfType;
 using fcc::fabric::detail::parseOptionalOperandListInParens;
 using fcc::fabric::detail::verifyModuleLevelComponentPlacement;
+
+namespace {
+
+bool isNativeFunctionUnitType(mlir::Type type) {
+  if (!type)
+    return false;
+  if (mlir::isa<mlir::NoneType>(type) || type.isIndex() ||
+      mlir::isa<mlir::FloatType>(type)) {
+    return true;
+  }
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
+    return intType.isSignless();
+  return false;
+}
+
+bool isAllowedFunctionUnitBodyOp(llvm::StringRef opName) {
+  return llvm::StringSwitch<bool>(opName)
+      .Case("fabric.mux", true)
+      .Case("arith.addf", true)
+      .Case("arith.addi", true)
+      .Case("arith.andi", true)
+      .Case("arith.cmpf", true)
+      .Case("arith.cmpi", true)
+      .Case("arith.divf", true)
+      .Case("arith.divsi", true)
+      .Case("arith.divui", true)
+      .Case("arith.extsi", true)
+      .Case("arith.extui", true)
+      .Case("arith.fptosi", true)
+      .Case("arith.fptoui", true)
+      .Case("arith.index_cast", true)
+      .Case("arith.index_castui", true)
+      .Case("arith.mulf", true)
+      .Case("arith.muli", true)
+      .Case("arith.negf", true)
+      .Case("arith.ori", true)
+      .Case("arith.remsi", true)
+      .Case("arith.remui", true)
+      .Case("arith.select", true)
+      .Case("arith.shli", true)
+      .Case("arith.shrsi", true)
+      .Case("arith.shrui", true)
+      .Case("arith.sitofp", true)
+      .Case("arith.subf", true)
+      .Case("arith.subi", true)
+      .Case("arith.trunci", true)
+      .Case("arith.uitofp", true)
+      .Case("arith.xori", true)
+      .Case("math.absf", true)
+      .Case("math.cos", true)
+      .Case("math.exp", true)
+      .Case("math.fma", true)
+      .Case("math.log2", true)
+      .Case("math.sin", true)
+      .Case("math.sqrt", true)
+      .Case("llvm.intr.bitreverse", true)
+      .Case("dataflow.carry", true)
+      .Case("dataflow.gate", true)
+      .Case("dataflow.invariant", true)
+      .Case("dataflow.stream", true)
+      .Case("handshake.cond_br", true)
+      .Case("handshake.constant", true)
+      .Case("handshake.join", true)
+      .Case("handshake.load", true)
+      .Case("handshake.mux", true)
+      .Case("handshake.store", true)
+      .Default(false);
+}
+
+bool isDedicatedDataflowFunctionUnitOp(llvm::StringRef opName) {
+  return llvm::StringSwitch<bool>(opName)
+      .Case("dataflow.carry", true)
+      .Case("dataflow.gate", true)
+      .Case("dataflow.invariant", true)
+      .Case("dataflow.stream", true)
+      .Default(false);
+}
+
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // Shared helper function definitions (declared in FabricOpsInternal.h)
@@ -895,8 +975,32 @@ LogicalResult FunctionUnitOp::verify() {
     return emitOpError("expected fabric.yield terminator");
 
   auto funcType = getFunctionType();
+  for (mlir::Type inputType : funcType.getInputs()) {
+    if (!isNativeFunctionUnitType(inputType)) {
+      return emitOpError()
+             << "function_unit inputs must use native semantic types, but got '"
+             << inputType << "'";
+    }
+  }
+  for (mlir::Type resultType : funcType.getResults()) {
+    if (!isNativeFunctionUnitType(resultType)) {
+      return emitOpError()
+             << "function_unit results must use native semantic types, but got '"
+             << resultType << "'";
+    }
+  }
   if (yieldOp.getNumOperands() != funcType.getNumResults()) {
     return emitOpError("yield operand count mismatch with function_unit results");
+  }
+  for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
+    mlir::Type yieldedType = yieldOp.getOperand(idx).getType();
+    mlir::Type resultType = funcType.getResult(idx);
+    if (yieldedType != resultType) {
+      return emitOpError() << "yield operand " << idx
+                           << " type mismatch with function_unit result: got '"
+                           << yieldedType << "', expected '" << resultType
+                           << "'";
+    }
   }
 
   for (mlir::Value operand : yieldOp.getOperands()) {
@@ -907,6 +1011,59 @@ LogicalResult FunctionUnitOp::verify() {
     }
   }
 
+  unsigned nonTerminatorCount = 0;
+  unsigned dedicatedDataflowCount = 0;
+  llvm::StringRef dedicatedDataflowOpName;
+  for (mlir::Operation &bodyOp : getBody().front().getOperations()) {
+    if (mlir::isa<fcc::fabric::YieldOp>(bodyOp))
+      continue;
+
+    ++nonTerminatorCount;
+    llvm::StringRef opName = bodyOp.getName().getStringRef();
+    if (!isAllowedFunctionUnitBodyOp(opName)) {
+      return emitOpError() << "operation '" << opName
+                           << "' is not allowed inside fabric.function_unit";
+    }
+
+    for (mlir::Type operandType : bodyOp.getOperandTypes()) {
+      if (!isNativeFunctionUnitType(operandType)) {
+        return emitOpError()
+               << "operation '" << opName
+               << "' inside fabric.function_unit uses illegal operand type '"
+               << operandType << "'";
+      }
+    }
+    for (mlir::Type resultType : bodyOp.getResultTypes()) {
+      if (!isNativeFunctionUnitType(resultType)) {
+        return emitOpError()
+               << "operation '" << opName
+               << "' inside fabric.function_unit uses illegal result type '"
+               << resultType << "'";
+      }
+    }
+
+    if (opName == "handshake.join") {
+      if (bodyOp.getNumOperands() == 0) {
+        return emitOpError(
+            "handshake.join inside fabric.function_unit requires at least one input");
+      }
+      if (bodyOp.getNumOperands() > 64) {
+        return emitOpError(
+            "handshake.join inside fabric.function_unit supports at most 64 inputs");
+      }
+    }
+
+    if (isDedicatedDataflowFunctionUnitOp(opName)) {
+      ++dedicatedDataflowCount;
+      dedicatedDataflowOpName = opName;
+    }
+  }
+
+  if (nonTerminatorCount == 0) {
+    return emitOpError(
+        "function_unit body must contain at least one non-terminator operation");
+  }
+
   for (mlir::BlockArgument arg : body.getArguments()) {
     if (arg.use_empty()) {
       return emitOpError(
@@ -914,30 +1071,21 @@ LogicalResult FunctionUnitOp::verify() {
     }
   }
 
-  bool hasStreamBehavior = false;
-  for (mlir::Operation &bodyOp : getBody().front().getOperations()) {
-    if (mlir::isa<fcc::fabric::YieldOp>(bodyOp))
-      continue;
-    if (bodyOp.getName().getStringRef() == "dataflow.stream")
-      hasStreamBehavior = true;
-    if (bodyOp.getName().getStringRef() != "handshake.join")
-      continue;
-    if (bodyOp.getNumOperands() == 0)
-      return emitOpError(
-          "handshake.join inside fabric.function_unit requires at least one input");
-    if (bodyOp.getNumOperands() > 64)
-      return emitOpError(
-          "handshake.join inside fabric.function_unit supports at most 64 inputs");
-  }
-
-  if (hasStreamBehavior) {
+  if (dedicatedDataflowCount > 0) {
+    if (nonTerminatorCount != 1 || dedicatedDataflowCount != 1) {
+      return emitOpError()
+             << "function_unit containing " << dedicatedDataflowOpName
+             << " must contain exactly one non-terminator dataflow operation "
+                "and no other body ops";
+    }
     if (latency != -1 || interval != -1) {
-      return emitOpError(
-          "function_unit containing dataflow.stream must use latency = -1 and interval = -1");
+      return emitOpError() << "function_unit containing "
+                           << dedicatedDataflowOpName
+                           << " must use latency = -1 and interval = -1";
     }
   } else if (latency == -1 || interval == -1) {
     return emitOpError(
-        "latency = -1 and interval = -1 are reserved for multi-beat or multi-result-set behaviors such as dataflow.stream");
+        "latency = -1 and interval = -1 are reserved for dedicated dataflow function_units");
   }
   return success();
 }

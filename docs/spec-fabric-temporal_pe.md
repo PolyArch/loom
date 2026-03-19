@@ -91,25 +91,27 @@ Normative rules:
 - a busy FU must not fire again, even if the selected instruction and operand
   readiness would otherwise allow it
 
+This document intentionally does not restate the full per-FU `latency`,
+`interval`, busy, and arbitration model. The single normative source for
+those rules is [spec-fabric-function_unit-ops.md](./spec-fabric-function_unit-ops.md).
+
+For temporal-PE users, the practical container-level consequence is:
+
+- the observable egress time of one result equals FU-local completion time
+  plus any output-register wait introduced by temporal-PE arbitration
+
 ## Result Arbitration
 
 When multiple FU-local output registers contend for PE egress service, the
 temporal PE uses round-robin arbitration.
 
-Normative rules:
+Normative summary:
 
 - arbitration priority is based on FU definition order
 - FU definition order is the same order used for opcode numbering
 - after reset, the smallest opcode has initial priority
 - after each successful grant, arbitration continues from the next FU in
   cyclic order
-
-Therefore the externally visible result time at a temporal-PE egress is:
-
-- fire time
-- plus FU-local `latency`
-- plus any arbitration wait while the result remains buffered in the FU-local
-  output register
 
 Temporal PE operand routing and result routing are selectors, not generic
 mixing or broadcasting structures:

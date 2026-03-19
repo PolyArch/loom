@@ -3,7 +3,7 @@ module {
   fabric.spatial_sw @right_sw [connectivity_table = ["1"]] : (!fabric.bits<32>) -> (!fabric.bits<32>)
 
   fabric.spatial_pe @relay_pe(%p0: !fabric.bits<32>, %p1: !fabric.bits<32>) -> (!fabric.bits<32>) {
-    fabric.function_unit @fu0(%cond: i1, %arg0: i32) -> (i32) [latency = 1, interval = 1] {
+    fabric.function_unit @fu0(%cond: i1, %arg0: i32) -> (i32) [latency = -1, interval = -1] {
       %0 = dataflow.invariant %cond, %arg0 : i1, i32 -> i32
       fabric.yield %0 : i32
     }

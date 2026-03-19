@@ -135,17 +135,22 @@ already declared by the ADG. The mapper does not infer tagged versus
 non-tagged shape or hardware tag width.
 
 The comparison point is the runtime tag value observed at the actual hardware
-resource being shared, not only the source-side software notion of tag. This
-matters because FCC hardware connections allow tagged width mismatch with LSB
-alignment:
+resource being shared, not only the source-side software notion of tag.
 
-- tagged wide to tagged narrow truncates high tag bits
-- tagged narrow to tagged wide zero-extends high tag bits
+FCC still allows tagged ports with different declared tag widths to be
+connected structurally, but the mapper must enforce a stronger semantic rule:
+
+- one mapped concrete runtime tag value must remain representable at every
+  tagged port on the routed path
+- implicit tag truncation or implicit tag widening must not be used as a legal
+  way to change the observed runtime tag
+- only explicit `fabric.add_tag`, `fabric.map_tag`, or `fabric.del_tag`
+  boundaries may change the runtime tag meaning observed by later resources
 
 Therefore, if two software flows share one tagged hardware edge or one tagged
 routing output, the mapper must compare the runtime tag values observed at that
-resource after any earlier `add_tag`, `map_tag`, and width adaptation along
-the routed hardware path.
+resource after any earlier explicit tag transforms and after representability
+checks along the routed hardware path.
 
 For memory-family routes, this comparison uses the bridge-expanded export path,
 not only the truncated boundary path used internally during placement and
@@ -166,7 +171,7 @@ not on one fixed helper-op pattern. A legal bridge may terminate at:
 - or a tagged route-stage boundary port when the adjacent compute-side region
   already remains tagged
 
-When mapper propagates runtime tags for a memory-family route, an explicit tag
+When the mapper propagates runtime tags for a memory-family route, an explicit tag
 already carried on the routed hardware path has priority. The software lane id
 acts only as a fallback source when the path has not attached any runtime tag
 yet.

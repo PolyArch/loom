@@ -76,12 +76,17 @@ For tagged ports:
   `temporal_sw`
 
 If a tagged path reaches the switch through narrower or wider tagged hardware
-connections elsewhere in the ADG, the runtime tag value observed at the switch
-port follows FCC's general hardware-connection rule:
+connections elsewhere in the ADG, FCC still requires the concrete runtime tag
+value to be representable on every tagged port it traverses.
 
-- tag bits are LSB-aligned
-- wide to narrow truncates
-- narrow to wide zero-extends
+In particular:
+
+- the switch does not authorize implicit runtime tag truncation
+- the switch does not authorize implicit runtime tag rewriting by zero-extended
+  widening
+- only explicit tag-boundary operations such as `fabric.add_tag`,
+  `fabric.map_tag`, and `fabric.del_tag` may change the runtime tag meaning
+  seen by later hardware stages
 
 One important FCC use case is memory or extmemory ingress:
 

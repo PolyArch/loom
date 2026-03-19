@@ -101,14 +101,17 @@ capacity.
 ## Multi-Port Memory and Tagging
 
 FCC retains Loom's broad direction that memory-related routing may involve tag
-mechanisms and explicit memory interface structure, but the exact MVP contract
-is currently centered on the FCC rebuild plan:
+mechanisms and explicit memory interface structure, but the current contract is
+no longer restricted to one hardware extmemory per software array.
 
-- one extmemory per array in the MVP
-- tagged memory interaction remains part of the architecture, especially for
-  temporal or multi-port expansion
+Normative compilation-side expectations are:
 
-This area should expand into dedicated memory specs as implementation grows.
+- DFG memory nodes must preserve enough identity for later mapping onto either
+  distinct or shared hardware memory interfaces
+- multi-port or shared-interface memory traffic may require tagged routing and
+  explicit tag-boundary structure
+- the detailed hardware-family and region-table rules live in
+  [spec-fabric-memory-interface.md](./spec-fabric-memory-interface.md)
 
 ## Relationship to Other Specs
 

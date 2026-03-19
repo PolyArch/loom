@@ -88,6 +88,14 @@ FCC simulation should support:
 - a machine-readable result artifact containing resolved output tokens and
   post-execution memory-region snapshots
 
+Current standalone artifact families include:
+
+- `<mixed>.sim.setup.json`
+- `<mixed>.sim.result.json`
+- `<mixed>.sim.report.json`
+- `<mixed>.sim.trace`
+- `<mixed>.sim.stat`
+
 These outputs are relevant both for debugging and for later visualization or
 performance analysis.
 

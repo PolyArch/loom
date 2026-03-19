@@ -1,0 +1,1 @@
+function_unit containing dataflow.gate must contain exactly one non-terminator dataflow operation and no other body ops

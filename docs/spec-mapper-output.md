@@ -105,14 +105,16 @@ At minimum, the report should include:
 
 ## Extended Visualization Payload
 
-FCC should evolve the JSON report to also expose component-local routing facts.
-Recommended sections are:
+The current FCC `map.json` report also exposes component-local routing facts
+needed by visualization and config inspection.
+
+Current sections include:
 
 - `switch_routes`
   - per switch, list of configured `input_index -> output_index` selections
 - `pe_routes`
   - per PE, list of selected ingress and egress mux or demux bindings
-  - `fu_configs`
+- `fu_configs`
   - selected effective FU configuration per mapped hardware FU
   - software nodes absorbed into that FU
   - selected `mux` fields such as `sel`
@@ -142,8 +144,15 @@ practice. It is the authoritative bridge between:
 - chosen hardware memory interfaces
 - region-table configuration
 
-These extensions are strongly recommended because they remove ambiguity from
-mapping-aware visualization.
+These sections are part of the current report family because they remove
+ambiguity from mapping-aware visualization and config inspection.
+
+Current `edge_routings` entries also classify the software edge into one of:
+
+- `routed`
+- `unrouted`
+- `intra_fu`
+- `temporal_reg`
 
 ## Text Mapping Report
 

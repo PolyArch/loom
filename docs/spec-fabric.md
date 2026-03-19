@@ -44,6 +44,12 @@ Typical rules:
 - tagged temporal routing uses `!fabric.tagged<!fabric.bits<N>, iK>`
 - native types such as `i32`, `f32`, `index`, and `none` live inside
   `function_unit` boundaries
+- when `index` is lowered to a concrete integer width for hardware-facing
+  behavior, FCC uses one centrally configured bit width
+- the default Fabric index width is `32`
+- the preset width family is `32`, `48`, `57`, or `64`
+- the process-wide environment variable `FCC_INDEX_WIDTH` may override the
+  default with any decimal integer in the inclusive range `32..64`
 
 For tagged Fabric ports, two concepts must stay separate:
 
@@ -65,15 +71,15 @@ FCC hardware connections allow width mismatch as long as tag-kind matches:
 
 When widths differ on one hardware connection:
 
-- value bits are LSB-aligned to value bits
-- tag bits are LSB-aligned to tag bits
-- wide to narrow truncates high bits
-- narrow to wide zero-extends high bits
-
-This means runtime tag values may change implicitly along one tagged hardware
-path even when no operation changes tagged shape. A runtime tag value observed
-on `!fabric.tagged<!fabric.bits<N>, i4>` and then carried into
-`!fabric.tagged<!fabric.bits<N>, i3>` is observed as the low 3 bits only.
+- value bits remain LSB-aligned at the physical connection boundary
+- value payloads may therefore be truncated or zero-extended according to the
+  usual wide-to-narrow or narrow-to-wide Fabric rule
+- tag fields may be carried between different tagged widths structurally, but a
+  mapped concrete runtime tag must remain representable at every tagged port
+  on the routed path
+- FCC must not rely on implicit tag truncation or implicit tag zero-extension
+  that would change the concrete runtime tag value seen by later hardware
+  resources
 
 Only three Fabric operations may intentionally change tagged shape at a port
 boundary:
@@ -84,6 +90,11 @@ boundary:
 
 All other Fabric operations are structural carriers or routers. They may route
 tagged values, but they do not create, remove, or resize the tag field.
+
+Therefore, a tagged-to-tagged hardware connection with different declared tag
+widths is only semantically usable for one mapped flow when that flow's
+concrete runtime tag value fits every tagged port type along the path without
+changing value.
 
 For `fabric.map_tag`, the value payload type must remain unchanged. `map_tag`
 may rewrite runtime tag values and may also change the tag width between its
