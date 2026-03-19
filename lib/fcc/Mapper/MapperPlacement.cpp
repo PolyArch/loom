@@ -1,3 +1,4 @@
+#include "MapperCongestionEstimator.h"
 #include "MapperInternal.h"
 #include "fcc/Mapper/Mapper.h"
 #include "fcc/Mapper/TypeCompat.h"
@@ -67,8 +68,14 @@ bool isSpatialPEOccupied(const MappingState &state, const Graph &adg,
     return false;
   if (!isSpatialPEName(flattener, peName))
     return false;
-  for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(state.hwNodeToSwNodes.size());
-       ++hwId) {
+  // Use the occupiedSpatialPEs set for O(1) lookup.
+  if (!state.occupiedSpatialPEs.contains(peName))
+    return false;
+  if (ignoreHwNode == INVALID_ID)
+    return true;
+  // The PE name is in the set. Check if the only occupant is ignoreHwNode.
+  for (IdIndex hwId = 0;
+       hwId < static_cast<IdIndex>(state.hwNodeToSwNodes.size()); ++hwId) {
     if (hwId == ignoreHwNode || state.hwNodeToSwNodes[hwId].empty())
       continue;
     const Node *hwNode = adg.getNode(hwId);
@@ -257,6 +264,105 @@ bool isMemoryOp(const Node *node) {
 
 bool isSoftwareMemoryInterfaceOp(llvm::StringRef opName) {
   return opName == "handshake.extmemory" || opName == "handshake.memory";
+}
+
+IdIndex findBridgePortForCategoryLane(const BridgeInfo &bridge, bool isInput,
+                                      BridgePortCategory cat, unsigned lane) {
+  llvm::ArrayRef<IdIndex> ports =
+      isInput ? llvm::ArrayRef<IdIndex>(bridge.inputPorts)
+              : llvm::ArrayRef<IdIndex>(bridge.outputPorts);
+  llvm::ArrayRef<BridgePortCategory> categories =
+      isInput ? llvm::ArrayRef<BridgePortCategory>(bridge.inputCategories)
+              : llvm::ArrayRef<BridgePortCategory>(bridge.outputCategories);
+  llvm::ArrayRef<unsigned> lanes =
+      isInput ? llvm::ArrayRef<unsigned>(bridge.inputLanes)
+              : llvm::ArrayRef<unsigned>(bridge.outputLanes);
+  for (size_t idx = 0; idx < ports.size() && idx < categories.size() &&
+                       idx < lanes.size();
+       ++idx) {
+    if (categories[idx] == cat && lanes[idx] == lane)
+      return ports[idx];
+  }
+  return INVALID_ID;
+}
+
+std::optional<std::pair<double, double>>
+getPortPlacementPos(IdIndex portId, const Graph &adg,
+                    const ADGFlattener &flattener) {
+  const Port *port = adg.getPort(portId);
+  if (!port || port->parentNode == INVALID_ID)
+    return std::nullopt;
+  auto [row, col] = flattener.getNodeGridPos(port->parentNode);
+  if (row < 0 || col < 0)
+    return std::nullopt;
+  return std::make_pair(static_cast<double>(row), static_cast<double>(col));
+}
+
+std::optional<std::pair<double, double>>
+estimateSoftwarePortPlacementPos(IdIndex swNode, IdIndex swPort,
+                                 IdIndex hwNode, bool isInput,
+                                 const Graph &dfg, const Graph &adg,
+                                 const ADGFlattener &flattener) {
+  const Node *swN = dfg.getNode(swNode);
+  const Node *hwN = adg.getNode(hwNode);
+  if (!swN || !hwN)
+    return std::nullopt;
+
+  if (isSoftwareMemoryInterfaceOp(getNodeAttrStr(swN, "op_name"))) {
+    bool isExtMem = (getNodeAttrStr(swN, "op_name") == "handshake.extmemory");
+    BridgeInfo bridge = BridgeInfo::extract(hwN);
+    DfgMemoryInfo memInfo = DfgMemoryInfo::extract(swN, dfg, isExtMem);
+
+    if (isInput) {
+      auto it = std::find(swN->inputPorts.begin(), swN->inputPorts.end(),
+                          swPort);
+      if (it != swN->inputPorts.end()) {
+        unsigned absIdx = static_cast<unsigned>(std::distance(swN->inputPorts.begin(), it));
+        if (absIdx >= memInfo.swInSkip) {
+          unsigned relIdx = absIdx - memInfo.swInSkip;
+          BridgePortCategory cat = memInfo.classifyInput(relIdx);
+          unsigned lane = memInfo.inputLocalLane(relIdx);
+          if (bridge.hasBridge) {
+            IdIndex hwPortId =
+                findBridgePortForCategoryLane(bridge, true, cat, lane);
+            if (auto pos = getPortPlacementPos(hwPortId, adg, flattener))
+              return pos;
+          }
+          if (IdIndex hwPortId =
+                  getExpandedMemoryInputPort(hwN, isExtMem, cat, lane);
+              hwPortId != INVALID_ID) {
+            if (auto pos = getPortPlacementPos(hwPortId, adg, flattener))
+              return pos;
+          }
+        }
+      }
+    } else {
+      auto it = std::find(swN->outputPorts.begin(), swN->outputPorts.end(),
+                          swPort);
+      if (it != swN->outputPorts.end()) {
+        unsigned outIdx =
+            static_cast<unsigned>(std::distance(swN->outputPorts.begin(), it));
+        BridgePortCategory cat = memInfo.classifyOutput(outIdx);
+        unsigned lane = memInfo.outputLocalLane(outIdx);
+        if (bridge.hasBridge) {
+          IdIndex hwPortId =
+              findBridgePortForCategoryLane(bridge, false, cat, lane);
+          if (auto pos = getPortPlacementPos(hwPortId, adg, flattener))
+            return pos;
+        }
+        if (IdIndex hwPortId = getExpandedMemoryOutputPort(hwN, cat, lane);
+            hwPortId != INVALID_ID) {
+          if (auto pos = getPortPlacementPos(hwPortId, adg, flattener))
+            return pos;
+        }
+      }
+    }
+  }
+
+  auto [row, col] = flattener.getNodeGridPos(hwNode);
+  if (row < 0 || col < 0)
+    return std::nullopt;
+  return std::make_pair(static_cast<double>(row), static_cast<double>(col));
 }
 
 IdIndex getExpandedMemoryInputPort(const Node *hwNode, bool isExtMem,
@@ -548,6 +654,113 @@ size_t computeTotalMappedPathLen(const MappingState &state) {
   return totalPathLen;
 }
 
+int manhattanDistance(IdIndex lhsHwNode, IdIndex rhsHwNode,
+                      const ADGFlattener &flattener) {
+  auto [lhsRow, lhsCol] = flattener.getNodeGridPos(lhsHwNode);
+  auto [rhsRow, rhsCol] = flattener.getNodeGridPos(rhsHwNode);
+  if (lhsRow < 0 || lhsCol < 0 || rhsRow < 0 || rhsCol < 0)
+    return 0;
+  return std::abs(lhsRow - rhsRow) + std::abs(lhsCol - rhsCol);
+}
+
+bool isWithinMoveRadius(IdIndex lhsHwNode, IdIndex rhsHwNode,
+                        const ADGFlattener &flattener, unsigned radius) {
+  if (radius == 0)
+    return true;
+  return manhattanDistance(lhsHwNode, rhsHwNode, flattener) <=
+         static_cast<int>(radius);
+}
+
+bool canRelocateNode(
+    IdIndex swNode, IdIndex newHwNode, IdIndex oldHwNode,
+    const MappingState &state, const Graph &adg, const ADGFlattener &flattener,
+    const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates) {
+  auto candIt = candidates.find(swNode);
+  if (candIt == candidates.end())
+    return false;
+  if (std::find(candIt->second.begin(), candIt->second.end(), newHwNode) ==
+      candIt->second.end())
+    return false;
+  if (newHwNode != oldHwNode && !state.hwNodeToSwNodes[newHwNode].empty())
+    return false;
+
+  const Node *hwNode = adg.getNode(newHwNode);
+  if (!hwNode)
+    return false;
+  llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
+  if (!peName.empty() &&
+      isSpatialPEOccupied(state, adg, flattener, peName, oldHwNode))
+    return false;
+  return true;
+}
+
+bool canSwapNodes(
+    IdIndex swA, IdIndex swB, IdIndex hwA, IdIndex hwB,
+    const MappingState &state, const Graph &adg, const ADGFlattener &flattener,
+    const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates) {
+  auto candItA = candidates.find(swA);
+  auto candItB = candidates.find(swB);
+  if (candItA == candidates.end() || candItB == candidates.end())
+    return false;
+  if (std::find(candItA->second.begin(), candItA->second.end(), hwB) ==
+      candItA->second.end())
+    return false;
+  if (std::find(candItB->second.begin(), candItB->second.end(), hwA) ==
+      candItB->second.end())
+    return false;
+
+  const Node *hwNodeA = adg.getNode(hwA);
+  const Node *hwNodeB = adg.getNode(hwB);
+  if (!hwNodeA || !hwNodeB)
+    return false;
+
+  llvm::StringRef peNameA = getNodeAttrStr(hwNodeA, "pe_name");
+  llvm::StringRef peNameB = getNodeAttrStr(hwNodeB, "pe_name");
+  if (!peNameA.empty() && isSpatialPEName(flattener, peNameA) &&
+      peNameA == peNameB)
+    return false;
+
+  if (!peNameA.empty() &&
+      isSpatialPEOccupied(state, adg, flattener, peNameA, hwA))
+    return false;
+  if (!peNameB.empty() &&
+      isSpatialPEOccupied(state, adg, flattener, peNameB, hwB))
+    return false;
+
+  return true;
+}
+
+double computeUnroutedPenalty(const MappingState &state, const Graph &dfg,
+                              llvm::ArrayRef<TechMappedEdgeKind> edgeKinds) {
+  double penalty = 0.0;
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId) {
+    if (edgeId < edgeKinds.size() &&
+        (edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU ||
+         edgeKinds[edgeId] == TechMappedEdgeKind::TemporalReg))
+      continue;
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    if (edgeId < state.swEdgeToHwPaths.size() &&
+        !state.swEdgeToHwPaths[edgeId].empty())
+      continue;
+    const Port *srcPort = dfg.getPort(edge->srcPort);
+    const Port *dstPort = dfg.getPort(edge->dstPort);
+    if (!srcPort || !dstPort || srcPort->parentNode == INVALID_ID ||
+        dstPort->parentNode == INVALID_ID)
+      continue;
+    bool srcMapped = srcPort->parentNode < state.swNodeToHwNode.size() &&
+                     state.swNodeToHwNode[srcPort->parentNode] != INVALID_ID;
+    bool dstMapped = dstPort->parentNode < state.swNodeToHwNode.size() &&
+                     state.swNodeToHwNode[dstPort->parentNode] != INVALID_ID;
+    if (!srcMapped || !dstMapped)
+      continue;
+    penalty += classifyEdgePlacementWeight(dfg, edgeId);
+  }
+  return penalty;
+}
+
 } // namespace mapper_detail
 
 // ---------------------------------------------------------------------------
@@ -769,48 +982,115 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
   const Node *swN = dfg.getNode(swNode);
   if (!swN)
     return 0.0;
+  const Node *hwN = adg.getNode(hwNode);
+  if (!hwN)
+    return -1.0e18;
 
   double weightedDist = 0.0;
   double totalWeight = 0.0;
-  auto accumulateNeighbor = [&](IdIndex otherSwNode, IdIndex edgeId) {
+  auto accumulateNeighborAt = [&](double anchorRow, double anchorCol,
+                                  IdIndex otherSwNode, IdIndex edgeId) {
     auto estimate =
         estimateNodePlacementPos(otherSwNode, state, dfg, flattener, candidates);
     if (!estimate)
       return;
     double edgeWeight = classifyEdgePlacementWeight(dfg, edgeId);
-    weightedDist += edgeWeight *
-                    (std::abs(static_cast<double>(hwRow) - estimate->first) +
-                     std::abs(static_cast<double>(hwCol) - estimate->second));
+    weightedDist +=
+        edgeWeight * (std::abs(anchorRow - estimate->first) +
+                      std::abs(anchorCol - estimate->second));
     totalWeight += edgeWeight;
   };
+  auto accumulateNeighbor = [&](IdIndex otherSwNode, IdIndex edgeId) {
+    accumulateNeighborAt(static_cast<double>(hwRow), static_cast<double>(hwCol),
+                         otherSwNode, edgeId);
+  };
 
-  for (IdIndex ipId : swN->inputPorts) {
-    const Port *ip = dfg.getPort(ipId);
-    if (!ip)
-      continue;
-    for (IdIndex eid : ip->connectedEdges) {
-      const Edge *edge = dfg.getEdge(eid);
-      if (!edge || edge->dstPort != ipId)
-        continue;
-      const Port *srcPort = dfg.getPort(edge->srcPort);
-      if (!srcPort || srcPort->parentNode == INVALID_ID)
-        continue;
-      accumulateNeighbor(srcPort->parentNode, eid);
+  bool usedBridgeBoundaryScoring = false;
+  if (isSoftwareMemoryInterfaceOp(getNodeAttrStr(swN, "op_name"))) {
+    bool isExtMem = (getNodeAttrStr(swN, "op_name") == "handshake.extmemory");
+    BridgeInfo bridge = BridgeInfo::extract(hwN);
+    if (bridge.hasBridge) {
+      DfgMemoryInfo memInfo = DfgMemoryInfo::extract(swN, dfg, isExtMem);
+      for (unsigned si = memInfo.swInSkip; si < swN->inputPorts.size(); ++si) {
+        IdIndex swPortId = swN->inputPorts[si];
+        const Port *swPort = dfg.getPort(swPortId);
+        if (!swPort)
+          continue;
+        BridgePortCategory cat =
+            memInfo.classifyInput(si - memInfo.swInSkip);
+        unsigned lane = memInfo.inputLocalLane(si - memInfo.swInSkip);
+        IdIndex hwPortId = findBridgePortForCategoryLane(bridge, true, cat, lane);
+        auto hwPortPos = getPortPlacementPos(hwPortId, adg, flattener);
+        if (!hwPortPos)
+          continue;
+        for (IdIndex eid : swPort->connectedEdges) {
+          const Edge *edge = dfg.getEdge(eid);
+          if (!edge || edge->dstPort != swPortId)
+            continue;
+          const Port *srcPort = dfg.getPort(edge->srcPort);
+          if (!srcPort || srcPort->parentNode == INVALID_ID)
+            continue;
+          accumulateNeighborAt(hwPortPos->first, hwPortPos->second,
+                               srcPort->parentNode, eid);
+          usedBridgeBoundaryScoring = true;
+        }
+      }
+      for (unsigned oi = 0; oi < swN->outputPorts.size(); ++oi) {
+        IdIndex swPortId = swN->outputPorts[oi];
+        const Port *swPort = dfg.getPort(swPortId);
+        if (!swPort)
+          continue;
+        BridgePortCategory cat = memInfo.classifyOutput(oi);
+        unsigned lane = memInfo.outputLocalLane(oi);
+        IdIndex hwPortId =
+            findBridgePortForCategoryLane(bridge, false, cat, lane);
+        auto hwPortPos = getPortPlacementPos(hwPortId, adg, flattener);
+        if (!hwPortPos)
+          continue;
+        for (IdIndex eid : swPort->connectedEdges) {
+          const Edge *edge = dfg.getEdge(eid);
+          if (!edge || edge->srcPort != swPortId)
+            continue;
+          const Port *dstPort = dfg.getPort(edge->dstPort);
+          if (!dstPort || dstPort->parentNode == INVALID_ID)
+            continue;
+          accumulateNeighborAt(hwPortPos->first, hwPortPos->second,
+                               dstPort->parentNode, eid);
+          usedBridgeBoundaryScoring = true;
+        }
+      }
     }
   }
 
-  for (IdIndex opId : swN->outputPorts) {
-    const Port *op = dfg.getPort(opId);
-    if (!op)
-      continue;
-    for (IdIndex eid : op->connectedEdges) {
-      const Edge *edge = dfg.getEdge(eid);
-      if (!edge || edge->srcPort != opId)
+  if (!usedBridgeBoundaryScoring) {
+    for (IdIndex ipId : swN->inputPorts) {
+      const Port *ip = dfg.getPort(ipId);
+      if (!ip)
         continue;
-      const Port *dstPort = dfg.getPort(edge->dstPort);
-      if (!dstPort || dstPort->parentNode == INVALID_ID)
+      for (IdIndex eid : ip->connectedEdges) {
+        const Edge *edge = dfg.getEdge(eid);
+        if (!edge || edge->dstPort != ipId)
+          continue;
+        const Port *srcPort = dfg.getPort(edge->srcPort);
+        if (!srcPort || srcPort->parentNode == INVALID_ID)
+          continue;
+        accumulateNeighbor(srcPort->parentNode, eid);
+      }
+    }
+
+    for (IdIndex opId : swN->outputPorts) {
+      const Port *op = dfg.getPort(opId);
+      if (!op)
         continue;
-      accumulateNeighbor(dstPort->parentNode, eid);
+      for (IdIndex eid : op->connectedEdges) {
+        const Edge *edge = dfg.getEdge(eid);
+        if (!edge || edge->srcPort != opId)
+          continue;
+        const Port *dstPort = dfg.getPort(edge->dstPort);
+        if (!dstPort || dstPort->parentNode == INVALID_ID)
+          continue;
+        accumulateNeighbor(dstPort->parentNode, eid);
+      }
     }
   }
 
@@ -821,6 +1101,55 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
     cost += 0.25 * (std::abs(hwRow) + std::abs(hwCol));
 
   cost += 0.6 * computeLocalSpreadPenalty(hwNode, state, adg, flattener);
+
+  if (activeCongestionEstimator && activeFlattener &&
+      activeCongestionPlacementWeight > 0.0) {
+    double congestionPenalty = 0.0;
+    for (IdIndex ipId : swN->inputPorts) {
+      const Port *ip = dfg.getPort(ipId);
+      if (!ip)
+        continue;
+      for (IdIndex eid : ip->connectedEdges) {
+        const Edge *edge = dfg.getEdge(eid);
+        if (!edge || edge->dstPort != ipId)
+          continue;
+        const Port *srcPort = dfg.getPort(edge->srcPort);
+        if (!srcPort || srcPort->parentNode == INVALID_ID)
+          continue;
+        IdIndex srcHw = srcPort->parentNode < state.swNodeToHwNode.size()
+                            ? state.swNodeToHwNode[srcPort->parentNode]
+                            : INVALID_ID;
+        if (srcHw != INVALID_ID) {
+          congestionPenalty +=
+              activeCongestionEstimator->demandCapacityRatio(
+                  srcHw, hwNode, adg, *activeFlattener);
+        }
+      }
+    }
+    for (IdIndex opId : swN->outputPorts) {
+      const Port *op = dfg.getPort(opId);
+      if (!op)
+        continue;
+      for (IdIndex eid : op->connectedEdges) {
+        const Edge *edge = dfg.getEdge(eid);
+        if (!edge || edge->srcPort != opId)
+          continue;
+        const Port *dstPort = dfg.getPort(edge->dstPort);
+        if (!dstPort || dstPort->parentNode == INVALID_ID)
+          continue;
+        IdIndex dstHw = dstPort->parentNode < state.swNodeToHwNode.size()
+                            ? state.swNodeToHwNode[dstPort->parentNode]
+                            : INVALID_ID;
+        if (dstHw != INVALID_ID) {
+          congestionPenalty +=
+              activeCongestionEstimator->demandCapacityRatio(
+                  hwNode, dstHw, adg, *activeFlattener);
+        }
+      }
+    }
+    cost += activeCongestionPlacementWeight * congestionPenalty;
+  }
+
   return -cost;
 }
 
@@ -1012,9 +1341,9 @@ double Mapper::computeTotalCost(const MappingState &state, const Graph &dfg,
     }
   }
   for (double load : rowCutLoad)
-    cost += 0.015 * load * load;
+    cost += 0.006 * load * load;
   for (double load : colCutLoad)
-    cost += 0.015 * load * load;
+    cost += 0.006 * load * load;
   return cost;
 }
 

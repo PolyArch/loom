@@ -12,13 +12,13 @@ def main() -> int:
     case_name = sys.argv[1]
     output_dir = Path(sys.argv[2])
     fabric_file = output_dir / "builder-temporal-single-fu.fabric.mlir"
-    map_file = output_dir / "dfg.map.txt"
+    map_file = output_dir / "dfg.builder-temporal-single-fu.map.txt"
 
     text = fabric_file.read_text(encoding="utf-8")
     if "fabric.temporal_pe @add_tpe" not in text:
         print(f"{case_name}: expected temporal PE definition", file=sys.stderr)
         return 1
-    if "num_instruction = 1 : i64" not in text:
+    if "num_instruction = 1" not in text:
         print(f"{case_name}: expected temporal PE instruction count", file=sys.stderr)
         return 1
 

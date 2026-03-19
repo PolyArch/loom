@@ -1,4 +1,5 @@
 #include "fcc/Mapper/Mapper.h"
+#include "MapperRoutingCongestion.h"
 #include "MapperRoutingInternal.h"
 
 #include "fcc/Dialect/Fabric/FabricTypes.h"
@@ -55,6 +56,29 @@ bool isRoutingCrossbarOutputPort(IdIndex portId, const Graph &adg) {
   return true;
 }
 
+bool isNonRoutingOutputPort(IdIndex portId, const Graph &adg) {
+  const Port *port = adg.getPort(portId);
+  if (!port || port->direction != Port::Output || port->parentNode == INVALID_ID)
+    return false;
+  const Node *owner = adg.getNode(port->parentNode);
+  return owner && !isRoutingNode(owner);
+}
+
+IdIndex getLockedFirstHopForSource(IdIndex swEdgeId, IdIndex srcHwPort,
+                                   const MappingState &state) {
+  // Use portToUsingEdges index for O(1) lookup.
+  if (srcHwPort < state.portToUsingEdges.size()) {
+    for (IdIndex otherEdgeId : state.portToUsingEdges[srcHwPort]) {
+      if (otherEdgeId == swEdgeId)
+        continue;
+      const auto &otherPath = state.swEdgeToHwPaths[otherEdgeId];
+      if (otherPath.size() >= 2 && otherPath.front() == srcHwPort)
+        return otherPath[1];
+    }
+  }
+  return INVALID_ID;
+}
+
 } // namespace routing_detail
 
 // ---------------------------------------------------------------------------
@@ -82,34 +106,40 @@ struct TemporalSwitchTagRouteObservation {
   uint64_t tag = 0;
 };
 
+struct RuntimeTagPathFailure {
+  size_t pathIndex = 0;
+  IdIndex portId = INVALID_ID;
+  uint64_t tag = 0;
+  unsigned tagWidth = 0;
+};
+
 std::optional<uint64_t>
 computeObservedTagAtPathIndex(IdIndex swEdgeId, llvm::ArrayRef<IdIndex> path,
                               size_t pathIndex, const MappingState &state,
                               const Graph &dfg, const Graph &adg);
 
+std::optional<RuntimeTagPathFailure> findRuntimeTagPathFailure(
+    IdIndex swEdgeId, llvm::ArrayRef<IdIndex> fullPath, const MappingState &state,
+    const Graph &dfg, const Graph &adg);
+
+bool isRuntimeTagPathRepresentable(IdIndex swEdgeId,
+                                   llvm::ArrayRef<IdIndex> candidatePath,
+                                   const MappingState &state,
+                                   const Graph &dfg, const Graph &adg);
+
 bool pathUsesPort(IdIndex portId, const MappingState &state) {
-  for (const auto &path : state.swEdgeToHwPaths) {
-    for (IdIndex usedPort : path) {
-      if (usedPort == portId)
-        return true;
-    }
-  }
+  if (portId < state.portToUsingEdges.size())
+    return !state.portToUsingEdges[portId].empty();
   return false;
 }
 
 bool routingOutputUsedByDifferentSource(IdIndex outPortId, IdIndex sourceHwPort,
                                         const MappingState &state) {
-  for (const auto &path : state.swEdgeToHwPaths) {
+  if (outPortId >= state.portToUsingEdges.size())
+    return false;
+  for (IdIndex edgeId : state.portToUsingEdges[outPortId]) {
+    const auto &path = state.swEdgeToHwPaths[edgeId];
     if (path.empty())
-      continue;
-    bool usesPort = false;
-    for (IdIndex usedPort : path) {
-      if (usedPort == outPortId) {
-        usesPort = true;
-        break;
-      }
-    }
-    if (!usesPort)
       continue;
     if (path.front() != sourceHwPort)
       return true;
@@ -418,8 +448,43 @@ std::optional<uint64_t>
 computeObservedTagAtPathIndex(IdIndex swEdgeId, llvm::ArrayRef<IdIndex> path,
                               size_t pathIndex, const MappingState &state,
                               const Graph &dfg, const Graph &adg) {
-  return computeRuntimeTagValueAlongMappedPath(swEdgeId, path, pathIndex, state,
-                                               dfg, adg);
+  auto info = computeRuntimeTagValueInfoAlongMappedPath(swEdgeId, path,
+                                                        pathIndex, state, dfg,
+                                                        adg);
+  if (!info.representable)
+    return std::nullopt;
+  return info.tag;
+}
+
+std::optional<RuntimeTagPathFailure> findRuntimeTagPathFailure(
+    IdIndex swEdgeId, llvm::ArrayRef<IdIndex> fullPath, const MappingState &state,
+    const Graph &dfg, const Graph &adg) {
+  for (size_t i = 0; i < fullPath.size(); ++i) {
+    auto info = computeRuntimeTagValueInfoAlongMappedPath(swEdgeId, fullPath, i,
+                                                          state, dfg, adg);
+    if (info.representable)
+      continue;
+
+    const Port *port = adg.getPort(fullPath[i]);
+    unsigned tagWidth = 0;
+    if (port) {
+      if (auto typeInfo = detail::getPortTypeInfo(port->type);
+          typeInfo && typeInfo->isTagged) {
+        tagWidth = typeInfo->tagWidth;
+      }
+    }
+    return RuntimeTagPathFailure{i, fullPath[i], info.rejectedTag.value_or(0),
+                                 tagWidth};
+  }
+  return std::nullopt;
+}
+
+bool isRuntimeTagPathRepresentable(IdIndex swEdgeId,
+                                   llvm::ArrayRef<IdIndex> candidatePath,
+                                   const MappingState &state,
+                                   const Graph &dfg, const Graph &adg) {
+  auto fullPath = buildExportPathForEdge(swEdgeId, candidatePath, state, dfg, adg);
+  return !findRuntimeTagPathFailure(swEdgeId, fullPath, state, dfg, adg);
 }
 
 void appendTemporalSwitchTagRouteObservations(
@@ -585,6 +650,9 @@ bool isInternalHopLegal(IdIndex inPortId, IdIndex outPortId,
   if (inPort->parentNode != outPort->parentNode)
     return false;
 
+  if (!isRuntimeTagPathRepresentable(swEdgeId, candidatePath, state, dfg, adg))
+    return false;
+
   if (routing_detail::isRoutingCrossbarOutputPort(outPortId, adg)) {
     if (isTaggedPort(outPort)) {
       if (hasTaggedRoutingOutputConflict(swEdgeId, candidatePath, outPortId,
@@ -611,6 +679,9 @@ bool Mapper::hasTaggedPathConflict(IdIndex swEdgeId,
                                    llvm::ArrayRef<IdIndex> candidatePath,
                                    const MappingState &state,
                                    const Graph &dfg, const Graph &adg) {
+  if (!isRuntimeTagPathRepresentable(swEdgeId, candidatePath, state, dfg, adg))
+    return true;
+
   llvm::SmallVector<TaggedPathObservation, 8> candidateObs;
   llvm::SmallVector<TemporalSwitchTagRouteObservation, 8> candidateTemporalObs;
   auto fullCandidatePath =
@@ -675,6 +746,17 @@ bool Mapper::validateTaggedPathConflicts(
     if (path.empty())
       continue;
     auto fullPath = buildExportPathForEdge(edgeId, path, state, dfg, adg);
+    if (auto failure =
+            findRuntimeTagPathFailure(edgeId, fullPath, state, dfg, adg)) {
+      diagnostics += "C4: runtime tag " + std::to_string(failure->tag) +
+                     " cannot be represented on hw_port " +
+                     std::to_string(failure->portId);
+      if (failure->tagWidth != 0)
+        diagnostics += " with tag_width=" + std::to_string(failure->tagWidth);
+      diagnostics += " for sw_edge " + std::to_string(edgeId) + "\n";
+      valid = false;
+      continue;
+    }
     appendTaggedPathObservations(edgeId, fullPath, state, dfg, adg,
                                  observationsByEdge[edgeId]);
     appendTemporalSwitchTagRouteObservations(edgeId, fullPath, state, dfg, adg,
@@ -753,6 +835,9 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort, IdIndex swEdgeId,
   if (!found)
     return false;
 
+  if (!isRuntimeTagPathRepresentable(swEdgeId, candidatePath, state, dfg, adg))
+    return false;
+
   if (isNonRoutingBroadcastTransitionConflict(swEdgeId, candidatePath, state,
                                               adg)) {
     return false;
@@ -775,7 +860,8 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
                  const MappingState &state, const Graph &dfg,
                  const Graph &adg,
                  const llvm::DenseMap<IdIndex, double> &routingOutputHistory,
-                 IdIndex forcedFirstHop) {
+                 IdIndex forcedFirstHop,
+                 const CongestionState *congestion) {
   llvm::SmallVector<IdIndex, 8> path;
 
   if (srcHwPort == INVALID_ID || dstHwPort == INVALID_ID)
@@ -832,8 +918,10 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
         activeFlattener->getNodeGridPos(dstPort->parentNode);
     if (srcRow < 0 || srcCol < 0 || dstRow < 0 || dstCol < 0)
       return 0.0;
-    int manhattan = std::abs(srcRow - dstRow) + std::abs(srcCol - dstCol);
-    return static_cast<double>(manhattan) * 0.5;
+    int dr = std::abs(srcRow - dstRow);
+    int dc = std::abs(srcCol - dstCol);
+    int chebyshev = std::max(dr, dc);
+    return static_cast<double>(chebyshev) * activeHeuristicWeight;
   };
 
   llvm::SmallVector<TrailNode, 64> trails;
@@ -927,7 +1015,11 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
           it != routingOutputHistory.end())
         historyPenalty = it->second;
 
-      double nextCost = current.gCost + 1.0 + historyPenalty;
+      double congestionPenalty = 0.0;
+      if (congestion)
+        congestionPenalty = congestion->resourceCost(outPortId);
+
+      double nextCost = current.gCost + 1.0 + historyPenalty + congestionPenalty;
       auto nextBestIt = bestCost.find(outPortId);
       if (nextBestIt != bestCost.end() &&
           nextCost >= nextBestIt->second - 1e-9)

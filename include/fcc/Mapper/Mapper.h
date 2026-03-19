@@ -17,6 +17,9 @@ class ModuleOp;
 
 namespace fcc {
 
+struct CongestionEstimator;
+struct CongestionState;
+
 class Mapper {
 public:
   struct Options {
@@ -32,6 +35,12 @@ public:
     double cpSatTimeLimitSeconds = 0.75;
     bool enableCPSat = true;
     bool verbose = false;
+    double routingHeuristicWeight = 1.5;
+    unsigned negotiatedRoutingPasses = 12;
+    double congestionHistoryFactor = 1.0;
+    double congestionHistoryScale = 1.5;
+    double congestionPresentFactor = 1.0;
+    double congestionPlacementWeight = 0.3;
   };
 
   struct Result {
@@ -71,14 +80,19 @@ private:
       llvm::ArrayRef<IdIndex> failedEdges, const Graph &dfg, const Graph &adg,
       const ADGFlattener &flattener,
       const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
-      std::vector<TechMappedEdgeKind> &edgeKinds, const Options &opts);
+      std::vector<TechMappedEdgeKind> &edgeKinds, const Options &opts,
+      const CongestionState *congestion = nullptr,
+      unsigned recursionDepth = 0);
 
   bool runExactRoutingRepair(MappingState &state,
                              llvm::ArrayRef<IdIndex> failedEdges,
                              const Graph &dfg, const Graph &adg,
                              const ADGFlattener &flattener,
                              llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
-                             const Options &opts);
+                             const Options &opts,
+                             const CongestionState *congestion = nullptr,
+                             llvm::ArrayRef<IdIndex> priorityEdges =
+                                 llvm::ArrayRef<IdIndex>());
 
   bool runInterleavedPlaceRoute(
       MappingState &state, const Graph &dfg, const Graph &adg,
@@ -99,10 +113,15 @@ private:
       const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
       std::vector<TechMappedEdgeKind> &edgeKinds, const Options &opts);
 
-  // BFS routing.
+  // Routing.
   bool runRouting(MappingState &state, const Graph &dfg, const Graph &adg,
                   llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                   const Options &opts);
+
+  bool runNegotiatedRouting(MappingState &state, const Graph &dfg,
+                            const Graph &adg,
+                            llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                            const Options &opts);
 
   // Sentinel binding: map DFG boundary nodes to ADG boundary nodes.
   bool bindSentinels(MappingState &state, const Graph &dfg, const Graph &adg);
@@ -129,7 +148,8 @@ private:
   findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
            const MappingState &state, const Graph &dfg, const Graph &adg,
            const llvm::DenseMap<IdIndex, double> &routingOutputHistory,
-           IdIndex forcedFirstHop = INVALID_ID);
+           IdIndex forcedFirstHop = INVALID_ID,
+           const CongestionState *congestion = nullptr);
   bool isEdgeLegal(IdIndex srcPort, IdIndex dstPort, IdIndex swEdgeId,
                    llvm::ArrayRef<IdIndex> candidatePath,
                    const MappingState &state, const Graph &dfg,
@@ -140,7 +160,8 @@ private:
                     llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                     const std::vector<IdIndex> &edgeOrder,
                     const llvm::DenseMap<IdIndex, double> &routingOutputHistory,
-                    unsigned &routed, unsigned &total);
+                    unsigned &routed, unsigned &total,
+                    const CongestionState *congestion = nullptr);
   bool hasTaggedPathConflict(IdIndex swEdgeId,
                              llvm::ArrayRef<IdIndex> candidatePath,
                              const MappingState &state, const Graph &dfg,
@@ -169,6 +190,9 @@ private:
 
   ConnectivityMatrix connectivity;
   const ADGFlattener *activeFlattener = nullptr;
+  double activeHeuristicWeight = 1.5;
+  CongestionEstimator *activeCongestionEstimator = nullptr;
+  double activeCongestionPlacementWeight = 0.0;
 };
 
 } // namespace fcc

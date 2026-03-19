@@ -249,6 +249,8 @@ bool DFGBuilder::build(mlir::ModuleOp module, mlir::MLIRContext *ctx) {
                << dfg.countPorts() << " ports, " << dfg.countEdges()
                << " edges\n";
 
+  dfg.buildAttributeCache();
+
   return true;
 }
 

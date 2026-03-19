@@ -56,6 +56,15 @@ std::string ADGBuilder::Impl::generateVizJson() const {
     double x = 0.0;
     double y = 0.0;
   };
+  auto getVizInstanceName = [&](const InstanceDef &inst) -> llvm::StringRef {
+    llvm::StringRef name(inst.name);
+    if ((inst.kind == InstanceKind::AddTag || inst.kind == InstanceKind::MapTag ||
+         inst.kind == InstanceKind::DelTag) &&
+        name.starts_with("__")) {
+      return name.drop_front(2);
+    }
+    return name;
+  };
 
   auto estimateFUBox = [&](const FUDef &fu) -> std::pair<double, double> {
     unsigned opCount = static_cast<unsigned>(
@@ -694,11 +703,13 @@ std::string ADGBuilder::Impl::generateVizJson() const {
   };
 
   ModuleBounds moduleBounds = computeModuleBounds();
+  const unsigned totalModuleInputs =
+      static_cast<unsigned>(memrefInputs.size() + scalarInputs.size());
   auto computeModuleInputPortPos = [&](unsigned portIdx) -> RoutePt {
     RoutePt pt;
     pt.x = moduleBounds.x + moduleBounds.w *
            (static_cast<double>(portIdx + 1) /
-            static_cast<double>(scalarInputs.size() + 1));
+            static_cast<double>(totalModuleInputs + 1));
     pt.y = moduleBounds.y;
     return pt;
   };
@@ -711,17 +722,19 @@ std::string ADGBuilder::Impl::generateVizJson() const {
     return pt;
   };
 
-  auto routeModuleInputConnection = [&](unsigned scalarIdx, unsigned dstInstIdx,
-                                        unsigned dstPortIdx) -> std::vector<RoutePt> {
+  auto routeModuleInputConnection = [&](unsigned moduleInputIdx,
+                                        unsigned dstInstIdx,
+                                        unsigned dstPortIdx)
+      -> std::vector<RoutePt> {
     if (!moduleBounds.valid)
       return {};
     BoxInfo dstBox = computeBoxInfo(dstInstIdx);
     if (!dstBox.valid)
       return {};
     const auto &dstInst = instances[dstInstIdx];
-    RoutePt srcPort = computeModuleInputPortPos(scalarIdx);
+    RoutePt srcPort = computeModuleInputPortPos(moduleInputIdx);
     RoutePt dstPort = computeInputPortPos(dstBox, dstInst, dstPortIdx);
-    const int signedLane = static_cast<int>(scalarIdx % 5) - 2;
+    const int signedLane = static_cast<int>(moduleInputIdx % 5) - 2;
     const double laneOffset = static_cast<double>(signedLane) * 7.0;
     const double entryY = moduleBounds.y + 42.0 + std::abs(laneOffset);
     const double dstApproachX = dstPort.x - (24.0 + std::abs(laneOffset));
@@ -847,7 +860,7 @@ std::string ADGBuilder::Impl::generateVizJson() const {
       break;
     }
 
-    os << "    {\"name\": \"" << inst.name << "\""
+    os << "    {\"name\": \"" << getVizInstanceName(inst).str() << "\""
        << ", \"kind\": \"" << kindName << "\""
        << ", \"center_x\": " << placement.centerX
        << ", \"center_y\": " << placement.centerY;
@@ -893,24 +906,35 @@ std::string ADGBuilder::Impl::generateVizJson() const {
     unsigned pairOrdinal = nextPairOrdinal[pairKey]++;
     std::vector<RoutePt> pts = routeConnection(conn, pairOrdinal);
 
-    emitRouteRecord(srcInst.name, conn.srcPort, dstInst.name, conn.dstPort,
-                    pts);
+    emitRouteRecord(getVizInstanceName(srcInst), conn.srcPort,
+                    getVizInstanceName(dstInst), conn.dstPort, pts);
   }
   for (const auto &sc : scalarToInstConns) {
     if (placements.find(sc.dstInst) == placements.end())
       continue;
     std::vector<RoutePt> pts =
-        routeModuleInputConnection(sc.scalarIdx, sc.dstInst, sc.dstPort);
-    emitRouteRecord("module_in", sc.scalarIdx, instances[sc.dstInst].name,
-                    sc.dstPort, pts);
+        routeModuleInputConnection(
+            static_cast<unsigned>(memrefInputs.size()) + sc.scalarIdx,
+            sc.dstInst, sc.dstPort);
+    emitRouteRecord("module_in",
+                    static_cast<unsigned>(memrefInputs.size()) + sc.scalarIdx,
+                    getVizInstanceName(instances[sc.dstInst]), sc.dstPort, pts);
+  }
+  for (const auto &mc : memrefConnections) {
+    if (placements.find(mc.instIdx) == placements.end())
+      continue;
+    std::vector<RoutePt> pts =
+        routeModuleInputConnection(mc.memrefIdx, mc.instIdx, 0);
+    emitRouteRecord("module_in", mc.memrefIdx,
+                    getVizInstanceName(instances[mc.instIdx]), 0, pts);
   }
   for (const auto &ic : instToScalarConns) {
     if (placements.find(ic.srcInst) == placements.end())
       continue;
     std::vector<RoutePt> pts =
         routeModuleOutputConnection(ic.srcInst, ic.srcPort, ic.scalarOutputIdx);
-    emitRouteRecord(instances[ic.srcInst].name, ic.srcPort, "module_out",
-                    ic.scalarOutputIdx, pts);
+    emitRouteRecord(getVizInstanceName(instances[ic.srcInst]), ic.srcPort,
+                    "module_out", ic.scalarOutputIdx, pts);
   }
   os << "\n  ]\n"
      << "}\n";

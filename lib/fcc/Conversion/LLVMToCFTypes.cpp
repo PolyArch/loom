@@ -1,6 +1,7 @@
 // Type conversion utilities for LLVMToCF pass.
 
 #include "LLVMToCFTypes.h"
+#include "fcc/Dialect/Fabric/FabricTypes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -25,9 +26,9 @@ Type normalizeScalarType(MLIRContext *ctx, Type llvmType) {
   if (isa<Float16Type, Float32Type, Float64Type, Float128Type,
           BFloat16Type>(llvmType))
     return llvmType;
-  // LLVM pointer -> i64 (or index) for pointer-as-integer
+  // LLVM pointer -> configured index-width integer for pointer-as-integer
   if (isa<LLVM::LLVMPointerType>(llvmType))
-    return IntegerType::get(ctx, 64);
+    return fcc::fabric::getIndexIntegerType(ctx);
   // Fallback
   return llvmType;
 }
@@ -59,7 +60,7 @@ unsigned getTypeBitWidth(Type type) {
   if (isa<Float128Type>(type))
     return 128;
   if (isa<IndexType>(type))
-    return 64; // assume 64-bit index
+    return fcc::fabric::getConfiguredIndexBitWidth();
   return 0;
 }
 

@@ -64,6 +64,16 @@ IdIndex getExpandedMemoryInputPort(const Node *hwNode, bool isExtMem,
                                    BridgePortCategory cat, unsigned lane);
 IdIndex getExpandedMemoryOutputPort(const Node *hwNode,
                                     BridgePortCategory cat, unsigned lane);
+IdIndex findBridgePortForCategoryLane(const BridgeInfo &bridge, bool isInput,
+                                      BridgePortCategory cat, unsigned lane);
+std::optional<std::pair<double, double>>
+getPortPlacementPos(IdIndex portId, const Graph &adg,
+                    const ADGFlattener &flattener);
+std::optional<std::pair<double, double>>
+estimateSoftwarePortPlacementPos(IdIndex swNode, IdIndex swPort,
+                                 IdIndex hwNode, bool isInput,
+                                 const Graph &dfg, const Graph &adg,
+                                 const ADGFlattener &flattener);
 
 // Placement heuristics.
 double classifyEdgePlacementWeight(const Graph &dfg, IdIndex edgeId);
@@ -77,6 +87,22 @@ estimateNodePlacementPos(IdIndex swNode, const MappingState &state,
 double computeLocalSpreadPenalty(IdIndex hwNode, const MappingState &state,
                                  const Graph &adg,
                                  const ADGFlattener &flattener);
+
+// Refinement/repair shared helpers.
+int manhattanDistance(IdIndex lhsHwNode, IdIndex rhsHwNode,
+                     const ADGFlattener &flattener);
+bool isWithinMoveRadius(IdIndex lhsHwNode, IdIndex rhsHwNode,
+                        const ADGFlattener &flattener, unsigned radius);
+bool canRelocateNode(
+    IdIndex swNode, IdIndex newHwNode, IdIndex oldHwNode,
+    const MappingState &state, const Graph &adg, const ADGFlattener &flattener,
+    const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates);
+bool canSwapNodes(
+    IdIndex swA, IdIndex swB, IdIndex hwA, IdIndex hwB,
+    const MappingState &state, const Graph &adg, const ADGFlattener &flattener,
+    const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates);
+double computeUnroutedPenalty(const MappingState &state, const Graph &dfg,
+                              llvm::ArrayRef<TechMappedEdgeKind> edgeKinds);
 
 // Edge collection and counting.
 std::vector<IdIndex>

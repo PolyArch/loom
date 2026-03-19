@@ -24,6 +24,11 @@ static cl::opt<std::string> dfgPathOpt("dfg",
                                         cl::desc("Path to pre-built DFG .mlir (skip frontend)"),
                                         cl::init(""));
 
+static cl::opt<std::string> mapJsonPathOpt(
+    "map-json",
+    cl::desc("Path to existing mapping JSON for visualization regeneration"),
+    cl::init(""));
+
 static cl::opt<bool> vizOnlyOpt("viz-only",
                                 cl::desc("Visualize ADG/DFG side-by-side without mapping"),
                                 cl::init(false));
@@ -37,9 +42,39 @@ static cl::opt<bool> simulate("simulate",
                                cl::desc("Run standalone simulator after mapping"),
                                cl::init(false));
 
+static cl::opt<std::string> simBundlePath(
+    "sim-bundle",
+    cl::desc("Path to simulation bundle JSON with explicit inputs and expected results"),
+    cl::init(""));
+
 static cl::opt<unsigned> simMaxCycles("sim-max-cycles",
                                        cl::desc("Max simulation cycles"),
                                        cl::init(1000000));
+
+static cl::opt<std::string> runtimeManifestPath(
+    "runtime-manifest",
+    cl::desc("Path to mapped-case runtime manifest JSON"),
+    cl::init(""));
+
+static cl::opt<std::string> runtimeRequestPath(
+    "runtime-request",
+    cl::desc("Path to runtime invocation request JSON"),
+    cl::init(""));
+
+static cl::opt<std::string> runtimeResultPath(
+    "runtime-result",
+    cl::desc("Path to runtime invocation result JSON"),
+    cl::init(""));
+
+static cl::opt<std::string> runtimeTracePath(
+    "runtime-trace",
+    cl::desc("Path to runtime replay trace artifact"),
+    cl::init(""));
+
+static cl::opt<std::string> runtimeStatPath(
+    "runtime-stat",
+    cl::desc("Path to runtime replay stat artifact"),
+    cl::init(""));
 
 static cl::opt<unsigned> mapperBudget("mapper-budget",
                                        cl::desc("Mapper time budget (seconds)"),
@@ -89,6 +124,36 @@ static cl::opt<bool> mapperEnableCpSat(
     cl::desc("Enable OR-Tools CP-SAT placement refinement"),
     cl::init(true));
 
+static cl::opt<double> mapperRoutingHeuristicWeight(
+    "mapper-routing-heuristic-weight",
+    cl::desc("Weighted A* heuristic multiplier (Chebyshev distance weight)"),
+    cl::init(1.5));
+
+static cl::opt<unsigned> mapperNegotiatedRoutingPasses(
+    "mapper-negotiated-routing-passes",
+    cl::desc("Number of negotiated congestion routing iterations (0 = disable)"),
+    cl::init(12));
+
+static cl::opt<double> mapperCongestionHistoryFactor(
+    "mapper-congestion-history-factor",
+    cl::desc("PathFinder congestion history increment"),
+    cl::init(1.0));
+
+static cl::opt<double> mapperCongestionHistoryScale(
+    "mapper-congestion-history-scale",
+    cl::desc("PathFinder congestion history scaling per iteration"),
+    cl::init(1.5));
+
+static cl::opt<double> mapperCongestionPresentFactor(
+    "mapper-congestion-present-factor",
+    cl::desc("PathFinder present-demand cost weight"),
+    cl::init(1.0));
+
+static cl::opt<double> mapperCongestionPlacementWeight(
+    "mapper-congestion-placement-weight",
+    cl::desc("Weight of congestion penalty in placement scoring"),
+    cl::init(0.3));
+
 bool parseArgs(int argc, char **argv, FccArgs &args) {
   cl::ParseCommandLineOptions(argc, argv, "fcc - fabric compiler\n");
 
@@ -97,6 +162,7 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
   args.includePaths.assign(includePaths.begin(), includePaths.end());
   args.adgPath = adgPath;
   args.dfgPath = dfgPathOpt;
+  args.mapJsonPath = mapJsonPathOpt;
   args.vizOnly = vizOnlyOpt;
   if (vizLayoutOpt == "default")
     args.vizLayout = VizLayoutMode::Default;
@@ -107,7 +173,13 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
     return false;
   }
   args.simulate = simulate;
+  args.simBundlePath = simBundlePath;
   args.simMaxCycles = simMaxCycles;
+  args.runtimeManifestPath = runtimeManifestPath;
+  args.runtimeRequestPath = runtimeRequestPath;
+  args.runtimeResultPath = runtimeResultPath;
+  args.runtimeTracePath = runtimeTracePath;
+  args.runtimeStatPath = runtimeStatPath;
   args.mapperBudget = mapperBudget;
   args.mapperSeed = mapperSeed;
   args.mapperLanes = mapperLanes;
@@ -118,9 +190,21 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
   args.mapperCpSatNeighborhoodNodeLimit = mapperCpSatNeighborhoodNodeLimit;
   args.mapperCpSatTimeLimitSeconds = mapperCpSatTimeLimitSeconds;
   args.mapperEnableCpSat = mapperEnableCpSat;
+  args.mapperRoutingHeuristicWeight = mapperRoutingHeuristicWeight;
+  args.mapperNegotiatedRoutingPasses = mapperNegotiatedRoutingPasses;
+  args.mapperCongestionHistoryFactor = mapperCongestionHistoryFactor;
+  args.mapperCongestionHistoryScale = mapperCongestionHistoryScale;
+  args.mapperCongestionPresentFactor = mapperCongestionPresentFactor;
+  args.mapperCongestionPlacementWeight = mapperCongestionPlacementWeight;
 
   // --viz-only needs at least --dfg or --adg
-  if (args.vizOnly) {
+  if (!args.runtimeManifestPath.empty()) {
+    if (args.runtimeRequestPath.empty() || args.runtimeResultPath.empty()) {
+      errs() << "fcc: --runtime-manifest requires --runtime-request and "
+                "--runtime-result\n";
+      return false;
+    }
+  } else if (args.vizOnly) {
     if (args.dfgPath.empty() && args.adgPath.empty()) {
       errs() << "fcc: --viz-only needs at least --dfg or --adg\n";
       return false;
@@ -141,6 +225,11 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
   // Derive base name
   if (!args.sources.empty()) {
     StringRef stem = sys::path::stem(args.sources[0]);
+    args.baseName = stem.str();
+  } else if (!args.runtimeManifestPath.empty()) {
+    StringRef stem = sys::path::stem(args.runtimeManifestPath);
+    if (stem.ends_with(".runtime"))
+      stem = stem.drop_back(8);
     args.baseName = stem.str();
   } else if (!args.dfgPath.empty()) {
     StringRef stem = sys::path::stem(args.dfgPath);

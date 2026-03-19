@@ -15,7 +15,7 @@ def main() -> int:
     map_file = output_dir / "dfg.map.txt"
 
     text = fabric_file.read_text(encoding="utf-8")
-    if "is_private" not in text:
+    if "is_private = false" not in text:
       print(f"{case_name}: expected non-private memory", file=sys.stderr)
       return 1
     if "-> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, memref<256xi32>)" not in text:

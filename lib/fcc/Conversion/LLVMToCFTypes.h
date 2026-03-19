@@ -31,7 +31,7 @@ mlir::MemRefType buildStridedMemRefType(mlir::MLIRContext *ctx,
 
 // Normalize an LLVM scalar type to standard MLIR type.
 // Handles: LLVM integer -> mlir integer, LLVM float -> mlir float,
-// LLVM pointer -> index (for pointer-as-integer patterns).
+// LLVM pointer -> configured index-width integer.
 mlir::Type normalizeScalarType(mlir::MLIRContext *ctx, mlir::Type llvmType);
 
 // Flatten an LLVM aggregate element type to a memref-compatible scalar element.

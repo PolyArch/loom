@@ -534,51 +534,56 @@ FunctionalSimulationBackend::Impl::executeMemory(IdIndex nodeId, const Node *nod
       mlir::isa<mlir::MemRefType>(dfg.getPort(node->inputPorts.front())->type);
   unsigned inputBase = hasMemrefInput ? 1u : 0u;
 
-  for (unsigned ldIdx = 0; ldIdx < ldCount; ++ldIdx) {
-    unsigned portIdx = inputBase + stCount * 2 + ldIdx;
-    if (portIdx >= node->inputPorts.size() ||
-        !hasInputToken(node->inputPorts[portIdx]))
-      continue;
-    Token addrToken = popInputToken(node->inputPorts[portIdx]);
+  unsigned ldAddrPort = inputBase;
+  unsigned stAddrPort = inputBase + (ldCount > 0 ? 1u : 0u);
+  unsigned stDataPort = stAddrPort + (stCount > 0 ? 1u : 0u);
+
+  unsigned ldDataPort = 0;
+  unsigned ldDonePort = ldDataPort + (ldCount > 0 ? 1u : 0u);
+  unsigned stDonePort = ldDonePort + (ldCount > 0 ? 1u : 0u);
+
+  if (ldCount > 0 && ldAddrPort < node->inputPorts.size() &&
+      hasInputToken(node->inputPorts[ldAddrPort])) {
+    Token addrToken = popInputToken(node->inputPorts[ldAddrPort]);
     uint64_t loadedValue = 0;
     if (!readMemory(*regionId, addrToken.data, loadedValue, action.error))
       return action;
-    if (ldIdx >= node->outputPorts.size()) {
-      action.error = "memory load result index out of range";
+    if (ldDataPort >= node->outputPorts.size() ||
+        ldDonePort >= node->outputPorts.size()) {
+      action.error = "memory load family index out of range";
       return action;
     }
-    Token dataToken;
+    Token dataToken = addrToken;
     dataToken.data = loadedValue;
-    pushToken(node->outputPorts[ldIdx], dataToken);
-    unsigned donePort = ldCount + stCount + ldIdx;
-    if (donePort >= node->outputPorts.size()) {
-      action.error = "memory load done index out of range";
-      return action;
-    }
-    pushToken(node->outputPorts[donePort], Token{});
+    pushToken(node->outputPorts[ldDataPort], dataToken);
+    Token doneToken = addrToken;
+    doneToken.data = 0;
+    pushToken(node->outputPorts[ldDonePort], doneToken);
     action.progress = true;
     action.tokensIn = 1;
     action.tokensOut = 2;
     return action;
   }
 
-  for (unsigned stIdx = 0; stIdx < stCount; ++stIdx) {
-    unsigned dataPort = inputBase + stIdx * 2;
-    unsigned addrPort = dataPort + 1;
-    if (addrPort >= node->inputPorts.size() ||
-        !hasInputToken(node->inputPorts[dataPort]) ||
-        !hasInputToken(node->inputPorts[addrPort]))
-      continue;
-    Token dataToken = popInputToken(node->inputPorts[dataPort]);
-    Token addrToken = popInputToken(node->inputPorts[addrPort]);
-    if (!writeMemory(*regionId, addrToken.data, dataToken.data, action.error))
-      return action;
-    unsigned donePort = ldCount + stIdx;
-    if (donePort >= node->outputPorts.size()) {
-      action.error = "memory store done index out of range";
+  if (stCount > 0 && stAddrPort < node->inputPorts.size() &&
+      stDataPort < node->inputPorts.size() &&
+      hasInputToken(node->inputPorts[stAddrPort]) &&
+      hasInputToken(node->inputPorts[stDataPort])) {
+    Token addrToken = popInputToken(node->inputPorts[stAddrPort]);
+    Token dataToken = popInputToken(node->inputPorts[stDataPort]);
+    if (addrToken.hasTag && dataToken.hasTag && addrToken.tag != dataToken.tag) {
+      action.error = "memory store address/data tag mismatch";
       return action;
     }
-    pushToken(node->outputPorts[donePort], Token{});
+    if (!writeMemory(*regionId, addrToken.data, dataToken.data, action.error))
+      return action;
+    if (stDonePort >= node->outputPorts.size()) {
+      action.error = "memory store done family index out of range";
+      return action;
+    }
+    Token doneToken = addrToken.hasTag ? addrToken : dataToken;
+    doneToken.data = 0;
+    pushToken(node->outputPorts[stDonePort], doneToken);
     action.progress = true;
     action.tokensIn = 2;
     action.tokensOut = 1;
@@ -599,7 +604,8 @@ FunctionalSimulationBackend::Impl::executeIndexCast(IdIndex, const Node *node) {
   const Port *dstPort = dfg.getPort(node->outputPorts.front());
   unsigned srcWidth = srcPort ? getTypeBitWidth(srcPort->type) : 64;
   uint64_t value = input.data;
-  if (dstPort && dstPort->type.isIndex() && srcWidth < 64)
+  if (dstPort && dstPort->type.isIndex() &&
+      srcWidth < fcc::fabric::getConfiguredIndexBitWidth())
     value = static_cast<uint64_t>(signExtendToI64(input.data, srcWidth));
   Token output = input;
   output.data = dstPort ? coerceValueToType(value, dstPort->type) : value;

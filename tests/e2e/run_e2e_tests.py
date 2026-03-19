@@ -26,6 +26,7 @@ class E2ECase:
     builder_exec: Path
     generated_fabric_file: Path
     fcc_exec: Path
+    sim_bundle_template: Path | None
 
 
 @dataclass(frozen=True)
@@ -59,10 +60,11 @@ def load_cases(manifest_path: Path) -> List[E2ECase]:
         for row in reader:
             if not row:
                 continue
-            while len(row) < 7:
+            while len(row) < 8:
                 row.append("")
             (name, output_dir, app_source, app_include_dir,
-             builder_exec, generated_fabric_file, fcc_exec) = row[:7]
+             builder_exec, generated_fabric_file, fcc_exec,
+             sim_bundle_template) = row[:8]
             cases.append(E2ECase(
                 name=name,
                 output_dir=Path(output_dir),
@@ -71,6 +73,9 @@ def load_cases(manifest_path: Path) -> List[E2ECase]:
                 builder_exec=Path(builder_exec),
                 generated_fabric_file=Path(generated_fabric_file),
                 fcc_exec=Path(fcc_exec),
+                sim_bundle_template=(
+                    Path(sim_bundle_template) if sim_bundle_template else None
+                ),
             ))
     return cases
 
@@ -111,34 +116,68 @@ def shell_join(parts: List[str]) -> str:
 
 
 def render_run_script(case: E2ECase, repo_root: Path) -> str:
+    sim_bundle = case.output_dir / "sim.bundle.json"
+    fcc_cmd = [
+        str(case.fcc_exec),
+        "-I",
+        str(case.app_include_dir),
+        str(case.app_source),
+        "--adg",
+        str(case.generated_fabric_file),
+        "-o",
+        str(case.output_dir),
+    ]
+    if case.sim_bundle_template is not None:
+        fcc_cmd.extend(["--simulate", "--sim-bundle", str(sim_bundle)])
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         f"cd {shlex.quote(str(repo_root))}",
         f"mkdir -p {shlex.quote(str(case.output_dir))}",
         shell_join([str(case.builder_exec), str(case.generated_fabric_file)]),
-        shell_join(
-            [
-                str(case.fcc_exec),
-                "-I",
-                str(case.app_include_dir),
-                str(case.app_source),
-                "--adg",
-                str(case.generated_fabric_file),
-                "-o",
-                str(case.output_dir),
-            ]
-        ),
+        shell_join(fcc_cmd),
         "",
     ]
     return "\n".join(lines)
 
 
+def render_gem5_run_script(case: E2ECase, repo_root: Path) -> str:
+    lines = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        f"cd {shlex.quote(str(repo_root))}",
+        shell_join([str(case.output_dir / "run.cmd")]),
+        shell_join([
+            sys.executable,
+            str(repo_root / "tools/gem5/run_fcc_gem5_case.py"),
+            "--case-dir",
+            str(case.output_dir),
+        ]),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def write_sim_bundle(case: E2ECase) -> None:
+    if case.sim_bundle_template is None:
+        return
+    case.output_dir.mkdir(parents=True, exist_ok=True)
+    target = case.output_dir / "sim.bundle.json"
+    shutil.copyfile(case.sim_bundle_template, target)
+
+
 def write_run_script(case: E2ECase, repo_root: Path) -> Path:
     case.output_dir.mkdir(parents=True, exist_ok=True)
+    write_sim_bundle(case)
     run_cmd = case.output_dir / "run.cmd"
     run_cmd.write_text(render_run_script(case, repo_root), encoding="utf-8")
     run_cmd.chmod(0o755)
+    if case.sim_bundle_template is not None:
+        run_gem5_cmd = case.output_dir / "run.gem5.cmd"
+        run_gem5_cmd.write_text(
+            render_gem5_run_script(case, repo_root), encoding="utf-8"
+        )
+        run_gem5_cmd.chmod(0o755)
     return run_cmd
 
 

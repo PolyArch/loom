@@ -3,12 +3,14 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <thread>
 #include <vector>
 
 #ifdef FCC_HAVE_ORTOOLS
@@ -31,15 +33,6 @@ struct PreparedDomain {
   IdIndex hintedHw = INVALID_ID;
   std::vector<IdIndex> hwCandidates;
 };
-
-int manhattanDistance(IdIndex lhsHwNode, IdIndex rhsHwNode,
-                      const ADGFlattener &flattener) {
-  auto [lhsRow, lhsCol] = flattener.getNodeGridPos(lhsHwNode);
-  auto [rhsRow, rhsCol] = flattener.getNodeGridPos(rhsHwNode);
-  if (lhsRow < 0 || lhsCol < 0 || rhsRow < 0 || rhsCol < 0)
-    return 0;
-  return std::abs(lhsRow - rhsRow) + std::abs(lhsCol - rhsCol);
-}
 
 int64_t scaledPlacementCost(double weight, int distance) {
   return static_cast<int64_t>(std::llround(weight * 100.0)) *
@@ -70,6 +63,7 @@ bool solvePlacementSubset(
     variableNodes.insert(domain.swNode);
 
   std::vector<int64_t> remainingCapacity(adg.nodes.size(), 0);
+  llvm::StringMap<int64_t> remainingSpatialPECapacity;
   for (IdIndex hwNode = 0; hwNode < static_cast<IdIndex>(adg.nodes.size());
        ++hwNode) {
     const Node *node = adg.getNode(hwNode);
@@ -86,6 +80,28 @@ bool solvePlacementSubset(
       }
     }
     remainingCapacity[hwNode] = capacity - fixedOccupants;
+
+    llvm::StringRef peName = getNodeAttrStr(node, "pe_name");
+    if (!peName.empty() && isSpatialPENode(node) &&
+        !remainingSpatialPECapacity.count(peName)) {
+      int64_t fixedPEOccupants = 0;
+      for (IdIndex peHwNode = 0;
+           peHwNode < static_cast<IdIndex>(adg.nodes.size()); ++peHwNode) {
+        const Node *peNode = adg.getNode(peHwNode);
+        if (!peNode || getNodeAttrStr(peNode, "pe_name") != peName)
+          continue;
+        if (peHwNode >= state.hwNodeToSwNodes.size())
+          continue;
+        for (IdIndex swNode : state.hwNodeToSwNodes[peHwNode]) {
+          if (!variableNodes.contains(swNode)) {
+            ++fixedPEOccupants;
+            break;
+          }
+        }
+      }
+      remainingSpatialPECapacity[peName] =
+          std::max<int64_t>(0, 1 - fixedPEOccupants);
+    }
   }
 
   CpModelBuilder cpModel;
@@ -98,6 +114,26 @@ bool solvePlacementSubset(
   }
 
   llvm::DenseMap<IdIndex, std::vector<BoolVar>> varsByHwNode;
+  llvm::StringMap<std::vector<BoolVar>> varsBySpatialPE;
+
+  auto estimatedPlacementDistance = [&](IdIndex srcSwNode, IdIndex srcSwPort,
+                                        IdIndex srcHwNode, IdIndex dstSwNode,
+                                        IdIndex dstSwPort,
+                                        IdIndex dstHwNode) -> int {
+    auto srcPos = estimateSoftwarePortPlacementPos(
+        srcSwNode, srcSwPort, srcHwNode, /*isInput=*/false, dfg, adg,
+        flattener);
+    auto dstPos = estimateSoftwarePortPlacementPos(
+        dstSwNode, dstSwPort, dstHwNode, /*isInput=*/true, dfg, adg,
+        flattener);
+    if (srcPos && dstPos) {
+      double dist = std::abs(srcPos->first - dstPos->first) +
+                    std::abs(srcPos->second - dstPos->second);
+      return static_cast<int>(std::lround(dist));
+    }
+    return manhattanDistance(srcHwNode, dstHwNode, flattener);
+  };
+
   for (unsigned domainIndex = 0; domainIndex < domains.size(); ++domainIndex) {
     const auto &domain = domains[domainIndex];
     assignmentVars[domainIndex].reserve(domain.hwCandidates.size());
@@ -109,10 +145,22 @@ bool solvePlacementSubset(
           hwCandidate != domain.hintedHw) {
         continue;
       }
+      const Node *hwNode = adg.getNode(hwCandidate);
+      llvm::StringRef peName =
+          hwNode ? getNodeAttrStr(hwNode, "pe_name") : llvm::StringRef();
+      if (!peName.empty() && hwNode && isSpatialPENode(hwNode)) {
+        auto capIt = remainingSpatialPECapacity.find(peName);
+        if (capIt != remainingSpatialPECapacity.end() && capIt->second <= 0 &&
+            hwCandidate != domain.hintedHw) {
+          continue;
+        }
+      }
       BoolVar var = cpModel.NewBoolVar();
       assignmentVars[domainIndex].push_back(var);
       activeCandidates[domainIndex].push_back(hwCandidate);
       varsByHwNode[hwCandidate].push_back(var);
+      if (!peName.empty() && hwNode && isSpatialPENode(hwNode))
+        varsBySpatialPE[peName].push_back(var);
       if (hwCandidate == domain.hintedHw)
         cpModel.AddHint(var, true);
       else
@@ -120,8 +168,14 @@ bool solvePlacementSubset(
       if (domain.hintedHw != INVALID_ID && hwCandidate != domain.hintedHw)
         objective += 3 * var;
     }
-    if (assignmentVars[domainIndex].empty())
+    if (assignmentVars[domainIndex].empty()) {
+      if (opts.verbose) {
+        llvm::outs() << "  CP-SAT domain exhausted for sw "
+                     << domain.swNode << " hint=" << domain.hintedHw
+                     << " raw=" << domain.hwCandidates.size() << "\n";
+      }
       return false;
+    }
     cpModel.AddExactlyOne(assignmentVars[domainIndex]);
   }
 
@@ -138,6 +192,25 @@ bool solvePlacementSubset(
     }
     LinearExpr occupancy;
     for (const BoolVar &var : entry.second)
+      occupancy += var;
+    cpModel.AddLessOrEqual(occupancy, capacity);
+  }
+
+  for (const auto &entry : varsBySpatialPE) {
+    auto capIt = remainingSpatialPECapacity.find(entry.getKey());
+    int64_t capacity = capIt == remainingSpatialPECapacity.end() ? 1
+                                                                 : capIt->second;
+    if (capacity <= 0) {
+      for (const BoolVar &var : entry.getValue())
+        cpModel.AddEquality(var, 0);
+      continue;
+    }
+    if (capacity == 1) {
+      cpModel.AddAtMostOne(entry.getValue());
+      continue;
+    }
+    LinearExpr occupancy;
+    for (const BoolVar &var : entry.getValue())
       occupancy += var;
     cpModel.AddLessOrEqual(occupancy, capacity);
   }
@@ -175,8 +248,11 @@ bool solvePlacementSubset(
              dstCandIdx < assignmentVars[dstIndex].size(); ++dstCandIdx) {
           IdIndex srcHw = activeCandidates[srcIndex][srcCandIdx];
           IdIndex dstHw = activeCandidates[dstIndex][dstCandIdx];
-          int64_t distanceCost =
-              edgeWeight * manhattanDistance(srcHw, dstHw, flattener);
+          int64_t distanceCost = edgeWeight * estimatedPlacementDistance(
+                                                  srcPort->parentNode,
+                                                  edge->srcPort, srcHw,
+                                                  dstPort->parentNode,
+                                                  edge->dstPort, dstHw);
           if (distanceCost == 0)
             continue;
           BoolVar pairActive = cpModel.NewBoolVar();
@@ -205,7 +281,13 @@ bool solvePlacementSubset(
          ++candIdx) {
       IdIndex candHw = activeCandidates[varIndex][candIdx];
       int64_t distanceCost =
-          edgeWeight * manhattanDistance(candHw, fixedHw, flattener);
+          srcVariable
+              ? edgeWeight * estimatedPlacementDistance(
+                                 srcPort->parentNode, edge->srcPort, candHw,
+                                 dstPort->parentNode, edge->dstPort, fixedHw)
+              : edgeWeight * estimatedPlacementDistance(
+                                 srcPort->parentNode, edge->srcPort, fixedHw,
+                                 dstPort->parentNode, edge->dstPort, candHw);
       if (distanceCost == 0)
         continue;
       objective += distanceCost * assignmentVars[varIndex][candIdx];
@@ -216,13 +298,27 @@ bool solvePlacementSubset(
   Model model;
   SatParameters params;
   params.set_max_time_in_seconds(opts.cpSatTimeLimitSeconds);
-  params.set_num_search_workers(
-      std::max(1u, std::min(8u, opts.lanes == 0 ? 4u : opts.lanes)));
+  unsigned hwConcurrency = std::thread::hardware_concurrency();
+  if (hwConcurrency == 0)
+    hwConcurrency = 4;
+  unsigned laneBudget = opts.lanes == 0 ? 1u : opts.lanes;
+  unsigned cpSatWorkers =
+      std::max(1u, std::min(8u, hwConcurrency / laneBudget));
+  params.set_num_search_workers(cpSatWorkers);
   model.Add(NewSatParameters(params));
 
   const CpSolverResponse response = SolveCpModel(cpModel.Build(), &model);
   if (response.status() != CpSolverStatus::OPTIMAL &&
       response.status() != CpSolverStatus::FEASIBLE) {
+    if (opts.verbose) {
+      llvm::outs() << "  CP-SAT solve failed with status "
+                   << static_cast<int>(response.status()) << " for";
+      for (const auto &domain : domains) {
+        llvm::outs() << " [sw " << domain.swNode << " hint=" << domain.hintedHw
+                     << " cand=" << domain.hwCandidates.size() << "]";
+      }
+      llvm::outs() << "\n";
+    }
     return false;
   }
 
@@ -244,10 +340,20 @@ bool solvePlacementSubset(
         break;
       }
     }
-    if (chosenHw == INVALID_ID)
+    if (chosenHw == INVALID_ID) {
+      if (opts.verbose) {
+        llvm::outs() << "  CP-SAT chose no hw node for sw "
+                     << domains[domainIndex].swNode << "\n";
+      }
       return false;
+    }
     if (state.mapNode(domains[domainIndex].swNode, chosenHw, dfg, adg) !=
         ActionResult::Success) {
+      if (opts.verbose) {
+        llvm::outs() << "  CP-SAT mapNode failed for sw "
+                     << domains[domainIndex].swNode << " -> hw " << chosenHw
+                     << "\n";
+      }
       state.restore(baseCheckpoint);
       return false;
     }
@@ -402,15 +508,58 @@ bool Mapper::runCPSatNeighborhoodRepair(
   });
 
   const bool tightEndgame = failedEdges.size() <= 6;
+  const bool veryTightEndgame = failedEdges.size() <= 2;
   const unsigned targetNeighborhood =
-      tightEndgame ? 8u : std::min<unsigned>(12u, failedEdges.size() * 2u + 2u);
-  const unsigned neighborhoodLimit = std::max(
-      1u, std::min(opts.cpSatNeighborhoodNodeLimit, targetNeighborhood));
+      tightEndgame ? opts.cpSatNeighborhoodNodeLimit
+                   : std::min<unsigned>(12u, failedEdges.size() * 2u + 2u);
+  const unsigned neighborhoodLimit =
+      std::max(1u, std::min(opts.cpSatNeighborhoodNodeLimit, targetNeighborhood));
 
   std::vector<IdIndex> neighborhood;
-  for (IdIndex swNode : rankedNodes) {
+  auto maybeAddNeighborhoodNode = [&](IdIndex swNode) {
+    if (neighborhood.size() >= neighborhoodLimit)
+      return;
+    if (!isPlacedOperationNode(swNode, state, dfg))
+      return;
     if (selectedNodes.insert(swNode).second)
       neighborhood.push_back(swNode);
+  };
+
+  if (tightEndgame) {
+    llvm::DenseMap<IdIndex, double> endpointWeights;
+    for (IdIndex edgeId : failedEdges) {
+      const Edge *edge = dfg.getEdge(edgeId);
+      if (!edge)
+        continue;
+      const Port *srcPort = dfg.getPort(edge->srcPort);
+      const Port *dstPort = dfg.getPort(edge->dstPort);
+      double weight = classifyEdgePlacementWeight(dfg, edgeId);
+      if (srcPort && srcPort->parentNode != INVALID_ID)
+        endpointWeights[srcPort->parentNode] += weight;
+      if (dstPort && dstPort->parentNode != INVALID_ID)
+        endpointWeights[dstPort->parentNode] += weight;
+    }
+
+    std::vector<IdIndex> rankedEndpoints;
+    rankedEndpoints.reserve(endpointWeights.size());
+    for (const auto &entry : endpointWeights) {
+      if (isPlacedOperationNode(entry.first, state, dfg))
+        rankedEndpoints.push_back(entry.first);
+    }
+    llvm::stable_sort(rankedEndpoints, [&](IdIndex lhs, IdIndex rhs) {
+      double lhsWeight = endpointWeights.lookup(lhs);
+      double rhsWeight = endpointWeights.lookup(rhs);
+      if (lhsWeight != rhsWeight)
+        return lhsWeight > rhsWeight;
+      return lhs < rhs;
+    });
+
+    for (IdIndex swNode : rankedEndpoints)
+      maybeAddNeighborhoodNode(swNode);
+  }
+
+  for (IdIndex swNode : rankedNodes) {
+    maybeAddNeighborhoodNode(swNode);
     if (neighborhood.size() >= neighborhoodLimit)
       break;
   }
@@ -423,12 +572,7 @@ bool Mapper::runCPSatNeighborhoodRepair(
     if (!node)
       continue;
     auto maybeAddNeighbor = [&](IdIndex otherSwNode) {
-      if (neighborhood.size() >= neighborhoodLimit)
-        return;
-      if (!isPlacedOperationNode(otherSwNode, state, dfg))
-        return;
-      if (selectedNodes.insert(otherSwNode).second)
-        neighborhood.push_back(otherSwNode);
+      maybeAddNeighborhoodNode(otherSwNode);
     };
     for (IdIndex inPortId : node->inputPorts) {
       const Port *inPort = dfg.getPort(inPortId);
@@ -489,7 +633,9 @@ bool Mapper::runCPSatNeighborhoodRepair(
   }
   for (IdIndex edgeId : failedEdges)
     focusEdgeWeights[edgeId] =
-        std::max(40.0, focusEdgeWeights.lookup(edgeId) * 18.0);
+        veryTightEndgame
+            ? std::max(80.0, focusEdgeWeights.lookup(edgeId) * 28.0)
+            : std::max(40.0, focusEdgeWeights.lookup(edgeId) * 18.0);
 
   std::vector<PreparedDomain> domains;
   domains.reserve(neighborhood.size());
@@ -501,7 +647,12 @@ bool Mapper::runCPSatNeighborhoodRepair(
     IdIndex oldHw = state.swNodeToHwNode[swNode];
     llvm::SmallVector<std::pair<double, IdIndex>, 16> rankedCandidates;
     const unsigned moveRadius =
-        tightEndgame ? std::max(3u, opts.placementMoveRadius + 1u) : 0u;
+        veryTightEndgame
+            ? 0u
+            : (tightEndgame
+            ? std::max(veryTightEndgame ? 5u : 3u,
+                       opts.placementMoveRadius + (veryTightEndgame ? 2u : 1u))
+            : 0u);
     for (IdIndex hwNode : candIt->second) {
       if (oldHw != INVALID_ID && moveRadius != 0 &&
           manhattanDistance(oldHw, hwNode, flattener) >
@@ -530,8 +681,9 @@ bool Mapper::runCPSatNeighborhoodRepair(
     domain.hintedHw = oldHw;
     if (oldHw != INVALID_ID)
       domain.hwCandidates.push_back(oldHw);
-    unsigned limit =
-        std::min<unsigned>(rankedCandidates.size(), tightEndgame ? 5u : 8u);
+    unsigned limit = std::min<unsigned>(
+        rankedCandidates.size(),
+        veryTightEndgame ? 12u : (tightEndgame ? 5u : 8u));
     for (unsigned idx = 0; idx < limit; ++idx) {
       IdIndex hwNode = rankedCandidates[idx].second;
       if (std::find(domain.hwCandidates.begin(), domain.hwCandidates.end(),
@@ -539,8 +691,14 @@ bool Mapper::runCPSatNeighborhoodRepair(
         domain.hwCandidates.push_back(hwNode);
       }
     }
-    if (domain.hwCandidates.empty())
+    if (domain.hwCandidates.empty()) {
+      if (opts.verbose) {
+        llvm::outs() << "  CP-SAT empty domain for sw " << swNode
+                     << " oldHw=" << oldHw
+                     << " ranked=" << rankedCandidates.size() << "\n";
+      }
       return false;
+    }
     domains.push_back(std::move(domain));
   }
 
@@ -564,9 +722,13 @@ bool Mapper::runCPSatNeighborhoodRepair(
       return false;
     }
   }
+  rebindScalarInputSentinels(state, dfg, adg, flattener);
   bindMemrefSentinels(state, dfg, adg);
   classifyTemporalRegisterEdges(state, dfg, adg, flattener, edgeKinds);
-  bool allRouted = runRouting(state, dfg, adg, edgeKinds, opts);
+  bool allRouted =
+      opts.negotiatedRoutingPasses > 0
+          ? runNegotiatedRouting(state, dfg, adg, edgeKinds, opts)
+          : runRouting(state, dfg, adg, edgeKinds, opts);
   if (opts.verbose) {
     llvm::outs() << "  CP-SAT neighborhood repaired " << domains.size()
                  << " nodes, routed " << countRoutedEdges(state, dfg, edgeKinds)

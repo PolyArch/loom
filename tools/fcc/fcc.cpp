@@ -1,4 +1,5 @@
 #include "fcc_args.h"
+#include "fcc_runtime.h"
 #include "fcc_pipeline.h"
 
 #include "fcc/Dialect/Dataflow/DataflowDialect.h"
@@ -13,6 +14,7 @@
 #include "fcc/Mapper/Mapper.h"
 #include "fcc/Mapper/TypeCompat.h"
 #include "fcc/Simulator/SimArtifactWriter.h"
+#include "fcc/Simulator/SimBundle.h"
 #include "fcc/Simulator/SimInputSynthesis.h"
 #include "fcc/Simulator/SimSession.h"
 #include "fcc/Viz/VizExporter.h"
@@ -33,6 +35,7 @@
 #include "circt/Dialect/Handshake/HandshakeDialect.h"
 
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
@@ -67,6 +70,160 @@ static std::string deriveAdgStem(const std::string &adgPath) {
 static std::string joinOutputBase(const std::string &outputDir,
                                   const std::string &stem) {
   return outputDir + "/" + stem;
+}
+
+static void writeEscapedJsonString(llvm::raw_ostream &out,
+                                   const std::string &value) {
+  out << '"';
+  for (char ch : value) {
+    switch (ch) {
+    case '\\':
+      out << "\\\\";
+      break;
+    case '"':
+      out << "\\\"";
+      break;
+    case '\n':
+      out << "\\n";
+      break;
+    case '\r':
+      out << "\\r";
+      break;
+    case '\t':
+      out << "\\t";
+      break;
+    default:
+      out << ch;
+      break;
+    }
+  }
+  out << '"';
+}
+
+template <typename T>
+static void writeJsonIntegerArray(llvm::raw_ostream &out,
+                                  const std::vector<T> &values) {
+  out << "[";
+  for (size_t idx = 0; idx < values.size(); ++idx) {
+    if (idx)
+      out << ", ";
+    out << static_cast<uint64_t>(values[idx]);
+  }
+  out << "]";
+}
+
+struct SynthesizedOutputInfo {
+  unsigned portIdx = 0;
+  int64_t resultIndex = -1;
+};
+
+static std::vector<unsigned> buildBoundaryOutputOrdinals(const Graph &adg) {
+  std::vector<unsigned> ordinals(adg.nodes.size(), 0);
+  unsigned nextOrdinal = 0;
+  for (IdIndex nodeId = 0; nodeId < static_cast<IdIndex>(adg.nodes.size());
+       ++nodeId) {
+    const Node *node = adg.getNode(nodeId);
+    if (!node || node->kind != Node::ModuleOutputNode)
+      continue;
+    ordinals[nodeId] = nextOrdinal++;
+  }
+  return ordinals;
+}
+
+static std::vector<SynthesizedOutputInfo>
+collectSynthesizedOutputs(const Graph &dfg, const Graph &adg,
+                          const MappingState &mapping) {
+  std::vector<SynthesizedOutputInfo> outputs;
+  std::vector<unsigned> boundaryOutputOrdinals = buildBoundaryOutputOrdinals(adg);
+  for (IdIndex swNodeId = 0; swNodeId < static_cast<IdIndex>(dfg.nodes.size());
+       ++swNodeId) {
+    const Node *swNode = dfg.getNode(swNodeId);
+    if (!swNode || swNode->kind != Node::ModuleOutputNode)
+      continue;
+    if (swNodeId >= static_cast<IdIndex>(mapping.swNodeToHwNode.size()))
+      continue;
+    IdIndex hwNodeId = mapping.swNodeToHwNode[swNodeId];
+    if (hwNodeId == INVALID_ID ||
+        hwNodeId >= static_cast<IdIndex>(boundaryOutputOrdinals.size()))
+      continue;
+    SynthesizedOutputInfo output;
+    output.portIdx = boundaryOutputOrdinals[hwNodeId];
+    output.resultIndex = getNodeAttrInt(swNode, "result_index", -1);
+    outputs.push_back(output);
+  }
+  std::sort(outputs.begin(), outputs.end(),
+            [](const SynthesizedOutputInfo &lhs,
+               const SynthesizedOutputInfo &rhs) {
+              return lhs.portIdx < rhs.portIdx;
+            });
+  return outputs;
+}
+
+static bool writeStandaloneSimulationResult(
+    const std::string &path, const std::string &tracePath,
+    const std::string &statPath, const fcc::sim::SimResult &simResult,
+    const fcc::sim::SimSession &session,
+    const std::vector<SynthesizedOutputInfo> &outputs,
+    const fcc::sim::SynthesizedSetup &synthSetup,
+    const std::vector<std::vector<uint8_t>> &regionStorage) {
+  std::error_code ec;
+  llvm::raw_fd_ostream out(path, ec, llvm::sys::fs::OF_Text);
+  if (ec) {
+    llvm::errs() << "fcc: cannot open standalone simulation result '" << path
+                 << "': " << ec.message() << "\n";
+    return false;
+  }
+
+  out << "{\n";
+  out << "  \"success\": " << (simResult.success ? "true" : "false") << ",\n";
+  out << "  \"termination\": ";
+  writeEscapedJsonString(out, fcc::sim::runTerminationName(simResult.termination));
+  out << ",\n";
+  out << "  \"error_message\": ";
+  writeEscapedJsonString(out, simResult.errorMessage);
+  out << ",\n";
+  out << "  \"cycle_count\": " << simResult.totalCycles << ",\n";
+  out << "  \"config_cycles\": " << simResult.configCycles << ",\n";
+  out << "  \"config_writes\": " << simResult.totalConfigWrites << ",\n";
+  out << "  \"trace_path\": ";
+  writeEscapedJsonString(out, tracePath);
+  out << ",\n";
+  out << "  \"stat_path\": ";
+  writeEscapedJsonString(out, statPath);
+  out << ",\n";
+
+  out << "  \"outputs\": [\n";
+  for (size_t idx = 0; idx < outputs.size(); ++idx) {
+    const auto &output = outputs[idx];
+    out << "    {\"port\": " << output.portIdx
+        << ", \"result_index\": " << output.resultIndex << ", \"data\": ";
+    writeJsonIntegerArray(out, session.getOutput(output.portIdx));
+    out << ", \"tags\": ";
+    writeJsonIntegerArray(out, session.getOutputTags(output.portIdx));
+    out << "}";
+    if (idx + 1 != outputs.size())
+      out << ",";
+    out << "\n";
+  }
+  out << "  ],\n";
+
+  out << "  \"memory_regions\": [\n";
+  for (size_t idx = 0; idx < synthSetup.memoryRegions.size(); ++idx) {
+    const auto &region = synthSetup.memoryRegions[idx];
+    out << "    {\"region\": " << region.regionId
+        << ", \"memref_arg_index\": " << region.memrefArgIndex
+        << ", \"elem_size_log2\": " << region.elemSizeLog2
+        << ", \"byte_size\": " << regionStorage[idx].size()
+        << ", \"bytes\": ";
+    writeJsonIntegerArray(out, regionStorage[idx]);
+    out << "}";
+    if (idx + 1 != synthSetup.memoryRegions.size())
+      out << ",";
+    out << "\n";
+  }
+  out << "  ]\n";
+  out << "}\n";
+  return true;
 }
 
 static void attachADGCapacityAttrs(ModuleOp module, const std::string &adgPath,
@@ -180,6 +337,9 @@ int main(int argc, char **argv) {
   MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
+  if (!args.runtimeManifestPath.empty())
+    return runRuntimeReplay(args, context);
+
   const std::string softwareStem = args.baseName;
   const std::string adgStem = deriveAdgStem(args.adgPath);
   const std::string softwareBase = joinOutputBase(args.outputDir, softwareStem);
@@ -190,6 +350,8 @@ int main(int argc, char **argv) {
           ? softwareStem + "." + adgStem
           : (softwareStem.empty() ? adgStem : softwareStem);
   const std::string mixedBase = joinOutputBase(args.outputDir, mixedStem);
+  const std::string selectedDfgPath =
+      !args.dfgPath.empty() ? args.dfgPath : (softwareBase + ".dfg.mlir");
 
   // Helper: load ADG, build DFG, run mapper, generate viz
   auto runMappingPipeline = [&](OwningOpRef<ModuleOp> &dfgModule) -> int {
@@ -243,6 +405,12 @@ int main(int argc, char **argv) {
         args.mapperCpSatNeighborhoodNodeLimit;
     mapOpts.cpSatTimeLimitSeconds = args.mapperCpSatTimeLimitSeconds;
     mapOpts.enableCPSat = args.mapperEnableCpSat;
+    mapOpts.routingHeuristicWeight = args.mapperRoutingHeuristicWeight;
+    mapOpts.negotiatedRoutingPasses = args.mapperNegotiatedRoutingPasses;
+    mapOpts.congestionHistoryFactor = args.mapperCongestionHistoryFactor;
+    mapOpts.congestionHistoryScale = args.mapperCongestionHistoryScale;
+    mapOpts.congestionPresentFactor = args.mapperCongestionPresentFactor;
+    mapOpts.congestionPlacementWeight = args.mapperCongestionPlacementWeight;
     mapOpts.verbose = true;
 
     auto mapResult =
@@ -293,15 +461,52 @@ int main(int argc, char **argv) {
     if (!mapResult.success)
       return 1;
 
+    std::string runtimeManifestPath = mixedBase + ".runtime.json";
+    if (!writeRuntimeManifest(runtimeManifestPath, mixedStem,
+                              selectedDfgPath, args.adgPath,
+                              mixedBase + ".config.bin", dfgBuilder.getDFG(),
+                              flattener.getADG(), mapResult.state)) {
+      llvm::errs() << "fcc: failed to write runtime manifest\n";
+      return 1;
+    }
+    llvm::outs() << "  " << runtimeManifestPath << "\n";
+
     if (args.simulate) {
       llvm::outs() << "fcc: running standalone simulation...\n";
-      fcc::sim::SimSession session;
+      fcc::sim::SimConfig simConfig;
+      simConfig.maxCycles = args.simMaxCycles;
+      fcc::sim::SimSession session(nullptr, simConfig);
       fcc::sim::SimArtifactWriter artifactWriter;
-      auto synthSetup = fcc::sim::synthesizeSimulationSetup(
-          dfgBuilder.getDFG(), flattener.getADG(), mapResult.state);
+      fcc::sim::SynthesizedSetup synthSetup;
+      fcc::sim::ResolvedSimulationBundle resolvedBundle;
+      bool hasResolvedBundle = false;
+      if (!args.simBundlePath.empty()) {
+        fcc::sim::SimulationBundle bundle;
+        std::string bundleError;
+        if (!fcc::sim::loadSimulationBundle(args.simBundlePath, bundle,
+                                            bundleError)) {
+          llvm::errs() << "fcc: failed to load simulation bundle: "
+                       << bundleError << "\n";
+          return 1;
+        }
+        if (!fcc::sim::resolveSimulationBundle(
+                bundle, dfgBuilder.getDFG(), flattener.getADG(),
+                mapResult.state, resolvedBundle, bundleError)) {
+          llvm::errs() << "fcc: failed to resolve simulation bundle: "
+                       << bundleError << "\n";
+          return 1;
+        }
+        synthSetup = resolvedBundle.setup;
+        hasResolvedBundle = true;
+      } else {
+        synthSetup = fcc::sim::synthesizeSimulationSetup(
+            dfgBuilder.getDFG(), flattener.getADG(), mapResult.state);
+      }
       std::string tracePath = mixedBase + ".sim.trace";
       std::string statPath = mixedBase + ".sim.stat";
       std::string setupPath = mixedBase + ".sim.setup.json";
+      std::string resultPath = mixedBase + ".sim.result.json";
+      std::string reportPath = mixedBase + ".sim.report.json";
 
       if (std::string err = session.connect(); !err.empty()) {
         llvm::errs() << "fcc: simulation setup failed: " << err << "\n";
@@ -352,8 +557,15 @@ int main(int argc, char **argv) {
       }
 
       auto [simResult, invokeErr] = session.invoke();
+      std::vector<SynthesizedOutputInfo> synthesizedOutputs =
+          collectSynthesizedOutputs(dfgBuilder.getDFG(), flattener.getADG(),
+                                    mapResult.state);
       if (!artifactWriter.writeTrace(simResult, tracePath) ||
-          !artifactWriter.writeStat(simResult, statPath)) {
+          !artifactWriter.writeStat(simResult, statPath) ||
+          !writeStandaloneSimulationResult(resultPath, tracePath, statPath,
+                                           simResult, session,
+                                           synthesizedOutputs, synthSetup,
+                                           regionStorage)) {
         llvm::errs() << "fcc: failed to write simulation artifacts\n";
         return 1;
       }
@@ -361,6 +573,7 @@ int main(int argc, char **argv) {
       llvm::outs() << "  " << tracePath << "\n";
       llvm::outs() << "  " << statPath << "\n";
       llvm::outs() << "  " << setupPath << "\n";
+      llvm::outs() << "  " << resultPath << "\n";
 
       if (!invokeErr.empty()) {
         llvm::errs() << "fcc: simulation invocation failed: " << invokeErr
@@ -371,6 +584,22 @@ int main(int argc, char **argv) {
         llvm::errs() << "fcc: simulation failed: " << simResult.errorMessage
                      << "\n";
         return 1;
+      }
+      if (hasResolvedBundle) {
+        fcc::sim::SimValidationReport report =
+            fcc::sim::validateSimulationBundle(session, resolvedBundle);
+        if (!fcc::sim::writeValidationReport(report, reportPath)) {
+          llvm::errs() << "fcc: failed to write simulation validation report\n";
+          return 1;
+        }
+        llvm::outs() << "  " << reportPath << "\n";
+        if (!report.pass) {
+          llvm::errs() << "fcc: simulation validation failed";
+          if (!report.diagnostics.empty())
+            llvm::errs() << ": " << report.diagnostics.front();
+          llvm::errs() << "\n";
+          return 1;
+        }
       }
     }
     return 0;
@@ -399,10 +628,17 @@ int main(int argc, char **argv) {
             : (args.adgPath.empty() ? softwareBase + ".viz.html"
                                     : hardwareBase + ".viz.html");
     llvm::outs() << "fcc: generating viz-only...\n";
-    if (failed(fcc::exportVizOnly(
-            vizPath, adgMod ? *adgMod : ModuleOp(),
-            dfgMod ? *dfgMod : ModuleOp(), args.adgPath,
-            args.vizLayout, &context))) {
+    mlir::LogicalResult vizResult =
+        args.mapJsonPath.empty()
+            ? fcc::exportVizOnly(vizPath, adgMod ? *adgMod : ModuleOp(),
+                                 dfgMod ? *dfgMod : ModuleOp(), args.adgPath,
+                                 args.vizLayout, &context)
+            : fcc::exportVizWithMapping(vizPath,
+                                        adgMod ? *adgMod : ModuleOp(),
+                                        dfgMod ? *dfgMod : ModuleOp(),
+                                        args.mapJsonPath, args.adgPath,
+                                        args.vizLayout, &context);
+    if (failed(vizResult)) {
       llvm::errs() << "fcc: viz generation failed\n";
       return 1;
     }

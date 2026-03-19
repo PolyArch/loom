@@ -24,7 +24,7 @@ inline std::optional<unsigned> getScalarWidth(mlir::Type t) {
   if (mlir::isa<mlir::Float16Type, mlir::BFloat16Type>(t))
     return 16u;
   if (t.isIndex())
-    return static_cast<unsigned>(fcc::fabric::ADDR_BIT_WIDTH);
+    return fcc::fabric::getConfiguredIndexBitWidth();
   if (mlir::isa<mlir::NoneType>(t))
     return 0u;
   return std::nullopt;

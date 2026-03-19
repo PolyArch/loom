@@ -85,6 +85,8 @@ FCC simulation should support:
 - event traces
 - per-node activity or stall accounting
 - invocation start and completion markers
+- a machine-readable result artifact containing resolved output tokens and
+  post-execution memory-region snapshots
 
 These outputs are relevant both for debugging and for later visualization or
 performance analysis.

@@ -11,8 +11,11 @@ add_library(FccMapper STATIC
   Mapper.cpp
   MapperPlacement.cpp
   MapperRefinement.cpp
+  MapperLocalRepair.cpp
   MapperCPSat.cpp
+  MapperCongestionEstimator.cpp
   MapperRouting.cpp
+  MapperRoutingCongestion.cpp
   MapperRoutingStrategy.cpp
   ConfigGen.cpp
   ConfigGenHelpers.cpp

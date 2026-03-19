@@ -111,13 +111,13 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
     }
     os << ")";
     if (pe.temporal) {
-      os << " [num_register = " << pe.numRegister << " : i64"
-         << ", num_instruction = " << pe.numInstruction << " : i64"
-         << ", reg_fifo_depth = " << pe.regFifoDepth << " : i64";
+      os << " [num_register = " << pe.numRegister
+         << ", num_instruction = " << pe.numInstruction
+         << ", reg_fifo_depth = " << pe.regFifoDepth;
       if (pe.enableShareOperandBuffer)
         os << ", enable_share_operand_buffer = true";
       if (pe.operandBufferSize)
-        os << ", operand_buffer_size = " << *pe.operandBufferSize << " : i64";
+        os << ", operand_buffer_size = " << *pe.operandBufferSize;
       os << "]";
     }
     os << " {\n";
@@ -183,11 +183,11 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
 
     if (sw.decomposableBits >= 0) {
       startHw();
-      os << "decomposable_bits = " << sw.decomposableBits << " : i64";
+      os << "decomposable_bits = " << sw.decomposableBits;
     }
     if (sw.temporal) {
       startHw();
-      os << "num_route_table = " << sw.numRouteTable << " : i64";
+      os << "num_route_table = " << sw.numRouteTable;
     }
 
     if (hasHw)
@@ -214,51 +214,27 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
        << ", stCount = " << mem.stPorts << ", lsqDepth = " << mem.lsqDepth
        << ", memrefType = " << mem.memrefType;
     if (!mem.isPrivate)
-      os << ", is_private";
+      os << ", is_private = false";
     os << "] : (";
     bool first = true;
-    for (unsigned l = 0; l < mem.ldPorts; ++l) {
+    unsigned numInputs = getMemoryInputCount(mem.ldPorts, mem.stPorts, false);
+    for (unsigned p = 0; p < numInputs; ++p) {
       if (!first)
         os << ", ";
       first = false;
-      os << bitsType(64);
-    }
-    for (unsigned s = 0; s < mem.stPorts; ++s) {
-      if (!first)
-        os << ", ";
-      first = false;
-      os << bitsType(64);
-    }
-    for (unsigned s = 0; s < mem.stPorts; ++s) {
-      if (!first)
-        os << ", ";
-      first = false;
-      os << bitsType(64);
+      os << getDefaultMemoryInputType(mem.ldPorts, mem.stPorts, mem.memrefType,
+                                      false, p);
     }
     os << ") -> (";
     first = true;
-    for (unsigned l = 0; l < mem.ldPorts; ++l) {
+    unsigned numOutputs =
+        getMemoryOutputCount(mem.ldPorts, mem.stPorts, !mem.isPrivate);
+    for (unsigned p = 0; p < numOutputs; ++p) {
       if (!first)
         os << ", ";
       first = false;
-      os << bitsType(64);
-    }
-    for (unsigned l = 0; l < mem.ldPorts; ++l) {
-      if (!first)
-        os << ", ";
-      first = false;
-      os << bitsType(64);
-    }
-    for (unsigned s = 0; s < mem.stPorts; ++s) {
-      if (!first)
-        os << ", ";
-      first = false;
-      os << bitsType(64);
-    }
-    if (!mem.isPrivate) {
-      if (!first)
-        os << ", ";
-      os << mem.memrefType;
+      os << getDefaultMemoryOutputType(mem.ldPorts, mem.stPorts, mem.memrefType,
+                                       !mem.isPrivate, p);
     }
     os << ")\n";
   }
@@ -401,9 +377,10 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
     }
     case InstanceKind::Memory: {
       const auto &mem = memoryDefs[inst.defIdx];
-      const unsigned numDataInputs = mem.ldPorts + mem.stPorts * 2;
+      const unsigned numDataInputs =
+          getMemoryInputCount(mem.ldPorts, mem.stPorts, false);
       const unsigned numOut =
-          mem.ldPorts + mem.ldPorts + mem.stPorts + (mem.isPrivate ? 0 : 1);
+          getMemoryOutputCount(mem.ldPorts, mem.stPorts, !mem.isPrivate);
       if (numOut > 0) {
         os << "  %v" << i;
         if (numOut > 1)
@@ -413,7 +390,7 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
          << ", stCount = " << mem.stPorts << ", lsqDepth = " << mem.lsqDepth
          << ", memrefType = " << mem.memrefType << ", numRegion = 1";
       if (!mem.isPrivate)
-        os << ", is_private";
+        os << ", is_private = false";
       os << "] (";
 
       bool firstOperand = true;
@@ -463,8 +440,8 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
         if (p > 0)
           os << ", ";
         os << getInstanceInputType(instances, peDefs, swDefs, memoryDefs,
-                                   addTagDefs, mapTagDefs, delTagDefs,
-                                   fifoDefs, i, p);
+                                   extMemDefs, addTagDefs, mapTagDefs,
+                                   delTagDefs, fifoDefs, i, p);
       }
       os << ") -> (";
       bool first = true;
@@ -481,8 +458,8 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
     }
     case InstanceKind::ExtMem: {
       const auto &mem = extMemDefs[inst.defIdx];
-      unsigned numDataInputs = mem.ldPorts + mem.stPorts * 2;
-      unsigned numOut = mem.ldPorts + mem.ldPorts + mem.stPorts;
+      unsigned numDataInputs = getMemoryInputCount(mem.ldPorts, mem.stPorts, false);
+      unsigned numOut = getMemoryOutputCount(mem.ldPorts, mem.stPorts, false);
       if (numOut > 0) {
         os << "  %v" << i;
         if (numOut > 1)
@@ -567,7 +544,8 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
                                          pit->second.second);
           }
         }
-        return bitsType(64);
+        return getDefaultMemoryInputType(mem.ldPorts, mem.stPorts, mem.memrefType,
+                                         true, portIdx);
       };
 
       auto getExtMemOutputType = [&](unsigned portIdx) {
@@ -575,42 +553,28 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
           if (conn.srcInst != i || conn.srcPort != portIdx)
             continue;
           return getInstanceInputType(instances, peDefs, swDefs, memoryDefs,
-                                      addTagDefs, mapTagDefs, delTagDefs,
-                                      fifoDefs, conn.dstInst, conn.dstPort);
+                                      extMemDefs, addTagDefs, mapTagDefs,
+                                      delTagDefs, fifoDefs, conn.dstInst,
+                                      conn.dstPort);
         }
         for (const auto &ic : instToScalarConns) {
           if (ic.srcInst == i && ic.srcPort == portIdx)
             return scalarOutputs[ic.scalarOutputIdx].typeStr;
         }
-        return bitsType(64);
+        return getDefaultMemoryOutputType(mem.ldPorts, mem.stPorts,
+                                          mem.memrefType, false, portIdx);
       };
 
       os << " : (" << mem.memrefType;
-      for (unsigned l = 0; l < mem.ldPorts; ++l)
-        os << ", " << getExtMemInputType(1 + l);
-      for (unsigned s = 0; s < mem.stPorts; ++s)
-        os << ", " << getExtMemInputType(1 + mem.ldPorts + s);
-      for (unsigned s = 0; s < mem.stPorts; ++s)
-        os << ", " << getExtMemInputType(1 + mem.ldPorts + mem.stPorts + s);
+      for (unsigned p = 0; p < numDataInputs; ++p)
+        os << ", " << getExtMemInputType(1 + p);
       os << ") -> (";
       bool first = true;
-      for (unsigned l = 0; l < mem.ldPorts; ++l) {
+      for (unsigned p = 0; p < numOut; ++p) {
         if (!first)
           os << ", ";
         first = false;
-        os << getExtMemOutputType(l);
-      }
-      for (unsigned l = 0; l < mem.ldPorts; ++l) {
-        if (!first)
-          os << ", ";
-        first = false;
-        os << getExtMemOutputType(mem.ldPorts + l);
-      }
-      for (unsigned s = 0; s < mem.stPorts; ++s) {
-        if (!first)
-          os << ", ";
-        first = false;
-        os << getExtMemOutputType(mem.ldPorts * 2 + s);
+        os << getExtMemOutputType(p);
       }
       os << ")\n";
       break;

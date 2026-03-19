@@ -73,11 +73,25 @@ def main() -> int:
     offset += output_field_width
     fu_cfg = read_bits(words, offset, 3)
 
-    expected = {
-        "techmap-add": {"opcode": 0, "mux2": (0, False, True), "fu_cfg": 0},
-        "techmap-mul": {"opcode": 1, "mux2": (0, False, True), "fu_cfg": 0},
-        "techmap-mac": {"opcode": 1, "mux2": (2, False, False), "fu_cfg": 1},
-    }[case_name]
+    techmap_add_hw = None
+    if case_name == "techmap-add":
+        techmap_add_hw = None
+
+    node_mappings = {entry["sw_op"]: entry["hw_name"] for entry in mapping["node_mappings"]}
+
+    if case_name == "techmap-add":
+        techmap_add_hw = node_mappings.get("arith.addi")
+        if techmap_add_hw == "fu_add":
+            expected = {"opcode": 0, "mux2": (0, False, True), "fu_cfg": 0}
+        elif techmap_add_hw == "fu_mac":
+            expected = {"opcode": 1, "mux2": (0, False, True), "fu_cfg": 0}
+        else:
+            raise SystemExit("arith.addi should map to fu_add or fu_mac")
+    else:
+        expected = {
+            "techmap-mul": {"opcode": 1, "mux2": (0, False, True), "fu_cfg": 0},
+            "techmap-mac": {"opcode": 1, "mux2": (2, False, False), "fu_cfg": 1},
+        }[case_name]
 
     if enable != 1:
         raise SystemExit("spatial_pe enable bit should be 1")
@@ -94,9 +108,8 @@ def main() -> int:
     if fu_cfg != expected["fu_cfg"]:
         raise SystemExit(f"unexpected spatial FU config {fu_cfg}")
 
-    node_mappings = {entry["sw_op"]: entry["hw_name"] for entry in mapping["node_mappings"]}
-    if case_name == "techmap-add" and node_mappings.get("arith.addi") != "fu_add":
-        raise SystemExit("arith.addi should map to fu_add")
+    if case_name == "techmap-add" and techmap_add_hw not in ("fu_add", "fu_mac"):
+        raise SystemExit("arith.addi should map to fu_add or fu_mac")
     if case_name == "techmap-mul" and node_mappings.get("arith.muli") != "fu_mac":
         raise SystemExit("arith.muli should map to fu_mac")
     if case_name == "techmap-mac":

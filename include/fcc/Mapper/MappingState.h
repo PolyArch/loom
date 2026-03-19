@@ -5,6 +5,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringSet.h"
 
 #include <string>
 #include <vector>
@@ -37,6 +38,14 @@ public:
   std::vector<llvm::SmallVector<IdIndex, 2>> hwPortToSwPorts;
   std::vector<llvm::SmallVector<IdIndex, 4>> hwEdgeToSwEdges;
 
+  // Resource usage index: HW port ID -> SW edge IDs whose paths use that port.
+  // Dense vector indexed by port ID for O(1) lookup in hot paths.
+  // Excludes synthetic direct-binding routes (path[0] == path[1]).
+  std::vector<llvm::SmallVector<IdIndex, 4>> portToUsingEdges;
+
+  // Spatial PE occupancy: pe_name strings of occupied spatial PEs.
+  llvm::StringSet<> occupiedSpatialPEs;
+
   // Cost metrics.
   double totalCost = 0.0;
 
@@ -60,6 +69,8 @@ public:
     std::vector<llvm::SmallVector<IdIndex, 2>> hwNodeToSwNodes;
     std::vector<llvm::SmallVector<IdIndex, 2>> hwPortToSwPorts;
     std::vector<llvm::SmallVector<IdIndex, 4>> hwEdgeToSwEdges;
+    std::vector<llvm::SmallVector<IdIndex, 4>> portToUsingEdges;
+    llvm::StringSet<> occupiedSpatialPEs;
     double totalCost;
   };
 

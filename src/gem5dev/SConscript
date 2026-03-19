@@ -1,0 +1,4 @@
+Import('*')
+
+SimObject('dev/fcc/FccCgraDevice.py', sim_objects=['FccCgraDevice'])
+Source('dev/fcc/FccCgraDevice.cc')

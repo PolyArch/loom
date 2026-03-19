@@ -176,22 +176,43 @@ std::optional<uint64_t> applyMapTagTableValue(const Node *mapTagNode,
   return std::nullopt;
 }
 
-std::optional<uint64_t> projectRuntimeTagValueToType(std::optional<uint64_t> tag,
-                                                     mlir::Type type) {
+bool runtimeTagValueFitsType(uint64_t tag, mlir::Type type) {
   auto info = detail::getPortTypeInfo(type);
-  if (!info || !info->isTagged || !tag)
-    return std::nullopt;
+  if (!info || !info->isTagged)
+    return false;
   if (info->tagWidth >= 64)
-    return *tag;
-  uint64_t mask = (uint64_t{1} << info->tagWidth) - 1u;
-  return *tag & mask;
+    return true;
+  return (tag >> info->tagWidth) == 0;
 }
 
-std::optional<uint64_t> computeRuntimeTagValueAlongPath(
+RuntimeTagValueInfo
+projectRuntimeTagValueToTypeInfo(std::optional<uint64_t> tag, mlir::Type type) {
+  if (!tag)
+    return RuntimeTagValueInfo{true, std::nullopt, std::nullopt};
+
+  auto info = detail::getPortTypeInfo(type);
+  if (!info || !info->isTagged)
+    return RuntimeTagValueInfo{true, std::nullopt, std::nullopt};
+
+  if (!runtimeTagValueFitsType(*tag, type))
+    return RuntimeTagValueInfo{false, std::nullopt, *tag};
+
+  return RuntimeTagValueInfo{true, *tag, std::nullopt};
+}
+
+std::optional<uint64_t> projectRuntimeTagValueToType(std::optional<uint64_t> tag,
+                                                     mlir::Type type) {
+  auto info = projectRuntimeTagValueToTypeInfo(tag, type);
+  if (!info.representable)
+    return std::nullopt;
+  return info.tag;
+}
+
+RuntimeTagValueInfo computeRuntimeTagValueInfoAlongPath(
     llvm::ArrayRef<IdIndex> hwPath, size_t uptoIndex, const Graph &adg,
     llvm::function_ref<std::optional<uint64_t>(IdIndex)> externalTagAtPort) {
   if (hwPath.empty())
-    return std::nullopt;
+    return RuntimeTagValueInfo{true, std::nullopt, std::nullopt};
 
   std::optional<uint64_t> tag;
   for (size_t idx = 0; idx <= uptoIndex && idx < hwPath.size(); ++idx) {
@@ -220,18 +241,31 @@ std::optional<uint64_t> computeRuntimeTagValueAlongPath(
       }
     }
 
-    tag = projectRuntimeTagValueToType(tag, port->type);
+    auto projected = projectRuntimeTagValueToTypeInfo(tag, port->type);
+    if (!projected.representable)
+      return projected;
+    tag = projected.tag;
   }
 
-  return tag;
+  return RuntimeTagValueInfo{true, tag, std::nullopt};
 }
 
-std::optional<uint64_t> computeRuntimeTagValueAlongMappedPath(
+std::optional<uint64_t> computeRuntimeTagValueAlongPath(
+    llvm::ArrayRef<IdIndex> hwPath, size_t uptoIndex, const Graph &adg,
+    llvm::function_ref<std::optional<uint64_t>(IdIndex)> externalTagAtPort) {
+  auto info =
+      computeRuntimeTagValueInfoAlongPath(hwPath, uptoIndex, adg, externalTagAtPort);
+  if (!info.representable)
+    return std::nullopt;
+  return info.tag;
+}
+
+RuntimeTagValueInfo computeRuntimeTagValueInfoAlongMappedPath(
     IdIndex swEdgeId, llvm::ArrayRef<IdIndex> hwPath, size_t uptoIndex,
     const MappingState &state, const Graph &dfg, const Graph &adg) {
   const Edge *swEdge = dfg.getEdge(swEdgeId);
   if (!swEdge || hwPath.empty())
-    return std::nullopt;
+    return RuntimeTagValueInfo{true, std::nullopt, std::nullopt};
 
   const Port *swSrcPort = dfg.getPort(swEdge->srcPort);
   const Port *swDstPort = dfg.getPort(swEdge->dstPort);
@@ -240,7 +274,7 @@ std::optional<uint64_t> computeRuntimeTagValueAlongMappedPath(
   IdIndex swDstNodeId =
       swDstPort ? swDstPort->parentNode : static_cast<IdIndex>(INVALID_ID);
 
-  return computeRuntimeTagValueAlongPath(
+  return computeRuntimeTagValueInfoAlongPath(
       hwPath, uptoIndex, adg, [&](IdIndex portId) -> std::optional<uint64_t> {
         const Port *port = adg.getPort(portId);
         const Node *owner = getPortOwnerNode(adg, portId);
@@ -262,6 +296,17 @@ std::optional<uint64_t> computeRuntimeTagValueAlongMappedPath(
         }
         return std::nullopt;
       });
+}
+
+std::optional<uint64_t> computeRuntimeTagValueAlongMappedPath(
+    IdIndex swEdgeId, llvm::ArrayRef<IdIndex> hwPath, size_t uptoIndex,
+    const MappingState &state, const Graph &dfg, const Graph &adg) {
+  auto info = computeRuntimeTagValueInfoAlongMappedPath(swEdgeId, hwPath,
+                                                        uptoIndex, state, dfg,
+                                                        adg);
+  if (!info.representable)
+    return std::nullopt;
+  return info.tag;
 }
 
 } // namespace fcc

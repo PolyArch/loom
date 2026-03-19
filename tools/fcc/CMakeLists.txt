@@ -1,6 +1,7 @@
 add_executable(fcc
   fcc.cpp
   fcc_args.cpp
+  fcc_runtime.cpp
   fcc_pipeline.cpp
 )
 

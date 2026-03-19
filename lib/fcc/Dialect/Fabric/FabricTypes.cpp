@@ -3,8 +3,53 @@
 
 #include "fcc/Dialect/Fabric/FabricTypes.h"
 
+#include <cerrno>
+#include <cstdlib>
+#include <limits>
+#include <optional>
+
 using namespace mlir;
 using namespace fcc::fabric;
+
+namespace {
+
+std::optional<unsigned> parseIndexWidthOverrideFromEnv() {
+  const char *env = std::getenv("FCC_INDEX_WIDTH");
+  if (!env || *env == '\0')
+    return std::nullopt;
+
+  char *end = nullptr;
+  errno = 0;
+  unsigned long value = std::strtoul(env, &end, 10);
+  if (errno != 0 || end == env || *end != '\0' ||
+      value > std::numeric_limits<unsigned>::max()) {
+    return std::nullopt;
+  }
+
+  unsigned width = static_cast<unsigned>(value);
+  if (!isSupportedIndexBitWidth(width))
+    return std::nullopt;
+  return width;
+}
+
+} // namespace
+
+bool fcc::fabric::isSupportedIndexBitWidth(unsigned width) {
+  return width >= MIN_INDEX_BIT_WIDTH && width <= MAX_INDEX_BIT_WIDTH;
+}
+
+unsigned fcc::fabric::getConfiguredIndexBitWidth() {
+  static const unsigned configuredWidth = []() -> unsigned {
+    if (auto overrideWidth = parseIndexWidthOverrideFromEnv())
+      return *overrideWidth;
+    return getDefaultIndexBitWidth();
+  }();
+  return configuredWidth;
+}
+
+mlir::IntegerType fcc::fabric::getIndexIntegerType(mlir::MLIRContext *ctx) {
+  return mlir::IntegerType::get(ctx, getConfiguredIndexBitWidth());
+}
 
 LogicalResult BitsType::verify(function_ref<InFlightDiagnostic()> emitError,
                                unsigned width) {

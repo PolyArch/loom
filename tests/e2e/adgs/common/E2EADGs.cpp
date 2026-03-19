@@ -22,6 +22,32 @@ std::string bitsType(unsigned width = kDataWidth) {
   return "!fabric.bits<" + std::to_string(width) + ">";
 }
 
+std::string taggedBitsType(unsigned tagWidth, unsigned width = kDataWidth) {
+  return "!fabric.tagged<" + bitsType(width) + ", i" +
+         std::to_string(tagWidth) + ">";
+}
+
+struct TaggedVecaddExtMemBridge {
+  SWHandle ldAddrMux;
+  SWHandle ldDataDemux;
+  SWHandle ldDoneDemux;
+};
+
+TaggedVecaddExtMemBridge buildTaggedVecaddExtMemBridge(ADGBuilder &builder,
+                                                       const std::string &prefix) {
+  const std::string taggedTy = taggedBitsType(1);
+  TaggedVecaddExtMemBridge bridge;
+  bridge.ldAddrMux = builder.defineSpatialSW(
+      prefix + "_ld_addr_mux", {taggedTy, taggedTy}, {taggedTy}, {{true, true}});
+  bridge.ldDataDemux = builder.defineTemporalSW(
+      prefix + "_ld_data_demux", {taggedTy}, {taggedTy, taggedTy},
+      {{true}, {true}}, 2);
+  bridge.ldDoneDemux = builder.defineTemporalSW(
+      prefix + "_ld_done_demux", {taggedTy}, {taggedTy, taggedTy},
+      {{true}, {true}}, 2);
+  return bridge;
+}
+
 struct SpatialKernelPE {
   PEHandle pe;
   unsigned inputs = kDensePEInputs;
@@ -210,6 +236,94 @@ void wireRoundRobinExtMemIngressEgress(
                       mesh.egressPorts[egressIdx].port, mem, 1 + inPort);
       ++egressIdx;
     }
+  }
+}
+
+void wireRoundRobinVecaddTaggedExtMemIngressEgress(
+    ADGBuilder &builder, const MeshResult &mesh,
+    const std::vector<InstanceHandle> &extMems, unsigned topLeftIngressCount,
+    unsigned bottomLeftEgressCount,
+    const TaggedVecaddExtMemBridge &bridgeTemplates) {
+  unsigned leftIngressIdx = 0;
+  unsigned rightIngressIdx = topLeftIngressCount;
+  unsigned leftEgressIdx = 0;
+  unsigned rightEgressIdx = bottomLeftEgressCount;
+
+  const std::string taggedTy = taggedBitsType(1);
+
+  for (unsigned memIdx = 0; memIdx < extMems.size(); ++memIdx) {
+    InstanceHandle mem = extMems[memIdx];
+    bool useLeftIngress = (memIdx % 2 == 0);
+    bool useLeftEgress = (memIdx % 2 == 0);
+    if (extMems.size() == 3) {
+      if (memIdx == 0) {
+        useLeftIngress = true;
+        useLeftEgress = true;
+      } else if (memIdx == 1) {
+        useLeftIngress = false;
+        useLeftEgress = false;
+      } else {
+        useLeftIngress = false;
+        useLeftEgress = true;
+      }
+    }
+    unsigned &ingressIdx = useLeftIngress ? leftIngressIdx : rightIngressIdx;
+    unsigned &egressIdx = useLeftEgress ? leftEgressIdx : rightEgressIdx;
+
+    auto ldAddrTags =
+        builder.createAddTagBank(bitsType(), taggedTy, {0, 1});
+    auto stAddrTag = builder.createAddTag(bitsType(), taggedTy, 0);
+    auto stDataTag = builder.createAddTag(bitsType(), taggedTy, 0);
+    auto ldDataDrops = builder.createDelTagBank(taggedTy, bitsType(), 2);
+    auto ldDoneDrops = builder.createDelTagBank(taggedTy, bitsType(), 2);
+    auto stDoneDrop = builder.createDelTag(taggedTy, bitsType());
+
+    auto ldAddrMux = builder.instantiateSW(
+        bridgeTemplates.ldAddrMux,
+        "vecadd_ld_addr_mux_" + std::to_string(memIdx));
+    auto ldDataDemux = builder.instantiateSW(
+        bridgeTemplates.ldDataDemux,
+        "vecadd_ld_data_demux_" + std::to_string(memIdx));
+    auto ldDoneDemux = builder.instantiateSW(
+        bridgeTemplates.ldDoneDemux,
+        "vecadd_ld_done_demux_" + std::to_string(memIdx));
+
+    builder.connect(mesh.egressPorts[egressIdx + 0].instance,
+                    mesh.egressPorts[egressIdx + 0].port, ldAddrTags[0], 0);
+    builder.connect(mesh.egressPorts[egressIdx + 1].instance,
+                    mesh.egressPorts[egressIdx + 1].port, ldAddrTags[1], 0);
+    builder.connect(mesh.egressPorts[egressIdx + 2].instance,
+                    mesh.egressPorts[egressIdx + 2].port, stAddrTag, 0);
+    builder.connect(mesh.egressPorts[egressIdx + 3].instance,
+                    mesh.egressPorts[egressIdx + 3].port, stDataTag, 0);
+    egressIdx += 4;
+
+    builder.connect(ldAddrTags[0], 0, ldAddrMux, 0);
+    builder.connect(ldAddrTags[1], 0, ldAddrMux, 1);
+    builder.connect(ldAddrMux, 0, mem, 1);
+    builder.connect(stAddrTag, 0, mem, 2);
+    builder.connect(stDataTag, 0, mem, 3);
+
+    builder.connect(mem, 0, ldDataDemux, 0);
+    builder.connect(ldDataDemux, 0, ldDataDrops[0], 0);
+    builder.connect(ldDataDemux, 1, ldDataDrops[1], 0);
+    builder.connect(ldDataDrops[0], 0, mesh.ingressPorts[ingressIdx + 0].instance,
+                    mesh.ingressPorts[ingressIdx + 0].port);
+    builder.connect(ldDataDrops[1], 0, mesh.ingressPorts[ingressIdx + 1].instance,
+                    mesh.ingressPorts[ingressIdx + 1].port);
+
+    builder.connect(mem, 1, ldDoneDemux, 0);
+    builder.connect(ldDoneDemux, 0, ldDoneDrops[0], 0);
+    builder.connect(ldDoneDemux, 1, ldDoneDrops[1], 0);
+    builder.connect(ldDoneDrops[0], 0, mesh.ingressPorts[ingressIdx + 2].instance,
+                    mesh.ingressPorts[ingressIdx + 2].port);
+    builder.connect(ldDoneDrops[1], 0, mesh.ingressPorts[ingressIdx + 3].instance,
+                    mesh.ingressPorts[ingressIdx + 3].port);
+
+    builder.connect(mem, 2, stDoneDrop, 0);
+    builder.connect(stDoneDrop, 0, mesh.ingressPorts[ingressIdx + 4].instance,
+                    mesh.ingressPorts[ingressIdx + 4].port);
+    ingressIdx += 5;
   }
 }
 
@@ -518,10 +632,10 @@ void buildVecaddDemoChess6x6(const std::string &outputPath) {
   constexpr unsigned kScalarOutputs = 1;
 
   ChessMeshOptions options;
-  const unsigned leftIngressMems = (kNumExtMems + 1) / 2;
-  const unsigned rightIngressMems = kNumExtMems / 2;
-  const unsigned leftEgressMems = (kNumExtMems + 1) / 2;
-  const unsigned rightEgressMems = kNumExtMems / 2;
+  const unsigned leftIngressMems = 1;
+  const unsigned rightIngressMems = 2;
+  const unsigned leftEgressMems = 2;
+  const unsigned rightEgressMems = 1;
   options.topLeftExtraInputs = leftIngressMems * 5 + kScalarInputs;
   options.topRightExtraInputs = rightIngressMems * 5;
   options.bottomLeftExtraOutputs = leftEgressMems * 4;
@@ -531,15 +645,16 @@ void buildVecaddDemoChess6x6(const std::string &outputPath) {
       [&](unsigned, unsigned) { return computePE.pe; }, options);
 
   auto extMem = builder.defineExtMemory(moduleName + "_mem", 2, 1);
+  auto extMemBridge = buildTaggedVecaddExtMemBridge(builder, moduleName);
   auto extMems = builder.instantiateExtMemArray(kNumExtMems, extMem, "extmem");
   auto memrefs =
       builder.addMemrefInputs("buffer", kNumExtMems, "memref<?xi32>");
   for (unsigned idx = 0; idx < extMems.size(); ++idx)
     builder.connectMemrefToExtMem(memrefs[idx], extMems[idx]);
 
-  wireRoundRobinExtMemIngressEgress(builder, mesh, extMems,
-                                    options.topLeftExtraInputs,
-                                    options.bottomLeftExtraOutputs);
+  wireRoundRobinVecaddTaggedExtMemIngressEgress(
+      builder, mesh, extMems, options.topLeftExtraInputs,
+      options.bottomLeftExtraOutputs, extMemBridge);
 
   std::vector<unsigned> inputs = builder.addInputs(
       "scalar", std::vector<std::string>(kScalarInputs, bitsType()));

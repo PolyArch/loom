@@ -219,6 +219,8 @@ bool ADGFlattener::flatten(mlir::ModuleOp topModule, mlir::MLIRContext *ctx) {
                << connectivity.inToOut.size() << " in ports ("
                << totalInToOut << " in->out entries)\n";
 
+  adg.buildAttributeCache();
+
   return true;
 }
 

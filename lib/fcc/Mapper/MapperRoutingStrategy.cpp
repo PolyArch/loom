@@ -1,4 +1,5 @@
 #include "fcc/Mapper/Mapper.h"
+#include "MapperInternal.h"
 #include "MapperRoutingInternal.h"
 
 #include "fcc/Mapper/TechMapper.h"
@@ -20,29 +21,6 @@ namespace {
 
 bool isDirectBindingPath(llvm::ArrayRef<IdIndex> path) {
   return path.size() == 2 && path[0] == path[1];
-}
-
-bool isNonRoutingOutputPort(IdIndex portId, const Graph &adg) {
-  const Port *port = adg.getPort(portId);
-  if (!port || port->direction != Port::Output || port->parentNode == INVALID_ID)
-    return false;
-  const Node *owner = adg.getNode(port->parentNode);
-  return owner && !routing_detail::isRoutingNode(owner);
-}
-
-IdIndex getLockedFirstHopForSource(IdIndex swEdgeId, IdIndex srcHwPort,
-                                   const MappingState &state) {
-  for (IdIndex otherEdgeId = 0;
-       otherEdgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
-       ++otherEdgeId) {
-    if (otherEdgeId == swEdgeId)
-      continue;
-    const auto &otherPath = state.swEdgeToHwPaths[otherEdgeId];
-    if (otherPath.size() < 2 || otherPath.front() != srcHwPort)
-      continue;
-    return otherPath[1];
-  }
-  return INVALID_ID;
 }
 
 void collectUnroutedSiblingEdges(
@@ -367,7 +345,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
                           const std::vector<IdIndex> &edgeOrder,
                           const llvm::DenseMap<IdIndex, double>
                               &routingOutputHistory,
-                          unsigned &routed, unsigned &total) {
+                          unsigned &routed, unsigned &total,
+                          const CongestionState *congestion) {
   bool allRouted = true;
   routed = 0;
   total = 0;
@@ -404,6 +383,40 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
     if (limit != 0 && choices.size() > limit)
       choices.resize(limit);
   };
+  auto rankSharedFirstHopChoices =
+      [&](llvm::ArrayRef<IdIndex> siblingEdges,
+          llvm::SmallVectorImpl<IdIndex> &choices, unsigned limit) {
+        llvm::stable_sort(choices, [&](IdIndex lhs, IdIndex rhs) {
+          auto scoreChoice = [&](IdIndex choice) {
+            double totalScore = 0.0;
+            for (IdIndex siblingEdgeId : siblingEdges) {
+              const Edge *siblingEdge = dfg.getEdge(siblingEdgeId);
+              if (!siblingEdge)
+                continue;
+              IdIndex siblingDstHwPort = siblingEdge->dstPort <
+                                                 state.swPortToHwPort.size()
+                                             ? state.swPortToHwPort
+                                                   [siblingEdge->dstPort]
+                                             : INVALID_ID;
+              if (siblingDstHwPort == INVALID_ID)
+                continue;
+              double weight =
+                  mapper_detail::classifyEdgePlacementWeight(dfg,
+                                                             siblingEdgeId);
+              totalScore +=
+                  weight * estimatePortDistance(choice, siblingDstHwPort);
+            }
+            return totalScore;
+          };
+          double lhsScore = scoreChoice(lhs);
+          double rhsScore = scoreChoice(rhs);
+          if (std::abs(lhsScore - rhsScore) > 1e-9)
+            return lhsScore < rhsScore;
+          return lhs < rhs;
+        });
+        if (limit != 0 && choices.size() > limit)
+          choices.resize(limit);
+      };
 
   for (IdIndex edgeId : edgeOrder) {
     const Edge *edge = dfg.getEdge(edgeId);
@@ -460,9 +473,9 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
             continue;
           IdIndex groupedSrcHwPort = state.swPortToHwPort[groupedEdge->srcPort];
           llvm::SmallVector<IdIndex, 8> choices;
-          if (isNonRoutingOutputPort(groupedSrcHwPort, adg)) {
+          if (routing_detail::isNonRoutingOutputPort(groupedSrcHwPort, adg)) {
             IdIndex lockedFirstHop =
-                getLockedFirstHopForSource(groupedEdgeId, groupedSrcHwPort, state);
+                routing_detail::getLockedFirstHopForSource(groupedEdgeId, groupedSrcHwPort, state);
             if (lockedFirstHop != INVALID_ID) {
               choices.push_back(lockedFirstHop);
             } else if (auto it = connectivity.outToIn.find(groupedSrcHwPort);
@@ -533,7 +546,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
                 for (IdIndex firstHop : choices) {
                   auto groupedPath =
                       findPath(groupedSrcHwPort, groupedDstHwPort, groupedEdgeId,
-                               state, dfg, adg, routingOutputHistory, firstHop);
+                               state, dfg, adg, routingOutputHistory, firstHop,
+                               congestion);
                   if (groupedPath.empty())
                     continue;
                   if (state.mapEdge(groupedEdgeId, groupedPath, dfg, adg) !=
@@ -579,7 +593,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
           for (IdIndex firstHop : choices) {
             groupedPath = findPath(groupedSrcHwPort, groupedDstHwPort,
                                    groupedEdgeId, state, dfg, adg,
-                                   routingOutputHistory, firstHop);
+                                   routingOutputHistory, firstHop,
+                                   congestion);
             if (!groupedPath.empty())
               break;
           }
@@ -599,7 +614,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
       processedSinkNodes.insert(dstSwNodeId);
     }
 
-    if (isNonRoutingOutputPort(srcHwPort, adg)) {
+    if (routing_detail::isNonRoutingOutputPort(srcHwPort, adg)) {
       if (processedFanoutSources.contains(srcHwPort))
         continue;
 
@@ -610,7 +625,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
         processedFanoutSources.insert(srcHwPort);
 
         IdIndex lockedFirstHop =
-            getLockedFirstHopForSource(edgeId, srcHwPort, state);
+            routing_detail::getLockedFirstHopForSource(edgeId, srcHwPort, state);
         llvm::SmallVector<IdIndex, 8> firstHopCandidates;
         if (lockedFirstHop != INVALID_ID) {
           firstHopCandidates.push_back(lockedFirstHop);
@@ -623,7 +638,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
               firstHopCandidates.end());
         }
         if (!firstHopCandidates.empty() && firstHopCandidates.front() != INVALID_ID)
-          rankFirstHopChoices(dstHwPort, firstHopCandidates, 2);
+          rankSharedFirstHopChoices(siblingEdges, firstHopCandidates, 4);
 
         unsigned bestSuccessCount = 0;
         size_t bestTotalPathLen = std::numeric_limits<size_t>::max();
@@ -642,7 +657,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
               continue;
             auto siblingPath = findPath(srcHwPort, siblingDstHwPort,
                                         siblingEdgeId, state, dfg, adg,
-                                        routingOutputHistory, firstHop);
+                                        routingOutputHistory, firstHop,
+                                        congestion);
             if (siblingPath.empty())
               break;
             if (state.mapEdge(siblingEdgeId, siblingPath, dfg, adg) !=
@@ -677,7 +693,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
               bestFirstHop == INVALID_ID
                   ? llvm::SmallVector<IdIndex, 8>()
                   : findPath(srcHwPort, siblingDstHwPort, siblingEdgeId, state,
-                             dfg, adg, routingOutputHistory, bestFirstHop);
+                             dfg, adg, routingOutputHistory, bestFirstHop,
+                             congestion);
           if (siblingPath.empty()) {
             allRouted = false;
             continue;
@@ -696,7 +713,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
     total++;
 
     auto path = findPath(srcHwPort, dstHwPort, edgeId, state, dfg, adg,
-                         routingOutputHistory);
+                         routingOutputHistory, INVALID_ID, congestion);
     if (path.empty()) {
       allRouted = false;
       continue;

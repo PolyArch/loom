@@ -7,6 +7,10 @@
 
 #include "FabricOpsInternal.h"
 
+#include "fcc/Dialect/Fabric/FabricTypes.h"
+
+#include "llvm/Support/MathExtras.h"
+
 using namespace mlir;
 using namespace fcc::fabric;
 using fcc::fabric::detail::getFabricScalarWidth;
@@ -19,6 +23,219 @@ using fcc::fabric::detail::parseOptionalOperandListInParens;
 using fcc::fabric::detail::printNamedAttrsWithAliases;
 using fcc::fabric::detail::verifyBinaryRowTable;
 using fcc::fabric::detail::verifyModuleLevelComponentPlacement;
+
+namespace {
+
+enum class MemoryFamilyKind { Addr, Data, Done };
+
+static unsigned requiredMemoryTagWidth(int64_t laneCount) {
+  if (laneCount <= 1)
+    return 0;
+  return llvm::Log2_64_Ceil(static_cast<uint64_t>(laneCount));
+}
+
+static LogicalResult
+getMemoryElementWidth(Operation *op, Type memrefType, unsigned &elementWidth) {
+  auto memref = mlir::dyn_cast<mlir::MemRefType>(memrefType);
+  if (!memref)
+    return op->emitOpError("memrefType must be a memref");
+  auto width = getFabricScalarWidth(memref.getElementType());
+  if (!width) {
+    return op->emitOpError("memrefType element type is unsupported for memory families: ")
+           << memref.getElementType();
+  }
+  elementWidth = *width;
+  return success();
+}
+
+static LogicalResult verifyMemoryLaneCount(Operation *op, StringRef name,
+                                           int64_t count) {
+  if (count < 0)
+    return op->emitOpError() << name << " must be >= 0";
+  return success();
+}
+
+static LogicalResult verifyMemoryFamilyType(Operation *op, Type portType,
+                                            MemoryFamilyKind kind,
+                                            int64_t laneCount,
+                                            unsigned elementWidth) {
+  bool requireTagged = laneCount > 1;
+  Type payloadType = portType;
+  if (auto tagged = mlir::dyn_cast<TaggedType>(portType)) {
+    auto tagTy = mlir::dyn_cast<mlir::IntegerType>(tagged.getTagType());
+    if (!tagTy) {
+      return op->emitOpError("tagged memory family must use an integer tag type: ")
+             << portType;
+    }
+    unsigned minWidth = std::max(1u, requiredMemoryTagWidth(laneCount));
+    if (tagTy.getWidth() < minWidth) {
+      return op->emitOpError("tagged memory family tag width is too small: ")
+             << tagTy.getWidth() << " < " << minWidth;
+    }
+    payloadType = tagged.getValueType();
+  } else if (requireTagged) {
+    return op->emitOpError("multi-lane memory family must be tagged: ")
+           << portType;
+  }
+
+  if (mlir::isa<mlir::MemRefType>(payloadType)) {
+    return op->emitOpError("memory request/response family must not use memref payloads: ")
+           << payloadType;
+  }
+  if (!getFabricScalarWidth(payloadType)) {
+    return op->emitOpError("memory family payload must be scalar or none, got ")
+           << payloadType;
+  }
+  (void)kind;
+  (void)elementWidth;
+  return success();
+}
+
+static LogicalResult verifyExtMemoryFunctionType(ExtMemoryOp op) {
+  if (failed(verifyMemoryLaneCount(op, "ldCount", op.getLdCount())) ||
+      failed(verifyMemoryLaneCount(op, "stCount", op.getStCount())))
+    return failure();
+  if (op.getLsqDepth() < 0)
+    return op.emitOpError("lsqDepth must be >= 0");
+
+  unsigned elementWidth = 0;
+  if (failed(getMemoryElementWidth(op, op.getMemrefType(), elementWidth)))
+    return failure();
+
+  auto fnType = op.getFunctionType();
+  unsigned expectedInputs = 1;
+  if (op.getLdCount() > 0)
+    ++expectedInputs;
+  if (op.getStCount() > 0)
+    expectedInputs += 2;
+  unsigned expectedOutputs = 0;
+  if (op.getLdCount() > 0)
+    expectedOutputs += 2;
+  if (op.getStCount() > 0)
+    ++expectedOutputs;
+
+  if (fnType.getNumInputs() != expectedInputs) {
+    return op.emitOpError("function_type must have ")
+           << expectedInputs << " input(s), got " << fnType.getNumInputs();
+  }
+  if (fnType.getNumResults() != expectedOutputs) {
+    return op.emitOpError("function_type must have ")
+           << expectedOutputs << " result(s), got " << fnType.getNumResults();
+  }
+  if (fnType.getInput(0) != op.getMemrefType())
+    return op.emitOpError("function type input 0 must match memrefType");
+
+  unsigned inputIdx = 1;
+  if (op.getLdCount() > 0 &&
+      failed(verifyMemoryFamilyType(op, fnType.getInput(inputIdx++),
+                                    MemoryFamilyKind::Addr, op.getLdCount(),
+                                    elementWidth)))
+    return failure();
+  if (op.getStCount() > 0) {
+    if (failed(verifyMemoryFamilyType(op, fnType.getInput(inputIdx++),
+                                      MemoryFamilyKind::Addr, op.getStCount(),
+                                      elementWidth)))
+      return failure();
+    if (failed(verifyMemoryFamilyType(op, fnType.getInput(inputIdx++),
+                                      MemoryFamilyKind::Data, op.getStCount(),
+                                      elementWidth)))
+      return failure();
+  }
+
+  unsigned resultIdx = 0;
+  if (op.getLdCount() > 0) {
+    if (failed(verifyMemoryFamilyType(op, fnType.getResult(resultIdx++),
+                                      MemoryFamilyKind::Data, op.getLdCount(),
+                                      elementWidth)))
+      return failure();
+    if (failed(verifyMemoryFamilyType(op, fnType.getResult(resultIdx++),
+                                      MemoryFamilyKind::Done, op.getLdCount(),
+                                      elementWidth)))
+      return failure();
+  }
+  if (op.getStCount() > 0 &&
+      failed(verifyMemoryFamilyType(op, fnType.getResult(resultIdx++),
+                                    MemoryFamilyKind::Done, op.getStCount(),
+                                    elementWidth)))
+    return failure();
+
+  return success();
+}
+
+static LogicalResult verifyMemoryFunctionType(MemoryOp op) {
+  if (failed(verifyMemoryLaneCount(op, "ldCount", op.getLdCount())) ||
+      failed(verifyMemoryLaneCount(op, "stCount", op.getStCount())))
+    return failure();
+  if (op.getLsqDepth() < 0)
+    return op.emitOpError("lsqDepth must be >= 0");
+
+  unsigned elementWidth = 0;
+  if (failed(getMemoryElementWidth(op, op.getMemrefType(), elementWidth)))
+    return failure();
+
+  auto fnType = op.getFunctionType();
+  unsigned expectedInputs = 0;
+  if (op.getLdCount() > 0)
+    ++expectedInputs;
+  if (op.getStCount() > 0)
+    expectedInputs += 2;
+  unsigned expectedOutputs = 0;
+  if (op.getLdCount() > 0)
+    expectedOutputs += 2;
+  if (op.getStCount() > 0)
+    ++expectedOutputs;
+  if (!op.getIsPrivate())
+    ++expectedOutputs;
+
+  if (fnType.getNumInputs() != expectedInputs) {
+    return op.emitOpError("function_type must have ")
+           << expectedInputs << " input(s), got " << fnType.getNumInputs();
+  }
+  if (fnType.getNumResults() != expectedOutputs) {
+    return op.emitOpError("function_type must have ")
+           << expectedOutputs << " result(s), got " << fnType.getNumResults();
+  }
+
+  unsigned inputIdx = 0;
+  if (op.getLdCount() > 0 &&
+      failed(verifyMemoryFamilyType(op, fnType.getInput(inputIdx++),
+                                    MemoryFamilyKind::Addr, op.getLdCount(),
+                                    elementWidth)))
+    return failure();
+  if (op.getStCount() > 0) {
+    if (failed(verifyMemoryFamilyType(op, fnType.getInput(inputIdx++),
+                                      MemoryFamilyKind::Addr, op.getStCount(),
+                                      elementWidth)))
+      return failure();
+    if (failed(verifyMemoryFamilyType(op, fnType.getInput(inputIdx++),
+                                      MemoryFamilyKind::Data, op.getStCount(),
+                                      elementWidth)))
+      return failure();
+  }
+
+  unsigned resultIdx = 0;
+  if (op.getLdCount() > 0) {
+    if (failed(verifyMemoryFamilyType(op, fnType.getResult(resultIdx++),
+                                      MemoryFamilyKind::Data, op.getLdCount(),
+                                      elementWidth)))
+      return failure();
+    if (failed(verifyMemoryFamilyType(op, fnType.getResult(resultIdx++),
+                                      MemoryFamilyKind::Done, op.getLdCount(),
+                                      elementWidth)))
+      return failure();
+  }
+  if (op.getStCount() > 0 &&
+      failed(verifyMemoryFamilyType(op, fnType.getResult(resultIdx++),
+                                    MemoryFamilyKind::Done, op.getStCount(),
+                                    elementWidth)))
+    return failure();
+  if (!op.getIsPrivate() && fnType.getResult(resultIdx) != op.getMemrefType())
+    return op.emitOpError("public memory memref result must match memrefType");
+
+  return success();
+}
+
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // SpatialSwOp
@@ -679,18 +896,16 @@ LogicalResult ExtMemoryOp::verify() {
   if (failed(verifyModuleLevelComponentPlacement(*this)))
     return failure();
 
+  if (failed(verifyExtMemoryFunctionType(*this)))
+    return failure();
+
   constexpr int64_t kRegionFieldCount = 5;
   int64_t numRegion = getNumRegion();
   if (numRegion < 1)
     return emitOpError("numRegion must be >= 1");
 
-  auto fnType = getFunctionType();
-  if (fnType.getNumInputs() < 1)
-    return emitOpError("requires a memref input in the function type");
-  if (fnType.getInput(0) != getMemrefType())
-    return emitOpError("function type input 0 must match memrefType");
-
   if (getNumOperands() > 0) {
+    auto fnType = getFunctionType();
     if (getNumOperands() != fnType.getNumInputs())
       return emitOpError("operand count must match function_type inputs");
     auto firstInput = getInputs().front();
@@ -748,7 +963,14 @@ static ParseResult parseMemoryHwParams(OpAsmParser &parser,
       return failure();
 
     if (keyword == "is_private") {
-      result.addAttribute("is_private", parser.getBuilder().getBoolAttr(true));
+      if (failed(parser.parseOptionalEqual())) {
+        result.addAttribute("is_private", parser.getBuilder().getBoolAttr(true));
+        continue;
+      }
+      BoolAttr attr;
+      if (parser.parseAttribute(attr))
+        return failure();
+      result.addAttribute("is_private", attr);
       continue;
     }
 
@@ -849,9 +1071,14 @@ void MemoryOp::print(OpAsmPrinter &p) {
     p << "memrefType = ";
     p.printAttribute(attr);
   }
-  if (getIsPrivate()) {
+  if (auto attr = (*this)->getAttrOfType<mlir::BoolAttr>("is_private")) {
     startHw();
-    p << "is_private";
+    if (attr.getValue()) {
+      p << "is_private";
+    } else {
+      p << "is_private = ";
+      p.printAttribute(attr);
+    }
   }
   if (auto attr = (*this)->getAttr("numRegion")) {
     startHw();
@@ -877,6 +1104,9 @@ void MemoryOp::print(OpAsmPrinter &p) {
 
 LogicalResult MemoryOp::verify() {
   if (failed(verifyModuleLevelComponentPlacement(*this)))
+    return failure();
+
+  if (failed(verifyMemoryFunctionType(*this)))
     return failure();
 
   constexpr int64_t kRegionFieldCount = 5;

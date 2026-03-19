@@ -18,6 +18,14 @@ bool isRoutingCrossbarOutputPort(IdIndex portId, const Graph &adg);
 /// Returns true if opName is a software memory interface operation.
 bool isSoftwareMemoryInterfaceOpName(llvm::StringRef opName);
 
+/// Returns true if portId is an output port of a non-routing node.
+bool isNonRoutingOutputPort(IdIndex portId, const Graph &adg);
+
+/// Returns the locked first-hop input port for a non-routing source output
+/// port, or INVALID_ID if no existing route from this source exists.
+IdIndex getLockedFirstHopForSource(IdIndex swEdgeId, IdIndex srcHwPort,
+                                   const MappingState &state);
+
 } // namespace routing_detail
 } // namespace fcc
 

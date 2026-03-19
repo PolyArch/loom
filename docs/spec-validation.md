@@ -34,6 +34,7 @@ The gem5-backed flow must support:
 - MMIO-based configuration and launch
 - DMA-based memory interaction
 - result checking by host code and/or offline inspection
+- replay-backed accelerator execution that emits trace and stat artifacts
 
 ## Acceptance Matrix
 
@@ -43,8 +44,11 @@ The FCC target validation matrix includes at least:
 2. ADG generation
 3. mapping report generation
 4. standalone simulation with trace and stat output
+   The standalone flow is also expected to emit a machine-readable result
+   artifact with actual outputs and memory snapshots.
 5. correctness on a representative vecadd-style memory-writing kernel
 6. gem5 end-to-end host-plus-accelerator execution
+   Current smoke anchor: `sum-array.sum-array-demo-chess-6x6`
 7. visualization rendering with mapping and, when available, trace playback
 8. focused unit tests for temporal hardware, tagged memory topologies, and
    decomposable switches
@@ -122,6 +126,19 @@ The intended FCC validation family covers:
 - visualization HTML generation
 - trace and stat generation
 - host-runtime or gem5 integration success
+
+The current repository-level gem5 smoke entry point is:
+
+- `ninja -C build check-fcc-gem5`
+
+That smoke target is expected to exercise:
+
+- source to mapping flow through the normal FCC e2e case
+- runtime-manifest emission
+- baremetal host generation and cross-compilation
+- gem5 device launch
+- replay-generated accelerator trace and stat export
+- host-visible pass or fail reporting through `gem5.report.json`
 
 ## Relationship to Project Planning
 

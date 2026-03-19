@@ -47,6 +47,15 @@ public:
   llvm::SmallVector<IdIndex, 4> inputPorts;
   llvm::SmallVector<IdIndex, 4> outputPorts;
   llvm::SmallVector<mlir::NamedAttribute, 8> attributes;
+
+  // Cached attribute values for hot-path lookups. Populated by
+  // Graph::buildAttributeCache() after graph construction.
+  llvm::StringRef cachedResourceClass;
+  llvm::StringRef cachedPeName;
+  llvm::StringRef cachedOpName;
+  llvm::StringRef cachedPeKind;
+  llvm::StringRef cachedOpKind;
+  bool attributeCacheValid = false;
 };
 
 /// Iterator adaptor that skips nullptr entries in a unique_ptr vector.
@@ -139,6 +148,10 @@ public:
   NonNullRange<Node> nodeRange() const { return NonNullRange<Node>(nodes); }
   NonNullRange<Port> portRange() const { return NonNullRange<Port>(ports); }
   NonNullRange<Edge> edgeRange() const { return NonNullRange<Edge>(edges); }
+
+  /// Populate cached StringRef fields on every Node for hot-path attribute
+  /// lookups. Call after graph construction is complete.
+  void buildAttributeCache();
 };
 
 // Attribute helper utilities for Node.

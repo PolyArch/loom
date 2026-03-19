@@ -47,6 +47,9 @@ void MappingState::init(const Graph &dfg, const Graph &adg) {
   hwPortToSwPorts.resize(hwPorts);
   hwEdgeToSwEdges.resize(hwEdges);
 
+  portToUsingEdges.resize(hwPorts);
+  occupiedSpatialPEs.clear();
+
   totalCost = 0.0;
 }
 
@@ -56,11 +59,16 @@ ActionResult MappingState::mapNode(IdIndex swNode, IdIndex hwNode,
     return ActionResult::FailedInternalError;
 
   // Most hardware nodes are exclusive. Memory nodes may host multiple
-  // software memories and are capacity-checked by the mapper before mapNode().
+  // software memories, but mapNode must still enforce numRegion capacity so
+  // every placement path, including local repair and CP-SAT, stays legal.
   const Node *hwN = adg.getNode(hwNode);
   bool allowMultiOccupancy =
       hwN && getNodeAttrStr(hwN, "resource_class") == "memory";
-  if (!allowMultiOccupancy && !hwNodeToSwNodes[hwNode].empty()) {
+  if (allowMultiOccupancy) {
+    int64_t numRegion = std::max<int64_t>(1, getNodeAttrInt(hwN, "numRegion", 1));
+    if (static_cast<int64_t>(hwNodeToSwNodes[hwNode].size()) >= numRegion)
+      return ActionResult::FailedResourceUnavailable;
+  } else if (!hwNodeToSwNodes[hwNode].empty()) {
     return ActionResult::FailedResourceUnavailable;
   }
 
@@ -72,6 +80,13 @@ ActionResult MappingState::mapNode(IdIndex swNode, IdIndex hwNode,
 
   swNodeToHwNode[swNode] = hwNode;
   hwNodeToSwNodes[hwNode].push_back(swNode);
+
+  // Track spatial PE occupancy.
+  if (isSpatialPEFunctionalNode(hwN)) {
+    llvm::StringRef peName = getNodeAttrStr(hwN, "pe_name");
+    if (!peName.empty())
+      occupiedSpatialPEs.insert(peName);
+  }
 
   // Auto-map ports: match by position.
   const Node *swN = dfg.getNode(swNode);
@@ -156,6 +171,33 @@ ActionResult MappingState::unmapNode(IdIndex swNode,
     }
   }
 
+  // Update spatial PE occupancy tracking.
+  const Node *hwN = adg.getNode(hwNode);
+  if (isSpatialPEFunctionalNode(hwN)) {
+    llvm::StringRef peName = getNodeAttrStr(hwN, "pe_name");
+    if (!peName.empty()) {
+      // Check if any OTHER sw node is still mapped to a hw node with the
+      // same pe_name. If not, remove from the set.
+      bool stillOccupied = false;
+      for (IdIndex otherSw = 0;
+           otherSw < static_cast<IdIndex>(swNodeToHwNode.size()); ++otherSw) {
+        if (otherSw == swNode)
+          continue;
+        IdIndex otherHw = swNodeToHwNode[otherSw];
+        if (otherHw == INVALID_ID)
+          continue;
+        const Node *otherHwN = adg.getNode(otherHw);
+        if (isSpatialPEFunctionalNode(otherHwN) &&
+            getNodeAttrStr(otherHwN, "pe_name") == peName) {
+          stillOccupied = true;
+          break;
+        }
+      }
+      if (!stillOccupied)
+        occupiedSpatialPEs.erase(peName);
+    }
+  }
+
   swNodeToHwNode[swNode] = INVALID_ID;
   return ActionResult::Success;
 }
@@ -201,6 +243,14 @@ ActionResult MappingState::mapEdge(IdIndex swEdge,
     }
   }
 
+  // Maintain portToUsingEdges index (skip synthetic direct bindings).
+  if (!(path.size() == 2 && path[0] == path[1])) {
+    for (IdIndex portId : path) {
+      if (portId < portToUsingEdges.size())
+        portToUsingEdges[portId].push_back(swEdge);
+    }
+  }
+
   return ActionResult::Success;
 }
 
@@ -211,6 +261,16 @@ ActionResult MappingState::unmapEdge(IdIndex swEdge, const Graph &adg) {
   auto &path = swEdgeToHwPaths[swEdge];
   if (path.empty())
     return ActionResult::Success;
+
+  // Remove from portToUsingEdges index (skip synthetic direct bindings).
+  if (!(path.size() == 2 && path[0] == path[1])) {
+    for (IdIndex portId : path) {
+      if (portId < portToUsingEdges.size()) {
+        auto &vec = portToUsingEdges[portId];
+        vec.erase(std::remove(vec.begin(), vec.end(), swEdge), vec.end());
+      }
+    }
+  }
 
   for (size_t i = 0; i + 1 < path.size(); i += 2) {
     IdIndex outPort = path[i];
@@ -256,6 +316,8 @@ MappingState::Checkpoint MappingState::save() const {
   cp.hwNodeToSwNodes = hwNodeToSwNodes;
   cp.hwPortToSwPorts = hwPortToSwPorts;
   cp.hwEdgeToSwEdges = hwEdgeToSwEdges;
+  cp.portToUsingEdges = portToUsingEdges;
+  cp.occupiedSpatialPEs = occupiedSpatialPEs;
   cp.totalCost = totalCost;
   return cp;
 }
@@ -267,6 +329,8 @@ void MappingState::restore(const Checkpoint &cp) {
   hwNodeToSwNodes = cp.hwNodeToSwNodes;
   hwPortToSwPorts = cp.hwPortToSwPorts;
   hwEdgeToSwEdges = cp.hwEdgeToSwEdges;
+  portToUsingEdges = cp.portToUsingEdges;
+  occupiedSpatialPEs = cp.occupiedSpatialPEs;
   totalCost = cp.totalCost;
 }
 

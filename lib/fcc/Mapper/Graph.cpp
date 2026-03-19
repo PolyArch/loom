@@ -151,6 +151,19 @@ Graph Graph::clone() const {
 llvm::StringRef getNodeAttrStr(const Node *node, llvm::StringRef key) {
   if (!node)
     return "";
+  // Fast path: return from cache if available.
+  if (node->attributeCacheValid) {
+    if (key == "resource_class")
+      return node->cachedResourceClass;
+    if (key == "pe_name")
+      return node->cachedPeName;
+    if (key == "op_name")
+      return node->cachedOpName;
+    if (key == "pe_kind")
+      return node->cachedPeKind;
+    if (key == "op_kind")
+      return node->cachedOpKind;
+  }
   for (auto &attr : node->attributes) {
     if (attr.getName() == key) {
       if (auto strAttr = mlir::dyn_cast<mlir::StringAttr>(attr.getValue()))
@@ -180,6 +193,36 @@ bool nodeHasAttr(const Node *node, llvm::StringRef key) {
     if (attr.getName() == key)
       return true;
   return false;
+}
+
+void Graph::buildAttributeCache() {
+  for (auto &nodePtr : nodes) {
+    if (!nodePtr)
+      continue;
+    Node *node = nodePtr.get();
+    node->cachedResourceClass = "";
+    node->cachedPeName = "";
+    node->cachedOpName = "";
+    node->cachedPeKind = "";
+    node->cachedOpKind = "";
+    for (auto &attr : node->attributes) {
+      auto strAttr = mlir::dyn_cast<mlir::StringAttr>(attr.getValue());
+      if (!strAttr)
+        continue;
+      llvm::StringRef name = attr.getName();
+      if (name == "resource_class")
+        node->cachedResourceClass = strAttr.getValue();
+      else if (name == "pe_name")
+        node->cachedPeName = strAttr.getValue();
+      else if (name == "op_name")
+        node->cachedOpName = strAttr.getValue();
+      else if (name == "pe_kind")
+        node->cachedPeKind = strAttr.getValue();
+      else if (name == "op_kind")
+        node->cachedOpKind = strAttr.getValue();
+    }
+    node->attributeCacheValid = true;
+  }
 }
 
 } // namespace fcc

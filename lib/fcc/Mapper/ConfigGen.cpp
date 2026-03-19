@@ -300,6 +300,116 @@ bool ConfigGen::writeMapJson(const MappingState &state, const Graph &dfg,
 
   out << "\n  ],\n";
 
+  out << "  \"pe_routes\": [\n";
+  using PERouteKey =
+      std::tuple<std::string, std::string, std::string, std::string>;
+  struct PERouteEntry {
+    std::string peName;
+    std::string direction;
+    std::string pePortKey;
+    std::string fuPortKey;
+    std::vector<IdIndex> swEdges;
+  };
+  std::map<PERouteKey, PERouteEntry> peRoutes;
+  for (IdIndex eid = 0; eid < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
+       ++eid) {
+    auto hwPath = buildExportPathForEdge(eid, state, dfg, adg);
+    if (hwPath.size() < 2)
+      continue;
+
+    for (size_t i = 0; i + 1 < hwPath.size(); ++i) {
+      IdIndex srcPortId = hwPath[i];
+      IdIndex dstPortId = hwPath[i + 1];
+      const Port *srcPort = adg.getPort(srcPortId);
+      const Port *dstPort = adg.getPort(dstPortId);
+      if (!srcPort || !dstPort)
+        continue;
+
+      const Edge *flatEdge = findEdgeByPorts(adg, srcPortId, dstPortId);
+      if (!flatEdge)
+        continue;
+
+      if (dstPortId < portInfo.size()) {
+        const auto &dstInfo = portInfo[dstPortId];
+        const Node *dstNode =
+            dstPort->parentNode != INVALID_ID ? adg.getNode(dstPort->parentNode)
+                                              : nullptr;
+        auto peInputIndex = getUIntEdgeAttr(flatEdge, "pe_input_index");
+        int fuInputIndex =
+            dstNode ? findNodeInputIndex(dstNode, dstPortId) : -1;
+        if (dstInfo.valid && dstInfo.kind == "fu" && peInputIndex &&
+            fuInputIndex >= 0) {
+          std::string peName = dstInfo.pe;
+          std::string hwName = dstInfo.fu;
+          std::string pePortKey =
+              peName + "_in_" + std::to_string(*peInputIndex);
+          std::string fuPortKey =
+              peName + "/" + hwName + "/in_" + std::to_string(fuInputIndex);
+          auto key =
+              std::make_tuple(peName, std::string("in"), pePortKey, fuPortKey);
+          auto &entry = peRoutes[key];
+          if (entry.peName.empty()) {
+            entry.peName = peName;
+            entry.direction = "in";
+            entry.pePortKey = pePortKey;
+            entry.fuPortKey = fuPortKey;
+          }
+          entry.swEdges.push_back(eid);
+        }
+      }
+
+      if (srcPortId < portInfo.size()) {
+        const auto &srcInfo = portInfo[srcPortId];
+        const Node *srcNode =
+            srcPort->parentNode != INVALID_ID ? adg.getNode(srcPort->parentNode)
+                                              : nullptr;
+        auto peOutputIndex = getUIntEdgeAttr(flatEdge, "pe_output_index");
+        int fuOutputIndex =
+            srcNode ? findNodeOutputIndex(srcNode, srcPortId) : -1;
+        if (srcInfo.valid && srcInfo.kind == "fu" && peOutputIndex &&
+            fuOutputIndex >= 0) {
+          std::string peName = srcInfo.pe;
+          std::string hwName = srcInfo.fu;
+          std::string pePortKey =
+              peName + "_out_" + std::to_string(*peOutputIndex);
+          std::string fuPortKey =
+              peName + "/" + hwName + "/out_" + std::to_string(fuOutputIndex);
+          auto key =
+              std::make_tuple(peName, std::string("out"), pePortKey, fuPortKey);
+          auto &entry = peRoutes[key];
+          if (entry.peName.empty()) {
+            entry.peName = peName;
+            entry.direction = "out";
+            entry.pePortKey = pePortKey;
+            entry.fuPortKey = fuPortKey;
+          }
+          entry.swEdges.push_back(eid);
+        }
+      }
+    }
+  }
+
+  first = true;
+  for (const auto &it : peRoutes) {
+    const auto &entry = it.second;
+    if (!first)
+      out << ",\n";
+    first = false;
+
+    out << "    {\"pe_name\": \"" << entry.peName << "\"";
+    out << ", \"direction\": \"" << entry.direction << "\"";
+    out << ", \"pe_port_key\": \"" << entry.pePortKey << "\"";
+    out << ", \"fu_port_key\": \"" << entry.fuPortKey << "\"";
+    out << ", \"sw_edges\": [";
+    for (size_t i = 0; i < entry.swEdges.size(); ++i) {
+      if (i > 0)
+        out << ", ";
+      out << entry.swEdges[i];
+    }
+    out << "]}";
+  }
+  out << "\n  ],\n";
+
   out << "  \"fu_configs\": [\n";
   first = true;
   for (const auto &selection : fuConfigs) {

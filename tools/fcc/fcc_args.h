@@ -24,13 +24,22 @@ struct FccArgs {
   // DFG path (handshake MLIR) - skip frontend when provided
   std::string dfgPath;
 
+  // Existing mapping JSON for visualization-only regeneration
+  std::string mapJsonPath;
+
   // Viz-only mode: just visualize ADG/DFG side-by-side, no mapping
   bool vizOnly = false;
   VizLayoutMode vizLayout = VizLayoutMode::Default;
 
   // Simulation
   bool simulate = false;
+  std::string simBundlePath;
   unsigned simMaxCycles = 1000000;
+  std::string runtimeManifestPath;
+  std::string runtimeRequestPath;
+  std::string runtimeResultPath;
+  std::string runtimeTracePath;
+  std::string runtimeStatPath;
 
   // Mapper
   unsigned mapperBudget = 60;
@@ -43,6 +52,12 @@ struct FccArgs {
   unsigned mapperCpSatNeighborhoodNodeLimit = 8;
   double mapperCpSatTimeLimitSeconds = 0.75;
   bool mapperEnableCpSat = true;
+  double mapperRoutingHeuristicWeight = 1.5;
+  unsigned mapperNegotiatedRoutingPasses = 12;
+  double mapperCongestionHistoryFactor = 1.0;
+  double mapperCongestionHistoryScale = 1.5;
+  double mapperCongestionPresentFactor = 1.0;
+  double mapperCongestionPlacementWeight = 0.3;
 
   // Derived: base name of first source (e.g. "vecadd" from "vecadd.c")
   std::string baseName;
