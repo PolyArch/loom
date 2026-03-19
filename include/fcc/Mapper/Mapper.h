@@ -4,11 +4,15 @@
 #include "fcc/Mapper/ADGFlattener.h"
 #include "fcc/Mapper/Graph.h"
 #include "fcc/Mapper/MappingState.h"
+#include "fcc/Mapper/MapperOptions.h"
 #include "fcc/Mapper/TechMapper.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 
+#include <chrono>
+#include <functional>
 #include <string>
 
 namespace mlir {
@@ -22,26 +26,10 @@ struct CongestionState;
 
 class Mapper {
 public:
-  struct Options {
-    double budgetSeconds = 60.0;
-    int seed = 0;
-    std::string profile = "balanced";
-    unsigned lanes = 0;
-    unsigned interleavedRounds = 4;
-    unsigned selectiveRipupPasses = 3;
-    unsigned placementMoveRadius = 3;
-    unsigned cpSatGlobalNodeLimit = 24;
-    unsigned cpSatNeighborhoodNodeLimit = 8;
-    double cpSatTimeLimitSeconds = 0.75;
-    bool enableCPSat = true;
-    bool verbose = false;
-    double routingHeuristicWeight = 1.5;
-    unsigned negotiatedRoutingPasses = 12;
-    double congestionHistoryFactor = 1.0;
-    double congestionHistoryScale = 1.5;
-    double congestionPresentFactor = 1.0;
-    double congestionPlacementWeight = 0.3;
-  };
+  using Options = MapperOptions;
+  using SnapshotCallback = std::function<void(
+      const MappingState &, llvm::ArrayRef<TechMappedEdgeKind>,
+      llvm::ArrayRef<FUConfigSelection>, llvm::StringRef, unsigned)>;
 
   struct Result {
     bool success = false;
@@ -54,6 +42,10 @@ public:
   /// Run the full PnR pipeline.
   Result run(const Graph &dfg, const Graph &adg, const ADGFlattener &flattener,
              mlir::ModuleOp adgModule, const Options &opts);
+
+  void setSnapshotCallback(SnapshotCallback callback) {
+    snapshotCallback_ = std::move(callback);
+  }
 
 private:
   // Tech-mapping: match DFG ops to ADG FU types.
@@ -160,8 +152,8 @@ private:
                     llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                     const std::vector<IdIndex> &edgeOrder,
                     const llvm::DenseMap<IdIndex, double> &routingOutputHistory,
-                    unsigned &routed, unsigned &total,
-                    const CongestionState *congestion = nullptr);
+                    unsigned &routed, unsigned &total, const Options &opts,
+                    CongestionState *congestion = nullptr);
   bool hasTaggedPathConflict(IdIndex swEdgeId,
                              llvm::ArrayRef<IdIndex> candidatePath,
                              const MappingState &state, const Graph &dfg,
@@ -188,11 +180,34 @@ private:
   // Topological order for greedy placement.
   std::vector<IdIndex> computePlacementOrder(const Graph &dfg);
 
+  void resetRunControls(const Options &opts);
+  bool shouldStopForBudget(llvm::StringRef stage);
+  double remainingBudgetSeconds() const;
+  double clampToRemainingBudget(double requestedSeconds) const;
+  double clampDeadlineMsToRemainingBudget(double requestedMs) const;
+  bool maybeEmitProgressSnapshot(const MappingState &state,
+                                 llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                                 llvm::StringRef trigger,
+                                 const Options &opts);
+
   ConnectivityMatrix connectivity;
   const ADGFlattener *activeFlattener = nullptr;
   double activeHeuristicWeight = 1.5;
   CongestionEstimator *activeCongestionEstimator = nullptr;
   double activeCongestionPlacementWeight = 0.0;
+  unsigned activeUnroutedDiagnosticLimit = 8;
+  SnapshotCallback snapshotCallback_;
+  std::function<void(const MappingState &, llvm::ArrayRef<TechMappedEdgeKind>,
+                     llvm::StringRef, unsigned)>
+      activeSnapshotEmitter_;
+  std::chrono::steady_clock::time_point activeRunStartTime_;
+  std::chrono::steady_clock::time_point activeRunDeadline_;
+  bool activeBudgetEnabled_ = false;
+  bool activeBudgetExceeded_ = false;
+  std::string activeBudgetExceededStage_;
+  unsigned snapshotSequence_ = 0;
+  unsigned snapshotTickCount_ = 0;
+  double nextSnapshotAtSeconds_ = -1.0;
 };
 
 } // namespace fcc

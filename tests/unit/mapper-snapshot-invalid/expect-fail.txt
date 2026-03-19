@@ -1,0 +1,1 @@
+snapshot_interval_seconds and snapshot_interval_rounds cannot both be enabled

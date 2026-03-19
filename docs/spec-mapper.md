@@ -48,11 +48,18 @@ More specifically:
 - routing is not a one-shot terminal stage in the current architecture;
   FCC may run multiple interleaved place or route rounds, negotiated
   congestion routing passes, and selective rip-up or reroute attempts
+- negotiated routing may use both per-iteration historical congestion and
+  per-pass present-demand feedback while edges are routed, plus bounded
+  decay and early-stop heuristics to avoid late-iteration overfitting
 - repair may include targeted local re-placement, exact routing repair, or
   bounded CP-SAT neighborhood repair
 - the default implementation may explore multiple parallel mapper lanes with
   different seeds and then select the best deterministic winner by routed-edge
   count, cost, and lane index
+- mapper execution is governed by one global wall-clock budget for the full
+  mapping run, not separate per-stage budgets
+- optional progress snapshots may export the current best expanded checkpoint
+  at configured mapper-round or elapsed-time intervals
 - final reports are expanded back to original DFG-node and DFG-edge identity
 
 ## Read-Only Inputs
@@ -62,7 +69,7 @@ The mapper consumes:
 - a DFG
 - an ADG
 - flattening metadata
-- search policy such as seed or time budget
+- search policy such as seed, time budget, and mapper base configuration
 
 The mapper does not mutate hardware topology. It selects legal use of the
 existing topology.
@@ -82,6 +89,7 @@ Compared with Loom, FCC mapping must account for:
 
 ## Related Documents
 
+- [spec-mapper-config.md](./spec-mapper-config.md)
 - [spec-mapper-model.md](./spec-mapper-model.md)
 - [spec-mapper-output.md](./spec-mapper-output.md)
 - [spec-fabric-spatial_pe.md](./spec-fabric-spatial_pe.md)

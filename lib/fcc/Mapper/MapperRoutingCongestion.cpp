@@ -78,9 +78,16 @@ void CongestionState::updateHistory() {
       continue;
     }
     if (presentDemand[i] == capacity[i]) {
-      historicalCongestion[i] += historyIncrement * 0.5;
+      historicalCongestion[i] += historyIncrement * saturationPenalty;
     }
   }
+}
+
+void CongestionState::decayHistory(double factor) {
+  if (factor >= 1.0)
+    return;
+  for (double &hist : historicalCongestion)
+    hist *= factor;
 }
 
 void CongestionState::resetPresentDemand() {
@@ -103,6 +110,7 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
   congestion.historyIncrement = opts.congestionHistoryFactor;
   congestion.historyScale = opts.congestionHistoryScale;
   congestion.presentFactor = opts.congestionPresentFactor;
+  congestion.saturationPenalty = opts.congestion.saturationPenalty;
 
   // Build edge order (same as runRouting).
   std::vector<IdIndex> memEdges, otherEdges;
@@ -133,7 +141,7 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
   auto getRoutingPriority = [&](IdIndex edgeId) -> unsigned {
     const Edge *edge = dfg.getEdge(edgeId);
     if (!edge)
-      return 100;
+      return opts.routing.priority.invalidEdge;
     auto getNode = [&](IdIndex portId) -> const Node * {
       const Port *port = dfg.getPort(portId);
       if (!port || port->parentNode == INVALID_ID)
@@ -151,17 +159,17 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
     llvm::StringRef srcOp = getOpName(edge->srcPort);
     llvm::StringRef dstOp = getOpName(edge->dstPort);
     if (routing_detail::isSoftwareMemoryInterfaceOpName(dstOp))
-      return 0;
+      return opts.routing.priority.memorySink;
     if (dstNode && dstNode->kind == Node::ModuleOutputNode)
-      return 1;
+      return opts.routing.priority.moduleOutput;
     if (srcOp == "handshake.load" || srcOp == "handshake.store")
-      return 2;
+      return opts.routing.priority.loadStoreSource;
     if (routing_detail::isSoftwareMemoryInterfaceOpName(srcOp))
-      return 3;
+      return opts.routing.priority.memorySource;
     if (srcOp == "handshake.load" || dstOp == "handshake.load" ||
         srcOp == "handshake.store" || dstOp == "handshake.store")
-      return 4;
-    return 5;
+      return opts.routing.priority.loadStoreIncident;
+    return opts.routing.priority.fallback;
   };
 
   auto edgeOrderLess = [&](IdIndex lhs, IdIndex rhs) {
@@ -183,24 +191,27 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
   unsigned bestRouted = 0;
   unsigned bestTotal = 0;
   size_t bestPathLen = std::numeric_limits<size_t>::max();
+  unsigned stagnantIterations = 0;
 
   llvm::DenseMap<IdIndex, double> routingOutputHistory;
+  auto emitBestSnapshot = [&](llvm::StringRef trigger) {
+    auto checkpoint = state.save();
+    state.restore(bestCheckpoint);
+    maybeEmitProgressSnapshot(state, edgeKinds, trigger, opts);
+    state.restore(checkpoint);
+  };
 
   for (unsigned iter = 0; iter < opts.negotiatedRoutingPasses; ++iter) {
+    if (shouldStopForBudget("negotiated routing"))
+      break;
     state.clearRoutes(adg);
     congestion.resetPresentDemand();
 
     unsigned routed = 0;
     unsigned total = 0;
     bool allRouted = routeOnePass(state, dfg, adg, edgeKinds, edgeOrder,
-                                  routingOutputHistory, routed, total,
+                                  routingOutputHistory, routed, total, opts,
                                   &congestion);
-
-    // Commit routes to congestion state.
-    for (const auto &path : state.swEdgeToHwPaths) {
-      if (!path.empty() && !(path.size() == 2 && path[0] == path[1]))
-        congestion.commitRoute(path, adg);
-    }
 
     size_t totalPathLen = 0;
     for (const auto &path : state.swEdgeToHwPaths)
@@ -224,14 +235,41 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
       bestRouted = routed;
       bestTotal = total;
       bestPathLen = totalPathLen;
+      stagnantIterations = 0;
+    } else {
+      ++stagnantIterations;
     }
 
     llvm::outs() << "  Negotiated routing iteration " << (iter + 1) << ": "
                  << routed << "/" << total << " edges\n";
+    emitBestSnapshot("negotiated-iter");
 
+    if (opts.congestion.routingOutputHistoryDecay < 1.0) {
+      for (auto &entry : routingOutputHistory)
+        entry.second *= opts.congestion.routingOutputHistoryDecay;
+    }
+    if (opts.congestion.routingOutputHistoryBump > 0.0) {
+      for (size_t i = 0; i < congestion.capacity.size(); ++i) {
+        if (congestion.capacity[i] == 0)
+          continue;
+        if (congestion.presentDemand[i] >= congestion.capacity[i])
+          routingOutputHistory[static_cast<IdIndex>(i)] +=
+              opts.congestion.routingOutputHistoryBump;
+      }
+    }
+
+    congestion.decayHistory(opts.congestion.historyDecay);
     congestion.updateHistory();
     congestion.historyIncrement =
-        std::min(congestion.historyIncrement * congestion.historyScale, 8.0);
+        std::min(congestion.historyIncrement * congestion.historyScale,
+                 opts.congestion.historyIncrementCap);
+
+    if (opts.congestion.earlyTerminationWindow > 0 &&
+        stagnantIterations >= opts.congestion.earlyTerminationWindow) {
+      llvm::outs() << "  Negotiated routing early stop after "
+                   << stagnantIterations << " non-improving iterations\n";
+      break;
+    }
   }
 
   state.restore(bestCheckpoint);

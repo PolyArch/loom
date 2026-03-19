@@ -1,0 +1,2 @@
+--mapper-snapshot-interval-seconds 1
+--mapper-snapshot-interval-rounds 1

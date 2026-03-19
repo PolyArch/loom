@@ -1,5 +1,6 @@
 #include "fcc/Mapper/Mapper.h"
 #include "MapperInternal.h"
+#include "MapperRoutingCongestion.h"
 #include "MapperRoutingInternal.h"
 
 #include "fcc/Mapper/TechMapper.h"
@@ -142,10 +143,11 @@ void collectRepairSiblingEdges(IdIndex failedEdgeId,
   }
 }
 
-unsigned getRoutingPriority(IdIndex edgeId, const Graph &dfg) {
+unsigned getRoutingPriority(IdIndex edgeId, const Graph &dfg,
+                            const Mapper::Options &opts) {
   const Edge *edge = dfg.getEdge(edgeId);
   if (!edge)
-    return 100;
+    return opts.routing.priority.invalidEdge;
 
   auto getNode = [&](IdIndex portId) -> const Node * {
     const Port *port = dfg.getPort(portId);
@@ -166,17 +168,17 @@ unsigned getRoutingPriority(IdIndex edgeId, const Graph &dfg) {
   llvm::StringRef dstOp = getOpName(edge->dstPort);
 
   if (routing_detail::isSoftwareMemoryInterfaceOpName(dstOp))
-    return 0;
+    return opts.routing.priority.memorySink;
   if (dstNode && dstNode->kind == Node::ModuleOutputNode)
-    return 1;
+    return opts.routing.priority.moduleOutput;
   if (srcOp == "handshake.load" || srcOp == "handshake.store")
-    return 2;
+    return opts.routing.priority.loadStoreSource;
   if (routing_detail::isSoftwareMemoryInterfaceOpName(srcOp))
-    return 3;
+    return opts.routing.priority.memorySource;
   if (srcOp == "handshake.load" || dstOp == "handshake.load" ||
       srcOp == "handshake.store" || dstOp == "handshake.store")
-    return 4;
-  return 5;
+    return opts.routing.priority.loadStoreIncident;
+  return opts.routing.priority.fallback;
 }
 
 void collectFailedRoutingHotspots(
@@ -229,7 +231,7 @@ bool routedEdgeTouchesHotspot(llvm::ArrayRef<IdIndex> path,
 void collectSelectiveRipupEdges(
     llvm::ArrayRef<IdIndex> failedEdges, const std::vector<IdIndex> &edgeOrder,
     const MappingState &state, const Graph &dfg, const Graph &adg,
-    llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+    llvm::ArrayRef<TechMappedEdgeKind> edgeKinds, const Mapper::Options &opts,
     llvm::SmallVectorImpl<IdIndex> &ripupEdges) {
   ripupEdges.clear();
 
@@ -237,7 +239,8 @@ void collectSelectiveRipupEdges(
   llvm::DenseSet<IdIndex> hotspotNodes;
   collectFailedRoutingHotspots(failedEdges, state, dfg, adg, hotspotPorts,
                                hotspotNodes);
-  const bool tightRipup = failedEdges.size() <= 4;
+  const bool tightRipup =
+      failedEdges.size() <= opts.routing.tightRipupFailedEdgeThreshold;
 
   llvm::DenseSet<IdIndex> seen;
   for (IdIndex edgeId : failedEdges) {
@@ -245,7 +248,7 @@ void collectSelectiveRipupEdges(
       ripupEdges.push_back(edgeId);
   }
 
-  if (failedEdges.size() <= 6) {
+  if (failedEdges.size() <= opts.routing.siblingExpansionFailedEdgeThreshold) {
     llvm::SmallVector<IdIndex, 16> siblings;
     for (IdIndex edgeId : failedEdges) {
       collectRepairSiblingEdges(edgeId, edgeOrder, state, dfg, edgeKinds,
@@ -276,8 +279,11 @@ void collectSelectiveRipupEdges(
       ripupEdges.push_back(edgeId);
   }
 
-  if (tightRipup && ripupEdges.size() < std::max<size_t>(8, failedEdges.size() * 2)) {
-    const size_t targetRipup = std::min<size_t>(18, edgeOrder.size());
+  if (tightRipup &&
+      ripupEdges.size() < std::max<size_t>(opts.routing.tightRipupMinEdges,
+                                           failedEdges.size() * 2)) {
+    const size_t targetRipup =
+        std::min<size_t>(opts.routing.tightRipupTargetCap, edgeOrder.size());
     for (IdIndex edgeId : edgeOrder) {
       if (ripupEdges.size() >= targetRipup)
         break;
@@ -346,7 +352,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
                           const llvm::DenseMap<IdIndex, double>
                               &routingOutputHistory,
                           unsigned &routed, unsigned &total,
-                          const CongestionState *congestion) {
+                          const Options &opts,
+                          CongestionState *congestion) {
   bool allRouted = true;
   routed = 0;
   total = 0;
@@ -417,8 +424,25 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
         if (limit != 0 && choices.size() > limit)
           choices.resize(limit);
       };
+  auto savePresentDemand = [&]() -> std::vector<unsigned> {
+    if (!congestion)
+      return {};
+    return congestion->presentDemand;
+  };
+  auto restorePresentDemand = [&](const std::vector<unsigned> &saved) {
+    if (!congestion)
+      return;
+    congestion->presentDemand = saved;
+  };
+  auto commitRoutedPath = [&](llvm::ArrayRef<IdIndex> routedPath) {
+    if (!congestion || routedPath.empty() || isDirectBindingPath(routedPath))
+      return;
+    congestion->commitRoute(routedPath, adg);
+  };
 
   for (IdIndex edgeId : edgeOrder) {
+    if (shouldStopForBudget("routing"))
+      return false;
     const Edge *edge = dfg.getEdge(edgeId);
     if (!edge)
       continue;
@@ -457,7 +481,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
       llvm::SmallVector<IdIndex, 8> outputEdges;
       collectUnroutedSinkEdgesForNode(dstSwNodeId, edgeOrder, state, dfg,
                                       edgeKinds, outputEdges);
-      if (outputEdges.size() > 1 && outputEdges.size() <= 8) {
+      if (outputEdges.size() > 1 &&
+          outputEdges.size() <= opts.routing.moduleOutputGroupMaxEdges) {
         processedSinkNodes.insert(dstSwNodeId);
         unsigned bestSuccessCount = 0;
         size_t bestTotalPathLen = std::numeric_limits<size_t>::max();
@@ -490,7 +515,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
             choices.push_back(INVALID_ID);
           if (choices.front() != INVALID_ID)
             rankFirstHopChoices(state.swPortToHwPort[groupedEdge->dstPort],
-                                choices, 2);
+                                choices,
+                                opts.routing.moduleOutputFirstHopLimit);
           firstHopChoices[groupedEdgeId] = std::move(choices);
         }
 
@@ -521,8 +547,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
                 return;
               }
 
-              const size_t edgeBranchLimit =
-                  std::min<size_t>(remainingEdges.size(), 2);
+              const size_t edgeBranchLimit = std::min<size_t>(
+                  remainingEdges.size(), opts.routing.moduleOutputBranchLimit);
               for (size_t idx = 0; idx < edgeBranchLimit; ++idx) {
                 IdIndex groupedEdgeId = remainingEdges[idx];
                 const Edge *groupedEdge = dfg.getEdge(groupedEdgeId);
@@ -540,6 +566,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
                 IdIndex savedEdge = remainingEdges[idx];
                 remainingEdges.erase(remainingEdges.begin() + idx);
                 auto checkpoint = state.save();
+                auto demandCheckpoint = savePresentDemand();
                 bool mappedThisEdge = false;
 
                 const auto &choices = firstHopChoices[groupedEdgeId];
@@ -553,12 +580,15 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
                   if (state.mapEdge(groupedEdgeId, groupedPath, dfg, adg) !=
                       ActionResult::Success) {
                     state.restore(checkpoint);
+                    restorePresentDemand(demandCheckpoint);
                     continue;
                   }
                   mappedThisEdge = true;
+                  commitRoutedPath(groupedPath);
                   searchBoundaryGroup(remainingEdges, successCount + 1,
                                       totalPathLen + groupedPath.size());
                   state.restore(checkpoint);
+                  restorePresentDemand(demandCheckpoint);
                 }
 
                 if (!mappedThisEdge)
@@ -567,6 +597,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
                 remainingEdges.insert(remainingEdges.begin() + idx, savedEdge);
                 currentOrder.pop_back();
                 state.restore(checkpoint);
+                restorePresentDemand(demandCheckpoint);
               }
             };
 
@@ -607,6 +638,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
             allRouted = false;
             continue;
           }
+          commitRoutedPath(groupedPath);
           ++routed;
         }
         continue;
@@ -638,7 +670,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
               firstHopCandidates.end());
         }
         if (!firstHopCandidates.empty() && firstHopCandidates.front() != INVALID_ID)
-          rankSharedFirstHopChoices(siblingEdges, firstHopCandidates, 4);
+          rankSharedFirstHopChoices(siblingEdges, firstHopCandidates,
+                                    opts.routing.sourceFanoutFirstHopLimit);
 
         unsigned bestSuccessCount = 0;
         size_t bestTotalPathLen = std::numeric_limits<size_t>::max();
@@ -646,6 +679,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
 
         for (IdIndex firstHop : firstHopCandidates) {
           auto checkpoint = state.save();
+          auto demandCheckpoint = savePresentDemand();
           unsigned successCount = 0;
           size_t totalPathLen = 0;
           for (IdIndex siblingEdgeId : siblingEdges) {
@@ -664,10 +698,12 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
             if (state.mapEdge(siblingEdgeId, siblingPath, dfg, adg) !=
                 ActionResult::Success)
               break;
+            commitRoutedPath(siblingPath);
             ++successCount;
             totalPathLen += siblingPath.size();
           }
           state.restore(checkpoint);
+          restorePresentDemand(demandCheckpoint);
 
           if (successCount > bestSuccessCount ||
               (successCount == bestSuccessCount &&
@@ -704,6 +740,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
             allRouted = false;
             continue;
           }
+          commitRoutedPath(siblingPath);
           ++routed;
         }
         continue;
@@ -724,6 +761,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
       allRouted = false;
       continue;
     }
+    commitRoutedPath(path);
     routed++;
   }
 
@@ -734,6 +772,9 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
                         const Graph &adg,
                         llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                         const Options &opts) {
+  if (shouldStopForBudget("routing"))
+    return false;
+
   // Build edge order: memory edges first.
   std::vector<IdIndex> memEdges, otherEdges;
   for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
@@ -762,8 +803,8 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
   }
 
   auto edgeOrderLess = [&](IdIndex lhs, IdIndex rhs) {
-    unsigned lhsPriority = getRoutingPriority(lhs, dfg);
-    unsigned rhsPriority = getRoutingPriority(rhs, dfg);
+    unsigned lhsPriority = getRoutingPriority(lhs, dfg, opts);
+    unsigned rhsPriority = getRoutingPriority(rhs, dfg, opts);
     if (lhsPriority != rhsPriority)
       return lhsPriority < rhsPriority;
     return lhs < rhs;
@@ -781,7 +822,7 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
   unsigned routed = 0;
   unsigned total = 0;
   bool allRouted = routeOnePass(state, dfg, adg, edgeKinds, edgeOrder,
-                                routingOutputHistory, routed, total);
+                                routingOutputHistory, routed, total, opts);
 
   auto computeTotalPathLen = [&](const MappingState &routingState) -> size_t {
     size_t totalPathLen = 0;
@@ -802,6 +843,8 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
   // edges so later place/route rounds can preserve working regions.
   const unsigned maxRipupPasses = std::max(1u, opts.selectiveRipupPasses);
   for (unsigned pass = 0; pass < maxRipupPasses && !allRouted; ++pass) {
+    if (shouldStopForBudget("routing"))
+      break;
     // Collect failed edge IDs.
     std::vector<IdIndex> failedEdges;
     for (IdIndex edgeId : edgeOrder) {
@@ -827,13 +870,14 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
     llvm::stable_sort(failedEdges, edgeOrderLess);
     llvm::SmallVector<IdIndex, 16> ripupEdges;
     collectSelectiveRipupEdges(failedEdges, edgeOrder, state, dfg, adg,
-                               edgeKinds, ripupEdges);
+                               edgeKinds, opts, ripupEdges);
 
     llvm::outs() << "  Repair pass " << (pass + 1) << ": " << failedEdges.size()
                  << " failed edges, ripping up " << ripupEdges.size()
                  << " routes\n";
     if (opts.verbose)
-      dumpFailedEdgeDiagnostics(failedEdges, state, dfg, 6);
+      dumpFailedEdgeDiagnostics(failedEdges, state, dfg,
+                                opts.routing.failedEdgeDiagnosticLimit);
 
     for (IdIndex edgeId : ripupEdges) {
       if (edgeId >= state.swEdgeToHwPaths.size())
@@ -846,7 +890,7 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
       for (IdIndex portId : path) {
         if (!routing_detail::isRoutingCrossbarOutputPort(portId, adg))
           continue;
-        routingOutputHistory[portId] += 0.35;
+        routingOutputHistory[portId] += opts.routing.ripupHistoryBump;
       }
     }
 
@@ -870,7 +914,7 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
                     remainingEdges.end());
 
     allRouted = routeOnePass(state, dfg, adg, edgeKinds, newOrder,
-                             routingOutputHistory, routed, total);
+                             routingOutputHistory, routed, total, opts);
     llvm::outs() << "  Repair pass " << (pass + 1) << " result: " << routed
                  << "/" << total << " edges\n";
 

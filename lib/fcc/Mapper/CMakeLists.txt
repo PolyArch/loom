@@ -1,4 +1,5 @@
 add_library(FccMapper STATIC
+  MapperOptions.cpp
   Graph.cpp
   BridgeBinding.cpp
   TagRuntime.cpp

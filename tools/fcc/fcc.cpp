@@ -36,12 +36,17 @@
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <memory>
+#include <mutex>
 
 using namespace mlir;
 using namespace fcc;
@@ -70,6 +75,30 @@ static std::string deriveAdgStem(const std::string &adgPath) {
 static std::string joinOutputBase(const std::string &outputDir,
                                   const std::string &stem) {
   return outputDir + "/" + stem;
+}
+
+static std::string sanitizeSnapshotLabel(llvm::StringRef label) {
+  std::string sanitized;
+  sanitized.reserve(label.size());
+  bool lastDash = false;
+  for (char ch : label) {
+    bool alphaNum = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                    (ch >= '0' && ch <= '9');
+    if (alphaNum) {
+      sanitized.push_back(static_cast<char>(std::tolower(ch)));
+      lastDash = false;
+      continue;
+    }
+    if (!lastDash) {
+      sanitized.push_back('-');
+      lastDash = true;
+    }
+  }
+  while (!sanitized.empty() && sanitized.back() == '-')
+    sanitized.pop_back();
+  if (sanitized.empty())
+    return "snapshot";
+  return sanitized;
 }
 
 static void writeEscapedJsonString(llvm::raw_ostream &out,
@@ -393,25 +422,68 @@ int main(int argc, char **argv) {
 
     llvm::outs() << "fcc: running mapper...\n";
     fcc::Mapper mapper;
-    fcc::Mapper::Options mapOpts;
-    mapOpts.budgetSeconds = static_cast<double>(args.mapperBudget);
-    mapOpts.seed = static_cast<int>(args.mapperSeed);
-    mapOpts.lanes = args.mapperLanes;
-    mapOpts.interleavedRounds = args.mapperInterleavedRounds;
-    mapOpts.selectiveRipupPasses = args.mapperSelectiveRipupPasses;
-    mapOpts.placementMoveRadius = args.mapperPlacementMoveRadius;
-    mapOpts.cpSatGlobalNodeLimit = args.mapperCpSatGlobalNodeLimit;
-    mapOpts.cpSatNeighborhoodNodeLimit =
-        args.mapperCpSatNeighborhoodNodeLimit;
-    mapOpts.cpSatTimeLimitSeconds = args.mapperCpSatTimeLimitSeconds;
-    mapOpts.enableCPSat = args.mapperEnableCpSat;
-    mapOpts.routingHeuristicWeight = args.mapperRoutingHeuristicWeight;
-    mapOpts.negotiatedRoutingPasses = args.mapperNegotiatedRoutingPasses;
-    mapOpts.congestionHistoryFactor = args.mapperCongestionHistoryFactor;
-    mapOpts.congestionHistoryScale = args.mapperCongestionHistoryScale;
-    mapOpts.congestionPresentFactor = args.mapperCongestionPresentFactor;
-    mapOpts.congestionPlacementWeight = args.mapperCongestionPlacementWeight;
-    mapOpts.verbose = true;
+    fcc::Mapper::Options mapOpts = args.mapperOptions;
+    const bool snapshotEnabled =
+        mapOpts.snapshotIntervalSeconds > 0.0 ||
+        mapOpts.snapshotIntervalRounds > 0;
+    if (snapshotEnabled) {
+      const std::string snapshotDir = args.outputDir + "/mapper-snapshots";
+      auto snapshotSerial = std::make_shared<std::atomic<unsigned>>(0);
+      auto snapshotMutex = std::make_shared<std::mutex>();
+      mapper.setSnapshotCallback(
+          [snapshotDir, snapshotSerial, snapshotMutex, mixedStem,
+           &args, &adgModule, &context, &dfgBuilder, &dfgModule,
+           &flattener](const MappingState &snapshotState,
+                       llvm::ArrayRef<TechMappedEdgeKind> snapshotEdgeKinds,
+                       llvm::ArrayRef<FUConfigSelection> snapshotFuConfigs,
+                       llvm::StringRef trigger, unsigned mapperOrdinal) {
+            std::lock_guard<std::mutex> lock(*snapshotMutex);
+            if (llvm::sys::fs::create_directories(snapshotDir)) {
+              llvm::errs()
+                  << "fcc: warning: cannot create mapper snapshot dir "
+                  << snapshotDir << "\n";
+              return;
+            }
+
+            unsigned serial = snapshotSerial->fetch_add(1) + 1;
+            std::string triggerLabel = sanitizeSnapshotLabel(trigger);
+            std::string serialStr =
+                llvm::formatv("{0:0>4}", serial).str();
+            std::string ordinalStr =
+                llvm::formatv("{0:0>4}", mapperOrdinal).str();
+            std::string snapshotBase =
+                snapshotDir + "/" + mixedStem + ".snapshot-" + serialStr +
+                "." + triggerLabel + ".mapper-" + ordinalStr;
+
+            fcc::ConfigGen snapshotConfigGen;
+            if (!snapshotConfigGen.generate(snapshotState, dfgBuilder.getDFG(),
+                                            flattener.getADG(), flattener,
+                                            snapshotEdgeKinds,
+                                            snapshotFuConfigs, snapshotBase,
+                                            args.mapperOptions.seed)) {
+              llvm::errs() << "fcc: warning: mapper snapshot config export "
+                              "failed for "
+                           << trigger << "\n";
+              return;
+            }
+
+            std::string snapshotVizPath = snapshotBase + ".viz.html";
+            std::string snapshotMapPath = snapshotBase + ".map.json";
+            if (failed(fcc::exportVizWithMapping(snapshotVizPath, *adgModule,
+                                                *dfgModule, snapshotMapPath,
+                                                args.adgPath, args.vizLayout,
+                                                &context))) {
+              llvm::errs()
+                  << "fcc: warning: mapper snapshot visualization failed for "
+                  << trigger << "\n";
+              return;
+            }
+
+            llvm::outs() << "fcc: mapper snapshot " << serial << " ("
+                         << trigger << ")\n";
+            llvm::outs() << "  " << snapshotVizPath << "\n";
+          });
+    }
 
     auto mapResult =
         mapper.run(dfgBuilder.getDFG(), flattener.getADG(), flattener,
@@ -426,7 +498,7 @@ int main(int argc, char **argv) {
     if (!configGen.generate(mapResult.state, dfgBuilder.getDFG(),
                             flattener.getADG(), flattener,
                             mapResult.edgeKinds, mapResult.fuConfigs, mixedBase,
-                            static_cast<int>(args.mapperSeed))) {
+                            args.mapperOptions.seed)) {
       llvm::errs() << "fcc: config generation failed\n";
       return 1;
     }

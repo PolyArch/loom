@@ -166,6 +166,7 @@ def create_legacy_artifact_aliases(case: UnitCase) -> list[Path]:
 
 
 def render_run_script(case: UnitCase, repo_root: Path) -> str:
+    extra_args = load_fcc_args(case)
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
@@ -182,21 +183,32 @@ def render_run_script(case: UnitCase, repo_root: Path) -> str:
     else:
         raise RuntimeError(f"case {case.name} has no ADG source")
 
-    lines.append(
-        shell_join(
-            [
-                str(case.fcc_exec),
-                "--adg",
-                str(adg_path),
-                "--dfg",
-                str(case.dfg_file),
-                "-o",
-                str(case.output_dir),
-            ]
-        )
-    )
+    cmd = [
+        str(case.fcc_exec),
+        "--adg",
+        str(adg_path),
+        "--dfg",
+        str(case.dfg_file),
+        "-o",
+        str(case.output_dir),
+    ]
+    cmd.extend(extra_args)
+    lines.append(shell_join(cmd))
     lines.append("")
     return "\n".join(lines)
+
+
+def load_fcc_args(case: UnitCase) -> List[str]:
+    args_file = case.dfg_file.parent / "fcc.args"
+    if not args_file.exists():
+        return []
+    tokens: List[str] = []
+    for line in args_file.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        tokens.extend(shlex.split(stripped))
+    return tokens
 
 
 def run_optional_checker(case: UnitCase, repo_root: Path, timeout_sec: int,

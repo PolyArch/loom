@@ -50,6 +50,7 @@ future work under this repository.
 | Spec | Description |
 |------|-------------|
 | [spec-mapper.md](./spec-mapper.md) | Mapper scope, responsibilities, and stage boundaries |
+| [spec-mapper-config.md](./spec-mapper-config.md) | Mapper base-config merge rules, promoted CLI surface, and configuration ownership |
 | [spec-mapper-model.md](./spec-mapper-model.md) | Graph model, flattening contract, hard constraints, route semantics |
 | [spec-mapper-output.md](./spec-mapper-output.md) | Mapping reports, config fragments, and visualization payloads |
 

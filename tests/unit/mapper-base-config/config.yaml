@@ -1,0 +1,9 @@
+version: 1
+
+mapper:
+  routing_heuristic_weight: 1.25
+  congestion:
+    history_decay: 0.97
+    routing_output_history_bump: 0.15
+    routing_output_history_decay: 0.9
+    early_termination_window: 2

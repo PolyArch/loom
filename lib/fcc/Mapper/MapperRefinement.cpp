@@ -36,24 +36,30 @@ bool Mapper::runRefinement(
   if (placedNodes.size() < 2)
     return true;
 
-  double temperature = 100.0;
-  double coolingRate = 0.995;
-  int maxIter = static_cast<int>(placedNodes.size()) * 1000;
-  if (maxIter > 50000)
-    maxIter = 50000;
+  double temperature = opts.refinement.initialTemperature;
+  double coolingRate = opts.refinement.coolingRate;
+  int maxIter = static_cast<int>(placedNodes.size()) *
+                static_cast<int>(opts.refinement.iterationsPerPlacedNode);
+  if (maxIter > static_cast<int>(opts.refinement.iterationCap))
+    maxIter = static_cast<int>(opts.refinement.iterationCap);
 
   double bestCost = computeTotalCost(state, dfg, adg, flattener);
   auto bestCheckpoint = state.save();
   int acceptCount = 0;
 
   auto startTime = std::chrono::steady_clock::now();
+  double localBudgetSeconds =
+      std::min(opts.budgetSeconds * opts.refinement.budgetFraction,
+               remainingBudgetSeconds());
 
   for (int iter = 0; iter < maxIter; ++iter) {
+    if (shouldStopForBudget("placement refinement"))
+      break;
     auto elapsed = std::chrono::steady_clock::now() - startTime;
     double secs =
         std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() /
         1000.0;
-    if (secs > opts.budgetSeconds * 0.4)
+    if (secs > localBudgetSeconds)
       break;
 
     double oldCost = computeTotalCost(state, dfg, adg, flattener);
@@ -125,7 +131,8 @@ bool Mapper::runRefinement(
           topCandidates.clear();
           topCandidates.push_back(candHw);
         } else if (std::abs(candScore - bestCandScore) <= 1e-9 &&
-                   topCandidates.size() < 8) {
+                   topCandidates.size() <
+                       opts.refinement.relocateTopCandidateLimit) {
           topCandidates.push_back(candHw);
         }
       }

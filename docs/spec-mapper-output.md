@@ -21,6 +21,19 @@ The main mapping outputs are:
 
 Additional config or simulation artifacts may be produced by later stages.
 
+If periodic mapper snapshots are enabled, FCC also emits a sibling directory:
+
+- `mapper-snapshots/`
+
+Each snapshot is an expanded partial mapping checkpoint and currently produces:
+
+- `<mixed>.snapshot-<seq>.<trigger>.mapper-<ordinal>.map.json`
+- `<mixed>.snapshot-<seq>.<trigger>.mapper-<ordinal>.viz.html`
+
+`<seq>` is a monotonically increasing per-run snapshot serial. `<trigger>`
+identifies the mapper stage that requested the snapshot, and `<ordinal>` is
+the mapper-side emission count attached to that trigger.
+
 ## Config JSON
 
 `<dfg>.<adg>.config.json` is the authoritative structured summary of serialized

@@ -1,11 +1,52 @@
 #include "fcc_args.h"
+#include "mapper_config.h"
+
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 
+#include <cmath>
+#include <string>
+#include <type_traits>
+
 using namespace llvm;
 
 namespace fcc {
+
+namespace {
+
+template <typename T> bool mapperValuesDiffer(const T &lhs, const T &rhs) {
+  if constexpr (std::is_floating_point_v<T>)
+    return std::abs(lhs - rhs) > 1.0e-9;
+  return lhs != rhs;
+}
+
+template <typename T> std::string formatMapperValue(const T &value) {
+  if constexpr (std::is_same_v<T, bool>)
+    return value ? "true" : "false";
+  return std::to_string(value);
+}
+
+template <> std::string formatMapperValue<std::string>(const std::string &value) {
+  return value;
+}
+
+template <typename T, typename U>
+void applyMapperCliOverride(llvm::StringRef optionName, const T &cliValue,
+                            unsigned occurrences, U &mappedValue) {
+  if (occurrences == 0)
+    return;
+  U promotedValue = static_cast<U>(cliValue);
+  if (mapperValuesDiffer(mappedValue, promotedValue)) {
+    errs() << "fcc: warning: CLI option --" << optionName
+           << " overrides mapper base config value "
+           << formatMapperValue(mappedValue) << " -> "
+           << formatMapperValue(promotedValue) << "\n";
+  }
+  mappedValue = promotedValue;
+}
+
+} // namespace
 
 static cl::list<std::string> inputSources(cl::Positional,
                                            cl::desc("<source files>"),
@@ -89,6 +130,16 @@ static cl::opt<unsigned> mapperLanes(
     cl::desc("Number of parallel placement-and-route lanes (0 = auto)"),
     cl::init(0));
 
+static cl::opt<double> mapperSnapshotIntervalSeconds(
+    "mapper-snapshot-interval-seconds",
+    cl::desc("Emit periodic mapper snapshots every N seconds (-1 = disabled)"),
+    cl::init(-1.0));
+
+static cl::opt<int> mapperSnapshotIntervalRounds(
+    "mapper-snapshot-interval-rounds",
+    cl::desc("Emit periodic mapper snapshots every N progress rounds (-1 = disabled)"),
+    cl::init(-1));
+
 static cl::opt<unsigned> mapperInterleavedRounds(
     "mapper-interleaved-rounds",
     cl::desc("Number of place-route interleaving rounds"),
@@ -154,6 +205,11 @@ static cl::opt<double> mapperCongestionPlacementWeight(
     cl::desc("Weight of congestion penalty in placement scoring"),
     cl::init(0.3));
 
+static cl::opt<std::string> mapperBaseConfigPathOpt(
+    "mapper-base-config",
+    cl::desc("Path to mapper base config YAML (default: repository built-in template)"),
+    cl::init(""));
+
 bool parseArgs(int argc, char **argv, FccArgs &args) {
   cl::ParseCommandLineOptions(argc, argv, "fcc - fabric compiler\n");
 
@@ -180,22 +236,94 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
   args.runtimeResultPath = runtimeResultPath;
   args.runtimeTracePath = runtimeTracePath;
   args.runtimeStatPath = runtimeStatPath;
-  args.mapperBudget = mapperBudget;
-  args.mapperSeed = mapperSeed;
-  args.mapperLanes = mapperLanes;
-  args.mapperInterleavedRounds = mapperInterleavedRounds;
-  args.mapperSelectiveRipupPasses = mapperSelectiveRipupPasses;
-  args.mapperPlacementMoveRadius = mapperPlacementMoveRadius;
-  args.mapperCpSatGlobalNodeLimit = mapperCpSatGlobalNodeLimit;
-  args.mapperCpSatNeighborhoodNodeLimit = mapperCpSatNeighborhoodNodeLimit;
-  args.mapperCpSatTimeLimitSeconds = mapperCpSatTimeLimitSeconds;
-  args.mapperEnableCpSat = mapperEnableCpSat;
-  args.mapperRoutingHeuristicWeight = mapperRoutingHeuristicWeight;
-  args.mapperNegotiatedRoutingPasses = mapperNegotiatedRoutingPasses;
-  args.mapperCongestionHistoryFactor = mapperCongestionHistoryFactor;
-  args.mapperCongestionHistoryScale = mapperCongestionHistoryScale;
-  args.mapperCongestionPresentFactor = mapperCongestionPresentFactor;
-  args.mapperCongestionPlacementWeight = mapperCongestionPlacementWeight;
+
+  args.mapperBaseConfigPath = mapperBaseConfigPathOpt;
+  args.mapperResolvedBaseConfigPath =
+      mapperBaseConfigPathOpt.getNumOccurrences() > 0
+          ? mapperBaseConfigPathOpt
+          : getDefaultMapperBaseConfigPath();
+  if (args.mapperResolvedBaseConfigPath.empty()) {
+    errs() << "fcc: no default mapper base config path is available\n";
+    return false;
+  }
+  std::string mapperConfigError;
+  if (!loadMapperBaseConfig(args.mapperResolvedBaseConfigPath,
+                            args.mapperOptions, mapperConfigError)) {
+    errs() << "fcc: " << mapperConfigError << "\n";
+    return false;
+  }
+  applyMapperCliOverride("mapper-budget", mapperBudget,
+                         mapperBudget.getNumOccurrences(),
+                         args.mapperOptions.budgetSeconds);
+  applyMapperCliOverride("mapper-seed", mapperSeed,
+                         mapperSeed.getNumOccurrences(), args.mapperOptions.seed);
+  applyMapperCliOverride("mapper-lanes", mapperLanes,
+                         mapperLanes.getNumOccurrences(),
+                         args.mapperOptions.lanes);
+  applyMapperCliOverride("mapper-snapshot-interval-seconds",
+                         mapperSnapshotIntervalSeconds,
+                         mapperSnapshotIntervalSeconds.getNumOccurrences(),
+                         args.mapperOptions.snapshotIntervalSeconds);
+  applyMapperCliOverride("mapper-snapshot-interval-rounds",
+                         mapperSnapshotIntervalRounds,
+                         mapperSnapshotIntervalRounds.getNumOccurrences(),
+                         args.mapperOptions.snapshotIntervalRounds);
+  applyMapperCliOverride("mapper-interleaved-rounds",
+                         mapperInterleavedRounds,
+                         mapperInterleavedRounds.getNumOccurrences(),
+                         args.mapperOptions.interleavedRounds);
+  applyMapperCliOverride("mapper-selective-ripup-passes",
+                         mapperSelectiveRipupPasses,
+                         mapperSelectiveRipupPasses.getNumOccurrences(),
+                         args.mapperOptions.selectiveRipupPasses);
+  applyMapperCliOverride("mapper-placement-move-radius",
+                         mapperPlacementMoveRadius,
+                         mapperPlacementMoveRadius.getNumOccurrences(),
+                         args.mapperOptions.placementMoveRadius);
+  applyMapperCliOverride("mapper-cpsat-global-node-limit",
+                         mapperCpSatGlobalNodeLimit,
+                         mapperCpSatGlobalNodeLimit.getNumOccurrences(),
+                         args.mapperOptions.cpSatGlobalNodeLimit);
+  applyMapperCliOverride("mapper-cpsat-neighborhood-node-limit",
+                         mapperCpSatNeighborhoodNodeLimit,
+                         mapperCpSatNeighborhoodNodeLimit.getNumOccurrences(),
+                         args.mapperOptions.cpSatNeighborhoodNodeLimit);
+  applyMapperCliOverride("mapper-cpsat-time-limit",
+                         mapperCpSatTimeLimitSeconds,
+                         mapperCpSatTimeLimitSeconds.getNumOccurrences(),
+                         args.mapperOptions.cpSatTimeLimitSeconds);
+  applyMapperCliOverride("mapper-enable-cpsat", mapperEnableCpSat,
+                         mapperEnableCpSat.getNumOccurrences(),
+                         args.mapperOptions.enableCPSat);
+  applyMapperCliOverride("mapper-routing-heuristic-weight",
+                         mapperRoutingHeuristicWeight,
+                         mapperRoutingHeuristicWeight.getNumOccurrences(),
+                         args.mapperOptions.routingHeuristicWeight);
+  applyMapperCliOverride("mapper-negotiated-routing-passes",
+                         mapperNegotiatedRoutingPasses,
+                         mapperNegotiatedRoutingPasses.getNumOccurrences(),
+                         args.mapperOptions.negotiatedRoutingPasses);
+  applyMapperCliOverride("mapper-congestion-history-factor",
+                         mapperCongestionHistoryFactor,
+                         mapperCongestionHistoryFactor.getNumOccurrences(),
+                         args.mapperOptions.congestionHistoryFactor);
+  applyMapperCliOverride("mapper-congestion-history-scale",
+                         mapperCongestionHistoryScale,
+                         mapperCongestionHistoryScale.getNumOccurrences(),
+                         args.mapperOptions.congestionHistoryScale);
+  applyMapperCliOverride("mapper-congestion-present-factor",
+                         mapperCongestionPresentFactor,
+                         mapperCongestionPresentFactor.getNumOccurrences(),
+                         args.mapperOptions.congestionPresentFactor);
+  applyMapperCliOverride("mapper-congestion-placement-weight",
+                         mapperCongestionPlacementWeight,
+                         mapperCongestionPlacementWeight.getNumOccurrences(),
+                         args.mapperOptions.congestionPlacementWeight);
+  std::string mapperOptionError;
+  if (!validateMapperOptions(args.mapperOptions, mapperOptionError)) {
+    errs() << "fcc: invalid mapper options: " << mapperOptionError << "\n";
+    return false;
+  }
 
   // --viz-only needs at least --dfg or --adg
   if (!args.runtimeManifestPath.empty()) {

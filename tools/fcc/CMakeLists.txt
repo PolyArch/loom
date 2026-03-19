@@ -1,6 +1,7 @@
 add_executable(fcc
   fcc.cpp
   fcc_args.cpp
+  mapper_config.cpp
   fcc_runtime.cpp
   fcc_pipeline.cpp
 )
@@ -74,6 +75,7 @@ target_link_libraries(fcc PRIVATE
 # Embed the clang resource dir path at compile time
 target_compile_definitions(fcc PRIVATE
   FCC_CLANG_RESOURCE_DIR="${FCC_RESOURCE_DIR}"
+  FCC_SOURCE_DIR="${FCC_SOURCE_DIR}"
 )
 
 add_dependencies(fcc clang-resource-headers clang-headers)

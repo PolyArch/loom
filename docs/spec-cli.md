@@ -150,13 +150,22 @@ Additional semantics:
 
 ### Mapper Controls
 
-The following mapper heuristics are currently exposed by the CLI.
+FCC now always resolves mapper settings from a base YAML template plus an
+explicit CLI override layer.
+
+Authoritative merge semantics and the full mapper parameter inventory are
+defined in [spec-mapper-config.md](./spec-mapper-config.md).
+
+The following promoted mapper controls are intentionally exposed by the CLI.
 
 | Option | Meaning |
 |--------|---------|
+| `--mapper-base-config <path>` | Path to mapper base-config YAML. If omitted, FCC loads the repository-tracked default template at `configs/mapper/default.yaml`. |
 | `--mapper-budget <seconds>` | Overall mapper time budget. Default: `60`. |
 | `--mapper-seed <n>` | Deterministic random seed. Default: `0`. |
 | `--mapper-lanes <n>` | Parallel multi-start lane count. `0` means auto-select. |
+| `--mapper-snapshot-interval-seconds <x>` | Emit periodic mapper snapshots every `x` wall-clock seconds. `-1` disables time-based snapshots. |
+| `--mapper-snapshot-interval-rounds <n>` | Emit periodic mapper snapshots every `n` mapper progress rounds. `-1` disables round-based snapshots. |
 | `--mapper-interleaved-rounds <n>` | Number of interleaved place-route rounds. Default: `4`. |
 | `--mapper-selective-ripup-passes <n>` | Failed-edge selective rip-up passes per routing round. Default: `3`. |
 | `--mapper-placement-move-radius <n>` | Detailed placement move radius in Manhattan distance. `0` means unrestricted. Default: `3`. |
@@ -173,9 +182,14 @@ The following mapper heuristics are currently exposed by the CLI.
 
 Current implementation note:
 
-- the CLI always enables verbose mapper logging internally
-- `Mapper::Options::profile` exists internally but is not currently exposed as
-  a public CLI flag
+- standalone CLI flags are only the promoted high-frequency tuning subset
+- all other mapper thresholds and heuristic constants are config-only and must
+  be set through the base YAML
+- `--mapper-snapshot-interval-seconds` and
+  `--mapper-snapshot-interval-rounds` are mutually exclusive; enabling both is
+  a CLI error
+- if neither snapshot flag is enabled, FCC does not emit periodic mapper
+  snapshots
 
 ## Output Naming Rules
 
@@ -225,6 +239,14 @@ Successful or failed mapping attempts emit mixed artifacts under the mixed base:
 - `<mixed>.map.json`
 - `<mixed>.map.txt`
 - `<mixed>.viz.html`
+
+If periodic mapper snapshots are enabled, FCC also emits:
+
+- `<output_dir>/mapper-snapshots/<mixed>.snapshot-<seq>.<trigger>.mapper-<ordinal>.map.json`
+- `<output_dir>/mapper-snapshots/<mixed>.snapshot-<seq>.<trigger>.mapper-<ordinal>.viz.html`
+
+Snapshot emission is best-effort and captures the current best expanded mapper
+checkpoint at the trigger point.
 
 If mapping succeeds, FCC also emits:
 

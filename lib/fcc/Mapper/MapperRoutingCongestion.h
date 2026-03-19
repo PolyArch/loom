@@ -22,6 +22,7 @@ struct CongestionState {
   double historyIncrement = 1.0;
   double historyScale = 1.5;
   double presentFactor = 1.0;
+  double saturationPenalty = 0.5;
 
   /// Initialize vectors sized to the ADG port count. Sets capacity to 1 for
   /// routing crossbar output ports, 0 for others.
@@ -42,6 +43,9 @@ struct CongestionState {
 
   /// Update historical congestion: hist += increment * max(0, demand - cap).
   void updateHistory();
+
+  /// Apply multiplicative decay to historical congestion.
+  void decayHistory(double factor);
 
   /// Zero all presentDemand for a new routing iteration.
   void resetPresentDemand();

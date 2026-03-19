@@ -27,36 +27,41 @@ using namespace mapper_detail;
 
 namespace {
 
-unsigned selectLaneCount(unsigned configuredLanes, const Graph &dfg) {
+unsigned selectLaneCount(const Mapper::Options &opts, const Graph &dfg) {
+  unsigned configuredLanes = opts.lanes;
   if (configuredLanes != 0)
     return configuredLanes;
   // Tiny unit-style graphs do not benefit from speculative parallel lanes,
   // and serializing them avoids cross-lane diagnostic races.
-  if (dfg.nodes.size() <= 16)
+  if (dfg.nodes.size() <= opts.lane.autoSerialNodeThreshold)
     return 1;
   unsigned concurrency = std::thread::hardware_concurrency();
   if (concurrency == 0)
     concurrency = 1;
-  return std::max(1u, std::min(4u, concurrency));
+  return std::max(1u, std::min(opts.lane.autoLaneCap, concurrency));
 }
 
 struct LaneAttempt {
   bool placementSucceeded = false;
   bool routingSucceeded = false;
   bool usedCPSatGlobalPlacement = false;
+  bool budgetExceeded = false;
   unsigned laneIndex = 0;
   unsigned routedEdges = 0;
   size_t totalPathLen = std::numeric_limits<size_t>::max();
   double placementCost = std::numeric_limits<double>::infinity();
+  std::string budgetExceededStage;
   MappingState state;
   std::vector<TechMappedEdgeKind> edgeKinds;
 };
 
 bool isBetterLaneResult(const LaneAttempt &lhs, const LaneAttempt &rhs) {
-  if (lhs.routingSucceeded != rhs.routingSucceeded)
-    return lhs.routingSucceeded;
   if (lhs.routedEdges != rhs.routedEdges)
     return lhs.routedEdges > rhs.routedEdges;
+  if (lhs.routingSucceeded != rhs.routingSucceeded)
+    return lhs.routingSucceeded;
+  if (lhs.budgetExceeded != rhs.budgetExceeded)
+    return !lhs.budgetExceeded;
   if (lhs.totalPathLen != rhs.totalPathLen)
     return lhs.totalPathLen < rhs.totalPathLen;
   if (std::abs(lhs.placementCost - rhs.placementCost) > 1e-9)
@@ -96,6 +101,93 @@ std::vector<IdIndex> collectCriticalBoundaryEdges(const Graph &dfg) {
 }
 
 } // namespace
+
+void Mapper::resetRunControls(const Options &opts) {
+  activeRunStartTime_ = std::chrono::steady_clock::now();
+  activeRunDeadline_ = activeRunStartTime_ +
+                       std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                           std::chrono::duration<double>(opts.budgetSeconds));
+  activeBudgetEnabled_ = opts.budgetSeconds > 0.0;
+  activeBudgetExceeded_ = false;
+  activeBudgetExceededStage_.clear();
+  snapshotSequence_ = 0;
+  snapshotTickCount_ = 0;
+  nextSnapshotAtSeconds_ =
+      opts.snapshotIntervalSeconds > 0.0 ? opts.snapshotIntervalSeconds : -1.0;
+}
+
+double Mapper::remainingBudgetSeconds() const {
+  if (!activeBudgetEnabled_)
+    return std::numeric_limits<double>::infinity();
+  auto remaining = activeRunDeadline_ - std::chrono::steady_clock::now();
+  double seconds =
+      std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count() /
+      1000.0;
+  return std::max(0.0, seconds);
+}
+
+double Mapper::clampToRemainingBudget(double requestedSeconds) const {
+  if (requestedSeconds <= 0.0)
+    return requestedSeconds;
+  return std::min(requestedSeconds, remainingBudgetSeconds());
+}
+
+double Mapper::clampDeadlineMsToRemainingBudget(double requestedMs) const {
+  if (requestedMs <= 0.0)
+    return requestedMs;
+  double remainingMs = remainingBudgetSeconds() * 1000.0;
+  if (!std::isfinite(remainingMs))
+    return requestedMs;
+  return std::min(requestedMs, remainingMs);
+}
+
+bool Mapper::shouldStopForBudget(llvm::StringRef stage) {
+  if (!activeBudgetEnabled_ || activeBudgetExceeded_)
+    return activeBudgetExceeded_;
+  if (std::chrono::steady_clock::now() <= activeRunDeadline_)
+    return false;
+  activeBudgetExceeded_ = true;
+  activeBudgetExceededStage_ = stage.str();
+  llvm::errs() << "Mapper: budget exhausted";
+  if (!stage.empty())
+    llvm::errs() << " during " << stage;
+  llvm::errs() << "\n";
+  return true;
+}
+
+bool Mapper::maybeEmitProgressSnapshot(
+    const MappingState &state, llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+    llvm::StringRef trigger, const Options &opts) {
+  if (!activeSnapshotEmitter_)
+    return false;
+
+  bool due = false;
+  if (opts.snapshotIntervalRounds > 0) {
+    ++snapshotTickCount_;
+    due = (snapshotTickCount_ % static_cast<unsigned>(opts.snapshotIntervalRounds) ==
+           0);
+  } else if (opts.snapshotIntervalSeconds > 0.0) {
+    auto elapsed = std::chrono::steady_clock::now() - activeRunStartTime_;
+    double elapsedSeconds =
+        std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() /
+        1000.0;
+    if (nextSnapshotAtSeconds_ > 0.0 &&
+        elapsedSeconds + 1e-9 >= nextSnapshotAtSeconds_) {
+      due = true;
+      do {
+        nextSnapshotAtSeconds_ += opts.snapshotIntervalSeconds;
+      } while (nextSnapshotAtSeconds_ > 0.0 &&
+               elapsedSeconds + 1e-9 >= nextSnapshotAtSeconds_);
+    }
+  }
+
+  if (!due)
+    return false;
+
+  ++snapshotSequence_;
+  activeSnapshotEmitter_(state, edgeKinds, trigger, snapshotSequence_);
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Mapper::bindSentinels
@@ -594,8 +686,16 @@ bool Mapper::runInterleavedPlaceRoute(
     bestAllRouted = allRouted;
     return true;
   };
+  auto emitBestSnapshot = [&](llvm::StringRef trigger) {
+    auto checkpoint = state.save();
+    state.restore(bestCheckpoint);
+    maybeEmitProgressSnapshot(state, edgeKinds, trigger, opts);
+    state.restore(checkpoint);
+  };
 
   for (unsigned round = 0; round < rounds; ++round) {
+    if (shouldStopForBudget("interleaved place-route"))
+      break;
     state.restore(currentPlacementCheckpoint);
     rebindScalarInputSentinels(state, dfg, adg, flattener);
     classifyTemporalRegisterEdges(state, dfg, adg, flattener, edgeKinds);
@@ -611,6 +711,7 @@ bool Mapper::runInterleavedPlaceRoute(
                          : runRouting(state, dfg, adg, edgeKinds, opts);
     activeCongestionEstimator = nullptr;
     updateBest(allRouted);
+    emitBestSnapshot("interleaved-round");
 
     unsigned routed = countRoutedEdges(state, dfg, edgeKinds);
     auto failedEdges = collectUnroutedEdges(state, dfg, edgeKinds);
@@ -621,6 +722,8 @@ bool Mapper::runInterleavedPlaceRoute(
       state.restore(bestCheckpoint);
       return true;
     }
+    if (shouldStopForBudget("interleaved place-route"))
+      break;
     if (failedEdges.empty())
       break;
 
@@ -646,10 +749,14 @@ bool Mapper::runInterleavedPlaceRoute(
                        flattener, candidates, edgeKinds, opts,
                        repairCongestionPtr);
     bool repairImproved = updateBest(repaired, failedEdges);
+    if (repairImproved)
+      emitBestSnapshot("local-repair");
     if (repaired) {
       state.restore(bestCheckpoint);
       return true;
     }
+    if (shouldStopForBudget("local repair"))
+      break;
 
     if (repairImproved) {
       state.clearRoutes(adg);
@@ -663,12 +770,16 @@ bool Mapper::runInterleavedPlaceRoute(
     state.restore(bestCheckpoint);
     state.clearRoutes(adg);
     Options restartOpts = opts;
-    restartOpts.seed = opts.seed + static_cast<int>((round + 1) * 104729u);
+    restartOpts.seed = opts.seed +
+                       static_cast<int>((round + 1) *
+                                        opts.lane.restartSeedStride);
     if (opts.placementMoveRadius != 0)
       restartOpts.placementMoveRadius =
-          opts.placementMoveRadius + (round + 1) * 2u;
+          opts.placementMoveRadius +
+          (round + 1) * opts.lane.restartMoveRadiusStep;
     restartOpts.selectiveRipupPasses =
-        opts.selectiveRipupPasses + std::min<unsigned>(2u, round + 1);
+        opts.selectiveRipupPasses +
+        std::min<unsigned>(opts.lane.restartRipupBonusCap, round + 1);
     runRefinement(state, dfg, adg, flattener, candidates, restartOpts);
     state.clearRoutes(adg);
     rebindScalarInputSentinels(state, dfg, adg, flattener);
@@ -694,6 +805,12 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
                            const ADGFlattener &flattener,
                            mlir::ModuleOp adgModule, const Options &opts) {
   Result result;
+  if (!validateMapperOptions(opts, result.diagnostics)) {
+    llvm::errs() << "Mapper: invalid options: " << result.diagnostics << "\n";
+    return result;
+  }
+  resetRunControls(opts);
+  activeSnapshotEmitter_ = nullptr;
   TechMapper techMapper;
   TechMapper::Plan techPlan;
   if (!techMapper.buildPlan(dfg, adgModule, adg, techPlan)) {
@@ -705,6 +822,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   MappingState contractedState;
   contractedState.init(techPlan.contractedDFG, adg);
   result.edgeKinds = techPlan.originalEdgeKinds;
+  const auto originalEdgeKinds = result.edgeKinds;
   std::vector<TechMappedEdgeKind> initialContractedEdgeKinds(
       techPlan.contractedDFG.edges.size(), TechMappedEdgeKind::Routed);
 
@@ -713,6 +831,48 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   activeFlattener = &flattener;
   activeHeuristicWeight = opts.routingHeuristicWeight;
   activeCongestionPlacementWeight = opts.congestionPlacementWeight;
+  activeUnroutedDiagnosticLimit = opts.lane.unroutedDiagnosticLimit;
+  activeSnapshotEmitter_ = nullptr;
+  if (snapshotCallback_ &&
+      (opts.snapshotIntervalSeconds > 0.0 || opts.snapshotIntervalRounds > 0)) {
+    activeSnapshotEmitter_ =
+        [&](const MappingState &contractedSnapshot,
+            llvm::ArrayRef<TechMappedEdgeKind> contractedSnapshotEdgeKinds,
+            llvm::StringRef trigger, unsigned ordinal) {
+          MappingState expandedState;
+          llvm::SmallVector<FUConfigSelection, 4> expandedFuConfigs;
+          if (!techMapper.expandPlanMapping(dfg, adg, techPlan,
+                                            contractedSnapshot, expandedState,
+                                            expandedFuConfigs)) {
+            llvm::errs() << "Mapper: snapshot expansion failed for trigger "
+                         << trigger << "\n";
+            return;
+          }
+          std::vector<TechMappedEdgeKind> expandedEdgeKinds(
+              originalEdgeKinds.begin(), originalEdgeKinds.end());
+          for (IdIndex edgeId = 0;
+               edgeId < static_cast<IdIndex>(dfg.edges.size()); ++edgeId) {
+            if (edgeId >= expandedEdgeKinds.size() ||
+                expandedEdgeKinds[edgeId] == TechMappedEdgeKind::IntraFU) {
+              continue;
+            }
+            if (edgeId >= techPlan.originalEdgeToContractedEdge.size())
+              continue;
+            IdIndex contractedEdgeId =
+                techPlan.originalEdgeToContractedEdge[edgeId];
+            if (contractedEdgeId == INVALID_ID ||
+                contractedEdgeId >= contractedSnapshotEdgeKinds.size()) {
+              continue;
+            }
+            if (contractedSnapshotEdgeKinds[contractedEdgeId] ==
+                TechMappedEdgeKind::TemporalReg) {
+              expandedEdgeKinds[edgeId] = TechMappedEdgeKind::TemporalReg;
+            }
+          }
+          snapshotCallback_(expandedState, expandedEdgeKinds, expandedFuConfigs,
+                            trigger, ordinal);
+        };
+  }
 
   // Bind sentinels (DFG boundary nodes -> ADG boundary nodes).
   llvm::outs() << "Mapper: binding sentinels...\n";
@@ -747,7 +907,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     }
   }
 
-  const unsigned laneCount = selectLaneCount(opts.lanes, dfg);
+  const unsigned laneCount = selectLaneCount(opts, dfg);
   if (opts.verbose && laneCount > 1)
     llvm::outs() << "Mapper: launching " << laneCount << " parallel lanes\n";
 
@@ -759,13 +919,16 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     Mapper laneMapper = *this;
 
     Options laneOpts = opts;
-    laneOpts.seed = opts.seed + static_cast<int>(laneIndex * 7919u);
+    laneOpts.seed =
+        opts.seed + static_cast<int>(laneIndex * opts.lane.laneSeedStride);
     laneOpts.verbose = (laneCount == 1) ? opts.verbose : false;
     const bool preferCPSatGlobal =
         laneOpts.enableCPSat && (laneCount == 1 || laneIndex == 0);
     if (preferCPSatGlobal) {
       laneOpts.cpSatTimeLimitSeconds =
-          std::max(laneOpts.cpSatTimeLimitSeconds, laneCount == 1 ? 4.0 : 2.0);
+          std::max(laneOpts.cpSatTimeLimitSeconds,
+                   laneCount == 1 ? opts.lane.globalCPSatMinTimeSingleLane
+                                  : opts.lane.globalCPSatMinTimeMultiLane);
     }
 
     if (opts.verbose && laneCount == 1)
@@ -806,9 +969,12 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
         Options criticalBoundaryOpts = laneOpts;
         criticalBoundaryOpts.cpSatTimeLimitSeconds =
             std::max(criticalBoundaryOpts.cpSatTimeLimitSeconds,
-                     laneCount == 1 ? 3.0 : 1.5);
+                     laneCount == 1
+                         ? opts.lane.boundaryCPSatMinTimeSingleLane
+                         : opts.lane.boundaryCPSatMinTimeMultiLane);
         criticalBoundaryOpts.cpSatNeighborhoodNodeLimit = std::min<unsigned>(
-            criticalBoundaryOpts.cpSatNeighborhoodNodeLimit, 8u);
+            criticalBoundaryOpts.cpSatNeighborhoodNodeLimit,
+            opts.lane.boundaryNeighborhoodCap);
         laneMapper.runCPSatNeighborhoodRepair(
             attempt.state, cpSatCheckpoint, criticalBoundaryEdges,
             techPlan.contractedDFG, adg, flattener, candidates,
@@ -829,6 +995,8 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     attempt.routingSucceeded = laneMapper.runInterleavedPlaceRoute(
         attempt.state, techPlan.contractedDFG, adg, flattener, candidates,
         attempt.edgeKinds, laneOpts);
+    attempt.budgetExceeded = laneMapper.activeBudgetExceeded_;
+    attempt.budgetExceededStage = laneMapper.activeBudgetExceededStage_;
     attempt.routedEdges = countRoutedEdges(
         attempt.state, techPlan.contractedDFG, attempt.edgeKinds);
     attempt.totalPathLen = computeTotalMappedPathLen(attempt.state);
@@ -878,13 +1046,20 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   contractedState = bestIt->state;
   auto contractedEdgeKinds = bestIt->edgeKinds;
   bool routingSucceeded = bestIt->routingSucceeded;
+  activeBudgetExceeded_ = bestIt->budgetExceeded;
+  activeBudgetExceededStage_ = bestIt->budgetExceededStage;
   if (opts.verbose && laneCount > 1) {
     llvm::outs() << "Mapper: selected lane " << bestIt->laneIndex << " (routed "
                  << bestIt->routedEdges << "/"
                  << techPlan.contractedDFG.edges.size() << ")\n";
   }
   if (!routingSucceeded) {
-    result.diagnostics = "Routing failed";
+    result.diagnostics = activeBudgetExceeded_
+                             ? ("Mapper budget exceeded" +
+                                (activeBudgetExceededStage_.empty()
+                                     ? std::string()
+                                     : (" during " + activeBudgetExceededStage_)))
+                             : "Routing failed";
     llvm::errs() << "Mapper: " << result.diagnostics << "\n";
   }
 
@@ -920,6 +1095,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   }
 
   result.success = routingSucceeded && validationSucceeded;
+  activeSnapshotEmitter_ = nullptr;
   llvm::outs() << "Mapper: done.\n";
   return result;
 }
@@ -935,7 +1111,7 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
   bool valid = true;
   unsigned unroutedDiagnosticsEmitted = 0;
   auto emitUnroutedEdgeDebug = [&](IdIndex edgeId) {
-    if (unroutedDiagnosticsEmitted >= 8)
+    if (unroutedDiagnosticsEmitted >= activeUnroutedDiagnosticLimit)
       return;
     const Edge *edge = dfg.getEdge(edgeId);
     if (!edge)

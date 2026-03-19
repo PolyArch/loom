@@ -1,0 +1,346 @@
+# FCC mapper base configuration.
+# This file is loaded by default when --mapper-base-config is omitted.
+
+version: 1
+
+mapper:
+  # Overall mapper wall-clock budget in seconds.
+  budget_seconds: 60.0
+  # Deterministic RNG seed used by placement, repair, and lane generation.
+  seed: 0
+  # Reserved profile selector. The current implementation accepts it but does
+  # not branch on profile-specific presets yet.
+  profile: balanced
+  # Parallel lane count. 0 means auto-select from hardware concurrency.
+  lanes: 0
+  # Periodic snapshot interval in seconds. -1 disables time-based snapshots.
+  # Mutually exclusive with snapshot_interval_rounds.
+  snapshot_interval_seconds: -1.0
+  # Periodic snapshot interval in mapper progress rounds. -1 disables
+  # round-based snapshots. Mutually exclusive with
+  # snapshot_interval_seconds.
+  snapshot_interval_rounds: -1
+  # Number of interleaved place-route rounds in the main PnR driver.
+  interleaved_rounds: 4
+  # Number of selective rip-up passes inside each routing attempt.
+  selective_ripup_passes: 3
+  # Detailed placement move radius in Manhattan distance. 0 means unrestricted.
+  placement_move_radius: 3
+  # Maximum node count for CP-SAT global placement.
+  cpsat_global_node_limit: 24
+  # Maximum node count for CP-SAT neighborhood repair.
+  cpsat_neighborhood_node_limit: 8
+  # Default per-solve CP-SAT time limit in seconds.
+  cpsat_time_limit_seconds: 0.75
+  # Enable OR-Tools CP-SAT backed placement and repair stages.
+  enable_cpsat: true
+  # Emit detailed mapper progress logs.
+  verbose: true
+  # Weighted A* heuristic multiplier for routing.
+  routing_heuristic_weight: 1.5
+  # Number of negotiated congestion routing iterations. 0 disables the stage.
+  negotiated_routing_passes: 12
+  # PathFinder-style history increment.
+  congestion_history_factor: 1.0
+  # PathFinder-style history scaling per iteration.
+  congestion_history_scale: 1.5
+  # Present-demand multiplier in congestion-aware routing.
+  congestion_present_factor: 1.0
+  # Placement penalty weight derived from congestion estimation.
+  congestion_placement_weight: 0.3
+
+  refinement:
+    # Initial SA temperature for detailed placement refinement.
+    initial_temperature: 100.0
+    # Multiplicative cooling rate for SA.
+    cooling_rate: 0.995
+    # Maximum SA iterations per placed operation node.
+    iterations_per_placed_node: 1000
+    # Absolute cap on SA iterations.
+    iteration_cap: 50000
+    # Fraction of the total mapper budget that SA may consume.
+    budget_fraction: 0.4
+    # Number of equal-score relocation candidates retained before random pick.
+    relocate_top_candidate_limit: 8
+
+  lane:
+    # DFG node-count threshold below which auto lane selection becomes serial.
+    auto_serial_node_threshold: 16
+    # Upper bound for auto-selected lane count.
+    auto_lane_cap: 4
+    # Seed stride between speculative parallel lanes.
+    lane_seed_stride: 7919
+    # Seed stride for interleaved round restart refinement.
+    restart_seed_stride: 104729
+    # Additional placement radius granted after each interleaved restart.
+    restart_move_radius_step: 2
+    # Additional selective rip-up passes granted after each restart.
+    restart_ripup_bonus_cap: 2
+    # Minimum CP-SAT time limit for the preferred global lane in single-lane mode.
+    global_cpsat_min_time_single_lane: 4.0
+    # Minimum CP-SAT time limit for the preferred global lane in multi-lane mode.
+    global_cpsat_min_time_multi_lane: 2.0
+    # Minimum CP-SAT time limit for critical-boundary repair in single-lane mode.
+    boundary_cpsat_min_time_single_lane: 3.0
+    # Minimum CP-SAT time limit for critical-boundary repair in multi-lane mode.
+    boundary_cpsat_min_time_multi_lane: 1.5
+    # Upper bound for the critical-boundary CP-SAT neighborhood size.
+    boundary_neighborhood_cap: 8
+    # Number of unrouted-edge diagnostics emitted during validation.
+    unrouted_diagnostic_limit: 8
+
+  routing:
+    priority:
+      # Fallback priority assigned to missing or invalid edges.
+      invalid_edge: 100
+      # Highest-priority bucket for edges whose sink is a memory-like op.
+      memory_sink: 0
+      # Priority for edges driving a module output.
+      module_output: 1
+      # Priority for edges sourced by load or store operations.
+      load_store_source: 2
+      # Priority for edges sourced by memory-interface operations.
+      memory_source: 3
+      # Priority for edges incident to load or store operations.
+      load_store_incident: 4
+      # Catch-all routing priority for normal data edges.
+      fallback: 5
+    # Failed-edge count threshold that enables tighter rip-up neighborhoods.
+    tight_ripup_failed_edge_threshold: 4
+    # Failed-edge count threshold that enables sibling-edge expansion.
+    sibling_expansion_failed_edge_threshold: 6
+    # Minimum number of edges preserved in a tight rip-up neighborhood.
+    tight_ripup_min_edges: 8
+    # Maximum number of edges examined by the tight rip-up expansion.
+    tight_ripup_target_cap: 18
+    # Number of failed-edge diagnostics printed per repair pass.
+    failed_edge_diagnostic_limit: 6
+    # Maximum module-output fan-in group size handled by grouped routing.
+    module_output_group_max_edges: 8
+    # Maximum number of first-hop choices explored per module-output edge.
+    module_output_first_hop_limit: 2
+    # Number of edge-order branches explored during grouped module-output routing.
+    module_output_branch_limit: 2
+    # Maximum number of shared first-hop candidates for source fan-out grouping.
+    source_fanout_first_hop_limit: 4
+    # History bump applied to ripped routing outputs before reroute.
+    ripup_history_bump: 0.35
+
+  congestion:
+    # Historical penalty applied to ports that finish an iteration saturated.
+    saturation_penalty: 0.5
+    # Upper bound on negotiated-routing history increment growth.
+    history_increment_cap: 8.0
+    # Per-iteration decay applied to historical congestion before adding the
+    # current iteration's penalty. 1.0 disables decay.
+    history_decay: 0.95
+    # Additive routing-output history bump applied to ports that finish a
+    # negotiated iteration saturated.
+    routing_output_history_bump: 0.2
+    # Per-iteration decay applied to routing-output history between negotiated
+    # routing iterations. 1.0 disables decay.
+    routing_output_history_decay: 0.95
+    # Stop negotiated routing after this many consecutive non-improving
+    # iterations. 0 disables early termination.
+    early_termination_window: 3
+
+  cpsat_tuning:
+    # Scale used when converting floating placement weights into integer CP-SAT costs.
+    placement_cost_scale: 100.0
+    # Fallback hardware-concurrency value when the platform reports zero workers.
+    worker_fallback_concurrency: 4
+    # Upper bound on CP-SAT search workers.
+    worker_cap: 8
+    # Maximum ranked hardware candidates kept per node in global CP-SAT placement.
+    global_candidate_limit: 8
+    # Failed-edge threshold for the CP-SAT tight-endgame regime.
+    tight_endgame_failed_edge_threshold: 6
+    # Failed-edge threshold for the CP-SAT very-tight-endgame regime.
+    very_tight_endgame_failed_edge_threshold: 2
+    # Multiplier used to derive neighborhood size from failed-edge count.
+    neighborhood_expansion_edge_multiplier: 2
+    # Base offset added to CP-SAT neighborhood size outside tight endgame.
+    neighborhood_expansion_base: 2
+    # Absolute cap for derived CP-SAT neighborhood size.
+    neighborhood_expansion_cap: 12
+    # Minimum focus weight assigned to failed edges in very tight endgame.
+    very_tight_focus_weight_floor: 80.0
+    # Multiplicative boost applied to failed-edge weights in very tight endgame.
+    very_tight_focus_weight_scale: 28.0
+    # Minimum focus weight assigned to failed edges in tight endgame.
+    tight_focus_weight_floor: 40.0
+    # Multiplicative boost applied to failed-edge weights in tight endgame.
+    tight_focus_weight_scale: 18.0
+    # Minimum move radius used for CP-SAT tight-endgame neighborhoods.
+    tight_move_radius_floor: 3
+    # Reserved floor for very-tight move-radius expansion.
+    very_tight_move_radius_floor: 5
+    # Additional move radius granted to CP-SAT tight-endgame neighborhoods.
+    move_radius_expansion: 1
+    # Reserved extra move radius for very-tight neighborhoods.
+    very_tight_move_radius_expansion: 2
+    # Maximum candidate count per node in very-tight endgame.
+    very_tight_candidate_limit: 12
+    # Maximum candidate count per node in tight endgame.
+    tight_candidate_limit: 5
+    # Maximum candidate count per node outside tight endgame.
+    default_candidate_limit: 8
+
+  local_repair:
+    exact:
+      # Number of priority failed edges below which priority routing wins ties first.
+      priority_first_failed_edge_threshold: 2
+      # Minimum number of exact-neighborhood passes.
+      neighborhood_pass_min: 2
+      # Maximum number of exact-neighborhood passes.
+      neighborhood_pass_cap: 6
+      # Failed-edge threshold for tight exact-routing endgame mode.
+      tight_failed_edge_threshold: 3
+      # Repair-neighborhood size threshold for tight exact-routing mode.
+      tight_repair_edge_threshold: 6
+      # Failed-edge threshold for micro exact-routing mode.
+      micro_failed_edge_threshold: 2
+      # Repair-neighborhood size threshold for micro exact-routing mode.
+      micro_repair_edge_threshold: 6
+      # Deadline in milliseconds for micro exact-routing search.
+      micro_deadline_ms: 20000.0
+      # Deadline in milliseconds for tight exact-routing search.
+      tight_deadline_ms: 8000.0
+      # Repair-edge threshold that still counts as medium exact-routing search.
+      medium_repair_edge_threshold: 10
+      # Deadline in milliseconds for medium exact-routing search.
+      medium_deadline_ms: 4500.0
+      # Deadline in milliseconds for default exact-routing search.
+      default_deadline_ms: 3000.0
+      # Scale factor applied to cpSatTimeLimitSeconds when deriving exact-search deadlines.
+      deadline_scale: 4000.0
+      # Scale factor applied to cpSatTimeLimitSeconds in micro endgame.
+      micro_deadline_scale: 8000.0
+      # Maximum number of first-hop candidates per edge in micro mode.
+      micro_first_hop_limit: 20
+      # Maximum number of first-hop candidates per edge in tight mode.
+      tight_first_hop_limit: 12
+      # Maximum number of first-hop candidates per edge in medium mode.
+      medium_first_hop_limit: 8
+      # Maximum number of first-hop candidates when only a few failed edges remain.
+      small_failed_first_hop_limit: 6
+      # Maximum number of first-hop candidates in default mode.
+      default_first_hop_limit: 5
+      # Maximum candidate paths retained per edge in micro mode.
+      micro_candidate_path_limit: 32
+      # Maximum candidate paths retained per edge in tight mode.
+      tight_candidate_path_limit: 16
+      # Maximum candidate paths retained per edge in medium mode.
+      medium_candidate_path_limit: 8
+      # Maximum candidate paths retained per edge in small-failed mode.
+      small_failed_candidate_path_limit: 6
+      # Maximum candidate paths retained per edge in default mode.
+      default_candidate_path_limit: 5
+      # Local congestion bump applied while enumerating exact-routing alternatives.
+      local_history_bump: 1.5
+    # Recursion depth limit used for very small residual sets.
+    micro_recursion_depth_limit: 4
+    # Default recursion depth limit for local repair.
+    default_recursion_depth_limit: 2
+    # Failed-edge threshold for trying to preserve original failed-edge identity.
+    original_failed_escalation_threshold: 12
+    # Threshold that marks a small failed-edge set in local repair.
+    small_failed_edge_threshold: 3
+    # Maximum number of hotspot nodes considered per local-repair round.
+    hotspot_limit: 12
+    # Manhattan radius used when collecting hotspot-adjacent PEs.
+    hotspot_adjacency_radius: 1
+    # Additional placement radius per local-repair round.
+    repair_radius_step: 2
+    # Base placement-radius bias added during local repair.
+    repair_radius_bias: 1
+    # Maximum relocation candidates evaluated for each hotspot node.
+    relocation_candidate_limit: 10
+    # Maximum swap candidates evaluated for each hotspot node.
+    swap_candidate_limit: 8
+    # Recursion depth threshold that triggers early CP-SAT escalation.
+    early_cpsat_recursion_depth_threshold: 2
+    # Failed-edge threshold that triggers early CP-SAT escalation.
+    early_cpsat_failed_edge_threshold: 2
+    # Minimum CP-SAT time limit used by early escalation.
+    early_cpsat_min_time: 12.0
+    # Minimum CP-SAT neighborhood size used by early escalation.
+    early_cpsat_neighborhood_limit: 12
+    # Minimum placement move radius granted during early CP-SAT escalation.
+    early_cpsat_move_radius: 5
+    # Weight of failed-edge delta in local relocate and swap ranking.
+    failed_edge_delta_score_weight: 8.0
+    # Weight of placement score in local relocate and swap ranking.
+    candidate_score_weight: 0.25
+    # Weight of placement score used in focused-neighborhood ranking.
+    placement_score_weight: 8.0
+    # Weight of destination-distance score in focused-neighborhood ranking.
+    hotspot_distance_score_weight: 0.25
+    # Weight of source-distance score in focused-neighborhood ranking.
+    hotspot_source_distance_score_weight: 0.25
+    # Failed-edge threshold for the smaller CP-SAT repair regime.
+    cpsat_small_failed_threshold: 4
+    # Failed-edge threshold for the medium CP-SAT repair regime.
+    cpsat_medium_failed_threshold: 6
+    # Minimum CP-SAT time limit for the smaller repair regime.
+    cpsat_small_failed_min_time: 8.0
+    # Minimum CP-SAT time limit for the medium repair regime.
+    cpsat_medium_failed_min_time: 8.0
+    # Minimum CP-SAT neighborhood size for the smaller repair regime.
+    cpsat_small_failed_node_limit: 8
+    # Minimum CP-SAT neighborhood size for the medium repair regime.
+    cpsat_medium_failed_node_limit: 8
+    # Maximum negotiated-routing passes used while rerouting a repair candidate.
+    repair_negotiated_routing_pass_cap: 4
+    # Penalty used in repairability scoring when no free-space route exists.
+    free_path_missing_penalty: 1000
+    # Minimum node count for the exact memory-response cluster heuristic.
+    memory_response_cluster_min: 4
+    # Maximum node count for the exact memory-response cluster heuristic.
+    memory_response_cluster_max: 6
+    # Search-space cap for exact memory-response cluster enumeration.
+    exact_domain_search_space_cap: 1296
+    # Search-space cap for exact memory-focus neighborhood enumeration.
+    memory_exact_domain_search_space_cap: 1024
+    # Weight applied to neighbors of failed-edge endpoints in focused repair.
+    focus_neighborhood_weight_scale: 0.35
+    # Minimum move radius used in focused exact-neighborhood placement search.
+    exact_neighborhood_radius: 4
+    # Search-space cap for tighter focused exact neighborhoods.
+    exact_neighborhood_search_space_tight_cap: 16384
+    # Search-space cap for default focused exact neighborhoods.
+    exact_neighborhood_search_space_default_cap: 8192
+    # Failed-edge threshold that enables larger exact neighborhoods.
+    large_neighborhood_failed_edge_threshold: 4
+    # Failed-edge threshold that still allows polish exact-routing fallback.
+    cpsat_fallback_failed_edge_threshold: 8
+    # Failed-edge threshold that triggers CP-SAT escalation in local repair.
+    cpsat_escalation_failed_edge_threshold: 6
+    # Failed-edge threshold for reserved-target exact repair.
+    target_focused_failed_edge_threshold: 3
+    # Maximum number of target edges in the reserved-target exact solver.
+    focused_target_edge_threshold: 2
+    # Maximum blocker-edge count in the reserved-target exact solver.
+    focused_blocker_edge_threshold: 8
+    # Maximum number of memory-interface nodes in the exact memory neighborhood.
+    memory_focus_node_limit: 4
+    # Minimum CP-SAT time limit for the reserved-target exact solver.
+    focused_target_min_time: 1.0
+    # Failed-edge threshold for recursive residual repair.
+    residual_repair_failed_edge_threshold: 6
+    # Failed-edge threshold for residual joint-cycle repair.
+    residual_joint_repair_failed_edge_threshold: 2
+    # Minimum cycle size for residual exact cycle repair.
+    cycle_edge_cluster_min: 3
+    # Maximum cycle size for residual exact cycle repair.
+    cycle_edge_cluster_max: 4
+    # Minimum CP-SAT time limit for residual exact cycle repair.
+    cycle_exact_min_time: 1.25
+    # Local congestion bump used while generating reserved target paths.
+    focused_local_history_bump: 2.0
+    # Maximum number of edges in a conflict-directed joint rip-up.
+    joint_ripup_max_edges: 20
+    # Maximum number of edges in a single-edge conflict rip-up.
+    single_ripup_max_edges: 18
+    # Minimum number of edges required to consider a single-edge conflict rip-up.
+    single_ripup_min_edges: 1

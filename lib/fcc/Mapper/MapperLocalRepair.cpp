@@ -59,6 +59,10 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
                                    llvm::ArrayRef<IdIndex> forcedPriorityEdges) {
   if (failedEdges.empty())
     return true;
+  if (shouldStopForBudget("local repair"))
+    return false;
+  const auto &repairOpts = opts.localRepair;
+  const auto &exactOpts = repairOpts.exact;
 
   auto edgeWeight = [&](IdIndex edgeId) {
     return classifyEdgePlacementWeight(dfg, edgeId);
@@ -76,7 +80,8 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
     }
   }
   const bool prioritizePriorityBeforePenalty =
-      !forcedPriorityEdges.empty() || priorityEdges.size() <= 2;
+      !forcedPriorityEdges.empty() ||
+      priorityEdges.size() <= exactOpts.priorityFirstFailedEdgeThreshold;
 
   auto betterResult = [&](unsigned lhsRouted, double lhsPenalty,
                           unsigned lhsPriorityRouted,
@@ -122,6 +127,12 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
   }
   size_t globalBestPathLen = computeTotalMappedPathLen(state);
   bool globalAllRouted = failedEdges.empty();
+  auto emitBestSnapshot = [&](llvm::StringRef trigger) {
+    auto checkpoint = state.save();
+    state.restore(globalBestCheckpoint);
+    maybeEmitProgressSnapshot(state, edgeKinds, trigger, opts);
+    state.restore(checkpoint);
+  };
 
   auto edgeOrderLess = [&](IdIndex lhs, IdIndex rhs) {
     bool lhsPriority = priorityEdges.contains(lhs);
@@ -138,10 +149,14 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
   std::vector<IdIndex> pendingFailed(failedEdges.begin(), failedEdges.end());
   llvm::stable_sort(pendingFailed, edgeOrderLess);
   const unsigned maxNeighborhoodPasses =
-      std::max(2u, std::min<unsigned>(6u, opts.selectiveRipupPasses + 1u));
+      std::max(exactOpts.neighborhoodPassMin,
+               std::min<unsigned>(exactOpts.neighborhoodPassCap,
+                                  opts.selectiveRipupPasses + 1u));
 
   for (unsigned pass = 0; pass < maxNeighborhoodPasses && !globalAllRouted;
        ++pass) {
+    if (shouldStopForBudget("exact routing repair"))
+      break;
     auto currentFailed = collectUnroutedEdges(state, dfg, edgeKinds);
     if (currentFailed.empty()) {
       globalAllRouted = true;
@@ -203,17 +218,26 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
         state.unmapEdge(edgeId, adg);
 
       const bool tightEndgame =
-          currentFailed.size() <= 3 || repairEdges.size() <= 6;
+          currentFailed.size() <= exactOpts.tightFailedEdgeThreshold ||
+          repairEdges.size() <= exactOpts.tightRepairEdgeThreshold;
       const bool microEndgame =
-          currentFailed.size() <= 2 && repairEdges.size() <= 6;
+          currentFailed.size() <= exactOpts.microFailedEdgeThreshold &&
+          repairEdges.size() <= exactOpts.microRepairEdgeThreshold;
+      const double requestedDeadlineMs = std::max(
+          microEndgame
+              ? exactOpts.microDeadlineMs
+              : (tightEndgame
+                     ? exactOpts.tightDeadlineMs
+                     : (repairEdges.size() <= exactOpts.mediumRepairEdgeThreshold
+                            ? exactOpts.mediumDeadlineMs
+                            : exactOpts.defaultDeadlineMs)),
+          opts.cpSatTimeLimitSeconds *
+              (microEndgame ? exactOpts.microDeadlineScale
+                            : exactOpts.deadlineScale));
       const auto exactDeadline =
           std::chrono::steady_clock::now() +
           std::chrono::milliseconds(static_cast<int64_t>(std::max(
-              microEndgame ? 20000.0
-                           : (tightEndgame ? 8000.0
-                                           : (repairEdges.size() <= 10 ? 4500.0
-                                                                       : 3000.0)),
-              opts.cpSatTimeLimitSeconds * (microEndgame ? 8000.0 : 4000.0))));
+              1.0, clampDeadlineMsToRemainingBudget(requestedDeadlineMs))));
 
       auto rankFirstHopChoices = [&](IdIndex dstHwPort,
                                      llvm::SmallVectorImpl<IdIndex> &choices) {
@@ -227,12 +251,16 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
           return lhs < rhs;
         });
         const unsigned hopLimit =
-            microEndgame ? 20u
-                         : (tightEndgame ? 12u
-                                         : (repairEdges.size() <= 10
-                                                ? 8u
-                                                : (currentFailed.size() <= 3 ? 6u
-                                                                             : 5u)));
+            microEndgame
+                ? exactOpts.microFirstHopLimit
+                : (tightEndgame
+                       ? exactOpts.tightFirstHopLimit
+                       : (repairEdges.size() <= exactOpts.mediumRepairEdgeThreshold
+                              ? exactOpts.mediumFirstHopLimit
+                              : (currentFailed.size() <=
+                                         exactOpts.tightFailedEdgeThreshold
+                                     ? exactOpts.smallFailedFirstHopLimit
+                                     : exactOpts.defaultFirstHopLimit)));
         if (choices.size() > hopLimit)
           choices.resize(hopLimit);
       };
@@ -245,6 +273,8 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
                                unsigned currentPriorityRouted,
                                double currentPriorityPenalty,
                                size_t currentPathLen) {
+        if (shouldStopForBudget("exact routing repair"))
+          return;
         if (std::chrono::steady_clock::now() > exactDeadline)
           return;
         if (betterResult(currentRouted, currentPenalty, currentPriorityRouted,
@@ -308,11 +338,17 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
             firstHopChoices.push_back(INVALID_ID);
           llvm::DenseMap<IdIndex, double> localHistory;
           const unsigned maxCandidatePaths =
-              microEndgame ? 32u
-                           : (tightEndgame ? 16u
-                           : (repairEdges.size() <= 10
-                                  ? 8u
-                                  : (currentFailed.size() <= 3 ? 6u : 5u)));
+              microEndgame
+                  ? exactOpts.microCandidatePathLimit
+                  : (tightEndgame
+                         ? exactOpts.tightCandidatePathLimit
+                         : (repairEdges.size() <=
+                                    exactOpts.mediumRepairEdgeThreshold
+                                ? exactOpts.mediumCandidatePathLimit
+                                : (currentFailed.size() <=
+                                           exactOpts.tightFailedEdgeThreshold
+                                       ? exactOpts.smallFailedCandidatePathLimit
+                                       : exactOpts.defaultCandidatePathLimit)));
           for (unsigned pathAttempt = 0;
                pathAttempt < maxCandidatePaths &&
                bundle.paths.size() < maxCandidatePaths;
@@ -347,7 +383,7 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
             bundle.paths.push_back(bestPath);
             for (IdIndex portId : bestPath) {
               if (isRoutingCrossbarOutputPortForRepair(portId, adg))
-                localHistory[portId] += 1.5;
+                localHistory[portId] += exactOpts.localHistoryBump;
             }
           }
 
@@ -436,6 +472,10 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
                      << repairEdges.size()
                      << ", localPenalty=" << bestLocalPenalty << "\n";
       }
+      if (shouldStopForBudget("exact routing repair")) {
+        state.restore(baseCheckpoint);
+        return false;
+      }
 
       state.restore(bestLocalCheckpoint);
       unsigned routed = countRoutedEdges(state, dfg, edgeKinds);
@@ -469,6 +509,7 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
         globalBestPriorityPenalty = priorityPenalty;
         globalBestPathLen = totalPathLen;
         globalAllRouted = collectUnroutedEdges(state, dfg, edgeKinds).empty();
+        emitBestSnapshot("exact-routing-repair");
         return true;
       }
 
@@ -477,9 +518,12 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
     };
 
     bool improvedThisPass = false;
+    if (shouldStopForBudget("exact routing repair"))
+      break;
 
     if (pass == 0 && !forcedPriorityEdges.empty() &&
-        failedEdges.size() > currentFailed.size() && failedEdges.size() <= 12) {
+        failedEdges.size() > currentFailed.size() &&
+        failedEdges.size() <= repairOpts.originalFailedEscalationThreshold) {
       auto forcedCheckpoint = state.save();
       if (attemptExactNeighborhood("priority neighborhood", failedEdges,
                                    forcedCheckpoint)) {
@@ -490,7 +534,7 @@ bool Mapper::runExactRoutingRepair(MappingState &state,
       }
     }
 
-    if (currentFailed.size() <= 3) {
+    if (currentFailed.size() <= repairOpts.smallFailedEdgeThreshold) {
       auto combinedCheckpoint = state.save();
       llvm::DenseSet<IdIndex> anchorSrcHwPorts;
       llvm::DenseSet<IdIndex> anchorDstHwPorts;
@@ -865,8 +909,13 @@ bool Mapper::runLocalRepair(
     const CongestionState *congestion, unsigned recursionDepth) {
   if (failedEdges.empty())
     return true;
+  if (shouldStopForBudget("local repair"))
+    return false;
+  const auto &repairOpts = opts.localRepair;
   const unsigned maxRepairRecursionDepth =
-      failedEdges.size() <= 2 ? 4u : 2u;
+      failedEdges.size() <= repairOpts.focusedTargetEdgeThreshold
+          ? repairOpts.microRecursionDepthLimit
+          : repairOpts.defaultRecursionDepthLimit;
 
   if (opts.verbose) {
     llvm::outs() << "  Local repair start: depth=" << recursionDepth
@@ -1020,20 +1069,26 @@ bool Mapper::runLocalRepair(
       double weight = classifyEdgePlacementWeight(dfg, edgeId);
       auto freePath = findPath(srcHwPort, dstHwPort, edgeId, probeState, dfg,
                                adg, emptyHistory, INVALID_ID, congestion);
-      score += weight * static_cast<double>(freePath.empty() ? 1000u
-                                                             : freePath.size());
+      score += weight *
+               static_cast<double>(freePath.empty()
+                                       ? repairOpts.freePathMissingPenalty
+                                       : freePath.size());
     }
     return score;
   };
   double bestRepairabilityScore = computeRepairabilityScore(state);
   auto shouldEscalateToCPSat = [&]() {
-    return opts.enableCPSat && !bestAllRouted && bestFailedEdges.size() <= 6;
+    return opts.enableCPSat && !bestAllRouted &&
+           bestFailedEdges.size() <= repairOpts.cpSatEscalationFailedEdgeThreshold;
   };
   Options repairRoutingOpts = opts;
   if (repairRoutingOpts.negotiatedRoutingPasses > 0)
     repairRoutingOpts.negotiatedRoutingPasses =
-        std::min<unsigned>(repairRoutingOpts.negotiatedRoutingPasses, 4u);
+        std::min<unsigned>(repairRoutingOpts.negotiatedRoutingPasses,
+                           repairOpts.repairNegotiatedRoutingPassCap);
   auto rerouteRepairState = [&](MappingState &repairState) {
+    if (shouldStopForBudget("local repair"))
+      return false;
     if (repairRoutingOpts.negotiatedRoutingPasses > 0)
       return runNegotiatedRouting(repairState, dfg, adg, edgeKinds,
                                   repairRoutingOpts);
@@ -1307,18 +1362,24 @@ bool Mapper::runLocalRepair(
     state.clearRoutes(adg);
     bestPlacementCheckpoint = state.save();
     state.restore(bestCheckpoint);
+    maybeEmitProgressSnapshot(state, edgeKinds, "local-repair-update", opts);
     return true;
   };
 
-  if (opts.enableCPSat && recursionDepth >= 2 && failedEdges.size() <= 2) {
+  if (opts.enableCPSat &&
+      recursionDepth >= repairOpts.earlyCPSatRecursionDepthThreshold &&
+      failedEdges.size() <= repairOpts.earlyCPSatFailedEdgeThreshold) {
     state.restore(bestPlacementCheckpoint);
     Options earlyCpSatOpts = opts;
     earlyCpSatOpts.cpSatTimeLimitSeconds =
-        std::max(earlyCpSatOpts.cpSatTimeLimitSeconds, 12.0);
+        std::max(earlyCpSatOpts.cpSatTimeLimitSeconds,
+                 repairOpts.earlyCPSatMinTime);
     earlyCpSatOpts.cpSatNeighborhoodNodeLimit =
-        std::max<unsigned>(earlyCpSatOpts.cpSatNeighborhoodNodeLimit, 12u);
+        std::max<unsigned>(earlyCpSatOpts.cpSatNeighborhoodNodeLimit,
+                           repairOpts.earlyCPSatNeighborhoodLimit);
     earlyCpSatOpts.placementMoveRadius =
-        std::max<unsigned>(earlyCpSatOpts.placementMoveRadius, 5u);
+        std::max<unsigned>(earlyCpSatOpts.placementMoveRadius,
+                           repairOpts.earlyCPSatMoveRadius);
     bool allRouted = runCPSatNeighborhoodRepair(
         state, bestPlacementCheckpoint, failedEdges, dfg, adg, flattener,
         candidates, edgeKinds, earlyCpSatOpts);
@@ -1340,17 +1401,23 @@ bool Mapper::runLocalRepair(
       repairNodes.push_back(swNode);
   }
 
-  unsigned maxHotspots = std::min<unsigned>(hotspots.size(), 12);
+  unsigned maxHotspots =
+      std::min<unsigned>(hotspots.size(), repairOpts.hotspotLimit);
   bool deferToCPSat = false;
   for (unsigned round = 0; round < std::max(1u, opts.selectiveRipupPasses);
        ++round) {
+    if (shouldStopForBudget("local repair"))
+      break;
     bool improvedThisRound = false;
     const unsigned repairRadius =
         opts.placementMoveRadius == 0
             ? 0
-            : opts.placementMoveRadius + round * 2u + 1u;
+            : opts.placementMoveRadius + round * repairOpts.repairRadiusStep +
+                  repairOpts.repairRadiusBias;
 
     for (unsigned hotIdx = 0; hotIdx < maxHotspots; ++hotIdx) {
+      if (shouldStopForBudget("local repair"))
+        break;
       IdIndex swNode = hotspots[hotIdx];
       auto candIt = candidates.find(swNode);
       if (candIt == candidates.end())
@@ -1374,7 +1441,8 @@ bool Mapper::runLocalRepair(
                                           flattener, candidates);
         double failedEdgeDelta =
             evaluateFailedEdgeDelta({std::make_pair(swNode, candHw)});
-        double repairScore = failedEdgeDelta * 8.0 + candScore * 0.25;
+        double repairScore = failedEdgeDelta * repairOpts.failedEdgeDeltaScoreWeight +
+                             candScore * repairOpts.candidateScoreWeight;
         relocations.push_back({-repairScore, candHw});
       }
       llvm::stable_sort(relocations, [&](const auto &lhs, const auto &rhs) {
@@ -1383,8 +1451,11 @@ bool Mapper::runLocalRepair(
         return lhs.second < rhs.second;
       });
 
-      unsigned maxRelocations = std::min<unsigned>(relocations.size(), 10);
+      unsigned maxRelocations = std::min<unsigned>(
+          relocations.size(), repairOpts.relocationCandidateLimit);
       for (unsigned moveIdx = 0; moveIdx < maxRelocations; ++moveIdx) {
+        if (shouldStopForBudget("local repair"))
+          break;
         state.restore(bestPlacementCheckpoint);
         state.unmapNode(swNode, dfg, adg);
         if (state.mapNode(swNode, relocations[moveIdx].second, dfg, adg) !=
@@ -1429,13 +1500,13 @@ bool Mapper::runLocalRepair(
         double swapScore =
             evaluateFailedEdgeDelta({std::make_pair(swNode, otherHw),
                                      std::make_pair(otherSw, oldHw)}) *
-                8.0 +
+                repairOpts.failedEdgeDeltaScoreWeight +
             scorePlacement(swNode, otherHw, state, dfg, adg, flattener,
                            candidates) *
-                0.25 +
+                repairOpts.candidateScoreWeight +
             scorePlacement(otherSw, oldHw, state, dfg, adg, flattener,
                            candidates) *
-                0.25;
+                repairOpts.candidateScoreWeight;
         swapPartners.push_back({-swapScore, otherSw});
       }
       llvm::stable_sort(swapPartners, [&](const auto &lhs, const auto &rhs) {
@@ -1444,8 +1515,11 @@ bool Mapper::runLocalRepair(
         return lhs.second < rhs.second;
       });
 
-      unsigned maxSwaps = std::min<unsigned>(swapPartners.size(), 8);
+      unsigned maxSwaps = std::min<unsigned>(swapPartners.size(),
+                                             repairOpts.swapCandidateLimit);
       for (unsigned swapIdx = 0; swapIdx < maxSwaps; ++swapIdx) {
+        if (shouldStopForBudget("local repair"))
+          break;
         state.restore(bestPlacementCheckpoint);
         IdIndex otherSw = swapPartners[swapIdx].second;
         IdIndex otherHw = state.swNodeToHwNode[otherSw];
@@ -1487,18 +1561,27 @@ bool Mapper::runLocalRepair(
   }
 
   if (!bestAllRouted && opts.enableCPSat) {
+    if (shouldStopForBudget("local repair")) {
+      state.restore(bestCheckpoint);
+      return bestAllRouted;
+    }
     state.restore(bestPlacementCheckpoint);
     Options cpSatRepairOpts = opts;
-    if (bestFailedEdges.size() <= 4) {
+    if (bestFailedEdges.size() <= repairOpts.cpSatSmallFailedThreshold) {
       cpSatRepairOpts.cpSatTimeLimitSeconds =
-          std::max(cpSatRepairOpts.cpSatTimeLimitSeconds, 8.0);
+          std::max(cpSatRepairOpts.cpSatTimeLimitSeconds,
+                   repairOpts.cpSatSmallFailedMinTime);
       cpSatRepairOpts.cpSatNeighborhoodNodeLimit =
-          std::max<unsigned>(cpSatRepairOpts.cpSatNeighborhoodNodeLimit, 8u);
-    } else if (bestFailedEdges.size() <= 6) {
+          std::max<unsigned>(cpSatRepairOpts.cpSatNeighborhoodNodeLimit,
+                             repairOpts.cpSatSmallFailedNodeLimit);
+    } else if (bestFailedEdges.size() <=
+               repairOpts.cpSatMediumFailedThreshold) {
       cpSatRepairOpts.cpSatTimeLimitSeconds =
-          std::max(cpSatRepairOpts.cpSatTimeLimitSeconds, 8.0);
+          std::max(cpSatRepairOpts.cpSatTimeLimitSeconds,
+                   repairOpts.cpSatMediumFailedMinTime);
       cpSatRepairOpts.cpSatNeighborhoodNodeLimit =
-          std::max<unsigned>(cpSatRepairOpts.cpSatNeighborhoodNodeLimit, 8u);
+          std::max<unsigned>(cpSatRepairOpts.cpSatNeighborhoodNodeLimit,
+                             repairOpts.cpSatMediumFailedNodeLimit);
     }
     bool allRouted = runCPSatNeighborhoodRepair(
         state, bestPlacementCheckpoint, bestFailedEdges, dfg, adg, flattener,
@@ -1509,7 +1592,12 @@ bool Mapper::runLocalRepair(
     }
   }
 
-  if (!bestAllRouted && bestFailedEdges.size() <= 4) {
+  if (!bestAllRouted &&
+      bestFailedEdges.size() <= repairOpts.cpSatSmallFailedThreshold) {
+    if (shouldStopForBudget("local repair")) {
+      state.restore(bestCheckpoint);
+      return bestAllRouted;
+    }
     llvm::DenseSet<IdIndex> clusterNodeSet;
     std::vector<IdIndex> memoryResponseCluster;
     auto maybeAddClusterNode = [&](IdIndex swNodeId) {
@@ -1589,7 +1677,8 @@ bool Mapper::runLocalRepair(
       addIncidentOpNeighbors(dstNode, dstPort->parentNode);
     }
 
-    if (memoryResponseCluster.size() >= 4 && memoryResponseCluster.size() <= 6) {
+    if (memoryResponseCluster.size() >= repairOpts.memoryResponseClusterMin &&
+        memoryResponseCluster.size() <= repairOpts.memoryResponseClusterMax) {
       state.restore(bestPlacementCheckpoint);
       llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> exactDomains;
       size_t searchSpace = 1;
@@ -1652,7 +1741,8 @@ bool Mapper::runLocalRepair(
         searchSpace *= domain.size();
       }
 
-      if (!exactDomains.empty() && searchSpace <= 1296u) {
+      if (!exactDomains.empty() &&
+          searchSpace <= repairOpts.exactDomainSearchSpaceCap) {
         llvm::outs() << "  Exact memory-response cluster: nodes="
                      << memoryResponseCluster.size()
                      << ", searchSpace=" << searchSpace << "\n";
@@ -1661,12 +1751,14 @@ bool Mapper::runLocalRepair(
           state.unmapNode(swNode, dfg, adg);
 
         const auto exactDeadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(8);
+            std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(static_cast<int64_t>(std::max(
+                1.0, clampDeadlineMsToRemainingBudget(8000.0))));
         bool stopExactSearch = false;
 
         std::function<void(unsigned)> enumerateMemoryResponseCluster;
         enumerateMemoryResponseCluster = [&](unsigned depth) {
-          if (stopExactSearch ||
+          if (stopExactSearch || shouldStopForBudget("local repair") ||
               std::chrono::steady_clock::now() > exactDeadline)
             return;
           if (depth >= memoryResponseCluster.size()) {
@@ -1711,7 +1803,12 @@ bool Mapper::runLocalRepair(
     }
   }
 
-  if (!bestAllRouted && bestFailedEdges.size() <= 6) {
+  if (!bestAllRouted &&
+      bestFailedEdges.size() <= repairOpts.cpSatEscalationFailedEdgeThreshold) {
+    if (shouldStopForBudget("local repair")) {
+      state.restore(bestCheckpoint);
+      return bestAllRouted;
+    }
     llvm::DenseSet<IdIndex> seenMemoryNodes;
     std::vector<IdIndex> memoryFocusNodes;
     auto maybeAddMemoryNode = [&](IdIndex swNodeId) {
@@ -1741,7 +1838,8 @@ bool Mapper::runLocalRepair(
                              : INVALID_ID);
     }
 
-    if (!memoryFocusNodes.empty() && memoryFocusNodes.size() <= 4) {
+    if (!memoryFocusNodes.empty() &&
+        memoryFocusNodes.size() <= repairOpts.memoryFocusNodeLimit) {
       state.restore(bestPlacementCheckpoint);
       llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> exactDomains;
       size_t searchSpace = 1;
@@ -1779,7 +1877,8 @@ bool Mapper::runLocalRepair(
         searchSpace *= domain.size();
       }
 
-      if (!exactDomains.empty() && searchSpace <= 1024u) {
+      if (!exactDomains.empty() &&
+          searchSpace <= repairOpts.memoryExactDomainSearchSpaceCap) {
         llvm::stable_sort(memoryFocusNodes, [&](IdIndex lhs, IdIndex rhs) {
           size_t lhsDomain = exactDomains.lookup(lhs).size();
           size_t rhsDomain = exactDomains.lookup(rhs).size();
@@ -1796,12 +1895,14 @@ bool Mapper::runLocalRepair(
           state.unmapNode(swNode, dfg, adg);
 
         const auto exactDeadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(6);
+            std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(static_cast<int64_t>(std::max(
+                1.0, clampDeadlineMsToRemainingBudget(6000.0))));
         bool stopExactSearch = false;
 
         std::function<void(unsigned)> enumerateMemoryNeighborhood;
         enumerateMemoryNeighborhood = [&](unsigned depth) {
-          if (stopExactSearch ||
+          if (stopExactSearch || shouldStopForBudget("local repair") ||
               std::chrono::steady_clock::now() > exactDeadline)
             return;
           if (depth >= memoryFocusNodes.size()) {
@@ -1843,7 +1944,12 @@ bool Mapper::runLocalRepair(
     }
   }
 
-  if (!bestAllRouted && bestFailedEdges.size() <= 6) {
+  if (!bestAllRouted &&
+      bestFailedEdges.size() <= repairOpts.cpSatEscalationFailedEdgeThreshold) {
+    if (shouldStopForBudget("local repair")) {
+      state.restore(bestCheckpoint);
+      return bestAllRouted;
+    }
     llvm::DenseMap<IdIndex, double> focusWeights;
     llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> adjacency;
     auto addAdjacency = [&](IdIndex lhs, IdIndex rhs) {
@@ -1881,7 +1987,8 @@ bool Mapper::runLocalRepair(
           const Node *otherNode = dfg.getNode(otherPort->parentNode);
           if (!otherNode || otherNode->kind != Node::OperationNode)
             continue;
-          focusWeights[otherPort->parentNode] += weight * 0.35;
+          focusWeights[otherPort->parentNode] +=
+              weight * repairOpts.focusNeighborhoodWeightScale;
           addAdjacency(swNodeId, otherPort->parentNode);
         }
       };
@@ -1969,6 +2076,8 @@ bool Mapper::runLocalRepair(
 
     for (unsigned compIdx = 0;
          compIdx < focusComponents.size() && !bestAllRouted; ++compIdx) {
+      if (shouldStopForBudget("local repair"))
+        break;
       state.restore(bestPlacementCheckpoint);
       std::vector<IdIndex> focusNodes = focusComponents[compIdx];
       if (focusNodes.empty())
@@ -1985,13 +2094,16 @@ bool Mapper::runLocalRepair(
       }
 
       const bool largerExactNeighborhood = focusNodes.size() > 4;
-      const unsigned exactRadius = std::max(largerExactNeighborhood ? 4u : 4u,
-                                            opts.placementMoveRadius + 1u);
+      const unsigned exactRadius =
+          std::max(repairOpts.exactNeighborhoodRadius,
+                   opts.placementMoveRadius + repairOpts.repairRadiusBias);
       const unsigned candidateLimit = largerExactNeighborhood ? 3u : 4u;
       const size_t searchSpaceLimit =
           largerExactNeighborhood
-              ? (bestFailedEdges.size() <= 4 ? 16384u : 8192u)
-              : 16384u;
+              ? (bestFailedEdges.size() <= repairOpts.cpSatSmallFailedThreshold
+                     ? repairOpts.exactNeighborhoodSearchSpaceTightCap
+                     : repairOpts.exactNeighborhoodSearchSpaceDefaultCap)
+              : repairOpts.exactNeighborhoodSearchSpaceTightCap;
 
       llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> exactDomains;
       size_t searchSpace = 1;
@@ -2062,12 +2174,15 @@ bool Mapper::runLocalRepair(
 
       const auto exactDeadline =
           std::chrono::steady_clock::now() +
-          std::chrono::seconds(largerExactNeighborhood ? 5 : 8);
+          std::chrono::milliseconds(static_cast<int64_t>(std::max(
+              1.0, clampDeadlineMsToRemainingBudget(
+                       largerExactNeighborhood ? 5000.0 : 8000.0))));
       bool stopExactSearch = false;
 
       std::function<void(unsigned)> enumerateNeighborhood;
       enumerateNeighborhood = [&](unsigned depth) {
-        if (stopExactSearch || std::chrono::steady_clock::now() > exactDeadline)
+        if (stopExactSearch || shouldStopForBudget("local repair") ||
+            std::chrono::steady_clock::now() > exactDeadline)
           return;
         if (depth >= focusNodes.size()) {
           rebindScalarInputSentinels(state, dfg, adg, flattener);
@@ -2106,6 +2221,10 @@ bool Mapper::runLocalRepair(
 
   if (!bestAllRouted && bestFailedEdges.size() <= 8 &&
       bestFailedEdges.size() > 3) {
+    if (shouldStopForBudget("local repair")) {
+      state.restore(bestCheckpoint);
+      return bestAllRouted;
+    }
     state.restore(bestCheckpoint);
     bool allRouted = runExactRoutingRepair(state, bestFailedEdges, dfg, adg,
                                            flattener, edgeKinds, opts,
@@ -2116,7 +2235,12 @@ bool Mapper::runLocalRepair(
     }
   }
 
-  if (!bestAllRouted && bestFailedEdges.size() <= 3) {
+  if (!bestAllRouted &&
+      bestFailedEdges.size() <= repairOpts.targetFocusedFailedEdgeThreshold) {
+    if (shouldStopForBudget("local repair")) {
+      state.restore(bestCheckpoint);
+      return bestAllRouted;
+    }
     state.restore(bestCheckpoint);
 
     auto edgeOrderLess = [&](IdIndex lhs, IdIndex rhs) {
@@ -2139,11 +2263,17 @@ bool Mapper::runLocalRepair(
         candidatePathsByEdge;
     bool candidateGenerationFailed = false;
     for (IdIndex edgeId : targetEdges) {
+      if (shouldStopForBudget("local repair")) {
+        candidateGenerationFailed = true;
+        break;
+      }
       MappingState probeState = state;
       probeState.clearRoutes(adg);
       llvm::DenseMap<IdIndex, double> localHistory;
       auto &candidatesForEdge = candidatePathsByEdge[edgeId];
-      for (unsigned attempt = 0; attempt < 16 && candidatesForEdge.size() < 12;
+      for (unsigned attempt = 0;
+           attempt < repairOpts.exact.microCandidatePathLimit &&
+           candidatesForEdge.size() < repairOpts.exact.tightFirstHopLimit;
            ++attempt) {
         const Edge *edge = dfg.getEdge(edgeId);
         if (!edge) {
@@ -2175,7 +2305,7 @@ bool Mapper::runLocalRepair(
         candidatesForEdge.push_back(path);
         for (IdIndex portId : path) {
           if (isRoutingCrossbarOutputPortForRepair(portId, adg))
-            localHistory[portId] += 2.0;
+            localHistory[portId] += repairOpts.focusedLocalHistoryBump;
         }
       }
       if (candidateGenerationFailed || candidatesForEdge.empty()) {
@@ -2204,6 +2334,8 @@ bool Mapper::runLocalRepair(
 
       std::function<void(size_t)> searchReservedPaths;
       searchReservedPaths = [&](size_t index) {
+        if (shouldStopForBudget("local repair"))
+          return;
         if (index >= targetEdges.size()) {
           ReservedCandidateSet candidate;
           candidate.count = currentReserved.size();
@@ -2217,6 +2349,8 @@ bool Mapper::runLocalRepair(
         IdIndex edgeId = targetEdges[index];
         auto checkpoint = reservedState.save();
         for (const auto &path : candidatePathsByEdge.lookup(edgeId)) {
+          if (shouldStopForBudget("local repair"))
+            return;
           reservedState.restore(checkpoint);
           if (reservedState.mapEdge(edgeId, path, dfg, adg) !=
               ActionResult::Success)
@@ -2253,8 +2387,9 @@ bool Mapper::runLocalRepair(
                           }
                           return false;
                         });
-      if (reservedCandidates.size() > 8)
-        reservedCandidates.resize(8);
+      if (reservedCandidates.size() >
+          repairOpts.exact.mediumCandidatePathLimit)
+        reservedCandidates.resize(repairOpts.exact.mediumCandidatePathLimit);
 
       unsigned bestReservedCount =
           reservedCandidates.empty() ? 0u : reservedCandidates.front().count;
@@ -2264,6 +2399,8 @@ bool Mapper::runLocalRepair(
       if (bestReservedCount >= std::min<size_t>(2u, targetEdges.size())) {
         for (size_t candidateIdx = 0; candidateIdx < reservedCandidates.size();
              ++candidateIdx) {
+          if (shouldStopForBudget("local repair"))
+            break;
           const auto &reservedChoice = reservedCandidates[candidateIdx];
           if (reservedChoice.count < bestReservedCount)
             break;
@@ -2285,14 +2422,16 @@ bool Mapper::runLocalRepair(
             }
           }
 
-          if (blockerEdges.size() > 18)
+          if (blockerEdges.size() > repairOpts.singleRipupMaxEdges)
             continue;
 
-          if (targetEdges.size() <= 2 && blockerEdges.size() <= 8) {
+          if (targetEdges.size() <= repairOpts.focusedTargetEdgeThreshold &&
+              blockerEdges.size() <= repairOpts.focusedBlockerEdgeThreshold) {
             state.restore(bestCheckpoint);
             Options focusedExactOpts = opts;
             focusedExactOpts.cpSatTimeLimitSeconds =
-                std::max(focusedExactOpts.cpSatTimeLimitSeconds, 1.0);
+                std::max(focusedExactOpts.cpSatTimeLimitSeconds,
+                         repairOpts.focusedTargetMinTime);
             bool allRouted = runExactRoutingRepair(state, blockerEdges, dfg, adg,
                                                    flattener, edgeKinds,
                                                    focusedExactOpts,
@@ -2341,7 +2480,8 @@ bool Mapper::runLocalRepair(
             if (recursionDepth < maxRepairRecursionDepth &&
                 !postTargetFailed.empty() &&
                 postTargetFailed.size() <= failedEdges.size() &&
-                postTargetFailed.size() <= 6) {
+                postTargetFailed.size() <=
+                    repairOpts.residualRepairFailedEdgeThreshold) {
               bool postTargetChanged =
                   postTargetFailed.size() != failedEdges.size() ||
                   !std::equal(postTargetFailed.begin(), postTargetFailed.end(),
@@ -2394,7 +2534,9 @@ bool Mapper::runLocalRepair(
                              << "/" << reservedChoice.paths.size() << ")\n";
               }
               if (targetStillRouted == reservedChoice.paths.size() &&
-                  !residualFailed.empty() && residualFailed.size() <= 6) {
+                  !residualFailed.empty() &&
+                  residualFailed.size() <=
+                      repairOpts.residualRepairFailedEdgeThreshold) {
                 allRouted = runExactRoutingRepair(state, residualFailed, dfg, adg,
                                                  flattener, edgeKinds, opts,
                                                  congestion);
@@ -2406,8 +2548,12 @@ bool Mapper::runLocalRepair(
                     !std::equal(nextResidualFailed.begin(),
                                 nextResidualFailed.end(), failedEdges.begin(),
                                 failedEdges.end());
-                if (!allRouted && failedEdges.size() <= 2 &&
-                    nextResidualFailed.size() <= 2 && residualChanged) {
+                if (!allRouted &&
+                    failedEdges.size() <=
+                        repairOpts.residualJointRepairFailedEdgeThreshold &&
+                    nextResidualFailed.size() <=
+                        repairOpts.residualJointRepairFailedEdgeThreshold &&
+                    residualChanged) {
                   llvm::SmallVector<IdIndex, 8> cycleEdges;
                   llvm::DenseSet<IdIndex> seenCycleEdges;
                   for (IdIndex edgeId : failedEdges) {
@@ -2418,13 +2564,16 @@ bool Mapper::runLocalRepair(
                     if (seenCycleEdges.insert(edgeId).second)
                       cycleEdges.push_back(edgeId);
                   }
-                  if (cycleEdges.size() >= 3 && cycleEdges.size() <= 4) {
+                  if (cycleEdges.size() >= repairOpts.cycleEdgeClusterMin &&
+                      cycleEdges.size() <= repairOpts.cycleEdgeClusterMax) {
                     auto cycleCheckpoint = state.save();
                     auto cycleRepairEdges =
-                        buildFocusedRepairNeighborhood(cycleEdges, 12u);
+                        buildFocusedRepairNeighborhood(
+                            cycleEdges, repairOpts.earlyCPSatNeighborhoodLimit);
                     Options cycleExactOpts = opts;
                     cycleExactOpts.cpSatTimeLimitSeconds =
-                        std::max(cycleExactOpts.cpSatTimeLimitSeconds, 1.25);
+                        std::max(cycleExactOpts.cpSatTimeLimitSeconds,
+                                 repairOpts.cycleExactMinTime);
                     if (opts.verbose) {
                       llvm::outs() << "  Residual cycle exact repair:";
                       for (IdIndex edgeId : cycleEdges)
@@ -2453,7 +2602,8 @@ bool Mapper::runLocalRepair(
                                       nextResidualFailed.begin(),
                                       nextResidualFailed.end());
                       if (!cycleResidualFailed.empty() &&
-                          cycleResidualFailed.size() <= 6 &&
+                          cycleResidualFailed.size() <=
+                              repairOpts.residualRepairFailedEdgeThreshold &&
                           cycleResidualChanged) {
                         auto recursiveRoutedCheckpoint = state.save();
                         state.clearRoutes(adg);
@@ -2478,7 +2628,9 @@ bool Mapper::runLocalRepair(
                 if (!allRouted &&
                     recursionDepth < maxRepairRecursionDepth &&
                     !nextResidualFailed.empty() &&
-                    nextResidualFailed.size() <= 6 && residualChanged) {
+                    nextResidualFailed.size() <=
+                        repairOpts.residualRepairFailedEdgeThreshold &&
+                    residualChanged) {
                   auto recursiveRoutedCheckpoint = state.save();
                   state.clearRoutes(adg);
                   auto recursivePlacementCheckpoint = state.save();
@@ -2505,7 +2657,12 @@ bool Mapper::runLocalRepair(
     }
   }
 
-  if (!bestAllRouted && bestFailedEdges.size() <= 6) {
+  if (!bestAllRouted &&
+      bestFailedEdges.size() <= repairOpts.cpSatEscalationFailedEdgeThreshold) {
+    if (shouldStopForBudget("local repair")) {
+      state.restore(bestCheckpoint);
+      return bestAllRouted;
+    }
     auto edgeOrderLess = [&](IdIndex lhs, IdIndex rhs) {
       double lhsWeight = classifyEdgePlacementWeight(dfg, lhs);
       double rhsWeight = classifyEdgePlacementWeight(dfg, rhs);
@@ -2597,20 +2754,26 @@ bool Mapper::runLocalRepair(
         };
 
     bool improvedConflictRepair = false;
-    for (unsigned conflictRound = 0; conflictRound < 3 && !bestAllRouted;
+    for (unsigned conflictRound = 0;
+         conflictRound < repairOpts.targetFocusedFailedEdgeThreshold &&
+         !bestAllRouted;
          ++conflictRound) {
+      if (shouldStopForBudget("local repair"))
+        break;
       bool improvedThisConflictRound = false;
       conflictDrivenEdges.assign(bestFailedEdges.begin(), bestFailedEdges.end());
       llvm::stable_sort(conflictDrivenEdges, edgeOrderLess);
 
       state.restore(bestCheckpoint);
       auto jointRipupEdges =
-          buildConflictNeighborhood(conflictDrivenEdges, 20u);
-      if (jointRipupEdges.size() < 10)
-        expandConflictNeighborhood(jointRipupEdges, 12u);
+          buildConflictNeighborhood(conflictDrivenEdges,
+                                    repairOpts.jointRipupMaxEdges);
+      if (jointRipupEdges.size() < repairOpts.relocationCandidateLimit)
+        expandConflictNeighborhood(jointRipupEdges,
+                                   repairOpts.earlyCPSatNeighborhoodLimit);
       llvm::stable_sort(jointRipupEdges, edgeOrderLess);
       if (jointRipupEdges.size() > conflictDrivenEdges.size() &&
-          jointRipupEdges.size() <= 20) {
+          jointRipupEdges.size() <= repairOpts.jointRipupMaxEdges) {
         llvm::outs() << "  Conflict-directed joint repair: failedEdges="
                      << conflictDrivenEdges.size()
                      << ", ripupEdges=" << jointRipupEdges.size() << "\n";
@@ -2637,6 +2800,8 @@ bool Mapper::runLocalRepair(
       }
 
       for (IdIndex targetEdge : conflictDrivenEdges) {
+        if (shouldStopForBudget("local repair"))
+          break;
         state.restore(bestCheckpoint);
         if (targetEdge >= state.swEdgeToHwPaths.size() ||
             !state.swEdgeToHwPaths[targetEdge].empty()) {
@@ -2678,11 +2843,13 @@ bool Mapper::runLocalRepair(
               ripupEdges.push_back(otherEdgeId);
           }
         }
-        if (ripupEdges.size() < 8)
-          expandConflictNeighborhood(ripupEdges, 10u);
+        if (ripupEdges.size() < repairOpts.focusedBlockerEdgeThreshold)
+          expandConflictNeighborhood(ripupEdges,
+                                     repairOpts.relocationCandidateLimit);
         llvm::stable_sort(ripupEdges, edgeOrderLess);
 
-        if (ripupEdges.size() <= 1 || ripupEdges.size() > 18)
+        if (ripupEdges.size() <= repairOpts.singleRipupMinEdges ||
+            ripupEdges.size() > repairOpts.singleRipupMaxEdges)
           continue;
 
         llvm::outs() << "  Conflict-directed repair edge " << targetEdge
@@ -2721,32 +2888,46 @@ bool Mapper::runLocalRepair(
 
   auto buildCpSatRepairOpts = [&]() {
     Options cpSatRepairOpts = opts;
-    if (bestFailedEdges.size() <= 2) {
+    if (bestFailedEdges.size() <=
+        repairOpts.residualJointRepairFailedEdgeThreshold) {
       cpSatRepairOpts.cpSatTimeLimitSeconds =
-          std::max(cpSatRepairOpts.cpSatTimeLimitSeconds, 12.0);
+          std::max(cpSatRepairOpts.cpSatTimeLimitSeconds,
+                   repairOpts.earlyCPSatMinTime);
       cpSatRepairOpts.cpSatNeighborhoodNodeLimit =
-          std::max<unsigned>(cpSatRepairOpts.cpSatNeighborhoodNodeLimit, 12u);
+          std::max<unsigned>(cpSatRepairOpts.cpSatNeighborhoodNodeLimit,
+                             repairOpts.earlyCPSatNeighborhoodLimit);
       cpSatRepairOpts.placementMoveRadius =
-          std::max<unsigned>(cpSatRepairOpts.placementMoveRadius, 5u);
-    } else if (bestFailedEdges.size() <= 4) {
+          std::max<unsigned>(cpSatRepairOpts.placementMoveRadius,
+                             repairOpts.earlyCPSatMoveRadius);
+    } else if (bestFailedEdges.size() <= repairOpts.cpSatSmallFailedThreshold) {
       cpSatRepairOpts.cpSatTimeLimitSeconds =
-          std::max(cpSatRepairOpts.cpSatTimeLimitSeconds, 8.0);
+          std::max(cpSatRepairOpts.cpSatTimeLimitSeconds,
+                   repairOpts.cpSatSmallFailedMinTime);
       cpSatRepairOpts.cpSatNeighborhoodNodeLimit =
-          std::max<unsigned>(cpSatRepairOpts.cpSatNeighborhoodNodeLimit, 8u);
-    } else if (bestFailedEdges.size() <= 6) {
+          std::max<unsigned>(cpSatRepairOpts.cpSatNeighborhoodNodeLimit,
+                             repairOpts.cpSatSmallFailedNodeLimit);
+    } else if (bestFailedEdges.size() <=
+               repairOpts.cpSatMediumFailedThreshold) {
       cpSatRepairOpts.cpSatTimeLimitSeconds =
-          std::max(cpSatRepairOpts.cpSatTimeLimitSeconds, 8.0);
+          std::max(cpSatRepairOpts.cpSatTimeLimitSeconds,
+                   repairOpts.cpSatMediumFailedMinTime);
       cpSatRepairOpts.cpSatNeighborhoodNodeLimit =
-          std::max<unsigned>(cpSatRepairOpts.cpSatNeighborhoodNodeLimit, 8u);
+          std::max<unsigned>(cpSatRepairOpts.cpSatNeighborhoodNodeLimit,
+                             repairOpts.cpSatMediumFailedNodeLimit);
     }
     return cpSatRepairOpts;
   };
 
-  for (unsigned polishRound = 0; polishRound < 2 && !bestAllRouted;
+  for (unsigned polishRound = 0;
+       polishRound < repairOpts.residualJointRepairFailedEdgeThreshold &&
+       !bestAllRouted;
        ++polishRound) {
+    if (shouldStopForBudget("local repair"))
+      break;
     bool improved = false;
 
-    if (opts.enableCPSat && bestFailedEdges.size() <= 6) {
+    if (opts.enableCPSat &&
+        bestFailedEdges.size() <= repairOpts.cpSatMediumFailedThreshold) {
       state.restore(bestPlacementCheckpoint);
       Options cpSatRepairOpts = buildCpSatRepairOpts();
       bool allRouted = runCPSatNeighborhoodRepair(
@@ -2761,7 +2942,8 @@ bool Mapper::runLocalRepair(
       }
     }
 
-    if (!bestAllRouted && bestFailedEdges.size() <= 8) {
+    if (!bestAllRouted &&
+        bestFailedEdges.size() <= repairOpts.cpSatFallbackFailedEdgeThreshold) {
       state.restore(bestCheckpoint);
       bool allRouted = runExactRoutingRepair(state, bestFailedEdges, dfg, adg,
                                              flattener, edgeKinds, opts,

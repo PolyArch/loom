@@ -34,8 +34,8 @@ struct PreparedDomain {
   std::vector<IdIndex> hwCandidates;
 };
 
-int64_t scaledPlacementCost(double weight, int distance) {
-  return static_cast<int64_t>(std::llround(weight * 100.0)) *
+int64_t scaledPlacementCost(double weight, int distance, double scale) {
+  return static_cast<int64_t>(std::llround(weight * scale)) *
          static_cast<int64_t>(distance);
 }
 
@@ -235,7 +235,8 @@ bool solvePlacementSubset(
         edgeWeightOverrides && edgeWeightOverrides->count(edgeId)
             ? edgeWeightOverrides->lookup(edgeId)
             : classifyEdgePlacementWeight(dfg, edgeId);
-    int64_t edgeWeight = scaledPlacementCost(edgeWeightBase, 1);
+    int64_t edgeWeight = scaledPlacementCost(
+        edgeWeightBase, 1, opts.cpSatTuning.placementCostScale);
     if (edgeWeight <= 0)
       continue;
 
@@ -300,10 +301,11 @@ bool solvePlacementSubset(
   params.set_max_time_in_seconds(opts.cpSatTimeLimitSeconds);
   unsigned hwConcurrency = std::thread::hardware_concurrency();
   if (hwConcurrency == 0)
-    hwConcurrency = 4;
+    hwConcurrency = opts.cpSatTuning.workerFallbackConcurrency;
   unsigned laneBudget = opts.lanes == 0 ? 1u : opts.lanes;
   unsigned cpSatWorkers =
-      std::max(1u, std::min(8u, hwConcurrency / laneBudget));
+      std::max(1u, std::min(opts.cpSatTuning.workerCap,
+                            hwConcurrency / laneBudget));
   params.set_num_search_workers(cpSatWorkers);
   model.Add(NewSatParameters(params));
 
@@ -381,6 +383,14 @@ bool Mapper::runCPSatGlobalPlacement(
 #else
   if (!opts.enableCPSat)
     return false;
+  if (shouldStopForBudget("cp-sat global placement"))
+    return false;
+
+  Options budgetedOpts = opts;
+  budgetedOpts.cpSatTimeLimitSeconds =
+      clampToRemainingBudget(opts.cpSatTimeLimitSeconds);
+  if (budgetedOpts.cpSatTimeLimitSeconds <= 0.0)
+    return false;
 
   std::vector<IdIndex> unplacedNodes;
   for (IdIndex swNode = 0; swNode < static_cast<IdIndex>(dfg.nodes.size());
@@ -421,7 +431,8 @@ bool Mapper::runCPSatGlobalPlacement(
 
     PreparedDomain domain;
     domain.swNode = swNode;
-    unsigned limit = std::min<unsigned>(rankedCandidates.size(), 8);
+    unsigned limit = std::min<unsigned>(
+        rankedCandidates.size(), opts.cpSatTuning.globalCandidateLimit);
     for (unsigned idx = 0; idx < limit; ++idx)
       domain.hwCandidates.push_back(rankedCandidates[idx].second);
     if (domain.hwCandidates.empty()) {
@@ -432,7 +443,7 @@ bool Mapper::runCPSatGlobalPlacement(
   }
 
   bool solved = solvePlacementSubset(state, checkpoint, domains, dfg, adg,
-                                     flattener, opts);
+                                     flattener, budgetedOpts);
   if (solved) {
     for (const auto &domain : domains) {
       if (!bindMappedNodePorts(domain.swNode, state, dfg, adg)) {
@@ -474,6 +485,14 @@ bool Mapper::runCPSatNeighborhoodRepair(
 #else
   if (!opts.enableCPSat || failedEdges.empty())
     return false;
+  if (shouldStopForBudget("cp-sat neighborhood repair"))
+    return false;
+
+  Options budgetedOpts = opts;
+  budgetedOpts.cpSatTimeLimitSeconds =
+      clampToRemainingBudget(opts.cpSatTimeLimitSeconds);
+  if (budgetedOpts.cpSatTimeLimitSeconds <= 0.0)
+    return false;
 
   state.restore(baseCheckpoint);
 
@@ -507,11 +526,18 @@ bool Mapper::runCPSatNeighborhoodRepair(
     return lhs < rhs;
   });
 
-  const bool tightEndgame = failedEdges.size() <= 6;
-  const bool veryTightEndgame = failedEdges.size() <= 2;
+  const bool tightEndgame =
+      failedEdges.size() <= opts.cpSatTuning.tightEndgameFailedEdgeThreshold;
+  const bool veryTightEndgame = failedEdges.size() <=
+                                opts.cpSatTuning
+                                    .veryTightEndgameFailedEdgeThreshold;
   const unsigned targetNeighborhood =
       tightEndgame ? opts.cpSatNeighborhoodNodeLimit
-                   : std::min<unsigned>(12u, failedEdges.size() * 2u + 2u);
+                   : std::min<unsigned>(
+                         opts.cpSatTuning.neighborhoodExpansionCap,
+                         failedEdges.size() *
+                                 opts.cpSatTuning.neighborhoodExpansionEdgeMultiplier +
+                             opts.cpSatTuning.neighborhoodExpansionBase);
   const unsigned neighborhoodLimit =
       std::max(1u, std::min(opts.cpSatNeighborhoodNodeLimit, targetNeighborhood));
 
@@ -634,8 +660,12 @@ bool Mapper::runCPSatNeighborhoodRepair(
   for (IdIndex edgeId : failedEdges)
     focusEdgeWeights[edgeId] =
         veryTightEndgame
-            ? std::max(80.0, focusEdgeWeights.lookup(edgeId) * 28.0)
-            : std::max(40.0, focusEdgeWeights.lookup(edgeId) * 18.0);
+            ? std::max(opts.cpSatTuning.veryTightFocusWeightFloor,
+                       focusEdgeWeights.lookup(edgeId) *
+                           opts.cpSatTuning.veryTightFocusWeightScale)
+            : std::max(opts.cpSatTuning.tightFocusWeightFloor,
+                       focusEdgeWeights.lookup(edgeId) *
+                           opts.cpSatTuning.tightFocusWeightScale);
 
   std::vector<PreparedDomain> domains;
   domains.reserve(neighborhood.size());
@@ -650,9 +680,11 @@ bool Mapper::runCPSatNeighborhoodRepair(
         veryTightEndgame
             ? 0u
             : (tightEndgame
-            ? std::max(veryTightEndgame ? 5u : 3u,
-                       opts.placementMoveRadius + (veryTightEndgame ? 2u : 1u))
-            : 0u);
+                   ? std::max(
+                         opts.cpSatTuning.tightMoveRadiusFloor,
+                         opts.placementMoveRadius +
+                             opts.cpSatTuning.moveRadiusExpansion)
+                   : 0u);
     for (IdIndex hwNode : candIt->second) {
       if (oldHw != INVALID_ID && moveRadius != 0 &&
           manhattanDistance(oldHw, hwNode, flattener) >
@@ -683,7 +715,9 @@ bool Mapper::runCPSatNeighborhoodRepair(
       domain.hwCandidates.push_back(oldHw);
     unsigned limit = std::min<unsigned>(
         rankedCandidates.size(),
-        veryTightEndgame ? 12u : (tightEndgame ? 5u : 8u));
+        veryTightEndgame ? opts.cpSatTuning.veryTightCandidateLimit
+                         : (tightEndgame ? opts.cpSatTuning.tightCandidateLimit
+                                         : opts.cpSatTuning.defaultCandidateLimit));
     for (unsigned idx = 0; idx < limit; ++idx) {
       IdIndex hwNode = rankedCandidates[idx].second;
       if (std::find(domain.hwCandidates.begin(), domain.hwCandidates.end(),
@@ -703,7 +737,8 @@ bool Mapper::runCPSatNeighborhoodRepair(
   }
 
   bool solved = solvePlacementSubset(state, baseCheckpoint, domains, dfg, adg,
-                                     flattener, opts, &focusEdgeWeights);
+                                     flattener, budgetedOpts,
+                                     &focusEdgeWeights);
   if (!solved) {
     if (opts.verbose) {
       llvm::outs() << "  CP-SAT neighborhood could not solve " << domains.size()
@@ -726,9 +761,9 @@ bool Mapper::runCPSatNeighborhoodRepair(
   bindMemrefSentinels(state, dfg, adg);
   classifyTemporalRegisterEdges(state, dfg, adg, flattener, edgeKinds);
   bool allRouted =
-      opts.negotiatedRoutingPasses > 0
-          ? runNegotiatedRouting(state, dfg, adg, edgeKinds, opts)
-          : runRouting(state, dfg, adg, edgeKinds, opts);
+      budgetedOpts.negotiatedRoutingPasses > 0
+          ? runNegotiatedRouting(state, dfg, adg, edgeKinds, budgetedOpts)
+          : runRouting(state, dfg, adg, edgeKinds, budgetedOpts);
   if (opts.verbose) {
     llvm::outs() << "  CP-SAT neighborhood repaired " << domains.size()
                  << " nodes, routed " << countRoutedEdges(state, dfg, edgeKinds)

@@ -1,0 +1,3 @@
+# Load a custom mapper base config and override one promoted CLI flag.
+--mapper-base-config tests/unit/mapper-base-config/config.yaml
+--mapper-routing-heuristic-weight 2.0
