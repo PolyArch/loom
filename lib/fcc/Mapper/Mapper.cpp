@@ -25,9 +25,13 @@ using namespace mapper_detail;
 
 namespace {
 
-unsigned selectLaneCount(unsigned configuredLanes) {
+unsigned selectLaneCount(unsigned configuredLanes, const Graph &dfg) {
   if (configuredLanes != 0)
     return configuredLanes;
+  // Tiny unit-style graphs do not benefit from speculative parallel lanes,
+  // and serializing them avoids cross-lane diagnostic races.
+  if (dfg.nodes.size() <= 16)
+    return 1;
   unsigned concurrency = std::thread::hardware_concurrency();
   if (concurrency == 0)
     concurrency = 1;
@@ -637,7 +641,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     }
   }
 
-  const unsigned laneCount = selectLaneCount(opts.lanes);
+  const unsigned laneCount = selectLaneCount(opts.lanes, dfg);
   if (opts.verbose && laneCount > 1)
     llvm::outs() << "Mapper: launching " << laneCount << " parallel lanes\n";
 

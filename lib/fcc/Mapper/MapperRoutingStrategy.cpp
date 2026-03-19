@@ -438,7 +438,9 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
             ? dstSwPortPtr->parentNode
             : INVALID_ID;
 
-    if (dstSwNodeId != INVALID_ID && !processedSinkNodes.contains(dstSwNodeId)) {
+    if (dstSwNodeId != INVALID_ID &&
+        dstSwNode && dstSwNode->kind == Node::ModuleOutputNode &&
+        !processedSinkNodes.contains(dstSwNodeId)) {
       llvm::SmallVector<IdIndex, 8> outputEdges;
       collectUnroutedSinkEdgesForNode(dstSwNodeId, edgeOrder, state, dfg,
                                       edgeKinds, outputEdges);
