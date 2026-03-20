@@ -68,6 +68,13 @@ The `congestion` map owns negotiated-routing feedback controls such as:
 - routing-output history bump and decay
 - early-termination window for non-improving negotiated iterations
 
+The `refinement` map owns simulated-annealing placement tuning, including:
+
+- geometric cooling (`initial_temperature`, `cooling_rate`)
+- adaptive cooling enablement and acceptance-ratio windowing
+- cold-search reheating and hot-search extra cooling multipliers
+- plateau reheating thresholds and temperature clamps
+
 The top-level `snapshot_interval_seconds` and `snapshot_interval_rounds`
 controls own periodic mapper snapshot emission:
 
@@ -94,6 +101,10 @@ Parameters should remain config-only when they are:
 - narrowly scoped to one repair or endgame heuristic
 - unlikely to be tuned on every command invocation
 - part of a larger grouped strategy that is easier to reason about in YAML
+
+Adaptive simulated-annealing cooling currently remains config-only. It is part
+of the grouped `refinement` strategy and is expected to be tuned together with
+the base SA temperature schedule rather than as an ad-hoc standalone flag.
 
 ## Promoted CLI Surface
 
@@ -139,6 +150,15 @@ Validation also covers:
 - `snapshot_interval_seconds` must be `-1` or `> 0`
 - `snapshot_interval_rounds` must be `-1` or `> 0`
 - the two snapshot modes must not both be enabled
+- `refinement.target_acceptance_low` and
+  `refinement.target_acceptance_high` must both be within `[0, 1]`, and the
+  low threshold must not exceed the high threshold
+- `refinement.cold_acceptance_reheat_multiplier`,
+  `refinement.plateau_reheat_multiplier`, and
+  `refinement.max_temperature_scale` must be `>= 1`
+- `refinement.hot_acceptance_cooling_multiplier` must be within `[0, 1]`
+- `refinement.min_temperature` and `refinement.adaptive_window` must be
+  positive
 
 ## Related Documents
 

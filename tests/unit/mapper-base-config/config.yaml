@@ -2,6 +2,17 @@ version: 1
 
 mapper:
   routing_heuristic_weight: 1.25
+  refinement:
+    adaptive_cooling_enabled: true
+    adaptive_window: 64
+    target_acceptance_low: 0.1
+    target_acceptance_high: 0.5
+    cold_acceptance_reheat_multiplier: 1.05
+    hot_acceptance_cooling_multiplier: 0.98
+    plateau_window: 256
+    plateau_reheat_multiplier: 1.15
+    max_temperature_scale: 1.25
+    min_temperature: 0.02
   congestion:
     history_decay: 0.97
     routing_output_history_bump: 0.15

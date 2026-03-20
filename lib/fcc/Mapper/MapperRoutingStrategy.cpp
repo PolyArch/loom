@@ -565,21 +565,23 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
                 currentOrder.push_back(groupedEdgeId);
                 IdIndex savedEdge = remainingEdges[idx];
                 remainingEdges.erase(remainingEdges.begin() + idx);
-                auto checkpoint = state.save();
                 auto demandCheckpoint = savePresentDemand();
                 bool mappedThisEdge = false;
 
                 const auto &choices = firstHopChoices[groupedEdgeId];
                 for (IdIndex firstHop : choices) {
+                  auto savepoint = state.beginSavepoint();
                   auto groupedPath =
                       findPath(groupedSrcHwPort, groupedDstHwPort, groupedEdgeId,
                                state, dfg, adg, routingOutputHistory, firstHop,
                                congestion);
-                  if (groupedPath.empty())
+                  if (groupedPath.empty()) {
+                    state.rollbackSavepoint(savepoint);
                     continue;
+                  }
                   if (state.mapEdge(groupedEdgeId, groupedPath, dfg, adg) !=
                       ActionResult::Success) {
-                    state.restore(checkpoint);
+                    state.rollbackSavepoint(savepoint);
                     restorePresentDemand(demandCheckpoint);
                     continue;
                   }
@@ -587,7 +589,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
                   commitRoutedPath(groupedPath);
                   searchBoundaryGroup(remainingEdges, successCount + 1,
                                       totalPathLen + groupedPath.size());
-                  state.restore(checkpoint);
+                  state.rollbackSavepoint(savepoint);
                   restorePresentDemand(demandCheckpoint);
                 }
 
@@ -596,7 +598,6 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
 
                 remainingEdges.insert(remainingEdges.begin() + idx, savedEdge);
                 currentOrder.pop_back();
-                state.restore(checkpoint);
                 restorePresentDemand(demandCheckpoint);
               }
             };
@@ -678,10 +679,10 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
         IdIndex bestFirstHop = INVALID_ID;
 
         for (IdIndex firstHop : firstHopCandidates) {
-          auto checkpoint = state.save();
           auto demandCheckpoint = savePresentDemand();
           unsigned successCount = 0;
           size_t totalPathLen = 0;
+          auto savepoint = state.beginSavepoint();
           for (IdIndex siblingEdgeId : siblingEdges) {
             const Edge *siblingEdge = dfg.getEdge(siblingEdgeId);
             if (!siblingEdge)
@@ -702,7 +703,7 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
             ++successCount;
             totalPathLen += siblingPath.size();
           }
-          state.restore(checkpoint);
+          state.rollbackSavepoint(savepoint);
           restorePresentDemand(demandCheckpoint);
 
           if (successCount > bestSuccessCount ||
@@ -900,7 +901,7 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
     }
 
     for (IdIndex edgeId : ripupEdges)
-      state.unmapEdge(edgeId, adg);
+      state.unmapEdge(edgeId, dfg, adg);
 
     std::vector<IdIndex> remainingEdges;
     llvm::DenseSet<IdIndex> ripupSet;

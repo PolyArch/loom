@@ -204,7 +204,7 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
   for (unsigned iter = 0; iter < opts.negotiatedRoutingPasses; ++iter) {
     if (shouldStopForBudget("negotiated routing"))
       break;
-    state.clearRoutes(adg);
+    state.clearRoutes(dfg, adg);
     congestion.resetPresentDemand();
 
     unsigned routed = 0;

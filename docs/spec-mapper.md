@@ -44,7 +44,8 @@ More specifically:
 - coarse placement may come from greedy placement or from a bounded CP-SAT
   solve on small enough problems
 - placement refinement may include route-aware simulated annealing and
-  congestion-aware scoring, but must not mutate FU-internal configuration
+  congestion-aware scoring, adaptive cooling, and bounded reheating, but must
+  not mutate FU-internal configuration
 - routing is not a one-shot terminal stage in the current architecture;
   FCC may run multiple interleaved place or route rounds, negotiated
   congestion routing passes, and selective rip-up or reroute attempts

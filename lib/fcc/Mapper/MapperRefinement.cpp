@@ -17,6 +17,255 @@ namespace fcc {
 
 using namespace mapper_detail;
 
+namespace {
+
+struct SACostState {
+  double totalCost = 0.0;
+  std::vector<double> rowCutLoad;
+  std::vector<double> colCutLoad;
+  struct UndoRecord {
+    bool isRow = false;
+    int index = -1;
+    double oldValue = 0.0;
+  };
+  struct Savepoint {
+    size_t undoMarker = 0;
+    double totalCost = 0.0;
+  };
+  std::vector<UndoRecord> undoLog;
+  std::vector<size_t> savepointMarkers;
+};
+
+struct SAAdaptiveState {
+  unsigned windowIterations = 0;
+  unsigned windowAccepted = 0;
+  unsigned windowBestImprovements = 0;
+  unsigned iterationsSinceBestImprovement = 0;
+};
+
+constexpr double kCutLoadQuadraticWeight = 0.006;
+
+SACostState::Savepoint beginCostSavepoint(SACostState &costState) {
+  SACostState::Savepoint savepoint{costState.undoLog.size(),
+                                   costState.totalCost};
+  costState.savepointMarkers.push_back(savepoint.undoMarker);
+  return savepoint;
+}
+
+void rollbackCostSavepoint(SACostState &costState,
+                           SACostState::Savepoint savepoint) {
+  while (costState.undoLog.size() > savepoint.undoMarker) {
+    const auto &record = costState.undoLog.back();
+    auto &loads =
+        record.isRow ? costState.rowCutLoad : costState.colCutLoad;
+    loads[record.index] = record.oldValue;
+    costState.undoLog.pop_back();
+  }
+  costState.totalCost = savepoint.totalCost;
+  if (!costState.savepointMarkers.empty())
+    costState.savepointMarkers.pop_back();
+}
+
+void commitCostSavepoint(SACostState &costState,
+                         SACostState::Savepoint savepoint) {
+  (void)savepoint;
+  if (!costState.savepointMarkers.empty())
+    costState.savepointMarkers.pop_back();
+}
+
+void recordLoadUndo(SACostState &costState, bool isRow, int index,
+                    double oldValue) {
+  if (costState.savepointMarkers.empty())
+    return;
+  costState.undoLog.push_back({isRow, index, oldValue});
+}
+
+void adjustQuadraticLoad(std::vector<double> &loads, int index, double delta,
+                         double &totalCost, SACostState &costState,
+                         bool isRow) {
+  if (index < 0 || index >= static_cast<int>(loads.size()) || delta == 0.0)
+    return;
+  double oldLoad = loads[index];
+  recordLoadUndo(costState, isRow, index, oldLoad);
+  double newLoad = oldLoad + delta;
+  totalCost +=
+      kCutLoadQuadraticWeight * (newLoad * newLoad - oldLoad * oldLoad);
+  loads[index] = newLoad;
+}
+
+void applyEdgePlacementContribution(double sign, double edgeWeight, IdIndex srcHw,
+                                    IdIndex dstHw, const Graph &adg,
+                                    const ADGFlattener &flattener,
+                                    SACostState &costState) {
+  (void)adg;
+  if (srcHw == INVALID_ID || dstHw == INVALID_ID)
+    return;
+  auto [sr, sc] = flattener.getNodeGridPos(srcHw);
+  auto [dr, dc] = flattener.getNodeGridPos(dstHw);
+  if (sr < 0 || sc < 0 || dr < 0 || dc < 0)
+    return;
+
+  int dist = std::abs(sr - dr) + std::abs(sc - dc);
+  costState.totalCost += sign * edgeWeight * static_cast<double>(dist);
+
+  for (int row = std::min(sr, dr); row < std::max(sr, dr); ++row)
+    adjustQuadraticLoad(costState.rowCutLoad, row, sign * edgeWeight,
+                        costState.totalCost, costState, true);
+  for (int col = std::min(sc, dc); col < std::max(sc, dc); ++col)
+    adjustQuadraticLoad(costState.colCutLoad, col, sign * edgeWeight,
+                        costState.totalCost, costState, false);
+}
+
+SACostState initializeSACostState(const MappingState &state, const Graph &dfg,
+                                  const Graph &adg,
+                                  const ADGFlattener &flattener,
+                                  llvm::ArrayRef<double> edgeWeights) {
+  int maxRow = -1;
+  int maxCol = -1;
+  for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(adg.nodes.size()); ++hwId) {
+    const Node *hwNode = adg.getNode(hwId);
+    if (!hwNode)
+      continue;
+    auto [row, col] = flattener.getNodeGridPos(hwId);
+    if (row >= 0 && col >= 0) {
+      maxRow = std::max(maxRow, row);
+      maxCol = std::max(maxCol, col);
+    }
+  }
+
+  SACostState costState;
+  costState.rowCutLoad.assign(maxRow >= 0 ? static_cast<size_t>(maxRow) + 1 : 0,
+                              0.0);
+  costState.colCutLoad.assign(maxCol >= 0 ? static_cast<size_t>(maxCol) + 1 : 0,
+                              0.0);
+  costState.totalCost = 0.0;
+
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId) {
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    const Port *srcPort = dfg.getPort(edge->srcPort);
+    const Port *dstPort = dfg.getPort(edge->dstPort);
+    if (!srcPort || !dstPort || srcPort->parentNode == INVALID_ID ||
+        dstPort->parentNode == INVALID_ID)
+      continue;
+    IdIndex srcHw = state.swNodeToHwNode[srcPort->parentNode];
+    IdIndex dstHw = state.swNodeToHwNode[dstPort->parentNode];
+    double edgeWeight = edgeId < static_cast<IdIndex>(edgeWeights.size())
+                            ? edgeWeights[edgeId]
+                            : classifyEdgePlacementWeight(dfg, edgeId);
+    applyEdgePlacementContribution(+1.0, edgeWeight, srcHw, dstHw, adg,
+                                   flattener, costState);
+  }
+  return costState;
+}
+
+llvm::SmallVector<IdIndex, 32>
+collectPlacementDeltaEdges(llvm::ArrayRef<IdIndex> movedNodes,
+                           const Graph &dfg) {
+  llvm::DenseSet<IdIndex> seen;
+  llvm::SmallVector<IdIndex, 32> edges;
+  for (IdIndex swNode : movedNodes) {
+    const Node *node = dfg.getNode(swNode);
+    if (!node)
+      continue;
+    auto collect = [&](llvm::ArrayRef<IdIndex> ports) {
+      for (IdIndex portId : ports) {
+        const Port *port = dfg.getPort(portId);
+        if (!port)
+          continue;
+        for (IdIndex edgeId : port->connectedEdges) {
+          if (seen.insert(edgeId).second)
+            edges.push_back(edgeId);
+        }
+      }
+    };
+    collect(node->inputPorts);
+    collect(node->outputPorts);
+  }
+  return edges;
+}
+
+void applyPlacementDeltaForMovedNodes(
+    const llvm::SmallVectorImpl<IdIndex> &movedNodes,
+    const llvm::DenseMap<IdIndex, IdIndex> &oldHwBySwNode,
+    const MappingState &state, const Graph &dfg, const Graph &adg,
+    const ADGFlattener &flattener, llvm::ArrayRef<double> edgeWeights,
+    SACostState &costState) {
+  auto affectedEdges = collectPlacementDeltaEdges(movedNodes, dfg);
+  for (IdIndex edgeId : affectedEdges) {
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    const Port *srcPort = dfg.getPort(edge->srcPort);
+    const Port *dstPort = dfg.getPort(edge->dstPort);
+    if (!srcPort || !dstPort || srcPort->parentNode == INVALID_ID ||
+        dstPort->parentNode == INVALID_ID)
+      continue;
+
+    IdIndex srcSw = srcPort->parentNode;
+    IdIndex dstSw = dstPort->parentNode;
+    IdIndex oldSrcHw = state.swNodeToHwNode[srcSw];
+    IdIndex oldDstHw = state.swNodeToHwNode[dstSw];
+    if (auto it = oldHwBySwNode.find(srcSw); it != oldHwBySwNode.end())
+      oldSrcHw = it->second;
+    if (auto it = oldHwBySwNode.find(dstSw); it != oldHwBySwNode.end())
+      oldDstHw = it->second;
+    IdIndex newSrcHw = state.swNodeToHwNode[srcSw];
+    IdIndex newDstHw = state.swNodeToHwNode[dstSw];
+    double edgeWeight = edgeId < static_cast<IdIndex>(edgeWeights.size())
+                            ? edgeWeights[edgeId]
+                            : classifyEdgePlacementWeight(dfg, edgeId);
+    applyEdgePlacementContribution(-1.0, edgeWeight, oldSrcHw, oldDstHw, adg,
+                                   flattener, costState);
+    applyEdgePlacementContribution(+1.0, edgeWeight, newSrcHw, newDstHw, adg,
+                                   flattener, costState);
+  }
+}
+
+void applyAdaptiveCoolingWindow(double &temperature,
+                                const Mapper::Options &opts,
+                                SAAdaptiveState &adaptiveState) {
+  const auto &refineOpts = opts.refinement;
+  if (!refineOpts.adaptiveCoolingEnabled || adaptiveState.windowIterations == 0)
+    return;
+
+  const double initialTemperature = refineOpts.initialTemperature;
+  const double minTemperature = refineOpts.minTemperature;
+  const double maxTemperature =
+      initialTemperature * refineOpts.maxTemperatureScale;
+  const double acceptanceRatio =
+      static_cast<double>(adaptiveState.windowAccepted) /
+      static_cast<double>(adaptiveState.windowIterations);
+
+  if (acceptanceRatio < refineOpts.targetAcceptanceLow) {
+    temperature = std::min(maxTemperature, temperature *
+                                               refineOpts
+                                                   .coldAcceptanceReheatMultiplier);
+  } else if (acceptanceRatio > refineOpts.targetAcceptanceHigh) {
+    temperature = std::max(
+        minTemperature,
+        temperature * refineOpts.hotAcceptanceCoolingMultiplier);
+  }
+
+  if (refineOpts.plateauWindow > 0 &&
+      adaptiveState.iterationsSinceBestImprovement >=
+          refineOpts.plateauWindow &&
+      adaptiveState.windowBestImprovements == 0) {
+    temperature = std::min(maxTemperature,
+                           std::max(temperature, minTemperature) *
+                               refineOpts.plateauReheatMultiplier);
+    adaptiveState.iterationsSinceBestImprovement = 0;
+  }
+
+  adaptiveState.windowIterations = 0;
+  adaptiveState.windowAccepted = 0;
+  adaptiveState.windowBestImprovements = 0;
+}
+
+} // namespace
+
 bool Mapper::runRefinement(
     MappingState &state, const Graph &dfg, const Graph &adg,
     const ADGFlattener &flattener,
@@ -36,6 +285,21 @@ bool Mapper::runRefinement(
   if (placedNodes.size() < 2)
     return true;
 
+  CandidateSetMap candidateSets = buildCandidateSetMap(candidates);
+  std::vector<double> edgeWeights = buildEdgePlacementWeightCache(dfg);
+  llvm::DenseMap<int64_t, llvm::SmallVector<IdIndex, 4>> hwNodesByCell;
+  auto cellKey = [](int row, int col) -> int64_t {
+    return (static_cast<int64_t>(row) << 32) ^
+           static_cast<uint32_t>(col);
+  };
+  for (IdIndex hwNode = 0; hwNode < static_cast<IdIndex>(adg.nodes.size());
+       ++hwNode) {
+    auto [row, col] = flattener.getNodeGridPos(hwNode);
+    if (row < 0 || col < 0)
+      continue;
+    hwNodesByCell[cellKey(row, col)].push_back(hwNode);
+  }
+
   double temperature = opts.refinement.initialTemperature;
   double coolingRate = opts.refinement.coolingRate;
   int maxIter = static_cast<int>(placedNodes.size()) *
@@ -43,7 +307,10 @@ bool Mapper::runRefinement(
   if (maxIter > static_cast<int>(opts.refinement.iterationCap))
     maxIter = static_cast<int>(opts.refinement.iterationCap);
 
-  double bestCost = computeTotalCost(state, dfg, adg, flattener);
+  SACostState costState =
+      initializeSACostState(state, dfg, adg, flattener, edgeWeights);
+  SAAdaptiveState adaptiveState;
+  double bestCost = costState.totalCost;
   auto bestCheckpoint = state.save();
   int acceptCount = 0;
 
@@ -62,11 +329,15 @@ bool Mapper::runRefinement(
     if (secs > localBudgetSeconds)
       break;
 
-    double oldCost = computeTotalCost(state, dfg, adg, flattener);
-    auto checkpoint = state.save();
+    double oldCost = costState.totalCost;
+    auto savepoint = state.beginSavepoint();
+    auto costSavepoint = beginCostSavepoint(costState);
+    bool improvedBestThisIter = false;
 
     bool moveOk = false;
     bool doSwap = std::uniform_int_distribution<int>(0, 1)(rng) == 0;
+    llvm::SmallVector<IdIndex, 2> movedNodes;
+    llvm::DenseMap<IdIndex, IdIndex> oldHwBySwNode;
 
     if (doSwap) {
       std::uniform_int_distribution<size_t> dist(0, placedNodes.size() - 1);
@@ -74,26 +345,48 @@ bool Mapper::runRefinement(
       IdIndex hwA = state.swNodeToHwNode[swA];
 
       llvm::SmallVector<IdIndex, 16> nearbyNodes;
-      for (IdIndex swCandidate : placedNodes) {
-        if (swCandidate == swA)
-          continue;
-        IdIndex hwCandidate = state.swNodeToHwNode[swCandidate];
-        if (hwCandidate == INVALID_ID)
-          continue;
-        if (!isWithinMoveRadius(hwA, hwCandidate, flattener,
-                                opts.placementMoveRadius))
-          continue;
-        nearbyNodes.push_back(swCandidate);
+      auto [hwARow, hwACol] = flattener.getNodeGridPos(hwA);
+      for (int dr = -static_cast<int>(opts.placementMoveRadius);
+           dr <= static_cast<int>(opts.placementMoveRadius); ++dr) {
+        for (int dc = -static_cast<int>(opts.placementMoveRadius);
+             dc <= static_cast<int>(opts.placementMoveRadius); ++dc) {
+          int row = hwARow + dr;
+          int col = hwACol + dc;
+          auto it = hwNodesByCell.find(cellKey(row, col));
+          if (it == hwNodesByCell.end())
+            continue;
+          for (IdIndex nearbyHwNode : it->second) {
+            if (!isWithinMoveRadius(hwA, nearbyHwNode, flattener,
+                                    opts.placementMoveRadius))
+              continue;
+            if (nearbyHwNode >= state.hwNodeToSwNodes.size())
+              continue;
+            for (IdIndex swCandidate : state.hwNodeToSwNodes[nearbyHwNode]) {
+              if (swCandidate == swA)
+                continue;
+              nearbyNodes.push_back(swCandidate);
+            }
+          }
+        }
       }
+      llvm::sort(nearbyNodes);
+      nearbyNodes.erase(std::unique(nearbyNodes.begin(), nearbyNodes.end()),
+                        nearbyNodes.end());
       if (nearbyNodes.empty())
-        continue;
+        goto rollback_move;
 
       std::uniform_int_distribution<size_t> nearbyDist(0,
                                                        nearbyNodes.size() - 1);
       IdIndex swB = nearbyNodes[nearbyDist(rng)];
       IdIndex hwB = state.swNodeToHwNode[swB];
-      if (!canSwapNodes(swA, swB, hwA, hwB, state, adg, flattener, candidates))
-        continue;
+      if (!canSwapNodes(swA, swB, hwA, hwB, state, adg, flattener, candidates,
+                        &candidateSets))
+        goto rollback_move;
+
+      movedNodes.push_back(swA);
+      movedNodes.push_back(swB);
+      oldHwBySwNode[swA] = hwA;
+      oldHwBySwNode[swB] = hwB;
 
       state.unmapNode(swA, dfg, adg);
       state.unmapNode(swB, dfg, adg);
@@ -109,7 +402,7 @@ bool Mapper::runRefinement(
       IdIndex oldHw = state.swNodeToHwNode[swNode];
       auto candIt = candidates.find(swNode);
       if (candIt == candidates.end() || candIt->second.size() < 2)
-        continue;
+        goto rollback_move;
 
       IdIndex newHw = INVALID_ID;
       double bestCandScore = -1.0e18;
@@ -121,7 +414,7 @@ bool Mapper::runRefinement(
                                 opts.placementMoveRadius))
           continue;
         if (!canRelocateNode(swNode, candHw, oldHw, state, adg, flattener,
-                             candidates))
+                             candidates, &candidateSets))
           continue;
 
         double candScore = scorePlacement(swNode, candHw, state, dfg, adg,
@@ -143,7 +436,10 @@ bool Mapper::runRefinement(
         newHw = topCandidates[candDist(rng)];
       }
       if (newHw == INVALID_ID)
-        continue;
+        goto rollback_move;
+
+      movedNodes.push_back(swNode);
+      oldHwBySwNode[swNode] = oldHw;
 
       state.unmapNode(swNode, dfg, adg);
       auto result = state.mapNode(swNode, newHw, dfg, adg);
@@ -152,26 +448,45 @@ bool Mapper::runRefinement(
     }
 
     if (!moveOk) {
-      state.restore(checkpoint);
+rollback_move:
+      state.rollbackSavepoint(savepoint);
+      rollbackCostSavepoint(costState, costSavepoint);
       continue;
     }
 
-    double newCost = computeTotalCost(state, dfg, adg, flattener);
+    applyPlacementDeltaForMovedNodes(movedNodes, oldHwBySwNode, state, dfg, adg,
+                                     flattener, edgeWeights, costState);
+    double newCost = costState.totalCost;
     double delta = oldCost - newCost;
     bool acceptMove =
         delta > 0 || std::uniform_real_distribution<double>(0.0, 1.0)(rng) <
                          std::exp(delta / temperature);
     if (acceptMove) {
       ++acceptCount;
+      ++adaptiveState.windowAccepted;
+      state.commitSavepoint(savepoint);
+      commitCostSavepoint(costState, costSavepoint);
       if (newCost < bestCost) {
         bestCost = newCost;
+        improvedBestThisIter = true;
+        adaptiveState.windowBestImprovements++;
+        adaptiveState.iterationsSinceBestImprovement = 0;
         bestCheckpoint = state.save();
       }
     } else {
-      state.restore(checkpoint);
+      state.rollbackSavepoint(savepoint);
+      rollbackCostSavepoint(costState, costSavepoint);
     }
 
-    temperature *= coolingRate;
+    ++adaptiveState.windowIterations;
+    if (!improvedBestThisIter)
+      ++adaptiveState.iterationsSinceBestImprovement;
+    temperature = std::max(opts.refinement.minTemperature,
+                           temperature * coolingRate);
+    if (opts.refinement.adaptiveCoolingEnabled &&
+        adaptiveState.windowIterations >= opts.refinement.adaptiveWindow) {
+      applyAdaptiveCoolingWindow(temperature, opts, adaptiveState);
+    }
   }
 
   state.restore(bestCheckpoint);

@@ -10,6 +10,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
@@ -19,6 +20,9 @@
 
 namespace fcc {
 namespace mapper_detail {
+
+using CandidateMap = llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>>;
+using CandidateSetMap = llvm::DenseMap<IdIndex, llvm::DenseSet<IdIndex>>;
 
 // Type checking helpers.
 bool isMemrefType(mlir::Type type);
@@ -77,16 +81,16 @@ estimateSoftwarePortPlacementPos(IdIndex swNode, IdIndex swPort,
 
 // Placement heuristics.
 double classifyEdgePlacementWeight(const Graph &dfg, IdIndex edgeId);
+std::vector<double> buildEdgePlacementWeightCache(const Graph &dfg);
 double computeNodePriorityWeight(IdIndex swNode, const Graph &dfg);
 std::optional<std::pair<double, double>>
 estimateNodePlacementPos(IdIndex swNode, const MappingState &state,
                          const Graph &dfg, const ADGFlattener &flattener,
-                         const llvm::DenseMap<IdIndex,
-                                              llvm::SmallVector<IdIndex, 4>>
-                             &candidates);
+                         const CandidateMap &candidates);
 double computeLocalSpreadPenalty(IdIndex hwNode, const MappingState &state,
                                  const Graph &adg,
                                  const ADGFlattener &flattener);
+CandidateSetMap buildCandidateSetMap(const CandidateMap &candidates);
 
 // Refinement/repair shared helpers.
 int manhattanDistance(IdIndex lhsHwNode, IdIndex rhsHwNode,
@@ -96,11 +100,13 @@ bool isWithinMoveRadius(IdIndex lhsHwNode, IdIndex rhsHwNode,
 bool canRelocateNode(
     IdIndex swNode, IdIndex newHwNode, IdIndex oldHwNode,
     const MappingState &state, const Graph &adg, const ADGFlattener &flattener,
-    const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates);
+    const CandidateMap &candidates,
+    const CandidateSetMap *candidateSets = nullptr);
 bool canSwapNodes(
     IdIndex swA, IdIndex swB, IdIndex hwA, IdIndex hwB,
     const MappingState &state, const Graph &adg, const ADGFlattener &flattener,
-    const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates);
+    const CandidateMap &candidates,
+    const CandidateSetMap *candidateSets = nullptr);
 double computeUnroutedPenalty(const MappingState &state, const Graph &dfg,
                               llvm::ArrayRef<TechMappedEdgeKind> edgeKinds);
 

@@ -8,6 +8,16 @@ namespace fcc {
 struct MapperRefinementOptions {
   double initialTemperature = 100.0;
   double coolingRate = 0.995;
+  bool adaptiveCoolingEnabled = true;
+  unsigned adaptiveWindow = 128;
+  double targetAcceptanceLow = 0.12;
+  double targetAcceptanceHigh = 0.55;
+  double coldAcceptanceReheatMultiplier = 1.1;
+  double hotAcceptanceCoolingMultiplier = 0.97;
+  unsigned plateauWindow = 512;
+  double plateauReheatMultiplier = 1.25;
+  double maxTemperatureScale = 1.5;
+  double minTemperature = 0.01;
   unsigned iterationsPerPlacedNode = 1000;
   unsigned iterationCap = 50000;
   double budgetFraction = 0.4;

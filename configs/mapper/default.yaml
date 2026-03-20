@@ -59,6 +59,32 @@ mapper:
     initial_temperature: 100.0
     # Multiplicative cooling rate for SA.
     cooling_rate: 0.995
+    # Enable adaptive SA cooling and reheating.
+    adaptive_cooling_enabled: true
+    # Iteration window used to measure acceptance ratio for adaptive cooling.
+    adaptive_window: 128
+    # Lower bound of the target acceptance-ratio band. A colder-than-target
+    # search is mildly reheated.
+    target_acceptance_low: 0.12
+    # Upper bound of the target acceptance-ratio band. A hotter-than-target
+    # search cools more aggressively.
+    target_acceptance_high: 0.55
+    # Multiplicative reheat applied when the acceptance ratio drops below the
+    # target band.
+    cold_acceptance_reheat_multiplier: 1.1
+    # Extra multiplicative cooling applied when the acceptance ratio exceeds
+    # the target band.
+    hot_acceptance_cooling_multiplier: 0.97
+    # Number of SA iterations without a best-cost improvement before a plateau
+    # reheat is allowed. 0 disables plateau reheating.
+    plateau_window: 512
+    # Multiplicative reheat applied when SA plateaus.
+    plateau_reheat_multiplier: 1.25
+    # Upper bound on temperature relative to initial_temperature after any
+    # adaptive reheating event.
+    max_temperature_scale: 1.5
+    # Lower bound on SA temperature.
+    min_temperature: 0.01
     # Maximum SA iterations per placed operation node.
     iterations_per_placed_node: 1000
     # Absolute cap on SA iterations.

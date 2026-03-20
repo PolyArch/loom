@@ -763,7 +763,7 @@ bool Mapper::runInterleavedPlaceRoute(
       break;
 
     if (repairImproved) {
-      state.clearRoutes(adg);
+      state.clearRoutes(dfg, adg);
       currentPlacementCheckpoint = state.save();
       continue;
     }
@@ -772,7 +772,7 @@ bool Mapper::runInterleavedPlaceRoute(
       break;
 
     state.restore(bestCheckpoint);
-    state.clearRoutes(adg);
+    state.clearRoutes(dfg, adg);
     Options restartOpts = opts;
     restartOpts.seed = opts.seed +
                        static_cast<int>((round + 1) *
@@ -785,7 +785,7 @@ bool Mapper::runInterleavedPlaceRoute(
         opts.selectiveRipupPasses +
         std::min<unsigned>(opts.lane.restartRipupBonusCap, round + 1);
     runRefinement(state, dfg, adg, flattener, candidates, restartOpts);
-    state.clearRoutes(adg);
+    state.clearRoutes(dfg, adg);
     rebindScalarInputSentinels(state, dfg, adg, flattener);
     bindMemrefSentinels(state, dfg, adg);
     classifyTemporalRegisterEdges(state, dfg, adg, flattener, edgeKinds);
@@ -824,7 +824,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   }
 
   MappingState contractedState;
-  contractedState.init(techPlan.contractedDFG, adg);
+  contractedState.init(techPlan.contractedDFG, adg, &flattener);
   result.edgeKinds = techPlan.originalEdgeKinds;
   const auto originalEdgeKinds = result.edgeKinds;
   std::vector<TechMappedEdgeKind> initialContractedEdgeKinds(
@@ -992,7 +992,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
             attempt.state, cpSatCheckpoint, criticalBoundaryEdges,
             techPlan.contractedDFG, adg, flattener, candidates,
             attempt.edgeKinds, criticalBoundaryOpts);
-        attempt.state.clearRoutes(adg);
+        attempt.state.clearRoutes(dfg, adg);
         laneMapper.rebindScalarInputSentinels(attempt.state,
                                               techPlan.contractedDFG, adg,
                                               flattener);
@@ -1077,7 +1077,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
         llvm::outs() << "Mapper: final polish on selected lane...\n";
 
       auto routedCheckpoint = contractedState.save();
-      contractedState.clearRoutes(adg);
+      contractedState.clearRoutes(techPlan.contractedDFG, adg);
       auto placementCheckpoint = contractedState.save();
       contractedState.restore(routedCheckpoint);
 
@@ -1191,7 +1191,7 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
             : nullptr;
 
     MappingState probeState = state;
-    probeState.clearRoutes(adg);
+    probeState.clearRoutes(dfg, adg);
     llvm::DenseMap<IdIndex, double> emptyHistory;
     auto freeSpacePath =
         findPath(srcHwPort, dstHwPort, edgeId, probeState, dfg, adg,

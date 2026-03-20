@@ -659,7 +659,7 @@ int runRuntimeReplay(const FccArgs &args, MLIRContext &context) {
   }
 
   MappingState mapping;
-  mapping.init(dfgBuilder.getDFG(), flattener.getADG());
+  mapping.init(dfgBuilder.getDFG(), flattener.getADG(), &flattener);
   for (const RuntimeNodeBinding &binding : manifest.nodeBindings) {
     if (mapping.mapNode(binding.swNode, binding.hwNode, dfgBuilder.getDFG(),
                         flattener.getADG()) != ActionResult::Success) {

@@ -104,6 +104,25 @@ bool validateMapperOptions(const MapperOptions &opts, std::string &error) {
                              "refinement.initial_temperature", error) ||
       !requirePositiveDouble(opts.refinement.coolingRate,
                              "refinement.cooling_rate", error) ||
+      !requirePositiveUnsigned(opts.refinement.adaptiveWindow,
+                               "refinement.adaptive_window", error) ||
+      !requireDoubleInRange(opts.refinement.targetAcceptanceLow, 0.0, 1.0,
+                            "refinement.target_acceptance_low", error) ||
+      !requireDoubleInRange(opts.refinement.targetAcceptanceHigh, 0.0, 1.0,
+                            "refinement.target_acceptance_high", error) ||
+      !requirePositiveDouble(
+          opts.refinement.coldAcceptanceReheatMultiplier,
+          "refinement.cold_acceptance_reheat_multiplier", error) ||
+      !requireDoubleInRange(
+          opts.refinement.hotAcceptanceCoolingMultiplier, 0.0, 1.0,
+          "refinement.hot_acceptance_cooling_multiplier", error) ||
+      !requirePositiveDouble(opts.refinement.plateauReheatMultiplier,
+                             "refinement.plateau_reheat_multiplier",
+                             error) ||
+      !requirePositiveDouble(opts.refinement.maxTemperatureScale,
+                             "refinement.max_temperature_scale", error) ||
+      !requirePositiveDouble(opts.refinement.minTemperature,
+                             "refinement.min_temperature", error) ||
       !requirePositiveUnsigned(opts.refinement.iterationsPerPlacedNode,
                                "refinement.iterations_per_placed_node",
                                error) ||
@@ -118,6 +137,25 @@ bool validateMapperOptions(const MapperOptions &opts, std::string &error) {
   }
   if (opts.refinement.budgetFraction > 1.0) {
     error = "refinement.budget_fraction must be <= 1";
+    return false;
+  }
+  if (opts.refinement.targetAcceptanceLow >
+      opts.refinement.targetAcceptanceHigh) {
+    error =
+        "refinement.target_acceptance_low must be <= refinement.target_acceptance_high";
+    return false;
+  }
+  if (opts.refinement.coldAcceptanceReheatMultiplier < 1.0) {
+    error =
+        "refinement.cold_acceptance_reheat_multiplier must be >= 1";
+    return false;
+  }
+  if (opts.refinement.plateauReheatMultiplier < 1.0) {
+    error = "refinement.plateau_reheat_multiplier must be >= 1";
+    return false;
+  }
+  if (opts.refinement.maxTemperatureScale < 1.0) {
+    error = "refinement.max_temperature_scale must be >= 1";
     return false;
   }
 

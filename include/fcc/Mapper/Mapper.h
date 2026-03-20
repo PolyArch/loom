@@ -23,6 +23,7 @@ namespace fcc {
 
 struct CongestionEstimator;
 struct CongestionState;
+class LocalRepairDriver;
 
 class Mapper {
 public:
@@ -48,6 +49,8 @@ public:
   }
 
 private:
+  friend class LocalRepairDriver;
+
   // Tech-mapping: match DFG ops to ADG FU types.
   // Returns a candidate map: DFG node ID -> list of compatible ADG FU node IDs.
   llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>>

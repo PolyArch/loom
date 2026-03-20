@@ -68,21 +68,7 @@ bool isSpatialPEOccupied(const MappingState &state, const Graph &adg,
     return false;
   if (!isSpatialPEName(flattener, peName))
     return false;
-  // Use the occupiedSpatialPEs set for O(1) lookup.
-  if (!state.occupiedSpatialPEs.contains(peName))
-    return false;
-  if (ignoreHwNode == INVALID_ID)
-    return true;
-  // The PE name is in the set. Check if the only occupant is ignoreHwNode.
-  for (IdIndex hwId = 0;
-       hwId < static_cast<IdIndex>(state.hwNodeToSwNodes.size()); ++hwId) {
-    if (hwId == ignoreHwNode || state.hwNodeToSwNodes[hwId].empty())
-      continue;
-    const Node *hwNode = adg.getNode(hwId);
-    if (hwNode && getNodeAttrStr(hwNode, "pe_name") == peName)
-      return true;
-  }
-  return false;
+  return state.isSpatialPEOccupied(peName, adg, ignoreHwNode);
 }
 
 bool sameConfigFields(llvm::ArrayRef<FUConfigField> lhs,
@@ -203,6 +189,17 @@ void classifyTemporalRegisterEdges(const MappingState &state, const Graph &dfg,
 
     edgeKinds[edgeId] = TechMappedEdgeKind::TemporalReg;
   }
+
+  std::vector<uint8_t> fixedInternalMask(dfg.edges.size(), 0);
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId) {
+    if (edgeId < static_cast<IdIndex>(edgeKinds.size()) &&
+        (edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU ||
+         edgeKinds[edgeId] == TechMappedEdgeKind::TemporalReg)) {
+      fixedInternalMask[edgeId] = 1;
+    }
+  }
+  const_cast<MappingState &>(state).initializeRouteStats(dfg, fixedInternalMask);
 }
 
 IdIndex findDownstreamNode(const Graph &graph, IdIndex sentinelNodeId) {
@@ -500,6 +497,14 @@ double classifyEdgePlacementWeight(const Graph &dfg, IdIndex edgeId) {
   return weight;
 }
 
+std::vector<double> buildEdgePlacementWeightCache(const Graph &dfg) {
+  std::vector<double> edgeWeights(dfg.edges.size(), 1.0);
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId)
+    edgeWeights[edgeId] = classifyEdgePlacementWeight(dfg, edgeId);
+  return edgeWeights;
+}
+
 double computeNodePriorityWeight(IdIndex swNode, const Graph &dfg) {
   const Node *node = dfg.getNode(swNode);
   if (!node)
@@ -541,9 +546,7 @@ double computeNodePriorityWeight(IdIndex swNode, const Graph &dfg) {
 std::optional<std::pair<double, double>>
 estimateNodePlacementPos(IdIndex swNode, const MappingState &state,
                          const Graph &dfg, const ADGFlattener &flattener,
-                         const llvm::DenseMap<IdIndex,
-                                              llvm::SmallVector<IdIndex, 4>>
-                             &candidates) {
+                         const CandidateMap &candidates) {
   if (swNode < state.swNodeToHwNode.size()) {
     IdIndex mappedHw = state.swNodeToHwNode[swNode];
     if (mappedHw != INVALID_ID) {
@@ -576,6 +579,16 @@ estimateNodePlacementPos(IdIndex swNode, const MappingState &state,
   return std::make_pair(rowSum / count, colSum / count);
 }
 
+CandidateSetMap buildCandidateSetMap(const CandidateMap &candidates) {
+  CandidateSetMap candidateSets;
+  for (const auto &entry : candidates) {
+    auto &set = candidateSets[entry.first];
+    for (IdIndex hwNode : entry.second)
+      set.insert(hwNode);
+  }
+  return candidateSets;
+}
+
 double computeLocalSpreadPenalty(IdIndex hwNode, const MappingState &state,
                                  const Graph &adg,
                                  const ADGFlattener &flattener) {
@@ -583,26 +596,28 @@ double computeLocalSpreadPenalty(IdIndex hwNode, const MappingState &state,
   if (row < 0 || col < 0)
     return 0.0;
 
-  unsigned sameRow = 0;
-  unsigned sameCol = 0;
+  const Node *hwNodePtr = adg.getNode(hwNode);
+  bool isFunctionalCandidate =
+      hwNodePtr && getNodeAttrStr(hwNodePtr, "resource_class") == "functional";
+  unsigned selfOccupancy =
+      (isFunctionalCandidate && hwNode < state.hwNodeToSwNodes.size() &&
+       !state.hwNodeToSwNodes[hwNode].empty())
+          ? static_cast<unsigned>(state.hwNodeToSwNodes[hwNode].size())
+          : 0u;
+
+  unsigned sameRow = state.getFunctionalRowOccupancy(row);
+  unsigned sameCol = state.getFunctionalColOccupancy(col);
   unsigned nearby = 0;
-  for (IdIndex otherHw = 0;
-       otherHw < static_cast<IdIndex>(state.hwNodeToSwNodes.size()); ++otherHw) {
-    if (otherHw == hwNode || state.hwNodeToSwNodes[otherHw].empty())
-      continue;
-    const Node *otherNode = adg.getNode(otherHw);
-    if (!otherNode || getNodeAttrStr(otherNode, "resource_class") != "functional")
-      continue;
-    auto [otherRow, otherCol] = flattener.getNodeGridPos(otherHw);
-    if (otherRow < 0 || otherCol < 0)
-      continue;
-    if (otherRow == row)
-      ++sameRow;
-    if (otherCol == col)
-      ++sameCol;
-    if (std::abs(otherRow - row) + std::abs(otherCol - col) <= 2)
-      ++nearby;
+  for (int dr = -2; dr <= 2; ++dr) {
+    for (int dc = -2; dc <= 2; ++dc) {
+      if (std::abs(dr) + std::abs(dc) > 2)
+        continue;
+      nearby += state.getFunctionalCellOccupancy(row + dr, col + dc);
+    }
   }
+  sameRow = (sameRow >= selfOccupancy) ? (sameRow - selfOccupancy) : 0;
+  sameCol = (sameCol >= selfOccupancy) ? (sameCol - selfOccupancy) : 0;
+  nearby = (nearby >= selfOccupancy) ? (nearby - selfOccupancy) : 0;
 
   return 0.12 * static_cast<double>(sameRow + sameCol) +
          0.25 * static_cast<double>(nearby);
@@ -611,6 +626,10 @@ double computeLocalSpreadPenalty(IdIndex hwNode, const MappingState &state,
 std::vector<IdIndex>
 collectUnroutedEdges(const MappingState &state, const Graph &dfg,
                      llvm::ArrayRef<TechMappedEdgeKind> edgeKinds) {
+  if (state.routeStatsInitialized) {
+    return std::vector<IdIndex>(state.routeStatsUnroutedEdgeSet.begin(),
+                                state.routeStatsUnroutedEdgeSet.end());
+  }
   std::vector<IdIndex> failedEdges;
   for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
        ++edgeId) {
@@ -631,6 +650,17 @@ RoutingEdgeStats computeRoutingEdgeStats(const MappingState &state,
                                          const Graph &dfg,
                                          llvm::ArrayRef<TechMappedEdgeKind>
                                              edgeKinds) {
+  if (state.routeStatsInitialized) {
+    RoutingEdgeStats stats;
+    stats.overallEdges = state.routeStatsCounters.overallEdges;
+    stats.fixedInternalEdges = state.routeStatsCounters.fixedInternalEdges;
+    stats.directBindingEdges = state.routeStatsCounters.directBindingEdges;
+    stats.routerEdges = state.routeStatsCounters.routerEdges;
+    stats.routedOverallEdges = state.routeStatsCounters.routedOverallEdges;
+    stats.routedRouterEdges = state.routeStatsCounters.routedRouterEdges;
+    stats.unroutedRouterEdges = state.routeStatsCounters.unroutedRouterEdges;
+    return stats;
+  }
   RoutingEdgeStats stats;
   for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
        ++edgeId) {
@@ -673,6 +703,8 @@ RoutingEdgeStats computeRoutingEdgeStats(const MappingState &state,
 
 unsigned countRoutedEdges(const MappingState &state, const Graph &dfg,
                           llvm::ArrayRef<TechMappedEdgeKind> edgeKinds) {
+  if (state.routeStatsInitialized)
+    return state.routeStatsCounters.routedOverallEdges;
   unsigned routed = 0;
   for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
        ++edgeId) {
@@ -718,13 +750,18 @@ bool isWithinMoveRadius(IdIndex lhsHwNode, IdIndex rhsHwNode,
 bool canRelocateNode(
     IdIndex swNode, IdIndex newHwNode, IdIndex oldHwNode,
     const MappingState &state, const Graph &adg, const ADGFlattener &flattener,
-    const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates) {
+    const CandidateMap &candidates, const CandidateSetMap *candidateSets) {
   auto candIt = candidates.find(swNode);
   if (candIt == candidates.end())
     return false;
-  if (std::find(candIt->second.begin(), candIt->second.end(), newHwNode) ==
-      candIt->second.end())
+  if (candidateSets) {
+    auto setIt = candidateSets->find(swNode);
+    if (setIt == candidateSets->end() || !setIt->second.contains(newHwNode))
+      return false;
+  } else if (std::find(candIt->second.begin(), candIt->second.end(), newHwNode) ==
+             candIt->second.end()) {
     return false;
+  }
   if (newHwNode != oldHwNode && !state.hwNodeToSwNodes[newHwNode].empty())
     return false;
 
@@ -741,17 +778,26 @@ bool canRelocateNode(
 bool canSwapNodes(
     IdIndex swA, IdIndex swB, IdIndex hwA, IdIndex hwB,
     const MappingState &state, const Graph &adg, const ADGFlattener &flattener,
-    const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates) {
+    const CandidateMap &candidates, const CandidateSetMap *candidateSets) {
   auto candItA = candidates.find(swA);
   auto candItB = candidates.find(swB);
   if (candItA == candidates.end() || candItB == candidates.end())
     return false;
-  if (std::find(candItA->second.begin(), candItA->second.end(), hwB) ==
-      candItA->second.end())
-    return false;
-  if (std::find(candItB->second.begin(), candItB->second.end(), hwA) ==
-      candItB->second.end())
-    return false;
+  if (candidateSets) {
+    auto setItA = candidateSets->find(swA);
+    auto setItB = candidateSets->find(swB);
+    if (setItA == candidateSets->end() || setItB == candidateSets->end())
+      return false;
+    if (!setItA->second.contains(hwB) || !setItB->second.contains(hwA))
+      return false;
+  } else {
+    if (std::find(candItA->second.begin(), candItA->second.end(), hwB) ==
+        candItA->second.end())
+      return false;
+    if (std::find(candItB->second.begin(), candItB->second.end(), hwA) ==
+        candItB->second.end())
+      return false;
+  }
 
   const Node *hwNodeA = adg.getNode(hwA);
   const Node *hwNodeB = adg.getNode(hwB);
@@ -776,6 +822,8 @@ bool canSwapNodes(
 
 double computeUnroutedPenalty(const MappingState &state, const Graph &dfg,
                               llvm::ArrayRef<TechMappedEdgeKind> edgeKinds) {
+  if (state.routeStatsInitialized)
+    return state.routeStatsUnroutedPenalty;
   double penalty = 0.0;
   for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
        ++edgeId) {

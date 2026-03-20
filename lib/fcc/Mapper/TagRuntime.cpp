@@ -208,6 +208,40 @@ std::optional<uint64_t> projectRuntimeTagValueToType(std::optional<uint64_t> tag
   return info.tag;
 }
 
+RuntimeTagValueInfo advanceRuntimeTagValueInfoAtPort(
+    std::optional<uint64_t> currentTag, IdIndex portId, const Graph &adg,
+    llvm::function_ref<std::optional<uint64_t>(IdIndex)> externalTagAtPort) {
+  std::optional<uint64_t> tag = currentTag;
+  const Port *port = adg.getPort(portId);
+  const Node *owner = getPortOwnerNode(adg, portId);
+  if (!port)
+    return RuntimeTagValueInfo{true, tag, std::nullopt};
+
+  if (externalTagAtPort) {
+    if (!tag) {
+      if (auto extTag = externalTagAtPort(portId))
+        tag = *extTag;
+    }
+  }
+
+  if (owner && port->direction == Port::Output) {
+    llvm::StringRef opKind = getNodeAttrStr(owner, "op_kind");
+    if (opKind == "add_tag") {
+      if (auto edgeTag = getUIntNodeAttr(owner, "tag"))
+        tag = *edgeTag;
+    } else if (opKind == "map_tag") {
+      tag = applyMapTagTableValue(owner, tag);
+    } else if (opKind == "del_tag") {
+      tag = std::nullopt;
+    }
+  }
+
+  auto projected = projectRuntimeTagValueToTypeInfo(tag, port->type);
+  if (!projected.representable)
+    return projected;
+  return RuntimeTagValueInfo{true, projected.tag, std::nullopt};
+}
+
 RuntimeTagValueInfo computeRuntimeTagValueInfoAlongPath(
     llvm::ArrayRef<IdIndex> hwPath, size_t uptoIndex, const Graph &adg,
     llvm::function_ref<std::optional<uint64_t>(IdIndex)> externalTagAtPort) {
@@ -216,35 +250,11 @@ RuntimeTagValueInfo computeRuntimeTagValueInfoAlongPath(
 
   std::optional<uint64_t> tag;
   for (size_t idx = 0; idx <= uptoIndex && idx < hwPath.size(); ++idx) {
-    IdIndex portId = hwPath[idx];
-    const Port *port = adg.getPort(portId);
-    const Node *owner = getPortOwnerNode(adg, portId);
-    if (!port)
-      continue;
-
-    if (externalTagAtPort) {
-      if (!tag) {
-        if (auto extTag = externalTagAtPort(portId))
-          tag = *extTag;
-      }
-    }
-
-    if (owner && port->direction == Port::Output) {
-      llvm::StringRef opKind = getNodeAttrStr(owner, "op_kind");
-      if (opKind == "add_tag") {
-        if (auto edgeTag = getUIntNodeAttr(owner, "tag"))
-          tag = *edgeTag;
-      } else if (opKind == "map_tag") {
-        tag = applyMapTagTableValue(owner, tag);
-      } else if (opKind == "del_tag") {
-        tag = std::nullopt;
-      }
-    }
-
-    auto projected = projectRuntimeTagValueToTypeInfo(tag, port->type);
-    if (!projected.representable)
-      return projected;
-    tag = projected.tag;
+    auto advanced =
+        advanceRuntimeTagValueInfoAtPort(tag, hwPath[idx], adg, externalTagAtPort);
+    if (!advanced.representable)
+      return advanced;
+    tag = advanced.tag;
   }
 
   return RuntimeTagValueInfo{true, tag, std::nullopt};
@@ -260,12 +270,19 @@ std::optional<uint64_t> computeRuntimeTagValueAlongPath(
   return info.tag;
 }
 
-RuntimeTagValueInfo computeRuntimeTagValueInfoAlongMappedPath(
-    IdIndex swEdgeId, llvm::ArrayRef<IdIndex> hwPath, size_t uptoIndex,
-    const MappingState &state, const Graph &dfg, const Graph &adg) {
+std::optional<uint64_t> computeExternalRuntimeTagAtMappedPort(
+    IdIndex swEdgeId, IdIndex portId, const MappingState &state,
+    const Graph &dfg, const Graph &adg) {
   const Edge *swEdge = dfg.getEdge(swEdgeId);
-  if (!swEdge || hwPath.empty())
-    return RuntimeTagValueInfo{true, std::nullopt, std::nullopt};
+  if (!swEdge)
+    return std::nullopt;
+
+  const Port *port = adg.getPort(portId);
+  const Node *owner = getPortOwnerNode(adg, portId);
+  if (!port || !owner ||
+      getNodeAttrStr(owner, "resource_class") != "memory") {
+    return std::nullopt;
+  }
 
   const Port *swSrcPort = dfg.getPort(swEdge->srcPort);
   const Port *swDstPort = dfg.getPort(swEdge->dstPort);
@@ -273,28 +290,31 @@ RuntimeTagValueInfo computeRuntimeTagValueInfoAlongMappedPath(
       swSrcPort ? swSrcPort->parentNode : static_cast<IdIndex>(INVALID_ID);
   IdIndex swDstNodeId =
       swDstPort ? swDstPort->parentNode : static_cast<IdIndex>(INVALID_ID);
+  IdIndex hwNodeId = port->parentNode;
+
+  if (auto lane = computeSoftwareMemoryPortLane(swSrcNodeId, swEdge->srcPort,
+                                                true, hwNodeId, state, dfg,
+                                                adg)) {
+    return *lane;
+  }
+  if (auto lane = computeSoftwareMemoryPortLane(swDstNodeId, swEdge->dstPort,
+                                                false, hwNodeId, state, dfg,
+                                                adg)) {
+    return *lane;
+  }
+  return std::nullopt;
+}
+
+RuntimeTagValueInfo computeRuntimeTagValueInfoAlongMappedPath(
+    IdIndex swEdgeId, llvm::ArrayRef<IdIndex> hwPath, size_t uptoIndex,
+    const MappingState &state, const Graph &dfg, const Graph &adg) {
+  if (hwPath.empty())
+    return RuntimeTagValueInfo{true, std::nullopt, std::nullopt};
 
   return computeRuntimeTagValueInfoAlongPath(
       hwPath, uptoIndex, adg, [&](IdIndex portId) -> std::optional<uint64_t> {
-        const Port *port = adg.getPort(portId);
-        const Node *owner = getPortOwnerNode(adg, portId);
-        if (!port || !owner ||
-            getNodeAttrStr(owner, "resource_class") != "memory") {
-          return std::nullopt;
-        }
-
-        IdIndex hwNodeId = port->parentNode;
-        if (auto lane = computeSoftwareMemoryPortLane(swSrcNodeId, swEdge->srcPort,
-                                                      true, hwNodeId, state, dfg,
-                                                      adg)) {
-          return *lane;
-        }
-        if (auto lane = computeSoftwareMemoryPortLane(
-                swDstNodeId, swEdge->dstPort, false, hwNodeId, state, dfg,
-                adg)) {
-          return *lane;
-        }
-        return std::nullopt;
+        return computeExternalRuntimeTagAtMappedPort(swEdgeId, portId, state,
+                                                     dfg, adg);
       });
 }
 

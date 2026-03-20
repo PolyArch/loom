@@ -10,6 +10,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -87,45 +88,89 @@ IdIndex getLockedFirstHopForSource(IdIndex swEdgeId, IdIndex srcHwPort,
 
 namespace {
 
-enum class TaggedResourceKind {
-  RoutingOutput,
-  HardwareEdge,
-};
-
-struct TaggedPathObservation {
-  TaggedResourceKind kind;
-  IdIndex first = INVALID_ID;
-  IdIndex second = INVALID_ID;
-  uint64_t tag = 0;
-};
-
-struct TemporalSwitchTagRouteObservation {
-  IdIndex nodeId = INVALID_ID;
-  IdIndex inPortId = INVALID_ID;
-  IdIndex outPortId = INVALID_ID;
-  uint64_t tag = 0;
-};
-
-struct RuntimeTagPathFailure {
-  size_t pathIndex = 0;
+struct SearchStateKey {
   IdIndex portId = INVALID_ID;
-  uint64_t tag = 0;
-  unsigned tagWidth = 0;
+  bool hasTag = false;
+  uint64_t tagValue = 0;
+
+  bool operator==(const SearchStateKey &other) const {
+    return portId == other.portId && hasTag == other.hasTag &&
+           tagValue == other.tagValue;
+  }
 };
 
-std::optional<uint64_t>
-computeObservedTagAtPathIndex(IdIndex swEdgeId, llvm::ArrayRef<IdIndex> path,
-                              size_t pathIndex, const MappingState &state,
-                              const Graph &dfg, const Graph &adg);
+struct SearchStateKeyInfo {
+  static inline SearchStateKey getEmptyKey() {
+    return SearchStateKey{INVALID_ID, false, 0};
+  }
 
-std::optional<RuntimeTagPathFailure> findRuntimeTagPathFailure(
-    IdIndex swEdgeId, llvm::ArrayRef<IdIndex> fullPath, const MappingState &state,
-    const Graph &dfg, const Graph &adg);
+  static inline SearchStateKey getTombstoneKey() {
+    return SearchStateKey{INVALID_ID - 1, false, 0};
+  }
 
-bool isRuntimeTagPathRepresentable(IdIndex swEdgeId,
-                                   llvm::ArrayRef<IdIndex> candidatePath,
-                                   const MappingState &state,
-                                   const Graph &dfg, const Graph &adg);
+  static unsigned getHashValue(const SearchStateKey &key) {
+    return llvm::hash_combine(key.portId, key.hasTag, key.tagValue);
+  }
+
+  static bool isEqual(const SearchStateKey &lhs, const SearchStateKey &rhs) {
+    return lhs == rhs;
+  }
+};
+
+struct RoutingPathAnalysisCacheKey {
+  IdIndex swEdgeId = INVALID_ID;
+  unsigned pathSize = 0;
+  IdIndex firstPort = INVALID_ID;
+  IdIndex lastPort = INVALID_ID;
+  llvm::hash_code rawPathHash = 0;
+
+  bool operator==(const RoutingPathAnalysisCacheKey &other) const {
+    return swEdgeId == other.swEdgeId && pathSize == other.pathSize &&
+           firstPort == other.firstPort && lastPort == other.lastPort &&
+           rawPathHash == other.rawPathHash;
+  }
+};
+
+struct RoutingPathAnalysisCacheKeyInfo {
+  static inline RoutingPathAnalysisCacheKey getEmptyKey() {
+    return RoutingPathAnalysisCacheKey{INVALID_ID, 0, INVALID_ID, INVALID_ID, 0};
+  }
+
+  static inline RoutingPathAnalysisCacheKey getTombstoneKey() {
+    return RoutingPathAnalysisCacheKey{INVALID_ID - 1, 0, INVALID_ID, INVALID_ID,
+                                       llvm::hash_value("tombstone")};
+  }
+
+  static unsigned
+  getHashValue(const RoutingPathAnalysisCacheKey &key) {
+    return llvm::hash_combine(key.swEdgeId, key.pathSize, key.firstPort,
+                              key.lastPort, key.rawPathHash);
+  }
+
+  static bool isEqual(const RoutingPathAnalysisCacheKey &lhs,
+                      const RoutingPathAnalysisCacheKey &rhs) {
+    return lhs == rhs;
+  }
+};
+
+struct RoutingPathAnalysis {
+  bool fullPathReady = false;
+  llvm::SmallVector<IdIndex, 16> fullPath;
+  bool runtimeTagFailureReady = false;
+  std::optional<routing_detail::RuntimeTagPathFailure> runtimeTagFailure;
+  bool taggedObservationsReady = false;
+  llvm::SmallVector<routing_detail::TaggedPathObservation, 8>
+      taggedObservations;
+  bool temporalObservationsReady = false;
+  llvm::SmallVector<routing_detail::TemporalSwitchTagRouteObservation, 8>
+      temporalObservations;
+};
+
+struct RoutingPathAnalysisCache {
+  llvm::DenseMap<RoutingPathAnalysisCacheKey, RoutingPathAnalysis,
+                 RoutingPathAnalysisCacheKeyInfo>
+      entries;
+};
 
 bool pathUsesPort(IdIndex portId, const MappingState &state) {
   if (portId < state.portToUsingEdges.size())
@@ -152,6 +197,17 @@ bool isTaggedPort(const Port *port) {
     return false;
   auto info = detail::getPortTypeInfo(port->type);
   return info && info->isTagged;
+}
+
+RoutingPathAnalysisCacheKey
+makeRoutingPathAnalysisCacheKey(IdIndex swEdgeId,
+                                llvm::ArrayRef<IdIndex> rawPath) {
+  return RoutingPathAnalysisCacheKey{
+      swEdgeId,
+      static_cast<unsigned>(rawPath.size()),
+      rawPath.empty() ? INVALID_ID : rawPath.front(),
+      rawPath.empty() ? INVALID_ID : rawPath.back(),
+      llvm::hash_combine_range(rawPath.begin(), rawPath.end())};
 }
 
 const Edge *findEdgeByPorts(const Graph &graph, IdIndex srcPortId,
@@ -197,9 +253,9 @@ bool isNonRoutingBroadcastTransitionConflict(
   if (routing_detail::isRoutingNode(owner))
     return false;
 
-  for (IdIndex otherEdgeId = 0;
-       otherEdgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
-       ++otherEdgeId) {
+  if (srcPortId >= state.portToUsingEdges.size())
+    return false;
+  for (IdIndex otherEdgeId : state.portToUsingEdges[srcPortId]) {
     if (otherEdgeId == swEdgeId)
       continue;
     const auto &otherPath = state.swEdgeToHwPaths[otherEdgeId];
@@ -376,6 +432,35 @@ findBridgePathBackward(const Graph &graph, IdIndex startPortId,
   return path;
 }
 
+} // namespace
+
+namespace routing_detail {
+
+namespace {
+
+std::optional<size_t> findPortIndexInPath(llvm::ArrayRef<IdIndex> path,
+                                          IdIndex portId) {
+  for (size_t i = 0; i < path.size(); ++i) {
+    if (path[i] == portId)
+      return i;
+  }
+  return std::nullopt;
+}
+
+std::optional<uint64_t>
+computeObservedTagAtPathIndex(IdIndex swEdgeId, llvm::ArrayRef<IdIndex> path,
+                              size_t pathIndex, const MappingState &state,
+                              const Graph &dfg, const Graph &adg) {
+  auto info = computeRuntimeTagValueInfoAlongMappedPath(swEdgeId, path,
+                                                        pathIndex, state, dfg,
+                                                        adg);
+  if (!info.representable)
+    return std::nullopt;
+  return info.tag;
+}
+
+} // namespace
+
 llvm::SmallVector<IdIndex, 16>
 buildExportPathForEdge(IdIndex swEdgeId, llvm::ArrayRef<IdIndex> rawPath,
                        const MappingState &state, const Graph &dfg,
@@ -425,37 +510,6 @@ buildExportPathForEdge(IdIndex swEdgeId, llvm::ArrayRef<IdIndex> rawPath,
   return path;
 }
 
-std::optional<size_t> findPortIndexInPath(llvm::ArrayRef<IdIndex> path,
-                                          IdIndex portId) {
-  for (size_t i = 0; i < path.size(); ++i) {
-    if (path[i] == portId)
-      return i;
-  }
-  return std::nullopt;
-}
-
-std::optional<size_t> findTransitionDstIndex(llvm::ArrayRef<IdIndex> path,
-                                             IdIndex outPortId,
-                                             IdIndex inPortId) {
-  for (size_t i = 0; i + 1 < path.size(); ++i) {
-    if (path[i] == outPortId && path[i + 1] == inPortId)
-      return i + 1;
-  }
-  return std::nullopt;
-}
-
-std::optional<uint64_t>
-computeObservedTagAtPathIndex(IdIndex swEdgeId, llvm::ArrayRef<IdIndex> path,
-                              size_t pathIndex, const MappingState &state,
-                              const Graph &dfg, const Graph &adg) {
-  auto info = computeRuntimeTagValueInfoAlongMappedPath(swEdgeId, path,
-                                                        pathIndex, state, dfg,
-                                                        adg);
-  if (!info.representable)
-    return std::nullopt;
-  return info.tag;
-}
-
 std::optional<RuntimeTagPathFailure> findRuntimeTagPathFailure(
     IdIndex swEdgeId, llvm::ArrayRef<IdIndex> fullPath, const MappingState &state,
     const Graph &dfg, const Graph &adg) {
@@ -477,14 +531,6 @@ std::optional<RuntimeTagPathFailure> findRuntimeTagPathFailure(
                                  tagWidth};
   }
   return std::nullopt;
-}
-
-bool isRuntimeTagPathRepresentable(IdIndex swEdgeId,
-                                   llvm::ArrayRef<IdIndex> candidatePath,
-                                   const MappingState &state,
-                                   const Graph &dfg, const Graph &adg) {
-  auto fullPath = buildExportPathForEdge(swEdgeId, candidatePath, state, dfg, adg);
-  return !findRuntimeTagPathFailure(swEdgeId, fullPath, state, dfg, adg);
 }
 
 void appendTemporalSwitchTagRouteObservations(
@@ -529,7 +575,8 @@ void appendTaggedPathObservations(
     if (!tag)
       continue;
     observations.push_back(
-        {TaggedResourceKind::RoutingOutput, portId, INVALID_ID, *tag});
+        {MappingState::TaggedObservationKind::RoutingOutput, portId,
+         INVALID_ID, *tag});
   }
 
   for (size_t i = 0; i + 1 < path.size(); ++i) {
@@ -548,7 +595,8 @@ void appendTaggedPathObservations(
     if (!tag)
       continue;
     observations.push_back(
-        {TaggedResourceKind::HardwareEdge, srcPortId, dstPortId, *tag});
+        {MappingState::TaggedObservationKind::HardwareEdge, srcPortId,
+         dstPortId, *tag});
   }
 }
 
@@ -565,80 +613,157 @@ bool temporalSwitchTagRouteConflict(
          (lhs.inPortId != rhs.inPortId || lhs.outPortId != rhs.outPortId);
 }
 
+} // namespace routing_detail
+
+namespace {
+
+RoutingPathAnalysis &
+getOrCreateRoutingPathAnalysis(IdIndex swEdgeId,
+                               llvm::ArrayRef<IdIndex> candidatePath,
+                               RoutingPathAnalysisCache &cache,
+                               const MappingState &state, const Graph &dfg,
+                               const Graph &adg) {
+  RoutingPathAnalysisCacheKey key =
+      makeRoutingPathAnalysisCacheKey(swEdgeId, candidatePath);
+  auto [it, inserted] = cache.entries.try_emplace(key);
+  if (inserted) {
+    it->second.fullPath = routing_detail::buildExportPathForEdge(
+        swEdgeId, candidatePath, state, dfg, adg);
+    it->second.fullPathReady = true;
+  }
+  return it->second;
+}
+
+std::optional<routing_detail::RuntimeTagPathFailure>
+getRuntimeTagPathFailure(IdIndex swEdgeId, llvm::ArrayRef<IdIndex> candidatePath,
+                         RoutingPathAnalysisCache &cache,
+                         const MappingState &state, const Graph &dfg,
+                         const Graph &adg) {
+  auto &analysis =
+      getOrCreateRoutingPathAnalysis(swEdgeId, candidatePath, cache, state, dfg,
+                                     adg);
+  if (!analysis.runtimeTagFailureReady) {
+    analysis.runtimeTagFailure = routing_detail::findRuntimeTagPathFailure(
+        swEdgeId, analysis.fullPath, state, dfg, adg);
+    analysis.runtimeTagFailureReady = true;
+  }
+  return analysis.runtimeTagFailure;
+}
+
+llvm::ArrayRef<routing_detail::TaggedPathObservation>
+getTaggedPathObservations(IdIndex swEdgeId,
+                          llvm::ArrayRef<IdIndex> candidatePath,
+                          RoutingPathAnalysisCache &cache,
+                          const MappingState &state, const Graph &dfg,
+                          const Graph &adg) {
+  auto &analysis =
+      getOrCreateRoutingPathAnalysis(swEdgeId, candidatePath, cache, state, dfg,
+                                     adg);
+  if (!analysis.taggedObservationsReady) {
+    routing_detail::appendTaggedPathObservations(swEdgeId, analysis.fullPath,
+                                                 state, dfg, adg,
+                                                 analysis.taggedObservations);
+    analysis.taggedObservationsReady = true;
+  }
+  return analysis.taggedObservations;
+}
+
+llvm::ArrayRef<routing_detail::TemporalSwitchTagRouteObservation>
+getTemporalSwitchTagRouteObservations(
+    IdIndex swEdgeId, llvm::ArrayRef<IdIndex> candidatePath,
+    RoutingPathAnalysisCache &cache, const MappingState &state,
+    const Graph &dfg, const Graph &adg) {
+  auto &analysis =
+      getOrCreateRoutingPathAnalysis(swEdgeId, candidatePath, cache, state, dfg,
+                                     adg);
+  if (!analysis.temporalObservationsReady) {
+    routing_detail::appendTemporalSwitchTagRouteObservations(
+        swEdgeId, analysis.fullPath, state, dfg, adg,
+        analysis.temporalObservations);
+    analysis.temporalObservationsReady = true;
+  }
+  return analysis.temporalObservations;
+}
+
+std::optional<size_t> findTransitionDstIndex(llvm::ArrayRef<IdIndex> path,
+                                             IdIndex outPortId,
+                                             IdIndex inPortId) {
+  for (size_t i = 0; i + 1 < path.size(); ++i) {
+    if (path[i] == outPortId && path[i + 1] == inPortId)
+      return i + 1;
+  }
+  return std::nullopt;
+}
+
+bool isRuntimeTagPathRepresentable(IdIndex swEdgeId,
+                                   llvm::ArrayRef<IdIndex> candidatePath,
+                                   RoutingPathAnalysisCache &cache,
+                                   const MappingState &state,
+                                   const Graph &dfg, const Graph &adg) {
+  if (!state.hasTaggedResources)
+    return true;
+  return !getRuntimeTagPathFailure(swEdgeId, candidatePath, cache, state, dfg,
+                                   adg);
+}
+
 bool hasTaggedRoutingOutputConflict(IdIndex swEdgeId,
                                     llvm::ArrayRef<IdIndex> candidatePath,
                                     IdIndex outputPortId,
+                                    RoutingPathAnalysisCache &cache,
                                     const MappingState &state,
                                     const Graph &dfg, const Graph &adg) {
-  auto candidateIndex = findPortIndexInPath(candidatePath, outputPortId);
-  if (!candidateIndex)
+  if (!state.hasTaggedResources)
     return false;
-  auto candidateTag = computeObservedTagAtPathIndex(swEdgeId, candidatePath,
-                                                    *candidateIndex, state,
-                                                    dfg, adg);
-  if (!candidateTag)
+  auto candidateObs =
+      getTaggedPathObservations(swEdgeId, candidatePath, cache, state, dfg, adg);
+  auto it = llvm::find_if(candidateObs, [&](const auto &obs) {
+    return obs.kind == MappingState::TaggedObservationKind::RoutingOutput &&
+           obs.first == outputPortId;
+  });
+  if (it == candidateObs.end())
     return false;
 
-  for (IdIndex otherEdgeId = 0;
-       otherEdgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
-       ++otherEdgeId) {
-    if (otherEdgeId == swEdgeId)
-      continue;
-    const auto &otherPath = state.swEdgeToHwPaths[otherEdgeId];
-    if (otherPath.empty())
-      continue;
-    auto otherIndex = findPortIndexInPath(otherPath, outputPortId);
-    if (!otherIndex)
-      continue;
-    auto otherTag = computeObservedTagAtPathIndex(otherEdgeId, otherPath,
-                                                  *otherIndex, state, dfg, adg);
-    if (otherTag && *otherTag == *candidateTag)
-      return true;
-  }
-
-  return false;
+  MappingState::TaggedObservationKey key{it->kind, it->first, it->second,
+                                         it->tag};
+  auto existing = state.taggedObservationIndex.find(key);
+  if (existing == state.taggedObservationIndex.end())
+    return false;
+  return llvm::any_of(existing->second, [&](IdIndex otherEdgeId) {
+    return otherEdgeId != swEdgeId;
+  });
 }
 
 bool hasTaggedHardwareEdgeConflict(IdIndex swEdgeId,
                                    llvm::ArrayRef<IdIndex> candidatePath,
                                    IdIndex srcPortId, IdIndex dstPortId,
+                                   RoutingPathAnalysisCache &cache,
                                    const MappingState &state,
                                    const Graph &dfg, const Graph &adg) {
-  auto candidateDstIndex =
-      findTransitionDstIndex(candidatePath, srcPortId, dstPortId);
-  if (!candidateDstIndex)
+  if (!state.hasTaggedResources)
     return false;
-  auto candidateTag = computeObservedTagAtPathIndex(swEdgeId, candidatePath,
-                                                    *candidateDstIndex, state,
-                                                    dfg, adg);
-  if (!candidateTag)
+  auto candidateObs =
+      getTaggedPathObservations(swEdgeId, candidatePath, cache, state, dfg, adg);
+  auto it = llvm::find_if(candidateObs, [&](const auto &obs) {
+    return obs.kind == MappingState::TaggedObservationKind::HardwareEdge &&
+           obs.first == srcPortId && obs.second == dstPortId;
+  });
+  if (it == candidateObs.end())
     return false;
 
-  for (IdIndex otherEdgeId = 0;
-       otherEdgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
-       ++otherEdgeId) {
-    if (otherEdgeId == swEdgeId)
-      continue;
-    const auto &otherPath = state.swEdgeToHwPaths[otherEdgeId];
-    if (otherPath.empty())
-      continue;
-    auto otherDstIndex =
-        findTransitionDstIndex(otherPath, srcPortId, dstPortId);
-    if (!otherDstIndex)
-      continue;
-    auto otherTag = computeObservedTagAtPathIndex(otherEdgeId, otherPath,
-                                                  *otherDstIndex, state, dfg,
-                                                  adg);
-    if (otherTag && *otherTag == *candidateTag)
-      return true;
-  }
-
-  return false;
+  MappingState::TaggedObservationKey key{it->kind, it->first, it->second,
+                                         it->tag};
+  auto existing = state.taggedObservationIndex.find(key);
+  if (existing == state.taggedObservationIndex.end())
+    return false;
+  return llvm::any_of(existing->second, [&](IdIndex otherEdgeId) {
+    return otherEdgeId != swEdgeId;
+  });
 }
 
 bool isInternalHopLegal(IdIndex inPortId, IdIndex outPortId,
                         IdIndex swEdgeId,
                         llvm::ArrayRef<IdIndex> candidatePath,
+                        RoutingPathAnalysisCache &cache,
                         const MappingState &state, const Graph &dfg,
                         const Graph &adg) {
   const Port *inPort = adg.getPort(inPortId);
@@ -650,13 +775,14 @@ bool isInternalHopLegal(IdIndex inPortId, IdIndex outPortId,
   if (inPort->parentNode != outPort->parentNode)
     return false;
 
-  if (!isRuntimeTagPathRepresentable(swEdgeId, candidatePath, state, dfg, adg))
+  if (!isRuntimeTagPathRepresentable(swEdgeId, candidatePath, cache, state, dfg,
+                                     adg))
     return false;
 
   if (routing_detail::isRoutingCrossbarOutputPort(outPortId, adg)) {
     if (isTaggedPort(outPort)) {
       if (hasTaggedRoutingOutputConflict(swEdgeId, candidatePath, outPortId,
-                                         state, dfg, adg))
+                                         cache, state, dfg, adg))
         return false;
     } else if (!candidatePath.empty() &&
                routingOutputUsedByDifferentSource(outPortId,
@@ -671,6 +797,53 @@ bool isInternalHopLegal(IdIndex inPortId, IdIndex outPortId,
 
 } // namespace
 
+bool hasTaggedPathConflictCached(IdIndex swEdgeId,
+                                 llvm::ArrayRef<IdIndex> candidatePath,
+                                 RoutingPathAnalysisCache &cache,
+                                 const MappingState &state, const Graph &dfg,
+                                 const Graph &adg) {
+  if (!state.hasTaggedResources)
+    return false;
+  if (!isRuntimeTagPathRepresentable(swEdgeId, candidatePath, cache, state, dfg,
+                                     adg))
+    return true;
+
+  auto candidateObs =
+      getTaggedPathObservations(swEdgeId, candidatePath, cache, state, dfg, adg);
+  auto candidateTemporalObs = getTemporalSwitchTagRouteObservations(
+      swEdgeId, candidatePath, cache, state, dfg, adg);
+  if (candidateObs.empty() && candidateTemporalObs.empty())
+    return false;
+
+  for (const auto &obs : candidateObs) {
+    MappingState::TaggedObservationKey key{obs.kind, obs.first, obs.second,
+                                           obs.tag};
+    auto it = state.taggedObservationIndex.find(key);
+    if (it == state.taggedObservationIndex.end())
+      continue;
+    if (llvm::any_of(it->second, [&](IdIndex otherEdgeId) {
+          return otherEdgeId != swEdgeId;
+        })) {
+      return true;
+    }
+  }
+  for (const auto &obs : candidateTemporalObs) {
+    MappingState::TemporalRouteGroupKey key{obs.nodeId, obs.tag};
+    auto it = state.temporalRouteIndex.find(key);
+    if (it == state.temporalRouteIndex.end())
+      continue;
+    if (llvm::any_of(it->second, [&](const MappingState::TemporalRouteUse &use) {
+          return use.edgeId != swEdgeId &&
+                 (use.inPortId != obs.inPortId ||
+                  use.outPortId != obs.outPortId);
+        })) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Mapper methods: conflict detection, legality, pathfinding, routability
 // ---------------------------------------------------------------------------
@@ -679,62 +852,25 @@ bool Mapper::hasTaggedPathConflict(IdIndex swEdgeId,
                                    llvm::ArrayRef<IdIndex> candidatePath,
                                    const MappingState &state,
                                    const Graph &dfg, const Graph &adg) {
-  if (!isRuntimeTagPathRepresentable(swEdgeId, candidatePath, state, dfg, adg))
-    return true;
-
-  llvm::SmallVector<TaggedPathObservation, 8> candidateObs;
-  llvm::SmallVector<TemporalSwitchTagRouteObservation, 8> candidateTemporalObs;
-  auto fullCandidatePath =
-      buildExportPathForEdge(swEdgeId, candidatePath, state, dfg, adg);
-  appendTaggedPathObservations(swEdgeId, fullCandidatePath, state, dfg, adg,
-                               candidateObs);
-  appendTemporalSwitchTagRouteObservations(swEdgeId, fullCandidatePath, state,
-                                           dfg, adg, candidateTemporalObs);
-  if (candidateObs.empty() && candidateTemporalObs.empty())
-    return false;
-
-  for (IdIndex otherEdgeId = 0;
-       otherEdgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
-       ++otherEdgeId) {
-    if (otherEdgeId == swEdgeId)
-      continue;
-    const auto &otherPath = state.swEdgeToHwPaths[otherEdgeId];
-    if (otherPath.empty())
-      continue;
-    auto fullOtherPath =
-        buildExportPathForEdge(otherEdgeId, otherPath, state, dfg, adg);
-
-    llvm::SmallVector<TaggedPathObservation, 8> otherObs;
-    llvm::SmallVector<TemporalSwitchTagRouteObservation, 8> otherTemporalObs;
-    appendTaggedPathObservations(otherEdgeId, fullOtherPath, state, dfg, adg,
-                                 otherObs);
-    appendTemporalSwitchTagRouteObservations(otherEdgeId, fullOtherPath, state,
-                                             dfg, adg, otherTemporalObs);
-    for (const auto &lhs : candidateObs) {
-      for (const auto &rhs : otherObs) {
-        if (observationsConflict(lhs, rhs))
-          return true;
-      }
-    }
-    for (const auto &lhs : candidateTemporalObs) {
-      for (const auto &rhs : otherTemporalObs) {
-        if (temporalSwitchTagRouteConflict(lhs, rhs))
-          return true;
-      }
-    }
-  }
-
-  return false;
+  RoutingPathAnalysisCache cache;
+  return hasTaggedPathConflictCached(swEdgeId, candidatePath, cache, state, dfg,
+                                     adg);
 }
 
 bool Mapper::validateTaggedPathConflicts(
     const MappingState &state, const Graph &dfg, const Graph &adg,
     llvm::ArrayRef<TechMappedEdgeKind> edgeKinds, std::string &diagnostics) {
   bool valid = true;
-  llvm::SmallVector<llvm::SmallVector<TaggedPathObservation, 8>, 8>
+  if (!state.hasTaggedResources)
+    return true;
+  llvm::SmallVector<llvm::SmallVector<routing_detail::TaggedPathObservation, 8>,
+                    8>
       observationsByEdge(state.swEdgeToHwPaths.size());
-  llvm::SmallVector<llvm::SmallVector<TemporalSwitchTagRouteObservation, 8>, 8>
+  llvm::SmallVector<
+      llvm::SmallVector<routing_detail::TemporalSwitchTagRouteObservation, 8>,
+      8>
       temporalObsByEdge(state.swEdgeToHwPaths.size());
+  RoutingPathAnalysisCache cache;
 
   for (IdIndex edgeId = 0;
        edgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size()); ++edgeId) {
@@ -745,9 +881,8 @@ bool Mapper::validateTaggedPathConflicts(
     const auto &path = state.swEdgeToHwPaths[edgeId];
     if (path.empty())
       continue;
-    auto fullPath = buildExportPathForEdge(edgeId, path, state, dfg, adg);
     if (auto failure =
-            findRuntimeTagPathFailure(edgeId, fullPath, state, dfg, adg)) {
+            getRuntimeTagPathFailure(edgeId, path, cache, state, dfg, adg)) {
       diagnostics += "C4: runtime tag " + std::to_string(failure->tag) +
                      " cannot be represented on hw_port " +
                      std::to_string(failure->portId);
@@ -757,10 +892,13 @@ bool Mapper::validateTaggedPathConflicts(
       valid = false;
       continue;
     }
-    appendTaggedPathObservations(edgeId, fullPath, state, dfg, adg,
-                                 observationsByEdge[edgeId]);
-    appendTemporalSwitchTagRouteObservations(edgeId, fullPath, state, dfg, adg,
-                                             temporalObsByEdge[edgeId]);
+    auto taggedObs =
+        getTaggedPathObservations(edgeId, path, cache, state, dfg, adg);
+    observationsByEdge[edgeId].append(taggedObs.begin(), taggedObs.end());
+    auto temporalObs =
+        getTemporalSwitchTagRouteObservations(edgeId, path, cache, state, dfg,
+                                              adg);
+    temporalObsByEdge[edgeId].append(temporalObs.begin(), temporalObs.end());
   }
 
   for (IdIndex lhsEdge = 0;
@@ -769,9 +907,9 @@ bool Mapper::validateTaggedPathConflicts(
          rhsEdge < static_cast<IdIndex>(observationsByEdge.size()); ++rhsEdge) {
       for (const auto &lhsObs : observationsByEdge[lhsEdge]) {
         for (const auto &rhsObs : observationsByEdge[rhsEdge]) {
-          if (!observationsConflict(lhsObs, rhsObs))
+          if (!routing_detail::observationsConflict(lhsObs, rhsObs))
             continue;
-          if (lhsObs.kind == TaggedResourceKind::RoutingOutput) {
+          if (lhsObs.kind == MappingState::TaggedObservationKind::RoutingOutput) {
             diagnostics +=
                 "C4: tagged routing-output conflict on hw_port " +
                 std::to_string(lhsObs.first) + " tag " +
@@ -792,7 +930,7 @@ bool Mapper::validateTaggedPathConflicts(
       }
       for (const auto &lhsObs : temporalObsByEdge[lhsEdge]) {
         for (const auto &rhsObs : temporalObsByEdge[rhsEdge]) {
-          if (!temporalSwitchTagRouteConflict(lhsObs, rhsObs))
+          if (!routing_detail::temporalSwitchTagRouteConflict(lhsObs, rhsObs))
             continue;
           diagnostics +=
               "C4: temporal_sw tag-route conflict on hw_node " +
@@ -809,10 +947,13 @@ bool Mapper::validateTaggedPathConflicts(
   return valid;
 }
 
-bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort, IdIndex swEdgeId,
-                         llvm::ArrayRef<IdIndex> candidatePath,
-                         const MappingState &state, const Graph &dfg,
-                         const Graph &adg) {
+bool isEdgeLegalCached(const ConnectivityMatrix &connectivity, IdIndex srcPort,
+                       IdIndex dstPort,
+                       IdIndex swEdgeId,
+                       llvm::ArrayRef<IdIndex> candidatePath,
+                       RoutingPathAnalysisCache &cache,
+                       const MappingState &state, const Graph &dfg,
+                       const Graph &adg) {
   const Port *sp = adg.getPort(srcPort);
   const Port *dp = adg.getPort(dstPort);
   if (!sp || !dp)
@@ -821,7 +962,6 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort, IdIndex swEdgeId,
   if (sp->direction != Port::Output || dp->direction != Port::Input)
     return false;
 
-  // Check physical connectivity exists (multi-destination).
   auto it = connectivity.outToIn.find(srcPort);
   if (it == connectivity.outToIn.end())
     return false;
@@ -835,7 +975,8 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort, IdIndex swEdgeId,
   if (!found)
     return false;
 
-  if (!isRuntimeTagPathRepresentable(swEdgeId, candidatePath, state, dfg, adg))
+  if (!isRuntimeTagPathRepresentable(swEdgeId, candidatePath, cache, state, dfg,
+                                     adg))
     return false;
 
   if (isNonRoutingBroadcastTransitionConflict(swEdgeId, candidatePath, state,
@@ -845,14 +986,20 @@ bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort, IdIndex swEdgeId,
 
   if (isTaggedPort(sp) && isTaggedPort(dp) &&
       hasTaggedHardwareEdgeConflict(swEdgeId, candidatePath, srcPort, dstPort,
-                                    state, dfg, adg)) {
+                                    cache, state, dfg, adg)) {
     return false;
   }
 
-  // C4: For the MVP, allow edge sharing in the fully-connected fabric.
-  // In a real fabric with dedicated switch routing, edges are not exclusive
-  // at this level. Exclusivity is enforced at the switch port level.
   return true;
+}
+
+bool Mapper::isEdgeLegal(IdIndex srcPort, IdIndex dstPort, IdIndex swEdgeId,
+                         llvm::ArrayRef<IdIndex> candidatePath,
+                         const MappingState &state, const Graph &dfg,
+                         const Graph &adg) {
+  RoutingPathAnalysisCache cache;
+  return isEdgeLegalCached(connectivity, srcPort, dstPort, swEdgeId,
+                           candidatePath, cache, state, dfg, adg);
 }
 
 llvm::SmallVector<IdIndex, 8>
@@ -863,6 +1010,7 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
                  IdIndex forcedFirstHop,
                  const CongestionState *congestion) {
   llvm::SmallVector<IdIndex, 8> path;
+  RoutingPathAnalysisCache analysisCache;
 
   if (srcHwPort == INVALID_ID || dstHwPort == INVALID_ID)
     return path;
@@ -870,9 +1018,10 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
   // Direct connection check.
   llvm::SmallVector<IdIndex, 8> directPath{srcHwPort, dstHwPort};
   if ((forcedFirstHop == INVALID_ID || forcedFirstHop == dstHwPort) &&
-      isEdgeLegal(srcHwPort, dstHwPort, swEdgeId, directPath, state, dfg,
-                  adg) &&
-      !hasTaggedPathConflict(swEdgeId, directPath, state, dfg, adg)) {
+      isEdgeLegalCached(connectivity, srcHwPort, dstHwPort, swEdgeId, directPath,
+                        analysisCache, state, dfg, adg) &&
+      !hasTaggedPathConflictCached(swEdgeId, directPath, analysisCache, state,
+                                   dfg, adg)) {
     path.push_back(srcHwPort);
     path.push_back(dstHwPort);
     return path;
@@ -890,6 +1039,8 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
     IdIndex portId = INVALID_ID;
     int trailIndex = -1;
     unsigned depth = 0;
+    std::optional<uint64_t> currentTag;
+    SearchStateKey stateKey;
   };
 
   struct SearchEntryLess {
@@ -946,16 +1097,51 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
 
   std::priority_queue<SearchEntry, std::vector<SearchEntry>, SearchEntryLess>
       worklist;
-  llvm::DenseMap<IdIndex, double> bestCost;
+  llvm::DenseMap<SearchStateKey, double, SearchStateKeyInfo> bestCost;
+  auto externalTagAtPort = [&](IdIndex portId) -> std::optional<uint64_t> {
+    return computeExternalRuntimeTagAtMappedPort(swEdgeId, portId, state, dfg,
+                                                 adg);
+  };
+  auto makeSearchKey = [&](IdIndex portId, std::optional<uint64_t> tag) {
+    return SearchStateKey{portId, tag.has_value(), tag.value_or(0)};
+  };
 
-  worklist.push({0.0, estimateRemainingCost(srcHwPort), srcHwPort, 0, 0});
-  bestCost[srcHwPort] = 0.0;
+  std::optional<uint64_t> initialTag;
+  if (state.hasTaggedResources) {
+    llvm::SmallVector<IdIndex, 8> initialTagPath;
+    const Edge *swEdge = dfg.getEdge(swEdgeId);
+    const Port *srcSwPort = swEdge ? dfg.getPort(swEdge->srcPort) : nullptr;
+    if (srcSwPort && srcSwPort->parentNode != INVALID_ID) {
+      const Node *srcSwNode = dfg.getNode(srcSwPort->parentNode);
+      if (srcSwNode &&
+          routing_detail::isSoftwareMemoryInterfaceOpName(
+              getNodeAttrStr(srcSwNode, "op_name")) &&
+          srcSwPort->parentNode < state.swNodeToHwNode.size()) {
+        IdIndex hwNodeId = state.swNodeToHwNode[srcSwPort->parentNode];
+        if (hwNodeId != INVALID_ID) {
+          auto prefix = findBridgePathBackward(adg, srcHwPort, hwNodeId);
+          initialTagPath.append(prefix.begin(), prefix.end());
+        }
+      }
+    }
+    initialTagPath.push_back(srcHwPort);
+    auto initialInfo = computeRuntimeTagValueInfoAlongMappedPath(
+        swEdgeId, initialTagPath, initialTagPath.size() - 1, state, dfg, adg);
+    if (!initialInfo.representable)
+      return path;
+    initialTag = initialInfo.tag;
+  }
+
+  SearchStateKey srcKey = makeSearchKey(srcHwPort, initialTag);
+  worklist.push({0.0, estimateRemainingCost(srcHwPort), srcHwPort, 0, 0,
+                 initialTag, srcKey});
+  bestCost[srcKey] = 0.0;
 
   while (!worklist.empty()) {
     SearchEntry current = worklist.top();
     worklist.pop();
 
-    auto bestIt = bestCost.find(current.portId);
+    auto bestIt = bestCost.find(current.stateKey);
     if (bestIt != bestCost.end() && current.gCost > bestIt->second + 1e-9)
       continue;
 
@@ -965,7 +1151,8 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
 
     if (current.portId == dstHwPort) {
       auto candidatePath = buildPathFromTrail(current.trailIndex);
-      if (!hasTaggedPathConflict(swEdgeId, candidatePath, state, dfg, adg))
+      if (!hasTaggedPathConflictCached(swEdgeId, candidatePath, analysisCache,
+                                       state, dfg, adg))
         return candidatePath;
       continue;
     }
@@ -981,21 +1168,29 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
           continue;
         auto nextPath = buildPathFromTrail(current.trailIndex, nextInputPort);
 
-        if (!isEdgeLegal(current.portId, nextInputPort, swEdgeId, nextPath,
-                         state, dfg, adg))
+        if (!isEdgeLegalCached(connectivity, current.portId, nextInputPort,
+                               swEdgeId, nextPath, analysisCache, state, dfg,
+                               adg))
           continue;
+        auto nextTagInfo =
+            advanceRuntimeTagValueInfoAtPort(current.currentTag, nextInputPort,
+                                             adg, externalTagAtPort);
+        if (!nextTagInfo.representable)
+          continue;
+        SearchStateKey nextKey = makeSearchKey(nextInputPort, nextTagInfo.tag);
 
         double nextCost = current.gCost + 1.0;
-        auto nextBestIt = bestCost.find(nextInputPort);
+        auto nextBestIt = bestCost.find(nextKey);
         if (nextBestIt != bestCost.end() &&
             nextCost >= nextBestIt->second - 1e-9)
           continue;
 
-        bestCost[nextInputPort] = nextCost;
+        bestCost[nextKey] = nextCost;
         int nextTrailIndex = static_cast<int>(trails.size());
         trails.push_back({nextInputPort, current.trailIndex, current.depth + 1});
         worklist.push({nextCost, nextCost + estimateRemainingCost(nextInputPort),
-                       nextInputPort, nextTrailIndex, current.depth + 1});
+                       nextInputPort, nextTrailIndex, current.depth + 1,
+                       nextTagInfo.tag, nextKey});
       }
       continue;
     }
@@ -1007,7 +1202,7 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
     for (IdIndex outPortId : internalIt->second) {
       auto outPath = buildPathFromTrail(current.trailIndex, outPortId);
       if (!isInternalHopLegal(current.portId, outPortId, swEdgeId, outPath,
-                              state, dfg, adg))
+                              analysisCache, state, dfg, adg))
         continue;
 
       double historyPenalty = 0.0;
@@ -1019,18 +1214,25 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
       if (congestion)
         congestionPenalty = congestion->resourceCost(outPortId);
 
+      auto nextTagInfo = advanceRuntimeTagValueInfoAtPort(current.currentTag,
+                                                          outPortId, adg,
+                                                          externalTagAtPort);
+      if (!nextTagInfo.representable)
+        continue;
+      SearchStateKey nextKey = makeSearchKey(outPortId, nextTagInfo.tag);
+
       double nextCost = current.gCost + 1.0 + historyPenalty + congestionPenalty;
-      auto nextBestIt = bestCost.find(outPortId);
+      auto nextBestIt = bestCost.find(nextKey);
       if (nextBestIt != bestCost.end() &&
           nextCost >= nextBestIt->second - 1e-9)
         continue;
 
-      bestCost[outPortId] = nextCost;
+      bestCost[nextKey] = nextCost;
       int nextTrailIndex = static_cast<int>(trails.size());
       trails.push_back({outPortId, current.trailIndex, current.depth + 1});
       worklist.push(
           {nextCost, nextCost + estimateRemainingCost(outPortId), outPortId,
-           nextTrailIndex, current.depth + 1});
+           nextTrailIndex, current.depth + 1, nextTagInfo.tag, nextKey});
     }
   }
 

@@ -26,6 +26,18 @@ template <> struct MappingTraits<fcc::MapperRefinementOptions> {
   static void mapping(IO &io, fcc::MapperRefinementOptions &opts) {
     io.mapOptional("initial_temperature", opts.initialTemperature);
     io.mapOptional("cooling_rate", opts.coolingRate);
+    io.mapOptional("adaptive_cooling_enabled", opts.adaptiveCoolingEnabled);
+    io.mapOptional("adaptive_window", opts.adaptiveWindow);
+    io.mapOptional("target_acceptance_low", opts.targetAcceptanceLow);
+    io.mapOptional("target_acceptance_high", opts.targetAcceptanceHigh);
+    io.mapOptional("cold_acceptance_reheat_multiplier",
+                   opts.coldAcceptanceReheatMultiplier);
+    io.mapOptional("hot_acceptance_cooling_multiplier",
+                   opts.hotAcceptanceCoolingMultiplier);
+    io.mapOptional("plateau_window", opts.plateauWindow);
+    io.mapOptional("plateau_reheat_multiplier", opts.plateauReheatMultiplier);
+    io.mapOptional("max_temperature_scale", opts.maxTemperatureScale);
+    io.mapOptional("min_temperature", opts.minTemperature);
     io.mapOptional("iterations_per_placed_node", opts.iterationsPerPlacedNode);
     io.mapOptional("iteration_cap", opts.iterationCap);
     io.mapOptional("budget_fraction", opts.budgetFraction);
