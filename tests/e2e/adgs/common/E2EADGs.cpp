@@ -33,6 +33,21 @@ struct TaggedVecaddExtMemBridge {
   SWHandle ldDoneDemux;
 };
 
+struct TaggedVecaddExtMemBridgeInstances {
+  std::vector<InstanceHandle> ldAddrTags;
+  InstanceHandle stAddrTag;
+  InstanceHandle stDataTag;
+  SWHandle ldAddrMuxTemplate;
+  SWHandle ldDataDemuxTemplate;
+  SWHandle ldDoneDemuxTemplate;
+  InstanceHandle ldAddrMux;
+  InstanceHandle ldDataDemux;
+  InstanceHandle ldDoneDemux;
+  std::vector<InstanceHandle> ldDataDrops;
+  std::vector<InstanceHandle> ldDoneDrops;
+  InstanceHandle stDoneDrop;
+};
+
 TaggedVecaddExtMemBridge buildTaggedVecaddExtMemBridge(ADGBuilder &builder,
                                                        const std::string &prefix) {
   const std::string taggedTy = taggedBitsType(1);
@@ -245,7 +260,115 @@ void wireRoundRobinExtMemIngressEgress(
   }
 }
 
-void wireRoundRobinVecaddTaggedExtMemIngressEgress(
+std::vector<unsigned> buildSpreadSideCounts(unsigned totalPorts,
+                                            unsigned sideSwitchCount) {
+  std::vector<unsigned> counts(sideSwitchCount, 0);
+  if (totalPorts == 0 || sideSwitchCount == 0)
+    return counts;
+
+  if (totalPorts <= sideSwitchCount) {
+    if (totalPorts == 1) {
+      counts[sideSwitchCount / 2] = 1;
+      return counts;
+    }
+    for (unsigned idx = 0; idx < totalPorts; ++idx) {
+      unsigned sideIdx = static_cast<unsigned>(
+          std::llround(static_cast<double>(idx) *
+                       static_cast<double>(sideSwitchCount - 1) /
+                       static_cast<double>(totalPorts - 1)));
+      counts[std::min(sideIdx, sideSwitchCount - 1)] += 1;
+    }
+    return counts;
+  }
+
+  std::fill(counts.begin(), counts.end(), 1);
+  unsigned remaining = totalPorts - sideSwitchCount;
+  int center = static_cast<int>(sideSwitchCount / 2);
+  for (unsigned extra = 0; extra < remaining; ++extra) {
+    int delta = static_cast<int>((extra + 1) / 2);
+    int sideIdx = center;
+    if ((extra % 2) == 0) {
+      sideIdx = center - delta;
+    } else {
+      sideIdx = center + delta;
+    }
+    sideIdx = std::max(0, std::min(static_cast<int>(sideSwitchCount) - 1,
+                                   sideIdx));
+    counts[static_cast<unsigned>(sideIdx)] += 1;
+  }
+  return counts;
+}
+
+TaggedVecaddExtMemBridgeInstances wireTaggedVecaddExtMemSideBridge(
+    ADGBuilder &builder, const std::vector<PortRef> &ingressPorts,
+    const std::vector<PortRef> &egressPorts, InstanceHandle mem, unsigned memIdx,
+    const TaggedVecaddExtMemBridge &bridgeTemplates) {
+  assert(ingressPorts.size() >= 5 &&
+         "vecadd extmemory side bridge expects five ingress boundary ports");
+  assert(egressPorts.size() >= 4 &&
+         "vecadd extmemory side bridge expects four egress boundary ports");
+
+  const std::string taggedTy = taggedBitsType(1);
+  TaggedVecaddExtMemBridgeInstances bridge;
+  bridge.ldAddrMuxTemplate = bridgeTemplates.ldAddrMux;
+  bridge.ldDataDemuxTemplate = bridgeTemplates.ldDataDemux;
+  bridge.ldDoneDemuxTemplate = bridgeTemplates.ldDoneDemux;
+
+  bridge.ldAddrTags = builder.createAddTagBank(bitsType(), taggedTy, {0, 1});
+  bridge.stAddrTag = builder.createAddTag(bitsType(), taggedTy, 0);
+  bridge.stDataTag = builder.createAddTag(bitsType(), taggedTy, 0);
+  bridge.ldDataDrops = builder.createDelTagBank(taggedTy, bitsType(), 2);
+  bridge.ldDoneDrops = builder.createDelTagBank(taggedTy, bitsType(), 2);
+  bridge.stDoneDrop = builder.createDelTag(taggedTy, bitsType());
+
+  bridge.ldAddrMux = builder.instantiateSW(
+      bridgeTemplates.ldAddrMux, "vecadd_ld_addr_mux_" + std::to_string(memIdx));
+  bridge.ldDataDemux = builder.instantiateSW(
+      bridgeTemplates.ldDataDemux,
+      "vecadd_ld_data_demux_" + std::to_string(memIdx));
+  bridge.ldDoneDemux = builder.instantiateSW(
+      bridgeTemplates.ldDoneDemux,
+      "vecadd_ld_done_demux_" + std::to_string(memIdx));
+
+  builder.connect(egressPorts[0].instance, egressPorts[0].port,
+                  bridge.ldAddrTags[0], 0);
+  builder.connect(egressPorts[1].instance, egressPorts[1].port,
+                  bridge.ldAddrTags[1], 0);
+  builder.connect(egressPorts[2].instance, egressPorts[2].port,
+                  bridge.stAddrTag, 0);
+  builder.connect(egressPorts[3].instance, egressPorts[3].port,
+                  bridge.stDataTag, 0);
+
+  builder.connect(bridge.ldAddrTags[0], 0, bridge.ldAddrMux, 0);
+  builder.connect(bridge.ldAddrTags[1], 0, bridge.ldAddrMux, 1);
+  builder.connect(bridge.ldAddrMux, 0, mem, 1);
+  builder.connect(bridge.stAddrTag, 0, mem, 2);
+  builder.connect(bridge.stDataTag, 0, mem, 3);
+
+  builder.connect(mem, 0, bridge.ldDataDemux, 0);
+  builder.connect(bridge.ldDataDemux, 0, bridge.ldDataDrops[0], 0);
+  builder.connect(bridge.ldDataDemux, 1, bridge.ldDataDrops[1], 0);
+  builder.connect(bridge.ldDataDrops[0], 0, ingressPorts[0].instance,
+                  ingressPorts[0].port);
+  builder.connect(bridge.ldDataDrops[1], 0, ingressPorts[1].instance,
+                  ingressPorts[1].port);
+
+  builder.connect(mem, 1, bridge.ldDoneDemux, 0);
+  builder.connect(bridge.ldDoneDemux, 0, bridge.ldDoneDrops[0], 0);
+  builder.connect(bridge.ldDoneDemux, 1, bridge.ldDoneDrops[1], 0);
+  builder.connect(bridge.ldDoneDrops[0], 0, ingressPorts[2].instance,
+                  ingressPorts[2].port);
+  builder.connect(bridge.ldDoneDrops[1], 0, ingressPorts[3].instance,
+                  ingressPorts[3].port);
+
+  builder.connect(mem, 2, bridge.stDoneDrop, 0);
+  builder.connect(bridge.stDoneDrop, 0, ingressPorts[4].instance,
+                  ingressPorts[4].port);
+  return bridge;
+}
+
+std::vector<TaggedVecaddExtMemBridgeInstances>
+wireRoundRobinVecaddTaggedExtMemIngressEgress(
     ADGBuilder &builder, const MeshResult &mesh,
     const std::vector<InstanceHandle> &extMems, unsigned topLeftIngressCount,
     unsigned bottomLeftEgressCount,
@@ -256,6 +379,8 @@ void wireRoundRobinVecaddTaggedExtMemIngressEgress(
   unsigned rightEgressIdx = bottomLeftEgressCount;
 
   const std::string taggedTy = taggedBitsType(1);
+  std::vector<TaggedVecaddExtMemBridgeInstances> bridgeInstances;
+  bridgeInstances.reserve(extMems.size());
 
   for (unsigned memIdx = 0; memIdx < extMems.size(); ++memIdx) {
     InstanceHandle mem = extMems[memIdx];
@@ -276,61 +401,184 @@ void wireRoundRobinVecaddTaggedExtMemIngressEgress(
     unsigned &ingressIdx = useLeftIngress ? leftIngressIdx : rightIngressIdx;
     unsigned &egressIdx = useLeftEgress ? leftEgressIdx : rightEgressIdx;
 
-    auto ldAddrTags =
-        builder.createAddTagBank(bitsType(), taggedTy, {0, 1});
-    auto stAddrTag = builder.createAddTag(bitsType(), taggedTy, 0);
-    auto stDataTag = builder.createAddTag(bitsType(), taggedTy, 0);
-    auto ldDataDrops = builder.createDelTagBank(taggedTy, bitsType(), 2);
-    auto ldDoneDrops = builder.createDelTagBank(taggedTy, bitsType(), 2);
-    auto stDoneDrop = builder.createDelTag(taggedTy, bitsType());
+    TaggedVecaddExtMemBridgeInstances bridge;
+    bridge.ldAddrMuxTemplate = bridgeTemplates.ldAddrMux;
+    bridge.ldDataDemuxTemplate = bridgeTemplates.ldDataDemux;
+    bridge.ldDoneDemuxTemplate = bridgeTemplates.ldDoneDemux;
 
-    auto ldAddrMux = builder.instantiateSW(
+    bridge.ldAddrTags =
+        builder.createAddTagBank(bitsType(), taggedTy, {0, 1});
+    bridge.stAddrTag = builder.createAddTag(bitsType(), taggedTy, 0);
+    bridge.stDataTag = builder.createAddTag(bitsType(), taggedTy, 0);
+    bridge.ldDataDrops = builder.createDelTagBank(taggedTy, bitsType(), 2);
+    bridge.ldDoneDrops = builder.createDelTagBank(taggedTy, bitsType(), 2);
+    bridge.stDoneDrop = builder.createDelTag(taggedTy, bitsType());
+
+    bridge.ldAddrMux = builder.instantiateSW(
         bridgeTemplates.ldAddrMux,
         "vecadd_ld_addr_mux_" + std::to_string(memIdx));
-    auto ldDataDemux = builder.instantiateSW(
+    bridge.ldDataDemux = builder.instantiateSW(
         bridgeTemplates.ldDataDemux,
         "vecadd_ld_data_demux_" + std::to_string(memIdx));
-    auto ldDoneDemux = builder.instantiateSW(
+    bridge.ldDoneDemux = builder.instantiateSW(
         bridgeTemplates.ldDoneDemux,
         "vecadd_ld_done_demux_" + std::to_string(memIdx));
 
     builder.connect(mesh.egressPorts[egressIdx + 0].instance,
-                    mesh.egressPorts[egressIdx + 0].port, ldAddrTags[0], 0);
+                    mesh.egressPorts[egressIdx + 0].port, bridge.ldAddrTags[0], 0);
     builder.connect(mesh.egressPorts[egressIdx + 1].instance,
-                    mesh.egressPorts[egressIdx + 1].port, ldAddrTags[1], 0);
+                    mesh.egressPorts[egressIdx + 1].port, bridge.ldAddrTags[1], 0);
     builder.connect(mesh.egressPorts[egressIdx + 2].instance,
-                    mesh.egressPorts[egressIdx + 2].port, stAddrTag, 0);
+                    mesh.egressPorts[egressIdx + 2].port, bridge.stAddrTag, 0);
     builder.connect(mesh.egressPorts[egressIdx + 3].instance,
-                    mesh.egressPorts[egressIdx + 3].port, stDataTag, 0);
+                    mesh.egressPorts[egressIdx + 3].port, bridge.stDataTag, 0);
     egressIdx += 4;
 
-    builder.connect(ldAddrTags[0], 0, ldAddrMux, 0);
-    builder.connect(ldAddrTags[1], 0, ldAddrMux, 1);
-    builder.connect(ldAddrMux, 0, mem, 1);
-    builder.connect(stAddrTag, 0, mem, 2);
-    builder.connect(stDataTag, 0, mem, 3);
+    builder.connect(bridge.ldAddrTags[0], 0, bridge.ldAddrMux, 0);
+    builder.connect(bridge.ldAddrTags[1], 0, bridge.ldAddrMux, 1);
+    builder.connect(bridge.ldAddrMux, 0, mem, 1);
+    builder.connect(bridge.stAddrTag, 0, mem, 2);
+    builder.connect(bridge.stDataTag, 0, mem, 3);
 
-    builder.connect(mem, 0, ldDataDemux, 0);
-    builder.connect(ldDataDemux, 0, ldDataDrops[0], 0);
-    builder.connect(ldDataDemux, 1, ldDataDrops[1], 0);
-    builder.connect(ldDataDrops[0], 0, mesh.ingressPorts[ingressIdx + 0].instance,
+    builder.connect(mem, 0, bridge.ldDataDemux, 0);
+    builder.connect(bridge.ldDataDemux, 0, bridge.ldDataDrops[0], 0);
+    builder.connect(bridge.ldDataDemux, 1, bridge.ldDataDrops[1], 0);
+    builder.connect(bridge.ldDataDrops[0], 0, mesh.ingressPorts[ingressIdx + 0].instance,
                     mesh.ingressPorts[ingressIdx + 0].port);
-    builder.connect(ldDataDrops[1], 0, mesh.ingressPorts[ingressIdx + 1].instance,
+    builder.connect(bridge.ldDataDrops[1], 0, mesh.ingressPorts[ingressIdx + 1].instance,
                     mesh.ingressPorts[ingressIdx + 1].port);
 
-    builder.connect(mem, 1, ldDoneDemux, 0);
-    builder.connect(ldDoneDemux, 0, ldDoneDrops[0], 0);
-    builder.connect(ldDoneDemux, 1, ldDoneDrops[1], 0);
-    builder.connect(ldDoneDrops[0], 0, mesh.ingressPorts[ingressIdx + 2].instance,
+    builder.connect(mem, 1, bridge.ldDoneDemux, 0);
+    builder.connect(bridge.ldDoneDemux, 0, bridge.ldDoneDrops[0], 0);
+    builder.connect(bridge.ldDoneDemux, 1, bridge.ldDoneDrops[1], 0);
+    builder.connect(bridge.ldDoneDrops[0], 0, mesh.ingressPorts[ingressIdx + 2].instance,
                     mesh.ingressPorts[ingressIdx + 2].port);
-    builder.connect(ldDoneDrops[1], 0, mesh.ingressPorts[ingressIdx + 3].instance,
+    builder.connect(bridge.ldDoneDrops[1], 0, mesh.ingressPorts[ingressIdx + 3].instance,
                     mesh.ingressPorts[ingressIdx + 3].port);
 
-    builder.connect(mem, 2, stDoneDrop, 0);
-    builder.connect(stDoneDrop, 0, mesh.ingressPorts[ingressIdx + 4].instance,
+    builder.connect(mem, 2, bridge.stDoneDrop, 0);
+    builder.connect(bridge.stDoneDrop, 0, mesh.ingressPorts[ingressIdx + 4].instance,
                     mesh.ingressPorts[ingressIdx + 4].port);
     ingressIdx += 5;
+    bridgeInstances.push_back(bridge);
   }
+  return bridgeInstances;
+}
+
+void layoutTaggedVecaddExtMemBridges(
+    ADGBuilder &builder, const std::vector<InstanceHandle> &extMems,
+    const std::vector<TaggedVecaddExtMemBridgeInstances> &bridges,
+    double memX, double memY0, double memStep) {
+  const double muxX = memX - 145.0;
+  const double tagX = memX - 255.0;
+  const double demuxX = memX + 145.0;
+  const double delTagX = memX + 255.0;
+  for (unsigned idx = 0; idx < extMems.size() && idx < bridges.size(); ++idx) {
+    double memY = memY0 + memStep * static_cast<double>(idx);
+    builder.setInstanceVizPosition(extMems[idx], memX, memY, 8,
+                                   static_cast<int>(idx));
+
+    const auto &bridge = bridges[idx];
+    builder.setInstanceVizPosition(bridge.ldAddrMux, muxX, memY - 62.0, 8,
+                                   static_cast<int>(idx * 10 + 0));
+    builder.setInstanceVizPosition(bridge.stAddrTag, tagX, memY + 6.0, 8,
+                                   static_cast<int>(idx * 10 + 1));
+    builder.setInstanceVizPosition(bridge.stDataTag, tagX, memY + 62.0, 8,
+                                   static_cast<int>(idx * 10 + 2));
+    if (bridge.ldAddrTags.size() >= 2) {
+      builder.setInstanceVizPosition(bridge.ldAddrTags[0], tagX, memY - 96.0, 8,
+                                     static_cast<int>(idx * 10 + 3));
+      builder.setInstanceVizPosition(bridge.ldAddrTags[1], tagX, memY - 36.0, 8,
+                                     static_cast<int>(idx * 10 + 4));
+    }
+
+    builder.setInstanceVizPosition(bridge.ldDataDemux, demuxX, memY - 54.0, 8,
+                                   static_cast<int>(idx * 10 + 5));
+    builder.setInstanceVizPosition(bridge.ldDoneDemux, demuxX, memY + 18.0, 8,
+                                   static_cast<int>(idx * 10 + 6));
+    builder.setInstanceVizPosition(bridge.stDoneDrop, delTagX, memY + 88.0, 8,
+                                   static_cast<int>(idx * 10 + 7));
+    if (bridge.ldDataDrops.size() >= 2) {
+      builder.setInstanceVizPosition(bridge.ldDataDrops[0], delTagX, memY - 84.0, 8,
+                                     static_cast<int>(idx * 10 + 8));
+      builder.setInstanceVizPosition(bridge.ldDataDrops[1], delTagX, memY - 24.0, 8,
+                                     static_cast<int>(idx * 10 + 9));
+    }
+    if (bridge.ldDoneDrops.size() >= 2) {
+      builder.setInstanceVizPosition(bridge.ldDoneDrops[0], delTagX, memY + 28.0, 8,
+                                     static_cast<int>(idx * 10 + 10));
+      builder.setInstanceVizPosition(bridge.ldDoneDrops[1], delTagX, memY + 60.0, 8,
+                                     static_cast<int>(idx * 10 + 11));
+    }
+  }
+}
+
+void layoutTaggedVecaddSideExtMemBridges(
+    ADGBuilder &builder, const std::vector<InstanceHandle> &extMems,
+    const std::vector<TaggedVecaddExtMemBridgeInstances> &bridges,
+    unsigned rows, unsigned cols) {
+  assert(extMems.size() == bridges.size() &&
+         "vecadd extmemory layout expects one bridge bundle per extmemory");
+  if (extMems.empty())
+    return;
+
+  const double switchStep = 520.0;
+  const double origin = 122.0;
+  const double meshLeft = origin;
+  const double meshRight = origin + static_cast<double>(cols) * switchStep;
+  const double meshTop = origin;
+  const double meshBottom = origin + static_cast<double>(rows) * switchStep;
+  const double meshMidY = (meshTop + meshBottom) / 2.0;
+  const double memOffsetX = 520.0;
+  const double leftMemX = meshLeft - memOffsetX;
+  const double rightMemX = meshRight + memOffsetX;
+  const double leftMemY = meshMidY - 180.0;
+  const double rightMemY = meshMidY + 180.0;
+
+  auto placeOne = [&](const TaggedVecaddExtMemBridgeInstances &bridge,
+                      InstanceHandle mem, double memX, double memY,
+                      int gridColBase) {
+    const double muxX = memX - 145.0;
+    const double tagX = memX - 255.0;
+    const double demuxX = memX + 145.0;
+    const double delTagX = memX + 255.0;
+
+    builder.setInstanceVizPosition(mem, memX, memY, 8, gridColBase);
+    builder.setInstanceVizPosition(bridge.ldAddrMux, muxX, memY - 62.0, 8,
+                                   gridColBase + 1);
+    builder.setInstanceVizPosition(bridge.stAddrTag, tagX, memY + 6.0, 8,
+                                   gridColBase + 2);
+    builder.setInstanceVizPosition(bridge.stDataTag, tagX, memY + 62.0, 8,
+                                   gridColBase + 3);
+    if (bridge.ldAddrTags.size() >= 2) {
+      builder.setInstanceVizPosition(bridge.ldAddrTags[0], tagX, memY - 96.0, 8,
+                                     gridColBase + 4);
+      builder.setInstanceVizPosition(bridge.ldAddrTags[1], tagX, memY - 36.0, 8,
+                                     gridColBase + 5);
+    }
+    builder.setInstanceVizPosition(bridge.ldDataDemux, demuxX, memY - 54.0, 8,
+                                   gridColBase + 6);
+    builder.setInstanceVizPosition(bridge.ldDoneDemux, demuxX, memY + 18.0, 8,
+                                   gridColBase + 7);
+    builder.setInstanceVizPosition(bridge.stDoneDrop, delTagX, memY + 88.0, 8,
+                                   gridColBase + 8);
+    if (bridge.ldDataDrops.size() >= 2) {
+      builder.setInstanceVizPosition(bridge.ldDataDrops[0], delTagX, memY - 84.0, 8,
+                                     gridColBase + 9);
+      builder.setInstanceVizPosition(bridge.ldDataDrops[1], delTagX, memY - 24.0, 8,
+                                     gridColBase + 10);
+    }
+    if (bridge.ldDoneDrops.size() >= 2) {
+      builder.setInstanceVizPosition(bridge.ldDoneDrops[0], delTagX, memY + 28.0, 8,
+                                     gridColBase + 11);
+      builder.setInstanceVizPosition(bridge.ldDoneDrops[1], delTagX, memY + 60.0, 8,
+                                     gridColBase + 12);
+    }
+  };
+
+  placeOne(bridges[0], extMems[0], leftMemX, leftMemY, 0);
+  if (extMems.size() >= 2)
+    placeOne(bridges[1], extMems[1], rightMemX, rightMemY, 20);
 }
 
 void buildChessDomain(const std::string &moduleName,
@@ -645,19 +893,24 @@ void buildVecaddDemoChess6x6(const std::string &outputPath) {
 
   constexpr unsigned kRows = 6;
   constexpr unsigned kCols = 6;
-  constexpr unsigned kNumExtMems = 3;
+  constexpr unsigned kNumExtMems = 2;
   constexpr unsigned kScalarInputs = 2;
   constexpr unsigned kScalarOutputs = 1;
+  constexpr unsigned kSideSwitchCount = kCols + 1;
 
   ChessMeshOptions options;
-  const unsigned leftIngressMems = 2;
-  const unsigned rightIngressMems = 1;
-  const unsigned leftEgressMems = 1;
-  const unsigned rightEgressMems = 2;
-  options.topLeftExtraInputs = leftIngressMems * 5 + kScalarInputs;
-  options.topRightExtraInputs = rightIngressMems * 5;
-  options.bottomLeftExtraOutputs = leftEgressMems * 4;
-  options.bottomRightExtraOutputs = rightEgressMems * 4 + kScalarOutputs;
+  options.leftExtraInputsPerSwitch =
+      buildSpreadSideCounts(/*totalPorts=*/5, kSideSwitchCount);
+  options.leftExtraOutputsPerSwitch =
+      buildSpreadSideCounts(/*totalPorts=*/4, kSideSwitchCount);
+  options.rightExtraInputsPerSwitch =
+      buildSpreadSideCounts(/*totalPorts=*/5, kSideSwitchCount);
+  options.rightExtraOutputsPerSwitch =
+      buildSpreadSideCounts(/*totalPorts=*/4, kSideSwitchCount);
+  options.topExtraInputsPerSwitch =
+      buildSpreadSideCounts(kScalarInputs, kSideSwitchCount);
+  options.bottomExtraOutputsPerSwitch =
+      buildSpreadSideCounts(kScalarOutputs, kSideSwitchCount);
   auto mesh = builder.buildChessMesh(
       kRows, kCols,
       [&](unsigned, unsigned) { return computePE.pe; }, options);
@@ -676,25 +929,28 @@ void buildVecaddDemoChess6x6(const std::string &outputPath) {
   for (unsigned idx = 0; idx < extMems.size(); ++idx)
     builder.connectMemrefToExtMem(memrefs[idx], extMems[idx]);
 
-  wireRoundRobinVecaddTaggedExtMemIngressEgress(
-      builder, mesh, extMems, options.topLeftExtraInputs,
-      options.bottomLeftExtraOutputs, extMemBridge);
+  std::vector<TaggedVecaddExtMemBridgeInstances> extMemBridges;
+  extMemBridges.reserve(extMems.size());
+  extMemBridges.push_back(wireTaggedVecaddExtMemSideBridge(
+      builder, mesh.leftIngressPorts, mesh.leftEgressPorts, extMems[0], 0,
+      extMemBridge));
+  extMemBridges.push_back(wireTaggedVecaddExtMemSideBridge(
+      builder, mesh.rightIngressPorts, mesh.rightEgressPorts, extMems[1], 1,
+      extMemBridge));
 
   std::vector<unsigned> inputs = builder.addInputs(
       "scalar", std::vector<std::string>(kScalarInputs, bitsType()));
   std::vector<unsigned> outputs = builder.addOutputs(
       "scalar_out", std::vector<std::string>(kScalarOutputs, bitsType()));
 
-  unsigned ingressIdx = leftIngressMems * 5;
-  for (unsigned idx = 0; idx < inputs.size(); ++idx, ++ingressIdx)
-    builder.connectInputToPort(inputs[idx], mesh.ingressPorts[ingressIdx]);
+  for (unsigned idx = 0; idx < inputs.size(); ++idx)
+    builder.connectInputToPort(inputs[idx], mesh.topIngressPorts[idx]);
 
-  unsigned egressIdx = kNumExtMems * 4;
-  for (unsigned idx = 0; idx < outputs.size(); ++idx, ++egressIdx)
-    builder.connectPortToOutput(mesh.egressPorts[egressIdx], outputs[idx]);
+  for (unsigned idx = 0; idx < outputs.size(); ++idx)
+    builder.connectPortToOutput(mesh.bottomEgressPorts[idx], outputs[idx]);
 
-  setExtMemStripLayout(builder, extMems, -420.0,
-                       -220.0 + static_cast<double>(kRows) * 8.0, 180.0);
+  layoutTaggedVecaddSideExtMemBridges(builder, extMems, extMemBridges, kRows,
+                                      kCols);
   builder.exportMLIR(outputPath);
 }
 

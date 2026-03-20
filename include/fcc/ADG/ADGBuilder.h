@@ -97,6 +97,14 @@ struct MeshResult {
   std::vector<std::vector<InstanceHandle>> swGrid;  // topology-specific
   std::vector<PortRef> ingressPorts;
   std::vector<PortRef> egressPorts;
+  std::vector<PortRef> topIngressPorts;
+  std::vector<PortRef> topEgressPorts;
+  std::vector<PortRef> rightIngressPorts;
+  std::vector<PortRef> rightEgressPorts;
+  std::vector<PortRef> bottomIngressPorts;
+  std::vector<PortRef> bottomEgressPorts;
+  std::vector<PortRef> leftIngressPorts;
+  std::vector<PortRef> leftEgressPorts;
 };
 
 struct CubeResult {
@@ -192,6 +200,14 @@ struct ChessMeshOptions {
   unsigned topRightExtraOutputs = 0;
   unsigned bottomLeftExtraOutputs = 0;
   unsigned bottomRightExtraOutputs = 0;
+  std::vector<unsigned> topExtraInputsPerSwitch;
+  std::vector<unsigned> topExtraOutputsPerSwitch;
+  std::vector<unsigned> rightExtraInputsPerSwitch;
+  std::vector<unsigned> rightExtraOutputsPerSwitch;
+  std::vector<unsigned> bottomExtraInputsPerSwitch;
+  std::vector<unsigned> bottomExtraOutputsPerSwitch;
+  std::vector<unsigned> leftExtraInputsPerSwitch;
+  std::vector<unsigned> leftExtraOutputsPerSwitch;
 };
 
 struct LatticeMeshOptions {

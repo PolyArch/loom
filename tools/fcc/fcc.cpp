@@ -281,11 +281,15 @@ static void attachADGCapacityAttrs(ModuleOp module, const std::string &adgPath,
     totalFUs += pe.fuNodeIds.size();
 
   unsigned totalMemModules = 0;
+  unsigned totalMemRegions = 0;
   unsigned maxDataWidth = 0;
   unsigned maxJoinFanin = 0;
   for (const Node *node : adg.nodeRange()) {
-    if (getNodeAttrStr(node, "resource_class") == "memory")
+    if (getNodeAttrStr(node, "resource_class") == "memory") {
       totalMemModules++;
+      totalMemRegions +=
+          static_cast<unsigned>(std::max<int64_t>(1, getNodeAttrInt(node, "numRegion", 1)));
+    }
   }
   for (const Port *port : adg.portRange()) {
     if (auto info = fcc::detail::getPortTypeInfo(port->type)) {
@@ -313,6 +317,9 @@ static void attachADGCapacityAttrs(ModuleOp module, const std::string &adgPath,
       "fcc.adg_total_mem_modules",
       builder.getI64IntegerAttr(static_cast<int64_t>(totalMemModules)));
   module->setAttr(
+      "fcc.adg_total_mem_regions",
+      builder.getI64IntegerAttr(static_cast<int64_t>(totalMemRegions)));
+  module->setAttr(
       "fcc.adg_max_data_width",
       builder.getI64IntegerAttr(static_cast<int64_t>(maxDataWidth)));
   module->setAttr(
@@ -322,6 +329,7 @@ static void attachADGCapacityAttrs(ModuleOp module, const std::string &adgPath,
   llvm::outs() << "fcc: ADG capacity summary: PEs=" << totalPEs
                << ", FUs=" << totalFUs
                << ", mem=" << totalMemModules
+               << ", regions=" << totalMemRegions
                << ", maxWidth=" << maxDataWidth
                << ", maxJoin=" << maxJoinFanin << "\n";
 }

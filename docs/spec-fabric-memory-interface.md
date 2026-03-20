@@ -75,7 +75,11 @@ the hardware tag width.
 
 `fabric.memory` may additionally expose a memref-style externally visible view
 when `is_private` is not true. That memref represents a slave-style,
-memory-mapped access path into the scratchpad.
+memory-mapped access path into the scratchpad. In the visualization model,
+that public memref is the opposite-facing counterpart of `fabric.extmemory`:
+
+- `fabric.extmemory` shows one memref input on the ingress side
+- non-private `fabric.memory` shows one memref output on the egress side
 
 `fabric.extmemory` uses the same request and response family order, but always
 consumes one incoming module memref operand first. That memref represents the

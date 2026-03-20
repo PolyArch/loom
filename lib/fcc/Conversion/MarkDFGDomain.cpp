@@ -75,6 +75,7 @@ struct ADGCapacity {
   unsigned totalPEs = 0;
   unsigned totalFUs = 0;
   unsigned totalMemModules = 0;
+  unsigned totalMemRegions = 0;
   unsigned maxDataWidth = 64;
 
   bool isValid() const { return totalPEs > 0 || totalFUs > 0; }
@@ -273,10 +274,12 @@ static bool checkFeasibility(DFGCandidate &candidate,
                << " > capacity " << computeCapacity << "\n");
     fits = false;
   }
-  if (r.estimatedMemCount > adg.totalMemModules) {
+  unsigned memCapacity =
+      adg.totalMemRegions > 0 ? adg.totalMemRegions : adg.totalMemModules;
+  if (r.estimatedMemCount > memCapacity) {
     LLVM_DEBUG(llvm::dbgs()
                << "  INFEASIBLE: mem " << r.estimatedMemCount
-               << " > modules " << adg.totalMemModules << "\n");
+               << " > capacity " << memCapacity << "\n");
     fits = false;
   }
   if (r.maxDataWidth > adg.maxDataWidth) {
@@ -373,6 +376,9 @@ struct MarkDFGDomainPass
     if (auto attr =
             module->getAttrOfType<IntegerAttr>("fcc.adg_total_mem_modules"))
       adg.totalMemModules = attr.getInt();
+    if (auto attr =
+            module->getAttrOfType<IntegerAttr>("fcc.adg_total_mem_regions"))
+      adg.totalMemRegions = attr.getInt();
     if (auto attr =
             module->getAttrOfType<IntegerAttr>("fcc.adg_max_data_width"))
       adg.maxDataWidth = attr.getInt();

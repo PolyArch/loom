@@ -29,6 +29,58 @@ namespace adg {
 
 using namespace detail;
 
+namespace {
+
+constexpr double kMemoryBoxWidth = 170.0;
+constexpr double kMemoryPortPitch = 26.0;
+constexpr double kMemoryBoxMinHeight = 96.0;
+constexpr double kTagNodeWidth = 92.0;
+constexpr double kTagNodeHeight = 52.0;
+constexpr double kFifoNodeWidth = 100.0;
+constexpr double kFifoNodeHeight = 56.0;
+
+double computeMemoryBoxHeight(unsigned numInputs, unsigned numOutputs) {
+  unsigned sidePortCount = std::max(1U, std::max(numInputs > 0 ? numInputs - 1 : 0,
+                                                 numOutputs));
+  return std::max(kMemoryBoxMinHeight,
+                  40.0 + static_cast<double>(sidePortCount) * kMemoryPortPitch);
+}
+
+std::pair<double, double>
+computeMemoryInputPortPos(bool hasTopMemref, double boxLeft, double boxTop,
+                          double boxWidth, double boxHeight,
+                          unsigned numInputs, unsigned portIdx) {
+  if (hasTopMemref && portIdx == 0) {
+    return {boxLeft + boxWidth / 2.0, boxTop};
+  }
+  unsigned sideIdx = hasTopMemref ? portIdx : (portIdx + 1);
+  return {boxLeft,
+          boxTop + 20.0 +
+              (boxHeight - 30.0) * (static_cast<double>(sideIdx) /
+                                    static_cast<double>(std::max(1U, numInputs)))};
+}
+
+std::pair<double, double>
+computeMemoryOutputPortPos(double boxLeft, double boxTop, double boxWidth,
+                           double boxHeight, unsigned numOutputs,
+                           bool hasBottomMemref, unsigned portIdx) {
+  if (hasBottomMemref && portIdx + 1 == numOutputs)
+    return {boxLeft + boxWidth / 2.0, boxTop + boxHeight};
+  return {boxLeft + boxWidth,
+          boxTop + 20.0 +
+              (boxHeight - 30.0) *
+                  (static_cast<double>(portIdx + 1) /
+                   static_cast<double>(std::max(1U, numOutputs) + 1))};
+}
+
+std::string normalizeModuleTypeLabel(llvm::StringRef typeStr) {
+  if (typeStr.starts_with("!fabric."))
+    return typeStr.drop_front(8).str();
+  return typeStr.str();
+}
+
+} // namespace
+
 static double computeModuleMarginForAreaRatio(double contentW, double contentH,
                                               double areaRatio) {
   if (contentW <= 0.0 || contentH <= 0.0)
@@ -221,32 +273,32 @@ std::string ADGBuilder::Impl::generateVizJson() const {
     }
     case InstanceKind::Memory: {
       const auto &memDef = memoryDefs[inst.defIdx];
-      info.width = 170.0;
-      info.height = 80.0;
+      info.width = kMemoryBoxWidth;
       info.numInputs = memDef.ldPorts + memDef.stPorts * 2;
       info.numOutputs =
           memDef.ldPorts + memDef.stPorts + memDef.ldPorts + (memDef.isPrivate ? 0 : 1);
+      info.height = computeMemoryBoxHeight(info.numInputs, info.numOutputs);
       break;
     }
     case InstanceKind::ExtMem: {
       const auto &memDef = extMemDefs[inst.defIdx];
-      info.width = 170.0;
-      info.height = 80.0;
+      info.width = kMemoryBoxWidth;
       info.numInputs = 1 + memDef.ldPorts + memDef.stPorts * 2;
       info.numOutputs = memDef.ldPorts + memDef.stPorts + memDef.ldPorts;
+      info.height = computeMemoryBoxHeight(info.numInputs, info.numOutputs);
       break;
     }
     case InstanceKind::FIFO:
-      info.width = 100.0;
-      info.height = 56.0;
+      info.width = kFifoNodeWidth;
+      info.height = kFifoNodeHeight;
       info.numInputs = 1;
       info.numOutputs = 1;
       break;
     case InstanceKind::AddTag:
     case InstanceKind::MapTag:
     case InstanceKind::DelTag:
-      info.width = 92.0;
-      info.height = 52.0;
+      info.width = kTagNodeWidth;
+      info.height = kTagNodeHeight;
       info.numInputs = 1;
       info.numOutputs = 1;
       break;
@@ -647,6 +699,16 @@ std::string ADGBuilder::Impl::generateVizJson() const {
         pt.y = (box.centerY - box.height / 2.0) + box.height * ratio;
         break;
       }
+    } else if (inst.kind == InstanceKind::Memory ||
+               inst.kind == InstanceKind::ExtMem) {
+      bool hasTopMemref = inst.kind == InstanceKind::ExtMem;
+      double left = box.centerX - box.width / 2.0;
+      double top = box.centerY - box.height / 2.0;
+      auto [x, y] = computeMemoryInputPortPos(hasTopMemref, left, top,
+                                              box.width, box.height,
+                                              box.numInputs, portIdx);
+      pt.x = x;
+      pt.y = y;
     } else {
       pt.x = box.centerX - box.width / 2.0;
       pt.y = box.centerY - box.height / 2.0 + 16.0 +
@@ -693,6 +755,20 @@ std::string ADGBuilder::Impl::generateVizJson() const {
         pt.y = box.centerY + box.height / 2.0;
         break;
       }
+    } else if (inst.kind == InstanceKind::Memory ||
+               inst.kind == InstanceKind::ExtMem) {
+      double left = box.centerX - box.width / 2.0;
+      double top = box.centerY - box.height / 2.0;
+      bool hasBottomMemref = false;
+      if (inst.kind == InstanceKind::Memory) {
+        const auto &memDef = memoryDefs[inst.defIdx];
+        hasBottomMemref = !memDef.isPrivate;
+      }
+      auto [x, y] = computeMemoryOutputPortPos(left, top, box.width,
+                                               box.height, box.numOutputs,
+                                               hasBottomMemref, portIdx);
+      pt.x = x;
+      pt.y = y;
     } else {
       pt.x = box.centerX + box.width / 2.0;
       pt.y = box.centerY - box.height / 2.0 + 16.0 +
@@ -817,7 +893,38 @@ std::string ADGBuilder::Impl::generateVizJson() const {
 
   std::ostringstream os;
   os << "{\n"
-     << "  \"version\": 1,\n"
+     << "  \"version\": 1,\n";
+
+  os << "  \"moduleInputLabels\": [";
+  bool firstModuleInput = true;
+  for (const auto &mem : memrefInputs) {
+    if (!firstModuleInput)
+      os << ", ";
+    firstModuleInput = false;
+    std::string label = mem.name.empty() ? "input" : mem.name;
+    label += ": " + normalizeModuleTypeLabel(mem.typeStr);
+    os << "\"" << label << "\"";
+  }
+  for (const auto &input : scalarInputs) {
+    if (!firstModuleInput)
+      os << ", ";
+    firstModuleInput = false;
+    std::string label = input.name.empty() ? "input" : input.name;
+    label += ": " + normalizeModuleTypeLabel(input.typeStr);
+    os << "\"" << label << "\"";
+  }
+  os << "],\n";
+
+  os << "  \"moduleOutputLabels\": [";
+  for (size_t idx = 0; idx < scalarOutputs.size(); ++idx) {
+    if (idx > 0)
+      os << ", ";
+    std::string label =
+        scalarOutputs[idx].name.empty() ? "output" : scalarOutputs[idx].name;
+    label += ": " + normalizeModuleTypeLabel(scalarOutputs[idx].typeStr);
+    os << "\"" << label << "\"";
+  }
+  os << "],\n"
      << "  \"components\": [\n";
 
   bool first = true;
@@ -864,6 +971,11 @@ std::string ADGBuilder::Impl::generateVizJson() const {
        << ", \"kind\": \"" << kindName << "\""
        << ", \"center_x\": " << placement.centerX
        << ", \"center_y\": " << placement.centerY;
+    BoxInfo box = estimateBoxInfo(static_cast<unsigned>(instIdx));
+    if (box.valid) {
+      os << ", \"width\": " << box.width
+         << ", \"height\": " << box.height;
+    }
     if (placement.gridRow >= 0)
       os << ", \"grid_row\": " << placement.gridRow;
     if (placement.gridCol >= 0)

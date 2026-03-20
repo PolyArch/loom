@@ -1,7 +1,111 @@
 #include "VizExporterInternal.h"
+#include "fcc/Dialect/Fabric/FabricTypes.h"
 
 namespace fcc {
 namespace viz_detail {
+
+namespace {
+
+std::string describeMemoryPortLabel(llvm::StringRef baseName, mlir::Type type) {
+  if (auto tagged = mlir::dyn_cast<fcc::fabric::TaggedType>(type)) {
+    unsigned tagWidth = tagged.getTagType().getWidth();
+    return (baseName + "[i" + std::to_string(tagWidth) + "]").str();
+  }
+  return baseName.str();
+}
+
+template <typename EmitLabelFn>
+void emitLabelArray(llvm::raw_ostream &os, llvm::StringRef key,
+                    unsigned count, EmitLabelFn &&emitLabel) {
+  os << ", \"" << key << "\": [";
+  for (unsigned idx = 0; idx < count; ++idx) {
+    if (idx > 0)
+      os << ", ";
+    os << "\"" << jsonEsc(emitLabel(idx)) << "\"";
+  }
+  os << "]";
+}
+
+void emitMemoryPortLabels(llvm::raw_ostream &os, fcc::fabric::ExtMemoryOp extOp,
+                          mlir::FunctionType fnType) {
+  emitLabelArray(os, "inputLabels", fnType.getNumInputs(), [&](unsigned idx) {
+    if (idx == 0)
+      return std::string("memref");
+    unsigned portIdx = idx - 1;
+    if (extOp.getLdCount() > 0) {
+      if (portIdx == 0)
+        return describeMemoryPortLabel("ld_addr", fnType.getInput(idx));
+      --portIdx;
+    }
+    if (extOp.getStCount() > 0) {
+      if (portIdx == 0)
+        return describeMemoryPortLabel("st_addr", fnType.getInput(idx));
+      if (portIdx == 1)
+        return describeMemoryPortLabel("st_data", fnType.getInput(idx));
+    }
+    return std::string("in") + std::to_string(idx);
+  });
+  emitLabelArray(os, "outputLabels", fnType.getNumResults(),
+                 [&](unsigned idx) {
+                   unsigned portIdx = idx;
+                   if (extOp.getLdCount() > 0) {
+                     if (portIdx == 0)
+                       return describeMemoryPortLabel("ld_data",
+                                                      fnType.getResult(idx));
+                     if (portIdx == 1)
+                       return describeMemoryPortLabel("ld_done",
+                                                      fnType.getResult(idx));
+                     portIdx -= 2;
+                   }
+                   if (extOp.getStCount() > 0 && portIdx == 0)
+                     return describeMemoryPortLabel("st_done",
+                                                    fnType.getResult(idx));
+                   return std::string("out") + std::to_string(idx);
+                 });
+}
+
+void emitMemoryPortLabels(llvm::raw_ostream &os, fcc::fabric::MemoryOp memOp,
+                          mlir::FunctionType fnType) {
+  emitLabelArray(os, "inputLabels", fnType.getNumInputs(), [&](unsigned idx) {
+    unsigned portIdx = idx;
+    if (memOp.getLdCount() > 0) {
+      if (portIdx == 0)
+        return describeMemoryPortLabel("ld_addr", fnType.getInput(idx));
+      --portIdx;
+    }
+    if (memOp.getStCount() > 0) {
+      if (portIdx == 0)
+        return describeMemoryPortLabel("st_addr", fnType.getInput(idx));
+      if (portIdx == 1)
+        return describeMemoryPortLabel("st_data", fnType.getInput(idx));
+    }
+    return std::string("in") + std::to_string(idx);
+  });
+  emitLabelArray(os, "outputLabels", fnType.getNumResults(),
+                 [&](unsigned idx) {
+                   unsigned portIdx = idx;
+                   if (memOp.getLdCount() > 0) {
+                     if (portIdx == 0)
+                       return describeMemoryPortLabel("ld_data",
+                                                      fnType.getResult(idx));
+                     if (portIdx == 1)
+                       return describeMemoryPortLabel("ld_done",
+                                                      fnType.getResult(idx));
+                     portIdx -= 2;
+                   }
+                   if (memOp.getStCount() > 0) {
+                     if (portIdx == 0)
+                       return describeMemoryPortLabel("st_done",
+                                                      fnType.getResult(idx));
+                     --portIdx;
+                   }
+                   if (!memOp.getIsPrivate() && portIdx == 0)
+                     return std::string("memref");
+                   return std::string("out") + std::to_string(idx);
+                 });
+}
+
+} // namespace
 
 // ---- Serialize fabric.module to JSON ----
 
@@ -457,6 +561,7 @@ void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
       os << ", \"memoryKind\": \"extmemory\"";
       os << ", \"numInputs\": " << memFnType.getNumInputs();
       os << ", \"numOutputs\": " << memFnType.getNumResults();
+      emitMemoryPortLabels(os, extOp, memFnType);
       os << "}";
     }
 
@@ -471,6 +576,7 @@ void writeADGJson(llvm::raw_ostream &os, mlir::ModuleOp topModule,
       os << ", \"memoryKind\": \"memory\"";
       os << ", \"numInputs\": " << memFnType.getNumInputs();
       os << ", \"numOutputs\": " << memFnType.getNumResults();
+      emitMemoryPortLabels(os, memOp, memFnType);
       os << "}";
     }
 

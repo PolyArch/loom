@@ -507,6 +507,52 @@ MeshResult ADGBuilder::buildChessMesh(
       degree++;
     return degree;
   };
+  auto sideCountAt = [](const std::vector<unsigned> &counts,
+                        unsigned idx) -> unsigned {
+    return idx < counts.size() ? counts[idx] : 0U;
+  };
+  auto legacyExtraInputsAt = [&](unsigned sr, unsigned sc) -> unsigned {
+    unsigned count = 0;
+    if (sr == 0 && sc == 0)
+      count += options.topLeftExtraInputs;
+    if (sr == 0 && sc == cols)
+      count += options.topRightExtraInputs;
+    return count;
+  };
+  auto legacyExtraOutputsAt = [&](unsigned sr, unsigned sc) -> unsigned {
+    unsigned count = 0;
+    if (sr == 0 && sc == cols)
+      count += options.topRightExtraOutputs;
+    if (sr == rows && sc == 0)
+      count += options.bottomLeftExtraOutputs;
+    if (sr == rows && sc == cols)
+      count += options.bottomRightExtraOutputs;
+    return count;
+  };
+  auto topExtraInputsAt = [&](unsigned sr, unsigned sc) -> unsigned {
+    return sr == 0 ? sideCountAt(options.topExtraInputsPerSwitch, sc) : 0U;
+  };
+  auto topExtraOutputsAt = [&](unsigned sr, unsigned sc) -> unsigned {
+    return sr == 0 ? sideCountAt(options.topExtraOutputsPerSwitch, sc) : 0U;
+  };
+  auto rightExtraInputsAt = [&](unsigned sr, unsigned sc) -> unsigned {
+    return sc == cols ? sideCountAt(options.rightExtraInputsPerSwitch, sr) : 0U;
+  };
+  auto rightExtraOutputsAt = [&](unsigned sr, unsigned sc) -> unsigned {
+    return sc == cols ? sideCountAt(options.rightExtraOutputsPerSwitch, sr) : 0U;
+  };
+  auto bottomExtraInputsAt = [&](unsigned sr, unsigned sc) -> unsigned {
+    return sr == rows ? sideCountAt(options.bottomExtraInputsPerSwitch, sc) : 0U;
+  };
+  auto bottomExtraOutputsAt = [&](unsigned sr, unsigned sc) -> unsigned {
+    return sr == rows ? sideCountAt(options.bottomExtraOutputsPerSwitch, sc) : 0U;
+  };
+  auto leftExtraInputsAt = [&](unsigned sr, unsigned sc) -> unsigned {
+    return sc == 0 ? sideCountAt(options.leftExtraInputsPerSwitch, sr) : 0U;
+  };
+  auto leftExtraOutputsAt = [&](unsigned sr, unsigned sc) -> unsigned {
+    return sc == 0 ? sideCountAt(options.leftExtraOutputsPerSwitch, sr) : 0U;
+  };
 
   const unsigned maxSwitchDegree = 8;
   const double maxSwitchBox = std::max(80.0, maxSwitchDegree * 30.0 + 30.0);
@@ -533,16 +579,12 @@ MeshResult ADGBuilder::buildChessMesh(
       unsigned degree = switchDegree(sr, sc);
       unsigned numInputs = degree;
       unsigned numOutputs = degree;
-      if (sr == 0 && sc == 0)
-        numInputs += options.topLeftExtraInputs;
-      if (sr == 0 && sc == cols)
-        numInputs += options.topRightExtraInputs;
-      if (sr == 0 && sc == cols)
-        numOutputs += options.topRightExtraOutputs;
-      if (sr == rows && sc == 0)
-        numOutputs += options.bottomLeftExtraOutputs;
-      if (sr == rows && sc == cols)
-        numOutputs += options.bottomRightExtraOutputs;
+      numInputs += legacyExtraInputsAt(sr, sc);
+      numOutputs += legacyExtraOutputsAt(sr, sc);
+      numInputs += topExtraInputsAt(sr, sc) + rightExtraInputsAt(sr, sc) +
+                   bottomExtraInputsAt(sr, sc) + leftExtraInputsAt(sr, sc);
+      numOutputs += topExtraOutputsAt(sr, sc) + rightExtraOutputsAt(sr, sc) +
+                    bottomExtraOutputsAt(sr, sc) + leftExtraOutputsAt(sr, sc);
       SWHandle swHandle = makeSwitchTemplate(numInputs, numOutputs);
       std::string swName = "sw_" + std::to_string(sr) + "_" + std::to_string(sc);
       auto inst = instantiateSW(swHandle, swName);
@@ -641,6 +683,101 @@ MeshResult ADGBuilder::buildChessMesh(
     auto swInst = result.swGrid[rows][cols];
     for (unsigned idx = 0; idx < options.bottomRightExtraOutputs; ++idx)
       result.egressPorts.push_back({swInst, bottomRightDegree + idx});
+  }
+
+  for (unsigned sc = 0; sc <= cols; ++sc) {
+    unsigned sr = 0;
+    unsigned degree = switchDegree(sr, sc);
+    unsigned inputBase = degree + legacyExtraInputsAt(sr, sc);
+    unsigned outputBase = degree + legacyExtraOutputsAt(sr, sc);
+    auto swInst = result.swGrid[sr][sc];
+
+    for (unsigned idx = 0; idx < topExtraInputsAt(sr, sc); ++idx)
+      result.topIngressPorts.push_back({swInst, inputBase + idx});
+    inputBase += topExtraInputsAt(sr, sc);
+    for (unsigned idx = 0; idx < rightExtraInputsAt(sr, sc); ++idx)
+      result.rightIngressPorts.push_back({swInst, inputBase + idx});
+    inputBase += rightExtraInputsAt(sr, sc);
+    for (unsigned idx = 0; idx < bottomExtraInputsAt(sr, sc); ++idx)
+      result.bottomIngressPorts.push_back({swInst, inputBase + idx});
+    inputBase += bottomExtraInputsAt(sr, sc);
+    for (unsigned idx = 0; idx < leftExtraInputsAt(sr, sc); ++idx)
+      result.leftIngressPorts.push_back({swInst, inputBase + idx});
+
+    for (unsigned idx = 0; idx < topExtraOutputsAt(sr, sc); ++idx)
+      result.topEgressPorts.push_back({swInst, outputBase + idx});
+    outputBase += topExtraOutputsAt(sr, sc);
+    for (unsigned idx = 0; idx < rightExtraOutputsAt(sr, sc); ++idx)
+      result.rightEgressPorts.push_back({swInst, outputBase + idx});
+    outputBase += rightExtraOutputsAt(sr, sc);
+    for (unsigned idx = 0; idx < bottomExtraOutputsAt(sr, sc); ++idx)
+      result.bottomEgressPorts.push_back({swInst, outputBase + idx});
+    outputBase += bottomExtraOutputsAt(sr, sc);
+    for (unsigned idx = 0; idx < leftExtraOutputsAt(sr, sc); ++idx)
+      result.leftEgressPorts.push_back({swInst, outputBase + idx});
+  }
+  for (unsigned sr = 1; sr <= rows; ++sr) {
+    unsigned sc = cols;
+    unsigned degree = switchDegree(sr, sc);
+    unsigned inputBase = degree + legacyExtraInputsAt(sr, sc) +
+                         topExtraInputsAt(sr, sc);
+    unsigned outputBase = degree + legacyExtraOutputsAt(sr, sc) +
+                          topExtraOutputsAt(sr, sc);
+    auto swInst = result.swGrid[sr][sc];
+
+    for (unsigned idx = 0; idx < rightExtraInputsAt(sr, sc); ++idx)
+      result.rightIngressPorts.push_back({swInst, inputBase + idx});
+    inputBase += rightExtraInputsAt(sr, sc);
+    for (unsigned idx = 0; idx < bottomExtraInputsAt(sr, sc); ++idx)
+      result.bottomIngressPorts.push_back({swInst, inputBase + idx});
+
+    for (unsigned idx = 0; idx < rightExtraOutputsAt(sr, sc); ++idx)
+      result.rightEgressPorts.push_back({swInst, outputBase + idx});
+    outputBase += rightExtraOutputsAt(sr, sc);
+    for (unsigned idx = 0; idx < bottomExtraOutputsAt(sr, sc); ++idx)
+      result.bottomEgressPorts.push_back({swInst, outputBase + idx});
+  }
+  if (rows > 0) {
+    unsigned sr = rows;
+    for (int scSigned = static_cast<int>(cols) - 1; scSigned >= 0; --scSigned) {
+      unsigned sc = static_cast<unsigned>(scSigned);
+      unsigned degree = switchDegree(sr, sc);
+      unsigned inputBase = degree + legacyExtraInputsAt(sr, sc) +
+                           topExtraInputsAt(sr, sc) + rightExtraInputsAt(sr, sc);
+      unsigned outputBase = degree + legacyExtraOutputsAt(sr, sc) +
+                            topExtraOutputsAt(sr, sc) + rightExtraOutputsAt(sr, sc);
+      auto swInst = result.swGrid[sr][sc];
+
+      for (unsigned idx = 0; idx < bottomExtraInputsAt(sr, sc); ++idx)
+        result.bottomIngressPorts.push_back({swInst, inputBase + idx});
+      inputBase += bottomExtraInputsAt(sr, sc);
+      for (unsigned idx = 0; idx < leftExtraInputsAt(sr, sc); ++idx)
+        result.leftIngressPorts.push_back({swInst, inputBase + idx});
+
+      for (unsigned idx = 0; idx < bottomExtraOutputsAt(sr, sc); ++idx)
+        result.bottomEgressPorts.push_back({swInst, outputBase + idx});
+      outputBase += bottomExtraOutputsAt(sr, sc);
+      for (unsigned idx = 0; idx < leftExtraOutputsAt(sr, sc); ++idx)
+        result.leftEgressPorts.push_back({swInst, outputBase + idx});
+    }
+  }
+  if (cols > 0) {
+    unsigned sc = 0;
+    for (int srSigned = static_cast<int>(rows) - 1; srSigned >= 1; --srSigned) {
+      unsigned sr = static_cast<unsigned>(srSigned);
+      unsigned degree = switchDegree(sr, sc);
+      unsigned inputBase = degree + legacyExtraInputsAt(sr, sc) +
+                           topExtraInputsAt(sr, sc) + rightExtraInputsAt(sr, sc) +
+                           bottomExtraInputsAt(sr, sc);
+      unsigned outputBase = degree + legacyExtraOutputsAt(sr, sc) +
+                            topExtraOutputsAt(sr, sc) + rightExtraOutputsAt(sr, sc) +
+                            bottomExtraOutputsAt(sr, sc);
+      auto swInst = result.swGrid[sr][sc];
+      for (unsigned idx = 0; idx < leftExtraInputsAt(sr, sc); ++idx)
+        result.leftIngressPorts.push_back({swInst, inputBase + idx});
+      for (unsigned idx = 0; idx < leftExtraOutputsAt(sr, sc); ++idx)
+        result.leftEgressPorts.push_back({swInst, outputBase + idx});
+    }
   }
 
   return result;

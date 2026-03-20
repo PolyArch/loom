@@ -234,6 +234,13 @@ ports participate in switch routing. A non-private memory's host-visible memref
 output is not part of the switch-facing port budget and must remain a module
 boundary connection.
 
+Builder-emitted visualization sidecars should preserve this distinction:
+
+- `fabric.extmemory` bridge layouts anchor the memref family on the ingress
+  side of the rendered memory block
+- non-private `fabric.memory` anchors the public memref family on the egress
+  side of the rendered memory block
+
 ### Advanced Escape Hatch
 
 For compound `function_unit` design, the builder provides:

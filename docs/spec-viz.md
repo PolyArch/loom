@@ -50,8 +50,18 @@ The current sidecar schema is:
   - `kind`
   - `center_x`
   - `center_y`
+  - optional `width`
+  - optional `height`
   - optional `grid_row`
   - optional `grid_col`
+
+- top-level `routes`
+- each route entry contains:
+  - `from`
+  - `from_port`
+  - `to`
+  - `to_port`
+  - precomputed orthogonal `points`
 
 The sidecar path is resolved relative to the source `fabric.mlir` path when the
 `viz_file` attribute stores a relative path.
@@ -84,6 +94,10 @@ For topology-aware ADGs that provide explicit component coordinates, these
 constraints apply on top of the supplied geometry. The renderer should not
 discard explicit placement and then recompute a different base component
 layout.
+
+When Builder sidecar routes are available, the browser should consume those
+precomputed routes directly rather than re-running global edge routing or
+layout search at page-open time.
 
 When mapping is off, the base ADG rendering must still draw the routed
 module-level hardware edges. The renderer must not switch to a reduced
@@ -144,6 +158,21 @@ For tagged memory-interface bridges:
   `fabric.del_tag` only at the final non-tagged boundary
 - the renderer must not assume one fixed bridge micro-topology for memory or
   extmemory traffic
+
+For Builder-produced ADGs that explicitly instantiate memory bridges:
+
+- bridge components such as `fabric.add_tag`, `fabric.map_tag`,
+  `fabric.del_tag`, bridge-local `fabric.spatial_sw`, and bridge-local
+  `fabric.temporal_sw` should appear at their precomputed positions around the
+  corresponding `fabric.memory` or `fabric.extmemory`
+- ingress-side bridge components should render on the logical input side of the
+  memory-family component
+- egress-side bridge components should render on the logical output side of the
+  memory-family component
+
+Memory-family component ports should render with family names instead of only
+numeric indices. For tagged families, the label should append the tag width in
+the form `name[iK]`, such as `ld_addr[i3]`.
 
 The highlighted hardware path must be semantically continuous from the software
 edge's source to its destination.
