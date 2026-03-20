@@ -18,6 +18,8 @@ FCC treats each of them as one dedicated fixed-behavior state machine.
 Related documents:
 
 - [spec-compilation.md](./spec-compilation.md)
+- [spec-dataflow-compilation.md](./spec-dataflow-compilation.md)
+- [spec-dataflow-memory.md](./spec-dataflow-memory.md)
 - [spec-fabric-function_unit-ops.md](./spec-fabric-function_unit-ops.md)
 - [spec-fabric-function_unit.md](./spec-fabric-function_unit.md)
 

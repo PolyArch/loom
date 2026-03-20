@@ -1,3 +1,4 @@
+#include "fcc/Simulator/CycleBackend.h"
 #include "fcc/Simulator/FunctionalBackend.h"
 #include "fcc/Simulator/SimSession.h"
 
@@ -11,28 +12,6 @@ namespace sim {
 namespace {
 
 } // namespace
-
-const char *eventKindName(EventKind kind) {
-  switch (kind) {
-  case EventKind::NodeFire:
-    return "node_fire";
-  case EventKind::NodeStallIn:
-    return "node_stall_in";
-  case EventKind::NodeStallOut:
-    return "node_stall_out";
-  case EventKind::RouteUse:
-    return "route_use";
-  case EventKind::ConfigWrite:
-    return "config_write";
-  case EventKind::InvocationStart:
-    return "invocation_start";
-  case EventKind::InvocationDone:
-    return "invocation_done";
-  case EventKind::DeviceError:
-    return "device_error";
-  }
-  return "unknown";
-}
 
 const char *runTerminationName(RunTermination termination) {
   switch (termination) {
@@ -72,7 +51,7 @@ const char *sessionStateName(SessionState state) {
 
 std::unique_ptr<SimulationBackend>
 SimSession::createDefaultBackend(const SimConfig &config) {
-  return std::make_unique<FunctionalSimulationBackend>(config);
+  return std::make_unique<CycleSimulationBackend>(config);
 }
 
 SimSession::SimSession(std::unique_ptr<SimulationBackend> backend,
@@ -95,6 +74,7 @@ SimSession::SimSession(SimSession &&other) noexcept {
   backend_ = std::move(other.backend_);
   lastResult_ = std::move(other.lastResult_);
   configBlob_ = std::move(other.configBlob_);
+  configSlices_ = std::move(other.configSlices_);
   memoryRegions_ = std::move(other.memoryRegions_);
   other.state_ = SessionState::Closed;
 }
@@ -111,6 +91,7 @@ SimSession &SimSession::operator=(SimSession &&other) noexcept {
   backend_ = std::move(other.backend_);
   lastResult_ = std::move(other.lastResult_);
   configBlob_ = std::move(other.configBlob_);
+  configSlices_ = std::move(other.configSlices_);
   memoryRegions_ = std::move(other.memoryRegions_);
   other.state_ = SessionState::Closed;
   return *this;
@@ -188,15 +169,48 @@ std::string SimSession::buildFromMappedState(const Graph &dfg, const Graph &adg,
   return {};
 }
 
+std::string SimSession::buildFromMappedState(
+    const Graph &dfg, const Graph &adg, const MappingState &mapping,
+    llvm::ArrayRef<PEContainment> peContainment) {
+  std::lock_guard<std::mutex> lock(mu_);
+  std::string err = validateTransition(state_, SessionState::Ready);
+  if (!err.empty())
+    return err;
+  err = backend_->buildFromMappedState(dfg, adg, mapping, peContainment);
+  if (!err.empty())
+    return err;
+  state_ = SessionState::Ready;
+  return {};
+}
+
+std::string SimSession::buildFromStaticModel(const StaticMappedModel &model) {
+  std::lock_guard<std::mutex> lock(mu_);
+  std::string err = validateTransition(state_, SessionState::Ready);
+  if (!err.empty())
+    return err;
+  err = backend_->buildFromStaticModel(model);
+  if (!err.empty())
+    return err;
+  state_ = SessionState::Ready;
+  return {};
+}
+
 std::string SimSession::loadConfig(const std::vector<uint8_t> &configBlob) {
+  return loadConfig(configBlob, {});
+}
+
+std::string SimSession::loadConfig(
+    const std::vector<uint8_t> &configBlob,
+    llvm::ArrayRef<fcc::ConfigGen::ConfigSlice> configSlices) {
   std::lock_guard<std::mutex> lock(mu_);
   if (state_ != SessionState::Ready && state_ != SessionState::Verified) {
     std::string err = validateTransition(state_, SessionState::Configured);
     return err.empty() ? "unexpected state for loadConfig" : err;
   }
   configBlob_ = configBlob;
+  configSlices_.assign(configSlices.begin(), configSlices.end());
   ++epochId_;
-  std::string err = backend_->loadConfig(configBlob_);
+  std::string err = backend_->loadConfig(configBlob_, configSlices_);
   if (!err.empty())
     return err;
   state_ = SessionState::Configured;

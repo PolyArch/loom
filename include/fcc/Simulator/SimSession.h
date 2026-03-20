@@ -2,8 +2,11 @@
 #define FCC_SIMULATOR_SIMSESSION_H
 
 #include "fcc/Mapper/Graph.h"
+#include "fcc/Mapper/ConfigGen.h"
+#include "fcc/Mapper/ADGFlattener.h"
 #include "fcc/Mapper/MappingState.h"
 #include "fcc/Simulator/SimTypes.h"
+#include "fcc/Simulator/StaticModel.h"
 
 #include "llvm/ADT/ArrayRef.h"
 
@@ -46,8 +49,25 @@ public:
 
   virtual std::string buildFromMappedState(const Graph &dfg, const Graph &adg,
                                            const MappingState &mapping) = 0;
+  virtual std::string
+  buildFromMappedState(const Graph &dfg, const Graph &adg,
+                       const MappingState &mapping,
+                       llvm::ArrayRef<PEContainment> peContainment) {
+    (void)peContainment;
+    return buildFromMappedState(dfg, adg, mapping);
+  }
+  virtual std::string buildFromStaticModel(const StaticMappedModel &model) {
+    (void)model;
+    return "backend does not support buildFromStaticModel";
+  }
 
   virtual std::string loadConfig(const std::vector<uint8_t> &configBlob) = 0;
+  virtual std::string loadConfig(
+      const std::vector<uint8_t> &configBlob,
+      llvm::ArrayRef<fcc::ConfigGen::ConfigSlice> configSlices) {
+    (void)configSlices;
+    return loadConfig(configBlob);
+  }
 
   virtual std::string setInput(unsigned portIdx,
                                const std::vector<uint64_t> &data,
@@ -85,7 +105,14 @@ public:
   std::string connect();
   std::string buildFromMappedState(const Graph &dfg, const Graph &adg,
                                    const MappingState &mapping);
+  std::string buildFromMappedState(const Graph &dfg, const Graph &adg,
+                                   const MappingState &mapping,
+                                   llvm::ArrayRef<PEContainment> peContainment);
+  std::string buildFromStaticModel(const StaticMappedModel &model);
   std::string loadConfig(const std::vector<uint8_t> &configBlob);
+  std::string loadConfig(
+      const std::vector<uint8_t> &configBlob,
+      llvm::ArrayRef<fcc::ConfigGen::ConfigSlice> configSlices);
   std::string setInput(unsigned portIdx, const std::vector<uint64_t> &data,
                        const std::vector<uint16_t> &tags = {});
   std::string setExtMemoryBacking(unsigned regionId, uint8_t *data,
@@ -125,6 +152,7 @@ private:
   std::unique_ptr<SimulationBackend> backend_;
   SimResult lastResult_;
   std::vector<uint8_t> configBlob_;
+  std::vector<fcc::ConfigGen::ConfigSlice> configSlices_;
   std::vector<MemoryRegionBinding> memoryRegions_;
 };
 

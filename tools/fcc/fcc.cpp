@@ -16,6 +16,7 @@
 #include "fcc/Simulator/SimArtifactWriter.h"
 #include "fcc/Simulator/SimBundle.h"
 #include "fcc/Simulator/SimInputSynthesis.h"
+#include "fcc/Simulator/RuntimeImageBuilder.h"
 #include "fcc/Simulator/SimSession.h"
 #include "fcc/Viz/VizExporter.h"
 
@@ -129,6 +130,24 @@ static void writeEscapedJsonString(llvm::raw_ostream &out,
   out << '"';
 }
 
+static void writeNamedCountersJson(
+    llvm::raw_ostream &out,
+    const std::vector<fcc::sim::NamedCounter> &counters, unsigned indent) {
+  std::string pad(indent, ' ');
+  std::string childPad(indent + 2, ' ');
+  out << "[\n";
+  for (size_t idx = 0; idx < counters.size(); ++idx) {
+    const auto &counter = counters[idx];
+    out << childPad << "{\"name\": ";
+    writeEscapedJsonString(out, counter.name);
+    out << ", \"value\": " << counter.value << "}";
+    if (idx + 1 != counters.size())
+      out << ",";
+    out << "\n";
+  }
+  out << pad << "]";
+}
+
 template <typename T>
 static void writeJsonIntegerArray(llvm::raw_ostream &out,
                                   const std::vector<T> &values) {
@@ -235,6 +254,110 @@ static bool writeStandaloneSimulationResult(
     out << "\n";
   }
   out << "  ],\n";
+
+  out << "  \"final_state\": {\n";
+  out << "    \"obligations_satisfied\": "
+      << (simResult.finalState.obligationsSatisfied ? "true" : "false")
+      << ",\n";
+  out << "    \"quiescent\": "
+      << (simResult.finalState.quiescent ? "true" : "false") << ",\n";
+  out << "    \"done\": " << (simResult.finalState.done ? "true" : "false")
+      << ",\n";
+  out << "    \"deadlocked\": "
+      << (simResult.finalState.deadlocked ? "true" : "false") << ",\n";
+  out << "    \"idle_cycle_streak\": " << simResult.finalState.idleCycleStreak
+      << ",\n";
+  out << "    \"outstanding_memory_request_count\": "
+      << simResult.finalState.outstandingMemoryRequestCount << ",\n";
+  out << "    \"completed_memory_response_count\": "
+      << simResult.finalState.completedMemoryResponseCount << ",\n";
+
+  out << "    \"live_ports\": [\n";
+  for (size_t idx = 0; idx < simResult.finalState.livePorts.size(); ++idx) {
+    const auto &port = simResult.finalState.livePorts[idx];
+    out << "      {\"port_id\": " << port.portId
+        << ", \"parent_node_id\": " << port.parentNodeId
+        << ", \"direction\": ";
+    writeEscapedJsonString(out, port.isInput ? "input" : "output");
+    out << ", \"valid\": " << (port.valid ? "true" : "false")
+        << ", \"ready\": " << (port.ready ? "true" : "false")
+        << ", \"data\": " << port.data << ", \"tag\": " << port.tag
+        << ", \"has_tag\": " << (port.hasTag ? "true" : "false")
+        << ", \"generation\": " << port.generation << "}";
+    if (idx + 1 != simResult.finalState.livePorts.size())
+      out << ",";
+    out << "\n";
+  }
+  out << "    ],\n";
+
+  out << "    \"live_edges\": [\n";
+  for (size_t idx = 0; idx < simResult.finalState.liveEdges.size(); ++idx) {
+    const auto &edge = simResult.finalState.liveEdges[idx];
+    out << "      {\"edge_index\": " << edge.edgeIndex
+        << ", \"hw_edge_id\": " << edge.hwEdgeId
+        << ", \"src_port\": " << edge.srcPort
+        << ", \"dst_port\": " << edge.dstPort
+        << ", \"valid\": " << (edge.valid ? "true" : "false")
+        << ", \"ready\": " << (edge.ready ? "true" : "false")
+        << ", \"data\": " << edge.data << ", \"tag\": " << edge.tag
+        << ", \"has_tag\": " << (edge.hasTag ? "true" : "false")
+        << ", \"generation\": " << edge.generation << "}";
+    if (idx + 1 != simResult.finalState.liveEdges.size())
+      out << ",";
+    out << "\n";
+  }
+  out << "    ],\n";
+
+  out << "    \"pending_modules\": [\n";
+  for (size_t idx = 0; idx < simResult.finalState.pendingModules.size();
+       ++idx) {
+    const auto &module = simResult.finalState.pendingModules[idx];
+    out << "      {\"hw_node_id\": " << module.hwNodeId << ", \"name\": ";
+    writeEscapedJsonString(out, module.name);
+    out << ", \"kind\": ";
+    writeEscapedJsonString(out, module.kind);
+    out << ", \"has_pending_work\": "
+        << (module.hasPendingWork ? "true" : "false")
+        << ", \"collected_token_count\": " << module.collectedTokenCount
+        << ", \"logical_fire_count\": " << module.logicalFireCount
+        << ", \"input_capture_count\": " << module.inputCaptureCount
+        << ", \"output_transfer_count\": " << module.outputTransferCount
+        << ", \"debug_state\": ";
+    writeEscapedJsonString(out, module.debugState);
+    out << ", \"counters\": ";
+    writeNamedCountersJson(out, module.counters, 6);
+    out << "}";
+    if (idx + 1 != simResult.finalState.pendingModules.size())
+      out << ",";
+    out << "\n";
+  }
+  out << "    ],\n";
+
+  out << "    \"module_summaries\": [\n";
+  for (size_t idx = 0; idx < simResult.finalState.moduleSummaries.size();
+       ++idx) {
+    const auto &module = simResult.finalState.moduleSummaries[idx];
+    out << "      {\"hw_node_id\": " << module.hwNodeId << ", \"name\": ";
+    writeEscapedJsonString(out, module.name);
+    out << ", \"kind\": ";
+    writeEscapedJsonString(out, module.kind);
+    out << ", \"has_pending_work\": "
+        << (module.hasPendingWork ? "true" : "false")
+        << ", \"collected_token_count\": " << module.collectedTokenCount
+        << ", \"logical_fire_count\": " << module.logicalFireCount
+        << ", \"input_capture_count\": " << module.inputCaptureCount
+        << ", \"output_transfer_count\": " << module.outputTransferCount
+        << ", \"debug_state\": ";
+    writeEscapedJsonString(out, module.debugState);
+    out << ", \"counters\": ";
+    writeNamedCountersJson(out, module.counters, 6);
+    out << "}";
+    if (idx + 1 != simResult.finalState.moduleSummaries.size())
+      out << ",";
+    out << "\n";
+  }
+  out << "    ]\n";
+  out << "  },\n";
 
   out << "  \"memory_regions\": [\n";
   for (size_t idx = 0; idx < synthSetup.memoryRegions.size(); ++idx) {
@@ -542,10 +665,32 @@ int main(int argc, char **argv) {
       return 1;
 
     std::string runtimeManifestPath = mixedBase + ".runtime.json";
+    std::string runtimeImagePath = mixedBase + ".simimage.json";
+    std::string runtimeImageBinPath = mixedBase + ".simimage.bin";
+    {
+      fcc::sim::RuntimeImage runtimeImage;
+      std::string runtimeImageError;
+      if (!fcc::sim::buildRuntimeImage(
+              dfgBuilder.getDFG(), flattener.getADG(), mapResult.state,
+              flattener.getPEContainment(), configGen.getConfigSlices(),
+              configGen.getConfigWords(), runtimeImage, runtimeImageError) ||
+          !fcc::sim::writeRuntimeImageJson(runtimeImage, runtimeImagePath,
+                                           runtimeImageError) ||
+          !fcc::sim::writeRuntimeImageBinary(runtimeImage, runtimeImageBinPath,
+                                             runtimeImageError)) {
+        llvm::errs() << "fcc: failed to write runtime image: "
+                     << runtimeImageError << "\n";
+        return 1;
+      }
+    }
+    llvm::outs() << "  " << runtimeImagePath << "\n";
+    llvm::outs() << "  " << runtimeImageBinPath << "\n";
     if (!writeRuntimeManifest(runtimeManifestPath, mixedStem,
                               selectedDfgPath, args.adgPath,
-                              mixedBase + ".config.bin", dfgBuilder.getDFG(),
-                              flattener.getADG(), mapResult.state)) {
+                              mixedBase + ".config.bin", runtimeImagePath,
+                              runtimeImageBinPath,
+                              dfgBuilder.getDFG(), flattener.getADG(),
+                              mapResult.state)) {
       llvm::errs() << "fcc: failed to write runtime manifest\n";
       return 1;
     }
@@ -593,12 +738,14 @@ int main(int argc, char **argv) {
         return 1;
       }
       if (std::string err = session.buildFromMappedState(
-              dfgBuilder.getDFG(), flattener.getADG(), mapResult.state);
+              dfgBuilder.getDFG(), flattener.getADG(), mapResult.state,
+              flattener.getPEContainment());
           !err.empty()) {
         llvm::errs() << "fcc: simulation graph build failed: " << err << "\n";
         return 1;
       }
-      if (std::string err = session.loadConfig(configGen.getConfigBlob());
+      if (std::string err = session.loadConfig(configGen.getConfigBlob(),
+                                               configGen.getConfigSlices());
           !err.empty()) {
         llvm::errs() << "fcc: simulation config load failed: " << err << "\n";
         return 1;
@@ -680,6 +827,13 @@ int main(int argc, char **argv) {
           llvm::errs() << "\n";
           return 1;
         }
+      }
+
+      if (failed(fcc::exportVizWithMapping(vizPath, *adgModule, *dfgModule,
+                                          mapJsonPath, args.adgPath,
+                                          args.vizLayout, &context))) {
+        llvm::errs() << "fcc: warning: visualization refresh after simulation "
+                        "failed\n";
       }
     }
     return 0;

@@ -25,6 +25,30 @@ bool isFunctionalNode(const Node *node) {
   return node && getNodeAttrStr(node, "resource_class") == "functional";
 }
 
+bool isDirectMemoryHardwarePort(const Port *hwPort, const Graph &adg) {
+  if (!hwPort || hwPort->parentNode == INVALID_ID)
+    return false;
+  const Node *hwNode = adg.getNode(hwPort->parentNode);
+  return hwNode && getNodeAttrStr(hwNode, "resource_class") == "memory";
+}
+
+bool directMemoryHardwarePortAllowsSharing(const Port *hwPort,
+                                           const Graph &adg) {
+  if (!isDirectMemoryHardwarePort(hwPort, adg))
+    return false;
+  if (mlir::isa<mlir::MemRefType>(hwPort->type))
+    return true;
+  auto info = detail::getPortTypeInfo(hwPort->type);
+  return info && info->isTagged;
+}
+
+bool canMapSoftwareTypeToDirectMemoryHardware(mlir::Type swType,
+                                              mlir::Type hwType) {
+  if (mlir::isa<mlir::MemRefType>(swType) || mlir::isa<mlir::MemRefType>(hwType))
+    return canMapSoftwareTypeToHardware(swType, hwType);
+  return canMapSoftwareTypeToBridgeHardware(swType, hwType);
+}
+
 bool isDirectBindingPath(llvm::ArrayRef<IdIndex> path) {
   return path.size() == 2 && path[0] == path[1];
 }
@@ -555,20 +579,12 @@ void MappingState::applyUndoRecord(const UndoRecord &record) {
 
 bool MappingState::isSpatialPEOccupied(llvm::StringRef peName, const Graph &adg,
                                        IdIndex ignoreHwNode) const {
+  (void)adg;
+  (void)ignoreHwNode;
   if (peName.empty())
     return false;
   auto it = spatialPEOccupancyCount.find(peName);
-  if (it == spatialPEOccupancyCount.end() || it->second == 0)
-    return false;
-  if (ignoreHwNode == INVALID_ID)
-    return true;
-  if (it->second > 1)
-    return true;
-
-  const Node *hwNode = adg.getNode(ignoreHwNode);
-  if (!isSpatialPEFunctionalNode(hwNode))
-    return true;
-  return getNodeAttrStr(hwNode, "pe_name") != peName;
+  return it != spatialPEOccupancyCount.end() && it->second > 0;
 }
 
 IdIndex MappingState::lookupHwEdge(IdIndex outPort, IdIndex inPort) const {
@@ -923,13 +939,28 @@ ActionResult MappingState::mapNode(IdIndex swNode, IdIndex hwNode,
     skipAutoPorts = true;
 
   if (swN && hwN && !skipAutoPorts) {
+    if (swN->inputPorts.size() > hwN->inputPorts.size() ||
+        swN->outputPorts.size() > hwN->outputPorts.size()) {
+      unmapNode(swNode, dfg, adg);
+      return ActionResult::FailedTypeMismatch;
+    }
     for (unsigned i = 0;
          i < swN->inputPorts.size() && i < hwN->inputPorts.size(); ++i) {
-      mapPort(swN->inputPorts[i], hwN->inputPorts[i], dfg, adg);
+      ActionResult result =
+          mapPort(swN->inputPorts[i], hwN->inputPorts[i], dfg, adg);
+      if (result != ActionResult::Success) {
+        unmapNode(swNode, dfg, adg);
+        return result;
+      }
     }
     for (unsigned i = 0;
          i < swN->outputPorts.size() && i < hwN->outputPorts.size(); ++i) {
-      mapPort(swN->outputPorts[i], hwN->outputPorts[i], dfg, adg);
+      ActionResult result =
+          mapPort(swN->outputPorts[i], hwN->outputPorts[i], dfg, adg);
+      if (result != ActionResult::Success) {
+        unmapNode(swNode, dfg, adg);
+        return result;
+      }
     }
   }
 
@@ -1037,6 +1068,65 @@ ActionResult MappingState::mapPort(IdIndex swPort, IdIndex hwPort,
                                     const Graph &dfg, const Graph &adg) {
   if (swPort >= swPortToHwPort.size() || hwPort >= hwPortToSwPorts.size())
     return ActionResult::FailedInternalError;
+
+  if (swPortToHwPort[swPort] == hwPort) {
+#ifndef NDEBUG
+    debugMaybeVerifyCachedState(dfg, adg);
+#endif
+    return ActionResult::Success;
+  }
+
+  if (swPortToHwPort[swPort] != INVALID_ID)
+    return ActionResult::FailedResourceUnavailable;
+  const Port *swP = dfg.getPort(swPort);
+  const Port *hwP = adg.getPort(hwPort);
+  if (!swP || !hwP)
+    return ActionResult::FailedInternalError;
+
+  bool allowShared = directMemoryHardwarePortAllowsSharing(hwP, adg);
+  if (!hwPortToSwPorts[hwPort].empty() && !allowShared)
+    return ActionResult::FailedResourceUnavailable;
+
+  bool typeCompatible =
+      allowShared ? canMapSoftwareTypeToDirectMemoryHardware(swP->type, hwP->type)
+                  : canMapSoftwareTypeToHardware(swP->type, hwP->type);
+  if (!typeCompatible)
+    return ActionResult::FailedTypeMismatch;
+
+  recordSwPortToHwPort(swPort);
+  swPortToHwPort[swPort] = hwPort;
+  recordHwPortToSwPorts(hwPort);
+  hwPortToSwPorts[hwPort].push_back(swPort);
+#ifndef NDEBUG
+  debugMaybeVerifyCachedState(dfg, adg);
+#endif
+  return ActionResult::Success;
+}
+
+ActionResult MappingState::mapPortBridgeAware(IdIndex swPort, IdIndex hwPort,
+                                              const Graph &dfg,
+                                              const Graph &adg) {
+  if (swPort >= swPortToHwPort.size() || hwPort >= hwPortToSwPorts.size())
+    return ActionResult::FailedInternalError;
+
+  if (swPortToHwPort[swPort] == hwPort) {
+#ifndef NDEBUG
+    debugMaybeVerifyCachedState(dfg, adg);
+#endif
+    return ActionResult::Success;
+  }
+
+  if (swPortToHwPort[swPort] != INVALID_ID)
+    return ActionResult::FailedResourceUnavailable;
+  const Port *swP = dfg.getPort(swPort);
+  const Port *hwP = adg.getPort(hwPort);
+  if (!swP || !hwP)
+    return ActionResult::FailedInternalError;
+
+  if (!hwPortToSwPorts[hwPort].empty())
+    return ActionResult::FailedResourceUnavailable;
+  if (!canMapSoftwareTypeToBridgeHardware(swP->type, hwP->type))
+    return ActionResult::FailedTypeMismatch;
 
   recordSwPortToHwPort(swPort);
   swPortToHwPort[swPort] = hwPort;

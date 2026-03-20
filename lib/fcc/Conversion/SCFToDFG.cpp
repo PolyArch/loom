@@ -205,13 +205,14 @@ LogicalResult DFGConverter::convertFor(scf::ForOp op, RegionState &state) {
                                  "+=", "<");
   Value rawIndex = stream.getIndex();
   Value rawCond = stream.getWillContinue();
-  forConds[op] = rawCond;
 
   // Gate: separates before-region (N+1) from body (N)
   auto gate = GateOp::create(builder, loc, rawIndex.getType(),
                              builder.getI1Type(), rawIndex, rawCond);
   Value bodyIndex = gate.getAfterValue();
   Value bodyCond = gate.getAfterCond();
+  forRawConds[op] = rawCond;
+  forBodyConds[op] = bodyCond;
 
   // Handle loop-carried values
   SmallVector<CarryOp, 4> carries;
@@ -702,7 +703,7 @@ LogicalResult DFGConverter::buildMemoryControl() {
   // For each memory group, build a recursive ctrl-done chain
   SmallVector<Value, 4> doneTokens;
   for (auto &[memref, accesses] : groups) {
-    MemoryCtrlBuilder ctrlBuilder(builder, accesses, forConds, whileConds,
+    MemoryCtrlBuilder ctrlBuilder(builder, accesses, forBodyConds, whileConds,
                                   ifConds, entryToken);
     if (failed(ctrlBuilder.run()))
       return failure();

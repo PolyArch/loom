@@ -1,4 +1,17 @@
 Import('*')
+import os
+
+repo_root = os.path.abspath(os.path.join(Dir('.').srcnode().abspath, '..', '..'))
+env.Append(CPPPATH=[os.path.join(repo_root, 'include')])
 
 SimObject('dev/fcc/FccCgraDevice.py', sim_objects=['FccCgraDevice'])
 Source('dev/fcc/FccCgraDevice.cc')
+SimObject('dev/fcc/FccDmaSpikeDevice.py', sim_objects=['FccDmaSpikeDevice'])
+Source('dev/fcc/FccDmaSpikeDevice.cc')
+Source(os.path.join(repo_root, 'lib/fcc/Simulator/CycleKernel.cpp'))
+Source(os.path.join(repo_root, 'lib/fcc/Simulator/SimModule.cpp'))
+Source(os.path.join(repo_root, 'lib/fcc/Simulator/SimFunctionUnit.cpp'))
+Source(os.path.join(repo_root, 'lib/fcc/Simulator/SimMemory.cpp'))
+Source(os.path.join(repo_root, 'lib/fcc/Simulator/SimTypes.cpp'))
+Source(os.path.join(repo_root, 'lib/fcc/Simulator/RuntimeImageBinary.cpp'))
+Source(os.path.join(repo_root, 'lib/fcc/Simulator/StaticModel.cpp'))

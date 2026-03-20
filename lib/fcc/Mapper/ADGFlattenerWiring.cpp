@@ -732,8 +732,7 @@ void ADGFlattener::flattenAnalyzeBridges(FlattenContext &fctx) {
               continue;
             }
             const Port *outPort = adg.getPort(outPortId);
-            if (outPort &&
-                mlir::isa<fcc::fabric::TaggedType>(outPort->type) &&
+            if (outPort && mlir::isa<fcc::fabric::TaggedType>(outPort->type) &&
                 seenBoundaryPorts.insert(outPortId).second) {
               boundary.push_back(outPortId);
               foundBoundary = true;

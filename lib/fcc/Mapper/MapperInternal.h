@@ -64,9 +64,10 @@ bool opMatchesFU(llvm::StringRef dfgOpName, const Node *fuNode);
 // Memory operation helpers.
 bool isMemoryOp(const Node *node);
 bool isSoftwareMemoryInterfaceOp(llvm::StringRef opName);
-IdIndex getExpandedMemoryInputPort(const Node *hwNode, bool isExtMem,
-                                   BridgePortCategory cat, unsigned lane);
-IdIndex getExpandedMemoryOutputPort(const Node *hwNode,
+IdIndex getExpandedMemoryInputPort(const Node *hwNode, const Graph &adg,
+                                   bool isExtMem, BridgePortCategory cat,
+                                   unsigned lane);
+IdIndex getExpandedMemoryOutputPort(const Node *hwNode, const Graph &adg,
                                     BridgePortCategory cat, unsigned lane);
 IdIndex findBridgePortForCategoryLane(const BridgeInfo &bridge, bool isInput,
                                       BridgePortCategory cat, unsigned lane);

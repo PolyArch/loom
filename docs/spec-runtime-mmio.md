@@ -19,12 +19,16 @@ A conforming FCC runtime must support:
 - output retrieval
 - trace and performance retrieval
 
+The runtime must be able to build execution either from mapping-time graph data
+or from a prebuilt runtime image.
+
 ## SimSession Contract
 
-The conceptual lifecycle API is centered on a session abstraction with methods
-equivalent in responsibility to:
+The lifecycle API is centered on a session abstraction with methods equivalent
+in responsibility to:
 
 - `buildFromGraph(...)`
+- `buildFromRuntimeImage(...)`
 - `loadConfig(...)`
 - `setInput(...)`
 - `setExtMemoryBacking(...)`
@@ -65,6 +69,23 @@ to:
 
 This API is intentionally minimal and suitable for baremetal execution.
 
+## Runtime Image and Control Image
+
+The runtime layer now recognizes a runtime-image handoff family:
+
+- `<mixed>.simimage.json`
+- `<mixed>.simimage.bin`
+
+The control image carried inside the runtime image includes at least:
+
+- `start_token_port`
+- scalar slot bindings
+- memory-region slot bindings
+- output slot bindings
+
+This image is used by gem5 embedded execution and may also be used by runtime
+replay.
+
 ## MMIO Register Model
 
 The MMIO register file must cover at least these function groups:
@@ -78,6 +99,7 @@ The MMIO register file must cover at least these function groups:
 - scalar arguments
 - cycle count
 - error code
+- output selection and output token readback
 
 ## MMIO Semantics
 
@@ -117,6 +139,10 @@ The same runtime lifecycle should work with:
 
 The backend changes where MMIO requests terminate and how memory backing is
 implemented, but the host-visible contract should remain the same.
+
+In the current gem5 direct path, MMIO remains the control plane while memory
+region payloads are bound from gem5 physical memory into the shared cycle
+kernel through the runtime image and device-side memory adapters.
 
 ## Related Documents
 

@@ -244,6 +244,12 @@ SimResult FunctionalSimulationBackend::Impl::invoke(uint32_t epochId,
   SimResult result;
   result.configCycles = configWords * config.configWordsPerCycle;
   result.totalConfigWrites = configWords;
+  result.traceDocument.version = 1;
+  result.traceDocument.traceKind = "fcc_cycle_trace";
+  result.traceDocument.producer = "fcc";
+  result.traceDocument.epochId = epochId;
+  result.traceDocument.invocationId = invocationId;
+  result.traceDocument.coreId = config.coreId;
 
   if (!built) {
     result.errorMessage = "simulation backend has no mapped graph";
@@ -345,6 +351,8 @@ SimResult FunctionalSimulationBackend::Impl::invoke(uint32_t epochId,
     done.arg1 = static_cast<uint32_t>(result.termination);
     result.traceEvents.push_back(done);
   }
+
+  result.traceDocument.events = result.traceEvents;
 
   return result;
 }
@@ -606,6 +614,13 @@ std::string FunctionalSimulationBackend::connect() { return impl_->connect(); }
 
 std::string FunctionalSimulationBackend::buildFromMappedState(
     const Graph &dfg, const Graph &adg, const MappingState &mapping) {
+  return impl_->buildFromMappedState(dfg, adg, mapping);
+}
+
+std::string FunctionalSimulationBackend::buildFromMappedState(
+    const Graph &dfg, const Graph &adg, const MappingState &mapping,
+    llvm::ArrayRef<PEContainment> peContainment) {
+  (void)peContainment;
   return impl_->buildFromMappedState(dfg, adg, mapping);
 }
 

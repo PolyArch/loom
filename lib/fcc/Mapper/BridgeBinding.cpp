@@ -446,17 +446,21 @@ bool bindBridgeInputs(const BridgeInfo &bridge, const DfgMemoryInfo &mem,
                                           bridge.inputCategories,
                                           bridge.inputLanes, cat, lane,
                                           sp->type, adg, state);
-    if (!hwPid)
+    if (!hwPid) {
       return false;
-    state.mapPort(swPid, *hwPid, dfg, adg);
+    }
+    auto result = state.mapPortBridgeAware(swPid, *hwPid, dfg, adg);
+    if (result != ActionResult::Success) {
+      return false;
+    }
   }
   return true;
 }
 
 bool bindBridgeOutputs(const BridgeInfo &bridge, const DfgMemoryInfo &mem,
-                       const Node *swNode, const Node *hwNode,
-                       const Graph &dfg, const Graph &adg,
-                       MappingState &state) {
+                      const Node *swNode, const Node *hwNode,
+                      const Graph &dfg, const Graph &adg,
+                      MappingState &state) {
   if (!swNode || !hwNode)
     return false;
 
@@ -479,9 +483,13 @@ bool bindBridgeOutputs(const BridgeInfo &bridge, const DfgMemoryInfo &mem,
                                           bridge.outputCategories,
                                           bridge.outputLanes, cat, lane,
                                           sp->type, adg, state);
-    if (!hwPid)
+    if (!hwPid) {
       return false;
-    state.mapPort(swPid, *hwPid, dfg, adg);
+    }
+    auto result = state.mapPortBridgeAware(swPid, *hwPid, dfg, adg);
+    if (result != ActionResult::Success) {
+      return false;
+    }
   }
   return true;
 }

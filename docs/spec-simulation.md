@@ -3,8 +3,15 @@
 ## Overview
 
 FCC simulation is the execution-side validation layer for mapped designs.
-It must support both standalone use and reuse inside a host-driven environment
-such as gem5.
+The normative execution core is a shared cycle-accurate kernel that is reused
+by:
+
+- standalone mapped simulation
+- runtime replay
+- gem5 embedded execution
+
+The simulated object is the mapped ADG hardware topology plus mapping overlay,
+not the original software DFG alone.
 
 ## Input Sourcing
 
@@ -19,8 +26,7 @@ host-side or gem5-driven flows.
 
 ## Session Contract
 
-The simulation layer is expected to support a session-like abstraction with
-operations for:
+The simulation layer provides a session-like abstraction with operations for:
 
 - build from mapped state
 - config load
@@ -31,7 +37,8 @@ operations for:
 - trace and performance retrieval
 
 This contract is shared conceptually with
-[spec-host-accel-interface.md](./spec-host-accel-interface.md).
+[spec-host-accel-interface.md](./spec-host-accel-interface.md) and is realized
+today by `SimSession`.
 
 ## Two-Phase Cycle Model
 
@@ -44,6 +51,11 @@ FCC's intended simulation model is cycle-accurate with two phases per cycle:
 - propagate valid, ready, and data
 - iterate until the combinational state converges or a limit is reached
 
+Normative rule:
+
+- `max_comb_iterations = 4`
+- failure to converge within that bound is a structural simulation error
+
 ### Phase 2: Sequential Advance
 
 - commit transfers
@@ -53,7 +65,29 @@ FCC's intended simulation model is cycle-accurate with two phases per cycle:
 - collect boundary outputs
 
 The separation between combinational convergence and sequential state advance is
-normative.
+normative. Tokens produced during commit are visible starting in the next
+cycle, not earlier in the same cycle.
+
+## Invocation Boundary Semantics
+
+The cycle kernel tracks:
+
+- `done`
+- `quiescent`
+- `deadlock`
+
+Normative rules:
+
+- `quiescent` means no more transfer or fire can occur in the current mapped
+  hardware state
+- `done` means all software-visible completion obligations extracted from the
+  mapping overlay are satisfied and the kernel is quiescent
+- `deadlock` means the kernel is quiescent while completion obligations are
+  still unsatisfied
+
+Completion obligations come from the mapping overlay and include only
+software-visible outputs and memory side effects. Residual non-obligation
+control tails do not block completion.
 
 ## Module Families
 
@@ -63,8 +97,31 @@ types:
 - PE simulation
 - switch simulation
 - FIFO simulation
-- external-memory simulation
+- memory and extmemory simulation
 - stream and dataflow helper primitives
+
+## Current Shared Kernel Surface
+
+The shared cycle kernel currently exposes an interface equivalent in
+responsibility to:
+
+- `build(staticModel)`
+- `configure(configImage)`
+- `setInputTokens(portIdx, tokens)`
+- `setMemoryRegionBacking(regionId, bytes, size)`
+- `runUntilBoundary(maxCycles)`
+- `getLastBoundaryReason()`
+- `getOutputTokens(portIdx)`
+- `getTraceDocument()`
+- `getCurrentCycle()`
+
+The current boundary reasons are:
+
+- `NeedMemIssue`
+- `WaitMemResp`
+- `InvocationDone`
+- `Deadlock`
+- `BudgetHit`
 
 ## Channel Model
 
@@ -95,6 +152,21 @@ Current standalone artifact families include:
 - `<mixed>.sim.report.json`
 - `<mixed>.sim.trace`
 - `<mixed>.sim.stat`
+- `<mixed>.simimage.json`
+- `<mixed>.simimage.bin`
+
+The trace artifact is a versioned JSON document. The top-level fields are:
+
+- `version`
+- `trace_kind`
+- `producer`
+- `epoch_id`
+- `invocation_id`
+- `core_id`
+- `modules`
+- `events`
+
+This versioned trace is the contract consumed by HTML playback.
 
 These outputs are relevant both for debugging and for later visualization or
 performance analysis.
@@ -108,6 +180,17 @@ Simulation must support validation by:
 
 This is required because many accelerator kernels communicate results primarily
 through memory side effects.
+
+## Runtime Image
+
+FCC now emits a runtime image that captures the mapped static model and decoded
+control bindings needed by the shared kernel. The runtime manifest records:
+
+- `sim_image_json`
+- `sim_image_bin`
+
+The runtime image is the preferred handoff artifact for gem5 embedded
+execution.
 
 ## Relationship to Other Specs
 

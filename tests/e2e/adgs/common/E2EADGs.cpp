@@ -92,11 +92,14 @@ SpatialKernelPE buildSpatialKernelPE(ADGBuilder &builder,
       builder.defineIndexCastFU(prefix + "_i32_to_index", "i32", "index");
   auto fuStream = builder.defineStreamFU(prefix + "_stream");
   auto fuMux = builder.defineMuxFU(prefix + "_mux", "i32");
+  auto fuMuxNone = builder.defineMuxFU(prefix + "_mux_none", "none");
   auto fuJoin = builder.defineJoinFU(prefix + "_join", 4);
   auto fuGate = builder.defineGateFU(prefix + "_gate", "i32");
   auto fuGateIndex = builder.defineGateFU(prefix + "_gate_index", "index");
-  auto fuCarry = builder.defineCarryFU(prefix + "_carry", "none");
-  auto fuCondBr = builder.defineCondBrFU(prefix + "_cond_br", "none");
+  auto fuCarry = builder.defineCarryFU(prefix + "_carry", "i32");
+  auto fuCarryNone = builder.defineCarryFU(prefix + "_carry_none", "none");
+  auto fuCondBr = builder.defineCondBrFU(prefix + "_cond_br", "i32");
+  auto fuCondBrNone = builder.defineCondBrFU(prefix + "_cond_br_none", "none");
   auto fuLoad = builder.defineLoadFU(prefix + "_load", "index", "i32");
   auto fuStore = builder.defineStoreFU(prefix + "_store", "index", "i32");
   auto fuInvariant = builder.defineInvariantFU(prefix + "_invariant", "i32");
@@ -104,9 +107,10 @@ SpatialKernelPE buildSpatialKernelPE(ADGBuilder &builder,
   std::vector<FUHandle> fus = {
       fuAdd,        fuSub,        fuMul,         fuCmp,
       fuSelect,     fuConst,      fuConstIndex,  fuIndexToI32,
-      fuI32ToIndex, fuStream,     fuMux,         fuJoin,
-      fuGate,       fuGateIndex,  fuCarry,       fuCondBr,
-      fuLoad,       fuStore,      fuInvariant,
+      fuI32ToIndex, fuStream,     fuMux,         fuMuxNone,
+      fuJoin,       fuGate,       fuGateIndex,   fuCarry,
+      fuCarryNone,  fuCondBr,     fuCondBrNone,  fuLoad,
+      fuStore,      fuInvariant,
   };
 
   auto pe = builder.defineSpatialPE(

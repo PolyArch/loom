@@ -1,5 +1,6 @@
 #include "fcc/Mapper/Mapper.h"
 #include "fcc/Mapper/MapperRelaxedRouting.h"
+#include "ConfigGenInternal.h"
 #include "MapperCongestionEstimator.h"
 #include "MapperInternal.h"
 #include "MapperRoutingCongestion.h"
@@ -1127,6 +1128,46 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     return result;
   }
 
+  for (IdIndex swNode = 0; swNode < static_cast<IdIndex>(dfg.nodes.size());
+       ++swNode) {
+    const Node *swNodeObj = dfg.getNode(swNode);
+    if (!swNodeObj || swNodeObj->kind != Node::OperationNode)
+      continue;
+    if (!mapper_detail::isSoftwareMemoryInterfaceOp(
+            getNodeAttrStr(swNodeObj, "op_name")))
+      continue;
+    if (swNode >= result.state.swNodeToHwNode.size() ||
+        result.state.swNodeToHwNode[swNode] == INVALID_ID)
+      continue;
+
+    bool needsRebind = false;
+    for (IdIndex swPort : swNodeObj->inputPorts) {
+      if (swPort >= result.state.swPortToHwPort.size() ||
+          result.state.swPortToHwPort[swPort] == INVALID_ID) {
+        needsRebind = true;
+        break;
+      }
+    }
+    if (!needsRebind) {
+      for (IdIndex swPort : swNodeObj->outputPorts) {
+        if (swPort >= result.state.swPortToHwPort.size() ||
+            result.state.swPortToHwPort[swPort] == INVALID_ID) {
+          needsRebind = true;
+          break;
+        }
+      }
+    }
+    if (!needsRebind)
+      continue;
+    if (!bindMappedNodePorts(swNode, result.state, dfg, adg)) {
+      result.diagnostics =
+          "Port rebinding failed after tech-mapping expansion";
+      llvm::errs() << "Mapper: " << result.diagnostics << " for node "
+                   << swNode << "\n";
+      return result;
+    }
+  }
+
   for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
        ++edgeId) {
     if (edgeId >= result.edgeKinds.size() ||
@@ -1416,6 +1457,37 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
           "C8: multiple active function_unit instances in spatial_pe " +
           entry.getKey().str() + "\n";
       valid = false;
+    }
+  }
+
+  for (const auto &entry : activeSpatialFUsByPE) {
+    const PEContainment *pe = findPEContainmentByName(flattener, entry.getKey());
+    if (!pe)
+      continue;
+    auto routes =
+        configgen_detail::collectPERouteSummary(*pe, state, dfg, adg);
+    llvm::DenseMap<unsigned, IdIndex> usedOutputs;
+    for (IdIndex fuId : entry.getValue()) {
+      auto it = routes.outputPortSelects.find(fuId);
+      if (it == routes.outputPortSelects.end())
+        continue;
+      const auto &selects = it->second;
+      for (size_t outputIdx = 0; outputIdx < selects.size(); ++outputIdx) {
+        int peOutputIndex = selects[outputIdx];
+        if (peOutputIndex < 0)
+          continue;
+        auto existing = usedOutputs.find(static_cast<unsigned>(peOutputIndex));
+        if (existing != usedOutputs.end() &&
+            existing->second != static_cast<IdIndex>(outputIdx)) {
+          diagnostics += "C8: spatial_pe " + entry.getKey().str() +
+                         " output index " + std::to_string(peOutputIndex) +
+                         " used by multiple function_unit results\n";
+          valid = false;
+          continue;
+        }
+        usedOutputs[static_cast<unsigned>(peOutputIndex)] =
+            static_cast<IdIndex>(outputIdx);
+      }
     }
   }
 

@@ -163,6 +163,20 @@ std::string loadVizSidecarJson(mlir::ModuleOp adgModule,
   return (*buffer)->getBuffer().str();
 }
 
+std::string loadSiblingSimulationTraceJson(llvm::StringRef mapJsonPath) {
+  if (mapJsonPath.empty())
+    return "null";
+  llvm::SmallString<256> tracePath(mapJsonPath);
+  if (!tracePath.ends_with(".map.json"))
+    return "null";
+  tracePath.resize(tracePath.size() - llvm::StringRef(".map.json").size());
+  tracePath += ".sim.trace";
+  auto buffer = llvm::MemoryBuffer::getFile(tracePath);
+  if (!buffer)
+    return "null";
+  return (*buffer)->getBuffer().str();
+}
+
 // ---- JSON utility ----
 
 unsigned getJsonUnsigned(const llvm::json::Object &obj,
@@ -244,6 +258,7 @@ mlir::LogicalResult exportVizOnly(const std::string &outputPath,
       << "const ADG_LAYOUT_DATA = " << scriptSafe(adgLayoutJson) << ";\n\n"
       << "const DFG_DATA = " << scriptSafe(dfgJson) << ";\n"
       << "const MAPPING_DATA = null;\n"
+      << "const SIM_TRACE_DATA = null;\n"
       << "</script>\n\n";
 
   // Bundled D3 for self-contained local viewing.
@@ -298,6 +313,7 @@ mlir::LogicalResult exportVizWithMapping(const std::string &outputPath,
       selectVizLayoutJson(adgModule, adgSourcePath, adgJson, layoutMode);
 
   std::string title = makeVizTitle(adgModule, dfgModule, true);
+  std::string simTraceJson = loadSiblingSimulationTraceJson(mapJsonPath);
 
   out << "<!DOCTYPE html>\n<html>\n<head>\n"
       << "  <meta charset=\"UTF-8\">\n"
@@ -328,6 +344,7 @@ mlir::LogicalResult exportVizWithMapping(const std::string &outputPath,
       << "const ADG_LAYOUT_DATA = " << scriptSafe(adgLayoutJson) << ";\n\n"
       << "const DFG_DATA = " << scriptSafe(dfgJson) << ";\n\n"
       << "const MAPPING_DATA = " << scriptSafe(mapJson) << ";\n"
+      << "const SIM_TRACE_DATA = " << scriptSafe(simTraceJson) << ";\n"
       << "</script>\n\n";
 
   out << "<script>\n" << viz::D3_MIN_JS << "\n</script>\n\n";

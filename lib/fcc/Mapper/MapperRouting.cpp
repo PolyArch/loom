@@ -193,6 +193,89 @@ bool routingOutputUsedByDifferentSource(IdIndex outPortId, IdIndex sourceHwPort,
   return false;
 }
 
+bool spatialPEOutputIndexUsedByDifferentFUResult(
+    IdIndex swEdgeId, IdIndex srcPortId, IdIndex dstPortId,
+    llvm::ArrayRef<IdIndex> candidatePath, const MappingState &state,
+    const Graph &adg) {
+  if (candidatePath.size() < 2 || candidatePath.front() != srcPortId ||
+      candidatePath[1] != dstPortId)
+    return false;
+
+  const Port *srcPort = adg.getPort(srcPortId);
+  if (!srcPort || srcPort->parentNode == INVALID_ID)
+    return false;
+  const Node *srcNode = adg.getNode(srcPort->parentNode);
+  if (!srcNode || getNodeAttrStr(srcNode, "op_kind") != "function_unit")
+    return false;
+
+  llvm::StringRef peName = getNodeAttrStr(srcNode, "pe_name");
+  if (peName.empty() || getNodeAttrStr(srcNode, "pe_kind") != "spatial_pe")
+    return false;
+
+  auto findEdgeByPortsLocal = [&](IdIndex localSrcPortId,
+                                  IdIndex localDstPortId) -> const Edge * {
+    const Port *localSrcPort = adg.getPort(localSrcPortId);
+    if (!localSrcPort)
+      return nullptr;
+    for (IdIndex edgeId : localSrcPort->connectedEdges) {
+      const Edge *edge = adg.getEdge(edgeId);
+      if (edge && edge->srcPort == localSrcPortId &&
+          edge->dstPort == localDstPortId)
+        return edge;
+    }
+    return nullptr;
+  };
+  auto getUIntEdgeAttrLocal = [&](const Edge *edge,
+                                  llvm::StringRef name) -> std::optional<uint64_t> {
+    if (!edge)
+      return std::nullopt;
+    for (auto attr : edge->attributes) {
+      if (attr.getName() != name)
+        continue;
+      if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr.getValue()))
+        return static_cast<uint64_t>(intAttr.getInt());
+    }
+    return std::nullopt;
+  };
+
+  const Edge *candidateEdge = findEdgeByPortsLocal(srcPortId, dstPortId);
+  auto candidatePeOutputIndex =
+      getUIntEdgeAttrLocal(candidateEdge, "pe_output_index");
+  if (!candidatePeOutputIndex)
+    return false;
+
+  for (IdIndex otherEdgeId = 0;
+       otherEdgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
+       ++otherEdgeId) {
+    if (otherEdgeId == swEdgeId)
+      continue;
+    const auto &otherPath = state.swEdgeToHwPaths[otherEdgeId];
+    if (otherPath.size() < 2)
+      continue;
+
+    IdIndex otherSrcPortId = otherPath.front();
+    const Port *otherSrcPort = adg.getPort(otherSrcPortId);
+    if (!otherSrcPort || otherSrcPort->parentNode == INVALID_ID)
+      continue;
+    const Node *otherSrcNode = adg.getNode(otherSrcPort->parentNode);
+    if (!otherSrcNode || getNodeAttrStr(otherSrcNode, "op_kind") != "function_unit")
+      continue;
+    if (getNodeAttrStr(otherSrcNode, "pe_name") != peName)
+      continue;
+
+    const Edge *otherFirstEdge =
+        findEdgeByPortsLocal(otherPath[0], otherPath[1]);
+    auto otherPeOutputIndex =
+        getUIntEdgeAttrLocal(otherFirstEdge, "pe_output_index");
+    if (!otherPeOutputIndex || *otherPeOutputIndex != *candidatePeOutputIndex)
+      continue;
+    if (otherSrcPortId != srcPortId)
+      return true;
+  }
+
+  return false;
+}
+
 bool isTaggedPort(const Port *port) {
   if (!port)
     return false;
@@ -988,6 +1071,10 @@ bool isEdgeLegalCached(const ConnectivityMatrix &connectivity, IdIndex srcPort,
                                               adg)) {
     return false;
   }
+
+  if (spatialPEOutputIndexUsedByDifferentFUResult(swEdgeId, srcPort, dstPort,
+                                                  candidatePath, state, adg))
+    return false;
 
   if (isTaggedPort(sp) && isTaggedPort(dp) &&
       hasTaggedHardwareEdgeConflict(swEdgeId, candidatePath, srcPort, dstPort,

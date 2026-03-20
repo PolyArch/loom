@@ -263,6 +263,47 @@ bool isSoftwareMemoryInterfaceOp(llvm::StringRef opName) {
   return opName == "handshake.extmemory" || opName == "handshake.memory";
 }
 
+bool functionUnitPortsCompatible(const Node *swNode, const Node *hwNode,
+                                 const Graph &dfg, const Graph &adg) {
+  if (!swNode || !hwNode)
+    return false;
+  if (swNode->inputPorts.size() > hwNode->inputPorts.size())
+    return false;
+  if (swNode->outputPorts.size() > hwNode->outputPorts.size())
+    return false;
+  for (unsigned i = 0; i < swNode->inputPorts.size(); ++i) {
+    const Port *swPort = dfg.getPort(swNode->inputPorts[i]);
+    const Port *hwPort = adg.getPort(hwNode->inputPorts[i]);
+    if (!swPort || !hwPort ||
+        !canMapSoftwareTypeToHardware(swPort->type, hwPort->type))
+      return false;
+  }
+  for (unsigned i = 0; i < swNode->outputPorts.size(); ++i) {
+    const Port *swPort = dfg.getPort(swNode->outputPorts[i]);
+    const Port *hwPort = adg.getPort(hwNode->outputPorts[i]);
+    if (!swPort || !hwPort ||
+        !canMapSoftwareTypeToHardware(swPort->type, hwPort->type))
+      return false;
+  }
+  return true;
+}
+
+bool canMapSoftwareTypeToDirectMemoryHardware(mlir::Type swType,
+                                              mlir::Type hwType) {
+  if (mlir::isa<mlir::MemRefType>(swType) || mlir::isa<mlir::MemRefType>(hwType))
+    return canMapSoftwareTypeToHardware(swType, hwType);
+  return canMapSoftwareTypeToBridgeHardware(swType, hwType);
+}
+
+bool directMemoryHardwarePortAllowsSharing(const Port *hwPort) {
+  if (!hwPort)
+    return false;
+  if (mlir::isa<mlir::MemRefType>(hwPort->type))
+    return true;
+  auto info = detail::getPortTypeInfo(hwPort->type);
+  return info && info->isTagged;
+}
+
 IdIndex findBridgePortForCategoryLane(const BridgeInfo &bridge, bool isInput,
                                       BridgePortCategory cat, unsigned lane) {
   llvm::ArrayRef<IdIndex> ports =
@@ -326,7 +367,7 @@ estimateSoftwarePortPlacementPos(IdIndex swNode, IdIndex swPort,
               return pos;
           }
           if (IdIndex hwPortId =
-                  getExpandedMemoryInputPort(hwN, isExtMem, cat, lane);
+                  getExpandedMemoryInputPort(hwN, adg, isExtMem, cat, lane);
               hwPortId != INVALID_ID) {
             if (auto pos = getPortPlacementPos(hwPortId, adg, flattener))
               return pos;
@@ -347,7 +388,7 @@ estimateSoftwarePortPlacementPos(IdIndex swNode, IdIndex swPort,
           if (auto pos = getPortPlacementPos(hwPortId, adg, flattener))
             return pos;
         }
-        if (IdIndex hwPortId = getExpandedMemoryOutputPort(hwN, cat, lane);
+        if (IdIndex hwPortId = getExpandedMemoryOutputPort(hwN, adg, cat, lane);
             hwPortId != INVALID_ID) {
           if (auto pos = getPortPlacementPos(hwPortId, adg, flattener))
             return pos;
@@ -362,77 +403,82 @@ estimateSoftwarePortPlacementPos(IdIndex swNode, IdIndex swPort,
   return std::make_pair(static_cast<double>(row), static_cast<double>(col));
 }
 
-IdIndex getExpandedMemoryInputPort(const Node *hwNode, bool isExtMem,
-                                   BridgePortCategory cat, unsigned lane) {
+IdIndex getExpandedMemoryInputPort(const Node *hwNode, const Graph &adg,
+                                   bool isExtMem, BridgePortCategory cat,
+                                   unsigned lane) {
   if (!hwNode)
-    return INVALID_ID;
-  if (lane != 0)
     return INVALID_ID;
   unsigned ldCount =
       static_cast<unsigned>(std::max<int64_t>(0, getNodeAttrInt(hwNode, "ldCount", 0)));
   unsigned stCount =
       static_cast<unsigned>(std::max<int64_t>(0, getNodeAttrInt(hwNode, "stCount", 0)));
   unsigned portIdx = isExtMem ? 1u : 0u;
+  auto finalizePort = [&](unsigned idx) -> IdIndex {
+    if (idx >= hwNode->inputPorts.size())
+      return INVALID_ID;
+    IdIndex hwPortId = hwNode->inputPorts[idx];
+    if (lane == 0)
+      return hwPortId;
+    const Port *hwPort = adg.getPort(hwPortId);
+    return directMemoryHardwarePortAllowsSharing(hwPort) ? hwPortId
+                                                         : INVALID_ID;
+  };
 
   if (ldCount > 0) {
     if (cat == BridgePortCategory::LdAddr) {
-      if (portIdx >= hwNode->inputPorts.size())
-        return INVALID_ID;
-      return hwNode->inputPorts[portIdx];
+      return finalizePort(portIdx);
     }
     ++portIdx;
   }
 
   if (stCount > 0) {
     if (cat == BridgePortCategory::StAddr) {
-      if (portIdx >= hwNode->inputPorts.size())
-        return INVALID_ID;
-      return hwNode->inputPorts[portIdx];
+      return finalizePort(portIdx);
     }
     ++portIdx;
 
     if (cat == BridgePortCategory::StData) {
-      if (portIdx >= hwNode->inputPorts.size())
-        return INVALID_ID;
-      return hwNode->inputPorts[portIdx];
+      return finalizePort(portIdx);
     }
   }
 
   return INVALID_ID;
 }
 
-IdIndex getExpandedMemoryOutputPort(const Node *hwNode,
+IdIndex getExpandedMemoryOutputPort(const Node *hwNode, const Graph &adg,
                                     BridgePortCategory cat, unsigned lane) {
   if (!hwNode)
-    return INVALID_ID;
-  if (lane != 0)
     return INVALID_ID;
   unsigned ldCount =
       static_cast<unsigned>(std::max<int64_t>(0, getNodeAttrInt(hwNode, "ldCount", 0)));
   unsigned stCount =
       static_cast<unsigned>(std::max<int64_t>(0, getNodeAttrInt(hwNode, "stCount", 0)));
   unsigned portIdx = 0;
+  auto finalizePort = [&](unsigned idx) -> IdIndex {
+    if (idx >= hwNode->outputPorts.size())
+      return INVALID_ID;
+    IdIndex hwPortId = hwNode->outputPorts[idx];
+    if (lane == 0)
+      return hwPortId;
+    const Port *hwPort = adg.getPort(hwPortId);
+    return directMemoryHardwarePortAllowsSharing(hwPort) ? hwPortId
+                                                         : INVALID_ID;
+  };
 
   if (ldCount > 0) {
     if (cat == BridgePortCategory::LdData) {
-      if (portIdx >= hwNode->outputPorts.size())
-        return INVALID_ID;
-      return hwNode->outputPorts[portIdx];
+      return finalizePort(portIdx);
     }
     ++portIdx;
 
     if (cat == BridgePortCategory::LdDone) {
-      if (portIdx >= hwNode->outputPorts.size())
-        return INVALID_ID;
-      return hwNode->outputPorts[portIdx];
+      return finalizePort(portIdx);
     }
     ++portIdx;
   }
 
   if (stCount > 0 && cat == BridgePortCategory::StDone) {
-    if (portIdx >= hwNode->outputPorts.size())
-      return INVALID_ID;
-    return hwNode->outputPorts[portIdx];
+    return finalizePort(portIdx);
   }
 
   return INVALID_ID;
@@ -897,10 +943,16 @@ Mapper::buildCandidates(const Graph &dfg, const Graph &adg) {
           if (!bridgeOk)
             continue;
         } else {
-          if (swNode->inputPorts.size() > hwNode->inputPorts.size())
+          unsigned hwLdCount = static_cast<unsigned>(
+              std::max<int64_t>(0, getNodeAttrInt(hwNode, "ldCount", 0)));
+          unsigned hwStCount = static_cast<unsigned>(
+              std::max<int64_t>(0, getNodeAttrInt(hwNode, "stCount", 0)));
+          if (static_cast<unsigned>(std::max<int64_t>(memInfo.ldCount, 0)) >
+                  hwLdCount ||
+              static_cast<unsigned>(std::max<int64_t>(memInfo.stCount, 0)) >
+                  hwStCount) {
             continue;
-          if (swNode->outputPorts.size() > hwNode->outputPorts.size())
-            continue;
+          }
 
           if (memInfo.swInSkip > 0) {
             if (swNode->inputPorts.empty() || hwNode->inputPorts.empty())
@@ -920,10 +972,12 @@ Mapper::buildCandidates(const Graph &dfg, const Graph &adg) {
             BridgePortCategory cat =
                 memInfo.classifyInput(si - memInfo.swInSkip);
             unsigned lane = memInfo.inputLocalLane(si - memInfo.swInSkip);
-            IdIndex hwPid = getExpandedMemoryInputPort(hwNode, isExtMem, cat, lane);
+            IdIndex hwPid =
+                getExpandedMemoryInputPort(hwNode, adg, isExtMem, cat, lane);
             const Port *hp = adg.getPort(hwPid);
             if (!sp || hwPid == INVALID_ID || !hp ||
-                !canMapSoftwareTypeToHardware(sp->type, hp->type)) {
+                !canMapSoftwareTypeToDirectMemoryHardware(sp->type,
+                                                          hp->type)) {
               inputTypesOk = false;
               break;
             }
@@ -936,10 +990,11 @@ Mapper::buildCandidates(const Graph &dfg, const Graph &adg) {
             const Port *sp = dfg.getPort(swNode->outputPorts[oi]);
             BridgePortCategory cat = memInfo.classifyOutput(oi);
             unsigned lane = memInfo.outputLocalLane(oi);
-            IdIndex hwPid = getExpandedMemoryOutputPort(hwNode, cat, lane);
+            IdIndex hwPid = getExpandedMemoryOutputPort(hwNode, adg, cat, lane);
             const Port *hp = adg.getPort(hwPid);
             if (!sp || !hp ||
-                !canMapSoftwareTypeToHardware(sp->type, hp->type)) {
+                !canMapSoftwareTypeToDirectMemoryHardware(sp->type,
+                                                          hp->type)) {
               outputTypesOk = false;
               break;
             }
@@ -960,7 +1015,8 @@ Mapper::buildCandidates(const Graph &dfg, const Graph &adg) {
         continue;
       if (getNodeAttrStr(hwNode, "resource_class") != "functional")
         continue;
-      if (opMatchesFU(opName, hwNode)) {
+      if (opMatchesFU(opName, hwNode) &&
+          functionUnitPortsCompatible(swNode, hwNode, dfg, adg)) {
         candidates[swId].push_back(hwId);
       }
     }
@@ -1377,15 +1433,30 @@ bool Mapper::runPlacement(
       bestHw = shortlist[dist(rng)];
     }
 
-    auto result = state.mapNode(swId, bestHw, dfg, adg);
-    if (result != ActionResult::Success) {
-      llvm::errs() << "Mapper: mapNode failed for " << swId << " -> "
-                    << bestHw << "\n";
-      return false;
+    llvm::SmallVector<IdIndex, 8> tryOrder(shortlist.begin(), shortlist.end());
+    for (const auto &candidate : rankedCandidates) {
+      if (llvm::is_contained(tryOrder, candidate.second))
+        continue;
+      tryOrder.push_back(candidate.second);
     }
-    if (!bindMappedNodePorts(swId, state, dfg, adg)) {
-      llvm::errs() << "Mapper: port binding failed for " << swId << " -> "
-                   << bestHw << "\n";
+
+    bool placed = false;
+    ActionResult lastResult = ActionResult::FailedInternalError;
+    for (IdIndex hwCandidate : tryOrder) {
+      auto savepoint = state.beginSavepoint();
+      lastResult = state.mapNode(swId, hwCandidate, dfg, adg);
+      if (lastResult == ActionResult::Success &&
+          bindMappedNodePorts(swId, state, dfg, adg)) {
+        bestHw = hwCandidate;
+        state.commitSavepoint(savepoint);
+        placed = true;
+        break;
+      }
+      state.rollbackSavepoint(savepoint);
+    }
+    if (!placed) {
+      llvm::errs() << "Mapper: port binding failed for " << swId
+                   << " after trying " << tryOrder.size() << " candidate(s)\n";
       return false;
     }
 
@@ -1474,8 +1545,64 @@ bool Mapper::bindMappedNodePorts(IdIndex swId, MappingState &state,
   if (!swNode || !placedHwNode)
     return false;
 
+  auto verifyIncidentReachability = [&]() -> bool {
+    llvm::StringRef swOpName = getNodeAttrStr(swNode, "op_name");
+    if (mapper_detail::isSoftwareMemoryInterfaceOp(swOpName))
+      return true;
+    llvm::DenseMap<IdIndex, double> emptyHistory;
+    llvm::DenseSet<IdIndex> seenEdges;
+    auto checkPorts = [&](llvm::ArrayRef<IdIndex> ports) -> bool {
+      for (IdIndex swPid : ports) {
+        const Port *swPort = dfg.getPort(swPid);
+        if (!swPort)
+          continue;
+        for (IdIndex edgeId : swPort->connectedEdges) {
+          if (!seenEdges.insert(edgeId).second)
+            continue;
+          const Edge *edge = dfg.getEdge(edgeId);
+          if (!edge)
+            continue;
+          IdIndex srcHwPid =
+              edge->srcPort < state.swPortToHwPort.size()
+                  ? state.swPortToHwPort[edge->srcPort]
+                  : INVALID_ID;
+          IdIndex dstHwPid =
+              edge->dstPort < state.swPortToHwPort.size()
+                  ? state.swPortToHwPort[edge->dstPort]
+                  : INVALID_ID;
+          if (srcHwPid == INVALID_ID || dstHwPid == INVALID_ID)
+            continue;
+          if (srcHwPid == dstHwPid)
+            continue;
+          const Port *srcHwPort = adg.getPort(srcHwPid);
+          const Port *dstHwPort = adg.getPort(dstHwPid);
+          const Node *srcHwNode =
+              (srcHwPort && srcHwPort->parentNode != INVALID_ID)
+                  ? adg.getNode(srcHwPort->parentNode)
+                  : nullptr;
+          const Node *dstHwNode =
+              (dstHwPort && dstHwPort->parentNode != INVALID_ID)
+                  ? adg.getNode(dstHwPort->parentNode)
+                  : nullptr;
+          if (srcHwNode && dstHwNode) {
+            llvm::StringRef srcPe = getNodeAttrStr(srcHwNode, "pe_name");
+            llvm::StringRef dstPe = getNodeAttrStr(dstHwNode, "pe_name");
+            if (!srcPe.empty() && srcPe == dstPe)
+              continue;
+          }
+          auto path =
+              findPath(srcHwPid, dstHwPid, edgeId, state, dfg, adg, emptyHistory);
+          if (path.empty())
+            return false;
+        }
+      }
+      return true;
+    };
+    return checkPorts(swNode->inputPorts) && checkPorts(swNode->outputPorts);
+  };
+
   if (getNodeAttrStr(placedHwNode, "resource_class") != "memory")
-    return true;
+    return verifyIncidentReachability();
 
   BridgeInfo bridge = BridgeInfo::extract(placedHwNode);
   bool isExtMem = (getNodeAttrStr(placedHwNode, "op_kind") == "extmemory");
@@ -1484,7 +1611,8 @@ bool Mapper::bindMappedNodePorts(IdIndex swId, MappingState &state,
     return bindBridgeInputs(bridge, memInfo, swNode, placedHwNode, dfg, adg,
                             state) &&
            bindBridgeOutputs(bridge, memInfo, swNode, placedHwNode, dfg, adg,
-                             state);
+                             state) &&
+           verifyIncidentReachability();
   }
 
   llvm::StringRef hwKind = getNodeAttrStr(placedHwNode, "op_kind");
@@ -1510,14 +1638,16 @@ bool Mapper::bindMappedNodePorts(IdIndex swId, MappingState &state,
       BridgePortCategory cat = memInfo.classifyInput(si - memInfo.swInSkip);
       unsigned lane = memInfo.inputLocalLane(si - memInfo.swInSkip);
       IdIndex hwPid =
-          getExpandedMemoryInputPort(placedHwNode, isExtMem, cat, lane);
+          getExpandedMemoryInputPort(placedHwNode, adg, isExtMem, cat, lane);
       const Port *hp = adg.getPort(hwPid);
       if (!sp || hwPid == INVALID_ID || !hp ||
-          !state.hwPortToSwPorts[hwPid].empty() ||
-          !canMapSoftwareTypeToHardware(sp->type, hp->type)) {
+          (!state.hwPortToSwPorts[hwPid].empty() &&
+           !directMemoryHardwarePortAllowsSharing(hp)) ||
+          !canMapSoftwareTypeToDirectMemoryHardware(sp->type, hp->type)) {
         return false;
       }
-      state.mapPort(swPid, hwPid, dfg, adg);
+      if (state.mapPort(swPid, hwPid, dfg, adg) != ActionResult::Success)
+        return false;
     }
 
     for (unsigned oi = 0; oi < swNode->outputPorts.size(); ++oi) {
@@ -1525,16 +1655,18 @@ bool Mapper::bindMappedNodePorts(IdIndex swId, MappingState &state,
       const Port *sp = dfg.getPort(swPid);
       BridgePortCategory cat = memInfo.classifyOutput(oi);
       unsigned lane = memInfo.outputLocalLane(oi);
-      IdIndex hwPid = getExpandedMemoryOutputPort(placedHwNode, cat, lane);
+      IdIndex hwPid = getExpandedMemoryOutputPort(placedHwNode, adg, cat, lane);
       const Port *hp = adg.getPort(hwPid);
       if (!sp || hwPid == INVALID_ID || !hp ||
-          !state.hwPortToSwPorts[hwPid].empty() ||
-          !canMapSoftwareTypeToHardware(sp->type, hp->type)) {
+          (!state.hwPortToSwPorts[hwPid].empty() &&
+           !directMemoryHardwarePortAllowsSharing(hp)) ||
+          !canMapSoftwareTypeToDirectMemoryHardware(sp->type, hp->type)) {
         return false;
       }
-      state.mapPort(swPid, hwPid, dfg, adg);
+      if (state.mapPort(swPid, hwPid, dfg, adg) != ActionResult::Success)
+        return false;
     }
-    return true;
+    return verifyIncidentReachability();
   }
 
   llvm::DenseMap<IdIndex, double> emptyHistory;
@@ -1646,7 +1778,7 @@ bool Mapper::bindMappedNodePorts(IdIndex swId, MappingState &state,
     state.mapPort(swPid, placedHwNode->outputPorts[bestHi], dfg, adg);
     usedOut[bestHi] = true;
   }
-  return true;
+  return verifyIncidentReachability();
 }
 
 } // namespace fcc

@@ -29,6 +29,8 @@ future work under this repository.
 |------|-------------|
 | [spec-adg-builder.md](./spec-adg-builder.md) | ADG Builder responsibilities and fabric-generation contract |
 | [spec-dataflow.md](./spec-dataflow.md) | FCC dataflow dialect semantics and mapping expectations |
+| [spec-dataflow-compilation.md](./spec-dataflow-compilation.md) | SCF-to-handshake+dataflow lowering rules, raw-vs-gated control, and nested-SCF flattening |
+| [spec-dataflow-memory.md](./spec-dataflow-memory.md) | Memory-op lowering, root-memref grouping, and serial-recursive ctrl-done ordering |
 
 ## Fabric Dialect
 

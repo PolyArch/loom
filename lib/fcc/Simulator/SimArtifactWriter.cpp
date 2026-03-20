@@ -47,10 +47,54 @@ bool SimArtifactWriter::writeTrace(const SimResult &result,
     return false;
   }
 
-  out << "[\n";
-  for (size_t idx = 0; idx < result.traceEvents.size(); ++idx) {
-    const TraceEvent &event = result.traceEvents[idx];
+  TraceDocument doc = result.traceDocument;
+  if (doc.events.empty())
+    doc.events = result.traceEvents;
+  if (doc.events.empty()) {
+    doc.version = 1;
+    doc.traceKind = "fcc_cycle_trace";
+    doc.producer = "fcc";
+  } else {
+    doc.epochId = doc.events.front().epochId;
+    doc.invocationId = doc.events.front().invocationId;
+    doc.coreId = doc.events.front().coreId;
+  }
+
+  out << "{\n";
+  out << "  \"version\": " << doc.version << ",\n";
+  out << "  \"trace_kind\": ";
+  writeEscapedJsonString(out, doc.traceKind);
+  out << ",\n";
+  out << "  \"producer\": ";
+  writeEscapedJsonString(out, doc.producer);
+  out << ",\n";
+  out << "  \"epoch_id\": " << doc.epochId << ",\n";
+  out << "  \"invocation_id\": " << doc.invocationId << ",\n";
+  out << "  \"core_id\": " << doc.coreId << ",\n";
+  out << "  \"modules\": [\n";
+  for (size_t idx = 0; idx < doc.modules.size(); ++idx) {
+    const TraceModuleInfo &module = doc.modules[idx];
+    out << "  {\"hw_node_id\": " << module.hwNodeId
+        << ", \"kind\": ";
+    writeEscapedJsonString(out, module.kind);
+    out << ", \"name\": ";
+    writeEscapedJsonString(out, module.name);
+    out << ", \"component_name\": ";
+    writeEscapedJsonString(out, module.componentName);
+    out << ", \"function_unit_name\": ";
+    writeEscapedJsonString(out, module.functionUnitName);
+    out << ", \"boundary_ordinal\": " << module.boundaryOrdinal << "}";
+    if (idx + 1 != doc.modules.size())
+      out << ",";
+    out << "\n";
+  }
+  out << "  ],\n";
+  out << "  \"events\": [\n";
+  for (size_t idx = 0; idx < doc.events.size(); ++idx) {
+    const TraceEvent &event = doc.events[idx];
     out << "  {\"cycle\": " << event.cycle;
+    out << ", \"phase\": ";
+    writeEscapedJsonString(out, simPhaseName(event.phase));
     out << ", \"epoch_id\": " << event.epochId;
     out << ", \"invocation_id\": " << event.invocationId;
     out << ", \"core_id\": " << event.coreId;
@@ -61,11 +105,12 @@ bool SimArtifactWriter::writeTrace(const SimResult &result,
     out << ", \"flags\": " << event.flags;
     out << ", \"arg0\": " << event.arg0;
     out << ", \"arg1\": " << event.arg1 << "}";
-    if (idx + 1 != result.traceEvents.size())
+    if (idx + 1 != doc.events.size())
       out << ",";
     out << "\n";
   }
-  out << "]\n";
+  out << "  ]\n";
+  out << "}\n";
   return true;
 }
 

@@ -539,8 +539,12 @@ private:
   unsigned orderCounter = 0;
   unsigned memoryId = 0;
 
-  // SCF condition maps (for memory control building).
-  DenseMap<Operation *, Value> forConds;
+  // SCF condition maps.
+  // For scf.for we keep both:
+  // - raw N+1 control from dataflow.stream
+  // - body-visible N control from dataflow.gate
+  DenseMap<Operation *, Value> forRawConds;
+  DenseMap<Operation *, Value> forBodyConds;
   DenseMap<Operation *, Value> whileConds;
   DenseMap<Operation *, Value> ifConds;
 
@@ -560,10 +564,11 @@ private:
 class MemoryCtrlBuilder {
 public:
   MemoryCtrlBuilder(OpBuilder &builder, llvm::ArrayRef<MemAccess *> accesses,
-                    DenseMap<Operation *, Value> &forConds,
+                    DenseMap<Operation *, Value> &forBodyConds,
                     DenseMap<Operation *, Value> &whileConds,
                     DenseMap<Operation *, Value> &ifConds, Value entryControl)
-      : builder(builder), forConds(forConds), whileConds(whileConds),
+      : builder(builder), forBodyConds(forBodyConds),
+        whileConds(whileConds),
         ifConds(ifConds), entryControl(entryControl) {
     sortedAccesses.append(accesses.begin(), accesses.end());
     llvm::sort(sortedAccesses,
@@ -636,9 +641,9 @@ private:
 
   Value processFor(mlir::scf::ForOp op, const ScfPath &parentPath,
                    Value ctrl) {
-    auto condIt = forConds.find(op.getOperation());
-    if (condIt == forConds.end()) {
-      op.emitError("missing will_continue for scf.for in memory control");
+    auto condIt = forBodyConds.find(op.getOperation());
+    if (condIt == forBodyConds.end()) {
+      op.emitError("missing after_cond for scf.for in memory control");
       failed = true;
       return ctrl;
     }
@@ -737,7 +742,7 @@ private:
   }
 
   OpBuilder &builder;
-  DenseMap<Operation *, Value> &forConds;
+  DenseMap<Operation *, Value> &forBodyConds;
   DenseMap<Operation *, Value> &whileConds;
   DenseMap<Operation *, Value> &ifConds;
   llvm::SmallVector<MemAccess *, 16> sortedAccesses;

@@ -7,6 +7,7 @@ set(VIZ_JS_SOURCES
   ${VIZ_ASSETS_DIR}/renderer/adg.js
   ${VIZ_ASSETS_DIR}/renderer/dfg.js
   ${VIZ_ASSETS_DIR}/renderer/interaction.js
+  ${VIZ_ASSETS_DIR}/renderer/sim.js
   ${VIZ_ASSETS_DIR}/renderer/boot.js
 )
 list(JOIN VIZ_JS_SOURCES ",,FCC_VIZ_SEP,," VIZ_JS_SOURCES_ARG)

@@ -1,7 +1,15 @@
 #include "dev/fcc/FccCgraDevice.hh"
 
+#include "fcc/Simulator/CycleKernel.h"
+#include "fcc/Simulator/RuntimeImage.h"
+#include "fcc/Simulator/SimModule.h"
+
+#include "base/addr_range.hh"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <set>
 #include <sstream>
 
 #include "base/logging.hh"
@@ -37,6 +45,7 @@ constexpr Addr kRegErrorCode = 0xF4;
 
 constexpr uint32_t kCtrlStart = 1u << 0;
 constexpr uint32_t kCtrlReset = 1u << 1;
+constexpr uint64_t kMaxInvocationCycles = 1000000;
 
 static std::string shellQuote(const std::string &value)
 {
@@ -96,19 +105,138 @@ static bool readU16File(const std::filesystem::path &path,
     return true;
 }
 
+static bool writeBinaryFile(const std::filesystem::path &path,
+                            const uint8_t *bytes, size_t size)
+{
+    std::ofstream out(path, std::ios::binary);
+    if (!out)
+        return false;
+    out.write(reinterpret_cast<const char *>(bytes),
+              static_cast<std::streamsize>(size));
+    return static_cast<bool>(out);
+}
+
+template <typename T>
+static bool writeScalarVectorFile(const std::filesystem::path &path,
+                                  const std::vector<T> &values)
+{
+    std::ofstream out(path, std::ios::binary);
+    if (!out)
+        return false;
+    for (const T &value : values) {
+        out.write(reinterpret_cast<const char *>(&value), sizeof(T));
+        if (!out)
+            return false;
+    }
+    return true;
+}
+
+static bool writeTraceJson(const std::filesystem::path &path,
+                           const fcc::sim::TraceDocument &doc)
+{
+    std::ofstream out(path);
+    if (!out)
+        return false;
+    out << "{\n";
+    out << "  \"version\": " << doc.version << ",\n";
+    out << "  \"trace_kind\": \"fcc_cycle_trace\",\n";
+    out << "  \"producer\": \"fcc_gem5_device\",\n";
+    out << "  \"epoch_id\": " << doc.epochId << ",\n";
+    out << "  \"invocation_id\": " << doc.invocationId << ",\n";
+    out << "  \"core_id\": " << doc.coreId << ",\n";
+    out << "  \"modules\": [\n";
+    for (size_t idx = 0; idx < doc.modules.size(); ++idx) {
+        const auto &module = doc.modules[idx];
+        out << "    {\"hw_node_id\": " << module.hwNodeId
+            << ", \"kind\": " << std::quoted(module.kind)
+            << ", \"name\": " << std::quoted(module.name)
+            << ", \"component_name\": " << std::quoted(module.componentName)
+            << ", \"function_unit_name\": "
+            << std::quoted(module.functionUnitName)
+            << ", \"boundary_ordinal\": " << module.boundaryOrdinal << "}";
+        if (idx + 1 != doc.modules.size())
+            out << ",";
+        out << "\n";
+    }
+    out << "  ],\n";
+    out << "  \"events\": [\n";
+    for (size_t idx = 0; idx < doc.events.size(); ++idx) {
+        const auto &event = doc.events[idx];
+        out << "    {\"cycle\": " << event.cycle
+            << ", \"phase\": "
+            << std::quoted(fcc::sim::simPhaseName(event.phase))
+            << ", \"epoch_id\": " << event.epochId
+            << ", \"invocation_id\": " << event.invocationId
+            << ", \"core_id\": " << event.coreId
+            << ", \"hw_node_id\": " << event.hwNodeId
+            << ", \"event_kind\": "
+            << std::quoted(fcc::sim::eventKindName(event.eventKind))
+            << ", \"lane\": " << static_cast<unsigned>(event.lane)
+            << ", \"flags\": " << event.flags
+            << ", \"arg0\": " << event.arg0
+            << ", \"arg1\": " << event.arg1 << "}";
+        if (idx + 1 != doc.events.size())
+            out << ",";
+        out << "\n";
+    }
+    out << "  ]\n";
+    out << "}\n";
+    return true;
+}
+
+static bool writeStatText(const std::filesystem::path &path,
+                          bool success,
+                          gem5::Tick cycleCount,
+                          fcc::sim::BoundaryReason reason,
+                          const std::string &errorMessage)
+{
+    std::ofstream out(path);
+    if (!out)
+        return false;
+    out << "success: " << (success ? "true" : "false") << "\n";
+    out << "termination: " << fcc::sim::boundaryReasonName(reason) << "\n";
+    out << "total_cycles: " << cycleCount << "\n";
+    out << "config_cycles: 0\n";
+    out << "total_config_writes: 0\n";
+    out << "error_message: "
+        << (errorMessage.empty() ? "<none>" : errorMessage) << "\n";
+    return true;
+}
+
 } // namespace
 
 FccCgraDevice::FccCgraDevice(const Params &p)
-    : BasicPioDevice(p, p.pio_size), runtimeManifest(p.runtime_manifest),
-      fccBinary(p.fcc_binary), bridgeScript(p.bridge_script),
-      workDir(p.work_dir)
+    : DmaDevice(p), pioAddr_(p.pio_addr), pioDelay_(p.pio_latency),
+      pioSize_(p.pio_size), runtimeManifest(p.runtime_manifest),
+      simImagePath(p.sim_image), fccBinary(p.fcc_binary),
+      bridgeScript(p.bridge_script), workDir(p.work_dir),
+      runtimeImage(std::make_unique<fcc::sim::RuntimeImage>()),
+      kernel(std::make_unique<fcc::sim::CycleKernel>()),
+      invokeEvent_([this] { onDirectInvoke(); }, name() + ".invoke"),
+      dmaReadDoneEvent_([this] { onDirectReadComplete(); },
+                        name() + ".dmaReadDone"),
+      dmaWriteDoneEvent_([this] { onDirectWriteComplete(); },
+                         name() + ".dmaWriteDone")
 {
     resetDevice();
+    directRuntimeReady = initializeDirectRuntime();
+}
+
+AddrRangeList
+FccCgraDevice::getAddrRanges() const
+{
+    return {RangeSize(pioAddr_, pioSize_)};
 }
 
 void
 FccCgraDevice::resetDevice()
 {
+    if (invokeEvent_.scheduled())
+        deschedule(invokeEvent_);
+    if (dmaReadDoneEvent_.scheduled())
+        deschedule(dmaReadDoneEvent_);
+    if (dmaWriteDoneEvent_.scheduled())
+        deschedule(dmaWriteDoneEvent_);
     statusReg = 0;
     errorCode = 0;
     configAddr = 0;
@@ -117,11 +245,276 @@ FccCgraDevice::resetDevice()
     selectedOutputIndex = 0;
     configWords.clear();
     outputs.clear();
+    directPhase_ = DirectPhase::Idle;
+    activeInvocationDir_.clear();
+    activeReplyDir_.clear();
+    pendingReads_.clear();
+    pendingWrites_.clear();
+    pendingReadIndex_ = 0;
+    pendingWriteIndex_ = 0;
+    activeErrorMessage_.clear();
+    if (directRuntimeReady && runtimeImage) {
+        configWords = runtimeImage->configImage.words;
+    }
     for (unsigned i = 0; i < 8; ++i) {
         memBase[i] = 0;
         memSize[i] = 0;
         scalarArgs[i] = 0;
     }
+}
+
+bool
+FccCgraDevice::initializeDirectRuntime()
+{
+    if (simImagePath.empty())
+        return false;
+    if (!runtimeImage || !kernel)
+        return false;
+    std::string error;
+    if (!fcc::sim::loadRuntimeImageBinary(simImagePath, *runtimeImage, error)) {
+        warn("FccCgraDevice: failed to load sim image %s: %s",
+             simImagePath, error);
+        return false;
+    }
+    return true;
+}
+
+bool
+FccCgraDevice::startDirectInvocation(const std::filesystem::path &invocationDir,
+                                     const std::filesystem::path &replyDir)
+{
+    using namespace fcc::sim;
+
+    if (!runtimeImage || !kernel) {
+        statusReg = kStatusError;
+        errorCode = 8;
+        return false;
+    }
+
+    RuntimeImage image = *runtimeImage;
+    if (!configWords.empty())
+        image.configImage.words = configWords;
+
+    kernel->resetAll();
+    if (!kernel->build(image.staticModel) || !kernel->configure(image.configImage)) {
+        statusReg = kStatusError;
+        errorCode = 9;
+        return false;
+    }
+
+    activeInvocationDir_ = invocationDir;
+    activeReplyDir_ = replyDir;
+    pendingReads_.clear();
+    pendingWrites_.clear();
+    pendingReadIndex_ = 0;
+    pendingWriteIndex_ = 0;
+    activeErrorMessage_.clear();
+    directPhase_ = DirectPhase::Reading;
+
+    const uint64_t invocationId = invocationCount - 1;
+    kernel->setInvocationContext(1, invocationId);
+
+    if (image.controlImage.startTokenPort >= 0) {
+        SimToken token;
+        token.data = 1;
+        kernel->setInputTokens(
+            static_cast<unsigned>(image.controlImage.startTokenPort), {token});
+    }
+
+    for (const auto &binding : image.controlImage.scalarBindings) {
+        if (binding.slot >= 8)
+            continue;
+        SimToken token;
+        token.data = scalarArgs[binding.slot];
+        kernel->setInputTokens(binding.portIdx, {token});
+    }
+
+    regionBuffers.clear();
+    regionBuffers.resize(image.controlImage.memoryBindings.size());
+    std::set<unsigned> seenSlots;
+    for (const auto &binding : image.controlImage.memoryBindings) {
+        if (binding.slot >= 8 || memSize[binding.slot] == 0)
+            continue;
+        regionBuffers[binding.regionId].assign(memSize[binding.slot], 0);
+        pendingReads_.push_back(
+            {binding.slot, binding.regionId, regionBuffers[binding.regionId].size()});
+        if (seenSlots.insert(binding.slot).second) {
+            pendingWrites_.push_back(
+                {binding.slot, binding.regionId, regionBuffers[binding.regionId].size()});
+        }
+    }
+
+    if (pendingReads_.empty()) {
+        directPhase_ = DirectPhase::Running;
+        schedule(invokeEvent_, curTick() + 1);
+    } else {
+        issueNextDirectRead();
+    }
+    return true;
+}
+
+void
+FccCgraDevice::issueNextDirectRead()
+{
+    if (pendingReadIndex_ >= pendingReads_.size()) {
+        directPhase_ = DirectPhase::Running;
+        schedule(invokeEvent_, curTick() + 1);
+        return;
+    }
+    const auto &transfer = pendingReads_[pendingReadIndex_];
+    dmaRead(memBase[transfer.slot], static_cast<int>(transfer.sizeBytes),
+            &dmaReadDoneEvent_, regionBuffers[transfer.regionId].data(), 0);
+}
+
+void
+FccCgraDevice::onDirectReadComplete()
+{
+    if (directPhase_ != DirectPhase::Reading)
+        return;
+    ++pendingReadIndex_;
+    issueNextDirectRead();
+}
+
+void
+FccCgraDevice::issueNextDirectWrite()
+{
+    if (pendingWriteIndex_ >= pendingWrites_.size()) {
+        finishDirectInvocation(activeErrorMessage_.empty(), activeErrorMessage_);
+        return;
+    }
+    const auto &transfer = pendingWrites_[pendingWriteIndex_];
+    dmaWrite(memBase[transfer.slot], static_cast<int>(transfer.sizeBytes),
+             &dmaWriteDoneEvent_, regionBuffers[transfer.regionId].data(), 0);
+}
+
+void
+FccCgraDevice::onDirectWriteComplete()
+{
+    if (directPhase_ != DirectPhase::Writing)
+        return;
+    ++pendingWriteIndex_;
+    issueNextDirectWrite();
+}
+
+void
+FccCgraDevice::onDirectInvoke()
+{
+    using namespace fcc::sim;
+
+    if (directPhase_ != DirectPhase::Running || !runtimeImage || !kernel)
+        return;
+
+    for (const auto &binding : runtimeImage->controlImage.memoryBindings) {
+        if (binding.slot >= 8 || memSize[binding.slot] == 0 ||
+            binding.regionId >= regionBuffers.size())
+            continue;
+        std::string err = kernel->setMemoryRegionBacking(
+            binding.regionId, regionBuffers[binding.regionId].data(),
+            regionBuffers[binding.regionId].size());
+        if (!err.empty()) {
+            finishDirectInvocation(false, err);
+            return;
+        }
+    }
+
+    BoundaryReason reason = kernel->runUntilBoundary(kMaxInvocationCycles);
+    cycleCount = kernel->getCurrentCycle();
+
+    bool success = (reason == BoundaryReason::InvocationDone);
+    activeErrorMessage_.clear();
+    if (!success)
+        activeErrorMessage_ = fcc::sim::boundaryReasonName(reason);
+
+    outputs.clear();
+    for (const auto &binding : runtimeImage->controlImage.outputBindings) {
+        OutputSlotData slotData;
+        const auto &tokens = kernel->getOutputTokens(binding.portIdx);
+        for (const SimToken &token : tokens) {
+            slotData.data.push_back(token.data);
+            slotData.tags.push_back(token.hasTag ? token.tag : 0);
+        }
+        outputs[binding.slot] = std::move(slotData);
+    }
+
+    directPhase_ = DirectPhase::Writing;
+    pendingWriteIndex_ = 0;
+    if (pendingWrites_.empty()) {
+        finishDirectInvocation(success, activeErrorMessage_);
+        return;
+    }
+    if (!success) {
+        finishDirectInvocation(false, activeErrorMessage_);
+        return;
+    }
+    issueNextDirectWrite();
+}
+
+void
+FccCgraDevice::finishDirectInvocation(bool success,
+                                      const std::string &errorMessage)
+{
+    std::set<unsigned> outputSlotSet;
+    for (const auto &entry : outputs)
+        outputSlotSet.insert(entry.first);
+    std::vector<unsigned> outputSlots(outputSlotSet.begin(), outputSlotSet.end());
+
+    std::vector<unsigned> memorySlots;
+    memorySlots.reserve(pendingWrites_.size());
+    for (const auto &transfer : pendingWrites_) {
+        if (std::find(memorySlots.begin(), memorySlots.end(), transfer.slot) ==
+            memorySlots.end()) {
+            memorySlots.push_back(transfer.slot);
+        }
+    }
+
+    const std::filesystem::path tracePath = activeReplyDir_ / "trace.json";
+    const std::filesystem::path statPath = activeReplyDir_ / "stat.txt";
+    bool wroteArtifacts =
+        writeTraceJson(tracePath, kernel->getTraceDocument()) &&
+        writeStatText(statPath, success, cycleCount,
+                      success ? fcc::sim::BoundaryReason::InvocationDone
+                              : fcc::sim::BoundaryReason::Deadlock,
+                      errorMessage) &&
+        writeDirectReplyArtifacts(activeReplyDir_, success, errorMessage,
+                                  outputSlots, memorySlots);
+
+    if (wroteArtifacts) {
+        for (unsigned slot : outputSlots) {
+            const auto &slotData = outputs.at(slot);
+            wroteArtifacts =
+                writeScalarVectorFile<uint64_t>(
+                    activeReplyDir_ /
+                        ("output.slot" + std::to_string(slot) + ".data.bin"),
+                    slotData.data) &&
+                writeScalarVectorFile<uint16_t>(
+                    activeReplyDir_ /
+                        ("output.slot" + std::to_string(slot) + ".tags.bin"),
+                    slotData.tags);
+            if (!wroteArtifacts)
+                break;
+        }
+    }
+    if (wroteArtifacts) {
+        for (const auto &transfer : pendingWrites_) {
+            wroteArtifacts = writeBinaryFile(
+                activeReplyDir_ /
+                    ("memory.slot" + std::to_string(transfer.slot) + ".bin"),
+                regionBuffers[transfer.regionId].data(),
+                regionBuffers[transfer.regionId].size());
+            if (!wroteArtifacts)
+                break;
+        }
+    }
+
+    directPhase_ = DirectPhase::Idle;
+    if (!wroteArtifacts) {
+        statusReg = kStatusError;
+        errorCode = 11;
+        return;
+    }
+    statusReg = success ? kStatusDone : kStatusError;
+    if (!success)
+        errorCode = 14;
 }
 
 uint32_t
@@ -259,6 +652,8 @@ FccCgraDevice::writeRegister32(Addr offset, uint32_t value)
 bool
 FccCgraDevice::runInvocation()
 {
+    if ((statusReg & kStatusBusy) != 0)
+        return false;
     statusReg = kStatusBusy;
     errorCode = 0;
     outputs.clear();
@@ -285,6 +680,9 @@ FccCgraDevice::runInvocation()
         errorCode = 1;
         return false;
     }
+
+    if (directRuntimeReady)
+        return startDirectInvocation(invocationDir, replyDir);
 
     std::ofstream request(requestPath);
     if (!request) {
@@ -412,27 +810,189 @@ FccCgraDevice::runInvocation()
     return success;
 }
 
+bool
+FccCgraDevice::writeDirectReplyArtifacts(
+    const std::filesystem::path &replyDir, bool success,
+    const std::string &errorMessage, const std::vector<unsigned> &outputSlots,
+    const std::vector<unsigned> &memorySlots) const
+{
+    std::ofstream meta(replyDir / "reply.meta");
+    if (!meta)
+        return false;
+    meta << "success=" << (success ? 1 : 0) << "\n";
+    meta << "cycle_count=" << cycleCount << "\n";
+    meta << "trace_path=" << (replyDir / "trace.json").string() << "\n";
+    meta << "stat_path=" << (replyDir / "stat.txt").string() << "\n";
+    if (!errorMessage.empty())
+        meta << "error_message=" << errorMessage << "\n";
+    for (unsigned slot : outputSlots)
+        meta << "output_slot=" << slot << "\n";
+    for (unsigned slot : memorySlots)
+        meta << "memory_slot=" << slot << "\n";
+    return true;
+}
+
+bool
+FccCgraDevice::runDirectInvocation(const std::filesystem::path &invocationDir,
+                                   const std::filesystem::path &replyDir)
+{
+    using namespace fcc::sim;
+
+    if (!runtimeImage || !kernel) {
+        statusReg = kStatusError;
+        errorCode = 8;
+        return false;
+    }
+
+    RuntimeImage image = *runtimeImage;
+    if (!configWords.empty())
+        image.configImage.words = configWords;
+
+    kernel->resetAll();
+    if (!kernel->build(image.staticModel) || !kernel->configure(image.configImage)) {
+        statusReg = kStatusError;
+        errorCode = 9;
+        return false;
+    }
+
+    const uint64_t invocationId = invocationCount - 1;
+    kernel->setInvocationContext(1, invocationId);
+
+    if (image.controlImage.startTokenPort >= 0) {
+        SimToken token;
+        token.data = 1;
+        kernel->setInputTokens(static_cast<unsigned>(image.controlImage.startTokenPort),
+                               {token});
+    }
+
+    for (const auto &binding : image.controlImage.scalarBindings) {
+        if (binding.slot >= 8)
+            continue;
+        SimToken token;
+        token.data = scalarArgs[binding.slot];
+        kernel->setInputTokens(binding.portIdx, {token});
+    }
+
+    regionBuffers.clear();
+    regionBuffers.resize(image.controlImage.memoryBindings.size());
+    std::set<unsigned> writtenMemorySlots;
+    for (const auto &binding : image.controlImage.memoryBindings) {
+        if (binding.slot >= 8 || memSize[binding.slot] == 0)
+            continue;
+        regionBuffers[binding.regionId].assign(memSize[binding.slot], 0);
+        sys->physProxy.readBlob(memBase[binding.slot],
+                                regionBuffers[binding.regionId].data(),
+                                regionBuffers[binding.regionId].size());
+        std::string err = kernel->setMemoryRegionBacking(
+            binding.regionId, regionBuffers[binding.regionId].data(),
+            regionBuffers[binding.regionId].size());
+        if (!err.empty()) {
+            statusReg = kStatusError;
+            errorCode = 10;
+            return false;
+        }
+        writtenMemorySlots.insert(binding.slot);
+    }
+
+    BoundaryReason reason = kernel->runUntilBoundary(kMaxInvocationCycles);
+    cycleCount = kernel->getCurrentCycle();
+
+    bool success = (reason == BoundaryReason::InvocationDone);
+    std::string errorMessage;
+    if (!success)
+        errorMessage = fcc::sim::boundaryReasonName(reason);
+
+    std::set<unsigned> outputSlotSet;
+    for (const auto &binding : image.controlImage.outputBindings) {
+        OutputSlotData slotData;
+        const auto &tokens = kernel->getOutputTokens(binding.portIdx);
+        for (const SimToken &token : tokens) {
+            slotData.data.push_back(token.data);
+            slotData.tags.push_back(token.hasTag ? token.tag : 0);
+        }
+        outputs[binding.slot] = std::move(slotData);
+        outputSlotSet.insert(binding.slot);
+    }
+
+    for (const auto &binding : image.controlImage.memoryBindings) {
+        if (binding.slot >= 8 || memSize[binding.slot] == 0 ||
+            binding.regionId >= regionBuffers.size())
+            continue;
+        sys->physProxy.writeBlob(memBase[binding.slot],
+                                 regionBuffers[binding.regionId].data(),
+                                 regionBuffers[binding.regionId].size());
+    }
+
+    std::vector<unsigned> outputSlots(outputSlotSet.begin(), outputSlotSet.end());
+    std::vector<unsigned> memorySlots(writtenMemorySlots.begin(),
+                                      writtenMemorySlots.end());
+
+    const std::filesystem::path tracePath = replyDir / "trace.json";
+    const std::filesystem::path statPath = replyDir / "stat.txt";
+    if (!writeTraceJson(tracePath, kernel->getTraceDocument()) ||
+        !writeStatText(statPath, success, cycleCount, reason, errorMessage) ||
+        !writeDirectReplyArtifacts(replyDir, success, errorMessage, outputSlots,
+                                  memorySlots)) {
+        statusReg = kStatusError;
+        errorCode = 11;
+        return false;
+    }
+
+    for (unsigned slot : outputSlots) {
+        const auto &slotData = outputs.at(slot);
+        if (!writeScalarVectorFile<uint64_t>(
+                replyDir / ("output.slot" + std::to_string(slot) + ".data.bin"),
+                slotData.data) ||
+            !writeScalarVectorFile<uint16_t>(
+                replyDir / ("output.slot" + std::to_string(slot) + ".tags.bin"),
+                slotData.tags)) {
+            statusReg = kStatusError;
+            errorCode = 12;
+            return false;
+        }
+    }
+
+    for (const auto &binding : image.controlImage.memoryBindings) {
+        if (binding.slot >= 8 || memSize[binding.slot] == 0 ||
+            binding.regionId >= regionBuffers.size())
+            continue;
+        if (!writeBinaryFile(replyDir / ("memory.slot" +
+                                         std::to_string(binding.slot) + ".bin"),
+                             regionBuffers[binding.regionId].data(),
+                             regionBuffers[binding.regionId].size())) {
+            statusReg = kStatusError;
+            errorCode = 13;
+            return false;
+        }
+    }
+
+    statusReg = success ? kStatusDone : kStatusError;
+    if (!success)
+        errorCode = 14;
+    return success;
+}
+
 Tick
 FccCgraDevice::read(PacketPtr pkt)
 {
-    const Addr offset = pkt->getAddr() - pioAddr;
+    const Addr offset = pkt->getAddr() - pioAddr_;
     if (pkt->getSize() != 4)
         panic("FccCgraDevice only supports 32-bit MMIO accesses");
     pkt->setUintX(readRegister32(offset), ByteOrder::little);
     pkt->makeAtomicResponse();
-    return pioDelay;
+    return pioDelay_;
 }
 
 Tick
 FccCgraDevice::write(PacketPtr pkt)
 {
-    const Addr offset = pkt->getAddr() - pioAddr;
+    const Addr offset = pkt->getAddr() - pioAddr_;
     if (pkt->getSize() != 4)
         panic("FccCgraDevice only supports 32-bit MMIO accesses");
     writeRegister32(offset,
                     static_cast<uint32_t>(pkt->getUintX(ByteOrder::little)));
     pkt->makeAtomicResponse();
-    return pioDelay;
+    return pioDelay_;
 }
 
 } // namespace gem5

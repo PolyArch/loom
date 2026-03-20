@@ -69,6 +69,46 @@ html, body {
   background: #1a3a2a; color: #00b894; border-color: #00b894;
 }
 
+.sim-cycle-label {
+  font-size: 11px;
+  color: #ffd166;
+  min-width: 120px;
+}
+
+@keyframes sim-pulse {
+  0%, 100% { opacity: 0.95; }
+  50% { opacity: 0.45; }
+}
+
+.sim-highlight-box,
+.sim-highlight-port,
+.sim-highlight-edge {
+  pointer-events: none;
+  animation: sim-pulse 0.9s ease-in-out infinite;
+  filter: drop-shadow(0 0 6px rgba(255, 209, 102, 0.55));
+}
+
+.sim-highlight-box {
+  stroke-width: 3;
+}
+
+.sim-highlight-port {
+  stroke-width: 2.5;
+}
+
+.sim-highlight-edge {
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sim-highlight-dfg {
+  stroke: #ffd166 !important;
+  stroke-width: 3 !important;
+  animation: sim-pulse 0.9s ease-in-out infinite;
+  filter: drop-shadow(0 0 6px rgba(255, 209, 102, 0.55));
+}
+
 /* Cross-highlight animation */
 @keyframes cross-pulse {
   0%, 100% { stroke-opacity: 1; }

@@ -5,6 +5,7 @@
 #include "fcc/ADG/ADGVerifier.h"
 #include "fcc/Mapper/ADGFlattener.h"
 #include "fcc/Mapper/DFGBuilder.h"
+#include "fcc/Simulator/RuntimeImage.h"
 #include "fcc/Simulator/SimArtifactWriter.h"
 #include "fcc/Simulator/SimInputSynthesis.h"
 #include "fcc/Simulator/SimSession.h"
@@ -70,6 +71,8 @@ struct RuntimeManifestData {
   std::string dfgMlirPath;
   std::string adgMlirPath;
   std::string configBinPath;
+  std::string simImageJsonPath;
+  std::string simImageBinPath;
   unsigned startTokenPortIdx = std::numeric_limits<unsigned>::max();
   std::vector<RuntimeNodeBinding> nodeBindings;
   std::vector<RuntimeScalarBinding> scalarBindings;
@@ -255,6 +258,8 @@ static bool loadRuntimeManifest(const std::string &path,
   manifest.dfgMlirPath = root->getString("dfg_mlir").value_or("").str();
   manifest.adgMlirPath = root->getString("adg_mlir").value_or("").str();
   manifest.configBinPath = root->getString("config_bin").value_or("").str();
+  manifest.simImageJsonPath = root->getString("sim_image_json").value_or("").str();
+  manifest.simImageBinPath = root->getString("sim_image_bin").value_or("").str();
   manifest.startTokenPortIdx =
       static_cast<unsigned>(root->getInteger("start_token_port").value_or(
           std::numeric_limits<int64_t>::max()));
@@ -459,6 +464,41 @@ static bool loadRuntimeRequest(const std::string &path, RuntimeRequestData &req,
   return true;
 }
 
+static bool loadRuntimeConfigSlices(
+    const RuntimeManifestData &manifest,
+    std::vector<fcc::ConfigGen::ConfigSlice> &configSlices,
+    std::string &error) {
+  configSlices.clear();
+
+  fcc::sim::RuntimeImage runtimeImage;
+  bool loaded = false;
+  if (!manifest.simImageJsonPath.empty()) {
+    loaded = fcc::sim::loadRuntimeImageJson(manifest.simImageJsonPath,
+                                            runtimeImage, error);
+  } else if (!manifest.simImageBinPath.empty()) {
+    loaded = fcc::sim::loadRuntimeImageBinary(manifest.simImageBinPath,
+                                              runtimeImage, error);
+  } else {
+    error = "runtime manifest missing sim_image_json and sim_image_bin";
+    return false;
+  }
+  if (!loaded)
+    return false;
+
+  configSlices.reserve(runtimeImage.configImage.slices.size());
+  for (const auto &slice : runtimeImage.configImage.slices) {
+    fcc::ConfigGen::ConfigSlice converted;
+    converted.name = slice.name;
+    converted.kind = slice.kind;
+    converted.hwNode = slice.hwNode;
+    converted.wordOffset = slice.wordOffset;
+    converted.wordCount = slice.wordCount;
+    converted.complete = slice.complete;
+    configSlices.push_back(std::move(converted));
+  }
+  return true;
+}
+
 static bool readBinaryFile(const std::string &path, std::vector<uint8_t> &bytes,
                            std::string &error) {
   auto buffer = llvm::MemoryBuffer::getFile(path, /*IsText=*/false);
@@ -490,6 +530,8 @@ bool writeRuntimeManifest(const std::string &path, const std::string &caseName,
                           const std::string &dfgMlirPath,
                           const std::string &adgMlirPath,
                           const std::string &configBinPath,
+                          const std::string &simImageJsonPath,
+                          const std::string &simImageBinPath,
                           const Graph &dfg, const Graph &adg,
                           const MappingState &mapping) {
   sim::SynthesizedSetup setup =
@@ -610,6 +652,10 @@ bool writeRuntimeManifest(const std::string &path, const std::string &caseName,
   root["dfg_mlir"] = makeAbsolutePath(dfgMlirPath);
   root["adg_mlir"] = makeAbsolutePath(adgMlirPath);
   root["config_bin"] = makeAbsolutePath(configBinPath);
+  if (!simImageJsonPath.empty())
+    root["sim_image_json"] = makeAbsolutePath(simImageJsonPath);
+  if (!simImageBinPath.empty())
+    root["sim_image_bin"] = makeAbsolutePath(simImageBinPath);
   root["start_token_port"] = startPortIdx
                                  ? static_cast<int64_t>(*startPortIdx)
                                  : static_cast<int64_t>(-1);
@@ -623,6 +669,8 @@ bool writeRuntimeManifest(const std::string &path, const std::string &caseName,
 int runRuntimeReplay(const FccArgs &args, MLIRContext &context) {
   RuntimeManifestData manifest;
   RuntimeRequestData request;
+  std::vector<fcc::ConfigGen::ConfigSlice> configSlices;
+  fcc::sim::RuntimeImage runtimeImage;
   std::string error;
 
   if (!loadRuntimeManifest(args.runtimeManifestPath, manifest, error)) {
@@ -633,6 +681,29 @@ int runRuntimeReplay(const FccArgs &args, MLIRContext &context) {
   if (!loadRuntimeRequest(args.runtimeRequestPath, request, error)) {
     llvm::errs() << "fcc: runtime replay failed to load request: " << error
                  << "\n";
+    return 1;
+  }
+  if (!loadRuntimeConfigSlices(manifest, configSlices, error)) {
+    llvm::errs() << "fcc: runtime replay failed to load config slices: "
+                 << error << "\n";
+    return 1;
+  }
+  if (!manifest.simImageJsonPath.empty()) {
+    if (!fcc::sim::loadRuntimeImageJson(manifest.simImageJsonPath, runtimeImage,
+                                        error)) {
+      llvm::errs() << "fcc: runtime replay failed to load sim image: " << error
+                   << "\n";
+      return 1;
+    }
+  } else if (!manifest.simImageBinPath.empty()) {
+    if (!fcc::sim::loadRuntimeImageBinary(manifest.simImageBinPath, runtimeImage,
+                                          error)) {
+      llvm::errs() << "fcc: runtime replay failed to load sim image: " << error
+                   << "\n";
+      return 1;
+    }
+  } else {
+    llvm::errs() << "fcc: runtime replay manifest missing sim image path\n";
     return 1;
   }
 
@@ -658,17 +729,6 @@ int runRuntimeReplay(const FccArgs &args, MLIRContext &context) {
     return 1;
   }
 
-  MappingState mapping;
-  mapping.init(dfgBuilder.getDFG(), flattener.getADG(), &flattener);
-  for (const RuntimeNodeBinding &binding : manifest.nodeBindings) {
-    if (mapping.mapNode(binding.swNode, binding.hwNode, dfgBuilder.getDFG(),
-                        flattener.getADG()) != ActionResult::Success) {
-      llvm::errs() << "fcc: runtime replay failed to rebuild node mapping for "
-                   << binding.swNode << " -> " << binding.hwNode << "\n";
-      return 1;
-    }
-  }
-
   sim::SimConfig simConfig;
   simConfig.maxCycles = args.simMaxCycles;
   sim::SimSession session(nullptr, simConfig);
@@ -687,13 +747,14 @@ int runRuntimeReplay(const FccArgs &args, MLIRContext &context) {
     llvm::errs() << "fcc: runtime replay connect failed: " << err << "\n";
     return 1;
   }
-  if (std::string err = session.buildFromMappedState(
-          dfgBuilder.getDFG(), flattener.getADG(), mapping);
+  if (std::string err = session.buildFromStaticModel(runtimeImage.staticModel);
       !err.empty()) {
-    llvm::errs() << "fcc: runtime replay graph build failed: " << err << "\n";
+    llvm::errs() << "fcc: runtime replay static model build failed: " << err
+                 << "\n";
     return 1;
   }
-  if (std::string err = session.loadConfig(configBlob); !err.empty()) {
+  if (std::string err = session.loadConfig(configBlob, configSlices);
+      !err.empty()) {
     llvm::errs() << "fcc: runtime replay config load failed: " << err << "\n";
     return 1;
   }

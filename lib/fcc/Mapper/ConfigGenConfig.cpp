@@ -422,6 +422,79 @@ PERouteSummary collectPERouteSummary(const PEContainment &pe,
                                      const Graph &dfg, const Graph &adg) {
   PERouteSummary summary;
   llvm::DenseSet<IdIndex> fuSet(pe.fuNodeIds.begin(), pe.fuNodeIds.end());
+  llvm::DenseMap<IdIndex, llvm::DenseMap<int, int>> usedPeOutputsByFU;
+  auto findEdgesByPorts = [&](IdIndex srcPortId,
+                              IdIndex dstPortId) -> llvm::SmallVector<const Edge *, 4> {
+    llvm::SmallVector<const Edge *, 4> matches;
+    const Port *srcPort = adg.getPort(srcPortId);
+    if (!srcPort)
+      return matches;
+    for (IdIndex edgeId : srcPort->connectedEdges) {
+      const Edge *edge = adg.getEdge(edgeId);
+      if (edge && edge->srcPort == srcPortId && edge->dstPort == dstPortId)
+        matches.push_back(edge);
+    }
+    return matches;
+  };
+  auto chooseBestFlatEdge = [&](IdIndex srcPortId, IdIndex dstPortId,
+                                IdIndex srcNodeId, int outputIdx,
+                                IdIndex dstNodeId, int inputIdx)
+      -> const Edge * {
+    auto candidates = findEdgesByPorts(srcPortId, dstPortId);
+    if (candidates.empty())
+      return nullptr;
+    if (candidates.size() == 1)
+      return candidates.front();
+
+    auto scoreCandidate = [&](const Edge *edge) {
+      int score = 0;
+      auto peInputIndex = getUIntEdgeAttr(edge, "pe_input_index");
+      auto peOutputIndex = getUIntEdgeAttr(edge, "pe_output_index");
+
+      if (dstNodeId != INVALID_ID && inputIdx >= 0 && peInputIndex) {
+        auto it = summary.inputPortSelects.find(dstNodeId);
+        if (it != summary.inputPortSelects.end() &&
+            static_cast<size_t>(inputIdx) < it->second.size() &&
+            it->second[inputIdx] >= 0 &&
+            it->second[inputIdx] != static_cast<int>(*peInputIndex)) {
+          score += 100;
+        }
+      }
+      if (srcNodeId != INVALID_ID && outputIdx >= 0 && peOutputIndex) {
+        auto it = summary.outputPortSelects.find(srcNodeId);
+        if (it != summary.outputPortSelects.end() &&
+            static_cast<size_t>(outputIdx) < it->second.size() &&
+            it->second[outputIdx] >= 0 &&
+            it->second[outputIdx] != static_cast<int>(*peOutputIndex)) {
+          score += 100;
+        }
+        auto usedIt = usedPeOutputsByFU.find(srcNodeId);
+        if (usedIt != usedPeOutputsByFU.end()) {
+          auto existing = usedIt->second.find(static_cast<int>(*peOutputIndex));
+          if (existing != usedIt->second.end() && existing->second != outputIdx)
+            score += 100;
+        }
+      }
+      if (!peInputIndex)
+        score += 1;
+      if (!peOutputIndex)
+        score += 1;
+      return score;
+    };
+
+    const Edge *best = candidates.front();
+    int bestScore = scoreCandidate(best);
+    for (size_t candidateIdx = 1; candidateIdx < candidates.size();
+         ++candidateIdx) {
+      const Edge *candidate = candidates[candidateIdx];
+      int score = scoreCandidate(candidate);
+      if (score < bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    return best;
+  };
 
   for (IdIndex fuId : pe.fuNodeIds) {
     const Node *fuNode = adg.getNode(fuId);
@@ -446,17 +519,26 @@ PERouteSummary collectPERouteSummary(const PEContainment &pe,
       if (!srcPort || !dstPort)
         continue;
 
-      const Edge *flatEdge = findEdgeByPorts(adg, srcPortId, dstPortId);
+      IdIndex srcNodeId = srcPort->parentNode;
+      IdIndex dstNodeId = dstPort->parentNode;
+      int outputIdx =
+          srcNodeId != INVALID_ID ? findNodeOutputIndex(adg.getNode(srcNodeId), srcPortId)
+                                  : -1;
+      int inputIdx =
+          dstNodeId != INVALID_ID ? findNodeInputIndex(adg.getNode(dstNodeId), dstPortId)
+                                  : -1;
+      const Edge *flatEdge =
+          chooseBestFlatEdge(srcPortId, dstPortId, srcNodeId, outputIdx,
+                             dstNodeId, inputIdx);
       if (!flatEdge)
         continue;
 
-      if (dstPort->parentNode != INVALID_ID && fuSet.contains(dstPort->parentNode)) {
+      if (dstNodeId != INVALID_ID && fuSet.contains(dstNodeId)) {
         auto peInputIndex = getUIntEdgeAttr(flatEdge, "pe_input_index");
         if (peInputIndex) {
-          const Node *fuNode = adg.getNode(dstPort->parentNode);
-          int inputIdx = findNodeInputIndex(fuNode, dstPortId);
+          const Node *fuNode = adg.getNode(dstNodeId);
           if (fuNode && inputIdx >= 0) {
-            auto &slots = summary.inputPortSelects[dstPort->parentNode];
+            auto &slots = summary.inputPortSelects[dstNodeId];
             if (static_cast<size_t>(inputIdx) < slots.size()) {
               if (slots[inputIdx] >= 0 &&
                   slots[inputIdx] != static_cast<int>(*peInputIndex))
@@ -467,7 +549,7 @@ PERouteSummary collectPERouteSummary(const PEContainment &pe,
               if (auto tag =
                       computeTemporalRouteTagValue(swEdgeId, hwPath, i, state,
                                                    dfg, adg)) {
-                auto &tags = summary.tagsByFU[dstPort->parentNode];
+                auto &tags = summary.tagsByFU[dstNodeId];
                 if (std::find(tags.begin(), tags.end(), *tag) == tags.end())
                   tags.push_back(*tag);
               }
@@ -476,24 +558,28 @@ PERouteSummary collectPERouteSummary(const PEContainment &pe,
         }
       }
 
-      if (srcPort->parentNode != INVALID_ID && fuSet.contains(srcPort->parentNode)) {
+      if (srcNodeId != INVALID_ID && fuSet.contains(srcNodeId)) {
         auto peOutputIndex = getUIntEdgeAttr(flatEdge, "pe_output_index");
         if (peOutputIndex) {
-          const Node *fuNode = adg.getNode(srcPort->parentNode);
-          int outputIdx = findNodeOutputIndex(fuNode, srcPortId);
+          const Node *fuNode = adg.getNode(srcNodeId);
           if (fuNode && outputIdx >= 0) {
-            auto &slots = summary.outputPortSelects[srcPort->parentNode];
+            auto &slots = summary.outputPortSelects[srcNodeId];
             if (static_cast<size_t>(outputIdx) < slots.size()) {
               if (slots[outputIdx] >= 0 &&
                   slots[outputIdx] != static_cast<int>(*peOutputIndex))
                 summary.complete = false;
               slots[outputIdx] = static_cast<int>(*peOutputIndex);
             }
+            auto &usedOutputs = usedPeOutputsByFU[srcNodeId];
+            auto existing = usedOutputs.find(static_cast<int>(*peOutputIndex));
+            if (existing != usedOutputs.end() && existing->second != outputIdx)
+              summary.complete = false;
+            usedOutputs[static_cast<int>(*peOutputIndex)] = outputIdx;
             if (pe.peKind == "temporal_pe") {
               if (auto tag = computeTemporalRouteTagValue(swEdgeId, hwPath,
                                                           i + 1, state, dfg,
                                                           adg)) {
-                auto &tags = summary.tagsByFU[srcPort->parentNode];
+                auto &tags = summary.tagsByFU[srcNodeId];
                 if (std::find(tags.begin(), tags.end(), *tag) == tags.end())
                   tags.push_back(*tag);
               }
@@ -578,6 +664,7 @@ buildSpatialPEConfig(const PEContainment &pe, const MappingState &state,
   PERouteSummary routes;
   if (activeFuId != INVALID_ID)
     routes = collectPERouteSummary(pe, state, dfg, adg);
+  complete = complete && routes.complete;
 
   uint32_t bitPos = 0;
   bool enabled = activeFuId != INVALID_ID;

@@ -40,7 +40,16 @@ def read_case_metadata(case_dir: pathlib.Path):
     if not config_header.exists():
         raise RuntimeError(f"missing {config_header}")
     bundle = json.loads(sim_bundle.read_text(encoding="utf-8"))
-    return runtime_manifest, runtime, sim_bundle, bundle, config_header
+    sim_image_entry = runtime.get("sim_image_bin", "")
+    if sim_image_entry:
+        sim_image = pathlib.Path(sim_image_entry)
+        if not sim_image.is_absolute():
+            sim_image = (case_dir / sim_image).resolve()
+    else:
+        sim_image = load_single("*.simimage.bin", case_dir).resolve()
+    if not sim_image.exists():
+        raise RuntimeError(f"missing sim image {sim_image}")
+    return runtime_manifest, runtime, sim_image, sim_bundle, bundle, config_header
 
 
 def build_slot_maps(runtime: dict):
@@ -219,7 +228,7 @@ def build_gem5():
 
 
 def run_gem5(case_dir: pathlib.Path, gem5_dir: pathlib.Path, host_elf: pathlib.Path,
-             runtime_manifest: pathlib.Path):
+             runtime_manifest: pathlib.Path, sim_image: pathlib.Path):
     gem5_bin = build_gem5()
     report_path = gem5_dir / "gem5.report.json"
     accel_work_dir = gem5_dir / "accel-work"
@@ -235,6 +244,8 @@ def run_gem5(case_dir: pathlib.Path, gem5_dir: pathlib.Path, host_elf: pathlib.P
         str(config_script),
         "--kernel",
         str(host_elf),
+        "--accel-sim-image",
+        str(sim_image),
         "--accel-runtime-manifest",
         str(runtime_manifest),
         "--fcc-binary",
@@ -281,14 +292,14 @@ def main():
     args = parser.parse_args()
 
     case_dir = pathlib.Path(args.case_dir).resolve()
-    runtime_manifest, runtime, _, bundle, config_header = read_case_metadata(case_dir)
+    runtime_manifest, runtime, sim_image, _, bundle, config_header = read_case_metadata(case_dir)
     gem5_dir = case_dir / "gem5"
     gem5_dir.mkdir(parents=True, exist_ok=True)
 
     host_c = emit_host_source(case_dir, gem5_dir, runtime, bundle, config_header)
     host_elf = build_host_elf(case_dir, gem5_dir, host_c)
     report_path, trace_path, stat_path = run_gem5(
-        case_dir, gem5_dir, host_elf, runtime_manifest
+        case_dir, gem5_dir, host_elf, runtime_manifest, sim_image
     )
 
     print(f"host_c={host_c}")

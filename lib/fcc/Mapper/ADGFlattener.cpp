@@ -12,6 +12,41 @@
 
 namespace fcc {
 
+namespace {
+
+bool connectivityPositionEnabled(mlir::ArrayAttr table, unsigned outputIdx,
+                                 unsigned inputIdx) {
+  if (!table || table.empty())
+    return true;
+  if (outputIdx >= table.size())
+    return false;
+  auto rowAttr = mlir::dyn_cast<mlir::StringAttr>(table[outputIdx]);
+  if (!rowAttr)
+    return false;
+  llvm::StringRef row = rowAttr.getValue();
+  if (inputIdx >= row.size())
+    return false;
+  return row[inputIdx] == '1';
+}
+
+void addSwitchInternalConnectivity(
+    ConnectivityMatrix &connectivity, const Node *node,
+    mlir::ArrayAttr connectivityTable = mlir::ArrayAttr()) {
+  if (!node)
+    return;
+  for (unsigned inputIdx = 0; inputIdx < node->inputPorts.size(); ++inputIdx) {
+    IdIndex inputPort = node->inputPorts[inputIdx];
+    for (unsigned outputIdx = 0; outputIdx < node->outputPorts.size();
+         ++outputIdx) {
+      if (!connectivityPositionEnabled(connectivityTable, outputIdx, inputIdx))
+        continue;
+      connectivity.inToOut[inputPort].push_back(node->outputPorts[outputIdx]);
+    }
+  }
+}
+
+} // namespace
+
 // --- FlattenContext method implementations ---
 
 std::string FlattenContext::getOrCreateOpName(mlir::Operation &op) {
@@ -308,6 +343,12 @@ void ADGFlattener::flattenCreateNodes(FlattenContext &fctx,
                                            *fuOp.getLatency()),
                     ctx);
       }
+      if (fuOp.getInterval()) {
+        setNodeAttr(fuNode.get(), "interval",
+                    mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                           *fuOp.getInterval()),
+                    ctx);
+      }
 
       auto fnType = fuOp.getFunctionType();
       for (unsigned i = 0; i < fnType.getNumInputs(); ++i) {
@@ -419,6 +460,8 @@ void ADGFlattener::flattenCreateNodes(FlattenContext &fctx,
                     mlir::StringAttr::get(ctx, "spatial_sw"), ctx);
         setNodeAttr(swNode.get(), "resource_class",
                     mlir::StringAttr::get(ctx, "routing"), ctx);
+        if (auto ct = swDef.getConnectivityTable())
+          setNodeAttr(swNode.get(), "connectivity_table", *ct, ctx);
 
         auto gridPos = parseGridPos(instanceName);
         auto swFnType = swDef.getFunctionType();
@@ -448,11 +491,9 @@ void ADGFlattener::flattenCreateNodes(FlattenContext &fctx,
         nodeGridPos[swNodeId] = gridPos;
 
         auto *node = adg.getNode(swNodeId);
-        for (IdIndex ip : node->inputPorts) {
-          for (IdIndex op : node->outputPorts) {
-            connectivity.inToOut[ip].push_back(op);
-          }
-        }
+        addSwitchInternalConnectivity(connectivity, node,
+                                      swDef.getConnectivityTable().value_or(
+                                          mlir::ArrayAttr()));
 
         for (unsigned i = 0; i < instOp.getNumResults(); ++i) {
           fctx.valueToOutputPort[instOp.getResult(i)] = node->outputPorts[i];
@@ -510,10 +551,9 @@ void ADGFlattener::flattenCreateNodes(FlattenContext &fctx,
         nodeGridPos[tswNodeId] = gridPos;
 
         auto *node = adg.getNode(tswNodeId);
-        for (IdIndex ip : node->inputPorts) {
-          for (IdIndex op : node->outputPorts)
-            connectivity.inToOut[ip].push_back(op);
-        }
+        addSwitchInternalConnectivity(connectivity, node,
+                                      tswDef.getConnectivityTable().value_or(
+                                          mlir::ArrayAttr()));
 
         for (unsigned i = 0; i < instOp.getNumResults(); ++i)
           fctx.valueToOutputPort[instOp.getResult(i)] = node->outputPorts[i];
@@ -784,6 +824,8 @@ void ADGFlattener::flattenCreateNodes(FlattenContext &fctx,
                   mlir::StringAttr::get(ctx, "spatial_sw"), ctx);
       setNodeAttr(swNode.get(), "resource_class",
                   mlir::StringAttr::get(ctx, "routing"), ctx);
+      if (auto ct = swOp.getConnectivityTable())
+        setNodeAttr(swNode.get(), "connectivity_table", *ct, ctx);
 
       auto gridPos = parseGridPos(swName);
 
@@ -817,11 +859,9 @@ void ADGFlattener::flattenCreateNodes(FlattenContext &fctx,
 
       // Register internal connectivity based on connectivity_table.
       auto *node = adg.getNode(swNodeId);
-      for (IdIndex ip : node->inputPorts) {
-        for (IdIndex op : node->outputPorts) {
-          connectivity.inToOut[ip].push_back(op);
-        }
-      }
+      addSwitchInternalConnectivity(connectivity, node,
+                                    swOp.getConnectivityTable().value_or(
+                                        mlir::ArrayAttr()));
 
       // Map SSA results to output ports.
       for (unsigned i = 0; i < swOp.getNumResults(); ++i) {
@@ -879,10 +919,9 @@ void ADGFlattener::flattenCreateNodes(FlattenContext &fctx,
       nodeGridPos[tswNodeId] = gridPos;
 
       auto *node = adg.getNode(tswNodeId);
-      for (IdIndex ip : node->inputPorts) {
-        for (IdIndex op : node->outputPorts)
-          connectivity.inToOut[ip].push_back(op);
-      }
+      addSwitchInternalConnectivity(connectivity, node,
+                                    tswOp.getConnectivityTable().value_or(
+                                        mlir::ArrayAttr()));
       for (unsigned i = 0; i < tswOp.getNumResults(); ++i)
         fctx.valueToOutputPort[tswOp.getResult(i)] = node->outputPorts[i];
       continue;

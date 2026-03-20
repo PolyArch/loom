@@ -48,12 +48,15 @@ def build_system(args):
     system.platform.clint.int_pin = system.platform.rtc.int_pin
     system.platform.accel = FccCgraDevice(
         pio_addr=args.mmio_base,
+        pio_latency="100ns",
         pio_size=0x1000,
+        sim_image=args.accel_sim_image,
         runtime_manifest=args.accel_runtime_manifest,
         fcc_binary=args.fcc_binary,
         bridge_script=args.bridge_script,
         work_dir=args.accel_work_dir,
     )
+    system.platform.accel.dma = system.membus.cpu_side_ports
 
     system.iobus.cpu_side_ports = system.platform.pci_host.up_request_port()
     system.iobus.mem_side_ports = system.platform.pci_host.up_response_port()
@@ -98,6 +101,7 @@ def build_system(args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--kernel", required=True)
+    parser.add_argument("--accel-sim-image", default="")
     parser.add_argument("--accel-runtime-manifest", required=True)
     parser.add_argument("--fcc-binary", required=True)
     parser.add_argument("--bridge-script", required=True)

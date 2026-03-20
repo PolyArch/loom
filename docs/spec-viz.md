@@ -73,6 +73,7 @@ The viewer should support:
 - side-by-side DFG and ADG inspection
 - mapping on or off
 - an ADG-focused overlay mode when mapping is enabled
+- simulation playback on or off when versioned trace data is embedded
 
 Default initial view:
 
@@ -80,6 +81,14 @@ Default initial view:
   `Overlay`
 - when mapping data is absent, the page should open as `Mapping Off` with
   `Side-by-side`
+
+When embedded simulation trace data is present, the toolbar must also expose:
+
+- `Simulation: On/Off`
+- `Stop`
+- `Step`
+- `Back`
+- `Auto Play`
 
 ## Base ADG Routing Requirements
 
@@ -193,6 +202,22 @@ When one or more software operations are tech-mapped into one configurable FU:
 - shrinking component hit regions relative to the visible border is allowed and
   recommended
 - ports and routed edges should remain directly selectable
+
+## Simulation Playback Requirements
+
+The HTML artifact may embed a sibling versioned JSON trace as `SIM_TRACE_DATA`.
+When trace data is present and has a supported `version`, the renderer must:
+
+- group events into deterministic playback frames
+- support forward stepping and reverse stepping
+- support autoplay
+- highlight firing hardware modules
+- highlight active routed hardware edges and switch routes
+- highlight relevant boundary ports and memory bindings
+- highlight mapped DFG nodes corresponding to firing hardware modules
+
+If the embedded trace version is unsupported, the page must disable simulation
+playback instead of silently attempting to interpret the trace.
 
 ## Relationship to Mapping Output
 

@@ -14,6 +14,9 @@ public:
   std::string connect() override;
   std::string buildFromMappedState(const Graph &dfg, const Graph &adg,
                                    const MappingState &mapping) override;
+  std::string buildFromMappedState(const Graph &dfg, const Graph &adg,
+                                   const MappingState &mapping,
+                                   llvm::ArrayRef<PEContainment> peContainment) override;
   std::string loadConfig(const std::vector<uint8_t> &configBlob) override;
   std::string setInput(unsigned portIdx, const std::vector<uint64_t> &data,
                        const std::vector<uint16_t> &tags) override;

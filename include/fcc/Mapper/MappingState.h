@@ -24,6 +24,7 @@ enum class ActionResult {
   Success,
   FailedHardConstraint,
   FailedResourceUnavailable,
+  FailedTypeMismatch,
   FailedInternalError,
 };
 
@@ -171,6 +172,8 @@ public:
                          const Graph &dfg, const Graph &adg);
   ActionResult mapPort(IdIndex swPort, IdIndex hwPort,
                        const Graph &dfg, const Graph &adg);
+  ActionResult mapPortBridgeAware(IdIndex swPort, IdIndex hwPort,
+                                  const Graph &dfg, const Graph &adg);
   ActionResult mapEdge(IdIndex swEdge, llvm::ArrayRef<IdIndex> path,
                        const Graph &dfg, const Graph &adg);
   ActionResult unmapEdge(IdIndex swEdge, const Graph &dfg, const Graph &adg);
