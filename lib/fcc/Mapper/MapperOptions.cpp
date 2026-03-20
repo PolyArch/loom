@@ -229,6 +229,24 @@ bool validateMapperOptions(const MapperOptions &opts, std::string &error) {
     return false;
   }
 
+  if (!requirePositiveUnsigned(opts.relaxedRouting.legalizationPasses,
+                               "relaxed_routing.legalization_passes",
+                               error) ||
+      !requirePositiveDouble(opts.relaxedRouting.baseOverusePenalty,
+                             "relaxed_routing.base_overuse_penalty", error) ||
+      !requirePositiveDouble(opts.relaxedRouting.repeatedOveruseScale,
+                             "relaxed_routing.repeated_overuse_scale",
+                             error) ||
+      !requirePositiveUnsigned(opts.relaxedRouting.rejectCheckpointOveruseCap,
+                               "relaxed_routing.reject_checkpoint_overuse_cap",
+                               error)) {
+    return false;
+  }
+  if (opts.relaxedRouting.repeatedOveruseScale < 1.0) {
+    error = "relaxed_routing.repeated_overuse_scale must be >= 1";
+    return false;
+  }
+
   if (!requirePositiveDouble(opts.cpSatTuning.placementCostScale,
                              "cpsat_tuning.placement_cost_scale", error) ||
       !requirePositiveUnsigned(opts.cpSatTuning.workerFallbackConcurrency,

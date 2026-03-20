@@ -18,3 +18,9 @@ mapper:
     routing_output_history_bump: 0.15
     routing_output_history_decay: 0.9
     early_termination_window: 2
+  relaxed_routing:
+    enabled: true
+    legalization_passes: 3
+    base_overuse_penalty: 2.5
+    repeated_overuse_scale: 1.5
+    reject_checkpoint_overuse_cap: 64

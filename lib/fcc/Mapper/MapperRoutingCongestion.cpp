@@ -2,6 +2,7 @@
 #include "MapperRoutingInternal.h"
 #include "MapperInternal.h"
 #include "fcc/Mapper/Mapper.h"
+#include "fcc/Mapper/MapperRelaxedRouting.h"
 #include "fcc/Mapper/TechMapper.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -201,22 +202,87 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
     state.restore(checkpoint);
   };
 
+  RelaxedRoutingState relaxedRouting;
+  if (opts.relaxedRouting.enabled)
+    relaxedRouting.init(adg);
+
   for (unsigned iter = 0; iter < opts.negotiatedRoutingPasses; ++iter) {
     if (shouldStopForBudget("negotiated routing"))
       break;
     state.clearRoutes(dfg, adg);
     congestion.resetPresentDemand();
+    if (opts.relaxedRouting.enabled)
+      relaxedRouting.clear();
 
     unsigned routed = 0;
     unsigned total = 0;
     bool allRouted = routeOnePass(state, dfg, adg, edgeKinds, edgeOrder,
                                   routingOutputHistory, routed, total, opts,
-                                  &congestion);
+                                  &congestion,
+                                  opts.relaxedRouting.enabled ? &relaxedRouting
+                                                              : nullptr);
+    unsigned temporaryOveruseOutputs = 0;
+    unsigned remainingOveruseOutputs = 0;
+    if (opts.relaxedRouting.enabled) {
+      auto overusedOutputs = relaxedRouting.collectOverusedOutputs();
+      temporaryOveruseOutputs =
+          static_cast<unsigned>(overusedOutputs.size());
+      llvm::outs() << "  Relaxed routing temporary overuse before legalization: "
+                   << temporaryOveruseOutputs << " outputs\n";
+      if (temporaryOveruseOutputs >
+          opts.relaxedRouting.rejectCheckpointOveruseCap) {
+        remainingOveruseOutputs = temporaryOveruseOutputs;
+        llvm::outs() << "  Relaxed routing checkpoint rejected before "
+                        "legalization: overuse cap "
+                     << opts.relaxedRouting.rejectCheckpointOveruseCap
+                     << " exceeded\n";
+      } else {
+        for (unsigned pass = 0;
+             pass < opts.relaxedRouting.legalizationPasses &&
+             !overusedOutputs.empty();
+             ++pass) {
+          auto ripupEdges = collectEdgesTouchingRoutingOutputs(state,
+                                                               overusedOutputs);
+          if (ripupEdges.empty())
+            break;
+          llvm::DenseSet<IdIndex> ripupSet;
+          for (IdIndex edgeId : ripupEdges)
+            ripupSet.insert(edgeId);
+          std::vector<IdIndex> legalizationOrder;
+          legalizationOrder.reserve(ripupEdges.size());
+          for (IdIndex edgeId : edgeOrder) {
+            if (ripupSet.contains(edgeId))
+              legalizationOrder.push_back(edgeId);
+          }
+          llvm::outs() << "  Relaxed routing legalization pass "
+                       << (pass + 1) << ": ripping up " << ripupEdges.size()
+                       << " edges touching " << overusedOutputs.size()
+                       << " outputs\n";
+          for (IdIndex edgeId : ripupEdges)
+            state.unmapEdge(edgeId, dfg, adg);
+          unsigned legalizedRouted = 0;
+          unsigned legalizedTotal = 0;
+          routeOnePass(state, dfg, adg, edgeKinds, legalizationOrder,
+                       routingOutputHistory, legalizedRouted, legalizedTotal,
+                       opts, nullptr, nullptr);
+          overusedOutputs = collectOverusedNonTaggedRoutingOutputs(state, adg);
+        }
+        remainingOveruseOutputs =
+            static_cast<unsigned>(overusedOutputs.size());
+        llvm::outs() << "  Relaxed routing legalization result: "
+                     << remainingOveruseOutputs
+                     << " overused outputs remain\n";
+      }
+    }
     auto stats = computeRoutingEdgeStats(state, dfg, edgeKinds);
+    routed = stats.routedRouterEdges;
+    total = stats.routerEdges;
 
     size_t totalPathLen = 0;
     for (const auto &path : state.swEdgeToHwPaths)
       totalPathLen += path.size();
+
+    allRouted = allRouted && routed == total && remainingOveruseOutputs == 0;
 
     if (allRouted) {
       bestCheckpoint = state.save();
@@ -232,8 +298,9 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
       return true;
     }
 
-    if (routed > bestRouted ||
-        (routed == bestRouted && totalPathLen < bestPathLen)) {
+    if (remainingOveruseOutputs == 0 &&
+        (routed > bestRouted ||
+         (routed == bestRouted && totalPathLen < bestPathLen))) {
       bestCheckpoint = state.save();
       bestRouted = routed;
       bestTotal = total;
@@ -246,7 +313,10 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
     llvm::outs() << "  Negotiated routing iteration " << (iter + 1)
                  << ": router " << routed << "/" << total << ", overall "
                  << stats.routedOverallEdges << "/" << stats.overallEdges
-                 << ", prebound " << stats.directBindingEdges << "\n";
+                 << ", prebound " << stats.directBindingEdges;
+    if (opts.relaxedRouting.enabled)
+      llvm::outs() << ", overused_outputs " << remainingOveruseOutputs;
+    llvm::outs() << "\n";
     emitBestSnapshot("negotiated-iter");
 
     if (opts.congestion.routingOutputHistoryDecay < 1.0) {

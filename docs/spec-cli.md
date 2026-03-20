@@ -185,6 +185,8 @@ Current implementation note:
 - standalone CLI flags are only the promoted high-frequency tuning subset
 - all other mapper thresholds and heuristic constants are config-only and must
   be set through the base YAML
+- relaxed negotiated routing is currently config-only under
+  `mapper.relaxed_routing`
 - `--mapper-snapshot-interval-seconds` and
   `--mapper-snapshot-interval-rounds` are mutually exclusive; enabling both is
   a CLI error

@@ -68,6 +68,17 @@ The `congestion` map owns negotiated-routing feedback controls such as:
 - routing-output history bump and decay
 - early-termination window for non-improving negotiated iterations
 
+The `relaxed_routing` map owns an optional negotiated-routing extension that
+permits temporary overuse of non-tagged switch-owned routing outputs during one
+iteration, followed by strict legalization before a checkpoint may be accepted.
+Its fields control:
+
+- enablement
+- how many legalization passes are allowed after one relaxed iteration
+- the additive penalty for reusing an already claimed routing output
+- the multiplicative growth of that penalty as more logical sources compete
+- the checkpoint-rejection cap for too many simultaneously overused outputs
+
 The `refinement` map owns simulated-annealing placement tuning, including:
 
 - geometric cooling (`initial_temperature`, `cooling_rate`)
@@ -105,6 +116,10 @@ Parameters should remain config-only when they are:
 Adaptive simulated-annealing cooling currently remains config-only. It is part
 of the grouped `refinement` strategy and is expected to be tuned together with
 the base SA temperature schedule rather than as an ad-hoc standalone flag.
+
+Relaxed routing also remains config-only. It materially changes negotiated
+routing semantics and is expected to be tuned together with the broader routing
+strategy rather than as a frequently flipped standalone flag.
 
 ## Promoted CLI Surface
 

@@ -238,6 +238,27 @@ FCC uses the following hard-constraint families:
   multiple different next-hop inputs; dataflow broadcast or flow mixing may
   only occur inside `fabric.spatial_sw` or `fabric.temporal_sw`
 
+## Temporary Negotiated-Routing Relaxation
+
+FCC may optionally use a negotiated-routing mode in which one mapper iteration
+is allowed to temporarily overuse a non-tagged switch-owned routing output.
+This is a search-only relaxation, not a relaxation of final mapping legality.
+
+The scope is intentionally narrow:
+
+- it applies only to non-tagged routing outputs owned by routing resources
+- it does not relax tagged same-tag conflicts
+- it does not relax runtime tag representability
+- it does not relax temporal switch per-tag route-table legality
+- it does not relax non-routing source broadcast locality
+- it does not relax memory region capacity or node-placement constraints
+
+When this mode is enabled, an intermediate routing iteration may contain more
+than one logical source claiming the same non-tagged routing output. The mapper
+must then run a legalization pass that reroutes the affected edges under the
+normal strict rules. Only legalized checkpoints are eligible to become the
+current best mapping or the final emitted mapping.
+
 For op compatibility:
 
 - `dataflow.invariant` and `dataflow.gate` are distinct compatibility classes

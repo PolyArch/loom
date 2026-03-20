@@ -23,6 +23,7 @@ namespace fcc {
 
 struct CongestionEstimator;
 struct CongestionState;
+class RelaxedRoutingState;
 class LocalRepairDriver;
 
 class Mapper {
@@ -144,7 +145,8 @@ private:
            const MappingState &state, const Graph &dfg, const Graph &adg,
            const llvm::DenseMap<IdIndex, double> &routingOutputHistory,
            IdIndex forcedFirstHop = INVALID_ID,
-           const CongestionState *congestion = nullptr);
+           const CongestionState *congestion = nullptr,
+           const RelaxedRoutingState *relaxedRouting = nullptr);
   bool isEdgeLegal(IdIndex srcPort, IdIndex dstPort, IdIndex swEdgeId,
                    llvm::ArrayRef<IdIndex> candidatePath,
                    const MappingState &state, const Graph &dfg,
@@ -156,7 +158,8 @@ private:
                     const std::vector<IdIndex> &edgeOrder,
                     const llvm::DenseMap<IdIndex, double> &routingOutputHistory,
                     unsigned &routed, unsigned &total, const Options &opts,
-                    CongestionState *congestion = nullptr);
+                    CongestionState *congestion = nullptr,
+                    RelaxedRoutingState *relaxedRouting = nullptr);
   bool hasTaggedPathConflict(IdIndex swEdgeId,
                              llvm::ArrayRef<IdIndex> candidatePath,
                              const MappingState &state, const Graph &dfg,
@@ -200,6 +203,7 @@ private:
   double activeCongestionPlacementWeight = 0.0;
   double activeMemorySharingPenalty = 0.0;
   unsigned activeUnroutedDiagnosticLimit = 8;
+  MapperRelaxedRoutingOptions activeRelaxedRoutingOpts_;
   SnapshotCallback snapshotCallback_;
   std::function<void(const MappingState &, llvm::ArrayRef<TechMappedEdgeKind>,
                      llvm::StringRef, unsigned)>

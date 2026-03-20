@@ -73,6 +73,14 @@ struct MapperCongestionOptions {
   unsigned earlyTerminationWindow = 3;
 };
 
+struct MapperRelaxedRoutingOptions {
+  bool enabled = false;
+  unsigned legalizationPasses = 2;
+  double baseOverusePenalty = 3.0;
+  double repeatedOveruseScale = 1.75;
+  unsigned rejectCheckpointOveruseCap = 256;
+};
+
 struct MapperCPSatTuningOptions {
   double placementCostScale = 100.0;
   unsigned workerFallbackConcurrency = 4;
@@ -208,6 +216,7 @@ struct MapperOptions {
   MapperLaneOptions lane;
   MapperRoutingStrategyOptions routing;
   MapperCongestionOptions congestion;
+  MapperRelaxedRoutingOptions relaxedRouting;
   MapperCPSatTuningOptions cpSatTuning;
   MapperLocalRepairOptions localRepair;
 };

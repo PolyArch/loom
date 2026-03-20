@@ -117,6 +117,17 @@ template <> struct MappingTraits<fcc::MapperCongestionOptions> {
   }
 };
 
+template <> struct MappingTraits<fcc::MapperRelaxedRoutingOptions> {
+  static void mapping(IO &io, fcc::MapperRelaxedRoutingOptions &opts) {
+    io.mapOptional("enabled", opts.enabled);
+    io.mapOptional("legalization_passes", opts.legalizationPasses);
+    io.mapOptional("base_overuse_penalty", opts.baseOverusePenalty);
+    io.mapOptional("repeated_overuse_scale", opts.repeatedOveruseScale);
+    io.mapOptional("reject_checkpoint_overuse_cap",
+                   opts.rejectCheckpointOveruseCap);
+  }
+};
+
 template <> struct MappingTraits<fcc::MapperCPSatTuningOptions> {
   static void mapping(IO &io, fcc::MapperCPSatTuningOptions &opts) {
     io.mapOptional("placement_cost_scale", opts.placementCostScale);
@@ -314,6 +325,7 @@ template <> struct MappingTraits<fcc::MapperOptions> {
     io.mapOptional("lane", opts.lane);
     io.mapOptional("routing", opts.routing);
     io.mapOptional("congestion", opts.congestion);
+    io.mapOptional("relaxed_routing", opts.relaxedRouting);
     io.mapOptional("cpsat_tuning", opts.cpSatTuning);
     io.mapOptional("local_repair", opts.localRepair);
   }

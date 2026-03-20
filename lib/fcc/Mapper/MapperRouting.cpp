@@ -1,4 +1,5 @@
 #include "fcc/Mapper/Mapper.h"
+#include "fcc/Mapper/MapperRelaxedRouting.h"
 #include "MapperRoutingCongestion.h"
 #include "MapperRoutingInternal.h"
 
@@ -765,7 +766,8 @@ bool isInternalHopLegal(IdIndex inPortId, IdIndex outPortId,
                         llvm::ArrayRef<IdIndex> candidatePath,
                         RoutingPathAnalysisCache &cache,
                         const MappingState &state, const Graph &dfg,
-                        const Graph &adg) {
+                        const Graph &adg,
+                        const RelaxedRoutingState *relaxedRouting) {
   const Port *inPort = adg.getPort(inPortId);
   const Port *outPort = adg.getPort(outPortId);
   if (!inPort || !outPort)
@@ -787,7 +789,10 @@ bool isInternalHopLegal(IdIndex inPortId, IdIndex outPortId,
     } else if (!candidatePath.empty() &&
                routingOutputUsedByDifferentSource(outPortId,
                                                  candidatePath.front(),
-                                                 state)) {
+                                                 state) &&
+               !(relaxedRouting &&
+                 relaxedRouting->wouldConflict(outPortId,
+                                              candidatePath.front()))) {
       return false;
     }
   }
@@ -1008,7 +1013,8 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
                  const Graph &adg,
                  const llvm::DenseMap<IdIndex, double> &routingOutputHistory,
                  IdIndex forcedFirstHop,
-                 const CongestionState *congestion) {
+                 const CongestionState *congestion,
+                 const RelaxedRoutingState *relaxedRouting) {
   llvm::SmallVector<IdIndex, 8> path;
   RoutingPathAnalysisCache analysisCache;
 
@@ -1202,7 +1208,8 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
     for (IdIndex outPortId : internalIt->second) {
       auto outPath = buildPathFromTrail(current.trailIndex, outPortId);
       if (!isInternalHopLegal(current.portId, outPortId, swEdgeId, outPath,
-                              analysisCache, state, dfg, adg))
+                              analysisCache, state, dfg, adg,
+                              relaxedRouting))
         continue;
 
       double historyPenalty = 0.0;
@@ -1213,6 +1220,10 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
       double congestionPenalty = 0.0;
       if (congestion)
         congestionPenalty = congestion->resourceCost(outPortId);
+      double relaxedOverusePenalty = 0.0;
+      if (relaxedRouting)
+        relaxedOverusePenalty = relaxedRouting->softConflictPenalty(
+            outPortId, outPath.front(), activeRelaxedRoutingOpts_);
 
       auto nextTagInfo = advanceRuntimeTagValueInfoAtPort(current.currentTag,
                                                           outPortId, adg,
@@ -1221,7 +1232,8 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
         continue;
       SearchStateKey nextKey = makeSearchKey(outPortId, nextTagInfo.tag);
 
-      double nextCost = current.gCost + 1.0 + historyPenalty + congestionPenalty;
+      double nextCost = current.gCost + 1.0 + historyPenalty +
+                        congestionPenalty + relaxedOverusePenalty;
       auto nextBestIt = bestCost.find(nextKey);
       if (nextBestIt != bestCost.end() &&
           nextCost >= nextBestIt->second - 1e-9)

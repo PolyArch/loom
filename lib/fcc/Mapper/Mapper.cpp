@@ -1,4 +1,5 @@
 #include "fcc/Mapper/Mapper.h"
+#include "fcc/Mapper/MapperRelaxedRouting.h"
 #include "MapperCongestionEstimator.h"
 #include "MapperInternal.h"
 #include "MapperRoutingCongestion.h"
@@ -837,6 +838,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   activeCongestionPlacementWeight = opts.congestionPlacementWeight;
   activeMemorySharingPenalty = opts.memorySharingPenalty;
   activeUnroutedDiagnosticLimit = opts.lane.unroutedDiagnosticLimit;
+  activeRelaxedRoutingOpts_ = opts.relaxedRouting;
   activeSnapshotEmitter_ = nullptr;
   if (snapshotCallback_ &&
       (opts.snapshotIntervalSeconds > 0.0 || opts.snapshotIntervalRounds > 0)) {
@@ -1330,6 +1332,20 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
                    " fans out to multiple next hops (" +
                    std::to_string(it->second) + " and " +
                    std::to_string(firstHopInputId) + ")\n";
+    valid = false;
+  }
+
+  for (IdIndex outPortId = 0; outPortId < static_cast<IdIndex>(adg.ports.size());
+       ++outPortId) {
+    if (!isRelaxableRoutingOutput(outPortId, adg))
+      continue;
+    unsigned distinctSources =
+        countDistinctLogicalSourcesForOutput(outPortId, state);
+    if (distinctSources <= 1)
+      continue;
+    diagnostics += "C4: non-tagged routing output overuse on hw_port " +
+                   std::to_string(outPortId) + " with " +
+                   std::to_string(distinctSources) + " logical sources\n";
     valid = false;
   }
 

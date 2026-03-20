@@ -19,6 +19,7 @@ add_library(FccMapper STATIC
   MapperLocalRepairEndgame.cpp
   MapperCPSat.cpp
   MapperCongestionEstimator.cpp
+  MapperRelaxedRouting.cpp
   MapperRouting.cpp
   MapperRoutingCongestion.cpp
   MapperRoutingStrategy.cpp

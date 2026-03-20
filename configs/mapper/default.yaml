@@ -178,6 +178,23 @@ mapper:
     # iterations. 0 disables early termination.
     early_termination_window: 3
 
+  relaxed_routing:
+    # Allow negotiated routing to temporarily overuse non-tagged switch-owned
+    # routing outputs, then legalize them before a checkpoint may be accepted.
+    enabled: true
+    # Maximum number of strict legalization passes after one relaxed negotiated
+    # routing iteration.
+    legalization_passes: 2
+    # Base additive cost applied when a path reuses a non-tagged routing output
+    # already claimed by another logical source.
+    base_overuse_penalty: 3.0
+    # Multiplicative growth applied as more distinct logical sources compete
+    # for the same non-tagged routing output.
+    repeated_overuse_scale: 1.75
+    # If a relaxed iteration leaves more than this many overused routing
+    # outputs before legalization, reject the checkpoint outright.
+    reject_checkpoint_overuse_cap: 256
+
   cpsat_tuning:
     # Scale used when converting floating placement weights into integer CP-SAT costs.
     placement_cost_scale: 100.0

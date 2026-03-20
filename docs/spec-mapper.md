@@ -52,6 +52,10 @@ More specifically:
 - negotiated routing may use both per-iteration historical congestion and
   per-pass present-demand feedback while edges are routed, plus bounded
   decay and early-stop heuristics to avoid late-iteration overfitting
+- when explicitly enabled in mapper config, negotiated routing may also use a
+  temporary relaxed-overuse mode for non-tagged switch-owned routing outputs;
+  this intermediate state must always be followed by legalization before a
+  checkpoint may be accepted as the current best mapping
 - repair may include targeted local re-placement, exact routing repair, or
   bounded CP-SAT neighborhood repair
 - the default implementation may explore multiple parallel mapper lanes with
