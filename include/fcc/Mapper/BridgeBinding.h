@@ -56,6 +56,21 @@ struct BridgeLaneRange {
   unsigned end = 0;
 };
 
+struct BridgeLaneUsage {
+  unsigned base = 0;
+  bool usesLoadFamily = false;
+  unsigned loadStart = 0;
+  unsigned loadEnd = 0;
+  bool usesStoreFamily = false;
+  unsigned storeStart = 0;
+  unsigned storeEnd = 0;
+};
+
+BridgeLaneUsage computeBridgeLaneUsage(const DfgMemoryInfo &mem,
+                                       unsigned baseLane);
+bool bridgeLaneUsageConflicts(const BridgeLaneUsage &lhs,
+                              const BridgeLaneUsage &rhs);
+
 bool isBridgeCompatible(const BridgeInfo &bridge, const DfgMemoryInfo &mem,
                         const Node *swNode, const Node *hwNode,
                         const Graph &dfg, const Graph &adg);

@@ -48,6 +48,11 @@ mapper:
   congestion_present_factor: 1.0
   # Placement penalty weight derived from congestion estimation.
   congestion_placement_weight: 0.3
+  # Penalty applied when a software memory interface is placed onto a hardware
+  # memory node that already hosts another software memory. This keeps
+  # multi-region sharing available as a fallback, but prefers spreading across
+  # distinct compatible memory engines first.
+  memory_sharing_penalty: 8.0
 
   refinement:
     # Initial SA temperature for detailed placement refinement.
@@ -68,6 +73,9 @@ mapper:
     auto_serial_node_threshold: 16
     # Upper bound for auto-selected lane count.
     auto_lane_cap: 4
+    # Fraction of the total mapper budget reserved for a final polish pass on
+    # the selected winner lane after multi-lane exploration completes.
+    final_polish_reserve_fraction: 0.15
     # Seed stride between speculative parallel lanes.
     lane_seed_stride: 7919
     # Seed stride for interleaved round restart refinement.
@@ -295,7 +303,7 @@ mapper:
     # Penalty used in repairability scoring when no free-space route exists.
     free_path_missing_penalty: 1000
     # Minimum node count for the exact memory-response cluster heuristic.
-    memory_response_cluster_min: 4
+    memory_response_cluster_min: 3
     # Maximum node count for the exact memory-response cluster heuristic.
     memory_response_cluster_max: 6
     # Search-space cap for exact memory-response cluster enumeration.
@@ -319,13 +327,13 @@ mapper:
     # Failed-edge threshold for reserved-target exact repair.
     target_focused_failed_edge_threshold: 3
     # Maximum number of target edges in the reserved-target exact solver.
-    focused_target_edge_threshold: 2
+    focused_target_edge_threshold: 3
     # Maximum blocker-edge count in the reserved-target exact solver.
-    focused_blocker_edge_threshold: 8
+    focused_blocker_edge_threshold: 12
     # Maximum number of memory-interface nodes in the exact memory neighborhood.
     memory_focus_node_limit: 4
     # Minimum CP-SAT time limit for the reserved-target exact solver.
-    focused_target_min_time: 1.0
+    focused_target_min_time: 2.0
     # Failed-edge threshold for recursive residual repair.
     residual_repair_failed_edge_threshold: 6
     # Failed-edge threshold for residual joint-cycle repair.

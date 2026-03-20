@@ -195,6 +195,7 @@ private:
   double activeHeuristicWeight = 1.5;
   CongestionEstimator *activeCongestionEstimator = nullptr;
   double activeCongestionPlacementWeight = 0.0;
+  double activeMemorySharingPenalty = 0.0;
   unsigned activeUnroutedDiagnosticLimit = 8;
   SnapshotCallback snapshotCallback_;
   std::function<void(const MappingState &, llvm::ArrayRef<TechMappedEdgeKind>,

@@ -214,11 +214,11 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
   cl::ParseCommandLineOptions(argc, argv, "fcc - fabric compiler\n");
 
   args.sources.assign(inputSources.begin(), inputSources.end());
-  args.outputDir = outputDir;
+  args.outputDir = outputDir.getValue();
   args.includePaths.assign(includePaths.begin(), includePaths.end());
-  args.adgPath = adgPath;
-  args.dfgPath = dfgPathOpt;
-  args.mapJsonPath = mapJsonPathOpt;
+  args.adgPath = adgPath.getValue();
+  args.dfgPath = dfgPathOpt.getValue();
+  args.mapJsonPath = mapJsonPathOpt.getValue();
   args.vizOnly = vizOnlyOpt;
   if (vizLayoutOpt == "default")
     args.vizLayout = VizLayoutMode::Default;
@@ -229,19 +229,19 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
     return false;
   }
   args.simulate = simulate;
-  args.simBundlePath = simBundlePath;
+  args.simBundlePath = simBundlePath.getValue();
   args.simMaxCycles = simMaxCycles;
-  args.runtimeManifestPath = runtimeManifestPath;
-  args.runtimeRequestPath = runtimeRequestPath;
-  args.runtimeResultPath = runtimeResultPath;
-  args.runtimeTracePath = runtimeTracePath;
-  args.runtimeStatPath = runtimeStatPath;
+  args.runtimeManifestPath = runtimeManifestPath.getValue();
+  args.runtimeRequestPath = runtimeRequestPath.getValue();
+  args.runtimeResultPath = runtimeResultPath.getValue();
+  args.runtimeTracePath = runtimeTracePath.getValue();
+  args.runtimeStatPath = runtimeStatPath.getValue();
 
-  args.mapperBaseConfigPath = mapperBaseConfigPathOpt;
-  args.mapperResolvedBaseConfigPath =
-      mapperBaseConfigPathOpt.getNumOccurrences() > 0
-          ? mapperBaseConfigPathOpt
-          : getDefaultMapperBaseConfigPath();
+  args.mapperBaseConfigPath = mapperBaseConfigPathOpt.getValue();
+  if (mapperBaseConfigPathOpt.getNumOccurrences() > 0)
+    args.mapperResolvedBaseConfigPath = mapperBaseConfigPathOpt.getValue();
+  else
+    args.mapperResolvedBaseConfigPath = getDefaultMapperBaseConfigPath();
   if (args.mapperResolvedBaseConfigPath.empty()) {
     errs() << "fcc: no default mapper base config path is available\n";
     return false;
@@ -352,23 +352,19 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
 
   // Derive base name
   if (!args.sources.empty()) {
-    StringRef stem = sys::path::stem(args.sources[0]);
-    args.baseName = stem.str();
+    args.baseName = sys::path::stem(args.sources[0]).str();
   } else if (!args.runtimeManifestPath.empty()) {
-    StringRef stem = sys::path::stem(args.runtimeManifestPath);
-    if (stem.ends_with(".runtime"))
-      stem = stem.drop_back(8);
-    args.baseName = stem.str();
+    args.baseName = sys::path::stem(args.runtimeManifestPath).str();
+    if (StringRef(args.baseName).ends_with(".runtime"))
+      args.baseName.resize(args.baseName.size() - 8);
   } else if (!args.dfgPath.empty()) {
-    StringRef stem = sys::path::stem(args.dfgPath);
-    if (stem.ends_with(".dfg"))
-      stem = stem.drop_back(4);
-    args.baseName = stem.str();
+    args.baseName = sys::path::stem(args.dfgPath).str();
+    if (StringRef(args.baseName).ends_with(".dfg"))
+      args.baseName.resize(args.baseName.size() - 4);
   } else if (!args.adgPath.empty()) {
-    StringRef stem = sys::path::stem(args.adgPath);
-    if (stem.ends_with(".fabric"))
-      stem = stem.drop_back(7);
-    args.baseName = stem.str();
+    args.baseName = sys::path::stem(args.adgPath).str();
+    if (StringRef(args.baseName).ends_with(".fabric"))
+      args.baseName.resize(args.baseName.size() - 7);
   }
 
   // Ensure output directory exists

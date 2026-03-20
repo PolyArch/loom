@@ -889,31 +889,34 @@ MemoryHandle ADGBuilder::defineMemory(const std::string &name,
                                       unsigned ldPorts, unsigned stPorts,
                                       unsigned lsqDepth,
                                       const std::string &memrefType,
+                                      unsigned numRegion,
                                       bool isPrivate) {
   unsigned id = impl_->memoryDefs.size();
   impl_->memoryDefs.push_back(
-      {name, ldPorts, stPorts, lsqDepth, memrefType, isPrivate});
+      {name, ldPorts, stPorts, lsqDepth, memrefType, numRegion, isPrivate});
   return {id};
 }
 
 MemoryHandle ADGBuilder::defineMemory(const MemorySpec &spec) {
   return defineMemory(spec.name, spec.ldPorts, spec.stPorts, spec.lsqDepth,
-                      spec.memrefType, spec.isPrivate);
+                      spec.memrefType, spec.numRegion, spec.isPrivate);
 }
 
 ExtMemHandle ADGBuilder::defineExtMemory(const std::string &name,
                                          unsigned ldPorts, unsigned stPorts,
-                                         unsigned lsqDepth) {
+                                         unsigned lsqDepth,
+                                         unsigned numRegion) {
   unsigned id = impl_->extMemDefs.size();
   impl_->extMemDefs.push_back(
-      {name, ldPorts, stPorts, lsqDepth, "memref<?xi32>"});
+      {name, ldPorts, stPorts, lsqDepth, "memref<?xi32>", numRegion});
   return {id};
 }
 
 ExtMemHandle ADGBuilder::defineExtMemory(const ExtMemorySpec &spec) {
   unsigned id = impl_->extMemDefs.size();
   impl_->extMemDefs.push_back(
-      {spec.name, spec.ldPorts, spec.stPorts, spec.lsqDepth, spec.memrefType});
+      {spec.name, spec.ldPorts, spec.stPorts, spec.lsqDepth, spec.memrefType,
+       spec.numRegion});
   return {id};
 }
 

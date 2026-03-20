@@ -38,6 +38,8 @@ template <> struct MappingTraits<fcc::MapperLaneOptions> {
   static void mapping(IO &io, fcc::MapperLaneOptions &opts) {
     io.mapOptional("auto_serial_node_threshold", opts.autoSerialNodeThreshold);
     io.mapOptional("auto_lane_cap", opts.autoLaneCap);
+    io.mapOptional("final_polish_reserve_fraction",
+                   opts.finalPolishReserveFraction);
     io.mapOptional("lane_seed_stride", opts.laneSeedStride);
     io.mapOptional("restart_seed_stride", opts.restartSeedStride);
     io.mapOptional("restart_move_radius_step", opts.restartMoveRadiusStep);
@@ -295,6 +297,7 @@ template <> struct MappingTraits<fcc::MapperOptions> {
     io.mapOptional("congestion_present_factor", opts.congestionPresentFactor);
     io.mapOptional("congestion_placement_weight",
                    opts.congestionPlacementWeight);
+    io.mapOptional("memory_sharing_penalty", opts.memorySharingPenalty);
     io.mapOptional("refinement", opts.refinement);
     io.mapOptional("lane", opts.lane);
     io.mapOptional("routing", opts.routing);

@@ -90,7 +90,9 @@ bool validateMapperOptions(const MapperOptions &opts, std::string &error) {
       !requirePositiveDouble(opts.congestionPresentFactor,
                              "congestion_present_factor", error) ||
       !requireNonNegativeDouble(opts.congestionPlacementWeight,
-                                "congestion_placement_weight", error)) {
+                                "congestion_placement_weight", error) ||
+      !requireNonNegativeDouble(opts.memorySharingPenalty,
+                                "memory_sharing_penalty", error)) {
     return false;
   }
   if (opts.snapshotIntervalSeconds > 0.0 && opts.snapshotIntervalRounds > 0) {
@@ -123,6 +125,8 @@ bool validateMapperOptions(const MapperOptions &opts, std::string &error) {
                                "lane.auto_serial_node_threshold", error) ||
       !requirePositiveUnsigned(opts.lane.autoLaneCap, "lane.auto_lane_cap",
                                error) ||
+      !requireNonNegativeDouble(opts.lane.finalPolishReserveFraction,
+                                "lane.final_polish_reserve_fraction", error) ||
       !requirePositiveUnsigned(opts.lane.laneSeedStride,
                                "lane.lane_seed_stride", error) ||
       !requirePositiveUnsigned(opts.lane.restartSeedStride,
@@ -142,6 +146,10 @@ bool validateMapperOptions(const MapperOptions &opts, std::string &error) {
                                "lane.boundary_neighborhood_cap", error) ||
       !requirePositiveUnsigned(opts.lane.unroutedDiagnosticLimit,
                                "lane.unrouted_diagnostic_limit", error)) {
+    return false;
+  }
+  if (opts.lane.finalPolishReserveFraction >= 1.0) {
+    error = "lane.final_polish_reserve_fraction must be < 1";
     return false;
   }
 

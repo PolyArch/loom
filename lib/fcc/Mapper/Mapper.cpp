@@ -835,6 +835,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   activeFlattener = &flattener;
   activeHeuristicWeight = opts.routingHeuristicWeight;
   activeCongestionPlacementWeight = opts.congestionPlacementWeight;
+  activeMemorySharingPenalty = opts.memorySharingPenalty;
   activeUnroutedDiagnosticLimit = opts.lane.unroutedDiagnosticLimit;
   activeSnapshotEmitter_ = nullptr;
   if (snapshotCallback_ &&
@@ -926,6 +927,14 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     laneOpts.seed =
         opts.seed + static_cast<int>(laneIndex * opts.lane.laneSeedStride);
     laneOpts.verbose = (laneCount == 1) ? opts.verbose : false;
+    if (laneOpts.budgetSeconds > 0.0 &&
+        laneOpts.lane.finalPolishReserveFraction > 0.0) {
+      double laneBudgetSeconds =
+          laneOpts.budgetSeconds *
+          std::max(0.0, 1.0 - laneOpts.lane.finalPolishReserveFraction);
+      laneOpts.budgetSeconds = std::max(1.0, laneBudgetSeconds);
+      laneMapper.resetRunControls(laneOpts);
+    }
     const bool preferCPSatGlobal =
         laneOpts.enableCPSat && (laneCount == 1 || laneIndex == 0);
     if (preferCPSatGlobal) {
@@ -1050,13 +1059,55 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   contractedState = bestIt->state;
   auto contractedEdgeKinds = bestIt->edgeKinds;
   bool routingSucceeded = bestIt->routingSucceeded;
-  activeBudgetExceeded_ = bestIt->budgetExceeded;
-  activeBudgetExceededStage_ = bestIt->budgetExceededStage;
+  bool selectedBudgetExceeded = bestIt->budgetExceeded;
+  std::string selectedBudgetExceededStage = bestIt->budgetExceededStage;
   if (opts.verbose && laneCount > 1) {
     llvm::outs() << "Mapper: selected lane " << bestIt->laneIndex
                  << " (routed overall " << bestIt->routedEdges << "/"
                  << techPlan.contractedDFG.edges.size() << ")\n";
   }
+
+  if (!routingSucceeded && remainingBudgetSeconds() > 1.0) {
+    auto polishFailed =
+        collectUnroutedEdges(contractedState, techPlan.contractedDFG,
+                             contractedEdgeKinds);
+    if (!polishFailed.empty() &&
+        polishFailed.size() <= opts.localRepair.cpSatFallbackFailedEdgeThreshold) {
+      if (opts.verbose)
+        llvm::outs() << "Mapper: final polish on selected lane...\n";
+
+      auto routedCheckpoint = contractedState.save();
+      contractedState.clearRoutes(adg);
+      auto placementCheckpoint = contractedState.save();
+      contractedState.restore(routedCheckpoint);
+
+      Options polishOpts = opts;
+      polishOpts.verbose = opts.verbose;
+      polishOpts.cpSatTimeLimitSeconds =
+          std::max(polishOpts.cpSatTimeLimitSeconds,
+                   std::min(remainingBudgetSeconds(), 6.0));
+      polishOpts.localRepair.focusedTargetMinTime =
+          std::max(polishOpts.localRepair.focusedTargetMinTime,
+                   std::min(remainingBudgetSeconds(), 4.0));
+
+      activeBudgetExceeded_ = false;
+      activeBudgetExceededStage_.clear();
+      bool polishAllRouted =
+          runLocalRepair(contractedState, placementCheckpoint, polishFailed,
+                         techPlan.contractedDFG, adg, flattener, candidates,
+                         contractedEdgeKinds, polishOpts);
+      unsigned polishedRouted = countRoutedEdges(contractedState,
+                                                 techPlan.contractedDFG,
+                                                 contractedEdgeKinds);
+      if (polishAllRouted || polishedRouted > bestIt->routedEdges)
+        routingSucceeded = polishAllRouted;
+      selectedBudgetExceeded = activeBudgetExceeded_;
+      selectedBudgetExceededStage = activeBudgetExceededStage_;
+    }
+  }
+
+  activeBudgetExceeded_ = selectedBudgetExceeded;
+  activeBudgetExceededStage_ = selectedBudgetExceededStage;
   if (!routingSucceeded) {
     result.diagnostics = activeBudgetExceeded_
                              ? ("Mapper budget exceeded" +
@@ -1301,7 +1352,7 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
       continue;
 
     bool isExtMem = (getNodeAttrStr(hwNode, "op_kind") == "extmemory");
-    llvm::SmallVector<BridgeLaneRange, 4> usedLaneRanges;
+    llvm::SmallVector<std::pair<IdIndex, BridgeLaneUsage>, 4> usedLaneUsages;
     for (IdIndex swId : state.hwNodeToSwNodes[hwId]) {
       const Node *swNode = dfg.getNode(swId);
       if (!swNode)
@@ -1315,18 +1366,19 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
         valid = false;
         continue;
       }
-      for (const auto &usedRange : usedLaneRanges) {
-        if (laneRange->start < usedRange.end &&
-            usedRange.start < laneRange->end) {
-          diagnostics += "C4: overlapping bridge lane range [" +
-                         std::to_string(laneRange->start) + ", " +
-                         std::to_string(laneRange->end) + ") on hw_node " +
-                         std::to_string(hwId) + "\n";
+      BridgeLaneUsage laneUsage =
+          computeBridgeLaneUsage(memInfo, laneRange->start);
+      for (const auto &usedEntry : usedLaneUsages) {
+        if (!bridgeLaneUsageConflicts(laneUsage, usedEntry.second))
+          continue;
+        diagnostics += "C4: conflicting bridge family lanes on hw_node " +
+                       std::to_string(hwId) + " between sw_node " +
+                       std::to_string(swId) + " and sw_node " +
+                       std::to_string(usedEntry.first) + "\n";
           valid = false;
           break;
-        }
       }
-      usedLaneRanges.push_back(*laneRange);
+      usedLaneUsages.push_back({swId, laneUsage});
     }
   }
 

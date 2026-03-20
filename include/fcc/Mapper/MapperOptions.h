@@ -17,6 +17,7 @@ struct MapperRefinementOptions {
 struct MapperLaneOptions {
   unsigned autoSerialNodeThreshold = 16;
   unsigned autoLaneCap = 4;
+  double finalPolishReserveFraction = 0.15;
   unsigned laneSeedStride = 7919;
   unsigned restartSeedStride = 104729;
   unsigned restartMoveRadiusStep = 2;
@@ -143,7 +144,7 @@ struct MapperLocalRepairOptions {
   unsigned cpSatMediumFailedNodeLimit = 8;
   unsigned repairNegotiatedRoutingPassCap = 4;
   unsigned freePathMissingPenalty = 1000;
-  unsigned memoryResponseClusterMin = 4;
+  unsigned memoryResponseClusterMin = 3;
   unsigned memoryResponseClusterMax = 6;
   unsigned exactDomainSearchSpaceCap = 1296;
   unsigned memoryExactDomainSearchSpaceCap = 1024;
@@ -155,10 +156,10 @@ struct MapperLocalRepairOptions {
   unsigned cpSatFallbackFailedEdgeThreshold = 8;
   unsigned cpSatEscalationFailedEdgeThreshold = 6;
   unsigned targetFocusedFailedEdgeThreshold = 3;
-  unsigned focusedTargetEdgeThreshold = 2;
-  unsigned focusedBlockerEdgeThreshold = 8;
+  unsigned focusedTargetEdgeThreshold = 3;
+  unsigned focusedBlockerEdgeThreshold = 12;
   unsigned memoryFocusNodeLimit = 4;
-  double focusedTargetMinTime = 1.0;
+  double focusedTargetMinTime = 2.0;
   unsigned residualRepairFailedEdgeThreshold = 6;
   unsigned residualJointRepairFailedEdgeThreshold = 2;
   unsigned cycleEdgeClusterMin = 3;
@@ -191,6 +192,7 @@ struct MapperOptions {
   double congestionHistoryScale = 1.5;
   double congestionPresentFactor = 1.0;
   double congestionPlacementWeight = 0.3;
+  double memorySharingPenalty = 8.0;
 
   MapperRefinementOptions refinement;
   MapperLaneOptions lane;

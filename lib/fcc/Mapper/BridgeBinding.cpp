@@ -83,6 +83,34 @@ bool rangesOverlap(unsigned lhsStart, unsigned lhsEnd, unsigned rhsStart,
   return lhsStart < rhsEnd && rhsStart < lhsEnd;
 }
 
+BridgeLaneUsage makeBridgeLaneUsage(const DfgMemoryInfo &mem,
+                                    unsigned baseLane) {
+  BridgeLaneUsage usage;
+  usage.base = baseLane;
+  usage.usesLoadFamily = mem.ldCount > 0;
+  usage.loadStart = baseLane;
+  usage.loadEnd =
+      baseLane + static_cast<unsigned>(std::max<int64_t>(mem.ldCount, 0));
+  usage.usesStoreFamily = mem.stCount > 0;
+  usage.storeStart = baseLane;
+  usage.storeEnd =
+      baseLane + static_cast<unsigned>(std::max<int64_t>(mem.stCount, 0));
+  return usage;
+}
+
+bool laneUsageConflicts(const BridgeLaneUsage &lhs, const BridgeLaneUsage &rhs) {
+  if (lhs.usesLoadFamily && rhs.usesLoadFamily &&
+      rangesOverlap(lhs.loadStart, lhs.loadEnd, rhs.loadStart, rhs.loadEnd)) {
+    return true;
+  }
+  if (lhs.usesStoreFamily && rhs.usesStoreFamily &&
+      rangesOverlap(lhs.storeStart, lhs.storeEnd, rhs.storeStart,
+                    rhs.storeEnd)) {
+    return true;
+  }
+  return false;
+}
+
 std::optional<IdIndex> findCompatibleBridgePort(
     llvm::ArrayRef<IdIndex> ports,
     llvm::ArrayRef<BridgePortCategory> categories,
@@ -190,7 +218,9 @@ bool overlapsExistingLaneRanges(const BridgeInfo &bridge, const DfgMemoryInfo &m
   if (hwNodeId == INVALID_ID || hwNodeId >= state.hwNodeToSwNodes.size())
     return false;
 
+  BridgeLaneUsage candidateUsage = makeBridgeLaneUsage(mem, baseLane);
   unsigned endLane = baseLane + mem.laneSpan();
+  (void)endLane;
   for (IdIndex otherSwId : state.hwNodeToSwNodes[hwNodeId]) {
     const Node *otherSwNode = dfg.getNode(otherSwId);
     if (!otherSwNode || otherSwNode == swNode)
@@ -202,7 +232,8 @@ bool overlapsExistingLaneRanges(const BridgeInfo &bridge, const DfgMemoryInfo &m
     auto otherRange = inferBridgeLaneRange(bridge, otherMem, otherSwNode, state);
     if (!otherRange)
       continue;
-    if (rangesOverlap(baseLane, endLane, otherRange->start, otherRange->end))
+    BridgeLaneUsage otherUsage = makeBridgeLaneUsage(otherMem, otherRange->start);
+    if (laneUsageConflicts(candidateUsage, otherUsage))
       return true;
   }
   return false;
@@ -254,6 +285,16 @@ std::optional<unsigned> chooseBridgeBaseLane(const BridgeInfo &bridge,
 }
 
 } // namespace
+
+BridgeLaneUsage computeBridgeLaneUsage(const DfgMemoryInfo &mem,
+                                       unsigned baseLane) {
+  return makeBridgeLaneUsage(mem, baseLane);
+}
+
+bool bridgeLaneUsageConflicts(const BridgeLaneUsage &lhs,
+                              const BridgeLaneUsage &rhs) {
+  return laneUsageConflicts(lhs, rhs);
+}
 
 BridgeInfo BridgeInfo::extract(const Node *hwNode) {
   BridgeInfo info;

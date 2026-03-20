@@ -1630,7 +1630,7 @@ bool Mapper::runLocalRepair(
           dstNode->kind != Node::OperationNode)
         continue;
       if (!isSoftwareMemoryInterfaceOp(getNodeAttrStr(srcNode, "op_name")) ||
-          getNodeAttrStr(dstNode, "op_name") != "handshake.load") {
+          isSoftwareMemoryInterfaceOp(getNodeAttrStr(dstNode, "op_name"))) {
         continue;
       }
 
@@ -1677,6 +1677,35 @@ bool Mapper::runLocalRepair(
       addIncidentOpNeighbors(dstNode, dstPort->parentNode);
     }
 
+    if (!memoryResponseCluster.empty()) {
+      std::vector<IdIndex> allMemoryNodes;
+      for (IdIndex swNodeId = 0; swNodeId < static_cast<IdIndex>(dfg.nodes.size());
+           ++swNodeId) {
+        if (swNodeId >= state.swNodeToHwNode.size() ||
+            state.swNodeToHwNode[swNodeId] == INVALID_ID)
+          continue;
+        const Node *swNode = dfg.getNode(swNodeId);
+        if (!swNode || swNode->kind != Node::OperationNode)
+          continue;
+        if (!isSoftwareMemoryInterfaceOp(getNodeAttrStr(swNode, "op_name")))
+          continue;
+        allMemoryNodes.push_back(swNodeId);
+      }
+      unsigned additionalMemoryNodes = 0;
+      for (IdIndex swNodeId : allMemoryNodes) {
+        if (!clusterNodeSet.contains(swNodeId))
+          ++additionalMemoryNodes;
+      }
+      if (allMemoryNodes.size() <= repairOpts.memoryFocusNodeLimit &&
+          memoryResponseCluster.size() + additionalMemoryNodes <=
+              repairOpts.memoryResponseClusterMax) {
+        for (IdIndex swNodeId : allMemoryNodes) {
+          if (clusterNodeSet.insert(swNodeId).second)
+            memoryResponseCluster.push_back(swNodeId);
+        }
+      }
+    }
+
     if (memoryResponseCluster.size() >= repairOpts.memoryResponseClusterMin &&
         memoryResponseCluster.size() <= repairOpts.memoryResponseClusterMax) {
       state.restore(bestPlacementCheckpoint);
@@ -1706,7 +1735,7 @@ bool Mapper::runLocalRepair(
 
         llvm::StringRef opName = getNodeAttrStr(dfg.getNode(swNode), "op_name");
         const unsigned candidateLimit =
-            isSoftwareMemoryInterfaceOp(opName) ? 3u : 4u;
+            isSoftwareMemoryInterfaceOp(opName) ? 3u : 5u;
         const unsigned moveRadius =
             isSoftwareMemoryInterfaceOp(opName) ? 0u : 5u;
 
@@ -1755,9 +1784,24 @@ bool Mapper::runLocalRepair(
             std::chrono::milliseconds(static_cast<int64_t>(std::max(
                 1.0, clampDeadlineMsToRemainingBudget(8000.0))));
         bool stopExactSearch = false;
+        llvm::DenseSet<IdIndex> distinctMemoryCandidates;
+        unsigned memoryNodeCount = 0;
+        for (IdIndex swNode : memoryResponseCluster) {
+          const Node *node = dfg.getNode(swNode);
+          if (!node || !isSoftwareMemoryInterfaceOp(getNodeAttrStr(node, "op_name")))
+            continue;
+          ++memoryNodeCount;
+          for (IdIndex candHw : exactDomains.lookup(swNode))
+            distinctMemoryCandidates.insert(candHw);
+        }
+        const bool preferDistinctMemoryAssignments =
+            memoryNodeCount >= 2 &&
+            distinctMemoryCandidates.size() >= memoryNodeCount;
+        llvm::DenseSet<IdIndex> usedDistinctMemoryHws;
 
-        std::function<void(unsigned)> enumerateMemoryResponseCluster;
-        enumerateMemoryResponseCluster = [&](unsigned depth) {
+        std::function<void(unsigned, bool)> enumerateMemoryResponseCluster;
+        enumerateMemoryResponseCluster = [&](unsigned depth,
+                                            bool enforceDistinctMemory) {
           if (stopExactSearch || shouldStopForBudget("local repair") ||
               std::chrono::steady_clock::now() > exactDeadline)
             return;
@@ -1766,33 +1810,59 @@ bool Mapper::runLocalRepair(
             bindMemrefSentinels(state, dfg, adg);
             classifyTemporalRegisterEdges(state, dfg, adg, flattener,
                                           edgeKinds);
-            bool allRouted = runExactRoutingRepair(state, bestFailedEdges, dfg,
-                                                   adg, flattener, edgeKinds,
-                                                   repairRoutingOpts,
-                                                   congestion);
+            auto responseRepairEdges = buildFocusedRepairNeighborhood(
+                bestFailedEdges, repairOpts.earlyCPSatNeighborhoodLimit);
+            if (responseRepairEdges.size() < bestFailedEdges.size()) {
+              responseRepairEdges.assign(bestFailedEdges.begin(),
+                                         bestFailedEdges.end());
+            }
+            bool allRouted = runExactRoutingRepair(
+                state, responseRepairEdges, dfg, adg, flattener, edgeKinds,
+                repairRoutingOpts, congestion, bestFailedEdges);
             if (updateBest(allRouted) && allRouted)
               stopExactSearch = true;
             return;
           }
 
           IdIndex swNode = memoryResponseCluster[depth];
+          const Node *swNodeDef = dfg.getNode(swNode);
+          const bool isMemoryNode =
+              swNodeDef &&
+              isSoftwareMemoryInterfaceOp(getNodeAttrStr(swNodeDef, "op_name"));
           auto checkpoint = state.save();
           for (IdIndex candHw : exactDomains.lookup(swNode)) {
+            if (enforceDistinctMemory && isMemoryNode &&
+                usedDistinctMemoryHws.contains(candHw)) {
+              continue;
+            }
             state.restore(checkpoint);
+            if (enforceDistinctMemory && isMemoryNode)
+              usedDistinctMemoryHws.insert(candHw);
             if (state.mapNode(swNode, candHw, dfg, adg) !=
                 ActionResult::Success) {
+              if (enforceDistinctMemory && isMemoryNode)
+                usedDistinctMemoryHws.erase(candHw);
               continue;
             }
             if (!bindMappedNodePorts(swNode, state, dfg, adg))
+            {
+              if (enforceDistinctMemory && isMemoryNode)
+                usedDistinctMemoryHws.erase(candHw);
               continue;
-            enumerateMemoryResponseCluster(depth + 1);
+            }
+            enumerateMemoryResponseCluster(depth + 1, enforceDistinctMemory);
+            if (enforceDistinctMemory && isMemoryNode)
+              usedDistinctMemoryHws.erase(candHw);
             if (stopExactSearch)
               return;
           }
           state.restore(checkpoint);
         };
 
-        enumerateMemoryResponseCluster(0);
+        if (preferDistinctMemoryAssignments)
+          enumerateMemoryResponseCluster(0, true);
+        if (!stopExactSearch)
+          enumerateMemoryResponseCluster(0, false);
         llvm::outs() << "  Exact memory-response cluster result: routed "
                      << bestRouted << "/" << dfg.edges.size() << " edges\n";
         if (bestAllRouted) {
@@ -1824,6 +1894,33 @@ bool Mapper::runLocalRepair(
         return;
       memoryFocusNodes.push_back(swNodeId);
     };
+    auto expandToAllSoftwareMemoryNodes = [&](std::vector<IdIndex> &nodes,
+                                              llvm::DenseSet<IdIndex> &seen) {
+      if (nodes.empty())
+        return;
+      std::vector<IdIndex> allMemoryNodes;
+      allMemoryNodes.reserve(nodes.size());
+      for (IdIndex swNodeId = 0; swNodeId < static_cast<IdIndex>(dfg.nodes.size());
+           ++swNodeId) {
+        if (swNodeId >= state.swNodeToHwNode.size() ||
+            state.swNodeToHwNode[swNodeId] == INVALID_ID)
+          continue;
+        const Node *swNode = dfg.getNode(swNodeId);
+        if (!swNode || swNode->kind != Node::OperationNode)
+          continue;
+        if (!isSoftwareMemoryInterfaceOp(getNodeAttrStr(swNode, "op_name")))
+          continue;
+        allMemoryNodes.push_back(swNodeId);
+      }
+      if (allMemoryNodes.size() > repairOpts.memoryFocusNodeLimit)
+        return;
+      nodes.clear();
+      seen.clear();
+      for (IdIndex swNodeId : allMemoryNodes) {
+        nodes.push_back(swNodeId);
+        seen.insert(swNodeId);
+      }
+    };
     for (IdIndex edgeId : bestFailedEdges) {
       const Edge *edge = dfg.getEdge(edgeId);
       if (!edge)
@@ -1837,6 +1934,7 @@ bool Mapper::runLocalRepair(
                              ? dstPort->parentNode
                              : INVALID_ID);
     }
+    expandToAllSoftwareMemoryNodes(memoryFocusNodes, seenMemoryNodes);
 
     if (!memoryFocusNodes.empty() &&
         memoryFocusNodes.size() <= repairOpts.memoryFocusNodeLimit) {
@@ -1899,9 +1997,24 @@ bool Mapper::runLocalRepair(
             std::chrono::milliseconds(static_cast<int64_t>(std::max(
                 1.0, clampDeadlineMsToRemainingBudget(6000.0))));
         bool stopExactSearch = false;
+        llvm::DenseSet<IdIndex> distinctMemoryCandidates;
+        unsigned memoryNodeCount = 0;
+        for (IdIndex swNode : memoryFocusNodes) {
+          const Node *node = dfg.getNode(swNode);
+          if (!node || !isSoftwareMemoryInterfaceOp(getNodeAttrStr(node, "op_name")))
+            continue;
+          ++memoryNodeCount;
+          for (IdIndex candHw : exactDomains.lookup(swNode))
+            distinctMemoryCandidates.insert(candHw);
+        }
+        const bool preferDistinctMemoryAssignments =
+            memoryNodeCount >= 2 &&
+            distinctMemoryCandidates.size() >= memoryNodeCount;
+        llvm::DenseSet<IdIndex> usedDistinctMemoryHws;
 
-        std::function<void(unsigned)> enumerateMemoryNeighborhood;
-        enumerateMemoryNeighborhood = [&](unsigned depth) {
+        std::function<void(unsigned, bool)> enumerateMemoryNeighborhood;
+        enumerateMemoryNeighborhood = [&](unsigned depth,
+                                         bool enforceDistinctMemory) {
           if (stopExactSearch || shouldStopForBudget("local repair") ||
               std::chrono::steady_clock::now() > exactDeadline)
             return;
@@ -1917,23 +2030,44 @@ bool Mapper::runLocalRepair(
           }
 
           IdIndex swNode = memoryFocusNodes[depth];
+          const Node *swNodeDef = dfg.getNode(swNode);
+          const bool isMemoryNode =
+              swNodeDef &&
+              isSoftwareMemoryInterfaceOp(getNodeAttrStr(swNodeDef, "op_name"));
           auto checkpoint = state.save();
           for (IdIndex candHw : exactDomains.lookup(swNode)) {
+            if (enforceDistinctMemory && isMemoryNode &&
+                usedDistinctMemoryHws.contains(candHw)) {
+              continue;
+            }
             state.restore(checkpoint);
+            if (enforceDistinctMemory && isMemoryNode)
+              usedDistinctMemoryHws.insert(candHw);
             if (state.mapNode(swNode, candHw, dfg, adg) !=
                 ActionResult::Success) {
+              if (enforceDistinctMemory && isMemoryNode)
+                usedDistinctMemoryHws.erase(candHw);
               continue;
             }
             if (!bindMappedNodePorts(swNode, state, dfg, adg))
+            {
+              if (enforceDistinctMemory && isMemoryNode)
+                usedDistinctMemoryHws.erase(candHw);
               continue;
-            enumerateMemoryNeighborhood(depth + 1);
+            }
+            enumerateMemoryNeighborhood(depth + 1, enforceDistinctMemory);
+            if (enforceDistinctMemory && isMemoryNode)
+              usedDistinctMemoryHws.erase(candHw);
             if (stopExactSearch)
               return;
           }
           state.restore(checkpoint);
         };
 
-        enumerateMemoryNeighborhood(0);
+        if (preferDistinctMemoryAssignments)
+          enumerateMemoryNeighborhood(0, true);
+        if (!stopExactSearch)
+          enumerateMemoryNeighborhood(0, false);
         llvm::outs() << "  Exact memory neighborhood result: routed "
                      << bestRouted << "/" << dfg.edges.size() << " edges\n";
         if (bestAllRouted) {

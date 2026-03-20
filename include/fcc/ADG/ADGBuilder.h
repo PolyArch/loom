@@ -166,6 +166,7 @@ struct MemorySpec {
   unsigned stPorts = 1;
   unsigned lsqDepth = 0;
   std::string memrefType = "memref<256xi32>";
+  unsigned numRegion = 1;
   bool isPrivate = true;
 };
 
@@ -175,6 +176,7 @@ struct ExtMemorySpec {
   unsigned stPorts = 1;
   unsigned lsqDepth = 0;
   std::string memrefType = "memref<?xi32>";
+  unsigned numRegion = 1;
 };
 
 struct MapTagEntrySpec {
@@ -459,6 +461,7 @@ public:
                             unsigned ldPorts, unsigned stPorts,
                             unsigned lsqDepth = 0,
                             const std::string &memrefType = "memref<256xi32>",
+                            unsigned numRegion = 1,
                             bool isPrivate = true);
   MemoryHandle defineMemory(const MemorySpec &spec);
 
@@ -467,7 +470,8 @@ public:
   /// Define an external memory interface with load/store port counts.
   ExtMemHandle defineExtMemory(const std::string &name,
                                unsigned ldPorts, unsigned stPorts,
-                               unsigned lsqDepth = 0);
+                               unsigned lsqDepth = 0,
+                               unsigned numRegion = 1);
   ExtMemHandle defineExtMemory(const ExtMemorySpec &spec);
 
   // --- FIFO definitions ---

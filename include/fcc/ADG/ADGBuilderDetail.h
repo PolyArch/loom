@@ -66,6 +66,7 @@ struct MemoryDef {
   unsigned stPorts = 1;
   unsigned lsqDepth = 0;
   std::string memrefType = "memref<256xi32>";
+  unsigned numRegion = 1;
   bool isPrivate = true;
 };
 
@@ -75,6 +76,7 @@ struct ExtMemDef {
   unsigned stPorts = 1;
   unsigned lsqDepth = 0;
   std::string memrefType = "memref<?xi32>";
+  unsigned numRegion = 1;
 };
 
 struct FIFODef {

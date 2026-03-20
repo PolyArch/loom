@@ -388,7 +388,8 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
       }
       os << " = fabric.memory @" << inst.name << " [ldCount = " << mem.ldPorts
          << ", stCount = " << mem.stPorts << ", lsqDepth = " << mem.lsqDepth
-         << ", memrefType = " << mem.memrefType << ", numRegion = 1";
+         << ", memrefType = " << mem.memrefType
+         << ", numRegion = " << mem.numRegion;
       if (!mem.isPrivate)
         os << ", is_private = false";
       os << "] (";
@@ -468,7 +469,10 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
       os << " = fabric.extmemory @" << inst.name;
       os << " [ldCount = " << mem.ldPorts << ", stCount = " << mem.stPorts
          << ", lsqDepth = " << mem.lsqDepth << ", memrefType = "
-         << mem.memrefType << "]";
+         << mem.memrefType;
+      if (mem.numRegion != 1)
+        os << ", numRegion = " << mem.numRegion;
+      os << "]";
       os << " (";
 
       bool firstOperand = true;

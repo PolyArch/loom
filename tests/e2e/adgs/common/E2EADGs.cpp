@@ -177,7 +177,13 @@ void buildStarDomain(const std::string &moduleName,
       numPEs * computePE.inputs + numExtMems * extMemSWOutputs + scalarOutputs;
   auto sw = builder.defineFullCrossbarSpatialSW(moduleName + "_sw", swInputs,
                                                 swOutputs, kDataWidth);
-  auto extMem = builder.defineExtMemory(moduleName + "_mem", 2, 1);
+  ExtMemorySpec extMemSpec;
+  extMemSpec.name = moduleName + "_mem";
+  extMemSpec.ldPorts = 2;
+  extMemSpec.stPorts = 1;
+  extMemSpec.memrefType = "memref<?xi32>";
+  extMemSpec.numRegion = 3;
+  auto extMem = builder.defineExtMemory(extMemSpec);
 
   SwitchBankDomainSpec domain;
   domain.sw = sw;
@@ -263,8 +269,8 @@ void wireRoundRobinVecaddTaggedExtMemIngressEgress(
         useLeftIngress = false;
         useLeftEgress = false;
       } else {
-        useLeftIngress = false;
-        useLeftEgress = true;
+        useLeftIngress = true;
+        useLeftEgress = false;
       }
     }
     unsigned &ingressIdx = useLeftIngress ? leftIngressIdx : rightIngressIdx;
@@ -347,7 +353,13 @@ void buildChessDomain(const std::string &moduleName,
       rows, cols,
       [&](unsigned, unsigned) { return computePE.pe; }, options);
 
-  auto extMem = builder.defineExtMemory(moduleName + "_mem", 2, 1);
+  ExtMemorySpec extMemSpec;
+  extMemSpec.name = moduleName + "_mem";
+  extMemSpec.ldPorts = 2;
+  extMemSpec.stPorts = 1;
+  extMemSpec.memrefType = "memref<?xi32>";
+  extMemSpec.numRegion = 3;
+  auto extMem = builder.defineExtMemory(extMemSpec);
   auto extMems = builder.instantiateExtMemArray(numExtMems, extMem, "extmem");
   auto memrefs = builder.addMemrefInputs("buffer", numExtMems, "memref<?xi32>");
   for (unsigned idx = 0; idx < extMems.size(); ++idx)
@@ -527,7 +539,13 @@ void buildTinyStar4PE(const std::string &outputPath) {
       kNumPEs * kLeafLinkPorts + kNumExtMems * kExtMemSWOutputs +
           kScalarOutputs,
       kDataWidth);
-  auto extMem = builder.defineExtMemory(moduleName + "_mem", 2, 1);
+  ExtMemorySpec extMemSpec;
+  extMemSpec.name = moduleName + "_mem";
+  extMemSpec.ldPorts = 2;
+  extMemSpec.stPorts = 1;
+  extMemSpec.memrefType = "memref<?xi32>";
+  extMemSpec.numRegion = 3;
+  auto extMem = builder.defineExtMemory(extMemSpec);
 
   auto centerInst = builder.instantiateSW(centerSW, "sw_center");
   auto leafInsts = builder.instantiateSWArray(kNumPEs, leafSW, "sw_leaf");
@@ -632,10 +650,10 @@ void buildVecaddDemoChess6x6(const std::string &outputPath) {
   constexpr unsigned kScalarOutputs = 1;
 
   ChessMeshOptions options;
-  const unsigned leftIngressMems = 1;
-  const unsigned rightIngressMems = 2;
-  const unsigned leftEgressMems = 2;
-  const unsigned rightEgressMems = 1;
+  const unsigned leftIngressMems = 2;
+  const unsigned rightIngressMems = 1;
+  const unsigned leftEgressMems = 1;
+  const unsigned rightEgressMems = 2;
   options.topLeftExtraInputs = leftIngressMems * 5 + kScalarInputs;
   options.topRightExtraInputs = rightIngressMems * 5;
   options.bottomLeftExtraOutputs = leftEgressMems * 4;
@@ -644,7 +662,13 @@ void buildVecaddDemoChess6x6(const std::string &outputPath) {
       kRows, kCols,
       [&](unsigned, unsigned) { return computePE.pe; }, options);
 
-  auto extMem = builder.defineExtMemory(moduleName + "_mem", 2, 1);
+  ExtMemorySpec extMemSpec;
+  extMemSpec.name = moduleName + "_mem";
+  extMemSpec.ldPorts = 2;
+  extMemSpec.stPorts = 1;
+  extMemSpec.memrefType = "memref<?xi32>";
+  extMemSpec.numRegion = 3;
+  auto extMem = builder.defineExtMemory(extMemSpec);
   auto extMemBridge = buildTaggedVecaddExtMemBridge(builder, moduleName);
   auto extMems = builder.instantiateExtMemArray(kNumExtMems, extMem, "extmem");
   auto memrefs =

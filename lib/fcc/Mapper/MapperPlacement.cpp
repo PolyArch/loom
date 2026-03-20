@@ -1144,6 +1144,27 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
   else
     cost += 0.25 * (std::abs(hwRow) + std::abs(hwCol));
 
+  if (activeMemorySharingPenalty > 0.0 &&
+      isSoftwareMemoryInterfaceOp(getNodeAttrStr(swN, "op_name")) &&
+      getNodeAttrStr(hwN, "resource_class") == "memory") {
+    unsigned colocatedMemoryInterfaces = 0;
+    if (hwNode < state.hwNodeToSwNodes.size()) {
+      for (IdIndex otherSwId : state.hwNodeToSwNodes[hwNode]) {
+        if (otherSwId == swNode)
+          continue;
+        const Node *otherSwNode = dfg.getNode(otherSwId);
+        if (!otherSwNode || otherSwNode->kind != Node::OperationNode)
+          continue;
+        if (isSoftwareMemoryInterfaceOp(getNodeAttrStr(otherSwNode, "op_name")))
+          ++colocatedMemoryInterfaces;
+      }
+    }
+    if (colocatedMemoryInterfaces > 0) {
+      cost += activeMemorySharingPenalty *
+              static_cast<double>(colocatedMemoryInterfaces);
+    }
+  }
+
   cost += 0.6 * computeLocalSpreadPenalty(hwNode, state, adg, flattener);
 
   if (activeCongestionEstimator && activeFlattener &&
