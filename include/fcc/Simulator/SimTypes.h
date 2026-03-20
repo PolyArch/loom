@@ -143,12 +143,14 @@ struct FinalStateModuleSnapshot {
 
 struct FinalStateSummary {
   bool obligationsSatisfied = false;
+  bool hardwareEmpty = false;
   bool quiescent = false;
   bool done = false;
   bool deadlocked = false;
   uint64_t idleCycleStreak = 0;
   uint64_t outstandingMemoryRequestCount = 0;
   uint64_t completedMemoryResponseCount = 0;
+  std::string terminationAuditError;
   std::vector<FinalStatePortSnapshot> livePorts;
   std::vector<FinalStateEdgeSnapshot> liveEdges;
   std::vector<FinalStateModuleSnapshot> pendingModules;

@@ -181,6 +181,10 @@ SimResult CycleSimulationBackend::invoke(uint32_t epochId,
     case BoundaryReason::InvocationDone:
       result.success = true;
       result.termination = RunTermination::Completed;
+      if (!kernel_.validateSuccessfulTermination(result.errorMessage)) {
+        result.success = false;
+        result.termination = RunTermination::DeviceError;
+      }
       break;
     case BoundaryReason::BudgetHit:
       result.success = false;

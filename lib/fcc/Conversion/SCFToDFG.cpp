@@ -448,13 +448,29 @@ LogicalResult DFGConverter::convertIf(scf::IfOp op, RegionState &state) {
   thenState.parent = &state;
   thenState.controlToken = thenCtrl;
 
+  auto materializeBranchLocalYield = [&](Value original, Value mapped,
+                                         Region *region,
+                                         bool thenBranch) -> Value {
+    if (isLocalToRegion(original, region))
+      return mapped;
+    if (isa<BaseMemRefType>(mapped.getType()))
+      return mapped;
+    auto gated =
+        circt::handshake::ConditionalBranchOp::create(builder, loc, condValue,
+                                                      mapped);
+    return thenBranch ? gated.getTrueResult() : gated.getFalseResult();
+  };
+
   SmallVector<Value, 4> thenValues;
   if (!thenRegion.hasOneBlock())
     return op.emitError("expected single-block scf.if then region");
   for (Operation &nested : thenRegion.front()) {
     if (auto yield = dyn_cast<scf::YieldOp>(nested)) {
-      for (Value operand : yield.getOperands())
-        thenValues.push_back(mapValue(operand, thenState, yield.getLoc()));
+      for (Value operand : yield.getOperands()) {
+        Value mapped = mapValue(operand, thenState, yield.getLoc());
+        thenValues.push_back(materializeBranchLocalYield(
+            operand, mapped, &thenRegion, /*thenBranch=*/true));
+      }
       break;
     }
     if (failed(convertOp(&nested, thenState)))
@@ -474,8 +490,11 @@ LogicalResult DFGConverter::convertIf(scf::IfOp op, RegionState &state) {
       return op.emitError("expected single-block scf.if else region");
     for (Operation &nested : elseRegion.front()) {
       if (auto yield = dyn_cast<scf::YieldOp>(nested)) {
-        for (Value operand : yield.getOperands())
-          elseValues.push_back(mapValue(operand, elseState, yield.getLoc()));
+        for (Value operand : yield.getOperands()) {
+          Value mapped = mapValue(operand, elseState, yield.getLoc());
+          elseValues.push_back(materializeBranchLocalYield(
+              operand, mapped, &elseRegion, /*thenBranch=*/false));
+        }
         break;
       }
       if (failed(convertOp(&nested, elseState)))

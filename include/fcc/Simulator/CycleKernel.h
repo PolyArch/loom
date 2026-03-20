@@ -31,6 +31,7 @@ public:
 
   BoundaryReason getLastBoundaryReason() const { return lastBoundaryReason_; }
   FinalStateSummary getFinalStateSummary() const;
+  bool validateSuccessfulTermination(std::string &error) const;
 
   void stepCycle();
   BoundaryReason runUntilBoundary(uint64_t maxCycles);
@@ -99,6 +100,7 @@ private:
                         const std::vector<SimChannel> &snapshot) const;
   void syncOutputFanoutState(IdIndex outputPortId, uint64_t generation);
   bool completionObligationsSatisfied() const;
+  bool hardwareEmpty(std::string *details = nullptr) const;
   bool hasPendingInternalWork() const;
   bool hasPendingModuleOrMemoryWork() const;
   bool memoryRegionCompletionObserved(unsigned regionId) const;

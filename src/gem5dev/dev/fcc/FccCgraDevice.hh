@@ -105,8 +105,6 @@ class FccCgraDevice : public DmaDevice
     void finishDirectInvocation(bool success,
                                 const std::string &errorMessage);
     bool initializeDirectRuntime();
-    bool runDirectInvocation(const std::filesystem::path &invocationDir,
-                             const std::filesystem::path &replyDir);
     bool writeDirectReplyArtifacts(
         const std::filesystem::path &replyDir, bool success,
         const std::string &errorMessage,

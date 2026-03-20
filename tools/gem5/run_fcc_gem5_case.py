@@ -233,8 +233,6 @@ def run_gem5(case_dir: pathlib.Path, gem5_dir: pathlib.Path, host_elf: pathlib.P
     report_path = gem5_dir / "gem5.report.json"
     accel_work_dir = gem5_dir / "accel-work"
     m5out_dir = gem5_dir / "m5out"
-    bridge_script = REPO_ROOT / "tools/gem5/fcc_runtime_bridge.py"
-    fcc_binary = REPO_ROOT / "build/bin/fcc"
     config_script = REPO_ROOT / "configs/fcc_cgra.py"
 
     cmd = [
@@ -248,10 +246,6 @@ def run_gem5(case_dir: pathlib.Path, gem5_dir: pathlib.Path, host_elf: pathlib.P
         str(sim_image),
         "--accel-runtime-manifest",
         str(runtime_manifest),
-        "--fcc-binary",
-        str(fcc_binary),
-        "--bridge-script",
-        str(bridge_script),
         "--accel-work-dir",
         str(accel_work_dir),
         "--report",

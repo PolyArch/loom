@@ -422,8 +422,11 @@ FccCgraDevice::onDirectInvoke()
 
     bool success = (reason == BoundaryReason::InvocationDone);
     activeErrorMessage_.clear();
-    if (!success)
+    if (!success) {
         activeErrorMessage_ = fcc::sim::boundaryReasonName(reason);
+    } else if (!kernel->validateSuccessfulTermination(activeErrorMessage_)) {
+        success = false;
+    }
 
     outputs.clear();
     for (const auto &binding : runtimeImage->controlImage.outputBindings) {
@@ -684,6 +687,12 @@ FccCgraDevice::runInvocation()
     if (directRuntimeReady)
         return startDirectInvocation(invocationDir, replyDir);
 
+    if (fccBinary.empty() || bridgeScript.empty()) {
+        statusReg = kStatusError;
+        errorCode = 15;
+        return false;
+    }
+
     std::ofstream request(requestPath);
     if (!request) {
         statusReg = kStatusError;
@@ -830,146 +839,6 @@ FccCgraDevice::writeDirectReplyArtifacts(
     for (unsigned slot : memorySlots)
         meta << "memory_slot=" << slot << "\n";
     return true;
-}
-
-bool
-FccCgraDevice::runDirectInvocation(const std::filesystem::path &invocationDir,
-                                   const std::filesystem::path &replyDir)
-{
-    using namespace fcc::sim;
-
-    if (!runtimeImage || !kernel) {
-        statusReg = kStatusError;
-        errorCode = 8;
-        return false;
-    }
-
-    RuntimeImage image = *runtimeImage;
-    if (!configWords.empty())
-        image.configImage.words = configWords;
-
-    kernel->resetAll();
-    if (!kernel->build(image.staticModel) || !kernel->configure(image.configImage)) {
-        statusReg = kStatusError;
-        errorCode = 9;
-        return false;
-    }
-
-    const uint64_t invocationId = invocationCount - 1;
-    kernel->setInvocationContext(1, invocationId);
-
-    if (image.controlImage.startTokenPort >= 0) {
-        SimToken token;
-        token.data = 1;
-        kernel->setInputTokens(static_cast<unsigned>(image.controlImage.startTokenPort),
-                               {token});
-    }
-
-    for (const auto &binding : image.controlImage.scalarBindings) {
-        if (binding.slot >= 8)
-            continue;
-        SimToken token;
-        token.data = scalarArgs[binding.slot];
-        kernel->setInputTokens(binding.portIdx, {token});
-    }
-
-    regionBuffers.clear();
-    regionBuffers.resize(image.controlImage.memoryBindings.size());
-    std::set<unsigned> writtenMemorySlots;
-    for (const auto &binding : image.controlImage.memoryBindings) {
-        if (binding.slot >= 8 || memSize[binding.slot] == 0)
-            continue;
-        regionBuffers[binding.regionId].assign(memSize[binding.slot], 0);
-        sys->physProxy.readBlob(memBase[binding.slot],
-                                regionBuffers[binding.regionId].data(),
-                                regionBuffers[binding.regionId].size());
-        std::string err = kernel->setMemoryRegionBacking(
-            binding.regionId, regionBuffers[binding.regionId].data(),
-            regionBuffers[binding.regionId].size());
-        if (!err.empty()) {
-            statusReg = kStatusError;
-            errorCode = 10;
-            return false;
-        }
-        writtenMemorySlots.insert(binding.slot);
-    }
-
-    BoundaryReason reason = kernel->runUntilBoundary(kMaxInvocationCycles);
-    cycleCount = kernel->getCurrentCycle();
-
-    bool success = (reason == BoundaryReason::InvocationDone);
-    std::string errorMessage;
-    if (!success)
-        errorMessage = fcc::sim::boundaryReasonName(reason);
-
-    std::set<unsigned> outputSlotSet;
-    for (const auto &binding : image.controlImage.outputBindings) {
-        OutputSlotData slotData;
-        const auto &tokens = kernel->getOutputTokens(binding.portIdx);
-        for (const SimToken &token : tokens) {
-            slotData.data.push_back(token.data);
-            slotData.tags.push_back(token.hasTag ? token.tag : 0);
-        }
-        outputs[binding.slot] = std::move(slotData);
-        outputSlotSet.insert(binding.slot);
-    }
-
-    for (const auto &binding : image.controlImage.memoryBindings) {
-        if (binding.slot >= 8 || memSize[binding.slot] == 0 ||
-            binding.regionId >= regionBuffers.size())
-            continue;
-        sys->physProxy.writeBlob(memBase[binding.slot],
-                                 regionBuffers[binding.regionId].data(),
-                                 regionBuffers[binding.regionId].size());
-    }
-
-    std::vector<unsigned> outputSlots(outputSlotSet.begin(), outputSlotSet.end());
-    std::vector<unsigned> memorySlots(writtenMemorySlots.begin(),
-                                      writtenMemorySlots.end());
-
-    const std::filesystem::path tracePath = replyDir / "trace.json";
-    const std::filesystem::path statPath = replyDir / "stat.txt";
-    if (!writeTraceJson(tracePath, kernel->getTraceDocument()) ||
-        !writeStatText(statPath, success, cycleCount, reason, errorMessage) ||
-        !writeDirectReplyArtifacts(replyDir, success, errorMessage, outputSlots,
-                                  memorySlots)) {
-        statusReg = kStatusError;
-        errorCode = 11;
-        return false;
-    }
-
-    for (unsigned slot : outputSlots) {
-        const auto &slotData = outputs.at(slot);
-        if (!writeScalarVectorFile<uint64_t>(
-                replyDir / ("output.slot" + std::to_string(slot) + ".data.bin"),
-                slotData.data) ||
-            !writeScalarVectorFile<uint16_t>(
-                replyDir / ("output.slot" + std::to_string(slot) + ".tags.bin"),
-                slotData.tags)) {
-            statusReg = kStatusError;
-            errorCode = 12;
-            return false;
-        }
-    }
-
-    for (const auto &binding : image.controlImage.memoryBindings) {
-        if (binding.slot >= 8 || memSize[binding.slot] == 0 ||
-            binding.regionId >= regionBuffers.size())
-            continue;
-        if (!writeBinaryFile(replyDir / ("memory.slot" +
-                                         std::to_string(binding.slot) + ".bin"),
-                             regionBuffers[binding.regionId].data(),
-                             regionBuffers[binding.regionId].size())) {
-            statusReg = kStatusError;
-            errorCode = 13;
-            return false;
-        }
-    }
-
-    statusReg = success ? kStatusDone : kStatusError;
-    if (!success)
-        errorCode = 14;
-    return success;
 }
 
 Tick

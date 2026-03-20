@@ -108,6 +108,8 @@ For a condition `%cond`:
 - branch entry control by `handshake.cond_br`
 - lower then-region recursively
 - lower else-region recursively
+- branch-gate any yielded value that is defined outside the corresponding
+  branch region, so each branch result is locally owned before merge
 - merge branch results with `handshake.mux`
 
 ### Reference Pseudocode
@@ -129,6 +131,10 @@ function lower_if(if_op, parent_state):
 
   merged_results = []
   for each pair (then_v, else_v):
+    if then_v is defined outside then_region:
+      then_v = cond_br(cond, then_v).true_result
+    if else_v is defined outside else_region:
+      else_v = cond_br(cond, else_v).false_result
     merged_results.push(mux(sel = cond, false = else_v, true = then_v))
 
   merged_done = mux(sel = cond, false = else_done, true = then_done)
@@ -156,6 +162,9 @@ done     = mux(cond, else_done,    then_done)
 - the branch condition is the mapped SSA condition, not a synthetic loop token
 - values used from outside a branch region must be replicated into the branch
   with `dataflow.invariant` if they are body-local values
+- if a yielded value is defined outside the branch region, it must first be
+  split by `handshake.cond_br` so the untaken branch does not leave a residual
+  token on the final `handshake.mux`
 - branch-local side effects must stay inside that branch subtree
 - branch outputs must be merged explicitly; they do not implicitly rejoin
 

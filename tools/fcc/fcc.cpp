@@ -259,6 +259,8 @@ static bool writeStandaloneSimulationResult(
   out << "    \"obligations_satisfied\": "
       << (simResult.finalState.obligationsSatisfied ? "true" : "false")
       << ",\n";
+  out << "    \"hardware_empty\": "
+      << (simResult.finalState.hardwareEmpty ? "true" : "false") << ",\n";
   out << "    \"quiescent\": "
       << (simResult.finalState.quiescent ? "true" : "false") << ",\n";
   out << "    \"done\": " << (simResult.finalState.done ? "true" : "false")
@@ -271,6 +273,9 @@ static bool writeStandaloneSimulationResult(
       << simResult.finalState.outstandingMemoryRequestCount << ",\n";
   out << "    \"completed_memory_response_count\": "
       << simResult.finalState.completedMemoryResponseCount << ",\n";
+  out << "    \"termination_audit_error\": ";
+  writeEscapedJsonString(out, simResult.finalState.terminationAuditError);
+  out << ",\n";
 
   out << "    \"live_ports\": [\n";
   for (size_t idx = 0; idx < simResult.finalState.livePorts.size(); ++idx) {

@@ -140,6 +140,16 @@ The case-local gem5 wrapper is expected to:
 - invoke `tools/gem5/run_fcc_gem5_case.py`
 - leave gem5 outputs under `out/e2e/<case>/gem5/`
 
+The primary invocation path only requires:
+
+- `--accel-sim-image`
+- `--accel-runtime-manifest`
+- `--accel-work-dir`
+- `--report`
+
+Legacy `--fcc-binary` and `--bridge-script` arguments are fallback-only and
+must not be required for the primary embedded path.
+
 The gem5 runner is expected to leave these per-case outputs:
 
 - `gem5/host.c`

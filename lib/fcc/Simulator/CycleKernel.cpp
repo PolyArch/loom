@@ -15,7 +15,7 @@ namespace sim {
 namespace {
 
 constexpr int kInvalidModuleIndex = -1;
-constexpr uint64_t kIdleCyclesForBoundary = 4;
+constexpr uint64_t kIdleCyclesForBoundary = 32;
 constexpr unsigned kMaxCombIterations = 4;
 
 bool hasOutstandingCompletionObligations(const StaticMappedModel &staticModel) {
@@ -874,6 +874,98 @@ bool CycleKernel::completionObligationsSatisfied() const {
   return true;
 }
 
+bool CycleKernel::hardwareEmpty(std::string *details) const {
+  std::vector<std::string> parts;
+
+  if (!completedMemoryRequests_.empty() || !outstandingMemoryRequests_.empty()) {
+    parts.push_back("memory(outstanding=" +
+                    std::to_string(outstandingMemoryRequests_.size()) +
+                    ", completed=" +
+                    std::to_string(completedMemoryRequests_.size()) + ")");
+  }
+
+  size_t liveEdgeCount = 0;
+  std::vector<std::string> edgeParts;
+  for (size_t edgeIdx = 0; edgeIdx < edgeState_.size(); ++edgeIdx) {
+    const SimChannel &state = edgeState_[edgeIdx];
+    if (!state.valid)
+      continue;
+    ++liveEdgeCount;
+    if (edgeParts.size() < 4) {
+      const auto &edge = staticModel_.getChannels()[edgeIdx];
+      edgeParts.push_back("edge#" + std::to_string(edgeIdx) + "(hw=" +
+                          std::to_string(edge.hwEdgeId) + ", gen=" +
+                          std::to_string(state.generation) + ")");
+    }
+  }
+  if (liveEdgeCount != 0) {
+    std::string text = "live_edges=" + std::to_string(liveEdgeCount);
+    if (!edgeParts.empty()) {
+      text += " [";
+      for (size_t idx = 0; idx < edgeParts.size(); ++idx) {
+        if (idx)
+          text += ", ";
+        text += edgeParts[idx];
+      }
+      text += "]";
+    }
+    parts.push_back(std::move(text));
+  }
+
+  std::vector<std::string> pendingModules;
+  for (const auto &module : modules_) {
+    if (!module->hasPendingWork())
+      continue;
+    if (pendingModules.size() < 6) {
+      std::string text = module->name;
+      std::string state = module->getDebugStateSummary();
+      if (!state.empty())
+        text += "{" + state + "}";
+      pendingModules.push_back(std::move(text));
+    }
+  }
+  if (!pendingModules.empty()) {
+    std::string text = "pending_modules=" + std::to_string(pendingModules.size());
+    text += " [";
+    for (size_t idx = 0; idx < pendingModules.size(); ++idx) {
+      if (idx)
+        text += ", ";
+      text += pendingModules[idx];
+    }
+    text += "]";
+    parts.push_back(std::move(text));
+  }
+
+  if (details) {
+    details->clear();
+    for (size_t idx = 0; idx < parts.size(); ++idx) {
+      if (idx)
+        *details += "; ";
+      *details += parts[idx];
+    }
+  }
+  return parts.empty();
+}
+
+bool CycleKernel::validateSuccessfulTermination(std::string &error) const {
+  error.clear();
+  if (!completionObligationsSatisfied()) {
+    error = "termination audit failed: software-visible completion obligations "
+            "are not satisfied";
+    return false;
+  }
+  std::string hardwareDetails;
+  if (!hardwareEmpty(&hardwareDetails)) {
+    error =
+        "termination audit failed: invocation completed but hardware is not "
+        "empty";
+    if (!hardwareDetails.empty())
+      error += " (" + hardwareDetails + ")";
+    return false;
+  }
+  return true;
+}
+
 bool CycleKernel::hasPendingInternalWork() const {
   return hasPendingModuleOrMemoryWork();
 }
@@ -934,6 +1026,7 @@ bool CycleKernel::memoryRegionCompletionObserved(unsigned regionId) const {
 FinalStateSummary CycleKernel::getFinalStateSummary() const {
   FinalStateSummary summary;
   summary.obligationsSatisfied = completionObligationsSatisfied();
+  summary.hardwareEmpty = hardwareEmpty(&summary.terminationAuditError);
   summary.quiescent = quiescent_;
   summary.done = done_;
   summary.deadlocked = deadlocked_;
@@ -946,7 +1039,7 @@ FinalStateSummary CycleKernel::getFinalStateSummary() const {
     if (port.portId >= portState_.size())
       continue;
     const SimChannel &state = portState_[port.portId];
-    if (!state.valid && !state.ready)
+    if (!state.valid)
       continue;
     FinalStatePortSnapshot snap;
     snap.portId = port.portId;
@@ -966,7 +1059,7 @@ FinalStateSummary CycleKernel::getFinalStateSummary() const {
     if (edgeIdx >= edgeState_.size())
       continue;
     const SimChannel &state = edgeState_[edgeIdx];
-    if (!state.valid && !state.ready)
+    if (!state.valid)
       continue;
     const StaticChannelDesc &edge = staticModel_.getChannels()[edgeIdx];
     FinalStateEdgeSnapshot snap;
@@ -1010,7 +1103,7 @@ FinalStateSummary CycleKernel::getFinalStateSummary() const {
         !snap.debugState.empty() || !snap.counters.empty() || hasLivePort;
     if (interesting)
       summary.moduleSummaries.push_back(snap);
-    if (pending || collectedCount != 0)
+    if (pending)
       summary.pendingModules.push_back(std::move(snap));
   }
 
