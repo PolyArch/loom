@@ -131,8 +131,8 @@ The current direct gem5 execution flow is:
 
 The repository-maintained smoke path is:
 
-1. `./out/e2e/sum-array.sum-array-demo-chess-6x6/run.cmd`
-2. `./out/e2e/sum-array.sum-array-demo-chess-6x6/run.gem5.cmd`
+1. `./out/e2e/sum-array.mesh-6x6-extmem-1/run.cmd`
+2. `./out/e2e/sum-array.mesh-6x6-extmem-1/run.gem5.cmd`
 
 The case-local gem5 wrapper is expected to:
 

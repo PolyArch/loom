@@ -526,14 +526,18 @@ void layoutTaggedVecaddSideExtMemBridges(
   if (extMems.empty())
     return;
 
-  const double switchStep = 520.0;
-  const double origin = 122.0;
-  const double meshLeft = origin;
-  const double meshRight = origin + static_cast<double>(cols) * switchStep;
-  const double meshTop = origin;
-  const double meshBottom = origin + static_cast<double>(rows) * switchStep;
+  // Keep this layout anchored to the actual chess-mesh visual scale used by
+  // the current dense PE template, instead of the old 520x520 toy constants.
+  const double switchOriginX = 215.0;
+  const double switchOriginY = 215.0;
+  const double switchStepX = 1226.0;
+  const double switchStepY = 1288.0;
+  const double meshLeft = switchOriginX;
+  const double meshRight = switchOriginX + static_cast<double>(cols) * switchStepX;
+  const double meshTop = switchOriginY;
+  const double meshBottom = switchOriginY + static_cast<double>(rows) * switchStepY;
   const double meshMidY = (meshTop + meshBottom) / 2.0;
-  const double memOffsetX = 520.0;
+  const double memOffsetX = 620.0;
   const double leftMemX = meshLeft - memOffsetX;
   const double rightMemX = meshRight + memOffsetX;
   const double leftMemY = meshMidY - 180.0;
@@ -752,8 +756,8 @@ static void buildSumArrayDemoChess(const std::string &outputPath,
   builder.exportMLIR(outputPath);
 }
 
-void buildSumArrayDemoChess6x6(const std::string &outputPath) {
-  buildSumArrayDemoChess(outputPath, "sum_array_demo_chess_6x6", 6, 6);
+void buildMesh6x6Extmem1(const std::string &outputPath) {
+  buildSumArrayDemoChess(outputPath, "mesh_6x6_extmem_1", 6, 6);
 }
 
 void buildSumArrayDemoChess4x4(const std::string &outputPath) {
@@ -890,8 +894,8 @@ void buildWideStar16PE(const std::string &outputPath) {
   buildStarDomain("wide_star_16pe", outputPath, 16, 6, 8, 4);
 }
 
-void buildVecaddDemoChess6x6(const std::string &outputPath) {
-  const std::string moduleName = "vecadd_demo_chess_6x6";
+void buildMesh6x6Extmem2(const std::string &outputPath) {
+  const std::string moduleName = "mesh_6x6_extmem_2";
   ADGBuilder builder(moduleName);
   auto computePE = buildSpatialKernelPE(builder, moduleName, 4, 4);
 

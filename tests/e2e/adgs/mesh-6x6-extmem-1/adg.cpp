@@ -13,11 +13,11 @@
 
 static llvm::cl::opt<std::string> outputFile(
     llvm::cl::Positional, llvm::cl::desc("<output .fabric.mlir file>"),
-    llvm::cl::init("sum-array-demo-chess-5x5.fabric.mlir"));
+    llvm::cl::init("mesh-6x6-extmem-1.fabric.mlir"));
 
 int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(argc, argv,
-                                    "sum-array demo chess ADG generator\n");
+                                    "mesh-6x6-extmem-1 ADG generator\n");
 
   auto parentPath = llvm::sys::path::parent_path(outputFile);
   if (!parentPath.empty()) {
@@ -28,6 +28,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  fcc::e2e::buildSumArrayDemoChess5x5(outputFile);
+  fcc::e2e::buildMesh6x6Extmem1(outputFile);
   return 0;
 }

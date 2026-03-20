@@ -7,11 +7,11 @@
 
 static llvm::cl::opt<std::string> outputFile(
     llvm::cl::Positional, llvm::cl::desc("<output .fabric.mlir file>"),
-    llvm::cl::init("wide-star-16pe.fabric.mlir"));
+    llvm::cl::init("mesh-6x6-extmem-2.fabric.mlir"));
 
 int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(argc, argv,
-                                    "wide-star-16pe ADG generator\n");
+                                    "mesh-6x6-extmem-2 ADG generator\n");
 
   auto parent = llvm::sys::path::parent_path(outputFile);
   if (!parent.empty()) {
@@ -22,6 +22,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  fcc::e2e::buildWideStar16PE(outputFile);
+  fcc::e2e::buildMesh6x6Extmem2(outputFile);
   return 0;
 }

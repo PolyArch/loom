@@ -48,7 +48,7 @@ The FCC target validation matrix includes at least:
    artifact with actual outputs and memory snapshots.
 5. correctness on a representative vecadd-style memory-writing kernel
 6. gem5 end-to-end host-plus-accelerator execution
-   Current smoke anchor: `sum-array.sum-array-demo-chess-6x6`
+   Current smoke anchor: `sum-array.mesh-6x6-extmem-1`
 7. visualization rendering with mapping and, when available, trace playback
 8. focused unit tests for temporal hardware, tagged memory topologies, and
    decomposable switches

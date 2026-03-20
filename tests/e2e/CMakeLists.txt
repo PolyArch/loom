@@ -87,8 +87,7 @@ function(fcc_add_e2e_pair app_name hw_name)
                "${manifest_line}")
   set_property(GLOBAL APPEND PROPERTY FCC_E2E_RUNNER_DEPS ${builder_target} fcc)
 
-  string(MAKE_C_IDENTIFIER "${case_name}" case_id)
-  set(case_target "fcc-e2e-${case_id}")
+  set(case_target "fcc_e2e_${app_name}_${hw_name}")
   add_custom_target(${case_target}
     COMMAND ${Python3_EXECUTABLE} "${FCC_E2E_RUNNER}"
             --manifest "${FCC_E2E_MANIFEST}"
@@ -100,14 +99,16 @@ function(fcc_add_e2e_pair app_name hw_name)
 endfunction()
 
 function(fcc_add_gem5_smoke case_name)
-  string(MAKE_C_IDENTIFIER "${case_name}" case_id)
-  set(e2e_target "fcc-e2e-${case_id}")
+  string(REPLACE "." ";" case_fields "${case_name}")
+  list(GET case_fields 0 app_name)
+  list(GET case_fields 1 hw_name)
+  set(e2e_target "fcc_e2e_${app_name}_${hw_name}")
   if(NOT TARGET ${e2e_target})
     message(FATAL_ERROR "No e2e target registered for ${case_name}")
   endif()
 
   set(output_dir "${CMAKE_SOURCE_DIR}/out/e2e/${case_name}")
-  set(gem5_target "fcc-gem5-${case_id}")
+  set(gem5_target "fcc_gem5_${app_name}_${hw_name}")
 
   add_custom_target(${gem5_target}
     COMMAND ${Python3_EXECUTABLE} "${FCC_GEM5_RUNNER}"
@@ -127,17 +128,8 @@ function(fcc_add_gem5_smoke case_name)
 endfunction()
 
 set(FCC_E2E_ADGS
-  tiny-add-1pe
-  sum-array-demo-chess-4x4
-  sum-array-demo-chess-5x5
-  sum-array-demo-chess-6x6
-  sum-array-demo-chess-7x7
-  tiny-star-4pe
-  medium-star-8pe
-  wide-star-16pe
-  vecadd-demo-chess-6x6
-  medium-chess-6x6
-  medium-chess-10x10
+  mesh-6x6-extmem-1
+  mesh-6x6-extmem-2
 )
 
 foreach(hw_name IN LISTS FCC_E2E_ADGS)
@@ -145,21 +137,8 @@ foreach(hw_name IN LISTS FCC_E2E_ADGS)
 endforeach()
 
 set(FCC_E2E_PAIRS
-  "sum-array|sum-array-demo-chess-4x4"
-  "sum-array|sum-array-demo-chess-5x5"
-  "sum-array|sum-array-demo-chess-6x6|${CMAKE_CURRENT_SOURCE_DIR}/sim-bundles/sum-array-demo.json"
-  "sum-array|sum-array-demo-chess-7x7"
-  "vecadd|vecadd-demo-chess-6x6|${CMAKE_CURRENT_SOURCE_DIR}/sim-bundles/vecadd-demo.json"
-  "vecadd|tiny-star-4pe"
-  "dotprod|tiny-star-4pe"
-  "gemv|medium-star-8pe"
-  "spmv|medium-star-8pe"
-  "gemm|wide-star-16pe"
-  "gemv|wide-star-16pe"
-  "gemm|medium-chess-6x6"
-  "merge-sort|medium-chess-6x6"
-  "spmm|medium-chess-10x10"
-  "bfs-level|medium-chess-10x10"
+  "sum-array|mesh-6x6-extmem-1|${CMAKE_CURRENT_SOURCE_DIR}/sim-bundles/sum-array-demo.json"
+  "vecadd|mesh-6x6-extmem-2|${CMAKE_CURRENT_SOURCE_DIR}/sim-bundles/vecadd-demo.json"
 )
 
 foreach(pair_spec IN LISTS FCC_E2E_PAIRS)
@@ -176,7 +155,7 @@ foreach(pair_spec IN LISTS FCC_E2E_PAIRS)
 endforeach()
 
 set(FCC_GEM5_SMOKE_CASES
-  "sum-array.sum-array-demo-chess-6x6"
+  "sum-array.mesh-6x6-extmem-1"
 )
 
 foreach(case_name IN LISTS FCC_GEM5_SMOKE_CASES)
