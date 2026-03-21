@@ -28,7 +28,10 @@ def find_tool(name, module_spec=None):
 
 def run_check(script, args_list, check_name, output_dir):
     """Run a check script and capture results."""
-    log_path = os.path.join(output_dir, f"{check_name}.log")
+    # Sanitize check_name for use as filename (replace / with _)
+    safe_name = check_name.replace("/", "_").replace("\\", "_")
+    log_path = os.path.join(output_dir, f"{safe_name}.log")
+    os.makedirs(output_dir, exist_ok=True)
     cmd = [sys.executable, script] + args_list
 
     print(f"\n{'='*60}")
@@ -50,20 +53,35 @@ def run_check(script, args_list, check_name, output_dir):
 
 
 def generate_golden_traces(fcc_exec, adg_path, module_name, output_dir):
-    """Run fcc --simulate --trace-port-dump to produce golden traces.
+    """Generate golden traces from the C++ simulator.
 
-    Uses --simulate --trace-port-dump without --gen-sv so fcc enters
-    the normal mapping+simulation path rather than the SV generation
-    early-return branch.
+    Golden trace generation requires a full mapped case (DFG+ADG), not
+    an ADG-only input. If the test MLIR is ADG-only (no corresponding
+    DFG or source), golden traces cannot be generated and the behaviour
+    check falls back to standalone TB-only verification.
+
+    When a DFG companion exists (same directory, .dfg.mlir extension),
+    it is used together with the ADG for full mapped simulation.
     """
     trace_dir = os.path.join(output_dir, "rtl-traces")
-    cmd = [
-        fcc_exec,
-        "--simulate",
-        "--adg", adg_path,
-        "--trace-port-dump", module_name,
-        "-o", output_dir,
-    ]
+
+    # Look for a companion DFG file for mapped simulation
+    adg_dir = os.path.dirname(adg_path)
+    adg_stem = os.path.basename(adg_path).replace(".fabric.mlir", "")
+    dfg_path = os.path.join(adg_dir, adg_stem + ".dfg.mlir")
+
+    cmd = [fcc_exec, "--simulate", "--adg", adg_path,
+           "--trace-port-dump", module_name, "-o", output_dir]
+
+    if os.path.isfile(dfg_path):
+        # Full mapped simulation with DFG
+        cmd.extend(["--dfg", dfg_path])
+    else:
+        # ADG-only: cannot run C++ simulator golden traces.
+        # The behaviour check will rely on standalone TB verification.
+        print(f"[behaviour] No companion DFG for {adg_path}; "
+              "golden trace generation skipped (ADG-only)")
+        return None
     print(f"[behaviour] Generating golden traces: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
