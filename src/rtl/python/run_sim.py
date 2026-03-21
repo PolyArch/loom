@@ -28,10 +28,11 @@ def resolve_verilator():
 def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
                       tb_files=None, verilator_main=None,
                       dut_module=None, dut_inst_dir=None,
-                      num_dut_inputs=1, num_dut_outputs=1):
+                      num_dut_inputs=1, num_dut_outputs=1,
+                      filelist_override=None):
     """Compile with Verilator."""
     obj_dir = os.path.join(output_dir, "obj_dir")
-    filelist = os.path.join(rtl_dir, "filelist.f")
+    filelist = filelist_override or os.path.join(rtl_dir, "filelist.f")
     verilator_exec = resolve_verilator()
 
     cmd = [
@@ -266,6 +267,13 @@ def main():
     parser.add_argument("--plusargs", nargs="*", default=[],
                         help="Additional plusargs to pass to the simulator "
                              "(e.g. +NUM_INPUT_TOKENS_0=16 +CONFIG_FILE=cfg.hex)")
+    parser.add_argument("--standalone", default="",
+                        help="Standalone TB module name (e.g. tb_backpressure_test). "
+                             "Compiles using --standalone-filelist instead of "
+                             "rtl-dir/filelist.f.")
+    parser.add_argument("--standalone-filelist", default="",
+                        help="Filelist for standalone TBs (e.g. filelist_standalone.f). "
+                             "Used with --standalone to exclude FP modules.")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -314,6 +322,14 @@ def main():
                 plusargs.append(pa)
                 existing_keys.add(key)
 
+    # Determine filelist override for standalone mode
+    filelist_override = None
+    if args.standalone and args.standalone_filelist:
+        filelist_override = args.standalone_filelist
+        # For standalone mode, override top module to the standalone TB
+        if not args.top_module or args.top_module == "tb_module_wrapper":
+            args.top_module = args.standalone
+
     if args.tool == "verilator":
         sim_exec = compile_verilator(
             args.rtl_dir, args.tb_dir,
@@ -323,7 +339,8 @@ def main():
             dut_module=args.dut_module or None,
             dut_inst_dir=args.dut_inst_dir or None,
             num_dut_inputs=args.num_dut_inputs,
-            num_dut_outputs=args.num_dut_outputs)
+            num_dut_outputs=args.num_dut_outputs,
+            filelist_override=filelist_override)
     else:
         sim_exec = compile_vcs(
             args.rtl_dir, args.tb_dir,

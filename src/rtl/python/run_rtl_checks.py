@@ -682,7 +682,7 @@ def main():
         if "synth" in args.checks:
             phys_dir = os.path.join(test_output, "physical")
             os.makedirs(phys_dir, exist_ok=True)
-            if not find_tool("dc_shell", "synopsys/syn/X-2025.06-SP3"):
+            if not find_tool("dc_shell", "synopsys/syn/W-2024.09-SP5"):
                 print(f"[synth/{tc['module']}/{tc['test']}] SKIP: dc_shell not found")
                 results["synth"]["skipped"] += 1
             else:
