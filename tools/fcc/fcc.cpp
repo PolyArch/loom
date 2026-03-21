@@ -18,6 +18,7 @@
 #include "fcc/Simulator/SimInputSynthesis.h"
 #include "fcc/Simulator/RuntimeImageBuilder.h"
 #include "fcc/Simulator/SimSession.h"
+#include "fcc/SVGen/SVGen.h"
 #include "fcc/Viz/VizExporter.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -842,6 +843,33 @@ int main(int argc, char **argv) {
     }
     return 0;
   };
+
+  // ===== SVGen mode: generate SystemVerilog from ADG =====
+  if (args.genSV) {
+    if (args.adgPath.empty()) {
+      llvm::errs() << "fcc: --gen-sv requires --adg\n";
+      return 1;
+    }
+    auto adgMod = loadMLIR(args.adgPath, context);
+    if (!adgMod)
+      return 1;
+    if (failed(fcc::verifyFabricModule(*adgMod))) {
+      llvm::errs() << "fcc: ADG fabric.module verification failed\n";
+      return 1;
+    }
+
+    fcc::svgen::SVGenOptions svOpts;
+    svOpts.rtlSourceDir = std::string(FCC_SOURCE_DIR) + "/src/rtl";
+    svOpts.outputDir = args.outputDir;
+    svOpts.fpIpProfile = args.fpIpProfile;
+
+    llvm::outs() << "fcc: generating SystemVerilog...\n";
+    if (!fcc::svgen::generateSV(*adgMod, &context, svOpts)) {
+      llvm::errs() << "fcc: SystemVerilog generation failed\n";
+      return 1;
+    }
+    return 0;
+  }
 
   // ===== Viz-only mode: just visualize, no mapping =====
   if (args.vizOnly) {

@@ -30,6 +30,7 @@ target_link_libraries(fcc PRIVATE
   FccConversion
   FccDataflow
   FccFabric
+  FccSVGen
   FccViz
 
   # Clang libraries (in-process frontend)

@@ -1,57 +1,50 @@
 // fabric_handshake_if.sv -- Parameterized valid/ready handshake interface.
 //
 // Standard data-flow interface used by all fabric modules.  When
-// TAG_WIDTH > 0 a sideband tag field is included for temporal routing
-// and memory-lane identification.
+// TAG_WIDTH > 0 a sideband tag field carries temporal routing or
+// memory-lane identification.  When TAG_WIDTH == 0, a 1-bit dummy
+// tag is always present in the modports for port uniformity; the
+// source must tie it to 0.
 
 interface fabric_handshake_if #(
   parameter int unsigned DATA_WIDTH = 32,
   parameter int unsigned TAG_WIDTH  = 0
 );
 
+  // Effective tag width: at least 1 bit for port uniformity.
+  localparam int unsigned TAG_W   = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
+  localparam bit          HAS_TAG = (TAG_WIDTH > 0);
+
   // ---------------------------------------------------------------
   // Signals
   // ---------------------------------------------------------------
 
-  logic                    valid;
-  logic                    ready;
-  logic [DATA_WIDTH-1:0]   data;
+  logic                  valid;
+  logic                  ready;
+  logic [DATA_WIDTH-1:0] data;
+  logic [TAG_W-1:0]      tag;
 
-  // Tag field is conditionally generated.  When TAG_WIDTH == 0 the
-  // generate block produces no signals and modports omit the tag.
-  generate
-    if (TAG_WIDTH > 0) begin : gen_tag
-      logic [TAG_WIDTH-1:0] tag;
-    end : gen_tag
-  endgenerate
-
-  // Transfer indicator -- asserted for exactly one cycle when a
-  // payload is consumed by the sink.
+  // Transfer indicator -- asserted when a payload is consumed.
   logic transfer;
   assign transfer = valid & ready;
 
   // ---------------------------------------------------------------
-  // Modports
+  // Modports -- tag is always exposed for port uniformity.
   // ---------------------------------------------------------------
 
-  generate
-    if (TAG_WIDTH > 0) begin : gen_modport_tagged
-      // Modports are declared inside generate so they can reference
-      // the conditionally-generated tag signal.
-    end : gen_modport_tagged
-  endgenerate
-
-  // Source drives valid, data (and tag when present); reads ready.
+  // Source drives valid, data, tag; reads ready.
   modport source (
     output valid,
     output data,
+    output tag,
     input  ready
   );
 
-  // Sink drives ready; reads valid, data (and tag when present).
+  // Sink drives ready; reads valid, data, tag.
   modport sink (
     input  valid,
     input  data,
+    input  tag,
     output ready
   );
 

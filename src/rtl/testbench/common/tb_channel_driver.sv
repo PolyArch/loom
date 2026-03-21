@@ -1,13 +1,11 @@
-// tb_channel_driver.sv -- Token driver that reads a hex trace file and drives
-//                         a handshake channel (valid/ready protocol).
+// tb_channel_driver.sv -- Token driver from hex trace file.
 //
-// Trace file format (one line per token, $readmemh compatible):
-//   <data_hex>             -- data only (tag defaults to 0)
-//   <data_hex> <tag_hex>   -- data and tag
+// Trace format: one hex value per line representing the packed token
+// {tag, data} where tag occupies the upper TAG_WIDTH bits and data the
+// lower DATA_WIDTH bits.  When TAG_WIDTH == 0, each line is just data.
 //
-// The driver asserts valid when tokens remain. It advances to the next token
-// on a successful transfer (valid && ready). When all tokens have been sent,
-// it deasserts valid and asserts the 'done' output.
+// The number of tokens is provided explicitly via the NUM_TOKENS parameter
+// (not auto-detected from the file).
 //
 // Non-synthesizable (testbench only).
 
@@ -15,7 +13,8 @@
 
 module tb_channel_driver #(
     parameter DATA_WIDTH  = 32,
-    parameter TAG_WIDTH   = 4,
+    parameter TAG_WIDTH   = 0,
+    parameter NUM_TOKENS  = 0,       // Explicit token count (0 = no tokens)
     parameter MAX_TOKENS  = 4096,
     parameter TRACE_FILE  = "input_trace.hex"
 )(
@@ -24,7 +23,7 @@ module tb_channel_driver #(
 
     // Handshake channel output (source side)
     output reg  [DATA_WIDTH-1:0]  data,
-    output reg  [TAG_WIDTH-1:0]   tag,
+    output reg  [TAG_WIDTH > 0 ? TAG_WIDTH-1 : 0 : 0] tag,
     output reg                    valid,
     input  wire                   ready,
 
@@ -34,44 +33,32 @@ module tb_channel_driver #(
 );
 
     // -------------------------------------------------------------------------
-    // Token storage
+    // Token storage -- packed {tag, data} per entry
     // -------------------------------------------------------------------------
-    // Combined storage: each entry holds {tag, data} packed together.
-    // For the trace file, data occupies the lower DATA_WIDTH bits and tag
-    // occupies the next TAG_WIDTH bits.
-    localparam ENTRY_WIDTH = DATA_WIDTH + TAG_WIDTH;
+    localparam TAG_W = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
+    localparam ENTRY_WIDTH = DATA_WIDTH + TAG_W;
     reg [ENTRY_WIDTH-1:0] token_mem [0:MAX_TOKENS-1];
-
-    // Number of valid tokens loaded from the trace file
-    integer num_tokens;
 
     // Current index into the token array
     integer token_idx;
+
+    // Effective number of tokens
+    integer eff_num_tokens;
 
     // -------------------------------------------------------------------------
     // Trace loading
     // -------------------------------------------------------------------------
     initial begin : load_trace
-        integer iter_var0;
-        // Initialize memory to zero
-        for (iter_var0 = 0; iter_var0 < MAX_TOKENS; iter_var0 = iter_var0 + 1) begin : mem_init_loop
-            token_mem[iter_var0] = {ENTRY_WIDTH{1'b0}};
-        end
+        eff_num_tokens = NUM_TOKENS;
+        if (eff_num_tokens > MAX_TOKENS) begin : clamp_tokens
+            eff_num_tokens = MAX_TOKENS;
+        end : clamp_tokens
 
-        $readmemh(TRACE_FILE, token_mem);
+        if (eff_num_tokens > 0) begin : do_load
+            $readmemh(TRACE_FILE, token_mem, 0, eff_num_tokens - 1);
+        end : do_load
 
-        // Count valid tokens by scanning for the first all-zero entry
-        // after loading. This heuristic assumes the trace does not
-        // intentionally contain all-zero tokens at the end.
-        // A more robust approach would use a separate count file.
-        num_tokens = 0;
-        for (iter_var0 = 0; iter_var0 < MAX_TOKENS; iter_var0 = iter_var0 + 1) begin : count_loop
-            if (token_mem[iter_var0] !== {ENTRY_WIDTH{1'bx}}) begin : count_valid
-                num_tokens = iter_var0 + 1;
-            end
-        end
-
-        $display("[tb_channel_driver] Loaded %0d tokens from %s", num_tokens, TRACE_FILE);
+        $display("[tb_channel_driver] %0d tokens from %s", eff_num_tokens, TRACE_FILE);
     end
 
     // -------------------------------------------------------------------------
@@ -81,23 +68,23 @@ module tb_channel_driver #(
         if (!rst_n) begin : drive_reset
             token_idx   <= 0;
             valid       <= 1'b0;
-            data        <= {DATA_WIDTH{1'b0}};
-            tag         <= {TAG_WIDTH{1'b0}};
-            done        <= 1'b0;
+            data        <= '0;
+            tag         <= '0;
+            done        <= (eff_num_tokens == 0) ? 1'b1 : 1'b0;
             token_count <= 32'd0;
         end else begin : drive_active
             if (done) begin : drive_done_hold
                 valid <= 1'b0;
-            end else if (token_idx < num_tokens) begin : drive_send
-                // Present current token
+            end else if (token_idx < eff_num_tokens) begin : drive_send
                 data  <= token_mem[token_idx][DATA_WIDTH-1:0];
-                tag   <= token_mem[token_idx][ENTRY_WIDTH-1 -: TAG_WIDTH];
+                if (TAG_WIDTH > 0) begin : drive_tag
+                    tag <= token_mem[token_idx][ENTRY_WIDTH-1 -: TAG_W];
+                end : drive_tag
                 valid <= 1'b1;
 
-                // Advance on transfer
                 if (valid && ready) begin : drive_advance
                     token_count <= token_count + 32'd1;
-                    if (token_idx + 1 >= num_tokens) begin : drive_last
+                    if (token_idx + 1 >= eff_num_tokens) begin : drive_last
                         done  <= 1'b1;
                         valid <= 1'b0;
                     end else begin : drive_next
@@ -105,7 +92,6 @@ module tb_channel_driver #(
                     end
                 end
             end else begin : drive_empty
-                // No tokens loaded or already past end
                 valid <= 1'b0;
                 done  <= 1'b1;
             end

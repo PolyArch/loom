@@ -47,6 +47,11 @@ struct FccArgs {
   std::string mapperResolvedBaseConfigPath;
   MapperOptions mapperOptions;
 
+  // RTL generation
+  bool genSV = false;
+  std::string fpIpProfile;
+  std::string tracePortDump;  // module name to dump port traces for
+
   // Derived: base name of first source (e.g. "vecadd" from "vecadd.c")
   std::string baseName;
 };

@@ -1,8 +1,14 @@
-// fabric_axi_pkg.sv -- AXI4 Memory-Mapped type definitions.
+// fabric_axi_pkg.sv -- AXI4 Memory-Mapped constants and enums.
 //
-// Provides parameterized channel structs for AXI4 AW, W, B, AR, R
-// channels, standard response codes, and helper types.  Used by
-// fabric memory and extmemory modules that expose AXI-MM ports.
+// Provides AXI4 response codes, burst types, and helper functions.
+// Width-parameterized AXI channel signals are defined as flat ports
+// in each module (not as packed structs from this package), because
+// SystemVerilog packages cannot have parameterized typedefs.
+//
+// Modules that need AXI ports should declare signals like:
+//   input  logic [ADDR_WIDTH-1:0] awaddr,
+//   input  logic [DATA_WIDTH-1:0] wdata,
+// and reference constants from this package (e.g., fabric_axi_pkg::AXI_RESP_OKAY).
 
 package fabric_axi_pkg;
 
@@ -28,64 +34,12 @@ package fabric_axi_pkg;
   } axi_burst_t;
 
   // ---------------------------------------------------------------
-  // AXI4 Channel Structs
-  //
-  // These are parameterized by width constants that must be provided
-  // at instantiation.  SystemVerilog does not allow parameterized
-  // typedefs in packages, so we define structs with maximum widths
-  // and use the relevant bit ranges.  Alternatively, modules that
-  // instantiate AXI ports declare local typedefs.
-  //
-  // For convenience, we provide structs at common widths and a set
-  // of localparam constants.
+  // AXI4 Field Widths (protocol-fixed, width-independent)
   // ---------------------------------------------------------------
 
-  // Common default parameters.
-  localparam int unsigned AXI_ADDR_WIDTH_DEFAULT = 32;
-  localparam int unsigned AXI_DATA_WIDTH_DEFAULT = 64;
-  localparam int unsigned AXI_ID_WIDTH_DEFAULT   = 8;
-  localparam int unsigned AXI_LEN_WIDTH          = 8;   // AXI4 burst length
-  localparam int unsigned AXI_SIZE_WIDTH         = 3;   // AxSIZE
-  localparam int unsigned AXI_STRB_WIDTH_DEFAULT = AXI_DATA_WIDTH_DEFAULT / 8;
-
-  // ----- Write Address Channel (AW) -----
-  typedef struct packed {
-    logic [AXI_ID_WIDTH_DEFAULT-1:0]   awid;
-    logic [AXI_ADDR_WIDTH_DEFAULT-1:0] awaddr;
-    logic [AXI_LEN_WIDTH-1:0]         awlen;
-    logic [AXI_SIZE_WIDTH-1:0]        awsize;
-    axi_burst_t                       awburst;
-  } axi_aw_t;
-
-  // ----- Write Data Channel (W) -----
-  typedef struct packed {
-    logic [AXI_DATA_WIDTH_DEFAULT-1:0] wdata;
-    logic [AXI_STRB_WIDTH_DEFAULT-1:0] wstrb;
-    logic                              wlast;
-  } axi_w_t;
-
-  // ----- Write Response Channel (B) -----
-  typedef struct packed {
-    logic [AXI_ID_WIDTH_DEFAULT-1:0] bid;
-    axi_resp_t                       bresp;
-  } axi_b_t;
-
-  // ----- Read Address Channel (AR) -----
-  typedef struct packed {
-    logic [AXI_ID_WIDTH_DEFAULT-1:0]   arid;
-    logic [AXI_ADDR_WIDTH_DEFAULT-1:0] araddr;
-    logic [AXI_LEN_WIDTH-1:0]         arlen;
-    logic [AXI_SIZE_WIDTH-1:0]        arsize;
-    axi_burst_t                       arburst;
-  } axi_ar_t;
-
-  // ----- Read Data Channel (R) -----
-  typedef struct packed {
-    logic [AXI_ID_WIDTH_DEFAULT-1:0]   rid;
-    logic [AXI_DATA_WIDTH_DEFAULT-1:0] rdata;
-    axi_resp_t                         rresp;
-    logic                              rlast;
-  } axi_r_t;
+  localparam int unsigned AXI_LEN_WIDTH  = 8;  // AxLEN (burst length)
+  localparam int unsigned AXI_SIZE_WIDTH = 3;  // AxSIZE
+  localparam int unsigned AXI_RESP_WIDTH = 2;  // xRESP
 
   // ---------------------------------------------------------------
   // Helper: Compute AXI strobe width from data width
@@ -115,5 +69,14 @@ package fabric_axi_pkg;
     endcase
     return result;
   endfunction : axsize_from_bytes
+
+  // ---------------------------------------------------------------
+  // Helper: Compute AxSIZE from element size log2 (FCC convention)
+  // ---------------------------------------------------------------
+  function automatic logic [AXI_SIZE_WIDTH-1:0] axsize_from_log2(
+    input int unsigned elem_size_log2
+  );
+    return elem_size_log2[AXI_SIZE_WIDTH-1:0];
+  endfunction : axsize_from_log2
 
 endpackage : fabric_axi_pkg
