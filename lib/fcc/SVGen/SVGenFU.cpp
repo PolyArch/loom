@@ -310,13 +310,13 @@ static void emitWidthAdaptOpInstance(FUEmitContext &ctx, mlir::Operation &op,
 ///   - Standard in_data_N/in_valid_N/in_ready_N per operand
 ///   - Output ports: out_data_N/out_valid_N/out_ready_N (always indexed)
 ///   - handshake.load has: mem_addr, mem_addr_valid, mem_addr_ready,
-///     mem_data, mem_data_valid, mem_data_ready
-///   - handshake.store has: mem_addr, mem_data, mem_valid, mem_ready
+///     mem_rdata, mem_rdata_valid, mem_rdata_ready
+///   - handshake.store has: mem_addr, mem_wdata, mem_valid, mem_ready
 ///   - Clock/reset: clk, rst_n
 ///
-/// For memory-side ports, the generated FU body connects them to
-/// declared wires -- the PE-level memory subsystem wiring is handled
-/// at a higher level.
+/// Memory-side ports are connected to the FU wrapper module's
+/// module-level mem_* ports, which the PE wrapper will pass through
+/// to the top-level memory subsystem.
 static void emitMemoryOpInstance(FUEmitContext &ctx, mlir::Operation &op,
                                  unsigned /*fuDataWidth*/) {
   llvm::StringRef opName = op.getName().getStringRef();
@@ -379,60 +379,67 @@ static void emitMemoryOpInstance(FUEmitContext &ctx, mlir::Operation &op,
 
   // Memory-side ports for handshake.load:
   //   mem_addr (ADDR_WIDTH), mem_addr_valid, mem_addr_ready  -- request
-  //   mem_data (DATA_WIDTH), mem_data_valid, mem_data_ready  -- response
+  //   mem_rdata (DATA_WIDTH), mem_rdata_valid, mem_rdata_ready -- response
+  // Connected to FU wrapper module-level ports.
   if (opName == "handshake.load") {
-    std::string memAddrWire = instName + "_mem_addr";
-    std::string memAddrValidWire = instName + "_mem_addr_valid";
-    std::string memAddrReadyWire = instName + "_mem_addr_ready";
-    std::string memDataWire = instName + "_mem_data";
-    std::string memDataValidWire = instName + "_mem_data_valid";
-    std::string memDataReadyWire = instName + "_mem_data_ready";
-
-    ctx.emitter.emitWire("logic" + SVEmitter::bitRange(addrWidth), memAddrWire);
-    ctx.emitter.emitWire("logic", memAddrValidWire);
-    ctx.emitter.emitWire("logic", memAddrReadyWire);
-    ctx.emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth), memDataWire);
-    ctx.emitter.emitWire("logic", memDataValidWire);
-    ctx.emitter.emitWire("logic", memDataReadyWire);
-
-    connections.push_back({"mem_addr", memAddrWire});
-    connections.push_back({"mem_addr_valid", memAddrValidWire});
-    connections.push_back({"mem_addr_ready", memAddrReadyWire});
-    connections.push_back({"mem_data", memDataWire});
-    connections.push_back({"mem_data_valid", memDataValidWire});
-    connections.push_back({"mem_data_ready", memDataReadyWire});
-
-    // TODO: Connect memory-side wires to enclosing PE memory interface.
-    // For now, tie mem_addr_ready high and mem_data_valid low.
-    ctx.emitter.emitAssign(memAddrReadyWire, "1'b1");
-    ctx.emitter.emitAssign(memDataValidWire, "1'b0");
-    ctx.emitter.emitAssign(memDataWire, "'0");
+    connections.push_back({"mem_addr", "mem_addr"});
+    connections.push_back({"mem_addr_valid", "mem_addr_valid"});
+    connections.push_back({"mem_addr_ready", "mem_addr_ready"});
+    connections.push_back({"mem_rdata", "mem_rdata"});
+    connections.push_back({"mem_rdata_valid", "mem_rdata_valid"});
+    connections.push_back({"mem_rdata_ready", "mem_rdata_ready"});
   }
 
   // Memory-side ports for handshake.store:
-  //   mem_addr (ADDR_WIDTH), mem_data (DATA_WIDTH), mem_valid, mem_ready
+  //   mem_addr (ADDR_WIDTH), mem_wdata (DATA_WIDTH), mem_valid, mem_ready
+  // Connected to FU wrapper module-level ports.
   if (opName == "handshake.store") {
-    std::string memAddrWire = instName + "_mem_addr";
-    std::string memDataWire = instName + "_mem_data";
-    std::string memValidWire = instName + "_mem_valid";
-    std::string memReadyWire = instName + "_mem_ready";
-    ctx.emitter.emitWire("logic" + SVEmitter::bitRange(addrWidth), memAddrWire);
-    ctx.emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth), memDataWire);
-    ctx.emitter.emitWire("logic", memValidWire);
-    ctx.emitter.emitWire("logic", memReadyWire);
-
-    connections.push_back({"mem_addr", memAddrWire});
-    connections.push_back({"mem_data", memDataWire});
-    connections.push_back({"mem_valid", memValidWire});
-    connections.push_back({"mem_ready", memReadyWire});
-
-    // TODO: Connect memory-side wires to enclosing PE memory interface.
-    // For now, tie mem_ready high so the store can complete.
-    ctx.emitter.emitAssign(memReadyWire, "1'b1");
+    connections.push_back({"mem_addr", "mem_addr"});
+    connections.push_back({"mem_wdata", "mem_wdata"});
+    connections.push_back({"mem_valid", "mem_valid"});
+    connections.push_back({"mem_ready", "mem_ready"});
   }
 
   ctx.emitter.emitInstance(svModName, instName, params, connections);
   ctx.emitter.emitBlankLine();
+}
+
+/// Detect memory op type in an FU body. Returns "load", "store", or "".
+static std::string detectFUMemoryOpType(fcc::fabric::FunctionUnitOp fuOp) {
+  for (auto &op : fuOp.getBody().front().getOperations()) {
+    llvm::StringRef opName = op.getName().getStringRef();
+    if (opName == "handshake.load")
+      return "load";
+    if (opName == "handshake.store")
+      return "store";
+  }
+  return "";
+}
+
+/// Compute ADDR_WIDTH and DATA_WIDTH for a memory FU by inspecting its
+/// body's handshake.load or handshake.store op.
+static std::pair<unsigned, unsigned>
+computeMemoryWidths(fcc::fabric::FunctionUnitOp fuOp,
+                    const std::string &memType) {
+  unsigned addrWidth = 32;
+  unsigned dataWidth = 32;
+  for (auto &op : fuOp.getBody().front().getOperations()) {
+    llvm::StringRef opName = op.getName().getStringRef();
+    if ((memType == "load" && opName == "handshake.load") ||
+        (memType == "store" && opName == "handshake.store")) {
+      if (op.getNumOperands() > 0)
+        addrWidth = getValueWidth(op.getOperand(0));
+      if (memType == "load") {
+        if (op.getNumResults() > 0)
+          dataWidth = getValueWidth(op.getResult(0));
+      } else {
+        if (op.getNumOperands() > 1)
+          dataWidth = getValueWidth(op.getOperand(1));
+      }
+      break;
+    }
+  }
+  return {addrWidth, dataWidth};
 }
 
 /// Emit a handshake.join instantiation with packed-array ports.
@@ -795,6 +802,16 @@ std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
     totalConfigBits += getOpConfigBits(op, dataWidth);
   }
 
+  // Detect memory op type in FU body (load, store, or none).
+  std::string memOpType = detectFUMemoryOpType(fuOp);
+  unsigned memAddrWidth = 32;
+  unsigned memDataWidth = 32;
+  if (!memOpType.empty()) {
+    auto [aw, dw] = computeMemoryWidths(fuOp, memOpType);
+    memAddrWidth = aw;
+    memDataWidth = dw;
+  }
+
   // Build parameter list.
   std::vector<std::string> params;
   params.push_back("parameter DATA_WIDTH = " + std::to_string(dataWidth));
@@ -830,6 +847,25 @@ std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
         {SVPortDir::Input,
          "logic" + SVEmitter::bitRange(totalConfigBits),
          "fu_cfg"});
+
+  // Memory-side ports exposed at FU module boundary.
+  if (memOpType == "load") {
+    ports.push_back({SVPortDir::Output,
+                     "logic" + SVEmitter::bitRange(memAddrWidth), "mem_addr"});
+    ports.push_back({SVPortDir::Output, "logic", "mem_addr_valid"});
+    ports.push_back({SVPortDir::Input, "logic", "mem_addr_ready"});
+    ports.push_back({SVPortDir::Input,
+                     "logic" + SVEmitter::bitRange(memDataWidth), "mem_rdata"});
+    ports.push_back({SVPortDir::Input, "logic", "mem_rdata_valid"});
+    ports.push_back({SVPortDir::Output, "logic", "mem_rdata_ready"});
+  } else if (memOpType == "store") {
+    ports.push_back({SVPortDir::Output,
+                     "logic" + SVEmitter::bitRange(memAddrWidth), "mem_addr"});
+    ports.push_back({SVPortDir::Output,
+                     "logic" + SVEmitter::bitRange(memDataWidth), "mem_wdata"});
+    ports.push_back({SVPortDir::Output, "logic", "mem_valid"});
+    ports.push_back({SVPortDir::Input, "logic", "mem_ready"});
+  }
 
   emitter.emitModuleHeader(moduleName, params, ports);
 

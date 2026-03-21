@@ -3,8 +3,26 @@
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
+
+
+def resolve_verilator():
+    """Find the verilator executable, trying module load if needed."""
+    if shutil.which("verilator"):
+        return "verilator"
+    # Try module loading
+    try:
+        result = subprocess.run(
+            ["bash", "-c",
+             "source /etc/profile.d/modules.sh && module load verilator/5.044 && which verilator"],
+            capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "verilator"  # fallback, will fail at compile time
 
 
 def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
@@ -14,9 +32,11 @@ def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
     """Compile with Verilator."""
     obj_dir = os.path.join(output_dir, "obj_dir")
     filelist = os.path.join(rtl_dir, "filelist.f")
+    verilator_exec = resolve_verilator()
 
     cmd = [
-        "verilator", "--sv", "--cc", "--exe", "--build",
+        verilator_exec, "--sv", "--cc", "--exe", "--build",
+        "--timing",  # Required for #delay and event controls in testbenches
         "-Wall", "-Wno-fatal",
         "--top-module", top_module,
         "-f", filelist,

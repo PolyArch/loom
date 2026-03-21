@@ -664,7 +664,9 @@ def main():
                         continue
                 if os.path.isdir(gen_dir):
                     # Derive the generated top module name from MLIR
-                    synth_mod_name = tc.get("mod_name", tc["module"])
+                    synth_mod_name = extract_module_name(tc["mlir"])
+                    if not synth_mod_name:
+                        synth_mod_name = tc["module"]
                     synth_design = f"fabric_top_{synth_mod_name}"
                     passed = run_check(
                         os.path.join(scripts_dir, "run_synth.py"),
