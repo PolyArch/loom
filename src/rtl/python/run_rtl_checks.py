@@ -440,7 +440,12 @@ def main():
     args = parser.parse_args()
 
     scripts_dir = os.path.dirname(os.path.abspath(__file__))
-    results = {"passed": 0, "failed": 0, "skipped": 0}
+    # Per-check result counters so gen passes don't mask behaviour skips
+    results = {
+        "gen": {"passed": 0, "failed": 0, "skipped": 0},
+        "behaviour": {"passed": 0, "failed": 0, "skipped": 0},
+        "synth": {"passed": 0, "failed": 0, "skipped": 0},
+    }
 
     # Discover test cases
     fabric_dir = os.path.join(args.test_dir, "fabric")
@@ -485,7 +490,7 @@ def main():
                 f"gen/{tc['module']}/{tc['test']}",
                 gen_dir
             )
-            results["passed" if passed else "failed"] += 1
+            results["gen"]["passed" if passed else "failed"] += 1
 
         # Check 1: Functional behaviour verification
         if "behaviour" in args.checks:
@@ -493,7 +498,7 @@ def main():
             os.makedirs(beh_dir, exist_ok=True)
             if not find_tool("verilator", "verilator/5.044"):
                 print(f"[behaviour/{tc['module']}/{tc['test']}] SKIP: verilator not found")
-                results["skipped"] += 1
+                results["behaviour"]["skipped"] += 1
             else:
                 gen_dir = os.path.join(test_output, "gen-collateral")
                 rtl_dir = os.path.join(gen_dir, "rtl")
@@ -528,7 +533,7 @@ def main():
                     if not gen_ok:
                         print(f"[behaviour/{tc['module']}/{tc['test']}] "
                               "FAIL: auto-gen failed")
-                        results["failed"] += 1
+                        results["behaviour"]["failed"] += 1
                         continue
 
                 golden_traces = find_golden_traces(test_output)
@@ -540,21 +545,17 @@ def main():
                         golden_traces = find_golden_traces(test_output)
 
                 if not golden_traces:
-                    # ADG-only test: no DFG companion exists, so the C++
-                    # simulator cannot generate golden traces (simulation
-                    # requires a mapped DFG+ADG result).  Mark as SKIP,
-                    # not PASS -- behaviour comparison is only valid when
-                    # mapped inputs are available.  Standalone Wave 7 TB
-                    # targets provide separate structural verification.
+                    # Missing golden traces = behaviour FAIL. The C++
+                    # simulator requires a mapped DFG+ADG input. Add a
+                    # companion .dfg.mlir alongside the .fabric.mlir.
                     print(f"[behaviour/{tc['module']}/{tc['test']}] "
-                          "SKIP: ADG-only test, no mapped DFG companion "
-                          "for golden trace generation. Add a companion "
-                          ".dfg.mlir to enable full behaviour comparison.")
-                    results["skipped"] += 1
+                          "FAIL: no golden traces (missing companion "
+                          ".dfg.mlir for mapped simulation)")
+                    results["behaviour"]["failed"] += 1
                 elif not os.path.isdir(rtl_dir):
                     print(f"[behaviour/{tc['module']}/{tc['test']}] "
                           "FAIL: generated RTL not found")
-                    results["failed"] += 1
+                    results["behaviour"]["failed"] += 1
                 else:
                     trace_dir = os.path.join(test_output, "rtl-traces")
 
@@ -669,7 +670,7 @@ def main():
                         f"behaviour/{tc['module']}/{tc['test']}",
                         beh_dir
                     )
-                    results["passed" if passed else "failed"] += 1
+                    results["behaviour"]["passed" if passed else "failed"] += 1
 
         # Check 3: Synthesis
         if "synth" in args.checks:
@@ -677,7 +678,7 @@ def main():
             os.makedirs(phys_dir, exist_ok=True)
             if not find_tool("dc_shell", "synopsys/syn/X-2025.06-SP3"):
                 print(f"[synth/{tc['module']}/{tc['test']}] SKIP: dc_shell not found")
-                results["skipped"] += 1
+                results["behaviour"]["skipped"] += 1
             else:
                 tcl_template = os.path.join(args.src_rtl, "tcl", "synth_template.tcl")
                 gen_dir = os.path.join(test_output, "gen-collateral", "rtl")
@@ -697,10 +698,9 @@ def main():
                     if not gen_ok:
                         print(f"[synth/{tc['module']}/{tc['test']}] "
                               "FAIL: auto-gen failed")
-                        results["failed"] += 1
+                        results["synth"]["failed"] += 1
                         continue
                 if os.path.isdir(gen_dir):
-                    # Derive the generated top module name from MLIR
                     synth_mod_name = extract_module_name(tc["mlir"])
                     if not synth_mod_name:
                         synth_mod_name = tc["module"]
@@ -712,29 +712,27 @@ def main():
                         f"synth/{tc['module']}/{tc['test']}",
                         phys_dir
                     )
-                    results["passed" if passed else "failed"] += 1
+                    results["synth"]["passed" if passed else "failed"] += 1
                 else:
                     print(f"[synth/{tc['module']}/{tc['test']}] "
-                          "SKIP: gen-collateral/rtl still missing after auto-gen")
-                    results["skipped"] += 1
+                          "SKIP: gen-collateral/rtl still missing")
+                    results["synth"]["skipped"] += 1
 
-    # Summary
+    # Per-check summary and exit decision
     print(f"\n{'='*60}")
-    print("RTL Verification Summary")
+    print("RTL Verification Summary (per-check)")
     print(f"{'='*60}")
-    print(f"  Passed:  {results['passed']}")
-    print(f"  Failed:  {results['failed']}")
-    print(f"  Skipped: {results['skipped']}")
+    any_failed = False
+    for check in ["gen", "behaviour", "synth"]:
+        if check not in args.checks:
+            continue
+        r = results[check]
+        print(f"  {check:12s}: passed={r['passed']} failed={r['failed']} skipped={r['skipped']}")
+        if r["failed"] > 0:
+            any_failed = True
 
-    # Fail if any tests failed, OR if all tests were skipped with zero passes.
-    # A run with only skipped cases means no verification actually occurred.
-    if results["failed"] > 0:
-        sys.exit(1)
-    elif results["passed"] == 0 and results["skipped"] > 0:
-        print("\nERROR: All behaviour tests were skipped (no mapped DFG "
-              "companions). Add companion .dfg.mlir files to enable "
-              "golden-trace comparison, or run standalone Wave 7 TB "
-              "targets directly.")
+    # Exit nonzero if any check has failures
+    if any_failed:
         sys.exit(1)
     else:
         sys.exit(0)
