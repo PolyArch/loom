@@ -2,6 +2,9 @@
 //
 // Generates a free-running clock and an active-low reset that deasserts
 // after RST_CYCLES clock cycles. Non-synthesizable (testbench only).
+//
+// Clock uses `always` block instead of `initial forever` for broader
+// simulator compatibility (including Verilator --timing --binary).
 
 `timescale 1ns/1ps
 
@@ -14,16 +17,17 @@ module tb_clk_rst_gen #(
 );
 
     // Half period for toggling
-    localparam HALF_PERIOD = CLK_PERIOD_NS / 2.0;
+    localparam HALF_PERIOD = CLK_PERIOD_NS / 2;
 
     // -------------------------------------------------------------------------
-    // Clock generation
+    // Clock generation using always block (Verilator compatible)
     // -------------------------------------------------------------------------
     initial begin : clk_init
         clk = 1'b0;
-        forever begin : clk_toggle
-            #(HALF_PERIOD) clk = ~clk;
-        end
+    end
+
+    always begin : clk_toggle
+        #(HALF_PERIOD) clk = ~clk;
     end
 
     // -------------------------------------------------------------------------

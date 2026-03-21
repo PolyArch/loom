@@ -398,6 +398,11 @@ static void emitPrewrittenInstance(TopEmitContext &ctx, mlir::Operation &op,
   ctx.emitter.emitBlankLine();
 }
 
+// Memory FU connectivity uses the visible fabric graph exclusively.
+// No hidden memory sideband ports are needed at the PE or top level.
+// Load/store FUs are pure forwarding operators: data flows through
+// the visible MLIR routing graph (switches/FIFOs) to/from memory modules.
+
 } // namespace
 
 /// Generate the fabric_top.sv top module.
@@ -534,6 +539,8 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
 
       ctx.configInstanceNames.push_back(instName);
 
+      // Memory connectivity uses the visible fabric graph (no sideband ports).
+
       emitter.emitInstance(actualModName, instName, instParams, conns);
       emitter.emitBlankLine();
       continue;
@@ -587,6 +594,8 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
 
       ctx.configInstanceNames.push_back(instName);
 
+      // Memory connectivity uses the visible fabric graph (no sideband ports).
+
       emitter.emitInstance(peModName, instName, peParams, peConns);
       emitter.emitBlankLine();
       continue;
@@ -638,6 +647,8 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
       emitter.emitWire("logic", instName + "_cfg_ready");
 
       ctx.configInstanceNames.push_back(instName);
+
+      // Memory connectivity uses the visible fabric graph (no sideband ports).
 
       emitter.emitInstance(peModName, instName, peParams, peConns);
       emitter.emitBlankLine();
