@@ -8,6 +8,7 @@
 #include "fcc/Mapper/TypeCompat.h"
 
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/SymbolTable.h"
 
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -141,6 +142,46 @@ static unsigned computeFifoConfigBits(fcc::fabric::FifoOp op) {
   return 0;
 }
 
+// Helper: resolve a FunctionUnitOp definition from an InstanceOp by searching
+// the enclosing MLIR module for a FunctionUnitOp with a matching sym_name.
+static fcc::fabric::FunctionUnitOp
+resolveFUInstance(fcc::fabric::InstanceOp instOp) {
+  llvm::StringRef refName = instOp.getModule().getValue();
+  auto searchRoot = instOp->getParentOfType<mlir::ModuleOp>();
+  if (!searchRoot)
+    return nullptr;
+  fcc::fabric::FunctionUnitOp resolved = nullptr;
+  searchRoot->walk([&](fcc::fabric::FunctionUnitOp fuOp) {
+    if (!resolved && fuOp.getSymName() == refName)
+      resolved = fuOp;
+  });
+  return resolved;
+}
+
+// Accumulate FU stats from either inline FunctionUnitOps or InstanceOps
+// referencing shared FU definitions within a PE body block.
+static void accumulateFUStats(mlir::Block &peBody, unsigned &numFU,
+                              unsigned &maxFUInputs, unsigned &maxFUOutputs,
+                              unsigned &maxFUConfigBits) {
+  auto processFU = [&](fcc::fabric::FunctionUnitOp fuOp) {
+    ++numFU;
+    auto fuFnType = fuOp.getFunctionType();
+    maxFUInputs = std::max(maxFUInputs, fuFnType.getNumInputs());
+    maxFUOutputs = std::max(maxFUOutputs, fuFnType.getNumResults());
+    maxFUConfigBits =
+        std::max(maxFUConfigBits, computeFUBodyCfgBits(fuOp));
+  };
+
+  for (auto &op : peBody.getOperations()) {
+    if (auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(op)) {
+      processFU(fuOp);
+    } else if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
+      if (auto fuOp = resolveFUInstance(instOp))
+        processFU(fuOp);
+    }
+  }
+}
+
 // Compute config bit count for a spatial PE.
 static unsigned computeSpatialPEConfigBits(fcc::fabric::SpatialPEOp op) {
   auto fnType = op.getFunctionType();
@@ -153,18 +194,8 @@ static unsigned computeSpatialPEConfigBits(fcc::fabric::SpatialPEOp op) {
   unsigned maxFUOutputs = 0;
   unsigned maxFUConfigBits = 0;
 
-  op.getBody().front().walk([&](fcc::fabric::FunctionUnitOp fuOp) {
-    ++numFU;
-    auto fuFnType = fuOp.getFunctionType();
-    unsigned fuIn = fuFnType.getNumInputs();
-    unsigned fuOut = fuFnType.getNumResults();
-    maxFUInputs = std::max(maxFUInputs, fuIn);
-    maxFUOutputs = std::max(maxFUOutputs, fuOut);
-
-    // Count all configurable body ops for FU internal config bits.
-    unsigned fuCfgBits = computeFUBodyCfgBits(fuOp);
-    maxFUConfigBits = std::max(maxFUConfigBits, fuCfgBits);
-  });
+  accumulateFUStats(op.getBody().front(), numFU, maxFUInputs, maxFUOutputs,
+                    maxFUConfigBits);
 
   if (numFU == 0)
     return 0;
@@ -208,18 +239,8 @@ static unsigned computeTemporalPEConfigBits(fcc::fabric::TemporalPEOp op) {
   unsigned maxFUOutputs = 0;
   unsigned maxFUConfigBits = 0;
 
-  op.getBody().front().walk([&](fcc::fabric::FunctionUnitOp fuOp) {
-    ++numFU;
-    auto fuFnType = fuOp.getFunctionType();
-    unsigned fuIn = fuFnType.getNumInputs();
-    unsigned fuOut = fuFnType.getNumResults();
-    maxFUInputs = std::max(maxFUInputs, fuIn);
-    maxFUOutputs = std::max(maxFUOutputs, fuOut);
-
-    // Count all configurable body ops for FU internal config bits.
-    unsigned fuCfgBits = computeFUBodyCfgBits(fuOp);
-    maxFUConfigBits = std::max(maxFUConfigBits, fuCfgBits);
-  });
+  accumulateFUStats(op.getBody().front(), numFU, maxFUInputs, maxFUOutputs,
+                    maxFUConfigBits);
 
   if (numFU == 0 || numInstruction == 0)
     return 0;

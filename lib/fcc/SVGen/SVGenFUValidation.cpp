@@ -43,7 +43,7 @@ static int getOpIntrinsicLatency(llvm::StringRef opName) {
       opName == "arith.index_cast" || opName == "arith.index_castui" ||
       opName == "arith.negf" || opName == "arith.cmpi" ||
       opName == "arith.cmpf" || opName == "math.absf" ||
-      opName == "llvm.bitreverse" ||
+      opName == "llvm.intr.bitreverse" ||
       opName == "handshake.cond_br" || opName == "handshake.constant" ||
       opName == "handshake.join" || opName == "handshake.load" ||
       opName == "handshake.store" || opName == "handshake.mux")

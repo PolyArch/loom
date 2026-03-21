@@ -222,9 +222,13 @@ bool generateSV(mlir::ModuleOp adgModule, mlir::MLIRContext *ctx,
   }
 
   // Also walk for FU definitions referenced by fabric.instance ops.
+  bool globalDepsOk = true;
   adgModule->walk([&](fcc::fabric::FunctionUnitOp fuOp) {
-    collectFUDeps(fuOp, registry, options.fpIpProfile);
+    if (!collectFUDeps(fuOp, registry, options.fpIpProfile))
+      globalDepsOk = false;
   });
+  if (!globalDepsOk)
+    return false;
 
   // --- Pass 2: Generate/Copy ---
 

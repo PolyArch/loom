@@ -8,6 +8,7 @@
 #include "fcc/Mapper/TypeCompat.h"
 
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/SymbolTable.h"
 
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -70,6 +71,18 @@ static unsigned computeFUBodyConfigBits(fcc::fabric::FunctionUnitOp fuOp) {
 
 static std::vector<FUInfo> collectFUs(mlir::Block &peBody) {
   std::vector<FUInfo> fus;
+
+  // Build a map of FunctionUnitOp definitions reachable from the enclosing
+  // MLIR module so that fabric.instance ops can resolve shared FU defs.
+  llvm::DenseMap<llvm::StringRef, fcc::fabric::FunctionUnitOp> fuDefMap;
+  if (mlir::Operation *parentOp = peBody.getParentOp()) {
+    if (auto parentModule = parentOp->getParentOfType<mlir::ModuleOp>()) {
+      parentModule->walk([&](fcc::fabric::FunctionUnitOp fuDef) {
+        fuDefMap[fuDef.getSymName()] = fuDef;
+      });
+    }
+  }
+
   for (auto &op : peBody.getOperations()) {
     if (auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(op)) {
       FUInfo info;
@@ -82,6 +95,27 @@ static std::vector<FUInfo> collectFUs(mlir::Block &peBody) {
       info.fuOp = fuOp;
 
       // Count FU internal config bits (all configurable body ops).
+      info.configBits = computeFUBodyConfigBits(fuOp);
+      fus.push_back(std::move(info));
+      continue;
+    }
+
+    // Handle fabric.instance referencing a shared FunctionUnitOp definition.
+    if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
+      llvm::StringRef refName = instOp.getModule().getValue();
+      auto it = fuDefMap.find(refName);
+      if (it == fuDefMap.end())
+        continue; // Not a FU instance (could be a PE or SW instance).
+      fcc::fabric::FunctionUnitOp fuOp = it->second;
+
+      FUInfo info;
+      info.fuSymName = instOp.getSymName().value_or(refName).str();
+      info.svModuleName =
+          "fu_" + SVEmitter::sanitizeName(fuOp.getSymName());
+      auto fnType = fuOp.getFunctionType();
+      info.numInputs = fnType.getNumInputs();
+      info.numOutputs = fnType.getNumResults();
+      info.fuOp = fuOp;
       info.configBits = computeFUBodyConfigBits(fuOp);
       fus.push_back(std::move(info));
     }

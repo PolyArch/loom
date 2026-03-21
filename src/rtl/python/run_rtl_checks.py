@@ -423,9 +423,16 @@ def main():
                         results["failed"] += 1
                         continue
                 if os.path.isdir(gen_dir):
+                    # Extract the real fabric.module @name for the
+                    # synthesis design name (the top SV module is
+                    # fabric_top_<name>).
+                    synth_module_name = extract_module_name(tc["mlir"])
+                    if not synth_module_name:
+                        synth_module_name = tc["module"]
+                    synth_design_name = "fabric_top_" + synth_module_name
                     passed = run_check(
                         os.path.join(scripts_dir, "run_synth.py"),
-                        ["--rtl-dir", gen_dir, "--design-name", tc["module"],
+                        ["--rtl-dir", gen_dir, "--design-name", synth_design_name,
                          "--output-dir", phys_dir, "--tcl-template", tcl_template],
                         f"synth/{tc['module']}/{tc['test']}",
                         phys_dir

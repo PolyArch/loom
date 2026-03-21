@@ -4,14 +4,15 @@
 //   - tb_clk_rst_gen, tb_config_loader, tb_channel_driver,
 //     tb_channel_monitor, tb_backpressure_gen
 //
-// Supports up to NUM_DUT_INPUTS input channels and NUM_DUT_OUTPUTS output
+// Supports up to MAX_CHANNELS (4) input channels and MAX_CHANNELS output
 // channels via generate loops. Each channel reads its own plusarg for
 // trace file path and token count.
 //
-// The DUT is instantiated via the `DUT_MODULE` macro, which must be
-// defined at compile time (e.g., verilator +define+DUT_MODULE=fabric_top_xyz
-// or VCS +define+DUT_MODULE=...).  If not defined, the wrapper falls back
-// to a loopback stub for self-testing of the TB infrastructure.
+// The DUT is instantiated via a generated include file (dut_inst.svh)
+// produced by run_rtl_checks.py. This file wires the DUT module ports
+// to the testbench driver/monitor arrays. When DUT_MODULE is defined
+// but no dut_inst.svh is provided, the wrapper uses a 1in/1out default.
+// When DUT_MODULE is not defined, a loopback stub is used.
 //
 // Trace format: all traces use packed hex (one value per line).
 //   - Input trace: {tag, data} per line (or just data if TAG_WIDTH==0)
@@ -20,14 +21,17 @@
 //   - Config trace: one 32-bit word per line
 //
 // Runtime-configurable via Verilator/VCS plusargs:
-//   +INPUT_TRACE_0=path  +INPUT_TRACE_1=path  ... (up to NUM_DUT_INPUTS-1)
-//   +OUTPUT_TRACE_0=path +OUTPUT_TRACE_1=path ... (up to NUM_DUT_OUTPUTS-1)
-//   +GOLDEN_TRACE_0=path +GOLDEN_TRACE_1=path ... (up to NUM_DUT_OUTPUTS-1)
-//   +CONFIG_FILE=path     +NUM_INPUT_TOKENS=N     +GOLDEN_TOKENS=N
-//   +NUM_CONFIG_WORDS=N   +SIM_TIMEOUT_CYCLES=N
+//   +INPUT_TRACE_<i>=path   (per input channel)
+//   +OUTPUT_TRACE_<i>=path  (per output channel)
+//   +GOLDEN_TRACE_<i>=path  (per output channel)
+//   +NUM_INPUT_TOKENS_<i>=N (per input channel)
+//   +GOLDEN_TOKENS_<i>=N    (per output channel)
+//   +CONFIG_FILE=path
+//   +NUM_CONFIG_WORDS=N
+//   +SIM_TIMEOUT_CYCLES=N
 //
-// Token counts (NUM_INPUT_TOKENS, GOLDEN_TOKENS, NUM_CONFIG_WORDS) are
-// provided explicitly as parameters -- no auto-detection from files.
+// Token counts are provided explicitly as plusargs -- no auto-detection
+// from files.
 //
 // Non-synthesizable (testbench only).
 
@@ -51,11 +55,13 @@ module tb_module_wrapper;
     parameter RST_CYCLES         = 5;
     parameter SIM_TIMEOUT_CYCLES = 100000;
 
-    // Multi-channel support: up to 4 inputs and 4 outputs
+    // Multi-channel support: up to 4 inputs and 4 outputs.
+    // These are set at compile time via +define+NUM_DUT_INPUTS=N etc.
     parameter NUM_DUT_INPUTS     = 1;
     parameter NUM_DUT_OUTPUTS    = 1;
 
-    // Explicit token/word counts (no auto-detection)
+    // Explicit token/word counts (compile-time defaults, per-channel
+    // overrides come from plusargs)
     parameter NUM_INPUT_TOKENS  = 0;
     parameter GOLDEN_TOKENS     = 0;
     parameter NUM_CONFIG_WORDS  = 0;
@@ -72,7 +78,16 @@ module tb_module_wrapper;
     parameter CONFIG_FILE    = "config.hex";
 
     // =========================================================================
+    // Constants
+    // =========================================================================
+    localparam TAG_W = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
+    localparam MAX_CHANNELS = 4;
+    localparam ENTRY_WIDTH = DATA_WIDTH + TAG_W;
+
+    // =========================================================================
     // Plusarg overrides -- runtime configuration via +NAME=value
+    //
+    // Per-channel trace paths and token counts.
     // =========================================================================
     reg [4096*8-1:0] plusarg_input_trace_0;
     reg [4096*8-1:0] plusarg_input_trace_1;
@@ -87,8 +102,14 @@ module tb_module_wrapper;
     reg [4096*8-1:0] plusarg_golden_trace_2;
     reg [4096*8-1:0] plusarg_golden_trace_3;
     reg [4096*8-1:0] plusarg_config_file;
-    integer          plusarg_num_input_tokens;
-    integer          plusarg_golden_tokens;
+    integer          plusarg_num_input_tokens_0;
+    integer          plusarg_num_input_tokens_1;
+    integer          plusarg_num_input_tokens_2;
+    integer          plusarg_num_input_tokens_3;
+    integer          plusarg_golden_tokens_0;
+    integer          plusarg_golden_tokens_1;
+    integer          plusarg_golden_tokens_2;
+    integer          plusarg_golden_tokens_3;
     integer          plusarg_num_config_words;
     integer          plusarg_sim_timeout;
 
@@ -97,8 +118,8 @@ module tb_module_wrapper;
     reg [4096*8-1:0] eff_output_trace [0:3];
     reg [4096*8-1:0] eff_golden_trace [0:3];
     reg [4096*8-1:0] eff_config_file;
-    integer          eff_num_input_tokens;
-    integer          eff_golden_tokens;
+    integer          eff_num_input_tokens [0:3];
+    integer          eff_golden_tokens    [0:3];
     integer          eff_num_config_words;
     integer          eff_sim_timeout;
 
@@ -116,6 +137,18 @@ module tb_module_wrapper;
         eff_golden_trace[1] = "golden_1.hex";
         eff_golden_trace[2] = "golden_2.hex";
         eff_golden_trace[3] = "golden_3.hex";
+
+        // Default per-channel token counts from compile-time parameters.
+        // The single NUM_INPUT_TOKENS / GOLDEN_TOKENS params are used as
+        // defaults for all channels; per-channel plusargs override them.
+        eff_num_input_tokens[0] = NUM_INPUT_TOKENS;
+        eff_num_input_tokens[1] = NUM_INPUT_TOKENS;
+        eff_num_input_tokens[2] = NUM_INPUT_TOKENS;
+        eff_num_input_tokens[3] = NUM_INPUT_TOKENS;
+        eff_golden_tokens[0]    = GOLDEN_TOKENS;
+        eff_golden_tokens[1]    = GOLDEN_TOKENS;
+        eff_golden_tokens[2]    = GOLDEN_TOKENS;
+        eff_golden_tokens[3]    = GOLDEN_TOKENS;
 
         // Input trace plusargs
         if ($value$plusargs("INPUT_TRACE_0=%s", plusarg_input_trace_0)) begin : use_in0
@@ -159,28 +192,47 @@ module tb_module_wrapper;
             eff_golden_trace[3] = plusarg_golden_trace_3;
         end
 
+        // Per-channel input token count plusargs
+        if ($value$plusargs("NUM_INPUT_TOKENS_0=%d", plusarg_num_input_tokens_0)) begin : use_in_tok0
+            eff_num_input_tokens[0] = plusarg_num_input_tokens_0;
+        end
+        if ($value$plusargs("NUM_INPUT_TOKENS_1=%d", plusarg_num_input_tokens_1)) begin : use_in_tok1
+            eff_num_input_tokens[1] = plusarg_num_input_tokens_1;
+        end
+        if ($value$plusargs("NUM_INPUT_TOKENS_2=%d", plusarg_num_input_tokens_2)) begin : use_in_tok2
+            eff_num_input_tokens[2] = plusarg_num_input_tokens_2;
+        end
+        if ($value$plusargs("NUM_INPUT_TOKENS_3=%d", plusarg_num_input_tokens_3)) begin : use_in_tok3
+            eff_num_input_tokens[3] = plusarg_num_input_tokens_3;
+        end
+
+        // Per-channel golden token count plusargs
+        if ($value$plusargs("GOLDEN_TOKENS_0=%d", plusarg_golden_tokens_0)) begin : use_gld_tok0
+            eff_golden_tokens[0] = plusarg_golden_tokens_0;
+        end
+        if ($value$plusargs("GOLDEN_TOKENS_1=%d", plusarg_golden_tokens_1)) begin : use_gld_tok1
+            eff_golden_tokens[1] = plusarg_golden_tokens_1;
+        end
+        if ($value$plusargs("GOLDEN_TOKENS_2=%d", plusarg_golden_tokens_2)) begin : use_gld_tok2
+            eff_golden_tokens[2] = plusarg_golden_tokens_2;
+        end
+        if ($value$plusargs("GOLDEN_TOKENS_3=%d", plusarg_golden_tokens_3)) begin : use_gld_tok3
+            eff_golden_tokens[3] = plusarg_golden_tokens_3;
+        end
+
         // Config file plusarg
         eff_config_file = CONFIG_FILE;
         if ($value$plusargs("CONFIG_FILE=%s", plusarg_config_file)) begin : use_config_file
             eff_config_file = plusarg_config_file;
         end
 
-        // Integer plusargs
-        eff_num_input_tokens = NUM_INPUT_TOKENS;
-        if ($value$plusargs("NUM_INPUT_TOKENS=%d", plusarg_num_input_tokens)) begin : use_input_tokens
-            eff_num_input_tokens = plusarg_num_input_tokens;
-        end
-
-        eff_golden_tokens = GOLDEN_TOKENS;
-        if ($value$plusargs("GOLDEN_TOKENS=%d", plusarg_golden_tokens)) begin : use_golden_tokens
-            eff_golden_tokens = plusarg_golden_tokens;
-        end
-
+        // Config word count
         eff_num_config_words = NUM_CONFIG_WORDS;
         if ($value$plusargs("NUM_CONFIG_WORDS=%d", plusarg_num_config_words)) begin : use_config_words
             eff_num_config_words = plusarg_num_config_words;
         end
 
+        // Simulation timeout
         eff_sim_timeout = SIM_TIMEOUT_CYCLES;
         if ($value$plusargs("SIM_TIMEOUT_CYCLES=%d", plusarg_sim_timeout)) begin : use_sim_timeout
             eff_sim_timeout = plusarg_sim_timeout;
@@ -203,9 +255,6 @@ module tb_module_wrapper;
 
     // =========================================================================
     // Configuration loader
-    //
-    // The config loader reads its own plusargs (+CONFIG_FILE, +NUM_CONFIG_WORDS)
-    // so it uses the runtime-resolved values rather than compile-time params.
     // =========================================================================
     wire [CONFIG_WIDTH-1:0] cfg_wdata;
     wire                    cfg_valid;
@@ -229,10 +278,8 @@ module tb_module_wrapper;
     );
 
     // =========================================================================
-    // Multi-channel wires -- sized for up to 4 channels
+    // Multi-channel wires -- sized for up to MAX_CHANNELS channels
     // =========================================================================
-    localparam TAG_W = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
-    localparam MAX_CHANNELS = 4;
 
     // Input channel wires (from drivers to DUT)
     wire [DATA_WIDTH-1:0] drv_data  [0:MAX_CHANNELS-1];
@@ -255,11 +302,7 @@ module tb_module_wrapper;
     // =========================================================================
     // Generate input channel drivers (one per NUM_DUT_INPUTS)
     //
-    // Each driver reads its own plusarg for the trace file at runtime.
-    // The driver's TRACE_FILE parameter is the compile-time default;
-    // the plusarg override happens inside the driver's own $readmemh call
-    // which we replace: the driver now reads from its parent's eff_* arrays
-    // via an explicit initial-block override.
+    // Each driver uses per-channel plusargs for trace file and token count.
     // =========================================================================
     generate
         genvar gi;
@@ -283,15 +326,15 @@ module tb_module_wrapper;
                 );
 
                 // Override the driver's trace file and token count at runtime
-                // using the plusarg-resolved values from the wrapper.
+                // using the per-channel plusarg-resolved values.
                 initial begin : override_driver
                     #0; // ensure plusarg_init has executed
-                    u_driver.eff_num_tokens = eff_num_input_tokens;
-                    if (eff_num_input_tokens > 0) begin : do_reload
+                    u_driver.eff_num_tokens = eff_num_input_tokens[gi];
+                    if (eff_num_input_tokens[gi] > 0) begin : do_reload
                         $readmemh(eff_input_trace[gi], u_driver.token_mem,
-                                  0, eff_num_input_tokens - 1);
+                                  0, eff_num_input_tokens[gi] - 1);
                         $display("[tb_module_wrapper] Driver[%0d]: %0d tokens from %s",
-                                 gi, eff_num_input_tokens, eff_input_trace[gi]);
+                                 gi, eff_num_input_tokens[gi], eff_input_trace[gi]);
                     end
                 end
             end else begin : stub_input
@@ -328,10 +371,6 @@ module tb_module_wrapper;
 
     // =========================================================================
     // Generate output channel monitors (one per NUM_DUT_OUTPUTS)
-    //
-    // Each monitor writes captured tokens to its own trace file. The
-    // TRACE_FILE parameter is the compile-time default; the runtime
-    // override from plusargs is applied via hierarchical reference.
     // =========================================================================
     generate
         genvar go;
@@ -382,8 +421,6 @@ module tb_module_wrapper;
 
     // =========================================================================
     // Configuration loader runtime override
-    //
-    // Reload config from plusarg-resolved path and word count.
     // =========================================================================
     initial begin : override_config_loader
         #0; // ensure plusarg_init has executed
@@ -399,145 +436,27 @@ module tb_module_wrapper;
     // =========================================================================
     // DUT instantiation
     //
-    // The DUT_MODULE macro selects the generated fabric_top_* module.
-    // Define it at compile time:
-    //   verilator +define+DUT_MODULE=fabric_top_test_fifo_depth4
-    //   vcs       +define+DUT_MODULE=fabric_top_test_fifo_depth4
+    // The DUT is instantiated via a generated include file (dut_inst.svh).
+    // This file is produced per-test by the Python runner (run_rtl_checks.py)
+    // and contains the DUT module instantiation with the correct port
+    // connections for the specific port topology.
     //
-    // The generated top module ports follow a standard convention:
-    //   clk, rst_n,
-    //   mod_in0, mod_in0_valid, mod_in0_ready,
-    //   mod_in1, mod_in1_valid, mod_in1_ready, ... (up to NUM_DUT_INPUTS-1)
-    //   mod_out0, mod_out0_valid, mod_out0_ready,
-    //   mod_out1, mod_out1_valid, mod_out1_ready, ... (up to NUM_DUT_OUTPUTS-1)
-    //   cfg_valid, cfg_wdata, cfg_last, cfg_ready
+    // The include file connects:
+    //   clk, rst_n
+    //   drv_data[i], drv_valid[i], drv_ready[i]  -- for each input port
+    //   mon_data[j], mon_valid[j], mon_ready[j]  -- for each output port
+    //   cfg_valid, cfg_wdata, cfg_last, cfg_ready -- config bus
     //
-    // We connect using explicit port wiring for up to 4 channels.
-    // Unused channels' ready signals are tied high; unused valid/data are
-    // left unconnected (the DUT does not produce them).
+    // It also ties off drv_ready[i] for unused input channels.
+    //
+    // If DUT_MODULE is defined but no dut_inst.svh is found, a default
+    // 1-input 1-output instantiation is used.
     // =========================================================================
 
 `ifdef DUT_MODULE
-
-    // 1-input, 1-output DUT (most common: FIFOs, add_tag, del_tag, etc.)
-    `ifdef DUT_PORTS_1IN_1OUT
-    `DUT_MODULE u_dut (
-        .clk            (clk),
-        .rst_n          (rst_n),
-        .mod_in0        (drv_data[0]),
-        .mod_in0_valid  (drv_valid[0]),
-        .mod_in0_ready  (drv_ready[0]),
-        .mod_out0       (mon_data[0]),
-        .mod_out0_valid (mon_valid[0]),
-        .mod_out0_ready (mon_ready[0]),
-        .cfg_valid      (cfg_valid),
-        .cfg_wdata      (cfg_wdata),
-        .cfg_last       (cfg_last),
-        .cfg_ready      (cfg_ready)
-    );
-
-    // 2-input, 2-output DUT (spatial switches, 2x2 grids)
-    `elsif DUT_PORTS_2IN_2OUT
-    `DUT_MODULE u_dut (
-        .clk            (clk),
-        .rst_n          (rst_n),
-        .mod_in0        (drv_data[0]),
-        .mod_in0_valid  (drv_valid[0]),
-        .mod_in0_ready  (drv_ready[0]),
-        .mod_in1        (drv_data[1]),
-        .mod_in1_valid  (drv_valid[1]),
-        .mod_in1_ready  (drv_ready[1]),
-        .mod_out0       (mon_data[0]),
-        .mod_out0_valid (mon_valid[0]),
-        .mod_out0_ready (mon_ready[0]),
-        .mod_out1       (mon_data[1]),
-        .mod_out1_valid (mon_valid[1]),
-        .mod_out1_ready (mon_ready[1]),
-        .cfg_valid      (cfg_valid),
-        .cfg_wdata      (cfg_wdata),
-        .cfg_last       (cfg_last),
-        .cfg_ready      (cfg_ready)
-    );
-
-    // 3-input, 1-output DUT (e.g., chess_2x2 with 3 inputs, 1 output)
-    `elsif DUT_PORTS_3IN_1OUT
-    `DUT_MODULE u_dut (
-        .clk            (clk),
-        .rst_n          (rst_n),
-        .mod_in0        (drv_data[0]),
-        .mod_in0_valid  (drv_valid[0]),
-        .mod_in0_ready  (drv_ready[0]),
-        .mod_in1        (drv_data[1]),
-        .mod_in1_valid  (drv_valid[1]),
-        .mod_in1_ready  (drv_ready[1]),
-        .mod_in2        (drv_data[2]),
-        .mod_in2_valid  (drv_valid[2]),
-        .mod_in2_ready  (drv_ready[2]),
-        .mod_out0       (mon_data[0]),
-        .mod_out0_valid (mon_valid[0]),
-        .mod_out0_ready (mon_ready[0]),
-        .cfg_valid      (cfg_valid),
-        .cfg_wdata      (cfg_wdata),
-        .cfg_last       (cfg_last),
-        .cfg_ready      (cfg_ready)
-    );
-
-    // 4-input, 4-output DUT (maximum supported)
-    `elsif DUT_PORTS_4IN_4OUT
-    `DUT_MODULE u_dut (
-        .clk            (clk),
-        .rst_n          (rst_n),
-        .mod_in0        (drv_data[0]),
-        .mod_in0_valid  (drv_valid[0]),
-        .mod_in0_ready  (drv_ready[0]),
-        .mod_in1        (drv_data[1]),
-        .mod_in1_valid  (drv_valid[1]),
-        .mod_in1_ready  (drv_ready[1]),
-        .mod_in2        (drv_data[2]),
-        .mod_in2_valid  (drv_valid[2]),
-        .mod_in2_ready  (drv_ready[2]),
-        .mod_in3        (drv_data[3]),
-        .mod_in3_valid  (drv_valid[3]),
-        .mod_in3_ready  (drv_ready[3]),
-        .mod_out0       (mon_data[0]),
-        .mod_out0_valid (mon_valid[0]),
-        .mod_out0_ready (mon_ready[0]),
-        .mod_out1       (mon_data[1]),
-        .mod_out1_valid (mon_valid[1]),
-        .mod_out1_ready (mon_ready[1]),
-        .mod_out2       (mon_data[2]),
-        .mod_out2_valid (mon_valid[2]),
-        .mod_out2_ready (mon_ready[2]),
-        .mod_out3       (mon_data[3]),
-        .mod_out3_valid (mon_valid[3]),
-        .mod_out3_ready (mon_ready[3]),
-        .cfg_valid      (cfg_valid),
-        .cfg_wdata      (cfg_wdata),
-        .cfg_last       (cfg_last),
-        .cfg_ready      (cfg_ready)
-    );
-
-    // 2-input, 1-output DUT (PEs with 2 operands, single output)
-    `elsif DUT_PORTS_2IN_1OUT
-    `DUT_MODULE u_dut (
-        .clk            (clk),
-        .rst_n          (rst_n),
-        .mod_in0        (drv_data[0]),
-        .mod_in0_valid  (drv_valid[0]),
-        .mod_in0_ready  (drv_ready[0]),
-        .mod_in1        (drv_data[1]),
-        .mod_in1_valid  (drv_valid[1]),
-        .mod_in1_ready  (drv_ready[1]),
-        .mod_out0       (mon_data[0]),
-        .mod_out0_valid (mon_valid[0]),
-        .mod_out0_ready (mon_ready[0]),
-        .cfg_valid      (cfg_valid),
-        .cfg_wdata      (cfg_wdata),
-        .cfg_last       (cfg_last),
-        .cfg_ready      (cfg_ready)
-    );
-
-    `else
+`ifdef DUT_INST_SVH
+    `include "dut_inst.svh"
+`else
     // Default: 1-input, 1-output (backward compatible)
     `DUT_MODULE u_dut (
         .clk            (clk),
@@ -553,9 +472,8 @@ module tb_module_wrapper;
         .cfg_last       (cfg_last),
         .cfg_ready      (cfg_ready)
     );
-    `endif
 
-    // Tie off unused input channel ready signals for DUT ports not connected
+    // Tie off unused input channel ready signals
     generate
         genvar gtr;
         for (gtr = 0; gtr < MAX_CHANNELS; gtr = gtr + 1) begin : gen_tieoff_ready
@@ -564,6 +482,7 @@ module tb_module_wrapper;
             end
         end
     endgenerate
+`endif
 
 `else
     // Fallback loopback stub for TB infrastructure self-test.
@@ -581,33 +500,49 @@ module tb_module_wrapper;
 `endif
 
     // =========================================================================
-    // Golden trace comparison (channel 0 -- primary output)
+    // Per-channel golden trace comparison
     //
-    // Uses eff_golden_tokens / eff_golden_trace[0] resolved from plusargs.
-    // The golden trace is loaded after plusargs are resolved (deferred to a
-    // second initial block that runs after time 0 via #0).
+    // Each output channel has its own golden memory loaded from per-channel
+    // plusargs. The comparison checks ALL output channels, not just channel 0.
     // =========================================================================
-    localparam ENTRY_WIDTH = DATA_WIDTH + TAG_W;
-    reg [ENTRY_WIDTH-1:0] golden_mem [0:MAX_TOKENS-1];
-    integer mismatch_count;
+    reg [ENTRY_WIDTH-1:0] golden_mem_0 [0:MAX_TOKENS-1];
+    reg [ENTRY_WIDTH-1:0] golden_mem_1 [0:MAX_TOKENS-1];
+    reg [ENTRY_WIDTH-1:0] golden_mem_2 [0:MAX_TOKENS-1];
+    reg [ENTRY_WIDTH-1:0] golden_mem_3 [0:MAX_TOKENS-1];
 
     initial begin : golden_load
         #0; // ensure plusarg_init has executed
-        if (eff_golden_tokens > 0) begin : do_load_golden
-            $readmemh(eff_golden_trace[0], golden_mem, 0, eff_golden_tokens - 1);
-            $display("[tb_module_wrapper] Loaded %0d golden tokens from %s",
-                     eff_golden_tokens, eff_golden_trace[0]);
-        end else begin : no_golden_load
-            $display("[tb_module_wrapper] No golden tokens specified");
+        if (eff_golden_tokens[0] > 0) begin : do_load_golden_0
+            $readmemh(eff_golden_trace[0], golden_mem_0, 0,
+                      eff_golden_tokens[0] - 1);
+            $display("[tb_module_wrapper] Loaded %0d golden tokens ch0 from %s",
+                     eff_golden_tokens[0], eff_golden_trace[0]);
+        end
+        if (eff_golden_tokens[1] > 0) begin : do_load_golden_1
+            $readmemh(eff_golden_trace[1], golden_mem_1, 0,
+                      eff_golden_tokens[1] - 1);
+            $display("[tb_module_wrapper] Loaded %0d golden tokens ch1 from %s",
+                     eff_golden_tokens[1], eff_golden_trace[1]);
+        end
+        if (eff_golden_tokens[2] > 0) begin : do_load_golden_2
+            $readmemh(eff_golden_trace[2], golden_mem_2, 0,
+                      eff_golden_tokens[2] - 1);
+            $display("[tb_module_wrapper] Loaded %0d golden tokens ch2 from %s",
+                     eff_golden_tokens[2], eff_golden_trace[2]);
+        end
+        if (eff_golden_tokens[3] > 0) begin : do_load_golden_3
+            $readmemh(eff_golden_trace[3], golden_mem_3, 0,
+                      eff_golden_tokens[3] - 1);
+            $display("[tb_module_wrapper] Loaded %0d golden tokens ch3 from %s",
+                     eff_golden_tokens[3], eff_golden_trace[3]);
         end
     end
 
     // =========================================================================
     // Simulation timeout and done detection
     //
-    // Uses eff_golden_tokens and eff_sim_timeout for runtime flexibility.
-    // Done when all input drivers have finished and the primary output
-    // channel (channel 0) has received enough golden tokens.
+    // Done when all input drivers have finished AND all output channels
+    // that have golden tokens have received the expected count.
     // =========================================================================
     integer cycle_count;
     reg     sim_done;
@@ -617,6 +552,33 @@ module tb_module_wrapper;
     wire all_drivers_done;
     assign all_drivers_done = drv_done[0] & drv_done[1] & drv_done[2] & drv_done[3];
 
+    // Per-channel output done: each output channel with golden tokens
+    // must have received at least that many transfers.
+    wire out_ch0_done;
+    wire out_ch1_done;
+    wire out_ch2_done;
+    wire out_ch3_done;
+
+    assign out_ch0_done = (eff_golden_tokens[0] <= 0) ||
+                          (mon_transfer_count[0] >= eff_golden_tokens[0][31:0]);
+    assign out_ch1_done = (eff_golden_tokens[1] <= 0) ||
+                          (mon_transfer_count[1] >= eff_golden_tokens[1][31:0]);
+    assign out_ch2_done = (eff_golden_tokens[2] <= 0) ||
+                          (mon_transfer_count[2] >= eff_golden_tokens[2][31:0]);
+    assign out_ch3_done = (eff_golden_tokens[3] <= 0) ||
+                          (mon_transfer_count[3] >= eff_golden_tokens[3][31:0]);
+
+    wire all_outputs_done;
+    assign all_outputs_done = out_ch0_done & out_ch1_done &
+                              out_ch2_done & out_ch3_done;
+
+    // Track whether any channel has golden tokens (for done gating)
+    wire has_any_golden;
+    assign has_any_golden = (eff_golden_tokens[0] > 0) ||
+                            (eff_golden_tokens[1] > 0) ||
+                            (eff_golden_tokens[2] > 0) ||
+                            (eff_golden_tokens[3] > 0);
+
     always @(posedge clk or negedge rst_n) begin : timeout_proc
         if (!rst_n) begin : timeout_reset
             cycle_count <= 0;
@@ -625,8 +587,8 @@ module tb_module_wrapper;
             cycle_count <= cycle_count + 1;
 
             if (!sim_done && config_done && all_drivers_done) begin : check_done
-                if (eff_golden_tokens > 0) begin : check_golden_done
-                    if (mon_transfer_count[0] >= eff_golden_tokens[31:0]) begin : all_out
+                if (has_any_golden) begin : check_golden_done
+                    if (all_outputs_done) begin : all_out
                         sim_done <= 1'b1;
                     end
                 end else begin : check_drv_done
@@ -642,7 +604,7 @@ module tb_module_wrapper;
     end
 
     // =========================================================================
-    // Final comparison and verdict (compares channel 0 output against golden)
+    // Final comparison and verdict (compares ALL output channels)
     // =========================================================================
     always @(posedge clk) begin : verdict_proc
         if (sim_done) begin : verdict_check
@@ -653,42 +615,116 @@ module tb_module_wrapper;
     task compare_and_finish;
         begin : compare_body
             integer iter_var0;
-            mismatch_count = 0;
+            integer iter_var1;
+            integer ch_mismatch;
+            integer total_mismatch;
+            integer total_golden;
 
-            $display("[tb_module_wrapper] Output[0]: %0d transfers, Golden: %0d tokens",
-                     mon_transfer_count[0], eff_golden_tokens);
+            total_mismatch = 0;
+            total_golden = 0;
 
-            if (eff_golden_tokens > 0) begin : compare_with_golden
-                if (mon_transfer_count[0] != eff_golden_tokens[31:0]) begin : count_mismatch
-                    $display("[tb_module_wrapper] FAIL: count mismatch (got %0d, expected %0d)",
-                             mon_transfer_count[0], eff_golden_tokens);
-                    mismatch_count = mismatch_count + 1;
-                end
+            // Compare each output channel that has golden tokens
+            for (iter_var1 = 0; iter_var1 < NUM_DUT_OUTPUTS && iter_var1 < MAX_CHANNELS;
+                 iter_var1 = iter_var1 + 1) begin : compare_channels
+                if (eff_golden_tokens[iter_var1] > 0) begin : compare_ch
+                    ch_mismatch = 0;
+                    total_golden = total_golden + eff_golden_tokens[iter_var1];
 
-                for (iter_var0 = 0; iter_var0 < eff_golden_tokens && iter_var0 < MAX_TOKENS;
-                     iter_var0 = iter_var0 + 1) begin : compare_loop
-                    if (gen_output_ch[0].active_output.u_monitor.capture_mem[iter_var0] !== golden_mem[iter_var0]) begin : token_mismatch
-                        if (mismatch_count < 10) begin : report_mismatch
-                            $display("[tb_module_wrapper] MISMATCH[%0d]: got %h, expected %h",
-                                     iter_var0,
-                                     gen_output_ch[0].active_output.u_monitor.capture_mem[iter_var0],
-                                     golden_mem[iter_var0]);
-                        end
-                        mismatch_count = mismatch_count + 1;
+                    $display("[tb_module_wrapper] Output[%0d]: %0d transfers, Golden: %0d tokens",
+                             iter_var1, mon_transfer_count[iter_var1],
+                             eff_golden_tokens[iter_var1]);
+
+                    // Check transfer count
+                    if (mon_transfer_count[iter_var1] != eff_golden_tokens[iter_var1][31:0]) begin : count_mismatch
+                        $display("[tb_module_wrapper] FAIL ch%0d: count mismatch (got %0d, expected %0d)",
+                                 iter_var1, mon_transfer_count[iter_var1],
+                                 eff_golden_tokens[iter_var1]);
+                        ch_mismatch = ch_mismatch + 1;
+                    end
+
+                    // Compare tokens
+                    for (iter_var0 = 0;
+                         iter_var0 < eff_golden_tokens[iter_var1] && iter_var0 < MAX_TOKENS;
+                         iter_var0 = iter_var0 + 1) begin : compare_loop
+                        case (iter_var1)
+                            0: begin : cmp_ch0
+                                if (gen_output_ch[0].active_output.u_monitor.capture_mem[iter_var0]
+                                    !== golden_mem_0[iter_var0]) begin : mismatch_ch0
+                                    if (ch_mismatch < 10) begin : report_ch0
+                                        $display("[tb_module_wrapper] MISMATCH ch0[%0d]: got %h, expected %h",
+                                                 iter_var0,
+                                                 gen_output_ch[0].active_output.u_monitor.capture_mem[iter_var0],
+                                                 golden_mem_0[iter_var0]);
+                                    end
+                                    ch_mismatch = ch_mismatch + 1;
+                                end
+                            end
+                            1: begin : cmp_ch1
+                                if (gen_output_ch[1].active_output.u_monitor.capture_mem[iter_var0]
+                                    !== golden_mem_1[iter_var0]) begin : mismatch_ch1
+                                    if (ch_mismatch < 10) begin : report_ch1
+                                        $display("[tb_module_wrapper] MISMATCH ch1[%0d]: got %h, expected %h",
+                                                 iter_var0,
+                                                 gen_output_ch[1].active_output.u_monitor.capture_mem[iter_var0],
+                                                 golden_mem_1[iter_var0]);
+                                    end
+                                    ch_mismatch = ch_mismatch + 1;
+                                end
+                            end
+                            2: begin : cmp_ch2
+                                if (gen_output_ch[2].active_output.u_monitor.capture_mem[iter_var0]
+                                    !== golden_mem_2[iter_var0]) begin : mismatch_ch2
+                                    if (ch_mismatch < 10) begin : report_ch2
+                                        $display("[tb_module_wrapper] MISMATCH ch2[%0d]: got %h, expected %h",
+                                                 iter_var0,
+                                                 gen_output_ch[2].active_output.u_monitor.capture_mem[iter_var0],
+                                                 golden_mem_2[iter_var0]);
+                                    end
+                                    ch_mismatch = ch_mismatch + 1;
+                                end
+                            end
+                            3: begin : cmp_ch3
+                                if (gen_output_ch[3].active_output.u_monitor.capture_mem[iter_var0]
+                                    !== golden_mem_3[iter_var0]) begin : mismatch_ch3
+                                    if (ch_mismatch < 10) begin : report_ch3
+                                        $display("[tb_module_wrapper] MISMATCH ch3[%0d]: got %h, expected %h",
+                                                 iter_var0,
+                                                 gen_output_ch[3].active_output.u_monitor.capture_mem[iter_var0],
+                                                 golden_mem_3[iter_var0]);
+                                    end
+                                    ch_mismatch = ch_mismatch + 1;
+                                end
+                            end
+                            default: begin : cmp_default
+                                // unreachable
+                            end
+                        endcase
+                    end
+
+                    total_mismatch = total_mismatch + ch_mismatch;
+
+                    if (ch_mismatch == 0) begin : ch_pass
+                        $display("[tb_module_wrapper] Output[%0d] PASS: All %0d tokens match",
+                                 iter_var1, eff_golden_tokens[iter_var1]);
+                    end else begin : ch_fail
+                        $display("[tb_module_wrapper] Output[%0d] FAIL: %0d mismatches",
+                                 iter_var1, ch_mismatch);
                     end
                 end
+            end
 
-                if (mismatch_count == 0) begin : pass_verdict
-                    $display("[tb_module_wrapper] PASS: All %0d tokens match",
-                             eff_golden_tokens);
-                    sim_pass = 1'b1;
-                end else begin : fail_verdict
-                    $display("[tb_module_wrapper] FAIL: %0d mismatches", mismatch_count);
-                    sim_pass = 1'b0;
-                end
-            end else begin : no_golden
-                $display("[tb_module_wrapper] WARN: No golden trace; skipping comparison");
+            // Overall verdict
+            if (total_golden == 0) begin : no_golden
+                $display("[tb_module_wrapper] WARN: No golden traces; skipping comparison");
                 sim_pass = 1'b1;
+            end else if (total_mismatch == 0) begin : all_pass
+                $display("[tb_module_wrapper] PASS: All %0d output channels verified",
+                         NUM_DUT_OUTPUTS);
+                sim_pass = 1'b1;
+            end else begin : any_fail
+                $display("[tb_module_wrapper] FAIL: %0d total mismatches across channels",
+                         total_mismatch);
+                sim_pass = 1'b0;
             end
 
             if (sim_pass) begin : exit_pass

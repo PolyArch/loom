@@ -231,6 +231,185 @@ static void emitStandardOpInstance(FUEmitContext &ctx, mlir::Operation &op,
   ctx.emitter.emitBlankLine();
 }
 
+/// Returns true if the op is a width-adaptation op that uses IN_WIDTH/OUT_WIDTH
+/// parameters instead of the standard WIDTH parameter.
+static bool isWidthAdaptOp(llvm::StringRef opName) {
+  return opName == "arith.extsi" || opName == "arith.extui" ||
+         opName == "arith.trunci" || opName == "arith.index_cast" ||
+         opName == "arith.index_castui";
+}
+
+/// Returns true if the op is a memory-side op (handshake.load/store) that uses
+/// ADDR_WIDTH/DATA_WIDTH parameters and has memory-side ports.
+static bool isMemorySideOp(llvm::StringRef opName) {
+  return opName == "handshake.load" || opName == "handshake.store";
+}
+
+/// Emit a module instantiation for a width-adaptation op.
+///
+/// Width-adaptation ops (extsi, extui, trunci, index_cast, index_castui) use:
+///   - Parameters: IN_WIDTH, OUT_WIDTH (instead of WIDTH)
+///   - Input 0: in_data_0 [IN_WIDTH-1:0], in_valid_0, in_ready_0
+///   - Output:  out_data [OUT_WIDTH-1:0], out_valid, out_ready
+///   - Clock/reset: clk, rst_n
+static void emitWidthAdaptOpInstance(FUEmitContext &ctx, mlir::Operation &op,
+                                     unsigned /*fuDataWidth*/) {
+  llvm::StringRef opName = op.getName().getStringRef();
+  std::string svModName = SVModuleRegistry::getSVModuleName(opName);
+  if (svModName.empty())
+    return;
+
+  std::string instName =
+      svModName + "_inst_" + std::to_string(ctx.nextWireIdx);
+
+  // IN_WIDTH from the operand type, OUT_WIDTH from the result type.
+  unsigned inWidth = 32;
+  unsigned outWidth = 32;
+  if (op.getNumOperands() > 0)
+    inWidth = getValueWidth(op.getOperand(0));
+  if (op.getNumResults() > 0)
+    outWidth = getValueWidth(op.getResult(0));
+
+  std::vector<std::string> params;
+  params.push_back(".IN_WIDTH(" + std::to_string(inWidth) + ")");
+  params.push_back(".OUT_WIDTH(" + std::to_string(outWidth) + ")");
+
+  // Declare per-operand ready wires.
+  unsigned numOperands = op.getNumOperands();
+  for (unsigned i = 0; i < numOperands; ++i) {
+    std::string readyWire = instName + "_in_ready_" + std::to_string(i);
+    ctx.emitter.emitWire("logic", readyWire);
+    ctx.addConsumerReady(op.getOperand(i), instName, i);
+  }
+
+  std::vector<SVConnection> connections;
+  connections.push_back({"clk", "clk"});
+  connections.push_back({"rst_n", "rst_n"});
+
+  // Input ports.
+  for (unsigned i = 0; i < numOperands; ++i) {
+    std::string idx = std::to_string(i);
+    connections.push_back({"in_data_" + idx, ctx.getDataWire(op.getOperand(i))});
+    connections.push_back({"in_valid_" + idx, ctx.getValidWire(op.getOperand(i))});
+    connections.push_back({"in_ready_" + idx, instName + "_in_ready_" + idx});
+  }
+
+  // Single output.
+  connections.push_back({"out_data", ctx.getDataWire(op.getResult(0))});
+  connections.push_back({"out_valid", ctx.getValidWire(op.getResult(0))});
+  connections.push_back({"out_ready", ctx.getReadyWire(op.getResult(0))});
+
+  ctx.emitter.emitInstance(svModName, instName, params, connections);
+  ctx.emitter.emitBlankLine();
+}
+
+/// Emit a module instantiation for a memory-side op (handshake.load/store).
+///
+/// Memory ops use:
+///   - Parameters: ADDR_WIDTH, DATA_WIDTH
+///   - Standard in_data_N/in_valid_N/in_ready_N per operand
+///   - Output ports: out_data/out_valid/out_ready (single) or
+///     out_data_N/out_valid_N/out_ready_N (multi)
+///   - handshake.store additionally has: mem_addr, mem_data, mem_valid, mem_ready
+///   - Clock/reset: clk, rst_n
+///
+/// For memory-side ports, the generated FU body currently connects them to
+/// open wires with a TODO comment -- the PE-level memory subsystem wiring
+/// is handled at a higher level.
+static void emitMemoryOpInstance(FUEmitContext &ctx, mlir::Operation &op,
+                                 unsigned /*fuDataWidth*/) {
+  llvm::StringRef opName = op.getName().getStringRef();
+  std::string svModName = SVModuleRegistry::getSVModuleName(opName);
+  if (svModName.empty())
+    return;
+
+  std::string instName =
+      svModName + "_inst_" + std::to_string(ctx.nextWireIdx);
+
+  // ADDR_WIDTH from the first operand (address), DATA_WIDTH from the
+  // first result or the second operand (data).
+  unsigned addrWidth = 32;
+  unsigned dataWidth = 32;
+  if (op.getNumOperands() > 0)
+    addrWidth = getValueWidth(op.getOperand(0));
+  if (opName == "handshake.load") {
+    // load: result 0 is data
+    if (op.getNumResults() > 0)
+      dataWidth = getValueWidth(op.getResult(0));
+  } else {
+    // store: operand 1 is data
+    if (op.getNumOperands() > 1)
+      dataWidth = getValueWidth(op.getOperand(1));
+  }
+
+  std::vector<std::string> params;
+  params.push_back(".ADDR_WIDTH(" + std::to_string(addrWidth) + ")");
+  params.push_back(".DATA_WIDTH(" + std::to_string(dataWidth) + ")");
+
+  unsigned numOperands = op.getNumOperands();
+  unsigned numResults = op.getNumResults();
+
+  // Declare per-operand ready wires.
+  for (unsigned i = 0; i < numOperands; ++i) {
+    std::string readyWire = instName + "_in_ready_" + std::to_string(i);
+    ctx.emitter.emitWire("logic", readyWire);
+    ctx.addConsumerReady(op.getOperand(i), instName, i);
+  }
+
+  std::vector<SVConnection> connections;
+  connections.push_back({"clk", "clk"});
+  connections.push_back({"rst_n", "rst_n"});
+
+  // Input ports.
+  for (unsigned i = 0; i < numOperands; ++i) {
+    std::string idx = std::to_string(i);
+    connections.push_back({"in_data_" + idx, ctx.getDataWire(op.getOperand(i))});
+    connections.push_back({"in_valid_" + idx, ctx.getValidWire(op.getOperand(i))});
+    connections.push_back({"in_ready_" + idx, instName + "_in_ready_" + idx});
+  }
+
+  // Output ports.
+  if (numResults == 1) {
+    connections.push_back({"out_data", ctx.getDataWire(op.getResult(0))});
+    connections.push_back({"out_valid", ctx.getValidWire(op.getResult(0))});
+    connections.push_back({"out_ready", ctx.getReadyWire(op.getResult(0))});
+  } else {
+    for (unsigned i = 0; i < numResults; ++i) {
+      std::string idx = std::to_string(i);
+      connections.push_back({"out_data_" + idx, ctx.getDataWire(op.getResult(i))});
+      connections.push_back({"out_valid_" + idx, ctx.getValidWire(op.getResult(i))});
+      connections.push_back({"out_ready_" + idx, ctx.getReadyWire(op.getResult(i))});
+    }
+  }
+
+  // Memory-side ports for handshake.store.
+  // handshake.load does not have explicit mem_* ports in its SV module;
+  // memory response routing is handled at the PE level.
+  if (opName == "handshake.store") {
+    // Declare memory-side wires for this store instance.
+    std::string memAddrWire = instName + "_mem_addr";
+    std::string memDataWire = instName + "_mem_data";
+    std::string memValidWire = instName + "_mem_valid";
+    std::string memReadyWire = instName + "_mem_ready";
+    ctx.emitter.emitWire("logic" + SVEmitter::bitRange(addrWidth), memAddrWire);
+    ctx.emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth), memDataWire);
+    ctx.emitter.emitWire("logic", memValidWire);
+    ctx.emitter.emitWire("logic", memReadyWire);
+
+    connections.push_back({"mem_addr", memAddrWire});
+    connections.push_back({"mem_data", memDataWire});
+    connections.push_back({"mem_valid", memValidWire});
+    connections.push_back({"mem_ready", memReadyWire});
+
+    // TODO: Connect memory-side wires to enclosing PE memory interface.
+    // For now, tie mem_ready high so the store can complete.
+    ctx.emitter.emitAssign(memReadyWire, "1'b1");
+  }
+
+  ctx.emitter.emitInstance(svModName, instName, params, connections);
+  ctx.emitter.emitBlankLine();
+}
+
 /// Emit a handshake.join instantiation with packed-array ports.
 ///
 /// fu_op_join.sv ports:
@@ -678,6 +857,20 @@ std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
     if (opName == "handshake.mux") {
       emitOpResultWires(ctx, op);
       emitHandshakeMuxInstance(ctx, op, dataWidth);
+      continue;
+    }
+
+    // Handle width-adaptation ops (IN_WIDTH/OUT_WIDTH parameters).
+    if (isWidthAdaptOp(opName)) {
+      emitOpResultWires(ctx, op);
+      emitWidthAdaptOpInstance(ctx, op, dataWidth);
+      continue;
+    }
+
+    // Handle memory-side ops (ADDR_WIDTH/DATA_WIDTH + mem_* ports).
+    if (isMemorySideOp(opName)) {
+      emitOpResultWires(ctx, op);
+      emitMemoryOpInstance(ctx, op, dataWidth);
       continue;
     }
 

@@ -58,7 +58,7 @@ static const OpMapping kOpMappings[] = {
     {"math.exp", "math", "fu_op_exp.sv"},
     {"math.log2", "math", "fu_op_log2.sv"},
     // llvm dialect
-    {"llvm.bitreverse", "llvm", "fu_op_bitreverse.sv"},
+    {"llvm.intr.bitreverse", "llvm", "fu_op_bitreverse.sv"},
     // dataflow dialect
     {"dataflow.stream", "dataflow", "fu_op_stream.sv"},
     {"dataflow.gate", "dataflow", "fu_op_gate.sv"},
