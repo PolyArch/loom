@@ -453,10 +453,16 @@ def main():
         print(f"ERROR: test directory not found: {fabric_dir}")
         sys.exit(1)
 
+    # Directories excluded from generic discovery (have dedicated targets)
+    EXCLUDED_DIRS = {"negative"}
+
     test_cases = []
     for module_name in sorted(os.listdir(fabric_dir)):
         module_dir = os.path.join(fabric_dir, module_name)
         if not os.path.isdir(module_dir):
+            continue
+        # Skip directories with dedicated targets (negative tests)
+        if module_name in EXCLUDED_DIRS:
             continue
         # Filter by --modules if specified
         if args.modules is not None and module_name not in args.modules:
