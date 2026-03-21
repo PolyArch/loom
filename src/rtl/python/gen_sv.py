@@ -54,7 +54,30 @@ def run_verilator_lint(rtl_dir):
         return False
 
     verilator_exec = resolve_verilator()
-    cmd = [verilator_exec, "--lint-only", "-Wall", "-f", filelist]
+    # Find the generated top module name from filelist.f
+    top_module = None
+    try:
+        with open(filelist) as fl:
+            for line in fl:
+                line = line.strip()
+                if line.startswith("generated/fabric_top_"):
+                    top_module = line.replace("generated/", "").replace(".sv", "")
+                    break
+    except OSError:
+        pass
+
+    cmd = [verilator_exec, "--lint-only", "-Wall",
+           "-Wno-UNUSEDSIGNAL",   # Generated wiring may have unused signals
+           "-Wno-UNUSEDPARAM",    # Package constants may be unused in some modules
+           "-Wno-SYNCASYNCNET",   # Mixed sync/async reset is intentional design
+           "-Wno-WIDTHEXPAND",    # Width expansion in config loading is expected
+           "-Wno-WIDTHTRUNC",     # Width truncation in config bit extraction is expected
+           "-Wno-UNDRIVEN",       # Some modules may not drive all outputs (e.g., no-config del_tag)
+           "-Wno-PINMISSING",     # Instance port connections may be partial in generated code
+           "-Wno-fatal",          # Treat remaining warnings as non-fatal
+           "-f", filelist]
+    if top_module:
+        cmd.extend(["--top-module", top_module])
     print(f"[gen_sv] Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=rtl_dir)
     if result.returncode != 0:

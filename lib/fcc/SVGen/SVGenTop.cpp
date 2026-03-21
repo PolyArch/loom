@@ -478,6 +478,32 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
     ctx.wireNames[arg] = portName;
   }
 
+  // Build symbol table: map sym_name -> definition op for all named ops in
+  // the body.  Used to resolve fabric.instance references.
+  llvm::StringMap<mlir::Operation *> symTable;
+  for (auto &op : body.getOperations()) {
+    auto tryRegister = [&](std::optional<llvm::StringRef> sym) {
+      if (sym)
+        symTable[*sym] = &op;
+    };
+    if (auto pe = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op))
+      tryRegister(pe.getSymName());
+    else if (auto pe = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op))
+      tryRegister(pe.getSymName());
+    else if (auto mem = mlir::dyn_cast<fcc::fabric::MemoryOp>(op))
+      tryRegister(mem.getSymName());
+    else if (auto ext = mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(op))
+      tryRegister(ext.getSymName());
+    else if (auto sw = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op))
+      tryRegister(sw.getSymName());
+    else if (auto sw = mlir::dyn_cast<fcc::fabric::TemporalSwOp>(op))
+      tryRegister(sw.getSymName());
+    else if (auto fu = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(op))
+      tryRegister(std::optional<llvm::StringRef>(fu.getSymName()));
+    else if (auto fifo = mlir::dyn_cast<fcc::fabric::FifoOp>(op))
+      tryRegister(fifo.getSymName());
+  }
+
   // Walk body ops and emit wire declarations + instances.
   emitter.emitComment("Internal wires and module instances");
   emitter.emitBlankLine();
@@ -489,7 +515,8 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
     if (mlir::isa<fcc::fabric::YieldOp>(op))
       continue;
 
-    // Instance ops: instantiate the referenced module.
+    // Instance ops: instantiate the referenced module.  Resolve the symbol
+    // to its definition op and dispatch based on the definition type.
     if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
       emitTopWires(ctx, op);
       std::string refModName =
@@ -498,51 +525,213 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
       if (auto sym = instOp.getSymName())
         instName = SVEmitter::sanitizeName(*sym);
 
-      // The referenced module might be a PE -- look up its generated name.
-      std::string actualModName = "pe_" + refModName;
-
-      std::vector<std::string> instParams;
-      std::vector<SVConnection> conns;
-
-      conns.push_back({"clk", "clk"});
-      conns.push_back({"rst_n", "rst_n"});
-
-      // Connect operands using PE wrapper port convention.
-      unsigned dataPortIdx = 0;
-      for (unsigned i = 0; i < instOp.getOperands().size(); ++i) {
-        if (mlir::isa<mlir::MemRefType>(instOp.getOperand(i).getType()))
-          continue;
-        std::string wire = ctx.getOrCreateWire(instOp.getOperand(i));
-        std::string idx = std::to_string(dataPortIdx);
-        conns.push_back({"pe_in" + idx, wire});
-        conns.push_back({"pe_in_valid" + idx, wire + "_valid"});
-        conns.push_back({"pe_in_ready" + idx, wire + "_ready"});
-        ++dataPortIdx;
-      }
-      // Connect results.
-      for (unsigned i = 0; i < instOp.getResults().size(); ++i) {
-        std::string wire = ctx.getOrCreateWire(instOp.getResult(i));
-        std::string idx = std::to_string(i);
-        conns.push_back({"pe_out" + idx, wire});
-        conns.push_back({"pe_out_valid" + idx, wire + "_valid"});
-        conns.push_back({"pe_out_ready" + idx, wire + "_ready"});
+      // Resolve the referenced symbol to its definition op.
+      mlir::Operation *defOp = nullptr;
+      {
+        auto it = symTable.find(instOp.getModule());
+        if (it != symTable.end())
+          defOp = it->second;
       }
 
-      // Config interface.
-      conns.push_back({"cfg_valid", instName + "_cfg_valid"});
-      conns.push_back({"cfg_wdata", instName + "_cfg_wdata"});
-      conns.push_back({"cfg_ready", instName + "_cfg_ready"});
+      // Determine the definition type and emit accordingly.
+      bool isPE = defOp &&
+                  (mlir::isa<fcc::fabric::SpatialPEOp>(defOp) ||
+                   mlir::isa<fcc::fabric::TemporalPEOp>(defOp));
+      bool isMemory = defOp &&
+                      (mlir::isa<fcc::fabric::MemoryOp>(defOp) ||
+                       mlir::isa<fcc::fabric::ExtMemoryOp>(defOp));
+      bool isSwitch = defOp &&
+                      (mlir::isa<fcc::fabric::SpatialSwOp>(defOp) ||
+                       mlir::isa<fcc::fabric::TemporalSwOp>(defOp));
+      bool isFU = defOp &&
+                  mlir::isa<fcc::fabric::FunctionUnitOp>(defOp);
+      bool isFifo = defOp &&
+                    mlir::isa<fcc::fabric::FifoOp>(defOp);
 
-      emitter.emitWire("logic", instName + "_cfg_valid");
-      emitter.emitWire("logic [31:0]", instName + "_cfg_wdata");
-      emitter.emitWire("logic", instName + "_cfg_ready");
+      if (isMemory || isSwitch || isFifo) {
+        // Parameters come from the definition op; wire connections come
+        // from the instance op's operands/results.
+        std::string modName = getModuleName(*defOp);
 
-      ctx.configInstanceNames.push_back(instName);
+        std::vector<std::string> params;
+        std::vector<SVConnection> conns;
 
-      // Memory connectivity uses the visible fabric graph (no sideband ports).
+        conns.push_back({"clk", "clk"});
+        conns.push_back({"rst_n", "rst_n"});
 
-      emitter.emitInstance(actualModName, instName, instParams, conns);
-      emitter.emitBlankLine();
+        // Derive data/tag width from the instance op's ports.
+        unsigned dataWidth = 32;
+        unsigned tagWidth = 0;
+        if (instOp.getNumOperands() > 0) {
+          for (unsigned i = 0; i < instOp.getNumOperands(); ++i) {
+            if (mlir::isa<mlir::MemRefType>(
+                    instOp.getOperand(i).getType()))
+              continue;
+            dataWidth =
+                SVEmitter::getDataWidth(instOp.getOperand(i).getType());
+            tagWidth =
+                SVEmitter::getTagWidth(instOp.getOperand(i).getType());
+            break;
+          }
+        } else if (instOp.getNumResults() > 0) {
+          dataWidth =
+              SVEmitter::getDataWidth(instOp.getResult(0).getType());
+          tagWidth =
+              SVEmitter::getTagWidth(instOp.getResult(0).getType());
+        }
+
+        params.push_back(".DATA_WIDTH(" + std::to_string(dataWidth) + ")");
+        if (tagWidth > 0)
+          params.push_back(".TAG_WIDTH(" + std::to_string(tagWidth) + ")");
+
+        // Extract op-specific parameters from the definition op.
+        bool defIsSwitch = false;
+        bool defIsMemory = false;
+        if (auto spatialSw =
+                mlir::dyn_cast<fcc::fabric::SpatialSwOp>(defOp)) {
+          auto swFnType = spatialSw.getFunctionType();
+          params.push_back(".NUM_IN(" +
+                           std::to_string(swFnType.getNumInputs()) + ")");
+          params.push_back(".NUM_OUT(" +
+                           std::to_string(swFnType.getNumResults()) + ")");
+          int64_t decompBits = spatialSw.getDecomposableBits();
+          if (decompBits > 0)
+            params.push_back(".DECOMPOSABLE_BITS(" +
+                             std::to_string(decompBits) + ")");
+          defIsSwitch = true;
+        } else if (auto temporalSw =
+                       mlir::dyn_cast<fcc::fabric::TemporalSwOp>(defOp)) {
+          auto tswFnType = temporalSw.getFunctionType();
+          params.push_back(".NUM_IN(" +
+                           std::to_string(tswFnType.getNumInputs()) + ")");
+          params.push_back(".NUM_OUT(" +
+                           std::to_string(tswFnType.getNumResults()) + ")");
+          params.push_back(
+              ".NUM_SLOTS(" +
+              std::to_string(temporalSw.getNumRouteTable()) + ")");
+          defIsSwitch = true;
+        } else if (auto fifo =
+                       mlir::dyn_cast<fcc::fabric::FifoOp>(defOp)) {
+          params.push_back(".DEPTH(" + std::to_string(fifo.getDepth()) +
+                           ")");
+          if (fifo.getBypassable())
+            params.push_back(".BYPASSABLE(1)");
+        } else if (auto memOp =
+                       mlir::dyn_cast<fcc::fabric::MemoryOp>(defOp)) {
+          params.push_back(".LD_COUNT(" +
+                           std::to_string(memOp.getLdCount()) + ")");
+          params.push_back(".ST_COUNT(" +
+                           std::to_string(memOp.getStCount()) + ")");
+          params.push_back(".IS_PRIVATE(" +
+                           std::to_string(memOp.getIsPrivate() ? 1 : 0) +
+                           ")");
+          params.push_back(".NUM_REGION(" +
+                           std::to_string(memOp.getNumRegion()) + ")");
+          defIsMemory = true;
+        } else if (auto extMem =
+                       mlir::dyn_cast<fcc::fabric::ExtMemoryOp>(defOp)) {
+          params.push_back(".LD_COUNT(" +
+                           std::to_string(extMem.getLdCount()) + ")");
+          params.push_back(".ST_COUNT(" +
+                           std::to_string(extMem.getStCount()) + ")");
+          params.push_back(".NUM_REGION(" +
+                           std::to_string(extMem.getNumRegion()) + ")");
+          defIsMemory = true;
+        }
+
+        // Wire connections use the instance op's operands/results.
+        if (defIsSwitch) {
+          emitSwitchConns(ctx, op, conns);
+        } else if (defIsMemory) {
+          emitMemoryConns(ctx, op, conns);
+        } else {
+          emitSingleIOConns(ctx, op, conns);
+        }
+
+        // Config interface.
+        conns.push_back({"cfg_valid", instName + "_cfg_valid"});
+        conns.push_back({"cfg_wdata", instName + "_cfg_wdata"});
+        conns.push_back({"cfg_ready", instName + "_cfg_ready"});
+
+        emitter.emitWire("logic", instName + "_cfg_valid");
+        emitter.emitWire("logic [31:0]", instName + "_cfg_wdata");
+        emitter.emitWire("logic", instName + "_cfg_ready");
+
+        emitter.emitInstance(modName, instName, params, conns);
+        emitter.emitBlankLine();
+
+        // Track config instance name for modules that have config bits.
+        bool hasConfig = false;
+        if (mlir::isa<fcc::fabric::SpatialSwOp>(defOp) ||
+            mlir::isa<fcc::fabric::TemporalSwOp>(defOp) ||
+            mlir::isa<fcc::fabric::MemoryOp>(defOp) ||
+            mlir::isa<fcc::fabric::ExtMemoryOp>(defOp)) {
+          hasConfig = true;
+        } else if (auto fifo =
+                       mlir::dyn_cast<fcc::fabric::FifoOp>(defOp)) {
+          if (fifo.getBypassable())
+            hasConfig = true;
+        }
+        if (hasConfig)
+          ctx.configInstanceNames.push_back(instName);
+      } else if (isPE || isFU || !defOp) {
+        // PE, standalone FU, or unresolved symbol: use pe_*/fu_* naming
+        // with pe_in*/pe_out* port convention.
+        std::string actualModName;
+        if (isFU)
+          actualModName = "fu_" + refModName;
+        else if (defOp) {
+          // Look up the generated PE module name from peModuleNames.
+          auto peIt = peModuleNames.find(defOp);
+          actualModName = peIt != peModuleNames.end()
+                              ? peIt->second
+                              : "pe_" + refModName;
+        } else {
+          // Unresolved: fall back to pe_<symbol> for backward compat.
+          actualModName = "pe_" + refModName;
+        }
+
+        std::vector<std::string> instParams;
+        std::vector<SVConnection> conns;
+
+        conns.push_back({"clk", "clk"});
+        conns.push_back({"rst_n", "rst_n"});
+
+        // Connect operands using PE/FU wrapper port convention.
+        unsigned dataPortIdx = 0;
+        for (unsigned i = 0; i < instOp.getOperands().size(); ++i) {
+          if (mlir::isa<mlir::MemRefType>(instOp.getOperand(i).getType()))
+            continue;
+          std::string wire = ctx.getOrCreateWire(instOp.getOperand(i));
+          std::string idx = std::to_string(dataPortIdx);
+          conns.push_back({"pe_in" + idx, wire});
+          conns.push_back({"pe_in_valid" + idx, wire + "_valid"});
+          conns.push_back({"pe_in_ready" + idx, wire + "_ready"});
+          ++dataPortIdx;
+        }
+        // Connect results.
+        for (unsigned i = 0; i < instOp.getResults().size(); ++i) {
+          std::string wire = ctx.getOrCreateWire(instOp.getResult(i));
+          std::string idx = std::to_string(i);
+          conns.push_back({"pe_out" + idx, wire});
+          conns.push_back({"pe_out_valid" + idx, wire + "_valid"});
+          conns.push_back({"pe_out_ready" + idx, wire + "_ready"});
+        }
+
+        // Config interface.
+        conns.push_back({"cfg_valid", instName + "_cfg_valid"});
+        conns.push_back({"cfg_wdata", instName + "_cfg_wdata"});
+        conns.push_back({"cfg_ready", instName + "_cfg_ready"});
+
+        emitter.emitWire("logic", instName + "_cfg_valid");
+        emitter.emitWire("logic [31:0]", instName + "_cfg_wdata");
+        emitter.emitWire("logic", instName + "_cfg_ready");
+
+        ctx.configInstanceNames.push_back(instName);
+
+        emitter.emitInstance(actualModName, instName, instParams, conns);
+        emitter.emitBlankLine();
+      }
       continue;
     }
 

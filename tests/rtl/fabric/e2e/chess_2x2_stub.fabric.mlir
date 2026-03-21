@@ -40,28 +40,26 @@ module {
 
     // Switch 0: 2-input 2-output crossbar
     // Routes in0 -> pe_add input0, in1 -> pe_add input1
-    %sw0_out0, %sw0_out1 = fabric.spatial_sw %in0, %in1
-      [connectivity_table = ["11", "11"]]
-      {route_table = ["10", "01"]}
+    %sw0:2 = fabric.spatial_sw @sw0 [connectivity_table = ["11", "11"]] (%in0, %in1)
+      attributes {route_table = ["10", "01"]}
       : (!fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
 
     // PE 0: addi
-    %pe0_out = fabric.instance @pe_add(%sw0_out0, %sw0_out1) {sym_name = "pe_0"}
+    %pe0_out:1 = fabric.instance @pe_add(%sw0#0, %sw0#1) {sym_name = "pe_0"}
         : (!fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>)
 
     // FIFO between PE0 and SW1
-    %fifo_out = fabric.fifo %pe0_out#0 [depth = 4 : i64]
-        : !fabric.bits<32> -> !fabric.bits<32>
+    %fifo_out = fabric.fifo @fifo_0 [depth = 4] (%pe0_out#0)
+        : (!fabric.bits<32>) -> (!fabric.bits<32>)
 
     // Switch 1: 2-input 2-output crossbar
     // Routes fifo_out -> pe_mul input0, in2 -> pe_mul input1
-    %sw1_out0, %sw1_out1 = fabric.spatial_sw %fifo_out, %in2
-      [connectivity_table = ["11", "11"]]
-      {route_table = ["10", "01"]}
+    %sw1:2 = fabric.spatial_sw @sw1 [connectivity_table = ["11", "11"]] (%fifo_out, %in2)
+      attributes {route_table = ["10", "01"]}
       : (!fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
 
     // PE 1: muli
-    %pe1_out = fabric.instance @pe_mul(%sw1_out0, %sw1_out1) {sym_name = "pe_1"}
+    %pe1_out:1 = fabric.instance @pe_mul(%sw1#0, %sw1#1) {sym_name = "pe_1"}
         : (!fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>)
 
     fabric.yield %pe1_out#0 : !fabric.bits<32>
