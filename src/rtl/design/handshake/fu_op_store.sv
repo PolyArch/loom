@@ -1,32 +1,14 @@
 // fu_op_store.sv -- Memory store port adapter (handshake.store).
 //
-// Combinational: intrinsic latency 0.
-// The actual memory latency is external to this FU; this module
-// adapts the handshake protocol between the FU ports and the
-// memory subsystem interface.
+// CIRCT handshake.store convention:
+//   Operands (from DFG): addr (index), data (type), ctrl (none)
+//   Results  (to DFG):   done (none)
+//   Memory-side:         store addr + data forwarded to memory module
 //
-// Inputs:
-//   0: addr (index, ADDR_WIDTH bits)
-//   1: data (any, DATA_WIDTH bits)
-//   2: ctrl (none-type trigger, DATA_WIDTH bits, data ignored)
-//
-// Output:
-//   0: done (none-type, DATA_WIDTH bits) -- store request issued
-//
-// The store adapter captures all three inputs independently,
-// then when all are captured and output is free, emits both
-// addr and data to the memory subsystem (via output ports or
-// direct memory-side signals wired at PE level).
-//
-// Matching simulator commitStore behavior:
-//   - Independently capture addr, data, ctrl.
-//   - When all three captured and output free, fire:
-//     emit data on output 0, emit addr on output 1.
-//     (The two-output model lets the PE route data/addr to memory.)
-//
-// For simplicity in the single-done-output model requested:
-//   Output 0: done signal (data = 0, none-type acknowledgment)
-//   The addr and data are forwarded to memory via separate side ports.
+// Behavior:
+//   1. Independently capture addr, data, and ctrl operands.
+//   2. When all three captured and both memory channel and done output
+//      are free, issue the store to memory and emit done token.
 
 module fu_op_store #(
   parameter int unsigned ADDR_WIDTH = 32,
@@ -35,27 +17,27 @@ module fu_op_store #(
   input  logic                    clk,
   input  logic                    rst_n,
 
-  // Input 0: addr
+  // Input 0: addr (index, ADDR_WIDTH bits)
   input  logic [ADDR_WIDTH-1:0]   in_data_0,
   input  logic                    in_valid_0,
   output logic                    in_ready_0,
 
-  // Input 1: data
+  // Input 1: data (any, DATA_WIDTH bits)
   input  logic [DATA_WIDTH-1:0]   in_data_1,
   input  logic                    in_valid_1,
   output logic                    in_ready_1,
 
-  // Input 2: ctrl (trigger, data content ignored)
+  // Input 2: ctrl (none-type trigger, width 1, data ignored)
   /* verilator lint_off UNUSEDSIGNAL */
-  input  logic [DATA_WIDTH-1:0]   in_data_2,
+  input  logic                    in_data_2,
   /* verilator lint_on UNUSEDSIGNAL */
   input  logic                    in_valid_2,
   output logic                    in_ready_2,
 
-  // Output 0: done (acknowledgment that store has been issued)
-  output logic [DATA_WIDTH-1:0]   out_data,
-  output logic                    out_valid,
-  input  logic                    out_ready,
+  // Output 0: done (none-type acknowledgment, width 1)
+  output logic                    out_data_0,
+  output logic                    out_valid_0,
+  input  logic                    out_ready_0,
 
   // Memory-side: forwarded addr and data for memory subsystem
   output logic [ADDR_WIDTH-1:0]   mem_addr,
@@ -74,20 +56,20 @@ module fu_op_store #(
   logic                   ctrl_captured_r;
 
   // -------------------------------------------------------------------
-  // Output holding register
+  // Output and memory holding registers
   // -------------------------------------------------------------------
   logic              out_valid_r;
   logic              mem_valid_r;
 
-  assign out_valid = out_valid_r;
-  assign out_data  = '0;  // none-type: data is zero
+  assign out_valid_0 = out_valid_r;
+  assign out_data_0  = 1'b0;  // none-type: data is zero
 
   assign mem_valid = mem_valid_r;
   assign mem_addr  = addr_val_r;
   assign mem_data  = data_val_r;
 
   logic out_transfer;
-  assign out_transfer = out_valid & out_ready;
+  assign out_transfer = out_valid_0 & out_ready_0;
 
   logic mem_transfer;
   assign mem_transfer = mem_valid & mem_ready;

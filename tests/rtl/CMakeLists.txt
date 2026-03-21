@@ -11,6 +11,7 @@ set(FCC_RTL_NEGATIVE_TESTS
   "${FCC_RTL_NEGATIVE_DIR}/latency_too_low.fabric.mlir"
   "${FCC_RTL_NEGATIVE_DIR}/transcendental_no_profile.fabric.mlir"
   "${FCC_RTL_NEGATIVE_DIR}/dataflow_wrong_latency.fabric.mlir"
+  "${FCC_RTL_NEGATIVE_DIR}/interval_too_low.fabric.mlir"
 )
 
 # ---------------------------------------------------------------------------

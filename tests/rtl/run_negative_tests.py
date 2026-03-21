@@ -17,6 +17,7 @@ EXPECTED_ERRORS = {
     "latency_too_low": "latency",
     "transcendental_no_profile": "fp-ip-profile",
     "dataflow_wrong_latency": "latency",
+    "interval_too_low": "interval",
 }
 
 

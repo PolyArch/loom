@@ -308,14 +308,15 @@ static void emitWidthAdaptOpInstance(FUEmitContext &ctx, mlir::Operation &op,
 /// Memory ops use:
 ///   - Parameters: ADDR_WIDTH, DATA_WIDTH
 ///   - Standard in_data_N/in_valid_N/in_ready_N per operand
-///   - Output ports: out_data/out_valid/out_ready (single) or
-///     out_data_N/out_valid_N/out_ready_N (multi)
-///   - handshake.store additionally has: mem_addr, mem_data, mem_valid, mem_ready
+///   - Output ports: out_data_N/out_valid_N/out_ready_N (always indexed)
+///   - handshake.load has: mem_addr, mem_addr_valid, mem_addr_ready,
+///     mem_data, mem_data_valid, mem_data_ready
+///   - handshake.store has: mem_addr, mem_data, mem_valid, mem_ready
 ///   - Clock/reset: clk, rst_n
 ///
-/// For memory-side ports, the generated FU body currently connects them to
-/// open wires with a TODO comment -- the PE-level memory subsystem wiring
-/// is handled at a higher level.
+/// For memory-side ports, the generated FU body connects them to
+/// declared wires -- the PE-level memory subsystem wiring is handled
+/// at a higher level.
 static void emitMemoryOpInstance(FUEmitContext &ctx, mlir::Operation &op,
                                  unsigned /*fuDataWidth*/) {
   llvm::StringRef opName = op.getName().getStringRef();
@@ -368,25 +369,49 @@ static void emitMemoryOpInstance(FUEmitContext &ctx, mlir::Operation &op,
     connections.push_back({"in_ready_" + idx, instName + "_in_ready_" + idx});
   }
 
-  // Output ports.
-  if (numResults == 1) {
-    connections.push_back({"out_data", ctx.getDataWire(op.getResult(0))});
-    connections.push_back({"out_valid", ctx.getValidWire(op.getResult(0))});
-    connections.push_back({"out_ready", ctx.getReadyWire(op.getResult(0))});
-  } else {
-    for (unsigned i = 0; i < numResults; ++i) {
-      std::string idx = std::to_string(i);
-      connections.push_back({"out_data_" + idx, ctx.getDataWire(op.getResult(i))});
-      connections.push_back({"out_valid_" + idx, ctx.getValidWire(op.getResult(i))});
-      connections.push_back({"out_ready_" + idx, ctx.getReadyWire(op.getResult(i))});
-    }
+  // Output ports -- always use indexed naming (out_data_0, out_valid_0, ...).
+  for (unsigned i = 0; i < numResults; ++i) {
+    std::string idx = std::to_string(i);
+    connections.push_back({"out_data_" + idx, ctx.getDataWire(op.getResult(i))});
+    connections.push_back({"out_valid_" + idx, ctx.getValidWire(op.getResult(i))});
+    connections.push_back({"out_ready_" + idx, ctx.getReadyWire(op.getResult(i))});
   }
 
-  // Memory-side ports for handshake.store.
-  // handshake.load does not have explicit mem_* ports in its SV module;
-  // memory response routing is handled at the PE level.
+  // Memory-side ports for handshake.load:
+  //   mem_addr (ADDR_WIDTH), mem_addr_valid, mem_addr_ready  -- request
+  //   mem_data (DATA_WIDTH), mem_data_valid, mem_data_ready  -- response
+  if (opName == "handshake.load") {
+    std::string memAddrWire = instName + "_mem_addr";
+    std::string memAddrValidWire = instName + "_mem_addr_valid";
+    std::string memAddrReadyWire = instName + "_mem_addr_ready";
+    std::string memDataWire = instName + "_mem_data";
+    std::string memDataValidWire = instName + "_mem_data_valid";
+    std::string memDataReadyWire = instName + "_mem_data_ready";
+
+    ctx.emitter.emitWire("logic" + SVEmitter::bitRange(addrWidth), memAddrWire);
+    ctx.emitter.emitWire("logic", memAddrValidWire);
+    ctx.emitter.emitWire("logic", memAddrReadyWire);
+    ctx.emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth), memDataWire);
+    ctx.emitter.emitWire("logic", memDataValidWire);
+    ctx.emitter.emitWire("logic", memDataReadyWire);
+
+    connections.push_back({"mem_addr", memAddrWire});
+    connections.push_back({"mem_addr_valid", memAddrValidWire});
+    connections.push_back({"mem_addr_ready", memAddrReadyWire});
+    connections.push_back({"mem_data", memDataWire});
+    connections.push_back({"mem_data_valid", memDataValidWire});
+    connections.push_back({"mem_data_ready", memDataReadyWire});
+
+    // TODO: Connect memory-side wires to enclosing PE memory interface.
+    // For now, tie mem_addr_ready high and mem_data_valid low.
+    ctx.emitter.emitAssign(memAddrReadyWire, "1'b1");
+    ctx.emitter.emitAssign(memDataValidWire, "1'b0");
+    ctx.emitter.emitAssign(memDataWire, "'0");
+  }
+
+  // Memory-side ports for handshake.store:
+  //   mem_addr (ADDR_WIDTH), mem_data (DATA_WIDTH), mem_valid, mem_ready
   if (opName == "handshake.store") {
-    // Declare memory-side wires for this store instance.
     std::string memAddrWire = instName + "_mem_addr";
     std::string memDataWire = instName + "_mem_data";
     std::string memValidWire = instName + "_mem_valid";

@@ -4,9 +4,9 @@
 import argparse
 import glob
 import os
+import re
 import subprocess
 import sys
-import json
 
 
 def find_tool(name, module_spec=None):
@@ -63,7 +63,7 @@ def generate_golden_traces(fcc_exec, adg_path, module_name, output_dir):
     print(f"[behaviour] Generating golden traces: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"[behaviour] FAIL: fcc golden trace generation failed")
+        print("[behaviour] FAIL: fcc golden trace generation failed")
         if result.stderr:
             print(result.stderr[:2000])
         return None
@@ -86,7 +86,6 @@ def extract_module_name(mlir_path):
     Scans for `fabric.module @<name>` and returns the name string.
     Falls back to None if not found.
     """
-    import re
     pattern = re.compile(r'fabric\.module\s+@(\w+)')
     try:
         with open(mlir_path, "r") as f:
@@ -99,8 +98,214 @@ def extract_module_name(mlir_path):
     return None
 
 
+def extract_port_info(mlir_path):
+    """Extract visible (non-memref) input/output port counts and indices.
+
+    Parses the MLIR file to find the fabric.module declaration. Counts
+    only non-memref ports (matching SVGenTop's filtering). Returns
+    (num_visible_inputs, num_outputs, visible_input_indices) where
+    visible_input_indices is a list of the original argument numbers
+    for the non-memref inputs (used for port naming: mod_in<orig_idx>).
+
+    Falls back to (1, 1, [0]) on failure.
+    """
+    try:
+        with open(mlir_path, "r") as f:
+            content = f.read()
+    except OSError:
+        return 1, 1, [0]
+
+    # Find the fabric.module declaration and extract its full signature.
+    # Format: fabric.module @name( %arg0: type, ... ) -> ( type, ... ) {
+    mod_pattern = re.compile(
+        r'fabric\.module\s+@\w+\s*\((.*?)\)\s*->\s*\((.*?)\)\s*\{',
+        re.DOTALL)
+    m = mod_pattern.search(content)
+    if not m:
+        # Try single-output form: -> type {  (no parens around output)
+        mod_pattern2 = re.compile(
+            r'fabric\.module\s+@\w+\s*\((.*?)\)\s*->\s*([^{]+?)\s*\{',
+            re.DOTALL)
+        m = mod_pattern2.search(content)
+        if not m:
+            return 1, 1, [0]
+
+    inputs_str = m.group(1).strip()
+    outputs_str = m.group(2).strip()
+
+    # Count input ports: each port is "%name: type"
+    # Skip memref arguments (SVGenTop skips them for SV boundary ports).
+    # Track original argument indices for port naming (mod_in<orig_idx>).
+    num_inputs = 0
+    visible_input_indices = []
+    if inputs_str:
+        arg_idx = 0
+        for port_match in re.finditer(r'%\w+\s*:\s*([^,]+)', inputs_str):
+            port_type = port_match.group(1).strip()
+            if not port_type.startswith("memref"):
+                num_inputs += 1
+                visible_input_indices.append(arg_idx)
+            arg_idx += 1
+
+    # Count output ports: each is a type separated by top-level commas.
+    num_outputs = 0
+    if outputs_str:
+        depth = 0
+        count = 1 if outputs_str.strip() else 0
+        for ch in outputs_str:
+            if ch == '<':
+                depth += 1
+            elif ch == '>':
+                depth -= 1
+            elif ch == ',' and depth == 0:
+                count += 1
+        num_outputs = count
+
+    if num_inputs == 0:
+        num_inputs = 1
+    if num_outputs == 0:
+        num_outputs = 1
+
+    if not visible_input_indices:
+        visible_input_indices = list(range(num_inputs))
+    return num_inputs, num_outputs, visible_input_indices
+
+
+def find_port_traces(trace_dir, module_name, num_inputs, num_outputs):
+    """Find per-port trace files based on PortTraceExporter naming.
+
+    The PortTraceExporter writes files as:
+        <module>_in<pi>_tokens.hex   (input ports)
+        <module>_out<pi>_tokens.hex  (output ports)
+    where <pi> is the port index in the traced ports vector. Input ports
+    come first (0..num_inputs-1), then output ports (num_inputs..total-1).
+
+    Returns:
+        input_traces: list of (channel_idx, trace_path) tuples
+        output_traces: list of (channel_idx, trace_path) tuples
+    """
+    input_traces = []
+    output_traces = []
+
+    if not os.path.isdir(trace_dir):
+        return input_traces, output_traces
+
+    # Find input traces: module_in<pi>_tokens.hex where pi = 0..num_inputs-1
+    for pi in range(num_inputs):
+        candidates = [
+            os.path.join(trace_dir, f"{module_name}_in{pi}_tokens.hex"),
+            os.path.join(trace_dir, f"{module_name}_mod_in{pi}_tokens.hex"),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                input_traces.append((pi, path))
+                break
+
+    # Find output traces: module_out<pi>_tokens.hex
+    # Port index in PortTraceExporter: outputs start at index num_inputs
+    for oi in range(num_outputs):
+        pi = num_inputs + oi
+        candidates = [
+            os.path.join(trace_dir, f"{module_name}_out{pi}_tokens.hex"),
+            os.path.join(trace_dir, f"{module_name}_mod_out{pi}_tokens.hex"),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                output_traces.append((oi, path))
+                break
+
+    # Fallback: if no traces found with expected naming, try generic patterns
+    if not input_traces:
+        for pi in range(num_inputs):
+            pattern = os.path.join(trace_dir, f"*in{pi}*_tokens.hex")
+            matches = sorted(glob.glob(pattern))
+            if matches:
+                input_traces.append((pi, matches[0]))
+
+    if not output_traces:
+        for oi in range(num_outputs):
+            pattern = os.path.join(trace_dir, f"*out{oi}*_tokens.hex")
+            matches = sorted(glob.glob(pattern))
+            if matches:
+                output_traces.append((oi, matches[0]))
+        # If still nothing, try the old single-output fallback
+        if not output_traces:
+            pattern = os.path.join(trace_dir, "*out*_tokens.hex")
+            matches = sorted(glob.glob(pattern))
+            if matches:
+                output_traces.append((0, matches[0]))
+
+    return input_traces, output_traces
+
+
+def generate_dut_inst_svh(output_path, dut_module, num_inputs, num_outputs,
+                          visible_input_indices=None):
+    """Generate the dut_inst.svh file with DUT port connections.
+
+    Creates a SystemVerilog include file that instantiates the DUT module
+    with the correct port topology, connecting to the testbench wrapper's
+    drv_data/drv_valid/drv_ready and mon_data/mon_valid/mon_ready arrays.
+
+    visible_input_indices: list of original argument indices for visible
+    (non-memref) input ports. SVGenTop uses these indices for port naming:
+    mod_in<orig_idx>. If None, defaults to dense [0..num_inputs-1].
+    """
+    if visible_input_indices is None:
+        visible_input_indices = list(range(num_inputs))
+
+    lines = []
+    lines.append(f"// Auto-generated DUT instantiation for {dut_module}")
+    lines.append(f"// Topology: {num_inputs} visible inputs (indices {visible_input_indices}), {num_outputs} outputs")
+    lines.append("")
+
+    # Build port connection list
+    ports = []
+    ports.append("    .clk            (clk)")
+    ports.append("    .rst_n          (rst_n)")
+
+    # Use original argument indices for port naming (matches SVGenTop)
+    for drv_idx, orig_idx in enumerate(visible_input_indices):
+        ports.append(f"    .mod_in{orig_idx}        (drv_data[{drv_idx}])")
+        ports.append(f"    .mod_in{orig_idx}_valid  (drv_valid[{drv_idx}])")
+        ports.append(f"    .mod_in{orig_idx}_ready  (drv_ready[{drv_idx}])")
+
+    for o in range(num_outputs):
+        ports.append(f"    .mod_out{o}       (mon_data[{o}])")
+        ports.append(f"    .mod_out{o}_valid (mon_valid[{o}])")
+        ports.append(f"    .mod_out{o}_ready (mon_ready[{o}])")
+
+    ports.append("    .cfg_valid      (cfg_valid)")
+    ports.append("    .cfg_wdata      (cfg_wdata)")
+    ports.append("    .cfg_last       (cfg_last)")
+    ports.append("    .cfg_ready      (cfg_ready)")
+
+    lines.append("`DUT_MODULE u_dut (")
+    lines.append(",\n".join(ports))
+    lines.append(");")
+    lines.append("")
+
+    # Tie off unused input channel ready signals
+    lines.append("// Tie off unused input channel ready signals")
+    lines.append("generate")
+    lines.append("    genvar gtr;")
+    lines.append("    for (gtr = 0; gtr < MAX_CHANNELS; gtr = gtr + 1) "
+                 "begin : gen_tieoff_ready")
+    lines.append(f"        if (gtr >= {num_inputs}) "
+                 "begin : tieoff_drv_ready")
+    lines.append("            assign drv_ready[gtr] = 1'b1;")
+    lines.append("        end")
+    lines.append("    end")
+    lines.append("endgenerate")
+    lines.append("")
+
+    with open(output_path, "w") as f:
+        f.write("\n".join(lines))
+
+    return output_path
+
+
 def find_output_trace(trace_dir, module_name):
-    """Find the output port trace file for a given module.
+    """Find the output port trace file for a given module (legacy helper).
 
     Looks for files matching *_out0_tokens.hex or *_mod_out0*.hex
     in the trace directory. Falls back to the first *out*.hex file.
@@ -108,7 +313,6 @@ def find_output_trace(trace_dir, module_name):
     if not os.path.isdir(trace_dir):
         return None
 
-    # Preferred: exact output port trace patterns
     for pattern_str in [
         os.path.join(trace_dir, f"{module_name}_out0_tokens.hex"),
         os.path.join(trace_dir, f"{module_name}_mod_out0_tokens.hex"),
@@ -117,12 +321,10 @@ def find_output_trace(trace_dir, module_name):
         if matches:
             return matches[0]
 
-    # Fallback: any file with 'out' and ending in _tokens.hex
     candidates = glob.glob(os.path.join(trace_dir, "*out*_tokens.hex"))
     if candidates:
         return sorted(candidates)[0]
 
-    # Last resort: any file with 'out' in the name
     candidates = glob.glob(os.path.join(trace_dir, "*out*.hex"))
     if candidates:
         return sorted(candidates)[0]
@@ -131,7 +333,7 @@ def find_output_trace(trace_dir, module_name):
 
 
 def find_input_trace(trace_dir, module_name):
-    """Find the input port trace file for a given module.
+    """Find the input port trace file for a given module (legacy helper).
 
     Looks for files matching *_in0_tokens.hex in the trace directory.
     """
@@ -260,7 +462,7 @@ def main():
         if "behaviour" in args.checks:
             beh_dir = os.path.join(test_output, "behaviour")
             os.makedirs(beh_dir, exist_ok=True)
-            if not find_tool("verilator"):
+            if not find_tool("verilator", "verilator/5.044"):
                 print(f"[behaviour/{tc['module']}/{tc['test']}] SKIP: verilator not found")
                 results["skipped"] += 1
             else:
@@ -275,6 +477,12 @@ def main():
                     print(f"[behaviour/{tc['module']}/{tc['test']}] "
                           f"WARN: could not extract module name from MLIR, "
                           f"using directory name: {fabric_module_name}")
+
+                # Extract port topology from MLIR
+                num_inputs, num_outputs, visible_input_indices = extract_port_info(tc["mlir"])
+                print(f"[behaviour/{tc['module']}/{tc['test']}] "
+                      f"Port topology: {num_inputs} inputs, "
+                      f"{num_outputs} outputs")
 
                 # Auto-generate RTL collateral if missing.
                 if not os.path.isdir(rtl_dir):
@@ -313,36 +521,27 @@ def main():
                 else:
                     trace_dir = os.path.join(test_output, "rtl-traces")
 
-                    # Find specific golden output trace and set up output path
-                    golden_out_trace = find_output_trace(trace_dir,
-                                                         fabric_module_name)
-                    output_trace_path = os.path.join(beh_dir, "sim_out0.hex")
+                    # Find per-port traces using multi-port discovery
+                    input_traces, output_traces = find_port_traces(
+                        trace_dir, fabric_module_name,
+                        num_inputs, num_outputs)
 
-                    # Find input trace for the module
-                    input_trace = find_input_trace(trace_dir,
-                                                    fabric_module_name)
+                    # DUT module name for the generated top-level SV module
+                    dut_module = "fabric_top_" + fabric_module_name
 
-                    # Read token counts from .count files produced by
-                    # PortTraceExporter, falling back to line counting
-                    golden_token_count = 0
-                    input_token_count = 0
-                    if golden_out_trace:
-                        golden_token_count = read_count_file(golden_out_trace)
-                        if golden_token_count == 0:
-                            golden_token_count = count_hex_lines(
-                                golden_out_trace)
-                    if input_trace:
-                        input_token_count = read_count_file(input_trace)
-                        if input_token_count == 0:
-                            input_token_count = count_hex_lines(input_trace)
+                    # Generate the DUT instantiation include file
+                    dut_inst_path = os.path.join(beh_dir, "dut_inst.svh")
+                    generate_dut_inst_svh(
+                        dut_inst_path, dut_module,
+                        num_inputs, num_outputs,
+                        visible_input_indices)
+                    print(f"[behaviour/{tc['module']}/{tc['test']}] "
+                          f"Generated dut_inst.svh at {dut_inst_path}")
 
                     # Find config hex file and count words
                     config_hex = find_config_hex(gen_dir)
                     config_word_count = (count_hex_lines(config_hex)
                                          if config_hex else 0)
-
-                    # DUT module name for the generated top-level SV module
-                    dut_module = "fabric_top_" + fabric_module_name
 
                     sim_args = [
                         "--rtl-dir", rtl_dir,
@@ -351,36 +550,77 @@ def main():
                         "--tool", "verilator",
                         "--trace-dir", trace_dir,
                         "--dut-module", dut_module,
+                        "--dut-inst-dir", beh_dir,
+                        "--num-dut-inputs", str(num_inputs),
+                        "--num-dut-outputs", str(num_outputs),
                     ]
 
-                    # Build plusargs for runtime TB configuration
+                    # Build per-channel plusargs for runtime TB config
                     plusarg_list = []
-                    if input_token_count > 0:
+
+                    # Per-input-channel plusargs
+                    for ch_idx, in_trace in input_traces:
+                        in_count = read_count_file(in_trace)
+                        if in_count == 0:
+                            in_count = count_hex_lines(in_trace)
                         plusarg_list.append(
-                            f"+NUM_INPUT_TOKENS={input_token_count}")
-                    if golden_token_count > 0:
+                            f"+INPUT_TRACE_{ch_idx}={in_trace}")
+                        if in_count > 0:
+                            plusarg_list.append(
+                                f"+NUM_INPUT_TOKENS_{ch_idx}={in_count}")
+
+                    # Per-output-channel plusargs
+                    golden_trace_paths = []
+                    output_trace_paths = []
+                    for ch_idx, out_trace in output_traces:
+                        golden_count = read_count_file(out_trace)
+                        if golden_count == 0:
+                            golden_count = count_hex_lines(out_trace)
+                        out_path = os.path.join(
+                            beh_dir, f"sim_out{ch_idx}.hex")
+
                         plusarg_list.append(
-                            f"+GOLDEN_TOKENS={golden_token_count}")
+                            f"+GOLDEN_TRACE_{ch_idx}={out_trace}")
+                        plusarg_list.append(
+                            f"+OUTPUT_TRACE_{ch_idx}={out_path}")
+                        if golden_count > 0:
+                            plusarg_list.append(
+                                f"+GOLDEN_TOKENS_{ch_idx}={golden_count}")
+
+                        golden_trace_paths.append(
+                            (ch_idx, out_trace, golden_count))
+                        output_trace_paths.append(
+                            (ch_idx, out_path))
+
+                    # Config plusargs
                     if config_word_count > 0:
                         plusarg_list.append(
                             f"+NUM_CONFIG_WORDS={config_word_count}")
-                    if input_trace:
-                        plusarg_list.append(
-                            f"+INPUT_TRACE_0={input_trace}")
                     if config_hex:
                         plusarg_list.append(
                             f"+CONFIG_FILE={config_hex}")
 
-                    if golden_out_trace:
-                        plusarg_list.append(
-                            f"+GOLDEN_TRACE_0={golden_out_trace}")
+                    # Pass golden/output trace paths for post-sim
+                    # comparison. Use the first output channel for
+                    # backward compatibility, plus multi-channel info.
+                    if golden_trace_paths:
                         sim_args.extend([
-                            "--golden-trace", golden_out_trace,
-                            "--output-trace", output_trace_path,
+                            "--golden-trace",
+                            golden_trace_paths[0][1],
+                            "--output-trace",
+                            output_trace_paths[0][1],
                         ])
-                    if output_trace_path:
-                        plusarg_list.append(
-                            f"+OUTPUT_TRACE_0={output_trace_path}")
+                        # Pass all golden/output pairs for multi-channel
+                        for ch_idx, gpath, gcount in golden_trace_paths:
+                            sim_args.extend([
+                                "--golden-trace-ch",
+                                f"{ch_idx}:{gpath}",
+                            ])
+                        for ch_idx, opath in output_trace_paths:
+                            sim_args.extend([
+                                "--output-trace-ch",
+                                f"{ch_idx}:{opath}",
+                            ])
 
                     # Pass plusargs to run_sim.py
                     if plusarg_list:
@@ -398,7 +638,7 @@ def main():
         if "synth" in args.checks:
             phys_dir = os.path.join(test_output, "physical")
             os.makedirs(phys_dir, exist_ok=True)
-            if not find_tool("dc_shell"):
+            if not find_tool("dc_shell", "synopsys/syn/X-2025.06-SP3"):
                 print(f"[synth/{tc['module']}/{tc['test']}] SKIP: dc_shell not found")
                 results["skipped"] += 1
             else:
@@ -423,16 +663,12 @@ def main():
                         results["failed"] += 1
                         continue
                 if os.path.isdir(gen_dir):
-                    # Extract the real fabric.module @name for the
-                    # synthesis design name (the top SV module is
-                    # fabric_top_<name>).
-                    synth_module_name = extract_module_name(tc["mlir"])
-                    if not synth_module_name:
-                        synth_module_name = tc["module"]
-                    synth_design_name = "fabric_top_" + synth_module_name
+                    # Derive the generated top module name from MLIR
+                    synth_mod_name = tc.get("mod_name", tc["module"])
+                    synth_design = f"fabric_top_{synth_mod_name}"
                     passed = run_check(
                         os.path.join(scripts_dir, "run_synth.py"),
-                        ["--rtl-dir", gen_dir, "--design-name", synth_design_name,
+                        ["--rtl-dir", gen_dir, "--design-name", synth_design,
                          "--output-dir", phys_dir, "--tcl-template", tcl_template],
                         f"synth/{tc['module']}/{tc['test']}",
                         phys_dir
@@ -445,7 +681,7 @@ def main():
 
     # Summary
     print(f"\n{'='*60}")
-    print(f"RTL Verification Summary")
+    print("RTL Verification Summary")
     print(f"{'='*60}")
     print(f"  Passed:  {results['passed']}")
     print(f"  Failed:  {results['failed']}")

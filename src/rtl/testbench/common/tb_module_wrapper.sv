@@ -57,8 +57,16 @@ module tb_module_wrapper;
 
     // Multi-channel support: up to 4 inputs and 4 outputs.
     // These are set at compile time via +define+NUM_DUT_INPUTS=N etc.
+`ifdef NUM_DUT_INPUTS
+    parameter NUM_DUT_INPUTS     = `NUM_DUT_INPUTS;
+`else
     parameter NUM_DUT_INPUTS     = 1;
+`endif
+`ifdef NUM_DUT_OUTPUTS
+    parameter NUM_DUT_OUTPUTS    = `NUM_DUT_OUTPUTS;
+`else
     parameter NUM_DUT_OUTPUTS    = 1;
+`endif
 
     // Explicit token/word counts (compile-time defaults, per-channel
     // overrides come from plusargs)
