@@ -200,7 +200,7 @@ module tb_memory_sideeffect_test;
             test_state       <= ST_CFG_LOAD;
             cfg_idx          <= 0;
             cfg_valid        <= 1'b0;
-            cfg_wdata        <= 32'd0;
+            // cfg_wdata driven by always_comb (data_comb block)
             write_addr_idx   <= 0;
             write_data_idx   <= 0;
             store_done_cnt   <= 0;
@@ -209,13 +209,13 @@ module tb_memory_sideeffect_test;
             recv_idx         <= 0;
             mismatch_count   <= 0;
             store_addr_valid <= 1'b0;
-            store_addr_data  <= '0;
+            // store_addr_data driven by always_comb (data_comb block)
             store_addr_tag   <= '0;
             store_data_valid <= 1'b0;
-            store_data_data  <= '0;
+            // store_data_data driven by always_comb (data_comb block)
             store_data_tag   <= '0;
             load_addr_valid  <= 1'b0;
-            load_addr_data   <= '0;
+            // load_addr_data driven by always_comb (data_comb block)
             load_addr_tag    <= '0;
         end else begin : fsm_active
 
