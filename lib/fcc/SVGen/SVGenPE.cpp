@@ -29,48 +29,7 @@ struct FUInfo {
   unsigned numOutputs = 0;
   unsigned configBits = 0;
   fcc::fabric::FunctionUnitOp fuOp;
-  // Memory op type: "load", "store", or "" (no memory op).
-  std::string memOpType;
-  unsigned memAddrWidth = 32;
-  unsigned memDataWidth = 32;
 };
-
-/// Detect memory op type in an FU body. Returns "load", "store", or "".
-static std::string detectMemoryOpType(fcc::fabric::FunctionUnitOp fuOp) {
-  for (auto &op : fuOp.getBody().front().getOperations()) {
-    llvm::StringRef opName = op.getName().getStringRef();
-    if (opName == "handshake.load")
-      return "load";
-    if (opName == "handshake.store")
-      return "store";
-  }
-  return "";
-}
-
-/// Compute ADDR_WIDTH and DATA_WIDTH for a memory FU.
-static std::pair<unsigned, unsigned>
-computeMemWidths(fcc::fabric::FunctionUnitOp fuOp,
-                 const std::string &memType) {
-  unsigned addrWidth = 32;
-  unsigned dataWidth = 32;
-  for (auto &op : fuOp.getBody().front().getOperations()) {
-    llvm::StringRef opName = op.getName().getStringRef();
-    if ((memType == "load" && opName == "handshake.load") ||
-        (memType == "store" && opName == "handshake.store")) {
-      if (op.getNumOperands() > 0)
-        addrWidth = SVEmitter::getDataWidth(op.getOperand(0).getType());
-      if (memType == "load") {
-        if (op.getNumResults() > 0)
-          dataWidth = SVEmitter::getDataWidth(op.getResult(0).getType());
-      } else {
-        if (op.getNumOperands() > 1)
-          dataWidth = SVEmitter::getDataWidth(op.getOperand(1).getType());
-      }
-      break;
-    }
-  }
-  return {addrWidth, dataWidth};
-}
 
 /// Compute config bits for a single FU body op.
 static unsigned getBodyOpConfigBits(mlir::Operation &op,
@@ -138,14 +97,6 @@ static std::vector<FUInfo> collectFUs(mlir::Block &peBody) {
       // Count FU internal config bits (all configurable body ops).
       info.configBits = computeFUBodyConfigBits(fuOp);
 
-      // Detect memory op type and widths.
-      info.memOpType = detectMemoryOpType(fuOp);
-      if (!info.memOpType.empty()) {
-        auto [aw, dw] = computeMemWidths(fuOp, info.memOpType);
-        info.memAddrWidth = aw;
-        info.memDataWidth = dw;
-      }
-
       fus.push_back(std::move(info));
       continue;
     }
@@ -167,14 +118,6 @@ static std::vector<FUInfo> collectFUs(mlir::Block &peBody) {
       info.numOutputs = fnType.getNumResults();
       info.fuOp = fuOp;
       info.configBits = computeFUBodyConfigBits(fuOp);
-
-      // Detect memory op type and widths.
-      info.memOpType = detectMemoryOpType(fuOp);
-      if (!info.memOpType.empty()) {
-        auto [aw, dw] = computeMemWidths(fuOp, info.memOpType);
-        info.memAddrWidth = aw;
-        info.memDataWidth = dw;
-      }
 
       fus.push_back(std::move(info));
     }
@@ -285,35 +228,6 @@ std::string generateSpatialPE(fcc::fabric::SpatialPEOp peOp,
   ports.push_back({SVPortDir::Input, "logic", "cfg_valid"});
   ports.push_back({SVPortDir::Input, "logic [31:0]", "cfg_wdata"});
   ports.push_back({SVPortDir::Output, "logic", "cfg_ready"});
-
-  // Memory-side ports: expose per-FU mem_* ports at PE boundary.
-  for (unsigned fuIdx = 0; fuIdx < numFU; ++fuIdx) {
-    const auto &fu = fus[fuIdx];
-    if (fu.memOpType.empty())
-      continue;
-    std::string pfx = "fu" + u2s(fuIdx) + "_";
-    if (fu.memOpType == "load") {
-      ports.push_back({SVPortDir::Output,
-          "logic" + SVEmitter::bitRange(fu.memAddrWidth),
-          pfx + "mem_addr"});
-      ports.push_back({SVPortDir::Output, "logic", pfx + "mem_addr_valid"});
-      ports.push_back({SVPortDir::Input, "logic", pfx + "mem_addr_ready"});
-      ports.push_back({SVPortDir::Input,
-          "logic" + SVEmitter::bitRange(fu.memDataWidth),
-          pfx + "mem_rdata"});
-      ports.push_back({SVPortDir::Input, "logic", pfx + "mem_rdata_valid"});
-      ports.push_back({SVPortDir::Output, "logic", pfx + "mem_rdata_ready"});
-    } else if (fu.memOpType == "store") {
-      ports.push_back({SVPortDir::Output,
-          "logic" + SVEmitter::bitRange(fu.memAddrWidth),
-          pfx + "mem_addr"});
-      ports.push_back({SVPortDir::Output,
-          "logic" + SVEmitter::bitRange(fu.memDataWidth),
-          pfx + "mem_wdata"});
-      ports.push_back({SVPortDir::Output, "logic", pfx + "mem_valid"});
-      ports.push_back({SVPortDir::Input, "logic", pfx + "mem_ready"});
-    }
-  }
 
   emitter.emitModuleHeader(moduleName, params, ports);
 
@@ -562,22 +476,6 @@ std::string generateSpatialPE(fcc::fabric::SpatialPEOp peOp,
         fuConns.push_back({"fu_cfg", fp + "_cfg_out"});
       }
 
-      // Memory-side port connections: pass through to PE boundary ports.
-      std::string memPfx = fp + "_";
-      if (fu.memOpType == "load") {
-        fuConns.push_back({"mem_addr", memPfx + "mem_addr"});
-        fuConns.push_back({"mem_addr_valid", memPfx + "mem_addr_valid"});
-        fuConns.push_back({"mem_addr_ready", memPfx + "mem_addr_ready"});
-        fuConns.push_back({"mem_rdata", memPfx + "mem_rdata"});
-        fuConns.push_back({"mem_rdata_valid", memPfx + "mem_rdata_valid"});
-        fuConns.push_back({"mem_rdata_ready", memPfx + "mem_rdata_ready"});
-      } else if (fu.memOpType == "store") {
-        fuConns.push_back({"mem_addr", memPfx + "mem_addr"});
-        fuConns.push_back({"mem_wdata", memPfx + "mem_wdata"});
-        fuConns.push_back({"mem_valid", memPfx + "mem_valid"});
-        fuConns.push_back({"mem_ready", memPfx + "mem_ready"});
-      }
-
       emitter.emitInstance(fu.svModuleName, fp + "_body",
                            fuParams, fuConns);
     }
@@ -786,35 +684,6 @@ std::string generateTemporalPE(fcc::fabric::TemporalPEOp peOp,
   ports.push_back({SVPortDir::Input, "logic", "cfg_valid"});
   ports.push_back({SVPortDir::Input, "logic [31:0]", "cfg_wdata"});
   ports.push_back({SVPortDir::Output, "logic", "cfg_ready"});
-
-  // Memory-side ports: expose per-FU mem_* ports at PE boundary.
-  for (unsigned fuIdx = 0; fuIdx < numFU; ++fuIdx) {
-    const auto &fu = fus[fuIdx];
-    if (fu.memOpType.empty())
-      continue;
-    std::string pfx = "fu" + u2s(fuIdx) + "_";
-    if (fu.memOpType == "load") {
-      ports.push_back({SVPortDir::Output,
-          "logic" + SVEmitter::bitRange(fu.memAddrWidth),
-          pfx + "mem_addr"});
-      ports.push_back({SVPortDir::Output, "logic", pfx + "mem_addr_valid"});
-      ports.push_back({SVPortDir::Input, "logic", pfx + "mem_addr_ready"});
-      ports.push_back({SVPortDir::Input,
-          "logic" + SVEmitter::bitRange(fu.memDataWidth),
-          pfx + "mem_rdata"});
-      ports.push_back({SVPortDir::Input, "logic", pfx + "mem_rdata_valid"});
-      ports.push_back({SVPortDir::Output, "logic", pfx + "mem_rdata_ready"});
-    } else if (fu.memOpType == "store") {
-      ports.push_back({SVPortDir::Output,
-          "logic" + SVEmitter::bitRange(fu.memAddrWidth),
-          pfx + "mem_addr"});
-      ports.push_back({SVPortDir::Output,
-          "logic" + SVEmitter::bitRange(fu.memDataWidth),
-          pfx + "mem_wdata"});
-      ports.push_back({SVPortDir::Output, "logic", pfx + "mem_valid"});
-      ports.push_back({SVPortDir::Input, "logic", pfx + "mem_ready"});
-    }
-  }
 
   emitter.emitModuleHeader(moduleName, params, ports);
 

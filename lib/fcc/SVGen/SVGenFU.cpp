@@ -305,18 +305,12 @@ static void emitWidthAdaptOpInstance(FUEmitContext &ctx, mlir::Operation &op,
 
 /// Emit a module instantiation for a memory-side op (handshake.load/store).
 ///
-/// Memory ops use:
+/// Memory ops (handshake.load, handshake.store) use the visible-graph contract:
 ///   - Parameters: ADDR_WIDTH, DATA_WIDTH
-///   - Standard in_data_N/in_valid_N/in_ready_N per operand
-///   - Output ports: out_data_N/out_valid_N/out_ready_N (always indexed)
-///   - handshake.load has: mem_addr, mem_addr_valid, mem_addr_ready,
-///     mem_rdata, mem_rdata_valid, mem_rdata_ready
-///   - handshake.store has: mem_addr, mem_wdata, mem_valid, mem_ready
+///   - Standard in_data_N/in_valid_N/in_ready_N per operand (3 inputs)
+///   - Output ports: out_data_N/out_valid_N/out_ready_N (2 outputs)
+///   - No hidden memory-side ports: data flows through the visible fabric graph
 ///   - Clock/reset: clk, rst_n
-///
-/// Memory-side ports are connected to the FU wrapper module's
-/// module-level mem_* ports, which the PE wrapper will pass through
-/// to the top-level memory subsystem.
 static void emitMemoryOpInstance(FUEmitContext &ctx, mlir::Operation &op,
                                  unsigned /*fuDataWidth*/) {
   llvm::StringRef opName = op.getName().getStringRef();
@@ -377,28 +371,9 @@ static void emitMemoryOpInstance(FUEmitContext &ctx, mlir::Operation &op,
     connections.push_back({"out_ready_" + idx, ctx.getReadyWire(op.getResult(i))});
   }
 
-  // Memory-side ports for handshake.load:
-  //   mem_addr (ADDR_WIDTH), mem_addr_valid, mem_addr_ready  -- request
-  //   mem_rdata (DATA_WIDTH), mem_rdata_valid, mem_rdata_ready -- response
-  // Connected to FU wrapper module-level ports.
-  if (opName == "handshake.load") {
-    connections.push_back({"mem_addr", "mem_addr"});
-    connections.push_back({"mem_addr_valid", "mem_addr_valid"});
-    connections.push_back({"mem_addr_ready", "mem_addr_ready"});
-    connections.push_back({"mem_rdata", "mem_rdata"});
-    connections.push_back({"mem_rdata_valid", "mem_rdata_valid"});
-    connections.push_back({"mem_rdata_ready", "mem_rdata_ready"});
-  }
-
-  // Memory-side ports for handshake.store:
-  //   mem_addr (ADDR_WIDTH), mem_wdata (DATA_WIDTH), mem_valid, mem_ready
-  // Connected to FU wrapper module-level ports.
-  if (opName == "handshake.store") {
-    connections.push_back({"mem_addr", "mem_addr"});
-    connections.push_back({"mem_wdata", "mem_wdata"});
-    connections.push_back({"mem_valid", "mem_valid"});
-    connections.push_back({"mem_ready", "mem_ready"});
-  }
+  // No hidden memory-side ports: load/store use the visible fabric graph.
+  // Memory access flows through the fabric routing (addr out -> memory ->
+  // data back) via the visible SSA operands and results.
 
   ctx.emitter.emitInstance(svModName, instName, params, connections);
   ctx.emitter.emitBlankLine();
@@ -848,24 +823,8 @@ std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
          "logic" + SVEmitter::bitRange(totalConfigBits),
          "fu_cfg"});
 
-  // Memory-side ports exposed at FU module boundary.
-  if (memOpType == "load") {
-    ports.push_back({SVPortDir::Output,
-                     "logic" + SVEmitter::bitRange(memAddrWidth), "mem_addr"});
-    ports.push_back({SVPortDir::Output, "logic", "mem_addr_valid"});
-    ports.push_back({SVPortDir::Input, "logic", "mem_addr_ready"});
-    ports.push_back({SVPortDir::Input,
-                     "logic" + SVEmitter::bitRange(memDataWidth), "mem_rdata"});
-    ports.push_back({SVPortDir::Input, "logic", "mem_rdata_valid"});
-    ports.push_back({SVPortDir::Output, "logic", "mem_rdata_ready"});
-  } else if (memOpType == "store") {
-    ports.push_back({SVPortDir::Output,
-                     "logic" + SVEmitter::bitRange(memAddrWidth), "mem_addr"});
-    ports.push_back({SVPortDir::Output,
-                     "logic" + SVEmitter::bitRange(memDataWidth), "mem_wdata"});
-    ports.push_back({SVPortDir::Output, "logic", "mem_valid"});
-    ports.push_back({SVPortDir::Input, "logic", "mem_ready"});
-  }
+  // No hidden memory-side ports: load/store use the visible fabric graph.
+  // Memory data flows through the visible SSA operands and results.
 
   emitter.emitModuleHeader(moduleName, params, ports);
 

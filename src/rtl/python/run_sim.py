@@ -35,7 +35,7 @@ def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
     verilator_exec = resolve_verilator()
 
     cmd = [
-        verilator_exec, "--sv", "--cc", "--exe", "--build",
+        verilator_exec, "--sv", "--binary",
         "--timing",  # Required for #delay and event controls in testbenches
         "-Wall", "-Wno-fatal",
         "--top-module", top_module,
@@ -62,8 +62,8 @@ def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
     if tb_files:
         cmd.extend(tb_files)
 
-    if verilator_main and os.path.isfile(verilator_main):
-        cmd.append(verilator_main)
+    # Note: --binary mode does not use a C++ harness file.
+    # verilator_main.cpp is kept for reference but not compiled.
 
     # Make paths absolute before changing working directory
     abs_rtl_dir = os.path.abspath(rtl_dir)

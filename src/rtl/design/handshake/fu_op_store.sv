@@ -1,16 +1,17 @@
-// fu_op_store.sv -- Memory store port adapter (handshake.store).
+// fu_op_store.sv -- Memory store forwarding adapter (handshake.store).
 //
-// ADGBuilder contract (3 inputs, 2 outputs):
+// Visible-graph contract matching ADGBuilder and simulator:
 //   Inputs:  in_data_0 (addr, ADDR_WIDTH), in_data_1 (data, DATA_WIDTH),
 //            in_data_2 (ctrl/none, 1-bit)
-//   Outputs: out_data_0 (data, forwarded, DATA_WIDTH),
-//            out_data_1 (addr, forwarded, ADDR_WIDTH)
-//   Memory-side: store addr + wdata forwarded to memory module
+//   Outputs: out_data_0 = in_data_1 (forwarded data), out_data_1 = in_data_0 (forwarded addr)
 //
-// Behavior:
-//   1. Independently capture addr, data, and ctrl operands.
-//   2. When all three captured and memory channel and outputs are free,
-//      issue the store to memory and forward data/addr to outputs.
+// This is a pure forwarding FU. Store data flows through the visible fabric
+// routing graph to the memory module. The FU simply synchronizes the
+// operands and forwards them.
+//
+// Matches SimFunctionUnitCore computeOutputs for Store body type:
+//   result[0] = operand[1]  (forwarded data)
+//   result[1] = operand[0]  (forwarded address)
 
 module fu_op_store #(
   parameter int unsigned ADDR_WIDTH = 32,
@@ -19,12 +20,12 @@ module fu_op_store #(
   input  logic                    clk,
   input  logic                    rst_n,
 
-  // Input 0: addr (index, ADDR_WIDTH bits)
+  // Input 0: addr (ADDR_WIDTH)
   input  logic [ADDR_WIDTH-1:0]   in_data_0,
   input  logic                    in_valid_0,
   output logic                    in_ready_0,
 
-  // Input 1: data (any, DATA_WIDTH bits)
+  // Input 1: data (DATA_WIDTH)
   input  logic [DATA_WIDTH-1:0]   in_data_1,
   input  logic                    in_valid_1,
   output logic                    in_ready_1,
@@ -36,123 +37,38 @@ module fu_op_store #(
   input  logic                    in_valid_2,
   output logic                    in_ready_2,
 
-  // Output 0: data (forwarded, DATA_WIDTH bits)
+  // Output 0: data (forwarded in_data_1, DATA_WIDTH)
   output logic [DATA_WIDTH-1:0]   out_data_0,
   output logic                    out_valid_0,
   input  logic                    out_ready_0,
 
-  // Output 1: addr (forwarded, ADDR_WIDTH bits)
+  // Output 1: addr (forwarded in_data_0, ADDR_WIDTH)
   output logic [ADDR_WIDTH-1:0]   out_data_1,
   output logic                    out_valid_1,
-  input  logic                    out_ready_1,
-
-  // Memory-side: forwarded addr and wdata for memory subsystem
-  output logic [ADDR_WIDTH-1:0]   mem_addr,
-  output logic [DATA_WIDTH-1:0]   mem_wdata,
-  output logic                    mem_valid,
-  input  logic                    mem_ready
+  input  logic                    out_ready_1
 );
 
-  // -------------------------------------------------------------------
-  // Input capture registers (independent capture)
-  // -------------------------------------------------------------------
-  logic                   addr_captured_r;
-  logic [ADDR_WIDTH-1:0]  addr_val_r;
-  logic                   data_captured_r;
-  logic [DATA_WIDTH-1:0]  data_val_r;
-  logic                   ctrl_captured_r;
+  // All three inputs must be valid to fire.
+  logic all_inputs_valid;
+  assign all_inputs_valid = in_valid_0 & in_valid_1 & in_valid_2;
 
-  // -------------------------------------------------------------------
-  // Output and memory holding registers
-  // -------------------------------------------------------------------
-  logic                   out0_valid_r;
-  logic [DATA_WIDTH-1:0]  out0_data_r;
-  logic                   out1_valid_r;
-  logic [ADDR_WIDTH-1:0]  out1_data_r;
-  logic                   mem_valid_r;
+  // Both outputs must be accepted to complete the transfer.
+  logic all_outputs_ready;
+  assign all_outputs_ready = out_ready_0 & out_ready_1;
 
-  assign out_valid_0 = out0_valid_r;
-  assign out_data_0  = out0_data_r;
-  assign out_valid_1 = out1_valid_r;
-  assign out_data_1  = out1_data_r;
+  // Fire condition: all inputs valid AND all outputs ready.
+  logic fire;
+  assign fire = all_inputs_valid & all_outputs_ready;
 
-  assign mem_valid = mem_valid_r;
-  assign mem_addr  = addr_val_r;
-  assign mem_wdata = data_val_r;
+  // Combinational forwarding: result[0] = operand[1], result[1] = operand[0]
+  assign out_data_0  = in_data_1;  // forwarded data
+  assign out_data_1  = in_data_0;  // forwarded addr
+  assign out_valid_0 = all_inputs_valid;
+  assign out_valid_1 = all_inputs_valid;
 
-  logic out0_transfer;
-  logic out1_transfer;
-  assign out0_transfer = out_valid_0 & out_ready_0;
-  assign out1_transfer = out_valid_1 & out_ready_1;
-
-  logic mem_transfer;
-  assign mem_transfer = mem_valid & mem_ready;
-
-  // -------------------------------------------------------------------
-  // Input ready
-  // -------------------------------------------------------------------
-  assign in_ready_0 = ~addr_captured_r;
-  assign in_ready_1 = ~data_captured_r;
-  assign in_ready_2 = ~ctrl_captured_r;
-
-  // -------------------------------------------------------------------
-  // Main sequential logic
-  // -------------------------------------------------------------------
-  always_ff @(posedge clk) begin : main_seq
-    if (!rst_n) begin : reset_block
-      addr_captured_r <= 1'b0;
-      addr_val_r      <= '0;
-      data_captured_r <= 1'b0;
-      data_val_r      <= '0;
-      ctrl_captured_r <= 1'b0;
-      out0_valid_r    <= 1'b0;
-      out0_data_r     <= '0;
-      out1_valid_r    <= 1'b0;
-      out1_data_r     <= '0;
-      mem_valid_r     <= 1'b0;
-    end : reset_block
-    else begin : active_block
-      // Clear outputs on transfer
-      if (out0_transfer) begin : clr_out0
-        out0_valid_r <= 1'b0;
-      end : clr_out0
-      if (out1_transfer) begin : clr_out1
-        out1_valid_r <= 1'b0;
-      end : clr_out1
-      if (mem_transfer) begin : clr_mem
-        mem_valid_r <= 1'b0;
-      end : clr_mem
-
-      // Capture addr independently
-      if (in_valid_0 && !addr_captured_r) begin : cap_addr
-        addr_val_r      <= in_data_0;
-        addr_captured_r <= 1'b1;
-      end : cap_addr
-
-      // Capture data independently
-      if (in_valid_1 && !data_captured_r) begin : cap_data
-        data_val_r      <= in_data_1;
-        data_captured_r <= 1'b1;
-      end : cap_data
-
-      // Capture ctrl independently
-      if (in_valid_2 && !ctrl_captured_r) begin : cap_ctrl
-        ctrl_captured_r <= 1'b1;
-      end : cap_ctrl
-
-      // Issue store: when all three captured and outputs free
-      if (addr_captured_r && data_captured_r && ctrl_captured_r &&
-          !out0_valid_r && !out1_valid_r && !mem_valid_r) begin : issue_store
-        out0_valid_r    <= 1'b1;
-        out0_data_r     <= data_val_r;
-        out1_valid_r    <= 1'b1;
-        out1_data_r     <= addr_val_r;
-        mem_valid_r     <= 1'b1;
-        addr_captured_r <= 1'b0;
-        data_captured_r <= 1'b0;
-        ctrl_captured_r <= 1'b0;
-      end : issue_store
-    end : active_block
-  end : main_seq
+  // All inputs consumed together on fire.
+  assign in_ready_0 = fire;
+  assign in_ready_1 = fire;
+  assign in_ready_2 = fire;
 
 endmodule : fu_op_store
