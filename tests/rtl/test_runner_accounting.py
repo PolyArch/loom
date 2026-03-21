@@ -92,60 +92,53 @@ class TestRunnerAccounting(unittest.TestCase):
 
     def test_synth_no_tool_increments_synth_skipped(self):
         """When find_tool returns False for dc_shell, synth skip goes to
-        results['synth']['skipped'], not behaviour or gen."""
-        # Import the runner module to monkeypatch
+        results['synth']['skipped'], not behaviour or gen.
+
+        This test patches find_tool in-process and invokes the runner's
+        main loop body directly to deterministically exercise the branch.
+        """
         import run_rtl_checks as runner_mod
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
 
         with tempfile.TemporaryDirectory() as tmpdir:
             make_test_tree(tmpdir, "test_mod", "test_case", has_dfg=True)
 
-            # Monkeypatch find_tool to always return False
-            original_find_tool = runner_mod.find_tool
-
+            # Patch find_tool to return False for dc_shell
             def mock_find_tool(name, module_spec=None):
-                if name == "dc_shell":
-                    return False
-                return original_find_tool(name, module_spec)
+                return False  # All tools unavailable
 
-            with patch.object(runner_mod, 'find_tool', side_effect=mock_find_tool):
-                # Build args namespace manually
-                import argparse
-                args = argparse.Namespace(
-                    fcc="/bin/false",
-                    test_dir=tmpdir,
-                    output_dir=os.path.join(tmpdir, "out"),
-                    src_rtl=SRC_RTL,
-                    checks=["synth"],
-                    modules=None,
-                    test_filter=None,
-                )
-
-                # Capture the results dict by running the main loop body
-                # We need to test the accounting, so let's parse and run
-                # through the subprocess with the mock, but since monkeypatch
-                # doesn't cross process boundaries, we use a different approach:
-                # Run the actual subprocess with a PATH that excludes dc_shell
-                pass
-
-            # Fallback: subprocess with minimal PATH
-            env = os.environ.copy()
-            env["PATH"] = "/usr/bin:/bin"  # Exclude module-loaded tools
-            rc, out = run_runner_subprocess([
-                "--fcc", "/bin/false", "--test-dir", tmpdir,
+            # Patch sys.argv to simulate CLI args
+            fake_argv = [
+                "run_rtl_checks.py",
+                "--fcc", "/bin/false",
+                "--test-dir", tmpdir,
                 "--output-dir", os.path.join(tmpdir, "out"),
-                "--src-rtl", SRC_RTL, "--checks", "synth",
-            ])
-            # Check synth summary line
+                "--src-rtl", SRC_RTL,
+                "--checks", "synth",
+            ]
+
+            captured = io.StringIO()
+            with patch.object(runner_mod, 'find_tool', side_effect=mock_find_tool), \
+                 patch('sys.argv', fake_argv), \
+                 redirect_stdout(captured), \
+                 redirect_stderr(captured):
+                try:
+                    runner_mod.main()
+                except SystemExit:
+                    pass  # main() calls sys.exit()
+
+            out = captured.getvalue()
+            # Assert exact synth accounting
             lines = [l.strip() for l in out.split("\n")
                      if l.strip().startswith("synth")]
-            if lines and "skipped=1" in lines[0]:
-                pass  # dc_shell not found -> synth skipped
-            elif lines and "failed=" in lines[0]:
-                # dc_shell found via module load -> synth ran and failed
-                # (expected since fcc=/bin/false can't generate RTL)
-                pass  # Still valid - synth accounting is correct
-            else:
-                self.fail(f"Unexpected synth summary: {out}")
+            self.assertTrue(lines, f"Expected synth summary line in:\n{out}")
+            self.assertIn("passed=0", lines[0],
+                          f"Expected synth passed=0:\n{lines[0]}")
+            self.assertIn("failed=0", lines[0],
+                          f"Expected synth failed=0:\n{lines[0]}")
+            self.assertIn("skipped=1", lines[0],
+                          f"Expected synth skipped=1:\n{lines[0]}")
 
 
 if __name__ == "__main__":
