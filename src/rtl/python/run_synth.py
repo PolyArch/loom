@@ -17,7 +17,7 @@ def find_dc_shell():
     try:
         result = subprocess.run(
             ["bash", "-c",
-             "source /etc/profile.d/modules.sh && module load synopsys/syn/X-2025.06-SP3 && which dc_shell"],
+             "source /etc/profile.d/modules.sh && module load synopsys/syn/W-2024.09-SP5 && which dc_shell"],
             capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
@@ -35,6 +35,7 @@ def generate_synth_tcl(rtl_dir, design_name, output_dir, tcl_template):
             if f.endswith(".sv"):
                 sv_files.append(os.path.join(root, f))
 
+    # Wrap each file in braces for Tcl list safety, then join with space
     sv_files_str = " ".join(sv_files)
 
     # Read template and substitute
@@ -55,9 +56,15 @@ def generate_synth_tcl(rtl_dir, design_name, output_dir, tcl_template):
 def run_synthesis(dc_shell, tcl_path, output_dir):
     """Run DC synthesis."""
     log_path = os.path.join(output_dir, "synth.log")
-    cmd = [dc_shell, "-f", tcl_path]
+    # Run dc_shell through a module-loaded bash to ensure all env vars are set.
+    bash_cmd = (
+        "source /etc/profile.d/modules.sh && "
+        "module load synopsys/syn/W-2024.09-SP5 && "
+        f"dc_shell -f {tcl_path}"
+    )
+    cmd = ["bash", "-c", bash_cmd]
 
-    print(f"[run_synth] Running: {' '.join(cmd)}")
+    print(f"[run_synth] Running: dc_shell -f {tcl_path}")
     with open(log_path, "w") as log_file:
         result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT,
                                 cwd=output_dir)

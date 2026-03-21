@@ -10,6 +10,7 @@
 #include "mlir/IR/BuiltinOps.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
@@ -190,6 +191,11 @@ static bool registerOpDeps(mlir::Operation &op, SVModuleRegistry &registry,
     }
     return true;
   }
+  // Standalone FunctionUnitOp definitions: recurse into body to register
+  // the pre-written arith/FP op library files they instantiate.
+  if (auto fuOp = mlir::dyn_cast<fcc::fabric::FunctionUnitOp>(op)) {
+    return collectFUDeps(fuOp, registry, fpIpProfile);
+  }
   // fabric.instance, fabric.yield, etc.: no direct deps.
   return true;
 }
@@ -215,20 +221,24 @@ bool generateSV(mlir::ModuleOp adgModule, mlir::MLIRContext *ctx,
   registry.requireModule("fabric", "fabric_config_ctrl.sv");
 
   // --- Pass 1: Collect definitions and dependency set ---
+  // Walk the entire parent mlir::ModuleOp (not just the fabric.module body)
+  // so that out-of-line PE/memory/switch/FU definitions at module scope are
+  // also discovered.
   auto &body = fabricMod.getBody().front();
-  for (auto &op : body.getOperations()) {
-    if (!registerOpDeps(op, registry, options.fpIpProfile))
+  bool globalDepsOk = true;
+  for (auto &topOp : adgModule.getBody()->getOperations()) {
+    // For the fabric.module, walk its body ops.
+    if (&topOp == fabricMod.getOperation()) {
+      for (auto &op : body.getOperations()) {
+        if (!registerOpDeps(op, registry, options.fpIpProfile))
+          return false;
+      }
+      continue;
+    }
+    // For top-level definitions (PE, switch, memory, FU), register their deps.
+    if (!registerOpDeps(topOp, registry, options.fpIpProfile))
       return false;
   }
-
-  // Also walk for FU definitions referenced by fabric.instance ops.
-  bool globalDepsOk = true;
-  adgModule->walk([&](fcc::fabric::FunctionUnitOp fuOp) {
-    if (!collectFUDeps(fuOp, registry, options.fpIpProfile))
-      globalDepsOk = false;
-  });
-  if (!globalDepsOk)
-    return false;
 
   // --- Pass 2: Generate/Copy ---
 
@@ -283,10 +293,15 @@ bool generateSV(mlir::ModuleOp adgModule, mlir::MLIRContext *ctx,
   }
 
   // Generate PE wrapper SV files.
-  for (auto &op : body.getOperations()) {
+  // Walk the entire parent mlir::ModuleOp to find all PE definitions,
+  // including out-of-line definitions at module scope.
+  llvm::StringSet<> emittedPEs;
+  auto emitPEWrappers = [&](mlir::Operation &op) -> bool {
     if (auto spatialPE = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op)) {
       std::string peName = SVEmitter::sanitizeName(
           spatialPE.getSymName().value_or("spatial_pe"));
+      if (!emittedPEs.insert(peName).second)
+        return true; // Already emitted.
       std::string fileName = "pe_" + peName + ".sv";
       std::string filePath = outGenDir + "/" + fileName;
 
@@ -309,6 +324,8 @@ bool generateSV(mlir::ModuleOp adgModule, mlir::MLIRContext *ctx,
     if (auto temporalPE = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op)) {
       std::string peName = SVEmitter::sanitizeName(
           temporalPE.getSymName().value_or("temporal_pe"));
+      if (!emittedPEs.insert(peName).second)
+        return true; // Already emitted.
       std::string fileName = "pe_" + peName + ".sv";
       std::string filePath = outGenDir + "/" + fileName;
 
@@ -326,6 +343,19 @@ bool generateSV(mlir::ModuleOp adgModule, mlir::MLIRContext *ctx,
       generatedFiles.push_back("generated/" + fileName);
 
       llvm::outs() << "svgen: generated temporal PE: " << fileName << "\n";
+    }
+    return true;
+  };
+
+  for (auto &topOp : adgModule.getBody()->getOperations()) {
+    if (!emitPEWrappers(topOp))
+      return false;
+    // Also walk into fabric.module body for inline PE definitions.
+    if (&topOp == fabricMod.getOperation()) {
+      for (auto &bodyOp : body.getOperations()) {
+        if (!emitPEWrappers(bodyOp))
+          return false;
+      }
     }
   }
 

@@ -156,9 +156,20 @@ static void emitSingleIOConns(TopEmitContext &ctx, mlir::Operation &op,
 }
 
 /// Emit connections for switch modules (spatial_sw, temporal_sw).
-/// These use array ports: in_valid[N], in_data[N], in_tag[N], etc.
+///
+/// Switch modules use array ports.  SV does not allow indexed port names in a
+/// module instance (`.port[i](expr)` is illegal).  Instead, we declare
+/// aggregate temporary wires, connect them to the instance's array ports, and
+/// use element-wise assign statements to bridge individual nets.
+///
+/// Port style differs between switch variants:
+///   spatial_sw:  in_valid/in_ready/out_valid/out_ready are packed [N-1:0]
+///   temporal_sw: all ports are unpacked [0:N-1]
+/// The `defOp` parameter determines which variant we are generating for.
 static void emitSwitchConns(TopEmitContext &ctx, mlir::Operation &op,
-                             std::vector<SVConnection> &conns) {
+                             std::vector<SVConnection> &conns,
+                             llvm::StringRef instName,
+                             mlir::Operation *defOp = nullptr) {
   // Collect non-memref operands for input array ports.
   std::vector<mlir::Value> inputs;
   for (unsigned i = 0; i < op.getNumOperands(); ++i) {
@@ -166,43 +177,118 @@ static void emitSwitchConns(TopEmitContext &ctx, mlir::Operation &op,
       inputs.push_back(op.getOperand(i));
   }
 
-  // For switch modules, in_valid/in_ready are packed bit vectors and
-  // in_data/in_tag are unpacked arrays.  We connect them element-wise.
-  for (unsigned i = 0; i < inputs.size(); ++i) {
+  unsigned numIn = inputs.size();
+  unsigned numOut = op.getNumResults();
+
+  // Determine data/tag width from input ports (fall back to output if none).
+  unsigned dataWidth = 32;
+  unsigned tagWidth = 0;
+  if (!inputs.empty()) {
+    dataWidth = SVEmitter::getDataWidth(inputs[0].getType());
+    tagWidth = SVEmitter::getTagWidth(inputs[0].getType());
+  } else if (numOut > 0) {
+    dataWidth = SVEmitter::getDataWidth(op.getResult(0).getType());
+    tagWidth = SVEmitter::getTagWidth(op.getResult(0).getType());
+  }
+
+  // Determine the switch variant.  If defOp is null, fall back to checking op.
+  mlir::Operation *checkOp = defOp ? defOp : &op;
+  bool isTemporal = mlir::isa<fcc::fabric::TemporalSwOp>(checkOp);
+
+  std::string inst(instName);
+
+  // Helper for declaring array wires with the correct style.
+  // Spatial: packed [N-1:0] for valid/ready, unpacked [N] for data/tag.
+  // Temporal: all unpacked [0:N-1].
+  auto declValidReadyWire = [&](const std::string &suffix, unsigned count) {
+    if (isTemporal) {
+      // Unpacked array of single-bit logic.
+      ctx.emitter.emitWire("logic",
+                           inst + suffix + " [0:" +
+                               std::to_string(count - 1) + "]");
+    } else {
+      // Packed bit vector.
+      ctx.emitter.emitWire(
+          "logic [" + std::to_string(count - 1) + ":0]",
+          inst + suffix);
+    }
+  };
+
+  auto declDataWire = [&](const std::string &suffix, unsigned width,
+                          unsigned count) {
+    std::string range = "[0:" + std::to_string(count - 1) + "]";
+    ctx.emitter.emitWire("logic [" + std::to_string(width - 1) + ":0]",
+                         inst + suffix + " " + range);
+  };
+
+  auto declTagWire = [&](const std::string &suffix, unsigned tw,
+                         unsigned count) {
+    unsigned w = tw > 0 ? tw : 1;
+    std::string range = "[0:" + std::to_string(count - 1) + "]";
+    ctx.emitter.emitWire("logic [" + std::to_string(w - 1) + ":0]",
+                         inst + suffix + " " + range);
+  };
+
+  // Declare aggregate wires for input ports.
+  declValidReadyWire("_in_valid", numIn);
+  declValidReadyWire("_in_ready", numIn);
+  declDataWire("_in_data", dataWidth, numIn);
+  declTagWire("_in_tag", tagWidth, numIn);
+
+  // Declare aggregate wires for output ports.
+  declValidReadyWire("_out_valid", numOut);
+  declValidReadyWire("_out_ready", numOut);
+  declDataWire("_out_data", dataWidth, numOut);
+  declTagWire("_out_tag", tagWidth, numOut);
+
+  // Element-wise assign: bridge individual nets to aggregate arrays.
+  for (unsigned i = 0; i < numIn; ++i) {
     std::string wire = ctx.getOrCreateWire(inputs[i]);
     unsigned dw = SVEmitter::getDataWidth(inputs[i].getType());
     unsigned tw = SVEmitter::getTagWidth(inputs[i].getType());
-    conns.push_back({"in_valid[" + std::to_string(i) + "]",
-                     wire + "_valid"});
-    conns.push_back({"in_ready[" + std::to_string(i) + "]",
-                     wire + "_ready"});
-    conns.push_back({"in_data[" + std::to_string(i) + "]",
-                     wire + "[" + std::to_string(dw - 1) + ":0]"});
+    std::string idx = std::to_string(i);
+    ctx.emitter.emitAssign(inst + "_in_valid[" + idx + "]",
+                           wire + "_valid");
+    ctx.emitter.emitAssign(wire + "_ready",
+                           inst + "_in_ready[" + idx + "]");
+    ctx.emitter.emitAssign(inst + "_in_data[" + idx + "]",
+                           wire + "[" + std::to_string(dw - 1) + ":0]");
     if (tw > 0)
-      conns.push_back({"in_tag[" + std::to_string(i) + "]",
-                       wire + "[" + std::to_string(dw + tw - 1) + ":" +
-                           std::to_string(dw) + "]"});
+      ctx.emitter.emitAssign(
+          inst + "_in_tag[" + idx + "]",
+          wire + "[" + std::to_string(dw + tw - 1) + ":" +
+              std::to_string(dw) + "]");
     else
-      conns.push_back({"in_tag[" + std::to_string(i) + "]", "'0"});
+      ctx.emitter.emitAssign(inst + "_in_tag[" + idx + "]", "'0");
   }
 
-  for (unsigned i = 0; i < op.getNumResults(); ++i) {
+  for (unsigned i = 0; i < numOut; ++i) {
     std::string wire = ctx.getOrCreateWire(op.getResult(i));
     unsigned outDw = SVEmitter::getDataWidth(op.getResult(i).getType());
     unsigned outTw = SVEmitter::getTagWidth(op.getResult(i).getType());
-    conns.push_back({"out_valid[" + std::to_string(i) + "]",
-                     wire + "_valid"});
-    conns.push_back({"out_ready[" + std::to_string(i) + "]",
-                     wire + "_ready"});
-    conns.push_back({"out_data[" + std::to_string(i) + "]",
-                     wire + "[" + std::to_string(outDw - 1) + ":0]"});
+    std::string idx = std::to_string(i);
+    ctx.emitter.emitAssign(wire + "_valid",
+                           inst + "_out_valid[" + idx + "]");
+    ctx.emitter.emitAssign(inst + "_out_ready[" + idx + "]",
+                           wire + "_ready");
+    ctx.emitter.emitAssign(wire + "[" + std::to_string(outDw - 1) + ":0]",
+                           inst + "_out_data[" + idx + "]");
     if (outTw > 0)
-      conns.push_back({"out_tag[" + std::to_string(i) + "]",
-                       wire + "[" + std::to_string(outDw + outTw - 1) + ":" +
-                           std::to_string(outDw) + "]"});
-    else
-      conns.push_back({"out_tag[" + std::to_string(i) + "]", ""});
+      ctx.emitter.emitAssign(
+          wire + "[" + std::to_string(outDw + outTw - 1) + ":" +
+              std::to_string(outDw) + "]",
+          inst + "_out_tag[" + idx + "]");
   }
+
+  // Connect aggregate ports to the instance.
+  conns.push_back({"in_valid", inst + "_in_valid"});
+  conns.push_back({"in_ready", inst + "_in_ready"});
+  conns.push_back({"in_data", inst + "_in_data"});
+  conns.push_back({"in_tag", inst + "_in_tag"});
+  conns.push_back({"out_valid", inst + "_out_valid"});
+  conns.push_back({"out_ready", inst + "_out_ready"});
+  conns.push_back({"out_data", inst + "_out_data"});
+  conns.push_back({"out_tag", inst + "_out_tag"});
 }
 
 /// Emit connections for memory modules (fabric_memory, fabric_extmemory).
@@ -374,7 +460,7 @@ static void emitPrewrittenInstance(TopEmitContext &ctx, mlir::Operation &op,
 
   // Emit port connections based on module category.
   if (isSwitch) {
-    emitSwitchConns(ctx, op, conns);
+    emitSwitchConns(ctx, op, conns, instName);
   } else if (isMemory) {
     emitMemoryConns(ctx, op, conns);
   } else {
@@ -478,10 +564,12 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
     ctx.wireNames[arg] = portName;
   }
 
-  // Build symbol table: map sym_name -> definition op for all named ops in
-  // the body.  Used to resolve fabric.instance references.
+  // Build symbol table from the parent mlir::ModuleOp to include module-scope
+  // definitions (out-of-line PE/memory/switch/FU defs).
   llvm::StringMap<mlir::Operation *> symTable;
-  for (auto &op : body.getOperations()) {
+  auto *parentModule =
+      fabricMod->getParentOfType<mlir::ModuleOp>().getOperation();
+  auto registerSymsFrom = [&](mlir::Operation &op) {
     auto tryRegister = [&](std::optional<llvm::StringRef> sym) {
       if (sym)
         symTable[*sym] = &op;
@@ -502,7 +590,15 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
       tryRegister(std::optional<llvm::StringRef>(fu.getSymName()));
     else if (auto fifo = mlir::dyn_cast<fcc::fabric::FifoOp>(op))
       tryRegister(fifo.getSymName());
+  };
+  // Register symbols from the parent mlir::ModuleOp (top-level scope).
+  if (parentModule) {
+    for (auto &op : parentModule->getRegion(0).front().getOperations())
+      registerSymsFrom(op);
   }
+  // Also register symbols from the fabric.module body (inline definitions).
+  for (auto &op : body.getOperations())
+    registerSymsFrom(op);
 
   // Walk body ops and emit wire declarations + instances.
   emitter.emitComment("Internal wires and module instances");
@@ -547,6 +643,13 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
                   mlir::isa<fcc::fabric::FunctionUnitOp>(defOp);
       bool isFifo = defOp &&
                     mlir::isa<fcc::fabric::FifoOp>(defOp);
+
+      if (!defOp) {
+        llvm::errs() << "svgen: error: fabric.instance @"
+                     << instOp.getModule()
+                     << " references an undefined symbol\n";
+        continue;
+      }
 
       if (isMemory || isSwitch || isFifo) {
         // Parameters come from the definition op; wire connections come
@@ -641,7 +744,7 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
 
         // Wire connections use the instance op's operands/results.
         if (defIsSwitch) {
-          emitSwitchConns(ctx, op, conns);
+          emitSwitchConns(ctx, op, conns, instName, defOp);
         } else if (defIsMemory) {
           emitMemoryConns(ctx, op, conns);
         } else {
@@ -674,21 +777,18 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
         }
         if (hasConfig)
           ctx.configInstanceNames.push_back(instName);
-      } else if (isPE || isFU || !defOp) {
-        // PE, standalone FU, or unresolved symbol: use pe_*/fu_* naming
-        // with pe_in*/pe_out* port convention.
+      } else if (isPE || isFU) {
+        // PE or standalone FU: use pe_*/fu_* naming with pe_in*/pe_out*
+        // port convention.
         std::string actualModName;
-        if (isFU)
+        if (isFU) {
           actualModName = "fu_" + refModName;
-        else if (defOp) {
+        } else {
           // Look up the generated PE module name from peModuleNames.
           auto peIt = peModuleNames.find(defOp);
           actualModName = peIt != peModuleNames.end()
                               ? peIt->second
                               : "pe_" + refModName;
-        } else {
-          // Unresolved: fall back to pe_<symbol> for backward compat.
-          actualModName = "pe_" + refModName;
         }
 
         std::vector<std::string> instParams;
@@ -909,8 +1009,9 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
     }
     emitter.emitBlankLine();
 
-    // Build SLICE_OFFSET and SLICE_COUNT parameter array literals.
-    // SystemVerilog array parameter: '{val0, val1, ...}
+    // Emit typed localparams for array parameters to avoid bare assignment
+    // patterns that Verilator rejects.
+    std::string rangeStr = "[0:" + std::to_string(numSlices - 1) + "]";
     std::string offsetArr = "'{";
     std::string countArr = "'{";
     for (unsigned i = 0; i < numSlices; ++i) {
@@ -924,11 +1025,19 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
     offsetArr += "}";
     countArr += "}";
 
+    emitter.emitLocalParam("int unsigned",
+                           "SLICE_OFFSET_VAL " + rangeStr,
+                           offsetArr);
+    emitter.emitLocalParam("int unsigned",
+                           "SLICE_COUNT_VAL " + rangeStr,
+                           countArr);
+    emitter.emitBlankLine();
+
     std::vector<std::string> cfgParams;
     cfgParams.push_back(".NUM_SLICES(" + std::to_string(numSlices) + ")");
     cfgParams.push_back(".TOTAL_WORDS(" + std::to_string(totalWords) + ")");
-    cfgParams.push_back(".SLICE_OFFSET(" + offsetArr + ")");
-    cfgParams.push_back(".SLICE_COUNT(" + countArr + ")");
+    cfgParams.push_back(".SLICE_OFFSET(SLICE_OFFSET_VAL)");
+    cfgParams.push_back(".SLICE_COUNT(SLICE_COUNT_VAL)");
 
     // Declare wires for config controller outputs.
     emitter.emitWire("logic [" + std::to_string(numSlices - 1) + ":0]",

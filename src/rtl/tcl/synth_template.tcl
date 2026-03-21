@@ -9,11 +9,12 @@
 
 # Library setup
 set search_path [list /mnt/nas0/eda.libs/saed32/EDK_08_2025/lib/stdcell_rvt/db_nldm]
-set target_library {saed32rvt_dlvl_ff0p85v25c_i0p85v.db}
+set target_library {saed32rvt_ff0p85v25c.db}
 set link_library [list * $target_library]
 
 # Read design
-foreach sv_file ${SV_FILES} {
+set sv_file_list {${SV_FILES}}
+foreach sv_file $sv_file_list {
     analyze -format sverilog $sv_file
 }
 elaborate ${DESIGN_NAME}

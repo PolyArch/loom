@@ -69,8 +69,12 @@ void SVEmitter::emitModuleFooter(llvm::StringRef name) {
 // --- Declarations ---
 
 void SVEmitter::emitWire(llvm::StringRef typeStr, llvm::StringRef name) {
+  // Emit as plain 'logic' variable (no 'wire' prefix). In SystemVerilog,
+  // 'logic' can be used with both continuous assign and procedural
+  // (always_comb) assignment, and works for module instance connections.
+  // This avoids PROCASSWIRE errors when signals are driven procedurally.
   emitIndent();
-  os_ << "wire " << typeStr;
+  os_ << typeStr;
   if (!typeStr.empty())
     os_ << " ";
   os_ << name << ";\n";

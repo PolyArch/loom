@@ -787,27 +787,8 @@ std::string generateTemporalPE(fcc::fabric::TemporalPEOp peOp,
     ctrParams.push_back(".TOTAL_FU_CFG_BITS(" + u2s(totalFUCfgBits) + ")");
 
     // Per-FU packed parameter arrays.
-    auto buildUnsignedArray = [&](const std::string &paramName,
-                                  const std::vector<unsigned> &vals) {
-      std::string val = "'{";
-      for (unsigned i = 0; i < vals.size(); ++i) {
-        if (i > 0) val += ", ";
-        val += u2s(vals[i]);
-      }
-      val += "}";
-      ctrParams.push_back("." + paramName + "(" + val + ")");
-    };
-    auto buildSignedArray = [&](const std::string &paramName,
-                                const std::vector<int64_t> &vals) {
-      std::string val = "'{";
-      for (unsigned i = 0; i < vals.size(); ++i) {
-        if (i > 0) val += ", ";
-        val += s2s(vals[i]);
-      }
-      val += "}";
-      ctrParams.push_back("." + paramName + "(" + val + ")");
-    };
-
+    // Emit as localparam arrays before the instance to avoid Verilator
+    // issues with parameterized array sizes in assignment patterns.
     std::vector<unsigned> fuNumInputs, fuNumOutputs, fuIntrinsic;
     std::vector<int64_t> fuLatency, fuInterval;
     for (unsigned i = 0; i < numFU; ++i) {
@@ -817,11 +798,52 @@ std::string generateTemporalPE(fcc::fabric::TemporalPEOp peOp,
       fuIntrinsic.push_back(fuTimings[i].intrinsic);
       fuInterval.push_back(fuTimings[i].interval);
     }
-    buildUnsignedArray("FU_NUM_INPUTS", fuNumInputs);
-    buildUnsignedArray("FU_NUM_OUTPUTS", fuNumOutputs);
-    buildSignedArray("FU_LATENCY", fuLatency);
-    buildUnsignedArray("FU_INTRINSIC", fuIntrinsic);
-    buildSignedArray("FU_INTERVAL", fuInterval);
+
+    auto emitLocalparamArray = [&](const std::string &lpName,
+                                    const std::string &elemType,
+                                    const std::vector<std::string> &vals) {
+      std::string decl = "localparam " + elemType + " " + lpName +
+                          " [" + u2s(numFU) + "] = '{";
+      for (unsigned i = 0; i < vals.size(); ++i) {
+        if (i > 0) decl += ", ";
+        decl += vals[i];
+      }
+      decl += "};";
+      emitter.emitRaw(decl + "\n");
+    };
+
+    {
+      std::vector<std::string> v;
+      for (auto x : fuNumInputs) v.push_back(u2s(x));
+      emitLocalparamArray("LP_FU_NUM_INPUTS", "int unsigned", v);
+    }
+    {
+      std::vector<std::string> v;
+      for (auto x : fuNumOutputs) v.push_back(u2s(x));
+      emitLocalparamArray("LP_FU_NUM_OUTPUTS", "int unsigned", v);
+    }
+    {
+      std::vector<std::string> v;
+      for (auto x : fuLatency) v.push_back(s2s(x));
+      emitLocalparamArray("LP_FU_LATENCY", "int unsigned", v);
+    }
+    {
+      std::vector<std::string> v;
+      for (auto x : fuIntrinsic) v.push_back(u2s(x));
+      emitLocalparamArray("LP_FU_INTRINSIC", "int unsigned", v);
+    }
+    {
+      std::vector<std::string> v;
+      for (auto x : fuInterval) v.push_back(s2s(x));
+      emitLocalparamArray("LP_FU_INTERVAL", "int unsigned", v);
+    }
+    emitter.emitBlankLine();
+
+    ctrParams.push_back(".FU_NUM_INPUTS(LP_FU_NUM_INPUTS)");
+    ctrParams.push_back(".FU_NUM_OUTPUTS(LP_FU_NUM_OUTPUTS)");
+    ctrParams.push_back(".FU_LATENCY(LP_FU_LATENCY)");
+    ctrParams.push_back(".FU_INTRINSIC(LP_FU_INTRINSIC)");
+    ctrParams.push_back(".FU_INTERVAL(LP_FU_INTERVAL)");
 
     std::vector<SVConnection> ctrConns;
     ctrConns.push_back({"clk", "clk"});
