@@ -678,7 +678,7 @@ def main():
             os.makedirs(phys_dir, exist_ok=True)
             if not find_tool("dc_shell", "synopsys/syn/X-2025.06-SP3"):
                 print(f"[synth/{tc['module']}/{tc['test']}] SKIP: dc_shell not found")
-                results["behaviour"]["skipped"] += 1
+                results["synth"]["skipped"] += 1
             else:
                 tcl_template = os.path.join(args.src_rtl, "tcl", "synth_template.tcl")
                 gen_dir = os.path.join(test_output, "gen-collateral", "rtl")
