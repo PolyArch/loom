@@ -1,5 +1,4 @@
-// End-to-end stub: minimal 2x2 chess grid with 2 spatial PEs, 2 spatial
-// switches, and 1 FIFO. Serves as a placeholder for full mapped test.
+// Minimal 2x2 chess grid: 2 spatial PEs, 2 spatial switches, 1 FIFO.
 //
 // Topology:
 //   in0 -> sw0 -> pe0 (addi) -> fifo0 -> sw1 -> pe1 (muli) -> out0
@@ -33,7 +32,7 @@ module {
   }
 
   // -- Top-level module: 2x2 chess grid --
-  fabric.module @chess_2x2_stub(
+  fabric.module @chess_2x2(
       %in0: !fabric.bits<32>,
       %in1: !fabric.bits<32>,
       %in2: !fabric.bits<32>)

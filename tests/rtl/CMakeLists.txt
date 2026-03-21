@@ -82,6 +82,90 @@ add_custom_target(check-fcc-rtl-negative
 )
 
 # ---------------------------------------------------------------------------
+# Wave 7 standalone TB tests: backpressure, config-equiv, memory-sideeffect
+#
+# These tests compile standalone testbenches (no DUT_MODULE macro needed)
+# that instantiate specific fabric modules directly. Each target uses
+# run_sim.py with the standalone TB as the top module.
+# ---------------------------------------------------------------------------
+set(FCC_RTL_SIM_RUNNER "${CMAKE_SOURCE_DIR}/src/rtl/python/run_sim.py")
+set(FCC_RTL_TB_FABRIC_DIR "${FCC_RTL_SRC_DIR}/testbench/fabric")
+set(FCC_RTL_TB_COMMON_DIR "${FCC_RTL_SRC_DIR}/testbench/common")
+set(FCC_RTL_DESIGN_DIR "${FCC_RTL_SRC_DIR}/design")
+
+# check-fcc-rtl-backpressure: backpressure stress test on fabric_fifo
+add_custom_target(check-fcc-rtl-backpressure
+  COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_SIM_RUNNER}"
+          --rtl-dir "${FCC_RTL_DESIGN_DIR}"
+          --tb-dir "${FCC_RTL_TB_COMMON_DIR}"
+          --tb-files
+              "${FCC_RTL_TB_COMMON_DIR}/tb_clk_rst_gen.sv"
+              "${FCC_RTL_TB_COMMON_DIR}/tb_backpressure_gen.sv"
+              "${FCC_RTL_TB_FABRIC_DIR}/tb_backpressure_test.sv"
+          --top-module tb_backpressure_test
+          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/wave7/backpressure"
+          --tool verilator
+  DEPENDS fcc "${FCC_RTL_SIM_RUNNER}"
+          "${FCC_RTL_TB_FABRIC_DIR}/tb_backpressure_test.sv"
+  VERBATIM
+  USES_TERMINAL
+)
+
+# check-fcc-rtl-config-equiv: config bus loading test on fabric_add_tag
+add_custom_target(check-fcc-rtl-config-equiv
+  COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_SIM_RUNNER}"
+          --rtl-dir "${FCC_RTL_DESIGN_DIR}"
+          --tb-dir "${FCC_RTL_TB_COMMON_DIR}"
+          --tb-files
+              "${FCC_RTL_TB_COMMON_DIR}/tb_clk_rst_gen.sv"
+              "${FCC_RTL_TB_FABRIC_DIR}/tb_config_equiv_test.sv"
+          --top-module tb_config_equiv_test
+          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/wave7/config-equiv"
+          --tool verilator
+  DEPENDS fcc "${FCC_RTL_SIM_RUNNER}"
+          "${FCC_RTL_TB_FABRIC_DIR}/tb_config_equiv_test.sv"
+  VERBATIM
+  USES_TERMINAL
+)
+
+# check-fcc-rtl-memory: write-then-read test on fabric_memory
+add_custom_target(check-fcc-rtl-memory
+  COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_SIM_RUNNER}"
+          --rtl-dir "${FCC_RTL_DESIGN_DIR}"
+          --tb-dir "${FCC_RTL_TB_COMMON_DIR}"
+          --tb-files
+              "${FCC_RTL_TB_COMMON_DIR}/tb_clk_rst_gen.sv"
+              "${FCC_RTL_TB_FABRIC_DIR}/tb_memory_sideeffect_test.sv"
+          --top-module tb_memory_sideeffect_test
+          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/wave7/memory"
+          --tool verilator
+  DEPENDS fcc "${FCC_RTL_SIM_RUNNER}"
+          "${FCC_RTL_TB_FABRIC_DIR}/tb_memory_sideeffect_test.sv"
+  VERBATIM
+  USES_TERMINAL
+)
+
+# ---------------------------------------------------------------------------
+# check-fcc-rtl-e2e: end-to-end test on chess_2x2 grid
+#
+# Runs the full gen + behaviour pipeline on the chess_2x2 MLIR test case.
+# ---------------------------------------------------------------------------
+set(FCC_RTL_E2E_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fabric/e2e")
+
+add_custom_target(check-fcc-rtl-e2e
+  COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_CHECKS_RUNNER}"
+          --fcc "$<TARGET_FILE:fcc>"
+          --test-dir "${CMAKE_CURRENT_SOURCE_DIR}"
+          --output-dir "${FCC_RTL_OUTPUT_DIR}"
+          --src-rtl "${FCC_RTL_SRC_DIR}"
+          --checks gen behaviour
+  DEPENDS fcc "${FCC_RTL_CHECKS_RUNNER}"
+          "${FCC_RTL_E2E_DIR}/chess_2x2_stub.fabric.mlir"
+  VERBATIM
+  USES_TERMINAL
+)
+
+# ---------------------------------------------------------------------------
 # check-fcc-rtl: aggregate target that runs all RTL checks
 # ---------------------------------------------------------------------------
 add_custom_target(check-fcc-rtl
@@ -89,4 +173,8 @@ add_custom_target(check-fcc-rtl
           check-fcc-rtl-behaviour
           check-fcc-rtl-synth
           check-fcc-rtl-negative
+          check-fcc-rtl-backpressure
+          check-fcc-rtl-config-equiv
+          check-fcc-rtl-memory
+          check-fcc-rtl-e2e
 )
