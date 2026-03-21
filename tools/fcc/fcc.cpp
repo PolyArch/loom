@@ -937,7 +937,12 @@ int main(int argc, char **argv) {
       llvm::errs() << "fcc: SystemVerilog generation failed\n";
       return 1;
     }
-    return 0;
+    // If --simulate is also requested, fall through to the simulation path
+    // instead of returning early. This enables combined gen+simulate+trace
+    // workflows used by the behaviour verification runner.
+    if (!args.simulate)
+      return 0;
+    // Fall through to simulation below...
   }
 
   // ===== Viz-only mode: just visualize, no mapping =====

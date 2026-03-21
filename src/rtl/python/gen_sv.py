@@ -29,6 +29,23 @@ def run_gen_sv(fcc_exec, adg_path, output_dir, fp_ip_profile=None):
     return True, rtl_dir
 
 
+def resolve_verilator():
+    """Find verilator executable, trying module load if not on PATH."""
+    import shutil
+    if shutil.which("verilator"):
+        return "verilator"
+    try:
+        result = subprocess.run(
+            ["bash", "-c",
+             "source /etc/profile.d/modules.sh && module load verilator/5.044 && which verilator"],
+            capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "verilator"
+
+
 def run_verilator_lint(rtl_dir):
     """Run verilator --lint-only on all .sv files in rtl_dir."""
     filelist = os.path.join(rtl_dir, "filelist.f")
@@ -36,7 +53,8 @@ def run_verilator_lint(rtl_dir):
         print(f"[gen_sv] WARN: no filelist.f found in {rtl_dir}")
         return False
 
-    cmd = ["verilator", "--lint-only", "-Wall", "-f", filelist]
+    verilator_exec = resolve_verilator()
+    cmd = [verilator_exec, "--lint-only", "-Wall", "-f", filelist]
     print(f"[gen_sv] Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=rtl_dir)
     if result.returncode != 0:

@@ -106,7 +106,7 @@ add_custom_target(check-fcc-rtl-backpressure
           --top-module tb_backpressure_test
           --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/wave7/backpressure"
           --tool verilator
-  DEPENDS fcc "${FCC_RTL_SIM_RUNNER}"
+  DEPENDS "${FCC_RTL_SIM_RUNNER}"
           "${FCC_RTL_TB_FABRIC_DIR}/tb_backpressure_test.sv"
   VERBATIM
   USES_TERMINAL
@@ -123,7 +123,7 @@ add_custom_target(check-fcc-rtl-config-equiv
           --top-module tb_config_equiv_test
           --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/wave7/config-equiv"
           --tool verilator
-  DEPENDS fcc "${FCC_RTL_SIM_RUNNER}"
+  DEPENDS "${FCC_RTL_SIM_RUNNER}"
           "${FCC_RTL_TB_FABRIC_DIR}/tb_config_equiv_test.sv"
   VERBATIM
   USES_TERMINAL
@@ -140,7 +140,7 @@ add_custom_target(check-fcc-rtl-memory
           --top-module tb_memory_sideeffect_test
           --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/wave7/memory"
           --tool verilator
-  DEPENDS fcc "${FCC_RTL_SIM_RUNNER}"
+  DEPENDS "${FCC_RTL_SIM_RUNNER}"
           "${FCC_RTL_TB_FABRIC_DIR}/tb_memory_sideeffect_test.sv"
   VERBATIM
   USES_TERMINAL
@@ -160,8 +160,10 @@ add_custom_target(check-fcc-rtl-e2e
           --output-dir "${FCC_RTL_OUTPUT_DIR}"
           --src-rtl "${FCC_RTL_SRC_DIR}"
           --checks gen behaviour
+          --modules e2e
   DEPENDS fcc "${FCC_RTL_CHECKS_RUNNER}"
           "${FCC_RTL_E2E_DIR}/chess_2x2_stub.fabric.mlir"
+  COMMENT "End-to-end test: chess_2x2 only (filtered by --modules e2e)"
   VERBATIM
   USES_TERMINAL
 )

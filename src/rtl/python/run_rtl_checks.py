@@ -50,11 +50,15 @@ def run_check(script, args_list, check_name, output_dir):
 
 
 def generate_golden_traces(fcc_exec, adg_path, module_name, output_dir):
-    """Run fcc --simulate --trace-port-dump to produce golden traces."""
+    """Run fcc --simulate --trace-port-dump to produce golden traces.
+
+    Uses --simulate --trace-port-dump without --gen-sv so fcc enters
+    the normal mapping+simulation path rather than the SV generation
+    early-return branch.
+    """
     trace_dir = os.path.join(output_dir, "rtl-traces")
     cmd = [
         fcc_exec,
-        "--gen-sv",
         "--simulate",
         "--adg", adg_path,
         "--trace-port-dump", module_name,
@@ -414,6 +418,8 @@ def main():
     parser.add_argument("--src-rtl", required=True, help="src/rtl/ directory")
     parser.add_argument("--checks", nargs="+", default=["gen", "behaviour", "synth"],
                         choices=["gen", "behaviour", "synth"])
+    parser.add_argument("--modules", nargs="*", default=None,
+                        help="Only run tests for these module directories (e.g., e2e)")
     args = parser.parse_args()
 
     scripts_dir = os.path.dirname(os.path.abspath(__file__))
@@ -429,6 +435,9 @@ def main():
     for module_name in sorted(os.listdir(fabric_dir)):
         module_dir = os.path.join(fabric_dir, module_name)
         if not os.path.isdir(module_dir):
+            continue
+        # Filter by --modules if specified
+        if args.modules is not None and module_name not in args.modules:
             continue
         for test_file in sorted(os.listdir(module_dir)):
             if test_file.endswith(".fabric.mlir"):
