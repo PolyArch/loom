@@ -99,6 +99,15 @@ function(fcc_add_e2e_pair app_name hw_name)
 endfunction()
 
 function(fcc_add_gem5_smoke case_name)
+  set(extra_args "")
+  set(target_suffix "")
+  if(ARGC GREATER 1)
+    set(target_suffix "${ARGV1}")
+  endif()
+  if(ARGC GREATER 2)
+    math(EXPR extra_arg_count "${ARGC} - 2")
+    list(SUBLIST ARGV 2 ${extra_arg_count} extra_args)
+  endif()
   string(REPLACE "." ";" case_fields "${case_name}")
   list(GET case_fields 0 app_name)
   list(GET case_fields 1 hw_name)
@@ -109,14 +118,17 @@ function(fcc_add_gem5_smoke case_name)
 
   set(output_dir "${CMAKE_SOURCE_DIR}/out/e2e/${case_name}")
   set(gem5_target "fcc_gem5_${app_name}_${hw_name}")
+  if(target_suffix)
+    string(APPEND gem5_target "_${target_suffix}")
+  endif()
 
   add_custom_target(${gem5_target}
     COMMAND ${Python3_EXECUTABLE} "${FCC_GEM5_RUNNER}"
             --case-dir "${output_dir}"
+            ${extra_args}
     DEPENDS ${e2e_target}
             fcc
             "${FCC_GEM5_RUNNER}"
-            "${CMAKE_SOURCE_DIR}/tools/gem5/fcc_runtime_bridge.py"
             "${CMAKE_SOURCE_DIR}/configs/fcc_cgra.py"
             "${CMAKE_SOURCE_DIR}/runtime/baremetal/crt0.S"
             "${CMAKE_SOURCE_DIR}/runtime/baremetal/fcc_baremetal.ld"
@@ -156,11 +168,14 @@ endforeach()
 
 set(FCC_GEM5_SMOKE_CASES
   "sum-array.mesh-6x6-extmem-1"
+  "vecadd.mesh-6x6-extmem-2"
 )
 
 foreach(case_name IN LISTS FCC_GEM5_SMOKE_CASES)
   fcc_add_gem5_smoke("${case_name}")
 endforeach()
+
+fcc_add_gem5_smoke("sum-array.mesh-6x6-extmem-1" "multiaccel" "--extra-accel-count" "1")
 
 get_property(fcc_e2e_manifest_lines GLOBAL PROPERTY FCC_E2E_MANIFEST_LINES)
 get_property(fcc_e2e_runner_deps GLOBAL PROPERTY FCC_E2E_RUNNER_DEPS)

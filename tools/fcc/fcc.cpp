@@ -672,8 +672,8 @@ int main(int argc, char **argv) {
     std::string runtimeManifestPath = mixedBase + ".runtime.json";
     std::string runtimeImagePath = mixedBase + ".simimage.json";
     std::string runtimeImageBinPath = mixedBase + ".simimage.bin";
+    fcc::sim::RuntimeImage runtimeImage;
     {
-      fcc::sim::RuntimeImage runtimeImage;
       std::string runtimeImageError;
       if (!fcc::sim::buildRuntimeImage(
               dfgBuilder.getDFG(), flattener.getADG(), mapResult.state,
@@ -705,8 +705,6 @@ int main(int argc, char **argv) {
       llvm::outs() << "fcc: running standalone simulation...\n";
       fcc::sim::SimConfig simConfig;
       simConfig.maxCycles = args.simMaxCycles;
-      fcc::sim::SimSession session(nullptr, simConfig);
-      fcc::sim::SimArtifactWriter artifactWriter;
       fcc::sim::SynthesizedSetup synthSetup;
       fcc::sim::ResolvedSimulationBundle resolvedBundle;
       bool hasResolvedBundle = false;
@@ -737,14 +735,15 @@ int main(int argc, char **argv) {
       std::string setupPath = mixedBase + ".sim.setup.json";
       std::string resultPath = mixedBase + ".sim.result.json";
       std::string reportPath = mixedBase + ".sim.report.json";
+      fcc::sim::SimSession session(nullptr, simConfig);
+      fcc::sim::SimArtifactWriter artifactWriter;
 
       if (std::string err = session.connect(); !err.empty()) {
         llvm::errs() << "fcc: simulation setup failed: " << err << "\n";
         return 1;
       }
-      if (std::string err = session.buildFromMappedState(
-              dfgBuilder.getDFG(), flattener.getADG(), mapResult.state,
-              flattener.getPEContainment());
+      if (std::string err =
+              session.buildFromStaticModel(std::move(runtimeImage.staticModel));
           !err.empty()) {
         llvm::errs() << "fcc: simulation graph build failed: " << err << "\n";
         return 1;

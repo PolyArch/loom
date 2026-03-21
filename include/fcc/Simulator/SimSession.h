@@ -60,6 +60,9 @@ public:
     (void)model;
     return "backend does not support buildFromStaticModel";
   }
+  virtual std::string buildFromStaticModel(StaticMappedModel &&model) {
+    return buildFromStaticModel(model);
+  }
 
   virtual std::string loadConfig(const std::vector<uint8_t> &configBlob) = 0;
   virtual std::string loadConfig(
@@ -109,6 +112,7 @@ public:
                                    const MappingState &mapping,
                                    llvm::ArrayRef<PEContainment> peContainment);
   std::string buildFromStaticModel(const StaticMappedModel &model);
+  std::string buildFromStaticModel(StaticMappedModel &&model);
   std::string loadConfig(const std::vector<uint8_t> &configBlob);
   std::string loadConfig(
       const std::vector<uint8_t> &configBlob,

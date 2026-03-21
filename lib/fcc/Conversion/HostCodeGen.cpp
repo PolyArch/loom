@@ -97,9 +97,9 @@ static std::string generateAccelHeader() {
   os << "// Register offsets\n";
   os << "#define FCC_REG_STATUS      0x00\n";
   os << "#define FCC_REG_CONTROL     0x04\n";
-  os << "#define FCC_REG_CONFIG_ADDR 0x08\n";
-  os << "#define FCC_REG_CONFIG_DATA 0x0C\n";
-  os << "#define FCC_REG_CONFIG_SIZE 0x10\n";
+  os << "#define FCC_REG_CONFIG_BASE_LO 0x08\n";
+  os << "#define FCC_REG_CONFIG_BASE_HI 0x0C\n";
+  os << "#define FCC_REG_CONFIG_SIZE    0x10\n";
   os << "#define FCC_REG_MEM_BASE(n) (0x20 + (n) * 0x10)\n";
   os << "#define FCC_REG_MEM_SIZE(n) (0x24 + (n) * 0x10)\n";
   os << "#define FCC_REG_ARG(n)      (0x80 + (n) * 0x08)\n";
@@ -122,6 +122,7 @@ static std::string generateAccelHeader() {
   os << "// Control register bits\n";
   os << "#define FCC_CTRL_START   (1 << 0)\n";
   os << "#define FCC_CTRL_RESET   (1 << 1)\n";
+  os << "#define FCC_CTRL_LOAD_CONFIG (1 << 2)\n";
   os << "\n";
   os << "void fcc_accel_init(void);\n";
   os << "void fcc_accel_load_config(const uint32_t *words, unsigned count);\n";
@@ -156,6 +157,11 @@ static std::string generateAccelRuntimeSource() {
   os << "    fccMmio[offset / 4] = value;\n";
   os << "}\n";
   os << "\n";
+  os << "static void fccWrite64(unsigned offset, uint64_t value) {\n";
+  os << "    fccWrite32(offset, (uint32_t)value);\n";
+  os << "    fccWrite32(offset + 4, (uint32_t)(value >> 32));\n";
+  os << "}\n";
+  os << "\n";
   os << "static uint32_t fccRead32(unsigned offset) {\n";
   os << "    return fccMmio[offset / 4];\n";
   os << "}\n";
@@ -166,9 +172,10 @@ static std::string generateAccelRuntimeSource() {
   os << "}\n";
   os << "\n";
   os << "void fcc_accel_load_config(const uint32_t *words, unsigned count) {\n";
-  os << "    for (unsigned i = 0; i < count; i++) {\n";
-  os << "        fccWrite32(FCC_REG_CONFIG_ADDR, i);\n";
-  os << "        fccWrite32(FCC_REG_CONFIG_DATA, words[i]);\n";
+  os << "    fccWrite64(FCC_REG_CONFIG_BASE_LO, (uint64_t)(uintptr_t)words);\n";
+  os << "    fccWrite32(FCC_REG_CONFIG_SIZE, count);\n";
+  os << "    fccWrite32(FCC_REG_CONTROL, FCC_CTRL_LOAD_CONFIG);\n";
+  os << "    while (fccRead32(FCC_REG_STATUS) & FCC_STATUS_BUSY) {\n";
   os << "    }\n";
   os << "}\n";
   os << "\n";
@@ -227,9 +234,9 @@ static std::string generateConfigHeaderStub() {
   os << "#ifndef FCC_ACCEL_CONFIG_H\n";
   os << "#define FCC_ACCEL_CONFIG_H\n\n";
   os << "#include <stdint.h>\n\n";
-  os << "static const uint32_t fcc_accel_config_words[] = {0};\n";
-  os << "static const unsigned fcc_accel_config_word_count = 0;\n";
-  os << "static const int fcc_accel_config_complete = 0;\n\n";
+  os << "static const uint32_t fcc_runtime_config_words[] = {0};\n";
+  os << "static const unsigned fcc_runtime_config_word_count = 0;\n";
+  os << "static const int fcc_runtime_config_complete = 0;\n\n";
   os << "#endif\n";
   return header;
 }
@@ -336,9 +343,9 @@ static std::string generateHostSource(const std::string &originalSource,
 
     os << "    fcc_accel_init();\n";
     os << "\n";
-    os << "    if (fcc_accel_config_word_count > 0)\n";
-    os << "        fcc_accel_load_config(fcc_accel_config_words,\n";
-    os << "                              fcc_accel_config_word_count);\n";
+    os << "    if (fcc_runtime_config_word_count > 0)\n";
+    os << "        fcc_accel_load_config(fcc_runtime_config_words,\n";
+    os << "                              fcc_runtime_config_word_count);\n";
     os << "\n";
 
     // Set up memory regions

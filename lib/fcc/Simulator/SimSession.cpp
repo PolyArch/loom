@@ -195,6 +195,18 @@ std::string SimSession::buildFromStaticModel(const StaticMappedModel &model) {
   return {};
 }
 
+std::string SimSession::buildFromStaticModel(StaticMappedModel &&model) {
+  std::lock_guard<std::mutex> lock(mu_);
+  std::string err = validateTransition(state_, SessionState::Ready);
+  if (!err.empty())
+    return err;
+  err = backend_->buildFromStaticModel(std::move(model));
+  if (!err.empty())
+    return err;
+  state_ = SessionState::Ready;
+  return {};
+}
+
 std::string SimSession::loadConfig(const std::vector<uint8_t> &configBlob) {
   return loadConfig(configBlob, {});
 }

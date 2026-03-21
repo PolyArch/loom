@@ -6,7 +6,11 @@ add_library(FccSimulator STATIC
   RuntimeImageBuilder.cpp
   RuntimeImageBinary.cpp
   SimTypes.cpp
+  SimStats.cpp
   SimFunctionUnit.cpp
+  SimFunctionUnitCore.cpp
+  SimFunctionUnitStateful.cpp
+  SimTemporalPE.cpp
   SimMemory.cpp
   SimModule.cpp
   RuntimeImage.cpp

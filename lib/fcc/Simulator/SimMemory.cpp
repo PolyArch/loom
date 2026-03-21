@@ -43,6 +43,7 @@ struct ConfiguredRegionSlot {
 
 struct BoundRegionInfo {
   unsigned regionId = 0;
+  unsigned regionIndex = 0;
   unsigned startLane = 0;
   unsigned endLane = 1;
   unsigned elemSizeLog2 = 0;
@@ -101,7 +102,7 @@ public:
       if (binding.hwNodeId != static_cast<IdIndex>(module.hwNodeId))
         continue;
       boundRegions_.push_back(
-          {binding.regionId, binding.startLane, binding.endLane,
+          {binding.regionId, binding.regionIndex, binding.startLane, binding.endLane,
            binding.elemSizeLog2, binding.supportsLoad, binding.supportsStore});
     }
   }
@@ -114,7 +115,6 @@ public:
 
   void reset() override {
     perf_ = PerfSnapshot();
-    configuredSlots_.clear();
     outstandingLoadsByLane_.clear();
     outstandingStoresByLane_.clear();
     latchedStoreAddrByLane_.clear();
@@ -138,7 +138,8 @@ public:
     if (runtime_ && (hwNodeId == 735 || simDebugEnabled())) {
       std::cerr << "SimMemory reset hw=" << hwNodeId << " boundRegions=";
       for (const auto &region : boundRegions_) {
-        std::cerr << " {rid=" << region.regionId << " lanes=["
+        std::cerr << " {rid=" << region.regionId << " idx="
+                  << region.regionIndex << " lanes=["
                   << region.startLane << "," << region.endLane
                   << ") ld=" << region.supportsLoad
                   << " st=" << region.supportsStore
@@ -173,7 +174,10 @@ public:
 
     if (configWords.empty()) {
       configuredSlots_.clear();
-      configuredSlots_.reserve(boundRegions_.size());
+      unsigned slotCount = 0;
+      for (const auto &region : boundRegions_)
+        slotCount = std::max(slotCount, region.regionIndex + 1);
+      configuredSlots_.resize(slotCount);
       for (const auto &region : boundRegions_) {
         ConfiguredRegionSlot slot;
         slot.valid = true;
@@ -181,14 +185,15 @@ public:
         slot.endLane = region.endLane;
         slot.baseByteOffset = isExtMemory_ ? 0 : 0;
         slot.elemSizeLog2 = region.elemSizeLog2;
-        configuredSlots_.push_back(slot);
+        configuredSlots_[region.regionIndex] = slot;
       }
     }
 
     if (hwNodeId == 735 || simDebugEnabled()) {
       std::cerr << "SimMemory configure hw=" << hwNodeId << " boundRegions=";
       for (const auto &region : boundRegions_) {
-        std::cerr << " {rid=" << region.regionId << " lanes=["
+        std::cerr << " {rid=" << region.regionId << " idx="
+                  << region.regionIndex << " lanes=["
                   << region.startLane << "," << region.endLane
                   << ") ld=" << region.supportsLoad
                   << " st=" << region.supportsStore
@@ -319,7 +324,8 @@ public:
           } else {
             std::cerr << " region=NONE boundRegions=";
             for (const auto &region : boundRegions_) {
-              std::cerr << " {rid=" << region.regionId << " lanes=["
+              std::cerr << " {rid=" << region.regionId << " idx="
+                           << region.regionIndex << " lanes=["
                            << region.startLane << "," << region.endLane
                            << ") ld=" << region.supportsLoad
                            << " st=" << region.supportsStore << "}";
@@ -597,6 +603,8 @@ private:
         continue;
       for (const auto &binding : boundRegions_) {
         if (!kindMatches(binding))
+          continue;
+        if (binding.regionIndex != slotIdx)
           continue;
         if (binding.startLane != slot.startLane || binding.endLane != slot.endLane)
           continue;

@@ -294,6 +294,7 @@ bool writeStaticModel(std::ofstream &out, const StaticMappedModel &model) {
     return false;
   for (const auto &binding : model.getMemoryBindings()) {
     if (!writeScalar(out, binding.regionId) ||
+        !writeScalar(out, binding.regionIndex) ||
         !writeScalar(out, binding.swNodeId) ||
         !writeScalar(out, binding.hwNodeId) ||
         !writeScalar(out, binding.startLane) ||
@@ -440,6 +441,7 @@ bool readStaticModel(std::ifstream &in, StaticMappedModel &model) {
   memoryBindings.resize(static_cast<size_t>(memoryBindingCount));
   for (auto &binding : memoryBindings) {
     if (!readScalar(in, binding.regionId) ||
+        !readScalar(in, binding.regionIndex) ||
         !readScalar(in, binding.swNodeId) ||
         !readScalar(in, binding.hwNodeId) ||
         !readScalar(in, binding.startLane) ||

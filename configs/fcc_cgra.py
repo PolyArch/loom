@@ -17,9 +17,25 @@ class MemBus(SystemXBar):
 class FccHiFive(HiFive):
     def _off_chip_devices(self):
         devices = list(super()._off_chip_devices())
-        if hasattr(self, "accel"):
-            devices.append(self.accel)
+        for child in self._children.values():
+            if isinstance(child, FccCgraDevice) and child not in devices:
+                devices.append(child)
         return devices
+
+
+def build_accel(args, mmio_base, work_dir):
+    accel = FccCgraDevice(
+        pio_addr=mmio_base,
+        pio_latency="100ns",
+        pio_size=0x1000,
+        accel_cycle_latency="1ns",
+        max_batch_cycles=1024,
+        max_inflight_mem_reqs=8,
+        sim_image=args.accel_sim_image,
+        runtime_manifest=args.accel_runtime_manifest,
+        work_dir=work_dir,
+    )
+    return accel
 
 
 def build_system(args):
@@ -46,17 +62,14 @@ def build_system(args):
     system.platform = FccHiFive()
     system.platform.rtc = RiscvRTC(frequency=Frequency("100MHz"))
     system.platform.clint.int_pin = system.platform.rtc.int_pin
-    system.platform.accel = FccCgraDevice(
-        pio_addr=args.mmio_base,
-        pio_latency="100ns",
-        pio_size=0x1000,
-        sim_image=args.accel_sim_image,
-        runtime_manifest=args.accel_runtime_manifest,
-        fcc_binary=args.fcc_binary,
-        bridge_script=args.bridge_script,
-        work_dir=args.accel_work_dir,
-    )
+    system.platform.accel = build_accel(args, args.mmio_base, args.accel_work_dir)
     system.platform.accel.dma = system.membus.cpu_side_ports
+    for accel_idx in range(args.extra_accel_count):
+        mmio_base = args.mmio_base + ((accel_idx + 1) * args.extra_accel_mmio_stride)
+        work_dir = f"{args.accel_work_dir}.accel{accel_idx + 1}"
+        extra = build_accel(args, mmio_base, work_dir)
+        extra.dma = system.membus.cpu_side_ports
+        setattr(system.platform, f"accel_extra_{accel_idx + 1}", extra)
 
     system.iobus.cpu_side_ports = system.platform.pci_host.up_request_port()
     system.iobus.mem_side_ports = system.platform.pci_host.up_response_port()
@@ -103,11 +116,15 @@ def main():
     parser.add_argument("--kernel", required=True)
     parser.add_argument("--accel-sim-image", default="")
     parser.add_argument("--accel-runtime-manifest", required=True)
-    parser.add_argument("--fcc-binary", default="")
-    parser.add_argument("--bridge-script", default="")
     parser.add_argument("--accel-work-dir", required=True)
     parser.add_argument("--report", required=True)
     parser.add_argument("--mmio-base", type=lambda x: int(x, 0), default=0x10010000)
+    parser.add_argument("--extra-accel-count", type=int, default=0)
+    parser.add_argument(
+        "--extra-accel-mmio-stride",
+        type=lambda x: int(x, 0),
+        default=0x1000,
+    )
     args = parser.parse_args()
 
     system = build_system(args)

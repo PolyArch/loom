@@ -23,6 +23,18 @@ struct MemoryCompletion {
   bool hasTag = false;
 };
 
+struct MemoryRequestRecord {
+  uint64_t requestId = 0;
+  MemoryRequestKind kind = MemoryRequestKind::Load;
+  unsigned regionId = 0;
+  uint32_t ownerNodeId = 0;
+  uint64_t byteAddr = 0;
+  uint64_t data = 0;
+  unsigned byteWidth = 0;
+  uint16_t tag = 0;
+  bool hasTag = false;
+};
+
 class SimRuntimeServices {
 public:
   virtual ~SimRuntimeServices() = default;

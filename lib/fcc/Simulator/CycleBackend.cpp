@@ -4,8 +4,22 @@
 #include "fcc/Simulator/SimFunctionUnit.h"
 #include "fcc/Simulator/StaticModelBuilder.h"
 
+#include <sstream>
+
 namespace fcc {
 namespace sim {
+
+namespace {
+
+std::string getStringAttr(const StaticModuleDesc &module, const char *name) {
+  for (const auto &attr : module.strAttrs) {
+    if (attr.name == name)
+      return attr.value;
+  }
+  return {};
+}
+
+} // namespace
 
 bool CycleSimulationBackend::modelSupportsKernelExecution() const {
   for (const auto &module : staticModel_.getModules()) {
@@ -20,11 +34,14 @@ bool CycleSimulationBackend::modelSupportsKernelExecution() const {
     case StaticModuleKind::Fifo:
       break;
     case StaticModuleKind::FunctionUnit:
+      if (getStringAttr(module, "pe_kind") == "temporal_pe")
+        break;
       if (!functionUnitModuleSupportedByCycleKernel(module))
         return false;
       break;
     case StaticModuleKind::Memory:
     case StaticModuleKind::ExtMemory:
+    case StaticModuleKind::TemporalPE:
       break;
     case StaticModuleKind::Unknown:
       return false;
@@ -34,13 +51,15 @@ bool CycleSimulationBackend::modelSupportsKernelExecution() const {
 }
 
 CycleSimulationBackend::CycleSimulationBackend(const SimConfig &config)
-    : config_(config),
-      kernel_(config),
-      fallback_(std::make_unique<FunctionalSimulationBackend>(config)) {}
+    : config_(config), kernel_(config) {}
 
 CycleSimulationBackend::~CycleSimulationBackend() = default;
 
-std::string CycleSimulationBackend::connect() { return fallback_->connect(); }
+std::string CycleSimulationBackend::connect() {
+  if (fallback_)
+    return fallback_->connect();
+  return {};
+}
 
 std::string CycleSimulationBackend::buildFromMappedState(
     const Graph &dfg, const Graph &adg, const MappingState &mapping) {
@@ -49,9 +68,18 @@ std::string CycleSimulationBackend::buildFromMappedState(
   if (!kernel_.build(staticModel_))
     return "failed to build cycle kernel";
   useKernelExecution_ = modelSupportsKernelExecution();
-  hasFallbackGraph_ = true;
+  hasFallbackGraph_ = !useKernelExecution_;
   pendingInputs_.assign(staticModel_.getInputBindings().size(), {});
   collectedOutputs_.assign(staticModel_.getOutputBindings().size(), {});
+  memoryBindings_.clear();
+  if (!hasFallbackGraph_) {
+    fallback_.reset();
+    return {};
+  }
+  fallback_ = std::make_unique<FunctionalSimulationBackend>(config_);
+  std::string err = fallback_->connect();
+  if (!err.empty())
+    return err;
   return fallback_->buildFromMappedState(dfg, adg, mapping);
 }
 
@@ -63,9 +91,18 @@ std::string CycleSimulationBackend::buildFromMappedState(
   if (!kernel_.build(staticModel_))
     return "failed to build cycle kernel";
   useKernelExecution_ = modelSupportsKernelExecution();
-  hasFallbackGraph_ = true;
+  hasFallbackGraph_ = !useKernelExecution_;
   pendingInputs_.assign(staticModel_.getInputBindings().size(), {});
   collectedOutputs_.assign(staticModel_.getOutputBindings().size(), {});
+  memoryBindings_.clear();
+  if (!hasFallbackGraph_) {
+    fallback_.reset();
+    return {};
+  }
+  fallback_ = std::make_unique<FunctionalSimulationBackend>(config_);
+  std::string err = fallback_->connect();
+  if (!err.empty())
+    return err;
   return fallback_->buildFromMappedState(dfg, adg, mapping, peContainment);
 }
 
@@ -76,8 +113,26 @@ CycleSimulationBackend::buildFromStaticModel(const StaticMappedModel &model) {
     return "failed to build cycle kernel";
   useKernelExecution_ = modelSupportsKernelExecution();
   hasFallbackGraph_ = false;
+  fallback_.reset();
   pendingInputs_.assign(staticModel_.getInputBindings().size(), {});
   collectedOutputs_.assign(staticModel_.getOutputBindings().size(), {});
+  memoryBindings_.clear();
+  if (!useKernelExecution_)
+    return "static-model execution requires cycle-kernel support";
+  return {};
+}
+
+std::string
+CycleSimulationBackend::buildFromStaticModel(StaticMappedModel &&model) {
+  staticModel_ = std::move(model);
+  if (!kernel_.build(staticModel_))
+    return "failed to build cycle kernel";
+  useKernelExecution_ = modelSupportsKernelExecution();
+  hasFallbackGraph_ = false;
+  fallback_.reset();
+  pendingInputs_.assign(staticModel_.getInputBindings().size(), {});
+  collectedOutputs_.assign(staticModel_.getOutputBindings().size(), {});
+  memoryBindings_.clear();
   if (!useKernelExecution_)
     return "static-model execution requires cycle-kernel support";
   return {};
@@ -97,7 +152,7 @@ CycleSimulationBackend::loadConfig(const std::vector<uint8_t> &configBlob) {
   }
   if (!kernel_.configure(configImage_))
     return "failed to configure cycle kernel";
-  if (hasFallbackGraph_)
+  if (hasFallbackGraph_ && fallback_)
     return fallback_->loadConfig(configBlob);
   return {};
 }
@@ -139,7 +194,7 @@ std::string CycleSimulationBackend::setInput(
       pendingInputs_[portIdx].push_back(token);
     }
   }
-  if (hasFallbackGraph_)
+  if (hasFallbackGraph_ && fallback_)
     return fallback_->setInput(portIdx, data, tags);
   return {};
 }
@@ -147,12 +202,60 @@ std::string CycleSimulationBackend::setInput(
 std::string CycleSimulationBackend::setExtMemoryBacking(unsigned regionId,
                                                         uint8_t *data,
                                                         size_t sizeBytes) {
+  if (memoryBindings_.size() <= regionId)
+    memoryBindings_.resize(regionId + 1);
+  memoryBindings_[regionId].data = data;
+  memoryBindings_[regionId].sizeBytes = sizeBytes;
   std::string kernelErr = kernel_.setMemoryRegionBacking(regionId, data, sizeBytes);
   if (!kernelErr.empty())
     return kernelErr;
-  if (hasFallbackGraph_)
+  if (hasFallbackGraph_ && fallback_)
     return fallback_->setExtMemoryBacking(regionId, data, sizeBytes);
   return {};
+}
+
+bool CycleSimulationBackend::serviceOutgoingMemoryRequests(std::string &error) {
+  for (const MemoryRequestRecord &request : kernel_.drainOutgoingMemoryRequests()) {
+    if (request.regionId >= memoryBindings_.size() ||
+        memoryBindings_[request.regionId].data == nullptr) {
+      std::ostringstream oss;
+      oss << "cycle backend missing memory backing for region "
+          << request.regionId;
+      error = oss.str();
+      return false;
+    }
+    MemoryRegionBinding &binding = memoryBindings_[request.regionId];
+    if (request.byteAddr + request.byteWidth > binding.sizeBytes) {
+      std::ostringstream oss;
+      oss << "cycle backend memory OOB for region " << request.regionId
+          << " at byte " << request.byteAddr;
+      error = oss.str();
+      return false;
+    }
+
+    MemoryCompletion completion;
+    completion.requestId = request.requestId;
+    completion.kind = request.kind;
+    completion.regionId = request.regionId;
+    completion.ownerNodeId = request.ownerNodeId;
+    completion.tag = request.tag;
+    completion.hasTag = request.hasTag;
+    if (request.kind == MemoryRequestKind::Load) {
+      uint64_t value = 0;
+      for (unsigned byte = 0; byte < request.byteWidth; ++byte) {
+        value |= uint64_t(binding.data[request.byteAddr + byte]) << (byte * 8);
+      }
+      completion.data = value;
+    } else {
+      for (unsigned byte = 0; byte < request.byteWidth; ++byte) {
+        binding.data[request.byteAddr + byte] =
+            static_cast<uint8_t>((request.data >> (byte * 8)) & 0xffu);
+      }
+      completion.data = 0;
+    }
+    kernel_.pushMemoryCompletion(completion);
+  }
+  return true;
 }
 
 SimResult CycleSimulationBackend::invoke(uint32_t epochId,
@@ -164,50 +267,94 @@ SimResult CycleSimulationBackend::invoke(uint32_t epochId,
       kernel_.setInputTokens(portIdx, pendingInputs_[portIdx]);
 
     SimResult result;
-    result.configCycles = static_cast<uint64_t>(configImage_.words.size()) *
-                          config_.configWordsPerCycle;
+    result.configCycles =
+        config_.configWordsPerCycle == 0
+            ? 0
+            : ((static_cast<uint64_t>(configImage_.words.size()) +
+                config_.configWordsPerCycle - 1) /
+               config_.configWordsPerCycle);
     result.totalConfigWrites = configImage_.words.size();
 
-    BoundaryReason reason = kernel_.runUntilBoundary(config_.maxCycles);
-    result.totalCycles = kernel_.getCurrentCycle() + result.configCycles;
+    uint64_t remainingCycles = config_.maxCycles;
+    while (true) {
+      BoundaryReason reason = kernel_.runUntilBoundary(remainingCycles);
+      uint64_t consumedCycles = kernel_.getCurrentCycle();
+      remainingCycles =
+          (consumedCycles >= config_.maxCycles) ? 0 : (config_.maxCycles - consumedCycles);
+
+      if (reason == BoundaryReason::NeedMemIssue) {
+        if (!serviceOutgoingMemoryRequests(result.errorMessage)) {
+          result.success = false;
+          result.termination = RunTermination::DeviceError;
+          break;
+        }
+        if (remainingCycles == 0) {
+          result.success = false;
+          result.termination = RunTermination::Timeout;
+          result.errorMessage = "cycle kernel budget exceeded";
+          break;
+        }
+        continue;
+      }
+      if (reason == BoundaryReason::WaitMemResp) {
+        result.success = false;
+        result.termination = RunTermination::DeviceError;
+        result.errorMessage =
+            "cycle backend stalled waiting for memory response";
+        break;
+      }
+
+      switch (reason) {
+      case BoundaryReason::InvocationDone:
+        result.success = true;
+        result.termination = RunTermination::Completed;
+        if (!kernel_.validateSuccessfulTermination(result.errorMessage)) {
+          result.success = false;
+          result.termination = RunTermination::DeviceError;
+        }
+        break;
+      case BoundaryReason::BudgetHit:
+        result.success = false;
+        result.termination = RunTermination::Timeout;
+        result.errorMessage = "cycle kernel budget exceeded";
+        break;
+      case BoundaryReason::Deadlock:
+        result.success = false;
+        result.termination = RunTermination::DeviceError;
+        result.errorMessage = "cycle kernel deadlock";
+        break;
+      case BoundaryReason::None:
+        result.success = false;
+        result.termination = RunTermination::ContractError;
+        result.errorMessage = "cycle kernel returned no boundary reason";
+        break;
+      case BoundaryReason::NeedMemIssue:
+      case BoundaryReason::WaitMemResp:
+        break;
+      }
+      break;
+    }
+
+    result.totalCycles = result.configCycles + kernel_.getCurrentCycle();
+    result.acceleratorStats =
+        kernel_.buildAcceleratorStats(/*configLoadStartCycle=*/0,
+                                      result.configCycles,
+                                      /*kernelLaunchCycle=*/result.configCycles,
+                                      /*configDmaRequestCount=*/0,
+                                      /*configDmaReadBytes=*/0);
     result.traceDocument = kernel_.getTraceDocument();
     result.traceEvents = result.traceDocument.events;
     result.finalState = kernel_.getFinalStateSummary();
     collectedOutputs_.assign(collectedOutputs_.size(), {});
     for (unsigned portIdx = 0; portIdx < collectedOutputs_.size(); ++portIdx)
       collectedOutputs_[portIdx] = kernel_.getOutputTokens(portIdx);
-
-    switch (reason) {
-    case BoundaryReason::InvocationDone:
-      result.success = true;
-      result.termination = RunTermination::Completed;
-      if (!kernel_.validateSuccessfulTermination(result.errorMessage)) {
-        result.success = false;
-        result.termination = RunTermination::DeviceError;
-      }
-      break;
-    case BoundaryReason::BudgetHit:
-      result.success = false;
-      result.termination = RunTermination::Timeout;
-      result.errorMessage = "cycle kernel budget exceeded";
-      break;
-    case BoundaryReason::Deadlock:
-      result.success = false;
-      result.termination = RunTermination::DeviceError;
-      result.errorMessage = "cycle kernel deadlock";
-      break;
-    case BoundaryReason::NeedMemIssue:
-    case BoundaryReason::WaitMemResp:
-      result.success = false;
-      result.termination = RunTermination::ContractError;
-      result.errorMessage = "cycle kernel memory boundary not yet integrated";
-      break;
-    case BoundaryReason::None:
-      result.success = false;
-      result.termination = RunTermination::ContractError;
-      result.errorMessage = "cycle kernel returned no boundary reason";
-      break;
-    }
+    return result;
+  }
+  if (!fallback_) {
+    SimResult result;
+    result.success = false;
+    result.termination = RunTermination::ContractError;
+    result.errorMessage = "fallback backend is unavailable";
     return result;
   }
   return fallback_->invoke(epochId, invocationId);
@@ -222,7 +369,9 @@ CycleSimulationBackend::getOutput(unsigned portIdx) const {
       data.push_back(token.data);
     return data;
   }
-  return fallback_->getOutput(portIdx);
+  if (fallback_)
+    return fallback_->getOutput(portIdx);
+  return {};
 }
 
 std::vector<uint16_t>
@@ -234,13 +383,16 @@ CycleSimulationBackend::getOutputTags(unsigned portIdx) const {
       tags.push_back(token.hasTag ? token.tag : 0);
     return tags;
   }
-  return fallback_->getOutputTags(portIdx);
+  if (fallback_)
+    return fallback_->getOutputTags(portIdx);
+  return {};
 }
 
 void CycleSimulationBackend::resetExecution() {
   kernel_.resetExecution();
   collectedOutputs_.assign(collectedOutputs_.size(), {});
-  fallback_->resetExecution();
+  if (fallback_)
+    fallback_->resetExecution();
 }
 
 void CycleSimulationBackend::resetAll() {
@@ -249,10 +401,12 @@ void CycleSimulationBackend::resetAll() {
   staticModel_ = StaticMappedModel();
   pendingInputs_.clear();
   collectedOutputs_.clear();
+  memoryBindings_.clear();
   useKernelExecution_ = false;
   hasFallbackGraph_ = false;
   kernel_.resetAll();
-  fallback_->resetAll();
+  if (fallback_)
+    fallback_->resetAll();
 }
 
 unsigned CycleSimulationBackend::getNumInputPorts() const {

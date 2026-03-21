@@ -11,8 +11,13 @@ class FccCgraDevice(DmaDevice):
     pio_addr = Param.Addr("Device Address")
     pio_latency = Param.Latency("100ns", "Programmed IO latency")
     pio_size = Param.Addr(0x1000, "MMIO aperture size")
+    accel_cycle_latency = Param.Latency("1ns", "Accelerator cycle latency")
+    max_batch_cycles = Param.Unsigned(
+        1024, "Maximum accelerator cycles executed per gem5 event"
+    )
+    max_inflight_mem_reqs = Param.Unsigned(
+        8, "Maximum external memory DMA requests in flight"
+    )
     sim_image = Param.String("", "Path to FCC simulator runtime image")
     runtime_manifest = Param.String("", "Path to FCC runtime manifest")
-    fcc_binary = Param.String("", "Legacy replay fallback binary path")
-    bridge_script = Param.String("", "Legacy replay fallback bridge path")
     work_dir = Param.String("", "Per-run scratch directory for accelerator artifacts")

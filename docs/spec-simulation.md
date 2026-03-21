@@ -89,6 +89,14 @@ Completion obligations come from the mapping overlay and include only
 software-visible outputs and memory side effects. Residual non-obligation
 control tails do not block completion.
 
+Successful completion is additionally audited as:
+
+- software-visible obligations satisfied
+- hardware empty
+
+where "hardware empty" means the mapped ADG has no live channel token and no
+module-internal pending work remaining.
+
 ## Module Families
 
 The simulation architecture should accommodate at least these conceptual module
@@ -122,6 +130,9 @@ The current boundary reasons are:
 - `InvocationDone`
 - `Deadlock`
 - `BudgetHit`
+
+In the embedded gem5 path, `NeedMemIssue` and `WaitMemResp` are the normative
+memory boundaries between the shared kernel and the device-side DMA adapter.
 
 ## Channel Model
 

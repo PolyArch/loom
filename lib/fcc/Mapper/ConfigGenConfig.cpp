@@ -1101,7 +1101,7 @@ bool ConfigGen::writeConfigHeader(const std::string &path) const {
   out << "#ifndef " << guard << "\n";
   out << "#define " << guard << "\n\n";
   out << "#include <stdint.h>\n\n";
-  out << "static const uint32_t fcc_accel_config_words[] = {";
+  out << "static const uint32_t fcc_runtime_config_words[] = {";
   if (configWords_.empty()) {
     out << "0";
   } else {
@@ -1118,9 +1118,9 @@ bool ConfigGen::writeConfigHeader(const std::string &path) const {
     out << "\n";
   }
   out << "};\n";
-  out << "static const unsigned fcc_accel_config_word_count = "
+  out << "static const unsigned fcc_runtime_config_word_count = "
       << configWords_.size() << ";\n";
-  out << "static const int fcc_accel_config_complete = "
+  out << "static const int fcc_runtime_config_complete = "
       << (configComplete_ ? 1 : 0) << ";\n\n";
   out << "#endif\n";
   return true;

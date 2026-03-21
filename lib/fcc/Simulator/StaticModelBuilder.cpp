@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -479,6 +480,7 @@ bool buildStaticMappedModel(const Graph &dfg, const Graph &adg,
         getMemoryLaneRange(swNode, hwNode, dfg, adg, mapping);
     StaticMemoryBinding binding;
     binding.regionId = static_cast<unsigned>(memoryBindings.size());
+    binding.regionIndex = 0;
     binding.swNodeId = swNodeId;
     binding.hwNodeId = hwNodeId;
     binding.startLane = laneRange.start;
@@ -497,6 +499,26 @@ bool buildStaticMappedModel(const Graph &dfg, const Graph &adg,
           std::to_string(binding.regionId);
       obligations.push_back(std::move(obligation));
     }
+  }
+
+  std::unordered_map<IdIndex, std::vector<size_t>> bindingIndicesByHwNode;
+  for (size_t idx = 0; idx < memoryBindings.size(); ++idx)
+    bindingIndicesByHwNode[memoryBindings[idx].hwNodeId].push_back(idx);
+  for (auto &entry : bindingIndicesByHwNode) {
+    auto &indices = entry.second;
+    std::sort(indices.begin(), indices.end(),
+              [&](size_t lhs, size_t rhs) {
+                const auto &a = memoryBindings[lhs];
+                const auto &b = memoryBindings[rhs];
+                if (a.startLane != b.startLane)
+                  return a.startLane < b.startLane;
+                if (a.swNodeId != b.swNodeId)
+                  return a.swNodeId < b.swNodeId;
+                return a.regionId < b.regionId;
+              });
+    for (size_t localIndex = 0; localIndex < indices.size(); ++localIndex)
+      memoryBindings[indices[localIndex]].regionIndex =
+          static_cast<unsigned>(localIndex);
   }
 
   return true;

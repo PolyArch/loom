@@ -23,6 +23,7 @@ enum class StaticModuleKind : uint8_t {
   Fifo = 8,
   Memory = 9,
   ExtMemory = 10,
+  TemporalPE = 11,
   Unknown = 255,
 };
 
@@ -134,6 +135,7 @@ struct StaticOutputBinding {
 
 struct StaticMemoryBinding {
   unsigned regionId = 0;
+  unsigned regionIndex = 0;
   IdIndex swNodeId = INVALID_ID;
   IdIndex hwNodeId = INVALID_ID;
   unsigned startLane = 0;

@@ -8,6 +8,7 @@
 #include <deque>
 #include <limits>
 #include <optional>
+#include <ostream>
 #include <utility>
 
 namespace fcc {
@@ -931,6 +932,41 @@ public:
     return false;
   }
 
+  void debugDump(std::ostream &os) const override {
+    os << "      temporal_sw slots=" << slots_.size()
+       << " tag_width=" << tagWidth_ << " inputs=" << numInputs_
+       << " outputs=" << numOutputs_ << "\n";
+    for (unsigned slotIdx = 0; slotIdx < slots_.size(); ++slotIdx) {
+      os << "      slot[" << slotIdx << "] valid=" << slots_[slotIdx].valid
+         << " tag=" << slots_[slotIdx].tag << " routes=[";
+      for (size_t routeIdx = 0; routeIdx < slots_[slotIdx].routes.size(); ++routeIdx) {
+        if (routeIdx)
+          os << ",";
+        os << (slots_[slotIdx].routes[routeIdx] ? "1" : "0");
+      }
+      os << "]\n";
+    }
+    os << "      input_slot=[";
+    for (size_t idx = 0; idx < inputSlot_.size(); ++idx) {
+      if (idx)
+        os << ",";
+      os << inputSlot_[idx];
+    }
+    os << "] winners=[";
+    for (size_t idx = 0; idx < winners_.size(); ++idx) {
+      if (idx)
+        os << ",";
+      os << winners_[idx];
+    }
+    os << "] broadcast_ok=[";
+    for (size_t idx = 0; idx < broadcastOk_.size(); ++idx) {
+      if (idx)
+        os << ",";
+      os << (broadcastOk_[idx] ? "1" : "0");
+    }
+    os << "]\n";
+  }
+
 private:
   struct Slot {
     bool valid = false;
@@ -1168,6 +1204,8 @@ std::unique_ptr<SimModule> createSimModule(const StaticModuleDesc &module,
   case StaticModuleKind::ExtMemory:
     if (auto modulePtr = createMemoryModule(module, model))
       return modulePtr;
+    break;
+  case StaticModuleKind::TemporalPE:
     break;
   case StaticModuleKind::Unknown:
     break;

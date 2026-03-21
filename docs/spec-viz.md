@@ -85,10 +85,16 @@ Default initial view:
 When embedded simulation trace data is present, the toolbar must also expose:
 
 - `Simulation: On/Off`
+- `Reset`
 - `Stop`
 - `Step`
 - `Back`
 - `Auto Play`
+
+When simulation playback is active, the status display should distinguish the
+hardware cycle number from the playback-frame number. The preferred wording is:
+
+- `Cycle: <cycle> | Event Frame: <frame>/<total>`
 
 ## Base ADG Routing Requirements
 
@@ -202,6 +208,8 @@ When one or more software operations are tech-mapped into one configurable FU:
 - shrinking component hit regions relative to the visible border is allowed and
   recommended
 - ports and routed edges should remain directly selectable
+- releasing the center divider after a panel resize should trigger a fresh fit
+  of both panes to the new viewport
 
 ## Simulation Playback Requirements
 
@@ -209,6 +217,7 @@ The HTML artifact may embed a sibling versioned JSON trace as `SIM_TRACE_DATA`.
 When trace data is present and has a supported `version`, the renderer must:
 
 - group events into deterministic playback frames
+- support reset-to-frame-zero playback
 - support forward stepping and reverse stepping
 - support autoplay
 - highlight firing hardware modules

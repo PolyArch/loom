@@ -92,9 +92,9 @@ The MMIO register file must cover at least these function groups:
 
 - status
 - control
-- config address
-- config data
-- optional config size
+- config blob base
+- config blob size
+- config load doorbell
 - memory region base and size
 - scalar arguments
 - cycle count
@@ -106,14 +106,18 @@ The MMIO register file must cover at least these function groups:
 The canonical host sequence is:
 
 1. reset accelerator state
-2. upload config words in ascending address order
-3. bind memory regions
-4. write scalar arguments
-5. launch execution
-6. poll or wait for completion
-7. read cycle count and inspect outputs or memory side effects
+2. patch runtime-dependent fields inside the config image
+3. provide config blob base and size
+4. trigger config load
+5. bind memory regions
+6. write scalar arguments
+7. launch execution
+8. poll or wait for completion
+9. read cycle count and inspect outputs or memory side effects
 
-Config upload is word-oriented and MMIO-based in the baseline FCC design.
+The host-visible config image remains a contiguous word stream, but the
+preferred transport is bulk load of one contiguous blob rather than one-word
+MMIO writes.
 
 ## DMA vs MMIO Division
 
@@ -121,11 +125,12 @@ FCC uses MMIO for:
 
 - control
 - status
-- configuration
+- configuration load setup
 - scalar setup
 
 FCC uses DMA or equivalent backing access for:
 
+- configuration blob transfer
 - array and buffer payloads in external memory
 
 Large memory payloads are not meant to be copied through MMIO data registers.
@@ -141,8 +146,38 @@ The backend changes where MMIO requests terminate and how memory backing is
 implemented, but the host-visible contract should remain the same.
 
 In the current gem5 direct path, MMIO remains the control plane while memory
-region payloads are bound from gem5 physical memory into the shared cycle
-kernel through the runtime image and device-side memory adapters.
+region payloads stay in gem5-visible memory.
+
+`fcc_accel_set_mem_region(slot, addr, size)` is the host-visible operation that
+binds a software memory object to a runtime memory-region slot. The mapping-time
+control image still defines which extmemory or memory region id uses which slot.
+
+In the direct gem5 path, the concrete array or buffer address used by a mapped
+extmemory or memory region comes from the uploaded config words:
+
+- the host patches the relevant `addr_offset_table.base` entries inside the
+  runtime config image before `fcc_accel_load_config`
+- the host then calls `fcc_accel_set_mem_region(slot, addr, size)` to declare
+  the legal host memory aperture and size that the gem5 device may access for
+  that slot
+
+This split lets the hardware-visible address source live inside the programmed
+bitstream/config image while the runtime binding still provides a checked host
+memory aperture for DMA and artifact export.
+
+The device-side direct path is now:
+
+- runtime image provides memory-region to slot bindings
+- host patches `fcc_runtime_config_words[]` before load
+- host writes config blob base and size through MMIO
+- host triggers one config-load operation
+- the gem5 device DMA-loads the config blob into the accelerator config image
+- the shared kernel emits `MemoryRequestRecord` batches at `NeedMemIssue`
+- the gem5 device converts those records into DMA reads and writes
+- DMA completions are pushed back as `MemoryCompletion` records
+
+This means the primary embedded path no longer relies on invocation-wide memory
+staging before or after execution.
 
 ## Related Documents
 

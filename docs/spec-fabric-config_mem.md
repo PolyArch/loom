@@ -59,7 +59,7 @@ These are three representations of the same configuration image:
 - `config.bin`: raw little-endian bytes
 - `config.json`: structured summary with slice metadata
 - `config.h`: C header embedding the same 32-bit words as
-  `fcc_accel_config_words[]`
+  `fcc_runtime_config_words[]`
 
 ## Physical Word Model
 
@@ -493,9 +493,9 @@ Properties:
 
 `config.h` embeds the same word stream as:
 
-- `fcc_accel_config_words[]`
-- `fcc_accel_config_word_count`
-- `fcc_accel_config_complete`
+- `fcc_runtime_config_words[]`
+- `fcc_runtime_config_word_count`
+- `fcc_runtime_config_complete`
 
 Host code may load this array directly through `fcc_accel_load_config(...)`.
 

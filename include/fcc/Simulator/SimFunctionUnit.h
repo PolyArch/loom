@@ -10,9 +10,11 @@ namespace fcc {
 namespace sim {
 
 std::unique_ptr<SimModule> createFunctionUnitModule(
-    const StaticModuleDesc &module, const StaticMappedModel &model);
+    const StaticModuleDesc &module, const StaticMappedModel &model,
+    bool allowTemporalPE = false);
 
-bool functionUnitModuleSupportedByCycleKernel(const StaticModuleDesc &module);
+bool functionUnitModuleSupportedByCycleKernel(const StaticModuleDesc &module,
+                                              bool allowTemporalPE = false);
 
 } // namespace sim
 } // namespace fcc

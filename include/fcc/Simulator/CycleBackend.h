@@ -6,6 +6,8 @@
 #include "fcc/Simulator/StaticModel.h"
 
 #include <memory>
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace fcc {
@@ -23,6 +25,7 @@ public:
                                    const MappingState &mapping,
                                    llvm::ArrayRef<PEContainment> peContainment) override;
   std::string buildFromStaticModel(const StaticMappedModel &model) override;
+  std::string buildFromStaticModel(StaticMappedModel &&model) override;
   std::string loadConfig(const std::vector<uint8_t> &configBlob) override;
   std::string loadConfig(
       const std::vector<uint8_t> &configBlob,
@@ -46,7 +49,13 @@ public:
   const StaticConfigImage &getConfigImage() const { return configImage_; }
 
 private:
+  struct MemoryRegionBinding {
+    uint8_t *data = nullptr;
+    size_t sizeBytes = 0;
+  };
+
   bool modelSupportsKernelExecution() const;
+  bool serviceOutgoingMemoryRequests(std::string &error);
 
   SimConfig config_;
   StaticMappedModel staticModel_;
@@ -57,6 +66,7 @@ private:
   bool hasFallbackGraph_ = false;
   std::vector<std::vector<SimToken>> pendingInputs_;
   std::vector<std::vector<SimToken>> collectedOutputs_;
+  std::vector<MemoryRegionBinding> memoryBindings_;
 };
 
 } // namespace sim

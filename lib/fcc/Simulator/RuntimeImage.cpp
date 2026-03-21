@@ -169,6 +169,7 @@ static Value toJson(const StaticOutputBinding &binding) {
 static Value toJson(const StaticMemoryBinding &binding) {
   Object object;
   object["region_id"] = static_cast<int64_t>(binding.regionId);
+  object["region_index"] = static_cast<int64_t>(binding.regionIndex);
   object["sw_node_id"] = static_cast<int64_t>(binding.swNodeId);
   object["hw_node_id"] = static_cast<int64_t>(binding.hwNodeId);
   object["start_lane"] = static_cast<int64_t>(binding.startLane);
@@ -685,6 +686,7 @@ static bool loadRuntimeImage(const Object &root, RuntimeImage &image) {
         return false;
       StaticMemoryBinding binding;
       auto regionId = getInteger<unsigned>(*object, "region_id");
+      auto regionIndex = getInteger<unsigned>(*object, "region_index");
       auto swNodeId = getInteger<IdIndex>(*object, "sw_node_id");
       auto hwNodeId = getInteger<IdIndex>(*object, "hw_node_id");
       auto startLane = getInteger<unsigned>(*object, "start_lane");
@@ -692,10 +694,11 @@ static bool loadRuntimeImage(const Object &root, RuntimeImage &image) {
       auto elemSizeLog2 = getInteger<unsigned>(*object, "elem_size_log2");
       auto supportsLoad = object->getBoolean("supports_load");
       auto supportsStore = object->getBoolean("supports_store");
-      if (!regionId || !swNodeId || !hwNodeId || !startLane || !endLane ||
+      if (!regionId || !regionIndex || !swNodeId || !hwNodeId || !startLane || !endLane ||
           !elemSizeLog2 || !supportsLoad || !supportsStore)
         return false;
       binding.regionId = *regionId;
+      binding.regionIndex = *regionIndex;
       binding.swNodeId = *swNodeId;
       binding.hwNodeId = *hwNodeId;
       binding.startLane = *startLane;

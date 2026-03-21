@@ -1,5 +1,7 @@
 #include "fcc/Simulator/CycleKernel.h"
 
+#include "fcc/Simulator/SimTemporalPE.h"
+
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
@@ -57,6 +59,11 @@ std::string getStringAttr(const StaticModuleDesc &module, const char *name) {
       return attr.value;
   }
   return {};
+}
+
+bool isTemporalInternalFunctionUnit(const StaticModuleDesc &module) {
+  return module.kind == StaticModuleKind::FunctionUnit &&
+         getStringAttr(module, "pe_kind") == "temporal_pe";
 }
 
 unsigned bitWidthForChoices(unsigned count) {
@@ -244,6 +251,8 @@ const char *moduleKindName(StaticModuleKind kind) {
     return "memory";
   case StaticModuleKind::ExtMemory:
     return "extmemory";
+  case StaticModuleKind::TemporalPE:
+    return "temporal_pe";
   case StaticModuleKind::Unknown:
     return "unknown";
   }
@@ -258,12 +267,14 @@ bool CycleKernel::build(const StaticMappedModel &staticModel) {
   staticModel_ = staticModel;
   built_ = true;
   configured_ = false;
+  externalMemoryMode_ = false;
 
   portState_.assign(computePortStateSize(staticModel_), {});
   edgeState_.assign(staticModel_.getChannels().size(), {});
-  inputSourcePort_.assign(portState_.size(), INVALID_ID);
+  visibleInputEdge_.assign(portState_.size(), -1);
+  inputSourcePort_.assign(portState_.size(), {});
   outputDestPorts_.assign(portState_.size(), {});
-  inputChannelIndex_.assign(portState_.size(), -1);
+  inputChannelIndex_.assign(portState_.size(), {});
   outputChannelIndices_.assign(portState_.size(), {});
   outputFanoutState_.assign(portState_.size(), {});
   forcedReadyOutputPort_.assign(portState_.size(), 0);
@@ -278,12 +289,13 @@ bool CycleKernel::build(const StaticMappedModel &staticModel) {
        ++channelIdx) {
     const auto &channel = staticModel_.getChannels()[channelIdx];
     if (channel.dstPort < static_cast<IdIndex>(inputSourcePort_.size()))
-      inputSourcePort_[channel.dstPort] = channel.srcPort;
+      inputSourcePort_[channel.dstPort].push_back(channel.srcPort);
     if (channel.srcPort < static_cast<IdIndex>(outputDestPorts_.size()))
       outputDestPorts_[channel.srcPort].push_back(channel.dstPort);
     if (channel.dstPort != INVALID_ID &&
         channel.dstPort < static_cast<IdIndex>(inputChannelIndex_.size()))
-      inputChannelIndex_[channel.dstPort] = static_cast<int>(channelIdx);
+      inputChannelIndex_[channel.dstPort].push_back(
+          static_cast<unsigned>(channelIdx));
     if (channel.srcPort != INVALID_ID &&
         channel.srcPort < static_cast<IdIndex>(outputChannelIndices_.size()))
       outputChannelIndices_[channel.srcPort].push_back(
@@ -292,6 +304,8 @@ bool CycleKernel::build(const StaticMappedModel &staticModel) {
 
   modules_.reserve(staticModel_.getModules().size());
   for (const auto &moduleDesc : staticModel_.getModules()) {
+    if (isTemporalInternalFunctionUnit(moduleDesc))
+      continue;
     std::unique_ptr<SimModule> module = createSimModule(moduleDesc, staticModel_);
     module->hwNodeId = moduleDesc.hwNodeId;
     module->name = moduleDesc.name;
@@ -319,6 +333,34 @@ bool CycleKernel::build(const StaticMappedModel &staticModel) {
     modules_.push_back(std::move(module));
   }
 
+  syntheticModuleBegin_ = modules_.size();
+  uint32_t nextSyntheticHwNodeId =
+      static_cast<uint32_t>(computeNodeStateSize(staticModel_));
+  for (const StaticPEDesc &pe : staticModel_.getPEs()) {
+    if (pe.peKind != "temporal_pe")
+      continue;
+    std::unique_ptr<SimModule> module = createTemporalPEModule(pe, staticModel_);
+    if (!module)
+      continue;
+    module->hwNodeId = nextSyntheticHwNodeId++;
+    std::vector<IdIndex> inputPorts =
+        temporalPEInputRepresentativePorts(pe, staticModel_);
+    for (IdIndex portId : inputPorts) {
+      if (portId != INVALID_ID &&
+          portId < static_cast<IdIndex>(portState_.size()))
+        module->inputs.push_back(&portState_[portId]);
+    }
+    std::vector<IdIndex> outputPorts =
+        temporalPEOutputCandidatePorts(pe, staticModel_);
+    for (IdIndex portId : outputPorts) {
+      if (portId != INVALID_ID &&
+          portId < static_cast<IdIndex>(portState_.size()))
+        module->outputs.push_back(&portState_[portId]);
+    }
+    module->bindRuntimeServices(this);
+    modules_.push_back(std::move(module));
+  }
+
   resetExecution();
   return true;
 }
@@ -332,10 +374,17 @@ bool CycleKernel::configure(const StaticConfigImage &configImage) {
   traceDocument_.traceKind = "fcc_cycle_trace";
   traceDocument_.producer = "fcc";
   traceDocument_.coreId = config_.coreId;
+  configuredFunctionUnits_.clear();
+  configuredModuleNodes_.clear();
+  moduleConfigReadyCycle_.clear();
+  moduleComponentName_.clear();
+  moduleFunctionUnitName_.clear();
+  configSliceTimings_.clear();
 
   std::unordered_map<IdIndex, const StaticModuleDesc *> moduleByNode;
   std::unordered_map<IdIndex, size_t> moduleIndexByNode;
   std::unordered_map<IdIndex, std::string> fuToPEName;
+  std::unordered_set<IdIndex> temporalFUNodes;
   moduleByNode.reserve(staticModel_.getModules().size());
   for (size_t moduleIdx = 0; moduleIdx < staticModel_.getModules().size();
        ++moduleIdx) {
@@ -344,8 +393,11 @@ bool CycleKernel::configure(const StaticConfigImage &configImage) {
     moduleIndexByNode[moduleDesc.hwNodeId] = moduleIdx;
   }
   for (const StaticPEDesc &pe : staticModel_.getPEs()) {
-    for (IdIndex fuNodeId : pe.fuNodeIds)
+    for (IdIndex fuNodeId : pe.fuNodeIds) {
       fuToPEName[fuNodeId] = pe.peName;
+      if (pe.peKind == "temporal_pe")
+        temporalFUNodes.insert(fuNodeId);
+    }
   }
 
   traceDocument_.modules.clear();
@@ -375,7 +427,34 @@ bool CycleKernel::configure(const StaticConfigImage &configImage) {
     traceDocument_.modules.push_back(std::move(info));
   }
 
+  for (const TraceModuleInfo &info : traceDocument_.modules) {
+    moduleComponentName_[info.hwNodeId] = info.componentName;
+    moduleFunctionUnitName_[info.hwNodeId] = info.functionUnitName;
+  }
+
+  configSliceTimings_.reserve(configImage_.slices.size());
+  for (const StaticConfigSlice &slice : configImage_.slices) {
+    ConfigSliceTiming timing;
+    timing.name = slice.name;
+    timing.kind = slice.kind;
+    timing.hwNodeId = static_cast<uint32_t>(slice.hwNode);
+    timing.wordOffset = slice.wordOffset;
+    timing.wordCount = slice.wordCount;
+    timing.startCycle = config_.configWordsPerCycle == 0
+                            ? 0
+                            : (slice.wordOffset / config_.configWordsPerCycle);
+    timing.endCycle =
+        (config_.configWordsPerCycle == 0 || slice.wordCount == 0)
+            ? timing.startCycle
+            : ((static_cast<uint64_t>(slice.wordOffset) + slice.wordCount +
+                config_.configWordsPerCycle - 1) /
+               config_.configWordsPerCycle);
+    configSliceTimings_.push_back(std::move(timing));
+  }
+
   std::unordered_map<std::string, DecodedSpatialPEConfig> spatialPEConfigs;
+  std::unordered_map<std::string, std::vector<uint32_t>> temporalPEConfigWords;
+  std::unordered_map<std::string, std::vector<IdIndex>> temporalPEInputReps;
   std::set<std::string> seenSpatialPENames;
   std::unordered_set<IdIndex> activeFunctionUnits;
   debugInterestingNodes_.clear();
@@ -425,6 +504,22 @@ bool CycleKernel::configure(const StaticConfigImage &configImage) {
       activeFunctionUnits.insert(decoded.activeFuId);
     spatialPEConfigs[pe.peName] = std::move(decoded);
   }
+  configuredFunctionUnits_ = activeFunctionUnits;
+
+  for (const StaticPEDesc &pe : staticModel_.getPEs()) {
+    if (pe.peKind != "temporal_pe")
+      continue;
+    temporalPEInputReps[pe.peName] =
+        temporalPEInputRepresentativePorts(pe, staticModel_);
+    if (const auto *slice =
+            configImage_.findSliceByNameAndKind(pe.peName, "temporal_pe")) {
+      if (slice->wordOffset + slice->wordCount <= configImage_.words.size()) {
+        temporalPEConfigWords[pe.peName] = std::vector<uint32_t>(
+            configImage_.words.begin() + slice->wordOffset,
+            configImage_.words.begin() + slice->wordOffset + slice->wordCount);
+      }
+    }
+  }
 
   if (simDebugEnabled()) {
     std::cerr << "CycleKernel spatial_pe inventory:";
@@ -433,10 +528,11 @@ bool CycleKernel::configure(const StaticConfigImage &configImage) {
     std::cerr << "\n";
   }
 
-  inputSourcePort_.assign(portState_.size(), INVALID_ID);
+  inputSourcePort_.assign(portState_.size(), {});
   outputDestPorts_.assign(portState_.size(), {});
-  inputChannelIndex_.assign(portState_.size(), -1);
+  inputChannelIndex_.assign(portState_.size(), {});
   outputChannelIndices_.assign(portState_.size(), {});
+  visibleInputEdge_.assign(portState_.size(), -1);
   forcedReadyOutputPort_.assign(portState_.size(), 0);
   std::fill(edgeState_.begin(), edgeState_.end(), SimChannel());
   for (size_t channelIdx = 0; channelIdx < staticModel_.getChannels().size();
@@ -449,6 +545,26 @@ bool CycleKernel::configure(const StaticConfigImage &configImage) {
         (srcModuleIt != moduleByNode.end()) ? srcModuleIt->second : nullptr;
     const StaticModuleDesc *dstModule =
         (dstModuleIt != moduleByNode.end()) ? dstModuleIt->second : nullptr;
+
+    if (temporalFUNodes.count(channel.srcNode) != 0 ||
+        temporalFUNodes.count(channel.dstNode) != 0) {
+      bool keepTemporalIngress = false;
+      bool keepTemporalEgress = false;
+      if (temporalFUNodes.count(channel.dstNode) != 0 && channel.peInputIndex >= 0) {
+        auto peIt = fuToPEName.find(channel.dstNode);
+        if (peIt != fuToPEName.end()) {
+          const auto repsIt = temporalPEInputReps.find(peIt->second);
+          unsigned ingressIdx = static_cast<unsigned>(channel.peInputIndex);
+          keepTemporalIngress =
+              repsIt != temporalPEInputReps.end() &&
+              ingressIdx < repsIt->second.size() &&
+              repsIt->second[ingressIdx] == channel.dstPort;
+        }
+      }
+      if (temporalFUNodes.count(channel.srcNode) != 0 && channel.peOutputIndex >= 0)
+        keepTemporalEgress = true;
+      include = keepTemporalIngress || keepTemporalEgress;
+    }
 
     if (dstModule && dstModule->kind == StaticModuleKind::FunctionUnit) {
       std::string peName = getStringAttr(*dstModule, "pe_name");
@@ -530,13 +646,14 @@ bool CycleKernel::configure(const StaticConfigImage &configImage) {
     }
     if (channel.dstPort != INVALID_ID &&
         channel.dstPort < static_cast<IdIndex>(inputSourcePort_.size()))
-      inputSourcePort_[channel.dstPort] = channel.srcPort;
+      inputSourcePort_[channel.dstPort].push_back(channel.srcPort);
     if (channel.srcPort != INVALID_ID &&
         channel.srcPort < static_cast<IdIndex>(outputDestPorts_.size()))
       outputDestPorts_[channel.srcPort].push_back(channel.dstPort);
     if (channel.dstPort != INVALID_ID &&
         channel.dstPort < static_cast<IdIndex>(inputChannelIndex_.size()))
-      inputChannelIndex_[channel.dstPort] = static_cast<int>(channelIdx);
+      inputChannelIndex_[channel.dstPort].push_back(
+          static_cast<unsigned>(channelIdx));
     if (channel.srcPort != INVALID_ID &&
         channel.srcPort < static_cast<IdIndex>(outputChannelIndices_.size()))
       outputChannelIndices_[channel.srcPort].push_back(
@@ -544,15 +661,27 @@ bool CycleKernel::configure(const StaticConfigImage &configImage) {
   }
 
   for (size_t moduleIdx = 0; moduleIdx < modules_.size(); ++moduleIdx) {
-    const StaticModuleDesc &moduleDesc = staticModel_.getModules()[moduleIdx];
+    SimModule *module = modules_[moduleIdx].get();
     std::vector<uint32_t> words;
-    if (moduleDesc.kind == StaticModuleKind::FunctionUnit) {
-      std::string peName = getStringAttr(moduleDesc, "pe_name");
-      auto peConfigIt = spatialPEConfigs.find(peName);
-      if (peConfigIt != spatialPEConfigs.end() &&
-          peConfigIt->second.enabled &&
-          peConfigIt->second.activeFuId == moduleDesc.hwNodeId) {
-        words = peConfigIt->second.fuConfigWords;
+
+    auto moduleIt = moduleByNode.find(module->hwNodeId);
+    if (moduleIt != moduleByNode.end()) {
+      const StaticModuleDesc &moduleDesc = *moduleIt->second;
+      if (moduleDesc.kind == StaticModuleKind::FunctionUnit) {
+        std::string peName = getStringAttr(moduleDesc, "pe_name");
+        auto peConfigIt = spatialPEConfigs.find(peName);
+        if (peConfigIt != spatialPEConfigs.end() &&
+            peConfigIt->second.enabled &&
+            peConfigIt->second.activeFuId == moduleDesc.hwNodeId) {
+          words = peConfigIt->second.fuConfigWords;
+        } else if (const auto *slice = configImage_.findSliceByNameAndKind(
+                       moduleDesc.name, moduleDesc.opKind)) {
+          if (slice->wordOffset + slice->wordCount <= configImage_.words.size()) {
+            words.assign(configImage_.words.begin() + slice->wordOffset,
+                         configImage_.words.begin() + slice->wordOffset +
+                             slice->wordCount);
+          }
+        }
       } else if (const auto *slice = configImage_.findSliceByNameAndKind(
                      moduleDesc.name, moduleDesc.opKind)) {
         if (slice->wordOffset + slice->wordCount <= configImage_.words.size()) {
@@ -561,16 +690,95 @@ bool CycleKernel::configure(const StaticConfigImage &configImage) {
                            slice->wordCount);
         }
       }
-    } else if (const auto *slice = configImage_.findSliceByNameAndKind(
-                   moduleDesc.name, moduleDesc.opKind)) {
-      if (slice->wordOffset + slice->wordCount <= configImage_.words.size()) {
-        words.assign(configImage_.words.begin() + slice->wordOffset,
-                     configImage_.words.begin() + slice->wordOffset +
-                         slice->wordCount);
+    } else {
+      for (const auto &entry : temporalPEConfigWords) {
+        if (module->name == entry.first) {
+          words = entry.second;
+          break;
+        }
       }
     }
-    modules_[moduleIdx]->reset();
-    modules_[moduleIdx]->configure(words);
+
+    module->reset();
+    module->configure(words);
+
+    bool configured = false;
+    uint64_t readyCycle = 0;
+    if (moduleIt != moduleByNode.end()) {
+      const StaticModuleDesc &moduleDesc = *moduleIt->second;
+      if (moduleDesc.kind == StaticModuleKind::BoundaryInput ||
+          moduleDesc.kind == StaticModuleKind::BoundaryOutput) {
+        configured = true;
+      } else if (moduleDesc.kind == StaticModuleKind::FunctionUnit) {
+        std::string peKind = getStringAttr(moduleDesc, "pe_kind");
+        std::string peName = getStringAttr(moduleDesc, "pe_name");
+        if (peKind == "spatial_pe") {
+          configured = configuredFunctionUnits_.count(moduleDesc.hwNodeId) != 0;
+          if (configured) {
+            if (const auto *slice =
+                    configImage_.findSliceByNameAndKind(peName, "spatial_pe")) {
+              readyCycle = (config_.configWordsPerCycle == 0 ||
+                            slice->wordCount == 0)
+                               ? 0
+                               : ((static_cast<uint64_t>(slice->wordOffset) +
+                                   slice->wordCount +
+                                   config_.configWordsPerCycle - 1) /
+                                  config_.configWordsPerCycle);
+            }
+          }
+        } else if (peKind == "temporal_pe") {
+          if (const auto *slice =
+                  configImage_.findSliceByNameAndKind(peName, "temporal_pe")) {
+            configured = slice->wordCount != 0;
+            readyCycle = (config_.configWordsPerCycle == 0 ||
+                          slice->wordCount == 0)
+                             ? 0
+                             : ((static_cast<uint64_t>(slice->wordOffset) +
+                                 slice->wordCount +
+                                 config_.configWordsPerCycle - 1) /
+                                config_.configWordsPerCycle);
+          }
+        } else if (const auto *slice = configImage_.findSliceByNameAndKind(
+                       moduleDesc.name, moduleDesc.opKind)) {
+          configured = slice->wordCount != 0;
+          readyCycle = (config_.configWordsPerCycle == 0 ||
+                        slice->wordCount == 0)
+                           ? 0
+                           : ((static_cast<uint64_t>(slice->wordOffset) +
+                               slice->wordCount +
+                               config_.configWordsPerCycle - 1) /
+                              config_.configWordsPerCycle);
+        }
+      } else if (const auto *slice = configImage_.findSliceByNameAndKind(
+                     moduleDesc.name, moduleDesc.opKind)) {
+        configured = slice->wordCount != 0 || moduleDesc.kind == StaticModuleKind::Memory ||
+                     moduleDesc.kind == StaticModuleKind::ExtMemory;
+        readyCycle = (config_.configWordsPerCycle == 0 ||
+                      slice->wordCount == 0)
+                         ? 0
+                         : ((static_cast<uint64_t>(slice->wordOffset) +
+                             slice->wordCount +
+                             config_.configWordsPerCycle - 1) /
+                            config_.configWordsPerCycle);
+      }
+      if (configured) {
+        configuredModuleNodes_.insert(moduleDesc.hwNodeId);
+        moduleConfigReadyCycle_[moduleDesc.hwNodeId] = readyCycle;
+      }
+    } else if (!words.empty()) {
+      configuredModuleNodes_.insert(module->hwNodeId);
+      if (const auto *slice =
+              configImage_.findSliceByNameAndKind(module->name, "temporal_pe")) {
+        uint64_t readyCycle = (config_.configWordsPerCycle == 0 ||
+                               slice->wordCount == 0)
+                                  ? 0
+                                  : ((static_cast<uint64_t>(slice->wordOffset) +
+                                      slice->wordCount +
+                                      config_.configWordsPerCycle - 1) /
+                                     config_.configWordsPerCycle);
+        moduleConfigReadyCycle_[module->hwNodeId] = readyCycle;
+      }
+    }
   }
 
   if (simDebugEnabled()) {
@@ -585,11 +793,13 @@ bool CycleKernel::configure(const StaticConfigImage &configImage) {
       std::cerr << "CycleKernel connectivity " << moduleDesc.name << " node="
                    << moduleDesc.hwNodeId << "\n";
       for (IdIndex portId : moduleDesc.inputPorts) {
-        IdIndex srcPort = (portId != INVALID_ID &&
-                           portId < static_cast<IdIndex>(inputSourcePort_.size()))
-                              ? inputSourcePort_[portId]
-                              : INVALID_ID;
-        std::cerr << "  in_port " << portId << " <- " << srcPort << "\n";
+        std::cerr << "  in_port " << portId << " <-";
+        if (portId != INVALID_ID &&
+            portId < static_cast<IdIndex>(inputSourcePort_.size())) {
+          for (IdIndex srcPort : inputSourcePort_[portId])
+            std::cerr << " " << srcPort;
+        }
+        std::cerr << "\n";
       }
       for (IdIndex portId : moduleDesc.outputPorts) {
         std::cerr << "  out_port " << portId << " ->";
@@ -622,6 +832,19 @@ void CycleKernel::resetExecution() {
   outstandingMemoryRequests_.clear();
   completedMemoryRequests_.clear();
   std::fill(completedStoreRegions_.begin(), completedStoreRegions_.end(), 0);
+  memoryRegionPerf_.clear();
+  loadRequestCount_ = 0;
+  storeRequestCount_ = 0;
+  loadBytes_ = 0;
+  storeBytes_ = 0;
+  activeCycles_ = 0;
+  idleCycles_ = 0;
+  fabricActiveCycles_ = 0;
+  needMemIssueCycles_ = 0;
+  waitMemRespCycles_ = 0;
+  budgetBoundaryCount_ = 0;
+  deadlockBoundaryCount_ = 0;
+  maxInflightMemoryRequests_ = 0;
   traceDocument_.events.clear();
   traceDocument_.epochId = 0;
   traceDocument_.invocationId = 0;
@@ -636,6 +859,7 @@ void CycleKernel::resetAll() {
   configImage_ = StaticConfigImage();
   portState_.clear();
   edgeState_.clear();
+  visibleInputEdge_.clear();
   inputSourcePort_.clear();
   outputDestPorts_.clear();
   inputChannelIndex_.clear();
@@ -643,8 +867,15 @@ void CycleKernel::resetAll() {
   outputFanoutState_.clear();
   completedStoreRegions_.clear();
   modules_.clear();
+  syntheticModuleBegin_ = 0;
   boundaryInputModuleIndex_.clear();
   boundaryOutputModuleIndex_.clear();
+  configuredFunctionUnits_.clear();
+  configuredModuleNodes_.clear();
+  moduleConfigReadyCycle_.clear();
+  moduleComponentName_.clear();
+  moduleFunctionUnitName_.clear();
+  configSliceTimings_.clear();
   resetExecution();
 }
 
@@ -708,21 +939,24 @@ void CycleKernel::rebuildPortSignalsFromSnapshot(
   for (const auto &port : staticModel_.getPorts()) {
     SimChannel &state = portState_[port.portId];
     if (port.direction == StaticPortDirection::Input) {
+      if (port.portId != INVALID_ID &&
+          port.portId < static_cast<IdIndex>(visibleInputEdge_.size()))
+        visibleInputEdge_[port.portId] = -1;
       state.ready = false;
       state.valid = false;
       state.data = 0;
       state.tag = 0;
       state.hasTag = false;
       state.generation = 0;
-      int edgeIdx = (port.portId != INVALID_ID &&
-                     port.portId < static_cast<IdIndex>(inputChannelIndex_.size()))
-                        ? inputChannelIndex_[port.portId]
-                        : -1;
-      if (edgeIdx >= 0 &&
-          static_cast<size_t>(edgeIdx) < staticModel_.getChannels().size()) {
-        const StaticChannelDesc &edge = staticModel_.getChannels()[edgeIdx];
-        if (edge.srcPort != INVALID_ID &&
-            edge.srcPort < static_cast<IdIndex>(snapshot.size())) {
+      if (port.portId != INVALID_ID &&
+          port.portId < static_cast<IdIndex>(inputChannelIndex_.size())) {
+        for (unsigned edgeIdx : inputChannelIndex_[port.portId]) {
+          if (edgeIdx >= staticModel_.getChannels().size())
+            continue;
+          const StaticChannelDesc &edge = staticModel_.getChannels()[edgeIdx];
+          if (edge.srcPort == INVALID_ID ||
+              edge.srcPort >= static_cast<IdIndex>(snapshot.size()))
+            continue;
           const SimChannel &src = snapshot[edge.srcPort];
           bool visible = src.valid;
           if (edge.srcPort != INVALID_ID &&
@@ -731,7 +965,7 @@ void CycleKernel::rebuildPortSignalsFromSnapshot(
             if (edge.srcPort < static_cast<IdIndex>(outputChannelIndices_.size())) {
               const auto &edgeIndices = outputChannelIndices_[edge.srcPort];
               for (size_t localIdx = 0; localIdx < edgeIndices.size(); ++localIdx) {
-                if (edgeIndices[localIdx] != static_cast<unsigned>(edgeIdx))
+                if (edgeIndices[localIdx] != edgeIdx)
                   continue;
                 if (fanout.generation == src.generation &&
                     localIdx < fanout.captured.size() &&
@@ -741,13 +975,17 @@ void CycleKernel::rebuildPortSignalsFromSnapshot(
               }
             }
           }
-          if (visible) {
-            state.valid = true;
-            state.data = src.data;
-            state.tag = src.tag;
-            state.hasTag = src.hasTag;
-            state.generation = src.generation;
-          }
+          if (!visible)
+            continue;
+          state.valid = true;
+          state.data = src.data;
+          state.tag = src.tag;
+          state.hasTag = src.hasTag;
+          state.generation = src.generation;
+          if (port.portId != INVALID_ID &&
+              port.portId < static_cast<IdIndex>(visibleInputEdge_.size()))
+            visibleInputEdge_[port.portId] = static_cast<int>(edgeIdx);
+          break;
         }
       }
     } else {
@@ -828,7 +1066,15 @@ bool CycleKernel::edgeCanAcceptNow(
   if (channel.dstPort == INVALID_ID ||
       channel.dstPort >= static_cast<IdIndex>(snapshot.size()))
     return false;
-  return snapshot[channel.dstPort].ready;
+  if (!snapshot[channel.dstPort].ready)
+    return false;
+  if (channel.dstPort != INVALID_ID &&
+      channel.dstPort < static_cast<IdIndex>(visibleInputEdge_.size())) {
+    int selectedEdge = visibleInputEdge_[channel.dstPort];
+    if (selectedEdge >= 0 && selectedEdge != static_cast<int>(edgeIdx))
+      return false;
+  }
+  return true;
 }
 
 void CycleKernel::syncOutputFanoutState(IdIndex outputPortId,
@@ -1128,6 +1374,22 @@ void CycleKernel::evaluateBoundaryState() {
     idleCycleStreak_ = 0;
 
   bool pendingInternalWork = hasPendingInternalWork();
+  if (externalMemoryMode_ && !outgoingMemoryRequests_.empty()) {
+    quiescent_ = false;
+    done_ = false;
+    deadlocked_ = false;
+    lastBoundaryReason_ = BoundaryReason::NeedMemIssue;
+    return;
+  }
+  if (externalMemoryMode_ && outgoingMemoryRequests_.empty() &&
+      !outstandingMemoryRequests_.empty() && completedMemoryRequests_.empty() &&
+      idleThisCycle) {
+    quiescent_ = false;
+    done_ = false;
+    deadlocked_ = false;
+    lastBoundaryReason_ = BoundaryReason::WaitMemResp;
+    return;
+  }
   quiescent_ = idleCycleStreak_ >= kIdleCyclesForBoundary;
   bool obligationsSatisfied = completionObligationsSatisfied();
   done_ = obligationsSatisfied && quiescent_;
@@ -1343,30 +1605,27 @@ void CycleKernel::stepCycle() {
                      << "\n";
         if (moduleDesc && i < moduleDesc->inputPorts.size()) {
           IdIndex portId = moduleDesc->inputPorts[i];
-          IdIndex srcPort = (portId != INVALID_ID &&
-                             portId < static_cast<IdIndex>(inputSourcePort_.size()))
-                                ? inputSourcePort_[portId]
-                                : INVALID_ID;
-          int srcEdge = (portId != INVALID_ID &&
-                         portId < static_cast<IdIndex>(inputChannelIndex_.size()))
-                            ? inputChannelIndex_[portId]
-                            : -1;
           std::cerr << "      portId=" << portId;
-          if (srcPort != INVALID_ID) {
-            const StaticPortDesc *srcPortDesc = staticModel_.findPort(srcPort);
-            const StaticModuleDesc *srcModule = srcPortDesc
-                                                    ? staticModel_.findModule(
-                                                          srcPortDesc->parentNodeId)
-                                                    : nullptr;
-            std::cerr << " srcPort=" << srcPort;
-            if (srcModule) {
-              std::cerr << " srcNode=" << srcModule->hwNodeId << ":"
-                           << srcModule->name << ":"
-                           << moduleKindName(srcModule->kind);
+          if (portId != INVALID_ID &&
+              portId < static_cast<IdIndex>(inputSourcePort_.size())) {
+            for (size_t srcIdx = 0; srcIdx < inputSourcePort_[portId].size(); ++srcIdx) {
+              IdIndex srcPort = inputSourcePort_[portId][srcIdx];
+              std::cerr << (srcIdx == 0 ? " srcPort=" : ",srcPort=") << srcPort;
+              const StaticPortDesc *srcPortDesc = staticModel_.findPort(srcPort);
+              const StaticModuleDesc *srcModule = srcPortDesc
+                                                      ? staticModel_.findModule(
+                                                            srcPortDesc->parentNodeId)
+                                                      : nullptr;
+              if (srcModule) {
+                std::cerr << " srcNode=" << srcModule->hwNodeId << ":"
+                          << srcModule->name << ":"
+                          << moduleKindName(srcModule->kind);
+              }
+              if (portId < static_cast<IdIndex>(inputChannelIndex_.size()) &&
+                  srcIdx < inputChannelIndex_[portId].size())
+                std::cerr << " edge=" << inputChannelIndex_[portId][srcIdx];
             }
           }
-          if (srcEdge >= 0)
-            std::cerr << " edge=" << srcEdge;
           std::cerr << "\n";
         }
       }
@@ -1476,6 +1735,19 @@ void CycleKernel::stepCycle() {
                       EventKind::DeviceError);
   }
 
+  if (lastTransferCount_ != 0 || lastActivityCount_ != 0)
+    ++activeCycles_;
+  else
+    ++idleCycles_;
+  if (lastActivityCount_ != 0 || lastTransferCount_ != 0)
+    ++fabricActiveCycles_;
+  if (lastBoundaryReason_ == BoundaryReason::NeedMemIssue)
+    ++needMemIssueCycles_;
+  else if (lastBoundaryReason_ == BoundaryReason::WaitMemResp)
+    ++waitMemRespCycles_;
+  else if (lastBoundaryReason_ == BoundaryReason::Deadlock)
+    ++deadlockBoundaryCount_;
+
   ++currentCycle_;
 }
 
@@ -1493,6 +1765,7 @@ BoundaryReason CycleKernel::runUntilBoundary(uint64_t maxCycles) {
                      outstandingMemoryRequests_.size(),
                      completionObligationsSatisfied(), quiescent_, done_,
                      deadlocked_, currentCycle_);
+  ++budgetBoundaryCount_;
   lastBoundaryReason_ = BoundaryReason::BudgetHit;
   return lastBoundaryReason_;
 }
@@ -1503,6 +1776,48 @@ std::string CycleKernel::setMemoryRegionBacking(unsigned regionId, uint8_t *data
   if (!bindMemoryRegion(regionId, data, sizeBytes, error))
     return error;
   return {};
+}
+
+std::string CycleKernel::bindExternalMemoryRegion(unsigned regionId,
+                                                  uint64_t baseByteAddr,
+                                                  size_t sizeBytes) {
+  std::string error;
+  if (boundMemoryRegions_.size() <= regionId)
+    boundMemoryRegions_.resize(regionId + 1);
+  boundMemoryRegions_[regionId].data = nullptr;
+  boundMemoryRegions_[regionId].baseByteAddr = baseByteAddr;
+  boundMemoryRegions_[regionId].sizeBytes = sizeBytes;
+  boundMemoryRegions_[regionId].external = true;
+  (void)error;
+  return {};
+}
+
+void CycleKernel::setUseExternalMemoryService(bool enable) {
+  externalMemoryMode_ = enable;
+  outgoingMemoryRequests_.clear();
+}
+
+std::vector<MemoryRequestRecord> CycleKernel::drainOutgoingMemoryRequests() {
+  std::vector<MemoryRequestRecord> drained;
+  drained.swap(outgoingMemoryRequests_);
+  return drained;
+}
+
+void CycleKernel::pushMemoryCompletion(const MemoryCompletion &completion) {
+  auto it = std::find_if(
+      outstandingMemoryRequests_.begin(), outstandingMemoryRequests_.end(),
+      [&](const OutstandingMemoryRequest &request) {
+        return request.requestId == completion.requestId;
+      });
+  if (it != outstandingMemoryRequests_.end())
+    outstandingMemoryRequests_.erase(it);
+  completedMemoryRequests_[completion.requestId] = completion;
+  MemoryRegionPerfState &regionPerf = memoryRegionPerf_[completion.regionId];
+  regionPerf.hasLastCompletionCycle = true;
+  regionPerf.lastCompletionCycle = currentCycle_;
+  if (completion.kind == MemoryRequestKind::Store &&
+      completion.regionId < completedStoreRegions_.size())
+    completedStoreRegions_[completion.regionId] = 1;
 }
 
 unsigned CycleKernel::getMemoryLatencyCycles(bool isExtMemory) const {
@@ -1518,6 +1833,25 @@ bool CycleKernel::checkMemoryAccess(unsigned regionId, uint64_t byteAddr,
   }
   const BoundMemoryRegion &region = boundMemoryRegions_[regionId];
   if (!region.data) {
+    if (region.external && externalMemoryMode_) {
+      if (byteAddr < region.baseByteAddr) {
+        std::ostringstream oss;
+        oss << "memory region " << regionId << " OOB at byte " << byteAddr
+            << " below base " << region.baseByteAddr;
+        error = oss.str();
+        return false;
+      }
+      uint64_t relative = byteAddr - region.baseByteAddr;
+      if (relative + byteWidth > region.sizeBytes) {
+        std::ostringstream oss;
+        oss << "memory region " << regionId << " OOB at byte " << byteAddr
+            << " outside [" << region.baseByteAddr << ", "
+            << (region.baseByteAddr + region.sizeBytes) << ")";
+        error = oss.str();
+        return false;
+      }
+      return true;
+    }
     std::ostringstream oss;
     oss << "memory region " << regionId << " is not bound";
     error = oss.str();
@@ -1549,6 +1883,23 @@ bool CycleKernel::issueMemoryLoad(uint32_t ownerNodeId, unsigned regionId,
                                         byteWidth,
                                         tag,
                                         hasTag});
+  if (externalMemoryMode_) {
+    outgoingMemoryRequests_.push_back({requestId, MemoryRequestKind::Load,
+                                       regionId, ownerNodeId, byteAddr, 0,
+                                       byteWidth, tag, hasTag});
+  }
+  ++loadRequestCount_;
+  loadBytes_ += byteWidth;
+  MemoryRegionPerfState &regionPerf = memoryRegionPerf_[regionId];
+  ++regionPerf.loadRequestCount;
+  regionPerf.loadBytes += byteWidth;
+  if (!regionPerf.hasFirstRequestCycle) {
+    regionPerf.hasFirstRequestCycle = true;
+    regionPerf.firstRequestCycle = currentCycle_;
+  }
+  maxInflightMemoryRequests_ =
+      std::max<uint64_t>(maxInflightMemoryRequests_,
+                         outstandingMemoryRequests_.size());
   return true;
 }
 
@@ -1570,6 +1921,23 @@ bool CycleKernel::issueMemoryStore(uint32_t ownerNodeId, unsigned regionId,
                                         byteWidth,
                                         tag,
                                         hasTag});
+  if (externalMemoryMode_) {
+    outgoingMemoryRequests_.push_back({requestId, MemoryRequestKind::Store,
+                                       regionId, ownerNodeId, byteAddr, data,
+                                       byteWidth, tag, hasTag});
+  }
+  ++storeRequestCount_;
+  storeBytes_ += byteWidth;
+  MemoryRegionPerfState &regionPerf = memoryRegionPerf_[regionId];
+  ++regionPerf.storeRequestCount;
+  regionPerf.storeBytes += byteWidth;
+  if (!regionPerf.hasFirstRequestCycle) {
+    regionPerf.hasFirstRequestCycle = true;
+    regionPerf.firstRequestCycle = currentCycle_;
+  }
+  maxInflightMemoryRequests_ =
+      std::max<uint64_t>(maxInflightMemoryRequests_,
+                         outstandingMemoryRequests_.size());
   return true;
 }
 
@@ -1604,12 +1972,16 @@ bool CycleKernel::bindMemoryRegion(unsigned regionId, uint8_t *data,
   if (boundMemoryRegions_.size() <= regionId)
     boundMemoryRegions_.resize(regionId + 1);
   boundMemoryRegions_[regionId].data = data;
+  boundMemoryRegions_[regionId].baseByteAddr = 0;
   boundMemoryRegions_[regionId].sizeBytes = sizeBytes;
+  boundMemoryRegions_[regionId].external = false;
   (void)error;
   return true;
 }
 
 void CycleKernel::retireReadyMemoryRequests() {
+  if (externalMemoryMode_)
+    return;
   std::vector<size_t> readyIndices;
   readyIndices.reserve(outstandingMemoryRequests_.size());
   for (size_t idx = 0; idx < outstandingMemoryRequests_.size(); ++idx) {
@@ -1660,6 +2032,9 @@ void CycleKernel::retireReadyMemoryRequests() {
                    << " cycle=" << currentCycle_ << "\n";
     }
     completedMemoryRequests_[completion.requestId] = completion;
+    MemoryRegionPerfState &regionPerf = memoryRegionPerf_[completion.regionId];
+    regionPerf.hasLastCompletionCycle = true;
+    regionPerf.lastCompletionCycle = currentCycle_;
   }
 }
 

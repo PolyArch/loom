@@ -75,7 +75,6 @@ The gem5-side integration is expected to include files equivalent in role to:
 - `SConscript`
 - `runtime/baremetal/crt0.S`
 - `runtime/baremetal/fcc_baremetal.ld`
-- `tools/gem5/fcc_runtime_bridge.py`
 - `tools/gem5/run_fcc_gem5_case.py`
 - host driver implementation sources generated per case
 
@@ -105,27 +104,58 @@ needed by the device-local kernel:
 - memory-region slot bindings
 - output slot bindings
 
-The historical replay bridge remains only as migration fallback and must not be
-treated as the primary architecture.
+The primary repository-maintained gem5 path no longer depends on replay-bridge
+CLI arguments or out-of-process bridge execution, and the legacy bridge helper
+is no longer part of the repository-maintained execution path.
 
 ## End-to-End Execution Sequence
 
 The current direct gem5 execution flow is:
 
 1. host program boots in baremetal mode
-2. host resets the accelerator
-3. host uploads config words by MMIO
-4. host binds memory regions and scalar arguments by MMIO
-5. host starts execution
-6. gem5 device rebuilds kernel state from the runtime image
-7. gem5 device binds gem5 physical memory into the kernel's region backings
-8. gem5 device runs the shared cycle kernel in-process until a boundary reason
-   is reached
-9. gem5 device exports output tokens, trace, stat, and updated memory back into
-   gem5-visible state
-10. device signals completion
-11. host checks result data and exits with `m5_exit` on success or `m5_fail` on
-    mismatch
+2. host initializes software-visible input arrays and buffers in gem5-visible
+   memory
+3. host resets the accelerator
+4. host patches the runtime config image so each extmemory or memory
+   `addr_offset_table.base` entry points at the concrete host array or buffer
+   address that this invocation should use
+5. host writes config blob base and size by MMIO and triggers one config-load
+   operation
+6. gem5 device DMA-loads the patched config image from host memory into the
+   accelerator config image
+7. host binds memory-region slots and scalar arguments by MMIO
+   The slot binding provides the legal host memory aperture and size for each
+   mapped region domain; the extmemory base used by the hardware request path
+   comes from the uploaded config image.
+8. host starts execution
+9. gem5 device rebuilds kernel state from the runtime image
+10. gem5 device binds kernel-visible memory regions to gem5 DMA apertures and
+   region sizes instead of staging entire memory images into local buffers
+11. gem5 device advances the shared cycle kernel in-process with repeated
+    `runUntilBoundary(maxCycles)` calls
+12. `NeedMemIssue` causes the device to drain kernel-side outgoing memory
+    requests and convert them into gem5 DMA transactions
+13. DMA completions are pushed back into the shared kernel as
+    `MemoryCompletion` records
+14. `BudgetHit` causes the device to schedule another accelerator event after
+    a batch-sized tick delay instead of blocking the current gem5 event until
+    the whole invocation finishes
+15. terminal boundary reasons such as `InvocationDone` or `Deadlock` end the
+    invocation
+16. gem5 device exports output tokens, trace, stat, and updated memory back
+    into gem5-visible state
+17. device signals completion
+18. host reads back output ports or memory side effects, checks them against the
+    host-side golden result, and exits with `m5_exit` on success or `m5_fail`
+    on mismatch
+
+The current repository configuration uses:
+
+- `accel_cycle_latency = 1ns`
+- `max_batch_cycles = 1024`
+- `max_inflight_mem_reqs = 8`
+
+for the embedded gem5 smoke path.
 
 ## Current Smoke Flow
 
@@ -133,6 +163,8 @@ The repository-maintained smoke path is:
 
 1. `./out/e2e/sum-array.mesh-6x6-extmem-1/run.cmd`
 2. `./out/e2e/sum-array.mesh-6x6-extmem-1/run.gem5.cmd`
+3. `./out/e2e/vecadd.mesh-6x6-extmem-2/run.cmd`
+4. `./out/e2e/vecadd.mesh-6x6-extmem-2/run.gem5.cmd`
 
 The case-local gem5 wrapper is expected to:
 
@@ -147,16 +179,28 @@ The primary invocation path only requires:
 - `--accel-work-dir`
 - `--report`
 
-Legacy `--fcc-binary` and `--bridge-script` arguments are fallback-only and
-must not be required for the primary embedded path.
+The repository-maintained gem5 smoke coverage currently includes:
+
+- `sum-array.mesh-6x6-extmem-1`
+- `vecadd.mesh-6x6-extmem-2`
+- `fcc_gem5_sum-array_mesh-6x6-extmem-1_multiaccel`
+
+The multi-device smoke target instantiates one primary accelerator plus one
+additional idle FCC accelerator in the same gem5 system and verifies that the
+host-visible device still executes correctly.
 
 The gem5 runner is expected to leave these per-case outputs:
 
 - `gem5/host.c`
 - `gem5/host.elf`
 - `gem5/gem5.report.json`
+- `gem5/<case>.cpu.trace`
+- `gem5/<case>.cpu.stat.txt`
+- `gem5/<case>.cpu.stat.json`
 - `gem5/<case>.gem5.trace`
 - `gem5/<case>.gem5.stat`
+- `gem5/<case>.accel.stat.json`
+- `gem5/<case>.gem5.memory.slot*.bin`
 - `gem5/accel-work/invoke-*/*`
 
 The direct path is still allowed to emit compatibility artifacts under
@@ -183,6 +227,19 @@ as standalone execution whenever practical.
 
 If there are gem5-specific transport details, they must not change the event
 semantics defined by FCC trace specs.
+
+The repository-maintained gem5 flow now exports CPU-side and accelerator-side
+artifacts separately:
+
+- CPU-side trace and performance come from gem5 host execution:
+  - `<case>.cpu.trace`
+  - `<case>.cpu.stat.txt`
+  - `<case>.cpu.stat.json`
+- accelerator-side trace and performance come from the embedded FCC cycle
+  kernel:
+  - `<case>.gem5.trace`
+  - `<case>.gem5.stat`
+  - `<case>.accel.stat.json`
 
 ## Relationship to Other Specs
 
