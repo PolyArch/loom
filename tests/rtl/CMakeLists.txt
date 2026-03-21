@@ -161,9 +161,10 @@ add_custom_target(check-fcc-rtl-e2e
           --src-rtl "${FCC_RTL_SRC_DIR}"
           --checks gen behaviour
           --modules e2e
+          --test-filter chess_2x2_stub
   DEPENDS fcc "${FCC_RTL_CHECKS_RUNNER}"
           "${FCC_RTL_E2E_DIR}/chess_2x2_stub.fabric.mlir"
-  COMMENT "End-to-end test: chess_2x2 only (filtered by --modules e2e)"
+  COMMENT "End-to-end test: chess_2x2_stub only"
   VERBATIM
   USES_TERMINAL
 )

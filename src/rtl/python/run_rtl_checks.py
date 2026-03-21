@@ -420,6 +420,8 @@ def main():
                         choices=["gen", "behaviour", "synth"])
     parser.add_argument("--modules", nargs="*", default=None,
                         help="Only run tests for these module directories (e.g., e2e)")
+    parser.add_argument("--test-filter", default=None,
+                        help="Only run tests matching this name (e.g., chess_2x2_stub)")
     args = parser.parse_args()
 
     scripts_dir = os.path.dirname(os.path.abspath(__file__))
@@ -442,6 +444,9 @@ def main():
         for test_file in sorted(os.listdir(module_dir)):
             if test_file.endswith(".fabric.mlir"):
                 test_name = test_file.replace(".fabric.mlir", "")
+                # Filter by --test-filter if specified
+                if args.test_filter is not None and test_name != args.test_filter:
+                    continue
                 test_cases.append({
                     "module": module_name,
                     "test": test_name,

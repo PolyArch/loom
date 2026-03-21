@@ -354,6 +354,16 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
       errs() << "fcc: --viz-only needs at least --dfg or --adg\n";
       return false;
     }
+  } else if (args.genSV) {
+    // --gen-sv mode: only needs --adg (no sources or --dfg required)
+    if (args.adgPath.empty()) {
+      errs() << "fcc: --gen-sv requires --adg\n";
+      return false;
+    }
+  } else if (args.simulate && !args.adgPath.empty() &&
+             args.sources.empty() && args.dfgPath.empty()) {
+    // ADG-only simulation mode: --simulate --adg without sources/DFG
+    // Used for golden trace generation via --trace-port-dump
   } else {
     // Normal mode: need sources or --dfg
     if (args.sources.empty() && args.dfgPath.empty()) {
