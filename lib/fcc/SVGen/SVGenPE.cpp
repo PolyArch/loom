@@ -1,3 +1,5 @@
+#include "SVGenInternal.h"
+
 #include "fcc/SVGen/SVEmitter.h"
 #include "fcc/SVGen/SVModuleRegistry.h"
 
@@ -15,12 +17,6 @@
 
 namespace fcc {
 namespace svgen {
-
-// Forward declaration from SVGenFU.cpp.
-std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
-                           llvm::raw_ostream &os,
-                           SVModuleRegistry &registry,
-                           llvm::StringRef fpIpProfile);
 
 namespace {
 

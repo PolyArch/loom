@@ -1,3 +1,5 @@
+#include "SVGenInternal.h"
+
 #include "fcc/SVGen/SVEmitter.h"
 #include "fcc/SVGen/SVModuleRegistry.h"
 

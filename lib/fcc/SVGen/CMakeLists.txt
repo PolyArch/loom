@@ -13,6 +13,10 @@ target_include_directories(FccSVGen PUBLIC
   ${CMAKE_BINARY_DIR}/include
 )
 
+target_include_directories(FccSVGen PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
 target_link_libraries(FccSVGen PUBLIC
   FccFabric
   MLIRSupport

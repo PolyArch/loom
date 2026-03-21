@@ -1,7 +1,13 @@
 #ifndef FCC_SVGEN_SVGENINTERNAL_H
 #define FCC_SVGEN_SVGENINTERNAL_H
 
+#include "fcc/SVGen/SVModuleRegistry.h"
+
 #include "fcc/Dialect/Fabric/FabricOps.h"
+
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <string>
 #include <vector>

@@ -1,3 +1,5 @@
+#include "SVGenInternal.h"
+
 #include "fcc/SVGen/SVEmitter.h"
 #include "fcc/SVGen/SVModuleRegistry.h"
 
@@ -14,15 +16,6 @@
 
 namespace fcc {
 namespace svgen {
-
-/// Per-module config layout information used to generate config_ctrl
-/// parameters (slice offsets and word counts).
-struct ModuleConfigSlice {
-  std::string moduleName;
-  unsigned bitCount = 0;
-  unsigned wordCount = 0;
-  unsigned wordOffset = 0;
-};
 
 // Compute config bit count for a spatial switch.
 static unsigned computeSpatialSwConfigBits(fcc::fabric::SpatialSwOp op) {
