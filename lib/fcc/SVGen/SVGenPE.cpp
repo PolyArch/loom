@@ -103,7 +103,7 @@ static std::vector<FUInfo> collectFUs(mlir::Block &peBody) {
 
     // Handle fabric.instance referencing a shared FunctionUnitOp definition.
     if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
-      llvm::StringRef refName = instOp.getModule().getValue();
+      llvm::StringRef refName = instOp.getModule();
       auto it = fuDefMap.find(refName);
       if (it == fuDefMap.end())
         continue; // Not a FU instance (could be a PE or SW instance).

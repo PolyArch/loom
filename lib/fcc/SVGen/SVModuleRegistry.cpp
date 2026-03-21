@@ -104,7 +104,7 @@ void SVModuleRegistry::requireCommonInfrastructure() {
 void SVModuleRegistry::requireModule(llvm::StringRef category,
                                      llvm::StringRef filename) {
   requireCommonInfrastructure();
-  std::string path = (category + "/" + filename).str();
+  std::string path = category.str() + "/" + filename.str();
   requiredFiles_.insert(path);
 }
 
@@ -162,7 +162,7 @@ std::string SVModuleRegistry::getSVFilePath(llvm::StringRef mlirOpName) {
   const OpMapping *mapping = findMapping(mlirOpName);
   if (!mapping)
     return "";
-  return (mapping->category + "/" + mapping->filename).str();
+  return std::string(mapping->category) + "/" + std::string(mapping->filename);
 }
 
 bool SVModuleRegistry::isTier3TranscendentalOp(llvm::StringRef mlirOpName) {

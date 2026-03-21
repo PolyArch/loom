@@ -463,7 +463,7 @@ void MappingState::recordRouteStatsUnroutedEdgeMembership(IdIndex edgeId) {
   UndoRecord record;
   record.kind = UndoRecord::Kind::RouteStatsUnroutedEdgeMembership;
   record.idValue = edgeId;
-  record.countExisted = routeStatsUnroutedEdgeSet.contains(edgeId);
+  record.countExisted = routeStatsUnroutedEdgeSet.count(edgeId) > 0;
   undoLog.push_back(std::move(record));
 }
 

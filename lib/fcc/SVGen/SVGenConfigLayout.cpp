@@ -146,7 +146,7 @@ static unsigned computeFifoConfigBits(fcc::fabric::FifoOp op) {
 // the enclosing MLIR module for a FunctionUnitOp with a matching sym_name.
 static fcc::fabric::FunctionUnitOp
 resolveFUInstance(fcc::fabric::InstanceOp instOp) {
-  llvm::StringRef refName = instOp.getModule().getValue();
+  llvm::StringRef refName = instOp.getModule();
   auto searchRoot = instOp->getParentOfType<mlir::ModuleOp>();
   if (!searchRoot)
     return nullptr;
@@ -349,7 +349,7 @@ computeConfigLayout(fcc::fabric::ModuleOp fabricMod) {
       addSlice(name, computeExtMemoryConfigBits(extMemOp));
     } else if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
       // Resolve the referenced PE definition and compute its config bits.
-      llvm::StringRef refName = instOp.getModule().getValue();
+      llvm::StringRef refName = instOp.getModule();
       std::string instName = SVEmitter::sanitizeName(
           instOp.getSymName().value_or(refName));
 

@@ -493,7 +493,7 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
     if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
       emitTopWires(ctx, op);
       std::string refModName =
-          SVEmitter::sanitizeName(instOp.getModule().getValue());
+          SVEmitter::sanitizeName(instOp.getModule());
       std::string instName = "inst_" + refModName;
       if (auto sym = instOp.getSymName())
         instName = SVEmitter::sanitizeName(*sym);
