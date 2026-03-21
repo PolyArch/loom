@@ -499,21 +499,40 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
       std::vector<std::string> instParams;
       std::vector<SVConnection> conns;
 
-      // Connect operands.
+      conns.push_back({"clk", "clk"});
+      conns.push_back({"rst_n", "rst_n"});
+
+      // Connect operands using PE wrapper port convention.
+      unsigned dataPortIdx = 0;
       for (unsigned i = 0; i < instOp.getOperands().size(); ++i) {
         if (mlir::isa<mlir::MemRefType>(instOp.getOperand(i).getType()))
           continue;
         std::string wire = ctx.getOrCreateWire(instOp.getOperand(i));
-        conns.push_back({"in" + std::to_string(i), wire});
+        std::string idx = std::to_string(dataPortIdx);
+        conns.push_back({"pe_in" + idx, wire});
+        conns.push_back({"pe_in_valid" + idx, wire + "_valid"});
+        conns.push_back({"pe_in_ready" + idx, wire + "_ready"});
+        ++dataPortIdx;
       }
       // Connect results.
       for (unsigned i = 0; i < instOp.getResults().size(); ++i) {
         std::string wire = ctx.getOrCreateWire(instOp.getResult(i));
-        conns.push_back({"out" + std::to_string(i), wire});
+        std::string idx = std::to_string(i);
+        conns.push_back({"pe_out" + idx, wire});
+        conns.push_back({"pe_out_valid" + idx, wire + "_valid"});
+        conns.push_back({"pe_out_ready" + idx, wire + "_ready"});
       }
 
-      conns.push_back({"clk", "clk"});
-      conns.push_back({"rst_n", "rst_n"});
+      // Config interface.
+      conns.push_back({"cfg_valid", instName + "_cfg_valid"});
+      conns.push_back({"cfg_wdata", instName + "_cfg_wdata"});
+      conns.push_back({"cfg_ready", instName + "_cfg_ready"});
+
+      emitter.emitWire("logic", instName + "_cfg_valid");
+      emitter.emitWire("logic [31:0]", instName + "_cfg_wdata");
+      emitter.emitWire("logic", instName + "_cfg_ready");
+
+      ctx.configInstanceNames.push_back(instName);
 
       emitter.emitInstance(actualModName, instName, instParams, conns);
       emitter.emitBlankLine();

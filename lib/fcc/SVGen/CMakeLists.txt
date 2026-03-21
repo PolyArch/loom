@@ -1,6 +1,7 @@
 add_library(FccSVGen STATIC
   SVGen.cpp
   SVGenFU.cpp
+  SVGenFUValidation.cpp
   SVGenPE.cpp
   SVGenTop.cpp
   SVEmitter.cpp

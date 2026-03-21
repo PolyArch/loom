@@ -80,6 +80,56 @@ def find_golden_traces(test_output):
     return sorted(glob.glob(os.path.join(trace_dir, "*.hex")))
 
 
+def extract_module_name(mlir_path):
+    """Extract the fabric.module @name from an MLIR file.
+
+    Scans for `fabric.module @<name>` and returns the name string.
+    Falls back to None if not found.
+    """
+    import re
+    pattern = re.compile(r'fabric\.module\s+@(\w+)')
+    try:
+        with open(mlir_path, "r") as f:
+            for line in f:
+                m = pattern.search(line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    return None
+
+
+def find_output_trace(trace_dir, module_name):
+    """Find the output port trace file for a given module.
+
+    Looks for files matching *_out0_tokens.hex or *_mod_out0*.hex
+    in the trace directory. Falls back to the first *out*.hex file.
+    """
+    if not os.path.isdir(trace_dir):
+        return None
+
+    # Preferred: exact output port trace patterns
+    for pattern_str in [
+        os.path.join(trace_dir, f"{module_name}_out0_tokens.hex"),
+        os.path.join(trace_dir, f"{module_name}_mod_out0_tokens.hex"),
+    ]:
+        matches = glob.glob(pattern_str)
+        if matches:
+            return matches[0]
+
+    # Fallback: any file with 'out' and ending in _tokens.hex
+    candidates = glob.glob(os.path.join(trace_dir, "*out*_tokens.hex"))
+    if candidates:
+        return sorted(candidates)[0]
+
+    # Last resort: any file with 'out' in the name
+    candidates = glob.glob(os.path.join(trace_dir, "*out*.hex"))
+    if candidates:
+        return sorted(candidates)[0]
+
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Master RTL verification runner")
     parser.add_argument("--fcc", required=True, help="Path to fcc executable")
@@ -144,10 +194,18 @@ def main():
                 rtl_dir = os.path.join(gen_dir, "rtl")
                 tb_dir = os.path.join(args.src_rtl, "testbench", "common")
 
+                # Extract the real fabric.module @name from MLIR
+                fabric_module_name = extract_module_name(tc["mlir"])
+                if not fabric_module_name:
+                    fabric_module_name = tc["module"]
+                    print(f"[behaviour/{tc['module']}/{tc['test']}] "
+                          f"WARN: could not extract module name from MLIR, "
+                          f"using directory name: {fabric_module_name}")
+
                 golden_traces = find_golden_traces(test_output)
                 if not golden_traces:
                     trace_result = generate_golden_traces(
-                        args.fcc, tc["mlir"], tc["module"],
+                        args.fcc, tc["mlir"], fabric_module_name,
                         test_output)
                     if trace_result:
                         golden_traces = find_golden_traces(test_output)
@@ -161,13 +219,31 @@ def main():
                           "FAIL: generated RTL not found")
                     results["failed"] += 1
                 else:
+                    trace_dir = os.path.join(test_output, "rtl-traces")
+
+                    # Find specific golden output trace and set up output path
+                    golden_out_trace = find_output_trace(trace_dir,
+                                                         fabric_module_name)
+                    output_trace_path = os.path.join(beh_dir, "sim_out0.hex")
+
+                    # DUT module name for the generated top-level SV module
+                    dut_module = "fabric_top_" + fabric_module_name
+
                     sim_args = [
                         "--rtl-dir", rtl_dir,
                         "--tb-dir", tb_dir,
                         "--output-dir", beh_dir,
                         "--tool", "verilator",
-                        "--trace-dir", os.path.join(test_output, "rtl-traces"),
+                        "--trace-dir", trace_dir,
+                        "--dut-module", dut_module,
                     ]
+
+                    if golden_out_trace:
+                        sim_args.extend([
+                            "--golden-trace", golden_out_trace,
+                            "--output-trace", output_trace_path,
+                        ])
+
                     passed = run_check(
                         os.path.join(scripts_dir, "run_sim.py"),
                         sim_args,

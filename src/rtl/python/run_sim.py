@@ -8,7 +8,8 @@ import sys
 
 
 def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
-                      tb_files=None, verilator_main=None):
+                      tb_files=None, verilator_main=None,
+                      dut_module=None):
     """Compile with Verilator."""
     obj_dir = os.path.join(output_dir, "obj_dir")
     filelist = os.path.join(rtl_dir, "filelist.f")
@@ -21,6 +22,10 @@ def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
         "-I" + tb_dir,
         "--Mdir", obj_dir,
     ]
+
+    # Pass DUT_MODULE define so tb_module_wrapper instantiates the real DUT
+    if dut_module:
+        cmd.append(f"+define+DUT_MODULE={dut_module}")
 
     if tb_files:
         cmd.extend(tb_files)
@@ -40,7 +45,8 @@ def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
     return sim_exec
 
 
-def compile_vcs(rtl_dir, tb_dir, top_module, output_dir, tb_files=None):
+def compile_vcs(rtl_dir, tb_dir, top_module, output_dir,
+                tb_files=None, dut_module=None):
     """Compile with VCS."""
     filelist = os.path.join(rtl_dir, "filelist.f")
     sim_exec = os.path.join(output_dir, "simv")
@@ -52,6 +58,10 @@ def compile_vcs(rtl_dir, tb_dir, top_module, output_dir, tb_files=None):
         "+incdir+" + tb_dir,
         "-o", sim_exec,
     ]
+
+    # Pass DUT_MODULE define so tb_module_wrapper instantiates the real DUT
+    if dut_module:
+        cmd.append(f"+define+DUT_MODULE={dut_module}")
 
     if tb_files:
         cmd.extend(tb_files)
@@ -152,6 +162,8 @@ def main():
                         help="Trace directory path passed to TB via +plusarg")
     parser.add_argument("--verilator-main", default="",
                         help="Path to C++ main harness for Verilator")
+    parser.add_argument("--dut-module", default="",
+                        help="DUT SV module name (e.g. fabric_top_test_fifo_depth4)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -171,24 +183,28 @@ def main():
         if os.path.isfile(candidate):
             verilator_main = candidate
 
-    # Build plusargs for trace paths
+    # Build plusargs for trace paths and runtime configuration.
+    # The SV wrapper (tb_module_wrapper) reads these via $value$plusargs:
+    #   +GOLDEN_TRACE_0=<path>  +OUTPUT_TRACE_0=<path>  +TRACE_DIR=<dir>
     plusargs = []
     if args.trace_dir:
         plusargs.append(f"+TRACE_DIR={args.trace_dir}")
     if args.golden_trace:
-        plusargs.append(f"+GOLDEN_TRACE={args.golden_trace}")
+        plusargs.append(f"+GOLDEN_TRACE_0={args.golden_trace}")
     if args.output_trace:
-        plusargs.append(f"+OUTPUT_TRACE={args.output_trace}")
+        plusargs.append(f"+OUTPUT_TRACE_0={args.output_trace}")
 
     if args.tool == "verilator":
         sim_exec = compile_verilator(args.rtl_dir, args.tb_dir,
                                      args.top_module, args.output_dir,
                                      tb_files=tb_files,
-                                     verilator_main=verilator_main)
+                                     verilator_main=verilator_main,
+                                     dut_module=args.dut_module or None)
     else:
         sim_exec = compile_vcs(args.rtl_dir, args.tb_dir,
                                args.top_module, args.output_dir,
-                               tb_files=tb_files)
+                               tb_files=tb_files,
+                               dut_module=args.dut_module or None)
 
     if sim_exec is None:
         sys.exit(1)

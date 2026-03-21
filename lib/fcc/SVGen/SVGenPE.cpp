@@ -191,6 +191,12 @@ std::string generateSpatialPE(fcc::fabric::SpatialPEOp peOp,
   }
   emitter.emitBlankLine();
 
+  // Container PE-data unpacked array wires.
+  emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
+                   "ctr_in_data [" + u2s(numPEInputs) + "]");
+  emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
+                   "ctr_out_data [" + u2s(numPEOutputs) + "]");
+
   // Container FU-body-facing wires (MAX_FU_IN / MAX_FU_OUT wide).
   unsigned fuInPackW = maxFUIn > 0 ? maxFUIn : 1;
   unsigned fuOutPackW = maxFUOut > 0 ? maxFUOut : 1;
@@ -200,10 +206,14 @@ std::string generateSpatialPE(fcc::fabric::SpatialPEOp peOp,
                    "ctr_fu_in_valid");
   emitter.emitWire("logic [" + u2s(fuInPackW - 1) + ":0]",
                    "ctr_fu_in_ready");
+  emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
+                   "ctr_fu_in_data [" + u2s(maxFUIn) + "]");
   emitter.emitWire("logic [" + u2s(fuOutPackW - 1) + ":0]",
                    "ctr_fu_out_valid");
   emitter.emitWire("logic [" + u2s(fuOutPackW - 1) + ":0]",
                    "ctr_fu_out_ready");
+  emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
+                   "ctr_fu_out_data [" + u2s(maxFUOut) + "]");
   emitter.emitWire("logic" + SVEmitter::bitRange(fuCfgW), "ctr_fu_cfg_bits");
   emitter.emitWire("logic", "ctr_pe_enable");
   emitter.emitWire("logic" + SVEmitter::bitRange(opcodeRegW),
@@ -296,18 +306,24 @@ std::string generateSpatialPE(fcc::fabric::SpatialPEOp peOp,
                      fp + "_gated_in_valid");
     emitter.emitWire("logic [" + u2s(fuInPackW - 1) + ":0]",
                      fp + "_gated_in_ready");
+    emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
+                     fp + "_gated_in_data [" + u2s(maxFUIn) + "]");
 
     // --- FU body output signals ---
     emitter.emitWire("logic [" + u2s(fuOutPackW - 1) + ":0]",
                      fp + "_body_out_valid");
     emitter.emitWire("logic [" + u2s(fuOutPackW - 1) + ":0]",
                      fp + "_body_out_ready");
+    emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
+                     fp + "_body_out_data [" + u2s(maxFUOut) + "]");
 
     // --- Gated FU output signals (fu_slot -> container demux) ---
     emitter.emitWire("logic [" + u2s(fuOutPackW - 1) + ":0]",
                      fp + "_gated_out_valid");
     emitter.emitWire("logic [" + u2s(fuOutPackW - 1) + ":0]",
                      fp + "_gated_out_ready");
+    emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
+                     fp + "_gated_out_data [" + u2s(maxFUOut) + "]");
 
     // --- Ungated in ready from fu_slot (back to container mux) ---
     emitter.emitWire("logic [" + u2s(fuInPackW - 1) + ":0]",
@@ -364,30 +380,31 @@ std::string generateSpatialPE(fcc::fabric::SpatialPEOp peOp,
       fuParams.push_back(".DATA_WIDTH(DATA_WIDTH)");
 
       std::vector<SVConnection> fuConns;
+      fuConns.push_back({"clk", "clk"});
+      fuConns.push_back({"rst_n", "rst_n"});
+
       for (unsigned i = 0; i < fu.numInputs; ++i) {
+        std::string idx = u2s(i);
         fuConns.push_back(
-            {"in" + u2s(i), fp + "_gated_in_data[" + u2s(i) + "]"});
+            {"in_data_" + idx, fp + "_gated_in_data[" + idx + "]"});
+        fuConns.push_back(
+            {"in_valid_" + idx,
+             fp + "_gated_in_valid[" + idx + "]"});
+        fuConns.push_back(
+            {"in_ready_" + idx,
+             fp + "_gated_in_ready[" + idx + "]"});
       }
       for (unsigned i = 0; i < fu.numOutputs; ++i) {
+        std::string idx = u2s(i);
         fuConns.push_back(
-            {"out" + u2s(i), fp + "_body_out_data[" + u2s(i) + "]"});
+            {"out_data_" + idx, fp + "_body_out_data[" + idx + "]"});
+        fuConns.push_back(
+            {"out_valid_" + idx,
+             fp + "_body_out_valid[" + idx + "]"});
+        fuConns.push_back(
+            {"out_ready_" + idx,
+             fp + "_body_out_ready[" + idx + "]"});
       }
-      fuConns.push_back(
-          {"in_valid", fp + "_gated_in_valid[" +
-                           u2s(fu.numInputs > 0 ? fu.numInputs - 1 : 0) +
-                           ":0]"});
-      fuConns.push_back(
-          {"in_ready", fp + "_gated_in_ready[" +
-                           u2s(fu.numInputs > 0 ? fu.numInputs - 1 : 0) +
-                           ":0]"});
-      fuConns.push_back(
-          {"out_valid", fp + "_body_out_valid[" +
-                            u2s(fu.numOutputs > 0 ? fu.numOutputs - 1 : 0) +
-                            ":0]"});
-      fuConns.push_back(
-          {"out_ready", fp + "_body_out_ready[" +
-                            u2s(fu.numOutputs > 0 ? fu.numOutputs - 1 : 0) +
-                            ":0]"});
       if (fu.configBits > 0) {
         fuConns.push_back({"fu_cfg", fp + "_cfg_out"});
       }
@@ -541,7 +558,11 @@ std::string generateTemporalPE(fcc::fabric::TemporalPEOp peOp,
       fuTimings[i].latency = *lat;
     if (auto intv = fus[i].fuOp.getInterval())
       fuTimings[i].interval = *intv;
-    fuTimings[i].intrinsic = 0;
+    fuTimings[i].intrinsic = computeFUIntrinsicLatency(fus[i].fuOp);
+
+    // Validate timing constraints; abort generation on violation.
+    if (!validateFUTimingConstraints(fus[i].fuOp))
+      return "";
   }
 
   SVEmitter emitter(os);
@@ -615,6 +636,29 @@ std::string generateTemporalPE(fcc::fabric::TemporalPEOp peOp,
   emitter.emitWire("logic [" + u2s(outPackW - 1) + ":0]", "agg_out_valid");
   emitter.emitWire("logic [" + u2s(outPackW - 1) + ":0]", "agg_out_ready");
   emitter.emitWire("logic" + SVEmitter::bitRange(fuCfgW), "ctr_fu_cfg_bits");
+
+  // Container PE-data unpacked arrays.
+  emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
+                   "ctr_pe_in_data [" + u2s(numPEInputs) + "]");
+  emitter.emitWire("logic" + SVEmitter::bitRange(tagWidth),
+                   "ctr_pe_in_tag [" + u2s(numPEInputs) + "]");
+  emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
+                   "ctr_pe_out_data [" + u2s(numPEOutputs) + "]");
+  emitter.emitWire("logic" + SVEmitter::bitRange(tagWidth),
+                   "ctr_pe_out_tag [" + u2s(numPEOutputs) + "]");
+
+  // Container FU-body unpacked arrays.
+  // fu_fire[NUM_FU], fu_in_data[NUM_FU][MAX_FU_IN],
+  // fu_in_valid[NUM_FU], fu_out_valid[NUM_FU], fu_out_data[NUM_FU][MAX_FU_OUT]
+  emitter.emitWire("logic", "ctr_fu_fire [" + u2s(numFU) + "]");
+  emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
+                   "ctr_fu_in_data [" + u2s(numFU) + "][" + u2s(maxFUIn) + "]");
+  emitter.emitWire("logic [" + u2s(fuInPackW - 1) + ":0]",
+                   "ctr_fu_in_valid [" + u2s(numFU) + "]");
+  emitter.emitWire("logic [" + u2s(fuOutPackW - 1) + ":0]",
+                   "ctr_fu_out_valid [" + u2s(numFU) + "]");
+  emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
+                   "ctr_fu_out_data [" + u2s(numFU) + "][" + u2s(maxFUOut) + "]");
   emitter.emitBlankLine();
 
   for (unsigned i = 0; i < numPEInputs; ++i) {
@@ -826,16 +870,31 @@ std::string generateTemporalPE(fcc::fabric::TemporalPEOp peOp,
       fuParams.push_back(".DATA_WIDTH(DATA_WIDTH)");
 
       std::vector<SVConnection> fuConns;
+      fuConns.push_back({"clk", "clk"});
+      fuConns.push_back({"rst_n", "rst_n"});
+
       for (unsigned i = 0; i < fu.numInputs; ++i) {
-        fuConns.push_back({"in" + u2s(i), fp + "_body_in" + u2s(i)});
+        std::string idx = u2s(i);
+        fuConns.push_back(
+            {"in_data_" + idx, fp + "_body_in" + idx});
+        fuConns.push_back(
+            {"in_valid_" + idx,
+             fp + "_body_in_valid[" + idx + "]"});
+        fuConns.push_back(
+            {"in_ready_" + idx,
+             fp + "_body_in_ready[" + idx + "]"});
       }
       for (unsigned i = 0; i < fu.numOutputs; ++i) {
-        fuConns.push_back({"out" + u2s(i), fp + "_body_out" + u2s(i)});
+        std::string idx = u2s(i);
+        fuConns.push_back(
+            {"out_data_" + idx, fp + "_body_out" + idx});
+        fuConns.push_back(
+            {"out_valid_" + idx,
+             fp + "_body_out_valid[" + idx + "]"});
+        fuConns.push_back(
+            {"out_ready_" + idx,
+             fp + "_body_out_ready[" + idx + "]"});
       }
-      fuConns.push_back({"in_valid", fp + "_body_in_valid"});
-      fuConns.push_back({"in_ready", fp + "_body_in_ready"});
-      fuConns.push_back({"out_valid", fp + "_body_out_valid"});
-      fuConns.push_back({"out_ready", fp + "_body_out_ready"});
 
       if (fu.configBits > 0) {
         std::string cfgSlice = "ctr_fu_cfg_bits[" +

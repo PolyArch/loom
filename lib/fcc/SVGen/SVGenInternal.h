@@ -29,6 +29,18 @@ struct ModuleConfigSlice {
 std::vector<ModuleConfigSlice>
 computeConfigLayout(fcc::fabric::ModuleOp fabricMod);
 
+/// Compute the intrinsic latency for an FU body based on its primary
+/// operation. Returns the conservative minimum cycle count from input
+/// acceptance to result availability inside the FU body itself.
+/// For dataflow FUs this returns 0 (their timing is not latency-modeled).
+unsigned computeFUIntrinsicLatency(fcc::fabric::FunctionUnitOp fuOp);
+
+/// Validate the declared latency and interval of an FU against its body
+/// operations. Emits "gen-sv error: latency-violation:" or
+/// "gen-sv error: interval-violation:" diagnostics to llvm::errs() and
+/// returns false if any constraint is violated.
+bool validateFUTimingConstraints(fcc::fabric::FunctionUnitOp fuOp);
+
 /// Generate a FU body SV module. Returns the generated SV module name,
 /// or an empty string if code generation failed (e.g. unsupported op).
 std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,

@@ -250,6 +250,13 @@ bool generateSV(mlir::ModuleOp adgModule, mlir::MLIRContext *ctx,
     fuDefs[fuOp.getSymName()] = fuOp;
   });
 
+  // Validate latency/interval constraints for all FU definitions before
+  // generating any SV output.
+  for (auto &entry : fuDefs) {
+    if (!validateFUTimingConstraints(entry.second))
+      return false;
+  }
+
   for (auto &entry : fuDefs) {
     auto fuOp = entry.second;
     std::string fuName = SVEmitter::sanitizeName(fuOp.getSymName());

@@ -297,8 +297,41 @@ computeConfigLayout(fcc::fabric::ModuleOp fabricMod) {
       std::string name = SVEmitter::sanitizeName(
           extMemOp.getSymName().value_or("extmemory"));
       addSlice(name, computeExtMemoryConfigBits(extMemOp));
+    } else if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
+      // Resolve the referenced PE definition and compute its config bits.
+      llvm::StringRef refName = instOp.getModule().getValue();
+      std::string instName = SVEmitter::sanitizeName(
+          instOp.getSymName().value_or(refName));
+
+      // Search sibling operations for the referenced PE definition.
+      mlir::Operation *parentOp = fabricMod.getOperation()->getParentOp();
+      mlir::Operation *searchRoot =
+          parentOp ? parentOp : fabricMod.getOperation();
+      bool found = false;
+
+      searchRoot->walk([&](fcc::fabric::SpatialPEOp peOp) {
+        if (found)
+          return;
+        auto sym = peOp.getSymName();
+        if (sym && *sym == refName) {
+          addSlice(instName, computeSpatialPEConfigBits(peOp));
+          found = true;
+        }
+      });
+      if (!found) {
+        searchRoot->walk([&](fcc::fabric::TemporalPEOp peOp) {
+          if (found)
+            return;
+          auto sym = peOp.getSymName();
+          if (sym && *sym == refName) {
+            addSlice(instName, computeTemporalPEConfigBits(peOp));
+            found = true;
+          }
+        });
+      }
+      // fabric.instance of FunctionUnitOp: no config bits at instance level.
     }
-    // fabric.instance, fabric.del_tag, fabric.yield: no config bits.
+    // fabric.del_tag, fabric.yield: no config bits.
   }
 
   return slices;
