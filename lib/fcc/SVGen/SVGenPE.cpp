@@ -562,6 +562,22 @@ std::string generateSpatialPE(fcc::fabric::SpatialPEOp peOp,
         fuConns.push_back({"fu_cfg", fp + "_cfg_out"});
       }
 
+      // Memory-side port connections: pass through to PE boundary ports.
+      std::string memPfx = fp + "_";
+      if (fu.memOpType == "load") {
+        fuConns.push_back({"mem_addr", memPfx + "mem_addr"});
+        fuConns.push_back({"mem_addr_valid", memPfx + "mem_addr_valid"});
+        fuConns.push_back({"mem_addr_ready", memPfx + "mem_addr_ready"});
+        fuConns.push_back({"mem_rdata", memPfx + "mem_rdata"});
+        fuConns.push_back({"mem_rdata_valid", memPfx + "mem_rdata_valid"});
+        fuConns.push_back({"mem_rdata_ready", memPfx + "mem_rdata_ready"});
+      } else if (fu.memOpType == "store") {
+        fuConns.push_back({"mem_addr", memPfx + "mem_addr"});
+        fuConns.push_back({"mem_wdata", memPfx + "mem_wdata"});
+        fuConns.push_back({"mem_valid", memPfx + "mem_valid"});
+        fuConns.push_back({"mem_ready", memPfx + "mem_ready"});
+      }
+
       emitter.emitInstance(fu.svModuleName, fp + "_body",
                            fuParams, fuConns);
     }
@@ -770,6 +786,35 @@ std::string generateTemporalPE(fcc::fabric::TemporalPEOp peOp,
   ports.push_back({SVPortDir::Input, "logic", "cfg_valid"});
   ports.push_back({SVPortDir::Input, "logic [31:0]", "cfg_wdata"});
   ports.push_back({SVPortDir::Output, "logic", "cfg_ready"});
+
+  // Memory-side ports: expose per-FU mem_* ports at PE boundary.
+  for (unsigned fuIdx = 0; fuIdx < numFU; ++fuIdx) {
+    const auto &fu = fus[fuIdx];
+    if (fu.memOpType.empty())
+      continue;
+    std::string pfx = "fu" + u2s(fuIdx) + "_";
+    if (fu.memOpType == "load") {
+      ports.push_back({SVPortDir::Output,
+          "logic" + SVEmitter::bitRange(fu.memAddrWidth),
+          pfx + "mem_addr"});
+      ports.push_back({SVPortDir::Output, "logic", pfx + "mem_addr_valid"});
+      ports.push_back({SVPortDir::Input, "logic", pfx + "mem_addr_ready"});
+      ports.push_back({SVPortDir::Input,
+          "logic" + SVEmitter::bitRange(fu.memDataWidth),
+          pfx + "mem_rdata"});
+      ports.push_back({SVPortDir::Input, "logic", pfx + "mem_rdata_valid"});
+      ports.push_back({SVPortDir::Output, "logic", pfx + "mem_rdata_ready"});
+    } else if (fu.memOpType == "store") {
+      ports.push_back({SVPortDir::Output,
+          "logic" + SVEmitter::bitRange(fu.memAddrWidth),
+          pfx + "mem_addr"});
+      ports.push_back({SVPortDir::Output,
+          "logic" + SVEmitter::bitRange(fu.memDataWidth),
+          pfx + "mem_wdata"});
+      ports.push_back({SVPortDir::Output, "logic", pfx + "mem_valid"});
+      ports.push_back({SVPortDir::Input, "logic", pfx + "mem_ready"});
+    }
+  }
 
   emitter.emitModuleHeader(moduleName, params, ports);
 
@@ -1054,6 +1099,22 @@ std::string generateTemporalPE(fcc::fabric::TemporalPEOp peOp,
                                u2s(fuCfgOffset + fu.configBits - 1) + ":" +
                                u2s(fuCfgOffset) + "]";
         fuConns.push_back({"fu_cfg", cfgSlice});
+      }
+
+      // Memory-side port connections: pass through to PE boundary ports.
+      std::string memPfx = fp + "_";
+      if (fu.memOpType == "load") {
+        fuConns.push_back({"mem_addr", memPfx + "mem_addr"});
+        fuConns.push_back({"mem_addr_valid", memPfx + "mem_addr_valid"});
+        fuConns.push_back({"mem_addr_ready", memPfx + "mem_addr_ready"});
+        fuConns.push_back({"mem_rdata", memPfx + "mem_rdata"});
+        fuConns.push_back({"mem_rdata_valid", memPfx + "mem_rdata_valid"});
+        fuConns.push_back({"mem_rdata_ready", memPfx + "mem_rdata_ready"});
+      } else if (fu.memOpType == "store") {
+        fuConns.push_back({"mem_addr", memPfx + "mem_addr"});
+        fuConns.push_back({"mem_wdata", memPfx + "mem_wdata"});
+        fuConns.push_back({"mem_valid", memPfx + "mem_valid"});
+        fuConns.push_back({"mem_ready", memPfx + "mem_ready"});
       }
 
       emitter.emitInstance(fu.svModuleName, fp + "_body",
