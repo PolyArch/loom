@@ -164,6 +164,9 @@ def main():
                         help="Path to C++ main harness for Verilator")
     parser.add_argument("--dut-module", default="",
                         help="DUT SV module name (e.g. fabric_top_test_fifo_depth4)")
+    parser.add_argument("--plusargs", nargs="*", default=[],
+                        help="Additional plusargs to pass to the simulator "
+                             "(e.g. +NUM_INPUT_TOKENS=16 +CONFIG_FILE=cfg.hex)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -186,6 +189,8 @@ def main():
     # Build plusargs for trace paths and runtime configuration.
     # The SV wrapper (tb_module_wrapper) reads these via $value$plusargs:
     #   +GOLDEN_TRACE_0=<path>  +OUTPUT_TRACE_0=<path>  +TRACE_DIR=<dir>
+    #   +NUM_INPUT_TOKENS=N     +GOLDEN_TOKENS=N        +NUM_CONFIG_WORDS=N
+    #   +INPUT_TRACE_0=<path>   +CONFIG_FILE=<path>      +DUT_MODULE=<name>
     plusargs = []
     if args.trace_dir:
         plusargs.append(f"+TRACE_DIR={args.trace_dir}")
@@ -193,6 +198,22 @@ def main():
         plusargs.append(f"+GOLDEN_TRACE_0={args.golden_trace}")
     if args.output_trace:
         plusargs.append(f"+OUTPUT_TRACE_0={args.output_trace}")
+
+    # Append caller-supplied plusargs (from run_rtl_checks.py --plusargs).
+    # These carry token counts, config info, and trace file paths that
+    # the SV wrapper resolves at runtime via $value$plusargs.
+    if args.plusargs:
+        # Deduplicate: caller plusargs take precedence over the ones
+        # constructed above. Build a set of plusarg keys already present.
+        existing_keys = set()
+        for pa in plusargs:
+            key = pa.split("=", 1)[0] if "=" in pa else pa
+            existing_keys.add(key)
+        for pa in args.plusargs:
+            key = pa.split("=", 1)[0] if "=" in pa else pa
+            if key not in existing_keys:
+                plusargs.append(pa)
+                existing_keys.add(key)
 
     if args.tool == "verilator":
         sim_exec = compile_verilator(args.rtl_dir, args.tb_dir,

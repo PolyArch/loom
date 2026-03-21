@@ -29,10 +29,11 @@ struct ModuleConfigSlice {
 std::vector<ModuleConfigSlice>
 computeConfigLayout(fcc::fabric::ModuleOp fabricMod);
 
-/// Compute the intrinsic latency for an FU body based on its primary
-/// operation. Returns the conservative minimum cycle count from input
-/// acceptance to result availability inside the FU body itself.
-/// For dataflow FUs this returns 0 (their timing is not latency-modeled).
+/// Compute the critical-path intrinsic latency for an FU body by analyzing
+/// the SSA DAG from block arguments to yield operands. Returns the minimum
+/// cycle count from input acceptance to result availability inside the FU
+/// body itself. For dataflow FUs this returns 0 (their timing is not
+/// latency-modeled).
 unsigned computeFUIntrinsicLatency(fcc::fabric::FunctionUnitOp fuOp);
 
 /// Validate the declared latency and interval of an FU against its body

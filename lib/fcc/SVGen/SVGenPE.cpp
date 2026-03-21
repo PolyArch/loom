@@ -30,6 +30,44 @@ struct FUInfo {
   fcc::fabric::FunctionUnitOp fuOp;
 };
 
+/// Compute config bits for a single FU body op.
+static unsigned getBodyOpConfigBits(mlir::Operation &op,
+                                    unsigned dataWidth) {
+  if (auto muxOp = mlir::dyn_cast<fcc::fabric::MuxOp>(op)) {
+    unsigned numMuxIn = muxOp.getInputs().size();
+    unsigned selBits = numMuxIn > 1 ? llvm::Log2_32_Ceil(numMuxIn) : 0;
+    return selBits + 2; // sel + discard + disconnect
+  }
+  llvm::StringRef opName = op.getName().getStringRef();
+  if (opName == "arith.cmpi" || opName == "arith.cmpf")
+    return 4;
+  if (opName == "handshake.constant")
+    return dataWidth;
+  if (opName == "handshake.join")
+    return op.getNumOperands(); // NUM_IN bits for join mask
+  if (opName == "dataflow.stream")
+    return 5;
+  return 0;
+}
+
+/// Compute total config bits for a FunctionUnitOp body.
+static unsigned computeFUBodyConfigBits(fcc::fabric::FunctionUnitOp fuOp) {
+  auto fnType = fuOp.getFunctionType();
+  unsigned dataWidth = 32;
+  if (fnType.getNumInputs() > 0)
+    dataWidth = SVEmitter::getDataWidth(fnType.getInput(0));
+  else if (fnType.getNumResults() > 0)
+    dataWidth = SVEmitter::getDataWidth(fnType.getResult(0));
+
+  unsigned cfgBits = 0;
+  for (auto &op : fuOp.getBody().front().getOperations()) {
+    if (mlir::isa<fcc::fabric::YieldOp>(op))
+      continue;
+    cfgBits += getBodyOpConfigBits(op, dataWidth);
+  }
+  return cfgBits;
+}
+
 static std::vector<FUInfo> collectFUs(mlir::Block &peBody) {
   std::vector<FUInfo> fus;
   for (auto &op : peBody.getOperations()) {
@@ -43,15 +81,8 @@ static std::vector<FUInfo> collectFUs(mlir::Block &peBody) {
       info.numOutputs = fnType.getNumResults();
       info.fuOp = fuOp;
 
-      // Count FU internal config bits (mux ops).
-      unsigned cfgBits = 0;
-      fuOp.getBody().front().walk([&](fcc::fabric::MuxOp muxOp) {
-        unsigned numMuxIn = muxOp.getInputs().size();
-        unsigned selBits =
-            numMuxIn > 1 ? llvm::Log2_32_Ceil(numMuxIn) : 0;
-        cfgBits += selBits + 2;
-      });
-      info.configBits = cfgBits;
+      // Count FU internal config bits (all configurable body ops).
+      info.configBits = computeFUBodyConfigBits(fuOp);
       fus.push_back(std::move(info));
     }
   }

@@ -130,6 +130,80 @@ def find_output_trace(trace_dir, module_name):
     return None
 
 
+def find_input_trace(trace_dir, module_name):
+    """Find the input port trace file for a given module.
+
+    Looks for files matching *_in0_tokens.hex in the trace directory.
+    """
+    if not os.path.isdir(trace_dir):
+        return None
+
+    for pattern_str in [
+        os.path.join(trace_dir, f"{module_name}_in0_tokens.hex"),
+        os.path.join(trace_dir, f"{module_name}_mod_in0_tokens.hex"),
+    ]:
+        matches = glob.glob(pattern_str)
+        if matches:
+            return matches[0]
+
+    candidates = glob.glob(os.path.join(trace_dir, "*in0*_tokens.hex"))
+    if candidates:
+        return sorted(candidates)[0]
+
+    candidates = glob.glob(os.path.join(trace_dir, "*in*.hex"))
+    if candidates:
+        return sorted(candidates)[0]
+
+    return None
+
+
+def read_count_file(hex_path):
+    """Read a .count file associated with a .hex trace file.
+
+    Given a path like /dir/module_out0_tokens.hex, looks for
+    /dir/module_out0_tokens.count and returns the integer count.
+    Returns 0 if the .count file does not exist or is unreadable.
+    """
+    count_path = hex_path.rsplit(".hex", 1)[0] + ".count"
+    try:
+        with open(count_path, "r") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def find_config_hex(gen_dir):
+    """Find a config hex file in the generated RTL collateral directory.
+
+    Looks for files matching *config*.hex in the gen directory tree.
+    """
+    if not os.path.isdir(gen_dir):
+        return None
+
+    candidates = glob.glob(os.path.join(gen_dir, "**", "*config*.hex"),
+                           recursive=True)
+    if candidates:
+        return sorted(candidates)[0]
+
+    return None
+
+
+def count_hex_lines(hex_path):
+    """Count non-empty, non-comment lines in a hex file."""
+    if not hex_path or not os.path.isfile(hex_path):
+        return 0
+    count = 0
+    try:
+        with open(hex_path, "r") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped and not stripped.startswith("//"):
+                    count += 1
+    except OSError:
+        pass
+    return count
+
+
 def main():
     parser = argparse.ArgumentParser(description="Master RTL verification runner")
     parser.add_argument("--fcc", required=True, help="Path to fcc executable")
@@ -202,6 +276,24 @@ def main():
                           f"WARN: could not extract module name from MLIR, "
                           f"using directory name: {fabric_module_name}")
 
+                # Auto-generate RTL collateral if missing.
+                if not os.path.isdir(rtl_dir):
+                    print(f"[behaviour/{tc['module']}/{tc['test']}] "
+                          "gen-collateral/rtl not found, running gen first")
+                    os.makedirs(gen_dir, exist_ok=True)
+                    gen_ok = run_check(
+                        os.path.join(scripts_dir, "gen_sv.py"),
+                        ["--fcc", args.fcc, "--adg", tc["mlir"],
+                         "--output-dir", gen_dir],
+                        f"gen(auto)/{tc['module']}/{tc['test']}",
+                        gen_dir
+                    )
+                    if not gen_ok:
+                        print(f"[behaviour/{tc['module']}/{tc['test']}] "
+                              "FAIL: auto-gen failed")
+                        results["failed"] += 1
+                        continue
+
                 golden_traces = find_golden_traces(test_output)
                 if not golden_traces:
                     trace_result = generate_golden_traces(
@@ -226,6 +318,29 @@ def main():
                                                          fabric_module_name)
                     output_trace_path = os.path.join(beh_dir, "sim_out0.hex")
 
+                    # Find input trace for the module
+                    input_trace = find_input_trace(trace_dir,
+                                                    fabric_module_name)
+
+                    # Read token counts from .count files produced by
+                    # PortTraceExporter, falling back to line counting
+                    golden_token_count = 0
+                    input_token_count = 0
+                    if golden_out_trace:
+                        golden_token_count = read_count_file(golden_out_trace)
+                        if golden_token_count == 0:
+                            golden_token_count = count_hex_lines(
+                                golden_out_trace)
+                    if input_trace:
+                        input_token_count = read_count_file(input_trace)
+                        if input_token_count == 0:
+                            input_token_count = count_hex_lines(input_trace)
+
+                    # Find config hex file and count words
+                    config_hex = find_config_hex(gen_dir)
+                    config_word_count = (count_hex_lines(config_hex)
+                                         if config_hex else 0)
+
                     # DUT module name for the generated top-level SV module
                     dut_module = "fabric_top_" + fabric_module_name
 
@@ -238,11 +353,38 @@ def main():
                         "--dut-module", dut_module,
                     ]
 
+                    # Build plusargs for runtime TB configuration
+                    plusarg_list = []
+                    if input_token_count > 0:
+                        plusarg_list.append(
+                            f"+NUM_INPUT_TOKENS={input_token_count}")
+                    if golden_token_count > 0:
+                        plusarg_list.append(
+                            f"+GOLDEN_TOKENS={golden_token_count}")
+                    if config_word_count > 0:
+                        plusarg_list.append(
+                            f"+NUM_CONFIG_WORDS={config_word_count}")
+                    if input_trace:
+                        plusarg_list.append(
+                            f"+INPUT_TRACE_0={input_trace}")
+                    if config_hex:
+                        plusarg_list.append(
+                            f"+CONFIG_FILE={config_hex}")
+
                     if golden_out_trace:
+                        plusarg_list.append(
+                            f"+GOLDEN_TRACE_0={golden_out_trace}")
                         sim_args.extend([
                             "--golden-trace", golden_out_trace,
                             "--output-trace", output_trace_path,
                         ])
+                    if output_trace_path:
+                        plusarg_list.append(
+                            f"+OUTPUT_TRACE_0={output_trace_path}")
+
+                    # Pass plusargs to run_sim.py
+                    if plusarg_list:
+                        sim_args.extend(["--plusargs"] + plusarg_list)
 
                     passed = run_check(
                         os.path.join(scripts_dir, "run_sim.py"),
@@ -262,6 +404,24 @@ def main():
             else:
                 tcl_template = os.path.join(args.src_rtl, "tcl", "synth_template.tcl")
                 gen_dir = os.path.join(test_output, "gen-collateral", "rtl")
+                # Auto-generate RTL collateral if missing.
+                if not os.path.isdir(gen_dir):
+                    print(f"[synth/{tc['module']}/{tc['test']}] "
+                          "gen-collateral/rtl not found, running gen first")
+                    gen_base = os.path.join(test_output, "gen-collateral")
+                    os.makedirs(gen_base, exist_ok=True)
+                    gen_ok = run_check(
+                        os.path.join(scripts_dir, "gen_sv.py"),
+                        ["--fcc", args.fcc, "--adg", tc["mlir"],
+                         "--output-dir", gen_base],
+                        f"gen(auto)/{tc['module']}/{tc['test']}",
+                        gen_base
+                    )
+                    if not gen_ok:
+                        print(f"[synth/{tc['module']}/{tc['test']}] "
+                              "FAIL: auto-gen failed")
+                        results["failed"] += 1
+                        continue
                 if os.path.isdir(gen_dir):
                     passed = run_check(
                         os.path.join(scripts_dir, "run_synth.py"),
@@ -272,6 +432,8 @@ def main():
                     )
                     results["passed" if passed else "failed"] += 1
                 else:
+                    print(f"[synth/{tc['module']}/{tc['test']}] "
+                          "SKIP: gen-collateral/rtl still missing after auto-gen")
                     results["skipped"] += 1
 
     # Summary

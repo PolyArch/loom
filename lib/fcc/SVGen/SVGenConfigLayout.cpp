@@ -17,6 +17,44 @@
 namespace fcc {
 namespace svgen {
 
+// Compute config bits for a single FU body operation.
+static unsigned getBodyOpConfigBitsForLayout(mlir::Operation &op,
+                                             unsigned dataWidth) {
+  if (auto muxOp = mlir::dyn_cast<fcc::fabric::MuxOp>(op)) {
+    unsigned numMuxIn = muxOp.getInputs().size();
+    unsigned selBits = numMuxIn > 1 ? llvm::Log2_32_Ceil(numMuxIn) : 0;
+    return selBits + 2; // sel + discard + disconnect
+  }
+  llvm::StringRef opName = op.getName().getStringRef();
+  if (opName == "arith.cmpi" || opName == "arith.cmpf")
+    return 4;
+  if (opName == "handshake.constant")
+    return dataWidth;
+  if (opName == "handshake.join")
+    return op.getNumOperands(); // NUM_IN bits for join mask
+  if (opName == "dataflow.stream")
+    return 5;
+  return 0;
+}
+
+// Compute total config bits for a FunctionUnitOp body.
+static unsigned computeFUBodyCfgBits(fcc::fabric::FunctionUnitOp fuOp) {
+  auto fnType = fuOp.getFunctionType();
+  unsigned dataWidth = 32;
+  if (fnType.getNumInputs() > 0)
+    dataWidth = SVEmitter::getDataWidth(fnType.getInput(0));
+  else if (fnType.getNumResults() > 0)
+    dataWidth = SVEmitter::getDataWidth(fnType.getResult(0));
+
+  unsigned cfgBits = 0;
+  for (auto &op : fuOp.getBody().front().getOperations()) {
+    if (mlir::isa<fcc::fabric::YieldOp>(op))
+      continue;
+    cfgBits += getBodyOpConfigBitsForLayout(op, dataWidth);
+  }
+  return cfgBits;
+}
+
 // Compute config bit count for a spatial switch.
 static unsigned computeSpatialSwConfigBits(fcc::fabric::SpatialSwOp op) {
   auto fnType = op.getFunctionType();
@@ -123,13 +161,8 @@ static unsigned computeSpatialPEConfigBits(fcc::fabric::SpatialPEOp op) {
     maxFUInputs = std::max(maxFUInputs, fuIn);
     maxFUOutputs = std::max(maxFUOutputs, fuOut);
 
-    // Count mux ops for FU internal config bits.
-    unsigned fuCfgBits = 0;
-    fuOp.getBody().front().walk([&](fcc::fabric::MuxOp muxOp) {
-      unsigned numMuxIn = muxOp.getInputs().size();
-      unsigned selBits = numMuxIn > 1 ? llvm::Log2_32_Ceil(numMuxIn) : 0;
-      fuCfgBits += selBits + 2; // sel + discard + disconnect
-    });
+    // Count all configurable body ops for FU internal config bits.
+    unsigned fuCfgBits = computeFUBodyCfgBits(fuOp);
     maxFUConfigBits = std::max(maxFUConfigBits, fuCfgBits);
   });
 
@@ -183,12 +216,8 @@ static unsigned computeTemporalPEConfigBits(fcc::fabric::TemporalPEOp op) {
     maxFUInputs = std::max(maxFUInputs, fuIn);
     maxFUOutputs = std::max(maxFUOutputs, fuOut);
 
-    unsigned fuCfgBits = 0;
-    fuOp.getBody().front().walk([&](fcc::fabric::MuxOp muxOp) {
-      unsigned numMuxIn = muxOp.getInputs().size();
-      unsigned selBits = numMuxIn > 1 ? llvm::Log2_32_Ceil(numMuxIn) : 0;
-      fuCfgBits += selBits + 2;
-    });
+    // Count all configurable body ops for FU internal config bits.
+    unsigned fuCfgBits = computeFUBodyCfgBits(fuOp);
     maxFUConfigBits = std::max(maxFUConfigBits, fuCfgBits);
   });
 

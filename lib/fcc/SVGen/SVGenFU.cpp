@@ -11,6 +11,7 @@
 #include "mlir/IR/Value.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -28,12 +29,22 @@ struct FUEmitContext {
   SVModuleRegistry &registry;
   llvm::StringRef fpIpProfile;
 
-  /// Map from MLIR SSA value to the SV wire name representing it.
+  /// Map from MLIR SSA value to the SV wire base name representing it.
+  /// The actual wires are: <base>_data (or just <base> for data),
+  /// <base>_valid, <base>_ready.
   llvm::DenseMap<mlir::Value, std::string> valueNames;
   unsigned nextWireIdx = 0;
 
   /// Track whether any error was emitted during code generation.
   bool hadError = false;
+
+  /// Running config bit offset within fu_cfg for configurable ops.
+  unsigned cfgBitOffset = 0;
+
+  /// For each SSA value, track all consumer ready wire names.
+  /// The value's ready signal = AND of all consumer readies.
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<std::string, 2>>
+      valueConsumerReadies;
 
   std::string getOrCreateWireName(mlir::Value val) {
     auto it = valueNames.find(val);
@@ -43,6 +54,32 @@ struct FUEmitContext {
     valueNames[val] = name;
     return name;
   }
+
+  /// Get the valid wire name for an SSA value.
+  std::string getValidWire(mlir::Value val) {
+    return getOrCreateWireName(val) + "_valid";
+  }
+
+  /// Get the ready wire name for an SSA value.
+  std::string getReadyWire(mlir::Value val) {
+    return getOrCreateWireName(val) + "_ready";
+  }
+
+  /// Get the data wire name for an SSA value.
+  std::string getDataWire(mlir::Value val) {
+    return getOrCreateWireName(val);
+  }
+
+  /// Register a consumer ready wire for an SSA value.
+  /// Returns the name of the per-consumer ready wire that will be driven
+  /// by the consumer instance.
+  std::string addConsumerReady(mlir::Value val, llvm::StringRef consumerInst,
+                               unsigned operandIdx) {
+    std::string readyWire = consumerInst.str() + "_in_ready_" +
+                            std::to_string(operandIdx);
+    valueConsumerReadies[val].push_back(readyWire);
+    return readyWire;
+  }
 };
 
 /// Get the data width for an SSA value.
@@ -50,115 +87,337 @@ static unsigned getValueWidth(mlir::Value val) {
   return SVEmitter::getDataWidth(val.getType());
 }
 
-/// Emit wire declarations for all SSA results of an op.
+/// Emit data, valid, and ready wire declarations for all SSA results of an op.
 static void emitOpResultWires(FUEmitContext &ctx, mlir::Operation &op) {
   for (mlir::Value result : op.getResults()) {
     std::string wireName = ctx.getOrCreateWireName(result);
     unsigned width = getValueWidth(result);
     std::string typeStr = "logic" + SVEmitter::bitRange(width);
     ctx.emitter.emitWire(typeStr, wireName);
+    ctx.emitter.emitWire("logic", wireName + "_valid");
+    ctx.emitter.emitWire("logic", wireName + "_ready");
   }
 }
 
-/// Emit valid/ready wire declarations for an op instance.
-/// For each input port: in_valid_N and in_ready_N wires.
-/// For output ports: single-output uses out_valid/out_ready,
-/// multi-output uses out_valid_N/out_ready_N.
-static void emitHandshakeWires(FUEmitContext &ctx,
-                               llvm::StringRef instName,
-                               unsigned numOperands,
-                               unsigned numResults) {
-  for (unsigned i = 0; i < numOperands; ++i) {
-    ctx.emitter.emitWire(
-        "logic", instName.str() + "_in_valid_" + std::to_string(i));
-    ctx.emitter.emitWire(
-        "logic", instName.str() + "_in_ready_" + std::to_string(i));
+/// Compute the config bit count for a single body op.
+/// Returns 0 for non-configurable ops.
+static unsigned getOpConfigBits(mlir::Operation &op, unsigned dataWidth) {
+  llvm::StringRef opName = op.getName().getStringRef();
+  if (mlir::isa<fcc::fabric::MuxOp>(op)) {
+    auto muxOp = mlir::cast<fcc::fabric::MuxOp>(op);
+    unsigned numMuxIn = muxOp.getInputs().size();
+    unsigned selBits = numMuxIn > 1 ? llvm::Log2_32_Ceil(numMuxIn) : 0;
+    return selBits + 2; // sel + discard + disconnect
   }
-  if (numResults == 1) {
-    ctx.emitter.emitWire("logic", instName.str() + "_out_valid");
-    ctx.emitter.emitWire("logic", instName.str() + "_out_ready");
-  } else {
-    for (unsigned i = 0; i < numResults; ++i) {
-      ctx.emitter.emitWire(
-          "logic", instName.str() + "_out_valid_" + std::to_string(i));
-      ctx.emitter.emitWire(
-          "logic", instName.str() + "_out_ready_" + std::to_string(i));
-    }
-  }
+  if (opName == "arith.cmpi" || opName == "arith.cmpf")
+    return 4;
+  if (opName == "handshake.constant")
+    return dataWidth;
+  if (opName == "handshake.join")
+    return op.getNumOperands(); // NUM_IN bits for join mask
+  if (opName == "dataflow.stream")
+    return 5;
+  return 0;
 }
 
-/// Emit a module instantiation for a dialect compute op.
+/// Emit a module instantiation for a standard dialect compute op.
 ///
-/// The pre-written fu_op_* modules use this port convention:
-///   - Parameter: WIDTH (not DATA_WIDTH)
+/// Standard ops use this port convention:
+///   - Parameter: WIDTH
 ///   - Inputs:  in_data_N, in_valid_N, in_ready_N  (per operand, indexed)
 ///   - Single output:  out_data, out_valid, out_ready
 ///   - Multi output:   out_data_N, out_valid_N, out_ready_N
 ///   - Clock/reset:    clk, rst_n
-///   - Optional config: cfg_bits (cmpi), cfg_cont_cond (stream), etc.
-static void emitDialectOpInstance(FUEmitContext &ctx, mlir::Operation &op) {
+///   - Optional config: cfg_bits (cmpi/cmpf), cfg_value (constant),
+///     cfg_cont_cond (stream)
+///
+/// SSA-driven handshake: each operand's in_valid comes from the SSA value's
+/// valid wire; each result's out_valid drives the SSA result's valid wire.
+/// The instance's in_ready outputs are registered as consumer readies for
+/// the SSA operand values. The instance's out_ready input comes from the
+/// SSA result's ready wire.
+static void emitStandardOpInstance(FUEmitContext &ctx, mlir::Operation &op,
+                                   unsigned dataWidth) {
   llvm::StringRef opName = op.getName().getStringRef();
   std::string svModName = SVModuleRegistry::getSVModuleName(opName);
   if (svModName.empty())
     return;
 
-  // Determine instance name from operation position.
   std::string instName =
       svModName + "_inst_" + std::to_string(ctx.nextWireIdx);
 
-  // Gather WIDTH parameter from first result or first operand.
-  unsigned dataWidth = 32;
+  // WIDTH parameter from first result or first operand.
+  unsigned opDataWidth = 32;
   if (op.getNumResults() > 0)
-    dataWidth = getValueWidth(op.getResult(0));
+    opDataWidth = getValueWidth(op.getResult(0));
   else if (op.getNumOperands() > 0)
-    dataWidth = getValueWidth(op.getOperand(0));
+    opDataWidth = getValueWidth(op.getOperand(0));
 
   std::vector<std::string> params;
-  params.push_back(".WIDTH(" + std::to_string(dataWidth) + ")");
+  params.push_back(".WIDTH(" + std::to_string(opDataWidth) + ")");
 
   unsigned numOperands = op.getNumOperands();
   unsigned numResults = op.getNumResults();
 
-  // Emit handshake wires for this instance.
-  emitHandshakeWires(ctx, instName, numOperands, numResults);
+  // Declare per-operand ready wires (outputs from the instance).
+  for (unsigned i = 0; i < numOperands; ++i) {
+    std::string readyWire = instName + "_in_ready_" + std::to_string(i);
+    ctx.emitter.emitWire("logic", readyWire);
+    // Register this ready wire as a consumer of the SSA operand.
+    ctx.addConsumerReady(op.getOperand(i), instName, i);
+  }
 
   // Build connection list.
   std::vector<SVConnection> connections;
 
-  // Clock and reset.
   connections.push_back({"clk", "clk"});
   connections.push_back({"rst_n", "rst_n"});
 
-  // Input data ports: in_data_N.
+  // Input data/valid/ready ports per operand.
   for (unsigned i = 0; i < numOperands; ++i) {
     std::string idx = std::to_string(i);
-    std::string expr = ctx.getOrCreateWireName(op.getOperand(i));
-    connections.push_back({"in_data_" + idx, expr});
-    connections.push_back(
-        {"in_valid_" + idx, instName + "_in_valid_" + idx});
-    connections.push_back(
-        {"in_ready_" + idx, instName + "_in_ready_" + idx});
+    std::string dataExpr = ctx.getDataWire(op.getOperand(i));
+    std::string validExpr = ctx.getValidWire(op.getOperand(i));
+    std::string readyWire = instName + "_in_ready_" + idx;
+    connections.push_back({"in_data_" + idx, dataExpr});
+    connections.push_back({"in_valid_" + idx, validExpr});
+    connections.push_back({"in_ready_" + idx, readyWire});
   }
 
-  // Output data ports: out_data / out_data_N depending on result count.
+  // Output data/valid/ready ports.
   if (numResults == 1) {
-    std::string expr = ctx.getOrCreateWireName(op.getResult(0));
-    connections.push_back({"out_data", expr});
-    connections.push_back({"out_valid", instName + "_out_valid"});
-    connections.push_back({"out_ready", instName + "_out_ready"});
+    std::string dataWire = ctx.getDataWire(op.getResult(0));
+    std::string validWire = ctx.getValidWire(op.getResult(0));
+    std::string readyWire = ctx.getReadyWire(op.getResult(0));
+    connections.push_back({"out_data", dataWire});
+    connections.push_back({"out_valid", validWire});
+    connections.push_back({"out_ready", readyWire});
   } else {
     for (unsigned i = 0; i < numResults; ++i) {
       std::string idx = std::to_string(i);
-      std::string expr = ctx.getOrCreateWireName(op.getResult(i));
-      connections.push_back({"out_data_" + idx, expr});
-      connections.push_back(
-          {"out_valid_" + idx, instName + "_out_valid_" + idx});
-      connections.push_back(
-          {"out_ready_" + idx, instName + "_out_ready_" + idx});
+      std::string dataWire = ctx.getDataWire(op.getResult(i));
+      std::string validWire = ctx.getValidWire(op.getResult(i));
+      std::string readyWire = ctx.getReadyWire(op.getResult(i));
+      connections.push_back({"out_data_" + idx, dataWire});
+      connections.push_back({"out_valid_" + idx, validWire});
+      connections.push_back({"out_ready_" + idx, readyWire});
     }
   }
 
+  // Connect op-specific config ports from fu_cfg bit slices.
+  unsigned cfgBits = getOpConfigBits(op, dataWidth);
+  if (cfgBits > 0) {
+    std::string cfgSlice;
+    if (cfgBits == 1) {
+      cfgSlice = "fu_cfg[" + std::to_string(ctx.cfgBitOffset) + "]";
+    } else {
+      cfgSlice = "fu_cfg[" +
+                 std::to_string(ctx.cfgBitOffset + cfgBits - 1) + ":" +
+                 std::to_string(ctx.cfgBitOffset) + "]";
+    }
+
+    if (opName == "arith.cmpi" || opName == "arith.cmpf") {
+      connections.push_back({"cfg_bits", cfgSlice});
+    } else if (opName == "handshake.constant") {
+      connections.push_back({"cfg_value", cfgSlice});
+    } else if (opName == "dataflow.stream") {
+      connections.push_back({"cfg_cont_cond", cfgSlice});
+    }
+
+    ctx.cfgBitOffset += cfgBits;
+  }
+
   ctx.emitter.emitInstance(svModName, instName, params, connections);
+  ctx.emitter.emitBlankLine();
+}
+
+/// Emit a handshake.join instantiation with packed-array ports.
+///
+/// fu_op_join.sv ports:
+///   - Parameters: NUM_IN, WIDTH
+///   - in_data  [NUM_IN-1:0][WIDTH-1:0] (packed 2D)
+///   - in_valid [NUM_IN-1:0]
+///   - in_ready [NUM_IN-1:0]
+///   - out_data, out_valid, out_ready
+///   - cfg_join_mask [NUM_IN-1:0]
+static void emitJoinInstance(FUEmitContext &ctx, mlir::Operation &op,
+                             unsigned fuDataWidth) {
+  unsigned numIn = op.getNumOperands();
+
+  std::string instName = "fu_op_join_inst_" + std::to_string(ctx.nextWireIdx);
+
+  unsigned opDataWidth = 32;
+  if (op.getNumResults() > 0)
+    opDataWidth = getValueWidth(op.getResult(0));
+  else if (numIn > 0)
+    opDataWidth = getValueWidth(op.getOperand(0));
+
+  std::vector<std::string> params;
+  params.push_back(".NUM_IN(" + std::to_string(numIn) + ")");
+  params.push_back(".WIDTH(" + std::to_string(opDataWidth) + ")");
+
+  // Declare per-input ready wires.
+  for (unsigned i = 0; i < numIn; ++i) {
+    std::string readyWire = instName + "_in_ready_" + std::to_string(i);
+    ctx.emitter.emitWire("logic", readyWire);
+    ctx.addConsumerReady(op.getOperand(i), instName, i);
+  }
+
+  // Build in_data concatenation: packed [NUM_IN-1:0][WIDTH-1:0].
+  // Concatenation order: {data_N-1, data_N-2, ..., data_0}.
+  std::string inDataConcat = "{";
+  for (int i = static_cast<int>(numIn) - 1; i >= 0; --i) {
+    if (i < static_cast<int>(numIn) - 1)
+      inDataConcat += ", ";
+    inDataConcat += ctx.getDataWire(op.getOperand(i));
+  }
+  inDataConcat += "}";
+
+  // Build in_valid concatenation.
+  std::string inValidConcat = "{";
+  for (int i = static_cast<int>(numIn) - 1; i >= 0; --i) {
+    if (i < static_cast<int>(numIn) - 1)
+      inValidConcat += ", ";
+    inValidConcat += ctx.getValidWire(op.getOperand(i));
+  }
+  inValidConcat += "}";
+
+  // Build in_ready concatenation.
+  std::string inReadyConcat = "{";
+  for (int i = static_cast<int>(numIn) - 1; i >= 0; --i) {
+    if (i < static_cast<int>(numIn) - 1)
+      inReadyConcat += ", ";
+    inReadyConcat += instName + "_in_ready_" + std::to_string(i);
+  }
+  inReadyConcat += "}";
+
+  std::vector<SVConnection> connections;
+
+  connections.push_back({"clk", "clk"});
+  connections.push_back({"rst_n", "rst_n"});
+
+  connections.push_back({"in_data", inDataConcat});
+  connections.push_back({"in_valid", inValidConcat});
+  connections.push_back({"in_ready", inReadyConcat});
+
+  // Single output.
+  std::string outDataWire = ctx.getDataWire(op.getResult(0));
+  std::string outValidWire = ctx.getValidWire(op.getResult(0));
+  std::string outReadyWire = ctx.getReadyWire(op.getResult(0));
+  connections.push_back({"out_data", outDataWire});
+  connections.push_back({"out_valid", outValidWire});
+  connections.push_back({"out_ready", outReadyWire});
+
+  // Config: cfg_join_mask from fu_cfg slice.
+  unsigned cfgBits = numIn;
+  std::string cfgSlice;
+  if (cfgBits == 1) {
+    cfgSlice = "fu_cfg[" + std::to_string(ctx.cfgBitOffset) + "]";
+  } else {
+    cfgSlice = "fu_cfg[" +
+               std::to_string(ctx.cfgBitOffset + cfgBits - 1) + ":" +
+               std::to_string(ctx.cfgBitOffset) + "]";
+  }
+  connections.push_back({"cfg_join_mask", cfgSlice});
+  ctx.cfgBitOffset += cfgBits;
+
+  ctx.emitter.emitInstance("fu_op_join", instName, params, connections);
+  ctx.emitter.emitBlankLine();
+}
+
+/// Emit a handshake.mux instantiation with special port layout.
+///
+/// fu_op_mux.sv ports:
+///   - Parameters: NUM_DATA, WIDTH
+///   - in_data_sel [WIDTH-1:0], in_valid_sel, in_ready_sel
+///   - in_data [NUM_DATA-1:0][WIDTH-1:0] (packed)
+///   - in_valid [NUM_DATA-1:0], in_ready [NUM_DATA-1:0]
+///   - out_data, out_valid, out_ready
+///
+/// MLIR handshake.mux operands: [sel, data_0, data_1, ...]
+static void emitHandshakeMuxInstance(FUEmitContext &ctx, mlir::Operation &op,
+                                     unsigned fuDataWidth) {
+  unsigned numOperands = op.getNumOperands();
+  // Operand 0 is sel, rest are data inputs.
+  unsigned numData = numOperands - 1;
+
+  std::string instName =
+      "fu_op_mux_inst_" + std::to_string(ctx.nextWireIdx);
+
+  unsigned opDataWidth = 32;
+  if (op.getNumResults() > 0)
+    opDataWidth = getValueWidth(op.getResult(0));
+  else if (numData > 0)
+    opDataWidth = getValueWidth(op.getOperand(1));
+
+  std::vector<std::string> params;
+  params.push_back(".NUM_DATA(" + std::to_string(numData) + ")");
+  params.push_back(".WIDTH(" + std::to_string(opDataWidth) + ")");
+
+  // Declare per-input ready wires.
+  // Operand 0 (sel) ready wire.
+  std::string selReadyWire = instName + "_in_ready_sel";
+  ctx.emitter.emitWire("logic", selReadyWire);
+  ctx.valueConsumerReadies[op.getOperand(0)].push_back(selReadyWire);
+
+  // Data input ready wires.
+  for (unsigned i = 0; i < numData; ++i) {
+    std::string readyWire = instName + "_in_ready_" + std::to_string(i);
+    ctx.emitter.emitWire("logic", readyWire);
+    // Data operand is at MLIR operand index i+1.
+    ctx.valueConsumerReadies[op.getOperand(i + 1)].push_back(readyWire);
+  }
+
+  std::vector<SVConnection> connections;
+
+  connections.push_back({"clk", "clk"});
+  connections.push_back({"rst_n", "rst_n"});
+
+  // Sel port (operand 0).
+  connections.push_back({"in_data_sel", ctx.getDataWire(op.getOperand(0))});
+  connections.push_back({"in_valid_sel", ctx.getValidWire(op.getOperand(0))});
+  connections.push_back({"in_ready_sel", selReadyWire});
+
+  // Build in_data concatenation for data inputs (packed array).
+  std::string inDataConcat = "{";
+  for (int i = static_cast<int>(numData) - 1; i >= 0; --i) {
+    if (i < static_cast<int>(numData) - 1)
+      inDataConcat += ", ";
+    inDataConcat += ctx.getDataWire(op.getOperand(i + 1));
+  }
+  inDataConcat += "}";
+
+  // Build in_valid concatenation for data inputs.
+  std::string inValidConcat = "{";
+  for (int i = static_cast<int>(numData) - 1; i >= 0; --i) {
+    if (i < static_cast<int>(numData) - 1)
+      inValidConcat += ", ";
+    inValidConcat += ctx.getValidWire(op.getOperand(i + 1));
+  }
+  inValidConcat += "}";
+
+  // Build in_ready concatenation for data inputs.
+  std::string inReadyConcat = "{";
+  for (int i = static_cast<int>(numData) - 1; i >= 0; --i) {
+    if (i < static_cast<int>(numData) - 1)
+      inReadyConcat += ", ";
+    inReadyConcat += instName + "_in_ready_" + std::to_string(i);
+  }
+  inReadyConcat += "}";
+
+  connections.push_back({"in_data", inDataConcat});
+  connections.push_back({"in_valid", inValidConcat});
+  connections.push_back({"in_ready", inReadyConcat});
+
+  // Single output.
+  std::string outDataWire = ctx.getDataWire(op.getResult(0));
+  std::string outValidWire = ctx.getValidWire(op.getResult(0));
+  std::string outReadyWire = ctx.getReadyWire(op.getResult(0));
+  connections.push_back({"out_data", outDataWire});
+  connections.push_back({"out_valid", outValidWire});
+  connections.push_back({"out_ready", outReadyWire});
+
+  ctx.emitter.emitInstance("fu_op_mux", instName, params, connections);
   ctx.emitter.emitBlankLine();
 }
 
@@ -171,7 +430,12 @@ static void emitDialectOpInstance(FUEmitContext &ctx, mlir::Operation &op) {
 ///   - Inputs (array): in_valid[NUM_IN-1:0], in_ready[NUM_IN-1:0],
 ///                     in_data[0:NUM_IN-1]
 ///   - Output: out_valid, out_ready, out_data
-static void emitMuxInstance(FUEmitContext &ctx, fcc::fabric::MuxOp muxOp) {
+///
+/// Config bits from fu_cfg are packed as [sel | discard | disconnect]
+/// and driven through a 32-bit cfg_wdata word with cfg_valid tied high.
+static void emitFabricMuxInstance(FUEmitContext &ctx,
+                                  fcc::fabric::MuxOp muxOp,
+                                  unsigned fuDataWidth) {
   unsigned numIn = muxOp.getInputs().size();
 
   std::string instName = "mux_inst_" + std::to_string(ctx.nextWireIdx);
@@ -188,39 +452,55 @@ static void emitMuxInstance(FUEmitContext &ctx, fcc::fabric::MuxOp muxOp) {
 
   std::vector<SVConnection> connections;
 
-  // Clock and reset.
   connections.push_back({"clk", "clk"});
   connections.push_back({"rst_n", "rst_n"});
 
-  // Config port: driven from FU-level config wiring.
-  connections.push_back({"cfg_valid", "cfg_mux_valid_" + instName});
-  connections.push_back({"cfg_wdata", "cfg_mux_wdata_" + instName});
-  connections.push_back({"cfg_ready", "cfg_mux_ready_" + instName});
+  // Config port: extract bits from fu_cfg and pack into cfg_wdata.
+  unsigned selBits = numIn > 1 ? llvm::Log2_32_Ceil(numIn) : 0;
+  unsigned muxCfgBits = selBits + 2;
 
-  // Input ports: fabric_mux uses packed arrays in_valid[N], in_ready[N],
-  // and unpacked array in_data[0:N-1]. We concatenate individual wires
-  // into the packed vectors and use per-element assignment for in_data.
-  //
-  // For the packed in_valid/in_ready vectors, build a concatenation
-  // expression: {wire_N-1, ..., wire_1, wire_0}.
+  std::string cfgWdataWire = instName + "_cfg_wdata";
+  ctx.emitter.emitWire("logic [31:0]", cfgWdataWire);
+
+  std::string cfgSlice;
+  if (muxCfgBits == 1) {
+    cfgSlice = "fu_cfg[" + std::to_string(ctx.cfgBitOffset) + "]";
+  } else {
+    cfgSlice = "fu_cfg[" +
+               std::to_string(ctx.cfgBitOffset + muxCfgBits - 1) + ":" +
+               std::to_string(ctx.cfgBitOffset) + "]";
+  }
+  ctx.emitter.emitAssign(cfgWdataWire,
+                         "{" + std::to_string(32 - muxCfgBits) +
+                             "'b0, " + cfgSlice + "}");
+
+  connections.push_back({"cfg_valid", "1'b1"});
+  connections.push_back({"cfg_wdata", cfgWdataWire});
+
+  std::string cfgReadyWire = instName + "_cfg_ready";
+  ctx.emitter.emitWire("logic", cfgReadyWire);
+  connections.push_back({"cfg_ready", cfgReadyWire});
+
+  ctx.cfgBitOffset += muxCfgBits;
+
+  // Declare per-input ready wires and register consumer readies.
+  for (unsigned i = 0; i < numIn; ++i) {
+    std::string readyWire = instName + "_in_ready_" + std::to_string(i);
+    ctx.emitter.emitWire("logic", readyWire);
+    ctx.addConsumerReady(muxOp.getInputs()[i], instName, i);
+  }
+
+  // Build in_valid concatenation: {wire_N-1, ..., wire_0}.
   std::string inValidConcat = "{";
   for (int i = static_cast<int>(numIn) - 1; i >= 0; --i) {
     if (i < static_cast<int>(numIn) - 1)
       inValidConcat += ", ";
-    inValidConcat += instName + "_in_valid_" + std::to_string(i);
+    inValidConcat += ctx.getValidWire(muxOp.getInputs()[i]);
   }
   inValidConcat += "}";
   connections.push_back({"in_valid", inValidConcat});
 
-  // in_ready is an output packed vector; declare per-element wires and
-  // connect the packed vector.
-  for (unsigned i = 0; i < numIn; ++i) {
-    ctx.emitter.emitWire("logic",
-                         instName + "_in_valid_" + std::to_string(i));
-    ctx.emitter.emitWire("logic",
-                         instName + "_in_ready_" + std::to_string(i));
-  }
-
+  // Build in_ready concatenation.
   std::string inReadyConcat = "{";
   for (int i = static_cast<int>(numIn) - 1; i >= 0; --i) {
     if (i < static_cast<int>(numIn) - 1)
@@ -230,30 +510,50 @@ static void emitMuxInstance(FUEmitContext &ctx, fcc::fabric::MuxOp muxOp) {
   inReadyConcat += "}";
   connections.push_back({"in_ready", inReadyConcat});
 
-  // in_data is an unpacked array -- connected via a generate-friendly
-  // temporary wire array. Emit an array wire and assign each element.
+  // in_data is an unpacked array -- connected via a temporary wire array.
   std::string dataArrayName = instName + "_in_data";
   ctx.emitter.emitRaw(
       "logic [" + std::to_string(dataWidth - 1) + ":0] " +
       dataArrayName + " [0:" + std::to_string(numIn - 1) + "];\n");
   for (unsigned i = 0; i < numIn; ++i) {
-    std::string expr = ctx.getOrCreateWireName(muxOp.getInputs()[i]);
+    std::string expr = ctx.getDataWire(muxOp.getInputs()[i]);
     ctx.emitter.emitAssign(
         dataArrayName + "[" + std::to_string(i) + "]", expr);
   }
   connections.push_back({"in_data", dataArrayName});
 
-  // Output port (single output).
-  std::string outExpr = ctx.getOrCreateWireName(muxOp.getResult(0));
-  connections.push_back({"out_data", outExpr});
-  connections.push_back({"out_valid", instName + "_out_valid"});
-  connections.push_back({"out_ready", instName + "_out_ready"});
-
-  ctx.emitter.emitWire("logic", instName + "_out_valid");
-  ctx.emitter.emitWire("logic", instName + "_out_ready");
+  // Output port (single output): connect to SSA result valid/ready.
+  connections.push_back({"out_data", ctx.getDataWire(muxOp.getResult(0))});
+  connections.push_back({"out_valid", ctx.getValidWire(muxOp.getResult(0))});
+  connections.push_back({"out_ready", ctx.getReadyWire(muxOp.getResult(0))});
 
   ctx.emitter.emitInstance("fabric_mux", instName, params, connections);
   ctx.emitter.emitBlankLine();
+}
+
+/// Emit the ready-merge logic for all SSA values that have consumers.
+/// For each SSA value, its ready signal = AND of all consumer ready signals.
+/// If a value has no consumers (dead code), ready is tied high.
+static void emitReadyMergeLogic(FUEmitContext &ctx) {
+  for (auto &entry : ctx.valueConsumerReadies) {
+    mlir::Value val = entry.first;
+    const auto &readies = entry.second;
+    std::string readyWire = ctx.getReadyWire(val);
+
+    if (readies.empty()) {
+      ctx.emitter.emitAssign(readyWire, "1'b1");
+      continue;
+    }
+    if (readies.size() == 1) {
+      ctx.emitter.emitAssign(readyWire, readies[0]);
+      continue;
+    }
+    // AND of all consumer readies.
+    std::string expr = readies[0];
+    for (unsigned i = 1; i < readies.size(); ++i)
+      expr += " & " + readies[i];
+    ctx.emitter.emitAssign(readyWire, expr);
+  }
 }
 
 } // namespace
@@ -282,20 +582,21 @@ std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
   else if (numOut > 0)
     dataWidth = SVEmitter::getDataWidth(fnType.getResult(0));
 
-  // Count mux ops for config bit computation.
-  unsigned totalMuxConfigBits = 0;
-  fuOp.getBody().front().walk([&](fcc::fabric::MuxOp muxOp) {
-    unsigned numMuxIn = muxOp.getInputs().size();
-    unsigned selBits = numMuxIn > 1 ? llvm::Log2_32_Ceil(numMuxIn) : 0;
-    totalMuxConfigBits += selBits + 2; // sel + discard + disconnect
-  });
+  // Count total config bits across all configurable body ops.
+  unsigned totalConfigBits = 0;
+  auto &bodyBlock = fuOp.getBody().front();
+  for (auto &op : bodyBlock.getOperations()) {
+    if (mlir::isa<fcc::fabric::YieldOp>(op))
+      continue;
+    totalConfigBits += getOpConfigBits(op, dataWidth);
+  }
 
   // Build parameter list.
   std::vector<std::string> params;
   params.push_back("parameter DATA_WIDTH = " + std::to_string(dataWidth));
-  if (totalMuxConfigBits > 0)
+  if (totalConfigBits > 0)
     params.push_back("parameter FU_CFG_BITS = " +
-                      std::to_string(totalMuxConfigBits));
+                      std::to_string(totalConfigBits));
 
   // Build port list using in_data_N / in_valid_N / in_ready_N convention.
   std::vector<SVPort> ports;
@@ -320,27 +621,38 @@ std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
     ports.push_back({SVPortDir::Output, "logic", "out_valid_" + idx});
     ports.push_back({SVPortDir::Input, "logic", "out_ready_" + idx});
   }
-  if (totalMuxConfigBits > 0)
+  if (totalConfigBits > 0)
     ports.push_back(
         {SVPortDir::Input,
-         "logic" + SVEmitter::bitRange(totalMuxConfigBits),
+         "logic" + SVEmitter::bitRange(totalConfigBits),
          "fu_cfg"});
 
   emitter.emitModuleHeader(moduleName, params, ports);
 
   // Set up emission context.
-  FUEmitContext ctx{emitter, registry, fpIpProfile, {}, 0, false};
+  FUEmitContext ctx{emitter, registry, fpIpProfile, {}, 0, false, 0, {}};
 
-  // Map block arguments to input port data wire names.
-  auto &bodyBlock = fuOp.getBody().front();
+  // Map block arguments (FU inputs) to port wire names and declare
+  // corresponding valid/ready wires aliased to FU port signals.
+  emitter.emitComment("Block argument (FU input) valid/ready aliases");
   for (unsigned i = 0; i < numIn && i < bodyBlock.getNumArguments(); ++i) {
-    ctx.valueNames[bodyBlock.getArgument(i)] =
-        "in_data_" + std::to_string(i);
+    mlir::Value arg = bodyBlock.getArgument(i);
+    std::string idx = std::to_string(i);
+    // Data wire name maps directly to the FU port.
+    ctx.valueNames[arg] = "in_data_" + idx;
+    // Declare valid/ready wires for the block argument so they can be
+    // referenced uniformly.  Valid is driven from the FU port; ready
+    // will be driven by the consumer merge later.
+    ctx.emitter.emitWire("logic", "in_data_" + idx + "_valid");
+    ctx.emitter.emitWire("logic", "in_data_" + idx + "_ready");
+    ctx.emitter.emitAssign("in_data_" + idx + "_valid",
+                           "in_valid_" + idx);
   }
 
-  // Declare internal wires and emit logic.
+  emitter.emitBlankLine();
   emitter.emitComment("Internal wiring");
 
+  // Emit all ops in body order.
   for (auto &op : bodyBlock.getOperations()) {
     llvm::StringRef opName = op.getName().getStringRef();
 
@@ -348,17 +660,31 @@ std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
     if (mlir::isa<fcc::fabric::YieldOp>(op))
       continue;
 
-    // Handle fabric.mux specially.
+    // Handle fabric.mux specially (config-time structural mux).
     if (auto muxOp = mlir::dyn_cast<fcc::fabric::MuxOp>(op)) {
       emitOpResultWires(ctx, op);
-      emitMuxInstance(ctx, muxOp);
+      emitFabricMuxInstance(ctx, muxOp, dataWidth);
       continue;
     }
 
-    // For known dialect ops, emit wire + instance.
+    // Handle handshake.join specially (packed array ports).
+    if (opName == "handshake.join") {
+      emitOpResultWires(ctx, op);
+      emitJoinInstance(ctx, op, dataWidth);
+      continue;
+    }
+
+    // Handle handshake.mux specially (sel + packed data array ports).
+    if (opName == "handshake.mux") {
+      emitOpResultWires(ctx, op);
+      emitHandshakeMuxInstance(ctx, op, dataWidth);
+      continue;
+    }
+
+    // For other known dialect ops, emit with standard port convention.
     if (SVModuleRegistry::isKnownOp(opName)) {
       emitOpResultWires(ctx, op);
-      emitDialectOpInstance(ctx, op);
+      emitStandardOpInstance(ctx, op, dataWidth);
       continue;
     }
 
@@ -375,57 +701,66 @@ std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
     return "";
   }
 
-  // Connect yield operands to output ports.
+  // -------------------------------------------------------------------
+  // Yield: connect yield operands to FU output ports.
+  // FU out_data = yield operand data wire
+  // FU out_valid = yield operand valid wire
+  // yield operand ready = FU out_ready (registered as consumer)
+  // -------------------------------------------------------------------
   emitter.emitBlankLine();
-  emitter.emitComment("Output connections");
+  emitter.emitComment("Output connections (yield)");
   if (auto yieldOp = mlir::dyn_cast<fcc::fabric::YieldOp>(
           bodyBlock.getTerminator())) {
     for (unsigned i = 0; i < yieldOp.getOperands().size() && i < numOut;
          ++i) {
-      std::string srcWire = ctx.getOrCreateWireName(yieldOp.getOperand(i));
-      emitter.emitAssign("out_data_" + std::to_string(i), srcWire);
+      mlir::Value yieldOperand = yieldOp.getOperand(i);
+      std::string idx = std::to_string(i);
+      emitter.emitAssign("out_data_" + idx,
+                         ctx.getDataWire(yieldOperand));
+      emitter.emitAssign("out_valid_" + idx,
+                         ctx.getValidWire(yieldOperand));
+      // The FU output ready drives back into the yield operand's ready.
+      // Register it as a consumer of the yield operand value.
+      ctx.valueConsumerReadies[yieldOperand].push_back("out_ready_" + idx);
     }
   }
 
-  // Handshake passthrough for combinational FU:
-  // Each input valid is driven from the corresponding FU port,
-  // each output ready is driven from the corresponding FU port.
-  // For now, simple passthrough: all input valids AND-ed -> all output
-  // valids; all output readies AND-ed -> all input readies.
+  // -------------------------------------------------------------------
+  // SSA-driven ready backpropagation
+  //
+  // For each SSA value, its ready = AND(all consumer readies).
+  // For block arguments, the merged ready drives the FU input ready port.
+  // Values with no consumers (dead results) get ready tied high.
+  // -------------------------------------------------------------------
   emitter.emitBlankLine();
-  emitter.emitComment("Handshake passthrough (combinational FU)");
+  emitter.emitComment("SSA ready backpropagation");
 
-  // Build AND of all input valids.
-  std::string allInValid;
-  if (numIn == 0) {
-    allInValid = "1'b1";
-  } else if (numIn == 1) {
-    allInValid = "in_valid_0";
-  } else {
-    allInValid = "in_valid_0";
-    for (unsigned i = 1; i < numIn; ++i)
-      allInValid += " & in_valid_" + std::to_string(i);
+  // Ensure all SSA values (block args + op results) have a ready driver.
+  // If a value has no registered consumers, tie its ready high.
+  for (unsigned i = 0; i < bodyBlock.getNumArguments(); ++i) {
+    mlir::Value arg = bodyBlock.getArgument(i);
+    if (ctx.valueConsumerReadies.find(arg) == ctx.valueConsumerReadies.end())
+      ctx.valueConsumerReadies[arg]; // insert empty vector
+  }
+  for (auto &op : bodyBlock.getOperations()) {
+    if (mlir::isa<fcc::fabric::YieldOp>(op))
+      continue;
+    for (mlir::Value result : op.getResults()) {
+      if (ctx.valueConsumerReadies.find(result) ==
+          ctx.valueConsumerReadies.end())
+        ctx.valueConsumerReadies[result]; // insert empty vector
+    }
   }
 
-  // Build AND of all output readies.
-  std::string allOutReady;
-  if (numOut == 0) {
-    allOutReady = "1'b1";
-  } else if (numOut == 1) {
-    allOutReady = "out_ready_0";
-  } else {
-    allOutReady = "out_ready_0";
-    for (unsigned i = 1; i < numOut; ++i)
-      allOutReady += " & out_ready_" + std::to_string(i);
-  }
+  emitReadyMergeLogic(ctx);
 
-  for (unsigned i = 0; i < numOut; ++i) {
-    emitter.emitAssign("out_valid_" + std::to_string(i),
-                        allInValid);
-  }
-  for (unsigned i = 0; i < numIn; ++i) {
-    emitter.emitAssign("in_ready_" + std::to_string(i),
-                        allOutReady);
+  // Drive FU input ready ports from block argument ready wires.
+  emitter.emitBlankLine();
+  emitter.emitComment("FU input ready from block argument ready");
+  for (unsigned i = 0; i < numIn && i < bodyBlock.getNumArguments(); ++i) {
+    std::string idx = std::to_string(i);
+    emitter.emitAssign("in_ready_" + idx,
+                       "in_data_" + idx + "_ready");
   }
 
   emitter.emitBlankLine();

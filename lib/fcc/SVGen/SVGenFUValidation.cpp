@@ -2,9 +2,11 @@
 
 #include "fcc/Dialect/Fabric/FabricOps.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <string>
 
 namespace fcc {
@@ -78,49 +80,105 @@ static int getOpIntrinsicLatency(llvm::StringRef opName) {
   return -2;
 }
 
-/// Scan the FU body to find the primary (highest-latency) non-terminator op.
+/// Compute the critical-path intrinsic latency through the FU body's SSA DAG.
 /// Also detects whether any dataflow op is present.
 ///
 /// Sets `hasDataflowOp` to true if any dataflow op is found.
-/// Sets `primaryOpName` to the op with highest intrinsic latency.
-/// Returns the body's critical-path intrinsic latency (max across all ops).
+/// Sets `primaryOpName` to the op on the critical path with highest
+/// contribution (the op whose arrival + latency determines the body latency).
+/// Returns the body's critical-path intrinsic latency from block arguments
+/// to yield operands.
 ///
-/// Note: This is a conservative single-level max across individual ops,
-/// not a full DAG critical-path analysis. That is sufficient for the
-/// current single-fire FU bodies and exclusive dataflow FU bodies.
+/// Algorithm: single-pass forward propagation over the SSA DAG (ops in a
+/// single MLIR block are already in topological order).
+///   arrival[block_arg] = 0
+///   arrival[op_result] = max over operands (arrival[operand] + producer_latency)
+///     where producer_latency is the intrinsic latency of the op that defines
+///     the operand (0 for block arguments).
+///   body_latency = max over yield operands (arrival[operand] + producer_latency)
 static unsigned
 computeBodyIntrinsicLatency(fcc::fabric::FunctionUnitOp fuOp,
                             bool &hasDataflowOp,
                             std::string &primaryOpName) {
   hasDataflowOp = false;
   primaryOpName.clear();
-  unsigned maxLatency = 0;
 
   auto &bodyBlock = fuOp.getBody().front();
+
+  // Map from SSA value to its arrival time (cycle at which the value is ready).
+  // Block arguments have arrival time 0 (they are inputs available at cycle 0).
+  llvm::DenseMap<mlir::Value, unsigned> arrivalTime;
+
+  // Block arguments: arrival = 0.
+  for (mlir::Value arg : bodyBlock.getArguments())
+    arrivalTime[arg] = 0;
+
+  // Forward pass: propagate arrival times through the SSA DAG.
+  // Ops in a single MLIR block are in SSA dominance (topological) order.
   for (auto &op : bodyBlock.getOperations()) {
     llvm::StringRef opName = op.getName().getStringRef();
 
-    if (isNonComputeOp(opName))
-      continue;
-
+    // Detect dataflow ops.
     if (isDataflowOp(opName)) {
       hasDataflowOp = true;
       primaryOpName = opName.str();
+      // Dataflow ops are body-exclusive; their latency is not modeled as a
+      // scalar value, so skip DAG propagation.
       continue;
     }
 
-    int intrinsic = getOpIntrinsicLatency(opName);
-    if (intrinsic < 0)
+    // For the yield terminator, we do not assign arrival times to its
+    // "results" (it has none); its operands are handled in the final step.
+    if (opName == "fabric.yield")
       continue;
 
-    unsigned uIntrinsic = static_cast<unsigned>(intrinsic);
-    if (uIntrinsic > maxLatency) {
-      maxLatency = uIntrinsic;
-      primaryOpName = opName.str();
+    // Determine this op's intrinsic latency.
+    unsigned opLatency = 0;
+    if (!isNonComputeOp(opName)) {
+      int intrinsic = getOpIntrinsicLatency(opName);
+      if (intrinsic > 0)
+        opLatency = static_cast<unsigned>(intrinsic);
+    }
+
+    // Compute arrival time for this op's results:
+    // arrival[result] = max(arrival[operand]) + opLatency
+    // (all operands must be ready before the op can start, then it takes
+    // opLatency cycles to produce its results).
+    unsigned maxOperandArrival = 0;
+    for (mlir::Value operand : op.getOperands()) {
+      auto it = arrivalTime.find(operand);
+      if (it != arrivalTime.end())
+        maxOperandArrival = std::max(maxOperandArrival, it->second);
+    }
+
+    unsigned resultArrival = maxOperandArrival + opLatency;
+    for (mlir::Value result : op.getResults())
+      arrivalTime[result] = resultArrival;
+  }
+
+  // If this is a dataflow body, critical-path latency is not meaningful;
+  // return 0 and let the caller handle the dataflow timing class.
+  if (hasDataflowOp)
+    return 0;
+
+  // Final step: the body's intrinsic latency is the maximum arrival time
+  // at any yield operand. Each yield operand's arrival time already includes
+  // the producing op's latency (it was added when we set arrivalTime for
+  // the producer's results).
+  unsigned bodyLatency = 0;
+  auto yieldOp = bodyBlock.getTerminator();
+  for (mlir::Value operand : yieldOp->getOperands()) {
+    auto it = arrivalTime.find(operand);
+    unsigned arrival = (it != arrivalTime.end()) ? it->second : 0;
+    if (arrival > bodyLatency) {
+      bodyLatency = arrival;
+      // Identify the critical-path bottleneck op for diagnostic messages.
+      if (auto *defOp = operand.getDefiningOp())
+        primaryOpName = defOp->getName().getStringRef().str();
     }
   }
 
-  return maxLatency;
+  return bodyLatency;
 }
 
 } // namespace
@@ -174,12 +232,12 @@ bool validateFUTimingConstraints(fcc::fabric::FunctionUnitOp fuOp) {
       valid = false;
     } else if (declaredLatency >= 0 &&
                static_cast<unsigned>(declaredLatency) < bodyIntrinsic) {
-      // Declared latency is below the intrinsic minimum.
+      // Declared latency is below the critical-path intrinsic minimum.
       llvm::errs()
           << "gen-sv error: latency-violation: function_unit '" << fuName
-          << "' has latency=" << declaredLatency << " but operation '"
-          << primaryOpName << "' requires minimum latency "
-          << bodyIntrinsic << "\n";
+          << "' has latency=" << declaredLatency
+          << " but critical-path intrinsic latency is " << bodyIntrinsic
+          << " (bottleneck: '" << primaryOpName << "')\n";
       valid = false;
     }
   }

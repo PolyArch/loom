@@ -149,6 +149,7 @@ static bool registerOpDeps(mlir::Operation &op, SVModuleRegistry &registry,
     return true;
   }
   if (auto spatialPE = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op)) {
+    registry.requireModule("fabric/spatial_pe", "fabric_spatial_pe.sv");
     registry.requireModule("fabric/spatial_pe",
                            "fabric_spatial_pe_mux.sv");
     registry.requireModule("fabric/spatial_pe",
@@ -166,6 +167,19 @@ static bool registerOpDeps(mlir::Operation &op, SVModuleRegistry &registry,
     return true;
   }
   if (auto temporalPE = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op)) {
+    registry.requireModule("fabric/temporal_pe", "fabric_temporal_pe.sv");
+    registry.requireModule("fabric/temporal_pe",
+                           "fabric_temporal_pe_imem.sv");
+    registry.requireModule("fabric/temporal_pe",
+                           "fabric_temporal_pe_operand.sv");
+    registry.requireModule("fabric/temporal_pe",
+                           "fabric_temporal_pe_regfile.sv");
+    registry.requireModule("fabric/temporal_pe",
+                           "fabric_temporal_pe_scheduler.sv");
+    registry.requireModule("fabric/temporal_pe",
+                           "fabric_temporal_pe_output_arb.sv");
+    registry.requireModule("fabric/temporal_pe",
+                           "fabric_temporal_pe_fu_slot.sv");
     // Recurse into PE body for FU ops.
     for (auto &bodyOp : temporalPE.getBody().front().getOperations()) {
       if (auto fuOp =
@@ -220,25 +234,6 @@ bool generateSV(mlir::ModuleOp adgModule, mlir::MLIRContext *ctx,
   std::string outGenDir = outRtlDir + "/generated";
   if (!ensureDir(outDesignDir) || !ensureDir(outGenDir))
     return false;
-
-  // Copy pre-written SV files.
-  auto requiredFiles = registry.getRequiredFiles();
-  for (const auto &relPath : requiredFiles) {
-    std::string srcPath = options.rtlSourceDir + "/design/" + relPath;
-    std::string dstPath = outDesignDir + "/" + relPath;
-
-    // Ensure subdirectory exists.
-    llvm::SmallString<256> dstDir(dstPath);
-    llvm::sys::path::remove_filename(dstDir);
-    if (!ensureDir(dstDir))
-      return false;
-
-    if (!copyFile(srcPath, dstPath))
-      return false;
-  }
-
-  llvm::outs() << "svgen: copied " << requiredFiles.size()
-               << " pre-written SV files\n";
 
   // Generate FU body SV files.
   llvm::DenseMap<mlir::Operation *, std::string> peModuleNames;
@@ -350,6 +345,27 @@ bool generateSV(mlir::ModuleOp adgModule, mlir::MLIRContext *ctx,
 
     llvm::outs() << "svgen: generated top module: " << fileName << "\n";
   }
+
+  // Now that all generation is complete (FU, PE, top), collect the full
+  // set of required pre-written files including any modules registered
+  // during PE/FU/top generation.
+  auto requiredFiles = registry.getRequiredFiles();
+  for (const auto &relPath : requiredFiles) {
+    std::string srcPath = options.rtlSourceDir + "/design/" + relPath;
+    std::string dstPath = outDesignDir + "/" + relPath;
+
+    // Ensure subdirectory exists.
+    llvm::SmallString<256> dstDir(dstPath);
+    llvm::sys::path::remove_filename(dstDir);
+    if (!ensureDir(dstDir))
+      return false;
+
+    if (!copyFile(srcPath, dstPath))
+      return false;
+  }
+
+  llvm::outs() << "svgen: copied " << requiredFiles.size()
+               << " pre-written SV files\n";
 
   // Write filelist.f in compilation order.
   {
