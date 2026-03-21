@@ -61,8 +61,21 @@ mapper:
     cooling_rate: 0.995
     # Enable adaptive SA cooling and reheating.
     adaptive_cooling_enabled: true
+    # Enable coarse route-checkpoint reroute/rescore after a batch of accepted
+    # placement moves when exact-neighborhood reroute is not used.
+    route_aware_checkpoint_enabled: true
+    # Enable accepted-move exact-neighborhood reroute when refinement starts
+    # from a routed state.
+    route_aware_neighborhood_enabled: true
     # Iteration window used to measure acceptance ratio for adaptive cooling.
     adaptive_window: 128
+    # Maximum reroute-neighborhood size for accepted-move route-aware
+    # refinement. Larger neighborhoods fall back to coarse route-checkpoint
+    # scoring instead of exact reroute.
+    route_aware_neighborhood_edge_cap: 16
+    # Number of accepted placement moves between coarse route-checkpoint
+    # reroute/rescore attempts.
+    route_aware_checkpoint_accepted_move_batch: 8
     # Lower bound of the target acceptance-ratio band. A colder-than-target
     # search is mildly reheated.
     target_acceptance_low: 0.12
@@ -99,6 +112,9 @@ mapper:
     auto_serial_node_threshold: 16
     # Upper bound for auto-selected lane count.
     auto_lane_cap: 4
+    # Keep only the best placement/refinement lanes for the expensive routing
+    # stage. 0 means route every placement lane.
+    routing_beam_width: 0
     # Fraction of the total mapper budget reserved for a final polish pass on
     # the selected winner lane after multi-lane exploration completes.
     final_polish_reserve_fraction: 0.15
@@ -178,6 +194,36 @@ mapper:
     # iterations. 0 disables early termination.
     early_termination_window: 3
 
+  timing:
+    # Multiplier applied to edges that lie on a detected recurrence cycle.
+    recurrence_edge_weight_multiplier: 2.5
+    # Additional placement penalty per extra hardware latency cycle when the
+    # software operation belongs to a detected recurrence cycle.
+    recurrence_node_latency_weight: 1.0
+    # Additional placement penalty per extra hardware interval cycle when the
+    # software operation belongs to a detected recurrence cycle.
+    recurrence_node_interval_weight: 2.0
+    # Surrogate combinational delay contributed by each operation when timing
+    # analysis summarizes a routed mapping.
+    combinational_node_delay: 1.0
+    # Surrogate combinational delay contributed by each routed interior hop
+    # when timing analysis summarizes a routed mapping.
+    routing_hop_delay: 0.1
+
+  bufferization:
+    # Enable the post-route FIFO-only timing cut loop.
+    enabled: true
+    # Maximum number of accepted FIFO buffering toggles.
+    max_iterations: 4
+    # Maximum number of outer joint PnR + FIFO-bufferization rounds.
+    outer_joint_iterations: 2
+    # Minimum throughput-cost improvement required to accept a FIFO buffering
+    # toggle.
+    min_throughput_improvement: 1.0e-6
+    # Minimum clock-period improvement used as the tie-breaker when throughput
+    # cost stays effectively unchanged.
+    clock_tie_break_improvement: 1.0e-6
+
   relaxed_routing:
     # Allow negotiated routing to temporarily overuse non-tagged switch-owned
     # routing outputs, then legalize them before a checkpoint may be accepted.
@@ -238,6 +284,9 @@ mapper:
     default_candidate_limit: 8
 
   local_repair:
+    # Enable the post-routing local-repair stack. Benchmark and ablation runs
+    # may disable this to compare against routing-only and CP-SAT-only modes.
+    enabled: true
     exact:
       # Number of priority failed edges below which priority routing wins ties first.
       priority_first_failed_edge_threshold: 2

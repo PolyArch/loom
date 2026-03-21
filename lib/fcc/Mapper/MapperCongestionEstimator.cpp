@@ -9,10 +9,28 @@ namespace fcc {
 
 using namespace mapper_detail;
 
+namespace {
+
+bool isPortInTopologyCorridor(IdIndex srcHwNode, IdIndex dstHwNode,
+                              IdIndex corridorHwNode,
+                              const TopologyModel *topologyModel) {
+  if (!topologyModel)
+    return false;
+  unsigned endToEnd = topologyModel->placementDistance(srcHwNode, dstHwNode);
+  unsigned viaCandidate =
+      topologyModel->placementDistance(srcHwNode, corridorHwNode) +
+      topologyModel->placementDistance(corridorHwNode, dstHwNode);
+  unsigned slack = std::max<unsigned>(2U, endToEnd / 2U);
+  return viaCandidate <= endToEnd + slack;
+}
+
+} // namespace
+
 void CongestionEstimator::estimate(const MappingState &state, const Graph &dfg,
                                    const Graph &adg,
                                    const ADGFlattener &flattener) {
   switchOutputDemand.clear();
+  const TopologyModel *topologyModel = getActiveTopologyModel();
 
   for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
        ++edgeId) {
@@ -36,20 +54,9 @@ void CongestionEstimator::estimate(const MappingState &state, const Graph &dfg,
     if (srcHwNode == INVALID_ID || dstHwNode == INVALID_ID)
       continue;
 
-    auto [srcRow, srcCol] = flattener.getNodeGridPos(srcHwNode);
-    auto [dstRow, dstCol] = flattener.getNodeGridPos(dstHwNode);
-    if (srcRow < 0 || dstRow < 0)
-      continue;
-
-    int minRow = std::min(srcRow, dstRow);
-    int maxRow = std::max(srcRow, dstRow);
-    int minCol = std::min(srcCol, dstCol);
-    int maxCol = std::max(srcCol, dstCol);
-
     double weight = classifyEdgePlacementWeight(dfg, edgeId);
 
-    // Collect routing crossbar output ports within bounding box.
-    llvm::SmallVector<IdIndex, 16> bboxPorts;
+    llvm::SmallVector<IdIndex, 16> corridorPorts;
     for (IdIndex portId = 0; portId < static_cast<IdIndex>(adg.ports.size());
          ++portId) {
       if (!routing_detail::isRoutingCrossbarOutputPort(portId, adg))
@@ -57,18 +64,33 @@ void CongestionEstimator::estimate(const MappingState &state, const Graph &dfg,
       const Port *port = adg.getPort(portId);
       if (!port || port->parentNode == INVALID_ID)
         continue;
-      auto [row, col] = flattener.getNodeGridPos(port->parentNode);
-      if (row < 0)
-        continue;
-      if (row >= minRow && row <= maxRow && col >= minCol && col <= maxCol)
-        bboxPorts.push_back(portId);
+      bool includePort = false;
+      if (topologyModel) {
+        includePort = isPortInTopologyCorridor(srcHwNode, dstHwNode,
+                                               port->parentNode,
+                                               topologyModel);
+      } else {
+        auto [srcRow, srcCol] = flattener.getNodeGridPos(srcHwNode);
+        auto [dstRow, dstCol] = flattener.getNodeGridPos(dstHwNode);
+        auto [row, col] = flattener.getNodeGridPos(port->parentNode);
+        if (srcRow >= 0 && dstRow >= 0 && row >= 0) {
+          int minRow = std::min(srcRow, dstRow);
+          int maxRow = std::max(srcRow, dstRow);
+          int minCol = std::min(srcCol, dstCol);
+          int maxCol = std::max(srcCol, dstCol);
+          includePort =
+              row >= minRow && row <= maxRow && col >= minCol && col <= maxCol;
+        }
+      }
+      if (includePort)
+        corridorPorts.push_back(portId);
     }
 
-    if (bboxPorts.empty())
+    if (corridorPorts.empty())
       continue;
 
-    double share = weight / static_cast<double>(bboxPorts.size());
-    for (IdIndex portId : bboxPorts)
+    double share = weight / static_cast<double>(corridorPorts.size());
+    for (IdIndex portId : corridorPorts)
       switchOutputDemand[portId] += share;
   }
 }
@@ -76,15 +98,7 @@ void CongestionEstimator::estimate(const MappingState &state, const Graph &dfg,
 double CongestionEstimator::demandCapacityRatio(
     IdIndex srcHwNode, IdIndex dstHwNode, const Graph &adg,
     const ADGFlattener &flattener) const {
-  auto [srcRow, srcCol] = flattener.getNodeGridPos(srcHwNode);
-  auto [dstRow, dstCol] = flattener.getNodeGridPos(dstHwNode);
-  if (srcRow < 0 || dstRow < 0)
-    return 0.0;
-
-  int minRow = std::min(srcRow, dstRow);
-  int maxRow = std::max(srcRow, dstRow);
-  int minCol = std::min(srcCol, dstCol);
-  int maxCol = std::max(srcCol, dstCol);
+  const TopologyModel *topologyModel = getActiveTopologyModel();
 
   double totalRatio = 0.0;
   for (const auto &entry : switchOutputDemand) {
@@ -93,11 +107,25 @@ double CongestionEstimator::demandCapacityRatio(
     const Port *port = adg.getPort(portId);
     if (!port || port->parentNode == INVALID_ID)
       continue;
-    auto [row, col] = flattener.getNodeGridPos(port->parentNode);
-    if (row < 0)
-      continue;
-    if (row >= minRow && row <= maxRow && col >= minCol && col <= maxCol)
-      totalRatio += demand; // capacity is 1 per port
+    bool includePort = false;
+    if (topologyModel) {
+      includePort = isPortInTopologyCorridor(srcHwNode, dstHwNode,
+                                             port->parentNode, topologyModel);
+    } else {
+      auto [srcRow, srcCol] = flattener.getNodeGridPos(srcHwNode);
+      auto [dstRow, dstCol] = flattener.getNodeGridPos(dstHwNode);
+      auto [row, col] = flattener.getNodeGridPos(port->parentNode);
+      if (srcRow >= 0 && dstRow >= 0 && row >= 0) {
+        int minRow = std::min(srcRow, dstRow);
+        int maxRow = std::max(srcRow, dstRow);
+        int minCol = std::min(srcCol, dstCol);
+        int maxCol = std::max(srcCol, dstCol);
+        includePort =
+            row >= minRow && row <= maxRow && col >= minCol && col <= maxCol;
+      }
+    }
+    if (includePort)
+      totalRatio += demand;
   }
   return totalRatio;
 }

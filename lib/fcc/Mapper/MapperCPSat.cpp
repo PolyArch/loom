@@ -115,11 +115,16 @@ bool solvePlacementSubset(
 
   llvm::DenseMap<IdIndex, std::vector<BoolVar>> varsByHwNode;
   llvm::StringMap<std::vector<BoolVar>> varsBySpatialPE;
+  const TopologyModel *topologyModel = getActiveTopologyModel();
 
   auto estimatedPlacementDistance = [&](IdIndex srcSwNode, IdIndex srcSwPort,
                                         IdIndex srcHwNode, IdIndex dstSwNode,
                                         IdIndex dstSwPort,
                                         IdIndex dstHwNode) -> int {
+    if (topologyModel) {
+      return static_cast<int>(
+          topologyModel->placementDistance(srcHwNode, dstHwNode));
+    }
     auto srcPos = estimateSoftwarePortPlacementPos(
         srcSwNode, srcSwPort, srcHwNode, /*isInput=*/false, dfg, adg,
         flattener);
@@ -131,7 +136,7 @@ bool solvePlacementSubset(
                     std::abs(srcPos->second - dstPos->second);
       return static_cast<int>(std::lround(dist));
     }
-    return manhattanDistance(srcHwNode, dstHwNode, flattener);
+    return placementDistance(srcHwNode, dstHwNode, flattener);
   };
 
   for (unsigned domainIndex = 0; domainIndex < domains.size(); ++domainIndex) {
@@ -687,7 +692,7 @@ bool Mapper::runCPSatNeighborhoodRepair(
                    : 0u);
     for (IdIndex hwNode : candIt->second) {
       if (oldHw != INVALID_ID && moveRadius != 0 &&
-          manhattanDistance(oldHw, hwNode, flattener) >
+          placementDistance(oldHw, hwNode, flattener) >
               static_cast<int>(moveRadius)) {
         continue;
       }

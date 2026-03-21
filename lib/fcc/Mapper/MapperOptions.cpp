@@ -106,6 +106,13 @@ bool validateMapperOptions(const MapperOptions &opts, std::string &error) {
                              "refinement.cooling_rate", error) ||
       !requirePositiveUnsigned(opts.refinement.adaptiveWindow,
                                "refinement.adaptive_window", error) ||
+      !requirePositiveUnsigned(opts.refinement.routeAwareNeighborhoodEdgeCap,
+                               "refinement.route_aware_neighborhood_edge_cap",
+                               error) ||
+      !requirePositiveUnsigned(
+          opts.refinement.routeAwareCheckpointAcceptedMoveBatch,
+          "refinement.route_aware_checkpoint_accepted_move_batch",
+                               error) ||
       !requireDoubleInRange(opts.refinement.targetAcceptanceLow, 0.0, 1.0,
                             "refinement.target_acceptance_low", error) ||
       !requireDoubleInRange(opts.refinement.targetAcceptanceHigh, 0.0, 1.0,
@@ -163,6 +170,8 @@ bool validateMapperOptions(const MapperOptions &opts, std::string &error) {
                                "lane.auto_serial_node_threshold", error) ||
       !requirePositiveUnsigned(opts.lane.autoLaneCap, "lane.auto_lane_cap",
                                error) ||
+      !requireMinUnsigned(opts.lane.routingBeamWidth, 0,
+                          "lane.routing_beam_width", error) ||
       !requireNonNegativeDouble(opts.lane.finalPolishReserveFraction,
                                 "lane.final_polish_reserve_fraction", error) ||
       !requirePositiveUnsigned(opts.lane.laneSeedStride,
@@ -226,6 +235,35 @@ bool validateMapperOptions(const MapperOptions &opts, std::string &error) {
                             1.0,
                             "congestion.routing_output_history_decay",
                             error)) {
+    return false;
+  }
+
+  if (!requirePositiveDouble(opts.timing.recurrenceEdgeWeightMultiplier,
+                             "timing.recurrence_edge_weight_multiplier",
+                             error) ||
+      !requireNonNegativeDouble(opts.timing.recurrenceNodeLatencyWeight,
+                                "timing.recurrence_node_latency_weight",
+                                error) ||
+      !requireNonNegativeDouble(opts.timing.recurrenceNodeIntervalWeight,
+                                "timing.recurrence_node_interval_weight",
+                                error) ||
+      !requirePositiveDouble(opts.timing.combinationalNodeDelay,
+                             "timing.combinational_node_delay", error) ||
+      !requirePositiveDouble(opts.timing.routingHopDelay,
+                             "timing.routing_hop_delay", error)) {
+    return false;
+  }
+
+  if (!requirePositiveUnsigned(opts.bufferization.maxIterations,
+                               "bufferization.max_iterations", error) ||
+      !requirePositiveUnsigned(opts.bufferization.outerJointIterations,
+                               "bufferization.outer_joint_iterations", error) ||
+      !requireNonNegativeDouble(opts.bufferization.minThroughputImprovement,
+                                "bufferization.min_throughput_improvement",
+                                error) ||
+      !requireNonNegativeDouble(opts.bufferization.clockTieBreakImprovement,
+                                "bufferization.clock_tie_break_improvement",
+                                error)) {
     return false;
   }
 

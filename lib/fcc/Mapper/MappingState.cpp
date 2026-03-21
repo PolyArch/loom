@@ -100,6 +100,7 @@ void MappingState::init(const Graph &dfg, const Graph &adg,
   hwEdgeToSwEdges.assign(hwEdges, {});
 
   portToUsingEdges.assign(hwPorts, {});
+  hwNodeFifoBypassedOverride.assign(hwNodes, static_cast<int8_t>(-1));
   spatialPEOccupancyCount.clear();
   hwEdgeByPortPair.clear();
   hwEdgeByPortPair.resize(hwPorts);
@@ -1249,6 +1250,7 @@ MappingState::Checkpoint MappingState::save() const {
   cp.hwPortToSwPorts = hwPortToSwPorts;
   cp.hwEdgeToSwEdges = hwEdgeToSwEdges;
   cp.portToUsingEdges = portToUsingEdges;
+  cp.hwNodeFifoBypassedOverride = hwNodeFifoBypassedOverride;
   cp.spatialPEOccupancyCount = spatialPEOccupancyCount;
   cp.swEdgeTaggedObservationKeys = swEdgeTaggedObservationKeys;
   cp.swEdgeTemporalRouteRecords = swEdgeTemporalRouteRecords;
@@ -1277,6 +1279,7 @@ void MappingState::restore(const Checkpoint &cp) {
   hwPortToSwPorts = cp.hwPortToSwPorts;
   hwEdgeToSwEdges = cp.hwEdgeToSwEdges;
   portToUsingEdges = cp.portToUsingEdges;
+  hwNodeFifoBypassedOverride = cp.hwNodeFifoBypassedOverride;
   spatialPEOccupancyCount = cp.spatialPEOccupancyCount;
   swEdgeTaggedObservationKeys = cp.swEdgeTaggedObservationKeys;
   swEdgeTemporalRouteRecords = cp.swEdgeTemporalRouteRecords;

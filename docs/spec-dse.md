@@ -27,16 +27,28 @@ It is FCC-specific because `fabric.mux` changes FU behavior.
 
 Output:
 
-- candidate FU matches
-- selected FU internal configurations
-- coverage and feasibility feedback to Layer 1
+- one selected contracted Layer-2 plan
+- one conservative fallback Layer-2 plan that preserves single-op coverage
+- selected FU internal configurations and selected config classes
+- support-class and temporal-compatibility metadata consumed by Layer 3
+- coverage, flexibility, fusion-benefit, and fallback diagnostics for DSE
 
 Normative Layer-2 behavior:
 
-- enumerate configurable FU variants induced by `fabric.mux`
-- derive an effective graph for each variant
-- match DFG subgraphs against those effective graphs
-- score coverage and candidate quality quickly enough for exploration
+- treat configurable `function_unit` bodies as pattern data, not as one-shot
+  hand-written logic
+- support demand-driven structural-state generation instead of relying on
+  unbounded global Cartesian enumeration for every `fabric.mux` or
+  `handshake.join` choice
+- support explicit commutative matching where the software operation semantics
+  allow operand-order symmetry
+- construct a global candidate-selection problem with hard overlap and hardware
+  capacity constraints instead of one greedy first-fit pass
+- apply hard capacity eagerly to spatial support pools, while temporal reuse is
+  governed by config-class compatibility and deferred same-instance legality in
+  Layer 3
+- emit explicit config classes and temporal-compatibility information before
+  Layer 3 starts
 - lock the chosen FU configuration before Layer 3
 
 ### Layer 3: Place and Route
@@ -79,6 +91,11 @@ The exploration loop allows upward feedback:
 - Layer 3 to Layer 2 or Layer 1 when routing or capacity fails
 - Layer 4 to the lower layers when placement quality is poor or correctness
   fails under realistic execution
+
+The first production Layer-2 implementation is allowed to expose only one
+selected plan plus one conservative fallback, but the artifact and metadata
+contract must preserve enough information for later cached reselection and
+feedback-driven replanning.
 
 ## Relationship to Other Specs
 

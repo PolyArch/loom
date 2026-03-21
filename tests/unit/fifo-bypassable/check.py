@@ -30,8 +30,18 @@ def main() -> int:
     fifo_cfg = fifo_configs.get("fifo_0")
     if fifo_cfg is None:
         raise SystemExit("missing fifo_configs entry")
+    if fifo_cfg.get("depth") != 2:
+        raise SystemExit(f"unexpected fifo depth payload: {fifo_cfg}")
     if not fifo_cfg["bypassable"] or not fifo_cfg["bypassed"]:
         raise SystemExit(f"unexpected fifo config payload: {fifo_cfg}")
+
+    timing = mapping.get("timing", {})
+    if not timing.get("available"):
+        raise SystemExit("missing timing summary")
+    if timing.get("mapper_selected_buffered_fifo_count") != 0:
+        raise SystemExit(f"unexpected mapper-selected buffered fifo count: {timing}")
+    if timing.get("mapper_selected_buffered_fifo_depths") not in ([], None):
+        raise SystemExit(f"unexpected mapper-selected fifo depths: {timing}")
 
     routed = [entry for entry in mapping["edge_routings"] if entry["kind"] == "routed"]
     if len(routed) != 1:

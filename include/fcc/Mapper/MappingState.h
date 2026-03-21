@@ -123,6 +123,10 @@ public:
   // Excludes synthetic direct-binding routes (path[0] == path[1]).
   std::vector<EdgeReverseMap> portToUsingEdges;
 
+  // Runtime FIFO bypass overrides keyed by hardware node id.
+  // -1 means use the ADG default, 0 means force buffered, 1 means force bypassed.
+  std::vector<int8_t> hwNodeFifoBypassedOverride;
+
   // Spatial PE occupancy count keyed by pe_name.
   llvm::StringMap<unsigned> spatialPEOccupancyCount;
 
@@ -193,6 +197,7 @@ public:
     std::vector<NodeReverseMap> hwPortToSwPorts;
     std::vector<EdgeReverseMap> hwEdgeToSwEdges;
     std::vector<EdgeReverseMap> portToUsingEdges;
+    std::vector<int8_t> hwNodeFifoBypassedOverride;
     llvm::StringMap<unsigned> spatialPEOccupancyCount;
     std::vector<llvm::SmallVector<TaggedObservationKey, 8>>
         swEdgeTaggedObservationKeys;

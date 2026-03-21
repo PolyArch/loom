@@ -370,14 +370,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
     if (!lhsPort || !rhsPort || lhsPort->parentNode == INVALID_ID ||
         rhsPort->parentNode == INVALID_ID)
       return 0.0;
-    auto [lhsRow, lhsCol] =
-        activeFlattener->getNodeGridPos(lhsPort->parentNode);
-    auto [rhsRow, rhsCol] =
-        activeFlattener->getNodeGridPos(rhsPort->parentNode);
-    if (lhsRow < 0 || lhsCol < 0 || rhsRow < 0 || rhsCol < 0)
-      return 0.0;
-    return static_cast<double>(std::abs(lhsRow - rhsRow) +
-                               std::abs(lhsCol - rhsCol));
+    return static_cast<double>(mapper_detail::placementDistance(
+        lhsPort->parentNode, rhsPort->parentNode, *activeFlattener));
   };
   auto rankFirstHopChoices = [&](IdIndex dstHwPort,
                                  llvm::SmallVectorImpl<IdIndex> &choices,

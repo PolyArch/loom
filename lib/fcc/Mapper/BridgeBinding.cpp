@@ -4,6 +4,8 @@
 
 #include "mlir/IR/BuiltinAttributes.h"
 
+#include "llvm/ADT/STLExtras.h"
+
 namespace fcc {
 
 namespace {
@@ -51,6 +53,38 @@ findLaneForPort(IdIndex hwPort, llvm::ArrayRef<IdIndex> ports,
       return lanes[i];
   }
   return std::nullopt;
+}
+
+template <typename ObserveFn>
+bool observeRoutedEndpointPorts(IdIndex swPort, const Graph &dfg,
+                                const MappingState &state,
+                                ObserveFn &&observePort) {
+  const Port *port = dfg.getPort(swPort);
+  if (!port)
+    return true;
+
+  for (IdIndex edgeId : port->connectedEdges) {
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge || edgeId >= state.swEdgeToHwPaths.size())
+      continue;
+    const auto &path = state.swEdgeToHwPaths[edgeId];
+    if (path.empty())
+      continue;
+
+    IdIndex hwPort = INVALID_ID;
+    if (edge->srcPort == swPort)
+      hwPort = path.front();
+    else if (edge->dstPort == swPort)
+      hwPort = path.back();
+    else
+      continue;
+
+    if (hwPort == INVALID_ID)
+      continue;
+    if (!observePort(hwPort))
+      return false;
+  }
+  return true;
 }
 
 IdIndex inferNodeId(const Node *node, const Graph &graph) {
@@ -229,7 +263,8 @@ bool overlapsExistingLaneRanges(const BridgeInfo &bridge, const DfgMemoryInfo &m
     bool isExtMem =
         (getNodeAttrStr(otherSwNode, "op_name") == "handshake.extmemory");
     DfgMemoryInfo otherMem = DfgMemoryInfo::extract(otherSwNode, dfg, isExtMem);
-    auto otherRange = inferBridgeLaneRange(bridge, otherMem, otherSwNode, state);
+    auto otherRange =
+        inferBridgeLaneRange(bridge, otherMem, otherSwNode, dfg, state);
     if (!otherRange)
       continue;
     BridgeLaneUsage otherUsage = makeBridgeLaneUsage(otherMem, otherRange->start);
@@ -249,7 +284,7 @@ std::optional<unsigned> chooseBridgeBaseLane(const BridgeInfo &bridge,
   if (!swNode || !hwNode || !bridge.hasBridge)
     return std::nullopt;
 
-  if (auto existing = inferBridgeLaneRange(bridge, mem, swNode, state))
+  if (auto existing = inferBridgeLaneRange(bridge, mem, swNode, dfg, state))
     return existing->start;
 
   unsigned span = mem.laneSpan();
@@ -497,8 +532,9 @@ bool bindBridgeOutputs(const BridgeInfo &bridge, const DfgMemoryInfo &mem,
 std::optional<unsigned> inferBridgeLane(const BridgeInfo &bridge,
                                         const DfgMemoryInfo &mem,
                                         const Node *swNode,
+                                        const Graph &dfg,
                                         const MappingState &state) {
-  auto range = inferBridgeLaneRange(bridge, mem, swNode, state);
+  auto range = inferBridgeLaneRange(bridge, mem, swNode, dfg, state);
   if (!range)
     return std::nullopt;
   return range->start;
@@ -506,7 +542,8 @@ std::optional<unsigned> inferBridgeLane(const BridgeInfo &bridge,
 
 std::optional<BridgeLaneRange>
 inferBridgeLaneRange(const BridgeInfo &bridge, const DfgMemoryInfo &mem,
-                     const Node *swNode, const MappingState &state) {
+                     const Node *swNode, const Graph &dfg,
+                     const MappingState &state) {
   if (!bridge.hasBridge || !swNode)
     return std::nullopt;
 
@@ -516,21 +553,31 @@ inferBridgeLaneRange(const BridgeInfo &bridge, const DfgMemoryInfo &mem,
   auto considerPort = [&](IdIndex swPort, unsigned localLane,
                           llvm::ArrayRef<IdIndex> ports,
                           llvm::ArrayRef<unsigned> lanes) -> bool {
-    if (swPort >= state.swPortToHwPort.size())
-      return true;
-    IdIndex hwPort = state.swPortToHwPort[swPort];
-    if (hwPort == INVALID_ID)
-      return true;
-    auto lane = findLaneForPort(hwPort, ports, lanes);
-    if (!lane || *lane < localLane)
+    llvm::SmallVector<IdIndex, 4> observedHwPorts;
+    auto observeHwPort = [&](IdIndex hwPort) -> bool {
+      if (hwPort == INVALID_ID)
+        return true;
+      if (llvm::is_contained(observedHwPorts, hwPort))
+        return true;
+      observedHwPorts.push_back(hwPort);
+
+      auto lane = findLaneForPort(hwPort, ports, lanes);
+      if (!lane || *lane < localLane)
+        return false;
+      unsigned candidateBase = *lane - localLane;
+      if (!found) {
+        baseLane = candidateBase;
+        found = true;
+        return true;
+      }
+      return baseLane == candidateBase;
+    };
+
+    if (swPort < state.swPortToHwPort.size() &&
+        !observeHwPort(state.swPortToHwPort[swPort])) {
       return false;
-    unsigned candidateBase = *lane - localLane;
-    if (!found) {
-      baseLane = candidateBase;
-      found = true;
-      return true;
     }
-    return baseLane == candidateBase;
+    return observeRoutedEndpointPorts(swPort, dfg, state, observeHwPort);
   };
 
   for (unsigned si = mem.swInSkip; si < swNode->inputPorts.size(); ++si) {

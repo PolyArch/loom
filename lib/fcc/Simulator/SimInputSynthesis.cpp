@@ -146,36 +146,43 @@ SynthesizedSetup synthesizeSimulationSetup(const Graph &dfg, const Graph &adg,
               return a.portIdx < b.portIdx;
             });
 
-  unsigned regionId = 0;
   unsigned elemCount = std::max(4u, vectorLength);
-  for (IdIndex hwNodeId = 0; hwNodeId < static_cast<IdIndex>(adg.nodes.size());
-       ++hwNodeId) {
+  unsigned regionId = 0;
+  for (IdIndex swNodeId = 0; swNodeId < static_cast<IdIndex>(dfg.nodes.size());
+       ++swNodeId) {
+    const Node *swNode = dfg.getNode(swNodeId);
+    if (!swNode)
+      continue;
+    llvm::StringRef opName = getNodeAttrStr(swNode, "op_name");
+    bool isMemoryOp =
+        opName == "handshake.memory" || opName == "handshake.extmemory";
+    if (!isMemoryOp)
+      continue;
+    if (swNodeId >= mapping.swNodeToHwNode.size())
+      continue;
+
+    IdIndex hwNodeId = mapping.swNodeToHwNode[swNodeId];
+    if (hwNodeId == INVALID_ID)
+      continue;
+
     const Node *hwNode = adg.getNode(hwNodeId);
     if (!hwNode || getNodeAttrStr(hwNode, "resource_class") != "memory")
       continue;
-    if (hwNodeId >= mapping.hwNodeToSwNodes.size())
-      continue;
 
-    for (IdIndex swNodeId : mapping.hwNodeToSwNodes[hwNodeId]) {
-      const Node *swNode = dfg.getNode(swNodeId);
-      if (!swNode)
-        continue;
+    SynthesizedMemoryRegion region;
+    region.regionId = regionId++;
+    region.hwNode = hwNodeId;
+    region.swNode = swNodeId;
+    region.memrefArgIndex = findDfgMemrefArgIndex(swNode, dfg);
+    region.elemSizeLog2 = getElemSizeLog2(swNode, hwNode, dfg, adg);
+    size_t byteSize = static_cast<size_t>(elemCount) << region.elemSizeLog2;
+    region.data.resize(byteSize, 0);
 
-      SynthesizedMemoryRegion region;
-      region.regionId = regionId++;
-      region.hwNode = hwNodeId;
-      region.swNode = swNodeId;
-      region.memrefArgIndex = findDfgMemrefArgIndex(swNode, dfg);
-      region.elemSizeLog2 = getElemSizeLog2(swNode, hwNode, dfg, adg);
-      size_t byteSize = static_cast<size_t>(elemCount) << region.elemSizeLog2;
-      region.data.resize(byteSize, 0);
-
-      bool zeroFill = getNodeAttrInt(swNode, "stCount", 0) > 0 &&
-                      getNodeAttrInt(swNode, "ldCount", 0) == 0;
-      fillRegionBytes(region.data, region.elemSizeLog2, region.memrefArgIndex,
-                      zeroFill);
-      setup.memoryRegions.push_back(std::move(region));
-    }
+    bool zeroFill = getNodeAttrInt(swNode, "stCount", 0) > 0 &&
+                    getNodeAttrInt(swNode, "ldCount", 0) == 0;
+    fillRegionBytes(region.data, region.elemSizeLog2, region.memrefArgIndex,
+                    zeroFill);
+    setup.memoryRegions.push_back(std::move(region));
   }
 
   return setup;

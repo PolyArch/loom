@@ -45,8 +45,8 @@ def main() -> int:
         return 2
 
     out_dir = Path(sys.argv[2])
-    config = json.loads((out_dir / "dfg.config.json").read_text(encoding="utf-8"))
-    mapping = json.loads((out_dir / "dfg.map.json").read_text(encoding="utf-8"))
+    config = json.loads((out_dir / "dfg.fabric.config.json").read_text(encoding="utf-8"))
+    mapping = json.loads((out_dir / "dfg.fabric.map.json").read_text(encoding="utf-8"))
 
     slices = {(entry["name"], entry["kind"]): entry for entry in config["slices"]}
     pe_slice = slices.get(("tpe_0", "temporal_pe"))

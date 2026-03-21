@@ -262,8 +262,8 @@ double LocalRepairDriver::evaluateFailedEdgeDelta(
       double weight = failedEdgeWeights.lookup(edgeId);
       delta += weight *
                static_cast<double>(
-                   manhattanDistance(oldSrcHw, oldDstHw, flattener) -
-                   manhattanDistance(newSrcHw, newDstHw, flattener));
+                   placementDistance(oldSrcHw, oldDstHw, flattener) -
+                   placementDistance(newSrcHw, newDstHw, flattener));
     }
   }
   return delta;
@@ -281,14 +281,13 @@ llvm::SmallVector<IdIndex, 24> LocalRepairDriver::buildFocusedRepairNeighborhood
   llvm::DenseSet<IdIndex> anchorDstSwNodes;
   llvm::DenseSet<IdIndex> anchorSrcHwNodes;
   llvm::DenseSet<IdIndex> anchorDstHwNodes;
-  llvm::SmallVector<std::pair<int, int>, 8> anchorPositions;
+  llvm::DenseSet<IdIndex> anchorNeighborhoodHwNodes;
+  const TopologyModel *topologyModel = getActiveTopologyModel();
 
   auto recordAnchorNode = [&](IdIndex hwNodeId) {
     if (hwNodeId == INVALID_ID)
       return;
-    auto [row, col] = flattener.getNodeGridPos(hwNodeId);
-    if (row >= 0 && col >= 0)
-      anchorPositions.push_back({row, col});
+    anchorNeighborhoodHwNodes.insert(hwNodeId);
   };
 
   for (IdIndex edgeId : seedEdges) {
@@ -368,11 +367,16 @@ llvm::SmallVector<IdIndex, 24> LocalRepairDriver::buildFocusedRepairNeighborhood
       const Port *port = adg.getPort(portId);
       if (!port || port->parentNode == INVALID_ID)
         continue;
-      auto [row, col] = flattener.getNodeGridPos(port->parentNode);
-      if (row < 0 || col < 0)
-        continue;
-      for (const auto &pos : anchorPositions) {
-        if (std::abs(row - pos.first) + std::abs(col - pos.second) <= 1)
+      if (anchorNeighborhoodHwNodes.contains(port->parentNode))
+        return true;
+      for (IdIndex anchorHwNode : anchorNeighborhoodHwNodes) {
+        bool nearAnchor =
+            topologyModel
+                ? topologyModel->isWithinMoveRadius(port->parentNode,
+                                                    anchorHwNode, 1)
+                : isWithinMoveRadius(port->parentNode, anchorHwNode, flattener,
+                                     1);
+        if (nearAnchor)
           return true;
       }
     }
@@ -580,10 +584,14 @@ bool Mapper::runLocalRepair(
     const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
     std::vector<TechMappedEdgeKind> &edgeKinds, const Mapper::Options &opts,
     const CongestionState *congestion, unsigned recursionDepth) {
+  ++activeSearchSummary_.localRepairAttempts;
   LocalRepairDriver driver(*this, state, baseCheckpoint, failedEdges, dfg, adg,
                            flattener, candidates, edgeKinds, opts, congestion,
                            recursionDepth);
-  return driver.run();
+  bool repaired = driver.run();
+  if (repaired)
+    ++activeSearchSummary_.localRepairSuccesses;
+  return repaired;
 }
 
 } // namespace fcc

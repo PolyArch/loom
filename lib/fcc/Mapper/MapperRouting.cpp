@@ -1,5 +1,6 @@
 #include "fcc/Mapper/Mapper.h"
 #include "fcc/Mapper/MapperRelaxedRouting.h"
+#include "MapperInternal.h"
 #include "MapperRoutingCongestion.h"
 #include "MapperRoutingInternal.h"
 
@@ -1156,16 +1157,10 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
     if (!currentPort || !dstPort || currentPort->parentNode == INVALID_ID ||
         dstPort->parentNode == INVALID_ID)
       return 0.0;
-    auto [srcRow, srcCol] =
-        activeFlattener->getNodeGridPos(currentPort->parentNode);
-    auto [dstRow, dstCol] =
-        activeFlattener->getNodeGridPos(dstPort->parentNode);
-    if (srcRow < 0 || srcCol < 0 || dstRow < 0 || dstCol < 0)
-      return 0.0;
-    int dr = std::abs(srcRow - dstRow);
-    int dc = std::abs(srcCol - dstCol);
-    int chebyshev = std::max(dr, dc);
-    return static_cast<double>(chebyshev) * activeHeuristicWeight;
+    return static_cast<double>(mapper_detail::placementDistance(
+               currentPort->parentNode, dstPort->parentNode,
+               *activeFlattener)) *
+           activeHeuristicWeight;
   };
 
   llvm::SmallVector<TrailNode, 64> trails;

@@ -43,6 +43,23 @@ def main() -> int:
         stem = "dfg"
     config = json.loads((out_dir / f"{stem}.config.json").read_text(encoding="utf-8"))
     mapping = json.loads((out_dir / f"{stem}.map.json").read_text(encoding="utf-8"))
+    techmap = mapping.get("techmap")
+    if not isinstance(techmap, dict):
+        raise SystemExit("missing top-level techmap section")
+    for key in (
+        "layer2_handoff_status",
+        "layer2_handoff_blockers",
+        "support_classes",
+        "config_classes",
+        "candidates",
+        "selected_units",
+        "node_tech_info",
+        "conservative_fallback_plan",
+    ):
+        if key not in techmap:
+            raise SystemExit(f"missing techmap key {key}")
+    if not techmap["selected_units"]:
+        raise SystemExit("selected_units should not be empty")
 
     slices = {(entry["name"], entry["kind"]): entry for entry in config["slices"]}
     pe_slice = slices.get(("pe_0", "spatial_pe"))

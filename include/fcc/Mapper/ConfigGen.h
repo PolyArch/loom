@@ -3,16 +3,20 @@
 
 #include "fcc/Mapper/ADGFlattener.h"
 #include "fcc/Mapper/Graph.h"
+#include "fcc/Mapper/MapperTiming.h"
 #include "fcc/Mapper/MappingState.h"
 #include "fcc/Mapper/TechMapper.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 
 #include <string>
 #include <cstdint>
 #include <vector>
 
 namespace fcc {
+
+struct MapperSearchSummary;
 
 class ConfigGen {
 public:
@@ -30,7 +34,12 @@ public:
                 const ADGFlattener &flattener,
                 llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                 llvm::ArrayRef<FUConfigSelection> fuConfigs,
-                const std::string &basePath, int seed);
+                const std::string &basePath, int seed,
+                const TechMapper::Plan *techMapPlan = nullptr,
+                const TechMapper::PlanMetrics *techMapMetrics = nullptr,
+                const MapperTimingSummary *timingSummary = nullptr,
+                const MapperSearchSummary *searchSummary = nullptr,
+                llvm::StringRef techMapDiagnostics = "");
 
   const std::vector<uint8_t> &getConfigBlob() const { return configBlob_; }
   const std::vector<uint32_t> &getConfigWords() const { return configWords_; }
@@ -62,11 +71,21 @@ private:
                     const Graph &adg, const ADGFlattener &flattener,
                     llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                     llvm::ArrayRef<FUConfigSelection> fuConfigs,
-                    const std::string &path, int seed);
+                    const std::string &path, int seed,
+                    const TechMapper::Plan *techMapPlan,
+                    const TechMapper::PlanMetrics *techMapMetrics,
+                    const MapperTimingSummary *timingSummary,
+                    const MapperSearchSummary *searchSummary,
+                    llvm::StringRef techMapDiagnostics);
   bool writeMapText(const MappingState &state, const Graph &dfg,
                     const Graph &adg, const ADGFlattener &flattener,
                     llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
-                    const std::string &path);
+                    const std::string &path,
+                    const TechMapper::Plan *techMapPlan,
+                    const TechMapper::PlanMetrics *techMapMetrics,
+                    const MapperTimingSummary *timingSummary,
+                    const MapperSearchSummary *searchSummary,
+                    llvm::StringRef techMapDiagnostics);
 
   std::vector<NodeConfig> nodeConfigs_;
   std::vector<ConfigSlice> configSlices_;

@@ -88,11 +88,13 @@ bool bindBridgeOutputs(const BridgeInfo &bridge, const DfgMemoryInfo &mem,
 std::optional<unsigned> inferBridgeLane(const BridgeInfo &bridge,
                                         const DfgMemoryInfo &mem,
                                         const Node *swNode,
+                                        const Graph &dfg,
                                         const MappingState &state);
 
 std::optional<BridgeLaneRange>
 inferBridgeLaneRange(const BridgeInfo &bridge, const DfgMemoryInfo &mem,
-                     const Node *swNode, const MappingState &state);
+                     const Node *swNode, const Graph &dfg,
+                     const MappingState &state);
 
 } // namespace fcc
 

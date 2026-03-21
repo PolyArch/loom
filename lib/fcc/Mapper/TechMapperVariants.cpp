@@ -1,4 +1,5 @@
 #include "TechMapperInternal.h"
+#include "fcc/Mapper/OpCompat.h"
 #include "fcc/Mapper/TypeCompat.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -8,10 +9,13 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <functional>
 #include <optional>
+#include <tuple>
 
 namespace fcc {
 namespace techmapper_detail {
@@ -43,15 +47,18 @@ std::string printType(mlir::Type type) {
   return text;
 }
 
-llvm::StringRef getCompatibleOp(llvm::StringRef dfgOpName) {
-  return "";
-}
-
 bool opNamesCompatible(llvm::StringRef dfgOpName, llvm::StringRef fuOpName) {
   if (dfgOpName == fuOpName)
     return true;
-  llvm::StringRef compat = getCompatibleOp(dfgOpName);
+  llvm::StringRef compat = opcompat::getCompatibleOp(dfgOpName);
   return !compat.empty() && compat == fuOpName;
+}
+
+bool isCommutativeOp(llvm::StringRef opName) {
+  return opName == "arith.addi" || opName == "arith.addf" ||
+         opName == "arith.muli" || opName == "arith.mulf" ||
+         opName == "arith.andi" || opName == "arith.ori" ||
+         opName == "arith.xori";
 }
 
 // --- Config field helpers ---
@@ -72,6 +79,29 @@ llvm::StringRef configFieldKindName(FUConfigFieldKind kind) {
     return "join_mask";
   }
   return "unknown";
+}
+
+std::string serializeConfigFields(llvm::ArrayRef<FUConfigField> fields) {
+  llvm::SmallVector<std::string, 4> tokens;
+  tokens.reserve(fields.size());
+  for (const auto &field : fields) {
+    std::string token;
+    llvm::raw_string_ostream os(token);
+    os << static_cast<unsigned>(field.kind) << ":" << field.opIndex << ":"
+       << field.templateOpIndex << ":" << field.opName << ":" << field.bitWidth
+       << ":" << field.value << ":" << field.sel << ":" << field.discard << ":"
+       << field.disconnect;
+    tokens.push_back(os.str());
+  }
+  std::sort(tokens.begin(), tokens.end());
+  std::string text;
+  llvm::raw_string_ostream joined(text);
+  for (size_t idx = 0; idx < tokens.size(); ++idx) {
+    if (idx)
+      joined << ";";
+    joined << tokens[idx];
+  }
+  return text;
 }
 
 std::optional<uint64_t> encodeStreamContCond(llvm::StringRef cond) {
@@ -223,13 +253,23 @@ std::string buildFamilySignature(const VariantFamily &family) {
   for (size_t i = 0; i < family.ops.size(); ++i) {
     if (i)
       os << ";";
-    os << family.ops[i].opName << ":";
-    for (size_t j = 0; j < family.ops[i].operands.size(); ++j) {
+    const auto &op = family.ops[i];
+    os << op.opName << ":";
+    llvm::SmallVector<std::string, 4> operandTokens;
+    operandTokens.reserve(op.operands.size());
+    for (const auto &ref : op.operands) {
+      std::string token;
+      llvm::raw_string_ostream tokenOs(token);
+      tokenOs << (ref.kind == RefKind::Input ? "i" : "o") << ref.index << "."
+              << ref.resultIndex;
+      operandTokens.push_back(tokenOs.str());
+    }
+    if (op.commutative)
+      std::sort(operandTokens.begin(), operandTokens.end());
+    for (size_t j = 0; j < operandTokens.size(); ++j) {
       if (j)
         os << ",";
-      const auto &ref = family.ops[i].operands[j];
-      os << (ref.kind == RefKind::Input ? "i" : "o") << ref.index << "."
-         << ref.resultIndex;
+      os << operandTokens[j];
     }
   }
   os << ")|yield(";
@@ -245,20 +285,37 @@ std::string buildFamilySignature(const VariantFamily &family) {
        << ref.resultIndex;
   }
   os << ")|cfg(";
-  for (size_t i = 0; i < family.configFields.size(); ++i) {
+  llvm::SmallVector<std::string, 4> configTokens;
+  configTokens.reserve(family.configFields.size());
+  for (const auto &field : family.configFields) {
+    std::string token;
+    llvm::raw_string_ostream tokenOs(token);
+    tokenOs << configFieldKindName(field.kind) << ":" << field.opIndex << ":"
+            << field.bitWidth;
+    if (field.kind == FUConfigFieldKind::Mux)
+      tokenOs << ":" << field.sel << ":" << field.discard << ":"
+              << field.disconnect;
+    else if (field.kind == FUConfigFieldKind::JoinMask)
+      tokenOs << ":" << field.value;
+    configTokens.push_back(tokenOs.str());
+  }
+  std::sort(configTokens.begin(), configTokens.end());
+  for (size_t i = 0; i < configTokens.size(); ++i) {
     if (i)
       os << ";";
-    const auto &field = family.configFields[i];
-    os << configFieldKindName(field.kind) << ":" << field.opIndex << ":"
-       << field.bitWidth;
-    if (field.kind == FUConfigFieldKind::Mux)
-      os << ":" << field.sel << ":" << field.discard << ":"
-         << field.disconnect;
-    else if (field.kind == FUConfigFieldKind::JoinMask)
-      os << ":" << field.value;
+    os << configTokens[i];
   }
   os << ")";
   return os.str();
+}
+
+bool configFieldLess(const FUConfigField &lhs, const FUConfigField &rhs) {
+  return std::tie(lhs.kind, lhs.opIndex, lhs.templateOpIndex, lhs.opName,
+                  lhs.bitWidth, lhs.value, lhs.sel, lhs.discard,
+                  lhs.disconnect) <
+         std::tie(rhs.kind, rhs.opIndex, rhs.templateOpIndex, rhs.opName,
+                  rhs.bitWidth, rhs.value, rhs.sel, rhs.discard,
+                  rhs.disconnect);
 }
 
 bool isMuxPassThrough(fcc::fabric::MuxOp muxOp) {
@@ -423,6 +480,7 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
     TemplateOp op;
     op.bodyOpIndex = bodyIndex;
     op.opName = bodyOps[bodyIndex]->getName().getStringRef().str();
+    op.commutative = isCommutativeOp(op.opName);
     family.ops.push_back(std::move(op));
   }
 
@@ -577,6 +635,8 @@ buildVariantFamily(fcc::fabric::FunctionUnitOp fuOp, const Node *hwNode,
   }
 
   family.configurable = !family.configFields.empty();
+  std::sort(family.configFields.begin(), family.configFields.end(),
+            configFieldLess);
   family.signature = buildFamilySignature(family);
   return family;
 }
@@ -638,11 +698,20 @@ bool buildMatchBindings(const Graph &dfg, const VariantFamily &family,
     const Node *swNode = dfg.getNode(swNodeId);
     if (!swNode || swNode->inputPorts.size() != templ.operands.size())
       return false;
+    llvm::ArrayRef<unsigned> operandOrder =
+        opIdx < match.operandOrderByOp.size() ? match.operandOrderByOp[opIdx]
+                                              : llvm::ArrayRef<unsigned>();
+    if (!operandOrder.empty() && operandOrder.size() != templ.operands.size())
+      return false;
 
     for (unsigned operandIdx = 0; operandIdx < templ.operands.size();
          ++operandIdx) {
       const ValueRef &ref = templ.operands[operandIdx];
-      IdIndex swInputPort = swNode->inputPorts[operandIdx];
+      unsigned swOperandIdx =
+          operandOrder.empty() ? operandIdx : operandOrder[operandIdx];
+      if (swOperandIdx >= swNode->inputPorts.size())
+        return false;
+      IdIndex swInputPort = swNode->inputPorts[swOperandIdx];
       IdIndex producerPort = findProducerPort(dfg, swInputPort);
       const Port *producer = dfg.getPort(producerPort);
       if (!producer || producer->parentNode == INVALID_ID)
@@ -653,7 +722,7 @@ bool buildMatchBindings(const Graph &dfg, const VariantFamily &family,
         if (!swNodeSet.contains(producer->parentNode))
           return false;
         if (!portsMatchProducer(dfg, expectedProducer, ref.resultIndex, swNodeId,
-                                operandIdx)) {
+                                swOperandIdx)) {
           return false;
         }
         IdIndex edgeId = findProducerEdge(dfg, swInputPort);
@@ -710,16 +779,39 @@ bool buildMatchBindings(const Graph &dfg, const VariantFamily &family,
   return true;
 }
 
+llvm::SmallVector<llvm::SmallVector<unsigned, 2>, 2>
+enumerateOperandOrders(const TemplateOp &templ, const Node *swNode) {
+  llvm::SmallVector<llvm::SmallVector<unsigned, 2>, 2> orders;
+  if (!swNode || swNode->inputPorts.size() != templ.operands.size())
+    return orders;
+
+  llvm::SmallVector<unsigned, 2> identity;
+  for (unsigned idx = 0; idx < templ.operands.size(); ++idx)
+    identity.push_back(idx);
+  orders.push_back(identity);
+
+  if (!templ.commutative || templ.operands.size() != 2)
+    return orders;
+
+  llvm::SmallVector<unsigned, 2> swapped{1, 0};
+  if (swapped != identity)
+    orders.push_back(swapped);
+  return orders;
+}
+
 void findMatchesRecursive(
     const Graph &dfg, const VariantFamily &family,
     const llvm::StringMap<llvm::SmallVector<IdIndex, 8>> &nodesByOp,
     unsigned nextOp, llvm::SmallVectorImpl<IdIndex> &swNodesByOp,
+    llvm::SmallVectorImpl<llvm::SmallVector<unsigned, 4>> &operandOrderByOp,
     llvm::DenseSet<IdIndex> &usedSwNodes, std::vector<Match> &matches,
     unsigned familyIndex) {
   if (nextOp == family.ops.size()) {
     Match match;
     match.familyIndex = familyIndex;
     match.swNodesByOp.append(swNodesByOp.begin(), swNodesByOp.end());
+    match.operandOrderByOp.append(operandOrderByOp.begin(),
+                                  operandOrderByOp.end());
     if (buildMatchBindings(dfg, family, swNodesByOp, match))
       matches.push_back(std::move(match));
     return;
@@ -736,28 +828,388 @@ void findMatchesRecursive(
     const Node *swNode = dfg.getNode(swNodeId);
     if (!swNode || swNode->kind != Node::OperationNode)
       continue;
-
-    bool compatible = true;
-    for (unsigned operandIdx = 0; operandIdx < templ.operands.size();
-         ++operandIdx) {
-      const ValueRef &ref = templ.operands[operandIdx];
-      if (ref.kind != RefKind::OpResult || ref.index >= nextOp)
+    for (const auto &operandOrder : enumerateOperandOrders(templ, swNode)) {
+      bool compatible = true;
+      for (unsigned operandIdx = 0; operandIdx < templ.operands.size();
+           ++operandIdx) {
+        const ValueRef &ref = templ.operands[operandIdx];
+        if (ref.kind != RefKind::OpResult || ref.index >= nextOp)
+          continue;
+        unsigned swOperandIdx = operandOrder[operandIdx];
+        if (!portsMatchProducer(dfg, swNodesByOp[ref.index], ref.resultIndex,
+                                swNodeId, swOperandIdx)) {
+          compatible = false;
+          break;
+        }
+      }
+      if (!compatible)
         continue;
-      if (!portsMatchProducer(dfg, swNodesByOp[ref.index], ref.resultIndex,
-                              swNodeId, operandIdx)) {
-        compatible = false;
+
+      usedSwNodes.insert(swNodeId);
+      swNodesByOp[nextOp] = swNodeId;
+      operandOrderByOp[nextOp].assign(operandOrder.begin(), operandOrder.end());
+      findMatchesRecursive(dfg, family, nodesByOp, nextOp + 1, swNodesByOp,
+                           operandOrderByOp, usedSwNodes, matches, familyIndex);
+      usedSwNodes.erase(swNodeId);
+      operandOrderByOp[nextOp].clear();
+    }
+  }
+}
+
+struct DemandBodyInfo {
+  fcc::fabric::FunctionUnitOp fuOp;
+  const Node *hwNode = nullptr;
+  llvm::SmallVector<mlir::Operation *, 8> bodyOps;
+  llvm::DenseMap<mlir::Operation *, unsigned> bodyOpToIndex;
+  llvm::SmallVector<mlir::Operation *, 8> structuralOps;
+  llvm::DenseMap<mlir::Operation *, unsigned> structuralOpToIndex;
+  mutable std::map<std::string, std::optional<VariantFamily>>
+      structuralFamilyCache;
+  DemandMatchStats *stats = nullptr;
+};
+
+struct DemandMatchState {
+  llvm::DenseMap<mlir::Operation *, IdIndex> swNodeByBodyOp;
+  llvm::DenseSet<IdIndex> usedSwNodes;
+  llvm::DenseMap<mlir::Operation *, unsigned> muxSelection;
+  llvm::DenseMap<mlir::Operation *, uint64_t> joinSelection;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<unsigned, 4>>
+      operandOrderByBodyOp;
+};
+
+bool bindMuxSelection(llvm::DenseMap<mlir::Operation *, unsigned> &muxSelection,
+                      mlir::Operation *muxOp, unsigned sel) {
+  auto it = muxSelection.find(muxOp);
+  if (it != muxSelection.end())
+    return it->second == sel;
+  muxSelection[muxOp] = sel;
+  return true;
+}
+
+bool bindJoinMask(llvm::DenseMap<mlir::Operation *, uint64_t> &joinSelection,
+                  mlir::Operation *joinOp, uint64_t mask) {
+  auto it = joinSelection.find(joinOp);
+  if (it != joinSelection.end())
+    return it->second == mask;
+  joinSelection[joinOp] = mask;
+  return true;
+}
+
+void enumerateOperationMatches(const Graph &dfg, mlir::Operation *bodyOp,
+                               IdIndex swNodeId, const DemandBodyInfo &info,
+                               const DemandMatchState &state,
+                               llvm::SmallVectorImpl<DemandMatchState> &results);
+
+void enumerateValueProducerMatches(
+    const Graph &dfg, mlir::Value value, IdIndex swNodeId,
+    const DemandBodyInfo &info, const DemandMatchState &state,
+    llvm::SmallVectorImpl<DemandMatchState> &results) {
+  if (mlir::isa<mlir::BlockArgument>(value)) {
+    results.push_back(state);
+    return;
+  }
+
+  mlir::Operation *defOp = value.getDefiningOp();
+  if (!defOp)
+    return;
+
+  if (auto muxOp = mlir::dyn_cast<fcc::fabric::MuxOp>(defOp)) {
+    if (isMuxPassThrough(muxOp)) {
+      enumerateValueProducerMatches(dfg, muxOp.getInputs().front(), swNodeId,
+                                    info, state, results);
+      return;
+    }
+
+    if (isMuxFanIn(muxOp)) {
+      for (unsigned sel = 0; sel < muxOp.getInputs().size(); ++sel) {
+        DemandMatchState trial = state;
+        if (!bindMuxSelection(trial.muxSelection, defOp, sel))
+          continue;
+        enumerateValueProducerMatches(dfg, muxOp.getInputs()[sel], swNodeId,
+                                      info, trial, results);
+      }
+      return;
+    }
+
+    if (isMuxFanOut(muxOp)) {
+      auto result = mlir::dyn_cast<mlir::OpResult>(value);
+      if (!result)
+        return;
+      unsigned sel = static_cast<unsigned>(result.getResultNumber());
+      DemandMatchState trial = state;
+      if (!bindMuxSelection(trial.muxSelection, defOp, sel))
+        return;
+      enumerateValueProducerMatches(dfg, muxOp.getInputs().front(), swNodeId,
+                                    info, trial, results);
+    }
+    return;
+  }
+
+  enumerateOperationMatches(dfg, defOp, swNodeId, info, state, results);
+}
+
+void enumerateOperandValueToInputPort(
+    const Graph &dfg, mlir::Value value, IdIndex swInputPortId,
+    const DemandBodyInfo &info, const DemandMatchState &state,
+    llvm::SmallVectorImpl<DemandMatchState> &results) {
+  const Port *swInputPort = dfg.getPort(swInputPortId);
+  if (!swInputPort)
+    return;
+  IdIndex producerPort = findProducerPort(dfg, swInputPortId);
+  const Port *producer = dfg.getPort(producerPort);
+  if (!producer || producer->parentNode == INVALID_ID)
+    return;
+  enumerateValueProducerMatches(dfg, value, producer->parentNode, info, state,
+                                results);
+}
+
+void enumerateJoinMatches(const Graph &dfg, mlir::Operation *bodyOp,
+                          IdIndex swNodeId, const DemandBodyInfo &info,
+                          const DemandMatchState &state,
+                          llvm::SmallVectorImpl<DemandMatchState> &results) {
+  const Node *swNode = dfg.getNode(swNodeId);
+  if (!swNode || swNode->inputPorts.size() > bodyOp->getNumOperands() ||
+      bodyOp->getNumOperands() > kMaxHardwareJoinFanin)
+    return;
+
+  unsigned swArity = swNode->inputPorts.size();
+  unsigned hwArity = bodyOp->getNumOperands();
+  llvm::SmallVector<unsigned, 8> chosenPositions;
+
+  auto enumerateCombinations = [&](auto &&self, unsigned nextHwIndex,
+                                   const DemandMatchState &comboState) -> void {
+    if (chosenPositions.size() == swArity) {
+      DemandMatchState seededState = comboState;
+      uint64_t mask = 0;
+      for (unsigned pos : chosenPositions)
+        mask |= (uint64_t{1} << pos);
+      if (mask == 0)
+        return;
+      if (!bindJoinMask(seededState.joinSelection, bodyOp, mask))
+        return;
+
+      llvm::SmallVector<unsigned, 4> identityOrder;
+      for (unsigned idx = 0; idx < swArity; ++idx)
+        identityOrder.push_back(idx);
+      seededState.operandOrderByBodyOp[bodyOp] = identityOrder;
+
+      llvm::SmallVector<DemandMatchState, 4> frontier;
+      frontier.push_back(std::move(seededState));
+      for (unsigned idx = 0; idx < swArity; ++idx) {
+        llvm::SmallVector<DemandMatchState, 4> nextFrontier;
+        for (const DemandMatchState &frontierState : frontier) {
+          enumerateOperandValueToInputPort(
+              dfg, bodyOp->getOperand(chosenPositions[idx]),
+              swNode->inputPorts[idx], info, frontierState, nextFrontier);
+        }
+        if (nextFrontier.empty())
+          return;
+        frontier = std::move(nextFrontier);
+      }
+
+      results.append(frontier.begin(), frontier.end());
+      return;
+    }
+
+    unsigned remainingNeed = swArity - chosenPositions.size();
+    for (unsigned hwIdx = nextHwIndex; hwIdx + remainingNeed <= hwArity;
+         ++hwIdx) {
+      chosenPositions.push_back(hwIdx);
+      self(self, hwIdx + 1, comboState);
+      chosenPositions.pop_back();
+    }
+  };
+
+  enumerateCombinations(enumerateCombinations, 0, state);
+}
+
+void enumerateOperationMatches(const Graph &dfg, mlir::Operation *bodyOp,
+                               IdIndex swNodeId, const DemandBodyInfo &info,
+                               const DemandMatchState &state,
+                               llvm::SmallVectorImpl<DemandMatchState> &results) {
+  auto mappedIt = state.swNodeByBodyOp.find(bodyOp);
+  if (mappedIt != state.swNodeByBodyOp.end()) {
+    if (mappedIt->second == swNodeId)
+      results.push_back(state);
+    return;
+  }
+
+  const Node *swNode = dfg.getNode(swNodeId);
+  if (!swNode || swNode->kind != Node::OperationNode ||
+      state.usedSwNodes.contains(swNodeId))
+    return;
+
+  llvm::StringRef swOpName = getNodeAttrStr(swNode, "op_name");
+  llvm::StringRef fuOpName = bodyOp->getName().getStringRef();
+  if (!opNamesCompatible(swOpName, fuOpName))
+    return;
+
+  DemandMatchState baseState = state;
+  baseState.swNodeByBodyOp[bodyOp] = swNodeId;
+  baseState.usedSwNodes.insert(swNodeId);
+
+  if (fuOpName == "handshake.join") {
+    enumerateJoinMatches(dfg, bodyOp, swNodeId, info, baseState, results);
+    return;
+  }
+
+  if (swNode->inputPorts.size() != bodyOp->getNumOperands())
+    return;
+
+  TemplateOp tempOp;
+  tempOp.opName = fuOpName.str();
+  tempOp.commutative = isCommutativeOp(fuOpName);
+  for (unsigned operandIdx = 0; operandIdx < bodyOp->getNumOperands();
+       ++operandIdx)
+    tempOp.operands.push_back(ValueRef{RefKind::Input, operandIdx, 0});
+
+  for (const auto &operandOrder : enumerateOperandOrders(tempOp, swNode)) {
+    DemandMatchState seededState = baseState;
+    llvm::SmallVector<unsigned, 4> order;
+    order.append(operandOrder.begin(), operandOrder.end());
+    seededState.operandOrderByBodyOp[bodyOp] = order;
+
+    llvm::SmallVector<DemandMatchState, 4> frontier;
+    frontier.push_back(std::move(seededState));
+    bool operandsMatch = true;
+    for (unsigned fuOperandIdx = 0; fuOperandIdx < bodyOp->getNumOperands();
+         ++fuOperandIdx) {
+      unsigned swOperandIdx = operandOrder[fuOperandIdx];
+      llvm::SmallVector<DemandMatchState, 4> nextFrontier;
+      for (const DemandMatchState &frontierState : frontier) {
+        enumerateOperandValueToInputPort(
+            dfg, bodyOp->getOperand(fuOperandIdx), swNode->inputPorts[swOperandIdx],
+            info, frontierState, nextFrontier);
+      }
+      if (nextFrontier.empty()) {
+        operandsMatch = false;
         break;
       }
+      frontier = std::move(nextFrontier);
     }
-    if (!compatible)
+    if (!operandsMatch)
       continue;
-
-    usedSwNodes.insert(swNodeId);
-    swNodesByOp[nextOp] = swNodeId;
-    findMatchesRecursive(dfg, family, nodesByOp, nextOp + 1, swNodesByOp,
-                         usedSwNodes, matches, familyIndex);
-    usedSwNodes.erase(swNodeId);
+    results.append(frontier.begin(), frontier.end());
   }
+}
+
+std::string buildDemandMatchKey(const VariantFamily &family, const Match &match) {
+  std::string key = family.signature;
+  key += "|sw(";
+  for (size_t idx = 0; idx < match.swNodesByOp.size(); ++idx) {
+    if (idx)
+      key += ",";
+    key += std::to_string(match.swNodesByOp[idx]);
+  }
+  key += ")|in(";
+  for (size_t idx = 0; idx < match.inputBindings.size(); ++idx) {
+    if (idx)
+      key += ",";
+    key += std::to_string(match.inputBindings[idx].swPortId);
+    key += "->";
+    key += std::to_string(match.inputBindings[idx].hwPortIndex);
+  }
+  key += ")|out(";
+  for (size_t idx = 0; idx < match.outputBindings.size(); ++idx) {
+    if (idx)
+      key += ",";
+    key += std::to_string(match.outputBindings[idx].swPortId);
+    key += "->";
+    key += std::to_string(match.outputBindings[idx].hwPortIndex);
+  }
+  key += ")|edge(";
+  for (size_t idx = 0; idx < match.internalEdges.size(); ++idx) {
+    if (idx)
+      key += ",";
+    key += std::to_string(match.internalEdges[idx]);
+  }
+  key += ")|cfg(";
+  key += serializeConfigFields(match.configFields);
+  key += ")";
+  return key;
+}
+
+std::string buildDemandStructuralStateKey(const DemandBodyInfo &info,
+                                          const DemandMatchState &state) {
+  std::string key;
+  llvm::raw_string_ostream os(key);
+  for (mlir::Operation *bodyOp : info.structuralOps) {
+    if (auto muxOp = mlir::dyn_cast<fcc::fabric::MuxOp>(bodyOp)) {
+      if (isMuxPassThrough(muxOp))
+        continue;
+      os << "mux#" << info.structuralOpToIndex.lookup(bodyOp) << "=";
+      auto it = state.muxSelection.find(bodyOp);
+      if (it == state.muxSelection.end())
+        os << "unset";
+      else
+        os << it->second;
+      os << ";";
+      continue;
+    }
+    if (bodyOp->getName().getStringRef() == "handshake.join") {
+      os << "join#" << info.structuralOpToIndex.lookup(bodyOp) << "=";
+      auto it = state.joinSelection.find(bodyOp);
+      if (it == state.joinSelection.end())
+        os << "unset";
+      else
+        os << it->second;
+      os << ";";
+    }
+  }
+  return key;
+}
+
+std::optional<FamilyMatch>
+materializeDemandFamilyMatch(const Graph &dfg, const DemandBodyInfo &info,
+                             const DemandMatchState &state) {
+  std::string structuralKey = buildDemandStructuralStateKey(info, state);
+  auto cacheIt = info.structuralFamilyCache.find(structuralKey);
+  if (cacheIt == info.structuralFamilyCache.end()) {
+    if (info.stats)
+      ++info.stats->structuralStateCacheMissCount;
+    auto builtFamily = buildVariantFamily(info.fuOp, info.hwNode,
+                                          state.muxSelection,
+                                          state.joinSelection);
+    if (builtFamily && builtFamily->isTechFamily()) {
+      cacheIt = info.structuralFamilyCache
+                    .emplace(structuralKey, std::move(builtFamily))
+                    .first;
+    } else {
+      cacheIt = info.structuralFamilyCache
+                    .emplace(structuralKey, std::nullopt)
+                    .first;
+    }
+  } else if (info.stats) {
+    ++info.stats->structuralStateCacheHitCount;
+  }
+  if (!cacheIt->second)
+    return std::nullopt;
+  const VariantFamily &family = *cacheIt->second;
+
+  Match match;
+  match.operandOrderByOp.reserve(family.ops.size());
+  for (const auto &templ : family.ops) {
+    if (templ.bodyOpIndex >= info.bodyOps.size())
+      return std::nullopt;
+    mlir::Operation *bodyOp = info.bodyOps[templ.bodyOpIndex];
+    auto swIt = state.swNodeByBodyOp.find(bodyOp);
+    if (swIt == state.swNodeByBodyOp.end())
+      return std::nullopt;
+    match.swNodesByOp.push_back(swIt->second);
+    auto orderIt = state.operandOrderByBodyOp.find(bodyOp);
+    if (orderIt != state.operandOrderByBodyOp.end())
+      match.operandOrderByOp.push_back(orderIt->second);
+    else
+      match.operandOrderByOp.push_back({});
+  }
+
+  if (!buildMatchBindings(dfg, family, match.swNodesByOp, match))
+    return std::nullopt;
+
+  FamilyMatch result;
+  result.family = family;
+  result.match = std::move(match);
+  return result;
 }
 
 } // anonymous namespace
@@ -864,16 +1316,80 @@ findMatchesForFamily(const Graph &dfg, const VariantFamily &family,
       continue;
     llvm::StringRef opName = getNodeAttrStr(swNode, "op_name");
     nodesByOp[opName.str()].push_back(swId);
-    llvm::StringRef compat = getCompatibleOp(opName);
+    llvm::StringRef compat = opcompat::getCompatibleOp(opName);
     if (!compat.empty())
       nodesByOp[compat.str()].push_back(swId);
   }
 
   std::vector<Match> matches;
   llvm::SmallVector<IdIndex, 4> swNodesByOp(family.ops.size(), INVALID_ID);
+  llvm::SmallVector<llvm::SmallVector<unsigned, 4>, 4> operandOrderByOp(
+      family.ops.size());
   llvm::DenseSet<IdIndex> usedSwNodes;
-  findMatchesRecursive(dfg, family, nodesByOp, 0, swNodesByOp, usedSwNodes,
-                       matches, familyIndex);
+  findMatchesRecursive(dfg, family, nodesByOp, 0, swNodesByOp, operandOrderByOp,
+                       usedSwNodes, matches, familyIndex);
+  return matches;
+}
+
+std::vector<FamilyMatch>
+findDemandDrivenMatchesForFU(const Graph &dfg, fcc::fabric::FunctionUnitOp fuOp,
+                             const Node *hwNode, DemandMatchStats *stats) {
+  std::vector<FamilyMatch> matches;
+  if (!hwNode)
+    return matches;
+
+  DemandBodyInfo info;
+  info.fuOp = fuOp;
+  info.hwNode = hwNode;
+  info.stats = stats;
+  for (mlir::Operation &bodyOp : fuOp.getBody().front().getOperations()) {
+    if (mlir::isa<fcc::fabric::YieldOp>(bodyOp))
+      continue;
+    if (auto muxOp = mlir::dyn_cast<fcc::fabric::MuxOp>(bodyOp)) {
+      if (!isMuxPassThrough(muxOp)) {
+        info.structuralOpToIndex[&bodyOp] = info.structuralOps.size();
+        info.structuralOps.push_back(&bodyOp);
+      }
+      continue;
+    }
+    if (bodyOp.getName().getStringRef() == "handshake.join") {
+      info.structuralOpToIndex[&bodyOp] = info.structuralOps.size();
+      info.structuralOps.push_back(&bodyOp);
+    }
+    info.bodyOpToIndex[&bodyOp] = info.bodyOps.size();
+    info.bodyOps.push_back(&bodyOp);
+  }
+
+  auto yieldOp =
+      mlir::cast<fcc::fabric::YieldOp>(fuOp.getBody().front().getTerminator());
+  llvm::StringSet<> seenKeys;
+
+  for (IdIndex swNodeId = 0; swNodeId < static_cast<IdIndex>(dfg.nodes.size());
+       ++swNodeId) {
+    const Node *swNode = dfg.getNode(swNodeId);
+    if (!swNode || swNode->kind != Node::OperationNode)
+      continue;
+
+    for (mlir::Value yieldValue : yieldOp.getOperands()) {
+      DemandMatchState seedState;
+      llvm::SmallVector<DemandMatchState, 4> resultStates;
+      enumerateValueProducerMatches(dfg, yieldValue, swNodeId, info, seedState,
+                                    resultStates);
+      for (const DemandMatchState &state : resultStates) {
+        auto familyMatch = materializeDemandFamilyMatch(dfg, info, state);
+        if (!familyMatch)
+          continue;
+        std::string key =
+            buildDemandMatchKey(familyMatch->family, familyMatch->match);
+        if (!seenKeys.insert(key).second)
+          continue;
+        matches.push_back(std::move(*familyMatch));
+      }
+    }
+  }
+
+  if (stats)
+    stats->structuralStateCount = info.structuralFamilyCache.size();
   return matches;
 }
 

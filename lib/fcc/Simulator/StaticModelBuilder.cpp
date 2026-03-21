@@ -99,7 +99,8 @@ BridgeLaneRange getMemoryLaneRange(const Node *swNode, const Node *hwNode,
   DfgMemoryInfo memInfo = DfgMemoryInfo::extract(swNode, dfg, isExtMem);
   BridgeInfo bridge = BridgeInfo::extract(hwNode);
   if (bridge.hasBridge) {
-    if (auto range = inferBridgeLaneRange(bridge, memInfo, swNode, mapping))
+    if (auto range =
+            inferBridgeLaneRange(bridge, memInfo, swNode, dfg, mapping))
       return *range;
   }
   return {0u, memInfo.laneSpan()};

@@ -5,6 +5,7 @@
 #include "fcc/Mapper/Graph.h"
 #include "fcc/Mapper/MappingState.h"
 #include "fcc/Mapper/MapperOptions.h"
+#include "fcc/Mapper/MapperTiming.h"
 #include "fcc/Mapper/TechMapper.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -13,6 +14,7 @@
 
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <string>
 
 namespace mlir {
@@ -25,6 +27,23 @@ struct CongestionEstimator;
 struct CongestionState;
 class RelaxedRoutingState;
 class LocalRepairDriver;
+class TopologyModel;
+
+struct MapperSearchSummary {
+  unsigned placementSeedLaneCount = 0;
+  unsigned successfulPlacementSeedCount = 0;
+  unsigned routedLaneCount = 0;
+  unsigned localRepairAttempts = 0;
+  unsigned localRepairSuccesses = 0;
+  unsigned routeAwareRefinementPasses = 0;
+  unsigned routeAwareCheckpointRescorePasses = 0;
+  unsigned routeAwareCheckpointRestoreCount = 0;
+  unsigned routeAwareNeighborhoodAttempts = 0;
+  unsigned routeAwareNeighborhoodAcceptedMoves = 0;
+  unsigned routeAwareCoarseFallbackMoves = 0;
+  unsigned fifoBufferizationAcceptedToggles = 0;
+  unsigned outerJointAcceptedRounds = 0;
+};
 
 class Mapper {
 public:
@@ -34,10 +53,30 @@ public:
       llvm::ArrayRef<FUConfigSelection>, llvm::StringRef, unsigned)>;
 
   struct Result {
+    struct RoutedAlternative {
+      unsigned laneIndex = 0;
+      MappingState state;
+      std::vector<TechMappedEdgeKind> edgeKinds;
+      llvm::SmallVector<FUConfigSelection, 4> fuConfigs;
+      MapperTimingSummary timingSummary;
+      MapperSearchSummary searchSummary;
+      size_t totalPathLen = 0;
+      double placementCost = 0.0;
+      double throughputCost = 0.0;
+      double estimatedClockPeriod = 0.0;
+    };
+
     bool success = false;
+    unsigned selectedLaneIndex = 0;
     MappingState state;
     std::vector<TechMappedEdgeKind> edgeKinds;
     llvm::SmallVector<FUConfigSelection, 4> fuConfigs;
+    TechMapper::Plan techMapPlan;
+    TechMapper::PlanMetrics techMapMetrics;
+    std::string techMapDiagnostics;
+    MapperTimingSummary timingSummary;
+    MapperSearchSummary searchSummary;
+    std::vector<RoutedAlternative> routedAlternatives;
     std::string diagnostics;
   };
 
@@ -69,7 +108,8 @@ private:
       MappingState &state, const Graph &dfg, const Graph &adg,
       const ADGFlattener &flattener,
       const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
-      const Options &opts);
+      const Options &opts,
+      std::vector<TechMappedEdgeKind> *edgeKinds = nullptr);
 
   bool runLocalRepair(
       MappingState &state, const MappingState::Checkpoint &baseCheckpoint,
@@ -139,6 +179,10 @@ private:
                      llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                      std::string &diagnostics);
 
+  MapperTimingSummary runPostRouteFifoBufferization(
+      MappingState &state, const Graph &dfg, const Graph &adg,
+      llvm::ArrayRef<TechMappedEdgeKind> edgeKinds, const Options &opts);
+
   // Routing helpers.
   llvm::SmallVector<IdIndex, 8>
   findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
@@ -198,6 +242,7 @@ private:
 
   ConnectivityMatrix connectivity;
   const ADGFlattener *activeFlattener = nullptr;
+  std::shared_ptr<const TopologyModel> activeTopologyModel_;
   double activeHeuristicWeight = 1.5;
   CongestionEstimator *activeCongestionEstimator = nullptr;
   double activeCongestionPlacementWeight = 0.0;
@@ -216,6 +261,7 @@ private:
   unsigned snapshotSequence_ = 0;
   unsigned snapshotTickCount_ = 0;
   double nextSnapshotAtSeconds_ = -1.0;
+  MapperSearchSummary activeSearchSummary_;
 };
 
 } // namespace fcc

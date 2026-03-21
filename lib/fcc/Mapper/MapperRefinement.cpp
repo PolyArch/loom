@@ -21,6 +21,7 @@ namespace {
 
 struct SACostState {
   double totalCost = 0.0;
+  bool enableGridCutLoad = false;
   std::vector<double> rowCutLoad;
   std::vector<double> colCutLoad;
   struct UndoRecord {
@@ -42,6 +43,24 @@ struct SAAdaptiveState {
   unsigned windowBestImprovements = 0;
   unsigned iterationsSinceBestImprovement = 0;
 };
+
+double computeRouteAwareCheckpointCost(Mapper &mapper, const MappingState &state,
+                                       const Graph &dfg, const Graph &adg,
+                                       const ADGFlattener &flattener,
+                                       llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                                       const Mapper::Options &opts,
+                                       double placementCost) {
+  const double unroutedPenalty =
+      computeUnroutedPenalty(state, dfg, edgeKinds) * 1000000.0;
+  const double pathLenPenalty =
+      static_cast<double>(computeTotalMappedPathLen(state)) * 0.001;
+  const MapperTimingSummary timingSummary =
+      analyzeMapperTiming(state, dfg, adg, edgeKinds, opts.timing);
+  (void)mapper;
+  return placementCost + unroutedPenalty + pathLenPenalty +
+         timingSummary.estimatedThroughputCost +
+         0.1 * timingSummary.estimatedClockPeriod;
+}
 
 constexpr double kCutLoadQuadraticWeight = 0.006;
 
@@ -100,13 +119,14 @@ void applyEdgePlacementContribution(double sign, double edgeWeight, IdIndex srcH
   (void)adg;
   if (srcHw == INVALID_ID || dstHw == INVALID_ID)
     return;
+  int dist = placementDistance(srcHw, dstHw, flattener);
+  costState.totalCost += sign * edgeWeight * static_cast<double>(dist);
+  if (!costState.enableGridCutLoad)
+    return;
   auto [sr, sc] = flattener.getNodeGridPos(srcHw);
   auto [dr, dc] = flattener.getNodeGridPos(dstHw);
   if (sr < 0 || sc < 0 || dr < 0 || dc < 0)
     return;
-
-  int dist = std::abs(sr - dr) + std::abs(sc - dc);
-  costState.totalCost += sign * edgeWeight * static_cast<double>(dist);
 
   for (int row = std::min(sr, dr); row < std::max(sr, dr); ++row)
     adjustQuadraticLoad(costState.rowCutLoad, row, sign * edgeWeight,
@@ -120,23 +140,33 @@ SACostState initializeSACostState(const MappingState &state, const Graph &dfg,
                                   const Graph &adg,
                                   const ADGFlattener &flattener,
                                   llvm::ArrayRef<double> edgeWeights) {
+  const TopologyModel *topologyModel = getActiveTopologyModel();
   int maxRow = -1;
   int maxCol = -1;
-  for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(adg.nodes.size()); ++hwId) {
-    const Node *hwNode = adg.getNode(hwId);
-    if (!hwNode)
-      continue;
-    auto [row, col] = flattener.getNodeGridPos(hwId);
-    if (row >= 0 && col >= 0) {
-      maxRow = std::max(maxRow, row);
-      maxCol = std::max(maxCol, col);
+  SACostState costState;
+  costState.enableGridCutLoad =
+      topologyModel && topologyModel->supportsGridCutLoad();
+  if (costState.enableGridCutLoad) {
+    for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(adg.nodes.size());
+         ++hwId) {
+      const Node *hwNode = adg.getNode(hwId);
+      if (!hwNode)
+        continue;
+      auto [row, col] = flattener.getNodeGridPos(hwId);
+      if (row >= 0 && col >= 0) {
+        maxRow = std::max(maxRow, row);
+        maxCol = std::max(maxCol, col);
+      }
     }
   }
 
-  SACostState costState;
-  costState.rowCutLoad.assign(maxRow >= 0 ? static_cast<size_t>(maxRow) + 1 : 0,
+  costState.rowCutLoad.assign(costState.enableGridCutLoad && maxRow >= 0
+                                  ? static_cast<size_t>(maxRow) + 1
+                                  : 0,
                               0.0);
-  costState.colCutLoad.assign(maxCol >= 0 ? static_cast<size_t>(maxCol) + 1 : 0,
+  costState.colCutLoad.assign(costState.enableGridCutLoad && maxCol >= 0
+                                  ? static_cast<size_t>(maxCol) + 1
+                                  : 0,
                               0.0);
   costState.totalCost = 0.0;
 
@@ -157,6 +187,13 @@ SACostState initializeSACostState(const MappingState &state, const Graph &dfg,
                             : classifyEdgePlacementWeight(dfg, edgeId);
     applyEdgePlacementContribution(+1.0, edgeWeight, srcHw, dstHw, adg,
                                    flattener, costState);
+  }
+  for (IdIndex swNode = 0; swNode < static_cast<IdIndex>(state.swNodeToHwNode.size());
+       ++swNode) {
+    IdIndex hwNode = state.swNodeToHwNode[swNode];
+    if (hwNode == INVALID_ID)
+      continue;
+    costState.totalCost += computeNodeTimingPenalty(swNode, hwNode, dfg, adg);
   }
   return costState;
 }
@@ -222,6 +259,17 @@ void applyPlacementDeltaForMovedNodes(
     applyEdgePlacementContribution(+1.0, edgeWeight, newSrcHw, newDstHw, adg,
                                    flattener, costState);
   }
+
+  for (IdIndex swNode : movedNodes) {
+    IdIndex oldHw = state.swNodeToHwNode[swNode];
+    if (auto it = oldHwBySwNode.find(swNode); it != oldHwBySwNode.end())
+      oldHw = it->second;
+    IdIndex newHw = state.swNodeToHwNode[swNode];
+    if (oldHw != INVALID_ID)
+      costState.totalCost -= computeNodeTimingPenalty(swNode, oldHw, dfg, adg);
+    if (newHw != INVALID_ID)
+      costState.totalCost += computeNodeTimingPenalty(swNode, newHw, dfg, adg);
+  }
 }
 
 void applyAdaptiveCoolingWindow(double &temperature,
@@ -270,7 +318,7 @@ bool Mapper::runRefinement(
     MappingState &state, const Graph &dfg, const Graph &adg,
     const ADGFlattener &flattener,
     const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
-    const Options &opts) {
+    const Options &opts, std::vector<TechMappedEdgeKind> *edgeKinds) {
 
   std::mt19937 rng(static_cast<unsigned>(opts.seed));
 
@@ -287,18 +335,7 @@ bool Mapper::runRefinement(
 
   CandidateSetMap candidateSets = buildCandidateSetMap(candidates);
   std::vector<double> edgeWeights = buildEdgePlacementWeightCache(dfg);
-  llvm::DenseMap<int64_t, llvm::SmallVector<IdIndex, 4>> hwNodesByCell;
-  auto cellKey = [](int row, int col) -> int64_t {
-    return (static_cast<int64_t>(row) << 32) ^
-           static_cast<uint32_t>(col);
-  };
-  for (IdIndex hwNode = 0; hwNode < static_cast<IdIndex>(adg.nodes.size());
-       ++hwNode) {
-    auto [row, col] = flattener.getNodeGridPos(hwNode);
-    if (row < 0 || col < 0)
-      continue;
-    hwNodesByCell[cellKey(row, col)].push_back(hwNode);
-  }
+  const TopologyModel *topologyModel = getActiveTopologyModel();
 
   double temperature = opts.refinement.initialTemperature;
   double coolingRate = opts.refinement.coolingRate;
@@ -310,8 +347,24 @@ bool Mapper::runRefinement(
   SACostState costState =
       initializeSACostState(state, dfg, adg, flattener, edgeWeights);
   SAAdaptiveState adaptiveState;
-  double bestCost = costState.totalCost;
+  const bool routeAwareMode =
+      edgeKinds && state.routeStatsInitialized &&
+      countRoutedEdges(state, dfg, *edgeKinds) > 0;
+  if (routeAwareMode)
+    ++activeSearchSummary_.routeAwareRefinementPasses;
+  double currentObjective =
+      routeAwareMode
+          ? computeRouteAwareCheckpointCost(*this, state, dfg, adg, flattener,
+                                            *edgeKinds, opts,
+                                            costState.totalCost)
+          : costState.totalCost;
+  double bestCost = currentObjective;
   auto bestCheckpoint = state.save();
+  auto routeCheckpointState = bestCheckpoint;
+  std::vector<TechMappedEdgeKind> routeCheckpointEdgeKinds =
+      edgeKinds ? *edgeKinds : std::vector<TechMappedEdgeKind>();
+  double routeCheckpointObjective = currentObjective;
+  unsigned acceptedSinceRouteCheckpoint = 0;
   int acceptCount = 0;
 
   auto startTime = std::chrono::steady_clock::now();
@@ -329,7 +382,7 @@ bool Mapper::runRefinement(
     if (secs > localBudgetSeconds)
       break;
 
-    double oldCost = costState.totalCost;
+    double oldCost = currentObjective;
     auto savepoint = state.beginSavepoint();
     auto costSavepoint = beginCostSavepoint(costState);
     bool improvedBestThisIter = false;
@@ -345,26 +398,53 @@ bool Mapper::runRefinement(
       IdIndex hwA = state.swNodeToHwNode[swA];
 
       llvm::SmallVector<IdIndex, 16> nearbyNodes;
-      auto [hwARow, hwACol] = flattener.getNodeGridPos(hwA);
-      for (int dr = -static_cast<int>(opts.placementMoveRadius);
-           dr <= static_cast<int>(opts.placementMoveRadius); ++dr) {
-        for (int dc = -static_cast<int>(opts.placementMoveRadius);
-             dc <= static_cast<int>(opts.placementMoveRadius); ++dc) {
-          int row = hwARow + dr;
-          int col = hwACol + dc;
-          auto it = hwNodesByCell.find(cellKey(row, col));
-          if (it == hwNodesByCell.end())
+      if (topologyModel) {
+        std::vector<IdIndex> nearbyHwNodes =
+            topologyModel->placeableNodesWithinRadius(hwA,
+                                                      opts.placementMoveRadius);
+        for (IdIndex nearbyHwNode : nearbyHwNodes) {
+          if (nearbyHwNode >= state.hwNodeToSwNodes.size())
             continue;
-          for (IdIndex nearbyHwNode : it->second) {
-            if (!isWithinMoveRadius(hwA, nearbyHwNode, flattener,
-                                    opts.placementMoveRadius))
+          for (IdIndex swCandidate : state.hwNodeToSwNodes[nearbyHwNode]) {
+            if (swCandidate == swA)
               continue;
-            if (nearbyHwNode >= state.hwNodeToSwNodes.size())
+            nearbyNodes.push_back(swCandidate);
+          }
+        }
+      } else {
+        llvm::DenseMap<int64_t, llvm::SmallVector<IdIndex, 4>> hwNodesByCell;
+        auto cellKey = [](int row, int col) -> int64_t {
+          return (static_cast<int64_t>(row) << 32) ^
+                 static_cast<uint32_t>(col);
+        };
+        for (IdIndex hwNode = 0; hwNode < static_cast<IdIndex>(adg.nodes.size());
+             ++hwNode) {
+          auto [row, col] = flattener.getNodeGridPos(hwNode);
+          if (row < 0 || col < 0)
+            continue;
+          hwNodesByCell[cellKey(row, col)].push_back(hwNode);
+        }
+        auto [hwARow, hwACol] = flattener.getNodeGridPos(hwA);
+        for (int dr = -static_cast<int>(opts.placementMoveRadius);
+             dr <= static_cast<int>(opts.placementMoveRadius); ++dr) {
+          for (int dc = -static_cast<int>(opts.placementMoveRadius);
+               dc <= static_cast<int>(opts.placementMoveRadius); ++dc) {
+            int row = hwARow + dr;
+            int col = hwACol + dc;
+            auto it = hwNodesByCell.find(cellKey(row, col));
+            if (it == hwNodesByCell.end())
               continue;
-            for (IdIndex swCandidate : state.hwNodeToSwNodes[nearbyHwNode]) {
-              if (swCandidate == swA)
+            for (IdIndex nearbyHwNode : it->second) {
+              if (!isWithinMoveRadius(hwA, nearbyHwNode, flattener,
+                                      opts.placementMoveRadius))
                 continue;
-              nearbyNodes.push_back(swCandidate);
+              if (nearbyHwNode >= state.hwNodeToSwNodes.size())
+                continue;
+              for (IdIndex swCandidate : state.hwNodeToSwNodes[nearbyHwNode]) {
+                if (swCandidate == swA)
+                  continue;
+                nearbyNodes.push_back(swCandidate);
+              }
             }
           }
         }
@@ -456,7 +536,32 @@ rollback_move:
 
     applyPlacementDeltaForMovedNodes(movedNodes, oldHwBySwNode, state, dfg, adg,
                                      flattener, edgeWeights, costState);
-    double newCost = costState.totalCost;
+    bool usedNeighborhoodRepair = false;
+    if (routeAwareMode) {
+      classifyTemporalRegisterEdges(state, dfg, adg, flattener, *edgeKinds);
+      auto repairEdges = collectPlacementDeltaEdges(movedNodes, dfg);
+      llvm::DenseSet<IdIndex> seenRepairEdges(repairEdges.begin(),
+                                              repairEdges.end());
+      for (IdIndex edgeId : collectUnroutedEdges(state, dfg, *edgeKinds)) {
+        if (seenRepairEdges.insert(edgeId).second)
+          repairEdges.push_back(edgeId);
+      }
+      if (opts.refinement.routeAwareNeighborhoodEnabled &&
+          repairEdges.size() <= opts.refinement.routeAwareNeighborhoodEdgeCap) {
+        ++activeSearchSummary_.routeAwareNeighborhoodAttempts;
+        usedNeighborhoodRepair = true;
+        runExactRoutingRepair(state, repairEdges, dfg, adg, flattener,
+                              *edgeKinds, opts);
+      } else {
+        ++activeSearchSummary_.routeAwareCoarseFallbackMoves;
+      }
+    }
+    double newCost =
+        routeAwareMode
+            ? computeRouteAwareCheckpointCost(*this, state, dfg, adg, flattener,
+                                              *edgeKinds, opts,
+                                              costState.totalCost)
+            : costState.totalCost;
     double delta = oldCost - newCost;
     bool acceptMove =
         delta > 0 || std::uniform_real_distribution<double>(0.0, 1.0)(rng) <
@@ -464,18 +569,73 @@ rollback_move:
     if (acceptMove) {
       ++acceptCount;
       ++adaptiveState.windowAccepted;
+      if (usedNeighborhoodRepair)
+        ++activeSearchSummary_.routeAwareNeighborhoodAcceptedMoves;
       state.commitSavepoint(savepoint);
       commitCostSavepoint(costState, costSavepoint);
-      if (newCost < bestCost) {
+      currentObjective = newCost;
+      bool allowImmediateBestUpdate =
+          !routeAwareMode || usedNeighborhoodRepair ||
+          !opts.refinement.routeAwareCheckpointEnabled;
+      if (allowImmediateBestUpdate && newCost < bestCost) {
         bestCost = newCost;
         improvedBestThisIter = true;
         adaptiveState.windowBestImprovements++;
         adaptiveState.iterationsSinceBestImprovement = 0;
         bestCheckpoint = state.save();
       }
+      if (routeAwareMode) {
+        if (usedNeighborhoodRepair) {
+          routeCheckpointState = state.save();
+          routeCheckpointEdgeKinds = *edgeKinds;
+          routeCheckpointObjective = currentObjective;
+          acceptedSinceRouteCheckpoint = 0;
+        } else {
+          ++acceptedSinceRouteCheckpoint;
+          if (opts.refinement.routeAwareCheckpointEnabled &&
+              acceptedSinceRouteCheckpoint >=
+                  opts.refinement.routeAwareCheckpointAcceptedMoveBatch) {
+            ++activeSearchSummary_.routeAwareCheckpointRescorePasses;
+            bool rerouteSucceeded = runRouting(state, dfg, adg, *edgeKinds, opts);
+            if (rerouteSucceeded)
+              classifyTemporalRegisterEdges(state, dfg, adg, flattener,
+                                            *edgeKinds);
+            double reroutedObjective =
+                rerouteSucceeded
+                    ? computeRouteAwareCheckpointCost(
+                          *this, state, dfg, adg, flattener, *edgeKinds, opts,
+                          costState.totalCost)
+                    : std::numeric_limits<double>::infinity();
+            if (!rerouteSucceeded ||
+                reroutedObjective > routeCheckpointObjective + 1e-9) {
+              ++activeSearchSummary_.routeAwareCheckpointRestoreCount;
+              state.restore(routeCheckpointState);
+              *edgeKinds = routeCheckpointEdgeKinds;
+              costState = initializeSACostState(state, dfg, adg, flattener,
+                                                edgeWeights);
+              currentObjective = routeCheckpointObjective;
+            } else {
+              currentObjective = reroutedObjective;
+              routeCheckpointState = state.save();
+              routeCheckpointEdgeKinds = *edgeKinds;
+              routeCheckpointObjective = currentObjective;
+              if (currentObjective < bestCost) {
+                bestCost = currentObjective;
+                improvedBestThisIter = true;
+                adaptiveState.windowBestImprovements++;
+                adaptiveState.iterationsSinceBestImprovement = 0;
+                bestCheckpoint = state.save();
+              }
+            }
+            acceptedSinceRouteCheckpoint = 0;
+          }
+        }
+      }
     } else {
       state.rollbackSavepoint(savepoint);
       rollbackCostSavepoint(costState, costSavepoint);
+      if (routeAwareMode)
+        classifyTemporalRegisterEdges(state, dfg, adg, flattener, *edgeKinds);
     }
 
     ++adaptiveState.windowIterations;
@@ -490,6 +650,8 @@ rollback_move:
   }
 
   state.restore(bestCheckpoint);
+  if (edgeKinds)
+    classifyTemporalRegisterEdges(state, dfg, adg, flattener, *edgeKinds);
   if (opts.verbose) {
     llvm::outs() << "  SA: " << acceptCount << " accepted moves, best cost "
                  << bestCost << "\n";

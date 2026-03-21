@@ -36,12 +36,14 @@ double estimatePortDistance(IdIndex lhsPortId, IdIndex rhsPortId,
   if (!lhsPort || !rhsPort || lhsPort->parentNode == INVALID_ID ||
       rhsPort->parentNode == INVALID_ID)
     return 0.0;
-  auto [lhsRow, lhsCol] = flattener.getNodeGridPos(lhsPort->parentNode);
-  auto [rhsRow, rhsCol] = flattener.getNodeGridPos(rhsPort->parentNode);
-  if (lhsRow < 0 || lhsCol < 0 || rhsRow < 0 || rhsCol < 0)
-    return 0.0;
-  return static_cast<double>(std::abs(lhsRow - rhsRow) +
-                             std::abs(lhsCol - rhsCol));
+  const TopologyModel *topologyModel = getActiveTopologyModel();
+  if (topologyModel) {
+    return static_cast<double>(topologyModel->placementDistance(
+        lhsPort->parentNode, rhsPort->parentNode));
+  }
+  return static_cast<double>(placementDistance(lhsPort->parentNode,
+                                               rhsPort->parentNode,
+                                               flattener));
 }
 
 bool Mapper::runExactRoutingRepair(

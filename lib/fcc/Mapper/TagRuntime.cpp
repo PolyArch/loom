@@ -87,7 +87,8 @@ findMemoryRegionStartLane(IdIndex swNodeId, IdIndex hwNodeId,
     if (!swNode)
       return std::nullopt;
     DfgMemoryInfo memInfo = DfgMemoryInfo::extract(swNode, dfg, isExtMem);
-    auto laneRange = inferBridgeLaneRange(bridge, memInfo, swNode, state);
+    auto laneRange =
+        inferBridgeLaneRange(bridge, memInfo, swNode, dfg, state);
     if (!laneRange)
       return std::nullopt;
     return laneRange->start;

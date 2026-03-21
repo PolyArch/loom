@@ -511,7 +511,8 @@ collectMemoryRegionsForNode(IdIndex hwId, const MappingState &state,
     if (auto elemSize = getRegionElemSizeLog2(swNode, hwNode, dfg, adg))
       entry.elemSizeLog2 = *elemSize;
     if (bridge.hasBridge) {
-      auto laneRange = inferBridgeLaneRange(bridge, memInfo, swNode, state);
+      auto laneRange =
+          inferBridgeLaneRange(bridge, memInfo, swNode, dfg, state);
       if (laneRange) {
         entry.startLane = static_cast<int64_t>(laneRange->start);
         entry.endLane = static_cast<int64_t>(laneRange->end);

@@ -3,12 +3,24 @@
 // This file is compiled as part of the ConfigGen translation unit.
 
 #include "ConfigGenInternal.h"
+#include "fcc/Mapper/OpCompat.h"
 
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace fcc {
 namespace configgen_detail {
+
+namespace {
+
+bool isCommutativeTechMappedOp(llvm::StringRef opName) {
+  return opName == "arith.addi" || opName == "arith.addf" ||
+         opName == "arith.muli" || opName == "arith.mulf" ||
+         opName == "arith.andi" || opName == "arith.ori" ||
+         opName == "arith.xori";
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Switch config builders
@@ -212,12 +224,14 @@ GeneratedNodeConfig buildMemoryConfig(const Node *hwNode, IdIndex hwId,
   return cfg;
 }
 
-GeneratedNodeConfig buildFifoConfig(const Node *hwNode) {
-  GeneratedNodeConfig cfg;
-  if (!hwNode)
-    return cfg;
+namespace {
+
+bool getEffectiveFifoBypassed(const Node *hwNode, IdIndex hwId,
+                              const MappingState &state) {
   bool bypassable = false;
   bool bypassed = false;
+  if (!hwNode)
+    return false;
   for (const auto &attr : hwNode->attributes) {
     if (attr.getName() == "bypassable") {
       if (mlir::isa<mlir::BoolAttr>(attr.getValue()))
@@ -228,7 +242,34 @@ GeneratedNodeConfig buildFifoConfig(const Node *hwNode) {
     }
   }
   if (!bypassable)
+    return false;
+  if (hwId < state.hwNodeFifoBypassedOverride.size()) {
+    int8_t overrideValue = state.hwNodeFifoBypassedOverride[hwId];
+    if (overrideValue == 0)
+      return false;
+    if (overrideValue > 0)
+      return true;
+  }
+  return bypassed;
+}
+
+} // namespace
+
+GeneratedNodeConfig buildFifoConfig(const Node *hwNode, IdIndex hwId,
+                                    const MappingState &state) {
+  GeneratedNodeConfig cfg;
+  if (!hwNode)
     return cfg;
+  bool bypassable = false;
+  for (const auto &attr : hwNode->attributes) {
+    if (attr.getName() == "bypassable") {
+      if (mlir::isa<mlir::BoolAttr>(attr.getValue()))
+        bypassable = mlir::cast<mlir::BoolAttr>(attr.getValue()).getValue();
+    }
+  }
+  if (!bypassable)
+    return cfg;
+  bool bypassed = getEffectiveFifoBypassed(hwNode, hwId, state);
   cfg.words.push_back(bypassed ? 1u : 0u);
   return cfg;
 }
@@ -770,6 +811,38 @@ buildTemporalPEConfig(const PEContainment &pe, const MappingState &state,
   if (usedFUs.size() > pe.numInstruction)
     complete = false;
 
+  auto normalizeCommutativeInputSelects =
+      [&](IdIndex fuId, llvm::SmallVector<int, 4> &inputSelects) {
+        if (inputSelects.size() != 2 || fuId >= state.hwNodeToSwNodes.size() ||
+            state.hwNodeToSwNodes[fuId].size() != 1) {
+          return;
+        }
+        IdIndex swNodeId = state.hwNodeToSwNodes[fuId].front();
+        const Node *swNode = dfg.getNode(swNodeId);
+        if (!swNode ||
+            !isCommutativeTechMappedOp(getNodeAttrStr(swNode, "op_name")))
+          return;
+
+        auto regIt = temporalPlan.operandRegsByFU.find(fuId);
+        llvm::SmallVector<unsigned, 2> externalOperandIndices;
+        llvm::SmallVector<int, 2> externalSelects;
+        for (unsigned operandIdx = 0; operandIdx < inputSelects.size();
+             ++operandIdx) {
+          bool isReg = regIt != temporalPlan.operandRegsByFU.end() &&
+                       operandIdx < regIt->second.size() &&
+                       regIt->second[operandIdx].has_value();
+          if (isReg || inputSelects[operandIdx] < 0)
+            continue;
+          externalOperandIndices.push_back(operandIdx);
+          externalSelects.push_back(inputSelects[operandIdx]);
+        }
+        if (externalSelects.size() < 2)
+          return;
+        std::sort(externalSelects.begin(), externalSelects.end());
+        for (unsigned idx = 0; idx < externalOperandIndices.size(); ++idx)
+          inputSelects[externalOperandIndices[idx]] = externalSelects[idx];
+      };
+
   uint32_t bitPos = 0;
   for (unsigned slot = 0; slot < pe.numInstruction; ++slot) {
     bool valid = slot < usedFUs.size();
@@ -787,6 +860,7 @@ buildTemporalPEConfig(const PEContainment &pe, const MappingState &state,
         inputSelects = routes.inputPortSelects.lookup(fuId);
       if (routes.outputPortSelects.count(fuId))
         outputSelects = routes.outputPortSelects.lookup(fuId);
+      normalizeCommutativeInputSelects(fuId, inputSelects);
       auto tags = routes.tagsByFU.lookup(fuId);
       if (tags.empty()) {
         complete = false;
@@ -940,7 +1014,7 @@ bool ConfigGen::buildConfigArtifacts(const MappingState &state,
       else if (opKind == "map_tag")
         generated = buildMapTagConfig(hwNode, adg);
       else if (opKind == "fifo")
-        generated = buildFifoConfig(hwNode);
+        generated = buildFifoConfig(hwNode, hwId, state);
       else
         continue;
     } else if (resourceClass == "memory") {
@@ -1130,7 +1204,12 @@ bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
                          const Graph &adg, const ADGFlattener &flattener,
                          llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
                          llvm::ArrayRef<FUConfigSelection> fuConfigs,
-                         const std::string &basePath, int seed) {
+                         const std::string &basePath, int seed,
+                         const TechMapper::Plan *techMapPlan,
+                         const TechMapper::PlanMetrics *techMapMetrics,
+                         const MapperTimingSummary *timingSummary,
+                         const MapperSearchSummary *searchSummary,
+                         llvm::StringRef techMapDiagnostics) {
   using namespace configgen_detail;
 
   if (!buildConfigArtifacts(state, dfg, adg, flattener, edgeKinds, fuConfigs))
@@ -1142,10 +1221,14 @@ bool ConfigGen::generate(const MappingState &state, const Graph &dfg,
   if (!writeConfigHeader(getConfigHeaderFilename(basePath)))
     return false;
   if (!writeMapJson(state, dfg, adg, flattener, edgeKinds, fuConfigs,
-                    basePath + ".map.json", seed))
+                    basePath + ".map.json", seed, techMapPlan, techMapMetrics,
+                    timingSummary, searchSummary,
+                    techMapDiagnostics))
     return false;
   if (!writeMapText(state, dfg, adg, flattener, edgeKinds,
-                    basePath + ".map.txt"))
+                    basePath + ".map.txt", techMapPlan, techMapMetrics,
+                    timingSummary, searchSummary,
+                    techMapDiagnostics))
     return false;
   return true;
 }

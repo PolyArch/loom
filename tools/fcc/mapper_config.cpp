@@ -27,7 +27,15 @@ template <> struct MappingTraits<fcc::MapperRefinementOptions> {
     io.mapOptional("initial_temperature", opts.initialTemperature);
     io.mapOptional("cooling_rate", opts.coolingRate);
     io.mapOptional("adaptive_cooling_enabled", opts.adaptiveCoolingEnabled);
+    io.mapOptional("route_aware_neighborhood_enabled",
+                   opts.routeAwareNeighborhoodEnabled);
+    io.mapOptional("route_aware_checkpoint_enabled",
+                   opts.routeAwareCheckpointEnabled);
     io.mapOptional("adaptive_window", opts.adaptiveWindow);
+    io.mapOptional("route_aware_neighborhood_edge_cap",
+                   opts.routeAwareNeighborhoodEdgeCap);
+    io.mapOptional("route_aware_checkpoint_accepted_move_batch",
+                   opts.routeAwareCheckpointAcceptedMoveBatch);
     io.mapOptional("target_acceptance_low", opts.targetAcceptanceLow);
     io.mapOptional("target_acceptance_high", opts.targetAcceptanceHigh);
     io.mapOptional("cold_acceptance_reheat_multiplier",
@@ -50,6 +58,7 @@ template <> struct MappingTraits<fcc::MapperLaneOptions> {
   static void mapping(IO &io, fcc::MapperLaneOptions &opts) {
     io.mapOptional("auto_serial_node_threshold", opts.autoSerialNodeThreshold);
     io.mapOptional("auto_lane_cap", opts.autoLaneCap);
+    io.mapOptional("routing_beam_width", opts.routingBeamWidth);
     io.mapOptional("final_polish_reserve_fraction",
                    opts.finalPolishReserveFraction);
     io.mapOptional("lane_seed_stride", opts.laneSeedStride);
@@ -114,6 +123,31 @@ template <> struct MappingTraits<fcc::MapperCongestionOptions> {
     io.mapOptional("routing_output_history_decay",
                    opts.routingOutputHistoryDecay);
     io.mapOptional("early_termination_window", opts.earlyTerminationWindow);
+  }
+};
+
+template <> struct MappingTraits<fcc::MapperTimingOptions> {
+  static void mapping(IO &io, fcc::MapperTimingOptions &opts) {
+    io.mapOptional("recurrence_edge_weight_multiplier",
+                   opts.recurrenceEdgeWeightMultiplier);
+    io.mapOptional("recurrence_node_latency_weight",
+                   opts.recurrenceNodeLatencyWeight);
+    io.mapOptional("recurrence_node_interval_weight",
+                   opts.recurrenceNodeIntervalWeight);
+    io.mapOptional("combinational_node_delay", opts.combinationalNodeDelay);
+    io.mapOptional("routing_hop_delay", opts.routingHopDelay);
+  }
+};
+
+template <> struct MappingTraits<fcc::MapperBufferizationOptions> {
+  static void mapping(IO &io, fcc::MapperBufferizationOptions &opts) {
+    io.mapOptional("enabled", opts.enabled);
+    io.mapOptional("max_iterations", opts.maxIterations);
+    io.mapOptional("outer_joint_iterations", opts.outerJointIterations);
+    io.mapOptional("min_throughput_improvement",
+                   opts.minThroughputImprovement);
+    io.mapOptional("clock_tie_break_improvement",
+                   opts.clockTieBreakImprovement);
   }
 };
 
@@ -203,6 +237,7 @@ template <> struct MappingTraits<fcc::MapperLocalRepairExactOptions> {
 
 template <> struct MappingTraits<fcc::MapperLocalRepairOptions> {
   static void mapping(IO &io, fcc::MapperLocalRepairOptions &opts) {
+    io.mapOptional("enabled", opts.enabled);
     io.mapOptional("exact", opts.exact);
     io.mapOptional("micro_recursion_depth_limit",
                    opts.microRecursionDepthLimit);
@@ -325,6 +360,8 @@ template <> struct MappingTraits<fcc::MapperOptions> {
     io.mapOptional("lane", opts.lane);
     io.mapOptional("routing", opts.routing);
     io.mapOptional("congestion", opts.congestion);
+    io.mapOptional("timing", opts.timing);
+    io.mapOptional("bufferization", opts.bufferization);
     io.mapOptional("relaxed_routing", opts.relaxedRouting);
     io.mapOptional("cpsat_tuning", opts.cpSatTuning);
     io.mapOptional("local_repair", opts.localRepair);

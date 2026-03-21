@@ -40,6 +40,7 @@ struct ValueRef {
 struct TemplateOp {
   unsigned bodyOpIndex = 0;
   std::string opName;
+  bool commutative = false;
   llvm::SmallVector<ValueRef, 4> operands;
 };
 
@@ -55,16 +56,28 @@ struct VariantFamily {
   llvm::SmallVector<FUConfigField, 2> configFields;
   bool configurable = false;
 
-  bool isTechFamily() const { return configurable || ops.size() > 1; }
+  bool isTechFamily() const { return !ops.empty(); }
 };
 
 struct Match {
   unsigned familyIndex = 0;
   llvm::SmallVector<IdIndex, 4> swNodesByOp;
+  llvm::SmallVector<llvm::SmallVector<unsigned, 4>, 4> operandOrderByOp;
   llvm::SmallVector<TechMapper::PortBinding, 4> inputBindings;
   llvm::SmallVector<TechMapper::PortBinding, 4> outputBindings;
   llvm::SmallVector<IdIndex, 4> internalEdges;
   llvm::SmallVector<FUConfigField, 4> configFields;
+};
+
+struct FamilyMatch {
+  VariantFamily family;
+  Match match;
+};
+
+struct DemandMatchStats {
+  unsigned structuralStateCount = 0;
+  unsigned structuralStateCacheHitCount = 0;
+  unsigned structuralStateCacheMissCount = 0;
 };
 
 // Locate the ADG node for a function unit identified by PE name and FU name.
@@ -80,6 +93,13 @@ void collectVariantsForFU(fcc::fabric::FunctionUnitOp fuOp,
 std::vector<Match> findMatchesForFamily(const Graph &dfg,
                                         const VariantFamily &family,
                                         unsigned familyIndex);
+
+// Find all DFG match candidates for a given FunctionUnitOp without globally
+// enumerating every structural variant first.
+std::vector<FamilyMatch>
+findDemandDrivenMatchesForFU(const Graph &dfg, fcc::fabric::FunctionUnitOp fuOp,
+                             const Node *hwNode,
+                             DemandMatchStats *stats = nullptr);
 
 } // namespace techmapper_detail
 } // namespace fcc

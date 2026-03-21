@@ -38,9 +38,12 @@ The normative mapper pipeline is:
 
 More specifically:
 
-- Layer 2 tech-mapping may enumerate `fabric.mux` selections, derive an
-  effective FU graph, and contract a matched software subgraph into one
-  placeable unit
+- Layer 2 tech-mapping may instantiate configurable `fabric.function_unit`
+  bodies through demand-driven structural states, derive an effective FU graph,
+  and contract a matched software subgraph into one placeable unit
+- Layer 2 emits explicit support classes, config classes, temporal
+  compatibility, conservative fallback information, and DSE-facing metrics; the
+  mapper consumes that contract and must not rediscover it ad hoc
 - coarse placement may come from greedy placement or from a bounded CP-SAT
   solve on small enough problems
 - placement refinement may include route-aware simulated annealing and
@@ -74,6 +77,8 @@ The mapper consumes:
 - a DFG
 - an ADG
 - flattening metadata
+- a Layer-2 plan containing contracted-unit semantics, selected FU
+  configurations, config classes, and temporal-compatibility metadata
 - search policy such as seed, time budget, and mapper base configuration
 
 The mapper does not mutate hardware topology. It selects legal use of the
@@ -85,6 +90,7 @@ Compared with Loom, FCC mapping must account for:
 
 - explicit `function_unit` containment
 - FU-internal configuration selection
+- support-class capacity and config-class compatibility exported by Layer 2
 - non-positional PE port routing through muxes and demuxes
 - decomposable switch semantics
 - shared-memory bridge structure and runtime tag representability

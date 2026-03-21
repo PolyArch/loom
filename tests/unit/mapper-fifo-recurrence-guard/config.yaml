@@ -1,0 +1,14 @@
+version: 1
+
+mapper:
+  verbose: false
+  lanes: 1
+  timing:
+    combinational_node_delay: 1.0
+    routing_hop_delay: 4.0
+  bufferization:
+    enabled: true
+    max_iterations: 2
+    outer_joint_iterations: 1
+    min_throughput_improvement: 0.0
+    clock_tie_break_improvement: 0.0

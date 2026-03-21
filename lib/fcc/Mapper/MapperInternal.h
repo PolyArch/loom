@@ -5,7 +5,9 @@
 #include "fcc/Mapper/BridgeBinding.h"
 #include "fcc/Mapper/Graph.h"
 #include "fcc/Mapper/MappingState.h"
+#include "fcc/Mapper/MapperOptions.h"
 #include "fcc/Mapper/TechMapper.h"
+#include "fcc/Mapper/TopologyModel.h"
 
 #include "mlir/IR/BuiltinTypes.h"
 
@@ -45,6 +47,9 @@ bool sameConfigFields(llvm::ArrayRef<FUConfigField> lhs,
 
 // Tech mapping conflict detection.
 bool detectForcedTemporalConfigConflict(const TechMapper::Plan &plan,
+                                        const llvm::DenseMap<
+                                            IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
+                                        const Graph &dfg,
                                         const Graph &adg,
                                         std::string &diagnostics);
 
@@ -94,10 +99,16 @@ double computeLocalSpreadPenalty(IdIndex hwNode, const MappingState &state,
 CandidateSetMap buildCandidateSetMap(const CandidateMap &candidates);
 
 // Refinement/repair shared helpers.
-int manhattanDistance(IdIndex lhsHwNode, IdIndex rhsHwNode,
-                     const ADGFlattener &flattener);
+void setActiveTopologyModel(const TopologyModel *model);
+const TopologyModel *getActiveTopologyModel();
+void setActiveTimingOptions(const MapperTimingOptions *opts);
+const MapperTimingOptions *getActiveTimingOptions();
+int placementDistance(IdIndex lhsHwNode, IdIndex rhsHwNode,
+                      const ADGFlattener &flattener);
 bool isWithinMoveRadius(IdIndex lhsHwNode, IdIndex rhsHwNode,
                         const ADGFlattener &flattener, unsigned radius);
+double computeNodeTimingPenalty(IdIndex swNode, IdIndex hwNode,
+                                const Graph &dfg, const Graph &adg);
 bool canRelocateNode(
     IdIndex swNode, IdIndex newHwNode, IdIndex oldHwNode,
     const MappingState &state, const Graph &adg, const ADGFlattener &flattener,

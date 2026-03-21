@@ -10,8 +10,9 @@
 namespace fcc {
 
 /// Estimate per-switch-output routing demand based on current placement.
-/// For each DFG edge, compute bounding box of src/dst PEs, identify switch
-/// outputs in the bbox, and distribute demand proportionally.
+/// For each DFG edge, identify a topology-aware routing corridor between the
+/// mapped endpoints and distribute demand over routing crossbar outputs whose
+/// parent nodes lie close to that corridor.
 struct CongestionEstimator {
   /// Per switch output port demand estimate.
   llvm::DenseMap<IdIndex, double> switchOutputDemand;
@@ -20,8 +21,8 @@ struct CongestionEstimator {
   void estimate(const MappingState &state, const Graph &dfg, const Graph &adg,
                 const ADGFlattener &flattener);
 
-  /// Get the demand/capacity ratio sum for switch outputs in the bounding
-  /// box of the given src/dst HW node positions.
+  /// Get the demand/capacity ratio sum for switch outputs in the topology
+  /// corridor of the given src/dst HW node positions.
   double demandCapacityRatio(IdIndex srcHwNode, IdIndex dstHwNode,
                              const Graph &adg,
                              const ADGFlattener &flattener) const;

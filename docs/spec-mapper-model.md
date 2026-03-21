@@ -39,10 +39,17 @@ This contracted view is a planning artifact for Layer 3. It must preserve:
 - the original software edges that become FU-internal edges
 - the hardware FU instance and locked FU configuration associated with the
   contracted unit
+- the selected family identity, support class, and config class associated with
+  the contracted unit
 - the external software-to-hardware port bindings of the contracted unit
 
 Layer 3 may place and route the contracted view, but final reporting must be
 expanded back to the original software DFG.
+
+The contracted tech-mapped view must also carry one conservative fallback view
+for diagnostics and later feedback-driven reselection. That fallback view does
+not replace the selected plan during one mapping run, but it is part of the
+Layer-2 artifact contract.
 
 ## Canonical Route Semantics
 
@@ -206,6 +213,16 @@ to serialize:
 - result-tag defaults
 - internal temporal register assignments
 - persistent per-function_unit config state
+
+Temporal reuse legality is jointly defined by Layer 2 and Layer 3:
+
+- Layer 2 emits config classes plus an explicit compatibility relation between
+  those classes
+- Layer 3 enforces that two contracted units forced onto the same temporal
+  physical function unit may only share that instance when their config classes
+  are compatible
+- diagnostics must preserve both the config-class ids and enough stable class
+  identity to explain the rejection
 
 For current FCC register-backed temporal edges:
 

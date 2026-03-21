@@ -557,151 +557,165 @@ int main(int argc, char **argv) {
     }
 
     llvm::outs() << "fcc: running mapper...\n";
-    fcc::Mapper mapper;
     fcc::Mapper::Options mapOpts = args.mapperOptions;
     const bool snapshotEnabled =
         mapOpts.snapshotIntervalSeconds > 0.0 ||
         mapOpts.snapshotIntervalRounds > 0;
-    if (snapshotEnabled) {
-      const std::string snapshotDir = args.outputDir + "/mapper-snapshots";
-      auto snapshotSerial = std::make_shared<std::atomic<unsigned>>(0);
-      auto snapshotMutex = std::make_shared<std::mutex>();
-      mapper.setSnapshotCallback(
-          [snapshotDir, snapshotSerial, snapshotMutex, mixedStem,
-           &args, &adgModule, &context, &dfgBuilder, &dfgModule,
-           &flattener](const MappingState &snapshotState,
-                       llvm::ArrayRef<TechMappedEdgeKind> snapshotEdgeKinds,
-                       llvm::ArrayRef<FUConfigSelection> snapshotFuConfigs,
-                       llvm::StringRef trigger, unsigned mapperOrdinal) {
-            std::lock_guard<std::mutex> lock(*snapshotMutex);
-            if (llvm::sys::fs::create_directories(snapshotDir)) {
-              llvm::errs()
-                  << "fcc: warning: cannot create mapper snapshot dir "
-                  << snapshotDir << "\n";
-              return;
-            }
+    const std::string snapshotDir = args.outputDir + "/mapper-snapshots";
+    auto snapshotSerial = std::make_shared<std::atomic<unsigned>>(0);
+    auto snapshotMutex = std::make_shared<std::mutex>();
 
-            unsigned serial = snapshotSerial->fetch_add(1) + 1;
-            std::string triggerLabel = sanitizeSnapshotLabel(trigger);
-            std::string serialStr =
-                llvm::formatv("{0:0>4}", serial).str();
-            std::string ordinalStr =
-                llvm::formatv("{0:0>4}", mapperOrdinal).str();
-            std::string snapshotBase =
-                snapshotDir + "/" + mixedStem + ".snapshot-" + serialStr +
-                "." + triggerLabel + ".mapper-" + ordinalStr;
+    struct MappingAttemptView {
+      unsigned laneIndex = 0;
+      const MappingState *state = nullptr;
+      llvm::ArrayRef<TechMappedEdgeKind> edgeKinds;
+      llvm::ArrayRef<FUConfigSelection> fuConfigs;
+      const MapperTimingSummary *timingSummary = nullptr;
+      const MapperSearchSummary *searchSummary = nullptr;
+    };
 
-            fcc::ConfigGen snapshotConfigGen;
-            if (!snapshotConfigGen.generate(snapshotState, dfgBuilder.getDFG(),
-                                            flattener.getADG(), flattener,
-                                            snapshotEdgeKinds,
-                                            snapshotFuConfigs, snapshotBase,
-                                            args.mapperOptions.seed)) {
-              llvm::errs() << "fcc: warning: mapper snapshot config export "
-                              "failed for "
-                           << trigger << "\n";
-              return;
-            }
+    struct AttemptOutcome {
+      bool success = false;
+      bool fatal = false;
+      std::string error;
+    };
 
-            std::string snapshotVizPath = snapshotBase + ".viz.html";
-            std::string snapshotMapPath = snapshotBase + ".map.json";
-            if (failed(fcc::exportVizWithMapping(snapshotVizPath, *adgModule,
-                                                *dfgModule, snapshotMapPath,
-                                                args.adgPath, args.vizLayout,
-                                                &context))) {
-              llvm::errs()
-                  << "fcc: warning: mapper snapshot visualization failed for "
-                  << trigger << "\n";
-              return;
-            }
+    auto makeMapper = [&](int activeSeed) {
+      fcc::Mapper mapper;
+      if (snapshotEnabled) {
+        mapper.setSnapshotCallback(
+            [snapshotDir, snapshotSerial, snapshotMutex, mixedStem,
+             &args, &adgModule, &context, &dfgBuilder, &dfgModule,
+             &flattener, activeSeed](const MappingState &snapshotState,
+                                     llvm::ArrayRef<TechMappedEdgeKind>
+                                         snapshotEdgeKinds,
+                                     llvm::ArrayRef<FUConfigSelection>
+                                         snapshotFuConfigs,
+                                     llvm::StringRef trigger,
+                                     unsigned mapperOrdinal) {
+              std::lock_guard<std::mutex> lock(*snapshotMutex);
+              if (llvm::sys::fs::create_directories(snapshotDir)) {
+                llvm::errs()
+                    << "fcc: warning: cannot create mapper snapshot dir "
+                    << snapshotDir << "\n";
+                return;
+              }
 
-            llvm::outs() << "fcc: mapper snapshot " << serial << " ("
-                         << trigger << ")\n";
-            llvm::outs() << "  " << snapshotVizPath << "\n";
-          });
-    }
+              unsigned serial = snapshotSerial->fetch_add(1) + 1;
+              std::string triggerLabel = sanitizeSnapshotLabel(trigger);
+              std::string serialStr = llvm::formatv("{0:0>4}", serial).str();
+              std::string ordinalStr =
+                  llvm::formatv("{0:0>4}", mapperOrdinal).str();
+              std::string snapshotBase =
+                  snapshotDir + "/" + mixedStem + ".snapshot-" + serialStr +
+                  "." + triggerLabel + ".mapper-" + ordinalStr;
 
-    auto mapResult =
-        mapper.run(dfgBuilder.getDFG(), flattener.getADG(), flattener,
-                   *adgModule, mapOpts);
+              fcc::ConfigGen snapshotConfigGen;
+              if (!snapshotConfigGen.generate(snapshotState, dfgBuilder.getDFG(),
+                                              flattener.getADG(), flattener,
+                                              snapshotEdgeKinds,
+                                              snapshotFuConfigs, snapshotBase,
+                                              activeSeed, nullptr, nullptr,
+                                              nullptr, nullptr, "")) {
+                llvm::errs() << "fcc: warning: mapper snapshot config export "
+                                "failed for "
+                             << trigger << "\n";
+                return;
+              }
 
-    if (!mapResult.success) {
-      llvm::errs() << "fcc: mapping failed: " << mapResult.diagnostics << "\n";
-    }
+              std::string snapshotVizPath = snapshotBase + ".viz.html";
+              std::string snapshotMapPath = snapshotBase + ".map.json";
+              if (failed(fcc::exportVizWithMapping(snapshotVizPath, *adgModule,
+                                                  *dfgModule, snapshotMapPath,
+                                                  args.adgPath,
+                                                  args.vizLayout, &context))) {
+                llvm::errs()
+                    << "fcc: warning: mapper snapshot visualization failed for "
+                    << trigger << "\n";
+                return;
+              }
 
-    llvm::outs() << "fcc: generating config...\n";
-    fcc::ConfigGen configGen;
-    if (!configGen.generate(mapResult.state, dfgBuilder.getDFG(),
-                            flattener.getADG(), flattener,
-                            mapResult.edgeKinds, mapResult.fuConfigs, mixedBase,
-                            args.mapperOptions.seed)) {
-      llvm::errs() << "fcc: config generation failed\n";
-      return 1;
-    }
-    llvm::outs() << "fcc: mapping output:\n";
-    llvm::outs() << "  " << mixedBase << ".config.bin\n";
-    llvm::outs() << "  " << mixedBase << ".config.json\n";
-    llvm::outs() << "  " << mixedBase << ".config.h\n";
-    llvm::outs() << "  " << mixedBase << ".map.json\n";
-    llvm::outs() << "  " << mixedBase << ".map.txt\n";
-    if (!configGen.isConfigComplete()) {
-      llvm::outs() << "fcc: warning: config artifacts include all currently "
-                      "serialized slice families, but some slice contents are "
-                      "still incomplete\n";
-    }
-
-    // Generate visualization with mapping data
-    std::string vizPath = mixedBase + ".viz.html";
-    std::string mapJsonPath = mixedBase + ".map.json";
-    llvm::outs() << "fcc: generating visualization...\n";
-
-    // We need the original MLIR modules for viz serialization.
-    // adgModule is already loaded above. dfgModule is the parameter.
-    if (failed(fcc::exportVizWithMapping(vizPath, *adgModule, *dfgModule,
-                                        mapJsonPath, args.adgPath,
-                                        args.vizLayout,
-                                        &context))) {
-      llvm::errs() << "fcc: warning: visualization generation failed\n";
-    } else {
-      llvm::outs() << "  " << vizPath << "\n";
-    }
-
-    if (!mapResult.success)
-      return 1;
-
-    std::string runtimeManifestPath = mixedBase + ".runtime.json";
-    std::string runtimeImagePath = mixedBase + ".simimage.json";
-    std::string runtimeImageBinPath = mixedBase + ".simimage.bin";
-    fcc::sim::RuntimeImage runtimeImage;
-    {
-      std::string runtimeImageError;
-      if (!fcc::sim::buildRuntimeImage(
-              dfgBuilder.getDFG(), flattener.getADG(), mapResult.state,
-              flattener.getPEContainment(), configGen.getConfigSlices(),
-              configGen.getConfigWords(), runtimeImage, runtimeImageError) ||
-          !fcc::sim::writeRuntimeImageJson(runtimeImage, runtimeImagePath,
-                                           runtimeImageError) ||
-          !fcc::sim::writeRuntimeImageBinary(runtimeImage, runtimeImageBinPath,
-                                             runtimeImageError)) {
-        llvm::errs() << "fcc: failed to write runtime image: "
-                     << runtimeImageError << "\n";
-        return 1;
+              llvm::outs() << "fcc: mapper snapshot " << serial << " ("
+                           << trigger << ")\n";
+              llvm::outs() << "  " << snapshotVizPath << "\n";
+            });
       }
-    }
-    llvm::outs() << "  " << runtimeImagePath << "\n";
-    llvm::outs() << "  " << runtimeImageBinPath << "\n";
-    if (!writeRuntimeManifest(runtimeManifestPath, mixedStem,
-                              selectedDfgPath, args.adgPath,
-                              mixedBase + ".config.bin", runtimeImagePath,
-                              runtimeImageBinPath,
-                              dfgBuilder.getDFG(), flattener.getADG(),
-                              mapResult.state)) {
-      llvm::errs() << "fcc: failed to write runtime manifest\n";
-      return 1;
-    }
-    llvm::outs() << "  " << runtimeManifestPath << "\n";
+      return mapper;
+    };
 
-    if (args.simulate) {
+    auto runMappingAttempt =
+        [&](const fcc::Mapper::Result &mapResult, int activeSeed,
+            const MappingAttemptView &attempt) -> AttemptOutcome {
+      llvm::outs() << "fcc: generating config...\n";
+      fcc::ConfigGen configGen;
+      if (!configGen.generate(*attempt.state, dfgBuilder.getDFG(),
+                              flattener.getADG(), flattener, attempt.edgeKinds,
+                              attempt.fuConfigs, mixedBase, activeSeed,
+                              &mapResult.techMapPlan,
+                              &mapResult.techMapMetrics, attempt.timingSummary,
+                              attempt.searchSummary,
+                              mapResult.techMapDiagnostics)) {
+        return {false, true, "fcc: config generation failed"};
+      }
+      llvm::outs() << "fcc: mapping output:\n";
+      llvm::outs() << "  " << mixedBase << ".config.bin\n";
+      llvm::outs() << "  " << mixedBase << ".config.json\n";
+      llvm::outs() << "  " << mixedBase << ".config.h\n";
+      llvm::outs() << "  " << mixedBase << ".map.json\n";
+      llvm::outs() << "  " << mixedBase << ".map.txt\n";
+      if (!configGen.isConfigComplete()) {
+        llvm::outs() << "fcc: warning: config artifacts include all currently "
+                        "serialized slice families, but some slice contents are "
+                        "still incomplete\n";
+      }
+
+      std::string vizPath = mixedBase + ".viz.html";
+      std::string mapJsonPath = mixedBase + ".map.json";
+      llvm::outs() << "fcc: generating visualization...\n";
+      if (failed(fcc::exportVizWithMapping(vizPath, *adgModule, *dfgModule,
+                                          mapJsonPath, args.adgPath,
+                                          args.vizLayout, &context))) {
+        llvm::errs() << "fcc: warning: visualization generation failed\n";
+      } else {
+        llvm::outs() << "  " << vizPath << "\n";
+      }
+
+      if (!mapResult.success)
+        return {true, false, ""};
+
+      std::string runtimeManifestPath = mixedBase + ".runtime.json";
+      std::string runtimeImagePath = mixedBase + ".simimage.json";
+      std::string runtimeImageBinPath = mixedBase + ".simimage.bin";
+      fcc::sim::RuntimeImage runtimeImage;
+      {
+        std::string runtimeImageError;
+        if (!fcc::sim::buildRuntimeImage(
+                dfgBuilder.getDFG(), flattener.getADG(), *attempt.state,
+                flattener.getPEContainment(), configGen.getConfigSlices(),
+                configGen.getConfigWords(), runtimeImage, runtimeImageError) ||
+            !fcc::sim::writeRuntimeImageJson(runtimeImage, runtimeImagePath,
+                                             runtimeImageError) ||
+            !fcc::sim::writeRuntimeImageBinary(runtimeImage,
+                                               runtimeImageBinPath,
+                                               runtimeImageError)) {
+          return {false, true,
+                  "fcc: failed to write runtime image: " + runtimeImageError};
+        }
+      }
+      llvm::outs() << "  " << runtimeImagePath << "\n";
+      llvm::outs() << "  " << runtimeImageBinPath << "\n";
+      if (!writeRuntimeManifest(runtimeManifestPath, mixedStem,
+                                selectedDfgPath, args.adgPath,
+                                mixedBase + ".config.bin", runtimeImagePath,
+                                runtimeImageBinPath, dfgBuilder.getDFG(),
+                                flattener.getADG(), *attempt.state)) {
+        return {false, true, "fcc: failed to write runtime manifest"};
+      }
+      llvm::outs() << "  " << runtimeManifestPath << "\n";
+
+      if (!args.simulate)
+        return {true, false, ""};
+
       llvm::outs() << "fcc: running standalone simulation...\n";
       fcc::sim::SimConfig simConfig;
       simConfig.maxCycles = args.simMaxCycles;
@@ -713,22 +727,20 @@ int main(int argc, char **argv) {
         std::string bundleError;
         if (!fcc::sim::loadSimulationBundle(args.simBundlePath, bundle,
                                             bundleError)) {
-          llvm::errs() << "fcc: failed to load simulation bundle: "
-                       << bundleError << "\n";
-          return 1;
+          return {false, true,
+                  "fcc: failed to load simulation bundle: " + bundleError};
         }
         if (!fcc::sim::resolveSimulationBundle(
-                bundle, dfgBuilder.getDFG(), flattener.getADG(),
-                mapResult.state, resolvedBundle, bundleError)) {
-          llvm::errs() << "fcc: failed to resolve simulation bundle: "
-                       << bundleError << "\n";
-          return 1;
+                bundle, dfgBuilder.getDFG(), flattener.getADG(), *attempt.state,
+                resolvedBundle, bundleError)) {
+          return {false, true,
+                  "fcc: failed to resolve simulation bundle: " + bundleError};
         }
         synthSetup = resolvedBundle.setup;
         hasResolvedBundle = true;
       } else {
         synthSetup = fcc::sim::synthesizeSimulationSetup(
-            dfgBuilder.getDFG(), flattener.getADG(), mapResult.state);
+            dfgBuilder.getDFG(), flattener.getADG(), *attempt.state);
       }
       std::string tracePath = mixedBase + ".sim.trace";
       std::string statPath = mixedBase + ".sim.stat";
@@ -738,67 +750,60 @@ int main(int argc, char **argv) {
       fcc::sim::SimSession session(nullptr, simConfig);
       fcc::sim::SimArtifactWriter artifactWriter;
 
-      if (std::string err = session.connect(); !err.empty()) {
-        llvm::errs() << "fcc: simulation setup failed: " << err << "\n";
-        return 1;
-      }
+      if (std::string err = session.connect(); !err.empty())
+        return {false, true, "fcc: simulation setup failed: " + err};
       if (std::string err =
               session.buildFromStaticModel(std::move(runtimeImage.staticModel));
           !err.empty()) {
-        llvm::errs() << "fcc: simulation graph build failed: " << err << "\n";
-        return 1;
+        return {false, true, "fcc: simulation graph build failed: " + err};
       }
-      if (std::string err = session.loadConfig(configGen.getConfigBlob(),
-                                               configGen.getConfigSlices());
+      if (std::string err =
+              session.loadConfig(configGen.getConfigBlob(),
+                                 configGen.getConfigSlices());
           !err.empty()) {
-        llvm::errs() << "fcc: simulation config load failed: " << err << "\n";
-        return 1;
+        return {false, true, "fcc: simulation config load failed: " + err};
       }
 
-      if (!fcc::sim::writeSetupManifest(synthSetup, setupPath)) {
-        llvm::errs() << "fcc: failed to write simulation setup manifest\n";
-        return 1;
-      }
+      if (!fcc::sim::writeSetupManifest(synthSetup, setupPath))
+        return {false, true, "fcc: failed to write simulation setup manifest"};
 
       for (const auto &input : synthSetup.inputs) {
         if (std::string err =
                 session.setInput(input.portIdx, input.data, input.tags);
             !err.empty()) {
-          llvm::errs() << "fcc: failed to bind synthetic input port "
-                       << input.portIdx << ": " << err << "\n";
-          return 1;
+          return {false, true,
+                  "fcc: failed to bind synthetic input port " +
+                      std::to_string(input.portIdx) + ": " + err};
         }
       }
 
       std::vector<std::vector<uint8_t>> regionStorage;
       regionStorage.reserve(synthSetup.memoryRegions.size());
-      for (const auto &region : synthSetup.memoryRegions) {
+      for (const auto &region : synthSetup.memoryRegions)
         regionStorage.push_back(region.data);
-      }
       for (size_t idx = 0; idx < synthSetup.memoryRegions.size(); ++idx) {
         const auto &region = synthSetup.memoryRegions[idx];
         auto &bytes = regionStorage[idx];
         if (std::string err = session.setExtMemoryBacking(
                 region.regionId, bytes.data(), bytes.size());
             !err.empty()) {
-          llvm::errs() << "fcc: failed to bind synthetic memory region "
-                       << region.regionId << ": " << err << "\n";
-          return 1;
+          return {false, true,
+                  "fcc: failed to bind synthetic memory region " +
+                      std::to_string(region.regionId) + ": " + err};
         }
       }
 
       auto [simResult, invokeErr] = session.invoke();
       std::vector<SynthesizedOutputInfo> synthesizedOutputs =
           collectSynthesizedOutputs(dfgBuilder.getDFG(), flattener.getADG(),
-                                    mapResult.state);
+                                    *attempt.state);
       if (!artifactWriter.writeTrace(simResult, tracePath) ||
           !artifactWriter.writeStat(simResult, statPath) ||
           !writeStandaloneSimulationResult(resultPath, tracePath, statPath,
                                            simResult, session,
                                            synthesizedOutputs, synthSetup,
                                            regionStorage)) {
-        llvm::errs() << "fcc: failed to write simulation artifacts\n";
-        return 1;
+        return {false, true, "fcc: failed to write simulation artifacts"};
       }
 
       llvm::outs() << "  " << tracePath << "\n";
@@ -806,30 +811,24 @@ int main(int argc, char **argv) {
       llvm::outs() << "  " << setupPath << "\n";
       llvm::outs() << "  " << resultPath << "\n";
 
-      if (!invokeErr.empty()) {
-        llvm::errs() << "fcc: simulation invocation failed: " << invokeErr
-                     << "\n";
-        return 1;
-      }
-      if (!simResult.success) {
-        llvm::errs() << "fcc: simulation failed: " << simResult.errorMessage
-                     << "\n";
-        return 1;
-      }
+      if (!invokeErr.empty())
+        return {false, true, "fcc: simulation invocation failed: " + invokeErr};
+      if (!simResult.success)
+        return {false, false,
+                "fcc: simulation failed: " + simResult.errorMessage};
       if (hasResolvedBundle) {
         fcc::sim::SimValidationReport report =
             fcc::sim::validateSimulationBundle(session, resolvedBundle);
         if (!fcc::sim::writeValidationReport(report, reportPath)) {
-          llvm::errs() << "fcc: failed to write simulation validation report\n";
-          return 1;
+          return {false, true,
+                  "fcc: failed to write simulation validation report"};
         }
         llvm::outs() << "  " << reportPath << "\n";
         if (!report.pass) {
-          llvm::errs() << "fcc: simulation validation failed";
+          std::string error = "fcc: simulation validation failed";
           if (!report.diagnostics.empty())
-            llvm::errs() << ": " << report.diagnostics.front();
-          llvm::errs() << "\n";
-          return 1;
+            error += ": " + report.diagnostics.front();
+          return {false, false, error};
         }
       }
 
@@ -839,8 +838,78 @@ int main(int argc, char **argv) {
         llvm::errs() << "fcc: warning: visualization refresh after simulation "
                         "failed\n";
       }
+      return {true, false, ""};
+    };
+
+    const unsigned remapAttemptCount = args.simulate ? 4u : 1u;
+    const int remapSeedStride = static_cast<int>(
+        std::max(1u, args.mapperOptions.lane.restartSeedStride));
+    std::string lastSimulationError;
+    for (unsigned remapAttempt = 0; remapAttempt < remapAttemptCount;
+         ++remapAttempt) {
+      int activeSeed =
+          args.mapperOptions.seed + static_cast<int>(remapAttempt) *
+                                        remapSeedStride;
+      fcc::Mapper mapper = makeMapper(activeSeed);
+      fcc::Mapper::Options activeMapOpts = mapOpts;
+      activeMapOpts.seed = activeSeed;
+      auto mapResult =
+          mapper.run(dfgBuilder.getDFG(), flattener.getADG(), flattener,
+                     *adgModule, activeMapOpts);
+
+      if (!mapResult.success) {
+        llvm::errs() << "fcc: mapping failed: " << mapResult.diagnostics
+                     << "\n";
+      }
+
+      MappingAttemptView selectedAttempt{mapResult.selectedLaneIndex,
+                                         &mapResult.state,
+                                         mapResult.edgeKinds,
+                                         mapResult.fuConfigs,
+                                         &mapResult.timingSummary,
+                                         &mapResult.searchSummary};
+      AttemptOutcome selectedOutcome =
+          runMappingAttempt(mapResult, activeSeed, selectedAttempt);
+      if (selectedOutcome.success)
+        return mapResult.success ? 0 : 1;
+      if (selectedOutcome.fatal) {
+        llvm::errs() << selectedOutcome.error << "\n";
+        return 1;
+      }
+
+      lastSimulationError = selectedOutcome.error;
+      llvm::errs() << selectedOutcome.error << "\n";
+      for (const auto &alternative : mapResult.routedAlternatives) {
+        llvm::outs() << "fcc: retrying standalone simulation with routed lane "
+                     << alternative.laneIndex << "...\n";
+        MappingAttemptView alternativeAttempt{alternative.laneIndex,
+                                              &alternative.state,
+                                              alternative.edgeKinds,
+                                              alternative.fuConfigs,
+                                              &alternative.timingSummary,
+                                              &alternative.searchSummary};
+        AttemptOutcome alternativeOutcome =
+            runMappingAttempt(mapResult, activeSeed, alternativeAttempt);
+        if (alternativeOutcome.success)
+          return 0;
+        if (alternativeOutcome.fatal) {
+          llvm::errs() << alternativeOutcome.error << "\n";
+          return 1;
+        }
+        lastSimulationError = alternativeOutcome.error;
+        llvm::errs() << alternativeOutcome.error << "\n";
+      }
+
+      if (!args.simulate)
+        return 1;
+      if (remapAttempt + 1 < remapAttemptCount) {
+        llvm::outs() << "fcc: remapping after simulation failure with seed "
+                     << (activeSeed + remapSeedStride) << "...\n";
+      }
     }
-    return 0;
+    if (!lastSimulationError.empty())
+      llvm::errs() << lastSimulationError << "\n";
+    return 1;
   };
 
   // ===== Viz-only mode: just visualize, no mapping =====

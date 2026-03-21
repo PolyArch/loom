@@ -9,7 +9,11 @@ struct MapperRefinementOptions {
   double initialTemperature = 100.0;
   double coolingRate = 0.995;
   bool adaptiveCoolingEnabled = true;
+  bool routeAwareNeighborhoodEnabled = true;
+  bool routeAwareCheckpointEnabled = true;
   unsigned adaptiveWindow = 128;
+  unsigned routeAwareNeighborhoodEdgeCap = 16;
+  unsigned routeAwareCheckpointAcceptedMoveBatch = 8;
   double targetAcceptanceLow = 0.12;
   double targetAcceptanceHigh = 0.55;
   double coldAcceptanceReheatMultiplier = 1.1;
@@ -27,6 +31,7 @@ struct MapperRefinementOptions {
 struct MapperLaneOptions {
   unsigned autoSerialNodeThreshold = 16;
   unsigned autoLaneCap = 4;
+  unsigned routingBeamWidth = 0;
   double finalPolishReserveFraction = 0.15;
   unsigned laneSeedStride = 7919;
   unsigned restartSeedStride = 104729;
@@ -71,6 +76,22 @@ struct MapperCongestionOptions {
   double routingOutputHistoryBump = 0.2;
   double routingOutputHistoryDecay = 0.95;
   unsigned earlyTerminationWindow = 3;
+};
+
+struct MapperTimingOptions {
+  double recurrenceEdgeWeightMultiplier = 2.5;
+  double recurrenceNodeLatencyWeight = 1.0;
+  double recurrenceNodeIntervalWeight = 2.0;
+  double combinationalNodeDelay = 1.0;
+  double routingHopDelay = 0.1;
+};
+
+struct MapperBufferizationOptions {
+  bool enabled = true;
+  unsigned maxIterations = 4;
+  unsigned outerJointIterations = 2;
+  double minThroughputImprovement = 1e-6;
+  double clockTieBreakImprovement = 1e-6;
 };
 
 struct MapperRelaxedRoutingOptions {
@@ -133,6 +154,7 @@ struct MapperLocalRepairExactOptions {
 };
 
 struct MapperLocalRepairOptions {
+  bool enabled = true;
   MapperLocalRepairExactOptions exact;
   unsigned microRecursionDepthLimit = 4;
   unsigned defaultRecursionDepthLimit = 2;
@@ -216,6 +238,8 @@ struct MapperOptions {
   MapperLaneOptions lane;
   MapperRoutingStrategyOptions routing;
   MapperCongestionOptions congestion;
+  MapperTimingOptions timing;
+  MapperBufferizationOptions bufferization;
   MapperRelaxedRoutingOptions relaxedRouting;
   MapperCPSatTuningOptions cpSatTuning;
   MapperLocalRepairOptions localRepair;

@@ -232,7 +232,8 @@ GeneratedNodeConfig buildMapTagConfig(const Node *hwNode, const Graph &adg);
 GeneratedNodeConfig buildMemoryConfig(const Node *hwNode, IdIndex hwId,
                                       const MappingState &state,
                                       const Graph &dfg, const Graph &adg);
-GeneratedNodeConfig buildFifoConfig(const Node *hwNode);
+GeneratedNodeConfig buildFifoConfig(const Node *hwNode, IdIndex hwId,
+                                    const MappingState &state);
 
 const FUConfigSelection *
 findFUConfigSelection(llvm::ArrayRef<FUConfigSelection> fuConfigs,

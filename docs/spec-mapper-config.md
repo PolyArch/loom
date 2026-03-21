@@ -58,7 +58,16 @@ The `mapper` mapping contains:
 - promoted top-level controls such as budget, seed, lane count, and CP-SAT
   enablement
 - grouped sub-maps such as `refinement`, `lane`, `routing`, `congestion`,
-  `cpsat_tuning`, and `local_repair`
+  `timing`, `bufferization`, `cpsat_tuning`, and `local_repair`
+
+The `lane` map owns speculative-lane generation and staged narrowing. Its
+fields control:
+
+- automatic serial fallback and auto lane-cap behavior
+- optional routing-stage beam width after placement/refinement lanes are scored
+- seed spacing and restart spacing between lanes
+- budget reservation for final polish on the selected lane
+- minimum CP-SAT time floors for preferred global and boundary-repair lanes
 
 The `congestion` map owns negotiated-routing feedback controls such as:
 
@@ -67,6 +76,31 @@ The `congestion` map owns negotiated-routing feedback controls such as:
 - historical-congestion decay
 - routing-output history bump and decay
 - early-termination window for non-improving negotiated iterations
+
+The `timing` map owns mapper timing-proxy and timing-summary constants, including:
+
+- recurrence-edge weight amplification used by placement and repair heuristics
+- recurrence-node latency and interval penalties used when choosing hardware
+  candidates for recurrence-critical software nodes
+- surrogate combinational node delay used by mapper timing analysis
+- surrogate routed-hop delay used by mapper timing analysis
+
+The `bufferization` map owns the post-route FIFO-only timing-cut loop. Its
+fields control:
+
+- enablement
+- the maximum number of accepted FIFO buffering toggles
+- the maximum number of outer joint PnR and FIFO-bufferization rounds
+- the minimum throughput-cost improvement required for acceptance
+- the minimum clock-period improvement used as a tie-breaker when throughput
+  cost remains unchanged
+
+The `local_repair` map owns the post-routing repair stack. Its fields control:
+
+- global enablement so ablation and benchmark runs can disable local repair
+- exact-neighborhood repair thresholds and deadlines
+- focused hotspot and residual repair tuning
+- CP-SAT escalation thresholds used inside local repair
 
 The `relaxed_routing` map owns an optional negotiated-routing extension that
 permits temporary overuse of non-tagged switch-owned routing outputs during one
@@ -83,6 +117,10 @@ The `refinement` map owns simulated-annealing placement tuning, including:
 
 - geometric cooling (`initial_temperature`, `cooling_rate`)
 - adaptive cooling enablement and acceptance-ratio windowing
+- coarse route-checkpoint reroute/rescore enablement and the accepted-move
+  batch size that triggers it
+- route-aware accepted-move neighborhood reroute enablement and its
+  neighborhood-size cap
 - cold-search reheating and hot-search extra cooling multipliers
 - plateau reheating thresholds and temperature clamps
 
@@ -174,6 +212,15 @@ Validation also covers:
 - `refinement.hot_acceptance_cooling_multiplier` must be within `[0, 1]`
 - `refinement.min_temperature` and `refinement.adaptive_window` must be
   positive
+- `timing.recurrence_edge_weight_multiplier`,
+  `timing.combinational_node_delay`, and `timing.routing_hop_delay` must be
+  positive
+- `timing.recurrence_node_latency_weight` and
+  `timing.recurrence_node_interval_weight` must be non-negative
+- `bufferization.max_iterations` must be positive
+- `bufferization.outer_joint_iterations` must be positive
+- `bufferization.min_throughput_improvement` and
+  `bufferization.clock_tie_break_improvement` must be non-negative
 
 ## Related Documents
 

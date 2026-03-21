@@ -1,11 +1,13 @@
 #include "fcc/Mapper/Mapper.h"
 #include "fcc/Mapper/MapperRelaxedRouting.h"
+#include "fcc/Mapper/MapperTiming.h"
 #include "ConfigGenInternal.h"
 #include "MapperCongestionEstimator.h"
 #include "MapperInternal.h"
 #include "MapperRoutingCongestion.h"
 #include "fcc/Mapper/BridgeBinding.h"
 #include "fcc/Mapper/TypeCompat.h"
+#include "fcc/Mapper/TopologyModel.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -52,6 +54,9 @@ struct LaneAttempt {
   unsigned routedEdges = 0;
   size_t totalPathLen = std::numeric_limits<size_t>::max();
   double placementCost = std::numeric_limits<double>::infinity();
+  double throughputCost = std::numeric_limits<double>::infinity();
+  double estimatedClockPeriod = std::numeric_limits<double>::infinity();
+  MapperSearchSummary searchSummary;
   std::string budgetExceededStage;
   MappingState state;
   std::vector<TechMappedEdgeKind> edgeKinds;
@@ -64,11 +69,124 @@ bool isBetterLaneResult(const LaneAttempt &lhs, const LaneAttempt &rhs) {
     return lhs.routingSucceeded;
   if (lhs.budgetExceeded != rhs.budgetExceeded)
     return !lhs.budgetExceeded;
+  if (std::abs(lhs.throughputCost - rhs.throughputCost) > 1e-9)
+    return lhs.throughputCost < rhs.throughputCost;
+  if (std::abs(lhs.estimatedClockPeriod - rhs.estimatedClockPeriod) > 1e-9)
+    return lhs.estimatedClockPeriod < rhs.estimatedClockPeriod;
   if (lhs.totalPathLen != rhs.totalPathLen)
     return lhs.totalPathLen < rhs.totalPathLen;
   if (std::abs(lhs.placementCost - rhs.placementCost) > 1e-9)
     return lhs.placementCost < rhs.placementCost;
   return lhs.laneIndex < rhs.laneIndex;
+}
+
+bool isBetterPlacementSeed(const LaneAttempt &lhs, const LaneAttempt &rhs) {
+  if (lhs.placementSucceeded != rhs.placementSucceeded)
+    return lhs.placementSucceeded;
+  if (lhs.budgetExceeded != rhs.budgetExceeded)
+    return !lhs.budgetExceeded;
+  if (std::abs(lhs.throughputCost - rhs.throughputCost) > 1e-9)
+    return lhs.throughputCost < rhs.throughputCost;
+  if (std::abs(lhs.estimatedClockPeriod - rhs.estimatedClockPeriod) > 1e-9)
+    return lhs.estimatedClockPeriod < rhs.estimatedClockPeriod;
+  if (std::abs(lhs.placementCost - rhs.placementCost) > 1e-9)
+    return lhs.placementCost < rhs.placementCost;
+  return lhs.laneIndex < rhs.laneIndex;
+}
+
+bool isBypassableFifoNode(const Node *hwNode) {
+  if (!hwNode || getNodeAttrStr(hwNode, "op_kind") != "fifo")
+    return false;
+  for (const auto &attr : hwNode->attributes) {
+    if (attr.getName() == "bypassable") {
+      if (auto boolAttr = mlir::dyn_cast<mlir::BoolAttr>(attr.getValue()))
+        return boolAttr.getValue();
+    }
+  }
+  return false;
+}
+
+bool getDefaultFifoBypassed(const Node *hwNode) {
+  if (!hwNode)
+    return false;
+  for (const auto &attr : hwNode->attributes) {
+    if (attr.getName() == "bypassed") {
+      if (auto boolAttr = mlir::dyn_cast<mlir::BoolAttr>(attr.getValue()))
+        return boolAttr.getValue();
+    }
+  }
+  return false;
+}
+
+bool isEffectiveFifoBypassed(IdIndex hwNodeId, const MappingState &state,
+                             const Graph &adg) {
+  const Node *hwNode = adg.getNode(hwNodeId);
+  if (!isBypassableFifoNode(hwNode))
+    return false;
+  if (hwNodeId < state.hwNodeFifoBypassedOverride.size()) {
+    int8_t overrideValue = state.hwNodeFifoBypassedOverride[hwNodeId];
+    if (overrideValue == 0)
+      return false;
+    if (overrideValue > 0)
+      return true;
+  }
+  return getDefaultFifoBypassed(hwNode);
+}
+
+bool pathTouchesHwNode(llvm::ArrayRef<IdIndex> path, IdIndex hwNodeId,
+                       const Graph &adg) {
+  for (IdIndex portId : path) {
+    const Port *port = adg.getPort(portId);
+    if (port && port->parentNode == hwNodeId)
+      return true;
+  }
+  return false;
+}
+
+bool isCarryNextEdge(IdIndex edgeId, const Graph &dfg) {
+  const Edge *edge = dfg.getEdge(edgeId);
+  if (!edge)
+    return false;
+  const Port *dstPort = dfg.getPort(edge->dstPort);
+  if (!dstPort || dstPort->parentNode == INVALID_ID)
+    return false;
+  const Node *dstNode = dfg.getNode(dstPort->parentNode);
+  if (!dstNode || dstNode->inputPorts.size() < 3)
+    return false;
+  llvm::StringRef opName = getNodeAttrStr(dstNode, "op_name");
+  bool isCarryNode = opName == "dataflow.carry";
+  if (!isCarryNode && opName == "techmap_group") {
+    llvm::StringRef familySignature =
+        getNodeAttrStr(dstNode, "techmap_family_signature");
+    isCarryNode = familySignature.contains("dataflow.carry:");
+  }
+  return isCarryNode && edge->dstPort == dstNode->inputPorts[2];
+}
+
+bool isBetterTimingSummary(const MapperTimingSummary &lhs,
+                           const MapperTimingSummary &rhs,
+                           const MapperBufferizationOptions &opts) {
+  if (lhs.estimatedThroughputCost + opts.minThroughputImprovement <
+      rhs.estimatedThroughputCost) {
+    return true;
+  }
+  if (rhs.estimatedThroughputCost + opts.minThroughputImprovement <
+      lhs.estimatedThroughputCost) {
+    return false;
+  }
+  if (lhs.estimatedClockPeriod + opts.clockTieBreakImprovement <
+      rhs.estimatedClockPeriod) {
+    return true;
+  }
+  if (rhs.estimatedClockPeriod + opts.clockTieBreakImprovement <
+      lhs.estimatedClockPeriod) {
+    return false;
+  }
+  if (lhs.estimatedInitiationInterval != rhs.estimatedInitiationInterval)
+    return lhs.estimatedInitiationInterval < rhs.estimatedInitiationInterval;
+  if (lhs.forcedBufferedFifoCount != rhs.forcedBufferedFifoCount)
+    return lhs.forcedBufferedFifoCount < rhs.forcedBufferedFifoCount;
+  return false;
 }
 
 std::vector<IdIndex> collectCriticalBoundaryEdges(const Graph &dfg) {
@@ -459,6 +577,7 @@ bool Mapper::rebindScalarInputSentinels(MappingState &state, const Graph &dfg,
   llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> candidateInputs;
   llvm::DenseMap<uint64_t, double> assignmentCostCache;
   llvm::DenseMap<IdIndex, double> emptyRoutingHistory;
+  const TopologyModel *topologyModel = getActiveTopologyModel();
   auto estimateAssignmentCost = [&](IdIndex swSentinel, IdIndex adgSentinel) {
     uint64_t cacheKey = (static_cast<uint64_t>(static_cast<uint32_t>(swSentinel))
                          << 32) |
@@ -475,9 +594,6 @@ bool Mapper::rebindScalarInputSentinels(MappingState &state, const Graph &dfg,
     if (!adgNode || adgNode->outputPorts.empty())
       return std::numeric_limits<double>::infinity();
     IdIndex srcHwPort = adgNode->outputPorts[0];
-    auto [srcRow, srcCol] = flattener.getNodeGridPos(adgSentinel);
-    if (srcRow < 0 || srcCol < 0)
-      return std::numeric_limits<double>::infinity();
 
     double cost = 0.0;
     IdIndex swOutId = swNode->outputPorts[0];
@@ -497,9 +613,6 @@ bool Mapper::rebindScalarInputSentinels(MappingState &state, const Graph &dfg,
       IdIndex dstHw = state.swNodeToHwNode[dstPort->parentNode];
       if (dstHw == INVALID_ID)
         continue;
-      auto [dstRow, dstCol] = flattener.getNodeGridPos(dstHw);
-      if (dstRow < 0 || dstCol < 0)
-        continue;
       double weight = classifyEdgePlacementWeight(dfg, edgeId);
       IdIndex dstHwPort =
           edge->dstPort < state.swPortToHwPort.size()
@@ -515,8 +628,14 @@ bool Mapper::rebindScalarInputSentinels(MappingState &state, const Graph &dfg,
         cost += weight * static_cast<double>(path.size());
         continue;
       }
-      cost += weight * static_cast<double>(std::abs(srcRow - dstRow) +
-                                           std::abs(srcCol - dstCol));
+      if (topologyModel) {
+        cost += weight * static_cast<double>(
+                             topologyModel->placementDistance(adgSentinel,
+                                                              dstHw));
+      } else {
+        cost += weight * static_cast<double>(
+                             placementDistance(adgSentinel, dstHw, flattener));
+      }
     }
     assignmentCostCache[cacheKey] = cost;
     return cost;
@@ -637,6 +756,10 @@ bool Mapper::runInterleavedPlaceRoute(
   double bestUnroutedPenalty = computeUnroutedPenalty(state);
   size_t bestPathLen = std::numeric_limits<size_t>::max();
   double bestPlacementCost = computeTotalCost(state, dfg, adg, flattener);
+  MapperTimingSummary bestTimingSummary =
+      analyzeMapperTiming(state, dfg, adg, edgeKinds, opts.timing);
+  double bestThroughputCost = bestTimingSummary.estimatedThroughputCost;
+  double bestClockPeriod = bestTimingSummary.estimatedClockPeriod;
   bool bestAllRouted = false;
   unsigned bestPriorityRouted = 0;
   double bestPriorityPenalty = 0.0;
@@ -649,6 +772,10 @@ bool Mapper::runInterleavedPlaceRoute(
     double unroutedPenalty = computeUnroutedPenalty(state);
     size_t totalPathLen = computeTotalMappedPathLen(state);
     double placementCost = computeTotalCost(state, dfg, adg, flattener);
+    MapperTimingSummary timingSummary =
+        analyzeMapperTiming(state, dfg, adg, edgeKinds, opts.timing);
+    double throughputCost = timingSummary.estimatedThroughputCost;
+    double clockPeriod = timingSummary.estimatedClockPeriod;
     auto [priorityRouted, priorityPenalty] =
         computePriorityMetrics(state, priorityEdges);
     bool improved = allRouted || routed > bestRouted ||
@@ -659,9 +786,9 @@ bool Mapper::runInterleavedPlaceRoute(
                      priorityPenalty + 1e-9 < bestPriorityPenalty) ||
                     (routed == bestRouted &&
                      (!usePriority ||
-                      (priorityRouted == bestPriorityRouted &&
-                       std::abs(priorityPenalty - bestPriorityPenalty) <=
-                           1e-9)) &&
+                     (priorityRouted == bestPriorityRouted &&
+                      std::abs(priorityPenalty - bestPriorityPenalty) <=
+                          1e-9)) &&
                      unroutedPenalty + 1e-9 < bestUnroutedPenalty) ||
                     (routed == bestRouted &&
                      (!usePriority ||
@@ -669,12 +796,31 @@ bool Mapper::runInterleavedPlaceRoute(
                        std::abs(priorityPenalty - bestPriorityPenalty) <=
                            1e-9)) &&
                      std::abs(unroutedPenalty - bestUnroutedPenalty) <= 1e-9 &&
+                     throughputCost + 1e-9 < bestThroughputCost) ||
+                    (routed == bestRouted &&
+                     (!usePriority ||
+                      (priorityRouted == bestPriorityRouted &&
+                       std::abs(priorityPenalty - bestPriorityPenalty) <=
+                           1e-9)) &&
+                     std::abs(unroutedPenalty - bestUnroutedPenalty) <= 1e-9 &&
+                     std::abs(throughputCost - bestThroughputCost) <= 1e-9 &&
+                     clockPeriod + 1e-9 < bestClockPeriod) ||
+                    (routed == bestRouted &&
+                     (!usePriority ||
+                      (priorityRouted == bestPriorityRouted &&
+                       std::abs(priorityPenalty - bestPriorityPenalty) <=
+                           1e-9)) &&
+                     std::abs(unroutedPenalty - bestUnroutedPenalty) <= 1e-9 &&
+                     std::abs(throughputCost - bestThroughputCost) <= 1e-9 &&
+                     std::abs(clockPeriod - bestClockPeriod) <= 1e-9 &&
                      totalPathLen < bestPathLen) ||
                     (routed == bestRouted && totalPathLen == bestPathLen &&
                      (!usePriority ||
                       (priorityRouted == bestPriorityRouted &&
                        std::abs(priorityPenalty - bestPriorityPenalty) <=
                            1e-9)) &&
+                     std::abs(throughputCost - bestThroughputCost) <= 1e-9 &&
+                     std::abs(clockPeriod - bestClockPeriod) <= 1e-9 &&
                      placementCost + 1e-9 < bestPlacementCost);
     if (!improved)
       return false;
@@ -683,6 +829,9 @@ bool Mapper::runInterleavedPlaceRoute(
     bestUnroutedPenalty = unroutedPenalty;
     bestPathLen = totalPathLen;
     bestPlacementCost = placementCost;
+    bestTimingSummary = std::move(timingSummary);
+    bestThroughputCost = bestTimingSummary.estimatedThroughputCost;
+    bestClockPeriod = bestTimingSummary.estimatedClockPeriod;
     bestPriorityRouted = usePriority ? priorityRouted : 0u;
     bestPriorityPenalty = usePriority ? priorityPenalty : 0.0;
     bestAllRouted = allRouted;
@@ -750,10 +899,13 @@ bool Mapper::runInterleavedPlaceRoute(
     }
 
     state.restore(currentPlacementCheckpoint);
-    bool repaired =
-        runLocalRepair(state, currentPlacementCheckpoint, failedEdges, dfg, adg,
-                       flattener, candidates, edgeKinds, opts,
-                       repairCongestionPtr);
+    bool repaired = false;
+    if (opts.localRepair.enabled) {
+      repaired =
+          runLocalRepair(state, currentPlacementCheckpoint, failedEdges, dfg,
+                         adg, flattener, candidates, edgeKinds, opts,
+                         repairCongestionPtr);
+    }
     bool repairImproved = updateBest(repaired, failedEdges);
     if (repairImproved)
       emitBestSnapshot("local-repair");
@@ -774,7 +926,6 @@ bool Mapper::runInterleavedPlaceRoute(
       break;
 
     state.restore(bestCheckpoint);
-    state.clearRoutes(dfg, adg);
     Options restartOpts = opts;
     restartOpts.seed = opts.seed +
                        static_cast<int>((round + 1) *
@@ -786,7 +937,8 @@ bool Mapper::runInterleavedPlaceRoute(
     restartOpts.selectiveRipupPasses =
         opts.selectiveRipupPasses +
         std::min<unsigned>(opts.lane.restartRipupBonusCap, round + 1);
-    runRefinement(state, dfg, adg, flattener, candidates, restartOpts);
+    runRefinement(state, dfg, adg, flattener, candidates, restartOpts,
+                  &edgeKinds);
     state.clearRoutes(dfg, adg);
     rebindScalarInputSentinels(state, dfg, adg, flattener);
     bindMemrefSentinels(state, dfg, adg);
@@ -803,6 +955,132 @@ bool Mapper::runInterleavedPlaceRoute(
   return bestAllRouted;
 }
 
+MapperTimingSummary Mapper::runPostRouteFifoBufferization(
+    MappingState &state, const Graph &dfg, const Graph &adg,
+    llvm::ArrayRef<TechMappedEdgeKind> edgeKinds, const Options &opts) {
+  MapperTimingSummary currentTiming =
+      analyzeMapperTiming(state, dfg, adg, edgeKinds, opts.timing);
+  if (!opts.bufferization.enabled)
+    return currentTiming;
+
+  llvm::DenseSet<IdIndex> recurrenceEdges;
+  for (const auto &cycle : currentTiming.recurrenceCycles) {
+    for (IdIndex edgeId : cycle.swEdges)
+      recurrenceEdges.insert(edgeId);
+  }
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId) {
+    if (isCarryNextEdge(edgeId, dfg))
+      recurrenceEdges.insert(edgeId);
+  }
+  llvm::DenseSet<IdIndex> criticalEdges(currentTiming.criticalPathEdges.begin(),
+                                        currentTiming.criticalPathEdges.end());
+
+  for (IdIndex edgeId : recurrenceEdges) {
+    if (edgeId >= state.swEdgeToHwPaths.size())
+      continue;
+    for (IdIndex portId : state.swEdgeToHwPaths[edgeId]) {
+      const Port *port = adg.getPort(portId);
+      if (!port || port->parentNode == INVALID_ID)
+        continue;
+      IdIndex hwNodeId = port->parentNode;
+      const Node *hwNode = adg.getNode(hwNodeId);
+      if (!isBypassableFifoNode(hwNode) ||
+          !isEffectiveFifoBypassed(hwNodeId, state, adg)) {
+        continue;
+      }
+      if (opts.verbose) {
+        llvm::outs() << "Mapper: skipping FIFO bufferization because "
+                     << hwNodeId
+                     << " is on a recurrence-sensitive routed edge\n";
+      }
+      return currentTiming;
+    }
+  }
+
+  for (unsigned iter = 0; iter < opts.bufferization.maxIterations; ++iter) {
+    llvm::DenseSet<IdIndex> seenCandidates;
+    std::vector<IdIndex> fifoCandidates;
+    std::vector<IdIndex> criticalFifoCandidates;
+    llvm::DenseMap<IdIndex, bool> candidateTouchesRecurrence;
+    llvm::DenseMap<IdIndex, bool> candidateTouchesCriticalPath;
+    for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(state.swEdgeToHwPaths.size());
+         ++edgeId) {
+      const auto &path = state.swEdgeToHwPaths[edgeId];
+      if (path.empty())
+        continue;
+      for (IdIndex portId : path) {
+        const Port *port = adg.getPort(portId);
+        if (!port || port->parentNode == INVALID_ID)
+          continue;
+        IdIndex hwNodeId = port->parentNode;
+        const Node *hwNode = adg.getNode(hwNodeId);
+        if (!isBypassableFifoNode(hwNode) ||
+            !isEffectiveFifoBypassed(hwNodeId, state, adg)) {
+          continue;
+        }
+        if (recurrenceEdges.count(edgeId) || isCarryNextEdge(edgeId, dfg))
+          candidateTouchesRecurrence[hwNodeId] = true;
+        if (criticalEdges.count(edgeId))
+          candidateTouchesCriticalPath[hwNodeId] = true;
+        if (seenCandidates.insert(hwNodeId).second) {
+          fifoCandidates.push_back(hwNodeId);
+          if (candidateTouchesCriticalPath.lookup(hwNodeId))
+            criticalFifoCandidates.push_back(hwNodeId);
+        }
+      }
+    }
+
+    if (!criticalFifoCandidates.empty())
+      fifoCandidates = criticalFifoCandidates;
+
+    std::sort(fifoCandidates.begin(), fifoCandidates.end());
+    IdIndex bestFifo = INVALID_ID;
+    MapperTimingSummary bestTiming = currentTiming;
+
+    for (IdIndex hwNodeId : fifoCandidates) {
+      if (hwNodeId >= state.hwNodeFifoBypassedOverride.size())
+        continue;
+      int8_t oldOverride = state.hwNodeFifoBypassedOverride[hwNodeId];
+      state.hwNodeFifoBypassedOverride[hwNodeId] = 0;
+      MapperTimingSummary candidateTiming =
+          analyzeMapperTiming(state, dfg, adg, edgeKinds, opts.timing);
+      state.hwNodeFifoBypassedOverride[hwNodeId] = oldOverride;
+
+      bool recurrenceSensitive = candidateTouchesRecurrence.lookup(hwNodeId);
+      if (recurrenceSensitive)
+        continue;
+      if (!isBetterTimingSummary(candidateTiming, currentTiming,
+                                 opts.bufferization)) {
+        continue;
+      }
+      if (bestFifo == INVALID_ID ||
+          isBetterTimingSummary(candidateTiming, bestTiming,
+                               opts.bufferization)) {
+        bestFifo = hwNodeId;
+        bestTiming = std::move(candidateTiming);
+      }
+    }
+
+    if (bestFifo == INVALID_ID)
+      break;
+
+    state.hwNodeFifoBypassedOverride[bestFifo] = 0;
+    ++activeSearchSummary_.fifoBufferizationAcceptedToggles;
+    currentTiming = std::move(bestTiming);
+    if (opts.verbose) {
+      llvm::outs() << "Mapper: accepted FIFO timing cut on hw node "
+                   << bestFifo << ", throughput="
+                   << currentTiming.estimatedThroughputCost
+                   << ", clock=" << currentTiming.estimatedClockPeriod
+                   << ", ii=" << currentTiming.estimatedInitiationInterval
+                   << "\n";
+    }
+  }
+
+  return currentTiming;
+}
+
 // ---------------------------------------------------------------------------
 // Mapper::run
 // ---------------------------------------------------------------------------
@@ -812,18 +1090,28 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
                            mlir::ModuleOp adgModule, const Options &opts) {
   Result result;
   if (!validateMapperOptions(opts, result.diagnostics)) {
+    result.searchSummary = activeSearchSummary_;
     llvm::errs() << "Mapper: invalid options: " << result.diagnostics << "\n";
     return result;
   }
   resetRunControls(opts);
+  activeSearchSummary_ = {};
   activeSnapshotEmitter_ = nullptr;
   TechMapper techMapper;
   TechMapper::Plan techPlan;
   if (!techMapper.buildPlan(dfg, adgModule, adg, techPlan)) {
-    result.diagnostics = "Tech-mapping failed";
+    result.diagnostics = techPlan.diagnostics.empty()
+                             ? "Tech-mapping failed"
+                             : "Tech-mapping failed: " + techPlan.diagnostics;
+    result.searchSummary = activeSearchSummary_;
     llvm::errs() << "Mapper: " << result.diagnostics << "\n";
     return result;
   }
+  result.techMapPlan = techPlan;
+  result.techMapMetrics = techPlan.metrics;
+  result.techMapDiagnostics = techPlan.diagnostics;
+  if (opts.verbose && !techPlan.diagnostics.empty())
+    llvm::outs() << "Mapper: techmap note: " << techPlan.diagnostics << "\n";
 
   MappingState contractedState;
   contractedState.init(techPlan.contractedDFG, adg, &flattener);
@@ -835,6 +1123,9 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   // Copy connectivity from flattener.
   connectivity = flattener.getConnectivity();
   activeFlattener = &flattener;
+  activeTopologyModel_ = std::make_shared<TopologyModel>(adg, flattener);
+  mapper_detail::setActiveTopologyModel(activeTopologyModel_.get());
+  mapper_detail::setActiveTimingOptions(&opts.timing);
   activeHeuristicWeight = opts.routingHeuristicWeight;
   activeCongestionPlacementWeight = opts.congestionPlacementWeight;
   activeMemorySharingPenalty = opts.memorySharingPenalty;
@@ -888,10 +1179,20 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
 
   llvm::outs() << "Mapper: building candidates...\n";
   auto candidates = buildCandidates(techPlan.contractedDFG, adg);
-  for (const auto &entry : techPlan.contractedCandidates)
-    candidates[entry.first] = entry.second;
+  for (IdIndex swNodeId = 0;
+       swNodeId < static_cast<IdIndex>(techPlan.contractedDFG.nodes.size());
+       ++swNodeId) {
+    const auto *contractedCandidates =
+        TechMapper::findContractedCandidates(techPlan, swNodeId);
+    if (!contractedCandidates)
+      continue;
+    candidates[swNodeId] = *contractedCandidates;
+  }
 
-  if (detectForcedTemporalConfigConflict(techPlan, adg, result.diagnostics)) {
+  if (detectForcedTemporalConfigConflict(techPlan, candidates,
+                                         techPlan.contractedDFG, adg,
+                                         result.diagnostics)) {
+    result.searchSummary = activeSearchSummary_;
     llvm::errs() << "Mapper: " << result.diagnostics << "\n";
     return result;
   }
@@ -906,6 +1207,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
       result.diagnostics = "No hardware candidates for DFG node " +
                            std::to_string(i) + " (" +
                            getNodeAttrStr(node, "op_name").str() + ")";
+      result.searchSummary = activeSearchSummary_;
       llvm::errs() << "Mapper: " << result.diagnostics << "\n";
       return result;
     }
@@ -919,18 +1221,13 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   if (opts.verbose && laneCount > 1)
     llvm::outs() << "Mapper: launching " << laneCount << " parallel lanes\n";
 
-  auto runLane = [&](unsigned laneIndex) -> LaneAttempt {
-    LaneAttempt attempt;
-    attempt.laneIndex = laneIndex;
-    attempt.state = contractedState;
-    attempt.edgeKinds = initialContractedEdgeKinds;
-    Mapper laneMapper = *this;
-
+  auto configureLaneOptions = [&](unsigned laneIndex, Mapper &laneMapper,
+                                  bool resetBudgetWindow) {
     Options laneOpts = opts;
     laneOpts.seed =
         opts.seed + static_cast<int>(laneIndex * opts.lane.laneSeedStride);
     laneOpts.verbose = (laneCount == 1) ? opts.verbose : false;
-    if (laneOpts.budgetSeconds > 0.0 &&
+    if (resetBudgetWindow && laneOpts.budgetSeconds > 0.0 &&
         laneOpts.lane.finalPolishReserveFraction > 0.0) {
       double laneBudgetSeconds =
           laneOpts.budgetSeconds *
@@ -938,6 +1235,19 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
       laneOpts.budgetSeconds = std::max(1.0, laneBudgetSeconds);
       laneMapper.resetRunControls(laneOpts);
     }
+    return laneOpts;
+  };
+
+  auto runLanePlacementSeed = [&](unsigned laneIndex) -> LaneAttempt {
+    LaneAttempt attempt;
+    attempt.laneIndex = laneIndex;
+    attempt.state = contractedState;
+    attempt.edgeKinds = initialContractedEdgeKinds;
+    Mapper laneMapper = *this;
+    mapper_detail::setActiveTopologyModel(activeTopologyModel_.get());
+    mapper_detail::setActiveTimingOptions(&opts.timing);
+
+    Options laneOpts = configureLaneOptions(laneIndex, laneMapper, true);
     const bool preferCPSatGlobal =
         laneOpts.enableCPSat && (laneCount == 1 || laneIndex == 0);
     if (preferCPSatGlobal) {
@@ -966,7 +1276,8 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     if (laneOpts.verbose)
       llvm::outs() << "Mapper: refining placement...\n";
     laneMapper.runRefinement(attempt.state, techPlan.contractedDFG, adg,
-                             flattener, candidates, laneOpts);
+                             flattener, candidates, laneOpts,
+                             &attempt.edgeKinds);
     laneMapper.rebindScalarInputSentinels(attempt.state, techPlan.contractedDFG,
                                           adg, flattener);
 
@@ -976,6 +1287,29 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     if (laneOpts.verbose)
       llvm::outs() << "Mapper: binding memref sentinels...\n";
     laneMapper.bindMemrefSentinels(attempt.state, techPlan.contractedDFG, adg);
+
+    attempt.budgetExceeded = laneMapper.activeBudgetExceeded_;
+    attempt.budgetExceededStage = laneMapper.activeBudgetExceededStage_;
+    attempt.placementCost =
+        computeTotalCost(attempt.state, techPlan.contractedDFG, adg, flattener);
+    MapperTimingSummary attemptTiming = analyzeMapperTiming(
+        attempt.state, techPlan.contractedDFG, adg, attempt.edgeKinds,
+        laneOpts.timing);
+    attempt.throughputCost = attemptTiming.estimatedThroughputCost;
+    attempt.estimatedClockPeriod = attemptTiming.estimatedClockPeriod;
+    attempt.searchSummary = laneMapper.activeSearchSummary_;
+    return attempt;
+  };
+
+  auto runLaneRouting = [&](LaneAttempt attempt) -> LaneAttempt {
+    if (!attempt.placementSucceeded)
+      return attempt;
+    Mapper laneMapper = *this;
+    laneMapper.activeSearchSummary_ = attempt.searchSummary;
+    mapper_detail::setActiveTopologyModel(activeTopologyModel_.get());
+    mapper_detail::setActiveTimingOptions(&opts.timing);
+    Options laneOpts =
+        configureLaneOptions(attempt.laneIndex, laneMapper, false);
 
     if (laneOpts.enableCPSat) {
       auto criticalBoundaryEdges =
@@ -1018,18 +1352,79 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     attempt.totalPathLen = computeTotalMappedPathLen(attempt.state);
     attempt.placementCost =
         computeTotalCost(attempt.state, techPlan.contractedDFG, adg, flattener);
+    MapperTimingSummary attemptTiming = analyzeMapperTiming(
+        attempt.state, techPlan.contractedDFG, adg, attempt.edgeKinds,
+        laneOpts.timing);
+    attempt.throughputCost = attemptTiming.estimatedThroughputCost;
+    attempt.estimatedClockPeriod = attemptTiming.estimatedClockPeriod;
+    attempt.searchSummary = laneMapper.activeSearchSummary_;
     return attempt;
   };
 
-  std::vector<LaneAttempt> attempts;
-  attempts.reserve(laneCount);
+  std::vector<LaneAttempt> placementSeeds;
+  placementSeeds.reserve(laneCount);
   if (laneCount == 1) {
-    attempts.push_back(runLane(0));
+    placementSeeds.push_back(runLanePlacementSeed(0));
   } else {
     std::vector<std::future<LaneAttempt>> futures;
     futures.reserve(laneCount);
     for (unsigned laneIndex = 0; laneIndex < laneCount; ++laneIndex) {
-      futures.push_back(std::async(std::launch::async, runLane, laneIndex));
+      futures.push_back(
+          std::async(std::launch::async, runLanePlacementSeed, laneIndex));
+    }
+    for (auto &future : futures)
+      placementSeeds.push_back(future.get());
+  }
+
+  llvm::SmallVector<LaneAttempt, 4> routingSeeds;
+  for (const auto &attempt : placementSeeds) {
+    if (attempt.placementSucceeded)
+      routingSeeds.push_back(attempt);
+  }
+  llvm::stable_sort(routingSeeds, isBetterPlacementSeed);
+
+  activeSearchSummary_.placementSeedLaneCount =
+      static_cast<unsigned>(placementSeeds.size());
+  activeSearchSummary_.successfulPlacementSeedCount =
+      static_cast<unsigned>(routingSeeds.size());
+
+  unsigned routingBeamWidth =
+      opts.lane.routingBeamWidth == 0
+          ? static_cast<unsigned>(routingSeeds.size())
+          : std::min(opts.lane.routingBeamWidth,
+                     static_cast<unsigned>(routingSeeds.size()));
+  if (routingBeamWidth < routingSeeds.size())
+    routingSeeds.resize(routingBeamWidth);
+  activeSearchSummary_.routedLaneCount =
+      static_cast<unsigned>(routingSeeds.size());
+
+  for (auto &attempt : routingSeeds) {
+    attempt.searchSummary.placementSeedLaneCount =
+        activeSearchSummary_.placementSeedLaneCount;
+    attempt.searchSummary.successfulPlacementSeedCount =
+        activeSearchSummary_.successfulPlacementSeedCount;
+    attempt.searchSummary.routedLaneCount =
+        activeSearchSummary_.routedLaneCount;
+  }
+
+  if (opts.verbose && laneCount > 1 &&
+      routingSeeds.size() < placementSeeds.size()) {
+    llvm::outs() << "Mapper: narrowed " << placementSeeds.size()
+                 << " placement lanes to " << routingSeeds.size()
+                 << " routing lanes\n";
+  }
+
+  std::vector<LaneAttempt> attempts;
+  attempts.reserve(routingSeeds.size());
+  if (routingSeeds.size() <= 1) {
+    for (auto &attempt : routingSeeds)
+      attempts.push_back(runLaneRouting(std::move(attempt)));
+  } else {
+    std::vector<std::future<LaneAttempt>> futures;
+    futures.reserve(routingSeeds.size());
+    for (auto &attempt : routingSeeds) {
+      futures.push_back(
+          std::async(std::launch::async, runLaneRouting, std::move(attempt)));
     }
     for (auto &future : futures)
       attempts.push_back(future.get());
@@ -1043,6 +1438,8 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
                    << attempt.routedEdges << "/"
                    << techPlan.contractedDFG.edges.size()
                    << " edges, pathLen=" << attempt.totalPathLen
+                   << ", throughput=" << attempt.throughputCost
+                   << ", clock=" << attempt.estimatedClockPeriod
                    << ", cost=" << attempt.placementCost << ", cp-sat-global="
                    << (attempt.usedCPSatGlobalPlacement ? "yes" : "no") << "\n";
     }
@@ -1055,6 +1452,7 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   }
   if (bestIt == attempts.end() || !bestIt->placementSucceeded) {
     result.diagnostics = "Placement failed";
+    result.searchSummary = activeSearchSummary_;
     llvm::errs() << "Mapper: " << result.diagnostics << "\n";
     return result;
   }
@@ -1064,17 +1462,21 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   bool routingSucceeded = bestIt->routingSucceeded;
   bool selectedBudgetExceeded = bestIt->budgetExceeded;
   std::string selectedBudgetExceededStage = bestIt->budgetExceededStage;
+  activeSearchSummary_ = bestIt->searchSummary;
+  result.selectedLaneIndex = bestIt->laneIndex;
   if (opts.verbose && laneCount > 1) {
     llvm::outs() << "Mapper: selected lane " << bestIt->laneIndex
                  << " (routed overall " << bestIt->routedEdges << "/"
-                 << techPlan.contractedDFG.edges.size() << ")\n";
+                 << techPlan.contractedDFG.edges.size()
+                 << ", throughput=" << bestIt->throughputCost
+                 << ", clock=" << bestIt->estimatedClockPeriod << ")\n";
   }
 
   if (!routingSucceeded && remainingBudgetSeconds() > 1.0) {
     auto polishFailed =
         collectUnroutedEdges(contractedState, techPlan.contractedDFG,
                              contractedEdgeKinds);
-    if (!polishFailed.empty() &&
+    if (opts.localRepair.enabled && !polishFailed.empty() &&
         polishFailed.size() <= opts.localRepair.cpSatFallbackFailedEdgeThreshold) {
       if (opts.verbose)
         llvm::outs() << "Mapper: final polish on selected lane...\n";
@@ -1121,67 +1523,170 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     llvm::errs() << "Mapper: " << result.diagnostics << "\n";
   }
 
-  if (!techMapper.expandPlanMapping(dfg, adg, techPlan, contractedState,
-                                    result.state, result.fuConfigs)) {
-    result.diagnostics = "Tech-mapping expansion failed";
-    llvm::errs() << "Mapper: " << result.diagnostics << "\n";
-    return result;
-  }
-
-  for (IdIndex swNode = 0; swNode < static_cast<IdIndex>(dfg.nodes.size());
-       ++swNode) {
-    const Node *swNodeObj = dfg.getNode(swNode);
-    if (!swNodeObj || swNodeObj->kind != Node::OperationNode)
-      continue;
-    if (!mapper_detail::isSoftwareMemoryInterfaceOp(
-            getNodeAttrStr(swNodeObj, "op_name")))
-      continue;
-    if (swNode >= result.state.swNodeToHwNode.size() ||
-        result.state.swNodeToHwNode[swNode] == INVALID_ID)
-      continue;
-
-    bool needsRebind = false;
-    for (IdIndex swPort : swNodeObj->inputPorts) {
-      if (swPort >= result.state.swPortToHwPort.size() ||
-          result.state.swPortToHwPort[swPort] == INVALID_ID) {
-        needsRebind = true;
+  MapperTimingSummary contractedTimingSummary =
+      analyzeMapperTiming(contractedState, techPlan.contractedDFG, adg,
+                          contractedEdgeKinds, opts.timing);
+  if (routingSucceeded && opts.bufferization.enabled) {
+    for (unsigned outerIter = 0;
+         outerIter < opts.bufferization.outerJointIterations; ++outerIter) {
+      auto beforeBufferizationCheckpoint = contractedState.save();
+      auto beforeBufferizationOverrides =
+          contractedState.hwNodeFifoBypassedOverride;
+      auto beforeBufferizationEdgeKinds = contractedEdgeKinds;
+      MapperTimingSummary bufferizedTiming = runPostRouteFifoBufferization(
+          contractedState, techPlan.contractedDFG, adg, contractedEdgeKinds,
+          opts);
+      if (beforeBufferizationOverrides ==
+          contractedState.hwNodeFifoBypassedOverride) {
+        contractedState.restore(beforeBufferizationCheckpoint);
+        contractedEdgeKinds = beforeBufferizationEdgeKinds;
         break;
       }
+      if (!isBetterTimingSummary(bufferizedTiming, contractedTimingSummary,
+                                 opts.bufferization)) {
+        contractedState.restore(beforeBufferizationCheckpoint);
+        contractedEdgeKinds = beforeBufferizationEdgeKinds;
+        break;
+      }
+
+      contractedTimingSummary = bufferizedTiming;
+      auto acceptedBufferizedCheckpoint = contractedState.save();
+      auto acceptedBufferizedEdgeKinds = contractedEdgeKinds;
+      if (opts.verbose) {
+        llvm::outs() << "Mapper: accepted bufferization round "
+                     << (outerIter + 1) << "/"
+                     << opts.bufferization.outerJointIterations
+                     << ", throughput="
+                     << contractedTimingSummary.estimatedThroughputCost
+                     << ", clock="
+                     << contractedTimingSummary.estimatedClockPeriod
+                     << ", ii="
+                     << contractedTimingSummary.estimatedInitiationInterval
+                     << "\n";
+      }
+
+      if (outerIter + 1 >= opts.bufferization.outerJointIterations)
+        break;
+
+      Options outerOpts = opts;
+      outerOpts.seed =
+          opts.seed +
+          static_cast<int>((outerIter + 1) * opts.lane.restartSeedStride);
+      runRefinement(contractedState, techPlan.contractedDFG, adg, flattener,
+                    candidates, outerOpts, &contractedEdgeKinds);
+      rebindScalarInputSentinels(contractedState, techPlan.contractedDFG, adg,
+                                flattener);
+      bindMemrefSentinels(contractedState, techPlan.contractedDFG, adg);
+      bool outerRoutingSucceeded = runInterleavedPlaceRoute(
+          contractedState, techPlan.contractedDFG, adg, flattener, candidates,
+          contractedEdgeKinds, outerOpts);
+      if (!outerRoutingSucceeded) {
+        contractedState.restore(acceptedBufferizedCheckpoint);
+        contractedEdgeKinds = acceptedBufferizedEdgeKinds;
+        break;
+      }
+      MapperTimingSummary reroutedTiming =
+          analyzeMapperTiming(contractedState, techPlan.contractedDFG, adg,
+                              contractedEdgeKinds, opts.timing);
+      if (!isBetterTimingSummary(reroutedTiming, contractedTimingSummary,
+                                 opts.bufferization)) {
+        contractedState.restore(acceptedBufferizedCheckpoint);
+        contractedEdgeKinds = acceptedBufferizedEdgeKinds;
+        break;
+      }
+      contractedTimingSummary = reroutedTiming;
+      if (opts.verbose) {
+        llvm::outs() << "Mapper: accepted outer joint PnR round "
+                     << (outerIter + 1) << ", throughput="
+                     << contractedTimingSummary.estimatedThroughputCost
+                     << ", clock="
+                     << contractedTimingSummary.estimatedClockPeriod
+                     << ", ii="
+                     << contractedTimingSummary.estimatedInitiationInterval
+                     << "\n";
+      }
+      ++activeSearchSummary_.outerJointAcceptedRounds;
     }
-    if (!needsRebind) {
-      for (IdIndex swPort : swNodeObj->outputPorts) {
-        if (swPort >= result.state.swPortToHwPort.size() ||
-            result.state.swPortToHwPort[swPort] == INVALID_ID) {
+  }
+
+  auto expandContractedMapping =
+      [&](const MappingState &contractedMapping,
+          llvm::ArrayRef<TechMappedEdgeKind> contractedKinds,
+          MappingState &expandedState,
+          llvm::SmallVector<FUConfigSelection, 4> &expandedFuConfigs,
+          std::vector<TechMappedEdgeKind> &expandedEdgeKinds,
+          std::string &expandDiagnostics) -> bool {
+    if (!techMapper.expandPlanMapping(dfg, adg, techPlan, contractedMapping,
+                                      expandedState, expandedFuConfigs)) {
+      expandDiagnostics = "Tech-mapping expansion failed";
+      return false;
+    }
+
+    for (IdIndex swNode = 0; swNode < static_cast<IdIndex>(dfg.nodes.size());
+         ++swNode) {
+      const Node *swNodeObj = dfg.getNode(swNode);
+      if (!swNodeObj || swNodeObj->kind != Node::OperationNode)
+        continue;
+      if (!mapper_detail::isSoftwareMemoryInterfaceOp(
+              getNodeAttrStr(swNodeObj, "op_name"))) {
+        continue;
+      }
+      if (swNode >= expandedState.swNodeToHwNode.size() ||
+          expandedState.swNodeToHwNode[swNode] == INVALID_ID) {
+        continue;
+      }
+
+      bool needsRebind = false;
+      for (IdIndex swPort : swNodeObj->inputPorts) {
+        if (swPort >= expandedState.swPortToHwPort.size() ||
+            expandedState.swPortToHwPort[swPort] == INVALID_ID) {
           needsRebind = true;
           break;
         }
       }
+      if (!needsRebind) {
+        for (IdIndex swPort : swNodeObj->outputPorts) {
+          if (swPort >= expandedState.swPortToHwPort.size() ||
+              expandedState.swPortToHwPort[swPort] == INVALID_ID) {
+            needsRebind = true;
+            break;
+          }
+        }
+      }
+      if (!needsRebind)
+        continue;
+      if (!bindMappedNodePorts(swNode, expandedState, dfg, adg)) {
+        expandDiagnostics = "Port rebinding failed after tech-mapping expansion";
+        return false;
+      }
     }
-    if (!needsRebind)
-      continue;
-    if (!bindMappedNodePorts(swNode, result.state, dfg, adg)) {
-      result.diagnostics =
-          "Port rebinding failed after tech-mapping expansion";
-      llvm::errs() << "Mapper: " << result.diagnostics << " for node "
-                   << swNode << "\n";
-      return result;
-    }
-  }
 
-  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
-       ++edgeId) {
-    if (edgeId >= result.edgeKinds.size() ||
-        result.edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU)
-      continue;
-    if (edgeId >= techPlan.originalEdgeToContractedEdge.size())
-      continue;
-    IdIndex contractedEdgeId = techPlan.originalEdgeToContractedEdge[edgeId];
-    if (contractedEdgeId == INVALID_ID ||
-        contractedEdgeId >= contractedEdgeKinds.size())
-      continue;
-    if (contractedEdgeKinds[contractedEdgeId] ==
-        TechMappedEdgeKind::TemporalReg)
-      result.edgeKinds[edgeId] = TechMappedEdgeKind::TemporalReg;
+    expandedEdgeKinds.assign(originalEdgeKinds.begin(), originalEdgeKinds.end());
+    for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+         ++edgeId) {
+      if (edgeId >= expandedEdgeKinds.size() ||
+          expandedEdgeKinds[edgeId] == TechMappedEdgeKind::IntraFU) {
+        continue;
+      }
+      if (edgeId >= techPlan.originalEdgeToContractedEdge.size())
+        continue;
+      IdIndex contractedEdgeId = techPlan.originalEdgeToContractedEdge[edgeId];
+      if (contractedEdgeId == INVALID_ID ||
+          contractedEdgeId >= contractedKinds.size()) {
+        continue;
+      }
+      if (contractedKinds[contractedEdgeId] == TechMappedEdgeKind::TemporalReg)
+        expandedEdgeKinds[edgeId] = TechMappedEdgeKind::TemporalReg;
+    }
+    return true;
+  };
+
+  if (!expandContractedMapping(contractedState, contractedEdgeKinds, result.state,
+                               result.fuConfigs, result.edgeKinds,
+                               result.diagnostics)) {
+    result.searchSummary = activeSearchSummary_;
+    llvm::errs() << "Mapper: " << result.diagnostics << "\n";
+    return result;
   }
 
   llvm::outs() << "Mapper: validating...\n";
@@ -1190,6 +1695,40 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   if (!validationSucceeded) {
     llvm::errs() << "Mapper: validation issues: " << result.diagnostics << "\n";
     // Proceed with partial result.
+  }
+
+  result.timingSummary =
+      analyzeMapperTiming(result.state, dfg, adg, result.edgeKinds,
+                          opts.timing);
+  result.searchSummary = activeSearchSummary_;
+
+  std::vector<LaneAttempt> sortedAttempts = attempts;
+  llvm::stable_sort(sortedAttempts, isBetterLaneResult);
+  for (const auto &attempt : sortedAttempts) {
+    if (!attempt.placementSucceeded || !attempt.routingSucceeded)
+      continue;
+    if (attempt.laneIndex == result.selectedLaneIndex)
+      continue;
+    Result::RoutedAlternative alternative;
+    alternative.laneIndex = attempt.laneIndex;
+    alternative.totalPathLen = attempt.totalPathLen;
+    alternative.placementCost = attempt.placementCost;
+    alternative.throughputCost = attempt.throughputCost;
+    alternative.estimatedClockPeriod = attempt.estimatedClockPeriod;
+    alternative.searchSummary = attempt.searchSummary;
+    std::string expandDiagnostics;
+    if (!expandContractedMapping(attempt.state, attempt.edgeKinds,
+                                 alternative.state, alternative.fuConfigs,
+                                 alternative.edgeKinds, expandDiagnostics)) {
+      if (opts.verbose) {
+        llvm::outs() << "Mapper: skipping lane " << attempt.laneIndex
+                     << " fallback export: " << expandDiagnostics << "\n";
+      }
+      continue;
+    }
+    alternative.timingSummary = analyzeMapperTiming(
+        alternative.state, dfg, adg, alternative.edgeKinds, opts.timing);
+    result.routedAlternatives.push_back(std::move(alternative));
   }
 
   result.success = routingSucceeded && validationSucceeded;
@@ -1415,7 +1954,8 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
       if (!swNode)
         continue;
       DfgMemoryInfo memInfo = DfgMemoryInfo::extract(swNode, dfg, isExtMem);
-      auto laneRange = inferBridgeLaneRange(bridge, memInfo, swNode, state);
+      auto laneRange =
+          inferBridgeLaneRange(bridge, memInfo, swNode, dfg, state);
       if (!laneRange) {
         diagnostics += "C4: missing bridge lane range for sw_node " +
                        std::to_string(swId) + " on hw_node " +

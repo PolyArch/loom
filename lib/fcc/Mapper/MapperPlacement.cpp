@@ -1,17 +1,21 @@
 #include "MapperCongestionEstimator.h"
 #include "MapperInternal.h"
 #include "fcc/Mapper/Mapper.h"
+#include "fcc/Mapper/OpCompat.h"
+#include "fcc/Mapper/TopologyModel.h"
 #include "fcc/Mapper/TypeCompat.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <queue>
@@ -24,6 +28,203 @@ namespace fcc {
 // ---------------------------------------------------------------------------
 
 namespace mapper_detail {
+
+namespace {
+
+thread_local const TopologyModel *activeTopologyModel = nullptr;
+thread_local const MapperTimingOptions *activeTimingOptions = nullptr;
+
+struct RecurrenceProxyCache {
+  const Graph *dfg = nullptr;
+  std::vector<uint8_t> recurrenceNodeMask;
+  std::vector<uint8_t> recurrenceEdgeMask;
+};
+
+thread_local RecurrenceProxyCache activeRecurrenceProxyCache;
+
+const MapperTimingOptions &getTimingProxyOptions() {
+  static const MapperTimingOptions defaults;
+  return activeTimingOptions ? *activeTimingOptions : defaults;
+}
+
+bool isRecurrenceProxyOperationNode(const Node *node) {
+  return node && node->kind == Node::OperationNode;
+}
+
+IdIndex findCarryNextEdge(IdIndex carryNodeId, const Graph &dfg) {
+  const Node *carryNode = dfg.getNode(carryNodeId);
+  if (!carryNode || getNodeAttrStr(carryNode, "op_name") != "dataflow.carry" ||
+      carryNode->inputPorts.size() < 3) {
+    return INVALID_ID;
+  }
+  IdIndex nextPortId = carryNode->inputPorts[2];
+  const Port *nextPort = dfg.getPort(nextPortId);
+  if (!nextPort)
+    return INVALID_ID;
+  for (IdIndex edgeId : nextPort->connectedEdges) {
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (edge && edge->dstPort == nextPortId)
+      return edgeId;
+  }
+  return INVALID_ID;
+}
+
+void rebuildRecurrenceProxyCache(const Graph &dfg) {
+  activeRecurrenceProxyCache = {};
+  activeRecurrenceProxyCache.dfg = &dfg;
+  activeRecurrenceProxyCache.recurrenceNodeMask.assign(dfg.nodes.size(), 0);
+  activeRecurrenceProxyCache.recurrenceEdgeMask.assign(dfg.edges.size(), 0);
+
+  llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> outgoingEdgesByNode;
+  llvm::DenseSet<IdIndex> operationNodes;
+  for (IdIndex edgeId = 0; edgeId < static_cast<IdIndex>(dfg.edges.size());
+       ++edgeId) {
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    const Port *srcPort = dfg.getPort(edge->srcPort);
+    const Port *dstPort = dfg.getPort(edge->dstPort);
+    if (!srcPort || !dstPort || srcPort->parentNode == INVALID_ID ||
+        dstPort->parentNode == INVALID_ID) {
+      continue;
+    }
+    const Node *srcNode = dfg.getNode(srcPort->parentNode);
+    const Node *dstNode = dfg.getNode(dstPort->parentNode);
+    if (!isRecurrenceProxyOperationNode(srcNode) ||
+        !isRecurrenceProxyOperationNode(dstNode)) {
+      continue;
+    }
+    outgoingEdgesByNode[srcPort->parentNode].push_back(edgeId);
+    operationNodes.insert(srcPort->parentNode);
+    operationNodes.insert(dstPort->parentNode);
+  }
+
+  llvm::DenseMap<IdIndex, unsigned> indexByNode;
+  llvm::DenseMap<IdIndex, unsigned> lowlinkByNode;
+  llvm::DenseSet<IdIndex> onStack;
+  llvm::SmallVector<IdIndex, 16> stack;
+  unsigned nextIndex = 0;
+
+  std::function<void(IdIndex)> strongConnect = [&](IdIndex nodeId) {
+    indexByNode[nodeId] = nextIndex;
+    lowlinkByNode[nodeId] = nextIndex;
+    ++nextIndex;
+    stack.push_back(nodeId);
+    onStack.insert(nodeId);
+
+    for (IdIndex edgeId : outgoingEdgesByNode.lookup(nodeId)) {
+      const Edge *edge = dfg.getEdge(edgeId);
+      const Port *dstPort = edge ? dfg.getPort(edge->dstPort) : nullptr;
+      if (!dstPort || dstPort->parentNode == INVALID_ID)
+        continue;
+      IdIndex succ = dstPort->parentNode;
+      if (!indexByNode.count(succ)) {
+        strongConnect(succ);
+        lowlinkByNode[nodeId] =
+            std::min(lowlinkByNode[nodeId], lowlinkByNode[succ]);
+      } else if (onStack.count(succ)) {
+        lowlinkByNode[nodeId] =
+            std::min(lowlinkByNode[nodeId], indexByNode[succ]);
+      }
+    }
+
+    if (lowlinkByNode[nodeId] != indexByNode[nodeId])
+      return;
+
+    llvm::SmallVector<IdIndex, 8> component;
+    while (!stack.empty()) {
+      IdIndex member = stack.back();
+      stack.pop_back();
+      onStack.erase(member);
+      component.push_back(member);
+      if (member == nodeId)
+        break;
+    }
+
+    bool hasSelfLoop = false;
+    if (component.size() == 1) {
+      for (IdIndex edgeId : outgoingEdgesByNode.lookup(component.front())) {
+        const Edge *edge = dfg.getEdge(edgeId);
+        const Port *dstPort = edge ? dfg.getPort(edge->dstPort) : nullptr;
+        if (dstPort && dstPort->parentNode == component.front()) {
+          hasSelfLoop = true;
+          break;
+        }
+      }
+    }
+    if (component.size() == 1 && !hasSelfLoop)
+      return;
+
+    llvm::DenseSet<IdIndex> componentNodes(component.begin(), component.end());
+    for (IdIndex nodeIdInCycle : component) {
+      if (nodeIdInCycle >=
+          static_cast<IdIndex>(activeRecurrenceProxyCache.recurrenceNodeMask.size())) {
+        continue;
+      }
+      activeRecurrenceProxyCache.recurrenceNodeMask[nodeIdInCycle] = 1;
+      for (IdIndex edgeId : outgoingEdgesByNode.lookup(nodeIdInCycle)) {
+        const Edge *edge = dfg.getEdge(edgeId);
+        const Port *dstPort = edge ? dfg.getPort(edge->dstPort) : nullptr;
+        if (!dstPort || dstPort->parentNode == INVALID_ID ||
+            !componentNodes.count(dstPort->parentNode)) {
+          continue;
+        }
+        if (edgeId <
+            static_cast<IdIndex>(activeRecurrenceProxyCache.recurrenceEdgeMask.size()))
+          activeRecurrenceProxyCache.recurrenceEdgeMask[edgeId] = 1;
+      }
+    }
+  };
+
+  for (IdIndex nodeId : operationNodes) {
+    if (!indexByNode.count(nodeId))
+      strongConnect(nodeId);
+  }
+
+  for (IdIndex nodeId : operationNodes) {
+    const Node *node = dfg.getNode(nodeId);
+    if (!node || getNodeAttrStr(node, "op_name") != "dataflow.carry")
+      continue;
+    IdIndex edgeId = findCarryNextEdge(nodeId, dfg);
+    if (edgeId == INVALID_ID ||
+        edgeId >=
+            static_cast<IdIndex>(
+                activeRecurrenceProxyCache.recurrenceEdgeMask.size()) ||
+        activeRecurrenceProxyCache.recurrenceEdgeMask[edgeId] != 0) {
+      continue;
+    }
+
+    activeRecurrenceProxyCache.recurrenceNodeMask[nodeId] = 1;
+    activeRecurrenceProxyCache.recurrenceEdgeMask[edgeId] = 1;
+
+    const Edge *edge = dfg.getEdge(edgeId);
+    const Port *srcPort = edge ? dfg.getPort(edge->srcPort) : nullptr;
+    if (!srcPort || srcPort->parentNode == INVALID_ID ||
+        srcPort->parentNode == nodeId ||
+        srcPort->parentNode >=
+            static_cast<IdIndex>(
+                activeRecurrenceProxyCache.recurrenceNodeMask.size())) {
+      continue;
+    }
+    activeRecurrenceProxyCache.recurrenceNodeMask[srcPort->parentNode] = 1;
+  }
+}
+
+void ensureRecurrenceProxyCache(const Graph &dfg) {
+  if (activeRecurrenceProxyCache.dfg == &dfg)
+    return;
+  rebuildRecurrenceProxyCache(dfg);
+}
+
+bool isRecurrenceProxyNode(IdIndex swNode, const Graph &dfg) {
+  ensureRecurrenceProxyCache(dfg);
+  return swNode >= 0 &&
+         swNode < static_cast<IdIndex>(
+                      activeRecurrenceProxyCache.recurrenceNodeMask.size()) &&
+         activeRecurrenceProxyCache.recurrenceNodeMask[swNode] != 0;
+}
+
+} // namespace
 
 bool isMemrefType(mlir::Type type) {
   return mlir::isa<mlir::MemRefType>(type);
@@ -89,20 +290,19 @@ bool sameConfigFields(llvm::ArrayRef<FUConfigField> lhs,
 }
 
 bool detectForcedTemporalConfigConflict(
-    const TechMapper::Plan &plan, const Graph &adg, std::string &diagnostics) {
+    const TechMapper::Plan &plan,
+    const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
+    const Graph &dfg, const Graph &adg, std::string &diagnostics) {
   llvm::DenseMap<IdIndex, llvm::SmallVector<const TechMapper::Unit *, 4>>
       forcedByHwNode;
 
-  for (const auto &unit : plan.units) {
+  for (const auto &unit : TechMapper::allUnits(plan)) {
     if (unit.contractedNodeId == INVALID_ID || unit.candidates.empty())
       continue;
-    if (unit.candidates.size() != 1)
+    auto forcedHwNodeId = TechMapper::findForcedTemporalHwNodeId(unit, adg);
+    if (!forcedHwNodeId)
       continue;
-    IdIndex hwNodeId = unit.candidates.front().hwNodeId;
-    const Node *hwNode = adg.getNode(hwNodeId);
-    if (!isTemporalPENode(hwNode))
-      continue;
-    forcedByHwNode[hwNodeId].push_back(&unit);
+    forcedByHwNode[*forcedHwNodeId].push_back(&unit);
   }
 
   for (const auto &it : forcedByHwNode) {
@@ -111,10 +311,34 @@ bool detectForcedTemporalConfigConflict(
     if (units.size() < 2)
       continue;
 
-    llvm::ArrayRef<FUConfigField> firstConfig = units.front()->candidates.front().configFields;
+    const auto *firstPreferredCandidate =
+        TechMapper::findPreferredUnitCandidate(*units.front());
+    const auto *firstConfigInfo =
+        TechMapper::findSelectedUnitConfigClass(plan, *units.front());
+    unsigned firstConfigClass =
+        firstConfigInfo ? firstConfigInfo->id
+                        : std::numeric_limits<unsigned>::max();
+    llvm::ArrayRef<FUConfigField> firstConfig =
+        firstPreferredCandidate ? llvm::ArrayRef<FUConfigField>(
+                                      firstPreferredCandidate->configFields)
+                                : llvm::ArrayRef<FUConfigField>();
     for (size_t i = 1; i < units.size(); ++i) {
+      const auto *otherPreferredCandidate =
+          TechMapper::findPreferredUnitCandidate(*units[i]);
+      const auto *otherConfigInfo =
+          TechMapper::findSelectedUnitConfigClass(plan, *units[i]);
+      unsigned otherConfigClass =
+          otherConfigInfo ? otherConfigInfo->id
+                          : std::numeric_limits<unsigned>::max();
       llvm::ArrayRef<FUConfigField> otherConfig =
-          units[i]->candidates.front().configFields;
+          otherPreferredCandidate ? llvm::ArrayRef<FUConfigField>(
+                                        otherPreferredCandidate->configFields)
+                                  : llvm::ArrayRef<FUConfigField>();
+      if ((firstConfigClass != std::numeric_limits<unsigned>::max() ||
+           otherConfigClass != std::numeric_limits<unsigned>::max()) &&
+          TechMapper::areConfigClassesCompatible(plan, firstConfigClass,
+                                                 otherConfigClass))
+        continue;
       if (sameConfigFields(firstConfig, otherConfig))
         continue;
 
@@ -129,7 +353,148 @@ bool detectForcedTemporalConfigConflict(
         if (!peName.empty())
           diagnostics += " in " + peName.str();
       }
+      diagnostics += " between config classes " +
+                     std::to_string(firstConfigClass) + " and " +
+                     std::to_string(otherConfigClass);
+      if (const auto *firstInfo =
+              TechMapper::findConfigClass(plan, firstConfigClass)) {
+        diagnostics += " [" + firstInfo->key + "]";
+      }
+      if (const auto *otherInfo =
+              TechMapper::findConfigClass(plan, otherConfigClass)) {
+        diagnostics += " [" + otherInfo->key + "]";
+      }
+      if (const auto *incompat = TechMapper::findTemporalIncompatibility(
+              plan, firstConfigClass, otherConfigClass)) {
+        diagnostics += ": " + incompat->reason;
+      }
+      diagnostics += " (contracted nodes " +
+                     std::to_string(units.front()->contractedNodeId) + " and " +
+                     std::to_string(units[i]->contractedNodeId) + ")";
       return true;
+    }
+  }
+
+  struct ForcedTemporalCandidateInfo {
+    IdIndex swNodeId = INVALID_ID;
+    llvm::SmallVector<unsigned, 4> configClassIds;
+  };
+
+  llvm::DenseMap<IdIndex, llvm::SmallVector<ForcedTemporalCandidateInfo, 4>>
+      forcedCandidatesByHwNode;
+  for (IdIndex swNodeId = 0; swNodeId < static_cast<IdIndex>(dfg.nodes.size());
+       ++swNodeId) {
+    const Node *swNode = dfg.getNode(swNodeId);
+    if (!swNode || swNode->kind != Node::OperationNode)
+      continue;
+
+    auto candidateIt = candidates.find(swNodeId);
+    if (candidateIt == candidates.end() || candidateIt->second.empty())
+      continue;
+
+    IdIndex forcedHwNodeId = candidateIt->second.front();
+    bool allSameHwNode = true;
+    for (IdIndex hwNodeId : candidateIt->second) {
+      if (hwNodeId != forcedHwNodeId) {
+        allSameHwNode = false;
+        break;
+      }
+    }
+    if (!allSameHwNode)
+      continue;
+
+    llvm::ArrayRef<unsigned> supportClassIds;
+    if (const auto *contractedSupportClassIds =
+            TechMapper::findContractedCandidateSupportClasses(plan, swNodeId)) {
+      supportClassIds = *contractedSupportClassIds;
+    }
+    llvm::SmallVector<unsigned, 8> fallbackSupportClassIds;
+    if (supportClassIds.empty()) {
+      if (const auto *nodeInfo = TechMapper::findNodeTechInfo(plan, swNodeId)) {
+        fallbackSupportClassIds.assign(nodeInfo->supportClassIds.begin(),
+                                       nodeInfo->supportClassIds.end());
+        supportClassIds = fallbackSupportClassIds;
+      }
+    }
+    bool temporalSupportOnly = !supportClassIds.empty();
+    if (temporalSupportOnly) {
+      for (unsigned supportClassId : supportClassIds) {
+        if (!TechMapper::isTemporalSupportClass(plan, supportClassId)) {
+          temporalSupportOnly = false;
+          break;
+        }
+      }
+    }
+    if (!temporalSupportOnly)
+      continue;
+
+    ForcedTemporalCandidateInfo info;
+    info.swNodeId = swNodeId;
+    llvm::ArrayRef<unsigned> configClassIds;
+    if (const auto *contractedConfigClassIds =
+            TechMapper::findContractedCandidateConfigClasses(plan, swNodeId)) {
+      configClassIds = *contractedConfigClassIds;
+    }
+    llvm::SmallVector<unsigned, 8> fallbackConfigClassIds;
+    if (configClassIds.empty()) {
+      if (const auto *nodeInfo = TechMapper::findNodeTechInfo(plan, swNodeId)) {
+        fallbackConfigClassIds.assign(nodeInfo->configClassIds.begin(),
+                                      nodeInfo->configClassIds.end());
+        configClassIds = fallbackConfigClassIds;
+      }
+    }
+    if (!configClassIds.empty()) {
+      info.configClassIds.assign(configClassIds.begin(), configClassIds.end());
+      std::sort(info.configClassIds.begin(), info.configClassIds.end());
+      info.configClassIds.erase(
+          std::unique(info.configClassIds.begin(), info.configClassIds.end()),
+          info.configClassIds.end());
+    }
+    forcedCandidatesByHwNode[forcedHwNodeId].push_back(std::move(info));
+  }
+
+  for (const auto &it : forcedCandidatesByHwNode) {
+    IdIndex hwNodeId = it.first;
+    const auto &infos = it.second;
+    if (infos.size() < 2)
+      continue;
+
+    for (size_t lhsIdx = 0; lhsIdx < infos.size(); ++lhsIdx) {
+      for (size_t rhsIdx = lhsIdx + 1; rhsIdx < infos.size(); ++rhsIdx) {
+        bool hasCompatibleConfigPair = false;
+        if (!infos[lhsIdx].configClassIds.empty() &&
+            !infos[rhsIdx].configClassIds.empty()) {
+          for (unsigned lhsConfigClassId : infos[lhsIdx].configClassIds) {
+            for (unsigned rhsConfigClassId : infos[rhsIdx].configClassIds) {
+              if (TechMapper::areConfigClassesCompatible(
+                      plan, lhsConfigClassId, rhsConfigClassId)) {
+                hasCompatibleConfigPair = true;
+                break;
+              }
+            }
+            if (hasCompatibleConfigPair)
+              break;
+          }
+        }
+        if (hasCompatibleConfigPair)
+          continue;
+
+        const Node *hwNode = adg.getNode(hwNodeId);
+        diagnostics = "Temporal function_unit config conflict on hw node " +
+                      std::to_string(hwNodeId);
+        if (hwNode) {
+          llvm::StringRef hwName = getNodeAttrStr(hwNode, "op_name");
+          llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
+          if (!hwName.empty())
+            diagnostics += " (" + hwName.str() + ")";
+          if (!peName.empty())
+            diagnostics += " in " + peName.str();
+        }
+        diagnostics += " between contracted nodes " +
+                       std::to_string(infos[lhsIdx].swNodeId) + " and " +
+                       std::to_string(infos[rhsIdx].swNodeId);
+        return true;
+      }
     }
   }
 
@@ -226,8 +591,7 @@ IdIndex findDownstreamNode(const Graph &graph, IdIndex sentinelNodeId) {
 }
 
 llvm::StringRef getCompatibleOp(llvm::StringRef dfgOpName) {
-  // No other equivalences -- arith.select needs its own fu_select
-  return "";
+  return opcompat::getCompatibleOp(dfgOpName);
 }
 
 bool opMatchesFU(llvm::StringRef dfgOpName, const Node *fuNode) {
@@ -249,6 +613,7 @@ bool opMatchesFU(llvm::StringRef dfgOpName, const Node *fuNode) {
         return true;
     }
   }
+
   return false;
 }
 
@@ -540,6 +905,13 @@ double classifyEdgePlacementWeight(const Graph &dfg, IdIndex edgeId) {
        (dstPort && isNoneType(dstPort->type))) &&
       (isMemoryBoundaryOp(srcOp) || isMemoryBoundaryOp(dstOp)))
     weight += 1.50;
+  ensureRecurrenceProxyCache(dfg);
+  if (edgeId >= 0 &&
+      edgeId < static_cast<IdIndex>(
+                   activeRecurrenceProxyCache.recurrenceEdgeMask.size()) &&
+      activeRecurrenceProxyCache.recurrenceEdgeMask[edgeId] != 0) {
+    weight *= getTimingProxyOptions().recurrenceEdgeWeightMultiplier;
+  }
   return weight;
 }
 
@@ -586,6 +958,8 @@ double computeNodePriorityWeight(IdIndex swNode, const Graph &dfg) {
   if (opName == "handshake.cond_br" || opName == "dataflow.carry" ||
       opName == "dataflow.gate")
     weight += 2.5;
+  if (isRecurrenceProxyNode(swNode, dfg))
+    weight += getTimingProxyOptions().recurrenceEdgeWeightMultiplier;
   return weight;
 }
 
@@ -625,6 +999,35 @@ estimateNodePlacementPos(IdIndex swNode, const MappingState &state,
   return std::make_pair(rowSum / count, colSum / count);
 }
 
+std::optional<double>
+estimateNodeDistanceToHardware(IdIndex swNode, IdIndex anchorHwNode,
+                               const MappingState &state, const Graph &dfg,
+                               const ADGFlattener &flattener,
+                               const CandidateMap &candidates) {
+  if (swNode < state.swNodeToHwNode.size()) {
+    IdIndex mappedHw = state.swNodeToHwNode[swNode];
+    if (mappedHw != INVALID_ID) {
+      return static_cast<double>(
+          placementDistance(anchorHwNode, mappedHw, flattener));
+    }
+  }
+
+  auto it = candidates.find(swNode);
+  if (it == candidates.end() || it->second.empty())
+    return std::nullopt;
+
+  double distanceSum = 0.0;
+  unsigned count = 0;
+  for (IdIndex candidateHw : it->second) {
+    distanceSum += static_cast<double>(
+        placementDistance(anchorHwNode, candidateHw, flattener));
+    ++count;
+  }
+  if (count == 0)
+    return std::nullopt;
+  return distanceSum / static_cast<double>(count);
+}
+
 CandidateSetMap buildCandidateSetMap(const CandidateMap &candidates) {
   CandidateSetMap candidateSets;
   for (const auto &entry : candidates) {
@@ -638,10 +1041,6 @@ CandidateSetMap buildCandidateSetMap(const CandidateMap &candidates) {
 double computeLocalSpreadPenalty(IdIndex hwNode, const MappingState &state,
                                  const Graph &adg,
                                  const ADGFlattener &flattener) {
-  auto [row, col] = flattener.getNodeGridPos(hwNode);
-  if (row < 0 || col < 0)
-    return 0.0;
-
   const Node *hwNodePtr = adg.getNode(hwNode);
   bool isFunctionalCandidate =
       hwNodePtr && getNodeAttrStr(hwNodePtr, "resource_class") == "functional";
@@ -650,6 +1049,40 @@ double computeLocalSpreadPenalty(IdIndex hwNode, const MappingState &state,
        !state.hwNodeToSwNodes[hwNode].empty())
           ? static_cast<unsigned>(state.hwNodeToSwNodes[hwNode].size())
           : 0u;
+
+  if (const TopologyModel *topologyModel = getActiveTopologyModel()) {
+    unsigned nearbyRadius1 = 0;
+    unsigned nearbyRadius2 = 0;
+    for (IdIndex nearbyHwNode :
+         topologyModel->placeableNodesWithinRadius(hwNode, 2)) {
+      if (nearbyHwNode >= state.hwNodeToSwNodes.size())
+        continue;
+      const Node *nearbyNodePtr = adg.getNode(nearbyHwNode);
+      if (!nearbyNodePtr ||
+          getNodeAttrStr(nearbyNodePtr, "resource_class") != "functional") {
+        continue;
+      }
+      unsigned occupancy =
+          static_cast<unsigned>(state.hwNodeToSwNodes[nearbyHwNode].size());
+      if (occupancy == 0)
+        continue;
+      unsigned radius =
+          topologyModel->undirectedNodeDistance(hwNode, nearbyHwNode);
+      if (radius <= 1)
+        nearbyRadius1 += occupancy;
+      nearbyRadius2 += occupancy;
+    }
+    nearbyRadius1 =
+        (nearbyRadius1 >= selfOccupancy) ? (nearbyRadius1 - selfOccupancy) : 0;
+    nearbyRadius2 =
+        (nearbyRadius2 >= selfOccupancy) ? (nearbyRadius2 - selfOccupancy) : 0;
+    return 0.37 * static_cast<double>(nearbyRadius1) +
+           0.18 * static_cast<double>(nearbyRadius2);
+  }
+
+  auto [row, col] = flattener.getNodeGridPos(hwNode);
+  if (row < 0 || col < 0)
+    return 0.0;
 
   unsigned sameRow = state.getFunctionalRowOccupancy(row);
   unsigned sameCol = state.getFunctionalColOccupancy(col);
@@ -776,8 +1209,28 @@ size_t computeTotalMappedPathLen(const MappingState &state) {
   return totalPathLen;
 }
 
-int manhattanDistance(IdIndex lhsHwNode, IdIndex rhsHwNode,
+void setActiveTopologyModel(const TopologyModel *model) {
+  activeTopologyModel = model;
+}
+
+const TopologyModel *getActiveTopologyModel() {
+  return activeTopologyModel;
+}
+
+void setActiveTimingOptions(const MapperTimingOptions *opts) {
+  activeTimingOptions = opts;
+}
+
+const MapperTimingOptions *getActiveTimingOptions() {
+  return activeTimingOptions;
+}
+
+int placementDistance(IdIndex lhsHwNode, IdIndex rhsHwNode,
                       const ADGFlattener &flattener) {
+  if (activeTopologyModel) {
+    return static_cast<int>(
+        activeTopologyModel->placementDistance(lhsHwNode, rhsHwNode));
+  }
   auto [lhsRow, lhsCol] = flattener.getNodeGridPos(lhsHwNode);
   auto [rhsRow, rhsCol] = flattener.getNodeGridPos(rhsHwNode);
   if (lhsRow < 0 || lhsCol < 0 || rhsRow < 0 || rhsCol < 0)
@@ -789,8 +1242,32 @@ bool isWithinMoveRadius(IdIndex lhsHwNode, IdIndex rhsHwNode,
                         const ADGFlattener &flattener, unsigned radius) {
   if (radius == 0)
     return true;
-  return manhattanDistance(lhsHwNode, rhsHwNode, flattener) <=
+  if (activeTopologyModel)
+    return activeTopologyModel->isWithinMoveRadius(lhsHwNode, rhsHwNode,
+                                                   radius);
+  return placementDistance(lhsHwNode, rhsHwNode, flattener) <=
          static_cast<int>(radius);
+}
+
+double computeNodeTimingPenalty(IdIndex swNode, IdIndex hwNode,
+                                const Graph &dfg, const Graph &adg) {
+  if (!isRecurrenceProxyNode(swNode, dfg))
+    return 0.0;
+  const Node *hwNodePtr = adg.getNode(hwNode);
+  if (!hwNodePtr)
+    return 0.0;
+  const auto &timingOpts = getTimingProxyOptions();
+  const unsigned latencyCycles = static_cast<unsigned>(
+      std::max<int64_t>(0, getNodeAttrInt(hwNodePtr, "latency", 0)));
+  const unsigned intervalCycles = static_cast<unsigned>(
+      std::max<int64_t>(1, getNodeAttrInt(hwNodePtr, "interval", 1)));
+  const double latencyPenalty =
+      timingOpts.recurrenceNodeLatencyWeight *
+      static_cast<double>(latencyCycles > 0 ? latencyCycles - 1 : 0);
+  const double intervalPenalty =
+      timingOpts.recurrenceNodeIntervalWeight *
+      static_cast<double>(intervalCycles > 0 ? intervalCycles - 1 : 0);
+  return latencyPenalty + intervalPenalty;
 }
 
 bool canRelocateNode(
@@ -1121,12 +1598,6 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
                                const llvm::DenseMap<IdIndex,
                                                     llvm::SmallVector<IdIndex, 4>>
                                    &candidates) {
-  auto hwPos = flattener.getNodeGridPos(hwNode);
-  int hwRow = hwPos.first;
-  int hwCol = hwPos.second;
-  if (hwRow < 0 || hwCol < 0)
-    return -1.0e18;
-
   const Node *swN = dfg.getNode(swNode);
   if (!swN)
     return 0.0;
@@ -1136,21 +1607,17 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
 
   double weightedDist = 0.0;
   double totalWeight = 0.0;
-  auto accumulateNeighborAt = [&](double anchorRow, double anchorCol,
-                                  IdIndex otherSwNode, IdIndex edgeId) {
-    auto estimate =
-        estimateNodePlacementPos(otherSwNode, state, dfg, flattener, candidates);
+  auto accumulateNeighborAt = [&](IdIndex otherSwNode, IdIndex edgeId) {
+    auto estimate = estimateNodeDistanceToHardware(otherSwNode, hwNode, state,
+                                                   dfg, flattener, candidates);
     if (!estimate)
       return;
     double edgeWeight = classifyEdgePlacementWeight(dfg, edgeId);
-    weightedDist +=
-        edgeWeight * (std::abs(anchorRow - estimate->first) +
-                      std::abs(anchorCol - estimate->second));
+    weightedDist += edgeWeight * *estimate;
     totalWeight += edgeWeight;
   };
   auto accumulateNeighbor = [&](IdIndex otherSwNode, IdIndex edgeId) {
-    accumulateNeighborAt(static_cast<double>(hwRow), static_cast<double>(hwCol),
-                         otherSwNode, edgeId);
+    accumulateNeighborAt(otherSwNode, edgeId);
   };
 
   bool usedBridgeBoundaryScoring = false;
@@ -1168,8 +1635,7 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
             memInfo.classifyInput(si - memInfo.swInSkip);
         unsigned lane = memInfo.inputLocalLane(si - memInfo.swInSkip);
         IdIndex hwPortId = findBridgePortForCategoryLane(bridge, true, cat, lane);
-        auto hwPortPos = getPortPlacementPos(hwPortId, adg, flattener);
-        if (!hwPortPos)
+        if (hwPortId == INVALID_ID)
           continue;
         for (IdIndex eid : swPort->connectedEdges) {
           const Edge *edge = dfg.getEdge(eid);
@@ -1178,8 +1644,7 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
           const Port *srcPort = dfg.getPort(edge->srcPort);
           if (!srcPort || srcPort->parentNode == INVALID_ID)
             continue;
-          accumulateNeighborAt(hwPortPos->first, hwPortPos->second,
-                               srcPort->parentNode, eid);
+          accumulateNeighbor(srcPort->parentNode, eid);
           usedBridgeBoundaryScoring = true;
         }
       }
@@ -1192,8 +1657,7 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
         unsigned lane = memInfo.outputLocalLane(oi);
         IdIndex hwPortId =
             findBridgePortForCategoryLane(bridge, false, cat, lane);
-        auto hwPortPos = getPortPlacementPos(hwPortId, adg, flattener);
-        if (!hwPortPos)
+        if (hwPortId == INVALID_ID)
           continue;
         for (IdIndex eid : swPort->connectedEdges) {
           const Edge *edge = dfg.getEdge(eid);
@@ -1202,8 +1666,7 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
           const Port *dstPort = dfg.getPort(edge->dstPort);
           if (!dstPort || dstPort->parentNode == INVALID_ID)
             continue;
-          accumulateNeighborAt(hwPortPos->first, hwPortPos->second,
-                               dstPort->parentNode, eid);
+          accumulateNeighbor(dstPort->parentNode, eid);
           usedBridgeBoundaryScoring = true;
         }
       }
@@ -1245,8 +1708,14 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
   double cost = 0.0;
   if (totalWeight > 0.0)
     cost += weightedDist / totalWeight;
+  else if (const TopologyModel *topologyModel = getActiveTopologyModel())
+    cost += topologyModel->averagePlacementDistance(hwNode);
+  else if (auto hwPos = flattener.getNodeGridPos(hwNode);
+           hwPos.first >= 0 && hwPos.second >= 0)
+    cost += 0.25 *
+            static_cast<double>(std::abs(hwPos.first) + std::abs(hwPos.second));
   else
-    cost += 0.25 * (std::abs(hwRow) + std::abs(hwCol));
+    cost += 0.0;
 
   if (activeMemorySharingPenalty > 0.0 &&
       isSoftwareMemoryInterfaceOp(getNodeAttrStr(swN, "op_name")) &&
@@ -1318,6 +1787,8 @@ double Mapper::scorePlacement(IdIndex swNode, IdIndex hwNode,
     }
     cost += activeCongestionPlacementWeight * congestionPenalty;
   }
+
+  cost += computeNodeTimingPenalty(swNode, hwNode, dfg, adg);
 
   return -cost;
 }
@@ -1473,22 +1944,29 @@ double Mapper::computeTotalCost(const MappingState &state, const Graph &dfg,
                                 const Graph &adg,
                                 const ADGFlattener &flattener) {
   double cost = 0.0;
+  const TopologyModel *topologyModel = getActiveTopologyModel();
+  const bool enableGridCutLoad =
+      topologyModel && topologyModel->supportsGridCutLoad();
   int maxRow = -1;
   int maxCol = -1;
-  for (IdIndex hwId = 0; hwId < static_cast<IdIndex>(state.hwNodeToSwNodes.size());
-       ++hwId) {
-    if (state.hwNodeToSwNodes[hwId].empty())
-      continue;
-    auto [row, col] = flattener.getNodeGridPos(hwId);
-    if (row >= 0 && col >= 0) {
-      maxRow = std::max(maxRow, row);
-      maxCol = std::max(maxCol, col);
+  if (enableGridCutLoad) {
+    for (IdIndex hwId = 0;
+         hwId < static_cast<IdIndex>(state.hwNodeToSwNodes.size()); ++hwId) {
+      if (state.hwNodeToSwNodes[hwId].empty())
+        continue;
+      auto [row, col] = flattener.getNodeGridPos(hwId);
+      if (row >= 0 && col >= 0) {
+        maxRow = std::max(maxRow, row);
+        maxCol = std::max(maxCol, col);
+      }
     }
   }
   std::vector<double> rowCutLoad(
-      maxRow >= 0 ? static_cast<size_t>(maxRow) + 1 : 0, 0.0);
+      enableGridCutLoad && maxRow >= 0 ? static_cast<size_t>(maxRow) + 1 : 0,
+      0.0);
   std::vector<double> colCutLoad(
-      maxCol >= 0 ? static_cast<size_t>(maxCol) + 1 : 0, 0.0);
+      enableGridCutLoad && maxCol >= 0 ? static_cast<size_t>(maxCol) + 1 : 0,
+      0.0);
 
   for (IdIndex eid = 0; eid < static_cast<IdIndex>(dfg.edges.size()); ++eid) {
     const Edge *edge = dfg.getEdge(eid);
@@ -1508,12 +1986,14 @@ double Mapper::computeTotalCost(const MappingState &state, const Graph &dfg,
     IdIndex dstHw = state.swNodeToHwNode[dstSw];
     if (srcHw == INVALID_ID || dstHw == INVALID_ID)
       continue;
-    auto [sr, sc] = flattener.getNodeGridPos(srcHw);
-    auto [dr, dc] = flattener.getNodeGridPos(dstHw);
-    if (sr >= 0 && dr >= 0) {
-      double edgeWeight = classifyEdgePlacementWeight(dfg, eid);
-      int dist = std::abs(sr - dr) + std::abs(sc - dc);
-      cost += edgeWeight * static_cast<double>(dist);
+    double edgeWeight = classifyEdgePlacementWeight(dfg, eid);
+    cost += edgeWeight *
+            static_cast<double>(placementDistance(srcHw, dstHw, flattener));
+    if (enableGridCutLoad) {
+      auto [sr, sc] = flattener.getNodeGridPos(srcHw);
+      auto [dr, dc] = flattener.getNodeGridPos(dstHw);
+      if (sr < 0 || sc < 0 || dr < 0 || dc < 0)
+        continue;
       for (int row = std::min(sr, dr); row < std::max(sr, dr) &&
                                        row < static_cast<int>(rowCutLoad.size());
            ++row)
@@ -1524,10 +2004,19 @@ double Mapper::computeTotalCost(const MappingState &state, const Graph &dfg,
         colCutLoad[col] += edgeWeight;
     }
   }
-  for (double load : rowCutLoad)
-    cost += 0.006 * load * load;
-  for (double load : colCutLoad)
-    cost += 0.006 * load * load;
+  for (IdIndex swNode = 0; swNode < static_cast<IdIndex>(state.swNodeToHwNode.size());
+       ++swNode) {
+    IdIndex hwNode = state.swNodeToHwNode[swNode];
+    if (hwNode == INVALID_ID)
+      continue;
+    cost += computeNodeTimingPenalty(swNode, hwNode, dfg, adg);
+  }
+  if (enableGridCutLoad) {
+    for (double load : rowCutLoad)
+      cost += 0.006 * load * load;
+    for (double load : colCutLoad)
+      cost += 0.006 * load * load;
+  }
   return cost;
 }
 

@@ -7,8 +7,10 @@ add_library(FccMapper STATIC
   ADGFlattenerWiring.cpp
   DFGBuilder.cpp
   MappingState.cpp
+  OpCompat.cpp
   TechMapper.cpp
   TechMapperVariants.cpp
+  TopologyModel.cpp
   Mapper.cpp
   MapperPlacement.cpp
   MapperRefinement.cpp
@@ -19,6 +21,7 @@ add_library(FccMapper STATIC
   MapperLocalRepairEndgame.cpp
   MapperCPSat.cpp
   MapperCongestionEstimator.cpp
+  MapperTiming.cpp
   MapperRelaxedRouting.cpp
   MapperRouting.cpp
   MapperRoutingCongestion.cpp
