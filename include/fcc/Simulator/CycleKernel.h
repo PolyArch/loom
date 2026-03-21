@@ -8,6 +8,7 @@
 
 #include <deque>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <memory>
 #include <string>
@@ -45,6 +46,14 @@ public:
   bool isDone() const { return done_; }
   bool isQuiescent() const { return quiescent_; }
   bool isDeadlocked() const { return deadlocked_; }
+
+  const std::vector<SimChannel> &getPortState() const { return portState_; }
+
+  // Optional per-cycle callback invoked after each stepCycle().
+  // Arguments: (cycle, portState).
+  using CycleCallback =
+      std::function<void(uint64_t, const std::vector<SimChannel> &)>;
+  void setCycleCallback(CycleCallback cb) { cycleCallback_ = std::move(cb); }
 
   const TraceDocument &getTraceDocument() const { return traceDocument_; }
   void setInputTokens(unsigned boundaryOrdinal,
@@ -187,6 +196,7 @@ private:
   uint64_t budgetBoundaryCount_ = 0;
   uint64_t deadlockBoundaryCount_ = 0;
   uint64_t maxInflightMemoryRequests_ = 0;
+  CycleCallback cycleCallback_;
 };
 
 } // namespace sim

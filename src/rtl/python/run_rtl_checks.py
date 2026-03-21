@@ -2,6 +2,7 @@
 """Master RTL verification runner. Dispatches to gen_sv, run_sim, run_synth."""
 
 import argparse
+import glob
 import os
 import subprocess
 import sys
@@ -46,6 +47,37 @@ def run_check(script, args_list, check_name, output_dir):
     status = "PASS" if passed else "FAIL"
     print(f"[{check_name}] {status}")
     return passed
+
+
+def generate_golden_traces(fcc_exec, adg_path, module_name, output_dir):
+    """Run fcc --simulate --trace-port-dump to produce golden traces."""
+    trace_dir = os.path.join(output_dir, "rtl-traces")
+    cmd = [
+        fcc_exec,
+        "--gen-sv",
+        "--simulate",
+        "--adg", adg_path,
+        "--trace-port-dump", module_name,
+        "-o", output_dir,
+    ]
+    print(f"[behaviour] Generating golden traces: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[behaviour] FAIL: fcc golden trace generation failed")
+        if result.stderr:
+            print(result.stderr[:2000])
+        return None
+    if os.path.isdir(trace_dir):
+        return trace_dir
+    return None
+
+
+def find_golden_traces(test_output):
+    """Look for golden trace files under the test output tree."""
+    trace_dir = os.path.join(test_output, "rtl-traces")
+    if not os.path.isdir(trace_dir):
+        return []
+    return sorted(glob.glob(os.path.join(trace_dir, "*.hex")))
 
 
 def main():
@@ -100,7 +132,7 @@ def main():
             )
             results["passed" if passed else "failed"] += 1
 
-        # Check 1: Functional (requires golden traces)
+        # Check 1: Functional behaviour verification
         if "behaviour" in args.checks:
             beh_dir = os.path.join(test_output, "behaviour")
             os.makedirs(beh_dir, exist_ok=True)
@@ -108,8 +140,41 @@ def main():
                 print(f"[behaviour/{tc['module']}/{tc['test']}] SKIP: verilator not found")
                 results["skipped"] += 1
             else:
-                # TODO: generate golden traces first via fcc --simulate --trace-port-dump
-                results["skipped"] += 1
+                gen_dir = os.path.join(test_output, "gen-collateral")
+                rtl_dir = os.path.join(gen_dir, "rtl")
+                tb_dir = os.path.join(args.src_rtl, "testbench", "common")
+
+                golden_traces = find_golden_traces(test_output)
+                if not golden_traces:
+                    trace_result = generate_golden_traces(
+                        args.fcc, tc["mlir"], tc["module"],
+                        test_output)
+                    if trace_result:
+                        golden_traces = find_golden_traces(test_output)
+
+                if not golden_traces:
+                    print(f"[behaviour/{tc['module']}/{tc['test']}] "
+                          "FAIL: no golden traces available")
+                    results["failed"] += 1
+                elif not os.path.isdir(rtl_dir):
+                    print(f"[behaviour/{tc['module']}/{tc['test']}] "
+                          "FAIL: generated RTL not found")
+                    results["failed"] += 1
+                else:
+                    sim_args = [
+                        "--rtl-dir", rtl_dir,
+                        "--tb-dir", tb_dir,
+                        "--output-dir", beh_dir,
+                        "--tool", "verilator",
+                        "--trace-dir", os.path.join(test_output, "rtl-traces"),
+                    ]
+                    passed = run_check(
+                        os.path.join(scripts_dir, "run_sim.py"),
+                        sim_args,
+                        f"behaviour/{tc['module']}/{tc['test']}",
+                        beh_dir
+                    )
+                    results["passed" if passed else "failed"] += 1
 
         # Check 3: Synthesis
         if "synth" in args.checks:

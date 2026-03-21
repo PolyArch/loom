@@ -1749,6 +1749,9 @@ void CycleKernel::stepCycle() {
     ++deadlockBoundaryCount_;
 
   ++currentCycle_;
+
+  if (cycleCallback_)
+    cycleCallback_(currentCycle_, portState_);
 }
 
 BoundaryReason CycleKernel::runUntilBoundary(uint64_t maxCycles) {

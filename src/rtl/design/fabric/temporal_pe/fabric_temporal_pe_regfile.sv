@@ -24,20 +24,21 @@ module fabric_temporal_pe_regfile
   input  logic        rst_n,
 
   // --- Read ports (non-destructive peek at FIFO front) ---
-  input  logic [REG_IDX_W-1:0]   rd_reg_idx   [NUM_RD_PORTS],
+  input  logic [(NUM_REG > 1 ? $clog2(NUM_REG) : 1)-1:0]
+                                   rd_reg_idx   [NUM_RD_PORTS],
   input  logic [NUM_RD_PORTS-1:0] rd_enable,
   output logic [DATA_WIDTH-1:0]  rd_data      [NUM_RD_PORTS],
-  output logic [NUM_RD_PORTS-1:0] rd_valid,    // FIFO not empty for requested reg
+  output logic [NUM_RD_PORTS-1:0] rd_valid,
 
   // --- Read consume (pop FIFO front on FU fire) ---
-  // rd_consume_en: per-register pop strobe (indexed by register number)
-  input  logic [EFF_NUM_REG-1:0]  rd_consume_en,
+  input  logic [(NUM_REG > 0 ? NUM_REG : 1)-1:0] rd_consume_en,
 
   // --- Write ports (push to FIFO tail) ---
-  input  logic [REG_IDX_W-1:0]   wr_reg_idx   [NUM_WR_PORTS],
+  input  logic [(NUM_REG > 1 ? $clog2(NUM_REG) : 1)-1:0]
+                                   wr_reg_idx   [NUM_WR_PORTS],
   input  logic [NUM_WR_PORTS-1:0] wr_enable,
   input  logic [DATA_WIDTH-1:0]  wr_data      [NUM_WR_PORTS],
-  output logic [NUM_WR_PORTS-1:0] wr_ready     // FIFO not full for requested reg
+  output logic [NUM_WR_PORTS-1:0] wr_ready
 );
 
   // ---------------------------------------------------------------

@@ -424,5 +424,14 @@ size_t SimSession::getNumBoundMemoryRegions() const {
   return memoryRegions_.size();
 }
 
+bool SimSession::setCycleCallback(CycleCallback cb) {
+  std::lock_guard<std::mutex> lock(mu_);
+  auto *cycleBackend = dynamic_cast<CycleSimulationBackend *>(backend_.get());
+  if (!cycleBackend)
+    return false;
+  cycleBackend->setCycleCallback(std::move(cb));
+  return true;
+}
+
 } // namespace sim
 } // namespace fcc

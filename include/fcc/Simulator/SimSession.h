@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -137,6 +138,12 @@ public:
   unsigned getNumInputPorts() const;
   unsigned getNumOutputPorts() const;
   size_t getNumBoundMemoryRegions() const;
+
+  // Set a per-cycle callback. Only effective when the backend is the
+  // cycle-accurate kernel (CycleSimulationBackend).
+  using CycleCallback =
+      std::function<void(uint64_t, const std::vector<SimChannel> &)>;
+  bool setCycleCallback(CycleCallback cb);
 
 private:
   struct MemoryRegionBinding {

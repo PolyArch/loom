@@ -13,6 +13,7 @@
 #include "fcc/Mapper/DFGBuilder.h"
 #include "fcc/Mapper/Mapper.h"
 #include "fcc/Mapper/TypeCompat.h"
+#include "fcc/Simulator/PortTraceExporter.h"
 #include "fcc/Simulator/SimArtifactWriter.h"
 #include "fcc/Simulator/SimBundle.h"
 #include "fcc/Simulator/SimInputSynthesis.h"
@@ -674,6 +675,9 @@ int main(int argc, char **argv) {
     std::string runtimeImagePath = mixedBase + ".simimage.json";
     std::string runtimeImageBinPath = mixedBase + ".simimage.bin";
     fcc::sim::RuntimeImage runtimeImage;
+    // Capture port/module info before the static model is moved into session.
+    std::vector<fcc::sim::StaticModuleDesc> savedModuleDescs;
+    std::vector<fcc::sim::StaticPortDesc> savedPortDescs;
     {
       std::string runtimeImageError;
       if (!fcc::sim::buildRuntimeImage(
@@ -687,6 +691,10 @@ int main(int argc, char **argv) {
         llvm::errs() << "fcc: failed to write runtime image: "
                      << runtimeImageError << "\n";
         return 1;
+      }
+      if (!args.tracePortDump.empty()) {
+        savedModuleDescs = runtimeImage.staticModel.getModules();
+        savedPortDescs = runtimeImage.staticModel.getPorts();
       }
     }
     llvm::outs() << "  " << runtimeImagePath << "\n";
@@ -788,6 +796,58 @@ int main(int argc, char **argv) {
         }
       }
 
+      // Set up port trace export if requested.
+      std::unique_ptr<fcc::sim::PortTraceExporter> portTraceExporter;
+      if (!args.tracePortDump.empty()) {
+        std::string traceOutputDir = args.outputDir + "/rtl-traces";
+        if (std::error_code ec =
+                llvm::sys::fs::create_directories(traceOutputDir)) {
+          llvm::errs() << "fcc: cannot create trace output dir '"
+                       << traceOutputDir << "': " << ec.message() << "\n";
+          return 1;
+        }
+        portTraceExporter =
+            std::make_unique<fcc::sim::PortTraceExporter>(traceOutputDir);
+
+        for (unsigned modIdx = 0; modIdx < savedModuleDescs.size(); ++modIdx) {
+          const auto &mod = savedModuleDescs[modIdx];
+          if (mod.name != args.tracePortDump)
+            continue;
+
+          std::vector<fcc::sim::PortTraceExporter::TracedPort> tracedPorts;
+          auto addPorts = [&](const std::vector<IdIndex> &portIds,
+                              const std::string &prefix) {
+            unsigned iter_var0 = 0;
+            for (IdIndex portId : portIds) {
+              if (portId < static_cast<IdIndex>(savedPortDescs.size())) {
+                const auto &pd = savedPortDescs[portId];
+                fcc::sim::PortTraceExporter::TracedPort tp;
+                tp.portIndex = static_cast<unsigned>(portId);
+                tp.dir = pd.direction;
+                tp.valueWidth = pd.valueWidth;
+                tp.tagWidth = pd.tagWidth;
+                tp.isTagged = pd.isTagged;
+                tp.name = prefix + std::to_string(iter_var0);
+                tracedPorts.push_back(tp);
+              }
+              ++iter_var0;
+            }
+          };
+          addPorts(mod.inputPorts, "in");
+          addPorts(mod.outputPorts, "out");
+
+          portTraceExporter->addTracedModule(modIdx, mod.name, tracedPorts);
+          llvm::outs() << "fcc: tracing ports for module '" << mod.name
+                       << "' (" << tracedPorts.size() << " ports)\n";
+        }
+
+        session.setCycleCallback(
+            [&portTraceExporter](uint64_t cycle,
+                                 const std::vector<fcc::sim::SimChannel> &ps) {
+              portTraceExporter->recordCycle(cycle, ps);
+            });
+      }
+
       auto [simResult, invokeErr] = session.invoke();
       std::vector<SynthesizedOutputInfo> synthesizedOutputs =
           collectSynthesizedOutputs(dfgBuilder.getDFG(), flattener.getADG(),
@@ -806,6 +866,15 @@ int main(int argc, char **argv) {
       llvm::outs() << "  " << statPath << "\n";
       llvm::outs() << "  " << setupPath << "\n";
       llvm::outs() << "  " << resultPath << "\n";
+
+      if (portTraceExporter) {
+        if (!portTraceExporter->flush()) {
+          llvm::errs() << "fcc: warning: port trace export flush failed\n";
+        } else {
+          llvm::outs() << "fcc: port traces written to "
+                       << args.outputDir << "/rtl-traces/\n";
+        }
+      }
 
       if (!invokeErr.empty()) {
         llvm::errs() << "fcc: simulation invocation failed: " << invokeErr

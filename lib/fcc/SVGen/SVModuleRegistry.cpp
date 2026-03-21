@@ -114,8 +114,11 @@ bool SVModuleRegistry::requireArithOp(llvm::StringRef mlirOpName,
     return false;
 
   const OpMapping *mapping = findMapping(mlirOpName);
-  if (!mapping)
-    return true; // unknown op -- silently skip (might be fabric.mux etc.)
+  if (!mapping) {
+    // Not a known op. Return false so the caller can report the error.
+    // fabric.mux and fabric.yield are handled separately before this is called.
+    return false;
+  }
 
   requireModule(mapping->category, mapping->filename);
   return true;

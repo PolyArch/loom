@@ -115,40 +115,38 @@ module fabric_temporal_pe_fu_slot
       logic [INTERVAL_CNT_W-1:0] interval_cnt;
       logic interval_busy;
 
-      generate
-        if (INTERVAL_VAL > 0) begin : gen_interval
+      if (INTERVAL_VAL > 0) begin : gen_interval
 
-          always_ff @(posedge clk or negedge rst_n) begin : interval_seq
-            if (!rst_n) begin : interval_reset
-              interval_cnt <= '0;
-            end : interval_reset
-            else begin : interval_op
-              if (fire) begin : interval_reload
-                interval_cnt <= INTERVAL_CNT_W'(INTERVAL_VAL);
-              end : interval_reload
-              else if (interval_cnt != '0) begin : interval_dec
-                interval_cnt <= interval_cnt - 1'b1;
-              end : interval_dec
-            end : interval_op
-          end : interval_seq
+        always_ff @(posedge clk or negedge rst_n) begin : interval_seq
+          if (!rst_n) begin : interval_reset
+            interval_cnt <= '0;
+          end : interval_reset
+          else begin : interval_op
+            if (fire) begin : interval_reload
+              interval_cnt <= INTERVAL_CNT_W'(INTERVAL_VAL);
+            end : interval_reload
+            else if (interval_cnt != '0) begin : interval_dec
+              interval_cnt <= interval_cnt - 1'b1;
+            end : interval_dec
+          end : interval_op
+        end : interval_seq
 
-          assign interval_busy = (interval_cnt != '0);
+        assign interval_busy = (interval_cnt != '0);
 
-        end : gen_interval
-        else begin : gen_no_interval
+      end : gen_interval
+      else begin : gen_no_interval
 
-          assign interval_busy = 1'b0;
+        assign interval_cnt  = '0;
+        assign interval_busy = 1'b0;
 
-        end : gen_no_interval
-      endgenerate
+      end : gen_no_interval
 
       // ---------------------------------------------------------------
       // Latency pipeline (shift register)
       // ---------------------------------------------------------------
       logic pipeline_busy;
 
-      generate
-        if (EXTRA_LATENCY == 0) begin : gen_no_pipe
+      if (EXTRA_LATENCY == 0) begin : gen_no_pipe
 
           // No extra latency: FU output goes directly to output stage
           assign pipe_out_valid = fu_out_valid;
@@ -217,7 +215,6 @@ module fabric_temporal_pe_fu_slot
           end : pipe_busy_check
 
         end : gen_pipe
-      endgenerate
 
       // ---------------------------------------------------------------
       // Busy: union of all blocking conditions

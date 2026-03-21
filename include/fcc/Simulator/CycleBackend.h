@@ -47,6 +47,9 @@ public:
 
   const StaticMappedModel &getStaticModel() const { return staticModel_; }
   const StaticConfigImage &getConfigImage() const { return configImage_; }
+  void setCycleCallback(CycleKernel::CycleCallback cb) {
+    kernel_.setCycleCallback(std::move(cb));
+  }
 
 private:
   struct MemoryRegionBinding {

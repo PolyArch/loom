@@ -73,19 +73,31 @@ static bool collectFUDeps(fcc::fabric::FunctionUnitOp fuOp,
       continue;
     }
 
+    // Check for Tier 3 transcendental FP ops first.
+    if (SVModuleRegistry::isTier3TranscendentalOp(opName) &&
+        fpIpProfile.empty()) {
+      llvm::errs() << "gen-sv error: unsupported-op: transcendental FP op '"
+                   << opName
+                   << "' requires --fp-ip-profile; no portable "
+                      "synthesizable implementation available.\n";
+      return false;
+    }
     if (SVModuleRegistry::isKnownOp(opName)) {
-      if (SVModuleRegistry::isTier3TranscendentalOp(opName) &&
-          fpIpProfile.empty()) {
-        llvm::errs() << "svgen: error: transcendental FP op '" << opName
-                     << "' requires --fp-ip-profile; no portable "
-                        "synthesizable implementation available.\n";
+      if (!registry.requireArithOp(opName, fpIpProfile)) {
+        llvm::errs() << "gen-sv error: unsupported-op: operation '" << opName
+                     << "' could not be registered for RTL generation\n";
         return false;
       }
-      registry.requireArithOp(opName, fpIpProfile);
       continue;
     }
 
-    // Unknown ops are silently accepted (may be pure MLIR constructs).
+    // Unknown ops: report error if they're non-terminator body operations.
+    // Yield and block arguments are handled separately, but actual compute
+    // ops that SVGen doesn't know how to lower must be rejected.
+    llvm::errs() << "gen-sv error: unsupported-op: operation '" << opName
+                 << "' inside function_unit '" << fuOp.getSymName()
+                 << "' has no known RTL implementation\n";
+    return false;
   }
   return true;
 }
@@ -254,6 +266,11 @@ bool generateSV(mlir::ModuleOp adgModule, mlir::MLIRContext *ctx,
 
     std::string modName =
         generateFUBody(fuOp, os, registry, options.fpIpProfile);
+    if (modName.empty()) {
+      llvm::errs() << "svgen: failed to generate FU body for "
+                   << fuName << "\n";
+      return false;
+    }
     generatedFiles.push_back("generated/" + fileName);
 
     llvm::outs() << "svgen: generated FU body: " << fileName << "\n";

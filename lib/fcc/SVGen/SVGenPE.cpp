@@ -258,27 +258,30 @@ std::string generateSpatialPE(fcc::fabric::SpatialPEOp peOp,
   for (unsigned fuIdx = 0; fuIdx < numFU; ++fuIdx) {
     const auto &fu = fus[fuIdx];
     std::string fuInstName = fu.svModuleName + "_inst";
+    std::string fuPfx = "fu" + std::to_string(fuIdx);
 
-    // FU data connections.
+    // FU data connections -- FU body modules use in_data_N / out_data_N
+    // naming with per-port valid/ready.
     std::vector<SVConnection> fuConns;
+    fuConns.push_back({"clk", "clk"});
+    fuConns.push_back({"rst_n", "rst_n"});
+
     for (unsigned i = 0; i < fu.numInputs; ++i) {
-      fuConns.push_back({"in" + std::to_string(i),
-                         "fu" + std::to_string(fuIdx) + "_in" +
-                             std::to_string(i)});
+      std::string idx = std::to_string(i);
+      fuConns.push_back({"in_data_" + idx, fuPfx + "_in" + idx});
+      fuConns.push_back({"in_valid_" + idx, "cfg_enable"});
+      fuConns.push_back(
+          {"in_ready_" + idx, fuPfx + "_in_ready_" + idx});
     }
     for (unsigned i = 0; i < fu.numOutputs; ++i) {
-      std::string outWire = "fu" + std::to_string(fuIdx) + "_out" +
-                            std::to_string(i);
+      std::string idx = std::to_string(i);
+      std::string outWire = fuPfx + "_out" + idx;
       emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth), outWire);
-      fuConns.push_back({"out" + std::to_string(i), outWire});
+      fuConns.push_back({"out_data_" + idx, outWire});
+      fuConns.push_back(
+          {"out_valid_" + idx, fuPfx + "_out_valid_" + idx});
+      fuConns.push_back({"out_ready_" + idx, "1'b1"});
     }
-
-    fuConns.push_back({"in_valid", "cfg_enable"});
-    fuConns.push_back(
-        {"in_ready", "fu" + std::to_string(fuIdx) + "_in_ready"});
-    fuConns.push_back(
-        {"out_valid", "fu" + std::to_string(fuIdx) + "_out_valid"});
-    fuConns.push_back({"out_ready", "1'b1"});
 
     if (fu.configBits > 0) {
       fuConns.push_back(
@@ -292,10 +295,12 @@ std::string generateSpatialPE(fcc::fabric::SpatialPEOp peOp,
       fuParams.push_back(".FU_CFG_BITS(" + std::to_string(fu.configBits) +
                           ")");
 
-    emitter.emitWire("logic",
-                     "fu" + std::to_string(fuIdx) + "_in_ready");
-    emitter.emitWire("logic",
-                     "fu" + std::to_string(fuIdx) + "_out_valid");
+    for (unsigned i = 0; i < fu.numInputs; ++i) {
+      emitter.emitWire("logic", fuPfx + "_in_ready_" + std::to_string(i));
+    }
+    for (unsigned i = 0; i < fu.numOutputs; ++i) {
+      emitter.emitWire("logic", fuPfx + "_out_valid_" + std::to_string(i));
+    }
     emitter.emitInstance(fu.svModuleName, fuInstName, fuParams, fuConns);
     emitter.emitBlankLine();
   }
@@ -404,48 +409,42 @@ std::string generateTemporalPE(fcc::fabric::TemporalPEOp peOp,
   emitter.emitComment("FU instantiations");
   for (unsigned fuIdx = 0; fuIdx < numFU; ++fuIdx) {
     const auto &fu = fus[fuIdx];
+    std::string fuPfx = "fu" + std::to_string(fuIdx);
     emitter.emitComment("  FU " + std::to_string(fuIdx) + ": " +
                         fu.svModuleName);
 
     // Declare FU data wires.
     for (unsigned i = 0; i < fu.numInputs; ++i) {
+      std::string idx = std::to_string(i);
       emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
-                        "fu" + std::to_string(fuIdx) + "_in" +
-                            std::to_string(i));
+                        fuPfx + "_in" + idx);
+      emitter.emitWire("logic", fuPfx + "_in_valid_" + idx);
+      emitter.emitWire("logic", fuPfx + "_in_ready_" + idx);
     }
     for (unsigned i = 0; i < fu.numOutputs; ++i) {
+      std::string idx = std::to_string(i);
       emitter.emitWire("logic" + SVEmitter::bitRange(dataWidth),
-                        "fu" + std::to_string(fuIdx) + "_out" +
-                            std::to_string(i));
+                        fuPfx + "_out" + idx);
+      emitter.emitWire("logic", fuPfx + "_out_valid_" + idx);
+      emitter.emitWire("logic", fuPfx + "_out_ready_" + idx);
     }
-    emitter.emitWire("logic",
-                     "fu" + std::to_string(fuIdx) + "_in_valid");
-    emitter.emitWire("logic",
-                     "fu" + std::to_string(fuIdx) + "_in_ready");
-    emitter.emitWire("logic",
-                     "fu" + std::to_string(fuIdx) + "_out_valid");
-    emitter.emitWire("logic",
-                     "fu" + std::to_string(fuIdx) + "_out_ready");
 
     std::vector<SVConnection> conns;
+    conns.push_back({"clk", "clk"});
+    conns.push_back({"rst_n", "rst_n"});
+
     for (unsigned i = 0; i < fu.numInputs; ++i) {
-      conns.push_back({"in" + std::to_string(i),
-                       "fu" + std::to_string(fuIdx) + "_in" +
-                           std::to_string(i)});
+      std::string idx = std::to_string(i);
+      conns.push_back({"in_data_" + idx, fuPfx + "_in" + idx});
+      conns.push_back({"in_valid_" + idx, fuPfx + "_in_valid_" + idx});
+      conns.push_back({"in_ready_" + idx, fuPfx + "_in_ready_" + idx});
     }
     for (unsigned i = 0; i < fu.numOutputs; ++i) {
-      conns.push_back({"out" + std::to_string(i),
-                       "fu" + std::to_string(fuIdx) + "_out" +
-                           std::to_string(i)});
+      std::string idx = std::to_string(i);
+      conns.push_back({"out_data_" + idx, fuPfx + "_out" + idx});
+      conns.push_back({"out_valid_" + idx, fuPfx + "_out_valid_" + idx});
+      conns.push_back({"out_ready_" + idx, fuPfx + "_out_ready_" + idx});
     }
-    conns.push_back(
-        {"in_valid", "fu" + std::to_string(fuIdx) + "_in_valid"});
-    conns.push_back(
-        {"in_ready", "fu" + std::to_string(fuIdx) + "_in_ready"});
-    conns.push_back(
-        {"out_valid", "fu" + std::to_string(fuIdx) + "_out_valid"});
-    conns.push_back(
-        {"out_ready", "fu" + std::to_string(fuIdx) + "_out_ready"});
 
     std::vector<std::string> fuParams;
     fuParams.push_back(".DATA_WIDTH(DATA_WIDTH)");

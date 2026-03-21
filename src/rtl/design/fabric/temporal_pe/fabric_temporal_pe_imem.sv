@@ -128,7 +128,11 @@ module fabric_temporal_pe_imem
   end : cfg_load
 
   // ---------------------------------------------------------------
-  // Combinational field extraction from cfg_flat into output arrays
+  // Combinational field extraction from cfg_flat into output arrays.
+  //
+  // Bit-extraction widths must be >= 1 for +: operator legality.
+  // We use EFF_* widths (min 1) and guard assignment with generate-time
+  // conditions where the field truly has zero bits.
   // ---------------------------------------------------------------
   always_comb begin : slot_decode
     integer iter_var0;
@@ -146,35 +150,31 @@ module fabric_temporal_pe_imem
       slot_tag[iter_var0] = cfg_flat[bit_pos +: TAG_WIDTH];
       bit_pos = bit_pos + TAG_WIDTH;
 
-      // opcode
-      if (OPCODE_W > 0) begin : decode_opcode
-        slot_opcode[iter_var0] = cfg_flat[bit_pos +: OPCODE_W];
-      end : decode_opcode
-      else begin : decode_opcode_zero
-        slot_opcode[iter_var0] = '0;
-      end : decode_opcode_zero
+      // opcode (EFF_OPCODE bits, always >= 1)
+      slot_opcode[iter_var0] = cfg_flat[bit_pos +: EFF_OPCODE];
       bit_pos = bit_pos + OPCODE_W;
 
       // operand configs
       slot_operand_is_reg[iter_var0] = '0;
       for (iter_var1 = 0; iter_var1 < MAX_FU_IN; iter_var1 = iter_var1 + 1) begin : decode_operand
         slot_operand_reg_idx[iter_var0][iter_var1] = '0;
-        if (OPERAND_CFG_W > 0) begin : has_operand_cfg
-          if (REG_IDX_W > 0) begin : has_reg_idx
-            slot_operand_reg_idx[iter_var0][iter_var1] = cfg_flat[bit_pos +: REG_IDX_W];
-          end : has_reg_idx
-          slot_operand_is_reg[iter_var0][iter_var1] = cfg_flat[bit_pos + REG_IDX_W];
-          bit_pos = bit_pos + OPERAND_CFG_W;
-        end : has_operand_cfg
       end : decode_operand
+      // Only decode operand config fields if registers exist
+      if (OPERAND_CFG_W > 0) begin : has_operand_cfgs
+        for (iter_var1 = 0; iter_var1 < MAX_FU_IN; iter_var1 = iter_var1 + 1) begin : decode_operand_cfg
+          slot_operand_reg_idx[iter_var0][iter_var1] = cfg_flat[bit_pos +: EFF_REG_IDX];
+          slot_operand_is_reg[iter_var0][iter_var1]  = cfg_flat[bit_pos + REG_IDX_W];
+          bit_pos = bit_pos + OPERAND_CFG_W;
+        end : decode_operand_cfg
+      end : has_operand_cfgs
 
-      // input mux controls
+      // input mux controls (always at least 2 bits: discard + disconnect)
       slot_in_mux_discard[iter_var0]    = '0;
       slot_in_mux_disconnect[iter_var0] = '0;
       for (iter_var1 = 0; iter_var1 < MAX_FU_IN; iter_var1 = iter_var1 + 1) begin : decode_in_mux
         slot_in_mux_sel[iter_var0][iter_var1] = '0;
         if (IN_SEL_W > 0) begin : has_in_sel
-          slot_in_mux_sel[iter_var0][iter_var1] = cfg_flat[bit_pos +: IN_SEL_W];
+          slot_in_mux_sel[iter_var0][iter_var1] = cfg_flat[bit_pos +: EFF_IN_SEL];
         end : has_in_sel
         slot_in_mux_discard[iter_var0][iter_var1]    = cfg_flat[bit_pos + IN_SEL_W];
         slot_in_mux_disconnect[iter_var0][iter_var1] = cfg_flat[bit_pos + IN_SEL_W + 1];
@@ -187,7 +187,7 @@ module fabric_temporal_pe_imem
       for (iter_var1 = 0; iter_var1 < MAX_FU_OUT; iter_var1 = iter_var1 + 1) begin : decode_out_demux
         slot_out_demux_sel[iter_var0][iter_var1] = '0;
         if (OUT_SEL_W > 0) begin : has_out_sel
-          slot_out_demux_sel[iter_var0][iter_var1] = cfg_flat[bit_pos +: OUT_SEL_W];
+          slot_out_demux_sel[iter_var0][iter_var1] = cfg_flat[bit_pos +: EFF_OUT_SEL];
         end : has_out_sel
         slot_out_demux_discard[iter_var0][iter_var1]    = cfg_flat[bit_pos + OUT_SEL_W];
         slot_out_demux_disconnect[iter_var0][iter_var1] = cfg_flat[bit_pos + OUT_SEL_W + 1];
@@ -201,10 +201,8 @@ module fabric_temporal_pe_imem
         bit_pos = bit_pos + TAG_WIDTH;
         slot_result_reg_idx[iter_var0][iter_var1] = '0;
         if (OPERAND_CFG_W > 0) begin : has_result_reg
-          if (REG_IDX_W > 0) begin : has_result_reg_idx
-            slot_result_reg_idx[iter_var0][iter_var1] = cfg_flat[bit_pos +: REG_IDX_W];
-          end : has_result_reg_idx
-          slot_result_is_reg[iter_var0][iter_var1] = cfg_flat[bit_pos + REG_IDX_W];
+          slot_result_reg_idx[iter_var0][iter_var1] = cfg_flat[bit_pos +: EFF_REG_IDX];
+          slot_result_is_reg[iter_var0][iter_var1]  = cfg_flat[bit_pos + REG_IDX_W];
           bit_pos = bit_pos + OPERAND_CFG_W;
         end : has_result_reg
       end : decode_result

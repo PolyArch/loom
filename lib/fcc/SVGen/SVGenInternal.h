@@ -29,7 +29,8 @@ struct ModuleConfigSlice {
 std::vector<ModuleConfigSlice>
 computeConfigLayout(fcc::fabric::ModuleOp fabricMod);
 
-/// Generate a FU body SV module. Returns the generated SV module name.
+/// Generate a FU body SV module. Returns the generated SV module name,
+/// or an empty string if code generation failed (e.g. unsupported op).
 std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
                            llvm::raw_ostream &os,
                            SVModuleRegistry &registry,

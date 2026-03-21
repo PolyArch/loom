@@ -41,13 +41,15 @@ module fabric_temporal_pe_output_arb
   // fu_active[fu]: this FU has an active instruction context
   input  logic [NUM_FU-1:0]       fu_active,
   // Output demux config for each FU's active slot
-  input  logic [OUT_SEL_W-1:0]    fu_out_demux_sel        [0:NUM_FU-1][0:MAX_FU_OUT-1],
+  input  logic [(NUM_PE_OUT > 1 ? $clog2(NUM_PE_OUT) : 1)-1:0]
+                                   fu_out_demux_sel        [0:NUM_FU-1][0:MAX_FU_OUT-1],
   input  logic                     fu_out_demux_discard    [0:NUM_FU-1][0:MAX_FU_OUT-1],
   input  logic                     fu_out_demux_disconnect [0:NUM_FU-1][0:MAX_FU_OUT-1],
   // Result config for each FU's active slot
   input  logic [TAG_WIDTH-1:0]    fu_result_tag           [0:NUM_FU-1][0:MAX_FU_OUT-1],
   input  logic                     fu_result_is_reg        [0:NUM_FU-1][0:MAX_FU_OUT-1],
-  input  logic [REG_IDX_W-1:0]    fu_result_reg_idx       [0:NUM_FU-1][0:MAX_FU_OUT-1],
+  input  logic [(NUM_REG > 1 ? $clog2(NUM_REG) : 1)-1:0]
+                                   fu_result_reg_idx       [0:NUM_FU-1][0:MAX_FU_OUT-1],
 
   // --- PE output ports ---
   output logic [NUM_PE_OUT-1:0]   pe_out_valid,
@@ -57,7 +59,8 @@ module fabric_temporal_pe_output_arb
 
   // --- Register writeback port ---
   output logic [MAX_FU_OUT-1:0]   reg_wr_enable,
-  output logic [REG_IDX_W-1:0]    reg_wr_idx     [MAX_FU_OUT],
+  output logic [(NUM_REG > 1 ? $clog2(NUM_REG) : 1)-1:0]
+                                   reg_wr_idx     [MAX_FU_OUT],
   output logic [DATA_WIDTH-1:0]   reg_wr_data    [MAX_FU_OUT]
 );
 

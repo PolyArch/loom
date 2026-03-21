@@ -40,7 +40,8 @@ module fabric_temporal_pe_operand
   // maps to a PE input.  Used by ingress capture logic.
   // NOTE: These are provided for ALL slots, not just the matched one.
   //       Index: [slot][operand]
-  input  logic [IN_SEL_W-1:0]     slot_in_mux_sel        [0:NUM_INSTR-1][0:MAX_FU_IN-1],
+  input  logic [(NUM_PE_IN > 1 ? $clog2(NUM_PE_IN) : 1)-1:0]
+                                    slot_in_mux_sel        [0:NUM_INSTR-1][0:MAX_FU_IN-1],
   input  logic                     slot_in_mux_discard    [0:NUM_INSTR-1][0:MAX_FU_IN-1],
   input  logic                     slot_in_mux_disconnect [0:NUM_INSTR-1][0:MAX_FU_IN-1],
   input  logic                     slot_operand_is_reg    [0:NUM_INSTR-1][0:MAX_FU_IN-1],
@@ -48,17 +49,14 @@ module fabric_temporal_pe_operand
   input  logic [TAG_WIDTH-1:0]     slot_tag               [0:NUM_INSTR-1],
 
   // --- Operand readiness query for a specific slot ---
-  input  logic [SLOT_IDX_W-1:0]   query_slot_idx,
+  input  logic [(NUM_INSTR > 1 ? $clog2(NUM_INSTR) : 1)-1:0] query_slot_idx,
   input  logic                     query_valid,
-  // Per-operand: is this operand available?
   output logic [MAX_FU_IN-1:0]     operand_ready,
-  // Per-operand: peeked data value
   output logic [DATA_WIDTH-1:0]    operand_data [MAX_FU_IN],
 
-  // --- Operand consume strobe (from scheduler on FU fire) ---
+  // --- Operand consume strobe ---
   input  logic                     consume_valid,
-  input  logic [SLOT_IDX_W-1:0]   consume_slot_idx,
-  // Per-operand mask: which operands to consume (register operands excluded)
+  input  logic [(NUM_INSTR > 1 ? $clog2(NUM_INSTR) : 1)-1:0] consume_slot_idx,
   input  logic [MAX_FU_IN-1:0]     consume_mask
 );
 
