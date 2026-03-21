@@ -55,13 +55,13 @@ def run_check(script, args_list, check_name, output_dir):
 def generate_golden_traces(fcc_exec, adg_path, module_name, output_dir):
     """Generate golden traces from the C++ simulator.
 
-    Golden trace generation requires a full mapped case (DFG+ADG), not
-    an ADG-only input. If the test MLIR is ADG-only (no corresponding
-    DFG or source), golden traces cannot be generated and the behaviour
-    check falls back to standalone TB-only verification.
+    Golden trace generation requires a full mapped case (DFG+ADG).
+    The caller must provide a companion <stem>.dfg.mlir alongside the
+    <stem>.fabric.mlir ADG input. Without it, this function returns
+    None and the testcase will be skipped by the behaviour runner.
 
-    When a DFG companion exists (same directory, .dfg.mlir extension),
-    it is used together with the ADG for full mapped simulation.
+    Returns the trace directory path on success, None on failure or
+    when no companion DFG exists.
     """
     trace_dir = os.path.join(output_dir, "rtl-traces")
 
@@ -70,18 +70,15 @@ def generate_golden_traces(fcc_exec, adg_path, module_name, output_dir):
     adg_stem = os.path.basename(adg_path).replace(".fabric.mlir", "")
     dfg_path = os.path.join(adg_dir, adg_stem + ".dfg.mlir")
 
-    cmd = [fcc_exec, "--simulate", "--adg", adg_path,
-           "--trace-port-dump", module_name, "-o", output_dir]
-
-    if os.path.isfile(dfg_path):
-        # Full mapped simulation with DFG
-        cmd.extend(["--dfg", dfg_path])
-    else:
-        # ADG-only: cannot run C++ simulator golden traces.
-        # The behaviour check will rely on standalone TB verification.
+    if not os.path.isfile(dfg_path):
+        # ADG-only: no DFG companion, cannot generate golden traces.
         print(f"[behaviour] No companion DFG for {adg_path}; "
-              "golden trace generation skipped (ADG-only)")
+              "golden trace generation requires mapped DFG+ADG input")
         return None
+
+    cmd = [fcc_exec, "--simulate", "--dfg", dfg_path,
+           "--adg", adg_path, "--trace-port-dump", module_name,
+           "-o", output_dir]
     print(f"[behaviour] Generating golden traces: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -729,7 +726,18 @@ def main():
     print(f"  Failed:  {results['failed']}")
     print(f"  Skipped: {results['skipped']}")
 
-    sys.exit(0 if results["failed"] == 0 else 1)
+    # Fail if any tests failed, OR if all tests were skipped with zero passes.
+    # A run with only skipped cases means no verification actually occurred.
+    if results["failed"] > 0:
+        sys.exit(1)
+    elif results["passed"] == 0 and results["skipped"] > 0:
+        print("\nERROR: All behaviour tests were skipped (no mapped DFG "
+              "companions). Add companion .dfg.mlir files to enable "
+              "golden-trace comparison, or run standalone Wave 7 TB "
+              "targets directly.")
+        sys.exit(1)
+    else:
+        sys.exit(0)
 
 
 if __name__ == "__main__":
