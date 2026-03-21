@@ -970,22 +970,6 @@ std::string generateTemporalPE(fcc::fabric::TemporalPEOp peOp,
         fuConns.push_back({"fu_cfg", cfgSlice});
       }
 
-      // Memory-side port connections: pass through to PE boundary ports.
-      std::string memPfx = fp + "_";
-      if (fu.memOpType == "load") {
-        fuConns.push_back({"mem_addr", memPfx + "mem_addr"});
-        fuConns.push_back({"mem_addr_valid", memPfx + "mem_addr_valid"});
-        fuConns.push_back({"mem_addr_ready", memPfx + "mem_addr_ready"});
-        fuConns.push_back({"mem_rdata", memPfx + "mem_rdata"});
-        fuConns.push_back({"mem_rdata_valid", memPfx + "mem_rdata_valid"});
-        fuConns.push_back({"mem_rdata_ready", memPfx + "mem_rdata_ready"});
-      } else if (fu.memOpType == "store") {
-        fuConns.push_back({"mem_addr", memPfx + "mem_addr"});
-        fuConns.push_back({"mem_wdata", memPfx + "mem_wdata"});
-        fuConns.push_back({"mem_valid", memPfx + "mem_valid"});
-        fuConns.push_back({"mem_ready", memPfx + "mem_ready"});
-      }
-
       emitter.emitInstance(fu.svModuleName, fp + "_body",
                            fuParams, fuConns);
     }
