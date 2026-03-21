@@ -92,17 +92,21 @@ module tb_backpressure_test;
     integer send_idx;
     logic   send_done;
 
+    // Drive in_data combinationally from send_idx so the FIFO sees the
+    // correct value on the same cycle that in_valid is high.
+    always_comb begin : driver_comb
+        in_data = send_idx[DATA_WIDTH-1:0];
+    end
+
     always @(posedge clk or negedge rst_n) begin : driver_proc
         if (!rst_n) begin : driver_reset
             send_idx  <= 0;
             in_valid  <= 1'b0;
-            in_data   <= '0;
             send_done <= 1'b0;
         end else begin : driver_active
             if (send_done) begin : driver_done_hold
                 in_valid <= 1'b0;
             end else begin : driver_send
-                in_data  <= send_idx[DATA_WIDTH-1:0];
                 in_valid <= 1'b1;
 
                 if (in_valid && in_ready) begin : driver_advance

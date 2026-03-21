@@ -77,15 +77,18 @@ module tb_config_equiv_test;
     // =========================================================================
     logic config_sent;
 
+    // Config word driven combinationally so DUT sees correct value when valid.
+    always_comb begin : cfg_comb
+        cfg_wdata = {28'd0, EXPECTED_TAG};
+    end
+
     always @(posedge clk or negedge rst_n) begin : cfg_driver_proc
         if (!rst_n) begin : cfg_driver_reset
             cfg_valid   <= 1'b0;
-            cfg_wdata   <= 32'd0;
             config_sent <= 1'b0;
         end else begin : cfg_driver_active
             if (!config_sent) begin : cfg_send
                 cfg_valid <= 1'b1;
-                cfg_wdata <= {28'd0, EXPECTED_TAG};
                 if (cfg_valid && cfg_ready) begin : cfg_accepted
                     config_sent <= 1'b1;
                     cfg_valid   <= 1'b0;
@@ -102,17 +105,21 @@ module tb_config_equiv_test;
     integer send_idx;
     logic   send_done;
 
+    // Drive in_data combinationally from send_idx so add_tag sees
+    // the correct value on the same cycle in_valid is high.
+    always_comb begin : data_comb
+        in_data = send_idx[DATA_WIDTH-1:0];
+    end
+
     always @(posedge clk or negedge rst_n) begin : data_driver_proc
         if (!rst_n) begin : data_driver_reset
             send_idx  <= 0;
             in_valid  <= 1'b0;
-            in_data   <= '0;
             send_done <= 1'b0;
         end else begin : data_driver_active
             if (!config_sent || send_done) begin : data_wait
                 in_valid <= 1'b0;
             end else begin : data_send
-                in_data  <= send_idx[DATA_WIDTH-1:0];
                 in_valid <= 1'b1;
 
                 if (in_valid && in_ready) begin : data_advance

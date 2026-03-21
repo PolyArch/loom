@@ -225,7 +225,7 @@ module tb_memory_sideeffect_test;
                 // ---------------------------------------------------------
                 ST_CFG_LOAD: begin : state_cfg_load
                     cfg_valid <= 1'b1;
-                    cfg_wdata <= cfg_table[cfg_idx];
+                    // cfg_wdata driven combinationally below (cfg_comb)
                     if (cfg_valid && cfg_ready) begin : cfg_advance
                         if (cfg_idx + 1 >= 5) begin : cfg_done
                             cfg_valid  <= 1'b0;
@@ -242,10 +242,9 @@ module tb_memory_sideeffect_test;
                 ST_WRITE: begin : state_write
                     cfg_valid <= 1'b0;
 
-                    // Drive store address
+                    // Drive store address (data driven combinationally below)
                     if (write_addr_idx < NUM_WORDS) begin : write_addr_drive
                         store_addr_valid <= 1'b1;
-                        store_addr_data  <= write_addr_idx[DATA_WIDTH-1:0];
                         store_addr_tag   <= '0;
                         if (store_addr_valid && store_addr_ready) begin : write_addr_advance
                             write_addr_idx <= write_addr_idx + 1;
@@ -254,10 +253,9 @@ module tb_memory_sideeffect_test;
                         store_addr_valid <= 1'b0;
                     end
 
-                    // Drive store data
+                    // Drive store data (data driven combinationally below)
                     if (write_data_idx < NUM_WORDS) begin : write_data_drive
                         store_data_valid <= 1'b1;
-                        store_data_data  <= ref_data[write_data_idx];
                         store_data_tag   <= '0;
                         if (store_data_valid && store_data_ready) begin : write_data_advance
                             write_data_idx <= write_data_idx + 1;
@@ -298,7 +296,7 @@ module tb_memory_sideeffect_test;
                 ST_READ: begin : state_read
                     if (read_idx < NUM_WORDS) begin : read_drive
                         load_addr_valid <= 1'b1;
-                        load_addr_data  <= read_idx[DATA_WIDTH-1:0];
+                        // load_addr_data driven combinationally below
                         load_addr_tag   <= '0;
                         if (load_addr_valid && load_addr_ready) begin : read_advance
                             read_idx <= read_idx + 1;
@@ -378,6 +376,18 @@ module tb_memory_sideeffect_test;
                 $finish;
             end
         end
+    end
+
+    // =========================================================================
+    // Combinational data drivers: present data from current index so the DUT
+    // sees correct values on the same cycle that valid is asserted. This
+    // avoids the one-cycle NBA delay that would cause stale/duplicated data.
+    // =========================================================================
+    always_comb begin : data_comb
+        cfg_wdata       = cfg_table[cfg_idx];
+        store_addr_data = write_addr_idx[DATA_WIDTH-1:0];
+        store_data_data = ref_data[write_data_idx];
+        load_addr_data  = read_idx[DATA_WIDTH-1:0];
     end
 
 endmodule
