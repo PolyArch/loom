@@ -83,7 +83,7 @@ add_custom_target(check-fcc-rtl-negative
 )
 
 # ---------------------------------------------------------------------------
-# Wave 7 standalone TB tests: backpressure, config-equiv, memory-sideeffect
+# Standalone TB tests: backpressure, config-equiv, memory-sideeffect
 #
 # These tests compile standalone testbenches (no DUT_MODULE macro needed)
 # that instantiate specific fabric modules directly. Each target uses
@@ -94,6 +94,10 @@ set(FCC_RTL_TB_FABRIC_DIR "${FCC_RTL_SRC_DIR}/testbench/fabric")
 set(FCC_RTL_TB_COMMON_DIR "${FCC_RTL_SRC_DIR}/testbench/common")
 set(FCC_RTL_DESIGN_DIR "${FCC_RTL_SRC_DIR}/design")
 
+# Standalone filelist excludes FP behavioral modules (SHORTREAL not supported
+# by Verilator) and includes only modules needed by the standalone TBs.
+set(FCC_RTL_STANDALONE_FILELIST "${FCC_RTL_DESIGN_DIR}/filelist_standalone.f")
+
 # check-fcc-rtl-backpressure: backpressure stress test on fabric_fifo
 add_custom_target(check-fcc-rtl-backpressure
   COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_SIM_RUNNER}"
@@ -102,12 +106,17 @@ add_custom_target(check-fcc-rtl-backpressure
           --tb-files
               "${FCC_RTL_TB_COMMON_DIR}/tb_clk_rst_gen.sv"
               "${FCC_RTL_TB_COMMON_DIR}/tb_backpressure_gen.sv"
+              "${FCC_RTL_TB_COMMON_DIR}/tb_config_loader.sv"
+              "${FCC_RTL_TB_COMMON_DIR}/tb_axi_mem_model.sv"
               "${FCC_RTL_TB_FABRIC_DIR}/tb_backpressure_test.sv"
           --top-module tb_backpressure_test
-          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/wave7/backpressure"
+          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/standalone/backpressure"
           --tool verilator
+          --standalone tb_backpressure_test
+          --standalone-filelist "${FCC_RTL_STANDALONE_FILELIST}"
   DEPENDS "${FCC_RTL_SIM_RUNNER}"
           "${FCC_RTL_TB_FABRIC_DIR}/tb_backpressure_test.sv"
+          "${FCC_RTL_STANDALONE_FILELIST}"
   VERBATIM
   USES_TERMINAL
 )
@@ -119,12 +128,18 @@ add_custom_target(check-fcc-rtl-config-equiv
           --tb-dir "${FCC_RTL_TB_COMMON_DIR}"
           --tb-files
               "${FCC_RTL_TB_COMMON_DIR}/tb_clk_rst_gen.sv"
+              "${FCC_RTL_TB_COMMON_DIR}/tb_backpressure_gen.sv"
+              "${FCC_RTL_TB_COMMON_DIR}/tb_config_loader.sv"
+              "${FCC_RTL_TB_COMMON_DIR}/tb_axi_mem_model.sv"
               "${FCC_RTL_TB_FABRIC_DIR}/tb_config_equiv_test.sv"
           --top-module tb_config_equiv_test
-          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/wave7/config-equiv"
+          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/standalone/config-equiv"
           --tool verilator
+          --standalone tb_config_equiv_test
+          --standalone-filelist "${FCC_RTL_STANDALONE_FILELIST}"
   DEPENDS "${FCC_RTL_SIM_RUNNER}"
           "${FCC_RTL_TB_FABRIC_DIR}/tb_config_equiv_test.sv"
+          "${FCC_RTL_STANDALONE_FILELIST}"
   VERBATIM
   USES_TERMINAL
 )
@@ -136,12 +151,18 @@ add_custom_target(check-fcc-rtl-memory
           --tb-dir "${FCC_RTL_TB_COMMON_DIR}"
           --tb-files
               "${FCC_RTL_TB_COMMON_DIR}/tb_clk_rst_gen.sv"
+              "${FCC_RTL_TB_COMMON_DIR}/tb_backpressure_gen.sv"
+              "${FCC_RTL_TB_COMMON_DIR}/tb_config_loader.sv"
+              "${FCC_RTL_TB_COMMON_DIR}/tb_axi_mem_model.sv"
               "${FCC_RTL_TB_FABRIC_DIR}/tb_memory_sideeffect_test.sv"
           --top-module tb_memory_sideeffect_test
-          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/wave7/memory"
+          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/standalone/memory"
           --tool verilator
+          --standalone tb_memory_sideeffect_test
+          --standalone-filelist "${FCC_RTL_STANDALONE_FILELIST}"
   DEPENDS "${FCC_RTL_SIM_RUNNER}"
           "${FCC_RTL_TB_FABRIC_DIR}/tb_memory_sideeffect_test.sv"
+          "${FCC_RTL_STANDALONE_FILELIST}"
   VERBATIM
   USES_TERMINAL
 )

@@ -1,4 +1,4 @@
-// Standalone filelist for Wave 7 testbenches.
+// Standalone filelist for standalone testbenches.
 // Excludes FP behavioral modules that use shortreal/$bitstoreal
 // (not supported by Verilator in all modes).
 // Includes only modules needed by: tb_backpressure_test (fifo),
