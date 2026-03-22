@@ -91,12 +91,14 @@ class TestRunnerAccounting(unittest.TestCase):
             self.assertIn("Discovered 1 test cases", out)
 
     def test_synth_no_tool_increments_synth_skipped(self):
-        """When find_tool returns False for dc_shell, synth skip goes to
+        """When resolve_tool returns None for dc_shell, synth skip goes to
         results['synth']['skipped'], not behaviour or gen.
 
-        This test patches find_tool in-process and invokes the runner's
-        main loop body directly to deterministically exercise the branch.
+        This test patches backend_config.resolve_tool in-process and invokes
+        the runner's main loop body directly to deterministically exercise
+        the branch.
         """
+        import backend_config as bc_mod
         import run_rtl_checks as runner_mod
         import io
         from contextlib import redirect_stdout, redirect_stderr
@@ -104,9 +106,8 @@ class TestRunnerAccounting(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             make_test_tree(tmpdir, "test_mod", "test_case", has_dfg=True)
 
-            # Patch find_tool to return False for dc_shell
-            def mock_find_tool(name, module_spec=None):
-                return False  # All tools unavailable
+            def mock_resolve_tool(name, fallback_module=None):
+                return None  # All tools unavailable
 
             # Patch sys.argv to simulate CLI args
             fake_argv = [
@@ -119,7 +120,7 @@ class TestRunnerAccounting(unittest.TestCase):
             ]
 
             captured = io.StringIO()
-            with patch.object(runner_mod, 'find_tool', side_effect=mock_find_tool), \
+            with patch.object(bc_mod, 'resolve_tool', side_effect=mock_resolve_tool), \
                  patch('sys.argv', fake_argv), \
                  redirect_stdout(captured), \
                  redirect_stderr(captured):
@@ -130,6 +131,55 @@ class TestRunnerAccounting(unittest.TestCase):
 
             out = captured.getvalue()
             # Assert exact synth accounting
+            lines = [l.strip() for l in out.split("\n")
+                     if l.strip().startswith("synth")]
+            self.assertTrue(lines, f"Expected synth summary line in:\n{out}")
+            self.assertIn("passed=0", lines[0],
+                          f"Expected synth passed=0:\n{lines[0]}")
+            self.assertIn("failed=0", lines[0],
+                          f"Expected synth failed=0:\n{lines[0]}")
+            self.assertIn("skipped=1", lines[0],
+                          f"Expected synth skipped=1:\n{lines[0]}")
+
+    def test_synth_no_lib_increments_synth_skipped(self):
+        """When dc_shell is found but no cell library path is configured,
+        synth should be skipped (not failed).
+        """
+        import backend_config as bc_mod
+        import run_rtl_checks as runner_mod
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            make_test_tree(tmpdir, "test_mod", "test_case", has_dfg=True)
+
+            def mock_resolve_tool(name, fallback_module=None):
+                return "/usr/bin/true"  # Tool "found"
+
+            def mock_resolve_lib(key, env_var=None):
+                return ""  # No lib path
+
+            fake_argv = [
+                "run_rtl_checks.py",
+                "--loom", "/bin/false",
+                "--test-dir", tmpdir,
+                "--output-dir", os.path.join(tmpdir, "out"),
+                "--src-rtl", SRC_RTL,
+                "--checks", "synth",
+            ]
+
+            captured = io.StringIO()
+            with patch.object(bc_mod, 'resolve_tool', side_effect=mock_resolve_tool), \
+                 patch.object(bc_mod, 'resolve_lib', side_effect=mock_resolve_lib), \
+                 patch('sys.argv', fake_argv), \
+                 redirect_stdout(captured), \
+                 redirect_stderr(captured):
+                try:
+                    runner_mod.main()
+                except SystemExit:
+                    pass
+
+            out = captured.getvalue()
             lines = [l.strip() for l in out.split("\n")
                      if l.strip().startswith("synth")]
             self.assertTrue(lines, f"Expected synth summary line in:\n{out}")

@@ -6,6 +6,8 @@ import os
 import subprocess
 import sys
 
+import backend_config
+
 
 def run_gen_sv(loom_exec, adg_path, output_dir, fp_ip_profile=None):
     """Run loom --gen-sv and return (success, rtl_dir)."""
@@ -29,23 +31,6 @@ def run_gen_sv(loom_exec, adg_path, output_dir, fp_ip_profile=None):
     return True, rtl_dir
 
 
-def resolve_verilator():
-    """Find verilator executable, trying module load if not on PATH."""
-    import shutil
-    if shutil.which("verilator"):
-        return "verilator"
-    try:
-        result = subprocess.run(
-            ["bash", "-c",
-             "source /etc/profile.d/modules.sh && module load verilator/5.044 && which verilator"],
-            capture_output=True, text=True)
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except Exception:
-        pass
-    return "verilator"
-
-
 def run_verilator_lint(rtl_dir):
     """Run verilator --lint-only on all .sv files in rtl_dir."""
     filelist = os.path.join(rtl_dir, "filelist.f")
@@ -53,7 +38,8 @@ def run_verilator_lint(rtl_dir):
         print(f"[gen_sv] WARN: no filelist.f found in {rtl_dir}")
         return False
 
-    verilator_exec = resolve_verilator()
+    verilator_exec = (backend_config.resolve_tool("verilator", "verilator/5.044")
+                       or "verilator")
     # Find the generated top module name from filelist.f
     top_module = None
     try:

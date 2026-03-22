@@ -1,0 +1,16 @@
+{
+  "tools": {
+    "dc_shell": {
+      "path": "",
+      "module": ""
+    },
+    "verilator": {
+      "path": "",
+      "module": ""
+    }
+  },
+  "synth": {
+    "lib_search_path": "",
+    "license_server": ""
+  }
+}

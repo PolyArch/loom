@@ -5,38 +5,8 @@ import argparse
 import os
 import subprocess
 import sys
-import shutil
 
-
-def _env_modules_hint():
-    """Return a hint string about environment-modules if available."""
-    if os.path.isfile("/etc/profile.d/modules.sh"):
-        return ("  Hint: environment-modules detected. Try:\n"
-                "    source /etc/profile.d/modules.sh && module avail\n"
-                "  to see available tool modules.")
-    return ""
-
-
-def find_dc_shell():
-    """Find dc_shell executable."""
-    dc = shutil.which("dc_shell")
-    if dc:
-        return dc
-    # Try module loading as last resort
-    try:
-        result = subprocess.run(
-            ["bash", "-c",
-             "source /etc/profile.d/modules.sh && module load synopsys/syn/W-2024.09-SP5 && which dc_shell"],
-            capture_output=True, text=True)
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except Exception:
-        pass
-    print("[run_synth] ERROR: 'dc_shell' not found in PATH.")
-    hint = _env_modules_hint()
-    if hint:
-        print(hint)
-    return None
+import backend_config
 
 
 def generate_synth_tcl(rtl_dir, design_name, output_dir, tcl_template,
@@ -77,7 +47,10 @@ def run_synthesis(dc_shell, tcl_path, output_dir):
     # Derive these from the dc_shell installation path.
     env = os.environ.copy()
     dc_dir = os.path.dirname(os.path.dirname(dc_shell))  # e.g. .../syn/W-...
-    license_server = "27020@pyrito.cs.ucla.edu"
+    default_license = "27020@pyrito.cs.ucla.edu"
+    cfg = backend_config.load_config()
+    license_server = (cfg.get("synth", {}).get("license_server", "")
+                      or default_license)
     env.setdefault("SNPSLMD_LICENSE_FILE", license_server)
     env.setdefault("LM_LICENSE_FILE", license_server)
     env.setdefault("SYNOPSYS_HOME", dc_dir)
@@ -134,19 +107,19 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    dc_shell = find_dc_shell()
+    dc_shell = backend_config.resolve_tool("dc_shell", "synopsys/syn/W-2024.09-SP5")
     if not dc_shell:
         print("[run_synth] SKIP: dc_shell not found")
         sys.exit(0)  # Graceful skip
 
-    lib_search_path = args.lib_search_path or os.environ.get(
-        "LOOM_SYNTH_LIB_PATH", "")
+    lib_search_path = (args.lib_search_path
+                       or backend_config.resolve_lib(
+                           "synth.lib_search_path", "LOOM_SYNTH_LIB_PATH"))
     if not lib_search_path:
-        print("[run_synth] ERROR: No cell library path specified.\n"
-              "  Set LOOM_SYNTH_LIB_PATH or pass --lib-search-path.\n"
-              "  Example: export LOOM_SYNTH_LIB_PATH="
-              "/path/to/saed32/EDK/lib/stdcell_rvt/db_nldm")
-        sys.exit(1)
+        print("[run_synth] SKIP: No cell library path configured.\n"
+              "  Set LOOM_SYNTH_LIB_PATH, or configure synth.lib_search_path\n"
+              "  in configs/backend/config.json.")
+        sys.exit(0)  # Graceful skip
 
     tcl_path = generate_synth_tcl(args.rtl_dir, args.design_name,
                                    args.output_dir, args.tcl_template,

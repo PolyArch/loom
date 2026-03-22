@@ -7,35 +7,7 @@ import shutil
 import subprocess
 import sys
 
-
-def _env_modules_hint():
-    """Return a hint string about environment-modules if available."""
-    if os.path.isfile("/etc/profile.d/modules.sh"):
-        return ("  Hint: environment-modules detected. Try:\n"
-                "    source /etc/profile.d/modules.sh && module avail\n"
-                "  to see available tool modules.")
-    return ""
-
-
-def resolve_verilator():
-    """Find the verilator executable, trying module load if needed."""
-    if shutil.which("verilator"):
-        return "verilator"
-    # Try module loading as last resort
-    try:
-        result = subprocess.run(
-            ["bash", "-c",
-             "source /etc/profile.d/modules.sh && module load verilator/5.044 && which verilator"],
-            capture_output=True, text=True)
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except Exception:
-        pass
-    print("[run_sim] ERROR: 'verilator' not found in PATH.")
-    hint = _env_modules_hint()
-    if hint:
-        print(hint)
-    return None
+import backend_config
 
 
 def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
@@ -46,7 +18,7 @@ def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
     """Compile with Verilator."""
     obj_dir = os.path.join(output_dir, "obj_dir")
     filelist = filelist_override or os.path.join(rtl_dir, "filelist.f")
-    verilator_exec = resolve_verilator()
+    verilator_exec = backend_config.resolve_tool("verilator", "verilator/5.044")
     if verilator_exec is None:
         return None
 

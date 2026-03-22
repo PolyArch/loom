@@ -8,36 +8,7 @@ import re
 import subprocess
 import sys
 
-
-def _env_modules_hint():
-    """Return a hint string about environment-modules if available."""
-    if os.path.isfile("/etc/profile.d/modules.sh"):
-        return ("  Hint: environment-modules detected. Try:\n"
-                "    source /etc/profile.d/modules.sh && module avail\n"
-                "  to see available tool modules.")
-    return ""
-
-
-def find_tool(name, module_spec=None):
-    """Check if a tool is available, optionally via module loading."""
-    import shutil
-    if shutil.which(name):
-        return True
-    if module_spec:
-        try:
-            result = subprocess.run(
-                ["bash", "-c",
-                 f"source /etc/profile.d/modules.sh && module load {module_spec} && which {name}"],
-                capture_output=True, text=True)
-            if result.returncode == 0:
-                return True
-        except Exception:
-            pass
-    hint = _env_modules_hint()
-    print(f"[tool-check] '{name}' not found in PATH.")
-    if hint:
-        print(hint)
-    return False
+import backend_config
 
 
 def run_check(script, args_list, check_name, output_dir):
@@ -888,7 +859,7 @@ def main():
         if "behaviour" in args.checks:
             beh_dir = os.path.join(test_output, "behaviour")
             os.makedirs(beh_dir, exist_ok=True)
-            if not find_tool("verilator", "verilator/5.044"):
+            if not backend_config.resolve_tool("verilator", "verilator/5.044"):
                 print(f"[behaviour/{tc['module']}/{tc['test']}] SKIP: verilator not found")
                 results["behaviour"]["skipped"] += 1
             else:
@@ -1140,10 +1111,21 @@ def main():
         if "synth" in args.checks:
             phys_dir = os.path.join(test_output, "physical")
             os.makedirs(phys_dir, exist_ok=True)
-            if not find_tool("dc_shell", "synopsys/syn/W-2024.09-SP5"):
+            if not backend_config.resolve_tool("dc_shell", "synopsys/syn/W-2024.09-SP5"):
                 print(f"[synth/{tc['module']}/{tc['test']}] SKIP: dc_shell not found")
                 results["synth"]["skipped"] += 1
             else:
+                # Resolve synth lib path: CLI > env > config
+                lib_path = (args.lib_search_path
+                            or backend_config.resolve_lib(
+                                "synth.lib_search_path",
+                                "LOOM_SYNTH_LIB_PATH"))
+                if not lib_path:
+                    print(f"[synth/{tc['module']}/{tc['test']}] "
+                          "SKIP: no cell library path configured")
+                    results["synth"]["skipped"] += 1
+                    continue
+
                 tcl_template = os.path.join(args.src_rtl, "tcl", "synth_template.tcl")
                 gen_dir = os.path.join(test_output, "gen-collateral", "rtl")
                 # Auto-generate RTL collateral if missing.
@@ -1171,11 +1153,8 @@ def main():
                     synth_design = f"fabric_top_{synth_mod_name}"
                     synth_args = [
                         "--rtl-dir", gen_dir, "--design-name", synth_design,
-                        "--output-dir", phys_dir, "--tcl-template", tcl_template]
-                    lib_path = args.lib_search_path or os.environ.get(
-                        "LOOM_SYNTH_LIB_PATH", "")
-                    if lib_path:
-                        synth_args += ["--lib-search-path", lib_path]
+                        "--output-dir", phys_dir, "--tcl-template", tcl_template,
+                        "--lib-search-path", lib_path]
                     passed = run_check(
                         os.path.join(scripts_dir, "run_synth.py"),
                         synth_args,
