@@ -4,7 +4,7 @@ add_compile_options(-w)
 # Build LLVM/MLIR/CIRCT (CIRCT integrated as LLVM external project)
 add_subdirectory(llvm/llvm)
 
-if(FCC_ENABLE_ORTOOLS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/or-tools/CMakeLists.txt")
+if(LOOM_ENABLE_ORTOOLS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/or-tools/CMakeLists.txt")
   set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
   set(BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
   set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
