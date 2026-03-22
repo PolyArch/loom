@@ -1,8 +1,8 @@
-# FCC DFG-Domain and Four-Layer Exploration Specification
+# LOOM DFG-Domain and Four-Layer Exploration Specification
 
 ## Overview
 
-FCC replaces Loom's pragma-led domain selection with a staged exploration model.
+LOOM replaces the legacy design's pragma-led domain selection with a staged exploration model.
 The exploration loop is intentionally structured so fast filters run before slow
 mapping and simulation.
 
@@ -23,7 +23,7 @@ architecture must preserve the candidate abstraction.
 ### Layer 2: Tech-Mapping Co-Design
 
 This layer matches DFG patterns against configurable `function_unit` DAGs.
-It is FCC-specific because `fabric.mux` changes FU behavior.
+It is LOOM-specific because `fabric.mux` changes FU behavior.
 
 Output:
 
@@ -81,7 +81,7 @@ The check may use resource estimates such as:
 - estimated FU demand
 
 The exact heuristic may evolve, but the existence of a cheap pruning step is
-part of the FCC architecture.
+part of the LOOM architecture.
 
 ## Feedback Arcs
 
@@ -99,6 +99,6 @@ feedback-driven replanning.
 
 ## Relationship to Other Specs
 
-- Pipeline overview: [spec-fcc.md](./spec-fcc.md)
+- Pipeline overview: [spec-loom.md](./spec-loom.md)
 - Host integration: [spec-host-accel-interface.md](./spec-host-accel-interface.md)
 - Mapper: [spec-mapper.md](./spec-mapper.md)

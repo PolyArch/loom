@@ -1,23 +1,23 @@
 //===-- adg.cpp - Builder index width configuration test --------*- C++ -*-===//
 //
-// Part of the fcc project.
+// Part of the loom project.
 //
 //===----------------------------------------------------------------------===//
 
-#include "fcc/ADG/ADGBuilder.h"
-#include "fcc/ADG/ADGBuilderDetail.h"
-#include "fcc/Dialect/Fabric/FabricTypes.h"
+#include "loom/ADG/ADGBuilder.h"
+#include "loom/ADG/ADGBuilderDetail.h"
+#include "loom/Dialect/Fabric/FabricTypes.h"
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
-using namespace fcc::adg;
+using namespace loom::adg;
 
 static bool buildADG(const std::string &outputPath) {
   auto parsedIndexWidth = detail::tryParseScalarWidth("index");
-  unsigned configuredIndexWidth = fcc::fabric::getConfiguredIndexBitWidth();
+  unsigned configuredIndexWidth = loom::fabric::getConfiguredIndexBitWidth();
   if (!parsedIndexWidth || *parsedIndexWidth != configuredIndexWidth) {
     llvm::errs() << "error: index width configuration mismatch\n";
     return false;

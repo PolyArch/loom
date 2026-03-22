@@ -1,6 +1,6 @@
-# FCC Temporal Fabric Summary
+# LOOM Temporal Fabric Summary
 
-Temporal hardware in FCC is specified by two focused documents:
+Temporal hardware in LOOM is specified by two focused documents:
 
 - [spec-fabric-temporal_pe.md](./spec-fabric-temporal_pe.md)
 - [spec-fabric-temporal_sw.md](./spec-fabric-temporal_sw.md)

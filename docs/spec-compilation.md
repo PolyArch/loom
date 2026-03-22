@@ -1,4 +1,4 @@
-# FCC Compilation Pipeline Specification
+# LOOM Compilation Pipeline Specification
 
 ## Overview
 
@@ -7,7 +7,7 @@ an SCF-level candidate region into a DFG suitable for mapping.
 
 ## Stage Family
 
-FCC compilation is organized into these conceptual stages:
+LOOM compilation is organized into these conceptual stages:
 
 1. source to LLVM IR
 2. LLVM dialect MLIR
@@ -53,7 +53,7 @@ names, for example:
 
 ## DFG-Domain Selection
 
-FCC does not hardcode "convert the whole function" as the only model.
+LOOM does not hardcode "convert the whole function" as the only model.
 Instead:
 
 - a candidate region is selected from SCF-level IR
@@ -66,7 +66,7 @@ The exploration logic itself is specified in [spec-dse.md](./spec-dse.md).
 
 The DFG stage must produce a graph suitable for mapping and later validation.
 
-Important FCC-side requirements include:
+Important LOOM-side requirements include:
 
 - unsupported fanout or merge patterns should be normalized away by the
   lowering pipeline when required by the mapper model
@@ -83,15 +83,15 @@ Normative rules:
 
 - the ADG exporter annotates the selected hardware with a maximum supported
   `handshake.join` fan-in
-- FCC lowers this limit into the compilation pipeline as
-  `fcc.adg_max_join_fanin`
+- LOOM lowers this limit into the compilation pipeline as
+  `loom.adg_max_join_fanin`
 - if the software DFG contains a `handshake.join` whose fan-in is less than or
   equal to that limit, it may remain unchanged
 - if the software DFG contains a `handshake.join` whose fan-in exceeds that
-  limit, FCC must rewrite it into a tree of smaller joins whose fan-in does
+  limit, LOOM must rewrite it into a tree of smaller joins whose fan-in does
   not exceed the hardware limit
 - the current mapper/config encoding supports hardware join fan-in up to `64`
-- if the hardware limit is less than `2`, FCC must reject any software join
+- if the hardware limit is less than `2`, LOOM must reject any software join
   whose fan-in is greater than `1`
 
 This legalization happens before mapping. The mapper therefore only needs to
@@ -100,7 +100,7 @@ capacity.
 
 ## Multi-Port Memory and Tagging
 
-FCC retains Loom's broad direction that memory-related routing may involve tag
+LOOM retains the legacy design's broad direction that memory-related routing may involve tag
 mechanisms and explicit memory interface structure, but the current contract is
 no longer restricted to one hardware extmemory per software array.
 
@@ -116,5 +116,5 @@ Normative compilation-side expectations are:
 ## Relationship to Other Specs
 
 - [spec-dse.md](./spec-dse.md)
-- [spec-fcc.md](./spec-fcc.md)
+- [spec-loom.md](./spec-loom.md)
 - [spec-host-accel-interface.md](./spec-host-accel-interface.md)

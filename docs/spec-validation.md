@@ -1,13 +1,13 @@
-# FCC Validation Specification
+# LOOM Validation Specification
 
 ## Overview
 
-This document defines the end-to-end validation contract for FCC, including
+This document defines the end-to-end validation contract for LOOM, including
 standalone simulation checks, gem5-backed checks, and regression expectations.
 
 ## Validation Scope
 
-A conforming FCC validation flow should be able to demonstrate:
+A conforming LOOM validation flow should be able to demonstrate:
 
 - successful graph lowering and mapping
 - successful configuration generation and loading
@@ -38,7 +38,7 @@ The gem5-backed flow must support:
 
 ## Acceptance Matrix
 
-The FCC target validation matrix includes at least:
+The LOOM target validation matrix includes at least:
 
 1. full lowering from source to DFG artifacts
 2. ADG generation
@@ -119,7 +119,7 @@ When deterministic settings are enabled:
 
 ## Deliverable-Oriented Checks
 
-The intended FCC validation family covers:
+The intended LOOM validation family covers:
 
 - IR-stage artifact generation
 - mapping JSON and text reports
@@ -129,11 +129,11 @@ The intended FCC validation family covers:
 
 The current repository-level gem5 smoke entry point is:
 
-- `ninja -C build check-fcc-gem5`
+- `ninja -C build check-loom-gem5`
 
 That smoke target is expected to exercise:
 
-- source to mapping flow through the normal FCC e2e case
+- source to mapping flow through the normal LOOM e2e case
 - runtime-manifest emission
 - baremetal host generation and cross-compilation
 - gem5 device launch

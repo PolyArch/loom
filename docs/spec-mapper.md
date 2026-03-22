@@ -1,4 +1,4 @@
-# FCC Mapper Specification
+# LOOM Mapper Specification
 
 ## Overview
 
@@ -7,13 +7,13 @@ The mapper is the bridge between:
 - the software execution graph
 - the hardware architecture graph
 
-Its job is not only place-and-route. In FCC it also depends on a prior
+Its job is not only place-and-route. In LOOM it also depends on a prior
 tech-mapping step that locks `function_unit` configurations before final
 routing.
 
 ## Mapper Responsibilities
 
-The FCC mapper must:
+The LOOM mapper must:
 
 1. build compatibility candidates between DFG nodes and FU resources
 2. select FU internal configurations where configurable FUs exist
@@ -50,7 +50,7 @@ More specifically:
   congestion-aware scoring, adaptive cooling, and bounded reheating, but must
   not mutate FU-internal configuration
 - routing is not a one-shot terminal stage in the current architecture;
-  FCC may run multiple interleaved place or route rounds, negotiated
+  LOOM may run multiple interleaved place or route rounds, negotiated
   congestion routing passes, and selective rip-up or reroute attempts
 - negotiated routing may use both per-iteration historical congestion and
   per-pass present-demand feedback while edges are routed, plus bounded
@@ -84,9 +84,9 @@ The mapper consumes:
 The mapper does not mutate hardware topology. It selects legal use of the
 existing topology.
 
-## Core FCC-Specific Concerns
+## Core LOOM-Specific Concerns
 
-Compared with Loom, FCC mapping must account for:
+Compared with the legacy design, LOOM mapping must account for:
 
 - explicit `function_unit` containment
 - FU-internal configuration selection

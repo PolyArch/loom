@@ -1,12 +1,12 @@
-# FCC Mapper Model Specification
+# LOOM Mapper Model Specification
 
 ## Overview
 
-This document defines the logical model and hard constraints for FCC mapping.
+This document defines the logical model and hard constraints for LOOM mapping.
 
 ## Graph Families
 
-FCC mapping uses three related graph views:
+LOOM mapping uses three related graph views:
 
 ### Software Graph
 
@@ -53,7 +53,7 @@ Layer-2 artifact contract.
 
 ## Canonical Route Semantics
 
-For FCC, a routed software edge is not just an arbitrary port sequence. It must
+For LOOM, a routed software edge is not just an arbitrary port sequence. It must
 retain enough meaning to reconstruct the component-local path.
 
 Canonical route steps may include:
@@ -144,7 +144,7 @@ non-tagged shape or hardware tag width.
 The comparison point is the runtime tag value observed at the actual hardware
 resource being shared, not only the source-side software notion of tag.
 
-FCC still allows tagged ports with different declared tag widths to be
+LOOM still allows tagged ports with different declared tag widths to be
 connected structurally, but the mapper must enforce a stronger semantic rule:
 
 - one mapped concrete runtime tag value must remain representable at every
@@ -224,7 +224,7 @@ Temporal reuse legality is jointly defined by Layer 2 and Layer 3:
 - diagnostics must preserve both the config-class ids and enough stable class
   identity to explain the rejection
 
-For current FCC register-backed temporal edges:
+For current LOOM register-backed temporal edges:
 
 - an internal dependency between two software nodes mapped into the same
   `temporal_pe` is represented as a `temporal_reg` edge, not as a routed
@@ -236,7 +236,7 @@ For current FCC register-backed temporal edges:
 
 ## Hard Constraints
 
-FCC uses the following hard-constraint families:
+LOOM uses the following hard-constraint families:
 
 - `C1 Node compatibility`: the DFG op must match the selected FU effective graph
 - `C2 Type compatibility`: data widths and type rules must be satisfied
@@ -257,7 +257,7 @@ FCC uses the following hard-constraint families:
 
 ## Temporary Negotiated-Routing Relaxation
 
-FCC may optionally use a negotiated-routing mode in which one mapper iteration
+LOOM may optionally use a negotiated-routing mode in which one mapper iteration
 is allowed to temporarily overuse a non-tagged switch-owned routing output.
 This is a search-only relaxation, not a relaxation of final mapping legality.
 

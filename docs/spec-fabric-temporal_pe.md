@@ -1,4 +1,4 @@
-# FCC Temporal PE Specification
+# LOOM Temporal PE Specification
 
 `fabric.temporal_pe` contains:
 

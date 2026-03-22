@@ -22,6 +22,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  fcc::e2e::buildMesh6x6Extmem2(outputFile);
+  loom::e2e::buildMesh6x6Extmem2(outputFile);
   return 0;
 }

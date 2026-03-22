@@ -1,8 +1,8 @@
-# FCC Spatial Switch Specification
+# LOOM Spatial Switch Specification
 
 ## Overview
 
-`fabric.spatial_sw` is FCC's configurable routing switch. It replaces Loom's
+`fabric.spatial_sw` is LOOM's configurable routing switch. It replaces the legacy design's
 older `fabric.switch` naming and adds decomposable routing support.
 
 Unlike `fabric.temporal_sw`, a `fabric.spatial_sw` never makes routing
@@ -76,7 +76,7 @@ For tagged ports:
   `temporal_sw`
 
 If a tagged path reaches the switch through narrower or wider tagged hardware
-connections elsewhere in the ADG, FCC still requires the concrete runtime tag
+connections elsewhere in the ADG, LOOM still requires the concrete runtime tag
 value to be representable on every tagged port it traverses.
 
 In particular:
@@ -88,7 +88,7 @@ In particular:
   `fabric.map_tag`, and `fabric.del_tag` may change the runtime tag meaning
   seen by later hardware stages
 
-One important FCC use case is memory or extmemory ingress:
+One important LOOM use case is memory or extmemory ingress:
 
 - multiple tagged request streams may be merged through a tagged
   `fabric.spatial_sw`
@@ -98,7 +98,7 @@ One important FCC use case is memory or extmemory ingress:
 
 ## Fill and Broadcast Rules
 
-FCC allows a narrow stream to be replicated across multiple output sub-lanes
+LOOM allows a narrow stream to be replicated across multiple output sub-lanes
 when a wider destination must be fully occupied.
 
 This implies:

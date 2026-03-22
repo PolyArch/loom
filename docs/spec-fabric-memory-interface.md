@@ -1,8 +1,8 @@
-# FCC Fabric Memory Interface Specification
+# LOOM Fabric Memory Interface Specification
 
 ## Overview
 
-FCC memory-facing hardware uses explicit external-memory resources together with
+LOOM memory-facing hardware uses explicit external-memory resources together with
 switch routing, optional tag transforms, and a backend-independent memory
 backing abstraction.
 
@@ -17,7 +17,7 @@ Placement rules:
 
 ## Memory-Interface Placement Rule
 
-FCC does not require a one-to-one relationship between software memrefs and
+LOOM does not require a one-to-one relationship between software memrefs and
 hardware memory interfaces.
 
 Instead:
@@ -38,12 +38,12 @@ This means the mapper may choose either:
 When load and store counts are both one, a memory may be used without tagged
 memory routing.
 
-When `ldCount > 1` or `stCount > 1`, FCC uses tagged memory routing so multiple
+When `ldCount > 1` or `stCount > 1`, LOOM uses tagged memory routing so multiple
 logical streams can share one memory-facing endpoint.
 
 ## Hardware Interface Families
 
-FCC hardware memory interfaces are organized by signal family, not by software
+LOOM hardware memory interfaces are organized by signal family, not by software
 operand order.
 
 `fabric.memory` uses these physical families:
@@ -138,7 +138,7 @@ They may be merged:
 They may be stripped on egress by `fabric.del_tag`, but stripping is only
 required when the destination side expects a non-tagged value.
 
-In other words, FCC does not require a canonical chain such as:
+In other words, LOOM does not require a canonical chain such as:
 
 - `add_tag -> one switch -> memory`
 - or `memory -> one switch -> del_tag`
@@ -149,7 +149,7 @@ when no explicit `fabric.add_tag` or `fabric.del_tag` exists at the compute
 container side. This is valid when the compute-facing side already remains
 tagged.
 
-For conflict checking and route validation, FCC must compare software streams
+For conflict checking and route validation, LOOM must compare software streams
 on the full bridge-expanded shared path, not only on the truncated
 place-and-route boundary path stored in mapper state. Shared tagged resources
 may appear entirely inside the recovered bridge suffix or prefix.
@@ -168,13 +168,13 @@ What matters is the semantic contract:
 Tagged memory traffic still obeys the switch rules of the enclosing routing
 resources. The only difference is that payload identity includes a tag field.
 
-FCC may carry tagged memory traffic through:
+LOOM may carry tagged memory traffic through:
 
 - `fabric.temporal_sw`, when route choice is tag-dependent
 - `fabric.spatial_sw`, when route choice is tag-agnostic and the tag is only
   part of the payload
 
-In current FCC memory-bridge design intent:
+In current LOOM memory-bridge design intent:
 
 - ingress request mixing may use any tagged, tag-compatible routing path
 - tagged `fabric.spatial_sw` is legal for tag-agnostic merging
@@ -199,14 +199,14 @@ start out different may still be illegal if their routed path would require one
 of them to become unrepresentable on a tagged hardware port, or if an explicit
 later tag transform makes them equal on a shared tagged resource.
 
-FCC must not treat implicit width adaptation itself as a legal tag-rewrite
+LOOM must not treat implicit width adaptation itself as a legal tag-rewrite
 mechanism. Only explicit `fabric.add_tag`, `fabric.map_tag`, or
 `fabric.del_tag` boundaries may change the runtime tag meaning seen by later
 shared tagged resources.
 
 ## Memory Region Model
 
-FCC treats external memory as a set of numbered regions. Each region has:
+LOOM treats external memory as a set of numbered regions. Each region has:
 
 - a region id
 - a tag range
@@ -216,7 +216,7 @@ FCC treats external memory as a set of numbered regions. Each region has:
 
 The accelerator runtime binds these regions before launch.
 
-`addr_offset_table` entries use the FCC tuple:
+`addr_offset_table` entries use the LOOM tuple:
 
 - `valid`
 - `start_tag`
@@ -243,14 +243,14 @@ This region model works together with tagged family ports:
 - different tags may progress independently
 - requests with the same tag must preserve order
 
-In FCC syntax:
+In LOOM syntax:
 
 - hardware-structure fields such as `ldCount`, `stCount`, `lsqDepth`,
   `memrefType`, and `numRegion` belong to `[]`
 - runtime region programming such as `addr_offset_table` belongs to
   `attributes {}`
 
-One important FCC distinction is ownership of the region base address:
+One important LOOM distinction is ownership of the region base address:
 
 - for `fabric.memory`, the mapper may compute on-chip base offsets directly
 - for `fabric.extmemory`, the mapper does not know the host virtual or physical
@@ -265,7 +265,7 @@ Therefore:
 
 ## Memref Type Compatibility
 
-For software-to-hardware memory mapping, FCC matches memrefs by element width,
+For software-to-hardware memory mapping, LOOM matches memrefs by element width,
 not by the original scalar kind.
 
 Examples:

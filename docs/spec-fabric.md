@@ -1,14 +1,14 @@
-# FCC Fabric Dialect Specification
+# LOOM Fabric Dialect Specification
 
 ## Overview
 
-Fabric MLIR is FCC's hardware architecture IR. It describes the modules,
+Fabric MLIR is LOOM's hardware architecture IR. It describes the modules,
 containers, routing resources, and memory endpoints that form the ADG.
 
-FCC retains the overall Fabric role from Loom, but changes the internal PE and
+LOOM retains the overall Fabric role from the legacy design, but changes the internal PE and
 switch model substantially.
 
-## Key FCC Differences from Loom
+## Key LOOM Differences from the legacy design
 
 - `fabric.spatial_pe` and `fabric.temporal_pe` contain explicit
   `fabric.function_unit` instances.
@@ -33,7 +33,7 @@ switch model substantially.
 
 ## Type Model
 
-At module boundaries and inter-module connections, FCC uses structural bit
+At module boundaries and inter-module connections, LOOM uses structural bit
 types, not native arithmetic types.
 
 Typical rules:
@@ -45,10 +45,10 @@ Typical rules:
 - native types such as `i32`, `f32`, `index`, and `none` live inside
   `function_unit` boundaries
 - when `index` is lowered to a concrete integer width for hardware-facing
-  behavior, FCC uses one centrally configured bit width
+  behavior, LOOM uses one centrally configured bit width
 - the default Fabric index width is `32`
 - the preset width family is `32`, `48`, `57`, or `64`
-- the process-wide environment variable `FCC_INDEX_WIDTH` may override the
+- the process-wide environment variable `LOOM_INDEX_WIDTH` may override the
   default with any decimal integer in the inclusive range `32..64`
 
 For tagged Fabric ports, two concepts must stay separate:
@@ -63,7 +63,7 @@ Hardware tag parameters come directly from the ADG's port types. They are not
 inferred by the mapper. The mapper only validates compatibility and computes
 runtime tag values where configuration requires them.
 
-FCC hardware connections allow width mismatch as long as tag-kind matches:
+LOOM hardware connections allow width mismatch as long as tag-kind matches:
 
 - non-tagged may connect to non-tagged
 - tagged may connect to tagged
@@ -77,7 +77,7 @@ When widths differ on one hardware connection:
 - tag fields may be carried between different tagged widths structurally, but a
   mapped concrete runtime tag must remain representable at every tagged port
   on the routed path
-- FCC must not rely on implicit tag truncation or implicit tag zero-extension
+- LOOM must not rely on implicit tag truncation or implicit tag zero-extension
   that would change the concrete runtime tag value seen by later hardware
   resources
 
@@ -102,7 +102,7 @@ input and result tagged types.
 
 ## Definition and Instantiation Rules
 
-FCC distinguishes named definitions from inline instantiations by structural
+LOOM distinguishes named definitions from inline instantiations by structural
 syntax, not by whether an op happens to have SSA results on the left-hand side.
 
 For module-level Fabric components:
@@ -194,7 +194,7 @@ Each operation separates:
 - hardware parameters: physical structure, fixed for an instance
 - runtime configuration: values programmed by the mapper
 
-For FCC, this split is especially important for:
+For LOOM, this split is especially important for:
 
 - `spatial_sw` connectivity versus route tables
 - `spatial_pe` structure versus opcode, mux, demux, and FU config selections
@@ -206,7 +206,7 @@ is the authoritative source of final runtime configuration.
 
 ## Textual Assembly Convention
 
-FCC follows one textual convention across the Fabric dialect:
+LOOM follows one textual convention across the Fabric dialect:
 
 - hardware parameters are serialized in square brackets `[...]`
 - runtime-configurable state is serialized in braces, either as bare

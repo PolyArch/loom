@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Negative test runner: verify that fcc --gen-sv rejects invalid MLIR inputs.
+"""Negative test runner: verify that loom --gen-sv rejects invalid MLIR inputs.
 
-Each test file is expected to cause a non-zero exit from fcc --gen-sv.
+Each test file is expected to cause a non-zero exit from loom --gen-sv.
 The runner also checks that stderr contains a recognizable error message
 (not a crash or unexpected failure mode).
 """
@@ -21,8 +21,8 @@ EXPECTED_ERRORS = {
 }
 
 
-def run_negative_test(fcc_exec, test_file, output_dir):
-    """Run fcc --gen-sv on a test file and verify rejection.
+def run_negative_test(loom_exec, test_file, output_dir):
+    """Run loom --gen-sv on a test file and verify rejection.
 
     Returns (passed: bool, message: str).
     """
@@ -30,7 +30,7 @@ def run_negative_test(fcc_exec, test_file, output_dir):
     test_output = os.path.join(output_dir, test_name)
     os.makedirs(test_output, exist_ok=True)
 
-    cmd = [fcc_exec, "--gen-sv", "--adg", test_file, "-o", test_output]
+    cmd = [loom_exec, "--gen-sv", "--adg", test_file, "-o", test_output]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     combined_output = (result.stdout or "") + (result.stderr or "")
@@ -50,8 +50,8 @@ def run_negative_test(fcc_exec, test_file, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Negative test runner for fcc --gen-sv")
-    parser.add_argument("--fcc", required=True, help="Path to fcc executable")
+        description="Negative test runner for loom --gen-sv")
+    parser.add_argument("--loom", required=True, help="Path to loom executable")
     parser.add_argument("--test-files", nargs="+", required=True,
                         help="Paths to negative test .fabric.mlir files")
     parser.add_argument("--output-dir", required=True,
@@ -69,7 +69,7 @@ def main():
 
     for test_file in sorted(args.test_files):
         test_name = os.path.basename(test_file).replace(".fabric.mlir", "")
-        ok, msg = run_negative_test(args.fcc, test_file, args.output_dir)
+        ok, msg = run_negative_test(args.loom, test_file, args.output_dir)
         status = "PASS" if ok else "FAIL"
         print(f"[negative/{test_name}] {status}: {msg}")
         if ok:

@@ -1,25 +1,25 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-set(FCC_UNIT_RUNNER "${CMAKE_CURRENT_SOURCE_DIR}/run_unit_tests.py")
-set(FCC_UNIT_MANIFEST "${CMAKE_BINARY_DIR}/tests/unit/unit_manifest.tsv")
+set(LOOM_UNIT_RUNNER "${CMAKE_CURRENT_SOURCE_DIR}/run_unit_tests.py")
+set(LOOM_UNIT_MANIFEST "${CMAKE_BINARY_DIR}/tests/unit/unit_manifest.tsv")
 
-set_property(GLOBAL PROPERTY FCC_UNIT_MANIFEST_LINES "")
-set_property(GLOBAL PROPERTY FCC_UNIT_RUNNER_DEPS "")
+set_property(GLOBAL PROPERTY LOOM_UNIT_MANIFEST_LINES "")
+set_property(GLOBAL PROPERTY LOOM_UNIT_RUNNER_DEPS "")
 
-function(fcc_configure_unit_adg_builder target_name)
+function(loom_configure_unit_adg_builder target_name)
   target_include_directories(${target_name} PRIVATE
-    ${FCC_INCLUDE_DIR}
+    ${LOOM_INCLUDE_DIR}
     ${CMAKE_BINARY_DIR}/include
   )
 
-  llvm_map_components_to_libnames(FCC_UNIT_ADG_LLVM_LIBS
+  llvm_map_components_to_libnames(LOOM_UNIT_ADG_LLVM_LIBS
     core support
   )
 
   target_link_libraries(${target_name} PRIVATE
-    FccADG
-    FccFabric
-    FccDataflow
+    LoomADG
+    LoomFabric
+    LoomDataflow
 
     CIRCTHandshake
 
@@ -31,15 +31,15 @@ function(fcc_configure_unit_adg_builder target_name)
     MLIRMemRefDialect
     MLIRFuncDialect
 
-    ${FCC_UNIT_ADG_LLVM_LIBS}
+    ${LOOM_UNIT_ADG_LLVM_LIBS}
   )
 
   set_target_properties(${target_name} PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${FCC_RUNTIME_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
   )
 endfunction()
 
-function(fcc_add_unit_case unit_name case_name dfg_file)
+function(loom_add_unit_case unit_name case_name dfg_file)
   string(MAKE_C_IDENTIFIER "${case_name}" unit_id)
 
   set(unit_dir "${CMAKE_CURRENT_SOURCE_DIR}/${unit_name}")
@@ -54,15 +54,15 @@ function(fcc_add_unit_case unit_name case_name dfg_file)
   endif()
 
   if(EXISTS "${unit_dir}/adg.cpp")
-    set(builder_target "fcc_unit_adg_${unit_id}")
+    set(builder_target "loom_unit_adg_${unit_id}")
     set(generated_fabric_file "${output_dir}/${unit_name}.fabric.mlir")
     set(builder_exec "$<TARGET_FILE:${builder_target}>")
 
     add_executable(${builder_target}
       "${unit_dir}/adg.cpp"
     )
-    fcc_configure_unit_adg_builder(${builder_target})
-    set_property(GLOBAL APPEND PROPERTY FCC_UNIT_RUNNER_DEPS ${builder_target})
+    loom_configure_unit_adg_builder(${builder_target})
+    set_property(GLOBAL APPEND PROPERTY LOOM_UNIT_RUNNER_DEPS ${builder_target})
   elseif(EXISTS "${unit_dir}/fabric.mlir")
     set(fabric_file "${unit_dir}/fabric.mlir")
   else()
@@ -70,20 +70,20 @@ function(fcc_add_unit_case unit_name case_name dfg_file)
   endif()
 
   set(manifest_line
-      "${case_name}\t${output_dir}\t${dfg_file}\t${fabric_file}\t${builder_exec}\t${generated_fabric_file}\t$<TARGET_FILE:fcc>\n")
-  set_property(GLOBAL APPEND_STRING PROPERTY FCC_UNIT_MANIFEST_LINES
+      "${case_name}\t${output_dir}\t${dfg_file}\t${fabric_file}\t${builder_exec}\t${generated_fabric_file}\t$<TARGET_FILE:loom>\n")
+  set_property(GLOBAL APPEND_STRING PROPERTY LOOM_UNIT_MANIFEST_LINES
                "${manifest_line}")
-  set_property(GLOBAL APPEND PROPERTY FCC_UNIT_RUNNER_DEPS fcc)
+  set_property(GLOBAL APPEND PROPERTY LOOM_UNIT_RUNNER_DEPS loom)
 
-  set(case_target "fcc-unit-${case_name}")
-  set(case_deps fcc "${FCC_UNIT_MANIFEST}" "${FCC_UNIT_RUNNER}")
+  set(case_target "loom-unit-${case_name}")
+  set(case_deps loom "${LOOM_UNIT_MANIFEST}" "${LOOM_UNIT_RUNNER}")
   if(builder_target)
     list(APPEND case_deps ${builder_target})
   endif()
 
   add_custom_target(${case_target}
-    COMMAND ${Python3_EXECUTABLE} "${FCC_UNIT_RUNNER}"
-            --manifest "${FCC_UNIT_MANIFEST}"
+    COMMAND ${Python3_EXECUTABLE} "${LOOM_UNIT_RUNNER}"
+            --manifest "${LOOM_UNIT_MANIFEST}"
             --tests "${case_name}"
     DEPENDS ${case_deps}
     VERBATIM
@@ -104,7 +104,7 @@ foreach(unit_name IN LISTS unit_entries)
 
   set(unit_dir "${CMAKE_CURRENT_SOURCE_DIR}/${unit_name}")
   if(EXISTS "${unit_dir}/dfg.mlir")
-    fcc_add_unit_case("${unit_name}" "${unit_name}" "${unit_dir}/dfg.mlir")
+    loom_add_unit_case("${unit_name}" "${unit_name}" "${unit_dir}/dfg.mlir")
   endif()
 
   file(GLOB extra_dfgs CONFIGURE_DEPENDS
@@ -116,24 +116,24 @@ foreach(unit_name IN LISTS unit_entries)
     string(REGEX REPLACE "^dfg-(.*)\\.mlir$" "\\1" case_suffix
            "${extra_dfg_name}")
     set(case_name "${unit_name}-${case_suffix}")
-    fcc_add_unit_case("${unit_name}" "${case_name}" "${extra_dfg}")
+    loom_add_unit_case("${unit_name}" "${case_name}" "${extra_dfg}")
   endforeach()
 endforeach()
 
-get_property(fcc_unit_manifest_lines GLOBAL PROPERTY FCC_UNIT_MANIFEST_LINES)
-get_property(fcc_unit_runner_deps GLOBAL PROPERTY FCC_UNIT_RUNNER_DEPS)
-list(REMOVE_DUPLICATES fcc_unit_runner_deps)
+get_property(loom_unit_manifest_lines GLOBAL PROPERTY LOOM_UNIT_MANIFEST_LINES)
+get_property(loom_unit_runner_deps GLOBAL PROPERTY LOOM_UNIT_RUNNER_DEPS)
+list(REMOVE_DUPLICATES loom_unit_runner_deps)
 
-file(GENERATE OUTPUT "${FCC_UNIT_MANIFEST}" CONTENT "${fcc_unit_manifest_lines}")
+file(GENERATE OUTPUT "${LOOM_UNIT_MANIFEST}" CONTENT "${loom_unit_manifest_lines}")
 
-add_custom_target(check-fcc-unit
-  COMMAND ${Python3_EXECUTABLE} "${FCC_UNIT_RUNNER}"
-          --manifest "${FCC_UNIT_MANIFEST}"
-  DEPENDS ${fcc_unit_runner_deps} "${FCC_UNIT_MANIFEST}" "${FCC_UNIT_RUNNER}"
+add_custom_target(check-loom-unit
+  COMMAND ${Python3_EXECUTABLE} "${LOOM_UNIT_RUNNER}"
+          --manifest "${LOOM_UNIT_MANIFEST}"
+  DEPENDS ${loom_unit_runner_deps} "${LOOM_UNIT_MANIFEST}" "${LOOM_UNIT_RUNNER}"
   VERBATIM
   USES_TERMINAL
 )
 
-if(NOT TARGET check-fcc)
-  add_custom_target(check-fcc DEPENDS check-fcc-unit)
+if(NOT TARGET check-loom)
+  add_custom_target(check-loom DEPENDS check-loom-unit)
 endif()

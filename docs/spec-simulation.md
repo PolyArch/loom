@@ -1,8 +1,8 @@
-# FCC Simulation Specification
+# LOOM Simulation Specification
 
 ## Overview
 
-FCC simulation is the execution-side validation layer for mapped designs.
+LOOM simulation is the execution-side validation layer for mapped designs.
 The normative execution core is a shared cycle-accurate kernel that is reused
 by:
 
@@ -42,7 +42,7 @@ today by `SimSession`.
 
 ## Two-Phase Cycle Model
 
-FCC's intended simulation model is cycle-accurate with two phases per cycle:
+LOOM's intended simulation model is cycle-accurate with two phases per cycle:
 
 ### Phase 1: Combinational Convergence
 
@@ -148,7 +148,7 @@ architectural behavior.
 
 ## Trace and Statistics
 
-FCC simulation should support:
+LOOM simulation should support:
 
 - event traces
 - per-node activity or stall accounting
@@ -194,7 +194,7 @@ through memory side effects.
 
 ## Runtime Image
 
-FCC now emits a runtime image that captures the mapped static model and decoded
+LOOM now emits a runtime image that captures the mapped static model and decoded
 control bindings needed by the shared kernel. The runtime manifest records:
 
 - `sim_image_json`
@@ -207,4 +207,4 @@ execution.
 
 - [spec-host-accel-interface.md](./spec-host-accel-interface.md)
 - [spec-dse.md](./spec-dse.md)
-- [spec-fcc.md](./spec-fcc.md)
+- [spec-loom.md](./spec-loom.md)

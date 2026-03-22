@@ -1,8 +1,8 @@
-# FCC CLI Specification
+# LOOM CLI Specification
 
 ## Overview
 
-`fcc` currently supports five invocation families:
+`loom` currently supports five invocation families:
 
 1. source compilation without mapping
 2. source compilation plus ADG mapping
@@ -17,7 +17,7 @@
 ### Source Compilation Only
 
 ```
-fcc <sources> -o <output_dir> [-I<include_path> ...]
+loom <sources> -o <output_dir> [-I<include_path> ...]
 ```
 
 This mode runs the software frontend and lowering pipeline only. It emits
@@ -32,13 +32,13 @@ Representative outputs:
 - `<dfg>.scf.mlir`
 - `<dfg>.dfg.mlir`
 - `<dfg>_host.c`
-- `fcc_accel.h`
-- `fcc_accel.c`
+- `loom_accel.h`
+- `loom_accel.c`
 
 ### Source Compilation Plus Mapping
 
 ```
-fcc <sources> --adg <fabric.mlir> -o <output_dir> [options]
+loom <sources> --adg <fabric.mlir> -o <output_dir> [options]
 ```
 
 This mode runs the full software frontend, lowers to DFG, loads and verifies
@@ -48,7 +48,7 @@ runtime manifest, and optionally runs standalone simulation.
 ### DFG-Direct Mapping
 
 ```
-fcc --dfg <dfg.mlir> --adg <fabric.mlir> -o <output_dir> [options]
+loom --dfg <dfg.mlir> --adg <fabric.mlir> -o <output_dir> [options]
 ```
 
 This mode skips source compilation and maps a pre-built DFG onto a pre-built
@@ -59,8 +59,8 @@ ADG.
 ### Visualization Only
 
 ```
-fcc --viz-only [--dfg <dfg.mlir>] [--adg <fabric.mlir>] -o <output_dir>
-fcc --viz-only --map-json <map.json> [--dfg <dfg.mlir>] [--adg <fabric.mlir>] -o <output_dir>
+loom --viz-only [--dfg <dfg.mlir>] [--adg <fabric.mlir>] -o <output_dir>
+loom --viz-only --map-json <map.json> [--dfg <dfg.mlir>] [--adg <fabric.mlir>] -o <output_dir>
 ```
 
 This mode emits HTML visualization without running mapping.
@@ -69,13 +69,13 @@ Normative rules:
 
 - `--viz-only` requires at least one of `--dfg` or `--adg`
 - `--map-json` is meaningful only in visualization-only mode
-- if `--map-json` is present, FCC overlays an existing mapping onto the
+- if `--map-json` is present, LOOM overlays an existing mapping onto the
   visualization instead of regenerating one
 
 ### Runtime Replay
 
 ```
-fcc --runtime-manifest <case.runtime.json> \
+loom --runtime-manifest <case.runtime.json> \
     --runtime-request <request.json> \
     --runtime-result <result.json> \
     -o <output_dir> \
@@ -83,16 +83,16 @@ fcc --runtime-manifest <case.runtime.json> \
     [--runtime-stat <stat_path>]
 ```
 
-This mode bypasses compilation and mapping. FCC loads an existing mapped-case
+This mode bypasses compilation and mapping. LOOM loads an existing mapped-case
 runtime manifest, replays one invocation on the standalone simulator, and
 writes result JSON plus trace/stat artifacts.
 
 Normative rules:
 
 - `--runtime-manifest` requires both `--runtime-request` and `--runtime-result`
-- if `--runtime-trace` is omitted, FCC writes
+- if `--runtime-trace` is omitted, LOOM writes
   `<output_dir>/<case_name>.runtime.trace`
-- if `--runtime-stat` is omitted, FCC writes
+- if `--runtime-stat` is omitted, LOOM writes
   `<output_dir>/<case_name>.runtime.stat`
 
 ## Option Reference
@@ -118,7 +118,7 @@ Normative rules:
 
 - `default`:
   - if the ADG provides an explicit sidecar layout, use it
-  - otherwise use FCC's offline auto-layout path
+  - otherwise use LOOM's offline auto-layout path
 - `neato`:
   - ignore explicit sidecar placement and force offline neato-style layout
 
@@ -133,9 +133,9 @@ Normative rules:
 Additional semantics:
 
 - `--simulate` is effective only in modes that actually perform mapping
-- if `--sim-bundle` is omitted, FCC synthesizes a standalone simulation setup
+- if `--sim-bundle` is omitted, LOOM synthesizes a standalone simulation setup
   from the mapped graph
-- if `--sim-bundle` is present, FCC also emits a validation report comparing
+- if `--sim-bundle` is present, LOOM also emits a validation report comparing
   simulated outputs against bundle expectations
 
 ### Runtime Replay
@@ -150,7 +150,7 @@ Additional semantics:
 
 ### Mapper Controls
 
-FCC now always resolves mapper settings from a base YAML template plus an
+LOOM now always resolves mapper settings from a base YAML template plus an
 explicit CLI override layer.
 
 Authoritative merge semantics and the full mapper parameter inventory are
@@ -160,7 +160,7 @@ The following promoted mapper controls are intentionally exposed by the CLI.
 
 | Option | Meaning |
 |--------|---------|
-| `--mapper-base-config <path>` | Path to mapper base-config YAML. If omitted, FCC loads the repository-tracked default template at `configs/mapper/default.yaml`. |
+| `--mapper-base-config <path>` | Path to mapper base-config YAML. If omitted, LOOM loads the repository-tracked default template at `configs/mapper/default.yaml`. |
 | `--mapper-budget <seconds>` | Overall mapper time budget. Default: `60`. |
 | `--mapper-seed <n>` | Deterministic random seed. Default: `0`. |
 | `--mapper-lanes <n>` | Parallel multi-start lane count. `0` means auto-select. |
@@ -190,12 +190,12 @@ Current implementation note:
 - `--mapper-snapshot-interval-seconds` and
   `--mapper-snapshot-interval-rounds` are mutually exclusive; enabling both is
   a CLI error
-- if neither snapshot flag is enabled, FCC does not emit periodic mapper
+- if neither snapshot flag is enabled, LOOM does not emit periodic mapper
   snapshots
 
 ## Output Naming Rules
 
-FCC derives three stems:
+LOOM derives three stems:
 
 - software stem:
   - from the first source file in source-compilation modes
@@ -228,8 +228,8 @@ Source compilation emits software artifacts under the software base:
 - `<software>.scf.mlir`
 - `<software>.dfg.mlir`
 - `<software>_host.c`
-- `fcc_accel.h`
-- `fcc_accel.c`
+- `loom_accel.h`
+- `loom_accel.c`
 
 ### Mapping
 
@@ -242,7 +242,7 @@ Successful or failed mapping attempts emit mixed artifacts under the mixed base:
 - `<mixed>.map.txt`
 - `<mixed>.viz.html`
 
-If periodic mapper snapshots are enabled, FCC also emits:
+If periodic mapper snapshots are enabled, LOOM also emits:
 
 - `<output_dir>/mapper-snapshots/<mixed>.snapshot-<seq>.<trigger>.mapper-<ordinal>.map.json`
 - `<output_dir>/mapper-snapshots/<mixed>.snapshot-<seq>.<trigger>.mapper-<ordinal>.viz.html`
@@ -250,20 +250,20 @@ If periodic mapper snapshots are enabled, FCC also emits:
 Snapshot emission is best-effort and captures the current best expanded mapper
 checkpoint at the trigger point.
 
-If mapping succeeds, FCC also emits:
+If mapping succeeds, LOOM also emits:
 
 - `<mixed>.runtime.json`
 
 ### Standalone Simulation
 
-If `--simulate` is enabled and mapping succeeds, FCC emits:
+If `--simulate` is enabled and mapping succeeds, LOOM emits:
 
 - `<mixed>.sim.trace`
 - `<mixed>.sim.stat`
 - `<mixed>.sim.setup.json`
 - `<mixed>.sim.result.json`
 
-If `--sim-bundle` is provided and validation succeeds or fails, FCC also emits:
+If `--sim-bundle` is provided and validation succeeds or fails, LOOM also emits:
 
 - `<mixed>.sim.report.json`
 

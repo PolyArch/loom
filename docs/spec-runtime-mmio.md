@@ -1,15 +1,15 @@
-# FCC Runtime and MMIO Specification
+# LOOM Runtime and MMIO Specification
 
 ## Overview
 
-FCC uses a runtime-facing session abstraction together with a simple MMIO
+LOOM uses a runtime-facing session abstraction together with a simple MMIO
 control plane for host-driven accelerator execution.
 
 This document is the authority for the runtime lifecycle and MMIO contract.
 
 ## Runtime Responsibilities
 
-A conforming FCC runtime must support:
+A conforming LOOM runtime must support:
 
 - build from mapped DFG and ADG data
 - configuration upload
@@ -59,13 +59,13 @@ Reconfiguration and execution must respect this order.
 The host-side driver is expected to provide a thin API equivalent in behavior
 to:
 
-- `fcc_accel_init`
-- `fcc_accel_load_config`
-- `fcc_accel_set_mem_region`
-- `fcc_accel_set_arg`
-- `fcc_accel_launch`
-- `fcc_accel_wait`
-- `fcc_accel_cycle_count`
+- `loom_accel_init`
+- `loom_accel_load_config`
+- `loom_accel_set_mem_region`
+- `loom_accel_set_arg`
+- `loom_accel_launch`
+- `loom_accel_wait`
+- `loom_accel_cycle_count`
 
 This API is intentionally minimal and suitable for baremetal execution.
 
@@ -121,14 +121,14 @@ MMIO writes.
 
 ## DMA vs MMIO Division
 
-FCC uses MMIO for:
+LOOM uses MMIO for:
 
 - control
 - status
 - configuration load setup
 - scalar setup
 
-FCC uses DMA or equivalent backing access for:
+LOOM uses DMA or equivalent backing access for:
 
 - configuration blob transfer
 - array and buffer payloads in external memory
@@ -148,7 +148,7 @@ implemented, but the host-visible contract should remain the same.
 In the current gem5 direct path, MMIO remains the control plane while memory
 region payloads stay in gem5-visible memory.
 
-`fcc_accel_set_mem_region(slot, addr, size)` is the host-visible operation that
+`loom_accel_set_mem_region(slot, addr, size)` is the host-visible operation that
 binds a software memory object to a runtime memory-region slot. The mapping-time
 control image still defines which extmemory or memory region id uses which slot.
 
@@ -156,8 +156,8 @@ In the direct gem5 path, the concrete array or buffer address used by a mapped
 extmemory or memory region comes from the uploaded config words:
 
 - the host patches the relevant `addr_offset_table.base` entries inside the
-  runtime config image before `fcc_accel_load_config`
-- the host then calls `fcc_accel_set_mem_region(slot, addr, size)` to declare
+  runtime config image before `loom_accel_load_config`
+- the host then calls `loom_accel_set_mem_region(slot, addr, size)` to declare
   the legal host memory aperture and size that the gem5 device may access for
   that slot
 
@@ -168,7 +168,7 @@ memory aperture for DMA and artifact export.
 The device-side direct path is now:
 
 - runtime image provides memory-region to slot bindings
-- host patches `fcc_runtime_config_words[]` before load
+- host patches `loom_runtime_config_words[]` before load
 - host writes config blob base and size through MMIO
 - host triggers one config-load operation
 - the gem5 device DMA-loads the config blob into the accelerator config image

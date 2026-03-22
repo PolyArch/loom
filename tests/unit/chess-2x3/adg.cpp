@@ -17,7 +17,7 @@ int main(int argc, char **argv) {
   if (!parentPath.empty())
     llvm::sys::fs::create_directories(parentPath);
   llvm::outs() << "Generating chess-2x3 ADG -> " << outputFile << "\n";
-  fcc::unit::buildChessUnitADG(outputFile, "chess_2x3_test_adg", 2, 3);
+  loom::unit::buildChessUnitADG(outputFile, "chess_2x3_test_adg", 2, 3);
   llvm::outs() << "Done.\n";
   return 0;
 }

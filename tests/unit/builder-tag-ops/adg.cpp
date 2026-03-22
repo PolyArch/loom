@@ -1,17 +1,17 @@
 //===-- adg.cpp - Builder tag ops test --------------------------*- C++ -*-===//
 //
-// Part of the fcc project.
+// Part of the loom project.
 //
 //===----------------------------------------------------------------------===//
 
-#include "fcc/ADG/ADGBuilder.h"
+#include "loom/ADG/ADGBuilder.h"
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
-using namespace fcc::adg;
+using namespace loom::adg;
 
 static void buildTagOpsADG(const std::string &outputPath) {
   ADGBuilder builder("builder_tag_ops_test");

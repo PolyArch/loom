@@ -1,20 +1,20 @@
-# FCC Fabric config_mem and Bitstream Specification
+# LOOM Fabric config_mem and Bitstream Specification
 
 ## Overview
 
-`config_mem` is FCC's unified runtime-configuration image for one mapped
+`config_mem` is LOOM's unified runtime-configuration image for one mapped
 `fabric.module`.
 
 This document defines:
 
 - the logical `config_mem` model
-- the serialized word-stream format used by FCC artifacts
-- the slice ordering and field packing rules used by current FCC `ConfigGen`
+- the serialized word-stream format used by LOOM artifacts
+- the slice ordering and field packing rules used by current LOOM `ConfigGen`
 - the per-resource configuration layouts that contribute to the final
   bitstream
 
-This document plays the same role in FCC that
-`spec-fabric-config_mem.md` played in Loom, but FCC's slice structure is
+This document plays the same role in LOOM that
+`spec-fabric-config_mem.md` played in the legacy design, but LOOM's slice structure is
 different because compute containers are now built around:
 
 - `fabric.spatial_pe`
@@ -36,7 +36,7 @@ Related documents:
 
 ## Role of `config_mem`
 
-FCC uses one unified configuration image to capture all runtime-programmable
+LOOM uses one unified configuration image to capture all runtime-programmable
 state needed by one mapped accelerator instance.
 
 This includes:
@@ -59,11 +59,11 @@ These are three representations of the same configuration image:
 - `config.bin`: raw little-endian bytes
 - `config.json`: structured summary with slice metadata
 - `config.h`: C header embedding the same 32-bit words as
-  `fcc_runtime_config_words[]`
+  `loom_runtime_config_words[]`
 
 ## Physical Word Model
 
-FCC currently uses a fixed 32-bit configuration word width.
+LOOM currently uses a fixed 32-bit configuration word width.
 
 Normative properties:
 
@@ -86,7 +86,7 @@ as consecutive little-endian `uint32_t` values.
 
 ## Slice Model
 
-FCC does not treat the configuration image as one monolithic anonymous bit
+LOOM does not treat the configuration image as one monolithic anonymous bit
 array. Instead, it is assembled from ordered slices.
 
 Each slice has:
@@ -102,11 +102,11 @@ Each slice has:
 
 ## Current Slice Ordering
 
-Current FCC `ConfigGen` emits slices in two stages.
+Current LOOM `ConfigGen` emits slices in two stages.
 
 ### Stage 1: Primitive and Storage Slices
 
-First, FCC walks flattened ADG nodes in flattened node order and emits slices
+First, LOOM walks flattened ADG nodes in flattened node order and emits slices
 for configurable primitive resources.
 
 Current primitive slice families are:
@@ -124,7 +124,7 @@ the final slice table.
 
 ### Stage 2: PE Container Slices
 
-After primitive slices, FCC emits one slice per PE container in PE-containment
+After primitive slices, LOOM emits one slice per PE container in PE-containment
 order.
 
 Current PE slice families are:
@@ -132,12 +132,12 @@ Current PE slice families are:
 - `spatial_pe`
 - `temporal_pe`
 
-This means the current FCC bitstream order is:
+This means the current LOOM bitstream order is:
 
 1. configurable routing, tag, FIFO, and memory primitive slices
 2. then PE container slices
 
-This differs from Loom's older `fabric.pe`-centric layout because FCC models
+This differs from the legacy design's older `fabric.pe`-centric layout because LOOM models
 PE routing and FU state at the container level.
 
 ## Alignment and Packing Rules
@@ -167,14 +167,14 @@ General bit-packing rules:
 - array-like fields use ascending logical index order
 - a field may legally straddle a 32-bit word boundary within the same slice
 
-The core helper rule used by current FCC `ConfigGen` is:
+The core helper rule used by current LOOM `ConfigGen` is:
 
 - `packBits(...)` appends fields LSB-first
 - `packMuxField(...)` appends `[sel | discard | disconnect]` low-to-high
 
 ### Choice Width Rule
 
-Whenever FCC needs to encode a choice among `N` alternatives, the current
+Whenever LOOM needs to encode a choice among `N` alternatives, the current
 selection width is:
 
 - `0` bits when `N <= 1`
@@ -189,7 +189,7 @@ This rule is used for:
 
 ## Primitive Slice Layouts
 
-This section defines the current FCC slice layouts used by `ConfigGen`.
+This section defines the current LOOM slice layouts used by `ConfigGen`.
 
 ### `fabric.spatial_sw`
 
@@ -284,7 +284,7 @@ Non-bypassable FIFOs contribute no slice.
 
 ### `fabric.memory` and `fabric.extmemory`
 
-FCC memory-facing nodes contribute region-table configuration through
+LOOM memory-facing nodes contribute region-table configuration through
 `addr_offset_table`.
 
 Current generated memory-family slices are word tables, not bit-packed record
@@ -309,21 +309,21 @@ Semantics:
 - `addr_offset`: base offset of the region
 - `elem_size_log2`: AXI-style element-size code
 
-Important FCC distinction:
+Important LOOM distinction:
 
 - `fabric.memory` may carry concrete mapped base offsets
 - `fabric.extmemory` is emitted by the mapper with `addr_offset = 0`
 - host runtime is responsible for patching or programming the actual backing
   base for `extmemory`
 
-This is a major FCC difference from Loom's older assumption that memory or
+This is a major LOOM difference from the legacy design's older assumption that memory or
 extmemory contributed no runtime configuration.
 
 ## PE Container Slice Layouts
 
-PE container slices are the most important FCC difference relative to Loom.
+PE container slices are the most important LOOM difference relative to the legacy design.
 
-FCC does not serialize one old-style `fabric.pe` record. It serializes
+LOOM does not serialize one old-style `fabric.pe` record. It serializes
 container-level state for `spatial_pe` and `temporal_pe`.
 
 ### `fabric.spatial_pe`
@@ -359,7 +359,7 @@ That is, width:
 - `input_mux_width = input_mux_sel_bits + 2`
 - `output_demux_width = output_demux_sel_bits + 2`
 
-Important FCC-specific rules:
+Important LOOM-specific rules:
 
 - exactly zero or one physical FU is active in one `spatial_pe`
 - only the selected FU's internal payload is emitted into the shared FU-config
@@ -368,7 +368,7 @@ Important FCC-specific rules:
 - if the selected FU uses fewer bits than the shared region width, the high
   remainder is zero-padded
 
-This is one of the biggest FCC differences from Loom.
+This is one of the biggest LOOM differences from the legacy design.
 
 ### `fabric.temporal_pe`
 
@@ -429,7 +429,7 @@ Important temporal semantics:
 
 #### Persistent FU-Config Region
 
-After all instruction slots, FCC appends persistent FU-internal config
+After all instruction slots, LOOM appends persistent FU-internal config
 payloads.
 
 Concatenation order:
@@ -441,7 +441,7 @@ Width:
 
 - `sum(fu_config_bits of all FUs in this temporal_pe)`
 
-This is another major FCC difference from Loom:
+This is another major LOOM difference from the legacy design:
 
 - temporal PE instruction slots do not carry duplicated copies of FU-internal
   config
@@ -472,7 +472,7 @@ Per-field encodings are:
 - `arith.cmpf`: 4-bit predicate value
 - `dataflow.stream`: 5-bit one-hot `cont_cond`
 
-FCC-specific consequence:
+LOOM-specific consequence:
 
 - `spatial_pe` stores only the active FU payload in one shared max-width slot
 - `temporal_pe` stores all FU payloads persistently in FU-definition order
@@ -493,11 +493,11 @@ Properties:
 
 `config.h` embeds the same word stream as:
 
-- `fcc_runtime_config_words[]`
-- `fcc_runtime_config_word_count`
-- `fcc_runtime_config_complete`
+- `loom_runtime_config_words[]`
+- `loom_runtime_config_word_count`
+- `loom_runtime_config_complete`
 
-Host code may load this array directly through `fcc_accel_load_config(...)`.
+Host code may load this array directly through `loom_accel_load_config(...)`.
 
 ### `config.json`
 
@@ -515,14 +515,14 @@ The `complete` flags are important:
   could not fully recover all fields for that slice
 - the top-level `complete` bit is the conjunction across emitted slices
 
-This lets FCC distinguish:
+This lets LOOM distinguish:
 
 - architectural config layout
 - current implementation coverage
 
 ## Current Coverage Boundary
 
-The current FCC `ConfigGen` models and emits slices for:
+The current LOOM `ConfigGen` models and emits slices for:
 
 - routing primitives
 - tag primitives
@@ -532,14 +532,14 @@ The current FCC `ConfigGen` models and emits slices for:
 - bypassable FIFOs
 
 Therefore the current exported bitstream already covers the main
-configuration-bearing structures of FCC's mapped accelerator view.
+configuration-bearing structures of LOOM's mapped accelerator view.
 
 At the same time, `config.json` completeness flags remain authoritative for
 whether every slice was fully reconstructed for one concrete mapping result.
 
-## FCC Differences Relative to Loom
+## LOOM Differences Relative to the legacy design
 
-The most important FCC differences are:
+The most important LOOM differences are:
 
 - `fabric.pe` is no longer the central configuration carrier
 - `fabric.spatial_pe` adds:
@@ -559,7 +559,7 @@ The most important FCC differences are:
   `arith.cmpf`, and `dataflow.stream`
 - `fabric.memory` and `fabric.extmemory` now contribute region-table config via
   `addr_offset_table`
-- FCC's exported bitstream is assembled from primitive slices first and PE
+- LOOM's exported bitstream is assembled from primitive slices first and PE
   container slices second
 
 ## Related Documents

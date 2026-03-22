@@ -1,8 +1,8 @@
-# FCC Dataflow Dialect Specification
+# LOOM Dataflow Dialect Specification
 
 ## Overview
 
-FCC uses a small `dataflow` dialect to represent loop-derived stream and
+LOOM uses a small `dataflow` dialect to represent loop-derived stream and
 state-machine behavior in DFG form.
 
 Current core operations are:
@@ -13,7 +13,7 @@ Current core operations are:
 - `dataflow.invariant`
 
 These are software-graph operations. When they are implemented in hardware,
-FCC treats each of them as one dedicated fixed-behavior state machine.
+LOOM treats each of them as one dedicated fixed-behavior state machine.
 
 Related documents:
 
@@ -31,7 +31,7 @@ Instead:
 
 - software-side `dataflow` operations use native semantic values such as
   `index`, `i1`, or other scalar element types
-- when a mapped hardware path carries those values across ADG boundaries, FCC
+- when a mapped hardware path carries those values across ADG boundaries, LOOM
   uses Fabric transport types such as `!fabric.bits<...>` or
   `!fabric.tagged<...>`
 
@@ -44,13 +44,13 @@ Therefore the separation is:
 
 All four current `dataflow` operations are fixed state-machine behaviors.
 
-Normative FCC rule for hardware mapping:
+Normative LOOM rule for hardware mapping:
 
 - a `function_unit` that implements any one of the four `dataflow` operations
   must contain exactly that one non-terminator `dataflow` operation
 - such a `function_unit` must use `latency = -1` and `interval = -1`
 
-FCC does not currently model any of the four `dataflow` operations as ordinary
+LOOM does not currently model any of the four `dataflow` operations as ordinary
 single-fire datapath FUs with meaningful scalar `latency` or `interval`.
 
 The authoritative FU-body legality, timing, and exclusivity rules are defined
@@ -126,7 +126,7 @@ For a loop with `N` body iterations:
 - `%idx` has `N + 1` elements
 - `%cont` has `N` true values followed by one false value
 
-This is the canonical FCC representation of the one-step-ahead loop-control
+This is the canonical LOOM representation of the one-step-ahead loop-control
 stream used by later `dataflow.gate`, `dataflow.carry`, and
 `dataflow.invariant`.
 
@@ -368,7 +368,7 @@ The common dedicated-dataflow FU rule above applies.
 
 ## Mapper Contract
 
-For FCC mapping:
+For LOOM mapping:
 
 - each of the four `dataflow` operations is a distinct compatibility class
 - matching is by exact operation identity
@@ -384,7 +384,7 @@ In particular:
 
 ## Relationship to Loop Lowering
 
-FCC's SCF-to-DFG lowering uses the four operations in a specific pattern:
+LOOM's SCF-to-DFG lowering uses the four operations in a specific pattern:
 
 - `dataflow.stream` generates one-step-ahead loop index and continue streams
 - `dataflow.gate` converts before-region shape into body-region shape

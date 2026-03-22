@@ -1,2 +1,2 @@
-add_subdirectory(fcc/Dialect/Dataflow)
-add_subdirectory(fcc/Dialect/Fabric)
+add_subdirectory(loom/Dialect/Dataflow)
+add_subdirectory(loom/Dialect/Fabric)

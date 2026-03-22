@@ -71,7 +71,7 @@ package fabric_axi_pkg;
   endfunction : axsize_from_bytes
 
   // ---------------------------------------------------------------
-  // Helper: Compute AxSIZE from element size log2 (FCC convention)
+  // Helper: Compute AxSIZE from element size log2 (LOOM convention)
   // ---------------------------------------------------------------
   function automatic logic [AXI_SIZE_WIDTH-1:0] axsize_from_log2(
     input int unsigned elem_size_log2

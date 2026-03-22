@@ -1,4 +1,4 @@
-# FCC RTL Generation Constraints Specification
+# LOOM RTL Generation Constraints Specification
 
 ## Overview
 
@@ -374,7 +374,7 @@ Inside one slice, fields are packed low-to-high (LSB-first):
 ### Slice Ordering
 
 The RTL config controller routes words to per-module config ports based on a
-slice offset table. The ordering follows the FCC `ConfigGen` convention:
+slice offset table. The ordering follows the LOOM `ConfigGen` convention:
 
 1. Primitive and storage slices in flattened node order: `spatial_sw`,
    `temporal_sw`, `add_tag`, `map_tag`, bypassable `fifo`, `memory`,

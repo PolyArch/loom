@@ -1,8 +1,8 @@
-# FCC Visualization Specification
+# LOOM Visualization Specification
 
 ## Overview
 
-FCC visualization presents the DFG and ADG together and, when mapping data is
+LOOM visualization presents the DFG and ADG together and, when mapping data is
 available, explains how software edges traverse hardware resources.
 
 The viewer is a self-contained HTML artifact.
@@ -12,7 +12,7 @@ the ADG's `fabric.module`.
 
 ## Rendering Stack
 
-FCC currently uses:
+LOOM currently uses:
 
 - Graphviz WASM for hierarchical DFG rendering
 - D3.js for ADG layout, routing overlays, and interaction
@@ -27,7 +27,7 @@ ADG visualization supports two layout sources:
 
 Normative rules:
 
-- ADGs emitted by the FCC ADG Builder always emit a sidecar layout file and
+- ADGs emitted by the LOOM ADG Builder always emit a sidecar layout file and
   bind it through `viz_file`
 - topology helpers such as ring, mesh, torus, chess, lattice, cube, and
   star-like generators must precompute coordinates instead of delegating

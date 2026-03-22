@@ -25,7 +25,7 @@ class UnitCase:
     fabric_file: Path | None
     builder_exec: Path | None
     generated_fabric_file: Path | None
-    fcc_exec: Path
+    loom_exec: Path
 
 
 @dataclass(frozen=True)
@@ -78,12 +78,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--jobs",
         type=int,
-        default=int(os.environ.get("FCC_UNIT_JOBS", "0") or "0"),
+        default=int(os.environ.get("LOOM_UNIT_JOBS", "0") or "0"),
     )
     parser.add_argument(
         "--timeout",
         type=int,
-        default=int(os.environ.get("FCC_UNIT_TIMEOUT", str(DEFAULT_TIMEOUT_SEC))),
+        default=int(os.environ.get("LOOM_UNIT_TIMEOUT", str(DEFAULT_TIMEOUT_SEC))),
     )
     return parser.parse_args()
 
@@ -97,7 +97,7 @@ def load_cases(manifest_path: Path) -> List[UnitCase]:
           continue
         while len(row) < 7:
           row.append("")
-        name, output_dir, dfg_file, fabric_file, builder_exec, generated_fabric_file, fcc_exec = row[:7]
+        name, output_dir, dfg_file, fabric_file, builder_exec, generated_fabric_file, loom_exec = row[:7]
         cases.append(
             UnitCase(
                 name=name,
@@ -108,7 +108,7 @@ def load_cases(manifest_path: Path) -> List[UnitCase]:
                 generated_fabric_file=Path(generated_fabric_file)
                 if generated_fabric_file
                 else None,
-                fcc_exec=Path(fcc_exec),
+                loom_exec=Path(loom_exec),
             )
         )
     return cases
@@ -166,7 +166,7 @@ def create_legacy_artifact_aliases(case: UnitCase) -> list[Path]:
 
 
 def render_run_script(case: UnitCase, repo_root: Path) -> str:
-    extra_args = load_fcc_args(case)
+    extra_args = load_loom_args(case)
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
@@ -184,7 +184,7 @@ def render_run_script(case: UnitCase, repo_root: Path) -> str:
         raise RuntimeError(f"case {case.name} has no ADG source")
 
     cmd = [
-        str(case.fcc_exec),
+        str(case.loom_exec),
         "--adg",
         str(adg_path),
         "--dfg",
@@ -198,8 +198,8 @@ def render_run_script(case: UnitCase, repo_root: Path) -> str:
     return "\n".join(lines)
 
 
-def load_fcc_args(case: UnitCase) -> List[str]:
-    args_file = case.dfg_file.parent / "fcc.args"
+def load_loom_args(case: UnitCase) -> List[str]:
+    args_file = case.dfg_file.parent / "loom.args"
     if not args_file.exists():
         return []
     tokens: List[str] = []

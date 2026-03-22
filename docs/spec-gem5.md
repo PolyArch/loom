@@ -1,8 +1,8 @@
-# FCC gem5 Backend Specification
+# LOOM gem5 Backend Specification
 
 ## Overview
 
-FCC's gem5 integration provides a baremetal host-plus-accelerator execution
+LOOM's gem5 integration provides a baremetal host-plus-accelerator execution
 path in which the host CPU configures and launches the accelerator through MMIO
 while bulk memory data is accessed through DMA.
 
@@ -12,13 +12,13 @@ The gem5 backend contains:
 
 - a RISC-V baremetal host program
 - a gem5 SimObject representing the accelerator device
-- a shared simulation core reused from FCC standalone execution
+- a shared simulation core reused from LOOM standalone execution
 - a DMA-backed memory adapter that connects extmemory activity to gem5 physical
   memory
 
 ## Baremetal Execution Model
 
-The baseline FCC gem5 flow is baremetal:
+The baseline LOOM gem5 flow is baremetal:
 
 - machine mode
 - no OS
@@ -31,17 +31,17 @@ OS-stack complexity.
 ## Device Model
 
 The accelerator device is expected to have a structure equivalent to an
-`FccCgraDevice` SimObject that:
+`LoomCgraDevice` SimObject that:
 
 - registers an MMIO range
-- owns or wraps the FCC simulation engine
+- owns or wraps the LOOM simulation engine
 - translates MMIO requests into runtime operations
 - services memory-backed region binding through a device-side adapter
 
 ## Shared SimEngine Contract
 
 The simulation engine used inside gem5 should be the same logical engine as the
-standalone FCC simulation engine.
+standalone LOOM simulation engine.
 
 The critical abstraction is that the execution core does not need to know
 whether it is running:
@@ -51,7 +51,7 @@ whether it is running:
 
 ## Build Integration
 
-The intended gem5 integration path uses gem5 `EXTRAS` support so the FCC device
+The intended gem5 integration path uses gem5 `EXTRAS` support so the LOOM device
 can be built out-of-tree relative to the main gem5 source tree.
 
 The build family also includes:
@@ -60,7 +60,7 @@ The build family also includes:
 - gem5 Python configuration
 - a baremetal host runtime and linker script
 
-The current FCC build path uses:
+The current LOOM build path uses:
 
 - `module load scons`
 - `scons -C externals/gem5 EXTRAS=<repo>/src/gem5dev build/RISCV/gem5.opt`
@@ -69,21 +69,21 @@ The current FCC build path uses:
 
 The gem5-side integration is expected to include files equivalent in role to:
 
-- `src/gem5dev/dev/fcc/FccCgraDevice.hh`
-- `src/gem5dev/dev/fcc/FccCgraDevice.cc`
-- `src/gem5dev/dev/fcc/FccCgraDevice.py`
+- `src/gem5dev/dev/loom/LoomCgraDevice.hh`
+- `src/gem5dev/dev/loom/LoomCgraDevice.cc`
+- `src/gem5dev/dev/loom/LoomCgraDevice.py`
 - `SConscript`
 - `runtime/baremetal/crt0.S`
-- `runtime/baremetal/fcc_baremetal.ld`
-- `tools/gem5/run_fcc_gem5_case.py`
+- `runtime/baremetal/loom_baremetal.ld`
+- `tools/gem5/run_loom_gem5_case.py`
 - host driver implementation sources generated per case
 
 The exact paths may evolve, but the role split is stable.
 
 ## Runtime Handoff Contract
 
-The primary gem5 path now embeds the FCC cycle kernel directly inside
-`FccCgraDevice`.
+The primary gem5 path now embeds the LOOM cycle kernel directly inside
+`LoomCgraDevice`.
 
 The primary handoff artifacts are:
 
@@ -168,8 +168,8 @@ The repository-maintained smoke path is:
 
 The case-local gem5 wrapper is expected to:
 
-- rerun the normal FCC e2e flow through `run.cmd`
-- invoke `tools/gem5/run_fcc_gem5_case.py`
+- rerun the normal LOOM e2e flow through `run.cmd`
+- invoke `tools/gem5/run_loom_gem5_case.py`
 - leave gem5 outputs under `out/e2e/<case>/gem5/`
 
 The primary invocation path only requires:
@@ -183,10 +183,10 @@ The repository-maintained gem5 smoke coverage currently includes:
 
 - `sum-array.mesh-6x6-extmem-1`
 - `vecadd.mesh-6x6-extmem-2`
-- `fcc_gem5_sum-array_mesh-6x6-extmem-1_multiaccel`
+- `loom_gem5_sum-array_mesh-6x6-extmem-1_multiaccel`
 
 The multi-device smoke target instantiates one primary accelerator plus one
-additional idle FCC accelerator in the same gem5 system and verifies that the
+additional idle LOOM accelerator in the same gem5 system and verifies that the
 host-visible device still executes correctly.
 
 The gem5 runner is expected to leave these per-case outputs:
@@ -209,7 +209,7 @@ themselves.
 
 ## DMA Spike
 
-FCC also maintains a minimal DMA integration spike that exercises:
+LOOM also maintains a minimal DMA integration spike that exercises:
 
 - `DmaDevice`
 - `getPort()` / `dma` wiring
@@ -217,7 +217,7 @@ FCC also maintains a minimal DMA integration spike that exercises:
 - DMA write callback
 - coexistence with MMIO control
 
-This spike is intentionally isolated from `FccCgraDevice` and exists to prove
+This spike is intentionally isolated from `LoomCgraDevice` and exists to prove
 the gem5 DMA path independently of the main accelerator device.
 
 ## Trace and Performance
@@ -226,7 +226,7 @@ gem5-backed execution should expose the same logical trace and performance model
 as standalone execution whenever practical.
 
 If there are gem5-specific transport details, they must not change the event
-semantics defined by FCC trace specs.
+semantics defined by LOOM trace specs.
 
 The repository-maintained gem5 flow now exports CPU-side and accelerator-side
 artifacts separately:
@@ -235,7 +235,7 @@ artifacts separately:
   - `<case>.cpu.trace`
   - `<case>.cpu.stat.txt`
   - `<case>.cpu.stat.json`
-- accelerator-side trace and performance come from the embedded FCC cycle
+- accelerator-side trace and performance come from the embedded LOOM cycle
   kernel:
   - `<case>.gem5.trace`
   - `<case>.gem5.stat`

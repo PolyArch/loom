@@ -1,8 +1,8 @@
-# FCC ADG Builder Specification
+# LOOM ADG Builder Specification
 
 ## Overview
 
-The ADG Builder is FCC's programmatic user interface for constructing
+The ADG Builder is LOOM's programmatic user interface for constructing
 architecture descriptions before mapping.
 
 Its intended role is two-layered:

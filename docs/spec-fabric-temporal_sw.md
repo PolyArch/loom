@@ -1,8 +1,8 @@
-# FCC Temporal Switch Specification
+# LOOM Temporal Switch Specification
 
 ## Overview
 
-`fabric.temporal_sw` is FCC's tag-dependent routing switch.
+`fabric.temporal_sw` is LOOM's tag-dependent routing switch.
 
 Placement rules:
 
@@ -37,7 +37,7 @@ The important semantic rule is:
 - the route table is matched by tag
 - the tag is not used as a direct array index
 
-FCC therefore uses tag-as-matching, not tag-as-indexing.
+LOOM therefore uses tag-as-matching, not tag-as-indexing.
 
 At runtime, one observed tag value may match at most one active transition
 inside one `fabric.temporal_sw`.

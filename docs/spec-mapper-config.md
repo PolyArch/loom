@@ -1,8 +1,8 @@
-# FCC Mapper Configuration Specification
+# LOOM Mapper Configuration Specification
 
 ## Purpose
 
-FCC mapper tuning is defined in two layers:
+LOOM mapper tuning is defined in two layers:
 
 - a repository-tracked base YAML template
 - a small promoted subset of standalone CLI flags
@@ -18,7 +18,7 @@ The authoritative field inventory is the checked-in base template:
 
 The authoritative in-memory schema is:
 
-- [`include/fcc/Mapper/MapperOptions.h`](../include/fcc/Mapper/MapperOptions.h)
+- [`include/loom/Mapper/MapperOptions.h`](../include/loom/Mapper/MapperOptions.h)
 
 The YAML comments in `configs/mapper/default.yaml` are normative parameter
 descriptions. This document defines merge semantics, ownership rules, and which
@@ -26,7 +26,7 @@ parameters are promoted to standalone CLI flags.
 
 ## Config Resolution Order
 
-FCC computes effective mapper options in this order:
+LOOM computes effective mapper options in this order:
 
 1. compile-time built-in `MapperOptions` defaults
 2. mapper base YAML
@@ -34,12 +34,12 @@ FCC computes effective mapper options in this order:
 
 Normative behavior:
 
-- if `--mapper-base-config <path>` is provided, FCC loads that YAML file
-- if `--mapper-base-config` is omitted, FCC automatically loads the
+- if `--mapper-base-config <path>` is provided, LOOM loads that YAML file
+- if `--mapper-base-config` is omitted, LOOM automatically loads the
   repository-tracked default file at [`configs/mapper/default.yaml`](../configs/mapper/default.yaml)
-- if a YAML value and an explicit CLI value differ, FCC emits a warning and
+- if a YAML value and an explicit CLI value differ, LOOM emits a warning and
   uses the CLI value
-- if the YAML file cannot be opened, parsed, or validated, FCC must fail
+- if the YAML file cannot be opened, parsed, or validated, LOOM must fail
   before mapping starts
 
 ## YAML Shape

@@ -1,8 +1,8 @@
-# FCC Host-Accelerator Interface Specification
+# LOOM Host-Accelerator Interface Specification
 
 ## Overview
 
-FCC targets a split execution model:
+LOOM targets a split execution model:
 
 - the host program runs on the CPU side
 - the selected kernel region is executed by the mapped accelerator
@@ -11,7 +11,7 @@ The host-accelerator contract must work in both standalone simulation and gem5.
 
 ## MVP Strategy
 
-FCC may generate a separate host-side file that replaces the original direct
+LOOM may generate a separate host-side file that replaces the original direct
 kernel call with an accelerator invocation sequence.
 
 The host-side flow is:
@@ -41,7 +41,7 @@ The exact C++ surface may evolve, but these responsibilities are stable.
 
 The same simulation core should serve both:
 
-- standalone FCC simulation
+- standalone LOOM simulation
 - gem5 device-backed execution
 
 The difference is only where inputs, memory, and completion handling come from.
@@ -49,7 +49,7 @@ The mapped accelerator semantics must stay identical across the two environments
 
 ## Memory-Centric Kernels
 
-FCC must treat memory side effects as first-class outputs. A kernel that
+LOOM must treat memory side effects as first-class outputs. A kernel that
 produces its final result by storing into external memory is not fully validated
 by checking return tokens alone.
 
@@ -60,6 +60,6 @@ Therefore the host contract must support:
 
 ## Relationship to Other Specs
 
-- Top-level pipeline: [spec-fcc.md](./spec-fcc.md)
+- Top-level pipeline: [spec-loom.md](./spec-loom.md)
 - Exploration and validation loop: [spec-dse.md](./spec-dse.md)
 - Mapper outputs: [spec-mapper-output.md](./spec-mapper-output.md)

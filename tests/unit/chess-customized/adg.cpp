@@ -1,17 +1,17 @@
 //===-- adg.cpp - Customized chess mesh builder test ------------*- C++ -*-===//
 //
-// Part of the fcc project.
+// Part of the loom project.
 //
 //===----------------------------------------------------------------------===//
 
-#include "fcc/ADG/ADGBuilder.h"
+#include "loom/ADG/ADGBuilder.h"
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
-using namespace fcc::adg;
+using namespace loom::adg;
 
 static void buildCustomizedChessADG(const std::string &outputPath) {
   ADGBuilder builder("chess_customized_test");

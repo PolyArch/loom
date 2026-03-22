@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
-project(fcc LANGUAGES C CXX)
+project(loom LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-option(FCC_ENABLE_ORTOOLS "Enable OR-Tools backed CP-SAT mapper stages" ON)
+option(LOOM_ENABLE_ORTOOLS "Enable OR-Tools backed CP-SAT mapper stages" ON)
 
 # Use ccache if available
 find_program(CCACHE_PROGRAM ccache)
@@ -51,14 +51,14 @@ set(CIRCT_BINARY_DIR "${LLVM_BINARY_DIR}/tools/circt")
 # Build externals (LLVM + CIRCT)
 add_subdirectory(externals)
 
-# FCC include paths
-set(FCC_SOURCE_DIR ${CMAKE_SOURCE_DIR})
-set(FCC_BINARY_DIR ${CMAKE_BINARY_DIR})
-set(FCC_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include")
+# LOOM include paths
+set(LOOM_SOURCE_DIR ${CMAKE_SOURCE_DIR})
+set(LOOM_BINARY_DIR ${CMAKE_BINARY_DIR})
+set(LOOM_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include")
 
 # Runtime output directory
-set(FCC_RUNTIME_DIR "${CMAKE_BINARY_DIR}/bin")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${FCC_RUNTIME_DIR})
+set(LOOM_RUNTIME_DIR "${CMAKE_BINARY_DIR}/bin")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR})
 
 # LLVM/MLIR/CIRCT includes (post-build)
 include_directories(${LLVM_SOURCE_DIR}/include)
@@ -67,7 +67,7 @@ include_directories(${MLIR_SOURCE_DIR}/include)
 include_directories(${MLIR_BINARY_DIR}/include)
 include_directories(${CIRCT_SOURCE_DIR}/include)
 include_directories(${CIRCT_BINARY_DIR}/include)
-include_directories(${FCC_INCLUDE_DIR})
+include_directories(${LOOM_INCLUDE_DIR})
 include_directories(${CMAKE_BINARY_DIR}/include)
 
 # LLVM/MLIR cmake modules
@@ -77,34 +77,34 @@ list(APPEND CMAKE_MODULE_PATH "${MLIR_BINARY_DIR}/lib/cmake/mlir")
 # Reuse Clang's generated resource-header directory directly instead of copying
 # it into a second build-local location. The extra copy was racy under
 # concurrent Ninja invocations and could fail spuriously.
-get_target_property(FCC_CLANG_RESOURCE_INCLUDE_DIR
+get_target_property(LOOM_CLANG_RESOURCE_INCLUDE_DIR
   clang-resource-headers INTERFACE_INCLUDE_DIRECTORIES)
-if(NOT FCC_CLANG_RESOURCE_INCLUDE_DIR)
+if(NOT LOOM_CLANG_RESOURCE_INCLUDE_DIR)
   message(FATAL_ERROR "Unable to query clang-resource-headers include dir")
 endif()
-list(GET FCC_CLANG_RESOURCE_INCLUDE_DIR 0 FCC_CLANG_RESOURCE_INCLUDE_DIR)
+list(GET LOOM_CLANG_RESOURCE_INCLUDE_DIR 0 LOOM_CLANG_RESOURCE_INCLUDE_DIR)
 string(REGEX REPLACE "^\\$<BUILD_INTERFACE:([^>]+)>$" "\\1"
-  FCC_CLANG_RESOURCE_INCLUDE_DIR "${FCC_CLANG_RESOURCE_INCLUDE_DIR}")
-get_filename_component(FCC_RESOURCE_DIR
-  "${FCC_CLANG_RESOURCE_INCLUDE_DIR}" DIRECTORY)
+  LOOM_CLANG_RESOURCE_INCLUDE_DIR "${LOOM_CLANG_RESOURCE_INCLUDE_DIR}")
+get_filename_component(LOOM_RESOURCE_DIR
+  "${LOOM_CLANG_RESOURCE_INCLUDE_DIR}" DIRECTORY)
 
 # Tablegen include directories
-set(MLIR_TABLEGEN_FLAGS "-I${FCC_INCLUDE_DIR}" ${MLIR_TABLEGEN_FLAGS})
+set(MLIR_TABLEGEN_FLAGS "-I${LOOM_INCLUDE_DIR}" ${MLIR_TABLEGEN_FLAGS})
 
 # Tablegen targets (generates .inc files under build/include/)
 add_subdirectory(include)
 
-# Build fcc libraries and tools
+# Build loom libraries and tools
 add_subdirectory(lib)
 add_subdirectory(tools)
 add_subdirectory(tests/e2e)
 add_subdirectory(tests/unit)
 add_subdirectory(tests/rtl)
 
-if(TARGET check-fcc)
-  add_dependencies(check-fcc check-fcc-e2e check-fcc-gem5 check-fcc-rtl)
+if(TARGET check-loom)
+  add_dependencies(check-loom check-loom-e2e check-loom-gem5 check-loom-rtl)
 else()
-  add_custom_target(check-fcc
-    DEPENDS check-fcc-unit check-fcc-e2e check-fcc-gem5 check-fcc-rtl
+  add_custom_target(check-loom
+    DEPENDS check-loom-unit check-loom-e2e check-loom-gem5 check-loom-rtl
   )
 endif()

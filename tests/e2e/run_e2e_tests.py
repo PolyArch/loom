@@ -25,7 +25,7 @@ class E2ECase:
     app_include_dir: Path
     builder_exec: Path
     generated_fabric_file: Path
-    fcc_exec: Path
+    loom_exec: Path
     sim_bundle_template: Path | None
 
 
@@ -43,12 +43,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--jobs",
         type=int,
-        default=int(os.environ.get("FCC_E2E_JOBS", "0") or "0"),
+        default=int(os.environ.get("LOOM_E2E_JOBS", "0") or "0"),
     )
     parser.add_argument(
         "--timeout",
         type=int,
-        default=int(os.environ.get("FCC_E2E_TIMEOUT", str(DEFAULT_TIMEOUT_SEC))),
+        default=int(os.environ.get("LOOM_E2E_TIMEOUT", str(DEFAULT_TIMEOUT_SEC))),
     )
     return parser.parse_args()
 
@@ -63,7 +63,7 @@ def load_cases(manifest_path: Path) -> List[E2ECase]:
             while len(row) < 8:
                 row.append("")
             (name, output_dir, app_source, app_include_dir,
-             builder_exec, generated_fabric_file, fcc_exec,
+             builder_exec, generated_fabric_file, loom_exec,
              sim_bundle_template) = row[:8]
             cases.append(E2ECase(
                 name=name,
@@ -72,7 +72,7 @@ def load_cases(manifest_path: Path) -> List[E2ECase]:
                 app_include_dir=Path(app_include_dir),
                 builder_exec=Path(builder_exec),
                 generated_fabric_file=Path(generated_fabric_file),
-                fcc_exec=Path(fcc_exec),
+                loom_exec=Path(loom_exec),
                 sim_bundle_template=(
                     Path(sim_bundle_template) if sim_bundle_template else None
                 ),
@@ -117,8 +117,8 @@ def shell_join(parts: List[str]) -> str:
 
 def render_run_script(case: E2ECase, repo_root: Path) -> str:
     sim_bundle = case.output_dir / "sim.bundle.json"
-    fcc_cmd = [
-        str(case.fcc_exec),
+    loom_cmd = [
+        str(case.loom_exec),
         "-I",
         str(case.app_include_dir),
         str(case.app_source),
@@ -128,14 +128,14 @@ def render_run_script(case: E2ECase, repo_root: Path) -> str:
         str(case.output_dir),
     ]
     if case.sim_bundle_template is not None:
-        fcc_cmd.extend(["--simulate", "--sim-bundle", str(sim_bundle)])
+        loom_cmd.extend(["--simulate", "--sim-bundle", str(sim_bundle)])
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         f"cd {shlex.quote(str(repo_root))}",
         f"mkdir -p {shlex.quote(str(case.output_dir))}",
         shell_join([str(case.builder_exec), str(case.generated_fabric_file)]),
-        shell_join(fcc_cmd),
+        shell_join(loom_cmd),
         "",
     ]
     return "\n".join(lines)
@@ -149,7 +149,7 @@ def render_gem5_run_script(case: E2ECase, repo_root: Path) -> str:
         shell_join([str(case.output_dir / "run.cmd")]),
         shell_join([
             sys.executable,
-            str(repo_root / "tools/gem5/run_fcc_gem5_case.py"),
+            str(repo_root / "tools/gem5/run_loom_gem5_case.py"),
             "--case-dir",
             str(case.output_dir),
         ]),

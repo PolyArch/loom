@@ -53,7 +53,7 @@ class TestRunnerAccounting(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             make_test_tree(tmpdir, "test_mod", "test_case", has_dfg=False)
             rc, out = run_runner_subprocess([
-                "--fcc", "/bin/false", "--test-dir", tmpdir,
+                "--loom", "/bin/false", "--test-dir", tmpdir,
                 "--output-dir", os.path.join(tmpdir, "out"),
                 "--src-rtl", SRC_RTL, "--checks", "behaviour",
             ])
@@ -65,7 +65,7 @@ class TestRunnerAccounting(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             make_test_tree(tmpdir, "test_mod", "test_case", has_dfg=False)
             rc, out = run_runner_subprocess([
-                "--fcc", "/bin/false", "--test-dir", tmpdir,
+                "--loom", "/bin/false", "--test-dir", tmpdir,
                 "--output-dir", os.path.join(tmpdir, "out"),
                 "--src-rtl", SRC_RTL, "--checks", "gen", "behaviour",
             ])
@@ -84,7 +84,7 @@ class TestRunnerAccounting(unittest.TestCase):
             make_test_tree(tmpdir, "negative", "bad_test", has_dfg=False)
             make_test_tree(tmpdir, "good_mod", "good_test", has_dfg=False)
             rc, out = run_runner_subprocess([
-                "--fcc", "/bin/false", "--test-dir", tmpdir,
+                "--loom", "/bin/false", "--test-dir", tmpdir,
                 "--output-dir", os.path.join(tmpdir, "out"),
                 "--src-rtl", SRC_RTL, "--checks", "behaviour",
             ])
@@ -111,7 +111,7 @@ class TestRunnerAccounting(unittest.TestCase):
             # Patch sys.argv to simulate CLI args
             fake_argv = [
                 "run_rtl_checks.py",
-                "--fcc", "/bin/false",
+                "--loom", "/bin/false",
                 "--test-dir", tmpdir,
                 "--output-dir", os.path.join(tmpdir, "out"),
                 "--src-rtl", SRC_RTL,

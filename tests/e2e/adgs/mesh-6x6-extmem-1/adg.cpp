@@ -1,6 +1,6 @@
 //===-- adg.cpp - sum-array demo chess ADG builder -------------*- C++ -*-===//
 //
-// Part of the fcc project.
+// Part of the loom project.
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,6 +28,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  fcc::e2e::buildMesh6x6Extmem1(outputFile);
+  loom::e2e::buildMesh6x6Extmem1(outputFile);
   return 0;
 }

@@ -1,4 +1,4 @@
-# FCC Spatial PE Specification
+# LOOM Spatial PE Specification
 
 ## Overview
 

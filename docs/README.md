@@ -1,7 +1,7 @@
-# FCC Documentation Index
+# LOOM Documentation Index
 
-FCC is the successor design to Loom for the current Fabric Compiler effort.
-This directory contains the implementation-anchor specifications for FCC.
+LOOM is the successor design to the legacy design for the current Fabric Compiler effort.
+This directory contains the implementation-anchor specifications for LOOM.
 
 These documents are aligned primarily with:
 
@@ -9,15 +9,15 @@ These documents are aligned primarily with:
 - `temp/design-four-layer-dse.md`
 - `temp/design-host-accel-interface.md`
 
-When Loom and FCC differ, FCC documents in this directory take precedence for
-future work under this repository.
+When the legacy design and LOOM differ, LOOM documents in this directory take
+precedence for future work under this repository.
 
 ## Top Level
 
 | Spec | Description |
 |------|-------------|
-| [spec-fcc.md](./spec-fcc.md) | End-to-end FCC architecture and stage boundaries |
-| [spec-fcc-vs-loom.md](./spec-fcc-vs-loom.md) | FCC changes relative to Loom and the intended compatibility boundary |
+| [spec-loom.md](./spec-loom.md) | End-to-end LOOM architecture and stage boundaries |
+| [spec-loom-vs-legacy.md](./spec-loom-vs-legacy.md) | LOOM changes relative to the legacy design and the intended compatibility boundary |
 | [spec-cli.md](./spec-cli.md) | CLI modes, inputs, outputs, and artifact naming |
 | [spec-compilation.md](./spec-compilation.md) | Frontend, SCF, DFG, and compilation-stage contracts |
 | [spec-dse.md](./spec-dse.md) | Four-layer exploration and DFG-domain selection |
@@ -28,7 +28,7 @@ future work under this repository.
 | Spec | Description |
 |------|-------------|
 | [spec-adg-builder.md](./spec-adg-builder.md) | ADG Builder responsibilities and fabric-generation contract |
-| [spec-dataflow.md](./spec-dataflow.md) | FCC dataflow dialect semantics and mapping expectations |
+| [spec-dataflow.md](./spec-dataflow.md) | LOOM dataflow dialect semantics and mapping expectations |
 | [spec-dataflow-compilation.md](./spec-dataflow-compilation.md) | SCF-to-handshake+dataflow lowering rules, raw-vs-gated control, and nested-SCF flattening |
 | [spec-dataflow-memory.md](./spec-dataflow-memory.md) | Memory-op lowering, root-memref grouping, and serial-recursive ctrl-done ordering |
 
@@ -74,7 +74,7 @@ future work under this repository.
 
 ## Notes
 
-- This is the first FCC-native spec set. It intentionally focuses on the
+- This is the first LOOM-native spec set. It intentionally focuses on the
   currently active architecture and the most important implementation anchors.
 - Backend realization, standalone simulation, and gem5 integration are still
   primarily anchored by `temp/plan-rebuild-0315-0.md` and related design notes.

@@ -1,4 +1,4 @@
-# FCC Function Unit Allowed Operations and Timing Specification
+# LOOM Function Unit Allowed Operations and Timing Specification
 
 ## Overview
 
@@ -24,18 +24,18 @@ Related documents:
 
 ## Design Intent
 
-`fabric.function_unit` is FCC's hardware abstraction for one software-visible
+`fabric.function_unit` is LOOM's hardware abstraction for one software-visible
 operation or one software-visible subgraph.
 
-Compared with Loom's older `fabric.pe` body rules, FCC keeps an explicit body
+Compared with the legacy design's older `fabric.pe` body rules, LOOM keeps an explicit body
 allowlist but intentionally relaxes several blanket exclusivity rules:
 
 - `handshake.load` and `handshake.store` are not forced to be singleton or
   body-exclusive
 - `handshake.constant` is not forced to be singleton or body-exclusive
-- FCC does not use Loom's homogeneous-consumption grouping rule
+- LOOM does not use the legacy design's homogeneous-consumption grouping rule
 
-FCC instead judges legality by three layers of rules:
+LOOM instead judges legality by three layers of rules:
 
 - explicit body operation allowlist
 - explicit structural and typing constraints
@@ -80,7 +80,7 @@ Allowed:
 
 Rules:
 
-- `fabric.mux` is FCC-specific and may appear only inside
+- `fabric.mux` is LOOM-specific and may appear only inside
   `fabric.function_unit`
 - `fabric.yield` must be the only terminator of the body
 - no other `fabric.*` operation is allowed inside an FU body
@@ -159,7 +159,7 @@ Allowed operations:
 Notes:
 
 - all four current `dataflow` operations are dedicated fixed-behavior
-  state-machine FUs in FCC
+  state-machine FUs in LOOM
 - therefore each of them must occupy one exclusive `fabric.function_unit`
 - a `function_unit` that contains any `dataflow.*` operation must use
   `latency = -1` and `interval = -1`
@@ -177,10 +177,10 @@ Allowed operations:
 
 Notes:
 
-- FCC does not currently allow `handshake.sink` inside one FU body
+- LOOM does not currently allow `handshake.sink` inside one FU body
 - unused FU outputs are handled by PE-side discard or disconnect behavior, not
   by inserting `handshake.sink`
-- FCC does not require `handshake.load`, `handshake.store`, or
+- LOOM does not require `handshake.load`, `handshake.store`, or
   `handshake.constant` to be body-exclusive
 
 ### Everything Else
@@ -285,7 +285,7 @@ routing structure.
 Every FU block argument must be consumed by at least one non-terminator body
 operation.
 
-FCC treats unused FU inputs as illegal dead interface.
+LOOM treats unused FU inputs as illegal dead interface.
 
 ### Minimum Body Content
 
@@ -330,7 +330,7 @@ boundary modeling. They are not FU-body operations.
 
 ## Compound FU Bodies
 
-FCC allows one `fabric.function_unit` body to contain multiple internal
+LOOM allows one `fabric.function_unit` body to contain multiple internal
 operations and to represent a compound software subgraph rather than one
 single software op.
 
@@ -342,7 +342,7 @@ Typical legal patterns include:
   `handshake.store`
 - internal configurable alternatives expressed by one or more `fabric.mux`
 
-FCC does not require a compound body to be homogeneous by operation family.
+LOOM does not require a compound body to be homogeneous by operation family.
 For example, the following mixtures are legal in principle:
 
 - `arith.*` together with `handshake.*`
@@ -398,11 +398,11 @@ behaviors:
 - `handshake.mux`
 - `handshake.store`
 
-The `dataflow` family is not in this class in FCC's current hardware model.
+The `dataflow` family is not in this class in LOOM's current hardware model.
 
 ### Dedicated Dataflow State-Machine Behavior
 
-FCC treats all four current `dataflow` operations as dedicated fixed state
+LOOM treats all four current `dataflow` operations as dedicated fixed state
 machines rather than ordinary scalar-latency datapath FUs.
 
 For this class:
@@ -433,14 +433,14 @@ Normative rule:
 - if the whole body behaves as one firing to one result tuple, then it is
   single-fire single-result-set
 
-Current conservative classifier for FCC:
+Current conservative classifier for LOOM:
 
 - any body containing `dataflow.stream`, `dataflow.gate`, `dataflow.carry`, or
   `dataflow.invariant` is treated as a dedicated dataflow state-machine FU
 - any other currently allowed body is expected to satisfy the single-fire
   single-result-set contract
 
-This is the intended first validator contract. A future FCC revision may add
+This is the intended first validator contract. A future LOOM revision may add
 more refined whole-body behavior inference.
 
 ## Additional Per-Operation Rules
@@ -526,11 +526,11 @@ Normative rules:
 
 - it is allowed to coexist with other allowed operations
 - it contributes runtime-config bits for its literal value
-- it is not body-exclusive in FCC
+- it is not body-exclusive in LOOM
 
 ### `handshake.join`
 
-FCC treats one `handshake.join` inside an FU body as a fixed maximum hardware
+LOOM treats one `handshake.join` inside an FU body as a fixed maximum hardware
 fan-in synchronizer with runtime-selectable participating inputs.
 
 Normative rules:
@@ -545,11 +545,11 @@ Normative rules:
 Normative rules:
 
 - they may coexist with other allowed operations
-- they are not singleton-only and not body-exclusive in FCC
+- they are not singleton-only and not body-exclusive in LOOM
 - multiple loads and stores may appear in one compound body if the whole body
   still represents one coherent FU behavior
 
-This is a deliberate FCC relaxation compared with Loom's earlier PE-body
+This is a deliberate LOOM relaxation compared with the legacy design's earlier PE-body
 rules.
 
 ### `dataflow.carry`, `dataflow.gate`, and `dataflow.invariant`
@@ -559,7 +559,7 @@ Normative rules:
 - each must occupy an exclusive FU body
 - the containing FU must use `latency = -1` and `interval = -1`
 - they are not mixed with arithmetic, handshake, or `fabric.mux` operations in
-  the current FCC hardware model
+  the current LOOM hardware model
 
 ### `dataflow.stream`
 
@@ -585,7 +585,7 @@ otherwise allowed:
 - body-local operation sets that cannot be classified into one coherent
   body-level timing class
 
-In particular, the following old Loom-style assumptions are not part of FCC:
+In particular, the following old legacy-style assumptions are not part of LOOM:
 
 - no load/store exclusivity rule
 - no constant exclusivity rule
@@ -759,12 +759,12 @@ Therefore:
 - `latency` models FU-local compute delay
 - arbitration delay is a separate temporal-PE effect
 
-## FCC Relaxation Summary Compared with Loom
+## LOOM Relaxation Summary Compared with the legacy design
 
-FCC deliberately differs from Loom's older PE-body rules in the following
+LOOM deliberately differs from the legacy design's older PE-body rules in the following
 ways:
 
-- `fabric.mux` is an allowed FCC-specific FU-body operation
+- `fabric.mux` is an allowed LOOM-specific FU-body operation
 - `handshake.sink` is not an allowed FU-body operation
 - `handshake.load` and `handshake.store` are not body-exclusive
 - `handshake.constant` is not body-exclusive

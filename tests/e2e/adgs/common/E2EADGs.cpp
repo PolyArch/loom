@@ -1,15 +1,15 @@
 #include "E2EADGs.h"
 
-#include "fcc/ADG/ADGBuilder.h"
+#include "loom/ADG/ADGBuilder.h"
 
 #include <cassert>
 #include <cmath>
 #include <string>
 #include <vector>
 
-using namespace fcc::adg;
+using namespace loom::adg;
 
-namespace fcc {
+namespace loom {
 namespace e2e {
 
 namespace {
@@ -971,4 +971,4 @@ void buildMediumChess10x10(const std::string &outputPath) {
 }
 
 } // namespace e2e
-} // namespace fcc
+} // namespace loom

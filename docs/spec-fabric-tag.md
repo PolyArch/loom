@@ -1,8 +1,8 @@
-# FCC Tag Boundary Specification
+# LOOM Tag Boundary Specification
 
 ## Overview
 
-FCC uses three inline-only tag-boundary operations:
+LOOM uses three inline-only tag-boundary operations:
 
 - `fabric.add_tag`
 - `fabric.map_tag`

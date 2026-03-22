@@ -62,7 +62,7 @@ def run_check(script, args_list, check_name, output_dir):
     return passed
 
 
-def generate_golden_traces(fcc_exec, adg_path, module_name, output_dir):
+def generate_golden_traces(loom_exec, adg_path, module_name, output_dir):
     """Generate golden traces from the C++ simulator.
 
     Golden trace generation requires a full mapped case (DFG+ADG).
@@ -86,13 +86,13 @@ def generate_golden_traces(fcc_exec, adg_path, module_name, output_dir):
               "golden trace generation requires mapped DFG+ADG input")
         return None
 
-    cmd = [fcc_exec, "--simulate", "--dfg", dfg_path,
+    cmd = [loom_exec, "--simulate", "--dfg", dfg_path,
            "--adg", adg_path, "--trace-port-dump", module_name,
            "-o", output_dir]
     print(f"[behaviour] Generating golden traces: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print("[behaviour] FAIL: fcc golden trace generation failed")
+        print("[behaviour] FAIL: loom golden trace generation failed")
         if result.stderr:
             print(result.stderr[:2000])
         return None
@@ -751,7 +751,7 @@ def count_hex_lines(hex_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Master RTL verification runner")
-    parser.add_argument("--fcc", required=True, help="Path to fcc executable")
+    parser.add_argument("--loom", required=True, help="Path to loom executable")
     parser.add_argument("--test-dir", required=True, help="tests/rtl/ directory")
     parser.add_argument("--output-dir", required=True, help="Output base directory")
     parser.add_argument("--src-rtl", required=True, help="src/rtl/ directory")
@@ -816,7 +816,7 @@ def main():
             os.makedirs(gen_dir, exist_ok=True)
             passed = run_check(
                 os.path.join(scripts_dir, "gen_sv.py"),
-                ["--fcc", args.fcc, "--adg", tc["mlir"], "--output-dir", gen_dir],
+                ["--loom", args.loom, "--adg", tc["mlir"], "--output-dir", gen_dir],
                 f"gen/{tc['module']}/{tc['test']}",
                 gen_dir
             )
@@ -865,7 +865,7 @@ def main():
                     os.makedirs(gen_dir, exist_ok=True)
                     gen_ok = run_check(
                         os.path.join(scripts_dir, "gen_sv.py"),
-                        ["--fcc", args.fcc, "--adg", tc["mlir"],
+                        ["--loom", args.loom, "--adg", tc["mlir"],
                          "--output-dir", gen_dir],
                         f"gen(auto)/{tc['module']}/{tc['test']}",
                         gen_dir
@@ -879,7 +879,7 @@ def main():
                 golden_traces = find_golden_traces(test_output)
                 if not golden_traces:
                     trace_result = generate_golden_traces(
-                        args.fcc, tc["mlir"], trace_target,
+                        args.loom, tc["mlir"], trace_target,
                         test_output)
                     if trace_result:
                         golden_traces = find_golden_traces(test_output)
@@ -1065,7 +1065,7 @@ def main():
                     os.makedirs(gen_base, exist_ok=True)
                     gen_ok = run_check(
                         os.path.join(scripts_dir, "gen_sv.py"),
-                        ["--fcc", args.fcc, "--adg", tc["mlir"],
+                        ["--loom", args.loom, "--adg", tc["mlir"],
                          "--output-dir", gen_base],
                         f"gen(auto)/{tc['module']}/{tc['test']}",
                         gen_base

@@ -8,14 +8,14 @@ init:
 
 build:
 	cmake -G Ninja -B build -S . -DCMAKE_BUILD_TYPE=Release
-	ninja -C build fcc
+	ninja -C build loom
 
 rebuild:
 	cmake -G Ninja -B build -S . -DCMAKE_BUILD_TYPE=Release
 	ninja -C build
 
 check:
-	ninja -C build check-fcc
+	ninja -C build check-loom
 
 clean:
 	ninja -C build -t clean 2>/dev/null || true

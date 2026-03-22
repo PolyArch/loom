@@ -1,8 +1,8 @@
-# FCC Function Unit Specification
+# LOOM Function Unit Specification
 
 ## Overview
 
-`fabric.function_unit` is FCC's placeable computation body abstraction.
+`fabric.function_unit` is LOOM's placeable computation body abstraction.
 It is the direct bridge between software operations and hardware computation
 resources inside a PE.
 
@@ -71,7 +71,7 @@ This document intentionally does not restate the full timing-class rules.
 
 ## Internal DAG
 
-FCC allows a `function_unit` body to contain multiple operations connected as a
+LOOM allows a `function_unit` body to contain multiple operations connected as a
 hardware DAG.
 
 This DAG may be:
@@ -81,7 +81,7 @@ This DAG may be:
 
 ## FU-Internal Configurability
 
-FCC allows one FU body to contain configurable internal structure, primarily
+LOOM allows one FU body to contain configurable internal structure, primarily
 through `fabric.mux` and a small set of runtime-configurable body operations.
 
 This document intentionally does not duplicate the normative definitions for:
@@ -149,7 +149,7 @@ lives in [spec-fabric-config_mem.md](./spec-fabric-config_mem.md), with the
 semantic meaning of each configurable body operation defined in
 [spec-fabric-function_unit-ops.md](./spec-fabric-function_unit-ops.md).
 
-FCC does not carry Loom's earlier `output_tag` PE-body config field into
+LOOM does not carry the legacy design's earlier `output_tag` PE-body config field into
 `fabric.function_unit`. Runtime tag handling is modeled explicitly through
 tagged ports and tag-boundary operations instead.
 

@@ -1,83 +1,83 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-set(FCC_RTL_CHECKS_RUNNER "${CMAKE_SOURCE_DIR}/src/rtl/python/run_rtl_checks.py")
-set(FCC_RTL_TEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-set(FCC_RTL_SRC_DIR "${CMAKE_SOURCE_DIR}/src/rtl")
-set(FCC_RTL_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/out")
+set(LOOM_RTL_CHECKS_RUNNER "${CMAKE_SOURCE_DIR}/src/rtl/python/run_rtl_checks.py")
+set(LOOM_RTL_TEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+set(LOOM_RTL_SRC_DIR "${CMAKE_SOURCE_DIR}/src/rtl")
+set(LOOM_RTL_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/out")
 
 # Negative test MLIR sources
-set(FCC_RTL_NEGATIVE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fabric/negative")
-set(FCC_RTL_NEGATIVE_TESTS
-  "${FCC_RTL_NEGATIVE_DIR}/latency_too_low.fabric.mlir"
-  "${FCC_RTL_NEGATIVE_DIR}/transcendental_no_profile.fabric.mlir"
-  "${FCC_RTL_NEGATIVE_DIR}/dataflow_wrong_latency.fabric.mlir"
-  "${FCC_RTL_NEGATIVE_DIR}/interval_too_low.fabric.mlir"
+set(LOOM_RTL_NEGATIVE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fabric/negative")
+set(LOOM_RTL_NEGATIVE_TESTS
+  "${LOOM_RTL_NEGATIVE_DIR}/latency_too_low.fabric.mlir"
+  "${LOOM_RTL_NEGATIVE_DIR}/transcendental_no_profile.fabric.mlir"
+  "${LOOM_RTL_NEGATIVE_DIR}/dataflow_wrong_latency.fabric.mlir"
+  "${LOOM_RTL_NEGATIVE_DIR}/interval_too_low.fabric.mlir"
 )
 
 # ---------------------------------------------------------------------------
-# check-fcc-rtl-gen: RTL generation from fabric MLIR test cases
+# check-loom-rtl-gen: RTL generation from fabric MLIR test cases
 # ---------------------------------------------------------------------------
-add_custom_target(check-fcc-rtl-gen
-  COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_CHECKS_RUNNER}"
-          --fcc "$<TARGET_FILE:fcc>"
-          --test-dir "${FCC_RTL_TEST_DIR}"
-          --output-dir "${FCC_RTL_OUTPUT_DIR}"
-          --src-rtl "${FCC_RTL_SRC_DIR}"
+add_custom_target(check-loom-rtl-gen
+  COMMAND ${Python3_EXECUTABLE} "${LOOM_RTL_CHECKS_RUNNER}"
+          --loom "$<TARGET_FILE:loom>"
+          --test-dir "${LOOM_RTL_TEST_DIR}"
+          --output-dir "${LOOM_RTL_OUTPUT_DIR}"
+          --src-rtl "${LOOM_RTL_SRC_DIR}"
           --checks gen
-  DEPENDS fcc "${FCC_RTL_CHECKS_RUNNER}"
+  DEPENDS loom "${LOOM_RTL_CHECKS_RUNNER}"
   VERBATIM
   USES_TERMINAL
 )
 
 # ---------------------------------------------------------------------------
-# check-fcc-rtl-behaviour: functional verification via simulation
+# check-loom-rtl-behaviour: functional verification via simulation
 #
 # Self-contained: runs gen first to produce collateral, then behaviour.
 # Also depends on the gen target so that the aggregate target serializes
 # properly (avoids duplicate gen when both are requested together).
 # ---------------------------------------------------------------------------
-add_custom_target(check-fcc-rtl-behaviour
-  COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_CHECKS_RUNNER}"
-          --fcc "$<TARGET_FILE:fcc>"
-          --test-dir "${FCC_RTL_TEST_DIR}"
-          --output-dir "${FCC_RTL_OUTPUT_DIR}"
-          --src-rtl "${FCC_RTL_SRC_DIR}"
+add_custom_target(check-loom-rtl-behaviour
+  COMMAND ${Python3_EXECUTABLE} "${LOOM_RTL_CHECKS_RUNNER}"
+          --loom "$<TARGET_FILE:loom>"
+          --test-dir "${LOOM_RTL_TEST_DIR}"
+          --output-dir "${LOOM_RTL_OUTPUT_DIR}"
+          --src-rtl "${LOOM_RTL_SRC_DIR}"
           --checks gen behaviour
-  DEPENDS fcc "${FCC_RTL_CHECKS_RUNNER}" check-fcc-rtl-gen
+  DEPENDS loom "${LOOM_RTL_CHECKS_RUNNER}" check-loom-rtl-gen
   VERBATIM
   USES_TERMINAL
 )
 
 # ---------------------------------------------------------------------------
-# check-fcc-rtl-synth: synthesis checks
+# check-loom-rtl-synth: synthesis checks
 #
 # Self-contained: runs gen first to produce collateral, then synth.
 # Also depends on the gen target for proper aggregate serialization.
 # ---------------------------------------------------------------------------
-add_custom_target(check-fcc-rtl-synth
-  COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_CHECKS_RUNNER}"
-          --fcc "$<TARGET_FILE:fcc>"
-          --test-dir "${FCC_RTL_TEST_DIR}"
-          --output-dir "${FCC_RTL_OUTPUT_DIR}"
-          --src-rtl "${FCC_RTL_SRC_DIR}"
+add_custom_target(check-loom-rtl-synth
+  COMMAND ${Python3_EXECUTABLE} "${LOOM_RTL_CHECKS_RUNNER}"
+          --loom "$<TARGET_FILE:loom>"
+          --test-dir "${LOOM_RTL_TEST_DIR}"
+          --output-dir "${LOOM_RTL_OUTPUT_DIR}"
+          --src-rtl "${LOOM_RTL_SRC_DIR}"
           --checks gen synth
-  DEPENDS fcc "${FCC_RTL_CHECKS_RUNNER}" check-fcc-rtl-gen
+  DEPENDS loom "${LOOM_RTL_CHECKS_RUNNER}" check-loom-rtl-gen
   VERBATIM
   USES_TERMINAL
 )
 
 # ---------------------------------------------------------------------------
-# check-fcc-rtl-negative: run fcc --gen-sv on negative test MLIRs and
+# check-loom-rtl-negative: run loom --gen-sv on negative test MLIRs and
 # verify each exits with non-zero status (expected rejection).
 # ---------------------------------------------------------------------------
-set(FCC_RTL_NEGATIVE_SCRIPT "${CMAKE_SOURCE_DIR}/tests/rtl/run_negative_tests.py")
+set(LOOM_RTL_NEGATIVE_SCRIPT "${CMAKE_SOURCE_DIR}/tests/rtl/run_negative_tests.py")
 
-add_custom_target(check-fcc-rtl-negative
-  COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_NEGATIVE_SCRIPT}"
-          --fcc "$<TARGET_FILE:fcc>"
-          --test-files ${FCC_RTL_NEGATIVE_TESTS}
-          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/negative"
-  DEPENDS fcc "${FCC_RTL_NEGATIVE_SCRIPT}" ${FCC_RTL_NEGATIVE_TESTS}
+add_custom_target(check-loom-rtl-negative
+  COMMAND ${Python3_EXECUTABLE} "${LOOM_RTL_NEGATIVE_SCRIPT}"
+          --loom "$<TARGET_FILE:loom>"
+          --test-files ${LOOM_RTL_NEGATIVE_TESTS}
+          --output-dir "${LOOM_RTL_OUTPUT_DIR}/rtl/negative"
+  DEPENDS loom "${LOOM_RTL_NEGATIVE_SCRIPT}" ${LOOM_RTL_NEGATIVE_TESTS}
   VERBATIM
   USES_TERMINAL
 )
@@ -89,117 +89,117 @@ add_custom_target(check-fcc-rtl-negative
 # that instantiate specific fabric modules directly. Each target uses
 # run_sim.py with the standalone TB as the top module.
 # ---------------------------------------------------------------------------
-set(FCC_RTL_SIM_RUNNER "${CMAKE_SOURCE_DIR}/src/rtl/python/run_sim.py")
-set(FCC_RTL_TB_FABRIC_DIR "${FCC_RTL_SRC_DIR}/testbench/fabric")
-set(FCC_RTL_TB_COMMON_DIR "${FCC_RTL_SRC_DIR}/testbench/common")
-set(FCC_RTL_DESIGN_DIR "${FCC_RTL_SRC_DIR}/design")
+set(LOOM_RTL_SIM_RUNNER "${CMAKE_SOURCE_DIR}/src/rtl/python/run_sim.py")
+set(LOOM_RTL_TB_FABRIC_DIR "${LOOM_RTL_SRC_DIR}/testbench/fabric")
+set(LOOM_RTL_TB_COMMON_DIR "${LOOM_RTL_SRC_DIR}/testbench/common")
+set(LOOM_RTL_DESIGN_DIR "${LOOM_RTL_SRC_DIR}/design")
 
 # Standalone filelist excludes FP behavioral modules (SHORTREAL not supported
 # by Verilator) and includes only modules needed by the standalone TBs.
-set(FCC_RTL_STANDALONE_FILELIST "${FCC_RTL_DESIGN_DIR}/filelist_standalone.f")
+set(LOOM_RTL_STANDALONE_FILELIST "${LOOM_RTL_DESIGN_DIR}/filelist_standalone.f")
 
-# check-fcc-rtl-backpressure: backpressure stress test on fabric_fifo
-add_custom_target(check-fcc-rtl-backpressure
-  COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_SIM_RUNNER}"
-          --rtl-dir "${FCC_RTL_DESIGN_DIR}"
-          --tb-dir "${FCC_RTL_TB_COMMON_DIR}"
+# check-loom-rtl-backpressure: backpressure stress test on fabric_fifo
+add_custom_target(check-loom-rtl-backpressure
+  COMMAND ${Python3_EXECUTABLE} "${LOOM_RTL_SIM_RUNNER}"
+          --rtl-dir "${LOOM_RTL_DESIGN_DIR}"
+          --tb-dir "${LOOM_RTL_TB_COMMON_DIR}"
           --tb-files
-              "${FCC_RTL_TB_COMMON_DIR}/tb_clk_rst_gen.sv"
-              "${FCC_RTL_TB_COMMON_DIR}/tb_backpressure_gen.sv"
-              "${FCC_RTL_TB_COMMON_DIR}/tb_config_loader.sv"
-              "${FCC_RTL_TB_COMMON_DIR}/tb_axi_mem_model.sv"
-              "${FCC_RTL_TB_FABRIC_DIR}/tb_backpressure_test.sv"
+              "${LOOM_RTL_TB_COMMON_DIR}/tb_clk_rst_gen.sv"
+              "${LOOM_RTL_TB_COMMON_DIR}/tb_backpressure_gen.sv"
+              "${LOOM_RTL_TB_COMMON_DIR}/tb_config_loader.sv"
+              "${LOOM_RTL_TB_COMMON_DIR}/tb_axi_mem_model.sv"
+              "${LOOM_RTL_TB_FABRIC_DIR}/tb_backpressure_test.sv"
           --top-module tb_backpressure_test
-          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/standalone/backpressure"
+          --output-dir "${LOOM_RTL_OUTPUT_DIR}/rtl/standalone/backpressure"
           --tool verilator
           --standalone tb_backpressure_test
-          --standalone-filelist "${FCC_RTL_STANDALONE_FILELIST}"
-  DEPENDS "${FCC_RTL_SIM_RUNNER}"
-          "${FCC_RTL_TB_FABRIC_DIR}/tb_backpressure_test.sv"
-          "${FCC_RTL_STANDALONE_FILELIST}"
+          --standalone-filelist "${LOOM_RTL_STANDALONE_FILELIST}"
+  DEPENDS "${LOOM_RTL_SIM_RUNNER}"
+          "${LOOM_RTL_TB_FABRIC_DIR}/tb_backpressure_test.sv"
+          "${LOOM_RTL_STANDALONE_FILELIST}"
   VERBATIM
   USES_TERMINAL
 )
 
-# check-fcc-rtl-config-equiv: config bus loading test on fabric_add_tag
-add_custom_target(check-fcc-rtl-config-equiv
-  COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_SIM_RUNNER}"
-          --rtl-dir "${FCC_RTL_DESIGN_DIR}"
-          --tb-dir "${FCC_RTL_TB_COMMON_DIR}"
+# check-loom-rtl-config-equiv: config bus loading test on fabric_add_tag
+add_custom_target(check-loom-rtl-config-equiv
+  COMMAND ${Python3_EXECUTABLE} "${LOOM_RTL_SIM_RUNNER}"
+          --rtl-dir "${LOOM_RTL_DESIGN_DIR}"
+          --tb-dir "${LOOM_RTL_TB_COMMON_DIR}"
           --tb-files
-              "${FCC_RTL_TB_COMMON_DIR}/tb_clk_rst_gen.sv"
-              "${FCC_RTL_TB_COMMON_DIR}/tb_backpressure_gen.sv"
-              "${FCC_RTL_TB_COMMON_DIR}/tb_config_loader.sv"
-              "${FCC_RTL_TB_COMMON_DIR}/tb_axi_mem_model.sv"
-              "${FCC_RTL_TB_FABRIC_DIR}/tb_config_equiv_test.sv"
+              "${LOOM_RTL_TB_COMMON_DIR}/tb_clk_rst_gen.sv"
+              "${LOOM_RTL_TB_COMMON_DIR}/tb_backpressure_gen.sv"
+              "${LOOM_RTL_TB_COMMON_DIR}/tb_config_loader.sv"
+              "${LOOM_RTL_TB_COMMON_DIR}/tb_axi_mem_model.sv"
+              "${LOOM_RTL_TB_FABRIC_DIR}/tb_config_equiv_test.sv"
           --top-module tb_config_equiv_test
-          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/standalone/config-equiv"
+          --output-dir "${LOOM_RTL_OUTPUT_DIR}/rtl/standalone/config-equiv"
           --tool verilator
           --standalone tb_config_equiv_test
-          --standalone-filelist "${FCC_RTL_STANDALONE_FILELIST}"
-  DEPENDS "${FCC_RTL_SIM_RUNNER}"
-          "${FCC_RTL_TB_FABRIC_DIR}/tb_config_equiv_test.sv"
-          "${FCC_RTL_STANDALONE_FILELIST}"
+          --standalone-filelist "${LOOM_RTL_STANDALONE_FILELIST}"
+  DEPENDS "${LOOM_RTL_SIM_RUNNER}"
+          "${LOOM_RTL_TB_FABRIC_DIR}/tb_config_equiv_test.sv"
+          "${LOOM_RTL_STANDALONE_FILELIST}"
   VERBATIM
   USES_TERMINAL
 )
 
-# check-fcc-rtl-memory: write-then-read test on fabric_memory
-add_custom_target(check-fcc-rtl-memory
-  COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_SIM_RUNNER}"
-          --rtl-dir "${FCC_RTL_DESIGN_DIR}"
-          --tb-dir "${FCC_RTL_TB_COMMON_DIR}"
+# check-loom-rtl-memory: write-then-read test on fabric_memory
+add_custom_target(check-loom-rtl-memory
+  COMMAND ${Python3_EXECUTABLE} "${LOOM_RTL_SIM_RUNNER}"
+          --rtl-dir "${LOOM_RTL_DESIGN_DIR}"
+          --tb-dir "${LOOM_RTL_TB_COMMON_DIR}"
           --tb-files
-              "${FCC_RTL_TB_COMMON_DIR}/tb_clk_rst_gen.sv"
-              "${FCC_RTL_TB_COMMON_DIR}/tb_backpressure_gen.sv"
-              "${FCC_RTL_TB_COMMON_DIR}/tb_config_loader.sv"
-              "${FCC_RTL_TB_COMMON_DIR}/tb_axi_mem_model.sv"
-              "${FCC_RTL_TB_FABRIC_DIR}/tb_memory_sideeffect_test.sv"
+              "${LOOM_RTL_TB_COMMON_DIR}/tb_clk_rst_gen.sv"
+              "${LOOM_RTL_TB_COMMON_DIR}/tb_backpressure_gen.sv"
+              "${LOOM_RTL_TB_COMMON_DIR}/tb_config_loader.sv"
+              "${LOOM_RTL_TB_COMMON_DIR}/tb_axi_mem_model.sv"
+              "${LOOM_RTL_TB_FABRIC_DIR}/tb_memory_sideeffect_test.sv"
           --top-module tb_memory_sideeffect_test
-          --output-dir "${FCC_RTL_OUTPUT_DIR}/rtl/standalone/memory"
+          --output-dir "${LOOM_RTL_OUTPUT_DIR}/rtl/standalone/memory"
           --tool verilator
           --standalone tb_memory_sideeffect_test
-          --standalone-filelist "${FCC_RTL_STANDALONE_FILELIST}"
-  DEPENDS "${FCC_RTL_SIM_RUNNER}"
-          "${FCC_RTL_TB_FABRIC_DIR}/tb_memory_sideeffect_test.sv"
-          "${FCC_RTL_STANDALONE_FILELIST}"
+          --standalone-filelist "${LOOM_RTL_STANDALONE_FILELIST}"
+  DEPENDS "${LOOM_RTL_SIM_RUNNER}"
+          "${LOOM_RTL_TB_FABRIC_DIR}/tb_memory_sideeffect_test.sv"
+          "${LOOM_RTL_STANDALONE_FILELIST}"
   VERBATIM
   USES_TERMINAL
 )
 
 # ---------------------------------------------------------------------------
-# check-fcc-rtl-e2e: end-to-end test on chess_2x2 grid
+# check-loom-rtl-e2e: end-to-end test on chess_2x2 grid
 #
 # Runs the full gen + behaviour pipeline on the chess_2x2 MLIR test case.
 # ---------------------------------------------------------------------------
-set(FCC_RTL_E2E_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fabric/e2e")
+set(LOOM_RTL_E2E_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fabric/e2e")
 
-add_custom_target(check-fcc-rtl-e2e
-  COMMAND ${Python3_EXECUTABLE} "${FCC_RTL_CHECKS_RUNNER}"
-          --fcc "$<TARGET_FILE:fcc>"
+add_custom_target(check-loom-rtl-e2e
+  COMMAND ${Python3_EXECUTABLE} "${LOOM_RTL_CHECKS_RUNNER}"
+          --loom "$<TARGET_FILE:loom>"
           --test-dir "${CMAKE_CURRENT_SOURCE_DIR}"
-          --output-dir "${FCC_RTL_OUTPUT_DIR}"
-          --src-rtl "${FCC_RTL_SRC_DIR}"
+          --output-dir "${LOOM_RTL_OUTPUT_DIR}"
+          --src-rtl "${LOOM_RTL_SRC_DIR}"
           --checks gen behaviour
           --modules e2e
           --test-filter chess_2x2_stub
-  DEPENDS fcc "${FCC_RTL_CHECKS_RUNNER}"
-          "${FCC_RTL_E2E_DIR}/chess_2x2_stub.fabric.mlir"
+  DEPENDS loom "${LOOM_RTL_CHECKS_RUNNER}"
+          "${LOOM_RTL_E2E_DIR}/chess_2x2_stub.fabric.mlir"
   COMMENT "End-to-end test: chess_2x2_stub only"
   VERBATIM
   USES_TERMINAL
 )
 
 # ---------------------------------------------------------------------------
-# check-fcc-rtl: aggregate target that runs all RTL checks
+# check-loom-rtl: aggregate target that runs all RTL checks
 # ---------------------------------------------------------------------------
-add_custom_target(check-fcc-rtl
-  DEPENDS check-fcc-rtl-gen
-          check-fcc-rtl-behaviour
-          check-fcc-rtl-synth
-          check-fcc-rtl-negative
-          check-fcc-rtl-backpressure
-          check-fcc-rtl-config-equiv
-          check-fcc-rtl-memory
-          check-fcc-rtl-e2e
+add_custom_target(check-loom-rtl
+  DEPENDS check-loom-rtl-gen
+          check-loom-rtl-behaviour
+          check-loom-rtl-synth
+          check-loom-rtl-negative
+          check-loom-rtl-backpressure
+          check-loom-rtl-config-equiv
+          check-loom-rtl-memory
+          check-loom-rtl-e2e
 )

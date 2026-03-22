@@ -1,8 +1,8 @@
-# FCC Trace and Performance Specification
+# LOOM Trace and Performance Specification
 
 ## Overview
 
-FCC trace and performance output provides cycle-level visibility into mapped
+LOOM trace and performance output provides cycle-level visibility into mapped
 accelerator execution for both standalone and gem5-backed runs.
 
 ## Goals

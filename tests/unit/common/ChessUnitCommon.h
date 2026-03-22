@@ -1,18 +1,18 @@
 //===-- ChessUnitCommon.h - Shared chessboard ADG test helpers -*- C++ -*-===//
 //
-// Part of the fcc project.
+// Part of the loom project.
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef FCC_TESTS_UNIT_COMMON_CHESSUNITCOMMON_H
-#define FCC_TESTS_UNIT_COMMON_CHESSUNITCOMMON_H
+#ifndef LOOM_TESTS_UNIT_COMMON_CHESSUNITCOMMON_H
+#define LOOM_TESTS_UNIT_COMMON_CHESSUNITCOMMON_H
 
-#include "fcc/ADG/ADGBuilder.h"
+#include "loom/ADG/ADGBuilder.h"
 
 #include <cassert>
 #include <string>
 
-namespace fcc::unit {
+namespace loom::unit {
 
 inline void buildChessUnitADG(const std::string &outputPath,
                               const std::string &moduleName, unsigned rows,
@@ -20,7 +20,7 @@ inline void buildChessUnitADG(const std::string &outputPath,
   assert(rows >= 1 && cols >= 2 &&
          "chess unit tests expect at least one row and two columns");
 
-  fcc::adg::ADGBuilder builder(moduleName);
+  loom::adg::ADGBuilder builder(moduleName);
   constexpr unsigned dataWidth = 64;
 
   auto fuAdd = builder.defineBinaryFU("fu_add", "arith.addi", "i32", "i32");
@@ -47,6 +47,6 @@ inline void buildChessUnitADG(const std::string &outputPath,
   builder.exportMLIR(outputPath);
 }
 
-} // namespace fcc::unit
+} // namespace loom::unit
 
-#endif // FCC_TESTS_UNIT_COMMON_CHESSUNITCOMMON_H
+#endif // LOOM_TESTS_UNIT_COMMON_CHESSUNITCOMMON_H

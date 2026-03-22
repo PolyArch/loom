@@ -15,7 +15,7 @@ def main() -> int:
     output_dir = Path(sys.argv[2])
     repo_root = Path.cwd()
     unit_dir = Path(__file__).resolve().parent
-    fcc = repo_root / "build/bin/fcc"
+    loom = repo_root / "build/bin/loom"
     dfg = unit_dir / "dfg.mlir"
     fabric = unit_dir / "fabric.mlir"
 
@@ -27,7 +27,7 @@ def main() -> int:
     run_b.mkdir(parents=True, exist_ok=True)
 
     base_cmd = [
-        str(fcc),
+        str(loom),
         "--mapper-seed",
         "7",
         "--adg",

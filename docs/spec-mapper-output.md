@@ -1,8 +1,8 @@
-# FCC Mapper Output Specification
+# LOOM Mapper Output Specification
 
 ## Overview
 
-A successful FCC mapping produces machine-readable, human-readable, and
+A successful LOOM mapping produces machine-readable, human-readable, and
 visualization-oriented outputs.
 
 ## Output Families
@@ -21,7 +21,7 @@ The main mapping outputs are:
 
 Additional config or simulation artifacts may be produced by later stages.
 
-If periodic mapper snapshots are enabled, FCC also emits a sibling directory:
+If periodic mapper snapshots are enabled, LOOM also emits a sibling directory:
 
 - `mapper-snapshots/`
 
@@ -392,7 +392,7 @@ state from multiple booleans.
 
 ## Extended Visualization Payload
 
-The current FCC `map.json` report also exposes component-local routing facts
+The current LOOM `map.json` report also exposes component-local routing facts
 needed by visualization and config inspection.
 
 Current sections include:

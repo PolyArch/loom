@@ -1,8 +1,8 @@
-# FCC FIFO Specification
+# LOOM FIFO Specification
 
 ## Overview
 
-`fabric.fifo` is FCC's single-input, single-output pipeline buffer.
+`fabric.fifo` is LOOM's single-input, single-output pipeline buffer.
 
 Placement rules:
 

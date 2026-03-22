@@ -1,8 +1,8 @@
-# FCC Dataflow Compilation Specification
+# LOOM Dataflow Compilation Specification
 
 ## Overview
 
-This document specifies how FCC lowers nested `scf` structure into
+This document specifies how LOOM lowers nested `scf` structure into
 `handshake + dataflow` DFG form.
 
 The focus here is not the standalone semantics of the four `dataflow`
@@ -17,7 +17,7 @@ The focus here is:
   `dataflow.invariant` must be inserted
 - how loop-carried values, exit values, and nested-region values are wired
 
-This is one of the most delicate parts of the FCC compilation pipeline.
+This is one of the most delicate parts of the LOOM compilation pipeline.
 The normative intent follows the older
 `dsa-stack/main/lib/dsa/Transforms/SCFToHandshakeDSA` implementation, which
 had already been checked by simulation.
@@ -72,7 +72,7 @@ edges.
 
 ## Normative Rule: Raw vs Gated Control
 
-FCC must distinguish two different uses of loop control.
+LOOM must distinguish two different uses of loop control.
 
 ### Uses that must take `raw_will_continue`
 
@@ -380,7 +380,7 @@ after_cond        --> invariants, body control, nested-SCF body lowering,
 
 ## Lowering of `scf.while`
 
-FCC lowers `scf.while` using the same four dataflow primitives, but with an
+LOOM lowers `scf.while` using the same four dataflow primitives, but with an
 explicit before-region / after-region partition.
 
 ### Region Meaning
@@ -465,7 +465,7 @@ For `scf.while`, just as for `scf.for`:
 
 ## Nested SCF Flattening
 
-FCC must flatten nested SCF recursively.
+LOOM must flatten nested SCF recursively.
 
 ### General Rule
 

@@ -1,8 +1,8 @@
-# FCC Dataflow Memory Compilation Specification
+# LOOM Dataflow Memory Compilation Specification
 
 ## Overview
 
-This document specifies how FCC lowers nested-SCF memory operations into
+This document specifies how LOOM lowers nested-SCF memory operations into
 `handshake.load`, `handshake.store`, and memory-interface operators, while
 preserving the intended read/write order by explicit ctrl-done token wiring.
 
@@ -43,7 +43,7 @@ behavior is defined elsewhere.
 
 ## Memory Lowering Overview
 
-FCC lowers memory in three conceptual layers.
+LOOM lowers memory in three conceptual layers.
 
 ### Layer 1: Replace Frontend Memory Ops
 
@@ -126,7 +126,7 @@ shape under the alias-free memref model.
 
 ## Alias Assumption and Alias Analysis
 
-FCC relies on the frontend to preserve alias structure as much as possible.
+LOOM relies on the frontend to preserve alias structure as much as possible.
 
 Normative assumption:
 
@@ -139,7 +139,7 @@ Compilation implication:
   regions into one overly conservative memref domain
 - if two references may alias, they must remain in the same ordering domain
   unless a stronger proof separates them
-- if two references are proven non-overlapping, FCC should prefer keeping them
+- if two references are proven non-overlapping, LOOM should prefer keeping them
   in separate root-memref groups so their ctrl-done networks remain
   independent
 
@@ -319,7 +319,7 @@ This is the most delicate case.
 
 ### Correct Control Source
 
-For memory ordering inside the loop body, FCC must use the loop body's gated
+For memory ordering inside the loop body, LOOM must use the loop body's gated
 control stream, not the raw stream.
 
 That means:
@@ -416,7 +416,7 @@ If there are no memory accesses:
 
 Cross-group synchronization is exceptional, not the default.
 
-FCC should only combine done tokens from different memory ordering domains
+LOOM should only combine done tokens from different memory ordering domains
 when the program semantics explicitly require a global synchronization point.
 
 Typical examples are:
