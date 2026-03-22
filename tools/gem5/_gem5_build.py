@@ -50,6 +50,24 @@ def derive_main_root(repo_root: pathlib.Path):
     return main_root
 
 
+def _resolve_gem5_src(repo_root: pathlib.Path):
+    """Find gem5 source directory, falling back to main worktree if local is empty."""
+    local = repo_root / "externals/gem5"
+    if local.is_dir() and any(local.iterdir()):
+        return local
+    # Linked worktree: try main worktree's gem5
+    main_root = derive_main_root(repo_root)
+    if main_root:
+        main_gem5 = main_root / "externals/gem5"
+        if main_gem5.is_dir() and any(main_gem5.iterdir()):
+            print(f"[gem5] Using main worktree gem5 sources: {main_gem5}")
+            return main_gem5
+    return local  # Caller handles missing files
+
+
+GEM5_SRC_ROOT = _resolve_gem5_src(REPO_ROOT)
+
+
 def newest_input_mtime(paths):
     """Return the newest mtime across all files under the given paths.
 
@@ -126,7 +144,7 @@ def run_scons_build(repo_root: pathlib.Path):
         "source /etc/profile.d/modules.sh && "
         "module load scons && "
         f"{path_prefix}"
-        f"scons -C {repo_root / 'externals/gem5'} "
+        f"scons -C {GEM5_SRC_ROOT} "
         f"EXTRAS={repo_root / 'src/gem5dev'} "
         f"-j{jobs} build/RISCV/gem5.opt"
     )

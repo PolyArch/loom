@@ -11,6 +11,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _gem5_build
 
 REPO_ROOT = _gem5_build.REPO_ROOT
+GEM5_SRC_ROOT = _gem5_build.GEM5_SRC_ROOT
 
 
 def build_gem5():
@@ -106,11 +107,11 @@ def build_host_elf(out_dir: pathlib.Path, host_c: pathlib.Path) -> pathlib.Path:
         "-msmall-data-limit=0",
         "-O2",
         "-I",
-        str(REPO_ROOT / "externals/gem5/include"),
+        str(GEM5_SRC_ROOT / "include"),
         "-T",
         str(REPO_ROOT / "runtime/baremetal/loom_baremetal.ld"),
         str(REPO_ROOT / "runtime/baremetal/crt0.S"),
-        str(REPO_ROOT / "externals/gem5/util/m5/src/abi/riscv/m5op.S"),
+        str(GEM5_SRC_ROOT / "util/m5/src/abi/riscv/m5op.S"),
         str(host_c),
         "-o",
         str(host_elf),

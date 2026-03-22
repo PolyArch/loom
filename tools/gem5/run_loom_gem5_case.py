@@ -13,6 +13,7 @@ import _gem5_build
 
 REPO_ROOT = _gem5_build.REPO_ROOT
 GEM5_BIN = _gem5_build.GEM5_BIN
+GEM5_SRC_ROOT = _gem5_build.GEM5_SRC_ROOT
 
 
 def load_single(path_glob: str, base_dir: pathlib.Path) -> pathlib.Path:
@@ -393,11 +394,11 @@ def build_host_elf(case_dir: pathlib.Path, gem5_dir: pathlib.Path, host_c: pathl
         "-I",
         str(case_dir),
         "-I",
-        str(REPO_ROOT / "externals/gem5/include"),
+        str(GEM5_SRC_ROOT / "include"),
         "-T",
         str(REPO_ROOT / "runtime/baremetal/loom_baremetal.ld"),
         str(REPO_ROOT / "runtime/baremetal/crt0.S"),
-        str(REPO_ROOT / "externals/gem5/util/m5/src/abi/riscv/m5op.S"),
+        str(GEM5_SRC_ROOT / "util/m5/src/abi/riscv/m5op.S"),
         str(host_c),
         str(case_dir / "loom_accel.c"),
         "-o",
