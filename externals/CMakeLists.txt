@@ -2,7 +2,10 @@
 add_compile_options(-w)
 
 # Build LLVM/MLIR/CIRCT (CIRCT integrated as LLVM external project)
-add_subdirectory(llvm/llvm)
+# Skipped in prebuilt-deps mode (linked worktree reusing main build)
+if(NOT LOOM_DEPS_BUILD_DIR)
+  add_subdirectory(llvm/llvm)
+endif()
 
 if(LOOM_ENABLE_ORTOOLS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/or-tools/CMakeLists.txt")
   set(BUILD_TESTING OFF CACHE BOOL "" FORCE)

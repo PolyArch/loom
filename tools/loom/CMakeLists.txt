@@ -10,9 +10,7 @@ target_include_directories(loom PRIVATE
   ${LOOM_INCLUDE_DIR}
   ${CMAKE_BINARY_DIR}/include
   ${CMAKE_CURRENT_SOURCE_DIR}
-  # Clang headers
-  ${CMAKE_SOURCE_DIR}/externals/llvm/clang/include
-  ${LLVM_BINARY_DIR}/tools/clang/include
+  ${CLANG_INCLUDE_DIRS}
 )
 
 # LLVM libraries for IR reading and target support
@@ -79,7 +77,12 @@ target_compile_definitions(loom PRIVATE
   LOOM_SOURCE_DIR="${LOOM_SOURCE_DIR}"
 )
 
-add_dependencies(loom clang-resource-headers clang-headers)
+if(TARGET clang-resource-headers)
+  add_dependencies(loom clang-resource-headers)
+endif()
+if(TARGET clang-headers)
+  add_dependencies(loom clang-headers)
+endif()
 
 set_target_properties(loom PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
