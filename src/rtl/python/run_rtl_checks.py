@@ -131,68 +131,233 @@ def extract_trace_target(mlir_path):
     """Extract the mapped hardware instance name for --trace-port-dump.
 
     The trace exporter uses mapped hardware instance names (e.g. 'fifo_0',
-    'pe_0', 'sw0'), not the outer fabric.module name. This function looks
-    for fabric.instance sym_name attributes inside the fabric.module body.
-    For inline definitions without fabric.instance, it derives a name from
-    the op type (e.g. fabric.fifo -> 'fifo_0', fabric.add_tag -> 'add_tag_0').
+    'fu_add_0', 'sw0'), not the outer fabric.module name. The simulator
+    models FUs, switches, fifos, and memories -- NOT PEs as units. So for
+    PE-containing modules, the trace target is the FU INSIDE the PE.
 
-    Returns the first non-boundary instance name, or None if not found.
+    Algorithm:
+      1. Parse the whole file to collect PE definitions and their inner FU
+         names (either fabric.instance with sym_name or inline
+         fabric.function_unit @name).
+      2. Scan the fabric.module body for ops and instances.
+      3. For fabric.instance referencing a PE definition, resolve to the FU
+         name inside that PE.
+      4. For infrastructure instances (memory, extmemory) use sym_name.
+      5. For named inline ops (fifo @name, spatial_sw @name, etc.) use @name.
+      6. For anonymous inline ops (fabric.add_tag without @name) derive name
+         from type + count.
+      7. Priority order: FU instances from PEs > infrastructure instances >
+         named inline infra ops > anonymous inline ops.
+      8. Special: for anonymous inline ops, prefer map_tag over add_tag/del_tag
+         (the "main" operation for map_tag test modules).
+
+    Returns the trace target name, or None if not found.
     """
-    # Inline op type -> instance name prefix mapping
-    inline_op_names = {
-        "fabric.add_tag": "add_tag",
-        "fabric.del_tag": "del_tag",
-        "fabric.map_tag": "map_tag",
-        "fabric.fifo": "fifo",
-        "fabric.spatial_sw": "spatial_sw",
-        "fabric.temporal_sw": "temporal_sw",
-    }
-
-    inst_pattern = re.compile(r'fabric\.instance\s+@\w+.*\{sym_name\s*=\s*"(\w+)"')
-    # Inline ops with explicit @name: e.g. fabric.fifo @fifo_0
-    named_inline_pattern = re.compile(
-        r'(fabric\.(?:fifo|add_tag|del_tag|map_tag|spatial_sw|temporal_sw))'
-        r'\s+@(\w+)')
-    # Fallback: inline ops without @name (e.g. fabric.add_tag %in0, fabric.del_tag %in0)
-    anon_inline_pattern = re.compile(r'(fabric\.(?:add_tag|del_tag|map_tag|fifo|spatial_sw|temporal_sw))\b')
-    in_module = False
-    instance_names = []
-    inline_count = {}
-
     try:
         with open(mlir_path, "r") as f:
-            for line in f:
-                if 'fabric.module' in line:
-                    in_module = True
-                    continue
-                if not in_module:
-                    continue
-
-                # Look for fabric.instance with sym_name
-                m = inst_pattern.search(line)
-                if m:
-                    instance_names.append(m.group(1))
-                    continue
-
-                # Look for named inline ops: fabric.fifo @fifo_0
-                m = named_inline_pattern.search(line)
-                if m:
-                    instance_names.append(m.group(2))
-                    continue
-
-                # Fallback: anonymous inline ops
-                m = anon_inline_pattern.search(line)
-                if m:
-                    op_name = m.group(1)
-                    if op_name in inline_op_names:
-                        prefix = inline_op_names[op_name]
-                        idx = inline_count.get(prefix, 0)
-                        instance_names.append(f"{prefix}_{idx}")
-                        inline_count[prefix] = idx + 1
+            content = f.read()
     except OSError:
-        pass
+        return None
 
-    return instance_names[0] if instance_names else None
+    lines = content.split('\n')
+
+    # Patterns for parsing definitions
+    pe_def_pattern = re.compile(
+        r'fabric\.(?:spatial_pe|temporal_pe)\s+@(\w+)')
+    fu_inst_pattern = re.compile(
+        r'fabric\.instance\s+@(\w+).*\{sym_name\s*=\s*"(\w+)"')
+    fu_inline_pattern = re.compile(
+        r'fabric\.function_unit\s+@(\w+)')
+    memory_def_pattern = re.compile(
+        r'fabric\.(?:memory|extmemory)\s+@(\w+)')
+
+    # Collect PE definitions and the FU names they contain.
+    # Also collect memory/extmemory definition names so we can recognize
+    # instances of them in the module body.
+    pe_defs = {}          # pe_def_name -> fu_target_name
+    memory_def_names = set()  # names of memory/extmemory definitions
+
+    # Parse definitions outside fabric.module body
+    in_module_body = False
+    brace_depth = 0
+    module_body_start = None
+
+    for i, line in enumerate(lines):
+        # Track fabric.module body boundaries
+        if not in_module_body and 'fabric.module' in line:
+            # Module body starts at the opening brace on or after this line
+            for j in range(i, len(lines)):
+                if '{' in lines[j]:
+                    in_module_body = True
+                    module_body_start = j
+                    # Count braces from this line
+                    brace_depth = lines[j].count('{') - lines[j].count('}')
+                    break
+            continue
+
+        if in_module_body:
+            brace_depth += line.count('{') - line.count('}')
+            if brace_depth <= 0:
+                # End of module body
+                break
+            continue
+
+        # Outside module body: look for PE and memory definitions
+        m = pe_def_pattern.search(line)
+        if m:
+            pe_name = m.group(1)
+            if pe_name not in pe_defs:
+                pe_defs[pe_name] = None  # placeholder
+
+        m = memory_def_pattern.search(line)
+        if m:
+            memory_def_names.add(m.group(1))
+
+    # Now scan inside each PE definition for FU names.
+    # PE definitions may span multiple lines before the opening '{', so
+    # we track whether we have entered the body (seen the first '{').
+    current_pe = None
+    pe_brace_depth = 0
+    pe_body_entered = False
+    for line in lines:
+        if current_pe is None:
+            m = pe_def_pattern.search(line)
+            if m and m.group(1) in pe_defs:
+                current_pe = m.group(1)
+                pe_brace_depth = 0
+                pe_body_entered = False
+                if '{' in line:
+                    pe_brace_depth = line.count('{') - line.count('}')
+                    pe_body_entered = True
+                continue
+        else:
+            if not pe_body_entered:
+                # Still looking for the opening brace of the PE body
+                if '{' in line:
+                    pe_brace_depth = line.count('{') - line.count('}')
+                    pe_body_entered = True
+                continue
+
+            pe_brace_depth += line.count('{') - line.count('}')
+
+            # Look for FU instance: fabric.instance @fu_name() {sym_name="x"}
+            m = fu_inst_pattern.search(line)
+            if m:
+                # m.group(1) = referenced def name, m.group(2) = sym_name
+                pe_defs[current_pe] = m.group(2)
+
+            # Look for inline FU: fabric.function_unit @fu_name
+            m = fu_inline_pattern.search(line)
+            if m:
+                if pe_defs[current_pe] is None:
+                    pe_defs[current_pe] = m.group(1)
+
+            if pe_brace_depth <= 0:
+                current_pe = None
+
+    # Now scan the fabric.module body to collect trace target candidates
+    # in priority buckets.
+    fu_from_pe = []       # FU names resolved from PE instances
+    infra_instances = []  # memory/extmemory instance sym_names
+    named_inline = []     # named inline ops (fifo @name, switch @name, etc.)
+    anon_inline = []      # anonymous inline ops
+
+    inst_pattern = re.compile(
+        r'fabric\.instance\s+@(\w+).*\{sym_name\s*=\s*"(\w+)"')
+    named_inline_pattern = re.compile(
+        r'(fabric\.(?:fifo|spatial_sw|temporal_sw))\s+@(\w+)')
+    # Memory/extmemory inline definitions (not instances) in module body
+    mem_inline_pattern = re.compile(
+        r'(fabric\.(?:memory|extmemory))\s+@(\w+)')
+    anon_inline_pattern = re.compile(
+        r'(fabric\.(?:add_tag|del_tag|map_tag|fifo|spatial_sw|temporal_sw))\b')
+
+    anon_count = {}
+
+    in_module_body = False
+    brace_depth = 0
+    for i, line in enumerate(lines):
+        if not in_module_body and 'fabric.module' in line:
+            for j in range(i, len(lines)):
+                if '{' in lines[j]:
+                    in_module_body = True
+                    brace_depth = lines[j].count('{') - lines[j].count('}')
+                    break
+            continue
+
+        if not in_module_body:
+            continue
+
+        brace_depth += line.count('{') - line.count('}')
+        if brace_depth <= 0:
+            break
+
+        # fabric.instance with sym_name
+        m = inst_pattern.search(line)
+        if m:
+            ref_def = m.group(1)
+            sym = m.group(2)
+            if ref_def in pe_defs:
+                # This is a PE instance -- resolve to inner FU name
+                fu_name = pe_defs[ref_def]
+                if fu_name:
+                    fu_from_pe.append(fu_name)
+            elif ref_def in memory_def_names:
+                # Memory/extmemory instance
+                infra_instances.append(sym)
+            else:
+                # Other instance (e.g. temporal_sw instance) -- treat as infra
+                infra_instances.append(sym)
+            continue
+
+        # Named inline ops: fabric.fifo @fifo_0, fabric.spatial_sw @sw0
+        m = named_inline_pattern.search(line)
+        if m:
+            named_inline.append(m.group(2))
+            continue
+
+        # Memory/extmemory inline in module body (e.g. fabric.memory @mem_0)
+        m = mem_inline_pattern.search(line)
+        if m:
+            infra_instances.append(m.group(2))
+            continue
+
+        # Anonymous inline ops
+        m = anon_inline_pattern.search(line)
+        if m:
+            op_type = m.group(1)
+            # Check this is not already captured as named inline
+            # (named inline pattern would have matched first via continue)
+            prefix_map = {
+                "fabric.add_tag": "add_tag",
+                "fabric.del_tag": "del_tag",
+                "fabric.map_tag": "map_tag",
+                "fabric.fifo": "fifo",
+                "fabric.spatial_sw": "spatial_sw",
+                "fabric.temporal_sw": "temporal_sw",
+            }
+            prefix = prefix_map.get(op_type)
+            if prefix:
+                idx = anon_count.get(prefix, 0)
+                anon_count[prefix] = idx + 1
+                anon_inline.append((prefix, f"{prefix}_{idx}"))
+
+    # Priority: FU from PE > infra instances > named inline > anonymous inline
+    if fu_from_pe:
+        return fu_from_pe[0]
+    if infra_instances:
+        return infra_instances[0]
+    if named_inline:
+        return named_inline[0]
+    if anon_inline:
+        # For anonymous inline, prefer map_tag over add_tag/del_tag
+        # (the "main" operation in map_tag test modules)
+        for prefix, name in anon_inline:
+            if prefix == "map_tag":
+                return name
+        return anon_inline[0][1]
+
+    return None
 
 
 def extract_port_info(mlir_path):

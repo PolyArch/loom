@@ -383,6 +383,7 @@ static void emitPrewrittenInstance(TopEmitContext &ctx, mlir::Operation &op,
   // Op-specific parameters and connections.
   bool isSwitch = false;
   bool isMemory = false;
+  bool isFifo = false;
 
   if (auto spatialSw = mlir::dyn_cast<fcc::fabric::SpatialSwOp>(op)) {
     auto swFnType = spatialSw.getFunctionType();
@@ -409,6 +410,7 @@ static void emitPrewrittenInstance(TopEmitContext &ctx, mlir::Operation &op,
     params.push_back(".DEPTH(" + std::to_string(fifo.getDepth()) + ")");
     if (fifo.getBypassable())
       params.push_back(".BYPASSABLE(1)");
+    isFifo = true;
   } else if (auto addTag = mlir::dyn_cast<fcc::fabric::AddTagOp>(op)) {
     // add_tag: TAG_WIDTH from output type.
     unsigned outTagW = SVEmitter::getTagWidth(addTag.getResult().getType());
@@ -466,6 +468,20 @@ static void emitPrewrittenInstance(TopEmitContext &ctx, mlir::Operation &op,
   } else {
     // Single I/O modules: add_tag, del_tag, map_tag, fifo.
     emitSingleIOConns(ctx, op, conns);
+    // FIFO tag ports: fabric_fifo always has in_tag/out_tag (min 1-bit).
+    // When the data is untagged, emitSingleIOConns skips them because
+    // tw==0. Tie them off so Verilator doesn't report PINMISSING.
+    if (isFifo) {
+      bool hasInTag = false, hasOutTag = false;
+      for (const auto &c : conns) {
+        if (c.portName == "in_tag") hasInTag = true;
+        if (c.portName == "out_tag") hasOutTag = true;
+      }
+      if (!hasInTag)
+        conns.push_back({"in_tag", "1'b0"});
+      if (!hasOutTag)
+        conns.push_back({"out_tag", ""});  // unconnected
+    }
   }
 
   // Config interface (del_tag has no config ports).
@@ -758,6 +774,18 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
           emitMemoryConns(ctx, op, conns);
         } else {
           emitSingleIOConns(ctx, op, conns);
+          // FIFO tag pins: always present (min 1-bit). Tie off when untagged.
+          if (isFifo) {
+            bool hasInTag = false, hasOutTag = false;
+            for (const auto &c : conns) {
+              if (c.portName == "in_tag") hasInTag = true;
+              if (c.portName == "out_tag") hasOutTag = true;
+            }
+            if (!hasInTag)
+              conns.push_back({"in_tag", "1'b0"});
+            if (!hasOutTag)
+              conns.push_back({"out_tag", ""});
+          }
         }
 
         // Config interface.
