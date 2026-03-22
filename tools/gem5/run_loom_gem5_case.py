@@ -8,14 +8,11 @@ import shutil
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _gem5_build
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-GEM5_BIN = REPO_ROOT / "build/RISCV/gem5.opt"
-GEM5_REBUILD_INPUTS = [
-    REPO_ROOT / "src/gem5dev",
-    REPO_ROOT / "lib/loom/Simulator",
-    REPO_ROOT / "include/loom/Simulator",
-]
+REPO_ROOT = _gem5_build.REPO_ROOT
+GEM5_BIN = _gem5_build.GEM5_BIN
 
 
 def load_single(path_glob: str, base_dir: pathlib.Path) -> pathlib.Path:
@@ -410,53 +407,8 @@ def build_host_elf(case_dir: pathlib.Path, gem5_dir: pathlib.Path, host_c: pathl
     return host_elf
 
 
-def newest_input_mtime(paths):
-    newest = 0.0
-    for root in paths:
-        if not root.exists():
-            continue
-        if root.is_file():
-            newest = max(newest, root.stat().st_mtime)
-            continue
-        for path in root.rglob("*"):
-            if not path.is_file():
-                continue
-            newest = max(newest, path.stat().st_mtime)
-    return newest
-
-
-def gem5_needs_rebuild(gem5_bin: pathlib.Path):
-    if os.environ.get("LOOM_GEM5_FORCE_REBUILD", "") not in ("", "0"):
-        return True, "LOOM_GEM5_FORCE_REBUILD is set"
-    if not gem5_bin.exists():
-        return True, f"missing {gem5_bin}"
-    binary_mtime = gem5_bin.stat().st_mtime
-    newest_input = newest_input_mtime(GEM5_REBUILD_INPUTS)
-    if newest_input > binary_mtime:
-        return True, "local gem5/simulator sources are newer than gem5.opt"
-    return False, "existing gem5.opt is up to date"
-
-
 def build_gem5(force_rebuild: bool):
-    gem5_bin = GEM5_BIN
-    if not force_rebuild:
-        needs_rebuild, reason = gem5_needs_rebuild(gem5_bin)
-        if not needs_rebuild:
-            print(f"reusing gem5 binary: {gem5_bin} ({reason})")
-            return gem5_bin
-    else:
-        reason = "requested by --rebuild-gem5"
-
-    print(f"rebuilding gem5 binary: {reason}")
-    jobs = max(os.cpu_count() or 1, 1)
-    cmd = (
-        "source /etc/profile.d/modules.sh && "
-        "module load scons && "
-        f"scons -C {REPO_ROOT / 'externals/gem5'} "
-        f"EXTRAS={REPO_ROOT / 'src/gem5dev'} -j{jobs} build/RISCV/gem5.opt"
-    )
-    subprocess.run(["bash", "-lc", cmd], check=True, cwd=REPO_ROOT)
-    return gem5_bin
+    return _gem5_build.build_gem5(force_rebuild)
 
 
 def run_gem5(case_dir: pathlib.Path, gem5_dir: pathlib.Path, host_elf: pathlib.Path,

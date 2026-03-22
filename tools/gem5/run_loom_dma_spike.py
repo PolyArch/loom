@@ -5,21 +5,16 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _gem5_build
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+REPO_ROOT = _gem5_build.REPO_ROOT
 
 
 def build_gem5():
-    jobs = max(os.cpu_count() or 1, 1)
-    cmd = (
-        "source /etc/profile.d/modules.sh && "
-        "module load scons && "
-        f"scons -C {REPO_ROOT / 'externals/gem5'} "
-        f"EXTRAS={REPO_ROOT / 'src/gem5dev'} -j{jobs} build/RISCV/gem5.opt"
-    )
-    subprocess.run(["bash", "-lc", cmd], check=True, cwd=REPO_ROOT)
-    return REPO_ROOT / "build/RISCV/gem5.opt"
+    return _gem5_build.build_gem5()
 
 
 def emit_host_source(out_dir: pathlib.Path, mmio_base: int) -> pathlib.Path:
