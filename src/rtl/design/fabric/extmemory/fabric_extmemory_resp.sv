@@ -13,7 +13,9 @@
 module fabric_extmemory_resp #(
   parameter int unsigned DATA_WIDTH   = 32,
   parameter int unsigned TAG_WIDTH    = 4,
-  parameter int unsigned AXI_ID_WIDTH = 4
+  parameter int unsigned AXI_ID_WIDTH = 4,
+  // Derived parameters (used in port declarations)
+  parameter int unsigned TAG_W        = (TAG_WIDTH > 0) ? TAG_WIDTH : 1
 )(
   input  logic                    clk,
   input  logic                    rst_n,
@@ -60,11 +62,6 @@ module fabric_extmemory_resp #(
   output logic                    st_completed,
   output logic [TAG_W-1:0]       st_completed_lane
 );
-
-  // ---------------------------------------------------------------
-  // Localparams
-  // ---------------------------------------------------------------
-  localparam int unsigned TAG_W = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
 
   // ---------------------------------------------------------------
   // Load response (AXI R -> load_data + load_done)

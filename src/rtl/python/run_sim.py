@@ -12,7 +12,11 @@ def resolve_verilator():
     """Find the verilator executable, trying module load if needed."""
     if shutil.which("verilator"):
         return "verilator"
-    # Try module loading
+    # Well-known installation path (avoids module load dependency)
+    well_known = "/mnt/nas0/software/verilator/5.044/bin/verilator"
+    if os.path.isfile(well_known) and os.access(well_known, os.X_OK):
+        return well_known
+    # Try module loading as last resort
     try:
         result = subprocess.run(
             ["bash", "-c",

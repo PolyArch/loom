@@ -6,17 +6,17 @@ module {
     fabric.yield %sum : i32
   }
 
-  fabric.spatial_pe @pe_def(%a: !fabric.bits<64>, %b: !fabric.bits<64>)
-      -> (!fabric.bits<64>) {
+  fabric.spatial_pe @pe_def(%a: !fabric.bits<32>, %b: !fabric.bits<32>)
+      -> (!fabric.bits<32>) {
     fabric.instance @fu_add() {sym_name = "fu_add_0"} : () -> ()
     fabric.yield
   }
 
   fabric.module @test_fu_add_latency1(
-      %a: !fabric.bits<64>, %b: !fabric.bits<64>)
-      -> (!fabric.bits<64>) {
+      %a: !fabric.bits<32>, %b: !fabric.bits<32>)
+      -> (!fabric.bits<32>) {
     %out = fabric.instance @pe_def(%a, %b) {sym_name = "pe_0"}
-        : (!fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>)
-    fabric.yield %out#0 : !fabric.bits<64>
+        : (!fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>)
+    fabric.yield %out#0 : !fabric.bits<32>
   }
 }

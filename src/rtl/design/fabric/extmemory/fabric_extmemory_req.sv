@@ -13,7 +13,10 @@ module fabric_extmemory_req #(
   parameter int unsigned TAG_WIDTH   = 4,
   parameter int unsigned NUM_REGION  = 4,
   parameter int unsigned ADDR_WIDTH  = 32,
-  parameter int unsigned AXI_ID_WIDTH = 4
+  parameter int unsigned AXI_ID_WIDTH = 4,
+  // Derived parameters (used in port declarations)
+  parameter int unsigned TAG_W      = (TAG_WIDTH > 0) ? TAG_WIDTH : 1,
+  parameter int unsigned MAX_LANES  = (1 << TAG_W)
 )(
   input  logic                    clk,
   input  logic                    rst_n,
@@ -76,12 +79,6 @@ module fabric_extmemory_req #(
   output logic                    st_issued,
   output logic [TAG_W-1:0]       st_issued_lane
 );
-
-  // ---------------------------------------------------------------
-  // Localparams
-  // ---------------------------------------------------------------
-  localparam int unsigned TAG_W = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
-  localparam int unsigned MAX_LANES = (1 << TAG_W);
 
   // ---------------------------------------------------------------
   // Region table (loaded via config bus)

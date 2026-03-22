@@ -13,7 +13,11 @@ def find_dc_shell():
     dc = shutil.which("dc_shell")
     if dc:
         return dc
-    # Try module loading
+    # Well-known installation path (avoids module load dependency)
+    well_known = "/mnt/nas0/software/synopsys/syn/W-2024.09-SP5/bin/dc_shell"
+    if os.path.isfile(well_known) and os.access(well_known, os.X_OK):
+        return well_known
+    # Try module loading as last resort
     try:
         result = subprocess.run(
             ["bash", "-c",

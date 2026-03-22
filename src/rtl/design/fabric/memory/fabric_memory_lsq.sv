@@ -21,7 +21,13 @@ module fabric_memory_lsq #(
   parameter int unsigned DATA_WIDTH       = 32,
   parameter int unsigned TAG_WIDTH        = 4,
   parameter int unsigned NUM_REGION       = 4,
-  parameter int unsigned SPAD_SIZE_BYTES  = 4096
+  parameter int unsigned SPAD_SIZE_BYTES  = 4096,
+  // Derived parameters (used in port declarations)
+  parameter int unsigned TAG_W      = (TAG_WIDTH > 0) ? TAG_WIDTH : 1,
+  parameter int unsigned SRAM_ADDR_W = $clog2(
+    (SPAD_SIZE_BYTES / ((DATA_WIDTH / 8) > 0 ? (DATA_WIDTH / 8) : 1)) > 1
+    ? (SPAD_SIZE_BYTES / ((DATA_WIDTH / 8) > 0 ? (DATA_WIDTH / 8) : 1))
+    : 2)
 )(
   input  logic                    clk,
   input  logic                    rst_n,
@@ -78,11 +84,9 @@ module fabric_memory_lsq #(
   // ---------------------------------------------------------------
   // Localparams
   // ---------------------------------------------------------------
-  localparam int unsigned TAG_W = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
   localparam int unsigned SRAM_WORD_BYTES    = DATA_WIDTH / 8;
   localparam int unsigned SRAM_WORD_BYTE_LOG2 = $clog2(SRAM_WORD_BYTES > 0 ? SRAM_WORD_BYTES : 1);
   localparam int unsigned SRAM_DEPTH         = SPAD_SIZE_BYTES / (SRAM_WORD_BYTES > 0 ? SRAM_WORD_BYTES : 1);
-  localparam int unsigned SRAM_ADDR_W        = $clog2(SRAM_DEPTH > 1 ? SRAM_DEPTH : 2);
   localparam int unsigned MAX_LANES          = (1 << TAG_W);
 
   // ---------------------------------------------------------------

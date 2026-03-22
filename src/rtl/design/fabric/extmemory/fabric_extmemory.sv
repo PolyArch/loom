@@ -26,7 +26,9 @@ module fabric_extmemory #(
   /* verilator lint_on UNUSEDPARAM */
   parameter int unsigned NUM_REGION      = 1,
   parameter int unsigned ADDR_WIDTH      = 32,
-  parameter int unsigned AXI_ID_WIDTH    = 4
+  parameter int unsigned AXI_ID_WIDTH    = 4,
+  // Derived: effective tag width (at least 1 bit to avoid zero-width ports)
+  parameter int unsigned TAG_W           = (TAG_WIDTH > 0) ? TAG_WIDTH : 1
 )(
   input  logic                    clk,
   input  logic                    rst_n,
@@ -113,7 +115,6 @@ module fabric_extmemory #(
   // ---------------------------------------------------------------
   // Localparams
   // ---------------------------------------------------------------
-  localparam int unsigned TAG_W = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
   localparam int unsigned MAX_LANES = (1 << TAG_W);
 
   // ---------------------------------------------------------------

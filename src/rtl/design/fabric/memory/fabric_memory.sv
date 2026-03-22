@@ -34,7 +34,9 @@ module fabric_memory #(
   parameter int unsigned NUM_REGION      = 1,
   parameter bit          IS_PRIVATE      = 1'b1,
   parameter int unsigned SPAD_SIZE_BYTES = 4096,
-  parameter int unsigned ADDR_WIDTH      = 32
+  parameter int unsigned ADDR_WIDTH      = 32,
+  // Derived: effective tag width (at least 1 bit to avoid zero-width ports)
+  parameter int unsigned TAG_W           = (TAG_WIDTH > 0) ? TAG_WIDTH : 1
 )(
   input  logic                    clk,
   input  logic                    rst_n,
@@ -109,7 +111,6 @@ module fabric_memory #(
   // ---------------------------------------------------------------
   // Localparams
   // ---------------------------------------------------------------
-  localparam int unsigned TAG_W = (TAG_WIDTH > 0) ? TAG_WIDTH : 1;
   localparam int unsigned SRAM_WORD_BYTES     = DATA_WIDTH / 8;
   localparam int unsigned SRAM_WORD_BYTE_LOG2 = $clog2(SRAM_WORD_BYTES > 0 ? SRAM_WORD_BYTES : 1);
   localparam int unsigned SRAM_DEPTH          = SPAD_SIZE_BYTES / (SRAM_WORD_BYTES > 0 ? SRAM_WORD_BYTES : 1);

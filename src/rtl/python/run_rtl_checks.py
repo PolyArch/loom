@@ -9,10 +9,20 @@ import subprocess
 import sys
 
 
+WELL_KNOWN_TOOLS = {
+    "verilator": "/mnt/nas0/software/verilator/5.044/bin/verilator",
+    "dc_shell": "/mnt/nas0/software/synopsys/syn/W-2024.09-SP5/bin/dc_shell",
+}
+
+
 def find_tool(name, module_spec=None):
     """Check if a tool is available, optionally via module loading."""
     import shutil
     if shutil.which(name):
+        return True
+    # Check well-known installation path
+    wk = WELL_KNOWN_TOOLS.get(name)
+    if wk and os.path.isfile(wk) and os.access(wk, os.X_OK):
         return True
     if module_spec:
         try:
