@@ -67,14 +67,16 @@ def run_verilator_lint(rtl_dir):
         pass
 
     cmd = [verilator_exec, "--lint-only", "-Wall",
-           "-Wno-UNUSEDSIGNAL",   # Generated wiring may have unused signals
-           "-Wno-UNUSEDPARAM",    # Package constants may be unused in some modules
-           "-Wno-SYNCASYNCNET",   # Mixed sync/async reset is intentional design
-           "-Wno-WIDTHEXPAND",    # Width expansion in config loading is expected
-           "-Wno-WIDTHTRUNC",     # Width truncation in config bit extraction is expected
-           "-Wno-UNDRIVEN",       # Some modules may not drive all outputs (e.g., no-config del_tag)
-           "-Wno-PINMISSING",     # Instance port connections may be partial in generated code
-           "-Wno-fatal",          # Treat remaining warnings as non-fatal
+           "-Wno-UNUSEDSIGNAL",      # Generated wiring may have unused signals
+           "-Wno-UNUSEDPARAM",       # Package constants may be unused in some modules
+           "-Wno-SYNCASYNCNET",      # Mixed sync/async reset is intentional design
+           "-Wno-UNDRIVEN",          # Some modules may not drive all outputs (e.g., no-config del_tag)
+           "-Wno-PINMISSING",        # Instance port connections may be partial in generated code
+           "-Wno-PINCONNECTEMPTY",   # Unconnected output ports use empty reference (intentional)
+           "-Wno-UNSIGNED",          # Unsigned comparison in generated/prewritten RTL is intentional
+           # No -Wno-fatal: any remaining warning (including unwaived WIDTHTRUNC/
+           # WIDTHEXPAND) is a hard lint error.
+           # See docs/spec-rtl-width-adaptation.md for the strict-by-default policy.
            "-f", filelist]
     if top_module:
         cmd.extend(["--top-module", top_module])

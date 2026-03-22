@@ -1,7 +1,7 @@
-// Golden output trace for add_tag test (data-only, 32-bit)
-// Tag bits are not captured by the testbench (TAG_WIDTH=0).
-// The add_tag module appends a tag, but only data is verified here.
-00000001
-00000002
-00000003
-00000004
+// Golden output trace for add_tag test: 36-bit packed {tag, data}
+// Token 0 arrives before config (tag=5) is latched, so tag=0.
+// Tokens 1-3 have the configured tag=5.
+000000001
+500000002
+500000003
+500000004

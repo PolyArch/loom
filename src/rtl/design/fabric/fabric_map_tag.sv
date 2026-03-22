@@ -65,7 +65,11 @@ module fabric_map_tag
     end : cnt_reset
     else begin : cnt_update
       if (cfg_valid && cfg_ready) begin : cnt_advance
+        // Fabric width adaptation (WA-4): config bit extraction
+        // See docs/spec-rtl-width-adaptation.md
+        /* verilator lint_off WIDTHTRUNC */
         if (cfg_word_idx == CNT_W'(NUM_CFG_WORDS - 1)) begin : cnt_wrap
+        /* verilator lint_on WIDTHTRUNC */
           cfg_word_idx <= '0;
         end : cnt_wrap
         else begin : cnt_inc
@@ -84,7 +88,11 @@ module fabric_map_tag
           cfg_words[gw] <= 32'b0;
         end : word_reset
         else begin : word_update
+          // Fabric width adaptation (WA-4): config bit extraction
+          // See docs/spec-rtl-width-adaptation.md
+          /* verilator lint_off WIDTHTRUNC */
           if (cfg_valid && cfg_ready && (cfg_word_idx == CNT_W'(gw))) begin : word_write
+          /* verilator lint_on WIDTHTRUNC */
             cfg_words[gw] <= cfg_wdata;
           end : word_write
         end : word_update
@@ -120,6 +128,9 @@ module fabric_map_tag
     any_match       = 1'b0;
     matched_dst_tag = '0;
 
+    // Fabric width adaptation (WA-4): config bit extraction
+    // See docs/spec-rtl-width-adaptation.md
+    /* verilator lint_off WIDTHTRUNC */
     for (iter_var0 = 0; iter_var0 < TABLE_SIZE; iter_var0 = iter_var0 + 1) begin : entry_unpack
       tbl_valid[iter_var0]   = cfg_flat[iter_var0 * ENTRY_WIDTH];
       tbl_src_tag[iter_var0] = cfg_flat[iter_var0 * ENTRY_WIDTH + 1 +: IN_TAG_WIDTH];
@@ -128,6 +139,7 @@ module fabric_map_tag
       cam_hit[iter_var0] = tbl_valid[iter_var0] &&
                            (tbl_src_tag[iter_var0] == in_tag);
     end : entry_unpack
+    /* verilator lint_on WIDTHTRUNC */
 
     // Priority encoder: first valid match (lowest index) wins.
     // Reverse iteration so lower-index overwrites higher-index.

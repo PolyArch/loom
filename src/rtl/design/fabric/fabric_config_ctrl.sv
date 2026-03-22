@@ -59,7 +59,11 @@ module fabric_config_ctrl #(
             if (word_counter >= SLICE_OFFSET[iter_var0] &&
                 word_counter < (SLICE_OFFSET[iter_var0] + SLICE_COUNT[iter_var0])) begin : match
                 slice_match[iter_var0] = 1'b1;
+                // Fabric width adaptation (WA-4): config bit extraction
+                // See docs/spec-rtl-width-adaptation.md
+                /* verilator lint_off WIDTHTRUNC */
                 word_within_slice = word_counter[15:0] - SLICE_OFFSET[iter_var0][15:0];
+                /* verilator lint_on WIDTHTRUNC */
             end : match
         end : decode_loop
     end : slice_decode

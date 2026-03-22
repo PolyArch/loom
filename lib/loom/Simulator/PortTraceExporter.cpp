@@ -163,6 +163,21 @@ bool PortTraceExporter::flush() const {
             ++count;
         os << count << "\n";
       }
+
+      // Write a .meta file with per-port width information.
+      {
+        llvm::SmallString<256> path(outputDir_);
+        llvm::sys::path::append(path, mod.moduleName + "_" + dirStr +
+                                          std::to_string(pi) + "_tokens.meta");
+        std::error_code ec;
+        llvm::raw_fd_ostream os(path, ec);
+        if (ec) {
+          success = false;
+          continue;
+        }
+        os << "data_width=" << port.valueWidth << "\n";
+        os << "tag_width=" << port.tagWidth << "\n";
+      }
     }
   }
 

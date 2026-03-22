@@ -1,7 +1,5 @@
-// Golden input trace for del_tag test (data-only, 32-bit)
-// The testbench drives 32-bit data; the DUT input is 36-bit
-// but the upper tag bits are zero-padded by dut_inst.svh.
-00000001
-00000002
-00000003
-00000004
+// Golden input trace for del_tag test: 36-bit packed {tag=5, data}
+500000001
+500000002
+500000003
+500000004

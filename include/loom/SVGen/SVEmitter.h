@@ -64,6 +64,22 @@ public:
   /// Emit a continuous assignment: `assign lhs = rhs;`
   void emitAssign(llvm::StringRef lhs, llvm::StringRef rhs);
 
+  /// Emit a width-adapted assignment with local lint waivers.
+  /// If srcWidth == dstWidth, emits a plain assign.
+  /// If srcWidth > dstWidth, emits truncation via bit-select.
+  /// If srcWidth < dstWidth, emits zero-extension via concatenation.
+  /// \p waId is one of "WA-1" through "WA-5" per the width adaptation spec.
+  void emitWidthAdapt(llvm::StringRef dstName, llvm::StringRef srcExpr,
+                      unsigned srcWidth, unsigned dstWidth,
+                      llvm::StringRef waId);
+
+  /// Emit a tagged width-adapted assignment that adapts data and tag portions
+  /// independently. \p srcExpr is the packed {tag, data} source expression.
+  void emitTaggedWidthAdapt(llvm::StringRef dstName, llvm::StringRef srcExpr,
+                            unsigned srcDataW, unsigned srcTagW,
+                            unsigned dstDataW, unsigned dstTagW,
+                            llvm::StringRef waId);
+
   /// Emit a blank line.
   void emitBlankLine();
 

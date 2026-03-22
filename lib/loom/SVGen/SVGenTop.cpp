@@ -242,6 +242,8 @@ static void emitSwitchConns(TopEmitContext &ctx, mlir::Operation &op,
   declTagWire("_out_tag", tagWidth, numOut);
 
   // Element-wise assign: bridge individual nets to aggregate arrays.
+  // Width adaptation is applied when a wire's data/tag width differs from
+  // the switch's parameterized width.
   for (unsigned i = 0; i < numIn; ++i) {
     std::string wire = ctx.getOrCreateWire(inputs[i]);
     unsigned dw = SVEmitter::getDataWidth(inputs[i].getType());
@@ -251,15 +253,25 @@ static void emitSwitchConns(TopEmitContext &ctx, mlir::Operation &op,
                            wire + "_valid");
     ctx.emitter.emitAssign(wire + "_ready",
                            inst + "_in_ready[" + idx + "]");
-    ctx.emitter.emitAssign(inst + "_in_data[" + idx + "]",
-                           wire + "[" + std::to_string(dw - 1) + ":0]");
-    if (tw > 0)
-      ctx.emitter.emitAssign(
-          inst + "_in_tag[" + idx + "]",
-          wire + "[" + std::to_string(dw + tw - 1) + ":" +
-              std::to_string(dw) + "]");
-    else
+    std::string srcData = wire + "[" + std::to_string(dw - 1) + ":0]";
+    if (dw != dataWidth) {
+      ctx.emitter.emitWidthAdapt(inst + "_in_data[" + idx + "]",
+                                  srcData, dw, dataWidth, "WA-2");
+    } else {
+      ctx.emitter.emitAssign(inst + "_in_data[" + idx + "]", srcData);
+    }
+    if (tw > 0) {
+      std::string srcTag = wire + "[" + std::to_string(dw + tw - 1) + ":" +
+                           std::to_string(dw) + "]";
+      if (tw != tagWidth) {
+        ctx.emitter.emitWidthAdapt(inst + "_in_tag[" + idx + "]",
+                                    srcTag, tw, tagWidth, "WA-3");
+      } else {
+        ctx.emitter.emitAssign(inst + "_in_tag[" + idx + "]", srcTag);
+      }
+    } else {
       ctx.emitter.emitAssign(inst + "_in_tag[" + idx + "]", "'0");
+    }
   }
 
   for (unsigned i = 0; i < numOut; ++i) {
@@ -271,13 +283,29 @@ static void emitSwitchConns(TopEmitContext &ctx, mlir::Operation &op,
                            inst + "_out_valid[" + idx + "]");
     ctx.emitter.emitAssign(inst + "_out_ready[" + idx + "]",
                            wire + "_ready");
-    ctx.emitter.emitAssign(wire + "[" + std::to_string(outDw - 1) + ":0]",
-                           inst + "_out_data[" + idx + "]");
-    if (outTw > 0)
-      ctx.emitter.emitAssign(
-          wire + "[" + std::to_string(outDw + outTw - 1) + ":" +
-              std::to_string(outDw) + "]",
-          inst + "_out_tag[" + idx + "]");
+    std::string swOutData = inst + "_out_data[" + idx + "]";
+    if (outDw != dataWidth) {
+      ctx.emitter.emitWidthAdapt(
+          wire + "[" + std::to_string(outDw - 1) + ":0]",
+          swOutData, dataWidth, outDw, "WA-2");
+    } else {
+      ctx.emitter.emitAssign(wire + "[" + std::to_string(outDw - 1) + ":0]",
+                             swOutData);
+    }
+    if (outTw > 0) {
+      std::string swOutTag = inst + "_out_tag[" + idx + "]";
+      if (outTw != tagWidth) {
+        ctx.emitter.emitWidthAdapt(
+            wire + "[" + std::to_string(outDw + outTw - 1) + ":" +
+                std::to_string(outDw) + "]",
+            swOutTag, tagWidth, outTw, "WA-3");
+      } else {
+        ctx.emitter.emitAssign(
+            wire + "[" + std::to_string(outDw + outTw - 1) + ":" +
+                std::to_string(outDw) + "]",
+            swOutTag);
+      }
+    }
   }
 
   // Connect aggregate ports to the instance.
