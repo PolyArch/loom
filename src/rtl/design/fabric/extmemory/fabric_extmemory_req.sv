@@ -189,9 +189,11 @@ module fabric_extmemory_req #(
   logic st_data_can_capture;
 
   always_comb begin : st_capture_check
+    resolved_t region_tmp;
+    region_tmp = resolve_region(st_addr_tag, st_addr_data);
     st_addr_can_capture = st_addr_valid &&
                           !st_addr_latched[st_addr_tag] &&
-                          resolve_region(st_addr_tag, st_addr_data).found;
+                          region_tmp.found;
     st_data_can_capture = st_data_valid &&
                           !st_data_latched[st_data_tag];
   end : st_capture_check
@@ -230,6 +232,8 @@ module fabric_extmemory_req #(
   // Arbitration toggle
   // ---------------------------------------------------------------
   logic load_priority;
+  logic do_issue_load;
+  logic do_issue_store;
 
   always_ff @(posedge clk or negedge rst_n) begin : arb_update
     if (!rst_n) begin : arb_reset
@@ -241,9 +245,6 @@ module fabric_extmemory_req #(
       end : arb_flip
     end : arb_toggle
   end : arb_update
-
-  logic do_issue_load;
-  logic do_issue_store;
 
   always_comb begin : arb_decision
     do_issue_load  = 1'b0;

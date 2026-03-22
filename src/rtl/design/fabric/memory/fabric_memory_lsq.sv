@@ -204,9 +204,11 @@ module fabric_memory_lsq #(
   logic st_data_can_capture;
 
   always_comb begin : st_capture_logic
+    resolved_t region_tmp;
+    region_tmp = resolve_region(st_addr_tag, st_addr_data);
     st_addr_can_capture = st_addr_valid &&
                           !st_addr_latched[st_addr_tag] &&
-                          resolve_region(st_addr_tag, st_addr_data).found;
+                          region_tmp.found;
     st_data_can_capture = st_data_valid &&
                           !st_data_latched[st_data_tag];
   end : st_capture_logic
@@ -247,6 +249,8 @@ module fabric_memory_lsq #(
   // Round-robin priority toggles each cycle an operation issues.
   // ---------------------------------------------------------------
   logic load_priority;
+  logic issue_load;
+  logic issue_store;
 
   always_ff @(posedge clk or negedge rst_n) begin : arb_priority_update
     if (!rst_n) begin : arb_reset
@@ -258,9 +262,6 @@ module fabric_memory_lsq #(
       end : arb_flip
     end : arb_toggle
   end : arb_priority_update
-
-  logic issue_load;
-  logic issue_store;
 
   always_comb begin : arb_decision
     issue_load  = 1'b0;

@@ -58,20 +58,27 @@ def generate_synth_tcl(rtl_dir, design_name, output_dir, tcl_template):
 
 
 def run_synthesis(dc_shell, tcl_path, output_dir):
-    """Run DC synthesis."""
+    """Run DC synthesis using the discovered dc_shell path directly."""
     log_path = os.path.join(output_dir, "synth.log")
-    # Run dc_shell through a module-loaded bash to ensure all env vars are set.
-    bash_cmd = (
-        "source /etc/profile.d/modules.sh && "
-        "module load synopsys/syn/W-2024.09-SP5 && "
-        f"dc_shell -f {tcl_path}"
-    )
-    cmd = ["bash", "-c", bash_cmd]
+    cmd = [dc_shell, "-f", tcl_path]
 
-    print(f"[run_synth] Running: dc_shell -f {tcl_path}")
+    # Set up environment: DC needs license server and library paths.
+    # Derive these from the dc_shell installation path.
+    env = os.environ.copy()
+    dc_dir = os.path.dirname(os.path.dirname(dc_shell))  # e.g. .../syn/W-...
+    license_server = "27020@pyrito.cs.ucla.edu"
+    env.setdefault("SNPSLMD_LICENSE_FILE", license_server)
+    env.setdefault("LM_LICENSE_FILE", license_server)
+    env.setdefault("SYNOPSYS_HOME", dc_dir)
+    env.setdefault("DC_HOME", dc_dir)
+    lib_path = os.path.join(dc_dir, "lib")
+    if os.path.isdir(lib_path):
+        env["LD_LIBRARY_PATH"] = lib_path + ":" + env.get("LD_LIBRARY_PATH", "")
+
+    print(f"[run_synth] Running: {dc_shell} -f {tcl_path}")
     with open(log_path, "w") as log_file:
         result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT,
-                                cwd=output_dir)
+                                cwd=output_dir, env=env)
 
     if result.returncode != 0:
         print(f"[run_synth] FAIL: DC exited with code {result.returncode}")
