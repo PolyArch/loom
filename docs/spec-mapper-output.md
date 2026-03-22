@@ -201,7 +201,9 @@ At minimum it must preserve:
   produced from that region, not only to candidate ids, so component-space and
   selected-plan-space can be joined without one extra reconstruction step
 - a top-level `search` section that records staged lane narrowing
-  (`placement_seed_lane_count`, `successful_placement_seed_count`,
+  (`techmap_feedback_attempts`,
+  `techmap_feedback_accepted_reconfigurations`,
+  `placement_seed_lane_count`, `successful_placement_seed_count`,
   `routed_lane_count`), local-repair attempts and successes, route-aware
   refinement passes, route-checkpoint rescore and restore counts,
   exact-neighborhood reroute attempts and accepted moves, coarse fallback move

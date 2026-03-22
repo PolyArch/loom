@@ -1959,6 +1959,10 @@ bool ConfigGen::writeMapJson(const MappingState &state, const Graph &dfg,
     out << "    \"available\": false\n";
   } else {
     out << "    \"available\": true";
+    out << ",\n    \"techmap_feedback_attempts\": "
+        << searchSummary->techMapFeedbackAttempts;
+    out << ",\n    \"techmap_feedback_accepted_reconfigurations\": "
+        << searchSummary->techMapFeedbackAcceptedReconfigurations;
     out << ",\n    \"placement_seed_lane_count\": "
         << searchSummary->placementSeedLaneCount;
     out << ",\n    \"successful_placement_seed_count\": "
@@ -3436,6 +3440,10 @@ bool ConfigGen::writeMapText(const MappingState &state, const Graph &dfg,
   if (!searchSummary) {
     out << "(not available)\n\n";
   } else {
+    out << "techmap_feedback_attempts: "
+        << searchSummary->techMapFeedbackAttempts << "\n";
+    out << "techmap_feedback_accepted_reconfigurations: "
+        << searchSummary->techMapFeedbackAcceptedReconfigurations << "\n";
     out << "placement_seed_lane_count: "
         << searchSummary->placementSeedLaneCount << "\n";
     out << "successful_placement_seed_count: "

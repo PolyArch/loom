@@ -30,6 +30,8 @@ class LocalRepairDriver;
 class TopologyModel;
 
 struct MapperSearchSummary {
+  unsigned techMapFeedbackAttempts = 0;
+  unsigned techMapFeedbackAcceptedReconfigurations = 0;
   unsigned placementSeedLaneCount = 0;
   unsigned successfulPlacementSeedCount = 0;
   unsigned routedLaneCount = 0;
@@ -182,6 +184,12 @@ private:
   MapperTimingSummary runPostRouteFifoBufferization(
       MappingState &state, const Graph &dfg, const Graph &adg,
       llvm::ArrayRef<TechMappedEdgeKind> edgeKinds, const Options &opts);
+
+  Result runWithTechMapPlan(const Graph &dfg, const Graph &adg,
+                            const ADGFlattener &flattener,
+                            mlir::ModuleOp adgModule, const Options &opts,
+                            TechMapper &techMapper, TechMapper::Plan techPlan,
+                            unsigned techFeedbackAttempt);
 
   // Routing helpers.
   llvm::SmallVector<IdIndex, 8>

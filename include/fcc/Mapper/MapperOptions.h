@@ -94,6 +94,12 @@ struct MapperBufferizationOptions {
   double clockTieBreakImprovement = 1e-6;
 };
 
+struct MapperTechFeedbackOptions {
+  bool enabled = true;
+  unsigned maxRetries = 2;
+  unsigned maxTargetsPerRetry = 4;
+};
+
 struct MapperRelaxedRoutingOptions {
   bool enabled = false;
   unsigned legalizationPasses = 2;
@@ -240,6 +246,7 @@ struct MapperOptions {
   MapperCongestionOptions congestion;
   MapperTimingOptions timing;
   MapperBufferizationOptions bufferization;
+  MapperTechFeedbackOptions techFeedback;
   MapperRelaxedRoutingOptions relaxedRouting;
   MapperCPSatTuningOptions cpSatTuning;
   MapperLocalRepairOptions localRepair;

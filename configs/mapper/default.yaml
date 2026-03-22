@@ -224,6 +224,16 @@ mapper:
     # cost stays effectively unchanged.
     clock_tie_break_improvement: 1.0e-6
 
+  tech_feedback:
+    # Allow Layer-3 conflicts or routing failures to trigger a Layer-2
+    # techmap reselection pass before the mapper gives up.
+    enabled: true
+    # Maximum number of Layer-2 feedback retries inside one mapper run.
+    max_retries: 2
+    # Maximum number of routed-hotspot or temporal-conflict targets converted
+    # into Layer-2 feedback actions during one retry.
+    max_targets_per_retry: 4
+
   relaxed_routing:
     # Allow negotiated routing to temporarily overuse non-tagged switch-owned
     # routing outputs, then legalize them before a checkpoint may be accepted.

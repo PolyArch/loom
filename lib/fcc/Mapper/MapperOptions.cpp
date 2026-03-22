@@ -267,6 +267,14 @@ bool validateMapperOptions(const MapperOptions &opts, std::string &error) {
     return false;
   }
 
+  if (!requirePositiveUnsigned(opts.techFeedback.maxRetries,
+                               "tech_feedback.max_retries", error) ||
+      !requirePositiveUnsigned(opts.techFeedback.maxTargetsPerRetry,
+                               "tech_feedback.max_targets_per_retry",
+                               error)) {
+    return false;
+  }
+
   if (!requirePositiveUnsigned(opts.relaxedRouting.legalizationPasses,
                                "relaxed_routing.legalization_passes",
                                error) ||

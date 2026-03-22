@@ -163,6 +163,25 @@ bool isCarryNextEdge(IdIndex edgeId, const Graph &dfg) {
   return isCarryNode && edge->dstPort == dstNode->inputPorts[2];
 }
 
+bool sameConfigFields(llvm::ArrayRef<FUConfigField> lhs,
+                      llvm::ArrayRef<FUConfigField> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (size_t idx = 0; idx < lhs.size(); ++idx) {
+    if (lhs[idx].kind != rhs[idx].kind ||
+        lhs[idx].opIndex != rhs[idx].opIndex ||
+        lhs[idx].templateOpIndex != rhs[idx].templateOpIndex ||
+        lhs[idx].opName != rhs[idx].opName ||
+        lhs[idx].bitWidth != rhs[idx].bitWidth ||
+        lhs[idx].value != rhs[idx].value || lhs[idx].sel != rhs[idx].sel ||
+        lhs[idx].discard != rhs[idx].discard ||
+        lhs[idx].disconnect != rhs[idx].disconnect) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool isBetterTimingSummary(const MapperTimingSummary &lhs,
                            const MapperTimingSummary &rhs,
                            const MapperBufferizationOptions &opts) {
@@ -218,6 +237,259 @@ std::vector<IdIndex> collectCriticalBoundaryEdges(const Graph &dfg) {
       edges.push_back(edgeId);
   }
   return edges;
+}
+
+bool addUnitTechMapFeedback(const TechMapper::Unit &unit,
+                            TechMapper::Feedback &feedback,
+                            llvm::DenseSet<unsigned> &seenSplitCandidates,
+                            llvm::DenseSet<unsigned> &seenBannedCandidates) {
+  if (unit.selectedCandidateId == std::numeric_limits<unsigned>::max())
+    return false;
+  if (unit.swNodes.size() > 1) {
+    if (seenSplitCandidates.insert(unit.selectedCandidateId).second)
+      feedback.splitCandidateIds.push_back(unit.selectedCandidateId);
+    return true;
+  }
+  if (unit.candidates.size() > 1) {
+    if (seenBannedCandidates.insert(unit.selectedCandidateId).second)
+      feedback.bannedCandidateIds.push_back(unit.selectedCandidateId);
+    return true;
+  }
+  return false;
+}
+
+bool buildForcedTemporalConflictFeedback(
+    const TechMapper::Plan &plan,
+    const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
+    const Graph &dfg, const Graph &adg,
+    TechMapper::Feedback &feedback) {
+  llvm::DenseSet<unsigned> seenSplitCandidates;
+  llvm::DenseSet<unsigned> seenBannedCandidates;
+  llvm::DenseMap<IdIndex, llvm::SmallVector<const TechMapper::Unit *, 4>>
+      forcedByHwNode;
+
+  for (const auto &unit : TechMapper::allUnits(plan)) {
+    auto forcedHwNodeId = TechMapper::findForcedTemporalHwNodeId(unit, adg);
+    if (!forcedHwNodeId)
+      continue;
+    forcedByHwNode[*forcedHwNodeId].push_back(&unit);
+  }
+
+  for (const auto &it : forcedByHwNode) {
+    const auto &units = it.second;
+    if (units.size() < 2)
+      continue;
+    for (size_t lhsIdx = 0; lhsIdx < units.size(); ++lhsIdx) {
+      const auto *lhsConfigInfo =
+          TechMapper::findSelectedUnitConfigClass(plan, *units[lhsIdx]);
+      const auto *lhsCandidate =
+          TechMapper::findPreferredUnitCandidate(*units[lhsIdx]);
+      for (size_t rhsIdx = lhsIdx + 1; rhsIdx < units.size(); ++rhsIdx) {
+        const auto *rhsConfigInfo =
+            TechMapper::findSelectedUnitConfigClass(plan, *units[rhsIdx]);
+        const auto *rhsCandidate =
+            TechMapper::findPreferredUnitCandidate(*units[rhsIdx]);
+        unsigned lhsConfigClass =
+            lhsConfigInfo ? lhsConfigInfo->id
+                          : std::numeric_limits<unsigned>::max();
+        unsigned rhsConfigClass =
+            rhsConfigInfo ? rhsConfigInfo->id
+                          : std::numeric_limits<unsigned>::max();
+        bool compatible =
+            (lhsConfigClass != std::numeric_limits<unsigned>::max() ||
+             rhsConfigClass != std::numeric_limits<unsigned>::max()) &&
+            TechMapper::areConfigClassesCompatible(plan, lhsConfigClass,
+                                                   rhsConfigClass);
+        bool sameConfig =
+            lhsCandidate && rhsCandidate &&
+            sameConfigFields(lhsCandidate->configFields,
+                             rhsCandidate->configFields);
+        if (compatible || sameConfig)
+          continue;
+        bool changed = false;
+        changed |= addUnitTechMapFeedback(*units[lhsIdx], feedback,
+                                          seenSplitCandidates,
+                                          seenBannedCandidates);
+        changed |= addUnitTechMapFeedback(*units[rhsIdx], feedback,
+                                          seenSplitCandidates,
+                                          seenBannedCandidates);
+        if (changed)
+          return true;
+      }
+    }
+  }
+
+  struct ForcedTemporalCandidateInfo {
+    IdIndex contractedNodeId = INVALID_ID;
+    llvm::SmallVector<unsigned, 4> configClassIds;
+  };
+
+  llvm::DenseMap<IdIndex, llvm::SmallVector<ForcedTemporalCandidateInfo, 4>>
+      forcedCandidatesByHwNode;
+  for (IdIndex swNodeId = 0; swNodeId < static_cast<IdIndex>(dfg.nodes.size());
+       ++swNodeId) {
+    const Node *swNode = dfg.getNode(swNodeId);
+    if (!swNode || swNode->kind != Node::OperationNode)
+      continue;
+    auto candidateIt = candidates.find(swNodeId);
+    if (candidateIt == candidates.end() || candidateIt->second.empty())
+      continue;
+
+    IdIndex forcedHwNodeId = candidateIt->second.front();
+    bool allSameHwNode = true;
+    for (IdIndex hwNodeId : candidateIt->second) {
+      if (hwNodeId != forcedHwNodeId) {
+        allSameHwNode = false;
+        break;
+      }
+    }
+    if (!allSameHwNode)
+      continue;
+
+    llvm::ArrayRef<unsigned> supportClassIds;
+    if (const auto *contractedSupportClassIds =
+            TechMapper::findContractedCandidateSupportClasses(plan, swNodeId)) {
+      supportClassIds = *contractedSupportClassIds;
+    }
+    llvm::SmallVector<unsigned, 8> fallbackSupportClassIds;
+    if (supportClassIds.empty()) {
+      if (const auto *nodeInfo = TechMapper::findNodeTechInfo(plan, swNodeId)) {
+        fallbackSupportClassIds.assign(nodeInfo->supportClassIds.begin(),
+                                       nodeInfo->supportClassIds.end());
+        supportClassIds = fallbackSupportClassIds;
+      }
+    }
+    bool temporalSupportOnly = !supportClassIds.empty();
+    if (temporalSupportOnly) {
+      for (unsigned supportClassId : supportClassIds) {
+        if (!TechMapper::isTemporalSupportClass(plan, supportClassId)) {
+          temporalSupportOnly = false;
+          break;
+        }
+      }
+    }
+    if (!temporalSupportOnly)
+      continue;
+
+    ForcedTemporalCandidateInfo info;
+    info.contractedNodeId = swNodeId;
+    llvm::ArrayRef<unsigned> configClassIds;
+    if (const auto *contractedConfigClassIds =
+            TechMapper::findContractedCandidateConfigClasses(plan, swNodeId)) {
+      configClassIds = *contractedConfigClassIds;
+    }
+    llvm::SmallVector<unsigned, 8> fallbackConfigClassIds;
+    if (configClassIds.empty()) {
+      if (const auto *nodeInfo = TechMapper::findNodeTechInfo(plan, swNodeId)) {
+        fallbackConfigClassIds.assign(nodeInfo->configClassIds.begin(),
+                                      nodeInfo->configClassIds.end());
+        configClassIds = fallbackConfigClassIds;
+      }
+    }
+    info.configClassIds.assign(configClassIds.begin(), configClassIds.end());
+    std::sort(info.configClassIds.begin(), info.configClassIds.end());
+    info.configClassIds.erase(
+        std::unique(info.configClassIds.begin(), info.configClassIds.end()),
+        info.configClassIds.end());
+    forcedCandidatesByHwNode[forcedHwNodeId].push_back(std::move(info));
+  }
+
+  for (const auto &it : forcedCandidatesByHwNode) {
+    const auto &infos = it.second;
+    if (infos.size() < 2)
+      continue;
+    for (size_t lhsIdx = 0; lhsIdx < infos.size(); ++lhsIdx) {
+      for (size_t rhsIdx = lhsIdx + 1; rhsIdx < infos.size(); ++rhsIdx) {
+        bool hasCompatibleConfigPair = false;
+        if (!infos[lhsIdx].configClassIds.empty() &&
+            !infos[rhsIdx].configClassIds.empty()) {
+          for (unsigned lhsConfigClassId : infos[lhsIdx].configClassIds) {
+            for (unsigned rhsConfigClassId : infos[rhsIdx].configClassIds) {
+              if (TechMapper::areConfigClassesCompatible(
+                      plan, lhsConfigClassId, rhsConfigClassId)) {
+                hasCompatibleConfigPair = true;
+                break;
+              }
+            }
+            if (hasCompatibleConfigPair)
+              break;
+          }
+        }
+        if (hasCompatibleConfigPair)
+          continue;
+        bool changed = false;
+        if (const auto *lhsUnit = TechMapper::findUnitForContractedNode(
+                plan, infos[lhsIdx].contractedNodeId)) {
+          changed |= addUnitTechMapFeedback(*lhsUnit, feedback,
+                                            seenSplitCandidates,
+                                            seenBannedCandidates);
+        }
+        if (const auto *rhsUnit = TechMapper::findUnitForContractedNode(
+                plan, infos[rhsIdx].contractedNodeId)) {
+          changed |= addUnitTechMapFeedback(*rhsUnit, feedback,
+                                            seenSplitCandidates,
+                                            seenBannedCandidates);
+        }
+        if (changed)
+          return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+bool buildRoutingFailureFeedback(const TechMapper::Plan &plan,
+                                 const MappingState &state, const Graph &dfg,
+                                 llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                                 const MapperTechFeedbackOptions &opts,
+                                 TechMapper::Feedback &feedback) {
+  auto failedEdges = collectUnroutedEdges(state, dfg, edgeKinds);
+  if (failedEdges.empty())
+    return false;
+
+  llvm::DenseMap<IdIndex, unsigned> failedEdgeIncidence;
+  for (IdIndex edgeId : failedEdges) {
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
+    auto accumulatePortNode = [&](IdIndex portId) {
+      const Port *port = dfg.getPort(portId);
+      if (!port || port->parentNode == INVALID_ID)
+        return;
+      ++failedEdgeIncidence[port->parentNode];
+    };
+    accumulatePortNode(edge->srcPort);
+    accumulatePortNode(edge->dstPort);
+  }
+
+  std::vector<std::pair<IdIndex, unsigned>> rankedNodes(
+      failedEdgeIncidence.begin(), failedEdgeIncidence.end());
+  llvm::stable_sort(rankedNodes,
+                    [](const auto &lhs, const auto &rhs) {
+                      if (lhs.second != rhs.second)
+                        return lhs.second > rhs.second;
+                      return lhs.first < rhs.first;
+                    });
+
+  llvm::DenseSet<unsigned> seenSplitCandidates;
+  llvm::DenseSet<unsigned> seenBannedCandidates;
+  unsigned targets = 0;
+  for (const auto &entry : rankedNodes) {
+    if (targets >= opts.maxTargetsPerRetry)
+      break;
+    const auto *unit =
+        TechMapper::findUnitForContractedNode(plan, entry.first);
+    if (!unit)
+      continue;
+    if (!addUnitTechMapFeedback(*unit, feedback, seenSplitCandidates,
+                                seenBannedCandidates)) {
+      continue;
+    }
+    ++targets;
+  }
+  return !feedback.splitCandidateIds.empty() ||
+         !feedback.bannedCandidateIds.empty();
 }
 
 } // namespace
@@ -975,7 +1247,7 @@ MapperTimingSummary Mapper::runPostRouteFifoBufferization(
   }
   llvm::DenseSet<IdIndex> criticalEdges(currentTiming.criticalPathEdges.begin(),
                                         currentTiming.criticalPathEdges.end());
-
+  llvm::DenseSet<IdIndex> blockedRecurrenceFifos;
   for (IdIndex edgeId : recurrenceEdges) {
     if (edgeId >= state.swEdgeToHwPaths.size())
       continue;
@@ -989,13 +1261,12 @@ MapperTimingSummary Mapper::runPostRouteFifoBufferization(
           !isEffectiveFifoBypassed(hwNodeId, state, adg)) {
         continue;
       }
-      if (opts.verbose) {
-        llvm::outs() << "Mapper: skipping FIFO bufferization because "
-                     << hwNodeId
-                     << " is on a recurrence-sensitive routed edge\n";
-      }
-      return currentTiming;
+      blockedRecurrenceFifos.insert(hwNodeId);
     }
+  }
+  if (opts.verbose && !blockedRecurrenceFifos.empty()) {
+    llvm::outs() << "Mapper: excluding " << blockedRecurrenceFifos.size()
+                 << " recurrence-sensitive FIFO candidates from bufferization\n";
   }
 
   for (unsigned iter = 0; iter < opts.bufferization.maxIterations; ++iter) {
@@ -1040,6 +1311,8 @@ MapperTimingSummary Mapper::runPostRouteFifoBufferization(
 
     for (IdIndex hwNodeId : fifoCandidates) {
       if (hwNodeId >= state.hwNodeFifoBypassedOverride.size())
+        continue;
+      if (blockedRecurrenceFifos.contains(hwNodeId))
         continue;
       int8_t oldOverride = state.hwNodeFifoBypassedOverride[hwNodeId];
       state.hwNodeFifoBypassedOverride[hwNodeId] = 0;
@@ -1107,6 +1380,15 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
     llvm::errs() << "Mapper: " << result.diagnostics << "\n";
     return result;
   }
+  return runWithTechMapPlan(dfg, adg, flattener, adgModule, opts, techMapper,
+                            std::move(techPlan), 0);
+}
+
+Mapper::Result Mapper::runWithTechMapPlan(
+    const Graph &dfg, const Graph &adg, const ADGFlattener &flattener,
+    mlir::ModuleOp adgModule, const Options &opts, TechMapper &techMapper,
+    TechMapper::Plan techPlan, unsigned techFeedbackAttempt) {
+  Result result;
   result.techMapPlan = techPlan;
   result.techMapMetrics = techPlan.metrics;
   result.techMapDiagnostics = techPlan.diagnostics;
@@ -1192,6 +1474,30 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
   if (detectForcedTemporalConfigConflict(techPlan, candidates,
                                          techPlan.contractedDFG, adg,
                                          result.diagnostics)) {
+    if (opts.techFeedback.enabled &&
+        techFeedbackAttempt < opts.techFeedback.maxRetries) {
+      TechMapper::Feedback feedback;
+      if (buildForcedTemporalConflictFeedback(
+              techPlan, candidates, techPlan.contractedDFG, adg, feedback)) {
+        ++activeSearchSummary_.techMapFeedbackAttempts;
+        TechMapper::Plan feedbackPlan;
+        if (techMapper.applyFeedback(dfg, adg, techPlan, feedback,
+                                     feedbackPlan)) {
+          ++activeSearchSummary_.techMapFeedbackAcceptedReconfigurations;
+          if (opts.verbose) {
+            llvm::outs() << "Mapper: retrying techmap after temporal config "
+                            "conflict with "
+                         << feedback.splitCandidateIds.size()
+                         << " split requests and "
+                         << feedback.bannedCandidateIds.size()
+                         << " banned candidates\n";
+          }
+          return runWithTechMapPlan(dfg, adg, flattener, adgModule, opts,
+                                    techMapper, std::move(feedbackPlan),
+                                    techFeedbackAttempt + 1);
+        }
+      }
+    }
     result.searchSummary = activeSearchSummary_;
     llvm::errs() << "Mapper: " << result.diagnostics << "\n";
     return result;
@@ -1513,6 +1819,30 @@ Mapper::Result Mapper::run(const Graph &dfg, const Graph &adg,
 
   activeBudgetExceeded_ = selectedBudgetExceeded;
   activeBudgetExceededStage_ = selectedBudgetExceededStage;
+  if (!routingSucceeded && !activeBudgetExceeded_ && opts.techFeedback.enabled &&
+      techFeedbackAttempt < opts.techFeedback.maxRetries) {
+    TechMapper::Feedback feedback;
+    if (buildRoutingFailureFeedback(techPlan, contractedState,
+                                    techPlan.contractedDFG, contractedEdgeKinds,
+                                    opts.techFeedback, feedback)) {
+      ++activeSearchSummary_.techMapFeedbackAttempts;
+      TechMapper::Plan feedbackPlan;
+      if (techMapper.applyFeedback(dfg, adg, techPlan, feedback,
+                                   feedbackPlan)) {
+        ++activeSearchSummary_.techMapFeedbackAcceptedReconfigurations;
+        if (opts.verbose) {
+          llvm::outs() << "Mapper: retrying techmap after routing failure with "
+                       << feedback.splitCandidateIds.size()
+                       << " split requests and "
+                       << feedback.bannedCandidateIds.size()
+                       << " banned candidates\n";
+        }
+        return runWithTechMapPlan(dfg, adg, flattener, adgModule, opts,
+                                  techMapper, std::move(feedbackPlan),
+                                  techFeedbackAttempt + 1);
+      }
+    }
+  }
   if (!routingSucceeded) {
     result.diagnostics = activeBudgetExceeded_
                              ? ("Mapper budget exceeded" +

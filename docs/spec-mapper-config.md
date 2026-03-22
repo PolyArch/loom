@@ -58,7 +58,8 @@ The `mapper` mapping contains:
 - promoted top-level controls such as budget, seed, lane count, and CP-SAT
   enablement
 - grouped sub-maps such as `refinement`, `lane`, `routing`, `congestion`,
-  `timing`, `bufferization`, `cpsat_tuning`, and `local_repair`
+  `timing`, `bufferization`, `tech_feedback`, `cpsat_tuning`, and
+  `local_repair`
 
 The `lane` map owns speculative-lane generation and staged narrowing. Its
 fields control:
@@ -94,6 +95,14 @@ fields control:
 - the minimum throughput-cost improvement required for acceptance
 - the minimum clock-period improvement used as a tie-breaker when throughput
   cost remains unchanged
+
+The `tech_feedback` map owns the Layer-3 to Layer-2 reconfiguration loop. Its
+fields control:
+
+- enablement
+- the maximum number of techmap reselection retries within one mapper run
+- the maximum number of temporal-conflict or routing-failure hotspots that may
+  be translated into Layer-2 split or ban actions during one retry
 
 The `local_repair` map owns the post-routing repair stack. Its fields control:
 
@@ -221,6 +230,8 @@ Validation also covers:
 - `bufferization.outer_joint_iterations` must be positive
 - `bufferization.min_throughput_improvement` and
   `bufferization.clock_tie_break_improvement` must be non-negative
+- `tech_feedback.max_retries` must be positive
+- `tech_feedback.max_targets_per_retry` must be positive
 
 ## Related Documents
 

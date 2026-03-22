@@ -151,6 +151,14 @@ template <> struct MappingTraits<fcc::MapperBufferizationOptions> {
   }
 };
 
+template <> struct MappingTraits<fcc::MapperTechFeedbackOptions> {
+  static void mapping(IO &io, fcc::MapperTechFeedbackOptions &opts) {
+    io.mapOptional("enabled", opts.enabled);
+    io.mapOptional("max_retries", opts.maxRetries);
+    io.mapOptional("max_targets_per_retry", opts.maxTargetsPerRetry);
+  }
+};
+
 template <> struct MappingTraits<fcc::MapperRelaxedRoutingOptions> {
   static void mapping(IO &io, fcc::MapperRelaxedRoutingOptions &opts) {
     io.mapOptional("enabled", opts.enabled);
@@ -362,6 +370,7 @@ template <> struct MappingTraits<fcc::MapperOptions> {
     io.mapOptional("congestion", opts.congestion);
     io.mapOptional("timing", opts.timing);
     io.mapOptional("bufferization", opts.bufferization);
+    io.mapOptional("tech_feedback", opts.techFeedback);
     io.mapOptional("relaxed_routing", opts.relaxedRouting);
     io.mapOptional("cpsat_tuning", opts.cpSatTuning);
     io.mapOptional("local_repair", opts.localRepair);
