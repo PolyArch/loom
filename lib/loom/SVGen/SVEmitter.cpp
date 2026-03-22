@@ -141,6 +141,98 @@ void SVEmitter::emitAssign(llvm::StringRef lhs, llvm::StringRef rhs) {
   os_ << "assign " << lhs << " = " << rhs << ";\n";
 }
 
+void SVEmitter::emitWidthAdapt(llvm::StringRef dstName, llvm::StringRef srcExpr,
+                                unsigned srcWidth, unsigned dstWidth,
+                                llvm::StringRef waId) {
+  if (srcWidth == dstWidth) {
+    emitAssign(dstName, srcExpr);
+    return;
+  }
+
+  emitComment("Fabric width adaptation (" + std::string(waId) + "): " +
+              std::to_string(srcWidth) + "b -> " + std::to_string(dstWidth) +
+              "b");
+  emitComment("See docs/spec-rtl-width-adaptation.md");
+
+  if (srcWidth > dstWidth) {
+    // Truncation: take lower dstWidth bits.
+    emitRaw("/* verilator lint_off WIDTHTRUNC */\n");
+    std::string rhs = std::string(srcExpr) + "[" +
+                      std::to_string(dstWidth - 1) + ":0]";
+    emitAssign(dstName, rhs);
+    emitRaw("/* verilator lint_on WIDTHTRUNC */\n");
+  } else {
+    // Zero-extension: pad upper bits with 0.
+    unsigned pad = dstWidth - srcWidth;
+    emitRaw("/* verilator lint_off WIDTHEXPAND */\n");
+    std::string rhs = "{" + std::to_string(pad) + "'b0, " +
+                      std::string(srcExpr) + "}";
+    emitAssign(dstName, rhs);
+    emitRaw("/* verilator lint_on WIDTHEXPAND */\n");
+  }
+}
+
+void SVEmitter::emitTaggedWidthAdapt(llvm::StringRef dstName,
+                                      llvm::StringRef srcExpr,
+                                      unsigned srcDataW, unsigned srcTagW,
+                                      unsigned dstDataW, unsigned dstTagW,
+                                      llvm::StringRef waId) {
+  unsigned srcTotal = srcDataW + srcTagW;
+  unsigned dstTotal = dstDataW + dstTagW;
+
+  // If both data and tag widths match, plain assign.
+  if (srcDataW == dstDataW && srcTagW == dstTagW) {
+    emitAssign(dstName, srcExpr);
+    return;
+  }
+
+  emitComment("Fabric tagged width adaptation (" + std::string(waId) +
+              "): data " + std::to_string(srcDataW) + "b->" +
+              std::to_string(dstDataW) + "b, tag " +
+              std::to_string(srcTagW) + "b->" + std::to_string(dstTagW) +
+              "b");
+  emitComment("See docs/spec-rtl-width-adaptation.md");
+
+  // Build adapted data portion expression.
+  std::string srcData = std::string(srcExpr) + "[" +
+                        std::to_string(srcDataW - 1) + ":0]";
+  std::string dataExpr;
+  if (srcDataW == dstDataW) {
+    dataExpr = srcData;
+  } else if (srcDataW > dstDataW) {
+    dataExpr = srcData + "[" + std::to_string(dstDataW - 1) + ":0]";
+  } else {
+    unsigned pad = dstDataW - srcDataW;
+    dataExpr = "{" + std::to_string(pad) + "'b0, " + srcData + "}";
+  }
+
+  // Build adapted tag portion expression.
+  std::string srcTag = std::string(srcExpr) + "[" +
+                       std::to_string(srcDataW + srcTagW - 1) + ":" +
+                       std::to_string(srcDataW) + "]";
+  std::string tagExpr;
+  if (srcTagW == dstTagW) {
+    tagExpr = srcTag;
+  } else if (srcTagW > dstTagW) {
+    tagExpr = srcTag + "[" + std::to_string(dstTagW - 1) + ":0]";
+  } else {
+    unsigned pad = dstTagW - srcTagW;
+    tagExpr = "{" + std::to_string(pad) + "'b0, " + srcTag + "}";
+  }
+
+  // Emit the combined adapted assignment with lint waivers.
+  std::string lintTag = (srcTotal != dstTotal)
+                            ? ((srcTotal > dstTotal) ? "WIDTHTRUNC"
+                                                     : "WIDTHEXPAND")
+                            : "";
+  if (!lintTag.empty())
+    emitRaw("/* verilator lint_off " + lintTag + " */\n");
+  std::string rhs = "{" + tagExpr + ", " + dataExpr + "}";
+  emitAssign(dstName, rhs);
+  if (!lintTag.empty())
+    emitRaw("/* verilator lint_on " + lintTag + " */\n");
+}
+
 void SVEmitter::emitBlankLine() { os_ << "\n"; }
 
 void SVEmitter::emitComment(llvm::StringRef text) {

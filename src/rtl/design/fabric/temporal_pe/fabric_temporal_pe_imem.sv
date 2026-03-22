@@ -118,7 +118,11 @@ module fabric_temporal_pe_imem
           cfg_flat[int'(cfg_word_cnt) * 32 + iter_var0] <= cfg_wdata[iter_var0];
         end : cfg_bit_in_range
       end : cfg_bit_pack
+      // Fabric width adaptation (WA-4): config bit extraction
+      // See docs/spec-rtl-width-adaptation.md
+      /* verilator lint_off WIDTHTRUNC */
       if (cfg_word_cnt == CFG_CNT_W'(TOTAL_CFG_WORDS - 1)) begin : cfg_wrap
+      /* verilator lint_on WIDTHTRUNC */
         cfg_word_cnt <= '0;
       end : cfg_wrap
       else begin : cfg_advance
@@ -134,6 +138,9 @@ module fabric_temporal_pe_imem
   // We use EFF_* widths (min 1) and guard assignment with generate-time
   // conditions where the field truly has zero bits.
   // ---------------------------------------------------------------
+  // Fabric width adaptation (WA-4): config bit extraction
+  // See docs/spec-rtl-width-adaptation.md
+  /* verilator lint_off WIDTHTRUNC */
   always_comb begin : slot_decode
     integer iter_var0;
     integer iter_var1;
@@ -208,10 +215,14 @@ module fabric_temporal_pe_imem
       end : decode_result
     end : decode_slot
   end : slot_decode
+  /* verilator lint_on WIDTHTRUNC */
 
   // ---------------------------------------------------------------
   // Persistent FU config extraction
   // ---------------------------------------------------------------
+  // Fabric width adaptation (WA-4): config bit extraction
+  // See docs/spec-rtl-width-adaptation.md
+  /* verilator lint_off WIDTHTRUNC */
   generate
     if (TOTAL_FU_CFG_BITS > 0) begin : gen_fu_cfg
       assign fu_cfg_bits = cfg_flat[NUM_INSTR * SLOT_BITS +: TOTAL_FU_CFG_BITS];
@@ -220,6 +231,7 @@ module fabric_temporal_pe_imem
       assign fu_cfg_bits = '0;
     end : gen_no_fu_cfg
   endgenerate
+  /* verilator lint_on WIDTHTRUNC */
 
   // ---------------------------------------------------------------
   // Tag-match CAM: first valid slot whose tag matches query_tag

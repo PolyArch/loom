@@ -103,11 +103,15 @@ module fabric_temporal_sw
 
   always_comb begin : unpack_slots
     integer iter_var0;
+    // Fabric width adaptation (WA-4): config bit extraction
+    // See docs/spec-rtl-width-adaptation.md
+    /* verilator lint_off WIDTHTRUNC */
     for (iter_var0 = 0; iter_var0 < NUM_SLOTS; iter_var0 = iter_var0 + 1) begin : per_slot
       slot_valid[iter_var0]  = cfg_sr[iter_var0 * SLOT_WIDTH];
       slot_tag[iter_var0]    = cfg_sr[iter_var0 * SLOT_WIDTH + 1 +: TAG_WIDTH];
       slot_routes[iter_var0] = cfg_sr[iter_var0 * SLOT_WIDTH + 1 + TAG_WIDTH +: ROUTE_BITS];
     end : per_slot
+    /* verilator lint_on WIDTHTRUNC */
   end : unpack_slots
 
   // ---------------------------------------------------------------

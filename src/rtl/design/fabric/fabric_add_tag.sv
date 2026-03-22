@@ -43,7 +43,11 @@ module fabric_add_tag #(
     end : cfg_reset
     else begin : cfg_update
       if (cfg_valid && cfg_ready) begin : cfg_capture
+        // Fabric width adaptation (WA-4): config bit extraction
+        // See docs/spec-rtl-width-adaptation.md
+        /* verilator lint_off WIDTHTRUNC */
         cfg_tag <= cfg_wdata[TAG_WIDTH-1:0];
+        /* verilator lint_on WIDTHTRUNC */
       end : cfg_capture
     end : cfg_update
   end : cfg_load

@@ -105,7 +105,11 @@ module fabric_spatial_sw_core
             cfg_bits[int'(cfg_word_cnt) * 32 + iter_var0] <= cfg_wdata[iter_var0];
           end : cfg_bit_valid
         end : cfg_bit_loop
+        // Fabric width adaptation (WA-4): config bit extraction
+        // See docs/spec-rtl-width-adaptation.md
+        /* verilator lint_off WIDTHTRUNC */
         if (cfg_word_cnt == CFG_WORDS[$clog2(CFG_WORDS > 1 ? CFG_WORDS : 2)-1:0] - 1'b1) begin : cfg_wrap
+        /* verilator lint_on WIDTHTRUNC */
           cfg_word_cnt <= '0;
         end : cfg_wrap
         else begin : cfg_incr
@@ -119,6 +123,9 @@ module fabric_spatial_sw_core
   logic [ROUTE_BITS > 0 ? ROUTE_BITS-1 : 0 : 0] route_bitmap;
   logic [NUM_IN-1:0]                              discard;
 
+  // Fabric width adaptation (WA-4): config bit extraction
+  // See docs/spec-rtl-width-adaptation.md
+  /* verilator lint_off WIDTHTRUNC */
   generate
     if (ROUTE_BITS > 0) begin : gen_route_extract
       assign route_bitmap = cfg_bits[ROUTE_BITS-1:0];
@@ -128,6 +135,7 @@ module fabric_spatial_sw_core
     end : gen_route_zero
   endgenerate
   assign discard = cfg_bits[ROUTE_BITS + NUM_IN - 1 : ROUTE_BITS];
+  /* verilator lint_on WIDTHTRUNC */
 
   // ---------------------------------------------------------------
   // Route-enabled map

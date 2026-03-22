@@ -1,7 +1,5 @@
-// Golden input trace for temporal_sw test: 4 tokens of 32-bit data
-// The DUT input is 36-bit (tagged), but dut_inst.svh zero-pads the tag.
-// All tokens have tag=0, which matches the configured route slot.
-00000001
-00000002
-00000003
-00000004
+// Golden input trace for temporal_sw test: 36-bit packed {tag=0, data}
+000000001
+000000002
+000000003
+000000004

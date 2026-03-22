@@ -456,13 +456,15 @@ std::string generateSpatialPE(loom::fabric::SpatialPEOp peOp,
 
       for (unsigned i = 0; i < fu.numInputs; ++i) {
         std::string idx = u2s(i);
-        // Narrow the data connection for FU ports narrower than DATA_WIDTH.
+        // Adapt the data connection between PE DATA_WIDTH and FU port width.
         // NoneType returns 0 from getDataWidth but maps to 1-bit in SV.
         unsigned portW = SVEmitter::getDataWidth(fuFnType.getInput(i));
         unsigned svPortW = (portW == 0) ? 1 : portW;
         std::string dataExpr = fp + "_gated_in_data[" + idx + "]";
         if (svPortW < dataWidth)
           dataExpr += "[" + u2s(svPortW - 1) + ":0]";
+        else if (svPortW > dataWidth)
+          dataExpr = "{" + u2s(svPortW - dataWidth) + "'b0, " + dataExpr + "}";
         fuConns.push_back({"in_data_" + idx, dataExpr});
         fuConns.push_back(
             {"in_valid_" + idx,
@@ -471,10 +473,29 @@ std::string generateSpatialPE(loom::fabric::SpatialPEOp peOp,
             {"in_ready_" + idx,
              fp + "_gated_in_ready[" + idx + "]"});
       }
+
+      // For FU outputs with width != DATA_WIDTH, use intermediate wires
+      // and explicit width adaptation assigns.
+      struct FUOutAdapt {
+        unsigned index;
+        std::string rawWire;
+        unsigned fuWidth;
+      };
+      std::vector<FUOutAdapt> outAdapts;
+
       for (unsigned i = 0; i < fu.numOutputs; ++i) {
         std::string idx = u2s(i);
-        fuConns.push_back(
-            {"out_data_" + idx, fp + "_body_out_data[" + idx + "]"});
+        unsigned portW = SVEmitter::getDataWidth(fuFnType.getResult(i));
+        unsigned svPortW = (portW == 0) ? 1 : portW;
+        if (svPortW != dataWidth) {
+          std::string rawWire = fp + "_out_raw" + idx;
+          emitter.emitWire("logic" + SVEmitter::bitRange(svPortW), rawWire);
+          fuConns.push_back({"out_data_" + idx, rawWire});
+          outAdapts.push_back({i, rawWire, svPortW});
+        } else {
+          fuConns.push_back(
+              {"out_data_" + idx, fp + "_body_out_data[" + idx + "]"});
+        }
         fuConns.push_back(
             {"out_valid_" + idx,
              fp + "_body_out_valid[" + idx + "]"});
@@ -488,6 +509,13 @@ std::string generateSpatialPE(loom::fabric::SpatialPEOp peOp,
 
       emitter.emitInstance(fu.svModuleName, fp + "_body",
                            fuParams, fuConns);
+
+      // Width adaptation for FU outputs that differ from DATA_WIDTH.
+      for (const auto &oa : outAdapts) {
+        emitter.emitWidthAdapt(
+            fp + "_body_out_data[" + u2s(oa.index) + "]",
+            oa.rawWire, oa.fuWidth, dataWidth, "WA-1");
+      }
     }
     emitter.emitBlankLine();
   }
@@ -978,13 +1006,15 @@ std::string generateTemporalPE(loom::fabric::TemporalPEOp peOp,
 
       for (unsigned i = 0; i < fu.numInputs; ++i) {
         std::string idx = u2s(i);
-        // Narrow the data connection for FU ports narrower than DATA_WIDTH.
+        // Adapt the data connection between PE DATA_WIDTH and FU port width.
         // NoneType returns 0 from getDataWidth but maps to 1-bit in SV.
         unsigned portW = SVEmitter::getDataWidth(fuFnType.getInput(i));
         unsigned svPortW = (portW == 0) ? 1 : portW;
         std::string dataExpr = fp + "_body_in" + idx;
         if (svPortW < dataWidth)
           dataExpr += "[" + u2s(svPortW - 1) + ":0]";
+        else if (svPortW > dataWidth)
+          dataExpr = "{" + u2s(svPortW - dataWidth) + "'b0, " + dataExpr + "}";
         fuConns.push_back({"in_data_" + idx, dataExpr});
         fuConns.push_back(
             {"in_valid_" + idx,
@@ -993,10 +1023,29 @@ std::string generateTemporalPE(loom::fabric::TemporalPEOp peOp,
             {"in_ready_" + idx,
              fp + "_body_in_ready[" + idx + "]"});
       }
+
+      // For FU outputs with width != DATA_WIDTH, use intermediate wires
+      // and explicit width adaptation assigns.
+      struct FUOutAdaptT {
+        unsigned index;
+        std::string rawWire;
+        unsigned fuWidth;
+      };
+      std::vector<FUOutAdaptT> outAdapts;
+
       for (unsigned i = 0; i < fu.numOutputs; ++i) {
         std::string idx = u2s(i);
-        fuConns.push_back(
-            {"out_data_" + idx, fp + "_body_out" + idx});
+        unsigned portW = SVEmitter::getDataWidth(fuFnType.getResult(i));
+        unsigned svPortW = (portW == 0) ? 1 : portW;
+        if (svPortW != dataWidth) {
+          std::string rawWire = fp + "_out_raw" + idx;
+          emitter.emitWire("logic" + SVEmitter::bitRange(svPortW), rawWire);
+          fuConns.push_back({"out_data_" + idx, rawWire});
+          outAdapts.push_back({i, rawWire, svPortW});
+        } else {
+          fuConns.push_back(
+              {"out_data_" + idx, fp + "_body_out" + idx});
+        }
         fuConns.push_back(
             {"out_valid_" + idx,
              fp + "_body_out_valid[" + idx + "]"});
@@ -1014,6 +1063,13 @@ std::string generateTemporalPE(loom::fabric::TemporalPEOp peOp,
 
       emitter.emitInstance(fu.svModuleName, fp + "_body",
                            fuParams, fuConns);
+
+      // Width adaptation for FU outputs that differ from DATA_WIDTH.
+      for (const auto &oa : outAdapts) {
+        emitter.emitWidthAdapt(
+            fp + "_body_out" + u2s(oa.index),
+            oa.rawWire, oa.fuWidth, dataWidth, "WA-1");
+      }
     }
     emitter.emitBlankLine();
 

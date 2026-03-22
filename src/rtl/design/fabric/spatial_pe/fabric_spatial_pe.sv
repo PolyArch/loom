@@ -120,7 +120,11 @@ module fabric_spatial_pe
     else begin : cfg_update
       if (cfg_valid && cfg_ready) begin : cfg_capture
         cfg_flat[cfg_word_idx*32 +: 32] <= cfg_wdata;
+        // Fabric width adaptation (WA-4): config bit extraction
+        // See docs/spec-rtl-width-adaptation.md
+        /* verilator lint_off WIDTHTRUNC */
         if (cfg_word_idx == CFG_IDX_W'(NUM_CFG_WORDS - 1)) begin : cfg_wrap
+        /* verilator lint_on WIDTHTRUNC */
           cfg_word_idx <= '0;
         end : cfg_wrap
         else begin : cfg_inc
@@ -152,6 +156,9 @@ module fabric_spatial_pe
 
   // Opcode field.
   logic [OPCODE_REG_W-1:0] cfg_opcode;
+  // Fabric width adaptation (WA-4): config bit extraction
+  // See docs/spec-rtl-width-adaptation.md
+  /* verilator lint_off WIDTHTRUNC */
   generate
     if (OPCODE_WIDTH > 0) begin : gen_opcode_extract
       assign cfg_opcode = cfg_flat[BIT_OPCODE +: OPCODE_WIDTH];
@@ -160,6 +167,7 @@ module fabric_spatial_pe
       assign cfg_opcode = '0;
     end : gen_opcode_single
   endgenerate
+  /* verilator lint_on WIDTHTRUNC */
   assign pe_opcode = cfg_opcode;
 
   // Input mux fields.
@@ -168,6 +176,9 @@ module fabric_spatial_pe
   logic [MAX_FU_IN-1:0]    in_mux_discard;
   logic [MAX_FU_IN-1:0]    in_mux_disconnect;
 
+  // Fabric width adaptation (WA-4): config bit extraction
+  // See docs/spec-rtl-width-adaptation.md
+  /* verilator lint_off WIDTHTRUNC */
   generate
     genvar gi;
     for (gi = 0; gi < MAX_FU_IN; gi = gi + 1) begin : gen_in_mux_extract
@@ -184,6 +195,7 @@ module fabric_spatial_pe
       assign in_mux_disconnect[gi] = cfg_flat[FIELD_BASE + IN_MUX_SEL_W + 1];
     end : gen_in_mux_extract
   endgenerate
+  /* verilator lint_on WIDTHTRUNC */
 
   // Output demux fields.
   localparam int unsigned OUT_SEL_W = (OUT_DEMUX_SEL_W > 0) ? OUT_DEMUX_SEL_W : 1;
@@ -191,6 +203,9 @@ module fabric_spatial_pe
   logic [MAX_FU_OUT-1:0]    out_demux_discard;
   logic [MAX_FU_OUT-1:0]    out_demux_disconnect;
 
+  // Fabric width adaptation (WA-4): config bit extraction
+  // See docs/spec-rtl-width-adaptation.md
+  /* verilator lint_off WIDTHTRUNC */
   generate
     genvar go;
     for (go = 0; go < MAX_FU_OUT; go = go + 1) begin : gen_out_demux_extract
@@ -207,8 +222,12 @@ module fabric_spatial_pe
       assign out_demux_disconnect[go] = cfg_flat[FIELD_BASE + OUT_DEMUX_SEL_W + 1];
     end : gen_out_demux_extract
   endgenerate
+  /* verilator lint_on WIDTHTRUNC */
 
   // FU config bits.
+  // Fabric width adaptation (WA-4): config bit extraction
+  // See docs/spec-rtl-width-adaptation.md
+  /* verilator lint_off WIDTHTRUNC */
   generate
     if (MAX_FU_CFG_BITS > 0) begin : gen_fu_cfg_extract
       assign fu_cfg_bits = cfg_flat[BIT_FU_CFG +: MAX_FU_CFG_BITS];
@@ -217,6 +236,7 @@ module fabric_spatial_pe
       assign fu_cfg_bits = 1'b0;
     end : gen_fu_cfg_zero
   endgenerate
+  /* verilator lint_on WIDTHTRUNC */
 
   // ---------------------------------------------------------------
   // Input mux bank instantiation

@@ -89,7 +89,11 @@ module fabric_spatial_sw_decomp
             cfg_bits[int'(cfg_word_cnt) * 32 + iter_var0] <= cfg_wdata[iter_var0];
           end : cfg_bit_valid
         end : cfg_bit_loop
+        // Fabric width adaptation (WA-4): config bit extraction
+        // See docs/spec-rtl-width-adaptation.md
+        /* verilator lint_off WIDTHTRUNC */
         if (cfg_word_cnt == CFG_WORDS[$clog2(CFG_WORDS > 1 ? CFG_WORDS : 2)-1:0] - 1'b1) begin : cfg_wrap
+        /* verilator lint_on WIDTHTRUNC */
           cfg_word_cnt <= '0;
         end : cfg_wrap
         else begin : cfg_incr
@@ -121,6 +125,9 @@ module fabric_spatial_sw_decomp
       logic [ROUTE_BITS_PER_LANE > 0 ? ROUTE_BITS_PER_LANE-1 : 0 : 0] lane_route;
       logic [NUM_IN-1:0] lane_discard;
 
+      // Fabric width adaptation (WA-4): config bit extraction
+      // See docs/spec-rtl-width-adaptation.md
+      /* verilator lint_off WIDTHTRUNC */
       if (ROUTE_BITS_PER_LANE > 0) begin : gen_lane_route_extract
         assign lane_route = cfg_bits[LANE_CFG_BASE + ROUTE_BITS_PER_LANE - 1 : LANE_CFG_BASE];
       end : gen_lane_route_extract
@@ -130,6 +137,7 @@ module fabric_spatial_sw_decomp
 
       assign lane_discard = cfg_bits[LANE_CFG_BASE + ROUTE_BITS_PER_LANE + NUM_IN - 1 :
                                      LANE_CFG_BASE + ROUTE_BITS_PER_LANE];
+      /* verilator lint_on WIDTHTRUNC */
 
       // Build route_enabled for this lane (same structure as core).
       logic [NUM_IN-1:0] lane_route_enabled [NUM_OUT];

@@ -536,25 +536,20 @@ def parse_dut_port_widths(gen_sv_path):
 
 
 def generate_dut_inst_svh(output_path, dut_module, num_inputs, num_outputs,
-                          visible_input_indices=None, port_widths=None):
+                          visible_input_indices=None, port_widths=None,
+                          port_meta=None):
     """Generate the dut_inst.svh file with DUT port connections.
 
-    Creates a SystemVerilog include file that instantiates the DUT module
-    with the correct port topology, connecting to the testbench wrapper's
-    drv_data/drv_valid/drv_ready and mon_data/mon_valid/mon_ready arrays.
-
-    visible_input_indices: list of original argument indices for visible
-    (non-memref) input ports. SVGenTop uses these indices for port naming:
-    mod_in<orig_idx>. If None, defaults to dense [0..num_inputs-1].
-
-    port_widths: dict mapping port name to total bit width (from
-    parse_dut_port_widths). When a port is wider than DATA_WIDTH (32),
-    intermediate wires are used to adapt the width.
+    port_meta: dict mapping port name -> (data_width, tag_width).
+    When available, generates tagged port connections with explicit
+    width adaptation.
     """
     if visible_input_indices is None:
         visible_input_indices = list(range(num_inputs))
     if port_widths is None:
         port_widths = {}
+    if port_meta is None:
+        port_meta = {}
 
     DATA_WIDTH = 32  # Must match tb_module_wrapper default
 
@@ -564,23 +559,49 @@ def generate_dut_inst_svh(output_path, dut_module, num_inputs, num_outputs,
                  f"(indices {visible_input_indices}), {num_outputs} outputs")
     if port_widths:
         lines.append(f"// Port widths: {port_widths}")
+    if port_meta:
+        lines.append(f"// Port metadata: {port_meta}")
     lines.append("")
 
-    # Declare intermediate wires for width-mismatched input ports
+    # Fabric width adaptation (WA-5): testbench width adaptation
+    # See docs/spec-rtl-width-adaptation.md
+    lines.append("// Fabric width adaptation (WA-5): testbench width adaptation")
+    lines.append("// See docs/spec-rtl-width-adaptation.md")
+    lines.append("")
+
+    # Declare intermediate wires for width-mismatched or tagged ports
     for drv_idx, orig_idx in enumerate(visible_input_indices):
         port_name = f"mod_in{orig_idx}"
+        meta = port_meta.get(port_name)
         w = port_widths.get(port_name, DATA_WIDTH)
-        if w > DATA_WIDTH:
+        if meta and meta[1] > 0:
+            # Tagged input: pack {tag, data} from separate testbench arrays
+            dw, tw = meta
+            total = dw + tw
+            lines.append(f"/* verilator lint_off WIDTHTRUNC */")
+            lines.append(f"/* verilator lint_off WIDTHEXPAND */")
+            lines.append(f"wire [{total-1}:0] _dut_{port_name};")
+            lines.append(f"assign _dut_{port_name} = "
+                         f"{{drv_tag[{drv_idx}][{tw-1}:0], drv_data[{drv_idx}][{dw-1}:0]}};")
+            lines.append(f"/* verilator lint_on WIDTHEXPAND */")
+            lines.append(f"/* verilator lint_on WIDTHTRUNC */")
+        elif w > DATA_WIDTH:
             pad = w - DATA_WIDTH
+            lines.append(f"/* verilator lint_off WIDTHEXPAND */")
             lines.append(f"wire [{w-1}:0] _dut_{port_name};")
             lines.append(f"assign _dut_{port_name} = "
                          f"{{{{{pad}{{1'b0}}}}, drv_data[{drv_idx}]}};")
+            lines.append(f"/* verilator lint_on WIDTHEXPAND */")
 
-    # Declare intermediate wires for width-mismatched output ports
     for o in range(num_outputs):
         port_name = f"mod_out{o}"
+        meta = port_meta.get(port_name)
         w = port_widths.get(port_name, DATA_WIDTH)
-        if w > DATA_WIDTH:
+        if meta and meta[1] > 0:
+            dw, tw = meta
+            total = dw + tw
+            lines.append(f"wire [{total-1}:0] _dut_{port_name};")
+        elif w > DATA_WIDTH:
             lines.append(f"wire [{w-1}:0] _dut_{port_name};")
 
     lines.append("")
@@ -593,8 +614,9 @@ def generate_dut_inst_svh(output_path, dut_module, num_inputs, num_outputs,
     # Input port connections
     for drv_idx, orig_idx in enumerate(visible_input_indices):
         port_name = f"mod_in{orig_idx}"
+        meta = port_meta.get(port_name)
         w = port_widths.get(port_name, DATA_WIDTH)
-        if w > DATA_WIDTH:
+        if (meta and meta[1] > 0) or w > DATA_WIDTH:
             ports.append(f"    .{port_name}        (_dut_{port_name})")
         else:
             ports.append(f"    .{port_name}        (drv_data[{drv_idx}])")
@@ -604,8 +626,9 @@ def generate_dut_inst_svh(output_path, dut_module, num_inputs, num_outputs,
     # Output port connections
     for o in range(num_outputs):
         port_name = f"mod_out{o}"
+        meta = port_meta.get(port_name)
         w = port_widths.get(port_name, DATA_WIDTH)
-        if w > DATA_WIDTH:
+        if (meta and meta[1] > 0) or w > DATA_WIDTH:
             ports.append(f"    .{port_name}       (_dut_{port_name})")
         else:
             ports.append(f"    .{port_name}       (mon_data[{o}])")
@@ -617,17 +640,26 @@ def generate_dut_inst_svh(output_path, dut_module, num_inputs, num_outputs,
     ports.append("    .cfg_last       (cfg_last)")
     ports.append("    .cfg_ready      (cfg_ready)")
 
-    lines.append("`DUT_MODULE u_dut (")
+    lines.append(f"`DUT_MODULE u_dut (")
     lines.append(",\n".join(ports))
     lines.append(");")
     lines.append("")
 
     # Width adaptation assigns for output ports
+    lines.append("/* verilator lint_off WIDTHTRUNC */")
+    lines.append("/* verilator lint_off WIDTHEXPAND */")
     for o in range(num_outputs):
         port_name = f"mod_out{o}"
+        meta = port_meta.get(port_name)
         w = port_widths.get(port_name, DATA_WIDTH)
-        if w > DATA_WIDTH:
+        if meta and meta[1] > 0:
+            dw, tw = meta
+            lines.append(f"assign mon_data[{o}] = _dut_{port_name}[{dw-1}:0];")
+            lines.append(f"assign mon_tag[{o}] = _dut_{port_name}[{dw+tw-1}:{dw}];")
+        elif w > DATA_WIDTH:
             lines.append(f"assign mon_data[{o}] = _dut_{port_name}[{DATA_WIDTH-1}:0];")
+    lines.append("/* verilator lint_on WIDTHEXPAND */")
+    lines.append("/* verilator lint_on WIDTHTRUNC */")
 
     lines.append("")
 
@@ -719,6 +751,29 @@ def read_count_file(hex_path):
             return int(f.read().strip())
     except (OSError, ValueError):
         return 0
+
+
+def read_trace_meta(hex_path):
+    """Read a .meta file associated with a .hex trace file.
+
+    Given a path like /dir/module_out0_tokens.hex, looks for
+    /dir/module_out0_tokens.meta and returns (data_width, tag_width).
+    Returns (None, None) if the .meta file does not exist or is unreadable.
+    """
+    meta_path = hex_path.rsplit(".hex", 1)[0] + ".meta"
+    data_width = None
+    tag_width = None
+    try:
+        with open(meta_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("data_width="):
+                    data_width = int(line.split("=", 1)[1])
+                elif line.startswith("tag_width="):
+                    tag_width = int(line.split("=", 1)[1])
+    except (OSError, ValueError):
+        pass
+    return data_width, tag_width
 
 
 def find_config_hex(gen_dir):
@@ -942,24 +997,48 @@ def main():
                         rtl_dir, "generated", dut_module + ".sv")
                     port_widths = parse_dut_port_widths(gen_sv_path)
 
+                    # Read per-port width metadata from .meta files.
+                    port_meta = {}
+                    max_tag_width = 0
+                    for ch_idx, trace_path in input_traces:
+                        port_name = f"mod_in{visible_input_indices[ch_idx] if ch_idx < len(visible_input_indices) else ch_idx}"
+                        dw, tw = read_trace_meta(trace_path)
+                        if dw is not None:
+                            port_meta[port_name] = (dw, tw or 0)
+                            if tw and tw > max_tag_width:
+                                max_tag_width = tw
+                    for ch_idx, trace_path in output_traces:
+                        port_name = f"mod_out{ch_idx}"
+                        dw, tw = read_trace_meta(trace_path)
+                        if dw is not None:
+                            port_meta[port_name] = (dw, tw or 0)
+                            if tw and tw > max_tag_width:
+                                max_tag_width = tw
+
                     # Generate the DUT instantiation include file
                     dut_inst_path = os.path.join(beh_dir, "dut_inst.svh")
                     generate_dut_inst_svh(
                         dut_inst_path, dut_module,
                         num_inputs, num_outputs,
                         visible_input_indices,
-                        port_widths=port_widths)
+                        port_widths=port_widths,
+                        port_meta=port_meta)
                     print(f"[behaviour/{tc['module']}/{tc['test']}] "
                           f"Generated dut_inst.svh at {dut_inst_path}")
 
                     # Find config hex file and count words.
-                    # First check gen-collateral, then fall back to
-                    # checked-in golden_traces/ for infrastructure-only tests.
+                    # First check gen-collateral, then rtl-traces (has
+                    # copies of checked-in golden_traces), then fall back
+                    # to checked-in golden_traces/ directly.
                     config_hex = find_config_hex(gen_dir)
+                    if not config_hex:
+                        config_hex = find_config_hex(trace_dir)
                     if not config_hex:
                         checked_in_cfg = os.path.join(
                             os.path.dirname(tc["mlir"]), "golden_traces")
                         config_hex = find_config_hex(checked_in_cfg)
+                    if config_hex:
+                        config_hex = os.path.abspath(config_hex)
                     config_word_count = (count_hex_lines(config_hex)
                                          if config_hex else 0)
 
@@ -974,6 +1053,9 @@ def main():
                         "--num-dut-inputs", str(num_inputs),
                         "--num-dut-outputs", str(num_outputs),
                     ]
+
+                    if max_tag_width > 0:
+                        sim_args.extend(["--tag-width", str(max_tag_width)])
 
                     # Build per-channel plusargs for runtime TB config
                     plusarg_list = []

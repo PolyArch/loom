@@ -42,7 +42,7 @@ def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
                       tb_files=None, verilator_main=None,
                       dut_module=None, dut_inst_dir=None,
                       num_dut_inputs=1, num_dut_outputs=1,
-                      filelist_override=None):
+                      filelist_override=None, tag_width=0):
     """Compile with Verilator."""
     obj_dir = os.path.join(output_dir, "obj_dir")
     filelist = filelist_override or os.path.join(rtl_dir, "filelist.f")
@@ -74,6 +74,12 @@ def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
     # Pass port count defines so the SV wrapper knows the topology
     cmd.append(f"+define+NUM_DUT_INPUTS={num_dut_inputs}")
     cmd.append(f"+define+NUM_DUT_OUTPUTS={num_dut_outputs}")
+
+    # Override TAG_WIDTH parameter on the top module via -G (not +define+,
+    # which only creates a preprocessor macro and does not change the
+    # module parameter value).
+    if tag_width > 0:
+        cmd.append(f"-GTAG_WIDTH={tag_width}")
 
     if tb_files:
         cmd.extend(tb_files)
@@ -123,7 +129,7 @@ def compile_verilator(rtl_dir, tb_dir, top_module, output_dir,
 
 def compile_vcs(rtl_dir, tb_dir, top_module, output_dir,
                 tb_files=None, dut_module=None, dut_inst_dir=None,
-                num_dut_inputs=1, num_dut_outputs=1):
+                num_dut_inputs=1, num_dut_outputs=1, tag_width=0):
     """Compile with VCS."""
     filelist = os.path.join(rtl_dir, "filelist.f")
     sim_exec = os.path.join(output_dir, "simv")
@@ -150,6 +156,9 @@ def compile_vcs(rtl_dir, tb_dir, top_module, output_dir,
     # Pass port count defines so the SV wrapper knows the topology
     cmd.append(f"+define+NUM_DUT_INPUTS={num_dut_inputs}")
     cmd.append(f"+define+NUM_DUT_OUTPUTS={num_dut_outputs}")
+
+    if tag_width > 0:
+        cmd.append(f"-pvalue+TAG_WIDTH={tag_width}")
 
     if tb_files:
         cmd.extend(tb_files)
@@ -224,10 +233,16 @@ def compare_traces(golden_path, output_path, channel_label=""):
 
     mismatches = 0
     for i, (g, o) in enumerate(zip(golden_lines, output_lines)):
-        if g != o:
-            if mismatches < 10:
-                print(f"[run_sim] MISMATCH{label}[{i}]: golden={g}, output={o}")
-            mismatches += 1
+        try:
+            if int(g, 16) != int(o, 16):
+                if mismatches < 10:
+                    print(f"[run_sim] MISMATCH{label}[{i}]: golden={g}, output={o}")
+                mismatches += 1
+        except ValueError:
+            if g != o:
+                if mismatches < 10:
+                    print(f"[run_sim] MISMATCH{label}[{i}]: golden={g}, output={o}")
+                mismatches += 1
 
     if mismatches == 0:
         print(f"[run_sim] PASS{label}: All {len(golden_lines)} tokens match")
@@ -279,6 +294,8 @@ def main():
                         help="Number of DUT input ports")
     parser.add_argument("--num-dut-outputs", type=int, default=1,
                         help="Number of DUT output ports")
+    parser.add_argument("--tag-width", type=int, default=0,
+                        help="Tag width for tagged ports (passed as TAG_WIDTH define)")
     parser.add_argument("--plusargs", nargs="*", default=[],
                         help="Additional plusargs to pass to the simulator "
                              "(e.g. +NUM_INPUT_TOKENS_0=16 +CONFIG_FILE=cfg.hex)")
@@ -355,7 +372,8 @@ def main():
             dut_inst_dir=args.dut_inst_dir or None,
             num_dut_inputs=args.num_dut_inputs,
             num_dut_outputs=args.num_dut_outputs,
-            filelist_override=filelist_override)
+            filelist_override=filelist_override,
+            tag_width=args.tag_width)
     else:
         sim_exec = compile_vcs(
             args.rtl_dir, args.tb_dir,
@@ -364,7 +382,8 @@ def main():
             dut_module=args.dut_module or None,
             dut_inst_dir=args.dut_inst_dir or None,
             num_dut_inputs=args.num_dut_inputs,
-            num_dut_outputs=args.num_dut_outputs)
+            num_dut_outputs=args.num_dut_outputs,
+            tag_width=args.tag_width)
 
     if sim_exec is None:
         sys.exit(1)

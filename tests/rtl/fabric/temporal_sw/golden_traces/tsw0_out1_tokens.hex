@@ -1,6 +1,5 @@
-// Golden output trace for temporal_sw test: tag=0 tokens routed to out0
-// Output is 36-bit (tagged) but only lower 32 data bits are captured
-00000001
-00000002
-00000003
-00000004
+// Golden output trace for temporal_sw test: 36-bit packed {tag=0, data}
+000000001
+000000002
+000000003
+000000004
