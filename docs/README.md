@@ -3,12 +3,6 @@
 LOOM is the successor design to the legacy design for the current Fabric Compiler effort.
 This directory contains the implementation-anchor specifications for LOOM.
 
-These documents are aligned primarily with:
-
-- `temp/plan-rebuild-0315-0.md`
-- `temp/design-four-layer-dse.md`
-- `temp/design-host-accel-interface.md`
-
 When the legacy design and LOOM differ, LOOM documents in this directory take
 precedence for future work under this repository.
 
@@ -76,12 +70,10 @@ precedence for future work under this repository.
 
 - This is the first LOOM-native spec set. It intentionally focuses on the
   currently active architecture and the most important implementation anchors.
-- Backend realization, standalone simulation, and gem5 integration are still
-  primarily anchored by `temp/plan-rebuild-0315-0.md` and related design notes.
+- Backend realization, standalone simulation, and gem5 integration specs
+  are included above and continue to evolve.
 - Several currently observed mapper and visualization gaps are intentionally
   captured here as normative requirements so later implementation work can
   converge against explicit specs.
 - Pure project-management content such as implementation batches remains better
   suited to planning notes than to normative spec documents.
-- Future documents should extend this structure instead of adding new
-  ad-hoc design notes under `temp/`.
