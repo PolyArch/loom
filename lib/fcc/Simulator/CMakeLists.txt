@@ -1,6 +1,7 @@
 add_library(FccSimulator STATIC
   CycleBackend.cpp
   CycleKernel.cpp
+  CycleKernelMemory.cpp
   FunctionalBackend.cpp
   FunctionalBackendOps.cpp
   RuntimeImageBuilder.cpp

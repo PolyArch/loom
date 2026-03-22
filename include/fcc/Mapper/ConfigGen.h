@@ -9,6 +9,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <string>
 #include <cstdint>
@@ -86,6 +87,14 @@ private:
                     const MapperTimingSummary *timingSummary,
                     const MapperSearchSummary *searchSummary,
                     llvm::StringRef techMapDiagnostics);
+  void writeMapJsonTailSections(llvm::raw_ostream &out,
+                                const MappingState &state, const Graph &dfg,
+                                const Graph &adg,
+                                const ADGFlattener &flattener,
+                                llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+                                llvm::ArrayRef<FUConfigSelection> fuConfigs,
+                                const MapperTimingSummary *timingSummary,
+                                const MapperSearchSummary *searchSummary);
 
   std::vector<NodeConfig> nodeConfigs_;
   std::vector<ConfigSlice> configSlices_;

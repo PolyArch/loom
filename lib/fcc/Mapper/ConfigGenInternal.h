@@ -23,6 +23,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <map>
@@ -94,6 +95,58 @@ struct TemporalConfigPlan {
   llvm::SmallVector<TemporalRegisterBinding, 8> registerBindings;
   bool complete = true;
 };
+
+// ---------------------------------------------------------------------------
+// Report helpers
+// ---------------------------------------------------------------------------
+std::string escapeJsonString(llvm::StringRef text);
+std::string summarizeConfigField(const FUConfigField &field);
+bool getEffectiveFifoBypassed(const Node *hwNode, IdIndex hwId,
+                              const MappingState &state);
+void writeOptionalUIntJson(llvm::raw_ostream &out, unsigned value);
+int64_t computeSelectedUnitTemporalPenalty(const TechMapper::Unit &unit);
+int64_t computeFamilyScarcityPenalty(const TechMapper::Plan *techMapPlan,
+                                     unsigned familyIndex);
+void writeOptionalUIntText(llvm::raw_ostream &out, unsigned value);
+llvm::StringRef lookupSupportClassKey(const TechMapper::Plan *techMapPlan,
+                                      unsigned id);
+llvm::StringRef lookupConfigClassKey(const TechMapper::Plan *techMapPlan,
+                                     unsigned id);
+llvm::StringRef lookupConfigClassReason(const TechMapper::Plan *techMapPlan,
+                                        unsigned id);
+llvm::StringRef lookupFamilySignature(const TechMapper::Plan *techMapPlan,
+                                      unsigned id);
+const TechMapper::CandidateSummaryInfo *
+lookupCandidateSummary(const TechMapper::Plan *techMapPlan, unsigned id);
+void writeCandidateFeedbackRefJson(llvm::raw_ostream &out,
+                                   const TechMapper::Plan *techMapPlan,
+                                   unsigned id);
+void writeFamilyFeedbackRefJson(llvm::raw_ostream &out,
+                                const TechMapper::Plan *techMapPlan,
+                                unsigned id);
+void writeConfigClassFeedbackRefJson(llvm::raw_ostream &out,
+                                     const TechMapper::Plan *techMapPlan,
+                                     unsigned id);
+void writeCandidatePenaltyJson(llvm::raw_ostream &out,
+                               const TechMapper::Plan *techMapPlan,
+                               const TechMapper::WeightedIdPenalty &penalty);
+void writeFamilyPenaltyJson(llvm::raw_ostream &out,
+                            const TechMapper::Plan *techMapPlan,
+                            const TechMapper::WeightedIdPenalty &penalty);
+void writeConfigClassPenaltyJson(llvm::raw_ostream &out,
+                                 const TechMapper::Plan *techMapPlan,
+                                 const TechMapper::WeightedIdPenalty &penalty);
+void writeCandidateFeedbackRefText(llvm::raw_ostream &out,
+                                   const TechMapper::Plan *techMapPlan,
+                                   unsigned id);
+void writeFamilyFeedbackRefText(llvm::raw_ostream &out,
+                                const TechMapper::Plan *techMapPlan,
+                                unsigned id);
+void writeConfigClassFeedbackRefText(llvm::raw_ostream &out,
+                                     const TechMapper::Plan *techMapPlan,
+                                     unsigned id);
+std::string
+sanitizeTechMapDiagnosticsForArtifact(llvm::StringRef diagnostics);
 
 // ---------------------------------------------------------------------------
 // Bit packing helpers

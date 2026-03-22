@@ -224,37 +224,6 @@ GeneratedNodeConfig buildMemoryConfig(const Node *hwNode, IdIndex hwId,
   return cfg;
 }
 
-namespace {
-
-bool getEffectiveFifoBypassed(const Node *hwNode, IdIndex hwId,
-                              const MappingState &state) {
-  bool bypassable = false;
-  bool bypassed = false;
-  if (!hwNode)
-    return false;
-  for (const auto &attr : hwNode->attributes) {
-    if (attr.getName() == "bypassable") {
-      if (mlir::isa<mlir::BoolAttr>(attr.getValue()))
-        bypassable = mlir::cast<mlir::BoolAttr>(attr.getValue()).getValue();
-    } else if (attr.getName() == "bypassed") {
-      if (auto boolAttr = mlir::dyn_cast<mlir::BoolAttr>(attr.getValue()))
-        bypassed = boolAttr.getValue();
-    }
-  }
-  if (!bypassable)
-    return false;
-  if (hwId < state.hwNodeFifoBypassedOverride.size()) {
-    int8_t overrideValue = state.hwNodeFifoBypassedOverride[hwId];
-    if (overrideValue == 0)
-      return false;
-    if (overrideValue > 0)
-      return true;
-  }
-  return bypassed;
-}
-
-} // namespace
-
 GeneratedNodeConfig buildFifoConfig(const Node *hwNode, IdIndex hwId,
                                     const MappingState &state) {
   GeneratedNodeConfig cfg;

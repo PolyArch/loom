@@ -9,10 +9,15 @@ add_library(FccMapper STATIC
   MappingState.cpp
   OpCompat.cpp
   TechMapper.cpp
+  TechMapperSelection.cpp
+  TechMapperGraphs.cpp
   TechMapperVariants.cpp
   TopologyModel.cpp
   Mapper.cpp
+  MapperSentinels.cpp
+  MapperInterleaved.cpp
   MapperPlacement.cpp
+  MapperPlacementMethods.cpp
   MapperRefinement.cpp
   MapperLocalRepair.cpp
   MapperLocalRepairExact.cpp
@@ -27,6 +32,9 @@ add_library(FccMapper STATIC
   MapperRoutingCongestion.cpp
   MapperRoutingStrategy.cpp
   ConfigGen.cpp
+  ConfigGenText.cpp
+  ConfigGenMapJsonTail.cpp
+  ConfigGenReportHelpers.cpp
   ConfigGenHelpers.cpp
   ConfigGenConfig.cpp
 )
