@@ -94,6 +94,17 @@ if(LOOM_DEPS_BUILD_DIR)
   find_package(MLIR REQUIRED CONFIG)
   find_package(CIRCT REQUIRED CONFIG)
 
+  # When the pre-built LLVM uses static archives (LLVM_ENABLE_SHARED_LIBS=OFF),
+  # loom must also link statically. Otherwise each shared loom library embeds
+  # its own copy of LLVM, and cl::Option registrations collide at runtime
+  # ("Option registered more than once" fatal error).
+  if(NOT LLVM_ENABLE_SHARED_LIBS AND BUILD_SHARED_LIBS)
+    message(STATUS
+      "Forcing BUILD_SHARED_LIBS=OFF: pre-built LLVM uses static libraries.")
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL
+      "Forced OFF to match pre-built static LLVM" FORCE)
+  endif()
+
   # CMake modules needed for tablegen, add_mlir_dialect_library, etc.
   list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}" "${MLIR_CMAKE_DIR}")
   include(TableGen)
