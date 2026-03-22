@@ -9,10 +9,13 @@ import subprocess
 import sys
 
 
-WELL_KNOWN_TOOLS = {
-    "verilator": "/mnt/nas0/software/verilator/5.044/bin/verilator",
-    "dc_shell": "/mnt/nas0/software/synopsys/syn/W-2024.09-SP5/bin/dc_shell",
-}
+def _env_modules_hint():
+    """Return a hint string about environment-modules if available."""
+    if os.path.isfile("/etc/profile.d/modules.sh"):
+        return ("  Hint: environment-modules detected. Try:\n"
+                "    source /etc/profile.d/modules.sh && module avail\n"
+                "  to see available tool modules.")
+    return ""
 
 
 def find_tool(name, module_spec=None):
@@ -20,19 +23,20 @@ def find_tool(name, module_spec=None):
     import shutil
     if shutil.which(name):
         return True
-    # Check well-known installation path
-    wk = WELL_KNOWN_TOOLS.get(name)
-    if wk and os.path.isfile(wk) and os.access(wk, os.X_OK):
-        return True
     if module_spec:
         try:
             result = subprocess.run(
                 ["bash", "-c",
                  f"source /etc/profile.d/modules.sh && module load {module_spec} && which {name}"],
                 capture_output=True, text=True)
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
         except Exception:
             pass
+    hint = _env_modules_hint()
+    print(f"[tool-check] '{name}' not found in PATH.")
+    if hint:
+        print(hint)
     return False
 
 
@@ -761,6 +765,9 @@ def main():
                         help="Only run tests for these module directories (e.g., e2e)")
     parser.add_argument("--test-filter", default=None,
                         help="Only run tests matching this name (e.g., chess_2x2_stub)")
+    parser.add_argument("--lib-search-path", default="",
+                        help="Cell library search path for synthesis "
+                             "(overrides LOOM_SYNTH_LIB_PATH env var)")
     args = parser.parse_args()
 
     scripts_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1080,10 +1087,16 @@ def main():
                     if not synth_mod_name:
                         synth_mod_name = tc["module"]
                     synth_design = f"fabric_top_{synth_mod_name}"
+                    synth_args = [
+                        "--rtl-dir", gen_dir, "--design-name", synth_design,
+                        "--output-dir", phys_dir, "--tcl-template", tcl_template]
+                    lib_path = args.lib_search_path or os.environ.get(
+                        "LOOM_SYNTH_LIB_PATH", "")
+                    if lib_path:
+                        synth_args += ["--lib-search-path", lib_path]
                     passed = run_check(
                         os.path.join(scripts_dir, "run_synth.py"),
-                        ["--rtl-dir", gen_dir, "--design-name", synth_design,
-                         "--output-dir", phys_dir, "--tcl-template", tcl_template],
+                        synth_args,
                         f"synth/{tc['module']}/{tc['test']}",
                         phys_dir
                     )

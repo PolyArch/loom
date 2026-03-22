@@ -409,7 +409,7 @@ RTL generation targets ASIC synthesis using:
 - **Synthesis tool**: Synopsys Design Compiler (DC)
 - **Standard cell library**: saed32 (SAED 32nm EDK), specifically
   `saed32rvt_dlvl_ff0p85v25c`
-- **Library path**: `/mnt/nas0/eda.libs/saed32/EDK_08_2025`
+- **Library path**: Set via `LOOM_SYNTH_LIB_PATH` env var or `--lib-search-path`
 
 ### Structural Rules
 

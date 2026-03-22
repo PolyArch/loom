@@ -8,7 +8,9 @@
 # Target library: saed32 (TSMC 32nm educational)
 
 # Library setup
-set search_path [list /mnt/nas0/eda.libs/saed32/EDK_08_2025/lib/stdcell_rvt/db_nldm]
+# LIB_SEARCH_PATH is substituted by run_synth.py from --lib-search-path or
+# the LOOM_SYNTH_LIB_PATH environment variable.
+set search_path [list ${LIB_SEARCH_PATH}]
 set target_library {saed32rvt_ff0p85v25c.db}
 set link_library [list * $target_library]
 

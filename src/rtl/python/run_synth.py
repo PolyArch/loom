@@ -8,15 +8,20 @@ import sys
 import shutil
 
 
+def _env_modules_hint():
+    """Return a hint string about environment-modules if available."""
+    if os.path.isfile("/etc/profile.d/modules.sh"):
+        return ("  Hint: environment-modules detected. Try:\n"
+                "    source /etc/profile.d/modules.sh && module avail\n"
+                "  to see available tool modules.")
+    return ""
+
+
 def find_dc_shell():
     """Find dc_shell executable."""
     dc = shutil.which("dc_shell")
     if dc:
         return dc
-    # Well-known installation path (avoids module load dependency)
-    well_known = "/mnt/nas0/software/synopsys/syn/W-2024.09-SP5/bin/dc_shell"
-    if os.path.isfile(well_known) and os.access(well_known, os.X_OK):
-        return well_known
     # Try module loading as last resort
     try:
         result = subprocess.run(
@@ -27,10 +32,15 @@ def find_dc_shell():
             return result.stdout.strip()
     except Exception:
         pass
+    print("[run_synth] ERROR: 'dc_shell' not found in PATH.")
+    hint = _env_modules_hint()
+    if hint:
+        print(hint)
     return None
 
 
-def generate_synth_tcl(rtl_dir, design_name, output_dir, tcl_template):
+def generate_synth_tcl(rtl_dir, design_name, output_dir, tcl_template,
+                       lib_search_path=""):
     """Generate a concrete synthesis TCL script from the template."""
     # Collect all SV files
     sv_files = []
@@ -49,6 +59,7 @@ def generate_synth_tcl(rtl_dir, design_name, output_dir, tcl_template):
     concrete = template.replace("${DESIGN_NAME}", design_name)
     concrete = concrete.replace("${SV_FILES}", sv_files_str)
     concrete = concrete.replace("${OUTPUT_DIR}", output_dir)
+    concrete = concrete.replace("${LIB_SEARCH_PATH}", lib_search_path)
 
     tcl_path = os.path.join(output_dir, "synth.tcl")
     with open(tcl_path, "w") as f:
@@ -116,6 +127,9 @@ def main():
     parser.add_argument("--design-name", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--tcl-template", required=True)
+    parser.add_argument("--lib-search-path", default="",
+                        help="Cell library search path for synthesis "
+                             "(overrides LOOM_SYNTH_LIB_PATH env var)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -125,8 +139,18 @@ def main():
         print("[run_synth] SKIP: dc_shell not found")
         sys.exit(0)  # Graceful skip
 
+    lib_search_path = args.lib_search_path or os.environ.get(
+        "LOOM_SYNTH_LIB_PATH", "")
+    if not lib_search_path:
+        print("[run_synth] ERROR: No cell library path specified.\n"
+              "  Set LOOM_SYNTH_LIB_PATH or pass --lib-search-path.\n"
+              "  Example: export LOOM_SYNTH_LIB_PATH="
+              "/path/to/saed32/EDK/lib/stdcell_rvt/db_nldm")
+        sys.exit(1)
+
     tcl_path = generate_synth_tcl(args.rtl_dir, args.design_name,
-                                   args.output_dir, args.tcl_template)
+                                   args.output_dir, args.tcl_template,
+                                   lib_search_path=lib_search_path)
     if not run_synthesis(dc_shell, tcl_path, args.output_dir):
         sys.exit(1)
 
