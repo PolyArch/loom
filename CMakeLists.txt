@@ -99,11 +99,12 @@ add_subdirectory(lib)
 add_subdirectory(tools)
 add_subdirectory(tests/e2e)
 add_subdirectory(tests/unit)
+add_subdirectory(tests/rtl)
 
 if(TARGET check-fcc)
-  add_dependencies(check-fcc check-fcc-e2e check-fcc-gem5)
+  add_dependencies(check-fcc check-fcc-e2e check-fcc-gem5 check-fcc-rtl)
 else()
   add_custom_target(check-fcc
-    DEPENDS check-fcc-unit check-fcc-e2e check-fcc-gem5
+    DEPENDS check-fcc-unit check-fcc-e2e check-fcc-gem5 check-fcc-rtl
   )
 endif()

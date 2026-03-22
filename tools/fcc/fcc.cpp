@@ -13,11 +13,13 @@
 #include "fcc/Mapper/DFGBuilder.h"
 #include "fcc/Mapper/Mapper.h"
 #include "fcc/Mapper/TypeCompat.h"
+#include "fcc/Simulator/PortTraceExporter.h"
 #include "fcc/Simulator/SimArtifactWriter.h"
 #include "fcc/Simulator/SimBundle.h"
 #include "fcc/Simulator/SimInputSynthesis.h"
 #include "fcc/Simulator/RuntimeImageBuilder.h"
 #include "fcc/Simulator/SimSession.h"
+#include "fcc/SVGen/SVGen.h"
 #include "fcc/Viz/VizExporter.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -687,6 +689,9 @@ int main(int argc, char **argv) {
       std::string runtimeImagePath = mixedBase + ".simimage.json";
       std::string runtimeImageBinPath = mixedBase + ".simimage.bin";
       fcc::sim::RuntimeImage runtimeImage;
+      // Capture port/module info before the static model is moved into session.
+      std::vector<fcc::sim::StaticModuleDesc> savedModuleDescs;
+      std::vector<fcc::sim::StaticPortDesc> savedPortDescs;
       {
         std::string runtimeImageError;
         if (!fcc::sim::buildRuntimeImage(
@@ -700,6 +705,10 @@ int main(int argc, char **argv) {
                                                runtimeImageError)) {
           return {false, true,
                   "fcc: failed to write runtime image: " + runtimeImageError};
+        }
+        if (!args.tracePortDump.empty()) {
+          savedModuleDescs = runtimeImage.staticModel.getModules();
+          savedPortDescs = runtimeImage.staticModel.getPorts();
         }
       }
       llvm::outs() << "  " << runtimeImagePath << "\n";
@@ -793,6 +802,58 @@ int main(int argc, char **argv) {
         }
       }
 
+      // Set up port trace export if requested.
+      std::unique_ptr<fcc::sim::PortTraceExporter> portTraceExporter;
+      if (!args.tracePortDump.empty()) {
+        std::string traceOutputDir = args.outputDir + "/rtl-traces";
+        if (std::error_code ec =
+                llvm::sys::fs::create_directories(traceOutputDir)) {
+          llvm::errs() << "fcc: cannot create trace output dir '"
+                       << traceOutputDir << "': " << ec.message() << "\n";
+          return {false, true, "fcc: cannot create trace output dir"};
+        }
+        portTraceExporter =
+            std::make_unique<fcc::sim::PortTraceExporter>(traceOutputDir);
+
+        for (unsigned modIdx = 0; modIdx < savedModuleDescs.size(); ++modIdx) {
+          const auto &mod = savedModuleDescs[modIdx];
+          if (mod.name != args.tracePortDump)
+            continue;
+
+          std::vector<fcc::sim::PortTraceExporter::TracedPort> tracedPorts;
+          auto addPorts = [&](const std::vector<IdIndex> &portIds,
+                              const std::string &prefix) {
+            unsigned iter_var0 = 0;
+            for (IdIndex portId : portIds) {
+              if (portId < static_cast<IdIndex>(savedPortDescs.size())) {
+                const auto &pd = savedPortDescs[portId];
+                fcc::sim::PortTraceExporter::TracedPort tp;
+                tp.portIndex = static_cast<unsigned>(portId);
+                tp.dir = pd.direction;
+                tp.valueWidth = pd.valueWidth;
+                tp.tagWidth = pd.tagWidth;
+                tp.isTagged = pd.isTagged;
+                tp.name = prefix + std::to_string(iter_var0);
+                tracedPorts.push_back(tp);
+              }
+              ++iter_var0;
+            }
+          };
+          addPorts(mod.inputPorts, "in");
+          addPorts(mod.outputPorts, "out");
+
+          portTraceExporter->addTracedModule(modIdx, mod.name, tracedPorts);
+          llvm::outs() << "fcc: tracing ports for module '" << mod.name
+                       << "' (" << tracedPorts.size() << " ports)\n";
+        }
+
+        session.setCycleCallback(
+            [&portTraceExporter](uint64_t cycle,
+                                 const std::vector<fcc::sim::SimChannel> &ps) {
+              portTraceExporter->recordCycle(cycle, ps);
+            });
+      }
+
       auto [simResult, invokeErr] = session.invoke();
       std::vector<SynthesizedOutputInfo> synthesizedOutputs =
           collectSynthesizedOutputs(dfgBuilder.getDFG(), flattener.getADG(),
@@ -810,6 +871,15 @@ int main(int argc, char **argv) {
       llvm::outs() << "  " << statPath << "\n";
       llvm::outs() << "  " << setupPath << "\n";
       llvm::outs() << "  " << resultPath << "\n";
+
+      if (portTraceExporter) {
+        if (!portTraceExporter->flush()) {
+          llvm::errs() << "fcc: warning: port trace export flush failed\n";
+        } else {
+          llvm::outs() << "fcc: port traces written to "
+                       << args.outputDir << "/rtl-traces/\n";
+        }
+      }
 
       if (!invokeErr.empty())
         return {false, true, "fcc: simulation invocation failed: " + invokeErr};
@@ -911,6 +981,38 @@ int main(int argc, char **argv) {
       llvm::errs() << lastSimulationError << "\n";
     return 1;
   };
+
+  // ===== SVGen mode: generate SystemVerilog from ADG =====
+  if (args.genSV) {
+    if (args.adgPath.empty()) {
+      llvm::errs() << "fcc: --gen-sv requires --adg\n";
+      return 1;
+    }
+    auto adgMod = loadMLIR(args.adgPath, context);
+    if (!adgMod)
+      return 1;
+    if (failed(fcc::verifyFabricModule(*adgMod))) {
+      llvm::errs() << "fcc: ADG fabric.module verification failed\n";
+      return 1;
+    }
+
+    fcc::svgen::SVGenOptions svOpts;
+    svOpts.rtlSourceDir = std::string(FCC_SOURCE_DIR) + "/src/rtl";
+    svOpts.outputDir = args.outputDir;
+    svOpts.fpIpProfile = args.fpIpProfile;
+
+    llvm::outs() << "fcc: generating SystemVerilog...\n";
+    if (!fcc::svgen::generateSV(*adgMod, &context, svOpts)) {
+      llvm::errs() << "fcc: SystemVerilog generation failed\n";
+      return 1;
+    }
+    // If --simulate is also requested, fall through to the simulation path
+    // instead of returning early. This enables combined gen+simulate+trace
+    // workflows used by the behaviour verification runner.
+    if (!args.simulate)
+      return 0;
+    // Fall through to simulation below...
+  }
 
   // ===== Viz-only mode: just visualize, no mapping =====
   if (args.vizOnly) {

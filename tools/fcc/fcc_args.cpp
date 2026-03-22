@@ -117,6 +117,20 @@ static cl::opt<std::string> runtimeStatPath(
     cl::desc("Path to runtime replay stat artifact"),
     cl::init(""));
 
+static cl::opt<bool> genSV("gen-sv",
+                             cl::desc("Generate synthesizable SystemVerilog from ADG"),
+                             cl::init(false));
+
+static cl::opt<std::string> fpIpProfile(
+    "fp-ip-profile",
+    cl::desc("Floating-point IP profile for synthesis (enables Tier 3 transcendental FP ops)"),
+    cl::init(""));
+
+static cl::opt<std::string> tracePortDump(
+    "trace-port-dump",
+    cl::desc("Dump per-cycle port traces for the named module during simulation"),
+    cl::init(""));
+
 static cl::opt<unsigned> mapperBudget("mapper-budget",
                                        cl::desc("Mapper time budget (seconds)"),
                                        cl::init(60));
@@ -236,6 +250,9 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
   args.runtimeResultPath = runtimeResultPath.getValue();
   args.runtimeTracePath = runtimeTracePath.getValue();
   args.runtimeStatPath = runtimeStatPath.getValue();
+  args.genSV = genSV;
+  args.fpIpProfile = fpIpProfile.getValue();
+  args.tracePortDump = tracePortDump.getValue();
 
   args.mapperBaseConfigPath = mapperBaseConfigPathOpt.getValue();
   if (mapperBaseConfigPathOpt.getNumOccurrences() > 0)
@@ -335,6 +352,12 @@ bool parseArgs(int argc, char **argv, FccArgs &args) {
   } else if (args.vizOnly) {
     if (args.dfgPath.empty() && args.adgPath.empty()) {
       errs() << "fcc: --viz-only needs at least --dfg or --adg\n";
+      return false;
+    }
+  } else if (args.genSV) {
+    // --gen-sv mode: only needs --adg (no sources or --dfg required)
+    if (args.adgPath.empty()) {
+      errs() << "fcc: --gen-sv requires --adg\n";
       return false;
     }
   } else {

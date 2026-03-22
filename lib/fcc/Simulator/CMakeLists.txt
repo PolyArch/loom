@@ -22,6 +22,7 @@ add_library(FccSimulator STATIC
   SimSession.cpp
   SimArtifactWriter.cpp
   SimInputSynthesis.cpp
+  PortTraceExporter.cpp
 )
 
 target_include_directories(FccSimulator PUBLIC
