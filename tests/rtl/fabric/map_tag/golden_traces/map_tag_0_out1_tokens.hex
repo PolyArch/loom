@@ -1,0 +1,6 @@
+// Golden output trace for map_tag test: pass-through (add_tag -> map_tag -> del_tag)
+// With config: add_tag sets tag=0, map_tag CAM maps tag 0->0, del_tag strips tag
+00000001
+00000002
+00000003
+00000004

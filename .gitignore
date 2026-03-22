@@ -7,3 +7,5 @@ package-lock.json
 screenshot.mjs
 __pycache__/
 *.pyc
+# Derived trace token counts (computable from .hex files)
+*.count

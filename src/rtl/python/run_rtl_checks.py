@@ -500,8 +500,39 @@ def find_port_traces(trace_dir, module_name, num_inputs, num_outputs):
     return input_traces, output_traces
 
 
+def parse_dut_port_widths(gen_sv_path):
+    """Parse the generated DUT SV module for per-port bit widths.
+
+    Returns dict mapping port name to total bit width, e.g.:
+    {'mod_in0': 32, 'mod_out0': 36}
+    Only includes mod_in*/mod_out* data ports (excludes _valid/_ready).
+    """
+    widths = {}
+    if not os.path.isfile(gen_sv_path):
+        return widths
+    try:
+        with open(gen_sv_path) as f:
+            for line in f:
+                # Match: input/output logic[N:0] mod_inX or mod_outX
+                m = re.match(
+                    r'\s*(?:input|output)\s+logic\s*\[(\d+):0\]\s+(mod_(?:in|out)\d+)\s*[,)]',
+                    line)
+                if m:
+                    widths[m.group(2)] = int(m.group(1)) + 1
+                    continue
+                # Match: input/output logic mod_inX (1-bit, unlikely for data)
+                m = re.match(
+                    r'\s*(?:input|output)\s+logic\s+(mod_(?:in|out)\d+)\s*[,)]',
+                    line)
+                if m and not m.group(1).endswith(('_valid', '_ready')):
+                    widths[m.group(1)] = 1
+    except OSError:
+        pass
+    return widths
+
+
 def generate_dut_inst_svh(output_path, dut_module, num_inputs, num_outputs,
-                          visible_input_indices=None):
+                          visible_input_indices=None, port_widths=None):
     """Generate the dut_inst.svh file with DUT port connections.
 
     Creates a SystemVerilog include file that instantiates the DUT module
@@ -511,13 +542,43 @@ def generate_dut_inst_svh(output_path, dut_module, num_inputs, num_outputs,
     visible_input_indices: list of original argument indices for visible
     (non-memref) input ports. SVGenTop uses these indices for port naming:
     mod_in<orig_idx>. If None, defaults to dense [0..num_inputs-1].
+
+    port_widths: dict mapping port name to total bit width (from
+    parse_dut_port_widths). When a port is wider than DATA_WIDTH (32),
+    intermediate wires are used to adapt the width.
     """
     if visible_input_indices is None:
         visible_input_indices = list(range(num_inputs))
+    if port_widths is None:
+        port_widths = {}
+
+    DATA_WIDTH = 32  # Must match tb_module_wrapper default
 
     lines = []
     lines.append(f"// Auto-generated DUT instantiation for {dut_module}")
-    lines.append(f"// Topology: {num_inputs} visible inputs (indices {visible_input_indices}), {num_outputs} outputs")
+    lines.append(f"// Topology: {num_inputs} visible inputs "
+                 f"(indices {visible_input_indices}), {num_outputs} outputs")
+    if port_widths:
+        lines.append(f"// Port widths: {port_widths}")
+    lines.append("")
+
+    # Declare intermediate wires for width-mismatched input ports
+    for drv_idx, orig_idx in enumerate(visible_input_indices):
+        port_name = f"mod_in{orig_idx}"
+        w = port_widths.get(port_name, DATA_WIDTH)
+        if w > DATA_WIDTH:
+            pad = w - DATA_WIDTH
+            lines.append(f"wire [{w-1}:0] _dut_{port_name};")
+            lines.append(f"assign _dut_{port_name} = "
+                         f"{{{{{pad}{{1'b0}}}}, drv_data[{drv_idx}]}};")
+
+    # Declare intermediate wires for width-mismatched output ports
+    for o in range(num_outputs):
+        port_name = f"mod_out{o}"
+        w = port_widths.get(port_name, DATA_WIDTH)
+        if w > DATA_WIDTH:
+            lines.append(f"wire [{w-1}:0] _dut_{port_name};")
+
     lines.append("")
 
     # Build port connection list
@@ -525,16 +586,27 @@ def generate_dut_inst_svh(output_path, dut_module, num_inputs, num_outputs,
     ports.append("    .clk            (clk)")
     ports.append("    .rst_n          (rst_n)")
 
-    # Use original argument indices for port naming (matches SVGenTop)
+    # Input port connections
     for drv_idx, orig_idx in enumerate(visible_input_indices):
-        ports.append(f"    .mod_in{orig_idx}        (drv_data[{drv_idx}])")
-        ports.append(f"    .mod_in{orig_idx}_valid  (drv_valid[{drv_idx}])")
-        ports.append(f"    .mod_in{orig_idx}_ready  (drv_ready[{drv_idx}])")
+        port_name = f"mod_in{orig_idx}"
+        w = port_widths.get(port_name, DATA_WIDTH)
+        if w > DATA_WIDTH:
+            ports.append(f"    .{port_name}        (_dut_{port_name})")
+        else:
+            ports.append(f"    .{port_name}        (drv_data[{drv_idx}])")
+        ports.append(f"    .{port_name}_valid  (drv_valid[{drv_idx}])")
+        ports.append(f"    .{port_name}_ready  (drv_ready[{drv_idx}])")
 
+    # Output port connections
     for o in range(num_outputs):
-        ports.append(f"    .mod_out{o}       (mon_data[{o}])")
-        ports.append(f"    .mod_out{o}_valid (mon_valid[{o}])")
-        ports.append(f"    .mod_out{o}_ready (mon_ready[{o}])")
+        port_name = f"mod_out{o}"
+        w = port_widths.get(port_name, DATA_WIDTH)
+        if w > DATA_WIDTH:
+            ports.append(f"    .{port_name}       (_dut_{port_name})")
+        else:
+            ports.append(f"    .{port_name}       (mon_data[{o}])")
+        ports.append(f"    .{port_name}_valid (mon_valid[{o}])")
+        ports.append(f"    .{port_name}_ready (mon_ready[{o}])")
 
     ports.append("    .cfg_valid      (cfg_valid)")
     ports.append("    .cfg_wdata      (cfg_wdata)")
@@ -544,6 +616,15 @@ def generate_dut_inst_svh(output_path, dut_module, num_inputs, num_outputs,
     lines.append("`DUT_MODULE u_dut (")
     lines.append(",\n".join(ports))
     lines.append(");")
+    lines.append("")
+
+    # Width adaptation assigns for output ports
+    for o in range(num_outputs):
+        port_name = f"mod_out{o}"
+        w = port_widths.get(port_name, DATA_WIDTH)
+        if w > DATA_WIDTH:
+            lines.append(f"assign mon_data[{o}] = _dut_{port_name}[{DATA_WIDTH-1}:0];")
+
     lines.append("")
 
     # Tie off unused input channel ready signals
@@ -847,17 +928,31 @@ def main():
                     # DUT module name for the generated top-level SV module
                     dut_module = "fabric_top_" + fabric_module_name
 
+                    # Parse per-port widths from the generated DUT SV module.
+                    # When ports are wider than DATA_WIDTH (e.g. tagged ports),
+                    # dut_inst.svh uses intermediate wires for adaptation.
+                    gen_sv_path = os.path.join(
+                        rtl_dir, "generated", dut_module + ".sv")
+                    port_widths = parse_dut_port_widths(gen_sv_path)
+
                     # Generate the DUT instantiation include file
                     dut_inst_path = os.path.join(beh_dir, "dut_inst.svh")
                     generate_dut_inst_svh(
                         dut_inst_path, dut_module,
                         num_inputs, num_outputs,
-                        visible_input_indices)
+                        visible_input_indices,
+                        port_widths=port_widths)
                     print(f"[behaviour/{tc['module']}/{tc['test']}] "
                           f"Generated dut_inst.svh at {dut_inst_path}")
 
-                    # Find config hex file and count words
+                    # Find config hex file and count words.
+                    # First check gen-collateral, then fall back to
+                    # checked-in golden_traces/ for infrastructure-only tests.
                     config_hex = find_config_hex(gen_dir)
+                    if not config_hex:
+                        checked_in_cfg = os.path.join(
+                            os.path.dirname(tc["mlir"]), "golden_traces")
+                        config_hex = find_config_hex(checked_in_cfg)
                     config_word_count = (count_hex_lines(config_hex)
                                          if config_hex else 0)
 

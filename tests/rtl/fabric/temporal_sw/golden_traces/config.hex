@@ -1,0 +1,3 @@
+// Config for temporal_sw test: 1 word
+// Slot 0: valid=1, tag=0, route to output 0
+00000021

@@ -89,6 +89,13 @@ module tb_channel_driver #(
                         valid <= 1'b0;
                     end else begin : drive_next
                         token_idx <= token_idx + 1;
+                        // Look ahead: present next token immediately so
+                        // combinational DUTs don't see stale data for
+                        // one extra cycle after handshake completion.
+                        data <= token_mem[token_idx + 1][DATA_WIDTH-1:0];
+                        if (TAG_WIDTH > 0) begin : drive_tag_next
+                            tag <= token_mem[token_idx + 1][ENTRY_WIDTH-1 -: TAG_W];
+                        end : drive_tag_next
                     end
                 end
             end else begin : drive_empty

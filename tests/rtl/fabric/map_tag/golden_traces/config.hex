@@ -1,0 +1,5 @@
+// Config for map_tag test: 2 words
+// Word 0: add_tag config (tag=0)
+// Word 1: map_tag CAM table (entry0: valid=1,src=0,dst=0; entry1: valid=1,src=1,dst=1)
+00000000
+00000039

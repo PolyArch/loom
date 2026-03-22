@@ -80,7 +80,13 @@ module tb_config_loader #(
                         cfg_valid   <= 1'b0;
                         cfg_last    <= 1'b0;
                     end else begin : drive_next
-                        word_idx <= word_idx + 1;
+                        word_idx  <= word_idx + 1;
+                        // Look ahead: present next config word immediately
+                        // so the DUT receives correct data without a
+                        // 1-cycle stale repetition after handshake.
+                        cfg_wdata <= config_mem[word_idx + 1];
+                        cfg_last  <= (word_idx + 1 == eff_num_words - 1)
+                                     ? 1'b1 : 1'b0;
                     end
                 end
             end else begin : drive_no_config
