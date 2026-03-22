@@ -1,19 +1,14 @@
 // Companion DFG for single_load.fabric.mlir.
 //
-// ADG module boundary:
-//   inputs: idx (bits<64>), ctrl (bits<64>)
-//   outputs: pe_ld#0 (load data), mem0#1 (memory load_done completion)
-//
-// The module's second public output is the memory instance's load_done
-// channel (a completion token), NOT the FU's internal forwarded address.
-// Per spec-fabric-memory-interface.md, memory response families are:
-// load_data, load_done, store_done.
+// ADG module boundary (32-bit):
+//   inputs: idx (bits<32>), ctrl (bits<32>)
+//   outputs: load data (bits<32>), load done (bits<32>)
 module {
-  handshake.func @mem_load_test(%idx: index, %ctrl: none,
-                                 %mem: memref<256xi32>) -> (i32, none)
-      attributes {argNames = ["idx", "ctrl", "mem"],
-                  resNames = ["data", "load_done"]} {
-    %data, %done = handshake.load [%mem] %idx, %ctrl : index, none
-    handshake.return %data, %done : i32, none
+  handshake.func @mem_load_test(%idx: index, %data: i32, %ctrl: none)
+      -> (i32, index)
+      attributes {argNames = ["idx", "data", "ctrl"],
+                  resNames = ["out_data", "out_addr"]} {
+    %0, %1 = handshake.load [%idx] %data, %ctrl : index, i32
+    handshake.return %0, %1 : i32, index
   }
 }

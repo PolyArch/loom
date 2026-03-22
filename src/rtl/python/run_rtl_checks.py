@@ -127,6 +127,74 @@ def extract_module_name(mlir_path):
     return None
 
 
+def extract_trace_target(mlir_path):
+    """Extract the mapped hardware instance name for --trace-port-dump.
+
+    The trace exporter uses mapped hardware instance names (e.g. 'fifo_0',
+    'pe_0', 'sw0'), not the outer fabric.module name. This function looks
+    for fabric.instance sym_name attributes inside the fabric.module body.
+    For inline definitions without fabric.instance, it derives a name from
+    the op type (e.g. fabric.fifo -> 'fifo_0', fabric.add_tag -> 'add_tag_0').
+
+    Returns the first non-boundary instance name, or None if not found.
+    """
+    # Inline op type -> instance name prefix mapping
+    inline_op_names = {
+        "fabric.add_tag": "add_tag",
+        "fabric.del_tag": "del_tag",
+        "fabric.map_tag": "map_tag",
+        "fabric.fifo": "fifo",
+        "fabric.spatial_sw": "spatial_sw",
+        "fabric.temporal_sw": "temporal_sw",
+    }
+
+    inst_pattern = re.compile(r'fabric\.instance\s+@\w+.*\{sym_name\s*=\s*"(\w+)"')
+    # Inline ops with explicit @name: e.g. fabric.fifo @fifo_0
+    named_inline_pattern = re.compile(
+        r'(fabric\.(?:fifo|add_tag|del_tag|map_tag|spatial_sw|temporal_sw))'
+        r'\s+@(\w+)')
+    # Fallback: inline ops without @name (e.g. fabric.add_tag %in0, fabric.del_tag %in0)
+    anon_inline_pattern = re.compile(r'(fabric\.(?:add_tag|del_tag|map_tag|fifo|spatial_sw|temporal_sw))\b')
+    in_module = False
+    instance_names = []
+    inline_count = {}
+
+    try:
+        with open(mlir_path, "r") as f:
+            for line in f:
+                if 'fabric.module' in line:
+                    in_module = True
+                    continue
+                if not in_module:
+                    continue
+
+                # Look for fabric.instance with sym_name
+                m = inst_pattern.search(line)
+                if m:
+                    instance_names.append(m.group(1))
+                    continue
+
+                # Look for named inline ops: fabric.fifo @fifo_0
+                m = named_inline_pattern.search(line)
+                if m:
+                    instance_names.append(m.group(2))
+                    continue
+
+                # Fallback: anonymous inline ops
+                m = anon_inline_pattern.search(line)
+                if m:
+                    op_name = m.group(1)
+                    if op_name in inline_op_names:
+                        prefix = inline_op_names[op_name]
+                        idx = inline_count.get(prefix, 0)
+                        instance_names.append(f"{prefix}_{idx}")
+                        inline_count[prefix] = idx + 1
+    except OSError:
+        pass
+
+    return instance_names[0] if instance_names else None
+
+
 def extract_port_info(mlir_path):
     """Extract visible (non-memref) input/output port counts and indices.
 
@@ -528,6 +596,16 @@ def main():
                           f"WARN: could not extract module name from MLIR, "
                           f"using directory name: {fabric_module_name}")
 
+                # Extract the mapped hardware instance name for trace export.
+                # The trace exporter uses mapped instance names (e.g. fifo_0),
+                # not the outer fabric.module name.
+                trace_target = extract_trace_target(tc["mlir"])
+                if not trace_target:
+                    trace_target = fabric_module_name
+                    print(f"[behaviour/{tc['module']}/{tc['test']}] "
+                          f"WARN: no trace target found, falling back to "
+                          f"module name: {trace_target}")
+
                 # Extract port topology from MLIR
                 num_inputs, num_outputs, visible_input_indices = extract_port_info(tc["mlir"])
                 print(f"[behaviour/{tc['module']}/{tc['test']}] "
@@ -555,7 +633,7 @@ def main():
                 golden_traces = find_golden_traces(test_output)
                 if not golden_traces:
                     trace_result = generate_golden_traces(
-                        args.fcc, tc["mlir"], fabric_module_name,
+                        args.fcc, tc["mlir"], trace_target,
                         test_output)
                     if trace_result:
                         golden_traces = find_golden_traces(test_output)
@@ -575,9 +653,12 @@ def main():
                 else:
                     trace_dir = os.path.join(test_output, "rtl-traces")
 
-                    # Find per-port traces using multi-port discovery
+                    # Find per-port traces using multi-port discovery.
+                    # Use trace_target (mapped instance name) for trace file
+                    # naming, since the exporter writes files like
+                    # fifo_0_in0_tokens.hex, not test_fifo_depth4_in0_tokens.hex.
                     input_traces, output_traces = find_port_traces(
-                        trace_dir, fabric_module_name,
+                        trace_dir, trace_target,
                         num_inputs, num_outputs)
 
                     # DUT module name for the generated top-level SV module
