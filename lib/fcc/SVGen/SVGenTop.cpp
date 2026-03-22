@@ -297,7 +297,16 @@ static void emitSwitchConns(TopEmitContext &ctx, mlir::Operation &op,
 /// MLIR operand order (non-memref): load_addr, store_addr, store_data.
 /// MLIR result order: load_data, load_done, store_done.
 static void emitMemoryConns(TopEmitContext &ctx, mlir::Operation &op,
-                             std::vector<SVConnection> &conns) {
+                             std::vector<SVConnection> &conns,
+                             mlir::Operation *defOp = nullptr) {
+  // Resolve the definition op (for instance ops, defOp is the actual
+  // MemoryOp/ExtMemoryOp; for inline ops, use &op itself).
+  mlir::Operation *memDef = defOp ? defOp : &op;
+  bool isExtMemory = mlir::isa<fcc::fabric::ExtMemoryOp>(memDef);
+  bool isPrivate = false;
+  if (auto memOp = mlir::dyn_cast<fcc::fabric::MemoryOp>(memDef))
+    isPrivate = memOp.getIsPrivate();
+
   // Collect non-memref operands.
   std::vector<mlir::Value> dataOperands;
   for (unsigned i = 0; i < op.getNumOperands(); ++i) {
@@ -307,7 +316,9 @@ static void emitMemoryConns(TopEmitContext &ctx, mlir::Operation &op,
 
   // Port family names for inputs in order.
   const char *inPortFamilies[] = {"load_addr", "store_addr", "store_data"};
-  for (unsigned i = 0; i < dataOperands.size() && i < 3; ++i) {
+  unsigned numInConnected = std::min(static_cast<unsigned>(dataOperands.size()),
+                                     3u);
+  for (unsigned i = 0; i < numInConnected; ++i) {
     std::string wire = ctx.getOrCreateWire(dataOperands[i]);
     unsigned dw = SVEmitter::getDataWidth(dataOperands[i].getType());
     unsigned tw = SVEmitter::getTagWidth(dataOperands[i].getType());
@@ -324,12 +335,22 @@ static void emitMemoryConns(TopEmitContext &ctx, mlir::Operation &op,
       conns.push_back({family + "_tag", "'0"});
   }
 
+  // Tie off unconnected input port families.
+  for (unsigned i = numInConnected; i < 3; ++i) {
+    std::string family = inPortFamilies[i];
+    conns.push_back({family + "_valid", "1'b0"});
+    conns.push_back({family + "_ready", ""});   // unconnected output
+    conns.push_back({family + "_data", "'0"});
+    conns.push_back({family + "_tag", "'0"});
+  }
+
   // Port family names for outputs in order.
   // load_data has data+tag; load_done and store_done have tag only.
   const char *outPortFamilies[] = {"load_data", "load_done", "store_done"};
   // load_data has data field; load_done and store_done do not.
   const bool outHasData[] = {true, false, false};
-  for (unsigned i = 0; i < op.getNumResults() && i < 3; ++i) {
+  unsigned numOutConnected = std::min(op.getNumResults(), 3u);
+  for (unsigned i = 0; i < numOutConnected; ++i) {
     std::string wire = ctx.getOrCreateWire(op.getResult(i));
     unsigned outDw = SVEmitter::getDataWidth(op.getResult(i).getType());
     unsigned outTw = SVEmitter::getTagWidth(op.getResult(i).getType());
@@ -346,6 +367,76 @@ static void emitMemoryConns(TopEmitContext &ctx, mlir::Operation &op,
                            std::to_string(outDw) + "]"});
     else
       conns.push_back({family + "_tag", ""});
+  }
+
+  // Tie off unconnected output port families.
+  for (unsigned i = numOutConnected; i < 3; ++i) {
+    std::string family = outPortFamilies[i];
+    conns.push_back({family + "_valid", ""});    // unconnected output
+    conns.push_back({family + "_ready", "1'b1"});
+    conns.push_back({family + "_tag", ""});      // unconnected output
+    if (outHasData[i])
+      conns.push_back({family + "_data", ""});   // unconnected output
+  }
+
+  // AXI port tieoffs -- these ports always exist on the pre-written modules
+  // but are never driven from the MLIR graph.
+  if (!isExtMemory) {
+    // fabric_memory: AXI-MM slave port (always present, internally tied off
+    // when IS_PRIVATE=1, but the ports still exist on the module interface).
+    conns.push_back({"s_axi_awaddr", "'0"});
+    conns.push_back({"s_axi_awvalid", "1'b0"});
+    conns.push_back({"s_axi_awready", ""});
+    conns.push_back({"s_axi_wdata", "'0"});
+    conns.push_back({"s_axi_wstrb", "'0"});
+    conns.push_back({"s_axi_wvalid", "1'b0"});
+    conns.push_back({"s_axi_wready", ""});
+    conns.push_back({"s_axi_bresp", ""});
+    conns.push_back({"s_axi_bvalid", ""});
+    conns.push_back({"s_axi_bready", "1'b1"});
+    conns.push_back({"s_axi_araddr", "'0"});
+    conns.push_back({"s_axi_arvalid", "1'b0"});
+    conns.push_back({"s_axi_arready", ""});
+    conns.push_back({"s_axi_rdata", ""});
+    conns.push_back({"s_axi_rresp", ""});
+    conns.push_back({"s_axi_rvalid", ""});
+    conns.push_back({"s_axi_rready", "1'b1"});
+  } else {
+    // fabric_extmemory: AXI-MM master port -- tie off all signals.
+    // AR channel (read address -- outputs from master)
+    conns.push_back({"m_axi_arid", ""});
+    conns.push_back({"m_axi_araddr", ""});
+    conns.push_back({"m_axi_arlen", ""});
+    conns.push_back({"m_axi_arsize", ""});
+    conns.push_back({"m_axi_arburst", ""});
+    conns.push_back({"m_axi_arvalid", ""});
+    conns.push_back({"m_axi_arready", "1'b0"});
+    // R channel (read data -- inputs to master)
+    conns.push_back({"m_axi_rid", "'0"});
+    conns.push_back({"m_axi_rdata", "'0"});
+    conns.push_back({"m_axi_rresp", "2'b00"});
+    conns.push_back({"m_axi_rlast", "1'b0"});
+    conns.push_back({"m_axi_rvalid", "1'b0"});
+    conns.push_back({"m_axi_rready", ""});
+    // AW channel (write address -- outputs from master)
+    conns.push_back({"m_axi_awid", ""});
+    conns.push_back({"m_axi_awaddr", ""});
+    conns.push_back({"m_axi_awlen", ""});
+    conns.push_back({"m_axi_awsize", ""});
+    conns.push_back({"m_axi_awburst", ""});
+    conns.push_back({"m_axi_awvalid", ""});
+    conns.push_back({"m_axi_awready", "1'b0"});
+    // W channel (write data -- outputs from master)
+    conns.push_back({"m_axi_wdata", ""});
+    conns.push_back({"m_axi_wstrb", ""});
+    conns.push_back({"m_axi_wlast", ""});
+    conns.push_back({"m_axi_wvalid", ""});
+    conns.push_back({"m_axi_wready", "1'b0"});
+    // B channel (write response -- inputs to master)
+    conns.push_back({"m_axi_bid", "'0"});
+    conns.push_back({"m_axi_bresp", "2'b00"});
+    conns.push_back({"m_axi_bvalid", "1'b0"});
+    conns.push_back({"m_axi_bready", ""});
   }
 }
 
@@ -771,7 +862,7 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
         if (defIsSwitch) {
           emitSwitchConns(ctx, op, conns, instName, defOp);
         } else if (defIsMemory) {
-          emitMemoryConns(ctx, op, conns);
+          emitMemoryConns(ctx, op, conns, defOp);
         } else {
           emitSingleIOConns(ctx, op, conns);
           // FIFO tag pins: always present (min 1-bit). Tie off when untagged.

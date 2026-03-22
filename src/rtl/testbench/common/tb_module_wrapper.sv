@@ -341,8 +341,8 @@ module tb_module_wrapper;
                     if (eff_num_input_tokens[gi] > 0) begin : do_reload
                         $readmemh(eff_input_trace[gi], u_driver.token_mem,
                                   0, eff_num_input_tokens[gi] - 1);
-                        $display("[tb_module_wrapper] Driver[%0d]: %0d tokens from %s",
-                                 gi, eff_num_input_tokens[gi], eff_input_trace[gi]);
+                        $display("[tb_module_wrapper] Driver[%0d]: %0d tokens loaded",
+                                 gi, eff_num_input_tokens[gi]);
                     end
                 end
             end else begin : stub_input
@@ -411,18 +411,39 @@ module tb_module_wrapper;
                     end
                     u_monitor.fd = $fopen(eff_output_trace[go], "w");
                     if (u_monitor.fd == 0) begin : reopen_fail
-                        $display("[tb_module_wrapper] ERROR: Monitor[%0d] cannot open %s",
-                                 go, eff_output_trace[go]);
+                        $display("[tb_module_wrapper] ERROR: Monitor[%0d] cannot open output trace",
+                                 go);
                         u_monitor.file_open = 1'b0;
                     end else begin : reopen_ok
                         u_monitor.file_open = 1'b1;
-                        $display("[tb_module_wrapper] Monitor[%0d]: writing to %s",
-                                 go, eff_output_trace[go]);
+                        $display("[tb_module_wrapper] Monitor[%0d]: output trace opened",
+                                 go);
+                    end
+                end
+
+                // Copy monitor capture_mem into top-level shadow memory so that
+                // the comparison task can use a flat array reference instead of
+                // a hierarchical path into a conditionally-generated scope.
+                always_comb begin : shadow_copy_ch
+                    integer iter_var0;
+                    for (iter_var0 = 0; iter_var0 < MAX_TOKENS;
+                         iter_var0 = iter_var0 + 1) begin : copy_loop
+                        shadow_capture_mem[go][iter_var0] =
+                            u_monitor.capture_mem[iter_var0];
                     end
                 end
             end else begin : stub_output
                 assign mon_ready[go]          = 1'b1;
                 assign mon_transfer_count[go] = 32'd0;
+
+                // Zero-fill shadow memory for inactive channels
+                always_comb begin : shadow_zero_ch
+                    integer iter_var0;
+                    for (iter_var0 = 0; iter_var0 < MAX_TOKENS;
+                         iter_var0 = iter_var0 + 1) begin : zero_loop
+                        shadow_capture_mem[go][iter_var0] = '0;
+                    end
+                end
             end
         end
     endgenerate
@@ -436,8 +457,8 @@ module tb_module_wrapper;
         if (eff_num_config_words > 0) begin : do_reload_cfg
             $readmemh(eff_config_file, u_config_loader.config_mem,
                       0, eff_num_config_words - 1);
-            $display("[tb_module_wrapper] Config: %0d words from %s",
-                     eff_num_config_words, eff_config_file);
+            $display("[tb_module_wrapper] Config: %0d words loaded",
+                     eff_num_config_words);
         end
     end
 
@@ -518,31 +539,51 @@ module tb_module_wrapper;
     reg [ENTRY_WIDTH-1:0] golden_mem_2 [0:MAX_TOKENS-1];
     reg [ENTRY_WIDTH-1:0] golden_mem_3 [0:MAX_TOKENS-1];
 
+    // 2D golden memory for uniform indexed access in comparison task.
+    // Populated from the per-channel arrays after $readmemh loading.
+    reg [ENTRY_WIDTH-1:0] golden_mem [0:MAX_CHANNELS-1][0:MAX_TOKENS-1];
+
+    // Shadow memories: mirror of each monitor's capture_mem, populated inside
+    // the generate blocks so that the comparison task never uses hierarchical
+    // references into conditionally-generated scopes.
+    reg [ENTRY_WIDTH-1:0] shadow_capture_mem [0:MAX_CHANNELS-1][0:MAX_TOKENS-1];
+
     initial begin : golden_load
+        integer iter_var0;
+
         #0; // ensure plusarg_init has executed
         if (eff_golden_tokens[0] > 0) begin : do_load_golden_0
             $readmemh(eff_golden_trace[0], golden_mem_0, 0,
                       eff_golden_tokens[0] - 1);
-            $display("[tb_module_wrapper] Loaded %0d golden tokens ch0 from %s",
-                     eff_golden_tokens[0], eff_golden_trace[0]);
+            $display("[tb_module_wrapper] Loaded %0d golden tokens ch0",
+                     eff_golden_tokens[0]);
         end
         if (eff_golden_tokens[1] > 0) begin : do_load_golden_1
             $readmemh(eff_golden_trace[1], golden_mem_1, 0,
                       eff_golden_tokens[1] - 1);
-            $display("[tb_module_wrapper] Loaded %0d golden tokens ch1 from %s",
-                     eff_golden_tokens[1], eff_golden_trace[1]);
+            $display("[tb_module_wrapper] Loaded %0d golden tokens ch1",
+                     eff_golden_tokens[1]);
         end
         if (eff_golden_tokens[2] > 0) begin : do_load_golden_2
             $readmemh(eff_golden_trace[2], golden_mem_2, 0,
                       eff_golden_tokens[2] - 1);
-            $display("[tb_module_wrapper] Loaded %0d golden tokens ch2 from %s",
-                     eff_golden_tokens[2], eff_golden_trace[2]);
+            $display("[tb_module_wrapper] Loaded %0d golden tokens ch2",
+                     eff_golden_tokens[2]);
         end
         if (eff_golden_tokens[3] > 0) begin : do_load_golden_3
             $readmemh(eff_golden_trace[3], golden_mem_3, 0,
                       eff_golden_tokens[3] - 1);
-            $display("[tb_module_wrapper] Loaded %0d golden tokens ch3 from %s",
-                     eff_golden_tokens[3], eff_golden_trace[3]);
+            $display("[tb_module_wrapper] Loaded %0d golden tokens ch3",
+                     eff_golden_tokens[3]);
+        end
+
+        // Copy per-channel arrays into 2D golden_mem for uniform access
+        for (iter_var0 = 0; iter_var0 < MAX_TOKENS;
+             iter_var0 = iter_var0 + 1) begin : copy_golden
+            golden_mem[0][iter_var0] = golden_mem_0[iter_var0];
+            golden_mem[1][iter_var0] = golden_mem_1[iter_var0];
+            golden_mem[2][iter_var0] = golden_mem_2[iter_var0];
+            golden_mem[3][iter_var0] = golden_mem_3[iter_var0];
         end
     end
 
@@ -631,7 +672,10 @@ module tb_module_wrapper;
             total_mismatch = 0;
             total_golden = 0;
 
-            // Compare each output channel that has golden tokens
+            // Compare each output channel that has golden tokens.
+            // Uses shadow_capture_mem (flat top-level array) instead of
+            // hierarchical paths into conditionally-generated scopes, so
+            // elaboration succeeds regardless of NUM_DUT_OUTPUTS.
             for (iter_var1 = 0; iter_var1 < NUM_DUT_OUTPUTS && iter_var1 < MAX_CHANNELS;
                  iter_var1 = iter_var1 + 1) begin : compare_channels
                 if (eff_golden_tokens[iter_var1] > 0) begin : compare_ch
@@ -650,63 +694,20 @@ module tb_module_wrapper;
                         ch_mismatch = ch_mismatch + 1;
                     end
 
-                    // Compare tokens
+                    // Compare tokens using shadow memory
                     for (iter_var0 = 0;
                          iter_var0 < eff_golden_tokens[iter_var1] && iter_var0 < MAX_TOKENS;
                          iter_var0 = iter_var0 + 1) begin : compare_loop
-                        case (iter_var1)
-                            0: begin : cmp_ch0
-                                if (gen_output_ch[0].active_output.u_monitor.capture_mem[iter_var0]
-                                    !== golden_mem_0[iter_var0]) begin : mismatch_ch0
-                                    if (ch_mismatch < 10) begin : report_ch0
-                                        $display("[tb_module_wrapper] MISMATCH ch0[%0d]: got %h, expected %h",
-                                                 iter_var0,
-                                                 gen_output_ch[0].active_output.u_monitor.capture_mem[iter_var0],
-                                                 golden_mem_0[iter_var0]);
-                                    end
-                                    ch_mismatch = ch_mismatch + 1;
-                                end
+                        if (shadow_capture_mem[iter_var1][iter_var0]
+                            !== golden_mem[iter_var1][iter_var0]) begin : mismatch_token
+                            if (ch_mismatch < 10) begin : report_mismatch
+                                $display("[tb_module_wrapper] MISMATCH ch%0d[%0d]: got %h, expected %h",
+                                         iter_var1, iter_var0,
+                                         shadow_capture_mem[iter_var1][iter_var0],
+                                         golden_mem[iter_var1][iter_var0]);
                             end
-                            1: begin : cmp_ch1
-                                if (gen_output_ch[1].active_output.u_monitor.capture_mem[iter_var0]
-                                    !== golden_mem_1[iter_var0]) begin : mismatch_ch1
-                                    if (ch_mismatch < 10) begin : report_ch1
-                                        $display("[tb_module_wrapper] MISMATCH ch1[%0d]: got %h, expected %h",
-                                                 iter_var0,
-                                                 gen_output_ch[1].active_output.u_monitor.capture_mem[iter_var0],
-                                                 golden_mem_1[iter_var0]);
-                                    end
-                                    ch_mismatch = ch_mismatch + 1;
-                                end
-                            end
-                            2: begin : cmp_ch2
-                                if (gen_output_ch[2].active_output.u_monitor.capture_mem[iter_var0]
-                                    !== golden_mem_2[iter_var0]) begin : mismatch_ch2
-                                    if (ch_mismatch < 10) begin : report_ch2
-                                        $display("[tb_module_wrapper] MISMATCH ch2[%0d]: got %h, expected %h",
-                                                 iter_var0,
-                                                 gen_output_ch[2].active_output.u_monitor.capture_mem[iter_var0],
-                                                 golden_mem_2[iter_var0]);
-                                    end
-                                    ch_mismatch = ch_mismatch + 1;
-                                end
-                            end
-                            3: begin : cmp_ch3
-                                if (gen_output_ch[3].active_output.u_monitor.capture_mem[iter_var0]
-                                    !== golden_mem_3[iter_var0]) begin : mismatch_ch3
-                                    if (ch_mismatch < 10) begin : report_ch3
-                                        $display("[tb_module_wrapper] MISMATCH ch3[%0d]: got %h, expected %h",
-                                                 iter_var0,
-                                                 gen_output_ch[3].active_output.u_monitor.capture_mem[iter_var0],
-                                                 golden_mem_3[iter_var0]);
-                                    end
-                                    ch_mismatch = ch_mismatch + 1;
-                                end
-                            end
-                            default: begin : cmp_default
-                                // unreachable
-                            end
-                        endcase
+                            ch_mismatch = ch_mismatch + 1;
+                        end
                     end
 
                     total_mismatch = total_mismatch + ch_mismatch;

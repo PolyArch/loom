@@ -1,0 +1,5 @@
+// Golden output trace for del_tag test: tag stripped, 32-bit data only
+00000001
+00000002
+00000003
+00000004

@@ -379,6 +379,29 @@ computeConfigLayout(fcc::fabric::ModuleOp fabricMod) {
           }
         });
       }
+      // Resolve memory/extmemory definitions referenced by fabric.instance.
+      if (!found) {
+        searchRoot->walk([&](fcc::fabric::MemoryOp memOp) {
+          if (found)
+            return;
+          auto sym = memOp.getSymName();
+          if (sym && *sym == refName) {
+            addSlice(instName, computeMemoryConfigBits(memOp));
+            found = true;
+          }
+        });
+      }
+      if (!found) {
+        searchRoot->walk([&](fcc::fabric::ExtMemoryOp extMemOp) {
+          if (found)
+            return;
+          auto sym = extMemOp.getSymName();
+          if (sym && *sym == refName) {
+            addSlice(instName, computeExtMemoryConfigBits(extMemOp));
+            found = true;
+          }
+        });
+      }
       // fabric.instance of FunctionUnitOp: no config bits at instance level.
     }
     // fabric.del_tag, fabric.yield: no config bits.

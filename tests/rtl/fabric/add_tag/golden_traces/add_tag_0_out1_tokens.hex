@@ -1,0 +1,7 @@
+// Golden output trace for add_tag test: tag=5 appended to data
+// Output is DATA_WIDTH+TAG_WIDTH = 32+4 = 36 bits
+// Format: {tag[3:0], data[31:0]} = {4'h5, data}
+500000001
+500000002
+500000003
+500000004

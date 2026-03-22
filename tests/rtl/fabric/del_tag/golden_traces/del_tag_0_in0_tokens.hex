@@ -1,0 +1,6 @@
+// Golden input trace for del_tag test: 4 tokens of tagged data (36-bit)
+// Format: {tag[3:0], data[31:0]}
+500000001
+500000002
+500000003
+500000004

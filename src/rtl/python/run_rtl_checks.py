@@ -804,12 +804,30 @@ def main():
                         golden_traces = find_golden_traces(test_output)
 
                 if not golden_traces:
-                    # Missing golden traces = behaviour FAIL. The C++
-                    # simulator requires a mapped DFG+ADG input. Add a
-                    # companion .dfg.mlir alongside the .fabric.mlir.
+                    # Fallback: use checked-in golden trace fixtures.
+                    # Infrastructure-only ADGs (add_tag, del_tag, etc.) can't
+                    # produce traces via the mapper. Pre-computed fixtures in
+                    # golden_traces/ provide the expected DUT port behaviour.
+                    checked_in_dir = os.path.join(
+                        os.path.dirname(tc["mlir"]), "golden_traces")
+                    if os.path.isdir(checked_in_dir):
+                        # Copy checked-in traces to the trace output dir
+                        trace_out = os.path.join(test_output, "rtl-traces")
+                        os.makedirs(trace_out, exist_ok=True)
+                        import shutil as _shutil
+                        for fname in os.listdir(checked_in_dir):
+                            _shutil.copy2(
+                                os.path.join(checked_in_dir, fname),
+                                os.path.join(trace_out, fname))
+                        golden_traces = find_golden_traces(test_output)
+                        if golden_traces:
+                            print(f"[behaviour/{tc['module']}/{tc['test']}] "
+                                  "Using checked-in golden trace fixtures")
+
+                if not golden_traces:
                     print(f"[behaviour/{tc['module']}/{tc['test']}] "
-                          "FAIL: no golden traces (missing companion "
-                          ".dfg.mlir for mapped simulation)")
+                          "FAIL: no golden traces (no mapper path and "
+                          "no checked-in fixtures)")
                     results["behaviour"]["failed"] += 1
                 elif not os.path.isdir(rtl_dir):
                     print(f"[behaviour/{tc['module']}/{tc['test']}] "
