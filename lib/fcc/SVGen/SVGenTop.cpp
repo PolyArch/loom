@@ -600,9 +600,19 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
   for (auto &op : body.getOperations())
     registerSymsFrom(op);
 
-  // Walk body ops and emit wire declarations + instances.
+  // Pre-declare all internal wires before emitting instances.
+  // DC requires net declarations to appear before their use, so we must
+  // emit all wire declarations up front rather than inline with instances.
   emitter.emitComment("Internal wires and module instances");
   emitter.emitBlankLine();
+
+  for (auto &op : body.getOperations()) {
+    if (mlir::isa<fcc::fabric::FunctionUnitOp>(op))
+      continue;
+    if (mlir::isa<fcc::fabric::YieldOp>(op))
+      continue;
+    emitTopWires(ctx, op);
+  }
 
   for (auto &op : body.getOperations()) {
     // Skip definitions (function_unit, PE defs that are not inline).
@@ -614,7 +624,6 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
     // Instance ops: instantiate the referenced module.  Resolve the symbol
     // to its definition op and dispatch based on the definition type.
     if (auto instOp = mlir::dyn_cast<fcc::fabric::InstanceOp>(op)) {
-      emitTopWires(ctx, op);
       std::string refModName =
           SVEmitter::sanitizeName(instOp.getModule());
       std::string instName = "inst_" + refModName;
@@ -837,7 +846,6 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
 
     // Inline PE ops (with inline_instantiation attribute).
     if (auto spatialPE = mlir::dyn_cast<fcc::fabric::SpatialPEOp>(op)) {
-      emitTopWires(ctx, op);
       auto peIt = peModuleNames.find(&op);
       std::string peModName =
           peIt != peModuleNames.end()
@@ -891,7 +899,6 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
     }
 
     if (auto temporalPE = mlir::dyn_cast<fcc::fabric::TemporalPEOp>(op)) {
-      emitTopWires(ctx, op);
       auto peIt = peModuleNames.find(&op);
       std::string peModName =
           peIt != peModuleNames.end()
@@ -947,7 +954,6 @@ void generateTopModule(fcc::fabric::ModuleOp fabricMod,
     // Pre-written module ops (switches, FIFOs, tag ops, memory).
     std::string modName = getModuleName(op);
     if (!modName.empty()) {
-      emitTopWires(ctx, op);
       std::string hint = getInstanceHint(op);
       std::string instName =
           hint.empty() ? ctx.makeInstanceName(modName) : hint;

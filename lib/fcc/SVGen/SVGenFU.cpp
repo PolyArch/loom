@@ -41,6 +41,10 @@ struct FUEmitContext {
   /// Running config bit offset within fu_cfg for configurable ops.
   unsigned cfgBitOffset = 0;
 
+  /// FU module data width: wires matching this width use parameterized
+  /// DATA_WIDTH so the FU scales when instantiated with a different width.
+  unsigned fuDataWidth = 0;
+
   /// For each SSA value, track all consumer ready wire names.
   /// The value's ready signal = AND of all consumer readies.
   llvm::DenseMap<mlir::Value, llvm::SmallVector<std::string, 2>>
@@ -92,7 +96,10 @@ static void emitOpResultWires(FUEmitContext &ctx, mlir::Operation &op) {
   for (mlir::Value result : op.getResults()) {
     std::string wireName = ctx.getOrCreateWireName(result);
     unsigned width = getValueWidth(result);
-    std::string typeStr = "logic" + SVEmitter::bitRange(width);
+    // Use parameterized DATA_WIDTH for wires matching the FU data width.
+    std::string typeStr = (ctx.fuDataWidth > 1 && width == ctx.fuDataWidth)
+        ? "logic[DATA_WIDTH-1:0]"
+        : "logic" + SVEmitter::bitRange(width);
     ctx.emitter.emitWire(typeStr, wireName);
     ctx.emitter.emitWire("logic", wireName + "_valid");
     ctx.emitter.emitWire("logic", wireName + "_ready");
@@ -323,6 +330,7 @@ static void emitMemoryOpInstance(FUEmitContext &ctx, mlir::Operation &op,
 
   // ADDR_WIDTH from the first operand (address), DATA_WIDTH from the
   // first result or the second operand (data).
+  // Use parameterized DATA_WIDTH so the inner op scales with the wrapper.
   unsigned addrWidth = 32;
   unsigned dataWidth = 32;
   if (op.getNumOperands() > 0)
@@ -338,8 +346,8 @@ static void emitMemoryOpInstance(FUEmitContext &ctx, mlir::Operation &op,
   }
 
   std::vector<std::string> params;
-  params.push_back(".ADDR_WIDTH(" + std::to_string(addrWidth) + ")");
-  params.push_back(".DATA_WIDTH(" + std::to_string(dataWidth) + ")");
+  params.push_back(".ADDR_WIDTH(DATA_WIDTH)");
+  params.push_back(".DATA_WIDTH(DATA_WIDTH)");
 
   unsigned numOperands = op.getNumOperands();
   unsigned numResults = op.getNumResults();
@@ -802,8 +810,13 @@ std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
   for (unsigned i = 0; i < numIn; ++i) {
     unsigned w = SVEmitter::getDataWidth(fnType.getInput(i));
     std::string idx = std::to_string(i);
+    // Use parameterized DATA_WIDTH for ports matching the module data width
+    // so the FU wrapper scales when instantiated with a different DATA_WIDTH.
+    std::string typeStr = (w == dataWidth && w > 1)
+        ? "logic[DATA_WIDTH-1:0]"
+        : "logic" + SVEmitter::bitRange(w);
     ports.push_back(
-        {SVPortDir::Input, "logic" + SVEmitter::bitRange(w),
+        {SVPortDir::Input, typeStr,
          "in_data_" + idx});
     ports.push_back({SVPortDir::Input, "logic", "in_valid_" + idx});
     ports.push_back({SVPortDir::Output, "logic", "in_ready_" + idx});
@@ -811,8 +824,11 @@ std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
   for (unsigned i = 0; i < numOut; ++i) {
     unsigned w = SVEmitter::getDataWidth(fnType.getResult(i));
     std::string idx = std::to_string(i);
+    std::string typeStr = (w == dataWidth && w > 1)
+        ? "logic[DATA_WIDTH-1:0]"
+        : "logic" + SVEmitter::bitRange(w);
     ports.push_back(
-        {SVPortDir::Output, "logic" + SVEmitter::bitRange(w),
+        {SVPortDir::Output, typeStr,
          "out_data_" + idx});
     ports.push_back({SVPortDir::Output, "logic", "out_valid_" + idx});
     ports.push_back({SVPortDir::Input, "logic", "out_ready_" + idx});
@@ -829,7 +845,7 @@ std::string generateFUBody(fcc::fabric::FunctionUnitOp fuOp,
   emitter.emitModuleHeader(moduleName, params, ports);
 
   // Set up emission context.
-  FUEmitContext ctx{emitter, registry, fpIpProfile, {}, 0, false, 0, {}};
+  FUEmitContext ctx{emitter, registry, fpIpProfile, {}, 0, false, 0, dataWidth, {}};
 
   // Map block arguments (FU inputs) to port wire names and declare
   // corresponding valid/ready wires aliased to FU port signals.

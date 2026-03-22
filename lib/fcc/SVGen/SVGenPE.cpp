@@ -450,10 +450,20 @@ std::string generateSpatialPE(fcc::fabric::SpatialPEOp peOp,
       fuConns.push_back({"clk", "clk"});
       fuConns.push_back({"rst_n", "rst_n"});
 
+      // Get FU function type for per-port width inspection.
+      auto fuOpMut = fu.fuOp;
+      auto fuFnType = fuOpMut.getFunctionType();
+
       for (unsigned i = 0; i < fu.numInputs; ++i) {
         std::string idx = u2s(i);
-        fuConns.push_back(
-            {"in_data_" + idx, fp + "_gated_in_data[" + idx + "]"});
+        // Narrow the data connection for FU ports narrower than DATA_WIDTH.
+        // NoneType returns 0 from getDataWidth but maps to 1-bit in SV.
+        unsigned portW = SVEmitter::getDataWidth(fuFnType.getInput(i));
+        unsigned svPortW = (portW == 0) ? 1 : portW;
+        std::string dataExpr = fp + "_gated_in_data[" + idx + "]";
+        if (svPortW < dataWidth)
+          dataExpr += "[" + u2s(svPortW - 1) + ":0]";
+        fuConns.push_back({"in_data_" + idx, dataExpr});
         fuConns.push_back(
             {"in_valid_" + idx,
              fp + "_gated_in_valid[" + idx + "]"});
@@ -962,10 +972,20 @@ std::string generateTemporalPE(fcc::fabric::TemporalPEOp peOp,
       fuConns.push_back({"clk", "clk"});
       fuConns.push_back({"rst_n", "rst_n"});
 
+      // Get FU function type for per-port width inspection.
+      auto fuOpMut = fu.fuOp;
+      auto fuFnType = fuOpMut.getFunctionType();
+
       for (unsigned i = 0; i < fu.numInputs; ++i) {
         std::string idx = u2s(i);
-        fuConns.push_back(
-            {"in_data_" + idx, fp + "_body_in" + idx});
+        // Narrow the data connection for FU ports narrower than DATA_WIDTH.
+        // NoneType returns 0 from getDataWidth but maps to 1-bit in SV.
+        unsigned portW = SVEmitter::getDataWidth(fuFnType.getInput(i));
+        unsigned svPortW = (portW == 0) ? 1 : portW;
+        std::string dataExpr = fp + "_body_in" + idx;
+        if (svPortW < dataWidth)
+          dataExpr += "[" + u2s(svPortW - 1) + ":0]";
+        fuConns.push_back({"in_data_" + idx, dataExpr});
         fuConns.push_back(
             {"in_valid_" + idx,
              fp + "_body_in_valid[" + idx + "]"});
