@@ -9,3 +9,7 @@ __pycache__/
 *.pyc
 # Derived trace token counts (computable from .hex files)
 *.count
+.claude/worktrees/
+system-adg-builder.fabric.mlir
+system-adg-builder.fabric.viz.json
+system_*.mlir
