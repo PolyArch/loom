@@ -64,6 +64,7 @@ bool isAllowedFunctionUnitBodyOp(llvm::StringRef opName) {
       .Case("math.absf", true)
       .Case("math.cos", true)
       .Case("math.exp", true)
+      .Case("math.floor", true)
       .Case("math.fma", true)
       .Case("math.log2", true)
       .Case("math.sin", true)

@@ -352,7 +352,7 @@ void emitFUBody(std::ostringstream &os, const FUDef &fu,
 
   if (op == "arith.negf" || op == "math.absf" || op == "math.cos" ||
       op == "math.sin" || op == "math.exp" || op == "math.log2" ||
-      op == "math.sqrt") {
+      op == "math.sqrt" || op == "math.floor") {
     os << indent << "  %0 = " << op << " %arg0 : " << fu.outputTypes[0]
        << "\n";
     os << indent << "  fabric.yield %0 : " << fu.outputTypes[0] << "\n";
