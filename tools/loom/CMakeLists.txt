@@ -13,9 +13,10 @@ target_include_directories(loom PRIVATE
   ${CLANG_INCLUDE_DIRS}
 )
 
-# LLVM libraries for IR reading and target support
+# LLVM libraries for IR reading, target support, and optimization passes
 llvm_map_components_to_libnames(LLVM_LIBS
   core support irreader linker
+  passes instcombine scalaropts transformutils analysis
   native nativecodegen
   ${LLVM_TARGETS_TO_BUILD}
 )

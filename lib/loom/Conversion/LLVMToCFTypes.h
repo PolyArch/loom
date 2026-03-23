@@ -43,7 +43,16 @@ mlir::Type flattenAllocaElementType(mlir::MLIRContext *ctx,
                                     uint64_t &elementCount);
 
 // Get byte width of a type (for offset scaling in GEP conversion).
+// For struct types, returns the total size including padding.
 unsigned getTypeBitWidth(mlir::Type type);
+
+// Compute the byte offset of a struct field at the given index.
+// Returns 0 if the type is not a struct or the field index is invalid.
+unsigned getStructFieldByteOffset(mlir::Type structType, unsigned fieldIndex);
+
+// Get the type of the field at the given index in a struct type.
+// Returns nullptr if the type is not a struct or the index is out of bounds.
+mlir::Type getStructFieldType(mlir::Type structType, unsigned fieldIndex);
 
 // Infer the element type for each pointer-typed function argument
 // by analyzing downstream uses (GEPs, loads, stores, calls).

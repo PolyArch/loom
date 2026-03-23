@@ -5,6 +5,7 @@
 
 #include "LLVMToCFTypes.h"
 #include "loom/Conversion/Passes.h"
+#include "loom/Dialect/Fabric/FabricTypes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -38,7 +39,15 @@ static Type inferPointerElemTypeFromUses(Value ptrVal, unsigned depth = 0) {
 
     if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
       if (use.getOperandNumber() == 0) {
-        Type elemTy = normalizeScalarType(user->getContext(), gep.getElemType());
+        Type elemTy = gep.getElemType();
+        // Skip struct-typed GEP elem types and look through to uses
+        if (isa<LLVM::LLVMStructType>(elemTy)) {
+          Type fromGepUses = inferPointerElemTypeFromUses(gep.getResult(), depth + 1);
+          if (fromGepUses)
+            return fromGepUses;
+          continue;
+        }
+        elemTy = normalizeScalarType(user->getContext(), elemTy);
         if (!isa<IntegerType>(elemTy) ||
             cast<IntegerType>(elemTy).getWidth() != 8)
           return elemTy;
@@ -133,13 +142,13 @@ struct FunctionConverter {
   // Argument memref types (for pointer args)
   llvm::DenseMap<unsigned, MemRefType> argMemRefTypes;
 
-  // Map of global symbol names to their converted memref.global types
-  llvm::DenseMap<StringRef, MemRefType> &convertedGlobals;
+  // Vector element tracking: maps LLVM vector values to their scalar components.
+  // Used to decompose vector operations (from SRoA struct decomposition)
+  // into individual scalar operations.
+  llvm::DenseMap<Value, SmallVector<Value, 4>> vectorMap;
 
-  FunctionConverter(LLVM::LLVMFuncOp func, OpBuilder &b,
-                    llvm::DenseMap<StringRef, MemRefType> &globals)
-      : llvmFunc(func), builder(b), ctx(func.getContext()),
-        convertedGlobals(globals) {}
+  FunctionConverter(LLVM::LLVMFuncOp func, OpBuilder &b)
+      : llvmFunc(func), builder(b), ctx(func.getContext()) {}
 
   LogicalResult convert();
 
@@ -154,7 +163,10 @@ private:
   LogicalResult convertLoad(LLVM::LoadOp op);
   LogicalResult convertStore(LLVM::StoreOp op);
   LogicalResult convertAlloca(LLVM::AllocaOp op);
-  LogicalResult convertAddressOf(LLVM::AddressOfOp op);
+
+  // Vector operations (from SRoA struct decomposition)
+  LogicalResult convertExtractElement(LLVM::ExtractElementOp op);
+  LogicalResult convertInsertElement(LLVM::InsertElementOp op);
 
   // Arithmetic
   LogicalResult convertBinaryIntOp(Operation *op);
@@ -176,6 +188,8 @@ private:
   PointerInfo lookupPtr(Value v);
   void mapValue(Value oldVal, Value newVal);
   void mapPointer(Value oldPtr, PointerInfo info);
+  void mapVector(Value oldVec, SmallVector<Value, 4> elements);
+  SmallVector<Value, 4> lookupVector(Value v);
   SmallVector<Value> materializeBranchArgs(Location loc, OperandRange args,
                                            Block *dest);
   Value createIndexCast(Location loc, Value intVal);
@@ -242,6 +256,8 @@ LogicalResult FunctionConverter::createFuncOp() {
     if (isa<LLVM::LLVMPointerType>(argTy)) {
       Type elemTy = argElemTypes.count(i) ? argElemTypes[i]
                                           : IntegerType::get(ctx, 8);
+      // Normalize the element type to ensure it's memref-compatible
+      elemTy = normalizeScalarType(ctx, elemTy);
       auto memrefTy = buildStridedMemRefType(ctx, elemTy);
       newArgTypes.push_back(memrefTy);
       argMemRefTypes[i] = memrefTy;
@@ -289,42 +305,50 @@ LogicalResult FunctionConverter::createBlocks() {
 
     for (unsigned i = 0; i < srcBlock.getNumArguments(); ++i) {
       auto srcArg = srcBlock.getArgument(i);
-      Type newTy;
+      Type rawTy = srcArg.getType();
 
-      if (isEntry && isa<LLVM::LLVMPointerType>(srcArg.getType())) {
+      if (isEntry && isa<LLVM::LLVMPointerType>(rawTy)) {
+        Type newTy;
         if (argMemRefTypes.count(i))
           newTy = argMemRefTypes[i];
         else
           newTy = buildStridedMemRefType(ctx, IntegerType::get(ctx, 8));
-      } else if (isa<LLVM::LLVMPointerType>(srcArg.getType())) {
-        // Non-entry block pointer args: infer pointee type from downstream uses.
-        Type elemTy = inferPointerElemTypeFromUses(srcArg);
-        if (!elemTy)
-          elemTy = IntegerType::get(ctx, 8);
-        elemTy = normalizeScalarType(ctx, elemTy);
-        newTy = buildStridedMemRefType(ctx, elemTy);
-      } else {
-        newTy = normalizeScalarType(ctx, srcArg.getType());
-      }
-
-      auto dstArg = dstBlock->addArgument(newTy, srcArg.getLoc());
-
-      if (isa<LLVM::LLVMPointerType>(srcArg.getType())) {
-        // Pointer arg: create PointerInfo with zero index
+        auto dstArg = dstBlock->addArgument(newTy, srcArg.getLoc());
         OpBuilder blockBuilder = OpBuilder::atBlockBegin(dstBlock);
         auto zeroIdx =
             arith::ConstantIndexOp::create(blockBuilder, srcArg.getLoc(), 0);
         Type elemTy;
-        if (isEntry && argElemTypes.count(i))
+        if (argElemTypes.count(i))
           elemTy = argElemTypes[i];
         else {
           elemTy = inferPointerElemTypeFromUses(srcArg);
-          if (!elemTy)
-            elemTy = IntegerType::get(ctx, 8);
+          if (!elemTy) elemTy = IntegerType::get(ctx, 8);
           elemTy = normalizeScalarType(ctx, elemTy);
         }
         mapPointer(srcArg, {dstArg, zeroIdx, elemTy});
+      } else if (isa<LLVM::LLVMPointerType>(rawTy)) {
+        Type elemTy = inferPointerElemTypeFromUses(srcArg);
+        if (!elemTy) elemTy = IntegerType::get(ctx, 8);
+        elemTy = normalizeScalarType(ctx, elemTy);
+        Type newTy = buildStridedMemRefType(ctx, elemTy);
+        auto dstArg = dstBlock->addArgument(newTy, srcArg.getLoc());
+        OpBuilder blockBuilder = OpBuilder::atBlockBegin(dstBlock);
+        auto zeroIdx =
+            arith::ConstantIndexOp::create(blockBuilder, srcArg.getLoc(), 0);
+        mapPointer(srcArg, {dstArg, zeroIdx, elemTy});
+      } else if (auto vecTy = dyn_cast<VectorType>(rawTy)) {
+        // Vector block arg (from phi): expand into N scalar block args
+        Type scalarTy = normalizeScalarType(ctx, vecTy.getElementType());
+        unsigned numElems = vecTy.getNumElements();
+        SmallVector<Value, 4> scalarArgs;
+        for (unsigned j = 0; j < numElems; ++j) {
+          auto dstArg = dstBlock->addArgument(scalarTy, srcArg.getLoc());
+          scalarArgs.push_back(dstArg);
+        }
+        mapVector(srcArg, std::move(scalarArgs));
       } else {
+        Type newTy = normalizeScalarType(ctx, rawTy);
+        auto dstArg = dstBlock->addArgument(newTy, srcArg.getLoc());
         mapValue(srcArg, dstArg);
       }
     }
@@ -374,19 +398,41 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
   }
 
   // AddressOf (global references): track as pointer
-  if (auto addrOf = dyn_cast<LLVM::AddressOfOp>(op))
-    return convertAddressOf(addrOf);
+  if (auto addrOf = dyn_cast<LLVM::AddressOfOp>(op)) {
+    // For now, fail - globals support would need memref::GlobalOp conversion
+    return op->emitError("llvm.mlir.addressof not yet supported");
+  }
 
   // Constants
   if (auto c = dyn_cast<LLVM::ConstantOp>(op))
     return convertConstant(c);
   if (isa<LLVM::ZeroOp>(op)) {
-    Type ty = normalizeScalarType(ctx, op->getResult(0).getType());
+    Type rawTy = op->getResult(0).getType();
+    // Handle vector zero: create zero elements for each lane
+    if (auto vecTy = dyn_cast<VectorType>(rawTy)) {
+      Type elemTy = normalizeScalarType(ctx, vecTy.getElementType());
+      unsigned numElems = vecTy.getNumElements();
+      SmallVector<Value, 4> elems;
+      for (unsigned i = 0; i < numElems; ++i) {
+        Value zero;
+        if (auto intTy = dyn_cast<IntegerType>(elemTy))
+          zero = arith::ConstantIntOp::create(builder, loc, intTy, 0);
+        else if (auto fTy = dyn_cast<FloatType>(elemTy))
+          zero = arith::ConstantFloatOp::create(builder,
+              loc, fTy, APFloat::getZero(fTy.getFloatSemantics()));
+        else
+          return op->emitError("unsupported zero vector element type");
+        elems.push_back(zero);
+      }
+      mapVector(op->getResult(0), std::move(elems));
+      return success();
+    }
+    Type ty = normalizeScalarType(ctx, rawTy);
     Value zero;
     if (auto intTy = dyn_cast<IntegerType>(ty))
       zero = arith::ConstantIntOp::create(builder, loc, intTy, 0);
     else if (auto fTy = dyn_cast<FloatType>(ty))
-      zero = arith::ConstantFloatOp::create(builder, 
+      zero = arith::ConstantFloatOp::create(builder,
           loc, fTy, APFloat::getZero(fTy.getFloatSemantics()));
     else
       return op->emitError("unsupported zero type");
@@ -395,22 +441,48 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
   }
   if (isa<LLVM::UndefOp, LLVM::PoisonOp>(op)) {
     // Undef/poison: create arith.constant 0 as placeholder
-    Type ty = normalizeScalarType(ctx, op->getResult(0).getType());
-    if (isa<LLVM::LLVMPointerType>(op->getResult(0).getType())) {
+    Type rawTy = op->getResult(0).getType();
+    if (isa<LLVM::LLVMPointerType>(rawTy)) {
       // Pointer undef: skip (will be handled if used)
       return success();
     }
+    // Handle vector undef/poison by creating zero-initialized vector elements
+    if (auto vecTy = dyn_cast<VectorType>(rawTy)) {
+      Type elemTy = normalizeScalarType(ctx, vecTy.getElementType());
+      unsigned numElems = vecTy.getNumElements();
+      SmallVector<Value, 4> elems;
+      for (unsigned i = 0; i < numElems; ++i) {
+        Value zero;
+        if (auto intTy = dyn_cast<IntegerType>(elemTy))
+          zero = arith::ConstantIntOp::create(builder, loc, intTy, 0);
+        else if (auto fTy = dyn_cast<FloatType>(elemTy))
+          zero = arith::ConstantFloatOp::create(builder,
+              loc, fTy, APFloat::getZero(fTy.getFloatSemantics()));
+        else
+          return success();
+        elems.push_back(zero);
+      }
+      mapVector(op->getResult(0), std::move(elems));
+      return success();
+    }
+    Type ty = normalizeScalarType(ctx, rawTy);
     Value zero;
     if (auto intTy = dyn_cast<IntegerType>(ty))
       zero = arith::ConstantIntOp::create(builder, loc, intTy, 0);
     else if (auto fTy = dyn_cast<FloatType>(ty))
-      zero = arith::ConstantFloatOp::create(builder, 
+      zero = arith::ConstantFloatOp::create(builder,
           loc, fTy, APFloat::getZero(fTy.getFloatSemantics()));
     else
       return success(); // skip unsupported undef types
     mapValue(op->getResult(0), zero);
     return success();
   }
+
+  // Vector element operations (from SRoA struct decomposition)
+  if (auto extractElem = dyn_cast<LLVM::ExtractElementOp>(op))
+    return convertExtractElement(extractElem);
+  if (auto insertElem = dyn_cast<LLVM::InsertElementOp>(op))
+    return convertInsertElement(insertElem);
 
   // Memory operations
   if (auto gep = dyn_cast<LLVM::GEPOp>(op))
@@ -461,126 +533,14 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
   // Calls: convert non-vararg function calls
   if (auto call = dyn_cast<LLVM::CallOp>(op)) {
     auto callee = call.getCalleeAttr();
-    if (!callee)
-      return call.emitError("indirect calls not supported");
 
-    StringRef calleeName = callee.getAttr().getValue();
-
-    // Convert known C math library functions to math/arith ops
-    if (call.getNumResults() == 1 && call.getNumOperands() == 1 &&
-        !isa<LLVM::LLVMPointerType>(call.getOperand(0).getType())) {
-      Value arg = lookup(call.getOperand(0));
-      Value result;
-      if (calleeName == "expf" || calleeName == "exp")
-        result = math::ExpOp::create(builder, loc, arg);
-      else if (calleeName == "exp2f" || calleeName == "exp2")
-        result = math::Exp2Op::create(builder, loc, arg);
-      else if (calleeName == "logf" || calleeName == "log")
-        result = math::LogOp::create(builder, loc, arg);
-      else if (calleeName == "log2f" || calleeName == "log2")
-        result = math::Log2Op::create(builder, loc, arg);
-      else if (calleeName == "log10f" || calleeName == "log10")
-        result = math::Log10Op::create(builder, loc, arg);
-      else if (calleeName == "sqrtf" || calleeName == "sqrt")
-        result = math::SqrtOp::create(builder, loc, arg);
-      else if (calleeName == "fabsf" || calleeName == "fabs")
-        result = math::AbsFOp::create(builder, loc, arg);
-      else if (calleeName == "floorf" || calleeName == "floor")
-        result = math::FloorOp::create(builder, loc, arg);
-      else if (calleeName == "ceilf" || calleeName == "ceil")
-        result = math::CeilOp::create(builder, loc, arg);
-      else if (calleeName == "sinf" || calleeName == "sin")
-        result = math::SinOp::create(builder, loc, arg);
-      else if (calleeName == "cosf" || calleeName == "cos")
-        result = math::CosOp::create(builder, loc, arg);
-      else if (calleeName == "tanhf" || calleeName == "tanh")
-        result = math::TanhOp::create(builder, loc, arg);
-      else if (calleeName == "roundf" || calleeName == "round")
-        result = math::RoundOp::create(builder, loc, arg);
-      else if (calleeName == "truncf" || calleeName == "trunc")
-        result = math::TruncOp::create(builder, loc, arg);
-      if (result) {
-        mapValue(call->getResult(0), result);
-        return success();
-      }
-    }
-
-    // Binary math functions
-    if (call.getNumResults() == 1 && call.getNumOperands() == 2 &&
-        !isa<LLVM::LLVMPointerType>(call.getOperand(0).getType()) &&
-        !isa<LLVM::LLVMPointerType>(call.getOperand(1).getType())) {
-      Value lhs = lookup(call.getOperand(0));
-      Value rhs = lookup(call.getOperand(1));
-      Value result;
-      if (calleeName == "powf" || calleeName == "pow")
-        result = math::PowFOp::create(builder, loc, lhs, rhs);
-      else if (calleeName == "fmodf" || calleeName == "fmod")
-        result = arith::RemFOp::create(builder, loc, lhs, rhs);
-      else if (calleeName == "copysignf" || calleeName == "copysign")
-        result = math::CopySignOp::create(builder, loc, lhs, rhs);
-      else if (calleeName == "fminf" || calleeName == "fmin")
-        result = arith::MinimumFOp::create(builder, loc, lhs, rhs);
-      else if (calleeName == "fmaxf" || calleeName == "fmax")
-        result = arith::MaximumFOp::create(builder, loc, lhs, rhs);
-      else if (calleeName == "atan2f" || calleeName == "atan2")
-        result = math::Atan2Op::create(builder, loc, lhs, rhs);
-      if (result) {
-        mapValue(call->getResult(0), result);
-        return success();
-      }
-    }
-
-    // Void math/memory functions to skip
-    if (calleeName == "memset" || calleeName == "memcpy" ||
-        calleeName == "memmove" || calleeName == "free") {
-      // These operate on raw pointers; skip them in the converted IR
-      return success();
-    }
-
-    // Heap allocation functions: convert to memref.alloc
-    if (calleeName == "malloc" || calleeName == "calloc") {
-      if (call.getNumResults() == 1 &&
-          isa<LLVM::LLVMPointerType>(call->getResult(0).getType())) {
-        // Infer element type from downstream uses
-        Type elemTy = inferPointerElemTypeFromUses(call->getResult(0));
-        if (!elemTy)
-          elemTy = IntegerType::get(ctx, 8);
-        elemTy = normalizeScalarType(ctx, elemTy);
-
-        // Compute total byte count
-        Value totalBytes;
-        if (calleeName == "malloc") {
-          totalBytes = lookup(call.getOperand(0));
-        } else {
-          // calloc(count, size): total = count * size
-          Value count = lookup(call.getOperand(0));
-          Value size = lookup(call.getOperand(1));
-          totalBytes = arith::MulIOp::create(builder, loc, count, size);
-        }
-        Value totalBytesIdx = createIndexCast(loc, totalBytes);
-
-        // Convert byte count to element count
-        unsigned elemBytes = getTypeBitWidth(elemTy) / 8;
-        Value numElems;
-        if (elemBytes > 1) {
-          Value elemSize =
-              arith::ConstantIndexOp::create(builder, loc, elemBytes);
-          numElems = arith::DivUIOp::create(builder, loc, totalBytesIdx,
-                                            elemSize);
-        } else {
-          numElems = totalBytesIdx;
-        }
-
-        auto plainMemRefTy =
-            MemRefType::get({ShapedType::kDynamic}, elemTy);
-        auto alloc = memref::AllocOp::create(builder, loc, plainMemRefTy,
-                                             ValueRange{numElems});
-        Value base = alloc;
-        auto memrefTy = buildStridedMemRefType(ctx, elemTy);
-        if (plainMemRefTy != memrefTy)
-          base = memref::CastOp::create(builder, loc, memrefTy, alloc);
-        Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
-        mapPointer(call->getResult(0), {base, zeroIdx, elemTy});
+    // Skip memory management calls (malloc, calloc, realloc, free, memset, memcpy)
+    // These are runtime operations that don't map to CGRA dataflow.
+    if (callee) {
+      StringRef name = callee.getAttr().getValue();
+      if (name == "free" || name == "memset" || name == "memcpy" ||
+          name == "memmove") {
+        // Void calls: just skip
         return success();
       }
     }
@@ -597,17 +557,81 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
         args.push_back(lookup(v));
       }
     }
+    if (!callee)
+      return call.emitError("indirect calls not supported");
 
     SmallVector<Type> resultTypes;
-    for (Type t : call.getResultTypes()) {
+    SmallVector<unsigned> ptrResultIndices;
+    for (auto [ri, t] : llvm::enumerate(call.getResultTypes())) {
       if (isa<LLVM::LLVMVoidType>(t))
         continue;
+      if (isa<LLVM::LLVMPointerType>(t))
+        ptrResultIndices.push_back(ri);
       resultTypes.push_back(normalizeScalarType(ctx, t));
     }
     auto newCall = func::CallOp::create(builder,
         op->getLoc(), callee.getAttr(), resultTypes, args);
-    for (unsigned i = 0; i < newCall->getNumResults(); ++i)
-      mapValue(call->getResult(i), newCall->getResult(i));
+    for (unsigned i = 0; i < newCall->getNumResults(); ++i) {
+      Value oldRes = call->getResult(i);
+      Value newRes = newCall->getResult(i);
+
+      // If the original result was a pointer, track it in the pointer map
+      if (isa<LLVM::LLVMPointerType>(oldRes.getType())) {
+        // Infer element type from downstream uses
+        Type ptrElemTy = inferPointerElemTypeFromUses(oldRes);
+        if (!ptrElemTy)
+          ptrElemTy = IntegerType::get(ctx, 8);
+        ptrElemTy = normalizeScalarType(ctx, ptrElemTy);
+
+        // Convert integer result to index for base offset
+        Value baseIdx = createIndexCast(call.getLoc(), newRes);
+        unsigned elemBytes = getTypeBitWidth(ptrElemTy) / 8;
+        if (elemBytes > 1) {
+          Value divisor = arith::ConstantIndexOp::create(builder,
+              call.getLoc(), elemBytes);
+          baseIdx = arith::DivUIOp::create(builder, call.getLoc(),
+              baseIdx, divisor);
+        }
+
+        // Create a memref for the returned pointer using reinterpret_cast.
+        // For malloc-like calls, the returned pointer starts a new array.
+        auto newMemRefTy = buildStridedMemRefType(ctx, ptrElemTy);
+
+        // Use the first pointer argument's memref as a basis for the cast,
+        // or create a default. For simplicity, create a zero-offset pointer.
+        // In the CGRA flat memory model, all pointers address the same space.
+        Value zeroIdx = arith::ConstantIndexOp::create(builder,
+            call.getLoc(), 0);
+
+        // Find any available memref base from existing pointer args
+        Value memrefBase;
+        for (auto &entry : pointerMap) {
+          if (entry.second.isValid() &&
+              entry.second.base.getType() == newMemRefTy) {
+            memrefBase = entry.second.base;
+            break;
+          }
+        }
+        if (!memrefBase) {
+          // Use the first available memref base and cast it
+          for (auto &entry : pointerMap) {
+            if (entry.second.isValid()) {
+              memrefBase = memref::CastOp::create(builder, call.getLoc(),
+                  newMemRefTy, entry.second.base);
+              break;
+            }
+          }
+        }
+
+        if (memrefBase) {
+          mapPointer(oldRes, {memrefBase, baseIdx, ptrElemTy});
+        }
+        // Also map as a scalar value for non-pointer uses
+        mapValue(oldRes, newRes);
+      } else {
+        mapValue(oldRes, newRes);
+      }
+    }
     return success();
   }
 
@@ -645,9 +669,10 @@ LogicalResult FunctionConverter::convertGEP(LLVM::GEPOp op) {
   auto indices = op.getIndices();
   auto dynamicIndices = op.getDynamicIndices();
 
-  // Simple case: single dynamic index, no struct nesting
-  // gep base[idx] where base is a typed pointer
-  if (dynamicIndices.size() == 1 && indices.size() == 1) {
+  // Simple case: single dynamic index, non-struct element type
+  // gep base[idx] where base is a typed pointer to a scalar/array
+  if (dynamicIndices.size() == 1 && indices.size() == 1 &&
+      !isa<LLVM::LLVMStructType>(elemTy)) {
     Value idx = lookup(dynamicIndices[0]);
     Value idxAsIndex = createIndexCast(loc, idx);
 
@@ -667,11 +692,17 @@ LogicalResult FunctionConverter::convertGEP(LLVM::GEPOp op) {
     return success();
   }
 
-  // Multi-index GEP: compute byte offset, then scale to element type
-  // offset_bytes = sum of (index[i] * stride[i]) for each level
-  Value byteOffset = arith::ConstantIndexOp::create(builder, loc, 0);
+  // Multi-index GEP or struct-typed GEP: compute byte offset.
+  // LLVM GEP semantics:
+  //   gep elemTy, ptr, idx0, idx1, ...
+  //   - idx0 indexes into an array of elemTy (scales by sizeof(elemTy))
+  //   - idx1 indexes into elemTy:
+  //       if elemTy is struct -> constant field index (byte offset of field)
+  //       if elemTy is array  -> dynamic index (scales by array element size)
+  //   - etc. for deeper nesting
 
   // Start with base's existing offset in bytes
+  Value byteOffset;
   unsigned baseElemBytes = getTypeBitWidth(baseInfo.elementType) / 8;
   if (baseElemBytes == 0) baseElemBytes = 1;
   if (baseElemBytes != 1) {
@@ -681,39 +712,140 @@ LogicalResult FunctionConverter::convertGEP(LLVM::GEPOp op) {
     byteOffset = baseInfo.index;
   }
 
-  // Walk through GEP indices
+  // Walk through GEP indices, tracking the current type at each level
   Type currentType = elemTy;
   unsigned dynIdx = 0;
+  bool isFirstIndex = true;
 
-  for (auto idxAttr : indices) {
-    // Get the index value
-    Value idxVal;
-    if (auto constIdx = dyn_cast<IntegerAttr>(idxAttr)) {
-      idxVal = arith::ConstantIndexOp::create(builder, loc,
-                                                       constIdx.getInt());
-    } else {
-      // Dynamic index
-      if (dynIdx >= dynamicIndices.size())
-        return op.emitError("GEP: more indices than dynamic operands");
-      idxVal = createIndexCast(loc, lookup(dynamicIndices[dynIdx++]));
+  for (auto idxEntry : indices) {
+    if (isFirstIndex) {
+      // First index: scales by sizeof(elemTy) (array of the element type)
+      isFirstIndex = false;
+
+      Value idxVal;
+      if (auto constIdx = dyn_cast<IntegerAttr>(idxEntry)) {
+        idxVal = arith::ConstantIndexOp::create(builder, loc,
+                                                 constIdx.getInt());
+      } else {
+        if (dynIdx >= dynamicIndices.size())
+          return op.emitError("GEP: more indices than dynamic operands");
+        idxVal = createIndexCast(loc, lookup(dynamicIndices[dynIdx++]));
+      }
+
+      unsigned strideBytes = getTypeBitWidth(currentType) / 8;
+      if (strideBytes == 0) strideBytes = 1;
+
+      if (strideBytes != 1) {
+        Value stride = arith::ConstantIndexOp::create(builder, loc, strideBytes);
+        Value contribution = arith::MulIOp::create(builder, loc, idxVal, stride);
+        byteOffset = arith::AddIOp::create(builder, loc, byteOffset, contribution);
+      } else {
+        byteOffset = arith::AddIOp::create(builder, loc, byteOffset, idxVal);
+      }
+      // currentType stays as elemTy (we're now pointing into that type)
+      continue;
     }
 
-    // Compute stride for this level
-    unsigned strideBytes = getTypeBitWidth(currentType) / 8;
-    if (strideBytes == 0) strideBytes = 1;
+    // Subsequent indices: depend on the current type
+    if (auto structTy = dyn_cast<LLVM::LLVMStructType>(currentType)) {
+      // Struct field access: index must be a constant
+      auto constIdx = dyn_cast<IntegerAttr>(idxEntry);
+      if (!constIdx)
+        return op.emitError("GEP: struct field index must be constant");
 
-    if (strideBytes != 1) {
-      Value stride = arith::ConstantIndexOp::create(builder, loc, strideBytes);
-      Value contribution = arith::MulIOp::create(builder, loc, idxVal, stride);
-      byteOffset = arith::AddIOp::create(builder, loc, byteOffset, contribution);
+      unsigned fieldIdx = constIdx.getInt();
+      unsigned fieldOffset = getStructFieldByteOffset(currentType, fieldIdx);
+      if (fieldOffset != 0) {
+        Value offsetVal = arith::ConstantIndexOp::create(builder, loc, fieldOffset);
+        byteOffset = arith::AddIOp::create(builder, loc, byteOffset, offsetVal);
+      }
+
+      // Advance to field type
+      Type fieldTy = getStructFieldType(currentType, fieldIdx);
+      if (!fieldTy)
+        return op.emitError("GEP: invalid struct field index");
+      currentType = fieldTy;
+    } else if (auto arrayTy = dyn_cast<LLVM::LLVMArrayType>(currentType)) {
+      // Array element access
+      Value idxVal;
+      if (auto constIdx = dyn_cast<IntegerAttr>(idxEntry)) {
+        idxVal = arith::ConstantIndexOp::create(builder, loc,
+                                                 constIdx.getInt());
+      } else {
+        if (dynIdx >= dynamicIndices.size())
+          return op.emitError("GEP: more indices than dynamic operands");
+        idxVal = createIndexCast(loc, lookup(dynamicIndices[dynIdx++]));
+      }
+
+      Type innerTy = arrayTy.getElementType();
+      unsigned strideBytes = getTypeBitWidth(innerTy) / 8;
+      if (strideBytes == 0) strideBytes = 1;
+
+      if (strideBytes != 1) {
+        Value stride = arith::ConstantIndexOp::create(builder, loc, strideBytes);
+        Value contribution = arith::MulIOp::create(builder, loc, idxVal, stride);
+        byteOffset = arith::AddIOp::create(builder, loc, byteOffset, contribution);
+      } else {
+        byteOffset = arith::AddIOp::create(builder, loc, byteOffset, idxVal);
+      }
+      currentType = innerTy;
     } else {
-      byteOffset = arith::AddIOp::create(builder, loc, byteOffset, idxVal);
+      // Scalar type: treat as array index
+      Value idxVal;
+      if (auto constIdx = dyn_cast<IntegerAttr>(idxEntry)) {
+        idxVal = arith::ConstantIndexOp::create(builder, loc,
+                                                 constIdx.getInt());
+      } else {
+        if (dynIdx >= dynamicIndices.size())
+          return op.emitError("GEP: more indices than dynamic operands");
+        idxVal = createIndexCast(loc, lookup(dynamicIndices[dynIdx++]));
+      }
+
+      unsigned strideBytes = getTypeBitWidth(currentType) / 8;
+      if (strideBytes == 0) strideBytes = 1;
+
+      if (strideBytes != 1) {
+        Value stride = arith::ConstantIndexOp::create(builder, loc, strideBytes);
+        Value contribution = arith::MulIOp::create(builder, loc, idxVal, stride);
+        byteOffset = arith::AddIOp::create(builder, loc, byteOffset, contribution);
+      } else {
+        byteOffset = arith::AddIOp::create(builder, loc, byteOffset, idxVal);
+      }
     }
-    // TODO: handle struct field traversal (update currentType)
+  }
+
+  // Determine the final element type for the resulting pointer.
+  // For struct types used as arrays of homogeneous scalars (e.g., cmplx_t
+  // with two floats), use the scalar element type. This enables seamless
+  // vector load/store decomposition.
+  Type finalElemTy = currentType;
+  if (auto structTy = dyn_cast<LLVM::LLVMStructType>(finalElemTy)) {
+    // Check if all fields have the same type
+    auto body = structTy.getBody();
+    if (!body.empty()) {
+      Type firstFieldTy = normalizeScalarType(ctx, body[0]);
+      bool allSame = true;
+      for (unsigned fi = 1; fi < body.size(); ++fi) {
+        if (normalizeScalarType(ctx, body[fi]) != firstFieldTy) {
+          allSame = false;
+          break;
+        }
+      }
+      if (allSame)
+        finalElemTy = firstFieldTy;
+      else
+        finalElemTy = IntegerType::get(ctx, 8);
+    } else {
+      finalElemTy = IntegerType::get(ctx, 8);
+    }
+  } else if (isa<LLVM::LLVMArrayType>(finalElemTy)) {
+    finalElemTy = IntegerType::get(ctx, 8);
+  } else {
+    finalElemTy = normalizeScalarType(ctx, finalElemTy);
   }
 
   // Convert byte offset to element offset
-  unsigned finalElemBytes = getTypeBitWidth(elemTy) / 8;
+  unsigned finalElemBytes = getTypeBitWidth(finalElemTy) / 8;
   if (finalElemBytes == 0) finalElemBytes = 1;
   Value finalIdx;
   if (finalElemBytes != 1) {
@@ -723,7 +855,9 @@ LogicalResult FunctionConverter::convertGEP(LLVM::GEPOp op) {
     finalIdx = byteOffset;
   }
 
-  mapPointer(op.getResult(), {baseInfo.base, finalIdx, elemTy});
+  // If the base memref element type differs from finalElemTy, we may need to
+  // reinterpret. Keep the base memref as-is and just record the new element type.
+  mapPointer(op.getResult(), {baseInfo.base, finalIdx, finalElemTy});
   return success();
 }
 
@@ -733,11 +867,119 @@ LogicalResult FunctionConverter::convertLoad(LLVM::LoadOp op) {
   if (!addrInfo.isValid())
     return op.emitError("load address pointer not found");
 
-  // If the load result is a pointer type, track as pointer
+  // Handle vector-typed loads by decomposing into scalar loads.
+  // This handles patterns from SRoA where struct loads become vector loads
+  // (e.g., load <2 x float> from a cmplx_t pointer).
+  if (auto vecTy = dyn_cast<VectorType>(op.getResult().getType())) {
+    Type scalarTy = normalizeScalarType(ctx, vecTy.getElementType());
+    unsigned numElems = vecTy.getNumElements();
+    Value baseIdx = addrInfo.index;
+
+    // Scale base index from current element type to scalar element type
+    if (addrInfo.elementType != scalarTy) {
+      unsigned srcBits = getTypeBitWidth(addrInfo.elementType);
+      unsigned dstBits = getTypeBitWidth(scalarTy);
+      if (srcBits != dstBits && srcBits > 0 && dstBits > 0)
+        baseIdx = scaleIndex(loc, baseIdx, addrInfo.elementType, scalarTy);
+    }
+
+    SmallVector<Value, 4> elems;
+    for (unsigned i = 0; i < numElems; ++i) {
+      Value elemIdx = baseIdx;
+      if (i != 0) {
+        Value offset = arith::ConstantIndexOp::create(builder, loc, i);
+        elemIdx = arith::AddIOp::create(builder, loc, baseIdx, offset);
+      }
+
+      // Create a memref with the correct scalar element type
+      auto scalarMemRefTy = buildStridedMemRefType(ctx, scalarTy);
+      Value scalarBase = addrInfo.base;
+      if (scalarBase.getType() != scalarMemRefTy)
+        scalarBase = memref::CastOp::create(builder, loc, scalarMemRefTy,
+                                            addrInfo.base);
+
+      auto loadOp = memref::LoadOp::create(builder, loc, scalarBase,
+                                            ValueRange{elemIdx});
+      Value result = loadOp.getResult();
+      if (result.getType() != scalarTy)
+        result = arith::BitcastOp::create(builder, loc, scalarTy, result);
+      elems.push_back(result);
+    }
+
+    mapVector(op.getResult(), std::move(elems));
+    return success();
+  }
+
+  // If the load result is a pointer type, handle indirect pointer access.
+  // This occurs in patterns like CSR graph access: g->row_ptr[i] where
+  // row_ptr is a pointer field loaded from a struct.
+  // We model the loaded pointer as a new memref base by loading the index
+  // value (pointer-as-integer) and creating a PointerInfo that can be
+  // used for subsequent GEP/load/store operations.
   if (isa<LLVM::LLVMPointerType>(op.getResult().getType())) {
-    // Pointer load: not supported for now in general case
-    // (would need to load a memref from a memref-of-memref)
-    return op.emitError("pointer-typed loads not yet supported");
+    // Infer the element type from downstream uses of this loaded pointer
+    Type ptrElemTy = inferPointerElemTypeFromUses(op.getResult());
+    if (!ptrElemTy)
+      ptrElemTy = IntegerType::get(ctx, 8);
+    ptrElemTy = normalizeScalarType(ctx, ptrElemTy);
+
+    // Load the pointer value as an integer (index-width)
+    Type idxIntTy = loom::fabric::getIndexIntegerType(ctx);
+    Value idx = addrInfo.index;
+
+    // Scale index to match the load access width (pointer = index-width integer)
+    if (addrInfo.elementType != idxIntTy) {
+      unsigned srcBits = getTypeBitWidth(addrInfo.elementType);
+      unsigned dstBits = getTypeBitWidth(idxIntTy);
+      if (srcBits != dstBits && srcBits > 0 && dstBits > 0)
+        idx = scaleIndex(loc, idx, addrInfo.elementType, idxIntTy);
+    }
+
+    auto loadOp = memref::LoadOp::create(builder, loc, addrInfo.base,
+                                          ValueRange{idx});
+    Value loadedVal = loadOp.getResult();
+
+    // Convert loaded value to index-width integer
+    if (loadedVal.getType() != idxIntTy) {
+      unsigned loadBits = getTypeBitWidth(loadedVal.getType());
+      unsigned idxBits = getTypeBitWidth(idxIntTy);
+      if (isa<FloatType>(loadedVal.getType())) {
+        // Float memref element: bitcast to same-width integer first
+        auto intOfSameWidth = IntegerType::get(ctx, loadBits);
+        loadedVal = arith::BitcastOp::create(builder, loc, intOfSameWidth,
+                                              loadedVal);
+        if (loadBits < idxBits)
+          loadedVal = arith::ExtUIOp::create(builder, loc, idxIntTy, loadedVal);
+        else if (loadBits > idxBits)
+          loadedVal = arith::TruncIOp::create(builder, loc, idxIntTy, loadedVal);
+      } else if (loadBits < idxBits)
+        loadedVal = arith::ExtUIOp::create(builder, loc, idxIntTy, loadedVal);
+      else if (loadBits > idxBits)
+        loadedVal = arith::TruncIOp::create(builder, loc, idxIntTy, loadedVal);
+    }
+
+    // Convert the loaded integer to an index value for use as a base offset.
+    // Scale from byte address to element offset.
+    Value baseIdx = createIndexCast(loc, loadedVal);
+    unsigned elemBytes = getTypeBitWidth(ptrElemTy) / 8;
+    if (elemBytes > 1) {
+      Value divisor = arith::ConstantIndexOp::create(builder, loc, elemBytes);
+      baseIdx = arith::DivUIOp::create(builder, loc, baseIdx, divisor);
+    }
+
+    // Create a new memref for the target array via reinterpret_cast.
+    // In the flat memory model, the loaded pointer addresses the same
+    // memory space, so we reinterpret the root memref as a new type.
+    auto newMemRefTy = buildStridedMemRefType(ctx, ptrElemTy);
+
+    // Find the root memref base (walk up the base chain)
+    Value rootBase = addrInfo.base;
+    auto rootCast = memref::CastOp::create(builder, loc, newMemRefTy, rootBase);
+
+    mapPointer(op.getResult(), {rootCast, baseIdx, ptrElemTy});
+    // Also map as a regular value (loaded integer) for non-pointer uses
+    mapValue(op.getResult(), loadedVal);
+    return success();
   }
 
   Type accessType = normalizeScalarType(ctx, op.getResult().getType());
@@ -756,9 +998,20 @@ LogicalResult FunctionConverter::convertLoad(LLVM::LoadOp op) {
                                                 ValueRange{idx});
   Value result = loadOp.getResult();
 
-  // Bitcast if types differ but widths match
+  // Cast if types differ
   if (result.getType() != accessType) {
-    result = arith::BitcastOp::create(builder, loc, accessType, result);
+    unsigned resBits = getTypeBitWidth(result.getType());
+    unsigned accBits = getTypeBitWidth(accessType);
+    if (resBits == accBits) {
+      result = arith::BitcastOp::create(builder, loc, accessType, result);
+    } else if (isa<IntegerType>(result.getType()) && isa<IntegerType>(accessType)) {
+      if (resBits < accBits)
+        result = arith::ExtUIOp::create(builder, loc, accessType, result);
+      else
+        result = arith::TruncIOp::create(builder, loc, accessType, result);
+    }
+    // For other type mismatches (different width float/int), skip the cast
+    // and use the loaded value as-is (will be caught by MLIR verifier)
   }
 
   mapValue(op.getResult(), result);
@@ -774,6 +1027,43 @@ LogicalResult FunctionConverter::convertStore(LLVM::StoreOp op) {
   // Skip pointer stores
   if (isa<LLVM::LLVMPointerType>(op.getValue().getType()))
     return success();
+
+  // Handle vector-typed stores by decomposing into scalar stores.
+  if (isa<VectorType>(op.getValue().getType())) {
+    auto elems = lookupVector(op.getValue());
+    if (elems.empty())
+      return op.emitError("vector store value not tracked");
+
+    Type scalarTy = elems[0].getType();
+    Value baseIdx = addrInfo.index;
+
+    // Scale base index from current element type to scalar element type
+    if (addrInfo.elementType != scalarTy) {
+      unsigned srcBits = getTypeBitWidth(addrInfo.elementType);
+      unsigned dstBits = getTypeBitWidth(scalarTy);
+      if (srcBits != dstBits && srcBits > 0 && dstBits > 0)
+        baseIdx = scaleIndex(loc, baseIdx, addrInfo.elementType, scalarTy);
+    }
+
+    auto scalarMemRefTy = buildStridedMemRefType(ctx, scalarTy);
+    Value scalarBase = addrInfo.base;
+    if (scalarBase.getType() != scalarMemRefTy)
+      scalarBase = memref::CastOp::create(builder, loc, scalarMemRefTy,
+                                          addrInfo.base);
+
+    for (unsigned i = 0; i < elems.size(); ++i) {
+      Value elemIdx = baseIdx;
+      if (i != 0) {
+        Value offset = arith::ConstantIndexOp::create(builder, loc, i);
+        elemIdx = arith::AddIOp::create(builder, loc, baseIdx, offset);
+      }
+      Value val = elems[i];
+      if (val.getType() != scalarTy)
+        val = arith::BitcastOp::create(builder, loc, scalarTy, val);
+      memref::StoreOp::create(builder, loc, val, scalarBase, ValueRange{elemIdx});
+    }
+    return success();
+  }
 
   Value val = lookup(op.getValue());
   Value idx = addrInfo.index;
@@ -825,100 +1115,101 @@ LogicalResult FunctionConverter::convertAlloca(LLVM::AllocaOp op) {
   return success();
 }
 
-LogicalResult FunctionConverter::convertAddressOf(LLVM::AddressOfOp op) {
-  Location loc = op.getLoc();
-  StringRef globalName = op.getGlobalName();
+//===----------------------------------------------------------------------===//
+// Vector operations (from SRoA struct decomposition)
+//===----------------------------------------------------------------------===//
 
-  // Check if we already converted this global to memref.global
-  auto it = convertedGlobals.find(globalName);
-  if (it == convertedGlobals.end()) {
-    // Look for the LLVM global in the parent module
-    auto module = op->getParentOfType<ModuleOp>();
-    auto llvmGlobal = module.lookupSymbol<LLVM::GlobalOp>(globalName);
-    if (!llvmGlobal) {
-      // Might reference an LLVM function (e.g. for indirect calls)
-      // or an external symbol. Skip gracefully.
-      return op.emitError("llvm.mlir.addressof references unknown symbol: ")
-             << globalName;
+LogicalResult FunctionConverter::convertExtractElement(LLVM::ExtractElementOp op) {
+  auto elems = lookupVector(op.getVector());
+  if (elems.empty())
+    return op.emitError("extractelement: vector operand not tracked");
+
+  // Get the constant index
+  Value position = op.getPosition();
+  // Try to resolve the index from the value map
+  auto *defOp = position.getDefiningOp();
+  int64_t constIdx = -1;
+  if (defOp) {
+    if (auto constOp = dyn_cast<LLVM::ConstantOp>(defOp)) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
+        constIdx = intAttr.getInt();
     }
-
-    // Determine the element type and count from the LLVM global type
-    Type globalTy = llvmGlobal.getGlobalType();
-    Type elemTy;
-    int64_t numElements = 1;
-
-    if (auto arrTy = dyn_cast<LLVM::LLVMArrayType>(globalTy)) {
-      // Recursively flatten nested arrays
-      Type inner = arrTy;
-      numElements = 1;
-      while (auto nested = dyn_cast<LLVM::LLVMArrayType>(inner)) {
-        numElements *= nested.getNumElements();
-        inner = nested.getElementType();
+    if (constIdx < 0) {
+      // Try from mapped arith constant
+      Value mapped = lookup(position);
+      if (mapped) {
+        if (auto *mappedDef = mapped.getDefiningOp()) {
+          if (auto arithConst = dyn_cast<arith::ConstantOp>(mappedDef)) {
+            if (auto intAttr = dyn_cast<IntegerAttr>(arithConst.getValue()))
+              constIdx = intAttr.getInt();
+          }
+        }
       }
-      elemTy = normalizeScalarType(ctx, inner);
-    } else {
-      elemTy = normalizeScalarType(ctx, globalTy);
-      numElements = 1;
     }
-
-    if (!elemTy)
-      return op.emitError("cannot determine element type for global: ")
-             << globalName;
-
-    auto memrefTy = MemRefType::get({numElements}, elemTy);
-
-    // Create memref.global at module level
-    OpBuilder moduleBuilder(module.getBody(), module.getBody()->begin());
-
-    bool isConst = llvmGlobal.getConstant();
-    Attribute initialValue;
-
-    // Try to extract the initial value from the LLVM global
-    if (auto valueAttr = llvmGlobal.getValueOrNull()) {
-      if (auto elementsAttr = dyn_cast<ElementsAttr>(valueAttr)) {
-        initialValue = elementsAttr;
-      } else if (auto intAttr = dyn_cast<IntegerAttr>(valueAttr)) {
-        // Scalar integer global
-        initialValue = DenseElementsAttr::get(memrefTy, intAttr);
-      } else if (auto fpAttr = dyn_cast<FloatAttr>(valueAttr)) {
-        // Scalar float global
-        initialValue = DenseElementsAttr::get(memrefTy, fpAttr);
-      }
-      // If we cannot extract value, declare without initializer
-    }
-
-    // If global has an initializer region, try to extract dense value from it
-    if (!initialValue && !llvmGlobal.getInitializerRegion().empty()) {
-      // The region has a single block with LLVM ops that produce the value.
-      // For simple constant arrays, the return value may be an LLVM constant.
-      // This is complex in general; declare without initializer.
-    }
-
-    if (!initialValue)
-      initialValue = UnitAttr::get(ctx); // uninitialized declaration
-
-    memref::GlobalOp::create(
-        moduleBuilder, llvmGlobal.getLoc(), globalName.str(),
-        /*sym_visibility=*/moduleBuilder.getStringAttr("private"),
-        /*type=*/memrefTy,
-        /*initial_value=*/initialValue,
-        /*constant=*/isConst,
-        /*alignment=*/IntegerAttr());
-
-    convertedGlobals[globalName] = memrefTy;
-    it = convertedGlobals.find(globalName);
   }
 
-  MemRefType memrefTy = it->second;
-  auto getGlobal =
-      memref::GetGlobalOp::create(builder, loc, memrefTy, globalName);
+  if (constIdx < 0 || constIdx >= (int64_t)elems.size())
+    return op.emitError("extractelement: non-constant or out-of-range index");
 
-  // Cast to strided memref for compatibility with the pointer tracking system
-  Type elemTy = memrefTy.getElementType();
-  auto stridedTy = buildStridedMemRefType(ctx, elemTy);
-  Value base = memref::CastOp::create(builder, loc, stridedTy, getGlobal);
-  Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
-  mapPointer(op.getResult(), {base, zeroIdx, elemTy});
+  mapValue(op.getResult(), elems[constIdx]);
+  return success();
+}
+
+LogicalResult FunctionConverter::convertInsertElement(LLVM::InsertElementOp op) {
+  // Get existing vector elements (or create zero-initialized if from poison)
+  auto elems = lookupVector(op.getVector());
+  if (elems.empty()) {
+    // The vector might be undef/poison - create zero-initialized elements
+    auto vecTy = dyn_cast<VectorType>(op.getVector().getType());
+    if (!vecTy)
+      return op.emitError("insertelement: non-fixed vector type");
+    Type scalarTy = normalizeScalarType(ctx, vecTy.getElementType());
+    unsigned numElems = vecTy.getNumElements();
+    for (unsigned i = 0; i < numElems; ++i) {
+      Value zero;
+      if (auto intTy = dyn_cast<IntegerType>(scalarTy))
+        zero = arith::ConstantIntOp::create(builder, op.getLoc(), intTy, 0);
+      else if (auto fTy = dyn_cast<FloatType>(scalarTy))
+        zero = arith::ConstantFloatOp::create(builder, op.getLoc(), fTy,
+            APFloat::getZero(fTy.getFloatSemantics()));
+      else
+        return op.emitError("insertelement: unsupported element type");
+      elems.push_back(zero);
+    }
+  }
+
+  // Get the constant index
+  Value position = op.getPosition();
+  auto *defOp = position.getDefiningOp();
+  int64_t constIdx = -1;
+  if (defOp) {
+    if (auto constOp = dyn_cast<LLVM::ConstantOp>(defOp)) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
+        constIdx = intAttr.getInt();
+    }
+    if (constIdx < 0) {
+      Value mapped = lookup(position);
+      if (mapped) {
+        if (auto *mappedDef = mapped.getDefiningOp()) {
+          if (auto arithConst = dyn_cast<arith::ConstantOp>(mappedDef)) {
+            if (auto intAttr = dyn_cast<IntegerAttr>(arithConst.getValue()))
+              constIdx = intAttr.getInt();
+          }
+        }
+      }
+    }
+  }
+
+  if (constIdx < 0 || constIdx >= (int64_t)elems.size())
+    return op.emitError("insertelement: non-constant or out-of-range index");
+
+  // Replace the element at the given index
+  Value newVal = lookup(op.getValue());
+  if (!newVal)
+    return op.emitError("insertelement: value operand not mapped");
+  SmallVector<Value, 4> newElems(elems.begin(), elems.end());
+  newElems[constIdx] = newVal;
+  mapVector(op.getResult(), std::move(newElems));
   return success();
 }
 
@@ -1036,38 +1327,12 @@ LogicalResult FunctionConverter::convertCast(Operation *op) {
 }
 
 LogicalResult FunctionConverter::convertICmp(LLVM::ICmpOp op) {
-  Location loc = op.getLoc();
-
-  // Handle pointer comparisons (e.g., ptr == NULL, ptr != NULL)
-  bool lhsIsPtr = isa<LLVM::LLVMPointerType>(op.getLhs().getType());
-  bool rhsIsPtr = isa<LLVM::LLVMPointerType>(op.getRhs().getType());
-  if (lhsIsPtr || rhsIsPtr) {
-    // Pointer comparisons against null: result is always true/false depending
-    // on whether the pointer was allocated. For heap-allocated pointers
-    // (malloc/calloc), assume non-null (the alloc succeeded).
-    auto pred = op.getPredicate();
-    bool isEqNull = (pred == LLVM::ICmpPredicate::eq);
-    bool isNeNull = (pred == LLVM::ICmpPredicate::ne);
-    if (isEqNull || isNeNull) {
-      // ptr == null -> false, ptr != null -> true
-      // (We assume all allocated pointers are non-null)
-      bool constVal = isNeNull;
-      Value result = arith::ConstantIntOp::create(builder, loc,
-                                                  builder.getI1Type(),
-                                                  constVal ? 1 : 0);
-      mapValue(op.getResult(), result);
-      return success();
-    }
-    // Other pointer comparisons (e.g., ptr < ptr) are not supported
-    return op.emitError("unsupported pointer comparison predicate");
-  }
-
   Value lhs = lookup(op.getLhs());
   Value rhs = lookup(op.getRhs());
   if (!lhs || !rhs)
     return op.emitError("icmp has unmapped operand");
   auto pred = convertICmpPredicate(op.getPredicate());
-  auto result = arith::CmpIOp::create(builder, loc, pred, lhs, rhs);
+  auto result = arith::CmpIOp::create(builder, op.getLoc(), pred, lhs, rhs);
   mapValue(op.getResult(), result);
   return success();
 }
@@ -1100,6 +1365,21 @@ LogicalResult FunctionConverter::convertSelect(LLVM::SelectOp op) {
     mapPointer(op.getResult(), {base, idx, truePI.elementType});
     return success();
   }
+  // Handle vector-typed selects element-wise
+  if (isa<VectorType>(op.getType())) {
+    auto trueElems = lookupVector(op.getTrueValue());
+    auto falseElems = lookupVector(op.getFalseValue());
+    if (trueElems.empty() || falseElems.empty())
+      return op.emitError("vector select operands not tracked");
+    SmallVector<Value, 4> resultElems;
+    for (unsigned i = 0; i < trueElems.size(); ++i) {
+      auto sel = arith::SelectOp::create(builder, op.getLoc(), cond,
+                                          trueElems[i], falseElems[i]);
+      resultElems.push_back(sel);
+    }
+    mapVector(op.getResult(), std::move(resultElems));
+    return success();
+  }
   Value trueVal = lookup(op.getTrueValue());
   Value falseVal = lookup(op.getFalseValue());
   if (!trueVal || !falseVal)
@@ -1111,7 +1391,35 @@ LogicalResult FunctionConverter::convertSelect(LLVM::SelectOp op) {
 }
 
 LogicalResult FunctionConverter::convertConstant(LLVM::ConstantOp op) {
-  auto result = arith::ConstantOp::create(builder, 
+  // Handle vector constants by decomposing into scalar elements
+  if (auto vecTy = dyn_cast<VectorType>(op.getType())) {
+    if (auto denseAttr = dyn_cast<DenseElementsAttr>(op.getValue())) {
+      Type elemTy = normalizeScalarType(ctx, vecTy.getElementType());
+      SmallVector<Value, 4> elems;
+      for (auto val : denseAttr.getValues<Attribute>()) {
+        Value scalarConst;
+        if (auto intAttr = dyn_cast<IntegerAttr>(val)) {
+          auto intTy = dyn_cast<IntegerType>(elemTy);
+          if (!intTy) return op.emitError("vector constant type mismatch");
+          scalarConst = arith::ConstantIntOp::create(builder, op.getLoc(),
+                                                      intTy, intAttr.getInt());
+        } else if (auto fpAttr = dyn_cast<FloatAttr>(val)) {
+          auto fTy = dyn_cast<FloatType>(elemTy);
+          if (!fTy) return op.emitError("vector constant type mismatch");
+          scalarConst = arith::ConstantFloatOp::create(builder, op.getLoc(),
+                                                        fTy, fpAttr.getValue());
+        } else {
+          return op.emitError("unsupported vector constant element");
+        }
+        elems.push_back(scalarConst);
+      }
+      mapVector(op.getResult(), std::move(elems));
+      return success();
+    }
+    return op.emitError("unsupported vector constant attribute type");
+  }
+
+  auto result = arith::ConstantOp::create(builder,
       op.getLoc(), op.getType(), cast<TypedAttr>(op.getValue()));
   mapValue(op.getResult(), result);
   return success();
@@ -1134,6 +1442,164 @@ LogicalResult FunctionConverter::convertIntrinsic(LLVM::CallIntrinsicOp op) {
     mapValue(op.getResult(0), result);
     return success();
   };
+
+  // fmuladd: a*b + c (fused multiply-add)
+  if (name.starts_with("llvm.fmuladd.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 3)
+      return failure();
+    Value a = lookup(op.getArgs()[0]);
+    Value b = lookup(op.getArgs()[1]);
+    Value c = lookup(op.getArgs()[2]);
+    if (!a || !b || !c)
+      return op.emitError("fmuladd has unmapped operand");
+    // Lower to math.fma (fused multiply-add)
+    Value result = math::FmaOp::create(builder, loc, a, b, c);
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
+  // fabs: absolute value of float
+  if (name.starts_with("llvm.fabs.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg)
+      return op.emitError("fabs has unmapped operand");
+    Value result = math::AbsFOp::create(builder, loc, arg);
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
+  // sqrt
+  if (name.starts_with("llvm.sqrt.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg)
+      return op.emitError("sqrt has unmapped operand");
+    Value result = math::SqrtOp::create(builder, loc, arg);
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
+  // exp/log/sin/cos/pow
+  if (name.starts_with("llvm.exp.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg) return op.emitError("exp has unmapped operand");
+    mapValue(op.getResult(0), math::ExpOp::create(builder, loc, arg));
+    return success();
+  }
+  if (name.starts_with("llvm.exp2.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg) return op.emitError("exp2 has unmapped operand");
+    mapValue(op.getResult(0), math::Exp2Op::create(builder, loc, arg));
+    return success();
+  }
+  if (name.starts_with("llvm.log.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg) return op.emitError("log has unmapped operand");
+    mapValue(op.getResult(0), math::LogOp::create(builder, loc, arg));
+    return success();
+  }
+  if (name.starts_with("llvm.log2.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg) return op.emitError("log2 has unmapped operand");
+    mapValue(op.getResult(0), math::Log2Op::create(builder, loc, arg));
+    return success();
+  }
+  if (name.starts_with("llvm.sin.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg) return op.emitError("sin has unmapped operand");
+    mapValue(op.getResult(0), math::SinOp::create(builder, loc, arg));
+    return success();
+  }
+  if (name.starts_with("llvm.cos.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg) return op.emitError("cos has unmapped operand");
+    mapValue(op.getResult(0), math::CosOp::create(builder, loc, arg));
+    return success();
+  }
+  if (name.starts_with("llvm.pow.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value base = lookup(op.getArgs()[0]);
+    Value exp = lookup(op.getArgs()[1]);
+    if (!base || !exp) return op.emitError("pow has unmapped operand");
+    mapValue(op.getResult(0), math::PowFOp::create(builder, loc, base, exp));
+    return success();
+  }
+  if (name.starts_with("llvm.atan2.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value y = lookup(op.getArgs()[0]);
+    Value x = lookup(op.getArgs()[1]);
+    if (!y || !x) return op.emitError("atan2 has unmapped operand");
+    mapValue(op.getResult(0), math::Atan2Op::create(builder, loc, y, x));
+    return success();
+  }
+  if (name.starts_with("llvm.copysign.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value mag = lookup(op.getArgs()[0]);
+    Value sign = lookup(op.getArgs()[1]);
+    if (!mag || !sign) return op.emitError("copysign has unmapped operand");
+    mapValue(op.getResult(0), math::CopySignOp::create(builder, loc, mag, sign));
+    return success();
+  }
+
+  // floor/ceil/round
+  if (name.starts_with("llvm.floor.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg) return op.emitError("floor has unmapped operand");
+    mapValue(op.getResult(0), math::FloorOp::create(builder, loc, arg));
+    return success();
+  }
+  if (name.starts_with("llvm.ceil.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg) return op.emitError("ceil has unmapped operand");
+    mapValue(op.getResult(0), math::CeilOp::create(builder, loc, arg));
+    return success();
+  }
+
+  // minnum/maxnum (float min/max)
+  if (name.starts_with("llvm.minnum.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value a = lookup(op.getArgs()[0]);
+    Value b = lookup(op.getArgs()[1]);
+    if (!a || !b) return op.emitError("minnum has unmapped operand");
+    Value cmp = arith::CmpFOp::create(builder, loc,
+        arith::CmpFPredicate::OLT, a, b);
+    mapValue(op.getResult(0), arith::SelectOp::create(builder, loc, cmp, a, b));
+    return success();
+  }
+  if (name.starts_with("llvm.maxnum.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value a = lookup(op.getArgs()[0]);
+    Value b = lookup(op.getArgs()[1]);
+    if (!a || !b) return op.emitError("maxnum has unmapped operand");
+    Value cmp = arith::CmpFOp::create(builder, loc,
+        arith::CmpFPredicate::OGT, a, b);
+    mapValue(op.getResult(0), arith::SelectOp::create(builder, loc, cmp, a, b));
+    return success();
+  }
 
   if (name.starts_with("llvm.smin."))
     return createMinMax(arith::CmpIPredicate::sle, true);
@@ -1221,92 +1687,6 @@ LogicalResult FunctionConverter::convertIntrinsic(LLVM::CallIntrinsicOp op) {
     mapValue(op.getResult(0), result);
     return success();
   }
-
-  // Fused multiply-add: fmuladd(a, b, c) = a * b + c
-  if (name.starts_with("llvm.fmuladd.") || name.starts_with("llvm.fma.")) {
-    if (op.getNumResults() != 1 || op.getArgs().size() != 3)
-      return failure();
-    Value a = lookup(op.getArgs()[0]);
-    Value b = lookup(op.getArgs()[1]);
-    Value c = lookup(op.getArgs()[2]);
-    if (!a || !b || !c)
-      return op.emitError("fmuladd/fma has unmapped operand");
-    Value mul = arith::MulFOp::create(builder, loc, a, b);
-    Value result = arith::AddFOp::create(builder, loc, mul, c);
-    mapValue(op.getResult(0), result);
-    return success();
-  }
-
-  // Unary float math intrinsics -> math dialect ops
-  {
-    if (op.getNumResults() == 1 && op.getArgs().size() == 1) {
-      Value arg = lookup(op.getArgs()[0]);
-      if (!arg)
-        return op.emitError("math intrinsic has unmapped operand");
-      Value result;
-      if (name.starts_with("llvm.fabs."))
-        result = math::AbsFOp::create(builder, loc, arg);
-      else if (name.starts_with("llvm.sqrt."))
-        result = math::SqrtOp::create(builder, loc, arg);
-      else if (name.starts_with("llvm.exp."))
-        result = math::ExpOp::create(builder, loc, arg);
-      else if (name.starts_with("llvm.exp2."))
-        result = math::Exp2Op::create(builder, loc, arg);
-      else if (name.starts_with("llvm.log."))
-        result = math::LogOp::create(builder, loc, arg);
-      else if (name.starts_with("llvm.log2."))
-        result = math::Log2Op::create(builder, loc, arg);
-      else if (name.starts_with("llvm.log10."))
-        result = math::Log10Op::create(builder, loc, arg);
-      else if (name.starts_with("llvm.floor."))
-        result = math::FloorOp::create(builder, loc, arg);
-      else if (name.starts_with("llvm.ceil."))
-        result = math::CeilOp::create(builder, loc, arg);
-      else if (name.starts_with("llvm.round."))
-        result = math::RoundOp::create(builder, loc, arg);
-      else if (name.starts_with("llvm.roundeven."))
-        result = math::RoundEvenOp::create(builder, loc, arg);
-      else if (name.starts_with("llvm.sin."))
-        result = math::SinOp::create(builder, loc, arg);
-      else if (name.starts_with("llvm.cos."))
-        result = math::CosOp::create(builder, loc, arg);
-      if (result) {
-        mapValue(op.getResult(0), result);
-        return success();
-      }
-    }
-  }
-
-  // Binary float math intrinsics
-  {
-    if (op.getNumResults() == 1 && op.getArgs().size() == 2) {
-      Value lhs = lookup(op.getArgs()[0]);
-      Value rhs = lookup(op.getArgs()[1]);
-      if (!lhs || !rhs)
-        return op.emitError("math intrinsic has unmapped operand");
-      Value result;
-      if (name.starts_with("llvm.pow."))
-        result = math::PowFOp::create(builder, loc, lhs, rhs);
-      else if (name.starts_with("llvm.copysign."))
-        result = math::CopySignOp::create(builder, loc, lhs, rhs);
-      else if (name.starts_with("llvm.minnum."))
-        result = arith::MinimumFOp::create(builder, loc, lhs, rhs);
-      else if (name.starts_with("llvm.maxnum."))
-        result = arith::MaximumFOp::create(builder, loc, lhs, rhs);
-      if (result) {
-        mapValue(op.getResult(0), result);
-        return success();
-      }
-    }
-  }
-
-  // memset: treat as void and skip (the destination is a pointer argument)
-  if (name.starts_with("llvm.memset."))
-    return success();
-
-  // memcpy / memmove: treat as void and skip
-  if (name.starts_with("llvm.memcpy.") || name.starts_with("llvm.memmove."))
-    return success();
 
   return failure();
 }
@@ -1555,19 +1935,56 @@ void FunctionConverter::mapPointer(Value oldPtr, PointerInfo info) {
   pointerMap[oldPtr] = info;
 }
 
+void FunctionConverter::mapVector(Value oldVec, SmallVector<Value, 4> elements) {
+  vectorMap[oldVec] = std::move(elements);
+}
+
+SmallVector<Value, 4> FunctionConverter::lookupVector(Value v) {
+  auto it = vectorMap.find(v);
+  if (it != vectorMap.end())
+    return it->second;
+  return {};
+}
+
 SmallVector<Value>
 FunctionConverter::materializeBranchArgs(Location loc, OperandRange args,
                                          Block *dest) {
   SmallVector<Value> result;
   result.reserve(args.size());
+  // dstArgIdx tracks the destination block argument index, which may differ
+  // from the source operand index when vector operands expand into multiple args.
+  unsigned dstArgIdx = 0;
   for (auto [idx, v] : llvm::enumerate(args)) {
-    Type dstTy = idx < dest->getNumArguments() ? dest->getArgument(idx).getType()
-                                               : Type();
+    // Handle vector-typed branch arguments by expanding into scalar values
+    if (isa<VectorType>(v.getType())) {
+      auto elems = lookupVector(v);
+      if (!elems.empty()) {
+        for (Value elem : elems) {
+          Type dstTy = dstArgIdx < dest->getNumArguments()
+                           ? dest->getArgument(dstArgIdx).getType()
+                           : Type();
+          if (dstTy && elem.getType() != dstTy) {
+            // Type mismatch: try cast
+            if (isa<IndexType>(dstTy))
+              elem = createIndexCast(loc, elem);
+            else if (getTypeBitWidth(elem.getType()) == getTypeBitWidth(dstTy))
+              elem = arith::BitcastOp::create(builder, loc, dstTy, elem);
+          }
+          result.push_back(elem);
+          dstArgIdx++;
+        }
+        continue;
+      }
+    }
+
+    Type dstTy = dstArgIdx < dest->getNumArguments()
+                     ? dest->getArgument(dstArgIdx).getType()
+                     : Type();
+    dstArgIdx++;
+
     if (isa<LLVM::LLVMPointerType>(v.getType())) {
       auto pi = lookupPtr(v);
       if (pi.isValid()) {
-        // Pass the memref base as branch argument
-        // TODO: handle index offset passing through block args
         result.push_back(pi.base);
       }
     } else {
@@ -1655,9 +2072,6 @@ struct ConvertLLVMToCFPassImpl
     ModuleOp module = getOperation();
     OpBuilder builder(module.getContext());
 
-    // Shared map of LLVM globals already converted to memref.global
-    llvm::DenseMap<StringRef, MemRefType> convertedGlobals;
-
     // Collect functions to convert (snapshot to avoid iterator invalidation)
     SmallVector<LLVM::LLVMFuncOp> funcsToConvert;
     module.walk([&](LLVM::LLVMFuncOp f) {
@@ -1672,7 +2086,7 @@ struct ConvertLLVMToCFPassImpl
     });
 
     for (auto llvmFunc : funcsToConvert) {
-      FunctionConverter converter(llvmFunc, builder, convertedGlobals);
+      FunctionConverter converter(llvmFunc, builder);
       if (failed(converter.convert())) {
         // Graceful degradation: erase any partially created func.func
         // and skip this function
@@ -1683,8 +2097,6 @@ struct ConvertLLVMToCFPassImpl
         });
         for (auto f : toErase)
           f->erase();
-        // Also erase any memref.global ops that were just created for this
-        // failed function and are not referenced by other successful functions
         llvm::errs() << "warning: LLVMToCF: skipping function '"
                      << llvmFunc.getSymName() << "'\n";
         continue;
@@ -1694,19 +2106,47 @@ struct ConvertLLVMToCFPassImpl
         llvmFunc->erase();
     }
 
+    // Convert external LLVM function declarations to func.func declarations.
+    // This ensures that calls to external functions (malloc, calloc, etc.)
+    // have valid declarations in the output module.
     SmallVector<LLVM::LLVMFuncOp, 8> residualLLVMFuncs;
     module.walk([&](LLVM::LLVMFuncOp func) { residualLLVMFuncs.push_back(func); });
-    for (LLVM::LLVMFuncOp func : residualLLVMFuncs)
-      if (func->getParentOp())
-        func.erase();
+    for (LLVM::LLVMFuncOp func : residualLLVMFuncs) {
+      if (!func->getParentOp())
+        continue;
+      if (func.isExternal() && !func.getFunctionType().isVarArg()) {
+        // Create a func.func declaration for this external function,
+        // but only if it doesn't have pointer-typed arguments (which
+        // would need memref conversion that we can't do for externals).
+        auto llvmFuncType = func.getFunctionType();
+        bool hasPointerArgs = false;
+        for (Type t : llvmFuncType.getParams()) {
+          if (isa<LLVM::LLVMPointerType>(t)) {
+            hasPointerArgs = true;
+            break;
+          }
+        }
+        if (!hasPointerArgs) {
+          SmallVector<Type> argTypes;
+          for (Type t : llvmFuncType.getParams())
+            argTypes.push_back(normalizeScalarType(module.getContext(), t));
+          SmallVector<Type> resultTypes;
+          Type retTy = llvmFuncType.getReturnType();
+          if (!isa<LLVM::LLVMVoidType>(retTy))
+            resultTypes.push_back(normalizeScalarType(module.getContext(), retTy));
+          auto funcType = FunctionType::get(module.getContext(), argTypes,
+                                             resultTypes);
+          OpBuilder declBuilder(module.getContext());
+          declBuilder.setInsertionPoint(func);
+          auto decl = func::FuncOp::create(declBuilder, func.getLoc(),
+                                            func.getSymName(), funcType);
+          decl.setVisibility(SymbolTable::Visibility::Private);
+        }
+      }
+      func.erase();
+    }
 
-    // Clean up LLVM module-level ops (globals, module flags)
-    SmallVector<LLVM::GlobalOp, 8> residualGlobals;
-    module.walk(
-        [&](LLVM::GlobalOp g) { residualGlobals.push_back(g); });
-    for (auto g : residualGlobals)
-      if (g->getParentOp())
-        g.erase();
+    // Clean up LLVM module-level ops
     module.walk([](LLVM::ModuleFlagsOp op) { op.erase(); });
   }
 };

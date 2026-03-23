@@ -27,11 +27,17 @@
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Linker/Linker.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Host.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar/SROA.h"
+#include "llvm/Transforms/Scalar/EarlyCSE.h"
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
 
 using namespace mlir;
 
@@ -69,6 +75,8 @@ compileOneSource(const std::string &srcPath, llvm::LLVMContext &llvmCtx,
   driverArgs.push_back("-c");
   driverArgs.push_back("-emit-llvm");
   driverArgs.push_back("-fno-discard-value-names");
+  // Allow math functions to be converted to LLVM intrinsics (no errno)
+  driverArgs.push_back("-fno-math-errno");
   // Preserve source locations as line-table debug info
   driverArgs.push_back("-gline-tables-only");
   // Use built-in headers from project LLVM
@@ -148,6 +156,42 @@ static void stripProblematicIntrinsics(llvm::Module &mod) {
     call->eraseFromParent();
 }
 
+// Run LLVM optimization passes to decompose aggregate types into scalars.
+// SRoA (Scalar Replacement of Aggregates) turns struct alloca/GEP patterns
+// into individual scalar variables, which avoids struct-typed memrefs in MLIR.
+static void runStructDecompositionPasses(llvm::Module &mod) {
+  llvm::PassBuilder PB;
+
+  llvm::LoopAnalysisManager LAM;
+  llvm::FunctionAnalysisManager FAM;
+  llvm::CGSCCAnalysisManager CGAM;
+  llvm::ModuleAnalysisManager MAM;
+
+  PB.registerModuleAnalyses(MAM);
+  PB.registerCGSCCAnalyses(CGAM);
+  PB.registerFunctionAnalyses(FAM);
+  PB.registerLoopAnalyses(LAM);
+  PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+  llvm::FunctionPassManager FPM;
+  // SRoA decomposes struct allocas into individual scalar SSA values
+  FPM.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+  // InstCombine cleans up after SRoA (fold redundant ops, simplify GEPs)
+  FPM.addPass(llvm::InstCombinePass());
+  // EarlyCSE eliminates trivially redundant instructions
+  FPM.addPass(llvm::EarlyCSEPass());
+  // SimplifyCFG merges/cleans up basic blocks
+  FPM.addPass(llvm::SimplifyCFGPass());
+  // Run SRoA again to catch anything exposed by previous passes
+  FPM.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+  FPM.addPass(llvm::InstCombinePass());
+
+  llvm::ModulePassManager MPM;
+  MPM.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(FPM)));
+
+  MPM.run(mod, MAM);
+}
+
 OwningOpRef<ModuleOp> compileAndImport(const LoomArgs &args,
                                         MLIRContext &ctx,
                                         const std::string &llOutputPath) {
@@ -174,16 +218,21 @@ OwningOpRef<ModuleOp> compileAndImport(const LoomArgs &args,
     }
   }
 
-  // Write LLVM IR to file for inspection (before stripping)
+  // Clean up intrinsics that carry metadata operands (crash MLIR importer)
+  stripProblematicIntrinsics(*linkedModule);
+
+  // Run SRoA and supporting passes to decompose struct types into scalars.
+  // This must happen before MLIR import because MLIR memref cannot hold
+  // struct-typed elements.
+  runStructDecompositionPasses(*linkedModule);
+
+  // Write LLVM IR to file for inspection (after optimization)
   {
     std::error_code ec;
     llvm::raw_fd_ostream os(llOutputPath, ec);
     if (!ec)
       linkedModule->print(os, nullptr);
   }
-
-  // Clean up intrinsics that carry metadata operands (crash MLIR importer)
-  stripProblematicIntrinsics(*linkedModule);
 
   // Import to MLIR LLVM dialect.
   // Source locations from -gline-tables-only become MLIR FileLineColLoc.

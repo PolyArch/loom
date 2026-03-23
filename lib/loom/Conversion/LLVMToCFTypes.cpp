@@ -29,6 +29,15 @@ Type normalizeScalarType(MLIRContext *ctx, Type llvmType) {
   // LLVM pointer -> configured index-width integer for pointer-as-integer
   if (isa<LLVM::LLVMPointerType>(llvmType))
     return loom::fabric::getIndexIntegerType(ctx);
+  // LLVM struct type -> i8 (byte-addressable representation)
+  if (isa<LLVM::LLVMStructType>(llvmType))
+    return IntegerType::get(ctx, 8);
+  // LLVM array type -> element type
+  if (auto arrayTy = dyn_cast<LLVM::LLVMArrayType>(llvmType))
+    return normalizeScalarType(ctx, arrayTy.getElementType());
+  // Vector type -> element type (vectors are decomposed into scalars)
+  if (auto vecTy = dyn_cast<VectorType>(llvmType))
+    return normalizeScalarType(ctx, vecTy.getElementType());
   // Fallback
   return llvmType;
 }
@@ -39,6 +48,15 @@ Type flattenAllocaElementType(MLIRContext *ctx, Type llvmType,
     elementCount *= arrayTy.getNumElements();
     return flattenAllocaElementType(ctx, arrayTy.getElementType(),
                                     elementCount);
+  }
+
+  // Flatten struct types: treat as byte array
+  if (auto structTy = dyn_cast<LLVM::LLVMStructType>(llvmType)) {
+    unsigned totalBits = getTypeBitWidth(structTy);
+    unsigned totalBytes = (totalBits + 7) / 8;
+    if (totalBytes == 0) totalBytes = 1;
+    elementCount *= totalBytes;
+    return IntegerType::get(ctx, 8);
   }
 
   Type scalarTy = normalizeScalarType(ctx, llvmType);
@@ -61,7 +79,66 @@ unsigned getTypeBitWidth(Type type) {
     return 128;
   if (isa<IndexType>(type))
     return loom::fabric::getConfiguredIndexBitWidth();
+  if (isa<LLVM::LLVMPointerType>(type))
+    return 64; // Assume 64-bit pointers
+  if (auto arrTy = dyn_cast<LLVM::LLVMArrayType>(type))
+    return arrTy.getNumElements() * getTypeBitWidth(arrTy.getElementType());
+  if (auto structTy = dyn_cast<LLVM::LLVMStructType>(type)) {
+    // Sum up field sizes (simplified, no padding calculation)
+    unsigned totalBits = 0;
+    for (Type fieldTy : structTy.getBody()) {
+      unsigned fieldBits = getTypeBitWidth(fieldTy);
+      // Align to field boundary (natural alignment)
+      unsigned alignBits = fieldBits > 0 ? fieldBits : 8;
+      if (alignBits > 64) alignBits = 64; // Cap alignment at 64 bits
+      if (totalBits % alignBits != 0)
+        totalBits += alignBits - (totalBits % alignBits);
+      totalBits += fieldBits;
+    }
+    return totalBits;
+  }
   return 0;
+}
+
+unsigned getStructFieldByteOffset(Type structType, unsigned fieldIndex) {
+  auto structTy = dyn_cast<LLVM::LLVMStructType>(structType);
+  if (!structTy)
+    return 0;
+  auto body = structTy.getBody();
+  if (fieldIndex >= body.size())
+    return 0;
+
+  unsigned byteOffset = 0;
+  for (unsigned i = 0; i < fieldIndex; ++i) {
+    unsigned fieldBits = getTypeBitWidth(body[i]);
+    unsigned fieldBytes = (fieldBits + 7) / 8;
+    // Natural alignment (capped at 8 bytes)
+    unsigned alignBytes = fieldBytes;
+    if (alignBytes > 8) alignBytes = 8;
+    if (alignBytes == 0) alignBytes = 1;
+    if (byteOffset % alignBytes != 0)
+      byteOffset += alignBytes - (byteOffset % alignBytes);
+    byteOffset += fieldBytes;
+  }
+  // Align to the target field's alignment
+  unsigned targetBits = getTypeBitWidth(body[fieldIndex]);
+  unsigned targetBytes = (targetBits + 7) / 8;
+  unsigned targetAlign = targetBytes;
+  if (targetAlign > 8) targetAlign = 8;
+  if (targetAlign == 0) targetAlign = 1;
+  if (byteOffset % targetAlign != 0)
+    byteOffset += targetAlign - (byteOffset % targetAlign);
+  return byteOffset;
+}
+
+Type getStructFieldType(Type structType, unsigned fieldIndex) {
+  auto structTy = dyn_cast<LLVM::LLVMStructType>(structType);
+  if (!structTy)
+    return nullptr;
+  auto body = structTy.getBody();
+  if (fieldIndex >= body.size())
+    return nullptr;
+  return body[fieldIndex];
 }
 
 // Trace a value through the function to find GEP uses that reveal
@@ -79,6 +156,15 @@ static Type inferFromUses(Value ptrVal, unsigned depth = 0) {
     if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
       if (use.getOperandNumber() == 0) { // base operand
         Type elemTy = gep.getElemType();
+        // For struct-typed GEPs, skip past to look at downstream uses
+        if (isa<LLVM::LLVMStructType>(elemTy)) {
+          Type fromGepUses = inferFromUses(gep.getResult(), depth + 1);
+          if (fromGepUses)
+            return fromGepUses;
+          if (!bestType)
+            bestType = IntegerType::get(ptrVal.getContext(), 8);
+          continue;
+        }
         if (!isa<IntegerType>(elemTy) ||
             cast<IntegerType>(elemTy).getWidth() != 8) {
           // Prefer non-i8 types
@@ -95,8 +181,28 @@ static Type inferFromUses(Value ptrVal, unsigned depth = 0) {
 
     // Load reveals access type
     if (auto load = dyn_cast<LLVM::LoadOp>(user)) {
-      Type loadTy = normalizeScalarType(user->getContext(),
-                                        load.getResult().getType());
+      Type rawLoadTy = load.getResult().getType();
+      // If loading a pointer, trace its uses to find the scalar type
+      if (isa<LLVM::LLVMPointerType>(rawLoadTy)) {
+        Type fromLoadUses = inferFromUses(load.getResult(), depth + 1);
+        if (fromLoadUses) {
+          if (!bestType)
+            bestType = fromLoadUses;
+        }
+        continue;
+      }
+      // If loading a vector type, infer from the vector element type
+      if (auto vecTy = dyn_cast<VectorType>(rawLoadTy)) {
+        Type elemTy = normalizeScalarType(user->getContext(),
+                                          vecTy.getElementType());
+        if (!isa<IntegerType>(elemTy) ||
+            cast<IntegerType>(elemTy).getWidth() != 8)
+          return elemTy;
+        if (!bestType)
+          bestType = elemTy;
+        continue;
+      }
+      Type loadTy = normalizeScalarType(user->getContext(), rawLoadTy);
       if (!isa<IntegerType>(loadTy) ||
           cast<IntegerType>(loadTy).getWidth() != 8)
         return loadTy;
@@ -107,8 +213,19 @@ static Type inferFromUses(Value ptrVal, unsigned depth = 0) {
     // Store reveals value type
     if (auto store = dyn_cast<LLVM::StoreOp>(user)) {
       if (use.getOperandNumber() == 1) { // addr operand
-        Type valTy = normalizeScalarType(user->getContext(),
-                                         store.getValue().getType());
+        Type rawValTy = store.getValue().getType();
+        // If storing a vector type, infer from element type
+        if (auto vecTy = dyn_cast<VectorType>(rawValTy)) {
+          Type elemTy = normalizeScalarType(user->getContext(),
+                                            vecTy.getElementType());
+          if (!isa<IntegerType>(elemTy) ||
+              cast<IntegerType>(elemTy).getWidth() != 8)
+            return elemTy;
+          if (!bestType)
+            bestType = elemTy;
+          continue;
+        }
+        Type valTy = normalizeScalarType(user->getContext(), rawValTy);
         if (!isa<IntegerType>(valTy) ||
             cast<IntegerType>(valTy).getWidth() != 8)
           return valTy;
@@ -145,11 +262,38 @@ inferPointerElementTypes(LLVM::LLVMFuncOp funcOp) {
     if (!isa<LLVM::LLVMPointerType>(arg.getType()))
       continue;
 
-    // First try to infer from GEP elem_type (most reliable)
+    // First try to infer from GEP elem_type (most reliable).
+    // For struct-typed GEPs, look through the struct to find the scalar type
+    // from downstream uses or from the struct's field types.
     Type inferred = nullptr;
     funcOp.walk([&](LLVM::GEPOp gepOp) {
       if (gepOp.getBase() == arg) {
         Type elemTy = gepOp.getElemType();
+        if (elemTy && isa<LLVM::LLVMStructType>(elemTy)) {
+          // For homogeneous structs (all fields same type), use the scalar type.
+          // This enables vector load/store decomposition for struct-as-array.
+          auto structTy = cast<LLVM::LLVMStructType>(elemTy);
+          auto body = structTy.getBody();
+          if (!body.empty()) {
+            Type firstTy = normalizeScalarType(funcOp.getContext(), body[0]);
+            bool allSame = true;
+            for (unsigned fi = 1; fi < body.size(); ++fi) {
+              if (normalizeScalarType(funcOp.getContext(), body[fi]) != firstTy) {
+                allSame = false;
+                break;
+              }
+            }
+            if (allSame && (!inferred || (isa<IntegerType>(inferred) &&
+                            cast<IntegerType>(inferred).getWidth() == 8))) {
+              inferred = firstTy;
+              return;
+            }
+          }
+          // Heterogeneous struct or empty: use i8 byte addressing
+          if (!inferred)
+            inferred = IntegerType::get(funcOp.getContext(), 8);
+          return;
+        }
         if (elemTy && (!inferred || (isa<IntegerType>(inferred) &&
                                      cast<IntegerType>(inferred).getWidth() == 8))) {
           inferred = elemTy;
@@ -167,6 +311,8 @@ inferPointerElementTypes(LLVM::LLVMFuncOp funcOp) {
       inferred = IntegerType::get(funcOp.getContext(), 8);
     }
 
+    // Normalize to ensure memref-compatible type
+    inferred = normalizeScalarType(funcOp.getContext(), inferred);
     result[i] = inferred;
   }
 
