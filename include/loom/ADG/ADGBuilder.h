@@ -765,6 +765,25 @@ public:
       const SwitchBankDomainSpec &spec,
       const std::function<PEHandle(unsigned)> &peSelector);
 
+  // --- Multi-core extensions ---
+
+  /// Add a NoC ingress port to the core module. Returns the port index.
+  /// The port carries the noc_port = true attribute in generated MLIR.
+  unsigned addNoCIngressPort(const std::string &name, unsigned bitsWidth);
+
+  /// Add a NoC egress port to the core module. Returns the port index.
+  /// The port carries the noc_port = true attribute in generated MLIR.
+  unsigned addNoCEgressPort(const std::string &name, unsigned bitsWidth);
+
+  /// Set the scratchpad memory capacity for this core (in bytes).
+  /// Stored as the spm_capacity_bytes attribute on the fabric.module.
+  void setSPMCapacity(uint64_t bytes);
+
+  /// Export the current ADG module as a named core type.
+  /// Returns the generated MLIR text suitable for SystemADGBuilder
+  /// registration.
+  std::string exportCoreType(const std::string &typeName);
+
   // --- Export ---
 
   /// Export the ADG as Fabric MLIR to the given file path.

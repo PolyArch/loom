@@ -1,0 +1,31 @@
+{
+  "coreTypes": [
+    {
+      "typeName": "compute",
+      "instanceCount": 1,
+      "spmBytes": 8192,
+      "numPEs": 4,
+      "numFUs": 8,
+      "fuTypeCounts": {
+        "add": 4,
+        "mul": 2,
+        "load": 1,
+        "store": 1
+      }
+    }
+  ],
+  "noc": {
+    "topology": "mesh",
+    "meshRows": 1,
+    "meshCols": 1,
+    "flitWidth": 32,
+    "virtualChannels": 2,
+    "linkBandwidth": 1,
+    "routerPipelineStages": 2
+  },
+  "sharedMemory": {
+    "l2SizeBytes": 65536,
+    "numBanks": 2,
+    "bankWidthBytes": 32
+  }
+}

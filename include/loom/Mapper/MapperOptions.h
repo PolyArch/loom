@@ -1,6 +1,9 @@
 #ifndef LOOM_MAPPER_MAPPER_OPTIONS_H
 #define LOOM_MAPPER_MAPPER_OPTIONS_H
 
+#include "loom/Mapper/Types.h"
+
+#include <set>
 #include <string>
 
 namespace loom {
@@ -250,6 +253,10 @@ struct MapperOptions {
   MapperRelaxedRoutingOptions relaxedRouting;
   MapperCPSatTuningOptions cpSatTuning;
   MapperLocalRepairOptions localRepair;
+
+  /// Hardware node IDs to exclude from placement (used by multi-kernel L2
+  /// compilation to prevent overlap with previously mapped kernels).
+  std::set<IdIndex> excludedNodes;
 };
 
 bool validateMapperOptions(const MapperOptions &opts, std::string &error);

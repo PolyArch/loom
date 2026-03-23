@@ -137,3 +137,8 @@ add_custom_target(check-loom-unit
 if(NOT TARGET check-loom)
   add_custom_target(check-loom DEPENDS check-loom-unit)
 endif()
+
+# Tapestry (TDG dialect) C++ tests
+if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tapestry")
+  add_subdirectory(tapestry)
+endif()

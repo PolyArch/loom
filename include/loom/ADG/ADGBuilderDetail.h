@@ -182,6 +182,17 @@ struct ADGBuilder::Impl {
   std::vector<InstanceToScalarConn> instToScalarConns;
   std::map<unsigned, VizPlacement> vizPlacements;
 
+  // Multi-core extension fields
+  struct NoCPortEntry {
+    std::string name;
+    unsigned bitsWidth;
+    bool isIngress; // true = input, false = output
+  };
+  std::vector<NoCPortEntry> nocPorts;
+  uint64_t spmCapacityBytes = 0;
+  bool hasSPMCapacity = false;
+  std::string coreTypeName;
+
   std::string generateMLIR(llvm::StringRef vizFileName) const;
   std::string generateVizJson() const;
   bool validate(std::string &errMsg) const;

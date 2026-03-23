@@ -1,0 +1,43 @@
+{
+  "coreTypes": [
+    {
+      "typeName": "compute",
+      "instanceCount": 2,
+      "spmBytes": 8192,
+      "numPEs": 4,
+      "numFUs": 8,
+      "fuTypeCounts": {
+        "add": 4,
+        "mul": 2,
+        "load": 1,
+        "store": 1
+      }
+    },
+    {
+      "typeName": "memory",
+      "instanceCount": 2,
+      "spmBytes": 32768,
+      "numPEs": 4,
+      "numFUs": 6,
+      "fuTypeCounts": {
+        "add": 2,
+        "load": 2,
+        "store": 2
+      }
+    }
+  ],
+  "noc": {
+    "topology": "mesh",
+    "meshRows": 2,
+    "meshCols": 2,
+    "flitWidth": 32,
+    "virtualChannels": 2,
+    "linkBandwidth": 1,
+    "routerPipelineStages": 2
+  },
+  "sharedMemory": {
+    "l2SizeBytes": 131072,
+    "numBanks": 4,
+    "bankWidthBytes": 32
+  }
+}

@@ -662,6 +662,23 @@ Mapper::Result Mapper::runWithTechMapPlan(
     return result;
   }
 
+  // Filter out excluded hardware nodes from candidates (multi-kernel support).
+  if (!opts.excludedNodes.empty()) {
+    for (auto &entry : candidates) {
+      auto &hwList = entry.second;
+      hwList.erase(
+          std::remove_if(hwList.begin(), hwList.end(),
+                         [&](IdIndex hwId) {
+                           return opts.excludedNodes.count(hwId) > 0;
+                         }),
+          hwList.end());
+    }
+    if (opts.verbose) {
+      llvm::outs() << "Mapper: excluded " << opts.excludedNodes.size()
+                   << " hardware nodes from candidates\n";
+    }
+  }
+
   // Check that all operation nodes have candidates.
   for (IdIndex i = 0;
        i < static_cast<IdIndex>(techPlan.contractedDFG.nodes.size()); ++i) {

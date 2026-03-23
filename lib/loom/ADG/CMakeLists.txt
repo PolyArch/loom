@@ -3,6 +3,8 @@ add_library(LoomADG
   ADGBuilderEmit.cpp
   ADGBuilderViz.cpp
   ADGBuilderTopology.cpp
+  ADGBuilderNoCPorts.cpp
+  SystemADGBuilder.cpp
   ADGVerifier.cpp
 )
 

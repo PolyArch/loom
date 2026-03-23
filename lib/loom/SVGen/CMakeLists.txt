@@ -7,6 +7,8 @@ add_library(LoomSVGen STATIC
   SVEmitter.cpp
   SVModuleRegistry.cpp
   SVGenConfigLayout.cpp
+  MultiCoreSVGen.cpp
+  MultiCoreConfigGen.cpp
 )
 
 target_include_directories(LoomSVGen PUBLIC
@@ -20,6 +22,7 @@ target_include_directories(LoomSVGen PRIVATE
 
 target_link_libraries(LoomSVGen PUBLIC
   LoomFabric
+  LoomMapper
   MLIRSupport
   MLIRIR
 )

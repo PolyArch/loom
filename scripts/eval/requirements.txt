@@ -1,0 +1,5 @@
+matplotlib>=3.7
+numpy>=1.24
+pandas>=2.0
+seaborn>=0.12
+scipy>=1.10
