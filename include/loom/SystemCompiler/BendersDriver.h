@@ -1,80 +1,85 @@
-//===-- BendersDriver.h - Multi-core Benders decomposition driver --*- C++ -*-===//
-//
-// Drives the Benders decomposition for multi-core CGRA compilation.
-// The master problem assigns kernels to core types, and the sub-problems
-// map each kernel onto its assigned core's ADG using the Loom mapper.
-//
-//===----------------------------------------------------------------------===//
-
 #ifndef LOOM_SYSTEMCOMPILER_BENDERSDRIVER_H
 #define LOOM_SYSTEMCOMPILER_BENDERSDRIVER_H
 
-#include "loom/SystemCompiler/SystemTypes.h"
-#include "mlir/IR/MLIRContext.h"
-
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace loom {
-namespace tapestry {
+namespace syscomp {
 
-/// Configuration for the Benders driver.
-struct BendersConfig {
-  unsigned maxIterations = 10;
-  double mapperBudgetSeconds = 30.0;
-  int mapperSeed = 42;
-  bool verbose = true;
+// Configuration for the Benders decomposition driver used by the system
+// compiler to partition and schedule task graphs across multi-core fabrics.
+struct BendersDriverOptions {
+  // Maximum number of Benders iterations before giving up.
+  unsigned maxIterations = 100;
+
+  // Convergence tolerance: stop when the gap between upper and lower bounds
+  // falls below this fraction.
+  double convergenceTolerance = 1e-4;
+
+  // Time limit in seconds for the entire Benders solve.
+  double timeLimitSeconds = 300.0;
+
+  // Number of cores available in the target fabric.
+  unsigned numCores = 4;
+
+  // Per-core SPM budget in bytes.
+  uint64_t spmBudgetBytes = 65536;
+
+  // NoC bandwidth in bytes per cycle.
+  double nocBandwidthBytesPerCycle = 8.0;
+
+  // Enable verbose logging of each iteration.
+  bool verbose = false;
 };
 
-/// The Benders decomposition driver for multi-core compilation.
-///
-/// Usage:
-///   1. Construct with a SystemArchitecture, kernels, and contracts.
-///   2. Call compile() to run the decomposition loop.
-///   3. Inspect the BendersResult for assignments and metrics.
+// Represents one task (kernel) in the task graph that Benders partitions.
+struct BendersTask {
+  std::string name;
+  uint64_t estimatedCycles = 0;
+  uint64_t spmBytes = 0;
+  uint64_t outputBytes = 0;
+};
+
+// Represents a data dependency between two tasks.
+struct BendersEdge {
+  unsigned srcTaskIndex = 0;
+  unsigned dstTaskIndex = 0;
+  uint64_t dataBytes = 0;
+};
+
+// Result of the Benders decomposition: which task maps to which core.
+struct BendersResult {
+  bool feasible = false;
+  std::string statusMessage;
+  unsigned iterations = 0;
+  double objectiveValue = 0.0;
+
+  // taskAssignment[i] = core ID for task i.
+  std::vector<unsigned> taskAssignment;
+};
+
+// Drives the Benders decomposition for system-level compilation.
 class BendersDriver {
 public:
-  BendersDriver(const SystemArchitecture &arch,
-                std::vector<KernelDesc> kernels,
-                std::vector<ContractSpec> contracts,
-                mlir::MLIRContext &ctx);
+  explicit BendersDriver(const BendersDriverOptions &options);
 
-  /// Run the Benders decomposition. Returns the result.
-  BendersResult compile(const BendersConfig &config = {});
+  void addTask(const BendersTask &task);
+  void addEdge(const BendersEdge &edge);
+
+  // Run the decomposition and return the result.
+  BendersResult solve();
+
+  const BendersDriverOptions &getOptions() const { return options_; }
 
 private:
-  /// Master problem: assign kernels to core types.
-  /// Returns a kernel->coreTypeIndex mapping.
-  std::vector<int> solveMasterProblem(unsigned iteration);
-
-  /// Sub-problem: map one kernel to its assigned core's ADG.
-  /// Returns the L2Assignment with mapping results.
-  L2Assignment solveSubProblem(const KernelDesc &kernel,
-                               int coreTypeIndex,
-                               const BendersConfig &config);
-
-  /// Generate a Benders cut from sub-problem feedback.
-  void addBendersCut(const L2Assignment &assignment, unsigned iteration);
-
-  /// Check convergence: all sub-problems succeeded.
-  bool checkConvergence(const std::vector<L2Assignment> &assignments) const;
-
-  const SystemArchitecture &arch_;
-  std::vector<KernelDesc> kernels_;
-  std::vector<ContractSpec> contracts_;
-  mlir::MLIRContext &ctx_;
-
-  /// Accumulated cuts: (iteration, kernelName, coreTypeIndex) -> penalty.
-  struct BendersCut {
-    unsigned iteration;
-    std::string kernelName;
-    int coreTypeIndex;
-    double penalty;
-  };
-  std::vector<BendersCut> cuts_;
+  BendersDriverOptions options_;
+  std::vector<BendersTask> tasks_;
+  std::vector<BendersEdge> edges_;
 };
 
-} // namespace tapestry
+} // namespace syscomp
 } // namespace loom
 
 #endif // LOOM_SYSTEMCOMPILER_BENDERSDRIVER_H

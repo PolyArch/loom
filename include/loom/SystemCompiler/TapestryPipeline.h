@@ -2,159 +2,53 @@
 #define LOOM_SYSTEMCOMPILER_TAPESTRYPIPELINE_H
 
 #include "loom/SystemCompiler/BendersDriver.h"
+#include "loom/TDG/ContractLegalityChecker.h"
 #include "loom/MultiCoreSim/MultiCoreSimSession.h"
-#include "loom/SVGen/MultiCoreSVGen.h"
-#include "loom/SVGen/MultiCoreConfigGen.h"
 
-#include "mlir/IR/MLIRContext.h"
-
-#include <optional>
 #include <string>
 #include <vector>
 
 namespace loom {
+namespace syscomp {
 
-//===----------------------------------------------------------------------===//
-// Pipeline Stage Enum
-//===----------------------------------------------------------------------===//
-
-/// Individual pipeline stages that can be enabled selectively.
-enum class PipelineStage {
-  COMPILE,
-  SIMULATE,
-  RTLGEN
-};
-
-//===----------------------------------------------------------------------===//
-// Pipeline Configuration
-//===----------------------------------------------------------------------===//
-
-/// Configuration for the Tapestry multi-core pipeline.
-struct TapestryPipelineConfig {
-  /// Path to TDG input (MLIR text).
-  std::string tdgPath;
-
-  /// Path to system architecture JSON.
-  std::string systemArchPath;
-
-  /// Output directory for all artifacts.
-  std::string outputDir;
-
-  /// Stages to run (empty = run all stages).
-  std::vector<PipelineStage> stages;
-
-  /// Benders driver options.
-  BendersDriverOptions bendersOpts;
-
-  /// Base mapper options for L2 compilation.
-  MapperOptions baseMapperOpts;
-
-  /// Multi-core simulation configuration.
-  mcsim::MultiCoreSimConfig simConfig;
-
-  /// Multi-core SVGen options.
-  svgen::MultiCoreSVGenOptions svgenOpts;
-
-  /// Path to RTL source directory (for SVGen).
-  std::string rtlSourceDir;
-
-  /// Enable verbose logging.
-  bool verbose = false;
-
-  /// Helper: check if a specific stage should run.
-  bool shouldRunStage(PipelineStage stage) const;
-};
-
-//===----------------------------------------------------------------------===//
-// Pipeline Result
-//===----------------------------------------------------------------------===//
-
-/// Complete result of the Tapestry pipeline execution.
-struct TapestryPipelineResult {
-  bool success = false;
-
-  /// Diagnostics and status messages.
-  std::string diagnostics;
-
-  /// Compilation result (always populated if COMPILE stage runs).
-  std::optional<TapestryCompilationResult> compilationResult;
-
-  /// Simulation result (populated if SIMULATE stage runs).
-  std::optional<mcsim::MultiCoreSimResult> simResult;
-
-  /// RTL generation result (populated if RTLGEN stage runs).
-  std::optional<svgen::MultiCoreSVGenResult> rtlResult;
-
-  /// Multi-core configuration image (populated if RTLGEN stage runs).
-  std::optional<svgen::MultiCoreConfigImage> configImage;
-
-  /// Path to the JSON report file (populated after report generation).
-  std::string reportPath;
-};
-
-//===----------------------------------------------------------------------===//
-// TapestryPipeline
-//===----------------------------------------------------------------------===//
-
-/// Orchestrates the full Tapestry multi-core pipeline: compile, simulate,
-/// and generate RTL. Each stage can be run independently or as a full
-/// end-to-end flow.
+// End-to-end pipeline for the Tapestry system compiler.
+//
+// The pipeline orchestrates three stages:
+//   1. Benders decomposition: partition tasks across cores.
+//   2. Contract legality: validate that data-movement contracts are legal.
+//   3. Multi-core simulation: estimate end-to-end latency.
+//
+// This class wires the three subsystems together.
 class TapestryPipeline {
 public:
-  /// Run the configured pipeline stages.
-  ///
-  /// \param config   Pipeline configuration (paths, options, stages).
-  /// \param ctx      MLIR context for module parsing and lowering.
-  /// \returns        Complete pipeline result.
-  TapestryPipelineResult run(const TapestryPipelineConfig &config,
-                             mlir::MLIRContext &ctx);
+  explicit TapestryPipeline(const BendersDriverOptions &options);
 
-  /// Run only the compilation stage.
-  TapestryCompilationResult
-  runCompile(const TapestryPipelineConfig &config, mlir::MLIRContext &ctx);
+  // Add a task to the pipeline.
+  void addTask(const BendersTask &task);
 
-  /// Run only the simulation stage, given an existing compilation result.
-  mcsim::MultiCoreSimResult
-  runSimulate(const TapestryCompilationResult &compilation,
-              const TapestryPipelineConfig &config);
+  // Add an edge (data dependency) to the pipeline.
+  void addEdge(const BendersEdge &edge);
 
-  /// Run only the RTL generation stage, given an existing compilation result.
-  svgen::MultiCoreSVGenResult
-  runRtlGen(const TapestryCompilationResult &compilation,
-            const TapestryPipelineConfig &config, mlir::MLIRContext &ctx);
+  // Run the full pipeline: partition, check legality, simulate.
+  // Returns an error string on failure, empty string on success.
+  std::string run();
 
-  /// Generate a JSON report from the pipeline result.
-  static std::string generateReport(const TapestryPipelineResult &result,
-                                    const std::string &outputDir);
+  // Accessors for results after a successful run().
+  const BendersResult &getBendersResult() const { return bendersResult_; }
+  const mcsim::MultiCoreSimResult &getSimResult() const { return simResult_; }
+  bool legalityPassed() const { return legalityPassed_; }
 
 private:
-  /// Load system architecture from JSON file.
-  static SystemArchitecture loadSystemArch(const std::string &jsonPath);
+  BendersDriverOptions options_;
+  std::vector<BendersTask> tasks_;
+  std::vector<BendersEdge> edges_;
 
-  /// Build multi-core compilation descriptor from compilation result.
-  static svgen::MultiCoreCompilationDesc
-  buildCompilationDesc(const TapestryCompilationResult &compilation);
-
-  /// Write per-core config binaries to the output directory.
-  static void writeConfigBinaries(const TapestryCompilationResult &compilation,
-                                  const std::string &outputDir);
-
-  /// Write system-level JSON outputs (assignment, NoC schedule, etc.).
-  static void writeSystemOutputs(const TapestryCompilationResult &compilation,
-                                 const std::string &outputDir);
-
-  /// Write simulation results to JSON.
-  static void writeSimResults(const mcsim::MultiCoreSimResult &simResult,
-                              const std::string &outputDir);
-
-  /// Serialize SystemMetrics to JSON string.
-  static std::string metricsToJson(const SystemMetrics &metrics);
-
-  /// Serialize iteration history to JSON string.
-  static std::string iterationHistoryToJson(
-      const std::vector<IterationRecord> &history);
+  BendersResult bendersResult_;
+  mcsim::MultiCoreSimResult simResult_;
+  bool legalityPassed_ = false;
 };
 
+} // namespace syscomp
 } // namespace loom
 
 #endif // LOOM_SYSTEMCOMPILER_TAPESTRYPIPELINE_H

@@ -1,83 +1,112 @@
 #ifndef LOOM_MULTICORESIM_MULTICORESIMSESSION_H
 #define LOOM_MULTICORESIM_MULTICORESIMSESSION_H
 
-#include "loom/MultiCoreSim/CoreSimWrapper.h"
-#include "loom/MultiCoreSim/MemoryHierarchyModel.h"
-#include "loom/MultiCoreSim/NoCSimModel.h"
-#include "loom/MultiCoreSim/TapestryTypes.h"
-#include "loom/Simulator/SimTypes.h"
-
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <vector>
 
 namespace loom {
 namespace mcsim {
 
-// Configuration for the multi-core simulation session.
-struct MultiCoreSimConfig {
-  sim::SimConfig perCoreSimConfig;
-  MemoryHierarchyConfig memConfig;
-  unsigned nocPerHopLatency = 1;
-  uint64_t maxGlobalCycles = 10000000;
+// Describes one kernel assigned to a core.
+struct KernelDescriptor {
+  std::string name;
+  unsigned coreId = 0;
+  uint64_t estimatedCycles = 0;
+
+  // Cycle offset from kernel start at which output data becomes available
+  // for NoC injection. Zero means data is ready only after the kernel
+  // finishes (no overlap).
+  uint64_t outputReadyCycleOffset = 0;
+
+  // Bytes produced by this kernel that need to be sent over the NoC.
+  uint64_t outputBytes = 0;
 };
 
-// Orchestrates lockstep simulation of multiple cores, coordinating
-// the NoC and memory hierarchy models.
+// Describes a NoC transfer between cores.
+struct NocTransferDescriptor {
+  unsigned srcCoreId = 0;
+  unsigned dstCoreId = 0;
+  uint64_t bytes = 0;
+
+  // Index of the source kernel in the per-core kernel list that produces
+  // the data for this transfer.
+  unsigned srcKernelIndex = 0;
+};
+
+// Per-kernel simulation result.
+struct KernelResult {
+  std::string name;
+  unsigned coreId = 0;
+  uint64_t startCycle = 0;
+  uint64_t endCycle = 0;
+  uint64_t cycles = 0;
+};
+
+// Per-transfer simulation result.
+struct NocTransferResult {
+  unsigned srcCoreId = 0;
+  unsigned dstCoreId = 0;
+  uint64_t injectionStartCycle = 0;
+  uint64_t injectionEndCycle = 0;
+  uint64_t bytes = 0;
+};
+
+// Aggregate result of a multi-core simulation.
+struct MultiCoreSimResult {
+  bool success = false;
+  std::string errorMessage;
+  uint64_t totalCycles = 0;
+  std::vector<KernelResult> kernelResults;
+  std::vector<NocTransferResult> nocTransferResults;
+};
+
+// Configuration for the multi-core simulator.
+struct MultiCoreSimConfig {
+  // NoC bandwidth in bytes per cycle.
+  double nocBandwidthBytesPerCycle = 8.0;
+
+  // NoC injection startup latency in cycles.
+  uint64_t nocStartupLatencyCycles = 4;
+
+  // Maximum number of cores.
+  unsigned maxCores = 64;
+};
+
+// Simulates execution of multiple kernels across cores with interleaved
+// NoC data transfers. Supports multiple kernels per core (executed
+// sequentially) and overlapped NoC injection (transfer starts while the
+// producing kernel is still running, once output data is ready).
 class MultiCoreSimSession {
 public:
-  explicit MultiCoreSimSession(const MultiCoreSimConfig &config);
-  ~MultiCoreSimSession();
+  explicit MultiCoreSimSession(const MultiCoreSimConfig &config = {});
 
-  MultiCoreSimSession(const MultiCoreSimSession &) = delete;
-  MultiCoreSimSession &operator=(const MultiCoreSimSession &) = delete;
+  // Add a kernel to be executed on a specific core.
+  void addKernel(const KernelDescriptor &kernel);
 
-  // Initialize from a complete TapestryCompilationResult.
-  // Creates CoreSimWrappers for each core with mapped kernels,
-  // configures the NoC model, and sets up the memory hierarchy.
-  std::string initialize(const TapestryCompilationResult &compilationResult);
+  // Add a NoC transfer dependency.
+  void addNocTransfer(const NocTransferDescriptor &transfer);
 
-  // Run the entire multi-core simulation to completion.
-  // All cores run in lockstep, with the NoC and memory hierarchy
-  // models advanced each cycle.
+  // Run the simulation and return the result.
   MultiCoreSimResult run();
 
-  // Get the number of active cores.
-  unsigned getNumActiveCores() const;
-
-  // Get a reference to a specific core wrapper (for inspection).
-  const CoreSimWrapper *getCoreWrapper(unsigned coreId) const;
-
-  // Get the NoC model (for inspection).
-  const NoCSimModel *getNoCModel() const;
-
-  // Get the memory hierarchy model (for inspection).
-  const MemoryHierarchyModel *getMemoryModel() const;
-
 private:
-  // Process cross-core transfers: check if any core has produced
-  // data for another core, inject it into the NoC.
-  void processNoCInjections();
-
-  // Deliver arrived NoC flits to destination cores.
-  void processNoCDeliveries();
-
-  // Check if all cores are done.
-  bool allCoresDone() const;
+  // Determine the cycle at which a core can start its next kernel, given
+  // dependencies from NoC transfers.
+  uint64_t computeKernelStartCycle(unsigned coreId,
+                                   unsigned kernelIndex) const;
 
   MultiCoreSimConfig config_;
-  std::vector<std::unique_ptr<CoreSimWrapper>> coreWrappers_;
-  std::unique_ptr<NoCSimModel> nocModel_;
-  std::unique_ptr<MemoryHierarchyModel> memModel_;
 
-  // Mapping from core ID to coreWrappers_ index.
-  std::unordered_map<unsigned, unsigned> coreIdToIndex_;
+  // Per-core list of kernels in execution order.
+  // coreKernels_[coreId] = list of kernels for that core.
+  std::vector<std::vector<KernelDescriptor>> coreKernels_;
 
-  // Cross-core transfer contracts.
-  std::vector<NoCTransferContract> transferContracts_;
+  std::vector<NocTransferDescriptor> nocTransfers_;
 
-  uint64_t globalCycle_ = 0;
+  // Populated during run().
+  std::vector<KernelResult> kernelResults_;
+  std::vector<NocTransferResult> nocTransferResults_;
 };
 
 } // namespace mcsim
