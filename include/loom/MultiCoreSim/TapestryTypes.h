@@ -95,8 +95,9 @@ struct MemoryHierarchyStats {
   uint64_t dramAccesses = 0;
 };
 
-// Complete multi-core simulation result.
-struct MultiCoreSimResult {
+// Full multi-core simulation result with per-core breakdown, NoC stats,
+// and memory hierarchy stats.
+struct FullSimResult {
   std::vector<CoreSimResult> coreResults;
   NoCStats nocStats;
   MemoryHierarchyStats memStats;

@@ -5,6 +5,9 @@
 #include "loom/TDG/ContractLegalityChecker.h"
 #include "loom/MultiCoreSim/MultiCoreSimSession.h"
 
+#include "mlir/IR/MLIRContext.h"
+
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -49,6 +52,120 @@ private:
 };
 
 } // namespace syscomp
+
+// -----------------------------------------------------------------------
+// Config-driven full pipeline API (used by tapestry CLI tools)
+// -----------------------------------------------------------------------
+
+/// Pipeline stages that can be selectively enabled.
+enum class PipelineStage {
+  COMPILE,
+  SIMULATE,
+  RTLGEN,
+};
+
+/// Benders decomposition options for the config-driven pipeline.
+struct PipelineBendersOptions {
+  unsigned maxIterations = 10;
+  double costTighteningThreshold = 0.01;
+  bool perfectNoC = false;
+  bool verbose = false;
+};
+
+/// Simulation sub-config for the config-driven pipeline.
+struct PipelineSimConfig {
+  uint64_t maxGlobalCycles = 1000000;
+  bool enableNoCContention = true;
+  bool enableTracing = false;
+};
+
+/// SVGen sub-options for RTL generation.
+struct PipelineSVGenOptions {
+  std::string fpIpProfile;
+  unsigned meshRows = 0;
+  unsigned meshCols = 0;
+};
+
+/// Top-level configuration for the config-driven pipeline.
+struct TapestryPipelineConfig {
+  std::string tdgPath;
+  std::string systemArchPath;
+  std::string outputDir = "tapestry-output";
+  bool verbose = false;
+
+  std::vector<PipelineStage> stages;
+
+  PipelineBendersOptions bendersOpts;
+  PipelineSimConfig simConfig;
+  PipelineSVGenOptions svgenOpts;
+  std::string rtlSourceDir;
+};
+
+/// Compilation metrics from a successful compile stage.
+struct PipelineCompilationMetrics {
+  unsigned numBendersIterations = 0;
+  double compilationTimeSec = 0.0;
+};
+
+/// Per-core result from the compilation stage.
+struct PipelineCoreResult {
+  std::string coreName;
+  bool success = false;
+};
+
+/// Result of the compilation stage.
+struct PipelineCompilationResult {
+  std::vector<PipelineCoreResult> coreResults;
+  PipelineCompilationMetrics metrics;
+};
+
+/// NoC statistics from the simulation stage.
+struct PipelineNoCStats {
+  uint64_t totalFlitsTransferred = 0;
+};
+
+/// Per-core result from the simulation stage.
+struct PipelineCoreSimResult {
+  unsigned coreId = 0;
+  uint64_t cycles = 0;
+  bool completed = false;
+};
+
+/// Result of the simulation stage.
+struct PipelineSimResult {
+  uint64_t totalGlobalCycles = 0;
+  PipelineNoCStats nocStats;
+  std::vector<PipelineCoreSimResult> coreResults;
+};
+
+/// Result of the RTL generation stage.
+struct PipelineRTLResult {
+  std::string systemTopFile;
+  std::vector<std::string> allGeneratedFiles;
+};
+
+/// Top-level result from the full pipeline.
+struct TapestryPipelineResult {
+  bool success = false;
+  std::string diagnostics;
+  std::string reportPath;
+
+  std::optional<PipelineCompilationResult> compilationResult;
+  std::optional<PipelineSimResult> simResult;
+  std::optional<PipelineRTLResult> rtlResult;
+};
+
+/// Config-driven full pipeline: orchestrates compile, simulate, and RTL
+/// generation stages based on the provided configuration.
+class TapestryPipeline {
+public:
+  TapestryPipeline() = default;
+
+  /// Run the pipeline with the given configuration and MLIR context.
+  TapestryPipelineResult run(const TapestryPipelineConfig &config,
+                             mlir::MLIRContext &context);
+};
+
 } // namespace loom
 
 #endif // LOOM_SYSTEMCOMPILER_TAPESTRYPIPELINE_H

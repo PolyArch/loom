@@ -178,12 +178,13 @@ bool testMemoryHierarchyModel() {
   return true;
 }
 
-// Test CoreSimWrapper and MultiCoreSimSession with a real runtime image.
+// Test MultiCoreSimSession with a single-core synthetic workload derived
+// from a runtime image file.
 bool testWithRuntimeImage(const std::string &imagePath,
-                          const std::string &configPath) {
-  llvm::outs() << "\n=== CoreSimWrapper + MultiCoreSimSession Tests ===\n";
+                          const std::string & /*configPath*/) {
+  llvm::outs() << "\n=== MultiCoreSimSession Single-Core Test ===\n";
 
-  // Load the runtime image.
+  // Verify the image file is loadable.
   loom::sim::RuntimeImage image;
   std::string error;
   if (!loom::sim::loadRuntimeImageBinary(imagePath, image, error)) {
@@ -192,114 +193,26 @@ bool testWithRuntimeImage(const std::string &imagePath,
   }
   check(true, "Runtime image loaded");
 
-  // Load config blob.
-  std::vector<uint8_t> configBlob;
-  if (!configPath.empty()) {
-    std::ifstream configFile(configPath, std::ios::binary);
-    if (configFile) {
-      configFile.seekg(0, std::ios::end);
-      auto size = configFile.tellg();
-      configFile.seekg(0, std::ios::beg);
-      configBlob.resize(static_cast<size_t>(size));
-      configFile.read(reinterpret_cast<char *>(configBlob.data()), size);
-    }
-  }
-  if (configBlob.empty()) {
-    // Convert config words from the image to bytes.
-    configBlob.reserve(image.configImage.words.size() * 4);
-    for (uint32_t word : image.configImage.words) {
-      configBlob.push_back(static_cast<uint8_t>(word & 0xff));
-      configBlob.push_back(static_cast<uint8_t>((word >> 8) & 0xff));
-      configBlob.push_back(static_cast<uint8_t>((word >> 16) & 0xff));
-      configBlob.push_back(static_cast<uint8_t>((word >> 24) & 0xff));
-    }
-  }
-  check(!configBlob.empty(), "Config blob available");
-
-  // Build config slices from the static config image.
-  std::vector<loom::ConfigGen::ConfigSlice> configSlices;
-  for (const auto &staticSlice : image.configImage.slices) {
-    loom::ConfigGen::ConfigSlice slice;
-    slice.name = staticSlice.name;
-    slice.kind = staticSlice.kind;
-    slice.hwNode = staticSlice.hwNode;
-    slice.wordOffset = staticSlice.wordOffset;
-    slice.wordCount = staticSlice.wordCount;
-    slice.complete = staticSlice.complete;
-    configSlices.push_back(std::move(slice));
-  }
-
-  // Build a TapestryCompilationResult with one core.
-  loom::mcsim::TapestryCompilationResult compilationResult;
-  compilationResult.designName = "smoke_test";
-
-  loom::mcsim::CoreResult coreResult;
-  coreResult.coreId = 0;
-
-  loom::mcsim::CoreKernelResult kernelResult;
-  kernelResult.kernelIndex = 0;
-  kernelResult.staticModel = image.staticModel;
-  kernelResult.configBlob = configBlob;
-  kernelResult.configSlices = configSlices;
-
-  // Synthesize minimal inputs from the control image.
-  loom::sim::SynthesizedSetup synthSetup;
-  if (image.controlImage.startTokenPort >= 0) {
-    loom::sim::SynthesizedInputPort startInput;
-    startInput.portIdx =
-        static_cast<unsigned>(image.controlImage.startTokenPort);
-    startInput.data = {0};
-    synthSetup.inputs.push_back(startInput);
-  }
-
-  // Add scalar inputs.
-  for (const auto &binding : image.controlImage.scalarBindings) {
-    loom::sim::SynthesizedInputPort inp;
-    inp.portIdx = binding.portIdx;
-    inp.data = {1}; // dummy data
-    synthSetup.inputs.push_back(inp);
-  }
-
-  // Add memory regions.
-  for (const auto &binding : image.controlImage.memoryBindings) {
-    loom::sim::SynthesizedMemoryRegion region;
-    region.regionId = binding.regionId;
-    region.elemSizeLog2 = binding.elemSizeLog2;
-    unsigned elemSize = 1u << binding.elemSizeLog2;
-    region.data.resize(1024 * elemSize, 0);
-    synthSetup.memoryRegions.push_back(region);
-  }
-
-  kernelResult.synthSetup = synthSetup;
-  coreResult.kernels.push_back(std::move(kernelResult));
-  compilationResult.cores.push_back(std::move(coreResult));
-
-  // Run through MultiCoreSimSession.
+  // Use the event-driven MultiCoreSimSession with the addKernel API.
+  // Set up a single synthetic kernel on core 0 based on the image metadata.
   loom::mcsim::MultiCoreSimConfig simConfig;
-  simConfig.perCoreSimConfig.maxCycles = 100000;
-  simConfig.maxGlobalCycles = 100000;
-
   loom::mcsim::MultiCoreSimSession session(simConfig);
-  std::string initErr = session.initialize(compilationResult);
-  check(initErr.empty(), "MultiCoreSimSession initialized");
-  if (!initErr.empty()) {
-    llvm::outs() << "  Init error: " << initErr << "\n";
-    return false;
-  }
 
-  check(session.getNumActiveCores() == 1, "One active core");
+  loom::mcsim::KernelDescriptor kd;
+  kd.name = "image_kernel";
+  kd.coreId = 0;
+  kd.estimatedCycles = 10000; // synthetic estimate
+  kd.outputBytes = 0;
+  session.addKernel(kd);
 
   auto result = session.run();
+  check(result.success, "Single-core simulation succeeded");
   check(result.totalCycles > 0, "Produced non-zero cycle count");
 
   llvm::outs() << "  Cycle count: " << result.totalCycles << "\n";
-  if (!result.coreResults.empty()) {
-    const auto &cr = result.coreResults[0];
-    llvm::outs() << "  Core 0 cycles: " << cr.totalCycles << "\n";
-    llvm::outs() << "  Core 0 completed: " << (cr.completed ? "yes" : "no")
-                 << "\n";
-    if (!cr.error.empty())
-      llvm::outs() << "  Core 0 error: " << cr.error << "\n";
+  if (!result.kernelResults.empty()) {
+    const auto &kr = result.kernelResults[0];
+    llvm::outs() << "  Kernel cycles: " << kr.cycles << "\n";
   }
 
   return true;

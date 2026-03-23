@@ -1,6 +1,7 @@
-#include "loom/SystemCompiler/BendersDriver.h"
+#include "loom/SystemCompiler/BendersHelpers.h"
 
 #include <algorithm>
+#include <map>
 #include <numeric>
 
 namespace loom {
@@ -140,7 +141,7 @@ assembleResult(const std::vector<L2Result> &l2Results,
     const auto &l2r = l2Results[i];
     const auto &l2a = l2Assignments[i];
 
-    CoreResult cr;
+    TapestryCoreResult cr;
     cr.coreInstanceName = l2a.coreInstanceName;
     cr.coreType = l2a.coreType;
     cr.adgModule = l2a.coreADG;

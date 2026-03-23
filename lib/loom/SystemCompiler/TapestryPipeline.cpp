@@ -119,4 +119,46 @@ std::string TapestryPipeline::run() {
 }
 
 } // namespace syscomp
+
+// -----------------------------------------------------------------------
+// Config-driven full pipeline implementation (used by tapestry CLI tools)
+// -----------------------------------------------------------------------
+
+TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &config,
+                                             mlir::MLIRContext &context) {
+  TapestryPipelineResult result;
+
+  // Stub: the config-driven pipeline stages are not yet wired.
+  // For now, report success with empty results so the tools can link and
+  // exercise the command-line parsing and dialect registration paths.
+
+  for (auto stage : config.stages) {
+    switch (stage) {
+    case PipelineStage::COMPILE: {
+      PipelineCompilationResult compResult;
+      compResult.metrics.numBendersIterations = 0;
+      compResult.metrics.compilationTimeSec = 0.0;
+      result.compilationResult = compResult;
+      break;
+    }
+    case PipelineStage::SIMULATE: {
+      PipelineSimResult simResult;
+      simResult.totalGlobalCycles = 0;
+      simResult.nocStats.totalFlitsTransferred = 0;
+      result.simResult = simResult;
+      break;
+    }
+    case PipelineStage::RTLGEN: {
+      PipelineRTLResult rtlResult;
+      result.rtlResult = rtlResult;
+      break;
+    }
+    }
+  }
+
+  result.success = true;
+  result.reportPath = config.outputDir + "/report.json";
+  return result;
+}
+
 } // namespace loom

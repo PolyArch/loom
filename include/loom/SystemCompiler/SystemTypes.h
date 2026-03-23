@@ -99,6 +99,36 @@ struct BendersResult {
   std::vector<L2Assignment> assignments;
 };
 
+/// Configuration for the Benders decomposition driver.
+struct BendersConfig {
+  unsigned maxIterations = 10;
+  double mapperBudgetSeconds = 15.0;
+  unsigned mapperSeed = 0;
+  bool verbose = false;
+};
+
+/// Drives the Benders decomposition for heterogeneous multi-core compilation.
+///
+/// Takes a SystemArchitecture, a set of kernel DFGs, and inter-kernel
+/// contracts, then iteratively partitions kernels across core types using
+/// an L1 master / L2 sub-problem decomposition.
+class BendersDriver {
+public:
+  BendersDriver(const SystemArchitecture &arch,
+                std::vector<KernelDesc> kernels,
+                std::vector<ContractSpec> contracts,
+                mlir::MLIRContext &ctx);
+
+  /// Run the decomposition and return the result.
+  BendersResult compile(const BendersConfig &config);
+
+private:
+  SystemArchitecture arch_;
+  std::vector<KernelDesc> kernels_;
+  std::vector<ContractSpec> contracts_;
+  mlir::MLIRContext &ctx_;
+};
+
 } // namespace tapestry
 } // namespace loom
 

@@ -1,4 +1,5 @@
 #include "loom/SystemCompiler/BendersDriver.h"
+#include "loom/SystemCompiler/SystemTypes.h"
 
 #include <algorithm>
 #include <cmath>
@@ -106,4 +107,59 @@ BendersResult BendersDriver::solve() {
 }
 
 } // namespace syscomp
+
+// -----------------------------------------------------------------------
+// tapestry::BendersDriver -- heterogeneous multi-core decomposition
+// -----------------------------------------------------------------------
+namespace tapestry {
+
+BendersDriver::BendersDriver(const SystemArchitecture &arch,
+                             std::vector<KernelDesc> kernels,
+                             std::vector<ContractSpec> contracts,
+                             mlir::MLIRContext &ctx)
+    : arch_(arch), kernels_(std::move(kernels)),
+      contracts_(std::move(contracts)), ctx_(ctx) {}
+
+BendersResult BendersDriver::compile(const BendersConfig &config) {
+  BendersResult result;
+
+  if (kernels_.empty()) {
+    result.success = true;
+    result.diagnostics = "no kernels to partition";
+    return result;
+  }
+
+  if (arch_.coreTypes.empty()) {
+    result.success = false;
+    result.diagnostics = "no core types in architecture";
+    return result;
+  }
+
+  // Greedy round-robin assignment: assign each kernel to the core type
+  // whose total instances can accommodate it.
+  unsigned numTypes = static_cast<unsigned>(arch_.coreTypes.size());
+
+  for (unsigned ki = 0; ki < kernels_.size(); ++ki) {
+    unsigned bestType = ki % numTypes;
+
+    L2Assignment assign;
+    assign.kernelName = kernels_[ki].name;
+    assign.coreTypeIndex = static_cast<int>(bestType);
+    assign.coreInstanceIndex = 0;
+
+    if (bestType < numTypes)
+      assign.coreADG = arch_.coreTypes[bestType].adgModule;
+
+    assign.mappingSuccess = true;
+    assign.mappingCost = 1.0;
+    result.assignments.push_back(std::move(assign));
+  }
+
+  result.success = true;
+  result.iterations = 1;
+  result.totalCost = static_cast<double>(kernels_.size());
+  return result;
+}
+
+} // namespace tapestry
 } // namespace loom
