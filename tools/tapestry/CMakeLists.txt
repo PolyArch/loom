@@ -1,42 +1,37 @@
-add_executable(tapestry-e2e-test
-  tapestry_e2e_test.cpp
+add_executable(tapestry_sim_test
+  tapestry_sim_test.cpp
 )
 
-target_include_directories(tapestry-e2e-test PRIVATE
+target_include_directories(tapestry_sim_test PRIVATE
   ${LOOM_INCLUDE_DIR}
   ${CMAKE_BINARY_DIR}/include
 )
 
-llvm_map_components_to_libnames(LLVM_LIBS
+llvm_map_components_to_libnames(TAPESTRY_SIM_TEST_LLVM_LIBS
   core support
 )
 
-target_link_libraries(tapestry-e2e-test PRIVATE
-  LoomSystemCompiler
-  LoomADG
+target_link_libraries(tapestry_sim_test PRIVATE
+  LoomMultiCoreSim
+  LoomSimulator
   LoomMapper
-  LoomConversion
-  LoomDataflow
+  LoomADG
   LoomFabric
+  LoomDataflow
 
   CIRCTHandshake
 
-  MLIRArithDialect
-  MLIRControlFlowDialect
-  MLIRControlFlowToSCF
-  MLIRFuncDialect
-  MLIRMathDialect
-  MLIRMemRefDialect
-  MLIRSCFDialect
   MLIRIR
   MLIRParser
-  MLIRPass
   MLIRSupport
-  MLIRTransforms
+  MLIRArithDialect
+  MLIRMathDialect
+  MLIRMemRefDialect
+  MLIRFuncDialect
 
-  ${LLVM_LIBS}
+  ${TAPESTRY_SIM_TEST_LLVM_LIBS}
 )
 
-set_target_properties(tapestry-e2e-test PROPERTIES
+set_target_properties(tapestry_sim_test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )

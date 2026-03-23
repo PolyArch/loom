@@ -1,385 +1,242 @@
 #include "loom/MultiCoreSim/MultiCoreSimSession.h"
 
 #include <algorithm>
-#include <cassert>
-#include <cmath>
 #include <sstream>
 
 namespace loom {
 namespace mcsim {
-
-//===----------------------------------------------------------------------===//
-// Construction
-//===----------------------------------------------------------------------===//
 
 MultiCoreSimSession::MultiCoreSimSession(const MultiCoreSimConfig &config)
     : config_(config) {}
 
 MultiCoreSimSession::~MultiCoreSimSession() = default;
 
-//===----------------------------------------------------------------------===//
-// Build phase
-//===----------------------------------------------------------------------===//
+std::string MultiCoreSimSession::initialize(
+    const TapestryCompilationResult &compilationResult) {
+  coreWrappers_.clear();
+  coreIdToIndex_.clear();
+  transferContracts_.clear();
 
-std::string MultiCoreSimSession::addCore(const CoreSpec &spec) {
-  if (coreNameToIdx_.count(spec.name))
-    return "duplicate core name: '" + spec.name + "'";
+  // Determine mesh dimensions from the NoC schedule.
+  unsigned meshRows = compilationResult.nocSchedule.meshRows;
+  unsigned meshCols = compilationResult.nocSchedule.meshCols;
 
-  unsigned idx = static_cast<unsigned>(cores_.size());
-  auto wrapper =
-      std::make_unique<CoreSimWrapper>(spec.name, idx, spec.coreType);
+  // If the schedule doesn't specify dimensions, derive from core count.
+  unsigned numCores = static_cast<unsigned>(compilationResult.cores.size());
+  if (meshRows == 0 || meshCols == 0) {
+    meshRows = 1;
+    meshCols = std::max(numCores, 1u);
+  }
 
-  std::string err = wrapper->build(spec.model, spec.configBlob);
-  if (!err.empty())
-    return err;
+  // Create the NoC model.
+  nocModel_ = std::make_unique<NoCSimModel>(
+      meshRows, meshCols, config_.nocPerHopLatency);
+  nocModel_->configure(compilationResult.nocSchedule);
 
-  coreNameToIdx_[spec.name] = idx;
-  cores_.push_back(std::move(wrapper));
+  // Create the memory hierarchy model.
+  MemoryHierarchyConfig memConfig = config_.memConfig;
+  memConfig.numCores = numCores;
+  memModel_ = std::make_unique<MemoryHierarchyModel>(memConfig);
+
+  // Collect cross-core transfer contracts.
+  for (const auto &entry : compilationResult.nocSchedule.entries) {
+    transferContracts_.push_back(entry.contract);
+  }
+
+  // Create a CoreSimWrapper for each core that has mapped kernels.
+  for (const auto &coreResult : compilationResult.cores) {
+    if (coreResult.kernels.empty())
+      continue;
+
+    sim::SimConfig coreConfig = config_.perCoreSimConfig;
+    coreConfig.coreId = static_cast<uint16_t>(coreResult.coreId);
+
+    auto wrapper = std::make_unique<CoreSimWrapper>(coreResult.coreId,
+                                                     coreConfig);
+
+    // Initialize with the first kernel (multi-kernel scheduling is
+    // future work; for now each core runs its first kernel).
+    const CoreKernelResult &kernel = coreResult.kernels[0];
+    std::string err = wrapper->initialize(kernel);
+    if (!err.empty())
+      return err;
+
+    // Bind synthesized inputs.
+    err = wrapper->bindSynthesizedInputs(kernel.synthSetup);
+    if (!err.empty())
+      return err;
+
+    unsigned idx = static_cast<unsigned>(coreWrappers_.size());
+    coreIdToIndex_[coreResult.coreId] = idx;
+    coreWrappers_.push_back(std::move(wrapper));
+  }
+
   return {};
 }
-
-std::string MultiCoreSimSession::addInterCoreRoute(const InterCoreRoute &route) {
-  // Validate that producer and consumer cores exist.
-  if (!coreNameToIdx_.count(route.producerCoreName))
-    return "unknown producer core: '" + route.producerCoreName + "'";
-  if (!coreNameToIdx_.count(route.consumerCoreName))
-    return "unknown consumer core: '" + route.consumerCoreName + "'";
-
-  routes_.push_back(route);
-
-  // Register NoC port mappings on the producer and consumer cores.
-  unsigned prodIdx = coreNameToIdx_[route.producerCoreName];
-  unsigned consIdx = coreNameToIdx_[route.consumerCoreName];
-
-  cores_[prodIdx]->mapBoundaryToNoCPort(route.producerNoCPortIdx,
-                                        route.producerNoCPortIdx,
-                                        /*isOutput=*/true);
-  cores_[consIdx]->mapBoundaryToNoCPort(route.consumerNoCPortIdx,
-                                        route.consumerNoCPortIdx,
-                                        /*isOutput=*/false);
-
-  return {};
-}
-
-//===----------------------------------------------------------------------===//
-// Input
-//===----------------------------------------------------------------------===//
-
-std::string MultiCoreSimSession::setCoreInput(const std::string &coreName,
-                                              unsigned portIdx,
-                                              const std::vector<uint64_t> &data) {
-  CoreSimWrapper *core = findCore(coreName);
-  if (!core)
-    return "unknown core: '" + coreName + "'";
-  return core->setInput(portIdx, data);
-}
-
-std::string MultiCoreSimSession::setCoreExtMemory(const std::string &coreName,
-                                                  unsigned regionId,
-                                                  uint8_t *data,
-                                                  size_t sizeBytes) {
-  CoreSimWrapper *core = findCore(coreName);
-  if (!core)
-    return "unknown core: '" + coreName + "'";
-  return core->setExtMemoryBacking(regionId, data, sizeBytes);
-}
-
-//===----------------------------------------------------------------------===//
-// Execution
-//===----------------------------------------------------------------------===//
 
 MultiCoreSimResult MultiCoreSimSession::run() {
-  if (cores_.empty()) {
-    MultiCoreSimResult result;
-    result.success = false;
-    result.errorMessage = "no cores added to simulation";
+  MultiCoreSimResult result;
+  globalCycle_ = 0;
+
+  if (coreWrappers_.empty()) {
+    result.error = "no active cores to simulate";
+    result.allCoresCompleted = false;
     return result;
   }
 
-  uint64_t globalCycle = 0;
-  bool allComplete = false;
+  // For single-core mode, just run to completion directly.
+  // This avoids the per-cycle stepping overhead.
+  if (coreWrappers_.size() == 1 && transferContracts_.empty()) {
+    auto &wrapper = coreWrappers_[0];
+    auto [simResult, simErr] = wrapper->runToCompletion();
 
-  while (!allComplete && globalCycle < config_.maxGlobalCycles) {
-    // Advance all cores by one cycle.
-    stepAllCores();
+    CoreSimResult coreRes;
+    coreRes.coreId = wrapper->getCoreId();
+    coreRes.simResult = simResult;
+    coreRes.totalCycles = simResult.totalCycles;
+    coreRes.completed = simResult.success;
+    coreRes.error = simErr;
+    result.coreResults.push_back(coreRes);
 
-    // Process inter-core data transfers through the NoC model.
-    processInterCoreTransfers(globalCycle);
+    result.totalCycles = simResult.totalCycles;
+    result.allCoresCompleted = simResult.success;
+    if (!simResult.success)
+      result.error = simErr;
 
-    // Process DMA requests through the memory hierarchy.
-    if (config_.enableMemoryHierarchy) {
-      processMemoryHierarchy(globalCycle);
-    }
+    if (memModel_)
+      result.memStats = memModel_->getStats();
+    if (nocModel_)
+      result.nocStats = nocModel_->getStats();
 
-    // Check if all cores have completed.
-    allComplete = allCoresComplete();
-
-    // Invoke the global cycle callback if registered.
-    if (globalCycleCallback_) {
-      auto states = collectCoreStates(globalCycle);
-      globalCycleCallback_(globalCycle, states);
-    }
-
-    ++globalCycle;
+    return result;
   }
 
-  // Compute final link utilization.
-  if (globalCycle > 0) {
-    computeLinkUtilization(globalCycle);
+  // Multi-core lockstep simulation.
+  // Run each core independently to completion (since per-cycle stepping
+  // requires deeper integration with the CycleKernel). The NoC and
+  // memory models track cycle-level statistics.
+  for (auto &wrapper : coreWrappers_) {
+    auto [simResult, simErr] = wrapper->runToCompletion();
+
+    CoreSimResult coreRes;
+    coreRes.coreId = wrapper->getCoreId();
+    coreRes.simResult = simResult;
+    coreRes.totalCycles = simResult.totalCycles;
+    coreRes.completed = simResult.success;
+    coreRes.error = simErr;
+    result.coreResults.push_back(coreRes);
   }
 
-  return assembleResult(globalCycle);
-}
+  // Process NoC transfers after core execution.
+  processNoCInjections();
 
-//===----------------------------------------------------------------------===//
-// Output
-//===----------------------------------------------------------------------===//
-
-std::vector<uint64_t>
-MultiCoreSimSession::getCoreOutput(const std::string &coreName,
-                                   unsigned portIdx) const {
-  const CoreSimWrapper *core = findCore(coreName);
-  if (!core)
-    return {};
-  return core->getOutput(portIdx);
-}
-
-//===----------------------------------------------------------------------===//
-// Callback
-//===----------------------------------------------------------------------===//
-
-void MultiCoreSimSession::setGlobalCycleCallback(GlobalCycleCallback cb) {
-  globalCycleCallback_ = std::move(cb);
-}
-
-//===----------------------------------------------------------------------===//
-// Private: core lookup
-//===----------------------------------------------------------------------===//
-
-CoreSimWrapper *MultiCoreSimSession::findCore(const std::string &name) {
-  auto it = coreNameToIdx_.find(name);
-  if (it == coreNameToIdx_.end())
-    return nullptr;
-  return cores_[it->second].get();
-}
-
-const CoreSimWrapper *
-MultiCoreSimSession::findCore(const std::string &name) const {
-  auto it = coreNameToIdx_.find(name);
-  if (it == coreNameToIdx_.end())
-    return nullptr;
-  return cores_[it->second].get();
-}
-
-//===----------------------------------------------------------------------===//
-// Private: per-cycle stepping
-//===----------------------------------------------------------------------===//
-
-void MultiCoreSimSession::stepAllCores() {
-  for (auto &core : cores_) {
-    if (core->getState() != CoreState::COMPLETED &&
-        core->getState() != CoreState::ERROR) {
-      core->stepCycle();
-    }
-  }
-}
-
-//===----------------------------------------------------------------------===//
-// Private: inter-core transfer processing
-//===----------------------------------------------------------------------===//
-
-void MultiCoreSimSession::processInterCoreTransfers(uint64_t globalCycle) {
-  // Detect new outgoing data from producer cores and create transfers.
-  for (const auto &route : routes_) {
-    unsigned prodIdx = coreNameToIdx_[route.producerCoreName];
-    CoreSimWrapper *producer = cores_[prodIdx].get();
-
-    if (producer->hasOutgoingData(route.producerNoCPortIdx)) {
-      auto data = producer->consumeOutgoingData(route.producerNoCPortIdx);
-      if (!data.empty()) {
-        PendingTransfer transfer;
-        transfer.contractEdgeName = route.contractEdgeName;
-        transfer.srcCoreName = route.producerCoreName;
-        transfer.dstCoreName = route.consumerCoreName;
-        transfer.srcCoreIdx = route.producerCoreIdx;
-        transfer.dstCoreIdx = route.consumerCoreIdx;
-        transfer.data = std::move(data);
-        transfer.startCycle = globalCycle;
-        transfer.totalLatencyCycles = route.transferLatencyCycles;
-        transfer.remainingCycles = route.transferLatencyCycles;
-        transfer.dstNoCPortIdx = route.consumerNoCPortIdx;
-
-        transferStats_.totalTransfersInitiated++;
-        transferStats_.totalFlitsTransferred +=
-            static_cast<uint64_t>(transfer.data.size());
-
-        inFlightTransfers_.push_back(std::move(transfer));
-      }
-    }
+  // Advance NoC model until all flits are delivered.
+  unsigned maxNoCCycles = 10000;
+  unsigned nocCycles = 0;
+  while (!nocModel_->isIdle() && nocCycles < maxNoCCycles) {
+    nocModel_->stepOneCycle();
+    processNoCDeliveries();
+    ++nocCycles;
   }
 
-  // Advance in-flight transfers and deliver completed ones.
-  auto it = inFlightTransfers_.begin();
-  while (it != inFlightTransfers_.end()) {
-    if (it->remainingCycles > 0) {
-      --it->remainingCycles;
-      transferStats_.totalTransferCycles++;
-    }
-
-    if (it->remainingCycles == 0) {
-      // Deliver data to the destination core.
-      unsigned dstIdx = coreNameToIdx_[it->dstCoreName];
-      CoreSimWrapper *consumer = cores_[dstIdx].get();
-      consumer->injectIncomingData(it->dstNoCPortIdx, it->data);
-      consumer->clearStall();
-
-      transferStats_.totalTransfersCompleted++;
-      it = inFlightTransfers_.erase(it);
-    } else {
-      ++it;
-    }
+  // Compute global cycle count as max across all cores plus NoC.
+  uint64_t maxCoreCycles = 0;
+  bool allDone = true;
+  for (const auto &coreRes : result.coreResults) {
+    maxCoreCycles = std::max(maxCoreCycles, coreRes.totalCycles);
+    if (!coreRes.completed)
+      allDone = false;
   }
-}
+  result.totalCycles = maxCoreCycles + nocCycles;
+  result.allCoresCompleted = allDone;
 
-//===----------------------------------------------------------------------===//
-// Private: memory hierarchy processing
-//===----------------------------------------------------------------------===//
-
-void MultiCoreSimSession::processMemoryHierarchy(uint64_t globalCycle) {
-  for (auto &core : cores_) {
-    while (core->hasPendingDMA()) {
-      DMARequest req = core->dequeueDMA();
-      memStats_.dmaTotalBytes += req.sizeBytes;
-
-      // Model memory access latency based on DMA type.
-      DMAResponse response;
-      response.request = req;
-      response.completionCycle =
-          globalCycle + config_.dmaLatencyOverheadCycles;
-
-      if (req.type == DMARequest::READ) {
-        memStats_.dramReads++;
-        response.readData.resize(req.sizeBytes, 0);
-      } else {
-        memStats_.dramWrites++;
-      }
-
-      memStats_.dmaTotalCycles += config_.dmaLatencyOverheadCycles;
-      core->completeDMA(response);
-    }
-  }
-}
-
-//===----------------------------------------------------------------------===//
-// Private: completion check
-//===----------------------------------------------------------------------===//
-
-bool MultiCoreSimSession::allCoresComplete() const {
-  for (const auto &core : cores_) {
-    if (!core->isComplete())
-      return false;
-  }
-  return true;
-}
-
-//===----------------------------------------------------------------------===//
-// Private: state collection
-//===----------------------------------------------------------------------===//
-
-std::vector<CoreSimResultEntry>
-MultiCoreSimSession::collectCoreStates(uint64_t globalCycle) const {
-  std::vector<CoreSimResultEntry> states;
-  states.reserve(cores_.size());
-
-  for (const auto &core : cores_) {
-    CoreSimResultEntry entry;
-    entry.coreName = core->getCoreName();
-    entry.coreType = core->getCoreType();
-    entry.coreIdx = core->getCoreIdx();
-    entry.activeCycles = core->getActiveCycles();
-    entry.stallCycles = core->getStallCycles();
-    entry.idleCycles = core->getIdleCycles();
-    entry.utilization = (globalCycle > 0)
-                            ? static_cast<double>(core->getActiveCycles()) /
-                                  static_cast<double>(globalCycle)
-                            : 0.0;
-    states.push_back(std::move(entry));
-  }
-
-  return states;
-}
-
-//===----------------------------------------------------------------------===//
-// Private: result assembly
-//===----------------------------------------------------------------------===//
-
-MultiCoreSimResult
-MultiCoreSimSession::assembleResult(uint64_t totalCycles) const {
-  MultiCoreSimResult result;
-  result.totalGlobalCycles = totalCycles;
-
-  // Determine success: all cores must have completed.
-  result.success = allCoresComplete();
-  if (!result.success && totalCycles >= config_.maxGlobalCycles) {
-    result.errorMessage = "simulation timed out after " +
-                          std::to_string(config_.maxGlobalCycles) +
-                          " global cycles";
-  }
-
-  // Collect per-core results.
-  result.coreResults.reserve(cores_.size());
-  for (const auto &core : cores_) {
-    CoreSimResultEntry entry;
-    entry.coreName = core->getCoreName();
-    entry.coreType = core->getCoreType();
-    entry.coreIdx = core->getCoreIdx();
-    entry.activeCycles = core->getActiveCycles();
-    entry.stallCycles = core->getStallCycles();
-    entry.idleCycles = core->getIdleCycles();
-    entry.utilization = (totalCycles > 0)
-                            ? static_cast<double>(core->getActiveCycles()) /
-                                  static_cast<double>(totalCycles)
-                            : 0.0;
-    entry.perCoreResult = core->getSimResult();
-    result.coreResults.push_back(std::move(entry));
-  }
-
-  // NoC statistics.
-  result.nocStats.totalFlitsTransferred = transferStats_.totalFlitsTransferred;
-  result.nocStats.totalTransferCycles = transferStats_.totalTransferCycles;
-  result.nocStats.avgLinkUtilization = transferStats_.avgLinkUtilization;
-  result.nocStats.maxLinkUtilization = transferStats_.maxLinkUtilization;
-  result.nocStats.contentionStallCycles = transferStats_.contentionStallCycles;
-
-  // Memory statistics.
-  result.memStats = memStats_;
+  if (memModel_)
+    result.memStats = memModel_->getStats();
+  if (nocModel_)
+    result.nocStats = nocModel_->getStats();
 
   return result;
 }
 
-//===----------------------------------------------------------------------===//
-// Private: link utilization
-//===----------------------------------------------------------------------===//
+unsigned MultiCoreSimSession::getNumActiveCores() const {
+  return static_cast<unsigned>(coreWrappers_.size());
+}
 
-void MultiCoreSimSession::computeLinkUtilization(uint64_t totalCycles) {
-  if (linkStates_.empty())
-    return;
+const CoreSimWrapper *
+MultiCoreSimSession::getCoreWrapper(unsigned coreId) const {
+  auto it = coreIdToIndex_.find(coreId);
+  if (it == coreIdToIndex_.end())
+    return nullptr;
+  return coreWrappers_[it->second].get();
+}
 
-  double maxUtil = 0.0;
-  double sumUtil = 0.0;
+const NoCSimModel *MultiCoreSimSession::getNoCModel() const {
+  return nocModel_.get();
+}
 
-  for (const auto &link : linkStates_) {
-    double util = (totalCycles > 0)
-                      ? static_cast<double>(link.activeCycles) /
-                            static_cast<double>(totalCycles)
-                      : 0.0;
-    sumUtil += util;
-    maxUtil = std::max(maxUtil, util);
+const MemoryHierarchyModel *MultiCoreSimSession::getMemoryModel() const {
+  return memModel_.get();
+}
+
+void MultiCoreSimSession::processNoCInjections() {
+  // For each cross-core contract, extract output from source core and
+  // inject flits into the NoC.
+  for (const auto &contract : transferContracts_) {
+    auto srcIt = coreIdToIndex_.find(contract.srcCoreId);
+    if (srcIt == coreIdToIndex_.end())
+      continue;
+
+    const auto &srcWrapper = coreWrappers_[srcIt->second];
+    std::vector<uint64_t> outputData =
+        srcWrapper->extractOutput(contract.srcOutputPort);
+
+    // Create flits from the output data.
+    unsigned totalFlits = static_cast<unsigned>(outputData.size());
+    if (totalFlits == 0)
+      totalFlits = contract.flitCount;
+
+    for (unsigned flitIdx = 0; flitIdx < outputData.size(); ++flitIdx) {
+      Flit flit;
+      flit.srcCoreId = contract.srcCoreId;
+      flit.dstCoreId = contract.dstCoreId;
+      flit.channelId = contract.channelId;
+      flit.data = outputData[flitIdx];
+      flit.tag = 0;
+      flit.hasTag = false;
+      flit.injectionCycle = nocModel_->getCurrentCycle();
+      flit.flitIndex = flitIdx;
+      flit.totalFlits = totalFlits;
+      flit.isHead = (flitIdx == 0);
+      flit.isTail = (flitIdx + 1 == totalFlits);
+      nocModel_->injectFlit(flit);
+    }
   }
+}
 
-  transferStats_.avgLinkUtilization =
-      linkStates_.empty() ? 0.0 : sumUtil / static_cast<double>(linkStates_.size());
-  transferStats_.maxLinkUtilization = maxUtil;
+void MultiCoreSimSession::processNoCDeliveries() {
+  // Deliver arrived flits to destination cores.
+  for (const auto &contract : transferContracts_) {
+    if (!nocModel_->hasArrivedFlits(contract.dstCoreId))
+      continue;
+
+    auto dstIt = coreIdToIndex_.find(contract.dstCoreId);
+    if (dstIt == coreIdToIndex_.end())
+      continue;
+
+    auto flits = nocModel_->drainArrivedFlits(contract.dstCoreId);
+    for (const auto &flit : flits) {
+      coreWrappers_[dstIt->second]->injectToken(
+          contract.dstInputPort, flit.data, flit.tag, flit.hasTag);
+    }
+  }
+}
+
+bool MultiCoreSimSession::allCoresDone() const {
+  for (const auto &wrapper : coreWrappers_) {
+    if (!wrapper->isDone())
+      return false;
+  }
+  return true;
 }
 
 } // namespace mcsim

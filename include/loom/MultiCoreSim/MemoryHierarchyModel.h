@@ -1,104 +1,41 @@
 #ifndef LOOM_MULTICORESIM_MEMORYHIERARCHYMODEL_H
 #define LOOM_MULTICORESIM_MEMORYHIERARCHYMODEL_H
 
-#include "loom/MultiCoreSim/DMAEngine.h"
-#include "loom/MultiCoreSim/DRAMModel.h"
-#include "loom/MultiCoreSim/L2BankModel.h"
-#include "loom/MultiCoreSim/SPMModel.h"
+#include "loom/MultiCoreSim/TapestryTypes.h"
 
 #include <cstdint>
-#include <functional>
-#include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace loom {
 namespace mcsim {
 
-//===----------------------------------------------------------------------===//
-// Memory Hierarchy Configuration
-//===----------------------------------------------------------------------===//
-
-/// Configuration parameters for the entire memory hierarchy.
+// Configuration for the memory hierarchy model.
 struct MemoryHierarchyConfig {
-  /// Number of cores in the system.
+  uint64_t spmSizeBytes = 64 * 1024;   // 64 KB per-core SPM
+  unsigned spmLatencyCycles = 1;
+  uint64_t l2SizeBytes = 512 * 1024;   // 512 KB shared L2
+  unsigned l2LatencyCycles = 10;
+  unsigned dramLatencyCycles = 100;
   unsigned numCores = 1;
-
-  /// Per-core SPM size in bytes.
-  uint64_t spmSizeBytes = 4096;
-
-  /// SPM access latency in cycles (typically 1 for local core).
-  unsigned spmAccessLatency = 1;
-
-  /// Total shared L2 size in bytes.
-  uint64_t l2SizeBytes = 262144; // 256KB
-
-  /// Number of L2 banks.
-  unsigned l2NumBanks = 4;
-
-  /// L2 bank access latency in cycles (excluding NoC).
-  unsigned l2BankAccessLatency = 4;
-
-  /// L2 bank width in bytes (interleave granularity).
-  unsigned l2BankWidthBytes = 32;
-
-  /// External DRAM size in bytes.
-  uint64_t dramSizeBytes = 1ULL << 30; // 1GB
-
-  /// DRAM access latency in cycles.
-  unsigned dramAccessLatency = 100;
-
-  /// DRAM bandwidth in bytes per cycle.
-  unsigned dramBandwidthBytesPerCycle = 16;
-
-  /// Maximum concurrent DMA operations per core.
-  unsigned dmaMaxInflight = 4;
-
-  /// DMA setup latency in cycles.
-  unsigned dmaSetupLatency = 5;
-
-  /// DMA transfer bandwidth in bytes per cycle.
-  unsigned dmaTransferBandwidthBytesPerCycle = 16;
 };
 
-//===----------------------------------------------------------------------===//
-// Memory Access Result
-//===----------------------------------------------------------------------===//
-
-/// Result of a memory access operation.
-struct MemoryAccessResult {
-  bool hit = false;
-  unsigned latency = 0;
+// Represents a pending memory request in the hierarchy.
+struct MemoryHierarchyRequest {
   uint64_t requestId = 0;
+  unsigned coreId = 0;
+  uint64_t address = 0;
+  uint64_t data = 0;
+  unsigned byteWidth = 0;
+  bool isStore = false;
+  uint64_t issueCycle = 0;
+  uint64_t completionCycle = 0;
 };
 
-//===----------------------------------------------------------------------===//
-// Memory Hierarchy Statistics
-//===----------------------------------------------------------------------===//
-
-/// Aggregate statistics for the memory hierarchy.
-struct MemStats {
-  uint64_t spmReads = 0;
-  uint64_t spmWrites = 0;
-  uint64_t l2Reads = 0;
-  uint64_t l2Writes = 0;
-  uint64_t l2BankConflicts = 0;
-  uint64_t dramReads = 0;
-  uint64_t dramWrites = 0;
-  uint64_t dmaOpsSubmitted = 0;
-  uint64_t dmaOpsCompleted = 0;
-  uint64_t dmaTotalBytesTransferred = 0;
-  uint64_t dmaTotalCycles = 0;
-  double dmaOverlapRatio = 0.0;
-};
-
-//===----------------------------------------------------------------------===//
-// Memory Hierarchy Model
-//===----------------------------------------------------------------------===//
-
-/// Top-level memory hierarchy model integrating SPM, L2, DMA, and DRAM.
-///
-/// Routes memory accesses to the correct subsystem and orchestrates
-/// per-cycle advancement of all memory components.
+// Models a two-level memory hierarchy: per-core SPM + shared L2 + DRAM.
+// The SPM is modeled as a directly-mapped region (address-based),
+// and the L2 is a simple capacity-based model.
 class MemoryHierarchyModel {
 public:
   explicit MemoryHierarchyModel(const MemoryHierarchyConfig &config);
@@ -107,88 +44,36 @@ public:
   MemoryHierarchyModel(const MemoryHierarchyModel &) = delete;
   MemoryHierarchyModel &operator=(const MemoryHierarchyModel &) = delete;
 
-  // --- Initialization ---
+  // Issue a memory request. Returns the estimated completion cycle.
+  uint64_t issueRequest(unsigned coreId, uint64_t address, unsigned byteWidth,
+                        bool isStore, uint64_t currentCycle);
 
-  /// Initialize per-core SPM contents.
-  void initializeSPM(unsigned coreId, const std::vector<uint8_t> &data);
+  // Advance the model by one cycle.
+  void stepOneCycle();
 
-  /// Initialize shared L2 contents (distributed across banks).
-  void initializeL2(const std::vector<uint8_t> &data);
+  // Get the current cycle.
+  uint64_t getCurrentCycle() const { return currentCycle_; }
 
-  /// Initialize DRAM contents at a given base address.
-  void initializeDRAM(uint64_t baseAddr, const std::vector<uint8_t> &data);
+  // Gather statistics.
+  MemoryHierarchyStats getStats() const;
 
-  // --- SPM access (single-cycle, local core only) ---
-
-  uint64_t spmRead(unsigned coreId, uint64_t offset, unsigned sizeBytes);
-  void spmWrite(unsigned coreId, uint64_t offset, uint64_t data,
-                unsigned sizeBytes);
-
-  // --- L2 access (multi-cycle, banked) ---
-
-  MemoryAccessResult l2Read(unsigned requestingCoreId, uint64_t offset,
-                            unsigned sizeBytes);
-  MemoryAccessResult l2Write(unsigned requestingCoreId, uint64_t offset,
-                             uint64_t data, unsigned sizeBytes);
-
-  // --- DMA operations ---
-
-  /// Submit a DMA transfer. Returns the DMA operation ID (0 if no capacity).
-  uint64_t submitDMA(unsigned coreId, const DMAOpDescriptor &op);
-
-  /// Check if a DMA operation has completed.
-  bool isDMAComplete(unsigned coreId, uint64_t dmaId) const;
-
-  // --- Per-cycle update ---
-
-  /// Advance all memory hierarchy components by one cycle.
-  void tick(uint64_t globalCycle);
-
-  // --- Statistics ---
-
-  MemStats getStats() const;
-
-  // --- Accessors for sub-models ---
-
-  SPMModel &getSPM(unsigned coreId) { return spms_[coreId]; }
-  const SPMModel &getSPM(unsigned coreId) const { return spms_[coreId]; }
-
-  L2BankModel &getL2Bank(unsigned bankId) { return l2Banks_[bankId]; }
-  const L2BankModel &getL2Bank(unsigned bankId) const {
-    return l2Banks_[bankId];
-  }
-
-  DRAMModel &getDRAM() { return dram_; }
-  const DRAMModel &getDRAM() const { return dram_; }
-
-  const MemoryHierarchyConfig &getConfig() const { return config_; }
+  // Check if an address falls within the SPM range for a given core.
+  bool isInSpmRange(unsigned coreId, uint64_t address) const;
 
 private:
-  /// Decode an L2 address into bank index and bank-local offset.
-  std::pair<unsigned, uint64_t> decodeL2Address(uint64_t offset) const;
-
   MemoryHierarchyConfig config_;
-
-  /// Per-core scratchpad memories.
-  std::vector<SPMModel> spms_;
-
-  /// Shared L2 banks.
-  std::vector<L2BankModel> l2Banks_;
-
-  /// External DRAM.
-  DRAMModel dram_;
-
-  /// Per-core DMA engines.
-  std::vector<DMAEngine> dmaEngines_;
-
-  /// Current global cycle (updated in tick()).
   uint64_t currentCycle_ = 0;
+  uint64_t nextRequestId_ = 0;
 
-  /// Accumulated statistics.
-  uint64_t spmReadCount_ = 0;
-  uint64_t spmWriteCount_ = 0;
-  uint64_t l2ReadCount_ = 0;
-  uint64_t l2WriteCount_ = 0;
+  // Per-core SPM base addresses (each core has a distinct region).
+  std::vector<uint64_t> spmBaseAddresses_;
+
+  // Statistics counters.
+  uint64_t spmHits_ = 0;
+  uint64_t spmMisses_ = 0;
+  uint64_t l2Hits_ = 0;
+  uint64_t l2Misses_ = 0;
+  uint64_t dramAccesses_ = 0;
 };
 
 } // namespace mcsim
