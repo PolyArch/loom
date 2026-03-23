@@ -74,43 +74,205 @@ SpatialKernelPE buildSpatialKernelPE(ADGBuilder &builder,
                                      const std::string &prefix,
                                      unsigned numInputs = kDensePEInputs,
                                      unsigned numOutputs = kDensePEOutputs) {
+  // --- i32 arithmetic ---
   auto fuAdd = builder.defineBinaryFU(prefix + "_add", "arith.addi", "i32",
                                       "i32");
   auto fuSub = builder.defineBinaryFU(prefix + "_sub", "arith.subi", "i32",
                                       "i32");
   auto fuMul = builder.defineBinaryFU(prefix + "_mul", "arith.muli", "i32",
                                       "i32");
+  auto fuShli32 = builder.defineBinaryFU(prefix + "_shli32", "arith.shli",
+                                         "i32", "i32");
+  auto fuShrui32 = builder.defineBinaryFU(prefix + "_shrui32", "arith.shrui",
+                                          "i32", "i32");
+  auto fuAndi32 = builder.defineBinaryFU(prefix + "_andi32", "arith.andi",
+                                         "i32", "i32");
+  auto fuDivsi32 = builder.defineBinaryFU(prefix + "_divsi32", "arith.divsi",
+                                          "i32", "i32");
+  auto fuRemsi32 = builder.defineBinaryFU(prefix + "_remsi32", "arith.remsi",
+                                          "i32", "i32");
   auto fuCmp = builder.defineCmpiFU(prefix + "_cmp", "i32", "slt");
   auto fuSelect = builder.defineSelectFU(prefix + "_select", "i32");
-  auto fuConst = builder.defineConstantFU(prefix + "_const1", "i32",
-                                          "1 : i32");
-  auto fuConstIndex =
-      builder.defineConstantFU(prefix + "_const_index", "index", "0 : index");
+
+  // --- i64 arithmetic ---
+  auto fuAdd64 = builder.defineBinaryFU(prefix + "_add64", "arith.addi",
+                                        "i64", "i64");
+  auto fuMul64 = builder.defineBinaryFU(prefix + "_mul64", "arith.muli",
+                                        "i64", "i64");
+  auto fuShli64 = builder.defineBinaryFU(prefix + "_shli64", "arith.shli",
+                                         "i64", "i64");
+  auto fuShrui64 = builder.defineBinaryFU(prefix + "_shrui64", "arith.shrui",
+                                          "i64", "i64");
+  auto fuCmp64 = builder.defineCmpiFU(prefix + "_cmp64", "i64", "slt");
+
+  // --- i8 arithmetic ---
+  auto fuXori8 = builder.defineBinaryFU(prefix + "_xori8", "arith.xori",
+                                        "i8", "i8");
+
+  // --- index arithmetic ---
+  auto fuAddIndex = builder.defineBinaryFU(prefix + "_add_index", "arith.addi",
+                                           "index", "index");
+  auto fuMulIndex = builder.defineBinaryFU(prefix + "_mul_index", "arith.muli",
+                                           "index", "index");
+  auto fuDivuiIndex = builder.defineBinaryFU(
+      prefix + "_divui_index", "arith.divui", "index", "index");
+
+  // --- float arithmetic ---
+  auto fuAddf = builder.defineBinaryFU(prefix + "_addf", "arith.addf",
+                                       "f32", "f32");
+  auto fuSubf = builder.defineBinaryFU(prefix + "_subf", "arith.subf",
+                                       "f32", "f32");
+  auto fuMulf = builder.defineBinaryFU(prefix + "_mulf", "arith.mulf",
+                                       "f32", "f32");
+  auto fuDivf = builder.defineBinaryFU(prefix + "_divf", "arith.divf",
+                                       "f32", "f32");
+  auto fuNegf = builder.defineUnaryFU(prefix + "_negf", "arith.negf",
+                                      "f32", "f32");
+  auto fuCmpf = builder.defineCmpfFU(prefix + "_cmpf", "f32", "oeq");
+  auto fuSelectF32 = builder.defineSelectFU(prefix + "_select_f32", "f32");
+  auto fuSelectIndex =
+      builder.defineSelectFU(prefix + "_select_index", "index");
+  auto fuSelectI1 = builder.defineSelectFU(prefix + "_select_i1", "i1");
+
+  // --- math operations ---
+  auto fuAbsf = builder.defineUnaryFU(prefix + "_absf", "math.absf",
+                                      "f32", "f32");
+  auto fuCos = builder.defineUnaryFU(prefix + "_cos", "math.cos",
+                                     "f32", "f32");
+  auto fuSin = builder.defineUnaryFU(prefix + "_sin", "math.sin",
+                                     "f32", "f32");
+  auto fuExp = builder.defineUnaryFU(prefix + "_exp", "math.exp",
+                                     "f32", "f32");
+  auto fuFloor = builder.defineUnaryFU(prefix + "_floor", "math.floor",
+                                       "f32", "f32");
+  auto fuSqrt = builder.defineUnaryFU(prefix + "_sqrt", "math.sqrt",
+                                      "f32", "f32");
+  auto fuFma = builder.defineFUWithBody(
+      prefix + "_fma", {"f32", "f32", "f32"}, {"f32"},
+      "%0 = math.fma %arg0, %arg1, %arg2 : f32\nfabric.yield %0 : f32");
+
+  // --- type conversions ---
   auto fuIndexToI32 =
       builder.defineIndexCastFU(prefix + "_index_to_i32", "index", "i32");
   auto fuI32ToIndex =
       builder.defineIndexCastFU(prefix + "_i32_to_index", "i32", "index");
+  auto fuIndexToI64 =
+      builder.defineIndexCastFU(prefix + "_index_to_i64", "index", "i64");
+  auto fuI64ToIndex =
+      builder.defineIndexCastFU(prefix + "_i64_to_index", "i64", "index");
+  auto fuI8ToIndex =
+      builder.defineIndexCastFU(prefix + "_i8_to_index", "i8", "index");
+  auto fuExtsi32to64 = builder.defineUnaryFU(prefix + "_extsi_32_64",
+                                             "arith.extsi", "i32", "i64");
+  auto fuExtui32to64 = builder.defineUnaryFU(prefix + "_extui_32_64",
+                                             "arith.extui", "i32", "i64");
+  auto fuExtui1to32 = builder.defineUnaryFU(prefix + "_extui_1_32",
+                                            "arith.extui", "i1", "i32");
+  auto fuExtui8to32 = builder.defineUnaryFU(prefix + "_extui_8_32",
+                                            "arith.extui", "i8", "i32");
+  auto fuExtui8to64 = builder.defineUnaryFU(prefix + "_extui_8_64",
+                                            "arith.extui", "i8", "i64");
+  auto fuTrunci64to32 = builder.defineUnaryFU(prefix + "_trunci_64_32",
+                                              "arith.trunci", "i64", "i32");
+  auto fuSitofp = builder.defineUnaryFU(prefix + "_sitofp", "arith.sitofp",
+                                        "i32", "f32");
+  auto fuFptosi = builder.defineUnaryFU(prefix + "_fptosi", "arith.fptosi",
+                                        "f32", "i32");
+  auto fuUitofp = builder.defineUnaryFU(prefix + "_uitofp", "arith.uitofp",
+                                        "i32", "f32");
+
+  // --- constants ---
+  auto fuConst = builder.defineConstantFU(prefix + "_const1", "i32",
+                                          "1 : i32");
+  auto fuConstIndex =
+      builder.defineConstantFU(prefix + "_const_index", "index", "0 : index");
+  auto fuConstI64 =
+      builder.defineConstantFU(prefix + "_const_i64", "i64", "0 : i64");
+  auto fuConstF32 =
+      builder.defineConstantFU(prefix + "_const_f32", "f32",
+                               "0.000000e+00 : f32");
+  auto fuConstI1 =
+      builder.defineConstantFU(prefix + "_const_i1", "i1", "false");
+
+  // --- dataflow control ---
   auto fuStream = builder.defineStreamFU(prefix + "_stream");
   auto fuMux = builder.defineMuxFU(prefix + "_mux", "i32");
   auto fuMuxNone = builder.defineMuxFU(prefix + "_mux_none", "none");
+  auto fuMuxI64 = builder.defineMuxFU(prefix + "_mux_i64", "i64");
+  auto fuMuxF32 = builder.defineMuxFU(prefix + "_mux_f32", "f32");
+  auto fuMuxIndex = builder.defineMuxFU(prefix + "_mux_index", "index");
   auto fuJoin = builder.defineJoinFU(prefix + "_join", 4);
   auto fuGate = builder.defineGateFU(prefix + "_gate", "i32");
   auto fuGateIndex = builder.defineGateFU(prefix + "_gate_index", "index");
+  auto fuGateI64 = builder.defineGateFU(prefix + "_gate_i64", "i64");
+  auto fuGateF32 = builder.defineGateFU(prefix + "_gate_f32", "f32");
   auto fuCarry = builder.defineCarryFU(prefix + "_carry", "i32");
   auto fuCarryNone = builder.defineCarryFU(prefix + "_carry_none", "none");
+  auto fuCarryI64 = builder.defineCarryFU(prefix + "_carry_i64", "i64");
+  auto fuCarryF32 = builder.defineCarryFU(prefix + "_carry_f32", "f32");
+  auto fuCarryIndex = builder.defineCarryFU(prefix + "_carry_index", "index");
   auto fuCondBr = builder.defineCondBrFU(prefix + "_cond_br", "i32");
   auto fuCondBrNone = builder.defineCondBrFU(prefix + "_cond_br_none", "none");
+  auto fuCondBrI64 = builder.defineCondBrFU(prefix + "_cond_br_i64", "i64");
+  auto fuCondBrF32 = builder.defineCondBrFU(prefix + "_cond_br_f32", "f32");
+  auto fuCondBrIndex =
+      builder.defineCondBrFU(prefix + "_cond_br_index", "index");
+
+  // --- memory ---
   auto fuLoad = builder.defineLoadFU(prefix + "_load", "index", "i32");
   auto fuStore = builder.defineStoreFU(prefix + "_store", "index", "i32");
+  auto fuLoadF32 = builder.defineLoadFU(prefix + "_load_f32", "index", "f32");
+  auto fuStoreF32 =
+      builder.defineStoreFU(prefix + "_store_f32", "index", "f32");
+  auto fuLoadI64 = builder.defineLoadFU(prefix + "_load_i64", "index", "i64");
+  auto fuStoreI64 =
+      builder.defineStoreFU(prefix + "_store_i64", "index", "i64");
+  auto fuLoadI8 = builder.defineLoadFU(prefix + "_load_i8", "index", "i8");
+  auto fuStoreI8 = builder.defineStoreFU(prefix + "_store_i8", "index", "i8");
+
+  // --- invariants ---
   auto fuInvariant = builder.defineInvariantFU(prefix + "_invariant", "i32");
+  auto fuInvariantI64 =
+      builder.defineInvariantFU(prefix + "_invariant_i64", "i64");
+  auto fuInvariantF32 =
+      builder.defineInvariantFU(prefix + "_invariant_f32", "f32");
+  auto fuInvariantIndex =
+      builder.defineInvariantFU(prefix + "_invariant_index", "index");
+  auto fuInvariantI1 =
+      builder.defineInvariantFU(prefix + "_invariant_i1", "i1");
 
   std::vector<FUHandle> fus = {
-      fuAdd,        fuSub,        fuMul,         fuCmp,
-      fuSelect,     fuConst,      fuConstIndex,  fuIndexToI32,
-      fuI32ToIndex, fuStream,     fuMux,         fuMuxNone,
-      fuJoin,       fuGate,       fuGateIndex,   fuCarry,
-      fuCarryNone,  fuCondBr,     fuCondBrNone,  fuLoad,
-      fuStore,      fuInvariant,
+      // i32 arithmetic
+      fuAdd, fuSub, fuMul, fuShli32, fuShrui32, fuAndi32, fuDivsi32,
+      fuRemsi32, fuCmp, fuSelect,
+      // i64 arithmetic
+      fuAdd64, fuMul64, fuShli64, fuShrui64, fuCmp64,
+      // i8 arithmetic
+      fuXori8,
+      // index arithmetic
+      fuAddIndex, fuMulIndex, fuDivuiIndex,
+      // float arithmetic + math
+      fuAddf, fuSubf, fuMulf, fuDivf, fuNegf, fuCmpf, fuSelectF32,
+      fuSelectIndex, fuSelectI1,
+      fuAbsf, fuCos, fuSin, fuExp, fuFloor, fuSqrt, fuFma,
+      // type conversions
+      fuIndexToI32, fuI32ToIndex, fuIndexToI64, fuI64ToIndex, fuI8ToIndex,
+      fuExtsi32to64, fuExtui32to64, fuExtui1to32, fuExtui8to32, fuExtui8to64,
+      fuTrunci64to32, fuSitofp, fuFptosi, fuUitofp,
+      // constants
+      fuConst, fuConstIndex, fuConstI64, fuConstF32, fuConstI1,
+      // dataflow control
+      fuStream, fuMux, fuMuxNone, fuMuxI64, fuMuxF32, fuMuxIndex,
+      fuJoin,
+      fuGate, fuGateIndex, fuGateI64, fuGateF32,
+      fuCarry, fuCarryNone, fuCarryI64, fuCarryF32, fuCarryIndex,
+      fuCondBr, fuCondBrNone, fuCondBrI64, fuCondBrF32, fuCondBrIndex,
+      // memory
+      fuLoad, fuStore, fuLoadF32, fuStoreF32, fuLoadI64, fuStoreI64,
+      fuLoadI8, fuStoreI8,
+      // invariants
+      fuInvariant, fuInvariantI64, fuInvariantF32, fuInvariantIndex,
+      fuInvariantI1,
   };
 
   auto pe = builder.defineSpatialPE(
@@ -237,10 +399,29 @@ void setExtMemStripLayout(ADGBuilder &builder,
   }
 }
 
+void wireExtMemToSidePorts(
+    ADGBuilder &builder, InstanceHandle mem,
+    const std::vector<PortRef> &ingressPorts,
+    const std::vector<PortRef> &egressPorts,
+    unsigned &ingressIdx, unsigned &egressIdx,
+    unsigned memOutputPorts, unsigned memInputPorts) {
+  for (unsigned outPort = 0; outPort < memOutputPorts; ++outPort) {
+    builder.connect(mem, outPort, ingressPorts[ingressIdx].instance,
+                    ingressPorts[ingressIdx].port);
+    ++ingressIdx;
+  }
+  for (unsigned inPort = 0; inPort < memInputPorts; ++inPort) {
+    builder.connect(egressPorts[egressIdx].instance,
+                    egressPorts[egressIdx].port, mem, 1 + inPort);
+    ++egressIdx;
+  }
+}
+
 void wireRoundRobinExtMemIngressEgress(
     ADGBuilder &builder, const MeshResult &mesh,
     const std::vector<InstanceHandle> &extMems, unsigned topLeftIngressCount,
-    unsigned bottomLeftEgressCount) {
+    unsigned bottomLeftEgressCount, unsigned memOutputPorts,
+    unsigned memInputPorts) {
   unsigned leftIngressIdx = 0;
   unsigned rightIngressIdx = topLeftIngressCount;
   unsigned leftEgressIdx = 0;
@@ -251,12 +432,12 @@ void wireRoundRobinExtMemIngressEgress(
     unsigned &ingressIdx = (memIdx % 2 == 0) ? leftIngressIdx : rightIngressIdx;
     unsigned &egressIdx = (memIdx % 2 == 0) ? leftEgressIdx : rightEgressIdx;
 
-    for (unsigned outPort = 0; outPort < 5; ++outPort) {
+    for (unsigned outPort = 0; outPort < memOutputPorts; ++outPort) {
       builder.connect(mem, outPort, mesh.ingressPorts[ingressIdx].instance,
                       mesh.ingressPorts[ingressIdx].port);
       ++ingressIdx;
     }
-    for (unsigned inPort = 0; inPort < 4; ++inPort) {
+    for (unsigned inPort = 0; inPort < memInputPorts; ++inPort) {
       builder.connect(mesh.egressPorts[egressIdx].instance,
                       mesh.egressPorts[egressIdx].port, mem, 1 + inPort);
       ++egressIdx;
@@ -596,23 +777,30 @@ void buildChessDomain(const std::string &moduleName,
   ADGBuilder builder(moduleName);
   auto computePE = buildSpatialKernelPE(builder, moduleName);
 
+  constexpr unsigned kLdPorts = 2;
+  constexpr unsigned kStPorts = 2;
+  const unsigned memOutputPorts = (kLdPorts > 0 ? 2 : 0) + (kStPorts > 0 ? 1 : 0);
+  const unsigned memInputPorts = (kLdPorts > 0 ? 1 : 0) + (kStPorts > 0 ? 2 : 0);
+
   ChessMeshOptions options;
   const unsigned leftIngressMems = (numExtMems + 1) / 2;
   const unsigned rightIngressMems = numExtMems / 2;
   const unsigned leftEgressMems = (numExtMems + 1) / 2;
   const unsigned rightEgressMems = numExtMems / 2;
-  options.topLeftExtraInputs = leftIngressMems * 5 + scalarInputs;
-  options.topRightExtraInputs = rightIngressMems * 5;
-  options.bottomLeftExtraOutputs = leftEgressMems * 4;
-  options.bottomRightExtraOutputs = rightEgressMems * 4 + scalarOutputs;
+  options.topLeftExtraInputs =
+      leftIngressMems * memOutputPorts + scalarInputs;
+  options.topRightExtraInputs = rightIngressMems * memOutputPorts;
+  options.bottomLeftExtraOutputs = leftEgressMems * memInputPorts;
+  options.bottomRightExtraOutputs =
+      rightEgressMems * memInputPorts + scalarOutputs;
   auto mesh = builder.buildChessMesh(
       rows, cols,
       [&](unsigned, unsigned) { return computePE.pe; }, options);
 
   ExtMemorySpec extMemSpec;
   extMemSpec.name = moduleName + "_mem";
-  extMemSpec.ldPorts = 2;
-  extMemSpec.stPorts = 1;
+  extMemSpec.ldPorts = kLdPorts;
+  extMemSpec.stPorts = kStPorts;
   extMemSpec.memrefType = "memref<?xi32>";
   extMemSpec.numRegion = 3;
   auto extMem = builder.defineExtMemory(extMemSpec);
@@ -623,18 +811,19 @@ void buildChessDomain(const std::string &moduleName,
 
   wireRoundRobinExtMemIngressEgress(builder, mesh, extMems,
                                     options.topLeftExtraInputs,
-                                    options.bottomLeftExtraOutputs);
+                                    options.bottomLeftExtraOutputs,
+                                    memOutputPorts, memInputPorts);
 
   std::vector<unsigned> inputs = builder.addInputs(
       "scalar", std::vector<std::string>(scalarInputs, bitsType()));
   std::vector<unsigned> outputs = builder.addOutputs(
       "scalar_out", std::vector<std::string>(scalarOutputs, bitsType()));
 
-  unsigned ingressIdx = leftIngressMems * 5;
+  unsigned ingressIdx = leftIngressMems * memOutputPorts;
   for (unsigned idx = 0; idx < inputs.size(); ++idx, ++ingressIdx)
     builder.connectInputToPort(inputs[idx], mesh.ingressPorts[ingressIdx]);
 
-  unsigned egressIdx = numExtMems * 4;
+  unsigned egressIdx = numExtMems * memInputPorts;
   for (unsigned idx = 0; idx < outputs.size(); ++idx, ++egressIdx)
     builder.connectPortToOutput(mesh.egressPorts[egressIdx], outputs[idx]);
 
@@ -902,8 +1091,8 @@ void buildMesh6x6Extmem2(const std::string &outputPath) {
   constexpr unsigned kRows = 6;
   constexpr unsigned kCols = 6;
   constexpr unsigned kNumExtMems = 2;
-  constexpr unsigned kScalarInputs = 2;
-  constexpr unsigned kScalarOutputs = 1;
+  constexpr unsigned kScalarInputs = 4;
+  constexpr unsigned kScalarOutputs = 2;
   constexpr unsigned kSideSwitchCount = kCols + 1;
 
   ChessMeshOptions options;
