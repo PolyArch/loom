@@ -1,0 +1,296 @@
+{
+  "timestamp": "2026-03-23T04:25:23.816041+00:00",
+  "results": [
+    {
+      "kernel_name": "matmul_cublas",
+      "platform": "gpu",
+      "mean_time_ms": 0.0099,
+      "stddev_time_ms": 0.0009,
+      "min_time_ms": 0.0093,
+      "num_trials": 10,
+      "total_ops": 33554432.0,
+      "throughput_ops_sec": 3389336565656.5654,
+      "avg_power_w": 31.426666666666666,
+      "energy_j": 0.00031112399999999997,
+      "problem_size": {
+        "M": 256.0,
+        "N": 256.0,
+        "K": 256.0
+      }
+    },
+    {
+      "kernel_name": "matmul_naive_cuda",
+      "platform": "gpu",
+      "mean_time_ms": 0.0004,
+      "stddev_time_ms": 0.0,
+      "min_time_ms": 0.0004,
+      "num_trials": 10,
+      "total_ops": 33554432.0,
+      "throughput_ops_sec": 83886080000000.0,
+      "avg_power_w": 31.426666666666666,
+      "energy_j": 1.2570666666666668e-05,
+      "problem_size": {
+        "M": 256.0,
+        "N": 256.0,
+        "K": 256.0
+      }
+    },
+    {
+      "kernel_name": "matmul_cublas",
+      "platform": "gpu",
+      "mean_time_ms": 0.0168,
+      "stddev_time_ms": 0.0025,
+      "min_time_ms": 0.0154,
+      "num_trials": 10,
+      "total_ops": 268435456.0,
+      "throughput_ops_sec": 15978300952380.953,
+      "avg_power_w": 31.47,
+      "energy_j": 0.0005286959999999999,
+      "problem_size": {
+        "M": 512.0,
+        "N": 512.0,
+        "K": 512.0
+      }
+    },
+    {
+      "kernel_name": "matmul_naive_cuda",
+      "platform": "gpu",
+      "mean_time_ms": 0.0004,
+      "stddev_time_ms": 0.0,
+      "min_time_ms": 0.0004,
+      "num_trials": 10,
+      "total_ops": 268435456.0,
+      "throughput_ops_sec": 671088640000000.0,
+      "avg_power_w": 31.47,
+      "energy_j": 1.2588e-05,
+      "problem_size": {
+        "M": 512.0,
+        "N": 512.0,
+        "K": 512.0
+      }
+    },
+    {
+      "kernel_name": "matmul_cublas",
+      "platform": "gpu",
+      "mean_time_ms": 0.0473,
+      "stddev_time_ms": 0.0014,
+      "min_time_ms": 0.0459,
+      "num_trials": 10,
+      "total_ops": 2147483648.0,
+      "throughput_ops_sec": 45401345623678.64,
+      "avg_power_w": 44.49,
+      "energy_j": 0.002104377,
+      "problem_size": {
+        "M": 1024.0,
+        "N": 1024.0,
+        "K": 1024.0
+      }
+    },
+    {
+      "kernel_name": "matmul_naive_cuda",
+      "platform": "gpu",
+      "mean_time_ms": 0.0004,
+      "stddev_time_ms": 0.0,
+      "min_time_ms": 0.0004,
+      "num_trials": 10,
+      "total_ops": 2147483648.0,
+      "throughput_ops_sec": 5368709120000000.0,
+      "avg_power_w": 44.49,
+      "energy_j": 1.7796000000000004e-05,
+      "problem_size": {
+        "M": 1024.0,
+        "N": 1024.0,
+        "K": 1024.0
+      }
+    },
+    {
+      "kernel_name": "matmul_cublas",
+      "platform": "gpu",
+      "mean_time_ms": 0.2504,
+      "stddev_time_ms": 0.0012,
+      "min_time_ms": 0.2491,
+      "num_trials": 10,
+      "total_ops": 17179869184.0,
+      "throughput_ops_sec": 68609701214057.5,
+      "avg_power_w": 53.95666666666667,
+      "energy_j": 0.013510749333333336,
+      "problem_size": {
+        "M": 2048.0,
+        "N": 2048.0,
+        "K": 2048.0
+      }
+    },
+    {
+      "kernel_name": "matmul_naive_cuda",
+      "platform": "gpu",
+      "mean_time_ms": 0.0004,
+      "stddev_time_ms": 0.0,
+      "min_time_ms": 0.0004,
+      "num_trials": 10,
+      "total_ops": 17179869184.0,
+      "throughput_ops_sec": 4.294967296e+16,
+      "avg_power_w": 53.95666666666667,
+      "energy_j": 2.158266666666667e-05,
+      "problem_size": {
+        "M": 2048.0,
+        "N": 2048.0,
+        "K": 2048.0
+      }
+    },
+    {
+      "kernel_name": "fft_cufft",
+      "platform": "gpu",
+      "mean_time_ms": 0.0167,
+      "stddev_time_ms": 0.0009,
+      "min_time_ms": 0.016,
+      "num_trials": 10,
+      "total_ops": 104857600.0,
+      "throughput_ops_sec": 6278898203592.814,
+      "avg_power_w": 80.62,
+      "energy_j": 0.0013463540000000001,
+      "problem_size": {
+        "N": 1048576.0
+      }
+    },
+    {
+      "kernel_name": "fft_cufft",
+      "platform": "gpu",
+      "mean_time_ms": 0.0563,
+      "stddev_time_ms": 0.0027,
+      "min_time_ms": 0.0541,
+      "num_trials": 10,
+      "total_ops": 461373440.0,
+      "throughput_ops_sec": 8194910124333.926,
+      "avg_power_w": 78.9,
+      "energy_j": 0.00444207,
+      "problem_size": {
+        "N": 4194304.0
+      }
+    },
+    {
+      "kernel_name": "ntt_m31_gpu",
+      "platform": "gpu",
+      "mean_time_ms": 0.5859,
+      "stddev_time_ms": 0.1428,
+      "min_time_ms": 0.3073,
+      "num_trials": 10,
+      "total_ops": 62914560.0,
+      "throughput_ops_sec": 107381054787.50641,
+      "avg_power_w": 77.12,
+      "energy_j": 0.045184608,
+      "problem_size": {
+        "N": 1048576.0
+      }
+    },
+    {
+      "kernel_name": "ntt_m31_gpu",
+      "platform": "gpu",
+      "mean_time_ms": 0.9827,
+      "stddev_time_ms": 0.146,
+      "min_time_ms": 0.814,
+      "num_trials": 10,
+      "total_ops": 276824064.0,
+      "throughput_ops_sec": 281697429530.8843,
+      "avg_power_w": 76.24,
+      "energy_j": 0.07492104799999999,
+      "problem_size": {
+        "N": 4194304.0
+      }
+    },
+    {
+      "kernel_name": "attention_gpu",
+      "platform": "gpu",
+      "mean_time_ms": 0.0347,
+      "stddev_time_ms": 0.0006,
+      "min_time_ms": 0.0338,
+      "num_trials": 10,
+      "total_ops": 547356672.0,
+      "throughput_ops_sec": 15773967492795.387,
+      "avg_power_w": 77.12,
+      "energy_j": 0.0026760640000000006,
+      "problem_size": {
+        "batch": 1.0,
+        "heads": 8.0,
+        "seq_len": 512.0,
+        "d_k": 64.0
+      }
+    },
+    {
+      "kernel_name": "attention_gpu",
+      "platform": "gpu",
+      "mean_time_ms": 0.072,
+      "stddev_time_ms": 0.0011,
+      "min_time_ms": 0.0705,
+      "num_trials": 10,
+      "total_ops": 2189426688.0,
+      "throughput_ops_sec": 30408704000000.004,
+      "avg_power_w": 75.32,
+      "energy_j": 0.005423039999999999,
+      "problem_size": {
+        "batch": 1.0,
+        "heads": 8.0,
+        "seq_len": 1024.0,
+        "d_k": 64.0
+      }
+    },
+    {
+      "kernel_name": "spmv_cusparse",
+      "platform": "gpu",
+      "mean_time_ms": 0.0224,
+      "stddev_time_ms": 0.0004,
+      "min_time_ms": 0.0219,
+      "num_trials": 10,
+      "total_ops": 1996818.0,
+      "throughput_ops_sec": 89143660714.28572,
+      "avg_power_w": 76.44200000000001,
+      "energy_j": 0.0017123008,
+      "problem_size": {
+        "rows": 10000.0,
+        "cols": 10000.0,
+        "nnz": 998409.0,
+        "density": 0.01
+      }
+    },
+    {
+      "kernel_name": "spmv_cusparse",
+      "platform": "gpu",
+      "mean_time_ms": 0.0478,
+      "stddev_time_ms": 0.001,
+      "min_time_ms": 0.0467,
+      "num_trials": 10,
+      "total_ops": 9992242.0,
+      "throughput_ops_sec": 209042719665.27194,
+      "avg_power_w": 74.874,
+      "energy_j": 0.0035789772,
+      "problem_size": {
+        "rows": 10000.0,
+        "cols": 10000.0,
+        "nnz": 4996121.0,
+        "density": 0.05
+      }
+    },
+    {
+      "kernel_name": "spmv_cusparse",
+      "platform": "gpu",
+      "mean_time_ms": 0.0374,
+      "stddev_time_ms": 0.0011,
+      "min_time_ms": 0.0358,
+      "num_trials": 10,
+      "total_ops": 5003232.0,
+      "throughput_ops_sec": 133776256684.49197,
+      "avg_power_w": 37.810314136125655,
+      "energy_j": 0.0014141057486910995,
+      "problem_size": {
+        "rows": 50000.0,
+        "cols": 50000.0,
+        "nnz": 2501616.0,
+        "density": 0.001
+      }
+    }
+  ],
+  "metadata": {
+    "platform": "gpu",
+    "device": "RTX 5090 (detected via nvidia-smi)",
+    "cuda_version": "13.2"
+  }
+}

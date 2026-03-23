@@ -1,0 +1,248 @@
+{
+  "timestamp": "2026-03-23T04:12:09.888626+00:00",
+  "results": [
+    {
+      "kernel_name": "matmul_naive_cpu",
+      "platform": "cpu",
+      "mean_time_ms": 9.4492,
+      "stddev_time_ms": 0.2633,
+      "min_time_ms": 9.0226,
+      "num_trials": 10,
+      "total_ops": 33554432.0,
+      "throughput_ops_sec": 3551034161.622148,
+      "problem_size": {
+        "M": 256.0,
+        "N": 256.0,
+        "K": 256.0
+      }
+    },
+    {
+      "kernel_name": "matmul_tiled_omp",
+      "platform": "cpu",
+      "mean_time_ms": 3.511,
+      "stddev_time_ms": 3.0362,
+      "min_time_ms": 0.1805,
+      "num_trials": 10,
+      "total_ops": 33554432.0,
+      "throughput_ops_sec": 9556944460.267729,
+      "problem_size": {
+        "M": 256.0,
+        "N": 256.0,
+        "K": 256.0
+      }
+    },
+    {
+      "kernel_name": "matmul_naive_cpu",
+      "platform": "cpu",
+      "mean_time_ms": 115.4169,
+      "stddev_time_ms": 0.521,
+      "min_time_ms": 114.7914,
+      "num_trials": 10,
+      "total_ops": 268435456.0,
+      "throughput_ops_sec": 2325789862.6630936,
+      "problem_size": {
+        "M": 512.0,
+        "N": 512.0,
+        "K": 512.0
+      }
+    },
+    {
+      "kernel_name": "matmul_tiled_omp",
+      "platform": "cpu",
+      "mean_time_ms": 0.9311,
+      "stddev_time_ms": 0.0441,
+      "min_time_ms": 0.8546,
+      "num_trials": 10,
+      "total_ops": 268435456.0,
+      "throughput_ops_sec": 288299276125.0134,
+      "problem_size": {
+        "M": 512.0,
+        "N": 512.0,
+        "K": 512.0
+      }
+    },
+    {
+      "kernel_name": "matmul_naive_cpu",
+      "platform": "cpu",
+      "mean_time_ms": 3218.4256,
+      "stddev_time_ms": 52.2211,
+      "min_time_ms": 3149.1938,
+      "num_trials": 10,
+      "total_ops": 2147483648.0,
+      "throughput_ops_sec": 667246633.8821068,
+      "problem_size": {
+        "M": 1024.0,
+        "N": 1024.0,
+        "K": 1024.0
+      }
+    },
+    {
+      "kernel_name": "matmul_tiled_omp",
+      "platform": "cpu",
+      "mean_time_ms": 6.7047,
+      "stddev_time_ms": 0.2184,
+      "min_time_ms": 6.4516,
+      "num_trials": 10,
+      "total_ops": 2147483648.0,
+      "throughput_ops_sec": 320295262726.14734,
+      "problem_size": {
+        "M": 1024.0,
+        "N": 1024.0,
+        "K": 1024.0
+      }
+    },
+    {
+      "kernel_name": "matmul_tiled_omp",
+      "platform": "cpu",
+      "mean_time_ms": 52.1127,
+      "stddev_time_ms": 1.2994,
+      "min_time_ms": 50.5247,
+      "num_trials": 10,
+      "total_ops": 17179869184.0,
+      "throughput_ops_sec": 329667608548.39606,
+      "problem_size": {
+        "M": 2048.0,
+        "N": 2048.0,
+        "K": 2048.0
+      }
+    },
+    {
+      "kernel_name": "fft_cooley_tukey",
+      "platform": "cpu",
+      "mean_time_ms": 23.6609,
+      "stddev_time_ms": 0.0946,
+      "min_time_ms": 23.5206,
+      "num_trials": 10,
+      "total_ops": 104857600.0,
+      "throughput_ops_sec": 4431682649.4342985,
+      "problem_size": {
+        "N": 1048576.0
+      }
+    },
+    {
+      "kernel_name": "fft_cooley_tukey",
+      "platform": "cpu",
+      "mean_time_ms": 247.313,
+      "stddev_time_ms": 26.6343,
+      "min_time_ms": 211.98,
+      "num_trials": 10,
+      "total_ops": 461373440.0,
+      "throughput_ops_sec": 1865544633.7232578,
+      "problem_size": {
+        "N": 4194304.0
+      }
+    },
+    {
+      "kernel_name": "ntt_m31_cpu",
+      "platform": "cpu",
+      "mean_time_ms": 24.8487,
+      "stddev_time_ms": 0.4217,
+      "min_time_ms": 24.5422,
+      "num_trials": 10,
+      "total_ops": 62914560.0,
+      "throughput_ops_sec": 2531905492.0378127,
+      "problem_size": {
+        "N": 1048576.0
+      }
+    },
+    {
+      "kernel_name": "ntt_m31_cpu",
+      "platform": "cpu",
+      "mean_time_ms": 159.6013,
+      "stddev_time_ms": 29.8797,
+      "min_time_ms": 133.0444,
+      "num_trials": 10,
+      "total_ops": 276824064.0,
+      "throughput_ops_sec": 1734472488.6326113,
+      "problem_size": {
+        "N": 4194304.0
+      }
+    },
+    {
+      "kernel_name": "attention_cpu",
+      "platform": "cpu",
+      "mean_time_ms": 7.8833,
+      "stddev_time_ms": 1.3234,
+      "min_time_ms": 4.6165,
+      "num_trials": 10,
+      "total_ops": 136839168.0,
+      "throughput_ops_sec": 17358107391.574596,
+      "problem_size": {
+        "batch": 1.0,
+        "heads": 8.0,
+        "seq_len": 256.0,
+        "d_k": 64.0
+      }
+    },
+    {
+      "kernel_name": "attention_cpu",
+      "platform": "cpu",
+      "mean_time_ms": 16.8531,
+      "stddev_time_ms": 2.5712,
+      "min_time_ms": 14.5146,
+      "num_trials": 10,
+      "total_ops": 547356672.0,
+      "throughput_ops_sec": 32478100290.154327,
+      "problem_size": {
+        "batch": 1.0,
+        "heads": 8.0,
+        "seq_len": 512.0,
+        "d_k": 64.0
+      }
+    },
+    {
+      "kernel_name": "spmv_csr_cpu",
+      "platform": "cpu",
+      "mean_time_ms": 6.7649,
+      "stddev_time_ms": 1.8364,
+      "min_time_ms": 3.6738,
+      "num_trials": 10,
+      "total_ops": 1996818.0,
+      "throughput_ops_sec": 295173321.11339414,
+      "problem_size": {
+        "rows": 10000.0,
+        "cols": 10000.0,
+        "nnz": 998409.0,
+        "density": 0.01
+      }
+    },
+    {
+      "kernel_name": "spmv_csr_cpu",
+      "platform": "cpu",
+      "mean_time_ms": 7.0007,
+      "stddev_time_ms": 0.363,
+      "min_time_ms": 6.1497,
+      "num_trials": 10,
+      "total_ops": 9992242.0,
+      "throughput_ops_sec": 1427320410.8160613,
+      "problem_size": {
+        "rows": 10000.0,
+        "cols": 10000.0,
+        "nnz": 4996121.0,
+        "density": 0.05
+      }
+    },
+    {
+      "kernel_name": "spmv_csr_cpu",
+      "platform": "cpu",
+      "mean_time_ms": 6.582,
+      "stddev_time_ms": 0.7272,
+      "min_time_ms": 5.232,
+      "num_trials": 10,
+      "total_ops": 5003232.0,
+      "throughput_ops_sec": 760138559.7082953,
+      "problem_size": {
+        "rows": 50000.0,
+        "cols": 50000.0,
+        "nnz": 2501616.0,
+        "density": 0.001
+      }
+    }
+  ],
+  "metadata": {
+    "platform": "cpu",
+    "device": "AMD Ryzen 9950X3D",
+    "compiler": "g++",
+    "flags": "-O3 -std=c++17 -fopenmp -march=native"
+  }
+}
