@@ -142,6 +142,10 @@ endfunction()
 set(LOOM_E2E_ADGS
   mesh-6x6-extmem-1
   mesh-6x6-extmem-2
+  mesh-8x8-extmem-2
+  mesh-10x10-extmem-2
+  mesh-8x8-extmem-4
+  mesh-10x10-extmem-4
 )
 
 foreach(hw_name IN LISTS LOOM_E2E_ADGS)

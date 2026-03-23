@@ -1159,5 +1159,118 @@ void buildMediumChess10x10(const std::string &outputPath) {
   buildChessDomain("medium_chess_10x10", outputPath, 10, 10, 4, 6, 4);
 }
 
+namespace {
+
+/// Parameterized mesh builder with side-wired tagged external memories.
+/// Supports arbitrary rows/cols/numExtMems (extmems are distributed
+/// round-robin across left and right sides).
+void buildMeshNxNExtmem(const std::string &moduleName,
+                        const std::string &outputPath, unsigned rows,
+                        unsigned cols, unsigned numExtMems,
+                        unsigned scalarInputs, unsigned scalarOutputs) {
+  ADGBuilder builder(moduleName);
+  auto computePE = buildSpatialKernelPE(builder, moduleName, 4, 4);
+
+  const unsigned kVertSwitchCount = rows + 1;
+  const unsigned kHorizSwitchCount = cols + 1;
+  unsigned leftExtMems = (numExtMems + 1) / 2;
+  unsigned rightExtMems = numExtMems / 2;
+
+  ChessMeshOptions options;
+  options.leftExtraInputsPerSwitch =
+      buildSpreadSideCounts(leftExtMems * 5, kVertSwitchCount);
+  options.leftExtraOutputsPerSwitch =
+      buildSpreadSideCounts(leftExtMems * 4, kVertSwitchCount);
+  options.rightExtraInputsPerSwitch =
+      buildSpreadSideCounts(rightExtMems * 5, kVertSwitchCount);
+  options.rightExtraOutputsPerSwitch =
+      buildSpreadSideCounts(rightExtMems * 4, kVertSwitchCount);
+  options.topExtraInputsPerSwitch =
+      buildSpreadSideCounts(scalarInputs, kHorizSwitchCount);
+  options.bottomExtraOutputsPerSwitch =
+      buildSpreadSideCounts(scalarOutputs, kHorizSwitchCount);
+  auto mesh = builder.buildChessMesh(
+      rows, cols, [&](unsigned, unsigned) { return computePE.pe; }, options);
+
+  ExtMemorySpec extMemSpec;
+  extMemSpec.name = moduleName + "_mem";
+  extMemSpec.ldPorts = 2;
+  extMemSpec.stPorts = 1;
+  extMemSpec.memrefType = "memref<?xi32>";
+  extMemSpec.numRegion = 3;
+  auto extMem = builder.defineExtMemory(extMemSpec);
+  auto extMemBridge = buildTaggedVecaddExtMemBridge(builder, moduleName);
+  auto extMems = builder.instantiateExtMemArray(numExtMems, extMem, "extmem");
+  auto memrefs =
+      builder.addMemrefInputs("buffer", numExtMems, "memref<?xi32>");
+  for (unsigned idx = 0; idx < extMems.size(); ++idx)
+    builder.connectMemrefToExtMem(memrefs[idx], extMems[idx]);
+
+  // Wire left-side external memories
+  unsigned leftIngressIdx = 0;
+  unsigned leftEgressIdx = 0;
+  for (unsigned memIdx = 0; memIdx < leftExtMems; ++memIdx) {
+    std::vector<PortRef> ingressSlice(
+        mesh.leftIngressPorts.begin() + leftIngressIdx,
+        mesh.leftIngressPorts.begin() + leftIngressIdx + 5);
+    std::vector<PortRef> egressSlice(
+        mesh.leftEgressPorts.begin() + leftEgressIdx,
+        mesh.leftEgressPorts.begin() + leftEgressIdx + 4);
+    wireTaggedVecaddExtMemSideBridge(builder, ingressSlice, egressSlice,
+                                     extMems[memIdx], memIdx, extMemBridge);
+    leftIngressIdx += 5;
+    leftEgressIdx += 4;
+  }
+
+  // Wire right-side external memories
+  unsigned rightIngressIdx = 0;
+  unsigned rightEgressIdx = 0;
+  for (unsigned memIdx = 0; memIdx < rightExtMems; ++memIdx) {
+    unsigned globalMemIdx = leftExtMems + memIdx;
+    std::vector<PortRef> ingressSlice(
+        mesh.rightIngressPorts.begin() + rightIngressIdx,
+        mesh.rightIngressPorts.begin() + rightIngressIdx + 5);
+    std::vector<PortRef> egressSlice(
+        mesh.rightEgressPorts.begin() + rightEgressIdx,
+        mesh.rightEgressPorts.begin() + rightEgressIdx + 4);
+    wireTaggedVecaddExtMemSideBridge(builder, ingressSlice, egressSlice,
+                                     extMems[globalMemIdx], globalMemIdx,
+                                     extMemBridge);
+    rightIngressIdx += 5;
+    rightEgressIdx += 4;
+  }
+
+  std::vector<unsigned> inputs = builder.addInputs(
+      "scalar", std::vector<std::string>(scalarInputs, bitsType()));
+  std::vector<unsigned> outputs = builder.addOutputs(
+      "scalar_out", std::vector<std::string>(scalarOutputs, bitsType()));
+
+  for (unsigned idx = 0; idx < inputs.size(); ++idx)
+    builder.connectInputToPort(inputs[idx], mesh.topIngressPorts[idx]);
+
+  for (unsigned idx = 0; idx < outputs.size(); ++idx)
+    builder.connectPortToOutput(mesh.bottomEgressPorts[idx], outputs[idx]);
+
+  builder.exportMLIR(outputPath);
+}
+
+} // anonymous namespace
+
+void buildMesh8x8Extmem2(const std::string &outputPath) {
+  buildMeshNxNExtmem("mesh_8x8_extmem_2", outputPath, 8, 8, 2, 4, 2);
+}
+
+void buildMesh10x10Extmem2(const std::string &outputPath) {
+  buildMeshNxNExtmem("mesh_10x10_extmem_2", outputPath, 10, 10, 2, 4, 2);
+}
+
+void buildMesh8x8Extmem4(const std::string &outputPath) {
+  buildMeshNxNExtmem("mesh_8x8_extmem_4", outputPath, 8, 8, 4, 4, 2);
+}
+
+void buildMesh10x10Extmem4(const std::string &outputPath) {
+  buildMeshNxNExtmem("mesh_10x10_extmem_4", outputPath, 10, 10, 4, 4, 2);
+}
+
 } // namespace e2e
 } // namespace loom
