@@ -9,6 +9,8 @@ add_library(LoomSystemCompiler STATIC
   ExecutionModel.cpp
   FailureAnalyzer.cpp
   FlatCompilerBaselines.cpp
+  HWInnerADGGen.cpp
+  HWInnerOptimizer.cpp
   HWOuterOptimizer.cpp
   InfeasibilityCut.cpp
   KernelCompiler.cpp
