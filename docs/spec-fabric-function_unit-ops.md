@@ -134,6 +134,7 @@ Allowed operations:
 - `math.absf`
 - `math.cos`
 - `math.exp`
+- `math.floor`
 - `math.fma`
 - `math.log2`
 - `math.sin`

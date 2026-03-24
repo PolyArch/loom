@@ -71,7 +71,8 @@ bool isUnaryComputeOp(std::string_view op) {
          op == "arith.fptosi" || op == "arith.fptoui" ||
          op == "arith.sitofp" || op == "arith.uitofp" ||
          op == "math.absf" || op == "math.cos" || op == "math.exp" ||
-         op == "math.log2" || op == "math.sin" || op == "math.sqrt" ||
+         op == "math.floor" || op == "math.log2" || op == "math.sin" ||
+         op == "math.sqrt" ||
          op == "llvm.intr.bitreverse";
 }
 
