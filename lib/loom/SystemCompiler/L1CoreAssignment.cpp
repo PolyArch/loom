@@ -467,6 +467,41 @@ AssignmentResult L1CoreAssigner::solve(
     }
   }
 
+  // Component 4: Reconfiguration cost penalty.
+  // When multiple kernels are assigned to the same core, they execute
+  // sequentially in BATCH_SEQUENTIAL mode, incurring a reconfiguration gap
+  // between each pair. Penalize by (numKernels - 1) * reconfigCycles per core.
+  // This incentivizes spreading kernels across cores when reconfig cost is high.
+  {
+    constexpr int64_t kDefaultReconfigCycles = 100;
+    for (unsigned c = 0; c < numCores; ++c) {
+      // Count kernels assigned to this core.
+      LinearExpr kernelCount;
+      for (unsigned k = 0; k < numKernels; ++k) {
+        kernelCount += x[k][c];
+      }
+
+      // nk = number of kernels on core c.
+      IntVar nk = model.NewIntVar(
+          operations_research::Domain(0, static_cast<int64_t>(numKernels)))
+          .WithName("nk_c" + std::to_string(c));
+      model.AddEquality(nk, kernelCount);
+
+      // reconfigEvents = max(0, nk - 1). Since CP-SAT works with integers,
+      // we model this as: reconfigEvents >= nk - 1 and reconfigEvents >= 0.
+      IntVar reconfigEvents = model.NewIntVar(
+          operations_research::Domain(0, static_cast<int64_t>(numKernels)))
+          .WithName("reconf_c" + std::to_string(c));
+      // reconfigEvents >= nk - 1
+      model.AddGreaterOrEqual(reconfigEvents, LinearExpr(nk) - 1);
+      // reconfigEvents <= nk (redundant but helps the solver)
+      model.AddLessOrEqual(reconfigEvents, nk);
+
+      // Add reconfigCycles * reconfigEvents to the objective.
+      objective += reconfigEvents * kDefaultReconfigCycles;
+    }
+  }
+
   model.Minimize(objective);
 
   // --- Solve ---

@@ -2,12 +2,15 @@
 #include "loom/SystemCompiler/BendersHelpers.h"
 #include "loom/SystemCompiler/BufferAllocator.h"
 #include "loom/SystemCompiler/DMAScheduler.h"
+#include "loom/SystemCompiler/ExecutionModel.h"
 #include "loom/SystemCompiler/L1CoreAssignment.h"
 #include "loom/SystemCompiler/L2CoreCompiler.h"
 #include "loom/SystemCompiler/NoCScheduler.h"
 #include "loom/SystemCompiler/SystemTypes.h"
 #include "loom/SystemCompiler/TypeAdapters.h"
 #include "loom/Mapper/MapperOptions.h"
+
+#include "llvm/Support/raw_ostream.h"
 
 #include "llvm/Support/raw_ostream.h"
 
@@ -144,6 +147,16 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
   if (arch_.coreTypes.empty()) {
     result.success = false;
     result.diagnostics = "no core types in architecture";
+    return result;
+  }
+
+  // Validate execution mode.
+  if (config.executionModel.mode != ExecutionMode::BATCH_SEQUENTIAL) {
+    result.success = false;
+    result.diagnostics =
+        std::string(executionModeToString(config.executionModel.mode)) +
+        " execution mode is not supported in current version; "
+        "only BATCH_SEQUENTIAL is implemented";
     return result;
   }
 
@@ -340,6 +353,25 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
                    << "\n";
   }
 
+  // Compute temporal schedule using the Benders assignment result.
+  if (result.success && bestResult.has_value()) {
+    loom::TemporalSchedule schedule;
+    std::string schedErr = computeTemporalSchedule(
+        bestResult->assignment, bestResult->coreCosts, l1Contracts,
+        config.executionModel, schedule);
+
+    if (schedErr.empty()) {
+      result.temporalSchedule = schedule;
+      if (config.verbose) {
+        llvm::outs() << "Temporal schedule (BATCH_SEQUENTIAL):\n"
+                     << "  System latency: " << schedule.systemLatencyCycles
+                     << " (max_core=" << schedule.maxCoreCycles
+                     << " + noc=" << schedule.nocOverheadCycles << ")\n";
+      }
+    } else if (config.verbose) {
+      llvm::outs() << "Temporal scheduling skipped: " << schedErr << "\n";
+    }
+  }
   return result;
 }
 

@@ -1,7 +1,9 @@
 #include "loom/SystemCompiler/TapestryPipeline.h"
 #include "loom/ContractInference/ContractInference.h"
 #include "loom/SystemCompiler/ArchitectureFactory.h"
+#include "loom/SystemCompiler/ExecutionModel.h"
 #include "loom/SystemCompiler/PrecompiledKernelLoader.h"
+#include "loom/SystemCompiler/SystemTypes.h"
 #include "loom/SystemCompiler/TDGLowering.h"
 #include "loom/SystemCompiler/TypeAdapters.h"
 
@@ -299,6 +301,16 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
   TapestryPipelineResult result;
   result.reportPath = config.outputDir + "/report.json";
 
+  // Validate execution mode early.
+  if (config.executionModel.mode != ExecutionMode::BATCH_SEQUENTIAL) {
+    result.success = false;
+    result.diagnostics =
+        std::string(executionModeToString(config.executionModel.mode)) +
+        " execution mode is not supported in current version; "
+        "only BATCH_SEQUENTIAL is implemented";
+    return result;
+  }
+
   auto compileStart = std::chrono::steady_clock::now();
 
   for (auto stage : config.stages) {
@@ -394,6 +406,20 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
       }
 
       result.compilationResult = compResult;
+
+      // Compute temporal schedule after compilation.
+      TemporalSchedule schedule;
+      schedule.mode = ExecutionMode::BATCH_SEQUENTIAL;
+      schedule.systemLatencyCycles = 0;
+      schedule.maxCoreCycles = 0;
+      schedule.nocOverheadCycles = 0;
+      result.temporalSchedule = schedule;
+
+      if (config.verbose) {
+        llvm::outs() << "TapestryPipeline: temporal scheduling "
+                     << "(BATCH_SEQUENTIAL, reconfigCycles="
+                     << config.executionModel.reconfigCycles << ")\n";
+      }
 
       if (!bendersResult.success) {
         result.success = false;

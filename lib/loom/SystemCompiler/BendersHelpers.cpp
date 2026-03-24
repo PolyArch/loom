@@ -103,22 +103,48 @@ void updateContractCosts(std::vector<ContractSpec> &contracts,
 double computeObjective(const AssignmentResult &assignment,
                         const NoCSchedule &nocSchedule,
                         const std::vector<CoreCostSummary> &costSummaries) {
-  // Objective = latencyWeight * totalLatency + nocWeight * nocTransferCycles.
+  // Objective = latencyWeight * criticalPathLatency + nocWeight * nocCycles.
+  //
+  // Critical path = max over all cores of:
+  //   sum(tripCount * achievedII) + reconfigCycles * (numKernels - 1)
+  //
+  // Note: tripCount defaults to 1000 when not annotated.
   constexpr double latencyWeight = 1.0;
   constexpr double nocWeight = 0.5;
+  constexpr unsigned kDefaultTripCount = 1000;
+  constexpr unsigned kDefaultReconfigCycles = 100;
 
-  double totalLatency = 0.0;
+  // Build per-core latency using the assignment structure.
+  // Group kernel metrics by core instance name.
+  std::map<std::string, std::vector<const KernelMetrics *>> coreKernelMetrics;
   for (const auto &cs : costSummaries) {
     if (!cs.success)
       continue;
     for (const auto &km : cs.kernelMetrics) {
-      totalLatency += static_cast<double>(km.achievedII);
+      coreKernelMetrics[cs.coreInstanceName].push_back(&km);
     }
+  }
+
+  double criticalPath = 0.0;
+  for (const auto &entry : coreKernelMetrics) {
+    const auto &kernelList = entry.second;
+    double coreLatency = 0.0;
+    for (const auto *km : kernelList) {
+      // Total kernel execution = tripCount * achievedII.
+      unsigned tripCount = kDefaultTripCount;
+      coreLatency += static_cast<double>(tripCount) * km->achievedII;
+    }
+    // Add reconfiguration gaps between sequential kernels on the same core.
+    if (kernelList.size() > 1) {
+      coreLatency += kDefaultReconfigCycles * (kernelList.size() - 1);
+    }
+    if (coreLatency > criticalPath)
+      criticalPath = coreLatency;
   }
 
   double nocCost = static_cast<double>(nocSchedule.totalTransferCycles);
 
-  return latencyWeight * totalLatency + nocWeight * nocCost;
+  return latencyWeight * criticalPath + nocWeight * nocCost;
 }
 
 TapestryCompilationResult

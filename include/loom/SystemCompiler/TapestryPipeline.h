@@ -2,6 +2,7 @@
 #define LOOM_SYSTEMCOMPILER_TAPESTRYPIPELINE_H
 
 #include "loom/SystemCompiler/BendersDriver.h"
+#include "loom/SystemCompiler/ExecutionModel.h"
 #include "loom/TDG/ContractLegalityChecker.h"
 #include "loom/MultiCoreSim/MultiCoreSimSession.h"
 
@@ -102,13 +103,14 @@ struct TapestryPipelineConfig {
   std::string rtlSourceDir;
 
   /// Contract inference options (SPM/L2 capacity for buffer/visibility).
-  /// These mirror ContractInferencePass::Options to avoid a circular
-  /// header dependency between SystemCompiler and ContractInference.
   uint64_t ciSPMCapacityBytes = 4096;
   uint64_t ciL2CapacityBytes = 262144;
   double ciSPMThresholdFraction = 0.5;
   double ciL2ThresholdFraction = 0.8;
   unsigned ciProducerLatencyCycles = 1;
+
+  /// Temporal execution model configuration.
+  ExecutionModelConfig executionModel;
 };
 
 /// Compilation metrics from a successful compile stage.
@@ -163,6 +165,9 @@ struct TapestryPipelineResult {
   std::optional<PipelineCompilationResult> compilationResult;
   std::optional<PipelineSimResult> simResult;
   std::optional<PipelineRTLResult> rtlResult;
+
+  /// Temporal schedule from the execution model (populated after mapping).
+  std::optional<TemporalSchedule> temporalSchedule;
 };
 
 /// Config-driven full pipeline: orchestrates compile, simulate, and RTL
