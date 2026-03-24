@@ -10,3 +10,6 @@
 [submodule "externals/or-tools"]
 	path = externals/or-tools
 	url = git@github.com:google/or-tools.git
+[submodule "externals/taskflow"]
+	path = externals/taskflow
+	url = git@github.com:taskflow/taskflow.git

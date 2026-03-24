@@ -30,6 +30,7 @@ set_target_properties(TapestryCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(TapestryOptimizer STATIC
   tdg_optimizer.cpp
   host_scheduler.cpp
+  co_optimizer.cpp
 )
 
 target_include_directories(TapestryOptimizer PUBLIC

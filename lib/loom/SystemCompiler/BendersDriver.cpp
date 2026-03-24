@@ -176,6 +176,8 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
   // Benders iteration state.
   std::vector<loom::InfeasibilityCut> accumulatedCuts;
   std::optional<loom::TapestryCompilationResult> bestResult;
+  loom::AssignmentResult bestAssignment;
+  std::vector<loom::CoreCostSummary> bestCostSummaries;
   double bestObjective = std::numeric_limits<double>::max();
 
   L1CoreAssigner l1Assigner;
@@ -308,6 +310,8 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
 
       if (objective < bestObjective) {
         bestObjective = objective;
+        bestAssignment = assignment;
+        bestCostSummaries = costSummaries;
         bestResult = assembleResult(l2Results, l2Assignments, assignment,
                                     nocSchedule, bufferPlan, dmaSchedule,
                                     costSummaries);
@@ -357,7 +361,7 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
   if (result.success && bestResult.has_value()) {
     loom::TemporalSchedule schedule;
     std::string schedErr = computeTemporalSchedule(
-        bestResult->assignment, bestResult->coreCosts, l1Contracts,
+        bestAssignment, bestCostSummaries, l1Contracts,
         config.executionModel, schedule);
 
     if (schedErr.empty()) {
