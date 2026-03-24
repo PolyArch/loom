@@ -141,3 +141,7 @@ add_tapestry_pipeline_tool(tapestry_e2e_test tapestry_e2e_test.cpp)
 
 # tapestry_sensitivity -- parameter sensitivity sweeps
 add_tapestry_pipeline_tool(tapestry_sensitivity tapestry_sensitivity.cpp)
+
+# tapestry_coopt_experiment -- co-optimization experiments (E17-E20)
+add_tapestry_pipeline_tool(tapestry_coopt_experiment tapestry_coopt_experiment.cpp)
+target_link_libraries(tapestry_coopt_experiment PRIVATE TapestryOptimizer)
