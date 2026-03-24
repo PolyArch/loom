@@ -757,8 +757,14 @@ Mapper::Result Mapper::runWithTechMapPlan(
 
     if (laneOpts.verbose)
       llvm::outs() << "Mapper: refining placement...\n";
+    // When route-aware SA is enabled, reduce warmup budget
+    Options refinementOpts = laneOpts;
+    if (opts.enableRouteAwareSAMainLoop) {
+      refinementOpts.refinement.budgetFraction =
+          opts.refinement.warmupBudgetFraction;
+    }
     laneMapper.runRefinement(attempt.state, techPlan.contractedDFG, adg,
-                             flattener, candidates, laneOpts,
+                             flattener, candidates, refinementOpts,
                              &attempt.edgeKinds);
     laneMapper.rebindScalarInputSentinels(attempt.state, techPlan.contractedDFG,
                                           adg, flattener);
@@ -822,11 +828,51 @@ Mapper::Result Mapper::runWithTechMapPlan(
       }
     }
 
-    if (laneOpts.verbose)
-      llvm::outs() << "Mapper: routing...\n";
-    attempt.routingSucceeded = laneMapper.runInterleavedPlaceRoute(
-        attempt.state, techPlan.contractedDFG, adg, flattener, candidates,
-        attempt.edgeKinds, laneOpts);
+    if (opts.enableRouteAwareSAMainLoop) {
+      if (laneOpts.verbose)
+        llvm::outs() << "Mapper: initial routing...\n";
+      bool initialAllRouted =
+          (laneOpts.negotiatedRoutingPasses > 0)
+              ? laneMapper.runNegotiatedRouting(
+                    attempt.state, techPlan.contractedDFG, adg,
+                    attempt.edgeKinds, laneOpts)
+              : laneMapper.runRouting(attempt.state, techPlan.contractedDFG,
+                                      adg, attempt.edgeKinds, laneOpts);
+      if (initialAllRouted) {
+        attempt.routingSucceeded = true;
+      } else {
+        if (laneOpts.verbose)
+          llvm::outs() << "Mapper: route-aware SA...\n";
+        attempt.routingSucceeded = laneMapper.runRouteAwareSA(
+            attempt.state, techPlan.contractedDFG, adg, flattener,
+            candidates, attempt.edgeKinds, laneOpts);
+      }
+      // Single local repair pass if unrouted edges remain
+      if (!attempt.routingSucceeded && laneOpts.localRepair.enabled &&
+          !laneMapper.shouldStopForBudget("local repair")) {
+        auto failedEdges = mapper_detail::collectUnroutedEdges(
+            attempt.state, techPlan.contractedDFG, attempt.edgeKinds);
+        if (!failedEdges.empty()) {
+          if (laneOpts.verbose)
+            llvm::outs() << "Mapper: local repair on " << failedEdges.size()
+                         << " unrouted edges...\n";
+          auto routedCheckpoint = attempt.state.save();
+          attempt.state.clearRoutes(techPlan.contractedDFG, adg);
+          auto placementCheckpoint = attempt.state.save();
+          attempt.state.restore(routedCheckpoint);
+          attempt.routingSucceeded = laneMapper.runLocalRepair(
+              attempt.state, placementCheckpoint, failedEdges,
+              techPlan.contractedDFG, adg, flattener, candidates,
+              attempt.edgeKinds, laneOpts);
+        }
+      }
+    } else {
+      if (laneOpts.verbose)
+        llvm::outs() << "Mapper: routing...\n";
+      attempt.routingSucceeded = laneMapper.runInterleavedPlaceRoute(
+          attempt.state, techPlan.contractedDFG, adg, flattener, candidates,
+          attempt.edgeKinds, laneOpts);
+    }
     attempt.budgetExceeded = laneMapper.activeBudgetExceeded_;
     attempt.budgetExceededStage = laneMapper.activeBudgetExceededStage_;
     attempt.routedEdges = countRoutedEdges(
@@ -1078,18 +1124,29 @@ Mapper::Result Mapper::runWithTechMapPlan(
       outerOpts.seed =
           opts.seed +
           static_cast<int>((outerIter + 1) * opts.lane.restartSeedStride);
-      runRefinement(contractedState, techPlan.contractedDFG, adg, flattener,
-                    candidates, outerOpts, &contractedEdgeKinds);
-      rebindScalarInputSentinels(contractedState, techPlan.contractedDFG, adg,
-                                flattener);
-      bindMemrefSentinels(contractedState, techPlan.contractedDFG, adg);
-      bool outerRoutingSucceeded = runInterleavedPlaceRoute(
-          contractedState, techPlan.contractedDFG, adg, flattener, candidates,
-          contractedEdgeKinds, outerOpts);
-      if (!outerRoutingSucceeded) {
-        contractedState.restore(acceptedBufferizedCheckpoint);
-        contractedEdgeKinds = acceptedBufferizedEdgeKinds;
-        break;
+      if (opts.enableRouteAwareSAMainLoop) {
+        bool outerRoutingSucceeded = runRouteAwareSA(
+            contractedState, techPlan.contractedDFG, adg, flattener,
+            candidates, contractedEdgeKinds, outerOpts);
+        if (!outerRoutingSucceeded) {
+          contractedState.restore(acceptedBufferizedCheckpoint);
+          contractedEdgeKinds = acceptedBufferizedEdgeKinds;
+          break;
+        }
+      } else {
+        runRefinement(contractedState, techPlan.contractedDFG, adg, flattener,
+                      candidates, outerOpts, &contractedEdgeKinds);
+        rebindScalarInputSentinels(contractedState, techPlan.contractedDFG,
+                                    adg, flattener);
+        bindMemrefSentinels(contractedState, techPlan.contractedDFG, adg);
+        bool outerRoutingSucceeded = runInterleavedPlaceRoute(
+            contractedState, techPlan.contractedDFG, adg, flattener,
+            candidates, contractedEdgeKinds, outerOpts);
+        if (!outerRoutingSucceeded) {
+          contractedState.restore(acceptedBufferizedCheckpoint);
+          contractedEdgeKinds = acceptedBufferizedEdgeKinds;
+          break;
+        }
       }
       MapperTimingSummary reroutedTiming =
           analyzeMapperTiming(contractedState, techPlan.contractedDFG, adg,

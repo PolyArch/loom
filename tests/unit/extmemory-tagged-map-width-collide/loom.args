@@ -1,2 +1,1 @@
---mapper-snapshot-interval-rounds 1
 --mapper-enable-route-aware-sa=false
