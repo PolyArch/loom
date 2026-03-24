@@ -24,6 +24,23 @@ FU_AREA_TABLE: Dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
+# Cache miss rates per contract visibility level
+# ---------------------------------------------------------------------------
+
+CACHE_MISS_RATES: Dict[str, float] = {
+    "LOCAL_SPM": 0.0,        # scratchpad: guaranteed hit
+    "SHARED_L2": 0.1,        # shared L2 cache: configurable miss rate
+    "EXTERNAL_DRAM": 0.7,    # off-chip DRAM: high miss rate
+}
+
+# ---------------------------------------------------------------------------
+# Subprocess timeout for Tier-2/3 compile evaluations (seconds)
+# ---------------------------------------------------------------------------
+
+TIER2_TIMEOUT_SEC = 60
+TIER3_TIMEOUT_SEC = 600
+
+# ---------------------------------------------------------------------------
 # Default search-space bounds
 # ---------------------------------------------------------------------------
 

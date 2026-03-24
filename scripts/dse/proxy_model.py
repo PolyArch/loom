@@ -1,8 +1,8 @@
-"""Contract-based analytical proxy model for Tier-1 evaluation.
+"""Analytical resource model for Tier-1 DSE evaluation.
 
-Provides fast (~1ms) architecture quality estimates from contract rates
-and resource constraints, without running the full compilation pipeline.
-Target: R^2 > 0.85 correlation with full compile results.
+Provides fast (~1ms) architecture quality estimates from resource constraints
+(operation histograms, FU counts, area formulas) and contract-informed
+estimations (cache stall via visibility, pipeline stall via ordering).
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from .design_space import CoreTypeConfig, DesignPoint
 from .dse_config import (
+    CACHE_MISS_RATES,
     FU_AREA_TABLE,
     PE_AREA_UM2,
     SRAM_AREA_PER_BYTE_UM2,
@@ -49,6 +50,22 @@ class KernelProfile:
     assigned_core_type_idx: int = 0
 
 
+# ---------------------------------------------------------------------------
+# Contract visibility levels
+# ---------------------------------------------------------------------------
+
+VISIBILITY_LOCAL_SPM = "LOCAL_SPM"
+VISIBILITY_SHARED_L2 = "SHARED_L2"
+VISIBILITY_EXTERNAL_DRAM = "EXTERNAL_DRAM"
+
+# ---------------------------------------------------------------------------
+# Contract ordering modes
+# ---------------------------------------------------------------------------
+
+ORDERING_FIFO = "FIFO"
+ORDERING_UNORDERED = "UNORDERED"
+
+
 @dataclass
 class ContractEdge:
     """A data-flow contract between two kernels."""
@@ -56,7 +73,17 @@ class ContractEdge:
     producer: str = ""
     consumer: str = ""
     production_rate: float = 1.0
+    consumption_rate: float = 1.0
     element_size_bytes: int = 4
+
+    # Contract visibility: where the data buffer resides in the memory
+    # hierarchy. Affects cache hit rate estimation.
+    visibility: str = VISIBILITY_LOCAL_SPM
+
+    # Contract ordering: whether data must be consumed in production order
+    # (FIFO) or can be consumed out-of-order (UNORDERED). Affects pipeline
+    # stall estimation.
+    ordering: str = ORDERING_FIFO
 
 
 @dataclass
@@ -88,6 +115,8 @@ class ProxyScore:
     area_um2: float = 0.0            # estimated total area in um^2
     communication_cost: float = 0.0  # estimated inter-core data transfer cost
     utilization: float = 0.0         # average PE utilization (0-1)
+    cache_stall: float = 0.0         # estimated cache miss stall cycles
+    pipeline_stall: float = 0.0      # estimated pipeline stall cycles
     feasible: bool = True            # whether mapping is feasible at all
 
     def composite_score(self, area_weight: float = 0.5) -> float:
@@ -104,14 +133,20 @@ class ProxyScore:
 
 
 # ---------------------------------------------------------------------------
-# Contract proxy model
+# Analytical resource model
 # ---------------------------------------------------------------------------
 
-class ContractProxy:
-    """Tier-1 analytical proxy model.
+class AnalyticalResourceModel:
+    """Tier-1 analytical resource model.
 
     Estimates throughput, area, and communication cost from architecture
     parameters and kernel profiles alone -- no compilation needed.
+
+    The model combines resource-counting (FU/PE area, operation histograms)
+    with contract-informed estimations:
+    - Cache stall: uses contract visibility to model memory hierarchy penalty.
+    - Pipeline stall: uses contract ordering and rate mismatch to model
+      producer/consumer synchronization overhead.
     """
 
     def evaluate(
@@ -150,9 +185,20 @@ class ContractProxy:
             total_pe_demand += kernel.dfg_node_count
             total_pe_supply += ct.num_pes * ii
 
-        # Critical-path throughput
+        # Cache stall estimation (contract visibility)
+        cache_stall = self._estimate_cache_stalls(design, workload)
+
+        # Pipeline stall estimation (contract ordering + rate)
+        pipeline_stall = self._estimate_pipeline_stalls(workload, kernel_iis)
+
+        # Effective II includes stall penalties
+        effective_iis: Dict[str, float] = {}
+        for name, ii in kernel_iis.items():
+            effective_iis[name] = ii + cache_stall + pipeline_stall
+
+        # Critical-path throughput (using effective IIs)
         throughput = self._estimate_throughput(
-            workload.critical_path, kernel_iis
+            workload.critical_path, effective_iis
         )
 
         # Area estimate
@@ -171,6 +217,8 @@ class ContractProxy:
             area_um2=area,
             communication_cost=comm_cost,
             utilization=utilization,
+            cache_stall=cache_stall,
+            pipeline_stall=pipeline_stall,
             feasible=True,
         )
 
@@ -219,6 +267,101 @@ class ContractProxy:
         if mem_fus <= 0:
             return float("inf")
         return math.ceil(mem_ops / mem_fus)
+
+    def _estimate_cache_stalls(
+        self,
+        design: DesignPoint,
+        workload: WorkloadProfile,
+    ) -> float:
+        """Estimate cache miss stall cycles using contract visibility.
+
+        Each contract's visibility field indicates where the data buffer
+        resides in the memory hierarchy:
+        - LOCAL_SPM: data in scratchpad, 100% hit rate, no stall.
+        - SHARED_L2: data in shared L2 cache, configurable miss rate.
+        - EXTERNAL_DRAM: data in off-chip DRAM, high miss rate.
+
+        The stall is proportional to the miss rate times the number of
+        memory accesses on each contract, weighted by the miss penalty
+        (which depends on where in the hierarchy the miss occurs).
+        """
+        if not workload.contracts:
+            return 0.0
+
+        miss_rates = CACHE_MISS_RATES
+        total_stall = 0.0
+
+        for contract in workload.contracts:
+            vis = contract.visibility
+
+            miss_rate = miss_rates.get(vis, 0.0)
+            if miss_rate <= 0.0:
+                continue
+
+            # Penalty in cycles per miss depends on hierarchy level
+            if vis == VISIBILITY_SHARED_L2:
+                miss_penalty = 10.0   # L2 miss -> DRAM fetch
+            elif vis == VISIBILITY_EXTERNAL_DRAM:
+                miss_penalty = 100.0  # DRAM access latency
+            else:
+                miss_penalty = 0.0
+
+            # Volume of data accessed on this contract per iteration
+            accesses = contract.production_rate
+            stall = accesses * miss_rate * miss_penalty
+            total_stall += stall
+
+        return total_stall
+
+    def _estimate_pipeline_stalls(
+        self,
+        workload: WorkloadProfile,
+        kernel_iis: Dict[str, float],
+    ) -> float:
+        """Estimate pipeline stalls from contract ordering and rate mismatch.
+
+        When a producer and consumer operate at different rates, the faster
+        one must stall waiting for the slower one. The ordering mode affects
+        how severe this synchronization overhead is:
+        - FIFO: strict ordering requires the consumer to wait for each
+          element in sequence. Rate mismatch causes bubble cycles.
+        - UNORDERED: out-of-order consumption allows better overlap,
+          reducing the effective stall penalty.
+        """
+        if not workload.contracts or not kernel_iis:
+            return 0.0
+
+        total_stall = 0.0
+
+        for contract in workload.contracts:
+            prod_ii = kernel_iis.get(contract.producer, 1.0)
+            cons_ii = kernel_iis.get(contract.consumer, 1.0)
+
+            # Rate mismatch: ratio of the slower to faster kernel II
+            if prod_ii <= 0 or cons_ii <= 0:
+                continue
+
+            rate_ratio = max(prod_ii, cons_ii) / min(prod_ii, cons_ii)
+            if rate_ratio <= 1.0:
+                continue
+
+            # Mismatch penalty: proportional to how far from 1:1 the rates are
+            mismatch_penalty = rate_ratio - 1.0
+
+            # Ordering mode scales the penalty
+            if contract.ordering == ORDERING_FIFO:
+                # FIFO: full penalty from rate mismatch (blocking synchronous)
+                ordering_factor = 1.0
+            elif contract.ordering == ORDERING_UNORDERED:
+                # UNORDERED: reduced penalty (can overlap partial consumption)
+                ordering_factor = 0.3
+            else:
+                ordering_factor = 1.0
+
+            stall = mismatch_penalty * ordering_factor
+            total_stall += stall
+
+        return total_stall
 
     def _estimate_throughput(
         self,
