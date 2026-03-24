@@ -123,8 +123,9 @@ function(add_tapestry_pipeline_tool target_name source_file)
   )
 endfunction()
 
-# tapestry_compile -- multi-core compilation only
+# tapestry_compile -- multi-core compilation with auto-tdg support
 add_tapestry_pipeline_tool(tapestry_compile tapestry_compile.cpp)
+target_link_libraries(tapestry_compile PRIVATE TapestryAutoAnalyze)
 
 # tapestry_pipeline -- full pipeline (compile + simulate + RTL)
 add_tapestry_pipeline_tool(tapestry_pipeline tapestry_pipeline.cpp)
