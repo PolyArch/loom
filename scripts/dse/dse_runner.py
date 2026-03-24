@@ -23,7 +23,7 @@ import numpy as np
 
 from .bayesian_opt import AcquisitionType, BayesianOptimizer
 from .design_space import DesignPoint, DesignSpace
-from .dse_config import DSEConfig
+from .dse_config import DSEConfig, TIER2_TIMEOUT_SEC, TIER3_TIMEOUT_SEC
 from .pareto import (
     ParetoEntry,
     extract_pareto_front,
@@ -31,7 +31,7 @@ from .pareto import (
     merge_fronts,
     pareto_from_scores,
 )
-from .proxy_model import ContractProxy, ProxyScore, WorkloadProfile
+from .proxy_model import AnalyticalResourceModel, ProxyScore, WorkloadProfile
 from .spectral_clustering import CoreTypeDiscovery
 
 logger = logging.getLogger(__name__)
@@ -137,7 +137,7 @@ class DSEEngine:
         self.workloads = workloads
         self.config = config or DSEConfig()
 
-        self.proxy = ContractProxy()
+        self.proxy = AnalyticalResourceModel()
         self.stats = DSEStats()
         self.pareto_front: List[ParetoEntry] = []
         self.all_evaluated: List[ParetoEntry] = []
@@ -313,7 +313,7 @@ class DSEEngine:
         candidate: DesignPoint,
         workload: WorkloadProfile,
     ) -> ProxyScore:
-        """Tier 1: fast contract-based proxy evaluation."""
+        """Tier 1: fast analytical resource model evaluation."""
         return self.proxy.evaluate(candidate, workload)
 
     def _evaluate_tier2(
@@ -379,7 +379,7 @@ class DSEEngine:
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=300 if not partial else 30,
+                    timeout=TIER2_TIMEOUT_SEC if partial else TIER3_TIMEOUT_SEC,
                 )
             except FileNotFoundError:
                 logger.warning(

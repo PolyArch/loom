@@ -171,7 +171,10 @@ def load_workload_profile(path: str) -> WorkloadProfile:
                 "producer": "matmul",
                 "consumer": "relu",
                 "production_rate": 1.0,
-                "element_size_bytes": 4
+                "consumption_rate": 1.0,
+                "element_size_bytes": 4,
+                "visibility": "LOCAL_SPM",
+                "ordering": "FIFO"
             }, ...
         ],
         "critical_path": ["matmul", "relu"]
@@ -204,7 +207,10 @@ def load_workload_profile(path: str) -> WorkloadProfile:
                 producer=cd.get("producer", ""),
                 consumer=cd.get("consumer", ""),
                 production_rate=cd.get("production_rate", 1.0),
+                consumption_rate=cd.get("consumption_rate", 1.0),
                 element_size_bytes=cd.get("element_size_bytes", 4),
+                visibility=cd.get("visibility", "LOCAL_SPM"),
+                ordering=cd.get("ordering", "FIFO"),
             )
         )
 
