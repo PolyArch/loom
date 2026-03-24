@@ -14,41 +14,13 @@
 #include <random>
 
 namespace loom {
+namespace mapper_detail {
 
-using namespace mapper_detail;
-
-namespace {
-
-struct SACostState {
-  double totalCost = 0.0;
-  bool enableGridCutLoad = false;
-  std::vector<double> rowCutLoad;
-  std::vector<double> colCutLoad;
-  struct UndoRecord {
-    bool isRow = false;
-    int index = -1;
-    double oldValue = 0.0;
-  };
-  struct Savepoint {
-    size_t undoMarker = 0;
-    double totalCost = 0.0;
-  };
-  std::vector<UndoRecord> undoLog;
-  std::vector<size_t> savepointMarkers;
-};
-
-struct SAAdaptiveState {
-  unsigned windowIterations = 0;
-  unsigned windowAccepted = 0;
-  unsigned windowBestImprovements = 0;
-  unsigned iterationsSinceBestImprovement = 0;
-};
-
-double computeRouteAwareCheckpointCost(Mapper &mapper, const MappingState &state,
+double computeRouteAwareCheckpointCost(const MappingState &state,
                                        const Graph &dfg, const Graph &adg,
                                        const ADGFlattener &flattener,
                                        llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
-                                       const Mapper::Options &opts,
+                                       const MapperOptions &opts,
                                        double placementCost) {
   const double unroutedPenalty =
       computeUnroutedPenalty(state, dfg, edgeKinds) * 1000000.0;
@@ -56,13 +28,10 @@ double computeRouteAwareCheckpointCost(Mapper &mapper, const MappingState &state
       static_cast<double>(computeTotalMappedPathLen(state)) * 0.001;
   const MapperTimingSummary timingSummary =
       analyzeMapperTiming(state, dfg, adg, edgeKinds, opts.timing);
-  (void)mapper;
   return placementCost + unroutedPenalty + pathLenPenalty +
          timingSummary.estimatedThroughputCost +
          0.1 * timingSummary.estimatedClockPeriod;
 }
-
-constexpr double kCutLoadQuadraticWeight = 0.006;
 
 SACostState::Savepoint beginCostSavepoint(SACostState &costState) {
   SACostState::Savepoint savepoint{costState.undoLog.size(),
@@ -273,7 +242,7 @@ void applyPlacementDeltaForMovedNodes(
 }
 
 void applyAdaptiveCoolingWindow(double &temperature,
-                                const Mapper::Options &opts,
+                                const MapperOptions &opts,
                                 SAAdaptiveState &adaptiveState) {
   const auto &refineOpts = opts.refinement;
   if (!refineOpts.adaptiveCoolingEnabled || adaptiveState.windowIterations == 0)
@@ -312,7 +281,9 @@ void applyAdaptiveCoolingWindow(double &temperature,
   adaptiveState.windowBestImprovements = 0;
 }
 
-} // namespace
+} // namespace mapper_detail
+
+using namespace mapper_detail;
 
 bool Mapper::runRefinement(
     MappingState &state, const Graph &dfg, const Graph &adg,
@@ -354,7 +325,7 @@ bool Mapper::runRefinement(
     ++activeSearchSummary_.routeAwareRefinementPasses;
   double currentObjective =
       routeAwareMode
-          ? computeRouteAwareCheckpointCost(*this, state, dfg, adg, flattener,
+          ? computeRouteAwareCheckpointCost(state, dfg, adg, flattener,
                                             *edgeKinds, opts,
                                             costState.totalCost)
           : costState.totalCost;
@@ -558,7 +529,7 @@ rollback_move:
     }
     double newCost =
         routeAwareMode
-            ? computeRouteAwareCheckpointCost(*this, state, dfg, adg, flattener,
+            ? computeRouteAwareCheckpointCost(state, dfg, adg, flattener,
                                               *edgeKinds, opts,
                                               costState.totalCost)
             : costState.totalCost;
@@ -603,7 +574,7 @@ rollback_move:
             double reroutedObjective =
                 rerouteSucceeded
                     ? computeRouteAwareCheckpointCost(
-                          *this, state, dfg, adg, flattener, *edgeKinds, opts,
+                          state, dfg, adg, flattener, *edgeKinds, opts,
                           costState.totalCost)
                     : std::numeric_limits<double>::infinity();
             if (!rerouteSucceeded ||

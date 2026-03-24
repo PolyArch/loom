@@ -17,6 +17,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <optional>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -143,6 +144,89 @@ collectUnroutedEdges(const MappingState &state, const Graph &dfg,
 unsigned countRoutedEdges(const MappingState &state, const Graph &dfg,
                           llvm::ArrayRef<TechMappedEdgeKind> edgeKinds);
 size_t computeTotalMappedPathLen(const MappingState &state);
+
+// --- Shared SA helpers (used by MapperRefinement and MapperRouteAwareSA) ---
+
+constexpr double kCutLoadQuadraticWeight = 0.006;
+
+struct SACostState {
+  double totalCost = 0.0;
+  bool enableGridCutLoad = false;
+  std::vector<double> rowCutLoad;
+  std::vector<double> colCutLoad;
+  struct UndoRecord {
+    bool isRow = false;
+    int index = -1;
+    double oldValue = 0.0;
+  };
+  struct Savepoint {
+    size_t undoMarker = 0;
+    double totalCost = 0.0;
+  };
+  std::vector<UndoRecord> undoLog;
+  std::vector<size_t> savepointMarkers;
+};
+
+struct SAAdaptiveState {
+  unsigned windowIterations = 0;
+  unsigned windowAccepted = 0;
+  unsigned windowBestImprovements = 0;
+  unsigned iterationsSinceBestImprovement = 0;
+};
+
+struct SAMoveResult {
+  bool moveOk = false;
+  llvm::SmallVector<IdIndex, 2> movedNodes;
+  llvm::DenseMap<IdIndex, IdIndex> oldHwBySwNode;
+};
+
+// SACostState savepoint management.
+SACostState::Savepoint beginCostSavepoint(SACostState &costState);
+void rollbackCostSavepoint(SACostState &costState,
+                           SACostState::Savepoint savepoint);
+void commitCostSavepoint(SACostState &costState,
+                         SACostState::Savepoint savepoint);
+
+// Internal cost helpers.
+void recordLoadUndo(SACostState &costState, bool isRow, int index,
+                    double oldValue);
+void adjustQuadraticLoad(std::vector<double> &loads, int index, double delta,
+                         double &totalCost, SACostState &costState,
+                         bool isRow);
+void applyEdgePlacementContribution(double sign, double edgeWeight,
+                                    IdIndex srcHw, IdIndex dstHw,
+                                    const Graph &adg,
+                                    const ADGFlattener &flattener,
+                                    SACostState &costState);
+
+// SA cost initialization and incremental update.
+SACostState initializeSACostState(const MappingState &state, const Graph &dfg,
+                                  const Graph &adg,
+                                  const ADGFlattener &flattener,
+                                  llvm::ArrayRef<double> edgeWeights);
+void applyPlacementDeltaForMovedNodes(
+    const llvm::SmallVectorImpl<IdIndex> &movedNodes,
+    const llvm::DenseMap<IdIndex, IdIndex> &oldHwBySwNode,
+    const MappingState &state, const Graph &dfg, const Graph &adg,
+    const ADGFlattener &flattener, llvm::ArrayRef<double> edgeWeights,
+    SACostState &costState);
+
+// Adaptive cooling.
+void applyAdaptiveCoolingWindow(double &temperature,
+                                const MapperOptions &opts,
+                                SAAdaptiveState &adaptiveState);
+
+// Edge collection for SA moves.
+llvm::SmallVector<IdIndex, 32>
+collectPlacementDeltaEdges(llvm::ArrayRef<IdIndex> movedNodes,
+                           const Graph &dfg);
+
+// Route-aware checkpoint cost.
+double computeRouteAwareCheckpointCost(
+    const MappingState &state, const Graph &dfg, const Graph &adg,
+    const ADGFlattener &flattener,
+    llvm::ArrayRef<TechMappedEdgeKind> edgeKinds,
+    const MapperOptions &opts, double placementCost);
 
 } // namespace mapper_detail
 } // namespace loom
