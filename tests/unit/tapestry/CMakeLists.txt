@@ -53,3 +53,24 @@ target_link_libraries(contract-inference-test PRIVATE
 set_target_properties(contract-inference-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
+
+# TaskGraph API tests (C07)
+add_executable(taskgraph-test TaskGraphTest.cpp)
+
+target_include_directories(taskgraph-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+  ${CMAKE_BINARY_DIR}/include
+)
+
+target_link_libraries(taskgraph-test PRIVATE
+  TapestryCore
+  LoomTDG
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(taskgraph-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)

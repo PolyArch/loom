@@ -90,6 +90,7 @@ function(add_tapestry_pipeline_tool target_name source_file)
   )
 
   target_link_libraries(${target_name} PRIVATE
+    TapestryCore
     LoomSystemCompiler
     LoomContractInference
     LoomMultiCoreSim
