@@ -19,6 +19,7 @@ add_library(LoomSystemCompiler STATIC
   ResourceTracker.cpp
   TapestryPipeline.cpp
   TDGLowering.cpp
+  TypeAdapters.cpp
 )
 
 target_include_directories(LoomSystemCompiler PUBLIC
