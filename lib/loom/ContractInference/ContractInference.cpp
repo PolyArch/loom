@@ -51,6 +51,16 @@ static LogicalResult processContract(tdg::ContractOp contractOp,
   OpBuilder builder(contractOp.getContext());
   unsigned elemSize = getElementSizeBytes(contractOp.getDataType());
 
+  // Warn if DROP or OVERWRITE backpressure is specified -- these modes are
+  // reserved for future implementation. Fall back to BLOCK behavior.
+  StringRef bp = contractOp.getBackpressure();
+  if (bp == "DROP" || bp == "OVERWRITE") {
+    contractOp.emitWarning()
+        << bp
+        << " backpressure not yet implemented, falling back to BLOCK";
+    contractOp->setAttr("backpressure", builder.getStringAttr("BLOCK"));
+  }
+
   // Look up producer and consumer kernels.
   auto producerOp = findKernel(graphOp, contractOp.getProducer());
   auto consumerOp = findKernel(graphOp, contractOp.getConsumer());

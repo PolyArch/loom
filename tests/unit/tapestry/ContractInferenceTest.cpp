@@ -9,13 +9,12 @@
 /// 5. TileShapeInference: edge cases (empty, zero)
 /// 6. BufferSizeInference: FIFO ordering
 /// 7. BufferSizeInference: UNORDERED ordering
-/// 8. BufferSizeInference: AFFINE_INDEXED ordering
-/// 9. BufferSizeInference: min <= max invariant
-/// 10. BufferSizeInference: double buffering heuristic
-/// 11. VisibilityInference: small volume -> LOCAL_SPM
-/// 12. VisibilityInference: medium volume -> SHARED_L2
-/// 13. VisibilityInference: large volume -> EXTERNAL_DRAM
-/// 14. VisibilityInference: mayFuse override
+/// 8. BufferSizeInference: min <= max invariant (FIFO with tiny SPM)
+/// 9. BufferSizeInference: double buffering heuristic
+/// 10. VisibilityInference: small volume -> LOCAL_SPM
+/// 11. VisibilityInference: medium volume -> SHARED_L2
+/// 12. VisibilityInference: large volume -> EXTERNAL_DRAM
+/// 13. VisibilityInference: mayFuse override
 
 #include "loom/ContractInference/BufferSizeInference.h"
 #include "loom/ContractInference/TileShapeInference.h"
@@ -250,43 +249,17 @@ static bool testBufferUnordered() {
   return true;
 }
 
-/// Test 8: AFFINE_INDEXED ordering buffer sizing.
-static bool testBufferAffineIndexed() {
-  BufferSizeInference bsi;
-  ContractSpec spec;
-  spec.ordering = Ordering::AFFINE_INDEXED;
-  spec.tileShape = {8, 8};
-  spec.productionRate = 64;
-  spec.consumptionRate = 64;
-
-  auto result = bsi.infer(spec, 4096, 4, 1);
-  // min = full tile = 8*8 = 64
-  if (result.minElements != 64) {
-    std::cerr << "FAIL: testBufferAffineIndexed - minElements="
-              << result.minElements << " expected 64\n";
-    return false;
-  }
-  // max = 4096 / 4 = 1024
-  if (result.maxElements != 1024) {
-    std::cerr << "FAIL: testBufferAffineIndexed - maxElements="
-              << result.maxElements << " expected 1024\n";
-    return false;
-  }
-  std::cerr << "PASS: testBufferAffineIndexed\n";
-  return true;
-}
-
-/// Test 9: min <= max invariant.
+/// Test 8: min <= max invariant with FIFO ordering and tiny SPM.
 static bool testBufferMinMaxInvariant() {
   BufferSizeInference bsi;
   ContractSpec spec;
-  spec.ordering = Ordering::AFFINE_INDEXED;
-  spec.tileShape = {32, 32}; // 1024 elements
+  spec.ordering = Ordering::FIFO;
   spec.productionRate = 1;
   spec.consumptionRate = 1;
 
   // Very small SPM: 16 bytes / 4 = 4 elements max.
-  auto result = bsi.infer(spec, 16, 4, 1);
+  // High latency so min would want to be large.
+  auto result = bsi.infer(spec, 16, 4, 100);
   if (result.minElements > result.maxElements) {
     std::cerr << "FAIL: testBufferMinMaxInvariant - min("
               << result.minElements << ") > max(" << result.maxElements
@@ -297,7 +270,7 @@ static bool testBufferMinMaxInvariant() {
   return true;
 }
 
-/// Test 10: Double buffering heuristic.
+/// Test 9: Double buffering heuristic.
 static bool testDoubleBufferingHeuristic() {
   BufferSizeInference bsi;
 
@@ -331,7 +304,7 @@ static bool testDoubleBufferingHeuristic() {
 // VisibilityInference tests
 //===----------------------------------------------------------------------===//
 
-/// Test 11: Small volume -> LOCAL_SPM.
+/// Test 10: Small volume -> LOCAL_SPM.
 static bool testVisibilityLocalSPM() {
   // volume = 4 * 16 * 4 = 256 bytes.
   // spm threshold = 4096 * 0.5 = 2048 bytes.
@@ -345,7 +318,7 @@ static bool testVisibilityLocalSPM() {
   return true;
 }
 
-/// Test 12: Medium volume -> SHARED_L2.
+/// Test 11: Medium volume -> SHARED_L2.
 static bool testVisibilitySharedL2() {
   // volume = 100 * 100 * 4 = 40,000 bytes.
   // spm threshold = 4096 * 0.5 = 2048. 40000 > 2048.
@@ -360,7 +333,7 @@ static bool testVisibilitySharedL2() {
   return true;
 }
 
-/// Test 13: Large volume -> EXTERNAL_DRAM.
+/// Test 12: Large volume -> EXTERNAL_DRAM.
 static bool testVisibilityExternalDRAM() {
   // volume = 1000 * 1000 * 4 = 4,000,000 bytes.
   // spm threshold = 4096 * 0.5 = 2048.
@@ -375,7 +348,7 @@ static bool testVisibilityExternalDRAM() {
   return true;
 }
 
-/// Test 14: mayFuse override -> always LOCAL_SPM regardless of volume.
+/// Test 13: mayFuse override -> always LOCAL_SPM regardless of volume.
 static bool testVisibilityMayFuseOverride() {
   // Large volume but mayFuse=true should force LOCAL_SPM.
   auto vis = inferVisibility(1000, 1000, 4, 4096, 0.5, 262144, 0.8, true);
@@ -411,7 +384,6 @@ int main() {
   // BufferSizeInference tests
   run(testBufferFIFO);
   run(testBufferUnordered);
-  run(testBufferAffineIndexed);
   run(testBufferMinMaxInvariant);
   run(testDoubleBufferingHeuristic);
 

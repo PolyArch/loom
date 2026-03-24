@@ -42,19 +42,6 @@ BufferSizeResult BufferSizeInference::infer(const ContractSpec &contract,
     // No ordering constraint; a single-element buffer suffices.
     result.minElements = 1;
     break;
-
-  case Ordering::AFFINE_INDEXED: {
-    // Random access required: buffer must hold the full tile.
-    if (!contract.tileShape.empty()) {
-      int64_t tileElements = 1;
-      for (int64_t dim : contract.tileShape)
-        tileElements *= dim;
-      result.minElements = std::max(static_cast<int64_t>(1), tileElements);
-    } else {
-      result.minElements = 1;
-    }
-    break;
-  }
   }
 
   // Enforce min <= max invariant.

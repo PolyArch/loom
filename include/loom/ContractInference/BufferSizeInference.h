@@ -26,9 +26,8 @@ public:
   /// Infer buffer size requirements for a contract edge.
   ///
   /// Rules by ordering:
-  ///   FIFO:           min = max(1, producerLatencyCycles / consumptionRate)
-  ///   UNORDERED:      min = 1 (no ordering constraint)
-  ///   AFFINE_INDEXED: min = full tile size (random access required)
+  ///   FIFO:      min = max(1, producerLatencyCycles / consumptionRate)
+  ///   UNORDERED: min = 1 (no ordering constraint)
   ///
   /// max = spmBudgetBytes / elementSizeBytes
   /// doubleBuffering = (productionRate >= 2 * consumptionRate)

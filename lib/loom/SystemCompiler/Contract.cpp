@@ -13,8 +13,6 @@ const char *orderingToString(Ordering o) {
     return "FIFO";
   case Ordering::UNORDERED:
     return "UNORDERED";
-  case Ordering::AFFINE_INDEXED:
-    return "AFFINE_INDEXED";
   }
   return "FIFO";
 }
@@ -22,8 +20,6 @@ const char *orderingToString(Ordering o) {
 Ordering orderingFromString(const std::string &s) {
   if (s == "UNORDERED")
     return Ordering::UNORDERED;
-  if (s == "AFFINE_INDEXED")
-    return Ordering::AFFINE_INDEXED;
   return Ordering::FIFO;
 }
 

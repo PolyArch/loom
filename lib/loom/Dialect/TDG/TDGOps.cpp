@@ -38,9 +38,9 @@ LogicalResult ContractOp::verify() {
   }
 
   // Validate ordering value
-  if (ord != "FIFO" && ord != "UNORDERED" && ord != "AFFINE_INDEXED") {
+  if (ord != "FIFO" && ord != "UNORDERED") {
     return emitOpError() << "invalid ordering '" << ord
-                         << "'; expected FIFO, UNORDERED, or AFFINE_INDEXED";
+                         << "'; expected FIFO or UNORDERED";
   }
 
   // Validate backpressure value

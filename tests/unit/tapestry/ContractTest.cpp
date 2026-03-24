@@ -258,9 +258,7 @@ static bool testEnumConversions() {
   // Ordering
   if (orderingFromString(orderingToString(Ordering::FIFO)) != Ordering::FIFO ||
       orderingFromString(orderingToString(Ordering::UNORDERED)) !=
-          Ordering::UNORDERED ||
-      orderingFromString(orderingToString(Ordering::AFFINE_INDEXED)) !=
-          Ordering::AFFINE_INDEXED) {
+          Ordering::UNORDERED) {
     std::cerr << "FAIL: testEnumConversions - Ordering\n";
     return false;
   }

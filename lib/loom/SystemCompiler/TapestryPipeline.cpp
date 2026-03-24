@@ -1,4 +1,9 @@
 #include "loom/SystemCompiler/TapestryPipeline.h"
+#include "loom/ContractInference/ContractInference.h"
+
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Parser/Parser.h"
+#include "llvm/Support/SourceMgr.h"
 
 #include <sstream>
 
@@ -135,6 +140,31 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
   for (auto stage : config.stages) {
     switch (stage) {
     case PipelineStage::COMPILE: {
+      // Run ContractInferencePass on the TDG module before BendersDriver.
+      // This fills in missing contract fields (rates, tile shape, buffer
+      // sizes, visibility) and warns on unsupported backpressure modes.
+      if (!config.tdgPath.empty()) {
+        auto tdgModuleRef = mlir::parseSourceFile<mlir::ModuleOp>(
+            config.tdgPath, &context);
+        if (tdgModuleRef) {
+          if (config.verbose)
+            llvm::errs() << "Running ContractInferencePass...\n";
+
+          ContractInferencePass::Options ciOpts;
+          ciOpts.defaultSPMCapacityBytes = config.ciSPMCapacityBytes;
+          ciOpts.sharedL2CapacityBytes = config.ciL2CapacityBytes;
+          ciOpts.spmThresholdFraction = config.ciSPMThresholdFraction;
+          ciOpts.l2ThresholdFraction = config.ciL2ThresholdFraction;
+          ciOpts.defaultProducerLatencyCycles = config.ciProducerLatencyCycles;
+
+          ContractInferencePass ciPass;
+          (void)ciPass.run(*tdgModuleRef, ciOpts);
+
+          if (config.verbose)
+            llvm::errs() << "ContractInferencePass completed.\n";
+        }
+      }
+
       PipelineCompilationResult compResult;
       compResult.metrics.numBendersIterations = 0;
       compResult.metrics.compilationTimeSec = 0.0;

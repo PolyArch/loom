@@ -7,6 +7,7 @@
 
 #include "mlir/IR/MLIRContext.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -99,6 +100,15 @@ struct TapestryPipelineConfig {
   PipelineSimConfig simConfig;
   PipelineSVGenOptions svgenOpts;
   std::string rtlSourceDir;
+
+  /// Contract inference options (SPM/L2 capacity for buffer/visibility).
+  /// These mirror ContractInferencePass::Options to avoid a circular
+  /// header dependency between SystemCompiler and ContractInference.
+  uint64_t ciSPMCapacityBytes = 4096;
+  uint64_t ciL2CapacityBytes = 262144;
+  double ciSPMThresholdFraction = 0.5;
+  double ciL2ThresholdFraction = 0.8;
+  unsigned ciProducerLatencyCycles = 1;
 };
 
 /// Compilation metrics from a successful compile stage.

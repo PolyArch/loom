@@ -15,7 +15,7 @@ class Value;
 
 namespace loom {
 
-enum class Ordering { FIFO, UNORDERED, AFFINE_INDEXED };
+enum class Ordering { FIFO, UNORDERED };
 
 enum class Backpressure { BLOCK, DROP, OVERWRITE };
 
@@ -38,6 +38,8 @@ struct ContractSpec {
   Ordering ordering = Ordering::FIFO;
 
   // --- Rate and granularity ---
+  // Rates are integer constants derived from loop trip count analysis.
+  // int64_t is the correct representation (not affine expressions).
   std::optional<int64_t> productionRate;  // elements per invocation
   std::optional<int64_t> consumptionRate; // elements per invocation
   std::optional<std::pair<int64_t, int64_t>> steadyStateRatio; // num/den
@@ -56,9 +58,15 @@ struct ContractSpec {
 
   // --- Transformation permissions ---
   bool mayFuse = true;
+  /// Advisory hint for future optimizer passes; not enforced by the current
+  /// compiler. Specifies whether the optimizer may replicate this edge.
   bool mayReplicate = true;
+  /// Advisory hint for future optimizer passes; not enforced by the current
+  /// compiler. Specifies whether the optimizer may pipeline this edge.
   bool mayPipeline = true;
   bool mayReorder = false;
+  /// Advisory hint for future optimizer passes; not enforced by the current
+  /// compiler. Specifies whether the optimizer may retile this edge.
   bool mayRetile = true;
 
   // --- Populated by L2 compiler (achieved values) ---
