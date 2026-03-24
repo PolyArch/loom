@@ -1,6 +1,7 @@
 build/
 .cache/
 out/
+tapestry-output/
 node_modules/
 package.json
 package-lock.json
