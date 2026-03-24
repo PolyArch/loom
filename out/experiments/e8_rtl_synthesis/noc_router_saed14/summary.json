@@ -1,0 +1,38 @@
+{
+  "design_name": "noc_router",
+  "pdk": "saed14",
+  "clock_period_ns": 2.0,
+  "synthesis_success": true,
+  "area": {
+    "combinational_area": 2256.541159,
+    "noncombinational_area": 2171.248770,
+    "buf_inv_area": 323.587196,
+    "macro_blackbox_area": 0.0,
+    "net_interconnect_area": 7812.965357,
+    "total_cell_area": 4427.789929,
+    "total_area": 12240.755285
+  },
+  "timing": {
+    "worst_slack_ns": 0.000489,
+    "met_timing": true,
+    "critical_path_length_ns": 1.88,
+    "levels_of_logic": 35,
+    "worst_path_from": "gen_input_port[0].u_input_port/gen_vc_fifo[0].u_fifo/gen_general.rd_ptr_reg[0]",
+    "worst_path_to": "gen_input_port[2].u_input_port/gen_vc_fifo[0].u_fifo/gen_general.rd_ptr_reg[1]",
+    "hold_wns_ns": 0.02,
+    "hold_violations": 261
+  },
+  "power": {
+    "cell_internal_power_mw": 2.1249,
+    "net_switching_power_mw": 1.2628,
+    "total_dynamic_power_mw": 3.3876,
+    "cell_leakage_power_uw": 1.5022,
+    "total_power_mw": 3.3892
+  },
+  "cell_count": {
+    "total_cells": 9401,
+    "combinational_cells": 6976,
+    "sequential_cells": 2425,
+    "buf_inv_cells": 1170
+  }
+}

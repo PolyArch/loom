@@ -6,62 +6,69 @@ set by domain expert) and simulated compiler inference for the optional fields.
 The minimal input provides only ordering + data_type; the compiler must infer
 rate, tile_shape, visibility, double_buffering, and backpressure.
 
-Inference heuristics used:
-- **rate**: Inferred as product of tile_shape dimensions (matches manual if
-  tile_shape is correct)
-- **tile_shape**: Inferred as 1D array of [rate] (often differs from manual
-  multi-dimensional shapes)
-- **visibility**: LOCAL_SPM for rates < 100K, SHARED_L2 for larger
-- **double_buffering**: Enabled for rates > 4096
-- **backpressure**: Defaults to BLOCK
+The inference uses fixed defaults for all inferable fields (no ground-truth
+leakage). This represents what a user would get when providing only the
+required fields and relying entirely on compiler defaults.
+
+Inference defaults used:
+- **rate**: 1024 (fixed default)
+- **tile_shape**: [1024] (fixed 1D default)
+- **visibility**: LOCAL_SPM
+- **double_buffering**: false
+- **backpressure**: BLOCK
+
+Note: The ContractInferencePass binary was not used for this run because the
+`--dump-inferred-contracts` flag is not yet supported. Results are marked as
+"simulated" in the CSV. When the compiler pass is available, it should produce
+better results for rate and tile_shape inference.
 
 ## Results
 
 | Domain         | Contracts | Fields Match | Match Rate | Avg II Delta |
 |----------------|----------:|-------------:|-----------:|-------------:|
-| ai_llm         |         7 |        18/35 |      51.4% |         0.0% |
-| dsp_ofdm       |         5 |        15/25 |      60.0% |       177.5% |
-| arvr_stereo    |         4 |        10/20 |      50.0% |         0.0% |
-| robotics_vio   |         4 |        11/20 |      55.0% |         0.0% |
+| ai_llm         |         7 |        13/35 |      37.1% |        83.5% |
+| dsp_ofdm       |         5 |         8/25 |      32.0% |        46.6% |
+| arvr_stereo    |         4 |         6/20 |      30.0% |        81.2% |
+| robotics_vio   |         4 |         7/20 |      35.0% |        75.9% |
 | graph_analytics|         3 |         9/15 |      60.0% |         0.0% |
-| zk_stark       |         5 |        19/25 |      76.0% |         0.0% |
-| **Total**      |    **28** | **82/140**   |  **58.6%** |    **31.7%** |
+| zk_stark       |         5 |        11/25 |      44.0% |     14506.7% |
+| **Total**      |    **28** |   **54/140** |  **38.6%** |   **2642.1%** |
 
-### Per-field accuracy
-- **rate**: 100% match (inferred from tile_shape product)
-- **visibility**: 93% match (only mismatches for GLOBAL_MEM/SHARED_L2 edges)
-- **double_buffering**: 75% match (conservative heuristic over-enables for
-  high-rate edges)
-- **tile_shape**: 0% match (inference produces 1D shapes; manual uses 2D/3D)
-- **backpressure**: 0% match (manual TDGs did not specify backpressure, so
-  comparison against N/A always fails -- this is a measurement artifact)
+### Per-field accuracy (from CSV data)
+- **rate**: 14.3% match (4/28) -- default 1024 only matches graph_analytics
+  and zk_stark::ntt edges
+- **tile_shape**: 14.3% match (4/28) -- default [1024] only matches the same
+  edges as rate
+- **visibility**: 89.3% match (25/28) -- LOCAL_SPM default is correct for most
+  edges; mismatches for GLOBAL_MEM in graph_analytics
+- **double_buffering**: 75.0% match (21/28) -- false default is correct for
+  most edges; mismatches where manual enables buffering
+- **backpressure**: 0.0% match (0/28) -- manual TDGs do not specify
+  backpressure (N/A), so comparison against BLOCK always fails
 
 ## Key Findings
 
-1. **Rate inference is accurate** (100%). When tile_shape is known, the
-   production rate equals the product of tile dimensions, which matches the
-   manual specification.
+1. **Rate and tile_shape are the hardest to infer from defaults alone**. The
+   fixed default of 1024 only matches 4 of 28 edges. Real compiler inference
+   (when available) would analyze kernel loop bounds to produce better values.
 
-2. **Tile shape is the hardest to infer**. The compiler defaults to 1D shapes
-   (e.g., [2048]) while domain experts specify multi-dimensional tiles
-   (e.g., [32, 64]) that match the kernel's loop nest structure. This has
-   no II impact when total elements are the same, but affects data layout.
+2. **Visibility inference works well** (89.3%) because LOCAL_SPM is the
+   dominant pattern. Only graph_analytics uses GLOBAL_MEM, accounting for all
+   3 mismatches.
 
-3. **Visibility inference works well** for most edges (LOCAL_SPM is the common
-   case). Graph analytics edges use EXTERNAL_DRAM/GLOBAL_MEM, which is not
-   captured by the rate-based heuristic.
+3. **Backpressure shows 0% match** due to a measurement artifact: the manual
+   TDGs do not explicitly specify backpressure, so the field reads as N/A.
+   The comparison against the BLOCK default always fails. This does not
+   indicate a real inference problem.
 
-4. **Double buffering heuristic is conservative** -- it enables buffering for
-   edges with rate > 4096, while domain experts sometimes omit it for large
-   edges where latency hiding is not needed (e.g., gelu->ffn2 in ai_llm).
+4. **II delta is very high for zk_stark** because small-rate edges (rate=3, 4,
+   8) get a default of 1024, inflating the tile element count dramatically.
+   This would not occur with real compiler inference that reads kernel bounds.
 
-5. **II delta is negligible for most domains** (0%). The dsp_ofdm domain
-   shows significant delta (177.5% on equalizer->qam_demod) because the
-   inferred tile_shape changes the effective tile element count.
-
-6. **ZK/STARK has the best inference accuracy** (76%) because its edges
-   use simple 1D tile shapes that match the inference heuristic.
+5. **graph_analytics has the best match rate** (60%) because its edges happen
+   to use rate=1024 and tile_shape=[1024], matching the defaults.
 
 ## Data provenance
 - CSV: out/experiments/E03/inference_quality.csv
-- Inference method: heuristic simulation (compiler ContractInference pass)
+- Inference method: simulated (fixed defaults, no compiler binary used)
+- All data marked as "simulated" in the method column

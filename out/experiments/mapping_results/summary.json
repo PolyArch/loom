@@ -1,0 +1,671 @@
+{
+  "total_runs": 66,
+  "all_compiled": 66,
+  "successfully_mapped": 4,
+  "mapping_rate": "4/66 (6.1%)",
+  "per_adg_size": {
+    "2x2": {
+      "total": 22,
+      "compiled": 22,
+      "mapped": 0,
+      "mapping_rate": "0/22 (0.0%)",
+      "mapped_kernels": []
+    },
+    "3x3": {
+      "total": 22,
+      "compiled": 22,
+      "mapped": 2,
+      "mapping_rate": "2/22 (9.1%)",
+      "mapped_kernels": [
+        "dsp_ofdm/fft_butterfly",
+        "zk_stark/ntt"
+      ]
+    },
+    "5x5": {
+      "total": 22,
+      "compiled": 22,
+      "mapped": 2,
+      "mapping_rate": "2/22 (9.1%)",
+      "mapped_kernels": [
+        "dsp_ofdm/fft_butterfly",
+        "zk_stark/ntt"
+      ]
+    }
+  },
+  "per_domain": {
+    "ai_llm": {
+      "total": 24,
+      "mapped": 0,
+      "mapping_rate": "0/24 (0.0%)",
+      "per_adg_size": {
+        "2x2": "0/8",
+        "3x3": "0/8",
+        "5x5": "0/8"
+      }
+    },
+    "arvr_stereo": {
+      "total": 15,
+      "mapped": 0,
+      "mapping_rate": "0/15 (0.0%)",
+      "per_adg_size": {
+        "2x2": "0/5",
+        "3x3": "0/5",
+        "5x5": "0/5"
+      }
+    },
+    "dsp_ofdm": {
+      "total": 15,
+      "mapped": 2,
+      "mapping_rate": "2/15 (13.3%)",
+      "per_adg_size": {
+        "2x2": "0/5",
+        "3x3": "1/5",
+        "5x5": "1/5"
+      }
+    },
+    "robotics_vio": {
+      "total": 3,
+      "mapped": 0,
+      "mapping_rate": "0/3 (0.0%)",
+      "per_adg_size": {
+        "2x2": "0/1",
+        "3x3": "0/1",
+        "5x5": "0/1"
+      }
+    },
+    "zk_stark": {
+      "total": 9,
+      "mapped": 2,
+      "mapping_rate": "2/9 (22.2%)",
+      "per_adg_size": {
+        "2x2": "0/3",
+        "3x3": "1/3",
+        "5x5": "1/3"
+      }
+    }
+  },
+  "status_breakdown": {
+    "dfg_build_failed": 62,
+    "mapped": 4
+  },
+  "successfully_mapped_details": [
+    {
+      "kernel": "dsp_ofdm/fft_butterfly",
+      "adg_size": "3x3",
+      "techmap_coverage": 0.07692308,
+      "estimated_ii": 1,
+      "edge_routings": 26
+    },
+    {
+      "kernel": "dsp_ofdm/fft_butterfly",
+      "adg_size": "5x5",
+      "techmap_coverage": 0.07692308,
+      "estimated_ii": 1,
+      "edge_routings": 26
+    },
+    {
+      "kernel": "zk_stark/ntt",
+      "adg_size": "3x3",
+      "techmap_coverage": 0.0,
+      "estimated_ii": 1,
+      "edge_routings": 37
+    },
+    {
+      "kernel": "zk_stark/ntt",
+      "adg_size": "5x5",
+      "techmap_coverage": 0.0,
+      "estimated_ii": 1,
+      "edge_routings": 37
+    }
+  ],
+  "results": [
+    {
+      "domain": "ai_llm",
+      "kernel": "attn_output",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "attn_output",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "attn_output",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "attn_score",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "attn_score",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "attn_score",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "ffn1",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "ffn1",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "ffn1",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "ffn2",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "ffn2",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "ffn2",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "gelu",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "gelu",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "gelu",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "layernorm",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "layernorm",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "layernorm",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "qkv_proj",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "qkv_proj",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "qkv_proj",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "softmax",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "softmax",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "ai_llm",
+      "kernel": "softmax",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "harris_corner",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "harris_corner",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "harris_corner",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "image_warp",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "image_warp",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "image_warp",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "post_filter",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "post_filter",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "post_filter",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "sad_matching",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "sad_matching",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "sad_matching",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "stereo_disparity",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "stereo_disparity",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "arvr_stereo",
+      "kernel": "stereo_disparity",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "channel_est",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "channel_est",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "channel_est",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "crc_check",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "crc_check",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "crc_check",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "equalizer",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "equalizer",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "equalizer",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "fft_butterfly",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "fft_butterfly",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": true,
+      "techmap_coverage": 0.07692308,
+      "techmap_selected_candidates": 1,
+      "techmap_conservative_fallback": 12,
+      "estimated_ii": 1,
+      "edge_routings_count": 26,
+      "status": "mapped"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "fft_butterfly",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": true,
+      "techmap_coverage": 0.07692308,
+      "techmap_selected_candidates": 1,
+      "techmap_conservative_fallback": 12,
+      "estimated_ii": 1,
+      "edge_routings_count": 26,
+      "status": "mapped"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "qam_demod",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "qam_demod",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "dsp_ofdm",
+      "kernel": "qam_demod",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "robotics_vio",
+      "kernel": "feature_match",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "robotics_vio",
+      "kernel": "feature_match",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "robotics_vio",
+      "kernel": "feature_match",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "zk_stark",
+      "kernel": "msm",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "zk_stark",
+      "kernel": "msm",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "zk_stark",
+      "kernel": "msm",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "zk_stark",
+      "kernel": "ntt",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "zk_stark",
+      "kernel": "ntt",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": true,
+      "techmap_coverage": 0.0,
+      "techmap_selected_candidates": 0,
+      "techmap_conservative_fallback": 20,
+      "estimated_ii": 1,
+      "edge_routings_count": 37,
+      "status": "mapped"
+    },
+    {
+      "domain": "zk_stark",
+      "kernel": "ntt",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": true,
+      "techmap_coverage": 0.0,
+      "techmap_selected_candidates": 0,
+      "techmap_conservative_fallback": 20,
+      "estimated_ii": 1,
+      "edge_routings_count": 37,
+      "status": "mapped"
+    },
+    {
+      "domain": "zk_stark",
+      "kernel": "poly_eval",
+      "adg_size": "2x2",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "zk_stark",
+      "kernel": "poly_eval",
+      "adg_size": "3x3",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    },
+    {
+      "domain": "zk_stark",
+      "kernel": "poly_eval",
+      "adg_size": "5x5",
+      "compiled": true,
+      "mapped": false,
+      "status": "dfg_build_failed"
+    }
+  ]
+}

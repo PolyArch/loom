@@ -1,0 +1,20 @@
+{
+  "experiment": "E21_baseline_comparison",
+  "timestamp": "2026-03-24T07:04:04Z",
+  "git_hash": "4d4c308",
+  "cgra_clock_mhz": 500,
+  "cgra_power_w": 0.5,
+  "total_kernels": 33,
+  "mapped_kernels": 14,
+  "mapping_rate": 0.42424242424242425,
+  "geomean_speedup_vs_cpu1t": 1.47,
+  "geomean_speedup_vs_gpu": 0.001246,
+  "geomean_efficiency_vs_cpu": 500.97,
+  "geomean_efficiency_vs_gpu": 0.1871,
+  "data_sources": {
+    "cgra_mapping": "out/experiments/paper_results/e4_mapping_quality.json",
+    "cpu_baselines": "out/experiments/e10_cpu_baselines/cpu_results.json",
+    "gpu_baselines": "out/experiments/e10_gpu_baselines/gpu_results.json",
+    "synthesis": "out/experiments/e8_rtl_synthesis/synthesis_summary.json"
+  }
+}

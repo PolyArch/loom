@@ -1,0 +1,35 @@
+E09: Contract Ablation Summary
+================================
+
+Provenance: git 4d4c308, 2026-03-24T07:05:22Z
+Data: out/experiments/E09/ablation.csv (30 rows)
+Architecture: 2x2 Heterogeneous (2 GP + 2 DSP)
+
+Ablation Levels: full_tdc, no_permissions, no_visibility, dependency_only, no_contracts
+
+Normalized Cost (vs full_tdc = 1.0)
+--------------------------------------
+  Domain          full   no_perm  no_vis   dep_only  no_contract
+  ai_llm          1.000  1.000    2.224    0.916     0.942
+  dsp_ofdm        1.000  1.000    1.385    1.085     1.446
+  arvr_stereo     1.000  1.000    5.692    0.673     0.615
+  graph_analytics 1.000  1.000    1.000    1.000     1.176
+  robotics_vio    1.000  1.000    1.164    1.106     1.106
+  zk_stark        1.000  1.000    1.015    1.061     0.999
+
+Average Normalized Cost
+  full_tdc:        1.000x (baseline)
+  no_permissions:  1.000x (+0.0%)
+  no_visibility:   2.080x (+108.0%)
+  dependency_only: 0.973x (-2.7%)
+  no_contracts:    1.047x (+4.7%)
+
+Field Category Contribution Ranking (by avg cost increase)
+------------------------------------------------------------
+  1. Visibility:   +108.0% cost increase when removed (dominates)
+  2. No contracts: +4.7% cost increase (modest)
+  3. Permissions:  +0.0% (no effect in current compiler)
+  4. Dep-only:     -2.7% (slightly better -- fewer constraints)
+
+Mapping Success Rate: 100% for all ablation levels and domains.
+All compilers find feasible assignments regardless of contract info.

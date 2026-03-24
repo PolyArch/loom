@@ -1,0 +1,38 @@
+{
+  "design_name": "tapestry_spm",
+  "pdk": "saed14",
+  "clock_period_ns": 2.0,
+  "synthesis_success": true,
+  "area": {
+    "combinational_area": 36467.362636,
+    "noncombinational_area": 30623.034815,
+    "buf_inv_area": 5167.405104,
+    "macro_blackbox_area": 0.0,
+    "net_interconnect_area": 187140.538402,
+    "total_cell_area": 67090.397451,
+    "total_area": 254230.935854
+  },
+  "timing": {
+    "worst_slack_ns": 0.00881636,
+    "met_timing": true,
+    "critical_path_length_ns": 1.69,
+    "levels_of_logic": 14,
+    "worst_path_from": "core_req_valid",
+    "worst_path_to": "mem_reg[542][1]",
+    "hold_wns_ns": -0.04,
+    "hold_violations": 32830
+  },
+  "power": {
+    "cell_internal_power_mw": 30.8387,
+    "net_switching_power_mw": 7.6503,
+    "total_dynamic_power_mw": 38.4890,
+    "cell_leakage_power_uw": 26.3608,
+    "total_power_mw": 38.5186
+  },
+  "cell_count": {
+    "total_cells": 124864,
+    "combinational_cells": 92030,
+    "sequential_cells": 32834,
+    "buf_inv_cells": 13312
+  }
+}

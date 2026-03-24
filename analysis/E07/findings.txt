@@ -1,0 +1,35 @@
+E07: BendersDriver Convergence Findings
+=========================================
+
+Key Finding 1: Convergence is fast for well-sized architectures
+  - 89% of configurations converge in 1 iteration (no cuts needed)
+  - Only workloads where num_kernels > num_cores generate cuts
+  - The 3x3_hetero (9 cores) handles all 6 domains in 1 iteration
+
+Key Finding 2: Large kernels dominate cut generation
+  - ai_llm (8 kernels) is the only domain generating cuts on 4-core archs
+  - Kernels with types batched_matmul (65536 cycles) and matmul (32768 cycles)
+    have the highest config memory demand
+  - These kernels exhaust config memory when co-located with other complex kernels
+
+Key Finding 3: Heterogeneity doesn't help convergence for ai_llm
+  - ai_llm fails on both 2x2_homo AND 2x2_hetero (4 cores total)
+  - The DSP cores in 2x2_hetero lack comparison FUs but ai_llm doesn't need them
+  - The bottleneck is pure capacity (8 kernels on 4 cores), not type mismatch
+
+Key Finding 4: Architecture sizing matters more than heterogeneity
+  - Objective values on 2x2_homo and 2x2_hetero are very similar
+  - graph_analytics slightly benefits from hetero (33280 vs 33536)
+  - 3x3_hetero has higher objectives due to more cores with overhead
+
+Correlation: Kernel complexity vs iteration count
+  - ai_llm: 8 kernels, max_cycles=65536 -> 6 iterations (failed)
+  - dsp_ofdm: 6 kernels, max_cycles=32768 -> 1 iteration
+  - arvr_stereo: 5 kernels, max_cycles=32768 -> 1 iteration
+  - robotics_vio: 5 kernels, max_cycles=32768 -> 1 iteration
+  - graph_analytics: 4 kernels, max_cycles=32768 -> 1 iteration
+  - zk_stark: 5 kernels, max_cycles=65536 -> 1 iteration
+
+The primary driver is kernel count vs core count, not individual kernel
+complexity. zk_stark has 65536-cycle kernels but only 5 total, fitting
+easily on 4 cores.

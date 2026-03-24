@@ -1,0 +1,34 @@
+E08: Hierarchical vs Flat Compiler Findings
+=============================================
+
+Key Finding 1: Hierarchical beats greedy consistently
+  - Hierarchical wins on 5/6 domains against greedy (ties on 0)
+  - Average cost improvement: 15.0% lower than greedy
+  - Greedy round-robin creates load imbalance by assigning in kernel order
+
+Key Finding 2: Random can beat hierarchical on specific instances
+  - arvr_stereo and robotics_vio: random(best-of-5) beats hierarchical
+  - arvr_stereo: random found assignment placing sad_matching alone on a
+    core, reducing communication cost from the 262144-rate edge
+  - This is a known property of stochastic search: lucky draws on small
+    instances can beat systematic approaches
+
+Key Finding 3: Random has very high variance
+  - For arvr_stereo, random costs range from 52224 to 116736 (2.2x gap)
+  - For ai_llm, costs range from 129536 to 174592 (1.3x gap)
+  - The best-of-5 metric is optimistic; median random is consistently
+    worse than hierarchical
+
+Key Finding 4: Hierarchical is deterministic
+  - Hierarchical produces the same result every run (no seed dependence)
+  - Compile time is similar across all three (< 1ms in simulation)
+  - In practice, the ILP solver in L1 would add ~100ms but still sub-second
+
+Where hierarchical beats greedy most:
+  - ai_llm: 21% cost reduction (greedy puts heavy matmul kernels together)
+  - dsp_ofdm: 31% cost reduction (greedy fails to balance fft + viterbi)
+
+Where random beats hierarchical:
+  - arvr_stereo: 48% cost reduction (random isolated high-rate producer)
+  - This suggests the L1 assignment heuristic could be improved for
+    workloads with single dominant communication edges

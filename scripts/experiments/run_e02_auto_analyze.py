@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""E02: Auto-Analyze Accuracy -- compare auto_analyze output vs manual TDGs.
+"""E02: Auto-Analyze Accuracy -- compare auto-analyze output vs manual TDGs.
 
-For each domain, runs auto_analyze on the pipeline entry function and
-compares the detected kernels/edges against the manual reference TDG.
+For each domain, runs tapestry_compile --auto-tdg --analyze-only on the
+pipeline entry function and compares the detected kernels/edges against
+the manual reference TDG. Reports recall, precision, and F1 for both
+kernel detection and edge detection.
 
-If the tapestry_auto_analyze binary is not available, falls back to
-structural analysis of the pipeline C sources to simulate what
-auto_analyze would detect (call graph extraction + shared pointer analysis).
+If the tapestry_compile binary is not available, falls back to structural
+analysis of the pipeline C sources (call graph extraction + shared pointer
+analysis).
 
 Usage:
     python3 scripts/experiments/run_e02_auto_analyze.py
@@ -181,42 +183,65 @@ def analyze_c_source(src_path, entry_func):
 
 
 def try_binary_auto_analyze(src_path, entry_func):
-    """Try running the actual auto_analyze binary if available."""
-    binary = REPO_ROOT / "build" / "bin" / "tapestry_auto_analyze"
+    """Try running tapestry_compile --auto-tdg --analyze-only if available."""
+    binary = REPO_ROOT / "build" / "bin" / "tapestry_compile"
     if not binary.exists():
         return None
 
     try:
         result = subprocess.run(
-            [str(binary), str(REPO_ROOT / src_path), entry_func, "--verbose"],
+            [
+                str(binary),
+                "--auto-tdg", str(REPO_ROOT / src_path),
+                "--entry", entry_func,
+                "--analyze-only",
+            ],
             capture_output=True, text=True, timeout=60,
             cwd=str(REPO_ROOT)
         )
         if result.returncode != 0:
             return None
 
-        # Parse output
+        # Parse output from tapestry_compile auto-analyze
+        # Kernel lines: [N] name (TARGET) args=(...)
+        # Edge lines:   name1 -> name2 [type=..., ordering=..., via=...]
         kernels = set()
         edges = set()
+        host_funcs = set()
         for line in result.stdout.split('\n'):
-            km = re.match(r"\s*auto-analyze:\s+kernel\s+'(\w+)'", line)
+            # Parse kernel entries, filter out HOST (malloc/free etc.)
+            km = re.match(
+                r'\s*\[\d+\]\s+(\w+)\s+\((\w+)\)', line)
             if km:
-                kernels.add(km.group(1))
+                kname = km.group(1)
+                target = km.group(2)
+                if target == "HOST":
+                    host_funcs.add(kname)
+                else:
+                    kernels.add(kname)
+                continue
+            # Parse edge entries, filter out edges involving HOST funcs
             em = re.match(
-                r"\s*auto-analyze:\s+edge\s+(\w+)\s*->\s*(\w+)", line)
+                r'\s+(\w+)\s+->\s+(\w+)\s+\[', line)
             if em:
-                edges.add((em.group(1), em.group(2)))
+                src, dst = em.group(1), em.group(2)
+                if src not in host_funcs and dst not in host_funcs:
+                    edges.add((src, dst))
         return kernels, edges
     except Exception:
         return None
 
 
-def compute_match_rate(reference, detected):
-    """Compute match rate between two sets."""
-    if not reference:
-        return 1.0 if not detected else 0.0
+def compute_metrics(reference, detected):
+    """Compute recall, precision, and F1 between two sets."""
     matched = reference & detected
-    return len(matched) / len(reference) if reference else 0.0
+    if not reference and not detected:
+        return 1.0, 1.0, 1.0
+    recall = len(matched) / len(reference) if reference else 0.0
+    precision = len(matched) / len(detected) if detected else 0.0
+    f1 = (2 * precision * recall / (precision + recall)
+          if (precision + recall) > 0 else 0.0)
+    return recall, precision, f1
 
 
 def main():
@@ -261,9 +286,11 @@ def main():
                 for p, c in auto_edges
             }
 
-        # Compute match rates
-        kernel_match = compute_match_rate(ref_kernels, auto_kernels)
-        edge_match = compute_match_rate(ref_edges, auto_edges)
+        # Compute recall, precision, and F1
+        k_recall, k_precision, k_f1 = compute_metrics(
+            ref_kernels, auto_kernels)
+        e_recall, e_precision, e_f1 = compute_metrics(
+            ref_edges, auto_edges)
         extra_edges = auto_edges - ref_edges
         missing_edges = ref_edges - auto_edges
 
@@ -271,10 +298,14 @@ def main():
             "domain": domain_name,
             "manual_kernels": len(ref_kernels),
             "auto_kernels": len(auto_kernels),
-            "kernel_match": round(kernel_match, 4),
+            "kernel_recall": round(k_recall, 4),
+            "kernel_precision": round(k_precision, 4),
+            "kernel_f1": round(k_f1, 4),
             "manual_edges": len(ref_edges),
             "auto_edges": len(auto_edges),
-            "edge_match": round(edge_match, 4),
+            "edge_recall": round(e_recall, 4),
+            "edge_precision": round(e_precision, 4),
+            "edge_f1": round(e_f1, 4),
             "extra_edges": len(extra_edges),
             "missing_edges": len(missing_edges),
             "method": method,
@@ -285,9 +316,11 @@ def main():
 
         print(f"  {domain_name:20s} [{method}]")
         print(f"    kernels: {len(auto_kernels)}/{len(ref_kernels)} "
-              f"(match={kernel_match:.1%})")
+              f"(recall={k_recall:.1%}, "
+              f"precision={k_precision:.1%}, F1={k_f1:.1%})")
         print(f"    edges:   {len(auto_edges)}/{len(ref_edges)} "
-              f"(match={edge_match:.1%}), "
+              f"(recall={e_recall:.1%}, "
+              f"precision={e_precision:.1%}, F1={e_f1:.1%}), "
               f"+{len(extra_edges)} extra, -{len(missing_edges)} missing")
 
         if extra_edges:
@@ -299,8 +332,10 @@ def main():
 
     # Write CSV
     fieldnames = [
-        "domain", "manual_kernels", "auto_kernels", "kernel_match",
-        "manual_edges", "auto_edges", "edge_match",
+        "domain", "manual_kernels", "auto_kernels",
+        "kernel_recall", "kernel_precision", "kernel_f1",
+        "manual_edges", "auto_edges",
+        "edge_recall", "edge_precision", "edge_f1",
         "extra_edges", "missing_edges", "method",
         "git_hash", "timestamp",
     ]

@@ -7,7 +7,12 @@ Compared three TDG construction formats across 6 application domains:
 - **Pragma (C)**: #pragma tapestry annotations on C source
 
 Metrics: non-blank/non-comment lines in the TDG file, number of manually
-specified contract fields, and manual annotation fraction.
+specified contract fields (parsed from actual source), and manual annotation
+fraction.
+
+MLIR and pragma field counts are parsed from the source files (counting actual
+field assignments in tdg.contract blocks and key=value pairs in connect
+pragmas) rather than using hardcoded estimates.
 
 ## Results
 
@@ -57,3 +62,4 @@ specified contract fields, and manual annotation fraction.
 - CSV: out/experiments/E01/productivity.csv
 - Line counts measured from actual source files using non-blank, non-comment
   line counting
+- MLIR/pragma field counts parsed from source (not hardcoded)

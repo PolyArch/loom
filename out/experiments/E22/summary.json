@@ -1,0 +1,39 @@
+{
+  "experiment": "E22_rtl_synthesis",
+  "timestamp": "2026-03-24T07:04:07Z",
+  "git_hash": "4d4c308",
+  "synthesis_tool": "Synopsys DC Ultra W-2024.09-SP5",
+  "pdk": "SAED14nm FinFET (TT corner, 0.8V, 25C)",
+  "target_frequency_mhz": 500.0,
+  "timing_met": true,
+  "real_components_synthesized": [
+    "noc_router",
+    "tapestry_spm"
+  ],
+  "estimated_components": [
+    "pe_array",
+    "l2_bank",
+    "dma_ctrl"
+  ],
+  "note": "PE area estimated from published CGRA data at comparable technology. L2 and DMA scaled from synthesized SPM and router. Only noc_router and tapestry_spm have actual DC synthesis results.",
+  "per_design_summary": {
+    "design_A_hetero_2core": {
+      "label": "Heterogeneous 2-core (1x 10x10 + 1x 8x8)",
+      "total_pes": 164,
+      "area_mm2": 1.0262,
+      "power_mw": 465.93
+    },
+    "design_B_hetero_4core": {
+      "label": "Heterogeneous 4-core (2x 8x8 + 2x 6x6)",
+      "total_pes": 200,
+      "area_mm2": 1.8922,
+      "power_mw": 908.59
+    },
+    "design_C_homo_4core": {
+      "label": "Homogeneous 4-core (4x 8x8)",
+      "total_pes": 256,
+      "area_mm2": 1.9594,
+      "power_mw": 916.99
+    }
+  }
+}

@@ -1,0 +1,7 @@
+domain,total_candidates,tdc_feasible,tdc_pruned,pruned_fraction,min_noc_bw,min_l2_kb,min_core_types,min_total_cores,num_kernels,num_contracts,git_hash,timestamp
+ai_llm,1200,0,1200,1.0,4.0,1360.0,1,8,8,7,4d4c308,2026-03-24T07:06:49Z
+dsp_ofdm,1200,108,1092,0.91,4.0,121.0,3,6,6,5,4d4c308,2026-03-24T07:06:49Z
+arvr_stereo,1200,0,1200,1.0,4.0,2144.0,2,5,5,4,4d4c308,2026-03-24T07:06:49Z
+robotics_vio,1200,150,1050,0.875,4.0,64.0,3,5,5,4,4d4c308,2026-03-24T07:06:49Z
+graph_analytics,1200,210,990,0.825,4.0,64.0,2,4,4,3,4d4c308,2026-03-24T07:06:49Z
+zk_stark,1200,180,1020,0.85,4.0,64.0,1,5,5,5,4d4c308,2026-03-24T07:06:49Z

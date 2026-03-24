@@ -1,0 +1,42 @@
+E10: TDG Transform Effectiveness Findings
+============================================
+
+Key Finding 1: Retile is the dominant beneficial transform
+  - Retile improves throughput on 3/6 domains
+  - Average improvement when retile helps: +35.8% throughput
+  - arvr_stereo benefits most: 91.2% throughput gain (5 successive retiles)
+  - The retile transform halves the production rate of high-rate edges,
+    reducing communication cost for cross-core data movement
+
+Key Finding 2: Replicate has zero effect on 2x2 architectures
+  - No replication was applied on any domain
+  - With 4 cores and 4-8 kernels, there are no spare cores for replicas
+  - Replication would need at least 1 free core instance, which isn't
+    available when all cores are fully assigned
+  - Expected: replicate would show benefit on larger architectures (3x3+)
+
+Key Finding 3: Retile helps when producer/consumer rates are mismatched
+  - arvr_stereo: sad_matching produces 262144 elements per tile -> reduces to 8192
+  - ai_llm: ffn1->gelu produces 65536 elements -> reduces through multiple retiles
+  - dsp_ofdm: qam_demod->viterbi 7200 -> 3600 (modest 1.3% gain)
+  - Domains with already balanced rates (robotics_vio, graph_analytics, zk_stark)
+    see no benefit from retile
+
+Key Finding 4: Combined transforms = retile alone (no synergy)
+  - all_transforms produces identical results to retile_only for every domain
+  - This is because replicate is ineffective on this architecture size
+  - On larger architectures, all_transforms should exceed retile_only
+
+Key Finding 5: Iterative retile is effective
+  - arvr_stereo applies 5 successive retiles to the same edge
+  - Each halving produces an incremental improvement
+  - The optimizer correctly converges when no further improvement is possible
+  - ai_llm applies 7 retiles across 3 different high-rate edges
+
+Domains benefiting from retile (sorted by improvement):
+  1. arvr_stereo: +91.2% (dominant 262144-rate edge)
+  2. ai_llm: +14.9% (multiple high-rate FFN edges)
+  3. dsp_ofdm: +1.3% (single moderate-rate edge)
+
+Domains not benefiting:
+  4-6. robotics_vio, graph_analytics, zk_stark (rates already <= 4096)

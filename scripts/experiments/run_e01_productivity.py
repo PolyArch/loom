@@ -124,17 +124,49 @@ def count_manual_contract_fields_dsl(filepath, num_edges):
 def count_manual_contract_fields_mlir(filepath, num_edges):
     """Count manually specified contract fields in MLIR format.
 
-    In hand-written MLIR, every field must be explicitly specified.
+    Parses the MLIR source to count actual field assignments inside
+    tdg.contract blocks rather than assuming a fixed count per edge.
     """
-    return num_edges * TOTAL_CONTRACT_FIELDS
+    with open(filepath, "r") as f:
+        content = f.read()
+
+    contract_fields = [
+        "ordering", "data_type", "rate", "tile_shape", "visibility",
+        "double_buffering", "backpressure", "may_fuse", "may_replicate",
+        "may_pipeline", "may_reorder", "may_retile",
+    ]
+    count = 0
+    for field in contract_fields:
+        # Match field assignments like: field = value
+        # inside tdg.contract blocks
+        count += len(re.findall(
+            rf'^\s+{field}\s*=', content, re.MULTILINE))
+    return count
 
 
 def count_manual_contract_fields_pragma(filepath, num_edges):
     """Count manually specified contract fields in pragma format.
 
-    In pragma format, every field must be explicitly written in the pragma.
+    Parses #pragma tapestry connect(...) directives to count actual
+    key=value pairs rather than assuming a fixed count per edge.
     """
-    return num_edges * TOTAL_CONTRACT_FIELDS
+    with open(filepath, "r") as f:
+        content = f.read()
+
+    # Join continuation lines (backslash-newline)
+    content = content.replace('\\\n', ' ')
+
+    count = 0
+    for pragma_m in re.finditer(
+            r'#pragma\s+tapestry\s+connect\(([^)]+)\)', content):
+        pragma_body = pragma_m.group(1)
+        # First two items are producer and consumer (not fields)
+        # Count key=value pairs after them
+        pairs = re.findall(r'(\w+)\s*=', pragma_body)
+        # Subtract the two positional args (producer, consumer) are not
+        # key=value, they are positional. All key=value pairs are fields.
+        count += len(pairs)
+    return count
 
 
 def count_kernel_source_lines(domain_dir, num_kernels):
