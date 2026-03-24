@@ -9,10 +9,13 @@
 #ifndef LOOM_SYSTEMCOMPILER_SYSTEMTYPES_H
 #define LOOM_SYSTEMCOMPILER_SYSTEMTYPES_H
 
+#include "loom/SystemCompiler/ExecutionModel.h"
+
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OwningOpRef.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -97,6 +100,9 @@ struct BendersResult {
   std::string diagnostics;
 
   std::vector<L2Assignment> assignments;
+
+  /// Temporal schedule computed after all mappings succeed.
+  std::optional<TemporalSchedule> temporalSchedule;
 };
 
 /// Configuration for the Benders decomposition driver.
@@ -105,6 +111,9 @@ struct BendersConfig {
   double mapperBudgetSeconds = 15.0;
   unsigned mapperSeed = 0;
   bool verbose = false;
+
+  /// Temporal execution model configuration.
+  ExecutionModelConfig executionModel;
 };
 
 /// Drives the Benders decomposition for heterogeneous multi-core compilation.

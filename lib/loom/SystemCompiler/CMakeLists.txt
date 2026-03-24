@@ -6,6 +6,7 @@ add_library(LoomSystemCompiler STATIC
   Contract.cpp
   CostSummary.cpp
   DMAScheduler.cpp
+  ExecutionModel.cpp
   FailureAnalyzer.cpp
   FlatCompilerBaselines.cpp
   InfeasibilityCut.cpp

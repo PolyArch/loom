@@ -2,11 +2,13 @@
 #define LOOM_SYSTEMCOMPILER_TAPESTRYPIPELINE_H
 
 #include "loom/SystemCompiler/BendersDriver.h"
+#include "loom/SystemCompiler/ExecutionModel.h"
 #include "loom/TDG/ContractLegalityChecker.h"
 #include "loom/MultiCoreSim/MultiCoreSimSession.h"
 
 #include "mlir/IR/MLIRContext.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -99,6 +101,9 @@ struct TapestryPipelineConfig {
   PipelineSimConfig simConfig;
   PipelineSVGenOptions svgenOpts;
   std::string rtlSourceDir;
+
+  /// Temporal execution model configuration.
+  ExecutionModelConfig executionModel;
 };
 
 /// Compilation metrics from a successful compile stage.
@@ -153,6 +158,9 @@ struct TapestryPipelineResult {
   std::optional<PipelineCompilationResult> compilationResult;
   std::optional<PipelineSimResult> simResult;
   std::optional<PipelineRTLResult> rtlResult;
+
+  /// Temporal schedule from the execution model (populated after mapping).
+  std::optional<TemporalSchedule> temporalSchedule;
 };
 
 /// Config-driven full pipeline: orchestrates compile, simulate, and RTL

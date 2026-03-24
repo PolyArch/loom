@@ -3,6 +3,7 @@
 
 #include "loom/SystemCompiler/BufferAllocator.h"
 #include "loom/SystemCompiler/DMAScheduler.h"
+#include "loom/SystemCompiler/ExecutionModel.h"
 #include "loom/SystemCompiler/L1CoreAssignment.h"
 #include "loom/SystemCompiler/L2CoreCompiler.h"
 #include "loom/SystemCompiler/NoCScheduler.h"
@@ -36,6 +37,10 @@ struct TapestryCompilationResult {
   BufferAllocationPlan finalBufferPlan;
   DMASchedule finalDMASchedule;
   std::vector<TapestryCoreResult> coreResults;
+
+  /// Temporal schedule: per-core kernel ordering and timing.
+  /// Populated after all L2 compilations succeed.
+  std::optional<TemporalSchedule> temporalSchedule;
 };
 
 /// Build L2 assignments from L1 assignment results, kernel DFGs, and contracts.

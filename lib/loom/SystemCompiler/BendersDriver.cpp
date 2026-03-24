@@ -1,5 +1,8 @@
 #include "loom/SystemCompiler/BendersDriver.h"
+#include "loom/SystemCompiler/ExecutionModel.h"
 #include "loom/SystemCompiler/SystemTypes.h"
+
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cmath>
@@ -135,6 +138,16 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
     return result;
   }
 
+  // Validate execution mode.
+  if (config.executionModel.mode != ExecutionMode::BATCH_SEQUENTIAL) {
+    result.success = false;
+    result.diagnostics =
+        std::string(executionModeToString(config.executionModel.mode)) +
+        " execution mode is not supported in current version; "
+        "only BATCH_SEQUENTIAL is implemented";
+    return result;
+  }
+
   // Greedy round-robin assignment: assign each kernel to the core type
   // whose total instances can accommodate it.
   unsigned numTypes = static_cast<unsigned>(arch_.coreTypes.size());
@@ -153,6 +166,116 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
     assign.mappingSuccess = true;
     assign.mappingCost = 1.0;
     result.assignments.push_back(std::move(assign));
+  }
+
+  // Compute temporal schedule for the assignment.
+  // Build a synthetic AssignmentResult and CostSummary from the greedy
+  // assignment to feed into the temporal scheduler.
+  loom::AssignmentResult syntheticAssignment;
+  syntheticAssignment.feasible = true;
+
+  // Build per-core assignment structures.
+  // Map from (coreTypeIndex, coreInstanceIndex) to a flat core index.
+  unsigned totalInstances = 0;
+  for (const auto &ct : arch_.coreTypes)
+    totalInstances += ct.numInstances;
+  if (totalInstances == 0)
+    totalInstances = numTypes;
+
+  syntheticAssignment.coreAssignments.resize(totalInstances);
+  for (unsigned ci = 0; ci < totalInstances; ++ci) {
+    syntheticAssignment.coreAssignments[ci].coreInstanceIdx = ci;
+    // Determine core type name.
+    unsigned offset = 0;
+    for (const auto &ct : arch_.coreTypes) {
+      unsigned count = ct.numInstances > 0 ? ct.numInstances : 1;
+      if (ci < offset + count) {
+        syntheticAssignment.coreAssignments[ci].coreTypeName = ct.name;
+        break;
+      }
+      offset += count;
+    }
+  }
+
+  // Assign kernels to cores.
+  for (const auto &assign : result.assignments) {
+    unsigned typeIdx = static_cast<unsigned>(assign.coreTypeIndex);
+    unsigned instIdx = static_cast<unsigned>(assign.coreInstanceIndex);
+    // Compute flat core index.
+    unsigned flatIdx = 0;
+    for (unsigned ti = 0; ti < typeIdx && ti < arch_.coreTypes.size(); ++ti) {
+      unsigned count = arch_.coreTypes[ti].numInstances;
+      flatIdx += (count > 0 ? count : 1);
+    }
+    flatIdx += instIdx;
+
+    if (flatIdx < syntheticAssignment.coreAssignments.size()) {
+      syntheticAssignment.kernelToCore[assign.kernelName] = flatIdx;
+      syntheticAssignment.coreAssignments[flatIdx].assignedKernels.push_back(
+          assign.kernelName);
+    }
+  }
+
+  // Build synthetic cost summaries with default achieved II.
+  std::vector<loom::CoreCostSummary> syntheticCosts;
+  for (const auto &ca : syntheticAssignment.coreAssignments) {
+    if (ca.assignedKernels.empty())
+      continue;
+    loom::CoreCostSummary cs;
+    cs.coreInstanceName = ca.coreTypeName + "_" +
+                          std::to_string(ca.coreInstanceIdx);
+    cs.coreType = ca.coreTypeName;
+    cs.success = true;
+    for (const auto &kn : ca.assignedKernels) {
+      loom::KernelMetrics km;
+      km.kernelName = kn;
+      km.achievedII = 1; // Default: 1 cycle per iteration
+      cs.kernelMetrics.push_back(km);
+    }
+    syntheticCosts.push_back(std::move(cs));
+  }
+
+  // Build synthetic contracts in loom::ContractSpec format.
+  std::vector<loom::ContractSpec> l1Contracts;
+  for (const auto &tc : contracts_) {
+    loom::ContractSpec lc;
+    lc.producerKernel = tc.producerKernel;
+    lc.consumerKernel = tc.consumerKernel;
+    lc.dataTypeName = tc.dataType;
+    if (tc.elementCount > 0)
+      lc.productionRate = static_cast<int64_t>(tc.elementCount);
+    l1Contracts.push_back(std::move(lc));
+  }
+
+  // Run the temporal scheduler.
+  loom::TemporalSchedule schedule;
+  std::string schedErr = computeTemporalSchedule(
+      syntheticAssignment, syntheticCosts, l1Contracts,
+      config.executionModel, schedule);
+
+  if (schedErr.empty()) {
+    result.temporalSchedule = schedule;
+
+    if (config.verbose) {
+      llvm::outs() << "Temporal schedule (BATCH_SEQUENTIAL):\n";
+      for (const auto &cs : schedule.coreSchedules) {
+        llvm::outs() << "  Core " << cs.coreInstanceName << ": "
+                     << cs.kernelOrder.size() << " kernels, "
+                     << cs.totalCycles << " cycles"
+                     << " (reconfig=" << cs.reconfigCount << ")\n";
+        for (const auto &kt : cs.kernelTimings) {
+          llvm::outs() << "    " << kt.kernelName
+                       << ": tripCount=" << kt.tripCount
+                       << " II=" << kt.achievedII
+                       << " exec=" << kt.executionCycles << "\n";
+        }
+      }
+      llvm::outs() << "  System latency: " << schedule.systemLatencyCycles
+                   << " (max_core=" << schedule.maxCoreCycles
+                   << " + noc=" << schedule.nocOverheadCycles << ")\n";
+    }
+  } else if (config.verbose) {
+    llvm::outs() << "Temporal scheduling skipped: " << schedErr << "\n";
   }
 
   result.success = true;
