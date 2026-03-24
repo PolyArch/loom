@@ -130,20 +130,51 @@ static void runSystemTests(const std::string &outputDir) {
     assert(sysBuilder.getSharedMemorySpec().numBanks == 4);
     assert(sysBuilder.getSharedMemorySpec().l2SizeBytes == 262144);
 
-    // Verify generated MLIR content
+    // Verify generated MLIR contains typed ops (not comments)
     std::string mlir = sysBuilder.getSystemMLIR();
+
+    // System module name should be present
     assert(mlir.find("test_system_mesh") != std::string::npos);
+
+    // Core instance names should appear as real ops, not comments
     assert(mlir.find("core_0_0") != std::string::npos);
     assert(mlir.find("core_0_1") != std::string::npos);
     assert(mlir.find("core_1_0") != std::string::npos);
     assert(mlir.find("core_1_1") != std::string::npos);
+
+    // Core type references should be present
     assert(mlir.find("CoreType_A") != std::string::npos);
     assert(mlir.find("CoreType_B") != std::string::npos);
-    assert(mlir.find("MESH") != std::string::npos);
-    assert(mlir.find("noc_link_") != std::string::npos);
+
+    // Typed ops should be present (not comment-based)
+    assert(mlir.find("fabric.router") != std::string::npos &&
+           "should contain fabric.router ops");
+    assert(mlir.find("fabric.shared_mem") != std::string::npos &&
+           "should contain fabric.shared_mem ops");
+    assert(mlir.find("fabric.noc_link") != std::string::npos &&
+           "should contain fabric.noc_link ops");
+    assert(mlir.find("fabric.instance") != std::string::npos &&
+           "should contain fabric.instance ops");
+
+    // Verify router attributes are present
+    assert(mlir.find("num_ports") != std::string::npos);
+    assert(mlir.find("virtual_channels") != std::string::npos);
+    assert(mlir.find("flit_width_bits") != std::string::npos);
+
+    // Verify shared memory attributes
     assert(mlir.find("l2_bank_") != std::string::npos);
-    assert(mlir.find("noc_out_") != std::string::npos);
-    assert(mlir.find("noc_in_") != std::string::npos);
+    assert(mlir.find("size_bytes") != std::string::npos);
+    assert(mlir.find("l2_cache") != std::string::npos);
+    assert(mlir.find("external_dram") != std::string::npos);
+
+    // Verify NoC link attributes
+    assert(mlir.find("source") != std::string::npos);
+    assert(mlir.find("dest") != std::string::npos);
+    assert(mlir.find("width_bits") != std::string::npos);
+
+    // Verify no comment-based instances remain
+    assert(mlir.find("// fabric.instance") == std::string::npos &&
+           "should not have comment-based instances");
 
     sysBuilder.exportSystemMLIR(outputDir + "/system_mesh.mlir");
     llvm::outs() << "PASS: 2x2 mesh system with 2 core types\n";
@@ -168,9 +199,10 @@ static void runSystemTests(const std::string &outputDir) {
     ringBuilder.build();
 
     std::string mlir = ringBuilder.getSystemMLIR();
-    assert(mlir.find("RING") != std::string::npos);
-    assert(mlir.find("noc_out_fwd") != std::string::npos);
-    assert(mlir.find("noc_in_fwd") != std::string::npos);
+    // Verify typed ops for ring topology
+    assert(mlir.find("fabric.router") != std::string::npos);
+    assert(mlir.find("fabric.noc_link") != std::string::npos);
+    assert(mlir.find("fabric.shared_mem") != std::string::npos);
 
     ringBuilder.exportSystemMLIR(outputDir + "/system_ring.mlir");
     llvm::outs() << "PASS: ring topology\n";
@@ -196,9 +228,10 @@ static void runSystemTests(const std::string &outputDir) {
     hierBuilder.build();
 
     std::string mlir = hierBuilder.getSystemMLIR();
-    assert(mlir.find("HIERARCHICAL") != std::string::npos);
-    assert(mlir.find("Cluster") != std::string::npos);
-    assert(mlir.find("Inter-cluster") != std::string::npos);
+    // Verify typed ops for hierarchical topology
+    assert(mlir.find("fabric.router") != std::string::npos);
+    assert(mlir.find("fabric.noc_link") != std::string::npos);
+    assert(mlir.find("fabric.shared_mem") != std::string::npos);
 
     hierBuilder.exportSystemMLIR(outputDir + "/system_hier.mlir");
     llvm::outs() << "PASS: hierarchical topology\n";

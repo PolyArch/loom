@@ -5,6 +5,7 @@ add_library(LoomADG
   ADGBuilderTopology.cpp
   ADGBuilderNoCPorts.cpp
   SystemADGBuilder.cpp
+  SystemADGMLIRBuilder.cpp
   ADGVerifier.cpp
 )
 

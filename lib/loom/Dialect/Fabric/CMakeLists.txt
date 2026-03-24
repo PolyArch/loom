@@ -3,6 +3,7 @@ add_mlir_dialect_library(LoomFabric
   FabricTypes.cpp
   FabricOps.cpp
   FabricOpsMemory.cpp
+  FabricSystemOps.cpp
 
   DEPENDS
     LoomFabricDialectIncGen
