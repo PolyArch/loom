@@ -1,6 +1,0 @@
-initial_config,final_throughput,final_area,rounds_to_converge
-spectral,0.00654642,5603.52,10
-homogeneous_gp,0.00391599,5910.7,8
-homogeneous_dsp,0.00546664,6089.36,9
-random_fu,0.00566076,7349.99,7
-oversized,0.00579024,27611.11,8

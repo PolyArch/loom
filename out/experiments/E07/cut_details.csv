@@ -1,7 +1,0 @@
-domain,arch_config,iteration,cut_type,kernel,core_type,evidence,git_hash,timestamp
-ai_llm,2x2_homo,1,INSUFFICIENT_FU,ffn1,gp,config_demand=40 config_cap=32 pe_demand=10 mesh_pes=4,4d4c308,2026-03-24T07:04:12Z
-ai_llm,2x2_hetero,1,INSUFFICIENT_FU,ffn1,dsp,config_demand=40 config_cap=32 pe_demand=10 mesh_pes=4,4d4c308,2026-03-24T07:04:12Z
-ai_llm,2x2_hetero,2,INSUFFICIENT_FU,attn_score,gp,config_demand=48 config_cap=32 pe_demand=12 mesh_pes=4,4d4c308,2026-03-24T07:04:12Z
-ai_llm,2x2_hetero,3,INSUFFICIENT_FU,ffn2,dsp,config_demand=40 config_cap=32 pe_demand=10 mesh_pes=4,4d4c308,2026-03-24T07:04:12Z
-ai_llm,2x2_hetero,4,INSUFFICIENT_FU,attn_output,gp,config_demand=48 config_cap=32 pe_demand=12 mesh_pes=4,4d4c308,2026-03-24T07:04:12Z
-ai_llm,2x2_hetero,5,INSUFFICIENT_FU,ffn1,gp,config_demand=40 config_cap=32 pe_demand=10 mesh_pes=4,4d4c308,2026-03-24T07:04:12Z
