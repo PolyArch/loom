@@ -219,6 +219,11 @@ static cl::opt<double> mapperCongestionPlacementWeight(
     cl::desc("Weight of congestion penalty in placement scoring"),
     cl::init(0.3));
 
+static cl::opt<bool> mapperEnableRouteAwareSA(
+    "mapper-enable-route-aware-sa",
+    cl::desc("Enable route-aware SA as main optimization loop (default: true)"),
+    cl::init(true));
+
 static cl::opt<std::string> mapperBaseConfigPathOpt(
     "mapper-base-config",
     cl::desc("Path to mapper base config YAML (default: repository built-in template)"),
@@ -336,6 +341,8 @@ bool parseArgs(int argc, char **argv, LoomArgs &args) {
                          mapperCongestionPlacementWeight,
                          mapperCongestionPlacementWeight.getNumOccurrences(),
                          args.mapperOptions.congestionPlacementWeight);
+  if (mapperEnableRouteAwareSA.getNumOccurrences() > 0)
+    args.mapperOptions.enableRouteAwareSAMainLoop = mapperEnableRouteAwareSA;
   std::string mapperOptionError;
   if (!validateMapperOptions(args.mapperOptions, mapperOptionError)) {
     errs() << "loom: invalid mapper options: " << mapperOptionError << "\n";

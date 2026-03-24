@@ -51,6 +51,23 @@ template <> struct MappingTraits<loom::MapperRefinementOptions> {
     io.mapOptional("budget_fraction", opts.budgetFraction);
     io.mapOptional("relocate_top_candidate_limit",
                    opts.relocateTopCandidateLimit);
+    io.mapOptional("route_aware_sa_budget_fraction",
+                   opts.routeAwareSABudgetFraction);
+    io.mapOptional("warmup_budget_fraction", opts.warmupBudgetFraction);
+    io.mapOptional("initial_routing_budget_fraction",
+                   opts.initialRoutingBudgetFraction);
+    io.mapOptional("route_aware_sa_neighborhood_edge_cap",
+                   opts.routeAwareSANeighborhoodEdgeCap);
+    io.mapOptional("route_aware_sa_exact_repair_micro_budget_ms",
+                   opts.routeAwareSAExactRepairMicroBudgetMs);
+    io.mapOptional("route_aware_sa_checkpoint_move_batch",
+                   opts.routeAwareSACheckpointMoveBatch);
+    io.mapOptional("route_aware_sa_initial_temperature",
+                   opts.routeAwareSAInitialTemperature);
+    io.mapOptional("route_aware_sa_cooling_rate",
+                   opts.routeAwareSACoolingRate);
+    io.mapOptional("route_aware_sa_min_temperature",
+                   opts.routeAwareSAMinTemperature);
   }
 };
 
@@ -374,6 +391,8 @@ template <> struct MappingTraits<loom::MapperOptions> {
     io.mapOptional("relaxed_routing", opts.relaxedRouting);
     io.mapOptional("cpsat_tuning", opts.cpSatTuning);
     io.mapOptional("local_repair", opts.localRepair);
+    io.mapOptional("enable_route_aware_sa_main_loop",
+                   opts.enableRouteAwareSAMainLoop);
   }
 };
 
