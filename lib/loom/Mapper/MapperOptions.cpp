@@ -139,12 +139,50 @@ bool validateMapperOptions(const MapperOptions &opts, std::string &error) {
                              "refinement.budget_fraction", error) ||
       !requirePositiveUnsigned(opts.refinement.relocateTopCandidateLimit,
                                "refinement.relocate_top_candidate_limit",
-                               error)) {
+                               error) ||
+      !requirePositiveDouble(opts.refinement.routeAwareSABudgetFraction,
+                             "refinement.route_aware_sa_budget_fraction",
+                             error) ||
+      !requirePositiveDouble(opts.refinement.warmupBudgetFraction,
+                             "refinement.warmup_budget_fraction", error) ||
+      !requirePositiveDouble(opts.refinement.initialRoutingBudgetFraction,
+                             "refinement.initial_routing_budget_fraction",
+                             error) ||
+      !requirePositiveUnsigned(
+          opts.refinement.routeAwareSANeighborhoodEdgeCap,
+          "refinement.route_aware_sa_neighborhood_edge_cap", error) ||
+      !requirePositiveDouble(
+          opts.refinement.routeAwareSAExactRepairMicroBudgetMs,
+          "refinement.route_aware_sa_exact_repair_micro_budget_ms",
+          error) ||
+      !requirePositiveUnsigned(
+          opts.refinement.routeAwareSACheckpointMoveBatch,
+          "refinement.route_aware_sa_checkpoint_move_batch", error) ||
+      !requirePositiveDouble(opts.refinement.routeAwareSAInitialTemperature,
+                             "refinement.route_aware_sa_initial_temperature",
+                             error) ||
+      !requirePositiveDouble(opts.refinement.routeAwareSACoolingRate,
+                             "refinement.route_aware_sa_cooling_rate",
+                             error) ||
+      !requirePositiveDouble(opts.refinement.routeAwareSAMinTemperature,
+                             "refinement.route_aware_sa_min_temperature",
+                             error)) {
     return false;
   }
   if (opts.refinement.budgetFraction > 1.0) {
     error = "refinement.budget_fraction must be <= 1";
     return false;
+  }
+  if (opts.enableRouteAwareSAMainLoop) {
+    double fractionSum = opts.refinement.routeAwareSABudgetFraction +
+                         opts.refinement.warmupBudgetFraction +
+                         opts.refinement.initialRoutingBudgetFraction;
+    if (fractionSum > 0.85) {
+      error = "route-aware SA budget fractions sum to " +
+              std::to_string(fractionSum) +
+              " which exceeds 0.85 (must leave >= 15% for repair/polish)";
+      return false;
+    }
   }
   if (opts.refinement.targetAcceptanceLow >
       opts.refinement.targetAcceptanceHigh) {

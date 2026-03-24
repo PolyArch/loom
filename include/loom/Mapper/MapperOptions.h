@@ -29,6 +29,17 @@ struct MapperRefinementOptions {
   unsigned iterationCap = 50000;
   double budgetFraction = 0.4;
   unsigned relocateTopCandidateLimit = 8;
+
+  // Route-aware SA main loop options.
+  double routeAwareSABudgetFraction = 0.60;
+  double warmupBudgetFraction = 0.10;
+  double initialRoutingBudgetFraction = 0.10;
+  unsigned routeAwareSANeighborhoodEdgeCap = 32;
+  double routeAwareSAExactRepairMicroBudgetMs = 50.0;
+  unsigned routeAwareSACheckpointMoveBatch = 20;
+  double routeAwareSAInitialTemperature = 100.0;
+  double routeAwareSACoolingRate = 0.997;
+  double routeAwareSAMinTemperature = 0.005;
 };
 
 struct MapperLaneOptions {
@@ -242,6 +253,7 @@ struct MapperOptions {
   double congestionPresentFactor = 1.0;
   double congestionPlacementWeight = 0.3;
   double memorySharingPenalty = 8.0;
+  bool enableRouteAwareSAMainLoop = true;
 
   MapperRefinementOptions refinement;
   MapperLaneOptions lane;
