@@ -54,6 +54,16 @@ MODE_OVERRIDES: dict[str, dict[str, Any]] = {
             }
         }
     },
+    "route-aware-sa": {
+        "mapper": {
+            "enable_route_aware_sa_main_loop": True,
+        }
+    },
+    "no-route-aware-sa": {
+        "mapper": {
+            "enable_route_aware_sa_main_loop": False,
+        }
+    },
 }
 
 
