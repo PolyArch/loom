@@ -185,7 +185,11 @@ class DesignPoint:
 # ---------------------------------------------------------------------------
 
 class DesignSpace:
-    """Defines bounds and provides sampling methods for the design space."""
+    """Defines bounds and provides sampling methods for the design space.
+
+    Supports optional TDC-derived constraint bounds that tighten the search
+    space lower limits based on contract analysis.
+    """
 
     def __init__(
         self,
@@ -196,6 +200,68 @@ class DesignSpace:
         self.ranges = param_ranges or dict(DEFAULT_PARAM_RANGES)
         self.topologies = noc_topologies or list(NOC_TOPOLOGIES)
         self.rng = np.random.RandomState(seed)
+
+        # TDC-derived constraint lower bounds (None = no TDC constraints)
+        self._tdc_min_noc_bw: Optional[float] = None
+        self._tdc_min_l2_kb: Optional[float] = None
+        self._tdc_min_core_types: Optional[int] = None
+        self._tdc_min_total_cores: Optional[int] = None
+
+    def set_tdc_bounds(
+        self,
+        min_noc_bw: float = 0.0,
+        min_l2_kb: float = 0.0,
+        min_core_types: int = 1,
+        min_total_cores: int = 1,
+    ) -> None:
+        """Set TDC-derived constraint lower bounds.
+
+        Tightens the design space bounds so that sampling avoids clearly
+        infeasible regions. Call before bounds() or any sampling method.
+        """
+        self._tdc_min_noc_bw = min_noc_bw
+        self._tdc_min_l2_kb = min_l2_kb
+        self._tdc_min_core_types = min_core_types
+        self._tdc_min_total_cores = min_total_cores
+
+        # Apply to ranges
+        if min_noc_bw > 0:
+            lo, hi = self.ranges["noc_bandwidth"]
+            self.ranges["noc_bandwidth"] = (
+                max(lo, int(math.ceil(min_noc_bw))),
+                hi,
+            )
+        if min_l2_kb > 0:
+            lo, hi = self.ranges["l2_size_kb"]
+            self.ranges["l2_size_kb"] = (
+                max(lo, int(math.ceil(min_l2_kb))),
+                hi,
+            )
+        if min_core_types > 1:
+            lo, hi = self.ranges["core_type_count"]
+            self.ranges["core_type_count"] = (
+                max(lo, min_core_types),
+                hi,
+            )
+
+    def is_feasible(self, point: DesignPoint) -> bool:
+        """Check if a design point satisfies TDC-derived constraints.
+
+        Returns True if no TDC bounds are set or all constraints are met.
+        """
+        if self._tdc_min_noc_bw is not None:
+            if point.noc_bandwidth < self._tdc_min_noc_bw:
+                return False
+        if self._tdc_min_l2_kb is not None:
+            if point.l2_size_kb < self._tdc_min_l2_kb:
+                return False
+        if self._tdc_min_core_types is not None:
+            if len(point.core_types) < self._tdc_min_core_types:
+                return False
+        if self._tdc_min_total_cores is not None:
+            if point.total_cores() < self._tdc_min_total_cores:
+                return False
+        return True
 
     @property
     def dimension(self) -> int:

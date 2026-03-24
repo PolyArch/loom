@@ -8,6 +8,7 @@ add_library(LoomSystemCompiler STATIC
   DMAScheduler.cpp
   FailureAnalyzer.cpp
   FlatCompilerBaselines.cpp
+  HWOuterOptimizer.cpp
   InfeasibilityCut.cpp
   KernelProfiler.cpp
   L1CoreAssignment.cpp
