@@ -74,3 +74,25 @@ target_link_libraries(taskgraph-test PRIVATE
 set_target_properties(taskgraph-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
+
+# Verification suite tests (C06)
+add_executable(verification-test VerificationTest.cpp)
+
+target_include_directories(verification-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+  ${CMAKE_BINARY_DIR}/include
+)
+
+target_link_libraries(verification-test PRIVATE
+  TapestryCore
+  LoomTDG
+  LoomSystemCompiler
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(verification-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)

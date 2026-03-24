@@ -65,39 +65,48 @@ def data_dir() -> Path:
     return DATA_DIR
 
 
+def _find_binary(name_underscore: str, name_hyphen: str) -> Path:
+    """Find a binary by trying underscore then hyphen naming convention."""
+    for name in [name_underscore, name_hyphen]:
+        p = BIN_DIR / name
+        if p.exists():
+            return p
+    return BIN_DIR / name_underscore  # Return default for skip message
+
+
 @pytest.fixture(scope="session")
 def tapestry_pipeline_bin() -> Path:
-    """Path to the tapestry-pipeline binary."""
-    p = BIN_DIR / "tapestry-pipeline"
+    """Path to the tapestry pipeline binary."""
+    p = _find_binary("tapestry_pipeline", "tapestry-pipeline")
     if not p.exists():
-        pytest.skip("tapestry-pipeline binary not found; build first")
+        pytest.skip("tapestry_pipeline binary not found; build first")
     return p
 
 
 @pytest.fixture(scope="session")
 def tapestry_compile_bin() -> Path:
-    """Path to the tapestry-compile binary."""
-    p = BIN_DIR / "tapestry-compile"
+    """Path to the tapestry compile binary."""
+    p = _find_binary("tapestry_compile", "tapestry-compile")
     if not p.exists():
-        pytest.skip("tapestry-compile binary not found; build first")
+        pytest.skip("tapestry_compile binary not found; build first")
     return p
 
 
 @pytest.fixture(scope="session")
 def tapestry_simulate_bin() -> Path:
-    """Path to the tapestry-simulate binary."""
-    p = BIN_DIR / "tapestry-simulate"
+    """Path to the tapestry simulate binary."""
+    p = _find_binary("tapestry_simulate", "tapestry-simulate")
     if not p.exists():
-        pytest.skip("tapestry-simulate binary not found; build first")
+        pytest.skip("tapestry_simulate binary not found; build first")
     return p
 
 
 @pytest.fixture(scope="session")
 def tapestry_rtlgen_bin() -> Path:
-    """Path to the tapestry-rtlgen binary."""
-    p = BIN_DIR / "tapestry-rtlgen"
+    """Path to the tapestry rtlgen binary."""
+    p = _find_binary("tapestry_rtlgen", "tapestry-rtlgen")
     if not p.exists():
-        pytest.skip("tapestry-rtlgen binary not found; build first")
+        pytest.skip("tapestry_rtlgen binary not found; build first")
     return p
 
 
