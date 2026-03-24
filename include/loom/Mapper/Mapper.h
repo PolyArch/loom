@@ -138,6 +138,14 @@ private:
       const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
       std::vector<TechMappedEdgeKind> &edgeKinds, const Options &opts);
 
+  /// Route-aware SA main optimization loop. Requires routing to have been
+  /// performed before entry. Returns true if all edges are routed.
+  bool runRouteAwareSA(
+      MappingState &state, const Graph &dfg, const Graph &adg,
+      const ADGFlattener &flattener,
+      const llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> &candidates,
+      std::vector<TechMappedEdgeKind> &edgeKinds, const Options &opts);
+
   bool runCPSatGlobalPlacement(
       MappingState &state, const Graph &dfg, const Graph &adg,
       const ADGFlattener &flattener,

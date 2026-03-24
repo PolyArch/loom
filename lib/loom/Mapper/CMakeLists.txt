@@ -29,6 +29,7 @@ add_library(LoomMapper STATIC
   MapperTiming.cpp
   MapperRelaxedRouting.cpp
   MapperRouting.cpp
+  MapperRouteAwareSA.cpp
   MapperRoutingCongestion.cpp
   MapperRoutingStrategy.cpp
   ConfigGen.cpp
