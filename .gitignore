@@ -1,6 +1,8 @@
 build/
 .cache/
 out/
+analysis/
+temp/
 tapestry-output/
 node_modules/
 package.json
