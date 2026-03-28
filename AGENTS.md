@@ -10,7 +10,7 @@
 - Loop variables must be declared at the top of the enclosing procedural block (`always`, `initial`, `function`), not inline in `for`. Use `iter_var0`, `iter_var1`, ... as loop variable names (numbered by nesting depth).
 
 ## EDA Tool Versions
-- Synopsys DC: use `synopsys/syn/W-2024.09-SP5` (not X-2025.06-SP3)
+- Synopsys DC: use `synopsys/syn/Y-2026.03`
 - Verilator: use `verilator/5.044`
 
 # ExecPlans (for Codex only)
