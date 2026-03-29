@@ -398,6 +398,7 @@ class CoreDesignParams:
             "alu": self.fu_alu_count,
             "mul": self.fu_mul_count,
             "fp": self.fu_fp_count,
+            "mem": self.fu_mem_count,
         }
 
     @property
