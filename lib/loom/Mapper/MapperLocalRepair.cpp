@@ -35,6 +35,9 @@ LocalRepairDriver::LocalRepairDriver(
       bestPlacementCost(mapper.computeTotalCost(state, dfg, adg, flattener)),
       bestAllRouted(false),
       bestFailedEdges(failedEdges.begin(), failedEdges.end()) {
+  // Initialize congestion estimator for congestion-aware hotspot scoring.
+  congestionEstimator.estimate(state, dfg, adg, flattener);
+
   for (IdIndex edgeId : failedEdges)
     repairPriorityEdges.insert(edgeId);
   std::tie(bestPriorityRouted, bestPriorityPenalty) =
@@ -585,12 +588,32 @@ bool Mapper::runLocalRepair(
     std::vector<TechMappedEdgeKind> &edgeKinds, const Mapper::Options &opts,
     const CongestionState *congestion, unsigned recursionDepth) {
   ++activeSearchSummary_.localRepairAttempts;
+
+  // Apply local repair budget fraction: cap repair time to
+  // min(remaining_time, budgetSeconds * localRepairBudgetFraction).
+  auto savedDeadline = activeRunDeadline_;
+  if (opts.localRepairBudgetFraction > 0.0 &&
+      opts.localRepairBudgetFraction < 1.0) {
+    double repairBudget = opts.budgetSeconds * opts.localRepairBudgetFraction;
+    double remaining = remainingBudgetSeconds();
+    double effectiveBudget = std::min(remaining, repairBudget);
+    auto repairDeadline =
+        std::chrono::steady_clock::now() +
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(effectiveBudget));
+    if (repairDeadline < activeRunDeadline_)
+      activeRunDeadline_ = repairDeadline;
+  }
+
   LocalRepairDriver driver(*this, state, baseCheckpoint, failedEdges, dfg, adg,
                            flattener, candidates, edgeKinds, opts, congestion,
                            recursionDepth);
   bool repaired = driver.run();
   if (repaired)
     ++activeSearchSummary_.localRepairSuccesses;
+
+  // Restore the original deadline.
+  activeRunDeadline_ = savedDeadline;
   return repaired;
 }
 

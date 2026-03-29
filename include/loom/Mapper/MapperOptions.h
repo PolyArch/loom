@@ -37,9 +37,13 @@ struct MapperRefinementOptions {
   unsigned routeAwareSANeighborhoodEdgeCap = 32;
   double routeAwareSAExactRepairMicroBudgetMs = 50.0;
   unsigned routeAwareSACheckpointMoveBatch = 20;
-  double routeAwareSAInitialTemperature = 100.0;
-  double routeAwareSACoolingRate = 0.997;
-  double routeAwareSAMinTemperature = 0.005;
+  double routeAwareSAInitialTemperature = 150.0;
+  double routeAwareSACoolingRate = 0.9985;
+  double routeAwareSAMinTemperature = 0.001;
+
+  // Route-aware SA cost function penalty weights.
+  double routeAwareSAUnroutedEdgePenaltyWeight = 10.0;
+  double routeAwareSACongestionPenaltyWeight = 2.0;
 };
 
 struct MapperLaneOptions {
@@ -153,20 +157,20 @@ struct MapperLocalRepairExactOptions {
   unsigned tightRepairEdgeThreshold = 6;
   unsigned microFailedEdgeThreshold = 2;
   unsigned microRepairEdgeThreshold = 6;
-  double microDeadlineMs = 20000.0;
-  double tightDeadlineMs = 8000.0;
+  double microDeadlineMs = 35000.0;
+  double tightDeadlineMs = 12000.0;
   unsigned mediumRepairEdgeThreshold = 10;
   double mediumDeadlineMs = 4500.0;
   double defaultDeadlineMs = 3000.0;
   double deadlineScale = 4000.0;
   double microDeadlineScale = 8000.0;
-  unsigned microFirstHopLimit = 20;
+  unsigned microFirstHopLimit = 28;
   unsigned tightFirstHopLimit = 12;
   unsigned mediumFirstHopLimit = 8;
   unsigned smallFailedFirstHopLimit = 6;
   unsigned defaultFirstHopLimit = 5;
-  unsigned microCandidatePathLimit = 32;
-  unsigned tightCandidatePathLimit = 16;
+  unsigned microCandidatePathLimit = 48;
+  unsigned tightCandidatePathLimit = 24;
   unsigned mediumCandidatePathLimit = 8;
   unsigned smallFailedCandidatePathLimit = 6;
   unsigned defaultCandidatePathLimit = 5;
@@ -213,8 +217,8 @@ struct MapperLocalRepairOptions {
   unsigned exactNeighborhoodSearchSpaceTightCap = 16384;
   unsigned exactNeighborhoodSearchSpaceDefaultCap = 8192;
   unsigned largeNeighborhoodFailedEdgeThreshold = 4;
-  unsigned cpSatFallbackFailedEdgeThreshold = 8;
-  unsigned cpSatEscalationFailedEdgeThreshold = 6;
+  unsigned cpSatFallbackFailedEdgeThreshold = 5;
+  unsigned cpSatEscalationFailedEdgeThreshold = 4;
   unsigned targetFocusedFailedEdgeThreshold = 3;
   unsigned focusedTargetEdgeThreshold = 3;
   unsigned focusedBlockerEdgeThreshold = 12;
@@ -232,7 +236,7 @@ struct MapperLocalRepairOptions {
 };
 
 struct MapperOptions {
-  double budgetSeconds = 60.0;
+  double budgetSeconds = 300.0;
   int seed = 0;
   std::string profile = "balanced";
   unsigned lanes = 0;
@@ -251,9 +255,16 @@ struct MapperOptions {
   double congestionHistoryFactor = 1.0;
   double congestionHistoryScale = 1.5;
   double congestionPresentFactor = 1.0;
-  double congestionPlacementWeight = 0.3;
+  double congestionPlacementWeight = 0.6;
   double memorySharingPenalty = 8.0;
   bool enableRouteAwareSAMainLoop = true;
+
+  // Multi-restart options.
+  unsigned maxRestarts = 3;
+  double perRestartBudgetFraction = 0.33;
+
+  // Per-stage local repair budget fraction.
+  double localRepairBudgetFraction = 0.30;
 
   MapperRefinementOptions refinement;
   MapperLaneOptions lane;

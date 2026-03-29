@@ -1,6 +1,7 @@
 #ifndef LOOM_MAPPER_MAPPERLOCALREPAIRINTERNAL_H
 #define LOOM_MAPPER_MAPPERLOCALREPAIRINTERNAL_H
 
+#include "MapperCongestionEstimator.h"
 #include "MapperInternal.h"
 #include "MapperRoutingInternal.h"
 #include "loom/Mapper/Mapper.h"
@@ -75,6 +76,7 @@ private:
   const MapperLocalRepairOptions &repairOpts;
   std::vector<double> edgeWeights;
   mapper_detail::CandidateSetMap candidateSets;
+  CongestionEstimator congestionEstimator;
   unsigned maxRepairRecursionDepth = 0;
 
   llvm::DenseMap<IdIndex, double> hotspotWeights;

@@ -699,15 +699,51 @@ Mapper::Result Mapper::runWithTechMapPlan(
     }
   }
 
-  const unsigned laneCount = selectLaneCount(opts, dfg);
-  if (opts.verbose && laneCount > 1)
+  // Multi-restart wrapper: run the lane-based PnR pipeline up to
+  // opts.maxRestarts times with different seeds.
+  const unsigned maxRestarts = std::max(1u, opts.maxRestarts);
+  double perRestartBudget = opts.budgetSeconds * opts.perRestartBudgetFraction;
+  MappingState bestRestartState = contractedState;
+  auto bestRestartEdgeKinds = result.edgeKinds;
+  bool bestRestartRoutingSucceeded = false;
+  unsigned bestRestartRoutedEdges = 0;
+  double bestRestartPlacementCost = std::numeric_limits<double>::infinity();
+  bool bestRestartBudgetExceeded = false;
+  std::string bestRestartBudgetExceededStage;
+  MapperSearchSummary bestRestartSearchSummary;
+  unsigned bestRestartLaneIndex = 0;
+  bool anyRestartSucceeded = false;
+  std::vector<LaneAttempt> bestRestartAttempts;
+
+  for (unsigned restartIter = 0; restartIter < maxRestarts; ++restartIter) {
+    if (shouldStopForBudget("multi-restart"))
+      break;
+
+    // Per-restart seed offset.
+    int restartSeedOffset =
+        static_cast<int>(restartIter * opts.lane.restartSeedStride);
+    Options restartOpts = opts;
+    restartOpts.seed = opts.seed + restartSeedOffset;
+    // Limit each restart to its budget fraction.
+    if (maxRestarts > 1) {
+      double remaining = remainingBudgetSeconds();
+      restartOpts.budgetSeconds = std::min(perRestartBudget, remaining);
+    }
+
+    if (opts.verbose && maxRestarts > 1)
+      llvm::outs() << "Mapper: restart " << (restartIter + 1) << "/"
+                   << maxRestarts << " (seed offset " << restartSeedOffset
+                   << ", budget " << restartOpts.budgetSeconds << "s)\n";
+
+  const unsigned laneCount = selectLaneCount(restartOpts, dfg);
+  if (restartOpts.verbose && laneCount > 1)
     llvm::outs() << "Mapper: launching " << laneCount << " parallel lanes\n";
 
   auto configureLaneOptions = [&](unsigned laneIndex, Mapper &laneMapper,
                                   bool resetBudgetWindow) {
-    Options laneOpts = opts;
+    Options laneOpts = restartOpts;
     laneOpts.seed =
-        opts.seed + static_cast<int>(laneIndex * opts.lane.laneSeedStride);
+        restartOpts.seed + static_cast<int>(laneIndex * restartOpts.lane.laneSeedStride);
     laneOpts.verbose = (laneCount == 1) ? opts.verbose : false;
     if (resetBudgetWindow && laneOpts.budgetSeconds > 0.0 &&
         laneOpts.lane.finalPolishReserveFraction > 0.0) {
@@ -979,19 +1015,26 @@ Mapper::Result Mapper::runWithTechMapPlan(
       bestIt = it;
   }
   if (bestIt == attempts.end() || !bestIt->placementSucceeded) {
+    if (maxRestarts > 1) {
+      // No placement succeeded in this restart; try the next restart.
+      continue;
+    }
     result.diagnostics = "Placement failed";
     result.searchSummary = activeSearchSummary_;
     llvm::errs() << "Mapper: " << result.diagnostics << "\n";
     return result;
   }
 
-  contractedState = bestIt->state;
-  auto contractedEdgeKinds = bestIt->edgeKinds;
-  bool routingSucceeded = bestIt->routingSucceeded;
-  bool selectedBudgetExceeded = bestIt->budgetExceeded;
-  std::string selectedBudgetExceededStage = bestIt->budgetExceededStage;
-  activeSearchSummary_ = bestIt->searchSummary;
-  result.selectedLaneIndex = bestIt->laneIndex;
+  MappingState thisRestartState = bestIt->state;
+  auto thisRestartEdgeKinds = bestIt->edgeKinds;
+  bool thisRestartRoutingSucceeded = bestIt->routingSucceeded;
+  bool thisRestartBudgetExceeded = bestIt->budgetExceeded;
+  std::string thisRestartBudgetExceededStage = bestIt->budgetExceededStage;
+  unsigned thisRestartRoutedEdges = bestIt->routedEdges;
+  double thisRestartPlacementCost = bestIt->placementCost;
+  MapperSearchSummary thisRestartSearchSummary = bestIt->searchSummary;
+  unsigned thisRestartLaneIndex = bestIt->laneIndex;
+
   if (opts.verbose && laneCount > 1) {
     llvm::outs() << "Mapper: selected lane " << bestIt->laneIndex
                  << " (routed overall " << bestIt->routedEdges << "/"
@@ -1000,19 +1043,19 @@ Mapper::Result Mapper::runWithTechMapPlan(
                  << ", clock=" << bestIt->estimatedClockPeriod << ")\n";
   }
 
-  if (!routingSucceeded && remainingBudgetSeconds() > 1.0) {
+  if (!thisRestartRoutingSucceeded && remainingBudgetSeconds() > 1.0) {
     auto polishFailed =
-        collectUnroutedEdges(contractedState, techPlan.contractedDFG,
-                             contractedEdgeKinds);
+        collectUnroutedEdges(thisRestartState, techPlan.contractedDFG,
+                             thisRestartEdgeKinds);
     if (opts.localRepair.enabled && !polishFailed.empty() &&
         polishFailed.size() <= opts.localRepair.cpSatFallbackFailedEdgeThreshold) {
       if (opts.verbose)
         llvm::outs() << "Mapper: final polish on selected lane...\n";
 
-      auto routedCheckpoint = contractedState.save();
-      contractedState.clearRoutes(techPlan.contractedDFG, adg);
-      auto placementCheckpoint = contractedState.save();
-      contractedState.restore(routedCheckpoint);
+      auto routedCheckpoint = thisRestartState.save();
+      thisRestartState.clearRoutes(techPlan.contractedDFG, adg);
+      auto placementCheckpoint = thisRestartState.save();
+      thisRestartState.restore(routedCheckpoint);
 
       Options polishOpts = opts;
       polishOpts.verbose = opts.verbose;
@@ -1026,18 +1069,63 @@ Mapper::Result Mapper::runWithTechMapPlan(
       activeBudgetExceeded_ = false;
       activeBudgetExceededStage_.clear();
       bool polishAllRouted =
-          runLocalRepair(contractedState, placementCheckpoint, polishFailed,
+          runLocalRepair(thisRestartState, placementCheckpoint, polishFailed,
                          techPlan.contractedDFG, adg, flattener, candidates,
-                         contractedEdgeKinds, polishOpts);
-      unsigned polishedRouted = countRoutedEdges(contractedState,
+                         thisRestartEdgeKinds, polishOpts);
+      unsigned polishedRouted = countRoutedEdges(thisRestartState,
                                                  techPlan.contractedDFG,
-                                                 contractedEdgeKinds);
-      if (polishAllRouted || polishedRouted > bestIt->routedEdges)
-        routingSucceeded = polishAllRouted;
-      selectedBudgetExceeded = activeBudgetExceeded_;
-      selectedBudgetExceededStage = activeBudgetExceededStage_;
+                                                 thisRestartEdgeKinds);
+      if (polishAllRouted || polishedRouted > thisRestartRoutedEdges) {
+        thisRestartRoutingSucceeded = polishAllRouted;
+        thisRestartRoutedEdges = polishedRouted;
+      }
+      thisRestartBudgetExceeded = activeBudgetExceeded_;
+      thisRestartBudgetExceededStage = activeBudgetExceededStage_;
     }
   }
+
+  // Track best across restarts (fewest unrouted, tie-break by cost).
+  bool isBetterRestart =
+      thisRestartRoutingSucceeded ||
+      thisRestartRoutedEdges > bestRestartRoutedEdges ||
+      (thisRestartRoutedEdges == bestRestartRoutedEdges &&
+       thisRestartPlacementCost < bestRestartPlacementCost);
+  if (!anyRestartSucceeded || isBetterRestart) {
+    bestRestartState = thisRestartState;
+    bestRestartEdgeKinds = thisRestartEdgeKinds;
+    bestRestartRoutingSucceeded = thisRestartRoutingSucceeded;
+    bestRestartRoutedEdges = thisRestartRoutedEdges;
+    bestRestartPlacementCost = thisRestartPlacementCost;
+    bestRestartBudgetExceeded = thisRestartBudgetExceeded;
+    bestRestartBudgetExceededStage = thisRestartBudgetExceededStage;
+    bestRestartSearchSummary = thisRestartSearchSummary;
+    bestRestartLaneIndex = thisRestartLaneIndex;
+    bestRestartAttempts = attempts;
+    anyRestartSucceeded = true;
+  }
+
+  if (thisRestartRoutingSucceeded) {
+    if (opts.verbose && maxRestarts > 1)
+      llvm::outs() << "Mapper: routing succeeded at restart "
+                   << (restartIter + 1) << ", stopping early\n";
+    break;
+  }
+  } // end multi-restart loop
+
+  // Use the best result from all restarts.
+  if (!anyRestartSucceeded) {
+    result.diagnostics = "Placement failed";
+    result.searchSummary = activeSearchSummary_;
+    llvm::errs() << "Mapper: " << result.diagnostics << "\n";
+    return result;
+  }
+  contractedState = bestRestartState;
+  auto contractedEdgeKinds = bestRestartEdgeKinds;
+  bool routingSucceeded = bestRestartRoutingSucceeded;
+  bool selectedBudgetExceeded = bestRestartBudgetExceeded;
+  std::string selectedBudgetExceededStage = bestRestartBudgetExceededStage;
+  activeSearchSummary_ = bestRestartSearchSummary;
+  result.selectedLaneIndex = bestRestartLaneIndex;
 
   activeBudgetExceeded_ = selectedBudgetExceeded;
   activeBudgetExceededStage_ = selectedBudgetExceededStage;
@@ -1265,7 +1353,7 @@ Mapper::Result Mapper::runWithTechMapPlan(
                           opts.timing);
   result.searchSummary = activeSearchSummary_;
 
-  std::vector<LaneAttempt> sortedAttempts = attempts;
+  std::vector<LaneAttempt> sortedAttempts = bestRestartAttempts;
   llvm::stable_sort(sortedAttempts, isBetterLaneResult);
   for (const auto &attempt : sortedAttempts) {
     if (!attempt.placementSucceeded || !attempt.routingSucceeded)

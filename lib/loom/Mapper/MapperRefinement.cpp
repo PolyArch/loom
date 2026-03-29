@@ -1,4 +1,5 @@
 #include "MapperInternal.h"
+#include "MapperCongestionEstimator.h"
 #include "loom/Mapper/Mapper.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
@@ -28,9 +29,27 @@ double computeRouteAwareCheckpointCost(const MappingState &state,
       static_cast<double>(computeTotalMappedPathLen(state)) * 0.001;
   const MapperTimingSummary timingSummary =
       analyzeMapperTiming(state, dfg, adg, edgeKinds, opts.timing);
+
+  // Routing-failure penalty: alpha * unrouted_edge_count.
+  double unroutedEdgeCount = static_cast<double>(
+      collectUnroutedEdges(state, dfg, edgeKinds).size());
+  double routingFailurePenalty =
+      opts.refinement.routeAwareSAUnroutedEdgePenaltyWeight * unroutedEdgeCount;
+
+  // Congestion penalty: beta * total_demand_excess.
+  double totalDemandExcess = 0.0;
+  if (opts.refinement.routeAwareSACongestionPenaltyWeight > 0.0) {
+    CongestionEstimator congEstimator;
+    congEstimator.estimate(state, dfg, adg, flattener);
+    totalDemandExcess = congEstimator.totalDemandExcess();
+  }
+  double congestionPenalty =
+      opts.refinement.routeAwareSACongestionPenaltyWeight * totalDemandExcess;
+
   return placementCost + unroutedPenalty + pathLenPenalty +
          timingSummary.estimatedThroughputCost +
-         0.1 * timingSummary.estimatedClockPeriod;
+         0.1 * timingSummary.estimatedClockPeriod +
+         routingFailurePenalty + congestionPenalty;
 }
 
 SACostState::Savepoint beginCostSavepoint(SACostState &costState) {

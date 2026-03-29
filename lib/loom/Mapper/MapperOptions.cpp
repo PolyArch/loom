@@ -92,7 +92,26 @@ bool validateMapperOptions(const MapperOptions &opts, std::string &error) {
       !requireNonNegativeDouble(opts.congestionPlacementWeight,
                                 "congestion_placement_weight", error) ||
       !requireNonNegativeDouble(opts.memorySharingPenalty,
-                                "memory_sharing_penalty", error)) {
+                                "memory_sharing_penalty", error) ||
+      !requireNonNegativeDouble(opts.refinement.routeAwareSAUnroutedEdgePenaltyWeight,
+                                "refinement.route_aware_sa_unrouted_edge_penalty_weight",
+                                error) ||
+      !requireNonNegativeDouble(opts.refinement.routeAwareSACongestionPenaltyWeight,
+                                "refinement.route_aware_sa_congestion_penalty_weight",
+                                error) ||
+      !requirePositiveUnsigned(opts.maxRestarts, "max_restarts", error) ||
+      !requirePositiveDouble(opts.perRestartBudgetFraction,
+                             "per_restart_budget_fraction", error) ||
+      !requirePositiveDouble(opts.localRepairBudgetFraction,
+                             "local_repair_budget_fraction", error)) {
+    return false;
+  }
+  if (opts.perRestartBudgetFraction > 1.0) {
+    error = "per_restart_budget_fraction must be <= 1.0";
+    return false;
+  }
+  if (opts.localRepairBudgetFraction > 1.0) {
+    error = "local_repair_budget_fraction must be <= 1.0";
     return false;
   }
   if (opts.snapshotIntervalSeconds > 0.0 && opts.snapshotIntervalRounds > 0) {

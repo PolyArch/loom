@@ -84,9 +84,16 @@ bool LocalRepairDriver::runHotspotRepairAndEarlyCPSat() {
                                                  flattener, candidates);
         double failedEdgeDelta =
             evaluateFailedEdgeDelta({std::make_pair(swNode, candHw)});
+        // Congestion penalty: penalize relocating to congested locations.
+        double congestionPenalty = 0.0;
+        if (oldHw != INVALID_ID && candHw != INVALID_ID) {
+          congestionPenalty = congestionEstimator.demandCapacityRatio(
+              oldHw, candHw, adg, flattener);
+        }
         double repairScore =
             failedEdgeDelta * repairOpts.failedEdgeDeltaScoreWeight +
-            candScore * repairOpts.candidateScoreWeight;
+            candScore * repairOpts.candidateScoreWeight -
+            congestionPenalty * repairOpts.hotspotDistanceScoreWeight;
         relocations.push_back({-repairScore, candHw});
       }
       llvm::stable_sort(relocations, [&](const auto &lhs, const auto &rhs) {

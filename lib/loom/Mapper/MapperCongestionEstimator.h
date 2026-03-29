@@ -26,6 +26,10 @@ struct CongestionEstimator {
   double demandCapacityRatio(IdIndex srcHwNode, IdIndex dstHwNode,
                              const Graph &adg,
                              const ADGFlattener &flattener) const;
+
+  /// Compute total demand excess: sum of max(0, demand - 1.0) across all
+  /// switch outputs. Each switch output has capacity 1.0.
+  double totalDemandExcess() const;
 };
 
 } // namespace loom

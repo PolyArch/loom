@@ -370,8 +370,20 @@ bool Mapper::runRouteAwareSA(
       ++acceptedSinceRouteCheckpoint;
 
       // Tier 4: Periodic full re-route after a batch of accepted moves.
-      if (acceptedSinceRouteCheckpoint >=
-          opts.refinement.routeAwareSACheckpointMoveBatch) {
+      // Adaptive batch sizing: reduce batch for near-success cases.
+      unsigned adaptiveBatch = opts.refinement.routeAwareSACheckpointMoveBatch;
+      {
+        unsigned unroutedNow =
+            collectUnroutedEdges(state, dfg, edgeKinds).size();
+        unsigned baseBatch = opts.refinement.routeAwareSACheckpointMoveBatch;
+        if (unroutedNow <= 3)
+          adaptiveBatch = std::max(4u, baseBatch / 4);
+        else if (unroutedNow <= 10)
+          adaptiveBatch = baseBatch / 2;
+        else
+          adaptiveBatch = baseBatch;
+      }
+      if (acceptedSinceRouteCheckpoint >= adaptiveBatch) {
         ++activeSearchSummary_.routeAwareCheckpointRescorePasses;
         bool rerouteSucceeded =
             runRouting(state, dfg, adg, edgeKinds, opts);
