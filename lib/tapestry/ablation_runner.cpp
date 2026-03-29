@@ -125,59 +125,28 @@ AblationResult runAblation(const CoOptOptions &templateOpts,
                            const std::vector<std::string> &domainNames,
                            const std::string &archConfig,
                            bool verbose) {
+  // This function cannot call co_optimize because its signature lacks the
+  // workload data (kernels, contracts, architecture) that co_optimize
+  // requires.  The experiment driver (tapestry_coopt_experiment) builds
+  // workloads per-domain and calls co_optimize directly.
+  //
+  // Return an immediate failure so callers know this path is not usable.
   AblationResult ablResult;
+  ablResult.success = false;
   ablResult.configs = buildAblationConfigs();
   ablResult.domains = domainNames;
-
-  // Initialize results matrix: configs x domains.
   ablResult.results.resize(ablResult.configs.size());
-  for (auto &row : ablResult.results) {
+  for (auto &row : ablResult.results)
     row.resize(domainNames.size());
+
+  if (verbose) {
+    llvm::errs()
+        << "runAblation: not implemented at the library level. "
+        << "Use the experiment driver (tapestry_coopt_experiment --mode "
+           "ablation) which builds per-domain workloads and calls "
+           "co_optimize directly.\n";
   }
 
-  bool allSucceeded = true;
-
-  for (size_t ci = 0; ci < ablResult.configs.size(); ++ci) {
-    const auto &config = ablResult.configs[ci];
-
-    for (size_t di = 0; di < domainNames.size(); ++di) {
-      const auto &domName = domainNames[di];
-
-      if (verbose) {
-        llvm::outs() << "[" << config.name << " / " << domName << "] ";
-        llvm::outs().flush();
-      }
-
-      // Build a CoOptOptions from the template, then apply ablation config.
-      CoOptOptions cellOpts = templateOpts;
-      cellOpts.verbose = false; // Suppress per-round output in ablation
-      applyAblationConfig(cellOpts, config);
-
-      // Call co_optimize with the configured options.
-      // The caller is responsible for building workload and architecture
-      // before calling runAblation. Since co_optimize needs kernels,
-      // contracts, and architecture, we rely on the experiment driver
-      // to wrap this properly. For the library-level function, we store
-      // a default empty result and let the driver fill it in.
-      //
-      // This function is designed to be called from the experiment
-      // driver which has access to buildDomainWorkload and buildInitialArch.
-      // We store a placeholder that the caller replaces.
-      CoOptResult cellResult;
-      cellResult.success = false;
-      cellResult.diagnostics = "Placeholder: caller must provide workload";
-
-      ablResult.results[ci][di] = std::move(cellResult);
-
-      if (verbose) {
-        llvm::outs() << "throughput="
-                     << ablResult.results[ci][di].bestThroughput
-                     << " area=" << ablResult.results[ci][di].bestArea << "\n";
-      }
-    }
-  }
-
-  ablResult.success = allSucceeded;
   return ablResult;
 }
 

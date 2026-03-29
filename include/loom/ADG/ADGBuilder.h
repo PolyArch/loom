@@ -784,6 +784,14 @@ public:
   /// registration.
   std::string exportCoreType(const std::string &typeName);
 
+  // --- Validation ---
+
+  /// Validate the current ADG for connectivity. Returns true if all instance
+  /// ports are connected. On failure, errMsg describes the dangling ports.
+  /// Call this before exportMLIR / exportCoreType to avoid fatal errors from
+  /// unconnected ports in the emit path.
+  bool validate(std::string &errMsg) const;
+
   // --- Export ---
 
   /// Export the ADG as Fabric MLIR to the given file path.

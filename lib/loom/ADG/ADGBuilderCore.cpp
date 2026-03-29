@@ -1513,5 +1513,9 @@ bool ADGBuilder::Impl::validate(std::string &errMsg) const {
   return valid;
 }
 
+bool ADGBuilder::validate(std::string &errMsg) const {
+  return impl_->validate(errMsg);
+}
+
 } // namespace adg
 } // namespace loom

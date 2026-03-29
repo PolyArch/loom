@@ -16,6 +16,7 @@
 #ifndef TAPESTRY_CO_OPTIMIZER_H
 #define TAPESTRY_CO_OPTIMIZER_H
 
+#include "tapestry/ParetoTracker.h"
 #include "tapestry/tdg_optimizer.h"
 
 #include "loom/SystemCompiler/HWInnerOptimizer.h"
@@ -35,16 +36,7 @@
 
 namespace tapestry {
 
-//===----------------------------------------------------------------------===//
-// Pareto point
-//===----------------------------------------------------------------------===//
-
-/// A single (throughput, area) design point on the Pareto frontier.
-struct ParetoPoint {
-  double throughput = 0.0;
-  double area = 0.0;
-  unsigned round = 0;
-};
+// ParetoPoint is defined in ParetoTracker.h (included above).
 
 //===----------------------------------------------------------------------===//
 // ConvergenceMonitor
@@ -168,7 +160,7 @@ struct CoOptResult {
   double bestArea = std::numeric_limits<double>::infinity();
 
   /// Non-dominated Pareto frontier across all rounds.
-  std::vector<ParetoPoint> paretoFrontier;
+  ParetoTracker paretoFrontier;
 
   /// Total number of rounds executed.
   unsigned rounds = 0;
@@ -270,11 +262,12 @@ double computeSystemArea(
     const std::vector<loom::ADGOptResult> &innerResults);
 
 //===----------------------------------------------------------------------===//
-// Helper: Pareto frontier management
+// Helper: Pareto frontier management (legacy free-function API)
 //===----------------------------------------------------------------------===//
 
 /// Add a point to the Pareto frontier if it is non-dominated.
 /// Removes any existing points dominated by the new one.
+/// Prefer ParetoTracker::addPoint() for new code.
 void addParetoPoint(std::vector<ParetoPoint> &frontier,
                     const ParetoPoint &candidate);
 

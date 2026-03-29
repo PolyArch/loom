@@ -405,7 +405,7 @@ coOptResultToJSON(const tco::CoOptResult &result, const std::string &label,
 
   // Pareto frontier
   llvm::json::Array paretoArr;
-  for (const auto &p : result.paretoFrontier) {
+  for (const auto &p : result.paretoFrontier.frontier()) {
     llvm::json::Object pObj;
     pObj["throughput"] = p.throughput;
     pObj["area"] = p.area;

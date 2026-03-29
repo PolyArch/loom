@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "tapestry/co_optimizer.h"
+#include "tapestry/ParetoTracker.h"
 
 #include "llvm/Support/raw_ostream.h"
 
@@ -25,32 +26,17 @@ namespace lt = loom::tapestry;
 namespace tapestry {
 
 //===----------------------------------------------------------------------===//
-// Pareto frontier helpers
+// Pareto frontier helpers (legacy free-function API)
 //===----------------------------------------------------------------------===//
-
-/// Returns true if point A dominates point B (higher throughput AND lower area).
-static bool dominates(const ParetoPoint &a, const ParetoPoint &b) {
-  return (a.throughput >= b.throughput && a.area <= b.area) &&
-         (a.throughput > b.throughput || a.area < b.area);
-}
 
 void addParetoPoint(std::vector<ParetoPoint> &frontier,
                     const ParetoPoint &candidate) {
-  // Check if any existing point dominates the candidate.
-  for (const auto &existing : frontier) {
-    if (dominates(existing, candidate))
-      return; // Candidate is dominated; skip.
-  }
-
-  // Remove existing points dominated by the candidate.
-  frontier.erase(
-      std::remove_if(frontier.begin(), frontier.end(),
-                     [&candidate](const ParetoPoint &p) {
-                       return dominates(candidate, p);
-                     }),
-      frontier.end());
-
-  frontier.push_back(candidate);
+  // Delegate to ParetoTracker for correct dominance logic.
+  ParetoTracker tracker;
+  for (const auto &pt : frontier)
+    tracker.addPoint(pt);
+  tracker.addPoint(candidate);
+  frontier = tracker.frontier();
 }
 
 //===----------------------------------------------------------------------===//
@@ -689,7 +675,7 @@ CoOptResult co_optimize(
       candidate.throughput = swThroughput;
       candidate.area = hwArea;
       candidate.round = round;
-      addParetoPoint(result.paretoFrontier, candidate);
+      result.paretoFrontier.addPoint(candidate);
     }
 
     // ---- Convergence check via ConvergenceMonitor ----

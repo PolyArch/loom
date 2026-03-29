@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "tapestry/co_optimizer.h"
+#include "tapestry/ParetoTracker.h"
 
 #include "loom/SystemCompiler/ArchitectureFactory.h"
 #include "loom/SystemCompiler/PrecompiledKernelLoader.h"
@@ -236,36 +237,36 @@ static bool testConvergenceMonitor() {
 //===----------------------------------------------------------------------===//
 
 static bool testParetoFrontier() {
-  std::vector<tco::ParetoPoint> frontier;
+  tco::ParetoTracker tracker;
 
   // Add first point.
-  tco::addParetoPoint(frontier, {10.0, 100.0, 1});
-  if (frontier.size() != 1) {
-    std::cerr << "FAIL: T2 frontier size=" << frontier.size()
+  tracker.addPoint({10.0, 100.0, 1});
+  if (tracker.size() != 1) {
+    std::cerr << "FAIL: T2 frontier size=" << tracker.size()
               << " after 1st point\n";
     return false;
   }
 
   // Add dominated point (lower throughput, higher area). Should be rejected.
-  tco::addParetoPoint(frontier, {5.0, 200.0, 2});
-  if (frontier.size() != 1) {
+  tracker.addPoint({5.0, 200.0, 2});
+  if (tracker.size() != 1) {
     std::cerr << "FAIL: T2 dominated point not rejected\n";
     return false;
   }
 
   // Add non-dominated point (higher throughput, higher area).
-  tco::addParetoPoint(frontier, {20.0, 150.0, 3});
-  if (frontier.size() != 2) {
+  tracker.addPoint({20.0, 150.0, 3});
+  if (tracker.size() != 2) {
     std::cerr << "FAIL: T2 non-dominated point not added\n";
     return false;
   }
 
   // Add dominating point (higher throughput, lower area). Should remove first.
-  tco::addParetoPoint(frontier, {15.0, 50.0, 4});
+  tracker.addPoint({15.0, 50.0, 4});
   // This dominates (10, 100) and is non-dominated by (20, 150).
   // frontier should have 2 points: (15, 50) and (20, 150).
-  if (frontier.size() != 2) {
-    std::cerr << "FAIL: T2 after dominating point, size=" << frontier.size()
+  if (tracker.size() != 2) {
+    std::cerr << "FAIL: T2 after dominating point, size=" << tracker.size()
               << " (expected 2)\n";
     return false;
   }

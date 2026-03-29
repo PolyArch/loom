@@ -1519,9 +1519,15 @@ ADGOptResult HWInnerOptimizer::optimize(
     }
   }
 
-  // Generate final ADG MLIR
+  // Generate final ADG MLIR. buildADGFromParams returns empty string if
+  // the ADG has unconnected ports (e.g., fallback topology mismatch).
+  // In that case, mark the result as failed so callers can skip it.
   std::string moduleName = "core_type_" + std::to_string(coreType.typeIndex);
   result.adgMLIR = buildADGFromParams(result.params, moduleName);
+  if (result.adgMLIR.empty() && result.success) {
+    result.success = false;
+    result.diagnostics += "ADG generation failed (unconnected ports); ";
+  }
 
   auto wallEnd = std::chrono::steady_clock::now();
   result.wallTimeSec =

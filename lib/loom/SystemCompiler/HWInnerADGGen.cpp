@@ -406,6 +406,20 @@ std::string buildADGFromParams(const CoreDesignParams &params,
   uint64_t spmBytes = static_cast<uint64_t>(params.spmSizeKB) * 1024;
   builder.setSPMCapacity(spmBytes);
 
+  // ---- Validate connectivity before export ----
+  // When HW optimization explores fallback topologies, some spatial_sw ports
+  // may end up unconnected. ADGBuilder::exportCoreType would hit
+  // report_fatal_error in that case, so validate first and return an empty
+  // string to let the caller skip this candidate gracefully.
+  std::string valErr;
+  if (!builder.validate(valErr)) {
+    llvm::errs() << "buildADGFromParams: ADG validation failed for '"
+                 << moduleName << "':\n"
+                 << valErr
+                 << "Returning empty MLIR (caller should skip this candidate).\n";
+    return {};
+  }
+
   // ---- Export as core type MLIR ----
   return builder.exportCoreType(moduleName);
 }

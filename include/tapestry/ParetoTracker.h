@@ -9,13 +9,22 @@
 #ifndef TAPESTRY_PARETO_TRACKER_H
 #define TAPESTRY_PARETO_TRACKER_H
 
-#include "tapestry/co_optimizer.h"
-
 #include "llvm/Support/raw_ostream.h"
 
 #include <vector>
 
 namespace tapestry {
+
+//===----------------------------------------------------------------------===//
+// ParetoPoint
+//===----------------------------------------------------------------------===//
+
+/// A single (throughput, area) design point on the Pareto frontier.
+struct ParetoPoint {
+  double throughput = 0.0;
+  double area = 0.0;
+  unsigned round = 0;
+};
 
 //===----------------------------------------------------------------------===//
 // HypervolumeResult
