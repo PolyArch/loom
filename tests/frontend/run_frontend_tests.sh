@@ -100,20 +100,17 @@ run_test "test_bitwise_ops" "$SCRIPT_DIR/test_bitwise_ops.cpp" "arith.shli|arith
 # T4: Math intrinsics
 run_test "test_math_intrinsics" "$SCRIPT_DIR/test_math_intrinsics.cpp" "math.exp|math.sqrt"
 
-# T5: Saturating arithmetic
-# KNOWN: requires future frontend work (no DFG candidate produced)
+# T5: Saturating arithmetic (manual clamp pattern)
 run_test "test_saturating_arith" "$SCRIPT_DIR/test_saturating_arith.cpp" "arith.select"
 
 # T6: Nested conditional
 run_test "test_nested_conditional" "$SCRIPT_DIR/test_nested_conditional.cpp" "handshake.mux|arith.select"
 
 # T8: Select-based control (absolute value)
-# KNOWN: requires future frontend work (no DFG candidate produced)
 run_test "test_select_control" "$SCRIPT_DIR/test_select_control.cpp" "arith.select"
 
-# T9: Indirect addressing
-# KNOWN: requires future frontend work (DFG generated but missing handshake.load)
-run_test "test_indirect_access" "$SCRIPT_DIR/test_indirect_access.cpp" "handshake.load"
+# T9: Indirect addressing (gather pattern with chained loads)
+run_test "test_indirect_access" "$SCRIPT_DIR/test_indirect_access.cpp" "load \["
 
 # T12: Sum reduction
 run_test "test_sum_reduction" "$SCRIPT_DIR/test_sum_reduction.cpp" "dataflow.carry"

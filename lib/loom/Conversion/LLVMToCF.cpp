@@ -1610,6 +1610,148 @@ LogicalResult FunctionConverter::convertIntrinsic(LLVM::CallIntrinsicOp op) {
   if (name.starts_with("llvm.umax."))
     return createMinMax(arith::CmpIPredicate::uge, true);
 
+  // abs: |x| = (x >= 0) ? x : -x
+  if (name.starts_with("llvm.abs.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg)
+      return op.emitError("abs has unmapped operand");
+    auto intTy = dyn_cast<IntegerType>(arg.getType());
+    if (!intTy)
+      return failure();
+    Value zero = arith::ConstantIntOp::create(builder, loc, intTy, 0);
+    Value neg = arith::SubIOp::create(builder, loc, zero, arg);
+    Value cmp = arith::CmpIOp::create(builder, loc,
+                                       arith::CmpIPredicate::sge, arg, zero);
+    Value result = arith::SelectOp::create(builder, loc, cmp, arg, neg);
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
+  // Saturating arithmetic: sadd.sat, ssub.sat, uadd.sat, usub.sat
+  if (name.starts_with("llvm.sadd.sat.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value lhs = lookup(op.getArgs()[0]);
+    Value rhs = lookup(op.getArgs()[1]);
+    if (!lhs || !rhs)
+      return op.emitError("sadd.sat has unmapped operand");
+    auto intTy = dyn_cast<IntegerType>(lhs.getType());
+    if (!intTy)
+      return failure();
+    unsigned width = intTy.getWidth();
+    int64_t smax = (1LL << (width - 1)) - 1;
+    int64_t smin = -(1LL << (width - 1));
+    Value sum = arith::AddIOp::create(builder, loc, lhs, rhs);
+    Value maxVal = arith::ConstantIntOp::create(builder, loc, intTy, smax);
+    Value minVal = arith::ConstantIntOp::create(builder, loc, intTy, smin);
+    // Overflow: lhs > 0 && rhs > 0 && sum <= 0 -> clamp to smax
+    // Underflow: lhs < 0 && rhs < 0 && sum >= 0 -> clamp to smin
+    Value zero = arith::ConstantIntOp::create(builder, loc, intTy, 0);
+    Value lhsPos = arith::CmpIOp::create(builder, loc,
+                                          arith::CmpIPredicate::sgt, lhs, zero);
+    Value rhsPos = arith::CmpIOp::create(builder, loc,
+                                          arith::CmpIPredicate::sgt, rhs, zero);
+    Value sumNeg = arith::CmpIOp::create(builder, loc,
+                                          arith::CmpIPredicate::sle, sum, zero);
+    Value overflow = arith::AndIOp::create(builder, loc, lhsPos, rhsPos);
+    overflow = arith::AndIOp::create(builder, loc, overflow, sumNeg);
+    Value lhsNeg = arith::CmpIOp::create(builder, loc,
+                                          arith::CmpIPredicate::slt, lhs, zero);
+    Value rhsNeg = arith::CmpIOp::create(builder, loc,
+                                          arith::CmpIPredicate::slt, rhs, zero);
+    Value sumPos = arith::CmpIOp::create(builder, loc,
+                                          arith::CmpIPredicate::sge, sum, zero);
+    Value underflow = arith::AndIOp::create(builder, loc, lhsNeg, rhsNeg);
+    underflow = arith::AndIOp::create(builder, loc, underflow, sumPos);
+    Value result = arith::SelectOp::create(builder, loc, overflow, maxVal, sum);
+    result = arith::SelectOp::create(builder, loc, underflow, minVal, result);
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
+  if (name.starts_with("llvm.ssub.sat.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value lhs = lookup(op.getArgs()[0]);
+    Value rhs = lookup(op.getArgs()[1]);
+    if (!lhs || !rhs)
+      return op.emitError("ssub.sat has unmapped operand");
+    auto intTy = dyn_cast<IntegerType>(lhs.getType());
+    if (!intTy)
+      return failure();
+    unsigned width = intTy.getWidth();
+    int64_t smax = (1LL << (width - 1)) - 1;
+    int64_t smin = -(1LL << (width - 1));
+    Value diff = arith::SubIOp::create(builder, loc, lhs, rhs);
+    Value maxVal = arith::ConstantIntOp::create(builder, loc, intTy, smax);
+    Value minVal = arith::ConstantIntOp::create(builder, loc, intTy, smin);
+    // Overflow: lhs > 0 && rhs < 0 && diff <= 0 -> clamp to smax
+    // Underflow: lhs < 0 && rhs > 0 && diff >= 0 -> clamp to smin
+    Value zero = arith::ConstantIntOp::create(builder, loc, intTy, 0);
+    Value lhsPos = arith::CmpIOp::create(builder, loc,
+                                          arith::CmpIPredicate::sgt, lhs, zero);
+    Value rhsNeg = arith::CmpIOp::create(builder, loc,
+                                          arith::CmpIPredicate::slt, rhs, zero);
+    Value diffNeg = arith::CmpIOp::create(builder, loc,
+                                           arith::CmpIPredicate::sle, diff, zero);
+    Value overflow = arith::AndIOp::create(builder, loc, lhsPos, rhsNeg);
+    overflow = arith::AndIOp::create(builder, loc, overflow, diffNeg);
+    Value lhsNeg = arith::CmpIOp::create(builder, loc,
+                                          arith::CmpIPredicate::slt, lhs, zero);
+    Value rhsPos = arith::CmpIOp::create(builder, loc,
+                                          arith::CmpIPredicate::sgt, rhs, zero);
+    Value diffPos = arith::CmpIOp::create(builder, loc,
+                                           arith::CmpIPredicate::sge, diff, zero);
+    Value underflow = arith::AndIOp::create(builder, loc, lhsNeg, rhsPos);
+    underflow = arith::AndIOp::create(builder, loc, underflow, diffPos);
+    Value result = arith::SelectOp::create(builder, loc, overflow, maxVal, diff);
+    result = arith::SelectOp::create(builder, loc, underflow, minVal, result);
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
+  if (name.starts_with("llvm.uadd.sat.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value lhs = lookup(op.getArgs()[0]);
+    Value rhs = lookup(op.getArgs()[1]);
+    if (!lhs || !rhs)
+      return op.emitError("uadd.sat has unmapped operand");
+    auto intTy = dyn_cast<IntegerType>(lhs.getType());
+    if (!intTy)
+      return failure();
+    Value sum = arith::AddIOp::create(builder, loc, lhs, rhs);
+    // Unsigned overflow: sum < lhs (wrapping detected)
+    Value overflow = arith::CmpIOp::create(builder, loc,
+                                            arith::CmpIPredicate::ult, sum, lhs);
+    Value allOnes = arith::ConstantIntOp::create(builder, loc, intTy, -1);
+    Value result = arith::SelectOp::create(builder, loc, overflow, allOnes, sum);
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
+  if (name.starts_with("llvm.usub.sat.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 2)
+      return failure();
+    Value lhs = lookup(op.getArgs()[0]);
+    Value rhs = lookup(op.getArgs()[1]);
+    if (!lhs || !rhs)
+      return op.emitError("usub.sat has unmapped operand");
+    auto intTy = dyn_cast<IntegerType>(lhs.getType());
+    if (!intTy)
+      return failure();
+    Value diff = arith::SubIOp::create(builder, loc, lhs, rhs);
+    // Unsigned underflow: lhs < rhs -> clamp to 0
+    Value underflow = arith::CmpIOp::create(builder, loc,
+                                             arith::CmpIPredicate::ult, lhs, rhs);
+    Value zero = arith::ConstantIntOp::create(builder, loc, intTy, 0);
+    Value result = arith::SelectOp::create(builder, loc, underflow, zero, diff);
+    mapValue(op.getResult(0), result);
+    return success();
+  }
+
   if (name.starts_with("llvm.bswap.")) {
     if (op.getNumResults() != 1 || op.getArgs().size() != 1)
       return failure();

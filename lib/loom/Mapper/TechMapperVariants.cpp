@@ -1256,22 +1256,33 @@ void collectVariantsForFU(
       return;
     variants.push_back(*family);
 
-    // Emit commutative-swapped variants for each TemplateOp that is
-    // commutative and has exactly 2 operands. The swapped variant gets a
-    // "_swap" suffix appended to its signature so that both orderings appear
-    // as distinct structural families in the family list.
+    // Collect indices of commutative 2-operand ops with distinct operands.
+    llvm::SmallVector<unsigned, 4> swappableOps;
     for (unsigned opIdx = 0; opIdx < family->ops.size(); ++opIdx) {
       const TemplateOp &templ = family->ops[opIdx];
       if (!templ.commutative || templ.operands.size() != 2)
         continue;
-      // Only emit a swap variant if operands are actually different.
       if (templ.operands[0] == templ.operands[1])
         continue;
-      VariantFamily swapped = *family;
-      std::swap(swapped.ops[opIdx].operands[0],
-                swapped.ops[opIdx].operands[1]);
-      swapped.signature = buildFamilySignature(swapped) + "_swap";
-      variants.push_back(std::move(swapped));
+      swappableOps.push_back(opIdx);
+    }
+
+    // Enumerate all 2^N - 1 non-identity swap combinations. Cap at 4
+    // swappable ops (15 extra variants) to avoid combinatorial explosion.
+    if (!swappableOps.empty() && swappableOps.size() <= 4) {
+      unsigned numCombinations = 1u << swappableOps.size();
+      for (unsigned mask = 1; mask < numCombinations; ++mask) {
+        VariantFamily swapped = *family;
+        for (unsigned bit = 0; bit < swappableOps.size(); ++bit) {
+          if (mask & (1u << bit)) {
+            unsigned opIdx = swappableOps[bit];
+            std::swap(swapped.ops[opIdx].operands[0],
+                      swapped.ops[opIdx].operands[1]);
+          }
+        }
+        swapped.signature = buildFamilySignature(swapped) + "_swap";
+        variants.push_back(std::move(swapped));
+      }
     }
   };
 
