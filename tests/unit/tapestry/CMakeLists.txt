@@ -96,3 +96,18 @@ target_link_libraries(verification-test PRIVATE
 set_target_properties(verification-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
+
+# SystemGraph template tests (A3)
+add_executable(systemgraph-test SystemGraphTest.cpp)
+
+target_include_directories(systemgraph-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+)
+
+target_link_libraries(systemgraph-test PRIVATE
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(systemgraph-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)
