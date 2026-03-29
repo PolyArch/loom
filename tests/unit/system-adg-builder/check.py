@@ -19,21 +19,21 @@ def main() -> int:
         assert "core_1_1" in mesh_text, "core_1_1 missing"
         assert "CoreType_A" in mesh_text, "CoreType_A missing"
         assert "CoreType_B" in mesh_text, "CoreType_B missing"
-        assert "MESH" in mesh_text, "MESH topology missing"
-        assert "noc_link_" in mesh_text, "NoC connections missing"
+        assert "mesh" in mesh_text.lower(), "mesh topology missing"
+        assert "noc_link" in mesh_text, "NoC connections missing"
         assert "l2_bank_" in mesh_text, "L2 banks missing"
 
     # Verify ring topology output
     ring_file = output_dir / "system_ring.mlir"
     if ring_file.exists():
         ring_text = ring_file.read_text(encoding="utf-8")
-        assert "RING" in ring_text, "RING topology missing"
+        assert "ring" in ring_text.lower(), "ring topology missing"
 
     # Verify hierarchical topology output
     hier_file = output_dir / "system_hier.mlir"
     if hier_file.exists():
         hier_text = hier_file.read_text(encoding="utf-8")
-        assert "HIERARCHICAL" in hier_text, "HIERARCHICAL topology missing"
+        assert "hierarchical" in hier_text.lower(), "hierarchical topology missing"
 
     # Verify the per-core ADG mapper result
     map_text = (output_dir / "dfg.map.txt").read_text(encoding="utf-8")

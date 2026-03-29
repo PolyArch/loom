@@ -147,3 +147,8 @@ endif()
 if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/fabric")
   add_subdirectory(fabric)
 endif()
+
+# Mapper PnR C++ tests
+if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/mapper-pnr")
+  add_subdirectory(mapper-pnr)
+endif()
