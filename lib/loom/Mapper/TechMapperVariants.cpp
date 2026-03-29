@@ -1252,8 +1252,27 @@ void collectVariantsForFU(
 
   auto emitFamily = [&]() {
     auto family = buildVariantFamily(fuOp, hwNode, muxSelection, joinSelection);
-    if (family)
-      variants.push_back(*family);
+    if (!family)
+      return;
+    variants.push_back(*family);
+
+    // Emit commutative-swapped variants for each TemplateOp that is
+    // commutative and has exactly 2 operands. The swapped variant gets a
+    // "_swap" suffix appended to its signature so that both orderings appear
+    // as distinct structural families in the family list.
+    for (unsigned opIdx = 0; opIdx < family->ops.size(); ++opIdx) {
+      const TemplateOp &templ = family->ops[opIdx];
+      if (!templ.commutative || templ.operands.size() != 2)
+        continue;
+      // Only emit a swap variant if operands are actually different.
+      if (templ.operands[0] == templ.operands[1])
+        continue;
+      VariantFamily swapped = *family;
+      std::swap(swapped.ops[opIdx].operands[0],
+                swapped.ops[opIdx].operands[1]);
+      swapped.signature = buildFamilySignature(swapped) + "_swap";
+      variants.push_back(std::move(swapped));
+    }
   };
 
   std::function<void(size_t)> enumerateJoins = [&](size_t joinIdx) {

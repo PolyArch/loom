@@ -1052,6 +1052,64 @@ bool TechMapper::buildPlan(const Graph &dfg, mlir::ModuleOp adgModule,
       std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - layer2StartTime)
           .count();
+  // Emit per-node unmapped-operation diagnostics for every fallback node
+  // whose reason is "no_candidate". For each such node, report the DFG op
+  // name and the closest-match family (by op-name prefix) with the reason
+  // it did not match. Gated behind a non-zero fallbackNoCandidateCount to
+  // avoid overhead on clean runs.
+  if (plan.metrics.fallbackNoCandidateCount > 0) {
+    std::string unmappedDetails;
+    llvm::raw_string_ostream unmappedOs(unmappedDetails);
+    unsigned unmappedEmitted = 0;
+    constexpr unsigned kMaxUnmappedDetails = 16;
+    for (const auto &fallbackInfo : TechMapper::allFallbackNodes(plan)) {
+      if (fallbackInfo.reason != "no_candidate")
+        continue;
+      if (unmappedEmitted >= kMaxUnmappedDetails)
+        break;
+      const Node *swNode = dfg.getNode(fallbackInfo.swNodeId);
+      if (!swNode)
+        continue;
+      llvm::StringRef opName = getNodeAttrStr(swNode, "op_name");
+      if (opName.empty())
+        continue;
+      unmappedOs << " [unmapped id=" << fallbackInfo.swNodeId
+                 << " op=" << opName;
+      // Find the closest-match family by op-name prefix.
+      llvm::StringRef bestFamily;
+      unsigned bestPrefixLen = 0;
+      for (const auto &family : familyList) {
+        for (const auto &tOp : family.ops) {
+          unsigned prefixLen = 0;
+          unsigned minLen = std::min(
+              static_cast<unsigned>(opName.size()),
+              static_cast<unsigned>(tOp.opName.size()));
+          for (unsigned cIdx = 0; cIdx < minLen; ++cIdx) {
+            if (opName[cIdx] == tOp.opName[cIdx])
+              ++prefixLen;
+            else
+              break;
+          }
+          if (prefixLen > bestPrefixLen) {
+            bestPrefixLen = prefixLen;
+            bestFamily = family.signature;
+          }
+        }
+      }
+      if (!bestFamily.empty())
+        unmappedOs << " closest_family=\"" << bestFamily << "\"";
+      unmappedOs << "]";
+      ++unmappedEmitted;
+    }
+    if (unmappedEmitted > 0) {
+      if (!plan.diagnostics.empty())
+        plan.diagnostics += "; ";
+      plan.diagnostics += "unmapped_ops(" +
+                          std::to_string(plan.metrics.fallbackNoCandidateCount) +
+                          "):" + unmappedOs.str();
+    }
+  }
+
   if (plan.diagnostics.empty())
     plan.diagnostics = buildTechmapDiagnostics(plan);
   else
