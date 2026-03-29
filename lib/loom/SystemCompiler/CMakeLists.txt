@@ -2,6 +2,7 @@ add_library(LoomSystemCompiler STATIC
   ArchitectureFactory.cpp
   AssignmentPlan.cpp
   BendersHelpers.cpp
+  ConvergenceTracker.cpp
   HierarchicalCompiler.cpp
   MappingResult.cpp
   BufferAllocator.cpp

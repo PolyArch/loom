@@ -1,6 +1,7 @@
 #include "loom/SystemCompiler/HierarchicalCompiler.h"
 #include "loom/SystemCompiler/BendersHelpers.h"
 #include "loom/SystemCompiler/BufferAllocator.h"
+#include "loom/SystemCompiler/ConvergenceTracker.h"
 #include "loom/SystemCompiler/DMAScheduler.h"
 #include "loom/SystemCompiler/ExecutionModel.h"
 #include "loom/SystemCompiler/L1CoreAssignment.h"
@@ -176,20 +177,27 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
 
   // Iteration state for the bilevel decomposition loop.
   std::vector<loom::InfeasibilityCut> accumulatedCuts;
-  std::optional<loom::TapestryCompilationResult> bestResult;
+  std::optional<loom::TapestryCompilationResult> bestTapResult;
   loom::AssignmentResult bestAssignment;
   std::vector<loom::CoreCostSummary> bestCostSummaries;
-  double bestObjective = std::numeric_limits<double>::max();
+  loom::NoCSchedule bestNoCSchedule;
+  loom::BufferAllocationPlan bestBufferPlan;
+  loom::DMASchedule bestDMASchedule;
+
+  // Convergence tracking.
+  ConvergenceTracker tracker(config.maxIterations,
+                             config.convergenceStallWindow);
 
   L1CoreAssigner l1Assigner;
-  L1AssignerOptions l1Opts;
+  L1AssignerOptions l1Opts = config.l1Options;
   l1Opts.verbose = config.verbose;
 
   if (config.verbose) {
     llvm::outs() << "HierarchicalCompiler: starting bilevel compilation\n"
                  << "  kernels=" << kernels_.size()
                  << "  coreTypes=" << arch_.coreTypes.size()
-                 << "  maxIter=" << config.maxIterations << "\n";
+                 << "  maxIter=" << config.maxIterations
+                 << "  stallWindow=" << config.convergenceStallWindow << "\n";
   }
 
   unsigned lastIteration = 0;
@@ -214,6 +222,7 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
       result.diagnostics =
           "L1 infeasible after " +
           std::to_string(accumulatedCuts.size()) + " cuts";
+      result.allCuts = accumulatedCuts;
       return result;
     }
 
@@ -233,14 +242,14 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
 
     // --- NoC Scheduling ---
     NoCScheduler nocScheduler;
-    NoCSchedulerOptions nocOpts;
+    NoCSchedulerOptions nocOpts = config.nocOptions;
     nocOpts.verbose = config.verbose;
     loom::NoCSchedule nocSchedule =
         nocScheduler.schedule(assignment, l1Contracts, l1Arch, nocOpts);
 
     // --- Buffer Allocation ---
     BufferAllocator bufferAllocator;
-    BufferAllocatorOptions bufOpts;
+    BufferAllocatorOptions bufOpts = config.bufferOptions;
     bufOpts.verbose = config.verbose;
     loom::BufferAllocationPlan bufferPlan =
         bufferAllocator.allocate(assignment, l1Contracts, nocSchedule,
@@ -293,36 +302,47 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
     }
 
     // --- CONVERGENCE CHECK ---
+    double iterObjective = std::numeric_limits<double>::max();
+
     if (allMapped) {
-      double objective =
+      iterObjective =
           computeObjective(assignment, nocSchedule, costSummaries);
 
       if (config.verbose) {
-        llvm::outs() << "  all cores mapped, objective=" << objective
-                     << " (best=" << bestObjective << ")\n";
+        llvm::outs() << "  all cores mapped, objective=" << iterObjective
+                     << " (best=" << tracker.getBestObjective() << ")\n";
       }
 
       // --- DMA Scheduling ---
       DMAScheduler dmaScheduler;
-      DMASchedulerOptions dmaOpts;
+      DMASchedulerOptions dmaOpts = config.dmaOptions;
       dmaOpts.verbose = config.verbose;
       loom::DMASchedule dmaSchedule = dmaScheduler.schedule(
           bufferPlan, nocSchedule, l1Contracts, assignment, l1Arch, dmaOpts);
 
-      if (objective < bestObjective) {
-        bestObjective = objective;
+      if (iterObjective < tracker.getBestObjective()) {
         bestAssignment = assignment;
         bestCostSummaries = costSummaries;
-        bestResult = assembleResult(l2Results, l2Assignments, assignment,
-                                    nocSchedule, bufferPlan, dmaSchedule,
-                                    costSummaries);
+        bestNoCSchedule = nocSchedule;
+        bestBufferPlan = bufferPlan;
+        bestDMASchedule = dmaSchedule;
+        bestTapResult = assembleResult(l2Results, l2Assignments, assignment,
+                                       nocSchedule, bufferPlan, dmaSchedule,
+                                       costSummaries);
       }
 
-      if (newCuts.empty()) {
-        if (config.verbose)
-          llvm::outs() << "  converged: all mapped, no new cuts\n";
-        break;
-      }
+      tracker.recordSuccess(iter, iterObjective, iter);
+    }
+
+    // Record iteration in convergence tracker.
+    tracker.recordIteration(iter, static_cast<unsigned>(newCuts.size()),
+                            iterObjective, allMapped);
+
+    // Check for convergence (all mapped, no new cuts).
+    if (tracker.isConverged()) {
+      if (config.verbose)
+        llvm::outs() << "  converged: all mapped, no new cuts\n";
+      break;
     }
 
     // Feed cuts back to L1 for next iteration.
@@ -337,13 +357,28 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
                      << "\n";
       }
     }
+
+    // Check for stall.
+    if (tracker.isStalled()) {
+      if (config.verbose) {
+        llvm::outs() << "  stall detected after " << iter
+                     << " iterations (window=" << config.convergenceStallWindow
+                     << ")\n";
+      }
+      break;
+    }
   }
 
   // Finalize result.
-  if (bestResult.has_value()) {
-    result = toCompilationResult(bestResult.value(), kernels_, arch_,
+  if (bestTapResult.has_value()) {
+    result = toCompilationResult(bestTapResult.value(), kernels_, arch_,
                                  lastIteration);
     result.success = true;
+    result.finalAssignment = bestAssignment;
+    result.nocSchedule = bestNoCSchedule;
+    result.bufferPlan = bestBufferPlan;
+    result.dmaSchedule = bestDMASchedule;
+    result.allCuts = accumulatedCuts;
     if (config.verbose)
       llvm::outs() << "\nHierarchicalCompiler: converged in "
                    << lastIteration << " iterations\n";
@@ -353,13 +388,14 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
     result.diagnostics =
         "no feasible mapping found in " +
         std::to_string(config.maxIterations) + " iterations";
+    result.allCuts = accumulatedCuts;
     if (config.verbose)
       llvm::outs() << "\nHierarchicalCompiler: FAILED - "
                    << result.diagnostics << "\n";
   }
 
   // Compute temporal schedule using the assignment result.
-  if (result.success && bestResult.has_value()) {
+  if (result.success && bestTapResult.has_value()) {
     loom::TemporalSchedule schedule;
     std::string schedErr = computeTemporalSchedule(
         bestAssignment, bestCostSummaries, l1Contracts,

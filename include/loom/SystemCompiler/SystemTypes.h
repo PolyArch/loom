@@ -9,7 +9,12 @@
 #ifndef LOOM_SYSTEMCOMPILER_SYSTEMTYPES_H
 #define LOOM_SYSTEMCOMPILER_SYSTEMTYPES_H
 
+#include "loom/SystemCompiler/BufferAllocator.h"
+#include "loom/SystemCompiler/DMAScheduler.h"
 #include "loom/SystemCompiler/ExecutionModel.h"
+#include "loom/SystemCompiler/InfeasibilityCut.h"
+#include "loom/SystemCompiler/L1CoreAssignment.h"
+#include "loom/SystemCompiler/NoCScheduler.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -103,6 +108,21 @@ struct CompilationResult {
 
   /// Temporal schedule computed after all mappings succeed.
   std::optional<TemporalSchedule> temporalSchedule;
+
+  /// L1 assignment result (kernel-to-core mapping).
+  std::optional<loom::AssignmentResult> finalAssignment;
+
+  /// NoC route schedule.
+  std::optional<loom::NoCSchedule> nocSchedule;
+
+  /// Buffer allocation plan.
+  std::optional<loom::BufferAllocationPlan> bufferPlan;
+
+  /// DMA transfer schedule.
+  std::optional<loom::DMASchedule> dmaSchedule;
+
+  /// Complete history of infeasibility cuts generated during iteration.
+  std::vector<loom::InfeasibilityCut> allCuts;
 };
 
 /// Configuration for the hierarchical decomposition driver.
@@ -114,6 +134,21 @@ struct CompilerConfig {
 
   /// Temporal execution model configuration.
   ExecutionModelConfig executionModel;
+
+  /// L1 core assignment solver options.
+  loom::L1AssignerOptions l1Options;
+
+  /// NoC scheduling options.
+  loom::NoCSchedulerOptions nocOptions;
+
+  /// Buffer allocation options.
+  loom::BufferAllocatorOptions bufferOptions;
+
+  /// DMA scheduling options.
+  loom::DMASchedulerOptions dmaOptions;
+
+  /// Number of consecutive non-improving iterations before declaring stall.
+  unsigned convergenceStallWindow = 3;
 };
 
 /// Drives the hierarchical decomposition for heterogeneous multi-core
