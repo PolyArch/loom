@@ -9,10 +9,17 @@
 // them into a system-level fabric.module with NoC connectivity and shared
 // memory hierarchy.
 //
+// The builder accepts core type definitions as mlir::ModuleOp (produced by
+// ADGBuilder) and returns an mlir::ModuleOp from build(), eliminating the
+// string intermediary that was previously used.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LOOM_ADG_SYSTEMADGBUILDER_H
 #define LOOM_ADG_SYSTEMADGBUILDER_H
+
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/MLIRContext.h"
 
 #include <cstdint>
 #include <memory>
@@ -63,24 +70,37 @@ struct SharedMemorySpec {
 /// Builder for constructing a multi-core system-level ADG.
 ///
 /// Usage:
-///   1. Create builder with system name
-///   2. Register core types (from per-core ADGBuilder outputs)
+///   1. Create builder with an MLIRContext and system name
+///   2. Register core types as ModuleOp (from per-core ADGBuilder outputs)
 ///   3. Instantiate cores at grid positions
 ///   4. Configure NoC and shared memory
-///   5. Call build() to generate the system fabric.module
-///   6. Export to MLIR
+///   5. Call build() to generate the system fabric.module (returns ModuleOp)
+///   6. Optionally call exportMLIR() to write to file
+///
+/// The caller owns the MLIRContext and the returned ModuleOp remains valid
+/// as long as the context is alive, even after the builder is destroyed.
 class SystemADGBuilder {
 public:
+  /// Construct with an external MLIRContext (recommended).
+  /// The caller owns the context. The returned ModuleOp from build() is
+  /// valid as long as the context is alive.
+  SystemADGBuilder(mlir::MLIRContext *ctx, const std::string &systemName);
+
+  /// Convenience constructor that creates an internal MLIRContext.
+  /// The returned ModuleOp from build() becomes invalid when the builder
+  /// is destroyed.
   explicit SystemADGBuilder(const std::string &systemName);
+
   ~SystemADGBuilder();
 
   SystemADGBuilder(const SystemADGBuilder &) = delete;
   SystemADGBuilder &operator=(const SystemADGBuilder &) = delete;
 
-  /// Register a core type from its MLIR text representation.
-  /// The typeName should match the fabric.module name in the MLIR.
+  /// Register a core type from its ModuleOp representation.
+  /// The coreModule should contain a fabric.module as produced by
+  /// ADGBuilder. The typeName should match the fabric.module name.
   CoreTypeHandle registerCoreType(const std::string &typeName,
-                                  const std::string &mlirText);
+                                  mlir::ModuleOp coreModule);
 
   /// Instantiate a core of the given type at a grid position.
   SystemCoreInstance instantiateCore(CoreTypeHandle type,
@@ -94,13 +114,12 @@ public:
 
   /// Build the system-level fabric.module.
   /// Generates core instances, NoC connectivity, and shared memory.
-  void build();
+  /// Returns the fully assembled system ModuleOp.
+  mlir::ModuleOp build();
 
-  /// Export the system MLIR to a file.
-  void exportSystemMLIR(const std::string &path);
-
-  /// Get the generated system MLIR as text.
-  std::string getSystemMLIR() const;
+  /// Export the built system MLIR to a file.
+  /// Must call build() first.
+  void exportMLIR(const std::string &path);
 
   /// Query the registered core instances.
   const std::vector<SystemCoreInstance> &getCoreInstances() const;

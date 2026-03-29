@@ -7,7 +7,11 @@
 // Implementation of the SystemADGBuilder which composes per-core fabric.module
 // definitions into a system-level fabric.module with NoC connectivity and
 // shared memory hierarchy. Uses the MLIR builder API via SystemADGMLIRBuilder
-// to generate proper typed ops instead of string concatenation.
+// to generate proper typed ops.
+//
+// Core types are now stored as mlir::ModuleOp references instead of strings,
+// and build() returns an mlir::ModuleOp directly, eliminating the string
+// intermediary.
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,7 +27,6 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
-#include "mlir/IR/AsmState.h"
 
 #include "circt/Dialect/Handshake/HandshakeDialect.h"
 
@@ -31,11 +34,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <algorithm>
 #include <cassert>
-#include <map>
-#include <set>
-#include <sstream>
 
 namespace loom {
 namespace adg {
@@ -46,82 +45,66 @@ namespace adg {
 
 struct CoreTypeDef {
   std::string typeName;
-  std::string mlirText;
+  mlir::ModuleOp coreModule;
   unsigned id;
 };
 
 struct SystemADGBuilder::Impl {
+  mlir::MLIRContext *ctx;
+  std::unique_ptr<mlir::MLIRContext> ownedCtx; // non-null if builder owns ctx
   std::string systemName;
   std::vector<CoreTypeDef> coreTypes;
   std::vector<SystemCoreInstance> coreInstances;
   NoCSpec nocSpec;
   SharedMemorySpec sharedMemSpec;
-  std::string builtMLIR;
-  bool isBuilt = false;
+  mlir::ModuleOp builtModule; // null until build() is called
 
-  /// Generate the system MLIR text using the MLIR builder API.
-  std::string generateSystemMLIR() const;
-};
-
-//===----------------------------------------------------------------------===//
-// MLIR generation via builder API
-//===----------------------------------------------------------------------===//
-
-std::string SystemADGBuilder::Impl::generateSystemMLIR() const {
-  // Set up MLIR context with all dialects needed to parse core type MLIR
-  // and print the system module in custom assembly format.
-  // Core types contain fabric/dataflow/arith/math/memref/handshake ops.
-  mlir::DialectRegistry registry;
-  registry.insert<loom::fabric::FabricDialect>();
-  registry.insert<loom::dataflow::DataflowDialect>();
-  registry.insert<mlir::arith::ArithDialect>();
-  registry.insert<mlir::func::FuncDialect>();
-  registry.insert<mlir::math::MathDialect>();
-  registry.insert<mlir::memref::MemRefDialect>();
-  registry.insert<circt::handshake::HandshakeDialect>();
-
-  mlir::MLIRContext ctx(registry);
-  ctx.loadAllAvailableDialects();
-
-  // Build CoreType descriptors for the MLIR builder
-  std::vector<SystemADGMLIRBuilder::CoreType> mlirCoreTypes;
-  for (const auto &ct : coreTypes) {
-    mlirCoreTypes.push_back({ct.typeName, ct.mlirText, ct.id});
+  /// Initialize context with all required dialects.
+  static void initContext(mlir::MLIRContext *ctx) {
+    mlir::DialectRegistry registry;
+    registry.insert<loom::fabric::FabricDialect>();
+    registry.insert<loom::dataflow::DataflowDialect>();
+    registry.insert<mlir::arith::ArithDialect>();
+    registry.insert<mlir::func::FuncDialect>();
+    registry.insert<mlir::math::MathDialect>();
+    registry.insert<mlir::memref::MemRefDialect>();
+    registry.insert<circt::handshake::HandshakeDialect>();
+    ctx->appendDialectRegistry(registry);
+    ctx->loadAllAvailableDialects();
   }
-
-  // Build the system module using the MLIR builder
-  mlir::ModuleOp sysModule = SystemADGMLIRBuilder::build(
-      &ctx, systemName, mlirCoreTypes, coreInstances, nocSpec, sharedMemSpec);
-
-  // Print the module to a string.
-  // The output uses MLIR generic format -- this is valid and parseable.
-  // Custom assembly format would require printing ops individually with
-  // a properly configured AsmState, but the generic format is semantically
-  // equivalent and fully round-trippable.
-  std::string result;
-  llvm::raw_string_ostream os(result);
-  sysModule->print(os);
-  os.flush();
-
-  return result;
-}
+};
 
 //===----------------------------------------------------------------------===//
 // SystemADGBuilder public API
 //===----------------------------------------------------------------------===//
 
+SystemADGBuilder::SystemADGBuilder(mlir::MLIRContext *ctx,
+                                   const std::string &systemName)
+    : impl_(std::make_unique<Impl>()) {
+  impl_->ctx = ctx;
+  impl_->systemName = systemName;
+  Impl::initContext(ctx);
+}
+
 SystemADGBuilder::SystemADGBuilder(const std::string &systemName)
     : impl_(std::make_unique<Impl>()) {
+  impl_->ownedCtx = std::make_unique<mlir::MLIRContext>();
+  impl_->ctx = impl_->ownedCtx.get();
   impl_->systemName = systemName;
+  Impl::initContext(impl_->ctx);
 }
 
 SystemADGBuilder::~SystemADGBuilder() = default;
 
 CoreTypeHandle
 SystemADGBuilder::registerCoreType(const std::string &typeName,
-                                   const std::string &mlirText) {
+                                   mlir::ModuleOp coreModule) {
+  if (!coreModule) {
+    llvm::report_fatal_error(
+        "SystemADGBuilder::registerCoreType(): coreModule must not be null");
+  }
   unsigned id = impl_->coreTypes.size();
-  impl_->coreTypes.push_back({typeName, mlirText, id});
+  impl_->coreTypes.push_back({typeName, coreModule, id});
   return CoreTypeHandle{id};
 }
 
@@ -150,20 +133,30 @@ void SystemADGBuilder::setSharedMemorySpec(const SharedMemorySpec &spec) {
   impl_->sharedMemSpec = spec;
 }
 
-void SystemADGBuilder::build() {
+mlir::ModuleOp SystemADGBuilder::build() {
   if (impl_->coreInstances.empty()) {
     llvm::report_fatal_error(
         "SystemADGBuilder::build(): no core instances registered");
   }
 
-  impl_->builtMLIR = impl_->generateSystemMLIR();
-  impl_->isBuilt = true;
+  // Build CoreType descriptors for the MLIR builder
+  std::vector<SystemADGMLIRBuilder::CoreType> mlirCoreTypes;
+  for (const auto &ct : impl_->coreTypes) {
+    mlirCoreTypes.push_back({ct.typeName, ct.coreModule, ct.id});
+  }
+
+  // Build the system module using the MLIR builder
+  impl_->builtModule = SystemADGMLIRBuilder::build(
+      impl_->ctx, impl_->systemName, mlirCoreTypes,
+      impl_->coreInstances, impl_->nocSpec, impl_->sharedMemSpec);
+
+  return impl_->builtModule;
 }
 
-void SystemADGBuilder::exportSystemMLIR(const std::string &path) {
-  if (!impl_->isBuilt) {
+void SystemADGBuilder::exportMLIR(const std::string &path) {
+  if (!impl_->builtModule) {
     llvm::report_fatal_error(
-        "SystemADGBuilder::exportSystemMLIR(): must call build() first");
+        "SystemADGBuilder::exportMLIR(): must call build() first");
   }
 
   std::error_code ec;
@@ -174,16 +167,8 @@ void SystemADGBuilder::exportSystemMLIR(const std::string &path) {
         "\n" + ec.message());
   }
 
-  output << impl_->builtMLIR;
+  impl_->builtModule->print(output);
   output.flush();
-}
-
-std::string SystemADGBuilder::getSystemMLIR() const {
-  if (!impl_->isBuilt) {
-    llvm::report_fatal_error(
-        "SystemADGBuilder::getSystemMLIR(): must call build() first");
-  }
-  return impl_->builtMLIR;
 }
 
 const std::vector<SystemCoreInstance> &

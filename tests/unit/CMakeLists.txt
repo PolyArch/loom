@@ -138,6 +138,11 @@ if(NOT TARGET check-loom)
   add_custom_target(check-loom DEPENDS check-loom-unit)
 endif()
 
+# ADG builder C++ tests
+if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/adg")
+  add_subdirectory(adg)
+endif()
+
 # Tapestry (TDG dialect) C++ tests
 if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tapestry")
   add_subdirectory(tapestry)

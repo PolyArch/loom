@@ -5,9 +5,9 @@
 //===----------------------------------------------------------------------===//
 //
 // Builder class that constructs a system-level fabric.module using the MLIR
-// OpBuilder API. Replaces the string-concatenation approach in
-// SystemADGBuilder with proper typed MLIR ops (fabric.router,
-// fabric.shared_mem, fabric.noc_link).
+// OpBuilder API. Core type definitions are provided as mlir::ModuleOp
+// references and cloned directly into the system module, eliminating the
+// string parsing intermediary.
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,7 +27,7 @@ namespace loom {
 namespace adg {
 
 /// Builds a system-level MLIR module containing:
-///   - Per-core fabric.module definitions (parsed from registered MLIR text)
+///   - Per-core fabric.module definitions (cloned from registered ModuleOps)
 ///   - A system fabric.module with:
 ///     - fabric.instance ops for each core
 ///     - fabric.router ops for NoC routers
@@ -38,7 +38,7 @@ public:
   /// Core type descriptor for the builder.
   struct CoreType {
     std::string typeName;
-    std::string mlirText;
+    mlir::ModuleOp coreModule;
     unsigned id;
   };
 
@@ -55,6 +55,7 @@ public:
 
 private:
   /// Emit core type fabric.module definitions into the wrapper module.
+  /// Clones fabric.module ops from the provided ModuleOps.
   static void emitCoreTypeDefinitions(mlir::OpBuilder &builder,
                                       mlir::ModuleOp wrapper,
                                       const std::vector<CoreType> &coreTypes,

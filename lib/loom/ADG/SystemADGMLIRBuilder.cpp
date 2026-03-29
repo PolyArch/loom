@@ -6,7 +6,8 @@
 //
 // Implementation of SystemADGMLIRBuilder which constructs a proper typed MLIR
 // module for system-level ADG representation, using fabric.router,
-// fabric.shared_mem, and fabric.noc_link ops instead of string concatenation.
+// fabric.shared_mem, and fabric.noc_link ops. Core type definitions are
+// cloned directly from provided ModuleOps, eliminating string parsing.
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,9 +17,7 @@
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
-#include "mlir/Parser/Parser.h"
 
 #include "llvm/Support/ErrorHandling.h"
 
@@ -61,35 +60,19 @@ void SystemADGMLIRBuilder::emitCoreTypeDefinitions(
   for (const auto &inst : instances)
     usedTypeIds.insert(inst.coreType.id);
 
-  mlir::MLIRContext *ctx = wrapper.getContext();
-
-  // Suppress diagnostic output during core type parsing. Core types are
-  // generated via string concatenation by ADGBuilder and may contain
-  // constructs that are valid in their original context but fail when
-  // parsed into a fresh context (e.g., SSA references across module
-  // boundaries). When parsing succeeds we clone the fabric.module; when
-  // it fails we silently skip -- the core types are kept as separate
-  // files and the system module references them by name.
-  mlir::ScopedDiagnosticHandler diagHandler(
-      ctx, [](mlir::Diagnostic &) { return mlir::success(); });
-
   for (unsigned typeId : usedTypeIds) {
     if (typeId >= coreTypes.size())
       continue;
 
     const auto &coreType = coreTypes[typeId];
-    const std::string &mlirText = coreType.mlirText;
+    mlir::ModuleOp coreModule = coreType.coreModule;
 
-    // Parse the core type MLIR text to extract the fabric.module definition.
-    auto parsed = mlir::parseSourceString<mlir::ModuleOp>(
-        llvm::StringRef(mlirText), ctx);
-    if (!parsed) {
-      // Parsing failed -- core type will be referenced by name only.
+    if (!coreModule)
       continue;
-    }
 
-    // Find and clone the fabric.module ops from the parsed module
-    for (auto &op : parsed->getBody()->getOperations()) {
+    // Clone fabric.module ops from the provided ModuleOp directly.
+    // No string parsing needed -- the caller already has a live ModuleOp.
+    for (auto &op : coreModule.getBody()->getOperations()) {
       if (mlir::isa<fabric::ModuleOp>(op)) {
         builder.setInsertionPointToEnd(wrapper.getBody());
         builder.clone(op);
@@ -141,7 +124,6 @@ void SystemADGMLIRBuilder::emitSystemModule(
 
     const auto &coreType = coreTypes[inst.coreType.id];
 
-    // Use the convenience build overload: (results, module_name, sym_name, operands)
     auto instanceOp = fabric::InstanceOp::create(
         builder, loc,
         /*results=*/mlir::TypeRange{},
