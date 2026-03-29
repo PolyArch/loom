@@ -103,7 +103,7 @@ int main(int argc, char **argv) {
     std::map<std::string, mlir::ModuleOp> dfgModules;
 
     loom::TDGToSSGBuilder ssgBuilder;
-    loom::SSG ssg = ssgBuilder.build(*tdgModule, dfgModules, ctx);
+    loom::BuilderSSG ssg = ssgBuilder.build(*tdgModule, dfgModules, ctx);
 
     outs() << "\nSSG Summary:\n";
     outs() << "  Nodes: " << ssg.numNodes() << "\n";

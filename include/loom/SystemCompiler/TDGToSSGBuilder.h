@@ -4,7 +4,7 @@
 // System Scheduling Graph (SSG) for consumption by the hierarchical compiler.
 //
 // The SSG is a lightweight directed graph of KernelNode entries connected by
-// DataDependency edges. Each KernelNode carries compute profile data and
+// SSGDataDependency edges. Each KernelNode carries compute profile data and
 // variant information extracted from the corresponding DFG modules.
 //
 //===----------------------------------------------------------------------===//
@@ -12,6 +12,7 @@
 #ifndef LOOM_SYSTEMCOMPILER_TDGTOSSGBUILDER_H
 #define LOOM_SYSTEMCOMPILER_TDGTOSSGBUILDER_H
 
+#include "loom/Graph/SystemGraphTypes.h"
 #include "loom/SystemCompiler/L1CoreAssignment.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -24,30 +25,6 @@
 #include <vector>
 
 namespace loom {
-
-//===----------------------------------------------------------------------===//
-// SSG node type: KernelNode
-//===----------------------------------------------------------------------===//
-
-/// A node in the System Scheduling Graph representing one kernel.
-struct KernelNode {
-  /// Kernel name (matches the tdg.kernel sym_name).
-  std::string name;
-
-  /// Kernel execution type string ("cgra", "host", "auto").
-  std::string kernelType;
-
-  /// Set of variant names available for this kernel.
-  /// Each variant typically corresponds to a DFG module key like
-  /// "kernelName_v0", "kernelName_v1", etc.
-  std::set<std::string> variantSet;
-
-  /// Compute profile extracted from DFG analysis.
-  KernelProfile computeProfile;
-
-  /// Whether this node has a valid DFG (false if DFG module was missing).
-  bool hasDFG = false;
-};
 
 //===----------------------------------------------------------------------===//
 // SSG edge type: SSGDataDependency
@@ -76,14 +53,17 @@ struct SSGDataDependency {
 };
 
 //===----------------------------------------------------------------------===//
-// SystemGraph template
+// SimpleGraph template
 //===----------------------------------------------------------------------===//
 
-/// A lightweight directed graph of nodes and edges.
+/// A lightweight directed graph of nodes and edges used by TDGToSSGBuilder.
+///
+/// This is a flat vector-based graph with name-based lookup, distinct from the
+/// adjacency-list SystemGraph template in loom/Graph/SystemGraph.h.
 ///
 /// NodeT should have a `std::string name` field.
 /// EdgeT should have `std::string producerName` and `std::string consumerName`.
-template <typename NodeT, typename EdgeT> class SystemGraph {
+template <typename NodeT, typename EdgeT> class SimpleGraph {
 public:
   /// Add a node to the graph.
   void addNode(NodeT node) { nodes_.push_back(std::move(node)); }
@@ -144,8 +124,11 @@ private:
   std::vector<EdgeT> edges_;
 };
 
-/// The concrete SSG type used throughout the pipeline.
-using SSG = SystemGraph<KernelNode, SSGDataDependency>;
+/// The concrete SSG type used throughout the TDG-to-SSG pipeline.
+/// Named BuilderSSG to avoid conflict with loom::SSG in SystemGraphTypes.h,
+/// which is a SystemGraph<KernelNode, DataDependency> with adjacency-list
+/// storage and JSON serialization.
+using BuilderSSG = SimpleGraph<KernelNode, SSGDataDependency>;
 
 //===----------------------------------------------------------------------===//
 // TDGToSSGBuilder
@@ -170,9 +153,9 @@ public:
   ///                    appears in the SSG but with empty profile/variants.
   /// \param ctx         MLIR context for type queries.
   /// \returns           A populated SSG.
-  SSG build(mlir::ModuleOp tdgModule,
-            const std::map<std::string, mlir::ModuleOp> &dfgModules,
-            mlir::MLIRContext &ctx);
+  BuilderSSG build(mlir::ModuleOp tdgModule,
+                   const std::map<std::string, mlir::ModuleOp> &dfgModules,
+                   mlir::MLIRContext &ctx);
 };
 
 } // namespace loom

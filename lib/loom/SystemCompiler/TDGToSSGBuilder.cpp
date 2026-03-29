@@ -1,6 +1,6 @@
 //===-- TDGToSSGBuilder.cpp - TDG MLIR -> SSG conversion -------------------===//
 //
-// Walks a TDG MLIR module to build a SystemGraph<KernelNode, SSGDataDependency>.
+// Walks a TDG MLIR module to build a SimpleGraph<KernelNode, SSGDataDependency>.
 //
 //===----------------------------------------------------------------------===//
 
@@ -57,12 +57,12 @@ std::string typeToName(mlir::Type ty) {
 // TDGToSSGBuilder::build
 //===----------------------------------------------------------------------===//
 
-SSG TDGToSSGBuilder::build(
+BuilderSSG TDGToSSGBuilder::build(
     mlir::ModuleOp tdgModule,
     const std::map<std::string, mlir::ModuleOp> &dfgModules,
     mlir::MLIRContext &ctx) {
 
-  SSG ssg;
+  BuilderSSG ssg;
   KernelProfiler profiler;
 
   // Track kernel names seen for duplicate detection.
@@ -84,6 +84,7 @@ SSG TDGToSSGBuilder::build(
 
       KernelNode node;
       node.name = kernelName;
+      node.kernelId = kernelName;
       node.kernelType = kernelOp.getKernelType().str();
 
       // Look up the corresponding DFG module.
@@ -91,10 +92,13 @@ SSG TDGToSSGBuilder::build(
       if (dfgIt != dfgModules.end() && dfgIt->second) {
         node.hasDFG = true;
 
-        // Profile the DFG module.
-        node.computeProfile = profiler.profile(dfgIt->second, &ctx);
-        if (node.computeProfile.name.empty())
-          node.computeProfile.name = kernelName;
+        // Profile the DFG module and convert to lightweight ComputeProfile.
+        KernelProfile kp = profiler.profile(dfgIt->second, &ctx);
+        KernelNode::ComputeProfile cp;
+        cp.estimatedMinII = kp.estimatedMinII;
+        cp.estimatedSPMBytes = kp.estimatedSPMBytes;
+        cp.estimatedComputeCycles = kp.estimatedComputeCycles;
+        node.computeProfile = cp;
 
         // Collect variant names from the DFG modules map.
         // Variants are typically keyed as "kernelName_v0", "kernelName_v1", etc.
@@ -107,7 +111,6 @@ SSG TDGToSSGBuilder::build(
         llvm::errs() << "TDGToSSGBuilder: no DFG module for kernel '"
                      << kernelName << "', using empty profile\n";
         node.hasDFG = false;
-        node.computeProfile.name = kernelName;
       }
 
       ssg.addNode(std::move(node));

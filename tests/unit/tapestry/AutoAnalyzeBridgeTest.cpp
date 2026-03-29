@@ -243,7 +243,7 @@ static bool testSSGNodeCount() {
 
   std::map<std::string, mlir::ModuleOp> dfgModules; // empty
   loom::TDGToSSGBuilder builder;
-  loom::SSG ssg = builder.build(*tdgModule, dfgModules, ctx);
+  loom::BuilderSSG ssg = builder.build(*tdgModule, dfgModules, ctx);
 
   if (ssg.numNodes() != 3) {
     std::cerr << "FAIL T6: SSG nodes=" << ssg.numNodes()
@@ -277,7 +277,7 @@ static bool testSSGEdgeData() {
 
   std::map<std::string, mlir::ModuleOp> dfgModules;
   loom::TDGToSSGBuilder builder;
-  loom::SSG ssg = builder.build(*tdgModule, dfgModules, ctx);
+  loom::BuilderSSG ssg = builder.build(*tdgModule, dfgModules, ctx);
 
   if (ssg.numEdges() != 1) {
     std::cerr << "FAIL T7: SSG edges=" << ssg.numEdges()
@@ -323,7 +323,7 @@ static bool testSSGMissingDFG() {
   // Both kernels have no DFG module.
   std::map<std::string, mlir::ModuleOp> dfgModules;
   loom::TDGToSSGBuilder builder;
-  loom::SSG ssg = builder.build(*tdgModule, dfgModules, ctx);
+  loom::BuilderSSG ssg = builder.build(*tdgModule, dfgModules, ctx);
 
   // Should not crash, and should still have 2 nodes.
   if (ssg.numNodes() != 2) {

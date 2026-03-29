@@ -25,8 +25,20 @@ namespace loom {
 //===----------------------------------------------------------------------===//
 
 struct KernelNode {
+  /// Primary kernel identifier (matches tdg.kernel sym_name).
+  std::string name;
+
+  /// Legacy alias -- kept for backward compatibility with SSG JSON.
+  /// Prefer `name` for new code.
   std::string kernelId;
+
+  /// Kernel execution type string ("cgra", "host", "auto").
+  std::string kernelType;
+
   std::set<std::string> variantSet;
+
+  /// Whether this node has a valid DFG (false if DFG module was missing).
+  bool hasDFG = false;
 
   /// Lightweight compute-profile summary (avoids MLIR KernelProfile dep).
   struct ComputeProfile {
@@ -38,11 +50,14 @@ struct KernelNode {
 
   llvm::json::Value toJSON() const {
     llvm::json::Object obj;
+    obj["name"] = name;
     obj["kernelId"] = kernelId;
+    obj["kernelType"] = kernelType;
     llvm::json::Array vars;
     for (const auto &v : variantSet)
       vars.push_back(v);
     obj["variantSet"] = std::move(vars);
+    obj["hasDFG"] = hasDFG;
     if (computeProfile) {
       llvm::json::Object cp;
       cp["estimatedMinII"] =
@@ -60,14 +75,20 @@ struct KernelNode {
     auto *obj = val.getAsObject();
     if (!obj)
       return node;
+    if (auto s = obj->getString("name"))
+      node.name = s->str();
     if (auto id = obj->getString("kernelId"))
       node.kernelId = id->str();
+    if (auto s = obj->getString("kernelType"))
+      node.kernelType = s->str();
     if (auto *arr = obj->getArray("variantSet")) {
       for (const auto &elem : *arr) {
         if (auto s = elem.getAsString())
           node.variantSet.insert(s->str());
       }
     }
+    if (auto b = obj->getBoolean("hasDFG"))
+      node.hasDFG = *b;
     if (auto *cpObj = obj->getObject("computeProfile")) {
       KernelNode::ComputeProfile cp;
       if (auto v = cpObj->getInteger("estimatedMinII"))
@@ -82,7 +103,9 @@ struct KernelNode {
   }
 
   std::string dotLabel() const {
-    std::string label = kernelId;
+    std::string label = name.empty() ? kernelId : name;
+    if (!kernelType.empty())
+      label += " (" + kernelType + ")";
     if (!variantSet.empty()) {
       label += "\\n[";
       bool first = true;
