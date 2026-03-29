@@ -1,10 +1,11 @@
 """Combinatorial KHG core type library for LOOM DSE.
 
-Defines the 24 combinatorial KHG types (3 compute-mix x 2 PE-type x 2 SPM x
-2 array-size) and provides naming convention encoding/decoding, parameter
-mapping to CoreDesignParams equivalents, and enumeration for the outer DSE.
+Defines the 30-type core library: 6 domain-specific types (D1-D6) and
+24 combinatorial KHG types (3 compute-mix x 2 PE-type x 2 SPM x
+2 array-size). Provides naming convention encoding/decoding, parameter
+mapping to CoreDesignParams, and enumeration for the outer DSE.
 
-Naming convention: C{I|F|M}{S|T}{Y|N}{8|12}
+Naming convention for combinatorial types: C{I|F|M}{S|T}{Y|N}{8|12}
   - C:     prefix (Core)
   - I/F/M: INT-heavy / FP-heavy / Mixed compute mix
   - S/T:   Spatial / Temporal PE type
@@ -350,3 +351,227 @@ class CombinatorialGenerator:
                 "num_registers": params.num_registers,
             })
         return configs
+
+
+# ---------------------------------------------------------------------------
+# CoreDesignParams: unified parameter type for the 30-type library
+# ---------------------------------------------------------------------------
+
+# FU category sets for op support checking.
+_FP_OPS = frozenset({"fadd", "fmul", "fsub", "fdiv", "fcmp", "fma", "fexp",
+                      "fsqrt", "arith.addf", "arith.mulf", "arith.subf",
+                      "arith.divf", "arith.cmpf", "math.exp", "math.sqrt",
+                      "math.fma"})
+_INT_OPS = frozenset({"add", "sub", "mul", "div", "cmp", "and", "or", "xor",
+                       "shl", "shr", "select",
+                       "arith.addi", "arith.subi", "arith.muli",
+                       "arith.andi", "arith.ori", "arith.xori",
+                       "arith.shli", "arith.shrsi", "arith.shrui",
+                       "arith.cmpi", "arith.select"})
+_MEM_OPS = frozenset({"load", "store", "handshake.load", "handshake.store"})
+
+
+@dataclass(frozen=True)
+class CoreDesignParams:
+    """Unified design parameters for any core type (domain-specific or KHG)."""
+
+    type_id: str
+    name: str
+    array_rows: int
+    array_cols: int
+    fu_alu_count: int
+    fu_mul_count: int
+    fu_fp_count: int
+    fu_mem_count: int = 2
+    spm_size_kb: int = 0
+    is_temporal: bool = False
+    instruction_slots: int = 0
+    num_registers: int = 0
+    data_width: int = 32
+    has_fp: bool = False
+    has_int: bool = True
+
+    @property
+    def total_pes(self) -> int:
+        return self.array_rows * self.array_cols
+
+    def supports_ops(self, ops: Dict[str, int]) -> bool:
+        """Return True if this core can handle all requested op types."""
+        for op_name in ops:
+            op_lower = op_name.lower()
+            if op_lower in _FP_OPS and not self.has_fp:
+                return False
+        return True
+
+    def to_dict(self) -> dict:
+        return {
+            "type_id": self.type_id,
+            "name": self.name,
+            "array_rows": self.array_rows,
+            "array_cols": self.array_cols,
+            "fu_alu_count": self.fu_alu_count,
+            "fu_mul_count": self.fu_mul_count,
+            "fu_fp_count": self.fu_fp_count,
+            "fu_mem_count": self.fu_mem_count,
+            "spm_size_kb": self.spm_size_kb,
+            "is_temporal": self.is_temporal,
+            "total_pes": self.total_pes,
+        }
+
+    def fu_capability_vector(self) -> List[int]:
+        """Return a vector [alu, mul, fp, mem] of FU counts."""
+        return [self.fu_alu_count, self.fu_mul_count,
+                self.fu_fp_count, self.fu_mem_count]
+
+
+# ---------------------------------------------------------------------------
+# Domain-Specific Types (D1-D6)
+# ---------------------------------------------------------------------------
+
+_DOMAIN_SPECIFIC_DEFS: List[CoreDesignParams] = [
+    CoreDesignParams(
+        type_id="D1", name="LLM (FP-heavy, large)",
+        array_rows=6, array_cols=6,
+        fu_alu_count=4, fu_mul_count=4, fu_fp_count=4, fu_mem_count=2,
+        spm_size_kb=64, is_temporal=False,
+        has_fp=True, has_int=True,
+    ),
+    CoreDesignParams(
+        type_id="D2", name="CV (mixed, medium)",
+        array_rows=4, array_cols=4,
+        fu_alu_count=4, fu_mul_count=3, fu_fp_count=3, fu_mem_count=2,
+        spm_size_kb=32, is_temporal=False,
+        has_fp=True, has_int=True,
+    ),
+    CoreDesignParams(
+        type_id="D3", name="Signal (temporal, multiply)",
+        array_rows=4, array_cols=4,
+        fu_alu_count=3, fu_mul_count=4, fu_fp_count=2, fu_mem_count=2,
+        spm_size_kb=16, is_temporal=True,
+        instruction_slots=8, num_registers=8,
+        has_fp=True, has_int=True,
+    ),
+    CoreDesignParams(
+        type_id="D4", name="Crypto (INT-heavy, bitwise)",
+        array_rows=4, array_cols=4,
+        fu_alu_count=6, fu_mul_count=4, fu_fp_count=0, fu_mem_count=2,
+        spm_size_kb=8, is_temporal=False, data_width=64,
+        has_fp=False, has_int=True,
+    ),
+    CoreDesignParams(
+        type_id="D5", name="Sensor (temporal, control)",
+        array_rows=4, array_cols=4,
+        fu_alu_count=4, fu_mul_count=2, fu_fp_count=1, fu_mem_count=2,
+        spm_size_kb=8, is_temporal=True,
+        instruction_slots=16, num_registers=8,
+        has_fp=True, has_int=True,
+    ),
+    CoreDesignParams(
+        type_id="D6", name="Control (spatial, balanced)",
+        array_rows=4, array_cols=4,
+        fu_alu_count=4, fu_mul_count=2, fu_fp_count=0, fu_mem_count=2,
+        spm_size_kb=4, is_temporal=False,
+        has_fp=False, has_int=True,
+    ),
+]
+
+
+def _khg_to_core_design_params(p: KHGTypeParams) -> CoreDesignParams:
+    """Convert a KHGTypeParams to a CoreDesignParams."""
+    return CoreDesignParams(
+        type_id=p.type_id,
+        name=p.type_id,
+        array_rows=p.array_rows,
+        array_cols=p.array_cols,
+        fu_alu_count=p.fu_alu_count,
+        fu_mul_count=p.fu_mul_count,
+        fu_fp_count=p.fu_fp_count,
+        fu_mem_count=2,
+        spm_size_kb=p.spm_size_kb,
+        is_temporal=p.is_temporal,
+        instruction_slots=p.instruction_slots,
+        num_registers=p.num_registers,
+        data_width=p.data_width,
+        has_fp=(p.fu_fp_count > 0),
+        has_int=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Unified 30-type library
+# ---------------------------------------------------------------------------
+
+DOMAIN_SPECIFIC_TYPES: Dict[str, CoreDesignParams] = {
+    d.type_id: d for d in _DOMAIN_SPECIFIC_DEFS
+}
+
+COMBINATORIAL_TYPES: Dict[str, CoreDesignParams] = {
+    tid: _khg_to_core_design_params(params_from_type_id(tid))
+    for tid in ALL_TYPE_IDS
+}
+
+ALL_TYPES: Dict[str, CoreDesignParams] = {}
+ALL_TYPES.update(DOMAIN_SPECIFIC_TYPES)
+ALL_TYPES.update(COMBINATORIAL_TYPES)
+
+NUM_TYPES: int = len(ALL_TYPES)
+assert NUM_TYPES == 30, f"Expected 30 types, got {NUM_TYPES}"
+
+# Canonical ordering: D1-D6, then 24 combinatorial types.
+_ORDERED_TYPE_IDS: List[str] = (
+    [f"D{i}" for i in range(1, 7)] + list(ALL_TYPE_IDS)
+)
+assert len(_ORDERED_TYPE_IDS) == 30
+
+_TYPE_ID_TO_INDEX: Dict[str, int] = {
+    tid: idx for idx, tid in enumerate(_ORDERED_TYPE_IDS)
+}
+
+
+# ---------------------------------------------------------------------------
+# Accessor Functions
+# ---------------------------------------------------------------------------
+
+def get_all_type_ids() -> List[str]:
+    """Return all 30 type IDs in canonical order."""
+    return list(_ORDERED_TYPE_IDS)
+
+
+def index_to_type_id(idx: int) -> str:
+    """Convert a 0-based index to its type ID string."""
+    if idx < 0 or idx >= NUM_TYPES:
+        raise IndexError(f"Type index {idx} out of range [0, {NUM_TYPES})")
+    return _ORDERED_TYPE_IDS[idx]
+
+
+def type_id_to_index(type_id: str) -> int:
+    """Convert a type ID string to its 0-based index."""
+    if type_id not in _TYPE_ID_TO_INDEX:
+        raise KeyError(f"Unknown type ID '{type_id}'")
+    return _TYPE_ID_TO_INDEX[type_id]
+
+
+def get_core_design_params(type_id: str) -> CoreDesignParams:
+    """Get the CoreDesignParams for a type ID."""
+    if type_id not in ALL_TYPES:
+        raise KeyError(f"Unknown type ID '{type_id}'")
+    return ALL_TYPES[type_id]
+
+
+def get_type_name(type_id: str) -> str:
+    """Get a human-readable name for a type ID."""
+    if type_id not in ALL_TYPES:
+        raise KeyError(f"Unknown type ID '{type_id}'")
+    return ALL_TYPES[type_id].name
+
+
+def type_supports_ops(type_id: str, ops: Dict[str, int]) -> bool:
+    """Check if a core type can handle all requested operations."""
+    params = get_core_design_params(type_id)
+    return params.supports_ops(ops)
+
+
+def get_fu_capability_vector(type_id: str) -> List[int]:
+    """Return the FU capability vector [alu, mul, fp, mem] for a type."""
+    params = get_core_design_params(type_id)
+    return params.fu_capability_vector()

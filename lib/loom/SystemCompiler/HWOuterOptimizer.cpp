@@ -7,9 +7,14 @@
 #include "loom/SystemCompiler/HWOuterOptimizer.h"
 #include "loom/ADG/SystemADGBuilder.h"
 
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
+
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <chrono>
@@ -199,9 +204,17 @@ std::string HWOuterOptimizer::generateSystemMLIR(
     // Build a minimal placeholder MLIR for each core type
     // (INNER-HW C12 will replace this with the real ADG)
     std::string placeholderMLIR =
-        "fabric.module @" + typeName + " {\n}\n";
+        "module @" + typeName + " {}\n";
 
-    auto handle = builder.registerCoreType(typeName, placeholderMLIR);
+    // Parse the placeholder MLIR text into a ModuleOp
+    llvm::SourceMgr srcMgr;
+    srcMgr.AddNewSourceBuffer(
+        llvm::MemoryBuffer::getMemBuffer(placeholderMLIR), llvm::SMLoc());
+    auto parsedModule = mlir::parseSourceFile<mlir::ModuleOp>(srcMgr, ctx);
+    if (!parsedModule)
+      continue;
+
+    auto handle = builder.registerCoreType(typeName, *parsedModule);
 
     // Instantiate the requested number of cores
     for (unsigned inst = 0; inst < entry.instanceCount; ++inst) {
@@ -221,8 +234,15 @@ std::string HWOuterOptimizer::generateSystemMLIR(
     }
   }
 
-  builder.build();
-  return builder.getSystemMLIR();
+  mlir::ModuleOp builtModule = builder.build();
+  if (!builtModule)
+    return "";
+
+  // Print the built module to a string
+  std::string mlirText;
+  llvm::raw_string_ostream os(mlirText);
+  builtModule->print(os);
+  return mlirText;
 }
 
 // ---------------------------------------------------------------------------

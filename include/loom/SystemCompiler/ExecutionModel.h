@@ -31,11 +31,12 @@ enum class ExecutionMode {
   BATCH_SEQUENTIAL,
 
   /// X cores for kernel A, (N-X) for kernel B simultaneously.
-  /// Not implemented in current version.
   PIPELINE_PARALLEL,
 
+  /// All cores start simultaneously, sequential within each core.
+  SPATIAL_PARALLEL,
+
   /// Kernels share PE array within one core concurrently.
-  /// Not implemented in current version.
   SPATIAL_SHARING
 };
 
@@ -60,6 +61,10 @@ struct ExecutionModelConfig {
 
   /// Global synchronization overhead in cycles (barrier between batches).
   unsigned barrierCycles = 10;
+
+  /// Number of tiles for pipeline initiation delay computation.
+  /// Pipeline delay = kernel_duration / defaultTileCount.
+  unsigned defaultTileCount = 4;
 };
 
 //===----------------------------------------------------------------------===//
@@ -79,6 +84,10 @@ struct KernelTiming {
   /// Total execution cycles = tripCount * achievedII.
   /// This is the physically meaningful execution time.
   uint64_t executionCycles = 0;
+
+  /// Start time in cycles (relative to system start).
+  /// Used by PIPELINE_PARALLEL and SPATIAL_PARALLEL modes.
+  uint64_t startTime = 0;
 };
 
 /// Schedule for a single core, specifying the order and timing of its kernels.

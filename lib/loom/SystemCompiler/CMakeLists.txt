@@ -1,4 +1,5 @@
 add_library(LoomSystemCompiler STATIC
+  ADGPartitioner.cpp
   ArchitectureFactory.cpp
   AssignmentPlan.cpp
   BendersHelpers.cpp
@@ -26,6 +27,7 @@ add_library(LoomSystemCompiler STATIC
   ResourceTracker.cpp
   TapestryPipeline.cpp
   TDGLowering.cpp
+  TemporalScheduler.cpp
   TypeAdapters.cpp
 )
 

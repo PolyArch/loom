@@ -44,7 +44,7 @@ TIER3_TIMEOUT_SEC = 600
 # Default search-space bounds
 # ---------------------------------------------------------------------------
 
-MAX_CORE_TYPES = 5
+MAX_CORE_TYPES = 30
 
 DEFAULT_PARAM_RANGES: Dict[str, Tuple] = {
     "core_type_count": (2, 5),

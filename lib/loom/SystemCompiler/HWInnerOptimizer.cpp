@@ -100,24 +100,24 @@ RoutingTopology topologyFromString(const std::string &s) {
   return RoutingTopology::CHESS;
 }
 
-const char *computeMixToString(ComputeMix m) {
+const char *innerComputeMixToString(InnerComputeMix m) {
   switch (m) {
-  case ComputeMix::FP_HEAVY:
+  case InnerComputeMix::FP_HEAVY:
     return "fp_heavy";
-  case ComputeMix::INT_HEAVY:
+  case InnerComputeMix::INT_HEAVY:
     return "int_heavy";
-  case ComputeMix::MIXED:
+  case InnerComputeMix::MIXED:
     return "mixed";
   }
   return "mixed";
 }
 
-ComputeMix computeMixFromString(const std::string &s) {
+InnerComputeMix innerComputeMixFromString(const std::string &s) {
   if (s == "fp_heavy")
-    return ComputeMix::FP_HEAVY;
+    return InnerComputeMix::FP_HEAVY;
   if (s == "int_heavy")
-    return ComputeMix::INT_HEAVY;
-  return ComputeMix::MIXED;
+    return InnerComputeMix::INT_HEAVY;
+  return InnerComputeMix::MIXED;
 }
 
 //===----------------------------------------------------------------------===//
@@ -596,17 +596,17 @@ TierAScore scoreCoreDesign(const CoreDesignParams &params,
 // Preset Constructors
 //===----------------------------------------------------------------------===//
 
-std::string generateTypeID(ComputeMix mix, PEType pe, bool hasSPM,
+std::string generateTypeID(InnerComputeMix mix, PEType pe, bool hasSPM,
                            unsigned arraySize) {
   std::string id = "C";
   switch (mix) {
-  case ComputeMix::FP_HEAVY:
+  case InnerComputeMix::FP_HEAVY:
     id += "F";
     break;
-  case ComputeMix::INT_HEAVY:
+  case InnerComputeMix::INT_HEAVY:
     id += "I";
     break;
-  case ComputeMix::MIXED:
+  case InnerComputeMix::MIXED:
     id += "M";
     break;
   }
@@ -758,7 +758,7 @@ CoreDesignParams createDomainPreset(unsigned domainIndex) {
   return params;
 }
 
-CoreDesignParams createCombinatorialPreset(ComputeMix mix, PEType pe,
+CoreDesignParams createCombinatorialPreset(InnerComputeMix mix, PEType pe,
                                            bool hasSPM,
                                            unsigned arraySize) {
   CoreDesignParams params;
@@ -775,14 +775,14 @@ CoreDesignParams createCombinatorialPreset(ComputeMix mix, PEType pe,
 
   // Dimension 4: FU repertoire based on compute mix
   switch (mix) {
-  case ComputeMix::FP_HEAVY:
+  case InnerComputeMix::FP_HEAVY:
     params.fuRepertoire = {
         "arith.addf", "arith.mulf", "arith.subf", "arith.divf",
         "arith.cmpf", "arith.addi", "arith.muli",
         "arith.cmpi", "arith.select",
         "handshake.load", "handshake.store"};
     break;
-  case ComputeMix::INT_HEAVY:
+  case InnerComputeMix::INT_HEAVY:
     params.fuRepertoire = {
         "arith.addi", "arith.subi", "arith.muli",
         "arith.andi", "arith.ori", "arith.xori",
@@ -790,7 +790,7 @@ CoreDesignParams createCombinatorialPreset(ComputeMix mix, PEType pe,
         "arith.cmpi", "arith.select",
         "handshake.load", "handshake.store"};
     break;
-  case ComputeMix::MIXED:
+  case InnerComputeMix::MIXED:
     params.fuRepertoire = {
         "arith.addi", "arith.muli", "arith.addf", "arith.mulf",
         "arith.cmpi", "arith.select",

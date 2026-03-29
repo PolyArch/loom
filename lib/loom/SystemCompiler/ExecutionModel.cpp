@@ -26,6 +26,8 @@ const char *executionModeToString(ExecutionMode mode) {
     return "BATCH_SEQUENTIAL";
   case ExecutionMode::PIPELINE_PARALLEL:
     return "PIPELINE_PARALLEL";
+  case ExecutionMode::SPATIAL_PARALLEL:
+    return "SPATIAL_PARALLEL";
   case ExecutionMode::SPATIAL_SHARING:
     return "SPATIAL_SHARING";
   }
@@ -35,6 +37,8 @@ const char *executionModeToString(ExecutionMode mode) {
 ExecutionMode executionModeFromString(const std::string &s) {
   if (s == "PIPELINE_PARALLEL")
     return ExecutionMode::PIPELINE_PARALLEL;
+  if (s == "SPATIAL_PARALLEL")
+    return ExecutionMode::SPATIAL_PARALLEL;
   if (s == "SPATIAL_SHARING")
     return ExecutionMode::SPATIAL_SHARING;
   return ExecutionMode::BATCH_SEQUENTIAL;

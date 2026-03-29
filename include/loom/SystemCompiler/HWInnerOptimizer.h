@@ -75,17 +75,17 @@ const char *topologyToString(RoutingTopology t);
 RoutingTopology topologyFromString(const std::string &s);
 
 //===----------------------------------------------------------------------===//
-// Compute Mix Enumeration (for combinatorial type construction)
+// Inner Compute Mix Enumeration (for combinatorial type construction)
 //===----------------------------------------------------------------------===//
 
-enum class ComputeMix {
+enum class InnerComputeMix {
   FP_HEAVY,
   INT_HEAVY,
   MIXED,
 };
 
-const char *computeMixToString(ComputeMix m);
-ComputeMix computeMixFromString(const std::string &s);
+const char *innerComputeMixToString(InnerComputeMix m);
+InnerComputeMix innerComputeMixFromString(const std::string &s);
 
 //===----------------------------------------------------------------------===//
 // FreedomMask: which of the 13 dimensions are free for inner DSE
@@ -342,13 +342,13 @@ CoreDesignParams createDomainPreset(unsigned domainIndex);
 
 /// Create a combinatorial preset from the four combinatorial axes.
 /// Returns a CoreDesignParams populated with default values for the type.
-CoreDesignParams createCombinatorialPreset(ComputeMix mix, PEType pe,
+CoreDesignParams createCombinatorialPreset(InnerComputeMix mix, PEType pe,
                                            bool hasSPM,
                                            unsigned arraySize);
 
 /// Generate the type ID string for a combinatorial type.
 /// Format: C<mix><pe><spm><size>, e.g., "CFSY8" (FP, Spatial, Yes SPM, 8).
-std::string generateTypeID(ComputeMix mix, PEType pe, bool hasSPM,
+std::string generateTypeID(InnerComputeMix mix, PEType pe, bool hasSPM,
                            unsigned arraySize);
 
 //===----------------------------------------------------------------------===//

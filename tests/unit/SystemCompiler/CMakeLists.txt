@@ -18,6 +18,24 @@ set_target_properties(hierarchical-compiler-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
 
+# TemporalScheduler and ADGPartitioner tests
+
+add_executable(temporal-scheduler-test TemporalSchedulerTest.cpp)
+
+target_include_directories(temporal-scheduler-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+  ${CMAKE_BINARY_DIR}/include
+)
+
+target_link_libraries(temporal-scheduler-test PRIVATE
+  LoomSystemCompiler
+  ${HC_TEST_LLVM_LIBS}
+)
+
+set_target_properties(temporal-scheduler-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)
+
 # NoC/Buffer/DMA integration tests (D3)
 
 add_executable(noc-buffer-dma-test NoCBufferDMATest.cpp)

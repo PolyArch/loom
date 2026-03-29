@@ -123,6 +123,9 @@ struct AssignmentResult {
   /// Per-core assignment details.
   std::vector<CoreAssignment> coreAssignments;
 
+  /// Optional kernel start times (from solver or prior scheduling).
+  std::map<std::string, uint64_t> kernelStartTimes;
+
   /// Objective value breakdown.
   double totalCriticalPathLatency = 0.0;
   double totalNoCTransferCost = 0.0;
