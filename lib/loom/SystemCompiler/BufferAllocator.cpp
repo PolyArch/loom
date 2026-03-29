@@ -179,7 +179,7 @@ BufferAllocator::allocate(const AssignmentResult &assignment,
     }
 
     // Attempt 3: shared L2.
-    if (!allocated && contract.visibility != Visibility::EXTERNAL_DRAM) {
+    if (!allocated && contract.visibility != Placement::EXTERNAL) {
       if (l2Used + bufferBytes <= l2Capacity) {
         unsigned bankIdx = nextL2Bank;
         nextL2Bank =

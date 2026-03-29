@@ -127,3 +127,81 @@ target_link_libraries(systemgraph-test PRIVATE
 set_target_properties(systemgraph-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
+
+# TDC types tests (TDCEdgeSpec / TDCPathSpec / Placement / parseShapeExpr)
+add_executable(tdc-types-test TDCTypesTest.cpp)
+
+target_include_directories(tdc-types-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+)
+
+target_link_libraries(tdc-types-test PRIVATE
+  LoomSystemCompiler
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(tdc-types-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)
+
+# ParetoTracker tests
+add_executable(pareto-tracker-test ParetoTrackerTest.cpp)
+
+target_include_directories(pareto-tracker-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+  ${CMAKE_BINARY_DIR}/include
+)
+
+target_link_libraries(pareto-tracker-test PRIVATE
+  TapestryOptimizer
+  LoomSystemCompiler
+  MLIRIR
+  MLIRSupport
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(pareto-tracker-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)
+
+# Co-optimizer framework tests
+add_executable(co-optimizer-test CoOptimizerTest.cpp)
+
+target_include_directories(co-optimizer-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+  ${CMAKE_BINARY_DIR}/include
+)
+
+target_link_libraries(co-optimizer-test PRIVATE
+  TapestryCore
+  TapestryOptimizer
+  LoomSystemCompiler
+  LoomContractInference
+  LoomMultiCoreSim
+  LoomSimulator
+  LoomMapper
+  LoomADG
+  LoomConversion
+  LoomFabric
+  LoomDataflow
+  LoomTDGBuilder
+  LoomTDG
+
+  CIRCTHandshake
+
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  MLIRArithDialect
+  MLIRControlFlowDialect
+  MLIRMathDialect
+  MLIRMemRefDialect
+  MLIRFuncDialect
+  MLIRSCFDialect
+
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(co-optimizer-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)

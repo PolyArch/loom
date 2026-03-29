@@ -137,9 +137,9 @@ static tco::CoOptOptions makeBaseOpts(bool verb = false) {
   opts.verbose = verb;
   opts.swOpts.maxIterations = 3;
   opts.swOpts.improvementThreshold = 0.01;
-  opts.swOpts.bendersConfig.maxIterations = 3;
-  opts.swOpts.bendersConfig.mapperBudgetSeconds = 2.0;
-  opts.swOpts.bendersConfig.mapperSeed = 42;
+  opts.swOpts.compilerConfig.maxIterations = 3;
+  opts.swOpts.compilerConfig.mapperBudgetSeconds = 2.0;
+  opts.swOpts.compilerConfig.mapperSeed = 42;
   opts.swOpts.verbose = verb;
   opts.hwOuterOpts.maxIterations = 10;
   opts.hwOuterOpts.seed = 42;
@@ -670,9 +670,9 @@ static bool testInnerLayerFlags() {
   opts.maxRounds = 1;
   opts.enableHW = false;
   opts.swOpts.maxIterations = 10; // This should be overridden to 1
-  opts.swOpts.bendersConfig.maxIterations = 3;
-  opts.swOpts.bendersConfig.mapperBudgetSeconds = 2.0;
-  opts.swOpts.bendersConfig.mapperSeed = 42;
+  opts.swOpts.compilerConfig.maxIterations = 3;
+  opts.swOpts.compilerConfig.mapperBudgetSeconds = 2.0;
+  opts.swOpts.compilerConfig.mapperSeed = 42;
   opts.hwInnerOpts.tier2Enabled = true; // Should be overridden to false
 
   auto result = tco::co_optimize(

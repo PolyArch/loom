@@ -274,14 +274,19 @@ static bool testEnumConversions() {
     return false;
   }
 
-  // Visibility
+  // Visibility (now aliases Placement; EXTERNAL_DRAM -> EXTERNAL)
   if (visibilityFromString(visibilityToString(Visibility::LOCAL_SPM)) !=
           Visibility::LOCAL_SPM ||
       visibilityFromString(visibilityToString(Visibility::SHARED_L2)) !=
           Visibility::SHARED_L2 ||
-      visibilityFromString(visibilityToString(Visibility::EXTERNAL_DRAM)) !=
-          Visibility::EXTERNAL_DRAM) {
+      visibilityFromString(visibilityToString(Placement::EXTERNAL)) !=
+          Placement::EXTERNAL) {
     std::cerr << "FAIL: testEnumConversions - Visibility\n";
+    return false;
+  }
+  // Legacy EXTERNAL_DRAM string must still parse to EXTERNAL
+  if (visibilityFromString("EXTERNAL_DRAM") != Placement::EXTERNAL) {
+    std::cerr << "FAIL: testEnumConversions - EXTERNAL_DRAM compat\n";
     return false;
   }
 

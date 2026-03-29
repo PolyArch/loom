@@ -37,7 +37,7 @@ Visibility inferVisibility(int64_t productionRate, uint64_t tileElements,
   if (static_cast<double>(totalVolume) <= l2Threshold)
     return Visibility::SHARED_L2;
 
-  return Visibility::EXTERNAL_DRAM;
+  return Placement::EXTERNAL;
 }
 
 } // namespace loom

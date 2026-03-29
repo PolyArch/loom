@@ -99,7 +99,7 @@ static bool testTwoKernelPipeline() {
         }
         tdg.kernel @consumer type "reduction" {
         }
-        tdg.contract @producer -> @consumer {ordering = FIFO, data_type = f32}
+        tdg.contract @producer -> @consumer {data_type = f32, ordering = FIFO}
       }
     }
   )mlir";
@@ -141,7 +141,7 @@ static bool testFIFOMayReorderRejection() {
         }
         tdg.kernel @b type "elementwise" {
         }
-        tdg.contract @a -> @b {ordering = FIFO, data_type = f32, may_reorder = true}
+        tdg.contract @a -> @b {data_type = f32, ordering = FIFO, may_reorder = true}
       }
     }
   )mlir";
@@ -216,7 +216,7 @@ static bool testUnknownProducerRejection() {
       tdg.graph @bad_ref {
         tdg.kernel @existing type "matmul" {
         }
-        tdg.contract @nonexistent -> @existing {ordering = FIFO, data_type = f32}
+        tdg.contract @nonexistent -> @existing {data_type = f32, ordering = FIFO}
       }
     }
   )mlir";

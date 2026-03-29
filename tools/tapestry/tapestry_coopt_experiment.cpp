@@ -51,7 +51,7 @@ namespace tco = tapestry;
 static llvm::cl::opt<std::string>
     experimentMode("mode",
                    llvm::cl::desc("Experiment mode: convergence | comparison "
-                                  "| cross_domain | sensitivity"),
+                                  "| cross_domain | sensitivity | ablation"),
                    llvm::cl::Required);
 
 static llvm::cl::opt<std::string>
@@ -871,6 +871,96 @@ static bool runE20Sensitivity(mlir::MLIRContext &ctx) {
 }
 
 //===----------------------------------------------------------------------===//
+// Ablation experiment: evaluates 6 configurations across domains
+//===----------------------------------------------------------------------===//
+
+static bool runAblationExperiment(mlir::MLIRContext &ctx) {
+  llvm::outs() << "=== Ablation: 6-configuration sweep across domains ===\n\n";
+
+  auto domains = getDomains();
+  auto configs = tco::buildAblationConfigs();
+
+  llvm::json::Array allResults;
+  bool allSucceeded = true;
+
+  for (const auto &dom : domains) {
+    llvm::outs() << "--- Domain: " << dom << " ---\n";
+
+    for (size_t ci = 0; ci < configs.size(); ++ci) {
+      const auto &config = configs[ci];
+      llvm::outs() << "  Config: " << config.name << "\n";
+
+      auto workload = buildDomainWorkload(dom, ctx);
+      if (workload.kernels.empty()) {
+        llvm::errs() << "    Skipping: workload construction failed\n";
+        allSucceeded = false;
+        continue;
+      }
+
+      auto arch = buildInitialArch(archConfig, workload.kernels.size(), ctx);
+      if (arch.coreTypes.empty()) {
+        llvm::errs() << "    Skipping: architecture build failed\n";
+        allSucceeded = false;
+        continue;
+      }
+
+      // Build co-opt options and apply ablation config.
+      tco::CoOptOptions coOpts;
+      coOpts.maxRounds = maxRounds;
+      coOpts.improvementThreshold = threshold;
+      coOpts.verbose = verbose;
+      coOpts.swOpts.maxIterations = 5;
+      coOpts.swOpts.improvementThreshold = threshold;
+      coOpts.swOpts.compilerConfig.maxIterations = 5;
+      coOpts.swOpts.compilerConfig.mapperBudgetSeconds = mapperBudget;
+      coOpts.swOpts.compilerConfig.mapperSeed = 42;
+      coOpts.hwOuterOpts.maxIterations = 20;
+      coOpts.hwOuterOpts.seed = 42;
+      coOpts.hwInnerOpts.tier2Enabled = false;
+      coOpts.hwInnerOpts.maxInnerIter = 10;
+      coOpts.hwInnerOpts.seed = 42;
+
+      tco::applyAblationConfig(coOpts, config);
+
+      auto startTime = std::chrono::steady_clock::now();
+      auto result = tco::co_optimize(workload.kernels, workload.contracts,
+                                     arch, coOpts, &ctx);
+      auto endTime = std::chrono::steady_clock::now();
+      double elapsed =
+          std::chrono::duration<double>(endTime - startTime).count();
+
+      llvm::outs() << "    throughput=" << result.bestThroughput
+                   << " area=" << result.bestArea
+                   << " rounds=" << result.rounds
+                   << " time=" << llvm::format("%.2f", elapsed) << "s\n";
+
+      llvm::json::Object entry;
+      entry["domain"] = dom;
+      entry["config"] = config.name;
+      entry["throughput"] = result.bestThroughput;
+      entry["area"] = result.bestArea;
+      entry["rounds"] = static_cast<int64_t>(result.rounds);
+      entry["success"] = result.success;
+      entry["elapsed_seconds"] = elapsed;
+      allResults.push_back(std::move(entry));
+
+      if (!result.success)
+        allSucceeded = false;
+    }
+  }
+
+  llvm::json::Object summary;
+  summary["experiment"] = "Ablation";
+  summary["mode"] = "ablation";
+  summary["domains_run"] = static_cast<int64_t>(domains.size());
+  summary["configs_per_domain"] = static_cast<int64_t>(configs.size());
+  summary["results"] = std::move(allResults);
+
+  return writeJSON(outputDir.getValue() + "/ablation_results.json",
+                   llvm::json::Value(std::move(summary)));
+}
+
+//===----------------------------------------------------------------------===//
 // Main
 //===----------------------------------------------------------------------===//
 
@@ -898,10 +988,12 @@ int main(int argc, char **argv) {
     success = runE19CrossDomain(ctx);
   } else if (experimentMode == "sensitivity") {
     success = runE20Sensitivity(ctx);
+  } else if (experimentMode == "ablation") {
+    success = runAblationExperiment(ctx);
   } else {
     llvm::errs() << "Unknown mode: " << experimentMode << "\n";
     llvm::errs() << "Valid modes: convergence, comparison, cross_domain, "
-                    "sensitivity\n";
+                    "sensitivity, ablation\n";
     return 1;
   }
 

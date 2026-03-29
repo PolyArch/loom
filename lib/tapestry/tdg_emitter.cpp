@@ -141,47 +141,29 @@ OwningOpRef<ModuleOp> emitTDG(const TaskGraph &graph, MLIRContext &ctx) {
         contract.dataTypeName.value_or("f32");
     Type dataType = resolveDataType(builder, dataTypeName);
 
-    // Map tapestry::Placement to the TDG dialect visibility string.
-    StringRef visibilityStr = "LOCAL_SPM";
-    if (contract.placement) {
-      switch (*contract.placement) {
-      case Placement::LOCAL_SPM:
-        visibilityStr = "LOCAL_SPM";
-        break;
-      case Placement::SHARED_L2:
-        visibilityStr = "SHARED_L2";
-        break;
-      case Placement::EXTERNAL:
-        visibilityStr = "EXTERNAL_DRAM";
-        break;
-      case Placement::AUTO:
-        visibilityStr = "LOCAL_SPM";
-        break;
-      }
-    }
+    // Build optional TDC dimension attributes.
+    StringAttr orderingAttr = builder.getStringAttr(
+        orderingStr(contract.ordering));
+    StringAttr throughputAttr;
+    if (contract.throughput)
+      throughputAttr = builder.getStringAttr(*contract.throughput);
+    StringAttr placementAttr;
+    if (contract.placement)
+      placementAttr = builder.getStringAttr(
+          placementStr(contract.placement));
+    StringAttr tileShapeAttr;
+    if (contract.shape)
+      tileShapeAttr = builder.getStringAttr(*contract.shape);
 
     loom::tdg::ContractOp::create(
         builder, loc,
         /*producer=*/producerName,
         /*consumer=*/consumerName,
-        /*ordering=*/orderingStr(contract.ordering),
         /*data_type=*/dataType,
-        /*production_rate=*/AffineMapAttr(),
-        /*consumption_rate=*/AffineMapAttr(),
-        /*steady_state_ratio=*/DenseI64ArrayAttr(),
-        /*tile_shape=*/DenseI64ArrayAttr(),
-        /*min_buffer_elements=*/IntegerAttr(),
-        /*max_buffer_elements=*/IntegerAttr(),
-        /*backpressure=*/StringRef("BLOCK"),
-        /*double_buffering=*/false,
-        /*visibility=*/visibilityStr,
-        /*producer_writeback=*/StringRef("EAGER"),
-        /*consumer_prefetch=*/StringRef("NONE"),
-        /*may_fuse=*/true,
-        /*may_replicate=*/true,
-        /*may_pipeline=*/true,
-        /*may_reorder=*/false,
-        /*may_retile=*/true);
+        /*ordering=*/orderingAttr,
+        /*throughput=*/throughputAttr,
+        /*placement=*/placementAttr,
+        /*tile_shape=*/tileShapeAttr);
   });
 
   return module;

@@ -527,7 +527,7 @@ CoOptResult co_optimize(
   std::vector<lt::KernelDesc> bestKernels = kernels;
   std::vector<lt::ContractSpec> bestContracts = contracts;
   lt::SystemArchitecture bestArchSaved = currentArch;
-  lt::BendersResult bestBenders;
+  lt::CompilationResult bestCompilation;
 
   // Track last-round metrics for carry-forward when a step is disabled.
   double lastSwThroughput = 0.0;
@@ -551,7 +551,7 @@ CoOptResult co_optimize(
       updateContractsFromSW(contracts, warmSwResult);
       bestKernels = kernels;
       bestContracts = contracts;
-      bestBenders = warmSwResult.compilationResult;
+      bestCompilation = warmSwResult.compilationResult;
 
       // Record round 0.
       CoOptResult::RoundRecord r0;
@@ -712,7 +712,7 @@ CoOptResult co_optimize(
         bestKernels = kernels;
         bestContracts = contracts;
         if (swResult.success)
-          bestBenders = swResult.compilationResult;
+          bestCompilation = swResult.compilationResult;
       }
       if (hwArea < std::numeric_limits<double>::infinity()) {
         bestArchSaved = currentArch;
@@ -742,7 +742,7 @@ CoOptResult co_optimize(
   result.bestArch = std::move(bestArchSaved);
   result.bestThroughput = monitor.bestThroughput;
   result.bestArea = monitor.bestArea;
-  result.bestBendersResult = std::move(bestBenders);
+  result.bestCompilationResult = std::move(bestCompilation);
   result.diagnostics = diag.str();
 
   if (coOpts.verbose) {

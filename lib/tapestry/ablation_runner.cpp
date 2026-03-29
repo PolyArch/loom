@@ -104,7 +104,7 @@ void applyAblationConfig(CoOptOptions &opts, const AblationConfig &config) {
   // When disabled, reduce Benders iterations to single-pass (no infeasibility
   // cuts). The bendersConfig.maxIterations controls the L2 re-mapping loop.
   if (!config.enableSWInner) {
-    opts.swOpts.bendersConfig.maxIterations = 1;
+    opts.swOpts.compilerConfig.maxIterations = 1;
   }
 
   // HW-Inner (per-core Bayesian optimization):

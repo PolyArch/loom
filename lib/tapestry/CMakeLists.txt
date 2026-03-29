@@ -31,6 +31,8 @@ add_library(TapestryOptimizer STATIC
   tdg_optimizer.cpp
   host_scheduler.cpp
   co_optimizer.cpp
+  ParetoTracker.cpp
+  ablation_runner.cpp
 )
 
 target_include_directories(TapestryOptimizer PUBLIC

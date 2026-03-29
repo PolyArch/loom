@@ -26,6 +26,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 
+#include "llvm/Support/JSON.h"
+
 #include <limits>
 #include <sstream>
 #include <string>
@@ -187,8 +189,8 @@ struct CoOptResult {
   /// pre-existing architecture + contracts rather than default).
   bool warmStartUsed = false;
 
-  /// Final BendersResult from the best SW step.
-  loom::tapestry::BendersResult bestBendersResult;
+  /// Final CompilationResult from the best SW step.
+  loom::tapestry::CompilationResult bestCompilationResult;
 
   /// Diagnostic messages.
   std::string diagnostics;
@@ -286,6 +288,52 @@ loom::tapestry::SystemArchitecture
 buildArchFromHWResults(const loom::HWOuterOptimizerResult &outerResult,
                        const std::vector<loom::ADGOptResult> &innerResults,
                        mlir::MLIRContext *ctx);
+
+//===----------------------------------------------------------------------===//
+// Ablation experiment types and entry points
+//===----------------------------------------------------------------------===//
+
+/// Single ablation configuration (which optimization layers are enabled).
+struct AblationConfig {
+  std::string name;
+  bool enableSW = true;
+  bool enableHW = true;
+  bool enableSWInner = true;
+  bool enableHWInner = true;
+};
+
+/// Result of a full ablation experiment (configs x domains matrix).
+struct AblationResult {
+  bool success = false;
+  std::vector<AblationConfig> configs;
+  std::vector<std::string> domains;
+  /// results[config_idx][domain_idx]
+  std::vector<std::vector<CoOptResult>> results;
+
+  /// Extract throughput matrix (configs x domains).
+  std::vector<std::vector<double>> throughputMatrix() const;
+  /// Extract area matrix (configs x domains).
+  std::vector<std::vector<double>> areaMatrix() const;
+};
+
+/// Build the standard 6 ablation configurations.
+std::vector<AblationConfig> buildAblationConfigs();
+
+/// Apply an ablation configuration to CoOptOptions.
+void applyAblationConfig(CoOptOptions &opts, const AblationConfig &config);
+
+/// Run a full ablation experiment across configurations and domains.
+AblationResult runAblation(const CoOptOptions &templateOpts,
+                           mlir::MLIRContext *ctx,
+                           const std::vector<std::string> &domainNames,
+                           const std::string &archConfig,
+                           bool verbose);
+
+/// Serialize an AblationResult to JSON.
+llvm::json::Value ablationResultToJSON(const AblationResult &result);
+
+/// Generate a human-readable comparison report from an AblationResult.
+std::string generateComparisonReport(const AblationResult &result);
 
 } // namespace tapestry
 

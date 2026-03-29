@@ -340,7 +340,7 @@ static bool testVisibilityExternalDRAM() {
   // l2 threshold = 262144 * 0.8 = 209,715.
   // 4,000,000 > 209,715 => EXTERNAL_DRAM.
   auto vis = inferVisibility(1000, 1000, 4, 4096, 0.5, 262144, 0.8, false);
-  if (vis != Visibility::EXTERNAL_DRAM) {
+  if (vis != Placement::EXTERNAL) {
     std::cerr << "FAIL: testVisibilityExternalDRAM\n";
     return false;
   }

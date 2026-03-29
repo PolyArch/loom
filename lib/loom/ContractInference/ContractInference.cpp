@@ -11,6 +11,8 @@
 
 #include "llvm/Support/raw_ostream.h"
 
+#include <sstream>
+
 using namespace loom;
 using namespace mlir;
 
@@ -44,64 +46,53 @@ static tdg::KernelOp findKernel(tdg::GraphOp graphOp, StringRef name) {
   return nullptr;
 }
 
-/// Process a single tdg.contract op: infer missing fields.
+/// Process a single tdg.contract op: infer missing TDC dimensions.
+///
+/// The new TDC ContractOp has 4 optional string dimensions:
+///   ordering, throughput, placement, tile_shape
+///
+/// This pass infers missing dimensions based on kernel body analysis and
+/// memory hierarchy budgets. Legacy fields (backpressure, production_rate,
+/// consumption_rate, etc.) are no longer present on the MLIR op and are
+/// handled internally for inference purposes only.
 static LogicalResult processContract(tdg::ContractOp contractOp,
                                      tdg::GraphOp graphOp,
                                      const ContractInferencePass::Options &opts) {
   OpBuilder builder(contractOp.getContext());
   unsigned elemSize = getElementSizeBytes(contractOp.getDataType());
 
-  // Warn if DROP or OVERWRITE backpressure is specified -- these modes are
-  // reserved for future implementation. Fall back to BLOCK behavior.
-  StringRef bp = contractOp.getBackpressure();
-  if (bp == "DROP" || bp == "OVERWRITE") {
-    contractOp.emitWarning()
-        << bp
-        << " backpressure not yet implemented, falling back to BLOCK";
-    contractOp->setAttr("backpressure", builder.getStringAttr("BLOCK"));
-  }
-
   // Look up producer and consumer kernels.
   auto producerOp = findKernel(graphOp, contractOp.getProducer());
   auto consumerOp = findKernel(graphOp, contractOp.getConsumer());
 
-  // RateAnalyzer: infer production and consumption rates if not set.
-  RateAnalyzer rateAnalyzer;
+  // --- Ordering inference ---
+  // Default to FIFO if not set.
+  if (!contractOp.getOrderingAttr()) {
+    contractOp->setAttr("ordering", builder.getStringAttr("FIFO"));
+  }
 
+  // --- Rate analysis (used internally for tile shape and placement) ---
+  RateAnalyzer rateAnalyzer;
   int64_t productionRate = 1;
   int64_t consumptionRate = 1;
 
-  if (!contractOp.getProductionRateAttr() && producerOp &&
-      !producerOp.getBody().empty()) {
-    // Analyze producer kernel body.
-    // Use a null Value since we analyze the entire kernel body.
+  if (producerOp && !producerOp.getBody().empty()) {
     Value nullVal;
     auto rateResult =
         rateAnalyzer.analyzeProductionRate(producerOp.getBody(), nullVal);
     if (rateResult.elementsPerInvocation)
       productionRate = *rateResult.elementsPerInvocation;
-  } else if (contractOp.getProductionRateAttr()) {
-    // The production rate is stored as an AffineMap attribute.
-    // For constant maps, extract the single result.
-    auto map = contractOp.getProductionRateAttr().getValue();
-    if (map.isConstant())
-      productionRate = map.getSingleConstantResult();
   }
 
-  if (!contractOp.getConsumptionRateAttr() && consumerOp &&
-      !consumerOp.getBody().empty()) {
+  if (consumerOp && !consumerOp.getBody().empty()) {
     Value nullVal;
     auto rateResult =
         rateAnalyzer.analyzeConsumptionRate(consumerOp.getBody(), nullVal);
     if (rateResult.elementsPerInvocation)
       consumptionRate = *rateResult.elementsPerInvocation;
-  } else if (contractOp.getConsumptionRateAttr()) {
-    auto map = contractOp.getConsumptionRateAttr().getValue();
-    if (map.isConstant())
-      consumptionRate = map.getSingleConstantResult();
   }
 
-  // TileShapeInference: infer tile shape if not set.
+  // --- Tile shape inference ---
   TileShapeInference tileInfer;
   uint64_t tileElements = 1;
   std::vector<int64_t> tileShape;
@@ -113,7 +104,6 @@ static LogicalResult processContract(tdg::ContractOp contractOp,
       auto hint = *producerOp.getTileHint();
       problemShape.assign(hint.begin(), hint.end());
     } else {
-      // Use production rate as a 1D problem shape.
       problemShape = {productionRate};
     }
 
@@ -122,87 +112,56 @@ static LogicalResult processContract(tdg::ContractOp contractOp,
     tileShape = tileResult.tileShape;
     tileElements = tileResult.elementsPerTile;
 
-    // Set the tile_shape attribute on the contract.
+    // Serialize tile shape as a string expression "[d0, d1, ...]".
     if (!tileShape.empty()) {
+      std::ostringstream oss;
+      oss << "[";
+      for (size_t idx = 0; idx < tileShape.size(); ++idx) {
+        if (idx > 0)
+          oss << ", ";
+        oss << tileShape[idx];
+      }
+      oss << "]";
       contractOp->setAttr("tile_shape",
-                          builder.getDenseI64ArrayAttr(tileShape));
+                          builder.getStringAttr(oss.str()));
     }
   } else {
-    auto existingShapeAttr = contractOp.getTileShapeAttr();
-    tileShape.assign(existingShapeAttr.asArrayRef().begin(),
-                     existingShapeAttr.asArrayRef().end());
+    // Parse existing tile_shape string to compute tileElements.
+    auto shapeStr = contractOp.getTileShapeAttr().getValue();
+    auto dims = parseShapeExpr(shapeStr.str());
     tileElements = 1;
-    for (int64_t dim : tileShape)
-      tileElements *= static_cast<uint64_t>(dim);
-  }
-
-  // Compute steady_state_ratio if not set.
-  if (!contractOp.getSteadyStateRatioAttr() && consumptionRate > 0) {
-    // Simplify ratio by GCD.
-    int64_t num = productionRate;
-    int64_t den = consumptionRate;
-    auto gcd = [](int64_t a, int64_t b) -> int64_t {
-      while (b) {
-        a %= b;
-        std::swap(a, b);
+    for (const auto &dimStr : dims) {
+      // Try to parse numeric dimensions; skip symbolic ones.
+      char *end = nullptr;
+      long val = std::strtol(dimStr.c_str(), &end, 10);
+      if (end != dimStr.c_str() && *end == '\0' && val > 0) {
+        tileElements *= static_cast<uint64_t>(val);
+        tileShape.push_back(static_cast<int64_t>(val));
       }
-      return a;
-    };
-    int64_t g = gcd(num > 0 ? num : -num, den > 0 ? den : -den);
-    if (g > 0) {
-      num /= g;
-      den /= g;
-    }
-    contractOp->setAttr("steady_state_ratio",
-                        builder.getDenseI64ArrayAttr({num, den}));
-  }
-
-  // BufferSizeInference: infer buffer sizes if not set.
-  if (!contractOp.getMinBufferElements() ||
-      !contractOp.getMaxBufferElements()) {
-    ContractSpec spec;
-    spec.ordering = orderingFromString(
-        contractOp.getOrdering().str());
-    spec.productionRate = productionRate;
-    spec.consumptionRate = consumptionRate;
-    spec.tileShape = tileShape;
-
-    BufferSizeInference bufInfer;
-    auto bufResult = bufInfer.infer(spec, opts.defaultSPMCapacityBytes,
-                                    elemSize,
-                                    opts.defaultProducerLatencyCycles);
-
-    if (!contractOp.getMinBufferElements()) {
-      contractOp->setAttr("min_buffer_elements",
-                          builder.getI64IntegerAttr(bufResult.minElements));
-    }
-    if (!contractOp.getMaxBufferElements()) {
-      contractOp->setAttr("max_buffer_elements",
-                          builder.getI64IntegerAttr(bufResult.maxElements));
-    }
-
-    // Set double_buffering if the inference recommends it.
-    if (bufResult.requiresDoubleBuffering && !contractOp.getDoubleBuffering()) {
-      contractOp->setAttr("double_buffering", builder.getBoolAttr(true));
     }
   }
 
-  // VisibilityInference: infer visibility if still at default.
-  // Only override if the user has not explicitly set it (we check if it
-  // is the default LOCAL_SPM -- if the user wanted LOCAL_SPM they would
-  // leave it unset, so this is safe to override).
-  Visibility inferred = inferVisibility(
-      productionRate, tileElements, elemSize, opts.defaultSPMCapacityBytes,
-      opts.spmThresholdFraction, opts.sharedL2CapacityBytes,
-      opts.l2ThresholdFraction, contractOp.getMayFuse());
+  // --- Throughput inference ---
+  // If throughput is not set, derive from production rate.
+  if (!contractOp.getThroughputAttr() && productionRate > 1) {
+    contractOp->setAttr("throughput",
+                        builder.getStringAttr(std::to_string(productionRate)));
+  }
 
-  contractOp->setAttr("visibility",
-                       builder.getStringAttr(visibilityToString(inferred)));
+  // --- Placement inference ---
+  // Use VisibilityInference to determine memory placement if not set.
+  // The mayFuse heuristic: producer and consumer are co-located if both
+  // kernels exist (will be refined by the actual assignment later).
+  bool mayFuse = (producerOp && consumerOp);
 
-  // Set may_reorder based on ordering.
-  Ordering ordering = orderingFromString(contractOp.getOrdering().str());
-  if (ordering == Ordering::UNORDERED) {
-    contractOp->setAttr("may_reorder", builder.getBoolAttr(true));
+  if (!contractOp.getPlacementAttr()) {
+    Placement inferred = inferVisibility(
+        productionRate, tileElements, elemSize, opts.defaultSPMCapacityBytes,
+        opts.spmThresholdFraction, opts.sharedL2CapacityBytes,
+        opts.l2ThresholdFraction, mayFuse);
+
+    contractOp->setAttr("placement",
+                        builder.getStringAttr(placementToString(inferred)));
   }
 
   return success();
