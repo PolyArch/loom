@@ -1,8 +1,8 @@
 //===-- ExecutionModel.cpp - Temporal execution model implementation -------===//
 //
-// Implements the temporal scheduling for the Tapestry multi-core compiler.
-// Currently supports BATCH_SEQUENTIAL mode where kernels execute sequentially
-// on each core with reconfiguration gaps between them.
+// Implements temporal scheduling utilities and the BATCH_SEQUENTIAL scheduling
+// function for the Tapestry multi-core compiler. Multi-mode dispatch is handled
+// by TemporalScheduler (see TemporalScheduler.h).
 //
 //===----------------------------------------------------------------------===//
 
@@ -171,14 +171,9 @@ std::string computeTemporalSchedule(
     const ExecutionModelConfig &config,
     TemporalSchedule &outSchedule) {
 
-  // Only BATCH_SEQUENTIAL is currently supported.
-  if (config.mode != ExecutionMode::BATCH_SEQUENTIAL) {
-    std::string modeName = executionModeToString(config.mode);
-    return modeName +
-           std::string(" execution mode is not supported in current version; "
-                       "only BATCH_SEQUENTIAL is implemented");
-  }
-
+  // This function handles the BATCH_SEQUENTIAL scheduling logic.
+  // Other modes are handled by TemporalScheduler::schedule() which dispatches
+  // to dedicated mode-specific methods.
   outSchedule = TemporalSchedule();
   outSchedule.mode = ExecutionMode::BATCH_SEQUENTIAL;
 

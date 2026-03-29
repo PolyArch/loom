@@ -1,4 +1,5 @@
 #include "loom/SystemCompiler/HierarchicalCompiler.h"
+#include "loom/SystemCompiler/ADGPartitioner.h"
 #include "loom/SystemCompiler/BendersHelpers.h"
 #include "loom/SystemCompiler/BufferAllocator.h"
 #include "loom/SystemCompiler/ConvergenceTracker.h"
@@ -8,6 +9,7 @@
 #include "loom/SystemCompiler/L2CoreCompiler.h"
 #include "loom/SystemCompiler/NoCScheduler.h"
 #include "loom/SystemCompiler/SystemTypes.h"
+#include "loom/SystemCompiler/TemporalScheduler.h"
 #include "loom/SystemCompiler/TypeAdapters.h"
 #include "loom/Mapper/MapperOptions.h"
 
@@ -149,16 +151,6 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
   if (arch_.coreTypes.empty()) {
     result.success = false;
     result.diagnostics = "no core types in architecture";
-    return result;
-  }
-
-  // Validate execution mode.
-  if (config.executionModel.mode != ExecutionMode::BATCH_SEQUENTIAL) {
-    result.success = false;
-    result.diagnostics =
-        std::string(executionModeToString(config.executionModel.mode)) +
-        " execution mode is not supported in current version; "
-        "only BATCH_SEQUENTIAL is implemented";
     return result;
   }
 
@@ -429,17 +421,64 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
                    << result.diagnostics << "\n";
   }
 
+  // For SPATIAL_SHARING mode, partition the ADG for co-located kernels.
+  if (result.success && bestTapResult.has_value() &&
+      config.executionModel.mode == ExecutionMode::SPATIAL_SHARING) {
+    for (const auto &ca : bestAssignment.coreAssignments) {
+      if (ca.assignedKernels.size() <= 1)
+        continue;
+
+      // Look up the core type spec from the L1 architecture.
+      const loom::CoreTypeSpec *coreSpec = nullptr;
+      for (const auto &ct : l1Arch.coreTypes) {
+        if (ct.typeName == ca.coreTypeName) {
+          coreSpec = &ct;
+          break;
+        }
+      }
+      if (!coreSpec)
+        continue;
+
+      // Estimate grid dimensions from PE count (assume square grid).
+      unsigned gridDim = static_cast<unsigned>(
+          std::ceil(std::sqrt(static_cast<double>(coreSpec->numPEs))));
+      unsigned gridRows = gridDim;
+      unsigned gridCols = gridDim;
+
+      unsigned numPartitions = static_cast<unsigned>(ca.assignedKernels.size());
+      if (numPartitions != 2 && numPartitions != 4)
+        numPartitions = 2; // fallback to 2-way split
+
+      loom::PartitionPlan plan = loom::ADGPartitioner::generatePartitions(
+          *coreSpec, numPartitions, gridRows, gridCols);
+
+      auto validation = loom::ADGPartitioner::validatePartition(plan);
+      if (config.verbose) {
+        llvm::outs() << "ADGPartitioner: core " << ca.coreInstanceIdx
+                     << " (" << ca.coreTypeName << "): "
+                     << plan.partitions.size() << " partitions, valid="
+                     << (validation.valid ? "yes" : "no") << "\n";
+        if (!validation.valid)
+          llvm::outs() << "  validation error: " << validation.errorMessage
+                       << "\n";
+      }
+    }
+  }
+
   // Compute temporal schedule using the assignment result.
   if (result.success && bestTapResult.has_value()) {
     loom::TemporalSchedule schedule;
-    std::string schedErr = computeTemporalSchedule(
+    loom::TemporalScheduler temporalScheduler;
+    std::string schedErr = temporalScheduler.schedule(
         bestAssignment, bestCostSummaries, l1Contracts,
         config.executionModel, schedule);
 
     if (schedErr.empty()) {
       result.temporalSchedule = schedule;
       if (config.verbose) {
-        llvm::outs() << "Temporal schedule (BATCH_SEQUENTIAL):\n"
+        llvm::outs() << "Temporal schedule ("
+                     << executionModeToString(config.executionModel.mode)
+                     << "):\n"
                      << "  System latency: " << schedule.systemLatencyCycles
                      << " (max_core=" << schedule.maxCoreCycles
                      << " + noc=" << schedule.nocOverheadCycles << ")\n";
