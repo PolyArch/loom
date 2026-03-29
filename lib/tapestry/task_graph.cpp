@@ -115,11 +115,17 @@ TaskGraph &TaskGraph::operator=(TaskGraph &&) noexcept = default;
 
 KernelHandle TaskGraph::addKernelImpl(KernelInfo info) {
   unsigned idx = static_cast<unsigned>(impl_->kernels.size());
-  impl_->nameIndex[info.name] = idx;
+  std::string kname = info.name;
+  impl_->nameIndex[kname] = idx;
   impl_->kernels.push_back(std::move(info));
   impl_->adj.emplace_back();        // empty successors list
   impl_->preds.emplace_back();      // empty predecessors list
-  impl_->variantMap.emplace_back();  // empty variant list
+
+  // Seed a default variant entry for this kernel.
+  VariantEntry defaultVariant;
+  defaultVariant.variantName = kname + "_default";
+  defaultVariant.options = VariantOptions{/*unrollFactor=*/1, /*domainRank=*/0};
+  impl_->variantMap.push_back({std::move(defaultVariant)});
 
   return KernelHandle(this, idx);
 }
@@ -339,10 +345,17 @@ const std::string &EdgeHandle::consumerName() const {
 KernelHandle TaskGraph::addVariant(KernelHandle baseKernel,
                                    const std::string &variantName,
                                    VariantOptions opts) {
-  assert(baseKernel.graph_ == this &&
-         "baseKernel does not belong to this graph");
-  assert(baseKernel.index_ < impl_->kernels.size() &&
-         "invalid baseKernel index");
+  // Return default (invalid) handle for null or foreign handles.
+  if (!baseKernel.graph_ || baseKernel.graph_ != this)
+    return KernelHandle();
+  if (baseKernel.index_ >= impl_->kernels.size())
+    return KernelHandle();
+
+  // Reject duplicate variant names.
+  for (const auto &existing : impl_->variantMap[baseKernel.index_]) {
+    if (existing.variantName == variantName)
+      return KernelHandle();
+  }
 
   VariantEntry entry;
   entry.variantName = variantName;
@@ -361,9 +374,18 @@ static const std::vector<VariantEntry> emptyVariants;
 
 const std::vector<VariantEntry> &
 TaskGraph::variants(KernelHandle kernel) const {
-  assert(kernel.graph_ == this && "kernel does not belong to this graph");
-  assert(kernel.index_ < impl_->variantMap.size() && "invalid kernel index");
+  if (!kernel.graph_ || kernel.graph_ != this)
+    return emptyVariants;
+  if (kernel.index_ >= impl_->variantMap.size())
+    return emptyVariants;
   return impl_->variantMap[kernel.index_];
+}
+
+const std::vector<VariantEntry> &
+TaskGraph::variants(unsigned kernelIndex) const {
+  if (kernelIndex >= impl_->variantMap.size())
+    return emptyVariants;
+  return impl_->variantMap[kernelIndex];
 }
 
 void TaskGraph::latencyBound(KernelHandle startKernel,

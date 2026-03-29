@@ -85,8 +85,7 @@ TaskGraph buildTaskGraphFromAnalysis(const AutoAnalyzeResult &result) {
     if (edge.dependency.elementCount.has_value()) {
       uint64_t volume = edge.dependency.elementCount.value() *
                         sizeOfType(edge.dependency.dataType);
-      // Data volume is stored as rate on the edge contract.
-      eh.rate(static_cast<int64_t>(volume));
+      eh.data_volume(volume);
     }
   }
 

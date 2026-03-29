@@ -27,6 +27,7 @@ add_library(LoomSystemCompiler STATIC
   ResourceTracker.cpp
   TapestryPipeline.cpp
   TDGLowering.cpp
+  TDGToSSGBuilder.cpp
   TemporalScheduler.cpp
   TypeAdapters.cpp
 )

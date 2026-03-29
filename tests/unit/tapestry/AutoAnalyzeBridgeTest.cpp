@@ -101,10 +101,11 @@ static bool testBasicConversion() {
     std::cerr << "FAIL T1: dataTypeName should be f32\n";
     return false;
   }
-  // Data volume = 256 * 4 = 1024, stored as rate.
-  if (!contract.rate || *contract.rate != 1024) {
-    std::cerr << "FAIL T1: rate (data volume) should be 1024, got "
-              << (contract.rate ? std::to_string(*contract.rate) : "nullopt")
+  // Data volume = 256 * 4 = 1024.
+  if (!contract.dataVolume || *contract.dataVolume != 1024) {
+    std::cerr << "FAIL T1: dataVolume should be 1024, got "
+              << (contract.dataVolume ? std::to_string(*contract.dataVolume)
+                                      : "nullopt")
               << "\n";
     return false;
   }

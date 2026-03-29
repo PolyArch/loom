@@ -25,12 +25,10 @@ namespace loom {
 namespace {
 
 /// Try to extract a numeric data volume from a contract op's attributes.
-/// The TDG MLIR currently encodes data volume in tile_shape or as
-/// min_buffer_elements. Returns 0 if no volume information is present.
-uint64_t extractDataVolume(loom::tdg::ContractOp contractOp) {
-  // Check for min_buffer_elements as a proxy for data volume.
-  if (auto minBuf = contractOp.getMinBufferElements())
-    return static_cast<uint64_t>(minBuf.value());
+/// Returns 0 if no volume information is present.
+uint64_t extractDataVolume(loom::tdg::ContractOp /*contractOp*/) {
+  // Data volume is not yet encoded as a direct contract attribute.
+  // Future: extract from tile_shape or a dedicated attribute.
   return 0;
 }
 
@@ -120,9 +118,15 @@ SSG TDGToSSGBuilder::build(
       SSGDataDependency dep;
       dep.producerName = contractOp.getProducer().str();
       dep.consumerName = contractOp.getConsumer().str();
-      dep.ordering = contractOp.getOrdering().str();
+      if (auto ord = contractOp.getOrdering())
+        dep.ordering = ord->str();
+      else
+        dep.ordering = "FIFO";
       dep.dataTypeName = typeToName(contractOp.getDataType());
-      dep.visibility = contractOp.getVisibility().str();
+      if (auto plc = contractOp.getPlacement())
+        dep.visibility = plc->str();
+      else
+        dep.visibility = "LOCAL_SPM";
       dep.dataVolume = extractDataVolume(contractOp);
 
       ssg.addEdge(std::move(dep));

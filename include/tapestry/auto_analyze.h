@@ -177,6 +177,18 @@ AutoAnalyzeResult autoAnalyze(const std::string &sourcePath,
                               const std::string &entryFunc,
                               const AutoAnalyzeOptions &opts = {});
 
+//===----------------------------------------------------------------------===//
+// Bridge utilities (auto_analyze_bridge.cpp)
+//===----------------------------------------------------------------------===//
+
+class TaskGraph; // forward declaration
+
+/// Convert an AutoAnalyzeResult into a TaskGraph for the MLIR pipeline.
+TaskGraph buildTaskGraphFromAnalysis(const AutoAnalyzeResult &result);
+
+/// Map a data type name string to its byte size (e.g. "f32" -> 4).
+unsigned sizeOfType(const std::string &typeName);
+
 } // namespace tapestry
 
 #endif // TAPESTRY_AUTO_ANALYZE_H

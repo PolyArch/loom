@@ -127,6 +127,26 @@ OwningOpRef<ModuleOp> emitTDG(const TaskGraph &graph, MLIRContext &ctx) {
         /*tile_hint=*/DenseI64ArrayAttr(),
         /*target_core_type=*/StringAttr());
 
+    // Emit variant attributes if any are registered.
+    unsigned kIdx = graph.kernelIndex(ki.name);
+    const auto &variantEntries = graph.variants(kIdx);
+    if (!variantEntries.empty()) {
+      SmallVector<Attribute> variantAttrs;
+      for (const auto &ve : variantEntries) {
+        SmallVector<NamedAttribute> fields;
+        fields.push_back(builder.getNamedAttr(
+            "name", builder.getStringAttr(ve.variantName)));
+        fields.push_back(builder.getNamedAttr(
+            "unroll_factor",
+            builder.getI64IntegerAttr(ve.options.unrollFactor)));
+        fields.push_back(builder.getNamedAttr(
+            "domain_rank",
+            builder.getI64IntegerAttr(ve.options.domainRank)));
+        variantAttrs.push_back(builder.getDictionaryAttr(fields));
+      }
+      kernelOp->setAttr("variants", builder.getArrayAttr(variantAttrs));
+    }
+
     // Create an empty kernel body (kernel_compiler from C08 fills it later).
     Block *kernelBlock = new Block();
     kernelOp.getBody().push_back(kernelBlock);

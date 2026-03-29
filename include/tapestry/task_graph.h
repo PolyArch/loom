@@ -185,6 +185,11 @@ using KernelMap = std::vector<KernelInfo>;
 struct VariantOptions {
   unsigned unrollFactor = 1;
   unsigned domainRank = 0;
+
+  bool operator==(const VariantOptions &rhs) const {
+    return unrollFactor == rhs.unrollFactor && domainRank == rhs.domainRank;
+  }
+  bool operator!=(const VariantOptions &rhs) const { return !(*this == rhs); }
 };
 
 // ============================================================================
@@ -294,6 +299,9 @@ public:
 
   /// Get the list of registered variants for a kernel.
   const std::vector<VariantEntry> &variants(KernelHandle kernel) const;
+
+  /// Get the list of registered variants by kernel index (for emitters).
+  const std::vector<VariantEntry> &variants(unsigned kernelIndex) const;
 
   // -----------------------------------------------------------------------
   // Path contracts (latency bounds)

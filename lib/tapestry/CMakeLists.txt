@@ -3,6 +3,7 @@ add_library(TapestryCore STATIC
   derived_metrics.cpp
   tdg_emitter.cpp
   compile.cpp
+  auto_analyze_bridge.cpp
 )
 
 target_include_directories(TapestryCore PUBLIC

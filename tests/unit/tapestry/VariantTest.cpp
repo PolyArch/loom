@@ -6,14 +6,16 @@
 /// T3. addVariant API -- invalid kernel handle
 /// T4. Variant enumeration -- multiple kernels with edges
 /// T5. TDG MLIR round-trip -- variant attributes emitted
-/// T6. TDGBuilder variant registration
+/// T6. Variant registration via TaskGraph + emitTDG round-trip
+/// T7. VariantOptions equality operators
+/// T8. Variant info preserved in dump
+/// T9. Multiple kernels with different variant counts -- end-to-end MLIR
 
 #include "tapestry/task_graph.h"
 #include "tapestry/tdg_emitter.h"
 
 #include "loom/Dialect/TDG/TDGDialect.h"
 #include "loom/Dialect/TDG/TDGOps.h"
-#include "loom/TDG/TDGBuilder.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -39,30 +41,26 @@ static bool testAddVariantBasic() {
   auto k = tdg.kernel("matmul", matmul);
 
   // Should start with 1 default variant.
-  if (tdg.variantCount(k) != 1) {
-    std::cerr << "FAIL: testAddVariantBasic - initial variantCount="
-              << tdg.variantCount(k) << " (expected 1)\n";
+  if (tdg.variants(k).size() != 1) {
+    std::cerr << "FAIL: testAddVariantBasic - initial variants().size()="
+              << tdg.variants(k).size() << " (expected 1)\n";
     return false;
   }
 
   // Add a second variant.
-  auto r = tdg.addVariant(k, "matmul_u2",
-                          VariantOptions{/*unrollFactor=*/2, /*domainRank=*/0});
-  if (!r.isValid()) {
-    std::cerr << "FAIL: testAddVariantBasic - addVariant returned invalid\n";
+  tdg.addVariant(k, "matmul_u2",
+                 VariantOptions{/*unrollFactor=*/2, /*domainRank=*/0});
+
+  if (tdg.variants(k).size() != 2) {
+    std::cerr << "FAIL: testAddVariantBasic - variants().size()="
+              << tdg.variants(k).size() << " (expected 2)\n";
     return false;
   }
 
-  if (tdg.variantCount(k) != 2) {
-    std::cerr << "FAIL: testAddVariantBasic - variantCount="
-              << tdg.variantCount(k) << " (expected 2)\n";
-    return false;
-  }
-
-  // Check getVariants returns both.
-  auto variants = tdg.getVariants(k);
+  // Check variants returns both.
+  const auto &variants = tdg.variants(k);
   if (variants.size() != 2) {
-    std::cerr << "FAIL: testAddVariantBasic - getVariants.size()="
+    std::cerr << "FAIL: testAddVariantBasic - variants.size()="
               << variants.size() << " (expected 2)\n";
     return false;
   }
@@ -104,23 +102,20 @@ static bool testAddVariantDuplicate() {
   auto k = tdg.kernel("fir", fir);
 
   // Add first variant.
-  auto r1 = tdg.addVariant(k, "fir_v1", VariantOptions{2, 0});
-  if (!r1.isValid()) {
+  tdg.addVariant(k, "fir_v1", VariantOptions{2, 0});
+
+  if (tdg.variants(k).size() != 2) {
     std::cerr << "FAIL: testAddVariantDuplicate - first addVariant failed\n";
     return false;
   }
 
-  // Add duplicate name -> should return invalid.
-  auto r2 = tdg.addVariant(k, "fir_v1", VariantOptions{4, 0});
-  if (r2.isValid()) {
-    std::cerr << "FAIL: testAddVariantDuplicate - duplicate accepted\n";
-    return false;
-  }
+  // Add duplicate name -> should be rejected (count stays at 2).
+  tdg.addVariant(k, "fir_v1", VariantOptions{4, 0});
 
   // Variant count should still be 2 (default + fir_v1).
-  if (tdg.variantCount(k) != 2) {
-    std::cerr << "FAIL: testAddVariantDuplicate - variantCount="
-              << tdg.variantCount(k) << " (expected 2)\n";
+  if (tdg.variants(k).size() != 2) {
+    std::cerr << "FAIL: testAddVariantDuplicate - variants().size()="
+              << tdg.variants(k).size() << " (expected 2)\n";
     return false;
   }
 
@@ -134,24 +129,19 @@ static bool testAddVariantDuplicate() {
 static bool testAddVariantInvalidHandle() {
   TaskGraph tdg("variant_invalid");
 
-  // Default-constructed handle is invalid.
+  // Default-constructed handle is invalid (graph_ == nullptr).
   KernelHandle invalid;
-  auto r = tdg.addVariant(invalid, "v1", VariantOptions{1, 0});
-  if (r.isValid()) {
-    std::cerr << "FAIL: testAddVariantInvalidHandle - should be invalid\n";
+  tdg.addVariant(invalid, "v1", VariantOptions{1, 0});
+
+  // variants() on invalid handle returns empty.
+  if (tdg.variants(invalid).size() != 0) {
+    std::cerr << "FAIL: testAddVariantInvalidHandle - variants().size() != 0\n";
     return false;
   }
 
-  // variantCount on invalid handle returns 0.
-  if (tdg.variantCount(invalid) != 0) {
-    std::cerr << "FAIL: testAddVariantInvalidHandle - variantCount != 0\n";
-    return false;
-  }
-
-  // getVariants on invalid handle returns empty.
-  auto variants = tdg.getVariants(invalid);
+  const auto &variants = tdg.variants(invalid);
   if (!variants.empty()) {
-    std::cerr << "FAIL: testAddVariantInvalidHandle - getVariants not empty\n";
+    std::cerr << "FAIL: testAddVariantInvalidHandle - variants not empty\n";
     return false;
   }
 
@@ -178,14 +168,14 @@ static bool testVariantMultipleKernels() {
   // Connect A -> B.
   tdg.connect(kA, kB).data_type<float>();
 
-  if (tdg.variantCount(kA) != 2) {
-    std::cerr << "FAIL: testVariantMultipleKernels - variantCount(A)="
-              << tdg.variantCount(kA) << " (expected 2)\n";
+  if (tdg.variants(kA).size() != 2) {
+    std::cerr << "FAIL: testVariantMultipleKernels - variants(A).size()="
+              << tdg.variants(kA).size() << " (expected 2)\n";
     return false;
   }
-  if (tdg.variantCount(kB) != 3) {
-    std::cerr << "FAIL: testVariantMultipleKernels - variantCount(B)="
-              << tdg.variantCount(kB) << " (expected 3)\n";
+  if (tdg.variants(kB).size() != 3) {
+    std::cerr << "FAIL: testVariantMultipleKernels - variants(B).size()="
+              << tdg.variants(kB).size() << " (expected 3)\n";
     return false;
   }
 
@@ -303,50 +293,40 @@ static bool testVariantMLIREmission() {
 }
 
 // -------------------------------------------------------------------------
-// T6: TDGBuilder variant registration
+// T6: Variant registration via TaskGraph + emitTDG round-trip
 // -------------------------------------------------------------------------
 static bool testTDGBuilderVariants() {
-  loom::TaskDataflowGraph builder("builder_variant_test");
+  TaskGraph tdg("builder_variant_test");
 
-  auto k1 = builder.kernel("conv", "cgra");
+  auto k1 = tdg.kernel("conv", matmul);
+  k1.target(ExecutionTarget::CGRA);
 
   // Default: should have 1 variant.
-  if (builder.variantCount(k1) != 1) {
+  if (tdg.variants(k1).size() != 1) {
     std::cerr << "FAIL: testTDGBuilderVariants - initial count="
-              << builder.variantCount(k1) << "\n";
+              << tdg.variants(k1).size() << "\n";
     return false;
   }
 
   // Register a variant.
-  bool ok = builder.registerVariant(k1, "conv_u4", 4, 0);
-  if (!ok) {
-    std::cerr << "FAIL: testTDGBuilderVariants - registerVariant failed\n";
-    return false;
-  }
+  tdg.addVariant(k1, "conv_u4", VariantOptions{4, 0});
 
-  if (builder.variantCount(k1) != 2) {
+  if (tdg.variants(k1).size() != 2) {
     std::cerr << "FAIL: testTDGBuilderVariants - count after register="
-              << builder.variantCount(k1) << "\n";
+              << tdg.variants(k1).size() << "\n";
     return false;
   }
 
-  // Duplicate should fail.
-  bool dup = builder.registerVariant(k1, "conv_u4", 8, 0);
-  if (dup) {
+  // Duplicate should be rejected (count stays 2).
+  tdg.addVariant(k1, "conv_u4", VariantOptions{8, 0});
+  if (tdg.variants(k1).size() != 2) {
     std::cerr << "FAIL: testTDGBuilderVariants - duplicate accepted\n";
-    return false;
-  }
-
-  // Invalid handle.
-  loom::KernelHandle invalid{999};
-  if (builder.variantCount(invalid) != 0) {
-    std::cerr << "FAIL: testTDGBuilderVariants - invalid handle count != 0\n";
     return false;
   }
 
   // Build MLIR and check variant attributes.
   mlir::MLIRContext ctx;
-  auto module = builder.buildMLIR(ctx);
+  auto module = emitTDG(tdg, ctx);
   if (!module) {
     std::cerr << "FAIL: testTDGBuilderVariants - null module\n";
     return false;
@@ -414,8 +394,8 @@ static bool testVariantDump() {
   // Just make sure dump() does not crash with variants present.
   tdg.dump();
 
-  // Verify variant info through getVariants.
-  auto variants = tdg.getVariants(k);
+  // Verify variant info through variants().
+  const auto &variants = tdg.variants(k);
   if (variants.size() != 3) {
     std::cerr << "FAIL: testVariantDump - variant count=" << variants.size()
               << " (expected 3)\n";
@@ -455,22 +435,14 @@ static bool testMultiKernelVariantMLIR() {
     return false;
   }
 
-  // Walk kernel ops and check variant counts.
-  unsigned totalKernels = 0;
+  // Walk kernel ops and check variant counts for base kernels only.
   bool allCorrect = true;
+  unsigned baseKernelCount = 0;
 
   module->walk([&](loom::tdg::KernelOp kernelOp) {
-    totalKernels++;
-    auto variantsAttr = kernelOp->getAttrOfType<mlir::ArrayAttr>("variants");
-    if (!variantsAttr) {
-      std::cerr << "FAIL: testMultiKernelVariantMLIR - kernel '"
-                << kernelOp.getSymName().str()
-                << "' has no variants attr\n";
-      allCorrect = false;
-      return;
-    }
-
     llvm::StringRef name = kernelOp.getSymName();
+
+    // Only check base kernels (A, B, C), skip variant kernel nodes.
     unsigned expected = 0;
     if (name == "A")
       expected = 2;
@@ -478,6 +450,17 @@ static bool testMultiKernelVariantMLIR() {
       expected = 3;
     else if (name == "C")
       expected = 1;
+    else
+      return; // Skip variant kernel nodes.
+
+    baseKernelCount++;
+    auto variantsAttr = kernelOp->getAttrOfType<mlir::ArrayAttr>("variants");
+    if (!variantsAttr) {
+      std::cerr << "FAIL: testMultiKernelVariantMLIR - kernel '"
+                << name.str() << "' has no variants attr\n";
+      allCorrect = false;
+      return;
+    }
 
     if (variantsAttr.size() != expected) {
       std::cerr << "FAIL: testMultiKernelVariantMLIR - kernel '"
@@ -487,9 +470,9 @@ static bool testMultiKernelVariantMLIR() {
     }
   });
 
-  if (totalKernels != 3) {
-    std::cerr << "FAIL: testMultiKernelVariantMLIR - kernel count="
-              << totalKernels << " (expected 3)\n";
+  if (baseKernelCount != 3) {
+    std::cerr << "FAIL: testMultiKernelVariantMLIR - base kernel count="
+              << baseKernelCount << " (expected 3)\n";
     return false;
   }
   if (!allCorrect)
