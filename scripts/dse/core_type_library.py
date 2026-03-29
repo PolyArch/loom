@@ -392,6 +392,15 @@ class CoreDesignParams:
     has_int: bool = True
 
     @property
+    def fu_mix(self) -> dict:
+        """Return FU type counts as a dict for affinity scoring."""
+        return {
+            "alu": self.fu_alu_count,
+            "mul": self.fu_mul_count,
+            "fp": self.fu_fp_count,
+        }
+
+    @property
     def total_pes(self) -> int:
         return self.array_rows * self.array_cols
 
