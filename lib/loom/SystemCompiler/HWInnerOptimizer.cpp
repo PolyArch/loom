@@ -100,6 +100,71 @@ RoutingTopology topologyFromString(const std::string &s) {
   return RoutingTopology::CHESS;
 }
 
+const char *computeMixToString(ComputeMix m) {
+  switch (m) {
+  case ComputeMix::FP_HEAVY:
+    return "fp_heavy";
+  case ComputeMix::INT_HEAVY:
+    return "int_heavy";
+  case ComputeMix::MIXED:
+    return "mixed";
+  }
+  return "mixed";
+}
+
+ComputeMix computeMixFromString(const std::string &s) {
+  if (s == "fp_heavy")
+    return ComputeMix::FP_HEAVY;
+  if (s == "int_heavy")
+    return ComputeMix::INT_HEAVY;
+  return ComputeMix::MIXED;
+}
+
+//===----------------------------------------------------------------------===//
+// FreedomMask
+//===----------------------------------------------------------------------===//
+
+unsigned FreedomMask::countFree() const {
+  unsigned count = 0;
+  if (peType) ++count;
+  if (arrayDims) ++count;
+  if (dataWidth) ++count;
+  if (fuRepertoire) ++count;
+  if (fuBodyStructure) ++count;
+  if (switchType) ++count;
+  if (decomposability) ++count;
+  if (spm) ++count;
+  if (extMem) ++count;
+  if (topology) ++count;
+  if (temporalParams) ++count;
+  if (scalarIO) ++count;
+  if (connectivity) ++count;
+  return count;
+}
+
+FreedomMask FreedomMask::domainSpecific() {
+  FreedomMask mask;
+  mask.topology = true;       // Dim 10
+  mask.connectivity = true;   // Dim 13
+  mask.fuRepertoire = true;   // Dim 4
+  return mask;
+}
+
+FreedomMask FreedomMask::combinatorial(bool isTemporal) {
+  FreedomMask mask;
+  mask.dataWidth = true;       // Dim 3
+  mask.fuRepertoire = true;    // Dim 4
+  mask.decomposability = true; // Dim 7
+  mask.extMem = true;          // Dim 9
+  mask.topology = true;        // Dim 10
+  mask.scalarIO = true;        // Dim 12
+  mask.connectivity = true;    // Dim 13
+  if (isTemporal) {
+    mask.temporalParams = true;  // Dim 11
+  }
+  return mask;
+}
+
 //===----------------------------------------------------------------------===//
 // Area Model
 //===----------------------------------------------------------------------===//
@@ -349,6 +414,602 @@ std::set<std::string> tryPruneFU(const std::set<std::string> &repertoire,
   std::set<std::string> pruned = repertoire;
   pruned.erase(candidate);
   return pruned;
+}
+
+//===----------------------------------------------------------------------===//
+// Tier-A Analytical Scoring
+//===----------------------------------------------------------------------===//
+
+/// Map an op name to an FU category key for FU-bound analysis.
+static std::string opToFUCategory(const std::string &opName) {
+  std::string lower = opName;
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+
+  if (lower.find("mulf") != std::string::npos ||
+      lower.find("addf") != std::string::npos ||
+      lower.find("subf") != std::string::npos ||
+      lower.find("divf") != std::string::npos ||
+      lower.find("negf") != std::string::npos ||
+      lower.find("cmpf") != std::string::npos ||
+      lower.find("sqrt") != std::string::npos ||
+      lower.find("exp") != std::string::npos ||
+      lower.find("log") != std::string::npos ||
+      lower.find("sin") != std::string::npos ||
+      lower.find("cos") != std::string::npos ||
+      lower.find("fma") != std::string::npos ||
+      lower.find("absf") != std::string::npos ||
+      lower.find("sitofp") != std::string::npos ||
+      lower.find("uitofp") != std::string::npos ||
+      lower.find("fptosi") != std::string::npos ||
+      lower.find("fptoui") != std::string::npos)
+    return "fp";
+
+  if (lower.find("load") != std::string::npos ||
+      lower.find("store") != std::string::npos)
+    return "mem";
+
+  if (lower.find("muli") != std::string::npos ||
+      lower.find("divsi") != std::string::npos ||
+      lower.find("divui") != std::string::npos ||
+      lower.find("remsi") != std::string::npos ||
+      lower.find("remui") != std::string::npos)
+    return "mul";
+
+  return "alu";
+}
+
+/// Routing overhead factor by topology. Reflects average routing distance.
+static double routingOverhead(RoutingTopology topo) {
+  switch (topo) {
+  case RoutingTopology::CHESS:
+    return 1.0;
+  case RoutingTopology::MESH:
+    return 1.0;
+  case RoutingTopology::LATTICE:
+    return 1.2;
+  case RoutingTopology::RING:
+    return 1.5;
+  }
+  return 1.0;
+}
+
+TierAScore scoreCoreDesign(const CoreDesignParams &params,
+                           const std::vector<KernelProfile> &profiles) {
+  TierAScore result;
+  result.feasible = true;
+
+  if (profiles.empty()) {
+    result.feasible = false;
+    result.compositeScore = 0.0;
+    return result;
+  }
+
+  // Count FUs per category from the repertoire.
+  // Each FU in the repertoire contributes to its category.
+  std::map<std::string, unsigned> fuCounts;
+  for (const auto &op : params.fuRepertoire) {
+    std::string cat = opToFUCategory(op);
+    fuCounts[cat]++;
+  }
+
+  // Scale FU counts by total PEs (each PE has the full repertoire)
+  unsigned peCount = params.totalPEs();
+  for (auto &[cat, count] : fuCounts) {
+    count *= peCount;
+  }
+
+  // Score each kernel
+  double geoProduct = 1.0;
+  unsigned geoCount = 0;
+
+  for (const auto &profile : profiles) {
+    TierAKernelII kii;
+    kii.kernelName = profile.name;
+
+    // Check FU coverage: every kernel op must be supportable
+    bool allCovered = true;
+    std::map<std::string, unsigned> opsPerCategory;
+    for (const auto &[opName, count] : profile.requiredOps) {
+      std::string canon = canonicalizeFUOp(opName);
+      bool found = false;
+      for (const auto &fuOp : params.fuRepertoire) {
+        if (fuOp == canon) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        allCovered = false;
+        break;
+      }
+      std::string cat = opToFUCategory(canon);
+      opsPerCategory[cat] += count;
+    }
+
+    if (!allCovered) {
+      result.feasible = false;
+      result.compositeScore = 0.0;
+      return result;
+    }
+
+    // Compute FU-bound II: max over categories of ceil(ops / fu_count)
+    kii.fuBound = 1.0;
+    for (const auto &[cat, ops] : opsPerCategory) {
+      unsigned available = fuCounts.count(cat) ? fuCounts.at(cat) : 0;
+      if (available == 0 && ops > 0) {
+        result.feasible = false;
+        result.compositeScore = 0.0;
+        return result;
+      }
+      if (available > 0) {
+        double bound = std::ceil(static_cast<double>(ops) /
+                                 static_cast<double>(available));
+        kii.fuBound = std::max(kii.fuBound, bound);
+      }
+    }
+
+    // Compute memory-bound II: ceil(loads / spm_ld_ports)
+    unsigned loadOps = 0;
+    for (const auto &[opName, count] : profile.requiredOps) {
+      if (opName.find("load") != std::string::npos) {
+        loadOps += count;
+      }
+    }
+    if (loadOps > 0 && params.spmLdPorts > 0) {
+      kii.memBound = std::ceil(static_cast<double>(loadOps) /
+                               static_cast<double>(params.spmLdPorts));
+    } else {
+      kii.memBound = 1.0;
+    }
+
+    // Routing bound: topology-dependent overhead
+    kii.routingBound = routingOverhead(params.topology);
+
+    // Effective II is max of all bounds
+    kii.effectiveII = std::max({kii.fuBound, kii.memBound, kii.routingBound});
+
+    result.perKernelII.push_back(kii);
+
+    // Accumulate for geometric mean
+    if (kii.effectiveII > 0) {
+      geoProduct *= (1.0 / kii.effectiveII);
+      geoCount++;
+    }
+  }
+
+  // Area estimate
+  result.areaEstimate = estimateCoreArea(params);
+
+  // Composite score: geomean(1/II) / area
+  if (geoCount > 0 && result.areaEstimate > 0) {
+    double geoMean = std::pow(geoProduct, 1.0 / geoCount);
+    result.compositeScore = geoMean / result.areaEstimate;
+  } else {
+    result.compositeScore = 0.0;
+  }
+
+  return result;
+}
+
+//===----------------------------------------------------------------------===//
+// Preset Constructors
+//===----------------------------------------------------------------------===//
+
+std::string generateTypeID(ComputeMix mix, PEType pe, bool hasSPM,
+                           unsigned arraySize) {
+  std::string id = "C";
+  switch (mix) {
+  case ComputeMix::FP_HEAVY:
+    id += "F";
+    break;
+  case ComputeMix::INT_HEAVY:
+    id += "I";
+    break;
+  case ComputeMix::MIXED:
+    id += "M";
+    break;
+  }
+  id += (pe == PEType::SPATIAL) ? "S" : "T";
+  id += hasSPM ? "Y" : "N";
+  id += std::to_string(arraySize);
+  return id;
+}
+
+CoreDesignParams createDomainPreset(unsigned domainIndex) {
+  CoreDesignParams params;
+
+  switch (domainIndex) {
+  case 1: // D1: LLM - Large FP-heavy with big SPM
+    params.arrayRows = 12;
+    params.arrayCols = 12;
+    params.peType = PEType::SPATIAL;
+    params.switchType = SwitchType::SPATIAL;
+    params.dataWidth = 32;
+    params.spmSizeKB = 64;
+    params.spmLdPorts = 2;
+    params.spmStPorts = 2;
+    params.topology = RoutingTopology::MESH;
+    params.fuRepertoire = {
+        "arith.addf", "arith.mulf", "arith.addi", "arith.muli",
+        "arith.cmpi", "arith.select", "handshake.load",
+        "handshake.store", "math.exp", "math.sqrt"};
+    params.scalarInputs = 4;
+    params.scalarOutputs = 2;
+    params.extmemCount = 4;
+    params.extmemLdPorts = 2;
+    params.extmemStPorts = 1;
+    break;
+
+  case 2: // D2: CV - Medium spatial, mixed FP/INT
+    params.arrayRows = 8;
+    params.arrayCols = 8;
+    params.peType = PEType::SPATIAL;
+    params.switchType = SwitchType::SPATIAL;
+    params.dataWidth = 32;
+    params.spmSizeKB = 32;
+    params.spmLdPorts = 2;
+    params.spmStPorts = 2;
+    params.topology = RoutingTopology::CHESS;
+    params.fuRepertoire = {
+        "arith.addf", "arith.mulf", "arith.addi", "arith.muli",
+        "arith.cmpi", "arith.select", "arith.shli", "arith.shrsi",
+        "handshake.load", "handshake.store"};
+    params.scalarInputs = 3;
+    params.scalarOutputs = 1;
+    params.extmemCount = 2;
+    params.extmemLdPorts = 1;
+    params.extmemStPorts = 1;
+    break;
+
+  case 3: // D3: Signal - Temporal, multiply-heavy
+    params.arrayRows = 6;
+    params.arrayCols = 6;
+    params.peType = PEType::TEMPORAL;
+    params.switchType = SwitchType::TEMPORAL;
+    params.dataWidth = 32;
+    params.spmSizeKB = 16;
+    params.spmLdPorts = 2;
+    params.spmStPorts = 1;
+    params.topology = RoutingTopology::CHESS;
+    params.instructionSlots = 8;
+    params.numRegisters = 8;
+    params.regFifoDepth = 2;
+    params.fuRepertoire = {
+        "arith.addi", "arith.muli", "arith.addf", "arith.mulf",
+        "arith.cmpi", "arith.select", "handshake.load",
+        "handshake.store", "math.fma"};
+    params.scalarInputs = 3;
+    params.scalarOutputs = 1;
+    params.extmemCount = 2;
+    params.extmemLdPorts = 1;
+    params.extmemStPorts = 1;
+    break;
+
+  case 4: // D4: Crypto - INT-heavy, small array, bitwise ops
+    params.arrayRows = 4;
+    params.arrayCols = 4;
+    params.peType = PEType::SPATIAL;
+    params.switchType = SwitchType::SPATIAL;
+    params.dataWidth = 64;
+    params.spmSizeKB = 8;
+    params.spmLdPorts = 1;
+    params.spmStPorts = 1;
+    params.topology = RoutingTopology::CHESS;
+    params.fuRepertoire = {
+        "arith.addi", "arith.muli", "arith.andi", "arith.ori",
+        "arith.xori", "arith.shli", "arith.shrsi", "arith.shrui",
+        "arith.cmpi", "arith.select", "handshake.load",
+        "handshake.store"};
+    params.scalarInputs = 3;
+    params.scalarOutputs = 1;
+    params.extmemCount = 2;
+    params.extmemLdPorts = 1;
+    params.extmemStPorts = 1;
+    break;
+
+  case 5: // D5: Sensor - Small temporal, control-heavy
+    params.arrayRows = 4;
+    params.arrayCols = 4;
+    params.peType = PEType::TEMPORAL;
+    params.switchType = SwitchType::TEMPORAL;
+    params.dataWidth = 32;
+    params.spmSizeKB = 8;
+    params.spmLdPorts = 1;
+    params.spmStPorts = 1;
+    params.topology = RoutingTopology::CHESS;
+    params.instructionSlots = 16;
+    params.numRegisters = 8;
+    params.regFifoDepth = 4;
+    params.fuRepertoire = {
+        "arith.addi", "arith.muli", "arith.cmpi", "arith.select",
+        "arith.addf", "arith.cmpf", "handshake.load",
+        "handshake.store", "handshake.cond_br"};
+    params.scalarInputs = 3;
+    params.scalarOutputs = 1;
+    params.extmemCount = 2;
+    params.extmemLdPorts = 1;
+    params.extmemStPorts = 1;
+    break;
+
+  case 6: // D6: Control - Small spatial, balanced
+  default:
+    params.arrayRows = 4;
+    params.arrayCols = 4;
+    params.peType = PEType::SPATIAL;
+    params.switchType = SwitchType::SPATIAL;
+    params.dataWidth = 32;
+    params.spmSizeKB = 4;
+    params.spmLdPorts = 1;
+    params.spmStPorts = 1;
+    params.topology = RoutingTopology::CHESS;
+    params.fuRepertoire = {
+        "arith.addi", "arith.muli", "arith.cmpi", "arith.select",
+        "arith.andi", "arith.ori", "handshake.load",
+        "handshake.store", "handshake.cond_br", "handshake.mux"};
+    params.scalarInputs = 3;
+    params.scalarOutputs = 1;
+    params.extmemCount = 2;
+    params.extmemLdPorts = 1;
+    params.extmemStPorts = 1;
+    break;
+  }
+
+  return params;
+}
+
+CoreDesignParams createCombinatorialPreset(ComputeMix mix, PEType pe,
+                                           bool hasSPM,
+                                           unsigned arraySize) {
+  CoreDesignParams params;
+
+  // Dimension 1: PE type
+  params.peType = pe;
+
+  // Dimension 2: Array size
+  params.arrayRows = arraySize;
+  params.arrayCols = arraySize;
+
+  // Dimension 3: Data width (default 32)
+  params.dataWidth = 32;
+
+  // Dimension 4: FU repertoire based on compute mix
+  switch (mix) {
+  case ComputeMix::FP_HEAVY:
+    params.fuRepertoire = {
+        "arith.addf", "arith.mulf", "arith.subf", "arith.divf",
+        "arith.cmpf", "arith.addi", "arith.muli",
+        "arith.cmpi", "arith.select",
+        "handshake.load", "handshake.store"};
+    break;
+  case ComputeMix::INT_HEAVY:
+    params.fuRepertoire = {
+        "arith.addi", "arith.subi", "arith.muli",
+        "arith.andi", "arith.ori", "arith.xori",
+        "arith.shli", "arith.shrsi",
+        "arith.cmpi", "arith.select",
+        "handshake.load", "handshake.store"};
+    break;
+  case ComputeMix::MIXED:
+    params.fuRepertoire = {
+        "arith.addi", "arith.muli", "arith.addf", "arith.mulf",
+        "arith.cmpi", "arith.select",
+        "handshake.load", "handshake.store"};
+    break;
+  }
+
+  // Dimension 5: FU body structure
+  params.multiOpFUBodies = false;
+
+  // Dimension 6: Switch type matches PE type
+  params.switchType = (pe == PEType::TEMPORAL) ? SwitchType::TEMPORAL
+                                               : SwitchType::SPATIAL;
+
+  // Dimension 7: No decomposition by default
+  params.decomposableBits = -1;
+
+  // Dimension 8: SPM
+  if (hasSPM) {
+    params.spmSizeKB = 16;
+    params.spmLdPorts = 2;
+    params.spmStPorts = 2;
+  } else {
+    params.spmSizeKB = 0;
+    params.spmLdPorts = 0;
+    params.spmStPorts = 0;
+  }
+
+  // Dimension 9: External memory
+  params.extmemCount = 2;
+  params.extmemLdPorts = 1;
+  params.extmemStPorts = 1;
+
+  // Dimension 10: Default topology
+  params.topology = RoutingTopology::CHESS;
+
+  // Dimension 11: Temporal PE params
+  if (pe == PEType::TEMPORAL) {
+    params.instructionSlots = 8;
+    params.numRegisters = 8;
+    params.regFifoDepth = 0;
+    params.shareOperandBuffer = false;
+    params.operandBufferSize = 0;
+  }
+
+  // Dimension 12: Scalar I/O
+  params.scalarInputs = 3;
+  params.scalarOutputs = 1;
+
+  // Dimension 13: Full crossbar
+  params.connectivity.clear();
+
+  return params;
+}
+
+//===----------------------------------------------------------------------===//
+// Parameter Sweep Generation
+//===----------------------------------------------------------------------===//
+
+std::vector<CoreDesignParams> generateSweepCandidates(
+    const CoreDesignParams &baseline,
+    const FreedomMask &mask,
+    unsigned maxCandidates,
+    unsigned seed) {
+
+  // Define discrete value sets for each free dimension
+  static const RoutingTopology topoValues[] = {
+      RoutingTopology::CHESS, RoutingTopology::MESH,
+      RoutingTopology::LATTICE, RoutingTopology::RING};
+  static const unsigned dataWidthValues[] = {32, 64};
+  static const int decomposableValues[] = {-1, 8, 16};
+  // External memory configs: (count, ldPorts, stPorts)
+  static const unsigned extmemConfigs[][3] = {{1, 1, 1}, {2, 1, 1}, {2, 2, 1}};
+  // Scalar I/O configs: (inputs, outputs)
+  static const unsigned scalarIOConfigs[][2] = {{2, 1}, {3, 1}, {4, 2}};
+  // Temporal params: (instructionSlots, numRegisters, regFifoDepth)
+  static const unsigned temporalConfigs[][3] = {
+      {4, 4, 0}, {8, 8, 2}, {16, 8, 4}};
+
+  // Count the number of discrete choices per free dimension
+  struct DimInfo {
+    unsigned numChoices;
+  };
+  std::vector<DimInfo> freeDims;
+
+  if (mask.topology)
+    freeDims.push_back({4});
+  if (mask.dataWidth)
+    freeDims.push_back({2});
+  if (mask.decomposability)
+    freeDims.push_back({3});
+  if (mask.extMem)
+    freeDims.push_back({3});
+  if (mask.scalarIO)
+    freeDims.push_back({3});
+  if (mask.temporalParams && baseline.peType == PEType::TEMPORAL)
+    freeDims.push_back({3});
+  if (mask.fuRepertoire)
+    freeDims.push_back({3}); // base, +common ops, -rare ops
+  if (mask.connectivity)
+    freeDims.push_back({3}); // full, 50% sparse, 25% sparse
+
+  unsigned numFreeDims = freeDims.size();
+  if (numFreeDims == 0) {
+    return {baseline};
+  }
+
+  // Latin Hypercube Sampling
+  std::mt19937 rng(seed);
+  unsigned n = std::min(maxCandidates, 1u);
+
+  // Compute total combinations for bounding
+  unsigned totalCombos = 1;
+  for (const auto &dim : freeDims) {
+    totalCombos *= dim.numChoices;
+    if (totalCombos > maxCandidates) {
+      totalCombos = maxCandidates + 1;
+      break;
+    }
+  }
+  n = std::min(maxCandidates, totalCombos);
+
+  // Generate LHS samples: for each dimension, create a permutation
+  // of n indices, each in [0, numChoices)
+  std::vector<std::vector<unsigned>> dimSamples(numFreeDims);
+  for (unsigned d = 0; d < numFreeDims; ++d) {
+    unsigned nc = freeDims[d].numChoices;
+    dimSamples[d].resize(n);
+    for (unsigned i = 0; i < n; ++i) {
+      dimSamples[d][i] = i % nc;
+    }
+    std::shuffle(dimSamples[d].begin(), dimSamples[d].end(), rng);
+  }
+
+  // Generate candidates
+  std::vector<CoreDesignParams> candidates;
+  candidates.reserve(n);
+
+  for (unsigned i = 0; i < n; ++i) {
+    CoreDesignParams cand = baseline;
+    unsigned dimIdx = 0;
+
+    if (mask.topology) {
+      cand.topology = topoValues[dimSamples[dimIdx][i]];
+      dimIdx++;
+    }
+    if (mask.dataWidth) {
+      cand.dataWidth = dataWidthValues[dimSamples[dimIdx][i]];
+      dimIdx++;
+    }
+    if (mask.decomposability) {
+      cand.decomposableBits = decomposableValues[dimSamples[dimIdx][i]];
+      dimIdx++;
+    }
+    if (mask.extMem) {
+      unsigned cfgIdx = dimSamples[dimIdx][i];
+      cand.extmemCount = extmemConfigs[cfgIdx][0];
+      cand.extmemLdPorts = extmemConfigs[cfgIdx][1];
+      cand.extmemStPorts = extmemConfigs[cfgIdx][2];
+      dimIdx++;
+    }
+    if (mask.scalarIO) {
+      unsigned cfgIdx = dimSamples[dimIdx][i];
+      cand.scalarInputs = scalarIOConfigs[cfgIdx][0];
+      cand.scalarOutputs = scalarIOConfigs[cfgIdx][1];
+      dimIdx++;
+    }
+    if (mask.temporalParams && baseline.peType == PEType::TEMPORAL) {
+      unsigned cfgIdx = dimSamples[dimIdx][i];
+      cand.instructionSlots = temporalConfigs[cfgIdx][0];
+      cand.numRegisters = temporalConfigs[cfgIdx][1];
+      cand.regFifoDepth = temporalConfigs[cfgIdx][2];
+      dimIdx++;
+    }
+    if (mask.fuRepertoire) {
+      unsigned choice = dimSamples[dimIdx][i];
+      if (choice == 1) {
+        // Add common supplementary ops
+        cand.fuRepertoire.insert("arith.cmpi");
+        cand.fuRepertoire.insert("arith.select");
+        cand.fuRepertoire.insert("arith.addi");
+      } else if (choice == 2) {
+        // Try pruning non-essential ops (keep at least basic set)
+        std::set<std::string> essential = {
+            "arith.addi", "arith.muli", "handshake.load", "handshake.store"};
+        std::set<std::string> pruned;
+        for (const auto &op : cand.fuRepertoire) {
+          if (essential.count(op))
+            pruned.insert(op);
+        }
+        if (pruned.size() >= 2)
+          cand.fuRepertoire = pruned;
+      }
+      dimIdx++;
+    }
+    if (mask.connectivity) {
+      unsigned choice = dimSamples[dimIdx][i];
+      if (choice == 0) {
+        cand.connectivity.clear(); // full crossbar
+      } else {
+        // Generate sparse connectivity matrix
+        unsigned peCount = cand.totalPEs();
+        double density = (choice == 1) ? 0.5 : 0.25;
+        cand.connectivity.resize(peCount);
+        std::uniform_real_distribution<double> dist(0.0, 1.0);
+        for (unsigned r = 0; r < peCount; ++r) {
+          cand.connectivity[r].resize(peCount, false);
+          for (unsigned c = 0; c < peCount; ++c) {
+            cand.connectivity[r][c] = (r == c) || (dist(rng) < density);
+          }
+        }
+      }
+      dimIdx++;
+    }
+
+    candidates.push_back(cand);
+  }
+
+  return candidates;
 }
 
 //===----------------------------------------------------------------------===//
@@ -615,54 +1276,45 @@ HWInnerOptimizer::evaluateCandidate(
   // Compute area for this candidate
   double area = estimateCoreArea(candidate);
 
-  // For Tier-B, we verify with the real mapper. Since the mapper
-  // infrastructure (C08) requires runtime kernel DFG modules, and we only
-  // have kernel profiles here, we do a resource feasibility check as a
-  // proxy for actual mapping. Full mapper integration requires the
-  // KernelCompiler (C08) to produce DFG modules for each kernel.
-  //
-  // The feasibility check verifies:
-  //   1. Enough PEs for the largest kernel DFG
-  //   2. All required FU types are present in the repertoire
-  //   3. Sufficient SPM for memory requirements
-  //   4. Sufficient external memory ports
+  // Use Tier-A scoring to check feasibility and estimate II for each
+  // assigned kernel. This uses profile-based FU coverage checking and
+  // resource-bound II estimation.
+  TierAScore tierA = scoreCoreDesign(candidate, assignedProfiles_);
 
-  bool allFeasible = true;
-  for (const auto &kernelName : coreType.assignedKernels) {
-    KernelMappingResult mr;
-    mr.kernelName = kernelName;
-
-    // Find the profile for this kernel (if available)
-    const KernelProfile *profile = nullptr;
-    // Search by matching kernel name in the profiles passed to optimize()
-    // (the profiles vector is captured at the optimize() call site)
-    // Here we use a conservative feasibility check.
-
-    // Check FU compatibility: all ops in the kernel must be in the repertoire
-    bool fuOk = true;
-    // We rely on the fact that fuRepertoire was derived from profiles,
-    // so all assigned kernels' ops should be covered. A pruned repertoire
-    // may violate this.
-    (void)profile;
-
-    // Check PE count feasibility
-    bool peOk = (candidate.totalPEs() >= coreType.minPEs);
-
-    // Check SPM feasibility
-    bool spmOk = (candidate.spmSizeKB >= coreType.minSPMKB);
-
-    mr.success = fuOk && peOk && spmOk;
-    if (!mr.success)
-      allFeasible = false;
-
-    // Estimate II (rough: total ops / PE count)
-    mr.achievedII = 1;
-
-    results.push_back(mr);
+  if (!tierA.feasible) {
+    // Fill in failed results for diagnostics
+    for (const auto &kernelName : coreType.assignedKernels) {
+      KernelMappingResult mr;
+      mr.kernelName = kernelName;
+      mr.success = false;
+      mr.achievedII = 0;
+      results.push_back(mr);
+    }
+    return {-std::numeric_limits<double>::infinity(), results};
   }
 
-  if (!allFeasible) {
+  // Check PE count and SPM feasibility
+  bool peOk = (candidate.totalPEs() >= coreType.minPEs);
+  bool spmOk = (candidate.spmSizeKB >= coreType.minSPMKB);
+
+  if (!peOk || !spmOk) {
+    for (const auto &kernelName : coreType.assignedKernels) {
+      KernelMappingResult mr;
+      mr.kernelName = kernelName;
+      mr.success = false;
+      mr.achievedII = 0;
+      results.push_back(mr);
+    }
     return {-std::numeric_limits<double>::infinity(), results};
+  }
+
+  // Build results from Tier-A per-kernel II
+  for (const auto &kii : tierA.perKernelII) {
+    KernelMappingResult mr;
+    mr.kernelName = kii.kernelName;
+    mr.success = true;
+    mr.achievedII = static_cast<unsigned>(std::ceil(kii.effectiveII));
+    results.push_back(mr);
   }
 
   // Negate area for maximization (BO maximizes score)
@@ -685,6 +1337,42 @@ ADGOptResult HWInnerOptimizer::runTierB(
 
   std::string moduleName = "core_type_" + std::to_string(coreType.typeIndex);
 
+  // Determine freedom mask: use combinatorial mask as a reasonable default
+  bool isTemporal = (initial.peType == PEType::TEMPORAL);
+  FreedomMask mask = FreedomMask::combinatorial(isTemporal);
+
+  // Generate sweep candidates using constrained LHS
+  unsigned sweepCount = std::max(1u, options_.maxInnerIter / 2);
+  std::vector<CoreDesignParams> sweepCandidates =
+      generateSweepCandidates(initial, mask, sweepCount, options_.seed);
+
+  // Tier-A pre-screen: score all sweep candidates analytically
+  struct ScoredCandidate {
+    CoreDesignParams params;
+    double tierAScore;
+  };
+  std::vector<ScoredCandidate> scored;
+  scored.reserve(sweepCandidates.size() + 1);
+
+  // Include the initial point
+  TierAScore initTierA = scoreCoreDesign(initial, profiles);
+  scored.push_back({initial, initTierA.compositeScore});
+  bestResult.tier1Evaluations = 1;
+
+  for (const auto &cand : sweepCandidates) {
+    TierAScore ta = scoreCoreDesign(cand, profiles);
+    scored.push_back({cand, ta.compositeScore});
+    bestResult.tier1Evaluations++;
+  }
+
+  // Sort by Tier-A score (descending) and keep top-K for Tier-B
+  std::sort(scored.begin(), scored.end(),
+            [](const ScoredCandidate &a, const ScoredCandidate &b) {
+              return a.tierAScore > b.tierAScore;
+            });
+  unsigned topK = std::min(static_cast<unsigned>(scored.size()),
+                           std::max(1u, options_.maxInnerIter / 3));
+
   // Evaluate initial point
   auto [initScore, initMappings] =
       evaluateCandidate(initial, coreType, moduleName, ctx);
@@ -702,12 +1390,42 @@ ADGOptResult HWInnerOptimizer::runTierB(
   if (options_.verbose) {
     llvm::errs() << "INNER-HW Tier-B: initial area = "
                  << bestResult.areaEstimate
-                 << ", score = " << initScore << "\n";
+                 << ", score = " << initScore
+                 << ", sweep candidates = " << sweepCandidates.size()
+                 << ", top-K = " << topK << "\n";
   }
 
-  // Simple BO loop: perturbation + greedy selection
-  // A production implementation would use a proper BO library.
-  for (unsigned iter = 0; iter < options_.maxInnerIter; ++iter) {
+  // Evaluate top-K sweep candidates at Tier-B
+  for (unsigned i = 0; i < topK && i < scored.size(); ++i) {
+    const auto &cand = scored[i].params;
+
+    auto [score, mappings] =
+        evaluateCandidate(cand, coreType, moduleName, ctx);
+
+    bestResult.tier2Evaluations++;
+
+    if (score > -std::numeric_limits<double>::infinity()) {
+      bestResult.tier2Successes++;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestParams = cand;
+        bestResult.success = true;
+        bestResult.mappingResults = mappings;
+
+        if (options_.verbose) {
+          llvm::errs() << "INNER-HW Tier-B sweep " << i
+                       << ": improved area = " << estimateCoreArea(cand)
+                       << "\n";
+        }
+      }
+    }
+  }
+
+  // BO perturbation loop for remaining budget
+  unsigned remainingIter = options_.maxInnerIter -
+                           std::min(options_.maxInnerIter, topK);
+  for (unsigned iter = 0; iter < remainingIter; ++iter) {
     CoreDesignParams candidate = perturbCandidate(bestParams, iter);
 
     auto [score, mappings] =
@@ -749,6 +1467,9 @@ ADGOptResult HWInnerOptimizer::optimize(
     mlir::MLIRContext *ctx) {
   auto wallStart = std::chrono::steady_clock::now();
 
+  // Cache profiles for use in evaluateCandidate
+  assignedProfiles_ = assignedProfiles;
+
   ADGOptResult result;
   result.success = false;
 
@@ -780,7 +1501,10 @@ ADGOptResult HWInnerOptimizer::optimize(
 
     // Take Tier-B result if it improved on Tier-A
     if (tierBResult.success) {
+      // Preserve tier-1 evaluations count from sweep pre-screening
+      unsigned tier1FromSweep = tierBResult.tier1Evaluations;
       result = tierBResult;
+      result.tier1Evaluations += tier1FromSweep;
     }
   } else {
     // Use Tier-A result directly

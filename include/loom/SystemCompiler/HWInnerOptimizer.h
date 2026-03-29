@@ -21,6 +21,7 @@
 #include "loom/SystemCompiler/HWOuterOptimizer.h"
 #include "loom/SystemCompiler/L1CoreAssignment.h"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -72,6 +73,56 @@ enum class RoutingTopology {
 
 const char *topologyToString(RoutingTopology t);
 RoutingTopology topologyFromString(const std::string &s);
+
+//===----------------------------------------------------------------------===//
+// Compute Mix Enumeration (for combinatorial type construction)
+//===----------------------------------------------------------------------===//
+
+enum class ComputeMix {
+  FP_HEAVY,
+  INT_HEAVY,
+  MIXED,
+};
+
+const char *computeMixToString(ComputeMix m);
+ComputeMix computeMixFromString(const std::string &s);
+
+//===----------------------------------------------------------------------===//
+// FreedomMask: which of the 13 dimensions are free for inner DSE
+//===----------------------------------------------------------------------===//
+
+/// Boolean mask over the 13 design dimensions indicating which are free
+/// (true) or fixed (false) for inner DSE optimization.
+struct FreedomMask {
+  static constexpr unsigned NUM_DIMS = 13;
+
+  bool peType = false;             // Dim 1
+  bool arrayDims = false;          // Dim 2
+  bool dataWidth = false;          // Dim 3
+  bool fuRepertoire = false;       // Dim 4
+  bool fuBodyStructure = false;    // Dim 5
+  bool switchType = false;         // Dim 6
+  bool decomposability = false;    // Dim 7
+  bool spm = false;                // Dim 8
+  bool extMem = false;             // Dim 9
+  bool topology = false;           // Dim 10
+  bool temporalParams = false;     // Dim 11
+  bool scalarIO = false;           // Dim 12
+  bool connectivity = false;       // Dim 13
+
+  /// Count of free dimensions.
+  unsigned countFree() const;
+
+  /// Create a mask for domain-specific types (D1-D6).
+  /// Free: topology (10), connectivity (13), FU detail (4).
+  static FreedomMask domainSpecific();
+
+  /// Create a mask for combinatorial types.
+  /// Free: data width (3), FU detail (4), decomposability (7),
+  /// ext mem (9), topology (10), temporal params (11, if temporal),
+  /// scalar I/O (12), connectivity (13).
+  static FreedomMask combinatorial(bool isTemporal);
+};
 
 //===----------------------------------------------------------------------===//
 // Per-Core Design Parameters (13 Dimensions)
@@ -256,6 +307,64 @@ std::set<std::string> tryPruneFU(const std::set<std::string> &repertoire,
                                  const std::string &candidate);
 
 //===----------------------------------------------------------------------===//
+// Tier-A Analytical Scoring
+//===----------------------------------------------------------------------===//
+
+/// Per-kernel resource-bound II from Tier-A analysis.
+struct TierAKernelII {
+  std::string kernelName;
+  double fuBound = 1.0;
+  double memBound = 1.0;
+  double routingBound = 1.0;
+  double effectiveII = 1.0; // max of all bounds
+};
+
+/// Full result of Tier-A analytical scoring.
+struct TierAScore {
+  bool feasible = false;
+  double areaEstimate = 0.0;
+  std::vector<TierAKernelII> perKernelII;
+  double compositeScore = 0.0; // geomean(1/II) / area; higher is better
+};
+
+/// Score a CoreDesignParams against assigned kernel profiles using
+/// analytical resource-bound II and area estimation.
+TierAScore scoreCoreDesign(const CoreDesignParams &params,
+                           const std::vector<KernelProfile> &profiles);
+
+//===----------------------------------------------------------------------===//
+// Preset Constructors
+//===----------------------------------------------------------------------===//
+
+/// Create a domain-specific preset for D1 through D6.
+/// domainIndex: 1=LLM, 2=CV, 3=Signal, 4=Crypto, 5=Sensor, 6=Control.
+CoreDesignParams createDomainPreset(unsigned domainIndex);
+
+/// Create a combinatorial preset from the four combinatorial axes.
+/// Returns a CoreDesignParams populated with default values for the type.
+CoreDesignParams createCombinatorialPreset(ComputeMix mix, PEType pe,
+                                           bool hasSPM,
+                                           unsigned arraySize);
+
+/// Generate the type ID string for a combinatorial type.
+/// Format: C<mix><pe><spm><size>, e.g., "CFSY8" (FP, Spatial, Yes SPM, 8).
+std::string generateTypeID(ComputeMix mix, PEType pe, bool hasSPM,
+                           unsigned arraySize);
+
+//===----------------------------------------------------------------------===//
+// Parameter Sweep Generation
+//===----------------------------------------------------------------------===//
+
+/// Generate candidate CoreDesignParams via constrained Latin Hypercube
+/// Sampling over the free dimensions identified by the mask.
+/// Fixed dimensions retain their baseline values.
+std::vector<CoreDesignParams> generateSweepCandidates(
+    const CoreDesignParams &baseline,
+    const FreedomMask &mask,
+    unsigned maxCandidates,
+    unsigned seed);
+
+//===----------------------------------------------------------------------===//
 // ADG Generation
 //===----------------------------------------------------------------------===//
 
@@ -308,6 +417,9 @@ public:
 
 private:
   HWInnerOptimizerOptions options_;
+
+  /// Cached assigned profiles for use during evaluation.
+  std::vector<KernelProfile> assignedProfiles_;
 
   /// Tier-A: derive initial parameters analytically.
   CoreDesignParams runTierA(const CoreTypeLibraryEntry &coreType,
