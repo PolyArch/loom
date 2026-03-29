@@ -17,7 +17,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/RegionGraphTraits.h"
-#include "mlir/IR/Verifier.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
@@ -148,13 +147,8 @@ struct FunctionConverter {
   // into individual scalar operations.
   llvm::DenseMap<Value, SmallVector<Value, 4>> vectorMap;
 
-  // Map of global symbol names to their converted memref.global types
-  llvm::DenseMap<StringRef, MemRefType> &convertedGlobals;
-
-  FunctionConverter(LLVM::LLVMFuncOp func, OpBuilder &b,
-                    llvm::DenseMap<StringRef, MemRefType> &globals)
-      : llvmFunc(func), builder(b), ctx(func.getContext()),
-        convertedGlobals(globals) {}
+  FunctionConverter(LLVM::LLVMFuncOp func, OpBuilder &b)
+      : llvmFunc(func), builder(b), ctx(func.getContext()) {}
 
   LogicalResult convert();
 
@@ -169,7 +163,6 @@ private:
   LogicalResult convertLoad(LLVM::LoadOp op);
   LogicalResult convertStore(LLVM::StoreOp op);
   LogicalResult convertAlloca(LLVM::AllocaOp op);
-  LogicalResult convertAddressOf(LLVM::AddressOfOp op);
 
   // Vector operations (from SRoA struct decomposition)
   LogicalResult convertExtractElement(LLVM::ExtractElementOp op);
@@ -237,11 +230,6 @@ LogicalResult FunctionConverter::convert() {
   if (failed(createBlocks()))
     return failure();
   if (failed(convertOps()))
-    return failure();
-  // Verify the generated function. If any ops are invalid (e.g., type
-  // mismatches from imprecise type inference), report failure so the
-  // pass can clean up and skip this function gracefully.
-  if (failed(mlir::verify(newFunc)))
     return failure();
   return success();
 }
@@ -410,8 +398,10 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
   }
 
   // AddressOf (global references): track as pointer
-  if (auto addrOf = dyn_cast<LLVM::AddressOfOp>(op))
-    return convertAddressOf(addrOf);
+  if (auto addrOf = dyn_cast<LLVM::AddressOfOp>(op)) {
+    // For now, fail - globals support would need memref::GlobalOp conversion
+    return op->emitError("llvm.mlir.addressof not yet supported");
+  }
 
   // Constants
   if (auto c = dyn_cast<LLVM::ConstantOp>(op))
@@ -544,173 +534,14 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
   if (auto call = dyn_cast<LLVM::CallOp>(op)) {
     auto callee = call.getCalleeAttr();
 
-    if (!callee)
-      return call.emitError("indirect calls not supported");
-
-    StringRef calleeName = callee.getAttr().getValue();
-
-    // Convert known C math library functions to math/arith ops
-    if (call.getNumResults() == 1 && call.getNumOperands() == 1 &&
-        !isa<LLVM::LLVMPointerType>(call.getOperand(0).getType())) {
-      Value arg = lookup(call.getOperand(0));
-      Value mathResult;
-      if (calleeName == "expf" || calleeName == "exp")
-        mathResult = math::ExpOp::create(builder, loc, arg);
-      else if (calleeName == "exp2f" || calleeName == "exp2")
-        mathResult = math::Exp2Op::create(builder, loc, arg);
-      else if (calleeName == "logf" || calleeName == "log")
-        mathResult = math::LogOp::create(builder, loc, arg);
-      else if (calleeName == "log2f" || calleeName == "log2")
-        mathResult = math::Log2Op::create(builder, loc, arg);
-      else if (calleeName == "log10f" || calleeName == "log10")
-        mathResult = math::Log10Op::create(builder, loc, arg);
-      else if (calleeName == "sqrtf" || calleeName == "sqrt")
-        mathResult = math::SqrtOp::create(builder, loc, arg);
-      else if (calleeName == "fabsf" || calleeName == "fabs")
-        mathResult = math::AbsFOp::create(builder, loc, arg);
-      else if (calleeName == "floorf" || calleeName == "floor")
-        mathResult = math::FloorOp::create(builder, loc, arg);
-      else if (calleeName == "ceilf" || calleeName == "ceil")
-        mathResult = math::CeilOp::create(builder, loc, arg);
-      else if (calleeName == "sinf" || calleeName == "sin")
-        mathResult = math::SinOp::create(builder, loc, arg);
-      else if (calleeName == "cosf" || calleeName == "cos")
-        mathResult = math::CosOp::create(builder, loc, arg);
-      else if (calleeName == "tanhf" || calleeName == "tanh")
-        mathResult = math::TanhOp::create(builder, loc, arg);
-      else if (calleeName == "roundf" || calleeName == "round")
-        mathResult = math::RoundOp::create(builder, loc, arg);
-      else if (calleeName == "truncf" || calleeName == "trunc")
-        mathResult = math::TruncOp::create(builder, loc, arg);
-      if (mathResult) {
-        mapValue(call->getResult(0), mathResult);
+    // Skip memory management calls (malloc, calloc, realloc, free, memset, memcpy)
+    // These are runtime operations that don't map to CGRA dataflow.
+    if (callee) {
+      StringRef name = callee.getAttr().getValue();
+      if (name == "free" || name == "memset" || name == "memcpy" ||
+          name == "memmove") {
+        // Void calls: just skip
         return success();
-      }
-    }
-
-    // Binary math functions
-    if (call.getNumResults() == 1 && call.getNumOperands() == 2 &&
-        !isa<LLVM::LLVMPointerType>(call.getOperand(0).getType()) &&
-        !isa<LLVM::LLVMPointerType>(call.getOperand(1).getType())) {
-      Value lhs = lookup(call.getOperand(0));
-      Value rhs = lookup(call.getOperand(1));
-      Value mathResult;
-      if (calleeName == "powf" || calleeName == "pow")
-        mathResult = math::PowFOp::create(builder, loc, lhs, rhs);
-      else if (calleeName == "fmodf" || calleeName == "fmod")
-        mathResult = arith::RemFOp::create(builder, loc, lhs, rhs);
-      else if (calleeName == "copysignf" || calleeName == "copysign")
-        mathResult = math::CopySignOp::create(builder, loc, lhs, rhs);
-      else if (calleeName == "fminf" || calleeName == "fmin")
-        mathResult = arith::MinimumFOp::create(builder, loc, lhs, rhs);
-      else if (calleeName == "fmaxf" || calleeName == "fmax")
-        mathResult = arith::MaximumFOp::create(builder, loc, lhs, rhs);
-      else if (calleeName == "atan2f" || calleeName == "atan2")
-        mathResult = math::Atan2Op::create(builder, loc, lhs, rhs);
-      if (mathResult) {
-        mapValue(call->getResult(0), mathResult);
-        return success();
-      }
-    }
-
-    // Void math/memory functions to skip
-    if (calleeName == "memset" || calleeName == "memcpy" ||
-        calleeName == "memmove" || calleeName == "free") {
-      return success();
-    }
-
-    // Heap allocation functions: convert to memref.alloc
-    if (calleeName == "malloc" || calleeName == "calloc") {
-      if (call.getNumResults() == 1 &&
-          isa<LLVM::LLVMPointerType>(call->getResult(0).getType())) {
-        // Infer element type from downstream uses
-        Type elemTy = inferPointerElemTypeFromUses(call->getResult(0));
-        if (!elemTy)
-          elemTy = IntegerType::get(ctx, 8);
-        elemTy = normalizeScalarType(ctx, elemTy);
-
-        // Compute total byte count
-        Value totalBytes;
-        if (calleeName == "malloc") {
-          totalBytes = lookup(call.getOperand(0));
-        } else {
-          // calloc(count, size): total = count * size
-          Value count = lookup(call.getOperand(0));
-          Value size = lookup(call.getOperand(1));
-          totalBytes = arith::MulIOp::create(builder, loc, count, size);
-        }
-        Value totalBytesIdx = createIndexCast(loc, totalBytes);
-
-        // Convert byte count to element count
-        unsigned elemBytes = getTypeBitWidth(elemTy) / 8;
-        Value numElems;
-        if (elemBytes > 1) {
-          Value elemSize =
-              arith::ConstantIndexOp::create(builder, loc, elemBytes);
-          numElems = arith::DivUIOp::create(builder, loc, totalBytesIdx,
-                                            elemSize);
-        } else {
-          numElems = totalBytesIdx;
-        }
-
-        auto plainMemRefTy =
-            MemRefType::get({ShapedType::kDynamic}, elemTy);
-        auto alloc = memref::AllocOp::create(builder, loc, plainMemRefTy,
-                                             ValueRange{numElems});
-        Value base = alloc;
-        auto memrefTy = buildStridedMemRefType(ctx, elemTy);
-        if (plainMemRefTy != memrefTy)
-          base = memref::CastOp::create(builder, loc, memrefTy, alloc);
-        Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
-        mapPointer(call->getResult(0), {base, zeroIdx, elemTy});
-        return success();
-      }
-    }
-
-    // Check if the callee has pointer args - if so, we can't create
-    // a proper external declaration for it. Skip void calls; fail otherwise.
-    {
-      bool hasPointerArgs = false;
-      for (Value v : call.getOperands()) {
-        if (isa<LLVM::LLVMPointerType>(v.getType())) {
-          hasPointerArgs = true;
-          break;
-        }
-      }
-      if (hasPointerArgs) {
-        // Look up the callee in the parent module.
-        // A function is "external" if it has no LLVM definition and no
-        // already-converted func.func definition.
-        auto module = op->getParentOfType<ModuleOp>();
-        auto llvmCallee = module.lookupSymbol<LLVM::LLVMFuncOp>(calleeName);
-        auto funcCallee = module.lookupSymbol<func::FuncOp>(calleeName);
-        bool isExternal = false;
-        if (!llvmCallee && !funcCallee)
-          isExternal = true;
-        else if (llvmCallee && llvmCallee.isExternal() && !funcCallee)
-          isExternal = true;
-        if (isExternal) {
-          // External function with pointer args (e.g., fwrite, printf)
-          // These are I/O or runtime functions; skip void calls
-          if (call.getNumResults() == 0 ||
-              isa<LLVM::LLVMVoidType>(
-                  call.getResultTypes().front()))
-            return success();
-          // Non-void external with pointer args: skip if result unused,
-          // otherwise fail
-          bool allResultsUnused = true;
-          for (Value r : call.getResults()) {
-            if (!r.use_empty()) {
-              allResultsUnused = false;
-              break;
-            }
-          }
-          if (allResultsUnused)
-            return success();
-          return call.emitError("cannot convert call to external function "
-                                "with pointer args: ")
-                 << calleeName;
-        }
       }
     }
 
@@ -726,6 +557,8 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
         args.push_back(lookup(v));
       }
     }
+    if (!callee)
+      return call.emitError("indirect calls not supported");
 
     SmallVector<Type> resultTypes;
     SmallVector<unsigned> ptrResultIndices;
@@ -780,16 +613,12 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
           }
         }
         if (!memrefBase) {
-          // Use the first available memref base with matching element type
+          // Use the first available memref base and cast it
           for (auto &entry : pointerMap) {
             if (entry.second.isValid()) {
-              auto srcTy = dyn_cast<MemRefType>(entry.second.base.getType());
-              if (srcTy && srcTy.getElementType() ==
-                           newMemRefTy.getElementType()) {
-                memrefBase = memref::CastOp::create(builder, call.getLoc(),
-                    newMemRefTy, entry.second.base);
-                break;
-              }
+              memrefBase = memref::CastOp::create(builder, call.getLoc(),
+                  newMemRefTy, entry.second.base);
+              break;
             }
           }
         }
@@ -1138,25 +967,16 @@ LogicalResult FunctionConverter::convertLoad(LLVM::LoadOp op) {
       baseIdx = arith::DivUIOp::create(builder, loc, baseIdx, divisor);
     }
 
-    // Create a new memref for the target array.
+    // Create a new memref for the target array via reinterpret_cast.
     // In the flat memory model, the loaded pointer addresses the same
     // memory space, so we reinterpret the root memref as a new type.
     auto newMemRefTy = buildStridedMemRefType(ctx, ptrElemTy);
 
     // Find the root memref base (walk up the base chain)
     Value rootBase = addrInfo.base;
-    Value castBase = rootBase;
-    // Only create memref.cast if element types are compatible
-    if (rootBase.getType() != newMemRefTy) {
-      auto srcTy = dyn_cast<MemRefType>(rootBase.getType());
-      if (srcTy && srcTy.getElementType() == newMemRefTy.getElementType()) {
-        castBase = memref::CastOp::create(builder, loc, newMemRefTy, rootBase);
-      }
-      // Otherwise keep rootBase as-is; element types differ but we
-      // track the desired type via PointerInfo.elementType
-    }
+    auto rootCast = memref::CastOp::create(builder, loc, newMemRefTy, rootBase);
 
-    mapPointer(op.getResult(), {castBase, baseIdx, ptrElemTy});
+    mapPointer(op.getResult(), {rootCast, baseIdx, ptrElemTy});
     // Also map as a regular value (loaded integer) for non-pointer uses
     mapValue(op.getResult(), loadedVal);
     return success();
@@ -1290,91 +1110,6 @@ LogicalResult FunctionConverter::convertAlloca(LLVM::AllocaOp op) {
   auto memrefTy = buildStridedMemRefType(ctx, elemTy);
   if (plainMemRefTy != memrefTy)
     base = memref::CastOp::create(builder, loc, memrefTy, alloc);
-  Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
-  mapPointer(op.getResult(), {base, zeroIdx, elemTy});
-  return success();
-}
-
-LogicalResult FunctionConverter::convertAddressOf(LLVM::AddressOfOp op) {
-  Location loc = op.getLoc();
-  StringRef globalName = op.getGlobalName();
-
-  // Check if we already converted this global to memref.global
-  auto it = convertedGlobals.find(globalName);
-  if (it == convertedGlobals.end()) {
-    // Look for the LLVM global in the parent module
-    auto module = op->getParentOfType<ModuleOp>();
-    auto llvmGlobal = module.lookupSymbol<LLVM::GlobalOp>(globalName);
-    if (!llvmGlobal) {
-      return op.emitError("llvm.mlir.addressof references unknown symbol: ")
-             << globalName;
-    }
-
-    // Determine the element type and count from the LLVM global type
-    Type globalTy = llvmGlobal.getGlobalType();
-    Type elemTy;
-    int64_t numElements = 1;
-
-    if (auto arrTy = dyn_cast<LLVM::LLVMArrayType>(globalTy)) {
-      // Recursively flatten nested arrays
-      Type inner = arrTy;
-      numElements = 1;
-      while (auto nested = dyn_cast<LLVM::LLVMArrayType>(inner)) {
-        numElements *= nested.getNumElements();
-        inner = nested.getElementType();
-      }
-      elemTy = normalizeScalarType(ctx, inner);
-    } else {
-      elemTy = normalizeScalarType(ctx, globalTy);
-      numElements = 1;
-    }
-
-    if (!elemTy)
-      return op.emitError("cannot determine element type for global: ")
-             << globalName;
-
-    auto memrefTy = MemRefType::get({numElements}, elemTy);
-
-    // Create memref.global at module level
-    OpBuilder moduleBuilder(module.getBody(), module.getBody()->begin());
-
-    bool isConst = llvmGlobal.getConstant();
-    Attribute initialValue;
-
-    // Try to extract the initial value from the LLVM global
-    if (auto valueAttr = llvmGlobal.getValueOrNull()) {
-      if (auto elementsAttr = dyn_cast<ElementsAttr>(valueAttr)) {
-        initialValue = elementsAttr;
-      } else if (auto intAttr = dyn_cast<IntegerAttr>(valueAttr)) {
-        initialValue = DenseElementsAttr::get(memrefTy, intAttr);
-      } else if (auto fpAttr = dyn_cast<FloatAttr>(valueAttr)) {
-        initialValue = DenseElementsAttr::get(memrefTy, fpAttr);
-      }
-    }
-
-    if (!initialValue)
-      initialValue = UnitAttr::get(ctx); // uninitialized declaration
-
-    memref::GlobalOp::create(
-        moduleBuilder, llvmGlobal.getLoc(), globalName.str(),
-        /*sym_visibility=*/moduleBuilder.getStringAttr("private"),
-        /*type=*/memrefTy,
-        /*initial_value=*/initialValue,
-        /*constant=*/isConst,
-        /*alignment=*/IntegerAttr());
-
-    convertedGlobals[globalName] = memrefTy;
-    it = convertedGlobals.find(globalName);
-  }
-
-  MemRefType memrefTy = it->second;
-  auto getGlobal =
-      memref::GetGlobalOp::create(builder, loc, memrefTy, globalName);
-
-  // Cast to strided memref for compatibility with the pointer tracking system
-  Type elemTy = memrefTy.getElementType();
-  auto stridedTy = buildStridedMemRefType(ctx, elemTy);
-  Value base = memref::CastOp::create(builder, loc, stridedTy, getGlobal);
   Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
   mapPointer(op.getResult(), {base, zeroIdx, elemTy});
   return success();
@@ -1592,35 +1327,12 @@ LogicalResult FunctionConverter::convertCast(Operation *op) {
 }
 
 LogicalResult FunctionConverter::convertICmp(LLVM::ICmpOp op) {
-  Location loc = op.getLoc();
-
-  // Handle pointer comparisons (e.g., ptr == NULL, ptr != NULL)
-  bool lhsIsPtr = isa<LLVM::LLVMPointerType>(op.getLhs().getType());
-  bool rhsIsPtr = isa<LLVM::LLVMPointerType>(op.getRhs().getType());
-  if (lhsIsPtr || rhsIsPtr) {
-    // Pointer comparisons against null: fold to constant.
-    // For heap-allocated pointers (malloc/calloc), assume non-null.
-    auto pred = op.getPredicate();
-    bool isEqNull = (pred == LLVM::ICmpPredicate::eq);
-    bool isNeNull = (pred == LLVM::ICmpPredicate::ne);
-    if (isEqNull || isNeNull) {
-      // ptr == null -> false, ptr != null -> true
-      bool constVal = isNeNull;
-      Value result = arith::ConstantIntOp::create(builder, loc,
-                                                  builder.getI1Type(),
-                                                  constVal ? 1 : 0);
-      mapValue(op.getResult(), result);
-      return success();
-    }
-    return op.emitError("unsupported pointer comparison predicate");
-  }
-
   Value lhs = lookup(op.getLhs());
   Value rhs = lookup(op.getRhs());
   if (!lhs || !rhs)
     return op.emitError("icmp has unmapped operand");
   auto pred = convertICmpPredicate(op.getPredicate());
-  auto result = arith::CmpIOp::create(builder, loc, pred, lhs, rhs);
+  auto result = arith::CmpIOp::create(builder, op.getLoc(), pred, lhs, rhs);
   mapValue(op.getResult(), result);
   return success();
 }
@@ -1731,8 +1443,8 @@ LogicalResult FunctionConverter::convertIntrinsic(LLVM::CallIntrinsicOp op) {
     return success();
   };
 
-  // fmuladd/fma: a*b + c (fused multiply-add)
-  if (name.starts_with("llvm.fmuladd.") || name.starts_with("llvm.fma.")) {
+  // fmuladd: a*b + c (fused multiply-add)
+  if (name.starts_with("llvm.fmuladd.")) {
     if (op.getNumResults() != 1 || op.getArgs().size() != 3)
       return failure();
     Value a = lookup(op.getArgs()[0]);
@@ -1862,30 +1574,6 @@ LogicalResult FunctionConverter::convertIntrinsic(LLVM::CallIntrinsicOp op) {
     Value arg = lookup(op.getArgs()[0]);
     if (!arg) return op.emitError("ceil has unmapped operand");
     mapValue(op.getResult(0), math::CeilOp::create(builder, loc, arg));
-    return success();
-  }
-  if (name.starts_with("llvm.round.")) {
-    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
-      return failure();
-    Value arg = lookup(op.getArgs()[0]);
-    if (!arg) return op.emitError("round has unmapped operand");
-    mapValue(op.getResult(0), math::RoundOp::create(builder, loc, arg));
-    return success();
-  }
-  if (name.starts_with("llvm.roundeven.")) {
-    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
-      return failure();
-    Value arg = lookup(op.getArgs()[0]);
-    if (!arg) return op.emitError("roundeven has unmapped operand");
-    mapValue(op.getResult(0), math::RoundEvenOp::create(builder, loc, arg));
-    return success();
-  }
-  if (name.starts_with("llvm.log10.")) {
-    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
-      return failure();
-    Value arg = lookup(op.getArgs()[0]);
-    if (!arg) return op.emitError("log10 has unmapped operand");
-    mapValue(op.getResult(0), math::Log10Op::create(builder, loc, arg));
     return success();
   }
 
@@ -2384,9 +2072,6 @@ struct ConvertLLVMToCFPassImpl
     ModuleOp module = getOperation();
     OpBuilder builder(module.getContext());
 
-    // Shared map of LLVM globals already converted to memref.global
-    llvm::DenseMap<StringRef, MemRefType> convertedGlobals;
-
     // Collect functions to convert (snapshot to avoid iterator invalidation)
     SmallVector<LLVM::LLVMFuncOp> funcsToConvert;
     module.walk([&](LLVM::LLVMFuncOp f) {
@@ -2401,7 +2086,7 @@ struct ConvertLLVMToCFPassImpl
     });
 
     for (auto llvmFunc : funcsToConvert) {
-      FunctionConverter converter(llvmFunc, builder, convertedGlobals);
+      FunctionConverter converter(llvmFunc, builder);
       if (failed(converter.convert())) {
         // Graceful degradation: erase any partially created func.func
         // and skip this function
@@ -2461,13 +2146,7 @@ struct ConvertLLVMToCFPassImpl
       func.erase();
     }
 
-    // Clean up LLVM module-level ops (globals, module flags)
-    SmallVector<LLVM::GlobalOp, 8> residualGlobals;
-    module.walk(
-        [&](LLVM::GlobalOp g) { residualGlobals.push_back(g); });
-    for (auto g : residualGlobals)
-      if (g->getParentOp())
-        g.erase();
+    // Clean up LLVM module-level ops
     module.walk([](LLVM::ModuleFlagsOp op) { op.erase(); });
   }
 };
