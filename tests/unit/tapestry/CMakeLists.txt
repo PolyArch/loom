@@ -206,45 +206,34 @@ set_target_properties(co-optimizer-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
 
-# Auto-analyze bridge tests
-add_executable(auto-analyze-bridge-test AutoAnalyzeBridgeTest.cpp)
+# ContractConstraintTranslator tests
+add_executable(constraint-translator-test ConstraintTranslatorTest.cpp)
 
-target_include_directories(auto-analyze-bridge-test PRIVATE
+target_include_directories(constraint-translator-test PRIVATE
   ${LOOM_INCLUDE_DIR}
-  ${CMAKE_BINARY_DIR}/include
 )
 
-target_link_libraries(auto-analyze-bridge-test PRIVATE
-  TapestryCore
-  LoomTDG
+target_link_libraries(constraint-translator-test PRIVATE
   LoomSystemCompiler
-  MLIRIR
-  MLIRParser
-  MLIRSupport
   ${TDG_TEST_LLVM_LIBS}
 )
 
-set_target_properties(auto-analyze-bridge-test PROPERTIES
+set_target_properties(constraint-translator-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
 
-# Variant system tests
-add_executable(variant-test VariantTest.cpp)
+# TDCVerification tests
+add_executable(tdc-verification-test TDCVerificationTest.cpp)
 
-target_include_directories(variant-test PRIVATE
+target_include_directories(tdc-verification-test PRIVATE
   ${LOOM_INCLUDE_DIR}
-  ${CMAKE_BINARY_DIR}/include
 )
 
-target_link_libraries(variant-test PRIVATE
-  TapestryCore
-  LoomTDG
-  MLIRIR
-  MLIRParser
-  MLIRSupport
+target_link_libraries(tdc-verification-test PRIVATE
+  LoomSystemCompiler
   ${TDG_TEST_LLVM_LIBS}
 )
 
-set_target_properties(variant-test PROPERTIES
+set_target_properties(tdc-verification-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )

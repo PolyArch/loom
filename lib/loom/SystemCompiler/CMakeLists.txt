@@ -3,6 +3,7 @@ add_library(LoomSystemCompiler STATIC
   ArchitectureFactory.cpp
   AssignmentPlan.cpp
   BendersHelpers.cpp
+  ContractConstraintTranslator.cpp
   ConvergenceTracker.cpp
   HierarchicalCompiler.cpp
   MappingResult.cpp
@@ -26,6 +27,7 @@ add_library(LoomSystemCompiler STATIC
   PrecompiledKernelLoader.cpp
   ResourceTracker.cpp
   TapestryPipeline.cpp
+  TDCVerification.cpp
   TDGLowering.cpp
   TDGToSSGBuilder.cpp
   TemporalScheduler.cpp
