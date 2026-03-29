@@ -56,9 +56,29 @@ const char *coreRoleToString(CoreRole role);
 /// Parse CoreRole from string.
 CoreRole coreRoleFromString(const std::string &s);
 
+/// Compute mix classification for combinatorial KHG types.
+enum class ComputeMix {
+  FP_MIX,   // FP-heavy compute mix
+  INT_MIX,  // Integer-heavy compute mix
+  MEM_MIX,  // Memory-heavy compute mix
+};
+
+/// Array size classification for combinatorial KHG types.
+enum class ArraySize {
+  SMALL,  // ~8 PEs (3x3)
+  LARGE,  // ~12 PEs (4x3)
+};
+
+/// Total number of types in the fixed core type library.
+constexpr unsigned NUM_LIBRARY_TYPES = 30;
+
 /// One entry in the core type library produced by OUTER-HW.
 struct CoreTypeLibraryEntry {
   unsigned typeIndex = 0;
+
+  /// Canonical type ID (e.g. "D1", "CFSY8").
+  std::string typeId;
+
   CoreRole role = CoreRole::BALANCED;
   unsigned instanceCount = 1;
 
@@ -69,6 +89,11 @@ struct CoreTypeLibraryEntry {
 
   /// Names of kernels assigned to this core type.
   std::vector<std::string> assignedKernels;
+
+  /// Combinatorial dimensions (for KHG types).
+  ComputeMix computeMix = ComputeMix::INT_MIX;
+  bool hasSPM = true;
+  ArraySize arraySize = ArraySize::SMALL;
 };
 
 /// The complete core type library produced by OUTER-HW.

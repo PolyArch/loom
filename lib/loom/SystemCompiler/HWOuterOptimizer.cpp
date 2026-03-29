@@ -6,12 +6,6 @@
 
 #include "loom/SystemCompiler/HWOuterOptimizer.h"
 #include "loom/ADG/SystemADGBuilder.h"
-#include "loom/Dialect/Fabric/FabricDialect.h"
-#include "loom/Dialect/Fabric/FabricOps.h"
-
-#include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/Parser/Parser.h"
 
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -178,7 +172,7 @@ std::string HWOuterOptimizer::generateSystemMLIR(
     return "";
 
   const auto &topo = result.topology;
-  adg::SystemADGBuilder builder(ctx, "system");
+  adg::SystemADGBuilder builder("system");
 
   // Configure NoC
   adg::NoCSpec nocSpec;
@@ -197,40 +191,21 @@ std::string HWOuterOptimizer::generateSystemMLIR(
   memSpec.numBanks = topo.l2BankCount;
   builder.setSharedMemorySpec(memSpec);
 
-  // Build placeholder core type ModuleOps and register them.
-  // Each placeholder contains a minimal fabric.module that INNER-HW (C12)
-  // will replace with the real ADG later.
-  std::vector<mlir::OwningOpRef<mlir::ModuleOp>> coreModuleRefs;
+  // Register core types and instantiate cores
   for (const auto &entry : topo.coreLibrary.entries) {
+    // Generate a placeholder MLIR module name for each core type
     std::string typeName = "core_type_" + std::to_string(entry.typeIndex);
 
-    // Build a minimal placeholder ModuleOp containing one fabric.module
-    mlir::OpBuilder opBuilder(ctx);
-    auto loc = opBuilder.getUnknownLoc();
-    auto placeholderWrapper = mlir::ModuleOp::create(loc);
-    opBuilder.setInsertionPointToEnd(placeholderWrapper.getBody());
+    // Build a minimal placeholder MLIR for each core type
+    // (INNER-HW C12 will replace this with the real ADG)
+    std::string placeholderMLIR =
+        "fabric.module @" + typeName + " {\n}\n";
 
-    auto emptyFuncType = mlir::FunctionType::get(ctx, {}, {});
-    auto fabricMod = loom::fabric::ModuleOp::create(
-        opBuilder, loc, typeName, emptyFuncType);
-
-    // Ensure the body has a block with a yield terminator
-    mlir::Region &bodyRegion = fabricMod.getBody();
-    if (bodyRegion.empty())
-      bodyRegion.emplaceBlock();
-    mlir::Block &body = bodyRegion.front();
-    if (body.empty() ||
-        !body.back().hasTrait<mlir::OpTrait::IsTerminator>()) {
-      opBuilder.setInsertionPointToEnd(&body);
-      loom::fabric::YieldOp::create(opBuilder, loc, mlir::ValueRange{});
-    }
-
-    coreModuleRefs.push_back(
-        mlir::OwningOpRef<mlir::ModuleOp>(placeholderWrapper));
-    auto handle = builder.registerCoreType(typeName, placeholderWrapper);
+    auto handle = builder.registerCoreType(typeName, placeholderMLIR);
 
     // Instantiate the requested number of cores
     for (unsigned inst = 0; inst < entry.instanceCount; ++inst) {
+      // Find the placement for this core
       int row = 0, col = 0;
       for (const auto &p : topo.corePlacements) {
         if (p.typeIndex == entry.typeIndex && p.instanceId == inst) {
@@ -246,13 +221,8 @@ std::string HWOuterOptimizer::generateSystemMLIR(
     }
   }
 
-  mlir::ModuleOp sysModule = builder.build();
-
-  // Print the built module to a string
-  std::string resultStr;
-  llvm::raw_string_ostream os(resultStr);
-  sysModule->print(os);
-  return resultStr;
+  builder.build();
+  return builder.getSystemMLIR();
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +291,9 @@ std::string HWOuterOptimizer::writeWorkloadJSON(
     contractsArray.push_back(std::move(cObj));
   }
   root["contracts"] = std::move(contractsArray);
+
+  // Serialize 30-type library metadata for the Python optimizer
+  root["num_library_types"] = static_cast<int64_t>(NUM_LIBRARY_TYPES);
 
   // Write to file
   std::string path = outputDir + "/workload.json";
@@ -420,6 +393,8 @@ bool HWOuterOptimizer::parseCoreLibraryFromObject(
     CoreTypeLibraryEntry entry;
     if (auto idx = tObj->getInteger("type_index"))
       entry.typeIndex = static_cast<unsigned>(*idx);
+    if (auto id = tObj->getString("type_id"))
+      entry.typeId = id->str();
     if (auto role = tObj->getString("role"))
       entry.role = coreRoleFromString(role->str());
     if (auto count = tObj->getInteger("instance_count"))
@@ -428,6 +403,23 @@ bool HWOuterOptimizer::parseCoreLibraryFromObject(
       entry.minPEs = static_cast<unsigned>(*pes);
     if (auto spm = tObj->getInteger("min_spm_kb"))
       entry.minSPMKB = static_cast<unsigned>(*spm);
+
+    // Parse combinatorial dimensions
+    if (auto cm = tObj->getString("compute_mix")) {
+      std::string cmStr = cm->str();
+      if (cmStr == "fp_mix")
+        entry.computeMix = ComputeMix::FP_MIX;
+      else if (cmStr == "mem_mix")
+        entry.computeMix = ComputeMix::MEM_MIX;
+      else
+        entry.computeMix = ComputeMix::INT_MIX;
+    }
+    if (auto spm = tObj->getBoolean("has_spm"))
+      entry.hasSPM = *spm;
+    if (auto sz = tObj->getString("array_size")) {
+      entry.arraySize =
+          (sz->str() == "large") ? ArraySize::LARGE : ArraySize::SMALL;
+    }
 
     if (auto *fuTypes = tObj->getArray("required_fu_types")) {
       for (const auto &fuVal : *fuTypes) {
