@@ -53,7 +53,6 @@ DMAScheduler::schedule(const BufferAllocationPlan &bufferPlan,
   DMASchedule result;
   result.tileComputeCycles = opts.estimatedComputeCycles;
 
-  unsigned currentCycle = 0;
   unsigned totalDMACycles = 0;
   unsigned overlappedCycles = 0;
 
@@ -62,41 +61,102 @@ DMAScheduler::schedule(const BufferAllocationPlan &bufferPlan,
                  << contracts.size() << " contracts\n";
   }
 
-  // Build DMA transfers for each cross-core contract.
-  unsigned slotToggle = 0;
+  // Collect cross-core contract indices.
+  struct XferEntry {
+    size_t contractIdx;
+    std::string edgeName;
+  };
+  std::vector<XferEntry> crossCoreEntries;
 
-  for (const auto &contract : contracts) {
+  for (size_t ci = 0; ci < contracts.size(); ++ci) {
+    const auto &contract = contracts[ci];
     auto prodIt = assignment.kernelToCore.find(contract.producerKernel);
     auto consIt = assignment.kernelToCore.find(contract.consumerKernel);
     if (prodIt == assignment.kernelToCore.end() ||
         consIt == assignment.kernelToCore.end())
       continue;
-
-    unsigned prodCoreIdx = prodIt->second;
-    unsigned consCoreIdx = consIt->second;
-
-    // Skip intra-core transfers.
-    if (prodCoreIdx == consCoreIdx)
+    if (prodIt->second == consIt->second)
       continue;
+    crossCoreEntries.push_back({ci, makeEdgeName(contract)});
+  }
 
-    std::string edgeName = makeEdgeName(contract);
+  // Build dependency graph among cross-core transfers.
+  // If contract ci's consumer is contract cj's producer, then cj depends on ci.
+  std::map<size_t, std::vector<size_t>> depGraph;
+  std::map<size_t, unsigned> inDegree;
+  for (size_t i = 0; i < crossCoreEntries.size(); ++i)
+    inDegree[i] = 0;
 
-    // Look up the buffer allocation.
+  for (size_t i = 0; i < crossCoreEntries.size(); ++i) {
+    const auto &ci = contracts[crossCoreEntries[i].contractIdx];
+    for (size_t j = 0; j < crossCoreEntries.size(); ++j) {
+      if (i == j)
+        continue;
+      const auto &cj = contracts[crossCoreEntries[j].contractIdx];
+      if (ci.consumerKernel == cj.producerKernel) {
+        depGraph[i].push_back(j);
+        inDegree[j]++;
+      }
+    }
+  }
+
+  // Topological sort via Kahn's algorithm.
+  std::vector<size_t> sortedOrder;
+  std::vector<size_t> queue;
+  for (const auto &entry : inDegree) {
+    if (entry.second == 0)
+      queue.push_back(entry.first);
+  }
+  while (!queue.empty()) {
+    size_t cur = queue.back();
+    queue.pop_back();
+    sortedOrder.push_back(cur);
+    for (size_t dep : depGraph[cur]) {
+      inDegree[dep]--;
+      if (inDegree[dep] == 0)
+        queue.push_back(dep);
+    }
+  }
+
+  // Append any remaining entries (cycles or missing).
+  for (size_t i = 0; i < crossCoreEntries.size(); ++i) {
+    bool found = false;
+    for (size_t s : sortedOrder) {
+      if (s == i) {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      sortedOrder.push_back(i);
+  }
+
+  // Track when each kernel's data becomes available at the consumer.
+  std::map<std::string, unsigned> kernelDataReady;
+
+  unsigned slotToggle = 0;
+
+  for (size_t si : sortedOrder) {
+    const auto &entry = crossCoreEntries[si];
+    const auto &contract = contracts[entry.contractIdx];
+
+    unsigned prodCoreIdx =
+        assignment.kernelToCore.find(contract.producerKernel)->second;
+    unsigned consCoreIdx =
+        assignment.kernelToCore.find(contract.consumerKernel)->second;
+
     const BufferAllocation *alloc =
-        findAllocation(bufferPlan, edgeName);
+        findAllocation(bufferPlan, entry.edgeName);
     if (!alloc)
       continue;
 
-    // Look up the NoC route for timing.
-    const NoCRoute *route = findRoute(nocSchedule, edgeName);
+    const NoCRoute *route = findRoute(nocSchedule, entry.edgeName);
 
-    // Compute transfer duration.
     unsigned durationCycles = 0;
     if (route) {
       durationCycles = route->transferLatencyCycles +
                        route->transferDurationCycles;
     } else {
-      // Fallback: estimate from buffer size and NoC bandwidth.
       unsigned linkBW = arch.nocSpec.linkBandwidth;
       unsigned flitWidth = arch.nocSpec.flitWidth;
       uint64_t flits =
@@ -106,10 +166,22 @@ DMAScheduler::schedule(const BufferAllocationPlan &bufferPlan,
                      : static_cast<unsigned>(flits);
     }
 
-    // Construct source and destination buffer descriptors.
-    // Source is a producer-side buffer; destination is the allocated buffer.
+    // Compute the earliest start time for this DMA transfer.
+    // The producer must have completed its computation.
+    unsigned producerCompletion =
+        opts.kernelComputeCycles.count(contract.producerKernel)
+            ? opts.kernelComputeCycles.at(contract.producerKernel)
+            : opts.estimatedComputeCycles;
+
+    // If the producer depends on earlier DMA transfers, account for arrival.
+    unsigned producerDataReady =
+        kernelDataReady.count(contract.producerKernel)
+            ? kernelDataReady[contract.producerKernel]
+            : 0;
+    unsigned earliestStart = producerDataReady + producerCompletion;
+
     BufferAllocation srcBuf;
-    srcBuf.contractEdgeName = edgeName;
+    srcBuf.contractEdgeName = entry.edgeName;
     srcBuf.location = BufferAllocation::SPM_PRODUCER;
     srcBuf.offsetBytes = 0;
     srcBuf.sizeBytes = alloc->sizeBytes;
@@ -118,12 +190,11 @@ DMAScheduler::schedule(const BufferAllocationPlan &bufferPlan,
 
     BufferAllocation dstBuf = *alloc;
 
-    // Determine timing and double-buffering overlap.
     bool isDoubleBuffered = alloc->doubleBuffered;
-    bool canOverlap = isDoubleBuffered && currentCycle > 0;
+    bool canOverlap = isDoubleBuffered && earliestStart > 0;
 
     DMATransfer xfer;
-    xfer.contractEdgeName = edgeName;
+    xfer.contractEdgeName = entry.edgeName;
     xfer.srcCore = contract.producerKernel;
     xfer.dstCore = contract.consumerKernel;
     xfer.srcCoreIdx = prodCoreIdx;
@@ -131,28 +202,32 @@ DMAScheduler::schedule(const BufferAllocationPlan &bufferPlan,
     xfer.srcBuffer = srcBuf;
     xfer.dstBuffer = dstBuf;
     xfer.transferSizeBytes = alloc->sizeBytes;
-    xfer.startCycle = currentCycle;
+    xfer.startCycle = earliestStart;
     xfer.durationCycles = durationCycles;
-    xfer.endCycle = currentCycle + durationCycles;
+    xfer.endCycle = earliestStart + durationCycles;
     xfer.bufferSlot = isDoubleBuffered ? (slotToggle % 2) : 0;
     xfer.overlapWithCompute = canOverlap;
 
     result.transfers.push_back(xfer);
 
+    // Update when the consumer's data becomes available.
+    unsigned xferEnd = earliestStart + durationCycles;
+    if (kernelDataReady.count(contract.consumerKernel) == 0 ||
+        kernelDataReady[contract.consumerKernel] < xferEnd) {
+      kernelDataReady[contract.consumerKernel] = xferEnd;
+    }
+
     if (canOverlap) {
-      // Overlapped transfers run concurrently with compute.
       overlappedCycles += durationCycles;
-    } else {
-      // Non-overlapped transfers extend the tile time.
-      currentCycle += durationCycles;
     }
 
     totalDMACycles += durationCycles;
     slotToggle++;
 
     if (opts.verbose) {
-      llvm::errs() << "  DMA: " << edgeName << " | " << alloc->sizeBytes
-                   << " bytes | " << durationCycles << " cycles"
+      llvm::errs() << "  DMA: " << entry.edgeName << " | "
+                   << alloc->sizeBytes << " bytes | " << durationCycles
+                   << " cycles | start=" << earliestStart
                    << (canOverlap ? " (overlapped)" : "") << "\n";
     }
   }

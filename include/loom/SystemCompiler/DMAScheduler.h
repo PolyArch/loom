@@ -7,6 +7,7 @@
 #include "loom/SystemCompiler/NoCScheduler.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,10 @@ struct DMASchedule {
 struct DMASchedulerOptions {
   /// Estimated compute cycles per tile (used for overlap calculation).
   unsigned estimatedComputeCycles = 1000;
+
+  /// Per-kernel compute cycle estimates (kernel name -> cycles).
+  /// When populated, these override estimatedComputeCycles for ordering.
+  std::map<std::string, unsigned> kernelComputeCycles;
 
   bool verbose = false;
 };

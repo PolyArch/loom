@@ -60,6 +60,14 @@ double computeObjective(const AssignmentResult &assignment,
                         const NoCSchedule &nocSchedule,
                         const std::vector<CoreCostSummary> &costSummaries);
 
+/// Extended objective computation that incorporates buffer allocation costs.
+/// Buffer penalty: DRAM fallback is costlier than L2, which is costlier than
+/// SPM. The penalty is added as a weighted term to the base objective.
+double computeObjective(const AssignmentResult &assignment,
+                        const NoCSchedule &nocSchedule,
+                        const BufferAllocationPlan &bufferPlan,
+                        const std::vector<CoreCostSummary> &costSummaries);
+
 /// Assemble the final TapestryCompilationResult from all sub-results.
 TapestryCompilationResult
 assembleResult(const std::vector<L2Result> &l2Results,

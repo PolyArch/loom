@@ -247,6 +247,27 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
     loom::NoCSchedule nocSchedule =
         nocScheduler.schedule(assignment, l1Contracts, l1Arch, nocOpts);
 
+    // --- NoC contention diagnostics ---
+    if (nocSchedule.hasContention) {
+      std::string contentionMsg = "NoC contention detected: max link "
+          "utilization=" +
+          std::to_string(nocSchedule.maxLinkUtilization);
+      for (const auto &lu : nocSchedule.linkUtilizations) {
+        if (lu.utilization > 1.0) {
+          contentionMsg += "; congested link (" +
+              std::to_string(lu.srcNode.first) + "," +
+              std::to_string(lu.srcNode.second) + ")->(" +
+              std::to_string(lu.dstNode.first) + "," +
+              std::to_string(lu.dstNode.second) + ") util=" +
+              std::to_string(lu.utilization);
+        }
+      }
+      if (config.verbose)
+        llvm::outs() << "  WARNING: " << contentionMsg << "\n";
+      // Store contention diagnostic for final result.
+      result.diagnostics = contentionMsg;
+    }
+
     // --- Buffer Allocation ---
     BufferAllocator bufferAllocator;
     BufferAllocatorOptions bufOpts = config.bufferOptions;
@@ -306,7 +327,7 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
 
     if (allMapped) {
       iterObjective =
-          computeObjective(assignment, nocSchedule, costSummaries);
+          computeObjective(assignment, nocSchedule, bufferPlan, costSummaries);
 
       if (config.verbose) {
         llvm::outs() << "  all cores mapped, objective=" << iterObjective
@@ -317,6 +338,20 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
       DMAScheduler dmaScheduler;
       DMASchedulerOptions dmaOpts = config.dmaOptions;
       dmaOpts.verbose = config.verbose;
+
+      // Populate per-kernel compute cycle estimates from L2 cost summaries.
+      for (const auto &cs : costSummaries) {
+        if (!cs.success)
+          continue;
+        for (const auto &km : cs.kernelMetrics) {
+          if (km.achievedII > 0) {
+            constexpr unsigned kDefaultTripCount = 1000;
+            dmaOpts.kernelComputeCycles[km.kernelName] =
+                kDefaultTripCount * km.achievedII;
+          }
+        }
+      }
+
       loom::DMASchedule dmaSchedule = dmaScheduler.schedule(
           bufferPlan, nocSchedule, l1Contracts, assignment, l1Arch, dmaOpts);
 

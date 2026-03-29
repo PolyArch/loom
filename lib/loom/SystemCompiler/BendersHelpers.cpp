@@ -147,6 +147,39 @@ double computeObjective(const AssignmentResult &assignment,
   return latencyWeight * criticalPath + nocWeight * nocCost;
 }
 
+double computeObjective(const AssignmentResult &assignment,
+                        const NoCSchedule &nocSchedule,
+                        const BufferAllocationPlan &bufferPlan,
+                        const std::vector<CoreCostSummary> &costSummaries) {
+  // Start with the base objective (latency + NoC).
+  double base = computeObjective(assignment, nocSchedule, costSummaries);
+
+  // Add buffer allocation penalty.
+  // SPM allocations incur no penalty; L2 and DRAM allocations add cost
+  // proportional to their data volumes.
+  constexpr double bufferWeight = 0.1;
+  constexpr double l2CostPerByte = 0.01;
+  constexpr double dramCostPerByte = 0.1;
+
+  double bufferPenalty = 0.0;
+  for (const auto &alloc : bufferPlan.allocations) {
+    switch (alloc.location) {
+    case BufferAllocation::SPM_PRODUCER:
+    case BufferAllocation::SPM_CONSUMER:
+      // No penalty for SPM allocations.
+      break;
+    case BufferAllocation::SHARED_L2:
+      bufferPenalty += l2CostPerByte * static_cast<double>(alloc.sizeBytes);
+      break;
+    case BufferAllocation::EXTERNAL_DRAM:
+      bufferPenalty += dramCostPerByte * static_cast<double>(alloc.sizeBytes);
+      break;
+    }
+  }
+
+  return base + bufferWeight * bufferPenalty;
+}
+
 TapestryCompilationResult
 assembleResult(const std::vector<L2Result> &l2Results,
                const std::vector<L2Assignment> &l2Assignments,
