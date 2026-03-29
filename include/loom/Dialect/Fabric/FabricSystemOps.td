@@ -20,7 +20,9 @@ def Fabric_RouterOp : Fabric_Op<"router", [Symbol]> {
     I64Attr:$virtual_channels,
     I64Attr:$buffer_depth,
     I64Attr:$pipeline_stages,
-    I64Attr:$flit_width_bits
+    I64Attr:$flit_width_bits,
+    StrAttr:$routing_strategy,
+    StrAttr:$topology_role
   );
   let assemblyFormat = [{
     $sym_name attr-dict
@@ -41,7 +43,8 @@ def Fabric_SharedMemOp : Fabric_Op<"shared_mem", [Symbol]> {
     I64Attr:$size_bytes,
     I64Attr:$width_bytes,
     I64Attr:$num_banks,
-    StrAttr:$mem_type
+    StrAttr:$mem_type,
+    I64Attr:$port_count
   );
   let assemblyFormat = [{
     $sym_name attr-dict
@@ -63,7 +66,8 @@ def Fabric_NoCLinkOp : Fabric_Op<"noc_link", []> {
     FlatSymbolRefAttr:$dest,
     I64Attr:$dest_port,
     I64Attr:$width_bits,
-    I64Attr:$latency_cycles
+    I64Attr:$latency_cycles,
+    I64Attr:$bandwidth
   );
   let assemblyFormat = [{
     attr-dict

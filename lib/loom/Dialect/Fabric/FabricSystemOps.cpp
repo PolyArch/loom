@@ -42,6 +42,20 @@ LogicalResult RouterOp::verify() {
     return emitOpError("flit_width_bits must be positive, got ")
            << flitWidth;
 
+  llvm::StringRef routingStrategy = getRoutingStrategy();
+  if (routingStrategy != "xy_dor" && routingStrategy != "yx_dor" &&
+      routingStrategy != "adaptive")
+    return emitOpError("routing_strategy must be \"xy_dor\", \"yx_dor\", or "
+                       "\"adaptive\", got \"")
+           << routingStrategy << "\"";
+
+  llvm::StringRef topologyRole = getTopologyRole();
+  if (topologyRole != "mesh" && topologyRole != "ring" &&
+      topologyRole != "hierarchical")
+    return emitOpError("topology_role must be \"mesh\", \"ring\", or "
+                       "\"hierarchical\", got \"")
+           << topologyRole << "\"";
+
   return success();
 }
 
@@ -71,6 +85,11 @@ LogicalResult SharedMemOp::verify() {
                        "got \"")
            << memType << "\"";
 
+  int64_t portCount = getPortCount();
+  if (portCount <= 0)
+    return emitOpError("port_count must be positive, got ")
+           << portCount;
+
   return success();
 }
 
@@ -98,6 +117,11 @@ LogicalResult NoCLinkOp::verify() {
   if (latencyCycles < 0)
     return emitOpError("latency_cycles must be non-negative, got ")
            << latencyCycles;
+
+  int64_t bw = getBandwidth();
+  if (bw <= 0)
+    return emitOpError("bandwidth must be positive, got ")
+           << bw;
 
   return success();
 }

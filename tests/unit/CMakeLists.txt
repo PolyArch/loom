@@ -142,3 +142,8 @@ endif()
 if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tapestry")
   add_subdirectory(tapestry)
 endif()
+
+# Fabric dialect C++ tests
+if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/fabric")
+  add_subdirectory(fabric)
+endif()

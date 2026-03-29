@@ -181,6 +181,24 @@ void SystemADGMLIRBuilder::emitRouters(
     const std::vector<SystemCoreInstance> &instances,
     const NoCSpec &nocSpec) {
 
+  // Derive routing_strategy and topology_role from the topology enum
+  llvm::StringRef routingStrategy;
+  llvm::StringRef topologyRole;
+  switch (nocSpec.topology) {
+  case NoCSpec::MESH:
+    routingStrategy = "xy_dor";
+    topologyRole = "mesh";
+    break;
+  case NoCSpec::RING:
+    routingStrategy = "xy_dor";
+    topologyRole = "ring";
+    break;
+  case NoCSpec::HIERARCHICAL:
+    routingStrategy = "adaptive";
+    topologyRole = "hierarchical";
+    break;
+  }
+
   // Create one router per core instance
   for (size_t i = 0; i < instances.size(); ++i) {
     std::string routerName = "router_" + std::to_string(i);
@@ -190,7 +208,6 @@ void SystemADGMLIRBuilder::emitRouters(
     if (nocSpec.topology == NoCSpec::RING)
       numPorts = 3; // fwd, rev, local
 
-    // Use the convenience build overload with StringRef + uint64_t args
     fabric::RouterOp::create(
         builder, loc,
         /*sym_name=*/llvm::StringRef(routerName),
@@ -198,7 +215,9 @@ void SystemADGMLIRBuilder::emitRouters(
         /*virtual_channels=*/static_cast<uint64_t>(nocSpec.virtualChannels),
         /*buffer_depth=*/static_cast<uint64_t>(4),
         /*pipeline_stages=*/static_cast<uint64_t>(nocSpec.routerPipelineStages),
-        /*flit_width_bits=*/static_cast<uint64_t>(nocSpec.flitWidth));
+        /*flit_width_bits=*/static_cast<uint64_t>(nocSpec.flitWidth),
+        /*routing_strategy=*/routingStrategy,
+        /*topology_role=*/topologyRole);
   }
 }
 
@@ -220,7 +239,8 @@ void SystemADGMLIRBuilder::emitSharedMemory(
         /*size_bytes=*/bankSize,
         /*width_bytes=*/static_cast<uint64_t>(sharedMemSpec.bankWidthBytes),
         /*num_banks=*/static_cast<uint64_t>(1),
-        /*mem_type=*/llvm::StringRef("l2_cache"));
+        /*mem_type=*/llvm::StringRef("l2_cache"),
+        /*port_count=*/static_cast<uint64_t>(1));
   }
 
   // Emit external memory interface
@@ -230,7 +250,8 @@ void SystemADGMLIRBuilder::emitSharedMemory(
       /*size_bytes=*/sharedMemSpec.l2SizeBytes,
       /*width_bytes=*/static_cast<uint64_t>(sharedMemSpec.bankWidthBytes),
       /*num_banks=*/static_cast<uint64_t>(sharedMemSpec.numBanks),
-      /*mem_type=*/llvm::StringRef("external_dram"));
+      /*mem_type=*/llvm::StringRef("external_dram"),
+      /*port_count=*/static_cast<uint64_t>(sharedMemSpec.numBanks));
 }
 
 void SystemADGMLIRBuilder::emitMeshLinks(
@@ -282,7 +303,8 @@ void SystemADGMLIRBuilder::emitMeshLinks(
           /*dest_port=*/static_cast<uint64_t>(dir.ingressPort),
           /*width_bits=*/static_cast<uint64_t>(nocSpec.flitWidth),
           /*latency_cycles=*/
-          static_cast<uint64_t>(nocSpec.routerPipelineStages));
+          static_cast<uint64_t>(nocSpec.routerPipelineStages),
+          /*bandwidth=*/static_cast<uint64_t>(nocSpec.linkBandwidth));
     }
   }
 }
@@ -310,7 +332,8 @@ void SystemADGMLIRBuilder::emitRingLinks(
         /*dest_port=*/static_cast<uint64_t>(0),
         /*width_bits=*/static_cast<uint64_t>(nocSpec.flitWidth),
         /*latency_cycles=*/
-        static_cast<uint64_t>(nocSpec.routerPipelineStages));
+        static_cast<uint64_t>(nocSpec.routerPipelineStages),
+        /*bandwidth=*/static_cast<uint64_t>(nocSpec.linkBandwidth));
 
     // Reverse link
     fabric::NoCLinkOp::create(
@@ -321,7 +344,8 @@ void SystemADGMLIRBuilder::emitRingLinks(
         /*dest_port=*/static_cast<uint64_t>(1),
         /*width_bits=*/static_cast<uint64_t>(nocSpec.flitWidth),
         /*latency_cycles=*/
-        static_cast<uint64_t>(nocSpec.routerPipelineStages));
+        static_cast<uint64_t>(nocSpec.routerPipelineStages),
+        /*bandwidth=*/static_cast<uint64_t>(nocSpec.linkBandwidth));
   }
 }
 
@@ -358,7 +382,8 @@ void SystemADGMLIRBuilder::emitHierarchicalLinks(
             /*dest_port=*/static_cast<uint64_t>(0),
             /*width_bits=*/static_cast<uint64_t>(nocSpec.flitWidth),
             /*latency_cycles=*/
-            static_cast<uint64_t>(nocSpec.routerPipelineStages));
+            static_cast<uint64_t>(nocSpec.routerPipelineStages),
+            /*bandwidth=*/static_cast<uint64_t>(nocSpec.linkBandwidth));
 
         fabric::NoCLinkOp::create(
             builder, loc,
@@ -368,7 +393,8 @@ void SystemADGMLIRBuilder::emitHierarchicalLinks(
             /*dest_port=*/static_cast<uint64_t>(0),
             /*width_bits=*/static_cast<uint64_t>(nocSpec.flitWidth),
             /*latency_cycles=*/
-            static_cast<uint64_t>(nocSpec.routerPipelineStages));
+            static_cast<uint64_t>(nocSpec.routerPipelineStages),
+            /*bandwidth=*/static_cast<uint64_t>(nocSpec.linkBandwidth));
       }
     }
   }
@@ -390,7 +416,8 @@ void SystemADGMLIRBuilder::emitHierarchicalLinks(
           /*dest_port=*/static_cast<uint64_t>(0),
           /*width_bits=*/static_cast<uint64_t>(nocSpec.flitWidth),
           /*latency_cycles=*/
-          static_cast<uint64_t>(nocSpec.routerPipelineStages));
+          static_cast<uint64_t>(nocSpec.routerPipelineStages),
+          /*bandwidth=*/static_cast<uint64_t>(nocSpec.linkBandwidth));
     }
   }
 }
