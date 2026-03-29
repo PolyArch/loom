@@ -178,7 +178,7 @@ void updateContractsFromSW(
     std::vector<lt::ContractSpec> &contracts,
     const TDGOptimizeResult &swResult) {
   // Propagate achieved rates from the SW optimization result back into the
-  // contracts. The BendersResult contains L2Assignment with core assignments
+  // contracts. The CompilationResult contains L2Assignment with core assignments
   // that indicate which core each kernel ended up on.
   const auto &assignments = swResult.compilationResult.assignments;
 
@@ -474,7 +474,7 @@ CoOptResult co_optimize(
   std::vector<lt::KernelDesc> bestKernels = kernels;
   std::vector<lt::ContractSpec> bestContracts = contracts;
   lt::SystemArchitecture bestArchSaved = currentArch;
-  lt::BendersResult bestBenders;
+  lt::CompilationResult bestBenders;
 
   for (unsigned round = 1; round <= coOpts.maxRounds; ++round) {
     if (coOpts.verbose)
@@ -600,7 +600,7 @@ CoOptResult co_optimize(
   result.bestArch = std::move(bestArchSaved);
   result.bestThroughput = bestThroughput;
   result.bestArea = bestArea;
-  result.bestBendersResult = std::move(bestBenders);
+  result.bestCompilationResult = std::move(bestBenders);
   result.diagnostics = diag.str();
 
   if (coOpts.verbose) {

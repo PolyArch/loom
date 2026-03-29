@@ -23,30 +23,32 @@
 namespace loom {
 namespace syscomp {
 
-TapestryPipeline::TapestryPipeline(const BendersDriverOptions &options)
+TapestryPipeline::TapestryPipeline(
+    const HierarchicalCompilerOptions &options)
     : options_(options) {}
 
-void TapestryPipeline::addTask(const BendersTask &task) {
+void TapestryPipeline::addTask(const CompilerTask &task) {
   tasks_.push_back(task);
 }
 
-void TapestryPipeline::addEdge(const BendersEdge &edge) {
+void TapestryPipeline::addEdge(const TaskEdge &edge) {
   edges_.push_back(edge);
 }
 
 std::string TapestryPipeline::run() {
   legalityPassed_ = false;
 
-  // Stage 1: Benders decomposition to partition tasks across cores.
-  BendersDriver driver(options_);
+  // Stage 1: Hierarchical decomposition to partition tasks across cores.
+  HierarchicalCompiler compiler(options_);
   for (const auto &t : tasks_)
-    driver.addTask(t);
+    compiler.addTask(t);
   for (const auto &e : edges_)
-    driver.addEdge(e);
+    compiler.addEdge(e);
 
-  bendersResult_ = driver.solve();
-  if (!bendersResult_.feasible)
-    return "Benders partitioning failed: " + bendersResult_.statusMessage;
+  compilerResult_ = compiler.solve();
+  if (!compilerResult_.feasible)
+    return "Hierarchical partitioning failed: " +
+           compilerResult_.statusMessage;
 
   // Stage 2: Contract legality checking.
   // Build contracts from the partition result and edge set.
@@ -58,8 +60,8 @@ std::string TapestryPipeline::run() {
   std::vector<tdg::Contract> contracts;
 
   for (const auto &e : edges_) {
-    unsigned srcCore = bendersResult_.taskAssignment[e.srcTaskIndex];
-    unsigned dstCore = bendersResult_.taskAssignment[e.dstTaskIndex];
+    unsigned srcCore = compilerResult_.taskAssignment[e.srcTaskIndex];
+    unsigned dstCore = compilerResult_.taskAssignment[e.dstTaskIndex];
     if (srcCore == dstCore)
       continue; // Intra-core edges need no NoC contract.
 
@@ -92,7 +94,7 @@ std::string TapestryPipeline::run() {
   // Group tasks by assigned core, preserving task index order.
   std::vector<std::vector<unsigned>> coreTaskIndices(options_.numCores);
   for (unsigned ti = 0; ti < tasks_.size(); ++ti)
-    coreTaskIndices[bendersResult_.taskAssignment[ti]].push_back(ti);
+    coreTaskIndices[compilerResult_.taskAssignment[ti]].push_back(ti);
 
   // Track kernel index within each core for NoC transfer descriptors.
   std::vector<unsigned> taskToKernelIndex(tasks_.size(), 0);
@@ -116,8 +118,8 @@ std::string TapestryPipeline::run() {
 
   // Add NoC transfers for cross-core edges.
   for (const auto &e : edges_) {
-    unsigned srcCore = bendersResult_.taskAssignment[e.srcTaskIndex];
-    unsigned dstCore = bendersResult_.taskAssignment[e.dstTaskIndex];
+    unsigned srcCore = compilerResult_.taskAssignment[e.srcTaskIndex];
+    unsigned dstCore = compilerResult_.taskAssignment[e.dstTaskIndex];
     if (srcCore == dstCore)
       continue;
 
@@ -328,7 +330,7 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
         return result;
       }
 
-      // Run ContractInferencePass on the TDG module before BendersDriver.
+      // Run ContractInferencePass on the TDG module before compilation.
       {
         if (config.verbose)
           llvm::errs() << "Running ContractInferencePass...\n";
@@ -380,32 +382,33 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
         llvm::outs() << "TapestryPipeline: " << contracts.size()
                      << " contracts\n";
 
-      // Configure and run BendersDriver.
-      tapestry::BendersConfig bendersConfig;
-      bendersConfig.maxIterations = config.bendersOpts.maxIterations;
-      bendersConfig.verbose = config.bendersOpts.verbose || config.verbose;
+      // Configure and run HierarchicalCompiler.
+      tapestry::CompilerConfig compilerConfig;
+      compilerConfig.maxIterations = config.bendersOpts.maxIterations;
+      compilerConfig.verbose = config.bendersOpts.verbose || config.verbose;
 
-      tapestry::BendersDriver driver(tapArch, std::move(kernels),
-                                     std::move(contracts), context);
-      tapestry::BendersResult bendersResult = driver.compile(bendersConfig);
+      tapestry::HierarchicalCompiler compiler(tapArch, std::move(kernels),
+                                              std::move(contracts), context);
+      tapestry::CompilationResult compResult =
+          compiler.compile(compilerConfig);
 
       auto compileEnd = std::chrono::steady_clock::now();
       double compileSec =
           std::chrono::duration<double>(compileEnd - compileStart).count();
 
-      // Build PipelineCompilationResult from BendersResult.
-      PipelineCompilationResult compResult;
-      compResult.metrics.numBendersIterations = bendersResult.iterations;
-      compResult.metrics.compilationTimeSec = compileSec;
+      // Build PipelineCompilationResult from CompilationResult.
+      PipelineCompilationResult pipeCompResult;
+      pipeCompResult.metrics.numBendersIterations = compResult.iterations;
+      pipeCompResult.metrics.compilationTimeSec = compileSec;
 
-      for (const auto &assign : bendersResult.assignments) {
+      for (const auto &assign : compResult.assignments) {
         PipelineCoreResult cr;
         cr.coreName = assign.kernelName;
         cr.success = assign.mappingSuccess;
-        compResult.coreResults.push_back(cr);
+        pipeCompResult.coreResults.push_back(cr);
       }
 
-      result.compilationResult = compResult;
+      result.compilationResult = pipeCompResult;
 
       // Compute temporal schedule after compilation.
       TemporalSchedule schedule;
@@ -421,9 +424,9 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
                      << config.executionModel.reconfigCycles << ")\n";
       }
 
-      if (!bendersResult.success) {
+      if (!compResult.success) {
         result.success = false;
-        result.diagnostics = bendersResult.diagnostics;
+        result.diagnostics = compResult.diagnostics;
         return result;
       }
 

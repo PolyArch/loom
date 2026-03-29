@@ -212,15 +212,15 @@ void populateL2ADGs(std::vector<L2Assignment> &l2Assignments,
 }
 
 //===----------------------------------------------------------------------===//
-// TapestryCompilationResult -> tapestry::BendersResult
+// TapestryCompilationResult -> tapestry::CompilationResult
 //===----------------------------------------------------------------------===//
 
-tapestry::BendersResult
-toBendersResult(const TapestryCompilationResult &compResult,
-                const std::vector<tapestry::KernelDesc> &kernels,
-                const tapestry::SystemArchitecture &arch,
-                unsigned iterations) {
-  tapestry::BendersResult result;
+tapestry::CompilationResult
+toCompilationResult(const TapestryCompilationResult &compResult,
+                    const std::vector<tapestry::KernelDesc> &kernels,
+                    const tapestry::SystemArchitecture &arch,
+                    unsigned iterations) {
+  tapestry::CompilationResult result;
   result.success = compResult.success;
   result.iterations = iterations;
 

@@ -6,8 +6,7 @@ Tier-1 analytical resource model and Tier-2 (mapper-based evaluation or
 analytical with contract-aware adjustments). Computes honest R^2 and
 Spearman rank correlation between the two tiers.
 
-NO synthetic noise, NO fabricated R^2 values. All correlation is computed
-from real (tier1, tier2) evaluation pairs.
+All correlation is computed from real (tier1, tier2) evaluation pairs.
 
 Usage:
     python3 scripts/experiments/run_e13_proxy_accuracy.py

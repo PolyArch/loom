@@ -68,6 +68,32 @@ Value infeasibilityCutToJSON(const InfeasibilityCut &cut) {
       },
       cut.evidence);
 
+  // Serialize suggestedConstraints.
+  if (!cut.suggestedConstraints.empty()) {
+    Array constraintsArr;
+    for (const auto &sc : cut.suggestedConstraints) {
+      std::visit(
+          [&constraintsArr](auto &&constraint) {
+            using T = std::decay_t<decltype(constraint)>;
+            Object cObj;
+            if constexpr (std::is_same_v<T, ExclusionConstraint>) {
+              cObj["type"] = "exclusion";
+              cObj["kernel"] = constraint.kernel;
+              cObj["coreType"] = constraint.coreType;
+            } else if constexpr (std::is_same_v<T, CapacityConstraint>) {
+              cObj["type"] = "capacity";
+              cObj["coreType"] = constraint.coreType;
+              cObj["resourceName"] = constraint.resourceName;
+              cObj["minRequired"] =
+                  static_cast<int64_t>(constraint.minRequired);
+            }
+            constraintsArr.push_back(std::move(cObj));
+          },
+          sc);
+    }
+    obj["suggestedConstraints"] = std::move(constraintsArr);
+  }
+
   return Value(std::move(obj));
 }
 
@@ -112,6 +138,35 @@ InfeasibilityCut infeasibilityCutFromJSON(const Value &v) {
     if (auto n = ev->getInteger("targetII"))
       info.targetII = static_cast<unsigned>(*n);
     cut.evidence = info;
+  }
+
+  // Deserialize suggestedConstraints.
+  if (auto *constraintsArr = obj->getArray("suggestedConstraints")) {
+    for (const auto &entry : *constraintsArr) {
+      auto *cObj = entry.getAsObject();
+      if (!cObj)
+        continue;
+      auto typeStr = cObj->getString("type");
+      if (!typeStr)
+        continue;
+      if (*typeStr == "exclusion") {
+        ExclusionConstraint ec;
+        if (auto s = cObj->getString("kernel"))
+          ec.kernel = s->str();
+        if (auto s = cObj->getString("coreType"))
+          ec.coreType = s->str();
+        cut.suggestedConstraints.push_back(ec);
+      } else if (*typeStr == "capacity") {
+        CapacityConstraint cc;
+        if (auto s = cObj->getString("coreType"))
+          cc.coreType = s->str();
+        if (auto s = cObj->getString("resourceName"))
+          cc.resourceName = s->str();
+        if (auto n = cObj->getInteger("minRequired"))
+          cc.minRequired = static_cast<unsigned>(*n);
+        cut.suggestedConstraints.push_back(cc);
+      }
+    }
   }
 
   return cut;

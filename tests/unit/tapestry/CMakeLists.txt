@@ -75,6 +75,22 @@ set_target_properties(taskgraph-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
 
+# Contract types tests (A4)
+add_executable(contract-types-test ContractTypesTest.cpp)
+
+target_include_directories(contract-types-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+)
+
+target_link_libraries(contract-types-test PRIVATE
+  LoomSystemCompiler
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(contract-types-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)
+
 # Verification suite tests (C06)
 add_executable(verification-test VerificationTest.cpp)
 

@@ -1,7 +1,7 @@
 //===-- tdg_optimizer.cpp - TDG iterative optimization loop --------*- C++ -*-===//
 //
 // Implements the iterative TDG optimization loop. Each iteration:
-//   1. Evaluates the current TDG via BendersDriver mapping.
+//   1. Evaluates the current TDG via HierarchicalCompiler mapping.
 //   2. Computes system throughput from the result.
 //   3. Tries contract-gated transforms (retile, replicate).
 //   4. Accepts transforms that improve throughput.
@@ -27,9 +27,9 @@ using namespace loom::tapestry;
 // Throughput computation
 //===----------------------------------------------------------------------===//
 
-/// Compute throughput from a BendersResult. Throughput is the inverse of the
+/// Compute throughput from a CompilationResult. Throughput is the inverse of the
 /// total cost (lower cost = higher throughput). Returns 0 on failure.
-static double computeThroughput(const BendersResult &result) {
+static double computeThroughput(const CompilationResult &result) {
   if (!result.success || result.totalCost <= 0.0)
     return 0.0;
   return 1.0 / result.totalCost;
@@ -37,7 +37,7 @@ static double computeThroughput(const BendersResult &result) {
 
 /// Compute the maximum mapping cost across all assigned kernels.
 /// The kernel with the highest cost is the bottleneck.
-static double findMaxKernelCost(const BendersResult &result) {
+static double findMaxKernelCost(const CompilationResult &result) {
   double maxCost = 0.0;
   for (const auto &a : result.assignments) {
     if (a.mappingSuccess && a.mappingCost > maxCost)
@@ -70,14 +70,14 @@ TDGOptimizer::optimize(std::vector<KernelDesc> kernels,
   }
 
   double bestThroughput = 0.0;
-  BendersResult bestBendersResult;
+  CompilationResult bestCompilationResult;
 
   for (unsigned iter = 1; iter <= options_.maxIterations; ++iter) {
     if (options_.verbose)
       llvm::outs() << "TDGOptimizer: iteration " << iter << "\n";
 
     // Evaluate current TDG configuration.
-    BendersResult currentResult;
+    CompilationResult currentResult;
     double currentThroughput =
         evaluate(result.optimizedKernels, result.optimizedContracts,
                  arch, currentResult);
@@ -90,11 +90,11 @@ TDGOptimizer::optimize(std::vector<KernelDesc> kernels,
     if (currentResult.success &&
         currentThroughput > bestThroughput + options_.improvementThreshold) {
       bestThroughput = currentThroughput;
-      bestBendersResult = currentResult;
+      bestCompilationResult = currentResult;
     }
 
     if (!currentResult.success) {
-      // Mapping failed entirely. For MVP, BendersDriver handles reassignment
+      // Mapping failed entirely. For MVP, HierarchicalCompiler handles reassignment
       // via its own iteration loop. If it fails, report diagnostics.
       if (bestThroughput > 0.0) {
         // We had a previous successful configuration; keep it.
@@ -104,7 +104,7 @@ TDGOptimizer::optimize(std::vector<KernelDesc> kernels,
         break;
       }
       // No previous success; continue trying transforms.
-      result.diagnostics = "BendersDriver mapping failed: " +
+      result.diagnostics = "HierarchicalCompiler mapping failed: " +
                            currentResult.diagnostics;
     }
 
@@ -134,7 +134,7 @@ TDGOptimizer::optimize(std::vector<KernelDesc> kernels,
 
   // Populate final result.
   result.success = bestThroughput > 0.0;
-  result.compilationResult = bestBendersResult;
+  result.compilationResult = bestCompilationResult;
   result.bestThroughput = bestThroughput;
 
   if (!result.success && result.diagnostics.empty())
@@ -146,10 +146,10 @@ TDGOptimizer::optimize(std::vector<KernelDesc> kernels,
 double TDGOptimizer::evaluate(const std::vector<KernelDesc> &kernels,
                               const std::vector<ContractSpec> &contracts,
                               const SystemArchitecture &arch,
-                              BendersResult &outResult) {
-  // Create a BendersDriver with the current TDG configuration and run it.
-  BendersDriver driver(arch, kernels, contracts, ctx_);
-  outResult = driver.compile(options_.bendersConfig);
+                              CompilationResult &outResult) {
+  // Create a HierarchicalCompiler with the current TDG configuration and run it.
+  HierarchicalCompiler driver(arch, kernels, contracts, ctx_);
+  outResult = driver.compile(options_.compilerConfig);
   return computeThroughput(outResult);
 }
 
@@ -158,7 +158,7 @@ double TDGOptimizer::evaluate(const std::vector<KernelDesc> &kernels,
 //===----------------------------------------------------------------------===//
 
 bool TDGOptimizer::isRateImbalanced(const ContractSpec &contract,
-                                    const BendersResult &result) {
+                                    const CompilationResult &result) {
   // A contract is rate-imbalanced if its bandwidth is either 0 or if the
   // producer and consumer are on different core types with different capacities.
   // For MVP, use a simple heuristic: if elementCount > 0 and
@@ -208,7 +208,7 @@ bool TDGOptimizer::tryRetileTransforms(
     }
 
     // Evaluate the modified TDG.
-    BendersResult candidateResult;
+    CompilationResult candidateResult;
     double candidateThroughput =
         evaluate(kernels, contracts, arch, candidateResult);
 
@@ -247,7 +247,7 @@ bool TDGOptimizer::tryRetileTransforms(
 //===----------------------------------------------------------------------===//
 
 std::string TDGOptimizer::findBottleneckKernel(
-    const BendersResult &result,
+    const CompilationResult &result,
     const std::vector<KernelDesc> &kernels) {
   if (!result.success || result.assignments.empty())
     return "";
@@ -271,7 +271,7 @@ bool TDGOptimizer::tryReplicateTransforms(
     std::vector<ContractSpec> &contracts,
     const SystemArchitecture &arch,
     double currentThroughput,
-    const BendersResult &lastResult,
+    const CompilationResult &lastResult,
     std::vector<TransformRecord> &history,
     unsigned iteration) {
 
@@ -305,7 +305,7 @@ bool TDGOptimizer::tryReplicateTransforms(
   }
 
   // Evaluate.
-  BendersResult candidateResult;
+  CompilationResult candidateResult;
   double candidateThroughput =
       evaluate(kernels, contracts, arch, candidateResult);
 
@@ -341,7 +341,7 @@ bool TDGOptimizer::tryReplicateTransforms(
 //===----------------------------------------------------------------------===//
 
 bool tapestry::applyRetile(ContractSpec &contract,
-                           const BendersResult &result) {
+                           const CompilationResult &result) {
   // Retile heuristic: if elementCount is large, try halving it to reduce
   // per-tile data volume (improves SPM fit). If elementCount is small,
   // try doubling it (amortizes transfer overhead).

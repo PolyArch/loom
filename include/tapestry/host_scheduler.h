@@ -139,7 +139,7 @@ public:
   HostSchedule buildSchedule(
       const std::vector<loom::tapestry::KernelDesc> &kernels,
       const std::vector<loom::tapestry::ContractSpec> &contracts,
-      const loom::tapestry::BendersResult &assignments,
+      const loom::tapestry::CompilationResult &assignments,
       const loom::tapestry::SystemArchitecture &arch);
 
   /// Generate a C source file implementing the host schedule.

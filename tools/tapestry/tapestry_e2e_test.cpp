@@ -2,12 +2,12 @@
 //
 // Smoke test for the Tapestry multi-core compilation pipeline. Builds a
 // SystemArchitecture with two core types, creates synthetic kernel DFGs,
-// defines contracts between them, and runs the BendersDriver to completion.
+// defines contracts between them, and runs the HierarchicalCompiler to completion.
 //
 //===----------------------------------------------------------------------===//
 
 #include "loom/SystemCompiler/ArchitectureFactory.h"
-#include "loom/SystemCompiler/BendersDriver.h"
+#include "loom/SystemCompiler/SystemTypes.h"
 #include "loom/SystemCompiler/PrecompiledKernelLoader.h"
 #include "loom/SystemCompiler/TDGLowering.h"
 
@@ -169,16 +169,16 @@ int main(int argc, char **argv) {
 
   llvm::outs() << "  Created " << contracts.size() << " contracts\n";
 
-  //--- Run BendersDriver ---
+  //--- Run HierarchicalCompiler ---
   llvm::outs() << "\nRunning Benders decomposition...\n";
 
-  BendersConfig config;
+  CompilerConfig config;
   config.maxIterations = maxIter;
   config.mapperBudgetSeconds = budget;
   config.mapperSeed = 42;
   config.verbose = true;
 
-  BendersDriver driver(arch, std::move(kernels), std::move(contracts), ctx);
+  HierarchicalCompiler driver(arch, std::move(kernels), std::move(contracts), ctx);
   auto result = driver.compile(config);
 
   //--- Report results ---

@@ -3,7 +3,7 @@
 
 For each domain, runs co-optimization with maxRounds=10 and records
 round-by-round throughput, area, and convergence status. Uses the
-BendersDriver-based co_optimize() loop via tapestry_coopt_experiment.
+HierarchicalCompiler-based co_optimize() loop via tapestry_coopt_experiment.
 
 If the C++ binary crashes for a domain (e.g., ADGBuilder assertion),
 the script records the domain as failed and continues with remaining domains.

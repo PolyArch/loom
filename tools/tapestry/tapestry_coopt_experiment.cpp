@@ -12,7 +12,7 @@
 #include "tapestry/co_optimizer.h"
 
 #include "loom/SystemCompiler/ArchitectureFactory.h"
-#include "loom/SystemCompiler/BendersDriver.h"
+#include "loom/SystemCompiler/SystemTypes.h"
 #include "loom/SystemCompiler/PrecompiledKernelLoader.h"
 #include "loom/SystemCompiler/TDGLowering.h"
 
@@ -433,9 +433,9 @@ runCoOpt(DomainWorkload &workload, const SystemArchitecture &initialArch,
   coOpts.verbose = verb;
   coOpts.swOpts.maxIterations = 5;
   coOpts.swOpts.improvementThreshold = thresh;
-  coOpts.swOpts.bendersConfig.maxIterations = 5;
-  coOpts.swOpts.bendersConfig.mapperBudgetSeconds = mapperBudget;
-  coOpts.swOpts.bendersConfig.mapperSeed = 42;
+  coOpts.swOpts.compilerConfig.maxIterations = 5;
+  coOpts.swOpts.compilerConfig.mapperBudgetSeconds = mapperBudget;
+  coOpts.swOpts.compilerConfig.mapperSeed = 42;
   coOpts.swOpts.verbose = verb;
   coOpts.hwOuterOpts.maxIterations = 20;
   coOpts.hwOuterOpts.seed = 42;
@@ -463,9 +463,9 @@ runSWOnly(DomainWorkload &workload, const SystemArchitecture &initialArch,
   coOpts.verbose = verb;
   coOpts.swOpts.maxIterations = 10; // More SW iterations to compensate
   coOpts.swOpts.improvementThreshold = 0.005;
-  coOpts.swOpts.bendersConfig.maxIterations = 5;
-  coOpts.swOpts.bendersConfig.mapperBudgetSeconds = mapperBudget;
-  coOpts.swOpts.bendersConfig.mapperSeed = 42;
+  coOpts.swOpts.compilerConfig.maxIterations = 5;
+  coOpts.swOpts.compilerConfig.mapperBudgetSeconds = mapperBudget;
+  coOpts.swOpts.compilerConfig.mapperSeed = 42;
   coOpts.swOpts.verbose = verb;
   // HW parameters set to minimal since HW step still runs once
   coOpts.hwOuterOpts.maxIterations = 1;
@@ -488,9 +488,9 @@ runHWOnly(DomainWorkload &workload, const SystemArchitecture &initialArch,
   // SW set to minimal
   coOpts.swOpts.maxIterations = 1;
   coOpts.swOpts.improvementThreshold = 0.0;
-  coOpts.swOpts.bendersConfig.maxIterations = 3;
-  coOpts.swOpts.bendersConfig.mapperBudgetSeconds = mapperBudget;
-  coOpts.swOpts.bendersConfig.mapperSeed = 42;
+  coOpts.swOpts.compilerConfig.maxIterations = 3;
+  coOpts.swOpts.compilerConfig.mapperBudgetSeconds = mapperBudget;
+  coOpts.swOpts.compilerConfig.mapperSeed = 42;
   // Full HW optimization (Tier-B disabled for same reason as co-opt)
   coOpts.hwOuterOpts.maxIterations = 50;
   coOpts.hwOuterOpts.seed = 42;
@@ -735,12 +735,12 @@ static bool runE19CrossDomain(mlir::MLIRContext &ctx) {
       }
 
       // Compile SW domain's TDG on HW domain's architecture
-      BendersConfig bConfig;
+      CompilerConfig bConfig;
       bConfig.maxIterations = 5;
       bConfig.mapperBudgetSeconds = mapperBudget;
       bConfig.mapperSeed = 42;
 
-      BendersDriver driver(hwDom.arch, std::move(workload.kernels),
+      HierarchicalCompiler driver(hwDom.arch, std::move(workload.kernels),
                            std::move(workload.contracts), ctx);
       auto compResult = driver.compile(bConfig);
 

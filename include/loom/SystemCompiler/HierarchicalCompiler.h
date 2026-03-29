@@ -1,5 +1,5 @@
-#ifndef LOOM_SYSTEMCOMPILER_BENDERSDRIVER_H
-#define LOOM_SYSTEMCOMPILER_BENDERSDRIVER_H
+#ifndef LOOM_SYSTEMCOMPILER_HIERARCHICALCOMPILER_H
+#define LOOM_SYSTEMCOMPILER_HIERARCHICALCOMPILER_H
 
 #include <cstdint>
 #include <string>
@@ -8,17 +8,17 @@
 namespace loom {
 namespace syscomp {
 
-// Configuration for the Benders decomposition driver used by the system
+// Configuration for the hierarchical decomposition driver used by the system
 // compiler to partition and schedule task graphs across multi-core fabrics.
-struct BendersDriverOptions {
-  // Maximum number of Benders iterations before giving up.
+struct HierarchicalCompilerOptions {
+  // Maximum number of iterations before giving up.
   unsigned maxIterations = 100;
 
   // Convergence tolerance: stop when the gap between upper and lower bounds
   // falls below this fraction.
   double convergenceTolerance = 1e-4;
 
-  // Time limit in seconds for the entire Benders solve.
+  // Time limit in seconds for the entire solve.
   double timeLimitSeconds = 300.0;
 
   // Number of cores available in the target fabric.
@@ -34,8 +34,8 @@ struct BendersDriverOptions {
   bool verbose = false;
 };
 
-// Represents one task (kernel) in the task graph that Benders partitions.
-struct BendersTask {
+// Represents one task (kernel) in the task graph that the compiler partitions.
+struct CompilerTask {
   std::string name;
   uint64_t estimatedCycles = 0;
   uint64_t spmBytes = 0;
@@ -43,14 +43,14 @@ struct BendersTask {
 };
 
 // Represents a data dependency between two tasks.
-struct BendersEdge {
+struct TaskEdge {
   unsigned srcTaskIndex = 0;
   unsigned dstTaskIndex = 0;
   uint64_t dataBytes = 0;
 };
 
-// Result of the Benders decomposition: which task maps to which core.
-struct BendersResult {
+// Result of the hierarchical compilation: which task maps to which core.
+struct CompilerResult {
   bool feasible = false;
   std::string statusMessage;
   unsigned iterations = 0;
@@ -60,26 +60,26 @@ struct BendersResult {
   std::vector<unsigned> taskAssignment;
 };
 
-// Drives the Benders decomposition for system-level compilation.
-class BendersDriver {
+// Drives the hierarchical decomposition for system-level compilation.
+class HierarchicalCompiler {
 public:
-  explicit BendersDriver(const BendersDriverOptions &options);
+  explicit HierarchicalCompiler(const HierarchicalCompilerOptions &options);
 
-  void addTask(const BendersTask &task);
-  void addEdge(const BendersEdge &edge);
+  void addTask(const CompilerTask &task);
+  void addEdge(const TaskEdge &edge);
 
   // Run the decomposition and return the result.
-  BendersResult solve();
+  CompilerResult solve();
 
-  const BendersDriverOptions &getOptions() const { return options_; }
+  const HierarchicalCompilerOptions &getOptions() const { return options_; }
 
 private:
-  BendersDriverOptions options_;
-  std::vector<BendersTask> tasks_;
-  std::vector<BendersEdge> edges_;
+  HierarchicalCompilerOptions options_;
+  std::vector<CompilerTask> tasks_;
+  std::vector<TaskEdge> edges_;
 };
 
 } // namespace syscomp
 } // namespace loom
 
-#endif // LOOM_SYSTEMCOMPILER_BENDERSDRIVER_H
+#endif // LOOM_SYSTEMCOMPILER_HIERARCHICALCOMPILER_H

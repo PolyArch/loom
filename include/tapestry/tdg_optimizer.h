@@ -1,9 +1,9 @@
 //===-- tdg_optimizer.h - TDG iterative optimization loop ---------*- C++ -*-===//
 //
 // Iterative optimization of Task Dataflow Graphs using contract-driven
-// transforms and BendersDriver feedback. The optimizer applies greedy
+// transforms and HierarchicalCompiler feedback. The optimizer applies greedy
 // transforms (retile, replicate) gated by contract permissions, evaluates
-// each variant via BendersDriver mapping, and converges on the best TDG.
+// each variant via HierarchicalCompiler mapping, and converges on the best TDG.
 //
 //===----------------------------------------------------------------------===//
 
@@ -47,8 +47,8 @@ struct TDGOptimizeOptions {
   /// Minimum relative throughput improvement to accept a transform.
   double improvementThreshold = 0.01;
 
-  /// BendersDriver configuration for each evaluation.
-  loom::tapestry::BendersConfig bendersConfig;
+  /// HierarchicalCompiler configuration for each evaluation.
+  loom::tapestry::CompilerConfig compilerConfig;
 
   /// Enable verbose logging.
   bool verbose = false;
@@ -68,8 +68,8 @@ struct TDGOptimizeResult {
   /// The (possibly transformed) contracts after optimization.
   std::vector<loom::tapestry::ContractSpec> optimizedContracts;
 
-  /// The final BendersDriver compilation result.
-  loom::tapestry::BendersResult compilationResult;
+  /// The final HierarchicalCompiler compilation result.
+  loom::tapestry::CompilationResult compilationResult;
 
   /// Total number of iterations executed.
   unsigned iterations = 0;
@@ -89,10 +89,10 @@ struct TDGOptimizeResult {
 //===----------------------------------------------------------------------===//
 
 /// Iterative TDG optimizer using contract-driven transforms and
-/// BendersDriver feedback.
+/// HierarchicalCompiler feedback.
 ///
 /// The optimization loop:
-///   1. Evaluate current TDG via BendersDriver.
+///   1. Evaluate current TDG via HierarchicalCompiler.
 ///   2. Compute system throughput from the result.
 ///   3. Identify candidate transforms gated by contract permissions.
 ///   4. Apply best candidate, re-evaluate, accept if improved.
@@ -114,12 +114,12 @@ public:
                              mlir::ModuleOp systemADG = nullptr);
 
 private:
-  /// Evaluate a TDG configuration via BendersDriver.
+  /// Evaluate a TDG configuration via HierarchicalCompiler.
   /// Returns throughput (higher is better), or 0.0 on failure.
   double evaluate(const std::vector<loom::tapestry::KernelDesc> &kernels,
                   const std::vector<loom::tapestry::ContractSpec> &contracts,
                   const loom::tapestry::SystemArchitecture &arch,
-                  loom::tapestry::BendersResult &outResult);
+                  loom::tapestry::CompilationResult &outResult);
 
   /// Try applying retile transforms to improve rate balance.
   /// Returns true if a beneficial transform was found and applied.
@@ -138,19 +138,19 @@ private:
       std::vector<loom::tapestry::ContractSpec> &contracts,
       const loom::tapestry::SystemArchitecture &arch,
       double currentThroughput,
-      const loom::tapestry::BendersResult &lastResult,
+      const loom::tapestry::CompilationResult &lastResult,
       std::vector<TransformRecord> &history,
       unsigned iteration);
 
-  /// Find the bottleneck kernel from a BendersDriver result.
+  /// Find the bottleneck kernel from a HierarchicalCompiler result.
   /// Returns the kernel name, or empty string if none found.
   std::string findBottleneckKernel(
-      const loom::tapestry::BendersResult &result,
+      const loom::tapestry::CompilationResult &result,
       const std::vector<loom::tapestry::KernelDesc> &kernels);
 
   /// Check if a contract has a rate imbalance worth retiling.
   bool isRateImbalanced(const loom::tapestry::ContractSpec &contract,
-                        const loom::tapestry::BendersResult &result);
+                        const loom::tapestry::CompilationResult &result);
 
   TDGOptimizeOptions options_;
   mlir::MLIRContext &ctx_;
@@ -164,7 +164,7 @@ private:
 /// Adjusts the tile shape to better balance producer/consumer rates.
 /// Returns true if the tile shape was changed.
 bool applyRetile(loom::tapestry::ContractSpec &contract,
-                 const loom::tapestry::BendersResult &result);
+                 const loom::tapestry::CompilationResult &result);
 
 /// Apply a replicate transform to a bottleneck kernel.
 /// Duplicates the kernel and splits input/output contracts accordingly.

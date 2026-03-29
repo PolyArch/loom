@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""E07: BendersDriver Convergence -- measure iteration count, cut types,
+"""E07: HierarchicalCompiler Convergence -- measure iteration count, cut types,
 and objective trajectory across domains and architecture configs.
 
 Invokes the tapestry_compile binary with --verbose to capture per-iteration
-BendersDriver output, then parses convergence data from stdout/stderr.
+HierarchicalCompiler output, then parses convergence data from stdout/stderr.
 
 Usage:
     python3 scripts/experiments/run_e07_convergence.py
@@ -94,9 +94,9 @@ ARCH_CONFIGS = {
     },
 }
 
-# BendersDriver iteration pattern parsers (from verbose output).
+# HierarchicalCompiler iteration pattern parsers (from verbose output).
 RE_BENDERS_ITER = re.compile(
-    r"--- Benders iteration (\d+) ---")
+    r"--- iteration (\d+) ---")
 RE_ACCUMULATED_CUTS = re.compile(
     r"accumulated cuts:\s*(\d+)")
 RE_L1_OBJECTIVE = re.compile(
@@ -232,12 +232,12 @@ def estimate_kernel_spm(kernel_type, tile_shapes):
 
 def simulate_benders_convergence(domain_name, domain_info, arch_name,
                                  arch_config, max_iterations=10):
-    """Simulate BendersDriver convergence for a (domain, arch) pair.
+    """Simulate HierarchicalCompiler convergence for a (domain, arch) pair.
 
     Since tapestry_compile requires MLIR TDG inputs that may not be
-    available for all domains, we use the BendersDriver's algorithmic
+    available for all domains, we use the HierarchicalCompiler's algorithmic
     behavior to produce convergence data. The simulation follows the
-    exact same logic as BendersDriver.compile() in BendersDriver.cpp:
+    exact same logic as HierarchicalCompiler.compile() in HierarchicalCompiler.cpp:
       1. L1 master assigns kernels to cores.
       2. L2 sub-problems check per-core feasibility.
       3. Infeasibility cuts feed back to L1.
@@ -286,7 +286,7 @@ def simulate_benders_convergence(domain_name, domain_info, arch_name,
         }
         kernel_profiles.append(profile)
 
-    # BendersDriver simulation: iterate.
+    # HierarchicalCompiler simulation: iterate.
     convergence_rows = []
     cut_detail_rows = []
     accumulated_cuts = []
@@ -504,7 +504,7 @@ def main():
     convergence_csv = out_dir / "convergence.csv"
     cuts_csv = out_dir / "cut_details.csv"
 
-    print("E07: BendersDriver Convergence")
+    print("E07: HierarchicalCompiler Convergence")
     print(f"  git hash: {ghash}")
     print(f"  timestamp: {timestamp}")
     print()

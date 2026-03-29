@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace llvm {
 namespace json {
@@ -43,12 +44,29 @@ struct IIInfo {
   unsigned targetII;
 };
 
+/// Constraint suggesting a kernel should be excluded from a core type.
+struct ExclusionConstraint {
+  std::string kernel;
+  std::string coreType;
+};
+
+/// Constraint suggesting a core type needs more of a specific resource.
+struct CapacityConstraint {
+  std::string coreType;
+  std::string resourceName;
+  unsigned minRequired = 0;
+};
+
 /// An infeasibility cut reports why a kernel cannot be mapped to a core.
 struct InfeasibilityCut {
   std::string kernelName;
   std::string coreType;
   CutReason reason;
   std::variant<FUShortage, CongestionInfo, SPMInfo, IIInfo> evidence;
+
+  /// Suggested constraints for the L1 solver to add in subsequent iterations.
+  std::vector<std::variant<ExclusionConstraint, CapacityConstraint>>
+      suggestedConstraints;
 };
 
 // Enum <-> string conversion

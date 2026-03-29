@@ -6,7 +6,7 @@ then cross-compiles each domain's TDG on every other domain's architecture.
 Produces a 6x6 portability matrix.
 
 Uses real TDG structures and co-optimization parameters. The portability
-model is based on the BendersDriver mapping cost model: throughput degrades
+model is based on the HierarchicalCompiler mapping cost model: throughput degrades
 when the architecture's FU repertoire, core type mix, and SPM size don't
 match the cross-domain workload requirements.
 
@@ -308,7 +308,7 @@ def write_analysis(rows):
         f.write(f"\n### Provenance\n")
         f.write(f"- Git: {git_hash()}\n")
         f.write(f"- Date: {datetime.now(timezone.utc).isoformat()}\n")
-        f.write(f"- Model: BendersDriver cost model + Tier-A area model\n")
+        f.write(f"- Model: HierarchicalCompiler cost model + Tier-A area model\n")
 
     print(f"  Wrote {summary_path}")
 

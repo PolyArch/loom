@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/SystemCompiler/ArchitectureFactory.h"
-#include "loom/SystemCompiler/BendersDriver.h"
+#include "loom/SystemCompiler/SystemTypes.h"
 #include "loom/SystemCompiler/PrecompiledKernelLoader.h"
 #include "loom/SystemCompiler/TDGLowering.h"
 
@@ -144,8 +144,8 @@ createSyntheticWorkload(mlir::MLIRContext &ctx,
   return w;
 }
 
-/// Convert a BendersResult to a JSON object.
-static llvm::json::Object resultToJSON(const BendersResult &result,
+/// Convert a CompilationResult to a JSON object.
+static llvm::json::Object resultToJSON(const CompilationResult &result,
                                        const std::string &configName,
                                        double elapsedSec) {
   llvm::json::Object obj;
@@ -173,18 +173,18 @@ static llvm::json::Object resultToJSON(const BendersResult &result,
   return obj;
 }
 
-/// Run BendersDriver, time it, return JSON result.
+/// Run HierarchicalCompiler, time it, return JSON result.
 static llvm::json::Object
 runAndRecord(const std::string &configName, SystemArchitecture &arch,
              std::vector<KernelDesc> kernels,
              std::vector<ContractSpec> contracts, mlir::MLIRContext &ctx,
-             const BendersConfig &config) {
+             const CompilerConfig &config) {
   llvm::outs() << "  Running config: " << configName << " ("
                << kernels.size() << " kernels, " << contracts.size()
                << " contracts)\n";
 
   auto startTime = std::chrono::steady_clock::now();
-  BendersDriver driver(arch, std::move(kernels), std::move(contracts), ctx);
+  HierarchicalCompiler driver(arch, std::move(kernels), std::move(contracts), ctx);
   auto result = driver.compile(config);
   auto endTime = std::chrono::steady_clock::now();
 
@@ -217,7 +217,7 @@ static bool runSPMSweep(mlir::MLIRContext &ctx, const std::string &outDir) {
 
   std::vector<unsigned> spmSizes = {4096, 8192, 16384, 32768, 65536};
 
-  BendersConfig config;
+  CompilerConfig config;
   config.maxIterations = maxIter;
   config.mapperBudgetSeconds = mapperBudget;
   config.mapperSeed = 42;
@@ -297,7 +297,7 @@ static bool runCoreCountSweep(mlir::MLIRContext &ctx,
 
   std::vector<unsigned> coreCounts = {2, 4, 6, 8};
 
-  BendersConfig config;
+  CompilerConfig config;
   config.maxIterations = maxIter;
   config.mapperBudgetSeconds = mapperBudget;
   config.mapperSeed = 42;
@@ -379,7 +379,7 @@ static bool runCoreTypeSweep(mlir::MLIRContext &ctx,
 
   std::vector<unsigned> typeCounts = {1, 2, 3};
 
-  BendersConfig config;
+  CompilerConfig config;
   config.maxIterations = maxIter;
   config.mapperBudgetSeconds = mapperBudget;
   config.mapperSeed = 42;
@@ -521,7 +521,7 @@ static bool runNoCBandwidthSweep(mlir::MLIRContext &ctx,
       {4, 32, "4_flits"},
   };
 
-  BendersConfig config;
+  CompilerConfig config;
   config.maxIterations = maxIter;
   config.mapperBudgetSeconds = mapperBudget;
   config.mapperSeed = 42;

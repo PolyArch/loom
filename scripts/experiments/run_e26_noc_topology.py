@@ -2,7 +2,7 @@
 """E26: NoC Topology Comparison -- compare mesh, ring, hierarchical topologies.
 
 Uses the NoCScheduler with XY and YX routing, plus ring-style routing via
-the BendersDriver, to measure inter-core transfer costs across 6 benchmark
+the HierarchicalCompiler, to measure inter-core transfer costs across 6 benchmark
 domains under three topology variants on a 2x2 core grid.
 
 Topology models:

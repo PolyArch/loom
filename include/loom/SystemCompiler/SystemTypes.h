@@ -2,7 +2,7 @@
 //
 // Core data types for the Tapestry multi-core compilation pipeline.
 // Defines the SystemArchitecture, ContractSpec, L2Assignment, and
-// BendersResult structures that tie together the ADG, DFG, and Mapper.
+// CompilationResult structures that tie together the ADG, DFG, and Mapper.
 //
 //===----------------------------------------------------------------------===//
 
@@ -92,8 +92,8 @@ struct L2Assignment {
   unsigned unroutedEdges = 0;
 };
 
-/// Result of the full Benders compilation.
-struct BendersResult {
+/// Result of the full hierarchical compilation.
+struct CompilationResult {
   bool success = false;
   unsigned iterations = 0;
   double totalCost = 0.0;
@@ -105,8 +105,8 @@ struct BendersResult {
   std::optional<TemporalSchedule> temporalSchedule;
 };
 
-/// Configuration for the Benders decomposition driver.
-struct BendersConfig {
+/// Configuration for the hierarchical decomposition driver.
+struct CompilerConfig {
   unsigned maxIterations = 10;
   double mapperBudgetSeconds = 15.0;
   unsigned mapperSeed = 0;
@@ -116,20 +116,21 @@ struct BendersConfig {
   ExecutionModelConfig executionModel;
 };
 
-/// Drives the Benders decomposition for heterogeneous multi-core compilation.
+/// Drives the hierarchical decomposition for heterogeneous multi-core
+/// compilation.
 ///
 /// Takes a SystemArchitecture, a set of kernel DFGs, and inter-kernel
 /// contracts, then iteratively partitions kernels across core types using
 /// an L1 master / L2 sub-problem decomposition.
-class BendersDriver {
+class HierarchicalCompiler {
 public:
-  BendersDriver(const SystemArchitecture &arch,
-                std::vector<KernelDesc> kernels,
-                std::vector<ContractSpec> contracts,
-                mlir::MLIRContext &ctx);
+  HierarchicalCompiler(const SystemArchitecture &arch,
+                       std::vector<KernelDesc> kernels,
+                       std::vector<ContractSpec> contracts,
+                       mlir::MLIRContext &ctx);
 
   /// Run the decomposition and return the result.
-  BendersResult compile(const BendersConfig &config);
+  CompilationResult compile(const CompilerConfig &config);
 
 private:
   SystemArchitecture arch_;

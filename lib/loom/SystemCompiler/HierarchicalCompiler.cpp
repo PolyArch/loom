@@ -1,4 +1,4 @@
-#include "loom/SystemCompiler/BendersDriver.h"
+#include "loom/SystemCompiler/HierarchicalCompiler.h"
 #include "loom/SystemCompiler/BendersHelpers.h"
 #include "loom/SystemCompiler/BufferAllocator.h"
 #include "loom/SystemCompiler/DMAScheduler.h"
@@ -12,8 +12,6 @@
 
 #include "llvm/Support/raw_ostream.h"
 
-#include "llvm/Support/raw_ostream.h"
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -24,19 +22,20 @@
 namespace loom {
 namespace syscomp {
 
-BendersDriver::BendersDriver(const BendersDriverOptions &options)
+HierarchicalCompiler::HierarchicalCompiler(
+    const HierarchicalCompilerOptions &options)
     : options_(options) {}
 
-void BendersDriver::addTask(const BendersTask &task) {
+void HierarchicalCompiler::addTask(const CompilerTask &task) {
   tasks_.push_back(task);
 }
 
-void BendersDriver::addEdge(const BendersEdge &edge) {
+void HierarchicalCompiler::addEdge(const TaskEdge &edge) {
   edges_.push_back(edge);
 }
 
-BendersResult BendersDriver::solve() {
-  BendersResult result;
+CompilerResult HierarchicalCompiler::solve() {
+  CompilerResult result;
 
   if (tasks_.empty()) {
     result.feasible = true;
@@ -124,19 +123,21 @@ BendersResult BendersDriver::solve() {
 } // namespace syscomp
 
 // -----------------------------------------------------------------------
-// tapestry::BendersDriver -- heterogeneous multi-core decomposition
+// tapestry::HierarchicalCompiler -- heterogeneous multi-core decomposition
 // -----------------------------------------------------------------------
 namespace tapestry {
 
-BendersDriver::BendersDriver(const SystemArchitecture &arch,
-                             std::vector<KernelDesc> kernels,
-                             std::vector<ContractSpec> contracts,
-                             mlir::MLIRContext &ctx)
+HierarchicalCompiler::HierarchicalCompiler(
+    const SystemArchitecture &arch,
+    std::vector<KernelDesc> kernels,
+    std::vector<ContractSpec> contracts,
+    mlir::MLIRContext &ctx)
     : arch_(arch), kernels_(std::move(kernels)),
       contracts_(std::move(contracts)), ctx_(ctx) {}
 
-BendersResult BendersDriver::compile(const BendersConfig &config) {
-  BendersResult result;
+CompilationResult
+HierarchicalCompiler::compile(const CompilerConfig &config) {
+  CompilationResult result;
 
   if (kernels_.empty()) {
     result.success = true;
@@ -173,7 +174,7 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
   mapperOpts.budgetSeconds = config.mapperBudgetSeconds;
   mapperOpts.seed = static_cast<int>(config.mapperSeed);
 
-  // Benders iteration state.
+  // Iteration state for the bilevel decomposition loop.
   std::vector<loom::InfeasibilityCut> accumulatedCuts;
   std::optional<loom::TapestryCompilationResult> bestResult;
   loom::AssignmentResult bestAssignment;
@@ -185,7 +186,7 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
   l1Opts.verbose = config.verbose;
 
   if (config.verbose) {
-    llvm::outs() << "BendersDriver: starting bilevel compilation\n"
+    llvm::outs() << "HierarchicalCompiler: starting bilevel compilation\n"
                  << "  kernels=" << kernels_.size()
                  << "  coreTypes=" << arch_.coreTypes.size()
                  << "  maxIter=" << config.maxIterations << "\n";
@@ -196,11 +197,11 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
     lastIteration = iter;
 
     if (config.verbose) {
-      llvm::outs() << "\n--- Benders iteration " << iter << " ---\n"
+      llvm::outs() << "\n--- iteration " << iter << " ---\n"
                    << "  accumulated cuts: " << accumulatedCuts.size() << "\n";
     }
 
-    // --- L1 MASTER PROBLEM ---
+    // --- L1 MASTER PROBLEM: assign kernels to core instances ---
     loom::AssignmentResult assignment =
         l1Assigner.solve(kernelProfiles, l1Contracts, l1Arch,
                          accumulatedCuts, l1Opts);
@@ -245,7 +246,7 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
         bufferAllocator.allocate(assignment, l1Contracts, nocSchedule,
                                 l1Arch, bufOpts);
 
-    // --- L2 SUBPROBLEMS ---
+    // --- L2 SUBPROBLEMS: map kernels to core hardware ---
     std::vector<loom::L2Assignment> l2Assignments =
         buildL2Assignments(assignment, kernelDFGs, l1Contracts, l1Arch);
 
@@ -340,11 +341,11 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
 
   // Finalize result.
   if (bestResult.has_value()) {
-    result = toBendersResult(bestResult.value(), kernels_, arch_,
-                             lastIteration);
+    result = toCompilationResult(bestResult.value(), kernels_, arch_,
+                                 lastIteration);
     result.success = true;
     if (config.verbose)
-      llvm::outs() << "\nBendersDriver: converged in "
+      llvm::outs() << "\nHierarchicalCompiler: converged in "
                    << lastIteration << " iterations\n";
   } else {
     result.success = false;
@@ -353,11 +354,11 @@ BendersResult BendersDriver::compile(const BendersConfig &config) {
         "no feasible mapping found in " +
         std::to_string(config.maxIterations) + " iterations";
     if (config.verbose)
-      llvm::outs() << "\nBendersDriver: FAILED - " << result.diagnostics
-                   << "\n";
+      llvm::outs() << "\nHierarchicalCompiler: FAILED - "
+                   << result.diagnostics << "\n";
   }
 
-  // Compute temporal schedule using the Benders assignment result.
+  // Compute temporal schedule using the assignment result.
   if (result.success && bestResult.has_value()) {
     loom::TemporalSchedule schedule;
     std::string schedErr = computeTemporalSchedule(

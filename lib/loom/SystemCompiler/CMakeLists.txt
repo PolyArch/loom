@@ -1,7 +1,9 @@
 add_library(LoomSystemCompiler STATIC
   ArchitectureFactory.cpp
-  BendersDriver.cpp
+  AssignmentPlan.cpp
   BendersHelpers.cpp
+  HierarchicalCompiler.cpp
+  MappingResult.cpp
   BufferAllocator.cpp
   Contract.cpp
   CostSummary.cpp

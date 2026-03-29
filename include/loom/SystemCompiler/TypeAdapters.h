@@ -5,7 +5,7 @@
 //
 //   1. loom::tapestry  -- MLIR-centric types (SystemArchitecture, KernelDesc)
 //   2. loom (root)     -- abstract types (SystemArchitecture, KernelProfile)
-//   3. loom::syscomp   -- legacy types (BendersTask, BendersResult)
+//   3. loom::syscomp   -- legacy types (CompilerTask, CompilerResult)
 //
 // These adapters operate at namespace boundaries so that existing components
 // (L1CoreAssigner, L2CoreCompiler, BendersHelpers, NoCScheduler) can be
@@ -74,13 +74,13 @@ mlir::ModuleOp findCoreADG(const tapestry::SystemArchitecture &tapArch,
 void populateL2ADGs(std::vector<L2Assignment> &l2Assignments,
                     const tapestry::SystemArchitecture &tapArch);
 
-/// Convert L2Results and L1 assignment into a tapestry::BendersResult for
-/// returning from the tapestry::BendersDriver.
-tapestry::BendersResult
-toBendersResult(const TapestryCompilationResult &compResult,
-                const std::vector<tapestry::KernelDesc> &kernels,
-                const tapestry::SystemArchitecture &arch,
-                unsigned iterations);
+/// Convert L2Results and L1 assignment into a tapestry::CompilationResult for
+/// returning from the tapestry::HierarchicalCompiler.
+tapestry::CompilationResult
+toCompilationResult(const TapestryCompilationResult &compResult,
+                    const std::vector<tapestry::KernelDesc> &kernels,
+                    const tapestry::SystemArchitecture &arch,
+                    unsigned iterations);
 
 /// Serialize a TapestryCompilationResult as JSON and write to the given path.
 /// Returns true on success.

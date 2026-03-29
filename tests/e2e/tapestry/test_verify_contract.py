@@ -116,7 +116,7 @@ class TestBackpressureWarning:
 
 
 class TestContractInferencePipeline:
-    """B5: ContractInference runs before BendersDriver in the pipeline."""
+    """B5: ContractInference runs before HierarchicalCompiler in the pipeline."""
 
     def test_inference_in_verbose_pipeline(
         self, tapestry_compile_bin, simple_2kernel_mlir, arch_2x2_json, tmp_output_dir
@@ -139,7 +139,7 @@ class TestContractInferencePipeline:
         combined = result.stdout + result.stderr
         # Should show ContractInference or compilation activity
         has_inference = any(kw in combined for kw in [
-            "ContractInference", "Inference", "BendersDriver", "Benders"
+            "ContractInference", "Inference", "HierarchicalCompiler", "bilevel"
         ])
         assert has_inference, (
             "Expected inference/compilation activity in verbose output.\n"

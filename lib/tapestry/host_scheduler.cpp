@@ -235,13 +235,13 @@ std::vector<SyncBarrier> HostScheduler::planBarriers(
 HostSchedule HostScheduler::buildSchedule(
     const std::vector<KernelDesc> &kernels,
     const std::vector<ContractSpec> &contracts,
-    const BendersResult &assignments,
+    const CompilationResult &assignments,
     const SystemArchitecture &arch) {
 
   HostSchedule schedule;
   schedule.pipelineName = arch.name;
 
-  // Build a lookup from kernel name to its BendersResult assignment.
+  // Build a lookup from kernel name to its CompilationResult assignment.
   std::unordered_map<std::string, const L2Assignment *> assignMap;
   for (const auto &a : assignments.assignments)
     assignMap[a.kernelName] = &a;

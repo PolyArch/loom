@@ -110,8 +110,8 @@ struct CoOptResult {
   };
   std::vector<RoundRecord> history;
 
-  /// Final BendersResult from the best SW step.
-  loom::tapestry::BendersResult bestBendersResult;
+  /// Final CompilationResult from the best SW step.
+  loom::tapestry::CompilationResult bestCompilationResult;
 
   /// Diagnostic messages.
   std::string diagnostics;
@@ -162,7 +162,7 @@ buildDefaultArchitecture(const std::vector<loom::KernelProfile> &profiles);
 //===----------------------------------------------------------------------===//
 
 /// Convert loom::ContractSpec (from Contract.h) to loom::tapestry::ContractSpec
-/// (from SystemTypes.h) for BendersDriver compatibility.
+/// (from SystemTypes.h) for HierarchicalCompiler compatibility.
 std::vector<loom::tapestry::ContractSpec>
 toLoomTapestryContracts(const std::vector<loom::ContractSpec> &loomContracts);
 
@@ -175,7 +175,7 @@ fromLoomTapestryContracts(
 // Helper: update contracts from SW result
 //===----------------------------------------------------------------------===//
 
-/// Propagate achieved rates from the SW optimization BendersResult back
+/// Propagate achieved rates from the SW optimization CompilationResult back
 /// into loom::ContractSpec achieved fields.
 void updateContractsFromSW(
     std::vector<loom::tapestry::ContractSpec> &contracts,

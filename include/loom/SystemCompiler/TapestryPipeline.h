@@ -1,7 +1,7 @@
 #ifndef LOOM_SYSTEMCOMPILER_TAPESTRYPIPELINE_H
 #define LOOM_SYSTEMCOMPILER_TAPESTRYPIPELINE_H
 
-#include "loom/SystemCompiler/BendersDriver.h"
+#include "loom/SystemCompiler/HierarchicalCompiler.h"
 #include "loom/SystemCompiler/ExecutionModel.h"
 #include "loom/TDG/ContractLegalityChecker.h"
 #include "loom/MultiCoreSim/MultiCoreSimSession.h"
@@ -19,36 +19,36 @@ namespace syscomp {
 // End-to-end pipeline for the Tapestry system compiler.
 //
 // The pipeline orchestrates three stages:
-//   1. Benders decomposition: partition tasks across cores.
+//   1. Hierarchical decomposition: partition tasks across cores.
 //   2. Contract legality: validate that data-movement contracts are legal.
 //   3. Multi-core simulation: estimate end-to-end latency.
 //
 // This class wires the three subsystems together.
 class TapestryPipeline {
 public:
-  explicit TapestryPipeline(const BendersDriverOptions &options);
+  explicit TapestryPipeline(const HierarchicalCompilerOptions &options);
 
   // Add a task to the pipeline.
-  void addTask(const BendersTask &task);
+  void addTask(const CompilerTask &task);
 
   // Add an edge (data dependency) to the pipeline.
-  void addEdge(const BendersEdge &edge);
+  void addEdge(const TaskEdge &edge);
 
   // Run the full pipeline: partition, check legality, simulate.
   // Returns an error string on failure, empty string on success.
   std::string run();
 
   // Accessors for results after a successful run().
-  const BendersResult &getBendersResult() const { return bendersResult_; }
+  const CompilerResult &getCompilerResult() const { return compilerResult_; }
   const mcsim::MultiCoreSimResult &getSimResult() const { return simResult_; }
   bool legalityPassed() const { return legalityPassed_; }
 
 private:
-  BendersDriverOptions options_;
-  std::vector<BendersTask> tasks_;
-  std::vector<BendersEdge> edges_;
+  HierarchicalCompilerOptions options_;
+  std::vector<CompilerTask> tasks_;
+  std::vector<TaskEdge> edges_;
 
-  BendersResult bendersResult_;
+  CompilerResult compilerResult_;
   mcsim::MultiCoreSimResult simResult_;
   bool legalityPassed_ = false;
 };
@@ -66,7 +66,7 @@ enum class PipelineStage {
   RTLGEN,
 };
 
-/// Benders decomposition options for the config-driven pipeline.
+/// Hierarchical compiler options for the config-driven pipeline.
 struct PipelineBendersOptions {
   unsigned maxIterations = 10;
   double costTighteningThreshold = 0.01;

@@ -1,4 +1,4 @@
-"""Verification tests for BendersDriver (C01) and infeasibility cut feedback.
+"""Verification tests for HierarchicalCompiler (C01) and infeasibility cut feedback.
 
 Group A tests: Validates that the Benders decomposition bilevel loop
 runs real iterations, invokes L1 and L2, produces meaningful diagnostics,
@@ -42,9 +42,9 @@ class TestBendersRealIteration:
         )
 
         combined = result.stdout + result.stderr
-        # BendersDriver should start and announce itself
-        assert "BendersDriver" in combined or "Benders" in combined, (
-            "Expected BendersDriver invocation in verbose output.\n"
+        # HierarchicalCompiler should start and announce itself
+        assert "HierarchicalCompiler" in combined or "bilevel" in combined, (
+            "Expected HierarchicalCompiler invocation in verbose output.\n"
             f"Output snippet:\n{combined[:1500]}"
         )
 
@@ -70,7 +70,7 @@ class TestBendersRealIteration:
         # Look for iteration marker
         has_iteration = (
             "iteration 1" in combined.lower() or
-            "--- Benders iteration 1 ---" in combined
+            "--- iteration 1 ---" in combined
         )
         assert has_iteration, (
             "Expected at least iteration 1 in Benders output.\n"
@@ -223,7 +223,7 @@ class TestBendersInfeasibilityCuts:
 
 
 class TestBendersHelpers:
-    """A4: BendersDriver reports iteration count and kernel information."""
+    """A4: HierarchicalCompiler reports iteration count and kernel information."""
 
     def test_kernel_count_reported(
         self, tapestry_compile_bin, simple_2kernel_mlir, arch_2x2_json, tmp_output_dir

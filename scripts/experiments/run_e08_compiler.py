@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E08: Hierarchical vs Flat Compiler -- compare bilevel BendersDriver
+"""E08: Hierarchical vs Flat Compiler -- compare bilevel HierarchicalCompiler
 against greedy round-robin and random assignment baselines.
 
 Usage:
@@ -201,7 +201,7 @@ def compute_avg_ii(assignment, kernels):
 
 
 def compile_hierarchical(kernels, contracts, cores, max_iter=10):
-    """Simulate bilevel BendersDriver compilation."""
+    """Simulate bilevel HierarchicalCompiler compilation."""
     start = time.time()
     accumulated_cuts = set()
     best_assignment = None

@@ -3,7 +3,7 @@
 transforms improve system throughput beyond the base bilevel compiler.
 
 Four configurations:
-  (a) No transforms (BendersDriver only)
+  (a) No transforms (HierarchicalCompiler only)
   (b) Retile only (may_retile=true, others false)
   (c) Replicate only (may_replicate=true, others false)
   (d) All transforms enabled
@@ -309,7 +309,7 @@ def try_replicate(kernels, contracts, assignment, cores):
 
 
 def bilevel_compile(kernels, contracts, cores, max_iter=10):
-    """Run bilevel BendersDriver compilation (no transforms)."""
+    """Run bilevel HierarchicalCompiler compilation (no transforms)."""
     accumulated_cuts = set()
     best_assignment = None
     best_objective = float("inf")

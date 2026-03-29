@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real Tier-1 vs Tier-2 correlation experiment for the DSE proxy model.
 
-Replaces the fabricated R^2 data. Samples design points, evaluates each with
+Samples design points, evaluates each with
 both the analytical resource model (Tier-1) and a real tapestry-pipeline
 compile (Tier-2), then computes honest correlation metrics.
 

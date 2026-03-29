@@ -21,7 +21,7 @@ struct DerivedContractMetrics {
   int64_t dataVolume = 0;
 
   /// True when producer and consumer are mapped to different cores
-  /// (set by BendersDriver L1 during co-optimization).
+  /// (set by HierarchicalCompiler L1 during co-optimization).
   bool crossesCores = false;
 
   /// Actual production rate achieved after Loom mapper.
