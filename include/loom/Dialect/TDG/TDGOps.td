@@ -75,39 +75,57 @@ def TDG_KernelOp : TDG_Op<"kernel", [
 }
 
 //===----------------------------------------------------------------------===//
-// tdg.contract - First-class contract on a producer->consumer edge
+// tdg.contract - Edge contract (Ordering, Throughput, Placement, Shape)
 //===----------------------------------------------------------------------===//
 def TDG_ContractOp : TDG_Op<"contract", [
     HasParent<"GraphOp">
   ]> {
-  let summary = "Contract on an inter-kernel communication edge";
+  let summary = "TDC edge contract on a producer->consumer communication edge";
   let description = [{
-    Specifies the communication contract between a producer kernel and
-    a consumer kernel. Includes ordering semantics, rate constraints,
-    buffering parameters, memory visibility, and transformation permissions.
+    Specifies the TDC edge contract between a producer kernel and a consumer
+    kernel. The 3 required attributes identify the edge; the 4 optional
+    attributes specify the TDC edge dimensions:
+      - ordering: element delivery order (FIFO, UNORDERED, SYMBOLIC)
+      - throughput: symbolic throughput expression
+      - placement: memory placement (LOCAL_SPM, SHARED_L2, EXTERNAL, AUTO)
+      - tile_shape: symbolic tile shape expression (e.g. "[128, hidden_dim]")
+
+    Dimensions left unspecified are "unconstrained" and will be determined by
+    the compiler.
   }];
 
   let arguments = (ins
     FlatSymbolRefAttr:$producer,
     FlatSymbolRefAttr:$consumer,
-    StrAttr:$ordering,
     TypeAttr:$data_type,
-    OptionalAttr<AffineMapAttr>:$production_rate,
-    OptionalAttr<AffineMapAttr>:$consumption_rate,
-    OptionalAttr<DenseI64ArrayAttr>:$steady_state_ratio,
-    OptionalAttr<DenseI64ArrayAttr>:$tile_shape,
-    OptionalAttr<I64Attr>:$min_buffer_elements,
-    OptionalAttr<I64Attr>:$max_buffer_elements,
-    DefaultValuedStrAttr<StrAttr, "BLOCK">:$backpressure,
-    DefaultValuedAttr<BoolAttr, "false">:$double_buffering,
-    DefaultValuedStrAttr<StrAttr, "LOCAL_SPM">:$visibility,
-    DefaultValuedStrAttr<StrAttr, "EAGER">:$producer_writeback,
-    DefaultValuedStrAttr<StrAttr, "NONE">:$consumer_prefetch,
-    DefaultValuedAttr<BoolAttr, "true">:$may_fuse,
-    DefaultValuedAttr<BoolAttr, "true">:$may_replicate,
-    DefaultValuedAttr<BoolAttr, "true">:$may_pipeline,
-    DefaultValuedAttr<BoolAttr, "false">:$may_reorder,
-    DefaultValuedAttr<BoolAttr, "true">:$may_retile
+    OptionalAttr<StrAttr>:$ordering,
+    OptionalAttr<StrAttr>:$throughput,
+    OptionalAttr<StrAttr>:$placement,
+    OptionalAttr<StrAttr>:$tile_shape
+  );
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// tdg.path_contract - Path contract (Latency across a chain of edges)
+//===----------------------------------------------------------------------===//
+def TDG_PathContractOp : TDG_Op<"path_contract", [
+    HasParent<"GraphOp">
+  ]> {
+  let summary = "TDC path contract specifying latency across a chain of edges";
+  let description = [{
+    Specifies a latency constraint on a path from start_edge to end_edge.
+    Both start_edge and end_edge reference tdg.contract operations within
+    the same parent graph. The latency attribute is a symbolic expression
+    for the upper-bound cycle count along the path.
+  }];
+
+  let arguments = (ins
+    FlatSymbolRefAttr:$start_edge,
+    FlatSymbolRefAttr:$end_edge,
+    StrAttr:$latency
   );
 
   let hasCustomAssemblyFormat = 1;

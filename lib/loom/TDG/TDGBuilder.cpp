@@ -49,16 +49,15 @@ ContractHandle TaskDataflowGraph::connect(KernelHandle producer,
   return ContractHandle{static_cast<unsigned>(contracts_.size() - 1)};
 }
 
-void TaskDataflowGraph::setShape(ContractHandle c,
-                                 const std::string &shapeExpr) {
+void TaskDataflowGraph::setTileShape(ContractHandle c,
+                                     const std::string &shape) {
   assert(c.index < contracts_.size() && "invalid contract handle");
-  contracts_[c.index].shape = shapeExpr;
+  contracts_[c.index].tileShape = shape;
 }
 
-void TaskDataflowGraph::setPlacement(ContractHandle c,
-                                     const std::string &placement) {
+void TaskDataflowGraph::setPlacement(ContractHandle c, Placement plc) {
   assert(c.index < contracts_.size() && "invalid contract handle");
-  contracts_[c.index].placement = placement;
+  contracts_[c.index].placement = plc;
 }
 
 void TaskDataflowGraph::setDataType(ContractHandle c,
@@ -73,9 +72,8 @@ void TaskDataflowGraph::setThroughput(ContractHandle c,
   contracts_[c.index].throughput = expr;
 }
 
-void TaskDataflowGraph::setDataVolume(ContractHandle c, uint64_t volume) {
-  assert(c.index < contracts_.size() && "invalid contract handle");
-  contracts_[c.index].dataVolume = volume;
+void TaskDataflowGraph::setVisibility(ContractHandle c, Visibility vis) {
+  setPlacement(c, vis);
 }
 
 OwningOpRef<ModuleOp> TaskDataflowGraph::buildMLIR(MLIRContext &ctx) {
@@ -140,38 +138,32 @@ OwningOpRef<ModuleOp> TaskDataflowGraph::buildMLIR(MLIRContext &ctx) {
     else
       dataType = builder.getF32Type(); // fallback
 
-    // Map placement string to the TDG dialect's visibility attribute.
-    StringRef visibilityStr = "LOCAL_SPM";
-    if (cd.placement == "LOCAL_SPM")
-      visibilityStr = "LOCAL_SPM";
-    else if (cd.placement == "SHARED_L2")
-      visibilityStr = "SHARED_L2";
-    else if (cd.placement == "EXTERNAL")
-      visibilityStr = "EXTERNAL_DRAM";
-    // "AUTO" maps to default "LOCAL_SPM"
+    // Build optional string attributes
+    StringAttr orderingAttr;
+    if (cd.ordering)
+      orderingAttr = builder.getStringAttr(orderingToString(*cd.ordering));
+
+    StringAttr throughputAttr;
+    if (cd.throughput)
+      throughputAttr = builder.getStringAttr(*cd.throughput);
+
+    StringAttr placementAttr;
+    if (cd.placement)
+      placementAttr = builder.getStringAttr(placementToString(*cd.placement));
+
+    StringAttr tileShapeAttr;
+    if (cd.tileShape)
+      tileShapeAttr = builder.getStringAttr(*cd.tileShape);
 
     builder.create<ContractOp>(
         loc,
         /*producer=*/kernels_[cd.producerIdx].name,
         /*consumer=*/kernels_[cd.consumerIdx].name,
-        /*ordering=*/StringRef(orderingToString(cd.ordering)),
         /*data_type=*/dataType,
-        /*production_rate=*/AffineMapAttr(),
-        /*consumption_rate=*/AffineMapAttr(),
-        /*steady_state_ratio=*/DenseI64ArrayAttr(),
-        /*tile_shape=*/DenseI64ArrayAttr(),
-        /*min_buffer_elements=*/IntegerAttr(),
-        /*max_buffer_elements=*/IntegerAttr(),
-        /*backpressure=*/StringRef("BLOCK"),
-        /*double_buffering=*/false,
-        /*visibility=*/visibilityStr,
-        /*producer_writeback=*/StringRef("EAGER"),
-        /*consumer_prefetch=*/StringRef("NONE"),
-        /*may_fuse=*/true,
-        /*may_replicate=*/true,
-        /*may_pipeline=*/true,
-        /*may_reorder=*/false,
-        /*may_retile=*/true);
+        /*ordering=*/orderingAttr,
+        /*throughput=*/throughputAttr,
+        /*placement=*/placementAttr,
+        /*tile_shape=*/tileShapeAttr);
   }
 
   return module;

@@ -178,7 +178,7 @@ void updateContractsFromSW(
     std::vector<lt::ContractSpec> &contracts,
     const TDGOptimizeResult &swResult) {
   // Propagate achieved rates from the SW optimization result back into the
-  // contracts. The CompilationResult contains L2Assignment with core assignments
+  // contracts. The BendersResult contains L2Assignment with core assignments
   // that indicate which core each kernel ended up on.
   const auto &assignments = swResult.compilationResult.assignments;
 
@@ -425,6 +425,12 @@ runHWStep(const std::vector<lt::KernelDesc> &kernels,
 }
 
 //===----------------------------------------------------------------------===//
+// Hard upper bound for maxRounds
+//===----------------------------------------------------------------------===//
+
+static constexpr unsigned kMaxRoundsHardCap = 20;
+
+//===----------------------------------------------------------------------===//
 // co_optimize -- main entry point
 //===----------------------------------------------------------------------===//
 
@@ -449,17 +455,62 @@ CoOptResult co_optimize(
     return result;
   }
 
+  // Clamp maxRounds to the hard upper bound.
+  unsigned effectiveMaxRounds = coOpts.maxRounds;
+  if (effectiveMaxRounds > kMaxRoundsHardCap) {
+    if (coOpts.verbose)
+      llvm::errs() << "WARNING: maxRounds=" << effectiveMaxRounds
+                   << " exceeds hard cap " << kMaxRoundsHardCap
+                   << "; clamping to " << kMaxRoundsHardCap << "\n";
+    diag << "maxRounds clamped from " << effectiveMaxRounds
+         << " to " << kMaxRoundsHardCap << "\n";
+    effectiveMaxRounds = kMaxRoundsHardCap;
+  }
+
   if (coOpts.verbose)
     llvm::errs() << "Co-optimization: starting with "
                  << kernels.size() << " kernels, "
                  << contracts.size() << " contracts, "
-                 << "max " << coOpts.maxRounds << " rounds\n";
+                 << "max " << effectiveMaxRounds << " rounds"
+                 << (coOpts.enableSW ? "" : " [SW disabled]")
+                 << (coOpts.enableHW ? "" : " [HW disabled]")
+                 << "\n";
+
+  // Build effective sub-options with inner-layer flags applied.
+  CoOptOptions effectiveOpts = coOpts;
+  effectiveOpts.maxRounds = effectiveMaxRounds;
+
+  if (!coOpts.enableSWInner) {
+    effectiveOpts.swOpts.maxIterations = 1;
+  }
+  if (!coOpts.enableHWInner) {
+    effectiveOpts.hwInnerOpts.tier2Enabled = false;
+  }
 
   // Extract kernel profiles for HW optimizer.
   auto profiles = extractKernelProfiles(kernels);
 
   // Use provided architecture or derive a default one.
   lt::SystemArchitecture currentArch = initialArch;
+
+  // Warm-start detection: if the caller provides a non-empty architecture
+  // AND contracts with assigned core types (producerCoreType >= 0), the
+  // contracts came from a prior optimization. Skip buildDefaultArchitecture
+  // and run an initial SW evaluation to establish baseline throughput.
+  bool warmStart = false;
+  if (!currentArch.coreTypes.empty()) {
+    bool hasAssignedContracts = false;
+    for (const auto &c : contracts) {
+      if (c.elementCount > 0 && c.producerCoreType >= 0) {
+        hasAssignedContracts = true;
+        break;
+      }
+    }
+    if (hasAssignedContracts) {
+      warmStart = true;
+    }
+  }
+
   if (currentArch.coreTypes.empty()) {
     currentArch = buildDefaultArchitecture(profiles);
     if (coOpts.verbose)
@@ -469,78 +520,167 @@ CoOptResult co_optimize(
                    << " instance(s)\n";
   }
 
-  double bestThroughput = 0.0;
-  double bestArea = std::numeric_limits<double>::infinity();
+  // Initialize convergence monitor.
+  ConvergenceMonitor monitor;
+  monitor.improvementThreshold = coOpts.improvementThreshold;
+
   std::vector<lt::KernelDesc> bestKernels = kernels;
   std::vector<lt::ContractSpec> bestContracts = contracts;
   lt::SystemArchitecture bestArchSaved = currentArch;
-  lt::CompilationResult bestBenders;
+  lt::BendersResult bestBenders;
 
-  for (unsigned round = 1; round <= coOpts.maxRounds; ++round) {
+  // Track last-round metrics for carry-forward when a step is disabled.
+  double lastSwThroughput = 0.0;
+  double lastHwArea = std::numeric_limits<double>::infinity();
+  unsigned lastHwCoreTypes = 0;
+
+  // Warm-start: run one SW evaluation pass to establish baseline (round 0).
+  if (warmStart) {
+    result.warmStartUsed = true;
+    if (coOpts.verbose)
+      llvm::errs() << "  Warm-start: evaluating baseline with "
+                   << "pre-existing architecture + contracts\n";
+
+    TDGOptimizeResult warmSwResult =
+        runSWStep(kernels, contracts, currentArch, effectiveOpts, ctx);
+
+    if (warmSwResult.success) {
+      lastSwThroughput = warmSwResult.bestThroughput;
+      kernels = warmSwResult.optimizedKernels;
+      contracts = warmSwResult.optimizedContracts;
+      updateContractsFromSW(contracts, warmSwResult);
+      bestKernels = kernels;
+      bestContracts = contracts;
+      bestBenders = warmSwResult.compilationResult;
+
+      // Record round 0.
+      CoOptResult::RoundRecord r0;
+      r0.round = 0;
+      r0.swThroughput = lastSwThroughput;
+      r0.hwArea = std::numeric_limits<double>::infinity();
+      r0.swTransforms =
+          static_cast<unsigned>(warmSwResult.transformHistory.size());
+      r0.hwCoreTypes =
+          static_cast<unsigned>(currentArch.coreTypes.size());
+      r0.improved = true;
+      r0.reason = "warm-start baseline";
+      result.history.push_back(r0);
+
+      // Seed the convergence monitor.
+      monitor.bestThroughput = lastSwThroughput;
+
+      diag << "round,swThroughput,hwArea,swTransforms,hwCoreTypes,"
+           << "improved,reason\n";
+      diag << "0," << lastSwThroughput << ",inf,"
+           << r0.swTransforms << "," << r0.hwCoreTypes
+           << ",true,warm-start baseline\n";
+
+      if (coOpts.verbose)
+        llvm::errs() << "  Warm-start baseline: throughput="
+                     << lastSwThroughput << "\n";
+    } else {
+      if (coOpts.verbose)
+        llvm::errs() << "  Warm-start SW evaluation failed: "
+                     << warmSwResult.diagnostics
+                     << "; proceeding with standard loop\n";
+      diag << "warm-start SW evaluation failed; standard loop\n";
+    }
+  } else {
+    // CSV header for diagnostics.
+    diag << "round,swThroughput,hwArea,swTransforms,hwCoreTypes,"
+         << "improved,reason\n";
+  }
+
+  // Initialize last HW core types from current architecture.
+  lastHwCoreTypes =
+      static_cast<unsigned>(currentArch.coreTypes.size());
+
+  for (unsigned round = 1; round <= effectiveMaxRounds; ++round) {
     if (coOpts.verbose)
       llvm::errs() << "=== Round " << round << " / "
-                   << coOpts.maxRounds << " ===\n";
+                   << effectiveMaxRounds << " ===\n";
 
     CoOptResult::RoundRecord record;
     record.round = round;
 
+    double swThroughput = lastSwThroughput;
+    unsigned swTransforms = 0;
+    TDGOptimizeResult swResult;
+
     // ---- SW Step: fix hardware, optimize software ----
-    if (coOpts.verbose)
-      llvm::errs() << "  SW step: running TDGOptimizer...\n";
-
-    TDGOptimizeResult swResult =
-        runSWStep(kernels, contracts, currentArch, coOpts, ctx);
-
-    double swThroughput = 0.0;
-    if (swResult.success) {
-      swThroughput = swResult.bestThroughput;
-      kernels = swResult.optimizedKernels;
-      contracts = swResult.optimizedContracts;
-
+    if (effectiveOpts.enableSW) {
       if (coOpts.verbose)
-        llvm::errs() << "  SW step succeeded: throughput = "
-                     << swThroughput
-                     << ", iterations = " << swResult.iterations
-                     << ", transforms = "
-                     << swResult.transformHistory.size() << "\n";
+        llvm::errs() << "  SW step: running TDGOptimizer...\n";
+
+      swResult =
+          runSWStep(kernels, contracts, currentArch, effectiveOpts, ctx);
+
+      if (swResult.success) {
+        swThroughput = swResult.bestThroughput;
+        kernels = swResult.optimizedKernels;
+        contracts = swResult.optimizedContracts;
+        swTransforms =
+            static_cast<unsigned>(swResult.transformHistory.size());
+
+        if (coOpts.verbose)
+          llvm::errs() << "  SW step succeeded: throughput = "
+                       << swThroughput
+                       << ", iterations = " << swResult.iterations
+                       << ", transforms = " << swTransforms << "\n";
+      } else {
+        if (coOpts.verbose)
+          llvm::errs() << "  SW step failed: "
+                       << swResult.diagnostics << "\n";
+      }
+
+      // Propagate achieved rates back into contracts.
+      updateContractsFromSW(contracts, swResult);
     } else {
       if (coOpts.verbose)
-        llvm::errs() << "  SW step failed: "
-                     << swResult.diagnostics << "\n";
+        llvm::errs() << "  SW step: SKIPPED (enableSW=false), "
+                     << "carrying forward throughput="
+                     << lastSwThroughput << "\n";
     }
 
+    lastSwThroughput = swThroughput;
     record.swThroughput = swThroughput;
-    record.swTransforms =
-        static_cast<unsigned>(swResult.transformHistory.size());
-
-    // Propagate achieved rates back into contracts.
-    updateContractsFromSW(contracts, swResult);
+    record.swTransforms = swTransforms;
 
     // ---- HW Step: fix software, optimize hardware ----
-    if (coOpts.verbose)
-      llvm::errs() << "  HW step: running OUTER-HW + INNER-HW...\n";
+    double hwArea = lastHwArea;
+    unsigned hwCoreTypes = lastHwCoreTypes;
 
-    HWStepResult hwStep =
-        runHWStep(kernels, contracts, profiles, coOpts, ctx);
-
-    double hwArea = hwStep.totalArea;
-    if (hwStep.success) {
-      currentArch = hwStep.newArch;
-
+    if (effectiveOpts.enableHW) {
       if (coOpts.verbose)
-        llvm::errs() << "  HW step succeeded: area = " << hwArea
-                     << ", core types = "
-                     << hwStep.outerResult.topology.coreLibrary.numTypes()
-                     << "\n";
+        llvm::errs() << "  HW step: running OUTER-HW + INNER-HW...\n";
+
+      HWStepResult hwStep =
+          runHWStep(kernels, contracts, profiles, effectiveOpts, ctx);
+
+      if (hwStep.success) {
+        hwArea = hwStep.totalArea;
+        currentArch = hwStep.newArch;
+        hwCoreTypes =
+            hwStep.outerResult.topology.coreLibrary.numTypes();
+
+        if (coOpts.verbose)
+          llvm::errs() << "  HW step succeeded: area = " << hwArea
+                       << ", core types = " << hwCoreTypes << "\n";
+      } else {
+        if (coOpts.verbose)
+          llvm::errs() << "  HW step failed\n";
+        hwArea = std::numeric_limits<double>::infinity();
+      }
     } else {
       if (coOpts.verbose)
-        llvm::errs() << "  HW step failed\n";
-      hwArea = std::numeric_limits<double>::infinity();
+        llvm::errs() << "  HW step: SKIPPED (enableHW=false), "
+                     << "carrying forward area=" << lastHwArea << "\n";
     }
 
+    lastHwArea = hwArea;
+    lastHwCoreTypes = hwCoreTypes;
     record.hwArea = hwArea;
-    record.hwCoreTypes =
-        hwStep.outerResult.topology.coreLibrary.numTypes();
+    record.hwCoreTypes = hwCoreTypes;
 
     // ---- Pareto frontier update ----
     if (swThroughput > 0.0 &&
@@ -552,40 +692,37 @@ CoOptResult co_optimize(
       addParetoPoint(result.paretoFrontier, candidate);
     }
 
-    // ---- Convergence check ----
-    bool throughputImproved =
-        swThroughput >
-        bestThroughput * (1.0 + coOpts.improvementThreshold);
-    bool areaImproved =
-        hwArea <
-        bestArea * (1.0 - coOpts.improvementThreshold);
-    bool improved = throughputImproved || areaImproved;
+    // ---- Convergence check via ConvergenceMonitor ----
+    std::string reason;
+    bool improved = monitor.checkImproved(swThroughput, hwArea, reason);
 
     record.improved = improved;
+    record.reason = reason;
     result.history.push_back(record);
 
+    // Structured diagnostic line (CSV-ready).
+    diag << round << "," << swThroughput << "," << hwArea << ","
+         << swTransforms << "," << hwCoreTypes << ","
+         << (improved ? "true" : "false") << "," << reason << "\n";
+
     if (improved) {
-      if (swThroughput > bestThroughput) {
-        bestThroughput = swThroughput;
+      if (swThroughput > 0.0 &&
+          (swThroughput >= monitor.bestThroughput ||
+           effectiveOpts.enableSW)) {
         bestKernels = kernels;
         bestContracts = contracts;
-        bestBenders = swResult.compilationResult;
+        if (swResult.success)
+          bestBenders = swResult.compilationResult;
       }
-      if (hwArea < bestArea) {
-        bestArea = hwArea;
+      if (hwArea < std::numeric_limits<double>::infinity()) {
         bestArchSaved = currentArch;
       }
 
       if (coOpts.verbose)
-        llvm::errs() << "  Improved: throughput="
-                     << bestThroughput << " area=" << bestArea << "\n";
+        llvm::errs() << "  Improved: " << reason << "\n";
     } else {
       if (coOpts.verbose)
-        llvm::errs() << "  Converged: no significant improvement "
-                     << "(throughput=" << swThroughput
-                     << " vs best=" << bestThroughput
-                     << ", area=" << hwArea
-                     << " vs best=" << bestArea << ")\n";
+        llvm::errs() << "  Converged: " << reason << "\n";
       result.rounds = round;
       break;
     }
@@ -593,14 +730,19 @@ CoOptResult co_optimize(
     result.rounds = round;
   }
 
+  // If the loop ran to completion without breaking (all rounds improved),
+  // rounds was set inside the loop at the last iteration.
+  if (result.rounds == 0 && !result.history.empty())
+    result.rounds = result.history.back().round;
+
   // ---- Populate final result ----
-  result.success = bestThroughput > 0.0;
+  result.success = monitor.bestThroughput > 0.0;
   result.bestKernels = std::move(bestKernels);
   result.bestContracts = std::move(bestContracts);
   result.bestArch = std::move(bestArchSaved);
-  result.bestThroughput = bestThroughput;
-  result.bestArea = bestArea;
-  result.bestCompilationResult = std::move(bestBenders);
+  result.bestThroughput = monitor.bestThroughput;
+  result.bestArea = monitor.bestArea;
+  result.bestBendersResult = std::move(bestBenders);
   result.diagnostics = diag.str();
 
   if (coOpts.verbose) {

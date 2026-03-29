@@ -27,6 +27,7 @@
 #include "mlir/IR/MLIRContext.h"
 
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,60 @@ struct ParetoPoint {
   double throughput = 0.0;
   double area = 0.0;
   unsigned round = 0;
+};
+
+//===----------------------------------------------------------------------===//
+// ConvergenceMonitor
+//===----------------------------------------------------------------------===//
+
+/// Encapsulates convergence state for the co-optimization loop.
+/// Tracks best throughput and area, and determines whether a given round
+/// showed sufficient improvement to continue iterating.
+struct ConvergenceMonitor {
+  double bestThroughput = 0.0;
+  double bestArea = std::numeric_limits<double>::infinity();
+  double improvementThreshold = 0.01;
+
+  /// Check whether the given (throughput, area) pair represents a meaningful
+  /// improvement over the current best. Updates internal state and returns
+  /// true if improvement exceeds the threshold.
+  /// \param throughput   SW throughput from this round.
+  /// \param area         HW area from this round.
+  /// \param outReason    Human-readable string describing the decision.
+  /// \returns true if the round improved, false if converged.
+  bool checkImproved(double throughput, double area, std::string &outReason) {
+    bool throughputImproved =
+        throughput > bestThroughput * (1.0 + improvementThreshold);
+    bool areaImproved =
+        area < bestArea * (1.0 - improvementThreshold);
+    bool improved = throughputImproved || areaImproved;
+
+    std::ostringstream oss;
+    if (improved) {
+      if (throughputImproved && areaImproved)
+        oss << "both throughput and area improved";
+      else if (throughputImproved)
+        oss << "throughput improved";
+      else
+        oss << "area improved";
+    } else {
+      oss << "no significant improvement "
+          << "(throughput=" << throughput
+          << " vs best=" << bestThroughput
+          << ", area=" << area
+          << " vs best=" << bestArea << ")";
+    }
+    outReason = oss.str();
+
+    // Update tracked bests unconditionally so that downstream callers
+    // can compare against the latest observed values.
+    if (throughput > bestThroughput)
+      bestThroughput = throughput;
+    if (area < bestArea)
+      bestArea = area;
+
+    return improved;
+  }
 };
 
 //===----------------------------------------------------------------------===//
@@ -68,6 +123,23 @@ struct CoOptOptions {
 
   /// Enable verbose diagnostic logging.
   bool verbose = false;
+
+  /// Enable the SW optimization step. When false, the SW step is skipped
+  /// and throughput is carried forward from the previous round.
+  bool enableSW = true;
+
+  /// Enable the HW optimization step. When false, the HW step is skipped
+  /// and the architecture remains unchanged from the previous round.
+  bool enableHW = true;
+
+  /// Enable inner-layer SW iteration (L2 iterative re-mapping in
+  /// TDGOptimizer). When false, TDGOptimizeOptions::maxIterations is
+  /// forced to 1 (single-pass).
+  bool enableSWInner = true;
+
+  /// Enable inner-layer HW iteration (Tier-B BO + mapper). When false,
+  /// HWInnerOptimizerOptions::tier2Enabled is forced to false.
+  bool enableHWInner = true;
 };
 
 //===----------------------------------------------------------------------===//
@@ -107,11 +179,16 @@ struct CoOptResult {
     unsigned swTransforms = 0;
     unsigned hwCoreTypes = 0;
     bool improved = false;
+    std::string reason;
   };
   std::vector<RoundRecord> history;
 
-  /// Final CompilationResult from the best SW step.
-  loom::tapestry::CompilationResult bestCompilationResult;
+  /// Whether a warm-start initialization path was taken (baseline from
+  /// pre-existing architecture + contracts rather than default).
+  bool warmStartUsed = false;
+
+  /// Final BendersResult from the best SW step.
+  loom::tapestry::BendersResult bestBendersResult;
 
   /// Diagnostic messages.
   std::string diagnostics;
@@ -162,7 +239,7 @@ buildDefaultArchitecture(const std::vector<loom::KernelProfile> &profiles);
 //===----------------------------------------------------------------------===//
 
 /// Convert loom::ContractSpec (from Contract.h) to loom::tapestry::ContractSpec
-/// (from SystemTypes.h) for HierarchicalCompiler compatibility.
+/// (from SystemTypes.h) for BendersDriver compatibility.
 std::vector<loom::tapestry::ContractSpec>
 toLoomTapestryContracts(const std::vector<loom::ContractSpec> &loomContracts);
 
@@ -175,7 +252,7 @@ fromLoomTapestryContracts(
 // Helper: update contracts from SW result
 //===----------------------------------------------------------------------===//
 
-/// Propagate achieved rates from the SW optimization CompilationResult back
+/// Propagate achieved rates from the SW optimization BendersResult back
 /// into loom::ContractSpec achieved fields.
 void updateContractsFromSW(
     std::vector<loom::tapestry::ContractSpec> &contracts,

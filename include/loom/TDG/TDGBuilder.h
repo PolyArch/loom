@@ -48,7 +48,7 @@ private:
 ///   1. Create a TaskDataflowGraph with a name
 ///   2. Add kernels via kernel()
 ///   3. Connect kernels via connect()
-///   4. Optionally refine contracts (shape, placement, etc.)
+///   4. Optionally refine contracts (tile shape, placement, etc.)
 ///   5. Export to MLIR via buildMLIR() or exportMLIR()
 class TaskDataflowGraph {
 public:
@@ -67,20 +67,20 @@ public:
   ContractHandle connect(KernelHandle producer, KernelHandle consumer,
                          Ordering ordering = Ordering::FIFO);
 
-  /// Set the symbolic shape expression for a contract.
-  void setShape(ContractHandle c, const std::string &shapeExpr);
+  /// Set the tile shape for a contract (symbolic expression).
+  void setTileShape(ContractHandle c, const std::string &shape);
 
   /// Set the memory placement for a contract.
-  void setPlacement(ContractHandle c, const std::string &placement);
+  void setPlacement(ContractHandle c, Placement plc);
 
   /// Set the data type name for a contract.
   void setDataType(ContractHandle c, const std::string &typeName);
 
-  /// Set throughput expression for a contract.
+  /// Set the throughput expression for a contract.
   void setThroughput(ContractHandle c, const std::string &expr);
 
-  /// Set data volume (bytes per invocation) for a contract.
-  void setDataVolume(ContractHandle c, uint64_t volume);
+  /// Legacy API: setVisibility delegates to setPlacement.
+  void setVisibility(ContractHandle c, Visibility vis);
 
   /// Build the MLIR module containing the TDG graph.
   mlir::OwningOpRef<mlir::ModuleOp> buildMLIR(mlir::MLIRContext &ctx);
@@ -98,12 +98,11 @@ private:
   struct ContractDesc {
     unsigned producerIdx;
     unsigned consumerIdx;
-    Ordering ordering = Ordering::FIFO;
     std::string dataTypeName = "f32";
-    std::string placement = "AUTO";
-    std::string shape;
-    std::string throughput;
-    std::optional<uint64_t> dataVolume;
+    std::optional<Ordering> ordering;
+    std::optional<std::string> throughput;
+    std::optional<Placement> placement;
+    std::optional<std::string> tileShape;
   };
 
   std::string graphName_;

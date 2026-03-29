@@ -30,55 +30,21 @@ LogicalResult GraphOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult ContractOp::verify() {
-  // Check ordering/reorder consistency: FIFO + may_reorder=true is invalid
-  StringRef ord = getOrdering();
-  if (ord == "FIFO" && getMayReorder()) {
-    return emitOpError()
-           << "FIFO ordering is incompatible with may_reorder=true";
+  // Validate ordering value when present
+  if (auto ord = getOrdering()) {
+    if (*ord != "FIFO" && *ord != "UNORDERED" && *ord != "SYMBOLIC") {
+      return emitOpError() << "invalid ordering '" << *ord
+                           << "'; expected FIFO, UNORDERED, or SYMBOLIC";
+    }
   }
 
-  // Validate ordering value
-  if (ord != "FIFO" && ord != "UNORDERED") {
-    return emitOpError() << "invalid ordering '" << ord
-                         << "'; expected FIFO or UNORDERED";
-  }
-
-  // Validate backpressure value
-  StringRef bp = getBackpressure();
-  if (bp != "BLOCK" && bp != "DROP" && bp != "OVERWRITE") {
-    return emitOpError() << "invalid backpressure '" << bp
-                         << "'; expected BLOCK, DROP, or OVERWRITE";
-  }
-
-  // Validate visibility value
-  StringRef vis = getVisibility();
-  if (vis != "LOCAL_SPM" && vis != "SHARED_L2" && vis != "EXTERNAL_DRAM") {
-    return emitOpError()
-           << "invalid visibility '" << vis
-           << "'; expected LOCAL_SPM, SHARED_L2, or EXTERNAL_DRAM";
-  }
-
-  // Validate writeback value
-  StringRef wb = getProducerWriteback();
-  if (wb != "EAGER" && wb != "LAZY") {
-    return emitOpError() << "invalid producer_writeback '" << wb
-                         << "'; expected EAGER or LAZY";
-  }
-
-  // Validate prefetch value
-  StringRef pf = getConsumerPrefetch();
-  if (pf != "NONE" && pf != "NEXT_TILE" && pf != "DOUBLE_BUFFER") {
-    return emitOpError()
-           << "invalid consumer_prefetch '" << pf
-           << "'; expected NONE, NEXT_TILE, or DOUBLE_BUFFER";
-  }
-
-  // Validate steady_state_ratio has exactly 2 elements if present
-  if (auto ratio = getSteadyStateRatio()) {
-    if (ratio->size() != 2) {
+  // Validate placement value when present
+  if (auto plc = getPlacement()) {
+    if (*plc != "LOCAL_SPM" && *plc != "SHARED_L2" && *plc != "EXTERNAL" &&
+        *plc != "AUTO") {
       return emitOpError()
-             << "steady_state_ratio must have exactly 2 elements "
-             << "(numerator, denominator), got " << ratio->size();
+             << "invalid placement '" << *plc
+             << "'; expected LOCAL_SPM, SHARED_L2, EXTERNAL, or AUTO";
     }
   }
 
@@ -114,63 +80,39 @@ LogicalResult ContractOp::verify() {
 // ContractOp custom assembly format
 //===----------------------------------------------------------------------===//
 
-// Print: tdg.contract @producer -> @consumer {ordering = FIFO, ...}
+// Print: tdg.contract @producer -> @consumer {data_type = f32, ...}
 void ContractOp::print(OpAsmPrinter &p) {
   p << " " << getProducerAttr() << " -> " << getConsumerAttr();
   p << " {";
-  p << "ordering = " << getOrdering();
-  p << ", data_type = " << getDataType();
+  p << "data_type = " << getDataType();
 
-  if (auto rate = getProductionRateAttr())
-    p << ", production_rate = " << rate;
-  if (auto rate = getConsumptionRateAttr())
-    p << ", consumption_rate = " << rate;
-  if (auto ratio = getSteadyStateRatioAttr())
-    p << ", steady_state_ratio = " << ratio;
-  if (auto shape = getTileShapeAttr())
-    p << ", tile_shape = " << shape;
-  if (auto minBuf = getMinBufferElements())
-    p << ", min_buffer_elements = " << *minBuf;
-  if (auto maxBuf = getMaxBufferElements())
-    p << ", max_buffer_elements = " << *maxBuf;
-
-  // Only print non-default values
-  if (getBackpressure() != "BLOCK")
-    p << ", backpressure = " << getBackpressure();
-  if (getDoubleBuffering())
-    p << ", double_buffering = true";
-  if (getVisibility() != "LOCAL_SPM")
-    p << ", visibility = " << getVisibility();
-  if (getProducerWriteback() != "EAGER")
-    p << ", producer_writeback = " << getProducerWriteback();
-  if (getConsumerPrefetch() != "NONE")
-    p << ", consumer_prefetch = " << getConsumerPrefetch();
-  if (!getMayFuse())
-    p << ", may_fuse = false";
-  if (!getMayReplicate())
-    p << ", may_replicate = false";
-  if (!getMayPipeline())
-    p << ", may_pipeline = false";
-  if (getMayReorder())
-    p << ", may_reorder = true";
-  if (!getMayRetile())
-    p << ", may_retile = false";
+  if (auto ord = getOrderingAttr()) {
+    p << ", ordering = ";
+    p.printKeywordOrString(ord.getValue());
+  }
+  if (auto thr = getThroughputAttr()) {
+    p << ", throughput = ";
+    p.printKeywordOrString(thr.getValue());
+  }
+  if (auto plc = getPlacementAttr()) {
+    p << ", placement = ";
+    p.printKeywordOrString(plc.getValue());
+  }
+  if (auto ts = getTileShapeAttr()) {
+    p << ", tile_shape = ";
+    p.printKeywordOrString(ts.getValue());
+  }
 
   p << "}";
 
   // Print remaining attributes not covered above
-  SmallVector<StringRef> elidedAttrs = {
-      "producer",          "consumer",         "ordering",
-      "data_type",         "production_rate",  "consumption_rate",
-      "steady_state_ratio", "tile_shape",      "min_buffer_elements",
-      "max_buffer_elements", "backpressure",   "double_buffering",
-      "visibility",        "producer_writeback", "consumer_prefetch",
-      "may_fuse",          "may_replicate",    "may_pipeline",
-      "may_reorder",       "may_retile"};
+  SmallVector<StringRef> elidedAttrs = {"producer",   "consumer",  "data_type",
+                                        "ordering",   "throughput", "placement",
+                                        "tile_shape"};
   p.printOptionalAttrDict((*this)->getAttrs(), elidedAttrs);
 }
 
-// Parse: tdg.contract @producer -> @consumer {ordering = FIFO, ...}
+// Parse: tdg.contract @producer -> @consumer {data_type = f32, ...}
 ParseResult ContractOp::parse(OpAsmParser &parser, OperationState &result) {
   FlatSymbolRefAttr producerAttr, consumerAttr;
   if (parser.parseAttribute(producerAttr, "producer", result.attributes))
@@ -184,36 +126,14 @@ ParseResult ContractOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseLBrace())
     return failure();
 
-  // Mandatory: ordering
-  StringAttr orderingAttr;
-  if (parser.parseKeyword("ordering") || parser.parseEqual())
-    return failure();
-  std::string orderingStr;
-  if (parser.parseKeywordOrString(&orderingStr))
-    return failure();
-  orderingAttr = parser.getBuilder().getStringAttr(orderingStr);
-  result.addAttribute("ordering", orderingAttr);
-
   // Mandatory: data_type
-  if (parser.parseComma() || parser.parseKeyword("data_type") ||
-      parser.parseEqual())
+  if (parser.parseKeyword("data_type") || parser.parseEqual())
     return failure();
   TypeAttr dataTypeAttr;
   if (parser.parseAttribute(dataTypeAttr, "data_type", result.attributes))
     return failure();
 
-  // Set defaults for optional attributes
   auto &builder = parser.getBuilder();
-  result.addAttribute("backpressure", builder.getStringAttr("BLOCK"));
-  result.addAttribute("double_buffering", builder.getBoolAttr(false));
-  result.addAttribute("visibility", builder.getStringAttr("LOCAL_SPM"));
-  result.addAttribute("producer_writeback", builder.getStringAttr("EAGER"));
-  result.addAttribute("consumer_prefetch", builder.getStringAttr("NONE"));
-  result.addAttribute("may_fuse", builder.getBoolAttr(true));
-  result.addAttribute("may_replicate", builder.getBoolAttr(true));
-  result.addAttribute("may_pipeline", builder.getBoolAttr(true));
-  result.addAttribute("may_reorder", builder.getBoolAttr(false));
-  result.addAttribute("may_retile", builder.getBoolAttr(true));
 
   // Parse optional key-value pairs
   while (succeeded(parser.parseOptionalComma())) {
@@ -221,40 +141,16 @@ ParseResult ContractOp::parse(OpAsmParser &parser, OperationState &result) {
     if (parser.parseKeywordOrString(&key) || parser.parseEqual())
       return failure();
 
-    if (key == "production_rate" || key == "consumption_rate") {
-      AffineMapAttr mapAttr;
-      if (parser.parseAttribute(mapAttr, key, result.attributes))
-        return failure();
-    } else if (key == "steady_state_ratio" || key == "tile_shape") {
-      // Remove any existing attr with same name (won't be set yet for these)
-      DenseI64ArrayAttr arrayAttr;
-      if (parser.parseAttribute(arrayAttr, key, result.attributes))
-        return failure();
-    } else if (key == "min_buffer_elements" || key == "max_buffer_elements") {
-      IntegerAttr intAttr;
-      if (parser.parseAttribute(intAttr,
-                                builder.getIntegerType(64), key,
-                                result.attributes))
-        return failure();
-    } else if (key == "backpressure" || key == "visibility" ||
-               key == "producer_writeback" || key == "consumer_prefetch") {
-      // Override default
+    if (key == "ordering" || key == "throughput" || key == "placement" ||
+        key == "tile_shape") {
       std::string val;
       if (parser.parseKeywordOrString(&val))
         return failure();
-      // Remove existing default and set new value
-      result.attributes.set(key, builder.getStringAttr(val));
-    } else if (key == "double_buffering" || key == "may_fuse" ||
-               key == "may_replicate" || key == "may_pipeline" ||
-               key == "may_reorder" || key == "may_retile") {
-      bool val;
-      if (parser.parseKeywordOrString(&orderingStr))
-        return failure();
-      val = (orderingStr == "true");
-      result.attributes.set(key, builder.getBoolAttr(val));
+      result.addAttribute(key, builder.getStringAttr(val));
     } else {
       return parser.emitError(parser.getCurrentLocation(),
-                              "unknown contract attribute '") << key << "'";
+                              "unknown contract attribute '")
+             << key << "'";
     }
   }
 
@@ -262,6 +158,72 @@ ParseResult ContractOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   // Parse optional remaining attributes
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// PathContractOp verifier
+//===----------------------------------------------------------------------===//
+
+LogicalResult PathContractOp::verify() {
+  // Validate that start_edge and end_edge reference existing ContractOp
+  // symbols within the parent GraphOp. Since ContractOp does not have a
+  // SymbolName, we look for ContractOps whose producer->consumer pair
+  // matches the referenced name. The reference format is the edge name
+  // as a flat symbol ref.
+  //
+  // For now we just validate that the parent graph exists and the latency
+  // is non-empty. Full symbol resolution requires naming contracts.
+  if (getLatency().empty()) {
+    return emitOpError() << "latency expression must not be empty";
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// PathContractOp custom assembly format
+//===----------------------------------------------------------------------===//
+
+// Print: tdg.path_contract @edge0 -> @edge1 {latency = "4 * tile_m"}
+void PathContractOp::print(OpAsmPrinter &p) {
+  p << " " << getStartEdgeAttr() << " -> " << getEndEdgeAttr();
+  p << " {latency = ";
+  p.printKeywordOrString(getLatency());
+  p << "}";
+
+  SmallVector<StringRef> elidedAttrs = {"start_edge", "end_edge", "latency"};
+  p.printOptionalAttrDict((*this)->getAttrs(), elidedAttrs);
+}
+
+// Parse: tdg.path_contract @edge0 -> @edge1 {latency = "4 * tile_m"}
+ParseResult PathContractOp::parse(OpAsmParser &parser, OperationState &result) {
+  FlatSymbolRefAttr startEdgeAttr, endEdgeAttr;
+  if (parser.parseAttribute(startEdgeAttr, "start_edge", result.attributes))
+    return failure();
+  if (parser.parseArrow())
+    return failure();
+  if (parser.parseAttribute(endEdgeAttr, "end_edge", result.attributes))
+    return failure();
+
+  if (parser.parseLBrace())
+    return failure();
+
+  if (parser.parseKeyword("latency") || parser.parseEqual())
+    return failure();
+
+  std::string latencyStr;
+  if (parser.parseKeywordOrString(&latencyStr))
+    return failure();
+  result.addAttribute("latency",
+                       parser.getBuilder().getStringAttr(latencyStr));
+
+  if (parser.parseRBrace())
+    return failure();
+
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
