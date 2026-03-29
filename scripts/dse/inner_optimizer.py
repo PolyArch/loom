@@ -651,7 +651,20 @@ def evaluate_candidate_tier_b(
     If compile_fn is provided, it is called for each kernel as:
         compile_fn(params, kernel) -> KernelMappingResult
 
-    Otherwise, uses resource feasibility check as a proxy.
+    Otherwise, falls back to resource feasibility check as a proxy.
+    The proxy checks FU coverage and estimates II from op count / PE count,
+    which is a reasonable lower bound but does not capture routing
+    constraints or real mapping failures.
+
+    For real compilation, compile_fn should invoke the tapestry_compile
+    binary (or tapestry-pipeline with --enable-sim=false). This requires:
+      1. A concrete ADG MLIR file for the candidate (generated via the C++
+         ADGBuilder API or HWInnerADGGen from CoreDesignParams)
+      2. A TDG MLIR file for each kernel
+      3. The tapestry-pipeline binary on PATH
+    The compile_fn is responsible for generating the ADG, writing temp
+    files, invoking the subprocess, and parsing the output into a
+    KernelMappingResult with success/achieved_ii fields.
     """
     result = TierBResult()
     result.area = _estimate_area(params)

@@ -60,6 +60,14 @@ from .proxy_model import (
     ProxyScore,
     WorkloadProfile,
 )
+from .inner_optimizer import (
+    CoreDesignParams as InnerCoreDesignParams,
+    FreedomMask,
+    InnerDSEConfig,
+    InnerResult,
+    optimize_all_types,
+    optimize_single_type,
+)
 from .spectral_clustering import CoreTypeDiscovery
 from .system_graph_generator import (
     SystemGraphGenerator,
@@ -633,6 +641,9 @@ class OuterHWResult:
     # Type selection mask as type IDs
     selected_type_ids: List[str] = field(default_factory=list)
 
+    # Inner DSE results per core type (populated by refine_with_inner_dse)
+    inner_dse_results: Dict[str, InnerResult] = field(default_factory=dict)
+
     def summary(self) -> str:
         lines = [
             "OUTER-HW Optimization Result:",
@@ -651,6 +662,14 @@ class OuterHWResult:
         ]
         if self.pareto_front:
             lines.append(f"  Pareto front size: {len(self.pareto_front)}")
+        if self.inner_dse_results:
+            refined = sum(
+                1 for r in self.inner_dse_results.values() if r.success
+            )
+            lines.append(
+                f"  Inner DSE: {refined}/{len(self.inner_dse_results)} "
+                f"types refined"
+            )
         return "\n".join(lines)
 
 
@@ -668,11 +687,15 @@ class HWOuterOptimizer:
         config: Optional[DSEConfig] = None,
         bo_config: Optional[BOConfig] = None,
         tier_thresholds: Optional[TierThresholds] = None,
+        inner_dse_config: Optional[InnerDSEConfig] = None,
+        compile_fn=None,
     ):
         self.workload = workload
         self.dse_config = config or DSEConfig()
         self.bo_config = bo_config or self.dse_config.bo
         self.thresholds = tier_thresholds or self.dse_config.tier_thresholds
+        self.inner_dse_config = inner_dse_config or InnerDSEConfig()
+        self.compile_fn = compile_fn
 
         # Compute TDC bounds from contracts
         self.tdc_bounds = compute_tdc_bounds(workload)
@@ -848,6 +871,9 @@ class HWOuterOptimizer:
                 (iteration, self._best_score)
             )
 
+        # Run inner DSE refinement on the best selected core types
+        inner_results = self._refine_with_inner_dse()
+
         wall_time = time.time() - wall_start
 
         # Build the output topology spec
@@ -866,6 +892,7 @@ class HWOuterOptimizer:
             convergence_trace=list(self._convergence_trace),
             kernel_assignment=dict(self._best_assignment),
             selected_type_ids=list(self._best_selected_ids),
+            inner_dse_results=inner_results,
         )
 
     # -------------------------------------------------------------------
@@ -986,6 +1013,94 @@ class HWOuterOptimizer:
         return result
 
     # -------------------------------------------------------------------
+    # Inner DSE refinement
+    # -------------------------------------------------------------------
+
+    def _refine_with_inner_dse(self) -> Dict[str, InnerResult]:
+        """Run the inner DSE on each selected core type.
+
+        After the outer BO loop selects the best set of core types and
+        their instance counts, this method optimizes the free
+        microarchitectural dimensions (topology, decomposability,
+        ext-mem config, scalar I/O, etc.) for each selected type.
+
+        For each selected type, it:
+        1. Converts the library CoreDesignParams to inner-optimizer params
+        2. Determines the freedom mask (domain-specific vs combinatorial)
+        3. Collects the kernels assigned to this type
+        4. Runs InnerDSEDriver to sweep free dimensions
+        """
+        if not self._best_selected_ids or not self._best_assignment:
+            return {}
+
+        # Group kernels by assigned type index
+        type_kernel_map: Dict[int, List[KernelProfile]] = {}
+        for kernel in self.workload.kernels:
+            ti = self._best_assignment.get(kernel.name, -1)
+            if ti >= 0:
+                type_kernel_map.setdefault(ti, []).append(kernel)
+
+        # Build inner DSE configurations for each selected type
+        type_configs: List[
+            Tuple[str, InnerCoreDesignParams, FreedomMask, List[KernelProfile]]
+        ] = []
+
+        for ti, type_id in enumerate(self._best_selected_ids):
+            lib_params = get_core_design_params(type_id)
+            assigned_kernels = type_kernel_map.get(ti, [])
+
+            if not assigned_kernels:
+                continue
+
+            # Convert library params to inner optimizer CoreDesignParams
+            inner_params = _library_to_inner_params(lib_params, type_id)
+
+            # Determine freedom mask based on type category
+            is_domain_specific = type_id.startswith("D")
+            is_temporal = lib_params.is_temporal
+            if is_domain_specific:
+                mask = FreedomMask.domain_specific()
+            else:
+                mask = FreedomMask.combinatorial(is_temporal=is_temporal)
+
+            type_configs.append(
+                (type_id, inner_params, mask, assigned_kernels)
+            )
+
+        if not type_configs:
+            return {}
+
+        logger.info(
+            "Running inner DSE for %d selected core types: %s",
+            len(type_configs),
+            [tc[0] for tc in type_configs],
+        )
+
+        results = optimize_all_types(
+            type_configs,
+            config=self.inner_dse_config,
+            compile_fn=self.compile_fn,
+            parallel=False,
+        )
+
+        for type_id, result in results.items():
+            if result.success:
+                logger.info(
+                    "Inner DSE for %s: Tier-A=%.4f, Tier-B=%.4f, "
+                    "area=%.0f, evals=%d+%d",
+                    type_id,
+                    result.tier_a_score,
+                    result.tier_b_score,
+                    result.area_estimate,
+                    result.tier_a_evaluations,
+                    result.tier_b_evaluations,
+                )
+            else:
+                logger.warning("Inner DSE for %s: failed", type_id)
+
+        return results
+
+    # -------------------------------------------------------------------
     # Build output topology spec
     # -------------------------------------------------------------------
 
@@ -995,6 +1110,70 @@ class HWOuterOptimizer:
             return SystemTopologySpec()
 
         return self.graph_gen.generate(self._best_design)
+
+
+# ---------------------------------------------------------------------------
+# Helper: convert library CoreDesignParams to inner optimizer params
+# ---------------------------------------------------------------------------
+
+def _library_to_inner_params(
+    lib_params: CoreDesignParams,
+    type_id: str,
+) -> InnerCoreDesignParams:
+    """Convert a core_type_library.CoreDesignParams to inner_optimizer params.
+
+    The two modules use separate CoreDesignParams classes. The library version
+    stores FU counts (fu_alu_count, etc.), while the inner optimizer version
+    stores an FU repertoire list. This function bridges the two.
+    """
+    # Build FU repertoire from the library FU counts
+    fu_repertoire: List[str] = []
+
+    # ALU operations
+    if lib_params.fu_alu_count > 0:
+        fu_repertoire.extend([
+            "arith.addi", "arith.subi", "arith.andi", "arith.ori",
+            "arith.xori", "arith.shli", "arith.shrsi",
+        ])
+
+    # MUL operations
+    if lib_params.fu_mul_count > 0:
+        fu_repertoire.extend(["arith.muli", "arith.divsi"])
+
+    # FP operations
+    if lib_params.fu_fp_count > 0 or lib_params.has_fp:
+        fu_repertoire.extend([
+            "arith.addf", "arith.mulf", "arith.subf", "arith.divf",
+        ])
+
+    # Memory operations (always present if fu_mem_count > 0)
+    if lib_params.fu_mem_count > 0:
+        fu_repertoire.extend(["handshake.load", "handshake.store"])
+
+    # Common control operations
+    fu_repertoire.extend(["arith.cmpi", "arith.select"])
+
+    # Deduplicate while preserving order
+    seen: set = set()
+    unique_repertoire: List[str] = []
+    for op in fu_repertoire:
+        if op not in seen:
+            seen.add(op)
+            unique_repertoire.append(op)
+
+    return InnerCoreDesignParams(
+        pe_type="temporal" if lib_params.is_temporal else "spatial",
+        array_rows=lib_params.array_rows,
+        array_cols=lib_params.array_cols,
+        data_width=lib_params.data_width,
+        fu_repertoire=unique_repertoire,
+        spm_size_kb=lib_params.spm_size_kb,
+        spm_ld_ports=2 if lib_params.spm_size_kb > 0 else 0,
+        spm_st_ports=2 if lib_params.spm_size_kb > 0 else 0,
+        topology="chess",
+        instruction_slots=lib_params.instruction_slots,
+        num_registers=lib_params.num_registers,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1079,6 +1258,10 @@ def write_dse_results(
             for e in result.pareto_front
         ],
         "topology": result.topology.to_dict(),
+        "inner_dse": {
+            type_id: inner_res.to_dict()
+            for type_id, inner_res in result.inner_dse_results.items()
+        },
     }
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)

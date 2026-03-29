@@ -293,11 +293,22 @@ class SystemGraphGenerator:
 # ---------------------------------------------------------------------------
 
 def to_system_mlir(topology_spec: SystemTopologySpec) -> str:
-    """Generate a system-level Fabric MLIR module from the topology spec.
+    """Generate a structural system-level description from the topology spec.
 
-    This is a structural placeholder that produces valid MLIR syntax
-    with fabric.module and fabric.core ops. The actual ADG content per
-    core type is filled in by the inner DSE (C12).
+    WARNING: This produces pseudo-MLIR text for DSE visualization and
+    debugging purposes only. The output uses ops (fabric.core, fabric.l2bank,
+    fabric.router) that are NOT part of the real Fabric MLIR dialect.
+
+    For real, parseable system-level MLIR ADGs, use the C++ SystemADGBuilder
+    API (include/loom/ADG/SystemADGBuilder.h), which:
+      1. Accepts per-core ModuleOp from ADGBuilder
+      2. Composes them into a system fabric.module with NoC connectivity
+      3. Exports valid MLIR via exportMLIR()
+
+    The Python inner DSE (inner_optimizer.py) determines optimal per-core
+    microarchitectural params; the C++ HWInnerADGGen
+    (lib/loom/SystemCompiler/HWInnerADGGen.cpp) generates real ADGs
+    from those params using the ADGBuilder API.
     """
     lines = []
     lines.append('fabric.module @system {')
