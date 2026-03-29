@@ -30,45 +30,44 @@ tapestry::TaskGraph buildTransformerTDG() {
   tg.connect(k_qkv, k_attn)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({32, 64})
-      .rate(2048);
+      .shape("32x64")
+      .data_volume(2048);
 
   tg.connect(k_attn, k_soft)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({32, 128})
-      .rate(4096);
+      .shape("32x128")
+      .data_volume(4096);
 
   tg.connect(k_soft, k_out)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({32, 128})
-      .rate(4096);
+      .shape("32x128")
+      .data_volume(4096);
 
   tg.connect(k_out, k_ffn1)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({32, 512})
-      .rate(16384)
-      .double_buffering(true);
+      .shape("32x512")
+      .data_volume(16384);
 
   tg.connect(k_ffn1, k_gelu)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({32, 2048})
-      .rate(65536);
+      .shape("32x2048")
+      .data_volume(65536);
 
   tg.connect(k_gelu, k_ffn2)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({32, 2048})
-      .rate(65536);
+      .shape("32x2048")
+      .data_volume(65536);
 
   tg.connect(k_ffn2, k_ln)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({32, 512})
-      .rate(16384);
+      .shape("32x512")
+      .data_volume(16384);
 
   return tg;
 }

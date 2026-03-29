@@ -49,20 +49,16 @@ ContractHandle TaskDataflowGraph::connect(KernelHandle producer,
   return ContractHandle{static_cast<unsigned>(contracts_.size() - 1)};
 }
 
-void TaskDataflowGraph::setTileShape(ContractHandle c,
-                                     std::vector<int64_t> shape) {
+void TaskDataflowGraph::setShape(ContractHandle c,
+                                 const std::string &shapeExpr) {
   assert(c.index < contracts_.size() && "invalid contract handle");
-  contracts_[c.index].tileShape = std::move(shape);
+  contracts_[c.index].shape = shapeExpr;
 }
 
-void TaskDataflowGraph::setVisibility(ContractHandle c, Visibility vis) {
+void TaskDataflowGraph::setPlacement(ContractHandle c,
+                                     const std::string &placement) {
   assert(c.index < contracts_.size() && "invalid contract handle");
-  contracts_[c.index].visibility = vis;
-}
-
-void TaskDataflowGraph::setDoubleBuffering(ContractHandle c, bool enable) {
-  assert(c.index < contracts_.size() && "invalid contract handle");
-  contracts_[c.index].doubleBuffering = enable;
+  contracts_[c.index].placement = placement;
 }
 
 void TaskDataflowGraph::setDataType(ContractHandle c,
@@ -71,16 +67,15 @@ void TaskDataflowGraph::setDataType(ContractHandle c,
   contracts_[c.index].dataTypeName = typeName;
 }
 
-void TaskDataflowGraph::setBackpressure(ContractHandle c, Backpressure bp) {
+void TaskDataflowGraph::setThroughput(ContractHandle c,
+                                      const std::string &expr) {
   assert(c.index < contracts_.size() && "invalid contract handle");
-  contracts_[c.index].backpressure = bp;
+  contracts_[c.index].throughput = expr;
 }
 
-void TaskDataflowGraph::setBufferElements(ContractHandle c, int64_t minElems,
-                                          int64_t maxElems) {
+void TaskDataflowGraph::setDataVolume(ContractHandle c, uint64_t volume) {
   assert(c.index < contracts_.size() && "invalid contract handle");
-  contracts_[c.index].minBufferElements = minElems;
-  contracts_[c.index].maxBufferElements = maxElems;
+  contracts_[c.index].dataVolume = volume;
 }
 
 OwningOpRef<ModuleOp> TaskDataflowGraph::buildMLIR(MLIRContext &ctx) {
@@ -145,9 +140,15 @@ OwningOpRef<ModuleOp> TaskDataflowGraph::buildMLIR(MLIRContext &ctx) {
     else
       dataType = builder.getF32Type(); // fallback
 
-    DenseI64ArrayAttr tileShapeAttr;
-    if (!cd.tileShape.empty())
-      tileShapeAttr = builder.getDenseI64ArrayAttr(cd.tileShape);
+    // Map placement string to the TDG dialect's visibility attribute.
+    StringRef visibilityStr = "LOCAL_SPM";
+    if (cd.placement == "LOCAL_SPM")
+      visibilityStr = "LOCAL_SPM";
+    else if (cd.placement == "SHARED_L2")
+      visibilityStr = "SHARED_L2";
+    else if (cd.placement == "EXTERNAL")
+      visibilityStr = "EXTERNAL_DRAM";
+    // "AUTO" maps to default "LOCAL_SPM"
 
     builder.create<ContractOp>(
         loc,
@@ -158,18 +159,12 @@ OwningOpRef<ModuleOp> TaskDataflowGraph::buildMLIR(MLIRContext &ctx) {
         /*production_rate=*/AffineMapAttr(),
         /*consumption_rate=*/AffineMapAttr(),
         /*steady_state_ratio=*/DenseI64ArrayAttr(),
-        /*tile_shape=*/tileShapeAttr,
-        /*min_buffer_elements=*/
-        cd.minBufferElements > 0
-            ? builder.getI64IntegerAttr(cd.minBufferElements)
-            : IntegerAttr(),
-        /*max_buffer_elements=*/
-        cd.maxBufferElements > 0
-            ? builder.getI64IntegerAttr(cd.maxBufferElements)
-            : IntegerAttr(),
-        /*backpressure=*/StringRef(backpressureToString(cd.backpressure)),
-        /*double_buffering=*/cd.doubleBuffering,
-        /*visibility=*/StringRef(visibilityToString(cd.visibility)),
+        /*tile_shape=*/DenseI64ArrayAttr(),
+        /*min_buffer_elements=*/IntegerAttr(),
+        /*max_buffer_elements=*/IntegerAttr(),
+        /*backpressure=*/StringRef("BLOCK"),
+        /*double_buffering=*/false,
+        /*visibility=*/visibilityStr,
         /*producer_writeback=*/StringRef("EAGER"),
         /*consumer_prefetch=*/StringRef("NONE"),
         /*may_fuse=*/true,

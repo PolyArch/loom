@@ -116,10 +116,9 @@ static bool testTaskGraphContractPropagation() {
   tdg.connect(k1, k2)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .rate(256)
-      .tile_shape({32})
-      .visibility(tapestry::Visibility::LOCAL_SPM)
-      .may_retile(false);
+      .data_volume(256)
+      .shape("32")
+      .placement(tapestry::Placement::LOCAL_SPM);
 
   if (tdg.numKernels() != 2) {
     std::cerr << "FAIL: numKernels=" << tdg.numKernels() << "\n";
@@ -141,12 +140,8 @@ static bool testTaskGraphContractPropagation() {
     std::cerr << "FAIL: dataTypeName\n";
     return false;
   }
-  if (!c.rate || *c.rate != 256) {
-    std::cerr << "FAIL: rate\n";
-    return false;
-  }
-  if (c.mayRetile != false) {
-    std::cerr << "FAIL: mayRetile should be false\n";
+  if (!c.dataVolume || *c.dataVolume != 256) {
+    std::cerr << "FAIL: dataVolume\n";
     return false;
   }
 
@@ -207,20 +202,19 @@ static bool testTDGEmission() {
 // -------------------------------------------------------------------------
 static bool testDerivedMetricsBandwidth() {
   tapestry::Contract c;
-  c.rate = 512;
-  c.tileShape = std::vector<int64_t>{16};
+  c.dataVolume = 512;
 
   auto m = tapestry::computeDerivedMetrics(c, 4); // f32 = 4 bytes
 
-  // bandwidth = rate * element_size = 512 * 4 = 2048
+  // bandwidth = dataVolume * element_size = 512 * 4 = 2048
   if (std::abs(m.bandwidth - 2048.0) > 1e-6) {
     std::cerr << "FAIL: bandwidth=" << m.bandwidth << " expected 2048\n";
     return false;
   }
 
-  // dataVolume = rate * tile_elements * element_size = 512 * 16 * 4 = 32768
-  if (m.dataVolume != 32768) {
-    std::cerr << "FAIL: dataVolume=" << m.dataVolume << " expected 32768\n";
+  // dataVolume = volume * element_size = 512 * 4 = 2048
+  if (m.dataVolume != 2048) {
+    std::cerr << "FAIL: dataVolume=" << m.dataVolume << " expected 2048\n";
     return false;
   }
 

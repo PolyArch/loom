@@ -52,7 +52,7 @@ computeDerivedMetrics(const Contract &contract, unsigned elementSizeBytes);
 /// \param visibility    Memory visibility for the edge (from contract or
 ///                      inference).
 void updatePostAssignment(DerivedContractMetrics &metrics, bool crossesCores,
-                          Visibility visibility);
+                          Placement placement);
 
 /// Return the byte-width of a data-type name (e.g. "f32" -> 4, "i8" -> 1).
 /// Returns 0 for unrecognized type names.

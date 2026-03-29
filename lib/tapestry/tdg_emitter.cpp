@@ -60,37 +60,22 @@ static StringRef orderingStr(std::optional<Ordering> o) {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: convert tapestry::Visibility to loom visibility string.
+// Helper: convert tapestry::Placement to string.
 // ---------------------------------------------------------------------------
-static StringRef visibilityStr(std::optional<Visibility> v) {
-  if (!v)
-    return "LOCAL_SPM"; // default
-  switch (*v) {
-  case Visibility::LOCAL_SPM:
+static StringRef placementStr(std::optional<Placement> p) {
+  if (!p)
+    return "AUTO"; // default
+  switch (*p) {
+  case Placement::LOCAL_SPM:
     return "LOCAL_SPM";
-  case Visibility::SHARED_L2:
+  case Placement::SHARED_L2:
     return "SHARED_L2";
-  case Visibility::EXTERNAL_DRAM:
-    return "EXTERNAL_DRAM";
+  case Placement::EXTERNAL:
+    return "EXTERNAL";
+  case Placement::AUTO:
+    return "AUTO";
   }
-  return "LOCAL_SPM";
-}
-
-// ---------------------------------------------------------------------------
-// Helper: convert tapestry::Backpressure to string.
-// ---------------------------------------------------------------------------
-static StringRef backpressureStr(std::optional<Backpressure> bp) {
-  if (!bp)
-    return "BLOCK"; // default
-  switch (*bp) {
-  case Backpressure::BLOCK:
-    return "BLOCK";
-  case Backpressure::DROP:
-    return "DROP";
-  case Backpressure::OVERWRITE:
-    return "OVERWRITE";
-  }
-  return "BLOCK";
+  return "AUTO";
 }
 
 // ---------------------------------------------------------------------------
@@ -151,14 +136,29 @@ OwningOpRef<ModuleOp> emitTDG(const TaskGraph &graph, MLIRContext &ctx) {
   graph.forEachEdge([&](const std::string &producerName,
                         const std::string &consumerName,
                         const Contract &contract) {
-    // Fill defaults before emission (plan requirement).
+    // Fill defaults before emission.
     std::string dataTypeName =
         contract.dataTypeName.value_or("f32");
     Type dataType = resolveDataType(builder, dataTypeName);
 
-    DenseI64ArrayAttr tileShapeAttr;
-    if (contract.tileShape && !contract.tileShape->empty())
-      tileShapeAttr = builder.getDenseI64ArrayAttr(*contract.tileShape);
+    // Map tapestry::Placement to the TDG dialect visibility string.
+    StringRef visibilityStr = "LOCAL_SPM";
+    if (contract.placement) {
+      switch (*contract.placement) {
+      case Placement::LOCAL_SPM:
+        visibilityStr = "LOCAL_SPM";
+        break;
+      case Placement::SHARED_L2:
+        visibilityStr = "SHARED_L2";
+        break;
+      case Placement::EXTERNAL:
+        visibilityStr = "EXTERNAL_DRAM";
+        break;
+      case Placement::AUTO:
+        visibilityStr = "LOCAL_SPM";
+        break;
+      }
+    }
 
     loom::tdg::ContractOp::create(
         builder, loc,
@@ -169,19 +169,19 @@ OwningOpRef<ModuleOp> emitTDG(const TaskGraph &graph, MLIRContext &ctx) {
         /*production_rate=*/AffineMapAttr(),
         /*consumption_rate=*/AffineMapAttr(),
         /*steady_state_ratio=*/DenseI64ArrayAttr(),
-        /*tile_shape=*/tileShapeAttr,
+        /*tile_shape=*/DenseI64ArrayAttr(),
         /*min_buffer_elements=*/IntegerAttr(),
         /*max_buffer_elements=*/IntegerAttr(),
-        /*backpressure=*/backpressureStr(contract.backpressure),
-        /*double_buffering=*/contract.doubleBuffering.value_or(false),
-        /*visibility=*/visibilityStr(contract.visibility),
+        /*backpressure=*/StringRef("BLOCK"),
+        /*double_buffering=*/false,
+        /*visibility=*/visibilityStr,
         /*producer_writeback=*/StringRef("EAGER"),
         /*consumer_prefetch=*/StringRef("NONE"),
-        /*may_fuse=*/contract.mayFuse,
-        /*may_replicate=*/contract.mayReplicate,
-        /*may_pipeline=*/contract.mayPipeline,
-        /*may_reorder=*/contract.mayReorder,
-        /*may_retile=*/contract.mayRetile);
+        /*may_fuse=*/true,
+        /*may_replicate=*/true,
+        /*may_pipeline=*/true,
+        /*may_reorder=*/false,
+        /*may_retile=*/true);
   });
 
   return module;

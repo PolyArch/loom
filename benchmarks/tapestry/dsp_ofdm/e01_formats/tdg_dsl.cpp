@@ -27,34 +27,32 @@ tapestry::TaskGraph buildOFDMTDG() {
   tg.connect(k_fft, k_ch)
       .ordering(tapestry::Ordering::FIFO)
       .data_type("complex64")
-      .tile_shape({4096})
-      .rate(4096)
-      .double_buffering(true);
+      .shape("4096")
+      .data_volume(4096);
 
   tg.connect(k_ch, k_eq)
       .ordering(tapestry::Ordering::FIFO)
       .data_type("complex64")
-      .tile_shape({1200})
-      .rate(1200);
+      .shape("1200")
+      .data_volume(1200);
 
   tg.connect(k_eq, k_qam)
       .ordering(tapestry::Ordering::FIFO)
       .data_type("complex64")
-      .tile_shape({128})
-      .rate(1200);
+      .shape("128")
+      .data_volume(1200);
 
   tg.connect(k_qam, k_vit)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<int32_t>()
-      .tile_shape({7200})
-      .rate(7200)
-      .double_buffering(true);
+      .shape("7200")
+      .data_volume(7200);
 
   tg.connect(k_vit, k_crc)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<int32_t>()
-      .tile_shape({3600})
-      .rate(1800);
+      .shape("3600")
+      .data_volume(1800);
 
   return tg;
 }

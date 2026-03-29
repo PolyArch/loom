@@ -82,13 +82,9 @@ static bool testContractPropagation() {
   tdg.connect(k1, k2)
       .ordering(Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({64})
-      .visibility(Visibility::LOCAL_SPM)
-      .rate(1024)
-      .double_buffering(true)
-      .backpressure(Backpressure::BLOCK)
-      .may_fuse(false)
-      .may_replicate(true);
+      .shape("64")
+      .placement(Placement::LOCAL_SPM)
+      .data_volume(1024);
 
   // Inspect via forEachEdge.
   bool found = false;
@@ -104,29 +100,16 @@ static bool testContractPropagation() {
         std::cerr << "FAIL: testContractPropagation - dataTypeName\n";
         found = false;
       }
-      if (!c.tileShape || c.tileShape->size() != 1 ||
-          (*c.tileShape)[0] != 64) {
-        std::cerr << "FAIL: testContractPropagation - tileShape\n";
+      if (!c.shape || *c.shape != "64") {
+        std::cerr << "FAIL: testContractPropagation - shape\n";
         found = false;
       }
-      if (!c.visibility || *c.visibility != Visibility::LOCAL_SPM) {
-        std::cerr << "FAIL: testContractPropagation - visibility\n";
+      if (!c.placement || *c.placement != Placement::LOCAL_SPM) {
+        std::cerr << "FAIL: testContractPropagation - placement\n";
         found = false;
       }
-      if (!c.rate || *c.rate != 1024) {
-        std::cerr << "FAIL: testContractPropagation - rate\n";
-        found = false;
-      }
-      if (!c.doubleBuffering || *c.doubleBuffering != true) {
-        std::cerr << "FAIL: testContractPropagation - doubleBuffering\n";
-        found = false;
-      }
-      if (c.mayFuse != false) {
-        std::cerr << "FAIL: testContractPropagation - mayFuse\n";
-        found = false;
-      }
-      if (c.mayReplicate != true) {
-        std::cerr << "FAIL: testContractPropagation - mayReplicate\n";
+      if (!c.dataVolume || *c.dataVolume != 1024) {
+        std::cerr << "FAIL: testContractPropagation - dataVolume\n";
         found = false;
       }
     }
@@ -162,25 +145,16 @@ static bool testDefaults() {
       std::cerr << "FAIL: testDefaults - dataTypeName should be nullopt\n";
       ok = false;
     }
-    if (c.rate.has_value()) {
-      std::cerr << "FAIL: testDefaults - rate should be nullopt\n";
+    if (c.dataVolume.has_value()) {
+      std::cerr << "FAIL: testDefaults - dataVolume should be nullopt\n";
       ok = false;
     }
-    if (c.tileShape.has_value()) {
-      std::cerr << "FAIL: testDefaults - tileShape should be nullopt\n";
+    if (c.shape.has_value()) {
+      std::cerr << "FAIL: testDefaults - shape should be nullopt\n";
       ok = false;
     }
-    if (c.visibility.has_value()) {
-      std::cerr << "FAIL: testDefaults - visibility should be nullopt\n";
-      ok = false;
-    }
-    // Permission defaults.
-    if (!c.mayFuse || !c.mayReplicate || !c.mayPipeline || !c.mayRetile) {
-      std::cerr << "FAIL: testDefaults - permission defaults\n";
-      ok = false;
-    }
-    if (c.mayReorder) {
-      std::cerr << "FAIL: testDefaults - mayReorder should be false\n";
+    if (c.placement.has_value()) {
+      std::cerr << "FAIL: testDefaults - placement should be nullopt\n";
       ok = false;
     }
   });
@@ -200,14 +174,13 @@ static bool testEdgeLookup() {
   auto k1 = tdg.kernel("fft", fft);
   auto k2 = tdg.kernel("filter", filter);
 
-  tdg.connect(k1, k2).tile_shape({128, 64});
+  tdg.connect(k1, k2).shape("128x64");
 
   // Look up by name.
   auto e = tdg.edge("fft", "filter");
   const auto &c = e.contract();
-  if (!c.tileShape || c.tileShape->size() != 2 ||
-      (*c.tileShape)[0] != 128 || (*c.tileShape)[1] != 64) {
-    std::cerr << "FAIL: testEdgeLookup - tileShape mismatch\n";
+  if (!c.shape || *c.shape != "128x64") {
+    std::cerr << "FAIL: testEdgeLookup - shape mismatch\n";
     return false;
   }
   if (e.producerName() != "fft" || e.consumerName() != "filter") {
@@ -256,20 +229,19 @@ static bool testExecutionTarget() {
 // -------------------------------------------------------------------------
 static bool testDerivedMetrics() {
   Contract c;
-  c.rate = 1024;
-  c.tileShape = std::vector<int64_t>{64};
+  c.dataVolume = 1024;
 
   auto m = computeDerivedMetrics(c, 4); // f32 = 4 bytes
 
-  // bandwidth = rate * element_size = 1024 * 4 = 4096
+  // bandwidth = dataVolume * element_size = 1024 * 4 = 4096
   if (std::abs(m.bandwidth - 4096.0) > 1e-6) {
     std::cerr << "FAIL: testDerivedMetrics - bandwidth=" << m.bandwidth
               << " (expected 4096)\n";
     return false;
   }
 
-  // dataVolume = rate * tile_elements * element_size = 1024 * 64 * 4 = 262144
-  if (m.dataVolume != 1024 * 64 * 4) {
+  // dataVolume = volume * element_size = 1024 * 4 = 4096
+  if (m.dataVolume != 1024 * 4) {
     std::cerr << "FAIL: testDerivedMetrics - dataVolume=" << m.dataVolume
               << "\n";
     return false;
@@ -282,7 +254,7 @@ static bool testDerivedMetrics() {
   }
 
   // After assignment with crossesCores=true.
-  updatePostAssignment(m, /*crossesCores=*/true, Visibility::LOCAL_SPM);
+  updatePostAssignment(m, /*crossesCores=*/true, Placement::LOCAL_SPM);
   if (!m.crossesCores) {
     std::cerr << "FAIL: testDerivedMetrics - crossesCores post-assign\n";
     return false;
@@ -291,13 +263,13 @@ static bool testDerivedMetrics() {
     std::cerr << "FAIL: testDerivedMetrics - requiredNoCBandwidth\n";
     return false;
   }
-  if (m.requiredSPMBytes != 1024 * 64 * 4) {
+  if (m.requiredSPMBytes != 1024 * 4) {
     std::cerr << "FAIL: testDerivedMetrics - requiredSPMBytes\n";
     return false;
   }
 
-  // With SHARED_L2 visibility, requiredSPMBytes should be 0.
-  updatePostAssignment(m, /*crossesCores=*/true, Visibility::SHARED_L2);
+  // With SHARED_L2 placement, requiredSPMBytes should be 0.
+  updatePostAssignment(m, /*crossesCores=*/true, Placement::SHARED_L2);
   if (m.requiredSPMBytes != 0) {
     std::cerr << "FAIL: testDerivedMetrics - requiredSPMBytes SHARED_L2\n";
     return false;
@@ -320,7 +292,7 @@ static bool testMLIREmission() {
   tdg.connect(k1, k2)
       .ordering(Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({64});
+      .shape("64");
 
   mlir::MLIRContext ctx;
   auto module = emitTDG(tdg, ctx);

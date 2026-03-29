@@ -48,7 +48,7 @@ private:
 ///   1. Create a TaskDataflowGraph with a name
 ///   2. Add kernels via kernel()
 ///   3. Connect kernels via connect()
-///   4. Optionally refine contracts (tile shape, visibility, etc.)
+///   4. Optionally refine contracts (shape, placement, etc.)
 ///   5. Export to MLIR via buildMLIR() or exportMLIR()
 class TaskDataflowGraph {
 public:
@@ -67,23 +67,20 @@ public:
   ContractHandle connect(KernelHandle producer, KernelHandle consumer,
                          Ordering ordering = Ordering::FIFO);
 
-  /// Set the tile shape for a contract.
-  void setTileShape(ContractHandle c, std::vector<int64_t> shape);
+  /// Set the symbolic shape expression for a contract.
+  void setShape(ContractHandle c, const std::string &shapeExpr);
 
-  /// Set the memory visibility for a contract.
-  void setVisibility(ContractHandle c, Visibility vis);
-
-  /// Set double-buffering for a contract.
-  void setDoubleBuffering(ContractHandle c, bool enable);
+  /// Set the memory placement for a contract.
+  void setPlacement(ContractHandle c, const std::string &placement);
 
   /// Set the data type name for a contract.
   void setDataType(ContractHandle c, const std::string &typeName);
 
-  /// Set backpressure mode for a contract.
-  void setBackpressure(ContractHandle c, Backpressure bp);
+  /// Set throughput expression for a contract.
+  void setThroughput(ContractHandle c, const std::string &expr);
 
-  /// Set buffer size constraints for a contract.
-  void setBufferElements(ContractHandle c, int64_t minElems, int64_t maxElems);
+  /// Set data volume (bytes per invocation) for a contract.
+  void setDataVolume(ContractHandle c, uint64_t volume);
 
   /// Build the MLIR module containing the TDG graph.
   mlir::OwningOpRef<mlir::ModuleOp> buildMLIR(mlir::MLIRContext &ctx);
@@ -103,12 +100,10 @@ private:
     unsigned consumerIdx;
     Ordering ordering = Ordering::FIFO;
     std::string dataTypeName = "f32";
-    std::vector<int64_t> tileShape;
-    Visibility visibility = Visibility::LOCAL_SPM;
-    Backpressure backpressure = Backpressure::BLOCK;
-    bool doubleBuffering = false;
-    int64_t minBufferElements = 0;
-    int64_t maxBufferElements = 0;
+    std::string placement = "AUTO";
+    std::string shape;
+    std::string throughput;
+    std::optional<uint64_t> dataVolume;
   };
 
   std::string graphName_;

@@ -25,33 +25,32 @@ tapestry::TaskGraph buildSTARKTDG() {
   tg.connect(k_ntt, k_poly)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<uint32_t>()
-      .tile_shape({1024})
-      .rate(1024)
-      .double_buffering(true);
+      .shape("1024")
+      .data_volume(1024);
 
   tg.connect(k_poly, k_comp)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<uint32_t>()
-      .tile_shape({256})
-      .rate(256);
+      .shape("256")
+      .data_volume(256);
 
   tg.connect(k_hash, k_comp)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<uint32_t>()
-      .tile_shape({4})
-      .rate(4);
+      .shape("4")
+      .data_volume(4);
 
   tg.connect(k_msm, k_comp)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<uint32_t>()
-      .tile_shape({3})
-      .rate(3);
+      .shape("3")
+      .data_volume(3);
 
   tg.connect(k_ntt, k_hash)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<uint32_t>()
-      .tile_shape({8})
-      .rate(8);
+      .shape("8")
+      .data_volume(8);
 
   return tg;
 }

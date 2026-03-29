@@ -21,11 +21,8 @@ namespace tapestry {
 /// Ordering semantics on an inter-kernel data edge.
 enum class Ordering { FIFO, UNORDERED };
 
-/// Memory-hierarchy visibility for edge data.
-enum class Visibility { LOCAL_SPM, SHARED_L2, EXTERNAL_DRAM };
-
-/// Back-pressure policy when a producer outruns a consumer.
-enum class Backpressure { BLOCK, DROP, OVERWRITE };
+/// Memory-hierarchy placement for edge data.
+enum class Placement { LOCAL_SPM, SHARED_L2, EXTERNAL, AUTO };
 
 /// Execution target for a kernel node.
 enum class ExecutionTarget { CGRA, HOST, AUTO_DETECT };
@@ -33,10 +30,8 @@ enum class ExecutionTarget { CGRA, HOST, AUTO_DETECT };
 // Enum <-> string helpers (implemented in task_graph.cpp).
 const char *orderingToString(Ordering o);
 Ordering orderingFromString(const std::string &s);
-const char *visibilityToString(Visibility v);
-Visibility visibilityFromString(const std::string &s);
-const char *backpressureToString(Backpressure bp);
-Backpressure backpressureFromString(const std::string &s);
+const char *placementToString(Placement p);
+Placement placementFromString(const std::string &s);
 const char *executionTargetToString(ExecutionTarget t);
 ExecutionTarget executionTargetFromString(const std::string &s);
 
@@ -47,18 +42,10 @@ ExecutionTarget executionTargetFromString(const std::string &s);
 struct Contract {
   std::optional<Ordering> ordering;
   std::optional<std::string> dataTypeName;
-  std::optional<int64_t> rate;
-  std::optional<std::vector<int64_t>> tileShape;
-  std::optional<Visibility> visibility;
-  std::optional<bool> doubleBuffering;
-  std::optional<Backpressure> backpressure;
-
-  // Transformation permissions (defaults match the plan).
-  bool mayFuse = true;
-  bool mayReplicate = true;
-  bool mayPipeline = true;
-  bool mayReorder = false;
-  bool mayRetile = true;
+  std::optional<uint64_t> dataVolume;
+  std::optional<std::string> shape;
+  std::optional<Placement> placement;
+  std::optional<std::string> throughput;
 };
 
 // ============================================================================
@@ -94,16 +81,10 @@ public:
   // Chainable contract setters -- each returns *this.
   EdgeHandle &ordering(Ordering o);
   EdgeHandle &data_type(const std::string &typeName);
-  EdgeHandle &rate(int64_t r);
-  EdgeHandle &tile_shape(std::vector<int64_t> shape);
-  EdgeHandle &visibility(Visibility v);
-  EdgeHandle &double_buffering(bool enable);
-  EdgeHandle &backpressure(Backpressure bp);
-  EdgeHandle &may_fuse(bool b);
-  EdgeHandle &may_replicate(bool b);
-  EdgeHandle &may_pipeline(bool b);
-  EdgeHandle &may_reorder(bool b);
-  EdgeHandle &may_retile(bool b);
+  EdgeHandle &data_volume(uint64_t vol);
+  EdgeHandle &shape(const std::string &shapeExpr);
+  EdgeHandle &placement(Placement p);
+  EdgeHandle &throughput(const std::string &expr);
 
   /// Template helper: infer data-type name from C++ type.
   template <typename T> EdgeHandle &data_type() {
@@ -198,6 +179,34 @@ using EdgeMap = std::map<EdgeKey, Contract>;
 using KernelMap = std::vector<KernelInfo>;
 
 // ============================================================================
+// VariantOptions -- options for a kernel variant registration
+// ============================================================================
+
+struct VariantOptions {
+  unsigned unrollFactor = 1;
+  unsigned domainRank = 0;
+};
+
+// ============================================================================
+// VariantEntry -- stored variant info
+// ============================================================================
+
+struct VariantEntry {
+  std::string variantName;
+  VariantOptions options;
+};
+
+// ============================================================================
+// PathContract -- latency bound between two kernels
+// ============================================================================
+
+struct PathContract {
+  unsigned startIdx;
+  unsigned endIdx;
+  std::string latencyExpr;
+};
+
+// ============================================================================
 // TaskGraph -- top-level graph container
 //
 // Conceptually wraps tf::Taskflow for graph storage.  Internally uses a
@@ -273,6 +282,29 @@ public:
   void forEachEdge(
       std::function<void(const std::string &, const std::string &,
                          const Contract &)> visitor) const;
+
+  // -----------------------------------------------------------------------
+  // Variant registration
+  // -----------------------------------------------------------------------
+
+  /// Register a named variant of a base kernel.
+  KernelHandle addVariant(KernelHandle baseKernel,
+                          const std::string &variantName,
+                          VariantOptions opts);
+
+  /// Get the list of registered variants for a kernel.
+  const std::vector<VariantEntry> &variants(KernelHandle kernel) const;
+
+  // -----------------------------------------------------------------------
+  // Path contracts (latency bounds)
+  // -----------------------------------------------------------------------
+
+  /// Register a latency bound between two kernels.
+  void latencyBound(KernelHandle startKernel, KernelHandle endKernel,
+                    const std::string &latencyExpr);
+
+  /// Get all registered path contracts.
+  const std::vector<PathContract> &pathContracts() const;
 
   // -----------------------------------------------------------------------
   // Internal access (for kernel_compiler, tdg_emitter, compile)

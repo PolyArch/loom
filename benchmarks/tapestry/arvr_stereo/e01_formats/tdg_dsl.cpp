@@ -23,28 +23,26 @@ tapestry::TaskGraph buildStereoTDG() {
   tg.connect(k_harris, k_sad)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({64, 64})
-      .rate(4096)
-      .double_buffering(true);
+      .shape("64x64")
+      .data_volume(4096);
 
   tg.connect(k_sad, k_disp)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({64, 64, 64})
-      .rate(262144)
-      .double_buffering(true);
+      .shape("64x64x64")
+      .data_volume(262144);
 
   tg.connect(k_disp, k_warp)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({64, 64})
-      .rate(4096);
+      .shape("64x64")
+      .data_volume(4096);
 
   tg.connect(k_warp, k_filt)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({64, 64})
-      .rate(4096);
+      .shape("64x64")
+      .data_volume(4096);
 
   return tg;
 }

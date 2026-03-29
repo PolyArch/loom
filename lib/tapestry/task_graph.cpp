@@ -28,44 +28,28 @@ Ordering orderingFromString(const std::string &s) {
   return Ordering::FIFO;
 }
 
-const char *visibilityToString(Visibility v) {
-  switch (v) {
-  case Visibility::LOCAL_SPM:
+const char *placementToString(Placement p) {
+  switch (p) {
+  case Placement::LOCAL_SPM:
     return "LOCAL_SPM";
-  case Visibility::SHARED_L2:
+  case Placement::SHARED_L2:
     return "SHARED_L2";
-  case Visibility::EXTERNAL_DRAM:
-    return "EXTERNAL_DRAM";
+  case Placement::EXTERNAL:
+    return "EXTERNAL";
+  case Placement::AUTO:
+    return "AUTO";
   }
-  return "LOCAL_SPM";
+  return "AUTO";
 }
 
-Visibility visibilityFromString(const std::string &s) {
+Placement placementFromString(const std::string &s) {
+  if (s == "LOCAL_SPM")
+    return Placement::LOCAL_SPM;
   if (s == "SHARED_L2")
-    return Visibility::SHARED_L2;
-  if (s == "EXTERNAL_DRAM")
-    return Visibility::EXTERNAL_DRAM;
-  return Visibility::LOCAL_SPM;
-}
-
-const char *backpressureToString(Backpressure bp) {
-  switch (bp) {
-  case Backpressure::BLOCK:
-    return "BLOCK";
-  case Backpressure::DROP:
-    return "DROP";
-  case Backpressure::OVERWRITE:
-    return "OVERWRITE";
-  }
-  return "BLOCK";
-}
-
-Backpressure backpressureFromString(const std::string &s) {
-  if (s == "DROP")
-    return Backpressure::DROP;
-  if (s == "OVERWRITE")
-    return Backpressure::OVERWRITE;
-  return Backpressure::BLOCK;
+    return Placement::SHARED_L2;
+  if (s == "EXTERNAL")
+    return Placement::EXTERNAL;
+  return Placement::AUTO;
 }
 
 const char *executionTargetToString(ExecutionTarget t) {
@@ -104,6 +88,12 @@ struct TaskGraph::Impl {
   // Name -> index lookup.
   std::unordered_map<std::string, unsigned> nameIndex;
 
+  // Variant storage: per-kernel list of registered variants.
+  std::vector<std::vector<VariantEntry>> variantMap;
+
+  // Path contracts (latency bounds).
+  std::vector<PathContract> pathContracts;
+
   explicit Impl(const std::string &name) : graphName(name) {}
 };
 
@@ -127,8 +117,9 @@ KernelHandle TaskGraph::addKernelImpl(KernelInfo info) {
   unsigned idx = static_cast<unsigned>(impl_->kernels.size());
   impl_->nameIndex[info.name] = idx;
   impl_->kernels.push_back(std::move(info));
-  impl_->adj.emplace_back();   // empty successors list
-  impl_->preds.emplace_back(); // empty predecessors list
+  impl_->adj.emplace_back();        // empty successors list
+  impl_->preds.emplace_back();      // empty predecessors list
+  impl_->variantMap.emplace_back();  // empty variant list
 
   return KernelHandle(this, idx);
 }
@@ -194,19 +185,14 @@ void TaskGraph::dump() const {
       std::cout << "  ordering=" << orderingToString(*contract.ordering);
     if (contract.dataTypeName)
       std::cout << "  data_type=" << *contract.dataTypeName;
-    if (contract.rate)
-      std::cout << "  rate=" << *contract.rate;
-    if (contract.tileShape) {
-      std::cout << "  tile_shape=[";
-      for (size_t j = 0; j < contract.tileShape->size(); ++j) {
-        if (j > 0)
-          std::cout << ",";
-        std::cout << (*contract.tileShape)[j];
-      }
-      std::cout << "]";
-    }
-    if (contract.visibility)
-      std::cout << "  visibility=" << visibilityToString(*contract.visibility);
+    if (contract.dataVolume)
+      std::cout << "  data_volume=" << *contract.dataVolume;
+    if (contract.shape)
+      std::cout << "  shape=" << *contract.shape;
+    if (contract.placement)
+      std::cout << "  placement=" << placementToString(*contract.placement);
+    if (contract.throughput)
+      std::cout << "  throughput=" << *contract.throughput;
     std::cout << "\n";
   }
 }
@@ -314,53 +300,23 @@ EdgeHandle &EdgeHandle::data_type(const std::string &typeName) {
   return *this;
 }
 
-EdgeHandle &EdgeHandle::rate(int64_t r) {
-  graph_->contractRef(key_).rate = r;
+EdgeHandle &EdgeHandle::data_volume(uint64_t vol) {
+  graph_->contractRef(key_).dataVolume = vol;
   return *this;
 }
 
-EdgeHandle &EdgeHandle::tile_shape(std::vector<int64_t> shape) {
-  graph_->contractRef(key_).tileShape = std::move(shape);
+EdgeHandle &EdgeHandle::shape(const std::string &shapeExpr) {
+  graph_->contractRef(key_).shape = shapeExpr;
   return *this;
 }
 
-EdgeHandle &EdgeHandle::visibility(Visibility v) {
-  graph_->contractRef(key_).visibility = v;
+EdgeHandle &EdgeHandle::placement(Placement p) {
+  graph_->contractRef(key_).placement = p;
   return *this;
 }
 
-EdgeHandle &EdgeHandle::double_buffering(bool enable) {
-  graph_->contractRef(key_).doubleBuffering = enable;
-  return *this;
-}
-
-EdgeHandle &EdgeHandle::backpressure(Backpressure bp) {
-  graph_->contractRef(key_).backpressure = bp;
-  return *this;
-}
-
-EdgeHandle &EdgeHandle::may_fuse(bool b) {
-  graph_->contractRef(key_).mayFuse = b;
-  return *this;
-}
-
-EdgeHandle &EdgeHandle::may_replicate(bool b) {
-  graph_->contractRef(key_).mayReplicate = b;
-  return *this;
-}
-
-EdgeHandle &EdgeHandle::may_pipeline(bool b) {
-  graph_->contractRef(key_).mayPipeline = b;
-  return *this;
-}
-
-EdgeHandle &EdgeHandle::may_reorder(bool b) {
-  graph_->contractRef(key_).mayReorder = b;
-  return *this;
-}
-
-EdgeHandle &EdgeHandle::may_retile(bool b) {
-  graph_->contractRef(key_).mayRetile = b;
+EdgeHandle &EdgeHandle::throughput(const std::string &expr) {
+  graph_->contractRef(key_).throughput = expr;
   return *this;
 }
 
@@ -374,6 +330,59 @@ const std::string &EdgeHandle::producerName() const {
 
 const std::string &EdgeHandle::consumerName() const {
   return graph_->kernelRef(key_.second).name;
+}
+
+// ============================================================================
+// Variant and path contract implementation
+// ============================================================================
+
+KernelHandle TaskGraph::addVariant(KernelHandle baseKernel,
+                                   const std::string &variantName,
+                                   VariantOptions opts) {
+  assert(baseKernel.graph_ == this &&
+         "baseKernel does not belong to this graph");
+  assert(baseKernel.index_ < impl_->kernels.size() &&
+         "invalid baseKernel index");
+
+  VariantEntry entry;
+  entry.variantName = variantName;
+  entry.options = opts;
+  impl_->variantMap[baseKernel.index_].push_back(std::move(entry));
+
+  // Create a new kernel node for the variant.
+  KernelInfo info;
+  info.name = variantName;
+  info.provenance = impl_->kernels[baseKernel.index_].provenance;
+  info.target = impl_->kernels[baseKernel.index_].target;
+  return addKernelImpl(std::move(info));
+}
+
+static const std::vector<VariantEntry> emptyVariants;
+
+const std::vector<VariantEntry> &
+TaskGraph::variants(KernelHandle kernel) const {
+  assert(kernel.graph_ == this && "kernel does not belong to this graph");
+  assert(kernel.index_ < impl_->variantMap.size() && "invalid kernel index");
+  return impl_->variantMap[kernel.index_];
+}
+
+void TaskGraph::latencyBound(KernelHandle startKernel,
+                             KernelHandle endKernel,
+                             const std::string &latencyExpr) {
+  assert(startKernel.graph_ == this &&
+         "startKernel does not belong to this graph");
+  assert(endKernel.graph_ == this &&
+         "endKernel does not belong to this graph");
+
+  PathContract pc;
+  pc.startIdx = startKernel.index_;
+  pc.endIdx = endKernel.index_;
+  pc.latencyExpr = latencyExpr;
+  impl_->pathContracts.push_back(std::move(pc));
+}
+
+const std::vector<PathContract> &TaskGraph::pathContracts() const {
+  return impl_->pathContracts;
 }
 
 // ============================================================================

@@ -21,23 +21,14 @@ DerivedContractMetrics computeDerivedMetrics(const Contract &contract,
                                              unsigned elementSizeBytes) {
   DerivedContractMetrics m;
 
-  // rate defaults to 1 if unspecified.
-  int64_t rate = contract.rate.value_or(1);
+  // dataVolume from the contract (bytes per invocation), default to 1.
+  int64_t volume = static_cast<int64_t>(contract.dataVolume.value_or(1));
 
-  // bandwidth = rate * element_size (bytes/cycle).
-  m.bandwidth = static_cast<double>(rate) * elementSizeBytes;
+  // bandwidth = dataVolume * element_size (bytes/cycle).
+  m.bandwidth = static_cast<double>(volume) * elementSizeBytes;
 
-  // tile_elements = product of tile dimensions (defaults to rate if no tile).
-  int64_t tileElements = rate;
-  if (contract.tileShape && !contract.tileShape->empty()) {
-    tileElements = 1;
-    for (int64_t dim : *contract.tileShape)
-      tileElements *= dim;
-  }
-
-  // dataVolume = rate * tile_elements * element_size.
-  // Per the spec: "computed from rate * tile_elements * element_size".
-  m.dataVolume = rate * tileElements * static_cast<int64_t>(elementSizeBytes);
+  // dataVolume = volume * element_size (total bytes per tile transfer).
+  m.dataVolume = volume * static_cast<int64_t>(elementSizeBytes);
 
   // crossesCores, NoC bandwidth, and SPM bytes are set later by
   // updatePostAssignment() once core assignment is known.
@@ -49,7 +40,7 @@ DerivedContractMetrics computeDerivedMetrics(const Contract &contract,
 }
 
 void updatePostAssignment(DerivedContractMetrics &metrics, bool crossesCores,
-                          Visibility visibility) {
+                          Placement placement) {
   metrics.crossesCores = crossesCores;
 
   // requiredNoCBandwidth: bandwidth when crossesCores, else 0.
@@ -57,7 +48,7 @@ void updatePostAssignment(DerivedContractMetrics &metrics, bool crossesCores,
 
   // requiredSPMBytes: dataVolume when visibility==LOCAL_SPM.
   metrics.requiredSPMBytes =
-      (visibility == Visibility::LOCAL_SPM) ? metrics.dataVolume : 0;
+      (placement == Placement::LOCAL_SPM) ? metrics.dataVolume : 0;
 }
 
 } // namespace tapestry

@@ -21,23 +21,23 @@ tapestry::TaskGraph buildGraphTDG() {
   tg.connect(k_bfs, k_pr)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<int32_t>()
-      .tile_shape({1024})
-      .rate(1024)
-      .visibility(tapestry::Visibility::EXTERNAL_DRAM);
+      .shape("1024")
+      .data_volume(1024)
+      .placement(tapestry::Placement::EXTERNAL);
 
   tg.connect(k_pr, k_lp)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({1024})
-      .rate(1024)
-      .visibility(tapestry::Visibility::EXTERNAL_DRAM);
+      .shape("1024")
+      .data_volume(1024)
+      .placement(tapestry::Placement::EXTERNAL);
 
   tg.connect(k_bfs, k_tc)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<int32_t>()
-      .tile_shape({1024})
-      .rate(1024)
-      .visibility(tapestry::Visibility::EXTERNAL_DRAM);
+      .shape("1024")
+      .data_volume(1024)
+      .placement(tapestry::Placement::EXTERNAL);
 
   return tg;
 }

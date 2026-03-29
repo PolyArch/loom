@@ -25,27 +25,26 @@ tapestry::TaskGraph buildVIOTDG() {
   tg.connect(k_imu, k_pose)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({200, 3})
-      .rate(600);
+      .shape("200x3")
+      .data_volume(600);
 
   tg.connect(k_fast, k_orb)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<int32_t>()
-      .tile_shape({500, 2})
-      .rate(1000);
+      .shape("500x2")
+      .data_volume(1000);
 
   tg.connect(k_orb, k_match)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<uint32_t>()
-      .tile_shape({500, 8})
-      .rate(4000)
-      .double_buffering(true);
+      .shape("500x8")
+      .data_volume(4000);
 
   tg.connect(k_match, k_pose)
       .ordering(tapestry::Ordering::FIFO)
       .data_type<float>()
-      .tile_shape({100, 4})
-      .rate(400);
+      .shape("100x4")
+      .data_volume(400);
 
   return tg;
 }

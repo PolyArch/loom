@@ -82,7 +82,7 @@ CompileResult compile(TaskGraph &tdg, const CompileOptions &opts) {
     cs.producerKernel = producer;
     cs.consumerKernel = consumer;
     cs.dataType = c.dataTypeName.value_or("f32");
-    cs.elementCount = c.rate.value_or(1);
+    cs.elementCount = static_cast<int64_t>(c.dataVolume.value_or(1));
     contracts.push_back(std::move(cs));
   });
 
