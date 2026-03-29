@@ -1,7 +1,9 @@
 """Design space definition for LOOM DSE.
 
-Defines the DesignPoint representation, parameter encoding/decoding,
-and sampling strategies (random, Latin Hypercube, grid).
+Defines the DesignPoint representation with a 30-type binary selection mask,
+per-type instance counts, and system-level parameters (NoC, L2).
+Supports 64-D encoding (30 type_mask + 30 instance_counts + 4 system params)
+for Bayesian Optimization.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from .dse_config import (
 
 
 # ---------------------------------------------------------------------------
-# Core-type configuration
+# Core-type configuration (legacy, used by proxy_model)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -67,83 +69,136 @@ class CoreTypeConfig:
 
 @dataclass
 class DesignPoint:
-    """Complete architecture configuration for one DSE candidate."""
+    """Complete architecture configuration for one DSE candidate.
 
-    core_types: List[CoreTypeConfig] = field(default_factory=list)
+    Uses a 30-type design space with:
+    - type_mask: binary selection mask (length MAX_CORE_TYPES)
+    - instance_counts: per-type instance count (length MAX_CORE_TYPES)
+    - System-level: noc_topology, noc_bandwidth, l2_size_kb, l2_bank_count
+
+    Also maintains a legacy core_types list for compatibility with
+    AnalyticalResourceModel (proxy_model).
+    """
+
+    # 30-type selection mask and instance counts
+    type_mask: List[bool] = field(
+        default_factory=lambda: [False] * MAX_CORE_TYPES
+    )
+    instance_counts: List[int] = field(
+        default_factory=lambda: [0] * MAX_CORE_TYPES
+    )
+
+    # System-level parameters
     noc_topology: str = "mesh"
     noc_bandwidth: int = 1
     l2_size_kb: int = 256
+    l2_bank_count: int = 8
+
+    # Legacy core_types list (populated by _to_legacy_design_point or
+    # directly for proxy_model compatibility)
+    core_types: List[CoreTypeConfig] = field(default_factory=list)
+
+    def num_selected_types(self) -> int:
+        """Return the number of selected core types."""
+        return sum(1 for m in self.type_mask if m)
+
+    def selected_type_indices(self) -> List[int]:
+        """Return indices of selected types."""
+        return [i for i, m in enumerate(self.type_mask) if m]
 
     def total_cores(self) -> int:
-        return sum(ct.instance_count for ct in self.core_types)
+        """Total instance count across all selected types."""
+        total = sum(
+            self.instance_counts[i]
+            for i in range(len(self.type_mask))
+            if self.type_mask[i]
+        )
+        # Fall back to legacy core_types if no mask-based cores
+        if total == 0 and self.core_types:
+            return sum(ct.instance_count for ct in self.core_types)
+        return total
 
     def to_vector(self) -> np.ndarray:
-        """Encode this design point as a flat numeric vector for the GP."""
+        """Encode this design point as a 64-D vector for the GP.
+
+        Layout: [30 type_mask floats] + [30 instance_count floats] +
+                [noc_topology_idx, noc_bandwidth, l2_size_kb, l2_bank_count]
+        """
         vec: List[float] = []
-        vec.append(float(len(self.core_types)))
+        # Type mask (30 values, 0.0 or 1.0)
         for i in range(MAX_CORE_TYPES):
-            if i < len(self.core_types):
-                ct = self.core_types[i]
-                vec.extend([
-                    float(ct.pe_grid_rows),
-                    float(ct.pe_grid_cols),
-                    float(ct.fu_alu_count),
-                    float(ct.fu_mul_count),
-                    float(ct.fu_fp_count),
-                    float(ct.fu_mem_count),
-                    float(ct.spm_size_kb),
-                    float(ct.instance_count),
-                ])
-            else:
-                vec.extend([0.0] * 8)
+            vec.append(1.0 if self.type_mask[i] else 0.0)
+        # Instance counts (30 values)
+        for i in range(MAX_CORE_TYPES):
+            vec.append(float(self.instance_counts[i]))
+        # System parameters (4 values)
         vec.append(float(NOC_TOPOLOGIES.index(self.noc_topology)))
         vec.append(float(self.noc_bandwidth))
         vec.append(float(self.l2_size_kb))
+        vec.append(float(self.l2_bank_count))
         return np.array(vec, dtype=np.float64)
 
     @staticmethod
     def from_vector(vec: np.ndarray) -> "DesignPoint":
-        """Decode a flat numeric vector back to a DesignPoint."""
+        """Decode a 64-D vector back to a DesignPoint."""
         idx = 0
-        n_types = max(1, min(MAX_CORE_TYPES, int(round(vec[idx]))))
-        idx += 1
 
-        core_types: List[CoreTypeConfig] = []
+        # Type mask (30 values)
+        type_mask: List[bool] = []
         for i in range(MAX_CORE_TYPES):
-            vals = vec[idx: idx + 8]
-            idx += 8
-            if i < n_types:
-                ct = CoreTypeConfig(
-                    pe_grid_rows=_clamp_int(vals[0], 2, 8),
-                    pe_grid_cols=_clamp_int(vals[1], 2, 8),
-                    fu_alu_count=_clamp_int(vals[2], 1, 8),
-                    fu_mul_count=_clamp_int(vals[3], 0, 8),
-                    fu_fp_count=_clamp_int(vals[4], 0, 4),
-                    fu_mem_count=_clamp_int(vals[5], 1, 4),
-                    spm_size_kb=_nearest_power_of_2(vals[6], 4, 64),
-                    instance_count=_clamp_int(vals[7], 1, 8),
-                )
-                core_types.append(ct)
+            type_mask.append(vec[idx] >= 0.5)
+            idx += 1
 
+        # Instance counts (30 values)
+        instance_counts: List[int] = []
+        for i in range(MAX_CORE_TYPES):
+            count = _clamp_int(vec[idx], 0, 8)
+            instance_counts.append(count)
+            idx += 1
+
+        # Ensure selected types have at least 1 instance
+        for i in range(MAX_CORE_TYPES):
+            if type_mask[i] and instance_counts[i] < 1:
+                instance_counts[i] = 1
+
+        # Ensure at least one type is selected
+        if not any(type_mask):
+            best_idx = 0
+            best_count = instance_counts[0]
+            for i in range(MAX_CORE_TYPES):
+                if instance_counts[i] > best_count:
+                    best_count = instance_counts[i]
+                    best_idx = i
+            type_mask[best_idx] = True
+            if instance_counts[best_idx] < 1:
+                instance_counts[best_idx] = 1
+
+        # System parameters
         topo_idx = _clamp_int(vec[idx], 0, len(NOC_TOPOLOGIES) - 1)
         idx += 1
         noc_bw = _clamp_int(vec[idx], 1, 4)
         idx += 1
         l2_kb = _nearest_power_of_2(vec[idx], 64, 1024)
         idx += 1
+        l2_banks = _clamp_int(vec[idx], 4, 16)
+        idx += 1
 
         return DesignPoint(
-            core_types=core_types,
+            type_mask=type_mask,
+            instance_counts=instance_counts,
             noc_topology=NOC_TOPOLOGIES[topo_idx],
             noc_bandwidth=noc_bw,
             l2_size_kb=l2_kb,
+            l2_bank_count=l2_banks,
         )
 
     @staticmethod
     def vector_dimension() -> int:
-        """Return the dimensionality of the encoded vector."""
-        # 1 (n_types) + MAX_CORE_TYPES*8 + 3 (topo, bw, l2)
-        return 1 + MAX_CORE_TYPES * 8 + 3
+        """Return the dimensionality of the encoded vector.
+
+        30 type_mask + 30 instance_counts + 4 system params = 64.
+        """
+        return MAX_CORE_TYPES + MAX_CORE_TYPES + 4
 
     def to_arch_json(self) -> Dict[str, Any]:
         """Export to the JSON schema consumed by tapestry-pipeline."""
@@ -162,20 +217,27 @@ class DesignPoint:
                 "bandwidth": self.noc_bandwidth,
             },
             "l2_size_kb": self.l2_size_kb,
+            "l2_bank_count": self.l2_bank_count,
         }
 
     def summary(self) -> str:
-        parts = [f"{len(self.core_types)} core types"]
-        for i, ct in enumerate(self.core_types):
+        selected = self.selected_type_indices()
+        parts = [f"{len(selected)} core types selected"]
+        for i in selected:
             parts.append(
-                f"  T{i}: {ct.pe_grid_rows}x{ct.pe_grid_cols} PEs, "
-                f"ALU={ct.fu_alu_count} MUL={ct.fu_mul_count} "
-                f"FP={ct.fu_fp_count} MEM={ct.fu_mem_count}, "
-                f"SPM={ct.spm_size_kb}KB x{ct.instance_count}"
+                f"  Type[{i}]: x{self.instance_counts[i]}"
             )
+        if self.core_types:
+            for j, ct in enumerate(self.core_types):
+                parts.append(
+                    f"  Legacy T{j}: {ct.pe_grid_rows}x{ct.pe_grid_cols} PEs, "
+                    f"ALU={ct.fu_alu_count} MUL={ct.fu_mul_count} "
+                    f"FP={ct.fu_fp_count} MEM={ct.fu_mem_count}, "
+                    f"SPM={ct.spm_size_kb}KB x{ct.instance_count}"
+                )
         parts.append(
             f"  NoC: {self.noc_topology} BW={self.noc_bandwidth}, "
-            f"L2={self.l2_size_kb}KB"
+            f"L2={self.l2_size_kb}KB ({self.l2_bank_count} banks)"
         )
         return "\n".join(parts)
 
@@ -185,7 +247,7 @@ class DesignPoint:
 # ---------------------------------------------------------------------------
 
 class DesignSpace:
-    """Defines bounds and provides sampling methods for the design space.
+    """Defines bounds and provides sampling methods for the 64-D design space.
 
     Supports optional TDC-derived constraint bounds that tighten the search
     space lower limits based on contract analysis.
@@ -214,17 +276,12 @@ class DesignSpace:
         min_core_types: int = 1,
         min_total_cores: int = 1,
     ) -> None:
-        """Set TDC-derived constraint lower bounds.
-
-        Tightens the design space bounds so that sampling avoids clearly
-        infeasible regions. Call before bounds() or any sampling method.
-        """
+        """Set TDC-derived constraint lower bounds."""
         self._tdc_min_noc_bw = min_noc_bw
         self._tdc_min_l2_kb = min_l2_kb
         self._tdc_min_core_types = min_core_types
         self._tdc_min_total_cores = min_total_cores
 
-        # Apply to ranges
         if min_noc_bw > 0:
             lo, hi = self.ranges["noc_bandwidth"]
             self.ranges["noc_bandwidth"] = (
@@ -237,18 +294,9 @@ class DesignSpace:
                 max(lo, int(math.ceil(min_l2_kb))),
                 hi,
             )
-        if min_core_types > 1:
-            lo, hi = self.ranges["core_type_count"]
-            self.ranges["core_type_count"] = (
-                max(lo, min_core_types),
-                hi,
-            )
 
     def is_feasible(self, point: DesignPoint) -> bool:
-        """Check if a design point satisfies TDC-derived constraints.
-
-        Returns True if no TDC bounds are set or all constraints are met.
-        """
+        """Check if a design point satisfies TDC-derived constraints."""
         if self._tdc_min_noc_bw is not None:
             if point.noc_bandwidth < self._tdc_min_noc_bw:
                 return False
@@ -256,7 +304,7 @@ class DesignSpace:
             if point.l2_size_kb < self._tdc_min_l2_kb:
                 return False
         if self._tdc_min_core_types is not None:
-            if len(point.core_types) < self._tdc_min_core_types:
+            if point.num_selected_types() < self._tdc_min_core_types:
                 return False
         if self._tdc_min_total_cores is not None:
             if point.total_cores() < self._tdc_min_total_cores:
@@ -268,44 +316,38 @@ class DesignSpace:
         return DesignPoint.vector_dimension()
 
     def bounds(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Return (lower, upper) bound arrays for the encoded vector."""
+        """Return (lower, upper) bound arrays for the 64-D encoded vector."""
         r = self.ranges
         lo: List[float] = []
         hi: List[float] = []
-        # core_type_count
-        lo.append(float(r["core_type_count"][0]))
-        hi.append(float(r["core_type_count"][1]))
-        # per core-type params (repeated MAX_CORE_TYPES times)
+
+        # Type mask bounds: [0, 1] for each of the 30 types
         for _ in range(MAX_CORE_TYPES):
-            lo.extend([
-                float(r["pe_grid_rows"][0]),
-                float(r["pe_grid_cols"][0]),
-                float(r["fu_alu_count"][0]),
-                float(r["fu_mul_count"][0]),
-                float(r["fu_fp_count"][0]),
-                float(r["fu_mem_count"][0]),
-                float(r["spm_size_kb"][0]),
-                float(r["cores_per_type"][0]),
-            ])
-            hi.extend([
-                float(r["pe_grid_rows"][1]),
-                float(r["pe_grid_cols"][1]),
-                float(r["fu_alu_count"][1]),
-                float(r["fu_mul_count"][1]),
-                float(r["fu_fp_count"][1]),
-                float(r["fu_mem_count"][1]),
-                float(r["spm_size_kb"][1]),
-                float(r["cores_per_type"][1]),
-            ])
+            lo.append(0.0)
+            hi.append(1.0)
+
+        # Instance count bounds: [0, max_cores_per_type] for each type
+        cores_lo, cores_hi = r.get("cores_per_type", (1, 8))
+        for _ in range(MAX_CORE_TYPES):
+            lo.append(0.0)
+            hi.append(float(cores_hi))
+
         # noc_topology (categorical encoded as integer index)
         lo.append(0.0)
         hi.append(float(len(self.topologies) - 1))
+
         # noc_bandwidth
         lo.append(float(r["noc_bandwidth"][0]))
         hi.append(float(r["noc_bandwidth"][1]))
+
         # l2_size_kb
         lo.append(float(r["l2_size_kb"][0]))
         hi.append(float(r["l2_size_kb"][1]))
+
+        # l2_bank_count
+        lo.append(4.0)
+        hi.append(16.0)
+
         return np.array(lo), np.array(hi)
 
     def sample_random(self, n: int = 1) -> List[DesignPoint]:
@@ -321,7 +363,6 @@ class DesignSpace:
         """Latin Hypercube Sampling for better space coverage."""
         lo, hi = self.bounds()
         d = len(lo)
-        # Generate LHS intervals
         result = np.zeros((n, d))
         for j in range(d):
             perm = self.rng.permutation(n)
@@ -336,17 +377,14 @@ class DesignSpace:
         """Grid sampling on a coarse lattice (may be truncated)."""
         lo, hi = self.bounds()
         d = len(lo)
-        # Generate axis values
         axes = []
         for j in range(d):
             vals = np.linspace(lo[j], hi[j], steps_per_dim)
             axes.append(vals)
-        # Full grid would be steps^d; we subsample if too large
         total = steps_per_dim ** d
         if total <= max_samples:
             grid = np.array(np.meshgrid(*axes)).T.reshape(-1, d)
         else:
-            # Random subset of grid points
             grid = np.zeros((max_samples, d))
             for i in range(max_samples):
                 for j in range(d):
