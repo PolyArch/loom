@@ -211,7 +211,7 @@ static bool testBatchVerificationErrors() {
   badPath.endConsumer = "d";
   badPath.latency = "";
 
-  auto result = verifyContracts({badEdge}, {badPath});
+  auto result = verifyContractsStructural({badEdge}, {badPath});
 
   if (result.valid) {
     std::cerr << "FAIL: testBatchVerificationErrors - expected invalid\n";
@@ -249,7 +249,7 @@ static bool testBatchVerificationAllValid() {
   p1.endConsumer = "c";
   p1.latency = "100";
 
-  auto result = verifyContracts({e1}, {p1});
+  auto result = verifyContractsStructural({e1}, {p1});
 
   if (!result.valid) {
     std::cerr << "FAIL: testBatchVerificationAllValid - expected valid\n";

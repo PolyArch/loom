@@ -237,3 +237,37 @@ target_link_libraries(tdc-verification-test PRIVATE
 set_target_properties(tdc-verification-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
+
+# Deepened ContractConstraintTranslator tests (G2): typed constraints,
+# symbolic evaluator, pruning masks
+add_executable(constraint-translator-deep-test ConstraintTranslatorDeepTest.cpp)
+
+target_include_directories(constraint-translator-deep-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+)
+
+target_link_libraries(constraint-translator-deep-test PRIVATE
+  LoomSystemCompiler
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(constraint-translator-deep-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)
+
+# Deepened TDCVerification tests (G3): inference, static verification,
+# dynamic verification, aggregate reports
+add_executable(tdc-verification-deep-test TDCVerificationDeepTest.cpp)
+
+target_include_directories(tdc-verification-deep-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+)
+
+target_link_libraries(tdc-verification-deep-test PRIVATE
+  LoomSystemCompiler
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(tdc-verification-deep-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)
