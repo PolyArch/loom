@@ -11,6 +11,32 @@ using namespace mlir;
 
 namespace loom {
 
+namespace {
+
+static bool isByteType(Type type) {
+  auto intTy = dyn_cast<IntegerType>(type);
+  return intTy && intTy.getWidth() == 8;
+}
+
+static Type getHomogeneousStructElementType(LLVM::LLVMStructType structTy,
+                                            MLIRContext *ctx) {
+  auto body = structTy.getBody();
+  if (body.empty())
+    return nullptr;
+
+  Type firstTy = normalizeScalarType(ctx, body[0]);
+  if (isByteType(firstTy))
+    return nullptr;
+
+  for (unsigned i = 1; i < body.size(); ++i) {
+    if (normalizeScalarType(ctx, body[i]) != firstTy)
+      return nullptr;
+  }
+  return firstTy;
+}
+
+} // namespace
+
 MemRefType buildStridedMemRefType(MLIRContext *ctx, Type elementType) {
   auto layout = StridedLayoutAttr::get(ctx,
       /*offset=*/ShapedType::kDynamic,
@@ -148,34 +174,73 @@ static Type inferFromUses(Value ptrVal, unsigned depth = 0) {
     return nullptr;
 
   Type bestType = nullptr;
+  bool sawByteEvidence = false;
+
+  auto recordType = [&](Type ty) {
+    if (!ty)
+      return;
+    ty = normalizeScalarType(ptrVal.getContext(), ty);
+    if (isByteType(ty)) {
+      sawByteEvidence = true;
+      return;
+    }
+    if (!bestType)
+      bestType = ty;
+  };
 
   for (auto &use : ptrVal.getUses()) {
     Operation *user = use.getOwner();
+
+    if (auto bitcast = dyn_cast<LLVM::BitcastOp>(user)) {
+      if (use.getOperandNumber() == 0 && isa<LLVM::LLVMPointerType>(
+                                             bitcast.getType())) {
+        Type fromBitcastUses = inferFromUses(bitcast.getResult(), depth + 1);
+        if (fromBitcastUses) {
+          if (!isByteType(fromBitcastUses))
+            return fromBitcastUses;
+          sawByteEvidence = true;
+        }
+      }
+    }
+
+    if (auto cast = dyn_cast<LLVM::AddrSpaceCastOp>(user)) {
+      if (use.getOperandNumber() == 0 && isa<LLVM::LLVMPointerType>(
+                                             cast.getType())) {
+        Type fromCastUses = inferFromUses(cast.getResult(), depth + 1);
+        if (fromCastUses) {
+          if (!isByteType(fromCastUses))
+            return fromCastUses;
+          sawByteEvidence = true;
+        }
+      }
+    }
 
     // GEP reveals element type directly
     if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
       if (use.getOperandNumber() == 0) { // base operand
         Type elemTy = gep.getElemType();
-        // For struct-typed GEPs, skip past to look at downstream uses
         if (isa<LLVM::LLVMStructType>(elemTy)) {
+          Type structTy = getHomogeneousStructElementType(
+              cast<LLVM::LLVMStructType>(elemTy), ptrVal.getContext());
+          if (structTy)
+            recordType(structTy);
+
           Type fromGepUses = inferFromUses(gep.getResult(), depth + 1);
-          if (fromGepUses)
-            return fromGepUses;
-          if (!bestType)
-            bestType = IntegerType::get(ptrVal.getContext(), 8);
+          if (fromGepUses) {
+            if (!isByteType(fromGepUses))
+              return fromGepUses;
+            sawByteEvidence = true;
+          }
           continue;
         }
-        if (!isa<IntegerType>(elemTy) ||
-            cast<IntegerType>(elemTy).getWidth() != 8) {
-          // Prefer non-i8 types
-          return elemTy;
-        }
-        if (!bestType)
-          bestType = elemTy;
+        recordType(elemTy);
         // Also look at GEP result uses
         Type fromGepUses = inferFromUses(gep.getResult(), depth + 1);
-        if (fromGepUses)
-          return fromGepUses;
+        if (fromGepUses) {
+          if (!isByteType(fromGepUses))
+            return fromGepUses;
+          sawByteEvidence = true;
+        }
       }
     }
 
@@ -186,28 +251,18 @@ static Type inferFromUses(Value ptrVal, unsigned depth = 0) {
       if (isa<LLVM::LLVMPointerType>(rawLoadTy)) {
         Type fromLoadUses = inferFromUses(load.getResult(), depth + 1);
         if (fromLoadUses) {
-          if (!bestType)
-            bestType = fromLoadUses;
+          if (!isByteType(fromLoadUses))
+            return fromLoadUses;
+          sawByteEvidence = true;
         }
         continue;
       }
       // If loading a vector type, infer from the vector element type
       if (auto vecTy = dyn_cast<VectorType>(rawLoadTy)) {
-        Type elemTy = normalizeScalarType(user->getContext(),
-                                          vecTy.getElementType());
-        if (!isa<IntegerType>(elemTy) ||
-            cast<IntegerType>(elemTy).getWidth() != 8)
-          return elemTy;
-        if (!bestType)
-          bestType = elemTy;
+        recordType(vecTy.getElementType());
         continue;
       }
-      Type loadTy = normalizeScalarType(user->getContext(), rawLoadTy);
-      if (!isa<IntegerType>(loadTy) ||
-          cast<IntegerType>(loadTy).getWidth() != 8)
-        return loadTy;
-      if (!bestType)
-        bestType = loadTy;
+      recordType(rawLoadTy);
     }
 
     // Store reveals value type
@@ -216,21 +271,10 @@ static Type inferFromUses(Value ptrVal, unsigned depth = 0) {
         Type rawValTy = store.getValue().getType();
         // If storing a vector type, infer from element type
         if (auto vecTy = dyn_cast<VectorType>(rawValTy)) {
-          Type elemTy = normalizeScalarType(user->getContext(),
-                                            vecTy.getElementType());
-          if (!isa<IntegerType>(elemTy) ||
-              cast<IntegerType>(elemTy).getWidth() != 8)
-            return elemTy;
-          if (!bestType)
-            bestType = elemTy;
+          recordType(vecTy.getElementType());
           continue;
         }
-        Type valTy = normalizeScalarType(user->getContext(), rawValTy);
-        if (!isa<IntegerType>(valTy) ||
-            cast<IntegerType>(valTy).getWidth() != 8)
-          return valTy;
-        if (!bestType)
-          bestType = valTy;
+        recordType(rawValTy);
       }
     }
 
@@ -240,13 +284,51 @@ static Type inferFromUses(Value ptrVal, unsigned depth = 0) {
       Block *dest = br.getDest();
       if (idx < dest->getNumArguments()) {
         Type fromDest = inferFromUses(dest->getArgument(idx), depth + 1);
-        if (fromDest)
-          return fromDest;
+        if (fromDest) {
+          if (!isByteType(fromDest))
+            return fromDest;
+          sawByteEvidence = true;
+        }
+      }
+    }
+
+    if (auto condBr = dyn_cast<LLVM::CondBrOp>(user)) {
+      unsigned idx = use.getOperandNumber();
+      if (idx > 0) {
+        unsigned trueCount = condBr.getTrueDestOperands().size();
+        if (idx - 1 < trueCount) {
+          Block *dest = condBr.getTrueDest();
+          unsigned argIdx = idx - 1;
+          if (argIdx < dest->getNumArguments()) {
+            Type fromDest = inferFromUses(dest->getArgument(argIdx),
+                                          depth + 1);
+            if (fromDest) {
+              if (!isByteType(fromDest))
+                return fromDest;
+              sawByteEvidence = true;
+            }
+          }
+        } else {
+          Block *dest = condBr.getFalseDest();
+          unsigned argIdx = idx - 1 - trueCount;
+          if (argIdx < dest->getNumArguments()) {
+            Type fromDest = inferFromUses(dest->getArgument(argIdx), depth + 1);
+            if (fromDest) {
+              if (!isByteType(fromDest))
+                return fromDest;
+              sawByteEvidence = true;
+            }
+          }
+        }
       }
     }
   }
 
-  return bestType;
+  if (bestType)
+    return bestType;
+  if (sawByteEvidence)
+    return IntegerType::get(ptrVal.getContext(), 8);
+  return nullptr;
 }
 
 llvm::DenseMap<unsigned, Type>
@@ -262,54 +344,11 @@ inferPointerElementTypes(LLVM::LLVMFuncOp funcOp) {
     if (!isa<LLVM::LLVMPointerType>(arg.getType()))
       continue;
 
-    // First try to infer from GEP elem_type (most reliable).
-    // For struct-typed GEPs, look through the struct to find the scalar type
-    // from downstream uses or from the struct's field types.
-    Type inferred = nullptr;
-    funcOp.walk([&](LLVM::GEPOp gepOp) {
-      if (gepOp.getBase() == arg) {
-        Type elemTy = gepOp.getElemType();
-        if (elemTy && isa<LLVM::LLVMStructType>(elemTy)) {
-          // For homogeneous structs (all fields same type), use the scalar type.
-          // This enables vector load/store decomposition for struct-as-array.
-          auto structTy = cast<LLVM::LLVMStructType>(elemTy);
-          auto body = structTy.getBody();
-          if (!body.empty()) {
-            Type firstTy = normalizeScalarType(funcOp.getContext(), body[0]);
-            bool allSame = true;
-            for (unsigned fi = 1; fi < body.size(); ++fi) {
-              if (normalizeScalarType(funcOp.getContext(), body[fi]) != firstTy) {
-                allSame = false;
-                break;
-              }
-            }
-            if (allSame && (!inferred || (isa<IntegerType>(inferred) &&
-                            cast<IntegerType>(inferred).getWidth() == 8))) {
-              inferred = firstTy;
-              return;
-            }
-          }
-          // Heterogeneous struct or empty: use i8 byte addressing
-          if (!inferred)
-            inferred = IntegerType::get(funcOp.getContext(), 8);
-          return;
-        }
-        if (elemTy && (!inferred || (isa<IntegerType>(inferred) &&
-                                     cast<IntegerType>(inferred).getWidth() == 8))) {
-          inferred = elemTy;
-        }
-      }
-    });
-
-    if (!inferred) {
-      // Fallback: trace uses
-      inferred = inferFromUses(arg);
-    }
-
-    if (!inferred) {
-      // Final fallback: i8
+    // Prefer evidence from the full use graph; only fall back to byte
+    // addressing when no stronger scalar type can be proven.
+    Type inferred = inferFromUses(arg);
+    if (!inferred)
       inferred = IntegerType::get(funcOp.getContext(), 8);
-    }
 
     // Normalize to ensure memref-compatible type
     inferred = normalizeScalarType(funcOp.getContext(), inferred);
