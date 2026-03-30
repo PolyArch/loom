@@ -73,6 +73,26 @@ enum class ArraySize {
 /// Total number of types in the fixed core type library.
 constexpr unsigned NUM_LIBRARY_TYPES = 30;
 
+/// Per-type design parameters mirroring Python CoreDesignParams from
+/// core_type_library.py.  Captures FU counts, array geometry, SPM sizing,
+/// and temporal PE configuration so that the workload JSON carries the full
+/// metadata the Python optimizer needs for affinity scoring.
+struct CoreTypeDesignParams {
+  unsigned arrayRows = 2;
+  unsigned arrayCols = 2;
+  unsigned fuAluCount = 0;
+  unsigned fuMulCount = 0;
+  unsigned fuFpCount = 0;
+  unsigned fuMemCount = 2;
+  unsigned spmSizeKB = 0;
+  bool isTemporal = false;
+  unsigned instructionSlots = 0;
+  unsigned numRegisters = 0;
+  unsigned dataWidth = 32;
+  bool hasFP = false;
+  bool hasInt = true;
+};
+
 /// One entry in the core type library produced by OUTER-HW.
 struct CoreTypeLibraryEntry {
   unsigned typeIndex = 0;
@@ -95,6 +115,11 @@ struct CoreTypeLibraryEntry {
   ComputeMix computeMix = ComputeMix::INT_MIX;
   bool hasSPM = true;
   ArraySize arraySize = ArraySize::SMALL;
+
+  /// Full design parameters for this core type (FU counts, array geometry,
+  /// SPM sizing, temporal PE config).  Serialized into the workload JSON
+  /// so the Python optimizer can perform affinity scoring.
+  CoreTypeDesignParams designParams;
 };
 
 /// The complete core type library produced by OUTER-HW.

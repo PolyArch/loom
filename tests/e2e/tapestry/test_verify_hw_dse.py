@@ -55,6 +55,33 @@ class TestHWOuterOptimizer:
         assert "minSPMKB" in content, "Missing minSPMKB resource bound"
         assert "requiredFUTypes" in content, "Missing requiredFUTypes"
 
+    def test_core_type_design_params_struct(self):
+        """CoreTypeDesignParams should capture FU counts and array geometry."""
+        ho_h = REPO_ROOT / "include" / "loom" / "SystemCompiler" / "HWOuterOptimizer.h"
+        content = ho_h.read_text(encoding="utf-8")
+
+        assert "struct CoreTypeDesignParams" in content, (
+            "Missing CoreTypeDesignParams struct"
+        )
+        for field in [
+            "fuAluCount", "fuMulCount", "fuFpCount", "fuMemCount",
+            "arrayRows", "arrayCols", "spmSizeKB", "isTemporal",
+            "instructionSlots", "numRegisters", "dataWidth",
+            "hasFP", "hasInt",
+        ]:
+            assert field in content, (
+                f"CoreTypeDesignParams missing {field}"
+            )
+
+    def test_core_type_entry_has_design_params(self):
+        """CoreTypeLibraryEntry should embed a designParams field."""
+        ho_h = REPO_ROOT / "include" / "loom" / "SystemCompiler" / "HWOuterOptimizer.h"
+        content = ho_h.read_text(encoding="utf-8")
+
+        assert "designParams" in content, (
+            "CoreTypeLibraryEntry missing designParams field"
+        )
+
     def test_core_role_enum(self):
         """CoreRole should have FP_HEAVY, CONTROL_HEAVY, MEMORY_HEAVY, BALANCED."""
         ho_h = REPO_ROOT / "include" / "loom" / "SystemCompiler" / "HWOuterOptimizer.h"
@@ -91,6 +118,22 @@ class TestHWOuterOptimizer:
         content = ho_h.read_text(encoding="utf-8")
 
         assert "generateSystemMLIR" in content, "Missing generateSystemMLIR method"
+
+    def test_write_workload_json_serializes_type_metadata(self):
+        """writeWorkloadJSON should serialize per-type metadata, not just the count."""
+        ho_cpp = REPO_ROOT / "lib" / "loom" / "SystemCompiler" / "HWOuterOptimizer.cpp"
+        content = ho_cpp.read_text(encoding="utf-8")
+
+        assert '"type_metadata"' in content, (
+            "writeWorkloadJSON missing type_metadata serialization"
+        )
+        # Verify per-type fields are being written
+        for field in ["type_id", "fu_alu_count", "fu_mul_count",
+                       "fu_fp_count", "fu_mem_count", "array_rows",
+                       "array_cols", "spm_size_kb", "is_temporal"]:
+            assert f'"{field}"' in content, (
+                f"writeWorkloadJSON missing {field} in type_metadata"
+            )
 
 
 class TestHWInnerOptimizer:

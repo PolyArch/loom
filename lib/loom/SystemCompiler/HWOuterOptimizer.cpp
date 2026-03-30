@@ -324,8 +324,87 @@ std::string HWOuterOptimizer::writeWorkloadJSON(
   }
   root["contracts"] = std::move(contractsArray);
 
-  // Serialize 30-type library metadata for the Python optimizer
+  // Serialize 30-type library metadata for the Python optimizer.
+  // Build the canonical type list: D1-D6 (domain-specific) followed by
+  // 24 KHG combinatorial types, matching Python core_type_library ordering.
   root["num_library_types"] = static_cast<int64_t>(NUM_LIBRARY_TYPES);
+
+  llvm::json::Array typeMetadataArray;
+  unsigned typeIdx = 0;
+
+  // Helper lambda to serialize a CoreTypeDesignParams-like record.
+  auto serializeTypeEntry = [&](unsigned idx, const std::string &typeId,
+                                unsigned arrayRows, unsigned arrayCols,
+                                unsigned fuAlu, unsigned fuMul, unsigned fuFp,
+                                unsigned fuMem, unsigned spmKB,
+                                bool isTemporal, unsigned instrSlots,
+                                unsigned numRegs, unsigned dataWidth,
+                                bool hasFP, bool hasInt,
+                                const std::string &computeMix, bool hasSPM,
+                                const std::string &arraySize) {
+    llvm::json::Object tObj;
+    tObj["type_index"] = static_cast<int64_t>(idx);
+    tObj["type_id"] = typeId;
+    tObj["compute_mix"] = computeMix;
+    tObj["has_spm"] = hasSPM;
+    tObj["array_size"] = arraySize;
+    tObj["array_rows"] = static_cast<int64_t>(arrayRows);
+    tObj["array_cols"] = static_cast<int64_t>(arrayCols);
+    tObj["fu_alu_count"] = static_cast<int64_t>(fuAlu);
+    tObj["fu_mul_count"] = static_cast<int64_t>(fuMul);
+    tObj["fu_fp_count"] = static_cast<int64_t>(fuFp);
+    tObj["fu_mem_count"] = static_cast<int64_t>(fuMem);
+    tObj["spm_size_kb"] = static_cast<int64_t>(spmKB);
+    tObj["is_temporal"] = isTemporal;
+    tObj["instruction_slots"] = static_cast<int64_t>(instrSlots);
+    tObj["num_registers"] = static_cast<int64_t>(numRegs);
+    tObj["data_width"] = static_cast<int64_t>(dataWidth);
+    tObj["has_fp"] = hasFP;
+    tObj["has_int"] = hasInt;
+    typeMetadataArray.push_back(std::move(tObj));
+  };
+
+  // Domain-specific types D1-D6
+  for (const auto &dp : adg::allDomainTypes()) {
+    // Domain types use a mixed compute classification based on FU ratios
+    std::string computeMix = "int_mix";
+    if (dp.fuFpCount >= dp.fuAluCount)
+      computeMix = "fp_mix";
+    else if (dp.fuMemCount > dp.fuAluCount && dp.fuMemCount > dp.fuFpCount)
+      computeMix = "mem_mix";
+
+    std::string arraySz = (dp.arrayRows >= 6) ? "large" : "small";
+
+    serializeTypeEntry(typeIdx++, dp.typeId, dp.arrayRows, dp.arrayCols,
+                       dp.fuAluCount, dp.fuMulCount, dp.fuFpCount,
+                       dp.fuMemCount, dp.spmSizeKB, dp.isTemporal,
+                       dp.instructionSlots, dp.numRegisters, dp.dataWidth,
+                       dp.hasFP(), /*hasInt=*/true, computeMix,
+                       dp.hasSPM(), arraySz);
+  }
+
+  // KHG combinatorial types (24 types)
+  for (const auto &kp : adg::allKHGTypes()) {
+    std::string computeMix = "int_mix";
+    if (kp.computeMix == adg::KHGComputeMix::FP_HEAVY)
+      computeMix = "fp_mix";
+    else if (kp.computeMix == adg::KHGComputeMix::MIXED)
+      computeMix = "mem_mix";
+
+    std::string arraySz =
+        (kp.arraySize == adg::KHGArraySize::SIZE_12) ? "large" : "small";
+    bool hasSPM = (kp.spmPresence == adg::KHGSPMPresence::WITH_SPM);
+    bool isTemporal = (kp.peKind == adg::KHGPEKind::TEMPORAL);
+    bool hasFP = (kp.fuFpCount > 0);
+
+    serializeTypeEntry(typeIdx++, kp.typeId, kp.arrayRows, kp.arrayCols,
+                       kp.fuAluCount, kp.fuMulCount, kp.fuFpCount,
+                       /*fuMem=*/2, kp.spmSizeKB, isTemporal,
+                       kp.instructionSlots, kp.numRegisters, kp.dataWidth,
+                       hasFP, /*hasInt=*/true, computeMix, hasSPM, arraySz);
+  }
+
+  root["type_metadata"] = std::move(typeMetadataArray);
 
   // Write to file
   std::string path = outputDir + "/workload.json";
@@ -410,6 +489,47 @@ bool HWOuterOptimizer::parseTopologyJSON(const std::string &jsonPath,
   return true;
 }
 
+/// Parse a CoreTypeDesignParams from a JSON object containing per-type
+/// design metadata (FU counts, array geometry, SPM config, etc.).
+static void parseDesignParams(const llvm::json::Object *tObj,
+                              CoreTypeDesignParams &dp) {
+  if (!tObj)
+    return;
+
+  // Check for nested "design_params" object first, then fall back to
+  // top-level fields (flat format from writeWorkloadJSON).
+  const llvm::json::Object *src = tObj->getObject("design_params");
+  if (!src)
+    src = tObj;
+
+  if (auto v = src->getInteger("array_rows"))
+    dp.arrayRows = static_cast<unsigned>(*v);
+  if (auto v = src->getInteger("array_cols"))
+    dp.arrayCols = static_cast<unsigned>(*v);
+  if (auto v = src->getInteger("fu_alu_count"))
+    dp.fuAluCount = static_cast<unsigned>(*v);
+  if (auto v = src->getInteger("fu_mul_count"))
+    dp.fuMulCount = static_cast<unsigned>(*v);
+  if (auto v = src->getInteger("fu_fp_count"))
+    dp.fuFpCount = static_cast<unsigned>(*v);
+  if (auto v = src->getInteger("fu_mem_count"))
+    dp.fuMemCount = static_cast<unsigned>(*v);
+  if (auto v = src->getInteger("spm_size_kb"))
+    dp.spmSizeKB = static_cast<unsigned>(*v);
+  if (auto v = src->getBoolean("is_temporal"))
+    dp.isTemporal = *v;
+  if (auto v = src->getInteger("instruction_slots"))
+    dp.instructionSlots = static_cast<unsigned>(*v);
+  if (auto v = src->getInteger("num_registers"))
+    dp.numRegisters = static_cast<unsigned>(*v);
+  if (auto v = src->getInteger("data_width"))
+    dp.dataWidth = static_cast<unsigned>(*v);
+  if (auto v = src->getBoolean("has_fp"))
+    dp.hasFP = *v;
+  if (auto v = src->getBoolean("has_int"))
+    dp.hasInt = *v;
+}
+
 bool HWOuterOptimizer::parseCoreLibraryFromObject(
     const llvm::json::Object *root, CoreTypeLibrary &outLibrary) {
   if (!root)
@@ -469,6 +589,8 @@ bool HWOuterOptimizer::parseCoreLibraryFromObject(
           entry.assignedKernels.push_back(kStr->str());
       }
     }
+
+    parseDesignParams(tObj, entry.designParams);
 
     outLibrary.entries.push_back(std::move(entry));
   }
@@ -531,6 +653,8 @@ bool HWOuterOptimizer::parseCoreLibraryFromArray(
           entry.assignedKernels.push_back(kStr->str());
       }
     }
+
+    parseDesignParams(tObj, entry.designParams);
 
     outLibrary.entries.push_back(std::move(entry));
   }
