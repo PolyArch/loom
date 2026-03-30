@@ -1,8 +1,8 @@
 """Verification tests for the Contract System (C02).
 
-Group B tests: Validates that AFFINE_INDEXED is removed, DROP/OVERWRITE
-backpressure produces warnings and falls back to BLOCK, and contract
-inference populates missing fields.
+Group B tests: Validates that AFFINE_INDEXED is removed, the Placement enum
+replaces the legacy Visibility enum, TDCEdgeSpec carries dataVolume and
+shape fields, and contract inference populates missing fields.
 """
 
 import os
@@ -91,28 +91,91 @@ class TestOrderingEnum:
         assert "UNORDERED" in content, "Missing UNORDERED in tapestry::Ordering"
 
 
-class TestBackpressureWarning:
-    """B4: DROP/OVERWRITE backpressure should produce a warning and fall back to BLOCK."""
+class TestPlacementEnum:
+    """B: Placement enum replaces legacy Visibility with LOCAL_SPM, SHARED_L2, EXTERNAL, AUTO."""
 
-    def test_backpressure_enum_exists(self):
-        """Backpressure enum should have BLOCK, DROP, and OVERWRITE."""
+    def test_placement_enum_in_contract_header(self):
+        """Contract.h should define enum class Placement with all 4 values."""
         contract_h = REPO_ROOT / "include" / "loom" / "SystemCompiler" / "Contract.h"
         content = contract_h.read_text(encoding="utf-8")
 
-        assert "enum class Backpressure" in content
-        assert "BLOCK" in content
-        assert "DROP" in content
-        assert "OVERWRITE" in content
+        assert "enum class Placement" in content, "Missing Placement enum"
+        assert "LOCAL_SPM" in content, "Missing LOCAL_SPM in Placement"
+        assert "SHARED_L2" in content, "Missing SHARED_L2 in Placement"
+        assert "EXTERNAL" in content, "Missing EXTERNAL in Placement"
+        assert "AUTO" in content, "Missing AUTO in Placement"
 
-    def test_default_backpressure_is_block(self):
-        """Default backpressure in ContractSpec should be BLOCK."""
+    def test_placement_enum_in_taskgraph_header(self):
+        """task_graph.h should define enum class Placement with all 4 values."""
+        tg_h = REPO_ROOT / "include" / "tapestry" / "task_graph.h"
+        content = tg_h.read_text(encoding="utf-8")
+
+        assert "enum class Placement" in content, "Missing Placement enum"
+        assert "LOCAL_SPM" in content, "Missing LOCAL_SPM"
+        assert "SHARED_L2" in content, "Missing SHARED_L2"
+        assert "EXTERNAL" in content, "Missing EXTERNAL"
+        assert "AUTO" in content, "Missing AUTO"
+
+    def test_visibility_alias_retained(self):
+        """Contract.h should retain Visibility as a type alias to Placement."""
         contract_h = REPO_ROOT / "include" / "loom" / "SystemCompiler" / "Contract.h"
         content = contract_h.read_text(encoding="utf-8")
 
-        # Find the default value
-        assert "Backpressure::BLOCK" in content, (
-            "Expected default backpressure = BLOCK in ContractSpec"
+        assert "using Visibility = Placement" in content, (
+            "Expected Visibility alias to Placement for legacy compatibility"
         )
+
+
+class TestTDCEdgeSpec:
+    """B: TDCEdgeSpec carries the 4 atomic edge dimensions plus identity fields."""
+
+    def test_tdc_edge_spec_exists(self):
+        """Contract.h should define struct TDCEdgeSpec."""
+        contract_h = REPO_ROOT / "include" / "loom" / "SystemCompiler" / "Contract.h"
+        content = contract_h.read_text(encoding="utf-8")
+
+        assert "struct TDCEdgeSpec" in content, "Missing TDCEdgeSpec struct"
+
+    def test_tdc_edge_spec_has_placement(self):
+        """TDCEdgeSpec should have an optional Placement field."""
+        contract_h = REPO_ROOT / "include" / "loom" / "SystemCompiler" / "Contract.h"
+        content = contract_h.read_text(encoding="utf-8")
+
+        assert "Placement" in content, "TDCEdgeSpec missing Placement reference"
+        assert "placement" in content, "TDCEdgeSpec missing placement field"
+
+    def test_tdc_edge_spec_has_shape(self):
+        """TDCEdgeSpec should have an optional shape field."""
+        contract_h = REPO_ROOT / "include" / "loom" / "SystemCompiler" / "Contract.h"
+        content = contract_h.read_text(encoding="utf-8")
+
+        assert "shape" in content, "TDCEdgeSpec missing shape field"
+
+
+class TestTapestryContract:
+    """B: tapestry::Contract carries dataVolume, shape, and placement."""
+
+    def test_contract_has_data_volume(self):
+        """tapestry::Contract should have an optional dataVolume field."""
+        tg_h = REPO_ROOT / "include" / "tapestry" / "task_graph.h"
+        content = tg_h.read_text(encoding="utf-8")
+
+        assert "struct Contract" in content, "Missing Contract struct"
+        assert "dataVolume" in content, "Contract missing dataVolume field"
+
+    def test_contract_has_shape(self):
+        """tapestry::Contract should have an optional shape field."""
+        tg_h = REPO_ROOT / "include" / "tapestry" / "task_graph.h"
+        content = tg_h.read_text(encoding="utf-8")
+
+        assert "shape" in content, "Contract missing shape field"
+
+    def test_contract_has_placement(self):
+        """tapestry::Contract should have an optional placement field."""
+        tg_h = REPO_ROOT / "include" / "tapestry" / "task_graph.h"
+        content = tg_h.read_text(encoding="utf-8")
+
+        assert "placement" in content, "Contract missing placement field"
 
 
 class TestContractInferencePipeline:
@@ -147,46 +210,28 @@ class TestContractInferencePipeline:
         )
 
 
-class TestContractPermissions:
-    """B: Contract transformation permissions default correctly."""
+class TestShapeExprParser:
+    """B: parseShapeExpr utility is declared for symbolic shape parsing."""
 
-    def test_permission_defaults_in_contract_header(self):
-        """ContractSpec mayFuse/mayReplicate/mayRetile defaults should be true."""
+    def test_parse_shape_expr_declared(self):
+        """Contract.h should declare parseShapeExpr."""
         contract_h = REPO_ROOT / "include" / "loom" / "SystemCompiler" / "Contract.h"
         content = contract_h.read_text(encoding="utf-8")
 
-        assert "bool mayFuse = true" in content
-        assert "bool mayRetile = true" in content
-        # mayReorder should default to false
-        assert "bool mayReorder = false" in content
+        assert "parseShapeExpr" in content, "Missing parseShapeExpr declaration"
 
-    def test_permission_defaults_in_taskgraph_header(self):
-        """tapestry::Contract mayFuse/mayRetile defaults should match spec."""
-        tg_h = REPO_ROOT / "include" / "tapestry" / "task_graph.h"
-        content = tg_h.read_text(encoding="utf-8")
-
-        assert "bool mayFuse = true" in content
-        assert "bool mayRetile = true" in content
-        assert "bool mayReorder = false" in content
-
-
-class TestContractVisibility:
-    """B: Visibility enum has LOCAL_SPM, SHARED_L2, EXTERNAL_DRAM."""
-
-    def test_visibility_values(self):
-        """Visibility enum should have all three memory levels."""
-        contract_h = REPO_ROOT / "include" / "loom" / "SystemCompiler" / "Contract.h"
-        content = contract_h.read_text(encoding="utf-8")
-
-        assert "LOCAL_SPM" in content, "Missing LOCAL_SPM"
-        assert "SHARED_L2" in content, "Missing SHARED_L2"
-        assert "EXTERNAL_DRAM" in content, "Missing EXTERNAL_DRAM"
-
-    def test_default_visibility_is_local_spm(self):
-        """Default visibility should be LOCAL_SPM."""
-        contract_h = REPO_ROOT / "include" / "loom" / "SystemCompiler" / "Contract.h"
-        content = contract_h.read_text(encoding="utf-8")
-
-        assert "Visibility::LOCAL_SPM" in content, (
-            "Expected default visibility = LOCAL_SPM in ContractSpec"
+    def test_tdc_types_test_passes(self):
+        """The TDC types unit test (tdc-types-test) should pass."""
+        build_dir = REPO_ROOT / "build"
+        test_bin = build_dir / "bin" / "tdc-types-test"
+        if not test_bin.exists():
+            pytest.skip("tdc-types-test binary not built")
+        result = subprocess.run(
+            [str(test_bin)],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"tdc-types-test failed (rc={result.returncode}).\n"
+            f"STDOUT:\n{result.stdout[:2000]}\n"
+            f"STDERR:\n{result.stderr[:2000]}"
         )
