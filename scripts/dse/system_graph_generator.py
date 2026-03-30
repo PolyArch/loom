@@ -292,6 +292,22 @@ class SystemGraphGenerator:
 # Topology text generation helper (for DSE visualization only)
 # ---------------------------------------------------------------------------
 
+def to_system_mlir(topology_spec: SystemTopologySpec) -> str:
+    """Deprecated alias for to_system_topology_text.
+
+    Callers should migrate to to_system_topology_text(). This wrapper
+    exists only for backward compatibility with plans and scripts that
+    reference the old name.
+    """
+    import warnings
+    warnings.warn(
+        "to_system_mlir is deprecated; use to_system_topology_text instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return to_system_topology_text(topology_spec)
+
+
 def to_system_topology_text(topology_spec: SystemTopologySpec) -> str:
     """Generate a structural topology description for DSE visualization only.
 

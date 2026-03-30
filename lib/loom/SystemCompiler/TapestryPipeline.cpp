@@ -686,25 +686,25 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
       break;
     }
     case PipelineStage::SIMULATE: {
-      // By design: the SIMULATE stage requires external simulation tools
-      // (MultiCoreSimSession) that are not part of the config-driven
-      // pipeline. Return failure with diagnostic guidance so callers know
-      // to use the task-based API or invoke the simulator directly.
+      // The config-driven pipeline handles COMPILE only. Simulation
+      // requires external tools that run outside this pipeline.
       result.success = false;
       result.diagnostics =
-          "SIMULATE stage is not yet integrated into the config-driven "
-          "pipeline; use the syscomp::TapestryPipeline (task-based API) or "
-          "run MultiCoreSimSession directly";
+          "SIMULATE/RTLGEN stages delegate to external tools "
+          "(tapestry_simulate/tapestry_rtlgen CLI or MultiCoreSimSession "
+          "API). The config-driven pipeline handles COMPILE only. Use the "
+          "dedicated CLI tools for simulation and RTL generation.";
       return result;
     }
     case PipelineStage::RTLGEN: {
-      // By design: RTL generation depends on external EDA tooling that
-      // cannot be invoked from within the config-driven pipeline. Return
-      // failure with diagnostic guidance for the caller.
+      // The config-driven pipeline handles COMPILE only. RTL generation
+      // requires external tools that run outside this pipeline.
       result.success = false;
       result.diagnostics =
-          "RTLGEN stage is not yet integrated into the config-driven "
-          "pipeline; run the RTL generator directly on compilation output";
+          "SIMULATE/RTLGEN stages delegate to external tools "
+          "(tapestry_simulate/tapestry_rtlgen CLI or MultiCoreSimSession "
+          "API). The config-driven pipeline handles COMPILE only. Use the "
+          "dedicated CLI tools for simulation and RTL generation.";
       return result;
     }
     }

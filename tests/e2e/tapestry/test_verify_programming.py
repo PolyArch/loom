@@ -60,14 +60,10 @@ class TestTaskGraphAPI:
         required_setters = [
             "ordering(Ordering",
             "data_type(const std::string",
-            "rate(int64_t",
-            "tile_shape(std::vector<int64_t>",
-            "visibility(Visibility",
-            "double_buffering(bool",
-            "backpressure(Backpressure",
-            "may_fuse(bool",
-            "may_replicate(bool",
-            "may_retile(bool",
+            "data_volume(uint64_t",
+            "shape(const std::string",
+            "placement(Placement",
+            "throughput(const std::string",
         ]
         for setter in required_setters:
             assert setter in content, (
