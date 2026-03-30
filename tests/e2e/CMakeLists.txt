@@ -10,6 +10,8 @@ set_property(GLOBAL PROPERTY LOOM_GEM5_SMOKE_TARGETS "")
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/adgs/common
                  ${CMAKE_CURRENT_BINARY_DIR}/adgs_common)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/apps/scientific
+                 ${CMAKE_CURRENT_BINARY_DIR}/apps/scientific)
 
 function(loom_configure_e2e_adg_builder target_name)
   target_include_directories(${target_name} PRIVATE
