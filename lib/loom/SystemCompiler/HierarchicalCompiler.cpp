@@ -192,7 +192,12 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
     for (const auto &c : l1Contracts)
       tdcEdges.push_back(contractSpecToEdgeSpec(c));
 
-    // No path specs available from legacy ContractSpec; pass empty.
+    // Legacy ContractSpec does not carry path-scope (multi-edge latency)
+    // information; those constraints live in TDCPathSpec which is only
+    // available when contracts are authored directly in TDC format.
+    // TODO: When TDC specs are provided directly (bypassing ContractSpec
+    // conversion), propagate TDCPathSpecs here so path-latency constraints
+    // participate in L1 assignment pruning.
     std::vector<TDCPathSpec> tdcPaths;
 
     ContractConstraintTranslator translator;

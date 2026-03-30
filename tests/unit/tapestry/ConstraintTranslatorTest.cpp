@@ -231,7 +231,7 @@ static bool testLegacyConversion() {
     return false;
   }
 
-  // throughput and shape should not be set from legacy conversion.
+  // throughput and shape should not be set when legacy fields are absent.
   if (spec.throughput.has_value()) {
     std::cerr << "FAIL: testLegacyConversion - throughput should be unset\n";
     return false;
@@ -242,6 +242,87 @@ static bool testLegacyConversion() {
   }
 
   std::cerr << "PASS: testLegacyConversion\n";
+  return true;
+}
+
+/// T8: Legacy ContractSpec with productionRate produces throughput in TDCEdgeSpec.
+static bool testLegacyConversionWithThroughput() {
+  ContractSpec legacy;
+  legacy.producerKernel = "conv";
+  legacy.consumerKernel = "bn";
+  legacy.dataTypeName = "f32";
+  legacy.ordering = Ordering::FIFO;
+  legacy.visibility = Placement::LOCAL_SPM;
+  legacy.productionRate = 64;
+
+  TDCEdgeSpec spec = contractSpecToEdgeSpec(legacy);
+
+  if (!spec.throughput.has_value()) {
+    std::cerr << "FAIL: testLegacyConversionWithThroughput - throughput unset\n";
+    return false;
+  }
+
+  if (*spec.throughput != "64") {
+    std::cerr << "FAIL: testLegacyConversionWithThroughput - expected '64', "
+              << "got '" << *spec.throughput << "'\n";
+    return false;
+  }
+
+  std::cerr << "PASS: testLegacyConversionWithThroughput\n";
+  return true;
+}
+
+/// T9: Legacy ContractSpec with steadyStateRatio produces ratio expression.
+static bool testLegacyConversionWithRatio() {
+  ContractSpec legacy;
+  legacy.producerKernel = "enc";
+  legacy.consumerKernel = "dec";
+  legacy.dataTypeName = "i16";
+  legacy.ordering = Ordering::FIFO;
+  legacy.visibility = Placement::LOCAL_SPM;
+  legacy.steadyStateRatio = std::make_pair<int64_t, int64_t>(3, 4);
+
+  TDCEdgeSpec spec = contractSpecToEdgeSpec(legacy);
+
+  if (!spec.throughput.has_value()) {
+    std::cerr << "FAIL: testLegacyConversionWithRatio - throughput unset\n";
+    return false;
+  }
+
+  if (*spec.throughput != "3 / 4") {
+    std::cerr << "FAIL: testLegacyConversionWithRatio - expected '3 / 4', "
+              << "got '" << *spec.throughput << "'\n";
+    return false;
+  }
+
+  std::cerr << "PASS: testLegacyConversionWithRatio\n";
+  return true;
+}
+
+/// T10: Legacy ContractSpec with tileShape produces shape in TDCEdgeSpec.
+static bool testLegacyConversionWithShape() {
+  ContractSpec legacy;
+  legacy.producerKernel = "matmul";
+  legacy.consumerKernel = "softmax";
+  legacy.dataTypeName = "f32";
+  legacy.ordering = Ordering::FIFO;
+  legacy.visibility = Placement::SHARED_L2;
+  legacy.tileShape = {128, 64};
+
+  TDCEdgeSpec spec = contractSpecToEdgeSpec(legacy);
+
+  if (!spec.shape.has_value()) {
+    std::cerr << "FAIL: testLegacyConversionWithShape - shape unset\n";
+    return false;
+  }
+
+  if (*spec.shape != "[128, 64]") {
+    std::cerr << "FAIL: testLegacyConversionWithShape - expected '[128, 64]', "
+              << "got '" << *spec.shape << "'\n";
+    return false;
+  }
+
+  std::cerr << "PASS: testLegacyConversionWithShape\n";
   return true;
 }
 
@@ -262,6 +343,9 @@ int main() {
   run(testPathEmptyLatency);
   run(testBatchTranslation);
   run(testLegacyConversion);
+  run(testLegacyConversionWithThroughput);
+  run(testLegacyConversionWithRatio);
+  run(testLegacyConversionWithShape);
 
   std::cerr << "\nResults: " << passed << "/" << total << " tests passed\n";
   return (passed == total) ? 0 : 1;

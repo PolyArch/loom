@@ -465,6 +465,29 @@ TDCEdgeSpec contractSpecToEdgeSpec(const ContractSpec &legacy) {
   spec.dataTypeName = legacy.dataTypeName;
   spec.ordering = legacy.ordering;
   spec.placement = legacy.visibility;
+
+  // Copy rate/throughput: use productionRate as the throughput floor if present.
+  // If a steadyStateRatio is available, express it as "num / den" so that the
+  // symbolic evaluator can resolve it downstream.
+  if (legacy.steadyStateRatio.has_value()) {
+    spec.throughput = std::to_string(legacy.steadyStateRatio->first) + " / " +
+                      std::to_string(legacy.steadyStateRatio->second);
+  } else if (legacy.productionRate.has_value()) {
+    spec.throughput = std::to_string(*legacy.productionRate);
+  }
+
+  // Copy tileShape as a bracketed dimension list (e.g. "[128, 64]").
+  if (!legacy.tileShape.empty()) {
+    std::string shapeStr = "[";
+    for (size_t i = 0; i < legacy.tileShape.size(); ++i) {
+      if (i > 0)
+        shapeStr += ", ";
+      shapeStr += std::to_string(legacy.tileShape[i]);
+    }
+    shapeStr += "]";
+    spec.shape = shapeStr;
+  }
+
   return spec;
 }
 
