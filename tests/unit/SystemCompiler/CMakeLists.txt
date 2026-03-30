@@ -53,3 +53,37 @@ target_link_libraries(noc-buffer-dma-test PRIVATE
 set_target_properties(noc-buffer-dma-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
+
+# RTL generation wiring tests
+
+add_executable(rtlgen-test RtlGenTest.cpp)
+
+target_include_directories(rtlgen-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+  ${CMAKE_BINARY_DIR}/include
+)
+
+target_link_libraries(rtlgen-test PRIVATE
+  LoomSystemCompiler
+  LoomSVGen
+  LoomADG
+  LoomFabric
+  LoomDataflow
+
+  CIRCTHandshake
+
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  MLIRArithDialect
+  MLIRMathDialect
+  MLIRMemRefDialect
+  MLIRFuncDialect
+  MLIRSCFDialect
+
+  ${HC_TEST_LLVM_LIBS}
+)
+
+set_target_properties(rtlgen-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)

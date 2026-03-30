@@ -7,6 +7,7 @@
 #include "loom/SystemCompiler/SystemTypes.h"
 #include "loom/SystemCompiler/TDGLowering.h"
 #include "loom/SystemCompiler/TypeAdapters.h"
+#include "loom/SVGen/MultiCoreSVGen.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -19,9 +20,12 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <map>
 #include <sstream>
+#include <utility>
 
 namespace loom {
 namespace syscomp {
@@ -449,6 +453,48 @@ extractPathContractsFromTDG(mlir::ModuleOp tdgModule) {
   return paths;
 }
 
+static loom::svgen::MultiCoreCompilationDesc
+buildMultiCoreCompilationDesc(const tapestry::CompilationResult &compResult,
+                              const tapestry::SystemArchitecture &tapArch) {
+  std::map<std::pair<int, int>, loom::svgen::MultiCoreCoreDesc> coreMap;
+
+  for (const auto &assign : compResult.assignments) {
+    if (!assign.mappingSuccess)
+      continue;
+    if (assign.coreTypeIndex < 0)
+      continue;
+
+    const unsigned typeIdx = static_cast<unsigned>(assign.coreTypeIndex);
+    if (typeIdx >= tapArch.coreTypes.size())
+      continue;
+
+    const auto key = std::make_pair(assign.coreTypeIndex,
+                                    assign.coreInstanceIndex);
+    auto &core = coreMap[key];
+    const auto &tapCore = tapArch.coreTypes[typeIdx];
+
+    if (core.coreType.empty())
+      core.coreType = tapCore.name;
+    if (core.coreInstanceName.empty()) {
+      core.coreInstanceName =
+          tapCore.name + "_" + std::to_string(assign.coreInstanceIndex);
+    }
+
+    if (assign.coreADG)
+      core.adgModule = assign.coreADG;
+    else if (!core.adgModule)
+      core.adgModule = tapCore.adgModule;
+  }
+
+  loom::svgen::MultiCoreCompilationDesc desc;
+  for (auto &entry : coreMap) {
+    if (!entry.second.adgModule)
+      continue;
+    desc.coreDescs.push_back(std::move(entry.second));
+  }
+  return desc;
+}
+
 } // anonymous namespace
 
 TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &config,
@@ -467,6 +513,8 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
   std::vector<loom::EdgeTileDimensions> savedVerifyTileDims;
   std::vector<loom::EdgeSchedulingSlot> savedVerifySchedSlots;
   std::map<std::string, int64_t> savedVerifyParams;
+  std::optional<tapestry::CompilationResult> compiledResult;
+  std::optional<tapestry::SystemArchitecture> compiledArch;
 
   for (auto stage : config.stages) {
     switch (stage) {
@@ -515,6 +563,7 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
             "failed to load architecture from '" + config.systemArchPath + "'";
         return result;
       }
+      compiledArch = tapArch;
 
       // Extract kernels from TDG.
       std::vector<tapestry::KernelDesc> kernels =
@@ -559,6 +608,7 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
       compiler.setPathSpecs(tdgPathSpecs);
       tapestry::CompilationResult compResult =
           compiler.compile(compilerConfig);
+      compiledResult = compResult;
 
       auto compileEnd = std::chrono::steady_clock::now();
       double compileSec =
@@ -887,14 +937,63 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
       break;
     }
     case PipelineStage::RTLGEN: {
-      // By design: RTL generation depends on external EDA tooling that
-      // cannot be invoked from within the config-driven pipeline. Return
-      // failure with diagnostic guidance for the caller.
-      result.success = false;
-      result.diagnostics =
-          "RTLGEN stage is not yet integrated into the config-driven "
-          "pipeline; run the RTL generator directly on compilation output";
-      return result;
+      if (!compiledResult.has_value() || !compiledArch.has_value()) {
+        result.success = false;
+        result.diagnostics =
+            "RTLGEN stage requires a successful COMPILE stage first";
+        return result;
+      }
+
+      loom::svgen::MultiCoreCompilationDesc rtlCompilation =
+          buildMultiCoreCompilationDesc(*compiledResult, *compiledArch);
+      if (rtlCompilation.coreDescs.empty()) {
+        result.success = false;
+        result.diagnostics =
+            "RTLGEN stage has no mapped cores to emit";
+        return result;
+      }
+
+      loom::svgen::MultiCoreSVGenOptions svgenOpts;
+      svgenOpts.outputDir = config.outputDir;
+      if (config.rtlSourceDir.empty()) {
+#ifdef LOOM_SOURCE_DIR
+        svgenOpts.rtlSourceDir = std::string(LOOM_SOURCE_DIR) + "/src/rtl";
+#else
+        svgenOpts.rtlSourceDir = "src/rtl";
+#endif
+      } else {
+        svgenOpts.rtlSourceDir = config.rtlSourceDir;
+      }
+      svgenOpts.fpIpProfile = config.svgenOpts.fpIpProfile;
+      svgenOpts.meshRows = config.svgenOpts.meshRows;
+      svgenOpts.meshCols = config.svgenOpts.meshCols;
+      if (svgenOpts.meshRows == 0 || svgenOpts.meshCols == 0) {
+        const unsigned numCores =
+            static_cast<unsigned>(rtlCompilation.coreDescs.size());
+        const unsigned side = std::max(
+            1u, static_cast<unsigned>(
+                    std::ceil(std::sqrt(static_cast<double>(numCores)))));
+        if (svgenOpts.meshRows == 0)
+          svgenOpts.meshRows = side;
+        if (svgenOpts.meshCols == 0)
+          svgenOpts.meshCols = (numCores + side - 1) / side;
+      }
+
+      loom::svgen::MultiCoreSVGenResult rtlGenResult =
+          loom::svgen::generateMultiCoreSV(rtlCompilation, svgenOpts,
+                                           &context);
+      if (!rtlGenResult.success) {
+        result.success = false;
+        result.diagnostics =
+            "RTL generation failed for compiled multicore system";
+        return result;
+      }
+
+      PipelineRTLResult rtlResult;
+      rtlResult.systemTopFile = rtlGenResult.systemTopFile;
+      rtlResult.allGeneratedFiles = rtlGenResult.allGeneratedFiles;
+      result.rtlResult = std::move(rtlResult);
+      break;
     }
     }
   }

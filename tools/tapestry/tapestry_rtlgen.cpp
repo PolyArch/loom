@@ -83,7 +83,15 @@ int main(int argc, char **argv) {
   config.stages = {PipelineStage::COMPILE, PipelineStage::RTLGEN};
 
   // RTL options
-  config.rtlSourceDir = RtlSourceDir;
+  if (RtlSourceDir.empty()) {
+#ifdef LOOM_SOURCE_DIR
+    config.rtlSourceDir = std::string(LOOM_SOURCE_DIR) + "/src/rtl";
+#else
+    config.rtlSourceDir = "src/rtl";
+#endif
+  } else {
+    config.rtlSourceDir = RtlSourceDir;
+  }
   config.svgenOpts.fpIpProfile = FpIpProfile;
   if (MeshRows > 0)
     config.svgenOpts.meshRows = MeshRows;
