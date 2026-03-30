@@ -91,6 +91,9 @@ function(loom_add_unit_case unit_name case_name dfg_file)
   )
 endfunction()
 
+# Auto-discover unit test directories containing dfg.mlir / dfg-*.mlir files.
+# Directories with adg.cpp (e.g. techmap-fu-expansion) get an ADG builder
+# executable; directories with fabric.mlir use it directly as the ADG source.
 file(GLOB unit_entries CONFIGURE_DEPENDS
   RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
   "*"

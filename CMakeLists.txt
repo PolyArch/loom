@@ -222,11 +222,14 @@ add_subdirectory(tools)
 add_subdirectory(tests/e2e)
 add_subdirectory(tests/unit)
 add_subdirectory(tests/rtl)
+add_subdirectory(tests/frontend)
 
 if(TARGET check-loom)
-  add_dependencies(check-loom check-loom-e2e check-loom-gem5 check-loom-rtl)
+  add_dependencies(check-loom check-loom-e2e check-loom-gem5 check-loom-rtl
+                              check-loom-frontend)
 else()
   add_custom_target(check-loom
     DEPENDS check-loom-unit check-loom-e2e check-loom-gem5 check-loom-rtl
+            check-loom-frontend
   )
 endif()
