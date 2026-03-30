@@ -13,6 +13,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -23,6 +24,7 @@
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 
 using namespace mlir;
 using namespace loom;
@@ -120,12 +122,105 @@ static Type inferPointerElemTypeFromUses(Value ptrVal, unsigned depth = 0) {
   return bestType;
 }
 
+static LogicalResult materializeReadOnlyArrayInit(Attribute initValue,
+                                                  Type elementType,
+                                                  int64_t numElements,
+                                                  ElementsAttr &denseInit) {
+  auto tensorType = RankedTensorType::get({numElements}, elementType);
+
+  if (auto elements = dyn_cast<ElementsAttr>(initValue)) {
+    auto shapedType = dyn_cast<ShapedType>(elements.getType());
+    if (shapedType && shapedType.getRank() == 1 &&
+        shapedType.getNumElements() == numElements &&
+        shapedType.getElementType() == elementType) {
+      denseInit = elements;
+      return success();
+    }
+
+    if (auto splat = dyn_cast<SplatElementsAttr>(elements)) {
+      Attribute splatValue = splat.getSplatValue<Attribute>();
+      if (!isa<IntegerAttr, FloatAttr>(splatValue))
+        return failure();
+      denseInit = DenseElementsAttr::get(
+          tensorType, SmallVector<Attribute>(numElements, splatValue));
+      return success();
+    }
+
+    SmallVector<Attribute> values;
+    values.reserve(numElements);
+    for (Attribute value : elements.getValues<Attribute>()) {
+      if (!isa<IntegerAttr, FloatAttr>(value))
+        return failure();
+      values.push_back(value);
+    }
+    if (static_cast<int64_t>(values.size()) != numElements)
+      return failure();
+    denseInit = DenseElementsAttr::get(tensorType, values);
+    return success();
+  }
+
+  if (auto array = dyn_cast<ArrayAttr>(initValue)) {
+    SmallVector<Attribute> values;
+    values.reserve(array.size());
+    for (Attribute value : array) {
+      if (!isa<IntegerAttr, FloatAttr>(value))
+        return failure();
+      values.push_back(value);
+    }
+    if (static_cast<int64_t>(values.size()) != numElements)
+      return failure();
+    denseInit = DenseElementsAttr::get(tensorType, values);
+    return success();
+  }
+
+  return failure();
+}
+
+struct ReadOnlyGlobalInfo {
+  MemRefType memrefType;
+  ElementsAttr initialValue;
+  Type pointeeType;
+};
+
+static LogicalResult materializeReadOnlyGlobal(LLVM::GlobalOp global,
+                                               ReadOnlyGlobalInfo &info) {
+  if (!global.getConstant())
+    return failure();
+  if (global.getAddrSpace() != 0)
+    return failure();
+
+  auto arrayType = dyn_cast<LLVM::LLVMArrayType>(global.getType());
+  if (!arrayType)
+    return failure();
+
+  Type elementType = arrayType.getElementType();
+  if (!isa<IntegerType, FloatType>(elementType))
+    return failure();
+
+  Attribute initValue = global.getValueOrNull();
+  if (!initValue)
+    return failure();
+
+  ElementsAttr denseInit;
+  if (failed(materializeReadOnlyArrayInit(initValue, elementType,
+                                          arrayType.getNumElements(),
+                                          denseInit)))
+    return failure();
+
+  info.memrefType =
+      MemRefType::get({arrayType.getNumElements()}, elementType);
+  info.initialValue = denseInit;
+  info.pointeeType = arrayType;
+  return success();
+}
+
 // Per-function converter state.
 struct FunctionConverter {
   LLVM::LLVMFuncOp llvmFunc;
   func::FuncOp newFunc;
   OpBuilder &builder;
   MLIRContext *ctx;
+  const llvm::StringMap<ReadOnlyGlobalInfo> *readonlyGlobals;
 
   // Value mapping from old SSA values to new ones
   IRMapping valueMap;
@@ -147,8 +242,10 @@ struct FunctionConverter {
   // into individual scalar operations.
   llvm::DenseMap<Value, SmallVector<Value, 4>> vectorMap;
 
-  FunctionConverter(LLVM::LLVMFuncOp func, OpBuilder &b)
-      : llvmFunc(func), builder(b), ctx(func.getContext()) {}
+  FunctionConverter(LLVM::LLVMFuncOp func, OpBuilder &b,
+                    const llvm::StringMap<ReadOnlyGlobalInfo> &globals)
+      : llvmFunc(func), builder(b), ctx(func.getContext()),
+        readonlyGlobals(&globals) {}
 
   LogicalResult convert();
 
@@ -399,8 +496,20 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
 
   // AddressOf (global references): track as pointer
   if (auto addrOf = dyn_cast<LLVM::AddressOfOp>(op)) {
-    // For now, fail - globals support would need memref::GlobalOp conversion
-    return op->emitError("llvm.mlir.addressof not yet supported");
+    StringRef globalName = addrOf.getGlobalNameAttr().getLeafReference().str();
+    auto it = readonlyGlobals->find(globalName);
+    if (it == readonlyGlobals->end())
+      return op->emitError("llvm.mlir.addressof not yet supported");
+    if (addrOf.getType().getAddressSpace() != 0)
+      return op->emitError("unsupported global address space");
+
+    auto getGlobal = memref::GetGlobalOp::create(builder, loc,
+                                                 it->second.memrefType,
+                                                 globalName);
+    Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
+    mapPointer(addrOf.getResult(),
+               {getGlobal, zeroIdx, it->second.pointeeType});
+    return success();
   }
 
   // Constants
@@ -2214,6 +2323,29 @@ struct ConvertLLVMToCFPassImpl
     ModuleOp module = getOperation();
     OpBuilder builder(module.getContext());
 
+    llvm::StringMap<ReadOnlyGlobalInfo> readonlyGlobals;
+
+    // Materialize supported readonly LLVM globals as memref globals so that
+    // AddressOfOp can resolve them through memref.get_global.
+    SmallVector<LLVM::GlobalOp> globalsToConvert;
+    module.walk([&](LLVM::GlobalOp global) {
+      globalsToConvert.push_back(global);
+    });
+    for (LLVM::GlobalOp global : globalsToConvert) {
+      ReadOnlyGlobalInfo info;
+      if (failed(materializeReadOnlyGlobal(global, info)))
+        continue;
+
+      builder.setInsertionPoint(global);
+      auto memrefGlobal = memref::GlobalOp::create(
+          builder, global.getLoc(), global.getSymName(),
+          builder.getStringAttr("private"), info.memrefType,
+          info.initialValue, /*constant=*/true, IntegerAttr());
+      (void)memrefGlobal;
+      readonlyGlobals.insert({global.getSymName().str(), info});
+      global.erase();
+    }
+
     // Collect functions to convert (snapshot to avoid iterator invalidation)
     SmallVector<LLVM::LLVMFuncOp> funcsToConvert;
     module.walk([&](LLVM::LLVMFuncOp f) {
@@ -2228,7 +2360,7 @@ struct ConvertLLVMToCFPassImpl
     });
 
     for (auto llvmFunc : funcsToConvert) {
-      FunctionConverter converter(llvmFunc, builder);
+      FunctionConverter converter(llvmFunc, builder, readonlyGlobals);
       if (failed(converter.convert())) {
         // Graceful degradation: erase any partially created func.func
         // and skip this function
