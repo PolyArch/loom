@@ -53,14 +53,21 @@ loom::generateVariants(const std::string &kernelName,
     // Clone the base module for this variant so we don't mutate the original.
     mlir::OwningOpRef<mlir::ModuleOp> cloned = baseModule.clone();
 
-    // TODO: when the unroll/domain-rank pass options are wired into
-    // lowerModuleToDFG, pass variant.options here. For now, all variants
-    // go through the same default lowering pipeline. The structural
-    // difference comes from the clone-and-lower pattern itself (different
-    // variants may get different canonicalization results).
-    //
-    // Unroll factor: would be passed to ConvertSCFToDFGPass options.
-    // Domain rank: would be passed to MarkDFGDomainPass options.
+    // Attach variant options as module attributes so the lowering pipeline
+    // (MarkDFGDomainPass, ConvertSCFToDFGPass) can read them.
+    auto *ctx = cloned->getContext();
+    if (variant.options.unrollFactor > 1) {
+      (*cloned)->setAttr(
+          "loom.variant_unroll_factor",
+          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                 variant.options.unrollFactor));
+    }
+    if (variant.options.domainRank > 0) {
+      (*cloned)->setAttr(
+          "loom.variant_domain_rank",
+          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                 variant.options.domainRank));
+    }
 
     auto status = tapestry::lowerModuleToDFG(*cloned);
     if (mlir::failed(status)) {

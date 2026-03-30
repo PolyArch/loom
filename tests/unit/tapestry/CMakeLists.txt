@@ -287,3 +287,47 @@ target_link_libraries(buffer-allocator-constraint-test PRIVATE
 set_target_properties(buffer-allocator-constraint-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
+
+# AutoAnalyzeBridge provenance + variant tests
+add_executable(auto-analyze-bridge-test AutoAnalyzeBridgeTest.cpp)
+
+target_include_directories(auto-analyze-bridge-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+  ${CMAKE_BINARY_DIR}/include
+)
+
+target_link_libraries(auto-analyze-bridge-test PRIVATE
+  TapestryCore
+  LoomTDG
+  LoomTDGBuilder
+  LoomSystemCompiler
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(auto-analyze-bridge-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)
+
+# Variant system tests
+add_executable(variant-test VariantTest.cpp)
+
+target_include_directories(variant-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+  ${CMAKE_BINARY_DIR}/include
+)
+
+target_link_libraries(variant-test PRIVATE
+  TapestryCore
+  LoomTDG
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(variant-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)

@@ -146,6 +146,9 @@ public:
   /// Get the execution target.
   ExecutionTarget executionTarget() const;
 
+  /// Set the source path provenance for this kernel.
+  KernelHandle &sourcePath(const std::string &path);
+
   /// Get the kernel provenance.
   const KernelProvenance &provenance() const;
 

@@ -409,6 +409,11 @@ KernelHandle &KernelHandle::target(ExecutionTarget t) {
   return *this;
 }
 
+KernelHandle &KernelHandle::sourcePath(const std::string &path) {
+  graph_->kernelRef(index_).provenance.sourcePath = path;
+  return *this;
+}
+
 const std::string &KernelHandle::name() const {
   return graph_->kernelRef(index_).name;
 }

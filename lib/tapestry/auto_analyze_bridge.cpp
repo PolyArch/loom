@@ -61,6 +61,16 @@ TaskGraph buildTaskGraphFromAnalysis(const AutoAnalyzeResult &result) {
   for (const auto &binding : result.callBindings) {
     auto kh = tg.kernel(binding.kernelName);
     kh.target(mapKernelTarget(binding.target));
+
+    // Set provenance: record the source path that was analyzed.
+    if (!result.sourcePath.empty())
+      kh.sourcePath(result.sourcePath);
+
+    // Register an unroll-2 variant in addition to the default (unroll=1)
+    // that addKernelImpl already creates.
+    tg.addVariant(kh, binding.kernelName + "_u2",
+                  VariantOptions{/*unrollFactor=*/2, /*domainRank=*/0});
+
     kernelHandles.push_back(kh);
   }
 

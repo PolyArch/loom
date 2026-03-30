@@ -383,11 +383,28 @@ struct MarkDFGDomainPass
             module->getAttrOfType<IntegerAttr>("loom.adg_max_data_width"))
       adg.maxDataWidth = attr.getInt();
 
+    // Read variant unroll factor from module attribute if set by
+    // VariantGenerator before invoking the lowering pipeline.
+    unsigned variantUnroll = 1;
+    if (auto attr =
+            module->getAttrOfType<IntegerAttr>("loom.variant_unroll_factor"))
+      variantUnroll = attr.getInt();
+
     // Enumerate candidates from all non-main functions
     SmallVector<DFGCandidate> candidates;
     module.walk([&](func::FuncOp func) {
       enumerateCandidates(func, candidates);
     });
+
+    // Apply the variant unroll factor to all candidates.
+    if (variantUnroll > 1) {
+      for (auto &c : candidates) {
+        c.params.unrollFactor = variantUnroll;
+        // Scale resource estimates: unrolling multiplies compute and memory.
+        c.resources.estimatedPECount *= variantUnroll;
+        c.resources.estimatedMemCount *= variantUnroll;
+      }
+    }
 
     if (candidates.empty()) {
       llvm::outs() << "loom: no DFG candidates found\n";

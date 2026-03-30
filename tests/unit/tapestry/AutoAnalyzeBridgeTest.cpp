@@ -5,10 +5,11 @@
 /// T2: buildTaskGraphFromAnalysis with zero edges (3 kernels, 0 edges)
 /// T3: Kernel target mapping (CGRA, HOST, AUTO)
 /// T4: sizeOfType correctness for all type strings
-/// T5: Default variant (at least 1 variant registered)
+/// T5: Default + unroll variant registration
 /// T6: TDGToSSGBuilder node count from TDG MLIR
 /// T7: TDGToSSGBuilder edge data volume propagation
 /// T8: TDGToSSGBuilder handles missing DFG module gracefully
+/// T9: Provenance sourcePath is propagated to kernels
 
 #include "tapestry/auto_analyze.h"
 #include "tapestry/task_graph.h"
@@ -202,13 +203,9 @@ static bool testSizeOfType() {
 }
 
 //===----------------------------------------------------------------------===//
-// T5: Default variant generation
+// T5: Default + unroll variant registration
 //===----------------------------------------------------------------------===//
 static bool testDefaultVariant() {
-  // buildTaskGraphFromAnalysis currently does not add explicit variants
-  // (variant support requires the TaskGraph API to have addVariant, which
-  // is not yet part of the TaskGraph API). Verify that at least 1 kernel
-  // is created and the graph is well-formed.
   auto result = makeResult({{"single_kernel", KernelTarget::CGRA}}, {});
 
   TaskGraph tg = buildTaskGraphFromAnalysis(result);
@@ -218,7 +215,41 @@ static bool testDefaultVariant() {
     return false;
   }
 
-  std::cout << "PASS T5: default variant (kernel created)\n";
+  // After the fix, each kernel should have 2 variants:
+  //   (1) the default (unroll=1) created by addKernelImpl
+  //   (2) the unroll-2 variant registered by buildTaskGraphFromAnalysis
+  const auto &variants = tg.variants(0u);
+  if (variants.size() != 2) {
+    std::cerr << "FAIL T5: expected 2 variants, got "
+              << variants.size() << "\n";
+    return false;
+  }
+
+  // Default variant.
+  if (variants[0].variantName != "single_kernel_default") {
+    std::cerr << "FAIL T5: default variant name='"
+              << variants[0].variantName << "'\n";
+    return false;
+  }
+  if (variants[0].options.unrollFactor != 1) {
+    std::cerr << "FAIL T5: default variant unrollFactor="
+              << variants[0].options.unrollFactor << "\n";
+    return false;
+  }
+
+  // Unroll-2 variant.
+  if (variants[1].variantName != "single_kernel_u2") {
+    std::cerr << "FAIL T5: unroll variant name='"
+              << variants[1].variantName << "'\n";
+    return false;
+  }
+  if (variants[1].options.unrollFactor != 2) {
+    std::cerr << "FAIL T5: unroll variant unrollFactor="
+              << variants[1].options.unrollFactor << "\n";
+    return false;
+  }
+
+  std::cout << "PASS T5: default + unroll variant registration\n";
   return true;
 }
 
@@ -342,6 +373,34 @@ static bool testSSGMissingDFG() {
 }
 
 //===----------------------------------------------------------------------===//
+// T9: Provenance sourcePath propagated to kernels
+//===----------------------------------------------------------------------===//
+static bool testProvenance() {
+  auto result = makeResult(
+      {{"kern_a", KernelTarget::CGRA}, {"kern_b", KernelTarget::HOST}}, {});
+
+  TaskGraph tg = buildTaskGraphFromAnalysis(result);
+
+  // Each kernel's provenance should carry the sourcePath from the
+  // AutoAnalyzeResult ("test.c" is set by makeResult).
+  bool ok = true;
+  tg.forEachKernel([&](const KernelInfo &ki) {
+    if (ki.provenance.sourcePath != "test.c") {
+      std::cerr << "FAIL T9: kernel '" << ki.name
+                << "' sourcePath='" << ki.provenance.sourcePath
+                << "' (expected 'test.c')\n";
+      ok = false;
+    }
+  });
+
+  if (!ok)
+    return false;
+
+  std::cout << "PASS T9: provenance sourcePath propagated\n";
+  return true;
+}
+
+//===----------------------------------------------------------------------===//
 // Main
 //===----------------------------------------------------------------------===//
 
@@ -362,10 +421,11 @@ int main() {
   run(testZeroEdges, "T2: zero edges");
   run(testTargetMapping, "T3: target mapping");
   run(testSizeOfType, "T4: sizeOfType");
-  run(testDefaultVariant, "T5: default variant");
+  run(testDefaultVariant, "T5: default + unroll variant");
   run(testSSGNodeCount, "T6: SSG node count");
   run(testSSGEdgeData, "T7: SSG edge data");
   run(testSSGMissingDFG, "T8: SSG missing DFG");
+  run(testProvenance, "T9: provenance sourcePath");
 
   std::cout << "\n" << passed << " passed, " << failed << " failed out of "
             << (passed + failed) << " tests\n";
