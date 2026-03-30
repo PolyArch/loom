@@ -72,7 +72,7 @@ from .spectral_clustering import CoreTypeDiscovery
 from .system_graph_generator import (
     SystemGraphGenerator,
     SystemTopologySpec,
-    to_system_mlir,
+    to_system_topology_text,
 )
 
 logger = logging.getLogger(__name__)

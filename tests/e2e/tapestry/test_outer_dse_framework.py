@@ -64,7 +64,7 @@ from scripts.dse.proxy_model import (
 from scripts.dse.system_graph_generator import (
     SystemGraphGenerator,
     SystemTopologySpec,
-    to_system_mlir,
+    to_system_topology_text,
 )
 
 
@@ -215,8 +215,8 @@ class TestSystemGraphGeneration:
             assert 0 <= cp.row < spec.mesh_rows
             assert 0 <= cp.col < spec.mesh_cols
 
-    def test_mlir_output_has_fabric(self):
-        """to_system_mlir produces text with fabric.module and fabric.core."""
+    def test_topology_text_has_fabric(self):
+        """to_system_topology_text produces text with fabric.module and fabric.core."""
         point = DesignPoint()
         point.type_mask[0] = True
         point.instance_counts[0] = 2
@@ -227,10 +227,10 @@ class TestSystemGraphGeneration:
 
         gen = SystemGraphGenerator()
         spec = gen.generate(point)
-        mlir_text = to_system_mlir(spec)
+        topo_text = to_system_topology_text(spec)
 
-        assert "fabric.module" in mlir_text
-        assert "fabric.core" in mlir_text
+        assert "fabric.module" in topo_text
+        assert "fabric.core" in topo_text
 
     def test_l2_bank_placement(self):
         """L2 banks are placed along mesh edges."""

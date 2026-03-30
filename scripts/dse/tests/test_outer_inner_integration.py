@@ -5,7 +5,7 @@ Tests cover:
   IT2: HWOuterOptimizer._refine_with_inner_dse runs inner DSE on selected types
   IT3: Inner DSE results appear in OuterHWResult
   IT4: write_dse_results includes inner_dse section
-  IT5: to_system_mlir docstring warns about pseudo-MLIR
+  IT5: to_system_topology_text docstring clarifies DSE-only usage
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from scripts.dse.proxy_model import (
     KernelProfile,
     WorkloadProfile,
 )
-from scripts.dse.system_graph_generator import to_system_mlir, SystemTopologySpec
+from scripts.dse.system_graph_generator import to_system_topology_text, SystemTopologySpec
 
 
 def _make_workload() -> WorkloadProfile:
@@ -236,20 +236,20 @@ class TestWriteDSEResults(unittest.TestCase):
             os.unlink(path)
 
 
-class TestSystemMLIRDocstring(unittest.TestCase):
-    """IT5: to_system_mlir docstring warns about pseudo-MLIR."""
+class TestSystemTopologyTextDocstring(unittest.TestCase):
+    """IT5: to_system_topology_text docstring clarifies DSE-only usage."""
 
-    def test_docstring_warns_pseudo_mlir(self):
-        docstring = to_system_mlir.__doc__
-        self.assertIn("pseudo-MLIR", docstring)
+    def test_docstring_clarifies_dse_only(self):
+        docstring = to_system_topology_text.__doc__
+        self.assertIn("DSE visualization", docstring)
         self.assertIn("SystemADGBuilder", docstring)
-        self.assertIn("WARNING", docstring)
+        self.assertIn("NOT valid MLIR", docstring)
 
     def test_output_is_structural_description(self):
         spec = SystemTopologySpec()
         spec.mesh_rows = 2
         spec.mesh_cols = 2
-        output = to_system_mlir(spec)
+        output = to_system_topology_text(spec)
 
         # Should contain fabric.module wrapper
         self.assertIn("fabric.module", output)
