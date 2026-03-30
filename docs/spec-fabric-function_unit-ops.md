@@ -15,6 +15,8 @@ It defines:
 
 This document is the single source of truth for the future
 `fabric.function_unit` body validator.
+The same operation set is also the contract that simulator, RTL generation,
+and validation flows must recognize for `fabric.function_unit` bodies.
 
 Related documents:
 
@@ -105,6 +107,7 @@ Allowed operations:
 - `arith.index_castui`
 - `arith.mulf`
 - `arith.muli`
+- `arith.minimumf`
 - `arith.negf`
 - `arith.ori`
 - `arith.remsi`
@@ -137,8 +140,15 @@ Allowed operations:
 - `math.floor`
 - `math.fma`
 - `math.log2`
+- `math.rsqrt`
 - `math.sin`
 - `math.sqrt`
+
+Notes:
+
+- `arith.minimumf` and `math.rsqrt` are first-class supported compute ops in
+  current simulation and RTL generation paths, and they are treated as normal
+  `fabric.function_unit` body operations rather than special control helpers.
 
 ### `llvm` Dialect
 

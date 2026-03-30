@@ -51,7 +51,7 @@ The LOOM target validation matrix includes at least:
    Current smoke anchor: `sum-array.mesh-6x6-extmem-1`
 7. visualization rendering with mapping and, when available, trace playback
 8. focused unit tests for temporal hardware, tagged memory topologies, and
-   decomposable switches
+   decomposable switches, plus FU-body op coverage and exported ADG parseability
 9. container-config decoding checks for `spatial_pe` and `temporal_pe`
    slices, including mux or demux fields and selected internal FU config bits
 10. temporal register encoding checks when `num_register > 0`, including
@@ -94,8 +94,9 @@ The LOOM target validation matrix includes at least:
     inline-only `fabric.mux` and tag-boundary ops,
     module-level component inline placement restricted to `fabric.module`,
     lexical same-host duplicate-definition rejection across operation kinds,
-    and rejection of `fabric.instance` in unsupported hosts or with PE-local
-    SSA operands or results
+    rejection of `fabric.instance` in unsupported hosts or with PE-local SSA
+    operands or results, and rejection of exported Fabric MLIR that uses
+    invalid symbol names
 
 ## Compare Policies
 

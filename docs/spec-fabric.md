@@ -187,6 +187,11 @@ Two named definitions in the same host scope may not share the same name, even
 if they have different Fabric operation kinds. This conflict space is shared
 across module types so that `fabric.instance` resolution remains unambiguous.
 
+All named Fabric definitions that are emitted as MLIR symbols must also use
+valid MLIR symbol names. Human-facing identifiers that include punctuation or
+other symbol-unsafe characters must be canonicalized before export so that the
+resulting ADG parses without local text rewriting.
+
 ## Hardware Parameters vs Runtime Configuration
 
 Each operation separates:

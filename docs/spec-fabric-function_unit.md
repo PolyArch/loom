@@ -49,6 +49,16 @@ Definition and instantiation rules:
 - a `fabric.instance` of `fabric.function_unit` inside one PE does not carry
   Fabric-edge operands or results; it only selects one local FU definition
 
+Symbol naming rules:
+
+- named Fabric definitions that are serialized as MLIR symbols must use valid
+  MLIR symbol names
+- human-facing identifiers that contain punctuation or other symbol-unsafe
+  characters must be canonicalized before emission
+- this applies to `fabric.function_unit` definitions, PE definitions, switch
+  definitions, and other named Fabric components that appear in exported ADG
+  MLIR
+
 Textual syntax follows the Fabric-wide split:
 
 - fixed FU structure parameters such as `latency` and `interval` live in `[]`

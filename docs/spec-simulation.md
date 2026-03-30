@@ -108,6 +108,14 @@ types:
 - memory and extmemory simulation
 - stream and dataflow helper primitives
 
+The simulator's FU execution model must recognize the same `fabric.function_unit`
+body op set that is accepted by validation and RTL generation. Current supported
+compute ops include `arith.minimumf`, `math.rsqrt`, `math.sqrt`, and
+`math.fma`, together with the other operations listed in
+[spec-fabric-function_unit-ops.md](./spec-fabric-function_unit-ops.md).
+An unsupported FU-body op must be rejected before execution begins rather than
+being silently ignored.
+
 ## Current Shared Kernel Surface
 
 The shared cycle kernel currently exposes an interface equivalent in

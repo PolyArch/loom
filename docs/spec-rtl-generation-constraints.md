@@ -89,6 +89,7 @@ is implementation-dependent and parameterized by data width.
 | `arith.divf` | `fu_op_divf.sv` | >= 1 | Behavioral + `ifdef SYNTH_FP_IP` |
 | `arith.cmpf` | `fu_op_cmpf.sv` | 0 | 4-bit predicate config |
 | `arith.negf` | `fu_op_negf.sv` | 0 | Sign-bit inversion |
+| `arith.minimumf` | `fu_op_minimumf.sv` | 0 | FP min |
 | `arith.fptosi` | `fu_op_fptosi.sv` | >= 1 | Behavioral + `ifdef SYNTH_FP_IP` |
 | `arith.fptoui` | `fu_op_fptoui.sv` | >= 1 | Behavioral + `ifdef SYNTH_FP_IP` |
 | `arith.sitofp` | `fu_op_sitofp.sv` | >= 1 | Behavioral + `ifdef SYNTH_FP_IP` |
@@ -102,6 +103,7 @@ is implementation-dependent and parameterized by data width.
 |-----------|-----------|-------------------|-------|
 | `math.absf` | `fu_op_absf.sv` | 0 | Sign-bit clear |
 | `math.fma` | `fu_op_fma.sv` | >= 1 | Behavioral + `ifdef SYNTH_FP_IP` |
+| `math.rsqrt` | `fu_op_rsqrt.sv` | 0 | Reciprocal sqrt |
 | `math.sqrt` | `fu_op_sqrt.sv` | >= 1 | Behavioral + `ifdef SYNTH_FP_IP` |
 
 #### Tier 3 -- Transcendental FP (Rejected Without IP Profile)
