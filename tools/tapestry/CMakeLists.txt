@@ -94,6 +94,7 @@ function(add_tapestry_pipeline_tool target_name source_file)
     LoomSystemCompiler
     LoomContractInference
     LoomMultiCoreSim
+    LoomSVGen
     LoomSimulator
     LoomMapper
     LoomADG
