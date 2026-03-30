@@ -163,6 +163,10 @@ static ResourceEstimate estimateResources(Operation *root) {
 static bool hasUnsupportedOps(Operation *root) {
   bool unsupported = false;
   root->walk([&](Operation *op) {
+    if (isa<memref::AllocaOp>(op)) {
+      unsupported = true;
+      return;
+    }
     if (auto call = dyn_cast<func::CallOp>(op)) {
       // External calls (printf, etc.) are unsupported in DFG
       unsupported = true;
