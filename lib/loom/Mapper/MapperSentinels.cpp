@@ -24,6 +24,7 @@ bool Mapper::bindSentinels(MappingState &state, const Graph &dfg,
                            const Graph &adg) {
   std::vector<IdIndex> dfgInputSentinels;
   std::vector<IdIndex> dfgOutputSentinels;
+  std::vector<IdIndex> dfgControlOutputSentinels;
   std::vector<IdIndex> adgInputSentinels;
   std::vector<IdIndex> adgOutputSentinels;
 
@@ -68,6 +69,22 @@ bool Mapper::bindSentinels(MappingState &state, const Graph &dfg,
 
   llvm::outs() << "    DFG memref inputs: " << dfgMemrefSentinels.size()
                << ", scalar inputs: " << dfgScalarSentinels.size() << "\n";
+
+  for (IdIndex sid : dfgOutputSentinels) {
+    const Node *node = dfg.getNode(sid);
+    if (!node || node->inputPorts.empty())
+      continue;
+    const Port *port = dfg.getPort(node->inputPorts[0]);
+    if (port && isNoneType(port->type))
+      dfgControlOutputSentinels.push_back(sid);
+  }
+  llvm::stable_sort(dfgOutputSentinels, [&](IdIndex lhs, IdIndex rhs) {
+    bool lhsControl = llvm::is_contained(dfgControlOutputSentinels, lhs);
+    bool rhsControl = llvm::is_contained(dfgControlOutputSentinels, rhs);
+    if (lhsControl != rhsControl)
+      return !lhsControl && rhsControl;
+    return lhs < rhs;
+  });
 
   llvm::DenseSet<size_t> usedAdgIn;
   for (size_t di = 0; di < dfgScalarSentinels.size(); ++di) {
@@ -140,6 +157,9 @@ bool Mapper::bindSentinels(MappingState &state, const Graph &dfg,
     }
 
     if (!bound) {
+      bool isControlOutput = llvm::is_contained(dfgControlOutputSentinels, dfgSid);
+      if (isControlOutput)
+        continue;
       llvm::errs() << "Mapper: failed to bind DFG output sentinel " << dfgSid
                    << "\n";
     }

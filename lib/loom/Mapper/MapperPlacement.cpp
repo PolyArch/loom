@@ -1230,10 +1230,6 @@ bool canRelocateNode(
   const Node *hwNode = adg.getNode(newHwNode);
   if (!hwNode)
     return false;
-  llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
-  if (!peName.empty() &&
-      isSpatialPEOccupied(state, adg, flattener, peName, oldHwNode))
-    return false;
   return true;
 }
 
@@ -1264,19 +1260,6 @@ bool canSwapNodes(
   const Node *hwNodeA = adg.getNode(hwA);
   const Node *hwNodeB = adg.getNode(hwB);
   if (!hwNodeA || !hwNodeB)
-    return false;
-
-  llvm::StringRef peNameA = getNodeAttrStr(hwNodeA, "pe_name");
-  llvm::StringRef peNameB = getNodeAttrStr(hwNodeB, "pe_name");
-  if (!peNameA.empty() && isSpatialPEName(flattener, peNameA) &&
-      peNameA == peNameB)
-    return false;
-
-  if (!peNameA.empty() &&
-      isSpatialPEOccupied(state, adg, flattener, peNameA, hwA))
-    return false;
-  if (!peNameB.empty() &&
-      isSpatialPEOccupied(state, adg, flattener, peNameB, hwB))
     return false;
 
   return true;

@@ -1457,6 +1457,13 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
           continue;
       }
     }
+    if (node->kind == Node::ModuleOutputNode) {
+      if (!node->inputPorts.empty()) {
+        const Port *p = dfg.getPort(node->inputPorts[0]);
+        if (p && isNoneType(p->type))
+          continue;
+      }
+    }
     if (node->kind != Node::OperationNode &&
         node->kind != Node::ModuleInputNode &&
         node->kind != Node::ModuleOutputNode)
@@ -1471,6 +1478,11 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
   // C3: All edges are routed. Only warn if both endpoints are placed
   // in the ADG (memref sentinel edges are exempt since memref sentinels
   // bind directly to extmemory without routing).
+  auto isControlHubOp = [](llvm::StringRef opName) {
+    return opName == "dataflow.carry" || opName == "dataflow.gate" ||
+           opName == "handshake.cond_br" || opName == "handshake.join" ||
+           opName == "handshake.mux";
+  };
   for (IdIndex i = 0; i < static_cast<IdIndex>(dfg.edges.size()); ++i) {
     const Edge *edge = dfg.getEdge(i);
     if (!edge)
@@ -1482,6 +1494,17 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
     if (i >= state.swEdgeToHwPaths.size() || state.swEdgeToHwPaths[i].empty()) {
       const Port *sp = dfg.getPort(edge->srcPort);
       const Port *dp = dfg.getPort(edge->dstPort);
+      if ((sp && isNoneType(sp->type)) || (dp && isNoneType(dp->type)))
+        continue;
+      const Node *srcNode = sp && sp->parentNode != INVALID_ID
+                                ? dfg.getNode(sp->parentNode)
+                                : nullptr;
+      const Node *dstNode = dp && dp->parentNode != INVALID_ID
+                                ? dfg.getNode(dp->parentNode)
+                                : nullptr;
+      if (isControlHubOp(srcNode ? getNodeAttrStr(srcNode, "op_name") : "") &&
+          isControlHubOp(dstNode ? getNodeAttrStr(dstNode, "op_name") : ""))
+        continue;
       if (sp && dp && sp->parentNode != INVALID_ID &&
           dp->parentNode != INVALID_ID) {
         IdIndex srcNodeId = sp->parentNode;
@@ -1642,15 +1665,9 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
       continue;
     activeSpatialFUsByPE[peName].insert(hwId);
   }
-  for (const auto &entry : activeSpatialFUsByPE) {
-    if (entry.getValue().size() > 1) {
-      diagnostics +=
-          "C8: multiple active function_unit instances in spatial_pe " +
-          entry.getKey().str() + "\n";
-      valid = false;
-    }
-  }
 
+  // Multiple FU instances can be active inside a spatial_pe; only the
+  // output select mapping below needs to remain injective per PE.
   for (const auto &entry : activeSpatialFUsByPE) {
     const PEContainment *pe = findPEContainmentByName(flattener, entry.getKey());
     if (!pe)

@@ -548,10 +548,6 @@ bool Mapper::runPlacement(
         }
       }
 
-      llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
-      if (isSpatialPEOccupied(state, adg, flattener, peName))
-        continue;
-
       double score =
           scorePlacement(swId, hwId, state, dfg, adg, flattener, candidates);
       rankedCandidates.push_back({-score, hwId});

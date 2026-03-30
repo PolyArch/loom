@@ -912,11 +912,6 @@ ActionResult MappingState::mapNode(IdIndex swNode, IdIndex hwNode,
     return ActionResult::FailedResourceUnavailable;
   }
 
-  if (isSpatialPEFunctionalNode(hwN) &&
-      isSpatialPEOccupied(getNodeAttrStr(hwN, "pe_name"), adg, hwNode)) {
-    return ActionResult::FailedHardConstraint;
-  }
-
   recordSwNodeToHwNode(swNode);
   swNodeToHwNode[swNode] = hwNode;
   recordHwNodeToSwNodes(hwNode);
