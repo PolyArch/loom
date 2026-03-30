@@ -181,12 +181,42 @@ L2Result L2CoreCompiler::compile(const L2Assignment &assignment,
     l2Result.costSummary.totalSPMUtilization = totalSPM;
     l2Result.costSummary.routingPressure = maxRouting;
 
-    // Build aggregate config by concatenating per-kernel blobs.
-    for (const auto &kr : l2Result.kernelResults) {
-      if (kr.configBlob) {
-        l2Result.aggregateConfig.insert(l2Result.aggregateConfig.end(),
-                                        kr.configBlob->begin(),
-                                        kr.configBlob->end());
+    // Build aggregate config: merge via ADGPartitioner for SPATIAL_SHARING
+    // partitioned cores, otherwise concatenate per-kernel blobs.
+    if (hasPartitions) {
+      // Collect per-partition config blobs aligned with kernel order.
+      std::vector<std::vector<uint8_t>> partConfigs;
+      for (const auto &kr : l2Result.kernelResults) {
+        partConfigs.push_back(kr.configBlob.value_or(std::vector<uint8_t>{}));
+      }
+
+      // Reconstruct PartitionPlan from the per-kernel partition specs.
+      PartitionPlan plan;
+      plan.partitions.assign(assignment.kernelPartitions.begin(),
+                             assignment.kernelPartitions.end());
+      plan.totalRows = 0;
+      plan.totalCols = 0;
+      for (const auto &ps : plan.partitions) {
+        if (ps.rowEnd > plan.totalRows) plan.totalRows = ps.rowEnd;
+        if (ps.colEnd > plan.totalCols) plan.totalCols = ps.colEnd;
+      }
+      plan.totalPEs = plan.totalRows * plan.totalCols;
+
+      // Compute full config size as the sum of partition config sizes,
+      // which equals totalPEs * bytesPerPE when partitions tile perfectly.
+      size_t fullConfigSize = 0;
+      for (const auto &pc : partConfigs)
+        fullConfigSize += pc.size();
+
+      l2Result.aggregateConfig =
+          ADGPartitioner::mergeConfigurations(partConfigs, plan, fullConfigSize);
+    } else {
+      for (const auto &kr : l2Result.kernelResults) {
+        if (kr.configBlob) {
+          l2Result.aggregateConfig.insert(l2Result.aggregateConfig.end(),
+                                          kr.configBlob->begin(),
+                                          kr.configBlob->end());
+        }
       }
     }
   } else if (!allMapped) {
