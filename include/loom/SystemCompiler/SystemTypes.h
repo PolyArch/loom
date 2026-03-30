@@ -170,6 +170,10 @@ public:
                        std::vector<ContractSpec> contracts,
                        mlir::MLIRContext &ctx);
 
+  /// Set path-scope TDC contracts (multi-edge latency constraints) extracted
+  /// from tdg.path_contract ops. Must be called before compile().
+  void setPathSpecs(std::vector<loom::TDCPathSpec> pathSpecs);
+
   /// Run the decomposition and return the result.
   CompilationResult compile(const CompilerConfig &config);
 
@@ -177,6 +181,7 @@ private:
   SystemArchitecture arch_;
   std::vector<KernelDesc> kernels_;
   std::vector<ContractSpec> contracts_;
+  std::vector<loom::TDCPathSpec> pathSpecs_;
   mlir::MLIRContext &ctx_;
 };
 

@@ -433,6 +433,16 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
 
   auto compileStart = std::chrono::steady_clock::now();
 
+  // Verification inputs populated during COMPILE, reused in SIMULATE for
+  // dynamic verification when simulation results are available.
+  std::vector<loom::TDCEdgeSpec> savedVerifyEdgeSpecs;
+  std::vector<loom::TDCEdgeSpecOrigin> savedVerifyOrigins;
+  std::vector<loom::TDCPathSpec> savedVerifyPaths;
+  loom::BufferAllocationPlan savedVerifyBufPlan;
+  std::vector<loom::EdgeTileDimensions> savedVerifyTileDims;
+  std::vector<loom::EdgeSchedulingSlot> savedVerifySchedSlots;
+  std::map<std::string, int64_t> savedVerifyParams;
+
   for (auto stage : config.stages) {
     switch (stage) {
     case PipelineStage::COMPILE: {
@@ -504,6 +514,15 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
       // we need them later for TDC verification evidence.
       std::vector<tapestry::ContractSpec> savedContracts = contracts;
 
+      // Extract path contracts from tdg.path_contract ops (multi-edge
+      // latency constraints) so they participate in L1 assignment pruning.
+      std::vector<loom::TDCPathSpec> tdgPathSpecs =
+          extractPathContractsFromTDG(*tdgModule);
+
+      if (config.verbose)
+        llvm::outs() << "TapestryPipeline: " << tdgPathSpecs.size()
+                     << " path contracts\n";
+
       // Configure and run HierarchicalCompiler.
       tapestry::CompilerConfig compilerConfig;
       compilerConfig.maxIterations = config.bendersOpts.maxIterations;
@@ -512,6 +531,7 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
 
       tapestry::HierarchicalCompiler compiler(tapArch, std::move(kernels),
                                               std::move(contracts), context);
+      compiler.setPathSpecs(tdgPathSpecs);
       tapestry::CompilationResult compResult =
           compiler.compile(compilerConfig);
 
@@ -647,6 +667,16 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
             extractPathContractsFromTDG(*tdgModule);
         std::map<std::string, int64_t> verifyParams;
 
+        // Persist verification inputs for dynamic re-verification in
+        // SIMULATE stage.
+        savedVerifyEdgeSpecs = inferred.edgeSpecs;
+        savedVerifyOrigins = inferred.origins;
+        savedVerifyPaths = verifyPaths;
+        savedVerifyBufPlan = verifyBufPlan;
+        savedVerifyTileDims = verifyTileDims;
+        savedVerifySchedSlots = verifySchedSlots;
+        savedVerifyParams = verifyParams;
+
         loom::TDCVerificationReport verifyReport =
             loom::verifyContracts(
                 inferred.edgeSpecs, inferred.origins, verifyPaths,
@@ -686,25 +716,159 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
       break;
     }
     case PipelineStage::SIMULATE: {
-      // The config-driven pipeline handles COMPILE only. Simulation
-      // requires external tools that run outside this pipeline.
-      result.success = false;
-      result.diagnostics =
-          "SIMULATE/RTLGEN stages delegate to external tools "
-          "(tapestry_simulate/tapestry_rtlgen CLI or MultiCoreSimSession "
-          "API). The config-driven pipeline handles COMPILE only. Use the "
-          "dedicated CLI tools for simulation and RTL generation.";
-      return result;
+      // The SIMULATE stage delegates to external simulation tools.
+      // If a simulation results file exists at the expected path,
+      // parse it and populate dynamic metrics for TDC verification.
+      std::string simResultsPath =
+          config.outputDir + "/sim_results.json";
+
+      auto simBuf = llvm::MemoryBuffer::getFile(simResultsPath);
+      if (!simBuf) {
+        // No simulation results file found; simulation was not run.
+        result.success = false;
+        result.diagnostics =
+            "SIMULATE stage: no simulation results found at '" +
+            simResultsPath + "'; run MultiCoreSimSession or the "
+            "external simulator to produce this file";
+        return result;
+      }
+
+      // Parse the simulation results JSON.
+      auto simJson = llvm::json::parse((*simBuf)->getBuffer());
+      if (!simJson || !simJson->getAsObject()) {
+        result.success = false;
+        result.diagnostics =
+            "SIMULATE stage: invalid JSON in '" + simResultsPath + "'";
+        return result;
+      }
+
+      auto *simRoot = simJson->getAsObject();
+
+      // Populate PipelineSimResult from the JSON.
+      PipelineSimResult simRes;
+      if (auto gc = simRoot->getInteger("totalGlobalCycles"))
+        simRes.totalGlobalCycles = static_cast<uint64_t>(*gc);
+      if (auto *nocObj = simRoot->getObject("nocStats")) {
+        if (auto ft = nocObj->getInteger("totalFlitsTransferred"))
+          simRes.nocStats.totalFlitsTransferred = static_cast<uint64_t>(*ft);
+      }
+      if (auto *coresArr = simRoot->getArray("coreResults")) {
+        for (const auto &entry : *coresArr) {
+          auto *obj = entry.getAsObject();
+          if (!obj)
+            continue;
+          PipelineCoreSimResult csr;
+          if (auto cid = obj->getInteger("coreId"))
+            csr.coreId = static_cast<unsigned>(*cid);
+          if (auto cyc = obj->getInteger("cycles"))
+            csr.cycles = static_cast<uint64_t>(*cyc);
+          if (auto comp = obj->getBoolean("completed"))
+            csr.completed = *comp;
+          simRes.coreResults.push_back(csr);
+        }
+      }
+      result.simResult = simRes;
+
+      // Parse dynamic edge metrics for TDC verification.
+      std::optional<std::vector<loom::DynamicEdgeMetrics>> dynEdgeMetrics;
+      std::optional<std::vector<loom::DynamicPathMetrics>> dynPathMetrics;
+
+      if (auto *edgeArr = simRoot->getArray("edgeMetrics")) {
+        std::vector<loom::DynamicEdgeMetrics> edgeVec;
+        for (const auto &entry : *edgeArr) {
+          auto *obj = entry.getAsObject();
+          if (!obj)
+            continue;
+          loom::DynamicEdgeMetrics dem;
+          if (auto p = obj->getString("producerKernel"))
+            dem.producerKernel = p->str();
+          if (auto c = obj->getString("consumerKernel"))
+            dem.consumerKernel = c->str();
+          if (auto t = obj->getNumber("sustainedThroughput"))
+            dem.sustainedThroughput = *t;
+          if (auto v = obj->getInteger("orderingViolationCount"))
+            dem.orderingViolationCount = *v;
+          edgeVec.push_back(std::move(dem));
+        }
+        dynEdgeMetrics = std::move(edgeVec);
+      }
+
+      if (auto *pathArr = simRoot->getArray("pathMetrics")) {
+        std::vector<loom::DynamicPathMetrics> pathVec;
+        for (const auto &entry : *pathArr) {
+          auto *obj = entry.getAsObject();
+          if (!obj)
+            continue;
+          loom::DynamicPathMetrics dpm;
+          if (auto p = obj->getString("startProducer"))
+            dpm.startProducer = p->str();
+          if (auto c = obj->getString("startConsumer"))
+            dpm.startConsumer = c->str();
+          if (auto p = obj->getString("endProducer"))
+            dpm.endProducer = p->str();
+          if (auto c = obj->getString("endConsumer"))
+            dpm.endConsumer = c->str();
+          if (auto l = obj->getInteger("observedLatency"))
+            dpm.observedLatency = *l;
+          pathVec.push_back(std::move(dpm));
+        }
+        dynPathMetrics = std::move(pathVec);
+      }
+
+      // Re-run TDC verification with dynamic metrics if compile-stage
+      // verification inputs were populated and dynamic data is available.
+      if (!savedVerifyEdgeSpecs.empty() &&
+          (dynEdgeMetrics.has_value() || dynPathMetrics.has_value())) {
+        loom::TDCVerificationReport dynReport =
+            loom::verifyContracts(
+                savedVerifyEdgeSpecs, savedVerifyOrigins,
+                savedVerifyPaths, savedVerifyBufPlan,
+                savedVerifyTileDims, savedVerifySchedSlots,
+                dynEdgeMetrics, dynPathMetrics, savedVerifyParams);
+
+        // Replace the static-only report with the combined report.
+        result.tdcVerificationReport = dynReport;
+
+        if (!dynReport.allSatisfied) {
+          std::string dynDiag = "TDC dynamic verification failures:";
+          for (const auto &d : dynReport.diagnostics)
+            dynDiag += " " + d + ";";
+          for (const auto &er : dynReport.edgeResults) {
+            for (const auto &d : er.diagnostics)
+              dynDiag += " [" + er.producerKernel + "->"
+                  + er.consumerKernel + "] " + d + ";";
+          }
+          for (const auto &pr : dynReport.pathResults) {
+            for (const auto &d : pr.diagnostics)
+              dynDiag += " [path " + pr.startProducer + "->"
+                  + pr.endConsumer + "] " + d + ";";
+          }
+          if (result.diagnostics.empty())
+            result.diagnostics = dynDiag;
+          else
+            result.diagnostics += "; " + dynDiag;
+        }
+
+        if (config.verbose) {
+          llvm::outs() << "TapestryPipeline: dynamic TDC verification "
+                       << (dynReport.allSatisfied ? "PASSED" : "FAILED")
+                       << " (" << dynReport.edgeResults.size()
+                       << " edge checks, "
+                       << dynReport.pathResults.size()
+                       << " path checks)\n";
+        }
+      }
+
+      break;
     }
     case PipelineStage::RTLGEN: {
-      // The config-driven pipeline handles COMPILE only. RTL generation
-      // requires external tools that run outside this pipeline.
+      // By design: RTL generation depends on external EDA tooling that
+      // cannot be invoked from within the config-driven pipeline. Return
+      // failure with diagnostic guidance for the caller.
       result.success = false;
       result.diagnostics =
-          "SIMULATE/RTLGEN stages delegate to external tools "
-          "(tapestry_simulate/tapestry_rtlgen CLI or MultiCoreSimSession "
-          "API). The config-driven pipeline handles COMPILE only. Use the "
-          "dedicated CLI tools for simulation and RTL generation.";
+          "RTLGEN stage is not yet integrated into the config-driven "
+          "pipeline; run the RTL generator directly on compilation output";
       return result;
     }
     }

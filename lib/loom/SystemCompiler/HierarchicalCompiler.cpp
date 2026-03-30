@@ -139,6 +139,11 @@ HierarchicalCompiler::HierarchicalCompiler(
     : arch_(arch), kernels_(std::move(kernels)),
       contracts_(std::move(contracts)), ctx_(ctx) {}
 
+void HierarchicalCompiler::setPathSpecs(
+    std::vector<loom::TDCPathSpec> pathSpecs) {
+  pathSpecs_ = std::move(pathSpecs);
+}
+
 CompilationResult
 HierarchicalCompiler::compile(const CompilerConfig &config) {
   CompilationResult result;
@@ -192,13 +197,10 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
     for (const auto &c : l1Contracts)
       tdcEdges.push_back(contractSpecToEdgeSpec(c));
 
-    // Legacy ContractSpec does not carry path-scope (multi-edge latency)
-    // information; those constraints live in TDCPathSpec which is only
-    // available when contracts are authored directly in TDC format.
-    // TODO: When TDC specs are provided directly (bypassing ContractSpec
-    // conversion), propagate TDCPathSpecs here so path-latency constraints
-    // participate in L1 assignment pruning.
-    std::vector<TDCPathSpec> tdcPaths;
+    // Use path-scope TDC specs extracted from tdg.path_contract ops (if any).
+    // These carry multi-edge latency constraints that participate in L1
+    // assignment pruning via the ContractConstraintTranslator.
+    const std::vector<TDCPathSpec> &tdcPaths = pathSpecs_;
 
     ContractConstraintTranslator translator;
     ConstraintSet constraintSet = translator.translate(tdcEdges, tdcPaths);
