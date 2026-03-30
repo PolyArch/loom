@@ -11,11 +11,26 @@
 
 #include "loom/ADG/DomainADGGenerator.h"
 
+#include "llvm/Support/MemoryBuffer.h"
+
+#include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
 using namespace loom::adg;
+
+static unsigned countSubstring(const std::string &text,
+                               const std::string &needle) {
+  unsigned count = 0;
+  std::size_t pos = 0;
+  while ((pos = text.find(needle, pos)) != std::string::npos) {
+    ++count;
+    pos += needle.size();
+  }
+  return count;
+}
 
 //===----------------------------------------------------------------------===//
 // Tests
@@ -263,6 +278,148 @@ static bool testInvalidTypeId() {
   return ok;
 }
 
+/// Test 10: SciComp type validation and parameter decoding.
+static bool testSciCompParams() {
+  bool ok = true;
+
+  if (!isValidSciCompTypeId("SC-FP") || !isValidSciCompTypeId("SC-SPM") ||
+      !isValidSciCompTypeId("SC-CTRL") || isValidSciCompTypeId("SC-XYZ")) {
+    std::cerr << "FAIL: testSciCompParams - validation mismatch\n";
+    ok = false;
+  }
+
+  SciCompTypeParams fp = sciCompParamsFromTypeId("SC-FP");
+  SciCompTypeParams spm = sciCompParamsFromTypeId("SC-SPM");
+  SciCompTypeParams ctrl = sciCompParamsFromTypeId("SC-CTRL");
+
+  if (fp.totalPEs() != 144 || fp.dataWidth != 64 || !fp.decomposable ||
+      fp.subLaneBits != 32 || fp.totalFPUnits() != 15 || !fp.hasFMA ||
+      !fp.hasRSQRT || !fp.hasFPMin) {
+    std::cerr << "FAIL: testSciCompParams - SC-FP params mismatch\n";
+    ok = false;
+  }
+  if (spm.totalPEs() != 64 || spm.spmSizeKB != 64 || spm.spmLdPorts != 4 ||
+      spm.extMemLdPorts != 4 || !spm.hasIndirectLoad) {
+    std::cerr << "FAIL: testSciCompParams - SC-SPM params mismatch\n";
+    ok = false;
+  }
+  if (!ctrl.isTemporal || ctrl.dataWidth != 32 || ctrl.instructionSlots != 16 ||
+      ctrl.numRegisters != 8 || ctrl.operandBufferSize != 4 ||
+      !ctrl.hasScatterStore || !ctrl.hasBranch) {
+    std::cerr << "FAIL: testSciCompParams - SC-CTRL params mismatch\n";
+    ok = false;
+  }
+
+  auto ids = allSciCompTypeIds();
+  if (ids.size() != 3 || ids[0] != "SC-FP" || ids[1] != "SC-SPM" ||
+      ids[2] != "SC-CTRL") {
+    std::cerr << "FAIL: testSciCompParams - enumeration mismatch\n";
+    ok = false;
+  }
+
+  if (ok)
+    std::cerr << "PASS: testSciCompParams\n";
+  return ok;
+}
+
+/// Test 11: SciComp ADGs encode the required structure and capabilities.
+static bool testGenerateSciCompTypes() {
+  bool ok = true;
+
+  std::string scfp = generateSciCompADG(sciCompParamsFromTypeId("SC-FP"));
+  std::string scspm = generateSciCompADG(sciCompParamsFromTypeId("SC-SPM"));
+  std::string scctrl = generateSciCompADG(sciCompParamsFromTypeId("SC-CTRL"));
+
+  auto require = [&](const std::string &mlir, const std::string &needle,
+                     const char *msg) {
+    if (mlir.find(needle) == std::string::npos) {
+      std::cerr << "FAIL: testGenerateSciCompTypes - missing " << msg << "\n";
+      ok = false;
+    }
+  };
+
+  require(scfp, "loom.scicomp_khg_type = \"SC-FP\"", "SC-FP type attr");
+  require(scfp, "loom.decomposable = true", "SC-FP decomposable attr");
+  require(scfp, "loom.sub_lane_bits = 32", "SC-FP sub-lane attr");
+  require(scfp, "loom.routing_topology = \"CHESS\"", "SC-FP topology attr");
+  require(scfp, "math.fma", "SC-FP FMA op");
+  require(scfp, "math.rsqrt", "SC-FP RSQRT op");
+  require(scfp, "arith.minimumf", "SC-FP MIN op");
+  require(scfp, "f64", "SC-FP f64 types");
+
+  if (countSubstring(scfp, "fabric.instance @SC-FP_core_spe") != 144) {
+    std::cerr << "FAIL: testGenerateSciCompTypes - SC-FP expected 144 PEs\n";
+    ok = false;
+  }
+
+  require(scspm, "loom.scicomp_khg_type = \"SC-SPM\"", "SC-SPM type attr");
+  require(scspm, "loom.spm_ld_ports = 4", "SC-SPM SPM ld attr");
+  require(scspm, "loom.extmem_ld_ports = 4", "SC-SPM extmem ld attr");
+  require(scspm, "loom.has_indirect_load = true", "SC-SPM indirect attr");
+  require(scspm, "SC-SPM_core_indirect_load", "SC-SPM indirect FU");
+  require(scspm, "f64", "SC-SPM f64 types");
+  if (countSubstring(scspm, "fabric.instance @SC-SPM_core_spe") != 64) {
+    std::cerr << "FAIL: testGenerateSciCompTypes - SC-SPM expected 64 PEs\n";
+    ok = false;
+  }
+
+  require(scctrl, "loom.scicomp_khg_type = \"SC-CTRL\"",
+          "SC-CTRL type attr");
+  require(scctrl, "loom.routing_topology = \"MESH\"", "SC-CTRL topology attr");
+  require(scctrl, "loom.operand_buffer_size = 4", "SC-CTRL operand buffer");
+  require(scctrl, "temporal_pe", "SC-CTRL temporal PE");
+  require(scctrl, "num_instruction = 16", "SC-CTRL instruction slots");
+  require(scctrl, "num_register = 8", "SC-CTRL register count");
+  require(scctrl, "operand_buffer_size = 4", "SC-CTRL PE operand buffer");
+  require(scctrl, "SC-CTRL_core_scatter_store", "SC-CTRL scatter store FU");
+  require(scctrl, "SC-CTRL_core_branch", "SC-CTRL branch FU");
+  if (countSubstring(scctrl, "fabric.instance @SC-CTRL_core_tpe") != 64) {
+    std::cerr << "FAIL: testGenerateSciCompTypes - SC-CTRL expected 64 PEs\n";
+    ok = false;
+  }
+
+  if (ok)
+    std::cerr << "PASS: testGenerateSciCompTypes\n";
+  return ok;
+}
+
+/// Test 12: export SciComp ADGs to the canonical repo paths.
+static bool testExportSciCompTypes() {
+  bool ok = true;
+  std::vector<std::string> paths = {
+      "adg/scicomp/SC-FP.mlir",
+      "adg/scicomp/SC-SPM.mlir",
+      "adg/scicomp/SC-CTRL.mlir",
+  };
+
+  for (const auto &path : paths)
+    std::remove(path.c_str());
+
+  for (const auto &params : allSciCompTypes())
+    exportSciCompADG(params, "adg/scicomp/" + params.typeId + ".mlir");
+
+  for (const auto &path : paths) {
+    auto buf = llvm::MemoryBuffer::getFile(path);
+    if (!buf) {
+      std::cerr << "FAIL: testExportSciCompTypes - missing file " << path
+                << "\n";
+      ok = false;
+      continue;
+    }
+    std::string contents = (*buf)->getBuffer().str();
+    if (contents.find("fabric.module") == std::string::npos ||
+        contents.find("loom.scicomp_khg_type") == std::string::npos) {
+      std::cerr << "FAIL: testExportSciCompTypes - malformed file " << path
+                << "\n";
+      ok = false;
+    }
+  }
+
+  if (ok)
+    std::cerr << "PASS: testExportSciCompTypes\n";
+  return ok;
+}
+
 //===----------------------------------------------------------------------===//
 // Main
 //===----------------------------------------------------------------------===//
@@ -286,6 +443,9 @@ int main() {
   run(testPEType);
   run(testD4Wide);
   run(testInvalidTypeId);
+  run(testSciCompParams);
+  run(testGenerateSciCompTypes);
+  run(testExportSciCompTypes);
 
   std::cerr << "\nResults: " << passed << "/" << total << " tests passed\n";
   return (passed == total) ? 0 : 1;

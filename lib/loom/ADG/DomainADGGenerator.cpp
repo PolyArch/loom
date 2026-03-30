@@ -16,8 +16,16 @@
 #include "loom/ADG/DomainADGGenerator.h"
 #include "loom/ADG/ADGBuilder.h"
 
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
+
 #include <cassert>
+#include <fstream>
+#include <map>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace loom {
@@ -48,6 +56,20 @@ static const DomainTypeParams kDomainTypes[] = {
 
 constexpr unsigned kNumDomainTypes = 6;
 
+static const SciCompTypeParams kSciCompTypes[] = {
+    {"SC-FP", "ScientificFP", 12, 12, 64, false, 8, 6, 1, 4, 1, true, 32, 32,
+     2, 2, 2, 1, 0, 0, 0, 4, 2, "CHESS", true, true, true, false, false,
+     false},
+    {"SC-SPM", "ScientificSPM", 8, 8, 64, false, 4, 4, 1, 6, 1, true, 32, 64,
+     4, 2, 4, 2, 0, 0, 0, 4, 2, "CHESS", true, false, false, true, false,
+     false},
+    {"SC-CTRL", "ScientificCTRL", 8, 8, 32, true, 2, 2, 0, 6, 2, false, 0, 32,
+     2, 2, 2, 2, 16, 8, 4, 4, 2, "MESH", false, false, false, false, true,
+     true},
+};
+
+constexpr unsigned kNumSciCompTypes = 3;
+
 //===----------------------------------------------------------------------===//
 // Constants (same conventions as KHGGenerator)
 //===----------------------------------------------------------------------===//
@@ -63,6 +85,8 @@ constexpr unsigned kNumScalarOutputs = 2;
 static std::string bitsType(unsigned width) {
   return "!fabric.bits<" + std::to_string(width) + ">";
 }
+
+static std::string boolAttr(bool value) { return value ? "true" : "false"; }
 
 /// Determine the integer type string for a given data width.
 /// Returns "i32" for width <= 32, "i64" for width <= 64.
@@ -222,6 +246,102 @@ static void defineFPFUs(ADGBuilder &builder, const std::string &prefix,
   }
 }
 
+static void defineSciCompSpecializedFUs(ADGBuilder &builder,
+                                        const SciCompTypeParams &params,
+                                        const std::string &prefix,
+                                        std::vector<FUHandle> &fus) {
+  std::string itype = intTypeStr(params.dataWidth);
+  std::string ftype = floatTypeStr(params.dataWidth);
+
+  if (params.hasFMA) {
+    FunctionUnitSpec fmaSpec;
+    fmaSpec.name = prefix + "_fp_fma";
+    fmaSpec.inputTypes = {ftype, ftype, ftype};
+    fmaSpec.outputTypes = {ftype};
+    fmaSpec.ops = {"math.fma"};
+    fus.push_back(builder.defineFU(fmaSpec));
+  }
+  if (params.hasRSQRT) {
+    FunctionUnitSpec rsqrtSpec;
+    rsqrtSpec.name = prefix + "_fp_rsqrt";
+    rsqrtSpec.inputTypes = {ftype};
+    rsqrtSpec.outputTypes = {ftype};
+    rsqrtSpec.ops = {"math.rsqrt"};
+    fus.push_back(builder.defineFU(rsqrtSpec));
+  }
+  if (params.hasFPMin) {
+    FunctionUnitSpec minSpec;
+    minSpec.name = prefix + "_fp_min";
+    minSpec.inputTypes = {ftype, ftype};
+    minSpec.outputTypes = {ftype};
+    minSpec.ops = {"arith.minimumf"};
+    fus.push_back(builder.defineFU(minSpec));
+  }
+  if (params.hasIndirectLoad) {
+    FunctionUnitSpec indirectLoadSpec;
+    indirectLoadSpec.name = prefix + "_indirect_load";
+    indirectLoadSpec.inputTypes = {"index", itype, "none"};
+    indirectLoadSpec.outputTypes = {itype, "index"};
+    indirectLoadSpec.ops = {"handshake.load"};
+    fus.push_back(builder.defineFU(indirectLoadSpec));
+  }
+  if (params.hasScatterStore) {
+    FunctionUnitSpec scatterSpec;
+    scatterSpec.name = prefix + "_scatter_store";
+    scatterSpec.inputTypes = {"index", itype, "none"};
+    scatterSpec.outputTypes = {"none"};
+    scatterSpec.ops = {"handshake.store"};
+    fus.push_back(builder.defineFU(scatterSpec));
+  }
+  if (params.hasBranch) {
+    FunctionUnitSpec branchSpec;
+    branchSpec.name = prefix + "_branch";
+    branchSpec.inputTypes = {"i1", itype};
+    branchSpec.outputTypes = {itype, itype};
+    branchSpec.ops = {"handshake.cond_br"};
+    fus.push_back(builder.defineFU(branchSpec));
+  }
+}
+
+static std::string addModuleAttributes(
+    std::string mlir, const std::map<std::string, std::string> &attrs) {
+  std::size_t modulePos = mlir.find("fabric.module @");
+  if (modulePos == std::string::npos || attrs.empty())
+    return mlir;
+
+  std::size_t bracePos = mlir.find(" {", modulePos);
+  if (bracePos == std::string::npos)
+    return mlir;
+
+  std::size_t attrPos = mlir.rfind(" attributes {", bracePos);
+  std::string attrText;
+  bool hasAttrBlock = attrPos != std::string::npos && attrPos > modulePos;
+  if (hasAttrBlock) {
+    std::size_t attrEnd = mlir.find('}', attrPos);
+    if (attrEnd == std::string::npos)
+      return mlir;
+    attrText = mlir.substr(attrPos + 13, attrEnd - (attrPos + 13));
+    bracePos = attrEnd + 1;
+  }
+
+  std::string newAttrs = attrText;
+  for (const auto &entry : attrs) {
+    if (!newAttrs.empty())
+      newAttrs += ", ";
+    newAttrs += entry.first + " = " + entry.second;
+  }
+
+  if (hasAttrBlock) {
+    std::size_t attrEnd = mlir.find('}', attrPos);
+    mlir.replace(attrPos, attrEnd - attrPos + 1,
+                 " attributes {" + newAttrs + "}");
+    return mlir;
+  }
+
+  mlir.insert(bracePos, " attributes {" + newAttrs + "}");
+  return mlir;
+}
+
 //===----------------------------------------------------------------------===//
 // Core ADG Build Logic
 //===----------------------------------------------------------------------===//
@@ -252,6 +372,31 @@ static void buildDomainADGImpl(ADGBuilder &builder,
         params.numRegisters, params.instructionSlots,
         regFifoDepth, /*enableShareOperandBuffer=*/false,
         std::nullopt);
+
+    std::vector<std::vector<InstanceHandle>> peGrid(
+        params.arrayRows, std::vector<InstanceHandle>(params.arrayCols));
+    for (unsigned r = 0; r < params.arrayRows; ++r) {
+      for (unsigned c = 0; c < params.arrayCols; ++c) {
+        peGrid[r][c] = builder.instantiatePE(
+            pe, "pe_" + std::to_string(r) + "_" + std::to_string(c));
+      }
+    }
+    for (unsigned r = 0; r < params.arrayRows; ++r) {
+      for (unsigned c = 0; c < params.arrayCols; ++c) {
+        unsigned north = (r > 0) ? r - 1 : params.arrayRows - 1;
+        unsigned south = (r + 1 < params.arrayRows) ? r + 1 : 0;
+        unsigned east = (c + 1 < params.arrayCols) ? c + 1 : 0;
+        unsigned west = (c > 0) ? c - 1 : params.arrayCols - 1;
+        builder.connect(peGrid[r][c], 0, peGrid[north][c], 1);
+        builder.connect(peGrid[r][c], 1, peGrid[south][c], 0);
+        builder.connect(peGrid[r][c], 2, peGrid[r][east], 3);
+        builder.connect(peGrid[r][c], 3, peGrid[r][west], 2);
+      }
+    }
+
+    uint64_t spmBytes = static_cast<uint64_t>(params.spmSizeKB) * 1024;
+    builder.setSPMCapacity(spmBytes);
+    return;
   } else {
     pe = builder.defineSpatialPE(
         moduleName + "_spe", kPEInputs, kPEOutputs, params.dataWidth, fus);
@@ -344,6 +489,130 @@ static void buildDomainADGImpl(ADGBuilder &builder,
   builder.setSPMCapacity(spmBytes);
 }
 
+static void buildSciCompADGImpl(ADGBuilder &builder,
+                                const SciCompTypeParams &params,
+                                const std::string &moduleName) {
+  std::vector<FUHandle> fus =
+      defineBaselineFUs(builder, moduleName, params.dataWidth);
+  defineALUFUs(builder, moduleName, params.intAluCount, params.dataWidth, fus);
+  defineMulFUs(builder, moduleName, params.intMulCount, params.dataWidth, fus);
+  defineFPFUs(builder, moduleName, params.totalFPUnits(), params.dataWidth,
+              fus);
+  defineSciCompSpecializedFUs(builder, params, moduleName, fus);
+
+  PEHandle pe;
+  std::string portType = bitsType(params.dataWidth);
+  std::vector<std::string> peInTypes(kPEInputs, portType);
+  std::vector<std::string> peOutTypes(kPEOutputs, portType);
+
+  if (params.isTemporal) {
+    pe = builder.defineTemporalPE(
+        moduleName + "_tpe", peInTypes, peOutTypes, fus, params.numRegisters,
+        params.instructionSlots, /*regFifoDepth=*/1,
+        /*enableShareOperandBuffer=*/params.operandBufferSize > 0,
+        params.operandBufferSize > 0
+            ? std::optional<unsigned>(params.operandBufferSize)
+            : std::nullopt);
+
+    std::vector<std::vector<InstanceHandle>> peGrid(
+        params.arrayRows, std::vector<InstanceHandle>(params.arrayCols));
+    for (unsigned r = 0; r < params.arrayRows; ++r) {
+      for (unsigned c = 0; c < params.arrayCols; ++c) {
+        peGrid[r][c] = builder.instantiatePE(
+            pe, "pe_" + std::to_string(r) + "_" + std::to_string(c));
+      }
+    }
+    for (unsigned r = 0; r < params.arrayRows; ++r) {
+      for (unsigned c = 0; c < params.arrayCols; ++c) {
+        unsigned north = (r > 0) ? r - 1 : params.arrayRows - 1;
+        unsigned south = (r + 1 < params.arrayRows) ? r + 1 : 0;
+        unsigned east = (c + 1 < params.arrayCols) ? c + 1 : 0;
+        unsigned west = (c > 0) ? c - 1 : params.arrayCols - 1;
+        builder.connect(peGrid[r][c], 0, peGrid[north][c], 1);
+        builder.connect(peGrid[r][c], 1, peGrid[south][c], 0);
+        builder.connect(peGrid[r][c], 2, peGrid[r][east], 3);
+        builder.connect(peGrid[r][c], 3, peGrid[r][west], 2);
+      }
+    }
+
+    uint64_t spmBytes = static_cast<uint64_t>(params.spmSizeKB) * 1024;
+    builder.setSPMCapacity(spmBytes);
+    return;
+  } else {
+    pe = builder.defineSpatialPE(moduleName + "_spe", kPEInputs, kPEOutputs,
+                                 params.dataWidth, fus);
+  }
+
+  ChessMeshOptions meshOpts;
+  meshOpts.topLeftExtraInputs = kExtMemOutputs + params.scalarInputs;
+  meshOpts.topRightExtraInputs = kExtMemOutputs;
+  meshOpts.bottomLeftExtraOutputs = kExtMemDataInputs;
+  meshOpts.bottomRightExtraOutputs =
+      kExtMemDataInputs + params.scalarOutputs;
+
+  auto mesh = builder.buildChessMesh(params.arrayRows, params.arrayCols,
+                                     [&](unsigned, unsigned) { return pe; },
+                                     meshOpts);
+
+  std::string itype = intTypeStr(params.dataWidth);
+  std::string memrefType = "memref<?x" + itype + ">";
+
+  ExtMemorySpec extMemSpec;
+  extMemSpec.name = moduleName + "_extmem";
+  extMemSpec.ldPorts = std::max(1u, params.extMemLdPorts);
+  extMemSpec.stPorts = std::max(1u, params.extMemStPorts);
+  extMemSpec.memrefType = memrefType;
+  extMemSpec.numRegion = 1;
+  auto extMem = builder.defineExtMemory(extMemSpec);
+  auto extMems = builder.instantiateExtMemArray(2, extMem, "extmem");
+  auto memrefs = builder.addMemrefInputs("buffer", 2, memrefType);
+  for (unsigned idx = 0; idx < extMems.size(); ++idx)
+    builder.connectMemrefToExtMem(memrefs[idx], extMems[idx]);
+
+  unsigned leftIngressIdx = 0;
+  unsigned rightIngressIdx = meshOpts.topLeftExtraInputs;
+  unsigned leftEgressIdx = 0;
+  unsigned rightEgressIdx = meshOpts.bottomLeftExtraOutputs;
+
+  for (unsigned memIdx = 0; memIdx < extMems.size(); ++memIdx) {
+    InstanceHandle mem = extMems[memIdx];
+    unsigned &ingressIdx =
+        (memIdx % 2 == 0) ? leftIngressIdx : rightIngressIdx;
+    unsigned &egressIdx = (memIdx % 2 == 0) ? leftEgressIdx : rightEgressIdx;
+
+    for (unsigned outPort = 0; outPort < kExtMemOutputs; ++outPort) {
+      builder.connect(mem, outPort, mesh.ingressPorts[ingressIdx].instance,
+                      mesh.ingressPorts[ingressIdx].port);
+      ++ingressIdx;
+    }
+    for (unsigned inPort = 0; inPort < kExtMemDataInputs; ++inPort) {
+      builder.connect(mesh.egressPorts[egressIdx].instance,
+                      mesh.egressPorts[egressIdx].port, mem, 1 + inPort);
+      ++egressIdx;
+    }
+  }
+
+  std::vector<unsigned> scalarIns = builder.addInputs(
+      "scalar",
+      std::vector<std::string>(params.scalarInputs, bitsType(params.dataWidth)));
+  std::vector<unsigned> scalarOuts = builder.addOutputs(
+      "scalar_out", std::vector<std::string>(params.scalarOutputs,
+                                             bitsType(params.dataWidth)));
+
+  unsigned scalarIngressIdx = kExtMemOutputs;
+  for (unsigned idx = 0; idx < scalarIns.size(); ++idx, ++scalarIngressIdx)
+    builder.connectInputToPort(scalarIns[idx],
+                               mesh.ingressPorts[scalarIngressIdx]);
+
+  unsigned scalarEgressIdx = 2 * kExtMemDataInputs;
+  for (unsigned idx = 0; idx < scalarOuts.size(); ++idx, ++scalarEgressIdx)
+    builder.connectPortToOutput(mesh.egressPorts[scalarEgressIdx],
+                                scalarOuts[idx]);
+
+  uint64_t spmBytes = static_cast<uint64_t>(params.spmSizeKB) * 1024;
+  builder.setSPMCapacity(spmBytes);
+}
+
 } // anonymous namespace
 
 //===----------------------------------------------------------------------===//
@@ -357,6 +626,14 @@ bool isValidDomainTypeId(const std::string &typeId) {
   return c >= '1' && c <= '6';
 }
 
+bool isValidSciCompTypeId(const std::string &typeId) {
+  for (unsigned i = 0; i < kNumSciCompTypes; ++i) {
+    if (kSciCompTypes[i].typeId == typeId)
+      return true;
+  }
+  return false;
+}
+
 //===----------------------------------------------------------------------===//
 // Parameter Construction
 //===----------------------------------------------------------------------===//
@@ -366,6 +643,14 @@ DomainTypeParams domainParamsFromTypeId(const std::string &typeId) {
     return DomainTypeParams{};
   unsigned idx = static_cast<unsigned>(typeId[1] - '1');
   return kDomainTypes[idx];
+}
+
+SciCompTypeParams sciCompParamsFromTypeId(const std::string &typeId) {
+  for (unsigned i = 0; i < kNumSciCompTypes; ++i) {
+    if (kSciCompTypes[i].typeId == typeId)
+      return kSciCompTypes[i];
+  }
+  return SciCompTypeParams{};
 }
 
 //===----------------------------------------------------------------------===//
@@ -381,6 +666,45 @@ std::string generateDomainADG(const DomainTypeParams &params) {
   return builder.exportCoreType(moduleName);
 }
 
+static std::map<std::string, std::string>
+getSciCompModuleAttrs(const SciCompTypeParams &params) {
+  std::map<std::string, std::string> attrs;
+  attrs["loom.scicomp_khg_type"] = "\"" + params.typeId + "\"";
+  attrs["loom.routing_topology"] = "\"" + params.routingTopology + "\"";
+  attrs["loom.decomposable"] = boolAttr(params.decomposable);
+  attrs["loom.sub_lane_bits"] = std::to_string(params.subLaneBits);
+  attrs["loom.spm_ld_ports"] = std::to_string(params.spmLdPorts);
+  attrs["loom.spm_st_ports"] = std::to_string(params.spmStPorts);
+  attrs["loom.extmem_ld_ports"] = std::to_string(params.extMemLdPorts);
+  attrs["loom.extmem_st_ports"] = std::to_string(params.extMemStPorts);
+  attrs["loom.fp_add_units"] = std::to_string(params.fpAddCount);
+  attrs["loom.fp_mul_units"] = std::to_string(params.fpMulCount);
+  attrs["loom.fp_div_units"] = std::to_string(params.fpDivCount);
+  attrs["loom.int_alu_units"] = std::to_string(params.intAluCount);
+  attrs["loom.int_mul_units"] = std::to_string(params.intMulCount);
+  attrs["loom.has_fma"] = boolAttr(params.hasFMA);
+  attrs["loom.has_rsqrt"] = boolAttr(params.hasRSQRT);
+  attrs["loom.has_fp_min"] = boolAttr(params.hasFPMin);
+  attrs["loom.has_indirect_load"] = boolAttr(params.hasIndirectLoad);
+  attrs["loom.has_scatter_store"] = boolAttr(params.hasScatterStore);
+  attrs["loom.has_branch"] = boolAttr(params.hasBranch);
+  if (params.isTemporal) {
+    attrs["loom.operand_buffer_size"] =
+        std::to_string(params.operandBufferSize);
+  }
+  return attrs;
+}
+
+std::string generateSciCompADG(const SciCompTypeParams &params) {
+  assert(!params.typeId.empty() && "SciComp type ID must not be empty");
+
+  const std::string moduleName = params.typeId + "_core";
+  ADGBuilder builder(moduleName);
+  buildSciCompADGImpl(builder, params, moduleName);
+  std::string mlir = builder.exportCoreType(moduleName);
+  return addModuleAttributes(mlir, getSciCompModuleAttrs(params));
+}
+
 void exportDomainADG(const DomainTypeParams &params,
                      const std::string &outputPath) {
   assert(!params.typeId.empty() && "Domain type ID must not be empty");
@@ -389,6 +713,26 @@ void exportDomainADG(const DomainTypeParams &params,
   ADGBuilder builder(moduleName);
   buildDomainADGImpl(builder, params, moduleName);
   builder.exportMLIR(outputPath);
+}
+
+void exportSciCompADG(const SciCompTypeParams &params,
+                      const std::string &outputPath) {
+  assert(!params.typeId.empty() && "SciComp type ID must not be empty");
+
+  llvm::SmallString<128> dir(outputPath);
+  llvm::sys::path::remove_filename(dir);
+  if (!dir.empty()) {
+    std::error_code ec = llvm::sys::fs::create_directories(dir);
+    if (ec)
+      llvm::report_fatal_error("exportSciCompADG: cannot create output dir");
+  }
+
+  std::ofstream os(outputPath, std::ios::out | std::ios::trunc);
+  if (!os.is_open())
+    llvm::report_fatal_error("exportSciCompADG: cannot open output file");
+  std::string mlir = generateSciCompADG(params);
+  os << mlir;
+  os.flush();
 }
 
 //===----------------------------------------------------------------------===//
@@ -406,6 +750,19 @@ std::vector<std::string> allDomainTypeIds() {
 std::vector<DomainTypeParams> allDomainTypes() {
   return std::vector<DomainTypeParams>(
       kDomainTypes, kDomainTypes + kNumDomainTypes);
+}
+
+std::vector<std::string> allSciCompTypeIds() {
+  std::vector<std::string> ids;
+  ids.reserve(kNumSciCompTypes);
+  for (unsigned i = 0; i < kNumSciCompTypes; ++i)
+    ids.push_back(kSciCompTypes[i].typeId);
+  return ids;
+}
+
+std::vector<SciCompTypeParams> allSciCompTypes() {
+  return std::vector<SciCompTypeParams>(kSciCompTypes,
+                                        kSciCompTypes + kNumSciCompTypes);
 }
 
 } // namespace adg

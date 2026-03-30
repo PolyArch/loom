@@ -4,7 +4,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Generates ADG MLIR for the 6 domain-specific core types (D1-D6).
+// Generates ADG MLIR for the 6 domain-specific core types (D1-D6) and the
+// SciComp-specific SC-FP / SC-SPM / SC-CTRL core types.
 //
 // Each type targets a specific workload domain with hand-tuned parameters:
 //   D1: LLM      (FP-heavy, 6x6 spatial, SPM=64KB)
@@ -53,6 +54,51 @@ struct DomainTypeParams {
   bool hasSPM() const { return spmSizeKB > 0; }
 };
 
+/// Concrete parameters for a scientific-computing KHG type.
+struct SciCompTypeParams {
+  std::string typeId; // "SC-FP", "SC-SPM", "SC-CTRL"
+  std::string name;
+
+  unsigned arrayRows = 0;
+  unsigned arrayCols = 0;
+  unsigned dataWidth = 32;
+  bool isTemporal = false;
+
+  unsigned fpAddCount = 0;
+  unsigned fpMulCount = 0;
+  unsigned fpDivCount = 0;
+  unsigned intAluCount = 0;
+  unsigned intMulCount = 0;
+
+  bool decomposable = false;
+  unsigned subLaneBits = 0;
+
+  unsigned spmSizeKB = 0;
+  unsigned spmLdPorts = 0;
+  unsigned spmStPorts = 0;
+  unsigned extMemLdPorts = 0;
+  unsigned extMemStPorts = 0;
+
+  unsigned instructionSlots = 0;
+  unsigned numRegisters = 0;
+  unsigned operandBufferSize = 0;
+
+  unsigned scalarInputs = 4;
+  unsigned scalarOutputs = 2;
+
+  std::string routingTopology;
+
+  bool hasFMA = false;
+  bool hasRSQRT = false;
+  bool hasFPMin = false;
+  bool hasIndirectLoad = false;
+  bool hasScatterStore = false;
+  bool hasBranch = false;
+
+  unsigned totalPEs() const { return arrayRows * arrayCols; }
+  unsigned totalFPUnits() const { return fpAddCount + fpMulCount + fpDivCount; }
+};
+
 //===----------------------------------------------------------------------===//
 // Validation
 //===----------------------------------------------------------------------===//
@@ -89,6 +135,29 @@ std::vector<std::string> allDomainTypeIds();
 
 /// Return DomainTypeParams for all 6 types in canonical order.
 std::vector<DomainTypeParams> allDomainTypes();
+
+//===----------------------------------------------------------------------===//
+// SciComp-specific KHG generation
+//===----------------------------------------------------------------------===//
+
+/// Return true if the string is a valid scientific-computing KHG type ID.
+bool isValidSciCompTypeId(const std::string &typeId);
+
+/// Build SciComp KHG parameters from a type ID string.
+SciCompTypeParams sciCompParamsFromTypeId(const std::string &typeId);
+
+/// Generate a complete Fabric MLIR ADG string for a scientific-computing KHG.
+std::string generateSciCompADG(const SciCompTypeParams &params);
+
+/// Generate and export a scientific-computing KHG to a file.
+void exportSciCompADG(const SciCompTypeParams &params,
+                      const std::string &outputPath);
+
+/// Return all 3 scientific-computing type IDs in canonical order.
+std::vector<std::string> allSciCompTypeIds();
+
+/// Return parameters for all 3 scientific-computing KHG types.
+std::vector<SciCompTypeParams> allSciCompTypes();
 
 } // namespace adg
 } // namespace loom
