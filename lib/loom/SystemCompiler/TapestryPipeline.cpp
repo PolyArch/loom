@@ -1,5 +1,6 @@
 #include "loom/SystemCompiler/TapestryPipeline.h"
 #include "loom/ContractInference/ContractInference.h"
+#include "loom/Dialect/TDG/TDGOps.h"
 #include "loom/SystemCompiler/ArchitectureFactory.h"
 #include "loom/SystemCompiler/ExecutionModel.h"
 #include "loom/SystemCompiler/PrecompiledKernelLoader.h"
@@ -272,26 +273,89 @@ extractKernelsFromTDG(mlir::ModuleOp tdgModule) {
   return kernels;
 }
 
-/// Extract inter-kernel contracts from TDG module attributes.
-/// Falls back to creating sequential contracts if no explicit ones found.
+/// Return the byte width of an MLIR type (0 if unknown).
+static uint64_t elementSizeBytes(mlir::Type ty) {
+  if (ty.isF64() || ty.isInteger(64))
+    return 8;
+  if (ty.isF32() || ty.isInteger(32))
+    return 4;
+  if (ty.isF16() || ty.isBF16() || ty.isInteger(16))
+    return 2;
+  if (ty.isInteger(8))
+    return 1;
+  return 0;
+}
+
+/// Stringify an MLIR Type to a human-readable name (e.g. "i32", "f16").
+static std::string stringifyMLIRType(mlir::Type ty) {
+  std::string result;
+  llvm::raw_string_ostream os(result);
+  ty.print(os);
+  return result;
+}
+
+/// Compute element count from a tile_shape attribute string.
+/// The tile_shape is a comma-separated list of dimension sizes inside
+/// brackets, e.g. "[128, 256]". Returns 0 when tile_shape is absent or
+/// contains symbolic (non-numeric) dimensions.
+static uint64_t computeElementCountFromTileShape(
+    std::optional<llvm::StringRef> tileShapeStr) {
+  if (!tileShapeStr || tileShapeStr->empty())
+    return 0;
+
+  llvm::StringRef shape = *tileShapeStr;
+  // Strip leading/trailing brackets if present.
+  shape = shape.trim();
+  if (shape.starts_with("["))
+    shape = shape.drop_front(1);
+  if (shape.ends_with("]"))
+    shape = shape.drop_back(1);
+
+  uint64_t product = 1;
+  llvm::SmallVector<llvm::StringRef> dims;
+  shape.split(dims, ',');
+  for (auto dimRef : dims) {
+    llvm::StringRef dimStr = dimRef.trim();
+    if (dimStr.empty())
+      continue;
+    uint64_t val;
+    if (dimStr.getAsInteger(10, val) || val == 0)
+      return 0; // Symbolic or zero dimension; cannot compute statically.
+    product *= val;
+  }
+  return product;
+}
+
+/// Extract inter-kernel contracts from tdg.contract ops in the TDG module.
+/// Walks tdg.graph -> tdg.contract ops to read real contract data.
 std::vector<tapestry::ContractSpec>
 extractContractsFromTDG(mlir::ModuleOp tdgModule,
                         const std::vector<tapestry::KernelDesc> &kernels) {
   std::vector<tapestry::ContractSpec> contracts;
 
-  // Check for explicit contract attributes on the TDG module.
-  // If none found, create sequential contracts between adjacent kernels.
-  if (kernels.size() > 1) {
-    for (unsigned ki = 0; ki + 1 < kernels.size(); ++ki) {
+  // Walk all tdg.graph ops (typically one per module).
+  tdgModule.walk([&](loom::tdg::GraphOp graphOp) {
+    graphOp.walk([&](loom::tdg::ContractOp contractOp) {
       tapestry::ContractSpec contract;
-      contract.producerKernel = kernels[ki].name;
-      contract.consumerKernel = kernels[ki + 1].name;
-      contract.dataType = "i32";
-      contract.elementCount = 256;
-      contract.bandwidthBytesPerCycle = 4;
+      contract.producerKernel = contractOp.getProducer().str();
+      contract.consumerKernel = contractOp.getConsumer().str();
+
+      // Stringify the MLIR data_type attribute (e.g. i32, f32).
+      contract.dataType = stringifyMLIRType(contractOp.getDataType());
+
+      // Compute element count from tile_shape when available.
+      std::optional<llvm::StringRef> tileShapeStr;
+      if (auto tsAttr = contractOp.getTileShapeAttr())
+        tileShapeStr = tsAttr.getValue();
+      contract.elementCount = computeElementCountFromTileShape(tileShapeStr);
+
+      // Derive bandwidth from element size (one element per cycle baseline).
+      uint64_t elemBytes = elementSizeBytes(contractOp.getDataType());
+      contract.bandwidthBytesPerCycle = elemBytes > 0 ? elemBytes : 1;
+
       contracts.push_back(contract);
-    }
-  }
+    });
+  });
 
   return contracts;
 }
@@ -544,6 +608,10 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
       break;
     }
     case PipelineStage::SIMULATE: {
+      // By design: the SIMULATE stage requires external simulation tools
+      // (MultiCoreSimSession) that are not part of the config-driven
+      // pipeline. Return failure with diagnostic guidance so callers know
+      // to use the task-based API or invoke the simulator directly.
       result.success = false;
       result.diagnostics =
           "SIMULATE stage is not yet integrated into the config-driven "
@@ -552,6 +620,9 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
       return result;
     }
     case PipelineStage::RTLGEN: {
+      // By design: RTL generation depends on external EDA tooling that
+      // cannot be invoked from within the config-driven pipeline. Return
+      // failure with diagnostic guidance for the caller.
       result.success = false;
       result.diagnostics =
           "RTLGEN stage is not yet integrated into the config-driven "
