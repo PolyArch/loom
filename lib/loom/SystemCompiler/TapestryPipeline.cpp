@@ -427,6 +427,67 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
         return result;
       }
 
+      // Run TDC contract verification on the compilation results.
+      {
+        // Build TDCEdgeSpecs from the contracts used during compilation.
+        std::vector<loom::TDCEdgeSpec> verifyEdges;
+        for (const auto &c : contracts) {
+          loom::TDCEdgeSpec es;
+          es.producerKernel = c.producerKernel;
+          es.consumerKernel = c.consumerKernel;
+          es.dataTypeName = c.dataType;
+          verifyEdges.push_back(std::move(es));
+        }
+
+        // Infer missing dimensions so we have origin tracking.
+        loom::InferenceResult inferred = loom::inferEdgeContracts(verifyEdges);
+
+        // Assemble available compile-time outputs for static verification.
+        loom::BufferAllocationPlan verifyBufPlan;
+        if (compResult.bufferPlan.has_value())
+          verifyBufPlan = compResult.bufferPlan.value();
+
+        std::vector<loom::EdgeTileDimensions> verifyTileDims;
+        std::vector<loom::EdgeSchedulingSlot> verifySchedSlots;
+        std::vector<loom::TDCPathSpec> verifyPaths;
+        std::map<std::string, int64_t> verifyParams;
+
+        loom::TDCVerificationReport verifyReport =
+            loom::verifyContracts(
+                inferred.edgeSpecs, inferred.origins, verifyPaths,
+                verifyBufPlan, verifyTileDims, verifySchedSlots,
+                std::nullopt, std::nullopt, verifyParams);
+
+        if (!verifyReport.allSatisfied) {
+          std::string verifyDiag = "TDC verification failures:";
+          for (const auto &d : verifyReport.diagnostics)
+            verifyDiag += " " + d + ";";
+          for (const auto &er : verifyReport.edgeResults) {
+            for (const auto &d : er.diagnostics)
+              verifyDiag += " [" + er.producerKernel + "->"
+                  + er.consumerKernel + "] " + d + ";";
+          }
+          if (result.diagnostics.empty())
+            result.diagnostics = verifyDiag;
+          else
+            result.diagnostics += "; " + verifyDiag;
+        }
+
+        // Store the full verification report in the pipeline result.
+        result.tdcVerificationReport = verifyReport;
+
+        if (config.verbose) {
+          llvm::outs() << "TapestryPipeline: TDC verification "
+                       << (verifyReport.allSatisfied ? "PASSED" : "FAILED")
+                       << " (" << verifyReport.edgeResults.size()
+                       << " edge checks, "
+                       << verifyReport.pathResults.size()
+                       << " path checks)\n";
+          for (const auto &d : verifyReport.diagnostics)
+            llvm::outs() << "  TDC: " << d << "\n";
+        }
+      }
+
       break;
     }
     case PipelineStage::SIMULATE: {

@@ -2,10 +2,12 @@
 #define LOOM_SYSTEMCOMPILER_L1COREASSIGNMENT_H
 
 #include "loom/SystemCompiler/Contract.h"
+#include "loom/SystemCompiler/ContractConstraintTranslator.h"
 #include "loom/SystemCompiler/InfeasibilityCut.h"
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -158,6 +160,11 @@ struct L1AssignerOptions {
 
   /// Verbosity flag.
   bool verbose = false;
+
+  /// TDC-derived constraints translated by ContractConstraintTranslator.
+  /// When populated, the solver uses these to prune the search space
+  /// (scheduling precedences, rate floors, memory placement, tiling locks).
+  std::optional<ConstraintSet> tdcConstraints;
 };
 
 /// L1 master problem solver: assigns kernels to core instances using CP-SAT.

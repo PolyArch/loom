@@ -2,6 +2,7 @@
 #include "loom/SystemCompiler/ADGPartitioner.h"
 #include "loom/SystemCompiler/BendersHelpers.h"
 #include "loom/SystemCompiler/BufferAllocator.h"
+#include "loom/SystemCompiler/ContractConstraintTranslator.h"
 #include "loom/SystemCompiler/ConvergenceTracker.h"
 #include "loom/SystemCompiler/DMAScheduler.h"
 #include "loom/SystemCompiler/ExecutionModel.h"
@@ -183,6 +184,34 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
   L1CoreAssigner l1Assigner;
   L1AssignerOptions l1Opts = config.l1Options;
   l1Opts.verbose = config.verbose;
+
+  // Translate TDC edge/path specs into typed constraints for L1 assignment.
+  {
+    std::vector<TDCEdgeSpec> tdcEdges;
+    tdcEdges.reserve(l1Contracts.size());
+    for (const auto &c : l1Contracts)
+      tdcEdges.push_back(contractSpecToEdgeSpec(c));
+
+    // No path specs available from legacy ContractSpec; pass empty.
+    std::vector<TDCPathSpec> tdcPaths;
+
+    ContractConstraintTranslator translator;
+    ConstraintSet constraintSet = translator.translate(tdcEdges, tdcPaths);
+
+    if (config.verbose) {
+      llvm::outs() << "ContractConstraintTranslator: "
+                   << constraintSet.scheduling.size() << " scheduling, "
+                   << constraintSet.rate.size() << " rate, "
+                   << constraintSet.memory.size() << " memory, "
+                   << constraintSet.tiling.size() << " tiling, "
+                   << constraintSet.pathLatency.size() << " path-latency"
+                   << " constraints\n";
+      for (const auto &diag : constraintSet.diagnostics)
+        llvm::outs() << "  constraint diagnostic: " << diag << "\n";
+    }
+
+    l1Opts.tdcConstraints = std::move(constraintSet);
+  }
 
   if (config.verbose) {
     llvm::outs() << "HierarchicalCompiler: starting bilevel compilation\n"

@@ -3,6 +3,7 @@
 
 #include "loom/SystemCompiler/HierarchicalCompiler.h"
 #include "loom/SystemCompiler/ExecutionModel.h"
+#include "loom/SystemCompiler/TDCVerification.h"
 #include "loom/TDG/ContractLegalityChecker.h"
 #include "loom/MultiCoreSim/MultiCoreSimSession.h"
 
@@ -168,6 +169,9 @@ struct TapestryPipelineResult {
 
   /// Temporal schedule from the execution model (populated after mapping).
   std::optional<TemporalSchedule> temporalSchedule;
+
+  /// TDC contract verification report (populated after compilation).
+  std::optional<TDCVerificationReport> tdcVerificationReport;
 };
 
 /// Config-driven full pipeline: orchestrates compile, simulate, and RTL

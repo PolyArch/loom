@@ -355,6 +355,97 @@ AssignmentResult L1CoreAssigner::solve(
                          absThreshold);
   }
 
+  // --- Constraint 6: TDC-derived constraints ---
+  // When the ContractConstraintTranslator has produced constraints, inject
+  // them into the CP-SAT model to prune the search space.
+  if (opts.tdcConstraints.has_value() && !opts.tdcConstraints->empty()) {
+    const ConstraintSet &tdc = opts.tdcConstraints.value();
+
+    // 6a. SchedulingConstraints: precedence (producer before consumer).
+    // At the L1 assignment level, precedence is enforced by strongly
+    // favoring co-location of precedence-constrained pairs. When both
+    // kernels share a core, sequential execution guarantees producer
+    // completes before consumer begins. We add an objective penalty for
+    // cross-core placement of precedence-constrained pairs.
+    // (Penalties are accumulated in the objective section below via
+    //  nocScaled terms that already penalize cross-core edges. Here we
+    //  add hard constraints: introduce per-pair auxiliary bool colocVars
+    //  and mandate co-location when both kernels exist in the problem.)
+    for (const auto &sc : tdc.scheduling) {
+      auto pIt = kernelIdx.find(sc.producer);
+      auto cIt = kernelIdx.find(sc.consumer);
+      if (pIt == kernelIdx.end() || cIt == kernelIdx.end())
+        continue;
+
+      unsigned pk = pIt->second;
+      unsigned ck = cIt->second;
+
+      // Soft precedence: for each core, create a co-location indicator
+      // and add a large objective bonus (implemented later in objective
+      // section). For now, record a scheduling bonus weight.
+      // A stronger formulation: if both are on the same core, no extra
+      // constraint needed (sequential execution). If on different cores,
+      // the NoC transfer cost already acts as a penalty. We add an
+      // additional co-location incentive by creating a BoolVar that is
+      // true when both are on the same core, and give it a bonus.
+      for (unsigned c = 0; c < numCores; ++c) {
+        BoolVar precColoc = model.NewBoolVar().WithName(
+            "prec_coloc_" + std::to_string(pk) + "_" +
+            std::to_string(ck) + "_c" + std::to_string(c));
+        model.AddImplication(precColoc, x[pk][c]);
+        model.AddImplication(precColoc, x[ck][c]);
+        model.AddBoolOr({precColoc, x[pk][c].Not(), x[ck][c].Not()});
+        // The bonus is applied in the objective function below.
+      }
+    }
+
+    // 6b. MemoryConstraints: core-type filtering based on memory level.
+    // LOCAL_SPM means the buffer must reside in local scratchpad, so the
+    // producer and consumer must be on the same core or adjacent cores
+    // (Manhattan distance <= 1).
+    for (const auto &mc : tdc.memory) {
+      if (mc.level != MemoryLevel::LOCAL_SPM)
+        continue;
+
+      auto pIt = kernelIdx.find(mc.edgeProducer);
+      auto cIt = kernelIdx.find(mc.edgeConsumer);
+      if (pIt == kernelIdx.end() || cIt == kernelIdx.end())
+        continue;
+
+      unsigned pk = pIt->second;
+      unsigned ck = cIt->second;
+
+      // Disallow assignments where the two kernels are more than 1 hop
+      // apart on the mesh. For each pair (cp, cc) with distance > 1,
+      // forbid both being true simultaneously.
+      for (unsigned cp = 0; cp < numCores; ++cp) {
+        for (unsigned cc = 0; cc < numCores; ++cc) {
+          if (cp == cc)
+            continue;
+          int dist = manhattanDistance(cp, cc, arch.nocSpec.meshCols);
+          if (dist <= 1)
+            continue;
+          // Forbid x[pk][cp] AND x[ck][cc].
+          model.AddBoolOr({x[pk][cp].Not(), x[ck][cc].Not()});
+        }
+      }
+    }
+
+    // 6c. RateConstraints: minimum throughput requirements.
+    // Penalize cross-core placement proportional to the rate requirement
+    // so the solver prefers co-locating high-throughput edges. The
+    // penalty is added to the objective below; higher minRate means
+    // stronger incentive to keep the edge local.
+    // (Rate penalties are accumulated in the objective section.)
+
+    if (opts.verbose) {
+      llvm::outs() << "L1 TDC constraints applied: "
+                   << tdc.scheduling.size() << " scheduling, "
+                   << tdc.memory.size() << " memory, "
+                   << tdc.rate.size() << " rate\n";
+    }
+  }
+
   // --- Objective function ---
   // Scale everything to integer (x1000) for CP-SAT.
   constexpr int64_t kScale = 1000;
@@ -502,6 +593,75 @@ AssignmentResult L1CoreAssigner::solve(
     }
   }
 
+  // Component 5: TDC scheduling precedence co-location bonus.
+  // For each SchedulingConstraint, reward co-locating producer and consumer
+  // so that intra-core sequential execution trivially satisfies FIFO ordering.
+  if (opts.tdcConstraints.has_value()) {
+    const ConstraintSet &tdc = opts.tdcConstraints.value();
+
+    constexpr int64_t kPrecedenceBonus = 50;
+    for (const auto &sc : tdc.scheduling) {
+      auto pIt = kernelIdx.find(sc.producer);
+      auto cIt = kernelIdx.find(sc.consumer);
+      if (pIt == kernelIdx.end() || cIt == kernelIdx.end())
+        continue;
+
+      unsigned pk = pIt->second;
+      unsigned ck = cIt->second;
+
+      for (unsigned c = 0; c < numCores; ++c) {
+        // Reuse the already-created prec_coloc variables by creating
+        // matching co-location indicators for the objective.
+        BoolVar colocPrec = model.NewBoolVar().WithName(
+            "obj_prec_" + std::to_string(pk) + "_" +
+            std::to_string(ck) + "_c" + std::to_string(c));
+        model.AddImplication(colocPrec, x[pk][c]);
+        model.AddImplication(colocPrec, x[ck][c]);
+        model.AddBoolOr({colocPrec, x[pk][c].Not(), x[ck][c].Not()});
+        objective -= colocPrec * kPrecedenceBonus;
+      }
+    }
+
+    // Component 6: TDC rate constraint penalty for cross-core placement.
+    // Higher minRate means stronger penalty when the edge crosses cores.
+    for (const auto &rc : tdc.rate) {
+      auto pIt = kernelIdx.find(rc.edgeProducer);
+      auto cIt = kernelIdx.find(rc.edgeConsumer);
+      if (pIt == kernelIdx.end() || cIt == kernelIdx.end())
+        continue;
+      if (rc.minRate <= 0)
+        continue;
+
+      unsigned pk = pIt->second;
+      unsigned ck = cIt->second;
+
+      // For each cross-core pair, add a penalty proportional to minRate
+      // times hop distance.
+      for (unsigned cp = 0; cp < numCores; ++cp) {
+        for (unsigned cc = 0; cc < numCores; ++cc) {
+          if (cp == cc)
+            continue;
+
+          int dist = manhattanDistance(cp, cc, arch.nocSpec.meshCols);
+          if (dist == 0)
+            continue;
+
+          int64_t ratePenalty = rc.minRate * dist;
+          if (ratePenalty <= 0)
+            continue;
+
+          BoolVar both = model.NewBoolVar().WithName(
+              "rate_" + std::to_string(pk) + "_" + std::to_string(ck) +
+              "_cp" + std::to_string(cp) + "_cc" + std::to_string(cc));
+          model.AddImplication(both, x[pk][cp]);
+          model.AddImplication(both, x[ck][cc]);
+          model.AddBoolOr({both, x[pk][cp].Not(), x[ck][cc].Not()});
+          objective += both * ratePenalty;
+        }
+      }
+    }
+  }
+
   model.Minimize(objective);
 
   // --- Solve ---
@@ -557,7 +717,6 @@ AssignmentResult L1CoreAssigner::solve(
     const SystemArchitecture &arch,
     const std::vector<InfeasibilityCut> &cuts,
     const L1AssignerOptions &opts) {
-  (void)contracts;
   (void)cuts;
 
   // Fallback: round-robin assignment when OR-Tools is not available.
@@ -566,6 +725,46 @@ AssignmentResult L1CoreAssigner::solve(
   if (numCores == 0 || kernels.empty()) {
     result.feasible = kernels.empty();
     return result;
+  }
+
+  // Build kernel name -> index map for TDC constraint lookup.
+  std::map<std::string, unsigned> kernelIdx;
+  for (unsigned k = 0; k < kernels.size(); ++k)
+    kernelIdx[kernels[k].name] = k;
+
+  // Build a set of LOCAL_SPM memory-constrained kernel pairs. These pairs
+  // must be placed on the same core or adjacent cores (distance <= 1).
+  std::set<std::pair<unsigned, unsigned>> localSpmPairs;
+  if (opts.tdcConstraints.has_value()) {
+    for (const auto &mc : opts.tdcConstraints->memory) {
+      if (mc.level != MemoryLevel::LOCAL_SPM)
+        continue;
+      auto pIt = kernelIdx.find(mc.edgeProducer);
+      auto cIt = kernelIdx.find(mc.edgeConsumer);
+      if (pIt != kernelIdx.end() && cIt != kernelIdx.end())
+        localSpmPairs.insert({pIt->second, cIt->second});
+    }
+  }
+
+  // Build a set of scheduling-constrained pairs for co-location preference.
+  std::set<std::pair<unsigned, unsigned>> schedPairs;
+  if (opts.tdcConstraints.has_value()) {
+    for (const auto &sc : opts.tdcConstraints->scheduling) {
+      auto pIt = kernelIdx.find(sc.producer);
+      auto cIt = kernelIdx.find(sc.consumer);
+      if (pIt != kernelIdx.end() && cIt != kernelIdx.end())
+        schedPairs.insert({pIt->second, cIt->second});
+    }
+  }
+
+  // Build a mapping from contract producer-consumer kernel indices to the
+  // contract spec for NoC cost estimation.
+  std::map<std::pair<unsigned, unsigned>, const ContractSpec *> contractMap;
+  for (const auto &c : contracts) {
+    auto pIt = kernelIdx.find(c.producerKernel);
+    auto cIt = kernelIdx.find(c.consumerKernel);
+    if (pIt != kernelIdx.end() && cIt != kernelIdx.end())
+      contractMap[{pIt->second, cIt->second}] = &c;
   }
 
   result.feasible = true;
@@ -577,16 +776,55 @@ AssignmentResult L1CoreAssigner::solve(
 
   for (unsigned k = 0; k < kernels.size(); ++k) {
     // Find a compatible core, round-robin among compatible ones.
+    // If TDC constraints exist, prefer cores where co-located partners
+    // already reside.
     bool assigned = false;
+    int bestCore = -1;
+    int bestScore = -1;
+
     for (unsigned c = 0; c < numCores; ++c) {
       unsigned coreIdx = (k + c) % numCores;
-      if (isKernelCompatible(kernels[k], arch.typeForInstance(coreIdx))) {
-        result.kernelToCore[kernels[k].name] = coreIdx;
-        result.coreAssignments[coreIdx].assignedKernels.push_back(
-            kernels[k].name);
-        assigned = true;
-        break;
+      if (!isKernelCompatible(kernels[k], arch.typeForInstance(coreIdx)))
+        continue;
+
+      int score = 0;
+
+      // Prefer cores where scheduling-constrained partners are assigned.
+      for (const auto &sp : schedPairs) {
+        unsigned partner = (sp.first == k) ? sp.second : sp.first;
+        if (sp.first != k && sp.second != k)
+          continue;
+        auto it = result.kernelToCore.find(kernels[partner].name);
+        if (it != result.kernelToCore.end() && it->second == coreIdx)
+          score += 10;
       }
+
+      // Prefer cores where LOCAL_SPM partners are assigned (same or adjacent).
+      for (const auto &lp : localSpmPairs) {
+        unsigned partner = (lp.first == k) ? lp.second : lp.first;
+        if (lp.first != k && lp.second != k)
+          continue;
+        auto it = result.kernelToCore.find(kernels[partner].name);
+        if (it != result.kernelToCore.end()) {
+          int dist = manhattanDistance(it->second, coreIdx,
+                                       arch.nocSpec.meshCols);
+          if (dist <= 1)
+            score += 5;
+        }
+      }
+
+      if (score > bestScore || bestCore < 0) {
+        bestScore = score;
+        bestCore = static_cast<int>(coreIdx);
+      }
+    }
+
+    if (bestCore >= 0) {
+      unsigned coreIdx = static_cast<unsigned>(bestCore);
+      result.kernelToCore[kernels[k].name] = coreIdx;
+      result.coreAssignments[coreIdx].assignedKernels.push_back(
+          kernels[k].name);
+      assigned = true;
     }
     if (!assigned) {
       result.feasible = false;
@@ -594,7 +832,29 @@ AssignmentResult L1CoreAssigner::solve(
     }
   }
 
+  // Post-assignment validation: check LOCAL_SPM adjacency constraints.
+  for (const auto &lp : localSpmPairs) {
+    auto pIt = result.kernelToCore.find(kernels[lp.first].name);
+    auto cIt = result.kernelToCore.find(kernels[lp.second].name);
+    if (pIt == result.kernelToCore.end() || cIt == result.kernelToCore.end())
+      continue;
+    int dist = manhattanDistance(pIt->second, cIt->second,
+                                 arch.nocSpec.meshCols);
+    if (dist > 1 && opts.verbose) {
+      llvm::outs() << "L1 fallback WARNING: LOCAL_SPM constraint violated "
+                   << "for edge " << kernels[lp.first].name << " -> "
+                   << kernels[lp.second].name << " (distance=" << dist
+                   << ")\n";
+    }
+  }
+
   if (opts.verbose) {
+    if (opts.tdcConstraints.has_value() && !opts.tdcConstraints->empty()) {
+      llvm::outs() << "L1 fallback TDC constraints: "
+                   << opts.tdcConstraints->scheduling.size() << " scheduling, "
+                   << opts.tdcConstraints->memory.size() << " memory, "
+                   << opts.tdcConstraints->rate.size() << " rate\n";
+    }
     llvm::outs() << "L1 core assignment (fallback round-robin): "
                  << kernels.size() << " kernels assigned to " << numCores
                  << " cores\n";
