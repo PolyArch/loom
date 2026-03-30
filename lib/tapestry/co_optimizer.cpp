@@ -395,9 +395,35 @@ runHWStep(const std::vector<lt::KernelDesc> &kernels,
   }
 
   // INNER-HW: optimize each core type's ADG.
+  // ADGBuilder may fail for certain topologies (e.g., fallback MESH topologies
+  // can produce spatial_sw nodes with unconnected ports).  The per-core
+  // optimizer already catches that and marks individual ADGOptResult::success
+  // as false, but we need to propagate the failure here so the co-optimization
+  // loop can fall back gracefully instead of using an invalid architecture.
   hwStep.innerResults = loom::optimizeAllCoreTypes(
       hwStep.outerResult.topology.coreLibrary,
       profiles, ctx, coOpts.hwInnerOpts);
+
+  // Check whether at least one core type produced a valid ADG.  If every
+  // inner result failed (typically because ADGBuilder hit unconnected
+  // spatial_sw ports on the fallback topology), report the HW step as
+  // failed so the caller can carry forward the previous architecture.
+  bool anyInnerSuccess = false;
+  for (const auto &ir : hwStep.innerResults) {
+    if (ir.success) {
+      anyInnerSuccess = true;
+      break;
+    }
+  }
+  if (!anyInnerSuccess && !hwStep.innerResults.empty()) {
+    if (coOpts.verbose) {
+      llvm::errs() << "  INNER-HW: all core types failed ADG generation"
+                   << " (likely ADGBuilder unconnected-port issue);"
+                   << " HW step marked as failed.\n";
+    }
+    hwStep.success = false;
+    return hwStep;
+  }
 
   // Compute total system area.
   hwStep.totalArea = computeSystemArea(hwStep.outerResult, hwStep.innerResults);
