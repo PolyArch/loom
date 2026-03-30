@@ -32,6 +32,7 @@ add_library(LoomSystemCompiler STATIC
   TDGToSSGBuilder.cpp
   TemporalScheduler.cpp
   TypeAdapters.cpp
+  VariantGenerator.cpp
 )
 
 target_include_directories(LoomSystemCompiler PUBLIC

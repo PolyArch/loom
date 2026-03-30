@@ -9,6 +9,10 @@
 
 #include "tapestry/co_optimizer.h"
 
+#include "loom/SystemCompiler/ArchitectureFactory.h"
+#include "loom/SystemCompiler/PrecompiledKernelLoader.h"
+#include "loom/SystemCompiler/TDGLowering.h"
+
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -120,33 +124,213 @@ void applyAblationConfig(CoOptOptions &opts, const AblationConfig &config) {
 // runAblation
 //===----------------------------------------------------------------------===//
 
+/// Workload for a single domain: kernels + contracts for co-optimization.
+struct DomainWorkload {
+  std::vector<loom::tapestry::KernelDesc> kernels;
+  std::vector<loom::tapestry::ContractSpec> contracts;
+};
+
+/// Build a synthetic workload for the given domain name.
+/// Uses the same domain definitions as the experiment tool.
+static DomainWorkload
+buildDomainWorkload(const std::string &domainName, mlir::MLIRContext &ctx) {
+  namespace lt = loom::tapestry;
+  DomainWorkload w;
+
+  struct KernelSpec {
+    std::string name;
+    bool isMac;
+  };
+  struct ContractEdge {
+    std::string producer;
+    std::string consumer;
+    uint64_t elementCount;
+    uint64_t bw;
+  };
+
+  std::vector<KernelSpec> kSpecs;
+  std::vector<ContractEdge> cEdges;
+
+  if (domainName == "ai_llm") {
+    kSpecs = {{"qkv_proj", true}, {"attn_score", true}, {"softmax", false},
+              {"attn_output", true}, {"ffn1", true}, {"gelu", false},
+              {"ffn2", true}, {"layernorm", false}};
+    cEdges = {{"qkv_proj", "attn_score", 2048, 8},
+              {"attn_score", "softmax", 4096, 8},
+              {"softmax", "attn_output", 4096, 8},
+              {"attn_output", "ffn1", 16384, 16},
+              {"ffn1", "gelu", 65536, 16},
+              {"gelu", "ffn2", 65536, 16},
+              {"ffn2", "layernorm", 16384, 8}};
+  } else if (domainName == "dsp_ofdm") {
+    kSpecs = {{"fft_butterfly", true}, {"channel_est", false},
+              {"equalizer", false}, {"qam_demod", false},
+              {"viterbi", false}, {"crc_check", false}};
+    cEdges = {{"fft_butterfly", "channel_est", 4096, 16},
+              {"channel_est", "equalizer", 1200, 8},
+              {"equalizer", "qam_demod", 1200, 8},
+              {"qam_demod", "viterbi", 7200, 16},
+              {"viterbi", "crc_check", 1800, 8}};
+  } else if (domainName == "arvr_stereo") {
+    kSpecs = {{"harris_corner", false}, {"sad_matching", true},
+              {"stereo_disparity", true}, {"image_warp", false},
+              {"post_filter", false}};
+    cEdges = {{"harris_corner", "sad_matching", 4096, 16},
+              {"sad_matching", "stereo_disparity", 262144, 32},
+              {"stereo_disparity", "image_warp", 4096, 8},
+              {"image_warp", "post_filter", 4096, 8}};
+  } else if (domainName == "robotics_vio") {
+    kSpecs = {{"imu_integration", false}, {"fast_detect", false},
+              {"orb_descriptor", false}, {"feature_match", true},
+              {"pose_estimate", true}};
+    cEdges = {{"imu_integration", "pose_estimate", 600, 4},
+              {"fast_detect", "orb_descriptor", 1000, 8},
+              {"orb_descriptor", "feature_match", 4000, 16},
+              {"feature_match", "pose_estimate", 400, 4}};
+  } else if (domainName == "graph_analytics") {
+    kSpecs = {{"bfs_traversal", false}, {"pagerank_spmv", true},
+              {"triangle_count", false}, {"label_prop", false}};
+    cEdges = {{"bfs_traversal", "pagerank_spmv", 1024, 4},
+              {"pagerank_spmv", "label_prop", 1024, 4},
+              {"bfs_traversal", "triangle_count", 1024, 4}};
+  } else if (domainName == "zk_stark") {
+    kSpecs = {{"ntt", true}, {"msm", true},
+              {"poseidon_hash", false}, {"poly_eval", true},
+              {"proof_compose", false}};
+    cEdges = {{"ntt", "poly_eval", 1024, 8},
+              {"poly_eval", "proof_compose", 256, 4},
+              {"poseidon_hash", "proof_compose", 4, 4},
+              {"msm", "proof_compose", 3, 4},
+              {"ntt", "poseidon_hash", 8, 4}};
+  } else {
+    return w;
+  }
+
+  for (const auto &ks : kSpecs) {
+    lt::KernelDesc kd = ks.isMac
+                            ? lt::createSyntheticMacKernel(ks.name, ctx)
+                            : lt::createSyntheticAddKernel(ks.name, ctx);
+    if (!kd.dfgModule)
+      return DomainWorkload{};
+    w.kernels.push_back(std::move(kd));
+  }
+
+  if (!lt::lowerKernelsToDFG(w.kernels, ctx))
+    return DomainWorkload{};
+
+  for (const auto &ce : cEdges) {
+    lt::ContractSpec c;
+    c.producerKernel = ce.producer;
+    c.consumerKernel = ce.consumer;
+    c.dataType = "i32";
+    c.elementCount = ce.elementCount;
+    c.bandwidthBytesPerCycle = ce.bw;
+    w.contracts.push_back(std::move(c));
+  }
+
+  return w;
+}
+
+/// Build an initial architecture using the spectral configuration.
+static loom::tapestry::SystemArchitecture
+buildAblationArch(const std::string &config, unsigned numKernels,
+                  mlir::MLIRContext &ctx) {
+  namespace lt = loom::tapestry;
+
+  std::vector<lt::CoreTypeSpec> specs;
+
+  lt::CoreTypeSpec gpSpec;
+  gpSpec.name = "gp_core";
+  gpSpec.meshRows = 2;
+  gpSpec.meshCols = 2;
+  gpSpec.numInstances = std::max(1u, numKernels / 2);
+  gpSpec.includeMultiplier = false;
+  gpSpec.includeComparison = true;
+  gpSpec.includeMemory = false;
+  gpSpec.spmSizeBytes = 4096;
+  specs.push_back(gpSpec);
+
+  lt::CoreTypeSpec dspSpec;
+  dspSpec.name = "dsp_core";
+  dspSpec.meshRows = 2;
+  dspSpec.meshCols = 2;
+  dspSpec.numInstances = std::max(1u, (numKernels + 1) / 2);
+  dspSpec.includeMultiplier = true;
+  dspSpec.includeComparison = false;
+  dspSpec.includeMemory = false;
+  dspSpec.spmSizeBytes = 8192;
+  specs.push_back(dspSpec);
+
+  return lt::buildArchitecture(config + "_ablation", specs, ctx);
+}
+
 AblationResult runAblation(const CoOptOptions &templateOpts,
                            mlir::MLIRContext *ctx,
                            const std::vector<std::string> &domainNames,
                            const std::string &archConfig,
                            bool verbose) {
-  // This function cannot call co_optimize because its signature lacks the
-  // workload data (kernels, contracts, architecture) that co_optimize
-  // requires.  The experiment driver (tapestry_coopt_experiment) builds
-  // workloads per-domain and calls co_optimize directly.
-  //
-  // Return an immediate failure so callers know this path is not usable.
   AblationResult ablResult;
-  ablResult.success = false;
   ablResult.configs = buildAblationConfigs();
   ablResult.domains = domainNames;
   ablResult.results.resize(ablResult.configs.size());
   for (auto &row : ablResult.results)
     row.resize(domainNames.size());
 
-  if (verbose) {
-    llvm::errs()
-        << "runAblation: not implemented at the library level. "
-        << "Use the experiment driver (tapestry_coopt_experiment --mode "
-           "ablation) which builds per-domain workloads and calls "
-           "co_optimize directly.\n";
+  if (!ctx) {
+    ablResult.success = false;
+    return ablResult;
   }
 
+  bool allSucceeded = true;
+
+  for (size_t di = 0; di < domainNames.size(); ++di) {
+    if (verbose)
+      llvm::errs() << "runAblation: domain '" << domainNames[di] << "'\n";
+
+    for (size_t ci = 0; ci < ablResult.configs.size(); ++ci) {
+      const auto &config = ablResult.configs[ci];
+      if (verbose)
+        llvm::errs() << "  config '" << config.name << "'\n";
+
+      // Build a fresh workload per config (co_optimize may consume/modify).
+      auto workload = buildDomainWorkload(domainNames[di], *ctx);
+      if (workload.kernels.empty()) {
+        if (verbose)
+          llvm::errs() << "    skipping: workload construction failed\n";
+        allSucceeded = false;
+        continue;
+      }
+
+      auto arch = buildAblationArch(
+          archConfig, static_cast<unsigned>(workload.kernels.size()), *ctx);
+      if (arch.coreTypes.empty()) {
+        if (verbose)
+          llvm::errs() << "    skipping: architecture build failed\n";
+        allSucceeded = false;
+        continue;
+      }
+
+      // Build co-opt options from the template and apply the ablation config.
+      CoOptOptions coOpts = templateOpts;
+      coOpts.verbose = verbose;
+      applyAblationConfig(coOpts, config);
+
+      CoOptResult result = co_optimize(workload.kernels, workload.contracts,
+                                       arch, coOpts, ctx);
+
+      if (verbose)
+        llvm::errs() << "    throughput=" << result.bestThroughput
+                     << " area=" << result.bestArea
+                     << " rounds=" << result.rounds << "\n";
+
+      ablResult.results[ci][di] = std::move(result);
+
+      if (!ablResult.results[ci][di].success)
+        allSucceeded = false;
+    }
+  }
+
+  ablResult.success = allSucceeded;
   return ablResult;
 }
 

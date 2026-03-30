@@ -1,8 +1,14 @@
 #include "loom/SystemCompiler/TapestryPipeline.h"
+#include "loom/SystemCompiler/VariantGenerator.h"
 #include "tapestry/auto_analyze.h"
+#include "tapestry/compile.h"
+#include "tapestry/task_graph.h"
+#include "tapestry/tdg_emitter.h"
 
 #include "loom/Dialect/Dataflow/DataflowDialect.h"
 #include "loom/Dialect/Fabric/FabricDialect.h"
+#include "loom/Dialect/TDG/TDGDialect.h"
+#include "loom/SystemCompiler/TDGToSSGBuilder.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -211,56 +217,90 @@ static int runAutoTDGMode() {
     return 0;
   }
 
-  // If system-arch is provided, run the full compilation pipeline
-  if (!SystemArchPath.empty()) {
-    // Register dialects for the pipeline
-    DialectRegistry registry;
-    registry.insert<dataflow::DataflowDialect>();
-    registry.insert<fabric::FabricDialect>();
-    registry.insert<arith::ArithDialect>();
-    registry.insert<func::FuncDialect>();
-    registry.insert<memref::MemRefDialect>();
-    registry.insert<scf::SCFDialect>();
-    registry.insert<circt::handshake::HandshakeDialect>();
+  // Build a TaskGraph from the auto-analysis result, bridging the gap
+  // between auto_analyze and the compilation pipeline.
+  tapestry::TaskGraph tg = tapestry::buildTaskGraphFromAnalysis(result);
 
-    MLIRContext context(registry);
-    context.loadAllAvailableDialects();
-
-    // Configure pipeline using the auto-analyzed source
-    TapestryPipelineConfig config;
-    config.tdgPath = AutoTDGPath; // Pipeline will re-compile from source
-    config.systemArchPath = SystemArchPath;
-    config.outputDir = OutputDir;
-    config.verbose = Verbose;
-    config.stages = {PipelineStage::COMPILE};
-
-    config.bendersOpts.maxIterations = MaxIterations;
-    config.bendersOpts.costTighteningThreshold = CostThreshold;
-    config.bendersOpts.perfectNoC = PerfectNoC;
-    config.bendersOpts.verbose = Verbose;
-
-    TapestryPipeline pipeline;
-    TapestryPipelineResult pipelineResult = pipeline.run(config, context);
-
-    if (!pipelineResult.success) {
-      errs() << "tapestry-compile: compilation FAILED\n";
-      errs() << pipelineResult.diagnostics << "\n";
-      return 1;
-    }
-
-    outs() << "tapestry-compile: compilation SUCCESS\n";
-    if (pipelineResult.compilationResult.has_value()) {
-      const auto &comp = pipelineResult.compilationResult.value();
-      outs() << "  Cores: " << comp.coreResults.size() << "\n";
-      outs() << "  Iterations: " << comp.metrics.numBendersIterations << "\n";
-      outs() << "  Compilation time: " << comp.metrics.compilationTimeSec
-             << " sec\n";
-      outs() << "  Report: " << pipelineResult.reportPath << "\n";
-    }
-  } else {
-    outs() << "tapestry-compile: no --system-arch provided, "
-              "skipping hardware compilation\n";
+  if (Verbose) {
+    outs() << "\ntapestry-compile: TaskGraph:\n";
+    tg.dump();
   }
+
+  // Emit TDG MLIR from the TaskGraph.
+  MLIRContext tdgCtx;
+  tdgCtx.getOrLoadDialect<loom::tdg::TDGDialect>();
+  auto tdgModule = tapestry::emitTDG(tg, tdgCtx);
+  if (!tdgModule) {
+    errs() << "tapestry-compile: failed to emit TDG MLIR from TaskGraph\n";
+    return 1;
+  }
+
+  // Write the TDG MLIR to the output directory.
+  if (auto ec = sys::fs::create_directories(OutputDir)) {
+    errs() << "tapestry-compile: cannot create output directory: "
+           << ec.message() << "\n";
+    return 1;
+  }
+  SmallString<256> tdgPath;
+  sys::path::append(tdgPath, OutputDir, "auto_tdg.mlir");
+  if (tapestry::writeTDGToFile(*tdgModule, std::string(tdgPath)))
+    outs() << "tapestry-compile: TDG MLIR written to " << tdgPath << "\n";
+
+  // Generate variants for each kernel that has registered variants.
+  // The variant system (VariantGenerator) produces DFG modules per variant
+  // for use in SSG construction and co-optimization.
+  loom::VariantGeneratorConfig vgConfig;
+  vgConfig.verbose = Verbose;
+
+  std::map<std::string, mlir::ModuleOp> dfgModules;
+  for (unsigned ki = 0; ki < tg.numKernels(); ++ki) {
+    const auto &variants = tg.variants(ki);
+    if (variants.empty())
+      continue;
+
+    const auto &kernelInfo = tg.kernels()[ki];
+    if (Verbose)
+      outs() << "tapestry-compile: generating " << variants.size()
+             << " variant(s) for kernel '" << kernelInfo.name << "'\n";
+
+    // Variant generation requires a base module, but auto-analyzed kernels
+    // do not have a pre-lowered module. Skip variant generation for kernels
+    // without a base module and rely on the default DFG generation.
+  }
+
+  // Build SSG from TDG MLIR + DFG modules.
+  loom::TDGToSSGBuilder ssgBuilder;
+  loom::BuilderSSG ssg = ssgBuilder.build(*tdgModule, dfgModules, tdgCtx);
+
+  if (Verbose) {
+    outs() << "\ntapestry-compile: SSG Summary:\n";
+    outs() << "  Nodes: " << ssg.numNodes() << "\n";
+    outs() << "  Edges: " << ssg.numEdges() << "\n";
+  }
+
+  // Run the full compilation pipeline via tapestry::compile(),
+  // which wires TaskGraph -> TDG emission -> co-optimization.
+  tapestry::CompileOptions compileOpts;
+  compileOpts.systemArchPath = SystemArchPath;
+  compileOpts.outputDir = OutputDir;
+  compileOpts.sourcePaths = {AutoTDGPath.getValue()};
+  compileOpts.maxCoOptRounds = 1;
+  compileOpts.verbose = Verbose;
+
+  tapestry::CompileResult compResult = tapestry::compile(tg, compileOpts);
+
+  if (!compResult.success) {
+    errs() << "tapestry-compile: compilation FAILED\n";
+    if (!compResult.diagnostics.empty())
+      errs() << compResult.diagnostics << "\n";
+    return 1;
+  }
+
+  outs() << "tapestry-compile: compilation SUCCESS\n";
+  outs() << "  Iterations: " << compResult.iterations << "\n";
+  outs() << "  Throughput: " << compResult.systemThroughput << "\n";
+  if (!compResult.reportPath.empty())
+    outs() << "  Report: " << compResult.reportPath << "\n";
 
   return 0;
 }

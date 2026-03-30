@@ -125,7 +125,7 @@ endfunction()
 
 # tapestry_compile -- multi-core compilation with auto-tdg support
 add_tapestry_pipeline_tool(tapestry_compile tapestry_compile.cpp)
-target_link_libraries(tapestry_compile PRIVATE TapestryAutoAnalyze)
+target_link_libraries(tapestry_compile PRIVATE TapestryAutoAnalyze TapestryOptimizer)
 
 # tapestry_pipeline -- full pipeline (compile + simulate + RTL)
 add_tapestry_pipeline_tool(tapestry_pipeline tapestry_pipeline.cpp)
@@ -145,3 +145,7 @@ add_tapestry_pipeline_tool(tapestry_sensitivity tapestry_sensitivity.cpp)
 # tapestry_coopt_experiment -- co-optimization experiments (E17-E20)
 add_tapestry_pipeline_tool(tapestry_coopt_experiment tapestry_coopt_experiment.cpp)
 target_link_libraries(tapestry_coopt_experiment PRIVATE TapestryOptimizer)
+
+# tapestry_ablation_test -- ablation infrastructure tests
+add_tapestry_pipeline_tool(tapestry_ablation_test tapestry_ablation_test.cpp)
+target_link_libraries(tapestry_ablation_test PRIVATE TapestryOptimizer)

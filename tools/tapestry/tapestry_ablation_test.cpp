@@ -86,9 +86,9 @@ tco::CoOptOptions buildTemplateOpts() {
   opts.verbose = false;
   opts.swOpts.maxIterations = 5;
   opts.swOpts.improvementThreshold = 0.01;
-  opts.swOpts.bendersConfig.maxIterations = 5;
-  opts.swOpts.bendersConfig.mapperBudgetSeconds = 5.0;
-  opts.swOpts.bendersConfig.mapperSeed = 42;
+  opts.swOpts.compilerConfig.maxIterations = 5;
+  opts.swOpts.compilerConfig.mapperBudgetSeconds = 5.0;
+  opts.swOpts.compilerConfig.mapperSeed = 42;
   opts.hwOuterOpts.maxIterations = 20;
   opts.hwOuterOpts.seed = 42;
   opts.hwInnerOpts.tier2Enabled = false;
@@ -124,7 +124,7 @@ static void testConfigDisablesLayers() {
           "Baseline: hwInnerOpts.tier2Enabled == false");
     check(opts.hwInnerOpts.maxInnerIter == 0,
           "Baseline: hwInnerOpts.maxInnerIter == 0");
-    check(opts.swOpts.bendersConfig.maxIterations == 1,
+    check(opts.swOpts.compilerConfig.maxIterations == 1,
           "Baseline: SW-Inner single-pass (benders maxIter == 1)");
   }
 
@@ -135,7 +135,7 @@ static void testConfigDisablesLayers() {
     check(configs[1].name == "SW-only", "config[1] is SW-only");
     check(opts.swOpts.maxIterations > 0,
           "SW-only: swOpts.maxIterations > 0");
-    check(opts.swOpts.bendersConfig.maxIterations > 1,
+    check(opts.swOpts.compilerConfig.maxIterations > 1,
           "SW-only: SW-Inner enabled (benders maxIter > 1)");
     check(opts.hwOuterOpts.maxIterations == 0,
           "SW-only: hwOuterOpts.maxIterations == 0");
@@ -152,7 +152,7 @@ static void testConfigDisablesLayers() {
     check(configs[2].name == "HW-only", "config[2] is HW-only");
     check(opts.swOpts.maxIterations == 0,
           "HW-only: swOpts.maxIterations == 0");
-    check(opts.swOpts.bendersConfig.maxIterations == 1,
+    check(opts.swOpts.compilerConfig.maxIterations == 1,
           "HW-only: SW-Inner disabled (benders maxIter == 1)");
     check(opts.hwOuterOpts.maxIterations > 0,
           "HW-only: hwOuterOpts.maxIterations > 0");
@@ -169,7 +169,7 @@ static void testConfigDisablesLayers() {
     check(configs[3].name == "Outer-only", "config[3] is Outer-only");
     check(opts.swOpts.maxIterations > 0,
           "Outer-only: SW-Outer enabled (maxIterations > 0)");
-    check(opts.swOpts.bendersConfig.maxIterations == 1,
+    check(opts.swOpts.compilerConfig.maxIterations == 1,
           "Outer-only: SW-Inner disabled (benders maxIter == 1)");
     check(opts.hwOuterOpts.maxIterations == 0,
           "Outer-only: HW-Outer disabled (maxIterations == 0)");
@@ -185,7 +185,7 @@ static void testConfigDisablesLayers() {
     check(configs[4].name == "Inner-only", "config[4] is Inner-only");
     check(opts.swOpts.maxIterations == 0,
           "Inner-only: SW-Outer disabled (maxIterations == 0)");
-    check(opts.swOpts.bendersConfig.maxIterations > 1,
+    check(opts.swOpts.compilerConfig.maxIterations > 1,
           "Inner-only: SW-Inner enabled (benders maxIter > 1)");
     check(opts.hwOuterOpts.maxIterations > 0,
           "Inner-only: HW-Outer enabled via enableHW=true");
@@ -200,7 +200,7 @@ static void testConfigDisablesLayers() {
     check(configs[5].name == "Full-coopt", "config[5] is Full-coopt");
     check(opts.swOpts.maxIterations > 0,
           "Full-coopt: swOpts.maxIterations > 0");
-    check(opts.swOpts.bendersConfig.maxIterations > 1,
+    check(opts.swOpts.compilerConfig.maxIterations > 1,
           "Full-coopt: SW-Inner enabled (benders maxIter > 1)");
     check(opts.hwOuterOpts.maxIterations > 0,
           "Full-coopt: hwOuterOpts.maxIterations > 0");
