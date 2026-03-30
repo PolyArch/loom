@@ -31,6 +31,8 @@
 
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <iostream>
@@ -91,6 +93,102 @@ static std::string printModule(mlir::ModuleOp module) {
   std::string result;
   llvm::raw_string_ostream os(result);
   module->print(os);
+  return result;
+}
+
+/// Build the D6 SciComp SHG using placeholder core modules.
+static mlir::ModuleOp buildSciCompD6Shg(mlir::MLIRContext &ctx,
+                                        const std::string &exportPath) {
+  auto fpModule = buildMinimalCoreModule(ctx, "SC-FP");
+  auto spmModule = buildMinimalCoreModule(ctx, "SC-SPM");
+  auto ctrlModule = buildMinimalCoreModule(ctx, "SC-CTRL");
+
+  SystemADGBuilder builder(&ctx, "D6_scicomp_shg");
+  auto fpType = builder.registerCoreType("SC-FP", *fpModule);
+  auto spmType = builder.registerCoreType("SC-SPM", *spmModule);
+  auto ctrlType = builder.registerCoreType("SC-CTRL", *ctrlModule);
+
+  auto addCore = [&](CoreTypeHandle type, const std::string &name, int row,
+                     int col, unsigned coreId, const std::string &khgType,
+                     unsigned routerPorts) {
+    builder.instantiateCore(type, name, row, col, coreId, khgType, row, col,
+                            routerPorts);
+  };
+
+  addCore(fpType, "SC-FP.0", 0, 0, 0, "SC-FP", 6);
+  addCore(fpType, "SC-FP.1", 0, 1, 1, "SC-FP", 6);
+  addCore(spmType, "SC-SPM.0", 0, 2, 2, "SC-SPM", 5);
+  addCore(spmType, "SC-SPM.1", 0, 3, 3, "SC-SPM", 5);
+  addCore(fpType, "SC-FP.2", 1, 0, 4, "SC-FP", 6);
+  addCore(fpType, "SC-FP.3", 1, 1, 5, "SC-FP", 6);
+  addCore(spmType, "SC-SPM.2", 1, 2, 6, "SC-SPM", 5);
+  addCore(ctrlType, "SC-CTRL", 1, 3, 7, "SC-CTRL", 5);
+
+  NoCSpec noc;
+  noc.topology = NoCSpec::MESH;
+  noc.flitWidth = 128;
+  noc.virtualChannels = 2;
+  noc.linkBandwidth = 16;
+  noc.routerPipelineStages = 1;
+  builder.setNoCSpec(noc);
+
+  SharedMemorySpec shared;
+  shared.l2SizeBytes = 512 * 1024;
+  shared.numBanks = 8;
+  shared.bankWidthBytes = 32;
+  builder.setSharedMemorySpec(shared);
+
+  ShgMetadata meta;
+  meta.enabled = true;
+  meta.shgId = "D6";
+  meta.domain = "scientific_computing";
+  meta.totalCores = 8;
+  meta.meshRows = 2;
+  meta.meshCols = 4;
+  meta.expressLinkCount = 4;
+  meta.totalAreaBudgetMm2 = 25.0;
+  meta.totalAllocatedAreaMm2 = 22.5;
+  builder.setShgMetadata(meta);
+
+  auto addBidirectionalLink = [&](const std::string &src, unsigned srcPort,
+                                  const std::string &dst, unsigned dstPort,
+                                  unsigned widthBits, unsigned latencyCycles,
+                                  unsigned bandwidth,
+                                  const std::string &kind) {
+    builder.addNoCLink(
+        {src, srcPort, dst, dstPort, widthBits, latencyCycles, bandwidth,
+         kind});
+    builder.addNoCLink(
+        {dst, dstPort, src, srcPort, widthBits, latencyCycles, bandwidth,
+         kind});
+  };
+
+  addBidirectionalLink("router_0", 5, "router_4", 5, 256, 1, 32, "express");
+  addBidirectionalLink("router_1", 5, "router_5", 5, 256, 1, 32, "express");
+  addBidirectionalLink("router_0", 5, "router_5", 5, 256, 1, 32, "express");
+  addBidirectionalLink("router_1", 5, "router_4", 5, 256, 1, 32, "express");
+
+  for (unsigned i = 0; i < 8; ++i) {
+    builder.addNoCLink({"router_" + std::to_string(i), 4,
+                         "l2_bank_" + std::to_string(i), 0, 256, 2, 32,
+                         "l2_interface"});
+  }
+
+  auto result = builder.build();
+
+  if (!exportPath.empty()) {
+    llvm::SmallString<128> exportDir(exportPath);
+    llvm::sys::path::remove_filename(exportDir);
+    if (!exportDir.empty()) {
+      std::error_code ec = llvm::sys::fs::create_directories(exportDir);
+      if (ec) {
+        std::cerr << "FAIL: buildSciCompD6Shg - cannot create export dir: "
+                  << ec.message() << "\n";
+      }
+    }
+    builder.exportMLIR(exportPath);
+  }
+
   return result;
 }
 
@@ -724,6 +822,172 @@ static bool testNoStringIntermediary() {
   return true;
 }
 
+/// Test 13: SciComp D6 SHG structure and export path.
+static bool testSciCompD6ShgStructure() {
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  const std::string exportPath = "adg/scicomp/D6_scicomp_shg.mlir";
+  mlir::ModuleOp result = buildSciCompD6Shg(ctx, exportPath);
+  if (!result) {
+    std::cerr << "FAIL: testSciCompD6ShgStructure - build returned null\n";
+    return false;
+  }
+
+  bool ok = true;
+  auto fail = [&](const std::string &msg) {
+    std::cerr << "FAIL: testSciCompD6ShgStructure - " << msg << "\n";
+    ok = false;
+  };
+
+  if (countOps<fabric::InstanceOp>(result) != 8)
+    fail("expected 8 core instances");
+
+  if (countOps<fabric::RouterOp>(result) != 8)
+    fail("expected 8 routers");
+
+  if (countOps<fabric::SharedMemOp>(result) != 9)
+    fail("expected 9 shared_mem ops (8 banks + ext_mem_if)");
+
+  if (countOps<fabric::NoCLinkOp>(result) != 36)
+    fail("expected 36 directed NoC links");
+
+  unsigned scFp = 0;
+  unsigned scSpm = 0;
+  unsigned scCtrl = 0;
+  unsigned expressRouters = 0;
+  unsigned meshLinks = 0;
+  unsigned expressLinks = 0;
+  unsigned l2Links = 0;
+
+  result->walk([&](fabric::InstanceOp inst) {
+    auto khgType = inst->getAttrOfType<mlir::StringAttr>("khg_type");
+    auto coreId = inst->getAttrOfType<mlir::IntegerAttr>("core_id");
+    auto meshRow = inst->getAttrOfType<mlir::IntegerAttr>("mesh_row");
+    auto meshCol = inst->getAttrOfType<mlir::IntegerAttr>("mesh_col");
+    auto row = inst->getAttrOfType<mlir::IntegerAttr>("grid_row");
+    auto col = inst->getAttrOfType<mlir::IntegerAttr>("grid_col");
+
+    if (!khgType || !coreId || !meshRow || !meshCol || !row || !col) {
+      fail("instance missing metadata attrs");
+      return;
+    }
+
+    if (row.getInt() < 0 || row.getInt() > 1 || col.getInt() < 0 ||
+        col.getInt() > 3)
+      fail("instance grid position out of range");
+
+    if (meshRow.getInt() != row.getInt() || meshCol.getInt() != col.getInt())
+      fail("mesh position does not match grid position");
+
+    if (khgType.getValue() == "SC-FP")
+      ++scFp;
+    else if (khgType.getValue() == "SC-SPM")
+      ++scSpm;
+    else if (khgType.getValue() == "SC-CTRL")
+      ++scCtrl;
+    else
+      fail("unexpected khg_type");
+  });
+
+  result->walk([&](fabric::RouterOp router) {
+    if (router.getNumPorts() == 6)
+      ++expressRouters;
+  });
+
+  result->walk([&](fabric::NoCLinkOp link) {
+    auto kind = link->getAttrOfType<mlir::StringAttr>("link_kind");
+    auto widthBits = link.getWidthBits();
+    if (kind && kind.getValue() == "mesh") {
+      ++meshLinks;
+      if (widthBits != 128)
+        fail("mesh links must be 128-bit");
+    } else if (kind && kind.getValue() == "express") {
+      ++expressLinks;
+      if (widthBits != 256)
+        fail("express links must be 256-bit");
+    } else if (kind && kind.getValue() == "l2_interface") {
+      ++l2Links;
+      if (widthBits != 256)
+        fail("l2 interface links must be 256-bit");
+    }
+  });
+
+  if (scFp != 4)
+    fail("expected 4 SC-FP instances");
+  if (scSpm != 3)
+    fail("expected 3 SC-SPM instances");
+  if (scCtrl != 1)
+    fail("expected 1 SC-CTRL instance");
+  if (expressRouters != 4)
+    fail("expected 4 routers with express port count");
+  if (meshLinks != 20)
+    fail("expected 20 directed mesh links");
+  if (expressLinks != 8)
+    fail("expected 8 directed express links");
+  if (l2Links != 8)
+    fail("expected 8 directed L2 interface links");
+
+  auto shgId = result->getAttrOfType<mlir::StringAttr>("shg_id");
+  auto domain = result->getAttrOfType<mlir::StringAttr>("domain");
+  auto totalCores = result->getAttrOfType<mlir::IntegerAttr>("total_cores");
+  auto meshRows = result->getAttrOfType<mlir::IntegerAttr>("mesh_rows");
+  auto meshCols = result->getAttrOfType<mlir::IntegerAttr>("mesh_cols");
+  auto expressLinkCount =
+      result->getAttrOfType<mlir::IntegerAttr>("express_link_count");
+  auto budget = result->getAttrOfType<mlir::FloatAttr>("total_area_budget_mm2");
+  auto allocated =
+      result->getAttrOfType<mlir::FloatAttr>("total_allocated_area_mm2");
+
+  if (!shgId || shgId.getValue() != "D6")
+    fail("missing top-level shg_id");
+  if (!domain || domain.getValue() != "scientific_computing")
+    fail("missing top-level domain");
+  if (!totalCores || totalCores.getInt() != 8)
+    fail("missing top-level total_cores");
+  if (!meshRows || meshRows.getInt() != 2)
+    fail("missing top-level mesh_rows");
+  if (!meshCols || meshCols.getInt() != 4)
+    fail("missing top-level mesh_cols");
+  if (!expressLinkCount || expressLinkCount.getInt() != 4)
+    fail("missing top-level express_link_count");
+  if (!budget || budget.getValue().convertToDouble() != 25.0)
+    fail("missing top-level total_area_budget_mm2");
+  if (!allocated || allocated.getValue().convertToDouble() != 22.5)
+    fail("missing top-level total_allocated_area_mm2");
+
+  std::string printed = printModule(result);
+  if (printed.find("khg_type = \"SC-FP\"") == std::string::npos ||
+      printed.find("khg_type = \"SC-SPM\"") == std::string::npos ||
+      printed.find("khg_type = \"SC-CTRL\"") == std::string::npos) {
+    fail("printed module missing khg_type attrs");
+  }
+  if (printed.find("link_kind = \"express\"") == std::string::npos ||
+      printed.find("link_kind = \"l2_interface\"") == std::string::npos) {
+    fail("printed module missing explicit link kinds");
+  }
+  if (printed.find("shg_id = \"D6\"") == std::string::npos ||
+      printed.find("express_link_count = 4") == std::string::npos) {
+    fail("printed module missing top-level SHG attrs");
+  }
+
+  auto bufOrErr = llvm::MemoryBuffer::getFile(exportPath);
+  if (!bufOrErr) {
+    fail("exported D6 SHG file missing");
+  } else {
+    std::string fileContents = (*bufOrErr)->getBuffer().str();
+    if (fileContents.find("D6_scicomp_shg") == std::string::npos ||
+        fileContents.find("link_kind = \"express\"") == std::string::npos ||
+        fileContents.find("shg_id = \"D6\"") == std::string::npos) {
+      fail("exported D6 SHG file missing expected content");
+    }
+  }
+
+  if (ok)
+    std::cerr << "PASS: testSciCompD6ShgStructure\n";
+  return ok;
+}
+
 //===----------------------------------------------------------------------===//
 // Main
 //===----------------------------------------------------------------------===//
@@ -750,6 +1014,7 @@ int main() {
   run(testBuildWithoutCoresErrors);
   run(testContextOwnership);
   run(testNoStringIntermediary);
+  run(testSciCompD6ShgStructure);
 
   std::cerr << "\nResults: " << passed << "/" << total << " tests passed\n";
   return (passed == total) ? 0 : 1;

@@ -55,8 +55,10 @@ struct SystemADGBuilder::Impl {
   std::string systemName;
   std::vector<CoreTypeDef> coreTypes;
   std::vector<SystemCoreInstance> coreInstances;
+  std::vector<NoCLinkSpec> explicitLinks;
   NoCSpec nocSpec;
   SharedMemorySpec sharedMemSpec;
+  ShgMetadata shgMetadata;
   mlir::ModuleOp builtModule; // null until build() is called
 
   /// Initialize context with all required dialects.
@@ -110,7 +112,12 @@ SystemADGBuilder::registerCoreType(const std::string &typeName,
 
 SystemCoreInstance SystemADGBuilder::instantiateCore(CoreTypeHandle type,
                                                      const std::string &name,
-                                                     int row, int col) {
+                                                     int row, int col,
+                                                     unsigned coreId,
+                                                     const std::string &khgType,
+                                                     int meshRow,
+                                                     int meshCol,
+                                                     unsigned routerPortCount) {
   if (type.id >= impl_->coreTypes.size()) {
     llvm::report_fatal_error("SystemADGBuilder: invalid CoreTypeHandle");
   }
@@ -118,11 +125,20 @@ SystemCoreInstance SystemADGBuilder::instantiateCore(CoreTypeHandle type,
   SystemCoreInstance inst;
   inst.instanceName = name;
   inst.coreType = type;
+  inst.coreId = coreId;
+  inst.khgType = khgType;
   inst.row = row;
   inst.col = col;
+  inst.meshRow = (meshRow >= 0) ? meshRow : row;
+  inst.meshCol = (meshCol >= 0) ? meshCol : col;
+  inst.routerPortCount = routerPortCount;
 
   impl_->coreInstances.push_back(inst);
   return inst;
+}
+
+void SystemADGBuilder::addNoCLink(const NoCLinkSpec &link) {
+  impl_->explicitLinks.push_back(link);
 }
 
 void SystemADGBuilder::setNoCSpec(const NoCSpec &spec) {
@@ -131,6 +147,10 @@ void SystemADGBuilder::setNoCSpec(const NoCSpec &spec) {
 
 void SystemADGBuilder::setSharedMemorySpec(const SharedMemorySpec &spec) {
   impl_->sharedMemSpec = spec;
+}
+
+void SystemADGBuilder::setShgMetadata(const ShgMetadata &metadata) {
+  impl_->shgMetadata = metadata;
 }
 
 mlir::ModuleOp SystemADGBuilder::build() {
@@ -148,7 +168,9 @@ mlir::ModuleOp SystemADGBuilder::build() {
   // Build the system module using the MLIR builder
   impl_->builtModule = SystemADGMLIRBuilder::build(
       impl_->ctx, impl_->systemName, mlirCoreTypes,
-      impl_->coreInstances, impl_->nocSpec, impl_->sharedMemSpec);
+      impl_->coreInstances, impl_->nocSpec, impl_->sharedMemSpec,
+      impl_->explicitLinks,
+      impl_->shgMetadata.enabled ? &impl_->shgMetadata : nullptr);
 
   return impl_->builtModule;
 }
@@ -182,6 +204,14 @@ const NoCSpec &SystemADGBuilder::getNoCSpec() const {
 
 const SharedMemorySpec &SystemADGBuilder::getSharedMemorySpec() const {
   return impl_->sharedMemSpec;
+}
+
+const std::vector<NoCLinkSpec> &SystemADGBuilder::getNoCLinks() const {
+  return impl_->explicitLinks;
+}
+
+const ShgMetadata &SystemADGBuilder::getShgMetadata() const {
+  return impl_->shgMetadata;
 }
 
 } // namespace adg

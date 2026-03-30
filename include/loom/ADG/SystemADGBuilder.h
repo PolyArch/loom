@@ -42,8 +42,38 @@ struct CoreTypeHandle {
 struct SystemCoreInstance {
   std::string instanceName;
   CoreTypeHandle coreType;
-  int row;
-  int col;
+  unsigned coreId = 0;
+  std::string khgType;
+  int row = -1;
+  int col = -1;
+  int meshRow = -1;
+  int meshCol = -1;
+  unsigned routerPortCount = 0;
+};
+
+/// Explicit NoC link specification for system-level routing.
+struct NoCLinkSpec {
+  std::string source;
+  unsigned sourcePort = 0;
+  std::string dest;
+  unsigned destPort = 0;
+  unsigned widthBits = 0;
+  unsigned latencyCycles = 0;
+  unsigned bandwidth = 0;
+  std::string linkKind;
+};
+
+/// Top-level SHG metadata attached to the wrapper module.
+struct ShgMetadata {
+  std::string shgId;
+  std::string domain;
+  unsigned totalCores = 0;
+  unsigned meshRows = 0;
+  unsigned meshCols = 0;
+  unsigned expressLinkCount = 0;
+  double totalAreaBudgetMm2 = 0.0;
+  double totalAllocatedAreaMm2 = 0.0;
+  bool enabled = false;
 };
 
 /// Network-on-Chip specification.
@@ -104,13 +134,23 @@ public:
 
   /// Instantiate a core of the given type at a grid position.
   SystemCoreInstance instantiateCore(CoreTypeHandle type,
-                                    const std::string &name, int row, int col);
+                                    const std::string &name, int row, int col,
+                                    unsigned coreId = 0,
+                                    const std::string &khgType = "",
+                                    int meshRow = -1, int meshCol = -1,
+                                    unsigned routerPortCount = 0);
+
+  /// Add an explicit NoC link to the SHG.
+  void addNoCLink(const NoCLinkSpec &link);
 
   /// Set NoC configuration for the system.
   void setNoCSpec(const NoCSpec &spec);
 
   /// Set shared memory hierarchy configuration.
   void setSharedMemorySpec(const SharedMemorySpec &spec);
+
+  /// Set top-level SHG metadata for the wrapper module.
+  void setShgMetadata(const ShgMetadata &metadata);
 
   /// Build the system-level fabric.module.
   /// Generates core instances, NoC connectivity, and shared memory.
@@ -129,6 +169,12 @@ public:
 
   /// Query the shared memory specification.
   const SharedMemorySpec &getSharedMemorySpec() const;
+
+  /// Query explicit NoC links.
+  const std::vector<NoCLinkSpec> &getNoCLinks() const;
+
+  /// Query top-level SHG metadata.
+  const ShgMetadata &getShgMetadata() const;
 
 private:
   struct Impl;

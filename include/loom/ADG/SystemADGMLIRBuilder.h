@@ -19,6 +19,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Operation.h"
 
 #include <string>
 #include <vector>
@@ -51,7 +52,9 @@ public:
                               const std::vector<CoreType> &coreTypes,
                               const std::vector<SystemCoreInstance> &instances,
                               const NoCSpec &nocSpec,
-                              const SharedMemorySpec &sharedMemSpec);
+                              const SharedMemorySpec &sharedMemSpec,
+                              const std::vector<NoCLinkSpec> &explicitLinks = {},
+                              const ShgMetadata *metadata = nullptr);
 
 private:
   /// Emit core type fabric.module definitions into the wrapper module.
@@ -69,7 +72,14 @@ private:
                                const std::vector<CoreType> &coreTypes,
                                const std::vector<SystemCoreInstance> &instances,
                                const NoCSpec &nocSpec,
-                               const SharedMemorySpec &sharedMemSpec);
+                               const SharedMemorySpec &sharedMemSpec,
+                               const std::vector<NoCLinkSpec> &explicitLinks,
+                               const ShgMetadata *metadata);
+
+  /// Emit top-level SHG metadata on the wrapper module.
+  static void emitShgMetadata(mlir::OpBuilder &builder,
+                              mlir::Operation *module,
+                              const ShgMetadata &metadata);
 
   /// Emit fabric.router ops for each core position.
   static void emitRouters(mlir::OpBuilder &builder, mlir::Location loc,
@@ -79,6 +89,10 @@ private:
   /// Emit fabric.shared_mem ops for L2 banks and external memory.
   static void emitSharedMemory(mlir::OpBuilder &builder, mlir::Location loc,
                                const SharedMemorySpec &sharedMemSpec);
+
+  /// Emit explicit links that do not follow the base topology.
+  static void emitExplicitLinks(mlir::OpBuilder &builder, mlir::Location loc,
+                                const std::vector<NoCLinkSpec> &links);
 
   /// Emit fabric.noc_link ops for mesh topology.
   static void emitMeshLinks(mlir::OpBuilder &builder, mlir::Location loc,

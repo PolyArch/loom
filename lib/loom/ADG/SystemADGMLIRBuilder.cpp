@@ -18,6 +18,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Operation.h"
 
 #include "llvm/Support/ErrorHandling.h"
 
@@ -27,11 +28,23 @@
 namespace loom {
 namespace adg {
 
+namespace {
+
+void setLinkKind(mlir::Operation *op, mlir::OpBuilder &builder,
+                 llvm::StringRef kind) {
+  if (!kind.empty())
+    op->setAttr("link_kind", builder.getStringAttr(kind));
+}
+
+} // namespace
+
 mlir::ModuleOp SystemADGMLIRBuilder::build(
     mlir::MLIRContext *ctx, const std::string &systemName,
     const std::vector<CoreType> &coreTypes,
     const std::vector<SystemCoreInstance> &instances, const NoCSpec &nocSpec,
-    const SharedMemorySpec &sharedMemSpec) {
+    const SharedMemorySpec &sharedMemSpec,
+    const std::vector<NoCLinkSpec> &explicitLinks,
+    const ShgMetadata *metadata) {
 
   mlir::OpBuilder builder(ctx);
   auto loc = builder.getUnknownLoc();
@@ -40,12 +53,15 @@ mlir::ModuleOp SystemADGMLIRBuilder::build(
   auto wrapper = mlir::ModuleOp::create(loc);
   builder.setInsertionPointToEnd(wrapper.getBody());
 
+  if (metadata && metadata->enabled)
+    emitShgMetadata(builder, wrapper.getOperation(), *metadata);
+
   // Emit per-core fabric.module definitions
   emitCoreTypeDefinitions(builder, wrapper, coreTypes, instances);
 
   // Emit the system-level fabric.module
   emitSystemModule(builder, wrapper, systemName, coreTypes, instances,
-                   nocSpec, sharedMemSpec);
+                   nocSpec, sharedMemSpec, explicitLinks, metadata);
 
   return wrapper;
 }
@@ -82,12 +98,34 @@ void SystemADGMLIRBuilder::emitCoreTypeDefinitions(
   }
 }
 
+void SystemADGMLIRBuilder::emitShgMetadata(mlir::OpBuilder &builder,
+                                           mlir::Operation *module,
+                                           const ShgMetadata &metadata) {
+  if (!metadata.enabled)
+    return;
+
+  module->setAttr("shg_id", builder.getStringAttr(metadata.shgId));
+  module->setAttr("domain", builder.getStringAttr(metadata.domain));
+  module->setAttr("total_cores",
+                  builder.getI64IntegerAttr(metadata.totalCores));
+  module->setAttr("mesh_rows", builder.getI64IntegerAttr(metadata.meshRows));
+  module->setAttr("mesh_cols", builder.getI64IntegerAttr(metadata.meshCols));
+  module->setAttr("express_link_count",
+                  builder.getI64IntegerAttr(metadata.expressLinkCount));
+  module->setAttr("total_area_budget_mm2",
+                  builder.getF64FloatAttr(metadata.totalAreaBudgetMm2));
+  module->setAttr("total_allocated_area_mm2",
+                  builder.getF64FloatAttr(metadata.totalAllocatedAreaMm2));
+}
+
 void SystemADGMLIRBuilder::emitSystemModule(
     mlir::OpBuilder &builder, mlir::ModuleOp wrapper,
     const std::string &systemName,
     const std::vector<CoreType> &coreTypes,
     const std::vector<SystemCoreInstance> &instances,
-    const NoCSpec &nocSpec, const SharedMemorySpec &sharedMemSpec) {
+    const NoCSpec &nocSpec, const SharedMemorySpec &sharedMemSpec,
+    const std::vector<NoCLinkSpec> &explicitLinks,
+    const ShgMetadata *metadata) {
 
   mlir::MLIRContext *ctx = wrapper.getContext();
   auto loc = builder.getUnknownLoc();
@@ -98,6 +136,8 @@ void SystemADGMLIRBuilder::emitSystemModule(
   auto emptyFuncType = mlir::FunctionType::get(ctx, {}, {});
   auto sysModule = fabric::ModuleOp::create(
       builder, loc, systemName, emptyFuncType);
+  if (metadata && metadata->enabled)
+    emitShgMetadata(builder, sysModule.getOperation(), *metadata);
 
   // Ensure the body region has a block (the generated build only adds a
   // region, not a block). Then add a fabric.yield terminator.
@@ -136,6 +176,13 @@ void SystemADGMLIRBuilder::emitSystemModule(
                         builder.getI64IntegerAttr(inst.row));
     instanceOp->setAttr("grid_col",
                         builder.getI64IntegerAttr(inst.col));
+    instanceOp->setAttr("core_id", builder.getI64IntegerAttr(inst.coreId));
+    if (!inst.khgType.empty())
+      instanceOp->setAttr("khg_type", builder.getStringAttr(inst.khgType));
+    instanceOp->setAttr("mesh_row",
+                        builder.getI64IntegerAttr(inst.meshRow));
+    instanceOp->setAttr("mesh_col",
+                        builder.getI64IntegerAttr(inst.meshCol));
   }
 
   // Emit routers
@@ -155,6 +202,26 @@ void SystemADGMLIRBuilder::emitSystemModule(
   case NoCSpec::HIERARCHICAL:
     emitHierarchicalLinks(builder, loc, instances, nocSpec);
     break;
+  }
+
+  emitExplicitLinks(builder, loc, explicitLinks);
+}
+
+void SystemADGMLIRBuilder::emitExplicitLinks(
+    mlir::OpBuilder &builder, mlir::Location loc,
+    const std::vector<NoCLinkSpec> &links) {
+  for (const auto &link : links) {
+    auto op = fabric::NoCLinkOp::create(
+        builder, loc,
+        /*source=*/llvm::StringRef(link.source),
+        /*source_port=*/static_cast<uint64_t>(link.sourcePort),
+        /*dest=*/llvm::StringRef(link.dest),
+        /*dest_port=*/static_cast<uint64_t>(link.destPort),
+        /*width_bits=*/static_cast<uint64_t>(link.widthBits),
+        /*latency_cycles=*/static_cast<uint64_t>(link.latencyCycles),
+        /*bandwidth=*/static_cast<uint64_t>(link.bandwidth));
+    setLinkKind(op, builder, link.linkKind.empty() ? "explicit"
+                                                  : link.linkKind);
   }
 }
 
@@ -184,13 +251,16 @@ void SystemADGMLIRBuilder::emitRouters(
   // Create one router per core instance
   for (size_t i = 0; i < instances.size(); ++i) {
     std::string routerName = "router_" + std::to_string(i);
+    const auto &inst = instances[i];
 
     // Mesh routers typically have 5 ports (N, S, E, W, local)
     uint64_t numPorts = 5;
     if (nocSpec.topology == NoCSpec::RING)
       numPorts = 3; // fwd, rev, local
+    if (inst.routerPortCount != 0)
+      numPorts = inst.routerPortCount;
 
-    fabric::RouterOp::create(
+    auto router = fabric::RouterOp::create(
         builder, loc,
         /*sym_name=*/llvm::StringRef(routerName),
         /*num_ports=*/numPorts,
@@ -200,6 +270,10 @@ void SystemADGMLIRBuilder::emitRouters(
         /*flit_width_bits=*/static_cast<uint64_t>(nocSpec.flitWidth),
         /*routing_strategy=*/routingStrategy,
         /*topology_role=*/topologyRole);
+    if (inst.routerPortCount != 0)
+      router->setAttr("router_kind",
+                      builder.getStringAttr(inst.khgType.empty() ? "express"
+                                                                  : inst.khgType));
   }
 }
 
@@ -244,7 +318,10 @@ void SystemADGMLIRBuilder::emitMeshLinks(
   // Build a lookup: (row, col) -> instance index
   auto findInstanceIdx = [&](int row, int col) -> int {
     for (size_t i = 0; i < instances.size(); ++i) {
-      if (instances[i].row == row && instances[i].col == col)
+      const auto &inst = instances[i];
+      int instRow = inst.meshRow >= 0 ? inst.meshRow : inst.row;
+      int instCol = inst.meshCol >= 0 ? inst.meshCol : inst.col;
+      if (instRow == row && instCol == col)
         return static_cast<int>(i);
     }
     return -1;
@@ -267,17 +344,19 @@ void SystemADGMLIRBuilder::emitMeshLinks(
   for (size_t i = 0; i < instances.size(); ++i) {
     const auto &inst = instances[i];
     std::string srcRouter = "router_" + std::to_string(i);
+    int instRow = inst.meshRow >= 0 ? inst.meshRow : inst.row;
+    int instCol = inst.meshCol >= 0 ? inst.meshCol : inst.col;
 
     for (const auto &dir : dirs) {
-      int nr = inst.row + dir.dr;
-      int nc = inst.col + dir.dc;
+      int nr = instRow + dir.dr;
+      int nc = instCol + dir.dc;
       int neighborIdx = findInstanceIdx(nr, nc);
       if (neighborIdx < 0)
         continue;
 
       std::string dstRouter = "router_" + std::to_string(neighborIdx);
 
-      fabric::NoCLinkOp::create(
+      auto link = fabric::NoCLinkOp::create(
           builder, loc,
           /*source=*/llvm::StringRef(srcRouter),
           /*source_port=*/static_cast<uint64_t>(dir.egressPort),
@@ -287,6 +366,7 @@ void SystemADGMLIRBuilder::emitMeshLinks(
           /*latency_cycles=*/
           static_cast<uint64_t>(nocSpec.routerPipelineStages),
           /*bandwidth=*/static_cast<uint64_t>(nocSpec.linkBandwidth));
+      setLinkKind(link, builder, "mesh");
     }
   }
 }
@@ -306,7 +386,7 @@ void SystemADGMLIRBuilder::emitRingLinks(
     std::string dstRouter = "router_" + std::to_string(next);
 
     // Forward link
-    fabric::NoCLinkOp::create(
+    auto forward = fabric::NoCLinkOp::create(
         builder, loc,
         /*source=*/llvm::StringRef(srcRouter),
         /*source_port=*/static_cast<uint64_t>(0),
@@ -316,9 +396,10 @@ void SystemADGMLIRBuilder::emitRingLinks(
         /*latency_cycles=*/
         static_cast<uint64_t>(nocSpec.routerPipelineStages),
         /*bandwidth=*/static_cast<uint64_t>(nocSpec.linkBandwidth));
+    setLinkKind(forward, builder, "ring");
 
     // Reverse link
-    fabric::NoCLinkOp::create(
+    auto reverse = fabric::NoCLinkOp::create(
         builder, loc,
         /*source=*/llvm::StringRef(dstRouter),
         /*source_port=*/static_cast<uint64_t>(1),
@@ -328,6 +409,7 @@ void SystemADGMLIRBuilder::emitRingLinks(
         /*latency_cycles=*/
         static_cast<uint64_t>(nocSpec.routerPipelineStages),
         /*bandwidth=*/static_cast<uint64_t>(nocSpec.linkBandwidth));
+    setLinkKind(reverse, builder, "ring");
   }
 }
 
@@ -356,7 +438,7 @@ void SystemADGMLIRBuilder::emitHierarchicalLinks(
         std::string routerJ = "router_" + std::to_string(j);
 
         // Bidirectional links within cluster
-        fabric::NoCLinkOp::create(
+        auto forward = fabric::NoCLinkOp::create(
             builder, loc,
             /*source=*/llvm::StringRef(routerI),
             /*source_port=*/static_cast<uint64_t>(0),
@@ -366,8 +448,9 @@ void SystemADGMLIRBuilder::emitHierarchicalLinks(
             /*latency_cycles=*/
             static_cast<uint64_t>(nocSpec.routerPipelineStages),
             /*bandwidth=*/static_cast<uint64_t>(nocSpec.linkBandwidth));
+        setLinkKind(forward, builder, "hierarchical");
 
-        fabric::NoCLinkOp::create(
+        auto reverse = fabric::NoCLinkOp::create(
             builder, loc,
             /*source=*/llvm::StringRef(routerJ),
             /*source_port=*/static_cast<uint64_t>(0),
@@ -377,6 +460,7 @@ void SystemADGMLIRBuilder::emitHierarchicalLinks(
             /*latency_cycles=*/
             static_cast<uint64_t>(nocSpec.routerPipelineStages),
             /*bandwidth=*/static_cast<uint64_t>(nocSpec.linkBandwidth));
+        setLinkKind(reverse, builder, "hierarchical");
       }
     }
   }
@@ -390,7 +474,7 @@ void SystemADGMLIRBuilder::emitHierarchicalLinks(
       std::string srcRouter = "router_" + std::to_string(srcIdx);
       std::string dstRouter = "router_" + std::to_string(dstIdx);
 
-      fabric::NoCLinkOp::create(
+      auto forward = fabric::NoCLinkOp::create(
           builder, loc,
           /*source=*/llvm::StringRef(srcRouter),
           /*source_port=*/static_cast<uint64_t>(0),
@@ -400,6 +484,7 @@ void SystemADGMLIRBuilder::emitHierarchicalLinks(
           /*latency_cycles=*/
           static_cast<uint64_t>(nocSpec.routerPipelineStages),
           /*bandwidth=*/static_cast<uint64_t>(nocSpec.linkBandwidth));
+      setLinkKind(forward, builder, "hierarchical");
     }
   }
 }
