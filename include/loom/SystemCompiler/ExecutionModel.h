@@ -2,8 +2,8 @@
 //
 // Types and functions for the temporal execution model in the Tapestry
 // multi-core compilation pipeline. Defines how kernels are scheduled in time
-// across cores: currently supports BATCH_SEQUENTIAL mode where kernels execute
-// one at a time with reconfiguration gaps.
+// across cores with batch, pipeline-parallel, spatial-parallel, and spatial-
+// sharing modes.
 //
 //===----------------------------------------------------------------------===//
 

@@ -9,6 +9,7 @@
 #include "loom/SystemCompiler/TypeAdapters.h"
 
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/Support/FileSystem.h"
@@ -219,13 +220,19 @@ loadSystemArchJSON(const std::string &archPath, mlir::MLIRContext &ctx) {
     tapestry::CoreTypeSpec spec;
     if (auto n = obj->getString("name"))
       spec.name = n->str();
+    else if (auto n = obj->getString("typeName"))
+      spec.name = n->str();
     if (auto n = obj->getInteger("meshRows"))
       spec.meshRows = static_cast<unsigned>(*n);
     if (auto n = obj->getInteger("meshCols"))
       spec.meshCols = static_cast<unsigned>(*n);
     if (auto n = obj->getInteger("numInstances"))
       spec.numInstances = static_cast<unsigned>(*n);
+    else if (auto n = obj->getInteger("instanceCount"))
+      spec.numInstances = static_cast<unsigned>(*n);
     if (auto n = obj->getInteger("spmSizeBytes"))
+      spec.spmSizeBytes = static_cast<unsigned>(*n);
+    else if (auto n = obj->getInteger("spmBytes"))
       spec.spmSizeBytes = static_cast<unsigned>(*n);
     if (auto b = obj->getBoolean("includeMultiplier"))
       spec.includeMultiplier = *b;
@@ -241,7 +248,8 @@ loadSystemArchJSON(const std::string &archPath, mlir::MLIRContext &ctx) {
 }
 
 /// Extract kernel descriptors from a parsed TDG module.
-/// Looks for nested modules (each representing a kernel).
+/// Looks for nested modules first (each representing a kernel), then falls
+/// back to top-level func.func ops if the TDG is a plain module of kernels.
 std::vector<tapestry::KernelDesc>
 extractKernelsFromTDG(mlir::ModuleOp tdgModule) {
   std::vector<tapestry::KernelDesc> kernels;
@@ -260,7 +268,24 @@ extractKernelsFromTDG(mlir::ModuleOp tdgModule) {
     kernels.push_back(std::move(kd));
   });
 
-  // If no nested modules, treat the top-level module as a single kernel.
+  if (kernels.empty()) {
+    for (auto funcOp : tdgModule.getOps<mlir::func::FuncOp>()) {
+      tapestry::KernelDesc kd;
+      if (auto nameAttr = funcOp.getSymNameAttr())
+        kd.name = nameAttr.str();
+      else
+        kd.name = "kernel_" + std::to_string(kernels.size());
+
+      auto kernelModule = mlir::ModuleOp::create(tdgModule.getLoc());
+      auto clonedFunc = funcOp.clone();
+      kernelModule.getBody()->push_back(clonedFunc.getOperation());
+      kd.dfgModule = kernelModule;
+      kernels.push_back(std::move(kd));
+    }
+  }
+
+  // If no nested modules and no top-level func.func ops, treat the top-level
+  // module as a single kernel.
   if (kernels.empty()) {
     tapestry::KernelDesc kd;
     if (auto nameAttr = tdgModule.getSymNameAttr())

@@ -28,14 +28,19 @@ uint64_t estimateMemOpBytes(llvm::StringRef opName) {
   return 4;
 }
 
-/// Categorize an operation into a resource type for FU counting.
-/// Returns the canonical operation type name.
-std::string categorizeOp(llvm::StringRef opName) {
-  // Strip dialect prefix to get the base op name.
-  auto colonPos = opName.find('.');
-  if (colonPos != llvm::StringRef::npos)
-    return opName.substr(colonPos + 1).str();
-  return opName.str();
+/// Check if an operation should not be counted as a hardware resource.
+bool isNonResourceOp(llvm::StringRef opName) {
+  return opName == "arith.constant" || opName == "arith.index_cast" ||
+         opName == "arith.index_castui" || opName == "handshake.constant" ||
+         opName == "handshake.load" || opName == "handshake.store" ||
+         opName == "handshake.extmemory" || opName == "handshake.source" ||
+         opName == "handshake.sink" || opName == "handshake.join" ||
+         opName == "handshake.mux" || opName == "handshake.cond_br" ||
+         opName == "dataflow.stream" || opName == "dataflow.gate" ||
+         opName == "dataflow.carry" || opName == "dataflow.invariant" ||
+         opName == "scf.for" || opName == "scf.if" ||
+         opName == "scf.yield" || opName == "cf.br" ||
+         opName == "cf.cond_br";
 }
 
 } // namespace
@@ -68,14 +73,16 @@ KernelProfile KernelProfiler::profile(mlir::ModuleOp kernelDFG,
         opName == "cf.cond_br")
       return;
 
-    std::string category = categorizeOp(opName);
-    result.requiredOps[category] += 1;
-    totalOps += 1;
-
     if (isMemoryOp(opName)) {
       memOps += 1;
       estimatedMemBytes += estimateMemOpBytes(opName);
     }
+
+    if (isNonResourceOp(opName))
+      return;
+
+    result.requiredOps[opName.str()] += 1;
+    totalOps += 1;
   });
 
   // Estimate SPM: memory ops times an access granularity estimate.

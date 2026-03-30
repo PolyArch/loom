@@ -83,6 +83,22 @@ class TestRtlGeneration:
                 assert count >= 1, "Should generate at least 1 RTL file"
                 break
 
+    def test_rtlgen_discovers_multiple_kernels(
+        self, tapestry_rtlgen_bin, simple_2kernel_mlir, arch_1core_json, tmp_output_dir
+    ):
+        """Verbose RTL generation should split the TDG into multiple kernels."""
+        result = run_tapestry_tool(
+            tapestry_rtlgen_bin,
+            [
+                "-tdg", str(simple_2kernel_mlir),
+                "-system-arch", str(arch_1core_json),
+                "-o", str(tmp_output_dir),
+                "-verbose",
+            ],
+        )
+        assert_success_output(result, "tapestry-rtlgen")
+        assert "found 2 kernels" in result.stdout
+
     def test_rtlgen_multicore_system(
         self, tapestry_rtlgen_bin, simple_2kernel_mlir, arch_2x2_json, tmp_output_dir
     ):

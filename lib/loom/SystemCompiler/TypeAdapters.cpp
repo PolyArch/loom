@@ -33,10 +33,20 @@ extractFUTypeCounts(mlir::ModuleOp adgModule) {
 
   adgModule.walk([&](mlir::Operation *op) {
     llvm::StringRef opName = op->getName().getStringRef();
-    // Look for PE body operations that represent FU capabilities.
-    // The ADG uses fabric.pe_body containing arith/math operations.
-    if (opName.starts_with("arith.") || opName.starts_with("math.")) {
+    if (opName == "fabric.yield")
+      return;
+
+    // Count concrete resource-bearing operations from FU bodies and memory
+    // instances using the same op-name vocabulary as KernelProfiler.
+    if (opName.starts_with("arith.") || opName.starts_with("math.") ||
+        opName.starts_with("handshake.") || opName.starts_with("dataflow.")) {
       counts[opName.str()]++;
+      return;
+    }
+
+    if (opName == "fabric.extmemory") {
+      counts["handshake.extmemory"]++;
+      return;
     }
   });
 
@@ -51,7 +61,8 @@ static unsigned countPEs(mlir::ModuleOp adgModule) {
   unsigned count = 0;
   adgModule.walk([&](mlir::Operation *op) {
     llvm::StringRef opName = op->getName().getStringRef();
-    if (opName == "fabric.pe" || opName == "fabric.spatial_pe")
+    if (opName == "fabric.pe" || opName == "fabric.spatial_pe" ||
+        opName == "fabric.extmemory")
       ++count;
   });
   return count;

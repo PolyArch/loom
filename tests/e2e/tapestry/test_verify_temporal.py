@@ -142,29 +142,27 @@ class TestBatchSequentialSchedule:
         )
 
 
-class TestUnsupportedModeError:
-    """D4: PIPELINE_PARALLEL and SPATIAL_SHARING modes produce clear errors."""
+class TestTemporalModeDispatch:
+    """D4: PIPELINE_PARALLEL and SPATIAL_SHARING are declared and wired up."""
 
-    def test_unsupported_modes_declared(self):
-        """Unsupported modes should be declared (for future use) but not implemented."""
+    def test_temporal_modes_declared(self):
+        """ExecutionModel.h should declare all supported temporal modes."""
         em_h = REPO_ROOT / "include" / "loom" / "SystemCompiler" / "ExecutionModel.h"
         content = em_h.read_text(encoding="utf-8")
 
-        # Both modes should be declared in the enum
+        assert "BATCH_SEQUENTIAL" in content
         assert "PIPELINE_PARALLEL" in content
+        assert "SPATIAL_PARALLEL" in content
         assert "SPATIAL_SHARING" in content
 
-        # Comments should indicate they are not implemented
-        # (checking for "Not implemented" or similar)
-        has_not_impl = (
-            "Not implemented" in content or
-            "not implemented" in content or
-            "Not supported" in content
-        )
-        assert has_not_impl, (
-            "Expected documentation that PIPELINE_PARALLEL/SPATIAL_SHARING "
-            "are not implemented"
-        )
+    def test_temporal_scheduler_has_mode_specific_entry_points(self):
+        """TemporalScheduler.cpp should define dedicated mode handlers."""
+        ts_cpp = REPO_ROOT / "lib" / "loom" / "SystemCompiler" / "TemporalScheduler.cpp"
+        content = ts_cpp.read_text(encoding="utf-8")
+
+        assert "computePipelineSchedule" in content
+        assert "computeSpatialParallelSchedule" in content
+        assert "computeSpatialSharingSchedule" in content
 
 
 class TestNoCOverhead:

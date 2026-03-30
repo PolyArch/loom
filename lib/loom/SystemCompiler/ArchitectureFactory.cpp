@@ -62,6 +62,71 @@ buildCoreADG(const CoreTypeSpec &spec, mlir::MLIRContext &ctx) {
     fuList.push_back(fuCmpi);
   }
 
+  if (spec.includeMemory) {
+    auto fuConstI32 =
+        builder.defineConstantFU("fu_const_i32_0", "i32", "0 : i32");
+    auto fuConstI32One =
+        builder.defineConstantFU("fu_const_i32_1", "i32", "1 : i32");
+    auto fuConstIndex =
+        builder.defineConstantFU("fu_const_index_0", "index", "0 : index");
+    auto fuConstIndexOne =
+        builder.defineConstantFU("fu_const_index_1", "index", "1 : index");
+    auto fuIndexToI32 =
+        builder.defineIndexCastFU("fu_index_to_i32", "index", "i32");
+    auto fuI32ToIndex =
+        builder.defineIndexCastFU("fu_i32_to_index", "i32", "index");
+    auto fuStream = builder.defineStreamFU("fu_stream");
+    auto fuMuxI32 = builder.defineMuxFU("fu_mux_i32", "i32");
+    auto fuMuxIndex = builder.defineMuxFU("fu_mux_index", "index");
+    auto fuMuxNone = builder.defineMuxFU("fu_mux_none", "none");
+    auto fuJoin = builder.defineJoinFU("fu_join", 4);
+    auto fuGateI32 = builder.defineGateFU("fu_gate_i32", "i32");
+    auto fuGateIndex = builder.defineGateFU("fu_gate_index", "index");
+    auto fuGateI1 = builder.defineGateFU("fu_gate_i1", "i1");
+    auto fuCarryI32 = builder.defineCarryFU("fu_carry_i32", "i32");
+    auto fuCarryIndex = builder.defineCarryFU("fu_carry_index", "index");
+    auto fuCarryNone = builder.defineCarryFU("fu_carry_none", "none");
+    auto fuCondBrI32 = builder.defineCondBrFU("fu_cond_br_i32", "i32");
+    auto fuCondBrIndex = builder.defineCondBrFU("fu_cond_br_index", "index");
+    auto fuCondBrNone = builder.defineCondBrFU("fu_cond_br_none", "none");
+    auto fuInvariantI32 =
+        builder.defineInvariantFU("fu_invariant_i32", "i32");
+    auto fuInvariantIndex =
+        builder.defineInvariantFU("fu_invariant_index", "index");
+    auto fuInvariantI1 = builder.defineInvariantFU("fu_invariant_i1", "i1");
+    auto fuInvariantNone =
+        builder.defineInvariantFU("fu_invariant_none", "none");
+    auto fuLoad = builder.defineLoadFU("fu_load_i32", "index", "i32");
+    auto fuStore = builder.defineStoreFU("fu_store_i32", "index", "i32");
+
+    fuList.push_back(fuConstI32);
+    fuList.push_back(fuConstI32One);
+    fuList.push_back(fuConstIndex);
+    fuList.push_back(fuConstIndexOne);
+    fuList.push_back(fuIndexToI32);
+    fuList.push_back(fuI32ToIndex);
+    fuList.push_back(fuStream);
+    fuList.push_back(fuMuxI32);
+    fuList.push_back(fuMuxIndex);
+    fuList.push_back(fuMuxNone);
+    fuList.push_back(fuJoin);
+    fuList.push_back(fuGateI32);
+    fuList.push_back(fuGateIndex);
+    fuList.push_back(fuGateI1);
+    fuList.push_back(fuCarryI32);
+    fuList.push_back(fuCarryIndex);
+    fuList.push_back(fuCarryNone);
+    fuList.push_back(fuCondBrI32);
+    fuList.push_back(fuCondBrIndex);
+    fuList.push_back(fuCondBrNone);
+    fuList.push_back(fuInvariantI32);
+    fuList.push_back(fuInvariantIndex);
+    fuList.push_back(fuInvariantI1);
+    fuList.push_back(fuInvariantNone);
+    fuList.push_back(fuLoad);
+    fuList.push_back(fuStore);
+  }
+
   // Define PE with all function units
   auto pe = builder.defineSpatialPE(
       spec.name + "_pe",
@@ -70,39 +135,62 @@ buildCoreADG(const CoreTypeSpec &spec, mlir::MLIRContext &ctx) {
       /*bitsWidth=*/dataWidth,
       fuList);
 
-  // Build chessboard mesh topology
-  unsigned topLeftInputs = 3;
-  unsigned bottomRightOutputs = 1;
+  // Build chessboard mesh topology.
+  loom::adg::ChessMeshOptions meshOpts;
+  meshOpts.decomposableBits = -1;
 
   if (spec.includeMemory) {
-    // Extra boundary ports for memory
-    topLeftInputs += 1;
-    bottomRightOutputs += 1;
+    // Reserve a left-side ingress block for extmem outputs and scalar inputs,
+    // and a bottom-side egress block for extmem inputs plus the scalar output.
+    meshOpts.topLeftExtraInputs = 6;
+    meshOpts.bottomLeftExtraOutputs = 3;
+    meshOpts.bottomRightExtraOutputs = 1;
+  } else {
+    meshOpts.topLeftExtraInputs = 3;
+    meshOpts.bottomRightExtraOutputs = 1;
   }
 
-  auto mesh = builder.buildChessMesh(spec.meshRows, spec.meshCols, pe,
-                                     /*decomposableBits=*/-1,
-                                     topLeftInputs,
-                                     bottomRightOutputs);
+  auto mesh = builder.buildChessMesh(
+      spec.meshRows, spec.meshCols,
+      [&](unsigned, unsigned) { return pe; }, meshOpts);
 
   // Add scalar I/O boundary ports
   auto in0 = builder.addScalarInput("in0", dataWidth);
   auto in1 = builder.addScalarInput("in1", dataWidth);
   auto in2 = builder.addScalarInput("in2", dataWidth);
 
-  builder.connectInputToPort(in0, mesh.ingressPorts[0]);
-  builder.connectInputToPort(in1, mesh.ingressPorts[1]);
-  builder.connectInputToPort(in2, mesh.ingressPorts[2]);
-
   auto out0 = builder.addScalarOutput("out0", dataWidth);
-  builder.connectPortToOutput(mesh.egressPorts[0], out0);
+  if (spec.includeMemory) {
+    // External memory uses the first three ingress ports and the first three
+    // left-side egress ports. The scalar input/output is placed after them.
+    auto extMem = builder.defineExtMemory(spec.name + "_extmem", 1, 1);
+    auto extMems = builder.instantiateExtMemArray(1, extMem, "extmem");
+    auto memrefs = builder.addMemrefInputs("buffer", 1, "memref<?xi32>");
+    builder.connectMemrefToExtMem(memrefs[0], extMems[0]);
 
-  if (spec.includeMemory && mesh.ingressPorts.size() > 3 &&
-      mesh.egressPorts.size() > 1) {
-    auto in3 = builder.addScalarInput("in3", dataWidth);
-    builder.connectInputToPort(in3, mesh.ingressPorts[3]);
-    auto out1 = builder.addScalarOutput("out1", dataWidth);
-    builder.connectPortToOutput(mesh.egressPorts[1], out1);
+    builder.connect(extMems[0], 0, mesh.ingressPorts[0].instance,
+                    mesh.ingressPorts[0].port);
+    builder.connect(extMems[0], 1, mesh.ingressPorts[1].instance,
+                    mesh.ingressPorts[1].port);
+    builder.connect(extMems[0], 2, mesh.ingressPorts[2].instance,
+                    mesh.ingressPorts[2].port);
+
+    builder.connect(mesh.egressPorts[0].instance, mesh.egressPorts[0].port,
+                    extMems[0], 1);
+    builder.connect(mesh.egressPorts[1].instance, mesh.egressPorts[1].port,
+                    extMems[0], 2);
+    builder.connect(mesh.egressPorts[2].instance, mesh.egressPorts[2].port,
+                    extMems[0], 3);
+
+    builder.connectInputToPort(in0, mesh.ingressPorts[3]);
+    builder.connectInputToPort(in1, mesh.ingressPorts[4]);
+    builder.connectInputToPort(in2, mesh.ingressPorts[5]);
+    builder.connectPortToOutput(mesh.egressPorts[3], out0);
+  } else {
+    builder.connectInputToPort(in0, mesh.ingressPorts[0]);
+    builder.connectInputToPort(in1, mesh.ingressPorts[1]);
+    builder.connectInputToPort(in2, mesh.ingressPorts[2]);
+    builder.connectPortToOutput(mesh.egressPorts[0], out0);
   }
 
   // Export to temp file
