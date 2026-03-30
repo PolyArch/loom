@@ -77,7 +77,7 @@ std::vector<AblationConfig> buildAblationConfigs() {
 
   // Inner-only: SW-Inner + HW-Inner (inner layers only, outer disabled)
   // SW-Outer disabled, HW-Outer disabled, SW-Inner enabled, HW-Inner enabled
-  configs.push_back({"Inner-only", false, true, true, false});
+  configs.push_back({"Inner-only", false, false, true, true});
 
   // Full-coopt: all layers enabled
   configs.push_back({"Full-coopt", true, true, true, true});

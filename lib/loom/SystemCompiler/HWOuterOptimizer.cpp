@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/SystemCompiler/HWOuterOptimizer.h"
+#include "loom/ADG/KHGGenerator.h"
 #include "loom/ADG/SystemADGBuilder.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -196,20 +197,26 @@ std::string HWOuterOptimizer::generateSystemMLIR(
   memSpec.numBanks = topo.l2BankCount;
   builder.setSharedMemorySpec(memSpec);
 
-  // Register core types and instantiate cores
+  // Register core types and instantiate cores using KHGGenerator for real ADGs
   for (const auto &entry : topo.coreLibrary.entries) {
-    // Generate a placeholder MLIR module name for each core type
     std::string typeName = "core_type_" + std::to_string(entry.typeIndex);
 
-    // Build a minimal placeholder MLIR for each core type
-    // (INNER-HW C12 will replace this with the real ADG)
-    std::string placeholderMLIR =
-        "module @" + typeName + " {}\n";
+    // Try to generate a real ADG from the KHG type ID if available
+    std::string mlirText;
+    if (adg::isValidKHGTypeId(entry.typeId)) {
+      adg::KHGTypeParams khgParams = adg::paramsFromTypeId(entry.typeId);
+      mlirText = adg::generateKHGADG(khgParams);
+    }
 
-    // Parse the placeholder MLIR text into a ModuleOp
+    // Fall back to a minimal ADG if the type ID is not a KHG type or
+    // generation failed
+    if (mlirText.empty())
+      mlirText = "module @" + typeName + " {}\n";
+
+    // Parse the MLIR text into a ModuleOp
     llvm::SourceMgr srcMgr;
     srcMgr.AddNewSourceBuffer(
-        llvm::MemoryBuffer::getMemBuffer(placeholderMLIR), llvm::SMLoc());
+        llvm::MemoryBuffer::getMemBuffer(mlirText), llvm::SMLoc());
     auto parsedModule = mlir::parseSourceFile<mlir::ModuleOp>(srcMgr, ctx);
     if (!parsedModule)
       continue;
@@ -366,9 +373,12 @@ bool HWOuterOptimizer::parseTopologyJSON(const std::string &jsonPath,
       outSpec.l2BankCount = static_cast<unsigned>(*banks);
   }
 
-  // Parse core library directly from the nested object
+  // Parse core library: accept both the object form ({"core_types": [...]})
+  // and the flat array form that Python system_graph_generator outputs.
   if (auto *lib = root->getObject("core_library")) {
     parseCoreLibraryFromObject(lib, outSpec.coreLibrary);
+  } else if (auto *libArr = root->getArray("core_library")) {
+    parseCoreLibraryFromArray(libArr, outSpec.coreLibrary);
   }
 
   // Parse core placements
@@ -459,6 +469,68 @@ bool HWOuterOptimizer::parseCoreLibraryFromObject(
   }
 
   return true;
+}
+
+bool HWOuterOptimizer::parseCoreLibraryFromArray(
+    const llvm::json::Array *libArr, CoreTypeLibrary &outLibrary) {
+  if (!libArr)
+    return false;
+
+  outLibrary.entries.clear();
+  for (const auto &tVal : *libArr) {
+    auto *tObj = tVal.getAsObject();
+    if (!tObj)
+      continue;
+
+    CoreTypeLibraryEntry entry;
+    if (auto idx = tObj->getInteger("type_index"))
+      entry.typeIndex = static_cast<unsigned>(*idx);
+    if (auto id = tObj->getString("type_id"))
+      entry.typeId = id->str();
+    if (auto role = tObj->getString("role"))
+      entry.role = coreRoleFromString(role->str());
+    if (auto count = tObj->getInteger("instance_count"))
+      entry.instanceCount = static_cast<unsigned>(*count);
+    if (auto pes = tObj->getInteger("min_pes"))
+      entry.minPEs = static_cast<unsigned>(*pes);
+    if (auto spm = tObj->getInteger("min_spm_kb"))
+      entry.minSPMKB = static_cast<unsigned>(*spm);
+
+    // Parse combinatorial dimensions
+    if (auto cm = tObj->getString("compute_mix")) {
+      std::string cmStr = cm->str();
+      if (cmStr == "fp_mix")
+        entry.computeMix = ComputeMix::FP_MIX;
+      else if (cmStr == "mem_mix")
+        entry.computeMix = ComputeMix::MEM_MIX;
+      else
+        entry.computeMix = ComputeMix::INT_MIX;
+    }
+    if (auto spm = tObj->getBoolean("has_spm"))
+      entry.hasSPM = *spm;
+    if (auto sz = tObj->getString("array_size")) {
+      entry.arraySize =
+          (sz->str() == "large") ? ArraySize::LARGE : ArraySize::SMALL;
+    }
+
+    if (auto *fuTypes = tObj->getArray("required_fu_types")) {
+      for (const auto &fuVal : *fuTypes) {
+        if (auto fuStr = fuVal.getAsString())
+          entry.requiredFUTypes.push_back(fuStr->str());
+      }
+    }
+
+    if (auto *kernels = tObj->getArray("assigned_kernels")) {
+      for (const auto &kVal : *kernels) {
+        if (auto kStr = kVal.getAsString())
+          entry.assignedKernels.push_back(kStr->str());
+      }
+    }
+
+    outLibrary.entries.push_back(std::move(entry));
+  }
+
+  return !outLibrary.entries.empty();
 }
 
 } // namespace loom

@@ -196,7 +196,8 @@ verifyStatic(const std::vector<TDCEdgeSpec> &edgeSpecs,
              const std::vector<TDCEdgeSpecOrigin> &origins,
              const BufferAllocationPlan &bufferPlan,
              const std::vector<EdgeTileDimensions> &tileDims,
-             const std::vector<EdgeSchedulingSlot> &schedSlots);
+             const std::vector<EdgeSchedulingSlot> &schedSlots,
+             const std::map<std::string, int64_t> &params = {});
 
 //===----------------------------------------------------------------------===//
 // Dynamic verification

@@ -376,6 +376,7 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
       tapestry::CompilerConfig compilerConfig;
       compilerConfig.maxIterations = config.bendersOpts.maxIterations;
       compilerConfig.verbose = config.bendersOpts.verbose || config.verbose;
+      compilerConfig.executionModel = config.executionModel;
 
       tapestry::HierarchicalCompiler compiler(tapArch, std::move(kernels),
                                               std::move(contracts), context);
@@ -400,13 +401,18 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
 
       result.compilationResult = pipeCompResult;
 
-      // Compute temporal schedule after compilation.
-      TemporalSchedule schedule;
-      schedule.mode = config.executionModel.mode;
-      schedule.systemLatencyCycles = 0;
-      schedule.maxCoreCycles = 0;
-      schedule.nocOverheadCycles = 0;
-      result.temporalSchedule = schedule;
+      // Use the temporal schedule from compilation result if available,
+      // otherwise build a minimal schedule from the execution model config.
+      if (compResult.temporalSchedule.has_value()) {
+        result.temporalSchedule = compResult.temporalSchedule.value();
+      } else {
+        TemporalSchedule schedule;
+        schedule.mode = config.executionModel.mode;
+        schedule.systemLatencyCycles = 0;
+        schedule.maxCoreCycles = 0;
+        schedule.nocOverheadCycles = 0;
+        result.temporalSchedule = schedule;
+      }
 
       if (config.verbose) {
         llvm::outs() << "TapestryPipeline: temporal scheduling ("

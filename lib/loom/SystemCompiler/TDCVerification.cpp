@@ -282,7 +282,8 @@ verifyStatic(const std::vector<TDCEdgeSpec> &edgeSpecs,
              const std::vector<TDCEdgeSpecOrigin> &origins,
              const BufferAllocationPlan &bufferPlan,
              const std::vector<EdgeTileDimensions> &tileDims,
-             const std::vector<EdgeSchedulingSlot> &schedSlots) {
+             const std::vector<EdgeSchedulingSlot> &schedSlots,
+             const std::map<std::string, int64_t> &params) {
   TDCVerificationReport report;
 
   for (size_t iter_var0 = 0; iter_var0 < edgeSpecs.size(); ++iter_var0) {
@@ -328,13 +329,11 @@ verifyStatic(const std::vector<TDCEdgeSpec> &edgeSpecs,
       if (td) {
         // Parse the specified shape to get concrete dimensions
         auto specDimStrings = parseShapeExpr(*spec.shape);
-        // We need to resolve these to concrete values for comparison.
-        // Use evaluateSymbolicExpr with empty params for concrete shapes.
-        std::map<std::string, int64_t> emptyParams;
+        // Resolve symbolic dimension expressions using the provided params.
         std::vector<int64_t> specDims;
         bool parseOk = true;
         for (const auto &ds : specDimStrings) {
-          auto evalResult = evaluateSymbolicExpr(ds, emptyParams);
+          auto evalResult = evaluateSymbolicExpr(ds, params);
           if (evalResult.ok()) {
             specDims.push_back(*evalResult.value);
           } else {
@@ -533,9 +532,9 @@ verifyContracts(
     const std::optional<std::vector<DynamicPathMetrics>> &pathMetrics,
     const std::map<std::string, int64_t> &params) {
 
-  // Always run static verification
+  // Always run static verification, forwarding params for symbolic shape eval
   TDCVerificationReport report =
-      verifyStatic(edgeSpecs, origins, bufferPlan, tileDims, schedSlots);
+      verifyStatic(edgeSpecs, origins, bufferPlan, tileDims, schedSlots, params);
 
   // Run dynamic verification when metrics are provided
   if (edgeMetrics.has_value() || pathMetrics.has_value()) {

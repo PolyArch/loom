@@ -178,7 +178,7 @@ static void testConfigDisablesLayers() {
   }
 
   // Inner-only: SW-Inner + HW-Inner (no SW-Outer, no HW-Outer)
-  // config: enableSW=false, enableHW=true, enableSWInner=true, enableHWInner=false
+  // config: enableSW=false, enableHW=false, enableSWInner=true, enableHWInner=true
   {
     tco::CoOptOptions opts = templateOpts;
     tco::applyAblationConfig(opts, configs[4]);
@@ -187,10 +187,10 @@ static void testConfigDisablesLayers() {
           "Inner-only: SW-Outer disabled (maxIterations == 0)");
     check(opts.swOpts.compilerConfig.maxIterations > 1,
           "Inner-only: SW-Inner enabled (benders maxIter > 1)");
-    check(opts.hwOuterOpts.maxIterations > 0,
-          "Inner-only: HW-Outer enabled via enableHW=true");
-    check(opts.hwInnerOpts.maxInnerIter == 0,
-          "Inner-only: HW-Inner disabled (maxInnerIter == 0)");
+    check(opts.hwOuterOpts.maxIterations == 0,
+          "Inner-only: HW-Outer disabled (maxIterations == 0)");
+    check(opts.hwInnerOpts.maxInnerIter > 0,
+          "Inner-only: HW-Inner enabled (maxInnerIter > 0)");
   }
 
   // Full-coopt: all enabled

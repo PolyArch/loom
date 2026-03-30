@@ -4,6 +4,7 @@ add_library(LoomADG
   ADGBuilderViz.cpp
   ADGBuilderTopology.cpp
   ADGBuilderNoCPorts.cpp
+  KHGGenerator.cpp
   SystemADGBuilder.cpp
   SystemADGMLIRBuilder.cpp
   ADGVerifier.cpp

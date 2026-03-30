@@ -27,6 +27,7 @@
 
 namespace llvm {
 namespace json {
+class Array;
 class Object;
 } // namespace json
 } // namespace llvm
@@ -239,9 +240,13 @@ private:
   bool parseTopologyJSON(const std::string &jsonPath,
                          SystemTopologySpec &outSpec);
 
-  /// Parse a CoreTypeLibrary from a JSON object pointer.
+  /// Parse a CoreTypeLibrary from a JSON object with a "core_types" key.
   bool parseCoreLibraryFromObject(const llvm::json::Object *libObj,
                                   CoreTypeLibrary &outLibrary);
+
+  /// Parse a CoreTypeLibrary from a flat JSON array (Python output format).
+  bool parseCoreLibraryFromArray(const llvm::json::Array *libArr,
+                                 CoreTypeLibrary &outLibrary);
 };
 
 } // namespace loom
