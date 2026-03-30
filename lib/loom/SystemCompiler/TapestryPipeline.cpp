@@ -1,7 +1,6 @@
 #include "loom/SystemCompiler/TapestryPipeline.h"
 #include "loom/ContractInference/ContractInference.h"
 #include "loom/Dialect/TDG/TDGOps.h"
-#include "loom/SVGen/MultiCoreSVGen.h"
 #include "loom/SystemCompiler/ArchitectureFactory.h"
 #include "loom/SystemCompiler/ExecutionModel.h"
 #include "loom/SystemCompiler/PrecompiledKernelLoader.h"
@@ -329,7 +328,8 @@ static uint64_t computeElementCountFromTileShape(
 }
 
 /// Extract inter-kernel contracts from tdg.contract ops in the TDG module.
-/// Walks tdg.graph -> tdg.contract ops to read real contract data.
+/// Walks tdg.graph -> tdg.contract ops to read real contract data, including
+/// all 4 TDC edge dimensions: ordering, throughput, placement, tile_shape.
 std::vector<tapestry::ContractSpec>
 extractContractsFromTDG(mlir::ModuleOp tdgModule,
                         const std::vector<tapestry::KernelDesc> &kernels) {
@@ -355,11 +355,73 @@ extractContractsFromTDG(mlir::ModuleOp tdgModule,
       uint64_t elemBytes = elementSizeBytes(contractOp.getDataType());
       contract.bandwidthBytesPerCycle = elemBytes > 0 ? elemBytes : 1;
 
+      // Extract all 4 TDC edge dimensions when present on the op.
+      if (auto ordAttr = contractOp.getOrdering())
+        contract.ordering = ordAttr->str();
+      if (auto thrAttr = contractOp.getThroughput())
+        contract.throughput = thrAttr->str();
+      if (auto plcAttr = contractOp.getPlacement())
+        contract.placement = plcAttr->str();
+      if (tileShapeStr)
+        contract.tileShape = tileShapeStr->str();
+
       contracts.push_back(contract);
     });
   });
 
   return contracts;
+}
+
+/// Extract path contracts from tdg.path_contract ops in the TDG module.
+/// Walks tdg.graph -> tdg.path_contract ops and converts them to TDCPathSpec.
+/// The start_edge / end_edge references are symbolic names that encode the
+/// producer->consumer pair in the format "producer_to_consumer".
+std::vector<loom::TDCPathSpec>
+extractPathContractsFromTDG(mlir::ModuleOp tdgModule) {
+  std::vector<loom::TDCPathSpec> paths;
+
+  tdgModule.walk([&](loom::tdg::GraphOp graphOp) {
+    // Build a map from edge symbolic names to (producer, consumer) pairs.
+    // Edge names follow the convention "producer_to_consumer" unless a
+    // contract defines a different symbolic name.
+    std::map<std::string, std::pair<std::string, std::string>> edgeNameMap;
+    graphOp.walk([&](loom::tdg::ContractOp contractOp) {
+      std::string producer = contractOp.getProducer().str();
+      std::string consumer = contractOp.getConsumer().str();
+      std::string edgeName = producer + "_to_" + consumer;
+      edgeNameMap[edgeName] = {producer, consumer};
+      // Also register by just producer name as a fallback.
+      edgeNameMap[producer] = {producer, consumer};
+    });
+
+    graphOp.walk([&](loom::tdg::PathContractOp pathOp) {
+      loom::TDCPathSpec spec;
+      std::string startEdgeName = pathOp.getStartEdge().str();
+      std::string endEdgeName = pathOp.getEndEdge().str();
+
+      auto startIt = edgeNameMap.find(startEdgeName);
+      if (startIt != edgeNameMap.end()) {
+        spec.startProducer = startIt->second.first;
+        spec.startConsumer = startIt->second.second;
+      } else {
+        // Fallback: use the edge name directly as producer with empty consumer.
+        spec.startProducer = startEdgeName;
+      }
+
+      auto endIt = edgeNameMap.find(endEdgeName);
+      if (endIt != edgeNameMap.end()) {
+        spec.endProducer = endIt->second.first;
+        spec.endConsumer = endIt->second.second;
+      } else {
+        spec.endProducer = endEdgeName;
+      }
+
+      spec.latency = pathOp.getLatency().str();
+      paths.push_back(std::move(spec));
+    });
+  });
+
+  return paths;
 }
 
 } // anonymous namespace
@@ -370,11 +432,6 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
   result.reportPath = config.outputDir + "/report.json";
 
   auto compileStart = std::chrono::steady_clock::now();
-
-  // State that persists across pipeline stages so that SIMULATE and RTLGEN
-  // can consume the outputs produced by COMPILE.
-  std::optional<tapestry::CompilationResult> internalCompResult;
-  std::vector<tapestry::ContractSpec> savedContracts;
 
   for (auto stage : config.stages) {
     switch (stage) {
@@ -444,8 +501,8 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
                      << " contracts\n";
 
       // Save contract metadata before moving into the compiler, since
-      // we need them later for TDC verification evidence and simulation.
-      savedContracts = contracts;
+      // we need them later for TDC verification evidence.
+      std::vector<tapestry::ContractSpec> savedContracts = contracts;
 
       // Configure and run HierarchicalCompiler.
       tapestry::CompilerConfig compilerConfig;
@@ -502,20 +559,27 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
         return result;
       }
 
-      // Preserve the full internal compilation result for downstream stages.
-      internalCompResult = std::move(compResult);
-
       // Run TDC contract verification on the compilation results.
       {
-        const auto &compRef = internalCompResult.value();
-
-        // Build TDCEdgeSpecs from the saved contracts.
+        // Build TDCEdgeSpecs from the saved contracts, populating all
+        // 4 TDC edge dimensions (ordering, throughput, placement, shape)
+        // when they were present on the original tdg.contract ops.
         std::vector<loom::TDCEdgeSpec> verifyEdges;
         for (const auto &c : savedContracts) {
           loom::TDCEdgeSpec es;
           es.producerKernel = c.producerKernel;
           es.consumerKernel = c.consumerKernel;
           es.dataTypeName = c.dataType;
+
+          if (c.ordering)
+            es.ordering = loom::orderingFromString(*c.ordering);
+          if (c.throughput)
+            es.throughput = *c.throughput;
+          if (c.placement)
+            es.placement = loom::placementFromString(*c.placement);
+          if (c.tileShape)
+            es.shape = *c.tileShape;
+
           verifyEdges.push_back(std::move(es));
         }
 
@@ -524,8 +588,8 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
 
         // Assemble available compile-time outputs for static verification.
         loom::BufferAllocationPlan verifyBufPlan;
-        if (compRef.bufferPlan.has_value())
-          verifyBufPlan = compRef.bufferPlan.value();
+        if (compResult.bufferPlan.has_value())
+          verifyBufPlan = compResult.bufferPlan.value();
 
         // Extract real tile dimensions from L2 compilation results.
         // Each contract's elementCount represents the tile size produced by
@@ -543,8 +607,8 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
         // For each contract edge, find producer and consumer kernel timings
         // and build completion/start time vectors.
         std::vector<loom::EdgeSchedulingSlot> verifySchedSlots;
-        if (compRef.temporalSchedule.has_value()) {
-          const auto &tempSched = compRef.temporalSchedule.value();
+        if (compResult.temporalSchedule.has_value()) {
+          const auto &tempSched = compResult.temporalSchedule.value();
 
           // Build kernel-name -> timing lookup from the temporal schedule.
           std::map<std::string, loom::KernelTiming> timingMap;
@@ -578,7 +642,9 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
           }
         }
 
-        std::vector<loom::TDCPathSpec> verifyPaths;
+        // Extract path contracts from tdg.path_contract ops if present.
+        std::vector<loom::TDCPathSpec> verifyPaths =
+            extractPathContractsFromTDG(*tdgModule);
         std::map<std::string, int64_t> verifyParams;
 
         loom::TDCVerificationReport verifyReport =
@@ -620,215 +686,26 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
       break;
     }
     case PipelineStage::SIMULATE: {
-      // The SIMULATE stage uses MultiCoreSimSession to estimate system-level
-      // latency from the compilation result's temporal schedule and contracts.
-      if (!internalCompResult.has_value() ||
-          !result.temporalSchedule.has_value()) {
-        result.success = false;
-        result.diagnostics =
-            "SIMULATE stage requires a preceding COMPILE stage";
-        return result;
-      }
-
-      const auto &tempSched = result.temporalSchedule.value();
-      const auto &compRef = internalCompResult.value();
-
-      if (config.verbose)
-        llvm::outs() << "TapestryPipeline: running multi-core simulation\n";
-
-      // Build kernel-name -> (coreInstanceIndex, timing) mapping.
-      std::map<std::string, unsigned> kernelToCoreInstance;
-      std::map<std::string, KernelTiming> kernelTimingMap;
-      for (const auto &cs : tempSched.coreSchedules) {
-        for (size_t ki = 0; ki < cs.kernelOrder.size(); ++ki) {
-          // Derive core instance index from the assignment list.
-          for (const auto &assign : compRef.assignments) {
-            if (assign.kernelName == cs.kernelOrder[ki] &&
-                assign.coreInstanceIndex >= 0) {
-              kernelToCoreInstance[cs.kernelOrder[ki]] =
-                  static_cast<unsigned>(assign.coreInstanceIndex);
-              break;
-            }
-          }
-          if (ki < cs.kernelTimings.size())
-            kernelTimingMap[cs.kernelOrder[ki]] = cs.kernelTimings[ki];
-        }
-      }
-
-      // Determine total core count from assignments.
-      unsigned maxCoreId = 0;
-      for (const auto &assign : compRef.assignments) {
-        if (assign.coreInstanceIndex >= 0)
-          maxCoreId = std::max(maxCoreId,
-                               static_cast<unsigned>(assign.coreInstanceIndex));
-      }
-
-      mcsim::MultiCoreSimConfig simCfg;
-      simCfg.maxCores = maxCoreId + 1;
-
-      mcsim::MultiCoreSimSession sim(simCfg);
-
-      // Add kernels to the simulator from the temporal schedule.
-      for (const auto &cs : tempSched.coreSchedules) {
-        for (size_t ki = 0; ki < cs.kernelOrder.size(); ++ki) {
-          const std::string &kernelName = cs.kernelOrder[ki];
-
-          mcsim::KernelDescriptor kd;
-          kd.name = kernelName;
-
-          auto coreIt = kernelToCoreInstance.find(kernelName);
-          kd.coreId = (coreIt != kernelToCoreInstance.end())
-                          ? coreIt->second : 0;
-
-          auto timingIt = kernelTimingMap.find(kernelName);
-          if (timingIt != kernelTimingMap.end())
-            kd.estimatedCycles = timingIt->second.executionCycles;
-
-          // Estimate output bytes from contracts where this kernel is producer.
-          for (const auto &c : savedContracts) {
-            if (c.producerKernel == kernelName)
-              kd.outputBytes += c.elementCount * c.bandwidthBytesPerCycle;
-          }
-
-          // Allow interleaved NoC injection at 75% of kernel execution.
-          if (kd.estimatedCycles > 0)
-            kd.outputReadyCycleOffset = (kd.estimatedCycles * 3) / 4;
-
-          sim.addKernel(kd);
-        }
-      }
-
-      // Track per-core kernel index for NoC transfer descriptors.
-      std::map<std::string, unsigned> kernelIndexOnCore;
-      {
-        std::map<unsigned, unsigned> coreKernelCount;
-        for (const auto &cs : tempSched.coreSchedules) {
-          for (const auto &kernelName : cs.kernelOrder) {
-            auto coreIt = kernelToCoreInstance.find(kernelName);
-            unsigned coreId = (coreIt != kernelToCoreInstance.end())
-                                  ? coreIt->second : 0;
-            kernelIndexOnCore[kernelName] = coreKernelCount[coreId]++;
-          }
-        }
-      }
-
-      // Add NoC transfers for cross-core contract edges.
-      for (const auto &c : savedContracts) {
-        auto srcIt = kernelToCoreInstance.find(c.producerKernel);
-        auto dstIt = kernelToCoreInstance.find(c.consumerKernel);
-        if (srcIt == kernelToCoreInstance.end() ||
-            dstIt == kernelToCoreInstance.end())
-          continue;
-        if (srcIt->second == dstIt->second)
-          continue; // Intra-core: no NoC transfer needed.
-
-        mcsim::NocTransferDescriptor td;
-        td.srcCoreId = srcIt->second;
-        td.dstCoreId = dstIt->second;
-        td.bytes = c.elementCount * c.bandwidthBytesPerCycle;
-        td.srcKernelIndex = kernelIndexOnCore[c.producerKernel];
-        sim.addNocTransfer(td);
-      }
-
-      mcsim::MultiCoreSimResult simRes = sim.run();
-
-      // Translate into the pipeline result structure.
-      PipelineSimResult pipeSimResult;
-      pipeSimResult.totalGlobalCycles = simRes.totalCycles;
-
-      uint64_t totalFlits = 0;
-      for (const auto &tr : simRes.nocTransferResults)
-        totalFlits += tr.bytes;
-      pipeSimResult.nocStats.totalFlitsTransferred = totalFlits;
-
-      for (const auto &kr : simRes.kernelResults) {
-        PipelineCoreSimResult pcsr;
-        pcsr.coreId = kr.coreId;
-        pcsr.cycles = kr.cycles;
-        pcsr.completed = true;
-        pipeSimResult.coreResults.push_back(pcsr);
-      }
-
-      result.simResult = pipeSimResult;
-
-      if (config.verbose) {
-        llvm::outs() << "TapestryPipeline: simulation complete, "
-                     << simRes.totalCycles << " total cycles, "
-                     << simRes.kernelResults.size() << " kernels, "
-                     << totalFlits << " NoC bytes transferred\n";
-      }
-
-      if (!simRes.success) {
-        result.success = false;
-        result.diagnostics = "multi-core simulation failed: " +
-                             simRes.errorMessage;
-        return result;
-      }
-
-      break;
+      // By design: the SIMULATE stage requires external simulation tools
+      // (MultiCoreSimSession) that are not part of the config-driven
+      // pipeline. Return failure with diagnostic guidance so callers know
+      // to use the task-based API or invoke the simulator directly.
+      result.success = false;
+      result.diagnostics =
+          "SIMULATE stage is not yet integrated into the config-driven "
+          "pipeline; use the syscomp::TapestryPipeline (task-based API) or "
+          "run MultiCoreSimSession directly";
+      return result;
     }
     case PipelineStage::RTLGEN: {
-      // The RTLGEN stage uses MultiCoreSVGen to produce system-level
-      // SystemVerilog from the compilation result.
-      if (!internalCompResult.has_value()) {
-        result.success = false;
-        result.diagnostics =
-            "RTLGEN stage requires a preceding COMPILE stage";
-        return result;
-      }
-
-      const auto &compRef = internalCompResult.value();
-
-      if (config.verbose)
-        llvm::outs() << "TapestryPipeline: generating multi-core RTL\n";
-
-      // Build the MultiCoreCompilationDesc from the internal compilation
-      // result's assignments and ADG modules.
-      svgen::MultiCoreCompilationDesc svCompilation;
-      svCompilation.success = compRef.success;
-
-      for (const auto &assign : compRef.assignments) {
-        svgen::MultiCoreCoreDesc coreDesc;
-        coreDesc.coreInstanceName = assign.kernelName;
-        coreDesc.coreType = assign.kernelName; // Use kernel name as type
-        coreDesc.adgModule = assign.coreADG;
-        // Config blobs are not available from the L2Assignment (tapestry
-        // namespace); leave empty -- SVGen will generate without them.
-        svCompilation.coreDescs.push_back(std::move(coreDesc));
-      }
-
-      svgen::MultiCoreSVGenOptions svOpts;
-      svOpts.outputDir = config.outputDir + "/rtl";
-      svOpts.rtlSourceDir = config.rtlSourceDir;
-      svOpts.fpIpProfile = config.svgenOpts.fpIpProfile;
-      if (config.svgenOpts.meshRows > 0)
-        svOpts.meshRows = config.svgenOpts.meshRows;
-      if (config.svgenOpts.meshCols > 0)
-        svOpts.meshCols = config.svgenOpts.meshCols;
-
-      svgen::MultiCoreSVGenResult svResult =
-          svgen::generateMultiCoreSV(svCompilation, svOpts, &context);
-
-      // Translate into the pipeline result structure.
-      PipelineRTLResult pipeRtlResult;
-      pipeRtlResult.systemTopFile = svResult.systemTopFile;
-      pipeRtlResult.allGeneratedFiles = svResult.allGeneratedFiles;
-      result.rtlResult = pipeRtlResult;
-
-      if (config.verbose) {
-        llvm::outs() << "TapestryPipeline: RTL generation "
-                     << (svResult.success ? "succeeded" : "failed")
-                     << ", " << svResult.allGeneratedFiles.size()
-                     << " files generated\n";
-      }
-
-      if (!svResult.success) {
-        result.success = false;
-        result.diagnostics = "RTL generation failed";
-        return result;
-      }
-
-      break;
+      // By design: RTL generation depends on external EDA tooling that
+      // cannot be invoked from within the config-driven pipeline. Return
+      // failure with diagnostic guidance for the caller.
+      result.success = false;
+      result.diagnostics =
+          "RTLGEN stage is not yet integrated into the config-driven "
+          "pipeline; run the RTL generator directly on compilation output";
+      return result;
     }
     }
   }

@@ -64,6 +64,12 @@ struct ContractSpec {
 
   /// Communication cost computed from assignment.
   double communicationCost = 0.0;
+
+  // --- TDC edge dimensions extracted from tdg.contract ops ---
+  std::optional<std::string> ordering;    ///< e.g. "FIFO", "UNORDERED"
+  std::optional<std::string> throughput;  ///< Symbolic throughput expression
+  std::optional<std::string> placement;   ///< e.g. "LOCAL_SPM", "SHARED_L2"
+  std::optional<std::string> tileShape;   ///< Symbolic shape e.g. "[128, 256]"
 };
 
 /// A kernel descriptor for the multi-core pipeline.
