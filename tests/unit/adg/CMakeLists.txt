@@ -30,3 +30,36 @@ target_link_libraries(system-adg-builder-test PRIVATE
 set_target_properties(system-adg-builder-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
+
+# DomainADGGenerator unit tests
+
+add_executable(domain-adg-generator-test DomainADGGeneratorTest.cpp)
+
+target_include_directories(domain-adg-generator-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+  ${CMAKE_BINARY_DIR}/include
+)
+
+llvm_map_components_to_libnames(DOMAIN_ADG_TEST_LLVM_LIBS core support)
+
+target_link_libraries(domain-adg-generator-test PRIVATE
+  LoomADG
+  LoomFabric
+  LoomDataflow
+
+  CIRCTHandshake
+
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  MLIRArithDialect
+  MLIRMathDialect
+  MLIRMemRefDialect
+  MLIRFuncDialect
+
+  ${DOMAIN_ADG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(domain-adg-generator-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)

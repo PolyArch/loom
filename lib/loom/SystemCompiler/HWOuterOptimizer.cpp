@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/SystemCompiler/HWOuterOptimizer.h"
+#include "loom/ADG/DomainADGGenerator.h"
 #include "loom/ADG/KHGGenerator.h"
 #include "loom/ADG/SystemADGBuilder.h"
 
@@ -201,15 +202,19 @@ std::string HWOuterOptimizer::generateSystemMLIR(
   for (const auto &entry : topo.coreLibrary.entries) {
     std::string typeName = "core_type_" + std::to_string(entry.typeIndex);
 
-    // Try to generate a real ADG from the KHG type ID if available
+    // Try to generate a real ADG from the type ID. First check KHG types
+    // (combinatorial), then domain-specific types (D1-D6).
     std::string mlirText;
     if (adg::isValidKHGTypeId(entry.typeId)) {
       adg::KHGTypeParams khgParams = adg::paramsFromTypeId(entry.typeId);
       mlirText = adg::generateKHGADG(khgParams);
+    } else if (adg::isValidDomainTypeId(entry.typeId)) {
+      adg::DomainTypeParams domainParams =
+          adg::domainParamsFromTypeId(entry.typeId);
+      mlirText = adg::generateDomainADG(domainParams);
     }
 
-    // Fall back to a minimal ADG if the type ID is not a KHG type or
-    // generation failed
+    // Fall back to a minimal ADG only if the type ID is unrecognized
     if (mlirText.empty())
       mlirText = "module @" + typeName + " {}\n";
 
