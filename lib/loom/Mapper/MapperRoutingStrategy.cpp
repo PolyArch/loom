@@ -59,8 +59,11 @@ bool isBoundarySinkNode(const Node *node) {
     return true;
   if (node->kind != Node::OperationNode)
     return false;
-  return routing_detail::isSoftwareMemoryInterfaceOpName(
-      getNodeAttrStr(node, "op_name"));
+  llvm::StringRef opName = getNodeAttrStr(node, "op_name");
+  return routing_detail::isSoftwareMemoryInterfaceOpName(opName) ||
+         opName == "dataflow.gate" || opName == "dataflow.carry" ||
+         opName == "handshake.cond_br" || opName == "handshake.join" ||
+         opName == "handshake.mux";
 }
 
 void collectUnroutedSinkEdgesForNode(
@@ -170,7 +173,11 @@ unsigned getRoutingPriority(IdIndex edgeId, const Graph &dfg,
 
   if (routing_detail::isSoftwareMemoryInterfaceOpName(dstOp))
     return opts.routing.priority.memorySink;
-  if (dstNode && dstNode->kind == Node::ModuleOutputNode)
+  if (dstNode &&
+      (dstNode->kind == Node::ModuleOutputNode || dstNode->kind == Node::OperationNode &&
+           (dstOp == "dataflow.gate" || dstOp == "dataflow.carry" ||
+            dstOp == "handshake.cond_br" || dstOp == "handshake.join" ||
+            dstOp == "handshake.mux")))
     return opts.routing.priority.moduleOutput;
   if (srcOp == "handshake.load" || srcOp == "handshake.store")
     return opts.routing.priority.loadStoreSource;
@@ -487,8 +494,8 @@ bool Mapper::routeOnePass(MappingState &state, const Graph &dfg,
             ? dstSwPortPtr->parentNode
             : INVALID_ID;
 
-    if (dstSwNodeId != INVALID_ID &&
-        dstSwNode && dstSwNode->kind == Node::ModuleOutputNode &&
+    if (dstSwNodeId != INVALID_ID && dstSwNode &&
+        isBoundarySinkNode(dstSwNode) &&
         !processedSinkNodes.contains(dstSwNodeId)) {
       llvm::SmallVector<IdIndex, 8> outputEdges;
       collectUnroutedSinkEdgesForNode(dstSwNodeId, edgeOrder, state, dfg,

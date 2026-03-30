@@ -1,4 +1,5 @@
 #include "MapperInternal.h"
+#include "MapperRoutingInternal.h"
 #include "MapperRoutingCongestion.h"
 #include "loom/Mapper/Mapper.h"
 #include "loom/Mapper/MapperTiming.h"
@@ -275,6 +276,43 @@ bool Mapper::runRouteAwareSA(
       if (seenRepairEdges.insert(edgeId).second)
         repairEdges.push_back(edgeId);
     }
+
+    auto repairEdgePriority = [&](IdIndex edgeId) -> unsigned {
+      const Edge *edge = dfg.getEdge(edgeId);
+      if (!edge)
+        return 3;
+      auto getNode = [&](IdIndex portId) -> const Node * {
+        const Port *port = dfg.getPort(portId);
+        if (!port || port->parentNode == INVALID_ID)
+          return nullptr;
+        return dfg.getNode(port->parentNode);
+      };
+      auto getOpName = [&](IdIndex portId) -> llvm::StringRef {
+        const Node *node = getNode(portId);
+        if (!node || node->kind != Node::OperationNode)
+          return {};
+        return getNodeAttrStr(node, "op_name");
+      };
+      llvm::StringRef dstOp = getOpName(edge->dstPort);
+      if (routing_detail::isSoftwareMemoryInterfaceOpName(dstOp))
+        return 0;
+      if (dstOp == "dataflow.gate" || dstOp == "dataflow.carry" ||
+          dstOp == "handshake.cond_br" || dstOp == "handshake.join" ||
+          dstOp == "handshake.mux")
+        return 1;
+      return 2;
+    };
+    llvm::stable_sort(repairEdges, [&](IdIndex lhs, IdIndex rhs) {
+      unsigned lhsPriority = repairEdgePriority(lhs);
+      unsigned rhsPriority = repairEdgePriority(rhs);
+      if (lhsPriority != rhsPriority)
+        return lhsPriority < rhsPriority;
+      double lhsWeight = classifyEdgePlacementWeight(dfg, lhs);
+      double rhsWeight = classifyEdgePlacementWeight(dfg, rhs);
+      if (std::abs(lhsWeight - rhsWeight) > 1e-9)
+        return lhsWeight > rhsWeight;
+      return lhs < rhs;
+    });
 
     bool usedExactRepair = false;
 

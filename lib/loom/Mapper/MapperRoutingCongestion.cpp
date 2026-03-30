@@ -161,7 +161,12 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
     llvm::StringRef dstOp = getOpName(edge->dstPort);
     if (routing_detail::isSoftwareMemoryInterfaceOpName(dstOp))
       return opts.routing.priority.memorySink;
-    if (dstNode && dstNode->kind == Node::ModuleOutputNode)
+    if (dstNode &&
+        (dstNode->kind == Node::ModuleOutputNode ||
+         (dstNode->kind == Node::OperationNode &&
+          (dstOp == "dataflow.gate" || dstOp == "dataflow.carry" ||
+           dstOp == "handshake.cond_br" || dstOp == "handshake.join" ||
+           dstOp == "handshake.mux"))))
       return opts.routing.priority.moduleOutput;
     if (srcOp == "handshake.load" || srcOp == "handshake.store")
       return opts.routing.priority.loadStoreSource;

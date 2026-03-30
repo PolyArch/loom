@@ -133,10 +133,39 @@ bool Mapper::runExactRoutingRepair(
   };
 
   auto edgeOrderLess = [&](IdIndex lhs, IdIndex rhs) {
+    auto edgePriority = [&](IdIndex edgeId) -> unsigned {
+      const Edge *edge = dfg.getEdge(edgeId);
+      if (!edge)
+        return 3;
+      auto getNode = [&](IdIndex portId) -> const Node * {
+        const Port *port = dfg.getPort(portId);
+        if (!port || port->parentNode == INVALID_ID)
+          return nullptr;
+        return dfg.getNode(port->parentNode);
+      };
+      auto getOpName = [&](IdIndex portId) -> llvm::StringRef {
+        const Node *node = getNode(portId);
+        if (!node || node->kind != Node::OperationNode)
+          return {};
+        return getNodeAttrStr(node, "op_name");
+      };
+      llvm::StringRef dstOp = getOpName(edge->dstPort);
+      if (routing_detail::isSoftwareMemoryInterfaceOpName(dstOp))
+        return 0;
+      if (dstOp == "dataflow.gate" || dstOp == "dataflow.carry" ||
+          dstOp == "handshake.cond_br" || dstOp == "handshake.join" ||
+          dstOp == "handshake.mux")
+        return 1;
+      return 2;
+    };
+    unsigned lhsClass = edgePriority(lhs);
+    unsigned rhsClass = edgePriority(rhs);
+    if (lhsClass != rhsClass)
+      return lhsClass < rhsClass;
     bool lhsPriority = priorityEdges.contains(lhs);
     bool rhsPriority = priorityEdges.contains(rhs);
     if (lhsPriority != rhsPriority)
-      return lhsPriority;
+      return lhsPriority > rhsPriority;
     double lhsWeight = edgeWeight(lhs);
     double rhsWeight = edgeWeight(rhs);
     if (std::abs(lhsWeight - rhsWeight) > 1e-9)
