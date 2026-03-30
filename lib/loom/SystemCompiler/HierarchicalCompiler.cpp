@@ -372,17 +372,132 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
     std::vector<loom::CoreCostSummary> costSummaries;
 
     L2CoreCompiler l2Compiler;
+    bool isSpatialSharing =
+        config.executionModel.mode == ExecutionMode::SPATIAL_SHARING;
 
     for (const auto &l2Assign : l2Assignments) {
+      bool hasPartitions =
+          isSpatialSharing &&
+          !l2Assign.kernelPartitions.empty() &&
+          l2Assign.kernelPartitions.size() == l2Assign.kernels.size() &&
+          l2Assign.kernels.size() > 1;
+
       if (config.verbose) {
         llvm::outs() << "  L2 compiling core '"
                      << l2Assign.coreInstanceName << "' ("
                      << l2Assign.coreType << "): "
-                     << l2Assign.kernels.size() << " kernels\n";
+                     << l2Assign.kernels.size() << " kernels"
+                     << (hasPartitions ? " [per-partition]" : "") << "\n";
       }
 
-      loom::L2Result l2Result =
-          l2Compiler.compile(l2Assign, mapperOpts, &ctx_);
+      loom::L2Result l2Result;
+
+      if (hasPartitions) {
+        // SPATIAL_SHARING per-partition compilation: split the L2Assignment
+        // into one virtual assignment per partition and compile each
+        // independently, then merge per-partition configs.
+        l2Result.costSummary.coreInstanceName = l2Assign.coreInstanceName;
+        l2Result.costSummary.coreType = l2Assign.coreType;
+        bool partAllMapped = true;
+
+        std::vector<std::vector<uint8_t>> partConfigs;
+        partConfigs.reserve(l2Assign.kernels.size());
+
+        for (size_t pi = 0; pi < l2Assign.kernels.size(); ++pi) {
+          // Build a virtual L2Assignment containing only this partition's
+          // kernel and its partition constraint.
+          loom::L2Assignment virtAssign;
+          virtAssign.coreInstanceName = l2Assign.coreInstanceName;
+          virtAssign.coreType = l2Assign.coreType;
+          virtAssign.coreADG = l2Assign.coreADG;
+          virtAssign.nocPortBindings = l2Assign.nocPortBindings;
+          virtAssign.kernels.push_back(l2Assign.kernels[pi]);
+          virtAssign.kernelPartitions.push_back(
+              l2Assign.kernelPartitions[pi]);
+
+          if (config.verbose) {
+            llvm::outs() << "    partition " << pi << ": kernel '"
+                         << l2Assign.kernels[pi].kernelName
+                         << "' rows=[" << l2Assign.kernelPartitions[pi].rowStart
+                         << "," << l2Assign.kernelPartitions[pi].rowEnd
+                         << ") cols=["
+                         << l2Assign.kernelPartitions[pi].colStart << ","
+                         << l2Assign.kernelPartitions[pi].colEnd << ")\n";
+          }
+
+          loom::L2Result partResult =
+              l2Compiler.compile(virtAssign, mapperOpts, &ctx_);
+
+          // Collect kernel results and metrics into the combined L2Result.
+          for (auto &kr : partResult.kernelResults)
+            l2Result.kernelResults.push_back(std::move(kr));
+          for (auto &km : partResult.costSummary.kernelMetrics)
+            l2Result.costSummary.kernelMetrics.push_back(std::move(km));
+
+          if (!partResult.allKernelsMapped) {
+            partAllMapped = false;
+            if (config.verbose) {
+              llvm::outs() << "      partition " << pi << " FAILED\n";
+            }
+          } else {
+            if (config.verbose) {
+              llvm::outs() << "      partition " << pi
+                           << " mapped successfully\n";
+            }
+          }
+
+          partConfigs.push_back(std::move(partResult.aggregateConfig));
+        }
+
+        l2Result.allKernelsMapped = partAllMapped;
+        l2Result.costSummary.success = partAllMapped;
+
+        if (partAllMapped && !l2Result.costSummary.kernelMetrics.empty()) {
+          // Compute aggregate metrics across partitions.
+          double totalPE = 0.0;
+          double totalSPM = 0.0;
+          double maxRouting = 0.0;
+          for (const auto &km : l2Result.costSummary.kernelMetrics) {
+            totalPE += km.peUtilization;
+            totalSPM += static_cast<double>(km.spmBytesUsed);
+            maxRouting = std::max(maxRouting, km.switchUtilization);
+          }
+          l2Result.costSummary.totalPEUtilization = std::min(totalPE, 1.0);
+          l2Result.costSummary.totalSPMUtilization = totalSPM;
+          l2Result.costSummary.routingPressure = maxRouting;
+
+          // Merge per-partition configs via ADGPartitioner.
+          loom::PartitionPlan plan;
+          plan.partitions.assign(l2Assign.kernelPartitions.begin(),
+                                 l2Assign.kernelPartitions.end());
+          plan.totalRows = 0;
+          plan.totalCols = 0;
+          for (const auto &ps : plan.partitions) {
+            if (ps.rowEnd > plan.totalRows) plan.totalRows = ps.rowEnd;
+            if (ps.colEnd > plan.totalCols) plan.totalCols = ps.colEnd;
+          }
+          plan.totalPEs = plan.totalRows * plan.totalCols;
+
+          size_t fullConfigSize = 0;
+          for (const auto &pc : partConfigs)
+            fullConfigSize += pc.size();
+
+          l2Result.aggregateConfig =
+              loom::ADGPartitioner::mergeConfigurations(
+                  partConfigs, plan, fullConfigSize);
+        } else if (!partAllMapped) {
+          for (const auto &kr : l2Result.kernelResults) {
+            if (kr.cut) {
+              l2Result.costSummary.cut = *kr.cut;
+              break;
+            }
+          }
+        }
+      } else {
+        // Standard compilation: compile all kernels on this core together.
+        l2Result = l2Compiler.compile(l2Assign, mapperOpts, &ctx_);
+      }
+
       l2Results.push_back(l2Result);
       costSummaries.push_back(l2Result.costSummary);
 

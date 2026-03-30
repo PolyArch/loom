@@ -731,10 +731,165 @@ static bool testL2AssignmentPartitions() {
 }
 
 // =========================================================================
+// T12: Per-partition virtual L2Assignment splitting for SPATIAL_SHARING
+// =========================================================================
+static bool testPerPartitionL2Split() {
+  // Verify that a multi-kernel L2Assignment with partition specs can be
+  // correctly split into per-partition virtual assignments, each containing
+  // exactly one kernel and one partition spec.
+
+  // Build a 2-kernel assignment on a core with a 6x4 grid.
+  loom::L2Assignment l2;
+  l2.coreInstanceName = "PE_A_0";
+  l2.coreType = "PE_A";
+
+  loom::L2Assignment::KernelAssignment ka0;
+  ka0.kernelName = "K0";
+  l2.kernels.push_back(ka0);
+
+  loom::L2Assignment::KernelAssignment ka1;
+  ka1.kernelName = "K1";
+  l2.kernels.push_back(ka1);
+
+  // Generate a 2-way partition for a 6x4 grid.
+  CoreTypeSpec coreType;
+  coreType.typeName = "PE_A";
+  coreType.numPEs = 24;
+  coreType.numFUs = 24;
+  coreType.spmBytes = 8192;
+
+  PartitionPlan plan =
+      ADGPartitioner::generatePartitions(coreType, 2, 6, 4);
+
+  if (plan.partitions.size() < 2) {
+    std::cerr << "FAIL: testPerPartitionL2Split - expected >= 2 partitions\n";
+    return false;
+  }
+
+  l2.kernelPartitions.push_back(plan.partitions[0]);
+  l2.kernelPartitions.push_back(plan.partitions[1]);
+
+  // Simulate per-partition split as done in HierarchicalCompiler.
+  for (size_t pi = 0; pi < l2.kernels.size(); ++pi) {
+    loom::L2Assignment virtAssign;
+    virtAssign.coreInstanceName = l2.coreInstanceName;
+    virtAssign.coreType = l2.coreType;
+    virtAssign.coreADG = l2.coreADG;
+    virtAssign.nocPortBindings = l2.nocPortBindings;
+    virtAssign.kernels.push_back(l2.kernels[pi]);
+    virtAssign.kernelPartitions.push_back(l2.kernelPartitions[pi]);
+
+    // Each virtual assignment must have exactly 1 kernel.
+    if (virtAssign.kernels.size() != 1) {
+      std::cerr << "FAIL: testPerPartitionL2Split - virtual assignment "
+                << pi << " has " << virtAssign.kernels.size()
+                << " kernels, expected 1\n";
+      return false;
+    }
+
+    // Each virtual assignment must have exactly 1 partition.
+    if (virtAssign.kernelPartitions.size() != 1) {
+      std::cerr << "FAIL: testPerPartitionL2Split - virtual assignment "
+                << pi << " has " << virtAssign.kernelPartitions.size()
+                << " partitions, expected 1\n";
+      return false;
+    }
+
+    // The kernel name must match.
+    if (virtAssign.kernels[0].kernelName != l2.kernels[pi].kernelName) {
+      std::cerr << "FAIL: testPerPartitionL2Split - kernel name mismatch at "
+                << pi << "\n";
+      return false;
+    }
+
+    // The partition bounds must match the original.
+    if (virtAssign.kernelPartitions[0].rowStart !=
+            l2.kernelPartitions[pi].rowStart ||
+        virtAssign.kernelPartitions[0].rowEnd !=
+            l2.kernelPartitions[pi].rowEnd ||
+        virtAssign.kernelPartitions[0].colStart !=
+            l2.kernelPartitions[pi].colStart ||
+        virtAssign.kernelPartitions[0].colEnd !=
+            l2.kernelPartitions[pi].colEnd) {
+      std::cerr << "FAIL: testPerPartitionL2Split - partition bounds mismatch at "
+                << pi << "\n";
+      return false;
+    }
+
+    // Core instance name preserved.
+    if (virtAssign.coreInstanceName != l2.coreInstanceName) {
+      std::cerr << "FAIL: testPerPartitionL2Split - core name mismatch at "
+                << pi << "\n";
+      return false;
+    }
+  }
+
+  // Verify that virtual assignments have disjoint partition regions.
+  const auto &p0 = l2.kernelPartitions[0];
+  const auto &p1 = l2.kernelPartitions[1];
+  bool rowsOverlap = (p0.rowStart < p1.rowEnd) && (p1.rowStart < p0.rowEnd);
+  bool colsOverlap = (p0.colStart < p1.colEnd) && (p1.colStart < p0.colEnd);
+  if (rowsOverlap && colsOverlap) {
+    std::cerr << "FAIL: testPerPartitionL2Split - partitions overlap\n";
+    return false;
+  }
+
+  std::cout << "PASS: testPerPartitionL2Split\n";
+  return true;
+}
+
+// =========================================================================
+// T13: Merged config from per-partition compilation
+// =========================================================================
+static bool testMergedPartitionConfig() {
+  // Verify that mergeConfigurations correctly combines per-partition configs.
+  PartitionPlan plan;
+  plan.totalRows = 4;
+  plan.totalCols = 4;
+  plan.totalPEs = 16;
+
+  PartitionSpec ps0;
+  ps0.rowStart = 0; ps0.rowEnd = 2; ps0.colStart = 0; ps0.colEnd = 4;
+  ps0.numPEs = 8;
+  plan.partitions.push_back(ps0);
+
+  PartitionSpec ps1;
+  ps1.rowStart = 2; ps1.rowEnd = 4; ps1.colStart = 0; ps1.colEnd = 4;
+  ps1.numPEs = 8;
+  plan.partitions.push_back(ps1);
+
+  // Create synthetic per-partition config blobs.
+  std::vector<uint8_t> config0(8, 0xAA);
+  std::vector<uint8_t> config1(8, 0xBB);
+  std::vector<std::vector<uint8_t>> partConfigs = {config0, config1};
+
+  size_t fullConfigSize = config0.size() + config1.size();
+  std::vector<uint8_t> merged =
+      ADGPartitioner::mergeConfigurations(partConfigs, plan, fullConfigSize);
+
+  // Merged config should not be empty.
+  if (merged.empty()) {
+    std::cerr << "FAIL: testMergedPartitionConfig - merged config is empty\n";
+    return false;
+  }
+
+  // Merged config should have the expected size.
+  if (merged.size() != fullConfigSize) {
+    std::cerr << "FAIL: testMergedPartitionConfig - merged size "
+              << merged.size() << " != expected " << fullConfigSize << "\n";
+    return false;
+  }
+
+  std::cout << "PASS: testMergedPartitionConfig\n";
+  return true;
+}
+
+// =========================================================================
 // main
 // =========================================================================
 int main() {
   int failures = 0;
+  constexpr int totalTests = 13;
 
   if (!testL1ProducesValidAssignment()) ++failures;
   if (!testL1TypeCompatibility()) ++failures;
@@ -747,8 +902,11 @@ int main() {
   if (!testEnablePipelineScheduling()) ++failures;
   if (!testPipelineSchedulingDisabled()) ++failures;
   if (!testL2AssignmentPartitions()) ++failures;
+  if (!testPerPartitionL2Split()) ++failures;
+  if (!testMergedPartitionConfig()) ++failures;
 
-  std::cout << "\n" << (11 - failures) << "/11 tests passed";
+  std::cout << "\n" << (totalTests - failures) << "/" << totalTests
+            << " tests passed";
   if (failures > 0)
     std::cout << " (" << failures << " FAILED)";
   std::cout << "\n";
