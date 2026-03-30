@@ -303,16 +303,6 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
   TapestryPipelineResult result;
   result.reportPath = config.outputDir + "/report.json";
 
-  // Validate execution mode early.
-  if (config.executionModel.mode != ExecutionMode::BATCH_SEQUENTIAL) {
-    result.success = false;
-    result.diagnostics =
-        std::string(executionModeToString(config.executionModel.mode)) +
-        " execution mode is not supported in current version; "
-        "only BATCH_SEQUENTIAL is implemented";
-    return result;
-  }
-
   auto compileStart = std::chrono::steady_clock::now();
 
   for (auto stage : config.stages) {
@@ -412,15 +402,16 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
 
       // Compute temporal schedule after compilation.
       TemporalSchedule schedule;
-      schedule.mode = ExecutionMode::BATCH_SEQUENTIAL;
+      schedule.mode = config.executionModel.mode;
       schedule.systemLatencyCycles = 0;
       schedule.maxCoreCycles = 0;
       schedule.nocOverheadCycles = 0;
       result.temporalSchedule = schedule;
 
       if (config.verbose) {
-        llvm::outs() << "TapestryPipeline: temporal scheduling "
-                     << "(BATCH_SEQUENTIAL, reconfigCycles="
+        llvm::outs() << "TapestryPipeline: temporal scheduling ("
+                     << executionModeToString(config.executionModel.mode)
+                     << ", reconfigCycles="
                      << config.executionModel.reconfigCycles << ")\n";
       }
 
@@ -433,16 +424,19 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
       break;
     }
     case PipelineStage::SIMULATE: {
-      PipelineSimResult simResult;
-      simResult.totalGlobalCycles = 0;
-      simResult.nocStats.totalFlitsTransferred = 0;
-      result.simResult = simResult;
-      break;
+      result.success = false;
+      result.diagnostics =
+          "SIMULATE stage is not yet integrated into the config-driven "
+          "pipeline; use the syscomp::TapestryPipeline (task-based API) or "
+          "run MultiCoreSimSession directly";
+      return result;
     }
     case PipelineStage::RTLGEN: {
-      PipelineRTLResult rtlResult;
-      result.rtlResult = rtlResult;
-      break;
+      result.success = false;
+      result.diagnostics =
+          "RTLGEN stage is not yet integrated into the config-driven "
+          "pipeline; run the RTL generator directly on compilation output";
+      return result;
     }
     }
   }
