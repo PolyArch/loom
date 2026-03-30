@@ -2,6 +2,7 @@
 #define LOOM_SYSTEMCOMPILER_BUFFERALLOCATOR_H
 
 #include "loom/SystemCompiler/Contract.h"
+#include "loom/SystemCompiler/ContractConstraintTranslator.h"
 #include "loom/SystemCompiler/L1CoreAssignment.h"
 #include "loom/SystemCompiler/NoCScheduler.h"
 
@@ -101,11 +102,17 @@ struct BufferAllocatorOptions {
 class BufferAllocator {
 public:
   /// Allocate buffers for all contract edges that require cross-core transfer.
+  /// When \p tdcConstraints is provided, MemoryConstraints override the default
+  /// SPM-first policy:
+  ///   - LOCAL_SPM  -> only attempt SPM placement (no L2/DRAM fallback)
+  ///   - SHARED_L2  -> skip SPM, go directly to shared L2
+  ///   - EXTERNAL   -> go directly to external DRAM
   BufferAllocationPlan allocate(const AssignmentResult &assignment,
                                 const std::vector<ContractSpec> &contracts,
                                 const NoCSchedule &nocSchedule,
                                 const SystemArchitecture &arch,
-                                const BufferAllocatorOptions &opts);
+                                const BufferAllocatorOptions &opts,
+                                const std::optional<ConstraintSet> &tdcConstraints = std::nullopt);
 };
 
 } // namespace loom

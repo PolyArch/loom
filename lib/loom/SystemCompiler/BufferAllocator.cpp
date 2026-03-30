@@ -37,12 +37,30 @@ struct SPMBumpAllocator {
 // BufferAllocator::allocate
 //===----------------------------------------------------------------------===//
 
+namespace {
+
+/// Look up a forced MemoryLevel for a given edge (producer->consumer) from
+/// a ConstraintSet. Returns nullopt if no MemoryConstraint matches.
+std::optional<MemoryLevel>
+findMemoryConstraint(const ConstraintSet &cs,
+                     const std::string &producer,
+                     const std::string &consumer) {
+  for (const auto &mc : cs.memory) {
+    if (mc.edgeProducer == producer && mc.edgeConsumer == consumer)
+      return mc.level;
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
 BufferAllocationPlan
 BufferAllocator::allocate(const AssignmentResult &assignment,
                           const std::vector<ContractSpec> &contracts,
                           const NoCSchedule &nocSchedule,
                           const SystemArchitecture &arch,
-                          const BufferAllocatorOptions &opts) {
+                          const BufferAllocatorOptions &opts,
+                          const std::optional<ConstraintSet> &tdcConstraints) {
   BufferAllocationPlan plan;
   plan.l2TotalBytes = arch.sharedMemSpec.l2SizeBytes;
 
@@ -128,9 +146,26 @@ BufferAllocator::allocate(const AssignmentResult &assignment,
     std::string edgeName = makeEdgeName(contract);
     bool allocated = false;
 
+    // Check for a TDC MemoryConstraint that overrides the default policy.
+    std::optional<MemoryLevel> forcedLevel;
+    if (tdcConstraints.has_value()) {
+      forcedLevel = findMemoryConstraint(
+          *tdcConstraints, contract.producerKernel, contract.consumerKernel);
+    }
+
+    // Determine whether each memory tier is eligible for this edge.
+    bool spmAllowed = !forcedLevel.has_value() ||
+                      *forcedLevel == MemoryLevel::LOCAL_SPM;
+    bool l2Allowed = !forcedLevel.has_value() ||
+                     *forcedLevel == MemoryLevel::SHARED_L2;
+    bool dramAllowed = !forcedLevel.has_value() ||
+                       *forcedLevel == MemoryLevel::EXTERNAL;
+
     // Attempt 1: consumer SPM (preferred for streaming patterns).
-    if (contract.visibility == Visibility::LOCAL_SPM ||
-        contract.visibility == Visibility::SHARED_L2) {
+    if (spmAllowed &&
+        (contract.visibility == Visibility::LOCAL_SPM ||
+         contract.visibility == Visibility::SHARED_L2 ||
+         forcedLevel.has_value())) {
       auto &consAlloc = spmAllocators[consumerIdx];
       if (consAlloc.canAllocate(bufferBytes)) {
         uint64_t offset = consAlloc.allocate(bufferBytes);
@@ -154,8 +189,10 @@ BufferAllocator::allocate(const AssignmentResult &assignment,
     }
 
     // Attempt 2: producer SPM (if consumer SPM is full).
-    if (!allocated && (contract.visibility == Visibility::LOCAL_SPM ||
-                       contract.visibility == Visibility::SHARED_L2)) {
+    if (!allocated && spmAllowed &&
+        (contract.visibility == Visibility::LOCAL_SPM ||
+         contract.visibility == Visibility::SHARED_L2 ||
+         forcedLevel.has_value())) {
       auto &prodAlloc = spmAllocators[producerIdx];
       if (prodAlloc.canAllocate(bufferBytes)) {
         uint64_t offset = prodAlloc.allocate(bufferBytes);
@@ -179,7 +216,8 @@ BufferAllocator::allocate(const AssignmentResult &assignment,
     }
 
     // Attempt 3: shared L2.
-    if (!allocated && contract.visibility != Placement::EXTERNAL) {
+    if (!allocated && l2Allowed &&
+        (contract.visibility != Placement::EXTERNAL || forcedLevel.has_value())) {
       if (l2Used + bufferBytes <= l2Capacity) {
         unsigned bankIdx = nextL2Bank;
         nextL2Bank =
@@ -204,8 +242,8 @@ BufferAllocator::allocate(const AssignmentResult &assignment,
       }
     }
 
-    // Attempt 4: external DRAM fallback (always available).
-    if (!allocated) {
+    // Attempt 4: external DRAM fallback.
+    if (!allocated && dramAllowed) {
       BufferAllocation alloc;
       alloc.contractEdgeName = edgeName;
       alloc.location = BufferAllocation::EXTERNAL_DRAM;

@@ -295,7 +295,7 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
     bufOpts.verbose = config.verbose;
     loom::BufferAllocationPlan bufferPlan =
         bufferAllocator.allocate(assignment, l1Contracts, nocSchedule,
-                                l1Arch, bufOpts);
+                                l1Arch, bufOpts, l1Opts.tdcConstraints);
 
     // --- L2 SUBPROBLEMS: map kernels to core hardware ---
     std::vector<loom::L2Assignment> l2Assignments =

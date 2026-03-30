@@ -372,6 +372,10 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
         llvm::outs() << "TapestryPipeline: " << contracts.size()
                      << " contracts\n";
 
+      // Save contract metadata before moving into the compiler, since
+      // we need them later for TDC verification evidence.
+      std::vector<tapestry::ContractSpec> savedContracts = contracts;
+
       // Configure and run HierarchicalCompiler.
       tapestry::CompilerConfig compilerConfig;
       compilerConfig.maxIterations = config.bendersOpts.maxIterations;
@@ -429,9 +433,9 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
 
       // Run TDC contract verification on the compilation results.
       {
-        // Build TDCEdgeSpecs from the contracts used during compilation.
+        // Build TDCEdgeSpecs from the saved contracts.
         std::vector<loom::TDCEdgeSpec> verifyEdges;
-        for (const auto &c : contracts) {
+        for (const auto &c : savedContracts) {
           loom::TDCEdgeSpec es;
           es.producerKernel = c.producerKernel;
           es.consumerKernel = c.consumerKernel;
@@ -447,8 +451,57 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
         if (compResult.bufferPlan.has_value())
           verifyBufPlan = compResult.bufferPlan.value();
 
+        // Extract real tile dimensions from L2 compilation results.
+        // Each contract's elementCount represents the tile size produced by
+        // the compilation; expose it as a 1-D tile dimension vector.
         std::vector<loom::EdgeTileDimensions> verifyTileDims;
+        for (const auto &c : savedContracts) {
+          loom::EdgeTileDimensions td;
+          td.producerKernel = c.producerKernel;
+          td.consumerKernel = c.consumerKernel;
+          td.dimensions.push_back(static_cast<int64_t>(c.elementCount));
+          verifyTileDims.push_back(std::move(td));
+        }
+
+        // Extract real scheduling slots from the temporal schedule.
+        // For each contract edge, find producer and consumer kernel timings
+        // and build completion/start time vectors.
         std::vector<loom::EdgeSchedulingSlot> verifySchedSlots;
+        if (compResult.temporalSchedule.has_value()) {
+          const auto &tempSched = compResult.temporalSchedule.value();
+
+          // Build kernel-name -> timing lookup from the temporal schedule.
+          std::map<std::string, loom::KernelTiming> timingMap;
+          for (const auto &cs : tempSched.coreSchedules) {
+            for (size_t ki = 0; ki < cs.kernelOrder.size(); ++ki) {
+              if (ki < cs.kernelTimings.size())
+                timingMap[cs.kernelOrder[ki]] = cs.kernelTimings[ki];
+            }
+          }
+
+          for (const auto &c : savedContracts) {
+            auto prodIt = timingMap.find(c.producerKernel);
+            auto consIt = timingMap.find(c.consumerKernel);
+            if (prodIt != timingMap.end() && consIt != timingMap.end()) {
+              loom::EdgeSchedulingSlot slot;
+              slot.producerKernel = c.producerKernel;
+              slot.consumerKernel = c.consumerKernel;
+
+              // Build per-tile timing: producer completes at
+              // startTime + executionCycles; consumer begins at startTime.
+              const auto &prodTiming = prodIt->second;
+              const auto &consTiming = consIt->second;
+              uint64_t prodCompletion =
+                  prodTiming.startTime + prodTiming.executionCycles;
+              uint64_t consStart = consTiming.startTime;
+
+              slot.producerCompletionTimes.push_back(prodCompletion);
+              slot.consumerStartTimes.push_back(consStart);
+              verifySchedSlots.push_back(std::move(slot));
+            }
+          }
+        }
+
         std::vector<loom::TDCPathSpec> verifyPaths;
         std::map<std::string, int64_t> verifyParams;
 
