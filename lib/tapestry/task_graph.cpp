@@ -342,32 +342,25 @@ const std::string &EdgeHandle::consumerName() const {
 // Variant and path contract implementation
 // ============================================================================
 
-KernelHandle TaskGraph::addVariant(KernelHandle baseKernel,
-                                   const std::string &variantName,
-                                   VariantOptions opts) {
-  // Return default (invalid) handle for null or foreign handles.
+void TaskGraph::addVariant(KernelHandle baseKernel,
+                           const std::string &variantName,
+                           VariantOptions opts) {
+  // Ignore null or foreign handles.
   if (!baseKernel.graph_ || baseKernel.graph_ != this)
-    return KernelHandle();
+    return;
   if (baseKernel.index_ >= impl_->kernels.size())
-    return KernelHandle();
+    return;
 
   // Reject duplicate variant names.
   for (const auto &existing : impl_->variantMap[baseKernel.index_]) {
     if (existing.variantName == variantName)
-      return KernelHandle();
+      return;
   }
 
   VariantEntry entry;
   entry.variantName = variantName;
   entry.options = opts;
   impl_->variantMap[baseKernel.index_].push_back(std::move(entry));
-
-  // Create a new kernel node for the variant.
-  KernelInfo info;
-  info.name = variantName;
-  info.provenance = impl_->kernels[baseKernel.index_].provenance;
-  info.target = impl_->kernels[baseKernel.index_].target;
-  return addKernelImpl(std::move(info));
 }
 
 static const std::vector<VariantEntry> emptyVariants;

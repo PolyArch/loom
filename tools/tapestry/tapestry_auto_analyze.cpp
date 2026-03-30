@@ -103,21 +103,23 @@ int main(int argc, char **argv) {
     std::map<std::string, mlir::ModuleOp> dfgModules;
 
     loom::TDGToSSGBuilder ssgBuilder;
-    loom::BuilderSSG ssg = ssgBuilder.build(*tdgModule, dfgModules, ctx);
+    loom::SSG ssg = ssgBuilder.build(*tdgModule, dfgModules, ctx);
 
     outs() << "\nSSG Summary:\n";
     outs() << "  Nodes: " << ssg.numNodes() << "\n";
     outs() << "  Edges: " << ssg.numEdges() << "\n";
 
-    for (const auto &node : ssg.nodes()) {
+    for (unsigned i = 0; i < ssg.numNodes(); ++i) {
+      const auto &node = ssg.node(i);
       outs() << "  Kernel: " << node.name << " (type=" << node.kernelType
              << ", variants=" << node.variantSet.size()
              << ", hasDFG=" << (node.hasDFG ? "yes" : "no") << ")\n";
     }
-    for (const auto &edge : ssg.edges()) {
-      outs() << "  Edge: " << edge.producerName << " -> " << edge.consumerName
-             << " (volume=" << edge.dataVolume
-             << ", type=" << edge.dataTypeName << ")\n";
+    for (unsigned i = 0; i < ssg.numEdges(); ++i) {
+      const auto &dep = ssg.edge(i);
+      outs() << "  Edge: " << dep.producerKernel << " -> "
+             << dep.consumerKernel
+             << " (volume=" << dep.dataVolume << ")\n";
     }
   }
 

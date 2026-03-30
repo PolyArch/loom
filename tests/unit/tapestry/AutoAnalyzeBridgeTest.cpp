@@ -243,7 +243,7 @@ static bool testSSGNodeCount() {
 
   std::map<std::string, mlir::ModuleOp> dfgModules; // empty
   loom::TDGToSSGBuilder builder;
-  loom::BuilderSSG ssg = builder.build(*tdgModule, dfgModules, ctx);
+  loom::SSG ssg = builder.build(*tdgModule, dfgModules, ctx);
 
   if (ssg.numNodes() != 3) {
     std::cerr << "FAIL T6: SSG nodes=" << ssg.numNodes()
@@ -277,7 +277,7 @@ static bool testSSGEdgeData() {
 
   std::map<std::string, mlir::ModuleOp> dfgModules;
   loom::TDGToSSGBuilder builder;
-  loom::BuilderSSG ssg = builder.build(*tdgModule, dfgModules, ctx);
+  loom::SSG ssg = builder.build(*tdgModule, dfgModules, ctx);
 
   if (ssg.numEdges() != 1) {
     std::cerr << "FAIL T7: SSG edges=" << ssg.numEdges()
@@ -285,19 +285,9 @@ static bool testSSGEdgeData() {
     return false;
   }
 
-  const auto &edge = ssg.edges()[0];
-  if (edge.producerName != "p" || edge.consumerName != "c") {
+  const auto &dep = ssg.edge(0);
+  if (dep.producerKernel != "p" || dep.consumerKernel != "c") {
     std::cerr << "FAIL T7: edge endpoints wrong\n";
-    return false;
-  }
-  if (edge.dataTypeName != "f64") {
-    std::cerr << "FAIL T7: edge dataTypeName=" << edge.dataTypeName
-              << " (expected f64)\n";
-    return false;
-  }
-  if (edge.ordering != "FIFO") {
-    std::cerr << "FAIL T7: edge ordering=" << edge.ordering
-              << " (expected FIFO)\n";
     return false;
   }
 
@@ -323,7 +313,7 @@ static bool testSSGMissingDFG() {
   // Both kernels have no DFG module.
   std::map<std::string, mlir::ModuleOp> dfgModules;
   loom::TDGToSSGBuilder builder;
-  loom::BuilderSSG ssg = builder.build(*tdgModule, dfgModules, ctx);
+  loom::SSG ssg = builder.build(*tdgModule, dfgModules, ctx);
 
   // Should not crash, and should still have 2 nodes.
   if (ssg.numNodes() != 2) {
@@ -333,7 +323,8 @@ static bool testSSGMissingDFG() {
   }
 
   // Both nodes should have hasDFG=false.
-  for (const auto &node : ssg.nodes()) {
+  for (unsigned i = 0; i < ssg.numNodes(); ++i) {
+    const auto &node = ssg.node(i);
     if (node.hasDFG) {
       std::cerr << "FAIL T8: node " << node.name
                 << " should have hasDFG=false\n";

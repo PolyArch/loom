@@ -270,7 +270,7 @@ static int runAutoTDGMode() {
 
   // Build SSG from TDG MLIR + DFG modules.
   loom::TDGToSSGBuilder ssgBuilder;
-  loom::BuilderSSG ssg = ssgBuilder.build(*tdgModule, dfgModules, tdgCtx);
+  loom::SSG ssg = ssgBuilder.build(*tdgModule, dfgModules, tdgCtx);
 
   if (Verbose) {
     outs() << "\ntapestry-compile: SSG Summary:\n";

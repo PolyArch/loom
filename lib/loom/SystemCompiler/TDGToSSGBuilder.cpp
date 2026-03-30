@@ -1,18 +1,20 @@
 //===-- TDGToSSGBuilder.cpp - TDG MLIR -> SSG conversion -------------------===//
 //
-// Walks a TDG MLIR module to build a SimpleGraph<KernelNode, SSGDataDependency>.
+// Walks a TDG MLIR module to build an SSG (SystemGraph<KernelNode, DataDependency>).
 //
 //===----------------------------------------------------------------------===//
 
 #include "loom/SystemCompiler/TDGToSSGBuilder.h"
 #include "loom/Dialect/TDG/TDGDialect.h"
 #include "loom/Dialect/TDG/TDGOps.h"
+#include "loom/SystemCompiler/Contract.h"
 #include "loom/SystemCompiler/KernelProfiler.h"
 
 #include "mlir/IR/BuiltinOps.h"
 
 #include "llvm/Support/raw_ostream.h"
 
+#include <map>
 #include <set>
 #include <string>
 
@@ -24,31 +26,46 @@ namespace loom {
 
 namespace {
 
-/// Try to extract a numeric data volume from a contract op's attributes.
-/// Returns 0 if no volume information is present.
-uint64_t extractDataVolume(loom::tdg::ContractOp /*contractOp*/) {
-  // Data volume is not yet encoded as a direct contract attribute.
-  // Future: extract from tile_shape or a dedicated attribute.
+/// Return the byte width of an MLIR type (0 if unknown).
+uint64_t typeSizeBytes(mlir::Type ty) {
+  if (ty.isF64() || ty.isInteger(64))
+    return 8;
+  if (ty.isF32() || ty.isInteger(32))
+    return 4;
+  if (ty.isF16() || ty.isBF16() || ty.isInteger(16))
+    return 2;
+  if (ty.isInteger(8))
+    return 1;
+  // Conservative fallback for unknown types.
   return 0;
 }
 
-/// Convert an MLIR type to a data type name string.
-std::string typeToName(mlir::Type ty) {
-  if (ty.isF32())
-    return "f32";
-  if (ty.isF64())
-    return "f64";
-  if (ty.isF16())
-    return "f16";
-  if (ty.isInteger(64))
-    return "i64";
-  if (ty.isInteger(32))
-    return "i32";
-  if (ty.isInteger(16))
-    return "i16";
-  if (ty.isInteger(8))
-    return "i8";
-  return "unknown";
+/// Parse tile_shape from ContractOp, compute volume = product(dims) * typeSize.
+/// Returns 0 when tile_shape is absent or contains symbolic (non-numeric) dims.
+uint64_t extractDataVolume(loom::tdg::ContractOp contractOp) {
+  auto tileShapeAttr = contractOp.getTileShapeAttr();
+  if (!tileShapeAttr)
+    return 0;
+
+  auto dims = loom::parseShapeExpr(tileShapeAttr.getValue().str());
+  if (dims.empty())
+    return 0;
+
+  uint64_t product = 1;
+  for (const auto &dimStr : dims) {
+    // Try to parse as a number; bail on symbolic dimensions.
+    char *end = nullptr;
+    unsigned long val = std::strtoul(dimStr.c_str(), &end, 10);
+    if (end == dimStr.c_str() || *end != '\0' || val == 0)
+      return 0;
+    product *= val;
+  }
+
+  uint64_t elemBytes = typeSizeBytes(contractOp.getDataType());
+  if (elemBytes == 0)
+    return 0;
+
+  return product * elemBytes;
 }
 
 } // namespace
@@ -57,16 +74,17 @@ std::string typeToName(mlir::Type ty) {
 // TDGToSSGBuilder::build
 //===----------------------------------------------------------------------===//
 
-BuilderSSG TDGToSSGBuilder::build(
+SSG TDGToSSGBuilder::build(
     mlir::ModuleOp tdgModule,
     const std::map<std::string, mlir::ModuleOp> &dfgModules,
     mlir::MLIRContext &ctx) {
 
-  BuilderSSG ssg;
+  SSG ssg;
   KernelProfiler profiler;
 
-  // Track kernel names seen for duplicate detection.
+  // Track kernel names seen for duplicate detection, and name -> NodeId.
   std::set<std::string> seenKernels;
+  std::map<std::string, SSG::NodeId> nameToId;
 
   // Walk tdg.graph ops (there should be exactly one).
   tdgModule.walk([&](loom::tdg::GraphOp graphOp) {
@@ -113,26 +131,30 @@ BuilderSSG TDGToSSGBuilder::build(
         node.hasDFG = false;
       }
 
-      ssg.addNode(std::move(node));
+      SSG::NodeId nid = ssg.addNode(std::move(node));
+      nameToId[kernelName] = nid;
     });
 
-    // Walk tdg.contract ops to create SSGDataDependency edges.
+    // Walk tdg.contract ops to create DataDependency edges.
     graphOp.walk([&](loom::tdg::ContractOp contractOp) {
-      SSGDataDependency dep;
-      dep.producerName = contractOp.getProducer().str();
-      dep.consumerName = contractOp.getConsumer().str();
-      if (auto ord = contractOp.getOrdering())
-        dep.ordering = ord->str();
-      else
-        dep.ordering = "FIFO";
-      dep.dataTypeName = typeToName(contractOp.getDataType());
-      if (auto plc = contractOp.getPlacement())
-        dep.visibility = plc->str();
-      else
-        dep.visibility = "LOCAL_SPM";
+      std::string producerName = contractOp.getProducer().str();
+      std::string consumerName = contractOp.getConsumer().str();
+
+      auto srcIt = nameToId.find(producerName);
+      auto dstIt = nameToId.find(consumerName);
+      if (srcIt == nameToId.end() || dstIt == nameToId.end()) {
+        llvm::errs() << "TDGToSSGBuilder: edge references unknown kernel ("
+                     << producerName << " -> " << consumerName
+                     << "), skipping\n";
+        return;
+      }
+
+      DataDependency dep;
+      dep.producerKernel = producerName;
+      dep.consumerKernel = consumerName;
       dep.dataVolume = extractDataVolume(contractOp);
 
-      ssg.addEdge(std::move(dep));
+      ssg.addEdge(srcIt->second, dstIt->second, std::move(dep));
     });
   });
 

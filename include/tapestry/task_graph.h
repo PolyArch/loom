@@ -293,9 +293,10 @@ public:
   // -----------------------------------------------------------------------
 
   /// Register a named variant of a base kernel.
-  KernelHandle addVariant(KernelHandle baseKernel,
-                          const std::string &variantName,
-                          VariantOptions opts);
+  /// Variants are metadata on the base kernel, not new graph nodes.
+  void addVariant(KernelHandle baseKernel,
+                  const std::string &variantName,
+                  VariantOptions opts);
 
   /// Get the list of registered variants for a kernel.
   const std::vector<VariantEntry> &variants(KernelHandle kernel) const;
