@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <numeric>
+#include <queue>
 #include <thread>
 
 #ifdef LOOM_HAVE_ORTOOLS
@@ -110,6 +111,159 @@ bool isKernelCompatible(const KernelProfile &kernel,
       return false;
   }
   return true;
+}
+
+//===----------------------------------------------------------------------===//
+// Pipeline Start Time Computation
+//===----------------------------------------------------------------------===//
+
+/// Compute pipeline start times for each kernel using an ASAP topological
+/// traversal. When a producer and consumer are on different cores, the
+/// consumer may overlap with the producer by starting after the producer's
+/// pipeline initiation delay (estimatedComputeCycles / defaultTileCount).
+/// When they share a core, the consumer must wait for the producer to finish
+/// plus a reconfiguration gap.
+static void
+computePipelineStartTimes(AssignmentResult &result,
+                          const std::vector<KernelProfile> &kernels,
+                          const std::vector<ContractSpec> &contracts,
+                          unsigned defaultTileCount) {
+  if (kernels.empty())
+    return;
+
+  // Build name -> KernelProfile lookup.
+  std::map<std::string, const KernelProfile *> profileMap;
+  for (const auto &kp : kernels)
+    profileMap[kp.name] = &kp;
+
+  // Collect all kernel names from the assignment.
+  std::vector<std::string> allKernels;
+  for (const auto &ca : result.coreAssignments)
+    for (const auto &kn : ca.assignedKernels)
+      allKernels.push_back(kn);
+
+  if (allKernels.empty())
+    return;
+
+  // Build adjacency list and in-degree for topological sort.
+  std::set<std::string> kernelSet(allKernels.begin(), allKernels.end());
+  std::map<std::string, std::vector<std::string>> successors;
+  std::map<std::string, unsigned> inDegree;
+  for (const auto &k : allKernels) {
+    successors[k] = {};
+    inDegree[k] = 0;
+  }
+
+  // Build consumer dependency map.
+  std::map<std::string, std::vector<const ContractSpec *>> consumerDeps;
+  for (const auto &c : contracts) {
+    bool prodLocal = kernelSet.count(c.producerKernel) > 0;
+    bool consLocal = kernelSet.count(c.consumerKernel) > 0;
+    if (prodLocal && consLocal) {
+      successors[c.producerKernel].push_back(c.consumerKernel);
+      inDegree[c.consumerKernel]++;
+      consumerDeps[c.consumerKernel].push_back(&c);
+    }
+  }
+
+  // Topological sort (Kahn's algorithm).
+  std::queue<std::string> ready;
+  for (const auto &k : allKernels) {
+    if (inDegree[k] == 0)
+      ready.push(k);
+  }
+
+  std::vector<std::string> sortedKernels;
+  sortedKernels.reserve(allKernels.size());
+  while (!ready.empty()) {
+    std::string current = ready.front();
+    ready.pop();
+    sortedKernels.push_back(current);
+    for (const auto &neighbor : successors[current]) {
+      inDegree[neighbor]--;
+      if (inDegree[neighbor] == 0)
+        ready.push(neighbor);
+    }
+  }
+  // If cycle detected, fall back to original order.
+  if (sortedKernels.size() != allKernels.size())
+    sortedKernels = allKernels;
+
+  // Compute estimated duration for each kernel.
+  constexpr unsigned kDefaultTripCount = 1000;
+  std::map<std::string, uint64_t> duration;
+  for (const auto &kName : sortedKernels) {
+    auto profIt = profileMap.find(kName);
+    unsigned ii = 1;
+    double cycles = 0.0;
+    if (profIt != profileMap.end()) {
+      ii = std::max(1u, profIt->second->estimatedMinII);
+      cycles = profIt->second->estimatedComputeCycles;
+    }
+    // Use estimatedComputeCycles if available, else tripCount * II.
+    uint64_t dur = (cycles > 0.0)
+                       ? static_cast<uint64_t>(cycles)
+                       : static_cast<uint64_t>(kDefaultTripCount) * ii;
+    duration[kName] = dur;
+  }
+
+  unsigned tileCount = (defaultTileCount > 0) ? defaultTileCount : 4;
+  constexpr unsigned kReconfigCycles = 100;
+
+  // ASAP pipeline scheduling.
+  std::map<std::string, uint64_t> startTimes;
+  std::map<unsigned, uint64_t> coreAvailableAt;
+
+  for (const auto &kName : sortedKernels) {
+    uint64_t earliestStart = 0;
+
+    // Dependency constraints from producers.
+    auto depIt = consumerDeps.find(kName);
+    if (depIt != consumerDeps.end()) {
+      for (const auto *contract : depIt->second) {
+        auto prodStartIt = startTimes.find(contract->producerKernel);
+        if (prodStartIt == startTimes.end())
+          continue;
+
+        uint64_t prodStart = prodStartIt->second;
+        uint64_t prodDur = duration[contract->producerKernel];
+
+        auto prodCoreIt = result.kernelToCore.find(contract->producerKernel);
+        auto consCoreIt = result.kernelToCore.find(kName);
+        bool sameCore = (prodCoreIt != result.kernelToCore.end() &&
+                         consCoreIt != result.kernelToCore.end() &&
+                         prodCoreIt->second == consCoreIt->second);
+
+        if (sameCore) {
+          uint64_t constraint = prodStart + prodDur + kReconfigCycles;
+          if (constraint > earliestStart)
+            earliestStart = constraint;
+        } else {
+          uint64_t pipelineDelay = prodDur / tileCount;
+          uint64_t constraint = prodStart + pipelineDelay;
+          if (constraint > earliestStart)
+            earliestStart = constraint;
+        }
+      }
+    }
+
+    // Same-core serialization.
+    auto coreIt = result.kernelToCore.find(kName);
+    if (coreIt != result.kernelToCore.end()) {
+      unsigned coreIdx = coreIt->second;
+      auto availIt = coreAvailableAt.find(coreIdx);
+      if (availIt != coreAvailableAt.end()) {
+        if (availIt->second > earliestStart)
+          earliestStart = availIt->second;
+      }
+      coreAvailableAt[coreIdx] =
+          earliestStart + duration[kName] + kReconfigCycles;
+    }
+
+    startTimes[kName] = earliestStart;
+  }
+
+  result.kernelStartTimes = std::move(startTimes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -706,7 +860,17 @@ AssignmentResult L1CoreAssigner::solve(
     return result;
   }
 
-  return extractAssignment(response, x, kernels, arch);
+  AssignmentResult result = extractAssignment(response, x, kernels, arch);
+
+  if (opts.enablePipelineScheduling && result.feasible) {
+    computePipelineStartTimes(result, kernels, contracts, /*defaultTileCount=*/4);
+    if (opts.verbose) {
+      llvm::outs() << "L1 pipeline start times computed for "
+                   << result.kernelStartTimes.size() << " kernels\n";
+    }
+  }
+
+  return result;
 }
 
 #else // !LOOM_HAVE_ORTOOLS
@@ -858,6 +1022,14 @@ AssignmentResult L1CoreAssigner::solve(
     llvm::outs() << "L1 core assignment (fallback round-robin): "
                  << kernels.size() << " kernels assigned to " << numCores
                  << " cores\n";
+  }
+
+  if (opts.enablePipelineScheduling && result.feasible) {
+    computePipelineStartTimes(result, kernels, contracts, /*defaultTileCount=*/4);
+    if (opts.verbose) {
+      llvm::outs() << "L1 pipeline start times computed for "
+                   << result.kernelStartTimes.size() << " kernels\n";
+    }
   }
 
   return result;

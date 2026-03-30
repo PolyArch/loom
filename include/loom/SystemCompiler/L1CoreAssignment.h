@@ -158,6 +158,12 @@ struct L1AssignerOptions {
   /// Number of solver worker threads (0 = auto-detect).
   unsigned numWorkers = 0;
 
+  /// When true, the L1 solver computes pipeline start times for each kernel
+  /// and populates AssignmentResult::kernelStartTimes. This enables the
+  /// TemporalScheduler to use solver-provided timing instead of its own
+  /// ASAP heuristic.
+  bool enablePipelineScheduling = false;
+
   /// Verbosity flag.
   bool verbose = false;
 

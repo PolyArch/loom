@@ -13,8 +13,36 @@
 
 #include <algorithm>
 #include <numeric>
+#include <set>
 
 namespace loom {
+
+/// Compute the set of ADG node IDs that fall outside a given partition region.
+/// Uses the ADGFlattener's grid position mapping to determine which nodes
+/// are outside the partition's row/col bounds.
+static std::set<IdIndex>
+computeExcludedNodesForPartition(const PartitionSpec &partition,
+                                 const Graph &adg,
+                                 const ADGFlattener &flattener) {
+  std::set<IdIndex> excluded;
+  for (IdIndex nodeId = 0; nodeId < static_cast<IdIndex>(adg.nodes.size());
+       ++nodeId) {
+    if (!adg.getNode(nodeId))
+      continue;
+    auto gridPos = flattener.getNodeGridPos(nodeId);
+    // Nodes without a grid position (e.g., module I/O) are not excluded,
+    // since they may be needed for routing regardless of partition.
+    if (gridPos.first < 0 || gridPos.second < 0)
+      continue;
+    unsigned row = static_cast<unsigned>(gridPos.first);
+    unsigned col = static_cast<unsigned>(gridPos.second);
+    if (row < partition.rowStart || row >= partition.rowEnd ||
+        col < partition.colStart || col >= partition.colEnd) {
+      excluded.insert(nodeId);
+    }
+  }
+  return excluded;
+}
 
 L2Result L2CoreCompiler::compile(const L2Assignment &assignment,
                                  const MapperOptions &baseMapperOpts,
@@ -36,6 +64,11 @@ L2Result L2CoreCompiler::compile(const L2Assignment &assignment,
   ResourceTracker tracker;
   bool allMapped = true;
 
+  bool hasPartitions =
+      !assignment.kernelPartitions.empty() &&
+      assignment.kernelPartitions.size() == assignment.kernels.size();
+
+  unsigned kernelIdx = 0;
   for (const auto &kernel : assignment.kernels) {
     L2KernelResult kernelResult;
     kernelResult.kernelName = kernel.kernelName;
@@ -68,6 +101,16 @@ L2Result L2CoreCompiler::compile(const L2Assignment &assignment,
 
     // Apply resource exclusions from prior kernel mappings.
     opts.excludedNodes = tracker.getUsedNodes();
+
+    // Apply partition constraints for SPATIAL_SHARING mode.
+    // Exclude all ADG nodes outside this kernel's assigned partition.
+    if (hasPartitions) {
+      std::set<IdIndex> partitionExcluded =
+          computeExcludedNodesForPartition(
+              assignment.kernelPartitions[kernelIdx], adg, adgFlattener);
+      opts.excludedNodes.insert(partitionExcluded.begin(),
+                                partitionExcluded.end());
+    }
 
     // Run the mapper.
     Mapper mapper;
@@ -116,6 +159,8 @@ L2Result L2CoreCompiler::compile(const L2Assignment &assignment,
     // assignment is infeasible.
     if (!allMapped)
       break;
+
+    kernelIdx++;
   }
 
   l2Result.allKernelsMapped = allMapped;

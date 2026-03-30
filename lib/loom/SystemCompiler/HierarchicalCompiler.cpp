@@ -304,6 +304,63 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
     // Populate ADG modules from tapestry architecture.
     populateL2ADGs(l2Assignments, arch_);
 
+    // For SPATIAL_SHARING mode, generate partitions and attach them to L2
+    // assignments so the mapper constrains each kernel to its own PE region.
+    if (config.executionModel.mode == ExecutionMode::SPATIAL_SHARING) {
+      for (auto &l2Assign : l2Assignments) {
+        if (l2Assign.kernels.size() <= 1)
+          continue;
+
+        // Look up the core type spec from the L1 architecture.
+        const loom::CoreTypeSpec *coreSpec = nullptr;
+        for (const auto &ct : l1Arch.coreTypes) {
+          if (ct.typeName == l2Assign.coreType) {
+            coreSpec = &ct;
+            break;
+          }
+        }
+        if (!coreSpec)
+          continue;
+
+        // Estimate grid dimensions from PE count (assume square grid).
+        unsigned gridDim = static_cast<unsigned>(
+            std::ceil(std::sqrt(static_cast<double>(coreSpec->numPEs))));
+        unsigned gridRows = gridDim;
+        unsigned gridCols = gridDim;
+
+        unsigned numPartitions =
+            static_cast<unsigned>(l2Assign.kernels.size());
+        if (numPartitions != 2 && numPartitions != 4)
+          numPartitions = 2; // fallback to 2-way split
+
+        loom::PartitionPlan plan =
+            loom::ADGPartitioner::generatePartitions(
+                *coreSpec, numPartitions, gridRows, gridCols);
+
+        auto validation = loom::ADGPartitioner::validatePartition(plan);
+        if (config.verbose) {
+          llvm::outs() << "  ADGPartitioner: core '"
+                       << l2Assign.coreInstanceName << "' ("
+                       << l2Assign.coreType << "): "
+                       << plan.partitions.size() << " partitions, valid="
+                       << (validation.valid ? "yes" : "no") << "\n";
+          if (!validation.valid)
+            llvm::outs() << "    validation error: "
+                         << validation.errorMessage << "\n";
+        }
+
+        // Assign partitions to kernels. Partition count may differ from
+        // kernel count when the partitioner falls back; pad or truncate.
+        if (validation.valid &&
+            plan.partitions.size() >= l2Assign.kernels.size()) {
+          l2Assign.kernelPartitions.clear();
+          for (size_t ki = 0; ki < l2Assign.kernels.size(); ++ki) {
+            l2Assign.kernelPartitions.push_back(plan.partitions[ki]);
+          }
+        }
+      }
+    }
+
     std::vector<loom::InfeasibilityCut> newCuts;
     bool allMapped = true;
     std::vector<loom::L2Result> l2Results;
@@ -448,50 +505,6 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
     if (config.verbose)
       llvm::outs() << "\nHierarchicalCompiler: FAILED - "
                    << result.diagnostics << "\n";
-  }
-
-  // For SPATIAL_SHARING mode, partition the ADG for co-located kernels.
-  if (result.success && bestTapResult.has_value() &&
-      config.executionModel.mode == ExecutionMode::SPATIAL_SHARING) {
-    for (const auto &ca : bestAssignment.coreAssignments) {
-      if (ca.assignedKernels.size() <= 1)
-        continue;
-
-      // Look up the core type spec from the L1 architecture.
-      const loom::CoreTypeSpec *coreSpec = nullptr;
-      for (const auto &ct : l1Arch.coreTypes) {
-        if (ct.typeName == ca.coreTypeName) {
-          coreSpec = &ct;
-          break;
-        }
-      }
-      if (!coreSpec)
-        continue;
-
-      // Estimate grid dimensions from PE count (assume square grid).
-      unsigned gridDim = static_cast<unsigned>(
-          std::ceil(std::sqrt(static_cast<double>(coreSpec->numPEs))));
-      unsigned gridRows = gridDim;
-      unsigned gridCols = gridDim;
-
-      unsigned numPartitions = static_cast<unsigned>(ca.assignedKernels.size());
-      if (numPartitions != 2 && numPartitions != 4)
-        numPartitions = 2; // fallback to 2-way split
-
-      loom::PartitionPlan plan = loom::ADGPartitioner::generatePartitions(
-          *coreSpec, numPartitions, gridRows, gridCols);
-
-      auto validation = loom::ADGPartitioner::validatePartition(plan);
-      if (config.verbose) {
-        llvm::outs() << "ADGPartitioner: core " << ca.coreInstanceIdx
-                     << " (" << ca.coreTypeName << "): "
-                     << plan.partitions.size() << " partitions, valid="
-                     << (validation.valid ? "yes" : "no") << "\n";
-        if (!validation.valid)
-          llvm::outs() << "  validation error: " << validation.errorMessage
-                       << "\n";
-      }
-    }
   }
 
   // Compute temporal schedule using the assignment result.

@@ -4,6 +4,7 @@
 #include "loom/Mapper/Mapper.h"
 #include "loom/Mapper/MapperOptions.h"
 #include "loom/Mapper/Types.h"
+#include "loom/SystemCompiler/ADGPartitioner.h"
 #include "loom/SystemCompiler/Contract.h"
 #include "loom/SystemCompiler/CostSummary.h"
 #include "loom/SystemCompiler/InfeasibilityCut.h"
@@ -45,6 +46,12 @@ struct L2Assignment {
 
   /// NoC port bindings: (ADG port index, contract edge name).
   std::vector<std::pair<unsigned, std::string>> nocPortBindings;
+
+  /// Per-kernel partition specs for SPATIAL_SHARING mode.
+  /// When non-empty, entry i constrains kernel i to the given PE region.
+  /// The L2 compiler uses these to compute excluded nodes so each kernel
+  /// maps only within its assigned partition.
+  std::vector<PartitionSpec> kernelPartitions;
 };
 
 /// Result for a single kernel mapping attempt.

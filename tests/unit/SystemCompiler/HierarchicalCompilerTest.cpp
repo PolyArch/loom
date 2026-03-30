@@ -10,9 +10,11 @@
 ///   T7: ConvergenceTracker best solution tracking
 ///   T8: CompilerConfig sub-options propagation
 
+#include "loom/SystemCompiler/ADGPartitioner.h"
 #include "loom/SystemCompiler/ConvergenceTracker.h"
 #include "loom/SystemCompiler/InfeasibilityCut.h"
 #include "loom/SystemCompiler/L1CoreAssignment.h"
+#include "loom/SystemCompiler/L2CoreCompiler.h"
 #include "loom/SystemCompiler/SystemTypes.h"
 
 #include <cassert>
@@ -582,6 +584,153 @@ static bool testCompilerConfigSubOptions() {
 }
 
 // =========================================================================
+// T9: enablePipelineScheduling populates kernelStartTimes
+// =========================================================================
+static bool testEnablePipelineScheduling() {
+  SystemArchitecture arch = buildMinimal2x2Arch();
+  std::vector<KernelProfile> kernels = build4KernelProfiles();
+  std::vector<ContractSpec> contracts = buildDiamondContracts();
+  std::vector<InfeasibilityCut> cuts;
+
+  L1CoreAssigner assigner;
+  L1AssignerOptions opts;
+  opts.verbose = false;
+  opts.enablePipelineScheduling = true;
+
+  AssignmentResult result = assigner.solve(kernels, contracts, arch, cuts, opts);
+
+  if (!result.feasible) {
+    std::cerr << "FAIL: testEnablePipelineScheduling - not feasible\n";
+    return false;
+  }
+
+  // When enablePipelineScheduling is true, kernelStartTimes should be
+  // populated for all assigned kernels.
+  if (result.kernelStartTimes.size() != 4) {
+    std::cerr << "FAIL: testEnablePipelineScheduling - expected 4 start times, "
+              << "got " << result.kernelStartTimes.size() << "\n";
+    return false;
+  }
+
+  // All start times should be non-negative and K0 should start at 0
+  // (it has no predecessors in the diamond graph).
+  auto k0It = result.kernelStartTimes.find("K0");
+  if (k0It == result.kernelStartTimes.end()) {
+    std::cerr << "FAIL: testEnablePipelineScheduling - K0 missing from start times\n";
+    return false;
+  }
+  if (k0It->second != 0) {
+    std::cerr << "FAIL: testEnablePipelineScheduling - K0 should start at 0, got "
+              << k0It->second << "\n";
+    return false;
+  }
+
+  // K3 depends on K1 and K2, so it must start after them.
+  auto k1It = result.kernelStartTimes.find("K1");
+  auto k2It = result.kernelStartTimes.find("K2");
+  auto k3It = result.kernelStartTimes.find("K3");
+  if (k1It == result.kernelStartTimes.end() ||
+      k2It == result.kernelStartTimes.end() ||
+      k3It == result.kernelStartTimes.end()) {
+    std::cerr << "FAIL: testEnablePipelineScheduling - missing kernel start times\n";
+    return false;
+  }
+  if (k3It->second <= 0) {
+    std::cerr << "FAIL: testEnablePipelineScheduling - K3 should start after K1/K2\n";
+    return false;
+  }
+
+  std::cout << "PASS: testEnablePipelineScheduling\n";
+  return true;
+}
+
+// =========================================================================
+// T10: enablePipelineScheduling=false leaves kernelStartTimes empty
+// =========================================================================
+static bool testPipelineSchedulingDisabled() {
+  SystemArchitecture arch = buildMinimal2x2Arch();
+  std::vector<KernelProfile> kernels = build4KernelProfiles();
+  std::vector<ContractSpec> contracts = buildDiamondContracts();
+  std::vector<InfeasibilityCut> cuts;
+
+  L1CoreAssigner assigner;
+  L1AssignerOptions opts;
+  opts.verbose = false;
+  opts.enablePipelineScheduling = false;
+
+  AssignmentResult result = assigner.solve(kernels, contracts, arch, cuts, opts);
+
+  if (!result.feasible) {
+    std::cerr << "FAIL: testPipelineSchedulingDisabled - not feasible\n";
+    return false;
+  }
+
+  // When enablePipelineScheduling is false, kernelStartTimes should be empty.
+  if (!result.kernelStartTimes.empty()) {
+    std::cerr << "FAIL: testPipelineSchedulingDisabled - "
+              << "kernelStartTimes should be empty but has "
+              << result.kernelStartTimes.size() << " entries\n";
+    return false;
+  }
+
+  std::cout << "PASS: testPipelineSchedulingDisabled\n";
+  return true;
+}
+
+// =========================================================================
+// T11: L2Assignment kernelPartitions field exists and can be populated
+// =========================================================================
+static bool testL2AssignmentPartitions() {
+  // Test that the L2Assignment struct has kernelPartitions field and
+  // that PartitionSpec values can be assigned.
+  loom::L2Assignment l2;
+  l2.coreInstanceName = "PE_A_0";
+  l2.coreType = "PE_A";
+
+  loom::L2Assignment::KernelAssignment ka0;
+  ka0.kernelName = "K0";
+  l2.kernels.push_back(ka0);
+
+  loom::L2Assignment::KernelAssignment ka1;
+  ka1.kernelName = "K1";
+  l2.kernels.push_back(ka1);
+
+  // Generate a 2-way partition for a 4x4 grid.
+  CoreTypeSpec coreType;
+  coreType.typeName = "PE_A";
+  coreType.numPEs = 16;
+  coreType.numFUs = 16;
+  coreType.spmBytes = 4096;
+
+  PartitionPlan plan =
+      ADGPartitioner::generatePartitions(coreType, 2, 4, 4);
+
+  if (plan.partitions.size() < 2) {
+    std::cerr << "FAIL: testL2AssignmentPartitions - expected >= 2 partitions\n";
+    return false;
+  }
+
+  // Assign partitions to kernels.
+  l2.kernelPartitions.push_back(plan.partitions[0]);
+  l2.kernelPartitions.push_back(plan.partitions[1]);
+
+  if (l2.kernelPartitions.size() != l2.kernels.size()) {
+    std::cerr << "FAIL: testL2AssignmentPartitions - partition/kernel size mismatch\n";
+    return false;
+  }
+
+  // Verify partition bounds are different.
+  if (l2.kernelPartitions[0].rowStart == l2.kernelPartitions[1].rowStart &&
+      l2.kernelPartitions[0].rowEnd == l2.kernelPartitions[1].rowEnd) {
+    std::cerr << "FAIL: testL2AssignmentPartitions - partitions should differ\n";
+    return false;
+  }
+
+  std::cout << "PASS: testL2AssignmentPartitions\n";
+  return true;
+}
+
+// =========================================================================
 // main
 // =========================================================================
 int main() {
@@ -595,8 +744,11 @@ int main() {
   if (!testConvergenceTrackerConvergenceDetection()) ++failures;
   if (!testConvergenceTrackerBestSolution()) ++failures;
   if (!testCompilerConfigSubOptions()) ++failures;
+  if (!testEnablePipelineScheduling()) ++failures;
+  if (!testPipelineSchedulingDisabled()) ++failures;
+  if (!testL2AssignmentPartitions()) ++failures;
 
-  std::cout << "\n" << (8 - failures) << "/8 tests passed";
+  std::cout << "\n" << (11 - failures) << "/11 tests passed";
   if (failures > 0)
     std::cout << " (" << failures << " FAILED)";
   std::cout << "\n";
