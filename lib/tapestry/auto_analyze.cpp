@@ -587,8 +587,26 @@ AutoAnalyzeResult autoAnalyze(const std::string &sourcePath,
     binding.callOrder = site.callOrder;
 
     auto it = funcAnalyses.find(site.calleeName);
-    if (it != funcAnalyses.end() && isAccelerable(it->second)) {
-      binding.target = KernelTarget::CGRA;
+    if (it != funcAnalyses.end()) {
+      binding.target =
+          isAccelerable(it->second) ? KernelTarget::CGRA : KernelTarget::HOST;
+
+      // Populate the compute profile estimate from LLVM IR analysis.
+      const FunctionAnalysis &fa = it->second;
+      binding.computeEstimate.opCount = fa.estimatedOps;
+      binding.computeEstimate.hasLoops = fa.hasLoops;
+      binding.computeEstimate.hasExternalCalls = fa.hasExternalCalls;
+
+      // Count memory accesses from parameter access info.
+      unsigned memAccesses = 0;
+      for (auto pa : fa.paramAccess) {
+        if (pa == FunctionAnalysis::READ_ONLY ||
+            pa == FunctionAnalysis::WRITE_ONLY)
+          memAccesses += 1;
+        else if (pa == FunctionAnalysis::READ_WRITE)
+          memAccesses += 2;
+      }
+      binding.computeEstimate.memoryAccessCount = memAccesses;
     } else {
       binding.target = KernelTarget::HOST;
     }

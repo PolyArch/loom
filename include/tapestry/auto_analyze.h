@@ -73,6 +73,27 @@ struct DataDependency {
 };
 
 //===----------------------------------------------------------------------===//
+// Compute profile estimate (from LLVM IR static analysis)
+//===----------------------------------------------------------------------===//
+
+/// Lightweight compute profile estimated from LLVM IR analysis of a kernel
+/// function body.  Captures operation counts and memory access patterns
+/// without requiring DFG compilation.
+struct ComputeProfileEstimate {
+  /// Estimated number of arithmetic/logic operations (binary ops + compares).
+  unsigned opCount = 0;
+
+  /// Estimated number of memory access instructions (loads + stores).
+  unsigned memoryAccessCount = 0;
+
+  /// Whether the function body contains loop back-edges.
+  bool hasLoops = false;
+
+  /// Whether the function calls other non-intrinsic functions.
+  bool hasExternalCalls = false;
+};
+
+//===----------------------------------------------------------------------===//
 // Call site binding (provenance for host scheduler generation)
 //===----------------------------------------------------------------------===//
 
@@ -91,6 +112,9 @@ struct CallSiteBinding {
 
   /// Target designation for this kernel.
   KernelTarget target = KernelTarget::AUTO;
+
+  /// Compute profile estimate from LLVM IR static analysis.
+  ComputeProfileEstimate computeEstimate;
 };
 
 //===----------------------------------------------------------------------===//

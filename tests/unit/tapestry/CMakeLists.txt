@@ -331,3 +331,49 @@ target_link_libraries(variant-test PRIVATE
 set_target_properties(variant-test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
 )
+
+# SSG auto-analyze pipeline tests
+add_executable(ssg-auto-test SSGAutoTest.cpp)
+
+target_include_directories(ssg-auto-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+  ${CMAKE_BINARY_DIR}/include
+)
+
+target_link_libraries(ssg-auto-test PRIVATE
+  TapestryCore
+  LoomTDG
+  LoomTDGBuilder
+  LoomSystemCompiler
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(ssg-auto-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)
+
+# SSG parity tests
+add_executable(ssg-parity-test SSGParityTest.cpp)
+
+target_include_directories(ssg-parity-test PRIVATE
+  ${LOOM_INCLUDE_DIR}
+  ${CMAKE_BINARY_DIR}/include
+)
+
+target_link_libraries(ssg-parity-test PRIVATE
+  TapestryCore
+  LoomTDG
+  LoomTDGBuilder
+  LoomSystemCompiler
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  ${TDG_TEST_LLVM_LIBS}
+)
+
+set_target_properties(ssg-parity-test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${LOOM_RUNTIME_DIR}
+)
