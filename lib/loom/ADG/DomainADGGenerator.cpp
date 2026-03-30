@@ -86,6 +86,11 @@ static std::string bitsType(unsigned width) {
   return "!fabric.bits<" + std::to_string(width) + ">";
 }
 
+static std::string taggedBitsType(unsigned width, unsigned tagWidth) {
+  return "!fabric.tagged<" + bitsType(width) + ", i" +
+         std::to_string(tagWidth) + ">";
+}
+
 static std::string boolAttr(bool value) { return value ? "true" : "false"; }
 
 /// Determine the integer type string for a given data width.
@@ -97,6 +102,251 @@ static std::string intTypeStr(unsigned width) {
 /// Determine the float type string matching the data width.
 static std::string floatTypeStr(unsigned width) {
   return (width > 32) ? "f64" : "f32";
+}
+
+static std::vector<std::vector<bool>> fullConnectivity(unsigned numInputs,
+                                                       unsigned numOutputs) {
+  return std::vector<std::vector<bool>>(
+      numOutputs, std::vector<bool>(numInputs, true));
+}
+
+static unsigned memoryTagWidthForLanes(unsigned laneCount) {
+  if (laneCount <= 1)
+    return 0;
+  unsigned value = laneCount - 1;
+  unsigned bits = 0;
+  while (value != 0) {
+    ++bits;
+    value >>= 1;
+  }
+  return bits;
+}
+
+struct TaggedExtMemBridgeTemplates {
+  std::optional<SWHandle> ldAddrMux;
+  std::optional<SWHandle> stAddrMux;
+  std::optional<SWHandle> stDataMux;
+  std::optional<SWHandle> ldDataDemux;
+  std::optional<SWHandle> ldDoneDemux;
+  std::optional<SWHandle> stDoneDemux;
+};
+
+struct TaggedExtMemBridgeInstances {
+  std::vector<InstanceHandle> ldAddrTags;
+  std::vector<InstanceHandle> stAddrTags;
+  std::vector<InstanceHandle> stDataTags;
+  std::vector<InstanceHandle> ldDataDrops;
+  std::vector<InstanceHandle> ldDoneDrops;
+  std::vector<InstanceHandle> stDoneDrops;
+  std::optional<InstanceHandle> ldAddrMux;
+  std::optional<InstanceHandle> stAddrMux;
+  std::optional<InstanceHandle> stDataMux;
+  std::optional<InstanceHandle> ldDataDemux;
+  std::optional<InstanceHandle> ldDoneDemux;
+  std::optional<InstanceHandle> stDoneDemux;
+};
+
+static TaggedExtMemBridgeTemplates buildTaggedExtMemBridgeTemplates(
+    ADGBuilder &builder, const std::string &prefix, unsigned dataWidth,
+    unsigned ldPorts, unsigned stPorts) {
+  TaggedExtMemBridgeTemplates bridge;
+  unsigned tagWidth = memoryTagWidthForLanes(std::max<unsigned>(ldPorts, stPorts));
+  std::string taggedTy = taggedBitsType(dataWidth, tagWidth);
+
+  if (ldPorts > 1) {
+    bridge.ldAddrMux = builder.defineSpatialSW(
+        prefix + "_ld_addr_mux",
+        std::vector<std::string>(ldPorts, taggedTy), {taggedTy},
+        fullConnectivity(ldPorts, 1));
+    bridge.ldDataDemux = builder.defineTemporalSW(
+        prefix + "_ld_data_demux", {taggedTy},
+        std::vector<std::string>(ldPorts, taggedTy),
+        fullConnectivity(1, ldPorts), ldPorts);
+    bridge.ldDoneDemux = builder.defineTemporalSW(
+        prefix + "_ld_done_demux", {taggedTy},
+        std::vector<std::string>(ldPorts, taggedTy),
+        fullConnectivity(1, ldPorts), ldPorts);
+  }
+
+  if (stPorts > 1) {
+    bridge.stAddrMux = builder.defineSpatialSW(
+        prefix + "_st_addr_mux",
+        std::vector<std::string>(stPorts, taggedTy), {taggedTy},
+        fullConnectivity(stPorts, 1));
+    bridge.stDataMux = builder.defineSpatialSW(
+        prefix + "_st_data_mux",
+        std::vector<std::string>(stPorts, taggedTy), {taggedTy},
+        fullConnectivity(stPorts, 1));
+    bridge.stDoneDemux = builder.defineTemporalSW(
+        prefix + "_st_done_demux", {taggedTy},
+        std::vector<std::string>(stPorts, taggedTy),
+        fullConnectivity(1, stPorts), stPorts);
+  }
+
+  return bridge;
+}
+
+static std::vector<TaggedExtMemBridgeInstances>
+wireRoundRobinTaggedExtMemBridge(ADGBuilder &builder, const MeshResult &mesh,
+                                 const std::vector<InstanceHandle> &extMems,
+                                 unsigned topLeftIngressCount,
+                                 unsigned bottomLeftEgressCount,
+                                 const TaggedExtMemBridgeTemplates &templates,
+                                 unsigned dataWidth, unsigned ldPorts,
+                                 unsigned stPorts) {
+  std::vector<TaggedExtMemBridgeInstances> bridges;
+  bridges.reserve(extMems.size());
+
+  unsigned leftIngressIdx = 0;
+  unsigned rightIngressIdx = topLeftIngressCount;
+  unsigned leftEgressIdx = 0;
+  unsigned rightEgressIdx = bottomLeftEgressCount;
+
+  unsigned tagWidth = memoryTagWidthForLanes(std::max<unsigned>(ldPorts, stPorts));
+  std::string bitsTy = bitsType(dataWidth);
+  std::string taggedTy = taggedBitsType(dataWidth, tagWidth);
+
+  for (unsigned memIdx = 0; memIdx < extMems.size(); ++memIdx) {
+    InstanceHandle mem = extMems[memIdx];
+    unsigned &ingressIdx =
+        (memIdx % 2 == 0) ? leftIngressIdx : rightIngressIdx;
+    unsigned &egressIdx = (memIdx % 2 == 0) ? leftEgressIdx : rightEgressIdx;
+
+    TaggedExtMemBridgeInstances bridge;
+
+    for (unsigned lane = 0; lane < ldPorts; ++lane)
+      bridge.ldAddrTags.push_back(
+          builder.createAddTag(bitsTy, taggedTy, lane));
+    for (unsigned lane = 0; lane < stPorts; ++lane) {
+      bridge.stAddrTags.push_back(
+          builder.createAddTag(bitsTy, taggedTy, lane));
+      bridge.stDataTags.push_back(
+          builder.createAddTag(bitsTy, taggedTy, lane));
+    }
+    for (unsigned lane = 0; lane < ldPorts; ++lane) {
+      bridge.ldDataDrops.push_back(builder.createDelTag(taggedTy, bitsTy));
+      bridge.ldDoneDrops.push_back(builder.createDelTag(taggedTy, bitsTy));
+    }
+    for (unsigned lane = 0; lane < stPorts; ++lane)
+      bridge.stDoneDrops.push_back(builder.createDelTag(taggedTy, bitsTy));
+
+    if (templates.ldAddrMux) {
+      bridge.ldAddrMux = builder.instantiateSW(
+          *templates.ldAddrMux,
+          "ld_addr_mux_" + std::to_string(memIdx));
+    }
+    if (templates.stAddrMux) {
+      bridge.stAddrMux = builder.instantiateSW(
+          *templates.stAddrMux,
+          "st_addr_mux_" + std::to_string(memIdx));
+    }
+    if (templates.stDataMux) {
+      bridge.stDataMux = builder.instantiateSW(
+          *templates.stDataMux,
+          "st_data_mux_" + std::to_string(memIdx));
+    }
+    if (templates.ldDataDemux) {
+      bridge.ldDataDemux = builder.instantiateSW(
+          *templates.ldDataDemux,
+          "ld_data_demux_" + std::to_string(memIdx));
+    }
+    if (templates.ldDoneDemux) {
+      bridge.ldDoneDemux = builder.instantiateSW(
+          *templates.ldDoneDemux,
+          "ld_done_demux_" + std::to_string(memIdx));
+    }
+    if (templates.stDoneDemux) {
+      bridge.stDoneDemux = builder.instantiateSW(
+          *templates.stDoneDemux,
+          "st_done_demux_" + std::to_string(memIdx));
+    }
+
+    for (unsigned lane = 0; lane < ldPorts; ++lane) {
+      builder.connect(mesh.egressPorts[egressIdx + lane].instance,
+                      mesh.egressPorts[egressIdx + lane].port,
+                      bridge.ldAddrTags[lane], 0);
+      if (bridge.ldAddrMux)
+        builder.connect(bridge.ldAddrTags[lane], 0, *bridge.ldAddrMux, lane);
+    }
+    if (ldPorts > 0) {
+      builder.connect(bridge.ldAddrMux ? *bridge.ldAddrMux : bridge.ldAddrTags[0],
+                      0, mem, 1);
+    }
+    egressIdx += ldPorts;
+
+    for (unsigned lane = 0; lane < stPorts; ++lane) {
+      builder.connect(mesh.egressPorts[egressIdx + lane].instance,
+                      mesh.egressPorts[egressIdx + lane].port,
+                      bridge.stAddrTags[lane], 0);
+      if (bridge.stAddrMux)
+        builder.connect(bridge.stAddrTags[lane], 0, *bridge.stAddrMux, lane);
+    }
+    if (stPorts > 0) {
+      builder.connect(bridge.stAddrMux ? *bridge.stAddrMux : bridge.stAddrTags[0],
+                      0, mem, 1 + (ldPorts > 0 ? 1 : 0));
+    }
+    egressIdx += stPorts;
+
+    for (unsigned lane = 0; lane < stPorts; ++lane) {
+      builder.connect(mesh.egressPorts[egressIdx + lane].instance,
+                      mesh.egressPorts[egressIdx + lane].port,
+                      bridge.stDataTags[lane], 0);
+      if (bridge.stDataMux)
+        builder.connect(bridge.stDataTags[lane], 0, *bridge.stDataMux, lane);
+    }
+    if (stPorts > 0) {
+      builder.connect(bridge.stDataMux ? *bridge.stDataMux : bridge.stDataTags[0],
+                      0, mem, 1 + (ldPorts > 0 ? 1 : 0) + 1);
+    }
+    egressIdx += stPorts;
+
+    unsigned extOutPort = 0;
+    if (ldPorts > 0) {
+      if (bridge.ldDataDemux)
+        builder.connect(mem, extOutPort, *bridge.ldDataDemux, 0);
+      for (unsigned lane = 0; lane < ldPorts; ++lane) {
+        builder.connect(bridge.ldDataDemux ? *bridge.ldDataDemux : mem,
+                        bridge.ldDataDemux ? lane : extOutPort,
+                        bridge.ldDataDrops[lane], 0);
+        builder.connect(bridge.ldDataDrops[lane], 0,
+                        mesh.ingressPorts[ingressIdx + lane].instance,
+                        mesh.ingressPorts[ingressIdx + lane].port);
+      }
+      ingressIdx += ldPorts;
+      ++extOutPort;
+
+      if (bridge.ldDoneDemux)
+        builder.connect(mem, extOutPort, *bridge.ldDoneDemux, 0);
+      for (unsigned lane = 0; lane < ldPorts; ++lane) {
+        builder.connect(bridge.ldDoneDemux ? *bridge.ldDoneDemux : mem,
+                        bridge.ldDoneDemux ? lane : extOutPort,
+                        bridge.ldDoneDrops[lane], 0);
+        builder.connect(bridge.ldDoneDrops[lane], 0,
+                        mesh.ingressPorts[ingressIdx + lane].instance,
+                        mesh.ingressPorts[ingressIdx + lane].port);
+      }
+      ingressIdx += ldPorts;
+      ++extOutPort;
+    }
+
+    if (stPorts > 0) {
+      if (bridge.stDoneDemux)
+        builder.connect(mem, extOutPort, *bridge.stDoneDemux, 0);
+      for (unsigned lane = 0; lane < stPorts; ++lane) {
+        builder.connect(bridge.stDoneDemux ? *bridge.stDoneDemux : mem,
+                        bridge.stDoneDemux ? lane : extOutPort,
+                        bridge.stDoneDrops[lane], 0);
+        builder.connect(bridge.stDoneDrops[lane], 0,
+                        mesh.ingressPorts[ingressIdx + lane].instance,
+                        mesh.ingressPorts[ingressIdx + lane].port);
+      }
+      ingressIdx += stPorts;
+    }
+
+    bridges.push_back(std::move(bridge));
+  }
+
+  return bridges;
 }
 
 //===----------------------------------------------------------------------===//
@@ -289,7 +539,7 @@ static void defineSciCompSpecializedFUs(ADGBuilder &builder,
     FunctionUnitSpec scatterSpec;
     scatterSpec.name = prefix + "_scatter_store";
     scatterSpec.inputTypes = {"index", itype, "none"};
-    scatterSpec.outputTypes = {"none"};
+    scatterSpec.outputTypes = {itype, "index"};
     scatterSpec.ops = {"handshake.store"};
     fus.push_back(builder.defineFU(scatterSpec));
   }
@@ -543,12 +793,17 @@ static void buildSciCompADGImpl(ADGBuilder &builder,
                                  params.dataWidth, fus);
   }
 
+  unsigned extMemIngressPerSide =
+      params.extMemLdPorts + params.extMemLdPorts + params.extMemStPorts;
+  unsigned extMemEgressPerSide =
+      params.extMemLdPorts + params.extMemStPorts + params.extMemStPorts;
+
   ChessMeshOptions meshOpts;
-  meshOpts.topLeftExtraInputs = kExtMemOutputs + params.scalarInputs;
-  meshOpts.topRightExtraInputs = kExtMemOutputs;
-  meshOpts.bottomLeftExtraOutputs = kExtMemDataInputs;
+  meshOpts.topLeftExtraInputs = extMemIngressPerSide + params.scalarInputs;
+  meshOpts.topRightExtraInputs = extMemIngressPerSide;
+  meshOpts.bottomLeftExtraOutputs = extMemEgressPerSide;
   meshOpts.bottomRightExtraOutputs =
-      kExtMemDataInputs + params.scalarOutputs;
+      extMemEgressPerSide + params.scalarOutputs;
 
   auto mesh = builder.buildChessMesh(params.arrayRows, params.arrayCols,
                                      [&](unsigned, unsigned) { return pe; },
@@ -569,28 +824,13 @@ static void buildSciCompADGImpl(ADGBuilder &builder,
   for (unsigned idx = 0; idx < extMems.size(); ++idx)
     builder.connectMemrefToExtMem(memrefs[idx], extMems[idx]);
 
-  unsigned leftIngressIdx = 0;
-  unsigned rightIngressIdx = meshOpts.topLeftExtraInputs;
-  unsigned leftEgressIdx = 0;
-  unsigned rightEgressIdx = meshOpts.bottomLeftExtraOutputs;
-
-  for (unsigned memIdx = 0; memIdx < extMems.size(); ++memIdx) {
-    InstanceHandle mem = extMems[memIdx];
-    unsigned &ingressIdx =
-        (memIdx % 2 == 0) ? leftIngressIdx : rightIngressIdx;
-    unsigned &egressIdx = (memIdx % 2 == 0) ? leftEgressIdx : rightEgressIdx;
-
-    for (unsigned outPort = 0; outPort < kExtMemOutputs; ++outPort) {
-      builder.connect(mem, outPort, mesh.ingressPorts[ingressIdx].instance,
-                      mesh.ingressPorts[ingressIdx].port);
-      ++ingressIdx;
-    }
-    for (unsigned inPort = 0; inPort < kExtMemDataInputs; ++inPort) {
-      builder.connect(mesh.egressPorts[egressIdx].instance,
-                      mesh.egressPorts[egressIdx].port, mem, 1 + inPort);
-      ++egressIdx;
-    }
-  }
+  auto bridgeTemplates = buildTaggedExtMemBridgeTemplates(
+      builder, moduleName, params.dataWidth, params.extMemLdPorts,
+      params.extMemStPorts);
+  (void)wireRoundRobinTaggedExtMemBridge(
+      builder, mesh, extMems, meshOpts.topLeftExtraInputs,
+      meshOpts.bottomLeftExtraOutputs, bridgeTemplates, params.dataWidth,
+      params.extMemLdPorts, params.extMemStPorts);
 
   std::vector<unsigned> scalarIns = builder.addInputs(
       "scalar",
@@ -599,12 +839,12 @@ static void buildSciCompADGImpl(ADGBuilder &builder,
       "scalar_out", std::vector<std::string>(params.scalarOutputs,
                                              bitsType(params.dataWidth)));
 
-  unsigned scalarIngressIdx = kExtMemOutputs;
+  unsigned scalarIngressIdx = extMemIngressPerSide;
   for (unsigned idx = 0; idx < scalarIns.size(); ++idx, ++scalarIngressIdx)
     builder.connectInputToPort(scalarIns[idx],
                                mesh.ingressPorts[scalarIngressIdx]);
 
-  unsigned scalarEgressIdx = 2 * kExtMemDataInputs;
+  unsigned scalarEgressIdx = 2 * extMemEgressPerSide;
   for (unsigned idx = 0; idx < scalarOuts.size(); ++idx, ++scalarEgressIdx)
     builder.connectPortToOutput(mesh.egressPorts[scalarEgressIdx],
                                 scalarOuts[idx]);

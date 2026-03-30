@@ -22,6 +22,9 @@ bool isRoutingCrossbarOutputPort(IdIndex portId, const Graph &adg);
 /// Returns true if opName is a software memory interface operation.
 bool isSoftwareMemoryInterfaceOpName(llvm::StringRef opName);
 
+/// Returns true if opName should be treated as a routing hotspot.
+bool isRoutingHotspotOpName(llvm::StringRef opName);
+
 /// Returns true if portId is an output port of a non-routing node.
 bool isNonRoutingOutputPort(IdIndex portId, const Graph &adg);
 

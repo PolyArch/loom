@@ -1,679 +1,685 @@
 module {
-fabric.module @SC-SPM_core(%mem0: memref<?xi64>, %mem1: memref<?xi64>, %scalar0: !fabric.bits<64>, %scalar1: !fabric.bits<64>, %scalar2: !fabric.bits<64>, %scalar3: !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>) attributes {loom.decomposable = true, loom.extmem_ld_ports = 4, loom.extmem_st_ports = 2, loom.fp_add_units = 4, loom.fp_div_units = 1, loom.fp_mul_units = 4, loom.has_branch = false, loom.has_fma = true, loom.has_fp_min = false, loom.has_indirect_load = true, loom.has_rsqrt = false, loom.has_scatter_store = false, loom.int_alu_units = 6, loom.int_mul_units = 1, loom.routing_topology = "CHESS", loom.scicomp_khg_type = "SC-SPM", loom.spm_ld_ports = 4, loom.spm_st_ports = 2, loom.sub_lane_bits = 32} {
-  fabric.spatial_pe @SC-SPM_core_spe(%in0: !fabric.bits<64>, %in1: !fabric.bits<64>, %in2: !fabric.bits<64>, %in3: !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) {
-    fabric.function_unit @SC-SPM_core_const_int(%arg0: none) -> (i64) [latency = 1, interval = 1] {
+fabric.module @SC_SPM_core(%mem0: memref<?xi64>, %mem1: memref<?xi64>, %scalar0: !fabric.bits<64>, %scalar1: !fabric.bits<64>, %scalar2: !fabric.bits<64>, %scalar3: !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>) attributes {loom.decomposable = true, loom.extmem_ld_ports = 4, loom.extmem_st_ports = 2, loom.fp_add_units = 4, loom.fp_div_units = 1, loom.fp_mul_units = 4, loom.has_branch = false, loom.has_fma = true, loom.has_fp_min = false, loom.has_indirect_load = true, loom.has_rsqrt = false, loom.has_scatter_store = false, loom.int_alu_units = 6, loom.int_mul_units = 1, loom.routing_topology = "CHESS", loom.scicomp_khg_type = "SC-SPM", loom.spm_ld_ports = 4, loom.spm_st_ports = 2, loom.sub_lane_bits = 32} {
+  fabric.spatial_pe @SC_SPM_core_spe(%in0: !fabric.bits<64>, %in1: !fabric.bits<64>, %in2: !fabric.bits<64>, %in3: !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) {
+    fabric.function_unit @SC_SPM_core_const_int(%arg0: none) -> (i64) [latency = 1, interval = 1] {
       %0 = handshake.constant %arg0 {value = 0 : i64} : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_const_index(%arg0: none) -> (index) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_const_index(%arg0: none) -> (index) [latency = 1, interval = 1] {
       %0 = handshake.constant %arg0 {value = 0 : index} : index
       fabric.yield %0 : index
     }
-    fabric.function_unit @SC-SPM_core_const_float(%arg0: none) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_const_float(%arg0: none) -> (f64) [latency = 1, interval = 1] {
       %0 = handshake.constant %arg0 {value = 0.000000e+00 : f64} : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_index_to_int(%arg0: index) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_index_to_int(%arg0: index) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.index_cast %arg0 : index to i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_int_to_index(%arg0: i64) -> (index) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_int_to_index(%arg0: i64) -> (index) [latency = 1, interval = 1] {
       %0 = arith.index_cast %arg0 : i64 to index
       fabric.yield %0 : index
     }
-    fabric.function_unit @SC-SPM_core_stream(%arg0: index, %arg1: index, %arg2: index) -> (index, i1) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_stream(%arg0: index, %arg1: index, %arg2: index) -> (index, i1) [latency = -1, interval = -1] {
       %0, %1 = dataflow.stream %arg0, %arg1, %arg2 {step_op = "+=", cont_cond = "<"} : (index, index, index) -> (index, i1)
       fabric.yield %0, %1 : index, i1
     }
-    fabric.function_unit @SC-SPM_core_mux_int(%arg0: index, %arg1: i64, %arg2: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_mux_int(%arg0: index, %arg1: i64, %arg2: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = handshake.mux %arg0 [%arg1, %arg2] : index, i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_mux_none(%arg0: index, %arg1: none, %arg2: none) -> (none) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_mux_none(%arg0: index, %arg1: none, %arg2: none) -> (none) [latency = 1, interval = 1] {
       %0 = handshake.mux %arg0 [%arg1, %arg2] : index, none
       fabric.yield %0 : none
     }
-    fabric.function_unit @SC-SPM_core_mux_index(%arg0: index, %arg1: index, %arg2: index) -> (index) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_mux_index(%arg0: index, %arg1: index, %arg2: index) -> (index) [latency = 1, interval = 1] {
       %0 = handshake.mux %arg0 [%arg1, %arg2] : index, index
       fabric.yield %0 : index
     }
-    fabric.function_unit @SC-SPM_core_join(%arg0: none, %arg1: none, %arg2: none, %arg3: none) -> (none) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_join(%arg0: none, %arg1: none, %arg2: none, %arg3: none) -> (none) [latency = 1, interval = 1] {
       %0 = handshake.join %arg0, %arg1, %arg2, %arg3 : none, none, none, none
       fabric.yield %0 : none
     }
-    fabric.function_unit @SC-SPM_core_gate_int(%arg0: i64, %arg1: i1) -> (i64, i1) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_gate_int(%arg0: i64, %arg1: i1) -> (i64, i1) [latency = -1, interval = -1] {
       %0, %1 = dataflow.gate %arg0, %arg1 : i64, i1 -> i64, i1
       fabric.yield %0, %1 : i64, i1
     }
-    fabric.function_unit @SC-SPM_core_gate_index(%arg0: index, %arg1: i1) -> (index, i1) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_gate_index(%arg0: index, %arg1: i1) -> (index, i1) [latency = -1, interval = -1] {
       %0, %1 = dataflow.gate %arg0, %arg1 : index, i1 -> index, i1
       fabric.yield %0, %1 : index, i1
     }
-    fabric.function_unit @SC-SPM_core_gate_float(%arg0: f64, %arg1: i1) -> (f64, i1) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_gate_float(%arg0: f64, %arg1: i1) -> (f64, i1) [latency = -1, interval = -1] {
       %0, %1 = dataflow.gate %arg0, %arg1 : f64, i1 -> f64, i1
       fabric.yield %0, %1 : f64, i1
     }
-    fabric.function_unit @SC-SPM_core_gate_i1(%arg0: i1, %arg1: i1) -> (i1, i1) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_gate_i1(%arg0: i1, %arg1: i1) -> (i1, i1) [latency = -1, interval = -1] {
       %0, %1 = dataflow.gate %arg0, %arg1 : i1, i1 -> i1, i1
       fabric.yield %0, %1 : i1, i1
     }
-    fabric.function_unit @SC-SPM_core_carry_int(%arg0: i1, %arg1: i64, %arg2: i64) -> (i64) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_carry_int(%arg0: i1, %arg1: i64, %arg2: i64) -> (i64) [latency = -1, interval = -1] {
       %0 = dataflow.carry %arg0, %arg1, %arg2 : i1, i64, i64 -> i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_carry_none(%arg0: i1, %arg1: none, %arg2: none) -> (none) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_carry_none(%arg0: i1, %arg1: none, %arg2: none) -> (none) [latency = -1, interval = -1] {
       %0 = dataflow.carry %arg0, %arg1, %arg2 : i1, none, none -> none
       fabric.yield %0 : none
     }
-    fabric.function_unit @SC-SPM_core_carry_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_carry_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = -1, interval = -1] {
       %0 = dataflow.carry %arg0, %arg1, %arg2 : i1, f64, f64 -> f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_cond_br_int(%arg0: i1, %arg1: i64) -> (i64, i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_cond_br_int(%arg0: i1, %arg1: i64) -> (i64, i64) [latency = 1, interval = 1] {
       %0, %1 = handshake.cond_br %arg0, %arg1 : i64
       fabric.yield %0, %1 : i64, i64
     }
-    fabric.function_unit @SC-SPM_core_cond_br_none(%arg0: i1, %arg1: none) -> (none, none) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_cond_br_none(%arg0: i1, %arg1: none) -> (none, none) [latency = 1, interval = 1] {
       %0, %1 = handshake.cond_br %arg0, %arg1 : none
       fabric.yield %0, %1 : none, none
     }
-    fabric.function_unit @SC-SPM_core_cond_br_float(%arg0: i1, %arg1: f64) -> (f64, f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_cond_br_float(%arg0: i1, %arg1: f64) -> (f64, f64) [latency = 1, interval = 1] {
       %0, %1 = handshake.cond_br %arg0, %arg1 : f64
       fabric.yield %0, %1 : f64, f64
     }
-    fabric.function_unit @SC-SPM_core_invariant_int(%arg0: i1, %arg1: i64) -> (i64) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_invariant_int(%arg0: i1, %arg1: i64) -> (i64) [latency = -1, interval = -1] {
       %0 = dataflow.invariant %arg0, %arg1 : i1, i64 -> i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_invariant_index(%arg0: i1, %arg1: index) -> (index) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_invariant_index(%arg0: i1, %arg1: index) -> (index) [latency = -1, interval = -1] {
       %0 = dataflow.invariant %arg0, %arg1 : i1, index -> index
       fabric.yield %0 : index
     }
-    fabric.function_unit @SC-SPM_core_invariant_float(%arg0: i1, %arg1: f64) -> (f64) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_invariant_float(%arg0: i1, %arg1: f64) -> (f64) [latency = -1, interval = -1] {
       %0 = dataflow.invariant %arg0, %arg1 : i1, f64 -> f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_invariant_none(%arg0: i1, %arg1: none) -> (none) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_invariant_none(%arg0: i1, %arg1: none) -> (none) [latency = -1, interval = -1] {
       %0 = dataflow.invariant %arg0, %arg1 : i1, none -> none
       fabric.yield %0 : none
     }
-    fabric.function_unit @SC-SPM_core_invariant_i1(%arg0: i1, %arg1: i1) -> (i1) [latency = -1, interval = -1] {
+    fabric.function_unit @SC_SPM_core_invariant_i1(%arg0: i1, %arg1: i1) -> (i1) [latency = -1, interval = -1] {
       %0 = dataflow.invariant %arg0, %arg1 : i1, i1 -> i1
       fabric.yield %0 : i1
     }
-    fabric.function_unit @SC-SPM_core_load(%arg0: index, %arg1: i64, %arg2: none) -> (i64, index) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_load(%arg0: index, %arg1: i64, %arg2: none) -> (i64, index) [latency = 1, interval = 1] {
       %0, %1 = handshake.load [%arg0] %arg1, %arg2 : index, i64
       fabric.yield %0, %1 : i64, index
     }
-    fabric.function_unit @SC-SPM_core_store(%arg0: index, %arg1: i64, %arg2: none) -> (i64, index) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_store(%arg0: index, %arg1: i64, %arg2: none) -> (i64, index) [latency = 1, interval = 1] {
       %0, %1 = handshake.store [%arg0] %arg1, %arg2 : index, i64
       fabric.yield %0, %1 : i64, index
     }
-    fabric.function_unit @SC-SPM_core_select_int(%arg0: i1, %arg1: i64, %arg2: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_select_int(%arg0: i1, %arg1: i64, %arg2: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.select %arg0, %arg1, %arg2 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_select_index(%arg0: i1, %arg1: index, %arg2: index) -> (index) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_select_index(%arg0: i1, %arg1: index, %arg2: index) -> (index) [latency = 1, interval = 1] {
       %0 = arith.select %arg0, %arg1, %arg2 : index
       fabric.yield %0 : index
     }
-    fabric.function_unit @SC-SPM_core_cmpi_int(%arg0: i64, %arg1: i64) -> (i1) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_cmpi_int(%arg0: i64, %arg1: i64) -> (i1) [latency = 1, interval = 1] {
       %0 = arith.cmpi slt, %arg0, %arg1 : i64
       fabric.yield %0 : i1
     }
-    fabric.function_unit @SC-SPM_core_addi_index(%arg0: index, %arg1: index) -> (index) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_addi_index(%arg0: index, %arg1: index) -> (index) [latency = 1, interval = 1] {
       %0 = arith.addi %arg0, %arg1 : index
       fabric.yield %0 : index
     }
-    fabric.function_unit @SC-SPM_core_muli_index(%arg0: index, %arg1: index) -> (index) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_muli_index(%arg0: index, %arg1: index) -> (index) [latency = 1, interval = 1] {
       %0 = arith.muli %arg0, %arg1 : index
       fabric.yield %0 : index
     }
-    fabric.function_unit @SC-SPM_core_alu0_addi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu0_addi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.addi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu0_subi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu0_subi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.subi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu0_andi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu0_andi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.andi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu0_ori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu0_ori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.ori %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu0_xori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu0_xori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.xori %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu0_shli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu0_shli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shli %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu0_shrsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu0_shrsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shrsi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu0_shrui(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu0_shrui(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shrui %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu1_addi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu1_addi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.addi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu1_subi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu1_subi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.subi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu1_andi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu1_andi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.andi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu1_ori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu1_ori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.ori %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu1_xori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu1_xori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.xori %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu1_shli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu1_shli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shli %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu1_shrsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu1_shrsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shrsi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu1_shrui(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu1_shrui(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shrui %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu2_addi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu2_addi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.addi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu2_subi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu2_subi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.subi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu2_andi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu2_andi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.andi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu2_ori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu2_ori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.ori %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu2_xori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu2_xori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.xori %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu2_shli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu2_shli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shli %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu2_shrsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu2_shrsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shrsi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu2_shrui(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu2_shrui(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shrui %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu3_addi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu3_addi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.addi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu3_subi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu3_subi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.subi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu3_andi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu3_andi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.andi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu3_ori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu3_ori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.ori %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu3_xori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu3_xori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.xori %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu3_shli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu3_shli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shli %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu3_shrsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu3_shrsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shrsi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu3_shrui(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu3_shrui(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shrui %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu4_addi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu4_addi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.addi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu4_subi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu4_subi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.subi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu4_andi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu4_andi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.andi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu4_ori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu4_ori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.ori %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu4_xori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu4_xori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.xori %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu4_shli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu4_shli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shli %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu4_shrsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu4_shrsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shrsi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu4_shrui(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu4_shrui(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shrui %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu5_addi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu5_addi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.addi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu5_subi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu5_subi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.subi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu5_andi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu5_andi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.andi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu5_ori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu5_ori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.ori %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu5_xori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu5_xori(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.xori %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu5_shli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu5_shli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shli %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu5_shrsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu5_shrsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shrsi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_alu5_shrui(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_alu5_shrui(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.shrui %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_mul0_muli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_mul0_muli(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.muli %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_mul0_divsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_mul0_divsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.divsi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_mul0_remsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_mul0_remsi(%arg0: i64, %arg1: i64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.remsi %arg0, %arg1 : i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_fp0_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp0_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.addf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp0_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp0_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.subf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp0_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp0_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.mulf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp0_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp0_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.divf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp0_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp0_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
       %0 = arith.cmpf olt, %arg0, %arg1 : f64
       fabric.yield %0 : i1
     }
-    fabric.function_unit @SC-SPM_core_fp0_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp0_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.select %arg0, %arg1, %arg2 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp0_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp0_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.sitofp %arg0 : i64 to f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp0_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp0_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.fptosi %arg0 : f64 to i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_fp0_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp0_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.negf %arg0 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp1_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp1_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.addf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp1_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp1_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.subf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp1_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp1_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.mulf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp1_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp1_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.divf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp1_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp1_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
       %0 = arith.cmpf olt, %arg0, %arg1 : f64
       fabric.yield %0 : i1
     }
-    fabric.function_unit @SC-SPM_core_fp1_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp1_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.select %arg0, %arg1, %arg2 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp1_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp1_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.sitofp %arg0 : i64 to f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp1_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp1_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.fptosi %arg0 : f64 to i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_fp1_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp1_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.negf %arg0 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp2_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp2_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.addf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp2_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp2_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.subf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp2_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp2_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.mulf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp2_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp2_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.divf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp2_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp2_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
       %0 = arith.cmpf olt, %arg0, %arg1 : f64
       fabric.yield %0 : i1
     }
-    fabric.function_unit @SC-SPM_core_fp2_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp2_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.select %arg0, %arg1, %arg2 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp2_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp2_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.sitofp %arg0 : i64 to f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp2_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp2_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.fptosi %arg0 : f64 to i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_fp2_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp2_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.negf %arg0 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp3_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp3_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.addf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp3_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp3_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.subf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp3_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp3_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.mulf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp3_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp3_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.divf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp3_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp3_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
       %0 = arith.cmpf olt, %arg0, %arg1 : f64
       fabric.yield %0 : i1
     }
-    fabric.function_unit @SC-SPM_core_fp3_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp3_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.select %arg0, %arg1, %arg2 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp3_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp3_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.sitofp %arg0 : i64 to f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp3_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp3_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.fptosi %arg0 : f64 to i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_fp3_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp3_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.negf %arg0 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp4_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp4_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.addf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp4_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp4_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.subf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp4_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp4_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.mulf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp4_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp4_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.divf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp4_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp4_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
       %0 = arith.cmpf olt, %arg0, %arg1 : f64
       fabric.yield %0 : i1
     }
-    fabric.function_unit @SC-SPM_core_fp4_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp4_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.select %arg0, %arg1, %arg2 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp4_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp4_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.sitofp %arg0 : i64 to f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp4_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp4_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.fptosi %arg0 : f64 to i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_fp4_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp4_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.negf %arg0 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp5_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp5_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.addf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp5_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp5_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.subf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp5_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp5_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.mulf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp5_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp5_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.divf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp5_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp5_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
       %0 = arith.cmpf olt, %arg0, %arg1 : f64
       fabric.yield %0 : i1
     }
-    fabric.function_unit @SC-SPM_core_fp5_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp5_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.select %arg0, %arg1, %arg2 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp5_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp5_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.sitofp %arg0 : i64 to f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp5_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp5_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.fptosi %arg0 : f64 to i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_fp5_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp5_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.negf %arg0 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp6_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp6_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.addf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp6_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp6_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.subf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp6_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp6_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.mulf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp6_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp6_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.divf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp6_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp6_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
       %0 = arith.cmpf olt, %arg0, %arg1 : f64
       fabric.yield %0 : i1
     }
-    fabric.function_unit @SC-SPM_core_fp6_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp6_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.select %arg0, %arg1, %arg2 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp6_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp6_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.sitofp %arg0 : i64 to f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp6_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp6_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.fptosi %arg0 : f64 to i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_fp6_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp6_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.negf %arg0 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp7_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp7_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.addf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp7_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp7_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.subf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp7_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp7_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.mulf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp7_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp7_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.divf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp7_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp7_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
       %0 = arith.cmpf olt, %arg0, %arg1 : f64
       fabric.yield %0 : i1
     }
-    fabric.function_unit @SC-SPM_core_fp7_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp7_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.select %arg0, %arg1, %arg2 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp7_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp7_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.sitofp %arg0 : i64 to f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp7_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp7_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.fptosi %arg0 : f64 to i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_fp7_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp7_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.negf %arg0 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp8_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp8_addf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.addf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp8_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp8_subf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.subf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp8_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp8_mulf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.mulf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp8_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp8_divf(%arg0: f64, %arg1: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.divf %arg0, %arg1 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp8_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp8_cmpf(%arg0: f64, %arg1: f64) -> (i1) [latency = 1, interval = 1] {
       %0 = arith.cmpf olt, %arg0, %arg1 : f64
       fabric.yield %0 : i1
     }
-    fabric.function_unit @SC-SPM_core_fp8_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp8_select_float(%arg0: i1, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.select %arg0, %arg1, %arg2 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp8_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp8_sitofp(%arg0: i64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.sitofp %arg0 : i64 to f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp8_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp8_fptosi(%arg0: f64) -> (i64) [latency = 1, interval = 1] {
       %0 = arith.fptosi %arg0 : f64 to i64
       fabric.yield %0 : i64
     }
-    fabric.function_unit @SC-SPM_core_fp8_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp8_negf(%arg0: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = arith.negf %arg0 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_fp_fma(%arg0: f64, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_fp_fma(%arg0: f64, %arg1: f64, %arg2: f64) -> (f64) [latency = 1, interval = 1] {
       %0 = math.fma %arg0, %arg1, %arg2 : f64
       fabric.yield %0 : f64
     }
-    fabric.function_unit @SC-SPM_core_indirect_load(%arg0: index, %arg1: i64, %arg2: none) -> (i64, index) [latency = 1, interval = 1] {
+    fabric.function_unit @SC_SPM_core_indirect_load(%arg0: index, %arg1: i64, %arg2: none) -> (i64, index) [latency = 1, interval = 1] {
       %0, %1 = handshake.load [%arg0] %arg1, %arg2 : index, i64
       fabric.yield %0, %1 : i64, index
     }
     fabric.yield
   }
-  fabric.spatial_sw @__chess_sw_10x3_0 [connectivity_table = ["1111111111", "1111111111", "1111111111"]] : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  fabric.spatial_sw @__chess_sw_17x3_0 [connectivity_table = ["11111111111111111", "11111111111111111", "11111111111111111"]] : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   fabric.spatial_sw @__chess_sw_5x5_1 [connectivity_table = ["11111", "11111", "11111", "11111", "11111"]] : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  fabric.spatial_sw @__chess_sw_6x3_2 [connectivity_table = ["111111", "111111", "111111"]] : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  fabric.spatial_sw @__chess_sw_13x3_2 [connectivity_table = ["1111111111111", "1111111111111", "1111111111111"]] : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   fabric.spatial_sw @__chess_sw_8x8_3 [connectivity_table = ["11111111", "11111111", "11111111", "11111111", "11111111", "11111111", "11111111", "11111111"]] : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  fabric.spatial_sw @__chess_sw_3x6_4 [connectivity_table = ["111", "111", "111", "111", "111", "111"]] : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  fabric.spatial_sw @__chess_sw_3x8_5 [connectivity_table = ["111", "111", "111", "111", "111", "111", "111", "111"]] : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v0:3 = fabric.instance @__chess_sw_10x3_0(%v1#0, %v9#1, %v81#0, %v145#0, %v145#1, %v145#2, %scalar0, %scalar1, %scalar2, %scalar3) {sym_name = "sw_0_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  fabric.spatial_sw @__chess_sw_3x11_4 [connectivity_table = ["111", "111", "111", "111", "111", "111", "111", "111", "111", "111", "111"]] : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  fabric.spatial_sw @__chess_sw_3x13_5 [connectivity_table = ["111", "111", "111", "111", "111", "111", "111", "111", "111", "111", "111", "111", "111"]] : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  fabric.spatial_sw @SC_SPM_core_ld_addr_mux [connectivity_table = ["1111"]] : (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>)
+  fabric.temporal_sw @SC_SPM_core_ld_data_demux [connectivity_table = ["1", "1", "1", "1"], num_route_table = 4] : (!fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>)
+  fabric.temporal_sw @SC_SPM_core_ld_done_demux [connectivity_table = ["1", "1", "1", "1"], num_route_table = 4] : (!fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>)
+  fabric.spatial_sw @SC_SPM_core_st_addr_mux [connectivity_table = ["11"]] : (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>)
+  fabric.spatial_sw @SC_SPM_core_st_data_mux [connectivity_table = ["11"]] : (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>)
+  fabric.temporal_sw @SC_SPM_core_st_done_demux [connectivity_table = ["1", "1"], num_route_table = 2] : (!fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>)
+  %v0:3 = fabric.instance @__chess_sw_17x3_0(%v1#0, %v9#1, %v81#0, %v155, %v157, %v159, %v161, %v156, %v158, %v160, %v162, %v163, %v164, %scalar0, %scalar1, %scalar2, %scalar3) {sym_name = "sw_0_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v1:5 = fabric.instance @__chess_sw_5x5_1(%v0#0, %v2#0, %v10#2, %v81#1, %v82#0) {sym_name = "sw_0_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v2:5 = fabric.instance @__chess_sw_5x5_1(%v1#1, %v3#0, %v11#2, %v82#1, %v83#0) {sym_name = "sw_0_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v3:5 = fabric.instance @__chess_sw_5x5_1(%v2#1, %v4#0, %v12#2, %v83#1, %v84#0) {sym_name = "sw_0_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
@@ -681,7 +687,7 @@ fabric.module @SC-SPM_core(%mem0: memref<?xi64>, %mem1: memref<?xi64>, %scalar0:
   %v5:5 = fabric.instance @__chess_sw_5x5_1(%v4#1, %v6#0, %v14#2, %v85#1, %v86#0) {sym_name = "sw_0_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v6:5 = fabric.instance @__chess_sw_5x5_1(%v5#1, %v7#0, %v15#2, %v86#1, %v87#0) {sym_name = "sw_0_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v7:5 = fabric.instance @__chess_sw_5x5_1(%v6#1, %v8#0, %v16#2, %v87#1, %v88#0) {sym_name = "sw_0_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v8:3 = fabric.instance @__chess_sw_6x3_2(%v7#1, %v17#1, %v88#1, %v146#0, %v146#1, %v146#2) {sym_name = "sw_0_8"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v8:3 = fabric.instance @__chess_sw_13x3_2(%v7#1, %v17#1, %v88#1, %v179, %v181, %v183, %v185, %v180, %v182, %v184, %v186, %v187, %v188) {sym_name = "sw_0_8"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v9:5 = fabric.instance @__chess_sw_5x5_1(%v10#0, %v0#1, %v18#1, %v81#2, %v89#0) {sym_name = "sw_1_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v10:8 = fabric.instance @__chess_sw_8x8_3(%v9#0, %v11#0, %v1#2, %v19#2, %v81#3, %v82#2, %v89#1, %v90#0) {sym_name = "sw_1_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v11:8 = fabric.instance @__chess_sw_8x8_3(%v10#1, %v12#0, %v2#2, %v20#2, %v82#3, %v83#2, %v90#1, %v91#0) {sym_name = "sw_1_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
@@ -745,7 +751,7 @@ fabric.module @SC-SPM_core(%mem0: memref<?xi64>, %mem1: memref<?xi64>, %scalar0:
   %v69:8 = fabric.instance @__chess_sw_8x8_3(%v68#1, %v70#0, %v60#3, %v78#2, %v134#3, %v135#2, %v142#1, %v143#0) {sym_name = "sw_7_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v70:8 = fabric.instance @__chess_sw_8x8_3(%v69#1, %v71#0, %v61#3, %v79#2, %v135#3, %v136#2, %v143#1, %v144#0) {sym_name = "sw_7_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v71:5 = fabric.instance @__chess_sw_5x5_1(%v70#1, %v62#2, %v80#1, %v136#3, %v144#1) {sym_name = "sw_7_8"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v72:6 = fabric.instance @__chess_sw_3x6_4(%v73#0, %v63#2, %v137#2) {sym_name = "sw_8_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v72:11 = fabric.instance @__chess_sw_3x11_4(%v73#0, %v63#2, %v137#2) {sym_name = "sw_8_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v73:5 = fabric.instance @__chess_sw_5x5_1(%v72#0, %v74#0, %v64#3, %v137#3, %v138#2) {sym_name = "sw_8_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v74:5 = fabric.instance @__chess_sw_5x5_1(%v73#1, %v75#0, %v65#3, %v138#3, %v139#2) {sym_name = "sw_8_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v75:5 = fabric.instance @__chess_sw_5x5_1(%v74#1, %v76#0, %v66#3, %v139#3, %v140#2) {sym_name = "sw_8_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
@@ -753,74 +759,122 @@ fabric.module @SC-SPM_core(%mem0: memref<?xi64>, %mem1: memref<?xi64>, %scalar0:
   %v77:5 = fabric.instance @__chess_sw_5x5_1(%v76#1, %v78#0, %v68#3, %v141#3, %v142#2) {sym_name = "sw_8_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v78:5 = fabric.instance @__chess_sw_5x5_1(%v77#1, %v79#0, %v69#3, %v142#3, %v143#2) {sym_name = "sw_8_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
   %v79:5 = fabric.instance @__chess_sw_5x5_1(%v78#1, %v80#0, %v70#3, %v143#3, %v144#2) {sym_name = "sw_8_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v80:8 = fabric.instance @__chess_sw_3x8_5(%v79#1, %v71#2, %v144#3) {sym_name = "sw_8_8"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v81:4 = fabric.instance @SC-SPM_core_spe(%v0#2, %v1#3, %v9#3, %v10#4) {sym_name = "pe_0_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v82:4 = fabric.instance @SC-SPM_core_spe(%v1#4, %v2#3, %v10#5, %v11#4) {sym_name = "pe_0_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v83:4 = fabric.instance @SC-SPM_core_spe(%v2#4, %v3#3, %v11#5, %v12#4) {sym_name = "pe_0_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v84:4 = fabric.instance @SC-SPM_core_spe(%v3#4, %v4#3, %v12#5, %v13#4) {sym_name = "pe_0_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v85:4 = fabric.instance @SC-SPM_core_spe(%v4#4, %v5#3, %v13#5, %v14#4) {sym_name = "pe_0_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v86:4 = fabric.instance @SC-SPM_core_spe(%v5#4, %v6#3, %v14#5, %v15#4) {sym_name = "pe_0_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v87:4 = fabric.instance @SC-SPM_core_spe(%v6#4, %v7#3, %v15#5, %v16#4) {sym_name = "pe_0_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v88:4 = fabric.instance @SC-SPM_core_spe(%v7#4, %v8#2, %v16#5, %v17#3) {sym_name = "pe_0_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v89:4 = fabric.instance @SC-SPM_core_spe(%v9#4, %v10#6, %v18#3, %v19#4) {sym_name = "pe_1_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v90:4 = fabric.instance @SC-SPM_core_spe(%v10#7, %v11#6, %v19#5, %v20#4) {sym_name = "pe_1_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v91:4 = fabric.instance @SC-SPM_core_spe(%v11#7, %v12#6, %v20#5, %v21#4) {sym_name = "pe_1_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v92:4 = fabric.instance @SC-SPM_core_spe(%v12#7, %v13#6, %v21#5, %v22#4) {sym_name = "pe_1_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v93:4 = fabric.instance @SC-SPM_core_spe(%v13#7, %v14#6, %v22#5, %v23#4) {sym_name = "pe_1_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v94:4 = fabric.instance @SC-SPM_core_spe(%v14#7, %v15#6, %v23#5, %v24#4) {sym_name = "pe_1_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v95:4 = fabric.instance @SC-SPM_core_spe(%v15#7, %v16#6, %v24#5, %v25#4) {sym_name = "pe_1_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v96:4 = fabric.instance @SC-SPM_core_spe(%v16#7, %v17#4, %v25#5, %v26#3) {sym_name = "pe_1_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v97:4 = fabric.instance @SC-SPM_core_spe(%v18#4, %v19#6, %v27#3, %v28#4) {sym_name = "pe_2_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v98:4 = fabric.instance @SC-SPM_core_spe(%v19#7, %v20#6, %v28#5, %v29#4) {sym_name = "pe_2_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v99:4 = fabric.instance @SC-SPM_core_spe(%v20#7, %v21#6, %v29#5, %v30#4) {sym_name = "pe_2_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v100:4 = fabric.instance @SC-SPM_core_spe(%v21#7, %v22#6, %v30#5, %v31#4) {sym_name = "pe_2_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v101:4 = fabric.instance @SC-SPM_core_spe(%v22#7, %v23#6, %v31#5, %v32#4) {sym_name = "pe_2_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v102:4 = fabric.instance @SC-SPM_core_spe(%v23#7, %v24#6, %v32#5, %v33#4) {sym_name = "pe_2_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v103:4 = fabric.instance @SC-SPM_core_spe(%v24#7, %v25#6, %v33#5, %v34#4) {sym_name = "pe_2_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v104:4 = fabric.instance @SC-SPM_core_spe(%v25#7, %v26#4, %v34#5, %v35#3) {sym_name = "pe_2_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v105:4 = fabric.instance @SC-SPM_core_spe(%v27#4, %v28#6, %v36#3, %v37#4) {sym_name = "pe_3_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v106:4 = fabric.instance @SC-SPM_core_spe(%v28#7, %v29#6, %v37#5, %v38#4) {sym_name = "pe_3_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v107:4 = fabric.instance @SC-SPM_core_spe(%v29#7, %v30#6, %v38#5, %v39#4) {sym_name = "pe_3_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v108:4 = fabric.instance @SC-SPM_core_spe(%v30#7, %v31#6, %v39#5, %v40#4) {sym_name = "pe_3_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v109:4 = fabric.instance @SC-SPM_core_spe(%v31#7, %v32#6, %v40#5, %v41#4) {sym_name = "pe_3_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v110:4 = fabric.instance @SC-SPM_core_spe(%v32#7, %v33#6, %v41#5, %v42#4) {sym_name = "pe_3_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v111:4 = fabric.instance @SC-SPM_core_spe(%v33#7, %v34#6, %v42#5, %v43#4) {sym_name = "pe_3_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v112:4 = fabric.instance @SC-SPM_core_spe(%v34#7, %v35#4, %v43#5, %v44#3) {sym_name = "pe_3_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v113:4 = fabric.instance @SC-SPM_core_spe(%v36#4, %v37#6, %v45#3, %v46#4) {sym_name = "pe_4_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v114:4 = fabric.instance @SC-SPM_core_spe(%v37#7, %v38#6, %v46#5, %v47#4) {sym_name = "pe_4_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v115:4 = fabric.instance @SC-SPM_core_spe(%v38#7, %v39#6, %v47#5, %v48#4) {sym_name = "pe_4_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v116:4 = fabric.instance @SC-SPM_core_spe(%v39#7, %v40#6, %v48#5, %v49#4) {sym_name = "pe_4_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v117:4 = fabric.instance @SC-SPM_core_spe(%v40#7, %v41#6, %v49#5, %v50#4) {sym_name = "pe_4_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v118:4 = fabric.instance @SC-SPM_core_spe(%v41#7, %v42#6, %v50#5, %v51#4) {sym_name = "pe_4_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v119:4 = fabric.instance @SC-SPM_core_spe(%v42#7, %v43#6, %v51#5, %v52#4) {sym_name = "pe_4_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v120:4 = fabric.instance @SC-SPM_core_spe(%v43#7, %v44#4, %v52#5, %v53#3) {sym_name = "pe_4_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v121:4 = fabric.instance @SC-SPM_core_spe(%v45#4, %v46#6, %v54#3, %v55#4) {sym_name = "pe_5_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v122:4 = fabric.instance @SC-SPM_core_spe(%v46#7, %v47#6, %v55#5, %v56#4) {sym_name = "pe_5_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v123:4 = fabric.instance @SC-SPM_core_spe(%v47#7, %v48#6, %v56#5, %v57#4) {sym_name = "pe_5_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v124:4 = fabric.instance @SC-SPM_core_spe(%v48#7, %v49#6, %v57#5, %v58#4) {sym_name = "pe_5_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v125:4 = fabric.instance @SC-SPM_core_spe(%v49#7, %v50#6, %v58#5, %v59#4) {sym_name = "pe_5_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v126:4 = fabric.instance @SC-SPM_core_spe(%v50#7, %v51#6, %v59#5, %v60#4) {sym_name = "pe_5_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v127:4 = fabric.instance @SC-SPM_core_spe(%v51#7, %v52#6, %v60#5, %v61#4) {sym_name = "pe_5_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v128:4 = fabric.instance @SC-SPM_core_spe(%v52#7, %v53#4, %v61#5, %v62#3) {sym_name = "pe_5_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v129:4 = fabric.instance @SC-SPM_core_spe(%v54#4, %v55#6, %v63#3, %v64#4) {sym_name = "pe_6_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v130:4 = fabric.instance @SC-SPM_core_spe(%v55#7, %v56#6, %v64#5, %v65#4) {sym_name = "pe_6_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v131:4 = fabric.instance @SC-SPM_core_spe(%v56#7, %v57#6, %v65#5, %v66#4) {sym_name = "pe_6_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v132:4 = fabric.instance @SC-SPM_core_spe(%v57#7, %v58#6, %v66#5, %v67#4) {sym_name = "pe_6_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v133:4 = fabric.instance @SC-SPM_core_spe(%v58#7, %v59#6, %v67#5, %v68#4) {sym_name = "pe_6_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v134:4 = fabric.instance @SC-SPM_core_spe(%v59#7, %v60#6, %v68#5, %v69#4) {sym_name = "pe_6_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v135:4 = fabric.instance @SC-SPM_core_spe(%v60#7, %v61#6, %v69#5, %v70#4) {sym_name = "pe_6_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v136:4 = fabric.instance @SC-SPM_core_spe(%v61#7, %v62#4, %v70#5, %v71#3) {sym_name = "pe_6_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v137:4 = fabric.instance @SC-SPM_core_spe(%v63#4, %v64#6, %v72#2, %v73#3) {sym_name = "pe_7_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v138:4 = fabric.instance @SC-SPM_core_spe(%v64#7, %v65#6, %v73#4, %v74#3) {sym_name = "pe_7_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v139:4 = fabric.instance @SC-SPM_core_spe(%v65#7, %v66#6, %v74#4, %v75#3) {sym_name = "pe_7_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v140:4 = fabric.instance @SC-SPM_core_spe(%v66#7, %v67#6, %v75#4, %v76#3) {sym_name = "pe_7_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v141:4 = fabric.instance @SC-SPM_core_spe(%v67#7, %v68#6, %v76#4, %v77#3) {sym_name = "pe_7_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v142:4 = fabric.instance @SC-SPM_core_spe(%v68#7, %v69#6, %v77#4, %v78#3) {sym_name = "pe_7_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v143:4 = fabric.instance @SC-SPM_core_spe(%v69#7, %v70#6, %v78#4, %v79#3) {sym_name = "pe_7_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v144:4 = fabric.instance @SC-SPM_core_spe(%v70#7, %v71#4, %v79#4, %v80#2) {sym_name = "pe_7_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v145:3 = fabric.extmemory @extmem_0 [ldCount = 4, stCount = 2, lsqDepth = 0, memrefType = memref<?xi64>] (%mem0, %v72#3, %v72#4, %v72#5) : (memref<?xi64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  %v146:3 = fabric.extmemory @extmem_1 [ldCount = 4, stCount = 2, lsqDepth = 0, memrefType = memref<?xi64>] (%mem1, %v80#3, %v80#4, %v80#5) : (memref<?xi64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
-  fabric.yield %v80#6, %v80#7 : !fabric.bits<64>, !fabric.bits<64>
+  %v80:13 = fabric.instance @__chess_sw_3x13_5(%v79#1, %v71#2, %v144#3) {sym_name = "sw_8_8"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v81:4 = fabric.instance @SC_SPM_core_spe(%v0#2, %v1#3, %v9#3, %v10#4) {sym_name = "pe_0_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v82:4 = fabric.instance @SC_SPM_core_spe(%v1#4, %v2#3, %v10#5, %v11#4) {sym_name = "pe_0_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v83:4 = fabric.instance @SC_SPM_core_spe(%v2#4, %v3#3, %v11#5, %v12#4) {sym_name = "pe_0_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v84:4 = fabric.instance @SC_SPM_core_spe(%v3#4, %v4#3, %v12#5, %v13#4) {sym_name = "pe_0_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v85:4 = fabric.instance @SC_SPM_core_spe(%v4#4, %v5#3, %v13#5, %v14#4) {sym_name = "pe_0_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v86:4 = fabric.instance @SC_SPM_core_spe(%v5#4, %v6#3, %v14#5, %v15#4) {sym_name = "pe_0_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v87:4 = fabric.instance @SC_SPM_core_spe(%v6#4, %v7#3, %v15#5, %v16#4) {sym_name = "pe_0_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v88:4 = fabric.instance @SC_SPM_core_spe(%v7#4, %v8#2, %v16#5, %v17#3) {sym_name = "pe_0_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v89:4 = fabric.instance @SC_SPM_core_spe(%v9#4, %v10#6, %v18#3, %v19#4) {sym_name = "pe_1_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v90:4 = fabric.instance @SC_SPM_core_spe(%v10#7, %v11#6, %v19#5, %v20#4) {sym_name = "pe_1_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v91:4 = fabric.instance @SC_SPM_core_spe(%v11#7, %v12#6, %v20#5, %v21#4) {sym_name = "pe_1_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v92:4 = fabric.instance @SC_SPM_core_spe(%v12#7, %v13#6, %v21#5, %v22#4) {sym_name = "pe_1_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v93:4 = fabric.instance @SC_SPM_core_spe(%v13#7, %v14#6, %v22#5, %v23#4) {sym_name = "pe_1_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v94:4 = fabric.instance @SC_SPM_core_spe(%v14#7, %v15#6, %v23#5, %v24#4) {sym_name = "pe_1_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v95:4 = fabric.instance @SC_SPM_core_spe(%v15#7, %v16#6, %v24#5, %v25#4) {sym_name = "pe_1_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v96:4 = fabric.instance @SC_SPM_core_spe(%v16#7, %v17#4, %v25#5, %v26#3) {sym_name = "pe_1_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v97:4 = fabric.instance @SC_SPM_core_spe(%v18#4, %v19#6, %v27#3, %v28#4) {sym_name = "pe_2_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v98:4 = fabric.instance @SC_SPM_core_spe(%v19#7, %v20#6, %v28#5, %v29#4) {sym_name = "pe_2_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v99:4 = fabric.instance @SC_SPM_core_spe(%v20#7, %v21#6, %v29#5, %v30#4) {sym_name = "pe_2_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v100:4 = fabric.instance @SC_SPM_core_spe(%v21#7, %v22#6, %v30#5, %v31#4) {sym_name = "pe_2_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v101:4 = fabric.instance @SC_SPM_core_spe(%v22#7, %v23#6, %v31#5, %v32#4) {sym_name = "pe_2_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v102:4 = fabric.instance @SC_SPM_core_spe(%v23#7, %v24#6, %v32#5, %v33#4) {sym_name = "pe_2_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v103:4 = fabric.instance @SC_SPM_core_spe(%v24#7, %v25#6, %v33#5, %v34#4) {sym_name = "pe_2_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v104:4 = fabric.instance @SC_SPM_core_spe(%v25#7, %v26#4, %v34#5, %v35#3) {sym_name = "pe_2_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v105:4 = fabric.instance @SC_SPM_core_spe(%v27#4, %v28#6, %v36#3, %v37#4) {sym_name = "pe_3_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v106:4 = fabric.instance @SC_SPM_core_spe(%v28#7, %v29#6, %v37#5, %v38#4) {sym_name = "pe_3_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v107:4 = fabric.instance @SC_SPM_core_spe(%v29#7, %v30#6, %v38#5, %v39#4) {sym_name = "pe_3_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v108:4 = fabric.instance @SC_SPM_core_spe(%v30#7, %v31#6, %v39#5, %v40#4) {sym_name = "pe_3_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v109:4 = fabric.instance @SC_SPM_core_spe(%v31#7, %v32#6, %v40#5, %v41#4) {sym_name = "pe_3_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v110:4 = fabric.instance @SC_SPM_core_spe(%v32#7, %v33#6, %v41#5, %v42#4) {sym_name = "pe_3_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v111:4 = fabric.instance @SC_SPM_core_spe(%v33#7, %v34#6, %v42#5, %v43#4) {sym_name = "pe_3_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v112:4 = fabric.instance @SC_SPM_core_spe(%v34#7, %v35#4, %v43#5, %v44#3) {sym_name = "pe_3_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v113:4 = fabric.instance @SC_SPM_core_spe(%v36#4, %v37#6, %v45#3, %v46#4) {sym_name = "pe_4_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v114:4 = fabric.instance @SC_SPM_core_spe(%v37#7, %v38#6, %v46#5, %v47#4) {sym_name = "pe_4_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v115:4 = fabric.instance @SC_SPM_core_spe(%v38#7, %v39#6, %v47#5, %v48#4) {sym_name = "pe_4_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v116:4 = fabric.instance @SC_SPM_core_spe(%v39#7, %v40#6, %v48#5, %v49#4) {sym_name = "pe_4_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v117:4 = fabric.instance @SC_SPM_core_spe(%v40#7, %v41#6, %v49#5, %v50#4) {sym_name = "pe_4_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v118:4 = fabric.instance @SC_SPM_core_spe(%v41#7, %v42#6, %v50#5, %v51#4) {sym_name = "pe_4_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v119:4 = fabric.instance @SC_SPM_core_spe(%v42#7, %v43#6, %v51#5, %v52#4) {sym_name = "pe_4_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v120:4 = fabric.instance @SC_SPM_core_spe(%v43#7, %v44#4, %v52#5, %v53#3) {sym_name = "pe_4_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v121:4 = fabric.instance @SC_SPM_core_spe(%v45#4, %v46#6, %v54#3, %v55#4) {sym_name = "pe_5_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v122:4 = fabric.instance @SC_SPM_core_spe(%v46#7, %v47#6, %v55#5, %v56#4) {sym_name = "pe_5_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v123:4 = fabric.instance @SC_SPM_core_spe(%v47#7, %v48#6, %v56#5, %v57#4) {sym_name = "pe_5_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v124:4 = fabric.instance @SC_SPM_core_spe(%v48#7, %v49#6, %v57#5, %v58#4) {sym_name = "pe_5_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v125:4 = fabric.instance @SC_SPM_core_spe(%v49#7, %v50#6, %v58#5, %v59#4) {sym_name = "pe_5_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v126:4 = fabric.instance @SC_SPM_core_spe(%v50#7, %v51#6, %v59#5, %v60#4) {sym_name = "pe_5_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v127:4 = fabric.instance @SC_SPM_core_spe(%v51#7, %v52#6, %v60#5, %v61#4) {sym_name = "pe_5_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v128:4 = fabric.instance @SC_SPM_core_spe(%v52#7, %v53#4, %v61#5, %v62#3) {sym_name = "pe_5_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v129:4 = fabric.instance @SC_SPM_core_spe(%v54#4, %v55#6, %v63#3, %v64#4) {sym_name = "pe_6_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v130:4 = fabric.instance @SC_SPM_core_spe(%v55#7, %v56#6, %v64#5, %v65#4) {sym_name = "pe_6_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v131:4 = fabric.instance @SC_SPM_core_spe(%v56#7, %v57#6, %v65#5, %v66#4) {sym_name = "pe_6_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v132:4 = fabric.instance @SC_SPM_core_spe(%v57#7, %v58#6, %v66#5, %v67#4) {sym_name = "pe_6_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v133:4 = fabric.instance @SC_SPM_core_spe(%v58#7, %v59#6, %v67#5, %v68#4) {sym_name = "pe_6_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v134:4 = fabric.instance @SC_SPM_core_spe(%v59#7, %v60#6, %v68#5, %v69#4) {sym_name = "pe_6_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v135:4 = fabric.instance @SC_SPM_core_spe(%v60#7, %v61#6, %v69#5, %v70#4) {sym_name = "pe_6_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v136:4 = fabric.instance @SC_SPM_core_spe(%v61#7, %v62#4, %v70#5, %v71#3) {sym_name = "pe_6_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v137:4 = fabric.instance @SC_SPM_core_spe(%v63#4, %v64#6, %v72#2, %v73#3) {sym_name = "pe_7_0"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v138:4 = fabric.instance @SC_SPM_core_spe(%v64#7, %v65#6, %v73#4, %v74#3) {sym_name = "pe_7_1"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v139:4 = fabric.instance @SC_SPM_core_spe(%v65#7, %v66#6, %v74#4, %v75#3) {sym_name = "pe_7_2"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v140:4 = fabric.instance @SC_SPM_core_spe(%v66#7, %v67#6, %v75#4, %v76#3) {sym_name = "pe_7_3"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v141:4 = fabric.instance @SC_SPM_core_spe(%v67#7, %v68#6, %v76#4, %v77#3) {sym_name = "pe_7_4"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v142:4 = fabric.instance @SC_SPM_core_spe(%v68#7, %v69#6, %v77#4, %v78#3) {sym_name = "pe_7_5"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v143:4 = fabric.instance @SC_SPM_core_spe(%v69#7, %v70#6, %v78#4, %v79#3) {sym_name = "pe_7_6"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v144:4 = fabric.instance @SC_SPM_core_spe(%v70#7, %v71#4, %v79#4, %v80#2) {sym_name = "pe_7_7"} : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>)
+  %v145:3 = fabric.extmemory @extmem_0 [ldCount = 4, stCount = 2, lsqDepth = 0, memrefType = memref<?xi64>] (%mem0, %v165, %v166, %v167) : (memref<?xi64>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>)
+  %v146:3 = fabric.extmemory @extmem_1 [ldCount = 4, stCount = 2, lsqDepth = 0, memrefType = memref<?xi64>] (%mem1, %v189, %v190, %v191) : (memref<?xi64>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>)
+  %v147 = fabric.add_tag %v72#3 {tag = 0 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v148 = fabric.add_tag %v72#4 {tag = 1 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v149 = fabric.add_tag %v72#5 {tag = 2 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v150 = fabric.add_tag %v72#6 {tag = 3 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v151 = fabric.add_tag %v72#7 {tag = 0 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v152 = fabric.add_tag %v72#9 {tag = 0 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v153 = fabric.add_tag %v72#8 {tag = 1 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v154 = fabric.add_tag %v72#10 {tag = 1 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v155 = fabric.del_tag %v168#0 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v156 = fabric.del_tag %v169#0 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v157 = fabric.del_tag %v168#1 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v158 = fabric.del_tag %v169#1 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v159 = fabric.del_tag %v168#2 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v160 = fabric.del_tag %v169#2 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v161 = fabric.del_tag %v168#3 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v162 = fabric.del_tag %v169#3 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v163 = fabric.del_tag %v170#0 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v164 = fabric.del_tag %v170#1 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v165 = fabric.instance @SC_SPM_core_ld_addr_mux(%v147, %v148, %v149, %v150) {sym_name = "ld_addr_mux_0"} : (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>)
+  %v166 = fabric.instance @SC_SPM_core_st_addr_mux(%v151, %v153) {sym_name = "st_addr_mux_0"} : (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>)
+  %v167 = fabric.instance @SC_SPM_core_st_data_mux(%v152, %v154) {sym_name = "st_data_mux_0"} : (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>)
+  %v168:4 = fabric.instance @SC_SPM_core_ld_data_demux(%v145#0) {sym_name = "ld_data_demux_0"} : (!fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>)
+  %v169:4 = fabric.instance @SC_SPM_core_ld_done_demux(%v145#1) {sym_name = "ld_done_demux_0"} : (!fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>)
+  %v170:2 = fabric.instance @SC_SPM_core_st_done_demux(%v145#2) {sym_name = "st_done_demux_0"} : (!fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>)
+  %v171 = fabric.add_tag %v80#3 {tag = 0 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v172 = fabric.add_tag %v80#4 {tag = 1 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v173 = fabric.add_tag %v80#5 {tag = 2 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v174 = fabric.add_tag %v80#6 {tag = 3 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v175 = fabric.add_tag %v80#7 {tag = 0 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v176 = fabric.add_tag %v80#9 {tag = 0 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v177 = fabric.add_tag %v80#8 {tag = 1 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v178 = fabric.add_tag %v80#10 {tag = 1 : i64} : !fabric.bits<64> -> !fabric.tagged<!fabric.bits<64>, i2>
+  %v179 = fabric.del_tag %v192#0 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v180 = fabric.del_tag %v193#0 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v181 = fabric.del_tag %v192#1 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v182 = fabric.del_tag %v193#1 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v183 = fabric.del_tag %v192#2 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v184 = fabric.del_tag %v193#2 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v185 = fabric.del_tag %v192#3 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v186 = fabric.del_tag %v193#3 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v187 = fabric.del_tag %v194#0 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v188 = fabric.del_tag %v194#1 : !fabric.tagged<!fabric.bits<64>, i2> -> !fabric.bits<64>
+  %v189 = fabric.instance @SC_SPM_core_ld_addr_mux(%v171, %v172, %v173, %v174) {sym_name = "ld_addr_mux_1"} : (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>)
+  %v190 = fabric.instance @SC_SPM_core_st_addr_mux(%v175, %v177) {sym_name = "st_addr_mux_1"} : (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>)
+  %v191 = fabric.instance @SC_SPM_core_st_data_mux(%v176, %v178) {sym_name = "st_data_mux_1"} : (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>)
+  %v192:4 = fabric.instance @SC_SPM_core_ld_data_demux(%v146#0) {sym_name = "ld_data_demux_1"} : (!fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>)
+  %v193:4 = fabric.instance @SC_SPM_core_ld_done_demux(%v146#1) {sym_name = "ld_done_demux_1"} : (!fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>)
+  %v194:2 = fabric.instance @SC_SPM_core_st_done_demux(%v146#2) {sym_name = "st_done_demux_1"} : (!fabric.tagged<!fabric.bits<64>, i2>) -> (!fabric.tagged<!fabric.bits<64>, i2>, !fabric.tagged<!fabric.bits<64>, i2>)
+  fabric.yield %v80#11, %v80#12 : !fabric.bits<64>, !fabric.bits<64>
 }
 }
 // CORE_TYPE_METADATA

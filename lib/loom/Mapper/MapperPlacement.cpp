@@ -850,6 +850,8 @@ double classifyEdgePlacementWeight(const Graph &dfg, IdIndex edgeId) {
       return false;
     llvm::StringRef opName = getNodeAttrStr(node, "op_name");
     return opName == "dataflow.carry" || opName == "dataflow.gate" ||
+           opName == "dataflow.stream" || opName == "dataflow.invariant" ||
+           opName == "arith.index_cast" || opName == "math.fma" ||
            opName == "handshake.cond_br" || opName == "handshake.join" ||
            opName == "handshake.mux";
   };
@@ -860,7 +862,7 @@ double classifyEdgePlacementWeight(const Graph &dfg, IdIndex edgeId) {
     return opName == "handshake.load" || opName == "handshake.store";
   };
   if (isControlHub(srcNode) || isControlHub(dstNode))
-    weight += 0.40;
+    weight += 0.75;
   if (isMemoryBoundaryOp(srcOp) || isMemoryBoundaryOp(dstOp))
     weight += 2.25;
   if ((isMemoryDataOp(srcOp) && isMemoryBoundaryOp(dstOp)) ||
@@ -924,8 +926,14 @@ double computeNodePriorityWeight(IdIndex swNode, const Graph &dfg) {
   if (opName == "handshake.load" || opName == "handshake.store")
     weight += 3.0;
   if (opName == "handshake.cond_br" || opName == "dataflow.carry" ||
-      opName == "dataflow.gate")
+      opName == "dataflow.gate" || opName == "handshake.join" ||
+      opName == "handshake.mux")
     weight += 2.5;
+  if (opName == "dataflow.stream" || opName == "dataflow.invariant" ||
+      opName == "arith.index_cast")
+    weight += 4.0;
+  if (opName == "math.fma")
+    weight += 6.0;
   if (isRecurrenceProxyNode(swNode, dfg))
     weight += getTimingProxyOptions().recurrenceEdgeWeightMultiplier;
   return weight;

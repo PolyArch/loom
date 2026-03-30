@@ -9,6 +9,8 @@
 #include "loom/Mapper/MappingState.h"
 
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -131,7 +133,19 @@ L2Result L2CoreCompiler::compile(const L2Assignment &assignment,
 
       // Generate configuration blob.
       ConfigGen configGen;
-      std::string basePath = "/dev/null"; // We only need the in-memory blob.
+      llvm::SmallString<128> tempBasePath;
+      std::error_code tempEc = llvm::sys::fs::createTemporaryFile(
+          "loom_l2_config", "tmp", tempBasePath);
+      if (tempEc) {
+        llvm::errs() << "L2CoreCompiler: failed to create temp config base: "
+                     << tempEc.message() << "\n";
+        kernelResult.success = false;
+        allMapped = false;
+        l2Result.kernelResults.push_back(std::move(kernelResult));
+        break;
+      }
+      std::string basePath = std::string(tempBasePath);
+      llvm::sys::fs::remove(tempBasePath);
       bool configOk = configGen.generate(
           kernelResult.mapperResult->state, dfg, adg, adgFlattener,
           kernelResult.mapperResult->edgeKinds,
@@ -142,6 +156,11 @@ L2Result L2CoreCompiler::compile(const L2Assignment &assignment,
           &kernelResult.mapperResult->timingSummary,
           &kernelResult.mapperResult->searchSummary,
           kernelResult.mapperResult->techMapDiagnostics);
+      for (llvm::StringRef suffix :
+           {".config.bin", ".config.json", ".config.h", ".map.json",
+            ".map.txt"}) {
+        llvm::sys::fs::remove(basePath + suffix.str());
+      }
       if (configOk) {
         kernelResult.configBlob = configGen.getConfigBlob();
       }

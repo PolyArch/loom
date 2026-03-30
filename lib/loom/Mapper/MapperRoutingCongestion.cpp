@@ -164,9 +164,9 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
     if (dstNode &&
         (dstNode->kind == Node::ModuleOutputNode ||
          (dstNode->kind == Node::OperationNode &&
-          (dstOp == "dataflow.gate" || dstOp == "dataflow.carry" ||
-           dstOp == "handshake.cond_br" || dstOp == "handshake.join" ||
-           dstOp == "handshake.mux"))))
+          routing_detail::isRoutingHotspotOpName(dstOp))))
+      return opts.routing.priority.moduleOutput;
+    if (routing_detail::isRoutingHotspotOpName(srcOp))
       return opts.routing.priority.moduleOutput;
     if (srcOp == "handshake.load" || srcOp == "handshake.store")
       return opts.routing.priority.loadStoreSource;
@@ -232,15 +232,20 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
       auto overusedOutputs = relaxedRouting.collectOverusedOutputs();
       temporaryOveruseOutputs =
           static_cast<unsigned>(overusedOutputs.size());
-      llvm::outs() << "  Relaxed routing temporary overuse before legalization: "
-                   << temporaryOveruseOutputs << " outputs\n";
+      if (opts.verbose) {
+        llvm::outs()
+            << "  Relaxed routing temporary overuse before legalization: "
+            << temporaryOveruseOutputs << " outputs\n";
+      }
       if (temporaryOveruseOutputs >
           opts.relaxedRouting.rejectCheckpointOveruseCap) {
         remainingOveruseOutputs = temporaryOveruseOutputs;
-        llvm::outs() << "  Relaxed routing checkpoint rejected before "
-                        "legalization: overuse cap "
-                     << opts.relaxedRouting.rejectCheckpointOveruseCap
-                     << " exceeded\n";
+        if (opts.verbose) {
+          llvm::outs() << "  Relaxed routing checkpoint rejected before "
+                          "legalization: overuse cap "
+                       << opts.relaxedRouting.rejectCheckpointOveruseCap
+                       << " exceeded\n";
+        }
       } else {
         for (unsigned pass = 0;
              pass < opts.relaxedRouting.legalizationPasses &&
@@ -259,10 +264,12 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
             if (ripupSet.contains(edgeId))
               legalizationOrder.push_back(edgeId);
           }
-          llvm::outs() << "  Relaxed routing legalization pass "
-                       << (pass + 1) << ": ripping up " << ripupEdges.size()
-                       << " edges touching " << overusedOutputs.size()
-                       << " outputs\n";
+          if (opts.verbose) {
+            llvm::outs() << "  Relaxed routing legalization pass "
+                         << (pass + 1) << ": ripping up " << ripupEdges.size()
+                         << " edges touching " << overusedOutputs.size()
+                         << " outputs\n";
+          }
           for (IdIndex edgeId : ripupEdges)
             state.unmapEdge(edgeId, dfg, adg);
           unsigned legalizedRouted = 0;
@@ -274,9 +281,11 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
         }
         remainingOveruseOutputs =
             static_cast<unsigned>(overusedOutputs.size());
-        llvm::outs() << "  Relaxed routing legalization result: "
-                     << remainingOveruseOutputs
-                     << " overused outputs remain\n";
+        if (opts.verbose) {
+          llvm::outs() << "  Relaxed routing legalization result: "
+                       << remainingOveruseOutputs
+                       << " overused outputs remain\n";
+        }
       }
     }
     auto stats = computeRoutingEdgeStats(state, dfg, edgeKinds);
@@ -294,11 +303,13 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
       bestRouted = routed;
       bestTotal = total;
       bestPathLen = totalPathLen;
-      llvm::outs() << "  Negotiated routing converged at iteration "
-                   << (iter + 1) << ": router " << routed << "/" << total
-                   << ", overall " << stats.routedOverallEdges << "/"
-                   << stats.overallEdges << ", prebound "
-                   << stats.directBindingEdges << "\n";
+      if (opts.verbose) {
+        llvm::outs() << "  Negotiated routing converged at iteration "
+                     << (iter + 1) << ": router " << routed << "/" << total
+                     << ", overall " << stats.routedOverallEdges << "/"
+                     << stats.overallEdges << ", prebound "
+                     << stats.directBindingEdges << "\n";
+      }
       state.restore(bestCheckpoint);
       return true;
     }
@@ -315,13 +326,15 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
       ++stagnantIterations;
     }
 
-    llvm::outs() << "  Negotiated routing iteration " << (iter + 1)
-                 << ": router " << routed << "/" << total << ", overall "
-                 << stats.routedOverallEdges << "/" << stats.overallEdges
-                 << ", prebound " << stats.directBindingEdges;
-    if (opts.relaxedRouting.enabled)
-      llvm::outs() << ", overused_outputs " << remainingOveruseOutputs;
-    llvm::outs() << "\n";
+    if (opts.verbose) {
+      llvm::outs() << "  Negotiated routing iteration " << (iter + 1)
+                   << ": router " << routed << "/" << total << ", overall "
+                   << stats.routedOverallEdges << "/" << stats.overallEdges
+                   << ", prebound " << stats.directBindingEdges;
+      if (opts.relaxedRouting.enabled)
+        llvm::outs() << ", overused_outputs " << remainingOveruseOutputs;
+      llvm::outs() << "\n";
+    }
     emitBestSnapshot("negotiated-iter");
 
     if (opts.congestion.routingOutputHistoryDecay < 1.0) {
@@ -346,18 +359,22 @@ bool Mapper::runNegotiatedRouting(MappingState &state, const Graph &dfg,
 
     if (opts.congestion.earlyTerminationWindow > 0 &&
         stagnantIterations >= opts.congestion.earlyTerminationWindow) {
-      llvm::outs() << "  Negotiated routing early stop after "
-                   << stagnantIterations << " non-improving iterations\n";
+      if (opts.verbose) {
+        llvm::outs() << "  Negotiated routing early stop after "
+                     << stagnantIterations << " non-improving iterations\n";
+      }
       break;
     }
   }
 
   state.restore(bestCheckpoint);
   auto bestStats = computeRoutingEdgeStats(state, dfg, edgeKinds);
-  llvm::outs() << "  Negotiated routing best: router " << bestRouted << "/"
-               << bestTotal << ", overall " << bestStats.routedOverallEdges
-               << "/" << bestStats.overallEdges << ", prebound "
-               << bestStats.directBindingEdges << "\n";
+  if (opts.verbose) {
+    llvm::outs() << "  Negotiated routing best: router " << bestRouted << "/"
+                 << bestTotal << ", overall " << bestStats.routedOverallEdges
+                 << "/" << bestStats.overallEdges << ", prebound "
+                 << bestStats.directBindingEdges << "\n";
+  }
   return bestRouted == bestTotal && bestTotal != 0;
 }
 

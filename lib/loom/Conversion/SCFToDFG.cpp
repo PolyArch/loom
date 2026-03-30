@@ -50,7 +50,7 @@ Value DFGConverter::makeDummyData(Location loc, Type type) {
   return circt::handshake::SourceOp::create(builder, loc, type).getResult();
 }
 
-Value DFGConverter::mapValue(Value value, RegionState &state, Location loc) {
+Value DFGConverter::mapValue(Value value, RegionState &state, Operation *user) {
   if (!value)
     return value;
 
@@ -59,15 +59,19 @@ Value DFGConverter::mapValue(Value value, RegionState &state, Location loc) {
   if (it != state.valueMap.end())
     return it->second;
 
+  Location loc = user ? user->getLoc() : value.getLoc();
+
   // Try parent region
   if (state.parent) {
-    Value outer = mapValue(value, *state.parent, loc);
+    Value outer = mapValue(value, *state.parent, user);
     // If we have a loop condition and the value comes from outside, wrap
     // it in a dataflow.invariant
     if (!state.invariantCond || !isLocalToRegion(value, state.parent->region))
       return outer;
     // Memrefs are consumed by extmemory directly, not via invariant
     if (isa<BaseMemRefType>(outer.getType()))
+      return outer;
+    if (!dominatesOpUse(outer, user))
       return outer;
 
     auto inv = InvariantOp::create(builder, loc, outer.getType(),
@@ -87,8 +91,10 @@ Value DFGConverter::mapValue(Value value, RegionState &state, Location loc) {
 void DFGConverter::updateInvariantCond(RegionState &state, Value cond) {
   if (!state.pendingCond)
     return;
-  for (InvariantOp inv : state.pendingInvariants)
-    inv->setOperand(0, cond);
+  for (InvariantOp inv : state.pendingInvariants) {
+    if (dominatesOpUse(cond, inv.getOperation()))
+      inv->setOperand(0, cond);
+  }
   state.pendingInvariants.clear();
   state.pendingCond = false;
 }
@@ -99,7 +105,7 @@ LogicalResult DFGConverter::convertReturn(func::ReturnOp op,
     return op.emitError("multiple func.return in candidate function");
   sawReturn = true;
   for (Value operand : op.getOperands())
-    pendingReturnValues.push_back(mapValue(operand, state, op.getLoc()));
+    pendingReturnValues.push_back(mapValue(operand, state, op));
   returnLoc = op.getLoc();
   return success();
 }
@@ -109,9 +115,9 @@ LogicalResult DFGConverter::convertLoad(memref::LoadOp op,
   Location loc = op.getLoc();
   SmallVector<Value, 4> addrOperands;
   for (Value index : op.getIndices())
-    addrOperands.push_back(mapValue(index, state, loc));
+    addrOperands.push_back(mapValue(index, state, op));
 
-  Value mappedMemref = mapValue(op.getMemref(), state, loc);
+  Value mappedMemref = mapValue(op.getMemref(), state, op);
   Value rootMemref = getMemrefRoot(mappedMemref);
   Value dummyData = makeDummyData(loc, op.getType());
   Value dummyCtrl = makeDummyData(loc, builder.getNoneType());
@@ -154,10 +160,10 @@ LogicalResult DFGConverter::convertStore(memref::StoreOp op,
   Location loc = op.getLoc();
   SmallVector<Value, 4> addrOperands;
   for (Value index : op.getIndices())
-    addrOperands.push_back(mapValue(index, state, loc));
+    addrOperands.push_back(mapValue(index, state, op));
 
-  Value dataValue = mapValue(op.getValue(), state, loc);
-  Value mappedMemref = mapValue(op.getMemref(), state, loc);
+  Value dataValue = mapValue(op.getValue(), state, op);
+  Value mappedMemref = mapValue(op.getMemref(), state, op);
   Value rootMemref = getMemrefRoot(mappedMemref);
   Value dummyCtrl = makeDummyData(loc, builder.getNoneType());
 
@@ -195,9 +201,9 @@ LogicalResult DFGConverter::convertStore(memref::StoreOp op,
 
 LogicalResult DFGConverter::convertFor(scf::ForOp op, RegionState &state) {
   Location loc = op.getLoc();
-  Value lower = mapValue(op.getLowerBound(), state, loc);
-  Value upper = mapValue(op.getUpperBound(), state, loc);
-  Value step = mapValue(op.getStep(), state, loc);
+  Value lower = mapValue(op.getLowerBound(), state, op);
+  Value upper = mapValue(op.getUpperBound(), state, op);
+  Value step = mapValue(op.getStep(), state, op);
 
   // Create stream: generates index + will_continue streams
   auto stream = StreamOp::create(builder, loc, builder.getIndexType(),
@@ -220,7 +226,7 @@ LogicalResult DFGConverter::convertFor(scf::ForOp op, RegionState &state) {
   SmallVector<Value, 4> loopResults;
 
   for (Value init : op.getInitArgs()) {
-    Value initValue = mapValue(init, state, loc);
+    Value initValue = mapValue(init, state, op);
     auto carry = CarryOp::create(builder, loc, initValue.getType(), rawCond,
                                  initValue, initValue);
     carries.push_back(carry);
@@ -261,7 +267,7 @@ LogicalResult DFGConverter::convertFor(scf::ForOp op, RegionState &state) {
   for (Operation &nested : *bodyBlock) {
     if (auto yield = dyn_cast<scf::YieldOp>(nested)) {
       for (Value operand : yield.getOperands())
-        yieldValues.push_back(mapValue(operand, bodyState, yield.getLoc()));
+        yieldValues.push_back(mapValue(operand, bodyState, yield.getOperation()));
       break;
     }
     if (failed(convertOp(&nested, bodyState)))
@@ -272,26 +278,16 @@ LogicalResult DFGConverter::convertFor(scf::ForOp op, RegionState &state) {
   if (yieldValues.size() != carries.size())
     return op.emitError("scf.for yield arity mismatch");
 
-  for (unsigned i = 0, e = carries.size(); i < e; ++i)
-    carries[i]->setOperand(2, yieldValues[i]);
+  for (unsigned i = 0, e = carries.size(); i < e; ++i) {
+    if (dominatesOpUse(yieldValues[i], carries[i].getOperation()))
+      carries[i]->setOperand(2, yieldValues[i]);
+  }
 
   // Map loop results
   for (unsigned i = 0, e = loopResults.size(); i < e; ++i)
     state.valueMap[op.getResult(i)] = loopResults[i];
 
   updateInvariantCond(bodyState, bodyCond);
-
-  // Clean up the control-token invariant if nothing in the body used it.
-  // In handshake semantics, an invariant with no consumers is dead and its
-  // removal does not affect upstream producers (the cond_br that feeds it
-  // still has its other result consumed).
-  if (bodyState.controlToken) {
-    if (auto invOp = bodyState.controlToken.getDefiningOp<InvariantOp>()) {
-      if (invOp.getO().use_empty())
-        invOp->erase();
-    }
-  }
-
   return success();
 }
 
@@ -304,7 +300,7 @@ LogicalResult DFGConverter::convertWhile(scf::WhileOp op,
   SmallVector<Value, 4> initValues;
   initValues.reserve(op.getNumOperands());
   for (Value operand : op.getOperands())
-    initValues.push_back(mapValue(operand, state, loc));
+    initValues.push_back(mapValue(operand, state, op));
 
   // Create carries for each iter arg with placeholder condition
   Value placeholderCond =
@@ -339,9 +335,10 @@ LogicalResult DFGConverter::convertWhile(scf::WhileOp op,
   for (Operation &nested : beforeBlock) {
     if (auto condition = dyn_cast<scf::ConditionOp>(nested)) {
       condValue = mapValue(condition.getCondition(), beforeState,
-                           condition.getLoc());
+                           condition.getOperation());
       for (Value operand : condition.getArgs())
-        condArgs.push_back(mapValue(operand, beforeState, condition.getLoc()));
+        condArgs.push_back(
+            mapValue(operand, beforeState, condition.getOperation()));
       break;
     }
     if (failed(convertOp(&nested, beforeState)))
@@ -353,9 +350,12 @@ LogicalResult DFGConverter::convertWhile(scf::WhileOp op,
 
   // Patch carries and invariants to use the real condition
   whileConds[op] = condValue;
-  for (auto &carry : carries)
-    carry->setOperand(0, condValue);
-  beforeCtrlInv->setOperand(0, condValue);
+  for (auto &carry : carries) {
+    if (dominatesOpUse(condValue, carry.getOperation()))
+      carry->setOperand(0, condValue);
+  }
+  if (dominatesOpUse(condValue, beforeCtrlInv.getOperation()))
+    beforeCtrlInv->setOperand(0, condValue);
   updateInvariantCond(beforeState, condValue);
 
   // Split condArgs by condition: true -> after region, false -> exit
@@ -395,7 +395,7 @@ LogicalResult DFGConverter::convertWhile(scf::WhileOp op,
   for (Operation &nested : afterBlock) {
     if (auto yield = dyn_cast<scf::YieldOp>(nested)) {
       for (Value operand : yield.getOperands())
-        yieldValues.push_back(mapValue(operand, afterState, yield.getLoc()));
+        yieldValues.push_back(mapValue(operand, afterState, yield.getOperation()));
       break;
     }
     if (failed(convertOp(&nested, afterState)))
@@ -405,34 +405,21 @@ LogicalResult DFGConverter::convertWhile(scf::WhileOp op,
   if (yieldValues.size() != carries.size())
     return op.emitError("scf.while yield arity mismatch");
 
-  for (unsigned i = 0, e = carries.size(); i < e; ++i)
-    carries[i]->setOperand(2, yieldValues[i]);
+  for (unsigned i = 0, e = carries.size(); i < e; ++i) {
+    if (dominatesOpUse(yieldValues[i], carries[i].getOperation()))
+      carries[i]->setOperand(2, yieldValues[i]);
+  }
 
   for (unsigned i = 0, e = op.getNumResults(); i < e; ++i)
     state.valueMap[op.getResult(i)] = exitValues[i];
 
   updateInvariantCond(afterState, bodyCond);
-
-  // Clean up unused control-token invariants in before and after regions.
-  if (beforeState.controlToken) {
-    if (auto invOp = beforeState.controlToken.getDefiningOp<InvariantOp>()) {
-      if (invOp.getO().use_empty())
-        invOp->erase();
-    }
-  }
-  if (afterState.controlToken) {
-    if (auto invOp = afterState.controlToken.getDefiningOp<InvariantOp>()) {
-      if (invOp.getO().use_empty())
-        invOp->erase();
-    }
-  }
-
   return success();
 }
 
 LogicalResult DFGConverter::convertIf(scf::IfOp op, RegionState &state) {
   Location loc = op.getLoc();
-  Value condValue = mapValue(op.getCondition(), state, loc);
+  Value condValue = mapValue(op.getCondition(), state, op);
   ifConds[op] = condValue;
   Value ctrlToken = state.controlToken ? state.controlToken : entryToken;
 
@@ -465,12 +452,12 @@ LogicalResult DFGConverter::convertIf(scf::IfOp op, RegionState &state) {
   if (!thenRegion.hasOneBlock())
     return op.emitError("expected single-block scf.if then region");
   for (Operation &nested : thenRegion.front()) {
-    if (auto yield = dyn_cast<scf::YieldOp>(nested)) {
-      for (Value operand : yield.getOperands()) {
-        Value mapped = mapValue(operand, thenState, yield.getLoc());
-        thenValues.push_back(materializeBranchLocalYield(
-            operand, mapped, &thenRegion, /*thenBranch=*/true));
-      }
+      if (auto yield = dyn_cast<scf::YieldOp>(nested)) {
+        for (Value operand : yield.getOperands()) {
+          Value mapped = mapValue(operand, thenState, yield.getOperation());
+          thenValues.push_back(materializeBranchLocalYield(
+              operand, mapped, &thenRegion, /*thenBranch=*/true));
+        }
       break;
     }
     if (failed(convertOp(&nested, thenState)))
@@ -491,7 +478,7 @@ LogicalResult DFGConverter::convertIf(scf::IfOp op, RegionState &state) {
     for (Operation &nested : elseRegion.front()) {
       if (auto yield = dyn_cast<scf::YieldOp>(nested)) {
         for (Value operand : yield.getOperands()) {
-          Value mapped = mapValue(operand, elseState, yield.getLoc());
+          Value mapped = mapValue(operand, elseState, yield.getOperation());
           elseValues.push_back(materializeBranchLocalYield(
               operand, mapped, &elseRegion, /*thenBranch=*/false));
         }
@@ -544,27 +531,27 @@ LogicalResult DFGConverter::convertOp(Operation *op, RegionState &state) {
   // Memref shape operations: pass through the source memref
   if (auto castOp = dyn_cast<memref::CastOp>(op)) {
     state.valueMap[castOp.getResult()] =
-        mapValue(castOp.getSource(), state, op->getLoc());
+        mapValue(castOp.getSource(), state, op);
     return success();
   }
   if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
     state.valueMap[subviewOp.getResult()] =
-        mapValue(subviewOp.getSource(), state, op->getLoc());
+        mapValue(subviewOp.getSource(), state, op);
     return success();
   }
   if (auto reinterpret = dyn_cast<memref::ReinterpretCastOp>(op)) {
     state.valueMap[reinterpret.getResult()] =
-        mapValue(reinterpret.getSource(), state, op->getLoc());
+        mapValue(reinterpret.getSource(), state, op);
     return success();
   }
   if (auto collapse = dyn_cast<memref::CollapseShapeOp>(op)) {
     state.valueMap[collapse.getResult()] =
-        mapValue(collapse.getSrc(), state, op->getLoc());
+        mapValue(collapse.getSrc(), state, op);
     return success();
   }
   if (auto expand = dyn_cast<memref::ExpandShapeOp>(op)) {
     state.valueMap[expand.getResult()] =
-        mapValue(expand.getSrc(), state, op->getLoc());
+        mapValue(expand.getSrc(), state, op);
     return success();
   }
   if (isa<memref::DeallocOp>(op))
@@ -586,7 +573,7 @@ LogicalResult DFGConverter::convertOp(Operation *op, RegionState &state) {
   if (op->getNumRegions() == 0) {
     IRMapping mapping;
     for (Value operand : op->getOperands())
-      mapping.map(operand, mapValue(operand, state, op->getLoc()));
+      mapping.map(operand, mapValue(operand, state, op));
     Operation *clone = builder.clone(*op, mapping);
     for (unsigned i = 0, e = op->getNumResults(); i < e; ++i)
       state.valueMap[op->getResult(i)] = clone->getResult(i);
@@ -604,6 +591,7 @@ LogicalResult DFGConverter::convertOp(Operation *op, RegionState &state) {
 
 LogicalResult DFGConverter::finalizeMemory() {
   OpBuilder::InsertionGuard guard(builder);
+  circt::BackedgeBuilder backedges(builder, handshakeFunc.getLoc());
   // Insert extmemory ops before the return
   Operation *returnOp = nullptr;
   handshakeFunc.walk([&](circt::handshake::ReturnOp ret) {
@@ -671,6 +659,17 @@ LogicalResult DFGConverter::finalizeMemory() {
     unsigned stCount = stores.size();
     Location loc = memrefValue.getLoc();
 
+    SmallVector<circt::Backedge, 4> loadDataBackedges;
+    loadDataBackedges.reserve(loads.size());
+    for (MemAccess *access : loads) {
+      auto load = access->loadOp;
+      unsigned addrCount = load.getAddresses().size();
+      circt::Backedge dataBackedge =
+          backedges.get(load->getOperand(addrCount).getType());
+      load->setOperand(addrCount, static_cast<Value>(dataBackedge));
+      loadDataBackedges.push_back(dataBackedge);
+    }
+
     auto extMem = circt::handshake::ExternalMemoryOp::create(
         builder, loc, memrefValue, operands, ldCount, stCount, memoryId++);
 
@@ -680,9 +679,7 @@ LogicalResult DFGConverter::finalizeMemory() {
     for (unsigned i = 0; i < loads.size(); ++i) {
       MemAccess *access = loads[i];
       auto load = access->loadOp;
-      unsigned addrCount = load.getAddresses().size();
-      // Connect data-from-mem to load's data operand
-      load->setOperand(addrCount, memResults[i]);
+      loadDataBackedges[i].setValue(memResults[i]);
       // Done token
       access->doneToken = memResults[ldCount + stCount + i];
     }
@@ -692,7 +689,7 @@ LogicalResult DFGConverter::finalizeMemory() {
     }
   }
 
-  return success();
+  return backedges.clearOrEmitError();
 }
 
 //===----------------------------------------------------------------------===//
@@ -712,25 +709,26 @@ LogicalResult DFGConverter::buildMemoryControl() {
     }
   }
 
-  // Group accesses by root memref for independent ctrl-done chains
-  DenseMap<Value, SmallVector<MemAccess *, 8>> groups;
+  // Drive each memory op using the control token captured at conversion time.
+  // This avoids creating cyclic carry feedback edges in SSACFG regions.
+  SmallVector<Value, 16> doneTokens;
+  doneTokens.reserve(memAccesses.size());
   for (MemAccess &access : memAccesses) {
-    Value root = getMemrefRoot(access.memref);
-    groups[root].push_back(&access);
+    Value ctrl = access.controlToken ? access.controlToken : entryToken;
+    if (access.kind == AccessKind::Load) {
+      auto load = access.loadOp;
+      if (!load)
+        return access.origOp->emitError("missing load op in memory access");
+      load->setOperand(load->getNumOperands() - 1, ctrl);
+    } else {
+      auto store = access.storeOp;
+      if (!store)
+        return access.origOp->emitError("missing store op in memory access");
+      store->setOperand(store->getNumOperands() - 1, ctrl);
+    }
+    doneTokens.push_back(access.doneToken);
   }
 
-  // For each memory group, build a recursive ctrl-done chain
-  SmallVector<Value, 4> doneTokens;
-  for (auto &[memref, accesses] : groups) {
-    MemoryCtrlBuilder ctrlBuilder(builder, accesses, forBodyConds, whileConds,
-                                  ifConds, entryToken);
-    if (failed(ctrlBuilder.run()))
-      return failure();
-    if (Value done = ctrlBuilder.getDoneToken())
-      doneTokens.push_back(done);
-  }
-
-  // Join all group done tokens
   if (doneTokens.empty()) {
     memoryDoneToken = entryToken;
   } else if (doneTokens.size() == 1) {

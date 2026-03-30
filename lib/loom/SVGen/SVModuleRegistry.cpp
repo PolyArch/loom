@@ -37,6 +37,7 @@ static const OpMapping kOpMappings[] = {
     {"arith.divui", "arith", "fu_op_divui.sv"},
     {"arith.remsi", "arith", "fu_op_remsi.sv"},
     {"arith.remui", "arith", "fu_op_remui.sv"},
+    {"arith.minimumf", "arith", "fu_op_minimumf.sv"},
     // arith FP
     {"arith.addf", "arith", "fu_op_addf.sv"},
     {"arith.subf", "arith", "fu_op_subf.sv"},
@@ -51,6 +52,7 @@ static const OpMapping kOpMappings[] = {
     // math dialect
     {"math.absf", "math", "fu_op_absf.sv"},
     {"math.fma", "math", "fu_op_fma.sv"},
+    {"math.rsqrt", "math", "fu_op_rsqrt.sv"},
     {"math.sqrt", "math", "fu_op_sqrt.sv"},
     // math Tier 3 transcendental
     {"math.cos", "math", "fu_op_cos.sv"},

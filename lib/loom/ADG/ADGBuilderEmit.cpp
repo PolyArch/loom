@@ -35,12 +35,50 @@ namespace adg {
 
 using namespace detail;
 
+namespace {
+
+std::string sanitizeMlirSymbol(llvm::StringRef name) {
+  std::string sanitized;
+  sanitized.reserve(name.size() + 4);
+
+  auto appendSanitizedChar = [&sanitized](char ch) {
+    bool isAlpha = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+    bool isDigit = (ch >= '0' && ch <= '9');
+    if (isAlpha || isDigit || ch == '_')
+      sanitized.push_back(ch);
+    else
+      sanitized.push_back('_');
+  };
+
+  if (name.empty()) {
+    sanitized = "sym";
+    return sanitized;
+  }
+
+  char first = name.front();
+  bool firstIsAlpha = (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z');
+  bool firstIsUnderscore = first == '_';
+  if (!firstIsAlpha && !firstIsUnderscore)
+    sanitized += "sym_";
+
+  for (char ch : name)
+    appendSanitizedChar(ch);
+
+  if (sanitized.empty())
+    sanitized = "sym";
+  return sanitized;
+}
+
+} // namespace
+
 std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
   std::ostringstream os;
 
   os << "module {\n";
 
-  os << "fabric.module @" << moduleName << "(";
+  const std::string sanitizedModuleName = sanitizeMlirSymbol(moduleName);
+
+  os << "fabric.module @" << sanitizedModuleName << "(";
   unsigned argIdx = 0;
   for (size_t i = 0; i < memrefInputs.size(); ++i) {
     if (argIdx > 0)
@@ -96,8 +134,9 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
 
   for (unsigned peIdx : usedPEDefs) {
     const auto &pe = peDefs[peIdx];
+    const std::string sanitizedPeName = sanitizeMlirSymbol(pe.name);
     os << "  fabric." << (pe.temporal ? "temporal_pe" : "spatial_pe") << " @"
-       << pe.name << "(";
+       << sanitizedPeName << "(";
     for (size_t p = 0; p < pe.inputTypes.size(); ++p) {
       if (p > 0)
         os << ", ";
@@ -124,7 +163,8 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
 
     for (unsigned fuIdx : pe.fuIndices) {
       const auto &fu = fuDefs[fuIdx];
-      os << "    fabric.function_unit @" << fu.name << "(";
+      const std::string sanitizedFuName = sanitizeMlirSymbol(fu.name);
+      os << "    fabric.function_unit @" << sanitizedFuName << "(";
       for (size_t j = 0; j < fu.inputTypes.size(); ++j) {
         if (j > 0)
           os << ", ";
@@ -153,8 +193,9 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
 
   for (unsigned swIdx : usedSWDefs) {
     const auto &sw = swDefs[swIdx];
+    const std::string sanitizedSwName = sanitizeMlirSymbol(sw.name);
     os << "  fabric." << (sw.temporal ? "temporal_sw" : "spatial_sw") << " @"
-       << sw.name;
+       << sanitizedSwName;
 
     bool hasHw = false;
     auto startHw = [&]() {
@@ -210,7 +251,8 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
 
   for (unsigned memIdx : usedMemoryDefs) {
     const auto &mem = memoryDefs[memIdx];
-    os << "  fabric.memory @" << mem.name << " [ldCount = " << mem.ldPorts
+    const std::string sanitizedMemName = sanitizeMlirSymbol(mem.name);
+    os << "  fabric.memory @" << sanitizedMemName << " [ldCount = " << mem.ldPorts
        << ", stCount = " << mem.stPorts << ", lsqDepth = " << mem.lsqDepth
        << ", memrefType = " << mem.memrefType;
     if (!mem.isPrivate)
@@ -259,13 +301,15 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
     case InstanceKind::PE: {
       const auto &pe = peDefs[inst.defIdx];
       unsigned numOut = pe.outputTypes.size();
+      const std::string sanitizedPeName = sanitizeMlirSymbol(pe.name);
+      const std::string sanitizedInstName = sanitizeMlirSymbol(inst.name);
 
       if (numOut > 0) {
         os << "  %v" << i;
         if (numOut > 1)
           os << ":" << numOut;
       }
-      os << " = fabric.instance @" << pe.name << "(";
+      os << " = fabric.instance @" << sanitizedPeName << "(";
 
       for (size_t p = 0; p < pe.inputTypes.size(); ++p) {
         if (p > 0)
@@ -298,7 +342,7 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
             "input port; fix the ADG description instead of relying on "
             "implicit self-loops");
       }
-      os << ") {sym_name = \"" << inst.name << "\"}";
+      os << ") {sym_name = \"" << sanitizedInstName << "\"}";
 
       os << " : (";
       for (size_t p = 0; p < pe.inputTypes.size(); ++p) {
@@ -319,13 +363,15 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
       const auto &sw = swDefs[inst.defIdx];
       unsigned numIn = sw.inputTypes.size();
       unsigned numOut = sw.outputTypes.size();
+      const std::string sanitizedSwName = sanitizeMlirSymbol(sw.name);
+      const std::string sanitizedInstName = sanitizeMlirSymbol(inst.name);
 
       if (numOut > 0) {
         os << "  %v" << i;
         if (numOut > 1)
           os << ":" << numOut;
       }
-      os << " = fabric.instance @" << sw.name << "(";
+      os << " = fabric.instance @" << sanitizedSwName << "(";
 
       for (unsigned p = 0; p < numIn; ++p) {
         if (p > 0)
@@ -358,7 +404,7 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
             "input port; fix the ADG description instead of relying on "
             "implicit self-loops");
       }
-      os << ") {sym_name = \"" << inst.name << "\"}";
+      os << ") {sym_name = \"" << sanitizedInstName << "\"}";
 
       os << " : (";
       for (unsigned p = 0; p < numIn; ++p) {
@@ -377,6 +423,7 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
     }
     case InstanceKind::Memory: {
       const auto &mem = memoryDefs[inst.defIdx];
+      const std::string sanitizedInstName = sanitizeMlirSymbol(inst.name);
       const unsigned numDataInputs =
           getMemoryInputCount(mem.ldPorts, mem.stPorts, false);
       const unsigned numOut =
@@ -386,7 +433,7 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
         if (numOut > 1)
           os << ":" << numOut;
       }
-      os << " = fabric.memory @" << inst.name << " [ldCount = " << mem.ldPorts
+      os << " = fabric.memory @" << sanitizedInstName << " [ldCount = " << mem.ldPorts
          << ", stCount = " << mem.stPorts << ", lsqDepth = " << mem.lsqDepth
          << ", memrefType = " << mem.memrefType
          << ", numRegion = " << mem.numRegion;
@@ -459,6 +506,7 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
     }
     case InstanceKind::ExtMem: {
       const auto &mem = extMemDefs[inst.defIdx];
+      const std::string sanitizedInstName = sanitizeMlirSymbol(inst.name);
       unsigned numDataInputs = getMemoryInputCount(mem.ldPorts, mem.stPorts, false);
       unsigned numOut = getMemoryOutputCount(mem.ldPorts, mem.stPorts, false);
       if (numOut > 0) {
@@ -466,7 +514,7 @@ std::string ADGBuilder::Impl::generateMLIR(llvm::StringRef vizFileName) const {
         if (numOut > 1)
           os << ":" << numOut;
       }
-      os << " = fabric.extmemory @" << inst.name;
+      os << " = fabric.extmemory @" << sanitizedInstName;
       os << " [ldCount = " << mem.ldPorts << ", stCount = " << mem.stPorts
          << ", lsqDepth = " << mem.lsqDepth << ", memrefType = "
          << mem.memrefType;

@@ -31,13 +31,22 @@ using namespace mapper_detail;
 
 namespace {
 
+unsigned countOperationNodes(const Graph &dfg) {
+  unsigned count = 0;
+  for (const auto &nodePtr : dfg.nodes) {
+    if (nodePtr && nodePtr->kind == Node::OperationNode)
+      ++count;
+  }
+  return count;
+}
+
 unsigned selectLaneCount(const Mapper::Options &opts, const Graph &dfg) {
   unsigned configuredLanes = opts.lanes;
   if (configuredLanes != 0)
     return configuredLanes;
   // Tiny unit-style graphs do not benefit from speculative parallel lanes,
   // and serializing them avoids cross-lane diagnostic races.
-  if (dfg.nodes.size() <= opts.lane.autoSerialNodeThreshold)
+  if (countOperationNodes(dfg) <= opts.lane.autoSerialNodeThreshold)
     return 1;
   unsigned concurrency = std::thread::hardware_concurrency();
   if (concurrency == 0)
@@ -625,7 +634,7 @@ Mapper::Result Mapper::runWithTechMapPlan(
        ++swNodeId) {
     const auto *contractedCandidates =
         TechMapper::findContractedCandidates(techPlan, swNodeId);
-    if (!contractedCandidates)
+    if (!contractedCandidates || contractedCandidates->empty())
       continue;
     candidates[swNodeId] = *contractedCandidates;
   }
@@ -664,18 +673,28 @@ Mapper::Result Mapper::runWithTechMapPlan(
 
   // Filter out excluded hardware nodes from candidates (multi-kernel support).
   if (!opts.excludedNodes.empty()) {
+    unsigned filteredCount = 0;
     for (auto &entry : candidates) {
       auto &hwList = entry.second;
-      hwList.erase(
-          std::remove_if(hwList.begin(), hwList.end(),
-                         [&](IdIndex hwId) {
-                           return opts.excludedNodes.count(hwId) > 0;
-                         }),
-          hwList.end());
+      hwList.erase(std::remove_if(hwList.begin(), hwList.end(),
+                                  [&](IdIndex hwId) {
+                                    if (opts.excludedNodes.count(hwId) == 0)
+                                      return false;
+                                    const Node *hwNode = adg.getNode(hwId);
+                                    if (hwNode &&
+                                        getNodeAttrStr(hwNode, "resource_class") ==
+                                            "memory") {
+                                      return false;
+                                    }
+                                    ++filteredCount;
+                                    return true;
+                                  }),
+                   hwList.end());
     }
     if (opts.verbose) {
-      llvm::outs() << "Mapper: excluded " << opts.excludedNodes.size()
-                   << " hardware nodes from candidates\n";
+      llvm::outs() << "Mapper: excluded " << filteredCount
+                   << " non-memory hardware candidates from "
+                   << opts.excludedNodes.size() << " blocked nodes\n";
     }
   }
 
@@ -736,6 +755,10 @@ Mapper::Result Mapper::runWithTechMapPlan(
                    << ", budget " << restartOpts.budgetSeconds << "s)\n";
 
   const unsigned laneCount = selectLaneCount(restartOpts, dfg);
+  const unsigned opNodeCount = countOperationNodes(techPlan.contractedDFG);
+  const bool tinySerialLane =
+      laneCount == 1 &&
+      opNodeCount <= restartOpts.lane.autoSerialNodeThreshold;
   if (restartOpts.verbose && laneCount > 1)
     llvm::outs() << "Mapper: launching " << laneCount << " parallel lanes\n";
 
@@ -745,6 +768,17 @@ Mapper::Result Mapper::runWithTechMapPlan(
     laneOpts.seed =
         restartOpts.seed + static_cast<int>(laneIndex * restartOpts.lane.laneSeedStride);
     laneOpts.verbose = (laneCount == 1) ? opts.verbose : false;
+    if (tinySerialLane) {
+      laneOpts.enableCPSat = false;
+      laneOpts.enableRouteAwareSAMainLoop = false;
+      laneOpts.negotiatedRoutingPasses =
+          std::min<unsigned>(laneOpts.negotiatedRoutingPasses, 2u);
+      laneOpts.refinement.routeAwareSABudgetFraction =
+          std::min(laneOpts.refinement.routeAwareSABudgetFraction, 0.25);
+      laneOpts.localRepairBudgetFraction =
+          std::max(laneOpts.localRepairBudgetFraction, 0.75);
+      laneOpts.lane.finalPolishReserveFraction = 0.0;
+    }
     if (resetBudgetWindow && laneOpts.budgetSeconds > 0.0 &&
         laneOpts.lane.finalPolishReserveFraction > 0.0) {
       double laneBudgetSeconds =
@@ -793,11 +827,11 @@ Mapper::Result Mapper::runWithTechMapPlan(
 
     if (laneOpts.verbose)
       llvm::outs() << "Mapper: refining placement...\n";
-    // When route-aware SA is enabled, reduce warmup budget
+    // When route-aware SA is enabled for this lane, reduce warmup budget.
     Options refinementOpts = laneOpts;
-    if (opts.enableRouteAwareSAMainLoop) {
+    if (laneOpts.enableRouteAwareSAMainLoop) {
       refinementOpts.refinement.budgetFraction =
-          opts.refinement.warmupBudgetFraction;
+          laneOpts.refinement.warmupBudgetFraction;
     }
     laneMapper.runRefinement(attempt.state, techPlan.contractedDFG, adg,
                              flattener, candidates, refinementOpts,
@@ -864,7 +898,7 @@ Mapper::Result Mapper::runWithTechMapPlan(
       }
     }
 
-    if (opts.enableRouteAwareSAMainLoop) {
+    if (laneOpts.enableRouteAwareSAMainLoop) {
       if (laneOpts.verbose)
         llvm::outs() << "Mapper: initial routing...\n";
       bool initialAllRouted =
@@ -883,24 +917,134 @@ Mapper::Result Mapper::runWithTechMapPlan(
             attempt.state, techPlan.contractedDFG, adg, flattener,
             candidates, attempt.edgeKinds, laneOpts);
       }
-      // Single local repair pass if unrouted edges remain
-      if (!attempt.routingSucceeded && laneOpts.localRepair.enabled &&
-          !laneMapper.shouldStopForBudget("local repair")) {
-        auto failedEdges = mapper_detail::collectUnroutedEdges(
-            attempt.state, techPlan.contractedDFG, attempt.edgeKinds);
-        if (!failedEdges.empty()) {
-          if (laneOpts.verbose)
-            llvm::outs() << "Mapper: local repair on " << failedEdges.size()
-                         << " unrouted edges...\n";
-          auto routedCheckpoint = attempt.state.save();
-          attempt.state.clearRoutes(techPlan.contractedDFG, adg);
-          auto placementCheckpoint = attempt.state.save();
-          attempt.state.restore(routedCheckpoint);
-          attempt.routingSucceeded = laneMapper.runLocalRepair(
-              attempt.state, placementCheckpoint, failedEdges,
-              techPlan.contractedDFG, adg, flattener, candidates,
-              attempt.edgeKinds, laneOpts);
+      auto failedEdges = mapper_detail::collectUnroutedEdges(
+          attempt.state, techPlan.contractedDFG, attempt.edgeKinds);
+
+      if (!attempt.routingSucceeded && !failedEdges.empty() &&
+          failedEdges.size() <=
+              laneOpts.localRepair.targetFocusedFailedEdgeThreshold &&
+          !laneMapper.shouldStopForBudget("exact routing repair")) {
+        llvm::SmallVector<IdIndex, 24> focusedRepairEdges;
+        llvm::DenseSet<IdIndex> seenRepairEdges;
+        for (IdIndex edgeId : failedEdges) {
+          if (seenRepairEdges.insert(edgeId).second)
+            focusedRepairEdges.push_back(edgeId);
         }
+        MappingState probeState = attempt.state;
+        probeState.clearRoutes(techPlan.contractedDFG, adg);
+        llvm::DenseMap<IdIndex, double> emptyHistory;
+        for (IdIndex edgeId : failedEdges) {
+          const Edge *edge = techPlan.contractedDFG.getEdge(edgeId);
+          if (!edge)
+            continue;
+          IdIndex srcHwPort =
+              edge->srcPort < attempt.state.swPortToHwPort.size()
+                  ? attempt.state.swPortToHwPort[edge->srcPort]
+                  : INVALID_ID;
+          IdIndex dstHwPort =
+              edge->dstPort < attempt.state.swPortToHwPort.size()
+                  ? attempt.state.swPortToHwPort[edge->dstPort]
+                  : INVALID_ID;
+          if (srcHwPort == INVALID_ID || dstHwPort == INVALID_ID)
+            continue;
+          auto freeSpacePath = laneMapper.findPath(
+              srcHwPort, dstHwPort, edgeId, probeState, techPlan.contractedDFG,
+              adg, emptyHistory);
+          for (IdIndex portId : freeSpacePath) {
+            if (portId >= attempt.state.portToUsingEdges.size())
+              continue;
+            for (IdIndex otherEdgeId : attempt.state.portToUsingEdges[portId]) {
+              if (!seenRepairEdges.insert(otherEdgeId).second)
+                continue;
+              if (focusedRepairEdges.size() >=
+                  laneOpts.localRepair.singleRipupMaxEdges) {
+                break;
+              }
+              focusedRepairEdges.push_back(otherEdgeId);
+            }
+            if (focusedRepairEdges.size() >=
+                laneOpts.localRepair.singleRipupMaxEdges) {
+              break;
+            }
+          }
+          if (focusedRepairEdges.size() >=
+              laneOpts.localRepair.singleRipupMaxEdges) {
+            break;
+          }
+        }
+        if (focusedRepairEdges.size() <
+            laneOpts.localRepair.singleRipupMaxEdges) {
+          llvm::DenseSet<IdIndex> anchorNodes;
+          for (IdIndex edgeId : failedEdges) {
+            const Edge *edge = techPlan.contractedDFG.getEdge(edgeId);
+            if (!edge)
+              continue;
+            const Port *srcPort = techPlan.contractedDFG.getPort(edge->srcPort);
+            const Port *dstPort = techPlan.contractedDFG.getPort(edge->dstPort);
+            if (srcPort && srcPort->parentNode != INVALID_ID)
+              anchorNodes.insert(srcPort->parentNode);
+            if (dstPort && dstPort->parentNode != INVALID_ID)
+              anchorNodes.insert(dstPort->parentNode);
+          }
+          for (IdIndex edgeId = 0;
+               edgeId < static_cast<IdIndex>(techPlan.contractedDFG.edges.size());
+               ++edgeId) {
+            if (focusedRepairEdges.size() >=
+                laneOpts.localRepair.singleRipupMaxEdges) {
+              break;
+            }
+            if (seenRepairEdges.count(edgeId) != 0)
+              continue;
+            const Edge *edge = techPlan.contractedDFG.getEdge(edgeId);
+            if (!edge)
+              continue;
+            const Port *srcPort = techPlan.contractedDFG.getPort(edge->srcPort);
+            const Port *dstPort = techPlan.contractedDFG.getPort(edge->dstPort);
+            IdIndex srcNode = (srcPort && srcPort->parentNode != INVALID_ID)
+                                  ? srcPort->parentNode
+                                  : INVALID_ID;
+            IdIndex dstNode = (dstPort && dstPort->parentNode != INVALID_ID)
+                                  ? dstPort->parentNode
+                                  : INVALID_ID;
+            if (anchorNodes.count(srcNode) == 0 &&
+                anchorNodes.count(dstNode) == 0) {
+              continue;
+            }
+            seenRepairEdges.insert(edgeId);
+            focusedRepairEdges.push_back(edgeId);
+          }
+        }
+        if (laneOpts.verbose) {
+          llvm::outs() << "Mapper: focused exact repair on "
+                       << failedEdges.size() << " unrouted edges (neighborhood "
+                       << focusedRepairEdges.size() << ")\n";
+        }
+        bool exactAllRouted = laneMapper.runExactRoutingRepair(
+            attempt.state, focusedRepairEdges, techPlan.contractedDFG, adg,
+            flattener, attempt.edgeKinds, laneOpts, nullptr, failedEdges);
+        if (exactAllRouted) {
+          attempt.routingSucceeded = true;
+        } else {
+          failedEdges = mapper_detail::collectUnroutedEdges(
+              attempt.state, techPlan.contractedDFG, attempt.edgeKinds);
+        }
+      }
+
+      // Single local repair pass if unrouted edges remain.
+      if (!attempt.routingSucceeded && laneOpts.localRepair.enabled &&
+          !failedEdges.empty() &&
+          !laneMapper.shouldStopForBudget("local repair")) {
+        if (laneOpts.verbose)
+          llvm::outs() << "Mapper: local repair on " << failedEdges.size()
+                       << " unrouted edges...\n";
+        auto routedCheckpoint = attempt.state.save();
+        attempt.state.clearRoutes(techPlan.contractedDFG, adg);
+        auto placementCheckpoint = attempt.state.save();
+        attempt.state.restore(routedCheckpoint);
+        attempt.routingSucceeded = laneMapper.runLocalRepair(
+            attempt.state, placementCheckpoint, failedEdges,
+            techPlan.contractedDFG, adg, flattener, candidates,
+            attempt.edgeKinds, laneOpts);
       }
     } else {
       if (laneOpts.verbose)
@@ -1043,7 +1187,7 @@ Mapper::Result Mapper::runWithTechMapPlan(
                  << ", clock=" << bestIt->estimatedClockPeriod << ")\n";
   }
 
-  if (!thisRestartRoutingSucceeded && remainingBudgetSeconds() > 1.0) {
+  if (!thisRestartRoutingSucceeded && remainingBudgetSeconds() > 0.05) {
     auto polishFailed =
         collectUnroutedEdges(thisRestartState, techPlan.contractedDFG,
                              thisRestartEdgeKinds);
@@ -1059,6 +1203,9 @@ Mapper::Result Mapper::runWithTechMapPlan(
 
       Options polishOpts = opts;
       polishOpts.verbose = opts.verbose;
+      // Final polish should spend the remaining budget on the selected
+      // lane instead of inheriting the conservative per-stage cap.
+      polishOpts.localRepairBudgetFraction = 1.0;
       polishOpts.cpSatTimeLimitSeconds =
           std::max(polishOpts.cpSatTimeLimitSeconds,
                    std::min(remainingBudgetSeconds(), 6.0));

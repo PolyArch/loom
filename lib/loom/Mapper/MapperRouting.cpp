@@ -38,6 +38,15 @@ bool isSoftwareMemoryInterfaceOpName(llvm::StringRef opName) {
   return opName == "handshake.extmemory" || opName == "handshake.memory";
 }
 
+bool isRoutingHotspotOpName(llvm::StringRef opName) {
+  return opName == "dataflow.gate" || opName == "dataflow.carry" ||
+         opName == "dataflow.stream" || opName == "arith.addi" ||
+         opName == "arith.index_cast" || opName == "handshake.cond_br" ||
+         opName == "handshake.join" || opName == "handshake.mux" ||
+         opName == "dataflow.invariant" || opName == "math.fma" ||
+         opName == "handshake.load" || opName == "handshake.store";
+}
+
 bool isRoutingCrossbarOutputPort(IdIndex portId, const Graph &adg) {
   const Port *port = adg.getPort(portId);
   if (!port || port->direction != Port::Output ||

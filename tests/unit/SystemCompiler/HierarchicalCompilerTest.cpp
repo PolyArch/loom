@@ -15,7 +15,11 @@
 #include "loom/SystemCompiler/InfeasibilityCut.h"
 #include "loom/SystemCompiler/L1CoreAssignment.h"
 #include "loom/SystemCompiler/L2CoreCompiler.h"
+#include "loom/Mapper/Graph.h"
 #include "loom/SystemCompiler/SystemTypes.h"
+
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/MLIRContext.h"
 
 #include <cassert>
 #include <cmath>
@@ -26,6 +30,22 @@
 #include <vector>
 
 using namespace loom;
+
+static void setStringNodeAttr(Node *node, mlir::MLIRContext *ctx,
+                              llvm::StringRef key, llvm::StringRef value) {
+  node->attributes.push_back(mlir::NamedAttribute(
+      mlir::StringAttr::get(ctx, key), mlir::StringAttr::get(ctx, value)));
+}
+
+static void setStringArrayNodeAttr(Node *node, mlir::MLIRContext *ctx,
+                                   llvm::StringRef key,
+                                   std::initializer_list<llvm::StringRef> vals) {
+  llvm::SmallVector<mlir::Attribute, 4> attrs;
+  for (llvm::StringRef val : vals)
+    attrs.push_back(mlir::StringAttr::get(ctx, val));
+  node->attributes.push_back(mlir::NamedAttribute(
+      mlir::StringAttr::get(ctx, key), mlir::ArrayAttr::get(ctx, attrs)));
+}
 
 /// Build a minimal 2x2 system architecture with 2 core types,
 /// each having 2 instances.
@@ -498,8 +518,12 @@ static bool testCompilerConfigSubOptions() {
     std::cerr << "FAIL: testCompilerConfigSubOptions - stallWindow default\n";
     return false;
   }
-  if (std::fabs(config.mapperBudgetSeconds - 15.0) > 0.001) {
+  if (std::fabs(config.mapperBudgetSeconds - 300.0) > 0.001) {
     std::cerr << "FAIL: testCompilerConfigSubOptions - mapperBudgetSeconds default\n";
+    return false;
+  }
+  if (config.mapperSeed != 42) {
+    std::cerr << "FAIL: testCompilerConfigSubOptions - mapperSeed default\n";
     return false;
   }
 
@@ -884,12 +908,52 @@ static bool testMergedPartitionConfig() {
   return true;
 }
 
+static bool testFailureAnalyzerCanonicalizesShortFUNames() {
+  mlir::MLIRContext ctx;
+
+  Graph dfg(&ctx);
+  auto dfgNode = std::make_unique<Node>();
+  dfgNode->kind = Node::OperationNode;
+  setStringNodeAttr(dfgNode.get(), &ctx, "op_name", "arith.addi");
+  dfg.addNode(std::move(dfgNode));
+  dfg.buildAttributeCache();
+
+  Graph adg(&ctx);
+  auto adgNode = std::make_unique<Node>();
+  adgNode->kind = Node::OperationNode;
+  setStringNodeAttr(adgNode.get(), &ctx, "op_name", "fu_add");
+  setStringNodeAttr(adgNode.get(), &ctx, "op_kind", "function_unit");
+  setStringNodeAttr(adgNode.get(), &ctx, "resource_class", "functional");
+  setStringArrayNodeAttr(adgNode.get(), &ctx, "ops", {"add"});
+  adg.addNode(std::move(adgNode));
+  adg.buildAttributeCache();
+
+  Mapper::Result mapResult;
+  mapResult.success = false;
+  mapResult.diagnostics = "routing budget exhausted during routing";
+  mapResult.searchSummary.routedLaneCount = 1;
+
+  ADGFlattener flattener;
+  InfeasibilityCut cut =
+      analyzeFailure(mapResult, dfg, adg, flattener, "kernel", "PE",
+                     std::nullopt);
+
+  if (cut.reason != CutReason::ROUTING_CONGESTION) {
+    std::cerr << "FAIL: testFailureAnalyzerCanonicalizesShortFUNames - "
+              << "unexpected cut reason\n";
+    return false;
+  }
+
+  std::cout << "PASS: testFailureAnalyzerCanonicalizesShortFUNames\n";
+  return true;
+}
+
 // =========================================================================
 // main
 // =========================================================================
 int main() {
   int failures = 0;
-  constexpr int totalTests = 13;
+  constexpr int totalTests = 14;
 
   if (!testL1ProducesValidAssignment()) ++failures;
   if (!testL1TypeCompatibility()) ++failures;
@@ -904,6 +968,7 @@ int main() {
   if (!testL2AssignmentPartitions()) ++failures;
   if (!testPerPartitionL2Split()) ++failures;
   if (!testMergedPartitionConfig()) ++failures;
+  if (!testFailureAnalyzerCanonicalizesShortFUNames()) ++failures;
 
   std::cout << "\n" << (totalTests - failures) << "/" << totalTests
             << " tests passed";

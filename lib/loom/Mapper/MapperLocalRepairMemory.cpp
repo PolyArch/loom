@@ -80,8 +80,10 @@ bool LocalRepairDriver::runMemoryExactRepairs() {
               continue;
             llvm::StringRef otherOp = getNodeAttrStr(otherNode, "op_name");
             if (otherOp == "dataflow.gate" || otherOp == "arith.addi" ||
+                otherOp == "dataflow.stream" || otherOp == "arith.index_cast" ||
                 otherOp == "dataflow.carry" ||
-                otherOp == "handshake.cond_br") {
+                otherOp == "dataflow.invariant" ||
+                otherOp == "handshake.cond_br" || otherOp == "math.fma") {
               maybeAddClusterNode(otherPort->parentNode);
             }
           }

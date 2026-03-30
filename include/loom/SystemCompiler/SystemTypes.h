@@ -134,8 +134,8 @@ struct CompilationResult {
 /// Configuration for the hierarchical decomposition driver.
 struct CompilerConfig {
   unsigned maxIterations = 10;
-  double mapperBudgetSeconds = 15.0;
-  unsigned mapperSeed = 0;
+  double mapperBudgetSeconds = 300.0;
+  unsigned mapperSeed = 42;
   bool verbose = false;
 
   /// Temporal execution model configuration.

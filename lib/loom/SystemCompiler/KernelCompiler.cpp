@@ -32,6 +32,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Pass/PassManager.h"
@@ -241,6 +242,12 @@ LogicalResult runSCFToDFG(ModuleOp module) {
   return pm.run(module);
 }
 
+bool isKnownFrontendDominanceDiagnostic(Diagnostic &diag) {
+  if (diag.getSeverity() != DiagnosticSeverity::Error)
+    return false;
+  return llvm::StringRef(diag.str()).contains("does not dominate this use");
+}
+
 /// Check if a func::FuncOp has any DFG candidate regions.
 /// This is a lightweight check that mirrors the logic in MarkDFGDomain.cpp
 /// without running the full pass.
@@ -364,10 +371,17 @@ bool KernelCompiler::loadSource(const std::string &sourcePath) {
   }
 
   // Run CF-to-SCF conversion
-  if (failed(runCFToSCF(*mlirModule))) {
-    llvm::errs() << "KernelCompiler: CF-to-SCF failed for " << sourcePath
-                 << "\n";
-    return false;
+  {
+    ScopedDiagnosticHandler dominanceFilter(
+        &ctx_, [&](Diagnostic &diag) -> LogicalResult {
+          return isKnownFrontendDominanceDiagnostic(diag) ? success()
+                                                          : failure();
+        });
+    if (failed(runCFToSCF(*mlirModule))) {
+      llvm::errs() << "KernelCompiler: CF-to-SCF failed for " << sourcePath
+                   << "\n";
+      return false;
+    }
   }
 
   // Register all functions from this source
@@ -425,11 +439,18 @@ KernelCompileResult KernelCompiler::compile(const std::string &functionName) {
   });
 
   // Run the DFG conversion pipeline (MarkDFGDomain + SCFToDFG)
-  if (failed(runSCFToDFG(kernelModule))) {
-    result.diagnostics =
-        "DFG conversion failed for function '" + functionName + "'";
-    kernelModule.erase();
-    return result;
+  {
+    ScopedDiagnosticHandler dominanceFilter(
+        &ctx_, [&](Diagnostic &diag) -> LogicalResult {
+          return isKnownFrontendDominanceDiagnostic(diag) ? success()
+                                                          : failure();
+        });
+    if (failed(runSCFToDFG(kernelModule))) {
+      result.diagnostics =
+          "DFG conversion failed for function '" + functionName + "'";
+      kernelModule.erase();
+      return result;
+    }
   }
 
   // Verify that a handshake.func was produced

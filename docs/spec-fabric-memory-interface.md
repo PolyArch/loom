@@ -163,6 +163,12 @@ What matters is the semantic contract:
 - operations other than `fabric.add_tag`, `fabric.map_tag`, and
   `fabric.del_tag` do not change tagged shape; they only transport it
 
+Current SciComp collateral uses the same bridge contract for multi-lane
+`fabric.extmemory` families: the generated bridge expands the ingress and
+egress memory families per logical lane, and the bridge may terminate at route
+stage ports that are already tagged without requiring an explicit
+`fabric.add_tag` or `fabric.del_tag` at that boundary.
+
 ## Relationship to Switch Semantics
 
 Tagged memory traffic still obeys the switch rules of the enclosing routing

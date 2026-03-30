@@ -3,8 +3,10 @@
 #include "LLVMToCFTypes.h"
 #include "loom/Dialect/Fabric/FabricTypes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
 using namespace mlir;
@@ -33,6 +35,30 @@ static Type getHomogeneousStructElementType(LLVM::LLVMStructType structTy,
       return nullptr;
   }
   return firstTy;
+}
+
+static Operation *resolveCalleeOp(Operation *site, FlatSymbolRefAttr calleeAttr) {
+  if (!site || !calleeAttr)
+    return nullptr;
+
+  if (Operation *callee =
+          SymbolTable::lookupNearestSymbolFrom(site, calleeAttr))
+    return callee;
+
+  auto module = site->getParentOfType<ModuleOp>();
+  if (!module)
+    return nullptr;
+
+  StringRef calleeName = calleeAttr.getAttr().getValue();
+  for (auto llvmFunc : module.getOps<LLVM::LLVMFuncOp>()) {
+    if (llvmFunc.getSymName() == calleeName)
+      return llvmFunc;
+  }
+  for (auto func : module.getOps<func::FuncOp>()) {
+    if (func.getSymName() == calleeName)
+      return func;
+  }
+  return nullptr;
 }
 
 } // namespace
@@ -76,8 +102,33 @@ Type flattenAllocaElementType(MLIRContext *ctx, Type llvmType,
                                     elementCount);
   }
 
-  // Flatten struct types: treat as byte array
   if (auto structTy = dyn_cast<LLVM::LLVMStructType>(llvmType)) {
+    Type scalarTy = nullptr;
+    uint64_t totalCount = 0;
+    bool canScalarize = !structTy.getBody().empty();
+
+    for (Type fieldTy : structTy.getBody()) {
+      uint64_t fieldCount = 1;
+      Type flatFieldTy = flattenAllocaElementType(ctx, fieldTy, fieldCount);
+      if (!flatFieldTy) {
+        canScalarize = false;
+        break;
+      }
+      if (!scalarTy)
+        scalarTy = flatFieldTy;
+      else if (scalarTy != flatFieldTy) {
+        canScalarize = false;
+        break;
+      }
+      totalCount += fieldCount;
+    }
+
+    if (canScalarize && scalarTy && totalCount != 0) {
+      elementCount *= totalCount;
+      return scalarTy;
+    }
+
+    // Heterogeneous structs still fall back to a byte-addressable buffer.
     unsigned totalBits = getTypeBitWidth(structTy);
     unsigned totalBytes = (totalBits + 7) / 8;
     if (totalBytes == 0) totalBytes = 1;
@@ -320,6 +371,67 @@ static Type inferFromUses(Value ptrVal, unsigned depth = 0) {
             }
           }
         }
+      }
+    }
+
+    if (auto call = dyn_cast<LLVM::CallOp>(user)) {
+      auto calleeAttr = call.getCalleeAttr();
+      if (!calleeAttr)
+        continue;
+
+      unsigned argIdx = use.getOperandNumber();
+      Operation *calleeOp = resolveCalleeOp(call, calleeAttr);
+      if (!calleeOp)
+        continue;
+
+      if (auto calleeLLVM = dyn_cast<LLVM::LLVMFuncOp>(calleeOp)) {
+        if (calleeLLVM.isExternal())
+          continue;
+        Block &calleeEntry = calleeLLVM.getBody().front();
+        if (argIdx >= calleeEntry.getNumArguments())
+          continue;
+        Type fromCallee = inferFromUses(calleeEntry.getArgument(argIdx),
+                                        depth + 1);
+        if (fromCallee) {
+          if (!isByteType(fromCallee))
+            return fromCallee;
+          sawByteEvidence = true;
+        }
+        continue;
+      }
+
+      if (auto calleeFunc = dyn_cast<func::FuncOp>(calleeOp)) {
+        auto fnTy = calleeFunc.getFunctionType();
+        if (argIdx >= fnTy.getNumInputs())
+          continue;
+        auto memRefTy = dyn_cast<MemRefType>(fnTy.getInput(argIdx));
+        if (!memRefTy)
+          continue;
+        Type elemTy = memRefTy.getElementType();
+        if (isByteType(elemTy)) {
+          sawByteEvidence = true;
+          continue;
+        }
+        return elemTy;
+      }
+    }
+
+    if (auto callIntr = dyn_cast<LLVM::CallIntrinsicOp>(user)) {
+      StringRef name = callIntr.getIntrin();
+      if (!name.starts_with("llvm.memcpy.") &&
+          !name.starts_with("llvm.memmove."))
+        continue;
+
+      unsigned operandIdx = use.getOperandNumber();
+      if (operandIdx > 1 || callIntr.getArgs().size() < 2)
+        continue;
+
+      Value peerPtr = callIntr.getArgs()[operandIdx == 0 ? 1 : 0];
+      Type fromPeer = inferFromUses(peerPtr, depth + 1);
+      if (fromPeer) {
+        if (!isByteType(fromPeer))
+          return fromPeer;
+        sawByteEvidence = true;
       }
     }
   }

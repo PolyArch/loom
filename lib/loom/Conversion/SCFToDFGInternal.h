@@ -19,6 +19,7 @@
 
 #include "circt/Dialect/Handshake/HandshakeDialect.h"
 #include "circt/Dialect/Handshake/HandshakeOps.h"
+#include "circt/Support/BackedgeBuilder.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -26,6 +27,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -45,6 +47,7 @@ using mlir::BlockArgument;
 using mlir::DenseMap;
 using mlir::DenseSet;
 using mlir::FailureOr;
+using mlir::DominanceInfo;
 using mlir::IntegerAttr;
 using mlir::IRMapping;
 using mlir::Location;
@@ -115,6 +118,23 @@ inline std::optional<unsigned> getModuleUIntAttr(ModuleOp module,
   if (auto attr = module->getAttrOfType<IntegerAttr>(name))
     return static_cast<unsigned>(attr.getInt());
   return std::nullopt;
+}
+
+inline bool dominatesOpUse(Value value, Operation *user) {
+  if (!value || !user)
+    return false;
+
+  if (auto blockArg = mlir::dyn_cast<BlockArgument>(value))
+    return blockArg.getOwner() == user->getBlock();
+
+  Operation *defOp = value.getDefiningOp();
+  if (!defOp)
+    return true;
+  if (defOp->getBlock() == user->getBlock())
+    return defOp->isBeforeInBlock(user);
+
+  DominanceInfo dom(user->getParentOp());
+  return dom.dominates(defOp, user);
 }
 
 inline Value buildCappedJoinTree(OpBuilder &builder, Location loc,
@@ -504,7 +524,7 @@ private:
   Value makeDummyData(Location loc, Type type);
 
   // Value mapping across regions.
-  Value mapValue(Value value, RegionState &state, Location loc);
+  Value mapValue(Value value, RegionState &state, Operation *user);
 
   // Update pending invariant conditions.
   void updateInvariantCond(RegionState &state, Value cond);
@@ -660,7 +680,8 @@ private:
 
     auto doneBranch = circt::handshake::ConditionalBranchOp::create(
         builder, loc, wc, bodyDone);
-    carry->setOperand(2, doneBranch.getTrueResult());
+    if (dominatesOpUse(doneBranch.getTrueResult(), carry.getOperation()))
+      carry->setOperand(2, doneBranch.getTrueResult());
     return doneBranch.getFalseResult();
   }
 
@@ -727,7 +748,8 @@ private:
     ScfPath afterPath = parentPath;
     afterPath.push_back(PathEntry{op, 1});
     Value afterDone = processLevel(afterPath, afterCtrl);
-    carry->setOperand(2, afterDone);
+    if (dominatesOpUse(afterDone, carry.getOperation()))
+      carry->setOperand(2, afterDone);
     return exitCtrl;
   }
 

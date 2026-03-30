@@ -3,6 +3,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <limits>
 
 namespace loom {
 
@@ -32,6 +33,9 @@ bool LocalRepairDriver::runHotspotRepairAndEarlyCPSat() {
     }
   }
 
+  const bool focusedResidual =
+      failedEdges.size() <= repairOpts.targetFocusedFailedEdgeThreshold;
+
   state.restore(baseCheckpoint);
   std::vector<IdIndex> repairNodes;
   for (IdIndex swNode = 0; swNode < static_cast<IdIndex>(dfg.nodes.size());
@@ -44,8 +48,36 @@ bool LocalRepairDriver::runHotspotRepairAndEarlyCPSat() {
       repairNodes.push_back(swNode);
   }
 
-  unsigned maxHotspots =
-      std::min<unsigned>(hotspots.size(), repairOpts.hotspotLimit);
+  llvm::SmallVector<IdIndex, 8> activeHotspots;
+  if (focusedResidual) {
+    llvm::DenseSet<IdIndex> anchorNodes;
+    for (IdIndex edgeId : failedEdges) {
+      const Edge *edge = dfg.getEdge(edgeId);
+      if (!edge)
+        continue;
+      const Port *srcPort = dfg.getPort(edge->srcPort);
+      const Port *dstPort = dfg.getPort(edge->dstPort);
+      if (srcPort && srcPort->parentNode != INVALID_ID)
+        anchorNodes.insert(srcPort->parentNode);
+      if (dstPort && dstPort->parentNode != INVALID_ID)
+        anchorNodes.insert(dstPort->parentNode);
+    }
+    for (IdIndex swNode : hotspots) {
+      if (!anchorNodes.contains(swNode))
+        continue;
+      activeHotspots.push_back(swNode);
+      if (activeHotspots.size() >= repairOpts.hotspotLimit)
+        break;
+    }
+  } else {
+    for (IdIndex swNode : hotspots) {
+      activeHotspots.push_back(swNode);
+      if (activeHotspots.size() >= repairOpts.hotspotLimit)
+        break;
+    }
+  }
+
+  unsigned maxHotspots = activeHotspots.size();
   bool deferToCPSat = false;
   for (unsigned round = 0; round < std::max(1u, opts.selectiveRipupPasses);
        ++round) {
@@ -53,15 +85,18 @@ bool LocalRepairDriver::runHotspotRepairAndEarlyCPSat() {
       break;
     bool improvedThisRound = false;
     const unsigned repairRadius =
-        opts.placementMoveRadius == 0
-            ? 0
-            : opts.placementMoveRadius + round * repairOpts.repairRadiusStep +
-                  repairOpts.repairRadiusBias;
+        focusedResidual
+            ? std::numeric_limits<unsigned>::max() / 4
+            : (opts.placementMoveRadius == 0
+                   ? 0
+                   : opts.placementMoveRadius +
+                         round * repairOpts.repairRadiusStep +
+                         repairOpts.repairRadiusBias);
 
     for (unsigned hotIdx = 0; hotIdx < maxHotspots; ++hotIdx) {
       if (mapper.shouldStopForBudget("local repair"))
         break;
-      IdIndex swNode = hotspots[hotIdx];
+      IdIndex swNode = activeHotspots[hotIdx];
       auto candIt = candidates.find(swNode);
       if (candIt == candidates.end())
         continue;
@@ -75,7 +110,8 @@ bool LocalRepairDriver::runHotspotRepairAndEarlyCPSat() {
       for (IdIndex candHw : candIt->second) {
         if (candHw == oldHw)
           continue;
-        if (!isWithinMoveRadius(oldHw, candHw, flattener, repairRadius))
+        if (!focusedResidual &&
+            !isWithinMoveRadius(oldHw, candHw, flattener, repairRadius))
           continue;
         if (!canRelocateNode(swNode, candHw, oldHw, state, adg, flattener,
                              candidates, &candidateSets))
@@ -143,7 +179,8 @@ bool LocalRepairDriver::runHotspotRepairAndEarlyCPSat() {
         IdIndex otherHw = state.swNodeToHwNode[otherSw];
         if (otherHw == INVALID_ID)
           continue;
-        if (!isWithinMoveRadius(oldHw, otherHw, flattener, repairRadius))
+        if (!focusedResidual &&
+            !isWithinMoveRadius(oldHw, otherHw, flattener, repairRadius))
           continue;
         if (!canSwapNodes(swNode, otherSw, oldHw, otherHw, state, adg,
                           flattener, candidates, &candidateSets))

@@ -115,6 +115,12 @@ is implementation-dependent and parameterized by data width.
 | `math.exp` | `fu_op_exp.sv` | N/A | Requires `--fp-ip-profile` |
 | `math.log2` | `fu_op_log2.sv` | N/A | Requires `--fp-ip-profile` |
 
+Current implementation note:
+
+- `math.floor` is accepted by body validation and standalone simulation, but
+  the current RTL generator does not yet emit a dedicated `fu_op_floor.sv`
+  module. `--gen-sv` rejects it until RTL support is added.
+
 Generation rejects any FU body containing a Tier 3 operation unless the
 `--fp-ip-profile` flag is provided. See Error Reporting for the exact error
 message format.

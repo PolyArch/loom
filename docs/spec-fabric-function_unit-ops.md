@@ -15,8 +15,9 @@ It defines:
 
 This document is the single source of truth for the future
 `fabric.function_unit` body validator.
-The same operation set is also the contract that simulator, RTL generation,
-and validation flows must recognize for `fabric.function_unit` bodies.
+The simulator and RTL generator must stay aligned with the operation coverage
+described here and in the backend-specific specs, while validation always
+enforces the body allowlist and timing rules in this document.
 
 Related documents:
 
@@ -149,6 +150,8 @@ Notes:
 - `arith.minimumf` and `math.rsqrt` are first-class supported compute ops in
   current simulation and RTL generation paths, and they are treated as normal
   `fabric.function_unit` body operations rather than special control helpers.
+- `math.floor` is accepted by the current body validator and simulator. The
+  RTL generator documents its own support matrix separately.
 
 ### `llvm` Dialect
 

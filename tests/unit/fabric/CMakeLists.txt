@@ -11,7 +11,9 @@ llvm_map_components_to_libnames(FABRIC_TEST_LLVM_LIBS core support)
 
 target_link_libraries(fabric-system-ops-test PRIVATE
   LoomFabric
+  MLIRArithDialect
   MLIRIR
+  MLIRMathDialect
   MLIRParser
   MLIRSupport
   ${FABRIC_TEST_LLVM_LIBS}

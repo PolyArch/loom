@@ -42,7 +42,8 @@ static int getOpIntrinsicLatency(llvm::StringRef opName) {
       opName == "arith.trunci" || opName == "arith.select" ||
       opName == "arith.index_cast" || opName == "arith.index_castui" ||
       opName == "arith.negf" || opName == "arith.cmpi" ||
-      opName == "arith.cmpf" || opName == "math.absf" ||
+      opName == "arith.cmpf" || opName == "arith.minimumf" ||
+      opName == "math.absf" || opName == "math.rsqrt" ||
       opName == "llvm.intr.bitreverse" ||
       opName == "handshake.cond_br" || opName == "handshake.constant" ||
       opName == "handshake.join" || opName == "handshake.load" ||

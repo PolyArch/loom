@@ -46,6 +46,7 @@ target_link_libraries(domain-adg-generator-test PRIVATE
   LoomADG
   LoomFabric
   LoomDataflow
+  LoomSVGen
 
   CIRCTHandshake
 
@@ -53,9 +54,14 @@ target_link_libraries(domain-adg-generator-test PRIVATE
   MLIRParser
   MLIRSupport
   MLIRArithDialect
+  MLIRControlFlowDialect
+  MLIRDLTIDialect
+  MLIRLLVMDialect
   MLIRMathDialect
   MLIRMemRefDialect
   MLIRFuncDialect
+  MLIRSCFDialect
+  MLIRUBDialect
 
   ${DOMAIN_ADG_TEST_LLVM_LIBS}
 )

@@ -40,6 +40,7 @@ arith/fu_op_remui.sv
 arith/fu_op_addf.sv
 arith/fu_op_subf.sv
 arith/fu_op_mulf.sv
+arith/fu_op_minimumf.sv
 arith/fu_op_divf.sv
 arith/fu_op_negf.sv
 arith/fu_op_fptosi.sv
@@ -69,6 +70,7 @@ math/fu_op_absf.sv
 math/fu_op_cos.sv
 math/fu_op_exp.sv
 math/fu_op_fma.sv
+math/fu_op_rsqrt.sv
 math/fu_op_log2.sv
 math/fu_op_sin.sv
 math/fu_op_sqrt.sv

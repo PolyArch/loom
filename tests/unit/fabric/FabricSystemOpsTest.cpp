@@ -3,6 +3,8 @@
 
 #include "loom/Dialect/Fabric/FabricDialect.h"
 #include "loom/Dialect/Fabric/FabricOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -24,6 +26,8 @@ static MLIRContext &getContext() {
   static bool initialized = false;
   if (!initialized) {
     ctx.getOrLoadDialect<fabric::FabricDialect>();
+    ctx.getOrLoadDialect<arith::ArithDialect>();
+    ctx.getOrLoadDialect<math::MathDialect>();
     initialized = true;
   }
   return ctx;
@@ -654,6 +658,40 @@ static bool testAllThreeOpsInSystemModule() {
   return true;
 }
 
+static bool testFunctionUnitMathOpsAllowed() {
+  std::string input = R"mlir(
+    module {
+      fabric.function_unit @fu_math(%x: f32, %y: f32) -> (f32)
+          [latency = 1, interval = 1] {
+        %0 = math.rsqrt %x : f32
+        %1 = arith.minimumf %0, %y : f32
+        fabric.yield %1 : f32
+      }
+    }
+  )mlir";
+
+  auto module = parseMLIR(input);
+  if (!module) {
+    std::cerr << "FAIL: testFunctionUnitMathOpsAllowed - parse failed\n";
+    return false;
+  }
+
+  if (failed(verify(*module))) {
+    std::cerr << "FAIL: testFunctionUnitMathOpsAllowed - verify failed\n";
+    return false;
+  }
+
+  std::string printed = printMLIR(*module);
+  if (printed.find("math.rsqrt") == std::string::npos ||
+      printed.find("arith.minimumf") == std::string::npos) {
+    std::cerr << "FAIL: testFunctionUnitMathOpsAllowed - missing op text\n";
+    return false;
+  }
+
+  std::cerr << "PASS: testFunctionUnitMathOpsAllowed\n";
+  return true;
+}
+
 int main() {
   int passed = 0;
   int total = 0;
@@ -675,6 +713,7 @@ int main() {
   run(testNoCLinkRoundTrip);
   run(testSharedMemRoundTrip);
   run(testAllThreeOpsInSystemModule);
+  run(testFunctionUnitMathOpsAllowed);
 
   std::cerr << "\nResults: " << passed << "/" << total << " tests passed\n";
   return (passed == total) ? 0 : 1;

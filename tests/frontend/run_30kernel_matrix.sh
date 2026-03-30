@@ -122,6 +122,14 @@ run_kernel() {
 
   # Run frontend (no --adg => frontend only)
   if "${cmd[@]}" >"$kout/stdout.log" 2>"$kout/stderr.log"; then
+    if grep -q "error:" "$kout/stderr.log"; then
+      printf "  FAIL  %-40s  (frontend emitted verifier errors)\n" "$tag"
+      FAILED=$((FAILED + 1))
+      DOMAIN_FAIL[$domain]=$(( ${DOMAIN_FAIL[$domain]:-0} + 1 ))
+      DOMAIN_FAIL_NAMES[$domain]="${DOMAIN_FAIL_NAMES[$domain]:-} $name"
+      return
+    fi
+
     # Look for a DFG MLIR output
     local dfg_file
     dfg_file="$(find "$kout" -name '*.dfg.mlir' -print -quit 2>/dev/null || true)"

@@ -172,6 +172,7 @@ HierarchicalCompiler::compile(const CompilerConfig &config) {
   MapperOptions mapperOpts;
   mapperOpts.budgetSeconds = config.mapperBudgetSeconds;
   mapperOpts.seed = static_cast<int>(config.mapperSeed);
+  mapperOpts.verbose = config.verbose;
 
   // Iteration state for the bilevel decomposition loop.
   std::vector<loom::InfeasibilityCut> accumulatedCuts;

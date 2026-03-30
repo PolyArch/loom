@@ -156,10 +156,13 @@ bool LocalRepairDriver::rerouteRepairState(MappingState &repairState) const {
     repairRoutingOpts.negotiatedRoutingPasses =
         std::min<unsigned>(repairRoutingOpts.negotiatedRoutingPasses,
                            repairOpts.repairNegotiatedRoutingPassCap);
-  if (repairRoutingOpts.negotiatedRoutingPasses > 0)
-    return mapper.runNegotiatedRouting(repairState, dfg, adg, edgeKinds,
-                                       repairRoutingOpts);
-  return mapper.runRouting(repairState, dfg, adg, edgeKinds, repairRoutingOpts);
+  bool allRouted =
+      repairRoutingOpts.negotiatedRoutingPasses > 0
+          ? mapper.runNegotiatedRouting(repairState, dfg, adg, edgeKinds,
+                                        repairRoutingOpts)
+          : mapper.runRouting(repairState, dfg, adg, edgeKinds,
+                              repairRoutingOpts);
+  return allRouted;
 }
 
 bool LocalRepairDriver::updateBest(bool allRouted) {

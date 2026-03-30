@@ -152,9 +152,9 @@ bool Mapper::runExactRoutingRepair(
       llvm::StringRef dstOp = getOpName(edge->dstPort);
       if (routing_detail::isSoftwareMemoryInterfaceOpName(dstOp))
         return 0;
-      if (dstOp == "dataflow.gate" || dstOp == "dataflow.carry" ||
-          dstOp == "handshake.cond_br" || dstOp == "handshake.join" ||
-          dstOp == "handshake.mux")
+      llvm::StringRef srcOp = getOpName(edge->srcPort);
+      if (routing_detail::isRoutingHotspotOpName(dstOp) ||
+          routing_detail::isRoutingHotspotOpName(srcOp))
         return 1;
       return 2;
     };

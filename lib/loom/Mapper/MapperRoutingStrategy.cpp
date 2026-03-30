@@ -61,9 +61,14 @@ bool isBoundarySinkNode(const Node *node) {
     return false;
   llvm::StringRef opName = getNodeAttrStr(node, "op_name");
   return routing_detail::isSoftwareMemoryInterfaceOpName(opName) ||
-         opName == "dataflow.gate" || opName == "dataflow.carry" ||
-         opName == "handshake.cond_br" || opName == "handshake.join" ||
-         opName == "handshake.mux";
+         routing_detail::isRoutingHotspotOpName(opName);
+}
+
+bool isBoundarySourceNode(const Node *node) {
+  if (!node || node->kind != Node::OperationNode)
+    return false;
+  llvm::StringRef opName = getNodeAttrStr(node, "op_name");
+  return routing_detail::isRoutingHotspotOpName(opName);
 }
 
 void collectUnroutedSinkEdgesForNode(
@@ -174,10 +179,11 @@ unsigned getRoutingPriority(IdIndex edgeId, const Graph &dfg,
   if (routing_detail::isSoftwareMemoryInterfaceOpName(dstOp))
     return opts.routing.priority.memorySink;
   if (dstNode &&
-      (dstNode->kind == Node::ModuleOutputNode || dstNode->kind == Node::OperationNode &&
-           (dstOp == "dataflow.gate" || dstOp == "dataflow.carry" ||
-            dstOp == "handshake.cond_br" || dstOp == "handshake.join" ||
-            dstOp == "handshake.mux")))
+      (dstNode->kind == Node::ModuleOutputNode ||
+       (dstNode->kind == Node::OperationNode &&
+        routing_detail::isRoutingHotspotOpName(dstOp))))
+    return opts.routing.priority.moduleOutput;
+  if (routing_detail::isRoutingHotspotOpName(srcOp))
     return opts.routing.priority.moduleOutput;
   if (srcOp == "handshake.load" || srcOp == "handshake.store")
     return opts.routing.priority.loadStoreSource;
@@ -867,10 +873,12 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
   size_t bestTotalPathLen = computeTotalPathLen(state);
   bool bestAllRouted = allRouted;
 
-  llvm::outs() << "  Initial routing: router " << routed << "/" << total
-               << ", overall " << initialStats.routedOverallEdges << "/"
-               << initialStats.overallEdges << ", prebound "
-               << initialStats.directBindingEdges << "\n";
+  if (opts.verbose) {
+    llvm::outs() << "  Initial routing: router " << routed << "/" << total
+                 << ", overall " << initialStats.routedOverallEdges << "/"
+                 << initialStats.overallEdges << ", prebound "
+                 << initialStats.directBindingEdges << "\n";
+  }
 
   // Failed-edge driven repair: only rip up the neighborhood around failed
   // edges so later place/route rounds can preserve working regions.
@@ -880,10 +888,10 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
       break;
     // Collect failed edge IDs.
     std::vector<IdIndex> failedEdges;
-    for (IdIndex edgeId : edgeOrder) {
-      const Edge *edge = dfg.getEdge(edgeId);
-      if (!edge)
-        continue;
+  for (IdIndex edgeId : edgeOrder) {
+    const Edge *edge = dfg.getEdge(edgeId);
+    if (!edge)
+      continue;
       if (edgeId < edgeKinds.size() &&
           (edgeKinds[edgeId] == TechMappedEdgeKind::IntraFU ||
            edgeKinds[edgeId] == TechMappedEdgeKind::TemporalReg))
@@ -905,9 +913,11 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
     collectSelectiveRipupEdges(failedEdges, edgeOrder, state, dfg, adg,
                                edgeKinds, opts, ripupEdges);
 
-    llvm::outs() << "  Repair pass " << (pass + 1) << ": " << failedEdges.size()
-                 << " failed edges, ripping up " << ripupEdges.size()
-                 << " routes\n";
+    if (opts.verbose) {
+      llvm::outs() << "  Repair pass " << (pass + 1) << ": "
+                   << failedEdges.size() << " failed edges, ripping up "
+                   << ripupEdges.size() << " routes\n";
+    }
     if (opts.verbose)
       dumpFailedEdgeDiagnostics(failedEdges, state, dfg,
                                 opts.routing.failedEdgeDiagnosticLimit);
@@ -950,11 +960,13 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
                              routingOutputHistory, routed, total, opts);
     auto repairStats =
         mapper_detail::computeRoutingEdgeStats(state, dfg, edgeKinds);
-    llvm::outs() << "  Repair pass " << (pass + 1) << " result: router "
-                 << routed << "/" << total << ", overall "
-                 << repairStats.routedOverallEdges << "/"
-                 << repairStats.overallEdges << ", prebound "
-                 << repairStats.directBindingEdges << "\n";
+    if (opts.verbose) {
+      llvm::outs() << "  Repair pass " << (pass + 1) << " result: router "
+                   << routed << "/" << total << ", overall "
+                   << repairStats.routedOverallEdges << "/"
+                   << repairStats.overallEdges << ", prebound "
+                   << repairStats.directBindingEdges << "\n";
+    }
 
     size_t totalPathLen = computeTotalPathLen(state);
     if (routed > bestRouted ||
@@ -969,10 +981,12 @@ bool Mapper::runRouting(MappingState &state, const Graph &dfg,
 
   state.restore(bestCheckpoint);
   auto bestStats = mapper_detail::computeRoutingEdgeStats(state, dfg, edgeKinds);
-  llvm::outs() << "  Final routing: router " << bestRouted << "/"
-               << bestTotal << ", overall " << bestStats.routedOverallEdges
-               << "/" << bestStats.overallEdges << ", prebound "
-               << bestStats.directBindingEdges << "\n";
+  if (opts.verbose) {
+    llvm::outs() << "  Final routing: router " << bestRouted << "/"
+                 << bestTotal << ", overall " << bestStats.routedOverallEdges
+                 << "/" << bestStats.overallEdges << ", prebound "
+                 << bestStats.directBindingEdges << "\n";
+  }
   return bestAllRouted;
 }
 

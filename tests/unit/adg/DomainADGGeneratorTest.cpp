@@ -10,6 +10,21 @@
 //===----------------------------------------------------------------------===//
 
 #include "loom/ADG/DomainADGGenerator.h"
+#include "loom/SVGen/SVModuleRegistry.h"
+
+#include "circt/Dialect/Handshake/HandshakeDialect.h"
+
+#include "loom/Dialect/Dataflow/DataflowDialect.h"
+#include "loom/Dialect/Fabric/FabricDialect.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
 
 #include "llvm/Support/MemoryBuffer.h"
 
@@ -30,6 +45,65 @@ static unsigned countSubstring(const std::string &text,
     pos += needle.size();
   }
   return count;
+}
+
+static void registerSciCompDialects(mlir::DialectRegistry &registry) {
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  loom::dataflow::DataflowDialect, loom::fabric::FabricDialect,
+                  circt::handshake::HandshakeDialect>();
+}
+
+static std::optional<std::string>
+extractFirstPEBlock(const std::string &text) {
+  size_t start = std::string::npos;
+  size_t spatial = text.find("  fabric.spatial_pe @");
+  size_t temporal = text.find("  fabric.temporal_pe @");
+  if (spatial != std::string::npos)
+    start = spatial;
+  if (temporal != std::string::npos &&
+      (start == std::string::npos || temporal < start))
+    start = temporal;
+  if (start == std::string::npos)
+    return std::nullopt;
+
+  int braceDepth = 0;
+  bool sawOpenBrace = false;
+  size_t end = start;
+  for (; end < text.size(); ++end) {
+    char ch = text[end];
+    if (ch == '{') {
+      ++braceDepth;
+      sawOpenBrace = true;
+      continue;
+    }
+    if (ch == '}') {
+      if (braceDepth > 0)
+        --braceDepth;
+      if (sawOpenBrace && braceDepth == 0) {
+        ++end;
+        break;
+      }
+    }
+  }
+  if (!sawOpenBrace || braceDepth != 0)
+    return std::nullopt;
+
+  std::string scaffold = "module {\n";
+  scaffold.append(text.substr(start, end - start));
+  scaffold.append("\n}\n");
+  return scaffold;
+}
+
+static bool parseModuleText(const std::string &text) {
+  auto scaffold = extractFirstPEBlock(text);
+  if (!scaffold)
+    return false;
+  mlir::DialectRegistry registry;
+  registerSciCompDialects(registry);
+  mlir::MLIRContext ctx(registry);
+  return static_cast<bool>(
+      mlir::parseSourceString<mlir::ModuleOp>(llvm::StringRef(*scaffold), &ctx));
 }
 
 //===----------------------------------------------------------------------===//
@@ -347,7 +421,7 @@ static bool testGenerateSciCompTypes() {
   require(scfp, "arith.minimumf", "SC-FP MIN op");
   require(scfp, "f64", "SC-FP f64 types");
 
-  if (countSubstring(scfp, "fabric.instance @SC-FP_core_spe") != 144) {
+  if (countSubstring(scfp, "fabric.instance @SC_FP_core_spe") != 144) {
     std::cerr << "FAIL: testGenerateSciCompTypes - SC-FP expected 144 PEs\n";
     ok = false;
   }
@@ -356,9 +430,9 @@ static bool testGenerateSciCompTypes() {
   require(scspm, "loom.spm_ld_ports = 4", "SC-SPM SPM ld attr");
   require(scspm, "loom.extmem_ld_ports = 4", "SC-SPM extmem ld attr");
   require(scspm, "loom.has_indirect_load = true", "SC-SPM indirect attr");
-  require(scspm, "SC-SPM_core_indirect_load", "SC-SPM indirect FU");
+  require(scspm, "SC_SPM_core_indirect_load", "SC-SPM indirect FU");
   require(scspm, "f64", "SC-SPM f64 types");
-  if (countSubstring(scspm, "fabric.instance @SC-SPM_core_spe") != 64) {
+  if (countSubstring(scspm, "fabric.instance @SC_SPM_core_spe") != 64) {
     std::cerr << "FAIL: testGenerateSciCompTypes - SC-SPM expected 64 PEs\n";
     ok = false;
   }
@@ -371,10 +445,17 @@ static bool testGenerateSciCompTypes() {
   require(scctrl, "num_instruction = 16", "SC-CTRL instruction slots");
   require(scctrl, "num_register = 8", "SC-CTRL register count");
   require(scctrl, "operand_buffer_size = 4", "SC-CTRL PE operand buffer");
-  require(scctrl, "SC-CTRL_core_scatter_store", "SC-CTRL scatter store FU");
-  require(scctrl, "SC-CTRL_core_branch", "SC-CTRL branch FU");
-  if (countSubstring(scctrl, "fabric.instance @SC-CTRL_core_tpe") != 64) {
+  require(scctrl, "SC_CTRL_core_scatter_store", "SC-CTRL scatter store FU");
+  require(scctrl, "SC_CTRL_core_branch", "SC-CTRL branch FU");
+  if (countSubstring(scctrl, "fabric.instance @SC_CTRL_core_tpe") != 64) {
     std::cerr << "FAIL: testGenerateSciCompTypes - SC-CTRL expected 64 PEs\n";
+    ok = false;
+  }
+
+  if (!parseModuleText(scfp) || !parseModuleText(scspm) ||
+      !parseModuleText(scctrl)) {
+    std::cerr << "FAIL: testGenerateSciCompTypes - generated SciComp ADG did "
+                 "not parse\n";
     ok = false;
   }
 
@@ -383,7 +464,39 @@ static bool testGenerateSciCompTypes() {
   return ok;
 }
 
-/// Test 12: export SciComp ADGs to the canonical repo paths.
+/// Test 12: SV registry recognizes the SciComp-specific body ops.
+static bool testSciCompSVRegistry() {
+  loom::svgen::SVModuleRegistry registry;
+  bool ok = true;
+
+  auto require = [&](llvm::StringRef opName, llvm::StringRef expectedPath) {
+    if (!loom::svgen::SVModuleRegistry::isKnownOp(opName)) {
+      std::cerr << "FAIL: testSciCompSVRegistry - missing op "
+                << opName.str() << "\n";
+      ok = false;
+      return;
+    }
+    if (loom::svgen::SVModuleRegistry::getSVFilePath(opName) != expectedPath) {
+      std::cerr << "FAIL: testSciCompSVRegistry - bad path for "
+                << opName.str() << "\n";
+      ok = false;
+    }
+    if (!registry.requireArithOp(opName, "")) {
+      std::cerr << "FAIL: testSciCompSVRegistry - requireArithOp rejected "
+                << opName.str() << "\n";
+      ok = false;
+    }
+  };
+
+  require("math.rsqrt", "math/fu_op_rsqrt.sv");
+  require("arith.minimumf", "arith/fu_op_minimumf.sv");
+
+  if (ok)
+    std::cerr << "PASS: testSciCompSVRegistry\n";
+  return ok;
+}
+
+/// Test 13: export SciComp ADGs to the canonical repo paths.
 static bool testExportSciCompTypes() {
   bool ok = true;
   std::vector<std::string> paths = {
@@ -412,6 +525,17 @@ static bool testExportSciCompTypes() {
       std::cerr << "FAIL: testExportSciCompTypes - malformed file " << path
                 << "\n";
       ok = false;
+    }
+    if (contents.find("@SC-") != std::string::npos) {
+      std::cerr << "FAIL: testExportSciCompTypes - illegal symbol name in "
+                << path << "\n";
+      ok = false;
+    }
+    if (!parseModuleText(contents)) {
+      std::cerr << "FAIL: testExportSciCompTypes - cannot parse " << path
+                << "\n";
+      ok = false;
+      continue;
     }
   }
 
@@ -445,6 +569,7 @@ int main() {
   run(testInvalidTypeId);
   run(testSciCompParams);
   run(testGenerateSciCompTypes);
+  run(testSciCompSVRegistry);
   run(testExportSciCompTypes);
 
   std::cerr << "\nResults: " << passed << "/" << total << " tests passed\n";

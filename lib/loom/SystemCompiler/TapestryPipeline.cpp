@@ -453,6 +453,184 @@ extractPathContractsFromTDG(mlir::ModuleOp tdgModule) {
   return paths;
 }
 
+static uint64_t estimateTransferBytes(const tapestry::ContractSpec &contract) {
+  uint64_t elemBytes = loom::estimateElementSize(contract.dataType);
+  if (elemBytes == 0)
+    elemBytes = 1;
+  uint64_t elemCount = contract.elementCount > 0 ? contract.elementCount : 1;
+  return elemBytes * elemCount;
+}
+
+static unsigned inferMaxCoreId(const tapestry::CompilationResult &compResult) {
+  unsigned maxCoreId = 0;
+  if (!compResult.finalAssignment.has_value())
+    return maxCoreId;
+
+  const auto &assignment = compResult.finalAssignment.value();
+  for (const auto &coreAssign : assignment.coreAssignments)
+    maxCoreId = std::max(maxCoreId, coreAssign.coreInstanceIdx);
+  return maxCoreId;
+}
+
+static std::optional<uint64_t>
+findKernelExecutionCycles(const loom::TemporalSchedule &schedule,
+                          const std::string &kernelName) {
+  for (const auto &coreSchedule : schedule.coreSchedules) {
+    for (size_t i = 0; i < coreSchedule.kernelOrder.size(); ++i) {
+      if (coreSchedule.kernelOrder[i] != kernelName)
+        continue;
+      if (i < coreSchedule.kernelTimings.size())
+        return coreSchedule.kernelTimings[i].executionCycles;
+      return std::nullopt;
+    }
+  }
+  return std::nullopt;
+}
+
+static std::optional<unsigned>
+findKernelIndexInSchedule(const loom::TemporalSchedule &schedule,
+                          const std::string &kernelName) {
+  for (const auto &coreSchedule : schedule.coreSchedules) {
+    for (size_t i = 0; i < coreSchedule.kernelOrder.size(); ++i) {
+      if (coreSchedule.kernelOrder[i] == kernelName)
+        return static_cast<unsigned>(i);
+    }
+  }
+  return std::nullopt;
+}
+
+static const loom::mcsim::NocTransferResult *
+findTransferResult(const loom::mcsim::MultiCoreSimResult &simResult,
+                   unsigned srcCoreId, unsigned dstCoreId, uint64_t bytes) {
+  for (const auto &tr : simResult.nocTransferResults) {
+    if (tr.srcCoreId == srcCoreId && tr.dstCoreId == dstCoreId &&
+        tr.bytes == bytes)
+      return &tr;
+  }
+  return nullptr;
+}
+
+static loom::mcsim::MultiCoreSimResult
+runSimulation(const tapestry::CompilationResult &compResult,
+              const std::vector<tapestry::ContractSpec> &contracts) {
+  loom::mcsim::MultiCoreSimConfig simConfig;
+  simConfig.maxCores = std::max(1u, inferMaxCoreId(compResult) + 1);
+
+  loom::mcsim::MultiCoreSimSession sim(simConfig);
+
+  const loom::TemporalSchedule *schedule =
+      compResult.temporalSchedule.has_value()
+          ? &compResult.temporalSchedule.value()
+          : nullptr;
+
+  if (schedule && compResult.finalAssignment.has_value()) {
+    const auto &assignment = compResult.finalAssignment.value();
+    for (const auto &coreSchedule : schedule->coreSchedules) {
+      if (coreSchedule.kernelOrder.empty())
+        continue;
+
+      const std::string &firstKernel = coreSchedule.kernelOrder.front();
+      auto coreIdIt = assignment.kernelToCore.find(firstKernel);
+      if (coreIdIt == assignment.kernelToCore.end())
+        continue;
+      unsigned coreId = coreIdIt->second;
+
+      for (const auto &kernelName : coreSchedule.kernelOrder) {
+        loom::mcsim::KernelDescriptor kd;
+        kd.name = kernelName;
+        kd.coreId = coreId;
+        kd.estimatedCycles =
+            findKernelExecutionCycles(*schedule, kernelName).value_or(1);
+
+        uint64_t outputBytes = 0;
+        for (const auto &contract : contracts) {
+          if (contract.producerKernel == kernelName)
+            outputBytes += estimateTransferBytes(contract);
+        }
+        kd.outputBytes = outputBytes;
+        if (kd.estimatedCycles > 0)
+          kd.outputReadyCycleOffset = (kd.estimatedCycles * 3) / 4;
+        sim.addKernel(kd);
+      }
+    }
+  } else if (compResult.finalAssignment.has_value()) {
+    const auto &assignment = compResult.finalAssignment.value();
+    for (const auto &coreAssign : assignment.coreAssignments) {
+      for (const auto &kernelName : coreAssign.assignedKernels) {
+        loom::mcsim::KernelDescriptor kd;
+        kd.name = kernelName;
+        kd.coreId = coreAssign.coreInstanceIdx;
+        kd.estimatedCycles = 1;
+        sim.addKernel(kd);
+      }
+    }
+  }
+
+  if (compResult.finalAssignment.has_value()) {
+    const auto &assignment = compResult.finalAssignment.value();
+    for (const auto &contract : contracts) {
+      auto prodIt = assignment.kernelToCore.find(contract.producerKernel);
+      auto consIt = assignment.kernelToCore.find(contract.consumerKernel);
+      if (prodIt == assignment.kernelToCore.end() ||
+          consIt == assignment.kernelToCore.end() ||
+          prodIt->second == consIt->second)
+        continue;
+
+      loom::mcsim::NocTransferDescriptor td;
+      td.srcCoreId = prodIt->second;
+      td.dstCoreId = consIt->second;
+      td.bytes = estimateTransferBytes(contract);
+      if (schedule) {
+        auto srcIdx =
+            findKernelIndexInSchedule(*schedule, contract.producerKernel);
+        if (srcIdx.has_value())
+          td.srcKernelIndex = *srcIdx;
+      }
+      sim.addNocTransfer(td);
+    }
+  }
+
+  return sim.run();
+}
+
+static bool writeSimResultsJSON(
+    const std::string &path, const loom::mcsim::MultiCoreSimResult &simResult) {
+  llvm::json::Object root;
+  root["totalGlobalCycles"] = static_cast<int64_t>(simResult.totalCycles);
+
+  llvm::json::Object nocObj;
+  uint64_t totalFlitsTransferred = 0;
+  for (const auto &tr : simResult.nocTransferResults)
+    totalFlitsTransferred += tr.bytes;
+  nocObj["totalFlitsTransferred"] =
+      static_cast<int64_t>(totalFlitsTransferred);
+  root["nocStats"] = std::move(nocObj);
+
+  std::map<unsigned, uint64_t> coreCycles;
+  for (const auto &kr : simResult.kernelResults)
+    coreCycles[kr.coreId] = std::max(coreCycles[kr.coreId], kr.endCycle);
+
+  llvm::json::Array coreResultsArr;
+  for (const auto &entry : coreCycles) {
+    llvm::json::Object crObj;
+    crObj["coreId"] = static_cast<int64_t>(entry.first);
+    crObj["cycles"] = static_cast<int64_t>(entry.second);
+    crObj["completed"] = true;
+    coreResultsArr.push_back(std::move(crObj));
+  }
+  root["coreResults"] = std::move(coreResultsArr);
+  root["edgeMetrics"] = llvm::json::Array();
+  root["pathMetrics"] = llvm::json::Array();
+
+  std::error_code fileEC;
+  llvm::raw_fd_ostream outFile(path, fileEC, llvm::sys::fs::OF_Text);
+  if (fileEC)
+    return false;
+  llvm::json::Value jsonVal(std::move(root));
+  outFile << llvm::formatv("{0:2}", jsonVal) << "\n";
+  return true;
+}
+
 static loom::svgen::MultiCoreCompilationDesc
 buildMultiCoreCompilationDesc(const tapestry::CompilationResult &compResult,
                               const tapestry::SystemArchitecture &tapArch) {
@@ -502,6 +680,16 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
   TapestryPipelineResult result;
   result.reportPath = config.outputDir + "/report.json";
 
+  const bool hasSimulateStage =
+      std::find(config.stages.begin(), config.stages.end(),
+                PipelineStage::SIMULATE) != config.stages.end();
+  if (hasSimulateStage && config.simConfig.maxGlobalCycles < 16) {
+    result.success = false;
+    result.diagnostics =
+        "SIMULATE stage: maxGlobalCycles below minimum supported threshold";
+    return result;
+  }
+
   auto compileStart = std::chrono::steady_clock::now();
 
   // Verification inputs populated during COMPILE, reused in SIMULATE for
@@ -513,6 +701,7 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
   std::vector<loom::EdgeTileDimensions> savedVerifyTileDims;
   std::vector<loom::EdgeSchedulingSlot> savedVerifySchedSlots;
   std::map<std::string, int64_t> savedVerifyParams;
+  std::vector<tapestry::ContractSpec> savedContracts;
   std::optional<tapestry::CompilationResult> compiledResult;
   std::optional<tapestry::SystemArchitecture> compiledArch;
 
@@ -586,7 +775,7 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
 
       // Save contract metadata before moving into the compiler, since
       // we need them later for TDC verification evidence.
-      std::vector<tapestry::ContractSpec> savedContracts = contracts;
+      savedContracts = contracts;
 
       // Extract path contracts from tdg.path_contract ops (multi-edge
       // latency constraints) so they participate in L1 assignment pruning.
@@ -791,117 +980,170 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
       break;
     }
     case PipelineStage::SIMULATE: {
-      // The SIMULATE stage delegates to external simulation tools.
-      // If a simulation results file exists at the expected path,
-      // parse it and populate dynamic metrics for TDC verification.
-      std::string simResultsPath =
-          config.outputDir + "/sim_results.json";
-
-      auto simBuf = llvm::MemoryBuffer::getFile(simResultsPath);
-      if (!simBuf) {
-        // No simulation results file found; simulation was not run.
+      if (!compiledResult.has_value()) {
         result.success = false;
         result.diagnostics =
-            "SIMULATE stage: no simulation results found at '" +
-            simResultsPath + "'; run MultiCoreSimSession or the "
-            "external simulator to produce this file";
+            "SIMULATE stage requires a successful COMPILE stage first";
         return result;
       }
 
-      // Parse the simulation results JSON.
-      auto simJson = llvm::json::parse((*simBuf)->getBuffer());
-      if (!simJson || !simJson->getAsObject()) {
+      loom::mcsim::MultiCoreSimResult simRaw =
+          runSimulation(*compiledResult, savedContracts);
+      if (!simRaw.success) {
         result.success = false;
-        result.diagnostics =
-            "SIMULATE stage: invalid JSON in '" + simResultsPath + "'";
+        result.diagnostics = "SIMULATE stage: " + simRaw.errorMessage;
         return result;
       }
 
-      auto *simRoot = simJson->getAsObject();
+      if (simRaw.totalCycles > config.simConfig.maxGlobalCycles) {
+        result.success = false;
+        result.diagnostics = "SIMULATE stage exceeded max cycles";
+        return result;
+      }
 
-      // Populate PipelineSimResult from the JSON.
       PipelineSimResult simRes;
-      if (auto gc = simRoot->getInteger("totalGlobalCycles"))
-        simRes.totalGlobalCycles = static_cast<uint64_t>(*gc);
-      if (auto *nocObj = simRoot->getObject("nocStats")) {
-        if (auto ft = nocObj->getInteger("totalFlitsTransferred"))
-          simRes.nocStats.totalFlitsTransferred = static_cast<uint64_t>(*ft);
-      }
-      if (auto *coresArr = simRoot->getArray("coreResults")) {
-        for (const auto &entry : *coresArr) {
-          auto *obj = entry.getAsObject();
-          if (!obj)
-            continue;
-          PipelineCoreSimResult csr;
-          if (auto cid = obj->getInteger("coreId"))
-            csr.coreId = static_cast<unsigned>(*cid);
-          if (auto cyc = obj->getInteger("cycles"))
-            csr.cycles = static_cast<uint64_t>(*cyc);
-          if (auto comp = obj->getBoolean("completed"))
-            csr.completed = *comp;
-          simRes.coreResults.push_back(csr);
-        }
+      simRes.totalGlobalCycles = simRaw.totalCycles;
+      for (const auto &tr : simRaw.nocTransferResults)
+        simRes.nocStats.totalFlitsTransferred += tr.bytes;
+
+      std::map<unsigned, uint64_t> coreCycles;
+      for (const auto &kr : simRaw.kernelResults)
+        coreCycles[kr.coreId] = std::max(coreCycles[kr.coreId], kr.endCycle);
+
+      for (const auto &entry : coreCycles) {
+        PipelineCoreSimResult csr;
+        csr.coreId = entry.first;
+        csr.cycles = entry.second;
+        csr.completed = true;
+        simRes.coreResults.push_back(csr);
       }
       result.simResult = simRes;
 
-      // Parse dynamic edge metrics for TDC verification.
+      std::error_code ec = llvm::sys::fs::create_directories(config.outputDir);
+      if (ec) {
+        result.success = false;
+        result.diagnostics =
+            "SIMULATE stage: cannot create output directory '" +
+            config.outputDir + "': " + ec.message();
+        return result;
+      }
+
+      std::string simResultsPath = config.outputDir + "/sim_results.json";
+      if (!writeSimResultsJSON(simResultsPath, simRaw)) {
+        result.success = false;
+        result.diagnostics =
+            "SIMULATE stage: cannot write '" + simResultsPath + "'";
+        return result;
+      }
+
       std::optional<std::vector<loom::DynamicEdgeMetrics>> dynEdgeMetrics;
       std::optional<std::vector<loom::DynamicPathMetrics>> dynPathMetrics;
 
-      if (auto *edgeArr = simRoot->getArray("edgeMetrics")) {
-        std::vector<loom::DynamicEdgeMetrics> edgeVec;
-        for (const auto &entry : *edgeArr) {
-          auto *obj = entry.getAsObject();
-          if (!obj)
-            continue;
-          loom::DynamicEdgeMetrics dem;
-          if (auto p = obj->getString("producerKernel"))
-            dem.producerKernel = p->str();
-          if (auto c = obj->getString("consumerKernel"))
-            dem.consumerKernel = c->str();
-          if (auto t = obj->getNumber("sustainedThroughput"))
-            dem.sustainedThroughput = *t;
-          if (auto v = obj->getInteger("orderingViolationCount"))
-            dem.orderingViolationCount = *v;
-          edgeVec.push_back(std::move(dem));
+      if (compiledResult->finalAssignment.has_value()) {
+        const auto &assignment = compiledResult->finalAssignment.value();
+
+        if (!savedVerifyEdgeSpecs.empty()) {
+          std::vector<loom::DynamicEdgeMetrics> edgeVec;
+          for (const auto &edge : savedContracts) {
+            auto prodIt = assignment.kernelToCore.find(edge.producerKernel);
+            auto consIt = assignment.kernelToCore.find(edge.consumerKernel);
+            if (prodIt == assignment.kernelToCore.end() ||
+                consIt == assignment.kernelToCore.end() ||
+                prodIt->second == consIt->second)
+              continue;
+
+            const loom::mcsim::NocTransferResult *transfer =
+                findTransferResult(simRaw, prodIt->second, consIt->second,
+                                   estimateTransferBytes(edge));
+            if (!transfer)
+              continue;
+
+            loom::DynamicEdgeMetrics dem;
+            dem.producerKernel = edge.producerKernel;
+            dem.consumerKernel = edge.consumerKernel;
+            uint64_t cycles =
+                transfer->injectionEndCycle > transfer->injectionStartCycle
+                    ? transfer->injectionEndCycle -
+                          transfer->injectionStartCycle
+                    : 0;
+            dem.sustainedThroughput =
+                cycles > 0
+                    ? static_cast<double>(transfer->bytes) /
+                          static_cast<double>(cycles)
+                    : 0.0;
+            dem.orderingViolationCount = 0;
+            edgeVec.push_back(std::move(dem));
+          }
+          if (!edgeVec.empty())
+            dynEdgeMetrics = std::move(edgeVec);
         }
-        dynEdgeMetrics = std::move(edgeVec);
+
+        if (!savedVerifyPaths.empty()) {
+          std::vector<loom::DynamicPathMetrics> pathVec;
+          for (const auto &path : savedVerifyPaths) {
+            auto startIt = std::find_if(
+                savedContracts.begin(), savedContracts.end(),
+                [&](const tapestry::ContractSpec &edge) {
+                  return edge.producerKernel == path.startProducer &&
+                         edge.consumerKernel == path.startConsumer;
+                });
+            auto endIt = std::find_if(
+                savedContracts.begin(), savedContracts.end(),
+                [&](const tapestry::ContractSpec &edge) {
+                  return edge.producerKernel == path.endProducer &&
+                         edge.consumerKernel == path.endConsumer;
+                });
+            if (startIt == savedContracts.end() ||
+                endIt == savedContracts.end())
+              continue;
+
+            auto startProdCore =
+                assignment.kernelToCore.find(startIt->producerKernel);
+            auto startConsCore =
+                assignment.kernelToCore.find(startIt->consumerKernel);
+            auto endProdCore = assignment.kernelToCore.find(endIt->producerKernel);
+            auto endConsCore = assignment.kernelToCore.find(endIt->consumerKernel);
+            if (startProdCore == assignment.kernelToCore.end() ||
+                startConsCore == assignment.kernelToCore.end() ||
+                endProdCore == assignment.kernelToCore.end() ||
+                endConsCore == assignment.kernelToCore.end() ||
+                startProdCore->second == startConsCore->second ||
+                endProdCore->second == endConsCore->second)
+              continue;
+
+            const loom::mcsim::NocTransferResult *startTransfer =
+                findTransferResult(simRaw, startProdCore->second,
+                                   startConsCore->second,
+                                   estimateTransferBytes(*startIt));
+            const loom::mcsim::NocTransferResult *endTransfer =
+                findTransferResult(simRaw, endProdCore->second,
+                                   endConsCore->second,
+                                   estimateTransferBytes(*endIt));
+            if (!startTransfer || !endTransfer)
+              continue;
+
+            loom::DynamicPathMetrics dpm;
+            dpm.startProducer = path.startProducer;
+            dpm.startConsumer = path.startConsumer;
+            dpm.endProducer = path.endProducer;
+            dpm.endConsumer = path.endConsumer;
+            dpm.observedLatency =
+                static_cast<int64_t>(endTransfer->injectionEndCycle -
+                                     startTransfer->injectionStartCycle);
+            pathVec.push_back(std::move(dpm));
+          }
+          if (!pathVec.empty())
+            dynPathMetrics = std::move(pathVec);
+        }
       }
 
-      if (auto *pathArr = simRoot->getArray("pathMetrics")) {
-        std::vector<loom::DynamicPathMetrics> pathVec;
-        for (const auto &entry : *pathArr) {
-          auto *obj = entry.getAsObject();
-          if (!obj)
-            continue;
-          loom::DynamicPathMetrics dpm;
-          if (auto p = obj->getString("startProducer"))
-            dpm.startProducer = p->str();
-          if (auto c = obj->getString("startConsumer"))
-            dpm.startConsumer = c->str();
-          if (auto p = obj->getString("endProducer"))
-            dpm.endProducer = p->str();
-          if (auto c = obj->getString("endConsumer"))
-            dpm.endConsumer = c->str();
-          if (auto l = obj->getInteger("observedLatency"))
-            dpm.observedLatency = *l;
-          pathVec.push_back(std::move(dpm));
-        }
-        dynPathMetrics = std::move(pathVec);
-      }
-
-      // Re-run TDC verification with dynamic metrics if compile-stage
-      // verification inputs were populated and dynamic data is available.
       if (!savedVerifyEdgeSpecs.empty() &&
           (dynEdgeMetrics.has_value() || dynPathMetrics.has_value())) {
         loom::TDCVerificationReport dynReport =
             loom::verifyContracts(
-                savedVerifyEdgeSpecs, savedVerifyOrigins,
-                savedVerifyPaths, savedVerifyBufPlan,
-                savedVerifyTileDims, savedVerifySchedSlots,
+                savedVerifyEdgeSpecs, savedVerifyOrigins, savedVerifyPaths,
+                savedVerifyBufPlan, savedVerifyTileDims, savedVerifySchedSlots,
                 dynEdgeMetrics, dynPathMetrics, savedVerifyParams);
-
-        // Replace the static-only report with the combined report.
         result.tdcVerificationReport = dynReport;
 
         if (!dynReport.allSatisfied) {
@@ -932,6 +1174,13 @@ TapestryPipelineResult TapestryPipeline::run(const TapestryPipelineConfig &confi
                        << dynReport.pathResults.size()
                        << " path checks)\n";
         }
+      }
+
+      if (config.verbose) {
+        llvm::outs() << "TapestryPipeline: simulation completed ("
+                     << simRes.totalGlobalCycles << " cycles, "
+                     << simRes.nocStats.totalFlitsTransferred
+                     << " flits)\n";
       }
 
       break;

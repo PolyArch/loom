@@ -97,6 +97,10 @@ The LOOM target validation matrix includes at least:
     rejection of `fabric.instance` in unsupported hosts or with PE-local SSA
     operands or results, and rejection of exported Fabric MLIR that uses
     invalid symbol names
+21. SciComp regression coverage for `SC-FP`, `SC-SPM`, and `SC-CTRL`
+    collateral, including multi-lane `fabric.extmemory` bridges and
+    function-unit bodies that use the currently supported `arith.minimumf`,
+    `math.floor`, `math.rsqrt`, and other backend-recognized FU ops
 
 ## Compare Policies
 

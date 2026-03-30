@@ -42,6 +42,13 @@ run_test() {
 
   # Run loom WITHOUT --adg so only the frontend pipeline runs (no mapper)
   if "$LOOM" "$test_file" -o "$test_out" >"$test_out/stdout.log" 2>"$test_out/stderr.log"; then
+    if grep -q "error:" "$test_out/stderr.log"; then
+      echo "  FAIL  $test_name (frontend emitted verifier errors)"
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS="$FAILED_TESTS $test_name"
+      return
+    fi
+
     # Check that a DFG MLIR was generated
     local dfg_file="$test_out/${test_name}.dfg.mlir"
     if [ ! -f "$dfg_file" ]; then

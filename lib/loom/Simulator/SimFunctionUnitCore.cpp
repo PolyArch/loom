@@ -548,6 +548,9 @@ FunctionUnitModule::computeOutputs(uint64_t generation) const {
       result = cmpi(a, b, inputWidths_.empty() ? width : inputWidths_[0]) ? 1 : 0;
     else if (opName_ == "arith.cmpf")
       result = cmpf(a, b, width) ? 1 : 0;
+    else if (opName_ == "arith.minimumf")
+      result = width <= 32 ? fromFloat(std::fmin(toFloat(a), toFloat(b)))
+                           : fromDouble(std::fmin(toDouble(a), toDouble(b)));
     else if (opName_ == "math.absf")
       result = width <= 32 ? fromFloat(std::fabs(toFloat(a)))
                            : fromDouble(std::fabs(toDouble(a)));
@@ -563,6 +566,9 @@ FunctionUnitModule::computeOutputs(uint64_t generation) const {
     else if (opName_ == "math.sin")
       result = width <= 32 ? fromFloat(std::sin(toFloat(a)))
                            : fromDouble(std::sin(toDouble(a)));
+    else if (opName_ == "math.rsqrt")
+      result = width <= 32 ? fromFloat(1.0f / std::sqrt(toFloat(a)))
+                           : fromDouble(1.0 / std::sqrt(toDouble(a)));
     else if (opName_ == "math.sqrt")
       result = width <= 32 ? fromFloat(std::sqrt(toFloat(a)))
                            : fromDouble(std::sqrt(toDouble(a)));

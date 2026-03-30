@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-DEFAULT_TIMEOUT_SEC = 120
+DEFAULT_TIMEOUT_SEC = 900
 
 
 def run_tapestry_tool(
@@ -30,6 +30,7 @@ def run_tapestry_tool(
         cmd,
         capture_output=True,
         text=True,
+        errors="replace",
         timeout=timeout_sec,
         cwd=cwd,
         env=merged_env,

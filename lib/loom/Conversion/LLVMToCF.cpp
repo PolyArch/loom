@@ -18,6 +18,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/RegionGraphTraits.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
@@ -31,7 +32,37 @@ using namespace loom;
 
 namespace {
 
-static Type inferPointerElemTypeFromUses(Value ptrVal, unsigned depth = 0) {
+static bool isByteLikeType(Type type) {
+  auto intTy = dyn_cast<IntegerType>(type);
+  return intTy && intTy.getWidth() == 8;
+}
+
+static Operation *resolveCalleeOp(Operation *site, FlatSymbolRefAttr calleeAttr) {
+  if (!site || !calleeAttr)
+    return nullptr;
+
+  if (Operation *callee =
+          SymbolTable::lookupNearestSymbolFrom(site, calleeAttr))
+    return callee;
+
+  auto module = site->getParentOfType<ModuleOp>();
+  if (!module)
+    return nullptr;
+
+  StringRef calleeName = calleeAttr.getAttr().getValue();
+  for (auto llvmFunc : module.getOps<LLVM::LLVMFuncOp>()) {
+    if (llvmFunc.getSymName() == calleeName)
+      return llvmFunc;
+  }
+  for (auto func : module.getOps<func::FuncOp>()) {
+    if (func.getSymName() == calleeName)
+      return func;
+  }
+  return nullptr;
+}
+
+static Type inferPointerElemTypeFromUses(Value ptrVal, Operation *scope = nullptr,
+                                         unsigned depth = 0) {
   if (depth > 8)
     return nullptr;
 
@@ -39,23 +70,44 @@ static Type inferPointerElemTypeFromUses(Value ptrVal, unsigned depth = 0) {
   for (auto &use : ptrVal.getUses()) {
     Operation *user = use.getOwner();
 
+    if (auto bitcast = dyn_cast<LLVM::BitcastOp>(user)) {
+      if (use.getOperandNumber() == 0 &&
+          isa<LLVM::LLVMPointerType>(bitcast.getType())) {
+        Type fromBitcastUses = inferPointerElemTypeFromUses(bitcast.getResult(),
+                                                            scope, depth + 1);
+        if (fromBitcastUses)
+          return fromBitcastUses;
+      }
+    }
+
+    if (auto cast = dyn_cast<LLVM::AddrSpaceCastOp>(user)) {
+      if (use.getOperandNumber() == 0 &&
+          isa<LLVM::LLVMPointerType>(cast.getType())) {
+        Type fromCastUses = inferPointerElemTypeFromUses(cast.getResult(), scope,
+                                                         depth + 1);
+        if (fromCastUses)
+          return fromCastUses;
+      }
+    }
+
     if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
       if (use.getOperandNumber() == 0) {
         Type elemTy = gep.getElemType();
         // Skip struct-typed GEP elem types and look through to uses
         if (isa<LLVM::LLVMStructType>(elemTy)) {
-          Type fromGepUses = inferPointerElemTypeFromUses(gep.getResult(), depth + 1);
+          Type fromGepUses = inferPointerElemTypeFromUses(gep.getResult(), scope,
+                                                          depth + 1);
           if (fromGepUses)
             return fromGepUses;
           continue;
         }
         elemTy = normalizeScalarType(user->getContext(), elemTy);
-        if (!isa<IntegerType>(elemTy) ||
-            cast<IntegerType>(elemTy).getWidth() != 8)
+        if (!isByteLikeType(elemTy))
           return elemTy;
         if (!bestType)
           bestType = elemTy;
-        Type fromGepUses = inferPointerElemTypeFromUses(gep.getResult(), depth + 1);
+        Type fromGepUses = inferPointerElemTypeFromUses(gep.getResult(), scope,
+                                                        depth + 1);
         if (fromGepUses)
           return fromGepUses;
       }
@@ -85,8 +137,8 @@ static Type inferPointerElemTypeFromUses(Value ptrVal, unsigned depth = 0) {
       unsigned idx = use.getOperandNumber();
       Block *dest = br.getDest();
       if (idx < dest->getNumArguments()) {
-        Type fromDest =
-            inferPointerElemTypeFromUses(dest->getArgument(idx), depth + 1);
+        Type fromDest = inferPointerElemTypeFromUses(dest->getArgument(idx),
+                                                     scope, depth + 1);
         if (fromDest)
           return fromDest;
       }
@@ -101,7 +153,7 @@ static Type inferPointerElemTypeFromUses(Value ptrVal, unsigned depth = 0) {
           unsigned argIdx = idx - 1;
           if (argIdx < dest->getNumArguments()) {
             Type fromDest = inferPointerElemTypeFromUses(dest->getArgument(argIdx),
-                                                         depth + 1);
+                                                         scope, depth + 1);
             if (fromDest)
               return fromDest;
           }
@@ -110,13 +162,103 @@ static Type inferPointerElemTypeFromUses(Value ptrVal, unsigned depth = 0) {
           unsigned argIdx = idx - 1 - trueCount;
           if (argIdx < dest->getNumArguments()) {
             Type fromDest = inferPointerElemTypeFromUses(dest->getArgument(argIdx),
-                                                         depth + 1);
+                                                         scope, depth + 1);
             if (fromDest)
               return fromDest;
           }
         }
       }
     }
+
+    if (auto call = dyn_cast<LLVM::CallOp>(user)) {
+      if (!scope)
+        continue;
+      auto calleeAttr = call.getCalleeAttr();
+      if (!calleeAttr)
+        continue;
+
+      unsigned argIdx = use.getOperandNumber();
+      Operation *calleeOp = resolveCalleeOp(call, calleeAttr);
+      if (!calleeOp)
+        continue;
+
+      if (auto calleeLLVM = dyn_cast<LLVM::LLVMFuncOp>(calleeOp)) {
+        if (calleeLLVM.isExternal())
+          continue;
+        Block &calleeEntry = calleeLLVM.getBody().front();
+        if (argIdx >= calleeEntry.getNumArguments())
+          continue;
+        Type fromCallee = inferPointerElemTypeFromUses(
+            calleeEntry.getArgument(argIdx), scope, depth + 1);
+        if (fromCallee)
+          return fromCallee;
+        continue;
+      }
+
+      if (auto calleeFunc = dyn_cast<func::FuncOp>(calleeOp)) {
+        auto fnTy = calleeFunc.getFunctionType();
+        if (argIdx >= fnTy.getNumInputs())
+          continue;
+        auto memRefTy = dyn_cast<MemRefType>(fnTy.getInput(argIdx));
+        if (!memRefTy)
+          continue;
+        Type elemTy = memRefTy.getElementType();
+        if (!isByteLikeType(elemTy))
+          return elemTy;
+        if (!bestType)
+          bestType = elemTy;
+      }
+    }
+  }
+
+  return bestType;
+}
+
+static Type inferPointerElemTypeFromIncoming(BlockArgument blockArg,
+                                             Operation *scope,
+                                             unsigned depth = 0) {
+  if (depth > 8)
+    return nullptr;
+
+  Block *block = blockArg.getOwner();
+  unsigned argIdx = blockArg.getArgNumber();
+  Type bestType = nullptr;
+  auto recordIncoming = [&](Value incoming) {
+    Type incomingTy =
+        inferPointerElemTypeFromUses(incoming, scope, depth + 1);
+    if (!incomingTy)
+      return false;
+    if (!isByteLikeType(incomingTy)) {
+      bestType = incomingTy;
+      return true;
+    }
+    if (!bestType)
+      bestType = incomingTy;
+    return false;
+  };
+
+  for (Block *pred : block->getPredecessors()) {
+    Operation *term = pred->getTerminator();
+    if (auto br = dyn_cast<LLVM::BrOp>(term)) {
+      if (br.getDest() == block && argIdx < br.getDestOperands().size() &&
+          recordIncoming(br.getDestOperands()[argIdx]))
+        return bestType;
+      continue;
+    }
+
+    auto condBr = dyn_cast<LLVM::CondBrOp>(term);
+    if (!condBr)
+      continue;
+
+    if (condBr.getTrueDest() == block &&
+        argIdx < condBr.getTrueDestOperands().size() &&
+        recordIncoming(condBr.getTrueDestOperands()[argIdx]))
+      return bestType;
+
+    if (condBr.getFalseDest() == block &&
+        argIdx < condBr.getFalseDestOperands().size() &&
+        recordIncoming(condBr.getFalseDestOperands()[argIdx]))
+      return bestType;
   }
 
   return bestType;
@@ -198,8 +340,41 @@ static LogicalResult materializeReadOnlyGlobal(LLVM::GlobalOp global,
     return failure();
 
   Attribute initValue = global.getValueOrNull();
-  if (!initValue)
-    return failure();
+  if (!initValue) {
+    if (Block *block = global.getInitializerBlock()) {
+      auto ret = dyn_cast_or_null<LLVM::ReturnOp>(block->getTerminator());
+      if (!ret || ret.getNumOperands() != 1)
+        return failure();
+      Value returned = ret.getOperand(0);
+      if (auto cst = returned.getDefiningOp<LLVM::ConstantOp>()) {
+        initValue = cst.getValue();
+      } else if (isa<LLVM::UndefOp, LLVM::PoisonOp>(returned.getDefiningOp())) {
+        auto tensorType =
+            RankedTensorType::get({arrayType.getNumElements()}, elementType);
+        SmallVector<Attribute> zeros;
+        zeros.reserve(arrayType.getNumElements());
+        for (uint64_t i = 0, e = arrayType.getNumElements(); i < e; ++i) {
+          if (auto intTy = dyn_cast<IntegerType>(elementType)) {
+            zeros.push_back(IntegerAttr::get(intTy, 0));
+          } else if (auto floatTy = dyn_cast<FloatType>(elementType)) {
+            zeros.push_back(FloatAttr::get(
+                floatTy, APFloat::getZero(floatTy.getFloatSemantics())));
+          } else {
+            return failure();
+          }
+        }
+        info.memrefType = MemRefType::get(
+            {static_cast<int64_t>(arrayType.getNumElements())}, elementType);
+        info.initialValue = DenseElementsAttr::get(tensorType, zeros);
+        info.pointeeType = elementType;
+        return success();
+      } else {
+        return failure();
+      }
+    } else {
+      return failure();
+    }
+  }
 
   ElementsAttr denseInit;
   if (failed(materializeReadOnlyArrayInit(initValue, elementType,
@@ -207,10 +382,10 @@ static LogicalResult materializeReadOnlyGlobal(LLVM::GlobalOp global,
                                           denseInit)))
     return failure();
 
-  info.memrefType =
-      MemRefType::get({arrayType.getNumElements()}, elementType);
+  info.memrefType = MemRefType::get(
+      {static_cast<int64_t>(arrayType.getNumElements())}, elementType);
   info.initialValue = denseInit;
-  info.pointeeType = arrayType;
+  info.pointeeType = elementType;
   return success();
 }
 
@@ -241,6 +416,7 @@ struct FunctionConverter {
   // Used to decompose vector operations (from SRoA struct decomposition)
   // into individual scalar operations.
   llvm::DenseMap<Value, SmallVector<Value, 4>> vectorMap;
+  Operation *failedOp = nullptr;
 
   FunctionConverter(LLVM::LLVMFuncOp func, OpBuilder &b,
                     const llvm::StringMap<ReadOnlyGlobalInfo> &globals)
@@ -424,7 +600,12 @@ LogicalResult FunctionConverter::createBlocks() {
         }
         mapPointer(srcArg, {dstArg, zeroIdx, elemTy});
       } else if (isa<LLVM::LLVMPointerType>(rawTy)) {
-        Type elemTy = inferPointerElemTypeFromUses(srcArg);
+        Type elemTy = inferPointerElemTypeFromUses(srcArg, llvmFunc);
+        if (!elemTy || isByteLikeType(elemTy)) {
+          Type incomingTy = inferPointerElemTypeFromIncoming(srcArg, llvmFunc);
+          if (incomingTy)
+            elemTy = incomingTy;
+        }
         if (!elemTy) elemTy = IntegerType::get(ctx, 8);
         elemTy = normalizeScalarType(ctx, elemTy);
         Type newTy = buildStridedMemRefType(ctx, elemTy);
@@ -461,8 +642,10 @@ LogicalResult FunctionConverter::convertOps() {
     builder.setInsertionPointToEnd(dstBlock);
 
     for (Operation &op : *srcBlock) {
-      if (failed(convertOp(&op)))
+      if (failed(convertOp(&op))) {
+        failedOp = &op;
         return failure();
+      }
     }
   }
   return success();
@@ -496,19 +679,46 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
 
   // AddressOf (global references): track as pointer
   if (auto addrOf = dyn_cast<LLVM::AddressOfOp>(op)) {
-    StringRef globalName = addrOf.getGlobalNameAttr().getLeafReference().str();
+    StringRef globalName =
+        addrOf.getGlobalNameAttr().getLeafReference().getValue();
     auto it = readonlyGlobals->find(globalName);
-    if (it == readonlyGlobals->end())
-      return op->emitError("llvm.mlir.addressof not yet supported");
     if (addrOf.getType().getAddressSpace() != 0)
       return op->emitError("unsupported global address space");
 
-    auto getGlobal = memref::GetGlobalOp::create(builder, loc,
-                                                 it->second.memrefType,
-                                                 globalName);
+    MemRefType memrefType;
+    Type pointeeType;
+    if (it != readonlyGlobals->end()) {
+      memrefType = it->second.memrefType;
+      pointeeType = it->second.pointeeType;
+    } else if (auto memrefGlobal =
+                   SymbolTable::lookupNearestSymbolFrom<memref::GlobalOp>(
+                       addrOf, addrOf.getGlobalNameAttr())) {
+      memrefType = memrefGlobal.getType();
+      pointeeType = memrefType.getElementType();
+    } else if (auto llvmGlobal =
+                   SymbolTable::lookupNearestSymbolFrom<LLVM::GlobalOp>(
+                       addrOf, addrOf.getGlobalNameAttr())) {
+      ReadOnlyGlobalInfo info;
+      if (failed(materializeReadOnlyGlobal(llvmGlobal, info)))
+        return failure();
+
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPoint(llvmGlobal);
+      auto materialized = memref::GlobalOp::create(
+          builder, llvmGlobal.getLoc(), llvmGlobal.getSymName(),
+          builder.getStringAttr("private"), info.memrefType,
+          info.initialValue, /*constant=*/true, IntegerAttr());
+      memrefType = materialized.getType();
+      pointeeType = info.pointeeType;
+      llvmGlobal.erase();
+    } else {
+      return failure();
+    }
+
+    auto getGlobal =
+        memref::GetGlobalOp::create(builder, loc, memrefType, globalName);
     Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
-    mapPointer(addrOf.getResult(),
-               {getGlobal, zeroIdx, it->second.pointeeType});
+    mapPointer(addrOf.getResult(), {getGlobal, zeroIdx, pointeeType});
     return success();
   }
 
@@ -687,7 +897,7 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
       // If the original result was a pointer, track it in the pointer map
       if (isa<LLVM::LLVMPointerType>(oldRes.getType())) {
         // Infer element type from downstream uses
-        Type ptrElemTy = inferPointerElemTypeFromUses(oldRes);
+        Type ptrElemTy = inferPointerElemTypeFromUses(oldRes, llvmFunc);
         if (!ptrElemTy)
           ptrElemTy = IntegerType::get(ctx, 8);
         ptrElemTy = normalizeScalarType(ctx, ptrElemTy);
@@ -705,36 +915,18 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
         // Create a memref for the returned pointer using reinterpret_cast.
         // For malloc-like calls, the returned pointer starts a new array.
         auto newMemRefTy = buildStridedMemRefType(ctx, ptrElemTy);
-
-        // Use the first pointer argument's memref as a basis for the cast,
-        // or create a default. For simplicity, create a zero-offset pointer.
-        // In the CGRA flat memory model, all pointers address the same space.
-        Value zeroIdx = arith::ConstantIndexOp::create(builder,
-            call.getLoc(), 0);
-
-        // Find any available memref base from existing pointer args
-        Value memrefBase;
-        for (auto &entry : pointerMap) {
-          if (entry.second.isValid() &&
-              entry.second.base.getType() == newMemRefTy) {
-            memrefBase = entry.second.base;
-            break;
-          }
+        auto plainMemRefTy = MemRefType::get({ShapedType::kDynamic}, ptrElemTy);
+        Value scratchSize =
+            arith::ConstantIndexOp::create(builder, call.getLoc(), 1);
+        Value scratch = memref::AllocaOp::create(builder, call.getLoc(),
+                                                 plainMemRefTy,
+                                                 ValueRange{scratchSize});
+        Value memrefBase = scratch;
+        if (plainMemRefTy != newMemRefTy) {
+          memrefBase = memref::CastOp::create(builder, call.getLoc(),
+                                              newMemRefTy, scratch);
         }
-        if (!memrefBase) {
-          // Use the first available memref base and cast it
-          for (auto &entry : pointerMap) {
-            if (entry.second.isValid()) {
-              memrefBase = memref::CastOp::create(builder, call.getLoc(),
-                  newMemRefTy, entry.second.base);
-              break;
-            }
-          }
-        }
-
-        if (memrefBase) {
-          mapPointer(oldRes, {memrefBase, baseIdx, ptrElemTy});
-        }
+        mapPointer(oldRes, {memrefBase, baseIdx, ptrElemTy});
         // Also map as a scalar value for non-pointer uses
         mapValue(oldRes, newRes);
       } else {
@@ -1027,7 +1219,7 @@ LogicalResult FunctionConverter::convertLoad(LLVM::LoadOp op) {
   // used for subsequent GEP/load/store operations.
   if (isa<LLVM::LLVMPointerType>(op.getResult().getType())) {
     // Infer the element type from downstream uses of this loaded pointer
-    Type ptrElemTy = inferPointerElemTypeFromUses(op.getResult());
+    Type ptrElemTy = inferPointerElemTypeFromUses(op.getResult(), llvmFunc);
     if (!ptrElemTy)
       ptrElemTy = IntegerType::get(ctx, 8);
     ptrElemTy = normalizeScalarType(ctx, ptrElemTy);
@@ -1436,6 +1628,85 @@ LogicalResult FunctionConverter::convertCast(Operation *op) {
 }
 
 LogicalResult FunctionConverter::convertICmp(LLVM::ICmpOp op) {
+  if (isa<LLVM::LLVMPointerType>(op.getLhs().getType()) ||
+      isa<LLVM::LLVMPointerType>(op.getRhs().getType())) {
+    auto isNullPointerLike = [&](Value value) -> bool {
+      if (!isa<LLVM::LLVMPointerType>(value.getType()))
+        return false;
+
+      if (isa_and_nonnull<LLVM::ZeroOp>(value.getDefiningOp()))
+        return true;
+
+      if (auto constOp = dyn_cast_or_null<LLVM::ConstantOp>(value.getDefiningOp())) {
+        if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
+          return intAttr.getValue().isZero();
+      }
+
+      if (Value mapped = valueMap.lookupOrNull(value)) {
+        if (auto constOp = mapped.getDefiningOp<arith::ConstantOp>()) {
+          if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
+            return intAttr.getValue().isZero();
+        }
+      }
+
+      return false;
+    };
+
+    Value lhsScalar = valueMap.lookupOrNull(op.getLhs());
+    Value rhsScalar = valueMap.lookupOrNull(op.getRhs());
+    if (lhsScalar && rhsScalar &&
+        isa<IntegerType, IndexType>(lhsScalar.getType()) &&
+        isa<IntegerType, IndexType>(rhsScalar.getType())) {
+      auto pred = convertICmpPredicate(op.getPredicate());
+      auto result =
+          arith::CmpIOp::create(builder, op.getLoc(), pred, lhsScalar, rhsScalar);
+      mapValue(op.getResult(), result);
+      return success();
+    }
+
+    auto lhsPtr = lookupPtr(op.getLhs());
+    auto rhsPtr = lookupPtr(op.getRhs());
+    if (lhsPtr.isValid() && rhsPtr.isValid()) {
+      auto pred = op.getPredicate();
+      if (lhsPtr.base == rhsPtr.base) {
+        auto result = arith::CmpIOp::create(builder, op.getLoc(),
+                                            convertICmpPredicate(pred),
+                                            lhsPtr.index, rhsPtr.index);
+        mapValue(op.getResult(), result);
+        return success();
+      }
+
+      if (pred == LLVM::ICmpPredicate::eq || pred == LLVM::ICmpPredicate::ne) {
+        bool neq = pred == LLVM::ICmpPredicate::ne;
+        auto result = arith::ConstantIntOp::create(builder, op.getLoc(),
+                                                   builder.getI1Type(), neq);
+        mapValue(op.getResult(), result);
+        return success();
+      }
+    }
+
+    auto pred = op.getPredicate();
+    if (pred == LLVM::ICmpPredicate::eq || pred == LLVM::ICmpPredicate::ne) {
+      bool neq = pred == LLVM::ICmpPredicate::ne;
+      bool lhsNull = isNullPointerLike(op.getLhs());
+      bool rhsNull = isNullPointerLike(op.getRhs());
+
+      if ((lhsPtr.isValid() && rhsNull) || (rhsPtr.isValid() && lhsNull)) {
+        auto result = arith::ConstantIntOp::create(builder, op.getLoc(),
+                                                   builder.getI1Type(), neq);
+        mapValue(op.getResult(), result);
+        return success();
+      }
+
+      if (lhsNull && rhsNull) {
+        auto result = arith::ConstantIntOp::create(builder, op.getLoc(),
+                                                   builder.getI1Type(), !neq);
+        mapValue(op.getResult(), result);
+        return success();
+      }
+    }
+  }
+
   Value lhs = lookup(op.getLhs());
   Value rhs = lookup(op.getRhs());
   if (!lhs || !rhs)
@@ -1640,6 +1911,14 @@ LogicalResult FunctionConverter::convertIntrinsic(LLVM::CallIntrinsicOp op) {
     mapValue(op.getResult(0), math::CosOp::create(builder, loc, arg));
     return success();
   }
+  if (name.starts_with("llvm.tanh.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg) return op.emitError("tanh has unmapped operand");
+    mapValue(op.getResult(0), math::TanhOp::create(builder, loc, arg));
+    return success();
+  }
   if (name.starts_with("llvm.pow.")) {
     if (op.getNumResults() != 1 || op.getArgs().size() != 2)
       return failure();
@@ -1683,6 +1962,15 @@ LogicalResult FunctionConverter::convertIntrinsic(LLVM::CallIntrinsicOp op) {
     Value arg = lookup(op.getArgs()[0]);
     if (!arg) return op.emitError("ceil has unmapped operand");
     mapValue(op.getResult(0), math::CeilOp::create(builder, loc, arg));
+    return success();
+  }
+  if (name.starts_with("llvm.round.") ||
+      name.starts_with("llvm.roundeven.")) {
+    if (op.getNumResults() != 1 || op.getArgs().size() != 1)
+      return failure();
+    Value arg = lookup(op.getArgs()[0]);
+    if (!arg) return op.emitError("round has unmapped operand");
+    mapValue(op.getResult(0), math::RoundEvenOp::create(builder, loc, arg));
     return success();
   }
 
@@ -2127,7 +2415,7 @@ LogicalResult FunctionConverter::convertBr(LLVM::BrOp op) {
   if (!dst)
     return op.emitError("branch destination not mapped");
   auto args =
-      materializeBranchArgs(op.getLoc(), op.getDestOperands(), op.getDest());
+      materializeBranchArgs(op.getLoc(), op.getDestOperands(), dst);
   cf::BranchOp::create(builder, op.getLoc(), dst, args);
   return success();
 }
@@ -2139,10 +2427,10 @@ LogicalResult FunctionConverter::convertCondBr(LLVM::CondBrOp op) {
   if (!trueDst || !falseDst)
     return op.emitError("branch destinations not mapped");
 
-  auto trueArgs = materializeBranchArgs(op.getLoc(), op.getTrueDestOperands(),
-                                        op.getTrueDest());
-  auto falseArgs = materializeBranchArgs(op.getLoc(), op.getFalseDestOperands(),
-                                         op.getFalseDest());
+  auto trueArgs =
+      materializeBranchArgs(op.getLoc(), op.getTrueDestOperands(), trueDst);
+  auto falseArgs =
+      materializeBranchArgs(op.getLoc(), op.getFalseDestOperands(), falseDst);
   cf::CondBranchOp::create(builder, op.getLoc(), cond, trueDst, trueArgs,
                                     falseDst, falseArgs);
   return success();
@@ -2372,7 +2660,11 @@ struct ConvertLLVMToCFPassImpl
         for (auto f : toErase)
           f->erase();
         llvm::errs() << "warning: LLVMToCF: skipping function '"
-                     << llvmFunc.getSymName() << "'\n";
+                     << llvmFunc.getSymName() << "'";
+        if (converter.failedOp)
+          llvm::errs() << " after failing op '"
+                       << converter.failedOp->getName() << "'";
+        llvm::errs() << "\n";
         continue;
       }
       existingFuncs.insert(converter.newFunc.getOperation());

@@ -93,6 +93,70 @@ estimateNodeDistanceToHardware(IdIndex swNode, IdIndex anchorHwNode,
   return distanceSum / static_cast<double>(count);
 }
 
+bool isPELocalRoutingHotspotOp(llvm::StringRef opName) {
+  return opName == "math.fma" || opName == "handshake.store" ||
+         opName == "handshake.join";
+}
+
+double computePELocalRoutingHotspotPenalty(IdIndex swNode, IdIndex hwNode,
+                                           const MappingState &state,
+                                           const Graph &dfg,
+                                           const Graph &adg) {
+  const Node *swNodePtr = dfg.getNode(swNode);
+  const Node *hwNodePtr = adg.getNode(hwNode);
+  if (!swNodePtr || !hwNodePtr)
+    return 0.0;
+  if (getNodeAttrStr(hwNodePtr, "resource_class") != "functional" ||
+      getNodeAttrStr(hwNodePtr, "pe_kind") != "spatial_pe") {
+    return 0.0;
+  }
+
+  llvm::StringRef swOpName = getNodeAttrStr(swNodePtr, "op_name");
+  if (!isPELocalRoutingHotspotOp(swOpName))
+    return 0.0;
+
+  llvm::StringRef peName = getNodeAttrStr(hwNodePtr, "pe_name");
+  if (peName.empty())
+    return 0.0;
+  auto peOccupancyIt = state.spatialPEOccupancyCount.find(peName);
+  if (peOccupancyIt == state.spatialPEOccupancyCount.end() ||
+      peOccupancyIt->second == 0) {
+    return 0.0;
+  }
+
+  unsigned colocatedHotspots = 0;
+  unsigned colocatedSameOp = 0;
+  unsigned colocatedDistinctHotspotPairs = 0;
+  for (IdIndex otherSwNode = 0;
+       otherSwNode < static_cast<IdIndex>(state.swNodeToHwNode.size());
+       ++otherSwNode) {
+    IdIndex otherHwNode =
+        state.swNodeToHwNode[otherSwNode];
+    if (otherHwNode == INVALID_ID)
+      continue;
+    const Node *otherHwNodePtr = adg.getNode(otherHwNode);
+    if (!otherHwNodePtr ||
+        getNodeAttrStr(otherHwNodePtr, "pe_name") != peName) {
+      continue;
+    }
+    const Node *otherSwNodePtr = dfg.getNode(otherSwNode);
+    if (!otherSwNodePtr)
+      continue;
+    llvm::StringRef otherOpName = getNodeAttrStr(otherSwNodePtr, "op_name");
+    if (!isPELocalRoutingHotspotOp(otherOpName))
+      continue;
+    ++colocatedHotspots;
+    if (otherOpName == swOpName)
+      ++colocatedSameOp;
+    else
+      ++colocatedDistinctHotspotPairs;
+  }
+
+  return 12.0 * static_cast<double>(colocatedHotspots) +
+         4.0 * static_cast<double>(colocatedSameOp) +
+         20.0 * static_cast<double>(colocatedDistinctHotspotPairs);
+}
+
 } // namespace
 
 llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>>
@@ -432,6 +496,7 @@ double Mapper::scorePlacement(
   }
 
   cost += 0.6 * computeLocalSpreadPenalty(hwNode, state, adg, flattener);
+  cost += computePELocalRoutingHotspotPenalty(swNode, hwNode, state, dfg, adg);
 
   if (activeCongestionEstimator && activeFlattener &&
       activeCongestionPlacementWeight > 0.0) {
@@ -745,22 +810,6 @@ bool Mapper::bindMappedNodePorts(IdIndex swId, MappingState &state,
             continue;
           if (srcHwPid == dstHwPid)
             continue;
-          const Port *srcHwPort = adg.getPort(srcHwPid);
-          const Port *dstHwPort = adg.getPort(dstHwPid);
-          const Node *srcHwNode =
-              (srcHwPort && srcHwPort->parentNode != INVALID_ID)
-                  ? adg.getNode(srcHwPort->parentNode)
-                  : nullptr;
-          const Node *dstHwNode =
-              (dstHwPort && dstHwPort->parentNode != INVALID_ID)
-                  ? adg.getNode(dstHwPort->parentNode)
-                  : nullptr;
-          if (srcHwNode && dstHwNode) {
-            llvm::StringRef srcPe = getNodeAttrStr(srcHwNode, "pe_name");
-            llvm::StringRef dstPe = getNodeAttrStr(dstHwNode, "pe_name");
-            if (!srcPe.empty() && srcPe == dstPe)
-              continue;
-          }
           auto path =
               findPath(srcHwPid, dstHwPid, edgeId, state, dfg, adg, emptyHistory);
           if (path.empty())

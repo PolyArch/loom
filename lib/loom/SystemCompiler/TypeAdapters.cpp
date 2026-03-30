@@ -8,6 +8,9 @@
 #include "loom/SystemCompiler/TypeAdapters.h"
 #include "loom/SystemCompiler/InfeasibilityCut.h"
 
+#include "loom/Dialect/Fabric/FabricOps.h"
+
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 
@@ -24,6 +27,58 @@ namespace loom {
 // tapestry::SystemArchitecture -> loom::SystemArchitecture
 //===----------------------------------------------------------------------===//
 
+static std::string canonicalizeFUOpName(llvm::StringRef opName) {
+  if (opName.empty())
+    return "";
+  if (opName.contains('.'))
+    return opName.str();
+
+  static const std::map<std::string, std::string> canonMap = {
+      {"add", "arith.addi"},        {"addi", "arith.addi"},
+      {"sub", "arith.subi"},        {"subi", "arith.subi"},
+      {"mul", "arith.muli"},        {"muli", "arith.muli"},
+      {"div", "arith.divsi"},       {"divsi", "arith.divsi"},
+      {"divui", "arith.divui"},     {"rem", "arith.remsi"},
+      {"remsi", "arith.remsi"},     {"remui", "arith.remui"},
+      {"addf", "arith.addf"},       {"subf", "arith.subf"},
+      {"mulf", "arith.mulf"},       {"divf", "arith.divf"},
+      {"cmp", "arith.cmpi"},        {"cmpi", "arith.cmpi"},
+      {"cmpf", "arith.cmpf"},       {"andi", "arith.andi"},
+      {"ori", "arith.ori"},         {"xori", "arith.xori"},
+      {"shli", "arith.shli"},       {"shrsi", "arith.shrsi"},
+      {"shrui", "arith.shrui"},     {"select", "arith.select"},
+      {"negf", "arith.negf"},       {"extsi", "arith.extsi"},
+      {"extui", "arith.extui"},     {"trunci", "arith.trunci"},
+      {"sitofp", "arith.sitofp"},   {"uitofp", "arith.uitofp"},
+      {"fptosi", "arith.fptosi"},   {"fptoui", "arith.fptoui"},
+      {"index_cast", "arith.index_cast"},
+      {"index_castui", "arith.index_castui"},
+      {"sqrt", "math.sqrt"},        {"exp", "math.exp"},
+      {"log2", "math.log2"},        {"sin", "math.sin"},
+      {"cos", "math.cos"},          {"fma", "math.fma"},
+      {"absf", "math.absf"},        {"load", "handshake.load"},
+      {"store", "handshake.store"}, {"constant", "handshake.constant"},
+      {"cond_br", "handshake.cond_br"},
+      {"mux", "handshake.mux"},     {"join", "handshake.join"},
+      {"stream", "dataflow.stream"},{"gate", "dataflow.gate"},
+      {"carry", "dataflow.carry"},  {"invariant", "dataflow.invariant"},
+      {"extmemory", "handshake.extmemory"},
+  };
+
+  auto it = canonMap.find(opName.str());
+  if (it != canonMap.end())
+    return it->second;
+  return opName.str();
+}
+
+static void countCanonicalFUOp(std::map<std::string, unsigned> &counts,
+                               llvm::StringRef opName) {
+  std::string canon = canonicalizeFUOpName(opName);
+  if (canon.empty())
+    return;
+  counts[canon]++;
+}
+
 /// Extract FU type counts from an ADG MLIR module by walking its operations.
 static std::map<std::string, unsigned>
 extractFUTypeCounts(mlir::ModuleOp adgModule) {
@@ -38,14 +93,12 @@ extractFUTypeCounts(mlir::ModuleOp adgModule) {
 
     // Count concrete resource-bearing operations from FU bodies and memory
     // instances using the same op-name vocabulary as KernelProfiler.
-    if (opName.starts_with("arith.") || opName.starts_with("math.") ||
-        opName.starts_with("handshake.") || opName.starts_with("dataflow.")) {
-      counts[opName.str()]++;
-      return;
-    }
-
-    if (opName == "fabric.extmemory") {
-      counts["handshake.extmemory"]++;
+    std::string canonName = canonicalizeFUOpName(opName);
+    if (llvm::StringRef(canonName).starts_with("arith.") ||
+        llvm::StringRef(canonName).starts_with("math.") ||
+        llvm::StringRef(canonName).starts_with("handshake.") ||
+        llvm::StringRef(canonName).starts_with("dataflow.")) {
+      countCanonicalFUOp(counts, canonName);
       return;
     }
   });
@@ -76,8 +129,12 @@ static unsigned countFUs(mlir::ModuleOp adgModule) {
   unsigned count = 0;
   adgModule.walk([&](mlir::Operation *op) {
     llvm::StringRef opName = op->getName().getStringRef();
-    if (opName == "fabric.fu" || opName.starts_with("arith.") ||
-        opName.starts_with("math."))
+    std::string canonName = canonicalizeFUOpName(opName);
+    if (opName == "fabric.fu" ||
+        llvm::StringRef(canonName).starts_with("arith.") ||
+        llvm::StringRef(canonName).starts_with("math.") ||
+        llvm::StringRef(canonName).starts_with("handshake.") ||
+        llvm::StringRef(canonName).starts_with("dataflow."))
       ++count;
   });
   return count;

@@ -139,6 +139,11 @@ static cl::opt<unsigned> mapperSeed("mapper-seed",
                                      cl::desc("Deterministic seed"),
                                      cl::init(0));
 
+static cl::opt<bool> mapperVerbose(
+    "mapper-verbose",
+    cl::desc("Enable verbose mapper diagnostics"),
+    cl::init(false));
+
 static cl::opt<unsigned> mapperLanes(
     "mapper-lanes",
     cl::desc("Number of parallel placement-and-route lanes (0 = auto)"),
@@ -279,6 +284,9 @@ bool parseArgs(int argc, char **argv, LoomArgs &args) {
                          args.mapperOptions.budgetSeconds);
   applyMapperCliOverride("mapper-seed", mapperSeed,
                          mapperSeed.getNumOccurrences(), args.mapperOptions.seed);
+  applyMapperCliOverride("mapper-verbose", mapperVerbose,
+                         mapperVerbose.getNumOccurrences(),
+                         args.mapperOptions.verbose);
   applyMapperCliOverride("mapper-lanes", mapperLanes,
                          mapperLanes.getNumOccurrences(),
                          args.mapperOptions.lanes);

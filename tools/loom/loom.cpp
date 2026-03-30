@@ -32,7 +32,9 @@
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "circt/Dialect/Handshake/HandshakeDialect.h"
@@ -1077,6 +1079,15 @@ int main(int argc, char **argv) {
   // ===== Full pipeline: C -> LLVM -> CF -> SCF -> DFG =====
   std::string llPath = softwareBase + ".ll";
   llvm::outs() << "loom: compiling and importing...\n";
+  mlir::ScopedDiagnosticHandler diagnosticFilter(
+      &context, [&](mlir::Diagnostic &diag) -> mlir::LogicalResult {
+        if (diag.getSeverity() != mlir::DiagnosticSeverity::Error)
+          return mlir::failure();
+        if (!llvm::StringRef(diag.str()).contains("does not dominate this use"))
+          return mlir::failure();
+        return mlir::success();
+      });
+
   auto module = compileAndImport(args, context, llPath);
   if (!module)
     return 1;
@@ -1106,6 +1117,11 @@ int main(int argc, char **argv) {
   llvm::outs() << "loom: converting SCF to DFG...\n";
   if (failed(runSCFToDFG(*module)))
     return 1;
+
+  if (failed(verify(*module))) {
+    llvm::errs() << "loom: frontend module verification failed\n";
+    return 1;
+  }
 
   std::string dfgPath = softwareBase + ".dfg.mlir";
   if (failed(writeMLIR(*module, dfgPath)))

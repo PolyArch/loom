@@ -1,0 +1,87 @@
+{
+  "name": "D6_scicomp",
+  "domain": "scientific_computing",
+  "shgId": "D6",
+  "khgPaths": {
+    "SC-FP": "adg/scicomp/SC-FP.mlir",
+    "SC-SPM": "adg/scicomp/SC-SPM.mlir",
+    "SC-CTRL": "adg/scicomp/SC-CTRL.mlir"
+  },
+  "coreTypes": [
+    {
+      "typeName": "SC-FP",
+      "instanceCount": 4,
+      "meshRows": 12,
+      "meshCols": 12,
+      "dataWidthBits": 64,
+      "spmBytes": 32768,
+      "includeMultiplier": true,
+      "includeComparison": true,
+      "includeMemory": true,
+      "scalarInputs": 4,
+      "scalarOutputs": 2,
+      "routingTopology": "CHESS",
+      "categorySupport": ["A", "B"],
+      "khgPath": "adg/scicomp/SC-FP.mlir"
+    },
+    {
+      "typeName": "SC-SPM",
+      "instanceCount": 3,
+      "meshRows": 8,
+      "meshCols": 8,
+      "dataWidthBits": 64,
+      "spmBytes": 65536,
+      "includeMultiplier": true,
+      "includeComparison": true,
+      "includeMemory": true,
+      "scalarInputs": 4,
+      "scalarOutputs": 2,
+      "routingTopology": "CHESS",
+      "categorySupport": ["B", "C"],
+      "khgPath": "adg/scicomp/SC-SPM.mlir"
+    },
+    {
+      "typeName": "SC-CTRL",
+      "instanceCount": 1,
+      "meshRows": 8,
+      "meshCols": 8,
+      "dataWidthBits": 32,
+      "spmBytes": 32768,
+      "includeMultiplier": true,
+      "includeComparison": true,
+      "includeMemory": true,
+      "instructionSlots": 16,
+      "registersPerPE": 8,
+      "operandBufferEntries": 4,
+      "routingTopology": "MESH",
+      "categorySupport": ["D"],
+      "khgPath": "adg/scicomp/SC-CTRL.mlir"
+    }
+  ],
+  "instances": [
+    {"name": "SC-FP.0", "coreId": 0, "typeName": "SC-FP", "meshRow": 0, "meshCol": 0},
+    {"name": "SC-FP.1", "coreId": 1, "typeName": "SC-FP", "meshRow": 0, "meshCol": 1},
+    {"name": "SC-SPM.0", "coreId": 2, "typeName": "SC-SPM", "meshRow": 0, "meshCol": 2},
+    {"name": "SC-SPM.1", "coreId": 3, "typeName": "SC-SPM", "meshRow": 0, "meshCol": 3},
+    {"name": "SC-FP.2", "coreId": 4, "typeName": "SC-FP", "meshRow": 1, "meshCol": 0},
+    {"name": "SC-FP.3", "coreId": 5, "typeName": "SC-FP", "meshRow": 1, "meshCol": 1},
+    {"name": "SC-SPM.2", "coreId": 6, "typeName": "SC-SPM", "meshRow": 1, "meshCol": 2},
+    {"name": "SC-CTRL", "coreId": 7, "typeName": "SC-CTRL", "meshRow": 1, "meshCol": 3}
+  ],
+  "noc": {
+    "topology": "mesh",
+    "meshRows": 2,
+    "meshCols": 4,
+    "expressLinkCount": 4,
+    "flitWidth": 128,
+    "virtualChannels": 2,
+    "linkBandwidth": 16,
+    "routerPipelineStages": 1
+  },
+  "sharedMemory": {
+    "l2SizeBytes": 524288,
+    "numBanks": 8,
+    "bankWidthBytes": 32
+  },
+  "shgPath": "adg/scicomp/D6_scicomp_shg.mlir"
+}

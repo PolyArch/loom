@@ -11,13 +11,17 @@ using namespace mapper_detail;
 
 bool LocalRepairDriver::runLateRepairStages() {
   if (!bestAllRouted &&
-      bestFailedEdges.size() <= repairOpts.cpSatEscalationFailedEdgeThreshold) {
+      bestFailedEdges.size() <= repairOpts.cpSatEscalationFailedEdgeThreshold &&
+      bestFailedEdges.size() > repairOpts.targetFocusedFailedEdgeThreshold) {
     if (mapper.shouldStopForBudget("local repair")) {
       state.restore(bestCheckpoint);
       return bestAllRouted;
     }
     llvm::DenseMap<IdIndex, double> focusWeights;
     llvm::DenseMap<IdIndex, llvm::SmallVector<IdIndex, 4>> adjacency;
+    auto isHotspotOpName = [](llvm::StringRef opName) {
+      return routing_detail::isRoutingHotspotOpName(opName);
+    };
     auto addAdjacency = [&](IdIndex lhs, IdIndex rhs) {
       if (lhs == INVALID_ID || rhs == INVALID_ID || lhs == rhs)
         return;
@@ -28,7 +32,9 @@ bool LocalRepairDriver::runLateRepairStages() {
       if (std::find(rhsAdj.begin(), rhsAdj.end(), lhs) == rhsAdj.end())
         rhsAdj.push_back(lhs);
     };
-    auto addIncidentNeighbors = [&](IdIndex swNodeId, double weight) {
+    auto addIncidentNeighbors =
+        [&](auto &&self, IdIndex swNodeId, double weight, unsigned depth)
+            -> void {
       const Node *swNode = dfg.getNode(swNodeId);
       if (!swNode || swNode->kind != Node::OperationNode)
         return;
@@ -53,9 +59,14 @@ bool LocalRepairDriver::runLateRepairStages() {
           const Node *otherNode = dfg.getNode(otherPort->parentNode);
           if (!otherNode || otherNode->kind != Node::OperationNode)
             continue;
-          focusWeights[otherPort->parentNode] +=
-              weight * repairOpts.focusNeighborhoodWeightScale;
+          double neighborWeight = weight * repairOpts.focusNeighborhoodWeightScale;
+          if (isHotspotOpName(getNodeAttrStr(otherNode, "op_name")))
+            neighborWeight *= (depth == 0 ? 2.0 : 1.5);
+          focusWeights[otherPort->parentNode] += neighborWeight;
           addAdjacency(swNodeId, otherPort->parentNode);
+          if (depth == 0 &&
+              isHotspotOpName(getNodeAttrStr(otherNode, "op_name")))
+            self(self, otherPort->parentNode, weight * 0.5, depth + 1);
         }
       };
       for (IdIndex inPortId : swNode->inputPorts)
@@ -87,9 +98,9 @@ bool LocalRepairDriver::runLateRepairStages() {
       if (dstIsOp)
         focusWeights[dstNodeId] += weight;
       if (srcIsOp)
-        addIncidentNeighbors(srcNodeId, weight);
+        addIncidentNeighbors(addIncidentNeighbors, srcNodeId, weight, 0);
       if (dstIsOp)
-        addIncidentNeighbors(dstNodeId, weight);
+        addIncidentNeighbors(addIncidentNeighbors, dstNodeId, weight, 0);
       if (srcIsOp && dstIsOp && srcNodeId != dstNodeId)
         addAdjacency(srcNodeId, dstNodeId);
     }
@@ -148,7 +159,18 @@ bool LocalRepairDriver::runLateRepairStages() {
       std::vector<IdIndex> focusNodes = focusComponents[compIdx];
       if (focusNodes.empty())
         continue;
-      if (focusNodes.size() > 7) {
+      bool hotspotComponent = false;
+      for (IdIndex swNode : focusNodes) {
+        const Node *node = dfg.getNode(swNode);
+        if (!node || node->kind != Node::OperationNode)
+          continue;
+        if (isHotspotOpName(getNodeAttrStr(node, "op_name"))) {
+          hotspotComponent = true;
+          break;
+        }
+      }
+      const unsigned focusNodeCap = hotspotComponent ? 9u : 7u;
+      if (focusNodes.size() > focusNodeCap) {
         llvm::stable_sort(focusNodes, [&](IdIndex lhs, IdIndex rhs) {
           double lhsWeight = focusWeights.lookup(lhs);
           double rhsWeight = focusWeights.lookup(rhs);
@@ -156,7 +178,7 @@ bool LocalRepairDriver::runLateRepairStages() {
             return lhsWeight > rhsWeight;
           return lhs < rhs;
         });
-        focusNodes.resize(7);
+        focusNodes.resize(focusNodeCap);
       }
 
       const bool largerExactNeighborhood = focusNodes.size() > 4;
@@ -225,13 +247,17 @@ bool LocalRepairDriver::runLateRepairStages() {
         return lhs < rhs;
       });
 
-      llvm::outs() << "  Exact neighborhood " << (compIdx + 1) << "/"
-                   << focusComponents.size() << ": nodes=" << focusNodes.size()
-                   << ", searchSpace=" << searchSpace << "\n";
+      if (opts.verbose) {
+        llvm::outs() << "  Exact neighborhood " << (compIdx + 1) << "/"
+                     << focusComponents.size() << ": nodes="
+                     << focusNodes.size() << ", searchSpace=" << searchSpace
+                     << "\n";
+      }
 
       if (searchSpace > searchSpaceLimit) {
-        llvm::outs() << "  Exact neighborhood skipped: searchSpace="
-                     << searchSpace << "\n";
+        if (opts.verbose)
+          llvm::outs() << "  Exact neighborhood skipped: searchSpace="
+                       << searchSpace << "\n";
         continue;
       }
 
@@ -279,8 +305,10 @@ bool LocalRepairDriver::runLateRepairStages() {
       };
 
       enumerateNeighborhood(0);
-      llvm::outs() << "  Exact neighborhood result: routed " << bestRouted
-                   << "/" << dfg.edges.size() << " edges\n";
+      if (opts.verbose) {
+        llvm::outs() << "  Exact neighborhood result: routed " << bestRouted
+                     << "/" << dfg.edges.size() << " edges\n";
+      }
       if (bestAllRouted) {
         state.restore(bestCheckpoint);
         return true;
@@ -383,12 +411,14 @@ bool LocalRepairDriver::runLateRepairStages() {
       }
     }
 
-    llvm::outs() << "  Reserved failed-edge search:";
-    for (IdIndex edgeId : targetEdges)
-      llvm::outs() << " edge" << edgeId << "="
-                   << candidatePathsByEdge.lookup(edgeId).size();
-    llvm::outs() << ", generation="
-                 << (candidateGenerationFailed ? "failed" : "ok") << "\n";
+    if (opts.verbose) {
+      llvm::outs() << "  Reserved failed-edge search:";
+      for (IdIndex edgeId : targetEdges)
+        llvm::outs() << " edge" << edgeId << "="
+                     << candidatePathsByEdge.lookup(edgeId).size();
+      llvm::outs() << ", generation="
+                   << (candidateGenerationFailed ? "failed" : "ok") << "\n";
+    }
 
     if (!candidateGenerationFailed) {
       MappingState reservedState = state;
@@ -463,8 +493,10 @@ bool LocalRepairDriver::runLateRepairStages() {
 
       unsigned bestReservedCount =
           reservedCandidates.empty() ? 0u : reservedCandidates.front().count;
-      llvm::outs() << "  Reserved failed-edge compatibility: bestReserved="
-                   << bestReservedCount << "\n";
+      if (opts.verbose) {
+        llvm::outs() << "  Reserved failed-edge compatibility: bestReserved="
+                     << bestReservedCount << "\n";
+      }
 
       if (bestReservedCount >= std::min<size_t>(2u, targetEdges.size())) {
         for (size_t candidateIdx = 0; candidateIdx < reservedCandidates.size();
@@ -512,11 +544,13 @@ bool LocalRepairDriver::runLateRepairStages() {
             }
           }
 
-          llvm::outs() << "  Reserved failed-edge paths: targets="
-                       << targetEdges.size()
-                       << ", blockerEdges=" << blockerEdges.size()
-                       << ", candidate=" << (candidateIdx + 1) << "/"
-                       << reservedCandidates.size() << "\n";
+          if (opts.verbose) {
+            llvm::outs() << "  Reserved failed-edge paths: targets="
+                         << targetEdges.size()
+                         << ", blockerEdges=" << blockerEdges.size()
+                         << ", candidate=" << (candidateIdx + 1) << "/"
+                         << reservedCandidates.size() << "\n";
+          }
           if (opts.verbose) {
             llvm::outs() << "    reserved targets:";
             for (const auto &entry : reservedChoice.paths)
@@ -759,9 +793,11 @@ bool LocalRepairDriver::runLateRepairStages() {
       llvm::stable_sort(jointRipupEdges, edgeOrderLess);
       if (jointRipupEdges.size() > conflictDrivenEdges.size() &&
           jointRipupEdges.size() <= repairOpts.jointRipupMaxEdges) {
-        llvm::outs() << "  Conflict-directed joint repair: failedEdges="
-                     << conflictDrivenEdges.size()
-                     << ", ripupEdges=" << jointRipupEdges.size() << "\n";
+        if (opts.verbose) {
+          llvm::outs() << "  Conflict-directed joint repair: failedEdges="
+                       << conflictDrivenEdges.size()
+                       << ", ripupEdges=" << jointRipupEdges.size() << "\n";
+        }
         auto attemptSavepoint = state.beginSavepoint();
         for (IdIndex edgeId : jointRipupEdges) {
           if (edgeId >= state.swEdgeToHwPaths.size())
@@ -838,9 +874,11 @@ bool LocalRepairDriver::runLateRepairStages() {
             ripupEdges.size() > repairOpts.singleRipupMaxEdges)
           continue;
 
-        llvm::outs() << "  Conflict-directed repair edge " << targetEdge
-                     << ": freePathLen=" << freeSpacePath.size()
-                     << ", ripupEdges=" << ripupEdges.size() << "\n";
+        if (opts.verbose) {
+          llvm::outs() << "  Conflict-directed repair edge " << targetEdge
+                       << ": freePathLen=" << freeSpacePath.size()
+                       << ", ripupEdges=" << ripupEdges.size() << "\n";
+        }
 
         auto attemptSavepoint = state.beginSavepoint();
         for (IdIndex edgeId : ripupEdges) {

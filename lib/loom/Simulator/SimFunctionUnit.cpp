@@ -61,7 +61,7 @@ bool isBinaryComputeOp(std::string_view op) {
          op == "arith.xori" || op == "arith.shli" || op == "arith.shrsi" ||
          op == "arith.shrui" || op == "arith.cmpi" || op == "arith.cmpf" ||
          op == "arith.addf" || op == "arith.subf" || op == "arith.mulf" ||
-         op == "arith.divf" || op == "math.fma";
+         op == "arith.divf" || op == "arith.minimumf" || op == "math.fma";
 }
 
 bool isUnaryComputeOp(std::string_view op) {
@@ -72,7 +72,7 @@ bool isUnaryComputeOp(std::string_view op) {
          op == "arith.sitofp" || op == "arith.uitofp" ||
          op == "math.absf" || op == "math.cos" || op == "math.exp" ||
          op == "math.floor" || op == "math.log2" || op == "math.sin" ||
-         op == "math.sqrt" ||
+         op == "math.rsqrt" || op == "math.sqrt" ||
          op == "llvm.intr.bitreverse";
 }
 

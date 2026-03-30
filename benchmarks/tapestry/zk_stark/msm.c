@@ -28,40 +28,73 @@ typedef struct {
     int is_inf;
 } point_t;
 
-static const point_t POINT_INF = {0, 0, 1};
+static inline void point_set_inf(point_t *p) {
+    p->x = 0;
+    p->y = 0;
+    p->is_inf = 1;
+}
+
+static inline void point_copy(point_t *dst, const point_t *src) {
+    dst->x = src->x;
+    dst->y = src->y;
+    dst->is_inf = src->is_inf;
+}
 
 /* Point addition: componentwise M31 addition */
-static inline point_t point_add(point_t p, point_t q) {
-    if (p.is_inf) return q;
-    if (q.is_inf) return p;
-    point_t r;
-    r.x = m31_add(p.x, q.x);
-    r.y = m31_add(p.y, q.y);
-    r.is_inf = 0;
-    return r;
+static inline void point_add(const point_t *p, const point_t *q, point_t *out) {
+    m31_t px = p->x;
+    m31_t py = p->y;
+    int p_inf = p->is_inf;
+    m31_t qx = q->x;
+    m31_t qy = q->y;
+    int q_inf = q->is_inf;
+
+    if (p_inf) {
+        out->x = qx;
+        out->y = qy;
+        out->is_inf = q_inf;
+        return;
+    }
+    if (q_inf) {
+        out->x = px;
+        out->y = py;
+        out->is_inf = p_inf;
+        return;
+    }
+
+    out->x = m31_add(px, qx);
+    out->y = m31_add(py, qy);
+    out->is_inf = 0;
 }
 
 /* Scalar multiplication via double-and-add (for reference) */
-static point_t scalar_mul(uint32_t s, point_t p) {
-    point_t result = POINT_INF;
-    point_t base = p;
+static void scalar_mul(uint32_t s, const point_t *p, point_t *out) {
+    point_t result;
+    point_t base;
+    point_t tmp;
+    point_set_inf(&result);
+    point_copy(&base, p);
     while (s > 0) {
         if (s & 1) {
-            result = point_add(result, base);
+            point_add(&result, &base, &tmp);
+            point_copy(&result, &tmp);
         }
         /* "Doubling" = adding to itself */
-        base = point_add(base, base);
+        point_add(&base, &base, &tmp);
+        point_copy(&base, &tmp);
         s >>= 1;
     }
-    return result;
+    point_copy(out, &result);
 }
 
 /*
  * Pippenger MSM: decompose scalars into windows, accumulate in buckets.
  */
-point_t msm_pippenger(const uint32_t *scalars, const point_t *points,
-                      int n) {
-    point_t total = POINT_INF;
+void msm_pippenger(const uint32_t *scalars, const point_t *points,
+                   int n, point_t *out) {
+    point_t total;
+    point_t tmp;
+    point_set_inf(&total);
     int w;
 
     /* Process windows from MSB to LSB */
@@ -69,14 +102,15 @@ point_t msm_pippenger(const uint32_t *scalars, const point_t *points,
         /* Double the running total WINDOW_BITS times */
         int d;
         for (d = 0; d < WINDOW_BITS; d++) {
-            total = point_add(total, total);
+            point_add(&total, &total, &tmp);
+            point_copy(&total, &tmp);
         }
 
         /* Initialize buckets */
         point_t buckets[NUM_BUCKETS];
         int b;
         for (b = 0; b < NUM_BUCKETS; b++) {
-            buckets[b] = POINT_INF;
+            point_set_inf(&buckets[b]);
         }
 
         /* Assign points to buckets based on scalar window */
@@ -87,8 +121,8 @@ point_t msm_pippenger(const uint32_t *scalars, const point_t *points,
                 int bucket_idx = (scalars[i] >> (w * WINDOW_BITS))
                                  & (NUM_BUCKETS - 1);
                 if (bucket_idx > 0) {
-                    buckets[bucket_idx] = point_add(buckets[bucket_idx],
-                                                    points[i]);
+                    point_add(&buckets[bucket_idx], &points[i], &tmp);
+                    point_copy(&buckets[bucket_idx], &tmp);
                 }
             }
         }
@@ -103,45 +137,53 @@ point_t msm_pippenger(const uint32_t *scalars, const point_t *points,
          * running += bucket[1]
          * sum += running
          */
-        point_t running = POINT_INF;
-        point_t bucket_sum = POINT_INF;
+        point_t running;
+        point_t bucket_sum;
+        point_set_inf(&running);
+        point_set_inf(&bucket_sum);
         for (b = NUM_BUCKETS - 1; b >= 1; b--) {
-            running = point_add(running, buckets[b]);
-            bucket_sum = point_add(bucket_sum, running);
+            point_add(&running, &buckets[b], &tmp);
+            point_copy(&running, &tmp);
+            point_add(&bucket_sum, &running, &tmp);
+            point_copy(&bucket_sum, &tmp);
         }
 
-        total = point_add(total, bucket_sum);
+        point_add(&total, &bucket_sum, &tmp);
+        point_copy(&total, &tmp);
     }
-
-    return total;
+    point_copy(out, &total);
 }
 
 /* Naive MSM: compute each s_i * P_i via double-and-add */
-point_t msm_naive(const uint32_t *scalars, const point_t *points, int n) {
-    point_t total = POINT_INF;
+void msm_naive(const uint32_t *scalars, const point_t *points, int n,
+               point_t *out) {
+    point_t total;
+    point_t sp;
+    point_t tmp;
+    point_set_inf(&total);
     int i;
     for (i = 0; i < n; i++) {
-        point_t sp = scalar_mul(scalars[i], points[i]);
-        total = point_add(total, sp);
+        scalar_mul(scalars[i], &points[i], &sp);
+        point_add(&total, &sp, &tmp);
+        point_copy(&total, &tmp);
     }
-    return total;
+    point_copy(out, &total);
 }
 
 /* Direct MSM using M31 arithmetic (ground truth):
  * Since our group is additive M31^2, s*P = (s*P.x mod p, s*P.y mod p)
  * and the total is sum of those. */
-point_t msm_direct(const uint32_t *scalars, const point_t *points, int n) {
+void msm_direct(const uint32_t *scalars, const point_t *points, int n,
+                point_t *out) {
     m31_t sum_x = 0, sum_y = 0;
     int i;
     for (i = 0; i < n; i++) {
         sum_x = m31_add(sum_x, m31_mul((m31_t)scalars[i], points[i].x));
         sum_y = m31_add(sum_y, m31_mul((m31_t)scalars[i], points[i].y));
     }
-    point_t r;
-    r.x = sum_x;
-    r.y = sum_y;
-    r.is_inf = 0;
-    return r;
+    out->x = sum_x;
+    out->y = sum_y;
+    out->is_inf = 0;
 }
 
 int main(void) {
@@ -171,9 +213,10 @@ int main(void) {
         points[i].is_inf = 0;
     }
 
-    point_t result_pip = msm_pippenger(scalars, points, n);
-    point_t result_naive = msm_naive(scalars, points, n);
-    point_t result_direct = msm_direct(scalars, points, n);
+    point_t result_pip, result_naive, result_direct;
+    msm_pippenger(scalars, points, n, &result_pip);
+    msm_naive(scalars, points, n, &result_naive);
+    msm_direct(scalars, points, n, &result_direct);
 
     printf("msm: n=%d, window_bits=%d\n", n, WINDOW_BITS);
     printf("msm: pippenger = (%u, %u)\n", result_pip.x, result_pip.y);
