@@ -183,6 +183,28 @@ endforeach()
 
 loom_add_gem5_smoke("sum-array.mesh-6x6-extmem-1" "multiaccel" "--extra-accel-count" "1")
 
+# --- 24 KHG ADG types ---
+set(LOOM_KHG_TYPES
+  CISY8 CISY12 CISN8 CISN12
+  CITY8 CITY12 CITN8 CITN12
+  CFSY8 CFSY12 CFSN8 CFSN12
+  CFTY8 CFTY12 CFTN8 CFTN12
+  CMSY8 CMSY12 CMSN8 CMSN12
+  CMTY8 CMTY12 CMTN8 CMTN12
+)
+
+foreach(khg_type ${LOOM_KHG_TYPES})
+  loom_add_e2e_adg(${khg_type})
+endforeach()
+
+# Round 1: vecadd + sum-array on all 24 KHG types
+foreach(khg_type ${LOOM_KHG_TYPES})
+  loom_add_e2e_pair(vecadd ${khg_type}
+    "${CMAKE_CURRENT_SOURCE_DIR}/sim-bundles/vecadd-demo.json")
+  loom_add_e2e_pair(sum-array ${khg_type}
+    "${CMAKE_CURRENT_SOURCE_DIR}/sim-bundles/sum-array-demo.json")
+endforeach()
+
 get_property(loom_e2e_manifest_lines GLOBAL PROPERTY LOOM_E2E_MANIFEST_LINES)
 get_property(loom_e2e_runner_deps GLOBAL PROPERTY LOOM_E2E_RUNNER_DEPS)
 get_property(loom_gem5_smoke_targets GLOBAL PROPERTY LOOM_GEM5_SMOKE_TARGETS)
