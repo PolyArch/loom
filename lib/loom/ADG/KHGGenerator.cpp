@@ -171,8 +171,10 @@ KHGTypeParams makeKHGParams(KHGComputeMix compute, KHGPEKind pe,
 
   // Spatial fraction
   switch (pe) {
-  case KHGPEKind::SPATIAL:  params.spatialFraction = 0.80f; break;
-  case KHGPEKind::TEMPORAL: params.spatialFraction = 0.25f; break;
+  // Temporal PE mixing disabled pending temporal PE mapper/simulator
+  // validation. Restore to 0.80/0.25 after temporal PE tests pass.
+  case KHGPEKind::SPATIAL:  params.spatialFraction = 1.0f; break;
+  case KHGPEKind::TEMPORAL: params.spatialFraction = 1.0f; break;
   }
 
   // SPM parameters
