@@ -389,6 +389,167 @@ static LogicalResult materializeReadOnlyGlobal(LLVM::GlobalOp global,
   return success();
 }
 
+static Type getHomogeneousStructElementType(LLVM::LLVMStructType structTy,
+                                            MLIRContext *ctx) {
+  auto body = structTy.getBody();
+  if (body.empty())
+    return nullptr;
+
+  Type firstTy = normalizeScalarType(ctx, body.front());
+  if (isByteLikeType(firstTy))
+    return nullptr;
+  for (Type fieldTy : body.drop_front()) {
+    if (normalizeScalarType(ctx, fieldTy) != firstTy)
+      return nullptr;
+  }
+  return firstTy;
+}
+
+static LogicalResult materializeReadOnlyStructGlobal(LLVM::GlobalOp global,
+                                                     ReadOnlyGlobalInfo &info) {
+  if (!global.getConstant() || global.getAddrSpace() != 0)
+    return failure();
+
+  auto structType = dyn_cast<LLVM::LLVMStructType>(global.getType());
+  if (!structType)
+    return failure();
+
+  Type elementType =
+      getHomogeneousStructElementType(structType, global.getContext());
+  if (!elementType)
+    return failure();
+
+  SmallVector<Attribute> attrs;
+  auto collectFromValue = [&](auto &&self, Value value) -> LogicalResult {
+    if (auto ret = value.getDefiningOp<LLVM::ReturnOp>()) {
+      if (ret.getNumOperands() != 1)
+        return failure();
+      return self(self, ret.getOperand(0));
+    }
+    if (isa<LLVM::UndefOp, LLVM::PoisonOp>(value.getDefiningOp())) {
+      attrs.clear();
+      attrs.reserve(structType.getBody().size());
+      for (Type fieldTy : structType.getBody()) {
+        Type normalized = normalizeScalarType(value.getContext(), fieldTy);
+        if (auto intTy = dyn_cast<IntegerType>(normalized))
+          attrs.push_back(IntegerAttr::get(intTy, 0));
+        else if (auto floatTy = dyn_cast<FloatType>(normalized))
+          attrs.push_back(
+              FloatAttr::get(floatTy,
+                             APFloat::getZero(floatTy.getFloatSemantics())));
+        else
+          return failure();
+      }
+      return success();
+    }
+    if (auto insert = value.getDefiningOp<LLVM::InsertValueOp>()) {
+      if (insert.getPosition().size() != 1)
+        return failure();
+      if (failed(self(self, insert.getContainer())))
+        return failure();
+      unsigned fieldIdx = insert.getPosition()[0];
+      if (fieldIdx >= structType.getBody().size() || fieldIdx >= attrs.size())
+        return failure();
+      Value insertedValue = insert.getValue();
+      Attribute fieldAttr;
+      if (auto constant = insertedValue.getDefiningOp<LLVM::ConstantOp>())
+        fieldAttr = constant.getValue();
+      else if (auto zero = insertedValue.getDefiningOp<LLVM::ZeroOp>()) {
+        Type normalized =
+            normalizeScalarType(value.getContext(), zero.getType());
+        if (auto intTy = dyn_cast<IntegerType>(normalized))
+          fieldAttr = IntegerAttr::get(intTy, 0);
+        else if (auto floatTy = dyn_cast<FloatType>(normalized))
+          fieldAttr = FloatAttr::get(
+              floatTy, APFloat::getZero(floatTy.getFloatSemantics()));
+      }
+      if (!fieldAttr || !isa<IntegerAttr, FloatAttr>(fieldAttr))
+        return failure();
+      attrs[fieldIdx] = fieldAttr;
+      return success();
+    }
+    return failure();
+  };
+
+  Attribute initAttr = global.getValueOrNull();
+  if (initAttr) {
+    auto denseAttr = dyn_cast<DenseElementsAttr>(initAttr);
+    if (!denseAttr)
+      return failure();
+    int64_t numFields = static_cast<int64_t>(structType.getBody().size());
+    auto tensorType = RankedTensorType::get({numFields}, elementType);
+    info.memrefType = MemRefType::get({numFields}, elementType);
+    info.initialValue = denseAttr.reshape(tensorType);
+    info.pointeeType = elementType;
+    return success();
+  }
+
+  Block *initBlock = global.getInitializerBlock();
+  if (!initBlock)
+    return failure();
+  auto ret = dyn_cast_or_null<LLVM::ReturnOp>(initBlock->getTerminator());
+  if (!ret || ret.getNumOperands() != 1)
+    return failure();
+  if (failed(collectFromValue(collectFromValue, ret.getOperand(0))))
+    return failure();
+
+  int64_t numFields = static_cast<int64_t>(attrs.size());
+  auto tensorType = RankedTensorType::get({numFields}, elementType);
+  info.memrefType = MemRefType::get({numFields}, elementType);
+  info.initialValue = DenseElementsAttr::get(tensorType, attrs);
+  info.pointeeType = elementType;
+  return success();
+}
+
+static void flattenAggregateLeafTypes(Type type, MLIRContext *ctx,
+                                      SmallVectorImpl<Type> &leafTypes) {
+  if (auto structTy = dyn_cast<LLVM::LLVMStructType>(type)) {
+    for (Type fieldTy : structTy.getBody())
+      flattenAggregateLeafTypes(fieldTy, ctx, leafTypes);
+    return;
+  }
+  if (auto arrayTy = dyn_cast<LLVM::LLVMArrayType>(type)) {
+    for (uint64_t i = 0; i < arrayTy.getNumElements(); ++i)
+      flattenAggregateLeafTypes(arrayTy.getElementType(), ctx, leafTypes);
+    return;
+  }
+  leafTypes.push_back(normalizeScalarType(ctx, type));
+}
+
+static unsigned countAggregateLeaves(Type type, MLIRContext *ctx) {
+  SmallVector<Type, 8> leaves;
+  flattenAggregateLeafTypes(type, ctx, leaves);
+  return leaves.size();
+}
+
+static bool computeAggregateOffset(Type aggregateType, ArrayRef<int64_t> pos,
+                                   MLIRContext *ctx, unsigned &offset,
+                                   Type &subType) {
+  offset = 0;
+  subType = aggregateType;
+  for (int64_t idx : pos) {
+    if (auto structTy = dyn_cast<LLVM::LLVMStructType>(subType)) {
+      if (idx < 0 || static_cast<size_t>(idx) >= structTy.getBody().size())
+        return false;
+      auto body = structTy.getBody();
+      for (int64_t i = 0; i < idx; ++i)
+        offset += countAggregateLeaves(body[i], ctx);
+      subType = body[idx];
+      continue;
+    }
+    if (auto arrayTy = dyn_cast<LLVM::LLVMArrayType>(subType)) {
+      if (idx < 0 || static_cast<uint64_t>(idx) >= arrayTy.getNumElements())
+        return false;
+      unsigned elemLeaves = countAggregateLeaves(arrayTy.getElementType(), ctx);
+      offset += static_cast<unsigned>(idx) * elemLeaves;
+      subType = arrayTy.getElementType();
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 // Per-function converter state.
 struct FunctionConverter {
   LLVM::LLVMFuncOp llvmFunc;
@@ -416,6 +577,10 @@ struct FunctionConverter {
   // Used to decompose vector operations (from SRoA struct decomposition)
   // into individual scalar operations.
   llvm::DenseMap<Value, SmallVector<Value, 4>> vectorMap;
+
+  // Aggregate element tracking for insertvalue/extractvalue.
+  llvm::DenseMap<Value, SmallVector<Value, 4>> aggregateMap;
+
   Operation *failedOp = nullptr;
 
   FunctionConverter(LLVM::LLVMFuncOp func, OpBuilder &b,
@@ -440,6 +605,8 @@ private:
   // Vector operations (from SRoA struct decomposition)
   LogicalResult convertExtractElement(LLVM::ExtractElementOp op);
   LogicalResult convertInsertElement(LLVM::InsertElementOp op);
+  LogicalResult convertExtractValue(LLVM::ExtractValueOp op);
+  LogicalResult convertInsertValue(LLVM::InsertValueOp op);
 
   // Arithmetic
   LogicalResult convertBinaryIntOp(Operation *op);
@@ -462,7 +629,9 @@ private:
   void mapValue(Value oldVal, Value newVal);
   void mapPointer(Value oldPtr, PointerInfo info);
   void mapVector(Value oldVec, SmallVector<Value, 4> elements);
+  void mapAggregate(Value oldAgg, SmallVector<Value, 4> elements);
   SmallVector<Value, 4> lookupVector(Value v);
+  SmallVector<Value, 4> lookupAggregate(Value v);
   SmallVector<Value> materializeBranchArgs(Location loc, OperandRange args,
                                            Block *dest);
   Value createIndexCast(Location loc, Value intVal);
@@ -802,6 +971,10 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
     return convertExtractElement(extractElem);
   if (auto insertElem = dyn_cast<LLVM::InsertElementOp>(op))
     return convertInsertElement(insertElem);
+  if (auto extractVal = dyn_cast<LLVM::ExtractValueOp>(op))
+    return convertExtractValue(extractVal);
+  if (auto insertVal = dyn_cast<LLVM::InsertValueOp>(op))
+    return convertInsertValue(insertVal);
 
   // Memory operations
   if (auto gep = dyn_cast<LLVM::GEPOp>(op))
@@ -853,25 +1026,82 @@ LogicalResult FunctionConverter::convertOp(Operation *op) {
   if (auto call = dyn_cast<LLVM::CallOp>(op)) {
     auto callee = call.getCalleeAttr();
 
-    // Skip memory management calls (malloc, calloc, realloc, free, memset, memcpy)
-    // These are runtime operations that don't map to CGRA dataflow.
+    // Map results of skipped calls to zero/dummy values so downstream
+    // uses don't fail.
+    auto mapSkippedCallResults = [&]() -> LogicalResult {
+      for (Value oldRes : call.getResults()) {
+        Type oldTy = oldRes.getType();
+        if (isa<LLVM::LLVMVoidType>(oldTy))
+          continue;
+
+        if (isa<LLVM::LLVMPointerType>(oldTy)) {
+          Type elemTy = IntegerType::get(ctx, 8);
+          auto plainMemRefTy = MemRefType::get({ShapedType::kDynamic}, elemTy);
+          Value oneIdx = arith::ConstantIndexOp::create(builder, loc, 1);
+          Value alloc = memref::AllocaOp::create(builder, loc, plainMemRefTy,
+                                                 ValueRange{oneIdx});
+          auto memrefTy = buildStridedMemRefType(ctx, elemTy);
+          Value base = alloc;
+          if (plainMemRefTy != memrefTy)
+            base = memref::CastOp::create(builder, loc, memrefTy, alloc);
+          Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
+          mapPointer(oldRes, {base, zeroIdx, elemTy});
+
+          Type scalarTy = normalizeScalarType(ctx, oldTy);
+          if (auto intTy = dyn_cast<IntegerType>(scalarTy))
+            mapValue(oldRes,
+                     arith::ConstantIntOp::create(builder, loc, intTy, 0));
+          else if (isa<IndexType>(scalarTy))
+            mapValue(oldRes, arith::ConstantIndexOp::create(builder, loc, 0));
+          else
+            return call.emitError("unsupported skipped pointer call result type");
+          continue;
+        }
+
+        Type resTy = normalizeScalarType(ctx, oldTy);
+        Value zero;
+        if (auto intTy = dyn_cast<IntegerType>(resTy))
+          zero = arith::ConstantIntOp::create(builder, loc, intTy, 0);
+        else if (auto floatTy = dyn_cast<FloatType>(resTy))
+          zero = arith::ConstantFloatOp::create(
+              builder, loc, floatTy,
+              APFloat::getZero(floatTy.getFloatSemantics()));
+        else if (isa<IndexType>(resTy))
+          zero = arith::ConstantIndexOp::create(builder, loc, 0);
+        else
+          return call.emitError("unsupported skipped call result type");
+        mapValue(oldRes, zero);
+      }
+      return success();
+    };
+
+    // Skip runtime calls that don't map to CGRA dataflow.
     if (callee) {
       StringRef name = callee.getAttr().getValue();
       if (name == "free" || name == "memset" || name == "memcpy" ||
-          name == "memmove") {
-        // Void calls: just skip
-        return success();
-      }
+          name == "memmove")
+        return mapSkippedCallResults();
+
+      if (name == "printf" || name == "fprintf" || name == "sprintf" ||
+          name == "snprintf" || name == "vprintf" || name == "vfprintf" ||
+          name == "puts" || name == "fputs" || name == "putchar" ||
+          name == "perror" || name == "fwrite" || name == "fread")
+        return mapSkippedCallResults();
+
+      auto *calleeOp = resolveCalleeOp(call, callee);
+      auto calleeFunc = dyn_cast_or_null<LLVM::LLVMFuncOp>(calleeOp);
+      if (calleeFunc && calleeFunc.isExternal() &&
+          calleeFunc.getFunctionType().isVarArg())
+        return mapSkippedCallResults();
     }
 
     SmallVector<Value> args;
     for (Value v : call.getOperands()) {
       if (isa<LLVM::LLVMPointerType>(v.getType())) {
         auto pi = lookupPtr(v);
-        if (pi.isValid())
-          args.push_back(pi.base);
-        else
+        if (!pi.isValid())
           return call.emitError("cannot convert pointer call argument");
+        args.push_back(pi.base);
       } else {
         args.push_back(lookup(v));
       }
@@ -1511,6 +1741,114 @@ LogicalResult FunctionConverter::convertInsertElement(LLVM::InsertElementOp op) 
   SmallVector<Value, 4> newElems(elems.begin(), elems.end());
   newElems[constIdx] = newVal;
   mapVector(op.getResult(), std::move(newElems));
+  return success();
+}
+
+LogicalResult FunctionConverter::convertExtractValue(LLVM::ExtractValueOp op) {
+  auto elems = lookupAggregate(op.getContainer());
+  if (elems.empty())
+    return op.emitError("extractvalue: aggregate operand not tracked");
+
+  unsigned offset = 0;
+  Type subType;
+  if (!computeAggregateOffset(op.getContainer().getType(), op.getPosition(),
+                              ctx, offset, subType))
+    return op.emitError("extractvalue: unsupported aggregate position");
+
+  unsigned subLeaves = countAggregateLeaves(subType, ctx);
+  if (offset + subLeaves > elems.size())
+    return op.emitError("extractvalue: aggregate index out of range");
+
+  if (subLeaves == 1) {
+    Value v = elems[offset];
+    Type dstTy = normalizeScalarType(ctx, op.getType());
+    if (v.getType() != dstTy) {
+      if (isa<IndexType>(dstTy))
+        v = createIndexCast(op.getLoc(), v);
+      else if (isa<IndexType>(v.getType()))
+        v = arith::IndexCastOp::create(builder, op.getLoc(), dstTy, v);
+      else if (getTypeBitWidth(v.getType()) == getTypeBitWidth(dstTy))
+        v = arith::BitcastOp::create(builder, op.getLoc(), dstTy, v);
+    }
+    mapValue(op.getResult(), v);
+    return success();
+  }
+
+  SmallVector<Value, 4> sliced;
+  sliced.reserve(subLeaves);
+  for (unsigned i = 0; i < subLeaves; ++i)
+    sliced.push_back(elems[offset + i]);
+  mapAggregate(op.getResult(), std::move(sliced));
+  return success();
+}
+
+LogicalResult FunctionConverter::convertInsertValue(LLVM::InsertValueOp op) {
+  SmallVector<Type, 8> leafTypes;
+  flattenAggregateLeafTypes(op.getType(), ctx, leafTypes);
+  if (leafTypes.empty())
+    return op.emitError("insertvalue: unsupported aggregate result type");
+
+  SmallVector<Value, 8> elems;
+  auto existing = lookupAggregate(op.getContainer());
+  if (!existing.empty() && existing.size() == leafTypes.size()) {
+    elems.assign(existing.begin(), existing.end());
+  } else if (isa<LLVM::UndefOp, LLVM::PoisonOp>(
+                 op.getContainer().getDefiningOp())) {
+    elems.reserve(leafTypes.size());
+    for (Type leafTy : leafTypes) {
+      Value zero;
+      if (auto intTy = dyn_cast<IntegerType>(leafTy))
+        zero = arith::ConstantIntOp::create(builder, op.getLoc(), intTy, 0);
+      else if (auto floatTy = dyn_cast<FloatType>(leafTy))
+        zero = arith::ConstantFloatOp::create(
+            builder, op.getLoc(), floatTy,
+            APFloat::getZero(floatTy.getFloatSemantics()));
+      else
+        return op.emitError("insertvalue: unsupported leaf type");
+      elems.push_back(zero);
+    }
+  } else {
+    return op.emitError("insertvalue: aggregate container not tracked");
+  }
+
+  unsigned offset = 0;
+  Type subType;
+  if (!computeAggregateOffset(op.getType(), op.getPosition(), ctx, offset,
+                              subType))
+    return op.emitError("insertvalue: unsupported aggregate position");
+
+  unsigned subLeaves = countAggregateLeaves(subType, ctx);
+  if (offset + subLeaves > elems.size())
+    return op.emitError("insertvalue: aggregate index out of range");
+
+  if (subLeaves == 1) {
+    Value inserted = lookup(op.getValue());
+    if (!inserted)
+      return op.emitError("insertvalue: value operand not mapped");
+    Type expectedTy = leafTypes[offset];
+    if (inserted.getType() != expectedTy) {
+      if (isa<IndexType>(expectedTy))
+        inserted = createIndexCast(op.getLoc(), inserted);
+      else if (isa<IndexType>(inserted.getType()))
+        inserted = arith::IndexCastOp::create(builder, op.getLoc(), expectedTy,
+                                              inserted);
+      else if (getTypeBitWidth(inserted.getType()) == getTypeBitWidth(expectedTy))
+        inserted = arith::BitcastOp::create(builder, op.getLoc(), expectedTy,
+                                            inserted);
+    }
+    elems[offset] = inserted;
+  } else {
+    auto insertedAgg = lookupAggregate(op.getValue());
+    if (insertedAgg.size() != subLeaves)
+      return op.emitError("insertvalue: aggregate value operand not tracked");
+    for (unsigned i = 0; i < subLeaves; ++i)
+      elems[offset + i] = insertedAgg[i];
+  }
+
+  SmallVector<Value, 4> mapped(elems.begin(), elems.end());
+  mapAggregate(op.getResult(), mapped);
+  if (mapped.size() == 1)
+    mapValue(op.getResult(), mapped[0]);
   return success();
 }
 
@@ -2478,9 +2816,21 @@ void FunctionConverter::mapVector(Value oldVec, SmallVector<Value, 4> elements) 
   vectorMap[oldVec] = std::move(elements);
 }
 
+void FunctionConverter::mapAggregate(Value oldAgg,
+                                     SmallVector<Value, 4> elements) {
+  aggregateMap[oldAgg] = std::move(elements);
+}
+
 SmallVector<Value, 4> FunctionConverter::lookupVector(Value v) {
   auto it = vectorMap.find(v);
   if (it != vectorMap.end())
+    return it->second;
+  return {};
+}
+
+SmallVector<Value, 4> FunctionConverter::lookupAggregate(Value v) {
+  auto it = aggregateMap.find(v);
+  if (it != aggregateMap.end())
     return it->second;
   return {};
 }
@@ -2621,7 +2971,8 @@ struct ConvertLLVMToCFPassImpl
     });
     for (LLVM::GlobalOp global : globalsToConvert) {
       ReadOnlyGlobalInfo info;
-      if (failed(materializeReadOnlyGlobal(global, info)))
+      if (failed(materializeReadOnlyGlobal(global, info)) &&
+          failed(materializeReadOnlyStructGlobal(global, info)))
         continue;
 
       builder.setInsertionPoint(global);

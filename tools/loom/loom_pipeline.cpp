@@ -9,6 +9,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OperationSupport.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Import.h"
 #include "mlir/Transforms/Passes.h"
@@ -42,6 +43,17 @@
 using namespace mlir;
 
 namespace loom {
+
+static LogicalResult runPipelineAndVerify(PassManager &pm, ModuleOp module,
+                                          llvm::StringRef stageName) {
+  if (failed(pm.run(module)))
+    return failure();
+  if (failed(mlir::verify(module))) {
+    llvm::errs() << "loom: IR verification failed after " << stageName << "\n";
+    return failure();
+  }
+  return success();
+}
 
 static llvm::StringRef detectClangInputLanguage(const std::string &srcPath) {
   llvm::StringRef ext = llvm::sys::path::extension(srcPath);
@@ -250,7 +262,7 @@ LogicalResult runLLVMToCF(ModuleOp module) {
   pm.addPass(loom::createConvertLLVMToCFPass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
-  return pm.run(module);
+  return runPipelineAndVerify(pm, module, "LLVMToCF");
 }
 
 LogicalResult runCFToSCF(ModuleOp module) {
@@ -263,7 +275,7 @@ LogicalResult runCFToSCF(ModuleOp module) {
   pm.addPass(loom::createUpliftWhileToForPass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
-  return pm.run(module);
+  return runPipelineAndVerify(pm, module, "CFToSCF");
 }
 
 LogicalResult runSCFToDFG(ModuleOp module) {
@@ -272,7 +284,7 @@ LogicalResult runSCFToDFG(ModuleOp module) {
   pm.addPass(loom::createConvertSCFToDFGPass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
-  return pm.run(module);
+  return runPipelineAndVerify(pm, module, "SCFToDFG");
 }
 
 LogicalResult runHostCodeGen(ModuleOp module, const std::string &outputPath,
