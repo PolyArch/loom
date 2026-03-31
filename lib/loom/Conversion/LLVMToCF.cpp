@@ -270,6 +270,20 @@ static LogicalResult materializeReadOnlyArrayInit(Attribute initValue,
                                                   ElementsAttr &denseInit) {
   auto tensorType = RankedTensorType::get({numElements}, elementType);
 
+  // Handle string literals (e.g. format strings for printf).
+  if (auto str = dyn_cast<StringAttr>(initValue)) {
+    SmallVector<Attribute> values;
+    values.reserve(numElements);
+    for (char ch : str.getValue().bytes())
+      values.push_back(IntegerAttr::get(elementType, static_cast<uint8_t>(ch)));
+    while (static_cast<int64_t>(values.size()) < numElements)
+      values.push_back(IntegerAttr::get(elementType, 0));
+    if (static_cast<int64_t>(values.size()) != numElements)
+      return failure();
+    denseInit = DenseElementsAttr::get(tensorType, values);
+    return success();
+  }
+
   if (auto elements = dyn_cast<ElementsAttr>(initValue)) {
     auto shapedType = dyn_cast<ShapedType>(elements.getType());
     if (shapedType && shapedType.getRank() == 1 &&
