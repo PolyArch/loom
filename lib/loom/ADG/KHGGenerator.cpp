@@ -212,8 +212,15 @@ constexpr unsigned kPEInputs = 4;
 constexpr unsigned kPEOutputs = 4;
 constexpr unsigned kNumExtMems = 8;
 constexpr unsigned kExtMemsPerEdge = 2;
-constexpr unsigned kNumScalarInputs = 4;
-constexpr unsigned kNumScalarOutputs = 2;
+// Module I/O port counts depend on array size.
+// 8x8: 10 inputs (5 top + 5 left), 10 outputs (5 right + 5 bottom)
+// 12x12: 18 inputs (9 top + 9 left), 18 outputs (9 right + 9 bottom)
+static unsigned computeModuleIOPerEdge(unsigned arrayDim) {
+  unsigned switchCount = arrayDim + 1; // chess mesh: N+1 switches per edge
+  if (switchCount <= 6)
+    return switchCount - 1; // skip corner switches
+  return switchCount - 4;   // skip 2 corner switches on each end
+}
 
 // Tagged bridge port counts per extmem/spm (ldPorts=2, stPorts=2):
 //   Ingress (mem -> mesh): 2 ld_data + 2 ld_done + 2 st_done = 6
@@ -711,26 +718,26 @@ buildPEAssignment(const KHGTypeParams &params, const PESet &peSet) {
   }
 
   // Determine spatial/temporal assignment.
-  // For spatial-heavy (0.80): every 5th PE is temporal.
-  // For temporal-heavy (0.25): every 4th PE is spatial.
   std::vector<PEHandle> assignment;
   assignment.reserve(total);
+  unsigned spatialCount =
+      static_cast<unsigned>(std::llround(total * params.spatialFraction));
+  if (spatialCount > total) spatialCount = total;
   for (unsigned idx = 0; idx < total; ++idx) {
     bool isSpatial;
-    if (params.spatialFraction >= 0.5f) {
-      // Spatial-dominant: temporal PEs at regular intervals
-      unsigned temporalInterval =
-          static_cast<unsigned>(std::llround(1.0 / (1.0 - params.spatialFraction)));
-      if (temporalInterval == 0)
-        temporalInterval = 1;
-      isSpatial = ((idx % temporalInterval) != (temporalInterval - 1));
+    if (spatialCount == total) {
+      isSpatial = true;
+    } else if (spatialCount == 0) {
+      isSpatial = false;
+    } else if (spatialCount >= total / 2) {
+      // Spatial-dominant: scatter temporal PEs at regular intervals
+      unsigned temporalCount = total - spatialCount;
+      unsigned interval = total / temporalCount;
+      isSpatial = ((idx % interval) != (interval - 1));
     } else {
-      // Temporal-dominant: spatial PEs at regular intervals
-      unsigned spatialInterval =
-          static_cast<unsigned>(std::llround(1.0 / params.spatialFraction));
-      if (spatialInterval == 0)
-        spatialInterval = 1;
-      isSpatial = ((idx % spatialInterval) == 0);
+      // Temporal-dominant: scatter spatial PEs at regular intervals
+      unsigned interval = total / spatialCount;
+      isSpatial = ((idx % interval) == 0);
     }
     assignment.push_back(peSet.get(catAssign[idx], isSpatial));
   }
@@ -761,9 +768,7 @@ static void buildKHGADGImpl(ADGBuilder &builder, const KHGTypeParams &params,
   };
 
   // Compute boundary port layout.
-  // 8 extmemories: 2 per edge (top, bottom, left, right).
-  // Each extmem uses tagged bridges: kBridgeIngressPorts ingress +
-  // kBridgeEgressPorts egress ports per memory.
+  // 8 extmemories: 2 per edge. Each uses tagged bridges.
   unsigned extMemIngressPerEdge = kExtMemsPerEdge * kBridgeIngressPorts;
   unsigned extMemEgressPerEdge  = kExtMemsPerEdge * kBridgeEgressPorts;
 
@@ -772,51 +777,43 @@ static void buildKHGADGImpl(ADGBuilder &builder, const KHGTypeParams &params,
   unsigned spmIngressPerEdge = spmPerEdge * kBridgeIngressPorts;
   unsigned spmEgressPerEdge  = spmPerEdge * kBridgeEgressPorts;
 
-  // Switch counts along each edge (chess mesh: rows+1 for vertical edges,
-  // cols+1 for horizontal edges)
+  // Module I/O: inputs on top+left edges, outputs on right+bottom edges.
+  // 8x8: 5 per edge = 10 total I/O. 12x12: 9 per edge = 18 total I/O.
+  unsigned topIOCount = computeModuleIOPerEdge(params.arrayCols);
+  unsigned leftIOCount = computeModuleIOPerEdge(params.arrayRows);
+  unsigned rightIOCount = computeModuleIOPerEdge(params.arrayRows);
+  unsigned bottomIOCount = computeModuleIOPerEdge(params.arrayCols);
+  unsigned totalModuleInputs = topIOCount + leftIOCount;
+  unsigned totalModuleOutputs = rightIOCount + bottomIOCount;
+
   unsigned vertSwitchCount  = params.arrayRows + 1;
   unsigned horizSwitchCount = params.arrayCols + 1;
 
-  // Build per-switch port distribution for all 4 edges
   ChessMeshOptions meshOpts;
 
-  // Top edge: extmem ingress + spm ingress + scalar inputs
-  unsigned topIngressTotal = extMemIngressPerEdge + spmIngressPerEdge +
-                             kNumScalarInputs;
-  meshOpts.topExtraInputsPerSwitch =
-      buildSpreadSideCounts(topIngressTotal, horizSwitchCount);
-  // Top edge egress: extmem egress + spm egress
-  unsigned topEgressTotal = extMemEgressPerEdge + spmEgressPerEdge;
-  meshOpts.topExtraOutputsPerSwitch =
-      buildSpreadSideCounts(topEgressTotal, horizSwitchCount);
+  // Top edge: extmem + spm + module inputs (ingress into mesh)
+  meshOpts.topExtraInputsPerSwitch = buildSpreadSideCounts(
+      extMemIngressPerEdge + spmIngressPerEdge + topIOCount, horizSwitchCount);
+  meshOpts.topExtraOutputsPerSwitch = buildSpreadSideCounts(
+      extMemEgressPerEdge + spmEgressPerEdge, horizSwitchCount);
 
-  // Bottom edge: extmem ingress + spm ingress
-  unsigned bottomIngressTotal = extMemIngressPerEdge + spmIngressPerEdge;
-  meshOpts.bottomExtraInputsPerSwitch =
-      buildSpreadSideCounts(bottomIngressTotal, horizSwitchCount);
-  // Bottom edge egress: extmem egress + spm egress + scalar outputs
-  unsigned bottomEgressTotal = extMemEgressPerEdge + spmEgressPerEdge +
-                               kNumScalarOutputs;
-  meshOpts.bottomExtraOutputsPerSwitch =
-      buildSpreadSideCounts(bottomEgressTotal, horizSwitchCount);
+  // Bottom edge: extmem + spm + module outputs (egress from mesh)
+  meshOpts.bottomExtraInputsPerSwitch = buildSpreadSideCounts(
+      extMemIngressPerEdge + spmIngressPerEdge, horizSwitchCount);
+  meshOpts.bottomExtraOutputsPerSwitch = buildSpreadSideCounts(
+      extMemEgressPerEdge + spmEgressPerEdge + bottomIOCount, horizSwitchCount);
 
-  // Left edge: extmem ingress + spm ingress
-  unsigned leftIngressTotal = extMemIngressPerEdge + spmIngressPerEdge;
-  meshOpts.leftExtraInputsPerSwitch =
-      buildSpreadSideCounts(leftIngressTotal, vertSwitchCount);
-  // Left edge egress: extmem egress + spm egress
-  unsigned leftEgressTotal = extMemEgressPerEdge + spmEgressPerEdge;
-  meshOpts.leftExtraOutputsPerSwitch =
-      buildSpreadSideCounts(leftEgressTotal, vertSwitchCount);
+  // Left edge: extmem + spm + module inputs (ingress into mesh)
+  meshOpts.leftExtraInputsPerSwitch = buildSpreadSideCounts(
+      extMemIngressPerEdge + spmIngressPerEdge + leftIOCount, vertSwitchCount);
+  meshOpts.leftExtraOutputsPerSwitch = buildSpreadSideCounts(
+      extMemEgressPerEdge + spmEgressPerEdge, vertSwitchCount);
 
-  // Right edge: extmem ingress + spm ingress
-  unsigned rightIngressTotal = extMemIngressPerEdge + spmIngressPerEdge;
-  meshOpts.rightExtraInputsPerSwitch =
-      buildSpreadSideCounts(rightIngressTotal, vertSwitchCount);
-  // Right edge egress: extmem egress + spm egress
-  unsigned rightEgressTotal = extMemEgressPerEdge + spmEgressPerEdge;
-  meshOpts.rightExtraOutputsPerSwitch =
-      buildSpreadSideCounts(rightEgressTotal, vertSwitchCount);
+  // Right edge: extmem + spm + module outputs (egress from mesh)
+  meshOpts.rightExtraInputsPerSwitch = buildSpreadSideCounts(
+      extMemIngressPerEdge + spmIngressPerEdge, vertSwitchCount);
+  meshOpts.rightExtraOutputsPerSwitch = buildSpreadSideCounts(
+      extMemEgressPerEdge + spmEgressPerEdge + rightIOCount, vertSwitchCount);
 
   // Build chess mesh topology
   auto mesh = builder.buildChessMesh(
@@ -926,22 +923,38 @@ static void buildKHGADGImpl(ADGBuilder &builder, const KHGTypeParams &params,
     builder.setSPMCapacity(0);
   }
 
-  // Wire scalar I/O: scalar inputs on top edge (after extmem+spm ports),
-  // scalar outputs on bottom edge (after extmem+spm ports)
-  std::vector<unsigned> scalarIns = builder.addInputs(
-      "scalar", std::vector<std::string>(kNumScalarInputs, bitsType()));
-  std::vector<unsigned> scalarOuts = builder.addOutputs(
-      "scalar_out", std::vector<std::string>(kNumScalarOutputs, bitsType()));
+  // Wire module I/O: inputs on top + left edges, outputs on right + bottom.
+  // All ports use !fabric.bits<32>.
+  std::vector<unsigned> moduleIns = builder.addInputs(
+      "in", std::vector<std::string>(totalModuleInputs, bitsType()));
+  std::vector<unsigned> moduleOuts = builder.addOutputs(
+      "out", std::vector<std::string>(totalModuleOutputs, bitsType()));
 
-  for (unsigned idx = 0; idx < scalarIns.size(); ++idx) {
-    builder.connectInputToPort(scalarIns[idx],
+  // Connect first topIOCount inputs to top edge ingress (after extmem+spm)
+  unsigned inIdx = 0;
+  for (unsigned i = 0; i < topIOCount; ++i, ++inIdx) {
+    builder.connectInputToPort(moduleIns[inIdx],
                                mesh.topIngressPorts[topIngressIdx]);
     ++topIngressIdx;
   }
+  // Connect next leftIOCount inputs to left edge ingress (after extmem+spm)
+  for (unsigned i = 0; i < leftIOCount; ++i, ++inIdx) {
+    builder.connectInputToPort(moduleIns[inIdx],
+                               mesh.leftIngressPorts[leftIngressIdx]);
+    ++leftIngressIdx;
+  }
 
-  for (unsigned idx = 0; idx < scalarOuts.size(); ++idx) {
+  // Connect first rightIOCount outputs to right edge egress (after extmem+spm)
+  unsigned outIdx = 0;
+  for (unsigned i = 0; i < rightIOCount; ++i, ++outIdx) {
+    builder.connectPortToOutput(mesh.rightEgressPorts[rightEgressIdx],
+                                moduleOuts[outIdx]);
+    ++rightEgressIdx;
+  }
+  // Connect next bottomIOCount outputs to bottom edge egress (after extmem+spm)
+  for (unsigned i = 0; i < bottomIOCount; ++i, ++outIdx) {
     builder.connectPortToOutput(mesh.bottomEgressPorts[bottomEgressIdx],
-                                scalarOuts[idx]);
+                                moduleOuts[outIdx]);
     ++bottomEgressIdx;
   }
 }
