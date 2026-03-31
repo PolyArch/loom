@@ -680,8 +680,9 @@ private:
 
     auto doneBranch = circt::handshake::ConditionalBranchOp::create(
         builder, loc, wc, bodyDone);
-    if (dominatesOpUse(doneBranch.getTrueResult(), carry.getOperation()))
-      carry->setOperand(2, doneBranch.getTrueResult());
+    // In a GraphRegion (handshake.func), forward references are valid,
+    // so always update the carry feedback with the loop-body done token.
+    carry->setOperand(2, doneBranch.getTrueResult());
     return doneBranch.getFalseResult();
   }
 
@@ -748,8 +749,8 @@ private:
     ScfPath afterPath = parentPath;
     afterPath.push_back(PathEntry{op, 1});
     Value afterDone = processLevel(afterPath, afterCtrl);
-    if (dominatesOpUse(afterDone, carry.getOperation()))
-      carry->setOperand(2, afterDone);
+    // In a GraphRegion (handshake.func), forward references are valid.
+    carry->setOperand(2, afterDone);
     return exitCtrl;
   }
 

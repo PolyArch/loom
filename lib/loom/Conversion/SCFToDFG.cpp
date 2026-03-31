@@ -701,7 +701,7 @@ LogicalResult DFGConverter::buildMemoryControl() {
   if (memAccesses.empty())
     return success();
 
-  // Verify all accesses have done tokens
+  // Verify all accesses have done tokens from extmemory finalization.
   for (MemAccess &access : memAccesses) {
     if (!access.doneToken) {
       access.origOp->emitError("missing memory done token after finalization");
@@ -709,26 +709,26 @@ LogicalResult DFGConverter::buildMemoryControl() {
     }
   }
 
-  // Drive each memory op using the control token captured at conversion time.
-  // This avoids creating cyclic carry feedback edges in SSACFG regions.
-  SmallVector<Value, 16> doneTokens;
-  doneTokens.reserve(memAccesses.size());
-  for (MemAccess &access : memAccesses) {
-    Value ctrl = access.controlToken ? access.controlToken : entryToken;
-    if (access.kind == AccessKind::Load) {
-      auto load = access.loadOp;
-      if (!load)
-        return access.origOp->emitError("missing load op in memory access");
-      load->setOperand(load->getNumOperands() - 1, ctrl);
-    } else {
-      auto store = access.storeOp;
-      if (!store)
-        return access.origOp->emitError("missing store op in memory access");
-      store->setOperand(store->getNumOperands() - 1, ctrl);
-    }
-    doneTokens.push_back(access.doneToken);
+  // Group accesses by their root memref. Each group gets an independent
+  // ctrl-done chain built by MemoryCtrlBuilder, which properly propagates
+  // done tokens through the SCF hierarchy (carry+cond_br for loops,
+  // cond_br+mux for ifs). This ensures the done token for a loop body
+  // only exits when the loop terminates, rather than firing every iteration.
+  DenseMap<Value, SmallVector<MemAccess *, 8>> groups;
+  for (MemAccess &access : memAccesses)
+    groups[getMemrefRoot(access.memref)].push_back(&access);
+
+  SmallVector<Value, 4> doneTokens;
+  for (auto &[memref, accesses] : groups) {
+    MemoryCtrlBuilder ctrlBuilder(builder, accesses, forBodyConds, whileConds,
+                                  ifConds, entryToken);
+    if (failed(ctrlBuilder.run()))
+      return failure();
+    if (Value done = ctrlBuilder.getDoneToken())
+      doneTokens.push_back(done);
   }
 
+  // Join all per-group done tokens into a single memoryDoneToken.
   if (doneTokens.empty()) {
     memoryDoneToken = entryToken;
   } else if (doneTokens.size() == 1) {

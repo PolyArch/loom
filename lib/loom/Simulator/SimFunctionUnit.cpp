@@ -396,11 +396,25 @@ void FunctionUnitModule::collectTraceEvents(std::vector<TraceEvent> &events,
   }
   if (!emitted)
     return;
+  // Build per-port transfer bitmasks so the visualization can highlight
+  // only the edges that actually transferred (important for cond_br/mux).
+  uint32_t outputMask = 0;
+  for (size_t i = 0; i < outputs.size() && i < 32; ++i) {
+    if (outputs[i] && outputs[i]->transferred())
+      outputMask |= (1u << i);
+  }
+  uint32_t inputMask = 0;
+  for (size_t i = 0; i < inputs.size() && i < 32; ++i) {
+    if (inputs[i] && inputs[i]->transferred())
+      inputMask |= (1u << i);
+  }
   TraceEvent ev;
   ev.cycle = cycle;
   ev.phase = SimPhase::Commit;
   ev.hwNodeId = hwNodeId;
   ev.eventKind = EventKind::NodeFire;
+  ev.arg0 = outputMask;
+  ev.arg1 = inputMask;
   events.push_back(ev);
 }
 

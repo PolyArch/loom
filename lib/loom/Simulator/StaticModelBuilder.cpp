@@ -446,26 +446,21 @@ bool buildStaticMappedModel(const Graph &dfg, const Graph &adg,
     }
 
     if (swNode->kind == Node::ModuleOutputNode) {
-      bool softwareVisible = true;
-      if (!swNode->inputPorts.empty()) {
-        const Port *inPort = dfg.getPort(swNode->inputPorts.front());
-        if (inPort && mlir::isa<mlir::NoneType>(inPort->type))
-          softwareVisible = false;
-      }
       if (hwNodeId < static_cast<IdIndex>(boundaryOutputOrdinals.size()) &&
           boundaryOutputOrdinals[hwNodeId] != kInvalidOrdinal) {
         unsigned ordinal = boundaryOutputOrdinals[hwNodeId];
         outputBindings.push_back({ordinal, swNodeId});
-        if (softwareVisible) {
-          CompletionObligation obligation;
-          obligation.kind = CompletionObligationKind::OutputPort;
-          obligation.ordinal = ordinal;
-          obligation.swNodeId = swNodeId;
-          obligation.description =
-              "software output bound to hardware boundary output " +
-              std::to_string(ordinal);
-          obligations.push_back(std::move(obligation));
-        }
+        // All boundary outputs are completion obligations, including
+        // NoneType done_token. The done_token represents kernel completion
+        // and must be received before the invocation is considered done.
+        CompletionObligation obligation;
+        obligation.kind = CompletionObligationKind::OutputPort;
+        obligation.ordinal = ordinal;
+        obligation.swNodeId = swNodeId;
+        obligation.description =
+            "software output bound to hardware boundary output " +
+            std::to_string(ordinal);
+        obligations.push_back(std::move(obligation));
       }
       continue;
     }
