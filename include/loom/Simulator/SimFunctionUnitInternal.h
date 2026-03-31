@@ -229,6 +229,9 @@ private:
   uint64_t initLatchedValue_ = 0;
   bool carryDLatched_ = false;
   bool carryDValue_ = false;
+  uint64_t carryStoredData_ = 0;
+  uint16_t carryStoredTag_ = 0;
+  bool carryStoredHasTag_ = false;
   bool streamInitialPhase_ = true;
   bool streamTerminalPending_ = false;
   uint64_t streamNextIdx_ = 0;

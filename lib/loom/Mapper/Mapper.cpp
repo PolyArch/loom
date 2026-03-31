@@ -1813,8 +1813,17 @@ bool Mapper::runValidation(const MappingState &state, const Graph &dfg,
     activeSpatialFUsByPE[peName].insert(hwId);
   }
 
-  // Multiple FU instances can be active inside a spatial_pe; only the
-  // output select mapping below needs to remain injective per PE.
+  // Spatial PE exclusivity: at most one active FU per spatial_pe.
+  for (const auto &entry : activeSpatialFUsByPE) {
+    if (entry.getValue().size() > 1) {
+      diagnostics += "C8: spatial_pe " + entry.getKey().str() + " has " +
+                     std::to_string(entry.getValue().size()) +
+                     " active function_units (max 1 allowed)\n";
+      valid = false;
+    }
+  }
+
+  // Output select injectivity: no two FU results share a PE output port.
   for (const auto &entry : activeSpatialFUsByPE) {
     const PEContainment *pe = findPEContainmentByName(flattener, entry.getKey());
     if (!pe)

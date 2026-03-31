@@ -274,13 +274,13 @@ LogicalResult DFGConverter::convertFor(scf::ForOp op, RegionState &state) {
       return failure();
   }
 
-  // Connect yield values back to carries
+  // Connect yield values back to carries (loop back-edges).
+  // handshake.func uses GraphRegion, so SSA dominance is not required.
   if (yieldValues.size() != carries.size())
     return op.emitError("scf.for yield arity mismatch");
 
   for (unsigned i = 0, e = carries.size(); i < e; ++i) {
-    if (dominatesOpUse(yieldValues[i], carries[i].getOperation()))
-      carries[i]->setOperand(2, yieldValues[i]);
+    carries[i]->setOperand(2, yieldValues[i]);
   }
 
   // Map loop results

@@ -135,10 +135,6 @@ bool DFGBuilder::build(mlir::ModuleOp module, mlir::MLIRContext *ctx) {
       continue;
 
     for (unsigned i = 0; i < returnOp.getNumOperands(); ++i) {
-      mlir::Type operandType = returnOp.getOperand(i).getType();
-      if (mlir::isa<mlir::NoneType>(operandType))
-        continue;
-
       auto outputNode = std::make_unique<Node>();
       outputNode->kind = Node::ModuleOutputNode;
 
@@ -150,7 +146,7 @@ bool DFGBuilder::build(mlir::ModuleOp module, mlir::MLIRContext *ctx) {
 
       auto port = std::make_unique<Port>();
       port->direction = Port::Input;
-      port->type = operandType;
+      port->type = returnOp.getOperand(i).getType();
       IdIndex portId = dfg.addPort(std::move(port));
       dfg.ports[portId]->parentNode = static_cast<IdIndex>(dfg.nodes.size());
       outputNode->inputPorts.push_back(portId);

@@ -1238,6 +1238,13 @@ bool canRelocateNode(
   const Node *hwNode = adg.getNode(newHwNode);
   if (!hwNode)
     return false;
+
+  // Spatial PE exclusivity: at most one active FU per spatial_pe.
+  llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
+  if (!peName.empty() &&
+      isSpatialPEOccupied(state, adg, flattener, peName, newHwNode))
+    return false;
+
   return true;
 }
 

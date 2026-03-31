@@ -613,6 +613,12 @@ bool Mapper::runPlacement(
         }
       }
 
+      // Spatial PE exclusivity: at most one active FU per spatial_pe.
+      llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
+      if (!peName.empty() &&
+          isSpatialPEOccupied(state, adg, flattener, peName, hwId))
+        continue;
+
       double score =
           scorePlacement(swId, hwId, state, dfg, adg, flattener, candidates);
       rankedCandidates.push_back({-score, hwId});

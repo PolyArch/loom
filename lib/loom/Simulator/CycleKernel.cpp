@@ -640,6 +640,25 @@ bool CycleKernel::configure(const StaticConfigImage &configImage) {
           static_cast<unsigned>(channelIdx));
   }
 
+  // Mark FU output ports with no connected channels as forced-ready so that
+  // stateful FUs (e.g. gate) waiting for all outputs to be consumed do not
+  // deadlock on unrouted outputs.
+  for (const auto &port : staticModel_.getPorts()) {
+    if (port.direction != StaticPortDirection::Output)
+      continue;
+    if (port.portId >= static_cast<IdIndex>(outputChannelIndices_.size()))
+      continue;
+    if (!outputChannelIndices_[port.portId].empty())
+      continue;
+    auto it = moduleByNode.find(port.parentNodeId);
+    if (it == moduleByNode.end())
+      continue;
+    if (it->second->kind == StaticModuleKind::FunctionUnit &&
+        activeFunctionUnits.count(port.parentNodeId) != 0) {
+      forcedReadyOutputPort_[port.portId] = 1;
+    }
+  }
+
   for (size_t moduleIdx = 0; moduleIdx < modules_.size(); ++moduleIdx) {
     SimModule *module = modules_[moduleIdx].get();
     std::vector<uint32_t> words;
