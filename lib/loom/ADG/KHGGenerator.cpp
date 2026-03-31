@@ -210,17 +210,203 @@ namespace {
 constexpr unsigned kDataWidth = 32;
 constexpr unsigned kPEInputs = 4;
 constexpr unsigned kPEOutputs = 4;
-constexpr unsigned kExtMemOutputs = 3;     // ld_data, ld_done, st_done
-constexpr unsigned kExtMemDataInputs = 3;  // ld_addr, st_addr, st_data
 constexpr unsigned kNumExtMems = 8;
 constexpr unsigned kExtMemsPerEdge = 2;
 constexpr unsigned kNumScalarInputs = 4;
 constexpr unsigned kNumScalarOutputs = 2;
-constexpr unsigned kMemInputs = 3;   // ld_addr, st_addr, st_data
-constexpr unsigned kMemOutputs = 3;  // ld_data, ld_done, st_done
+
+// Tagged bridge port counts per extmem/spm (ldPorts=2, stPorts=2):
+//   Ingress (mem -> mesh): 2 ld_data + 2 ld_done + 2 st_done = 6
+//   Egress  (mesh -> mem): 2 ld_addr + 2 st_addr + 2 st_data = 6
+constexpr unsigned kBridgeIngressPorts = 6;
+constexpr unsigned kBridgeEgressPorts = 6;
 
 static std::string bitsType(unsigned width = kDataWidth) {
   return "!fabric.bits<" + std::to_string(width) + ">";
+}
+
+static std::string taggedBitsType(unsigned tagWidth,
+                                  unsigned width = kDataWidth * 2) {
+  return "!fabric.tagged<" + bitsType(width) + ", i" +
+         std::to_string(tagWidth) + ">";
+}
+
+//===----------------------------------------------------------------------===//
+// Tagged bridge templates for multi-port memories
+//===----------------------------------------------------------------------===//
+
+/// Bridge switch templates for a memory with ldPorts=2, stPorts=2.
+/// Muxes merge two tagged streams into one; demuxes split one tagged stream
+/// into two. Defined once and instantiated per memory.
+struct TaggedMemBridgeTemplates {
+  SWHandle ldAddrMux;   // 2 tagged in -> 1 tagged out (spatial)
+  SWHandle stAddrMux;   // 2 tagged in -> 1 tagged out (spatial)
+  SWHandle stDataMux;   // 2 tagged in -> 1 tagged out (spatial)
+  SWHandle ldDataDemux; // 1 tagged in -> 2 tagged out (temporal)
+  SWHandle ldDoneDemux; // 1 tagged in -> 2 tagged out (temporal)
+  SWHandle stDoneDemux; // 1 tagged in -> 2 tagged out (temporal)
+};
+
+static TaggedMemBridgeTemplates
+defineTaggedMemBridgeTemplates(ADGBuilder &builder,
+                               const std::string &prefix) {
+  const std::string taggedTy = taggedBitsType(1);
+  TaggedMemBridgeTemplates t;
+  t.ldAddrMux = builder.defineSpatialSW(
+      prefix + "_ld_addr_mux", {taggedTy, taggedTy}, {taggedTy},
+      {{true, true}});
+  t.stAddrMux = builder.defineSpatialSW(
+      prefix + "_st_addr_mux", {taggedTy, taggedTy}, {taggedTy},
+      {{true, true}});
+  t.stDataMux = builder.defineSpatialSW(
+      prefix + "_st_data_mux", {taggedTy, taggedTy}, {taggedTy},
+      {{true, true}});
+  t.ldDataDemux = builder.defineTemporalSW(
+      prefix + "_ld_data_demux", {taggedTy}, {taggedTy, taggedTy},
+      {{true}, {true}}, 2);
+  t.ldDoneDemux = builder.defineTemporalSW(
+      prefix + "_ld_done_demux", {taggedTy}, {taggedTy, taggedTy},
+      {{true}, {true}}, 2);
+  t.stDoneDemux = builder.defineTemporalSW(
+      prefix + "_st_done_demux", {taggedTy}, {taggedTy, taggedTy},
+      {{true}, {true}}, 2);
+  return t;
+}
+
+/// Wire a multi-port memory (ldPorts=2, stPorts=2) through tagged bridges to
+/// 6 ingress and 6 egress boundary ports.
+///
+/// Egress (mesh -> mem): 6 boundary ports
+///   [0] -> add_tag(ld_addr, 0) -> ld_addr_mux in 0
+///   [1] -> add_tag(ld_addr, 1) -> ld_addr_mux in 1
+///   [2] -> add_tag(st_addr, 0) -> st_addr_mux in 0
+///   [3] -> add_tag(st_addr, 1) -> st_addr_mux in 1
+///   [4] -> add_tag(st_data, 0) -> st_data_mux in 0
+///   [5] -> add_tag(st_data, 1) -> st_data_mux in 1
+///   ld_addr_mux out 0 -> mem in 1 (ld_addr)
+///   st_addr_mux out 0 -> mem in 2 (st_addr)
+///   st_data_mux out 0 -> mem in 3 (st_data)
+///
+/// Ingress (mem -> mesh): 6 boundary ports
+///   mem out 0 (ld_data)  -> ld_data_demux -> del_tag -> [0],[1]
+///   mem out 1 (ld_done)  -> ld_done_demux -> del_tag -> [2],[3]
+///   mem out 2 (st_done)  -> st_done_demux -> del_tag -> [4],[5]
+/// inputPortBase: first data input port index on the memory instance.
+///   For extmem, port 0 is memref, so inputPortBase = 1.
+///   For on-chip memory, inputPortBase = 0.
+static void wireTaggedMemBridge(ADGBuilder &builder,
+                                InstanceHandle mem,
+                                const std::vector<PortRef> &ingressPorts,
+                                unsigned &ingressIdx,
+                                const std::vector<PortRef> &egressPorts,
+                                unsigned &egressIdx,
+                                const TaggedMemBridgeTemplates &templates,
+                                unsigned memIdx,
+                                const std::string &prefix,
+                                unsigned inputPortBase = 1) {
+  const std::string taggedTy = taggedBitsType(1);
+  const std::string meshTy = bitsType();
+  const std::string suffix = "_" + std::to_string(memIdx);
+
+  // Create add_tag instances for egress (mesh -> mem) path
+  auto ldAddrTags = builder.createAddTagBank(meshTy, taggedTy, {0, 1});
+  auto stAddrTags = builder.createAddTagBank(meshTy, taggedTy, {0, 1});
+  auto stDataTags = builder.createAddTagBank(meshTy, taggedTy, {0, 1});
+
+  // Create del_tag instances for ingress (mem -> mesh) path
+  auto ldDataDrops = builder.createDelTagBank(taggedTy, meshTy, 2);
+  auto ldDoneDrops = builder.createDelTagBank(taggedTy, meshTy, 2);
+  auto stDoneDrops = builder.createDelTagBank(taggedTy, meshTy, 2);
+
+  // Instantiate mux/demux switches
+  auto ldAddrMux = builder.instantiateSW(
+      templates.ldAddrMux, prefix + "_ld_addr_mux" + suffix);
+  auto stAddrMux = builder.instantiateSW(
+      templates.stAddrMux, prefix + "_st_addr_mux" + suffix);
+  auto stDataMux = builder.instantiateSW(
+      templates.stDataMux, prefix + "_st_data_mux" + suffix);
+  auto ldDataDemux = builder.instantiateSW(
+      templates.ldDataDemux, prefix + "_ld_data_demux" + suffix);
+  auto ldDoneDemux = builder.instantiateSW(
+      templates.ldDoneDemux, prefix + "_ld_done_demux" + suffix);
+  auto stDoneDemux = builder.instantiateSW(
+      templates.stDoneDemux, prefix + "_st_done_demux" + suffix);
+
+  // Egress wiring: mesh boundary -> add_tag -> mux -> mem input
+  // ld_addr: egress[0..1] -> add_tag(0,1) -> ld_addr_mux -> mem in 1
+  builder.connect(egressPorts[egressIdx].instance,
+                  egressPorts[egressIdx].port, ldAddrTags[0], 0);
+  ++egressIdx;
+  builder.connect(egressPorts[egressIdx].instance,
+                  egressPorts[egressIdx].port, ldAddrTags[1], 0);
+  ++egressIdx;
+  // st_addr: egress[2..3] -> add_tag(0,1) -> st_addr_mux -> mem in 2
+  builder.connect(egressPorts[egressIdx].instance,
+                  egressPorts[egressIdx].port, stAddrTags[0], 0);
+  ++egressIdx;
+  builder.connect(egressPorts[egressIdx].instance,
+                  egressPorts[egressIdx].port, stAddrTags[1], 0);
+  ++egressIdx;
+  // st_data: egress[4..5] -> add_tag(0,1) -> st_data_mux -> mem in 3
+  builder.connect(egressPorts[egressIdx].instance,
+                  egressPorts[egressIdx].port, stDataTags[0], 0);
+  ++egressIdx;
+  builder.connect(egressPorts[egressIdx].instance,
+                  egressPorts[egressIdx].port, stDataTags[1], 0);
+  ++egressIdx;
+
+  // add_tag -> mux
+  builder.connect(ldAddrTags[0], 0, ldAddrMux, 0);
+  builder.connect(ldAddrTags[1], 0, ldAddrMux, 1);
+  builder.connect(stAddrTags[0], 0, stAddrMux, 0);
+  builder.connect(stAddrTags[1], 0, stAddrMux, 1);
+  builder.connect(stDataTags[0], 0, stDataMux, 0);
+  builder.connect(stDataTags[1], 0, stDataMux, 1);
+
+  // mux -> mem data inputs (ld_addr, st_addr, st_data)
+  builder.connect(ldAddrMux, 0, mem, inputPortBase + 0);
+  builder.connect(stAddrMux, 0, mem, inputPortBase + 1);
+  builder.connect(stDataMux, 0, mem, inputPortBase + 2);
+
+  // Ingress wiring: mem output -> demux -> del_tag -> mesh boundary
+  // ld_data: mem out 0 -> ld_data_demux -> del_tag -> ingress[0..1]
+  builder.connect(mem, 0, ldDataDemux, 0);
+  builder.connect(ldDataDemux, 0, ldDataDrops[0], 0);
+  builder.connect(ldDataDemux, 1, ldDataDrops[1], 0);
+  builder.connect(ldDataDrops[0], 0,
+                  ingressPorts[ingressIdx].instance,
+                  ingressPorts[ingressIdx].port);
+  ++ingressIdx;
+  builder.connect(ldDataDrops[1], 0,
+                  ingressPorts[ingressIdx].instance,
+                  ingressPorts[ingressIdx].port);
+  ++ingressIdx;
+
+  // ld_done: mem out 1 -> ld_done_demux -> del_tag -> ingress[2..3]
+  builder.connect(mem, 1, ldDoneDemux, 0);
+  builder.connect(ldDoneDemux, 0, ldDoneDrops[0], 0);
+  builder.connect(ldDoneDemux, 1, ldDoneDrops[1], 0);
+  builder.connect(ldDoneDrops[0], 0,
+                  ingressPorts[ingressIdx].instance,
+                  ingressPorts[ingressIdx].port);
+  ++ingressIdx;
+  builder.connect(ldDoneDrops[1], 0,
+                  ingressPorts[ingressIdx].instance,
+                  ingressPorts[ingressIdx].port);
+  ++ingressIdx;
+
+  // st_done: mem out 2 -> st_done_demux -> del_tag -> ingress[4..5]
+  builder.connect(mem, 2, stDoneDemux, 0);
+  builder.connect(stDoneDemux, 0, stDoneDrops[0], 0);
+  builder.connect(stDoneDemux, 1, stDoneDrops[1], 0);
+  builder.connect(stDoneDrops[0], 0,
+                  ingressPorts[ingressIdx].instance,
+                  ingressPorts[ingressIdx].port);
+  ++ingressIdx;
+  builder.connect(stDoneDrops[1], 0,
+                  ingressPorts[ingressIdx].instance,
+                  ingressPorts[ingressIdx].port);
+  ++ingressIdx;
 }
 
 /// Distribute totalPorts across sideSwitchCount positions as evenly as
@@ -551,54 +737,6 @@ buildPEAssignment(const KHGTypeParams &params, const PESet &peSet) {
   return assignment;
 }
 
-/// Wire an ext memory instance to side ingress/egress ports.
-/// The extmem has 3 output ports (ld_data, ld_done, st_done) that feed into
-/// mesh ingress ports, and 3 data input ports (ld_addr, st_addr, st_data)
-/// that are fed from mesh egress ports. Port 0 is the memref input, handled
-/// separately.
-static void wireExtMemToSide(ADGBuilder &builder,
-                              InstanceHandle mem,
-                              const std::vector<PortRef> &ingressPorts,
-                              unsigned &ingressIdx,
-                              const std::vector<PortRef> &egressPorts,
-                              unsigned &egressIdx) {
-  for (unsigned outPort = 0; outPort < kExtMemOutputs; ++outPort) {
-    builder.connect(mem, outPort,
-                    ingressPorts[ingressIdx].instance,
-                    ingressPorts[ingressIdx].port);
-    ++ingressIdx;
-  }
-  for (unsigned inPort = 0; inPort < kExtMemDataInputs; ++inPort) {
-    builder.connect(egressPorts[egressIdx].instance,
-                    egressPorts[egressIdx].port,
-                    mem, 1 + inPort);
-    ++egressIdx;
-  }
-}
-
-/// Wire an on-chip memory (fabric.memory) instance to side ingress/egress
-/// ports. The memory has 3 output ports (ld_data, ld_done, st_done) and
-/// 3 input ports (ld_addr, st_addr, st_data).
-static void wireMemoryToSide(ADGBuilder &builder,
-                              InstanceHandle mem,
-                              const std::vector<PortRef> &ingressPorts,
-                              unsigned &ingressIdx,
-                              const std::vector<PortRef> &egressPorts,
-                              unsigned &egressIdx) {
-  for (unsigned outPort = 0; outPort < kMemOutputs; ++outPort) {
-    builder.connect(mem, outPort,
-                    ingressPorts[ingressIdx].instance,
-                    ingressPorts[ingressIdx].port);
-    ++ingressIdx;
-  }
-  for (unsigned inPort = 0; inPort < kMemInputs; ++inPort) {
-    builder.connect(egressPorts[egressIdx].instance,
-                    egressPorts[egressIdx].port,
-                    mem, inPort);
-    ++egressIdx;
-  }
-}
-
 //===----------------------------------------------------------------------===//
 // Core ADG build logic
 //===----------------------------------------------------------------------===//
@@ -624,14 +762,15 @@ static void buildKHGADGImpl(ADGBuilder &builder, const KHGTypeParams &params,
 
   // Compute boundary port layout.
   // 8 extmemories: 2 per edge (top, bottom, left, right).
-  // Each extmem uses kExtMemOutputs ingress + kExtMemDataInputs egress ports.
-  unsigned extMemIngressPerEdge = kExtMemsPerEdge * kExtMemOutputs;
-  unsigned extMemEgressPerEdge  = kExtMemsPerEdge * kExtMemDataInputs;
+  // Each extmem uses tagged bridges: kBridgeIngressPorts ingress +
+  // kBridgeEgressPorts egress ports per memory.
+  unsigned extMemIngressPerEdge = kExtMemsPerEdge * kBridgeIngressPorts;
+  unsigned extMemEgressPerEdge  = kExtMemsPerEdge * kBridgeEgressPorts;
 
-  // SPM ports on boundary (if present)
+  // SPM ports on boundary (if present) -- same tagged bridge pattern
   unsigned spmPerEdge = params.spmCount / 4;
-  unsigned spmIngressPerEdge = spmPerEdge * kMemOutputs;
-  unsigned spmEgressPerEdge  = spmPerEdge * kMemInputs;
+  unsigned spmIngressPerEdge = spmPerEdge * kBridgeIngressPorts;
+  unsigned spmEgressPerEdge  = spmPerEdge * kBridgeEgressPorts;
 
   // Switch counts along each edge (chess mesh: rows+1 for vertical edges,
   // cols+1 for horizontal edges)
@@ -683,6 +822,10 @@ static void buildKHGADGImpl(ADGBuilder &builder, const KHGTypeParams &params,
   auto mesh = builder.buildChessMesh(
       params.arrayRows, params.arrayCols, peSelector, meshOpts);
 
+  // Define tagged bridge templates (shared across all extmem and spm)
+  auto extMemBridgeTemplates =
+      defineTaggedMemBridgeTemplates(builder, moduleName + "_extmem_bridge");
+
   // Define and instantiate 8 external memories (2 per edge)
   ExtMemorySpec extMemSpec;
   extMemSpec.name = moduleName + "_extmem";
@@ -696,8 +839,8 @@ static void buildKHGADGImpl(ADGBuilder &builder, const KHGTypeParams &params,
   for (unsigned idx = 0; idx < extMems.size(); ++idx)
     builder.connectMemrefToExtMem(memrefs[idx], extMems[idx]);
 
-  // Wire ext memory to boundary ports: 2 per edge
-  // Order: top[0], top[1], bottom[0], bottom[1], left[0], left[1], right[0], right[1]
+  // Wire ext memory through tagged bridges to boundary ports: 2 per edge
+  // Order: top[0..1], bottom[2..3], left[4..5], right[6..7]
   unsigned topIngressIdx = 0, topEgressIdx = 0;
   unsigned bottomIngressIdx = 0, bottomEgressIdx = 0;
   unsigned leftIngressIdx = 0, leftEgressIdx = 0;
@@ -705,30 +848,39 @@ static void buildKHGADGImpl(ADGBuilder &builder, const KHGTypeParams &params,
 
   // Top edge extmem (indices 0..1)
   for (unsigned m = 0; m < kExtMemsPerEdge; ++m)
-    wireExtMemToSide(builder, extMems[m],
-                     mesh.topIngressPorts, topIngressIdx,
-                     mesh.topEgressPorts, topEgressIdx);
+    wireTaggedMemBridge(builder, extMems[m],
+                        mesh.topIngressPorts, topIngressIdx,
+                        mesh.topEgressPorts, topEgressIdx,
+                        extMemBridgeTemplates, m, "extmem");
 
   // Bottom edge extmem (indices 2..3)
   for (unsigned m = 0; m < kExtMemsPerEdge; ++m)
-    wireExtMemToSide(builder, extMems[kExtMemsPerEdge + m],
-                     mesh.bottomIngressPorts, bottomIngressIdx,
-                     mesh.bottomEgressPorts, bottomEgressIdx);
+    wireTaggedMemBridge(builder, extMems[kExtMemsPerEdge + m],
+                        mesh.bottomIngressPorts, bottomIngressIdx,
+                        mesh.bottomEgressPorts, bottomEgressIdx,
+                        extMemBridgeTemplates, kExtMemsPerEdge + m, "extmem");
 
   // Left edge extmem (indices 4..5)
   for (unsigned m = 0; m < kExtMemsPerEdge; ++m)
-    wireExtMemToSide(builder, extMems[2 * kExtMemsPerEdge + m],
-                     mesh.leftIngressPorts, leftIngressIdx,
-                     mesh.leftEgressPorts, leftEgressIdx);
+    wireTaggedMemBridge(builder, extMems[2 * kExtMemsPerEdge + m],
+                        mesh.leftIngressPorts, leftIngressIdx,
+                        mesh.leftEgressPorts, leftEgressIdx,
+                        extMemBridgeTemplates, 2 * kExtMemsPerEdge + m,
+                        "extmem");
 
   // Right edge extmem (indices 6..7)
   for (unsigned m = 0; m < kExtMemsPerEdge; ++m)
-    wireExtMemToSide(builder, extMems[3 * kExtMemsPerEdge + m],
-                     mesh.rightIngressPorts, rightIngressIdx,
-                     mesh.rightEgressPorts, rightEgressIdx);
+    wireTaggedMemBridge(builder, extMems[3 * kExtMemsPerEdge + m],
+                        mesh.rightIngressPorts, rightIngressIdx,
+                        mesh.rightEgressPorts, rightEgressIdx,
+                        extMemBridgeTemplates, 3 * kExtMemsPerEdge + m,
+                        "extmem");
 
-  // Wire on-chip SPM if present
+  // Wire on-chip SPM if present (same tagged bridge pattern)
   if (params.hasSPM()) {
+    auto spmBridgeTemplates =
+        defineTaggedMemBridgeTemplates(builder, moduleName + "_spm_bridge");
+
     unsigned spmSizeBytes = params.spmSizePerUnit;
     std::string spmMemrefType =
         "memref<" + std::to_string(spmSizeBytes / 4) + "xi32>";
@@ -743,23 +895,28 @@ static void buildKHGADGImpl(ADGBuilder &builder, const KHGTypeParams &params,
     auto spmInstances = builder.instantiateMemoryArray(
         params.spmCount, spmDef, "spm");
 
-    // Wire 2 SPM per edge, after extmem ports
+    // Wire 2 SPM per edge through tagged bridges, after extmem ports.
+    // On-chip memory has no memref input port, so inputPortBase = 0.
     for (unsigned m = 0; m < spmPerEdge; ++m)
-      wireMemoryToSide(builder, spmInstances[m],
-                       mesh.topIngressPorts, topIngressIdx,
-                       mesh.topEgressPorts, topEgressIdx);
+      wireTaggedMemBridge(builder, spmInstances[m],
+                          mesh.topIngressPorts, topIngressIdx,
+                          mesh.topEgressPorts, topEgressIdx,
+                          spmBridgeTemplates, m, "spm", 0);
     for (unsigned m = 0; m < spmPerEdge; ++m)
-      wireMemoryToSide(builder, spmInstances[spmPerEdge + m],
-                       mesh.bottomIngressPorts, bottomIngressIdx,
-                       mesh.bottomEgressPorts, bottomEgressIdx);
+      wireTaggedMemBridge(builder, spmInstances[spmPerEdge + m],
+                          mesh.bottomIngressPorts, bottomIngressIdx,
+                          mesh.bottomEgressPorts, bottomEgressIdx,
+                          spmBridgeTemplates, spmPerEdge + m, "spm", 0);
     for (unsigned m = 0; m < spmPerEdge; ++m)
-      wireMemoryToSide(builder, spmInstances[2 * spmPerEdge + m],
-                       mesh.leftIngressPorts, leftIngressIdx,
-                       mesh.leftEgressPorts, leftEgressIdx);
+      wireTaggedMemBridge(builder, spmInstances[2 * spmPerEdge + m],
+                          mesh.leftIngressPorts, leftIngressIdx,
+                          mesh.leftEgressPorts, leftEgressIdx,
+                          spmBridgeTemplates, 2 * spmPerEdge + m, "spm", 0);
     for (unsigned m = 0; m < spmPerEdge; ++m)
-      wireMemoryToSide(builder, spmInstances[3 * spmPerEdge + m],
-                       mesh.rightIngressPorts, rightIngressIdx,
-                       mesh.rightEgressPorts, rightEgressIdx);
+      wireTaggedMemBridge(builder, spmInstances[3 * spmPerEdge + m],
+                          mesh.rightIngressPorts, rightIngressIdx,
+                          mesh.rightEgressPorts, rightEgressIdx,
+                          spmBridgeTemplates, 3 * spmPerEdge + m, "spm", 0);
 
     // Set total SPM capacity
     uint64_t totalSpmBytes =
