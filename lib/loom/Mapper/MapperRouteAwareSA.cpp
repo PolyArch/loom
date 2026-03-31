@@ -96,6 +96,10 @@ bool Mapper::runRouteAwareSA(
                  << totalRoutableEdges << " routed edges\n";
   }
 
+  // Early exit: if all edges are routed and no improvement for N iterations,
+  // stop immediately instead of burning remaining budget.
+  constexpr unsigned kConvergenceStallLimit = 10;
+
   // ---- MAIN SA LOOP ----
   for (int iter = 0;; ++iter) {
     if (shouldStopForBudget("route-aware SA"))
@@ -105,6 +109,11 @@ bool Mapper::runRouteAwareSA(
         std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() /
         1000.0;
     if (secs > localBudgetSeconds)
+      break;
+
+    // Converged: all routed and no improvement for kConvergenceStallLimit iters
+    if (allRoutedReached &&
+        adaptiveState.iterationsSinceBestImprovement >= kConvergenceStallLimit)
       break;
 
     double oldCost = currentObjective;

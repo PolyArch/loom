@@ -737,6 +737,9 @@ Mapper::Result Mapper::runWithTechMapPlan(
   for (unsigned restartIter = 0; restartIter < maxRestarts; ++restartIter) {
     if (shouldStopForBudget("multi-restart"))
       break;
+    // Skip remaining restarts if a fully-routed solution was already found.
+    if (anyRestartSucceeded && bestRestartRoutingSucceeded)
+      break;
 
     // Per-restart seed offset.
     int restartSeedOffset =
