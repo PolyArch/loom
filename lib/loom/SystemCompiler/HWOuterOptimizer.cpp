@@ -393,14 +393,19 @@ std::string HWOuterOptimizer::writeWorkloadJSON(
 
     std::string arraySz =
         (kp.arraySize == adg::KHGArraySize::SIZE_12) ? "large" : "small";
-    bool hasSPM = (kp.spmPresence == adg::KHGSPMPresence::WITH_SPM);
+    bool hasSPM = kp.hasSPM();
     bool isTemporal = (kp.peKind == adg::KHGPEKind::TEMPORAL);
-    bool hasFP = (kp.fuFpCount > 0);
+    bool hasFP = (kp.peArithFp > 0);
+    unsigned instrSlots = isTemporal ? 8u : 0u;
+    unsigned numRegs = isTemporal ? 8u : 0u;
+    unsigned spmKB = kp.hasSPM()
+                         ? (kp.spmCount * kp.spmSizePerUnit / 1024)
+                         : 0;
 
     serializeTypeEntry(typeIdx++, kp.typeId, kp.arrayRows, kp.arrayCols,
-                       kp.fuAluCount, kp.fuMulCount, kp.fuFpCount,
-                       /*fuMem=*/2, kp.spmSizeKB, isTemporal,
-                       kp.instructionSlots, kp.numRegisters, kp.dataWidth,
+                       kp.peArithInt, /*fuMul=*/0, kp.peArithFp,
+                       kp.peMemory, spmKB, isTemporal,
+                       instrSlots, numRegs, kp.dataWidth,
                        hasFP, /*hasInt=*/true, computeMix, hasSPM, arraySz);
   }
 

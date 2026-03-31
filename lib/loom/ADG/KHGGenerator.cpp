@@ -16,7 +16,9 @@
 #include "loom/ADG/KHGGenerator.h"
 #include "loom/ADG/ADGBuilder.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <regex>
 #include <string>
 #include <vector>
@@ -135,36 +137,53 @@ KHGTypeParams makeKHGParams(KHGComputeMix compute, KHGPEKind pe,
   case KHGArraySize::SIZE_12: params.arrayRows = 12; params.arrayCols = 12; break;
   }
 
-  // FU counts from compute mix
+  unsigned total = params.totalPEs();
+
+  // PE category counts by compute mix. Percentages:
+  //   INT_HEAVY: 38% arithInt, 6% arithFp, 25% control, 19% memory, rest stream
+  //   FP_HEAVY:  12% arithInt, 31% arithFp, 25% control, 19% memory, rest stream
+  //   MIXED:     25% arithInt, 19% arithFp, 25% control, 19% memory, rest stream
+  auto pct = [&](unsigned percent) -> unsigned {
+    return static_cast<unsigned>(
+        std::llround(static_cast<double>(total) *
+                     static_cast<double>(percent) / 100.0));
+  };
   switch (compute) {
   case KHGComputeMix::INT_HEAVY:
-    params.fuAluCount = 6; params.fuMulCount = 4; params.fuFpCount = 1;
+    params.peArithInt = pct(38);
+    params.peArithFp  = pct(6);
     break;
   case KHGComputeMix::FP_HEAVY:
-    params.fuAluCount = 2; params.fuMulCount = 2; params.fuFpCount = 6;
+    params.peArithInt = pct(12);
+    params.peArithFp  = pct(31);
     break;
   case KHGComputeMix::MIXED:
-    params.fuAluCount = 4; params.fuMulCount = 3; params.fuFpCount = 3;
+    params.peArithInt = pct(25);
+    params.peArithFp  = pct(19);
     break;
+  }
+  params.peControl = pct(25);
+  params.peMemory  = pct(19);
+  // Stream gets the remainder
+  unsigned assigned = params.peArithInt + params.peArithFp +
+                      params.peControl + params.peMemory;
+  params.peStream = (assigned < total) ? (total - assigned) : 0;
+
+  // Spatial fraction
+  switch (pe) {
+  case KHGPEKind::SPATIAL:  params.spatialFraction = 0.80f; break;
+  case KHGPEKind::TEMPORAL: params.spatialFraction = 0.25f; break;
   }
 
   // SPM parameters
   switch (spm) {
   case KHGSPMPresence::WITH_SPM:
-    params.spmSizeKB = 16; params.spmLdPorts = 2; params.spmStPorts = 2;
+    params.spmCount = 8;
+    params.spmSizePerUnit = 4096;
     break;
   case KHGSPMPresence::WITHOUT_SPM:
-    params.spmSizeKB = 0; params.spmLdPorts = 0; params.spmStPorts = 0;
-    break;
-  }
-
-  // Temporal PE parameters
-  switch (pe) {
-  case KHGPEKind::TEMPORAL:
-    params.instructionSlots = 8; params.numRegisters = 8;
-    break;
-  case KHGPEKind::SPATIAL:
-    params.instructionSlots = 0; params.numRegisters = 0;
+    params.spmCount = 0;
+    params.spmSizePerUnit = 0;
     break;
   }
 
@@ -183,7 +202,7 @@ KHGTypeParams paramsFromTypeId(const std::string &typeId) {
 }
 
 //===----------------------------------------------------------------------===//
-// FU Definition Helpers
+// Specialized PE FU Builders
 //===----------------------------------------------------------------------===//
 
 namespace {
@@ -193,251 +212,581 @@ constexpr unsigned kPEInputs = 4;
 constexpr unsigned kPEOutputs = 4;
 constexpr unsigned kExtMemOutputs = 3;     // ld_data, ld_done, st_done
 constexpr unsigned kExtMemDataInputs = 3;  // ld_addr, st_addr, st_data
-constexpr unsigned kNumExtMems = 2;
+constexpr unsigned kNumExtMems = 8;
+constexpr unsigned kExtMemsPerEdge = 2;
 constexpr unsigned kNumScalarInputs = 4;
 constexpr unsigned kNumScalarOutputs = 2;
+constexpr unsigned kMemInputs = 3;   // ld_addr, st_addr, st_data
+constexpr unsigned kMemOutputs = 3;  // ld_data, ld_done, st_done
 
 static std::string bitsType(unsigned width = kDataWidth) {
   return "!fabric.bits<" + std::to_string(width) + ">";
 }
 
-/// Define the baseline dataflow FUs needed for kernel mapping.
-/// Mirrors the baseline set from tapestry_adg_gen.
+/// Distribute totalPorts across sideSwitchCount positions as evenly as
+/// possible, spreading from center outward.
+static std::vector<unsigned> buildSpreadSideCounts(unsigned totalPorts,
+                                                   unsigned sideSwitchCount) {
+  std::vector<unsigned> counts(sideSwitchCount, 0);
+  if (totalPorts == 0 || sideSwitchCount == 0)
+    return counts;
+
+  if (totalPorts <= sideSwitchCount) {
+    if (totalPorts == 1) {
+      counts[sideSwitchCount / 2] = 1;
+      return counts;
+    }
+    for (unsigned idx = 0; idx < totalPorts; ++idx) {
+      unsigned sideIdx = static_cast<unsigned>(
+          std::llround(static_cast<double>(idx) *
+                       static_cast<double>(sideSwitchCount - 1) /
+                       static_cast<double>(totalPorts - 1)));
+      counts[std::min(sideIdx, sideSwitchCount - 1)] += 1;
+    }
+    return counts;
+  }
+
+  std::fill(counts.begin(), counts.end(), 1);
+  unsigned remaining = totalPorts - sideSwitchCount;
+  int center = static_cast<int>(sideSwitchCount / 2);
+  for (unsigned extra = 0; extra < remaining; ++extra) {
+    int delta = static_cast<int>((extra + 1) / 2);
+    int sideIdx = center;
+    if ((extra % 2) == 0) {
+      sideIdx = center - delta;
+    } else {
+      sideIdx = center + delta;
+    }
+    sideIdx = std::max(0, std::min(static_cast<int>(sideSwitchCount) - 1,
+                                   sideIdx));
+    counts[static_cast<unsigned>(sideIdx)] += 1;
+  }
+  return counts;
+}
+
+//===----------------------------------------------------------------------===//
+// Per-category FU definitions
+//===----------------------------------------------------------------------===//
+
+/// ArithInt: integer arithmetic, comparison, select, index ops.
 static std::vector<FUHandle>
-defineBaselineFUs(ADGBuilder &builder, const std::string &prefix) {
+defineArithIntFUs(ADGBuilder &builder, const std::string &prefix) {
   std::vector<FUHandle> fus;
-
-  // Constants
-  fus.push_back(builder.defineConstantFU(
-      prefix + "_const_i32", "i32", "0 : i32"));
-  fus.push_back(builder.defineConstantFU(
-      prefix + "_const_index", "index", "0 : index"));
-  fus.push_back(builder.defineConstantFU(
-      prefix + "_const_f32", "f32", "0.000000e+00 : f32"));
-
+  // Integer arithmetic (i32)
+  fus.push_back(builder.defineBinaryFU(prefix + "_addi", "arith.addi", "i32", "i32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_subi", "arith.subi", "i32", "i32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_muli", "arith.muli", "i32", "i32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_divi", "arith.divsi", "i32", "i32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_remsi", "arith.remsi", "i32", "i32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_shli", "arith.shli", "i32", "i32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_shrsi", "arith.shrsi", "i32", "i32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_shrui", "arith.shrui", "i32", "i32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_andi", "arith.andi", "i32", "i32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_ori", "arith.ori", "i32", "i32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_xori", "arith.xori", "i32", "i32"));
+  // Comparison and selection
+  fus.push_back(builder.defineCmpiFU(prefix + "_cmpi", "i32", "slt"));
+  fus.push_back(builder.defineSelectFU(prefix + "_select_i32", "i32"));
+  // Constants and invariants
+  fus.push_back(builder.defineConstantFU(prefix + "_const_i32", "i32", "0 : i32"));
+  fus.push_back(builder.defineConstantFU(prefix + "_const_index", "index", "0 : index"));
+  fus.push_back(builder.defineInvariantFU(prefix + "_invariant_i32", "i32"));
+  fus.push_back(builder.defineInvariantFU(prefix + "_invariant_index", "index"));
   // Index casts
-  fus.push_back(builder.defineIndexCastFU(
-      prefix + "_index_to_i32", "index", "i32"));
-  fus.push_back(builder.defineIndexCastFU(
-      prefix + "_i32_to_index", "i32", "index"));
+  fus.push_back(builder.defineIndexCastFU(prefix + "_index_to_i32", "index", "i32"));
+  fus.push_back(builder.defineIndexCastFU(prefix + "_i32_to_index", "i32", "index"));
+  // Index-typed arithmetic
+  fus.push_back(builder.defineBinaryFU(prefix + "_addi_index", "arith.addi", "index", "index"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_muli_index", "arith.muli", "index", "index"));
+  return fus;
+}
 
-  // Dataflow control FUs
-  fus.push_back(builder.defineStreamFU(prefix + "_stream"));
+/// ArithFp: floating-point arithmetic, comparison, conversion.
+static std::vector<FUHandle>
+defineArithFpFUs(ADGBuilder &builder, const std::string &prefix) {
+  std::vector<FUHandle> fus;
+  // FP arithmetic (f32)
+  fus.push_back(builder.defineBinaryFU(prefix + "_addf", "arith.addf", "f32", "f32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_subf", "arith.subf", "f32", "f32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_mulf", "arith.mulf", "f32", "f32"));
+  fus.push_back(builder.defineBinaryFU(prefix + "_divf", "arith.divf", "f32", "f32"));
+  fus.push_back(builder.defineUnaryFU(prefix + "_negf", "arith.negf", "f32", "f32"));
+  // FP comparison and selection
+  fus.push_back(builder.defineCmpfFU(prefix + "_cmpf", "f32", "olt"));
+  fus.push_back(builder.defineSelectFU(prefix + "_select_f32", "f32"));
+  // Conversion
+  fus.push_back(builder.defineUnaryFU(prefix + "_sitofp", "arith.sitofp", "i32", "f32"));
+  fus.push_back(builder.defineUnaryFU(prefix + "_fptosi", "arith.fptosi", "f32", "i32"));
+  // Math
+  fus.push_back(builder.defineUnaryFU(prefix + "_absf", "math.absf", "f32", "f32"));
+  fus.push_back(builder.defineUnaryFU(prefix + "_sqrtf", "math.sqrt", "f32", "f32"));
+  // Constants and invariants
+  fus.push_back(builder.defineConstantFU(prefix + "_const_f32", "f32", "0.000000e+00 : f32"));
+  fus.push_back(builder.defineInvariantFU(prefix + "_invariant_f32", "f32"));
+  return fus;
+}
+
+/// Control: mux, cond_br, join, select.
+static std::vector<FUHandle>
+defineControlFUs(ADGBuilder &builder, const std::string &prefix) {
+  std::vector<FUHandle> fus;
+  // Mux (multiple types)
   fus.push_back(builder.defineMuxFU(prefix + "_mux_i32", "i32"));
-  fus.push_back(builder.defineMuxFU(prefix + "_mux_none", "none"));
   fus.push_back(builder.defineMuxFU(prefix + "_mux_index", "index"));
-  fus.push_back(builder.defineJoinFU(prefix + "_join", 4));
-  fus.push_back(builder.defineGateFU(prefix + "_gate_i32", "i32"));
-  fus.push_back(builder.defineGateFU(prefix + "_gate_index", "index"));
-  fus.push_back(builder.defineGateFU(prefix + "_gate_f32", "f32"));
-  fus.push_back(builder.defineGateFU(prefix + "_gate_i1", "i1"));
-  fus.push_back(builder.defineCarryFU(prefix + "_carry_i32", "i32"));
-  fus.push_back(builder.defineCarryFU(prefix + "_carry_none", "none"));
-  fus.push_back(builder.defineCarryFU(prefix + "_carry_f32", "f32"));
+  fus.push_back(builder.defineMuxFU(prefix + "_mux_f32", "f32"));
+  fus.push_back(builder.defineMuxFU(prefix + "_mux_none", "none"));
+  // Conditional branch (multiple types)
   fus.push_back(builder.defineCondBrFU(prefix + "_cond_br_i32", "i32"));
-  fus.push_back(builder.defineCondBrFU(prefix + "_cond_br_none", "none"));
+  fus.push_back(builder.defineCondBrFU(prefix + "_cond_br_index", "index"));
   fus.push_back(builder.defineCondBrFU(prefix + "_cond_br_f32", "f32"));
+  fus.push_back(builder.defineCondBrFU(prefix + "_cond_br_none", "none"));
+  // Join
+  fus.push_back(builder.defineJoinFU(prefix + "_join", 4));
+  // Select
+  fus.push_back(builder.defineSelectFU(prefix + "_select_i32", "i32"));
+  fus.push_back(builder.defineSelectFU(prefix + "_select_index", "index"));
+  // Constant
+  fus.push_back(builder.defineConstantFU(prefix + "_const_i1", "i1", "false"));
+  return fus;
+}
+
+/// Memory: load, store, constants, invariants, index_cast.
+static std::vector<FUHandle>
+defineMemoryFUs(ADGBuilder &builder, const std::string &prefix) {
+  std::vector<FUHandle> fus;
+  // Load/store (i32 and f32)
+  fus.push_back(builder.defineLoadFU(prefix + "_load_i32", "index", "i32"));
+  fus.push_back(builder.defineStoreFU(prefix + "_store_i32", "index", "i32"));
+  fus.push_back(builder.defineLoadFU(prefix + "_load_f32", "index", "f32"));
+  fus.push_back(builder.defineStoreFU(prefix + "_store_f32", "index", "f32"));
+  // Constants (all types)
+  fus.push_back(builder.defineConstantFU(prefix + "_const_i32", "i32", "0 : i32"));
+  fus.push_back(builder.defineConstantFU(prefix + "_const_index", "index", "0 : index"));
+  fus.push_back(builder.defineConstantFU(prefix + "_const_f32", "f32", "0.000000e+00 : f32"));
+  fus.push_back(builder.defineConstantFU(prefix + "_const_i1", "i1", "false"));
+  // Invariants (all types)
   fus.push_back(builder.defineInvariantFU(prefix + "_invariant_i32", "i32"));
   fus.push_back(builder.defineInvariantFU(prefix + "_invariant_index", "index"));
   fus.push_back(builder.defineInvariantFU(prefix + "_invariant_f32", "f32"));
   fus.push_back(builder.defineInvariantFU(prefix + "_invariant_none", "none"));
   fus.push_back(builder.defineInvariantFU(prefix + "_invariant_i1", "i1"));
-
-  // Memory access FUs
-  fus.push_back(builder.defineLoadFU(prefix + "_load", "index", "i32"));
-  fus.push_back(builder.defineStoreFU(prefix + "_store", "index", "i32"));
-
-  // Comparison and selection
-  fus.push_back(builder.defineSelectFU(prefix + "_select_i32", "i32"));
-  fus.push_back(builder.defineSelectFU(prefix + "_select_index", "index"));
-  fus.push_back(builder.defineCmpiFU(prefix + "_cmpi_i32", "i32", "slt"));
-
-  // Index-typed arithmetic
-  fus.push_back(builder.defineBinaryFU(
-      prefix + "_addi_index", "arith.addi", "index", "index"));
-  fus.push_back(builder.defineBinaryFU(
-      prefix + "_muli_index", "arith.muli", "index", "index"));
-
+  // Index casts
+  fus.push_back(builder.defineIndexCastFU(prefix + "_index_to_i32", "index", "i32"));
+  fus.push_back(builder.defineIndexCastFU(prefix + "_i32_to_index", "i32", "index"));
   return fus;
 }
 
-/// Define ALU FUs (integer arithmetic + bitwise): count instances.
-static void defineALUFUs(ADGBuilder &builder, const std::string &prefix,
-                         unsigned count, std::vector<FUHandle> &fus) {
-  for (unsigned i = 0; i < count; ++i) {
-    std::string suffix = "_alu" + std::to_string(i);
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_addi", "arith.addi", "i32", "i32"));
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_subi", "arith.subi", "i32", "i32"));
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_andi", "arith.andi", "i32", "i32"));
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_ori", "arith.ori", "i32", "i32"));
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_xori", "arith.xori", "i32", "i32"));
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_shli", "arith.shli", "i32", "i32"));
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_shrsi", "arith.shrsi", "i32", "i32"));
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_shrui", "arith.shrui", "i32", "i32"));
+/// Stream: stream, gate, carry, index_cast, constants.
+static std::vector<FUHandle>
+defineStreamFUs(ADGBuilder &builder, const std::string &prefix) {
+  std::vector<FUHandle> fus;
+  // Stream
+  fus.push_back(builder.defineStreamFU(prefix + "_stream"));
+  // Gate (multiple types)
+  fus.push_back(builder.defineGateFU(prefix + "_gate_index", "index"));
+  fus.push_back(builder.defineGateFU(prefix + "_gate_i32", "i32"));
+  fus.push_back(builder.defineGateFU(prefix + "_gate_f32", "f32"));
+  fus.push_back(builder.defineGateFU(prefix + "_gate_i1", "i1"));
+  // Carry (multiple types)
+  fus.push_back(builder.defineCarryFU(prefix + "_carry_index", "index"));
+  fus.push_back(builder.defineCarryFU(prefix + "_carry_i32", "i32"));
+  fus.push_back(builder.defineCarryFU(prefix + "_carry_f32", "f32"));
+  fus.push_back(builder.defineCarryFU(prefix + "_carry_none", "none"));
+  // Index casts
+  fus.push_back(builder.defineIndexCastFU(prefix + "_index_to_i32", "index", "i32"));
+  fus.push_back(builder.defineIndexCastFU(prefix + "_i32_to_index", "i32", "index"));
+  // Constants and invariants
+  fus.push_back(builder.defineConstantFU(prefix + "_const_index", "index", "0 : index"));
+  fus.push_back(builder.defineConstantFU(prefix + "_const_i32", "i32", "0 : i32"));
+  fus.push_back(builder.defineInvariantFU(prefix + "_invariant_index", "index"));
+  return fus;
+}
+
+//===----------------------------------------------------------------------===//
+// PE Category and PE Set
+//===----------------------------------------------------------------------===//
+
+enum class PECategory {
+  ArithInt,
+  ArithFp,
+  Control,
+  Memory,
+  Stream,
+};
+
+/// Holds 10 PE templates: 5 categories x {spatial, temporal}.
+struct PESet {
+  PEHandle spatialArithInt;
+  PEHandle spatialArithFp;
+  PEHandle spatialControl;
+  PEHandle spatialMemory;
+  PEHandle spatialStream;
+  PEHandle temporalArithInt;
+  PEHandle temporalArithFp;
+  PEHandle temporalControl;
+  PEHandle temporalMemory;
+  PEHandle temporalStream;
+
+  PEHandle get(PECategory cat, bool spatial) const {
+    switch (cat) {
+    case PECategory::ArithInt: return spatial ? spatialArithInt : temporalArithInt;
+    case PECategory::ArithFp:  return spatial ? spatialArithFp  : temporalArithFp;
+    case PECategory::Control:  return spatial ? spatialControl  : temporalControl;
+    case PECategory::Memory:   return spatial ? spatialMemory   : temporalMemory;
+    case PECategory::Stream:   return spatial ? spatialStream   : temporalStream;
+    }
+    return spatialArithInt; // unreachable
+  }
+};
+
+/// Create all 10 PE templates (5 categories x spatial/temporal).
+static PESet definePESet(ADGBuilder &builder, const std::string &prefix) {
+  std::string portType = bitsType();
+  std::vector<std::string> inTypes(kPEInputs, portType);
+  std::vector<std::string> outTypes(kPEOutputs, portType);
+
+  constexpr unsigned kNumReg = 8;
+  constexpr unsigned kNumInst = 8;
+  constexpr unsigned kRegFifoDepth = 1;
+
+  auto arithIntFUs = defineArithIntFUs(builder, prefix + "_arith_int");
+  auto arithFpFUs  = defineArithFpFUs(builder, prefix + "_arith_fp");
+  auto controlFUs  = defineControlFUs(builder, prefix + "_control");
+  auto memoryFUs   = defineMemoryFUs(builder, prefix + "_memory");
+  auto streamFUs   = defineStreamFUs(builder, prefix + "_stream");
+
+  PESet ps;
+  // Spatial PEs
+  ps.spatialArithInt = builder.defineSpatialPE(
+      prefix + "_spe_arith_int", kPEInputs, kPEOutputs, kDataWidth, arithIntFUs);
+  ps.spatialArithFp = builder.defineSpatialPE(
+      prefix + "_spe_arith_fp", kPEInputs, kPEOutputs, kDataWidth, arithFpFUs);
+  ps.spatialControl = builder.defineSpatialPE(
+      prefix + "_spe_control", kPEInputs, kPEOutputs, kDataWidth, controlFUs);
+  ps.spatialMemory = builder.defineSpatialPE(
+      prefix + "_spe_memory", kPEInputs, kPEOutputs, kDataWidth, memoryFUs);
+  ps.spatialStream = builder.defineSpatialPE(
+      prefix + "_spe_stream", kPEInputs, kPEOutputs, kDataWidth, streamFUs);
+
+  // Temporal PEs
+  ps.temporalArithInt = builder.defineTemporalPE(
+      prefix + "_tpe_arith_int", inTypes, outTypes, arithIntFUs,
+      kNumReg, kNumInst, kRegFifoDepth);
+  ps.temporalArithFp = builder.defineTemporalPE(
+      prefix + "_tpe_arith_fp", inTypes, outTypes, arithFpFUs,
+      kNumReg, kNumInst, kRegFifoDepth);
+  ps.temporalControl = builder.defineTemporalPE(
+      prefix + "_tpe_control", inTypes, outTypes, controlFUs,
+      kNumReg, kNumInst, kRegFifoDepth);
+  ps.temporalMemory = builder.defineTemporalPE(
+      prefix + "_tpe_memory", inTypes, outTypes, memoryFUs,
+      kNumReg, kNumInst, kRegFifoDepth);
+  ps.temporalStream = builder.defineTemporalPE(
+      prefix + "_tpe_stream", inTypes, outTypes, streamFUs,
+      kNumReg, kNumInst, kRegFifoDepth);
+
+  return ps;
+}
+
+/// Build a flat vector of PEHandle assignments for all PEs in the mesh.
+/// Distributes categories uniformly (not clustered) and mixes spatial/temporal.
+static std::vector<PEHandle>
+buildPEAssignment(const KHGTypeParams &params, const PESet &peSet) {
+  unsigned total = params.totalPEs();
+
+  // Build category sequence: repeat categories in round-robin order,
+  // distributing them uniformly across the mesh.
+  struct CatEntry { PECategory cat; unsigned remaining; };
+  CatEntry entries[] = {
+    {PECategory::ArithInt, params.peArithInt},
+    {PECategory::ArithFp,  params.peArithFp},
+    {PECategory::Control,  params.peControl},
+    {PECategory::Memory,   params.peMemory},
+    {PECategory::Stream,   params.peStream},
+  };
+
+  // Build the category assignment for each PE position using interleaving.
+  // This avoids clustering same-type PEs together.
+  std::vector<PECategory> catAssign;
+  catAssign.reserve(total);
+  while (catAssign.size() < total) {
+    bool placed = false;
+    for (auto &e : entries) {
+      if (e.remaining > 0) {
+        catAssign.push_back(e.cat);
+        --e.remaining;
+        placed = true;
+        if (catAssign.size() >= total)
+          break;
+      }
+    }
+    if (!placed)
+      break;
+  }
+
+  // Determine spatial/temporal assignment.
+  // For spatial-heavy (0.80): every 5th PE is temporal.
+  // For temporal-heavy (0.25): every 4th PE is spatial.
+  std::vector<PEHandle> assignment;
+  assignment.reserve(total);
+  for (unsigned idx = 0; idx < total; ++idx) {
+    bool isSpatial;
+    if (params.spatialFraction >= 0.5f) {
+      // Spatial-dominant: temporal PEs at regular intervals
+      unsigned temporalInterval =
+          static_cast<unsigned>(std::llround(1.0 / (1.0 - params.spatialFraction)));
+      if (temporalInterval == 0)
+        temporalInterval = 1;
+      isSpatial = ((idx % temporalInterval) != (temporalInterval - 1));
+    } else {
+      // Temporal-dominant: spatial PEs at regular intervals
+      unsigned spatialInterval =
+          static_cast<unsigned>(std::llround(1.0 / params.spatialFraction));
+      if (spatialInterval == 0)
+        spatialInterval = 1;
+      isSpatial = ((idx % spatialInterval) == 0);
+    }
+    assignment.push_back(peSet.get(catAssign[idx], isSpatial));
+  }
+  return assignment;
+}
+
+/// Wire an ext memory instance to side ingress/egress ports.
+/// The extmem has 3 output ports (ld_data, ld_done, st_done) that feed into
+/// mesh ingress ports, and 3 data input ports (ld_addr, st_addr, st_data)
+/// that are fed from mesh egress ports. Port 0 is the memref input, handled
+/// separately.
+static void wireExtMemToSide(ADGBuilder &builder,
+                              InstanceHandle mem,
+                              const std::vector<PortRef> &ingressPorts,
+                              unsigned &ingressIdx,
+                              const std::vector<PortRef> &egressPorts,
+                              unsigned &egressIdx) {
+  for (unsigned outPort = 0; outPort < kExtMemOutputs; ++outPort) {
+    builder.connect(mem, outPort,
+                    ingressPorts[ingressIdx].instance,
+                    ingressPorts[ingressIdx].port);
+    ++ingressIdx;
+  }
+  for (unsigned inPort = 0; inPort < kExtMemDataInputs; ++inPort) {
+    builder.connect(egressPorts[egressIdx].instance,
+                    egressPorts[egressIdx].port,
+                    mem, 1 + inPort);
+    ++egressIdx;
   }
 }
 
-/// Define MUL FUs (integer multiply + divide): count instances.
-static void defineMulFUs(ADGBuilder &builder, const std::string &prefix,
-                         unsigned count, std::vector<FUHandle> &fus) {
-  for (unsigned i = 0; i < count; ++i) {
-    std::string suffix = "_mul" + std::to_string(i);
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_muli", "arith.muli", "i32", "i32"));
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_divsi", "arith.divsi", "i32", "i32"));
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_remsi", "arith.remsi", "i32", "i32"));
+/// Wire an on-chip memory (fabric.memory) instance to side ingress/egress
+/// ports. The memory has 3 output ports (ld_data, ld_done, st_done) and
+/// 3 input ports (ld_addr, st_addr, st_data).
+static void wireMemoryToSide(ADGBuilder &builder,
+                              InstanceHandle mem,
+                              const std::vector<PortRef> &ingressPorts,
+                              unsigned &ingressIdx,
+                              const std::vector<PortRef> &egressPorts,
+                              unsigned &egressIdx) {
+  for (unsigned outPort = 0; outPort < kMemOutputs; ++outPort) {
+    builder.connect(mem, outPort,
+                    ingressPorts[ingressIdx].instance,
+                    ingressPorts[ingressIdx].port);
+    ++ingressIdx;
+  }
+  for (unsigned inPort = 0; inPort < kMemInputs; ++inPort) {
+    builder.connect(egressPorts[egressIdx].instance,
+                    egressPorts[egressIdx].port,
+                    mem, inPort);
+    ++egressIdx;
   }
 }
 
-/// Define FP FUs (floating-point arithmetic + conversion): count instances.
-static void defineFPFUs(ADGBuilder &builder, const std::string &prefix,
-                        unsigned count, std::vector<FUHandle> &fus) {
-  for (unsigned i = 0; i < count; ++i) {
-    std::string suffix = "_fp" + std::to_string(i);
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_addf", "arith.addf", "f32", "f32"));
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_subf", "arith.subf", "f32", "f32"));
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_mulf", "arith.mulf", "f32", "f32"));
-    fus.push_back(builder.defineBinaryFU(
-        prefix + suffix + "_divf", "arith.divf", "f32", "f32"));
-    fus.push_back(builder.defineCmpfFU(
-        prefix + suffix + "_cmpf", "f32", "olt"));
-    fus.push_back(builder.defineSelectFU(
-        prefix + suffix + "_select_f32", "f32"));
-    fus.push_back(builder.defineUnaryFU(
-        prefix + suffix + "_sitofp", "arith.sitofp", "i32", "f32"));
-    fus.push_back(builder.defineUnaryFU(
-        prefix + suffix + "_fptosi", "arith.fptosi", "f32", "i32"));
-    fus.push_back(builder.defineUnaryFU(
-        prefix + suffix + "_negf", "arith.negf", "f32", "f32"));
-  }
-}
+//===----------------------------------------------------------------------===//
+// Core ADG build logic
+//===----------------------------------------------------------------------===//
 
 /// Core ADG build logic shared by generateKHGADG and exportKHGADG.
-/// Populates the builder with all components and wiring.
-/// Follows the same proven pattern as tapestry_adg_gen: chess mesh with
-/// boundary-distributed ext memory and scalar I/O.
+/// Uses 5 specialized PE categories distributed uniformly across the mesh,
+/// with spatial/temporal mixing. External memories (8 total) are distributed
+/// across all 4 edges (2 per edge). Optional on-chip SPM (8 units) is also
+/// distributed across 4 edges.
 static void buildKHGADGImpl(ADGBuilder &builder, const KHGTypeParams &params,
                             const std::string &moduleName) {
-  // Build FU list: baseline + compute-mix specific
-  std::vector<FUHandle> fus = defineBaselineFUs(builder, moduleName);
-  defineALUFUs(builder, moduleName, params.fuAluCount, fus);
-  defineMulFUs(builder, moduleName, params.fuMulCount, fus);
-  defineFPFUs(builder, moduleName, params.fuFpCount, fus);
+  // Define all 10 PE templates and build the per-position assignment
+  PESet peSet = definePESet(builder, moduleName);
+  std::vector<PEHandle> peAssignment = buildPEAssignment(params, peSet);
 
-  // Define PE template. Both spatial and temporal PEs use !fabric.bits<N>
-  // port types for compatibility with the chess mesh topology builder, which
-  // infers switch port widths from PE port types.
-  PEHandle pe;
-  std::string portType = bitsType();
-  std::vector<std::string> peInTypes(kPEInputs, portType);
-  std::vector<std::string> peOutTypes(kPEOutputs, portType);
+  // Convert flat assignment to a row/col PE selector lambda.
+  // The chess mesh calls peSelector(row, col) in row-major order.
+  unsigned cols = params.arrayCols;
+  auto peSelector = [&](unsigned row, unsigned col) -> PEHandle {
+    unsigned flatIdx = row * cols + col;
+    return peAssignment[flatIdx];
+  };
 
-  if (params.isTemporal()) {
-    // reg_fifo_depth must be >= 1 when num_register > 0
-    unsigned regFifoDepth = (params.numRegisters > 0) ? 1 : 0;
-    pe = builder.defineTemporalPE(
-        moduleName + "_tpe", peInTypes, peOutTypes, fus,
-        params.numRegisters, params.instructionSlots,
-        regFifoDepth, /*enableShareOperandBuffer=*/false,
-        std::nullopt);
-  } else {
-    pe = builder.defineSpatialPE(
-        moduleName + "_spe", kPEInputs, kPEOutputs, kDataWidth, fus);
-  }
+  // Compute boundary port layout.
+  // 8 extmemories: 2 per edge (top, bottom, left, right).
+  // Each extmem uses kExtMemOutputs ingress + kExtMemDataInputs egress ports.
+  unsigned extMemIngressPerEdge = kExtMemsPerEdge * kExtMemOutputs;
+  unsigned extMemEgressPerEdge  = kExtMemsPerEdge * kExtMemDataInputs;
 
-  // Compute boundary port layout (same pattern as tapestry_adg_gen)
-  unsigned leftIngressMems = (kNumExtMems + 1) / 2;
-  unsigned rightIngressMems = kNumExtMems / 2;
-  unsigned leftEgressMems = (kNumExtMems + 1) / 2;
-  unsigned rightEgressMems = kNumExtMems / 2;
+  // SPM ports on boundary (if present)
+  unsigned spmPerEdge = params.spmCount / 4;
+  unsigned spmIngressPerEdge = spmPerEdge * kMemOutputs;
+  unsigned spmEgressPerEdge  = spmPerEdge * kMemInputs;
 
+  // Switch counts along each edge (chess mesh: rows+1 for vertical edges,
+  // cols+1 for horizontal edges)
+  unsigned vertSwitchCount  = params.arrayRows + 1;
+  unsigned horizSwitchCount = params.arrayCols + 1;
+
+  // Build per-switch port distribution for all 4 edges
   ChessMeshOptions meshOpts;
-  meshOpts.topLeftExtraInputs =
-      leftIngressMems * kExtMemOutputs + kNumScalarInputs;
-  meshOpts.topRightExtraInputs = rightIngressMems * kExtMemOutputs;
-  meshOpts.bottomLeftExtraOutputs = leftEgressMems * kExtMemDataInputs;
-  meshOpts.bottomRightExtraOutputs =
-      rightEgressMems * kExtMemDataInputs + kNumScalarOutputs;
 
-  // Build chess mesh topology (all KHG types use chess)
+  // Top edge: extmem ingress + spm ingress + scalar inputs
+  unsigned topIngressTotal = extMemIngressPerEdge + spmIngressPerEdge +
+                             kNumScalarInputs;
+  meshOpts.topExtraInputsPerSwitch =
+      buildSpreadSideCounts(topIngressTotal, horizSwitchCount);
+  // Top edge egress: extmem egress + spm egress
+  unsigned topEgressTotal = extMemEgressPerEdge + spmEgressPerEdge;
+  meshOpts.topExtraOutputsPerSwitch =
+      buildSpreadSideCounts(topEgressTotal, horizSwitchCount);
+
+  // Bottom edge: extmem ingress + spm ingress
+  unsigned bottomIngressTotal = extMemIngressPerEdge + spmIngressPerEdge;
+  meshOpts.bottomExtraInputsPerSwitch =
+      buildSpreadSideCounts(bottomIngressTotal, horizSwitchCount);
+  // Bottom edge egress: extmem egress + spm egress + scalar outputs
+  unsigned bottomEgressTotal = extMemEgressPerEdge + spmEgressPerEdge +
+                               kNumScalarOutputs;
+  meshOpts.bottomExtraOutputsPerSwitch =
+      buildSpreadSideCounts(bottomEgressTotal, horizSwitchCount);
+
+  // Left edge: extmem ingress + spm ingress
+  unsigned leftIngressTotal = extMemIngressPerEdge + spmIngressPerEdge;
+  meshOpts.leftExtraInputsPerSwitch =
+      buildSpreadSideCounts(leftIngressTotal, vertSwitchCount);
+  // Left edge egress: extmem egress + spm egress
+  unsigned leftEgressTotal = extMemEgressPerEdge + spmEgressPerEdge;
+  meshOpts.leftExtraOutputsPerSwitch =
+      buildSpreadSideCounts(leftEgressTotal, vertSwitchCount);
+
+  // Right edge: extmem ingress + spm ingress
+  unsigned rightIngressTotal = extMemIngressPerEdge + spmIngressPerEdge;
+  meshOpts.rightExtraInputsPerSwitch =
+      buildSpreadSideCounts(rightIngressTotal, vertSwitchCount);
+  // Right edge egress: extmem egress + spm egress
+  unsigned rightEgressTotal = extMemEgressPerEdge + spmEgressPerEdge;
+  meshOpts.rightExtraOutputsPerSwitch =
+      buildSpreadSideCounts(rightEgressTotal, vertSwitchCount);
+
+  // Build chess mesh topology
   auto mesh = builder.buildChessMesh(
-      params.arrayRows, params.arrayCols,
-      [&](unsigned, unsigned) { return pe; },
-      meshOpts);
+      params.arrayRows, params.arrayCols, peSelector, meshOpts);
 
-  // Define and instantiate external memory
+  // Define and instantiate 8 external memories (2 per edge)
   ExtMemorySpec extMemSpec;
   extMemSpec.name = moduleName + "_extmem";
-  extMemSpec.ldPorts = 1;
-  extMemSpec.stPorts = 1;
+  extMemSpec.ldPorts = 2;
+  extMemSpec.stPorts = 2;
   extMemSpec.memrefType = "memref<?xi32>";
-  extMemSpec.numRegion = 1;
+  extMemSpec.numRegion = 4;
   auto extMem = builder.defineExtMemory(extMemSpec);
   auto extMems = builder.instantiateExtMemArray(kNumExtMems, extMem, "extmem");
   auto memrefs = builder.addMemrefInputs("buffer", kNumExtMems, "memref<?xi32>");
   for (unsigned idx = 0; idx < extMems.size(); ++idx)
     builder.connectMemrefToExtMem(memrefs[idx], extMems[idx]);
 
-  // Wire ext memory to boundary ports (round-robin left/right, same as
-  // tapestry_adg_gen)
-  unsigned leftIngressIdx = 0;
-  unsigned rightIngressIdx = meshOpts.topLeftExtraInputs;
-  unsigned leftEgressIdx = 0;
-  unsigned rightEgressIdx = meshOpts.bottomLeftExtraOutputs;
+  // Wire ext memory to boundary ports: 2 per edge
+  // Order: top[0], top[1], bottom[0], bottom[1], left[0], left[1], right[0], right[1]
+  unsigned topIngressIdx = 0, topEgressIdx = 0;
+  unsigned bottomIngressIdx = 0, bottomEgressIdx = 0;
+  unsigned leftIngressIdx = 0, leftEgressIdx = 0;
+  unsigned rightIngressIdx = 0, rightEgressIdx = 0;
 
-  for (unsigned memIdx = 0; memIdx < extMems.size(); ++memIdx) {
-    InstanceHandle mem = extMems[memIdx];
-    unsigned &ingressIdx =
-        (memIdx % 2 == 0) ? leftIngressIdx : rightIngressIdx;
-    unsigned &egressIdx =
-        (memIdx % 2 == 0) ? leftEgressIdx : rightEgressIdx;
+  // Top edge extmem (indices 0..1)
+  for (unsigned m = 0; m < kExtMemsPerEdge; ++m)
+    wireExtMemToSide(builder, extMems[m],
+                     mesh.topIngressPorts, topIngressIdx,
+                     mesh.topEgressPorts, topEgressIdx);
 
-    for (unsigned outPort = 0; outPort < kExtMemOutputs; ++outPort) {
-      builder.connect(mem, outPort,
-                      mesh.ingressPorts[ingressIdx].instance,
-                      mesh.ingressPorts[ingressIdx].port);
-      ++ingressIdx;
-    }
-    for (unsigned inPort = 0; inPort < kExtMemDataInputs; ++inPort) {
-      builder.connect(mesh.egressPorts[egressIdx].instance,
-                      mesh.egressPorts[egressIdx].port,
-                      mem, 1 + inPort);
-      ++egressIdx;
-    }
+  // Bottom edge extmem (indices 2..3)
+  for (unsigned m = 0; m < kExtMemsPerEdge; ++m)
+    wireExtMemToSide(builder, extMems[kExtMemsPerEdge + m],
+                     mesh.bottomIngressPorts, bottomIngressIdx,
+                     mesh.bottomEgressPorts, bottomEgressIdx);
+
+  // Left edge extmem (indices 4..5)
+  for (unsigned m = 0; m < kExtMemsPerEdge; ++m)
+    wireExtMemToSide(builder, extMems[2 * kExtMemsPerEdge + m],
+                     mesh.leftIngressPorts, leftIngressIdx,
+                     mesh.leftEgressPorts, leftEgressIdx);
+
+  // Right edge extmem (indices 6..7)
+  for (unsigned m = 0; m < kExtMemsPerEdge; ++m)
+    wireExtMemToSide(builder, extMems[3 * kExtMemsPerEdge + m],
+                     mesh.rightIngressPorts, rightIngressIdx,
+                     mesh.rightEgressPorts, rightEgressIdx);
+
+  // Wire on-chip SPM if present
+  if (params.hasSPM()) {
+    unsigned spmSizeBytes = params.spmSizePerUnit;
+    std::string spmMemrefType =
+        "memref<" + std::to_string(spmSizeBytes / 4) + "xi32>";
+    MemorySpec spmSpec;
+    spmSpec.name = moduleName + "_spm";
+    spmSpec.ldPorts = 2;
+    spmSpec.stPorts = 2;
+    spmSpec.memrefType = spmMemrefType;
+    spmSpec.numRegion = 1;
+    spmSpec.isPrivate = true;
+    auto spmDef = builder.defineMemory(spmSpec);
+    auto spmInstances = builder.instantiateMemoryArray(
+        params.spmCount, spmDef, "spm");
+
+    // Wire 2 SPM per edge, after extmem ports
+    for (unsigned m = 0; m < spmPerEdge; ++m)
+      wireMemoryToSide(builder, spmInstances[m],
+                       mesh.topIngressPorts, topIngressIdx,
+                       mesh.topEgressPorts, topEgressIdx);
+    for (unsigned m = 0; m < spmPerEdge; ++m)
+      wireMemoryToSide(builder, spmInstances[spmPerEdge + m],
+                       mesh.bottomIngressPorts, bottomIngressIdx,
+                       mesh.bottomEgressPorts, bottomEgressIdx);
+    for (unsigned m = 0; m < spmPerEdge; ++m)
+      wireMemoryToSide(builder, spmInstances[2 * spmPerEdge + m],
+                       mesh.leftIngressPorts, leftIngressIdx,
+                       mesh.leftEgressPorts, leftEgressIdx);
+    for (unsigned m = 0; m < spmPerEdge; ++m)
+      wireMemoryToSide(builder, spmInstances[3 * spmPerEdge + m],
+                       mesh.rightIngressPorts, rightIngressIdx,
+                       mesh.rightEgressPorts, rightEgressIdx);
+
+    // Set total SPM capacity
+    uint64_t totalSpmBytes =
+        static_cast<uint64_t>(params.spmCount) * params.spmSizePerUnit;
+    builder.setSPMCapacity(totalSpmBytes);
+  } else {
+    builder.setSPMCapacity(0);
   }
 
-  // Wire scalar I/O through remaining boundary ports
+  // Wire scalar I/O: scalar inputs on top edge (after extmem+spm ports),
+  // scalar outputs on bottom edge (after extmem+spm ports)
   std::vector<unsigned> scalarIns = builder.addInputs(
       "scalar", std::vector<std::string>(kNumScalarInputs, bitsType()));
   std::vector<unsigned> scalarOuts = builder.addOutputs(
       "scalar_out", std::vector<std::string>(kNumScalarOutputs, bitsType()));
 
-  unsigned scalarIngressIdx = leftIngressMems * kExtMemOutputs;
-  for (unsigned idx = 0; idx < scalarIns.size(); ++idx, ++scalarIngressIdx)
+  for (unsigned idx = 0; idx < scalarIns.size(); ++idx) {
     builder.connectInputToPort(scalarIns[idx],
-                               mesh.ingressPorts[scalarIngressIdx]);
+                               mesh.topIngressPorts[topIngressIdx]);
+    ++topIngressIdx;
+  }
 
-  unsigned scalarEgressIdx = kNumExtMems * kExtMemDataInputs;
-  for (unsigned idx = 0; idx < scalarOuts.size(); ++idx, ++scalarEgressIdx)
-    builder.connectPortToOutput(mesh.egressPorts[scalarEgressIdx],
+  for (unsigned idx = 0; idx < scalarOuts.size(); ++idx) {
+    builder.connectPortToOutput(mesh.bottomEgressPorts[bottomEgressIdx],
                                 scalarOuts[idx]);
-
-  // Set SPM capacity attribute (the standard way to declare SPM presence)
-  uint64_t spmBytes = static_cast<uint64_t>(params.spmSizeKB) * 1024;
-  builder.setSPMCapacity(spmBytes);
+    ++bottomEgressIdx;
+  }
 }
 
 } // anonymous namespace

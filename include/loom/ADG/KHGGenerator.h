@@ -59,18 +59,23 @@ struct KHGTypeParams {
 
   unsigned arrayRows;
   unsigned arrayCols;
-  unsigned fuAluCount;
-  unsigned fuMulCount;
-  unsigned fuFpCount;
-  unsigned spmSizeKB;
-  unsigned spmLdPorts;
-  unsigned spmStPorts;
-  unsigned instructionSlots;
-  unsigned numRegisters;
   unsigned dataWidth = 32;
 
+  // PE category counts (sum = totalPEs)
+  unsigned peArithInt = 0;   // PE count for integer arithmetic
+  unsigned peArithFp = 0;    // PE count for FP arithmetic
+  unsigned peControl = 0;    // PE count for mux/cond_br/join control
+  unsigned peMemory = 0;     // PE count for load/store/invariant/constant
+  unsigned peStream = 0;     // PE count for stream/gate/carry loop control
+
+  // Spatial/temporal mixing fraction
+  float spatialFraction = 0.80f; // fraction of PEs that are spatial
+
+  // Fabric memory (SPM) parameters
+  unsigned spmCount = 0;         // 0 or 8 (fabric.memory units on boundary)
+  unsigned spmSizePerUnit = 0;   // bytes per SPM unit (4096 = 4KB)
+
   unsigned totalPEs() const { return arrayRows * arrayCols; }
-  bool isTemporal() const { return peKind == KHGPEKind::TEMPORAL; }
   bool hasSPM() const { return spmPresence == KHGSPMPresence::WITH_SPM; }
 };
 
