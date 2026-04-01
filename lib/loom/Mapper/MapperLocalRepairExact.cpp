@@ -414,7 +414,6 @@ bool Mapper::runExactRoutingRepair(
         globalBestPriorityRouted = bestLocalPriorityRouted;
         globalBestPriorityPenalty = bestLocalPriorityPenalty;
         globalBestPathLen = bestLocalPathLen;
-        globalAllRouted = localAllRouted;
         emitBestSnapshot("exact-routing-repair");
       }
       if (localAllRouted)
