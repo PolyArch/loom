@@ -1296,6 +1296,22 @@ Mapper::findPath(IdIndex srcHwPort, IdIndex dstHwPort, IdIndex swEdgeId,
     if (internalIt == connectivity.inToOut.end())
       continue;
 
+    // Memory nodes (extmemory / fabric.memory) are endpoints, not routing
+    // resources.  Do not expand through their internal connectivity unless
+    // this port is the actual route destination; otherwise the router would
+    // treat memory as a crossbar shortcut, sending unrelated data through
+    // memory bridges and causing simulation deadlocks.
+    {
+      const Port *curPort = adg.getPort(current.portId);
+      if (curPort && curPort->parentNode != INVALID_ID) {
+        const Node *parentNode = adg.getNode(curPort->parentNode);
+        if (parentNode &&
+            getNodeAttrStr(parentNode, "resource_class") == "memory" &&
+            current.portId != dstHwPort)
+          continue;
+      }
+    }
+
     for (IdIndex outPortId : internalIt->second) {
       auto outPath = buildPathFromTrail(current.trailIndex, outPortId);
       if (!isInternalHopLegal(current.portId, outPortId, swEdgeId, outPath,
