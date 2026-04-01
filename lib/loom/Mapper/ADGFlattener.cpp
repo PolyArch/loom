@@ -619,9 +619,9 @@ void ADGFlattener::flattenCreateNodes(FlattenContext &fctx,
         fctx.opToNodeId[instOp.getOperation()] = memNodeId;
         nodeGridPos[memNodeId] = parseGridPos(instanceName);
         auto *node = adg.getNode(memNodeId);
-        for (IdIndex ip : node->inputPorts)
-          for (IdIndex opPort : node->outputPorts)
-            connectivity.inToOut[ip].push_back(opPort);
+        // Memory nodes must NOT have internal routing connectivity.  They are
+        // endpoints, not pass-through routing resources.  Adding inToOut here
+        // would let the router treat the memory as a crossbar shortcut.
         for (unsigned i = 0; i < instOp.getNumResults(); ++i)
           fctx.valueToOutputPort[instOp.getResult(i)] = node->outputPorts[i];
         continue;
@@ -686,9 +686,8 @@ void ADGFlattener::flattenCreateNodes(FlattenContext &fctx,
         fctx.opToNodeId[instOp.getOperation()] = memNodeId;
         nodeGridPos[memNodeId] = parseGridPos(instanceName);
         auto *node = adg.getNode(memNodeId);
-        for (IdIndex ip : node->inputPorts)
-          for (IdIndex opPort : node->outputPorts)
-            connectivity.inToOut[ip].push_back(opPort);
+        // Memory nodes must NOT have internal routing connectivity (same as
+        // extmemory above).
         for (unsigned i = 0; i < instOp.getNumResults(); ++i)
           fctx.valueToOutputPort[instOp.getResult(i)] = node->outputPorts[i];
         continue;
@@ -1009,14 +1008,8 @@ void ADGFlattener::flattenCreateNodes(FlattenContext &fctx,
       IdIndex memNodeId = adg.addNode(std::move(memNode));
       fctx.opToNodeId[extOp.getOperation()] = memNodeId;
 
-      // Internal connectivity.
+      // No inToOut: memory is an endpoint, not a routing resource.
       auto *node = adg.getNode(memNodeId);
-      for (IdIndex ip : node->inputPorts) {
-        for (IdIndex op : node->outputPorts) {
-          connectivity.inToOut[ip].push_back(op);
-        }
-      }
-
       for (unsigned i = 0; i < extOp.getNumResults(); ++i) {
         fctx.valueToOutputPort[extOp.getResult(i)] = node->outputPorts[i];
       }
@@ -1082,11 +1075,8 @@ void ADGFlattener::flattenCreateNodes(FlattenContext &fctx,
 
       IdIndex memNodeId = adg.addNode(std::move(memNode));
       fctx.opToNodeId[memOp.getOperation()] = memNodeId;
+      // No inToOut: memory is an endpoint, not a routing resource.
       auto *node = adg.getNode(memNodeId);
-      for (IdIndex ip : node->inputPorts) {
-        for (IdIndex op : node->outputPorts)
-          connectivity.inToOut[ip].push_back(op);
-      }
       for (unsigned i = 0; i < memOp.getNumResults(); ++i)
         fctx.valueToOutputPort[memOp.getResult(i)] = node->outputPorts[i];
       continue;

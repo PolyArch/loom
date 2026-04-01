@@ -6,7 +6,6 @@
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -435,33 +434,6 @@ bool shareSoftwareCoverage(const AggregatedMatch &lhs, const AggregatedMatch &rh
   return false;
 }
 
-bool shareSpatialHardwarePool(const AggregatedMatch &lhs,
-                              const AggregatedMatch &rhs, const Graph &adg) {
-  llvm::StringSet<> lhsSpatialPEs;
-  llvm::DenseSet<IdIndex> lhsSpatialHwNodes;
-  for (IdIndex hwNodeId : lhs.hwNodeIds) {
-    const Node *hwNode = adg.getNode(hwNodeId);
-    if (!hwNode || getNodeAttrStr(hwNode, "pe_kind") != "spatial_pe")
-      continue;
-    lhsSpatialHwNodes.insert(hwNodeId);
-    llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
-    if (!peName.empty())
-      lhsSpatialPEs.insert(peName);
-  }
-
-  for (IdIndex hwNodeId : rhs.hwNodeIds) {
-    const Node *hwNode = adg.getNode(hwNodeId);
-    if (!hwNode || getNodeAttrStr(hwNode, "pe_kind") != "spatial_pe")
-      continue;
-    if (lhsSpatialHwNodes.contains(hwNodeId))
-      return true;
-    llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
-    if (!peName.empty() && lhsSpatialPEs.contains(peName))
-      return true;
-  }
-  return false;
-}
-
 bool shareSupportClassConstraint(const AggregatedMatch &lhs,
                                  const AggregatedMatch &rhs) {
   if (lhs.temporal || rhs.temporal)
@@ -524,8 +496,7 @@ bool matchesCoupledForSelection(const AggregatedMatch &lhs,
                                 const AggregatedMatch &rhs,
                                 const Graph &adg) {
   return shareSoftwareCoverage(lhs, rhs) || temporalConflictForced(lhs, rhs) ||
-         shareSupportClassConstraint(lhs, rhs) ||
-         shareSpatialHardwarePool(lhs, rhs, adg);
+         shareSupportClassConstraint(lhs, rhs);
 }
 
 bool coversSoftwareNode(const AggregatedMatch &match, IdIndex swNodeId) {
@@ -540,7 +511,6 @@ std::string inferRejectedReason(
   bool overlap = false;
   bool temporalConflict = false;
   bool supportCapacity = false;
-  bool spatialPool = false;
   for (unsigned matchIdx = 0; matchIdx < matches.size(); ++matchIdx) {
     const auto &candidate = matches[matchIdx];
     if (!coversSoftwareNode(candidate, swNodeId))
@@ -555,8 +525,6 @@ std::string inferRejectedReason(
         overlap = true;
       if (temporalConflictForced(candidate, selected))
         temporalConflict = true;
-      if (shareSpatialHardwarePool(candidate, selected, adg))
-        spatialPool = true;
     }
     if (supportClassCapacityBlocked(matchIdx, matches, selectedMatches,
                                     matchComponentIds)) {
@@ -569,8 +537,6 @@ std::string inferRejectedReason(
     return "rejected_temporal_conflict";
   if (supportCapacity)
     return "rejected_support_capacity";
-  if (spatialPool)
-    return "rejected_spatial_pool";
   return "selection_rejected";
 }
 
@@ -586,7 +552,6 @@ std::string inferCandidateStatus(unsigned candidateIdx,
   bool overlap = false;
   bool temporalConflict = false;
   bool supportCapacity = false;
-  bool spatialPool = false;
   for (unsigned selectedIdx : selectedMatches) {
     if (candidateIdx < matchComponentIds.size() &&
         selectedIdx < matchComponentIds.size() &&
@@ -597,10 +562,6 @@ std::string inferCandidateStatus(unsigned candidateIdx,
       overlap = true;
     if (temporalConflictForced(matches[candidateIdx], matches[selectedIdx]))
       temporalConflict = true;
-    if (shareSpatialHardwarePool(matches[candidateIdx], matches[selectedIdx],
-                                 adg)) {
-      spatialPool = true;
-    }
   }
   if (supportClassCapacityBlocked(candidateIdx, matches, selectedMatches,
                                   matchComponentIds)) {
@@ -612,8 +573,6 @@ std::string inferCandidateStatus(unsigned candidateIdx,
     return "rejected_temporal_conflict";
   if (supportCapacity)
     return "rejected_support_capacity";
-  if (spatialPool)
-    return "rejected_spatial_pool";
   return "not_selected_by_objective";
 }
 
@@ -675,8 +634,6 @@ bool greedySelectMatches(const std::vector<AggregatedMatch> &matches,
   });
 
   llvm::DenseSet<IdIndex> usedSwNodes;
-  llvm::DenseSet<IdIndex> usedSpatialHwNodes;
-  llvm::StringSet<> usedSpatialPEs;
   llvm::DenseMap<unsigned, unsigned> supportClassUseCount;
   llvm::DenseMap<unsigned, unsigned> supportClassCapacity;
 
@@ -722,48 +679,12 @@ bool greedySelectMatches(const std::vector<AggregatedMatch> &matches,
       continue;
     }
 
-    bool spatialLegal = true;
-    if (!match.temporal) {
-      bool foundHw = false;
-      for (IdIndex hwNodeId : match.hwNodeIds) {
-        const Node *hwNode = adg.getNode(hwNodeId);
-        if (!hwNode || getNodeAttrStr(hwNode, "pe_kind") != "spatial_pe")
-          continue;
-        llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
-        if (usedSpatialHwNodes.contains(hwNodeId) ||
-            (!peName.empty() && usedSpatialPEs.contains(peName))) {
-          continue;
-        }
-        foundHw = true;
-        break;
-      }
-      spatialLegal = foundHw;
-    }
-    if (!spatialLegal)
-      continue;
-
     selectedIndices.push_back(idx);
     for (IdIndex swNodeId : match.swNodesByOp)
       usedSwNodes.insert(swNodeId);
     if (!match.temporal &&
         match.supportClassId != std::numeric_limits<unsigned>::max())
       ++supportClassUseCount[match.supportClassId];
-    if (!match.temporal) {
-      for (IdIndex hwNodeId : match.hwNodeIds) {
-        const Node *hwNode = adg.getNode(hwNodeId);
-        if (!hwNode || getNodeAttrStr(hwNode, "pe_kind") != "spatial_pe")
-          continue;
-        llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
-        if (usedSpatialHwNodes.contains(hwNodeId) ||
-            (!peName.empty() && usedSpatialPEs.contains(peName))) {
-          continue;
-        }
-        usedSpatialHwNodes.insert(hwNodeId);
-        if (!peName.empty())
-          usedSpatialPEs.insert(peName);
-        break;
-      }
-    }
   }
 
   return true;
@@ -804,11 +725,6 @@ bool solveMatchesExactly(const std::vector<AggregatedMatch> &matches,
   if (matches.empty())
     return true;
 
-  struct SpatialChoice {
-    IdIndex hwNodeId = INVALID_ID;
-    std::string peName;
-  };
-
   std::vector<unsigned> order(matches.size());
   for (unsigned idx = 0; idx < matches.size(); ++idx)
     order[idx] = idx;
@@ -833,7 +749,6 @@ bool solveMatchesExactly(const std::vector<AggregatedMatch> &matches,
   }
 
   llvm::DenseMap<unsigned, unsigned> supportClassCapacity;
-  std::vector<std::vector<SpatialChoice>> spatialChoices(matches.size());
   for (unsigned idx = 0; idx < matches.size(); ++idx) {
     const auto &match = matches[idx];
     if (!match.temporal &&
@@ -845,28 +760,9 @@ bool solveMatchesExactly(const std::vector<AggregatedMatch> &matches,
           std::max<unsigned>(supportClassCapacity.lookup(match.supportClassId),
                              matchCapacity);
     }
-    if (match.temporal)
-      continue;
-    for (IdIndex hwNodeId : match.hwNodeIds) {
-      const Node *hwNode = adg.getNode(hwNodeId);
-      if (!hwNode || getNodeAttrStr(hwNode, "pe_kind") != "spatial_pe")
-        continue;
-      SpatialChoice choice;
-      choice.hwNodeId = hwNodeId;
-      choice.peName = getNodeAttrStr(hwNode, "pe_name").str();
-      spatialChoices[idx].push_back(std::move(choice));
-    }
-    std::sort(spatialChoices[idx].begin(), spatialChoices[idx].end(),
-              [](const SpatialChoice &lhs, const SpatialChoice &rhs) {
-                if (lhs.peName != rhs.peName)
-                  return lhs.peName < rhs.peName;
-                return lhs.hwNodeId < rhs.hwNodeId;
-              });
   }
 
   llvm::DenseSet<IdIndex> usedSwNodes;
-  llvm::DenseSet<IdIndex> usedSpatialHwNodes;
-  llvm::StringSet<> usedSpatialPEs;
   llvm::DenseMap<unsigned, unsigned> supportClassUseCount;
   llvm::DenseMap<IdIndex, unsigned> temporalConfigByHwNode;
   std::vector<unsigned> currentSelection;
@@ -926,58 +822,37 @@ bool solveMatchesExactly(const std::vector<AggregatedMatch> &matches,
     }
 
     if (!swOverlap && !temporalConflict && !supportCapacityConflict) {
-      if (match.temporal) {
-        for (IdIndex swNodeId : match.swNodesByOp)
-          usedSwNodes.insert(swNodeId);
-        bool insertedTemporalBinding = false;
-        if (forcedTemporalHwNodeId) {
-          temporalConfigByHwNode[*forcedTemporalHwNodeId] = match.configClassId;
-          insertedTemporalBinding = true;
-        }
-        currentSelection.push_back(matchIdx);
-        currentScore += match.selectionScore;
-        search(orderIdx + 1);
-        currentScore -= match.selectionScore;
-        currentSelection.pop_back();
-        if (insertedTemporalBinding)
-          temporalConfigByHwNode.erase(*forcedTemporalHwNodeId);
-        for (IdIndex swNodeId : match.swNodesByOp)
-          usedSwNodes.erase(swNodeId);
-      } else {
-        for (const auto &choice : spatialChoices[matchIdx]) {
-          if (usedSpatialHwNodes.contains(choice.hwNodeId))
-            continue;
-          if (!choice.peName.empty() && usedSpatialPEs.contains(choice.peName))
-            continue;
-
-          for (IdIndex swNodeId : match.swNodesByOp)
-            usedSwNodes.insert(swNodeId);
-          usedSpatialHwNodes.insert(choice.hwNodeId);
-          if (!choice.peName.empty())
-            usedSpatialPEs.insert(choice.peName);
-          if (match.supportClassId != std::numeric_limits<unsigned>::max())
-            ++supportClassUseCount[match.supportClassId];
-          currentSelection.push_back(matchIdx);
-          currentScore += match.selectionScore;
-          search(orderIdx + 1);
-          currentScore -= match.selectionScore;
-          currentSelection.pop_back();
-          if (match.supportClassId != std::numeric_limits<unsigned>::max()) {
-            auto found = supportClassUseCount.find(match.supportClassId);
-            if (found != supportClassUseCount.end()) {
-              if (found->second > 1)
-                --found->second;
-              else
-                supportClassUseCount.erase(found);
-            }
-          }
-          if (!choice.peName.empty())
-            usedSpatialPEs.erase(choice.peName);
-          usedSpatialHwNodes.erase(choice.hwNodeId);
-          for (IdIndex swNodeId : match.swNodesByOp)
-            usedSwNodes.erase(swNodeId);
+      // Include this match (binary choice, no per-PE-instance branching).
+      // PE instance assignment is a placement concern handled later.
+      for (IdIndex swNodeId : match.swNodesByOp)
+        usedSwNodes.insert(swNodeId);
+      bool insertedTemporalBinding = false;
+      if (match.temporal && forcedTemporalHwNodeId) {
+        temporalConfigByHwNode[*forcedTemporalHwNodeId] = match.configClassId;
+        insertedTemporalBinding = true;
+      }
+      if (!match.temporal &&
+          match.supportClassId != std::numeric_limits<unsigned>::max())
+        ++supportClassUseCount[match.supportClassId];
+      currentSelection.push_back(matchIdx);
+      currentScore += match.selectionScore;
+      search(orderIdx + 1);
+      currentScore -= match.selectionScore;
+      currentSelection.pop_back();
+      if (!match.temporal &&
+          match.supportClassId != std::numeric_limits<unsigned>::max()) {
+        auto found = supportClassUseCount.find(match.supportClassId);
+        if (found != supportClassUseCount.end()) {
+          if (found->second > 1)
+            --found->second;
+          else
+            supportClassUseCount.erase(found);
         }
       }
+      if (insertedTemporalBinding)
+        temporalConfigByHwNode.erase(*forcedTemporalHwNodeId);
+      for (IdIndex swNodeId : match.swNodesByOp)
+        usedSwNodes.erase(swNodeId);
     }
 
     search(orderIdx + 1);
@@ -1286,8 +1161,8 @@ bool solveMatchesWithCpSat(const std::vector<AggregatedMatch> &matches,
     cpModel.AddLessOrEqual(expr, 1);
   }
 
-  llvm::DenseMap<IdIndex, std::vector<BoolVar>> varsBySpatialHwNode;
-  llvm::StringMap<std::vector<BoolVar>> varsBySpatialPE;
+  // Support class capacity: limit matches per PE type (not per PE instance).
+  // PE instance assignment is a placement concern handled later.
   llvm::DenseMap<unsigned, std::vector<int>> candidateIndicesBySupportClass;
   llvm::DenseMap<unsigned, int64_t> supportClassCapacity;
   for (unsigned idx = 0; idx < matches.size(); ++idx) {
@@ -1303,41 +1178,6 @@ bool solveMatchesWithCpSat(const std::vector<AggregatedMatch> &matches,
           std::max<int64_t>(supportClassCapacity.lookup(match.supportClassId),
                             matchCapacity);
     }
-    if (match.temporal)
-      continue;
-    std::vector<BoolVar> assignVars;
-    for (IdIndex hwNodeId : match.hwNodeIds) {
-      const Node *hwNode = adg.getNode(hwNodeId);
-      if (!hwNode || getNodeAttrStr(hwNode, "pe_kind") != "spatial_pe")
-        continue;
-      BoolVar assignVar = cpModel.NewBoolVar();
-      assignVars.push_back(assignVar);
-      varsBySpatialHwNode[hwNodeId].push_back(assignVar);
-      llvm::StringRef peName = getNodeAttrStr(hwNode, "pe_name");
-      if (!peName.empty())
-        varsBySpatialPE[peName].push_back(assignVar);
-    }
-    if (assignVars.empty()) {
-      cpModel.AddEquality(useVars[idx], 0);
-      continue;
-    }
-    LinearExpr sumAssign;
-    for (BoolVar assignVar : assignVars)
-      sumAssign += assignVar;
-    cpModel.AddEquality(sumAssign, useVars[idx]);
-  }
-
-  for (const auto &entry : varsBySpatialHwNode) {
-    LinearExpr expr;
-    for (BoolVar var : entry.second)
-      expr += var;
-    cpModel.AddLessOrEqual(expr, 1);
-  }
-  for (const auto &entry : varsBySpatialPE) {
-    LinearExpr expr;
-    for (BoolVar var : entry.second)
-      expr += var;
-    cpModel.AddLessOrEqual(expr, 1);
   }
   for (const auto &entry : candidateIndicesBySupportClass) {
     LinearExpr expr;
