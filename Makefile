@@ -28,6 +28,8 @@ llvm: $(LLVM_BUILD)/build.ninja
 $(LLVM_BUILD)/build.ninja:
 	cmake -G Ninja -S $(LLVM_SRC) -B $(LLVM_BUILD) \
 	  -DCMAKE_BUILD_TYPE=Release \
+	  -DCMAKE_C_COMPILER=clang \
+	  -DCMAKE_CXX_COMPILER=clang++ \
 	  -DLLVM_ENABLE_PROJECTS="mlir" \
 	  -DLLVM_TARGETS_TO_BUILD="host" \
 	  -DLLVM_ENABLE_ASSERTIONS=ON \
@@ -49,6 +51,8 @@ $(LOOM_BUILD)/build.ninja:
 	fi
 	cmake -G Ninja -S $(ROOT) -B $(LOOM_BUILD) \
 	  -DCMAKE_BUILD_TYPE=Release \
+	  -DCMAKE_C_COMPILER=clang \
+	  -DCMAKE_CXX_COMPILER=clang++ \
 	  -DMLIR_DIR=$(MLIR_DIR) \
 	  -DLLVM_DIR=$(LLVM_DIR) \
 	  -DLLVM_EXTERNAL_LIT=$(LLVM_LIT) \
