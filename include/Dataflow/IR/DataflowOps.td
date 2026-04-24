@@ -9,6 +9,14 @@ include "mlir/IR/OpAsmInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
+//===----------------------------------------------------------------------===//
+// Streaming Ops
+//
+// Ops whose primary semantics is generating / shaping / latching a stream of
+// value tokens. They are typically driven by i1 `cond`/`rwc` tokens or by
+// integer bounds to produce index streams.
+//===----------------------------------------------------------------------===//
+
 def Dataflow_StreamOp : Dataflow_Op<"stream", [Pure,
     AllTypesMatch<["lb", "ub", "step", "index"]>]> {
   let summary = "produce an index stream with a trailing out-of-range sentinel";
@@ -133,6 +141,14 @@ def Dataflow_GateOp : Dataflow_Op<"gate", [Pure,
     $before_cond `,` $before_value attr-dict `:` type($after_value)
   }];
 }
+
+//===----------------------------------------------------------------------===//
+// Control Ops
+//
+// Ops whose primary semantics is controlling *which* tokens flow and *when*:
+// constant sources triggered by ctrl tokens, rendezvous (sync), and
+// selection routing (mux / demux).
+//===----------------------------------------------------------------------===//
 
 def Dataflow_ConstantOp : Dataflow_Op<"constant", [Pure]> {
   let summary = "emit a recorded constant on each incoming ctrl token";

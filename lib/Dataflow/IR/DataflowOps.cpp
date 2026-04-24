@@ -13,8 +13,10 @@ using namespace dataflow;
 #include "Dataflow/IR/DataflowOps.cpp.inc"
 
 //===----------------------------------------------------------------------===//
-// dataflow.stream
+// Streaming Ops
 //===----------------------------------------------------------------------===//
+
+// dataflow.stream
 
 static bool isValidStepOp(llvm::StringRef s) {
   return llvm::StringSwitch<bool>(s)
@@ -50,8 +52,10 @@ LogicalResult StreamOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// dataflow.constant
+// Control Ops
 //===----------------------------------------------------------------------===//
+
+// dataflow.constant
 
 LogicalResult ConstantOp::verify() {
   auto typed = llvm::dyn_cast<TypedAttr>(getConstValue());
