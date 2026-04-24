@@ -4,6 +4,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringSwitch.h"
 
 using namespace mlir;
@@ -215,6 +216,64 @@ void GraphOp::print(OpAsmPrinter &p) {
                 /*printBlockTerminators=*/true);
 }
 
+// Ops allowed directly inside a `dataflow.graph` region.
+//
+// Policy:
+//   * dataflow.*                        : all
+//   * arith.*                           : all except arith.constant
+//                                         (use dataflow.constant instead)
+//   * math.*                            : all
+//   * ub.*                              : all (poison generators)
+//   * llvm.alloca                       : explicitly allowed
+//   * llvm.intr.*                       : all intrinsics
+//   * llvm.<computation ops>            : arithmetic / bitwise / compare /
+//                                         conversions / element-wise /
+//                                         select / freeze
+//
+// Everything else is rejected.
+static bool isAllowedInDataflowGraph(Operation *op) {
+  if (isa<YieldOp>(op))
+    return true;
+  StringRef dialect =
+      op->getDialect() ? op->getDialect()->getNamespace() : StringRef{};
+  StringRef name = op->getName().getStringRef();
+
+  if (dialect == "dataflow")
+    return true;
+  if (dialect == "arith")
+    return name != "arith.constant";
+  if (dialect == "math")
+    return true;
+  if (dialect == "ub")
+    return true;
+
+  if (dialect == "llvm") {
+    if (name == "llvm.alloca")
+      return true;
+    if (name.starts_with("llvm.intr."))
+      return true;
+    static const llvm::StringSet<> compute = {
+        "llvm.add",           "llvm.sub",          "llvm.mul",
+        "llvm.sdiv",          "llvm.udiv",         "llvm.srem",
+        "llvm.urem",          "llvm.fadd",         "llvm.fsub",
+        "llvm.fmul",          "llvm.fdiv",         "llvm.frem",
+        "llvm.fneg",          "llvm.and",          "llvm.or",
+        "llvm.xor",           "llvm.shl",          "llvm.lshr",
+        "llvm.ashr",          "llvm.icmp",         "llvm.fcmp",
+        "llvm.bitcast",       "llvm.trunc",        "llvm.zext",
+        "llvm.sext",          "llvm.fptrunc",      "llvm.fpext",
+        "llvm.sitofp",        "llvm.uitofp",       "llvm.fptosi",
+        "llvm.fptoui",        "llvm.ptrtoint",     "llvm.inttoptr",
+        "llvm.addrspacecast", "llvm.select",       "llvm.freeze",
+        "llvm.extractelement","llvm.insertelement","llvm.extractvalue",
+        "llvm.insertvalue",   "llvm.shufflevector",
+    };
+    return compute.contains(name);
+  }
+
+  return false;
+}
+
 LogicalResult GraphOp::verify() {
   Block &entry = getBody().front();
   if (entry.getNumArguments() != getInputs().size())
@@ -226,6 +285,13 @@ LogicalResult GraphOp::verify() {
       return emitOpError("region entry block argument #")
              << i << " type " << arg.getType() << " must match operand type "
              << getInputs()[i].getType();
+  }
+  for (Operation &op : entry.without_terminator()) {
+    if (!isAllowedInDataflowGraph(&op))
+      return op.emitOpError(
+                 "is not allowed inside dataflow.graph; permitted ops are "
+                 "dataflow.*, arith.* (except arith.constant), math.*, ub.*, "
+                 "llvm.alloca, llvm.intr.*, and llvm computation ops");
   }
   return success();
 }

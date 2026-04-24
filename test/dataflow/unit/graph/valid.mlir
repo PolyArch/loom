@@ -71,7 +71,38 @@ func.func @graph_nested(%cond: i1, %init: i32) -> i32 {
   return %r : i32
 }
 
-// Graph over memref + none.
+// Graph body using arith / math / ub / llvm computation ops.
+// CHECK-LABEL: @graph_mixed_compute
+func.func @graph_mixed_compute(%a: i32, %b: i32, %f: f32) -> (i32, f32) {
+  // CHECK: %{{.*}}:2 = dataflow.graph
+  %r:2 = dataflow.graph(%x = %a : i32, %y = %b : i32, %z = %f : f32) -> (i32, f32) {
+    // CHECK: arith.addi
+    %s = arith.addi %x, %y : i32
+    // CHECK: math.absf
+    %m = math.absf %z : f32
+    // CHECK: ub.poison
+    %p = ub.poison : i32
+    // CHECK: llvm.add
+    %l = llvm.add %x, %y : i32
+    // CHECK: llvm.intr.smax
+    %mx = llvm.intr.smax(%s, %l) : (i32, i32) -> i32
+    dataflow.yield %mx, %m : i32, f32
+  }
+  return %r#0, %r#1 : i32, f32
+}
+
+// Graph body using llvm.alloca.
+// CHECK-LABEL: @graph_alloca
+func.func @graph_alloca(%n: i32) {
+  // CHECK: dataflow.graph
+  dataflow.graph(%size = %n : i32) -> () {
+    // CHECK: llvm.alloca
+    %p = llvm.alloca %size x i32 : (i32) -> !llvm.ptr
+    dataflow.yield
+  }
+  return
+}
+
 // CHECK-LABEL: @graph_memref
 func.func @graph_memref(%mem: memref<16xi32>, %addr: index, %ctrl: none) -> (i32, none) {
   // CHECK: %{{.*}}:2 = dataflow.graph(%{{.*}} = %{{.*}} : memref<16xi32>, %{{.*}} = %{{.*}} : index, %{{.*}} = %{{.*}} : none) -> (i32, none)
