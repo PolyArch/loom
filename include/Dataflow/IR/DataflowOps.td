@@ -237,4 +237,56 @@ def Dataflow_DemuxOp : Dataflow_Op<"demux", [Pure]> {
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// Memory Ops
+//
+// Streaming load / store against a memref, orchestrated by none-typed ctrl /
+// done tokens. The memref's element type constrains the data port type.
+//===----------------------------------------------------------------------===//
+
+def Dataflow_LoadOp : Dataflow_Op<"load", [
+    TypesMatchWith<"'data' type matches memref element type",
+                   "mem", "data",
+                   "::llvm::cast<::mlir::MemRefType>($_self).getElementType()">
+]> {
+  let summary = "streaming load: addr + ctrl -> data + done";
+  let description = [{
+    On the simultaneous arrival of an `%addr : index` token and a
+    `%ctrl : none` token, consumes both, loads
+    `%mem[%addr]`, emits the read value on `%data`, and emits a
+    `none` token on `%done`.
+
+    The memref element type constrains `%data`'s type.
+  }];
+
+  let arguments = (ins AnyMemRef:$mem, Index:$addr, NoneType:$ctrl);
+  let results = (outs AnyType:$data, NoneType:$done);
+
+  let assemblyFormat = [{
+    $mem `[` $addr `]` $ctrl attr-dict `:` type($mem)
+  }];
+}
+
+def Dataflow_StoreOp : Dataflow_Op<"store", [
+    TypesMatchWith<"'data' type matches memref element type",
+                   "mem", "data",
+                   "::llvm::cast<::mlir::MemRefType>($_self).getElementType()">
+]> {
+  let summary = "streaming store: addr + data + ctrl -> done";
+  let description = [{
+    On the simultaneous arrival of an `%addr : index`, a `%data` value
+    (of the memref element type), and a `%ctrl : none`, consumes all
+    three, writes `%data` into `%mem[%addr]`, and emits a `none` token
+    on `%done`.
+  }];
+
+  let arguments = (ins AnyMemRef:$mem, Index:$addr, AnyType:$data,
+                       NoneType:$ctrl);
+  let results = (outs NoneType:$done);
+
+  let assemblyFormat = [{
+    $mem `[` $addr `]` $data $ctrl attr-dict `:` type($mem)
+  }];
+}
+
 #endif // DATAFLOW_OPS_TD
