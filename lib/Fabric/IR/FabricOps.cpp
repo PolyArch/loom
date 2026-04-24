@@ -124,3 +124,88 @@ LogicalResult MuxOp::verify() {
   }
   return success();
 }
+
+//===----------------------------------------------------------------------===//
+// fabric.fifo
+//===----------------------------------------------------------------------===//
+//
+// Format:
+//   fabric.fifo %in [max_depth = N, bypassable = true|false]
+//                   [ {bypassed = true|false} ]
+//                   : <fabric-type>
+
+static ParseResult parseBoolKeyword(OpAsmParser &parser, bool &out) {
+  StringRef kw;
+  SMLoc loc = parser.getCurrentLocation();
+  if (parser.parseKeyword(&kw))
+    return failure();
+  if (kw == "true") {
+    out = true;
+    return success();
+  }
+  if (kw == "false") {
+    out = false;
+    return success();
+  }
+  return parser.emitError(loc, "expected 'true' or 'false'");
+}
+
+ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand input;
+  if (parser.parseOperand(input))
+    return failure();
+
+  // Hardware params: [max_depth = N, bypassable = true|false]
+  int32_t maxDepth = 0;
+  bool bypassable = false;
+  if (parser.parseLSquare() ||
+      parser.parseKeyword("max_depth") || parser.parseEqual() ||
+      parser.parseInteger(maxDepth) ||
+      parser.parseComma() ||
+      parser.parseKeyword("bypassable") || parser.parseEqual() ||
+      parseBoolKeyword(parser, bypassable) ||
+      parser.parseRSquare())
+    return failure();
+  auto &builder = parser.getBuilder();
+  result.addAttribute("max_depth", builder.getI32IntegerAttr(maxDepth));
+  result.addAttribute("bypassable", builder.getBoolAttr(bypassable));
+
+  // Optional software param: {bypassed = true|false}
+  if (succeeded(parser.parseOptionalLBrace())) {
+    bool bypassed = false;
+    if (parser.parseKeyword("bypassed") || parser.parseEqual() ||
+        parseBoolKeyword(parser, bypassed) ||
+        parser.parseRBrace())
+      return failure();
+    result.addAttribute("bypassed", builder.getBoolAttr(bypassed));
+  }
+
+  Type type;
+  SMLoc typeLoc = parser.getCurrentLocation();
+  if (parser.parseColon() || parser.parseType(type))
+    return failure();
+  if (parser.resolveOperand(input, type, result.operands))
+    return failure();
+  (void)typeLoc;
+  result.addTypes(type);
+  return success();
+}
+
+void FifoOp::print(OpAsmPrinter &p) {
+  p << ' ' << getInput();
+  p << " [max_depth = " << getMaxDepth()
+    << ", bypassable = " << (getBypassable() ? "true" : "false") << "]";
+  if (auto a = getBypassedAttr())
+    p << " {bypassed = " << (a.getValue() ? "true" : "false") << "}";
+  p << " : " << getOutput().getType();
+}
+
+LogicalResult FifoOp::verify() {
+  if (getMaxDepth() <= 0)
+    return emitOpError("'max_depth' must be > 0, got ") << getMaxDepth();
+  if (!getBypassable() && getBypassedAttr())
+    return emitOpError(
+        "'bypassed' software parameter is only allowed when 'bypassable' is "
+        "true");
+  return success();
+}

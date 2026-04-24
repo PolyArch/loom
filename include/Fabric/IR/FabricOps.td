@@ -36,4 +36,34 @@ def Fabric_MuxOp : Fabric_Op<"mux", [Pure, SameOperandsAndResultType]> {
   let hasVerifier = 1;
 }
 
+def Fabric_FifoOp : Fabric_Op<"fifo", [Pure, SameOperandsAndResultType]> {
+  let summary = "fabric FIFO with handshake";
+  let description = [{
+    Single-input single-output FIFO. Input and output share one fabric type
+    (same kind, same widths).
+
+    Hardware parameters (always present, printed in `[...]`):
+      * `max_depth`   : i32, must be > 0 (physical FIFO depth)
+      * `bypassable`  : bool (whether hardware supports combinational bypass)
+
+    Software parameter (only valid when `bypassable` is true, printed in `{}`):
+      * `bypassed`    : bool (when true, the FIFO is configured in bypass mode;
+                       data/valid/ready become a combinational passthrough)
+
+    Unset `bypassed` describes pure hardware (not programmed). Setting
+    `bypassed` when `bypassable` is false is illegal.
+  }];
+
+  let arguments = (ins
+      Fabric_AnyType:$input,
+      I32Attr:$max_depth,
+      BoolAttr:$bypassable,
+      OptionalAttr<BoolAttr>:$bypassed
+  );
+  let results = (outs Fabric_AnyType:$output);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
 #endif // FABRIC_OPS_TD
