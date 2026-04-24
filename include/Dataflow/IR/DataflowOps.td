@@ -134,4 +134,22 @@ def Dataflow_GateOp : Dataflow_Op<"gate", [Pure,
   }];
 }
 
+def Dataflow_SyncOp : Dataflow_Op<"sync", [Pure]> {
+  let summary = "wait for all inputs, then forward them all as outputs";
+  let description = [{
+    Variadic rendezvous. Once every input has a token, all tokens are
+    consumed and the corresponding outputs fire simultaneously.
+
+    Operand count equals result count; types match positionally.
+  }];
+
+  let arguments = (ins Variadic<AnyType>:$inputs);
+  let results = (outs Variadic<AnyType>:$outputs);
+
+  let assemblyFormat = [{
+    $inputs attr-dict `:` functional-type($inputs, $outputs)
+  }];
+  let hasVerifier = 1;
+}
+
 #endif // DATAFLOW_OPS_TD

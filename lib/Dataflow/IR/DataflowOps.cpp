@@ -48,3 +48,23 @@ LogicalResult StreamOp::verify() {
            << getContCond() << "\"";
   return success();
 }
+
+//===----------------------------------------------------------------------===//
+// dataflow.sync
+//===----------------------------------------------------------------------===//
+
+LogicalResult SyncOp::verify() {
+  auto ins = getInputs();
+  auto outs = getOutputs();
+  if (ins.size() != outs.size())
+    return emitOpError("number of inputs (")
+           << ins.size() << ") must equal number of outputs ("
+           << outs.size() << ")";
+  for (unsigned i = 0, e = ins.size(); i < e; ++i) {
+    if (ins[i].getType() != outs[i].getType())
+      return emitOpError("input #")
+             << i << " type " << ins[i].getType() << " must match output #"
+             << i << " type " << outs[i].getType();
+  }
+  return success();
+}
