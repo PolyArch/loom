@@ -1,11 +1,17 @@
 #include "Fabric/IR/FabricOps.h"
 
+#include "Common/IndexWidth.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 
 using namespace mlir;
 using namespace fabric;
@@ -208,4 +214,361 @@ LogicalResult FifoOp::verify() {
         "'bypassed' software parameter is only allowed when 'bypassable' is "
         "true");
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// fabric.op
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+// Logical port shape for one port of a software op:
+//   - TypeParam(id): variable width tied to a per-op type-parameter id
+//   - Fixed(w):      a known fixed bit width (e.g., i1 -> 1, none -> 0)
+struct PortSpec {
+  enum Kind { TypeParam, Fixed } kind;
+  unsigned value; // type-param id, or fixed width
+  static PortSpec param(unsigned id) { return {TypeParam, id}; }
+  static PortSpec fixed(unsigned w) { return {Fixed, w}; }
+};
+
+struct OpSchema {
+  llvm::SmallVector<PortSpec, 4> inputs;
+  llvm::SmallVector<PortSpec, 4> outputs;
+  // Variadic ops: per-port-position counts vary with sw_configs (e.g.,
+  // dataflow.sync's bitmask). For these, in/out sizes here are advisory; the
+  // verifier defers detailed port-count checks.
+  bool variadic = false;
+};
+
+// All ops listed below are accepted in `op_list`. Anything outside is
+// rejected. The dataflow-graph allowlist's exclusions are applied here too:
+// llvm.alloca, dataflow.{load,store,graph,yield}, ub.poison, arith.constant
+// are NOT in this table.
+static const llvm::StringMap<OpSchema> &opSchemas() {
+  static const llvm::StringMap<OpSchema> table = []() {
+    llvm::StringMap<OpSchema> m;
+    auto pT = PortSpec::param;
+    auto pF = PortSpec::fixed;
+
+    auto add = [&](StringRef name,
+                   llvm::SmallVector<PortSpec, 4> ins,
+                   llvm::SmallVector<PortSpec, 4> outs,
+                   bool variadic = false) {
+      OpSchema s;
+      s.inputs = std::move(ins);
+      s.outputs = std::move(outs);
+      s.variadic = variadic;
+      m.insert({name, std::move(s)});
+    };
+
+    // --- arith integer arithmetic / logic / comparison ---
+    for (StringRef n : {"arith.addi", "arith.subi", "arith.muli",
+                        "arith.divsi", "arith.divui",
+                        "arith.remsi", "arith.remui",
+                        "arith.shli", "arith.shrsi", "arith.shrui",
+                        "arith.andi", "arith.ori", "arith.xori",
+                        "arith.minsi", "arith.maxsi",
+                        "arith.minui", "arith.maxui"}) {
+      add(n, {pT(0), pT(0)}, {pT(0)});
+    }
+    add("arith.cmpi", {pT(0), pT(0)}, {pF(1)});
+
+    // --- arith floating-point arithmetic / comparison ---
+    for (StringRef n : {"arith.addf", "arith.subf", "arith.mulf",
+                        "arith.divf", "arith.remf",
+                        "arith.minimumf", "arith.maximumf"}) {
+      add(n, {pT(0), pT(0)}, {pT(0)});
+    }
+    add("arith.cmpf", {pT(0), pT(0)}, {pF(1)});
+
+    // --- arith int<->fp casts (independent in/out widths) ---
+    for (StringRef n : {"arith.sitofp", "arith.uitofp",
+                        "arith.fptosi", "arith.fptoui"}) {
+      add(n, {pT(0)}, {pT(1)});
+    }
+
+    // --- math unary ops: 1 in, 1 out, same width ---
+    for (StringRef n : {"math.sin", "math.cos", "math.tan",
+                        "math.sinh", "math.cosh", "math.tanh",
+                        "math.exp", "math.exp2", "math.expm1",
+                        "math.log", "math.log2", "math.log10", "math.log1p",
+                        "math.floor", "math.ceil", "math.round",
+                        "math.trunc", "math.roundeven",
+                        "math.sqrt", "math.rsqrt",
+                        "math.absf", "math.absi",
+                        "math.erf"}) {
+      add(n, {pT(0)}, {pT(0)});
+    }
+
+    // --- dataflow ops ---
+    add("dataflow.stream",
+        {pT(0), pT(0), pT(0)}, {pT(0), pF(1)});
+    add("dataflow.constant",
+        {pF(0)}, {pT(0)});
+    add("dataflow.carry",
+        {pF(1), pT(0), pT(0)}, {pT(0)});
+    add("dataflow.invariant",
+        {pF(1), pT(0)}, {pT(0)});
+    add("dataflow.gate",
+        {pF(1), pT(0)}, {pF(1), pT(0)});
+    // Variadic ops: structural counts depend on sw_configs.
+    add("dataflow.sync", {}, {}, /*variadic=*/true);
+    add("dataflow.mux", {}, {}, /*variadic=*/true);
+    add("dataflow.demux", {}, {}, /*variadic=*/true);
+
+    return m;
+  }();
+  return table;
+}
+
+// Multi-member hardware-share groups. Single-member groups are implicit:
+// any op not in any group below is its own singleton (cannot share with
+// any other op).
+static const llvm::SmallVector<llvm::DenseSet<StringRef>, 32> &
+hwShareGroups() {
+  static const llvm::SmallVector<llvm::DenseSet<StringRef>, 32> groups = {
+      {"arith.addi", "arith.subi"},
+      {"arith.divsi", "arith.remsi"},
+      {"arith.divui", "arith.remui"},
+      {"arith.shli", "arith.shrsi", "arith.shrui"},
+      {"arith.andi", "arith.ori", "arith.xori"},
+      {"arith.minsi", "arith.maxsi"},
+      {"arith.minui", "arith.maxui"},
+      {"arith.sitofp", "arith.uitofp"},
+      {"arith.fptosi", "arith.fptoui"},
+      {"arith.addf", "arith.subf"},
+      {"arith.divf", "arith.remf"},
+      {"arith.minimumf", "arith.maximumf"},
+      {"math.sin", "math.cos"},
+      {"math.sinh", "math.cosh"},
+      {"math.exp", "math.exp2", "math.expm1"},
+      {"math.log", "math.log2", "math.log10", "math.log1p"},
+      {"math.floor", "math.ceil", "math.round", "math.trunc",
+       "math.roundeven"},
+      {"math.sqrt", "math.rsqrt"},
+      {"math.tanh", "math.erf"},
+  };
+  return groups;
+}
+
+// Returns the group index for `name` if it is in a multi-member group, or
+// `std::nullopt` otherwise (singleton).
+static std::optional<size_t> findShareGroup(StringRef name) {
+  const auto &groups = hwShareGroups();
+  for (size_t i = 0; i < groups.size(); ++i)
+    if (groups[i].contains(name))
+      return i;
+  return std::nullopt;
+}
+
+// Returns the bit width of a fabric.bits<N> type, or std::nullopt if `t` is
+// not a fabric.bits.
+static std::optional<unsigned> bitsWidth(Type t) {
+  if (auto bt = dyn_cast<BitsType>(t))
+    return bt.getWidth();
+  return std::nullopt;
+}
+
+} // namespace
+
+LogicalResult OpOp::verify() {
+  // 1. Operand and result types: all must be fabric.bits<N>. (Already enforced
+  //    by the type constraint, but emit a clearer error if something slipped
+  //    through, e.g. via the generic op syntax.)
+  for (auto [i, t] : llvm::enumerate(getInputs().getTypes()))
+    if (!bitsWidth(t))
+      return emitOpError("input #") << i << " must be fabric.bits<N>";
+  for (auto [i, t] : llvm::enumerate(getOutputs().getTypes()))
+    if (!bitsWidth(t))
+      return emitOpError("output #") << i << " must be fabric.bits<N>";
+
+  // 2. op_list: non-empty array of FlatSymbolRefAttr; each entry refers to a
+  //    schema-known op.
+  ArrayAttr opList = getOpList();
+  if (opList.empty())
+    return emitOpError("'op_list' must be non-empty");
+  llvm::SmallVector<StringRef, 4> opNames;
+  opNames.reserve(opList.size());
+  for (auto [i, attr] : llvm::enumerate(opList)) {
+    auto sym = dyn_cast<FlatSymbolRefAttr>(attr);
+    if (!sym)
+      return emitOpError("'op_list' entry #")
+             << i << " must be a flat symbol reference";
+    StringRef n = sym.getValue();
+    if (!opSchemas().count(n))
+      return emitOpError("'op_list' entry @")
+             << n << " is not a fabric.op-supported software op";
+    opNames.push_back(n);
+  }
+
+  // 3. Members of op_list must all share one hardware group (or there is just
+  //    one entry).
+  if (opNames.size() > 1) {
+    auto firstGroup = findShareGroup(opNames.front());
+    if (!firstGroup)
+      return emitOpError("op @")
+             << opNames.front()
+             << " is not in any multi-member hardware-share group; it must "
+                "occupy fabric.op alone";
+    for (size_t i = 1; i < opNames.size(); ++i) {
+      auto g = findShareGroup(opNames[i]);
+      if (g != firstGroup)
+        return emitOpError("ops @")
+               << opNames.front() << " and @" << opNames[i]
+               << " do not belong to the same hardware-share group";
+    }
+  }
+
+  // 4. Schema check (port count and per-port width). For variadic ops we
+  //    skip this step (counts are configuration-dependent).
+  bool anyVariadic = false;
+  for (StringRef n : opNames)
+    anyVariadic = anyVariadic || opSchemas().lookup(n).variadic;
+
+  unsigned numIns = getInputs().size();
+  unsigned numOuts = getOutputs().size();
+
+  if (!anyVariadic) {
+    // 4a. All members must agree on input/output count.
+    const OpSchema &first = opSchemas().lookup(opNames.front());
+    for (StringRef n : opNames) {
+      const OpSchema &s = opSchemas().lookup(n);
+      if (s.inputs.size() != first.inputs.size() ||
+          s.outputs.size() != first.outputs.size())
+        return emitOpError("ops in op_list must agree on input/output port "
+                           "counts; @")
+               << opNames.front() << " has "
+               << first.inputs.size() << "->" << first.outputs.size()
+               << " but @" << n << " has " << s.inputs.size() << "->"
+               << s.outputs.size();
+    }
+    if (numIns != first.inputs.size() || numOuts != first.outputs.size())
+      return emitOpError("port count (")
+             << numIns << "->" << numOuts
+             << ") does not match the supported software ops ("
+             << first.inputs.size() << "->" << first.outputs.size() << ")";
+
+    // 4b. Per port: collect the required width across all members. For
+    //     TypeParam ports the required width is taken from the fabric.op
+    //     port itself; we then check consistency across all TypeParam ports
+    //     sharing the same id within each member. For Fixed ports each
+    //     member contributes its fixed width and we take the max.
+    auto check = [&](ArrayRef<unsigned> portWidths,
+                     auto extractor,
+                     StringRef portKind) -> LogicalResult {
+      for (unsigned p = 0; p < portWidths.size(); ++p) {
+        unsigned want = 0;
+        for (StringRef n : opNames) {
+          const OpSchema &s = opSchemas().lookup(n);
+          PortSpec spec = extractor(s, p);
+          unsigned needed;
+          if (spec.kind == PortSpec::Fixed) {
+            needed = spec.value;
+          } else {
+            // TypeParam: the width is whatever the fabric port has, but it
+            // must agree with all other ports of the same param id within
+            // the same member.
+            needed = portWidths[p];
+            for (unsigned q = 0; q < s.inputs.size(); ++q) {
+              if (s.inputs[q].kind == PortSpec::TypeParam &&
+                  s.inputs[q].value == spec.value &&
+                  q < portWidths.size()) {
+                // Skip cross-checking here; handled below.
+              }
+            }
+          }
+          want = std::max(want, needed);
+        }
+        if (portWidths[p] != want)
+          return emitOpError() << portKind << " port #" << p << " has width "
+                               << portWidths[p]
+                               << " but software op(s) require width " << want;
+      }
+      return success();
+    };
+
+    SmallVector<unsigned, 4> inW, outW;
+    for (Type t : getInputs().getTypes())
+      inW.push_back(*bitsWidth(t));
+    for (Type t : getOutputs().getTypes())
+      outW.push_back(*bitsWidth(t));
+
+    if (failed(check(inW, [](const OpSchema &s, unsigned p) { return s.inputs[p]; },
+                     "input")))
+      return failure();
+    if (failed(check(outW, [](const OpSchema &s, unsigned p) { return s.outputs[p]; },
+                     "output")))
+      return failure();
+
+    // 4c. Within each member, all TypeParam ports with the same param id
+    //     must end up at the same width given the chosen fabric port widths.
+    for (StringRef n : opNames) {
+      const OpSchema &s = opSchemas().lookup(n);
+      llvm::SmallDenseMap<unsigned, unsigned, 4> paramWidth;
+      auto checkParam = [&](PortSpec spec, unsigned w) -> LogicalResult {
+        if (spec.kind != PortSpec::TypeParam)
+          return success();
+        auto it = paramWidth.find(spec.value);
+        if (it == paramWidth.end()) {
+          paramWidth[spec.value] = w;
+          return success();
+        }
+        if (it->second != w)
+          return emitOpError("op @")
+                 << n << " requires the same width on all ports tied to its "
+                          "type parameter T"
+                 << spec.value << ", got " << it->second << " and " << w;
+        return success();
+      };
+      for (unsigned p = 0; p < s.inputs.size(); ++p)
+        if (failed(checkParam(s.inputs[p], inW[p])))
+          return failure();
+      for (unsigned p = 0; p < s.outputs.size(); ++p)
+        if (failed(checkParam(s.outputs[p], outW[p])))
+          return failure();
+    }
+  }
+
+  // 5. hw_params (optional): must be ArrayAttr of length 1 wrapping a
+  //    DictionaryAttr.
+  if (auto hp = getHwParamsAttr()) {
+    if (hp.size() != 1)
+      return emitOpError("'hw_params' must be a length-1 array wrapping a "
+                         "dictionary, got length ")
+             << hp.size();
+    if (!isa<DictionaryAttr>(hp[0]))
+      return emitOpError(
+          "'hw_params' inner element must be a dictionary attribute");
+  }
+
+  // 6. sw_configs (optional). When op_list has > 1 entry and sw_configs is
+  //    present, it must contain `op_sel` whose StringAttr value matches one
+  //    of the symbols in op_list.
+  if (auto sw = getSwConfigsAttr()) {
+    if (opNames.size() > 1) {
+      auto sel = sw.get("op_sel");
+      if (!sel)
+        return emitOpError(
+            "'sw_configs' must contain key 'op_sel' when 'op_list' has more "
+            "than one entry");
+      auto selStr = dyn_cast<StringAttr>(sel);
+      if (!selStr)
+        return emitOpError("'sw_configs.op_sel' must be a string attribute");
+      bool found = false;
+      for (StringRef n : opNames)
+        if (selStr.getValue() == n) { found = true; break; }
+      if (!found)
+        return emitOpError("'sw_configs.op_sel' value \"")
+               << selStr.getValue()
+               << "\" is not one of the symbols listed in 'op_list'";
+    }
+  }
+  return success();
+}
+
+// Suppress unused-variable warning from the helper builder (LoomCommon's
+// getIndexWidth) until it is wired into a future per-port type-mapping helper.
+[[maybe_unused]] static unsigned indexWidthForFabricOp() {
+  return loom::getIndexWidth();
 }

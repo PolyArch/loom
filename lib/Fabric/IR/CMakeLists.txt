@@ -11,6 +11,7 @@ add_mlir_dialect_library(MLIRFabric
   MLIRFabricOpsIncGen
 
   LINK_LIBS PUBLIC
+  LoomCommon
   MLIRIR
   MLIRSupport
 )
