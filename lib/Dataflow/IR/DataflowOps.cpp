@@ -68,6 +68,59 @@ LogicalResult ConstantOp::verify() {
 // dataflow.sync
 //===----------------------------------------------------------------------===//
 
+//===----------------------------------------------------------------------===//
+// dataflow.mux / dataflow.demux
+//===----------------------------------------------------------------------===//
+
+static LogicalResult verifySelAgainstArity(Operation *op, Type selType,
+                                           size_t n, StringRef fanName) {
+  if (n < 2)
+    return op->emitOpError()
+           << "requires at least 2 " << fanName << ", got " << n;
+  bool isI1 = selType.isInteger(1);
+  bool isIndex = isa<IndexType>(selType);
+  if (n == 2) {
+    if (!isI1)
+      return op->emitOpError()
+             << "with 2 " << fanName << ", 'sel' must be 'i1', got "
+             << selType;
+  } else {
+    if (!isIndex)
+      return op->emitOpError()
+             << "with more than 2 " << fanName
+             << ", 'sel' must be 'index', got " << selType;
+  }
+  return success();
+}
+
+LogicalResult MuxOp::verify() {
+  if (failed(verifySelAgainstArity(getOperation(), getSel().getType(),
+                                   getInputs().size(), "inputs")))
+    return failure();
+  Type outTy = getOutput().getType();
+  for (auto [i, in] : llvm::enumerate(getInputs())) {
+    if (in.getType() != outTy)
+      return emitOpError("input #")
+             << i << " type " << in.getType() << " must match output type "
+             << outTy;
+  }
+  return success();
+}
+
+LogicalResult DemuxOp::verify() {
+  if (failed(verifySelAgainstArity(getOperation(), getSel().getType(),
+                                   getOutputs().size(), "outputs")))
+    return failure();
+  Type inTy = getInput().getType();
+  for (auto [i, out] : llvm::enumerate(getOutputs())) {
+    if (out.getType() != inTy)
+      return emitOpError("output #")
+             << i << " type " << out.getType() << " must match input type "
+             << inTy;
+  }
+  return success();
+}
+
 LogicalResult SyncOp::verify() {
   auto ins = getInputs();
   auto outs = getOutputs();

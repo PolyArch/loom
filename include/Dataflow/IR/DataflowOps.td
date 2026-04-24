@@ -170,4 +170,55 @@ def Dataflow_SyncOp : Dataflow_Op<"sync", [Pure]> {
   let hasVerifier = 1;
 }
 
+def Dataflow_MuxOp : Dataflow_Op<"mux", [Pure]> {
+  let summary = "N-to-1 selection: forward the sel-picked input to output";
+  let description = [{
+    N-input, 1-output multiplexer (N > 1). `sel` picks one input port
+    index `k`. The op fires when tokens are available on *both* `%sel`
+    and `%inputs[k]`. Both are consumed and the value is forwarded to
+    `%output`. Tokens on the non-selected inputs are **not** consumed
+    (they remain buffered; the other lanes block).
+
+    `sel` type:
+      * exactly 2 inputs -> `i1`
+      * more than 2 inputs -> `index`
+
+    All inputs and the output share one type.
+  }];
+
+  let arguments = (ins AnyTypeOf<[I1, Index]>:$sel,
+                       Variadic<AnyType>:$inputs);
+  let results = (outs AnyType:$output);
+
+  let assemblyFormat = [{
+    $sel `,` $inputs attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
+def Dataflow_DemuxOp : Dataflow_Op<"demux", [Pure]> {
+  let summary = "1-to-N selection: route the input to the sel-picked output";
+  let description = [{
+    1-input, N-output demultiplexer (N > 1). `sel` picks one output
+    port index `k`. The op fires when tokens are available on both
+    `%sel` and `%input`; both are consumed and the value is forwarded
+    to `%outputs[k]`. No token is produced on the non-selected output
+    ports.
+
+    `sel` type:
+      * exactly 2 outputs -> `i1`
+      * more than 2 outputs -> `index`
+
+    The input and all outputs share one type.
+  }];
+
+  let arguments = (ins AnyTypeOf<[I1, Index]>:$sel, AnyType:$input);
+  let results = (outs Variadic<AnyType>:$outputs);
+
+  let assemblyFormat = [{
+    $sel `,` $input attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
 #endif // DATAFLOW_OPS_TD
