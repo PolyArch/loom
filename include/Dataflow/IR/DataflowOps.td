@@ -102,4 +102,36 @@ def Dataflow_InvariantOp : Dataflow_Op<"invariant", [Pure,
   }];
 }
 
+def Dataflow_GateOp : Dataflow_Op<"gate", [Pure,
+    AllTypesMatch<["before_value", "after_value"]>]> {
+  let summary =
+      "open a value channel on the first true, reclose on the next false";
+  let description = [{
+    Two-state gate over a (cond, value) pair. Both inputs are always
+    consumed together on each firing.
+
+      * Start state is `init`.
+      * In state `init`:
+          - on `(false, X)`: emit nothing on either output;
+          - on `(true,  X)`: emit only `X` on `%after_value` (no token
+            on `%after_cond`), transition to `continue`.
+      * In state `continue`:
+          - on `(true,  X)`: forward the pair as `(true, X)` on
+            `%after_cond` and `%after_value` respectively, stay in
+            `continue`;
+          - on `(false, X)`: emit only `false` on `%after_cond` (no
+            token on `%after_value`), return to state `init`.
+
+    `%before_value` and `%after_value` share a single type;
+    `%before_cond` and `%after_cond` are `i1`.
+  }];
+
+  let arguments = (ins I1:$before_cond, AnyType:$before_value);
+  let results = (outs I1:$after_cond, AnyType:$after_value);
+
+  let assemblyFormat = [{
+    $before_cond `,` $before_value attr-dict `:` type($after_value)
+  }];
+}
+
 #endif // DATAFLOW_OPS_TD
