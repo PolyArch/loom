@@ -74,4 +74,32 @@ def Dataflow_CarryOp : Dataflow_Op<"carry", [Pure,
   }];
 }
 
+def Dataflow_InvariantOp : Dataflow_Op<"invariant", [Pure,
+    AllTypesMatch<["init", "output"]>]> {
+  let summary =
+      "latch an init value and replay it once per true cond until reset";
+  let description = [{
+    Two-state element that latches an init value and replays it.
+
+      * Start state is `init`.
+      * In state `init`: wait for one `%init` token, record its value,
+        forward it to `%output`, and transition to `carry`.
+      * In state `carry`: wait for one `%cond : i1` token. `%init` is
+        not consumed in this state.
+          - if `cond` is true : re-emit the recorded value to
+            `%output`, stay in `carry`;
+          - if `cond` is false: clear the recorded value, emit nothing,
+            return to state `init`.
+
+    `%init` and `%output` share a single type; `%cond` is `i1`.
+  }];
+
+  let arguments = (ins I1:$cond, AnyType:$init);
+  let results = (outs AnyType:$output);
+
+  let assemblyFormat = [{
+    $cond `,` $init attr-dict `:` type($output)
+  }];
+}
+
 #endif // DATAFLOW_OPS_TD
