@@ -28,6 +28,7 @@ set(LOOM_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 set(LOOM_BINARY_DIR ${PROJECT_BINARY_DIR})
 
 add_subdirectory(include/Fabric)
+add_subdirectory(include/Dataflow)
 add_subdirectory(lib)
 add_subdirectory(tools)
 

@@ -6,6 +6,7 @@ llvm_update_compile_flags(loom)
 
 target_link_libraries(loom PRIVATE
   MLIRFabric
+  MLIRDataflow
   MLIRIR
   MLIROptLib
   MLIRParser
