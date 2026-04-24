@@ -46,4 +46,32 @@ def Dataflow_StreamOp : Dataflow_Op<"stream", [Pure,
   let hasVerifier = 1;
 }
 
+def Dataflow_CarryOp : Dataflow_Op<"carry", [Pure,
+    AllTypesMatch<["init", "carry", "output"]>]> {
+  let summary =
+      "two-state carry: emit init once, then gate subsequent carries by cond";
+  let description = [{
+    Two-state (init / carry) token-level element.
+
+      * Start state is `init`.
+      * In state `init`: wait for one `%init` token; forward it to
+        `%output`; transition to `carry`.
+      * In state `carry`: wait for one `%cond : i1` and one `%carry`
+        token simultaneously; consume both.
+          - if `cond` is true : forward `%carry` to `%output`, stay in
+            `carry`;
+          - if `cond` is false: do not emit, return to state `init`.
+
+    `%init`, `%carry` and `%output` share a single type; `%cond` is
+    `i1`.
+  }];
+
+  let arguments = (ins I1:$cond, AnyType:$init, AnyType:$carry);
+  let results = (outs AnyType:$output);
+
+  let assemblyFormat = [{
+    $cond `,` $init `,` $carry attr-dict `:` type($output)
+  }];
+}
+
 #endif // DATAFLOW_OPS_TD
