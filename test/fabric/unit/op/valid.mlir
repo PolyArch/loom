@@ -85,14 +85,55 @@ func.func @op_constant(%ctrl: !fabric.bits<0>) -> !fabric.bits<32> {
 
 // CHECK-LABEL: @op_sync
 func.func @op_sync(%a: !fabric.bits<32>, %b: !fabric.bits<32>, %c: !fabric.bits<32>, %d: !fabric.bits<32>)
-    -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
+    -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
   // CHECK: fabric.op [@dataflow.sync]
   // CHECK-SAME: sw_configs = {bitmask = "1101"}
-  %x, %y, %z = fabric.op [@dataflow.sync] (%a, %b, %c, %d)
-               {sw_configs = {bitmask = "1101"}}
-               : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
-                 -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
-  return %x, %y, %z : !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>
+  %w, %x, %y, %z = fabric.op [@dataflow.sync] (%a, %b, %c, %d)
+                   {sw_configs = {bitmask = "1101"}}
+                   : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+                     -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+  return %w, %x, %y, %z : !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>
+}
+
+// -----------------------------------------------------------------------------
+// dataflow.mux: 1 sel + 2 data (sel is bits<1>) -> 1 out.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: @op_mux2
+func.func @op_mux2(%sel: !fabric.bits<1>, %a: !fabric.bits<32>, %b: !fabric.bits<32>) -> !fabric.bits<32> {
+  // CHECK: fabric.op [@dataflow.mux]
+  %0 = fabric.op [@dataflow.mux] (%sel, %a, %b)
+       : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  return %0 : !fabric.bits<32>
+}
+
+// -----------------------------------------------------------------------------
+// dataflow.mux: 1 sel + 4 data (sel is bits<32> = index width default).
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: @op_mux4
+func.func @op_mux4(%sel: !fabric.bits<32>,
+                   %a: !fabric.bits<16>, %b: !fabric.bits<16>,
+                   %c: !fabric.bits<16>, %d: !fabric.bits<16>) -> !fabric.bits<16> {
+  // CHECK: fabric.op [@dataflow.mux]
+  %0 = fabric.op [@dataflow.mux] (%sel, %a, %b, %c, %d)
+       : (!fabric.bits<32>, !fabric.bits<16>, !fabric.bits<16>,
+          !fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
+  return %0 : !fabric.bits<16>
+}
+
+// -----------------------------------------------------------------------------
+// dataflow.demux: 1 sel + 1 data -> 3 outs (sel is bits<32> = index).
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: @op_demux3
+func.func @op_demux3(%sel: !fabric.bits<32>, %in: !fabric.bits<8>)
+    -> (!fabric.bits<8>, !fabric.bits<8>, !fabric.bits<8>) {
+  // CHECK: fabric.op [@dataflow.demux]
+  %a, %b, %c = fabric.op [@dataflow.demux] (%sel, %in)
+               : (!fabric.bits<32>, !fabric.bits<8>)
+                 -> (!fabric.bits<8>, !fabric.bits<8>, !fabric.bits<8>)
+  return %a, %b, %c : !fabric.bits<8>, !fabric.bits<8>, !fabric.bits<8>
 }
 
 // -----------------------------------------------------------------------------

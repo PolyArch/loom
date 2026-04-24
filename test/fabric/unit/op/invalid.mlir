@@ -116,3 +116,109 @@ func.func @op_stream_inconsistent_t(%lb: !fabric.bits<32>, %ub: !fabric.bits<64>
              -> (!fabric.bits<32>, !fabric.bits<1>)
   return %i, %r : !fabric.bits<32>, !fabric.bits<1>
 }
+
+// -----
+// dataflow.sync: in/out counts must match.
+func.func @op_sync_unequal_counts(%a: !fabric.bits<32>, %b: !fabric.bits<32>)
+    -> !fabric.bits<32> {
+  // expected-error @+1 {{@dataflow.sync requires equal input/output counts}}
+  %0 = fabric.op [@dataflow.sync] (%a, %b)
+       : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  return %0 : !fabric.bits<32>
+}
+
+// -----
+// dataflow.sync: bitmask length must equal port count.
+func.func @op_sync_bad_bitmask_len(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
+                                    %c: !fabric.bits<32>, %d: !fabric.bits<32>)
+    -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
+  // expected-error @+1 {{'sw_configs.bitmask' length (3) must equal port count (4)}}
+  %w, %x, %y, %z = fabric.op [@dataflow.sync] (%a, %b, %c, %d)
+                   {sw_configs = {bitmask = "101"}}
+                   : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+                     -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+  return %w, %x, %y, %z : !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>
+}
+
+// -----
+// dataflow.sync: bitmask must contain only '0' / '1'.
+func.func @op_sync_bad_bitmask_chars(%a: !fabric.bits<32>, %b: !fabric.bits<32>)
+    -> (!fabric.bits<32>, !fabric.bits<32>) {
+  // expected-error @+1 {{'sw_configs.bitmask' must contain only '0' and '1'}}
+  %x, %y = fabric.op [@dataflow.sync] (%a, %b)
+           {sw_configs = {bitmask = "1x"}}
+           : (!fabric.bits<32>, !fabric.bits<32>)
+             -> (!fabric.bits<32>, !fabric.bits<32>)
+  return %x, %y : !fabric.bits<32>, !fabric.bits<32>
+}
+
+// -----
+// dataflow.mux with 2 data inputs requires bits<1> sel.
+func.func @op_mux2_bad_sel(%sel: !fabric.bits<32>, %a: !fabric.bits<16>, %b: !fabric.bits<16>)
+    -> !fabric.bits<16> {
+  // expected-error @+1 {{sel port (input #0) width 32 must be 1}}
+  %0 = fabric.op [@dataflow.mux] (%sel, %a, %b)
+       : (!fabric.bits<32>, !fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
+  return %0 : !fabric.bits<16>
+}
+
+// -----
+// dataflow.mux with >2 data inputs requires sel width = index width (default 32).
+func.func @op_mux3_bad_sel(%sel: !fabric.bits<1>,
+                            %a: !fabric.bits<16>, %b: !fabric.bits<16>, %c: !fabric.bits<16>)
+    -> !fabric.bits<16> {
+  // expected-error @+1 {{sel port (input #0) width 1 must be 32}}
+  %0 = fabric.op [@dataflow.mux] (%sel, %a, %b, %c)
+       : (!fabric.bits<1>, !fabric.bits<16>, !fabric.bits<16>, !fabric.bits<16>)
+         -> !fabric.bits<16>
+  return %0 : !fabric.bits<16>
+}
+
+// -----
+// dataflow.demux with 2 outs requires bits<1> sel.
+func.func @op_demux2_bad_sel(%sel: !fabric.bits<32>, %in: !fabric.bits<8>)
+    -> (!fabric.bits<8>, !fabric.bits<8>) {
+  // expected-error @+1 {{sel port (input #0) width 32 must be 1}}
+  %a, %b = fabric.op [@dataflow.demux] (%sel, %in)
+           : (!fabric.bits<32>, !fabric.bits<8>)
+             -> (!fabric.bits<8>, !fabric.bits<8>)
+  return %a, %b : !fabric.bits<8>, !fabric.bits<8>
+}
+
+// -----
+// dataflow.mux: data inputs must match output width.
+func.func @op_mux_data_mismatch(%sel: !fabric.bits<1>, %a: !fabric.bits<16>, %b: !fabric.bits<32>)
+    -> !fabric.bits<16> {
+  // expected-error @+1 {{@dataflow.mux input #2 width 32 must match output width 16}}
+  %0 = fabric.op [@dataflow.mux] (%sel, %a, %b)
+       : (!fabric.bits<1>, !fabric.bits<16>, !fabric.bits<32>) -> !fabric.bits<16>
+  return %0 : !fabric.bits<16>
+}
+
+// -----
+// hw_params allowed-set check: sw_configs value not in hw_params allowed array.
+func.func @op_sw_value_not_in_hw_set(%lb: !fabric.bits<32>, %ub: !fabric.bits<32>,
+                                      %step: !fabric.bits<32>)
+    -> (!fabric.bits<32>, !fabric.bits<1>) {
+  // expected-error @+1 {{'sw_configs["step_op"]' value "%=" is not in the 'hw_params["step_op"]' allowed set}}
+  %i, %r = fabric.op [@dataflow.stream] (%lb, %ub, %step)
+           {hw_params = [{step_op = ["+=", "/="], cont_cond = ["<", ">"]}],
+            sw_configs = {step_op = "%=", cont_cond = "<"}}
+           : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+             -> (!fabric.bits<32>, !fabric.bits<1>)
+  return %i, %r : !fabric.bits<32>, !fabric.bits<1>
+}
+
+// -----
+// hw_params allowed-set check: hw value for shared key must be ArrayAttr.
+func.func @op_hw_value_not_array(%lb: !fabric.bits<32>, %ub: !fabric.bits<32>,
+                                  %step: !fabric.bits<32>)
+    -> (!fabric.bits<32>, !fabric.bits<1>) {
+  // expected-error @+1 {{'hw_params["step_op"]' must be an array of allowed values}}
+  %i, %r = fabric.op [@dataflow.stream] (%lb, %ub, %step)
+           {hw_params = [{step_op = "+="}],
+            sw_configs = {step_op = "+=", cont_cond = "<"}}
+           : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+             -> (!fabric.bits<32>, !fabric.bits<1>)
+  return %i, %r : !fabric.bits<32>, !fabric.bits<1>
+}

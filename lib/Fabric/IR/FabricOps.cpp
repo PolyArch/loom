@@ -233,12 +233,15 @@ struct PortSpec {
 };
 
 struct OpSchema {
+  enum Kind {
+    Fixed,         // statically-known input / output port spec
+    VariadicSync,  // N in / N out, paired widths, sw config: bitmask
+    VariadicMux,   // 1 sel + N data inputs / 1 output (N >= 2)
+    VariadicDemux, // 1 sel + 1 input / N data outputs (N >= 2)
+  };
+  Kind kind = Fixed;
   llvm::SmallVector<PortSpec, 4> inputs;
   llvm::SmallVector<PortSpec, 4> outputs;
-  // Variadic ops: per-port-position counts vary with sw_configs (e.g.,
-  // dataflow.sync's bitmask). For these, in/out sizes here are advisory; the
-  // verifier defers detailed port-count checks.
-  bool variadic = false;
 };
 
 // All ops listed below are accepted in `op_list`. Anything outside is
@@ -254,11 +257,11 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
     auto add = [&](StringRef name,
                    llvm::SmallVector<PortSpec, 4> ins,
                    llvm::SmallVector<PortSpec, 4> outs,
-                   bool variadic = false) {
+                   OpSchema::Kind kind = OpSchema::Fixed) {
       OpSchema s;
       s.inputs = std::move(ins);
       s.outputs = std::move(outs);
-      s.variadic = variadic;
+      s.kind = kind;
       m.insert({name, std::move(s)});
     };
 
@@ -312,10 +315,10 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
         {pF(1), pT(0)}, {pT(0)});
     add("dataflow.gate",
         {pF(1), pT(0)}, {pF(1), pT(0)});
-    // Variadic ops: structural counts depend on sw_configs.
-    add("dataflow.sync", {}, {}, /*variadic=*/true);
-    add("dataflow.mux", {}, {}, /*variadic=*/true);
-    add("dataflow.demux", {}, {}, /*variadic=*/true);
+    // Variadic ops: structural counts depend on sw_configs / fabric ports.
+    add("dataflow.sync", {}, {}, OpSchema::VariadicSync);
+    add("dataflow.mux", {}, {}, OpSchema::VariadicMux);
+    add("dataflow.demux", {}, {}, OpSchema::VariadicDemux);
 
     return m;
   }();
@@ -420,16 +423,113 @@ LogicalResult OpOp::verify() {
     }
   }
 
-  // 4. Schema check (port count and per-port width). For variadic ops we
-  //    skip this step (counts are configuration-dependent).
-  bool anyVariadic = false;
-  for (StringRef n : opNames)
-    anyVariadic = anyVariadic || opSchemas().lookup(n).variadic;
-
+  // 4. Schema check (port count and per-port width).
   unsigned numIns = getInputs().size();
   unsigned numOuts = getOutputs().size();
+  SmallVector<unsigned, 4> inW, outW;
+  for (Type t : getInputs().getTypes())
+    inW.push_back(*bitsWidth(t));
+  for (Type t : getOutputs().getTypes())
+    outW.push_back(*bitsWidth(t));
 
-  if (!anyVariadic) {
+  // Variadic ops are always in a singleton group; opNames.size() == 1.
+  const OpSchema &schemaFront = opSchemas().lookup(opNames.front());
+  bool isFixedKind = schemaFront.kind == OpSchema::Fixed;
+
+  // Convenience for sw_configs lookups used by both variadic and shared
+  // hw_params <- sw_configs cross-check below.
+  DictionaryAttr swDict;
+  if (auto sw = getSwConfigsAttr())
+    swDict = sw;
+
+  if (!isFixedKind) {
+    // Variadic ops are singletons; ensure no group misuse already covered.
+    switch (schemaFront.kind) {
+    case OpSchema::Fixed:
+      llvm_unreachable("handled above");
+    case OpSchema::VariadicSync: {
+      if (numIns != numOuts)
+        return emitOpError(
+                   "@dataflow.sync requires equal input/output counts, got ")
+               << numIns << " inputs and " << numOuts << " outputs";
+      if (numIns < 1)
+        return emitOpError("@dataflow.sync requires at least 1 port");
+      for (unsigned p = 0; p < numIns; ++p)
+        if (inW[p] != outW[p])
+          return emitOpError("@dataflow.sync port #")
+                 << p << " input width " << inW[p]
+                 << " must match output width " << outW[p];
+      if (swDict) {
+        auto bm = swDict.get("bitmask");
+        if (!bm)
+          return emitOpError(
+              "programmed @dataflow.sync requires sw_configs key 'bitmask'");
+        auto bmStr = dyn_cast<StringAttr>(bm);
+        if (!bmStr)
+          return emitOpError("'sw_configs.bitmask' must be a string attribute");
+        StringRef s = bmStr.getValue();
+        if (s.size() != numIns)
+          return emitOpError("'sw_configs.bitmask' length (")
+                 << s.size() << ") must equal port count (" << numIns << ")";
+        for (char c : s)
+          if (c != '0' && c != '1')
+            return emitOpError(
+                "'sw_configs.bitmask' must contain only '0' and '1'");
+      }
+      break;
+    }
+    case OpSchema::VariadicMux: {
+      if (numIns < 3)
+        return emitOpError("@dataflow.mux requires at least 1 sel + 2 data "
+                           "inputs, got ")
+               << numIns << " inputs";
+      if (numOuts != 1)
+        return emitOpError(
+                   "@dataflow.mux requires exactly 1 output, got ")
+               << numOuts;
+      unsigned fanIn = numIns - 1;
+      unsigned wantSel = (fanIn == 2) ? 1u : loom::getIndexWidth();
+      if (inW[0] != wantSel)
+        return emitOpError("@dataflow.mux sel port (input #0) width ")
+               << inW[0] << " must be " << wantSel
+               << " (i1 for fan-in 2, index width " << loom::getIndexWidth()
+               << " otherwise)";
+      unsigned dataW = outW[0];
+      for (unsigned p = 1; p < numIns; ++p)
+        if (inW[p] != dataW)
+          return emitOpError("@dataflow.mux input #")
+                 << p << " width " << inW[p]
+                 << " must match output width " << dataW;
+      break;
+    }
+    case OpSchema::VariadicDemux: {
+      if (numIns != 2)
+        return emitOpError("@dataflow.demux requires exactly 1 sel + 1 data "
+                           "input, got ")
+               << numIns << " inputs";
+      if (numOuts < 2)
+        return emitOpError(
+                   "@dataflow.demux requires at least 2 outputs, got ")
+               << numOuts;
+      unsigned fanOut = numOuts;
+      unsigned wantSel = (fanOut == 2) ? 1u : loom::getIndexWidth();
+      if (inW[0] != wantSel)
+        return emitOpError("@dataflow.demux sel port (input #0) width ")
+               << inW[0] << " must be " << wantSel
+               << " (i1 for fan-out 2, index width " << loom::getIndexWidth()
+               << " otherwise)";
+      unsigned dataW = inW[1];
+      for (unsigned p = 0; p < numOuts; ++p)
+        if (outW[p] != dataW)
+          return emitOpError("@dataflow.demux output #")
+                 << p << " width " << outW[p]
+                 << " must match data input width " << dataW;
+      break;
+    }
+    }
+  }
+
+  if (isFixedKind) {
     // 4a. All members must agree on input/output count.
     const OpSchema &first = opSchemas().lookup(opNames.front());
     for (StringRef n : opNames) {
@@ -488,12 +588,6 @@ LogicalResult OpOp::verify() {
       return success();
     };
 
-    SmallVector<unsigned, 4> inW, outW;
-    for (Type t : getInputs().getTypes())
-      inW.push_back(*bitsWidth(t));
-    for (Type t : getOutputs().getTypes())
-      outW.push_back(*bitsWidth(t));
-
     if (failed(check(inW, [](const OpSchema &s, unsigned p) { return s.inputs[p]; },
                      "input")))
       return failure();
@@ -544,10 +638,12 @@ LogicalResult OpOp::verify() {
 
   // 6. sw_configs (optional). When op_list has > 1 entry and sw_configs is
   //    present, it must contain `op_sel` whose StringAttr value matches one
-  //    of the symbols in op_list.
-  if (auto sw = getSwConfigsAttr()) {
+  //    of the symbols in op_list. Additionally, every key in sw_configs that
+  //    also appears in hw_params must take a value listed in the
+  //    corresponding hw_params allowed set.
+  if (swDict) {
     if (opNames.size() > 1) {
-      auto sel = sw.get("op_sel");
+      auto sel = swDict.get("op_sel");
       if (!sel)
         return emitOpError(
             "'sw_configs' must contain key 'op_sel' when 'op_list' has more "
@@ -563,12 +659,36 @@ LogicalResult OpOp::verify() {
                << selStr.getValue()
                << "\" is not one of the symbols listed in 'op_list'";
     }
+
+    // hw_params allowed-set check: keys that appear on both sides must have
+    // the sw value in the hw value set.
+    DictionaryAttr hwDict;
+    if (auto hp = getHwParamsAttr())
+      if (hp.size() == 1)
+        hwDict = dyn_cast<DictionaryAttr>(hp[0]);
+    if (hwDict) {
+      for (NamedAttribute na : swDict) {
+        StringRef key = na.getName().getValue();
+        if (key == "op_sel")
+          continue;
+        auto hwVal = hwDict.get(key);
+        if (!hwVal)
+          continue;
+        auto allowed = dyn_cast<ArrayAttr>(hwVal);
+        if (!allowed)
+          return emitOpError("'hw_params[\"")
+                 << key
+                 << "\"]' must be an array of allowed values when the same "
+                    "key is selected by sw_configs";
+        bool found = false;
+        for (Attribute v : allowed)
+          if (v == na.getValue()) { found = true; break; }
+        if (!found)
+          return emitOpError("'sw_configs[\"")
+                 << key << "\"]' value " << na.getValue()
+                 << " is not in the 'hw_params[\"" << key << "\"]' allowed set";
+      }
+    }
   }
   return success();
-}
-
-// Suppress unused-variable warning from the helper builder (LoomCommon's
-// getIndexWidth) until it is wired into a future per-port type-mapping helper.
-[[maybe_unused]] static unsigned indexWidthForFabricOp() {
-  return loom::getIndexWidth();
 }
