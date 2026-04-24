@@ -50,6 +50,21 @@ LogicalResult StreamOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// dataflow.constant
+//===----------------------------------------------------------------------===//
+
+LogicalResult ConstantOp::verify() {
+  auto typed = llvm::dyn_cast<TypedAttr>(getConstValue());
+  if (!typed)
+    return emitOpError("'const_value' must be a typed attribute");
+  if (typed.getType() != getValue().getType())
+    return emitOpError("'const_value' type ")
+           << typed.getType() << " must match result type "
+           << getValue().getType();
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // dataflow.sync
 //===----------------------------------------------------------------------===//
 

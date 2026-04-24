@@ -134,6 +134,24 @@ def Dataflow_GateOp : Dataflow_Op<"gate", [Pure,
   }];
 }
 
+def Dataflow_ConstantOp : Dataflow_Op<"constant", [Pure]> {
+  let summary = "emit a recorded constant on each incoming ctrl token";
+  let description = [{
+    One-shot trigger: on every `%ctrl : none` token that arrives, the
+    op fires once and emits the value stored in the `const_value`
+    attribute on `%const`.
+
+    `const_value` must be a typed attribute whose type equals the
+    result type of `%const`.
+  }];
+
+  let arguments = (ins NoneType:$ctrl, AnyAttr:$const_value);
+  let results = (outs AnyType:$value);
+
+  let assemblyFormat = "$ctrl attr-dict `:` type($value)";
+  let hasVerifier = 1;
+}
+
 def Dataflow_SyncOp : Dataflow_Op<"sync", [Pure]> {
   let summary = "wait for all inputs, then forward them all as outputs";
   let description = [{
