@@ -6,8 +6,13 @@ include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/CommonAttrConstraints.td"
 include "mlir/IR/CommonTypeConstraints.td"
 include "mlir/IR/OpAsmInterface.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/IR/RegionKindInterface.td"
+
+def Dataflow_GraphType : AnyTypeOf<[
+    AnyInteger, AnyFloat, Index, NoneType, AnyMemRef]>;
 
 //===----------------------------------------------------------------------===//
 // Streaming Ops
@@ -287,6 +292,63 @@ def Dataflow_StoreOp : Dataflow_Op<"store", [
   let assemblyFormat = [{
     $mem `[` $addr `]` $data $ctrl attr-dict `:` type($mem)
   }];
+}
+
+//===----------------------------------------------------------------------===//
+// Region Ops
+//
+// The graph-region container and its terminator. Inside a dataflow.graph
+// region classical SSA dominance does not hold: any op may use values
+// produced later in program order (feedback edges are legal).
+//===----------------------------------------------------------------------===//
+
+def Dataflow_GraphOp : Dataflow_Op<"graph", [
+    IsolatedFromAbove,
+    SingleBlockImplicitTerminator<"YieldOp">,
+    DeclareOpInterfaceMethods<RegionKindInterface>
+]> {
+  let summary = "dataflow graph region (non-SSA; feedback allowed)";
+  let description = [{
+    Container for a dataflow subgraph. Inputs map to region block
+    arguments; results are produced by the terminator `dataflow.yield`.
+    The body is a single graph-kind region: ops may reference values
+    produced by later ops in program order (cycles / feedback edges
+    are permitted).
+
+    Argument and result types must be numeric (integer / float /
+    index), `none`, or `memref`.
+  }];
+
+  let arguments = (ins Variadic<Dataflow_GraphType>:$inputs);
+  let results = (outs Variadic<Dataflow_GraphType>:$outputs);
+  let regions = (region SizedRegion<1>:$body);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Dataflow_YieldOp : Dataflow_Op<"yield", [
+    Terminator,
+    HasParent<"::dataflow::GraphOp">,
+    Pure
+]> {
+  let summary = "terminator of a dataflow.graph region";
+  let description = [{
+    Supplies the values that leave the enclosing `dataflow.graph` on
+    its results. The number and types of `$values` must match the
+    parent graph's result count and types.
+  }];
+
+  let arguments = (ins Variadic<Dataflow_GraphType>:$values);
+
+  let assemblyFormat = "($values^ `:` type($values))? attr-dict";
+  let hasVerifier = 1;
+
+  let builders = [
+    OpBuilder<(ins), [{
+      build($_builder, $_state, ::mlir::ValueRange{});
+    }]>
+  ];
 }
 
 #endif // DATAFLOW_OPS_TD

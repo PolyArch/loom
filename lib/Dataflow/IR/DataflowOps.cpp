@@ -111,6 +111,147 @@ LogicalResult MuxOp::verify() {
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// Region Ops
+//===----------------------------------------------------------------------===//
+
+// dataflow.graph
+
+RegionKind GraphOp::getRegionKind(unsigned /*index*/) {
+  return RegionKind::Graph;
+}
+
+// Assembly format:
+//   dataflow.graph(%bb_arg0 = %outer0 : T0, %bb_arg1 = %outer1 : T1, ...)
+//                 -> ResultTypes [attributes {...}] { body; dataflow.yield ... }
+//
+// Block arguments are declared inline with their corresponding outer SSA
+// operand, removing the need for an explicit `^bb0(...)` header.
+ParseResult GraphOp::parse(OpAsmParser &parser, OperationState &result) {
+  SmallVector<OpAsmParser::Argument, 4> blockArgs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> operands;
+  SmallVector<Type, 4> operandTypes;
+  SMLoc operandsLoc = parser.getCurrentLocation();
+
+  if (parser.parseLParen())
+    return failure();
+  if (failed(parser.parseOptionalRParen())) {
+    auto parseOne = [&]() -> ParseResult {
+      OpAsmParser::Argument arg;
+      OpAsmParser::UnresolvedOperand op;
+      Type ty;
+      if (parser.parseArgument(arg) || parser.parseEqual() ||
+          parser.parseOperand(op) || parser.parseColon() ||
+          parser.parseType(ty))
+        return failure();
+      arg.type = ty;
+      blockArgs.push_back(arg);
+      operands.push_back(op);
+      operandTypes.push_back(ty);
+      return success();
+    };
+    if (parseOne())
+      return failure();
+    while (succeeded(parser.parseOptionalComma()))
+      if (parseOne())
+        return failure();
+    if (parser.parseRParen())
+      return failure();
+  }
+
+  if (parser.resolveOperands(operands, operandTypes, operandsLoc,
+                             result.operands))
+    return failure();
+
+  if (parser.parseArrow())
+    return failure();
+  SmallVector<Type, 4> resultTypes;
+  if (succeeded(parser.parseOptionalLParen())) {
+    if (failed(parser.parseOptionalRParen())) {
+      if (parser.parseTypeList(resultTypes) || parser.parseRParen())
+        return failure();
+    }
+  } else {
+    Type ty;
+    if (parser.parseType(ty))
+      return failure();
+    resultTypes.push_back(ty);
+  }
+  result.addTypes(resultTypes);
+
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  Region *body = result.addRegion();
+  if (parser.parseRegion(*body, blockArgs, /*enableNameShadowing=*/false))
+    return failure();
+  GraphOp::ensureTerminator(*body, parser.getBuilder(), result.location);
+  return success();
+}
+
+void GraphOp::print(OpAsmPrinter &p) {
+  p << '(';
+  Block &entry = getBody().front();
+  llvm::interleaveComma(
+      llvm::zip(entry.getArguments(), getInputs()), p, [&](auto pair) {
+        BlockArgument bb;
+        Value outer;
+        std::tie(bb, outer) = pair;
+        p.printRegionArgument(bb, /*argAttrs=*/{}, /*omitType=*/true);
+        p << " = " << outer << " : " << outer.getType();
+      });
+  p << ") -> ";
+  auto rTypes = getResultTypes();
+  if (rTypes.size() == 1) {
+    p << rTypes.front();
+  } else {
+    p << '(';
+    llvm::interleaveComma(rTypes, p);
+    p << ')';
+  }
+  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs());
+  p << ' ';
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/true);
+}
+
+LogicalResult GraphOp::verify() {
+  Block &entry = getBody().front();
+  if (entry.getNumArguments() != getInputs().size())
+    return emitOpError("region entry block argument count (")
+           << entry.getNumArguments() << ") must equal operand count ("
+           << getInputs().size() << ")";
+  for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
+    if (arg.getType() != getInputs()[i].getType())
+      return emitOpError("region entry block argument #")
+             << i << " type " << arg.getType() << " must match operand type "
+             << getInputs()[i].getType();
+  }
+  return success();
+}
+
+// dataflow.yield
+
+LogicalResult YieldOp::verify() {
+  auto graph = cast<GraphOp>((*this)->getParentOp());
+  if (getValues().size() != graph.getOutputs().size())
+    return emitOpError("yield value count (")
+           << getValues().size() << ") must match parent graph result count ("
+           << graph.getOutputs().size() << ")";
+  for (auto [i, v] : llvm::enumerate(getValues())) {
+    Type expected = graph.getOutputs()[i].getType();
+    if (v.getType() != expected)
+      return emitOpError("yield value #")
+             << i << " type " << v.getType()
+             << " must match parent graph result type " << expected;
+  }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// dataflow.mux / dataflow.demux (continued)
+//===----------------------------------------------------------------------===//
+
 LogicalResult DemuxOp::verify() {
   if (failed(verifySelAgainstArity(getOperation(), getSel().getType(),
                                    getOutputs().size(), "outputs")))
