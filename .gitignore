@@ -1,0 +1,15 @@
+# Build artifacts
+/build/
+/externals/llvm/build/
+
+# clangd / editor artifacts
+/compile_commands.json
+/.cache/
+
+# Python / test artifacts
+__pycache__/
+*.pyc
+
+# OS / editor junk
+.DS_Store
+*.swp

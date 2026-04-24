@@ -1,0 +1,29 @@
+#ifndef FABRIC_TYPES_TD
+#define FABRIC_TYPES_TD
+
+include "Fabric/IR/FabricDialect.td"
+
+def Fabric_BitsType : Fabric_Type<"Bits", "bits"> {
+  let summary = "fabric bits type (BW >= 0), with implicit valid/ready handshake";
+  let parameters = (ins "unsigned":$width);
+  let assemblyFormat = "`<` $width `>`";
+}
+
+def Fabric_BitsTagType : Fabric_Type<"BitsTag", "bits_tag"> {
+  let summary = "fabric bits+tag type (BW > 0, TW > 0), with implicit valid/ready handshake";
+  let parameters = (ins "unsigned":$width, "unsigned":$tagWidth);
+  let assemblyFormat = "`<` $width `,` $tagWidth `>`";
+  let genVerifyDecl = 1;
+}
+
+def Fabric_TagType : Fabric_Type<"Tag", "tag"> {
+  let summary = "fabric tag-only type (TW > 0), with implicit valid/ready handshake";
+  let parameters = (ins "unsigned":$tagWidth);
+  let assemblyFormat = "`<` $tagWidth `>`";
+  let genVerifyDecl = 1;
+}
+
+def Fabric_AnyType
+    : AnyTypeOf<[Fabric_BitsType, Fabric_BitsTagType, Fabric_TagType]>;
+
+#endif // FABRIC_TYPES_TD
