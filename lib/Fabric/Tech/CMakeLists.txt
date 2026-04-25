@@ -11,6 +11,7 @@ add_mlir_library(MLIRFabricTech
   MLIRFabric
   MLIRFuncDialect
   MLIRIR
+  MLIRMathDialect
   MLIRPass
   MLIRSupport
 )

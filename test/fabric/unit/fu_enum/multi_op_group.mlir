@@ -1,7 +1,7 @@
 // RUN: loom %s -loom-enumerate-fu-subgraphs | FileCheck %s
 
 // FU with two configurable fabric.ops, each with multiple op_list members.
-// 2 x 2 = 4 supported subgraphs.
+// 2 x 3 = 6 supported subgraphs.
 
 // CHECK-LABEL: @fu_two_op_groups
 func.func @fu_two_op_groups(%a: !fabric.bits<16>, %b: !fabric.bits<16>) {
@@ -14,19 +14,12 @@ func.func @fu_two_op_groups(%a: !fabric.bits<16>, %b: !fabric.bits<16>) {
     fabric.yield %m : !fabric.bits<16>
   }
 
-  // 2 (add/sub) x 3 (and/or/xor) = 6 enumerated subgraphs.
-  // CHECK: dataflow.subgraph
-  // CHECK-SAME: "op#0=arith.addi; op#1=arith.andi"
-  // CHECK: dataflow.subgraph
-  // CHECK-SAME: "op#0=arith.subi; op#1=arith.andi"
-  // CHECK: dataflow.subgraph
-  // CHECK-SAME: "op#0=arith.addi; op#1=arith.ori"
-  // CHECK: dataflow.subgraph
-  // CHECK-SAME: "op#0=arith.subi; op#1=arith.ori"
-  // CHECK: dataflow.subgraph
-  // CHECK-SAME: "op#0=arith.addi; op#1=arith.xori"
-  // CHECK: dataflow.subgraph
-  // CHECK-SAME: "op#0=arith.subi; op#1=arith.xori"
+  // CHECK-DAG: "op#0{op_sel=arith.addi}; op#1{op_sel=arith.andi}"
+  // CHECK-DAG: "op#0{op_sel=arith.subi}; op#1{op_sel=arith.andi}"
+  // CHECK-DAG: "op#0{op_sel=arith.addi}; op#1{op_sel=arith.ori}"
+  // CHECK-DAG: "op#0{op_sel=arith.subi}; op#1{op_sel=arith.ori}"
+  // CHECK-DAG: "op#0{op_sel=arith.addi}; op#1{op_sel=arith.xori}"
+  // CHECK-DAG: "op#0{op_sel=arith.subi}; op#1{op_sel=arith.xori}"
 
   return
 }

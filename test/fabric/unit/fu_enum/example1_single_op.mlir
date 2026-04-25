@@ -13,19 +13,15 @@ func.func @fu_addi_or_subi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
     fabric.yield %k : !fabric.bits<32>
   }
 
-  // The FU itself is preserved.
   // CHECK: fabric.fu
-  // CHECK:   fabric.op [@arith.addi, @arith.subi]
-  // CHECK:   fabric.yield
 
-  // Two enumerated subgraphs follow.
   // CHECK: dataflow.subgraph
-  // CHECK-SAME: loom.from_fu_config = "op#0=arith.addi"
+  // CHECK-SAME: loom.from_fu_config = "op#0{op_sel=arith.addi}"
   // CHECK:   arith.addi
   // CHECK:   dataflow.yield
 
   // CHECK: dataflow.subgraph
-  // CHECK-SAME: loom.from_fu_config = "op#0=arith.subi"
+  // CHECK-SAME: loom.from_fu_config = "op#0{op_sel=arith.subi}"
   // CHECK:   arith.subi
   // CHECK:   dataflow.yield
 

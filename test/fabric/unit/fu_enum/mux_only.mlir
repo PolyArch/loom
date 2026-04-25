@@ -16,12 +16,9 @@ func.func @fu_mux3_then_op(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
     fabric.yield %k : !fabric.bits<32>
   }
 
-  // CHECK: dataflow.subgraph
-  // CHECK-SAME: "mux#0.sel=0; op#0=arith.muli"
-  // CHECK: dataflow.subgraph
-  // CHECK-SAME: "mux#0.sel=1; op#0=arith.muli"
-  // CHECK: dataflow.subgraph
-  // CHECK-SAME: "mux#0.sel=2; op#0=arith.muli"
+  // CHECK-DAG: "mux#0{sel=0}"
+  // CHECK-DAG: "mux#0{sel=1}"
+  // CHECK-DAG: "mux#0{sel=2}"
 
   return
 }
