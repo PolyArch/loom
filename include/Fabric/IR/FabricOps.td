@@ -5,6 +5,7 @@ include "Fabric/IR/FabricDialect.td"
 include "Fabric/IR/FabricTypes.td"
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/CommonAttrConstraints.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
@@ -146,6 +147,62 @@ def Fabric_OpOp : Fabric_Op<"op", []> {
       `:` functional-type($inputs, $outputs)
   }];
   let hasVerifier = 1;
+}
+
+def Fabric_FuOp : Fabric_Op<"fu", [
+    IsolatedFromAbove,
+    SingleBlockImplicitTerminator<"YieldOp">
+]> {
+  let summary =
+      "fabric function unit (FU): an SSACFG tile of fabric.op / mux / demux";
+  let description = [{
+    Container for one CGRA-style functional unit. Inputs and outputs
+    are `fabric.bits<N>` ports. The body is a single SSACFG block
+    whose only permitted ops are `fabric.op`, `fabric.mux`,
+    `fabric.demux` and the `fabric.yield` terminator. The mux / demux
+    ops inside an FU let different software configurations realize
+    different internal compute graphs over the same hardware: they
+    are *not* required to attach to the FU's external inputs /
+    outputs, their role is to reshape the in-FU op connectivity.
+
+    Constraints:
+      * The body must contain at least one `fabric.op`.
+      * `fabric.fu` cannot be nested.
+      * `fabric.fifo` is not permitted in the body.
+      * The FU itself carries no `[hw_params]` / `{sw_configs}`;
+        all configuration lives on the inner ops.
+  }];
+
+  let arguments = (ins Variadic<Fabric_BitsType>:$inputs);
+  let results = (outs Variadic<Fabric_BitsType>:$outputs);
+  let regions = (region SizedRegion<1>:$body);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Fabric_YieldOp : Fabric_Op<"yield", [
+    Terminator,
+    HasParent<"::fabric::FuOp">,
+    Pure
+]> {
+  let summary = "terminator of a fabric.fu region";
+  let description = [{
+    Supplies the values that leave the enclosing `fabric.fu` on its
+    results. The number and types of `$values` must match the parent
+    op's result count and types.
+  }];
+
+  let arguments = (ins Variadic<Fabric_BitsType>:$values);
+
+  let assemblyFormat = "($values^ `:` type($values))? attr-dict";
+  let hasVerifier = 1;
+
+  let builders = [
+    OpBuilder<(ins), [{
+      build($_builder, $_state, ::mlir::ValueRange{});
+    }]>
+  ];
 }
 
 #endif // FABRIC_OPS_TD

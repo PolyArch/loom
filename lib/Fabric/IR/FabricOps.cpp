@@ -809,3 +809,147 @@ LogicalResult OpOp::verify() {
   }
   return success();
 }
+
+//===----------------------------------------------------------------------===//
+// fabric.fu / fabric.yield
+//===----------------------------------------------------------------------===//
+//
+// Assembly format mirrors dataflow.graph: inline (block-arg = outer : T)
+// pairs in `(...)`, then `-> result-types`, then optional attributes
+// keyword + region body.
+
+ParseResult FuOp::parse(OpAsmParser &parser, OperationState &result) {
+  SmallVector<OpAsmParser::Argument, 4> blockArgs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> operands;
+  SmallVector<Type, 4> operandTypes;
+  SMLoc operandsLoc = parser.getCurrentLocation();
+
+  if (parser.parseLParen())
+    return failure();
+  if (failed(parser.parseOptionalRParen())) {
+    auto parseOne = [&]() -> ParseResult {
+      OpAsmParser::Argument arg;
+      OpAsmParser::UnresolvedOperand op;
+      Type ty;
+      if (parser.parseArgument(arg) || parser.parseEqual() ||
+          parser.parseOperand(op) || parser.parseColon() ||
+          parser.parseType(ty))
+        return failure();
+      arg.type = ty;
+      blockArgs.push_back(arg);
+      operands.push_back(op);
+      operandTypes.push_back(ty);
+      return success();
+    };
+    if (parseOne())
+      return failure();
+    while (succeeded(parser.parseOptionalComma()))
+      if (parseOne())
+        return failure();
+    if (parser.parseRParen())
+      return failure();
+  }
+
+  if (parser.resolveOperands(operands, operandTypes, operandsLoc,
+                             result.operands))
+    return failure();
+
+  if (parser.parseArrow())
+    return failure();
+  SmallVector<Type, 4> resultTypes;
+  if (succeeded(parser.parseOptionalLParen())) {
+    if (failed(parser.parseOptionalRParen())) {
+      if (parser.parseTypeList(resultTypes) || parser.parseRParen())
+        return failure();
+    }
+  } else {
+    Type ty;
+    if (parser.parseType(ty))
+      return failure();
+    resultTypes.push_back(ty);
+  }
+  result.addTypes(resultTypes);
+
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  Region *body = result.addRegion();
+  if (parser.parseRegion(*body, blockArgs, /*enableNameShadowing=*/false))
+    return failure();
+  FuOp::ensureTerminator(*body, parser.getBuilder(), result.location);
+  return success();
+}
+
+void FuOp::print(OpAsmPrinter &p) {
+  p << '(';
+  Block &entry = getBody().front();
+  llvm::interleaveComma(
+      llvm::zip(entry.getArguments(), getInputs()), p, [&](auto pair) {
+        BlockArgument bb;
+        Value outer;
+        std::tie(bb, outer) = pair;
+        p.printRegionArgument(bb, /*argAttrs=*/{}, /*omitType=*/true);
+        p << " = " << outer << " : " << outer.getType();
+      });
+  p << ") -> ";
+  auto rTypes = getResultTypes();
+  if (rTypes.size() == 1) {
+    p << rTypes.front();
+  } else {
+    p << '(';
+    llvm::interleaveComma(rTypes, p);
+    p << ')';
+  }
+  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs());
+  p << ' ';
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/true);
+}
+
+LogicalResult FuOp::verify() {
+  Block &entry = getBody().front();
+  if (entry.getNumArguments() != getInputs().size())
+    return emitOpError("region entry block argument count (")
+           << entry.getNumArguments() << ") must equal operand count ("
+           << getInputs().size() << ")";
+  for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
+    if (arg.getType() != getInputs()[i].getType())
+      return emitOpError("region entry block argument #")
+             << i << " type " << arg.getType() << " must match operand type "
+             << getInputs()[i].getType();
+  }
+
+  unsigned numCompute = 0;
+  for (Operation &op : entry.without_terminator()) {
+    if (isa<OpOp>(op)) {
+      ++numCompute;
+      continue;
+    }
+    if (isa<MuxOp, DemuxOp>(op))
+      continue;
+    return op.emitOpError(
+        "is not allowed inside fabric.fu; only fabric.op, fabric.mux, "
+        "fabric.demux are permitted (no fabric.fu nesting, no fabric.fifo)");
+  }
+  if (numCompute < 1)
+    return emitOpError(
+        "fabric.fu body requires at least one fabric.op; got 0");
+  return success();
+}
+
+LogicalResult YieldOp::verify() {
+  auto fu = cast<FuOp>((*this)->getParentOp());
+  if (getValues().size() != fu.getOutputs().size())
+    return emitOpError("yield value count (")
+           << getValues().size() << ") must match parent fabric.fu result "
+                                    "count ("
+           << fu.getOutputs().size() << ")";
+  for (auto [i, v] : llvm::enumerate(getValues())) {
+    Type expected = fu.getOutputs()[i].getType();
+    if (v.getType() != expected)
+      return emitOpError("yield value #")
+             << i << " type " << v.getType()
+             << " must match parent fabric.fu result type " << expected;
+  }
+  return success();
+}
