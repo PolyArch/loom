@@ -51,8 +51,7 @@ struct EnumerateFuSubgraphsPass
       if (!unsupported.empty()) {
         fu.emitWarning("fabric.fu enumeration skipped: contains unsupported "
                        "op '")
-            << unsupported
-            << "' (v1 enumerator is limited to integer arith ops)";
+            << unsupported << "'";
       }
       for (auto &cand : cands) {
         cand.subgraph->setAttr(
@@ -73,6 +72,7 @@ std::unique_ptr<::mlir::Pass> createEnumerateFuSubgraphsPass() {
 
 void registerFabricTechPasses() {
   ::mlir::PassRegistration<EnumerateFuSubgraphsPass>();
+  ::mlir::registerPass(createMapSubgraphToFusPass);
 }
 
 } // namespace fabric

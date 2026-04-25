@@ -53,10 +53,13 @@ enum class Flavor : uint8_t {
   IntToFloat,  // 1-int-in 1-float-out
   FloatToInt,  // 1-float-in 1-int-out
   FloatUnary,  // 1-float-in 1-float-out (math.*)
-  DataflowStreamFlavor, // 3-int-in (T) 2-out (T,i1), step_op + cont_cond
-  DataflowCarryGateInv, // dataflow.carry/invariant/gate, polymorphic; treat
-                        // shared port as integer for v2 (it carries a
-                        // generic value; loom v2 instantiates it as iN)
+  DataflowStreamFlavor,    // 3-int-in (T) 2-out (T,i1)
+  DataflowCarryGateInv,    // dataflow.carry/invariant/gate, polymorphic
+                           // shared port treated as integer
+  DataflowConstantFlavor,  // dataflow.constant: 1 none-in, 1 typed-out,
+                           // const_hex_value sw_config materialized into
+                           // an IntegerAttr (or FloatAttr when the result
+                           // port is float-flavored).
 };
 
 static const llvm::StringMap<Flavor> &opFlavors() {
@@ -102,13 +105,14 @@ static const llvm::StringMap<Flavor> &opFlavors() {
     put("dataflow.carry", Flavor::DataflowCarryGateInv);
     put("dataflow.invariant", Flavor::DataflowCarryGateInv);
     put("dataflow.gate", Flavor::DataflowCarryGateInv);
+    put("dataflow.constant", Flavor::DataflowConstantFlavor);
 
     return r;
   }();
   return m;
 }
 
-static bool isV2Materializable(StringRef opSym) {
+static bool isMaterializable(StringRef opSym) {
   return opFlavors().count(opSym);
 }
 
@@ -173,6 +177,11 @@ static Type liftFor(Flavor flavor, unsigned w, bool isOutput, unsigned portIdx,
       return IntegerType::get(ctx, 1);
     return intLifted(w, ctx);
   }
+  case Flavor::DataflowConstantFlavor:
+    // Input is the none-typed control token (bits<0> -> none).
+    if (!isOutput)
+      return NoneType::get(ctx);
+    return intLifted(w, ctx);
   }
   return nullptr;
 }
@@ -184,6 +193,7 @@ static PortLift portLiftKind(Flavor f, bool isOutput, unsigned idx) {
   case Flavor::IntCmp:
   case Flavor::DataflowStreamFlavor:
   case Flavor::DataflowCarryGateInv:
+  case Flavor::DataflowConstantFlavor:
     return PortLift::Int;
   case Flavor::FloatArith:
   case Flavor::FloatUnary:
@@ -287,6 +297,31 @@ struct ChoiceAxis {
   SmallVector<Attribute> values;
 };
 
+// Parse a hex literal (with or without "0x" prefix) into an attribute
+// matching `resultTy`. Returns nullptr on invalid input or unsupported
+// result type.
+static Attribute parseConstHex(StringRef hex, Type resultTy,
+                               MLIRContext *ctx) {
+  StringRef body = hex;
+  if (body.starts_with("0x") || body.starts_with("0X"))
+    body = body.substr(2);
+  if (body.empty())
+    return nullptr;
+  uint64_t v = 0;
+  if (body.getAsInteger(16, v))
+    return nullptr;
+  if (auto intTy = ::mlir::dyn_cast<IntegerType>(resultTy)) {
+    return ::mlir::IntegerAttr::get(intTy,
+                                     ::llvm::APInt(intTy.getWidth(), v));
+  }
+  if (auto floatTy = ::mlir::dyn_cast<::mlir::FloatType>(resultTy)) {
+    ::llvm::APInt bits(floatTy.getWidth(), v);
+    ::llvm::APFloat fp(floatTy.getFloatSemantics(), bits);
+    return ::mlir::FloatAttr::get(floatTy, fp);
+  }
+  return nullptr;
+}
+
 // Convert a raw sw_config attribute value (typically StringAttr) into the
 // MLIR attribute the materialized sw op expects.
 static Attribute toSwAttr(StringRef opSym, StringRef key, Attribute raw,
@@ -386,6 +421,22 @@ buildBodyForConfig(FuOp fu, ::mlir::ValueRange subBlockArgs,
       for (auto &kv : chosen) {
         if (kv.getKey() == "op_sel")
           continue;
+        // Special case: dataflow.constant carries the constant payload as a
+        // hex string ("0xdeadbeef") under the sw_config key
+        // `const_hex_value`; the materialized op uses a typed attribute
+        // `const_value` instead.
+        if (sym == "dataflow.constant" && kv.getKey() == "const_hex_value") {
+          auto str = ::mlir::dyn_cast<StringAttr>(kv.getValue());
+          if (!str)
+            return std::nullopt;
+          if (swResultTypes.empty())
+            return std::nullopt;
+          Attribute v = parseConstHex(str.getValue(), swResultTypes[0], ctx);
+          if (!v)
+            return std::nullopt;
+          state.addAttribute("const_value", v);
+          continue;
+        }
         Attribute conv = toSwAttr(sym, kv.getKey(), kv.getValue(), ctx);
         if (!conv)
           return std::nullopt;
@@ -492,7 +543,7 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
   MLIRContext *ctx = fu.getContext();
   Block &fuBody = fu.getBody().front();
 
-  // 1. Validate every fabric.op uses only v2-materializable sw symbols.
+  // 1. Validate every fabric.op uses only materializable sw symbols.
   // 2. Build choice axes for the entire FU body.
   SmallVector<ChoiceAxis> axes;
   // Per-op ordinal (for human-readable description).
@@ -504,7 +555,7 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
       ArrayAttr opList = fop.getOpList();
       for (Attribute a : opList) {
         StringRef name = ::mlir::cast<FlatSymbolRefAttr>(a).getValue();
-        if (!isV2Materializable(name)) {
+        if (!isMaterializable(name)) {
           if (unsupported)
             *unsupported = name;
           return results;

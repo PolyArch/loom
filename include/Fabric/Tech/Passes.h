@@ -13,6 +13,13 @@ namespace fabric {
 // the configuration that produced it.
 std::unique_ptr<::mlir::Pass> createEnumerateFuSubgraphsPass();
 
+// For each dataflow.subgraph annotated with `loom.is_pattern`, try to find
+// a fabric.fu in the module that can implement the pattern. On success the
+// pattern is annotated with `loom.matched_fu` (FuOp identifier) and
+// `loom.match_config` (configuration description); otherwise the pattern
+// is tagged `loom.unmatched`.
+std::unique_ptr<::mlir::Pass> createMapSubgraphToFusPass();
+
 void registerFabricTechPasses();
 
 } // namespace fabric
