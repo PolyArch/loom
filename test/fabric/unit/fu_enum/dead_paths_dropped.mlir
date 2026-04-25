@@ -16,12 +16,12 @@ func.func @fu_demux_drop_dead_yield(%a: !fabric.bits<8>, %b: !fabric.bits<8>) {
 
   // Only one config (demux.sel=0) keeps %d0 alive.
   // CHECK: dataflow.subgraph
-  // CHECK-SAME: "demux#0{sel=0}"
+  // CHECK-SAME: demux#0{sel=0,discard=false,disconnect=false}
   // CHECK:   arith.muli
   // CHECK:   dataflow.yield
 
   // The demux.sel=1 case must not produce a candidate.
-  // CHECK-NOT: demux#0{sel=1}
+  // CHECK-NOT: demux#0{sel=1,discard=false,disconnect=false}
 
   return
 }

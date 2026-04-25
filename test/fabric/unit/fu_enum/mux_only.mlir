@@ -16,9 +16,9 @@ func.func @fu_mux3_then_op(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
     fabric.yield %k : !fabric.bits<32>
   }
 
-  // CHECK-DAG: "mux#0{sel=0}"
-  // CHECK-DAG: "mux#0{sel=1}"
-  // CHECK-DAG: "mux#0{sel=2}"
+  // CHECK-DAG: mux#0{sel=0,discard=false,disconnect=false}
+  // CHECK-DAG: mux#0{sel=1,discard=false,disconnect=false}
+  // CHECK-DAG: mux#0{sel=2,discard=false,disconnect=false}
 
   return
 }

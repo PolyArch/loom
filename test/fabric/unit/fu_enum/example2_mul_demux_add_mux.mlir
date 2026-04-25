@@ -28,13 +28,13 @@ func.func @fu_mul_or_mac(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
 
   // Subgraph for "%a * %b" (demux.sel=0, mux.sel=0):
   // CHECK: dataflow.subgraph
-  // CHECK-SAME: "demux#0{sel=0}; mux#0{sel=0}"
+  // CHECK-SAME: demux#0{sel=0,discard=false,disconnect=false}; mux#0{sel=0,discard=false,disconnect=false}
   // CHECK:   %[[M0:.*]] = arith.muli %{{.*}}, %{{.*}} : i32
   // CHECK:   dataflow.yield %[[M0]] : i32
 
   // Subgraph for "%a * %b + %c" (demux.sel=1, mux.sel=1):
   // CHECK: dataflow.subgraph
-  // CHECK-SAME: "demux#0{sel=1}; mux#0{sel=1}"
+  // CHECK-SAME: demux#0{sel=1,discard=false,disconnect=false}; mux#0{sel=1,discard=false,disconnect=false}
   // CHECK:   %[[M1:.*]] = arith.muli %{{.*}}, %{{.*}} : i32
   // CHECK:   %[[A1:.*]] = arith.addi %[[M1]], %{{.*}} : i32
   // CHECK:   dataflow.yield %[[A1]] : i32

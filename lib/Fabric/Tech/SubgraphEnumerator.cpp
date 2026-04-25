@@ -353,78 +353,251 @@ static Attribute toSwAttr(StringRef opSym, StringRef key, Attribute raw,
 
 using ValueMap = llvm::DenseMap<Value, Value>;
 
-// Build the body of one configuration. `subBlockArgs` is the list of
-// dataflow.subgraph block arguments. For each fabric op encountered we
-// look up its chosen sw_config attributes from `chosenByOp`. Returns the
-// mapped yield values on success or std::nullopt if any required path is
-// dead.
+// Returns (sel, discard, disconnect) decoded from a chosen sw_config dict.
+static std::tuple<unsigned, bool, bool>
+decodeMuxLikeMode(const llvm::StringMap<Attribute> &chosen) {
+  auto sel = ::mlir::cast<::mlir::IntegerAttr>(chosen.lookup("sel")).getInt();
+  bool discard =
+      ::mlir::cast<::mlir::BoolAttr>(chosen.lookup("discard")).getValue();
+  bool disconnect =
+      ::mlir::cast<::mlir::BoolAttr>(chosen.lookup("disconnect")).getValue();
+  return {(unsigned)sel, discard, disconnect};
+}
+
+// Whether the use port at `idx` of `user` is "active" (its handshake ready
+// can go high) under the chosen modes.
+static bool useIsActive(Operation *user, unsigned idx,
+                         const llvm::DenseSet<Operation *> &fires,
+                         const llvm::DenseMap<Operation *,
+                                               llvm::StringMap<Attribute>>
+                             &chosenByOp) {
+  if (::mlir::isa<::fabric::YieldOp>(user))
+    return true;
+  if (::mlir::isa<::fabric::OpOp>(user))
+    return fires.count(user);
+  if (::mlir::isa<::fabric::MuxOp>(user)) {
+    if (!fires.count(user))
+      return false;
+    auto [sel, discard, disconnect] =
+        decodeMuxLikeMode(chosenByOp.lookup(user));
+    (void)discard;
+    if (disconnect)
+      return false;
+    return idx == sel;
+  }
+  if (::mlir::isa<::fabric::DemuxOp>(user)) {
+    if (!fires.count(user))
+      return false;
+    auto [sel, discard, disconnect] =
+        decodeMuxLikeMode(chosenByOp.lookup(user));
+    (void)sel;
+    (void)discard;
+    if (disconnect)
+      return false;
+    return idx == 0;
+  }
+  return true;
+}
+
+static bool allUsesActive(Value v,
+                           const llvm::DenseSet<Operation *> &fires,
+                           const llvm::DenseMap<Operation *,
+                                                 llvm::StringMap<Attribute>>
+                               &chosenByOp) {
+  for (::mlir::OpOperand &use : v.getUses())
+    if (!useIsActive(use.getOwner(), use.getOperandNumber(), fires,
+                      chosenByOp))
+      return false;
+  return true;
+}
+
+static bool opCanFire(Operation *op,
+                       const llvm::DenseSet<Value> &alive,
+                       const llvm::DenseSet<Value> &demanded,
+                       const llvm::DenseMap<Operation *,
+                                             llvm::StringMap<Attribute>>
+                           &chosenByOp) {
+  if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(op)) {
+    for (Value in : fop.getInputs())
+      if (!alive.count(in))
+        return false;
+    bool any = false;
+    for (Value out : fop.getOutputs())
+      if (demanded.count(out)) { any = true; break; }
+    return any;
+  }
+  if (auto m = ::mlir::dyn_cast<::fabric::MuxOp>(op)) {
+    auto [sel, discard, disconnect] =
+        decodeMuxLikeMode(chosenByOp.lookup(op));
+    if (disconnect)
+      return false;
+    if (!alive.count(m.getInputs()[sel]))
+      return false;
+    if (discard)
+      return true;
+    return demanded.count(m.getOutput());
+  }
+  if (auto d = ::mlir::dyn_cast<::fabric::DemuxOp>(op)) {
+    auto [sel, discard, disconnect] =
+        decodeMuxLikeMode(chosenByOp.lookup(op));
+    if (disconnect)
+      return false;
+    if (!alive.count(d.getInput()))
+      return false;
+    if (discard)
+      return true;
+    return demanded.count(d.getOutputs()[sel]);
+  }
+  return false;
+}
+
+// Materialize body for one configuration. Computes a fixed-point of
+// (demanded, alive, fires) sets and validates that every demanded value
+// flows. Returns the mapped yield values on success or std::nullopt if the
+// config is invalid (deadlocked).
 static std::optional<SmallVector<Value, 4>>
 buildBodyForConfig(FuOp fu, ::mlir::ValueRange subBlockArgs,
                    OpBuilder &builder,
                    const llvm::DenseMap<Operation *,
                                         llvm::StringMap<Attribute>> &chosenByOp) {
-  ValueMap valueMap;
   Block &fuBody = fu.getBody().front();
   MLIRContext *ctx = fu.getContext();
+  auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());
 
+  // 1. Backward demand propagation.
+  llvm::DenseSet<Value> demanded;
+  for (Value y : yieldOp.getValues())
+    demanded.insert(y);
+  for (Operation &op : fuBody.without_terminator()) {
+    if (auto m = ::mlir::dyn_cast<::fabric::MuxOp>(&op)) {
+      auto [sel, discard, disconnect] =
+          decodeMuxLikeMode(chosenByOp.lookup(&op));
+      if (discard && !disconnect)
+        demanded.insert(m.getInputs()[sel]);
+    } else if (auto d = ::mlir::dyn_cast<::fabric::DemuxOp>(&op)) {
+      auto [sel, discard, disconnect] =
+          decodeMuxLikeMode(chosenByOp.lookup(&op));
+      (void)sel;
+      if (discard && !disconnect)
+        demanded.insert(d.getInput());
+    }
+  }
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (Operation &op : fuBody.without_terminator()) {
+      if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(&op)) {
+        bool anyOut = false;
+        for (Value out : fop.getOutputs())
+          if (demanded.count(out)) { anyOut = true; break; }
+        if (!anyOut)
+          continue;
+        for (Value in : fop.getInputs())
+          if (demanded.insert(in).second)
+            changed = true;
+      } else if (auto m = ::mlir::dyn_cast<::fabric::MuxOp>(&op)) {
+        auto [sel, discard, disconnect] =
+            decodeMuxLikeMode(chosenByOp.lookup(&op));
+        if (discard || disconnect)
+          continue;
+        if (demanded.count(m.getOutput()))
+          if (demanded.insert(m.getInputs()[sel]).second)
+            changed = true;
+      } else if (auto d = ::mlir::dyn_cast<::fabric::DemuxOp>(&op)) {
+        auto [sel, discard, disconnect] =
+            decodeMuxLikeMode(chosenByOp.lookup(&op));
+        if (discard || disconnect)
+          continue;
+        if (demanded.count(d.getOutputs()[sel]))
+          if (demanded.insert(d.getInput()).second)
+            changed = true;
+      }
+    }
+  }
+
+  // 2. Monotonic shrink fixed-point on alive / fires.
+  llvm::DenseSet<Value> alive(demanded.begin(), demanded.end());
+  llvm::DenseSet<Operation *> fires;
+  changed = true;
+  while (changed) {
+    changed = false;
+    llvm::DenseSet<Operation *> newFires;
+    for (Operation &op : fuBody.without_terminator())
+      if (opCanFire(&op, alive, demanded, chosenByOp))
+        newFires.insert(&op);
+    if (newFires != fires) {
+      fires = std::move(newFires);
+      changed = true;
+    }
+    llvm::DenseSet<Value> newAlive;
+    for (Value v : alive) {
+      bool producerOk = false;
+      if (::mlir::isa<::mlir::BlockArgument>(v)) {
+        producerOk = demanded.count(v);
+      } else if (Operation *def = v.getDefiningOp()) {
+        producerOk = fires.count(def);
+      }
+      if (!producerOk)
+        continue;
+      if (!allUsesActive(v, fires, chosenByOp))
+        continue;
+      newAlive.insert(v);
+    }
+    if (newAlive != alive) {
+      alive = std::move(newAlive);
+      changed = true;
+    }
+  }
+
+  // 3. Validate.
+  for (Value v : demanded)
+    if (!alive.count(v))
+      return std::nullopt;
+
+  // 4. Materialize sw subgraph body for live ops.
+  ValueMap valueMap;
   for (auto [fuArg, subArg] :
        llvm::zip(fuBody.getArguments(), subBlockArgs))
-    valueMap[fuArg] = subArg;
+    if (alive.count(fuArg))
+      valueMap[fuArg] = subArg;
 
   for (Operation &op : fuBody.without_terminator()) {
     if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(&op)) {
-      // Determine chosen op symbol.
+      if (!fires.count(&op))
+        continue; // op doesn't fire in this config
       const auto &chosen = chosenByOp.lookup(&op);
       ArrayAttr opList = fop.getOpList();
       StringRef sym;
       auto opSelIt = chosen.find("op_sel");
-      if (opSelIt != chosen.end()) {
+      if (opSelIt != chosen.end())
         sym = ::mlir::cast<StringAttr>(opSelIt->second).getValue();
-      } else {
+      else
         sym = ::mlir::cast<FlatSymbolRefAttr>(opList[0]).getValue();
-      }
-
       Flavor flavor = opFlavors().lookup(sym);
 
-      // Collect sw inputs; bail out on dead input by leaving outputs dead.
-      bool anyDead = false;
       SmallVector<Value, 4> swInputs;
       swInputs.reserve(fop.getInputs().size());
       for (Value in : fop.getInputs()) {
         auto it = valueMap.find(in);
-        if (it == valueMap.end()) {
-          anyDead = true;
-          break;
-        }
+        if (it == valueMap.end())
+          return std::nullopt;
         swInputs.push_back(it->second);
       }
-      if (anyDead)
-        continue;
-
-      // Build sw result types using flavor-aware lifting.
       SmallVector<Type, 2> swResultTypes;
       swResultTypes.reserve(fop.getOutputs().size());
       for (auto [i, t] : llvm::enumerate(fop.getResultTypes())) {
         unsigned w = ::mlir::cast<BitsType>(t).getWidth();
         Type ty = liftFor(flavor, w, /*isOutput=*/true, i, ctx);
         if (!ty)
-          return std::nullopt; // unsupported width for flavor
+          return std::nullopt;
         swResultTypes.push_back(ty);
       }
-
-      // Build the sw op.
       OperationState state(fop.getLoc(), sym);
       state.addOperands(swInputs);
       state.addTypes(swResultTypes);
-      // Inject attributes from chosen sw_configs (excluding op_sel, which
-      // is consumed locally).
       for (auto &kv : chosen) {
         if (kv.getKey() == "op_sel")
           continue;
-        // Special case: dataflow.constant carries the constant payload as a
-        // hex string ("0xdeadbeef") under the sw_config key
-        // `const_hex_value`; the materialized op uses a typed attribute
-        // `const_value` instead.
         if (sym == "dataflow.constant" && kv.getKey() == "const_hex_value") {
           auto str = ::mlir::dyn_cast<StringAttr>(kv.getValue());
           if (!str)
@@ -445,34 +618,38 @@ buildBodyForConfig(FuOp fu, ::mlir::ValueRange subBlockArgs,
       Operation *swOp = builder.create(state);
       for (auto [fuOut, swOut] :
            llvm::zip(fop.getOutputs(), swOp->getResults()))
-        valueMap[fuOut] = swOut;
+        if (alive.count(fuOut))
+          valueMap[fuOut] = swOut;
       continue;
     }
     if (auto m = ::mlir::dyn_cast<::fabric::MuxOp>(&op)) {
-      const auto &chosen = chosenByOp.lookup(&op);
-      auto sel =
-          ::mlir::cast<::mlir::IntegerAttr>(chosen.lookup("sel")).getInt();
-      Value src = m.getInputs()[sel];
-      auto it = valueMap.find(src);
-      if (it != valueMap.end())
+      if (!fires.count(&op))
+        continue;
+      auto [sel, discard, disconnect] =
+          decodeMuxLikeMode(chosenByOp.lookup(&op));
+      (void)disconnect;
+      if (discard)
+        continue; // drains input, no output produced
+      auto it = valueMap.find(m.getInputs()[sel]);
+      if (it != valueMap.end() && alive.count(m.getOutput()))
         valueMap[m.getOutput()] = it->second;
       continue;
     }
     if (auto d = ::mlir::dyn_cast<::fabric::DemuxOp>(&op)) {
-      const auto &chosen = chosenByOp.lookup(&op);
-      auto sel =
-          ::mlir::cast<::mlir::IntegerAttr>(chosen.lookup("sel")).getInt();
+      if (!fires.count(&op))
+        continue;
+      auto [sel, discard, disconnect] =
+          decodeMuxLikeMode(chosenByOp.lookup(&op));
+      (void)disconnect;
+      if (discard)
+        continue;
       auto it = valueMap.find(d.getInput());
-      Value liveSrc = (it != valueMap.end()) ? it->second : Value();
-      for (unsigned k = 0; k < d.getOutputs().size(); ++k) {
-        if (k == (unsigned)sel && liveSrc)
-          valueMap[d.getOutputs()[k]] = liveSrc;
-      }
+      if (it != valueMap.end() && alive.count(d.getOutputs()[sel]))
+        valueMap[d.getOutputs()[sel]] = it->second;
       continue;
     }
   }
 
-  auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());
   SmallVector<Value, 4> yields;
   yields.reserve(yieldOp.getValues().size());
   for (Value y : yieldOp.getValues()) {
@@ -489,21 +666,43 @@ static std::string describeChoice(::llvm::ArrayRef<ChoiceAxis> axes,
                                   llvm::DenseMap<Operation *, unsigned> &nthOp,
                                   llvm::DenseMap<Operation *, unsigned> &nthMux,
                                   llvm::DenseMap<Operation *, unsigned> &nthDemux) {
-  // Group choices by fabric op for readability.
+  // Group choices by fabric op for readability. Mode axes (key == "_mode")
+  // hold a full DictionaryAttr; we unpack into individual key=val entries.
   llvm::DenseMap<Operation *, std::string> perOp;
+  auto appendAttrEntry = [](std::string &slot, ::llvm::StringRef key,
+                             Attribute v) {
+    if (!slot.empty())
+      slot += ",";
+    // Check BoolAttr before IntegerAttr because in MLIR BoolAttr is a
+    // specialized i1 IntegerAttr.
+    if (auto bA = ::mlir::dyn_cast<::mlir::BoolAttr>(v)) {
+      slot += key.str() + (bA.getValue() ? "=true" : "=false");
+    } else if (auto str = ::mlir::dyn_cast<StringAttr>(v)) {
+      slot += key.str() + "=" + str.getValue().str();
+    } else if (auto iA = ::mlir::dyn_cast<::mlir::IntegerAttr>(v)) {
+      llvm::raw_string_ostream os(slot);
+      os << key << "=" << iA.getInt();
+    } else {
+      slot += key.str() + "=<attr>";
+    }
+  };
   for (auto [i, axis] : llvm::enumerate(axes)) {
     Attribute v = axis.values[choices[i]];
     std::string &slot = perOp[axis.fabricOp];
-    if (!slot.empty())
-      slot += ",";
-    if (auto str = ::mlir::dyn_cast<StringAttr>(v)) {
-      slot += axis.key + "=" + str.getValue().str();
-    } else if (auto i = ::mlir::dyn_cast<::mlir::IntegerAttr>(v)) {
-      llvm::raw_string_ostream os(slot);
-      // append - we already prepended above; use += instead.
-      os << axis.key << "=" << i.getInt();
+    if (axis.key == "_mode") {
+      auto dict = ::mlir::cast<DictionaryAttr>(v);
+      // Render in canonical order: sel, discard, disconnect.
+      auto sel = dict.get("sel");
+      auto disc = dict.get("discard");
+      auto dis = dict.get("disconnect");
+      if (sel)
+        appendAttrEntry(slot, "sel", sel);
+      if (disc)
+        appendAttrEntry(slot, "discard", disc);
+      if (dis)
+        appendAttrEntry(slot, "disconnect", dis);
     } else {
-      slot += axis.key + "=<attr>";
+      appendAttrEntry(slot, axis.key, v);
     }
   }
 
@@ -589,21 +788,56 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
       }
     } else if (auto m = ::mlir::dyn_cast<MuxOp>(&op)) {
       nthMux[&op] = countMux++;
+      // Encode each (sel, discard, disconnect) triple as one full
+      // DictionaryAttr in this single axis. Three modes per port plus a
+      // disconnect mode: normal sel=i, discard sel=i, disconnect (sel=0).
       ChoiceAxis axis;
       axis.fabricOp = &op;
-      axis.key = "sel";
-      for (unsigned i = 0; i < m.getInputs().size(); ++i)
-        axis.values.push_back(::mlir::IntegerAttr::get(
-            IntegerType::get(ctx, 32), (int64_t)i));
+      axis.key = "_mode";
+      auto i32 = IntegerType::get(ctx, 32);
+      auto trueA = ::mlir::BoolAttr::get(ctx, true);
+      auto falseA = ::mlir::BoolAttr::get(ctx, false);
+      auto buildModeDict = [&](unsigned sel, bool discard, bool disconnect) {
+        ::llvm::SmallVector<NamedAttribute, 3> e = {
+            NamedAttribute(StringAttr::get(ctx, "sel"),
+                            ::mlir::IntegerAttr::get(i32, (int64_t)sel)),
+            NamedAttribute(StringAttr::get(ctx, "discard"),
+                            discard ? trueA : falseA),
+            NamedAttribute(StringAttr::get(ctx, "disconnect"),
+                            disconnect ? trueA : falseA)};
+        return DictionaryAttr::get(ctx, e);
+      };
+      unsigned N = m.getInputs().size();
+      for (unsigned i = 0; i < N; ++i)
+        axis.values.push_back(buildModeDict(i, false, false));
+      for (unsigned i = 0; i < N; ++i)
+        axis.values.push_back(buildModeDict(i, true, false));
+      axis.values.push_back(buildModeDict(0, false, true));
       axes.push_back(std::move(axis));
     } else if (auto d = ::mlir::dyn_cast<DemuxOp>(&op)) {
       nthDemux[&op] = countDemux++;
       ChoiceAxis axis;
       axis.fabricOp = &op;
-      axis.key = "sel";
-      for (unsigned i = 0; i < d.getOutputs().size(); ++i)
-        axis.values.push_back(::mlir::IntegerAttr::get(
-            IntegerType::get(ctx, 32), (int64_t)i));
+      axis.key = "_mode";
+      auto i32 = IntegerType::get(ctx, 32);
+      auto trueA = ::mlir::BoolAttr::get(ctx, true);
+      auto falseA = ::mlir::BoolAttr::get(ctx, false);
+      auto buildModeDict = [&](unsigned sel, bool discard, bool disconnect) {
+        ::llvm::SmallVector<NamedAttribute, 3> e = {
+            NamedAttribute(StringAttr::get(ctx, "sel"),
+                            ::mlir::IntegerAttr::get(i32, (int64_t)sel)),
+            NamedAttribute(StringAttr::get(ctx, "discard"),
+                            discard ? trueA : falseA),
+            NamedAttribute(StringAttr::get(ctx, "disconnect"),
+                            disconnect ? trueA : falseA)};
+        return DictionaryAttr::get(ctx, e);
+      };
+      unsigned N = d.getOutputs().size();
+      for (unsigned i = 0; i < N; ++i)
+        axis.values.push_back(buildModeDict(i, false, false));
+      for (unsigned i = 0; i < N; ++i)
+        axis.values.push_back(buildModeDict(i, true, false));
+      axis.values.push_back(buildModeDict(0, false, true));
       axes.push_back(std::move(axis));
     }
   }
@@ -644,10 +878,20 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
       v /= step;
     }
 
-    // Group chosen attributes by fabric op.
+    // Group chosen attributes by fabric op. Axes with key == "_mode"
+    // contribute a full DictionaryAttr that is unpacked into individual
+    // entries; other axes contribute a single (key, value) pair.
     llvm::DenseMap<Operation *, llvm::StringMap<Attribute>> chosenByOp;
-    for (auto [i, axis] : llvm::enumerate(axes))
-      chosenByOp[axis.fabricOp][axis.key] = axis.values[choices[i]];
+    for (auto [i, axis] : llvm::enumerate(axes)) {
+      Attribute v = axis.values[choices[i]];
+      if (axis.key == "_mode") {
+        auto dict = ::mlir::cast<DictionaryAttr>(v);
+        for (NamedAttribute na : dict)
+          chosenByOp[axis.fabricOp][na.getName().getValue()] = na.getValue();
+      } else {
+        chosenByOp[axis.fabricOp][axis.key] = v;
+      }
+    }
 
     // Build wrapper func first so that if body materialization fails we can
     // erase it cleanly.

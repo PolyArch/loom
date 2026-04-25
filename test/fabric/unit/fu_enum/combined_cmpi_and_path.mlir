@@ -21,9 +21,9 @@ func.func @fu_combined(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
   }
 
   // 12 enumerated subgraphs total. Spot-check three corners.
-  // CHECK-DAG: "mux#0{sel=0}; op#0{op_sel=arith.addi}; op#1{predicate=eq}"
-  // CHECK-DAG: "mux#0{sel=1}; op#0{op_sel=arith.subi}; op#1{predicate=sgt}"
-  // CHECK-DAG: "mux#0{sel=0}; op#0{op_sel=arith.subi}; op#1{predicate=slt}"
+  // CHECK-DAG: "mux#0{sel=0,discard=false,disconnect=false}; op#0{op_sel=arith.addi}; op#1{predicate=eq}"
+  // CHECK-DAG: "mux#0{sel=1,discard=false,disconnect=false}; op#0{op_sel=arith.subi}; op#1{predicate=sgt}"
+  // CHECK-DAG: "mux#0{sel=0,discard=false,disconnect=false}; op#0{op_sel=arith.subi}; op#1{predicate=slt}"
 
   // Body of one specific config (mux.sel=1, addi, slt):
   // CHECK-DAG: arith.cmpi slt, %{{.*}}, %{{.*}} : i32

@@ -23,7 +23,7 @@ func.func @hw_mac(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
 // CHECK-LABEL: @pat_mul
 func.func @pat_mul(%a: i32, %b: i32, %c: i32) -> i32 {
   // CHECK: dataflow.subgraph
-  // CHECK-SAME: loom.match_config = "demux#0{sel=0}; mux#0{sel=0}"
+  // CHECK-SAME: demux#0{sel=0,discard=false,disconnect=false}; mux#0{sel=0,discard=false,disconnect=false}
   // CHECK-SAME: loom.matched_fu = "@hw_mac#0"
   %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32, %z = %c : i32) -> i32
        attributes {loom.is_pattern} {
@@ -37,7 +37,7 @@ func.func @pat_mul(%a: i32, %b: i32, %c: i32) -> i32 {
 // CHECK-LABEL: @pat_mac
 func.func @pat_mac(%a: i32, %b: i32, %c: i32) -> i32 {
   // CHECK: dataflow.subgraph
-  // CHECK-SAME: loom.match_config = "demux#0{sel=1}; mux#0{sel=1}"
+  // CHECK-SAME: demux#0{sel=1,discard=false,disconnect=false}; mux#0{sel=1,discard=false,disconnect=false}
   // CHECK-SAME: loom.matched_fu = "@hw_mac#0"
   %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32, %z = %c : i32) -> i32
        attributes {loom.is_pattern} {
