@@ -355,6 +355,14 @@ hwShareGroups() {
   return groups;
 }
 
+} // namespace
+
+namespace fabric {
+bool isFabricOpSupported(llvm::StringRef name) { return opSchemas().count(name); }
+} // namespace fabric
+
+namespace {
+
 // Returns the group index for `name` if it is in a multi-member group, or
 // `std::nullopt` otherwise (singleton).
 static std::optional<size_t> findShareGroup(StringRef name) {

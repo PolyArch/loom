@@ -10,6 +10,7 @@ add_mlir_dialect_library(MLIRDataflow
   MLIRDataflowOpsIncGen
 
   LINK_LIBS PUBLIC
+  MLIRFabric
   MLIRIR
   MLIRSupport
 )

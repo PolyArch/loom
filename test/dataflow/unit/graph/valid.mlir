@@ -56,13 +56,14 @@ func.func @graph_backward_ref(%cond: i1, %init: i32) -> i32 {
   return %r : i32
 }
 
-// Nested dataflow.graph: a graph that contains another graph.
-// CHECK-LABEL: @graph_nested
-func.func @graph_nested(%cond: i1, %init: i32) -> i32 {
+// Nested dataflow.subgraph inside dataflow.graph (graph-in-graph is forbidden;
+// use subgraph for hierarchy).
+// CHECK-LABEL: @graph_nested_subgraph
+func.func @graph_nested_subgraph(%cond: i1, %init: i32) -> i32 {
   // CHECK: %{{.*}} = dataflow.graph(%{{.*}} = %{{.*}} : i1, %{{.*}} = %{{.*}} : i32) -> i32
   %r = dataflow.graph(%c = %cond : i1, %i = %init : i32) -> i32 {
-    // CHECK: %{{.*}} = dataflow.graph(%{{.*}} = %{{.*}} : i1, %{{.*}} = %{{.*}} : i32) -> i32
-    %inner = dataflow.graph(%cn = %c : i1, %in = %i : i32) -> i32 {
+    // CHECK: %{{.*}} = dataflow.subgraph(%{{.*}} = %{{.*}} : i1, %{{.*}} = %{{.*}} : i32) -> i32
+    %inner = dataflow.subgraph(%cn = %c : i1, %in = %i : i32) -> i32 {
       %o = dataflow.carry %cn, %in, %o : i32
       dataflow.yield %o : i32
     }

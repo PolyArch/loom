@@ -35,7 +35,7 @@ func.func @graph_bad_yield_type(%x: i32) -> f32 {
 // -----
 // yield outside of graph.
 func.func @yield_outside() {
-  // expected-error @+1 {{expects parent op 'dataflow.graph'}}
+  // expected-error @+1 {{expects parent op to be one of 'dataflow.graph, dataflow.subgraph'}}
   dataflow.yield
 }
 
@@ -68,6 +68,19 @@ func.func @graph_rejects_func_call(%a: i32) {
   dataflow.graph(%x = %a : i32) -> () {
     // expected-error @+1 {{'func.call' op is not allowed inside dataflow.graph}}
     %r = func.call @helper(%x) : (i32) -> i32
+    dataflow.yield
+  }
+  return
+}
+
+// -----
+// graph-in-graph is forbidden; use subgraph for hierarchy.
+func.func @graph_rejects_nested_graph(%x: i32) {
+  dataflow.graph(%a = %x : i32) -> () {
+    // expected-error @+1 {{dataflow.graph cannot be nested inside another dataflow.graph}}
+    dataflow.graph(%b = %a : i32) -> () {
+      dataflow.yield
+    }
     dataflow.yield
   }
   return

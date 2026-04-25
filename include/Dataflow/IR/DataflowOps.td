@@ -14,6 +14,9 @@ include "mlir/IR/RegionKindInterface.td"
 def Dataflow_GraphType : AnyTypeOf<[
     AnyInteger, AnyFloat, Index, NoneType, AnyMemRef]>;
 
+def Dataflow_SubgraphType : AnyTypeOf<[
+    AnyInteger, AnyFloat, Index, NoneType]>;
+
 //===----------------------------------------------------------------------===//
 // Streaming Ops
 //
@@ -302,6 +305,33 @@ def Dataflow_StoreOp : Dataflow_Op<"store", [
 // produced later in program order (feedback edges are legal).
 //===----------------------------------------------------------------------===//
 
+def Dataflow_SubgraphOp : Dataflow_Op<"subgraph", [
+    IsolatedFromAbove,
+    SingleBlockImplicitTerminator<"YieldOp">,
+    DeclareOpInterfaceMethods<RegionKindInterface>
+]> {
+  let summary = "dataflow subgraph: a hierarchical block scoped to fabric.op";
+  let description = [{
+    A nested compute region inside a `dataflow.graph`. Same syntactic
+    shape as `dataflow.graph` and same graph-region semantics (no SSA
+    dominance), but two extra restrictions:
+
+      * Inputs and results may not be `memref` (memref I/O is reserved
+        for the enclosing `dataflow.graph`).
+      * The body may contain only ops that are supported by
+        `fabric.op`'s `op_list` (plus `dataflow.yield`). In particular,
+        `dataflow.{load, store, graph, subgraph}`, `llvm.alloca`,
+        `ub.poison` and `arith.constant` are not permitted.
+  }];
+
+  let arguments = (ins Variadic<Dataflow_SubgraphType>:$inputs);
+  let results = (outs Variadic<Dataflow_SubgraphType>:$outputs);
+  let regions = (region SizedRegion<1>:$body);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
 def Dataflow_GraphOp : Dataflow_Op<"graph", [
     IsolatedFromAbove,
     SingleBlockImplicitTerminator<"YieldOp">,
@@ -329,14 +359,14 @@ def Dataflow_GraphOp : Dataflow_Op<"graph", [
 
 def Dataflow_YieldOp : Dataflow_Op<"yield", [
     Terminator,
-    HasParent<"::dataflow::GraphOp">,
+    ParentOneOf<["::dataflow::GraphOp", "::dataflow::SubgraphOp"]>,
     Pure
 ]> {
-  let summary = "terminator of a dataflow.graph region";
+  let summary = "terminator of a dataflow.graph / dataflow.subgraph region";
   let description = [{
-    Supplies the values that leave the enclosing `dataflow.graph` on
-    its results. The number and types of `$values` must match the
-    parent graph's result count and types.
+    Supplies the values that leave the enclosing `dataflow.graph` or
+    `dataflow.subgraph` on its results. The number and types of
+    `$values` must match the parent op's result count and types.
   }];
 
   let arguments = (ins Variadic<Dataflow_GraphType>:$values);
