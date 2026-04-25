@@ -36,6 +36,9 @@ llvm::StringRef stringifyStepOp(StepOp value) {
 llvm::ArrayRef<llvm::StringRef> getStepOpSymbols() {
   static const llvm::StringRef kSymbols[] = {"+=",  "-=", "*=",
                                               "/=", "<<=", ">>="};
+  static_assert(sizeof(kSymbols) / sizeof(kSymbols[0]) ==
+                    static_cast<unsigned>(StepOp::ShrAssign) + 1u,
+                "StepOp symbol table is out of sync with the StepOp enum.");
   return kSymbols;
 }
 
@@ -67,6 +70,9 @@ llvm::StringRef stringifyContCond(ContCond value) {
 
 llvm::ArrayRef<llvm::StringRef> getContCondSymbols() {
   static const llvm::StringRef kSymbols[] = {"<", "<=", ">", ">=", "!="};
+  static_assert(sizeof(kSymbols) / sizeof(kSymbols[0]) ==
+                    static_cast<unsigned>(ContCond::Ne) + 1u,
+                "ContCond symbol table is out of sync with the ContCond enum.");
   return kSymbols;
 }
 

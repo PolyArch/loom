@@ -1,4 +1,5 @@
 add_mlir_dialect_library(MLIRFabric
+  ArithPredicates.cpp
   FabricDialect.cpp
   FabricOps.cpp
 
@@ -12,6 +13,7 @@ add_mlir_dialect_library(MLIRFabric
 
   LINK_LIBS PUBLIC
   LoomCommon
+  MLIRArithDialect
   MLIRIR
   MLIRSupport
 )
