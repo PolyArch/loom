@@ -36,6 +36,41 @@ def Fabric_MuxOp : Fabric_Op<"mux", [Pure, SameOperandsAndResultType]> {
   let hasVerifier = 1;
 }
 
+def Fabric_DemuxOp : Fabric_Op<"demux", [Pure, SameOperandsAndResultType]> {
+  let summary = "fabric demultiplexer with handshake";
+  let description = [{
+    Single input, N outputs (N > 1). All input/output ports share one fabric
+    type. No hardware parameters (the port width is fully described by the
+    shared operand/result type). The op is the input/output dual of
+    fabric.mux.
+
+    Software parameters (either all set or all unset):
+      * `sel`        : i32, 0 <= sel < N (forced 0 when `disconnect` is true)
+      * `discard`    : bool
+      * `disconnect` : bool
+
+    Unset means the op describes pure hardware (not programmed). When
+    programmed, `discard && disconnect` is forbidden. Untying valid/ready
+    on the unselected outputs:
+
+      * pure hardware: input.ready=0, all outputs.valid=0 (= disconnect)
+      * sel only    : input <-> outputs[sel] passthrough; other outputs.valid=0
+      * discard=T   : input.ready=1 (input drained); all outputs.valid=0
+      * disconnect=T: input.ready=0; all outputs.valid=0
+  }];
+
+  let arguments = (ins
+      Fabric_AnyType:$input,
+      OptionalAttr<I32Attr>:$sel,
+      OptionalAttr<BoolAttr>:$discard,
+      OptionalAttr<BoolAttr>:$disconnect
+  );
+  let results = (outs Variadic<Fabric_AnyType>:$outputs);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
 def Fabric_FifoOp : Fabric_Op<"fifo", [Pure, SameOperandsAndResultType]> {
   let summary = "fabric FIFO with handshake";
   let description = [{

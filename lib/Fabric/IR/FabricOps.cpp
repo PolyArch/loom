@@ -132,6 +132,115 @@ LogicalResult MuxOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// fabric.demux
+//===----------------------------------------------------------------------===//
+//
+// Format:
+//   fabric.demux %in [ {sel = N : i32, discard = B, disconnect = B} ]
+//                : <fabric-type> -> N
+//
+// Software parameters live in `{...}`. Fabric demux has no hardware
+// parameters, so `[...]` never appears. The trailing `-> N` records the
+// number of output ports so the parser can recreate them all (they share
+// the input's type via SameOperandsAndResultType).
+
+ParseResult DemuxOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand input;
+  if (parser.parseOperand(input))
+    return failure();
+
+  if (succeeded(parser.parseOptionalLBrace())) {
+    NamedAttrList attrs;
+    if (failed(parser.parseOptionalRBrace())) {
+      do {
+        StringRef name;
+        Attribute value;
+        if (parser.parseKeyword(&name) || parser.parseEqual() ||
+            parser.parseAttribute(value))
+          return failure();
+        attrs.append(name, value);
+      } while (succeeded(parser.parseOptionalComma()));
+      if (parser.parseRBrace())
+        return failure();
+    }
+    result.attributes.append(attrs);
+  }
+
+  Type elemType;
+  unsigned numOuts = 0;
+  SMLoc typeLoc = parser.getCurrentLocation();
+  if (parser.parseColon() || parser.parseType(elemType) ||
+      parser.parseArrow() || parser.parseInteger(numOuts))
+    return failure();
+  if (parser.resolveOperand(input, elemType, result.operands))
+    return failure();
+  (void)typeLoc;
+  SmallVector<Type, 4> outputTypes(numOuts, elemType);
+  result.addTypes(outputTypes);
+  return success();
+}
+
+void DemuxOp::print(OpAsmPrinter &p) {
+  p << ' ' << getInput();
+
+  SmallVector<NamedAttribute, 3> swAttrs;
+  if (auto a = getSelAttr())
+    swAttrs.push_back(NamedAttribute(getSelAttrName(), a));
+  if (auto a = getDiscardAttr())
+    swAttrs.push_back(NamedAttribute(getDiscardAttrName(), a));
+  if (auto a = getDisconnectAttr())
+    swAttrs.push_back(NamedAttribute(getDisconnectAttrName(), a));
+  if (!swAttrs.empty()) {
+    p << " {";
+    llvm::interleaveComma(swAttrs, p, [&](const NamedAttribute &na) {
+      p << na.getName().getValue() << " = ";
+      p.printAttribute(na.getValue());
+    });
+    p << "}";
+  }
+
+  p << " : " << getInput().getType() << " -> " << getOutputs().size();
+}
+
+LogicalResult DemuxOp::verify() {
+  auto outputs = getOutputs();
+  if (outputs.size() < 2)
+    return emitOpError("requires at least 2 outputs, got ")
+           << outputs.size();
+
+  auto selAttr = getSelAttr();
+  auto discardAttr = getDiscardAttr();
+  auto disconnectAttr = getDisconnectAttr();
+
+  unsigned present = (selAttr ? 1u : 0u) + (discardAttr ? 1u : 0u) +
+                     (disconnectAttr ? 1u : 0u);
+  if (present != 0 && present != 3)
+    return emitOpError(
+        "software parameters must be all set or all unset "
+        "(sel, discard, disconnect)");
+  if (present == 0)
+    return success();
+
+  bool discard = discardAttr.getValue();
+  bool disconnect = disconnectAttr.getValue();
+  int32_t sel = selAttr.getInt();
+  int64_t n = static_cast<int64_t>(outputs.size());
+
+  if (discard && disconnect)
+    return emitOpError("'discard' and 'disconnect' cannot both be true");
+
+  if (disconnect) {
+    if (sel != 0)
+      return emitOpError("when 'disconnect' is true, 'sel' must be 0");
+  } else {
+    if (sel < 0 || sel >= n)
+      return emitOpError("'sel' (")
+             << sel << ") must be in [0, " << n << ")";
+  }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // fabric.fifo
 //===----------------------------------------------------------------------===//
 //
