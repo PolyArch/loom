@@ -3,6 +3,7 @@ add_mlir_library(MLIRFabricTech
   MapSubgraphToFusPass.cpp
   SubgraphEnumerator.cpp
   SubgraphMatcher.cpp
+  TemplateLibrary.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Tech

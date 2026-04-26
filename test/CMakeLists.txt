@@ -11,6 +11,7 @@ set(LOOM_TEST_DEPENDS
   FileCheck count not
   loom
   loom-config-test
+  loom-template-dump
 )
 
 add_lit_testsuite(check-fabric "Running the fabric regression tests"
