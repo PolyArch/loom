@@ -1,6 +1,13 @@
 # Build artifacts
 /build/
 /externals/llvm/build/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.dSYM/
 
 # clangd / editor artifacts
 /compile_commands.json
@@ -9,10 +16,30 @@
 # Python / test artifacts
 __pycache__/
 *.pyc
+*.pyo
 
 # OS / editor junk
 .DS_Store
 *.swp
+*.swo
+*~
+*.bak
 
-# Local tool state (scheduled-task locks, etc.)
+# Crash dumps and runtime logs
+core
+core.*
+*.log
+
+# Local tool state (scheduled-task locks, scratch ExecPlans, etc.)
 /.claude/
+/temp/
+
+# Local perf-runner cache (default LOOM_PERF_CACHE if pointed inside the repo)
+/loom_perf_cache/
+
+# Bench artifacts under test/techmap/perf/results/<rev>/ are ignored by
+# default so casual `git add .` cannot pull in ad-hoc local runs. Already-
+# tracked baseline rev directories are unaffected (gitignore does not
+# untrack files). To publish a new baseline, force-add it explicitly:
+#   git add -f test/techmap/perf/results/<rev>/
+/test/techmap/perf/results/
