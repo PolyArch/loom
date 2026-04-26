@@ -12,6 +12,7 @@ add_mlir_library(MLIRFabricTech
   Partitioner/ListPartitioner.cpp
   Partitioner/Materializer.cpp
   Partitioner/Partitioner.cpp
+  Partitioner/PartitionerCommon.cpp
   Partitioner/SAPartitioner.cpp
 
   ADDITIONAL_HEADER_DIRS
