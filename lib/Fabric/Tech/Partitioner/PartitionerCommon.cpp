@@ -363,4 +363,63 @@ double computePendingCost(const ::llvm::SmallVector<PendingBlock> &blocks,
   return computeCost(mirror, lib, cfg);
 }
 
+bool partitionHasMultiBlockCycle(const PartitionResult &result) {
+  // Build the index map from op -> bound-block-id for the bound subset.
+  ::llvm::DenseMap<::mlir::Operation *, unsigned> opToBlock;
+  for (const Block &b : result.blocks)
+    if (b.tpl != nullptr)
+      for (::mlir::Operation *op : b.ops)
+        opToBlock[op] = b.id;
+
+  // Mirror the bound blocks into a PendingBlock vector indexed by Block::id
+  // so collectBlockEdges' indices align with opToBlock values. Unbound
+  // (tpl == nullptr) entries get empty placeholders so collectBlockEdges
+  // skips them.
+  unsigned n = 0;
+  for (const Block &b : result.blocks)
+    if (b.id + 1 > n)
+      n = b.id + 1;
+  ::llvm::SmallVector<PendingBlock> blocks(n);
+  for (const Block &b : result.blocks) {
+    if (b.tpl == nullptr)
+      continue;
+    PendingBlock pb;
+    pb.ops.append(b.ops.begin(), b.ops.end());
+    pb.tpl = b.tpl;
+    blocks[b.id] = std::move(pb);
+  }
+
+  auto edges = collectBlockEdges(blocks, opToBlock);
+  ReachMatrix verify;
+  verify.rebuild(n, edges);
+
+  // A multi-block SCC of size >= 2 manifests as a pair (i, j) with i != j
+  // and reach[i] -> j and reach[j] -> i. Self-reach (i, i) is normal and
+  // is excluded by the i != j guard.
+  for (unsigned i = 0; i < n; ++i) {
+    if (blocks[i].tpl == nullptr)
+      continue;
+    if (i >= verify.rows.size())
+      continue;
+    const ::llvm::BitVector &row_i = verify.rows[i];
+    for (unsigned j = 0; j < n; ++j) {
+      if (j == i)
+        continue;
+      if (blocks[j].tpl == nullptr)
+        continue;
+      if (j >= row_i.size())
+        continue;
+      if (!row_i.test(j))
+        continue;
+      if (j >= verify.rows.size())
+        continue;
+      if (i >= verify.rows[j].size())
+        continue;
+      if (verify.rows[j].test(i))
+        return true;
+    }
+  }
+  return false;
+}
+
 } // namespace fabric

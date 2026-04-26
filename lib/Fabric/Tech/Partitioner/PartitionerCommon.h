@@ -107,6 +107,15 @@ double computePendingCost(const ::llvm::SmallVector<PendingBlock> &blocks,
                           const TemplateLibrary &lib,
                           const ::loom::TechMapConfig &cfg);
 
+// Returns true iff the bound blocks of `result` (those with `tpl != nullptr`)
+// form a multi-block SSA cycle — i.e. there exists a non-trivial strongly
+// connected component of size >= 2 in the block-condensation graph induced
+// by inter-block SSA edges. Self-loops on a single block are NOT considered
+// a cycle (graph-region semantics permit self-feedback inside a single
+// dataflow.subgraph). Used by post-solve repair paths that need to verify
+// AC-CORR-3 after an algorithm has produced a candidate partition.
+bool partitionHasMultiBlockCycle(const PartitionResult &result);
+
 } // namespace fabric
 
 #endif // FABRIC_TECH_PARTITIONER_PARTITIONERCOMMON_H

@@ -236,6 +236,155 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
     }
     result.blocks.push_back(std::move(b));
   }
+
+  // Post-solve cycle repair.
+  //
+  // The single-op MIP minimizes block count subject to a coverage
+  // constraint, but it carries no acyclicity requirement. On graphs with
+  // SSA feedback (e.g. dataflow.carry whose carry input is produced by
+  // an op consuming carry's own result), the optimal MIP assignment can
+  // bind both ops in the cycle into separate single-op subgraphs, which
+  // would emit IR violating AC-CORR-3 (no SSA cycle of >=2 blocks).
+  //
+  // We detect any such multi-block SCC over the bound blocks and demote
+  // members to graph level (tpl = nullptr) until the SCC is broken.
+  // Demotion order: largest template id first (the cheaper template wins
+  // and stays bound), tie-break by smallest first-op program position so
+  // the same input always demotes the same op set.
+  bool warned = false;
+  while (partitionHasMultiBlockCycle(result)) {
+    // Identify one demotion victim deterministically.
+    //
+    // Strategy: re-run the SCC scan, find any pair (i, j) involved in a
+    // mutual reach, then walk *all* bound blocks that participate in any
+    // multi-block cycle and pick the one with the largest tpl id, breaking
+    // ties on the smallest program position of the block's first op.
+    //
+    // We re-use ReachMatrix via collectBlockEdges to identify cycle members.
+    ::llvm::DenseMap<::mlir::Operation *, unsigned> opToBlock;
+    for (const Block &b : result.blocks)
+      if (b.tpl != nullptr)
+        for (::mlir::Operation *op : b.ops)
+          opToBlock[op] = b.id;
+
+    unsigned n = 0;
+    for (const Block &b : result.blocks)
+      if (b.id + 1 > n)
+        n = b.id + 1;
+    ::llvm::SmallVector<PendingBlock> blocks(n);
+    for (const Block &b : result.blocks) {
+      if (b.tpl == nullptr)
+        continue;
+      PendingBlock pb;
+      pb.ops.append(b.ops.begin(), b.ops.end());
+      pb.tpl = b.tpl;
+      blocks[b.id] = std::move(pb);
+    }
+    auto edges = collectBlockEdges(blocks, opToBlock);
+    ReachMatrix verify;
+    verify.rebuild(n, edges);
+
+    // Collect cycle-participating block ids (any block with a non-self
+    // mutual-reach partner).
+    ::llvm::SmallVector<unsigned> cycleMembers;
+    for (unsigned i = 0; i < n; ++i) {
+      if (blocks[i].tpl == nullptr)
+        continue;
+      if (i >= verify.rows.size())
+        continue;
+      const ::llvm::BitVector &row_i = verify.rows[i];
+      for (unsigned j = 0; j < n; ++j) {
+        if (j == i)
+          continue;
+        if (blocks[j].tpl == nullptr)
+          continue;
+        if (j >= row_i.size() || !row_i.test(j))
+          continue;
+        if (j >= verify.rows.size() || i >= verify.rows[j].size())
+          continue;
+        if (verify.rows[j].test(i)) {
+          cycleMembers.push_back(i);
+          break;
+        }
+      }
+    }
+
+    if (cycleMembers.empty())
+      break; // defensive
+
+    // Pick the demotion victim deterministically.
+    // Primary key: largest template id (so the cheaper template stays).
+    // Tie-break: smallest program position of the block's first op, then
+    // smallest block id.
+    auto firstOpPos = [&](unsigned bi) -> unsigned {
+      // Find the index of the block's first op in the original `ops`
+      // vector (which is in body program order).
+      unsigned best = static_cast<unsigned>(ops.size());
+      for (::mlir::Operation *op : blocks[bi].ops) {
+        for (unsigned k = 0; k < ops.size(); ++k) {
+          if (ops[k] == op) {
+            if (k < best)
+              best = k;
+            break;
+          }
+        }
+      }
+      return best;
+    };
+    unsigned victim = cycleMembers.front();
+    auto victimTplId = [&](unsigned bi) -> unsigned {
+      // Recover the template id from the FuTemplate pointer by linear
+      // scan over the library's templates vector. The library is small
+      // enough at the ILP threshold (kILPMaxOps) that this is negligible.
+      const FuTemplate *tpl = blocks[bi].tpl;
+      for (unsigned k = 0; k < lib.templates().size(); ++k)
+        if (&lib.templates()[k] == tpl)
+          return k;
+      return 0u;
+    };
+    unsigned bestTplId = victimTplId(victim);
+    unsigned bestPos = firstOpPos(victim);
+    for (unsigned m : cycleMembers) {
+      unsigned mTplId = victimTplId(m);
+      unsigned mPos = firstOpPos(m);
+      bool better = false;
+      if (mTplId > bestTplId)
+        better = true;
+      else if (mTplId == bestTplId) {
+        if (mPos < bestPos)
+          better = true;
+        else if (mPos == bestPos && m < victim)
+          better = true;
+      }
+      if (better) {
+        victim = m;
+        bestTplId = mTplId;
+        bestPos = mPos;
+      }
+    }
+
+    // Demote the victim block to graph level.
+    for (Block &b : result.blocks) {
+      if (b.id == victim) {
+        b.tpl = nullptr;
+        break;
+      }
+    }
+    if (!warned) {
+      if (auto module = graph->getParentOfType<::mlir::ModuleOp>())
+        module->emitWarning()
+            << "loom-ilp-partitioner: HiGHS solution induced a multi-block "
+               "SSA cycle; demoting block(s) to graph level to satisfy "
+               "AC-CORR-3";
+      else
+        graph->emitWarning()
+            << "loom-ilp-partitioner: HiGHS solution induced a multi-block "
+               "SSA cycle; demoting block(s) to graph level to satisfy "
+               "AC-CORR-3";
+      warned = true;
+    }
+  }
+
   return result;
 }
 

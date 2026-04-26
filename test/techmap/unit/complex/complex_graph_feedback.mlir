@@ -1,4 +1,10 @@
 // RUN: loom %s -loom-partition-graph-into-subgraphs | FileCheck %s
+// RUN: echo "techmap:" > %t.ilp.yaml
+// RUN: echo "  algorithm: ilp" >> %t.ilp.yaml
+// RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.ilp.yaml" \
+// RUN:   2> %t.ilp.diag > %t.ilp.mlir
+// RUN: FileCheck --check-prefix=ILP %s < %t.ilp.mlir
+// RUN: FileCheck --check-prefix=ILPDIAG %s < %t.ilp.diag
 
 // Stress: a graph with a self-feedback loop. dataflow.carry's third
 // operand is the result of an arith.addi which itself consumes carry's
@@ -10,6 +16,14 @@
 // Expected current behavior (greedy default): wrap carry in a singleton
 // subgraph, leave the feedback addi at graph level so the loop closes
 // inside the graph block, not across two subgraph blocks (AC-CORR-3).
+//
+// The ILP partitioner's MIP has no acyclicity constraint, so its raw
+// optimum would wrap both ops into mutually-referencing subgraphs. A
+// post-solve cycle-repair pass detects the multi-block SCC and demotes
+// one block to graph level; the demotion order prefers to keep the
+// "cheaper" template, so for this input the carry block ends up
+// demoted while the addi block remains bound. The exact victim differs
+// from greedy, but both outputs satisfy AC-CORR-3.
 //
 // Note: the brief originally asked for a self-feedback chain using a
 // single arith.addi; that requires graph-region forward-reference of
@@ -65,3 +79,21 @@ func.func @graph_feedback(%cond: i1, %init: i32, %step: i32) -> i32 {
   }
   return %r : i32
 }
+
+// ILP after cycle-repair must also be acyclic at the block level.
+// On this input the post-solve pass keeps the addi block bound and
+// demotes the carry block to graph level. The order may differ from
+// greedy, but the result must contain exactly one dataflow.subgraph
+// (the addi block) and the carry must remain at graph level so the
+// feedback edge closes inside the graph body.
+// ILP-LABEL: @graph_feedback
+// ILP: dataflow.graph
+// ILP: dataflow.carry
+// ILP: dataflow.subgraph
+// ILP-NEXT: arith.addi
+// ILP-NEXT: dataflow.yield
+// ILP: dataflow.yield
+// ILP-NOT: dataflow.subgraph
+
+// ILPDIAG: warning: loom-ilp-partitioner: HiGHS solution induced a multi-block SSA cycle
+// ILPDIAG-SAME: demoting block(s) to graph level to satisfy AC-CORR-3
