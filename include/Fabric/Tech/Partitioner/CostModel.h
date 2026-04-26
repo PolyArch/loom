@@ -20,10 +20,16 @@ namespace fabric {
 //   * |blocks_with_template| counts blocks whose `tpl != nullptr`. Blocks
 //     left at the graph level (`tpl == nullptr`) are not counted toward
 //     this term.
-//   * cross_edges is the number of (def, use) pairs (op_d, op_u) where
-//     op_d and op_u live in the body of the same dataflow.graph but in
-//     different Blocks of the partition. Edges from / to ops that are not
-//     in any Block of the partition are ignored.
+//   * cross_edges is the count of cross-block SSA edges, totalled per
+//     operand-position rather than per distinct (producer-block,
+//     consumer-block) pair. Concretely: for every block B in the
+//     partition, for every op u in B, for every operand v of u whose
+//     defining op d is also in some block (B' != B), the edge
+//     (d -> u, that operand position) contributes one to cross_edges.
+//     Two consumer ops in the same block reading the same producer count
+//     as two cross_edges, by design — the cost reflects routing pressure
+//     between blocks, not the bipartite topology. Edges from / to ops
+//     that are not in any Block of the partition are ignored.
 //   * density(block) is defined for blocks with `tpl != nullptr` as
 //
 //       density(block) = block.ops.size()
