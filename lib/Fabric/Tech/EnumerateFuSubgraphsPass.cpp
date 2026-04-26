@@ -73,6 +73,7 @@ std::unique_ptr<::mlir::Pass> createEnumerateFuSubgraphsPass() {
 void registerFabricTechPasses() {
   ::mlir::PassRegistration<EnumerateFuSubgraphsPass>();
   ::mlir::registerPass(createMapSubgraphToFusPass);
+  ::mlir::registerPass([] { return createPartitionGraphPass(); });
 }
 
 } // namespace fabric

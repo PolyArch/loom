@@ -4,6 +4,7 @@
 #include "mlir/Pass/Pass.h"
 
 #include <memory>
+#include <string>
 
 namespace fabric {
 
@@ -19,6 +20,12 @@ std::unique_ptr<::mlir::Pass> createEnumerateFuSubgraphsPass();
 // `loom.match_config` (configuration description); otherwise the pattern
 // is tagged `loom.unmatched`.
 std::unique_ptr<::mlir::Pass> createMapSubgraphToFusPass();
+
+// Partition each dataflow.graph body in the module into dataflow.subgraphs
+// using the algorithm and weights specified by the (optional) tech-mapping
+// config file. An empty `configPath` selects the built-in defaults.
+std::unique_ptr<::mlir::Pass>
+createPartitionGraphPass(std::string configPath = "");
 
 void registerFabricTechPasses();
 
