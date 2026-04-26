@@ -10,6 +10,7 @@ configure_lit_site_cfg(
 set(LOOM_TEST_DEPENDS
   FileCheck count not
   loom
+  loom-config-test
 )
 
 add_lit_testsuite(check-fabric "Running the fabric regression tests"
