@@ -606,12 +606,15 @@ static std::optional<ConfigAnalysis> analyzeConfig(
 }
 
 // Materialize the sw subgraph body for a configuration whose analysis has
-// already succeeded. Returns the materialized SSA values for the live
-// yield positions in the same order as `analysis.liveYieldIndices`, or
-// std::nullopt when an inner sw op cannot be built (e.g. unsupported
-// const_hex_value width).
+// already succeeded. `liveInputIndices` lists the FU input port positions
+// that remain live in this config, in ascending order; `subBlockArgs` is
+// the matching list of sw block arguments (same length). Returns the
+// materialized SSA values for the live yield positions in the same order
+// as `analysis.liveYieldIndices`, or std::nullopt when an inner sw op
+// cannot be built (e.g. unsupported const_hex_value width).
 static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
-    FuOp fu, ::mlir::ValueRange subBlockArgs, OpBuilder &builder,
+    FuOp fu, ::llvm::ArrayRef<unsigned> liveInputIndices,
+    ::mlir::ValueRange subBlockArgs, OpBuilder &builder,
     const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>> &chosenByOp,
     const ConfigAnalysis &analysis) {
   Block &fuBody = fu.getBody().front();
@@ -619,10 +622,10 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
   auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());
 
   ValueMap valueMap;
-  for (auto [fuArg, subArg] :
-       llvm::zip(fuBody.getArguments(), subBlockArgs))
-    if (analysis.alive.count(fuArg))
-      valueMap[fuArg] = subArg;
+  for (auto [pos, fuIdx] : llvm::enumerate(liveInputIndices)) {
+    Value fuArg = fuBody.getArgument(fuIdx);
+    valueMap[fuArg] = subBlockArgs[pos];
+  }
 
   for (Operation &op : fuBody.without_terminator()) {
     if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(&op)) {
@@ -913,19 +916,20 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
 
   // Lifted FU input/output types: drive bits<N> -> iN / fN / i1 / none using
   // a flavor-trace through the FU body so float-flavored ops get f-typed
-  // sw ports.
+  // sw ports. The full lifted vectors below cover every physical FU port;
+  // each per-config materialization narrows them down to the live ports.
   auto liftMap = computePortLiftMap(fu);
-  SmallVector<Type, 4> swInputTypes;
+  SmallVector<Type, 4> fullSwInputTypes;
   for (auto [i, t] : llvm::enumerate(fu.getInputs().getTypes())) {
     PortLift k = liftMap.lookup(fuBody.getArgument(i));
-    swInputTypes.push_back(
+    fullSwInputTypes.push_back(
         liftWith(::mlir::cast<BitsType>(t).getWidth(), k, ctx));
   }
-  SmallVector<Type, 4> swOutputTypes;
+  SmallVector<Type, 4> fullSwOutputTypes;
   auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());
   for (auto [i, t] : llvm::enumerate(fu.getResultTypes())) {
     PortLift k = liftMap.lookup(yieldOp.getValues()[i]);
-    swOutputTypes.push_back(
+    fullSwOutputTypes.push_back(
         liftWith(::mlir::cast<BitsType>(t).getWidth(), k, ctx));
   }
 
@@ -966,11 +970,25 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
     if (analysis->liveYieldIndices.empty())
       continue;
 
+    // Compute which FU input ports remain live in this configuration. An
+    // FU input port is live iff its corresponding block argument is in the
+    // alive set. Iterate in ascending FU-input-port order so the resulting
+    // subgraph signature is deterministic.
+    SmallVector<unsigned, 4> liveInputIndices;
+    for (unsigned i = 0, e = fuBody.getNumArguments(); i < e; ++i)
+      if (analysis->alive.count(fuBody.getArgument(i)))
+        liveInputIndices.push_back(i);
+
+    SmallVector<Type, 4> liveInputTypes;
+    liveInputTypes.reserve(liveInputIndices.size());
+    for (unsigned idx : liveInputIndices)
+      liveInputTypes.push_back(fullSwInputTypes[idx]);
+
     SmallVector<Type, 4> liveOutputTypes;
     liveOutputTypes.reserve(analysis->liveYieldIndices.size());
     for (unsigned idx : analysis->liveYieldIndices)
-      liveOutputTypes.push_back(swOutputTypes[idx]);
-    auto funcType = FunctionType::get(ctx, swInputTypes, liveOutputTypes);
+      liveOutputTypes.push_back(fullSwOutputTypes[idx]);
+    auto funcType = FunctionType::get(ctx, liveInputTypes, liveOutputTypes);
 
     // Build wrapper func with the per-config signature so that, if body
     // materialization fails, we can erase it cleanly.
@@ -988,14 +1006,15 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
     ::mlir::Region *body = state.addRegion();
     Block *bodyBlock = new Block();
     body->push_back(bodyBlock);
-    SmallVector<Location, 4> argLocs(swInputTypes.size(), loc);
-    bodyBlock->addArguments(swInputTypes, argLocs);
+    SmallVector<Location, 4> argLocs(liveInputTypes.size(), loc);
+    bodyBlock->addArguments(liveInputTypes, argLocs);
 
     auto subgraph =
         ::mlir::cast<::dataflow::SubgraphOp>(funcBuilder.create(state));
 
     OpBuilder bodyBuilder(bodyBlock, bodyBlock->end());
-    auto yields = materializeBodyForConfig(fu, bodyBlock->getArguments(),
+    auto yields = materializeBodyForConfig(fu, liveInputIndices,
+                                           bodyBlock->getArguments(),
                                            bodyBuilder, chosenByOp,
                                            *analysis);
     if (!yields) {
