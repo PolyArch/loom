@@ -25,13 +25,15 @@ namespace {
 }
 
 bool stringIsKnownAlgorithm(StringRef s) {
-  return s == "greedy" || s == "list" || s == "beam" || s == "sa";
+  return s == "greedy" || s == "list" || s == "beam" || s == "sa" ||
+         s == "ilp";
 }
 
 ::llvm::Error validate(const ::loom::TechMapConfig &cfg) {
   if (!stringIsKnownAlgorithm(cfg.algorithm))
-    return makeErr("techmap.algorithm must be one of greedy|list|beam|sa, got '" +
-                   cfg.algorithm + "'");
+    return makeErr(
+        "techmap.algorithm must be one of greedy|list|beam|sa|ilp, got '" +
+        cfg.algorithm + "'");
   if (cfg.beamWidth == 0)
     return makeErr("techmap.beam_width must be >= 1");
   if (!(cfg.alpha >= 0.0 && cfg.beta >= 0.0 && cfg.gamma >= 0.0))

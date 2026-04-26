@@ -9,6 +9,7 @@ add_mlir_library(MLIRFabricTech
   Partitioner/CandidateCache.cpp
   Partitioner/CostModel.cpp
   Partitioner/GreedyPartitioner.cpp
+  Partitioner/ILPPartitioner.cpp
   Partitioner/ListPartitioner.cpp
   Partitioner/Materializer.cpp
   Partitioner/Partitioner.cpp
@@ -30,3 +31,9 @@ add_mlir_library(MLIRFabricTech
   MLIRPass
   MLIRSupport
 )
+
+if(LOOM_ENABLE_ILP)
+  target_link_libraries(MLIRFabricTech PUBLIC highs::highs)
+  set_property(SOURCE Partitioner/ILPPartitioner.cpp APPEND PROPERTY
+                COMPILE_OPTIONS -frtti -fexceptions)
+endif()

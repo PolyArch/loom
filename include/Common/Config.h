@@ -20,7 +20,7 @@ struct TechMapConfig {
   double beta = 1.0;
   double gamma = 0.5;
 
-  // Algorithm name. Valid values: "greedy", "list", "beam", "sa".
+  // Algorithm name. Valid values: "greedy", "list", "beam", "sa", "ilp".
   std::string algorithm = "greedy";
 
   // Beam-search width when algorithm == "beam".

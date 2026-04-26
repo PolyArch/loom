@@ -5,6 +5,7 @@
 #include "Fabric/Tech/Partitioner/BeamPartitioner.h"
 #include "Fabric/Tech/Partitioner/CandidateCache.h"
 #include "Fabric/Tech/Partitioner/GreedyPartitioner.h"
+#include "Fabric/Tech/Partitioner/ILPPartitioner.h"
 #include "Fabric/Tech/Partitioner/ListPartitioner.h"
 #include "Fabric/Tech/Partitioner/SAPartitioner.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -72,6 +73,8 @@ createPartitioner(::llvm::StringRef algorithm) {
     return std::make_unique<BeamPartitioner>();
   if (algorithm == "sa")
     return std::make_unique<SAPartitioner>();
+  if (algorithm == "ilp")
+    return std::make_unique<ILPPartitioner>();
   // Default to "greedy" for unknown / empty values; Config validation
   // should already have rejected invalid algorithm names upstream.
   return std::make_unique<GreedyPartitioner>();
