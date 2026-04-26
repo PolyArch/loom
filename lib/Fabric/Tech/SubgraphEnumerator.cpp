@@ -451,17 +451,28 @@ static bool opCanFire(Operation *op,
   return false;
 }
 
-// Materialize body for one configuration. Computes a fixed-point of
-// (demanded, alive, fires) sets and validates that every demanded value
-// flows. Returns the mapped yield values on success or std::nullopt if the
-// config is invalid (deadlocked).
-static std::optional<SmallVector<Value, 4>>
-buildBodyForConfig(FuOp fu, ::mlir::ValueRange subBlockArgs,
-                   OpBuilder &builder,
-                   const llvm::DenseMap<Operation *,
-                                        llvm::StringMap<Attribute>> &chosenByOp) {
+// Result of analyzing one FU configuration: which fabric ops fire and
+// which fabric SSA values are live (carry a real handshake) under the
+// chosen sw_configs. `liveYieldIndices` lists the FU yield positions that
+// remain live in this config, in original program order.
+struct ConfigAnalysis {
+  llvm::DenseSet<Value> demanded;
+  llvm::DenseSet<Value> alive;
+  llvm::DenseSet<Operation *> fires;
+  SmallVector<unsigned, 4> liveYieldIndices;
+};
+
+// Run the (demanded, alive, fires) fixed-point and validate the chosen
+// configuration. Returns std::nullopt when the config is invalid (e.g. a
+// discard-mode mux input is dead). Yield positions whose value is not
+// alive in this config are reported via `liveYieldIndices` (they are
+// silently omitted; the materialized subgraph signature shrinks
+// accordingly), but never cause failure on their own.
+static std::optional<ConfigAnalysis> analyzeConfig(
+    FuOp fu,
+    const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>>
+        &chosenByOp) {
   Block &fuBody = fu.getBody().front();
-  MLIRContext *ctx = fu.getContext();
   auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());
 
   // 1. Backward demand propagation.
@@ -535,7 +546,31 @@ buildBodyForConfig(FuOp fu, ::mlir::ValueRange subBlockArgs,
       if (::mlir::isa<::mlir::BlockArgument>(v)) {
         producerOk = demanded.count(v);
       } else if (Operation *def = v.getDefiningOp()) {
-        producerOk = fires.count(def);
+        if (!fires.count(def)) {
+          producerOk = false;
+        } else if (auto dem = ::mlir::dyn_cast<::fabric::DemuxOp>(def)) {
+          // A fabric.demux is a 1-of-N selector: in any given config only
+          // outputs[sel] carries a value (and even that only when not in
+          // discard mode). The other outputs do not exist on the wire.
+          auto [sel, discard, disconnect] =
+              decodeMuxLikeMode(chosenByOp.lookup(def));
+          (void)disconnect;
+          if (discard) {
+            producerOk = false;
+          } else {
+            producerOk = (v == dem.getOutputs()[sel]);
+          }
+        } else if (auto m = ::mlir::dyn_cast<::fabric::MuxOp>(def)) {
+          // A fabric.mux that fires in discard mode drains its selected
+          // input and produces no output value.
+          auto [sel, discard, disconnect] =
+              decodeMuxLikeMode(chosenByOp.lookup(def));
+          (void)sel;
+          (void)disconnect;
+          producerOk = !discard;
+        } else {
+          producerOk = true;
+        }
       }
       if (!producerOk)
         continue;
@@ -549,21 +584,49 @@ buildBodyForConfig(FuOp fu, ::mlir::ValueRange subBlockArgs,
     }
   }
 
-  // 3. Validate.
+  // 3. Validate. Yield positions are allowed to be inactive in this
+  // config (e.g. an unselected fabric.demux output): such positions are
+  // simply dropped from the materialized subgraph signature. Every other
+  // demanded value (e.g. a discard-mode mux input) must be alive.
+  llvm::DenseSet<Value> yieldVals;
+  for (Value y : yieldOp.getValues())
+    yieldVals.insert(y);
   for (Value v : demanded)
-    if (!alive.count(v))
+    if (!alive.count(v) && !yieldVals.count(v))
       return std::nullopt;
 
-  // 4. Materialize sw subgraph body for live ops.
+  ConfigAnalysis a;
+  a.demanded = std::move(demanded);
+  a.alive = std::move(alive);
+  a.fires = std::move(fires);
+  for (auto [i, y] : llvm::enumerate(yieldOp.getValues()))
+    if (a.alive.count(y))
+      a.liveYieldIndices.push_back(static_cast<unsigned>(i));
+  return a;
+}
+
+// Materialize the sw subgraph body for a configuration whose analysis has
+// already succeeded. Returns the materialized SSA values for the live
+// yield positions in the same order as `analysis.liveYieldIndices`, or
+// std::nullopt when an inner sw op cannot be built (e.g. unsupported
+// const_hex_value width).
+static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
+    FuOp fu, ::mlir::ValueRange subBlockArgs, OpBuilder &builder,
+    const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>> &chosenByOp,
+    const ConfigAnalysis &analysis) {
+  Block &fuBody = fu.getBody().front();
+  MLIRContext *ctx = fu.getContext();
+  auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());
+
   ValueMap valueMap;
   for (auto [fuArg, subArg] :
        llvm::zip(fuBody.getArguments(), subBlockArgs))
-    if (alive.count(fuArg))
+    if (analysis.alive.count(fuArg))
       valueMap[fuArg] = subArg;
 
   for (Operation &op : fuBody.without_terminator()) {
     if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(&op)) {
-      if (!fires.count(&op))
+      if (!analysis.fires.count(&op))
         continue; // op doesn't fire in this config
       const auto &chosen = chosenByOp.lookup(&op);
       ArrayAttr opList = fop.getOpList();
@@ -618,12 +681,12 @@ buildBodyForConfig(FuOp fu, ::mlir::ValueRange subBlockArgs,
       Operation *swOp = builder.create(state);
       for (auto [fuOut, swOut] :
            llvm::zip(fop.getOutputs(), swOp->getResults()))
-        if (alive.count(fuOut))
+        if (analysis.alive.count(fuOut))
           valueMap[fuOut] = swOut;
       continue;
     }
     if (auto m = ::mlir::dyn_cast<::fabric::MuxOp>(&op)) {
-      if (!fires.count(&op))
+      if (!analysis.fires.count(&op))
         continue;
       auto [sel, discard, disconnect] =
           decodeMuxLikeMode(chosenByOp.lookup(&op));
@@ -631,12 +694,12 @@ buildBodyForConfig(FuOp fu, ::mlir::ValueRange subBlockArgs,
       if (discard)
         continue; // drains input, no output produced
       auto it = valueMap.find(m.getInputs()[sel]);
-      if (it != valueMap.end() && alive.count(m.getOutput()))
+      if (it != valueMap.end() && analysis.alive.count(m.getOutput()))
         valueMap[m.getOutput()] = it->second;
       continue;
     }
     if (auto d = ::mlir::dyn_cast<::fabric::DemuxOp>(&op)) {
-      if (!fires.count(&op))
+      if (!analysis.fires.count(&op))
         continue;
       auto [sel, discard, disconnect] =
           decodeMuxLikeMode(chosenByOp.lookup(&op));
@@ -644,21 +707,22 @@ buildBodyForConfig(FuOp fu, ::mlir::ValueRange subBlockArgs,
       if (discard)
         continue;
       auto it = valueMap.find(d.getInput());
-      if (it != valueMap.end() && alive.count(d.getOutputs()[sel]))
+      if (it != valueMap.end() && analysis.alive.count(d.getOutputs()[sel]))
         valueMap[d.getOutputs()[sel]] = it->second;
       continue;
     }
   }
 
-  SmallVector<Value, 4> yields;
-  yields.reserve(yieldOp.getValues().size());
-  for (Value y : yieldOp.getValues()) {
+  SmallVector<Value, 4> liveYields;
+  liveYields.reserve(analysis.liveYieldIndices.size());
+  for (unsigned idx : analysis.liveYieldIndices) {
+    Value y = yieldOp.getValues()[idx];
     auto it = valueMap.find(y);
     if (it == valueMap.end())
       return std::nullopt;
-    yields.push_back(it->second);
+    liveYields.push_back(it->second);
   }
-  return yields;
+  return liveYields;
 }
 
 static std::string describeChoice(::llvm::ArrayRef<ChoiceAxis> axes,
@@ -867,7 +931,6 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
 
   Location loc = fu.getLoc();
   OpBuilder modBuilder(module.getBody(), module.getBody()->end());
-  auto funcType = FunctionType::get(ctx, swInputTypes, swOutputTypes);
 
   for (uint64_t configId = 0; configId < total; ++configId) {
     SmallVector<unsigned, 8> choices(axes.size(), 0);
@@ -893,8 +956,24 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
       }
     }
 
-    // Build wrapper func first so that if body materialization fails we can
-    // erase it cleanly.
+    // Analyze first so we know which FU yield positions remain live in
+    // this configuration. The materialized subgraph signature only
+    // exposes the live yields; configs with zero live yields are dropped
+    // entirely (no 0-result subgraph is emitted).
+    auto analysis = analyzeConfig(fu, chosenByOp);
+    if (!analysis)
+      continue;
+    if (analysis->liveYieldIndices.empty())
+      continue;
+
+    SmallVector<Type, 4> liveOutputTypes;
+    liveOutputTypes.reserve(analysis->liveYieldIndices.size());
+    for (unsigned idx : analysis->liveYieldIndices)
+      liveOutputTypes.push_back(swOutputTypes[idx]);
+    auto funcType = FunctionType::get(ctx, swInputTypes, liveOutputTypes);
+
+    // Build wrapper func with the per-config signature so that, if body
+    // materialization fails, we can erase it cleanly.
     std::string fname = (baseName + "_" + std::to_string(results.size())).str();
     auto func = modBuilder.create<::mlir::func::FuncOp>(loc, fname, funcType);
     func.setPrivate();
@@ -905,7 +984,7 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
                                          funcBody->args_end());
     OperationState state(loc, ::dataflow::SubgraphOp::getOperationName());
     state.addOperands(outerOperands);
-    state.addTypes(swOutputTypes);
+    state.addTypes(liveOutputTypes);
     ::mlir::Region *body = state.addRegion();
     Block *bodyBlock = new Block();
     body->push_back(bodyBlock);
@@ -916,8 +995,9 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
         ::mlir::cast<::dataflow::SubgraphOp>(funcBuilder.create(state));
 
     OpBuilder bodyBuilder(bodyBlock, bodyBlock->end());
-    auto yields = buildBodyForConfig(fu, bodyBlock->getArguments(),
-                                     bodyBuilder, chosenByOp);
+    auto yields = materializeBodyForConfig(fu, bodyBlock->getArguments(),
+                                           bodyBuilder, chosenByOp,
+                                           *analysis);
     if (!yields) {
       func.erase();
       continue;

@@ -1,19 +1,14 @@
 // RUN: loom %s -loom-partition-graph-into-subgraphs | FileCheck %s
 
 // Stress: an FU with an arith.muli followed by a fabric.demux at the
-// output stage, producing two outputs from one compute. The graph has a
-// single arith.muli whose i32 result fans out to two arith.addi
-// consumers. Intuitively the muli could bind to the muli-demux FU with
-// the demux providing the two fan-out copies; in practice the matcher
-// requires the graph root op to have the same arity as the FU template's
-// root, and the muli-demux template root is "arith.muli followed by a
-// 2-output demux" (a 2-result subgraph). A single-result arith.muli does
-// not currently match it, so the muli is left at graph level and only
-// the addi consumers are wrapped.
-//
-// TODO: when the partitioner learns to absorb single-output graph ops
-// into multi-output FU templates by treating the demux as an SSA
-// fan-out helper, update the CHECKs below to wrap the muli too.
+// output stage. The demux is a 1-of-N selector, so for any given config
+// only one of its outputs is live; the other ports do not contribute a
+// value to the FU's external behavior. The enumerator therefore emits
+// per-config single-result subgraph templates (one for sel=0, one for
+// sel=1), each wrapping the muli compute. The partitioner can then bind
+// the graph's muli to one of these templates, allowing it to be wrapped
+// even though it has only a single SSA result while the FU declares two
+// output ports.
 
 // CHECK-LABEL: @fu_muli_demux
 func.func @fu_muli_demux(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
@@ -39,11 +34,13 @@ func.func @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
   return
 }
 
-// Lock current behavior: muli stays at graph level, the three downstream
-// addi consumers each get their own subgraph. See TODO above.
+// The muli is now wrapped in its own dataflow.subgraph (bound to one of
+// the muli-demux per-config templates). Each downstream addi is also
+// wrapped in its own subgraph.
 // CHECK-LABEL: @graph_muli_fanout
 // CHECK: dataflow.graph
-// CHECK: arith.muli
+// CHECK: dataflow.subgraph
+// CHECK-NEXT: arith.muli
 // CHECK: dataflow.subgraph
 // CHECK-NEXT: arith.addi
 // CHECK: dataflow.subgraph
