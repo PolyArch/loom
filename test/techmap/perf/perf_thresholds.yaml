@@ -1,0 +1,21 @@
+# Performance thresholds for the loom tech-mapping partitioner.
+# Consumed by perf_runner.py via the per-test --max-median-ms argument
+# (kept here as the source of truth so the lit tests and any future
+# bench reporting agree on the exact numbers).
+
+thresholds:
+  - algo: greedy
+    n: 100
+    threads: 1
+    median_ms_max: 50
+
+  - algo: greedy
+    n: 1000
+    threads: 0   # default threads
+    median_ms_max: 500
+
+  - algo: greedy
+    n: 5000
+    threads: 0
+    median_ms_max: 5000
+    gated_by_env: LOOM_PERF=long

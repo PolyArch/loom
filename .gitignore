@@ -13,3 +13,6 @@ __pycache__/
 # OS / editor junk
 .DS_Store
 *.swp
+
+# Local tool state (scheduled-task locks, etc.)
+/.claude/
