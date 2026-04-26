@@ -6,6 +6,7 @@ add_mlir_library(MLIRFabricTech
   SubgraphMatcher.cpp
   TemplateLibrary.cpp
   Partitioner/BeamPartitioner.cpp
+  Partitioner/CandidateCache.cpp
   Partitioner/CostModel.cpp
   Partitioner/GreedyPartitioner.cpp
   Partitioner/ListPartitioner.cpp

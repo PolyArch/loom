@@ -49,12 +49,24 @@ public:
 // behavior is intentionally deferred.
 std::unique_ptr<IPartitioner> createPartitioner(::llvm::StringRef algorithm);
 
+// Forward declaration: the parallel candidate cache. Algorithms that want
+// to skip re-querying the template library per op can pre-build a cache and
+// pass it via the overload below.
+class CandidateCache;
+
 // Shared baseline: produce one Block per non-terminator op in the graph
 // body. Each op that names a template root in `lib` is bound to the first
 // matching template; everything else gets `tpl == nullptr` and stays at the
 // graph level when materialized.
 PartitionResult buildSingletonPartition(::dataflow::GraphOp graph,
                                         const TemplateLibrary &lib);
+
+// Same as `buildSingletonPartition(graph, lib)` but consults the
+// pre-computed `cache` instead of querying the library directly. Behavior
+// is identical when the cache was built from `graph` and `lib`.
+PartitionResult buildSingletonPartition(::dataflow::GraphOp graph,
+                                        const TemplateLibrary &lib,
+                                        const CandidateCache &cache);
 
 } // namespace fabric
 

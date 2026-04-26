@@ -3,9 +3,11 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/Tech/Partitioner/BeamPartitioner.h"
+#include "Fabric/Tech/Partitioner/CandidateCache.h"
 #include "Fabric/Tech/Partitioner/GreedyPartitioner.h"
 #include "Fabric/Tech/Partitioner/ListPartitioner.h"
 #include "Fabric/Tech/Partitioner/SAPartitioner.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <memory>
@@ -32,6 +34,30 @@ PartitionResult buildSingletonPartition(::dataflow::GraphOp graph,
       if (!ids.empty())
         block.tpl = &lib.templates()[ids.front()];
     }
+
+    result.blocks.push_back(std::move(block));
+  }
+  return result;
+}
+
+PartitionResult buildSingletonPartition(::dataflow::GraphOp graph,
+                                        const TemplateLibrary &lib,
+                                        const CandidateCache &cache) {
+  PartitionResult result;
+  unsigned nextId = 0;
+  ::mlir::Block &body = graph.getBody().front();
+  for (::mlir::Operation &op : body) {
+    if (::mlir::isa<::dataflow::YieldOp>(op))
+      continue;
+
+    Block block;
+    block.id = nextId++;
+    block.ops.push_back(&op);
+    block.tpl = nullptr;
+
+    ::llvm::ArrayRef<unsigned> ids = cache.templatesForOp(&op);
+    if (!ids.empty())
+      block.tpl = &lib.templates()[ids.front()];
 
     result.blocks.push_back(std::move(block));
   }

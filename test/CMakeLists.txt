@@ -10,6 +10,7 @@ configure_lit_site_cfg(
 set(LOOM_TEST_DEPENDS
   FileCheck count not
   loom
+  loom-candidate-dump
   loom-config-test
   loom-template-dump
 )
