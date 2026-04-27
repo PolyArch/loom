@@ -8,10 +8,18 @@
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/Value.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 
+#include <algorithm>
+#include <climits>
+#include <cstdlib>
+#include <string>
 #include <utility>
 
 #ifdef LOOM_HAS_ILP
@@ -34,23 +42,6 @@ unsigned countOps(::dataflow::GraphOp graph) {
   return n;
 }
 
-// Inspect the candidate cache: returns true if any op carries a multi-op
-// template candidate. The simplified single-op MIP cannot model multi-op
-// covering, so when this is true we delegate to greedy.
-bool anyMultiOpCandidate(::dataflow::GraphOp graph, const TemplateLibrary &lib,
-                         const CandidateCache &cache) {
-  ::mlir::Block &body = graph.getBody().front();
-  for (::mlir::Operation &op : body) {
-    if (::mlir::isa<::dataflow::YieldOp>(op))
-      continue;
-    for (unsigned id : cache.templatesForOp(&op)) {
-      if (lib.templates()[id].bodyOpCount > 1)
-        return true;
-    }
-  }
-  return false;
-}
-
 // Emit a module-level warning explaining why we are falling back to greedy.
 PartitionResult fallbackToGreedy(::dataflow::GraphOp graph,
                                  const TemplateLibrary &lib,
@@ -70,6 +61,19 @@ PartitionResult fallbackToGreedy(::dataflow::GraphOp graph,
   return greedy.run(graph, lib, cfg);
 }
 
+// Read the LOOM_ILP_TIMEOUT_S env var; default to 30 seconds when unset
+// or unparseable. A non-positive value is treated as "no time limit".
+double readTimeoutSeconds() {
+  const char *raw = std::getenv("LOOM_ILP_TIMEOUT_S");
+  if (raw == nullptr || raw[0] == '\0')
+    return 30.0;
+  char *endp = nullptr;
+  double v = std::strtod(raw, &endp);
+  if (endp == raw)
+    return 30.0;
+  return v;
+}
+
 } // namespace
 
 #ifdef LOOM_HAS_ILP
@@ -85,15 +89,7 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
             std::to_string(n) + " > " + std::to_string(kILPMaxOps) + " ops)");
   }
 
-  // The single-op MIP can only model template candidates whose bodyOpCount
-  // equals 1. Build the candidate cache and bail to greedy if any op has a
-  // multi-op candidate.
   CandidateCache cache = CandidateCache::build(graph, lib, cfg.threads);
-  if (anyMultiOpCandidate(graph, lib, cache)) {
-    return fallbackToGreedy(
-        graph, lib, cfg,
-        "multi-op template candidate detected (single-op MIP cannot cover it)");
-  }
 
   // Collect ops in body program order for stable indexing into the MIP.
   ::llvm::SmallVector<::mlir::Operation *> ops;
@@ -105,46 +101,136 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
     ops.push_back(&op);
   }
 
-  // For each op, list its admissible single-op template ids (filtered by
-  // root-op-name match and fabric op support, mirroring the greedy logic).
-  ::llvm::SmallVector<::llvm::SmallVector<unsigned>> tplIdsPerOp(ops.size());
-  unsigned totalAssigns = 0;
+  // Reverse map: op pointer -> index in `ops`. Used to translate the VF2
+  // candidate's op-pointer set into op indices for coverage constraints.
+  ::llvm::DenseMap<::mlir::Operation *, unsigned> opIdx;
+  opIdx.reserve(ops.size());
+  for (unsigned i = 0; i < ops.size(); ++i)
+    opIdx[ops[i]] = i;
+
+  // Per-rootOpName max bodyOpCount across templates, used for the gamma
+  // density term. Mirrors maxTemplateSizeByRoot in CostModel.cpp.
+  ::llvm::StringMap<unsigned> maxByRoot;
+  for (const FuTemplate &t : lib.templates()) {
+    if (t.rootOpName.empty())
+      continue;
+    auto &slot = maxByRoot[t.rootOpName];
+    if (t.bodyOpCount > slot)
+      slot = t.bodyOpCount;
+  }
+
+  // Enumerate the MIP's x-variables: one per (op_i, template_t) such that
+  //   * t.bodyOpCount >= 1,
+  //   * t.rootOpName == op_i's op name,
+  //   * collectMultiOpCandidate(op_i, t) returns a non-empty op set entirely
+  //     contained in the partitionable set (i.e. every covered op is in
+  //     `ops`).
+  // We record the covered op-indices for downstream coverage / cross-edge
+  // constraints.
+  struct AssignVar {
+    unsigned opIdx;                                 // root op index
+    unsigned tplId;                                 // template id in lib
+    ::llvm::SmallVector<unsigned, 4> coveredOps;    // indices into `ops`
+    unsigned bodySize = 0;                          // K_t = template size
+    unsigned maxRoot = 1;                           // M_t for normalization
+  };
+  ::llvm::SmallVector<AssignVar> assigns;
+  // assignColsForOp[j] = list of x-variable column indices that cover op j.
+  ::llvm::SmallVector<::llvm::SmallVector<unsigned, 4>> assignColsForOp(
+      ops.size());
+
   for (unsigned i = 0; i < ops.size(); ++i) {
     if (!::fabric::isFabricOpSupported(ops[i]->getName().getStringRef()))
       continue;
-    for (unsigned id : cache.templatesForOp(ops[i])) {
+    ::llvm::ArrayRef<unsigned> tplIds = cache.templatesForOp(ops[i]);
+    for (unsigned id : tplIds) {
       const FuTemplate &tpl = lib.templates()[id];
-      if (tpl.bodyOpCount != 1)
+      if (tpl.bodyOpCount == 0)
         continue;
       if (tpl.rootOpName != ops[i]->getName().getStringRef())
         continue;
-      tplIdsPerOp[i].push_back(id);
-      ++totalAssigns;
+
+      ::llvm::SmallVector<::mlir::Operation *> covered;
+      if (tpl.bodyOpCount == 1) {
+        covered.push_back(ops[i]);
+      } else {
+        covered = collectMultiOpCandidate(ops[i], tpl);
+        if (covered.empty())
+          continue;
+      }
+
+      AssignVar av;
+      av.opIdx = i;
+      av.tplId = id;
+      av.bodySize = tpl.bodyOpCount;
+      auto mit = maxByRoot.find(tpl.rootOpName);
+      av.maxRoot = (mit == maxByRoot.end()) ? 1u : std::max(1u, mit->second);
+      av.coveredOps.reserve(covered.size());
+      bool allInPartition = true;
+      for (::mlir::Operation *cop : covered) {
+        auto oit = opIdx.find(cop);
+        if (oit == opIdx.end()) {
+          allInPartition = false;
+          break;
+        }
+        av.coveredOps.push_back(oit->second);
+      }
+      if (!allInPartition)
+        continue;
+
+      unsigned col = static_cast<unsigned>(assigns.size());
+      for (unsigned j : av.coveredOps)
+        assignColsForOp[j].push_back(col);
+      assigns.push_back(std::move(av));
     }
   }
 
-  // Variable layout in the MIP:
-  //   columns [0 .. totalAssigns)            -> x[i,t]: op i bound to tpl t
-  //   columns [totalAssigns .. totalAssigns+n) -> y[i] : op i at graph level
-  //
-  // For each x[i,t] we record (op_index, tpl_id) so we can decode the
-  // solution back into Blocks.
-  struct AssignVar {
-    unsigned opIdx;
-    unsigned tplId;
+  unsigned numAssign = static_cast<unsigned>(assigns.size());
+  unsigned numOps = static_cast<unsigned>(ops.size());
+
+  // Enumerate cross-edge variables: one e[j, k] per SSA def-use edge where
+  // both endpoints are in the partitionable op set. We deduplicate so the
+  // same (j, k) pair from multiple operand positions counts only once
+  // structurally — the cost model's CostModel-style summation per operand
+  // would over-count when the consumer reads the same producer twice; we
+  // approximate the mean direction by summing distinct edges. This matches
+  // the spirit of the gamma linearization (sum vs mean).
+  struct Edge {
+    unsigned consumer; // op index (j)
+    unsigned producer; // op index (k)
   };
-  ::llvm::SmallVector<AssignVar> assigns;
-  assigns.reserve(totalAssigns);
-  ::llvm::SmallVector<::llvm::SmallVector<unsigned>> assignColsForOp(
-      ops.size());
-  for (unsigned i = 0; i < ops.size(); ++i) {
-    for (unsigned id : tplIdsPerOp[i]) {
-      unsigned col = static_cast<unsigned>(assigns.size());
-      assigns.push_back({i, id});
-      assignColsForOp[i].push_back(col);
+  ::llvm::SmallVector<Edge> edges;
+  ::llvm::DenseSet<uint64_t> seen;
+  for (unsigned j = 0; j < numOps; ++j) {
+    ::mlir::Operation *u = ops[j];
+    for (::mlir::Value v : u->getOperands()) {
+      ::mlir::Operation *def = v.getDefiningOp();
+      if (def == nullptr)
+        continue;
+      auto it = opIdx.find(def);
+      if (it == opIdx.end())
+        continue;
+      unsigned k = it->second;
+      if (k == j)
+        continue;
+      uint64_t key = (static_cast<uint64_t>(j) << 32) | static_cast<uint64_t>(k);
+      if (!seen.insert(key).second)
+        continue;
+      Edge e;
+      e.consumer = j;
+      e.producer = k;
+      edges.push_back(e);
     }
   }
-  unsigned numCols = totalAssigns + static_cast<unsigned>(ops.size());
+  unsigned numEdges = static_cast<unsigned>(edges.size());
+
+  // Variable layout:
+  //   [0 .. numAssign)                        -> x[i, t]
+  //   [numAssign .. numAssign + numOps)       -> y[j]
+  //   [numAssign + numOps .. numAssign + numOps + numEdges) -> e[j, k]
+  unsigned yBase = numAssign;
+  unsigned eBase = numAssign + numOps;
+  unsigned numCols = eBase + numEdges;
 
   // Bail out cleanly when the graph is empty: no MIP needed.
   if (numCols == 0) {
@@ -156,25 +242,52 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
   highs.setOptionValue("output_flag", false);
   highs.setOptionValue("log_to_console", false);
   highs.setOptionValue("threads", 1);
+  double timeoutS = readTimeoutSeconds();
+  if (timeoutS > 0.0)
+    highs.setOptionValue("time_limit", timeoutS);
 
-  // Variables: each is binary in [0,1], integer.
-  // Objective:
-  //   per-template-assign x[i,t]: cost alpha (block count contribution)
-  //   per graph-level slot y[i] : cost alpha + 1 (graph-level slot is
-  //                               strictly worse than any binding, so the
-  //                               MIP prefers to cover ops with a template
-  //                               whenever the candidate cache offers one)
-  // cross_edges and density terms are not modeled in this initial single-op
-  // MIP path; documented as a known limitation. The MIP therefore agrees
-  // with greedy on small inputs that have only single-op templates: every
-  // op gets bound when possible, otherwise it stays at graph level.
+  // Objective coefficients.
+  //
+  //   x[i, t] : alpha + gamma * (1 - K_t/M_t)   (per-block alpha cost plus
+  //                                              per-block density deficit
+  //                                              penalty -- see note below)
+  //   y[j]    : alpha + 1.0                     (graph-level slot strictly
+  //                                              worse than any binding so the
+  //                                              optimizer covers ops when it
+  //                                              can; matches the prior
+  //                                              single-op formulation)
+  //   e[j, k] : beta                            (cross-edge penalty)
+  //
+  // Density linearization. The cost model defines avg_density as the mean
+  // of K_t/M_t across bound blocks; the MIP encodes the per-block density
+  // *deficit* (1 - K_t/M_t), summed over all bound blocks. Two consequences:
+  //
+  //   * The mean is a non-linear ratio (numerator / |bound blocks|); the
+  //     deficit linearization replaces it with a linear sum so the MIP stays
+  //     in standard form.
+  //   * Per block the deficit is non-negative: it is 0 when the chosen
+  //     template fully utilizes the largest available template for that
+  //     root, and 1 - K/M > 0 otherwise. Higher gamma therefore strictly
+  //     prefers larger templates (covering more ops per block), matching
+  //     the cost-model intent. Picking more blocks just to inflate
+  //     `sum K/M` is not a useful escape because every additional block
+  //     pays alpha and a non-negative deficit.
   std::vector<double> colCost(numCols, 0.0);
   std::vector<double> colLower(numCols, 0.0);
   std::vector<double> colUpper(numCols, 1.0);
-  for (unsigned col = 0; col < totalAssigns; ++col)
-    colCost[col] = cfg.alpha;
-  for (unsigned i = 0; i < ops.size(); ++i)
-    colCost[totalAssigns + i] = cfg.alpha + 1.0;
+  for (unsigned col = 0; col < numAssign; ++col) {
+    const AssignVar &av = assigns[col];
+    double density =
+        static_cast<double>(av.bodySize) / static_cast<double>(av.maxRoot);
+    double deficit = 1.0 - density;
+    if (deficit < 0.0)
+      deficit = 0.0;
+    colCost[col] = cfg.alpha + cfg.gamma * deficit;
+  }
+  for (unsigned j = 0; j < numOps; ++j)
+    colCost[yBase + j] = cfg.alpha + 1.0;
+  for (unsigned ei = 0; ei < numEdges; ++ei)
+    colCost[eBase + ei] = cfg.beta;
 
   highs.addCols(static_cast<HighsInt>(numCols), colCost.data(),
                 colLower.data(), colUpper.data(),
@@ -185,20 +298,72 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
   highs.changeColsIntegrality(0, static_cast<HighsInt>(numCols) - 1,
                               integrality.data());
 
-  // Coverage constraint: for each op i, sum_t x[i,t] + y[i] = 1.
-  for (unsigned i = 0; i < ops.size(); ++i) {
+  // Coverage constraint: for each op j,
+  //   sum_{(i,t) covering j} x[i, t]  +  y[j]  =  1
+  for (unsigned j = 0; j < numOps; ++j) {
     std::vector<HighsInt> idx;
     std::vector<double> val;
-    idx.reserve(assignColsForOp[i].size() + 1);
-    val.reserve(assignColsForOp[i].size() + 1);
-    for (unsigned col : assignColsForOp[i]) {
+    idx.reserve(assignColsForOp[j].size() + 1);
+    val.reserve(assignColsForOp[j].size() + 1);
+    for (unsigned col : assignColsForOp[j]) {
       idx.push_back(static_cast<HighsInt>(col));
       val.push_back(1.0);
     }
-    idx.push_back(static_cast<HighsInt>(totalAssigns + i));
+    idx.push_back(static_cast<HighsInt>(yBase + j));
     val.push_back(1.0);
     highs.addRow(1.0, 1.0, static_cast<HighsInt>(idx.size()), idx.data(),
                  val.data());
+  }
+
+  // Cross-edge constraints. For each edge (j, k):
+  //   e[j, k]  +  sum_{(i,t) covering BOTH j AND k} x[i, t]  >= 1
+  //   e[j, k]  >=  y[j]
+  //   e[j, k]  >=  y[k]
+  // The first row encodes "if no x covers both j and k together, then they
+  // are in different blocks"; the latter two encode "graph-level on either
+  // side counts as a cross edge", matching the CostModel definition.
+  for (unsigned ei = 0; ei < numEdges; ++ei) {
+    const Edge &edge = edges[ei];
+    // Compute the intersection of assignColsForOp[j] and assignColsForOp[k].
+    // Both lists are appended in column-creation order which is also sorted
+    // (we generate assigns in increasing op index, then in increasing
+    // template id). For determinism iterate intersection via a small set.
+    ::llvm::DenseSet<unsigned> setJ(assignColsForOp[edge.consumer].begin(),
+                                    assignColsForOp[edge.consumer].end());
+    std::vector<HighsInt> idx;
+    std::vector<double> val;
+    idx.reserve(8);
+    val.reserve(8);
+    idx.push_back(static_cast<HighsInt>(eBase + ei));
+    val.push_back(1.0);
+    for (unsigned col : assignColsForOp[edge.producer]) {
+      if (setJ.contains(col)) {
+        idx.push_back(static_cast<HighsInt>(col));
+        val.push_back(1.0);
+      }
+    }
+    // e[j,k] + sum >= 1  -->  HiGHS row range [1, +inf).
+    highs.addRow(1.0, kHighsInf, static_cast<HighsInt>(idx.size()), idx.data(),
+                 val.data());
+
+    // e[j,k] - y[j] >= 0  -->  range [0, +inf).
+    {
+      std::vector<HighsInt> idx2 = {
+          static_cast<HighsInt>(eBase + ei),
+          static_cast<HighsInt>(yBase + edge.consumer)};
+      std::vector<double> val2 = {1.0, -1.0};
+      highs.addRow(0.0, kHighsInf, static_cast<HighsInt>(idx2.size()),
+                   idx2.data(), val2.data());
+    }
+    // e[j,k] - y[k] >= 0.
+    {
+      std::vector<HighsInt> idx2 = {
+          static_cast<HighsInt>(eBase + ei),
+          static_cast<HighsInt>(yBase + edge.producer)};
+      std::vector<double> val2 = {1.0, -1.0};
+      highs.addRow(0.0, kHighsInf, static_cast<HighsInt>(idx2.size()),
+                   idx2.data(), val2.data());
+    }
   }
 
   HighsStatus status = highs.run();
@@ -207,6 +372,10 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
     return fallbackToGreedy(graph, lib, cfg, "HiGHS solver failed");
   }
   HighsModelStatus mstatus = highs.getModelStatus();
+  if (mstatus == HighsModelStatus::kTimeLimit) {
+    return fallbackToGreedy(graph, lib, cfg,
+                            "HiGHS exceeded LOOM_ILP_TIMEOUT_S");
+  }
   if (mstatus != HighsModelStatus::kOptimal) {
     return fallbackToGreedy(graph, lib, cfg,
                             "HiGHS did not return an optimal solution");
@@ -218,33 +387,56 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
                             "HiGHS solution had unexpected dimensions");
   }
 
-  // Decode: pick the chosen template (or graph-level slot) for each op.
-  // Threshold at 0.5 since variables are binary; HiGHS may return values
-  // within a small numerical tolerance of {0,1}.
+  // Decode: every op j ends up in exactly one bound block (when some x[i,t]
+  // covering j is 1) or at the graph level (when y[j] is 1). Threshold at
+  // 0.5 since variables are binary; HiGHS may return values within a small
+  // numerical tolerance of {0,1}.
+  //
+  // Block creation order: program order of the root op `ops[i]`. This keeps
+  // the materializer's textual output stable across template ids.
+  ::llvm::SmallVector<unsigned> chosenAssignForOp(numOps, /*sentinel=*/UINT_MAX);
+  for (unsigned col = 0; col < numAssign; ++col) {
+    if (sol.col_value[col] <= 0.5)
+      continue;
+    const AssignVar &av = assigns[col];
+    for (unsigned j : av.coveredOps)
+      chosenAssignForOp[j] = col;
+  }
+
   PartitionResult result;
-  result.blocks.reserve(ops.size());
-  for (unsigned i = 0; i < ops.size(); ++i) {
+  result.blocks.reserve(numOps);
+  ::llvm::DenseSet<unsigned> emittedAssignCols;
+  for (unsigned j = 0; j < numOps; ++j) {
+    if (chosenAssignForOp[j] == UINT_MAX) {
+      // Graph-level (y[j] is 1, or no covering x and y is forced).
+      Block b;
+      b.id = static_cast<unsigned>(result.blocks.size());
+      b.ops.push_back(ops[j]);
+      b.tpl = nullptr;
+      result.blocks.push_back(std::move(b));
+      continue;
+    }
+    unsigned col = chosenAssignForOp[j];
+    if (!emittedAssignCols.insert(col).second)
+      continue; // already emitted as part of an earlier root op
+    const AssignVar &av = assigns[col];
     Block b;
     b.id = static_cast<unsigned>(result.blocks.size());
-    b.ops.push_back(ops[i]);
-    b.tpl = nullptr;
-    for (unsigned col : assignColsForOp[i]) {
-      if (sol.col_value[col] > 0.5) {
-        b.tpl = &lib.templates()[assigns[col].tplId];
-        break;
-      }
-    }
+    b.ops.reserve(av.coveredOps.size());
+    for (unsigned cidx : av.coveredOps)
+      b.ops.push_back(ops[cidx]);
+    b.tpl = &lib.templates()[av.tplId];
     result.blocks.push_back(std::move(b));
   }
 
   // Post-solve cycle repair.
   //
-  // The single-op MIP minimizes block count subject to a coverage
-  // constraint, but it carries no acyclicity requirement. On graphs with
-  // SSA feedback (e.g. dataflow.carry whose carry input is produced by
-  // an op consuming carry's own result), the optimal MIP assignment can
-  // bind both ops in the cycle into separate single-op subgraphs, which
-  // would emit IR violating AC-CORR-3 (no SSA cycle of >=2 blocks).
+  // The MIP minimizes the cost above subject to coverage and cross-edge
+  // constraints, but it has no direct acyclicity requirement. On graphs
+  // with SSA feedback (e.g. dataflow.carry whose carry input is produced
+  // by an op consuming carry's own result), the optimal MIP assignment can
+  // bind both ops in the cycle into separate subgraphs that mutually
+  // reference each other, which would emit IR violating AC-CORR-3.
   //
   // We detect any such multi-block SCC over the bound blocks and demote
   // members to graph level (tpl = nullptr) until the SCC is broken.
@@ -253,25 +445,17 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
   // the same input always demotes the same op set.
   bool warned = false;
   while (partitionHasMultiBlockCycle(result)) {
-    // Identify one demotion victim deterministically.
-    //
-    // Strategy: re-run the SCC scan, find any pair (i, j) involved in a
-    // mutual reach, then walk *all* bound blocks that participate in any
-    // multi-block cycle and pick the one with the largest tpl id, breaking
-    // ties on the smallest program position of the block's first op.
-    //
-    // We re-use ReachMatrix via collectBlockEdges to identify cycle members.
     ::llvm::DenseMap<::mlir::Operation *, unsigned> opToBlock;
     for (const Block &b : result.blocks)
       if (b.tpl != nullptr)
         for (::mlir::Operation *op : b.ops)
           opToBlock[op] = b.id;
 
-    unsigned n = 0;
+    unsigned nb = 0;
     for (const Block &b : result.blocks)
-      if (b.id + 1 > n)
-        n = b.id + 1;
-    ::llvm::SmallVector<PendingBlock> blocks(n);
+      if (b.id + 1 > nb)
+        nb = b.id + 1;
+    ::llvm::SmallVector<PendingBlock> blocks(nb);
     for (const Block &b : result.blocks) {
       if (b.tpl == nullptr)
         continue;
@@ -280,29 +464,27 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
       pb.tpl = b.tpl;
       blocks[b.id] = std::move(pb);
     }
-    auto edges = collectBlockEdges(blocks, opToBlock);
+    auto blockEdges = collectBlockEdges(blocks, opToBlock);
     ReachMatrix verify;
-    verify.rebuild(n, edges);
+    verify.rebuild(nb, blockEdges);
 
-    // Collect cycle-participating block ids (any block with a non-self
-    // mutual-reach partner).
     ::llvm::SmallVector<unsigned> cycleMembers;
-    for (unsigned i = 0; i < n; ++i) {
+    for (unsigned i = 0; i < nb; ++i) {
       if (blocks[i].tpl == nullptr)
         continue;
       if (i >= verify.rows.size())
         continue;
       const ::llvm::BitVector &row_i = verify.rows[i];
-      for (unsigned j = 0; j < n; ++j) {
-        if (j == i)
+      for (unsigned k = 0; k < nb; ++k) {
+        if (k == i)
           continue;
-        if (blocks[j].tpl == nullptr)
+        if (blocks[k].tpl == nullptr)
           continue;
-        if (j >= row_i.size() || !row_i.test(j))
+        if (k >= row_i.size() || !row_i.test(k))
           continue;
-        if (j >= verify.rows.size() || i >= verify.rows[j].size())
+        if (k >= verify.rows.size() || i >= verify.rows[k].size())
           continue;
-        if (verify.rows[j].test(i)) {
+        if (verify.rows[k].test(i)) {
           cycleMembers.push_back(i);
           break;
         }
@@ -312,13 +494,7 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
     if (cycleMembers.empty())
       break; // defensive
 
-    // Pick the demotion victim deterministically.
-    // Primary key: largest template id (so the cheaper template stays).
-    // Tie-break: smallest program position of the block's first op, then
-    // smallest block id.
     auto firstOpPos = [&](unsigned bi) -> unsigned {
-      // Find the index of the block's first op in the original `ops`
-      // vector (which is in body program order).
       unsigned best = static_cast<unsigned>(ops.size());
       for (::mlir::Operation *op : blocks[bi].ops) {
         for (unsigned k = 0; k < ops.size(); ++k) {
@@ -331,17 +507,14 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
       }
       return best;
     };
-    unsigned victim = cycleMembers.front();
     auto victimTplId = [&](unsigned bi) -> unsigned {
-      // Recover the template id from the FuTemplate pointer by linear
-      // scan over the library's templates vector. The library is small
-      // enough at the ILP threshold (kILPMaxOps) that this is negligible.
       const FuTemplate *tpl = blocks[bi].tpl;
       for (unsigned k = 0; k < lib.templates().size(); ++k)
         if (&lib.templates()[k] == tpl)
           return k;
       return 0u;
     };
+    unsigned victim = cycleMembers.front();
     unsigned bestTplId = victimTplId(victim);
     unsigned bestPos = firstOpPos(victim);
     for (unsigned m : cycleMembers) {
@@ -363,7 +536,6 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
       }
     }
 
-    // Demote the victim block to graph level.
     for (Block &b : result.blocks) {
       if (b.id == victim) {
         b.tpl = nullptr;

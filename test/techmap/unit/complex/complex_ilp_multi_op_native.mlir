@@ -1,21 +1,15 @@
 // RUN: echo "techmap:" > %t.ilp.yaml
 // RUN: echo "  algorithm: ilp" >> %t.ilp.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.ilp.yaml" 2> %t.diag | FileCheck %s
-// RUN: FileCheck --check-prefix=DIAG %s < %t.diag
+// RUN: not test -s %t.diag
 
 // Stress: a complex graph where the FU library contains a multi-op
 // template (a muli->addi 2-op chain) plus single-op templates for
-// arith.{addi, cmpi}. The simplified single-op MIP cannot model the
-// multi-op coverage so the ILP partitioner emits a diagnostic and
-// hands off to greedy. Greedy must produce a structurally valid
-// partition: the first muli+addi pair is fused via the 2-op template,
-// the second muli is left at graph level (its only template is the
-// 2-op chain which would create an inter-block cycle through the
-// cmpi consumer), and the trailing addi + cmpi each get their own
-// singleton subgraph.
-
-// DIAG: warning: loom-ilp-partitioner: multi-op template candidate detected
-// DIAG-SAME: falling back to greedy partitioner
+// arith.{addi, cmpi}. The ILP partitioner now models multi-op
+// coverage natively in the MIP, so no fallback diagnostic is emitted.
+// The optimum picks two muli+addi 2-op subgraphs (each fusing a
+// (muli, addi) pair) plus a singleton cmpi subgraph, dominating the
+// greedy solution that left the second muli at graph level.
 
 // CHECK-LABEL: @fu_addi
 func.func @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
@@ -57,10 +51,9 @@ func.func @fu_cmpi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
 // CHECK-NEXT: arith.muli
 // CHECK-NEXT: arith.addi
 // CHECK-NEXT: dataflow.yield
-// Second muli stays at graph level (cycle break).
-// CHECK: arith.muli
-// Trailing addi gets a singleton subgraph.
+// Second muli+addi fused into another 2-op subgraph.
 // CHECK: dataflow.subgraph
+// CHECK-NEXT: arith.muli
 // CHECK-NEXT: arith.addi
 // CHECK-NEXT: dataflow.yield
 // cmpi gets its own subgraph.

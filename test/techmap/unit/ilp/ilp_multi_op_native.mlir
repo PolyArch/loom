@@ -1,12 +1,12 @@
-// When the template library contains a multi-op template, the simplified
-// single-op MIP cannot model coverage and the ILP partitioner must fall
-// back to greedy, emitting a diagnostic on the way out. The greedy
-// fallback fuses the chain into a single subgraph.
+// When the template library contains a multi-op template, the ILP
+// partitioner models multi-op coverage natively in the MIP via rooted
+// VF2 candidates. The optimum binds the muli+addi chain to a single
+// 2-op subgraph; no greedy fallback diagnostic is emitted.
 
 // RUN: echo "techmap:" > %t.ilp.yaml
 // RUN: echo "  algorithm: ilp" >> %t.ilp.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.ilp.yaml" 2> %t.diag | FileCheck %s
-// RUN: FileCheck --check-prefix=DIAG %s < %t.diag
+// RUN: not test -s %t.diag
 
 // CHECK-LABEL: @fu_muli_addi
 func.func @fu_muli_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
@@ -21,7 +21,7 @@ func.func @fu_muli_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
   return
 }
 
-// Greedy fallback: muli+addi fuse into a single subgraph.
+// ILP-native multi-op coverage: muli+addi fuse into a single subgraph.
 // CHECK-LABEL: @graph_two_op
 // CHECK: dataflow.subgraph
 // CHECK-NEXT: arith.muli
@@ -36,6 +36,3 @@ func.func @graph_two_op(%a: i32, %b: i32) -> i32 {
   }
   return %r : i32
 }
-
-// DIAG: warning: loom-ilp-partitioner: multi-op template candidate detected
-// DIAG-SAME: falling back to greedy partitioner
