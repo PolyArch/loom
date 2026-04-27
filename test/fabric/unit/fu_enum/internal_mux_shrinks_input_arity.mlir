@@ -25,21 +25,19 @@ func.func @fu_internal_mux_2of4(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
     fabric.yield %r0 : !fabric.bits<32>
   }
 
-  // sel=0 candidate: live inputs are FU args 0 and 2, lifted to a
-  // 2-input/1-output subgraph. The wrapping func.func captures the
-  // canonical signature.
+  // sel=0 and sel=1 produce graph-isomorphic 2-input subgraphs (an addi
+  // of two distinct block args). Dedup keeps only the lex-smallest, so
+  // exactly one wrapper / one config is emitted.
   // CHECK: func.func private @fu0_subgraph_0(%{{[^,]*}}: i32, %{{[^,]*}}: i32) -> i32
   // CHECK: dataflow.subgraph(%{{.*}} = %{{.*}} : i32, %{{.*}} = %{{.*}} : i32) -> i32
   // CHECK-SAME: mux#0{sel=0,discard=false,disconnect=false}
   // CHECK:   arith.addi
   // CHECK:   dataflow.yield
 
-  // sel=1 candidate: live inputs are FU args 1 and 2, still 2-input.
-  // CHECK: func.func private @fu0_subgraph_1(%{{[^,]*}}: i32, %{{[^,]*}}: i32) -> i32
-  // CHECK: dataflow.subgraph(%{{.*}} = %{{.*}} : i32, %{{.*}} = %{{.*}} : i32) -> i32
-  // CHECK-SAME: mux#0{sel=1,discard=false,disconnect=false}
-  // CHECK:   arith.addi
-  // CHECK:   dataflow.yield
+  // No second wrapper is emitted (the sel=1 effective config is
+  // isomorphic to sel=0 and therefore deduped).
+  // CHECK-NOT: func.func private @fu0_subgraph_1
+  // CHECK-NOT: mux#0{sel=1,discard=false,disconnect=false}
 
   // No 4-input subgraph signature must ever be emitted for this FU.
   // CHECK-NOT: func.func private @fu0_subgraph_{{[0-9]+}}(%{{[^,]*}}: i32, %{{[^,]*}}: i32, %{{[^,]*}}: i32, %{{[^,]*}}: i32)

@@ -24,10 +24,11 @@ func.func @fu_internal_chain(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
     fabric.yield %s : !fabric.bits<32>
   }
 
-  // m2.sel=0 with m1.sel=0/1: both stages fire. %y has both consumers
-  // active.
-  // CHECK-DAG: mux#0{sel=0,discard=false,disconnect=false}; mux#1{sel=0,discard=false,disconnect=false}
-  // CHECK-DAG: mux#0{sel=1,discard=false,disconnect=false}; mux#1{sel=0,discard=false,disconnect=false}
+  // m1.sel=0 and m1.sel=1 (with m2.sel=0) yield graph-isomorphic
+  // subgraphs: each is muladd(blockarg_w_or_x, blockarg_y, blockarg_y).
+  // Dedup keeps the lex-smallest (m1.sel=0).
+  // CHECK: mux#0{sel=0,discard=false,disconnect=false}; mux#1{sel=0,discard=false,disconnect=false}
+  // CHECK-NOT: mux#0{sel=1,discard=false,disconnect=false}; mux#1{sel=0,discard=false,disconnect=false}
 
   // m2.sel=1 leaves the multiplier silent so %y has an inactive consumer
   // on its multiplier port: the broadcast cannot complete and the config

@@ -19,18 +19,16 @@ func.func @fu_muli_output_demux(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
     fabric.yield %d0, %d1 : !fabric.bits<32>, !fabric.bits<32>
   }
 
-  // sel=0 candidate: only %d0 is live; subgraph signature shrinks to a
-  // single i32 result.
+  // sel=0 and sel=1 each produce a 1-result subgraph wrapping just the
+  // arith.muli (the demux is purely a routing detail). They are
+  // graph-isomorphic and dedup keeps only the lex-smallest.
   // CHECK: dataflow.subgraph
   // CHECK-SAME: demux#0{sel=0,discard=false,disconnect=false}
   // CHECK:   %[[M0:.*]] = arith.muli %{{.*}}, %{{.*}} : i32
   // CHECK:   dataflow.yield %[[M0]] : i32
 
-  // sel=1 candidate: only %d1 is live; same single-result shape.
-  // CHECK: dataflow.subgraph
-  // CHECK-SAME: demux#0{sel=1,discard=false,disconnect=false}
-  // CHECK:   %[[M1:.*]] = arith.muli %{{.*}}, %{{.*}} : i32
-  // CHECK:   dataflow.yield %[[M1]] : i32
+  // No second template emitted.
+  // CHECK-NOT: demux#0{sel=1,discard=false,disconnect=false}
 
   // Discard / disconnect configs leave both yields dead so no candidate
   // should be emitted for them.

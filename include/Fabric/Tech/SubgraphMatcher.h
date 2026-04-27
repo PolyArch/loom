@@ -23,12 +23,21 @@ struct FuMatchResult {
 };
 
 // Whether two dataflow.subgraph instances describe the same software-level
-// computation. Block argument counts and types must agree; the body op
-// sequence must match by name, attribute values (excluding `loom.*`
-// annotations) and SSA connectivity (operand-position references resolved
-// via deterministic value numbering).
+// computation, up to graph isomorphism. Implemented by VF2-style
+// backtracking matching:
+//   * block-argument permutations are allowed,
+//   * commutativity-preserving operand permutations are allowed iff the
+//     SSA wiring remains consistent under some bijection,
+//   * op kind, arity, result-type widths and attribute dictionaries
+//     (excluding `loom.*` annotations) must agree.
+// Matching is deterministic: same input -> same yes/no answer.
+bool subgraphsIsomorphic(::dataflow::SubgraphOp user,
+                         ::dataflow::SubgraphOp tpl);
+
+// Backwards-compatible alias retained for the original strict-equality
+// callers. Implemented on top of `subgraphsIsomorphic`.
 bool subgraphsStructurallyEqual(::dataflow::SubgraphOp a,
-                                 ::dataflow::SubgraphOp b);
+                                ::dataflow::SubgraphOp b);
 
 // Try to find a software configuration of `fu` that implements `pattern`.
 // `tempModule` is used as scratch space for the FU's enumerated candidates;

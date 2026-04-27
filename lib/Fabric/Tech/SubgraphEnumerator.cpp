@@ -2,6 +2,7 @@
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/FabricTypes.h"
+#include "Fabric/Tech/SubgraphMatcher.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -1042,7 +1043,36 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
     results.push_back(std::move(cand));
   }
 
-  return results;
+  // Dedup pass over the produced candidates. Two configurations that map
+  // to graph-isomorphic subgraphs (after mux/demux reduction has already
+  // been applied implicitly by materialization) are considered equivalent
+  // effective configurations. We keep the FIRST occurrence in
+  // configuration-id order (lexicographically smallest sw_configs choice)
+  // and erase the wrapper for every later isomorphic clone. This makes
+  // multi-mux / multi-demux FUs collapse to one template per distinct
+  // effective compute, instead of one per Cartesian-product knob tuple.
+  ::llvm::SmallVector<FuSubgraphCandidate> deduped;
+  deduped.reserve(results.size());
+  for (auto &c : results) {
+    bool dup = false;
+    for (auto &kept : deduped) {
+      if (subgraphsIsomorphic(c.subgraph, kept.subgraph)) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup)
+      c.wrapper.erase();
+    else
+      deduped.push_back(std::move(c));
+  }
+  // Renumber wrapper names so the post-dedup names are contiguous and
+  // stable across runs.
+  for (auto [i, c] : ::llvm::enumerate(deduped)) {
+    std::string fname = (baseName + "_" + std::to_string(i)).str();
+    c.wrapper.setName(fname);
+  }
+  return deduped;
 }
 
 } // namespace fabric

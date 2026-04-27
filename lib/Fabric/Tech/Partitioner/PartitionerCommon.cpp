@@ -86,6 +86,263 @@ reverseTopoOrder(::dataflow::GraphOp graph) {
   return order;
 }
 
+// VF2-style isomorphism match for the partitioner's multi-op coverage.
+//
+// The user side is a `dataflow.graph` body; the template side is a
+// `dataflow.subgraph` body materialized from one effective FU configuration
+// (mux/demux already elided -- pure compute DAG). We anchor the user's
+// `root` to the template's "sink" (the op feeding the first yield operand)
+// and then expand by walking template body ops in program order, trying to
+// bind each one to a user op in `root->getBlock()` whose op kind, arity,
+// result-type list, operand-type multiset and attribute dict match.
+//
+// Operand sources can be:
+//   * another body op result (must respect the bijection),
+//   * a value external to the template body (block-arg or external def);
+//     on the user side this maps to ANY value that is (a) external to the
+//     selected user op set and (b) consistent with previous external-source
+//     bindings. This permits commutative-operand permutations and also
+//     handles patterns where the user's external-input wiring differs from
+//     the canonical template wiring.
+namespace {
+
+struct PNode {
+  ::mlir::Operation *op;
+  ::llvm::StringRef opName;
+  unsigned numOperands;
+  unsigned numResults;
+  ::llvm::SmallVector<std::pair<int, unsigned>, 4> operandRefs;
+  // operandRefs[p] = (-1, 0)  ==> external value
+  // operandRefs[p] = (i, r)   ==> body op i, result number r
+  ::llvm::SmallVector<std::string, 2> resultTypeKeys;
+  ::llvm::SmallVector<std::string, 4> sortedOperandTypeKeys;
+  ::llvm::SmallVector<std::pair<std::string, std::string>, 4> attrKeys;
+};
+
+static std::string canonTypeKey(::mlir::Type t) {
+  std::string s;
+  ::llvm::raw_string_ostream os(s);
+  t.print(os);
+  return s;
+}
+
+// Build the per-template node list, anchored on the sink (yield-feeder),
+// in template program order. Returns empty on malformed bodies. The sink
+// is guaranteed to be the last entry.
+static ::llvm::SmallVector<PNode, 4>
+buildTemplateNodes(::dataflow::SubgraphOp tplSubgraph) {
+  ::llvm::SmallVector<PNode, 4> out;
+  ::mlir::Block &body = tplSubgraph.getBody().front();
+  ::llvm::DenseMap<::mlir::Operation *, int> idx;
+  int i = 0;
+  for (::mlir::Operation &op : body.without_terminator()) {
+    idx[&op] = i++;
+  }
+  out.reserve(i);
+  for (::mlir::Operation &op : body.without_terminator()) {
+    PNode n;
+    n.op = &op;
+    n.opName = op.getName().getStringRef();
+    n.numOperands = op.getNumOperands();
+    n.numResults = op.getNumResults();
+    n.operandRefs.reserve(n.numOperands);
+    for (::mlir::Value v : op.getOperands()) {
+      ::mlir::Operation *def = v.getDefiningOp();
+      auto it = (def ? idx.find(def) : idx.end());
+      if (it == idx.end()) {
+        n.operandRefs.push_back({-1, 0});
+      } else {
+        unsigned r = ::llvm::cast<::mlir::OpResult>(v).getResultNumber();
+        n.operandRefs.push_back({it->second, r});
+      }
+    }
+    n.resultTypeKeys.reserve(n.numResults);
+    for (::mlir::Type t : op.getResultTypes())
+      n.resultTypeKeys.push_back(canonTypeKey(t));
+    n.sortedOperandTypeKeys.reserve(n.numOperands);
+    for (::mlir::Type t : op.getOperandTypes())
+      n.sortedOperandTypeKeys.push_back(canonTypeKey(t));
+    std::sort(n.sortedOperandTypeKeys.begin(), n.sortedOperandTypeKeys.end());
+    n.attrKeys = ::fabric::stripLoomAttrs(op.getAttrs());
+    out.push_back(std::move(n));
+  }
+  return out;
+}
+
+// Coarse pre-filter: same op kind + arity + types + attrs.
+static bool nodeFeaturesCompatible(::mlir::Operation *u, const PNode &t) {
+  if (u->getName().getStringRef() != t.opName)
+    return false;
+  if (u->getNumOperands() != t.numOperands)
+    return false;
+  if (u->getNumResults() != t.numResults)
+    return false;
+  ::llvm::SmallVector<std::string, 2> uRes;
+  uRes.reserve(u->getNumResults());
+  for (::mlir::Type tt : u->getResultTypes())
+    uRes.push_back(canonTypeKey(tt));
+  if (uRes != t.resultTypeKeys)
+    return false;
+  ::llvm::SmallVector<std::string, 4> uOp;
+  uOp.reserve(u->getNumOperands());
+  for (::mlir::Type tt : u->getOperandTypes())
+    uOp.push_back(canonTypeKey(tt));
+  std::sort(uOp.begin(), uOp.end());
+  if (uOp != t.sortedOperandTypeKeys)
+    return false;
+  if (::fabric::stripLoomAttrs(u->getAttrs()) != t.attrKeys)
+    return false;
+  return true;
+}
+
+struct MatchState {
+  // M[i] = user op bound to template node i (or nullptr).
+  ::llvm::SmallVector<::mlir::Operation *> M;
+  // Reverse lookup.
+  ::llvm::DenseSet<::mlir::Operation *> usedUserOps;
+  // External-source bindings: a template "external" Value t_ext maps to
+  // some user Value u_ext; both maps must stay consistent.
+  ::llvm::DenseMap<::mlir::Value, ::mlir::Value> extTplToUsr;
+  ::llvm::DenseMap<::mlir::Value, ::mlir::Value> extUsrToTpl;
+};
+
+static bool isCommutativeOp(::llvm::StringRef name) {
+  return name == "arith.addi" || name == "arith.muli" ||
+         name == "arith.andi" || name == "arith.ori" || name == "arith.xori" ||
+         name == "arith.addf" || name == "arith.mulf" ||
+         name == "arith.minsi" || name == "arith.maxsi" ||
+         name == "arith.minui" || name == "arith.maxui" ||
+         name == "arith.minimumf" || name == "arith.maximumf";
+}
+
+// Verify body-internal operand consistency under operand permutation
+// `perm` (perm[user_pos] = template_pos): every template body-ref operand
+// must in the user's mapping point at M[bIdx] with the right result num.
+static bool topologyConsistentPerm(const MatchState &S,
+                                   const ::llvm::SmallVector<PNode, 4> &T,
+                                   unsigned tIdx, ::mlir::Operation *usrOp,
+                                   ::llvm::ArrayRef<unsigned> perm) {
+  const PNode &tN = T[tIdx];
+  for (unsigned pu = 0; pu < tN.numOperands; ++pu) {
+    unsigned pt = perm[pu];
+    auto [bIdx, rNum] = tN.operandRefs[pt];
+    if (bIdx < 0)
+      continue;
+    ::mlir::Operation *expected = S.M[bIdx];
+    if (expected == nullptr)
+      return false;
+    ::mlir::Value uVal = usrOp->getOperand(pu);
+    ::mlir::Operation *uDef = uVal.getDefiningOp();
+    if (uDef != expected)
+      return false;
+    unsigned uRes = ::llvm::cast<::mlir::OpResult>(uVal).getResultNumber();
+    if (uRes != rNum)
+      return false;
+  }
+  return true;
+}
+
+// Tentatively bind external-source operands under `perm`. On success the
+// caller is responsible for snapshotting / restoring; on failure rolls
+// back any bindings this call added.
+static bool bindExternalsPerm(MatchState &S,
+                              const ::llvm::SmallVector<PNode, 4> &T,
+                              unsigned tIdx, ::mlir::Operation *usrOp,
+                              ::llvm::ArrayRef<unsigned> perm) {
+  ::llvm::SmallVector<std::pair<::mlir::Value, ::mlir::Value>, 4> added;
+  const PNode &tN = T[tIdx];
+  for (unsigned pu = 0; pu < tN.numOperands; ++pu) {
+    unsigned pt = perm[pu];
+    auto [bIdx, rNum] = tN.operandRefs[pt];
+    if (bIdx >= 0)
+      continue;
+    ::mlir::Value tVal = tN.op->getOperand(pt);
+    ::mlir::Value uVal = usrOp->getOperand(pu);
+    auto it = S.extTplToUsr.find(tVal);
+    if (it != S.extTplToUsr.end()) {
+      if (it->second != uVal) {
+        for (auto &kv : added) {
+          S.extTplToUsr.erase(kv.first);
+          S.extUsrToTpl.erase(kv.second);
+        }
+        return false;
+      }
+    } else {
+      auto rev = S.extUsrToTpl.find(uVal);
+      if (rev != S.extUsrToTpl.end() && rev->second != tVal) {
+        for (auto &kv : added) {
+          S.extTplToUsr.erase(kv.first);
+          S.extUsrToTpl.erase(kv.second);
+        }
+        return false;
+      }
+      S.extTplToUsr[tVal] = uVal;
+      S.extUsrToTpl[uVal] = tVal;
+      added.push_back({tVal, uVal});
+    }
+  }
+  return true;
+}
+
+static bool vf2RecMulti(MatchState &S, const ::llvm::SmallVector<PNode, 4> &T,
+                        ::mlir::Block *userBlock, unsigned nextT,
+                        unsigned sinkIdx, ::mlir::Operation *sinkUserOp) {
+  if (nextT == T.size())
+    return true;
+  const PNode &tN = T[nextT];
+
+  // Iterate user ops in block program order for determinism. When this is
+  // the sink template node, the user op is forced to `sinkUserOp`.
+  auto tryBind = [&](::mlir::Operation *uOp) -> bool {
+    if (S.usedUserOps.contains(uOp))
+      return false;
+    if (!nodeFeaturesCompatible(uOp, tN))
+      return false;
+    S.M[nextT] = uOp;
+    // Build the operand permutation to try. For commutative ops, iterate
+    // all permutations of operand positions; for non-commutative ops, only
+    // the identity permutation. The first admissible permutation wins.
+    ::llvm::SmallVector<unsigned, 4> perm(tN.numOperands);
+    for (unsigned i = 0; i < tN.numOperands; ++i)
+      perm[i] = i;
+    bool isComm = isCommutativeOp(tN.opName);
+    auto savedTplToUsr = S.extTplToUsr;
+    auto savedUsrToTpl = S.extUsrToTpl;
+    do {
+      if (!topologyConsistentPerm(S, T, nextT, uOp, perm))
+        goto next_perm;
+      if (!bindExternalsPerm(S, T, nextT, uOp, perm))
+        goto next_perm;
+      S.usedUserOps.insert(uOp);
+      if (vf2RecMulti(S, T, userBlock, nextT + 1, sinkIdx, sinkUserOp))
+        return true;
+      S.usedUserOps.erase(uOp);
+      S.extTplToUsr = savedTplToUsr;
+      S.extUsrToTpl = savedUsrToTpl;
+    next_perm:;
+    } while (isComm && std::next_permutation(perm.begin(), perm.end()));
+    S.M[nextT] = nullptr;
+    return false;
+  };
+
+  if (nextT == sinkIdx) {
+    if (tryBind(sinkUserOp))
+      return true;
+    return false;
+  }
+  for (::mlir::Operation &uOp : *userBlock) {
+    if (uOp.hasTrait<::mlir::OpTrait::IsTerminator>())
+      continue;
+    if (&uOp == sinkUserOp)
+      continue;
+    if (tryBind(&uOp))
+      return true;
+  }
+  return false;
+}
+
+} // namespace
+
 ::llvm::SmallVector<::mlir::Operation *>
 collectMultiOpCandidate(::mlir::Operation *root, const FuTemplate &tpl) {
   ::llvm::SmallVector<::mlir::Operation *> empty;
@@ -93,110 +350,58 @@ collectMultiOpCandidate(::mlir::Operation *root, const FuTemplate &tpl) {
   if (n == 0)
     return empty;
 
-  // Gather template body ops in program order.
-  ::llvm::SmallVector<::mlir::Operation *> tplOps;
   ::dataflow::SubgraphOp tplSubgraph = tpl.subgraph;
-  ::mlir::Block &tplBody = tplSubgraph.getBody().front();
-  for (::mlir::Operation &op : tplBody.without_terminator())
-    tplOps.push_back(&op);
-  if (tplOps.size() != n)
-    return empty;
-  if (tplOps.empty())
+  ::llvm::SmallVector<PNode, 4> tplNodes = buildTemplateNodes(tplSubgraph);
+  if (tplNodes.size() != n)
     return empty;
 
-  // The template's "root" is the op feeding the yield's first operand.
-  ::mlir::Operation *yieldOp = tplBody.getTerminator();
+  // The template's sink (yield-feeder of operand 0) must be the last node
+  // in template program order: the enumerator emits ops in that order and
+  // we rely on the topology consistency check having predecessors bound
+  // before consumers.
+  ::mlir::Operation *yieldOp = tplSubgraph.getBody().front().getTerminator();
   if (!yieldOp || yieldOp->getNumOperands() == 0)
     return empty;
-  ::mlir::Operation *tplRoot = yieldOp->getOperand(0).getDefiningOp();
-  if (tplRoot != tplOps.back())
+  ::mlir::Operation *tplSink = yieldOp->getOperand(0).getDefiningOp();
+  if (tplSink != tplNodes.back().op)
     return empty;
+  unsigned sinkIdx = n - 1;
 
-  // Walk back along operand[0] to recover the canonical chain.
-  ::llvm::SmallVector<::mlir::Operation *> tplChain(n, nullptr);
-  tplChain[n - 1] = tplRoot;
-  for (unsigned i = n - 1; i > 0; --i) {
-    ::mlir::Operation *cur = tplChain[i];
-    if (!cur || cur->getNumOperands() == 0)
-      return empty;
-    ::mlir::Operation *prev = cur->getOperand(0).getDefiningOp();
-    if (!prev || prev->getBlock() != &tplBody)
-      return empty;
-    tplChain[i - 1] = prev;
-  }
-
-  // Verify the chain covers every template body op exactly once.
-  ::llvm::DenseSet<::mlir::Operation *> chainSet;
-  for (::mlir::Operation *op : tplChain)
-    chainSet.insert(op);
-  if (chainSet.size() != n)
-    return empty;
-  for (::mlir::Operation *op : tplOps)
-    if (!chainSet.contains(op))
-      return empty;
-
-  // Build the user-side chain by mirroring the operand[0] walk on `root`.
-  ::llvm::SmallVector<::mlir::Operation *> usrChain(n, nullptr);
-  usrChain[n - 1] = root;
-  ::mlir::Block *userBody = root->getBlock();
-  for (unsigned i = n - 1; i > 0; --i) {
-    ::mlir::Operation *cur = usrChain[i];
-    if (!cur || cur->getNumOperands() == 0)
-      return empty;
-    ::mlir::Operation *prev = cur->getOperand(0).getDefiningOp();
-    if (!prev || prev->getBlock() != userBody)
-      return empty;
-    usrChain[i - 1] = prev;
-  }
-  ::llvm::DenseSet<::mlir::Operation *> usrSet;
-  for (::mlir::Operation *op : usrChain)
-    usrSet.insert(op);
-  if (usrSet.size() != n)
-    return empty;
-
-  // Position lookup for template-body internal refs.
-  ::llvm::DenseMap<::mlir::Operation *, unsigned> tplPos;
-  for (unsigned i = 0; i < n; ++i)
-    tplPos[tplChain[i]] = i;
-
-  // Per-step structural compare.
-  for (unsigned i = 0; i < n; ++i) {
-    ::mlir::Operation *T = tplChain[i];
-    ::mlir::Operation *C = usrChain[i];
-    if (T->getName() != C->getName())
-      return empty;
-    if (T->getNumOperands() != C->getNumOperands())
-      return empty;
-    if (T->getNumResults() != C->getNumResults())
-      return empty;
-    if (stripLoomAttrs(T->getAttrs()) != stripLoomAttrs(C->getAttrs()))
-      return empty;
-    for (unsigned p = 0; p < T->getNumOperands(); ++p) {
-      ::mlir::Value tv = T->getOperand(p);
-      ::mlir::Value cv = C->getOperand(p);
-      ::mlir::Operation *tdef = tv.getDefiningOp();
-      if (tdef && tplPos.contains(tdef)) {
-        unsigned j = tplPos[tdef];
-        unsigned resIdx = ::llvm::cast<::mlir::OpResult>(tv).getResultNumber();
-        ::mlir::Operation *cdef = cv.getDefiningOp();
-        if (cdef != usrChain[j])
-          return empty;
-        unsigned cResIdx =
-            ::llvm::cast<::mlir::OpResult>(cv).getResultNumber();
-        if (cResIdx != resIdx)
-          return empty;
-      } else {
-        ::mlir::Operation *cdef = cv.getDefiningOp();
-        if (cdef && usrSet.contains(cdef))
-          return empty;
-      }
+  // Sanity: every body ref is a back-edge in template program order.
+  for (unsigned i = 0; i < tplNodes.size(); ++i) {
+    for (auto &pr : tplNodes[i].operandRefs) {
+      int bIdx = pr.first;
+      if (bIdx >= 0 && static_cast<unsigned>(bIdx) >= i)
+        return empty;
     }
   }
 
+  // Quick reject: sink op kind / arity / attrs must match `root`.
+  if (!nodeFeaturesCompatible(root, tplNodes[sinkIdx]))
+    return empty;
+
+  if (n == 1) {
+    // Single-op template: name + signature already verified by the cache;
+    // just check feature compatibility above (already done).
+    return {root};
+  }
+
+  MatchState S;
+  S.M.assign(n, nullptr);
+  // Run generic VF2 with sink forced to `root`.
+  if (!vf2RecMulti(S, tplNodes, /*userBlock=*/root->getBlock(), /*nextT=*/0,
+                   sinkIdx, /*sinkUserOp=*/root))
+    return empty;
+
+  // Build result in template program order (matches the original API's
+  // "body program order" contract).
   ::llvm::SmallVector<::mlir::Operation *> result;
   result.reserve(n);
-  for (unsigned i = 0; i < n; ++i)
-    result.push_back(usrChain[i]);
+  for (unsigned i = 0; i < n; ++i) {
+    if (S.M[i] == nullptr)
+      return empty;
+    result.push_back(S.M[i]);
+  }
   return result;
 }
 

@@ -19,6 +19,10 @@ func.func @fu_mux3(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
   return
 }
 
-// CHECK-DAG: tpl#{{[0-9]+}} root=arith.muli size=1 cfg=mux#0{sel=0,discard=false,disconnect=false}
-// CHECK-DAG: tpl#{{[0-9]+}} root=arith.muli size=1 cfg=mux#0{sel=1,discard=false,disconnect=false}
-// CHECK-DAG: tpl#{{[0-9]+}} root=arith.muli size=1 cfg=mux#0{sel=2,discard=false,disconnect=false}
+// All three sel values produce graph-isomorphic single-op templates
+// (a 2-input arith.muli over two distinct block args). Enumerator dedup
+// keeps only the lex-smallest, so just one template is emitted.
+// CHECK: tpl#0 root=arith.muli size=1 cfg=mux#0{sel=0,discard=false,disconnect=false}
+// CHECK-NOT: tpl#1
+// CHECK-NOT: mux#0{sel=1
+// CHECK-NOT: mux#0{sel=2

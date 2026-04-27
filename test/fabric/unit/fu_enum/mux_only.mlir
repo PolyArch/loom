@@ -16,9 +16,14 @@ func.func @fu_mux3_then_op(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
     fabric.yield %k : !fabric.bits<32>
   }
 
-  // CHECK-DAG: mux#0{sel=0,discard=false,disconnect=false}
-  // CHECK-DAG: mux#0{sel=1,discard=false,disconnect=false}
-  // CHECK-DAG: mux#0{sel=2,discard=false,disconnect=false}
+  // The three sel values feed three different FU input ports into the
+  // same downstream arith.muli. Block-arg permutation is a structural
+  // isomorphism, so the three configurations produce graph-isomorphic
+  // subgraphs and the enumerator's dedup keeps only the lex-smallest one
+  // (sel=0).
+  // CHECK: mux#0{sel=0,discard=false,disconnect=false}
+  // CHECK-NOT: mux#0{sel=1,discard=false,disconnect=false}
+  // CHECK-NOT: mux#0{sel=2,discard=false,disconnect=false}
 
   return
 }

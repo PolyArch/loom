@@ -22,10 +22,11 @@ func.func @fu_broadcast_with_drain(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
     fabric.yield %add : !fabric.bits<32>
   }
 
-  // The only valid configurations have the demux in discard mode (one
-  // entry per sel value since the drain works the same way regardless).
-  // CHECK-DAG: demux#0{sel=0,discard=true,disconnect=false}
-  // CHECK-DAG: demux#0{sel=1,discard=true,disconnect=false}
+  // The only valid configurations have the demux in discard mode. The
+  // sel value does not change the materialized compute (the demux drains
+  // its input identically), so dedup keeps just the lex-smallest entry.
+  // CHECK: demux#0{sel=0,discard=true,disconnect=false}
+  // CHECK-NOT: demux#0{sel=1,discard=true,disconnect=false}
 
   // Configurations that leave the demux in normal mode would deadlock the
   // %mul wire and must be dropped.
