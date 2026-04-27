@@ -1,5 +1,6 @@
 #include "Fabric/Tech/SubgraphEnumerator.h"
 
+#include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "Fabric/Tech/SubgraphMatcher.h"
@@ -61,7 +62,25 @@ enum class Flavor : uint8_t {
                            // const_hex_value sw_config materialized into
                            // an IntegerAttr (or FloatAttr when the result
                            // port is float-flavored).
+  ArithSelect,             // arith.select: i1 sel + 2 data of type T -> T.
+                           // Strict-SSA eager-evaluation semantics; not
+                           // interchangeable with dataflow.mux.
+  VariadicSyncFlavor,      // dataflow.sync: M-port hardware unit
+                           // configured by a length-M bitmask whose
+                           // popcount N picks the live ports.
+  VariadicMuxFlavor,       // dataflow.mux: 1 sel + M data-port hardware
+                           // unit; bitmask of length M with N ones
+                           // picks the live data inputs.
+  VariadicDemuxFlavor,     // dataflow.demux: 1 sel + 1 data-in + M
+                           // data-out hardware unit; bitmask of length
+                           // M with N ones picks the live outputs.
 };
+
+static bool isVariadicFlavor(Flavor f) {
+  return f == Flavor::VariadicSyncFlavor ||
+         f == Flavor::VariadicMuxFlavor ||
+         f == Flavor::VariadicDemuxFlavor;
+}
 
 static const llvm::StringMap<Flavor> &opFlavors() {
   static const llvm::StringMap<Flavor> m = []() {
@@ -107,6 +126,18 @@ static const llvm::StringMap<Flavor> &opFlavors() {
     put("dataflow.invariant", Flavor::DataflowCarryGateInv);
     put("dataflow.gate", Flavor::DataflowCarryGateInv);
     put("dataflow.constant", Flavor::DataflowConstantFlavor);
+
+    // Variadic dataflow ops: structural counts depend on the bitmask
+    // sw_config picked by the enumerator. The enumerator iterates all
+    // legal bitmasks (popcount in [1, M], capped at M <= 8) and emits
+    // one materialized template per bitmask (post-dedup).
+    put("dataflow.sync", Flavor::VariadicSyncFlavor);
+    put("dataflow.mux", Flavor::VariadicMuxFlavor);
+    put("dataflow.demux", Flavor::VariadicDemuxFlavor);
+
+    // arith.select: fixed schema (i1 sel, T data, T data) -> T. Eager
+    // strict-SSA semantics, distinct from dataflow.mux.
+    put("arith.select", Flavor::ArithSelect);
 
     return r;
   }();
@@ -183,6 +214,39 @@ static Type liftFor(Flavor flavor, unsigned w, bool isOutput, unsigned portIdx,
     if (!isOutput)
       return NoneType::get(ctx);
     return intLifted(w, ctx);
+  case Flavor::ArithSelect:
+    // (i1 sel, T data, T data) -> T. Sel is fixed i1; the data ports
+    // share T which we treat as integer here (the lift propagation
+    // step refines it across mux/demux when relevant).
+    if (!isOutput && portIdx == 0)
+      return IntegerType::get(ctx, 1);
+    return intLifted(w, ctx);
+  case Flavor::VariadicSyncFlavor:
+    // Variadic sync: every port is a data port whose lift kind comes
+    // from neighboring ops via computePortLiftMap. Default to int.
+    return intLifted(w, ctx);
+  case Flavor::VariadicMuxFlavor:
+    // The hardware-side sel port is at input index 0. Whether the
+    // materialized sel block-arg ends up as i1 or index is decided
+    // per-config based on the active count N (see variadicSelType
+    // helpers below). At the FU lift level we just expose it as i1
+    // when bits==1 and as the matching integer width otherwise.
+    if (!isOutput && portIdx == 0) {
+      // Preserve the hardware sel port width; per-config materialization
+      // overrides the block-arg type to i1/index based on active N.
+      if (w == 1)
+        return IntegerType::get(ctx, 1);
+      return intLifted(w, ctx);
+    }
+    return intLifted(w, ctx);
+  case Flavor::VariadicDemuxFlavor:
+    // sel at input index 0, data at input index 1; outputs are data.
+    if (!isOutput && portIdx == 0) {
+      if (w == 1)
+        return IntegerType::get(ctx, 1);
+      return intLifted(w, ctx);
+    }
+    return intLifted(w, ctx);
   }
   return nullptr;
 }
@@ -205,6 +269,18 @@ static PortLift portLiftKind(Flavor f, bool isOutput, unsigned idx) {
     return isOutput ? PortLift::Float : PortLift::Int;
   case Flavor::FloatToInt:
     return isOutput ? PortLift::Int : PortLift::Float;
+  case Flavor::ArithSelect:
+    // sel is integer (i1); data ports are polymorphic. Leave the
+    // data ports unknown so the propagation pass can fix them from
+    // neighboring ops, while pinning sel as Int.
+    return (!isOutput && idx == 0) ? PortLift::Int : PortLift::Unknown;
+  case Flavor::VariadicSyncFlavor:
+    return PortLift::Unknown;
+  case Flavor::VariadicMuxFlavor:
+    // Sel is integer; data ports are polymorphic.
+    return (!isOutput && idx == 0) ? PortLift::Int : PortLift::Unknown;
+  case Flavor::VariadicDemuxFlavor:
+    return (!isOutput && idx == 0) ? PortLift::Int : PortLift::Unknown;
   }
   return PortLift::Unknown;
 }
@@ -240,6 +316,74 @@ static llvm::DenseMap<Value, PortLift> computePortLiftMap(FuOp fu) {
         setIfStronger(in, portLiftKind(f, false, i), dummy);
       for (auto [i, out] : llvm::enumerate(fop.getOutputs()))
         setIfStronger(out, portLiftKind(f, true, i), dummy);
+    }
+  }
+
+  // Propagate lift kinds across variadic data-only port-groups inside
+  // fabric.ops. For dataflow.sync the pairs (input #i, output #i) share
+  // a kind; for dataflow.mux all data inputs (input #1..#N-1) and the
+  // single output share one data kind; for dataflow.demux the data
+  // input (input #1) and every output share one data kind. Sel ports
+  // (input #0 of mux/demux) are independent and pinned to Int.
+  auto firstKnown = [&](::llvm::ArrayRef<Value> vs) {
+    for (Value v : vs) {
+      auto k = m.lookup(v);
+      if (k != PortLift::Unknown)
+        return k;
+    }
+    return PortLift::Unknown;
+  };
+  bool seedChanged = true;
+  while (seedChanged) {
+    seedChanged = false;
+    for (Operation &op : body.without_terminator()) {
+      auto fop = ::mlir::dyn_cast<::fabric::OpOp>(&op);
+      if (!fop)
+        continue;
+      ArrayAttr opList = fop.getOpList();
+      if (opList.empty())
+        continue;
+      auto sym = ::mlir::cast<FlatSymbolRefAttr>(opList[0]).getValue();
+      Flavor f = opFlavors().lookup(sym);
+      if (!isVariadicFlavor(f))
+        continue;
+      auto inputs = fop.getInputs();
+      auto outputs = fop.getOutputs();
+      if (f == Flavor::VariadicSyncFlavor) {
+        unsigned n = std::min<unsigned>(inputs.size(), outputs.size());
+        for (unsigned i = 0; i < n; ++i) {
+          PortLift k = m.lookup(inputs[i]);
+          if (k == PortLift::Unknown)
+            k = m.lookup(outputs[i]);
+          if (k == PortLift::Unknown)
+            continue;
+          setIfStronger(inputs[i], k, seedChanged);
+          setIfStronger(outputs[i], k, seedChanged);
+        }
+      } else if (f == Flavor::VariadicMuxFlavor) {
+        // Data ports: inputs[1..] and outputs[0].
+        ::llvm::SmallVector<Value, 8> dataPorts;
+        for (unsigned i = 1; i < inputs.size(); ++i)
+          dataPorts.push_back(inputs[i]);
+        for (Value v : outputs)
+          dataPorts.push_back(v);
+        PortLift k = firstKnown(dataPorts);
+        if (k == PortLift::Unknown)
+          continue;
+        for (Value v : dataPorts)
+          setIfStronger(v, k, seedChanged);
+      } else if (f == Flavor::VariadicDemuxFlavor) {
+        ::llvm::SmallVector<Value, 8> dataPorts;
+        if (inputs.size() >= 2)
+          dataPorts.push_back(inputs[1]);
+        for (Value v : outputs)
+          dataPorts.push_back(v);
+        PortLift k = firstKnown(dataPorts);
+        if (k == PortLift::Unknown)
+          continue;
+        for (Value v : dataPorts)
+          setIfStronger(v, k, seedChanged);
+      }
     }
   }
 
@@ -323,6 +467,52 @@ static Attribute parseConstHex(StringRef hex, Type resultTy,
   return nullptr;
 }
 
+// Maximum number of hardware ports allowed for any variadic op. Bitmask
+// cardinality is 2^M - 1 (the all-zero mask is illegal); we cap M at 8 so
+// each variadic op contributes at most 255 axis values to the Cartesian
+// product. Larger M is rejected by the enumerator with a diagnostic.
+static constexpr unsigned kVariadicMaxM = 8;
+
+// Hardware port count M for a variadic fabric.op:
+//   * VariadicSync   : numInputs == numOutputs == M
+//   * VariadicMux    : numInputs == M + 1 (1 sel + M data); numOutputs == 1
+//   * VariadicDemux  : numInputs == 2 (1 sel + 1 data); numOutputs == M
+static unsigned variadicM(Flavor f, ::fabric::OpOp fop) {
+  switch (f) {
+  case Flavor::VariadicSyncFlavor:
+    return fop.getInputs().size();
+  case Flavor::VariadicMuxFlavor:
+    return fop.getInputs().size() > 0 ? fop.getInputs().size() - 1 : 0;
+  case Flavor::VariadicDemuxFlavor:
+    return fop.getOutputs().size();
+  default:
+    return 0;
+  }
+}
+
+// Logical sel type for a materialized dataflow.mux/demux with N data
+// ports, mirroring the dataflow op verifier:
+//   * N == 2 -> i1
+//   * N >= 3 -> index
+// N == 1 is not legal for dataflow.mux/demux (the dataflow op verifier
+// rejects fewer than 2 fan-in/out); the enumerator skips such configs
+// upstream.
+static Type variadicMuxLogicalSelType(unsigned N, MLIRContext *ctx) {
+  if (N == 2)
+    return IntegerType::get(ctx, 1);
+  return ::mlir::IndexType::get(ctx);
+}
+
+// Population count of a bitmask string ("0"/"1" only). Caller validates
+// the alphabet.
+static unsigned popcountBitmask(StringRef s) {
+  unsigned n = 0;
+  for (char c : s)
+    if (c == '1')
+      ++n;
+  return n;
+}
+
 // Convert a raw sw_config attribute value (typically StringAttr) into the
 // MLIR attribute the materialized sw op expects.
 static Attribute toSwAttr(StringRef opSym, StringRef key, Attribute raw,
@@ -365,6 +555,75 @@ decodeMuxLikeMode(const llvm::StringMap<Attribute> &chosen) {
   return {(unsigned)sel, discard, disconnect};
 }
 
+// Returns the bitmask string of a variadic fabric.op from the chosen
+// sw_configs. Returns empty StringRef when no bitmask was chosen (the
+// caller treats this as "not configured / cannot fire").
+static StringRef getChosenBitmask(Operation *fop,
+                                  const llvm::DenseMap<Operation *,
+                                                       llvm::StringMap<
+                                                           Attribute>> &
+                                      chosenByOp) {
+  auto it = chosenByOp.find(fop);
+  if (it == chosenByOp.end())
+    return {};
+  auto bmIt = it->second.find("bitmask");
+  if (bmIt == it->second.end())
+    return {};
+  if (auto str = ::mlir::dyn_cast<StringAttr>(bmIt->second))
+    return str.getValue();
+  return {};
+}
+
+// Returns true if input port `portIdx` of variadic fabric.op `fop`
+// (Flavor `f`) is selected by `bitmask`. For sync, inputs[i] is active
+// iff bitmask[i] == '1'. For mux, input #0 (sel) is always active when
+// the op fires; input #(1+i) is a data port active iff bitmask[i] == '1'.
+// For demux, input #0 (sel) and input #1 (data) are always active when
+// the op fires.
+static bool variadicInputActive(Flavor f, unsigned portIdx, StringRef bm) {
+  if (bm.empty())
+    return false;
+  switch (f) {
+  case Flavor::VariadicSyncFlavor:
+    return portIdx < bm.size() && bm[portIdx] == '1';
+  case Flavor::VariadicMuxFlavor:
+    if (portIdx == 0)
+      return true; // sel
+    if (portIdx - 1 < bm.size())
+      return bm[portIdx - 1] == '1';
+    return false;
+  case Flavor::VariadicDemuxFlavor:
+    return portIdx <= 1; // sel + data both always active when firing
+  default:
+    return false;
+  }
+}
+
+// Returns true if output port `portIdx` of variadic fabric.op `fop`
+// (Flavor `f`) is alive when `bm` is the chosen bitmask.
+static bool variadicOutputActive(Flavor f, unsigned portIdx, StringRef bm) {
+  if (bm.empty())
+    return false;
+  switch (f) {
+  case Flavor::VariadicSyncFlavor:
+  case Flavor::VariadicDemuxFlavor:
+    return portIdx < bm.size() && bm[portIdx] == '1';
+  case Flavor::VariadicMuxFlavor:
+    return portIdx == 0; // single output, always live when firing
+  default:
+    return false;
+  }
+}
+
+// Returns the Flavor of `fop` if it is a variadic fabric.op, otherwise
+// Flavor::IntArith (caller checks isVariadicFlavor first).
+static Flavor flavorOfFabricOp(::fabric::OpOp fop) {
+  if (fop.getOpList().empty())
+    return Flavor::IntArith;
+  auto sym = ::mlir::cast<FlatSymbolRefAttr>(fop.getOpList()[0]).getValue();
+  return opFlavors().lookup(sym);
+}
+
 // Whether the use port at `idx` of `user` is "active" (its handshake ready
 // can go high) under the chosen modes.
 static bool useIsActive(Operation *user, unsigned idx,
@@ -374,8 +633,16 @@ static bool useIsActive(Operation *user, unsigned idx,
                              &chosenByOp) {
   if (::mlir::isa<::fabric::YieldOp>(user))
     return true;
-  if (::mlir::isa<::fabric::OpOp>(user))
-    return fires.count(user);
+  if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(user)) {
+    if (!fires.count(user))
+      return false;
+    Flavor f = flavorOfFabricOp(fop);
+    if (isVariadicFlavor(f)) {
+      StringRef bm = getChosenBitmask(user, chosenByOp);
+      return variadicInputActive(f, idx, bm);
+    }
+    return true;
+  }
   if (::mlir::isa<::fabric::MuxOp>(user)) {
     if (!fires.count(user))
       return false;
@@ -419,6 +686,32 @@ static bool opCanFire(Operation *op,
                                              llvm::StringMap<Attribute>>
                            &chosenByOp) {
   if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(op)) {
+    Flavor f = flavorOfFabricOp(fop);
+    if (isVariadicFlavor(f)) {
+      StringRef bm = getChosenBitmask(op, chosenByOp);
+      if (bm.empty())
+        return false;
+      if (popcountBitmask(bm) == 0)
+        return false;
+      // Every active input must be alive.
+      for (auto [i, in] : llvm::enumerate(fop.getInputs())) {
+        if (!variadicInputActive(f, i, bm))
+          continue;
+        if (!alive.count(in))
+          return false;
+      }
+      // At least one active output must be demanded.
+      bool any = false;
+      for (auto [i, out] : llvm::enumerate(fop.getOutputs())) {
+        if (!variadicOutputActive(f, i, bm))
+          continue;
+        if (demanded.count(out)) {
+          any = true;
+          break;
+        }
+      }
+      return any;
+    }
     for (Value in : fop.getInputs())
       if (!alive.count(in))
         return false;
@@ -499,6 +792,32 @@ static std::optional<ConfigAnalysis> analyzeConfig(
     changed = false;
     for (Operation &op : fuBody.without_terminator()) {
       if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(&op)) {
+        Flavor f = flavorOfFabricOp(fop);
+        if (isVariadicFlavor(f)) {
+          StringRef bm = getChosenBitmask(&op, chosenByOp);
+          if (bm.empty() || popcountBitmask(bm) == 0)
+            continue;
+          // An active output being demanded propagates demand to the
+          // active inputs of the variadic op.
+          bool anyOut = false;
+          for (auto [i, out] : llvm::enumerate(fop.getOutputs())) {
+            if (!variadicOutputActive(f, i, bm))
+              continue;
+            if (demanded.count(out)) {
+              anyOut = true;
+              break;
+            }
+          }
+          if (!anyOut)
+            continue;
+          for (auto [i, in] : llvm::enumerate(fop.getInputs())) {
+            if (!variadicInputActive(f, i, bm))
+              continue;
+            if (demanded.insert(in).second)
+              changed = true;
+          }
+          continue;
+        }
         bool anyOut = false;
         for (Value out : fop.getOutputs())
           if (demanded.count(out)) { anyOut = true; break; }
@@ -549,6 +868,19 @@ static std::optional<ConfigAnalysis> analyzeConfig(
       } else if (Operation *def = v.getDefiningOp()) {
         if (!fires.count(def)) {
           producerOk = false;
+        } else if (auto vfop = ::mlir::dyn_cast<::fabric::OpOp>(def);
+                   vfop && isVariadicFlavor(flavorOfFabricOp(vfop))) {
+          // Variadic fabric.op only produces values on its active outputs.
+          Flavor f = flavorOfFabricOp(vfop);
+          StringRef bm = getChosenBitmask(def, chosenByOp);
+          unsigned outIdx = 0;
+          for (auto [i, out] : llvm::enumerate(vfop.getOutputs())) {
+            if (out == v) {
+              outIdx = i;
+              break;
+            }
+          }
+          producerOk = variadicOutputActive(f, outIdx, bm);
         } else if (auto dem = ::mlir::dyn_cast<::fabric::DemuxOp>(def)) {
           // A fabric.demux is a 1-of-N selector: in any given config only
           // outputs[sel] carries a value (and even that only when not in
@@ -641,6 +973,155 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
       else
         sym = ::mlir::cast<FlatSymbolRefAttr>(opList[0]).getValue();
       Flavor flavor = opFlavors().lookup(sym);
+
+      // Variadic dataflow.{sync,mux,demux} have a fundamentally different
+      // realization: only the bitmask-active subset of fabric ports
+      // become operands/results of the materialized dataflow op, and the
+      // sel port (mux/demux) gets a logical width derived from N rather
+      // than the hardware-wide port width.
+      if (isVariadicFlavor(flavor)) {
+        StringRef bm = chosen.lookup("bitmask")
+                           ? ::mlir::cast<StringAttr>(chosen.lookup("bitmask"))
+                                 .getValue()
+                           : StringRef{};
+        if (bm.empty())
+          return std::nullopt;
+        unsigned N = popcountBitmask(bm);
+        if (N == 0)
+          return std::nullopt;
+
+        if (flavor == Flavor::VariadicSyncFlavor) {
+          // dataflow.sync: collect active inputs in port order; both
+          // input and output port-pairs share a width per port.
+          SmallVector<Value, 4> swInputs;
+          SmallVector<Type, 4> swResultTypes;
+          for (auto [i, in] : llvm::enumerate(fop.getInputs())) {
+            if (!variadicInputActive(flavor, i, bm))
+              continue;
+            auto it = valueMap.find(in);
+            if (it == valueMap.end())
+              return std::nullopt;
+            swInputs.push_back(it->second);
+          }
+          for (auto [i, t] : llvm::enumerate(fop.getResultTypes())) {
+            if (!variadicOutputActive(flavor, i, bm))
+              continue;
+            unsigned w = ::mlir::cast<BitsType>(t).getWidth();
+            Type ty = liftFor(flavor, w, /*isOutput=*/true, i, ctx);
+            if (!ty)
+              return std::nullopt;
+            swResultTypes.push_back(ty);
+          }
+          if (swInputs.size() != swResultTypes.size())
+            return std::nullopt;
+          OperationState state(fop.getLoc(), sym);
+          state.addOperands(swInputs);
+          state.addTypes(swResultTypes);
+          Operation *swOp = builder.create(state);
+          unsigned outPos = 0;
+          for (auto [i, fuOut] : llvm::enumerate(fop.getOutputs())) {
+            if (!variadicOutputActive(flavor, i, bm))
+              continue;
+            if (analysis.alive.count(fuOut))
+              valueMap[fuOut] = swOp->getResult(outPos);
+            ++outPos;
+          }
+          continue;
+        }
+        if (flavor == Flavor::VariadicMuxFlavor) {
+          // The materialized dataflow.mux's data-input count is the
+          // bitmask popcount N; the sel input is the FU's input #0
+          // remapped to the logical sel type (i1 for N==2, index for
+          // N>=3). N==1 is rejected upstream because the dataflow.mux
+          // verifier requires at least 2 data inputs.
+          if (N < 2)
+            return std::nullopt;
+          // Sel block-arg must already exist in valueMap with its
+          // hardware width; we cast/convert downstream by re-using the
+          // value as-is when its type already matches the required
+          // logical sel type, otherwise we synthesize a no-op cast to
+          // the logical type. In practice the FU lift step now produces
+          // the logical sel type directly when possible (see the lift
+          // override applied in enumerateFuSubgraphs); this guard
+          // catches mismatches.
+          Value selFuVal = fop.getInputs()[0];
+          auto selIt = valueMap.find(selFuVal);
+          if (selIt == valueMap.end())
+            return std::nullopt;
+          Value selSw = selIt->second;
+          Type wantSelTy = variadicMuxLogicalSelType(N, ctx);
+          if (selSw.getType() != wantSelTy)
+            return std::nullopt;
+
+          SmallVector<Value, 4> swInputs;
+          swInputs.push_back(selSw);
+          for (auto [i, in] : llvm::enumerate(fop.getInputs())) {
+            if (i == 0)
+              continue;
+            if (!variadicInputActive(flavor, i, bm))
+              continue;
+            auto it = valueMap.find(in);
+            if (it == valueMap.end())
+              return std::nullopt;
+            swInputs.push_back(it->second);
+          }
+          // Output: single port whose type comes from the fabric output.
+          unsigned outW = ::mlir::cast<BitsType>(
+                              fop.getResultTypes()[0])
+                              .getWidth();
+          Type outTy = liftFor(flavor, outW, /*isOutput=*/true, 0, ctx);
+          if (!outTy)
+            return std::nullopt;
+          OperationState state(fop.getLoc(), sym);
+          state.addOperands(swInputs);
+          state.addTypes(outTy);
+          Operation *swOp = builder.create(state);
+          if (analysis.alive.count(fop.getOutputs()[0]))
+            valueMap[fop.getOutputs()[0]] = swOp->getResult(0);
+          continue;
+        }
+        if (flavor == Flavor::VariadicDemuxFlavor) {
+          if (N < 2)
+            return std::nullopt;
+          Value selFuVal = fop.getInputs()[0];
+          auto selIt = valueMap.find(selFuVal);
+          if (selIt == valueMap.end())
+            return std::nullopt;
+          Value selSw = selIt->second;
+          Type wantSelTy = variadicMuxLogicalSelType(N, ctx);
+          if (selSw.getType() != wantSelTy)
+            return std::nullopt;
+
+          Value dataFuVal = fop.getInputs()[1];
+          auto dataIt = valueMap.find(dataFuVal);
+          if (dataIt == valueMap.end())
+            return std::nullopt;
+
+          SmallVector<Type, 4> swResultTypes;
+          for (auto [i, t] : llvm::enumerate(fop.getResultTypes())) {
+            if (!variadicOutputActive(flavor, i, bm))
+              continue;
+            unsigned w = ::mlir::cast<BitsType>(t).getWidth();
+            Type ty = liftFor(flavor, w, /*isOutput=*/true, i, ctx);
+            if (!ty)
+              return std::nullopt;
+            swResultTypes.push_back(ty);
+          }
+          OperationState state(fop.getLoc(), sym);
+          state.addOperands({selSw, dataIt->second});
+          state.addTypes(swResultTypes);
+          Operation *swOp = builder.create(state);
+          unsigned outPos = 0;
+          for (auto [i, fuOut] : llvm::enumerate(fop.getOutputs())) {
+            if (!variadicOutputActive(flavor, i, bm))
+              continue;
+            if (analysis.alive.count(fuOut))
+              valueMap[fuOut] = swOp->getResult(outPos);
+            ++outPos;
+          }
+          continue;
+        }
+      }
 
       SmallVector<Value, 4> swInputs;
       swInputs.reserve(fop.getInputs().size());
@@ -838,6 +1319,16 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
         }
         axes.push_back(std::move(axis));
       }
+      Flavor primaryFlavor =
+          opFlavors().lookup(::mlir::cast<FlatSymbolRefAttr>(opList[0])
+                                 .getValue());
+      bool variadic = isVariadicFlavor(primaryFlavor);
+
+      // Collect the hw_params allowed-set for "bitmask" if any. When
+      // present, the enumerator iterates only those bitmask values; when
+      // absent, every length-M non-zero bitmask is iterated.
+      ::llvm::SmallVector<StringRef, 8> bitmaskAllowed;
+      bool bitmaskRestricted = false;
       if (auto hp = fop.getHwParamsAttr()) {
         if (hp.size() == 1) {
           if (auto dict = ::mlir::dyn_cast<DictionaryAttr>(hp[0])) {
@@ -845,14 +1336,70 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
               auto arr = ::mlir::dyn_cast<ArrayAttr>(na.getValue());
               if (!arr)
                 continue;
+              StringRef key = na.getName().getValue();
+              if (variadic && key == "bitmask") {
+                bitmaskRestricted = true;
+                for (Attribute v : arr) {
+                  if (auto s = ::mlir::dyn_cast<StringAttr>(v))
+                    bitmaskAllowed.push_back(s.getValue());
+                }
+                continue;
+              }
               ChoiceAxis axis;
               axis.fabricOp = &op;
-              axis.key = na.getName().getValue().str();
+              axis.key = key.str();
               axis.values.assign(arr.begin(), arr.end());
               axes.push_back(std::move(axis));
             }
           }
         }
+      }
+
+      if (variadic) {
+        unsigned M = variadicM(primaryFlavor, fop);
+        if (M == 0) {
+          if (unsupported)
+            *unsupported = ::mlir::cast<FlatSymbolRefAttr>(opList[0])
+                               .getValue();
+          return results;
+        }
+        if (M > kVariadicMaxM) {
+          fop.emitWarning("variadic fabric.op port count M=")
+              << M << " exceeds the enumerator's hard cap (" << kVariadicMaxM
+              << "); skipping this FU";
+          if (unsupported)
+            *unsupported = ::mlir::cast<FlatSymbolRefAttr>(opList[0])
+                               .getValue();
+          return results;
+        }
+        ChoiceAxis axis;
+        axis.fabricOp = &op;
+        axis.key = "bitmask";
+        if (bitmaskRestricted) {
+          for (StringRef bm : bitmaskAllowed) {
+            if (bm.size() != M)
+              continue;
+            bool ok = true;
+            for (char c : bm)
+              if (c != '0' && c != '1') { ok = false; break; }
+            if (!ok)
+              continue;
+            if (popcountBitmask(bm) == 0)
+              continue;
+            axis.values.push_back(StringAttr::get(ctx, bm));
+          }
+        } else {
+          for (uint64_t mask = 1, end = (1ull << M); mask < end; ++mask) {
+            std::string s(M, '0');
+            for (unsigned b = 0; b < M; ++b)
+              if (mask & (1ull << b))
+                s[b] = '1';
+            axis.values.push_back(StringAttr::get(ctx, s));
+          }
+        }
+        if (axis.values.empty())
+          continue; // no legal bitmask -> this FU yields no template
+        axes.push_back(std::move(axis));
       }
     } else if (auto m = ::mlir::dyn_cast<MuxOp>(&op)) {
       nthMux[&op] = countMux++;
@@ -980,10 +1527,44 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
       if (analysis->alive.count(fuBody.getArgument(i)))
         liveInputIndices.push_back(i);
 
+    // Per-config sel-port type override: when a variadic mux/demux fires
+    // in this configuration, its sel input's logical type depends on N
+    // (the bitmask popcount). The FU input port that feeds that sel
+    // must therefore expose i1 (N==2) or index (N>=3) in the
+    // materialized subgraph signature, irrespective of the hardware-side
+    // bits<...> width. We compute that override here and apply it to the
+    // live input types.
+    llvm::DenseMap<unsigned, Type> selOverrideByFuArg;
+    for (Operation &fopOp : fuBody.without_terminator()) {
+      auto fop = ::mlir::dyn_cast<::fabric::OpOp>(&fopOp);
+      if (!fop)
+        continue;
+      Flavor f = flavorOfFabricOp(fop);
+      if (f != Flavor::VariadicMuxFlavor && f != Flavor::VariadicDemuxFlavor)
+        continue;
+      if (!analysis->fires.count(&fopOp))
+        continue;
+      StringRef bm = getChosenBitmask(&fopOp, chosenByOp);
+      unsigned N = popcountBitmask(bm);
+      if (N < 2)
+        continue;
+      Value selInput = fop.getInputs()[0];
+      auto ba = ::mlir::dyn_cast<::mlir::BlockArgument>(selInput);
+      if (!ba)
+        continue; // sel comes from another fabric op; pass-through
+      selOverrideByFuArg[ba.getArgNumber()] =
+          variadicMuxLogicalSelType(N, ctx);
+    }
+
     SmallVector<Type, 4> liveInputTypes;
     liveInputTypes.reserve(liveInputIndices.size());
-    for (unsigned idx : liveInputIndices)
-      liveInputTypes.push_back(fullSwInputTypes[idx]);
+    for (unsigned idx : liveInputIndices) {
+      auto it = selOverrideByFuArg.find(idx);
+      if (it != selOverrideByFuArg.end())
+        liveInputTypes.push_back(it->second);
+      else
+        liveInputTypes.push_back(fullSwInputTypes[idx]);
+    }
 
     SmallVector<Type, 4> liveOutputTypes;
     liveOutputTypes.reserve(analysis->liveYieldIndices.size());

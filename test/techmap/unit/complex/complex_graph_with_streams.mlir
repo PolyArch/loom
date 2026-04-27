@@ -1,15 +1,11 @@
 // RUN: loom %s -loom-partition-graph-into-subgraphs | FileCheck %s
 
-// Stress: graph mixes graph-only ops (dataflow.stream, dataflow.gate)
+// Stress: graph mixes multi-result ops (dataflow.stream, dataflow.gate)
 // with subgraph-allowed ops (dataflow.invariant, arith.addi). Both
 // stream and gate are in fabric.op's allowlist BUT no FU template here
-// covers them, and additionally they have variadic-result shapes that
-// the partitioner's matcher does not handle: the enumerator does not
-// materialize fabric.op[@dataflow.{sync,mux,demux}] templates per the
-// SubgraphEnumerator capability matrix, and the gate/stream templates
-// here have multi-result body roots that the single-output graph
-// matcher likewise leaves alone. Expected: stream + gate stay at graph
-// level; invariant + arith.addi each get wrapped.
+// covers them, and additionally they have multi-result body roots that
+// the single-output graph matcher leaves alone. Expected: stream + gate
+// stay at graph level; invariant + arith.addi each get wrapped.
 
 // CHECK-LABEL: @fu_addi
 func.func @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {

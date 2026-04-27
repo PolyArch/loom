@@ -56,10 +56,23 @@ struct FuSubgraphCandidate {
 //         IntegerAttr / FloatAttr depending on the result port flavor)
 //       - dataflow.stream (step_op, cont_cond iterated)
 //       - dataflow.{carry,invariant,gate} (no extra attrs needed)
+//       - arith.select (fixed (i1, T, T) -> T; eager strict-SSA
+//         semantics; not interchangeable with dataflow.mux)
+//       - variadic dataflow.{sync,mux,demux}: each fabric.op is an
+//         M-port hardware unit configured by a length-M `bitmask`
+//         sw_config string. Each char is '0' or '1'; the popcount N
+//         picks the active subset (1 <= N <= M for sync/demux; 2 <= N
+//         <= M for mux because the materialized dataflow.mux verifier
+//         requires at least 2 data inputs). The all-zero bitmask is
+//         illegal. M is hard-capped at 8 (2^M-1 = 255 raw bitmasks per
+//         op) — exceeding it triggers a diagnostic and skips the FU.
+//         When `hw_params["bitmask"]` is present it restricts the
+//         iteration to the listed values; otherwise the enumerator
+//         iterates every length-M non-zero bitmask. The materialized
+//         sel input (mux/demux only) has logical width i1 for N==2 and
+//         `index` for N>=3, mirroring the dataflow op verifier.
 //   * fabric.mux / fabric.demux iterate sel and the discard / disconnect
 //     modes (each emits an explicit per-op sw_configs combination).
-//   * Variadic dataflow.{sync,mux,demux} fabric.ops are not yet
-//     materialized.
 //
 // If `fu` references any op outside the supported set the function
 // returns an empty vector and, when `unsupported` is non-null, writes the
