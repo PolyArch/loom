@@ -10,5 +10,7 @@ target_link_libraries(loom-candidate-dump PRIVATE
   MLIRIR
   MLIRParser
   MLIRSupport
+  MLIRRegisterAllDialects
+  MLIRRegisterAllExtensions
   ${dialect_libs}
 )

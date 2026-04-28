@@ -10,5 +10,7 @@ target_link_libraries(loom-template-dump PRIVATE
   MLIRIR
   MLIRParser
   MLIRSupport
+  MLIRRegisterAllDialects
+  MLIRRegisterAllExtensions
   ${dialect_libs}
 )

@@ -12,6 +12,9 @@ target_link_libraries(loom PRIVATE
   MLIROptLib
   MLIRParser
   MLIRSupport
+  MLIRRegisterAllDialects
+  MLIRRegisterAllPasses
+  MLIRRegisterAllExtensions
   ${dialect_libs}
   ${conversion_libs}
 )
