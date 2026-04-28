@@ -217,7 +217,12 @@ static bool isCommutativeOp(::llvm::StringRef name) {
 
 // Verify body-internal operand consistency under operand permutation
 // `perm` (perm[user_pos] = template_pos): every template body-ref operand
-// must in the user's mapping point at M[bIdx] with the right result num.
+// must, in the user's mapping, point at M[bIdx] with the right result num.
+//
+// Graph-region templates may carry back-edges (bIdx > tIdx). For those the
+// producer is bound LATER in the search, so `S.M[bIdx]` is still nullptr at
+// this point. We DEFER the check: the caller re-runs source consistency over
+// every bound node once the bijection is complete (see vf2VerifyAllSources).
 static bool topologyConsistentPerm(const MatchState &S,
                                    const ::llvm::SmallVector<PNode, 4> &T,
                                    unsigned tIdx, ::mlir::Operation *usrOp,
@@ -230,7 +235,9 @@ static bool topologyConsistentPerm(const MatchState &S,
       continue;
     ::mlir::Operation *expected = S.M[bIdx];
     if (expected == nullptr)
-      return false;
+      // Producer not yet bound (back-edge in template program order).
+      // Verification is deferred to the end-of-search source check.
+      continue;
     ::mlir::Value uVal = usrOp->getOperand(pu);
     ::mlir::Operation *uDef = uVal.getDefiningOp();
     if (uDef != expected)
@@ -238,6 +245,48 @@ static bool topologyConsistentPerm(const MatchState &S,
     unsigned uRes = ::llvm::cast<::mlir::OpResult>(uVal).getResultNumber();
     if (uRes != rNum)
       return false;
+  }
+  return true;
+}
+
+// End-of-search verification: every template body-ref operand of every
+// bound node must, in the user mapping, point at M[bIdx] with the right
+// result num. Required because topologyConsistentPerm defers checks for
+// back-edge producers (bIdx > tIdx) that get bound later in the search.
+//
+// We only verify body-ref operands here; external bindings are already
+// committed/checked in bindExternalsPerm at each step.
+static bool vf2VerifyAllSources(const MatchState &S,
+                                const ::llvm::SmallVector<PNode, 4> &T) {
+  for (unsigned i = 0; i < T.size(); ++i) {
+    ::mlir::Operation *uOp = S.M[i];
+    if (uOp == nullptr)
+      return false;
+    const PNode &tN = T[i];
+    for (unsigned pt = 0; pt < tN.numOperands; ++pt) {
+      auto [bIdx, rNum] = tN.operandRefs[pt];
+      if (bIdx < 0)
+        continue;
+      ::mlir::Operation *expected = S.M[bIdx];
+      if (expected == nullptr)
+        return false;
+      // The user-side operand position that mapped to `pt` could be any
+      // permutation under commutativity; recover it by scanning the user
+      // op's operands for the unique one whose def matches.
+      bool ok = false;
+      for (unsigned pu = 0; pu < uOp->getNumOperands(); ++pu) {
+        ::mlir::Value uVal = uOp->getOperand(pu);
+        if (uVal.getDefiningOp() != expected)
+          continue;
+        unsigned uRes = ::llvm::cast<::mlir::OpResult>(uVal).getResultNumber();
+        if (uRes != rNum)
+          continue;
+        ok = true;
+        break;
+      }
+      if (!ok)
+        return false;
+    }
   }
   return true;
 }
@@ -288,7 +337,7 @@ static bool vf2RecMulti(MatchState &S, const ::llvm::SmallVector<PNode, 4> &T,
                         ::mlir::Block *userBlock, unsigned nextT,
                         unsigned sinkIdx, ::mlir::Operation *sinkUserOp) {
   if (nextT == T.size())
-    return true;
+    return vf2VerifyAllSources(S, T);
   const PNode &tN = T[nextT];
 
   // Iterate user ops in block program order for determinism. When this is
@@ -355,26 +404,25 @@ collectMultiOpCandidate(::mlir::Operation *root, const FuTemplate &tpl) {
   if (tplNodes.size() != n)
     return empty;
 
-  // The template's sink (yield-feeder of operand 0) must be the last node
-  // in template program order: the enumerator emits ops in that order and
-  // we rely on the topology consistency check having predecessors bound
-  // before consumers.
+  // The template's sink is the producer of yield operand 0. Under
+  // graph-region semantics the yielded op is not required to be the last
+  // body op in textual order, so we look up its index in tplNodes rather
+  // than assuming sinkIdx == n - 1.
   ::mlir::Operation *yieldOp = tplSubgraph.getBody().front().getTerminator();
   if (!yieldOp || yieldOp->getNumOperands() == 0)
     return empty;
   ::mlir::Operation *tplSink = yieldOp->getOperand(0).getDefiningOp();
-  if (tplSink != tplNodes.back().op)
+  if (tplSink == nullptr)
     return empty;
-  unsigned sinkIdx = n - 1;
-
-  // Sanity: every body ref is a back-edge in template program order.
+  unsigned sinkIdx = n;
   for (unsigned i = 0; i < tplNodes.size(); ++i) {
-    for (auto &pr : tplNodes[i].operandRefs) {
-      int bIdx = pr.first;
-      if (bIdx >= 0 && static_cast<unsigned>(bIdx) >= i)
-        return empty;
+    if (tplNodes[i].op == tplSink) {
+      sinkIdx = i;
+      break;
     }
   }
+  if (sinkIdx == n)
+    return empty;
 
   // Quick reject: sink op kind / arity / attrs must match `root`.
   if (!nodeFeaturesCompatible(root, tplNodes[sinkIdx]))

@@ -98,8 +98,19 @@ void materializeBlock(const Block &block, ::mlir::OpBuilder &builder) {
       ::mlir::cast<::dataflow::SubgraphOp>(builder.create(state));
 
   // 4. Populate the subgraph body. We map external operands to the new
-  //    block arguments, clone block ops in source program order via the
-  //    mapping, then add an explicit dataflow.yield.
+  //    block arguments, clone block ops in source program order, then add
+  //    an explicit dataflow.yield.
+  //
+  //    The host dataflow.subgraph's body is a graph region, so the source
+  //    block may contain SSA back-edges (e.g. a dataflow.carry whose carry
+  //    input is produced by a later body op). IRMapping-based cloning only
+  //    rewrites operands that are already in the mapping at clone time, so
+  //    a back-edge consumer cloned first would inherit a stale operand
+  //    pointing at the original (not-yet-cloned) producer. We work around
+  //    this with a two-pass strategy: clone every op with whatever operands
+  //    are mapped at the moment, accumulate result mappings, then run a
+  //    fix-up pass that rewrites every cloned operand through the (now
+  //    fully populated) mapping.
   ::mlir::Block &sgBlock = subgraph.getBody().front();
   ::mlir::IRMapping mapping;
   for (auto [extVal, blockArg] :
@@ -108,15 +119,30 @@ void materializeBlock(const Block &block, ::mlir::OpBuilder &builder) {
 
   ::mlir::OpBuilder bodyBuilder(&sgBlock, sgBlock.end());
 
-  // Clone in source program order so internal SSA edges stay valid.
+  // Clone in source program order so the textual layout of the new body
+  // preserves the original ordering for downstream tools (lit, dumper).
   ::llvm::SmallVector<::mlir::Operation *> sortedBlockOps(block.ops.begin(),
                                                           block.ops.end());
   std::sort(sortedBlockOps.begin(), sortedBlockOps.end(),
             [](::mlir::Operation *a, ::mlir::Operation *b) {
               return a->isBeforeInBlock(b);
             });
+  ::llvm::SmallVector<::mlir::Operation *> clonedOps;
+  clonedOps.reserve(sortedBlockOps.size());
   for (::mlir::Operation *op : sortedBlockOps)
-    bodyBuilder.clone(*op, mapping);
+    clonedOps.push_back(bodyBuilder.clone(*op, mapping));
+
+  // Fix-up pass: rewrite every cloned op's operand through the now-complete
+  // `mapping`. Forward-edge operands were already correct after their
+  // initial clone; back-edge operands referred to the original producer at
+  // clone time and need to be redirected to its in-body clone.
+  for (auto [origOp, newOp] : ::llvm::zip(sortedBlockOps, clonedOps)) {
+    for (auto [pos, origOperand] : ::llvm::enumerate(origOp->getOperands())) {
+      ::mlir::Value mapped = mapping.lookupOrNull(origOperand);
+      if (mapped && newOp->getOperand(pos) != mapped)
+        newOp->setOperand(pos, mapped);
+    }
+  }
 
   // 5. Build the explicit yield using mapped values for external results.
   ::mlir::SmallVector<::mlir::Value> yieldValues;
@@ -139,10 +165,17 @@ void materializeBlock(const Block &block, ::mlir::OpBuilder &builder) {
     });
   }
 
-  // 7. Erase original block ops. Reverse program order avoids dangling
-  //    uses among internal SSA edges.
-  for (auto it = sortedBlockOps.rbegin(); it != sortedBlockOps.rend(); ++it)
-    (*it)->erase();
+  // 7. Erase original block ops. Internal SSA edges (one block op consuming
+  //    another block op's result) include back-edges in the cyclic case, so
+  //    a plain reverse-order erase would still leave the producer with a
+  //    live use from its yet-to-be-erased back-edge consumer. We first call
+  //    dropAllReferences() on every block op so each op disconnects from
+  //    its operands; once all are disconnected, every block-op result has
+  //    an empty use list and erasure is safe in any order.
+  for (::mlir::Operation *op : sortedBlockOps)
+    op->dropAllReferences();
+  for (::mlir::Operation *op : sortedBlockOps)
+    op->erase();
 }
 
 } // namespace
