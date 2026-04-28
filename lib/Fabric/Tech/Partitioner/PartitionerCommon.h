@@ -113,7 +113,8 @@ double computePendingCost(const ::llvm::SmallVector<PendingBlock> &blocks,
 // by inter-block SSA edges. Self-loops on a single block are NOT considered
 // a cycle (graph-region semantics permit self-feedback inside a single
 // dataflow.subgraph). Used by post-solve repair paths that need to verify
-// AC-CORR-3 after an algorithm has produced a candidate partition.
+// the no-multi-block-cycle invariant after an algorithm has produced a
+// candidate partition.
 bool partitionHasMultiBlockCycle(const PartitionResult &result);
 
 } // namespace fabric

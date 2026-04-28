@@ -1,4 +1,4 @@
-// AC-PERF-1: synth_n100 / greedy single-thread must run in median < 50 ms.
+// Perf budget: synth_n100 / greedy single-thread must run in median < 50 ms.
 // The runner pins to core 0 with taskset, takes 7 timed runs, and prints
 // a stable PERF: line FileCheck can lock onto.
 

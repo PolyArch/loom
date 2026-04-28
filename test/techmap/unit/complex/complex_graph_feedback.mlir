@@ -15,7 +15,7 @@
 //
 // Expected current behavior (greedy default): wrap carry in a singleton
 // subgraph, leave the feedback addi at graph level so the loop closes
-// inside the graph block, not across two subgraph blocks (AC-CORR-3).
+// inside the graph block, not across two subgraph blocks.
 //
 // The ILP partitioner's MIP has no acyclicity constraint, so its raw
 // optimum would wrap both ops into mutually-referencing subgraphs. A
@@ -23,7 +23,7 @@
 // one block to graph level; the demotion order prefers to keep the
 // "cheaper" template, so for this input the carry block ends up
 // demoted while the addi block remains bound. The exact victim differs
-// from greedy, but both outputs satisfy AC-CORR-3.
+// from greedy, but both outputs avoid any multi-block SSA cycle.
 //
 // Note: the brief originally asked for a self-feedback chain using a
 // single arith.addi; that requires graph-region forward-reference of
@@ -96,4 +96,4 @@ func.func @graph_feedback(%cond: i1, %init: i32, %step: i32) -> i32 {
 // ILP-NOT: dataflow.subgraph
 
 // ILPDIAG: warning: loom-ilp-partitioner: HiGHS solution induced a multi-block SSA cycle
-// ILPDIAG-SAME: demoting block(s) to graph level to satisfy AC-CORR-3
+// ILPDIAG-SAME: demoting block(s) to graph level to break the cycle

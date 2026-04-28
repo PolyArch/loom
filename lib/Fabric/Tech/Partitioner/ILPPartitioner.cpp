@@ -436,7 +436,8 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
   // with SSA feedback (e.g. dataflow.carry whose carry input is produced
   // by an op consuming carry's own result), the optimal MIP assignment can
   // bind both ops in the cycle into separate subgraphs that mutually
-  // reference each other, which would emit IR violating AC-CORR-3.
+  // reference each other, which would emit IR violating the
+  // no-multi-block-cycle invariant.
   //
   // We detect any such multi-block SCC over the bound blocks and demote
   // members to graph level (tpl = nullptr) until the SCC is broken.
@@ -546,13 +547,13 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
       if (auto module = graph->getParentOfType<::mlir::ModuleOp>())
         module->emitWarning()
             << "loom-ilp-partitioner: HiGHS solution induced a multi-block "
-               "SSA cycle; demoting block(s) to graph level to satisfy "
-               "AC-CORR-3";
+               "SSA cycle; demoting block(s) to graph level to break the "
+               "cycle";
       else
         graph->emitWarning()
             << "loom-ilp-partitioner: HiGHS solution induced a multi-block "
-               "SSA cycle; demoting block(s) to graph level to satisfy "
-               "AC-CORR-3";
+               "SSA cycle; demoting block(s) to graph level to break the "
+               "cycle";
       warned = true;
     }
   }

@@ -2,7 +2,7 @@
 // path. The single-op MIP has no acyclicity requirement, so on a graph
 // containing SSA feedback its optimum binds both endpoints of the cycle
 // into separate single-op subgraphs that mutually reference each other,
-// which violates AC-CORR-3.
+// which violates the no-multi-block-cycle invariant.
 //
 // The post-solve pass detects this multi-block SCC, demotes the
 // cycle-participating block whose template id is largest (so the
@@ -66,4 +66,4 @@ func.func @graph_feedback(%cond: i1, %init: i32, %step: i32) -> i32 {
 }
 
 // DIAG: warning: loom-ilp-partitioner: HiGHS solution induced a multi-block SSA cycle
-// DIAG-SAME: demoting block(s) to graph level to satisfy AC-CORR-3
+// DIAG-SAME: demoting block(s) to graph level to break the cycle
