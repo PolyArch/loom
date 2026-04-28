@@ -18,12 +18,6 @@ config.substitutions.append(("%shlibext", config.llvm_shlib_ext))
 # same Python that drives the test harness.
 config.substitutions.append(("%python", sys.executable))
 
-# Long-running performance tests (e.g. AC-PERF-3 at N=5000) are gated
-# behind this feature. lit only runs `// REQUIRES: long-perf` tests when
-# LOOM_PERF=long is set in the environment.
-if os.environ.get("LOOM_PERF") == "long":
-    config.available_features.add("long-perf")
-
 llvm_config.with_system_environment(
     ["HOME", "INCLUDE", "LIB", "TMP", "TEMP",
      "LOOM_BIN", "LOOM_PERF", "LOOM_PERF_CACHE", "LOOM_PERF_TIMEOUT_S"])
