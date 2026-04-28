@@ -624,8 +624,62 @@ static Flavor flavorOfFabricOp(::fabric::OpOp fop) {
   return opFlavors().lookup(sym);
 }
 
-// Whether the use port at `idx` of `user` is "active" (its handshake ready
-// can go high) under the chosen modes.
+// Whether the use port at `idx` of `user` is "blocking" for `v` in this
+// configuration: the user's hardware-side ready signal would remain low,
+// so the value's producer cannot complete its broadcast to that consumer
+// unless an alternative drain (discard mode on another fanout branch, a
+// different firing consumer, etc.) is provided.
+//
+// "Non-blocking" (a.k.a. dormant) uses are uses that the configurable
+// fabric drains transparently: their ready is tied high so they cannot
+// stall the producer. Those uses do not consume `v` in the materialized
+// subgraph either; they only exist for routing flexibility.
+//
+// Non-blocking cases:
+//   * fabric.OpOp that does not fire in this configuration. The fabric
+//     configures unused op modules with their input ready signals tied
+//     high, draining whatever broadcasts arrive. They consume nothing.
+//   * fabric.OpOp that fires but whose `idx` is masked off by a variadic
+//     bitmask (dataflow.{sync,mux,demux}). The masked-off physical port
+//     is unused for this bitmask; its ready is tied high.
+//   * fabric.MuxOp that fires (any operand index, including the
+//     non-selected ports). A firing fabric.mux drains every input port:
+//     the selected one propagates, the others are accepted and discarded.
+//     This is the fix for the fanout-to-distinct-muxes bug.
+//   * fabric.DemuxOp that fires at any non-data operand index (only
+//     `idx == 0` is the data port; demux has no other operand kinds, so
+//     this case is dead weight in practice).
+//   * fabric.MuxOp / fabric.DemuxOp in disconnect mode: the input ready
+//     is held low by definition, so this is actually blocking. Listed
+//     here as a reminder that `disconnect` is treated as "blocking with
+//     no completion path", which is what causes the analyzer to drop
+//     configs that disconnect a value with no other consumer.
+//
+// Blocking cases:
+//   * fabric.yield (the FU's terminator): always blocking, since the FU
+//     output port must complete the handshake outward.
+//   * fabric.OpOp that fires AND `idx` is an active operand index for
+//     this configuration: the hardware actually consumes the value.
+//   * fabric.MuxOp that fires AND not in disconnect mode AND `idx` is the
+//     selected input port: the mux propagates this value to its output.
+//     Note: non-selected ports of a firing mux are drained, hence
+//     non-blocking (see above).
+//   * fabric.MuxOp / fabric.DemuxOp that does NOT fire and is not in
+//     disconnect mode: the hardware ready remains low (the unit has no
+//     downstream consumer demanding its output), so the fanout deadlocks.
+//     Treat as blocking so the analyzer rejects such configs (the user
+//     must explicitly request `discard` or a side drain).
+//   * fabric.DemuxOp that fires AND not in disconnect mode AND `idx == 0`
+//     (its single data input): consumed by the demux.
+//
+// Note on the legacy name `useIsActive`: the function returns true when
+// the use is "active in the consume-or-drain sense" (i.e. the producer's
+// broadcast can complete via this use). The alive-shrink in
+// `analyzeConfig` uses `allUsesActive` to test whether every use of a
+// value can complete its handshake; if any use is blocking-and-stuck,
+// the value cannot stay alive. Treating drained-but-not-consuming uses
+// (firing mux at non-selected port, non-firing fabric.op) as active is
+// the central fix for the fanout-broadcast deadlock false positive.
 static bool useIsActive(Operation *user, unsigned idx,
                          const llvm::DenseSet<Operation *> &fires,
                          const llvm::DenseMap<Operation *,
@@ -633,25 +687,19 @@ static bool useIsActive(Operation *user, unsigned idx,
                              &chosenByOp) {
   if (::mlir::isa<::fabric::YieldOp>(user))
     return true;
-  if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(user)) {
-    if (!fires.count(user))
-      return false;
-    Flavor f = flavorOfFabricOp(fop);
-    if (isVariadicFlavor(f)) {
-      StringRef bm = getChosenBitmask(user, chosenByOp);
-      return variadicInputActive(f, idx, bm);
-    }
-    return true;
-  }
   if (::mlir::isa<::fabric::MuxOp>(user)) {
     if (!fires.count(user))
       return false;
     auto [sel, discard, disconnect] =
         decodeMuxLikeMode(chosenByOp.lookup(user));
+    (void)sel;
     (void)discard;
     if (disconnect)
       return false;
-    return idx == sel;
+    // A firing fabric.mux drains every input port: the selected port
+    // propagates the value, the non-selected ports complete their
+    // handshakes by accepting and discarding the data.
+    return true;
   }
   if (::mlir::isa<::fabric::DemuxOp>(user)) {
     if (!fires.count(user))
@@ -917,16 +965,67 @@ static std::optional<ConfigAnalysis> analyzeConfig(
     }
   }
 
-  // 3. Validate. Yield positions are allowed to be inactive in this
-  // config (e.g. an unselected fabric.demux output): such positions are
-  // simply dropped from the materialized subgraph signature. Every other
-  // demanded value (e.g. a discard-mode mux input) must be alive.
+  // 3. Validate. The opCanFire / alive shrink fixed-point above already
+  // computes a self-consistent (fires, alive) pair: any op that ended up
+  // in `fires` had every active operand index pointing at an alive value
+  // when last reconsidered. We re-check that invariant here as a defense
+  // in depth, walking only firing ops and only their *active* operand
+  // indices: for variadic ops we restrict to bitmask-active ports; for
+  // fabric.mux/demux we restrict to the chosen-sel input (and, in
+  // discard mode, the selected drain input). Non-firing internal ops are
+  // ignored on purpose: their fabric inputs may have shrunk out of
+  // `alive` legitimately (the canonical Bug A shape: a demux output that
+  // a downstream consumer demanded but the bitmask masked off; that
+  // downstream consumer is excluded from `fires`, so its dead operands
+  // do not matter). Yield positions whose value is not alive are simply
+  // dropped from the materialized signature via `liveYieldIndices`; they
+  // never cause a rejection here.
   llvm::DenseSet<Value> yieldVals;
   for (Value y : yieldOp.getValues())
     yieldVals.insert(y);
-  for (Value v : demanded)
-    if (!alive.count(v) && !yieldVals.count(v))
-      return std::nullopt;
+  for (Operation *op : fires) {
+    if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(op)) {
+      Flavor f = flavorOfFabricOp(fop);
+      if (isVariadicFlavor(f)) {
+        StringRef bm = getChosenBitmask(op, chosenByOp);
+        for (auto [i, in] : llvm::enumerate(fop.getInputs())) {
+          if (!variadicInputActive(f, i, bm))
+            continue;
+          if (!alive.count(in))
+            return std::nullopt;
+        }
+        continue;
+      }
+      for (Value in : fop.getInputs())
+        if (!alive.count(in))
+          return std::nullopt;
+      continue;
+    }
+    if (auto m = ::mlir::dyn_cast<::fabric::MuxOp>(op)) {
+      auto [sel, discard, disconnect] =
+          decodeMuxLikeMode(chosenByOp.lookup(op));
+      (void)disconnect;
+      // Both normal-mode and discard-mode firing fabric.mux read the
+      // selected input; only the unselected ports are passive drains
+      // and need not be alive.
+      if (!alive.count(m.getInputs()[sel]))
+        return std::nullopt;
+      (void)discard;
+      continue;
+    }
+    if (auto d = ::mlir::dyn_cast<::fabric::DemuxOp>(op)) {
+      auto [sel, discard, disconnect] =
+          decodeMuxLikeMode(chosenByOp.lookup(op));
+      (void)sel;
+      (void)disconnect;
+      (void)discard;
+      // fabric.demux has a single data input (idx 0); it is always
+      // active for any firing demux (normal or discard).
+      if (!alive.count(d.getInput()))
+        return std::nullopt;
+      continue;
+    }
+  }
 
   ConfigAnalysis a;
   a.demanded = std::move(demanded);
@@ -938,6 +1037,112 @@ static std::optional<ConfigAnalysis> analyzeConfig(
   return a;
 }
 
+// Compute the set of fabric SSA values that the materialized software
+// body actually reads (transitively through pass-through fabric.mux /
+// fabric.demux chains). The set excludes values consumed only by:
+//   * non-firing ops (those don't materialize at all),
+//   * the unselected ports of a firing fabric.mux (drained, not consumed),
+//   * a firing fabric.mux/demux operating in discard mode (the selected
+//     input is drained at the hardware level but no value flows into the
+//     software graph).
+//
+// A block argument is software-live iff it appears in the returned set.
+// This is the central enabler for the discard-input dedup invariant: a
+// block-arg whose only role is to feed a discard-mode mux/demux (drain
+// path) does not propagate into the materialized subgraph signature.
+static llvm::DenseSet<Value> computeSoftwareLiveValues(
+    FuOp fu,
+    const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>>
+        &chosenByOp,
+    const ConfigAnalysis &analysis) {
+  Block &fuBody = fu.getBody().front();
+  auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());
+
+  llvm::DenseSet<Value> swNeeded;
+
+  auto addIfAlive = [&](Value v, bool &changed) {
+    if (!analysis.alive.count(v))
+      return;
+    if (swNeeded.insert(v).second)
+      changed = true;
+  };
+
+  // Seed with the live yield values: anything the dataflow.yield reads is
+  // by definition software-live.
+  for (unsigned idx : analysis.liveYieldIndices) {
+    Value y = yieldOp.getValues()[idx];
+    bool dummy = false;
+    addIfAlive(y, dummy);
+  }
+
+  // Seed with operand values consumed by firing software-materialized
+  // ops at their active operand indices. This is exactly the set of
+  // operands the materialized op will read in pass A of
+  // materializeBodyForConfig (mux/demux pass-through edges and discard
+  // modes are handled below via the back-propagation loop).
+  for (Operation *op : analysis.fires) {
+    if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(op)) {
+      Flavor f = flavorOfFabricOp(fop);
+      if (isVariadicFlavor(f)) {
+        StringRef bm = getChosenBitmask(op, chosenByOp);
+        for (auto [i, in] : llvm::enumerate(fop.getInputs())) {
+          if (!variadicInputActive(f, i, bm))
+            continue;
+          bool dummy = false;
+          addIfAlive(in, dummy);
+        }
+        continue;
+      }
+      for (Value in : fop.getInputs()) {
+        bool dummy = false;
+        addIfAlive(in, dummy);
+      }
+    }
+    // Note: firing fabric.mux/demux do not contribute direct seeds here.
+    // They are handled by the back-propagation loop below: if the mux/
+    // demux output is in `swNeeded` (because some downstream firing op
+    // reads it), back-propagate to the selected input. A discard-mode
+    // mux/demux produces no output value, so its selected input never
+    // becomes software-live this way -- which is the design intent.
+  }
+
+  // Back-propagate through firing pass-through fabric.mux/demux chains
+  // until fixed point: if a mux/demux output is software-needed, the
+  // selected input becomes software-needed too (because the materialized
+  // body wires the output to the input directly via valueMap pass-
+  // through). Discard-mode mux/demux are skipped: they produce no value,
+  // so their selected input is a hardware-only drain.
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (Operation &op : fuBody.without_terminator()) {
+      if (auto m = ::mlir::dyn_cast<::fabric::MuxOp>(&op)) {
+        if (!analysis.fires.count(&op))
+          continue;
+        auto [sel, discard, disconnect] =
+            decodeMuxLikeMode(chosenByOp.lookup(&op));
+        (void)disconnect;
+        if (discard)
+          continue;
+        if (swNeeded.count(m.getOutput()))
+          addIfAlive(m.getInputs()[sel], changed);
+      } else if (auto d = ::mlir::dyn_cast<::fabric::DemuxOp>(&op)) {
+        if (!analysis.fires.count(&op))
+          continue;
+        auto [sel, discard, disconnect] =
+            decodeMuxLikeMode(chosenByOp.lookup(&op));
+        (void)disconnect;
+        if (discard)
+          continue;
+        if (swNeeded.count(d.getOutputs()[sel]))
+          addIfAlive(d.getInput(), changed);
+      }
+    }
+  }
+
+  return swNeeded;
+}
+
 // Materialize the sw subgraph body for a configuration whose analysis has
 // already succeeded. `liveInputIndices` lists the FU input port positions
 // that remain live in this config, in ascending order; `subBlockArgs` is
@@ -945,11 +1150,44 @@ static std::optional<ConfigAnalysis> analyzeConfig(
 // materialized SSA values for the live yield positions in the same order
 // as `analysis.liveYieldIndices`, or std::nullopt when an inner sw op
 // cannot be built (e.g. unsupported const_hex_value width).
+//
+// Implementation: the FU body is a graph region (RegionKind::Graph) and may
+// contain back-edges, so a single textual walk that resolves operands
+// eagerly cannot work. We use a two-pass scheme:
+//
+//   Pass A: walk firing fabric.op ops in textual order. Build the
+//           materialized sw op for each, but if any operand lookup misses
+//           in `valueMap`, synthesize a placeholder Value (an
+//           `unrealized_conversion_cast` with no inputs and the operand's
+//           expected sw type) and use that. Each placeholder is recorded
+//           in `placeholders[fuValue]`. Outputs of the sw op are recorded
+//           in `valueMap`. fabric.mux/fabric.demux that fire in
+//           pass-through mode short-circuit by setting
+//           `valueMap[output] = valueMap[input]` (or a placeholder if the
+//           input is missing); discard / disconnect modes contribute no
+//           value. fabric.mux/fabric.demux pass-throughs are recorded in
+//           `passThroughEdges` so we can resolve them after Pass A.
+//
+//   Pass B: for each pass-through edge, chain-resolve so that
+//           `valueMap[output]` ultimately points at a real sw value (not
+//           a placeholder). Fixed-point iteration handles back-edges
+//           through pass-through chains.
+//
+//   Pass C: for every placeholder we created, find the corresponding real
+//           sw value via `valueMap` (or by chasing a pass-through chain)
+//           and `replaceAllUsesWith` it. Erase the placeholder. After
+//           Pass C every materialized sw op has its real operands wired,
+//           and `valueMap` no longer references any placeholder.
+//
+//   Pass D: build the dataflow.yield using the now-real `valueMap` entries
+//           for live yield positions. (Done by the caller via the returned
+//           value list.)
 static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
     FuOp fu, ::llvm::ArrayRef<unsigned> liveInputIndices,
     ::mlir::ValueRange subBlockArgs, OpBuilder &builder,
     const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>> &chosenByOp,
-    const ConfigAnalysis &analysis) {
+    const ConfigAnalysis &analysis,
+    const llvm::DenseSet<Value> &swLive) {
   Block &fuBody = fu.getBody().front();
   MLIRContext *ctx = fu.getContext();
   auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());
@@ -960,6 +1198,39 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
     valueMap[fuArg] = subBlockArgs[pos];
   }
 
+  // fabric SSA values that we synthesized a placeholder for, mapped to the
+  // placeholder Value. Pass C rewrites uses of these placeholders to the
+  // real sw value once it lands in `valueMap`.
+  llvm::DenseMap<Value, Value> placeholders;
+  // Op handles for the placeholders, so we can erase them after Pass C.
+  llvm::SmallVector<Operation *, 4> placeholderOps;
+  // fabric.mux / fabric.demux pass-through edges: (output, selected input).
+  // Resolved in Pass B by chaining `valueMap[input]` into
+  // `valueMap[output]`.
+  llvm::SmallVector<std::pair<Value, Value>, 4> passThroughEdges;
+
+  // Synthesize an unrealized_conversion_cast placeholder of type `ty` for
+  // fabric value `fuVal`. Idempotent: subsequent lookups for the same
+  // `fuVal` return the same placeholder.
+  auto getOrPlaceholder = [&](Value fuVal, Type ty) -> Value {
+    auto it = valueMap.find(fuVal);
+    if (it != valueMap.end())
+      return it->second;
+    auto pIt = placeholders.find(fuVal);
+    if (pIt != placeholders.end())
+      return pIt->second;
+    OperationState ph(fuVal.getLoc(),
+                      ::mlir::UnrealizedConversionCastOp::getOperationName());
+    ph.addTypes(ty);
+    Operation *phOp = builder.create(ph);
+    placeholderOps.push_back(phOp);
+    Value v = phOp->getResult(0);
+    placeholders[fuVal] = v;
+    valueMap[fuVal] = v;
+    return v;
+  };
+
+  // Pass A: walk firing ops in textual order and build materialized sw ops.
   for (Operation &op : fuBody.without_terminator()) {
     if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(&op)) {
       if (!analysis.fires.count(&op))
@@ -998,10 +1269,11 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
           for (auto [i, in] : llvm::enumerate(fop.getInputs())) {
             if (!variadicInputActive(flavor, i, bm))
               continue;
-            auto it = valueMap.find(in);
-            if (it == valueMap.end())
+            unsigned w = ::mlir::cast<BitsType>(in.getType()).getWidth();
+            Type inTy = liftFor(flavor, w, /*isOutput=*/false, i, ctx);
+            if (!inTy)
               return std::nullopt;
-            swInputs.push_back(it->second);
+            swInputs.push_back(getOrPlaceholder(in, inTy));
           }
           for (auto [i, t] : llvm::enumerate(fop.getResultTypes())) {
             if (!variadicOutputActive(flavor, i, bm))
@@ -1060,10 +1332,11 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
               continue;
             if (!variadicInputActive(flavor, i, bm))
               continue;
-            auto it = valueMap.find(in);
-            if (it == valueMap.end())
+            unsigned w = ::mlir::cast<BitsType>(in.getType()).getWidth();
+            Type inTy = liftFor(flavor, w, /*isOutput=*/false, i, ctx);
+            if (!inTy)
               return std::nullopt;
-            swInputs.push_back(it->second);
+            swInputs.push_back(getOrPlaceholder(in, inTy));
           }
           // Output: single port whose type comes from the fabric output.
           unsigned outW = ::mlir::cast<BitsType>(
@@ -1093,9 +1366,12 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
             return std::nullopt;
 
           Value dataFuVal = fop.getInputs()[1];
-          auto dataIt = valueMap.find(dataFuVal);
-          if (dataIt == valueMap.end())
+          unsigned dataW =
+              ::mlir::cast<BitsType>(dataFuVal.getType()).getWidth();
+          Type dataTy = liftFor(flavor, dataW, /*isOutput=*/false, 1, ctx);
+          if (!dataTy)
             return std::nullopt;
+          Value dataSw = getOrPlaceholder(dataFuVal, dataTy);
 
           SmallVector<Type, 4> swResultTypes;
           for (auto [i, t] : llvm::enumerate(fop.getResultTypes())) {
@@ -1108,7 +1384,7 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
             swResultTypes.push_back(ty);
           }
           OperationState state(fop.getLoc(), sym);
-          state.addOperands({selSw, dataIt->second});
+          state.addOperands({selSw, dataSw});
           state.addTypes(swResultTypes);
           Operation *swOp = builder.create(state);
           unsigned outPos = 0;
@@ -1125,11 +1401,12 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
 
       SmallVector<Value, 4> swInputs;
       swInputs.reserve(fop.getInputs().size());
-      for (Value in : fop.getInputs()) {
-        auto it = valueMap.find(in);
-        if (it == valueMap.end())
+      for (auto [i, in] : llvm::enumerate(fop.getInputs())) {
+        unsigned w = ::mlir::cast<BitsType>(in.getType()).getWidth();
+        Type inTy = liftFor(flavor, w, /*isOutput=*/false, i, ctx);
+        if (!inTy)
           return std::nullopt;
-        swInputs.push_back(it->second);
+        swInputs.push_back(getOrPlaceholder(in, inTy));
       }
       SmallVector<Type, 2> swResultTypes;
       swResultTypes.reserve(fop.getOutputs().size());
@@ -1178,9 +1455,12 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
       (void)disconnect;
       if (discard)
         continue; // drains input, no output produced
-      auto it = valueMap.find(m.getInputs()[sel]);
-      if (it != valueMap.end() && analysis.alive.count(m.getOutput()))
-        valueMap[m.getOutput()] = it->second;
+      // Only record a pass-through edge when the output is software-
+      // needed; otherwise the chain leads nowhere and would create a
+      // stranded placeholder for a block-arg that Fix B intentionally
+      // excluded from the subgraph signature.
+      if (swLive.count(m.getOutput()))
+        passThroughEdges.emplace_back(m.getOutput(), m.getInputs()[sel]);
       continue;
     }
     if (auto d = ::mlir::dyn_cast<::fabric::DemuxOp>(&op)) {
@@ -1191,13 +1471,77 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
       (void)disconnect;
       if (discard)
         continue;
-      auto it = valueMap.find(d.getInput());
-      if (it != valueMap.end() && analysis.alive.count(d.getOutputs()[sel]))
-        valueMap[d.getOutputs()[sel]] = it->second;
+      if (swLive.count(d.getOutputs()[sel]))
+        passThroughEdges.emplace_back(d.getOutputs()[sel], d.getInput());
       continue;
     }
   }
 
+  // Pass B: chain-resolve pass-through mux/demux edges. After Pass A,
+  // every fabric value reachable from a firing op either has a real sw
+  // value in `valueMap` (op output), a placeholder in `valueMap` (back-
+  // edge that was used before its producer was visited), or no entry yet
+  // (pass-through output whose input was a back-edge). This loop seeds
+  // pass-through outputs and iterates until no more progress is made.
+  {
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (auto [out, in] : passThroughEdges) {
+        auto inIt = valueMap.find(in);
+        Value src;
+        if (inIt != valueMap.end()) {
+          src = inIt->second;
+        } else {
+          // Input still missing: synthesize a placeholder so users have
+          // something to wire to. The expected sw type matches the input
+          // fabric width with no specific flavor knowledge; use intLifted
+          // as the safe default. Pass C will RAUW it once the producer
+          // lands a real value.
+          unsigned w = ::mlir::cast<BitsType>(in.getType()).getWidth();
+          src = getOrPlaceholder(in, intLifted(w, ctx));
+        }
+        auto outIt = valueMap.find(out);
+        if (outIt == valueMap.end() || outIt->second != src) {
+          valueMap[out] = src;
+          changed = true;
+        }
+      }
+    }
+  }
+
+  // Pass C: rewire placeholders to their real sw values. After Pass A and
+  // Pass B, every producer of a placeholder fabric value has stored its
+  // real sw value in `valueMap[fuVal]`. Walk the placeholder map and RAUW
+  // each placeholder Value to that real value, then erase the placeholder
+  // op. valueMap entries that still pointed at the placeholder are
+  // updated to the real value first so downstream lookups (e.g. yields)
+  // see only real sw values.
+  for (auto &kv : placeholders) {
+    Value fuVal = kv.first;
+    Value placeholder = kv.second;
+    auto it = valueMap.find(fuVal);
+    if (it == valueMap.end() || it->second == placeholder) {
+      // No real value ever materialized for this fabric value. This is
+      // unreachable for a well-formed config (any placeholder we created
+      // was driven by a use from a firing op, whose alive analysis
+      // guaranteed an alive producer), but bail out cleanly.
+      return std::nullopt;
+    }
+    Value real = it->second;
+    placeholder.replaceAllUsesWith(real);
+    // Pass-through outputs that adopted this placeholder via Pass B keep
+    // a stale valueMap entry; rewrite them so yields see real values.
+    for (auto &vm : valueMap)
+      if (vm.second == placeholder)
+        vm.second = real;
+  }
+  for (Operation *phOp : placeholderOps)
+    phOp->erase();
+
+  // Pass D: collect live yield values for the caller. Pass-through chains
+  // and placeholder rewrites have already settled valueMap, so a direct
+  // lookup is sufficient.
   SmallVector<Value, 4> liveYields;
   liveYields.reserve(analysis.liveYieldIndices.size());
   for (unsigned idx : analysis.liveYieldIndices) {
@@ -1518,13 +1862,20 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
     if (analysis->liveYieldIndices.empty())
       continue;
 
-    // Compute which FU input ports remain live in this configuration. An
-    // FU input port is live iff its corresponding block argument is in the
-    // alive set. Iterate in ascending FU-input-port order so the resulting
-    // subgraph signature is deterministic.
+    // Compute which FU input ports remain software-live in this
+    // configuration. A block-arg is software-live iff some firing op in
+    // the FU body reads it on an active operand index AND that read is
+    // not a fabric.mux/demux operating in discard mode. Pass-through
+    // chains are followed transitively. Block-args whose only role is to
+    // feed a discard-mode mux/demux are NOT software-live: at the
+    // hardware level the discard unit drains them, but no value flows
+    // into the materialized software subgraph, so including them would
+    // pad the subgraph signature with unused parameters and spuriously
+    // distinguish otherwise isomorphic templates.
+    auto swLive = computeSoftwareLiveValues(fu, chosenByOp, *analysis);
     SmallVector<unsigned, 4> liveInputIndices;
     for (unsigned i = 0, e = fuBody.getNumArguments(); i < e; ++i)
-      if (analysis->alive.count(fuBody.getArgument(i)))
+      if (swLive.count(fuBody.getArgument(i)))
         liveInputIndices.push_back(i);
 
     // Per-config sel-port type override: when a variadic mux/demux fires
@@ -1598,7 +1949,7 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
     auto yields = materializeBodyForConfig(fu, liveInputIndices,
                                            bodyBlock->getArguments(),
                                            bodyBuilder, chosenByOp,
-                                           *analysis);
+                                           *analysis, swLive);
     if (!yields) {
       func.erase();
       continue;
@@ -1632,6 +1983,15 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
   // and erase the wrapper for every later isomorphic clone. This makes
   // multi-mux / multi-demux FUs collapse to one template per distinct
   // effective compute, instead of one per Cartesian-product knob tuple.
+  //
+  // Design principle: if a fabric.fu produces many software-isomorphic
+  // templates under different sw_configs, the FU design itself is
+  // flawed -- distinct sw_configs should map to distinct software
+  // functions. The dedup deliberately keeps a single representative per
+  // isomorphism class; the dropped configs are a smell, not a feature.
+  // Tightening the per-config signature (see software-live block-arg
+  // computation upstream) shrinks isomorphism-class boundaries and
+  // therefore tends to reveal those redundant configs as duplicates.
   ::llvm::SmallVector<FuSubgraphCandidate> deduped;
   deduped.reserve(results.size());
   for (auto &c : results) {

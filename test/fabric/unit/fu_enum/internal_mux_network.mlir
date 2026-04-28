@@ -1,9 +1,11 @@
 // RUN: loom %s -loom-enumerate-fu-subgraphs | FileCheck %s
 
 // fabric.mux placed in the middle of a multi-stage compute network. This
-// example also exercises SSA fan-out (%y feeds both stages) and the strict
-// deadlock invariant: only configurations where both stages fire are
-// valid, since %y can only broadcast when every consumer port is active.
+// example exercises SSA fan-out (%y feeds both stages) and the routing
+// flexibility of fabric.mux: each firing mux drains its non-selected
+// input ports, and a fabric.op that does not fire in a given config is
+// configured away (its input ready is tied off), so producers fanning out
+// to such consumers are not stalled by them.
 
 // CHECK-LABEL: @fu_internal_chain
 func.func @fu_internal_chain(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
@@ -24,16 +26,16 @@ func.func @fu_internal_chain(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
     fabric.yield %s : !fabric.bits<32>
   }
 
-  // m1.sel=0 and m1.sel=1 (with m2.sel=0) yield graph-isomorphic
-  // subgraphs: each is muladd(blockarg_w_or_x, blockarg_y, blockarg_y).
-  // Dedup keeps the lex-smallest (m1.sel=0).
+  // m1.sel=0 with m2.sel=0 yields the full muladd compute. m1.sel=1 with
+  // m2.sel=0 produces the same shape (block-arg permutation only) and is
+  // deduped to the lex-smallest config.
   // CHECK: mux#0{sel=0,discard=false,disconnect=false}; mux#1{sel=0,discard=false,disconnect=false}
   // CHECK-NOT: mux#0{sel=1,discard=false,disconnect=false}; mux#1{sel=0,discard=false,disconnect=false}
 
-  // m2.sel=1 leaves the multiplier silent so %y has an inactive consumer
-  // on its multiplier port: the broadcast cannot complete and the config
-  // must be dropped.
-  // CHECK-NOT: mux#1{sel=1,discard=false,disconnect=false}
+  // m2.sel=1 selects %z directly into the adder; the multiplier is
+  // configured off and its drained input ports do not deadlock the
+  // %y broadcast. The resulting compute is just addi(%z, %y).
+  // CHECK: mux#0{sel=0,discard=false,disconnect=false}; mux#1{sel=1,discard=false,disconnect=false}
 
   return
 }
