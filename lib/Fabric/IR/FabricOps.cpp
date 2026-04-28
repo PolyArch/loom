@@ -912,6 +912,10 @@ void FuOp::print(OpAsmPrinter &p) {
                 /*printBlockTerminators=*/true);
 }
 
+RegionKind FuOp::getRegionKind(unsigned /*index*/) {
+  return RegionKind::Graph;
+}
+
 LogicalResult FuOp::verify() {
   Block &entry = getBody().front();
   if (entry.getNumArguments() != getInputs().size())

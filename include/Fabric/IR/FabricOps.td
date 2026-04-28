@@ -5,6 +5,7 @@ include "Fabric/IR/FabricDialect.td"
 include "Fabric/IR/FabricTypes.td"
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/CommonAttrConstraints.td"
+include "mlir/IR/RegionKindInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
@@ -151,19 +152,24 @@ def Fabric_OpOp : Fabric_Op<"op", []> {
 
 def Fabric_FuOp : Fabric_Op<"fu", [
     IsolatedFromAbove,
-    SingleBlockImplicitTerminator<"YieldOp">
+    SingleBlockImplicitTerminator<"YieldOp">,
+    DeclareOpInterfaceMethods<RegionKindInterface>
 ]> {
   let summary =
-      "fabric function unit (FU): an SSACFG tile of fabric.op / mux / demux";
+      "fabric function unit (FU): a graph-region tile of fabric.op / mux / demux";
   let description = [{
     Container for one CGRA-style functional unit. Inputs and outputs
-    are `fabric.bits<N>` ports. The body is a single SSACFG block
-    whose only permitted ops are `fabric.op`, `fabric.mux`,
-    `fabric.demux` and the `fabric.yield` terminator. The mux / demux
-    ops inside an FU let different software configurations realize
-    different internal compute graphs over the same hardware: they
-    are *not* required to attach to the FU's external inputs /
-    outputs, their role is to reshape the in-FU op connectivity.
+    are `fabric.bits<N>` ports. The body is a single graph-kind block
+    (no SSA dominance: cycles / feedback edges are permitted) whose
+    only permitted ops are `fabric.op`, `fabric.mux`, `fabric.demux`
+    and the `fabric.yield` terminator. The mux / demux ops inside an
+    FU let different software configurations realize different
+    internal compute graphs over the same hardware: they are *not*
+    required to attach to the FU's external inputs / outputs, their
+    role is to reshape the in-FU op connectivity. Allowing back-edges
+    in the body lets configurable compute ops (e.g.
+    `fabric.op[@dataflow.carry]`) and user-facing cyclic
+    `dataflow.subgraph`s map onto a single FU.
 
     Constraints:
       * The body must contain at least one `fabric.op`.
