@@ -4,6 +4,8 @@ add_mlir_library(MLIRFabricTechSynthesizer
   CostModel.cpp
   CoverageVerifier.cpp
   GeneralizeSubgraphsToFuPass.cpp
+  Incremental.cpp
+  IncrementalExtensions.cpp
   Parallel.cpp
   Synthesizer.cpp
 
