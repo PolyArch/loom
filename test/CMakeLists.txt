@@ -12,6 +12,7 @@ set(LOOM_TEST_DEPENDS
   loom
   loom-candidate-dump
   loom-config-test
+  loom-cost-test
   loom-hwsg-test
   loom-parallel-test
   loom-synth-config-test

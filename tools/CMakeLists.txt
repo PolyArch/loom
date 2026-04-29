@@ -1,6 +1,7 @@
 add_subdirectory(loom)
 add_subdirectory(loom-candidate-dump)
 add_subdirectory(loom-config-test)
+add_subdirectory(loom-cost-test)
 add_subdirectory(loom-hwsg-test)
 add_subdirectory(loom-parallel-test)
 add_subdirectory(loom-synth-config-test)

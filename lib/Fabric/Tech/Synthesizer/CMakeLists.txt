@@ -1,4 +1,5 @@
 add_mlir_library(MLIRFabricTechSynthesizer
+  CostModel.cpp
   Parallel.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -6,5 +7,8 @@ add_mlir_library(MLIRFabricTechSynthesizer
 
   LINK_LIBS PUBLIC
   LoomCommon
+  MLIRFabric
+  MLIRIR
+  MLIRSupport
   LLVMSupport
 )
