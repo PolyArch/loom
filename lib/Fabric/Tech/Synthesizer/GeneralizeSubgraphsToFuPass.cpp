@@ -7,8 +7,8 @@
 // strategy factory and splices the resulting wrapper `func.func`s into
 // the user's module in lexical group-name order.
 //
-// Strategies returned by `makeSynthesizer` are still stubs at this
-// point (T10+ replace them with real implementations); the pass exists
+// Strategies returned by `makeSynthesizer` may be stubs (real
+// implementations are wired in by their respective TUs); the pass exists
 // to wire up:
 //   * input validation -- each input func.func must contain exactly one
 //     `dataflow.subgraph`; zero or many subgraphs -> `invalid_input`.
