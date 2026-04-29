@@ -18,6 +18,7 @@ set(LOOM_TEST_DEPENDS
   loom-parallel-test
   loom-synth-base-test
   loom-synth-config-test
+  loom-synth-fu-dump
   loom-template-dump
 )
 
