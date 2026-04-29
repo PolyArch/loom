@@ -1,0 +1,93 @@
+// Auto-generated tier-A synthesizer perf workload.
+// n=10 seed=42 group=alu_int_32.
+// Do not edit by hand. Produced by gen_synth.py.
+
+func.func @pat0(%a: i32, %b: i32) -> i32
+    attributes {loom.synth_group = "alu_int_32"} {
+  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
+    %s = arith.subi %x, %y : i32
+    dataflow.yield %s : i32
+  }
+  return %r : i32
+}
+
+func.func @pat1(%a: i32, %b: i32) -> i32
+    attributes {loom.synth_group = "alu_int_32"} {
+  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
+    %s = arith.addi %x, %y : i32
+    dataflow.yield %s : i32
+  }
+  return %r : i32
+}
+
+func.func @pat2(%a: i32, %b: i32) -> i32
+    attributes {loom.synth_group = "alu_int_32"} {
+  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
+    %s = arith.subi %x, %y : i32
+    dataflow.yield %s : i32
+  }
+  return %r : i32
+}
+
+func.func @pat3(%a: i32, %b: i32) -> i32
+    attributes {loom.synth_group = "alu_int_32"} {
+  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
+    %s = arith.subi %x, %y : i32
+    dataflow.yield %s : i32
+  }
+  return %r : i32
+}
+
+func.func @pat4(%a: i32, %b: i32) -> i32
+    attributes {loom.synth_group = "alu_int_32"} {
+  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
+    %s = arith.addi %x, %y : i32
+    dataflow.yield %s : i32
+  }
+  return %r : i32
+}
+
+func.func @pat5(%a: i32, %b: i32) -> i32
+    attributes {loom.synth_group = "alu_int_32"} {
+  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
+    %s = arith.addi %x, %y : i32
+    dataflow.yield %s : i32
+  }
+  return %r : i32
+}
+
+func.func @pat6(%a: i32, %b: i32) -> i32
+    attributes {loom.synth_group = "alu_int_32"} {
+  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
+    %s = arith.subi %x, %y : i32
+    dataflow.yield %s : i32
+  }
+  return %r : i32
+}
+
+func.func @pat7(%a: i32, %b: i32) -> i32
+    attributes {loom.synth_group = "alu_int_32"} {
+  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
+    %s = arith.addi %x, %y : i32
+    dataflow.yield %s : i32
+  }
+  return %r : i32
+}
+
+func.func @pat8(%a: i32, %b: i32) -> i32
+    attributes {loom.synth_group = "alu_int_32"} {
+  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
+    %s = arith.addi %x, %y : i32
+    dataflow.yield %s : i32
+  }
+  return %r : i32
+}
+
+func.func @pat9(%a: i32, %b: i32) -> i32
+    attributes {loom.synth_group = "alu_int_32"} {
+  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
+    %s = arith.addi %x, %y : i32
+    dataflow.yield %s : i32
+  }
+  return %r : i32
+}
