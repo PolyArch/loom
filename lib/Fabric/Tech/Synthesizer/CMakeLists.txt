@@ -8,6 +8,7 @@ add_mlir_library(MLIRFabricTechSynthesizer
   IncrementalExtensions.cpp
   IncrementalExtensionsTierC.cpp
   IncrementalRandom.cpp
+  MCS.cpp
   Parallel.cpp
   Synthesizer.cpp
 

@@ -3,13 +3,11 @@
 #include "Fabric/Tech/Synthesizer/Anchor.h"
 #include "Fabric/Tech/Synthesizer/Incremental.h"
 #include "Fabric/Tech/Synthesizer/IncrementalRandom.h"
+#include "Fabric/Tech/Synthesizer/MCS.h"
 
 #include "llvm/Support/Compiler.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include <memory>
-#include <string>
-#include <utility>
 
 namespace loom::fabric::tech {
 
@@ -67,51 +65,13 @@ bool CoverageReport::allCovered() const {
 }
 
 //===----------------------------------------------------------------------===//
-// Stub strategy.
-//
-// Used by `makeSynthesizer` for every known strategy until each strategy
-// task lands its real implementation. Returns a `TopologyMismatch`
-// failure with a single `notes` line explaining that the named strategy
-// is a stub. The choice of `TopologyMismatch` matches the "BLOCKED"
-// signal documented in the per-task spec for Synthesizer scaffolding.
-//===----------------------------------------------------------------------===//
-
-namespace {
-
-class StubSynthesizer : public Synthesizer {
-public:
-  explicit StubSynthesizer(::llvm::StringRef name)
-      : strategyName(name.str()) {}
-
-  SynthResult run(const SynthInputs &) override {
-    SynthResult r;
-    r.failureReason = SynthFailureReason::TopologyMismatch;
-    std::string note;
-    {
-      ::llvm::raw_string_ostream os(note);
-      os << "strategy " << strategyName << " not yet implemented";
-    }
-    r.notes.push_back(std::move(note));
-    return r;
-  }
-
-private:
-  std::string strategyName;
-};
-
-} // namespace
-
-//===----------------------------------------------------------------------===//
 // Factory.
 //===----------------------------------------------------------------------===//
 
 ::std::unique_ptr<Synthesizer>
 makeSynthesizer(::llvm::StringRef strategyName,
                 const ::loom::SynthConfig &cfg) {
-  // Known strategy names per `SynthConfig.strategy` documentation. The
-  // anchor, incremental, and incremental_random strategies have real
-  // implementations; mcs remains a stub that reports TopologyMismatch
-  // with a note until its task lands.
+  // Known strategy names per `SynthConfig.strategy` documentation.
   if (strategyName == "anchor")
     return std::make_unique<AnchorSynthesizer>(cfg);
   if (strategyName == "incremental")
@@ -119,7 +79,7 @@ makeSynthesizer(::llvm::StringRef strategyName,
   if (strategyName == "incremental_random")
     return std::make_unique<IncrementalRandomSynthesizer>(cfg);
   if (strategyName == "mcs")
-    return std::make_unique<StubSynthesizer>(strategyName);
+    return std::make_unique<MCSSynthesizer>(cfg);
 
   // Unknown name: caller is responsible for translating this null
   // return into an `invalid_input` diagnostic on the input function.
