@@ -1,4 +1,5 @@
 add_mlir_library(MLIRFabricTechSynthesizer
+  Alignment.cpp
   CostModel.cpp
   Parallel.cpp
 
@@ -7,7 +8,9 @@ add_mlir_library(MLIRFabricTechSynthesizer
 
   LINK_LIBS PUBLIC
   LoomCommon
+  MLIRDataflow
   MLIRFabric
+  MLIRFabricTech
   MLIRIR
   MLIRSupport
   LLVMSupport

@@ -3,6 +3,7 @@ add_mlir_library(MLIRFabricTech
   MapSubgraphToFusPass.cpp
   PartitionGraphPass.cpp
   SubgraphEnumerator.cpp
+  SubgraphGraphView.cpp
   SubgraphMatcher.cpp
   TemplateLibrary.cpp
   Partitioner/BeamPartitioner.cpp

@@ -27,6 +27,7 @@ config.excludes = ["lit.cfg.py", "lit.site.cfg.py", "CMakeLists.txt"]
 
 tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom"),
+    os.path.join(config.loom_obj_root, "tools", "loom-alignment-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-candidate-dump"),
     os.path.join(config.loom_obj_root, "tools", "loom-config-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-cost-test"),
@@ -39,6 +40,7 @@ tool_dirs = [
 ]
 tools = [
     "loom",
+    "loom-alignment-test",
     "loom-candidate-dump",
     "loom-config-test",
     "loom-cost-test",

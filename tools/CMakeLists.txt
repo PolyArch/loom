@@ -1,4 +1,5 @@
 add_subdirectory(loom)
+add_subdirectory(loom-alignment-test)
 add_subdirectory(loom-candidate-dump)
 add_subdirectory(loom-config-test)
 add_subdirectory(loom-cost-test)
