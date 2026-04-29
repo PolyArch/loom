@@ -2,6 +2,7 @@ add_mlir_library(MLIRFabricTechSynthesizer
   Alignment.cpp
   CostModel.cpp
   Parallel.cpp
+  Synthesizer.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Tech/Synthesizer
@@ -11,6 +12,7 @@ add_mlir_library(MLIRFabricTechSynthesizer
   MLIRDataflow
   MLIRFabric
   MLIRFabricTech
+  MLIRFuncDialect
   MLIRIR
   MLIRSupport
   LLVMSupport

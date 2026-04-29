@@ -16,6 +16,7 @@ set(LOOM_TEST_DEPENDS
   loom-cost-test
   loom-hwsg-test
   loom-parallel-test
+  loom-synth-base-test
   loom-synth-config-test
   loom-template-dump
 )
