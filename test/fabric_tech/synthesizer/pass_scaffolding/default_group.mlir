@@ -9,7 +9,7 @@
 // CHECK: warning:
 // CHECK-SAME: group "default": synthesis failed: topology_mismatch
 // CHECK: remark:
-// CHECK-SAME: synth-stat group=default strategy=incremental_random reason=topology_mismatch cost=0 covered=0/2 nodes=0/0/0
+// CHECK-SAME: synth-stat group=default strategy=incremental_random reason=topology_mismatch cost=0.000000e+00 covered=0/2 nodes=0/0/0
 // CHECK: loom.synth_failed = "topology_mismatch"
 // CHECK: loom.synth_failed = "topology_mismatch"
 

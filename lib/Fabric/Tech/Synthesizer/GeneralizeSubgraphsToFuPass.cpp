@@ -55,12 +55,16 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/IR/AsmState.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/Location.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
 
@@ -111,6 +115,16 @@ static std::string wrapperNameFor(::llvm::StringRef groupName) {
   out += sanitizeGroupName(groupName);
   return out;
 }
+
+// Side-channel paired with each per-group `SynthResult`. Carries the
+// printed IR text of a successful wrapper so the main thread can
+// re-parse it under the user's `MLIRContext` before splicing. Empty
+// `wrapperIR` means either failure or that the worker did not produce
+// a printable wrapper. See `runOnOperation`'s splice loop for details.
+struct WorkerHandoff {
+  ::loom::fabric::tech::SynthResult result;
+  std::string wrapperIR;
+};
 
 // Run the configured primary strategy and walk `fallbackChain` on
 // failure. Returns the *primary's* failure reason on full failure (per
@@ -292,13 +306,11 @@ void GeneralizeSubgraphsToFuPass::validateFunctions(
     // them later via the SymbolTable.
     if (func->hasAttr("loom.synthesized_for"))
       continue;
-    // Pre-existing fabric.fu wrappers (a hand-written library or
-    // output from another tool) are also bystanders rather than
-    // inputs. Leaving such functions untouched lets the
-    // symbol-conflict precheck see them.
-    bool hasFabricFu = false;
-    func.walk([&](::fabric::FuOp) { hasFabricFu = true; });
-    if (hasFabricFu)
+    // Private-visibility func.funcs are also treated as bystanders
+    // (helper / library symbols), regardless of whether they contain a
+    // fabric.fu. This keeps the symbol-conflict precheck able to see
+    // them while still excluding them from input validation.
+    if (func.isPrivate())
       continue;
 
     ::llvm::SmallVector<::dataflow::SubgraphOp, 2> subgraphs;
@@ -431,7 +443,9 @@ void GeneralizeSubgraphsToFuPass::emitSynthStat(
     os << " cost=" << cost << " covered=" << covered << "/" << m
        << " nodes=" << nc.ops << "/" << nc.muxes << "/" << nc.demuxes;
   } else {
-    os << " cost=0 covered=0/" << m << " nodes=0/0/0";
+    // Print cost as a `double` so failure and success paths share one
+    // formatter (`raw_ostream::operator<<(double)` -> exponent style).
+    os << " cost=" << 0.0 << " covered=0/" << m << " nodes=0/0/0";
   }
 
   module.emitRemark() << os.str();
@@ -508,35 +522,114 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
 
   // Parallel-dispatch synthesis. Each worker runs the primary
   // strategy (and the fallback chain on failure) on its group's input
-  // subgraphs and produces a SynthResult.
+  // subgraphs in a thread-local *scratch* MLIRContext (per the spec
+  // rule "MLIR mutation is never parallel"). The strategy never sees
+  // the user's MLIRContext: that would race on `StorageUniquer`,
+  // attribute interning, and type uniquing as soon as a real strategy
+  // begins building IR. To hand the wrapper back to the main thread
+  // safely, the worker prints the wrapper to text under its scratch
+  // context and discards both the wrapper and the scratch context
+  // before returning. The main thread re-parses that text under the
+  // user's context below.
   ::loom::fabric::tech::WorkerPool pool(
       cfg.parallelismCrossGroup ? cfg.parallelismWorkers : 1u);
 
-  // Build a vector of SynthInputs that matches `queued` order. We
-  // store raw SubgraphOp arrays separately because SynthInputs holds
-  // an ArrayRef; the ArrayRef must outlive the worker.
-  ::llvm::SmallVector<::loom::fabric::tech::SynthInputs, 4> inputs;
-  inputs.reserve(queued.size());
-  for (auto &g : queued) {
-    inputs.push_back(::loom::fabric::tech::SynthInputs{
-        ::llvm::StringRef(g.name),
-        ::llvm::ArrayRef<::dataflow::SubgraphOp>(g.subgraphs),
-        cfg, ctx});
-  }
+  // Per-group input bundle that is cheap to copy into a worker. We
+  // pass the raw SubgraphOp slice + group name; the worker constructs
+  // its own scratch MLIRContext and rebuilds a `SynthInputs` rooted in
+  // it before invoking the strategy.
+  struct WorkerJob {
+    ::llvm::StringRef groupName;
+    ::llvm::ArrayRef<::dataflow::SubgraphOp> subgraphs;
+  };
+  ::llvm::SmallVector<WorkerJob, 4> jobs;
+  jobs.reserve(queued.size());
+  for (auto &g : queued)
+    jobs.push_back(WorkerJob{::llvm::StringRef(g.name),
+                             ::llvm::ArrayRef<::dataflow::SubgraphOp>(
+                                 g.subgraphs)});
 
-  auto results = pool.parallelMap<::loom::fabric::tech::SynthInputs,
-                                  ::loom::fabric::tech::SynthResult>(
-      ::llvm::ArrayRef<::loom::fabric::tech::SynthInputs>(inputs),
-      [&cfg](const ::loom::fabric::tech::SynthInputs &in) {
-        return runWithFallback(cfg, in);
+  auto handoffs = pool.parallelMap<WorkerJob, WorkerHandoff>(
+      ::llvm::ArrayRef<WorkerJob>(jobs),
+      [&cfg](const WorkerJob &job) {
+        // Thread-local scratch context. Required dialects must be
+        // loaded explicitly: scratch contexts do not inherit anything
+        // from the parent pass's context.
+        ::mlir::MLIRContext scratch;
+        ::mlir::DialectRegistry registry;
+        registry.insert<::mlir::func::FuncDialect,
+                        ::dataflow::DataflowDialect,
+                        ::fabric::FabricDialect,
+                        ::mlir::arith::ArithDialect,
+                        ::mlir::math::MathDialect>();
+        scratch.appendDialectRegistry(registry);
+        scratch.loadAllAvailableDialects();
+
+        ::loom::fabric::tech::SynthInputs in{
+            job.groupName, job.subgraphs, cfg, &scratch};
+        ::loom::fabric::tech::SynthResult res = runWithFallback(cfg, in);
+
+        WorkerHandoff out;
+        if (res.success()) {
+          // Print the wrapper into the worker's local string under the
+          // scratch context. `useLocalScope` keeps SSA numbering
+          // self-contained; `assumeVerified` skips a redundant verify.
+          ::llvm::raw_string_ostream os(out.wrapperIR);
+          ::mlir::OpPrintingFlags flags;
+          flags.useLocalScope().assumeVerified();
+          res.wrapper->print(os, flags);
+          os.flush();
+          // Drop the scratch-context-owned wrapper before returning.
+          // The main thread will re-parse `wrapperIR` into the user's
+          // context. We preserve the rest of `res` (failureReason,
+          // coverage, notes) verbatim.
+          res.wrapper = nullptr;
+        }
+        out.result = std::move(res);
+        // `scratch` goes out of scope here; any attribute / type
+        // pointers that lived in it are now invalid. `out` carries
+        // only POD-ish data plus the printed text.
+        return out;
       });
 
   // Serial splice in lexical group order. This is the only place that
-  // mutates the user's module after input validation.
+  // mutates the user's module after input validation. Cross-context
+  // handoff happens here: each worker handed us the wrapper as printed
+  // text (from a now-destroyed scratch context); we re-parse it under
+  // the user's context so all attribute/type uniquing happens on the
+  // pass's owning thread.
   ::mlir::OpBuilder modBuilder(module.getBody(), module.getBody()->end());
   for (size_t i = 0; i < queued.size(); ++i) {
     SynthGroup &group = queued[i];
-    ::loom::fabric::tech::SynthResult &result = results[i];
+    WorkerHandoff &handoff = handoffs[i];
+    ::loom::fabric::tech::SynthResult &result = handoff.result;
+
+    // Re-home the wrapper into the user's context if the worker
+    // produced one. Parse failures here become a `verifier_failed`
+    // demotion since the worker already produced verified IR but the
+    // round-trip lost something.
+    if (result.failureReason == ::loom::fabric::tech::SynthFailureReason::None
+        && !handoff.wrapperIR.empty()) {
+      ::mlir::OwningOpRef<::mlir::ModuleOp> parsed =
+          ::mlir::parseSourceString<::mlir::ModuleOp>(handoff.wrapperIR, ctx);
+      ::mlir::func::FuncOp reHomed;
+      if (parsed) {
+        for (auto fn : parsed->getOps<::mlir::func::FuncOp>()) {
+          reHomed = fn;
+          break;
+        }
+      }
+      if (reHomed) {
+        reHomed->remove();
+        result.wrapper = ::mlir::OwningOpRef<::mlir::func::FuncOp>(reHomed);
+      } else {
+        result.failureReason =
+            ::loom::fabric::tech::SynthFailureReason::VerifierFailed;
+        result.notes.push_back(
+            "internal: failed to re-parse worker-built wrapper into the "
+            "user's MLIRContext");
+      }
+    }
 
     if (result.success()) {
       // Tag the wrapper with `loom.synthesized_for = "<group>"` so

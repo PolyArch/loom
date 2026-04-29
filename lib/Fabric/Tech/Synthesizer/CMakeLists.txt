@@ -18,6 +18,7 @@ add_mlir_library(MLIRFabricTechSynthesizer
   MLIRFuncDialect
   MLIRIR
   MLIRMathDialect
+  MLIRParser
   MLIRPass
   MLIRSupport
   LLVMSupport

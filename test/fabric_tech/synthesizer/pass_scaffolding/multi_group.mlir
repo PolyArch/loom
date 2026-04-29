@@ -5,8 +5,8 @@
 // lexically by group name (`alu` before `fpu`). Both groups fail via the
 // stub strategy, so cost/coverage stay at zero.
 
-// CHECK: remark: {{.*}}synth-stat group=alu strategy=incremental_random reason=topology_mismatch cost=0 covered=0/2 nodes=0/0/0
-// CHECK: remark: {{.*}}synth-stat group=fpu strategy=incremental_random reason=topology_mismatch cost=0 covered=0/1 nodes=0/0/0
+// CHECK: remark: {{.*}}synth-stat group=alu strategy=incremental_random reason=topology_mismatch cost=0.000000e+00 covered=0/2 nodes=0/0/0
+// CHECK: remark: {{.*}}synth-stat group=fpu strategy=incremental_random reason=topology_mismatch cost=0.000000e+00 covered=0/1 nodes=0/0/0
 
 func.func @pat_alu_addi(%a: i32, %b: i32) -> i32 attributes {loom.synth_group = "alu"} {
   %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {

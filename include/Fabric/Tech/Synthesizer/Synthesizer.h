@@ -16,9 +16,12 @@
 // "Failure reasons (closed enumeration)".
 //
 // Threading: the factory is stateless and safe to call from any thread.
-// Concrete strategies must build their candidate wrappers in scratch
-// `MLIRContext`s (or in the caller-supplied context) without mutating
-// the user's `ModuleOp`; the pass main thread splices results in.
+// Concrete strategies must build their candidate wrappers in the
+// worker-local scratch `MLIRContext` provided via `SynthInputs.context`
+// (never in the user's module context) and must not mutate the user's
+// `ModuleOp`. The pass main thread re-homes each returned wrapper into
+// the user's module context and splices it in serially. See
+// `SynthInputs.context` and `SynthResult.wrapper` for the contract.
 
 #include "Common/SynthConfig.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -97,10 +100,15 @@ struct SynthInputs {
   ::llvm::ArrayRef<::dataflow::SubgraphOp> subgraphs;
   // Resolved synth config (already parsed; defaults applied).
   const ::loom::SynthConfig &config;
-  // MLIR context used to build the wrapper. Concrete strategies may
-  // additionally allocate scratch contexts for parallel per-restart
-  // work; the returned wrapper, however, must be created in `context`
-  // so the pass main thread can splice it without re-parsing.
+  // Scratch MLIR context for this worker. Per the spec rule "MLIR
+  // mutation is never parallel", the pass constructs a fresh
+  // thread-local `MLIRContext` for each worker before invoking
+  // `Synthesizer::run`, and the strategy must build its candidate
+  // wrapper here -- never in the user's module context. Concrete
+  // strategies may additionally allocate further scratch contexts for
+  // parallel per-restart work. The pass's main thread is responsible
+  // for re-homing the returned wrapper into the user's module context
+  // (see `SynthResult::wrapper`).
   ::mlir::MLIRContext *context = nullptr;
 };
 
@@ -108,7 +116,10 @@ struct SynthInputs {
 struct SynthResult {
   // On success: ownership of a freshly built wrapper `func.func` that
   // contains exactly one `fabric.fu` (detached, caller inserts into
-  // the module). Null on failure.
+  // the module). The wrapper is allocated in `SynthInputs.context`
+  // (the worker's scratch context). The pass's main-thread splice
+  // loop is responsible for cloning it into the user's module
+  // context before insertion. Null on failure.
   ::mlir::OwningOpRef<::mlir::func::FuncOp> wrapper;
   // `None` on success; one of the closed enum values on failure.
   SynthFailureReason failureReason = SynthFailureReason::None;
