@@ -31,10 +31,8 @@ struct SynthConfig {
   unsigned parallelismWorkers = 0;
 
   // Coverage-verifier knobs.
-  // `coverage_verifier.enabled` toggles back-coverage verification of every
-  // synthesized FU against its input subgraphs. `parallel_match` parallelizes
-  // the per-input matching loop inside the verifier.
-  bool coverageVerifierEnabled = true;
+  // `parallel_match` parallelizes the per-input matching loop inside the
+  // verifier.
   bool coverageVerifierParallelMatch = true;
 
   // Optional ordered list of strategies to retry on failure. Empty means no
@@ -71,7 +69,6 @@ struct SynthConfig {
     return strategy == o.strategy &&
            parallelismCrossGroup == o.parallelismCrossGroup &&
            parallelismWorkers == o.parallelismWorkers &&
-           coverageVerifierEnabled == o.coverageVerifierEnabled &&
            coverageVerifierParallelMatch == o.coverageVerifierParallelMatch &&
            fallbackChain == o.fallbackChain &&
            costMuxPenalty == o.costMuxPenalty &&

@@ -7,7 +7,6 @@
 // CHECK: strategy=incremental_random
 // CHECK-NEXT: parallelism.cross_group=true
 // CHECK-NEXT: parallelism.workers=0
-// CHECK-NEXT: coverage_verifier.enabled=true
 // CHECK-NEXT: coverage_verifier.parallel_match=true
 // CHECK-NEXT: fallback_chain.size=0
 // CHECK-NEXT: cost.mux_penalty=1.500000e+00

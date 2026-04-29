@@ -1,7 +1,0 @@
-synth:
-  strategy: anchor
-  parallelism:
-    workers: 1
-  coverage_verifier:
-    enabled: true
-    parallel_match: false

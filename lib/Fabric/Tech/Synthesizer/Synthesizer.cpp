@@ -38,8 +38,6 @@ bool CoverageReport::allCovered() const {
     return "topology_mismatch";
   case SynthFailureReason::FeedbackAlignConflict:
     return "feedback_align_conflict";
-  case SynthFailureReason::CoverageVerifyFailed:
-    return "coverage_verify_failed";
   case SynthFailureReason::Timeout:
     return "timeout";
   case SynthFailureReason::ResourceExhausted:

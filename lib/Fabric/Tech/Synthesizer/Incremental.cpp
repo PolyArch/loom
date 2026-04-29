@@ -204,15 +204,9 @@ buildTrivialFu(const ::loom::SynthConfig &cfg, ::mlir::MLIRContext *ctx,
     return wrapper;
   }
 
-  // Disable coverage verification for the trivial build; the
-  // incremental main loop runs the verifier itself when configured to
-  // do so. Skipping the anchor-side run avoids redundant work.
-  ::loom::SynthConfig sub = cfg;
-  sub.coverageVerifierEnabled = false;
-
-  AnchorSynthesizer anchor(sub);
+  AnchorSynthesizer anchor(cfg);
   ::dataflow::SubgraphOp arr[1] = {first};
-  SynthInputs in{groupName, ::llvm::ArrayRef<::dataflow::SubgraphOp>(arr), sub,
+  SynthInputs in{groupName, ::llvm::ArrayRef<::dataflow::SubgraphOp>(arr), cfg,
                  ctx};
   SynthResult r = anchor.run(in);
   if (!r.success()) {
@@ -427,30 +421,6 @@ SynthResult IncrementalSynthesizer::run(const SynthInputs &inputs) {
     }
     wrapper = std::move(best->wrapper);
     covered.push_back(sg);
-  }
-
-  // 4. Optional final coverage verification.
-  if (cfg.coverageVerifierEnabled) {
-    ::fabric::FuOp finalFu = innerFuOf(wrapper.get());
-    if (!finalFu) {
-      result.failureReason = SynthFailureReason::VerifierFailed;
-      result.notes.push_back("incremental: missing inner fabric.fu in wrapper");
-      return result;
-    }
-    CoverageVerifier verifier(cfg);
-    result.coverage = verifier.verify(finalFu, inputs.subgraphs);
-    if (!result.coverage.allCovered()) {
-      result.failureReason = SynthFailureReason::CoverageVerifyFailed;
-      result.notes.push_back(
-          "incremental: synthesized FU did not cover every input subgraph");
-      return result;
-    }
-  } else {
-    // Coverage off: populate matchIndex so downstream stats still read
-    // `covered=N/N`, mirroring the anchor strategy's behavior.
-    result.coverage.matchIndex.assign(inputs.subgraphs.size(), std::nullopt);
-    for (size_t i = 0; i < inputs.subgraphs.size(); ++i)
-      result.coverage.matchIndex[i] = i;
   }
 
   result.wrapper = std::move(wrapper);

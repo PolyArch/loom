@@ -51,7 +51,6 @@ enum class SynthFailureReason : uint8_t {
   CrossShareGroup,           // "cross_share_group"
   TopologyMismatch,          // "topology_mismatch"
   FeedbackAlignConflict,     // "feedback_align_conflict"
-  CoverageVerifyFailed,      // "coverage_verify_failed"
   Timeout,                   // "timeout"
   ResourceExhausted,         // "resource_exhausted"
   UnsupportedOp,             // "unsupported_op"

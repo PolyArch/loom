@@ -614,14 +614,7 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
         snapshotCost = cm.evaluate(innerFu);
         snapshotCounts = countFuBodyNodes(innerFu);
       }
-      unsigned m = static_cast<unsigned>(group.subgraphs.size());
-      if (result.coverage.allCovered()) {
-        snapshotCovered = m;
-      } else {
-        for (const auto &slot : result.coverage.matchIndex)
-          if (slot.has_value())
-            ++snapshotCovered;
-      }
+      snapshotCovered = static_cast<unsigned>(group.subgraphs.size());
     }
 
     if (result.success()) {

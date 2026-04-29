@@ -24,8 +24,6 @@ static void dump(const ::loom::SynthConfig &cfg) {
   ::llvm::outs() << "parallelism.cross_group="
                  << (cfg.parallelismCrossGroup ? "true" : "false") << "\n";
   ::llvm::outs() << "parallelism.workers=" << cfg.parallelismWorkers << "\n";
-  ::llvm::outs() << "coverage_verifier.enabled="
-                 << (cfg.coverageVerifierEnabled ? "true" : "false") << "\n";
   ::llvm::outs() << "coverage_verifier.parallel_match="
                  << (cfg.coverageVerifierParallelMatch ? "true" : "false")
                  << "\n";

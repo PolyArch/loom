@@ -4,7 +4,6 @@ synth:
     cross_group: false
     workers: 6
   coverage_verifier:
-    enabled: false
     parallel_match: false
   fallback_chain:
     - mcs

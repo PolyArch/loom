@@ -86,7 +86,6 @@ constexpr ::loom::fabric::tech::SynthFailureReason kAllFailureReasons[] = {
     ::loom::fabric::tech::SynthFailureReason::CrossShareGroup,
     ::loom::fabric::tech::SynthFailureReason::TopologyMismatch,
     ::loom::fabric::tech::SynthFailureReason::FeedbackAlignConflict,
-    ::loom::fabric::tech::SynthFailureReason::CoverageVerifyFailed,
     ::loom::fabric::tech::SynthFailureReason::Timeout,
     ::loom::fabric::tech::SynthFailureReason::ResourceExhausted,
     ::loom::fabric::tech::SynthFailureReason::UnsupportedOp,

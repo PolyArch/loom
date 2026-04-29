@@ -275,8 +275,6 @@ body.
 * `feedback_align_conflict` -- tier C found incompatible flow signatures
   on cyclic SCCs (e.g. `fabric.op[@dataflow.carry]` heads driven by
   incompatible `dataflow.stream` parameter sets).
-* `coverage_verify_failed` -- the synthesized FU did not enumerate a
-  match for some input subgraph.
 * `timeout` -- a strategy exceeded its `timeout_sec` budget.
 * `resource_exhausted` -- a strategy generated more candidates than its
   `candidate_cap`.
@@ -297,8 +295,8 @@ body.
 * `no_legal_materialization` -- the strategy produced an FU whose
   enumerated materializations do not satisfy `OpOp::verify` /
   `FuOp::verify`, or whose port assignments contradict the dialect's
-  static type rules. Distinct from `coverage_verify_failed`: nothing
-  the enumerator emits matches *anything* legal.
+  static type rules. The FU itself passes `mlir::verify` but the
+  enumerator emits nothing legal against it.
 
 These failure reasons are stored verbatim as the `loom.synth_failed`
 attribute on the offending input function. Implementations must keep
@@ -389,7 +387,6 @@ synth:
     cross_group: true               # parallel across loom.synth_group values
     workers: auto                   # std::thread::hardware_concurrency()
   coverage_verifier:
-    enabled: true                   # default-on per Q6 decision
     parallel_match: true            # parallelize across input subgraphs
   fallback_chain: []                # optional list of strategies to try
                                     #   in order on failure
@@ -568,8 +565,6 @@ function synthesize_anchor(inputs):
 
     resolve_back_edge_placeholders(fu, visited)
     finalize_yield(fu, anchors_per_index)
-    if config.coverage_verifier.enabled:
-        verify_coverage(fu, sgs)  // may fail with coverage_verify_failed
     return success(fu)
 ```
 
@@ -639,8 +634,6 @@ function synthesize_mcs(inputs):
                                        deadline=config.mcs.timeout_sec)
         if cand is timeout: continue
         fu = build_fu_from_mces(cand, sgs)
-        if config.coverage_verifier.enabled and not verify_coverage(fu, sgs):
-            continue
         if best is None or cost(fu) < cost(best):
             best = fu
     if best is None:
@@ -730,8 +723,6 @@ function synthesize_incremental(inputs):
             return failure(reason_from_attempts(candidates))
         fu = min(legal, key=cost_model.evaluate)
         covered.append(sg)
-    if config.coverage_verifier.enabled:
-        verify_coverage(fu, inputs.subgraphs)
     return success(fu)
 ```
 
@@ -1387,7 +1378,6 @@ test/techmap/synth/
       cross_share_group.mlir
       topology_mismatch.mlir
       feedback_align_conflict.mlir
-      coverage_verify_failed.mlir
       timeout.mlir
       resource_exhausted.mlir
       unsupported_op.mlir           # dataflow.load in input

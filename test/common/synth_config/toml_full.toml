@@ -10,7 +10,6 @@ cross_group = false
 workers = "auto"
 
 [synth.coverage_verifier]
-enabled = false
 parallel_match = false
 
 [synth.cost]

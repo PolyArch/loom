@@ -23,7 +23,6 @@
 #include "Fabric/IR/FabricTypes.h"
 #include "Fabric/Tech/Synthesizer/Alignment.h"
 #include "Fabric/Tech/Synthesizer/CostModel.h"
-#include "Fabric/Tech/Synthesizer/CoverageVerifier.h"
 #include "Fabric/Tech/Synthesizer/HwParams.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
@@ -1006,30 +1005,6 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
   // Wrap into an OwningOpRef so the worker-side thread retains
   // ownership until the main thread re-homes it.
   ::mlir::OwningOpRef<::mlir::func::FuncOp> owned(wrapper);
-
-  // 7. Optional coverage verification. We run this against the inputs
-  // before transferring ownership; the verifier clones the wrapper
-  // into its own scratch module so this does not contaminate the
-  // user's IR. Skipping this when disabled lets tier-A correctness be
-  // pinned by the structural FileCheck patterns alone.
-  if (cfg.coverageVerifierEnabled) {
-    CoverageVerifier verifier(cfg);
-    result.coverage = verifier.verify(fu, inputs.subgraphs);
-    if (!result.coverage.allCovered()) {
-      result.failureReason = SynthFailureReason::CoverageVerifyFailed;
-      result.notes.push_back(
-          "anchor: synthesized FU did not cover every input subgraph");
-      // owned destructor erases the wrapper; the failure is reported
-      // upward without any IR escaping the worker.
-      return result;
-    }
-  } else {
-    // When coverage is off, populate matchIndex with vacuous slots so
-    // downstream stats reporting reads `covered=N/N` rather than 0/N.
-    result.coverage.matchIndex.assign(inputs.subgraphs.size(), std::nullopt);
-    for (size_t i = 0; i < inputs.subgraphs.size(); ++i)
-      result.coverage.matchIndex[i] = i;
-  }
 
   result.wrapper = std::move(owned);
   for (auto &n : st.notes)

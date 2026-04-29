@@ -6,7 +6,6 @@
 // CHECK: strategy=anchor
 // CHECK-NEXT: parallelism.cross_group=false
 // CHECK-NEXT: parallelism.workers=0
-// CHECK-NEXT: coverage_verifier.enabled=false
 // CHECK-NEXT: coverage_verifier.parallel_match=false
 // CHECK-NEXT: fallback_chain.size=2
 // CHECK-NEXT: fallback_chain[0]=mcs

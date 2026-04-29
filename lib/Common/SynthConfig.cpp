@@ -176,12 +176,7 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
     if (parent == "coverage_verifier") {
       ::llvm::SmallString<32> vbuf;
       StringRef val = scalarValue(valNode, vbuf);
-      if (child == "enabled") {
-        auto v = parseBool(val, "synth.coverage_verifier.enabled");
-        if (!v)
-          return v.takeError();
-        cfg.coverageVerifierEnabled = *v;
-      } else if (child == "parallel_match") {
+      if (child == "parallel_match") {
         auto v = parseBool(val, "synth.coverage_verifier.parallel_match");
         if (!v)
           return v.takeError();
@@ -449,9 +444,6 @@ parseTomlStringArray(StringRef v, StringRef ctx) {
     return ::llvm::Error::success();
   }
   if (section == "synth.coverage_verifier") {
-    if (key == "enabled")
-      return setBool(cfg.coverageVerifierEnabled,
-                     "synth.coverage_verifier.enabled");
     if (key == "parallel_match")
       return setBool(cfg.coverageVerifierParallelMatch,
                      "synth.coverage_verifier.parallel_match");

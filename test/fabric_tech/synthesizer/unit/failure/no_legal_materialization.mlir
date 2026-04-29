@@ -4,8 +4,8 @@
 // produced an FU whose enumerated materializations do not satisfy
 // `OpOp::verify` / `FuOp::verify`, or whose port assignments
 // contradict the dialect's static type rules. Distinct from
-// `coverage_verify_failed`: nothing the enumerator emits matches
-// *anything* legal."
+// `verifier_failed` in that the FU itself passes `mlir::verify`
+// but the enumerator emits nothing legal against it."
 //
 // Reachability note: the four strategies emit FUs whose enumerator
 // materializations are by construction in-spec (`hw_params` axes
