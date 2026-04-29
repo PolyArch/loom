@@ -29,9 +29,7 @@
 // RUN: FileCheck --check-prefix=BEAM1 %s < %t.beam1.mlir
 // RUN: FileCheck --check-prefix=BEAM4 %s < %t.beam4.mlir
 
-fabric.module @fu_addi {
-  %cast0_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_addi(%cast0_fu_addi : !fabric.bits<32>, %cast1_fu_addi : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
@@ -44,9 +42,7 @@ fabric.module @fu_addi {
 }
 
 
-fabric.module @fu_muli {
-  %cast0_fu_muli = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_fu_muli = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_muli(%cast0_fu_muli : !fabric.bits<32>, %cast1_fu_muli : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_fu_muli : !fabric.bits<32>, %b = %cast1_fu_muli : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
@@ -59,9 +55,7 @@ fabric.module @fu_muli {
 }
 
 
-fabric.module @fu_am {
-  %cast0_fu_am = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_fu_am = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_am(%cast0_fu_am : !fabric.bits<32>, %cast1_fu_am : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_fu_am : !fabric.bits<32>, %b = %cast1_fu_am : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
@@ -76,9 +70,7 @@ fabric.module @fu_am {
 }
 
 
-fabric.module @fu_amam {
-  %cast0_fu_amam = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_fu_amam = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_amam(%cast0_fu_amam : !fabric.bits<32>, %cast1_fu_amam : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_fu_amam : !fabric.bits<32>, %b = %cast1_fu_amam : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {

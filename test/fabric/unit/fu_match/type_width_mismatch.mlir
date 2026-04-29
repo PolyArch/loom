@@ -2,9 +2,7 @@
 
 // FU is 32-bit only. A 64-bit pattern must not match.
 
-fabric.module @hw_32bit {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @hw_32bit(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)

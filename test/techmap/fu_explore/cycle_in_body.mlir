@@ -12,9 +12,7 @@
 // throughout (carry's TypeParam(0) data ports accept any width).
 
 // CHECK: dataflow.subgraph
-fabric.module @fu_self_feedback {
-  %c = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %i = builtin.unrealized_conversion_cast to !fabric.bits<1>
+fabric.module @fu_self_feedback(%c : !fabric.bits<1>, %i : !fabric.bits<1>) {
   fabric.spatial_pe(%pc = %c : !fabric.bits<1>,
                     %pi = %i : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%cc = %pc : !fabric.bits<1>,

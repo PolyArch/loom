@@ -4,9 +4,7 @@
 // addi is commutative, so both (a+b) and (b+a) patterns must bind to the
 // FU's addi configuration.
 
-fabric.module @hw_addi {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @hw_addi(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)

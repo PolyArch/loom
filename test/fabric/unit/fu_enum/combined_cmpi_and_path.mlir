@@ -9,11 +9,7 @@
 // Fixed(1) output already matches the boundary).
 
 // CHECK-LABEL: fabric.module @fu_combined
-fabric.module @fu_combined {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %c = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %d = builtin.unrealized_conversion_cast to !fabric.bits<1>
+fabric.module @fu_combined(%a : !fabric.bits<1>, %b : !fabric.bits<1>, %c : !fabric.bits<1>, %d : !fabric.bits<1>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>,
                     %pc = %c : !fabric.bits<1>,

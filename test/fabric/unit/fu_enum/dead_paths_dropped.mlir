@@ -5,9 +5,7 @@
 // and the candidate is dropped.
 
 // CHECK-LABEL: fabric.module @fu_demux_drop_dead_yield
-fabric.module @fu_demux_drop_dead_yield {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @fu_demux_drop_dead_yield(%a : !fabric.bits<8>, %b : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>,
                     %pb = %b : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%x = %pa : !fabric.bits<8>, %y = %pb : !fabric.bits<8>)

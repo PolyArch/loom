@@ -7,9 +7,7 @@
 // part of the sw_configs description (op_sel keyword for share groups
 // or implicit single-symbol picking otherwise).
 
-fabric.module @hw_addi {
-  %cast0_hw_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_hw_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @hw_addi(%cast0_hw_addi : !fabric.bits<32>, %cast1_hw_addi : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_hw_addi : !fabric.bits<32>, %b = %cast1_hw_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
@@ -22,9 +20,7 @@ fabric.module @hw_addi {
 }
 
 
-fabric.module @hw_muli {
-  %cast0_hw_muli = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_hw_muli = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @hw_muli(%cast0_hw_muli : !fabric.bits<32>, %cast1_hw_muli : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_hw_muli : !fabric.bits<32>, %b = %cast1_hw_muli : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {

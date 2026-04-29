@@ -11,12 +11,7 @@
 // template. Net: 2 templates remain.
 
 // CHECK-LABEL: fabric.module @fu_mux4
-fabric.module @fu_mux4 {
-  %sel = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %c = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %d = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_mux4(%sel : !fabric.bits<32>, %a : !fabric.bits<32>, %b : !fabric.bits<32>, %c : !fabric.bits<32>, %d : !fabric.bits<32>) {
   fabric.spatial_pe(%psel = %sel : !fabric.bits<32>,
                     %pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>,

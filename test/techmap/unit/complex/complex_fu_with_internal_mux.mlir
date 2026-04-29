@@ -15,11 +15,7 @@
 // at least one template to cover the graph's addi.
 
 // CHECK-LABEL: @fu_two_mux
-fabric.module @fu_two_mux {
-  %cast0_fu_two_mux = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_fu_two_mux = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast2_fu_two_mux = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast3_fu_two_mux = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_two_mux(%cast0_fu_two_mux : !fabric.bits<32>, %cast1_fu_two_mux : !fabric.bits<32>, %cast2_fu_two_mux : !fabric.bits<32>, %cast3_fu_two_mux : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_fu_two_mux : !fabric.bits<32>, %b = %cast1_fu_two_mux : !fabric.bits<32>, %c = %cast2_fu_two_mux : !fabric.bits<32>, %d = %cast3_fu_two_mux : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%w = %a : !fabric.bits<32>,
                  %x = %b : !fabric.bits<32>,

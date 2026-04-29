@@ -7,10 +7,7 @@
 // loop-closing producer at graph level (greedy default behavior).
 
 // CHECK-LABEL: @fu_carry
-fabric.module @fu_carry {
-  %c = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %i = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %k = builtin.unrealized_conversion_cast to !fabric.bits<1>
+fabric.module @fu_carry(%c : !fabric.bits<1>, %i : !fabric.bits<1>, %k : !fabric.bits<1>) {
   fabric.spatial_pe(%pc = %c : !fabric.bits<1>,
                     %pi = %i : !fabric.bits<1>,
                     %pk = %k : !fabric.bits<1>) -> !fabric.bits<1> {
@@ -27,9 +24,7 @@ fabric.module @fu_carry {
 }
 
 // CHECK-LABEL: @fu_addsub
-fabric.module @fu_addsub {
-  %cast0_fu_addsub = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_fu_addsub = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_addsub(%cast0_fu_addsub : !fabric.bits<32>, %cast1_fu_addsub : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_fu_addsub : !fabric.bits<32>, %b = %cast1_fu_addsub : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {

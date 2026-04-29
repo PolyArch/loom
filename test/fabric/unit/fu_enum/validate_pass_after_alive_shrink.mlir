@@ -15,9 +15,7 @@
 // one per bitmask -- each materializing the two surviving consumers.
 
 // CHECK-LABEL: fabric.module @fu_demux_per_output_consumer
-fabric.module @fu_demux_per_output_consumer {
-  %sel = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %x = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_demux_per_output_consumer(%sel : !fabric.bits<32>, %x : !fabric.bits<32>) {
   fabric.spatial_pe(%psel = %sel : !fabric.bits<32>,
                     %px = %x : !fabric.bits<32>)
                    -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {

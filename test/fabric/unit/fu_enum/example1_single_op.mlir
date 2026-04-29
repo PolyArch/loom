@@ -5,9 +5,7 @@
 // arith.addi, one wrapping arith.subi.
 
 // CHECK-LABEL: fabric.module @fu_addi_or_subi
-fabric.module @fu_addi_or_subi {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_addi_or_subi(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)

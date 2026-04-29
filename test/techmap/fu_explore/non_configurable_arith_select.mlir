@@ -8,10 +8,7 @@
 // throughout (sel is fixed bits<1> and the data ports accept any width).
 
 // CHECK-LABEL: fabric.module @fu_select
-fabric.module @fu_select {
-  %s = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<1>
+fabric.module @fu_select(%s : !fabric.bits<1>, %a : !fabric.bits<1>, %b : !fabric.bits<1>) {
   fabric.spatial_pe(%ps = %s : !fabric.bits<1>,
                     %pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {

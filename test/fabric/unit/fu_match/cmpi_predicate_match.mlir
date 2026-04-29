@@ -5,9 +5,7 @@
 // spatial_pe uniform-W rule we expose the FU at bits<1> throughout
 // (cmpi's TypeParam(0) inputs accept any width).
 
-fabric.module @hw_cmpi {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<1>
+fabric.module @hw_cmpi(%a : !fabric.bits<1>, %b : !fabric.bits<1>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%x = %pa : !fabric.bits<1>, %y = %pb : !fabric.bits<1>)

@@ -74,7 +74,7 @@ def Fabric_DemuxOp : Fabric_Op<"demux", [Pure, SameOperandsAndResultType]> {
   let hasVerifier = 1;
 }
 
-def Fabric_FifoOp : Fabric_Op<"fifo", [Pure, SameOperandsAndResultType]> {
+def Fabric_FifoOp : Fabric_Op<"fifo", [Pure]> {
   let summary = "fabric FIFO with handshake";
   let description = [{
     Single-input single-output FIFO. Input and output share one fabric type
@@ -151,31 +151,47 @@ def Fabric_OpOp : Fabric_Op<"op", []> {
   let hasVerifier = 1;
 }
 
+def Fabric_ModulePortType
+    : AnyTypeOf<[Fabric_BitsType, Fabric_BitsTagType, Fabric_TagType,
+                 AnyMemRef]>;
+
 def Fabric_ModuleOp : Fabric_Op<"module", [
     IsolatedFromAbove,
     SingleBlockImplicitTerminator<"YieldOp">,
     Symbol,
-    DeclareOpInterfaceMethods<RegionKindInterface>,
-    NoRegionArguments
+    DeclareOpInterfaceMethods<RegionKindInterface>
 ]> {
   let summary =
       "fabric module: top-level container of the fabric dialect";
   let description = [{
     Top-level container for the fabric dialect. Carries a required
-    `sym_name`. The body is a single graph-region block (back-references
-    are permitted) whose terminator is `fabric.yield` with zero operands.
-    Only canonical fabric container ops may appear in the body; today
-    that whitelist is `fabric.spatial_pe` and `fabric.fifo` (plus the
-    implicit `fabric.yield` terminator). Future container ops
-    (`fabric.temporal_pe`, `fabric.spatial_sw`, `fabric.instantiate`,
-    ...) will be added to the whitelist when they land.
+    `sym_name`. The body is a single graph-region block whose
+    terminator is `fabric.yield`.
+
+    Module inputs are declared as the body's entry-block arguments
+    (the op itself has zero SSA operands, like `func.func`). Module
+    outputs are declared as result types on the op signature; the
+    `fabric.yield` terminator supplies their values.
+
+    Allowed input/output types: `!fabric.bits<W>`,
+    `!fabric.bits_tag<W, T>`, `!fabric.tag<T>`, `memref<...>`. No
+    other MLIR types are accepted.
+
+    The body whitelist is limited to a fixed set of canonical fabric
+    container ops; today that set is `fabric.spatial_pe` and
+    `fabric.fifo` (plus the implicit `fabric.yield` terminator).
+    Future container ops (`fabric.temporal_pe`, `fabric.spatial_sw`,
+    `fabric.instantiate`, ...) will be added to the whitelist when
+    they land. See `docs/spec-fabric-module.md` for the full rules.
   }];
 
-  let arguments = (ins SymbolNameAttr:$sym_name);
+  let arguments = (ins
+      SymbolNameAttr:$sym_name,
+      TypeAttrOf<FunctionType>:$function_type
+  );
   let regions = (region SizedRegion<1>:$body);
 
-  let assemblyFormat = "$sym_name attr-dict-with-keyword $body";
-
+  let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 
@@ -284,15 +300,25 @@ def Fabric_YieldOp : Fabric_Op<"yield", [
 
     Inside `fabric.fu`, `$values` supplies the values that leave the FU
     on its results; the number and types must match the parent op's
-    result count and types.
+    result count and types exactly.
 
-    Inside `fabric.module`, `$values` must be empty: a fabric module
-    yields no SSA values across its boundary.
+    Inside `fabric.module`, `$values` supplies the module's declared
+    output values. The number and per-value types must match the
+    module's declared result list under the width-relaxation rule
+    documented in `docs/spec-fabric-module.md` (low-bit alignment, same
+    fabric kind; memref must match exactly). The optional per-value
+    `to <module-result-type>` clause makes the relaxation explicit:
+
+      fabric.yield %v : !fabric.bits<32> to !fabric.bits<16>
   }];
 
-  let arguments = (ins Variadic<Fabric_BitsType>:$values);
+  // Yield operands are the SSA values being yielded. They must be one of
+  // the allowed module port types when this yield closes a fabric.module
+  // body, and !fabric.bits<W> when it closes a fabric.fu body. The op
+  // accepts the union here; `verify` enforces the per-parent rule.
+  let arguments = (ins Variadic<Fabric_ModulePortType>:$values);
 
-  let assemblyFormat = "($values^ `:` type($values))? attr-dict";
+  let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 
   let builders = [

@@ -13,9 +13,7 @@
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @op_single_muli_hw
-fabric.module @op_single_muli_hw {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @op_single_muli_hw(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
@@ -33,9 +31,7 @@ fabric.module @op_single_muli_hw {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @op_addi_subi_programmed
-fabric.module @op_addi_subi_programmed {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @op_addi_subi_programmed(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
@@ -55,9 +51,7 @@ fabric.module @op_addi_subi_programmed {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @op_divrem_pure_hardware
-fabric.module @op_divrem_pure_hardware {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<64>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<64>
+fabric.module @op_divrem_pure_hardware(%a : !fabric.bits<64>, %b : !fabric.bits<64>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<64>,
                     %pb = %b : !fabric.bits<64>) -> !fabric.bits<64> {
     fabric.fu(%fa = %pa : !fabric.bits<64>,
@@ -77,9 +71,7 @@ fabric.module @op_divrem_pure_hardware {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @op_cmpi
-fabric.module @op_cmpi {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @op_cmpi(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
@@ -101,10 +93,7 @@ fabric.module @op_cmpi {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @op_stream_programmed
-fabric.module @op_stream_programmed {
-  %lb = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %ub = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %step = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @op_stream_programmed(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>, %step : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %lb : !fabric.bits<32>,
                     %pb = %ub : !fabric.bits<32>,
                     %pc = %step : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -129,8 +118,7 @@ fabric.module @op_stream_programmed {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @op_constant
-fabric.module @op_constant {
-  %ctrl = builtin.unrealized_conversion_cast to !fabric.bits<0>
+fabric.module @op_constant(%ctrl : !fabric.bits<0>) {
   fabric.spatial_pe(%pa = %ctrl : !fabric.bits<0>) -> !fabric.bits<0> {
     fabric.fu(%fa = %pa : !fabric.bits<0>) -> () {
       // CHECK: fabric.op [@dataflow.constant](%{{.*}}) {sw_configs = {const_hex_value = "0xdeadbeef"}}
@@ -148,11 +136,7 @@ fabric.module @op_constant {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @op_sync
-fabric.module @op_sync {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %c = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %d = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @op_sync(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %c : !fabric.bits<32>, %d : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>,
                     %pc = %c : !fabric.bits<32>,
@@ -184,9 +168,7 @@ fabric.module @op_sync {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @op_mux2
-fabric.module @op_mux2 {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @op_mux2(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
@@ -208,11 +190,7 @@ fabric.module @op_mux2 {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @op_mux4
-fabric.module @op_mux4 {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<16>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<16>
-  %c = builtin.unrealized_conversion_cast to !fabric.bits<16>
-  %d = builtin.unrealized_conversion_cast to !fabric.bits<16>
+fabric.module @op_mux4(%a : !fabric.bits<16>, %b : !fabric.bits<16>, %c : !fabric.bits<16>, %d : !fabric.bits<16>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<16>,
                     %pb = %b : !fabric.bits<16>,
                     %pc = %c : !fabric.bits<16>,
@@ -239,8 +217,7 @@ fabric.module @op_mux4 {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @op_demux3
-fabric.module @op_demux3 {
-  %in = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @op_demux3(%in : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %in : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %pa : !fabric.bits<8>) -> () {
       %sel = fabric.op [@arith.sitofp] (%fa)
@@ -261,8 +238,7 @@ fabric.module @op_demux3 {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @op_gate
-fabric.module @op_gate {
-  %bv = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @op_gate(%bv : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %bv : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> () {
       %bc = fabric.op [@arith.cmpi] (%fa, %fa)

@@ -383,14 +383,13 @@ The mapper and tech-mapping passes must respect the following:
 
 ## Placement rules
 
-The fabric dialect's top-level container is `fabric.module` (a
-graph-region body that allows back-references and carries a required
-`sym_name`). The full set of ops that may appear in a `fabric.module`
-body is, in this dialect's roadmap: `fabric.spatial_pe`,
-`fabric.temporal_pe`, `fabric.spatial_sw`, `fabric.temporal_sw`,
-`fabric.spatial_mem`, `fabric.temporal_mem`, `fabric.t2s`,
-`fabric.s2t`, `fabric.t2t`, `fabric.fifo`, `fabric.instantiate`, and
-the `fabric.yield` terminator that closes the module body.
+The fabric dialect's top-level container is `fabric.module`. See
+`spec-fabric-module.md` for the full module-side specification:
+declared inputs/outputs, body whitelist, the three connection points
+that admit width relaxation (module-input -> sub-module-operand,
+sub-module-result -> sub-module-operand, sub-module-result ->
+module-yield), and the `IsolatedFromAbove` requirement that bars
+external SSA leakage.
 
 Three ops carry a body region: `fabric.module`, `fabric.spatial_pe`,
 and `fabric.temporal_pe`. Of these, only `fabric.module` and

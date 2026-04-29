@@ -8,11 +8,7 @@
 // to such consumers are not stalled by them.
 
 // CHECK-LABEL: fabric.module @fu_internal_chain
-fabric.module @fu_internal_chain {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %c = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %d = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_internal_chain(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %c : !fabric.bits<32>, %d : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>,
                     %pc = %c : !fabric.bits<32>,

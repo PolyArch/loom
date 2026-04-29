@@ -10,9 +10,7 @@
 // pattern is correspondingly typed as i1.
 
 // CHECK-LABEL: @fu_carry_loop
-fabric.module @fu_carry_loop {
-  %cond = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %init = builtin.unrealized_conversion_cast to !fabric.bits<1>
+fabric.module @fu_carry_loop(%cond : !fabric.bits<1>, %init : !fabric.bits<1>) {
   fabric.spatial_pe(%pcond = %cond : !fabric.bits<1>,
                     %pinit = %init : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%c = %pcond : !fabric.bits<1>,

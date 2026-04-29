@@ -12,9 +12,7 @@
 // greedy solution that left the second muli at graph level.
 
 // CHECK-LABEL: @fu_addi
-fabric.module @fu_addi {
-  %cast0_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_addi(%cast0_fu_addi : !fabric.bits<32>, %cast1_fu_addi : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
@@ -27,9 +25,7 @@ fabric.module @fu_addi {
 }
 
 // CHECK-LABEL: @fu_muli_addi
-fabric.module @fu_muli_addi {
-  %cast0_fu_muli_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_fu_muli_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_muli_addi(%cast0_fu_muli_addi : !fabric.bits<32>, %cast1_fu_muli_addi : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_fu_muli_addi : !fabric.bits<32>, %b = %cast1_fu_muli_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
@@ -44,9 +40,7 @@ fabric.module @fu_muli_addi {
 }
 
 // CHECK-LABEL: @fu_cmpi
-fabric.module @fu_cmpi {
-  %cast0_fu_cmpi = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %cast1_fu_cmpi = builtin.unrealized_conversion_cast to !fabric.bits<1>
+fabric.module @fu_cmpi(%cast0_fu_cmpi : !fabric.bits<1>, %cast1_fu_cmpi : !fabric.bits<1>) {
   fabric.spatial_pe(%a = %cast0_fu_cmpi : !fabric.bits<1>, %b = %cast1_fu_cmpi : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%x = %a : !fabric.bits<1>, %y = %b : !fabric.bits<1>)
                   -> !fabric.bits<1> {

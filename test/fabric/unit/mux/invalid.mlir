@@ -3,8 +3,7 @@
 // -----
 // Fewer than 2 inputs is illegal. The mux is wrapped in a PE/FU shell since
 // fabric.mux must live inside fabric.fu.
-fabric.module @mux_too_few {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @mux_too_few(%a : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %pa : !fabric.bits<8>) -> !fabric.bits<8> {
       // expected-error @+1 {{requires at least 2 inputs}}
@@ -19,9 +18,7 @@ fabric.module @mux_too_few {
 
 // -----
 // Partial software parameters (violates all-or-nothing rule).
-fabric.module @mux_partial_params {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @mux_partial_params(%a : !fabric.bits<8>, %b : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>,
                     %pb = %b : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %pa : !fabric.bits<8>,
@@ -38,9 +35,7 @@ fabric.module @mux_partial_params {
 
 // -----
 // discard and disconnect both true is illegal.
-fabric.module @mux_discard_and_disconnect {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @mux_discard_and_disconnect(%a : !fabric.bits<8>, %b : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>,
                     %pb = %b : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %pa : !fabric.bits<8>,
@@ -57,9 +52,7 @@ fabric.module @mux_discard_and_disconnect {
 
 // -----
 // When disconnect is true, sel must be 0.
-fabric.module @mux_disconnect_nonzero_sel {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @mux_disconnect_nonzero_sel(%a : !fabric.bits<8>, %b : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>,
                     %pb = %b : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %pa : !fabric.bits<8>,
@@ -76,9 +69,7 @@ fabric.module @mux_disconnect_nonzero_sel {
 
 // -----
 // sel out of [0, N).
-fabric.module @mux_sel_out_of_range {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @mux_sel_out_of_range(%a : !fabric.bits<8>, %b : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>,
                     %pb = %b : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %pa : !fabric.bits<8>,
@@ -94,20 +85,16 @@ fabric.module @mux_sel_out_of_range {
 }
 
 // -----
-// bits_tag requires width > 0. Triggered by parsing the type itself; the
-// type appears here on a top-level cast since fabric.module's body
-// whitelist admits builtin.unrealized_conversion_cast.
-fabric.module @bad_bits_tag_zero_width {
-  // expected-error @+1 {{fabric.bits_tag requires width > 0}}
-  %a = builtin.unrealized_conversion_cast to !fabric.bits_tag<0, 2>
+// bits_tag requires width > 0. Triggered by parsing the type itself.
+// expected-error @+1 {{fabric.bits_tag requires width > 0}}
+fabric.module @bad_bits_tag_zero_width(%a : !fabric.bits_tag<0, 2>) {
   fabric.yield
 }
 
 // -----
 // tag requires tagWidth > 0. Triggered by parsing the type itself.
-fabric.module @bad_tag_zero_width {
-  // expected-error @+1 {{fabric.tag requires tagWidth > 0}}
-  %a = builtin.unrealized_conversion_cast to !fabric.tag<0>
+// expected-error @+1 {{fabric.tag requires tagWidth > 0}}
+fabric.module @bad_tag_zero_width(%a : !fabric.tag<0>) {
   fabric.yield
 }
 

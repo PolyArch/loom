@@ -6,10 +6,7 @@
 // throughout (the stream's TypeParam(0) data ports accept any width).
 
 // CHECK-LABEL: fabric.module @fu_stream
-fabric.module @fu_stream {
-  %lb = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %ub = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %step = builtin.unrealized_conversion_cast to !fabric.bits<1>
+fabric.module @fu_stream(%lb : !fabric.bits<1>, %ub : !fabric.bits<1>, %step : !fabric.bits<1>) {
   fabric.spatial_pe(%plb = %lb : !fabric.bits<1>,
                     %pub = %ub : !fabric.bits<1>,
                     %pstep = %step : !fabric.bits<1>)

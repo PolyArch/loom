@@ -8,8 +8,7 @@
 // inner block-arg as bits<0> via the `to` clause. The PE -> FU boundary
 // drops the high (32 - 0) = 32 bits of the carrier on each token.
 
-fabric.module @hw_const {
-  %ctrl = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @hw_const(%ctrl : !fabric.bits<32>) {
   fabric.spatial_pe(%pctrl = %ctrl : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%c = %pctrl : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
       %k = fabric.op [@dataflow.constant] (%c)

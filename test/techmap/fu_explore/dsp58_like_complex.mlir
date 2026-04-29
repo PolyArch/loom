@@ -46,12 +46,7 @@
 // distinct templates and that a few signature shapes are present.
 
 // CHECK-LABEL: fabric.module @dsp58_like
-fabric.module @dsp58_like {
-  %n = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %c = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %d = builtin.unrealized_conversion_cast to !fabric.bits<1>
+fabric.module @dsp58_like(%n : !fabric.bits<1>, %a : !fabric.bits<1>, %b : !fabric.bits<1>, %c : !fabric.bits<1>, %d : !fabric.bits<1>) {
   fabric.spatial_pe(%pn = %n : !fabric.bits<1>,
                     %pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>,

@@ -4,9 +4,7 @@
 // needs L >= 1 so we declare a single bits<W> output that the FU does
 // not drive (PE outputs are wired to FU outputs at config time).
 // CHECK-LABEL: fabric.module @fu_min
-fabric.module @fu_min {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_min(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   // CHECK: fabric.spatial_pe
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -23,10 +21,7 @@ fabric.module @fu_min {
 
 // FU yielding one value, with mux feeding the op.
 // CHECK-LABEL: fabric.module @fu_mux_op_yield
-fabric.module @fu_mux_op_yield {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %c = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_mux_op_yield(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %c : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>,
                     %pc = %c : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -48,9 +43,7 @@ fabric.module @fu_mux_op_yield {
 
 // FU with op then demux fanning out two values.
 // CHECK-LABEL: fabric.module @fu_op_demux
-fabric.module @fu_op_demux {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<16>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<16>
+fabric.module @fu_op_demux(%a : !fabric.bits<16>, %b : !fabric.bits<16>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<16>,
                     %pb = %b : !fabric.bits<16>)
                    -> (!fabric.bits<16>, !fabric.bits<16>) {
@@ -73,8 +66,7 @@ fabric.module @fu_op_demux {
 // type matches the enclosing PE's uniform W=32, while the inner body
 // op (dataflow.constant) consumes the bits<0> none-token.
 // CHECK-LABEL: fabric.module @fu_boundary_trunc
-fabric.module @fu_boundary_trunc {
-  %ctrl = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_boundary_trunc(%ctrl : !fabric.bits<32>) {
   fabric.spatial_pe(%pctrl = %ctrl : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: fabric.fu(%{{.*}} = %{{.*}} : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32>
     %r = fabric.fu(%c = %pctrl : !fabric.bits<32> to !fabric.bits<0>)
@@ -91,9 +83,7 @@ fabric.module @fu_boundary_trunc {
 // FU with multiple fabric.op nodes whose connectivity could be reconfigured by
 // inner mux/demux selectors.
 // CHECK-LABEL: fabric.module @fu_multi_op
-fabric.module @fu_multi_op {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_multi_op(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: %{{.*}} = fabric.fu

@@ -2,8 +2,7 @@
 
 // -----
 // Fewer than 2 outputs is illegal.
-fabric.module @demux_too_few {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @demux_too_few(%a : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %pa : !fabric.bits<8>) -> !fabric.bits<8> {
       %v = fabric.op [@arith.addi] (%fa, %fa)
@@ -18,8 +17,7 @@ fabric.module @demux_too_few {
 
 // -----
 // Partial software parameters.
-fabric.module @demux_partial_params {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @demux_partial_params(%a : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>)
                    -> (!fabric.bits<8>, !fabric.bits<8>) {
     fabric.fu(%fa = %pa : !fabric.bits<8>)
@@ -36,8 +34,7 @@ fabric.module @demux_partial_params {
 
 // -----
 // discard and disconnect both true is illegal.
-fabric.module @demux_discard_and_disconnect {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @demux_discard_and_disconnect(%a : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>)
                    -> (!fabric.bits<8>, !fabric.bits<8>) {
     fabric.fu(%fa = %pa : !fabric.bits<8>)
@@ -55,8 +52,7 @@ fabric.module @demux_discard_and_disconnect {
 
 // -----
 // When disconnect is true, sel must be 0.
-fabric.module @demux_disconnect_nonzero_sel {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @demux_disconnect_nonzero_sel(%a : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>)
                    -> (!fabric.bits<8>, !fabric.bits<8>) {
     fabric.fu(%fa = %pa : !fabric.bits<8>)
@@ -74,8 +70,7 @@ fabric.module @demux_disconnect_nonzero_sel {
 
 // -----
 // sel out of [0, N).
-fabric.module @demux_sel_out_of_range {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @demux_sel_out_of_range(%a : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>)
                    -> (!fabric.bits<8>, !fabric.bits<8>) {
     fabric.fu(%fa = %pa : !fabric.bits<8>)

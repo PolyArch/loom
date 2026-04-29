@@ -9,9 +9,7 @@
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.ilp.yaml" 2>&1 | FileCheck %s
 
 // CHECK-LABEL: @fu_muli
-fabric.module @fu_muli {
-  %cast0_fu_muli = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_fu_muli = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_muli(%cast0_fu_muli : !fabric.bits<32>, %cast1_fu_muli : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_fu_muli : !fabric.bits<32>, %b = %cast1_fu_muli : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
@@ -25,9 +23,7 @@ fabric.module @fu_muli {
 
 
 // CHECK-LABEL: @fu_addi
-fabric.module @fu_addi {
-  %cast0_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_addi(%cast0_fu_addi : !fabric.bits<32>, %cast1_fu_addi : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {

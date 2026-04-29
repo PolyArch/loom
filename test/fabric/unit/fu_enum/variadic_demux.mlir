@@ -7,9 +7,7 @@
 // follows the dataflow.demux verifier (i1 for N==2, index for N>=3).
 
 // CHECK-LABEL: fabric.module @fu_demux4
-fabric.module @fu_demux4 {
-  %sel = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %in = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_demux4(%sel : !fabric.bits<32>, %in : !fabric.bits<32>) {
   fabric.spatial_pe(%psel = %sel : !fabric.bits<32>,
                     %pin = %in : !fabric.bits<32>)
                    -> (!fabric.bits<32>, !fabric.bits<32>,

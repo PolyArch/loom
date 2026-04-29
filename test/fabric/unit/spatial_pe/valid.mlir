@@ -2,8 +2,7 @@
 
 // Minimal spatial_pe: K=1, L=1, single inner FU.
 // CHECK-LABEL: fabric.module @pe_min
-fabric.module @pe_min {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @pe_min(%a : !fabric.bits<32>) {
   // CHECK: fabric.spatial_pe(%{{.*}} = %{{.*}} : !fabric.bits<32>) -> !fabric.bits<32>
   %r = fabric.spatial_pe(%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: fabric.fu
@@ -19,9 +18,7 @@ fabric.module @pe_min {
 // Two-port spatial_pe with a single FU consuming both inputs and producing two
 // PE-level results (FU outputs are not SSA-wired to PE results).
 // CHECK-LABEL: fabric.module @pe_2x2
-fabric.module @pe_2x2 {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @pe_2x2(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   // CHECK: %{{.*}}:2 = fabric.spatial_pe
   %r:2 = fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                            %pb = %b : !fabric.bits<32>)
@@ -38,9 +35,7 @@ fabric.module @pe_2x2 {
 
 // Heterogeneous PE with two inner FUs of different shapes (K=2, L=1).
 // CHECK-LABEL: fabric.module @pe_heterogeneous
-fabric.module @pe_heterogeneous {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @pe_heterogeneous(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   // CHECK: fabric.spatial_pe
   %r = fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                          %pb = %b : !fabric.bits<32>)
@@ -64,9 +59,7 @@ fabric.module @pe_heterogeneous {
 
 // Boundary case: max_fu_inputs == K and max_fu_outputs == L.
 // CHECK-LABEL: fabric.module @pe_boundary
-fabric.module @pe_boundary {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<16>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<16>
+fabric.module @pe_boundary(%a : !fabric.bits<16>, %b : !fabric.bits<16>) {
   // CHECK: fabric.spatial_pe
   %r:2 = fabric.spatial_pe(%pa = %a : !fabric.bits<16>,
                            %pb = %b : !fabric.bits<16>)
@@ -88,9 +81,7 @@ fabric.module @pe_boundary {
 // CHECK-LABEL: fabric.module @pe_two_pes
 // CHECK: fabric.spatial_pe
 // CHECK: fabric.spatial_pe
-fabric.module @pe_two_pes {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @pe_two_pes(%a : !fabric.bits<8>, %b : !fabric.bits<8>) {
   %r0 = fabric.spatial_pe(%pa = %a : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %pa : !fabric.bits<8>) -> (!fabric.bits<8>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)

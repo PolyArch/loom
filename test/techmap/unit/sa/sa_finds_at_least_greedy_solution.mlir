@@ -22,9 +22,7 @@
 // RUN: diff %t.greedy.count %t.sa.count
 // RUN: FileCheck %s < %t.sa.mlir
 
-fabric.module @fu_muli_addi {
-  %cast0_fu_muli_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %cast1_fu_muli_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_muli_addi(%cast0_fu_muli_addi : !fabric.bits<32>, %cast1_fu_muli_addi : !fabric.bits<32>) {
   fabric.spatial_pe(%a = %cast0_fu_muli_addi : !fabric.bits<32>, %b = %cast1_fu_muli_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {

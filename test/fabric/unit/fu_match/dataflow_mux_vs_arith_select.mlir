@@ -15,10 +15,7 @@
 
 // FU offering a fixed-arity 2-input dataflow.mux (M=2 is a legal lower
 // bound for mux: numIns=3 == 1 sel + 2 data).
-fabric.module @hw_mux2 {
-  %sel = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<1>
+fabric.module @hw_mux2(%sel : !fabric.bits<1>, %a : !fabric.bits<1>, %b : !fabric.bits<1>) {
   fabric.spatial_pe(%psel = %sel : !fabric.bits<1>,
                     %pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {
@@ -35,10 +32,7 @@ fabric.module @hw_mux2 {
 }
 
 // FU offering a fixed-arity arith.select.
-fabric.module @hw_select {
-  %c = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<1>
+fabric.module @hw_select(%c : !fabric.bits<1>, %a : !fabric.bits<1>, %b : !fabric.bits<1>) {
   fabric.spatial_pe(%pc = %c : !fabric.bits<1>,
                     %pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {

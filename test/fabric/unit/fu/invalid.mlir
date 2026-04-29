@@ -2,8 +2,7 @@
 
 // -----
 // Body must contain at least one fabric.op.
-fabric.module @fu_no_op {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @fu_no_op(%a : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>) -> !fabric.bits<8> {
     // expected-error @+1 {{fabric.fu body requires at least one fabric.op}}
     fabric.fu(%x = %pa : !fabric.bits<8>) -> () {
@@ -15,9 +14,7 @@ fabric.module @fu_no_op {
 
 // -----
 // fabric.fu cannot be nested.
-fabric.module @fu_nested {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_nested(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> () {
@@ -37,9 +34,7 @@ fabric.module @fu_nested {
 
 // -----
 // fabric.fifo is not allowed inside fabric.fu.
-fabric.module @fu_with_fifo {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_with_fifo(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> () {
@@ -55,9 +50,7 @@ fabric.module @fu_with_fifo {
 
 // -----
 // arith ops are not allowed in fabric.fu (only fabric ops).
-fabric.module @fu_with_arith {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_with_arith(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> () {
@@ -73,9 +66,7 @@ fabric.module @fu_with_arith {
 
 // -----
 // yield value count mismatch.
-fabric.module @fu_yield_count_mismatch {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_yield_count_mismatch(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>)
                    -> (!fabric.bits<32>, !fabric.bits<32>) {
@@ -93,8 +84,7 @@ fabric.module @fu_yield_count_mismatch {
 
 // -----
 // yield value type mismatch.
-fabric.module @fu_yield_type_mismatch {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<16>
+fabric.module @fu_yield_type_mismatch(%a : !fabric.bits<16>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<16>) -> !fabric.bits<16> {
     %r = fabric.fu(%x = %pa : !fabric.bits<16>) -> !fabric.bits<16> {
       %k = fabric.op [@arith.sitofp] (%x)
@@ -116,8 +106,7 @@ fabric.yield
 // FU boundary truncation: inner block-arg width must be <= outer operand
 // width. Wider inner is illegal because hardware only supports high-bit
 // truncation, not zero/sign extension.
-fabric.module @fu_outer_lt_inner {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @fu_outer_lt_inner(%a : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>) -> !fabric.bits<8> {
     // expected-error @+1 {{operand #0 bits-width 8 is less than block-argument bits-width 32; the FU boundary only supports high-bit truncation (outer >= inner)}}
     fabric.fu(%fa = %pa : !fabric.bits<8> to !fabric.bits<32>) -> !fabric.bits<8> {

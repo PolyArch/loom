@@ -9,9 +9,7 @@
 // must produce no candidate at all.
 
 // CHECK-LABEL: fabric.module @fu_muli_output_demux
-fabric.module @fu_muli_output_demux {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_muli_output_demux(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>)
                    -> (!fabric.bits<32>, !fabric.bits<32>) {

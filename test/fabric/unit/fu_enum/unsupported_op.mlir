@@ -9,16 +9,7 @@
 // CHECK: warning: fabric.fu enumeration skipped: contains unsupported op 'dataflow.sync'
 
 // CHECK-LABEL: fabric.module @fu_unsupported
-fabric.module @fu_unsupported {
-  %a0 = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %a1 = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %a2 = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %a3 = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %a4 = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %a5 = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %a6 = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %a7 = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %a8 = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @fu_unsupported(%a0 : !fabric.bits<32>, %a1 : !fabric.bits<32>, %a2 : !fabric.bits<32>, %a3 : !fabric.bits<32>, %a4 : !fabric.bits<32>, %a5 : !fabric.bits<32>, %a6 : !fabric.bits<32>, %a7 : !fabric.bits<32>, %a8 : !fabric.bits<32>) {
   fabric.spatial_pe(%pa0 = %a0 : !fabric.bits<32>,
                     %pa1 = %a1 : !fabric.bits<32>,
                     %pa2 = %a2 : !fabric.bits<32>,

@@ -7,10 +7,7 @@
 // throughout (stream's TypeParam(0) data ports accept any width); the
 // pattern is correspondingly typed as i1.
 
-fabric.module @hw_stream {
-  %lb = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %ub = builtin.unrealized_conversion_cast to !fabric.bits<1>
-  %step = builtin.unrealized_conversion_cast to !fabric.bits<1>
+fabric.module @hw_stream(%lb : !fabric.bits<1>, %ub : !fabric.bits<1>, %step : !fabric.bits<1>) {
   fabric.spatial_pe(%plb = %lb : !fabric.bits<1>,
                     %pub = %ub : !fabric.bits<1>,
                     %pstep = %step : !fabric.bits<1>)

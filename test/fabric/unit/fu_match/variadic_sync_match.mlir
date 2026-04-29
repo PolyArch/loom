@@ -7,10 +7,7 @@
 // template; the matcher doesn't care which bitmask was canonical, only
 // that the structural shape matches).
 
-fabric.module @hw_sync3 {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %c = builtin.unrealized_conversion_cast to !fabric.bits<32>
+fabric.module @hw_sync3(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %c : !fabric.bits<32>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>,
                     %pc = %c : !fabric.bits<32>)

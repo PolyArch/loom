@@ -10,8 +10,7 @@
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @demux_hw_bits
-fabric.module @demux_hw_bits {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
+fabric.module @demux_hw_bits(%a : !fabric.bits<8>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<8>)
                    -> (!fabric.bits<8>, !fabric.bits<8>) {
     fabric.fu(%fa = %pa : !fabric.bits<8>)
@@ -31,8 +30,7 @@ fabric.module @demux_hw_bits {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @demux_hw_bits_zero
-fabric.module @demux_hw_bits_zero {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<0>
+fabric.module @demux_hw_bits_zero(%a : !fabric.bits<0>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<0>)
                    -> (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) {
     fabric.fu(%fa = %pa : !fabric.bits<0>)
@@ -53,8 +51,7 @@ fabric.module @demux_hw_bits_zero {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @demux_sw_route
-fabric.module @demux_sw_route {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<16>
+fabric.module @demux_sw_route(%a : !fabric.bits<16>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<16>)
                    -> (!fabric.bits<16>, !fabric.bits<16>, !fabric.bits<16>) {
     fabric.fu(%fa = %pa : !fabric.bits<16>)
@@ -75,8 +72,7 @@ fabric.module @demux_sw_route {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @demux_sw_discard
-fabric.module @demux_sw_discard {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<4>
+fabric.module @demux_sw_discard(%a : !fabric.bits<4>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<4>)
                    -> (!fabric.bits<4>, !fabric.bits<4>) {
     fabric.fu(%fa = %pa : !fabric.bits<4>)
@@ -97,8 +93,7 @@ fabric.module @demux_sw_discard {
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @demux_sw_disconnect
-fabric.module @demux_sw_disconnect {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<4>
+fabric.module @demux_sw_disconnect(%a : !fabric.bits<4>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<4>)
                    -> (!fabric.bits<4>, !fabric.bits<4>) {
     fabric.fu(%fa = %pa : !fabric.bits<4>)

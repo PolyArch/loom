@@ -19,6 +19,32 @@ using namespace fabric;
 #define GET_OP_CLASSES
 #include "Fabric/IR/FabricOps.cpp.inc"
 
+namespace {
+
+// True iff `t` is one of the four allowed fabric.module port types
+// (memref or one of the three fabric stream types).
+static bool isFabricModulePortType(Type t) {
+  return isa<BitsType, BitsTagType, TagType, MemRefType>(t);
+}
+
+// Returns true if both types have the same kind (both bits, both bits_tag,
+// both tag, or both memref). For memref this also requires exact equality
+// (no relaxation). Caller is expected to first ensure both are valid module
+// port types.
+static bool sameModulePortKind(Type src, Type dst) {
+  if (isa<BitsType>(src))
+    return isa<BitsType>(dst);
+  if (isa<BitsTagType>(src))
+    return isa<BitsTagType>(dst);
+  if (isa<TagType>(src))
+    return isa<TagType>(dst);
+  if (isa<MemRefType>(src))
+    return isa<MemRefType>(dst);
+  return false;
+}
+
+} // namespace
+
 //===----------------------------------------------------------------------===//
 // fabric.mux
 //===----------------------------------------------------------------------===//
@@ -265,10 +291,45 @@ static ParseResult parseBoolKeyword(OpAsmParser &parser, bool &out) {
   return parser.emitError(loc, "expected 'true' or 'false'");
 }
 
+// FIFO assembly form (with optional `to <inner-type>`):
+//   fabric.fifo %src [to <inner-type>] [max_depth = N, bypassable = B]
+//                    [{bypassed = B}] : <type>
+//
+// The trailing `: <type>` is the FIFO's own type (= inner type). The optional
+// `to <inner-type>` after the source operand allows the SSA source value to
+// have a different (same-kind) fabric type than the FIFO's internal type;
+// at the FIFO boundary low-bit alignment with zero-fill applies (handled by
+// the enclosing fabric.module connection-point rule).
 ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand input;
+  SMLoc operandLoc = parser.getCurrentLocation();
   if (parser.parseOperand(input))
     return failure();
+
+  // Optional `to <inner-type>` clause. When present, we record the inner
+  // type and parse the outer type later (after the trailing `: <type>` is
+  // wired to the inner side). Reuse a single optional approach: if `to`
+  // appears here, the trailing `: <type>` describes the FIFO's inner type;
+  // the SSA source needs an explicit outer type as well, so the form
+  // becomes `%src : <outer> to <inner>`. Use that ordering instead, like
+  // fabric.fu does, to keep the syntax aligned across the dialect.
+  //
+  // Concretely the form is one of:
+  //   %src : <T>                           // outer == inner == T
+  //   %src : <T_outer> to <T_inner>        // explicit relaxation
+  // The trailing `[max_depth ...]` and `: <type>` of the legacy form are
+  // replaced by inline operand types; the FIFO's own type matches the inner
+  // type and is also printed in the trailing `: <type>` slot for backward
+  // readability and so the round-trip is unambiguous.
+
+  // Re-design: keep the legacy trailing `: <fabric-type>` as the canonical
+  // FIFO type (inner) and add an optional inline `to <inner-type>` *after*
+  // the bracket params and right before the trailing colon, mirroring the
+  // existing print order. The new shape is:
+  //   fabric.fifo %src [max_depth = N, bypassable = B] [{bypassed = B}]
+  //               : <T_outer> [to <T_inner>]
+  // where `<T_inner>` defaults to `<T_outer>` when the `to` clause is
+  // absent. The FIFO's own type is `<T_inner>`.
 
   // Hardware params: [max_depth = N, bypassable = true|false]
   int32_t maxDepth = 0;
@@ -295,14 +356,20 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
     result.addAttribute("bypassed", builder.getBoolAttr(bypassed));
   }
 
-  Type type;
-  SMLoc typeLoc = parser.getCurrentLocation();
-  if (parser.parseColon() || parser.parseType(type))
+  Type outerType;
+  if (parser.parseColon() || parser.parseType(outerType))
     return failure();
-  if (parser.resolveOperand(input, type, result.operands))
+  // Optional `to <inner-type>` after the FIFO's own type. When absent,
+  // inner == outer.
+  Type innerType = outerType;
+  if (succeeded(parser.parseOptionalKeyword("to"))) {
+    if (parser.parseType(innerType))
+      return failure();
+  }
+  if (parser.resolveOperand(input, outerType, result.operands))
     return failure();
-  (void)typeLoc;
-  result.addTypes(type);
+  (void)operandLoc;
+  result.addTypes(innerType);
   return success();
 }
 
@@ -312,7 +379,11 @@ void FifoOp::print(OpAsmPrinter &p) {
     << ", bypassable = " << (getBypassable() ? "true" : "false") << "]";
   if (auto a = getBypassedAttr())
     p << " {bypassed = " << (a.getValue() ? "true" : "false") << "}";
-  p << " : " << getOutput().getType();
+  Type outerTy = getInput().getType();
+  Type innerTy = getOutput().getType();
+  p << " : " << outerTy;
+  if (outerTy != innerTy)
+    p << " to " << innerTy;
 }
 
 LogicalResult FifoOp::verify() {
@@ -322,6 +393,26 @@ LogicalResult FifoOp::verify() {
     return emitOpError(
         "'bypassed' software parameter is only allowed when 'bypassable' is "
         "true");
+  // Width-relaxation rule at the FIFO operand boundary. The outer SSA
+  // source type may differ from the FIFO's inner type only in width, and
+  // only for the same fabric kind (bits / bits_tag / tag). memref operands
+  // (not currently part of the SameOperandsAndResultType-constrained type)
+  // are not legal here; the type constraint already rejects them, but the
+  // explicit `to <T_inner>` clause is still rejected when the kinds
+  // disagree. Emit a clear diagnostic when the kinds disagree.
+  Type outerTy = getInput().getType();
+  Type innerTy = getOutput().getType();
+  if (outerTy != innerTy) {
+    if (!sameModulePortKind(outerTy, innerTy))
+      return emitOpError(
+                 "operand outer type and inner type must share the same "
+                 "fabric kind (bits, bits_tag, tag); got outer ")
+             << outerTy << " and inner " << innerTy;
+    if (isa<MemRefType>(outerTy))
+      return emitOpError(
+          "memref operands cannot use the 'to <inner-type>' clause: memref "
+          "types must match exactly");
+  }
   return success();
 }
 
@@ -1012,15 +1103,22 @@ ParseResult SpatialPeOp::parse(OpAsmParser &parser, OperationState &result) {
     auto parseOne = [&]() -> ParseResult {
       OpAsmParser::Argument arg;
       OpAsmParser::UnresolvedOperand op;
-      Type ty;
+      Type outerTy;
       if (parser.parseArgument(arg) || parser.parseEqual() ||
           parser.parseOperand(op) || parser.parseColon() ||
-          parser.parseType(ty))
+          parser.parseType(outerTy))
         return failure();
-      arg.type = ty;
+      // Optional `to <inner-type>` clause: lets the SSA source operand have
+      // a different (same-kind) fabric type than the PE block-arg / inner
+      // PE operand type. Without the clause, inner == outer (no relaxation).
+      Type innerTy = outerTy;
+      if (succeeded(parser.parseOptionalKeyword("to")))
+        if (parser.parseType(innerTy))
+          return failure();
+      arg.type = innerTy;
       blockArgs.push_back(arg);
       operands.push_back(op);
-      operandTypes.push_back(ty);
+      operandTypes.push_back(outerTy);
       return success();
     };
     if (parseOne())
@@ -1071,6 +1169,11 @@ void SpatialPeOp::print(OpAsmPrinter &p) {
         std::tie(bb, outer) = pair;
         p.printRegionArgument(bb, /*argAttrs=*/{}, /*omitType=*/true);
         p << " = " << outer << " : " << outer.getType();
+        // Emit `to <inner-type>` only when the inner block-arg type differs
+        // from the outer operand type (width relaxation under the
+        // module-level connection-point rule).
+        if (outer.getType() != bb.getType())
+          p << " to " << bb.getType();
       });
   p << ") -> ";
   auto rTypes = getResultTypes();
@@ -1100,20 +1203,32 @@ LogicalResult SpatialPeOp::verify() {
   if (getOutputs().empty())
     return emitOpError("requires at least 1 output port (L >= 1)");
 
-  // 3. Determine W from the first operand and walk all PE ports.
-  auto firstW = bitsWidth(getInputs().front().getType());
+  // 3. Determine W from the first block argument (the inner / PE-side
+  // type) and walk all PE-internal ports. Outer operand widths may
+  // differ from the inner block-arg width per the
+  // fabric.module width-relaxation rule (low-bit alignment, same-kind);
+  // see docs/spec-fabric-module.md. The PE's uniform W is enforced on
+  // the PE-internal side: every block argument and every result must
+  // be `!fabric.bits<W>` with the same `W`.
+  Block &entry = getBody().front();
+  if (entry.getNumArguments() != getInputs().size())
+    return emitOpError("region entry block argument count (")
+           << entry.getNumArguments() << ") must equal operand count ("
+           << getInputs().size() << ")";
+
+  auto firstW = bitsWidth(entry.getArgument(0).getType());
   if (!firstW)
     return emitOpError(
         "requires uniform 'bits<W>' on all PE ports; PE input #0 has type ")
-        << getInputs().front().getType();
+        << entry.getArgument(0).getType();
   unsigned W = *firstW;
-  for (auto [i, t] : llvm::enumerate(getInputs().getTypes())) {
-    auto w = bitsWidth(t);
+  for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
+    auto w = bitsWidth(arg.getType());
     if (!w || *w != W)
       return emitOpError("requires uniform 'bits<W>' on all PE ports; PE "
                          "input #")
-             << i << " has type " << t << " (expected '!fabric.bits<" << W
-             << ">')";
+             << i << " has type " << arg.getType() << " (expected '!fabric.bits<"
+             << W << ">')";
   }
   for (auto [i, t] : llvm::enumerate(getOutputs().getTypes())) {
     auto w = bitsWidth(t);
@@ -1124,17 +1239,27 @@ LogicalResult SpatialPeOp::verify() {
              << ">')";
   }
 
-  // 4. Body block-arg count and types must mirror PE inputs.
-  Block &entry = getBody().front();
-  if (entry.getNumArguments() != getInputs().size())
-    return emitOpError("region entry block argument count (")
-           << entry.getNumArguments() << ") must equal operand count ("
-           << getInputs().size() << ")";
+  // 4. Outer-vs-inner per operand: the outer operand SSA type may differ
+  // from the inner block-arg type only in width and only for the same
+  // fabric kind (bits / bits_tag / tag). Since the PE-internal type is
+  // already constrained to fabric.bits<W>, the outer must also be
+  // fabric.bits<*> (any width). Emit a clear diagnostic when the kind
+  // disagrees.
   for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
-    if (arg.getType() != getInputs()[i].getType())
-      return emitOpError("region entry block argument #")
-             << i << " type " << arg.getType() << " must match operand type "
-             << getInputs()[i].getType();
+    Type outerTy = getInputs()[i].getType();
+    Type innerTy = arg.getType();
+    if (outerTy == innerTy)
+      continue;
+    if (!sameModulePortKind(outerTy, innerTy))
+      return emitOpError("operand #")
+             << i << " outer type " << outerTy
+             << " and PE block-arg inner type " << innerTy
+             << " must share the same fabric kind (bits, bits_tag, tag)";
+    if (isa<MemRefType>(outerTy))
+      return emitOpError("operand #")
+             << i
+             << ": memref operands cannot use the 'to <inner-type>' clause; "
+                "memref types must match exactly";
   }
 
   // 5./6. Body whitelist: only fabric.fu, and at least one of them.
@@ -1185,26 +1310,188 @@ LogicalResult SpatialPeOp::verify() {
 //===----------------------------------------------------------------------===//
 // fabric.module
 //===----------------------------------------------------------------------===//
+//
+// Assembly form (mirrors func.func for inputs/outputs but with the fabric
+// dialect's restricted port-type union):
+//
+//   fabric.module @sym(%a : !fabric.bits<32>,
+//                      %b : memref<8xi32>) -> (!fabric.bits<32>) {
+//     ...
+//     fabric.yield %r : !fabric.bits<32>
+//   }
+//
+// Both input list and result list may be empty.
+
+ParseResult fabric::ModuleOp::parse(OpAsmParser &parser,
+                                    OperationState &result) {
+  // Symbol name.
+  StringAttr nameAttr;
+  if (parser.parseSymbolName(nameAttr, ::mlir::SymbolTable::getSymbolAttrName(),
+                             result.attributes))
+    return failure();
+
+  // Argument list: `(` (%name : T (`,` ...)*)? `)`
+  SmallVector<OpAsmParser::Argument, 4> entryArgs;
+  SmallVector<Type, 4> argTypes;
+  if (parser.parseLParen())
+    return failure();
+  if (failed(parser.parseOptionalRParen())) {
+    auto parseOne = [&]() -> ParseResult {
+      OpAsmParser::Argument arg;
+      Type ty;
+      if (parser.parseArgument(arg) || parser.parseColon() ||
+          parser.parseType(ty))
+        return failure();
+      arg.type = ty;
+      entryArgs.push_back(arg);
+      argTypes.push_back(ty);
+      return success();
+    };
+    if (parseOne())
+      return failure();
+    while (succeeded(parser.parseOptionalComma()))
+      if (parseOne())
+        return failure();
+    if (parser.parseRParen())
+      return failure();
+  }
+
+  // Result list: `->` ( `(` types? `)` | type )?  -- support the empty
+  // form (no `->`) for backward compatibility with body-less modules,
+  // an explicit `-> ()` for zero results, or `-> T` / `-> (T0, T1, ...)`.
+  SmallVector<Type, 4> resultTypes;
+  if (succeeded(parser.parseOptionalArrow())) {
+    if (succeeded(parser.parseOptionalLParen())) {
+      if (failed(parser.parseOptionalRParen())) {
+        if (parser.parseTypeList(resultTypes) || parser.parseRParen())
+          return failure();
+      }
+    } else {
+      Type ty;
+      if (parser.parseType(ty))
+        return failure();
+      resultTypes.push_back(ty);
+    }
+  }
+
+  // Build the function_type attribute.
+  auto funcType =
+      FunctionType::get(parser.getContext(), argTypes, resultTypes);
+  result.addAttribute("function_type", TypeAttr::get(funcType));
+
+  // Optional attribute dictionary keyword.
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  // Region body.
+  Region *body = result.addRegion();
+  if (parser.parseRegion(*body, entryArgs, /*enableNameShadowing=*/false))
+    return failure();
+
+  // Materialize the implicit terminator (fabric.yield with zero operands)
+  // when the body is empty -- mirrors SingleBlockImplicitTerminator.
+  fabric::ModuleOp::ensureTerminator(*body, parser.getBuilder(),
+                                     result.location);
+  return success();
+}
+
+void fabric::ModuleOp::print(OpAsmPrinter &p) {
+  p << ' ';
+  p.printSymbolName(getSymName());
+  Block &entry = getBody().front();
+  // Inputs.
+  p << '(';
+  llvm::interleaveComma(entry.getArguments(), p, [&](BlockArgument bb) {
+    p.printRegionArgument(bb, /*argAttrs=*/{}, /*omitType=*/true);
+    p << " : " << bb.getType();
+  });
+  p << ')';
+  // Outputs.
+  ArrayRef<Type> resultTypes = getFunctionType().getResults();
+  if (!resultTypes.empty()) {
+    p << " -> ";
+    if (resultTypes.size() == 1) {
+      p << resultTypes.front();
+    } else {
+      p << '(';
+      llvm::interleaveComma(resultTypes, p);
+      p << ')';
+    }
+  }
+  // Attribute dict (skip sym_name and function_type which we just printed).
+  SmallVector<StringRef, 2> elided{"sym_name", "function_type"};
+  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(), elided);
+  p << ' ';
+  // Elide the implicit terminator (a fabric.yield with no operands and no
+  // attributes) so an empty module body round-trips as `{ }`. When the
+  // module declares results, the yield carries operands and is printed.
+  bool printTerm = false;
+  if (auto y = dyn_cast<YieldOp>(getBody().front().getTerminator())) {
+    if (y.getValues().size() != 0)
+      printTerm = true;
+    else if (y->getAttrs().size() != 0)
+      printTerm = true;
+  } else {
+    printTerm = true;
+  }
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/printTerm);
+}
 
 RegionKind fabric::ModuleOp::getRegionKind(unsigned /*index*/) {
   return RegionKind::Graph;
 }
 
 LogicalResult fabric::ModuleOp::verify() {
+  // Validate declared input/output types: each must be one of the four
+  // allowed module port types (bits, bits_tag, tag, memref). The
+  // declarative type constraint Variadic<Fabric_ModulePortType> on the
+  // results is checked by the auto-generated verifier; we re-check here
+  // to give clean diagnostics for the input side, which is encoded as
+  // entry-block arguments rather than ODS-typed operands.
+  FunctionType ft = getFunctionType();
+  for (auto [i, t] : llvm::enumerate(ft.getInputs())) {
+    if (!isFabricModulePortType(t))
+      return emitOpError("input #")
+             << i << " type " << t
+             << " is not an allowed fabric.module port type "
+                "(allowed: !fabric.bits<W>, !fabric.bits_tag<W,T>, "
+                "!fabric.tag<T>, memref<...>)";
+  }
+  for (auto [i, t] : llvm::enumerate(ft.getResults())) {
+    if (!isFabricModulePortType(t))
+      return emitOpError("result #")
+             << i << " type " << t
+             << " is not an allowed fabric.module port type "
+                "(allowed: !fabric.bits<W>, !fabric.bits_tag<W,T>, "
+                "!fabric.tag<T>, memref<...>)";
+  }
+
+  // Block argument count + types must match the declared inputs.
+  Block &entry = getBody().front();
+  if (entry.getNumArguments() != ft.getNumInputs())
+    return emitOpError("entry block argument count (")
+           << entry.getNumArguments()
+           << ") must match declared input count (" << ft.getNumInputs() << ")";
+  for (auto [i, pair] :
+       llvm::enumerate(llvm::zip(entry.getArguments(), ft.getInputs()))) {
+    BlockArgument bb;
+    Type declared;
+    std::tie(bb, declared) = pair;
+    if (bb.getType() != declared)
+      return emitOpError("entry block argument #")
+             << i << " type " << bb.getType()
+             << " must equal declared input type " << declared;
+  }
+
   // Body whitelist: only fabric.spatial_pe, fabric.fifo, and the implicit
   // fabric.yield terminator may appear directly in the module body.
-  // builtin.unrealized_conversion_cast is also allowed as a way to
-  // materialize fabric values without an explicit producer (used by
-  // tests, and by lowering pipelines that have not yet wired up real
-  // producers/consumers).
   // (Future container ops -- fabric.temporal_pe, fabric.spatial_sw,
   // fabric.temporal_sw, fabric.spatial_mem, fabric.temporal_mem,
   // fabric.t2s, fabric.s2t, fabric.t2t, fabric.instantiate -- will be
   // added here as they land.)
-  for (Operation &op : getBody().front()) {
+  for (Operation &op : entry) {
     if (isa<SpatialPeOp, FifoOp, YieldOp>(op))
-      continue;
-    if (isa<::mlir::UnrealizedConversionCastOp>(op))
       continue;
     return op.emitOpError(
         "is not allowed inside fabric.module; only fabric.spatial_pe and "
@@ -1214,8 +1501,192 @@ LogicalResult fabric::ModuleOp::verify() {
   return success();
 }
 
+// fabric.yield assembly format. Two forms are accepted; the printer picks
+// the compact form when no per-value `to` clause is needed.
+//
+//   fabric.yield                                            // empty
+//   fabric.yield %v0, %v1 : T0, T1                          // compact
+//   fabric.yield %v0 : T0 [to TR0], %v1 : T1 [to TR1] ...   // per-value
+//
+// The optional `to <module-result-type>` clause is only meaningful inside
+// fabric.module (it expresses the connection-point width relaxation
+// against the module's declared result type). Inside fabric.fu the
+// clause must not appear; the verifier rejects it.
+
+ParseResult YieldOp::parse(OpAsmParser &parser, OperationState &result) {
+  // Allow the empty form: `fabric.yield` followed only by attr-dict.
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> operands;
+  SmallVector<Type, 4> sourceTypes;   // types of the SSA source values
+  SmallVector<Type, 4> declaredTypes; // declared destination types (with `to`)
+
+  OpAsmParser::UnresolvedOperand first;
+  OptionalParseResult firstParse = parser.parseOptionalOperand(first);
+  if (firstParse.has_value()) {
+    if (failed(*firstParse))
+      return failure();
+    operands.push_back(first);
+
+    // Decide between compact form (next token is `,` or `:` followed by a
+    // type list) and per-value form (next token is `:` followed by a single
+    // type that may be paired with `to` and another `,` operand).
+    //
+    // Strategy: collect operands greedily while we see `,`; after the
+    // operand list, consume `:` and parse types matching the operand count.
+    // If during that phase we see `to` (per-value form starting with one
+    // operand), fall through and re-route. We use a simpler split: peek at
+    // the next token; if it's `,` we're in compact form's operand list, if
+    // it's `:` we proceed with type parsing.
+    bool isCompact = false;
+    if (succeeded(parser.parseOptionalComma())) {
+      isCompact = true;
+      auto parseMoreOperand = [&]() -> ParseResult {
+        OpAsmParser::UnresolvedOperand op;
+        return parser.parseOperand(op).failed()
+                   ? failure()
+                   : (operands.push_back(op), success());
+      };
+      if (parseMoreOperand())
+        return failure();
+      while (succeeded(parser.parseOptionalComma()))
+        if (parseMoreOperand())
+          return failure();
+    }
+
+    if (parser.parseColon())
+      return failure();
+
+    if (isCompact) {
+      // Compact: parse a type list with N entries.
+      SmallVector<Type, 4> types;
+      if (parser.parseTypeList(types))
+        return failure();
+      if (types.size() != operands.size())
+        return parser.emitError(parser.getCurrentLocation(),
+                                "yield operand count and type count differ");
+      sourceTypes = std::move(types);
+      declaredTypes = sourceTypes;
+    } else {
+      // Per-value: we already have the first operand; parse `T [to TR]`,
+      // then optional `, %op : T [to TR]` repeated.
+      auto parseTypePair = [&]() -> ParseResult {
+        Type t;
+        if (parser.parseType(t))
+          return failure();
+        sourceTypes.push_back(t);
+        Type r = t;
+        if (succeeded(parser.parseOptionalKeyword("to")))
+          if (parser.parseType(r))
+            return failure();
+        declaredTypes.push_back(r);
+        return success();
+      };
+      if (parseTypePair())
+        return failure();
+      while (succeeded(parser.parseOptionalComma())) {
+        OpAsmParser::UnresolvedOperand op;
+        if (parser.parseOperand(op) || parser.parseColon())
+          return failure();
+        operands.push_back(op);
+        if (parseTypePair())
+          return failure();
+      }
+    }
+
+    // Resolve operands at their declared source types.
+    if (parser.resolveOperands(operands, sourceTypes,
+                               parser.getCurrentLocation(), result.operands))
+      return failure();
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  // Stash the declared destination types as an attribute so the printer can
+  // emit per-value `to` clauses on round-trip and the verifier can compare
+  // them against the parent's declared result types.
+  if (!operands.empty()) {
+    SmallVector<Attribute, 4> typeAttrs;
+    typeAttrs.reserve(declaredTypes.size());
+    for (Type t : declaredTypes)
+      typeAttrs.push_back(TypeAttr::get(t));
+    result.addAttribute("declared_types",
+                        ArrayAttr::get(parser.getContext(), typeAttrs));
+  }
+  return success();
+}
+
+void YieldOp::print(OpAsmPrinter &p) {
+  auto values = getValues();
+  if (values.empty()) {
+    p.printOptionalAttrDict(getOperation()->getAttrs());
+    return;
+  }
+
+  // Read the per-value declared destination types out of the
+  // `declared_types` attribute when present; otherwise the declared
+  // type equals the source type (no relaxation).
+  auto declaredArr = (*this)->getAttrOfType<ArrayAttr>("declared_types");
+  SmallVector<Type, 4> declared;
+  declared.reserve(values.size());
+  if (declaredArr && declaredArr.size() == values.size()) {
+    for (Attribute a : declaredArr) {
+      if (auto ta = dyn_cast<TypeAttr>(a))
+        declared.push_back(ta.getValue());
+      else
+        declared.push_back(Type{});
+    }
+  }
+  if (declared.size() != values.size())
+    declared.assign(values.size(), Type{});
+
+  bool needsPerValue = false;
+  for (auto [v, d] : llvm::zip(values, declared))
+    if (d && d != v.getType()) {
+      needsPerValue = true;
+      break;
+    }
+
+  p << ' ';
+  if (!needsPerValue) {
+    // Compact form: %v0, %v1 : T0, T1
+    llvm::interleaveComma(values, p, [&](Value v) { p << v; });
+    p << " : ";
+    llvm::interleaveComma(values, p, [&](Value v) { p << v.getType(); });
+  } else {
+    // Per-value form: %v0 : T0 [to TR0], %v1 : T1 [to TR1]
+    llvm::interleaveComma(
+        llvm::zip(values, declared), p, [&](auto pair) {
+          Value v;
+          Type d;
+          std::tie(v, d) = pair;
+          p << v << " : " << v.getType();
+          if (d && d != v.getType())
+            p << " to " << d;
+        });
+  }
+
+  // Print attr-dict but elide `declared_types` (handled above).
+  SmallVector<StringRef, 1> elided{"declared_types"};
+  p.printOptionalAttrDict(getOperation()->getAttrs(), elided);
+}
+
 LogicalResult YieldOp::verify() {
   Operation *parent = (*this)->getParentOp();
+  // Recover the per-value declared destination types if any (defaults to
+  // each operand's source type when unset).
+  auto declaredArr = (*this)->getAttrOfType<ArrayAttr>("declared_types");
+  SmallVector<Type, 4> declared;
+  declared.reserve(getValues().size());
+  if (declaredArr && declaredArr.size() == getValues().size()) {
+    for (Attribute a : declaredArr) {
+      auto ta = dyn_cast<TypeAttr>(a);
+      declared.push_back(ta ? ta.getValue() : Type{});
+    }
+  } else {
+    for (Value v : getValues())
+      declared.push_back(v.getType());
+  }
+
   if (auto fu = dyn_cast_or_null<FuOp>(parent)) {
     if (getValues().size() != fu.getOutputs().size())
       return emitOpError("yield value count (")
@@ -1224,6 +1695,13 @@ LogicalResult YieldOp::verify() {
              << fu.getOutputs().size() << ")";
     for (auto [i, v] : llvm::enumerate(getValues())) {
       Type expected = fu.getOutputs()[i].getType();
+      // Inside fabric.fu the per-value `to` clause is not allowed: the FU
+      // boundary is strict on its outputs (only the input direction is
+      // truncated, by the fu's own `to <inner-type>` clause on operands).
+      if (declared[i] && declared[i] != v.getType())
+        return emitOpError("yield value #")
+               << i
+               << ": 'to <type>' clause is not allowed inside fabric.fu";
       if (v.getType() != expected)
         return emitOpError("yield value #")
                << i << " type " << v.getType()
@@ -1231,11 +1709,40 @@ LogicalResult YieldOp::verify() {
     }
     return success();
   }
-  if (isa_and_nonnull<fabric::ModuleOp>(parent)) {
-    if (!getValues().empty())
-      return emitOpError(
-          "yield inside fabric.module must have no operands, got ")
-          << getValues().size();
+  if (auto mod = dyn_cast_or_null<fabric::ModuleOp>(parent)) {
+    ArrayRef<Type> resultTypes = mod.getFunctionType().getResults();
+    if (getValues().size() != resultTypes.size())
+      return emitOpError("yield value count (")
+             << getValues().size()
+             << ") must match parent fabric.module result count ("
+             << resultTypes.size() << ")";
+    for (auto [i, v] : llvm::enumerate(getValues())) {
+      Type srcTy = v.getType();
+      Type modResultTy = resultTypes[i];
+      // Apply the connection-point rule. Order: validate the source type
+      // is a legal fabric.module port type, then check kind agreement, then
+      // check the per-value `to <type>` clause (when present) matches the
+      // module's declared result type, then enforce memref's exact-match
+      // rule.
+      if (!isFabricModulePortType(srcTy))
+        return emitOpError("yield value #")
+               << i << " has type " << srcTy
+               << " which is not an allowed fabric.module port type";
+      if (!sameModulePortKind(srcTy, modResultTy))
+        return emitOpError("yield value #")
+               << i << " type " << srcTy
+               << " has a different fabric kind than the module result type "
+               << modResultTy << "; type-kind must match (bits/bits_tag/tag/memref)";
+      if (declared[i] && declared[i] != modResultTy)
+        return emitOpError("yield value #")
+               << i << ": declared destination type " << declared[i]
+               << " does not match the module's result type " << modResultTy;
+      if (isa<MemRefType>(srcTy) && srcTy != modResultTy)
+        return emitOpError("yield value #")
+               << i << " memref type " << srcTy
+               << " must match the module result type " << modResultTy
+               << " exactly (no width/shape relaxation on memref)";
+    }
     return success();
   }
   return emitOpError("expects parent op 'fabric.fu' or 'fabric.module'");

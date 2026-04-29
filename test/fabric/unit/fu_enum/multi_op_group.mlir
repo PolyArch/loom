@@ -4,9 +4,7 @@
 // 2 x 3 = 6 supported subgraphs.
 
 // CHECK-LABEL: fabric.module @fu_two_op_groups
-fabric.module @fu_two_op_groups {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<16>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<16>
+fabric.module @fu_two_op_groups(%a : !fabric.bits<16>, %b : !fabric.bits<16>) {
   fabric.spatial_pe(%pa = %a : !fabric.bits<16>,
                     %pb = %b : !fabric.bits<16>) -> !fabric.bits<16> {
     fabric.fu(%x = %pa : !fabric.bits<16>, %y = %pb : !fabric.bits<16>)
