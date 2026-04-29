@@ -15,8 +15,8 @@ def Fabric_MuxOp : Fabric_Op<"mux", [Pure, SameOperandsAndResultType]> {
   let summary = "fabric multiplexer with handshake";
   let description = [{
     Selects one of N (N > 1) inputs onto the single output. All inputs and the
-    output share one fabric type. No hardware parameters (the port width is
-    fully described by the shared operand/result type).
+    output share one `!fabric.bits<W>` type. No hardware parameters (the port
+    width is fully described by the shared operand/result type).
 
     Software parameters (either all set or all unset):
       * `sel`        : i32, 0 <= sel < N (forced 0 when `disconnect` is true)
@@ -28,12 +28,12 @@ def Fabric_MuxOp : Fabric_Op<"mux", [Pure, SameOperandsAndResultType]> {
   }];
 
   let arguments = (ins
-      Variadic<Fabric_AnyType>:$inputs,
+      Variadic<Fabric_BitsType>:$inputs,
       OptionalAttr<I32Attr>:$sel,
       OptionalAttr<BoolAttr>:$discard,
       OptionalAttr<BoolAttr>:$disconnect
   );
-  let results = (outs Fabric_AnyType:$output);
+  let results = (outs Fabric_BitsType:$output);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
@@ -42,10 +42,10 @@ def Fabric_MuxOp : Fabric_Op<"mux", [Pure, SameOperandsAndResultType]> {
 def Fabric_DemuxOp : Fabric_Op<"demux", [Pure, SameOperandsAndResultType]> {
   let summary = "fabric demultiplexer with handshake";
   let description = [{
-    Single input, N outputs (N > 1). All input/output ports share one fabric
-    type. No hardware parameters (the port width is fully described by the
-    shared operand/result type). The op is the input/output dual of
-    fabric.mux.
+    Single input, N outputs (N > 1). All input/output ports share one
+    `!fabric.bits<W>` type. No hardware parameters (the port width is fully
+    described by the shared operand/result type). The op is the input/output
+    dual of fabric.mux.
 
     Software parameters (either all set or all unset):
       * `sel`        : i32, 0 <= sel < N (forced 0 when `disconnect` is true)
@@ -63,12 +63,12 @@ def Fabric_DemuxOp : Fabric_Op<"demux", [Pure, SameOperandsAndResultType]> {
   }];
 
   let arguments = (ins
-      Fabric_AnyType:$input,
+      Fabric_BitsType:$input,
       OptionalAttr<I32Attr>:$sel,
       OptionalAttr<BoolAttr>:$discard,
       OptionalAttr<BoolAttr>:$disconnect
   );
-  let results = (outs Variadic<Fabric_AnyType>:$outputs);
+  let results = (outs Variadic<Fabric_BitsType>:$outputs);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;

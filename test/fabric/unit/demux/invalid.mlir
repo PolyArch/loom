@@ -90,3 +90,26 @@ fabric.module @demux_sel_out_of_range {
   }
   fabric.yield
 }
+
+// -----
+// fabric.demux operand/result type is restricted to !fabric.bits<W>.
+// Feeding a !fabric.bits_tag value is rejected by the op's type system
+// before the FU/PE body whitelist or parent rules ever apply.
+func.func @demux_rejects_bits_tag(%v: !fabric.bits_tag<8, 2>)
+    -> (!fabric.bits_tag<8, 2>, !fabric.bits_tag<8, 2>) {
+  // expected-error @+1 {{must be fabric bits type}}
+  %x, %y = "fabric.demux"(%v)
+            : (!fabric.bits_tag<8, 2>)
+            -> (!fabric.bits_tag<8, 2>, !fabric.bits_tag<8, 2>)
+  return %x, %y : !fabric.bits_tag<8, 2>, !fabric.bits_tag<8, 2>
+}
+
+// -----
+// fabric.demux operand/result type is restricted to !fabric.bits<W>.
+// Feeding a !fabric.tag value is rejected by the op's type system.
+func.func @demux_rejects_tag(%v: !fabric.tag<4>)
+    -> (!fabric.tag<4>, !fabric.tag<4>) {
+  // expected-error @+1 {{must be fabric bits type}}
+  %x, %y = "fabric.demux"(%v) : (!fabric.tag<4>) -> (!fabric.tag<4>, !fabric.tag<4>)
+  return %x, %y : !fabric.tag<4>, !fabric.tag<4>
+}

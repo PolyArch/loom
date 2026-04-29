@@ -1,11 +1,9 @@
 // RUN: loom %s | loom | FileCheck %s
 
-// Note: fabric.demux must live inside fabric.fu (per architecture: fabric.module
-// body only admits fabric.spatial_pe, fabric.fifo and fabric.yield; the
-// fabric.fu body is the only place that admits fabric.demux). PE/FU ports must
-// be !fabric.bits<W>, so the bits_tag and tag demux variants from the previous
-// suite are dropped here: the type-only round-trip is covered by fabric.fifo
-// on bits_tag and tag in the fifo unit suite.
+// Note: fabric.demux operand/result types are !fabric.bits<W>; see the
+// Fabric_DemuxOp declaration in include/Fabric/IR/FabricOps.td. fabric.demux
+// must live inside fabric.fu (the fabric.module body whitelist admits only
+// fabric.spatial_pe, fabric.fifo and fabric.yield).
 
 // -----------------------------------------------------------------------------
 // Pure hardware (no software params programmed): bits<8>, 2 outputs.
