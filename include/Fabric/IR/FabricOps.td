@@ -210,8 +210,11 @@ def Fabric_SpatialPeOp : Fabric_Op<"spatial_pe", [
         `fabric.spatial_pe`, or `fabric.yield` may appear directly in the
         body.
       * For every inner FU `f`, `f.numInputs() <= K` and
-        `f.numOutputs() <= L`, and every FU input/output port has type
-        `!fabric.bits<W>` matching the PE's `W`.
+        `f.numOutputs() <= L`. Every FU outer input port and every FU
+        outer output port has type `!fabric.bits<W>` matching the PE's
+        `W`. Inner FU block-arg types may be narrower
+        (`!fabric.bits<F>` with `F <= W`), in which case the FU
+        boundary truncates the high `W - F` bits.
       * The op must appear inside a `fabric.module` body.
   }];
 
@@ -244,12 +247,23 @@ def Fabric_FuOp : Fabric_Op<"fu", [
     `fabric.op[@dataflow.carry]`) and user-facing cyclic
     `dataflow.subgraph`s map onto a single FU.
 
+    The FU input boundary supports high-bit truncation. The textual
+    form `(%fa = %src : !fabric.bits<W> to !fabric.bits<F>)` declares
+    an outer operand of width `W` and an inner block argument of width
+    `F` with `F <= W`; the high `W - F` bits of `%src` are dropped at
+    the FU boundary. Without the `to ...` clause the inner type
+    defaults to the outer type. Output ports stay strict (yield value
+    types must match the FU's outer result types).
+
     Constraints:
       * The body must contain at least one `fabric.op`.
       * `fabric.fu` cannot be nested.
       * `fabric.fifo` is not permitted in the body.
       * The FU itself carries no `[hw_params]` / `{sw_configs}`;
         all configuration lives on the inner ops.
+      * For each input port `i`, the outer operand width must be
+        greater than or equal to the inner block-arg width
+        (`outer >= inner`).
   }];
 
   let arguments = (ins Variadic<Fabric_BitsType>:$inputs);

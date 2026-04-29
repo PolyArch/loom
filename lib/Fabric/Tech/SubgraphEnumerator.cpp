@@ -1810,12 +1810,15 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
   // a flavor-trace through the FU body so float-flavored ops get f-typed
   // sw ports. The full lifted vectors below cover every physical FU port;
   // each per-config materialization narrows them down to the live ports.
+  // For inputs, lift the inner block-arg width (which is what the body op
+  // actually consumes after FU-boundary high-bit truncation), not the
+  // outer operand width. Outputs stay strict (outer == inner).
   auto liftMap = computePortLiftMap(fu);
   SmallVector<Type, 4> fullSwInputTypes;
-  for (auto [i, t] : llvm::enumerate(fu.getInputs().getTypes())) {
-    PortLift k = liftMap.lookup(fuBody.getArgument(i));
+  for (auto [i, arg] : llvm::enumerate(fuBody.getArguments())) {
+    PortLift k = liftMap.lookup(arg);
     fullSwInputTypes.push_back(
-        liftWith(::mlir::cast<BitsType>(t).getWidth(), k, ctx));
+        liftWith(::mlir::cast<BitsType>(arg.getType()).getWidth(), k, ctx));
   }
   SmallVector<Type, 4> fullSwOutputTypes;
   auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());

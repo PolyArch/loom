@@ -68,6 +68,26 @@ fabric.module @fu_op_demux {
   fabric.yield
 }
 
+// FU boundary truncation: outer operand bits<32> with inner block-arg
+// bits<0>. Hardware drops the high 32 bits at the FU boundary. The outer
+// type matches the enclosing PE's uniform W=32, while the inner body
+// op (dataflow.constant) consumes the bits<0> none-token.
+// CHECK-LABEL: fabric.module @fu_boundary_trunc
+fabric.module @fu_boundary_trunc {
+  %ctrl = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%pctrl = %ctrl : !fabric.bits<32>) -> !fabric.bits<32> {
+    // CHECK: fabric.fu(%{{.*}} = %{{.*}} : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32>
+    %r = fabric.fu(%c = %pctrl : !fabric.bits<32> to !fabric.bits<0>)
+                  -> !fabric.bits<32> {
+      %k = fabric.op [@dataflow.constant] (%c)
+           {sw_configs = {const_hex_value = "0xdeadbeef"}}
+           : (!fabric.bits<0>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
+  }
+  fabric.yield
+}
+
 // FU with multiple fabric.op nodes whose connectivity could be reconfigured by
 // inner mux/demux selectors.
 // CHECK-LABEL: fabric.module @fu_multi_op

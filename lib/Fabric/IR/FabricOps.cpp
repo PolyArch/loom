@@ -823,6 +823,14 @@ LogicalResult OpOp::verify() {
 // Assembly format mirrors dataflow.graph: inline (block-arg = outer : T)
 // pairs in `(...)`, then `-> result-types`, then optional attributes
 // keyword + region body.
+//
+// FU boundary truncation:
+// The optional `to <inner-type>` syntax lets a FU declare an inner block-arg
+// type narrower than its outer operand type. When the SSA source is bits<W>
+// and the inner block arg is bits<F> with F < W, hardware drops the high
+// (W - F) bits at the FU boundary on each token. The outer operand type is
+// always reported in the FU op's signature (visible to the enclosing PE);
+// the inner type only governs the body block.
 
 ParseResult FuOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> blockArgs;
@@ -836,15 +844,22 @@ ParseResult FuOp::parse(OpAsmParser &parser, OperationState &result) {
     auto parseOne = [&]() -> ParseResult {
       OpAsmParser::Argument arg;
       OpAsmParser::UnresolvedOperand op;
-      Type ty;
+      Type outerTy;
       if (parser.parseArgument(arg) || parser.parseEqual() ||
           parser.parseOperand(op) || parser.parseColon() ||
-          parser.parseType(ty))
+          parser.parseType(outerTy))
         return failure();
-      arg.type = ty;
+      // Optional `to <inner-type>` clause: the FU declares an inner block-arg
+      // type narrower than its outer operand type. When absent, inner == outer
+      // (current behavior, no truncation).
+      Type innerTy = outerTy;
+      if (succeeded(parser.parseOptionalKeyword("to")))
+        if (parser.parseType(innerTy))
+          return failure();
+      arg.type = innerTy;
       blockArgs.push_back(arg);
       operands.push_back(op);
-      operandTypes.push_back(ty);
+      operandTypes.push_back(outerTy);
       return success();
     };
     if (parseOne())
@@ -896,6 +911,11 @@ void FuOp::print(OpAsmPrinter &p) {
         std::tie(bb, outer) = pair;
         p.printRegionArgument(bb, /*argAttrs=*/{}, /*omitType=*/true);
         p << " = " << outer << " : " << outer.getType();
+        // Emit the optional `to <inner-type>` clause only when the inner
+        // block-arg type differs from the outer operand type; this expresses
+        // the high-bit truncation at the FU boundary.
+        if (outer.getType() != bb.getType())
+          p << " to " << bb.getType();
       });
   p << ") -> ";
   auto rTypes = getResultTypes();
@@ -917,9 +937,14 @@ RegionKind FuOp::getRegionKind(unsigned /*index*/) {
 }
 
 LogicalResult FuOp::verify() {
-  // Parent restriction: a fabric.fu must live inside a fabric.spatial_pe.
-  // (When fabric.temporal_pe lands it will be added to the allowed parents;
-  //  TODO: extend this check once that op exists.)
+  // FU boundary truncation:
+  // The FU's outer operand type is what the enclosing PE sees on the input
+  // side. The inner block-arg type is what the FU body manipulates. Both
+  // must be `!fabric.bits<*>`; the inner width may be less than or equal
+  // to the outer width. When inner < outer, hardware drops the high
+  // (outerW - innerW) bits at the FU boundary on each token. The output
+  // direction stays strict (this op enforces nothing here; the enclosing
+  // spatial_pe and the inner `fabric.yield` together pin the output side).
   Operation *parent = (*this)->getParentOp();
   if (!isa_and_nonnull<SpatialPeOp>(parent))
     return emitOpError(
@@ -931,10 +956,22 @@ LogicalResult FuOp::verify() {
            << entry.getNumArguments() << ") must equal operand count ("
            << getInputs().size() << ")";
   for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
-    if (arg.getType() != getInputs()[i].getType())
+    Type outerTy = getInputs()[i].getType();
+    Type innerTy = arg.getType();
+    auto outerW = bitsWidth(outerTy);
+    auto innerW = bitsWidth(innerTy);
+    if (!outerW)
+      return emitOpError("operand #")
+             << i << " must be fabric.bits<N>, got " << outerTy;
+    if (!innerW)
       return emitOpError("region entry block argument #")
-             << i << " type " << arg.getType() << " must match operand type "
-             << getInputs()[i].getType();
+             << i << " must be fabric.bits<N>, got " << innerTy;
+    if (*outerW < *innerW)
+      return emitOpError("operand #")
+             << i << " bits-width " << *outerW
+             << " is less than block-argument bits-width " << *innerW
+             << "; the FU boundary only supports high-bit truncation "
+                "(outer >= inner)";
   }
 
   unsigned numCompute = 0;

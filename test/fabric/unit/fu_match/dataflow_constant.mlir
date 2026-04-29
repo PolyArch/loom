@@ -1,51 +1,60 @@
 // RUN: loom %s -loom-map-subgraph-to-fus | FileCheck %s
 
-// FU contains a fabric.op with a fixed singleton arith op (arith.muli),
-// no hw_params or sw_configs. The matcher pins the bare-op-identity
-// matching path: a pattern wrapping arith.muli must match this FU, and
-// a pattern wrapping any other op (e.g. arith.addi) must not.
+// FU contains a fabric.op[@dataflow.constant] whose hardware supports two
+// hex constants. The pattern asks for one of them and should match.
 //
-// (Originally this slot held a dataflow.constant matcher test, but
-// dataflow.constant requires a bits<0> control input which is
-// incompatible with the spatial_pe uniform-W rule. The const_hex_value
-// path is exercised at the IR level by op/valid.mlir; the matcher
-// allowed-set logic is exercised by cmpi_predicate_match.mlir.)
+// dataflow.constant has a !fabric.bits<0> control input (none token). The
+// enclosing spatial_pe runs at uniform bits<32>, so the FU declares its
+// inner block-arg as bits<0> via the `to` clause. The PE -> FU boundary
+// drops the high (32 - 0) = 32 bits of the carrier on each token.
 
-fabric.module @hw_muli_only {
-  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
-                    %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
-    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
-                  -> !fabric.bits<32> {
-      %k = fabric.op [@arith.muli] (%x, %y)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+fabric.module @hw_const {
+  %ctrl = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%pctrl = %ctrl : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%c = %pctrl : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
+      %k = fabric.op [@dataflow.constant] (%c)
+           {hw_params = [{const_hex_value = ["0xdeadbeef", "0xcafebabe"]}]}
+           : (!fabric.bits<0>) -> !fabric.bits<32>
       fabric.yield %k : !fabric.bits<32>
     }
   }
   fabric.yield
 }
 
-// CHECK-LABEL: @pat_muli
-func.func @pat_muli(%x: i32, %y: i32) -> i32 {
+// CHECK-LABEL: @pat_const_dead
+func.func @pat_const_dead(%c: none) -> i32 {
   // CHECK: dataflow.subgraph
-  // CHECK-SAME: loom.matched_fu = "@hw_muli_only#0"
-  %r = dataflow.subgraph(%a = %x : i32, %b = %y : i32) -> i32
+  // CHECK-SAME: loom.match_config = "op#0{const_hex_value=0xdeadbeef}"
+  // CHECK-SAME: loom.matched_fu = "@hw_const#0"
+  %r = dataflow.subgraph(%cc = %c : none) -> i32
        attributes {loom.is_pattern} {
-    %k = arith.muli %a, %b : i32
+    %k = dataflow.constant %cc {const_value = 3735928559 : i32} : i32
     dataflow.yield %k : i32
   }
   return %r : i32
 }
 
-// addi pattern -> unmatched (FU only supports muli).
-// CHECK-LABEL: @pat_addi_unmatched
-func.func @pat_addi_unmatched(%x: i32, %y: i32) -> i32 {
+// CHECK-LABEL: @pat_const_cafe
+func.func @pat_const_cafe(%c: none) -> i32 {
+  // CHECK: dataflow.subgraph
+  // CHECK-SAME: loom.match_config = "op#0{const_hex_value=0xcafebabe}"
+  // CHECK-SAME: loom.matched_fu = "@hw_const#0"
+  %r = dataflow.subgraph(%cc = %c : none) -> i32
+       attributes {loom.is_pattern} {
+    %k = dataflow.constant %cc {const_value = 3405691582 : i32} : i32
+    dataflow.yield %k : i32
+  }
+  return %r : i32
+}
+
+// Constant outside the hw set -> unmatched.
+// CHECK-LABEL: @pat_const_unsupported
+func.func @pat_const_unsupported(%c: none) -> i32 {
   // CHECK: dataflow.subgraph
   // CHECK-SAME: loom.unmatched
-  %r = dataflow.subgraph(%a = %x : i32, %b = %y : i32) -> i32
+  %r = dataflow.subgraph(%cc = %c : none) -> i32
        attributes {loom.is_pattern} {
-    %k = arith.addi %a, %b : i32
+    %k = dataflow.constant %cc {const_value = 1 : i32} : i32
     dataflow.yield %k : i32
   }
   return %r : i32

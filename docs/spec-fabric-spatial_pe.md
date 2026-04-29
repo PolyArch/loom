@@ -82,6 +82,23 @@ class ops to vary. This is why `fabric.mux` / `fabric.demux` belong
 inside `fabric.fu` (where they reshape in-FU connectivity) and not in
 the PE body.
 
+### FU-boundary truncation
+
+Inside a spatial_pe body, a `fabric.fu` may declare a block argument
+of type `!fabric.bits<F>` while its operand SSA source is the PE's
+`!fabric.bits<W>` value (`W >= F`). The textual form is
+`(%fa = %src : !fabric.bits<W> to !fabric.bits<F>)` -- without the
+`to ...` clause, the inner type defaults to the outer type (current
+behavior). The high `W - F` bits of the source are dropped; the
+inner block argument carries the low `F` bits.
+
+This input-direction relaxation lets ops with narrower inner ports
+(notably `fabric.op[@dataflow.constant]` whose ctrl input is
+`!fabric.bits<0>`) live inside a PE that runs at a wider uniform
+width. Output ports remain strict: the `fabric.yield` value types
+must equal the FU's outer result types, and those equal the PE's
+`bits<W>`.
+
 ## Hardware parameters
 
 All hardware parameters of `fabric.spatial_pe` are either declared on the
@@ -143,6 +160,11 @@ across all FUs in the body. Because at most one FU is active per PE
 configuration, the PE allocates one shared payload sized to the maximum;
 the unused tail bits are don't-care for inactive FUs.
 
+`fu_config_bitwidth` and the related width formulas below are unaffected
+by FU-boundary truncation: they sum sub-field widths internal to each
+FU (mux/demux mode fields and per-op runtime axes), not the FU's
+external port widths.
+
 ### Verifier constraints on hardware parameters
 
 * `K >= 1` and `L >= 1`. A PE must have at least one input and at least
@@ -155,10 +177,15 @@ the unused tail bits are don't-care for inactive FUs.
 * For every inner FU `f`, `f.numInputs() <= K` and
   `f.numOutputs() <= L`. Equivalently, `max_fu_inputs <= K` and
   `max_fu_outputs <= L`. Violations report which FU exceeded the bound.
-* Every inner FU's input ports and output ports use `!fabric.bits<W>`
-  with the same `W` as the PE boundary. Inside the FU body, `fabric.op`
-  ports may use any width; the FU's *own* boundary is what must match
-  the PE.
+* Every inner FU's outer port types (the operand and result types of
+  the `fabric.fu` op itself, as visible in the spatial_pe body) must
+  be `!fabric.bits<W>` matching the PE's `W`. Inner FU input port
+  types (the FU body's block argument types) may be any
+  `!fabric.bits<F>` with `F <= W`. When `F < W`, the high `W - F`
+  bits of the incoming PE data are dropped at the FU boundary
+  (high-bit truncation, hardware-implemented). Output ports remain
+  strict for now: `fabric.yield` value types must match the FU's
+  outer result types and the PE's `bits<W>`.
 * The body contains only `fabric.fu` ops. There is no terminator: the
   region uses MLIR's no-terminator form. Placing `fabric.op` / mux /
   demux / fifo / yield directly in the PE body, or nesting another
@@ -395,7 +422,10 @@ The verifier emits free-form diagnostics for the following conditions:
 * Body contains an op other than `fabric.fu` (in particular, no
   `fabric.yield` may appear inside a `fabric.spatial_pe`).
 * `max_fu_inputs > K` or `max_fu_outputs > L`.
-* An inner FU's boundary width does not match the PE's `W`.
+* An inner FU's outer port width does not match the PE's `W` (input
+  or output). Inner block-arg widths narrower than the outer operand
+  width are accepted; widening (`outer < inner`) is rejected by the
+  FU's own verifier.
 * `discard` and `disconnect` simultaneously set on any mux or demux
   field.
 * Nesting violations: `fabric.spatial_pe` placed outside a

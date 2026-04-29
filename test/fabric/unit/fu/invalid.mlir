@@ -112,3 +112,22 @@ func.func @fu_yield_outside() {
   // expected-error @+1 {{expects parent op 'fabric.fu' or 'fabric.module'}}
   fabric.yield
 }
+
+// -----
+// FU boundary truncation: inner block-arg width must be <= outer operand
+// width. Wider inner is illegal because hardware only supports high-bit
+// truncation, not zero/sign extension.
+fabric.module @fu_outer_lt_inner {
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<8>
+  fabric.spatial_pe(%pa = %a : !fabric.bits<8>) -> !fabric.bits<8> {
+    // expected-error @+1 {{operand #0 bits-width 8 is less than block-argument bits-width 32; the FU boundary only supports high-bit truncation (outer >= inner)}}
+    fabric.fu(%fa = %pa : !fabric.bits<8> to !fabric.bits<32>) -> !fabric.bits<8> {
+      %v = fabric.op [@arith.addi] (%fa, %fa)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %z = fabric.op [@dataflow.constant] ()
+           : () -> !fabric.bits<8>
+      fabric.yield %z : !fabric.bits<8>
+    }
+  }
+  fabric.yield
+}
