@@ -948,6 +948,196 @@ LogicalResult FuOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// fabric.spatial_pe
+//===----------------------------------------------------------------------===//
+//
+// Assembly format mirrors fabric.fu: inline (block-arg = outer : T) pairs in
+// `(...)`, then `-> result-types`, then optional attributes keyword + region
+// body. Differs from fabric.fu in that the body has no terminator.
+
+ParseResult SpatialPeOp::parse(OpAsmParser &parser, OperationState &result) {
+  SmallVector<OpAsmParser::Argument, 4> blockArgs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> operands;
+  SmallVector<Type, 4> operandTypes;
+  SMLoc operandsLoc = parser.getCurrentLocation();
+
+  if (parser.parseLParen())
+    return failure();
+  if (failed(parser.parseOptionalRParen())) {
+    auto parseOne = [&]() -> ParseResult {
+      OpAsmParser::Argument arg;
+      OpAsmParser::UnresolvedOperand op;
+      Type ty;
+      if (parser.parseArgument(arg) || parser.parseEqual() ||
+          parser.parseOperand(op) || parser.parseColon() ||
+          parser.parseType(ty))
+        return failure();
+      arg.type = ty;
+      blockArgs.push_back(arg);
+      operands.push_back(op);
+      operandTypes.push_back(ty);
+      return success();
+    };
+    if (parseOne())
+      return failure();
+    while (succeeded(parser.parseOptionalComma()))
+      if (parseOne())
+        return failure();
+    if (parser.parseRParen())
+      return failure();
+  }
+
+  if (parser.resolveOperands(operands, operandTypes, operandsLoc,
+                             result.operands))
+    return failure();
+
+  if (parser.parseArrow())
+    return failure();
+  SmallVector<Type, 4> resultTypes;
+  if (succeeded(parser.parseOptionalLParen())) {
+    if (failed(parser.parseOptionalRParen())) {
+      if (parser.parseTypeList(resultTypes) || parser.parseRParen())
+        return failure();
+    }
+  } else {
+    Type ty;
+    if (parser.parseType(ty))
+      return failure();
+    resultTypes.push_back(ty);
+  }
+  result.addTypes(resultTypes);
+
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  Region *body = result.addRegion();
+  if (parser.parseRegion(*body, blockArgs, /*enableNameShadowing=*/false))
+    return failure();
+  return success();
+}
+
+void SpatialPeOp::print(OpAsmPrinter &p) {
+  p << '(';
+  Block &entry = getBody().front();
+  llvm::interleaveComma(
+      llvm::zip(entry.getArguments(), getInputs()), p, [&](auto pair) {
+        BlockArgument bb;
+        Value outer;
+        std::tie(bb, outer) = pair;
+        p.printRegionArgument(bb, /*argAttrs=*/{}, /*omitType=*/true);
+        p << " = " << outer << " : " << outer.getType();
+      });
+  p << ") -> ";
+  auto rTypes = getResultTypes();
+  if (rTypes.size() == 1) {
+    p << rTypes.front();
+  } else {
+    p << '(';
+    llvm::interleaveComma(rTypes, p);
+    p << ')';
+  }
+  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs());
+  p << ' ';
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/false);
+}
+
+RegionKind SpatialPeOp::getRegionKind(unsigned /*index*/) {
+  return RegionKind::Graph;
+}
+
+LogicalResult SpatialPeOp::verify() {
+  // 1. K >= 1.
+  if (getInputs().empty())
+    return emitOpError("requires at least 1 input port (K >= 1)");
+
+  // 2. L >= 1.
+  if (getOutputs().empty())
+    return emitOpError("requires at least 1 output port (L >= 1)");
+
+  // 3. Determine W from the first operand and walk all PE ports.
+  auto firstW = bitsWidth(getInputs().front().getType());
+  if (!firstW)
+    return emitOpError(
+        "requires uniform 'bits<W>' on all PE ports; PE input #0 has type ")
+        << getInputs().front().getType();
+  unsigned W = *firstW;
+  for (auto [i, t] : llvm::enumerate(getInputs().getTypes())) {
+    auto w = bitsWidth(t);
+    if (!w || *w != W)
+      return emitOpError("requires uniform 'bits<W>' on all PE ports; PE "
+                         "input #")
+             << i << " has type " << t << " (expected '!fabric.bits<" << W
+             << ">')";
+  }
+  for (auto [i, t] : llvm::enumerate(getOutputs().getTypes())) {
+    auto w = bitsWidth(t);
+    if (!w || *w != W)
+      return emitOpError("requires uniform 'bits<W>' on all PE ports; PE "
+                         "output #")
+             << i << " has type " << t << " (expected '!fabric.bits<" << W
+             << ">')";
+  }
+
+  // 4. Body block-arg count and types must mirror PE inputs.
+  Block &entry = getBody().front();
+  if (entry.getNumArguments() != getInputs().size())
+    return emitOpError("region entry block argument count (")
+           << entry.getNumArguments() << ") must equal operand count ("
+           << getInputs().size() << ")";
+  for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
+    if (arg.getType() != getInputs()[i].getType())
+      return emitOpError("region entry block argument #")
+             << i << " type " << arg.getType() << " must match operand type "
+             << getInputs()[i].getType();
+  }
+
+  // 5./6. Body whitelist: only fabric.fu, and at least one of them.
+  unsigned numFu = 0;
+  for (Operation &op : entry) {
+    auto fu = dyn_cast<FuOp>(op);
+    if (!fu)
+      return op.emitOpError("'fabric.spatial_pe' op body may only contain "
+                            "fabric.fu; got '")
+             << op.getName().getStringRef() << "'";
+    ++numFu;
+
+    // 7. Per-FU constraints.
+    unsigned fuNumIns = fu.getInputs().size();
+    unsigned fuNumOuts = fu.getOutputs().size();
+    if (fuNumIns > getInputs().size())
+      return fu.emitOpError("inner fabric.fu has ")
+             << fuNumIns << " inputs which exceeds spatial_pe input count K="
+             << getInputs().size();
+    if (fuNumOuts > getOutputs().size())
+      return fu.emitOpError("inner fabric.fu has ")
+             << fuNumOuts
+             << " outputs which exceeds spatial_pe output count L="
+             << getOutputs().size();
+    for (auto [i, t] : llvm::enumerate(fu.getInputs().getTypes())) {
+      auto w = bitsWidth(t);
+      if (!w || *w != W)
+        return fu.emitOpError(
+                   "inner fabric.fu boundary width must equal spatial_pe "
+                   "width W=")
+               << W << "; FU input #" << i << " has type " << t;
+    }
+    for (auto [i, t] : llvm::enumerate(fu.getOutputs().getTypes())) {
+      auto w = bitsWidth(t);
+      if (!w || *w != W)
+        return fu.emitOpError(
+                   "inner fabric.fu boundary width must equal spatial_pe "
+                   "width W=")
+               << W << "; FU output #" << i << " has type " << t;
+    }
+  }
+  if (numFu < 1)
+    return emitOpError("body requires at least one fabric.fu");
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // fabric.module
 //===----------------------------------------------------------------------===//
 

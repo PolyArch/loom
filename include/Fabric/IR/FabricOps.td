@@ -176,6 +176,50 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
   let assemblyFormat = "$sym_name attr-dict-with-keyword $body";
 }
 
+def Fabric_SpatialPeOp : Fabric_Op<"spatial_pe", [
+    IsolatedFromAbove,
+    SingleBlock,
+    NoTerminator,
+    DeclareOpInterfaceMethods<RegionKindInterface>,
+    HasParent<"::fabric::ModuleOp">
+]> {
+  let summary =
+      "fabric spatial PE: a container of one or more fabric.fu ops with at "
+      "most one architecturally active per configuration";
+  let description = [{
+    Spatial processing element. Holds one or more `fabric.fu` ops in its body.
+    A configuration of the PE selects at most one inner FU as architecturally
+    active and routes the PE's external input ports to that FU's input ports
+    via the PE-level input-mux fields, and the active FU's output ports back
+    onto the PE's external output ports via the PE-level output-demux fields.
+
+    The PE has no terminator: inner FUs are not SSA-wired to the PE results.
+    Wiring is described by the PE's runtime configuration record (see the
+    spatial_pe spec), not by `fabric.yield`.
+
+    Constraints:
+      * `K = numInputs() >= 1` and `L = numOutputs() >= 1`.
+      * Every PE operand and every PE result is `!fabric.bits<W>` with the
+        same `W`. Mixing widths or non-`bits` fabric types on the PE
+        boundary is rejected.
+      * The body holds one or more `fabric.fu` ops and nothing else. No
+        `fabric.op`, `fabric.mux`, `fabric.demux`, `fabric.fifo`,
+        `fabric.spatial_pe`, or `fabric.yield` may appear directly in the
+        body.
+      * For every inner FU `f`, `f.numInputs() <= K` and
+        `f.numOutputs() <= L`, and every FU input/output port has type
+        `!fabric.bits<W>` matching the PE's `W`.
+      * The op must appear inside a `fabric.module` body.
+  }];
+
+  let arguments = (ins Variadic<Fabric_BitsType>:$inputs);
+  let results = (outs Variadic<Fabric_BitsType>:$outputs);
+  let regions = (region SizedRegion<1>:$body);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
 def Fabric_FuOp : Fabric_Op<"fu", [
     IsolatedFromAbove,
     SingleBlockImplicitTerminator<"YieldOp">,
