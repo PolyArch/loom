@@ -6,6 +6,7 @@ include "Fabric/IR/FabricTypes.td"
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/CommonAttrConstraints.td"
 include "mlir/IR/RegionKindInterface.td"
+include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
@@ -150,6 +151,31 @@ def Fabric_OpOp : Fabric_Op<"op", []> {
   let hasVerifier = 1;
 }
 
+def Fabric_ModuleOp : Fabric_Op<"module", [
+    IsolatedFromAbove,
+    SingleBlockImplicitTerminator<"YieldOp">,
+    Symbol,
+    DeclareOpInterfaceMethods<RegionKindInterface>,
+    NoRegionArguments
+]> {
+  let summary =
+      "fabric module: top-level container of the fabric dialect";
+  let description = [{
+    Top-level container for the fabric dialect. Carries a required
+    `sym_name`. The body is a single graph-region block (back-references
+    are permitted) whose terminator is `fabric.yield` with zero operands.
+    The body whitelist is intentionally permissive at this point; it will
+    be tightened in a later change to admit only the canonical fabric
+    container ops (e.g. `fabric.spatial_pe`, `fabric.temporal_pe`,
+    `fabric.spatial_sw`, `fabric.fifo`, `fabric.instantiate`, ...).
+  }];
+
+  let arguments = (ins SymbolNameAttr:$sym_name);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = "$sym_name attr-dict-with-keyword $body";
+}
+
 def Fabric_FuOp : Fabric_Op<"fu", [
     IsolatedFromAbove,
     SingleBlockImplicitTerminator<"YieldOp">,
@@ -189,14 +215,18 @@ def Fabric_FuOp : Fabric_Op<"fu", [
 
 def Fabric_YieldOp : Fabric_Op<"yield", [
     Terminator,
-    HasParent<"::fabric::FuOp">,
     Pure
 ]> {
-  let summary = "terminator of a fabric.fu region";
+  let summary = "terminator of a fabric.fu or fabric.module region";
   let description = [{
-    Supplies the values that leave the enclosing `fabric.fu` on its
-    results. The number and types of `$values` must match the parent
-    op's result count and types.
+    Closes the enclosing `fabric.fu` or `fabric.module` body.
+
+    Inside `fabric.fu`, `$values` supplies the values that leave the FU
+    on its results; the number and types must match the parent op's
+    result count and types.
+
+    Inside `fabric.module`, `$values` must be empty: a fabric module
+    yields no SSA values across its boundary.
   }];
 
   let arguments = (ins Variadic<Fabric_BitsType>:$values);

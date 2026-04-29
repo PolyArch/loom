@@ -947,19 +947,37 @@ LogicalResult FuOp::verify() {
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// fabric.module
+//===----------------------------------------------------------------------===//
+
+RegionKind fabric::ModuleOp::getRegionKind(unsigned /*index*/) {
+  return RegionKind::Graph;
+}
+
 LogicalResult YieldOp::verify() {
-  auto fu = cast<FuOp>((*this)->getParentOp());
-  if (getValues().size() != fu.getOutputs().size())
-    return emitOpError("yield value count (")
-           << getValues().size() << ") must match parent fabric.fu result "
-                                    "count ("
-           << fu.getOutputs().size() << ")";
-  for (auto [i, v] : llvm::enumerate(getValues())) {
-    Type expected = fu.getOutputs()[i].getType();
-    if (v.getType() != expected)
-      return emitOpError("yield value #")
-             << i << " type " << v.getType()
-             << " must match parent fabric.fu result type " << expected;
+  Operation *parent = (*this)->getParentOp();
+  if (auto fu = dyn_cast_or_null<FuOp>(parent)) {
+    if (getValues().size() != fu.getOutputs().size())
+      return emitOpError("yield value count (")
+             << getValues().size() << ") must match parent fabric.fu result "
+                                      "count ("
+             << fu.getOutputs().size() << ")";
+    for (auto [i, v] : llvm::enumerate(getValues())) {
+      Type expected = fu.getOutputs()[i].getType();
+      if (v.getType() != expected)
+        return emitOpError("yield value #")
+               << i << " type " << v.getType()
+               << " must match parent fabric.fu result type " << expected;
+    }
+    return success();
   }
-  return success();
+  if (isa_and_nonnull<fabric::ModuleOp>(parent)) {
+    if (!getValues().empty())
+      return emitOpError(
+          "yield inside fabric.module must have no operands, got ")
+          << getValues().size();
+    return success();
+  }
+  return emitOpError("expects parent op 'fabric.fu' or 'fabric.module'");
 }
