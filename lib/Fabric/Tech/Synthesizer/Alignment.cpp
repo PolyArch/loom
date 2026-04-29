@@ -120,12 +120,14 @@ static Source classifyValueAsSource(::mlir::Value v, const BodyPositions &bp) {
 }
 
 // Promote a BodyOp source to BackEdge iff the producer's textual
-// position in the body is >= the consumer's position. This is the
-// minimal test needed to align with the matcher's GraphView model:
-// the matcher treats every body-internal SSA value the same way, but
-// the synthesizer needs to distinguish forward edges from back-edges
-// so SCC heads can be reserved as placeholders. Yield-operand callers
-// pass `consumerIdx = numBodyOps`, which never triggers promotion.
+// position in the body is >= the consumer's position. This is a
+// strict superset of true SCC back-edges and is sufficient for
+// placeholder reservation during FU emission. The matcher treats
+// every body-internal SSA value the same way (its valueSource map is
+// direction-agnostic); the synthesizer surfaces this approximation
+// only so back-edge endpoints can be reserved as placeholders.
+// Yield-operand callers pass `consumerIdx = numBodyOps`, which never
+// triggers promotion.
 static void maybePromoteToBackEdge(Source &s, unsigned consumerIdx,
                                    const BodyPositions &bp) {
   if (s.kind != Source::BodyOp)
@@ -295,9 +297,9 @@ NodeSignature signatureOf(Source s) {
         static_cast<unsigned>(s.kind), s.argIndex));
     return ns;
   }
-  // BodyOp / BackEdge: identical signature shape -- the SCC pre-pass
-  // distinguishes them via the Source::kind tag, but the producer's
-  // structural identity is the same in both cases.
+  // BodyOp / BackEdge: identical signature shape -- the textual-
+  // position rule distinguishes them via the Source::kind tag, but
+  // the producer's structural identity is the same in both cases.
   ::mlir::Operation *op = s.op;
   if (!op) {
     // Defensive: unresolved Source.

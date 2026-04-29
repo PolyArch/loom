@@ -13,7 +13,8 @@
 //   * which arith / math op kinds get commutative-operand normalization,
 //   * how multi-result body ops (e.g. `dataflow.stream`) are addressed,
 //   * which graph-region in-body uses are classified as back-edges
-//     (via the same SCC pre-pass used by the matcher).
+//     (via the textual-position back-edge rule documented on
+//     `backEdges`; a strict superset of true SCC back-edges).
 //
 // Spec source: `docs/spec-generalize-subgraphs-to-fu.md`, section
 // "Sub-algorithms shared by strategies > Alignment".
@@ -45,12 +46,12 @@ namespace loom::fabric::tech {
 //              from the enclosing function).
 //   BackEdge:  in a graph-region body, a value produced by an op that
 //              also consumes (transitively) one of the consumer's
-//              results -- identified by the SCC pre-pass that lives
+//              results -- identified by the textual-position rule
 //              jointly with the matcher's `GraphView`. `op` and
 //              `resultIndex` name the producing op / result, exactly as
 //              for `BodyOp`. Strategies use the kind to decide whether
 //              the consuming edge is reserved as a placeholder (and
-//              resolved at SCC head emission) versus walked normally.
+//              resolved at back-edge emission) versus walked normally.
 struct Source {
   enum Kind { BodyOp, BlockArg, BackEdge } kind;
   ::mlir::Operation *op = nullptr; // BodyOp / BackEdge
@@ -104,8 +105,11 @@ yieldAnchors(::dataflow::SubgraphOp sg);
 //   * `BodyOp`:   when the operand is produced by another body op
 //                 (also captures multi-result by setting `resultIndex`);
 //   * `BackEdge`: when the producer is downstream of the consumer in
-//                 the body's textual order, identified by the SCC
-//                 pre-pass below. Only meaningful in graph-region
+//                 the body's textual order. Identified by a textual-
+//                 position approximation (see `backEdges` below) -- a
+//                 strict superset of true SCC back-edges that is
+//                 sufficient for the synthesizer's placeholder-
+//                 reservation needs. Only meaningful in graph-region
 //                 bodies; in DAG-only bodies this never returns
 //                 `BackEdge`.
 //
@@ -116,9 +120,15 @@ Source operandSource(::mlir::Operation *consumer, unsigned operandIdx);
 
 // Lightweight back-edge identification: returns the set of
 // `(consumer, operandIdx)` pairs whose `operandSource` would return
-// `BackEdge`. Uses the same SCC decomposition as `SubgraphMatcher`'s
-// `GraphView` so the matcher and the synthesizer always agree on
-// which operands are back-edges.
+// `BackEdge`. The current implementation uses a textual-position rule
+// (an operand whose producer's body index is `>=` the consumer's index
+// is classified as a back-edge); this is a strict superset of the true
+// SCC back-edge set and is sufficient for placeholder reservation
+// during FU emission. A future pass that needs exact SCC membership
+// (e.g. for cycle-length reasoning) can replace this with a Tarjan
+// pre-pass without changing the public API. The matcher itself does
+// not need to make this distinction (its value-source map is direction-
+// agnostic), so synth and matcher remain in lockstep.
 ::llvm::DenseSet<::std::pair<::mlir::Operation *, unsigned>>
 backEdges(::dataflow::SubgraphOp sg);
 

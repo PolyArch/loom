@@ -7,7 +7,8 @@
 // `lib/Fabric/Tech/SubgraphMatcher.cpp` so that the synthesizer's
 // Alignment facade and the matcher's VF2 search agree byte-for-byte on
 // node ordering, source descriptors, commutative-operand canonicalization,
-// and (downstream) SCC back-edge identification. The matcher continues
+// and the textual-position back-edge approximation used by the
+// synthesizer's Alignment facade. The matcher continues
 // to consume these primitives through this header; the alignment facade
 // (include/Fabric/Tech/Synthesizer/Alignment.h) wraps them with the
 // public Source / NodeSignature API mandated by the spec
@@ -39,7 +40,8 @@ namespace loom::fabric::tech::detail {
 //   * BlockArg(idx): forwarded from the i-th block argument of the
 //     subgraph's entry block.
 // Back-edge classification (graph-region bodies only) is layered on
-// top by callers via SCC analysis; it is not a separate kind here so
+// top by callers via the textual-position rule documented on
+// `loom::fabric::tech::backEdges`; it is not a separate kind here so
 // that the matcher's existing source-resolution model is unchanged.
 struct Source {
   enum Kind : uint8_t { BodyOp, BlockArg } kind;
