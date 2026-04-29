@@ -118,17 +118,28 @@ verified at synthesis time).
 ### Pass
 
 ```
-Pass:    loom-generalize-subgraphs-to-fu
-Scope:   ModuleOp
-Inputs:  any number of func.func, each containing exactly one
-         dataflow.subgraph in its body, optionally annotated with
-           loom.synth_group = "<group_name>"
-         Subgraphs without the attribute belong to the "default" group.
-Output:  the same module, with one fabric.fu appended per group that
-         synthesized successfully, and loom.synth_failed string attribute
-         on input func.func of any group that failed.
-Config:  see SynthConfig schema below; loaded from --synth-config=<path>
-         (YAML or TOML, mirroring TechMapConfig conventions).
+Pass:     loom-generalize-subgraphs-to-fu
+Scope:    ModuleOp
+Inputs:   any number of func.func, each containing exactly one
+          dataflow.subgraph in its body, optionally annotated with
+            loom.synth_group = "<group_name>"
+          Functions without the attribute belong to the "default" group.
+          Functions whose body shape violates the "exactly one subgraph"
+          rule are rejected with loom.synth_failed = "invalid_input".
+Output:   the same module, with one wrapper func.func (containing one
+          fabric.fu) appended per group that synthesized successfully,
+          and loom.synth_failed string attribute on input func.func of
+          any group that failed.
+Options:  config=<path>            -- YAML or TOML SynthConfig file;
+                                       same option name as
+                                       loom-partition-graph-into-subgraphs
+                                       for consistency
+          fail-as-error=<bool>     -- escalate warnings to errors
+                                       (default: false)
+          dump-stats=<bool>        -- print one-line per-group stats
+                                       (strategy, cost, coverage,
+                                        reason) as remarks; consumed by
+                                       lit tests (default: false)
 ```
 
 The pass is registered alongside the existing tech-mapping passes in the
@@ -157,16 +168,27 @@ stable format for lit tests, and is not part of the production pipeline.
    prevent synthesis of other groups. Failed groups have their input
    `func.func`s annotated with `loom.synth_failed = "<reason>"` (see
    failure enumeration below).
-6. **Idempotence on synthesized output**: the synthesized FU symbol name
-   for group `<g>` is `@fu_<sanitized(g)>` where `sanitized` replaces
-   any character outside `[A-Za-z0-9_]` with `_`. Rerunning the pass on
-   a module that already contains a top-level symbol with that name is
-   a no-op for that group, emitting a `remark`. Other groups proceed
-   normally.
-7. **Output IR validity**: every emitted `fabric.fu` passes
-   `OpOp::verify` (which transitively enforces `hwShareGroups()` rules).
-   This is checked by the MLIR verifier on pass exit; a violation is a
-   compiler bug, not a user-visible failure.
+6. **Idempotence on synthesized output**: the synthesized wrapper
+   function symbol name for group `<g>` is `@fu_<sanitized(g)>` where
+   `sanitized` replaces any character outside `[A-Za-z0-9_]` with `_`.
+   The inner `fabric.fu` carries no name. Rerunning the pass on a
+   module that already contains a top-level `func.func` symbol with
+   that name is a no-op for that group, emitting a `remark`. Name
+   collisions with non-synthesized functions of the same name are
+   reported as `symbol_conflict` failures.
+7. **Output IR validity**: every emitted wrapper function passes the
+   MLIR verifier; the inner `fabric.fu` passes `FuOp::verify` (which
+   restricts the body to `fabric.op` / `fabric.mux` / `fabric.demux`)
+   and every nested `fabric.op` passes `OpOp::verify` (which
+   transitively enforces `hwShareGroups()` rules). The pass invokes
+   the verifier on the freshly built FU before splicing it into the
+   module; a verifier failure is reported as `verifier_failed` with a
+   diagnostic.
+8. **Input validation**: each input `func.func` must contain exactly
+   one `dataflow.subgraph` operation in its body. Functions with zero
+   or with more than one subgraph are skipped, the function is
+   annotated with `loom.synth_failed = "invalid_input"`, and a
+   `warning` is emitted.
 
 ### IR conventions
 
@@ -205,20 +227,28 @@ func.func @pattern_loose_floor() {
 
 #### Output
 
-```mlir
-// New: synthesized FU per group, appended to module.
-fabric.fu @fu_alu_int_32 () -> () {
-  %a = fabric.bits<32> ...
-  %b = fabric.bits<32> ...
-  %y = fabric.op {
-        op_list = [@arith.addi, @arith.subi],
-        hw_params = [{}]
-       } (%a, %b) : (fabric.bits<32>, fabric.bits<32>) -> fabric.bits<32>
-  fabric.yield %y : fabric.bits<32>
-}
+`fabric.fu` is not a top-level symbol op; it is `IsolatedFromAbove`,
+must be wrapped inside another op (typically a `func.func`), and its
+body permits only `fabric.op`, `fabric.mux`, `fabric.demux`, and the
+`fabric.yield` terminator. The pass therefore appends one wrapper
+function per group, naming the function (not the inner `fabric.fu`)
+after the group:
 
-fabric.fu @fu_default () -> () {
-  ...
+```mlir
+// New: synthesized wrapper per group, appended to module. The function
+// symbol name is the canonical FU identity used downstream by
+// loom-map-subgraph-to-fus.
+func.func @fu_alu_int_32_addi_subi(%a: !fabric.bits<32>,
+                                   %b: !fabric.bits<32>)
+                                  -> !fabric.bits<32> {
+  %y = fabric.fu(%aa = %a : !fabric.bits<32>,
+                 %bb = %b : !fabric.bits<32>)
+                -> !fabric.bits<32> {
+    %r = fabric.op [@arith.addi, @arith.subi] (%aa, %bb)
+         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+    fabric.yield %r : !fabric.bits<32>
+  }
+  return %y : !fabric.bits<32>
 }
 
 // Failed groups have their input func.func annotated:
@@ -229,7 +259,12 @@ func.func @pattern_x() attributes {
 ```
 
 The synthesized FU never contains `fabric.fifo`. FIFO insertion is the
-responsibility of downstream passes.
+responsibility of downstream passes. The `fabric.fu` body conforms to
+`FuOp::verify`: only `fabric.op`, `fabric.mux`, `fabric.demux` between
+the entry block and `fabric.yield`. Any state-bearing dataflow op
+(e.g. `dataflow.carry`, `dataflow.stream`, `dataflow.invariant`,
+`dataflow.gate`) is realized as `fabric.op [@dataflow.<op>]` inside the
+body.
 
 #### Failure reasons (closed enumeration)
 
@@ -238,12 +273,37 @@ responsibility of downstream passes.
 * `topology_mismatch` -- tier B could not express a structural
   difference using `fabric.mux`/`fabric.demux`.
 * `feedback_align_conflict` -- tier C found incompatible flow signatures
-  on `dataflow.carry`-rooted SCCs.
+  on cyclic SCCs (e.g. `fabric.op[@dataflow.carry]` heads driven by
+  incompatible `dataflow.stream` parameter sets).
 * `coverage_verify_failed` -- the synthesized FU did not enumerate a
   match for some input subgraph.
 * `timeout` -- a strategy exceeded its `timeout_sec` budget.
 * `resource_exhausted` -- a strategy generated more candidates than its
   `candidate_cap`.
+* `unsupported_op` -- an input subgraph contains a software op not
+  supported by `fabric.op` (per `opSchemas()` in
+  `lib/Fabric/IR/FabricOps.cpp`); for example `dataflow.load`,
+  `dataflow.store`, `dataflow.graph`, `arith.constant`, `ub.poison`.
+* `invalid_input` -- the enclosing `func.func` does not contain
+  exactly one `dataflow.subgraph`, or a subgraph signature is
+  ill-typed.
+* `verifier_failed` -- the synthesized FU did not pass MLIR's verifier
+  (`FuOp::verify` or a nested `OpOp::verify`). Indicates a compiler
+  bug; the FU is dropped, no IR is appended.
+* `symbol_conflict` -- the wrapper function symbol name
+  `@fu_<sanitized(group)>` already exists in the module and does not
+  correspond to a previous synthesizer run that we may safely skip.
+* `config_parse_failed` -- the `--config=<path>` file failed to load.
+* `no_legal_materialization` -- the strategy produced an FU whose
+  enumerated materializations do not satisfy `OpOp::verify` /
+  `FuOp::verify`, or whose port assignments contradict the dialect's
+  static type rules. Distinct from `coverage_verify_failed`: nothing
+  the enumerator emits matches *anything* legal.
+
+These failure reasons are stored verbatim as the `loom.synth_failed`
+attribute on the offending input function. Implementations must keep
+this list in lockstep with a `SynthFailureReason` C++ enum to enable
+exhaustive `switch` checks.
 
 ## Module architecture
 
@@ -364,9 +424,12 @@ synth:
 ```
 
 The schema is loaded into a `SynthConfig` C++ struct that mirrors
-`TechMapConfig` in `include/Common/Config.h`. CLI surface uses the same
-`--synth-config=<path>` convention as existing tech-map passes; an
-unsupplied path uses built-in defaults equivalent to the YAML above.
+`TechMapConfig` in `include/Common/Config.h`. The pass exposes it via
+the standard MLIR pass-option mechanism as `config=<path>`, identical
+to the existing `loom-partition-graph-into-subgraphs` convention. An
+unsupplied or empty path uses built-in defaults equivalent to the YAML
+above. A failure to parse the file is reported as
+`config_parse_failed` and aborts the pass.
 
 ## Strategies
 
@@ -427,52 +490,94 @@ single-edge insertions/deletions handled by local mux/demux when
 
 #### Idea
 
-When all input subgraphs are topology-isomorphic, a structural anchor
-(the immediate producer of `dataflow.yield`, or a `dataflow.carry` head)
-gives a fixed pivot. BFS outward from the anchor in lock-step on every
-input simultaneously. At each visited position, collect the multiset of
-ops from each subgraph at that position, decide a fabric.op assignment
-using the share-group rule.
+When all input subgraphs are topology-isomorphic, the **list of values
+yielded by `dataflow.yield`** gives an ordered set of fixed anchors
+(one per yield operand). For each anchor index, the producer is a
+**Source**, which is one of:
+
+* `BodyOp(op, result_index)` -- a value produced by an op in the
+  subgraph body (possibly multi-result, e.g. `dataflow.stream` /
+  `dataflow.gate`).
+* `BlockArg(arg_index)` -- a value live-in to the subgraph (one of the
+  subgraph's external operands).
+* `BackEdge(carry_op, result_index)` -- in graph-region bodies, a value
+  produced by an op that is also a downstream consumer; identified by
+  the matcher's `GraphView` SCC pre-pass.
+
+Alignment proceeds in lock-step on the Source position across all
+input subgraphs simultaneously. The same `Source` abstraction (and the
+same SCC pre-pass) is borrowed from `SubgraphMatcher`'s `GraphView` so
+that anchor / mcs / incremental share one source-resolution
+implementation.
 
 #### Pseudocode
 
 ```
 function synthesize_anchor(inputs):
-    anchors = [pick_anchor(sg) for sg in inputs.subgraphs]
-    if not all_isomorphic_root_signatures(anchors):
+    sgs = inputs.subgraphs
+    yield_arities = [yield_operand_count(sg) for sg in sgs]
+    if not all_equal(yield_arities):
         return failure("topology_mismatch")
 
-    correspondence = {anchors[0]: [anchors[i] for i in 1..N]}
-    queue = [anchors[0]]
-    fu = empty_fu()
+    // anchors_per_index[k] = [Source for sg_i's k-th yield operand]
+    anchors_per_index = build_yield_anchors(sgs)
 
-    while queue not empty:
-        v0 = queue.pop()
-        peers = correspondence[v0]
-        op_set = {op_name(v0)} U {op_name(p) for p in peers}
-        bw = bitwidth(v0)
-        if not all_same_bitwidth(v0, peers):
+    fu = empty_wrapper_with_inputs(union_block_args(sgs))
+    visited = {}      // dedup so DAG fanout is not double-emitted
+    pending = anchors_per_index[*]    // queue all anchor sources
+
+    while pending not empty:
+        s0_peers = pending.pop()      // [Source_0, ..., Source_{N-1}]
+        if s0_peers in visited:
+            wire_existing(visited[s0_peers])
+            continue
+        kind = unify_kind(s0_peers)   // BodyOp | BlockArg | BackEdge
+        if kind == BlockArg:
+            wire_to_input_port(s0_peers)
+            visited[s0_peers] = port
+            continue
+        if kind == BackEdge:
+            // Reserve unrealized_conversion_cast placeholder; resolved
+            // when the SCC head emits its result.
+            place = reserve_back_edge_placeholder(s0_peers)
+            visited[s0_peers] = place
+            continue
+        // kind == BodyOp
+        op_set = {op_name(s.op) for s in s0_peers}
+        bw_set = {bitwidth(s.op.result(s.result_index)) for s in s0_peers}
+        if len(bw_set) != 1:
             return failure("topology_mismatch")
-        decision = decide_op_node(op_set, bw, config)
-            // decide_op_node options:
+        if not all_same_arity(s0_peers):
+            return failure("topology_mismatch")
+        decision = decide_op_node(op_set, bw=single(bw_set), config)
+            // decide_op_node options (ranked by CostModel):
             //   single_share_group => one fabric.op{op_list = op_set}
             //   cross_share_group  => if allow_intra_position_mux:
-            //                            split + insert local mux
+            //                            split into per-share-group
+            //                            fabric.ops merged through a
+            //                            local fabric.mux; pick the
+            //                            cheapest legal layout
             //                         else:
             //                            return failure("cross_share_group")
-        emit decision into fu
-        for each operand index i of v0:
-            child0 = operand(v0, i)
-            child_peers = [operand(p, i) for p in peers]
-            if not all_same_arity(v0, peers):
-                return failure("topology_mismatch")
-            correspondence[child0] = child_peers
-            queue.push(child0)
+        if decision is None: return failure("topology_mismatch")
+        emit decision into fu                  // returns produced Value
+        visited[s0_peers] = decision.value
+        for each operand index i of s0_peers[0].op:
+            child_peers = [operand_source(s.op, i) for s in s0_peers]
+            pending.push(child_peers)
 
+    resolve_back_edge_placeholders(fu, visited)
+    finalize_yield(fu, anchors_per_index)
     if config.coverage_verifier.enabled:
-        verify_coverage(fu, inputs.subgraphs)  // may fail
+        verify_coverage(fu, sgs)  // may fail with coverage_verify_failed
     return success(fu)
 ```
+
+`decide_op_node` ranks every legal share-group layout (single-group +
+optional discard / disconnect mux modes) by `CostModel::evaluate` on a
+hypothetical sub-FU and returns the lowest-cost legal candidate. This
+replaces "first success wins" everywhere in synthesis; ties are broken
+by stable structural id.
 
 #### Acceptance criteria (anchor)
 
@@ -493,13 +598,21 @@ function synthesize_anchor(inputs):
 
 #### Idea
 
-Find a maximum common edge subgraph (MCES) shared by every input. Use
-that as the FU skeleton. Bypass each input's edges/nodes outside the MCS
-through a per-input `fabric.demux`/`fabric.mux` shell, with mode bits
-choosing which input pattern is realized.
+Enumerate maximum common edge subgraphs (MCES) shared by every input
+and use each candidate as a FU skeleton. Bypass each input's
+edges/nodes outside the MCS through a per-input
+`fabric.demux`/`fabric.mux` shell, with mode bits choosing which input
+pattern is realized. Mux/demux modes follow the enumerator semantics:
+`sel` for normal selection, `discard` for ports drained by hardware
+(consumed without producing a software value), `disconnect` for ports
+that block the configuration entirely; `decide_mux_modes` chooses the
+cheapest mode tuple that legalizes a given input. The output is the
+**legal candidate FU with the lowest `CostModel::evaluate` score**;
+"maximum common subgraph" is the search structure, not a guarantee of
+hardware-area optimality (which depends on mux/demux costs and
+duplicated datapaths).
 
-This is provably tightest (smallest skeleton with all inputs covered)
-but is NP-hard. Mitigations:
+This problem is NP-hard. Mitigations:
 
 * prune by share-group compatibility on candidate node mappings;
 * prune by bit-width compatibility;
@@ -565,18 +678,30 @@ for i in 1..N:
 return fu_N
 ```
 
-`extend_to_cover` is the only step that mutates the FU. It runs in three
-sub-attempts in order, accepting the first that succeeds:
+`extend_to_cover` is the only routine that mutates the FU. It generates
+candidate extensions of three kinds and ranks **all candidates** by
+`CostModel::evaluate` on the resulting FU; it returns the lowest-cost
+legal candidate. (First-success is **not** used: it can permanently
+foreclose lower-cost future sharing.)
 
-1. **op-list widen**: try widening some `fabric.op.op_list` (within share
+1. **op-list widen**: widen some `fabric.op.op_list` (within share
    group + width) so input_i's op identity at that position becomes a
    member.
-2. **mux/demux insert**: try inserting a `fabric.mux` (output side) or
-   `fabric.demux` (input side) at the diff site so input_i's branch
-   becomes one configurable arm.
-3. **structural extend (tier C only)**: try grafting a new sub-FU for
-   the diff region, including SCC bodies if needed; gated by tier
-   detection (only attempted if the diff has a feedback edge).
+2. **mux/demux insert**: insert a `fabric.mux` (output side) or
+   `fabric.demux` (input side) at a diff site so input_i's branch
+   becomes one configurable arm. The candidate generator enumerates
+   `(sel, discard, disconnect)` mode tuples per port consistent with
+   the enumerator's drain semantics:
+     * a `sel`-mode arm is produced and consumed by software;
+     * a `discard`-mode arm drains the producer's value in hardware
+       without a software consumer (used for fanout where one branch
+       is structurally unused in this configuration);
+     * a `disconnect`-mode arm makes the configuration invalid
+       (used to prune cross-configuration interference).
+3. **structural extend (tier C only)**: graft a new sub-FU for the
+   diff region, including `fabric.op[@dataflow.carry]` SCC bodies if
+   needed; gated by tier detection (only attempted if the diff has a
+   back-edge in the alignment).
 
 #### Pseudocode
 
@@ -590,17 +715,21 @@ function synthesize_incremental(inputs):
         if coverage_verifier.is_covered(fu, sg):
             covered.append(sg)
             continue
-        for attempt in [widen_oplist, insert_mux_demux, structural_extend]:
-            fu_try = attempt(fu, sg, config)
-            if fu_try is not None:
-                if config.incremental.coverage_verify_each_attempt:
-                    if not all_covered(fu_try, covered + [sg]):
-                        continue
-                fu = fu_try
-                covered.append(sg)
-                break
-        else:
-            return failure(reason_from_attempts())
+        candidates = []
+        candidates += widen_oplist_candidates(fu, sg, config)
+        candidates += insert_mux_demux_candidates(fu, sg, config)
+        if has_backedge_in_diff(fu, sg):
+            candidates += structural_extend_candidates(fu, sg, config)
+        legal = []
+        for cand in candidates:
+            if not verifier_passes(cand): continue
+            if config.incremental.coverage_verify_each_attempt:
+                if not all_covered(cand, covered + [sg]): continue
+            legal.append(cand)
+        if not legal:
+            return failure(reason_from_attempts(candidates))
+        fu = min(legal, key=cost_model.evaluate)
+        covered.append(sg)
     if config.coverage_verifier.enabled:
         verify_coverage(fu, inputs.subgraphs)
     return success(fu)
@@ -661,38 +790,53 @@ function synthesize_incremental_random(inputs):
 
 ### Alignment
 
-`Alignment.h` exposes pure utilities used by anchor / mcs /
-incremental's diff phase. Key signatures:
+`Alignment.h` is a thin facade over the existing
+`SubgraphMatcher::GraphView` data model so that synthesis and matching
+agree on what "the same Source position" means across DAG fanout,
+multi-result ops, block arguments, commutative operands, graph-region
+back-edges, and yield wiring. Synthesis re-uses GraphView's SCC
+pre-pass and source descriptors verbatim; this avoids inventing a
+parallel hashing/iteration order that would diverge from the matcher.
 
 ```cpp
+// Source descriptor: how a value is produced inside a subgraph.
+// Identical in semantics to SubgraphMatcher::GraphView::Source.
+//   BodyOp:    op.result(resultIndex)
+//   BlockArg:  the subgraph's argIndex-th block argument
+//   BackEdge:  a graph-region back-edge into op (resolved by SCC
+//              pre-pass; consumed by reserve/resolve placeholder
+//              passes during emission)
+struct Source {
+  enum Kind { BodyOp, BlockArg, BackEdge } kind;
+  mlir::Operation *op;     // BodyOp / BackEdge
+  unsigned resultIndex;    // BodyOp / BackEdge
+  unsigned argIndex;       // BlockArg
+};
+
 // A node signature collapses op identity, share-group id, bit-width,
-// arity, and a rolling hash of operand signatures (for DAG matching).
-// Two subgraphs are alignable at a position iff the signatures match.
+// arity, and operand-source kinds (NOT operand identity). Two subgraph
+// positions are alignable iff their signatures match AND their per-operand
+// source kinds match positionally (commutative operands are normalized
+// upstream by GraphView's canonicalization).
 //
 // `op` borrows from the MLIR registered-name interning pool, so it
-// outlives any single pass invocation. NodeSignature is thus trivially
+// outlives any single pass invocation. NodeSignature is trivially
 // copyable and safe to cache across thread boundaries.
 struct NodeSignature {
   llvm::StringRef op;
   std::optional<size_t> shareGroup;
   unsigned bitwidth;
   unsigned arity;
-  uint64_t operandHash;
+  llvm::SmallVector<Source::Kind, 4> operandKinds;
+  uint64_t structuralHash;   // stable, deterministic
 };
-NodeSignature signatureOf(mlir::Operation *op);
+NodeSignature signatureOf(Source);
 
-// VF2-style isomorphism check between two subgraph regions, parameterized
-// by a node-equivalence predicate (default: shareGroup match + width
-// match). Reuses the existing matcher's primitives where possible.
-bool isIsomorphic(dataflow::SubgraphOp a, dataflow::SubgraphOp b,
-                  llvm::function_ref<bool(mlir::Operation *,
-                                          mlir::Operation *)> nodeEq);
-
-// Producers feeding dataflow.yield, plus dataflow.carry heads, are
-// "structural anchors" that have a fixed pivot independent of operand
-// labels.
-llvm::SmallVector<mlir::Operation *, 4>
-structuralAnchors(dataflow::SubgraphOp sg);
+// Yield anchors: the ordered list of Source descriptors corresponding
+// to dataflow.yield's operands. This is the canonical entry point for
+// anchor / mcs / incremental alignment.
+llvm::SmallVector<Source, 4>
+yieldAnchors(dataflow::SubgraphOp sg);
 ```
 
 ### CoverageVerifier
@@ -711,9 +855,16 @@ struct CoverageReport {
 class CoverageVerifier {
 public:
   CoverageVerifier(const SynthConfig &);
-  // Materializes `fu` via SubgraphEnumerator (in-memory, not appended
-  // to a module), then matches each input subgraph using
-  // SubgraphMatcher. Honors parallel_match.
+  // Materializes `fu` by:
+  //   1. Constructing a scratch ModuleOp owned by this verifier.
+  //   2. Cloning the wrapper func.func + fabric.fu into the scratch
+  //      module (so SubgraphEnumerator's append behavior does not
+  //      pollute the user's module).
+  //   3. Invoking SubgraphEnumerator::enumerateFuSubgraphs on the
+  //      scratch module.
+  //   4. Matching each input subgraph against the appended candidates
+  //      with SubgraphMatcher (parallel per `parallel_match`).
+  //   5. Discarding the scratch module deterministically before return.
   CoverageReport verify(fabric::FuOp fu,
                         llvm::ArrayRef<dataflow::SubgraphOp> inputs);
 };
@@ -732,22 +883,32 @@ and short-circuit per input on first match.
 
 ### SCC handling for tier C
 
-The flow signature of a `dataflow.carry` is the tuple
+`dataflow.carry` itself carries no `step_op` / `cont_cond` attributes;
+its signature is just the carried-value type. Reduction-shaped
+patterns therefore expose their stepping/continuation parameters via
+the **`dataflow.stream`** op driving the carry's `cond` operand
+(`step_op` and `cont_cond` are `dataflow.stream` attributes per
+`include/Dataflow/IR/DataflowOps.td`).
+
+The flow signature of a tier-C SCC head is the tuple
 
 ```
 flow_signature(carry) = (
-    init_type,        // MLIR Type of the carried value
-    step_op,          // StringAttr (e.g. "arith.addi")
-    cont_cond         // StringAttr (e.g. "slt")
+    carry_type,       // MLIR Type of the carried value
+    upstream_stream_signature_or_none
+        // present iff carry.cond is produced by a dataflow.stream:
+        //   (index_type, step_op, cont_cond)
+        // otherwise (e.g. cond comes from arith.cmpi or block-arg):
+        //   (cond_source_kind, cond_source_op_name)
 )
 ```
 
 Two carry heads "match" iff their signatures are equal under structural
-type equality plus string equality on the attributes. For N > 2 inputs,
-the heuristic builds an equivalence relation by transitive closure of
-pairwise matches; if the closure produces a partition with more than
-one class within a single input, that input fails
-`feedback_align_conflict`.
+type equality plus string equality on the attributes / op names. For
+N > 2 inputs, the heuristic builds an equivalence relation by
+transitive closure of pairwise matches; if the closure produces a
+partition with more than one class within a single input, that input
+fails `feedback_align_conflict`.
 
 ```
 function pre_align_sccs(sccsets):
@@ -772,6 +933,9 @@ function pre_align_sccs(sccsets):
 The unroll path mirrors the four-pass materialization scheme used by
 `SubgraphEnumerator` for forward-direction graph-region bodies (see
 recent commit history under `enumerator: graph-region body`).
+Carry-heads are realized inside the synthesized FU as
+`fabric.op [@dataflow.carry]`, never as bare `dataflow.carry`
+(`FuOp::verify` rejects the latter).
 
 ### CostModel
 
@@ -794,14 +958,18 @@ public:
 } // namespace loom::fabric::tech
 ```
 
-Formula:
+Formula (`fabric.fu` body contains only `fabric.op` / `fabric.mux` /
+`fabric.demux`; carry-shaped ops are `fabric.op[@dataflow.carry]`):
 
 ```
-cost(fu) = sum_{op in fu.fabric.op}     baseArea(shareGroupOf(op_list[0]),
-                                                 bitwidthOf(op))
-         + sum_{m  in fu.fabric.mux}    mux_penalty   * portCount(m) * bw(m)
-         + sum_{d  in fu.fabric.demux}  demux_penalty * portCount(d) * bw(d)
-         + sum_{c  in fu.dataflow.carry} carry_penalty * bw(c)
+cost(fu) = sum_{op in fu.fabric.op (op_list[0] != @dataflow.carry)}
+                baseArea(shareGroupOf(op_list[0]), bitwidthOf(op))
+         + sum_{op in fu.fabric.op (op_list[0] == @dataflow.carry)}
+                carry_penalty * bitwidthOf(op)
+         + sum_{m  in fu.fabric.mux}
+                mux_penalty   * portCount(m) * bw(m)
+         + sum_{d  in fu.fabric.demux}
+                demux_penalty * portCount(d) * bw(d)
 ```
 
 `baseArea(group, bw)` is a built-in table keyed on share-group id with a
@@ -841,8 +1009,8 @@ for perf tests.
    has exactly 2x the base cost of an i32 addi.
 2. A 2-port mux costs strictly less than a 4-port mux of the same
    width (under positive `mux_penalty`).
-3. Adding a `dataflow.carry` to an FU strictly increases its cost
-   (under positive `carry_penalty`).
+3. Adding a `fabric.op[@dataflow.carry]` to an FU strictly increases
+   its cost (under positive `carry_penalty`).
 4. CostModel is pure: same FU + same config gives identical cost
    across runs and threads.
 
@@ -861,15 +1029,40 @@ Implementation primitive: a single shared thread-pool wrapper in
 sections submit closures that capture by value to avoid lifetime issues
 across MLIR `OwningOpRef`s.
 
-Determinism is preserved by:
+**MLIR mutation is never parallel.** Each per-group worker builds its
+candidate FU in a *thread-local scratch* `MLIRContext`/`OwningOpRef`
+context and produces a detached `OwningOpRef<func::FuncOp>` (the
+wrapper). The pass's main thread, after all workers complete, splices
+the wrappers into the user's `ModuleOp` in **lexical group-name order**
+(serial). The same rule applies to `CoverageVerifier`, which builds a
+private scratch `ModuleOp` per call.
 
-* sorting input groups by name before dispatch;
-* sorting random restart results by `(cost, permutation_index)` before
-  selection;
-* coverage results being matched by index rather than by completion
-  order;
-* MCS branch candidates compared with stable tiebreakers
-  (`(cost, deterministic_node_id_hash)`).
+#### Determinism rules
+
+Every emitted IR construct is canonicalized through a single
+`Canonicalize.h` pass after synthesis and before splicing. The
+canonicalization step normalizes:
+
+* **`fabric.op.op_list`**: members sorted by string name (already a
+  precondition for `OpOp::verify`'s share-group check, but
+  re-asserted here).
+* **`fabric.fu` operand and result port order**: stable structural id
+  derived from the union of the input subgraphs' yield order +
+  block-arg order.
+* **Mux / demux arm order**: each arm carries a structural id derived
+  from the lowest-id subgraph it originated in; arms sorted by id.
+* **Wrapper symbol name**: `@fu_<sanitized(group)>` with the
+  `[A-Za-z0-9_]` sanitization rule.
+* **`hw_params` and `sw_configs` dictionaries**: keys sorted
+  lexically; allowed-set arrays sorted (e.g. `predicate = ["eq", "ne"]`
+  not `["ne", "eq"]`).
+* **Candidate ranking ties**: broken by `(cost, structural_id)` where
+  `structural_id` is a deterministic 64-bit hash of the canonical
+  printed form.
+
+No `DenseMap` / `DenseSet` iteration is permitted in the emission
+path. Internal data structures may use them; conversion to ordered
+form happens at every emission boundary.
 
 ## Failure handling
 
@@ -877,18 +1070,42 @@ Per Q14 (best-effort + optional fallback chain):
 
 ```
 function generalize_pass(module, config):
-    groups = collect_groups(module)             // by loom.synth_group
+    valid, invalid = validate_input_funcs(module)
+        // invalid: zero-or-many dataflow.subgraph in body, or other
+        // schema violations -> annotated immediately with
+        // loom.synth_failed = "invalid_input"; not enqueued for synth.
+    annotate_invalid(invalid)
+    groups = collect_groups(valid)              // by loom.synth_group
     sorted = sort(groups, by=name)              // determinism
-    parallel_for group in sorted:
-        result = run_with_fallback(group, config)
+
+    // Per-group workers run in parallel; each builds a detached
+    // wrapper func.func in a scratch MLIRContext. Workers do NOT
+    // mutate the user's module.
+    results = parallel_map sorted:
+        lambda group: run_with_fallback(group, config)
+
+    // Splice serially in sorted order; this is the ONLY place that
+    // mutates the user's module after input validation.
+    for (group, result) in zip(sorted, results):
         if result.success:
-            module.append(result.fu)
+            // Symbol-name precheck: detect collision before splice.
+            if module_has_symbol(module, result.fu_name):
+                if previously_synthesized_marker(module, result.fu_name):
+                    emit_remark(group, "skipping idempotent re-synth")
+                    continue
+                annotate_failure(group, "symbol_conflict")
+                emit_warning(group, "symbol_conflict")
+                continue
+            splice(module, result.wrapper)
+            tag(result.wrapper, loom.synthesized_for = group.name)
         else:
             for sg in group.subgraphs:
                 annotate(sg.parent_func,
                          loom.synth_failed = result.failureReason)
-            emit_warning(group, result.failureReason)
-    return success_if_any(groups)
+            emit_diagnostic(group, result.failureReason,
+                            severity=config.fail_as_error ? Error : Warning)
+
+    return success
 ```
 
 `run_with_fallback`:
@@ -1045,71 +1262,93 @@ synth_fu (tier B):
 #### Input
 
 ```mlir
-// Two reductive accumulators sharing identical carry signatures
-// (init_i32, step_op=arith.addi, cont_cond=slt) but differing in the
-// immediate post-step op (arith.addi vs arith.xori, two distinct
-// share groups). The flow-signature heuristic merges the carries; the
-// post-step diff falls through to the tier-B mux insertion path.
+// Two reductive accumulators driven by identical streams
+// (lb=0, ub=N, step=1, step_op="+=", cont_cond="<"); both feed a
+// dataflow.carry whose carried value is then post-processed differently
+// (arith.addi vs arith.xori). addi and xori are in different share
+// groups, so the post-carry op cannot share a single fabric.op.
 func.func @p_accum_addi() attributes {loom.synth_group = "accum"} {
-  %g = dataflow.subgraph (%init, %limit) -> (%out) {
-    %c, %cond = dataflow.carry %init step arith.addi cont_cond slt limit %limit : i32
-    %out = arith.addi %c, %c : i32
-    dataflow.yield %out : i32
+  %g = dataflow.subgraph (%lb, %ub, %step, %init)
+                          -> (%out) {
+    %idx, %rwc = dataflow.stream %lb, %ub, %step
+                 {step_op = "+=", cont_cond = "<"} : i32
+    %c = dataflow.carry %rwc, %init, %nxt : i32
+    %nxt = arith.addi %c, %idx : i32          // post-carry: addi
+    dataflow.yield %c : i32
   }
   return
 }
 func.func @p_accum_xori() attributes {loom.synth_group = "accum"} {
-  %g = dataflow.subgraph (%init, %limit) -> (%out) {
-    %c, %cond = dataflow.carry %init step arith.addi cont_cond slt limit %limit : i32
-    %out = arith.xori %c, %c : i32
-    dataflow.yield %out : i32
+  %g = dataflow.subgraph (%lb, %ub, %step, %init)
+                          -> (%out) {
+    %idx, %rwc = dataflow.stream %lb, %ub, %step
+                 {step_op = "+=", cont_cond = "<"} : i32
+    %c = dataflow.carry %rwc, %init, %nxt : i32
+    %nxt = arith.xori %c, %idx : i32          // post-carry: xori
+    dataflow.yield %c : i32
   }
   return
 }
 ```
 
-`arith.addi` and `arith.xori` are in different share groups, so the
-post-step op cannot share a single `fabric.op`. tier C inserts a 2-arm
-mux behind two parallel `fabric.op`s.
+The flow-signature heuristic matches the two carries by
+`(carry_type=i32, upstream_stream=(i32, "+=", "<"))`. The post-carry
+diff (addi vs xori) is then handled as a tier-B mux insertion.
 
 #### Synthesized FU (sketch)
 
 ```mlir
-fabric.fu @fu_accum () -> () {
-^bb0(%init : fabric.bits<32>, %limit : fabric.bits<32>):
-  %c, %cond = fabric.op {op_list = [@dataflow.carry],
-                         hw_params = [{step_op = "arith.addi",
-                                        cont_cond = "slt"}]}
-        (%init, %limit) : ...
-
-  %a = fabric.op {op_list = [@arith.addi], hw_params = [{}]} (%c, %c) : ...
-  %x = fabric.op {op_list = [@arith.xori], hw_params = [{}]} (%c, %c) : ...
-  %out = fabric.mux %a, %x : ...
-
-  fabric.yield %out : fabric.bits<32>
+func.func @fu_accum(%lb: !fabric.bits<32>, %ub: !fabric.bits<32>,
+                    %step: !fabric.bits<32>, %init: !fabric.bits<32>)
+                   -> !fabric.bits<32> {
+  %y = fabric.fu(%plb = %lb : !fabric.bits<32>,
+                 %pub = %ub : !fabric.bits<32>,
+                 %pstep = %step : !fabric.bits<32>,
+                 %pinit = %init : !fabric.bits<32>)
+                -> !fabric.bits<32> {
+    %idx, %rwc = fabric.op [@dataflow.stream] (%plb, %pub, %pstep)
+                 {hw_params = [{step_op = ["+="], cont_cond = ["<"]}]}
+                 : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+                   -> (!fabric.bits<32>, !fabric.bits<1>)
+    %c = fabric.op [@dataflow.carry] (%rwc, %pinit, %nxt)
+         : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>)
+           -> !fabric.bits<32>            // back-edge from %nxt
+    %a = fabric.op [@arith.addi] (%c, %idx)
+         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+    %x = fabric.op [@arith.xori] (%c, %idx)
+         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+    %nxt = fabric.mux %a, %x : !fabric.bits<32>
+    fabric.yield %c : !fabric.bits<32>
+  }
+  return %y : !fabric.bits<32>
 }
 ```
 
-The signature heuristic (`scc_full_unroll=false`) finds the carry-head
-match by `(init_type, step_op, cont_cond)`; the post-step diff is then
-handled as a tier-B mux insert problem on the unrolled body.
+The carry's third operand `%nxt` is a graph-region back-edge from
+`fabric.mux`; emission uses an `unrealized_conversion_cast` placeholder
+during the build phases (mirroring `SubgraphEnumerator`'s four-pass
+materialization), resolved before the verifier runs.
 
 #### Topology
 
 ```
 synth_fu (tier C, signature-heuristic):
 
-  init  limit
-    \   /
-     carry  --- back-edge (graph-region body)
-       |
-       c (and copy)
-      / \
-   addi  xori
-      \ /
-      mux
-       |
-      yield
+  lb   ub   step   init
+   \   |    /       |
+   stream            |
+   /     \          |
+ idx      rwc       |
+   \      |         |
+    \    carry <----+----  back-edge (graph-region body)
+     \   /  \
+      \ /    \
+   +---+---+  \
+   |       |   \
+  addi    xori  \
+       \   /     \
+        mux ------+ (feeds %nxt)
+                 (yield = %c)
 ```
 
 ## Test plan
@@ -1151,10 +1390,20 @@ test/techmap/synth/
       coverage_verify_failed.mlir
       timeout.mlir
       resource_exhausted.mlir
+      unsupported_op.mlir           # dataflow.load in input
+      invalid_input_zero.mlir       # func.func with 0 dataflow.subgraph
+      invalid_input_many.mlir       # func.func with 2 dataflow.subgraphs
+      verifier_failed.mlir          # FU build that intentionally
+                                    # violates FuOp::verify; assert the
+                                    # pass detects and aborts cleanly
+      symbol_conflict.mlir
+      config_parse_failed.mlir
+      no_legal_materialization.mlir
     grouping/
       multi_group.mlir              # multiple loom.synth_group values
       default_group.mlir            # missing attr -> default group
       empty_module.mlir
+      idempotent_resynth.mlir       # second pass run is a no-op
   integration/
     cross_strategy_equivalence.mlir
                                     # same input, all four strategies,
@@ -1173,15 +1422,24 @@ test/techmap/synth/
 
 ### Test conventions
 
-* lit + FileCheck. Each `.mlir` runs `loom -loom-generalize-subgraphs-to-fu
-  -synth-config=<path>` and asserts on textual output (synthesized FU IR,
-  coverage report stamp, failure attributes).
+* lit + FileCheck. Each `.mlir` runs
+  `loom %s -loom-generalize-subgraphs-to-fu='config=<path>
+  dump-stats=true' | FileCheck %s`. With `dump-stats=true` the pass
+  emits one canonical line per group as a remark:
+
+      synth-stat group=<name> strategy=<s> reason=<r> cost=<f>
+                 covered=<n>/<m> nodes=<n_op>/<n_mux>/<n_demux>
+
+  These lines are stable across runs (per the determinism rules) and
+  are the primary FileCheck targets for cost/coverage/strategy/reason
+  acceptance criteria. The synthesized FU IR is also printed for
+  structural assertions.
 * perf tests use `loom-synth-fu-dump` to print timing measurements;
   pass/fail criterion is wall-time below a per-test budget. Mirrors
   the existing `synth_n5000` partition perf test gating.
 * Cross-strategy equivalence test: parameterized by strategy name; its
-  invariant is `coverage_verifier passes` rather than identical FU
-  text (different strategies legitimately produce different FUs).
+  invariant is `covered=<m>/<m>` (full coverage) rather than identical
+  FU text (different strategies legitimately produce different FUs).
 
 ### Acceptance criteria for the test plan
 
@@ -1196,15 +1454,24 @@ test/techmap/synth/
 
 ## Open questions / known limits
 
-* The synthesized FU does not currently emit `hw_params` constraint
-  tightening. "Maximally permissive `hw_params`" means: the emitted
-  `hw_params` dictionary is empty (`{}`) for every `fabric.op`,
-  except where a structural property forces a value (for example, the
-  variadic arity of a `dataflow.sync` always emits a `bitmask` allowed
-  set so that the enumerator can reproduce the observed port subsets).
-  Tightening predicates / step_op / cont_cond enumerations to the
-  observed-value union is a deferred enhancement; until that lands the
-  FU enumerates a strict superset of the observed configurations.
+* `hw_params` policy: the synthesizer emits an **observed-value union**
+  for every configurable axis required by the enumerator. Concretely:
+    * `op_list` -- union of observed op names at the merged position
+      (already constrained by share-group + width).
+    * variadic `bitmask` (sync / mux / demux) -- union of the observed
+      bitmask values, encoded as the explicit allowed set.
+    * `predicate` (`arith.cmpi` / `arith.cmpf`) -- union of observed
+      predicate strings.
+    * `step_op` / `cont_cond` (`dataflow.stream`) -- union of observed
+      attribute strings.
+    * `const_hex_value` (`dataflow.constant`) -- union of observed
+      constants encoded as hex strings.
+  Empty `hw_params` (`[{}]`) is only valid when the inner op kind has
+  no configurable attribute axis (e.g. `arith.addi`). This is a
+  correctness requirement, not an optional tightening:
+  `SubgraphEnumerator` only fans out attribute axes that appear in
+  `hw_params`, so omission would prevent the synthesized FU from
+  enumerating any matching candidate.
 * The `baseArea` weight table is encoded in C++ source. PDK-specific
   override, or a YAML data file, is explicitly out of scope per Q16.
 * `IncrementalRandom` cost ranking with ties: the current spec picks
