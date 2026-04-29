@@ -92,12 +92,6 @@ unsigned bitWidthOf(::mlir::Type t) {
   return sym.getValue();
 }
 
-::mlir::ArrayAttr emptyHwParams(::mlir::MLIRContext *ctx) {
-  auto emptyDict = ::mlir::DictionaryAttr::get(ctx, {});
-  ::llvm::SmallVector<::mlir::Attribute, 1> outer{emptyDict};
-  return ::mlir::ArrayAttr::get(ctx, outer);
-}
-
 ::mlir::ArrayAttr sortedOpList(const ::std::set<::std::string> &names,
                                ::mlir::MLIRContext *ctx) {
   ::llvm::SmallVector<::mlir::Attribute, 4> attrs;
