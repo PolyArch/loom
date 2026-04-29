@@ -1,7 +1,7 @@
-// RUN: loom-hwsg-test same arith.muli math.sin | FileCheck %s
+// RUN: loom-hwsg-test same arith.muli arith.cmpi | FileCheck %s
 
-// Two distinct singletons (note: math.sin is in a multi-member group, but
-// arith.muli is not) must not be considered to share hardware. Even when
-// both names happen to be implicit singletons, distinct names never share.
+// Two distinct true singletons (neither arith.muli nor arith.cmpi appears in
+// any multi-member group) must not be considered to share hardware. This
+// exercises the !ga && !gb branch of sameShareGroup with differing names.
 
-// CHECK: same arith.muli math.sin=false
+// CHECK: same arith.muli arith.cmpi=false
