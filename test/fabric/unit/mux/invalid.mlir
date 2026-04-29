@@ -114,23 +114,21 @@ fabric.module @bad_tag_zero_width {
 // -----
 // fabric.mux operand/result type is restricted to !fabric.bits<W>.
 // Feeding a !fabric.bits_tag value is rejected by the op's type system
-// before the FU/PE body whitelist or parent rules ever apply.
-func.func @mux_rejects_bits_tag(%a: !fabric.bits_tag<8, 2>,
-                                %b: !fabric.bits_tag<8, 2>)
-    -> !fabric.bits_tag<8, 2> {
-  // expected-error @+1 {{must be variadic of fabric bits type}}
-  %0 = "fabric.mux"(%a, %b)
-       : (!fabric.bits_tag<8, 2>, !fabric.bits_tag<8, 2>)
-       -> !fabric.bits_tag<8, 2>
-  return %0 : !fabric.bits_tag<8, 2>
-}
+// before the FU/PE body whitelist or parent rules ever apply. Hosted at
+// the top of builtin.module via unrealized_conversion_cast so the type
+// constraint fires independently of any fabric.fu / fabric.module gate.
+%a_mux_bt = builtin.unrealized_conversion_cast to !fabric.bits_tag<8, 2>
+%b_mux_bt = builtin.unrealized_conversion_cast to !fabric.bits_tag<8, 2>
+// expected-error @+1 {{must be variadic of fabric bits type}}
+%mux_bt = "fabric.mux"(%a_mux_bt, %b_mux_bt)
+     : (!fabric.bits_tag<8, 2>, !fabric.bits_tag<8, 2>)
+     -> !fabric.bits_tag<8, 2>
 
 // -----
 // fabric.mux operand/result type is restricted to !fabric.bits<W>.
 // Feeding a !fabric.tag value is rejected by the op's type system.
-func.func @mux_rejects_tag(%a: !fabric.tag<4>, %b: !fabric.tag<4>)
-    -> !fabric.tag<4> {
-  // expected-error @+1 {{must be variadic of fabric bits type}}
-  %0 = "fabric.mux"(%a, %b) : (!fabric.tag<4>, !fabric.tag<4>) -> !fabric.tag<4>
-  return %0 : !fabric.tag<4>
-}
+%a_mux_tag = builtin.unrealized_conversion_cast to !fabric.tag<4>
+%b_mux_tag = builtin.unrealized_conversion_cast to !fabric.tag<4>
+// expected-error @+1 {{must be variadic of fabric bits type}}
+%mux_tag = "fabric.mux"(%a_mux_tag, %b_mux_tag)
+     : (!fabric.tag<4>, !fabric.tag<4>) -> !fabric.tag<4>
