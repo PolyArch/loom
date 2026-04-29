@@ -2,6 +2,7 @@ add_mlir_library(MLIRFabricTechSynthesizer
   Alignment.cpp
   CostModel.cpp
   CoverageVerifier.cpp
+  GeneralizeSubgraphsToFuPass.cpp
   Parallel.cpp
   Synthesizer.cpp
 
@@ -10,11 +11,14 @@ add_mlir_library(MLIRFabricTechSynthesizer
 
   LINK_LIBS PUBLIC
   LoomCommon
+  MLIRArithDialect
   MLIRDataflow
   MLIRFabric
   MLIRFabricTech
   MLIRFuncDialect
   MLIRIR
+  MLIRMathDialect
+  MLIRPass
   MLIRSupport
   LLVMSupport
 )
