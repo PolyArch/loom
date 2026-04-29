@@ -3,22 +3,33 @@
 
 // Internal helper interfaces for `Incremental.cpp`. The candidate
 // generators (op-list widening, mux/demux insertion, structural
-// extension hook) live in their own translation unit so the main
+// extension) live in their own translation units so the main
 // `IncrementalSynthesizer::run` loop in `Incremental.cpp` stays
 // focused on the left-fold control flow.
 //
-// This header is *not* part of the public Synthesizer API; it is only
-// included by `Incremental.cpp` and `IncrementalExtensions.cpp`.
+// Tier-A and tier-B candidate generators live in
+// `IncrementalExtensions.cpp`; the tier-C SCC handling (back-edge
+// alignment, fabric.op[@dataflow.carry] grafting, trivial FU build
+// for tier-C inputs) lives in `IncrementalExtensionsTierC.cpp`.
 //
-// Spec source: `docs/spec-generalize-subgraphs-to-fu.md`, section
-// "Strategy: incremental > extend_to_cover".
+// This header is *not* part of the public Synthesizer API; it is only
+// included by `Incremental.cpp` and the IncrementalExtensions* TUs.
+//
+// Spec source: `docs/spec-generalize-subgraphs-to-fu.md`, sections
+// "Strategy: incremental > extend_to_cover" and "SCC handling for
+// tier C".
 
 #include "Common/SynthConfig.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+
+#include <optional>
 
 namespace loom::fabric::tech::detail {
 
@@ -41,10 +52,14 @@ widenOplistCandidates(::mlir::func::FuncOp curWrapper,
 insertMuxDemuxCandidates(::mlir::func::FuncOp curWrapper,
                          ::dataflow::SubgraphOp sg);
 
-// Tier C structural extension hook. The current iteration returns an
-// empty candidate set; the back-edge / SCC implementation lands in the
-// follow-up tier-C task. Defined here so the main loop can invoke it
-// uniformly with the other generators.
+// Tier-C structural extension. Generates one candidate that grafts a
+// new sub-FU for the diff region, including
+// `fabric.op[@dataflow.carry]` SCC bodies if needed. Uses the flow-
+// signature heuristic from `pre_align_sccs` to decide which carry
+// heads merge with existing carries in the FU and which are new.
+// Returns an empty vector when the heuristic cannot align the SCCs
+// (caller should consult `classifyTierCConflict` to distinguish a
+// `feedback_align_conflict` from a generic structural mismatch).
 ::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4>
 structuralExtendCandidates(::mlir::func::FuncOp curWrapper,
                            ::dataflow::SubgraphOp sg,
@@ -55,6 +70,26 @@ structuralExtendCandidates(::mlir::func::FuncOp curWrapper,
 // structural extension hook).
 bool hasBackEdgeInDiff(::mlir::func::FuncOp curWrapper,
                        ::dataflow::SubgraphOp sg);
+
+// Build the trivial FU for a single tier-C input subgraph: a 1:1 mirror
+// of `first`'s body emitted as fabric.ops, with graph-region back-edges
+// resolved through a build-then-rewire placeholder scheme. Used by the
+// Incremental main loop when the input subgraph contains a back-edge
+// (the Anchor strategy refuses such inputs as `topology_mismatch`).
+::mlir::OwningOpRef<::mlir::func::FuncOp>
+buildTrivialFuTierC(::mlir::MLIRContext *ctx, ::llvm::StringRef groupName,
+                    ::dataflow::SubgraphOp first);
+
+// Classify why `structuralExtendCandidates` returned empty: returns
+// `FeedbackAlignConflict` when the flow-signature heuristic refused to
+// align the SCCs (e.g. one input has two carry heads in the same
+// equivalence class, or two inputs disagree on the upstream stream
+// signature), and `std::nullopt` otherwise (which the main loop
+// surfaces as `topology_mismatch`).
+::std::optional<SynthFailureReason>
+classifyTierCConflict(::mlir::func::FuncOp curWrapper,
+                      ::dataflow::SubgraphOp sg,
+                      const ::loom::SynthConfig &cfg);
 
 } // namespace loom::fabric::tech::detail
 

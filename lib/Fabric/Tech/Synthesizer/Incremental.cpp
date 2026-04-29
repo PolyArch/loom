@@ -36,6 +36,7 @@
 
 #include "Common/SynthConfig.h"
 #include "Fabric/IR/FabricOps.h"
+#include "Fabric/Tech/Synthesizer/Alignment.h"
 #include "Fabric/Tech/Synthesizer/Anchor.h"
 #include "Fabric/Tech/Synthesizer/CostModel.h"
 #include "Fabric/Tech/Synthesizer/CoverageVerifier.h"
@@ -188,6 +189,20 @@ buildTrivialFu(const ::loom::SynthConfig &cfg, ::mlir::MLIRContext *ctx,
                SynthFailureReason &reason,
                ::llvm::SmallVectorImpl<::std::string> &notes) {
   reason = SynthFailureReason::None;
+
+  // Tier-C inputs (back-edge in the body) cannot be built via the
+  // anchor strategy: anchor's lock-step BFS rejects BackEdge sources
+  // as `topology_mismatch`. Detect tier-C up front and route to the
+  // tier-C-aware mirror builder.
+  if (first && !backEdges(first).empty()) {
+    auto wrapper = detail::buildTrivialFuTierC(ctx, groupName, first);
+    if (!wrapper) {
+      reason = SynthFailureReason::TopologyMismatch;
+      notes.push_back(
+          "incremental: tier-C trivial FU build failed for first input");
+    }
+    return wrapper;
+  }
 
   // Disable coverage verification for the trivial build; the
   // incremental main loop runs the verifier itself when configured to
@@ -385,7 +400,16 @@ SynthResult IncrementalSynthesizer::run(const SynthInputs &inputs) {
     }
 
     if (legal.empty()) {
-      result.failureReason = SynthFailureReason::TopologyMismatch;
+      // Distinguish tier-C feedback_align_conflict from a generic
+      // topology mismatch so the on-IR `loom.synth_failed` attribute
+      // matches the spec's failure-reason enumeration.
+      SynthFailureReason classified = SynthFailureReason::TopologyMismatch;
+      if (detail::hasBackEdgeInDiff(wrapper.get(), sg)) {
+        if (auto reason =
+                detail::classifyTierCConflict(wrapper.get(), sg, cfg))
+          classified = *reason;
+      }
+      result.failureReason = classified;
       ::std::string note;
       {
         ::llvm::raw_string_ostream os(note);

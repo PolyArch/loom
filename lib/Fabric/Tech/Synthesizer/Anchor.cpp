@@ -464,18 +464,21 @@ EmitOutcome emitBodyOpPosition(AnchorState &st,
   return r;
 }
 
-// Reserve a placeholder Value for a back-edge peer set. Real
-// resolution (rewriting placeholder uses to the producer's emitted
-// value) happens after the BFS completes.
-EmitOutcome reserveBackEdgePlaceholder(AnchorState &st, unsigned bw) {
+// Anchor's lock-step BFS is tier A only: it requires every input to share
+// the same DAG topology, with no graph-region back-edges. Tier C SCC
+// handling (back-edge alignment, fabric.op[@dataflow.carry] emission) is
+// the Incremental strategy's job. If the BFS reaches a BackEdge source
+// here it means the caller fed us a tier-C input by mistake; report
+// `TopologyMismatch` rather than emitting a verifier-violating placeholder
+// inside the FU body. (FuOp::verify rejects everything that is not
+// fabric.op / fabric.mux / fabric.demux, so emitting an
+// `unrealized_conversion_cast` here would unconditionally fail
+// verification once executed.)
+EmitOutcome reserveBackEdgePlaceholder(AnchorState & /*st*/,
+                                       unsigned /*bw*/) {
   EmitOutcome r;
-  ::mlir::Type bits = ::fabric::BitsType::get(st.ctx, bw);
-  ::mlir::OperationState ph(
-      st.loc, ::mlir::UnrealizedConversionCastOp::getOperationName());
-  ph.addTypes({bits});
-  ::mlir::Operation *raw = st.bodyBuilder->create(ph);
-  r.ok = true;
-  r.value = raw->getResult(0);
+  r.ok = false;
+  r.reason = SynthFailureReason::TopologyMismatch;
   return r;
 }
 

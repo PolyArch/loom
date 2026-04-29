@@ -6,6 +6,7 @@ add_mlir_library(MLIRFabricTechSynthesizer
   GeneralizeSubgraphsToFuPass.cpp
   Incremental.cpp
   IncrementalExtensions.cpp
+  IncrementalExtensionsTierC.cpp
   Parallel.cpp
   Synthesizer.cpp
 

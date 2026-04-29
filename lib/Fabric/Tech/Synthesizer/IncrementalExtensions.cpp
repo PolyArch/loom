@@ -12,10 +12,8 @@
 //     has one extra head op sg cannot reach; in either case inserts a
 //     `fabric.demux` + `fabric.mux` pair so both shapes can be
 //     materialized from the same FU.
-//   * `structuralExtendCandidates` -- tier C hook (returns empty for
-//     now; back-edge / SCC handling lands in the follow-up task).
-//   * `hasBackEdgeInDiff` -- predicate gating the structural extension
-//     hook.
+//   * `hasBackEdgeInDiff` -- predicate gating the tier-C structural
+//     extension hook (defined in `IncrementalExtensionsTierC.cpp`).
 //
 // Spec source: `docs/spec-generalize-subgraphs-to-fu.md`, section
 // "Strategy: incremental > extend_to_cover".
@@ -692,18 +690,6 @@ bool hasBackEdgeInDiff(::mlir::func::FuncOp /*curWrapper*/,
   if (!sg)
     return false;
   return !backEdges(sg).empty();
-}
-
-::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4>
-structuralExtendCandidates(::mlir::func::FuncOp /*curWrapper*/,
-                           ::dataflow::SubgraphOp /*sg*/,
-                           const ::loom::SynthConfig & /*cfg*/) {
-  // TODO(tier-C): graft a sub-FU for back-edge / SCC diff regions per
-  // spec section "Strategy: incremental > extend_to_cover" item 3.
-  // The follow-up task wires this in; the incremental main loop already
-  // gates on `hasBackEdgeInDiff` so the no-op branch below is silent on
-  // tier-A / tier-B inputs.
-  return {};
 }
 
 } // namespace loom::fabric::tech::detail
