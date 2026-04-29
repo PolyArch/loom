@@ -1,6 +1,0 @@
-synth:
-  strategy: anchor
-  anchor:
-    allow_intra_position_mux: true
-  coverage_verifier:
-    enabled: false

@@ -1,18 +1,13 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor_with_mux_no_cov.yaml dump-stats=true' 2>&1 | FileCheck %s
+// RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor_with_mux.yaml dump-stats=true' 2>&1 | FileCheck %s
 
 // Tier A with two distinct singleton ops at the same anchor position
-// (math.absf and math.tan), this time with intra-position muxing
-// enabled. Each distinct singleton occupies its own share-group bucket,
-// so the strategy emits one fabric.op per singleton (each op_list has
-// exactly one entry) and joins them through a fresh fabric.mux. The
-// coverage verifier is intentionally disabled in this test config: the
-// enumerator's port-lift inference for fabric.mux paired with float-
-// flavored fabric.ops is independently broken (it pins the mux output
-// to int regardless of its float-typed inputs) and would spuriously
-// report coverage_verify_failed even though the synthesized FU is
-// structurally correct. Disabling the verifier isolates the regression
-// being pinned here -- the bucketing of distinct singletons -- from
-// that unrelated enumerator gap.
+// (math.absf and math.tan), with intra-position muxing enabled. Each
+// distinct singleton occupies its own share-group bucket, so the
+// strategy emits one fabric.op per singleton (each op_list has exactly
+// one entry) and joins them through a fresh fabric.mux. The coverage
+// verifier is left enabled (its default): the synthesized FU must
+// round-trip through SubgraphEnumerator + SubgraphMatcher cleanly,
+// including the fabric.mux output's float-flavor lift inference.
 
 // CHECK: remark: {{.*}}synth-stat group=fpu_unary_32_x strategy=anchor reason=success
 // CHECK: func.func @fu_fpu_unary_32_x

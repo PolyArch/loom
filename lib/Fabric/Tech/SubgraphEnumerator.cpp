@@ -176,8 +176,12 @@ static Type floatLifted(unsigned w, MLIRContext *ctx) {
 }
 
 // Coarse "lift kind" for a bits<N> port: do we make it integer-like or
-// floating-point? `Unknown` means no inference available; default to Int.
-enum class PortLift : uint8_t { Int, Float, Unknown };
+// floating-point? `Unknown` is listed first so that a default-constructed
+// PortLift (returned by `DenseMap::lookup` for an absent key) compares
+// equal to `Unknown` rather than to `Int`; without that, the propagation
+// loops below silently treat unmapped values as "already Int" and
+// short-circuit the float-lift inference path.
+enum class PortLift : uint8_t { Unknown, Int, Float };
 
 // Lift a bits<N> port width to the sw type expected for `flavor` at port
 // position. `isOutput` tells us whether the port is on the result side.
