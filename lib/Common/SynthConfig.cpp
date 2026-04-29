@@ -520,16 +520,48 @@ namespace loom {
   // that unknown keys are tolerated with a precise location.
   SynthConfig cfg;
   ::llvm::SourceMgr sm;
+
+  // Capture YAMLParser diagnostics (line/col, message) into a local string
+  // instead of letting them leak to stderr. Installed before the Stream is
+  // constructed so the very first tokenizer error is captured.
+  std::string capturedDiag;
+  auto diagSink = [](const ::llvm::SMDiagnostic &diag, void *ctx) {
+    auto *sink = static_cast<std::string *>(ctx);
+    if (!sink->empty())
+      sink->push_back('\n');
+    ::llvm::raw_string_ostream os(*sink);
+    diag.print(/*ProgName=*/nullptr, os, /*ShowColors=*/false,
+               /*ShowKindLabel=*/false);
+    os.flush();
+    // Trim trailing whitespace so the captured diagnostic composes cleanly
+    // into the error string.
+    while (!sink->empty() &&
+           std::isspace(static_cast<unsigned char>(sink->back())))
+      sink->pop_back();
+  };
+  sm.setDiagHandler(diagSink, &capturedDiag);
+
   ::llvm::yaml::Stream stream(body, sm);
 
+  auto buildParseErr = [&]() -> ::llvm::Error {
+    if (!capturedDiag.empty())
+      return makeErr("yaml: " + ::llvm::Twine(capturedDiag));
+    return makeErr("yaml: parse error in body");
+  };
+
   auto it = stream.begin();
-  if (it == stream.end())
+  if (it == stream.end()) {
+    if (stream.failed())
+      return buildParseErr();
     return cfg;
+  }
   ::llvm::yaml::Node *root = it->getRoot();
+  // Check the parser state immediately after the first getRoot() call so a
+  // malformed body cannot fall through with a non-null but garbage `root`.
+  if (stream.failed())
+    return buildParseErr();
   if (!root)
     return cfg;
-  if (stream.failed())
-    return makeErr("yaml: parse error in body");
   auto *topMap = ::llvm::dyn_cast<::llvm::yaml::MappingNode>(root);
   if (!topMap)
     return makeErr("yaml: top-level must be a mapping");
@@ -546,6 +578,8 @@ namespace loom {
       break;
     }
   }
+  if (stream.failed())
+    return buildParseErr();
   if (!synth)
     return makeErr("yaml: top-level mapping must contain a 'synth:' key");
 
@@ -559,7 +593,7 @@ namespace loom {
       return std::move(e);
   }
   if (stream.failed())
-    return makeErr("yaml: parse error in body");
+    return buildParseErr();
 
   if (auto e = validate(cfg))
     return std::move(e);

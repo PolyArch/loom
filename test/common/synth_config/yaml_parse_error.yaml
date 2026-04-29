@@ -1,5 +1,2 @@
 synth:
-  strategy: anchor
-  parallelism:
-    workers: : :
-   bad_indent: oops
+  strategy: "unterminated
