@@ -2,11 +2,15 @@
 
 // Three func.funcs in two groups (`alu` x 2, `fpu` x 1). With
 // `dump-stats=true` we expect one `synth-stat` remark per group, ordered
-// lexically by group name (`alu` before `fpu`). Both groups fail via the
-// stub strategy, so cost/coverage stay at zero.
+// lexically by group name (`alu` before `fpu`). Under the default
+// `incremental_random` strategy both groups are synthesized into shared
+// FUs (the `alu` group folds addi/subi together; `fpu` mirrors a single
+// addf input).
 
-// CHECK: remark: {{.*}}synth-stat group=alu strategy=incremental_random reason=topology_mismatch cost=0.000000e+00 covered=0/2 nodes=0/0/0
-// CHECK: remark: {{.*}}synth-stat group=fpu strategy=incremental_random reason=topology_mismatch cost=0.000000e+00 covered=0/1 nodes=0/0/0
+// CHECK: remark: {{.*}}synth-stat group=alu strategy=incremental_random reason=success
+// CHECK-SAME: covered=2/2 nodes=1/0/0
+// CHECK: remark: {{.*}}synth-stat group=fpu strategy=incremental_random reason=success
+// CHECK-SAME: covered=1/1 nodes=1/0/0
 
 func.func @pat_alu_addi(%a: i32, %b: i32) -> i32 attributes {loom.synth_group = "alu"} {
   %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {

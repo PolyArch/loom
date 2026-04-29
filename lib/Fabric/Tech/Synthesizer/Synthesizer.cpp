@@ -2,6 +2,7 @@
 
 #include "Fabric/Tech/Synthesizer/Anchor.h"
 #include "Fabric/Tech/Synthesizer/Incremental.h"
+#include "Fabric/Tech/Synthesizer/IncrementalRandom.h"
 
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/raw_ostream.h"
@@ -108,14 +109,16 @@ private:
 makeSynthesizer(::llvm::StringRef strategyName,
                 const ::loom::SynthConfig &cfg) {
   // Known strategy names per `SynthConfig.strategy` documentation. The
-  // anchor and incremental strategies have real implementations; mcs /
-  // incremental_random remain stubs that report TopologyMismatch with
-  // a note until their respective tasks land.
+  // anchor, incremental, and incremental_random strategies have real
+  // implementations; mcs remains a stub that reports TopologyMismatch
+  // with a note until its task lands.
   if (strategyName == "anchor")
     return std::make_unique<AnchorSynthesizer>(cfg);
   if (strategyName == "incremental")
     return std::make_unique<IncrementalSynthesizer>(cfg);
-  if (strategyName == "mcs" || strategyName == "incremental_random")
+  if (strategyName == "incremental_random")
+    return std::make_unique<IncrementalRandomSynthesizer>(cfg);
+  if (strategyName == "mcs")
     return std::make_unique<StubSynthesizer>(strategyName);
 
   // Unknown name: caller is responsible for translating this null
