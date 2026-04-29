@@ -30,6 +30,7 @@ tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom-candidate-dump"),
     os.path.join(config.loom_obj_root, "tools", "loom-config-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-hwsg-test"),
+    os.path.join(config.loom_obj_root, "tools", "loom-synth-config-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-template-dump"),
     os.path.join(config.loom_obj_root, "bin"),
     config.llvm_tools_dir,
@@ -39,6 +40,7 @@ tools = [
     "loom-candidate-dump",
     "loom-config-test",
     "loom-hwsg-test",
+    "loom-synth-config-test",
     "loom-template-dump",
     "mlir-opt",
 ]

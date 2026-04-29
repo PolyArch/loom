@@ -1,0 +1,30 @@
+synth:
+  strategy: anchor
+  parallelism:
+    cross_group: false
+    workers: 6
+  coverage_verifier:
+    enabled: false
+    parallel_match: false
+  fallback_chain:
+    - mcs
+    - incremental
+  cost:
+    mux_penalty: 2.0
+    demux_penalty: 2.5
+    carry_penalty: 3.0
+  anchor:
+    allow_intra_position_mux: true
+  incremental:
+    input_order_heuristic: smallest_first
+    coverage_verify_each_attempt: false
+  incremental_random:
+    restarts: 32
+    seed: 123
+    input_order_heuristic: largest_first
+  mcs:
+    timeout_sec: 120
+    branch_workers: 4
+    candidate_cap: 500000
+  scc_full_unroll: true
+  subgraph_share_recurse: true

@@ -1,0 +1,4 @@
+synth:
+  strategy: incremental
+  cost:
+    mux_penalty: 4.0

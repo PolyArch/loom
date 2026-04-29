@@ -13,6 +13,7 @@ set(LOOM_TEST_DEPENDS
   loom-candidate-dump
   loom-config-test
   loom-hwsg-test
+  loom-synth-config-test
   loom-template-dump
 )
 
