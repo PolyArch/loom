@@ -25,6 +25,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "Fabric/Tech/Synthesizer/Alignment.h"
+#include "Fabric/Tech/Synthesizer/HwParams.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
@@ -267,6 +268,10 @@ struct TailExtension {
   ::llvm::SmallVector<unsigned, 4> operandArgIdx;
   unsigned resultBw = 0;
   ::mlir::Type resultType;
+  // Source-side op the tail mirrors. Used by buildHwParamsUnion so the
+  // synthesized fabric.op carries the right `predicate` / `step_op` /
+  // etc. allowed-set rather than `[{}]`.
+  ::mlir::Operation *srcOp = nullptr;
 };
 
 ::std::optional<TailExtension>
@@ -296,6 +301,7 @@ detectSingleTailExtension(::fabric::FuOp fu, unsigned yieldIdx,
   t.opName = extra->getName().getStringRef();
   t.resultBw = bw;
   t.resultType = extra->getResult(0).getType();
+  t.srcOp = extra;
   t.operandArgIdx.reserve(extra->getNumOperands());
   for (unsigned i = 0; i < extra->getNumOperands(); ++i) {
     ::mlir::Value v = extra->getOperand(i);
@@ -434,7 +440,11 @@ buildMuxDemuxCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx,
   }
   ::mlir::ArrayAttr opList =
       sortedOpList({tail.opName.str()}, ctx);
-  ::mlir::ArrayAttr hwParams = emptyHwParams(ctx);
+  ::mlir::Operation *peers[1] = {tail.srcOp};
+  ::mlir::ArrayAttr hwParams = ::loom::fabric::tech::buildHwParamsUnion(
+      ctx, tail.opName,
+      tail.srcOp ? ::llvm::ArrayRef<::mlir::Operation *>(peers, 1)
+                 : ::llvm::ArrayRef<::mlir::Operation *>());
   auto tailOp = emitFabricOp(bodyBuilder, loc, opList, hwParams, extraOperands,
                              bits);
 

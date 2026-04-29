@@ -24,6 +24,7 @@
 #include "Fabric/Tech/Synthesizer/Alignment.h"
 #include "Fabric/Tech/Synthesizer/CostModel.h"
 #include "Fabric/Tech/Synthesizer/CoverageVerifier.h"
+#include "Fabric/Tech/Synthesizer/HwParams.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -78,16 +79,19 @@ namespace {
 // and `liftFor`.
 
 // Bit width of an MLIR software type expressible as a fabric.bits<N>
-// port. Returns 0 when the type cannot be lifted (caller treats as a
-// topology mismatch).
-unsigned bitWidthOf(::mlir::Type t) {
+// port. Returns std::nullopt when the type cannot be lifted (caller
+// treats as a topology mismatch). NoneType (e.g. dataflow.constant's
+// ctrl input) lifts to bits<0> -- a legitimate, zero-width port.
+::std::optional<unsigned> tryBitWidthOf(::mlir::Type t) {
   if (auto i = ::llvm::dyn_cast<::mlir::IntegerType>(t))
     return i.getWidth();
   if (auto f = ::llvm::dyn_cast<::mlir::FloatType>(t))
     return f.getWidth();
   if (::llvm::isa<::mlir::IndexType>(t))
     return ::loom::getIndexWidth();
-  return 0;
+  if (::llvm::isa<::mlir::NoneType>(t))
+    return 0u;
+  return std::nullopt;
 }
 
 //===----------------------------------------------------------------------===//
@@ -144,6 +148,22 @@ PeerKey keyOf(const PeerVec &v) {
   return k;
 }
 
+// "Op key" for a peer set that ignores the per-anchor resultIndex.
+// Multiple anchors may name distinct results of the same source op
+// (e.g. `dataflow.stream`'s `idx` at #0 and `rwc` at #1); they all
+// share one fabric.op emission and only differ in result projection.
+PeerKey opKeyOf(const PeerVec &v) {
+  PeerKey k;
+  k.peers.reserve(v.size());
+  for (const Source &s : v) {
+    Source proj = s;
+    if (s.kind == Source::BodyOp || s.kind == Source::BackEdge)
+      proj.resultIndex = 0;
+    k.peers.push_back(proj);
+  }
+  return k;
+}
+
 //===----------------------------------------------------------------------===//
 // Wrapper-port assignment (block-arg identity).
 //===----------------------------------------------------------------------===//
@@ -178,13 +198,14 @@ collectWrapperPorts(::llvm::ArrayRef<::dataflow::SubgraphOp> sgs) {
       return std::nullopt;
   ports.reserve(na);
   for (unsigned i = 0; i < na; ++i) {
-    unsigned bw = bitWidthOf(fb.getArgument(i).getType());
-    if (bw == 0)
+    auto firstBw = tryBitWidthOf(fb.getArgument(i).getType());
+    if (!firstBw.has_value())
       return std::nullopt;
+    unsigned bw = *firstBw;
     for (auto sg : sgs) {
       ::mlir::Block &b = sg.getBody().front();
-      unsigned other = bitWidthOf(b.getArgument(i).getType());
-      if (other == 0 || other != bw)
+      auto other = tryBitWidthOf(b.getArgument(i).getType());
+      if (!other.has_value() || *other != bw)
         return std::nullopt;
     }
     WrapperPort p;
@@ -214,15 +235,18 @@ bool peersUniformKind(const PeerVec &peers) {
 
 // Bit-width of the value the source names. For BlockArg: width of the
 // block argument; for BodyOp / BackEdge: width of the named result.
-unsigned widthOfSource(const Source &s, ::dataflow::SubgraphOp sg) {
+// Returns std::nullopt when the type cannot be lifted to fabric.bits<N>;
+// returns Some(0) for legitimate zero-width values (NoneType ctrl tokens).
+::std::optional<unsigned> widthOfSource(const Source &s,
+                                        ::dataflow::SubgraphOp sg) {
   if (s.kind == Source::BlockArg) {
     if (s.argIndex >= sg.getBody().front().getNumArguments())
-      return 0;
-    return bitWidthOf(sg.getBody().front().getArgument(s.argIndex).getType());
+      return std::nullopt;
+    return tryBitWidthOf(sg.getBody().front().getArgument(s.argIndex).getType());
   }
   if (!s.op || s.resultIndex >= s.op->getNumResults())
-    return 0;
-  return bitWidthOf(s.op->getResult(s.resultIndex).getType());
+    return std::nullopt;
+  return tryBitWidthOf(s.op->getResult(s.resultIndex).getType());
 }
 
 // Validate that all peers at a body-op position name a result with the
@@ -232,12 +256,12 @@ bool peersUniformWidth(const PeerVec &peers,
                        unsigned &widthOut) {
   unsigned w = 0;
   for (auto [i, s] : ::llvm::enumerate(peers)) {
-    unsigned cur = widthOfSource(s, sgs[i]);
-    if (cur == 0)
+    auto cur = widthOfSource(s, sgs[i]);
+    if (!cur.has_value())
       return false;
     if (i == 0)
-      w = cur;
-    else if (cur != w)
+      w = *cur;
+    else if (*cur != w)
       return false;
   }
   widthOut = w;
@@ -289,16 +313,16 @@ bool peersUniformArity(const PeerVec &peers, unsigned &arityOut) {
 }
 
 // Construct one `fabric.op` instance with the given op_list, hw_params,
-// inputs, and result type. The op is emitted at the builder's current
+// inputs, and result types. The op is emitted at the builder's current
 // insertion point.
 ::fabric::OpOp emitFabricOp(::mlir::OpBuilder &builder, ::mlir::Location loc,
                             ::mlir::ArrayAttr opList,
                             ::mlir::ArrayAttr hwParams,
                             ::mlir::ValueRange operands,
-                            ::mlir::Type resultType) {
+                            ::mlir::TypeRange resultTypes) {
   ::mlir::OperationState state(loc, ::fabric::OpOp::getOperationName());
   state.addOperands(operands);
-  state.addTypes({resultType});
+  state.addTypes(resultTypes);
   state.addAttribute("op_list", opList);
   if (hwParams)
     state.addAttribute("hw_params", hwParams);
@@ -333,6 +357,12 @@ struct OpNodeDecision {
   // map has exactly one entry.
   ::std::map<::std::optional<::std::size_t>, ::std::set<::std::string>>
       buckets;
+  // Parallel map: per-bucket source ops the union came from. The hw_params
+  // synthesizer scans these for observed-attribute axes (predicate,
+  // step_op, cont_cond, const_hex_value, bitmask).
+  ::std::map<::std::optional<::std::size_t>,
+             ::llvm::SmallVector<::mlir::Operation *, 4>>
+      bucketPeerOps;
 };
 
 // Group peers by share-group index (with singletons collapsed to
@@ -347,6 +377,24 @@ bucketBySharegroup(const PeerVec &peers) {
     ::llvm::StringRef name = s.op->getName().getStringRef();
     auto sg = ::loom::common::findShareGroup(name);
     out[sg].insert(name.str());
+  }
+  return out;
+}
+
+// Parallel collector to bucketBySharegroup that retains the source ops
+// per bucket (so the hw_params synthesis can scan their attributes).
+::std::map<::std::optional<::std::size_t>,
+           ::llvm::SmallVector<::mlir::Operation *, 4>>
+bucketPeerOpsBySharegroup(const PeerVec &peers) {
+  ::std::map<::std::optional<::std::size_t>,
+             ::llvm::SmallVector<::mlir::Operation *, 4>>
+      out;
+  for (const Source &s : peers) {
+    if (!s.op)
+      continue;
+    ::llvm::StringRef name = s.op->getName().getStringRef();
+    auto sg = ::loom::common::findShareGroup(name);
+    out[sg].push_back(s.op);
   }
   return out;
 }
@@ -370,10 +418,12 @@ decideOpNode(const PeerVec &peers, bool allowMux,
       return std::nullopt; // two distinct singletons cannot share a fabric.op
   }
 
+  auto peerOps = bucketPeerOpsBySharegroup(peers);
   if (buckets.size() == 1) {
     OpNodeDecision d;
     d.useMux = false;
     d.buckets = std::move(buckets);
+    d.bucketPeerOps = std::move(peerOps);
     return d;
   }
   // More than one bucket: cross-share-group. Only legal when the user
@@ -383,6 +433,7 @@ decideOpNode(const PeerVec &peers, bool allowMux,
   OpNodeDecision d;
   d.useMux = true;
   d.buckets = std::move(buckets);
+  d.bucketPeerOps = std::move(peerOps);
   // Cost ranking is trivial here -- there is only one cross-share-group
   // layout for tier A: one fabric.op per bucket + one fabric.mux
   // joining them. Future strategies may produce alternative layouts
@@ -398,6 +449,13 @@ decideOpNode(const PeerVec &peers, bool allowMux,
 // Anchor BFS state.
 //===----------------------------------------------------------------------===//
 
+// All fabric.op results for one BodyOp peer set, kept around so that
+// multiple anchors naming distinct resultIndex of the same source op
+// share one fabric.op emission.
+struct EmittedOp {
+  ::llvm::SmallVector<::mlir::Value, 2> results;
+};
+
 struct AnchorState {
   AnchorState(::mlir::MLIRContext *c, ::mlir::Location l)
       : ctx(c), loc(l) {}
@@ -412,6 +470,10 @@ struct AnchorState {
   ::llvm::SmallVector<::mlir::Value, 4> portValues;
   // Cache: peer set -> emitted Value. Dedups DAG fanout.
   ::llvm::DenseMap<PeerKey, EmittedSlot, PeerKeyInfo> visited;
+  // Cache keyed on the resultIndex-stripped peer set, holding the full
+  // fabric.op result list. Lets distinct (BodyOp,resultIndex) anchors
+  // share one fabric.op emission.
+  ::llvm::DenseMap<PeerKey, EmittedOp, PeerKeyInfo> emittedOps;
   // Diagnostic notes accumulated during the run.
   ::llvm::SmallVector<::std::string, 4> notes;
 };
@@ -426,41 +488,117 @@ struct EmitOutcome {
 EmitOutcome materializePeers(AnchorState &st, const PeerVec &peers,
                              const ::loom::SynthConfig &cfg);
 
+// Compute hw_params for the bucket whose op-name set is `names` and
+// whose source-side peer ops are `peerOps`. The merged op_list within
+// one bucket has at most one symbol per share-group entry; the helper
+// chooses the merged op name as the lexically smallest name in `names`,
+// which is the same name used to drive the enumerator's primary flavor
+// detection. (Within a share-group all members share the same
+// configurable axes by construction.)
+::mlir::ArrayAttr
+hwParamsForBucket(::mlir::MLIRContext *ctx,
+                  const ::std::set<::std::string> &names,
+                  ::llvm::ArrayRef<::mlir::Operation *> peerOps) {
+  if (names.empty())
+    return emptyHwParams(ctx);
+  ::llvm::StringRef merged(*names.begin());
+  return buildHwParamsUnion(ctx, merged, peerOps);
+}
+
+// Outcome of emitting one body-op position; returns ALL fabric.op
+// result values (lifted to fabric.bits<N>) so callers can project the
+// resultIndex of interest.
+struct EmitOpOutcome {
+  bool ok = false;
+  SynthFailureReason reason = SynthFailureReason::None;
+  ::llvm::SmallVector<::mlir::Value, 2> results;
+};
+
+// Compute the lifted (fabric.bits<N>) types for every result of the
+// peers' source ops. Tier A: peers must agree on result count and per-
+// index bit-width. Returns std::nullopt on a mismatch.
+::std::optional<::llvm::SmallVector<::mlir::Type, 2>>
+liftedResultTypesForPeers(::mlir::MLIRContext *ctx, const PeerVec &peers) {
+  if (peers.empty() || !peers.front().op)
+    return std::nullopt;
+  unsigned nr = peers.front().op->getNumResults();
+  ::llvm::SmallVector<unsigned, 2> bws;
+  bws.reserve(nr);
+  for (unsigned i = 0; i < nr; ++i) {
+    auto bw =
+        tryBitWidthOf(peers.front().op->getResult(i).getType());
+    if (!bw.has_value())
+      return std::nullopt;
+    bws.push_back(*bw);
+  }
+  for (const Source &s : peers) {
+    if (!s.op || s.op->getNumResults() != nr)
+      return std::nullopt;
+    for (unsigned i = 0; i < nr; ++i) {
+      auto bw = tryBitWidthOf(s.op->getResult(i).getType());
+      if (!bw.has_value() || *bw != bws[i])
+        return std::nullopt;
+    }
+  }
+  ::llvm::SmallVector<::mlir::Type, 2> out;
+  out.reserve(nr);
+  for (unsigned w : bws)
+    out.push_back(::fabric::BitsType::get(ctx, w));
+  return out;
+}
+
 // Emit a fabric.op (or per-bucket fabric.op + fabric.mux) for a body-op
 // peer set whose operands have already been materialized into
-// `operandValues`. Returns the value yielded by the (possibly mux-
-// joined) sub-FU at this position.
-EmitOutcome emitBodyOpPosition(AnchorState &st,
-                               const OpNodeDecision &decision, unsigned bw,
-                               ::mlir::ValueRange operandValues) {
-  EmitOutcome r;
-  ::mlir::Type bits = ::fabric::BitsType::get(st.ctx, bw);
-  ::mlir::ArrayAttr hwParams = emptyHwParams(st.ctx);
+// `operandValues`. Returns the FULL list of result values from the
+// emitted fabric.op (or a single mux output for the cross-share-group
+// case, which is single-result by construction).
+EmitOpOutcome
+emitBodyOpPositionMulti(AnchorState &st, const OpNodeDecision &decision,
+                        ::mlir::ValueRange operandValues,
+                        ::llvm::ArrayRef<::mlir::Type> resultTypes) {
+  EmitOpOutcome r;
   if (!decision.useMux) {
     // Single share-group: one fabric.op with the sorted union.
     const auto &kv = *decision.buckets.begin();
     ::mlir::ArrayAttr opList = sortedOpListFor(kv.second, st.ctx);
+    auto peerIt = decision.bucketPeerOps.find(kv.first);
+    ::llvm::ArrayRef<::mlir::Operation *> peerOps =
+        peerIt != decision.bucketPeerOps.end()
+            ? ::llvm::ArrayRef<::mlir::Operation *>(peerIt->second)
+            : ::llvm::ArrayRef<::mlir::Operation *>();
+    ::mlir::ArrayAttr hwParams =
+        hwParamsForBucket(st.ctx, kv.second, peerOps);
     auto op = emitFabricOp(*st.bodyBuilder, st.loc, opList, hwParams,
-                           operandValues, bits);
+                           operandValues, resultTypes);
     r.ok = true;
-    r.value = op.getOutputs()[0];
+    r.results.assign(op.getOutputs().begin(), op.getOutputs().end());
     return r;
   }
-  // Cross-share-group with intra-position mux: one fabric.op per
-  // bucket (in lexical share-group order via the std::map iteration),
-  // joined by one fabric.mux. The shared operand vector is reused
-  // across buckets verbatim per spec.
+  // Cross-share-group with intra-position mux: per spec, only the
+  // primary (single-result) output is muxed. Multi-result merging
+  // across share groups is out of scope for tier A.
+  if (resultTypes.size() != 1) {
+    r.reason = SynthFailureReason::TopologyMismatch;
+    return r;
+  }
   ::llvm::SmallVector<::mlir::Value, 4> arms;
   arms.reserve(decision.buckets.size());
   for (const auto &kv : decision.buckets) {
     ::mlir::ArrayAttr opList = sortedOpListFor(kv.second, st.ctx);
+    auto peerIt = decision.bucketPeerOps.find(kv.first);
+    ::llvm::ArrayRef<::mlir::Operation *> peerOps =
+        peerIt != decision.bucketPeerOps.end()
+            ? ::llvm::ArrayRef<::mlir::Operation *>(peerIt->second)
+            : ::llvm::ArrayRef<::mlir::Operation *>();
+    ::mlir::ArrayAttr hwParams =
+        hwParamsForBucket(st.ctx, kv.second, peerOps);
     auto opOp = emitFabricOp(*st.bodyBuilder, st.loc, opList, hwParams,
-                             operandValues, bits);
+                             operandValues, resultTypes);
     arms.push_back(opOp.getOutputs()[0]);
   }
-  auto mux = emitFabricMux(*st.bodyBuilder, st.loc, arms, bits);
+  auto mux = emitFabricMux(*st.bodyBuilder, st.loc, arms, resultTypes[0]);
   r.ok = true;
-  r.value = mux.getOutput();
+  r.results.push_back(mux.getOutput());
   return r;
 }
 
@@ -546,6 +684,24 @@ EmitOutcome materializePeers(AnchorState &st, const PeerVec &peers,
     return out;
   }
 
+  // The peer set may have been emitted before under a different
+  // resultIndex (e.g. yield #0 saw `dataflow.stream#0`, yield #1 saw
+  // `dataflow.stream#1`). Reuse the same fabric.op by projecting the
+  // requested resultIndex from the cached result list.
+  PeerKey opKey = opKeyOf(peers);
+  auto reuse = st.emittedOps.find(opKey);
+  if (reuse != st.emittedOps.end()) {
+    unsigned ri = peers.front().resultIndex;
+    if (ri >= reuse->second.results.size()) {
+      out.reason = SynthFailureReason::TopologyMismatch;
+      return out;
+    }
+    out.ok = true;
+    out.value = reuse->second.results[ri];
+    st.visited[key] = EmittedSlot{out.value};
+    return out;
+  }
+
   // Pre-decision: distinct share-groups when intra-position muxing is
   // disabled is a `cross_share_group` failure (distinct from
   // `topology_mismatch`).
@@ -587,13 +743,35 @@ EmitOutcome materializePeers(AnchorState &st, const PeerVec &peers,
       out.reason = SynthFailureReason::TopologyMismatch;
     return out;
   }
-  EmitOutcome emitted = emitBodyOpPosition(st, *decision, bw, operandValues);
-  if (!emitted.ok) {
-    out.reason = emitted.reason;
+  // Compute the lifted result types from the source-side ops so multi-
+  // result body ops (e.g. dataflow.stream's idx + rwc) are emitted with
+  // matching structural fabric.op shape.
+  auto resultTypesOpt = liftedResultTypesForPeers(st.ctx, peers);
+  if (!resultTypesOpt.has_value()) {
+    out.reason = SynthFailureReason::TopologyMismatch;
     return out;
   }
-  st.visited[key] = EmittedSlot{emitted.value};
-  return emitted;
+  EmitOpOutcome emitted = emitBodyOpPositionMulti(st, *decision,
+                                                  operandValues,
+                                                  *resultTypesOpt);
+  if (!emitted.ok) {
+    out.reason = emitted.reason != SynthFailureReason::None
+                     ? emitted.reason
+                     : SynthFailureReason::TopologyMismatch;
+    return out;
+  }
+  unsigned ri = peers.front().resultIndex;
+  if (ri >= emitted.results.size()) {
+    out.reason = SynthFailureReason::TopologyMismatch;
+    return out;
+  }
+  EmittedOp slot;
+  slot.results.assign(emitted.results.begin(), emitted.results.end());
+  st.emittedOps[opKey] = slot;
+  out.ok = true;
+  out.value = emitted.results[ri];
+  st.visited[key] = EmittedSlot{out.value};
+  return out;
 }
 
 //===----------------------------------------------------------------------===//
@@ -698,8 +876,8 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
     return result;
   }
   for (unsigned i = 0; i < arity; ++i) {
-    unsigned bw = bitWidthOf(yield0->getOperand(i).getType());
-    if (bw == 0) {
+    auto bw = tryBitWidthOf(yield0->getOperand(i).getType());
+    if (!bw.has_value()) {
       result.failureReason = SynthFailureReason::TopologyMismatch;
       result.notes.push_back("anchor: yield operand has unsupported type");
       return result;
@@ -707,7 +885,7 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
     // Cross-input yield-width uniformity is enforced lazily by
     // peersUniformWidth() during BFS, so we trust the first input's
     // width as the wrapper signature here.
-    wrapperResultTypes.push_back(::fabric::BitsType::get(ctx, bw));
+    wrapperResultTypes.push_back(::fabric::BitsType::get(ctx, *bw));
   }
 
   ::std::string symName = wrapperName(inputs.groupName);

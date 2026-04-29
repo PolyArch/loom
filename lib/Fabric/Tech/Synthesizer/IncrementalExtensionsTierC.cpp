@@ -48,6 +48,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "Fabric/Tech/Synthesizer/Alignment.h"
+#include "Fabric/Tech/Synthesizer/HwParams.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
@@ -88,14 +89,24 @@ namespace {
 // is self-contained).
 //===----------------------------------------------------------------------===//
 
-unsigned bitWidthOfType(::mlir::Type t) {
+// Returns the lift-target bit width for `t`, or std::nullopt if `t`
+// is not expressible as a fabric.bits<N> port. NoneType (e.g.
+// dataflow.constant's ctrl input) lifts to a legitimate bits<0>.
+::std::optional<unsigned> tryBitWidthOfType(::mlir::Type t) {
   if (auto i = ::llvm::dyn_cast<::mlir::IntegerType>(t))
     return i.getWidth();
   if (auto f = ::llvm::dyn_cast<::mlir::FloatType>(t))
     return f.getWidth();
   if (::llvm::isa<::mlir::IndexType>(t))
     return ::loom::getIndexWidth();
-  return 0;
+  if (::llvm::isa<::mlir::NoneType>(t))
+    return 0u;
+  return std::nullopt;
+}
+
+unsigned bitWidthOfType(::mlir::Type t) {
+  auto v = tryBitWidthOfType(t);
+  return v.has_value() ? *v : 0u;
 }
 
 ::mlir::Type bitsOf(::mlir::MLIRContext *ctx, unsigned bw) {
@@ -442,9 +453,10 @@ struct BodyBuildCtx {
   auto it = c.valueMap.find(srcValue);
   if (it != c.valueMap.end())
     return it->second;
-  unsigned bw = bitWidthOfType(srcValue.getType());
-  if (bw == 0)
+  auto bwOpt = tryBitWidthOfType(srcValue.getType());
+  if (!bwOpt.has_value())
     return {};
+  unsigned bw = *bwOpt;
   ::mlir::Type bits = bitsOf(c.ctx, bw);
   ::mlir::OperationState ph(
       c.loc, ::mlir::UnrealizedConversionCastOp::getOperationName());
@@ -457,39 +469,16 @@ struct BodyBuildCtx {
   return v;
 }
 
-// Build the hw_params attribute appropriate for `opName`. Per spec
-// "hw_params policy" the synthesizer emits an observed-value union for
-// every configurable axis the enumerator inspects. For
-// `dataflow.stream` we surface `step_op` and `cont_cond` as one-element
-// arrays drawn from the source op; for `dataflow.constant` /
-// `dataflow.mux` / `dataflow.demux` / `dataflow.sync` /
-// `arith.cmpi` / `arith.cmpf` similar surfacing applies. The trivial
-// builder only needs `dataflow.stream` for the spec example; other
-// configurable axes are handled by the same builder when needed (the
-// implementation walks `srcOp`'s attributes for the well-known keys).
+// Build the hw_params attribute appropriate for `opName` from a single
+// source-side op. Delegates to the shared `buildHwParamsUnion` helper so
+// the trivial-FU path agrees with Anchor on the per-op-kind axes
+// (predicate, step_op, cont_cond, const_hex_value, bitmask).
 ::mlir::ArrayAttr hwParamsFor(::mlir::MLIRContext *ctx,
                               ::llvm::StringRef opName,
                               ::mlir::Operation *srcOp) {
-  ::llvm::SmallVector<::mlir::NamedAttribute, 2> entries;
-  auto strToArr = [&](::llvm::StringRef value) -> ::mlir::ArrayAttr {
-    ::llvm::SmallVector<::mlir::Attribute, 1> v{
-        ::mlir::StringAttr::get(ctx, value)};
-    return ::mlir::ArrayAttr::get(ctx, v);
-  };
-  if (opName == "dataflow.stream") {
-    if (auto so = srcOp->getAttrOfType<::mlir::StringAttr>("step_op"))
-      entries.emplace_back(::mlir::StringAttr::get(ctx, "step_op"),
-                           strToArr(so.getValue()));
-    if (auto cc = srcOp->getAttrOfType<::mlir::StringAttr>("cont_cond"))
-      entries.emplace_back(::mlir::StringAttr::get(ctx, "cont_cond"),
-                           strToArr(cc.getValue()));
-  }
-  // Empty dictionary is the canonical hw_params for ops without
-  // configurable axes (per spec).
-  ::mlir::DictionaryAttr inner =
-      ::mlir::DictionaryAttr::get(ctx, entries);
-  ::llvm::SmallVector<::mlir::Attribute, 1> outer{inner};
-  return ::mlir::ArrayAttr::get(ctx, outer);
+  ::mlir::Operation *peers[1] = {srcOp};
+  return buildHwParamsUnion(ctx, opName,
+                            ::llvm::ArrayRef<::mlir::Operation *>(peers, 1));
 }
 
 ::mlir::ArrayAttr opListSingleton(::mlir::MLIRContext *ctx,
@@ -554,16 +543,17 @@ bool resolvePlaceholders(BodyBuildCtx &c) {
 }
 
 // Returns the lifted (fabric.bits<N>) type list for `srcOp`'s results.
-// Any unsupported type returns an empty SmallVector.
+// Any unsupported type returns an empty SmallVector. NoneType lifts to
+// a legitimate bits<0>.
 ::llvm::SmallVector<::mlir::Type, 2>
 liftedResultTypes(::mlir::MLIRContext *ctx, ::mlir::Operation *srcOp) {
   ::llvm::SmallVector<::mlir::Type, 2> out;
   out.reserve(srcOp->getNumResults());
   for (::mlir::Value r : srcOp->getResults()) {
-    unsigned bw = bitWidthOfType(r.getType());
-    if (bw == 0)
+    auto bw = tryBitWidthOfType(r.getType());
+    if (!bw.has_value())
       return {};
-    out.push_back(bitsOf(ctx, bw));
+    out.push_back(bitsOf(ctx, *bw));
   }
   return out;
 }
@@ -676,15 +666,16 @@ buildTrivialFuTierC(::mlir::MLIRContext *ctx, ::llvm::StringRef groupName,
     return {};
 
   // Collect the wrapper input bit-widths (per sg block-arg) and the
-  // wrapper result bit-widths (per yield operand).
+  // wrapper result bit-widths (per yield operand). NoneType (e.g.
+  // dataflow.constant's ctrl block-arg) lifts to a legitimate bits<0>.
   ::mlir::Block &sgBody = first.getBody().front();
   ::llvm::SmallVector<unsigned, 4> inputBws;
   inputBws.reserve(sgBody.getNumArguments());
   for (::mlir::BlockArgument a : sgBody.getArguments()) {
-    unsigned bw = bitWidthOfType(a.getType());
-    if (bw == 0)
+    auto bw = tryBitWidthOfType(a.getType());
+    if (!bw.has_value())
       return {};
-    inputBws.push_back(bw);
+    inputBws.push_back(*bw);
   }
   ::mlir::Operation *yieldTerm = sgBody.getTerminator();
   if (!yieldTerm)
@@ -692,10 +683,10 @@ buildTrivialFuTierC(::mlir::MLIRContext *ctx, ::llvm::StringRef groupName,
   ::llvm::SmallVector<unsigned, 4> resultBws;
   resultBws.reserve(yieldTerm->getNumOperands());
   for (::mlir::Value v : yieldTerm->getOperands()) {
-    unsigned bw = bitWidthOfType(v.getType());
-    if (bw == 0)
+    auto bw = tryBitWidthOfType(v.getType());
+    if (!bw.has_value())
       return {};
-    resultBws.push_back(bw);
+    resultBws.push_back(*bw);
   }
   WrapperShell ws =
       buildShell(ctx, sanitize(groupName), inputBws, resultBws);
