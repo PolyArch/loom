@@ -1,5 +1,6 @@
 add_mlir_library(MLIRFabricTechSynthesizer
   Alignment.cpp
+  Anchor.cpp
   CostModel.cpp
   CoverageVerifier.cpp
   GeneralizeSubgraphsToFuPass.cpp

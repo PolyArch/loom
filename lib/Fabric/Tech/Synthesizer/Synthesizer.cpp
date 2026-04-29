@@ -1,5 +1,7 @@
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
+#include "Fabric/Tech/Synthesizer/Anchor.h"
+
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -103,13 +105,14 @@ private:
 
 ::std::unique_ptr<Synthesizer>
 makeSynthesizer(::llvm::StringRef strategyName,
-                const ::loom::SynthConfig &) {
-  // Known strategy names per `SynthConfig.strategy` documentation. Each
-  // currently dispatches to a stub that reports TopologyMismatch with a
-  // note; later tasks swap in the real strategy classes behind the
-  // same factory entry point.
-  if (strategyName == "anchor" || strategyName == "mcs" ||
-      strategyName == "incremental" ||
+                const ::loom::SynthConfig &cfg) {
+  // Known strategy names per `SynthConfig.strategy` documentation. The
+  // anchor strategy now has a real implementation; mcs / incremental /
+  // incremental_random remain stubs that report TopologyMismatch with
+  // a note until their respective tasks land.
+  if (strategyName == "anchor")
+    return std::make_unique<AnchorSynthesizer>(cfg);
+  if (strategyName == "mcs" || strategyName == "incremental" ||
       strategyName == "incremental_random")
     return std::make_unique<StubSynthesizer>(strategyName);
 

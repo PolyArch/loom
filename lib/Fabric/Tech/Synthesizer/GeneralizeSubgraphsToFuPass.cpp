@@ -407,48 +407,16 @@ void GeneralizeSubgraphsToFuPass::annotateGroupFailure(
     func->setAttr("loom.synth_failed", attr);
 }
 
+// Note: synth-stat emission lives inline at the end of the per-group
+// splice loop in `runOnOperation` so the snapshot reads `result.wrapper`
+// before the splice releases it. The class still declares
+// `emitSynthStat` for future extensibility (e.g. multi-line per-strategy
+// stats) but the canonical one-line format is built inline.
 void GeneralizeSubgraphsToFuPass::emitSynthStat(
-    ::mlir::ModuleOp module, const SynthGroup &group,
-    const ::loom::fabric::tech::SynthResult &result,
-    const ::loom::SynthConfig &cfg) {
-  // Canonical synth-stat line:
-  //   synth-stat group=<name> strategy=<s> reason=<r> cost=<f>
-  //              covered=<n>/<m> nodes=<n_op>/<n_mux>/<n_demux>
-  std::string line;
-  ::llvm::raw_string_ostream os(line);
-  os << "synth-stat group=" << group.name << " strategy=" << cfg.strategy
-     << " reason=";
-  if (result.success())
-    os << "success";
-  else
-    os << ::loom::fabric::tech::failureReasonString(result.failureReason);
-
-  unsigned m = static_cast<unsigned>(group.subgraphs.size());
-  if (result.success()) {
-    auto innerFu = findInnerFu(result.wrapper.get());
-    double cost = 0.0;
-    if (innerFu) {
-      ::loom::fabric::tech::CostModel cm(cfg);
-      cost = cm.evaluate(innerFu);
-    }
-    unsigned covered = 0;
-    if (result.coverage.allCovered()) {
-      covered = m;
-    } else {
-      for (const auto &slot : result.coverage.matchIndex)
-        if (slot.has_value())
-          ++covered;
-    }
-    NodeCounts nc = countFuBodyNodes(innerFu);
-    os << " cost=" << cost << " covered=" << covered << "/" << m
-       << " nodes=" << nc.ops << "/" << nc.muxes << "/" << nc.demuxes;
-  } else {
-    // Print cost as a `double` so failure and success paths share one
-    // formatter (`raw_ostream::operator<<(double)` -> exponent style).
-    os << " cost=" << 0.0 << " covered=0/" << m << " nodes=0/0/0";
-  }
-
-  module.emitRemark() << os.str();
+    ::mlir::ModuleOp /*module*/, const SynthGroup & /*group*/,
+    const ::loom::fabric::tech::SynthResult & /*result*/,
+    const ::loom::SynthConfig & /*cfg*/) {
+  // Intentionally empty; replaced by inline snapshot in runOnOperation.
 }
 
 void GeneralizeSubgraphsToFuPass::runOnOperation() {
@@ -631,6 +599,31 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
       }
     }
 
+    // Capture a snapshot of the synth-stat metrics *before* the splice
+    // releases the wrapper from `result.wrapper`. After release the
+    // OwningOpRef is null, which would zero out the FU lookup that
+    // emitSynthStat needs.
+    bool snapshotSuccess = result.success();
+    double snapshotCost = 0.0;
+    unsigned snapshotCovered = 0;
+    NodeCounts snapshotCounts;
+    if (snapshotSuccess) {
+      auto innerFu = findInnerFu(result.wrapper.get());
+      if (innerFu) {
+        ::loom::fabric::tech::CostModel cm(cfg);
+        snapshotCost = cm.evaluate(innerFu);
+        snapshotCounts = countFuBodyNodes(innerFu);
+      }
+      unsigned m = static_cast<unsigned>(group.subgraphs.size());
+      if (result.coverage.allCovered()) {
+        snapshotCovered = m;
+      } else {
+        for (const auto &slot : result.coverage.matchIndex)
+          if (slot.has_value())
+            ++snapshotCovered;
+      }
+    }
+
     if (result.success()) {
       // Tag the wrapper with `loom.synthesized_for = "<group>"` so
       // future re-runs detect this as an idempotent slot.
@@ -656,8 +649,24 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
         signalPassFailure();
     }
 
-    if (dumpStats)
-      emitSynthStat(module, group, result, cfg);
+    if (dumpStats) {
+      // Build the canonical synth-stat line out of the pre-splice
+      // snapshot so success cases retain their cost / coverage / node
+      // metrics even though `result.wrapper` has been released.
+      std::string line;
+      ::llvm::raw_string_ostream os(line);
+      os << "synth-stat group=" << group.name
+         << " strategy=" << cfg.strategy << " reason=";
+      if (snapshotSuccess)
+        os << "success";
+      else
+        os << ::loom::fabric::tech::failureReasonString(result.failureReason);
+      unsigned m = static_cast<unsigned>(group.subgraphs.size());
+      os << " cost=" << snapshotCost << " covered=" << snapshotCovered
+         << "/" << m << " nodes=" << snapshotCounts.ops << "/"
+         << snapshotCounts.muxes << "/" << snapshotCounts.demuxes;
+      module.emitRemark() << os.str();
+    }
   }
 }
 
