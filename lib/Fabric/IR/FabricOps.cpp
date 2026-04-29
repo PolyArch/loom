@@ -1,5 +1,6 @@
 #include "Fabric/IR/FabricOps.h"
 
+#include "Common/HwShareGroup.h"
 #include "Common/IndexWidth.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricTypes.h"
@@ -440,36 +441,6 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
   return table;
 }
 
-// Multi-member hardware-share groups. Single-member groups are implicit:
-// any op not in any group below is its own singleton (cannot share with
-// any other op).
-static const llvm::SmallVector<llvm::DenseSet<StringRef>, 32> &
-hwShareGroups() {
-  static const llvm::SmallVector<llvm::DenseSet<StringRef>, 32> groups = {
-      {"arith.addi", "arith.subi"},
-      {"arith.divsi", "arith.remsi"},
-      {"arith.divui", "arith.remui"},
-      {"arith.shli", "arith.shrsi", "arith.shrui"},
-      {"arith.andi", "arith.ori", "arith.xori"},
-      {"arith.minsi", "arith.maxsi"},
-      {"arith.minui", "arith.maxui"},
-      {"arith.sitofp", "arith.uitofp"},
-      {"arith.fptosi", "arith.fptoui"},
-      {"arith.addf", "arith.subf"},
-      {"arith.divf", "arith.remf"},
-      {"arith.minimumf", "arith.maximumf"},
-      {"math.sin", "math.cos"},
-      {"math.sinh", "math.cosh"},
-      {"math.exp", "math.exp2", "math.expm1"},
-      {"math.log", "math.log2", "math.log10", "math.log1p"},
-      {"math.floor", "math.ceil", "math.round", "math.trunc",
-       "math.roundeven"},
-      {"math.sqrt", "math.rsqrt"},
-      {"math.tanh", "math.erf"},
-  };
-  return groups;
-}
-
 } // namespace
 
 namespace fabric {
@@ -477,16 +448,6 @@ bool isFabricOpSupported(llvm::StringRef name) { return opSchemas().count(name);
 } // namespace fabric
 
 namespace {
-
-// Returns the group index for `name` if it is in a multi-member group, or
-// `std::nullopt` otherwise (singleton).
-static std::optional<size_t> findShareGroup(StringRef name) {
-  const auto &groups = hwShareGroups();
-  for (size_t i = 0; i < groups.size(); ++i)
-    if (groups[i].contains(name))
-      return i;
-  return std::nullopt;
-}
 
 // Returns the bit width of a fabric.bits<N> type, or std::nullopt if `t` is
 // not a fabric.bits.
@@ -531,14 +492,14 @@ LogicalResult OpOp::verify() {
   // 3. Members of op_list must all share one hardware group (or there is just
   //    one entry).
   if (opNames.size() > 1) {
-    auto firstGroup = findShareGroup(opNames.front());
+    auto firstGroup = ::loom::common::findShareGroup(opNames.front());
     if (!firstGroup)
       return emitOpError("op @")
              << opNames.front()
              << " is not in any multi-member hardware-share group; it must "
                 "occupy fabric.op alone";
     for (size_t i = 1; i < opNames.size(); ++i) {
-      auto g = findShareGroup(opNames[i]);
+      auto g = ::loom::common::findShareGroup(opNames[i]);
       if (g != firstGroup)
         return emitOpError("ops @")
                << opNames.front() << " and @" << opNames[i]

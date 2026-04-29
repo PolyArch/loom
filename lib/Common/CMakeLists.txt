@@ -1,5 +1,6 @@
 add_mlir_library(LoomCommon
   Config.cpp
+  HwShareGroup.cpp
   IndexWidth.cpp
 
   ADDITIONAL_HEADER_DIRS
