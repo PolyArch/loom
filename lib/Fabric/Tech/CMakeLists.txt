@@ -37,3 +37,5 @@ if(LOOM_ENABLE_ILP)
   set_property(SOURCE Partitioner/ILPPartitioner.cpp APPEND PROPERTY
                 COMPILE_OPTIONS -frtti -fexceptions)
 endif()
+
+add_subdirectory(Synthesizer)
