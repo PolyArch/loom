@@ -52,14 +52,13 @@ fabric.module @m_raw_op_rejected {
 }
 
 // -----
-// fabric.fu placed inside func.func is rejected by the FU verifier
-// (parent must be fabric.spatial_pe).
-func.func @fu_in_func(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
-  // expected-error @+1 {{must be inside a fabric.spatial_pe (parent must be fabric.spatial_pe)}}
-  fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>) -> () {
-    %k = fabric.op [@arith.muli] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield
-  }
-  return
+// fabric.fu placed at the top of builtin.module is rejected by the FU
+// verifier (parent must be fabric.spatial_pe).
+%a_top = builtin.unrealized_conversion_cast to !fabric.bits<32>
+%b_top = builtin.unrealized_conversion_cast to !fabric.bits<32>
+// expected-error @+1 {{must be inside a fabric.spatial_pe (parent must be fabric.spatial_pe)}}
+fabric.fu(%x = %a_top : !fabric.bits<32>, %y = %b_top : !fabric.bits<32>) -> () {
+  %k = fabric.op [@arith.muli] (%x, %y)
+       : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  fabric.yield
 }

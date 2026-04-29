@@ -185,17 +185,15 @@ fabric.module @pe_inner_fu_output_width_mismatch {
 }
 
 // -----
-// spatial_pe inside a func.func (parent must be fabric.module).
-func.func @pe_outside_module(%a: !fabric.bits<32>) -> !fabric.bits<32> {
-  // expected-error @+1 {{'fabric.spatial_pe' op expects parent op 'fabric.module'}}
-  %r = fabric.spatial_pe(%pa = %a : !fabric.bits<32>) -> (!fabric.bits<32>) {
-    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
-      %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      fabric.yield %v : !fabric.bits<32>
-    }
+// spatial_pe at the top of builtin.module (parent must be fabric.module).
+%a_top = builtin.unrealized_conversion_cast to !fabric.bits<32>
+// expected-error @+1 {{'fabric.spatial_pe' op expects parent op 'fabric.module'}}
+%r = fabric.spatial_pe(%pa = %a_top : !fabric.bits<32>) -> (!fabric.bits<32>) {
+  fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+    %v = fabric.op [@arith.addi] (%fa, %fa)
+         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+    fabric.yield %v : !fabric.bits<32>
   }
-  return %r : !fabric.bits<32>
 }
 
 // -----

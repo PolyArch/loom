@@ -107,11 +107,10 @@ fabric.module @fu_yield_type_mismatch {
 }
 
 // -----
-// yield outside of fabric.fu / fabric.module.
-func.func @fu_yield_outside() {
-  // expected-error @+1 {{expects parent op 'fabric.fu' or 'fabric.module'}}
-  fabric.yield
-}
+// fabric.yield placed at the top of builtin.module (no enclosing fabric.fu /
+// fabric.module).
+// expected-error @+1 {{expects parent op 'fabric.fu' or 'fabric.module'}}
+fabric.yield
 
 // -----
 // FU boundary truncation: inner block-arg width must be <= outer operand
