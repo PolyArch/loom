@@ -1,6 +1,7 @@
 add_mlir_library(MLIRFabricTechSynthesizer
   Alignment.cpp
   CostModel.cpp
+  CoverageVerifier.cpp
   Parallel.cpp
   Synthesizer.cpp
 
