@@ -1929,7 +1929,7 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
     // Build wrapper func with the per-config signature so that, if body
     // materialization fails, we can erase it cleanly.
     std::string fname = (baseName + "_" + std::to_string(results.size())).str();
-    auto func = modBuilder.create<::mlir::func::FuncOp>(loc, fname, funcType);
+    auto func = ::mlir::func::FuncOp::create(modBuilder, loc, fname, funcType);
     func.setPrivate();
     Block *funcBody = func.addEntryBlock();
     OpBuilder funcBuilder(funcBody, funcBody->end());
@@ -1957,8 +1957,8 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
       func.erase();
       continue;
     }
-    bodyBuilder.create<::dataflow::YieldOp>(loc, *yields);
-    funcBuilder.create<::mlir::func::ReturnOp>(loc, subgraph.getResults());
+    ::dataflow::YieldOp::create(bodyBuilder, loc, *yields);
+    ::mlir::func::ReturnOp::create(funcBuilder, loc, subgraph.getResults());
 
     FuSubgraphCandidate cand;
     cand.wrapper = func;
