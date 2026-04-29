@@ -344,6 +344,46 @@ bool peersUniformArity(const PeerVec &peers, unsigned &arityOut) {
 // Per-position decision: single-share-group vs cross-share-group merge.
 //===----------------------------------------------------------------------===//
 
+// Key for a share-group bucket. A multi-member group is identified by
+// its index in `loom::common::hwShareGroups()`; a singleton op (any op
+// not in any multi-member group) is identified by its own op name so
+// that distinct singletons at the same anchor position never collapse
+// into one bucket. Bucket order is deterministic: multi-member groups
+// (sorted by index) come first, then singletons sorted by op name.
+struct BucketKey {
+  bool isSingleton = false;
+  ::std::size_t groupIndex = 0; // valid iff !isSingleton
+  ::std::string singletonName; // valid iff isSingleton
+
+  static BucketKey forGroup(::std::size_t idx) {
+    BucketKey k;
+    k.isSingleton = false;
+    k.groupIndex = idx;
+    return k;
+  }
+  static BucketKey forSingleton(::llvm::StringRef name) {
+    BucketKey k;
+    k.isSingleton = true;
+    k.singletonName = name.str();
+    return k;
+  }
+  static BucketKey forName(::llvm::StringRef name) {
+    if (auto idx = ::loom::common::findShareGroup(name))
+      return forGroup(*idx);
+    return forSingleton(name);
+  }
+
+  bool operator<(const BucketKey &o) const {
+    // Multi-member groups (isSingleton == false) sort before singletons
+    // so deterministic ordering is stable across all bucket sets.
+    if (isSingleton != o.isSingleton)
+      return !isSingleton; // false < true
+    if (!isSingleton)
+      return groupIndex < o.groupIndex;
+    return singletonName < o.singletonName;
+  }
+};
+
 // One layout candidate for a body-op position. `useMux == false` means
 // a single fabric.op merging every peer's op name into one op_list
 // (must all share one share group). `useMux == true` means one
@@ -352,49 +392,44 @@ bool peersUniformArity(const PeerVec &peers, unsigned &arityOut) {
 // sub-FU and the lowest-cost legal candidate wins.
 struct OpNodeDecision {
   bool useMux = false;
-  // Buckets[k] = the sorted set of op names belonging to share-group k
-  // (or the sentinel index for singletons). For useMux == false the
-  // map has exactly one entry.
-  ::std::map<::std::optional<::std::size_t>, ::std::set<::std::string>>
-      buckets;
+  // Buckets[k] = the sorted set of op names belonging to share-group k.
+  // Each multi-member group (e.g. arith.addi/subi) contributes one
+  // entry; each distinct singleton contributes its own entry. For
+  // useMux == false the map has exactly one entry.
+  ::std::map<BucketKey, ::std::set<::std::string>> buckets;
   // Parallel map: per-bucket source ops the union came from. The hw_params
   // synthesizer scans these for observed-attribute axes (predicate,
   // step_op, cont_cond, const_hex_value, bitmask).
-  ::std::map<::std::optional<::std::size_t>,
-             ::llvm::SmallVector<::mlir::Operation *, 4>>
+  ::std::map<BucketKey, ::llvm::SmallVector<::mlir::Operation *, 4>>
       bucketPeerOps;
 };
 
-// Group peers by share-group index (with singletons collapsed to
-// std::nullopt as a single bucket per distinct op name). For
-// useMux == false we expect every entry to map to the same key.
-::std::map<::std::optional<::std::size_t>, ::std::set<::std::string>>
+// Group peers by share-group key. Each multi-member group collapses
+// its members under one key; each distinct singleton receives its own
+// key (so two distinct singletons at the same anchor position never
+// land in one bucket).
+::std::map<BucketKey, ::std::set<::std::string>>
 bucketBySharegroup(const PeerVec &peers) {
-  ::std::map<::std::optional<::std::size_t>, ::std::set<::std::string>> out;
+  ::std::map<BucketKey, ::std::set<::std::string>> out;
   for (const Source &s : peers) {
     if (!s.op)
       continue;
     ::llvm::StringRef name = s.op->getName().getStringRef();
-    auto sg = ::loom::common::findShareGroup(name);
-    out[sg].insert(name.str());
+    out[BucketKey::forName(name)].insert(name.str());
   }
   return out;
 }
 
 // Parallel collector to bucketBySharegroup that retains the source ops
 // per bucket (so the hw_params synthesis can scan their attributes).
-::std::map<::std::optional<::std::size_t>,
-           ::llvm::SmallVector<::mlir::Operation *, 4>>
+::std::map<BucketKey, ::llvm::SmallVector<::mlir::Operation *, 4>>
 bucketPeerOpsBySharegroup(const PeerVec &peers) {
-  ::std::map<::std::optional<::std::size_t>,
-             ::llvm::SmallVector<::mlir::Operation *, 4>>
-      out;
+  ::std::map<BucketKey, ::llvm::SmallVector<::mlir::Operation *, 4>> out;
   for (const Source &s : peers) {
     if (!s.op)
       continue;
     ::llvm::StringRef name = s.op->getName().getStringRef();
-    auto sg = ::loom::common::findShareGroup(name);
-    out[sg].push_back(s.op);
+    out[BucketKey::forName(name)].push_back(s.op);
   }
   return out;
 }
@@ -409,14 +444,10 @@ decideOpNode(const PeerVec &peers, bool allowMux,
   if (buckets.empty())
     return std::nullopt;
 
-  // Collect the per-bucket "did we see > 1 op name and were they
-  // singletons?" check. fabric.op forbids multi-name op_lists where
-  // any entry is a singleton (per OpOp::verify); we avoid producing
-  // such candidates.
-  for (const auto &kv : buckets) {
-    if (!kv.first.has_value() && kv.second.size() > 1)
-      return std::nullopt; // two distinct singletons cannot share a fabric.op
-  }
+  // Each singleton has its own BucketKey, so any singleton bucket holds
+  // exactly one op name; OpOp::verify's "singletons must occupy
+  // fabric.op alone" rule is therefore satisfied by construction. No
+  // additional bucket-level filtering is needed here.
 
   auto peerOps = bucketPeerOpsBySharegroup(peers);
   if (buckets.size() == 1) {
@@ -426,8 +457,9 @@ decideOpNode(const PeerVec &peers, bool allowMux,
     d.bucketPeerOps = std::move(peerOps);
     return d;
   }
-  // More than one bucket: cross-share-group. Only legal when the user
-  // opted into intra-position muxing.
+  // More than one bucket: cross-share-group (multi-member groups vs
+  // each other, or distinct singletons against any other bucket). Only
+  // legal when the user opted into intra-position muxing.
   if (!allowMux)
     return std::nullopt;
   OpNodeDecision d;
