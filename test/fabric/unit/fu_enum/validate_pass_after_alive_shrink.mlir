@@ -14,25 +14,30 @@
 // "demanded but not alive". After the fix, three templates emerge --
 // one per bitmask -- each materializing the two surviving consumers.
 
-// CHECK-LABEL: @fu_demux_per_output_consumer
-func.func @fu_demux_per_output_consumer(%sel: !fabric.bits<32>,
-                                          %x: !fabric.bits<32>) {
-  %r:3 = fabric.fu(%s = %sel : !fabric.bits<32>, %y = %x : !fabric.bits<32>)
-                  -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
-    %a, %b, %c = fabric.op [@dataflow.demux] (%s, %y)
-                 {hw_params = [{bitmask = ["110", "101", "011"]}]}
-                 : (!fabric.bits<32>, !fabric.bits<32>)
-                   -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
-    %t0 = fabric.op [@arith.addi] (%a, %a)
-          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    %t1 = fabric.op [@arith.muli] (%b, %b)
-          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    %t2 = fabric.op [@arith.andi] (%c, %c)
-          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %t0, %t1, %t2 : !fabric.bits<32>, !fabric.bits<32>,
-                                  !fabric.bits<32>
+// CHECK-LABEL: fabric.module @fu_demux_per_output_consumer
+fabric.module @fu_demux_per_output_consumer {
+  %sel = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %x = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%psel = %sel : !fabric.bits<32>,
+                    %px = %x : !fabric.bits<32>)
+                   -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
+    fabric.fu(%s = %psel : !fabric.bits<32>, %y = %px : !fabric.bits<32>)
+             -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
+      %a, %b, %c = fabric.op [@dataflow.demux] (%s, %y)
+                   {hw_params = [{bitmask = ["110", "101", "011"]}]}
+                   : (!fabric.bits<32>, !fabric.bits<32>)
+                     -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+      %t0 = fabric.op [@arith.addi] (%a, %a)
+            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %t1 = fabric.op [@arith.muli] (%b, %b)
+            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %t2 = fabric.op [@arith.andi] (%c, %c)
+            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %t0, %t1, %t2 : !fabric.bits<32>, !fabric.bits<32>,
+                                    !fabric.bits<32>
+    }
   }
-  return
+  fabric.yield
 }
 
 // Three templates, one per bitmask. Each surviving template materializes

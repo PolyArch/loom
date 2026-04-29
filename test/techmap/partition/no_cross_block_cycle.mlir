@@ -7,29 +7,40 @@
 // loop-closing producer at graph level (greedy default behavior).
 
 // CHECK-LABEL: @fu_carry
-func.func @fu_carry(%c: !fabric.bits<1>, %i: !fabric.bits<32>,
-                    %k: !fabric.bits<32>) {
-  %r = fabric.fu(%cc = %c : !fabric.bits<1>,
-                 %ii = %i : !fabric.bits<32>,
-                 %kk = %k : !fabric.bits<32>) -> !fabric.bits<32> {
-    %o = fabric.op [@dataflow.carry] (%cc, %ii, %kk)
-         : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>)
-           -> !fabric.bits<32>
-    fabric.yield %o : !fabric.bits<32>
+fabric.module @fu_carry {
+  %c = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %i = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %k = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  fabric.spatial_pe(%pc = %c : !fabric.bits<1>,
+                    %pi = %i : !fabric.bits<1>,
+                    %pk = %k : !fabric.bits<1>) -> !fabric.bits<1> {
+    fabric.fu(%cc = %pc : !fabric.bits<1>,
+              %ii = %pi : !fabric.bits<1>,
+              %kk = %pk : !fabric.bits<1>) -> !fabric.bits<1> {
+      %o = fabric.op [@dataflow.carry] (%cc, %ii, %kk)
+           : (!fabric.bits<1>, !fabric.bits<1>, !fabric.bits<1>)
+             -> !fabric.bits<1>
+      fabric.yield %o : !fabric.bits<1>
+    }
   }
-  return
+  fabric.yield
 }
 
 // CHECK-LABEL: @fu_addsub
-func.func @fu_addsub(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @fu_addsub {
+  %cast0_fu_addsub = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_addsub = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_addsub : !fabric.bits<32>, %b = %cast1_fu_addsub : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi, @arith.subi] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 
 // The graph contains a carry-addi-subi loop. The partitioner must avoid
 // putting the producer chain in a subgraph that points back into the

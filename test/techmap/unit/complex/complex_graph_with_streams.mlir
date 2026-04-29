@@ -8,25 +8,35 @@
 // stay at graph level; invariant + arith.addi each get wrapped.
 
 // CHECK-LABEL: @fu_addi
-func.func @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @fu_addi {
+  %cast0_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
 
+
 // CHECK-LABEL: @fu_invariant
-func.func @fu_invariant(%c: !fabric.bits<1>, %v: !fabric.bits<32>) {
-  %r = fabric.fu(%cn = %c : !fabric.bits<1>,
-                 %vn = %v : !fabric.bits<32>) -> !fabric.bits<32> {
-    %o = fabric.op [@dataflow.invariant] (%cn, %vn)
-         : (!fabric.bits<1>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %o : !fabric.bits<32>
+fabric.module @fu_invariant {
+  %c = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %v = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  fabric.spatial_pe(%pc = %c : !fabric.bits<1>,
+                    %pv = %v : !fabric.bits<1>) -> !fabric.bits<1> {
+    fabric.fu(%cn = %pc : !fabric.bits<1>,
+              %vn = %pv : !fabric.bits<1>) -> !fabric.bits<1> {
+      %o = fabric.op [@dataflow.invariant] (%cn, %vn)
+           : (!fabric.bits<1>, !fabric.bits<1>) -> !fabric.bits<1>
+      fabric.yield %o : !fabric.bits<1>
+    }
   }
-  return
+  fabric.yield
 }
 
 // CHECK-LABEL: @graph_streams

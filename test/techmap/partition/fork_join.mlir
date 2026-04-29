@@ -7,8 +7,11 @@
 // dataflow.subgraph wraps both ops.
 
 // CHECK-LABEL: @fu_mac
-func.func @fu_mac(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
-                  %c: !fabric.bits<32>) {
+fabric.module @fu_mac {
+  %cast0_fu_mac = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_mac = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast2_fu_mac = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_mac : !fabric.bits<32>, %b = %cast1_fu_mac : !fabric.bits<32>, %c = %cast2_fu_mac : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>,
                  %y = %b : !fabric.bits<32>,
                  %z = %c : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -18,8 +21,10 @@ func.func @fu_mac(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %s : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 
 // CHECK-LABEL: @graph_mac_commuted
 // CHECK: dataflow.graph

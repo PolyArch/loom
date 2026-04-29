@@ -3,8 +3,9 @@
 // Models a simplified AMD/Xilinx DSP58-style fabric.fu so we can inspect
 // the full set of materialized software graphs. The native DSP58 carries
 // 27x24 multiplier widths and a 58-bit accumulator; here every datapath
-// is widened/narrowed uniformly to bits<32> so the focus stays on the
-// configuration combinatorics rather than width arithmetic.
+// is widened/narrowed uniformly to bits<1> so the focus stays on the
+// configuration combinatorics rather than width arithmetic and the FU
+// fits the spatial_pe uniform-W rule.
 //
 // Datapath (mirroring the public DSP58 simplified block diagram):
 //
@@ -44,58 +45,68 @@
 // Pins below assert that the enumerator emits a non-trivial number of
 // distinct templates and that a few signature shapes are present.
 
-// CHECK-LABEL: func.func @dsp58_like
-func.func @dsp58_like(%n: !fabric.bits<1>,
-                      %a: !fabric.bits<32>,
-                      %b: !fabric.bits<32>,
-                      %c: !fabric.bits<32>,
-                      %d: !fabric.bits<32>) {
-  %p, %x, %pd = fabric.fu(%negate = %n : !fabric.bits<1>,
-                           %A = %a : !fabric.bits<32>,
-                           %B = %b : !fabric.bits<32>,
-                           %C = %c : !fabric.bits<32>,
-                           %D = %d : !fabric.bits<32>)
-                          -> (!fabric.bits<32>,
-                              !fabric.bits<32>,
-                              !fabric.bits<1>) {
-    // Pre-adder: D op B with op selectable from {addi, subi}.
-    %pre = fabric.op [@arith.addi, @arith.subi] (%D, %B)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+// CHECK-LABEL: fabric.module @dsp58_like
+fabric.module @dsp58_like {
+  %n = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %c = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %d = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  fabric.spatial_pe(%pn = %n : !fabric.bits<1>,
+                    %pa = %a : !fabric.bits<1>,
+                    %pb = %b : !fabric.bits<1>,
+                    %pc = %c : !fabric.bits<1>,
+                    %pd = %d : !fabric.bits<1>)
+                   -> (!fabric.bits<1>,
+                 !fabric.bits<1>,
+                 !fabric.bits<1>) {
+    fabric.fu(%negate = %pn : !fabric.bits<1>,
+              %A = %pa : !fabric.bits<1>,
+              %B = %pb : !fabric.bits<1>,
+              %C = %pc : !fabric.bits<1>,
+              %D = %pd : !fabric.bits<1>)
+             -> (!fabric.bits<1>,
+                 !fabric.bits<1>,
+                 !fabric.bits<1>) {
+      // Pre-adder: D op B with op selectable from {addi, subi}.
+      %pre = fabric.op [@arith.addi, @arith.subi] (%D, %B)
+             : (!fabric.bits<1>, !fabric.bits<1>) -> !fabric.bits<1>
 
-    // Multiplier-side input muxes: each is a 2-input fabric.mux.
-    %xa = fabric.mux %A, %pre : !fabric.bits<32>
-    %xb = fabric.mux %pre, %B : !fabric.bits<32>
+      // Multiplier-side input muxes: each is a 2-input fabric.mux.
+      %xa = fabric.mux %A, %pre : !fabric.bits<1>
+      %xb = fabric.mux %pre, %B : !fabric.bits<1>
 
-    // 32x32 multiplier (widths uniform; native DSP58 is 27x24).
-    %m = fabric.op [@arith.muli] (%xa, %xb)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      // Multiplier (widths uniform; native DSP58 is 27x24).
+      %m = fabric.op [@arith.muli] (%xa, %xb)
+           : (!fabric.bits<1>, !fabric.bits<1>) -> !fabric.bits<1>
 
-    // Accumulator stage with back-edge: %acc reads %next which is
-    // produced by a textually-later arith.{addi,subi}. fabric.fu's
-    // graph-region semantics permit this forward reference; the
-    // enumerator's two-pass materializer threads the back-edge into
-    // each emitted dataflow.subgraph.
-    %acc = fabric.op [@dataflow.carry] (%negate, %A, %next)
-           : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>)
-             -> !fabric.bits<32>
-    %next = fabric.op [@arith.addi, @arith.subi] (%acc, %m)
-            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      // Accumulator stage with back-edge: %acc reads %next which is
+      // produced by a textually-later arith.{addi,subi}. fabric.fu's
+      // graph-region semantics permit this forward reference; the
+      // enumerator's two-pass materializer threads the back-edge into
+      // each emitted dataflow.subgraph.
+      %acc = fabric.op [@dataflow.carry] (%negate, %A, %next)
+             : (!fabric.bits<1>, !fabric.bits<1>, !fabric.bits<1>)
+               -> !fabric.bits<1>
+      %next = fabric.op [@arith.addi, @arith.subi] (%acc, %m)
+              : (!fabric.bits<1>, !fabric.bits<1>) -> !fabric.bits<1>
 
-    // XOR output: bit-wise xori of accumulator with C.
-    %xor = fabric.op [@arith.xori] (%acc, %C)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      // XOR output: bit-wise xori of accumulator with C.
+      %xor = fabric.op [@arith.xori] (%acc, %C)
+             : (!fabric.bits<1>, !fabric.bits<1>) -> !fabric.bits<1>
 
-    // Pattern detector: cmpi(%acc, %C) with the predicate restricted by
-    // hw_params to {eq, ne, slt, sgt} (the enumerator treats this as a
-    // 4-way axis; without hw_params it would be the full 10-way set).
-    %pat = fabric.op [@arith.cmpi] (%acc, %C)
-           {hw_params = [{predicate = ["eq", "ne", "slt", "sgt"]}]}
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
+      // Pattern detector: cmpi(%acc, %C) with the predicate restricted by
+      // hw_params to {eq, ne, slt, sgt} (the enumerator treats this as a
+      // 4-way axis; without hw_params it would be the full 10-way set).
+      %pat = fabric.op [@arith.cmpi] (%acc, %C)
+             {hw_params = [{predicate = ["eq", "ne", "slt", "sgt"]}]}
+             : (!fabric.bits<1>, !fabric.bits<1>) -> !fabric.bits<1>
 
-    fabric.yield %acc, %xor, %pat
-        : !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<1>
+      fabric.yield %acc, %xor, %pat
+          : !fabric.bits<1>, !fabric.bits<1>, !fabric.bits<1>
+    }
   }
-  return
+  fabric.yield
 }
 
 // At least 8 distinct templates must be emitted (sanity floor; on this

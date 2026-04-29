@@ -4,15 +4,20 @@
 // dataflow.subgraph with `loom.unmatched`. The user pattern below uses
 // arith.muli but the only FU advertises arith.addi.
 
-func.func @hw_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @hw_addi {
+  %cast0_hw_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_hw_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_hw_addi : !fabric.bits<32>, %b = %cast1_hw_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 
 // CHECK-LABEL: @pat_unmatched
 func.func @pat_unmatched(%x: i32, %y: i32) -> i32 {

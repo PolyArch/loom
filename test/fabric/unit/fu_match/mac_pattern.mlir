@@ -3,20 +3,26 @@
 // FU implements either a*b or a*b+c via mux/demux. Two patterns: pure
 // multiply and multiply-accumulate.
 
-func.func @hw_mac(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
-                  %c: !fabric.bits<32>) {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>,
-                 %y = %b : !fabric.bits<32>,
-                 %z = %c : !fabric.bits<32>) -> !fabric.bits<32> {
-    %mul = fabric.op [@arith.muli] (%x, %y)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    %d0, %d1 = fabric.demux %mul : !fabric.bits<32> -> 2
-    %add = fabric.op [@arith.addi] (%d1, %z)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    %out = fabric.mux %d0, %add : !fabric.bits<32>
-    fabric.yield %out : !fabric.bits<32>
+fabric.module @hw_mac {
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %c = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>,
+                    %pc = %c : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>,
+              %y = %pb : !fabric.bits<32>,
+              %z = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
+      %mul = fabric.op [@arith.muli] (%x, %y)
+             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %d0, %d1 = fabric.demux %mul : !fabric.bits<32> -> 2
+      %add = fabric.op [@arith.addi] (%d1, %z)
+             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %out = fabric.mux %d0, %add : !fabric.bits<32>
+      fabric.yield %out : !fabric.bits<32>
+    }
   }
-  return
+  fabric.yield
 }
 
 // Pattern: pure multiply. The FU has 3 inputs but the demux.sel=0 /

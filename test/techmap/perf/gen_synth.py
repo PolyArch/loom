@@ -32,18 +32,22 @@ OP_LIBRARY = [
 
 
 def render_fu_library() -> str:
-    """Emit one single-op fabric.fu func per library entry."""
+    """Emit one single-op fabric.fu wrapped in a fabric.module per entry."""
     blocks = []
     for op_name, fab_sym, fu_sym in OP_LIBRARY:
         blocks.append(
-            f"func.func @{fu_sym}(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {{\n"
-            f"  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)\n"
-            f"                -> !fabric.bits<32> {{\n"
-            f"    %k = fabric.op [{fab_sym}] (%x, %y)\n"
-            f"         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>\n"
-            f"    fabric.yield %k : !fabric.bits<32>\n"
+            f"fabric.module @{fu_sym} {{\n"
+            f"  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>\n"
+            f"  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>\n"
+            f"  fabric.spatial_pe(%pa = %a : !fabric.bits<32>, %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {{\n"
+            f"    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)\n"
+            f"                  -> !fabric.bits<32> {{\n"
+            f"      %k = fabric.op [{fab_sym}] (%x, %y)\n"
+            f"           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>\n"
+            f"      fabric.yield %k : !fabric.bits<32>\n"
+            f"    }}\n"
             f"  }}\n"
-            f"  return\n"
+            f"  fabric.yield\n"
             f"}}\n"
         )
     return "\n".join(blocks)

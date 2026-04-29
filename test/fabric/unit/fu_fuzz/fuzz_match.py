@@ -73,23 +73,30 @@ def gen_fu(rng, idx):
     sym_list = ", ".join(f"@{s}" for s in choice)
     if arity == 2:
         text = (
-            f"\nfunc.func @hw_{idx}(%a: {bits}, %b: {bits}) {{\n"
-            f"  %r = fabric.fu(%x = %a : {bits}, %y = %b : {bits}) -> {bits} {{\n"
-            f"    %k = fabric.op [{sym_list}] (%x, %y)\n"
-            f"         : ({bits}, {bits}) -> {bits}\n"
-            f"    fabric.yield %k : {bits}\n"
+            f"\nfabric.module @hw_{idx} {{\n"
+            f"  %a = builtin.unrealized_conversion_cast to {bits}\n"
+            f"  %b = builtin.unrealized_conversion_cast to {bits}\n"
+            f"  fabric.spatial_pe(%pa = %a : {bits}, %pb = %b : {bits}) -> {bits} {{\n"
+            f"    fabric.fu(%x = %pa : {bits}, %y = %pb : {bits}) -> {bits} {{\n"
+            f"      %k = fabric.op [{sym_list}] (%x, %y)\n"
+            f"           : ({bits}, {bits}) -> {bits}\n"
+            f"      fabric.yield %k : {bits}\n"
+            f"    }}\n"
             f"  }}\n"
-            f"  return\n"
+            f"  fabric.yield\n"
             f"}}\n"
         )
     else:
         text = (
-            f"\nfunc.func @hw_{idx}(%a: {bits}) {{\n"
-            f"  %r = fabric.fu(%x = %a : {bits}) -> {bits} {{\n"
-            f"    %k = fabric.op [{sym_list}] (%x) : ({bits}) -> {bits}\n"
-            f"    fabric.yield %k : {bits}\n"
+            f"\nfabric.module @hw_{idx} {{\n"
+            f"  %a = builtin.unrealized_conversion_cast to {bits}\n"
+            f"  fabric.spatial_pe(%pa = %a : {bits}) -> {bits} {{\n"
+            f"    fabric.fu(%x = %pa : {bits}) -> {bits} {{\n"
+            f"      %k = fabric.op [{sym_list}] (%x) : ({bits}) -> {bits}\n"
+            f"      fabric.yield %k : {bits}\n"
+            f"    }}\n"
             f"  }}\n"
-            f"  return\n"
+            f"  fabric.yield\n"
             f"}}\n"
         )
     ty_prefix = "i" if flavor == "int_bin" else "f"

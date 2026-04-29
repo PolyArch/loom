@@ -8,8 +8,12 @@
 // dataflow.subgraph backed by one of the FU's 2-input templates.
 
 // CHECK-LABEL: @fu_4in_2live
-func.func @fu_4in_2live(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
-                         %c: !fabric.bits<32>, %d: !fabric.bits<32>) {
+fabric.module @fu_4in_2live {
+  %cast0_fu_4in_2live = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_4in_2live = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast2_fu_4in_2live = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast3_fu_4in_2live = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_4in_2live : !fabric.bits<32>, %b = %cast1_fu_4in_2live : !fabric.bits<32>, %c = %cast2_fu_4in_2live : !fabric.bits<32>, %d = %cast3_fu_4in_2live : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%w = %a : !fabric.bits<32>,
                  %x = %b : !fabric.bits<32>,
                  %y = %c : !fabric.bits<32>,
@@ -19,8 +23,10 @@ func.func @fu_4in_2live(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %r0 : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 
 // CHECK-LABEL: @graph_one_addi
 // CHECK: dataflow.graph

@@ -17,21 +17,28 @@
 // discard-mode N=1 template becomes isomorphic to the bitmask=10
 // non-discard one-arg template and dedup folds them together.
 
-// CHECK-LABEL: @fu_mux_then_sync
-func.func @fu_mux_then_sync(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
-                             %c: !fabric.bits<32>) {
-  %r:2 = fabric.fu(%x = %a : !fabric.bits<32>,
-                   %y = %b : !fabric.bits<32>,
-                   %z = %c : !fabric.bits<32>)
-                  -> (!fabric.bits<32>, !fabric.bits<32>) {
-    %m = fabric.mux %x, %y : !fabric.bits<32>
-    %s:2 = fabric.op [@dataflow.sync] (%m, %z)
-           {hw_params = [{bitmask = ["11", "10", "01"]}]}
-           : (!fabric.bits<32>, !fabric.bits<32>)
-             -> (!fabric.bits<32>, !fabric.bits<32>)
-    fabric.yield %s#0, %s#1 : !fabric.bits<32>, !fabric.bits<32>
+// CHECK-LABEL: fabric.module @fu_mux_then_sync
+fabric.module @fu_mux_then_sync {
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %c = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>,
+                    %pc = %c : !fabric.bits<32>)
+                   -> (!fabric.bits<32>, !fabric.bits<32>) {
+    fabric.fu(%x = %pa : !fabric.bits<32>,
+              %y = %pb : !fabric.bits<32>,
+              %z = %pc : !fabric.bits<32>)
+             -> (!fabric.bits<32>, !fabric.bits<32>) {
+      %m = fabric.mux %x, %y : !fabric.bits<32>
+      %s:2 = fabric.op [@dataflow.sync] (%m, %z)
+             {hw_params = [{bitmask = ["11", "10", "01"]}]}
+             : (!fabric.bits<32>, !fabric.bits<32>)
+               -> (!fabric.bits<32>, !fabric.bits<32>)
+      fabric.yield %s#0, %s#1 : !fabric.bits<32>, !fabric.bits<32>
+    }
   }
-  return
+  fabric.yield
 }
 
 // First template: full bitmask=11 with normal-mode mux. Reads two
@@ -49,7 +56,7 @@ func.func @fu_mux_then_sync(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
 // CHECK-SAME: bitmask=10
 
 // The discard-mode pairing with bitmask=01 must NOT introduce a third
-// distinct template: after Fix B its signature is also (i32) -> i32
-// reading only %z, so it is software-isomorphic to subgraph_1 and the
-// dedup pass collapses it.
+// distinct template: after the discard-mode signature shrink its
+// signature is also (i32) -> i32 reading only %z, so it is
+// software-isomorphic to subgraph_1 and the dedup pass collapses it.
 // CHECK-NOT: func.func private @fu0_subgraph_2

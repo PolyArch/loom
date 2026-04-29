@@ -5,18 +5,27 @@
 // Each predicate value yields a distinct enumerated template; the
 // partitioner must cover each of the three graph cmpi ops with a
 // matching template, producing three predicate-distinct subgraphs.
+// To satisfy the spatial_pe uniform-W rule we expose the FU at bits<1>
+// throughout (cmpi's TypeParam(0) inputs accept any width); the graph
+// is correspondingly typed with i1 inputs.
 
 // CHECK-LABEL: @fu_cmpi
-func.func @fu_cmpi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
-                -> !fabric.bits<1> {
-    %k = fabric.op [@arith.cmpi] (%x, %y)
-         {hw_params = [{predicate = ["eq", "slt", "sgt"]}]}
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
-    fabric.yield %k : !fabric.bits<1>
+fabric.module @fu_cmpi {
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  fabric.spatial_pe(%pa = %a : !fabric.bits<1>,
+                    %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {
+    fabric.fu(%x = %pa : !fabric.bits<1>, %y = %pb : !fabric.bits<1>)
+                  -> !fabric.bits<1> {
+      %k = fabric.op [@arith.cmpi] (%x, %y)
+           {hw_params = [{predicate = ["eq", "slt", "sgt"]}]}
+           : (!fabric.bits<1>, !fabric.bits<1>) -> !fabric.bits<1>
+      fabric.yield %k : !fabric.bits<1>
+    }
   }
-  return
+  fabric.yield
 }
+
 
 // CHECK-LABEL: @graph_three_cmpi
 // CHECK: dataflow.graph
@@ -28,11 +37,11 @@ func.func @fu_cmpi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
 // CHECK-NEXT: arith.cmpi sgt
 // CHECK-NOT: dataflow.subgraph
 // CHECK: dataflow.yield
-func.func @graph_three_cmpi(%a: i32, %b: i32) -> (i1, i1, i1) {
-  %r:3 = dataflow.graph(%x = %a : i32, %y = %b : i32) -> (i1, i1, i1) {
-    %e = arith.cmpi eq, %x, %y : i32
-    %l = arith.cmpi slt, %x, %y : i32
-    %g = arith.cmpi sgt, %x, %y : i32
+func.func @graph_three_cmpi(%a: i1, %b: i1) -> (i1, i1, i1) {
+  %r:3 = dataflow.graph(%x = %a : i1, %y = %b : i1) -> (i1, i1, i1) {
+    %e = arith.cmpi eq, %x, %y : i1
+    %l = arith.cmpi slt, %x, %y : i1
+    %g = arith.cmpi sgt, %x, %y : i1
     dataflow.yield %e, %l, %g : i1, i1, i1
   }
   return %r#0, %r#1, %r#2 : i1, i1, i1

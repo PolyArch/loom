@@ -8,7 +8,10 @@
 // each non-trivial sel choice.
 
 // CHECK-LABEL: @fu_mux2_path
-func.func @fu_mux2_path(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @fu_mux2_path {
+  %cast0_fu_mux2_path = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_mux2_path = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_mux2_path : !fabric.bits<32>, %b = %cast1_fu_mux2_path : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>,
                  %y = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     %m = fabric.mux %x, %y : !fabric.bits<32>
@@ -22,5 +25,7 @@ func.func @fu_mux2_path(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
   // CHECK-SAME: loom.from_fu_config = "mux#0
   // CHECK: arith.addi
   // CHECK: dataflow.yield
-  return
+  }
+  fabric.yield
 }
+

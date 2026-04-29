@@ -8,58 +8,74 @@
 //                   data input.
 // VF2 distinguishes them by op-name; therefore an arith.select user
 // pattern must NOT match a dataflow.mux-only FU, and vice versa.
+//
+// To satisfy the spatial_pe uniform-W rule both FUs are exposed at
+// bits<1> throughout (sel is fixed bits<1> and the data ports accept
+// any width via TypeParam(0)).
 
 // FU offering a fixed-arity 2-input dataflow.mux (M=2 is a legal lower
 // bound for mux: numIns=3 == 1 sel + 2 data).
-func.func @hw_mux2(%sel: !fabric.bits<1>,
-                   %a: !fabric.bits<32>, %b: !fabric.bits<32>) {
-  %r = fabric.fu(%s = %sel : !fabric.bits<1>,
-                 %x = %a : !fabric.bits<32>,
-                 %y = %b : !fabric.bits<32>) -> !fabric.bits<32> {
-    %o = fabric.op [@dataflow.mux] (%s, %x, %y)
-         : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>)
-           -> !fabric.bits<32>
-    fabric.yield %o : !fabric.bits<32>
+fabric.module @hw_mux2 {
+  %sel = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  fabric.spatial_pe(%psel = %sel : !fabric.bits<1>,
+                    %pa = %a : !fabric.bits<1>,
+                    %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {
+    fabric.fu(%s = %psel : !fabric.bits<1>,
+              %x = %pa : !fabric.bits<1>,
+              %y = %pb : !fabric.bits<1>) -> !fabric.bits<1> {
+      %o = fabric.op [@dataflow.mux] (%s, %x, %y)
+           : (!fabric.bits<1>, !fabric.bits<1>, !fabric.bits<1>)
+             -> !fabric.bits<1>
+      fabric.yield %o : !fabric.bits<1>
+    }
   }
-  return
+  fabric.yield
 }
 
 // FU offering a fixed-arity arith.select.
-func.func @hw_select(%c: !fabric.bits<1>,
-                     %a: !fabric.bits<32>, %b: !fabric.bits<32>) {
-  %r = fabric.fu(%cn = %c : !fabric.bits<1>,
-                 %x = %a : !fabric.bits<32>,
-                 %y = %b : !fabric.bits<32>) -> !fabric.bits<32> {
-    %o = fabric.op [@arith.select] (%cn, %x, %y)
-         : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>)
-           -> !fabric.bits<32>
-    fabric.yield %o : !fabric.bits<32>
+fabric.module @hw_select {
+  %c = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  fabric.spatial_pe(%pc = %c : !fabric.bits<1>,
+                    %pa = %a : !fabric.bits<1>,
+                    %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {
+    fabric.fu(%cn = %pc : !fabric.bits<1>,
+              %x = %pa : !fabric.bits<1>,
+              %y = %pb : !fabric.bits<1>) -> !fabric.bits<1> {
+      %o = fabric.op [@arith.select] (%cn, %x, %y)
+           : (!fabric.bits<1>, !fabric.bits<1>, !fabric.bits<1>)
+             -> !fabric.bits<1>
+      fabric.yield %o : !fabric.bits<1>
+    }
   }
-  return
+  fabric.yield
 }
 
 // arith.select pattern matches @hw_select but NOT @hw_mux2.
 // CHECK-LABEL: @pat_select
-func.func @pat_select(%c: i1, %a: i32, %b: i32) -> i32 {
+func.func @pat_select(%c: i1, %a: i1, %b: i1) -> i1 {
   // CHECK: dataflow.subgraph
   // CHECK-SAME: loom.matched_fu = "@hw_select#0"
-  %r = dataflow.subgraph(%cn = %c : i1, %x = %a : i32, %y = %b : i32) -> i32
+  %r = dataflow.subgraph(%cn = %c : i1, %x = %a : i1, %y = %b : i1) -> i1
        attributes {loom.is_pattern} {
-    %o = arith.select %cn, %x, %y : i32
-    dataflow.yield %o : i32
+    %o = arith.select %cn, %x, %y : i1
+    dataflow.yield %o : i1
   }
-  return %r : i32
+  return %r : i1
 }
 
 // dataflow.mux pattern matches @hw_mux2 but NOT @hw_select.
 // CHECK-LABEL: @pat_mux
-func.func @pat_mux(%s: i1, %a: i32, %b: i32) -> i32 {
+func.func @pat_mux(%s: i1, %a: i1, %b: i1) -> i1 {
   // CHECK: dataflow.subgraph
   // CHECK-SAME: loom.matched_fu = "@hw_mux2#0"
-  %r = dataflow.subgraph(%sn = %s : i1, %x = %a : i32, %y = %b : i32) -> i32
+  %r = dataflow.subgraph(%sn = %s : i1, %x = %a : i1, %y = %b : i1) -> i1
        attributes {loom.is_pattern} {
-    %o = dataflow.mux %sn, %x, %y : (i1, i32, i32) -> i32
-    dataflow.yield %o : i32
+    %o = dataflow.mux %sn, %x, %y : (i1, i1, i1) -> i1
+    dataflow.yield %o : i1
   }
-  return %r : i32
+  return %r : i1
 }

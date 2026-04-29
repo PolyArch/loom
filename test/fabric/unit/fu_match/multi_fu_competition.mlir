@@ -3,24 +3,34 @@
 // Multiple FUs in the module. Each pattern is matched against the first FU
 // (in module walk order) that supports it.
 
-func.func @hw_intonly(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
-                -> !fabric.bits<32> {
-    %k = fabric.op [@arith.addi, @arith.subi] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @hw_intonly {
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
+                  -> !fabric.bits<32> {
+      %k = fabric.op [@arith.addi, @arith.subi] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return
+  fabric.yield
 }
 
-func.func @hw_floatonly(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
-                -> !fabric.bits<32> {
-    %k = fabric.op [@arith.addf, @arith.subf] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @hw_floatonly {
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
+                  -> !fabric.bits<32> {
+      %k = fabric.op [@arith.addf, @arith.subf] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return
+  fabric.yield
 }
 
 // Integer pattern -> matches first FU.

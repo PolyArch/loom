@@ -164,16 +164,19 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
     Top-level container for the fabric dialect. Carries a required
     `sym_name`. The body is a single graph-region block (back-references
     are permitted) whose terminator is `fabric.yield` with zero operands.
-    The body whitelist is intentionally permissive at this point; it will
-    be tightened in a later change to admit only the canonical fabric
-    container ops (e.g. `fabric.spatial_pe`, `fabric.temporal_pe`,
-    `fabric.spatial_sw`, `fabric.fifo`, `fabric.instantiate`, ...).
+    Only canonical fabric container ops may appear in the body; today
+    that whitelist is `fabric.spatial_pe` and `fabric.fifo` (plus the
+    implicit `fabric.yield` terminator). Future container ops
+    (`fabric.temporal_pe`, `fabric.spatial_sw`, `fabric.instantiate`,
+    ...) will be added to the whitelist when they land.
   }];
 
   let arguments = (ins SymbolNameAttr:$sym_name);
   let regions = (region SizedRegion<1>:$body);
 
   let assemblyFormat = "$sym_name attr-dict-with-keyword $body";
+
+  let hasVerifier = 1;
 }
 
 def Fabric_SpatialPeOp : Fabric_Op<"spatial_pe", [

@@ -18,29 +18,39 @@
 // RUN: FileCheck --check-prefix=DIAG %s < %t.diag
 
 // CHECK-LABEL: @fu_addi
-func.func @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @fu_addi {
+  %cast0_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
 
+
 // CHECK-LABEL: @fu_carry
-func.func @fu_carry(%cond: !fabric.bits<1>,
-                    %init: !fabric.bits<32>,
-                    %carry: !fabric.bits<32>) {
-  %r = fabric.fu(%c = %cond : !fabric.bits<1>,
-                 %i = %init : !fabric.bits<32>,
-                 %k = %carry : !fabric.bits<32>) -> !fabric.bits<32> {
-    %o = fabric.op [@dataflow.carry] (%c, %i, %k)
-         : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>)
-           -> !fabric.bits<32>
-    fabric.yield %o : !fabric.bits<32>
+fabric.module @fu_carry {
+  %cond = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %init = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %carry = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  fabric.spatial_pe(%pcond = %cond : !fabric.bits<1>,
+                    %pinit = %init : !fabric.bits<1>,
+                    %pcarry = %carry : !fabric.bits<1>) -> !fabric.bits<1> {
+    fabric.fu(%c = %pcond : !fabric.bits<1>,
+              %i = %pinit : !fabric.bits<1>,
+              %k = %pcarry : !fabric.bits<1>) -> !fabric.bits<1> {
+      %o = fabric.op [@dataflow.carry] (%c, %i, %k)
+           : (!fabric.bits<1>, !fabric.bits<1>, !fabric.bits<1>)
+             -> !fabric.bits<1>
+      fabric.yield %o : !fabric.bits<1>
+    }
   }
-  return
+  fabric.yield
 }
 
 // The bound result must form a DAG: at most one of {carry, addi} may

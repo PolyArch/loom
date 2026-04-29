@@ -6,8 +6,12 @@
 // N>=3 (per the dataflow op verifier).
 
 // CHECK-LABEL: @fu_mux3
-func.func @fu_mux3(%s: !fabric.bits<32>, %a: !fabric.bits<32>,
-                   %b: !fabric.bits<32>, %c: !fabric.bits<32>) {
+fabric.module @fu_mux3 {
+  %cast0_fu_mux3 = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_mux3 = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast2_fu_mux3 = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast3_fu_mux3 = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%s = %cast0_fu_mux3 : !fabric.bits<32>, %a = %cast1_fu_mux3 : !fabric.bits<32>, %b = %cast2_fu_mux3 : !fabric.bits<32>, %c = %cast3_fu_mux3 : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%ss = %s : !fabric.bits<32>,
                  %aa = %a : !fabric.bits<32>,
                  %bb = %b : !fabric.bits<32>,
@@ -18,5 +22,7 @@ func.func @fu_mux3(%s: !fabric.bits<32>, %a: !fabric.bits<32>,
     fabric.yield %k : !fabric.bits<32>
   }
   // CHECK-DAG: dataflow.mux
-  return
+  }
+  fabric.yield
 }
+

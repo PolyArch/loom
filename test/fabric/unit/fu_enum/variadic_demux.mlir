@@ -6,21 +6,28 @@
 // other; "1111" yields a 4-output demux. The materialized sel type
 // follows the dataflow.demux verifier (i1 for N==2, index for N>=3).
 
-// CHECK-LABEL: @fu_demux4
-func.func @fu_demux4(%sel: !fabric.bits<32>, %in: !fabric.bits<32>) {
-  %r:4 = fabric.fu(%s = %sel : !fabric.bits<32>,
-                   %x = %in : !fabric.bits<32>)
-                  -> (!fabric.bits<32>, !fabric.bits<32>,
-                      !fabric.bits<32>, !fabric.bits<32>) {
-    %a, %b, %c, %d = fabric.op [@dataflow.demux] (%s, %x)
-                     {hw_params = [{bitmask = ["1100", "0011", "1111"]}]}
-                     : (!fabric.bits<32>, !fabric.bits<32>)
-                       -> (!fabric.bits<32>, !fabric.bits<32>,
-                           !fabric.bits<32>, !fabric.bits<32>)
-    fabric.yield %a, %b, %c, %d : !fabric.bits<32>, !fabric.bits<32>,
-                                  !fabric.bits<32>, !fabric.bits<32>
+// CHECK-LABEL: fabric.module @fu_demux4
+fabric.module @fu_demux4 {
+  %sel = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %in = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%psel = %sel : !fabric.bits<32>,
+                    %pin = %in : !fabric.bits<32>)
+                   -> (!fabric.bits<32>, !fabric.bits<32>,
+                 !fabric.bits<32>, !fabric.bits<32>) {
+    fabric.fu(%s = %psel : !fabric.bits<32>,
+              %x = %pin : !fabric.bits<32>)
+             -> (!fabric.bits<32>, !fabric.bits<32>,
+                 !fabric.bits<32>, !fabric.bits<32>) {
+      %a, %b, %c, %d = fabric.op [@dataflow.demux] (%s, %x)
+                       {hw_params = [{bitmask = ["1100", "0011", "1111"]}]}
+                       : (!fabric.bits<32>, !fabric.bits<32>)
+                         -> (!fabric.bits<32>, !fabric.bits<32>,
+                             !fabric.bits<32>, !fabric.bits<32>)
+      fabric.yield %a, %b, %c, %d : !fabric.bits<32>, !fabric.bits<32>,
+                                    !fabric.bits<32>, !fabric.bits<32>
+    }
   }
-  return
+  fabric.yield
 }
 
 // First template: N=2 (sel becomes i1).

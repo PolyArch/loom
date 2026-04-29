@@ -2,14 +2,19 @@
 
 // FU has 2-input arity. Patterns with different arity must not match.
 
-func.func @hw_2in(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
-                -> !fabric.bits<32> {
-    %k = fabric.op [@arith.addi] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @hw_2in {
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
+                  -> !fabric.bits<32> {
+      %k = fabric.op [@arith.addi] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return
+  fabric.yield
 }
 
 // 1-input pattern: arity mismatch.

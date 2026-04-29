@@ -6,26 +6,31 @@
 // well-formed; the enumerator's two-pass materializer must walk firing
 // ops and synthesize placeholder operands on first reference, then
 // rewire them to the real sw values once the producer is built.
+// To satisfy the spatial_pe uniform-W rule we expose the FU at bits<1>
+// throughout.
 
-// CHECK-LABEL: @fu_carry_self_feedback
-func.func @fu_carry_self_feedback(%cond: !fabric.bits<1>,
-                                  %init: !fabric.bits<32>) {
-  %r = fabric.fu(%c = %cond : !fabric.bits<1>,
-                 %i = %init : !fabric.bits<32>) -> !fabric.bits<32> {
-    %acc = fabric.op [@dataflow.carry] (%c, %i, %next)
-           : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>)
-             -> !fabric.bits<32>
-    %next = fabric.op [@arith.addi] (%acc, %i)
-            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %acc : !fabric.bits<32>
+// CHECK-LABEL: fabric.module @fu_carry_self_feedback
+fabric.module @fu_carry_self_feedback {
+  %cond = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %init = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  fabric.spatial_pe(%pcond = %cond : !fabric.bits<1>,
+                    %pinit = %init : !fabric.bits<1>) -> !fabric.bits<1> {
+    fabric.fu(%c = %pcond : !fabric.bits<1>,
+              %i = %pinit : !fabric.bits<1>) -> !fabric.bits<1> {
+      %acc = fabric.op [@dataflow.carry] (%c, %i, %next)
+             : (!fabric.bits<1>, !fabric.bits<1>, !fabric.bits<1>)
+               -> !fabric.bits<1>
+      %next = fabric.op [@arith.addi] (%acc, %i)
+              : (!fabric.bits<1>, !fabric.bits<1>) -> !fabric.bits<1>
+      fabric.yield %acc : !fabric.bits<1>
+    }
   }
-
-  // The materialized subgraph must reproduce the cycle: dataflow.carry
-  // reads the result of arith.addi which itself reads back the carry.
-  // CHECK: dataflow.subgraph
-  // CHECK: %[[ACC:.*]] = dataflow.carry %{{.*}}, %{{.*}}, %[[NEXT:.*]] : i32
-  // CHECK: %[[NEXT]] = arith.addi %[[ACC]], %{{.*}} : i32
-  // CHECK: dataflow.yield %[[ACC]] : i32
-
-  return
+  fabric.yield
 }
+
+// The materialized subgraph must reproduce the cycle: dataflow.carry
+// reads the result of arith.addi which itself reads back the carry.
+// CHECK: dataflow.subgraph
+// CHECK: %[[ACC:.*]] = dataflow.carry %{{.*}}, %{{.*}}, %[[NEXT:.*]] : i1
+// CHECK: %[[NEXT]] = arith.addi %[[ACC]], %{{.*}} : i1
+// CHECK: dataflow.yield %[[ACC]] : i1

@@ -8,25 +8,35 @@
 //   * report sorted, ascending template ids for fabric-supported ops;
 //   * report `<empty>` for non-fabric-supported ops.
 
-func.func @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @fu_addi {
+  %cast0_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
 
-func.func @fu_muli(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+
+fabric.module @fu_muli {
+  %cast0_fu_muli = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_muli = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_muli : !fabric.bits<32>, %b = %cast1_fu_muli : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.muli] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 
 // CHECK: graph #0 @graph_mixed
 func.func @graph_mixed(%a: i32, %b: i32) -> i32 {

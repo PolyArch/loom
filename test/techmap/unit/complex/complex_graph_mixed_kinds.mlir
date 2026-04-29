@@ -20,74 +20,107 @@
 // dataflow.subgraph. Total: 30 subgraphs.
 
 // CHECK-LABEL: @fu_addi
-func.func @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @fu_addi {
+  %cast0_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 // CHECK-LABEL: @fu_subi
-func.func @fu_subi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @fu_subi {
+  %cast0_fu_subi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_subi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_subi : !fabric.bits<32>, %b = %cast1_fu_subi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.subi] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 // CHECK-LABEL: @fu_muli
-func.func @fu_muli(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @fu_muli {
+  %cast0_fu_muli = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_muli = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_muli : !fabric.bits<32>, %b = %cast1_fu_muli : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.muli] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 // CHECK-LABEL: @fu_logic
-func.func @fu_logic(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @fu_logic {
+  %cast0_fu_logic = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_logic = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_logic : !fabric.bits<32>, %b = %cast1_fu_logic : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.andi, @arith.ori, @arith.xori] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
-}
-// CHECK-LABEL: @fu_cmpi
-func.func @fu_cmpi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
-                -> !fabric.bits<1> {
-    %k = fabric.op [@arith.cmpi] (%x, %y)
-         {hw_params = [{predicate = ["eq", "slt", "sgt"]}]}
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
-    fabric.yield %k : !fabric.bits<1>
   }
-  return
+  fabric.yield
 }
+
+// CHECK-LABEL: @fu_cmpi
+fabric.module @fu_cmpi {
+  %cast0_fu_cmpi = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  %cast1_fu_cmpi = builtin.unrealized_conversion_cast to !fabric.bits<1>
+  fabric.spatial_pe(%a = %cast0_fu_cmpi : !fabric.bits<1>, %b = %cast1_fu_cmpi : !fabric.bits<1>) -> !fabric.bits<1> {
+    fabric.fu(%x = %a : !fabric.bits<1>, %y = %b : !fabric.bits<1>)
+                  -> !fabric.bits<1> {
+      %k = fabric.op [@arith.cmpi] (%x, %y)
+           {hw_params = [{predicate = ["eq", "slt", "sgt"]}]}
+           : (!fabric.bits<1>, !fabric.bits<1>) -> !fabric.bits<1>
+      fabric.yield %k : !fabric.bits<1>
+    }
+  }
+  fabric.yield
+}
+
 // CHECK-LABEL: @fu_trig
-func.func @fu_trig(%a: !fabric.bits<32>) {
+fabric.module @fu_trig {
+  %cast0_fu_trig = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_trig : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>) -> !fabric.bits<32> {
     %k = fabric.op [@math.sin, @math.cos] (%x)
          : (!fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 // CHECK-LABEL: @fu_sqrt
-func.func @fu_sqrt(%a: !fabric.bits<32>) {
+fabric.module @fu_sqrt {
+  %cast0_fu_sqrt = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_sqrt : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>) -> !fabric.bits<32> {
     %k = fabric.op [@math.sqrt] (%x)
          : (!fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 
 // Spot-check that representative subgraphs of every kind appear. A
 // stricter ordered count is enforced by the diff-against-list run line.

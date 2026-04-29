@@ -917,6 +917,14 @@ RegionKind FuOp::getRegionKind(unsigned /*index*/) {
 }
 
 LogicalResult FuOp::verify() {
+  // Parent restriction: a fabric.fu must live inside a fabric.spatial_pe.
+  // (When fabric.temporal_pe lands it will be added to the allowed parents;
+  //  TODO: extend this check once that op exists.)
+  Operation *parent = (*this)->getParentOp();
+  if (!isa_and_nonnull<SpatialPeOp>(parent))
+    return emitOpError(
+        "must be inside a fabric.spatial_pe (parent must be fabric.spatial_pe)");
+
   Block &entry = getBody().front();
   if (entry.getNumArguments() != getInputs().size())
     return emitOpError("region entry block argument count (")
@@ -1143,6 +1151,30 @@ LogicalResult SpatialPeOp::verify() {
 
 RegionKind fabric::ModuleOp::getRegionKind(unsigned /*index*/) {
   return RegionKind::Graph;
+}
+
+LogicalResult fabric::ModuleOp::verify() {
+  // Body whitelist: only fabric.spatial_pe, fabric.fifo, and the implicit
+  // fabric.yield terminator may appear directly in the module body.
+  // builtin.unrealized_conversion_cast is also allowed as a way to
+  // materialize fabric values without an explicit producer (used by
+  // tests, and by lowering pipelines that have not yet wired up real
+  // producers/consumers).
+  // (Future container ops -- fabric.temporal_pe, fabric.spatial_sw,
+  // fabric.temporal_sw, fabric.spatial_mem, fabric.temporal_mem,
+  // fabric.t2s, fabric.s2t, fabric.t2t, fabric.instantiate -- will be
+  // added here as they land.)
+  for (Operation &op : getBody().front()) {
+    if (isa<SpatialPeOp, FifoOp, YieldOp>(op))
+      continue;
+    if (isa<::mlir::UnrealizedConversionCastOp>(op))
+      continue;
+    return op.emitOpError(
+        "is not allowed inside fabric.module; only fabric.spatial_pe and "
+        "fabric.fifo are permitted (plus the implicit terminator "
+        "fabric.yield)");
+  }
+  return success();
 }
 
 LogicalResult YieldOp::verify() {

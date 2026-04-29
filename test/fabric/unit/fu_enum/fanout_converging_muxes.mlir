@@ -21,32 +21,36 @@
 // is independent of graph-region work and exercises the alive
 // fixed-point alone.
 
-// CHECK-LABEL: @repro_fanout_converging_muxes
-func.func @repro_fanout_converging_muxes(%a: !fabric.bits<32>,
-                                          %b: !fabric.bits<32>,
-                                          %d: !fabric.bits<32>) {
-  %r = fabric.fu(%A = %a : !fabric.bits<32>,
-                 %B = %b : !fabric.bits<32>,
-                 %D = %d : !fabric.bits<32>) -> !fabric.bits<32> {
-    %pre = fabric.op [@arith.addi] (%D, %B)
+// CHECK-LABEL: fabric.module @repro_fanout_converging_muxes
+fabric.module @repro_fanout_converging_muxes {
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %d = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>,
+                    %pd = %d : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%A = %pa : !fabric.bits<32>,
+              %B = %pb : !fabric.bits<32>,
+              %D = %pd : !fabric.bits<32>) -> !fabric.bits<32> {
+      %pre = fabric.op [@arith.addi] (%D, %B)
+             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %xa = fabric.mux %A, %pre : !fabric.bits<32>
+      %xb = fabric.mux %B, %pre : !fabric.bits<32>
+      %m = fabric.op [@arith.muli] (%xa, %xb)
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    %xa = fabric.mux %A, %pre : !fabric.bits<32>
-    %xb = fabric.mux %B, %pre : !fabric.bits<32>
-    %m = fabric.op [@arith.muli] (%xa, %xb)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %m : !fabric.bits<32>
+      fabric.yield %m : !fabric.bits<32>
+    }
   }
-
-  // Sanity floor: at least four distinct private subgraph wrappers must
-  // be emitted, one per (mux#0.sel, mux#1.sel) combination.
-  // CHECK: func.func private @fu0_subgraph_0
-  // CHECK: func.func private @fu0_subgraph_1
-  // CHECK: func.func private @fu0_subgraph_2
-  // CHECK: func.func private @fu0_subgraph_3
-
-  // At least one of the emitted templates must contain the converging
-  // arith.muli, confirming the downstream multi-arg op materializes.
-  // CHECK: arith.muli
-
-  return
+  fabric.yield
 }
+
+// Sanity floor: at least four distinct private subgraph wrappers must
+// be emitted, one per (mux#0.sel, mux#1.sel) combination.
+// CHECK: func.func private @fu0_subgraph_0
+// CHECK: func.func private @fu0_subgraph_1
+// CHECK: func.func private @fu0_subgraph_2
+// CHECK: func.func private @fu0_subgraph_3
+
+// At least one of the emitted templates must contain the converging
+// arith.muli, confirming the downstream multi-arg op materializes.
+// CHECK: arith.muli

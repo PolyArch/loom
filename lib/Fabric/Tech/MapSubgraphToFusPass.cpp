@@ -40,13 +40,20 @@ struct MapSubgraphToFusPass
                     ::mlir::math::MathDialect>();
   }
 
-  // Identify the symbolic name of an FU. We use the enclosing func.func
-  // name and the FU's index within that function so users can disambiguate
-  // multi-FU functions.
+  // Identify the symbolic name of an FU. After migration, every fabric.fu
+  // is nested inside a fabric.spatial_pe inside a fabric.module; we use
+  // the enclosing fabric.module's `sym_name` as the stable identifier.
+  // The legacy func::FuncOp lookup is retained as a fallback so that any
+  // residual non-migrated input still produces a usable name.
+  // The "indexInParent" still keys off the FU's immediate parent op
+  // (the spatial_pe after migration), giving each FU within the same
+  // PE a distinct index.
   static std::string nameForFu(::fabric::FuOp fu, unsigned indexInParent) {
     std::string s;
     ::llvm::raw_string_ostream os(s);
-    if (auto func = fu->getParentOfType<::mlir::func::FuncOp>())
+    if (auto mod = fu->getParentOfType<::fabric::ModuleOp>())
+      os << "@" << mod.getSymName();
+    else if (auto func = fu->getParentOfType<::mlir::func::FuncOp>())
       os << "@" << func.getName();
     else
       os << "<anon>";

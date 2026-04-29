@@ -4,6 +4,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/Tech/SubgraphEnumerator.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -32,6 +33,7 @@ struct EnumerateFuSubgraphsPass
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
     registry.insert<::dataflow::DataflowDialect,
                     ::mlir::arith::ArithDialect,
+                    ::mlir::func::FuncDialect,
                     ::mlir::math::MathDialect>();
   }
 

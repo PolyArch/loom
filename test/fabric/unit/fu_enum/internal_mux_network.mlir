@@ -7,35 +7,42 @@
 // configured away (its input ready is tied off), so producers fanning out
 // to such consumers are not stalled by them.
 
-// CHECK-LABEL: @fu_internal_chain
-func.func @fu_internal_chain(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
-                              %c: !fabric.bits<32>, %d: !fabric.bits<32>) {
-  %r = fabric.fu(%w = %a : !fabric.bits<32>,
-                 %x = %b : !fabric.bits<32>,
-                 %y = %c : !fabric.bits<32>,
-                 %z = %d : !fabric.bits<32>) -> !fabric.bits<32> {
-    // Stage 1: mux selects one of (w, x) into a multiplier; %y feeds both
-    // the multiplier and the downstream adder.
-    %m1 = fabric.mux %w, %x : !fabric.bits<32>
-    %p = fabric.op [@arith.muli] (%m1, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    // Stage 2: mux selects one of (p, z) into the final adder.
-    %m2 = fabric.mux %p, %z : !fabric.bits<32>
-    %s = fabric.op [@arith.addi] (%m2, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %s : !fabric.bits<32>
+// CHECK-LABEL: fabric.module @fu_internal_chain
+fabric.module @fu_internal_chain {
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %c = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %d = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>,
+                    %pc = %c : !fabric.bits<32>,
+                    %pd = %d : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%w = %pa : !fabric.bits<32>,
+              %x = %pb : !fabric.bits<32>,
+              %y = %pc : !fabric.bits<32>,
+              %z = %pd : !fabric.bits<32>) -> !fabric.bits<32> {
+      // Stage 1: mux selects one of (w, x) into a multiplier; %y feeds both
+      // the multiplier and the downstream adder.
+      %m1 = fabric.mux %w, %x : !fabric.bits<32>
+      %p = fabric.op [@arith.muli] (%m1, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      // Stage 2: mux selects one of (p, z) into the final adder.
+      %m2 = fabric.mux %p, %z : !fabric.bits<32>
+      %s = fabric.op [@arith.addi] (%m2, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %s : !fabric.bits<32>
+    }
   }
-
-  // m1.sel=0 with m2.sel=0 yields the full muladd compute. m1.sel=1 with
-  // m2.sel=0 produces the same shape (block-arg permutation only) and is
-  // deduped to the lex-smallest config.
-  // CHECK: mux#0{sel=0,discard=false,disconnect=false}; mux#1{sel=0,discard=false,disconnect=false}
-  // CHECK-NOT: mux#0{sel=1,discard=false,disconnect=false}; mux#1{sel=0,discard=false,disconnect=false}
-
-  // m2.sel=1 selects %z directly into the adder; the multiplier is
-  // configured off and its drained input ports do not deadlock the
-  // %y broadcast. The resulting compute is just addi(%z, %y).
-  // CHECK: mux#0{sel=0,discard=false,disconnect=false}; mux#1{sel=1,discard=false,disconnect=false}
-
-  return
+  fabric.yield
 }
+
+// m1.sel=0 with m2.sel=0 yields the full muladd compute. m1.sel=1 with
+// m2.sel=0 produces the same shape (block-arg permutation only) and is
+// deduped to the lex-smallest config.
+// CHECK: mux#0{sel=0,discard=false,disconnect=false}; mux#1{sel=0,discard=false,disconnect=false}
+// CHECK-NOT: mux#0{sel=1,discard=false,disconnect=false}; mux#1{sel=0,discard=false,disconnect=false}
+
+// m2.sel=1 selects %z directly into the adder; the multiplier is
+// configured off and its drained input ports do not deadlock the
+// %y broadcast. The resulting compute is just addi(%z, %y).
+// CHECK: mux#0{sel=0,discard=false,disconnect=false}; mux#1{sel=1,discard=false,disconnect=false}

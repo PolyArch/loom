@@ -7,18 +7,24 @@
 // permutations and any other textual reordering of an isomorphic DAG
 // match the canonical FU compute. This test pins that behavior.
 
-func.func @hw_muladd(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
-                     %c: !fabric.bits<32>) {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>,
-                 %y = %b : !fabric.bits<32>,
-                 %z = %c : !fabric.bits<32>) -> !fabric.bits<32> {
-    %m = fabric.op [@arith.muli] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    %s = fabric.op [@arith.addi] (%m, %z)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %s : !fabric.bits<32>
+fabric.module @hw_muladd {
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %c = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>,
+                    %pc = %c : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>,
+              %y = %pb : !fabric.bits<32>,
+              %z = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
+      %m = fabric.op [@arith.muli] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %s = fabric.op [@arith.addi] (%m, %z)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %s : !fabric.bits<32>
+    }
   }
-  return
+  fabric.yield
 }
 
 // Canonical pattern: same op order and same operand order as the FU body.

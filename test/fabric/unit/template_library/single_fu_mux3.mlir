@@ -5,18 +5,26 @@
 // input is wired straight into the muli; the mux is consumed by the
 // configuration).
 
-func.func @fu_mux3(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
-                    %c: !fabric.bits<32>, %d: !fabric.bits<32>) {
-  %r = fabric.fu(%w = %a : !fabric.bits<32>,
-                 %x = %b : !fabric.bits<32>,
-                 %y = %c : !fabric.bits<32>,
-                 %z = %d : !fabric.bits<32>) -> !fabric.bits<32> {
-    %sel = fabric.mux %w, %x, %y : !fabric.bits<32>
-    %k = fabric.op [@arith.muli] (%sel, %z)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @fu_mux3 {
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %c = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %d = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>,
+                    %pc = %c : !fabric.bits<32>,
+                    %pd = %d : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%w = %pa : !fabric.bits<32>,
+              %x = %pb : !fabric.bits<32>,
+              %y = %pc : !fabric.bits<32>,
+              %z = %pd : !fabric.bits<32>) -> !fabric.bits<32> {
+      %sel = fabric.mux %w, %x, %y : !fabric.bits<32>
+      %k = fabric.op [@arith.muli] (%sel, %z)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return
+  fabric.yield
 }
 
 // All three sel values produce graph-isomorphic single-op templates

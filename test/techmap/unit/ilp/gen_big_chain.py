@@ -6,15 +6,20 @@ import sys
 
 def main() -> None:
     n = int(sys.argv[1])
-    print('func.func @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {')
-    print('  %r = fabric.fu(%x = %a : !fabric.bits<32>, '
-          '%y = %b : !fabric.bits<32>)')
-    print('                -> !fabric.bits<32> {')
-    print('    %k = fabric.op [@arith.addi] (%x, %y) : '
+    print('fabric.module @fu_addi {')
+    print('  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>')
+    print('  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>')
+    print('  fabric.spatial_pe(%pa = %a : !fabric.bits<32>, '
+          '%pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {')
+    print('    fabric.fu(%x = %pa : !fabric.bits<32>, '
+          '%y = %pb : !fabric.bits<32>)')
+    print('                  -> !fabric.bits<32> {')
+    print('      %k = fabric.op [@arith.addi] (%x, %y) : '
           '(!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>')
-    print('    fabric.yield %k : !fabric.bits<32>')
+    print('      fabric.yield %k : !fabric.bits<32>')
+    print('    }')
     print('  }')
-    print('  return')
+    print('  fabric.yield')
     print('}')
     print('func.func @graph_big(%a: i32, %b: i32) -> i32 {')
     print('  %r = dataflow.graph(%x = %a : i32, %y = %b : i32) -> i32 {')

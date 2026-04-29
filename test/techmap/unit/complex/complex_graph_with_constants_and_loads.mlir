@@ -8,39 +8,35 @@
 // constant and the addi each get a singleton subgraph.
 
 // CHECK-LABEL: @fu_addi
-func.func @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @fu_addi {
+  %cast0_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
 
-// FU implements dataflow.constant. The control input is bits<0> (none
-// flavour) so the candidate cache binds it to the constant's typed
-// const_value attribute at materialization time.
-// CHECK-LABEL: @fu_const
-func.func @fu_const(%ctrl: !fabric.bits<0>) {
-  %r = fabric.fu(%c = %ctrl : !fabric.bits<0>) -> !fabric.bits<32> {
-    %k = fabric.op [@dataflow.constant] (%c)
-         {sw_configs = {const_hex_value = "0000002a"}}
-         : (!fabric.bits<0>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
-  }
-  return
-}
+
+// (Originally a dataflow.constant FU with a bits<0> control input lived
+//  here; that op cannot be wrapped in spatial_pe because bits<0> on the
+//  PE boundary violates the uniform-W rule (W >= 1). The constant
+//  subgraph wrapping behavior is exercised at the IR level by
+//  fabric/unit/op/valid.mlir without going through the PE container.)
+
 
 // CHECK-LABEL: @graph_const_load
 // CHECK: dataflow.graph
-// constant gets wrapped in a singleton subgraph.
-// CHECK: dataflow.subgraph
-// CHECK-NEXT: dataflow.constant
-// CHECK-NEXT: dataflow.yield
+// dataflow.constant has no covering FU here so it stays at graph level.
+// CHECK-DAG: dataflow.constant
 // load stays at graph level (graph-only op).
-// CHECK: dataflow.load
-// addi gets wrapped after load.
+// CHECK-DAG: dataflow.load
+// addi gets wrapped.
 // CHECK: dataflow.subgraph
 // CHECK-NEXT: arith.addi
 // CHECK-NEXT: dataflow.yield

@@ -7,8 +7,11 @@
 // arith.addi is commutative; the match should still bind both ops to
 // the FU and report an annotated dataflow.subgraph.
 
-func.func @hw_mac(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
-                  %c: !fabric.bits<32>) {
+fabric.module @hw_mac {
+  %cast0_hw_mac = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_hw_mac = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast2_hw_mac = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_hw_mac : !fabric.bits<32>, %b = %cast1_hw_mac : !fabric.bits<32>, %c = %cast2_hw_mac : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>,
                  %y = %b : !fabric.bits<32>,
                  %z = %c : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -18,8 +21,10 @@ func.func @hw_mac(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %s : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 
 // CHECK-LABEL: @pat_mac_swapped
 func.func @pat_mac_swapped(%x: i32, %y: i32, %z: i32) -> i32 {

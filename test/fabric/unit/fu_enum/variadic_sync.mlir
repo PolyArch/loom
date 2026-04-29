@@ -8,19 +8,26 @@
 // (input #i, output #i) sync subgraphs of the same N are isomorphic up
 // to block-arg permutation). Net: 3 templates remain (N=1, N=2, N=3).
 
-// CHECK-LABEL: @fu_sync3
-func.func @fu_sync3(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
-                    %c: !fabric.bits<32>) {
-  %r:3 = fabric.fu(%x = %a : !fabric.bits<32>,
-                   %y = %b : !fabric.bits<32>,
-                   %z = %c : !fabric.bits<32>)
-                  -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
-    %u, %v, %w = fabric.op [@dataflow.sync] (%x, %y, %z)
-                 : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
-                   -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
-    fabric.yield %u, %v, %w : !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>
+// CHECK-LABEL: fabric.module @fu_sync3
+fabric.module @fu_sync3 {
+  %a = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %b = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %c = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>,
+                    %pc = %c : !fabric.bits<32>)
+                   -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
+    fabric.fu(%x = %pa : !fabric.bits<32>,
+              %y = %pb : !fabric.bits<32>,
+              %z = %pc : !fabric.bits<32>)
+             -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
+      %u, %v, %w = fabric.op [@dataflow.sync] (%x, %y, %z)
+                   : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+                     -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+      fabric.yield %u, %v, %w : !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>
+    }
   }
-  return
+  fabric.yield
 }
 
 // One-input sync (popcount 1).

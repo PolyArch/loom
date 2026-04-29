@@ -11,28 +11,40 @@
 // output ports.
 
 // CHECK-LABEL: @fu_muli_demux
-func.func @fu_muli_demux(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
-  %r0, %r1 = fabric.fu(%x = %a : !fabric.bits<32>,
-                       %y = %b : !fabric.bits<32>)
-                       -> (!fabric.bits<32>, !fabric.bits<32>) {
-    %p = fabric.op [@arith.muli] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    %d0, %d1 = fabric.demux %p : !fabric.bits<32> -> 2
-    fabric.yield %d0, %d1 : !fabric.bits<32>, !fabric.bits<32>
+fabric.module @fu_muli_demux {
+  %cast0_fu_muli_demux = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_muli_demux = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_muli_demux : !fabric.bits<32>,
+                    %b = %cast1_fu_muli_demux : !fabric.bits<32>)
+                   -> (!fabric.bits<32>, !fabric.bits<32>) {
+    fabric.fu(%x = %a : !fabric.bits<32>,
+              %y = %b : !fabric.bits<32>)
+             -> (!fabric.bits<32>, !fabric.bits<32>) {
+      %p = fabric.op [@arith.muli] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %d0, %d1 = fabric.demux %p : !fabric.bits<32> -> 2
+      fabric.yield %d0, %d1 : !fabric.bits<32>, !fabric.bits<32>
+    }
   }
-  return
+  fabric.yield
 }
 
+
 // CHECK-LABEL: @fu_addi
-func.func @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @fu_addi {
+  %cast0_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 
 // The muli is now wrapped in its own dataflow.subgraph (bound to one of
 // the muli-demux per-config templates). Each downstream addi is also

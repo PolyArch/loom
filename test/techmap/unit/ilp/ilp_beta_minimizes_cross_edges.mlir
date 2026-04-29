@@ -27,27 +27,40 @@
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.b10.yaml" \
 // RUN:   | FileCheck --check-prefix=B10 %s
 
-func.func @fu_muli(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+fabric.module @fu_muli {
+  %cast0_fu_muli = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_muli = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_muli : !fabric.bits<32>, %b = %cast1_fu_muli : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.muli] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
 
-func.func @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+
+fabric.module @fu_addi {
+  %cast0_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %k : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
 
-func.func @fu_muli_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+
+fabric.module @fu_muli_addi {
+  %cast0_fu_muli_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  %cast1_fu_muli_addi = builtin.unrealized_conversion_cast to !fabric.bits<32>
+  fabric.spatial_pe(%a = %cast0_fu_muli_addi : !fabric.bits<32>, %b = %cast1_fu_muli_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.muli] (%x, %y)
@@ -56,8 +69,10 @@ func.func @fu_muli_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield %m : !fabric.bits<32>
   }
-  return
+  }
+  fabric.yield
 }
+
 
 // With beta = 0 the cost is flat across all admissible partitions; HiGHS
 // breaks the tie by returning the two-singleton solution.
