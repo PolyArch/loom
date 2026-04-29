@@ -35,6 +35,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <type_traits>
 
 namespace loom::fabric::tech {
 
@@ -54,11 +55,14 @@ public:
   // vector preserves input index order regardless of completion order.
   // The closure must be thread-safe and capture by value (no MLIR
   // mutation). When `numWorkers() == 1`, runs inline on the calling
-  // thread.
+  // thread. `R` must be default-constructible (slots are pre-allocated
+  // so each worker can write its result by index).
   template <class T, class R>
   ::llvm::SmallVector<R, 8>
   parallelMap(::llvm::ArrayRef<T> inputs,
               ::llvm::function_ref<R(const T &)> fn) {
+    static_assert(std::is_default_constructible_v<R>,
+                  "WorkerPool::parallelMap requires default-constructible R");
     ::llvm::SmallVector<R, 8> results;
     results.reserve(inputs.size());
     for (size_t i = 0; i < inputs.size(); ++i)
