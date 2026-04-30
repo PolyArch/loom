@@ -3,16 +3,16 @@
 // The module's `func.func @fu_y` carries `loom.synthesized_for = "y"`
 // but its body is empty (just a `func.return`). The tightened
 // idempotence precheck requires marker-tagged wrappers to contain
-// exactly one `fabric.fu` plus a `func.return` terminator (B1). With
-// zero `fabric.fu` ops the precheck rejects this as `symbol_conflict`
+// exactly one `fabric.fu` plus a `func.return` terminator. With zero
+// `fabric.fu` ops the precheck rejects this as `symbol_conflict`
 // rather than silently honoring it as a no-op idempotent re-synth.
 //
-// The diagnostic message names the failing check (B1) so debugging is
-// easy; the input func.func picks up
+// The diagnostic carries the `[wrapper-body-shape]` tag so debugging
+// is easy; the input func.func picks up
 // `loom.synth_failed = "symbol_conflict"`.
 
 // CHECK: warning: {{.*}}group "y": symbol_conflict
-// CHECK-SAME: [B1]
+// CHECK-SAME: [wrapper-body-shape]
 // CHECK-DAG: func.func @fu_y
 // CHECK-DAG: loom.synthesized_for = "y"
 // CHECK: func.func @pat_addi

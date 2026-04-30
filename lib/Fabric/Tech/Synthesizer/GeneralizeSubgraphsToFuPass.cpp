@@ -368,17 +368,18 @@ void GeneralizeSubgraphsToFuPass::validateFunctions(
 
 // Validate that a marker-tagged wrapper function is a real synthesized
 // wrapper. Performs three checks in order:
-//   B1: body is exactly `[fabric.fu, func.return]` (one fabric.fu plus
-//       a func.return terminator; no extra ops).
-//   B2: the inner fabric.fu passes its own verifier (FuOp::verify and
-//       any nested op verifiers reachable from `mlir::verify`).
-//   B3: the wrapper's signature (operand types + result types) matches
-//       the expected signature derived from the input subgraphs via
-//       `collectWrapperPorts`.
+//   Body shape: body is exactly `[fabric.fu, func.return]` (one
+//       fabric.fu plus a func.return terminator; no extra ops).
+//   Inner verifier: the inner fabric.fu passes its own verifier
+//       (FuOp::verify and any nested op verifiers reachable from
+//       `mlir::verify`).
+//   Signature match: the wrapper's signature (operand types + result
+//       types) matches the expected signature derived from the input
+//       subgraphs via `collectWrapperPorts`.
 //
 // Returns an empty string on success. Returns a deterministic failure
-// reason note (suitable for an attached note on the diag) when any of
-// B1/B2/B3 fails. The caller treats any non-empty return as a
+// reason note (suitable for an attached note on the diag) when any
+// check fails. The caller treats any non-empty return as a
 // `symbol_conflict` failure.
 static std::string validateMarkerWrapper(
     ::mlir::func::FuncOp existingFunc, ::llvm::StringRef symbolName,
@@ -388,14 +389,14 @@ static std::string validateMarkerWrapper(
   std::string note;
   ::llvm::raw_string_ostream os(note);
 
-  // B1: body must contain exactly one fabric.fu plus a func.return
-  // terminator. Empty body / no terminator / extra ops / no fabric.fu
-  // are all malformed.
+  // Body shape: body must contain exactly one fabric.fu plus a
+  // func.return terminator. Empty body / no terminator / extra ops /
+  // no fabric.fu are all malformed.
   if (existingFunc.getBody().empty()) {
     os << "symbol_conflict (existing @" << symbolName
        << " tagged loom.synthesized_for=\"" << groupName
        << "\" but body shape is malformed: expected exactly one fabric.fu, "
-          "found 0 [B1])";
+          "found 0 [wrapper-body-shape])";
     return os.str();
   }
   ::mlir::Block &entry = existingFunc.getBody().front();
@@ -422,15 +423,15 @@ static std::string validateMarkerWrapper(
        << " tagged loom.synthesized_for=\"" << groupName
        << "\" but body shape is malformed: expected exactly one fabric.fu, "
           "found "
-       << fuCount << " [B1])";
+       << fuCount << " [wrapper-body-shape])";
     return os.str();
   }
 
-  // B2: verify the inner fabric.fu in isolation. Capture diagnostics
-  // through a ScopedDiagnosticHandler so the verifier's error output
-  // does not leak to stderr; surface them as part of the attached note
-  // instead. Multiple diagnostics are joined with `; ` for a single
-  // deterministic line.
+  // Inner verifier: verify the inner fabric.fu in isolation. Capture
+  // diagnostics through a ScopedDiagnosticHandler so the verifier's
+  // error output does not leak to stderr; surface them as part of the
+  // attached note instead. Multiple diagnostics are joined with `; `
+  // for a single deterministic line.
   ::llvm::SmallVector<std::string, 2> diagMsgs;
   {
     ::mlir::ScopedDiagnosticHandler capture(
@@ -449,21 +450,22 @@ static std::string validateMarkerWrapper(
          << " tagged loom.synthesized_for=\"" << groupName
          << "\" but inner fabric.fu fails verification: "
          << (joined.empty() ? std::string("(no diagnostic)") : joined)
-         << " [B2])";
+         << " [inner-fu-verifier])";
       return os.str();
     }
   }
 
-  // B3: signature match. The expected signature is the lift of the
-  // input subgraphs' block-arg types (-> wrapper inputs) and yield
-  // operand types (-> wrapper outputs) to fabric.bits<N>.
+  // Signature match: the expected signature is the lift of the input
+  // subgraphs' block-arg types (-> wrapper inputs) and yield operand
+  // types (-> wrapper outputs) to fabric.bits<N>.
   auto portsOpt =
       ::loom::fabric::tech::collectWrapperPorts(subgraphs, ctx);
   if (!portsOpt.has_value()) {
     os << "symbol_conflict (existing @" << symbolName
        << " tagged loom.synthesized_for=\"" << groupName
        << "\" but expected signature could not be derived from the input "
-          "subgraphs (block-arg / yield types not lift-able) [B3])";
+          "subgraphs (block-arg / yield types not lift-able) "
+          "[signature-mismatch])";
     return os.str();
   }
   ::mlir::FunctionType actual = existingFunc.getFunctionType();
@@ -507,7 +509,7 @@ static std::string validateMarkerWrapper(
     os << "symbol_conflict (existing @" << symbolName
        << " tagged loom.synthesized_for=\"" << groupName
        << "\" but signature mismatch: expected " << expectedStr << ", got "
-       << actualStr << " [B3])";
+       << actualStr << " [signature-mismatch])";
     return os.str();
   }
 
@@ -528,10 +530,11 @@ bool GeneralizeSubgraphsToFuPass::prepareSymbolSlot(
             "loom.synthesized_for")) {
       if (tag.getValue() == group.name) {
         // Marker-tagged wrapper. Validate that it is a real synthesized
-        // wrapper (B1/B2/B3) before honoring it as idempotent. A failed
-        // check is reported as a `symbol_conflict` so the user can
-        // resolve the malformed wrapper rather than silently accepting
-        // it as a no-op.
+        // wrapper (body shape, inner fabric.fu verifier, signature
+        // match) before honoring it as idempotent. A failed check is
+        // reported as a `symbol_conflict` so the user can resolve the
+        // malformed wrapper rather than silently accepting it as a
+        // no-op.
         std::string failureNote = validateMarkerWrapper(
             existingFunc, symbolName, group.name,
             ::llvm::ArrayRef<::dataflow::SubgraphOp>(group.subgraphs),

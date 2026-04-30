@@ -2,11 +2,11 @@
 
 // The module already contains a top-level `func.func @fu_y` tagged with
 // `loom.synthesized_for = "y"` that is a real synthesized wrapper:
-//   * exactly one inner `fabric.fu` plus a `func.return` terminator (B1)
-//   * the inner fabric.fu passes its own verifier (B2)
-//   * the wrapper's signature matches the lift of the input subgraph's
-//     block-arg types (i32, i32) and yield types (i32) to fabric.bits<32>
-//     (B3)
+//   * body shape: exactly one inner `fabric.fu` plus a `func.return`
+//     terminator
+//   * inner fabric.fu passes its own verifier
+//   * signature matches the lift of the input subgraph's block-arg
+//     types (i32, i32) and yield types (i32) to fabric.bits<32>
 // Re-running the pass is a no-op for that group: the precheck detects
 // the marker, validates the body shape and signature, and emits a
 // `remark: skipping idempotent re-synth`. The input func.func is
