@@ -93,7 +93,6 @@ constexpr ::loom::fabric::tech::SynthFailureReason kAllFailureReasons[] = {
     ::loom::fabric::tech::SynthFailureReason::VerifierFailed,
     ::loom::fabric::tech::SynthFailureReason::SymbolConflict,
     ::loom::fabric::tech::SynthFailureReason::ConfigParseFailed,
-    ::loom::fabric::tech::SynthFailureReason::NoLegalMaterialization,
 };
 
 void printStrategies() {

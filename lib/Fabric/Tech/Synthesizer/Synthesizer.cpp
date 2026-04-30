@@ -52,8 +52,6 @@ bool CoverageReport::allCovered() const {
     return "symbol_conflict";
   case SynthFailureReason::ConfigParseFailed:
     return "config_parse_failed";
-  case SynthFailureReason::NoLegalMaterialization:
-    return "no_legal_materialization";
   }
   // The switch above is exhaustive over the closed enum; this point is
   // unreachable. The builtin keeps optimizers from emitting a default

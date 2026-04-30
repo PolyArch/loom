@@ -292,11 +292,6 @@ body.
   `@fu_<sanitized(group)>` already exists in the module and does not
   correspond to a previous synthesizer run that we may safely skip.
 * `config_parse_failed` -- the `--config=<path>` file failed to load.
-* `no_legal_materialization` -- the strategy produced an FU whose
-  enumerated materializations do not satisfy `OpOp::verify` /
-  `FuOp::verify`, or whose port assignments contradict the dialect's
-  static type rules. The FU itself passes `mlir::verify` but the
-  enumerator emits nothing legal against it.
 
 These failure reasons are stored verbatim as the `loom.synth_failed`
 attribute on the offending input function. Implementations must keep
@@ -1388,7 +1383,6 @@ test/techmap/synth/
                                     # pass detects and aborts cleanly
       symbol_conflict.mlir
       config_parse_failed.mlir
-      no_legal_materialization.mlir
     grouping/
       multi_group.mlir              # multiple loom.synth_group values
       default_group.mlir            # missing attr -> default group

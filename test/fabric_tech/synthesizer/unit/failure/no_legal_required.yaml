@@ -1,4 +1,0 @@
-synth:
-  strategy: anchor
-  parallelism:
-    workers: 1

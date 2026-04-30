@@ -58,7 +58,6 @@ enum class SynthFailureReason : uint8_t {
   VerifierFailed,            // "verifier_failed"
   SymbolConflict,            // "symbol_conflict"
   ConfigParseFailed,         // "config_parse_failed"
-  NoLegalMaterialization,    // "no_legal_materialization"
 };
 
 // Inverse: snake_case spec string for the attribute / diagnostic.
