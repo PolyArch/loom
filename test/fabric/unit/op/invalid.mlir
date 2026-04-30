@@ -3,7 +3,7 @@
 // -----
 // op_list cannot be empty.
 fabric.module @op_empty_list(%a : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> () {
       // expected-error @+1 {{'op_list' must be non-empty}}
       %0 = fabric.op [] (%fa) : (!fabric.bits<32>) -> !fabric.bits<32>
@@ -16,7 +16,7 @@ fabric.module @op_empty_list(%a : !fabric.bits<32>) {
 // -----
 // Unknown op symbol.
 fabric.module @op_unknown_symbol(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> () {
@@ -33,7 +33,7 @@ fabric.module @op_unknown_symbol(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 // arith.constant is explicitly disallowed (constants must come from
 // fabric.op[@dataflow.constant]).
 fabric.module @op_rejects_arith_constant(%a : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> () {
       // expected-error @+1 {{is not a fabric.op-supported software op}}
       %0 = fabric.op [@arith.constant] (%fa)
@@ -47,7 +47,7 @@ fabric.module @op_rejects_arith_constant(%a : !fabric.bits<32>) {
 // -----
 // Two singleton ops cannot share a fabric.op.
 fabric.module @op_two_singletons(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> () {
@@ -63,7 +63,7 @@ fabric.module @op_two_singletons(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 // -----
 // Two ops from different groups cannot share a fabric.op.
 fabric.module @op_different_groups(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> () {
@@ -79,7 +79,7 @@ fabric.module @op_different_groups(%a : !fabric.bits<32>, %b : !fabric.bits<32>)
 // -----
 // Multi-op programmed without op_sel.
 fabric.module @op_missing_op_sel(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> () {
@@ -96,7 +96,7 @@ fabric.module @op_missing_op_sel(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 // -----
 // op_sel value not in op_list.
 fabric.module @op_bad_op_sel(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> () {
@@ -113,7 +113,7 @@ fabric.module @op_bad_op_sel(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 // -----
 // Mismatched port count.
 fabric.module @op_bad_port_count(%a : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> () {
       // expected-error @+1 {{port count (1->1) does not match the supported software ops (2->1)}}
       %0 = fabric.op [@arith.addi] (%fa)
@@ -127,7 +127,7 @@ fabric.module @op_bad_port_count(%a : !fabric.bits<32>) {
 // -----
 // Wrong fixed-port width: dataflow.stream's rwc port must be bits<1> not bits<0>.
 fabric.module @op_stream_bad_rwc(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>, %step : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %lb : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %lb : !fabric.bits<32>,
                     %pb = %ub : !fabric.bits<32>,
                     %pc = %step : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
@@ -146,7 +146,7 @@ fabric.module @op_stream_bad_rwc(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>,
 // -----
 // dataflow.constant must have bits<0> input (none-typed ctrl).
 fabric.module @op_constant_bad_ctrl(%ctrl : !fabric.bits<1>) {
-  fabric.spatial_pe(%pa = %ctrl : !fabric.bits<1>) -> !fabric.bits<1> {
+  fabric.pe [spatial] (%pa = %ctrl : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%fa = %pa : !fabric.bits<1>) -> () {
       // expected-error @+1 {{input port #0 has width 1 but software op(s) require width 0}}
       %0 = fabric.op [@dataflow.constant] (%fa)
@@ -161,7 +161,7 @@ fabric.module @op_constant_bad_ctrl(%ctrl : !fabric.bits<1>) {
 // -----
 // hw_params must be a length-1 array.
 fabric.module @op_bad_hw_params(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> () {
@@ -180,7 +180,7 @@ fabric.module @op_bad_hw_params(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 // all share one width. The FU is at bits<32> uniformly; the inconsistent
 // bits<64> input is materialized internally via a width-changing op.
 fabric.module @op_stream_inconsistent_t(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>, %step : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %lb : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %lb : !fabric.bits<32>,
                     %pb = %ub : !fabric.bits<32>,
                     %pc = %step : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
@@ -201,7 +201,7 @@ fabric.module @op_stream_inconsistent_t(%lb : !fabric.bits<32>, %ub : !fabric.bi
 // -----
 // dataflow.sync: in/out counts must match.
 fabric.module @op_sync_unequal_counts(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> () {
@@ -217,7 +217,7 @@ fabric.module @op_sync_unequal_counts(%a : !fabric.bits<32>, %b : !fabric.bits<3
 // -----
 // dataflow.sync: bitmask length must equal port count.
 fabric.module @op_sync_bad_bitmask_len(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %c : !fabric.bits<32>, %d : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>,
                     %pc = %c : !fabric.bits<32>,
                     %pd = %d : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -239,7 +239,7 @@ fabric.module @op_sync_bad_bitmask_len(%a : !fabric.bits<32>, %b : !fabric.bits<
 // -----
 // dataflow.sync: bitmask must contain only '0' / '1'.
 fabric.module @op_sync_bad_bitmask_chars(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> () {
@@ -259,7 +259,7 @@ fabric.module @op_sync_bad_bitmask_chars(%a : !fabric.bits<32>, %b : !fabric.bit
 // sel is taken directly from a PE/FU input at bits<32> (PE width matches
 // data width).
 fabric.module @op_mux2_bad_sel(%sel : !fabric.bits<32>, %a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%psel = %sel : !fabric.bits<32>,
+  fabric.pe [spatial] (%psel = %sel : !fabric.bits<32>,
                     %pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fsel = %psel : !fabric.bits<32>,
@@ -278,7 +278,7 @@ fabric.module @op_mux2_bad_sel(%sel : !fabric.bits<32>, %a : !fabric.bits<32>, %
 // dataflow.mux with >2 data inputs requires sel width = index width
 // (default 32). Faulty bits<1> sel is generated internally via cmpi.
 fabric.module @op_mux3_bad_sel(%a : !fabric.bits<16>, %b : !fabric.bits<16>, %c : !fabric.bits<16>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<16>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<16>,
                     %pb = %b : !fabric.bits<16>,
                     %pc = %c : !fabric.bits<16>) -> !fabric.bits<16> {
     fabric.fu(%fa = %pa : !fabric.bits<16>,
@@ -299,7 +299,7 @@ fabric.module @op_mux3_bad_sel(%a : !fabric.bits<16>, %b : !fabric.bits<16>, %c 
 // -----
 // dataflow.demux with 2 outs requires bits<1> sel.
 fabric.module @op_demux2_bad_sel(%sel : !fabric.bits<8>, %in : !fabric.bits<8>) {
-  fabric.spatial_pe(%psel = %sel : !fabric.bits<8>,
+  fabric.pe [spatial] (%psel = %sel : !fabric.bits<8>,
                     %pa = %in : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fsel_8 = %psel : !fabric.bits<8>,
               %fin = %pa : !fabric.bits<8>) -> () {
@@ -320,7 +320,7 @@ fabric.module @op_demux2_bad_sel(%sel : !fabric.bits<8>, %in : !fabric.bits<8>) 
 // output width (bits<16>); the bits<1> sel and bits<32> mismatched data
 // input are both materialized internally.
 fabric.module @op_mux_data_mismatch(%a : !fabric.bits<16>, %b : !fabric.bits<16>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<16>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<16>,
                     %pb = %b : !fabric.bits<16>) -> !fabric.bits<16> {
     fabric.fu(%fa = %pa : !fabric.bits<16>,
               %fb = %pb : !fabric.bits<16>) -> () {
@@ -340,7 +340,7 @@ fabric.module @op_mux_data_mismatch(%a : !fabric.bits<16>, %b : !fabric.bits<16>
 // -----
 // hw_params allowed-set check: sw_configs value not in hw_params allowed array.
 fabric.module @op_sw_value_not_in_hw_set(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>, %step : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %lb : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %lb : !fabric.bits<32>,
                     %pb = %ub : !fabric.bits<32>,
                     %pc = %step : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
@@ -361,7 +361,7 @@ fabric.module @op_sw_value_not_in_hw_set(%lb : !fabric.bits<32>, %ub : !fabric.b
 // -----
 // hw_params allowed-set check: hw value for shared key must be ArrayAttr.
 fabric.module @op_hw_value_not_array(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>, %step : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %lb : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %lb : !fabric.bits<32>,
                     %pb = %ub : !fabric.bits<32>,
                     %pc = %step : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,

@@ -41,12 +41,12 @@ struct MapSubgraphToFusPass
   }
 
   // Identify the symbolic name of an FU. After migration, every fabric.fu
-  // is nested inside a fabric.spatial_pe inside a fabric.module; we use
-  // the enclosing fabric.module's `sym_name` as the stable identifier.
+  // is nested inside a fabric.pe inside a fabric.module; we use the
+  // enclosing fabric.module's `sym_name` as the stable identifier.
   // The legacy func::FuncOp lookup is retained as a fallback so that any
   // residual non-migrated input still produces a usable name.
   // The "indexInParent" still keys off the FU's immediate parent op
-  // (the spatial_pe after migration), giving each FU within the same
+  // (the fabric.pe after migration), giving each FU within the same
   // PE a distinct index.
   static std::string nameForFu(::fabric::FuOp fu, unsigned indexInParent) {
     std::string s;

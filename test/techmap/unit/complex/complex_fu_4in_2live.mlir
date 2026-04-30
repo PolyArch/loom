@@ -9,7 +9,7 @@
 
 // CHECK-LABEL: @fu_4in_2live
 fabric.module @fu_4in_2live(%cast0_fu_4in_2live : !fabric.bits<32>, %cast1_fu_4in_2live : !fabric.bits<32>, %cast2_fu_4in_2live : !fabric.bits<32>, %cast3_fu_4in_2live : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_4in_2live : !fabric.bits<32>, %b = %cast1_fu_4in_2live : !fabric.bits<32>, %c = %cast2_fu_4in_2live : !fabric.bits<32>, %d = %cast3_fu_4in_2live : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_fu_4in_2live : !fabric.bits<32>, %b = %cast1_fu_4in_2live : !fabric.bits<32>, %c = %cast2_fu_4in_2live : !fabric.bits<32>, %d = %cast3_fu_4in_2live : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%w = %a : !fabric.bits<32>,
                  %x = %b : !fabric.bits<32>,
                  %y = %c : !fabric.bits<32>,

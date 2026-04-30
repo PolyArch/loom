@@ -6,7 +6,7 @@
 // configuration).
 
 fabric.module @fu_mux3(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %c : !fabric.bits<32>, %d : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>,
                     %pc = %c : !fabric.bits<32>,
                     %pd = %d : !fabric.bits<32>) -> !fabric.bits<32> {

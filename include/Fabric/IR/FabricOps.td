@@ -5,11 +5,21 @@ include "Fabric/IR/FabricDialect.td"
 include "Fabric/IR/FabricTypes.td"
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/CommonAttrConstraints.td"
+include "mlir/IR/EnumAttr.td"
 include "mlir/IR/RegionKindInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+
+def Fabric_ScheduleAttr : I32EnumAttr<"Schedule",
+    "fabric container schedule (spatial vs temporal time-share)",
+    [
+      I32EnumAttrCase<"Spatial",  0, "spatial">,
+      I32EnumAttrCase<"Temporal", 1, "temporal">
+    ]> {
+  let cppNamespace = "::fabric";
+}
 
 def Fabric_MuxOp : Fabric_Op<"mux", [Pure, SameOperandsAndResultType]> {
   let summary = "fabric multiplexer with handshake";
@@ -152,8 +162,7 @@ def Fabric_OpOp : Fabric_Op<"op", []> {
 }
 
 def Fabric_ModulePortType
-    : AnyTypeOf<[Fabric_BitsType, Fabric_BitsTagType, Fabric_TagType,
-                 AnyMemRef]>;
+    : AnyTypeOf<[Fabric_BitsType, Fabric_BitsTagType, AnyMemRef]>;
 
 def Fabric_ModuleOp : Fabric_Op<"module", [
     IsolatedFromAbove,
@@ -174,15 +183,15 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
     `fabric.yield` terminator supplies their values.
 
     Allowed input/output types: `!fabric.bits<W>`,
-    `!fabric.bits_tag<W, T>`, `!fabric.tag<T>`, `memref<...>`. No
-    other MLIR types are accepted.
+    `!fabric.bits_tag<W, T>`, `memref<...>`. No other MLIR types are
+    accepted.
 
     The body whitelist is limited to a fixed set of canonical fabric
-    container ops; today that set is `fabric.spatial_pe` and
-    `fabric.fifo` (plus the implicit `fabric.yield` terminator).
-    Future container ops (`fabric.temporal_pe`, `fabric.spatial_sw`,
-    `fabric.instantiate`, ...) will be added to the whitelist when
-    they land. See `docs/spec-fabric-module.md` for the full rules.
+    container ops; today that set is `fabric.pe` and `fabric.fifo`
+    (plus the implicit `fabric.yield` terminator). Future container
+    ops (`fabric.switch`, `fabric.mem`, `fabric.s2t`, ...) will be
+    added to the whitelist when they land. See
+    `docs/spec-fabric-module.md` for the full rules.
   }];
 
   let arguments = (ins
@@ -195,7 +204,7 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
   let hasVerifier = 1;
 }
 
-def Fabric_SpatialPeOp : Fabric_Op<"spatial_pe", [
+def Fabric_PeOp : Fabric_Op<"pe", [
     IsolatedFromAbove,
     SingleBlock,
     NoTerminator,
@@ -203,28 +212,39 @@ def Fabric_SpatialPeOp : Fabric_Op<"spatial_pe", [
     HasParent<"::fabric::ModuleOp">
 ]> {
   let summary =
-      "fabric spatial PE: a container of one or more fabric.fu ops with at "
-      "most one architecturally active per configuration";
+      "fabric PE: a container of one or more fabric.fu ops with a schedule "
+      "predicate (spatial or temporal)";
   let description = [{
-    Spatial processing element. Holds one or more `fabric.fu` ops in its body.
-    A configuration of the PE selects at most one inner FU as architecturally
-    active and routes the PE's external input ports to that FU's input ports
-    via the PE-level input-mux fields, and the active FU's output ports back
-    onto the PE's external output ports via the PE-level output-demux fields.
+    Processing element. Holds one or more `fabric.fu` ops in its body and
+    carries a mandatory `schedule` predicate (`spatial` | `temporal`) that
+    declares how the contained FUs are time-shared.
 
-    The PE has no terminator: inner FUs are not SSA-wired to the PE results.
-    Wiring is described by the PE's runtime configuration record (see the
-    spatial_pe spec), not by `fabric.yield`.
+    Textually, the schedule appears in `[...]` right after the op keyword,
+    mirroring `fabric.op [@arith.muli]`:
 
-    Constraints:
+      fabric.pe [spatial] (%fa = %a : !fabric.bits<W>) -> !fabric.bits<W> {
+        fabric.fu(...) -> ...
+      }
+
+    Spatial schedule: a configuration of the PE selects at most one inner FU
+    as architecturally active and routes the PE's external input ports to
+    that FU's input ports via the PE-level input-mux fields, and the active
+    FU's output ports back onto the PE's external output ports via the PE-
+    level output-demux fields. The PE has no terminator: inner FUs are not
+    SSA-wired to the PE results. Wiring is described by the PE's runtime
+    configuration record (see the PE spec), not by `fabric.yield`.
+
+    Temporal schedule: parsable but not yet implemented; the verifier
+    rejects it with a "not yet implemented" diagnostic.
+
+    Constraints (spatial):
       * `K = numInputs() >= 1` and `L = numOutputs() >= 1`.
       * Every PE operand and every PE result is `!fabric.bits<W>` with the
         same `W`. Mixing widths or non-`bits` fabric types on the PE
         boundary is rejected.
       * The body holds one or more `fabric.fu` ops and nothing else. No
         `fabric.op`, `fabric.mux`, `fabric.demux`, `fabric.fifo`,
-        `fabric.spatial_pe`, or `fabric.yield` may appear directly in the
-        body.
+        `fabric.pe`, or `fabric.yield` may appear directly in the body.
       * For every inner FU `f`, `f.numInputs() <= K` and
         `f.numOutputs() <= L`. Every FU outer input port and every FU
         outer output port has type `!fabric.bits<W>` matching the PE's
@@ -234,7 +254,9 @@ def Fabric_SpatialPeOp : Fabric_Op<"spatial_pe", [
       * The op must appear inside a `fabric.module` body.
   }];
 
-  let arguments = (ins Variadic<Fabric_BitsType>:$inputs);
+  let arguments = (ins
+      Fabric_ScheduleAttr:$schedule,
+      Variadic<Fabric_BitsType>:$inputs);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
   let regions = (region SizedRegion<1>:$body);
 

@@ -6,12 +6,12 @@
 // well-formed; the enumerator's two-pass materializer must walk firing
 // ops and synthesize placeholder operands on first reference, then
 // rewire them to the real sw values once the producer is built.
-// To satisfy the spatial_pe uniform-W rule we expose the FU at bits<1>
+// To satisfy the pe uniform-W rule we expose the FU at bits<1>
 // throughout.
 
 // CHECK-LABEL: fabric.module @fu_carry_self_feedback
 fabric.module @fu_carry_self_feedback(%cond : !fabric.bits<1>, %init : !fabric.bits<1>) {
-  fabric.spatial_pe(%pcond = %cond : !fabric.bits<1>,
+  fabric.pe [spatial] (%pcond = %cond : !fabric.bits<1>,
                     %pinit = %init : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%c = %pcond : !fabric.bits<1>,
               %i = %pinit : !fabric.bits<1>) -> !fabric.bits<1> {

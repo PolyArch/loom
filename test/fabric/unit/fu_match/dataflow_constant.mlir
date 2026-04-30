@@ -4,12 +4,12 @@
 // hex constants. The pattern asks for one of them and should match.
 //
 // dataflow.constant has a !fabric.bits<0> control input (none token). The
-// enclosing spatial_pe runs at uniform bits<32>, so the FU declares its
+// enclosing pe runs at uniform bits<32>, so the FU declares its
 // inner block-arg as bits<0> via the `to` clause. The PE -> FU boundary
 // drops the high (32 - 0) = 32 bits of the carrier on each token.
 
 fabric.module @hw_const(%ctrl : !fabric.bits<32>) {
-  fabric.spatial_pe(%pctrl = %ctrl : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%pctrl = %ctrl : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%c = %pctrl : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
       %k = fabric.op [@dataflow.constant] (%c)
            {hw_params = [{const_hex_value = ["0xdeadbeef", "0xcafebabe"]}]}

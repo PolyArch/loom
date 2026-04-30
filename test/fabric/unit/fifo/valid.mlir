@@ -45,7 +45,7 @@ fabric.module @fifo_programmed_bypassed(%a : !fabric.bits<32>) {
 }
 
 // -----------------------------------------------------------------------------
-// Type variants: bits<0>, bits_tag, tag.
+// Type variants: bits<0>, bits_tag, tag-only bits_tag<0, T>.
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @fifo_bits_zero
@@ -62,9 +62,9 @@ fabric.module @fifo_bits_tag(%a : !fabric.bits_tag<8, 2>) {
   fabric.yield
 }
 
-// CHECK-LABEL: fabric.module @fifo_tag
-fabric.module @fifo_tag(%a : !fabric.tag<3>) {
-  // CHECK: fabric.fifo %{{.*}} [max_depth = 2, bypassable = false] : !fabric.tag<3>
-  %0 = fabric.fifo %a [max_depth = 2, bypassable = false] : !fabric.tag<3>
+// CHECK-LABEL: fabric.module @fifo_tag_only
+fabric.module @fifo_tag_only(%a : !fabric.bits_tag<0, 3>) {
+  // CHECK: fabric.fifo %{{.*}} [max_depth = 2, bypassable = false] : !fabric.bits_tag<0, 3>
+  %0 = fabric.fifo %a [max_depth = 2, bypassable = false] : !fabric.bits_tag<0, 3>
   fabric.yield
 }

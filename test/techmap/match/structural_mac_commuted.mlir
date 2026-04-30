@@ -8,7 +8,7 @@
 // the FU and report an annotated dataflow.subgraph.
 
 fabric.module @hw_mac(%cast0_hw_mac : !fabric.bits<32>, %cast1_hw_mac : !fabric.bits<32>, %cast2_hw_mac : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_hw_mac : !fabric.bits<32>, %b = %cast1_hw_mac : !fabric.bits<32>, %c = %cast2_hw_mac : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_hw_mac : !fabric.bits<32>, %b = %cast1_hw_mac : !fabric.bits<32>, %c = %cast2_hw_mac : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>,
                  %y = %b : !fabric.bits<32>,
                  %z = %c : !fabric.bits<32>) -> !fabric.bits<32> {

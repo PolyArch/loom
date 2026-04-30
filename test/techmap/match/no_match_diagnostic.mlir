@@ -5,7 +5,7 @@
 // arith.muli but the only FU advertises arith.addi.
 
 fabric.module @hw_addi(%cast0_hw_addi : !fabric.bits<32>, %cast1_hw_addi : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_hw_addi : !fabric.bits<32>, %b = %cast1_hw_addi : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_hw_addi : !fabric.bits<32>, %b = %cast1_hw_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)

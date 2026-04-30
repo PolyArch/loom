@@ -8,7 +8,7 @@
 
 // CHECK-LABEL: fabric.module @fu_demux4
 fabric.module @fu_demux4(%sel : !fabric.bits<32>, %in : !fabric.bits<32>) {
-  fabric.spatial_pe(%psel = %sel : !fabric.bits<32>,
+  fabric.pe [spatial] (%psel = %sel : !fabric.bits<32>,
                     %pin = %in : !fabric.bits<32>)
                    -> (!fabric.bits<32>, !fabric.bits<32>,
                  !fabric.bits<32>, !fabric.bits<32>) {

@@ -14,6 +14,8 @@
 
 #include "Fabric/IR/FabricTypes.h"
 
+#include "Fabric/IR/FabricEnums.h.inc"
+
 #define GET_OP_CLASSES
 #include "Fabric/IR/FabricOps.h.inc"
 

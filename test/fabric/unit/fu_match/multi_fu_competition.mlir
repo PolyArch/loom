@@ -4,7 +4,7 @@
 // (in module walk order) that supports it.
 
 fabric.module @hw_intonly(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
                   -> !fabric.bits<32> {
@@ -17,7 +17,7 @@ fabric.module @hw_intonly(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 }
 
 fabric.module @hw_floatonly(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
                   -> !fabric.bits<32> {

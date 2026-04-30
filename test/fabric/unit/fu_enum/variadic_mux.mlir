@@ -12,7 +12,7 @@
 
 // CHECK-LABEL: fabric.module @fu_mux4
 fabric.module @fu_mux4(%sel : !fabric.bits<32>, %a : !fabric.bits<32>, %b : !fabric.bits<32>, %c : !fabric.bits<32>, %d : !fabric.bits<32>) {
-  fabric.spatial_pe(%psel = %sel : !fabric.bits<32>,
+  fabric.pe [spatial] (%psel = %sel : !fabric.bits<32>,
                     %pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>,
                     %pc = %c : !fabric.bits<32>,

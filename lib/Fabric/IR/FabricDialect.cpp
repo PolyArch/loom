@@ -16,19 +16,9 @@ using namespace fabric;
 
 LogicalResult BitsTagType::verify(
     llvm::function_ref<InFlightDiagnostic()> emitError,
-    unsigned width, unsigned tagWidth) {
-  if (width == 0)
-    return emitError() << "fabric.bits_tag requires width > 0";
+    unsigned /*width*/, unsigned tagWidth) {
   if (tagWidth == 0)
     return emitError() << "fabric.bits_tag requires tagWidth > 0";
-  return success();
-}
-
-LogicalResult TagType::verify(
-    llvm::function_ref<InFlightDiagnostic()> emitError,
-    unsigned tagWidth) {
-  if (tagWidth == 0)
-    return emitError() << "fabric.tag requires tagWidth > 0";
   return success();
 }
 

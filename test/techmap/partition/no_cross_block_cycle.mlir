@@ -8,7 +8,7 @@
 
 // CHECK-LABEL: @fu_carry
 fabric.module @fu_carry(%c : !fabric.bits<1>, %i : !fabric.bits<1>, %k : !fabric.bits<1>) {
-  fabric.spatial_pe(%pc = %c : !fabric.bits<1>,
+  fabric.pe [spatial] (%pc = %c : !fabric.bits<1>,
                     %pi = %i : !fabric.bits<1>,
                     %pk = %k : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%cc = %pc : !fabric.bits<1>,
@@ -25,7 +25,7 @@ fabric.module @fu_carry(%c : !fabric.bits<1>, %i : !fabric.bits<1>, %k : !fabric
 
 // CHECK-LABEL: @fu_addsub
 fabric.module @fu_addsub(%cast0_fu_addsub : !fabric.bits<32>, %cast1_fu_addsub : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_addsub : !fabric.bits<32>, %b = %cast1_fu_addsub : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_fu_addsub : !fabric.bits<32>, %b = %cast1_fu_addsub : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi, @arith.subi] (%x, %y)

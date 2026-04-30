@@ -5,7 +5,7 @@
 // RUN: env LOOM_INDEX_WIDTH=16 loom %s -split-input-file -verify-diagnostics
 
 fabric.module @mux_index_env_ok(%a : !fabric.bits<8>, %b : !fabric.bits<8>, %c : !fabric.bits<8>, %d : !fabric.bits<8>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<8>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<8>,
                     %pb = %b : !fabric.bits<8>,
                     %pc = %c : !fabric.bits<8>,
                     %pd = %d : !fabric.bits<8>) -> !fabric.bits<8> {
@@ -27,7 +27,7 @@ fabric.module @mux_index_env_ok(%a : !fabric.bits<8>, %b : !fabric.bits<8>, %c :
 // -----
 
 fabric.module @mux_index_env_rejects_default(%a : !fabric.bits<8>, %b : !fabric.bits<8>, %c : !fabric.bits<8>, %d : !fabric.bits<8>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<8>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<8>,
                     %pb = %b : !fabric.bits<8>,
                     %pc = %c : !fabric.bits<8>,
                     %pd = %d : !fabric.bits<8>) -> !fabric.bits<8> {

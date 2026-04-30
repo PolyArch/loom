@@ -10,7 +10,7 @@
 
 // CHECK-LABEL: @fu_addi
 fabric.module @fu_addi(%cast0_fu_addi : !fabric.bits<32>, %cast1_fu_addi : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)
@@ -24,7 +24,7 @@ fabric.module @fu_addi(%cast0_fu_addi : !fabric.bits<32>, %cast1_fu_addi : !fabr
 
 // CHECK-LABEL: @fu_carry
 fabric.module @fu_carry(%cond : !fabric.bits<1>, %init : !fabric.bits<1>, %carry : !fabric.bits<1>) {
-  fabric.spatial_pe(%pcond = %cond : !fabric.bits<1>,
+  fabric.pe [spatial] (%pcond = %cond : !fabric.bits<1>,
                     %pinit = %init : !fabric.bits<1>,
                     %pcarry = %carry : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%c = %pcond : !fabric.bits<1>,

@@ -10,12 +10,12 @@
 // arith.select must NOT match a dataflow.mux fabric.op flavor and
 // vice versa.
 //
-// To satisfy the spatial_pe uniform-W rule we expose the FU at bits<1>
+// To satisfy the pe uniform-W rule we expose the FU at bits<1>
 // throughout: sel and data are all bits<1>.
 
 // CHECK-LABEL: fabric.module @fu_select
 fabric.module @fu_select(%c : !fabric.bits<1>, %a : !fabric.bits<1>, %b : !fabric.bits<1>) {
-  fabric.spatial_pe(%pc = %c : !fabric.bits<1>,
+  fabric.pe [spatial] (%pc = %c : !fabric.bits<1>,
                     %pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%cn = %pc : !fabric.bits<1>,

@@ -7,7 +7,7 @@
 
 // CHECK-LABEL: @fu_sync3
 fabric.module @fu_sync3(%cast0_fu_sync3 : !fabric.bits<32>, %cast1_fu_sync3 : !fabric.bits<32>, %cast2_fu_sync3 : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_sync3 : !fabric.bits<32>, %b = %cast1_fu_sync3 : !fabric.bits<32>, %c = %cast2_fu_sync3 : !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
+  fabric.pe [spatial] (%a = %cast0_fu_sync3 : !fabric.bits<32>, %b = %cast1_fu_sync3 : !fabric.bits<32>, %c = %cast2_fu_sync3 : !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
   %x, %y, %z = fabric.fu(%aa = %a : !fabric.bits<32>,
                          %bb = %b : !fabric.bits<32>,
                          %cc = %c : !fabric.bits<32>)

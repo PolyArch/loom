@@ -4,13 +4,13 @@
 // downstream cmpi whose hardware-supported predicates are a 3-set. The
 // total support set is 2 (mux.sel) x 2 (op_sel) x 3 (predicate) = 12.
 //
-// To satisfy the spatial_pe uniform-W rule the FU exposes bits<1>
+// To satisfy the pe uniform-W rule the FU exposes bits<1>
 // throughout (cmpi's TypeParam(0) inputs accept any width and its
 // Fixed(1) output already matches the boundary).
 
 // CHECK-LABEL: fabric.module @fu_combined
 fabric.module @fu_combined(%a : !fabric.bits<1>, %b : !fabric.bits<1>, %c : !fabric.bits<1>, %d : !fabric.bits<1>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<1>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>,
                     %pc = %c : !fabric.bits<1>,
                     %pd = %d : !fabric.bits<1>) -> !fabric.bits<1> {

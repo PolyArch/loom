@@ -49,11 +49,11 @@ fabric.module @m_yield_memref_mismatch(%a : memref<8xi32>)
 
 // -----
 // `to <inner-type>` cross-kind clause on fabric.fifo operand: a `bits`
-// source cannot relax to a `tag` FIFO inner type.
+// source cannot relax to a `bits_tag` FIFO inner type.
 fabric.module @m_fifo_to_clause_kind_mismatch(%a : !fabric.bits<32>) {
   // expected-error @+1 {{must share the same fabric kind}}
   %0 = fabric.fifo %a [max_depth = 4, bypassable = false]
-       : !fabric.bits<32> to !fabric.tag<3>
+       : !fabric.bits<32> to !fabric.bits_tag<8, 3>
   fabric.yield
 }
 
@@ -81,11 +81,11 @@ fabric.module @m_cast_rejected() {
 }
 
 // -----
-// Strict body whitelist: only fabric.spatial_pe, fabric.fifo, and the
+// Strict body whitelist: only fabric.pe, fabric.fifo, and the
 // implicit fabric.yield terminator are permitted in fabric.module's body.
 // A raw fabric.fu directly in the module body is rejected.
 fabric.module @m_raw_fu_rejected(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  // expected-error @+1 {{is not allowed inside fabric.module; only fabric.spatial_pe and fabric.fifo are permitted}}
+  // expected-error @+1 {{is not allowed inside fabric.module; only fabric.pe and fabric.fifo are permitted}}
   fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>) -> () {
     %k = fabric.op [@arith.muli] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
@@ -98,7 +98,7 @@ fabric.module @m_raw_fu_rejected(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 // Strict body whitelist: a raw fabric.op directly in the module body is
 // rejected.
 fabric.module @m_raw_op_rejected(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  // expected-error @+1 {{is not allowed inside fabric.module; only fabric.spatial_pe and fabric.fifo are permitted}}
+  // expected-error @+1 {{is not allowed inside fabric.module; only fabric.pe and fabric.fifo are permitted}}
   %k = fabric.op [@arith.addi] (%a, %b)
        : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   fabric.yield
@@ -106,10 +106,10 @@ fabric.module @m_raw_op_rejected(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 
 // -----
 // fabric.fu placed at the top of builtin.module is rejected by the FU
-// verifier (parent must be fabric.spatial_pe).
+// verifier (parent must be fabric.pe).
 %a_top = builtin.unrealized_conversion_cast to !fabric.bits<32>
 %b_top = builtin.unrealized_conversion_cast to !fabric.bits<32>
-// expected-error @+1 {{must be inside a fabric.spatial_pe (parent must be fabric.spatial_pe)}}
+// expected-error @+1 {{must be inside a fabric.pe (parent must be fabric.pe)}}
 fabric.fu(%x = %a_top : !fabric.bits<32>, %y = %b_top : !fabric.bits<32>) -> () {
   %k = fabric.op [@arith.muli] (%x, %y)
        : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>

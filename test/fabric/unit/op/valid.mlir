@@ -1,7 +1,7 @@
 // RUN: loom %s | loom | FileCheck %s
 
 // Note: fabric.op must live inside fabric.fu, which lives inside
-// fabric.spatial_pe, which lives inside fabric.module. PE/FU external ports
+// fabric.pe, which lives inside fabric.module. PE/FU external ports
 // must be uniform !fabric.bits<W>; internal fabric.op ports may be any
 // fabric.bits<N>. Tests whose inner op has heterogeneous port widths are
 // wrapped with the FU exposing only the input-side width to the PE and a
@@ -14,7 +14,7 @@
 
 // CHECK-LABEL: fabric.module @op_single_muli_hw
 fabric.module @op_single_muli_hw(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -32,7 +32,7 @@ fabric.module @op_single_muli_hw(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 
 // CHECK-LABEL: fabric.module @op_addi_subi_programmed
 fabric.module @op_addi_subi_programmed(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -52,7 +52,7 @@ fabric.module @op_addi_subi_programmed(%a : !fabric.bits<32>, %b : !fabric.bits<
 
 // CHECK-LABEL: fabric.module @op_divrem_pure_hardware
 fabric.module @op_divrem_pure_hardware(%a : !fabric.bits<64>, %b : !fabric.bits<64>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<64>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<64>,
                     %pb = %b : !fabric.bits<64>) -> !fabric.bits<64> {
     fabric.fu(%fa = %pa : !fabric.bits<64>,
               %fb = %pb : !fabric.bits<64>) -> !fabric.bits<64> {
@@ -72,7 +72,7 @@ fabric.module @op_divrem_pure_hardware(%a : !fabric.bits<64>, %b : !fabric.bits<
 
 // CHECK-LABEL: fabric.module @op_cmpi
 fabric.module @op_cmpi(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> () {
@@ -94,7 +94,7 @@ fabric.module @op_cmpi(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 
 // CHECK-LABEL: fabric.module @op_stream_programmed
 fabric.module @op_stream_programmed(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>, %step : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %lb : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %lb : !fabric.bits<32>,
                     %pb = %ub : !fabric.bits<32>,
                     %pc = %step : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
@@ -119,7 +119,7 @@ fabric.module @op_stream_programmed(%lb : !fabric.bits<32>, %ub : !fabric.bits<3
 
 // CHECK-LABEL: fabric.module @op_constant
 fabric.module @op_constant(%ctrl : !fabric.bits<0>) {
-  fabric.spatial_pe(%pa = %ctrl : !fabric.bits<0>) -> !fabric.bits<0> {
+  fabric.pe [spatial] (%pa = %ctrl : !fabric.bits<0>) -> !fabric.bits<0> {
     fabric.fu(%fa = %pa : !fabric.bits<0>) -> () {
       // CHECK: fabric.op [@dataflow.constant](%{{.*}}) {sw_configs = {const_hex_value = "0xdeadbeef"}}
       %0 = fabric.op [@dataflow.constant] (%fa)
@@ -137,7 +137,7 @@ fabric.module @op_constant(%ctrl : !fabric.bits<0>) {
 
 // CHECK-LABEL: fabric.module @op_sync
 fabric.module @op_sync(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %c : !fabric.bits<32>, %d : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>,
                     %pc = %c : !fabric.bits<32>,
                     %pd = %d : !fabric.bits<32>)
@@ -169,7 +169,7 @@ fabric.module @op_sync(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %c : !fabri
 
 // CHECK-LABEL: fabric.module @op_mux2
 fabric.module @op_mux2(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> () {
@@ -191,7 +191,7 @@ fabric.module @op_mux2(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 
 // CHECK-LABEL: fabric.module @op_mux4
 fabric.module @op_mux4(%a : !fabric.bits<16>, %b : !fabric.bits<16>, %c : !fabric.bits<16>, %d : !fabric.bits<16>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<16>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<16>,
                     %pb = %b : !fabric.bits<16>,
                     %pc = %c : !fabric.bits<16>,
                     %pd = %d : !fabric.bits<16>) -> !fabric.bits<16> {
@@ -218,7 +218,7 @@ fabric.module @op_mux4(%a : !fabric.bits<16>, %b : !fabric.bits<16>, %c : !fabri
 
 // CHECK-LABEL: fabric.module @op_demux3
 fabric.module @op_demux3(%in : !fabric.bits<8>) {
-  fabric.spatial_pe(%pa = %in : !fabric.bits<8>) -> !fabric.bits<8> {
+  fabric.pe [spatial] (%pa = %in : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %pa : !fabric.bits<8>) -> () {
       %sel = fabric.op [@arith.sitofp] (%fa)
              : (!fabric.bits<8>) -> !fabric.bits<32>
@@ -239,7 +239,7 @@ fabric.module @op_demux3(%in : !fabric.bits<8>) {
 
 // CHECK-LABEL: fabric.module @op_gate
 fabric.module @op_gate(%bv : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %bv : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%pa = %bv : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> () {
       %bc = fabric.op [@arith.cmpi] (%fa, %fa)
             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>

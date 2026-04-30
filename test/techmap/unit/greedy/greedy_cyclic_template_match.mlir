@@ -5,13 +5,13 @@
 // under the dataflow.subgraph contract. The partitioner must accept such
 // a template and fuse the matching cyclic chain in the user graph into a
 // single dataflow.subgraph -- not split it across two single-op blocks.
-// To satisfy the spatial_pe uniform-W rule we expose the FU at bits<1>
+// To satisfy the pe uniform-W rule we expose the FU at bits<1>
 // throughout (carry's TypeParam(0) data ports accept any width); the
 // pattern is correspondingly typed as i1.
 
 // CHECK-LABEL: @fu_carry_loop
 fabric.module @fu_carry_loop(%cond : !fabric.bits<1>, %init : !fabric.bits<1>) {
-  fabric.spatial_pe(%pcond = %cond : !fabric.bits<1>,
+  fabric.pe [spatial] (%pcond = %cond : !fabric.bits<1>,
                     %pinit = %init : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%c = %pcond : !fabric.bits<1>,
               %i = %pinit : !fabric.bits<1>) -> !fabric.bits<1> {

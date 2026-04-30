@@ -21,7 +21,7 @@
 
 // CHECK-LABEL: @fu_addi
 fabric.module @fu_addi(%cast0_fu_addi : !fabric.bits<32>, %cast1_fu_addi : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)
@@ -34,7 +34,7 @@ fabric.module @fu_addi(%cast0_fu_addi : !fabric.bits<32>, %cast1_fu_addi : !fabr
 
 // CHECK-LABEL: @fu_subi
 fabric.module @fu_subi(%cast0_fu_subi : !fabric.bits<32>, %cast1_fu_subi : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_subi : !fabric.bits<32>, %b = %cast1_fu_subi : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_fu_subi : !fabric.bits<32>, %b = %cast1_fu_subi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.subi] (%x, %y)
@@ -47,7 +47,7 @@ fabric.module @fu_subi(%cast0_fu_subi : !fabric.bits<32>, %cast1_fu_subi : !fabr
 
 // CHECK-LABEL: @fu_muli
 fabric.module @fu_muli(%cast0_fu_muli : !fabric.bits<32>, %cast1_fu_muli : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_muli : !fabric.bits<32>, %b = %cast1_fu_muli : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_fu_muli : !fabric.bits<32>, %b = %cast1_fu_muli : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.muli] (%x, %y)
@@ -60,7 +60,7 @@ fabric.module @fu_muli(%cast0_fu_muli : !fabric.bits<32>, %cast1_fu_muli : !fabr
 
 // CHECK-LABEL: @fu_logic
 fabric.module @fu_logic(%cast0_fu_logic : !fabric.bits<32>, %cast1_fu_logic : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_logic : !fabric.bits<32>, %b = %cast1_fu_logic : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_fu_logic : !fabric.bits<32>, %b = %cast1_fu_logic : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.andi, @arith.ori, @arith.xori] (%x, %y)
@@ -73,7 +73,7 @@ fabric.module @fu_logic(%cast0_fu_logic : !fabric.bits<32>, %cast1_fu_logic : !f
 
 // CHECK-LABEL: @fu_cmpi
 fabric.module @fu_cmpi(%cast0_fu_cmpi : !fabric.bits<1>, %cast1_fu_cmpi : !fabric.bits<1>) {
-  fabric.spatial_pe(%a = %cast0_fu_cmpi : !fabric.bits<1>, %b = %cast1_fu_cmpi : !fabric.bits<1>) -> !fabric.bits<1> {
+  fabric.pe [spatial] (%a = %cast0_fu_cmpi : !fabric.bits<1>, %b = %cast1_fu_cmpi : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%x = %a : !fabric.bits<1>, %y = %b : !fabric.bits<1>)
                   -> !fabric.bits<1> {
       %k = fabric.op [@arith.cmpi] (%x, %y)
@@ -87,7 +87,7 @@ fabric.module @fu_cmpi(%cast0_fu_cmpi : !fabric.bits<1>, %cast1_fu_cmpi : !fabri
 
 // CHECK-LABEL: @fu_trig
 fabric.module @fu_trig(%cast0_fu_trig : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_trig : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_fu_trig : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>) -> !fabric.bits<32> {
     %k = fabric.op [@math.sin, @math.cos] (%x)
          : (!fabric.bits<32>) -> !fabric.bits<32>
@@ -99,7 +99,7 @@ fabric.module @fu_trig(%cast0_fu_trig : !fabric.bits<32>) {
 
 // CHECK-LABEL: @fu_sqrt
 fabric.module @fu_sqrt(%cast0_fu_sqrt : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_sqrt : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_fu_sqrt : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>) -> !fabric.bits<32> {
     %k = fabric.op [@math.sqrt] (%x)
          : (!fabric.bits<32>) -> !fabric.bits<32>

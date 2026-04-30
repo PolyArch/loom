@@ -8,7 +8,7 @@ def main() -> None:
     n = int(sys.argv[1])
     print('fabric.module @fu_addi(%a : !fabric.bits<32>, '
           '%b : !fabric.bits<32>) {')
-    print('  fabric.spatial_pe(%pa = %a : !fabric.bits<32>, '
+    print('  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>, '
           '%pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {')
     print('    fabric.fu(%x = %pa : !fabric.bits<32>, '
           '%y = %pb : !fabric.bits<32>)')

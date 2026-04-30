@@ -5,13 +5,13 @@
 // is a graph region, so a textual back-reference (`%next`) is
 // well-formed and the enumerator handles the cycle via its two-pass
 // materializer.
-// To satisfy the spatial_pe uniform-W rule we expose the FU at bits<1>
+// To satisfy the pe uniform-W rule we expose the FU at bits<1>
 // throughout (carry's TypeParam(0) data ports accept any width); the
 // pattern is correspondingly typed as i1.
 
 // CHECK: loom.matched_fu
 fabric.module @hw_carry_loop(%cond : !fabric.bits<1>, %init : !fabric.bits<1>) {
-  fabric.spatial_pe(%pcond = %cond : !fabric.bits<1>,
+  fabric.pe [spatial] (%pcond = %cond : !fabric.bits<1>,
                     %pinit = %init : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%c = %pcond : !fabric.bits<1>,
               %i = %pinit : !fabric.bits<1>) -> !fabric.bits<1> {

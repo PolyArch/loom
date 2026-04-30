@@ -5,8 +5,8 @@
 // not drive (PE outputs are wired to FU outputs at config time).
 // CHECK-LABEL: fabric.module @fu_min
 fabric.module @fu_min(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  // CHECK: fabric.spatial_pe
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  // CHECK: fabric.pe
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: fabric.fu(%{{.*}} = %{{.*}} : !fabric.bits<32>, %{{.*}} = %{{.*}} : !fabric.bits<32>) -> ()
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> () {
@@ -22,7 +22,7 @@ fabric.module @fu_min(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 // FU yielding one value, with mux feeding the op.
 // CHECK-LABEL: fabric.module @fu_mux_op_yield
 fabric.module @fu_mux_op_yield(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %c : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>,
                     %pc = %c : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: %{{.*}} = fabric.fu
@@ -44,7 +44,7 @@ fabric.module @fu_mux_op_yield(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %c 
 // FU with op then demux fanning out two values.
 // CHECK-LABEL: fabric.module @fu_op_demux
 fabric.module @fu_op_demux(%a : !fabric.bits<16>, %b : !fabric.bits<16>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<16>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<16>,
                     %pb = %b : !fabric.bits<16>)
                    -> (!fabric.bits<16>, !fabric.bits<16>) {
     // CHECK: %{{.*}}:2 = fabric.fu
@@ -67,7 +67,7 @@ fabric.module @fu_op_demux(%a : !fabric.bits<16>, %b : !fabric.bits<16>) {
 // op (dataflow.constant) consumes the bits<0> none-token.
 // CHECK-LABEL: fabric.module @fu_boundary_trunc
 fabric.module @fu_boundary_trunc(%ctrl : !fabric.bits<32>) {
-  fabric.spatial_pe(%pctrl = %ctrl : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%pctrl = %ctrl : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: fabric.fu(%{{.*}} = %{{.*}} : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32>
     %r = fabric.fu(%c = %pctrl : !fabric.bits<32> to !fabric.bits<0>)
                   -> !fabric.bits<32> {
@@ -84,7 +84,7 @@ fabric.module @fu_boundary_trunc(%ctrl : !fabric.bits<32>) {
 // inner mux/demux selectors.
 // CHECK-LABEL: fabric.module @fu_multi_op
 fabric.module @fu_multi_op(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: %{{.*}} = fabric.fu
     %r = fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)

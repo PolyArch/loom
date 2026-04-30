@@ -1,17 +1,49 @@
-# Fabric Spatial PE
+# Fabric PE
 
-This document specifies `fabric.spatial_pe`, a spatial processing element
-container that holds one or more `fabric.fu` instances and selects exactly
-zero or one of them as architecturally active in any given configuration.
-The canonical IR source is `Fabric_SpatialPeOp` in
-`include/Fabric/IR/FabricOps.td`; verifier rules live in
+This document specifies `fabric.pe`, a processing element container that
+holds one or more `fabric.fu` instances. The op carries a mandatory
+`schedule` predicate (`spatial` | `temporal`) that selects how the
+contained FUs are time-shared. The canonical IR source is `Fabric_PeOp`
+in `include/Fabric/IR/FabricOps.td`; verifier rules live in
 `lib/Fabric/IR/FabricOps.cpp`.
+
+## Schedule predicate
+
+`fabric.pe` is a single op specialized by a mandatory `schedule` enum
+attribute. The schedule appears in `[...]` immediately after the op
+keyword, mirroring `fabric.op [@arith.muli]`:
+
+```mlir
+%out:2 = fabric.pe [spatial] (%a = %x : !fabric.bits<32>)
+                   -> (!fabric.bits<32>, !fabric.bits<32>) {
+  fabric.fu(...) -> ...
+}
+```
+
+* `spatial`: at most one inner `fabric.fu` is architecturally active per
+  PE configuration. Routing between PE ports and the active FU's ports
+  is described by the PE's runtime configuration record (see "Software
+  configuration"). All current verifier rules in this document apply to
+  this branch.
+* `temporal`: time-multiplexes multiple FUs / instructions through the
+  PE. Parsable today, but the verifier rejects it with a "fabric.pe in
+  'temporal' schedule is not yet implemented" diagnostic. The temporal
+  branch's full rules will land in a follow-up task.
+
+The `schedule` predicate is orthogonal to the container kind. Once
+`fabric.switch` and `fabric.mem` land they will follow the same
+`[spatial] | [temporal]` predicate convention. Cross-reference
+`docs/spec-fabric-module.md` for module-level placement of
+`fabric.pe`.
+
+In any given configuration of a `fabric.pe [spatial]`, the inner FU
+selects exactly zero or one of its FUs as architecturally active.
 
 ## Background
 
 `fabric.fu` already models a CGRA-style functional unit: a graph-region
 tile of `fabric.op` / `fabric.mux` / `fabric.demux` whose inner sw_configs
-materialize different software graphs. `fabric.spatial_pe` wraps a *set*
+materialize different software graphs. `fabric.pe [spatial]` wraps a *set*
 of such FUs so that one PE-level configuration picks which FU is active
 and how the PE's external ports are wired to that FU's ports.
 
@@ -25,7 +57,7 @@ Compared to a bare `fabric.fu`:
 
 Compared to allowing arbitrary multi-FU placement:
 
-* At most one physical `fabric.fu` inside a `fabric.spatial_pe` may be
+* At most one physical `fabric.fu` inside a `fabric.pe [spatial]` may be
   architecturally active per configuration. This is a hard legality rule,
   not a placement preference.
 
@@ -33,7 +65,7 @@ Compared to allowing arbitrary multi-FU placement:
 
 ### Body whitelist
 
-The body of `fabric.spatial_pe` is a single block whose only legal
+The body of `fabric.pe [spatial]` is a single block whose only legal
 contents are `fabric.fu` ops. No other op kind is permitted in the
 body. Specifically:
 
@@ -42,23 +74,23 @@ body. Specifically:
   inner `fabric.fu`.
 * No `fabric.yield` may appear in the PE body. The PE has no
   terminator (see below).
-* No `fabric.spatial_pe`, `fabric.temporal_pe`, `fabric.module`, or
+* No `fabric.pe [spatial]`, `fabric.pe [temporal]`, `fabric.module`, or
   any other body-bearing fabric op may be nested directly inside a
   PE body.
 * No non-fabric ops (e.g. `arith.*`, `func.*`, `dataflow.*`) may
   appear in the PE body. They live inside `fabric.fu` (wrapped by
   `fabric.op`) or higher-level dataflow regions, not the PE.
 
-The same body whitelist applies to `fabric.temporal_pe`: a temporal
+The same body whitelist applies to `fabric.pe [temporal]`: a temporal
 PE body is also restricted to `fabric.fu` ops. The two PE kinds
 differ only in how their FUs are time-shared at the PE level, not in
 what may be placed in their bodies.
 
 ### Body shape
 
-A `fabric.spatial_pe` body holds one or more `fabric.fu` instances --
+A `fabric.pe [spatial]` body holds one or more `fabric.fu` instances --
 the PE's FU set. The body has no terminator: there is no `fabric.yield`
-inside `fabric.spatial_pe`. The PE's external inputs and outputs are
+inside `fabric.pe [spatial]`. The PE's external inputs and outputs are
 not wired by SSA values that flow through a yield; instead they are
 implicitly wired to inner FU ports through the PE-level input-mux and
 output-demux fields (see "Software configuration").
@@ -69,8 +101,8 @@ FU similarity beyond what the verifier requires for individual FUs.
 
 Conceptually, the PE level only answers one question: how many
 `dataflow.subgraph`s can this PE module realize? Exactly one -> use
-`fabric.spatial_pe`; more than one through time multiplexing -> use
-`fabric.temporal_pe`. PE-level abstraction is solely about whether the
+`fabric.pe [spatial]`; more than one through time multiplexing -> use
+`fabric.pe [temporal]`. PE-level abstraction is solely about whether the
 contained FU(s) can be time-multiplexed; it is not a routing or
 enumeration boundary in its own right. Place and route operates at the
 `dataflow.subgraph` -> `fabric.fu` granularity, not at the PE level.
@@ -84,7 +116,7 @@ the PE body.
 
 ### FU-boundary truncation
 
-Inside a spatial_pe body, a `fabric.fu` may declare a block argument
+Inside a fabric.pe [spatial] body, a `fabric.fu` may declare a block argument
 of type `!fabric.bits<F>` while its operand SSA source is the PE's
 `!fabric.bits<W>` value (`W >= F`). The textual form is
 `(%fa = %src : !fabric.bits<W> to !fabric.bits<F>)` -- without the
@@ -101,21 +133,21 @@ must equal the FU's outer result types, and those equal the PE's
 
 ## Hardware parameters
 
-All hardware parameters of `fabric.spatial_pe` are either declared on the
+All hardware parameters of `fabric.pe [spatial]` are either declared on the
 op signature or inferred from the FU set in the body. None of them are
 attribute knobs.
 
 ### Explicit (from op signature)
 
 `K` -- the number of PE input ports. Equal to the number of operands of
-the `fabric.spatial_pe` op.
+the `fabric.pe [spatial]` op.
 
 `L` -- the number of PE output ports. Equal to the number of results of
-the `fabric.spatial_pe` op.
+the `fabric.pe [spatial]` op.
 
 `W` -- the PE bit width. Every PE input and every PE output must be
 `!fabric.bits<W>`, and every port must use the same `W`. Mixing widths
-or using non-`bits` fabric types (`bits_tag`, `tag`) on the PE boundary
+or using non-`bits` fabric types (e.g. `bits_tag`) on the PE boundary
 is a verifier error. Mixing widths inside the FU body is permitted; the
 PE boundary is the place where one uniform width is enforced.
 
@@ -169,16 +201,16 @@ external port widths.
 
 * `K >= 1` and `L >= 1`. A PE must have at least one input and at least
   one output.
-* Every operand and every result of `fabric.spatial_pe` has type
+* Every operand and every result of `fabric.pe [spatial]` has type
   `!fabric.bits<W>` with the same `W >= 1`. Violations report
-  `'fabric.spatial_pe' op requires uniform 'bits<W>' on all PE ports`.
+  `'fabric.pe [spatial]' op requires uniform 'bits<W>' on all PE ports`.
 * The body must contain at least one `fabric.fu`. An empty PE is
   rejected.
 * For every inner FU `f`, `f.numInputs() <= K` and
   `f.numOutputs() <= L`. Equivalently, `max_fu_inputs <= K` and
   `max_fu_outputs <= L`. Violations report which FU exceeded the bound.
 * Every inner FU's outer port types (the operand and result types of
-  the `fabric.fu` op itself, as visible in the spatial_pe body) must
+  the `fabric.fu` op itself, as visible in the fabric.pe [spatial] body) must
   be `!fabric.bits<W>` matching the PE's `W`. Inner FU input port
   types (the FU body's block argument types) may be any
   `!fabric.bits<F>` with `F <= W`. When `F < W`, the high `W - F`
@@ -189,7 +221,7 @@ external port widths.
 * The body contains only `fabric.fu` ops. There is no terminator: the
   region uses MLIR's no-terminator form. Placing `fabric.op` / mux /
   demux / fifo / yield directly in the PE body, or nesting another
-  `fabric.spatial_pe`, is rejected.
+  `fabric.pe [spatial]`, is rejected.
 
 ## Software configuration (the PE instruction word)
 
@@ -211,14 +243,14 @@ listed below from least-significant bit (LSB) to most-significant bit
 
 Equivalently, low-to-high:
 
-1. `spatial_pe_enable` (1 bit, LSB)
+1. `pe_enable` (1 bit, LSB)
 2. `opcode` (`O = log2Ceil(num_fu)` bits)
 3. `max_fu_inputs` input-mux fields, each `[sel | discard | disconnect]`
 4. `max_fu_outputs` output-demux fields, each
    `[sel | discard | disconnect]`
 5. `fu_sw_configs` payload of `fu_config_bitwidth_max` bits
 
-### `spatial_pe_enable`
+### `pe_enable`
 
 Bit `[0]`. When `0`, the PE is architecturally inactive: it produces no
 output activity and may be clock- or power-gated. When `1`, the
@@ -261,7 +293,7 @@ field's low-to-high layout is:
 Constraints on a single field:
 
 * It is illegal to set `discard = 1` and `disconnect = 1` simultaneously
-  (`'fabric.spatial_pe' op input mux N has both discard and disconnect`).
+  (`'fabric.pe [spatial]' op input mux N has both discard and disconnect`).
 * When `enable = 0`, all input-mux fields must serialize as
   `disconnect = 1`, `discard = 0`, `sel = 0`.
 
@@ -273,7 +305,7 @@ follow the discard/disconnect mutual-exclusion rule when programmed.
 The PE input mux is a **selector only**, not a fan-in. It must not be
 used to merge two distinct software flows onto one FU input. Flow
 mixing belongs to a higher-level switch / fabric structure
-(`fabric.spatial_sw`, `fabric.temporal_sw`), not the PE input mux.
+(`fabric.switch`), not the PE input mux.
 
 ### Output-demux fields
 
@@ -296,7 +328,7 @@ field's low-to-high layout is:
 Constraints:
 
 * `discard = 1` and `disconnect = 1` simultaneously is illegal
-  (`'fabric.spatial_pe' op output demux N has both discard and disconnect`).
+  (`'fabric.pe [spatial]' op output demux N has both discard and disconnect`).
 * When `enable = 0`, all output-demux fields must serialize as
   `disconnect = 1`, `discard = 0`, `sel = 0`.
 * The PE output demux is a **selector only**, not a fan-out. It must
@@ -337,7 +369,7 @@ Let:
 * `fu_config_bitwidth_max` as defined above
 
 ```
-spatial_pe_word_width =
+pe_word_width =
     1                                       // enable
   + O                                       // opcode
   + max_fu_inputs  * mux_field_width        // input-mux fields
@@ -349,9 +381,9 @@ When `num_fu = 1`, `O = 0` and the opcode contribution is zero.
 
 ## Default reset configuration
 
-The unprogrammed serialization of a `fabric.spatial_pe` is:
+The unprogrammed serialization of a `fabric.pe [spatial]` is:
 
-* `spatial_pe_enable = 0`
+* `pe_enable = 0`
 * `opcode = 0`
 * every input-mux field: `disconnect = 1`, `discard = 0`, `sel = 0`
 * every output-demux field: `disconnect = 1`, `discard = 0`, `sel = 0`
@@ -365,13 +397,13 @@ hardware must come out of reset in.
 
 The mapper and tech-mapping passes must respect the following:
 
-* Within one `fabric.spatial_pe`, at most one physical `fabric.fu` is
+* Within one `fabric.pe [spatial]`, at most one physical `fabric.fu` is
   active per mapped configuration. Two distinct physical FUs from the
   same PE cannot be co-active. A mapping that requires two physical
   FUs from the same PE is illegal and must be rejected.
 * Multiple software ops may still be tech-mapped onto the same active
   FU through the FU's own internal sw_configs (mux/demux/op_sel/etc.).
-* `fabric.fu` instances inside a `fabric.spatial_pe` are compute
+* `fabric.fu` instances inside a `fabric.pe [spatial]` are compute
   resources. They may terminate routed edges at FU inputs or originate
   routed edges at FU outputs, but they must not be used as generic
   transit hops to relay unrelated traffic.
@@ -391,24 +423,24 @@ sub-module-result -> sub-module-operand, sub-module-result ->
 module-yield), and the `IsolatedFromAbove` requirement that bars
 external SSA leakage.
 
-Three ops carry a body region: `fabric.module`, `fabric.spatial_pe`,
-and `fabric.temporal_pe`. Of these, only `fabric.module` and
+Three ops carry a body region: `fabric.module`, `fabric.pe [spatial]`,
+and `fabric.pe [temporal]`. Of these, only `fabric.module` and
 `fabric.fu` (which is itself a body-bearing op nested inside a PE)
-have an internal `fabric.yield` terminator. `fabric.spatial_pe` and
-`fabric.temporal_pe` do not have a terminator: their inner FUs are
+have an internal `fabric.yield` terminator. `fabric.pe [spatial]` and
+`fabric.pe [temporal]` do not have a terminator: their inner FUs are
 implicitly connected to the PE's external ports through the PE-level
 input-mux and output-demux fields.
 
-`fabric.spatial_pe` placement rules:
+`fabric.pe [spatial]` placement rules:
 
-* `fabric.spatial_pe` must be inside a `fabric.module` body. It may
+* `fabric.pe [spatial]` must be inside a `fabric.module` body. It may
   not appear at the top of `builtin.module`, inside a `func.func`, or
   inside any non-fabric container.
-* `fabric.spatial_pe` may not be nested inside another
-  `fabric.spatial_pe`, inside `fabric.temporal_pe`, or inside any
+* `fabric.pe [spatial]` may not be nested inside another
+  `fabric.pe [spatial]`, inside `fabric.pe [temporal]`, or inside any
   `fabric.fu`. The verifier rejects nested PEs.
 * Inner `fabric.fu` instances may only appear inside a
-  `fabric.spatial_pe` or a `fabric.temporal_pe` body. They may not
+  `fabric.pe [spatial]` or a `fabric.pe [temporal]` body. They may not
   appear directly inside `fabric.module` or any other container.
 
 ## Errors (verifier)
@@ -419,7 +451,7 @@ The verifier emits free-form diagnostics for the following conditions:
   non-`bits` types, `K < 1` or `L < 1`).
 * Empty body (no `fabric.fu`).
 * Body contains an op other than `fabric.fu` (in particular, no
-  `fabric.yield` may appear inside a `fabric.spatial_pe`).
+  `fabric.yield` may appear inside a `fabric.pe [spatial]`).
 * `max_fu_inputs > K` or `max_fu_outputs > L`.
 * An inner FU's outer port width does not match the PE's `W` (input
   or output). Inner block-arg widths narrower than the outer operand
@@ -427,9 +459,9 @@ The verifier emits free-form diagnostics for the following conditions:
   FU's own verifier.
 * `discard` and `disconnect` simultaneously set on any mux or demux
   field.
-* Nesting violations: `fabric.spatial_pe` placed outside a
-  `fabric.module` body, nested inside another `fabric.spatial_pe` /
-  `fabric.temporal_pe` / `fabric.fu`.
+* Nesting violations: `fabric.pe [spatial]` placed outside a
+  `fabric.module` body, nested inside another `fabric.pe [spatial]` /
+  `fabric.pe [temporal]` / `fabric.fu`.
 
 The exact diagnostic strings are defined in `FabricOps.cpp`; this
 document fixes the set of conditions that must trigger a diagnostic.
@@ -438,9 +470,9 @@ document fixes the set of conditions that must trigger a diagnostic.
 
 The canonical source of truth is:
 
-* `Fabric_SpatialPeOp` in `include/Fabric/IR/FabricOps.td` for the IR
+* `Fabric_PeOp` in `include/Fabric/IR/FabricOps.td` for the IR
   shape;
-* `SpatialPeOp::verify` in `lib/Fabric/IR/FabricOps.cpp` for the
+* `PeOp::verify` in `lib/Fabric/IR/FabricOps.cpp` for the
   verifier rules;
 * the related runtime-axis catalogue in
   `spec-fabric-reconfigurable-op.md` for the per-op sub-field shapes
@@ -448,6 +480,6 @@ The canonical source of truth is:
 * the share-group catalogue in `spec-fabric-hw-share-group.md` for
   legal multi-member `op_list`s inside inner FUs.
 
-When extending `fabric.spatial_pe` (for instance, adding a new field
+When extending `fabric.pe [spatial]` (for instance, adding a new field
 to the instruction word), update this document and add a unit test
-under `test/fabric/unit/spatial_pe/` that pins the new layout.
+under `test/fabric/unit/pe/` that pins the new layout.

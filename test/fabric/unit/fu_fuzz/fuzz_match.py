@@ -74,7 +74,7 @@ def gen_fu(rng, idx):
     if arity == 2:
         text = (
             f"\nfabric.module @hw_{idx}(%a : {bits}, %b : {bits}) {{\n"
-            f"  fabric.spatial_pe(%pa = %a : {bits}, %pb = %b : {bits}) -> {bits} {{\n"
+            f"  fabric.pe [spatial] (%pa = %a : {bits}, %pb = %b : {bits}) -> {bits} {{\n"
             f"    fabric.fu(%x = %pa : {bits}, %y = %pb : {bits}) -> {bits} {{\n"
             f"      %k = fabric.op [{sym_list}] (%x, %y)\n"
             f"           : ({bits}, {bits}) -> {bits}\n"
@@ -87,7 +87,7 @@ def gen_fu(rng, idx):
     else:
         text = (
             f"\nfabric.module @hw_{idx}(%a : {bits}) {{\n"
-            f"  fabric.spatial_pe(%pa = %a : {bits}) -> {bits} {{\n"
+            f"  fabric.pe [spatial] (%pa = %a : {bits}) -> {bits} {{\n"
             f"    fabric.fu(%x = %pa : {bits}) -> {bits} {{\n"
             f"      %k = fabric.op [{sym_list}] (%x) : ({bits}) -> {bits}\n"
             f"      fabric.yield %k : {bits}\n"

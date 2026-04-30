@@ -9,12 +9,12 @@
 // the exact count (which depends on dedup heuristics), only that:
 //   * every advertised predicate appears at least once,
 //   * mux/demux configurations expose at least both sel paths.
-// To satisfy the spatial_pe uniform-W rule we expose the FU at bits<1>
+// To satisfy the pe uniform-W rule we expose the FU at bits<1>
 // throughout (cmpi's TypeParam(0) inputs accept any width).
 
 // CHECK-LABEL: @fu_cartesian
 fabric.module @fu_cartesian(%a : !fabric.bits<1>, %b : !fabric.bits<1>, %c : !fabric.bits<1>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<1>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>,
                     %pc = %c : !fabric.bits<1>)
                    -> (!fabric.bits<1>, !fabric.bits<1>) {

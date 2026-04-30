@@ -10,20 +10,13 @@ def Fabric_BitsType : Fabric_Type<"Bits", "bits"> {
 }
 
 def Fabric_BitsTagType : Fabric_Type<"BitsTag", "bits_tag"> {
-  let summary = "fabric bits+tag type (BW > 0, TW > 0), with implicit valid/ready handshake";
+  let summary = "fabric bits+tag type (BW >= 0, TW > 0), with implicit valid/ready handshake";
   let parameters = (ins "unsigned":$width, "unsigned":$tagWidth);
   let assemblyFormat = "`<` $width `,` $tagWidth `>`";
   let genVerifyDecl = 1;
 }
 
-def Fabric_TagType : Fabric_Type<"Tag", "tag"> {
-  let summary = "fabric tag-only type (TW > 0), with implicit valid/ready handshake";
-  let parameters = (ins "unsigned":$tagWidth);
-  let assemblyFormat = "`<` $tagWidth `>`";
-  let genVerifyDecl = 1;
-}
-
 def Fabric_AnyType
-    : AnyTypeOf<[Fabric_BitsType, Fabric_BitsTagType, Fabric_TagType]>;
+    : AnyTypeOf<[Fabric_BitsType, Fabric_BitsTagType]>;
 
 #endif // FABRIC_TYPES_TD

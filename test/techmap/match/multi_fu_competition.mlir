@@ -6,7 +6,7 @@
 // be stable across runs.
 
 fabric.module @hw_addi_a(%cast0_hw_addi_a : !fabric.bits<32>, %cast1_hw_addi_a : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_hw_addi_a : !fabric.bits<32>, %b = %cast1_hw_addi_a : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_hw_addi_a : !fabric.bits<32>, %b = %cast1_hw_addi_a : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)
@@ -19,7 +19,7 @@ fabric.module @hw_addi_a(%cast0_hw_addi_a : !fabric.bits<32>, %cast1_hw_addi_a :
 
 
 fabric.module @hw_addi_b(%cast0_hw_addi_b : !fabric.bits<32>, %cast1_hw_addi_b : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_hw_addi_b : !fabric.bits<32>, %b = %cast1_hw_addi_b : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_hw_addi_b : !fabric.bits<32>, %b = %cast1_hw_addi_b : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)

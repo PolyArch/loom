@@ -9,7 +9,7 @@
 
 // CHECK-LABEL: @fu_addi
 fabric.module @fu_addi(%cast0_fu_addi : !fabric.bits<32>, %cast1_fu_addi : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_fu_addi : !fabric.bits<32>, %b = %cast1_fu_addi : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
                 -> !fabric.bits<32> {
     %k = fabric.op [@arith.addi] (%x, %y)
@@ -22,7 +22,7 @@ fabric.module @fu_addi(%cast0_fu_addi : !fabric.bits<32>, %cast1_fu_addi : !fabr
 
 
 // (Originally a dataflow.constant FU with a bits<0> control input lived
-//  here; that op cannot be wrapped in spatial_pe because bits<0> on the
+//  here; that op cannot be wrapped in pe because bits<0> on the
 //  PE boundary violates the uniform-W rule (W >= 1). The constant
 //  subgraph wrapping behavior is exercised at the IR level by
 //  fabric/unit/op/valid.mlir without going through the PE container.)

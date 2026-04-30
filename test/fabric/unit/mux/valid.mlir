@@ -3,7 +3,7 @@
 // Note: fabric.mux operand/result types are !fabric.bits<W>; see the
 // Fabric_MuxOp declaration in include/Fabric/IR/FabricOps.td. fabric.mux
 // must live inside fabric.fu (the fabric.module body whitelist admits only
-// fabric.spatial_pe, fabric.fifo and fabric.yield).
+// fabric.pe, fabric.fifo and fabric.yield).
 
 // -----------------------------------------------------------------------------
 // Pure hardware (no software params programmed): 2 inputs, bits<8>.
@@ -11,7 +11,7 @@
 
 // CHECK-LABEL: fabric.module @mux_hw_bits
 fabric.module @mux_hw_bits(%a : !fabric.bits<8>, %b : !fabric.bits<8>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<8>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<8>,
                     %pb = %b : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %pa : !fabric.bits<8>,
               %fb = %pb : !fabric.bits<8>) -> !fabric.bits<8> {
@@ -31,7 +31,7 @@ fabric.module @mux_hw_bits(%a : !fabric.bits<8>, %b : !fabric.bits<8>) {
 
 // CHECK-LABEL: fabric.module @mux_hw_bits_zero
 fabric.module @mux_hw_bits_zero(%a : !fabric.bits<0>, %b : !fabric.bits<0>, %c : !fabric.bits<0>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<0>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<0>,
                     %pb = %b : !fabric.bits<0>,
                     %pc = %c : !fabric.bits<0>) -> !fabric.bits<0> {
     fabric.fu(%fa = %pa : !fabric.bits<0>,
@@ -54,7 +54,7 @@ fabric.module @mux_hw_bits_zero(%a : !fabric.bits<0>, %b : !fabric.bits<0>, %c :
 
 // CHECK-LABEL: fabric.module @mux_sw_passthrough
 fabric.module @mux_sw_passthrough(%a : !fabric.bits<16>, %b : !fabric.bits<16>, %c : !fabric.bits<16>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<16>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<16>,
                     %pb = %b : !fabric.bits<16>,
                     %pc = %c : !fabric.bits<16>) -> !fabric.bits<16> {
     fabric.fu(%fa = %pa : !fabric.bits<16>,
@@ -76,7 +76,7 @@ fabric.module @mux_sw_passthrough(%a : !fabric.bits<16>, %b : !fabric.bits<16>, 
 
 // CHECK-LABEL: fabric.module @mux_sw_discard
 fabric.module @mux_sw_discard(%a : !fabric.bits<4>, %b : !fabric.bits<4>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<4>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<4>,
                     %pb = %b : !fabric.bits<4>) -> !fabric.bits<4> {
     fabric.fu(%fa = %pa : !fabric.bits<4>,
               %fb = %pb : !fabric.bits<4>) -> !fabric.bits<4> {
@@ -96,7 +96,7 @@ fabric.module @mux_sw_discard(%a : !fabric.bits<4>, %b : !fabric.bits<4>) {
 
 // CHECK-LABEL: fabric.module @mux_sw_disconnect
 fabric.module @mux_sw_disconnect(%a : !fabric.bits<4>, %b : !fabric.bits<4>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<4>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<4>,
                     %pb = %b : !fabric.bits<4>) -> !fabric.bits<4> {
     fabric.fu(%fa = %pa : !fabric.bits<4>,
               %fb = %pb : !fabric.bits<4>) -> !fabric.bits<4> {

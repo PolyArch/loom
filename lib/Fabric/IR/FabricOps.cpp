@@ -16,28 +16,28 @@
 using namespace mlir;
 using namespace fabric;
 
+#include "Fabric/IR/FabricEnums.cpp.inc"
+
 #define GET_OP_CLASSES
 #include "Fabric/IR/FabricOps.cpp.inc"
 
 namespace {
 
-// True iff `t` is one of the four allowed fabric.module port types
-// (memref or one of the three fabric stream types).
+// True iff `t` is one of the allowed fabric.module port types
+// (memref or one of the two fabric stream types).
 static bool isFabricModulePortType(Type t) {
-  return isa<BitsType, BitsTagType, TagType, MemRefType>(t);
+  return isa<BitsType, BitsTagType, MemRefType>(t);
 }
 
 // Returns true if both types have the same kind (both bits, both bits_tag,
-// both tag, or both memref). For memref this also requires exact equality
-// (no relaxation). Caller is expected to first ensure both are valid module
+// or both memref). For memref this also requires exact equality (no
+// relaxation). Caller is expected to first ensure both are valid module
 // port types.
 static bool sameModulePortKind(Type src, Type dst) {
   if (isa<BitsType>(src))
     return isa<BitsType>(dst);
   if (isa<BitsTagType>(src))
     return isa<BitsTagType>(dst);
-  if (isa<TagType>(src))
-    return isa<TagType>(dst);
   if (isa<MemRefType>(src))
     return isa<MemRefType>(dst);
   return false;
@@ -395,7 +395,7 @@ LogicalResult FifoOp::verify() {
         "true");
   // Width-relaxation rule at the FIFO operand boundary. The outer SSA
   // source type may differ from the FIFO's inner type only in width, and
-  // only for the same fabric kind (bits / bits_tag / tag). memref operands
+  // only for the same fabric kind (bits / bits_tag). memref operands
   // (not currently part of the SameOperandsAndResultType-constrained type)
   // are not legal here; the type constraint already rejects them, but the
   // explicit `to <T_inner>` clause is still rejected when the kinds
@@ -406,7 +406,7 @@ LogicalResult FifoOp::verify() {
     if (!sameModulePortKind(outerTy, innerTy))
       return emitOpError(
                  "operand outer type and inner type must share the same "
-                 "fabric kind (bits, bits_tag, tag); got outer ")
+                 "fabric kind (bits, bits_tag); got outer ")
              << outerTy << " and inner " << innerTy;
     if (isa<MemRefType>(outerTy))
       return emitOpError(
@@ -1035,11 +1035,11 @@ LogicalResult FuOp::verify() {
   // to the outer width. When inner < outer, hardware drops the high
   // (outerW - innerW) bits at the FU boundary on each token. The output
   // direction stays strict (this op enforces nothing here; the enclosing
-  // spatial_pe and the inner `fabric.yield` together pin the output side).
+  // pe and the inner `fabric.yield` together pin the output side).
   Operation *parent = (*this)->getParentOp();
-  if (!isa_and_nonnull<SpatialPeOp>(parent))
+  if (!isa_and_nonnull<PeOp>(parent))
     return emitOpError(
-        "must be inside a fabric.spatial_pe (parent must be fabric.spatial_pe)");
+        "must be inside a fabric.pe (parent must be fabric.pe)");
 
   Block &entry = getBody().front();
   if (entry.getNumArguments() != getInputs().size())
@@ -1084,14 +1084,34 @@ LogicalResult FuOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// fabric.spatial_pe
+// fabric.pe
 //===----------------------------------------------------------------------===//
 //
-// Assembly format mirrors fabric.fu: inline (block-arg = outer : T) pairs in
-// `(...)`, then `-> result-types`, then optional attributes keyword + region
-// body. Differs from fabric.fu in that the body has no terminator.
+// Assembly form mirrors fabric.fu but with a mandatory schedule predicate
+// in `[...]` immediately after the op keyword and no inner terminator:
+//
+//   fabric.pe [spatial] (%fa = %a : !fabric.bits<W>)
+//                       -> !fabric.bits<W> { ... }
+//
+// `[temporal]` parses but the verifier currently rejects it.
 
-ParseResult SpatialPeOp::parse(OpAsmParser &parser, OperationState &result) {
+ParseResult PeOp::parse(OpAsmParser &parser, OperationState &result) {
+  // Mandatory `[<schedule>]` predicate.
+  StringRef scheduleKw;
+  SMLoc scheduleLoc = parser.getCurrentLocation();
+  if (parser.parseLSquare() || parser.parseKeyword(&scheduleKw) ||
+      parser.parseRSquare())
+    return failure();
+  auto sym = symbolizeSchedule(scheduleKw);
+  if (!sym)
+    return parser.emitError(scheduleLoc,
+                            "expected fabric pe schedule keyword "
+                            "'spatial' or 'temporal', got '")
+           << scheduleKw << "'";
+  result.addAttribute(
+      "schedule",
+      ScheduleAttr::get(parser.getContext(), *sym));
+
   SmallVector<OpAsmParser::Argument, 4> blockArgs;
   SmallVector<OpAsmParser::UnresolvedOperand, 4> operands;
   SmallVector<Type, 4> operandTypes;
@@ -1159,8 +1179,8 @@ ParseResult SpatialPeOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-void SpatialPeOp::print(OpAsmPrinter &p) {
-  p << '(';
+void PeOp::print(OpAsmPrinter &p) {
+  p << " [" << stringifySchedule(getSchedule()) << "] (";
   Block &entry = getBody().front();
   llvm::interleaveComma(
       llvm::zip(entry.getArguments(), getInputs()), p, [&](auto pair) {
@@ -1184,17 +1204,28 @@ void SpatialPeOp::print(OpAsmPrinter &p) {
     llvm::interleaveComma(rTypes, p);
     p << ')';
   }
-  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs());
+  // Elide the `schedule` attribute from the optional attr-dict; it's already
+  // serialized in the `[...]` predicate.
+  SmallVector<StringRef, 1> elided{"schedule"};
+  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(), elided);
   p << ' ';
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/false);
 }
 
-RegionKind SpatialPeOp::getRegionKind(unsigned /*index*/) {
+RegionKind PeOp::getRegionKind(unsigned /*index*/) {
   return RegionKind::Graph;
 }
 
-LogicalResult SpatialPeOp::verify() {
+LogicalResult PeOp::verify() {
+  // Schedule predicate dispatch. Only the spatial branch is implemented in
+  // this revision; temporal is intentionally rejected with a placeholder
+  // diagnostic.
+  if (getSchedule() == Schedule::Temporal)
+    return emitOpError(
+        "fabric.pe in 'temporal' schedule is not yet implemented");
+  // From here on, schedule is Spatial.
+
   // 1. K >= 1.
   if (getInputs().empty())
     return emitOpError("requires at least 1 input port (K >= 1)");
@@ -1241,7 +1272,7 @@ LogicalResult SpatialPeOp::verify() {
 
   // 4. Outer-vs-inner per operand: the outer operand SSA type may differ
   // from the inner block-arg type only in width and only for the same
-  // fabric kind (bits / bits_tag / tag). Since the PE-internal type is
+  // fabric kind (bits / bits_tag). Since the PE-internal type is
   // already constrained to fabric.bits<W>, the outer must also be
   // fabric.bits<*> (any width). Emit a clear diagnostic when the kind
   // disagrees.
@@ -1254,7 +1285,7 @@ LogicalResult SpatialPeOp::verify() {
       return emitOpError("operand #")
              << i << " outer type " << outerTy
              << " and PE block-arg inner type " << innerTy
-             << " must share the same fabric kind (bits, bits_tag, tag)";
+             << " must share the same fabric kind (bits, bits_tag)";
     if (isa<MemRefType>(outerTy))
       return emitOpError("operand #")
              << i
@@ -1267,7 +1298,7 @@ LogicalResult SpatialPeOp::verify() {
   for (Operation &op : entry) {
     auto fu = dyn_cast<FuOp>(op);
     if (!fu)
-      return op.emitOpError("'fabric.spatial_pe' op body may only contain "
+      return op.emitOpError("'fabric.pe' op body may only contain "
                             "fabric.fu; got '")
              << op.getName().getStringRef() << "'";
     ++numFu;
@@ -1277,18 +1308,18 @@ LogicalResult SpatialPeOp::verify() {
     unsigned fuNumOuts = fu.getOutputs().size();
     if (fuNumIns > getInputs().size())
       return fu.emitOpError("inner fabric.fu has ")
-             << fuNumIns << " inputs which exceeds spatial_pe input count K="
+             << fuNumIns << " inputs which exceeds fabric.pe input count K="
              << getInputs().size();
     if (fuNumOuts > getOutputs().size())
       return fu.emitOpError("inner fabric.fu has ")
              << fuNumOuts
-             << " outputs which exceeds spatial_pe output count L="
+             << " outputs which exceeds fabric.pe output count L="
              << getOutputs().size();
     for (auto [i, t] : llvm::enumerate(fu.getInputs().getTypes())) {
       auto w = bitsWidth(t);
       if (!w || *w != W)
         return fu.emitOpError(
-                   "inner fabric.fu boundary width must equal spatial_pe "
+                   "inner fabric.fu boundary width must equal fabric.pe "
                    "width W=")
                << W << "; FU input #" << i << " has type " << t;
     }
@@ -1296,7 +1327,7 @@ LogicalResult SpatialPeOp::verify() {
       auto w = bitsWidth(t);
       if (!w || *w != W)
         return fu.emitOpError(
-                   "inner fabric.fu boundary width must equal spatial_pe "
+                   "inner fabric.fu boundary width must equal fabric.pe "
                    "width W=")
                << W << "; FU output #" << i << " has type " << t;
     }
@@ -1444,7 +1475,7 @@ RegionKind fabric::ModuleOp::getRegionKind(unsigned /*index*/) {
 
 LogicalResult fabric::ModuleOp::verify() {
   // Validate declared input/output types: each must be one of the four
-  // allowed module port types (bits, bits_tag, tag, memref). The
+  // allowed module port types (bits, bits_tag, memref). The
   // declarative type constraint Variadic<Fabric_ModulePortType> on the
   // results is checked by the auto-generated verifier; we re-check here
   // to give clean diagnostics for the input side, which is encoded as
@@ -1456,7 +1487,7 @@ LogicalResult fabric::ModuleOp::verify() {
              << i << " type " << t
              << " is not an allowed fabric.module port type "
                 "(allowed: !fabric.bits<W>, !fabric.bits_tag<W,T>, "
-                "!fabric.tag<T>, memref<...>)";
+                "memref<...>)";
   }
   for (auto [i, t] : llvm::enumerate(ft.getResults())) {
     if (!isFabricModulePortType(t))
@@ -1464,7 +1495,7 @@ LogicalResult fabric::ModuleOp::verify() {
              << i << " type " << t
              << " is not an allowed fabric.module port type "
                 "(allowed: !fabric.bits<W>, !fabric.bits_tag<W,T>, "
-                "!fabric.tag<T>, memref<...>)";
+                "memref<...>)";
   }
 
   // Block argument count + types must match the declared inputs.
@@ -1484,17 +1515,16 @@ LogicalResult fabric::ModuleOp::verify() {
              << " must equal declared input type " << declared;
   }
 
-  // Body whitelist: only fabric.spatial_pe, fabric.fifo, and the implicit
+  // Body whitelist: only fabric.pe, fabric.fifo, and the implicit
   // fabric.yield terminator may appear directly in the module body.
-  // (Future container ops -- fabric.temporal_pe, fabric.spatial_sw,
-  // fabric.temporal_sw, fabric.spatial_mem, fabric.temporal_mem,
-  // fabric.t2s, fabric.s2t, fabric.t2t, fabric.instantiate -- will be
-  // added here as they land.)
+  // (Future container ops -- fabric.switch, fabric.mem, fabric.t2s,
+  // fabric.s2t, fabric.t2t, fabric.instantiate -- will be added here
+  // as they land.)
   for (Operation &op : entry) {
-    if (isa<SpatialPeOp, FifoOp, YieldOp>(op))
+    if (isa<PeOp, FifoOp, YieldOp>(op))
       continue;
     return op.emitOpError(
-        "is not allowed inside fabric.module; only fabric.spatial_pe and "
+        "is not allowed inside fabric.module; only fabric.pe and "
         "fabric.fifo are permitted (plus the implicit terminator "
         "fabric.yield)");
   }
@@ -1732,7 +1762,7 @@ LogicalResult YieldOp::verify() {
         return emitOpError("yield value #")
                << i << " type " << srcTy
                << " has a different fabric kind than the module result type "
-               << modResultTy << "; type-kind must match (bits/bits_tag/tag/memref)";
+               << modResultTy << "; type-kind must match (bits/bits_tag/memref)";
       if (declared[i] && declared[i] != modResultTy)
         return emitOpError("yield value #")
                << i << ": declared destination type " << declared[i]

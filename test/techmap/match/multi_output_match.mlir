@@ -3,12 +3,12 @@
 // Pins: a multi-output match. The FU produces two outputs from a single
 // dataflow.stream (value, ready-cond). The user pattern that yields both
 // must bind to it as one subgraph.
-// To satisfy the spatial_pe uniform-W rule we expose the FU at bits<1>
+// To satisfy the pe uniform-W rule we expose the FU at bits<1>
 // throughout (stream's TypeParam(0) data ports accept any width); the
 // pattern is correspondingly typed as i1.
 
 fabric.module @hw_stream(%lb : !fabric.bits<1>, %ub : !fabric.bits<1>, %step : !fabric.bits<1>) {
-  fabric.spatial_pe(%plb = %lb : !fabric.bits<1>,
+  fabric.pe [spatial] (%plb = %lb : !fabric.bits<1>,
                     %pub = %ub : !fabric.bits<1>,
                     %pstep = %step : !fabric.bits<1>)
                    -> (!fabric.bits<1>, !fabric.bits<1>) {

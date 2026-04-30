@@ -7,7 +7,7 @@
 
 // CHECK-LABEL: @fu_addi_demux2
 fabric.module @fu_addi_demux2(%cast0_fu_addi_demux2 : !fabric.bits<32>, %cast1_fu_addi_demux2 : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_addi_demux2 : !fabric.bits<32>, %b = %cast1_fu_addi_demux2 : !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>) {
+  fabric.pe [spatial] (%a = %cast0_fu_addi_demux2 : !fabric.bits<32>, %b = %cast1_fu_addi_demux2 : !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>) {
   %x, %y = fabric.fu(%aa = %a : !fabric.bits<32>,
                      %bb = %b : !fabric.bits<32>)
                     -> (!fabric.bits<32>, !fabric.bits<32>) {

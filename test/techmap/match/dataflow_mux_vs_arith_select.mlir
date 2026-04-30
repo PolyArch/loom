@@ -7,12 +7,12 @@
 // example separating the four entities (claim 4 vs claim 2 in the
 // design statement).
 //
-// To satisfy the spatial_pe uniform-W rule both FUs are exposed at
+// To satisfy the pe uniform-W rule both FUs are exposed at
 // bits<1> throughout (sel is fixed bits<1> and the data ports accept
 // any width via TypeParam(0)).
 
 fabric.module @hw_mux2(%sel : !fabric.bits<1>, %a : !fabric.bits<1>, %b : !fabric.bits<1>) {
-  fabric.spatial_pe(%psel = %sel : !fabric.bits<1>,
+  fabric.pe [spatial] (%psel = %sel : !fabric.bits<1>,
                     %pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%s = %psel : !fabric.bits<1>,
@@ -28,7 +28,7 @@ fabric.module @hw_mux2(%sel : !fabric.bits<1>, %a : !fabric.bits<1>, %b : !fabri
 }
 
 fabric.module @hw_select(%c : !fabric.bits<1>, %a : !fabric.bits<1>, %b : !fabric.bits<1>) {
-  fabric.spatial_pe(%pc = %c : !fabric.bits<1>,
+  fabric.pe [spatial] (%pc = %c : !fabric.bits<1>,
                     %pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%cn = %pc : !fabric.bits<1>,

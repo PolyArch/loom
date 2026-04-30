@@ -23,7 +23,7 @@
 
 // CHECK-LABEL: fabric.module @repro_fanout_converging_muxes
 fabric.module @repro_fanout_converging_muxes(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %d : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>,
                     %pd = %d : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%A = %pa : !fabric.bits<32>,

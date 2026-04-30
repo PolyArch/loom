@@ -10,7 +10,7 @@
 
 // CHECK-LABEL: fabric.module @fu_muli_output_demux
 fabric.module @fu_muli_output_demux(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>)
                    -> (!fabric.bits<32>, !fabric.bits<32>) {
     fabric.fu(%x = %pa : !fabric.bits<32>,

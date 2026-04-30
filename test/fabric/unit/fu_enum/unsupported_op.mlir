@@ -10,7 +10,7 @@
 
 // CHECK-LABEL: fabric.module @fu_unsupported
 fabric.module @fu_unsupported(%a0 : !fabric.bits<32>, %a1 : !fabric.bits<32>, %a2 : !fabric.bits<32>, %a3 : !fabric.bits<32>, %a4 : !fabric.bits<32>, %a5 : !fabric.bits<32>, %a6 : !fabric.bits<32>, %a7 : !fabric.bits<32>, %a8 : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa0 = %a0 : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa0 = %a0 : !fabric.bits<32>,
                     %pa1 = %a1 : !fabric.bits<32>,
                     %pa2 = %a2 : !fabric.bits<32>,
                     %pa3 = %a3 : !fabric.bits<32>,

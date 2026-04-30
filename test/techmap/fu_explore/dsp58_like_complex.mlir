@@ -5,7 +5,7 @@
 // 27x24 multiplier widths and a 58-bit accumulator; here every datapath
 // is widened/narrowed uniformly to bits<1> so the focus stays on the
 // configuration combinatorics rather than width arithmetic and the FU
-// fits the spatial_pe uniform-W rule.
+// fits the pe uniform-W rule.
 //
 // Datapath (mirroring the public DSP58 simplified block diagram):
 //
@@ -47,7 +47,7 @@
 
 // CHECK-LABEL: fabric.module @dsp58_like
 fabric.module @dsp58_like(%n : !fabric.bits<1>, %a : !fabric.bits<1>, %b : !fabric.bits<1>, %c : !fabric.bits<1>, %d : !fabric.bits<1>) {
-  fabric.spatial_pe(%pn = %n : !fabric.bits<1>,
+  fabric.pe [spatial] (%pn = %n : !fabric.bits<1>,
                     %pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>,
                     %pc = %c : !fabric.bits<1>,

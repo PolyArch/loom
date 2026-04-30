@@ -2,12 +2,12 @@
 
 // FU with one fabric.op[@dataflow.stream] whose hardware supports two
 // step_op values and three cont_cond values: 2 x 3 = 6 supported subgraphs.
-// To satisfy the spatial_pe uniform-W rule we expose the FU at bits<1>
+// To satisfy the pe uniform-W rule we expose the FU at bits<1>
 // throughout (the stream's TypeParam(0) data ports accept any width).
 
 // CHECK-LABEL: fabric.module @fu_stream
 fabric.module @fu_stream(%lb : !fabric.bits<1>, %ub : !fabric.bits<1>, %step : !fabric.bits<1>) {
-  fabric.spatial_pe(%plb = %lb : !fabric.bits<1>,
+  fabric.pe [spatial] (%plb = %lb : !fabric.bits<1>,
                     %pub = %ub : !fabric.bits<1>,
                     %pstep = %step : !fabric.bits<1>)
                    -> (!fabric.bits<1>, !fabric.bits<1>) {

@@ -38,7 +38,7 @@ def render_fu_library() -> str:
         blocks.append(
             f"fabric.module @{fu_sym}(%a : !fabric.bits<32>, "
             f"%b : !fabric.bits<32>) {{\n"
-            f"  fabric.spatial_pe(%pa = %a : !fabric.bits<32>, %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {{\n"
+            f"  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>, %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {{\n"
             f"    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)\n"
             f"                  -> !fabric.bits<32> {{\n"
             f"      %k = fabric.op [{fab_sym}] (%x, %y)\n"

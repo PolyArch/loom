@@ -5,13 +5,13 @@
 // Each predicate value yields a distinct enumerated template; the
 // partitioner must cover each of the three graph cmpi ops with a
 // matching template, producing three predicate-distinct subgraphs.
-// To satisfy the spatial_pe uniform-W rule we expose the FU at bits<1>
+// To satisfy the pe uniform-W rule we expose the FU at bits<1>
 // throughout (cmpi's TypeParam(0) inputs accept any width); the graph
 // is correspondingly typed with i1 inputs.
 
 // CHECK-LABEL: @fu_cmpi
 fabric.module @fu_cmpi(%a : !fabric.bits<1>, %b : !fabric.bits<1>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<1>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%x = %pa : !fabric.bits<1>, %y = %pb : !fabric.bits<1>)
                   -> !fabric.bits<1> {

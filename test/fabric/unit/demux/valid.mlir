@@ -3,7 +3,7 @@
 // Note: fabric.demux operand/result types are !fabric.bits<W>; see the
 // Fabric_DemuxOp declaration in include/Fabric/IR/FabricOps.td. fabric.demux
 // must live inside fabric.fu (the fabric.module body whitelist admits only
-// fabric.spatial_pe, fabric.fifo and fabric.yield).
+// fabric.pe, fabric.fifo and fabric.yield).
 
 // -----------------------------------------------------------------------------
 // Pure hardware (no software params programmed): bits<8>, 2 outputs.
@@ -11,7 +11,7 @@
 
 // CHECK-LABEL: fabric.module @demux_hw_bits
 fabric.module @demux_hw_bits(%a : !fabric.bits<8>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<8>)
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<8>)
                    -> (!fabric.bits<8>, !fabric.bits<8>) {
     fabric.fu(%fa = %pa : !fabric.bits<8>)
               -> (!fabric.bits<8>, !fabric.bits<8>) {
@@ -31,7 +31,7 @@ fabric.module @demux_hw_bits(%a : !fabric.bits<8>) {
 
 // CHECK-LABEL: fabric.module @demux_hw_bits_zero
 fabric.module @demux_hw_bits_zero(%a : !fabric.bits<0>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<0>)
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<0>)
                    -> (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) {
     fabric.fu(%fa = %pa : !fabric.bits<0>)
               -> (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) {
@@ -52,7 +52,7 @@ fabric.module @demux_hw_bits_zero(%a : !fabric.bits<0>) {
 
 // CHECK-LABEL: fabric.module @demux_sw_route
 fabric.module @demux_sw_route(%a : !fabric.bits<16>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<16>)
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<16>)
                    -> (!fabric.bits<16>, !fabric.bits<16>, !fabric.bits<16>) {
     fabric.fu(%fa = %pa : !fabric.bits<16>)
               -> (!fabric.bits<16>, !fabric.bits<16>, !fabric.bits<16>) {
@@ -73,7 +73,7 @@ fabric.module @demux_sw_route(%a : !fabric.bits<16>) {
 
 // CHECK-LABEL: fabric.module @demux_sw_discard
 fabric.module @demux_sw_discard(%a : !fabric.bits<4>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<4>)
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<4>)
                    -> (!fabric.bits<4>, !fabric.bits<4>) {
     fabric.fu(%fa = %pa : !fabric.bits<4>)
               -> (!fabric.bits<4>, !fabric.bits<4>) {
@@ -94,7 +94,7 @@ fabric.module @demux_sw_discard(%a : !fabric.bits<4>) {
 
 // CHECK-LABEL: fabric.module @demux_sw_disconnect
 fabric.module @demux_sw_disconnect(%a : !fabric.bits<4>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<4>)
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<4>)
                    -> (!fabric.bits<4>, !fabric.bits<4>) {
     fabric.fu(%fa = %pa : !fabric.bits<4>)
               -> (!fabric.bits<4>, !fabric.bits<4>) {

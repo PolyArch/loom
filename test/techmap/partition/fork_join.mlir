@@ -8,7 +8,7 @@
 
 // CHECK-LABEL: @fu_mac
 fabric.module @fu_mac(%cast0_fu_mac : !fabric.bits<32>, %cast1_fu_mac : !fabric.bits<32>, %cast2_fu_mac : !fabric.bits<32>) {
-  fabric.spatial_pe(%a = %cast0_fu_mac : !fabric.bits<32>, %b = %cast1_fu_mac : !fabric.bits<32>, %c = %cast2_fu_mac : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%a = %cast0_fu_mac : !fabric.bits<32>, %b = %cast1_fu_mac : !fabric.bits<32>, %c = %cast2_fu_mac : !fabric.bits<32>) -> !fabric.bits<32> {
   %r = fabric.fu(%x = %a : !fabric.bits<32>,
                  %y = %b : !fabric.bits<32>,
                  %z = %c : !fabric.bits<32>) -> !fabric.bits<32> {

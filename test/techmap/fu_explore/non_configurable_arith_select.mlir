@@ -4,12 +4,12 @@
 // sw_configs axis (arith.select is non-configurable per the design
 // statement), so the enumerator emits exactly one template wrapping
 // arith.select.
-// To satisfy the spatial_pe uniform-W rule we expose the FU at bits<1>
+// To satisfy the pe uniform-W rule we expose the FU at bits<1>
 // throughout (sel is fixed bits<1> and the data ports accept any width).
 
 // CHECK-LABEL: fabric.module @fu_select
 fabric.module @fu_select(%s : !fabric.bits<1>, %a : !fabric.bits<1>, %b : !fabric.bits<1>) {
-  fabric.spatial_pe(%ps = %s : !fabric.bits<1>,
+  fabric.pe [spatial] (%ps = %s : !fabric.bits<1>,
                     %pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%ss = %ps : !fabric.bits<1>,

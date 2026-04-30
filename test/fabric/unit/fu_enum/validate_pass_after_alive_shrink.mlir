@@ -16,7 +16,7 @@
 
 // CHECK-LABEL: fabric.module @fu_demux_per_output_consumer
 fabric.module @fu_demux_per_output_consumer(%sel : !fabric.bits<32>, %x : !fabric.bits<32>) {
-  fabric.spatial_pe(%psel = %sel : !fabric.bits<32>,
+  fabric.pe [spatial] (%psel = %sel : !fabric.bits<32>,
                     %px = %x : !fabric.bits<32>)
                    -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
     fabric.fu(%s = %psel : !fabric.bits<32>, %y = %px : !fabric.bits<32>)

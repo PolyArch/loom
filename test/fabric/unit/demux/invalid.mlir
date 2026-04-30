@@ -3,7 +3,7 @@
 // -----
 // Fewer than 2 outputs is illegal.
 fabric.module @demux_too_few(%a : !fabric.bits<8>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<8>) -> !fabric.bits<8> {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %pa : !fabric.bits<8>) -> !fabric.bits<8> {
       %v = fabric.op [@arith.addi] (%fa, %fa)
            : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
@@ -18,7 +18,7 @@ fabric.module @demux_too_few(%a : !fabric.bits<8>) {
 // -----
 // Partial software parameters.
 fabric.module @demux_partial_params(%a : !fabric.bits<8>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<8>)
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<8>)
                    -> (!fabric.bits<8>, !fabric.bits<8>) {
     fabric.fu(%fa = %pa : !fabric.bits<8>)
               -> (!fabric.bits<8>, !fabric.bits<8>) {
@@ -35,7 +35,7 @@ fabric.module @demux_partial_params(%a : !fabric.bits<8>) {
 // -----
 // discard and disconnect both true is illegal.
 fabric.module @demux_discard_and_disconnect(%a : !fabric.bits<8>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<8>)
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<8>)
                    -> (!fabric.bits<8>, !fabric.bits<8>) {
     fabric.fu(%fa = %pa : !fabric.bits<8>)
               -> (!fabric.bits<8>, !fabric.bits<8>) {
@@ -53,7 +53,7 @@ fabric.module @demux_discard_and_disconnect(%a : !fabric.bits<8>) {
 // -----
 // When disconnect is true, sel must be 0.
 fabric.module @demux_disconnect_nonzero_sel(%a : !fabric.bits<8>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<8>)
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<8>)
                    -> (!fabric.bits<8>, !fabric.bits<8>) {
     fabric.fu(%fa = %pa : !fabric.bits<8>)
               -> (!fabric.bits<8>, !fabric.bits<8>) {
@@ -71,7 +71,7 @@ fabric.module @demux_disconnect_nonzero_sel(%a : !fabric.bits<8>) {
 // -----
 // sel out of [0, N).
 fabric.module @demux_sel_out_of_range(%a : !fabric.bits<8>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<8>)
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<8>)
                    -> (!fabric.bits<8>, !fabric.bits<8>) {
     fabric.fu(%fa = %pa : !fabric.bits<8>)
               -> (!fabric.bits<8>, !fabric.bits<8>) {
@@ -100,8 +100,10 @@ fabric.module @demux_sel_out_of_range(%a : !fabric.bits<8>) {
 
 // -----
 // fabric.demux operand/result type is restricted to !fabric.bits<W>.
-// Feeding a !fabric.tag value is rejected by the op's type system.
-%v_demux_tag = builtin.unrealized_conversion_cast to !fabric.tag<4>
+// Feeding a tag-only !fabric.bits_tag<0,T> value is also rejected by the
+// op's type system.
+%v_demux_tag = builtin.unrealized_conversion_cast to !fabric.bits_tag<0, 4>
 // expected-error @+1 {{must be fabric bits type}}
 %x_demux_tag, %y_demux_tag = "fabric.demux"(%v_demux_tag)
-     : (!fabric.tag<4>) -> (!fabric.tag<4>, !fabric.tag<4>)
+     : (!fabric.bits_tag<0, 4>)
+     -> (!fabric.bits_tag<0, 4>, !fabric.bits_tag<0, 4>)

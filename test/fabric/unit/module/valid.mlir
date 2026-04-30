@@ -18,15 +18,15 @@ fabric.module @m_explicit_yield() {
   fabric.yield
 }
 
-// Module body holding the canonical fabric containers (spatial_pe, fifo).
+// Module body holding the canonical fabric containers (pe, fifo).
 // CHECK-LABEL: fabric.module @m_with_inner_ops
 // CHECK-SAME: (%{{.*}}: !fabric.bits<32>, %{{.*}}: !fabric.bits<32>)
-// CHECK: fabric.spatial_pe
+// CHECK: fabric.pe
 // CHECK: fabric.fu
 // CHECK: fabric.op
 // CHECK: fabric.fifo
 fabric.module @m_with_inner_ops(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  %r = fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  %r = fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                          %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
                   -> !fabric.bits<32> {
@@ -54,7 +54,7 @@ fabric.module @m_second() {
 // CHECK-SAME: -> (!fabric.bits<32>, !fabric.bits<32>)
 fabric.module @m_with_outputs(%a : !fabric.bits<32>, %b : !fabric.bits<32>)
     -> (!fabric.bits<32>, !fabric.bits<32>) {
-  %r = fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  %r = fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                          %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
                   -> !fabric.bits<32> {
@@ -73,12 +73,12 @@ fabric.module @m_memref_passthrough(%mem : memref<8xi32>) -> (memref<8xi32>) {
   fabric.yield %mem : memref<8xi32>
 }
 
-// Width relaxation at module-input -> spatial_pe operand: the source is
+// Width relaxation at module-input -> pe operand: the source is
 // !fabric.bits<32> and the PE block-arg / inner type is !fabric.bits<16>.
 // CHECK-LABEL: fabric.module @m_pe_input_width_relax
-// CHECK: fabric.spatial_pe(%{{.*}} = %{{.*}} : !fabric.bits<32> to !fabric.bits<16>) -> !fabric.bits<16>
+// CHECK: fabric.pe [spatial] (%{{.*}} = %{{.*}} : !fabric.bits<32> to !fabric.bits<16>) -> !fabric.bits<16>
 fabric.module @m_pe_input_width_relax(%a : !fabric.bits<32>) {
-  %r = fabric.spatial_pe(%pa = %a : !fabric.bits<32> to !fabric.bits<16>)
+  %r = fabric.pe [spatial] (%pa = %a : !fabric.bits<32> to !fabric.bits<16>)
                         -> !fabric.bits<16> {
     fabric.fu(%fa = %pa : !fabric.bits<16>) -> !fabric.bits<16> {
       %v = fabric.op [@arith.addi] (%fa, %fa)

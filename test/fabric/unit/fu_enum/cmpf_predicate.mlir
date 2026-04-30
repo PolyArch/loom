@@ -2,13 +2,13 @@
 
 // FU with arith.cmpf and a hardware-supported predicate set. The FU's
 // external boundary uses bits<32> -> bits<1> mapping internally, but to
-// satisfy the spatial_pe uniform-W rule we expose the cmpf at bits<1>
+// satisfy the pe uniform-W rule we expose the cmpf at bits<1>
 // throughout (the TypeParam(0) data ports accept any width). The
 // enumerator lifts the f-typed cmp via the FloatCmp flavor.
 
 // CHECK-LABEL: fabric.module @fu_cmpf
 fabric.module @fu_cmpf(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
       %k = fabric.op [@arith.cmpf] (%x, %y)

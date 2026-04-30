@@ -8,7 +8,7 @@
 
 // CHECK-LABEL: fabric.module @fu_broadcast_with_drain
 fabric.module @fu_broadcast_with_drain(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %c : !fabric.bits<32>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<32>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                     %pb = %b : !fabric.bits<32>,
                     %pc = %c : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>,

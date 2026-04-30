@@ -8,12 +8,12 @@
 // operands during its first pass and rewiring them once the producer
 // has been built.
 //
-// To satisfy the spatial_pe uniform-W rule we expose the FU at bits<1>
+// To satisfy the pe uniform-W rule we expose the FU at bits<1>
 // throughout (carry's TypeParam(0) data ports accept any width).
 
 // CHECK: dataflow.subgraph
 fabric.module @fu_self_feedback(%c : !fabric.bits<1>, %i : !fabric.bits<1>) {
-  fabric.spatial_pe(%pc = %c : !fabric.bits<1>,
+  fabric.pe [spatial] (%pc = %c : !fabric.bits<1>,
                     %pi = %i : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%cc = %pc : !fabric.bits<1>,
               %ii = %pi : !fabric.bits<1>) -> !fabric.bits<1> {

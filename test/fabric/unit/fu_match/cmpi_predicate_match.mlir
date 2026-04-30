@@ -2,11 +2,11 @@
 
 // FU offers cmpi with a 3-predicate hardware support set. Patterns ask
 // for predicates within and outside the support set. To satisfy the
-// spatial_pe uniform-W rule we expose the FU at bits<1> throughout
+// pe uniform-W rule we expose the FU at bits<1> throughout
 // (cmpi's TypeParam(0) inputs accept any width).
 
 fabric.module @hw_cmpi(%a : !fabric.bits<1>, %b : !fabric.bits<1>) {
-  fabric.spatial_pe(%pa = %a : !fabric.bits<1>,
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<1>,
                     %pb = %b : !fabric.bits<1>) -> !fabric.bits<1> {
     fabric.fu(%x = %pa : !fabric.bits<1>, %y = %pb : !fabric.bits<1>)
                   -> !fabric.bits<1> {
