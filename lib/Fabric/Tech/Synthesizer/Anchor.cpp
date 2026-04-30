@@ -175,15 +175,16 @@ PeerKey opKeyOf(const PeerVec &v) {
 
 // Compute the wrapper's input ports: one entry per block-arg index of
 // input subgraphs (all subgraphs must agree on the per-index
-// bit-width).
-struct WrapperPort {
+// bit-width). Used by the AnchorSynthesizer to size the inner FU's
+// entry block before BFS materialization.
+struct WrapperInputSlot {
   unsigned argIndex;
   unsigned bitwidth;
 };
 
-::std::optional<::llvm::SmallVector<WrapperPort, 4>>
-collectWrapperPorts(::llvm::ArrayRef<::dataflow::SubgraphOp> sgs) {
-  ::llvm::SmallVector<WrapperPort, 4> ports;
+::std::optional<::llvm::SmallVector<WrapperInputSlot, 4>>
+collectWrapperInputSlots(::llvm::ArrayRef<::dataflow::SubgraphOp> sgs) {
+  ::llvm::SmallVector<WrapperInputSlot, 4> ports;
   if (sgs.empty())
     return ports;
   ::dataflow::SubgraphOp first = sgs.front();
@@ -207,12 +208,46 @@ collectWrapperPorts(::llvm::ArrayRef<::dataflow::SubgraphOp> sgs) {
       if (!other.has_value() || *other != bw)
         return std::nullopt;
     }
-    WrapperPort p;
+    WrapperInputSlot p;
     p.argIndex = i;
     p.bitwidth = bw;
     ports.push_back(p);
   }
   return ports;
+}
+
+// Compute the wrapper's expected yield-side bit-widths: one entry per
+// `dataflow.yield` operand of the canonical (input #0) subgraph. All
+// inputs must already agree on yield arity (caller's precondition);
+// per-position width uniformity is checked lazily at peer materialization
+// time inside the BFS, so here we trust the canonical subgraph's widths.
+::std::optional<::llvm::SmallVector<unsigned, 4>>
+collectWrapperOutputWidths(::llvm::ArrayRef<::dataflow::SubgraphOp> sgs) {
+  ::llvm::SmallVector<unsigned, 4> widths;
+  if (sgs.empty())
+    return widths;
+  ::dataflow::SubgraphOp first = sgs.front();
+  if (!first)
+    return std::nullopt;
+  ::mlir::Block &fb = first.getBody().front();
+  ::mlir::Operation *yield = fb.getTerminator();
+  if (!yield)
+    return std::nullopt;
+  unsigned ar = yield->getNumOperands();
+  // Tier A precondition: every subgraph has the same yield arity.
+  for (auto sg : sgs) {
+    ::mlir::Operation *y = sg.getBody().front().getTerminator();
+    if (!y || y->getNumOperands() != ar)
+      return std::nullopt;
+  }
+  widths.reserve(ar);
+  for (unsigned i = 0; i < ar; ++i) {
+    auto bw = tryBitWidthOf(yield->getOperand(i).getType());
+    if (!bw.has_value())
+      return std::nullopt;
+    widths.push_back(*bw);
+  }
+  return widths;
 }
 
 //===----------------------------------------------------------------------===//
@@ -873,7 +908,7 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
   // all inputs. Disagreement is a topology mismatch (a block-arg
   // mapped to wider/narrower types in different inputs cannot be
   // realized as a single fabric.bits<N> port).
-  auto portsOpt = collectWrapperPorts(inputs.subgraphs);
+  auto portsOpt = collectWrapperInputSlots(inputs.subgraphs);
   if (!portsOpt.has_value()) {
     result.failureReason = SynthFailureReason::TopologyMismatch;
     result.notes.push_back(
@@ -885,7 +920,7 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
   // Build the wrapper func.func and inner fabric.fu skeleton.
   ::llvm::SmallVector<::mlir::Type, 4> wrapperInputTypes;
   wrapperInputTypes.reserve(ports.size());
-  for (const WrapperPort &p : ports)
+  for (const WrapperInputSlot &p : ports)
     wrapperInputTypes.push_back(::fabric::BitsType::get(ctx, p.bitwidth));
   // Output types: bit-widths drawn from the first input's yield (all
   // inputs already agreed on yield arity; per-position uniformity
@@ -1010,6 +1045,31 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
   for (auto &n : st.notes)
     result.notes.push_back(std::move(n));
   return result;
+}
+
+//===----------------------------------------------------------------------===//
+// Public helpers (callable from any TU that links MLIRFabricTechSynthesizer).
+//===----------------------------------------------------------------------===//
+
+::std::optional<WrapperPorts>
+collectWrapperPorts(::llvm::ArrayRef<::dataflow::SubgraphOp> sgs,
+                    ::mlir::MLIRContext *ctx) {
+  if (!ctx)
+    return ::std::nullopt;
+  auto inputSlots = collectWrapperInputSlots(sgs);
+  if (!inputSlots.has_value())
+    return ::std::nullopt;
+  auto outputWidths = collectWrapperOutputWidths(sgs);
+  if (!outputWidths.has_value())
+    return ::std::nullopt;
+  WrapperPorts ports;
+  ports.inputs.reserve(inputSlots->size());
+  for (const WrapperInputSlot &p : *inputSlots)
+    ports.inputs.push_back(::fabric::BitsType::get(ctx, p.bitwidth));
+  ports.outputs.reserve(outputWidths->size());
+  for (unsigned w : *outputWidths)
+    ports.outputs.push_back(::fabric::BitsType::get(ctx, w));
+  return ports;
 }
 
 } // namespace loom::fabric::tech

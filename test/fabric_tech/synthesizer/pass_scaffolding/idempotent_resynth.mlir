@@ -1,10 +1,15 @@
 // RUN: loom %s -loom-generalize-subgraphs-to-fu 2>&1 | FileCheck %s
 
 // The module already contains a top-level `func.func @fu_y` tagged with
-// `loom.synthesized_for = "y"` -- evidence that a previous run of this
-// pass produced that function for group `y`. Re-running the pass is a
-// no-op for that group: the precheck detects the marker, emits a
-// `remark: skipping idempotent re-synth`, and the input func.func is
+// `loom.synthesized_for = "y"` that is a real synthesized wrapper:
+//   * exactly one inner `fabric.fu` plus a `func.return` terminator (B1)
+//   * the inner fabric.fu passes its own verifier (B2)
+//   * the wrapper's signature matches the lift of the input subgraph's
+//     block-arg types (i32, i32) and yield types (i32) to fabric.bits<32>
+//     (B3)
+// Re-running the pass is a no-op for that group: the precheck detects
+// the marker, validates the body shape and signature, and emits a
+// `remark: skipping idempotent re-synth`. The input func.func is
 // neither annotated with `loom.synth_failed` nor stripped.
 
 // CHECK: remark: {{.*}}group "y": skipping idempotent re-synth
@@ -12,8 +17,14 @@
 // CHECK-DAG: func.func @fu_y
 // CHECK-DAG: loom.synthesized_for = "y"
 
-func.func @fu_y() attributes {loom.synthesized_for = "y"} {
-  return
+func.func @fu_y(%a: !fabric.bits<32>, %b: !fabric.bits<32>) -> !fabric.bits<32>
+    attributes {loom.synthesized_for = "y"} {
+  %r = fabric.fu(%aa = %a : !fabric.bits<32>, %bb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    %x = fabric.op [@arith.addi] (%aa, %bb) {hw_params = [{}]}
+         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+    fabric.yield %x : !fabric.bits<32>
+  }
+  return %r : !fabric.bits<32>
 }
 
 func.func @pat_addi(%a: i32, %b: i32) -> i32 attributes {loom.synth_group = "y"} {

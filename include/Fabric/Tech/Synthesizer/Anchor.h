@@ -18,6 +18,13 @@
 #include "Common/SynthConfig.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Types.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
+
+#include <optional>
+
 namespace loom::fabric::tech {
 
 // Anchor strategy: lock-step BFS from yield anchors. Handles tier-A
@@ -32,6 +39,30 @@ public:
 private:
   const ::loom::SynthConfig &cfg;
 };
+
+// Lifted wrapper-port type lists for one synth group. `inputs` carries
+// one `fabric.bits<N>` type per block-argument index of the canonical
+// (input #0) subgraph; `outputs` carries one `fabric.bits<N>` type per
+// `dataflow.yield` operand of the canonical subgraph. All inputs in a
+// tier-A group must agree on per-index block-arg width and yield-arity
+// for the lift to succeed.
+struct WrapperPorts {
+  ::llvm::SmallVector<::mlir::Type, 4> inputs;
+  ::llvm::SmallVector<::mlir::Type, 4> outputs;
+};
+
+// Compute the wrapper's expected `(inputs, outputs)` signature from one
+// synth group's input subgraphs. Returns `std::nullopt` when any input
+// subgraph disagrees with its peers on block-arg shape, block-arg
+// width, yield arity, or yield operand width, or when any port type is
+// not lift-able to `fabric.bits<N>` (block-arg / yield-operand types
+// must be `iN`, `fN`, `index`, or `none`). The `MLIRContext *` is the
+// uniquer used to construct the lifted `fabric.bits<N>` types; pass the
+// caller's owning context (the user's module context for the symbol
+// precheck).
+::std::optional<WrapperPorts>
+collectWrapperPorts(::llvm::ArrayRef<::dataflow::SubgraphOp> sgs,
+                    ::mlir::MLIRContext *ctx);
 
 } // namespace loom::fabric::tech
 

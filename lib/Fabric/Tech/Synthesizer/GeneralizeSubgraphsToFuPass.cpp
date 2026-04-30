@@ -48,6 +48,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
+#include "Fabric/Tech/Synthesizer/Anchor.h"
 #include "Fabric/Tech/Synthesizer/CostModel.h"
 #include "Fabric/Tech/Synthesizer/Parallel.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
@@ -59,20 +60,24 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -360,6 +365,154 @@ void GeneralizeSubgraphsToFuPass::validateFunctions(
   return groups;
 }
 
+// Validate that a marker-tagged wrapper function is a real synthesized
+// wrapper. Performs three checks in order:
+//   B1: body is exactly `[fabric.fu, func.return]` (one fabric.fu plus
+//       a func.return terminator; no extra ops).
+//   B2: the inner fabric.fu passes its own verifier (FuOp::verify and
+//       any nested op verifiers reachable from `mlir::verify`).
+//   B3: the wrapper's signature (operand types + result types) matches
+//       the expected signature derived from the input subgraphs via
+//       `collectWrapperPorts`.
+//
+// Returns an empty string on success. Returns a deterministic failure
+// reason note (suitable for an attached note on the diag) when any of
+// B1/B2/B3 fails. The caller treats any non-empty return as a
+// `symbol_conflict` failure.
+static std::string validateMarkerWrapper(
+    ::mlir::func::FuncOp existingFunc, ::llvm::StringRef symbolName,
+    ::llvm::StringRef groupName,
+    ::llvm::ArrayRef<::dataflow::SubgraphOp> subgraphs,
+    ::mlir::MLIRContext *ctx) {
+  std::string note;
+  ::llvm::raw_string_ostream os(note);
+
+  // B1: body must contain exactly one fabric.fu plus a func.return
+  // terminator. Empty body / no terminator / extra ops / no fabric.fu
+  // are all malformed.
+  if (existingFunc.getBody().empty()) {
+    os << "symbol_conflict (existing @" << symbolName
+       << " tagged loom.synthesized_for=\"" << groupName
+       << "\" but body shape is malformed: expected exactly one fabric.fu, "
+          "found 0 [B1])";
+    return os.str();
+  }
+  ::mlir::Block &entry = existingFunc.getBody().front();
+  unsigned fuCount = 0;
+  ::fabric::FuOp innerFu;
+  for (::mlir::Operation &op : entry.getOperations()) {
+    if (auto fu = ::mlir::dyn_cast<::fabric::FuOp>(op)) {
+      ++fuCount;
+      if (!innerFu)
+        innerFu = fu;
+    }
+  }
+  ::mlir::Operation *terminator = entry.getTerminator();
+  bool terminatorIsReturn =
+      terminator && ::mlir::isa<::mlir::func::ReturnOp>(terminator);
+  // Body must be exactly two ops: the fabric.fu and the func.return.
+  unsigned numOps = 0;
+  for (::mlir::Operation &op : entry.getOperations()) {
+    (void)op;
+    ++numOps;
+  }
+  if (fuCount != 1 || !terminatorIsReturn || numOps != 2) {
+    os << "symbol_conflict (existing @" << symbolName
+       << " tagged loom.synthesized_for=\"" << groupName
+       << "\" but body shape is malformed: expected exactly one fabric.fu, "
+          "found "
+       << fuCount << " [B1])";
+    return os.str();
+  }
+
+  // B2: verify the inner fabric.fu in isolation. Capture diagnostics
+  // through a ScopedDiagnosticHandler so the verifier's error output
+  // does not leak to stderr; surface them as part of the attached note
+  // instead. Multiple diagnostics are joined with `; ` for a single
+  // deterministic line.
+  ::llvm::SmallVector<std::string, 2> diagMsgs;
+  {
+    ::mlir::ScopedDiagnosticHandler capture(
+        ctx, [&](::mlir::Diagnostic &d) {
+          diagMsgs.push_back(d.str());
+          return ::mlir::success();
+        });
+    if (::mlir::failed(::mlir::verify(innerFu))) {
+      std::string joined;
+      for (auto [i, m] : ::llvm::enumerate(diagMsgs)) {
+        if (i)
+          joined += "; ";
+        joined += m;
+      }
+      os << "symbol_conflict (existing @" << symbolName
+         << " tagged loom.synthesized_for=\"" << groupName
+         << "\" but inner fabric.fu fails verification: "
+         << (joined.empty() ? std::string("(no diagnostic)") : joined)
+         << " [B2])";
+      return os.str();
+    }
+  }
+
+  // B3: signature match. The expected signature is the lift of the
+  // input subgraphs' block-arg types (-> wrapper inputs) and yield
+  // operand types (-> wrapper outputs) to fabric.bits<N>.
+  auto portsOpt =
+      ::loom::fabric::tech::collectWrapperPorts(subgraphs, ctx);
+  if (!portsOpt.has_value()) {
+    os << "symbol_conflict (existing @" << symbolName
+       << " tagged loom.synthesized_for=\"" << groupName
+       << "\" but expected signature could not be derived from the input "
+          "subgraphs (block-arg / yield types not lift-able) [B3])";
+    return os.str();
+  }
+  ::mlir::FunctionType actual = existingFunc.getFunctionType();
+  ::llvm::ArrayRef<::mlir::Type> actualInputs = actual.getInputs();
+  ::llvm::ArrayRef<::mlir::Type> actualResults = actual.getResults();
+  ::llvm::ArrayRef<::mlir::Type> expectedInputs(portsOpt->inputs);
+  ::llvm::ArrayRef<::mlir::Type> expectedResults(portsOpt->outputs);
+  bool inputsMatch =
+      actualInputs.size() == expectedInputs.size() &&
+      std::equal(actualInputs.begin(), actualInputs.end(),
+                 expectedInputs.begin());
+  bool resultsMatch =
+      actualResults.size() == expectedResults.size() &&
+      std::equal(actualResults.begin(), actualResults.end(),
+                 expectedResults.begin());
+  if (!inputsMatch || !resultsMatch) {
+    auto printTypes = [](::llvm::raw_string_ostream &s,
+                         ::llvm::ArrayRef<::mlir::Type> ts) {
+      s << "(";
+      for (auto [i, t] : ::llvm::enumerate(ts)) {
+        if (i)
+          s << ", ";
+        t.print(s);
+      }
+      s << ")";
+    };
+    std::string expectedStr;
+    std::string actualStr;
+    {
+      ::llvm::raw_string_ostream eo(expectedStr);
+      printTypes(eo, expectedInputs);
+      eo << " -> ";
+      printTypes(eo, expectedResults);
+    }
+    {
+      ::llvm::raw_string_ostream ao(actualStr);
+      printTypes(ao, actualInputs);
+      ao << " -> ";
+      printTypes(ao, actualResults);
+    }
+    os << "symbol_conflict (existing @" << symbolName
+       << " tagged loom.synthesized_for=\"" << groupName
+       << "\" but signature mismatch: expected " << expectedStr << ", got "
+       << actualStr << " [B3])";
+    return os.str();
+  }
+
+  return std::string();
+}
+
 bool GeneralizeSubgraphsToFuPass::prepareSymbolSlot(
     ::mlir::ModuleOp module, const SynthGroup &group) {
   std::string symbolName = wrapperNameFor(group.name);
@@ -373,11 +526,34 @@ bool GeneralizeSubgraphsToFuPass::prepareSymbolSlot(
     if (auto tag = existingFunc->getAttrOfType<::mlir::StringAttr>(
             "loom.synthesized_for")) {
       if (tag.getValue() == group.name) {
-        ::mlir::InFlightDiagnostic diag = module.emitRemark()
-            << "loom-generalize-subgraphs-to-fu: group \"" << group.name
-            << "\": skipping idempotent re-synth (existing @" << symbolName
-            << " tagged loom.synthesized_for=\"" << group.name << "\")";
-        (void)diag;
+        // Marker-tagged wrapper. Validate that it is a real synthesized
+        // wrapper (B1/B2/B3) before honoring it as idempotent. A failed
+        // check is reported as a `symbol_conflict` so the user can
+        // resolve the malformed wrapper rather than silently accepting
+        // it as a no-op.
+        std::string failureNote = validateMarkerWrapper(
+            existingFunc, symbolName, group.name,
+            ::llvm::ArrayRef<::dataflow::SubgraphOp>(group.subgraphs),
+            &getContext());
+        if (failureNote.empty()) {
+          ::mlir::InFlightDiagnostic diag = module.emitRemark()
+              << "loom-generalize-subgraphs-to-fu: group \"" << group.name
+              << "\": skipping idempotent re-synth (existing @" << symbolName
+              << " tagged loom.synthesized_for=\"" << group.name << "\")";
+          (void)diag;
+          return false;
+        }
+        // Validation failed: surface as a symbol_conflict.
+        annotateGroupFailure(
+            group,
+            ::loom::fabric::tech::failureReasonString(
+                ::loom::fabric::tech::SynthFailureReason::SymbolConflict));
+        ::mlir::InFlightDiagnostic diag =
+            failAsError ? module.emitError() : module.emitWarning();
+        diag << "loom-generalize-subgraphs-to-fu: group \"" << group.name
+             << "\": " << failureNote;
+        if (failAsError)
+          signalPassFailure();
         return false;
       }
     }
