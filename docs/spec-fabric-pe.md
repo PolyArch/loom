@@ -66,8 +66,10 @@ Compared to allowing arbitrary multi-FU placement:
 ### Body whitelist
 
 The body of `fabric.pe [spatial]` is a single block whose only legal
-contents are `fabric.fu` ops. No other op kind is permitted in the
-body. Specifically:
+contents are `fabric.fu` ops and `fabric.instantiate` ops (the latter
+must resolve to a `fabric.fu` symbol; see
+`docs/spec-fabric-instantiate.md`). No other op kind is permitted in
+the body. Specifically:
 
 * No `fabric.op`, `fabric.mux`, `fabric.demux`, or `fabric.fifo` may
   appear directly in the PE body. They are only allowed inside an
@@ -80,6 +82,10 @@ body. Specifically:
 * No non-fabric ops (e.g. `arith.*`, `func.*`, `dataflow.*`) may
   appear in the PE body. They live inside `fabric.fu` (wrapped by
   `fabric.op`) or higher-level dataflow regions, not the PE.
+
+The PE body must contain at least one compute resource: either a
+`fabric.fu` directly, or a `fabric.instantiate` whose resolved callee
+is a `fabric.fu`.
 
 The same body whitelist applies to `fabric.pe [temporal]`: a temporal
 PE body is also restricted to `fabric.fu` ops. The two PE kinds
@@ -478,7 +484,10 @@ The canonical source of truth is:
   `spec-fabric-reconfigurable-op.md` for the per-op sub-field shapes
   that contribute to `fu_sw_configs`;
 * the share-group catalogue in `spec-fabric-hw-share-group.md` for
-  legal multi-member `op_list`s inside inner FUs.
+  legal multi-member `op_list`s inside inner FUs;
+* `spec-fabric-instantiate.md` for the rules governing
+  `fabric.instantiate` inside a PE body and named `fabric.fu`
+  definitions.
 
 When extending `fabric.pe [spatial]` (for instance, adding a new field
 to the instruction word), update this document and add a unit test

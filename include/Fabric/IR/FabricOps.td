@@ -168,6 +168,7 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
     IsolatedFromAbove,
     SingleBlockImplicitTerminator<"YieldOp">,
     Symbol,
+    SymbolTable,
     DeclareOpInterfaceMethods<RegionKindInterface>
 ]> {
   let summary =
@@ -209,7 +210,8 @@ def Fabric_PeOp : Fabric_Op<"pe", [
     SingleBlock,
     NoTerminator,
     DeclareOpInterfaceMethods<RegionKindInterface>,
-    HasParent<"::fabric::ModuleOp">
+    HasParent<"::fabric::ModuleOp">,
+    SymbolTable
 ]> {
   let summary =
       "fabric PE: a container of one or more fabric.fu ops with a schedule "
@@ -255,6 +257,7 @@ def Fabric_PeOp : Fabric_Op<"pe", [
   }];
 
   let arguments = (ins
+      OptionalAttr<SymbolNameAttr>:$sym_name,
       Fabric_ScheduleAttr:$schedule,
       Variadic<Fabric_BitsType>:$inputs);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
@@ -304,9 +307,50 @@ def Fabric_FuOp : Fabric_Op<"fu", [
         (`outer >= inner`).
   }];
 
-  let arguments = (ins Variadic<Fabric_BitsType>:$inputs);
+  let arguments = (ins
+      OptionalAttr<SymbolNameAttr>:$sym_name,
+      Variadic<Fabric_BitsType>:$inputs);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
   let regions = (region SizedRegion<1>:$body);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Fabric_InstantiateOp : Fabric_Op<"instantiate", [
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
+  let summary =
+      "fabric instantiation: bind a previously-defined fabric.{module,pe,fu} "
+      "symbol into the current scope as a fresh hardware instance";
+  let description = [{
+    `fabric.instantiate` references a previously-defined fabric symbol
+    (`fabric.module`, `fabric.pe`, or `fabric.fu`) and creates a fresh
+    hardware instance with its own SSA inputs and results. The symbol
+    target supplies the hardware shape (port count and per-port type);
+    the instantiation site supplies the SSA inputs and consumer-side
+    result SSA values.
+
+    Allowed target kinds depend on the parent of the `fabric.instantiate`:
+      * builtin top-level module: only `fabric.module` symbols.
+      * `fabric.module` body: `fabric.module` (sibling top-level) or a
+        named `fabric.pe` defined inside the same module body.
+      * `fabric.pe` body: a named `fabric.fu` defined inside the same
+        pe body.
+
+    Width relaxation at the input side mirrors the existing connection-
+    point rule: the SSA operand type may differ in width from the target's
+    declared input port type, expressed via the `to <inner-type>` clause.
+    `memref` operands must match exactly. Output direction is strict:
+    each result type must equal the target's declared output port type.
+
+    Forward and self-references are forbidden.
+  }];
+
+  let arguments = (ins
+      FlatSymbolRefAttr:$callee,
+      Variadic<Fabric_ModulePortType>:$inputs);
+  let results = (outs Variadic<Fabric_ModulePortType>:$outputs);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;

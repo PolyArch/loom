@@ -85,7 +85,7 @@ fabric.module @m_cast_rejected() {
 // implicit fabric.yield terminator are permitted in fabric.module's body.
 // A raw fabric.fu directly in the module body is rejected.
 fabric.module @m_raw_fu_rejected(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  // expected-error @+1 {{is not allowed inside fabric.module; only fabric.pe and fabric.fifo are permitted}}
+  // expected-error @+1 {{is not allowed inside fabric.module}}
   fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>) -> () {
     %k = fabric.op [@arith.muli] (%x, %y)
          : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
@@ -98,7 +98,7 @@ fabric.module @m_raw_fu_rejected(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 // Strict body whitelist: a raw fabric.op directly in the module body is
 // rejected.
 fabric.module @m_raw_op_rejected(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
-  // expected-error @+1 {{is not allowed inside fabric.module; only fabric.pe and fabric.fifo are permitted}}
+  // expected-error @+1 {{is not allowed inside fabric.module}}
   %k = fabric.op [@arith.addi] (%a, %b)
        : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   fabric.yield

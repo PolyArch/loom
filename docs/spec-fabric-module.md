@@ -72,12 +72,18 @@ A module may have zero outputs (`-> ()`) or zero inputs
 
 * `fabric.pe [spatial]`
 * `fabric.fifo`
+* `fabric.module` (nested or sibling top-level brought in by symbol
+  reference -- the body whitelist accepts top-level `fabric.module`
+  ops directly so cross-module references via `fabric.instantiate`
+  resolve correctly)
+* `fabric.instantiate` (binds a previously-defined fabric symbol
+  into this scope; see `docs/spec-fabric-instantiate.md`)
 * `fabric.yield` (terminator)
 
 Future container ops -- `fabric.pe [temporal]`, `fabric.switch`,
-`fabric.mem`, `fabric.t2t`, `fabric.s2t`, `fabric.t2s`,
-`fabric.instantiate` -- are listed in the dialect roadmap and will be
-added to the whitelist (or to the schedule predicate) as they land.
+`fabric.mem`, `fabric.t2t`, `fabric.s2t`, `fabric.t2s` -- are listed
+in the dialect roadmap and will be added to the whitelist (or to the
+schedule predicate) as they land.
 
 `builtin.unrealized_conversion_cast` is **not** in the whitelist. All
 fabric module values must come from a real fabric producer (a sub-
@@ -163,8 +169,9 @@ strict per the existing rules.
 ## Verifier rules
 
 * The body whitelist accepts only `fabric.pe [spatial]`, `fabric.fifo`,
-  and `fabric.yield`. Any other op is rejected with a diagnostic that
-  lists the allowed names.
+  `fabric.module`, `fabric.instantiate`, and the `fabric.yield`
+  terminator. Any other op is rejected with a diagnostic that lists
+  the allowed names.
 * Each block-argument type must be one of the allowed module port
   types (`!fabric.bits<W>`, `!fabric.bits_tag<W,T>`, `memref<...>`).
 * Each declared result type must be one of the same allowed types.
@@ -197,6 +204,9 @@ The verifier exercises the following rejections (see
 
 * `spec-fabric-pe.md` -- inner PE container (spatial and temporal
   schedules), including PE-side width and FU-boundary details.
+* `spec-fabric-instantiate.md` -- the `fabric.instantiate` op that
+  binds a previously-defined `fabric.{module, pe, fu}` symbol into
+  the current scope as a fresh hardware instance.
 * `spec-fabric-reconfigurable-op.md` -- per-op runtime axes that
   populate spatial PE configurations.
 * `spec-fabric-hw-share-group.md` -- legal hardware-share groups for

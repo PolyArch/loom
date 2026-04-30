@@ -1,0 +1,158 @@
+# Fabric Instantiate
+
+This document specifies `fabric.instantiate`, the op that binds a
+previously-defined `fabric.{module, pe, fu}` symbol into the current
+scope as a fresh hardware instance with its own SSA inputs and outputs.
+The canonical IR source is `Fabric_InstantiateOp` in
+`include/Fabric/IR/FabricOps.td`; verifier rules live in
+`lib/Fabric/IR/FabricOps.cpp`.
+
+## Op shape and assembly syntax
+
+```mlir
+%r0, %r1 = fabric.instantiate @callee(%a : !fabric.bits<32>,
+                                      %b : !fabric.bits<32> to !fabric.bits<16>,
+                                      %m : memref<8xi32>)
+                              -> (!fabric.bits<32>, memref<8xi32>)
+```
+
+Operands form:
+
+* `@callee` -- a flat symbol reference to a previously-defined
+  `fabric.module`, `fabric.pe`, or `fabric.fu`.
+* `(%v : T_outer [to T_inner], ...)` -- per-operand SSA value plus the
+  operand's outer (SSA source) type and an optional `to T_inner` clause
+  that names the target's declared input port type at this position.
+  When the `to` clause is absent, `T_inner` defaults to `T_outer` (no
+  width relaxation).
+* `-> (T_out0, T_out1, ...)` -- declared result types as seen by
+  consumers. Output direction is strict in this iteration: each result
+  type must equal the target's declared output port type.
+
+The IR-level operand types reflect the SSA source side. The internal
+inner-input types are stashed in an `inner_input_types : ArrayAttr` only
+when at least one operand has a width-relaxing `to` clause; otherwise
+the attribute is omitted to keep the no-relaxation case round-tripping
+unchanged.
+
+`fabric.instantiate` implements `SymbolUserOpInterface`, so the symbol
+table verifier dispatches `verifySymbolUses` automatically.
+
+## Allowed instantiation sites and targets
+
+| Parent of `fabric.instantiate` | Legal target kinds                                |
+| ------------------------------ | ------------------------------------------------- |
+| `builtin.module` (top-level)   | `fabric.module` only                              |
+| `fabric.module` body           | `fabric.module` (sibling top-level) or `fabric.pe`|
+| `fabric.pe` body               | `fabric.fu` only                                  |
+| Anywhere else                  | rejected                                          |
+
+Future container ops (`fabric.switch`, `fabric.mem`) will be added to
+the table when they land.
+
+The verifier dispatches on the resolved target's op kind; mismatch
+emits a parent-site-specific diagnostic that names the unsupported
+target kind and the offending symbol.
+
+## Named definitions for fabric.pe and fabric.fu
+
+`fabric.pe` and `fabric.fu` carry an optional `sym_name`. The anonymous
+form (no `sym_name`) keeps the existing single-instance behavior. The
+named form uses the same body / signature; structurally it is the same
+op (still produces SSA results in its enclosing scope), but the
+`sym_name` makes the op addressable from subsequent
+`fabric.instantiate @sym` ops as a template for additional independent
+instances.
+
+* `fabric.pe @ALU [spatial] (%pa = %a : T) -> T { ... }` -- named PE.
+* `fabric.fu @F (%fa = %pa : T) -> T { ... }` -- named FU.
+
+`fabric.pe` carries the `SymbolTable` trait so its body can host named
+`fabric.fu` definitions. `fabric.module` already carries `Symbol` and
+`SymbolTable` traits, so its body can host named `fabric.pe`
+definitions in addition to its own role as a fabric symbol.
+
+## Width-relaxation rules at the instantiate boundaries
+
+The instantiate op has two connection points:
+
+1. **Operand SSA outer type vs. target's declared input port type
+   (input direction).** The same connection-point rule used elsewhere
+   in the dialect (low-bit alignment, zero-fill on extension) applies:
+   * `bits` -> `bits`: widths may differ; aligned at the LSB.
+   * `bits_tag` -> `bits_tag`: widths may differ on each of the bits
+     and tag fields independently.
+   * `memref` -> `memref`: types must match exactly.
+   The `to T_inner` clause expresses the relaxation explicitly. Without
+   the clause, outer == inner.
+2. **Result SSA type vs. target's declared output port type (output
+   direction).** Strict equality in this iteration; the result type
+   must equal the target's output port type. A future iteration will
+   extend the relaxation to the output direction; until then attempts
+   to relax the output type are diagnosed as
+   "result #N type ... must equal callee '@<sym>' output port type
+   ... (output direction is strict; no width relaxation)".
+
+`memref` types are always exact-match. The `to <inner-type>` clause is
+rejected on `memref` operands.
+
+## Symbol resolution rules
+
+* **Nearest-symbol-table lookup.** The verifier resolves `@callee` via
+  `SymbolTable::lookupNearestSymbolFrom`, walking outward through
+  enclosing `SymbolTable` ops. Both `fabric.module` and `fabric.pe`
+  carry the `SymbolTable` trait; lookup tries each enclosing
+  `SymbolTable` in turn so a sibling top-level `fabric.module` is
+  reachable from inside another `fabric.module`'s body, even though
+  `fabric.module` is `IsolatedFromAbove`.
+* **Forward-reference forbidden.** When the target op is in the same
+  block as the closest ancestor of the `fabric.instantiate` site, the
+  target must textually precede the use. Forward references (the
+  named definition appears below its use) are rejected.
+* **Self-reference forbidden.** The target op MUST NOT be the closest
+  enclosing `fabric.{module, pe, fu}` of the `fabric.instantiate`
+  site. Recursive instantiation (a fabric.module's body instantiating
+  its own enclosing fabric.module) is therefore illegal.
+* **Scope leakage prevented.** A named pe defined inside a
+  fabric.module body is reachable only inside that module's body. A
+  top-level `fabric.instantiate @inner_pe` cannot reach an
+  `inner_pe` that is nested inside another fabric.module's body; the
+  lookup fails with "references undefined symbol '@inner_pe'".
+
+## Verifier checklist
+
+`InstantiateOp::verify` (operand-only, fast path) checks:
+
+* Per-operand outer/inner kind agreement.
+* memref operands cannot use the `to <inner-type>` clause.
+
+`InstantiateOp::verifySymbolUses` (cross-symbol checks) performs:
+
+1. Symbol resolution as described above; failure emits "references
+   undefined symbol '@<sym>'".
+2. Target kind matches the parent-of-instantiate rule.
+3. Self-reference prohibition.
+4. Forward-reference prohibition.
+5. Operand count equals the target's input port count.
+6. Result count equals the target's output port count.
+7. For each input port, the declared inner type equals the target's
+   declared input port type.
+8. For each output port, the result SSA type equals the target's
+   declared output port type (strict).
+
+## Body whitelist updates
+
+* `fabric.module` body now also accepts `fabric.module` (nested) and
+  `fabric.instantiate`. The implicit `fabric.yield` terminator is
+  unchanged.
+* `fabric.pe` body now accepts `fabric.instantiate` in addition to
+  `fabric.fu`. The PE body must contain at least one compute resource:
+  either a `fabric.fu` directly, or a `fabric.instantiate` whose
+  resolved callee is a `fabric.fu`.
+
+## Cross-references
+
+* `spec-fabric-module.md` -- module-level container, port types,
+  width-relaxation rule at the three intra-module connection points.
+* `spec-fabric-pe.md` -- PE container, schedule predicate, body
+  whitelist.

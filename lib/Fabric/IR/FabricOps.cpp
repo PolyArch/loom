@@ -924,6 +924,16 @@ LogicalResult OpOp::verify() {
 // the inner type only governs the body block.
 
 ParseResult FuOp::parse(OpAsmParser &parser, OperationState &result) {
+  // Optional `@sym_name` immediately after the op keyword. When present,
+  // this `fabric.fu` is itself a named definition; subsequent
+  // `fabric.instantiate @sym` ops can create additional instances.
+  StringAttr nameAttr;
+  if (succeeded(parser.parseOptionalSymbolName(
+          nameAttr, ::mlir::SymbolTable::getSymbolAttrName(),
+          result.attributes))) {
+    // Symbol name parsed; fall through.
+  }
+
   SmallVector<OpAsmParser::Argument, 4> blockArgs;
   SmallVector<OpAsmParser::UnresolvedOperand, 4> operands;
   SmallVector<Type, 4> operandTypes;
@@ -993,6 +1003,10 @@ ParseResult FuOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void FuOp::print(OpAsmPrinter &p) {
+  if (auto sym = getSymNameAttr()) {
+    p << ' ';
+    p.printSymbolName(sym.getValue());
+  }
   p << '(';
   Block &entry = getBody().front();
   llvm::interleaveComma(
@@ -1017,7 +1031,9 @@ void FuOp::print(OpAsmPrinter &p) {
     llvm::interleaveComma(rTypes, p);
     p << ')';
   }
-  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs());
+  // Elide `sym_name` from the attr-dict; it's printed inline (if present).
+  SmallVector<StringRef, 1> elided{::mlir::SymbolTable::getSymbolAttrName()};
+  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(), elided);
   p << ' ';
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/true);
@@ -1096,6 +1112,15 @@ LogicalResult FuOp::verify() {
 // `[temporal]` parses but the verifier currently rejects it.
 
 ParseResult PeOp::parse(OpAsmParser &parser, OperationState &result) {
+  // Optional `@sym_name` immediately after the op keyword, before the
+  // mandatory `[<schedule>]` predicate. When present, this `fabric.pe` is
+  // a named definition; subsequent `fabric.instantiate @sym` ops in the
+  // same enclosing fabric.module body create additional independent
+  // instances using the same body / signature.
+  StringAttr nameAttr;
+  (void)parser.parseOptionalSymbolName(
+      nameAttr, ::mlir::SymbolTable::getSymbolAttrName(), result.attributes);
+
   // Mandatory `[<schedule>]` predicate.
   StringRef scheduleKw;
   SMLoc scheduleLoc = parser.getCurrentLocation();
@@ -1180,6 +1205,10 @@ ParseResult PeOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void PeOp::print(OpAsmPrinter &p) {
+  if (auto sym = getSymNameAttr()) {
+    p << ' ';
+    p.printSymbolName(sym.getValue());
+  }
   p << " [" << stringifySchedule(getSchedule()) << "] (";
   Block &entry = getBody().front();
   llvm::interleaveComma(
@@ -1205,8 +1234,10 @@ void PeOp::print(OpAsmPrinter &p) {
     p << ')';
   }
   // Elide the `schedule` attribute from the optional attr-dict; it's already
-  // serialized in the `[...]` predicate.
-  SmallVector<StringRef, 1> elided{"schedule"};
+  // serialized in the `[...]` predicate. Elide `sym_name` too: the optional
+  // name is printed inline before the schedule predicate.
+  SmallVector<StringRef, 2> elided{"schedule",
+                                   ::mlir::SymbolTable::getSymbolAttrName()};
   p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(), elided);
   p << ' ';
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
@@ -1293,15 +1324,24 @@ LogicalResult PeOp::verify() {
                 "memref types must match exactly";
   }
 
-  // 5./6. Body whitelist: only fabric.fu, and at least one of them.
-  unsigned numFu = 0;
+  // 5./6. Body whitelist: fabric.fu (named or anonymous) plus
+  // fabric.instantiate. The PE body must contain at least one compute
+  // resource: either a fabric.fu or a fabric.instantiate whose target is
+  // a fabric.fu.
+  unsigned numCompute = 0;
   for (Operation &op : entry) {
+    if (isa<InstantiateOp>(op)) {
+      // Cross-checks against the resolved target run inside the
+      // InstantiateOp verifier (port count, per-port type, scope rules).
+      ++numCompute;
+      continue;
+    }
     auto fu = dyn_cast<FuOp>(op);
     if (!fu)
       return op.emitOpError("'fabric.pe' op body may only contain "
-                            "fabric.fu; got '")
+                            "fabric.fu and fabric.instantiate; got '")
              << op.getName().getStringRef() << "'";
-    ++numFu;
+    ++numCompute;
 
     // 7. Per-FU constraints.
     unsigned fuNumIns = fu.getInputs().size();
@@ -1332,11 +1372,18 @@ LogicalResult PeOp::verify() {
                << W << "; FU output #" << i << " has type " << t;
     }
   }
-  if (numFu < 1)
-    return emitOpError("body requires at least one fabric.fu");
+  if (numCompute < 1)
+    return emitOpError(
+        "body requires at least one fabric.fu or fabric.instantiate");
 
   return success();
 }
+
+//===----------------------------------------------------------------------===//
+// fabric.instantiate (parser/printer/verifier defined in
+// FabricInstantiateOp.cpp; kept in a separate translation unit to keep
+// each file under the dialect's file-size guideline).
+//===----------------------------------------------------------------------===//
 
 //===----------------------------------------------------------------------===//
 // fabric.module
@@ -1515,18 +1562,18 @@ LogicalResult fabric::ModuleOp::verify() {
              << " must equal declared input type " << declared;
   }
 
-  // Body whitelist: only fabric.pe, fabric.fifo, and the implicit
-  // fabric.yield terminator may appear directly in the module body.
-  // (Future container ops -- fabric.switch, fabric.mem, fabric.t2s,
-  // fabric.s2t, fabric.t2t, fabric.instantiate -- will be added here
-  // as they land.)
+  // Body whitelist: only fabric.pe, fabric.fifo, fabric.module (nested),
+  // fabric.instantiate, and the implicit fabric.yield terminator may
+  // appear directly in the module body. (Future container ops --
+  // fabric.switch, fabric.mem, fabric.t2s, fabric.s2t, fabric.t2t -- will
+  // be added here as they land.)
   for (Operation &op : entry) {
-    if (isa<PeOp, FifoOp, YieldOp>(op))
+    if (isa<PeOp, FifoOp, fabric::ModuleOp, InstantiateOp, YieldOp>(op))
       continue;
     return op.emitOpError(
-        "is not allowed inside fabric.module; only fabric.pe and "
-        "fabric.fifo are permitted (plus the implicit terminator "
-        "fabric.yield)");
+        "is not allowed inside fabric.module; only fabric.pe, "
+        "fabric.fifo, fabric.module, and fabric.instantiate are "
+        "permitted (plus the implicit terminator fabric.yield)");
   }
   return success();
 }
