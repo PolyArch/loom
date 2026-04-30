@@ -50,6 +50,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/Tech/Synthesizer/Anchor.h"
 #include "Fabric/Tech/Synthesizer/CostModel.h"
+#include "Fabric/Tech/Synthesizer/FailureDiagnostic.h"
 #include "Fabric/Tech/Synthesizer/Parallel.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
@@ -804,16 +805,13 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
       ::mlir::Operation *raw = result.wrapper.release();
       modBuilder.insert(raw);
     } else {
-      annotateGroupFailure(
-          group, ::loom::fabric::tech::failureReasonString(
-                     result.failureReason));
-      ::mlir::InFlightDiagnostic diag =
-          failAsError ? module.emitError() : module.emitWarning();
-      diag << "loom-generalize-subgraphs-to-fu: group \"" << group.name
-           << "\": synthesis failed: "
-           << ::loom::fabric::tech::failureReasonString(result.failureReason);
-      for (const std::string &n : result.notes)
-        diag.attachNote() << n;
+      ::loom::fabric::tech::annotateAndDiagnoseGroupFailure(
+          module, group.name,
+          ::llvm::ArrayRef<::mlir::func::FuncOp>(group.parents),
+          result.failureReason,
+          ::llvm::ArrayRef<std::string>(result.notes.begin(),
+                                        result.notes.end()),
+          failAsError);
       if (failAsError)
         signalPassFailure();
     }

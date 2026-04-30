@@ -37,6 +37,7 @@ tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom-synth-base-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-synth-config-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-synth-fu-dump"),
+    os.path.join(config.loom_obj_root, "tools", "loom-synth-verifier-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-template-dump"),
     os.path.join(config.loom_obj_root, "bin"),
     config.llvm_tools_dir,
@@ -53,6 +54,7 @@ tools = [
     "loom-synth-base-test",
     "loom-synth-config-test",
     "loom-synth-fu-dump",
+    "loom-synth-verifier-test",
     "loom-template-dump",
     "mlir-opt",
 ]

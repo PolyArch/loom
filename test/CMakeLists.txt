@@ -19,6 +19,7 @@ set(LOOM_TEST_DEPENDS
   loom-synth-base-test
   loom-synth-config-test
   loom-synth-fu-dump
+  loom-synth-verifier-test
   loom-template-dump
 )
 
