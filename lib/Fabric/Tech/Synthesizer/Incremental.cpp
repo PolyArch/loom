@@ -135,47 +135,6 @@ unsigned subgraphNodeCount(::dataflow::SubgraphOp sg) {
   return {};
 }
 
-::llvm::SmallVector<unsigned, 8>
-sortInputs(::llvm::ArrayRef<::dataflow::SubgraphOp> inputs,
-           ::llvm::StringRef heuristic, uint64_t seed) {
-  ::llvm::SmallVector<unsigned, 8> idx;
-  idx.reserve(inputs.size());
-  for (unsigned i = 0; i < inputs.size(); ++i)
-    idx.push_back(i);
-
-  if (heuristic == "smallest_first") {
-    ::std::stable_sort(idx.begin(), idx.end(),
-                       [&](unsigned a, unsigned b) {
-                         unsigned na = subgraphNodeCount(inputs[a]);
-                         unsigned nb = subgraphNodeCount(inputs[b]);
-                         if (na != nb)
-                           return na < nb;
-                         return parentFuncName(inputs[a]) <
-                                parentFuncName(inputs[b]);
-                       });
-  } else if (heuristic == "random_seeded") {
-    // Deterministic pseudo-random shuffle: the determinism rule (same
-    // seed -> same permutation) must hold across runs. The seed comes
-    // from `cfg.incrementalRandomSeed` (shared with incremental_random
-    // for consistency).
-    ::std::mt19937_64 rng(seed);
-    ::std::shuffle(idx.begin(), idx.end(), rng);
-  } else {
-    // Default: largest_first. Largest body first, ties broken by
-    // lexical func name.
-    ::std::stable_sort(idx.begin(), idx.end(),
-                       [&](unsigned a, unsigned b) {
-                         unsigned na = subgraphNodeCount(inputs[a]);
-                         unsigned nb = subgraphNodeCount(inputs[b]);
-                         if (na != nb)
-                           return na > nb;
-                         return parentFuncName(inputs[a]) <
-                                parentFuncName(inputs[b]);
-                       });
-  }
-  return idx;
-}
-
 //===----------------------------------------------------------------------===//
 // Trivial FU build: delegate to the anchor strategy on a single-input
 // bundle. Anchor's lock-step BFS over a one-element peer set degenerates
@@ -303,6 +262,53 @@ bool isCovered(::mlir::func::FuncOp wrapper, ::dataflow::SubgraphOp sg,
 } // namespace
 
 //===----------------------------------------------------------------------===//
+// Public order-heuristic helper. Shared with `IncrementalRandomSynthesizer`,
+// which uses it to seed the first restart permutation when the configured
+// heuristic is `largest_first` or `smallest_first`.
+//===----------------------------------------------------------------------===//
+
+::llvm::SmallVector<unsigned, 8>
+sortInputsByOrderHeuristic(::llvm::ArrayRef<::dataflow::SubgraphOp> inputs,
+                           ::llvm::StringRef heuristic, uint64_t seed) {
+  ::llvm::SmallVector<unsigned, 8> idx;
+  idx.reserve(inputs.size());
+  for (unsigned i = 0; i < inputs.size(); ++i)
+    idx.push_back(i);
+
+  if (heuristic == "smallest_first") {
+    ::std::stable_sort(idx.begin(), idx.end(),
+                       [&](unsigned a, unsigned b) {
+                         unsigned na = subgraphNodeCount(inputs[a]);
+                         unsigned nb = subgraphNodeCount(inputs[b]);
+                         if (na != nb)
+                           return na < nb;
+                         return parentFuncName(inputs[a]) <
+                                parentFuncName(inputs[b]);
+                       });
+  } else if (heuristic == "random_seeded") {
+    // Deterministic pseudo-random shuffle: the determinism rule (same
+    // seed -> same permutation) must hold across runs. The seed comes
+    // from `cfg.incrementalRandomSeed` (shared with incremental_random
+    // for consistency).
+    ::std::mt19937_64 rng(seed);
+    ::std::shuffle(idx.begin(), idx.end(), rng);
+  } else {
+    // Default: largest_first. Largest body first, ties broken by
+    // lexical func name.
+    ::std::stable_sort(idx.begin(), idx.end(),
+                       [&](unsigned a, unsigned b) {
+                         unsigned na = subgraphNodeCount(inputs[a]);
+                         unsigned nb = subgraphNodeCount(inputs[b]);
+                         if (na != nb)
+                           return na > nb;
+                         return parentFuncName(inputs[a]) <
+                                parentFuncName(inputs[b]);
+                       });
+  }
+  return idx;
+}
+
+//===----------------------------------------------------------------------===//
 // IncrementalSynthesizer.
 //===----------------------------------------------------------------------===//
 
@@ -324,9 +330,9 @@ SynthResult IncrementalSynthesizer::run(const SynthInputs &inputs) {
   }
 
   // 1. Sort inputs by configured heuristic.
-  auto sortedIdx = sortInputs(inputs.subgraphs,
-                              cfg.incrementalInputOrderHeuristic,
-                              cfg.incrementalRandomSeed);
+  auto sortedIdx = sortInputsByOrderHeuristic(
+      inputs.subgraphs, cfg.incrementalInputOrderHeuristic,
+      cfg.incrementalRandomSeed);
   ::llvm::SmallVector<::dataflow::SubgraphOp, 8> ordered;
   ordered.reserve(sortedIdx.size());
   for (unsigned i : sortedIdx)
@@ -366,7 +372,7 @@ SynthResult IncrementalSynthesizer::run(const SynthInputs &inputs) {
         candidates.push_back(std::move(c));
     }
     {
-      auto mux = detail::insertMuxDemuxCandidates(wrapper.get(), sg);
+      auto mux = detail::insertMuxDemuxCandidates(wrapper.get(), sg, cfg);
       for (auto &c : mux)
         candidates.push_back(std::move(c));
     }

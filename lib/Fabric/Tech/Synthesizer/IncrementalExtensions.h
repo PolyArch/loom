@@ -48,9 +48,16 @@ widenOplistCandidates(::mlir::func::FuncOp curWrapper,
 // new tail op + mux at yield) and the symmetric case where the FU is
 // one op longer than sg (insert demux at the FU's chain pre-head + mux
 // at yield to skip the extra op).
+//
+// When `cfg.subgraphShareRecurse == true`, the generator additionally
+// emits a recursive-compression candidate that widens an existing FU
+// body fabric.op's op_list to absorb the new tail op when the two
+// share a hardware share-group + width (spec Q12). When the flag is
+// false, only the baseline candidates are emitted.
 ::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4>
 insertMuxDemuxCandidates(::mlir::func::FuncOp curWrapper,
-                         ::dataflow::SubgraphOp sg);
+                         ::dataflow::SubgraphOp sg,
+                         const ::loom::SynthConfig &cfg);
 
 // Tier-C structural extension. Generates one candidate that grafts a
 // new sub-FU for the diff region, including

@@ -7,7 +7,12 @@
 //      permutations of the input subgraph list. The PRNG is a
 //      `std::mt19937_64` seeded with `cfg.incrementalRandomSeed`, so the
 //      same seed always produces the same set of permutations regardless
-//      of host or worker count.
+//      of host or worker count. When
+//      `cfg.incrementalRandomInputOrderHeuristic` is not
+//      `random_seeded`, the first permutation is overridden with the
+//      deterministic ordering driven by that heuristic
+//      (`largest_first` / `smallest_first`); the remaining `restarts - 1`
+//      permutations stay random.
 //   2. Run all permutations in parallel via `WorkerPool::parallelMap`.
 //      Each restart constructs its own sub-`MLIRContext` (so concurrent
 //      strategy invocations do not race on the outer scratch context's
@@ -127,6 +132,33 @@ buildPermutations(std::size_t n, unsigned restarts, uint64_t seed) {
     perms.push_back(std::move(perm));
   }
   return perms;
+}
+
+// Replace the first restart's permutation with a deterministic ordering
+// driven by `cfg.incrementalRandomInputOrderHeuristic`. The remaining
+// `restarts - 1` permutations stay random so the explore-exploit tradeoff
+// of multi-restart synthesis is preserved (the deterministic seed gives
+// the cost-rank floor a known starting point; random restarts still
+// explore alternatives).
+//
+// "random_seeded" leaves the all-random permutation set unchanged.
+void applyFirstPermutationHeuristic(
+    ::llvm::SmallVectorImpl<PermVec> &perms,
+    ::llvm::ArrayRef<::dataflow::SubgraphOp> inputs,
+    ::llvm::StringRef heuristic, uint64_t seed) {
+  if (perms.empty())
+    return;
+  if (heuristic.empty() || heuristic == "random_seeded")
+    return;
+  ::llvm::SmallVector<unsigned, 8> ordered =
+      sortInputsByOrderHeuristic(inputs, heuristic, seed);
+  // sortInputsByOrderHeuristic returns indices sized to `inputs`; the
+  // first restart's permutation also has that size by construction.
+  PermVec first;
+  first.reserve(ordered.size());
+  for (unsigned i : ordered)
+    first.push_back(i);
+  perms[0] = std::move(first);
 }
 
 //===----------------------------------------------------------------------===//
@@ -293,6 +325,13 @@ SynthResult IncrementalRandomSynthesizer::run(const SynthInputs &inputs) {
   // 1. Build all permutations up front from a single seeded PRNG so the
   // permutation set is independent of thread interleaving.
   auto perms = buildPermutations(inputs.subgraphs.size(), restarts,
+                                 cfg.incrementalRandomSeed);
+
+  // When the configured heuristic is not `random_seeded`, override the
+  // first restart's permutation with the deterministic ordering driven
+  // by that heuristic. The remaining restarts stay random.
+  applyFirstPermutationHeuristic(perms, inputs.subgraphs,
+                                 cfg.incrementalRandomInputOrderHeuristic,
                                  cfg.incrementalRandomSeed);
 
   // 2. Dispatch restarts in parallel. WorkerPool with `parallelismWorkers`

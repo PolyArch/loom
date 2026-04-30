@@ -19,7 +19,14 @@
 // module context (see `GeneralizeSubgraphsToFuPass`'s splice loop).
 
 #include "Common/SynthConfig.h"
+#include "Dataflow/IR/DataflowOps.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+
+#include <cstdint>
 
 namespace loom::fabric::tech {
 
@@ -31,6 +38,25 @@ public:
 private:
   const ::loom::SynthConfig &cfg;
 };
+
+// Sort a list of input subgraphs by the configured order heuristic. Returns
+// a permutation of indices into `inputs` (not a copy of the subgraph list).
+//
+// Heuristics:
+//   * "smallest_first": ascending body-node count, ties broken by lexical
+//     parent func.func name.
+//   * "random_seeded": deterministic Fisher-Yates shuffle keyed by `seed`.
+//   * anything else (including "largest_first"): descending body-node
+//     count, ties broken by lexical parent func.func name.
+//
+// This helper is shared by `IncrementalSynthesizer` (for its single
+// deterministic order) and `IncrementalRandomSynthesizer` (which uses it
+// to seed the first restart permutation when the heuristic is
+// "largest_first" or "smallest_first"; see spec section
+// "Strategy: incremental_random").
+::llvm::SmallVector<unsigned, 8>
+sortInputsByOrderHeuristic(::llvm::ArrayRef<::dataflow::SubgraphOp> inputs,
+                           ::llvm::StringRef heuristic, uint64_t seed);
 
 } // namespace loom::fabric::tech
 

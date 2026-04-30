@@ -923,6 +923,10 @@ Carry-heads are realized inside the synthesized FU as
 `fabric.op [@dataflow.carry]`, never as bare `dataflow.carry`
 (`FuOp::verify` rejects the latter).
 
+**Implementation note**: the `scc_full_unroll` knob is currently a
+no-op; the signature-equivalence heuristic is always taken. The
+alternate full-unroll path described above is a planned follow-up.
+
 ### CostModel
 
 ```cpp

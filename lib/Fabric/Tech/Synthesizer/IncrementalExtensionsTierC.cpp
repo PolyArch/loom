@@ -342,14 +342,11 @@ struct PreAlignment {
 // Returns std::nullopt on `feedback_align_conflict` (at least one input
 // has more than one head in the same class).
 //
-// `cfg.sccFullUnroll == true` selects the alternate path described in
-// the spec: unroll once per SCC (longest-cycle path), materialize back-
-// edges as placeholders, run alignment on the unrolled DAG, then re-fold.
-// That alternate path is documented in spec section "SCC handling for
-// tier C" but is not implemented here -- the signature heuristic is the
-// default and covers every example workload in the spec. When the flag
-// is set we still fall back to the heuristic so the strategy degrades
-// gracefully rather than aborting.
+// The cfg.sccFullUnroll alternate path (longest-cycle unroll, alignment
+// over the unrolled DAG, re-fold post-alignment) is intentionally
+// deferred to the broader tier-C follow-up. The flag is currently a
+// no-op: the signature-equivalence heuristic always runs. See spec
+// section "SCC handling for tier C" for the intended semantics.
 ::std::optional<PreAlignment>
 preAlignSccs(::fabric::FuOp fu, ::dataflow::SubgraphOp sg,
              const ::loom::SynthConfig &cfg) {

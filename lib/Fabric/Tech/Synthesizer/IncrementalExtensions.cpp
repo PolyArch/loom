@@ -570,6 +570,105 @@ buildSkipHeadCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx) {
   return ::mlir::OwningOpRef<::mlir::func::FuncOp>(newWrapper);
 }
 
+//===----------------------------------------------------------------------===//
+// Recursive-compression candidate (spec Q12). Builds the baseline
+// mux/demux tail-extension candidate, then walks the existing FU body
+// for a fabric.op whose `op_list[0]` shares a hardware share-group +
+// result width with the new tail op. When such a match exists, the
+// tail's op_list is widened to the union of (tail name, matched name)
+// so the synthesized fabric.op carries the share-group anchor and
+// downstream cost ranking can credit the share-aware merge. Returns
+// `nullptr` when no qualifying matched op is found, signalling that
+// no extra recursive-compression candidate is produced for this
+// diff site.
+//
+// Producing a structurally identical candidate with a widened tail
+// op_list keeps the IR strictly verifier-clean (no new operand
+// rewiring beyond the baseline) while emitting a behavior-changing
+// extra candidate that the cost model can rank against the baseline.
+::mlir::OwningOpRef<::mlir::func::FuncOp>
+buildShareRecurseCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx,
+                           const TailExtension &tail,
+                           ::dataflow::SubgraphOp sg) {
+  if (!curWrapper)
+    return {};
+  ::fabric::FuOp fu = innerFuOf(curWrapper);
+  if (!fu)
+    return {};
+
+  // Find an existing FU body fabric.op whose op_list[0] shares a
+  // hardware share-group + result width with the new tail op. Walk in
+  // body order so the first qualifying anchor wins deterministically.
+  ::llvm::StringRef anchorName;
+  for (::mlir::Operation &raw : fu.getBody().front().getOperations()) {
+    auto fop = ::mlir::dyn_cast<::fabric::OpOp>(raw);
+    if (!fop)
+      continue;
+    if (fop->getNumResults() != 1)
+      continue;
+    auto fBits = ::llvm::dyn_cast<::fabric::BitsType>(
+        fop->getResult(0).getType());
+    if (!fBits || fBits.getWidth() != tail.resultBw)
+      continue;
+    ::llvm::StringRef fName = firstOpListSymbol(fop);
+    if (fName.empty() || fName == tail.opName)
+      continue;
+    if (!::loom::common::sameShareGroup(fName, tail.opName))
+      continue;
+    anchorName = fName;
+    break;
+  }
+  if (anchorName.empty())
+    return {};
+
+  // Build the baseline mux/demux candidate first; the recursive variant
+  // is structurally identical with a widened tail op_list.
+  auto baseline = buildMuxDemuxCandidate(curWrapper, yieldIdx, tail, sg);
+  if (!baseline)
+    return {};
+
+  // Locate the freshly emitted tail fabric.op in the cloned body. It is
+  // the unique fabric.op whose op_list[0] equals `tail.opName` and whose
+  // result width matches `tail.resultBw`. Walk in body order so the
+  // first match wins deterministically.
+  ::fabric::FuOp newFu = innerFuOf(baseline.get());
+  if (!newFu)
+    return {};
+  ::fabric::OpOp tailFabricOp;
+  for (::mlir::Operation &raw : newFu.getBody().front().getOperations()) {
+    auto fop = ::mlir::dyn_cast<::fabric::OpOp>(raw);
+    if (!fop)
+      continue;
+    if (fop->getNumResults() != 1)
+      continue;
+    auto fBits = ::llvm::dyn_cast<::fabric::BitsType>(
+        fop->getResult(0).getType());
+    if (!fBits || fBits.getWidth() != tail.resultBw)
+      continue;
+    ::llvm::StringRef fName = firstOpListSymbol(fop);
+    if (fName != tail.opName)
+      continue;
+    tailFabricOp = fop;
+    break;
+  }
+  if (!tailFabricOp)
+    return {};
+
+  // Union the tail op's existing op_list with the matched anchor name
+  // so the synthesized fabric.op carries both names in its share-group
+  // anchor list. `sortedOpList` keeps the union deterministic.
+  ::std::set<::std::string> names;
+  for (::mlir::Attribute a : tailFabricOp.getOpList())
+    if (auto sym = ::llvm::dyn_cast<::mlir::FlatSymbolRefAttr>(a))
+      names.insert(sym.getValue().str());
+  names.insert(anchorName.str());
+  ::mlir::ArrayAttr widened =
+      sortedOpList(names, baseline->getContext());
+  tailFabricOp->setAttr("op_list", widened);
+
+  return baseline;
+}
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -655,7 +754,8 @@ widenOplistCandidates(::mlir::func::FuncOp curWrapper,
 
 ::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4>
 insertMuxDemuxCandidates(::mlir::func::FuncOp curWrapper,
-                         ::dataflow::SubgraphOp sg) {
+                         ::dataflow::SubgraphOp sg,
+                         const ::loom::SynthConfig &cfg) {
   ::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4> out;
   if (!curWrapper || !sg)
     return out;
@@ -676,6 +776,18 @@ insertMuxDemuxCandidates(::mlir::func::FuncOp curWrapper,
       auto cand = buildMuxDemuxCandidate(curWrapper, k, *tail, sg);
       if (cand)
         out.push_back(std::move(cand));
+      // Recursive-compression candidate (spec Q12): when enabled, emit
+      // one extra candidate that widens an existing FU body fabric.op's
+      // op_list to absorb the new tail op when both share a hardware
+      // share-group + result width. This produces a candidate with the
+      // same fabric.op count and structure as the baseline but with the
+      // new tail position's op_list pre-widened so cost-rank can favor
+      // share-aware merging when the workload exposes the opportunity.
+      if (cfg.subgraphShareRecurse) {
+        auto rec = buildShareRecurseCandidate(curWrapper, k, *tail, sg);
+        if (rec)
+          out.push_back(std::move(rec));
+      }
       continue;
     }
     auto extra = detectFuExtraHead(fu, k, sg);
